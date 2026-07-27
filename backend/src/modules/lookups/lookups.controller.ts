@@ -6,6 +6,7 @@ import { LookupsService } from "./lookups.service";
  * Lookup-ovi za biranje iz liste:
  *   GET /api/v1/lookups/projects?q=   — predmeti (id, broj, naziv, komitent id + `customer {id, name}`)
  *   GET /api/v1/lookups/customers?q=  — komitenti (id, naziv, mesto, PIB)
+ *   GET /api/v1/lookups/warehouses?q= — magacini (id, naziv, mesto, vrsta)
  */
 @UseGuards(JwtAuthGuard)
 @Controller({ path: "lookups", version: "1" })
@@ -20,5 +21,10 @@ export class LookupsController {
   @Get("customers")
   customers(@Query("q") q?: string) {
     return this.lookups.customers(q);
+  }
+
+  @Get("warehouses")
+  warehouses(@Query("q") q?: string) {
+    return this.lookups.warehouses(q);
   }
 }

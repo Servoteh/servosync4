@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 
 /**
  * Blagajna (gotovinski dnevnik) — data sloj. TanStack Query hooks nad
@@ -73,6 +73,26 @@ export function useCreateCashJournal() {
         body: JSON.stringify(input),
       }),
     onSuccess: invalidate,
+  });
+}
+
+/**
+ * BLAGAJNIČKI IZVEŠTAJ (dnevnik) — GET /blagajna/journals/:id/dnevnik/pdf.
+ * `from`/`to` su `YYYY-MM-DD`; bez njih se štampa današnji dan, a `to` je
+ * uključivo. Ruta traži Authorization header, pa ide kroz `apiBlob` (ne link).
+ * read = BLAGAJNA_READ.
+ */
+export function useCashJournalPdf() {
+  return useMutation({
+    mutationFn: (args: { journalId: number; from?: string; to?: string }) => {
+      const q = new URLSearchParams();
+      if (args.from) q.set('from', args.from);
+      if (args.to) q.set('to', args.to);
+      const qs = q.toString();
+      return apiBlob(
+        `${BASE}/journals/${args.journalId}/dnevnik/pdf${qs ? `?${qs}` : ''}`,
+      );
+    },
   });
 }
 

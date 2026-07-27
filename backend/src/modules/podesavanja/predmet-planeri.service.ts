@@ -1,7 +1,4 @@
-import {
-  Injectable,
-  UnprocessableEntityException,
-} from "@nestjs/common";
+import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 
@@ -85,7 +82,10 @@ export class PredmetPlaneriService {
     userIds: number[],
     actorUserId: number | null,
   ) {
-    const projectId = this.requirePositiveInt(itemId, "Neispravan ID predmeta.");
+    const projectId = this.requirePositiveInt(
+      itemId,
+      "Neispravan ID predmeta.",
+    );
     return this.replace({ projectId }, userIds, actorUserId, projectId);
   }
 
@@ -131,7 +131,9 @@ export class PredmetPlaneriService {
         Prisma.sql`SELECT pg_advisory_xact_lock(5262414, ${scope.projectId ?? 0}::int)`,
       );
       // `projectId: null` u Prisma where-u znači IS NULL — tačno gađa globalne redove.
-      await tx.predmetPlaner.deleteMany({ where: { projectId: scope.projectId } });
+      await tx.predmetPlaner.deleteMany({
+        where: { projectId: scope.projectId },
+      });
       if (clean.length)
         await tx.predmetPlaner.createMany({
           data: clean.map((plannerUserId) => ({
@@ -154,7 +156,9 @@ export class PredmetPlaneriService {
 
   private normalizeUserIds(ids: unknown): number[] {
     if (!Array.isArray(ids))
-      throw new UnprocessableEntityException("planerUserIds mora biti niz ID-jeva.");
+      throw new UnprocessableEntityException(
+        "planerUserIds mora biti niz ID-jeva.",
+      );
     const out: number[] = [];
     for (const raw of ids) {
       const n = Number(raw);

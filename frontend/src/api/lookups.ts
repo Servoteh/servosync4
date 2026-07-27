@@ -45,3 +45,23 @@ export function useCustomersLookup(q: string) {
       ),
   });
 }
+
+export interface WarehouseLookup {
+  id: number;
+  name: string;
+  city: string | null;
+  warehouseType: string | null;
+}
+
+/**
+ * Magacini za biranje iz liste. Koriste ga i ekrani van robnog modula (KEP knjiga
+ * u PDV-u, prenos između magacina), zato stoji u zajedničkim lookup-ovima —
+ * šifarnik je mali pa nema paginacije ni pretrage sa odlaganjem.
+ */
+export function useWarehousesLookup() {
+  return useQuery({
+    queryKey: ['lookups', 'warehouses'],
+    queryFn: () => apiFetch<{ data: WarehouseLookup[] }>('/v1/lookups/warehouses'),
+    staleTime: 5 * 60_000,
+  });
+}

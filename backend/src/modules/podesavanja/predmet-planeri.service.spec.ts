@@ -106,9 +106,9 @@ describe("PredmetPlaneriService", () => {
 
     it("422 samo kad nalog NE POSTOJI (nepoznat) — ne blokira transakciju za postojeće", async () => {
       prisma.user.findMany.mockResolvedValue([{ id: 1 }]); // 2 ne postoji
-      await expect(service.setForProject(9068, [1, 2], 77)).rejects.toBeInstanceOf(
-        UnprocessableEntityException,
-      );
+      await expect(
+        service.setForProject(9068, [1, 2], 77),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.predmetPlaner.deleteMany).not.toHaveBeenCalled();
       // Validacija NE zahteva active:true (postojeći-neaktivni planer sme ostati — bez soft-lock-a).
       expect(prisma.user.findMany).toHaveBeenCalledWith({

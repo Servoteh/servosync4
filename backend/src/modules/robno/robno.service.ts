@@ -16,6 +16,7 @@ import { toDec } from "./decimal.util";
 import {
   CreateStockDocumentDto,
   CreateStockDocumentItemDto,
+  UpdateStockDocumentShippingDto,
 } from "./dto/create-stock-document.dto";
 import { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
 import { computeKepuEntries, writeKepuEntries } from "./kepu-book.util";
@@ -56,6 +57,27 @@ const VALID_KINDS: readonly StockDocumentKind[] = [
   "VISAK",
   "MANJAK",
 ];
+
+/**
+ * Vrste dokumenata REZERVISANE za `TransferService` (obe strane međuskladišnice).
+ * Ručno napravljen dokument sa ovom vrstom bio bi po konstrukciji polovina
+ * transakcije — v. guard u `createStockDocument`.
+ */
+const TRANSFER_ONLY_TYPES = new Set<string>(["PREIZ", "PREUL"]);
+
+/** Vrste dokumenta koje ZADUŽUJU magacin (`document_types.is_inbound = true`). */
+const INBOUND_KINDS = new Set<StockDocumentKind>(["UL", "VISAK"]);
+
+/**
+ * Tekstualno polje → očišćena vrednost ili `null`. Prazan/beli string je ISTO što i „nije
+ * uneto": ako bi se sačuvao kao `""`, štampa bi videla „podatak postoji" i prestala bi da
+ * crta liniju za ručni upis — papir bi ostao bez mesta za dopunu.
+ */
+function trimOrNull(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const t = v.trim();
+  return t === "" ? null : t;
+}
 
 /**
  * Glavni robni servis (`stock_documents` + `stock_document_items`, 2.0-native, sve Decimal).
@@ -113,6 +135,14 @@ export class RobnoService {
       if (to) range.lte = to;
       where.documentDate = range;
     }
+
+    // Pretraga po broju dokumenta (§3.17): do 27.07.2026. su se `q`/`documentNumber`
+    // tiho ignorisali — lista je vraćala SVE dokumente i konkretna primka se nije mogla
+    // naći. Filter ide u `where` (dakle u SQL, pre paginacije), pa je i `meta.total`
+    // filtriran i strane se ne mogu raziću sa prikazom.
+    const term = (query.q ?? query.documentNumber ?? "").trim();
+    if (term !== "")
+      where.documentNumber = { contains: term, mode: "insensitive" };
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.stockDocument.findMany({
@@ -395,6 +425,17 @@ export class RobnoService {
     return { data, meta: { total, skip, take } };
   }
 
+  /**
+   * Detalj robnog dokumenta.
+   *
+   * Stavke nose i NAZIV/ŠIFRU/JM artikla (meki ref `items.id`, jedan upit po skupu id-jeva).
+   * Bez toga je detalj prikazivao samo `#90001` i korisnik nije video ŠTA je na dokumentu
+   * (isti nalaz kao na popisu, §3.10). Sirova polja ostaju netaknuta — ovo je dopuna.
+   *
+   * `transferPair` (kad postoji) je parni dokument prenosa: prenos je PAR dokumenata
+   * (izlaz iz izvornog + ulaz u odredišni magacin), pa detalj jedne strane bez druge
+   * ne govori celu istinu o tome gde je roba otišla.
+   */
   async getStockDocument(id: number) {
     const doc = await this.prisma.stockDocument.findUnique({
       where: { id },
@@ -405,7 +446,49 @@ export class RobnoService {
       },
     });
     if (!doc) throw new NotFoundException(`Robni dokument ${id} ne postoji.`);
-    return { data: doc };
+
+    const itemIds = [
+      ...new Set([
+        ...doc.items.map((i) => i.itemId),
+        ...doc.stockLevelingItems.map((i) => i.itemId),
+      ]),
+    ];
+    const meta = itemIds.length
+      ? await this.prisma.item.findMany({
+          where: { id: { in: itemIds } },
+          select: { id: true, name: true, catalogNumber: true, unit: true },
+        })
+      : [];
+    const byId = new Map(meta.map((m) => [m.id, m]));
+    const decorate = <T extends { itemId: number }>(row: T) => ({
+      ...row,
+      itemName: byId.get(row.itemId)?.name ?? null,
+      itemCode: byId.get(row.itemId)?.catalogNumber ?? null,
+      unit: byId.get(row.itemId)?.unit ?? null,
+    });
+
+    const transferPair =
+      doc.transferPairDocId != null
+        ? await this.prisma.stockDocument.findUnique({
+            where: { id: doc.transferPairDocId },
+            select: {
+              id: true,
+              documentTypeCode: true,
+              documentNumber: true,
+              warehouseId: true,
+              documentDate: true,
+            },
+          })
+        : null;
+
+    return {
+      data: {
+        ...doc,
+        items: doc.items.map(decorate),
+        stockLevelingItems: doc.stockLevelingItems.map(decorate),
+        transferPair,
+      },
+    };
   }
 
   /**
@@ -581,10 +664,7 @@ export class RobnoService {
       );
     if (!dto?.documentTypeCode?.trim())
       throw new UnprocessableEntityException("documentTypeCode je obavezan.");
-    if (
-      !Number.isInteger(dto?.warehouseId) ||
-      (dto.warehouseId as number) <= 0
-    )
+    if (!Number.isInteger(dto?.warehouseId) || dto.warehouseId <= 0)
       throw new UnprocessableEntityException(
         "warehouseId je obavezan — pozitivan ceo broj.",
       );
@@ -592,28 +672,53 @@ export class RobnoService {
       throw new UnprocessableEntityException(
         "Dokument mora imati bar jednu stavku.",
       );
-    if (kind === "PRENOS") {
-      if (
-        !Number.isInteger(dto?.targetWarehouseId) ||
-        (dto.targetWarehouseId as number) <= 0
-      )
-        throw new UnprocessableEntityException(
-          "PRENOS zahteva targetWarehouseId (odredišni magacin).",
-        );
-      if (dto.targetWarehouseId === dto.warehouseId)
-        throw new UnprocessableEntityException(
-          "Izvorni i odredišni magacin ne smeju biti isti.",
-        );
-    }
+    // PRENOS se NE PRAVI ovuda (27.07.2026, grupa C). Ovaj put pravi JEDAN dokument sa
+    // JEDNIM `warehouseId`, a stanje se svuda računa kao Σ(±količina) po
+    // `stock_document_items.warehouse_id` — dakle razdužio bi izvorni magacin i NIGDE ne
+    // zadužio odredišni (`target_warehouse_id` ne čita nijedan obračun stanja). Roba bi
+    // tiho nestala iz lagera. Prenos ide isključivo kroz `TransferService`, koji u jednoj
+    // transakciji pravi PAR dokumenata (PREIZ izlaz + PREUL ulaz) i povezuje ih.
+    if (kind === "PRENOS")
+      throw new UnprocessableEntityException(
+        "Prenos između magacina se ne pravi ovim putem — napravio bi jednostran " +
+          "dokument i roba bi nestala iz lagera. Koristi radnju „Prenos u drugi magacin”.",
+      );
 
     // Meki ref-ovi (validacija postojanja pre upisa — BACKEND_RULES §4/§6).
     const documentType = await this.prisma.documentType.findFirst({
       where: { code: dto.documentTypeCode },
-      select: { id: true, code: true },
+      select: { id: true, code: true, isInbound: true },
     });
     if (!documentType)
       throw new UnprocessableEntityException(
         `Tip dokumenta '${dto.documentTypeCode}' ne postoji (document_types.code).`,
+      );
+
+    // ZATVARANJE PRENOSA NA DRUGA VRATA (nalaz revizije 27.07.2026).
+    // Guard iznad gleda samo `kind`, a `documentTypeCode` je slobodan tekst — pa se
+    // isti bag pravio sa `kind=IZ, documentTypeCode=PREIZ` (razduži izvor, odredište
+    // nikad ne zaduži) ili `kind=UL, documentTypeCode=PREUL` (roba nastane ni iz čega,
+    // jer UL ne prolazi kroz guard dovoljnog stanja). Vrste para su REZERVISANE za
+    // `TransferService`, koji jedini piše obe strane u jednoj transakciji.
+    if (TRANSFER_ONLY_TYPES.has(documentType.code))
+      throw new UnprocessableEntityException(
+        `Vrsta dokumenta '${documentType.code}' pripada prenosu između magacina i ne sme ` +
+          `se koristiti ručno — takav dokument bi bio jednostran (razdužen jedan magacin, ` +
+          `drugi nezadužen). Koristi radnju „Prenos u drugi magacin”.`,
+      );
+
+    // SMER MORA DA ODGOVARA VRSTI: `is_inbound` je jedini izvor znaka u svim
+    // obračunima stanja. Ulazni dokument sa izlaznom vrstom (ili obrnuto) tiho
+    // pomera zalihu u pogrešnom smeru i ne prolazi kroz odgovarajući guard.
+    const expectInbound = INBOUND_KINDS.has(kind);
+    if (
+      documentType.isInbound != null &&
+      documentType.isInbound !== expectInbound
+    )
+      throw new UnprocessableEntityException(
+        `Vrsta '${documentType.code}' je ${documentType.isInbound ? "ULAZNA" : "IZLAZNA"}, ` +
+          `a dokument je ${expectInbound ? "ulazni" : "izlazni"} (${kind}). Zaliha bi se ` +
+          `pomerila u pogrešnom smeru — izaberi vrstu koja odgovara dokumentu.`,
       );
 
     const warehouse = await this.prisma.warehouse.findUnique({
@@ -659,8 +764,10 @@ export class RobnoService {
         );
     }
 
-    const documentDate = parseDateParam(dto.documentDate, "documentDate") ?? new Date();
-    const postingDate = parseDateParam(dto.postingDate, "postingDate") ?? documentDate;
+    const documentDate =
+      parseDateParam(dto.documentDate, "documentDate") ?? new Date();
+    const postingDate =
+      parseDateParam(dto.postingDate, "postingDate") ?? documentDate;
     const companyId = 0; // jednofirmno (kao ostatak 2.0); segment numeracije
     const year = businessYear(documentDate);
 
@@ -722,6 +829,16 @@ export class RobnoService {
           forwarding: toDec(dto.forwarding),
           otherDependentCosts: toDec(dto.otherDependentCosts),
           customsRefundBase: toDec(dto.customsRefundBase),
+          // Uslovi otpreme — čuva se ISKLJUČIVO ono što je uneto. `shippingDate` NIKAD
+          // ne pada na `documentDate`: time bi se laž ugradila u bazu, a ne samo u papir.
+          fco: trimOrNull(dto.fco),
+          shippingMethod: trimOrNull(dto.shippingMethod),
+          shippingDate:
+            parseDateParam(dto.shippingDate, "shippingDate") ?? null,
+          deliveryPlace: trimOrNull(dto.deliveryPlace),
+          route: trimOrNull(dto.route),
+          customerOrderRef: trimOrNull(dto.customerOrderRef),
+          note: trimOrNull(dto.note),
           purchaseOrderId: dto.purchaseOrderId ?? null,
           projectId: dto.projectId ?? null,
           workOrderId: dto.workOrderId ?? null,
@@ -826,6 +943,36 @@ export class RobnoService {
       else requested.set(key, { itemId: it.itemId, warehouseId, qty });
     }
 
+    await this.assertStockAvailable(
+      tx,
+      [...requested.values()],
+      documentDate,
+      reservedByKey,
+      kind,
+    );
+  }
+
+  /**
+   * Jezgro guarda negativnog stanja, nad VEĆ AGREGIRANOM listom zahteva
+   * `{ itemId, warehouseId, qty }` (qty pozitivna). Izdvojeno iz `assertSufficientStock`
+   * da bi ISTU proveru mogao da koristi i PRENOS (izlazna strana međuskladišnice) —
+   * `TransferService` inače ne prolazi kroz `createStockDocument`, pa bi bez ovoga
+   * postojale dve različite provere „ima li robe" i jedna bi pre ili kasnije popustila.
+   *
+   * `label` ulazi u poruku (`IZ`, `MANJAK`, `PRENOS`, `STORNO PRENOSA`) da korisnik zna
+   * koja ga radnja odbija.
+   */
+  async assertStockAvailable(
+    tx: Prisma.TransactionClient,
+    requests: ReadonlyArray<{
+      itemId: number;
+      warehouseId: number;
+      qty: Prisma.Decimal;
+    }>,
+    documentDate: Date,
+    reservedByKey: ReadonlyMap<string, Prisma.Decimal> = new Map(),
+    label = "IZ",
+  ): Promise<void> {
     const shortages: Array<{
       itemId: number;
       warehouseId: number;
@@ -833,13 +980,27 @@ export class RobnoService {
       available: Prisma.Decimal;
       reserved: Prisma.Decimal;
     }> = [];
-    for (const r of requested.values()) {
-      const onHand = await this.costing.stateAsOf(
+    // Datum unazad ne sme da otvori rupu: `stateAsOf(documentDate)` vidi stanje
+    // koje je TADA postojalo, pa bi izlaz datiran u prošlost prošao i napravio
+    // negativno stanje DANAS (kod prenosa i gore — fantomska, prodajiva zaliha u
+    // drugom magacinu). Zato se gleda i SADA i uzima MANJE raspoloživo.
+    // (nalaz revizije 27.07.2026; `documentDate` dolazi iz zahteva bez granice)
+    const now = new Date();
+    const checkNowToo = documentDate.getTime() < now.getTime();
+
+    for (const r of requests) {
+      const onHandAsOf = await this.costing.stateAsOf(
         r.itemId,
         r.warehouseId,
         documentDate,
         { tx },
       );
+      const onHand = checkNowToo
+        ? minDec(
+            onHandAsOf,
+            await this.costing.stateAsOf(r.itemId, r.warehouseId, now, { tx }),
+          )
+        : onHandAsOf;
       // Raspoloživo = stanje − tuđe otvorene rezervacije (C3); rezervacije ovog dokumenta
       // su već izuzete u `loadOpenReserved`, pa potrošač ne blokira sam sebe.
       const reserved =
@@ -892,7 +1053,7 @@ export class RobnoService {
 
     throw new UnprocessableEntityException({
       code: "STOCK_INSUFFICIENT",
-      message: `Nedovoljno stanje za izlaz (${kind}): ${human}.`,
+      message: `Nedovoljno stanje za izlaz (${label}): ${human}.`,
       shortages: detail,
     });
   }
@@ -937,6 +1098,63 @@ export class RobnoService {
     }
     this.logger.log(`Zaključan robni dokument ${id} (status → LOCKED).`);
     return { data: { id, status: "LOCKED" as const, isLocked: true } };
+  }
+
+  // ------------------------------------------------------- USLOVI OTPREME
+
+  /**
+   * Izmena uslova otpreme i napomene (`fco`, način/datum otpreme, mesto isporuke, ruta,
+   * „po porudžbini od", napomena) na postojećem dokumentu.
+   *
+   * ZAŠTO JE DOZVOLJENO I NA PROKNJIŽENOM DOKUMENTU: ova polja NE ULAZE ni u kalkulaciju,
+   * ni u zalihu, ni u glavnu knjigu — to su podaci prateće isprave koji se u praksi
+   * saznaju posle knjiženja (vozač, ruta, stvarni dan otpreme). Da se traži nacrt,
+   * magacin ih ne bi imao gde uneti i otpremnica bi zauvek izlazila sa praznim linijama.
+   * ZAKLJUČAN dokument je izuzet (409) — lock je terminalno stanje i znači „papir je
+   * predat"; posle njega se ništa na dokumentu više ne dopisuje.
+   *
+   * `undefined` polje se ne dira; `null`/prazan string briše vrednost (v. DTO).
+   */
+  async updateShipping(id: number, dto: UpdateStockDocumentShippingDto) {
+    const existing = await this.prisma.stockDocument.findUnique({
+      where: { id },
+      select: { id: true, status: true },
+    });
+    if (!existing)
+      throw new NotFoundException(`Robni dokument ${id} ne postoji.`);
+    if (existing.status === "LOCKED")
+      throw new ConflictException(
+        "Dokument je zaključan — uslovi otpreme se više ne menjaju.",
+      );
+
+    const data: Prisma.StockDocumentUpdateInput = {};
+    if (dto.fco !== undefined) data.fco = trimOrNull(dto.fco);
+    if (dto.shippingMethod !== undefined)
+      data.shippingMethod = trimOrNull(dto.shippingMethod);
+    if (dto.shippingDate !== undefined)
+      data.shippingDate = trimOrNull(dto.shippingDate)
+        ? parseDateParam(dto.shippingDate ?? undefined, "shippingDate")
+        : null;
+    if (dto.deliveryPlace !== undefined)
+      data.deliveryPlace = trimOrNull(dto.deliveryPlace);
+    if (dto.route !== undefined) data.route = trimOrNull(dto.route);
+    if (dto.customerOrderRef !== undefined)
+      data.customerOrderRef = trimOrNull(dto.customerOrderRef);
+    if (dto.note !== undefined) data.note = trimOrNull(dto.note);
+
+    if (Object.keys(data).length === 0)
+      throw new UnprocessableEntityException(
+        "Nijedno polje uslova otpreme nije prosleđeno.",
+      );
+
+    const updated = await this.prisma.stockDocument.update({
+      where: { id },
+      data,
+    });
+    this.logger.log(
+      `Ažurirani uslovi otpreme na robnom dokumentu ${id} (${Object.keys(data).join(", ")}).`,
+    );
+    return { data: updated };
   }
 
   /**
@@ -1017,7 +1235,12 @@ export class RobnoService {
         `Soft-delete stavke ${itemLineId} (dokument ${docId}, korisnik ${userId ?? "?"}).`,
       );
       return {
-        data: { docId, itemLineId, deleted: true, undoWindowMs: UNDO_WINDOW_MS },
+        data: {
+          docId,
+          itemLineId,
+          deleted: true,
+          undoWindowMs: UNDO_WINDOW_MS,
+        },
       };
     });
   }
@@ -1069,7 +1292,12 @@ export class RobnoService {
 
       const docType = await tx.documentType.findFirst({
         where: { code: doc.documentTypeCode },
-        select: { kepuDefaultCharge: true, kepuDefaultDischarge: true },
+        select: {
+          kepuDefaultCharge: true,
+          kepuDefaultDischarge: true,
+          // Smer je obavezan za stranu para prenosa (PREIZ razdužuje, PREUL zadužuje).
+          isInbound: true,
+        },
       });
       const entries = computeKepuEntries(
         doc,
@@ -1139,4 +1367,12 @@ export class RobnoService {
       goodsTaxRateCode: it.goodsTaxRateCode ?? "3",
     };
   }
+}
+
+/**
+ * Manji od dva stanja — koristi se u `assertStockAvailable` da datum unazad ne
+ * može da „pozajmi" zalihu koja u međuvremenu više ne postoji.
+ */
+function minDec(a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal {
+  return a.lessThan(b) ? a : b;
 }

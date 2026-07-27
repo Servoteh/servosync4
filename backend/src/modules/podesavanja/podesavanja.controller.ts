@@ -50,6 +50,8 @@ import {
   BIGBIT_MDB_SYNC_SWITCH,
   SyncSwitchService,
 } from "./sync-switch.service";
+import { CompanyDetailsService } from "./company-details.service";
+import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
 import {
   BulkJobPositionProfileDto,
   CreateDepartmentDto,
@@ -89,6 +91,7 @@ export class PodesavanjaController {
     private readonly users: PodesavanjaUsersService,
     private readonly planeri: PredmetPlaneriService,
     private readonly syncSwitch: SyncSwitchService,
+    private readonly companyDetails: CompanyDetailsService,
   ) {}
 
   // ----- Korisnici i pristup (settings.users) -----
@@ -606,6 +609,23 @@ export class PodesavanjaController {
     );
     // Vrati PUNO stanje (ne samo red prekidača) da ekran ne mora drugi poziv posle preklopa.
     return this.syncSwitch.bigbitStatus();
+  }
+
+  // ----- Matični podaci firme (memorandum + IBAN/SWIFT) -----
+  // Ono što se ovde upiše ŠTAMPA SE na svakom obrascu (zaglavlje) i na ino fakturi
+  // (IBAN/SWIFT). Kapija je `settings.system`, ista kao ostala matična podešavanja:
+  // ovo nisu korisnički podaci nego identitet firme na papiru.
+
+  @Get("firma")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  getCompanyDetails(@Query("id") id?: string) {
+    return this.companyDetails.get(id ? Number(id) : null);
+  }
+
+  @Put("firma")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  updateCompanyDetails(@Body() dto: UpdateCompanyDetailsDto) {
+    return this.companyDetails.update(dto.id ?? null, dto);
   }
 
   // ----- :id rute POSLEDNJE -----

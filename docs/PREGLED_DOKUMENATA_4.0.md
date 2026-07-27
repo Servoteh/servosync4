@@ -35,7 +35,10 @@ Od 21 nabrojanog kvara **zatvoreno je 15**, od čega 13 u talasu štampi. Ostata
 | 3.15 | Dnevnik knjiženja se ne može odštampati kao knjiga | **ZATVORENO** — `journal-book/pdf`, uz kartica konta, nalog i bruto bilans; obim je OBAVEZAN (godina ili period) + kapa od 20.000 stavki |
 | 3.16 | Skriveni limiti i tihi filteri — korisnik ne zna da nešto ne vidi | **ZATVORENO** — traka primenjenih filtera na svakom izveštaju, upozorenje „PRIKAZANO PRVIH N OD M", ispisan obim bruto bilansa; lager pretraga prebačena u SQL (bila je post-filter posle paginacije i gubila redove) |
 | 3.19 | Nivelacija prikazuje „Dokument nema stavki" a ima | **ZATVORENO** — obrazac čita `stock_leveling_items`, a kad parova nema ispisuje uputstvo umesto pada |
-| 3.2, 3.8, 3.17, 3.18, 3.20, 3.21 | ostalo | **OSTAJE — nije dirano** |
+| 3.2 | Prenos između magacina — roba se razduži i nigde ne zaduži | **ZATVORENO 27.07.2026** — prenos je PAR dokumenata (PREIZ izlaz + PREUL ulaz) u jednoj transakciji, sa stornom i guardom negativnog stanja. **Integracija istog dana:** zatvorena i „druga vrata" (`kind=UL` + `documentTypeCode=PREUL` je pravio robu ni iz čega) — vrste para su rezervisane i smer se proverava prema `is_inbound`; guard stanja gleda i datum dokumenta i SADA (datirano unazad je pravilo negativno stanje); negativna cena odbijena; **korisnik konačno ima ekran** — dugme „Prenos u drugi magacin" na `/robno` + panel sa obe strane para i stornom na detalju. Dokaz na dev bazi + 15 testova |
+| 3.17 | Pretraga po broju dokumenta u robnom ne postoji | **ZATVORENO 27.07.2026** — `q`/`documentNumber` filtriraju u SQL-u, pre paginacije. **Integracija:** dodato i polje „Broj dokumenta" na `/robno` (odlaganje 300 ms, ide u URL) — do tada je backend umeo da filtrira, ali korisnik nije imao gde da kuca |
+| 3.18 | Izdatnica ne može da nastane na svežoj bazi (nema vrste `IFR`) | **DELIMIČNO 27.07.2026** — vrsta `IFR` se seje migracijom `20260727120000`, pa izdatnica više ne pada sa 422; `customerId` na izdatnici i FE zaglavlje ostaju otvoreni |
+| 3.8, 3.20, 3.21 | ostalo | **OSTAJE — nije dirano** |
 
 ### Uz to — ujednačen izgled svih štampi (najvidljiviji deo za korisnika)
 
@@ -57,8 +60,35 @@ teme, formatiranja, noge i potpisnog bloka. Uz to su ispravljeni nalazi revizije
   preseče iskačući prozor dokument se preuzima pod ispravnim imenom umesto `blob:…` (jedan
   `frontend/src/lib/open-pdf.ts` umesto devet kopija).
 
-**Verifikacija (27.07.2026):** backend `tsc` ✅ · `nest build` ✅ · boot smoke ✅ ·
-`jest` 2502/2502 ✅ · `jest e2e` 4086/4086 ✅ · frontend `tsc` ✅ · `npm run build` (static export) ✅.
+**Verifikacija (27.07.2026, posle integracije četiri paketa):** backend `tsc` ✅ · `nest build` ✅ ·
+boot smoke ✅ (1.163 rute mapirane, „Nest application successfully started") · `jest`
+**2591/2591** u 141 suiti ✅ · `jest e2e` **4086/4086** u 22 suite ✅ · frontend `tsc` ✅ ·
+`npm run build` (static export) ✅ — sve rute statičke, nijedna `[id]`.
+
+### Integracija četiri paketa (isti dan) — šta je spajanje pokvarilo i popravilo
+
+Četiri paketa (obrasci / šema / prenos robe / SEF-UBL) su građena paralelno u istom stablu, pa je
+spajanje otkrilo tri stvari koje nijedan paket sam nije mogao da vidi:
+
+1. **Dve e2e suite su padale** (615 testova): grupa B je dodala `CompanyDetailsService` u
+   `PodesavanjaController`, a nije osvežila testne module — DI nije mogao da instancira kontroler.
+   Paket je prijavio „jest zeleno" jer e2e nije ni pokretao. Dopunjena oba testna modula.
+2. **Grupa D je čekala kolone koje grupa B nije isporučila.** `cac:Delivery` (datum prometa,
+   BT-72 — propisan sadržaj računa po ZPDV čl. 42) bio je napisan i testiran, ali se **nikad nije
+   emitovao** jer `invoices.supply_date` ne postoji. Dodata migracija `20260727140000`
+   (`supply_date`, `payment_reference`), `SefService` ih čita direktno umesto kroz defanzivan cast.
+3. **Redosled migracija je funkcionalna zavisnost, ne samo tekstualni konflikt.** Grupa C piše
+   `stock_documents.note`, a tu kolonu uvodi migracija grupe B — deploy bez B bi oborio ceo robni
+   upis (P2022), ne samo prenos. Redosled je zaključan timestampima (110000 → 120000 → 140000) i
+   zapisan u zaglavlju migracije 140000.
+
+**Zaglavlje obrasca sada je stvarno jedno.** `buildDocHeader` je živeo u `robno/print/`, pa su knjige
+iz drugih modula (KEP u PDV-u, blagajnički izveštaj) crtale SVOJE zaglavlje rukom — isti podaci, druge
+marže, drugi redosled, bez delatnosti i tekućeg računa. Promovisani su u
+`documents/doc-layout/index.ts`: `buildFormHeader`, `buildStatusBadge`, `IssuerInfo`, `loadIssuer`,
+`loadPrintedBy`; robni `buildDocHeader` je sada tanak omotač (samo prevod tona `success` → `ok`), a
+KEP i blagajna koriste zajednički. Ponašanje robnih štampi nepromenjeno — 38/38 testova zeleno posle
+refaktora.
 
 **3.1 — dokumenta se otvaraju.** Pet modula je prebačeno sa `[id]` ruta na statičku rutu
 `/<modul>/detalj?id=N`. Posle čistog build-a u `frontend/out` postoje stvarni fajlovi
@@ -123,7 +153,7 @@ Sortirano: **najgore na vrhu**.
 | Dokument | Lista | Detalj | Štampa | Pretraga | Ocena |
 |---|---|---|---|---|---|
 | Knjižno odobrenje / zaduženje (KO/KZ) | NE | NE | NE | NE | **NE POSTOJI** |
-| Međuskladišnica / prenos (PRENOS) | DELIMIČNO | NE | NE | NE | **OPASNO — roba nestaje** |
+| Međuskladišnica / prenos (PRENOS) | DA | DA | DA | DA | **✅ POPRAVLJENO 27.07.2026** — par dokumenata + storno |
 | KUF — knjiga ulaznih računa | DA | NE | DELIMIČNO | DELIMIČNO | **OPASNO — Σ PDV = 0,00** |
 | KIF — knjiga izlaznih računa | DA | NE | DELIMIČNO | DELIMIČNO | **OPASNO — Σ osnovica = 0,00** |
 | PP-PDV poreska prijava | NE | NE | DELIMIČNO | NE | **OPASNO — štampa besmislene brojeve** |
@@ -253,6 +283,28 @@ problem — `/robno/popis` je svesno napravljen kao panel ispod liste, a `/work-
 `?id=N` i **radi**. To je i rešenje: isti obrazac na preostalih pet modula.
 
 ### 3.2. Prenos između magacina — roba se razduži i nigde ne zaduži
+
+> **✅ POPRAVLJENO 27.07.2026** (migracija `20260727120000_prenos_izmedju_magacina`,
+> `backend/src/modules/robno/transfer.service.ts`). Opis ispod je stanje PRE ispravke.
+>
+> **Uzrok:** stanje se svuda računa kao Σ(±količina) po `stock_document_items.warehouse_id`,
+> a znak dolazi iz `document_types.is_inbound` — dakle JEDAN dokument može da promeni SAMO
+> JEDAN magacin. `target_warehouse_id` nije čitao nijedan obračun stanja.
+>
+> **Ispravka:** prenos je sada PAR dokumenata u jednoj transakciji — `PREIZ` (izlaz iz
+> izvornog) + `PREUL` (ulaz u odredišni magacin), povezan obostrano preko
+> `transfer_pair_doc_id`. Rute: `POST /robno/transfers`, `GET /robno/transfers/:id`,
+> `POST /robno/transfers/:id/reverse` (storno = ogledalni par; parcijalni UNIQUE
+> `uq_stock_documents_reversal_of` sprečava dvostruki storno). Izlazna strana prolazi kroz
+> isti guard negativnog stanja kao izdatnica (uključujući otvorene rezervacije), a
+> vrednovanje ide po ponderisanom proseku izvornog magacina — pa je i **vrednost** zaliha
+> firme invarijanta prenosa, ne samo količina. Stari, jednostrani put (`POST /robno/documents`
+> sa `kind=PRENOS`) sada vraća 422 sa uputstvom na novu rutu.
+>
+> **Dokaz na dev bazi:** `backend/scripts/proof-prenos-magacina.ts` — 10 kom u magacinu A →
+> prenos 4 → A=6 / B=4, ukupno 10 kom i 2.500,00 din pre i posle; prenos 999 odbijen sa 422
+> bez pomeranja stanja; storno vratio A=10 / B=0; drugi storno odbijen sa 409. Testovi:
+> `backend/src/modules/robno/transfer.service.spec.ts` (11 testova).
 
 **U praksi:** premestiš robu iz magacina A u magacin B; u A je nema, u B je nema. Lager laže.
 
@@ -449,6 +501,15 @@ revizija tvrdila.
 
 ### 3.17. Pretraga po broju dokumenta u robnom ne postoji
 
+> **✅ POPRAVLJENO 27.07.2026** — `GET /robno/documents` prima `q` (i alias `documentNumber`)
+> i filtrira `document_number` podnizom, bez obzira na veličinu slova. Filter ide U SQL
+> (pre `LIMIT`/`OFFSET`), pa je i `meta.total` filtriran i strane se ne mogu raziću sa
+> prikazom. **Dopuna iste večeri (integracija):** prvo je zatvoreno samo na backendu — ekran
+> `/robno` je imao samo Select-ove „Tip" i „Status" i nikad nije slao `q`, pa je za korisnika
+> nalaz i dalje bio otvoren („zatvoren nalaz nad neizmenjenim korisničkim iskustvom" je najgori
+> oblik tihog otkaza). Sada na listi stoji polje **„Broj dokumenta"** sa odlaganjem od 300 ms,
+> a vrednost živi u URL-u pa povratak sa detalja čuva pretragu. Opis ispod je stanje PRE ispravke.
+
 Poslao sam `q='0001/2026'`, `documentNumber='0001/2026'` i `search='0001/2026'` — servis je
 vratio **sva 2 UL dokumenta**, dakle sva tri polja se tiho ignorišu. Kad primki bude 5.000,
 konkretna primka se neće moći naći.
@@ -590,12 +651,12 @@ Procena veličine: **mali** = do 1 dana · **srednji** = 2–5 dana · **veliki*
 |---|---|---|---|
 | B1 | **Prebaciti 5 modula sa `[id]` rute na `?id=N`** (obrazac već postoji i radi: `/work-orders`, `/robno/popis`) | **Jednim potezom otključava ~20 dokumenata** — detalj, štampu, storno, kalkulaciju. Ovo je ubedljivo najisplativija stavka u celom izveštaju | **srednji** |
 | B2 | **Dugme „Štampaj otpremnicu"** — samo dodati izbor varijante (`?variant=delivery` radi, PDF je 56.777 B i savršen) | Magacin dobija papir za vozača. Jedan dan posla za funkciju koja je već napisana | **mali** |
-| B3 | **Zaustaviti prenos između magacina** dok se ne napravi parni ulazni dokument | Sprečava tihi gubitak zaliha (§3.2) | **mali** (blokada) / **srednji** (popravka) |
+| B3 | ~~**Zaustaviti prenos između magacina**~~ | **✅ URAĐENO 27.07.2026** — nije zaustavljen nego POPRAVLJEN: `POST /robno/transfers` pravi par (PREIZ izlaz + PREUL ulaz) u jednoj transakciji, sa stornom; jednostrani `kind=PRENOS` na opštoj ruti je odbijen (422) | — |
 | B4 | **Naslovi obrazaca:** PONUDA / PREDRAČUN / AVANSNI RAČUN / REVERS umesto svuda „RAČUN" | Danas ponuda kupcu izlazi kao poreski račun | **mali** |
 | B5 | **Vodeni žig „STORNIRANO"** na PDF-u storniranog računa + prikaz razloga iz `note` (podatak **već stiže** u listi) | Sprečava slanje storniranog računa kao važećeg | **mali** |
 | B6 | **Prikazati `meta.total` i pager svuda** (backend ga već vraća: RFQ 60, narudžbenice 61, lager `total`) | Korisnik prestaje da radi nad nevidljivo isečenom listom | **mali** |
-| B7 | **Pretraga po broju dokumenta u robnom** (`q`/`documentNumber`/`search` se danas tiho ignorišu) | Bez toga se konkretna primka ne može naći | **mali** |
-| B8 | **Naziv i šifra artikla u stavkama** primke, izdatnice i popisa (danas „#990001") | Popisivač trenutno ne vidi šta broji | **mali** |
+| B7 | ~~**Pretraga po broju dokumenta u robnom**~~ | **✅ URAĐENO 27.07.2026** — `q` / `documentNumber` filtriraju broj dokumenta u SQL-u (pre paginacije), pa je i `meta.total` filtriran | — |
+| B8 | **Naziv i šifra artikla u stavkama** primke, izdatnice i popisa (danas „#990001") | **BACKEND URAĐEN 27.07.2026** — `GET /robno/documents/:id` i `GET /robno/inventory-counts/:id` vraćaju `itemName`/`itemCode`/`unit` uz svaku stavku (jedan upit, bez N+1). Ostaje da ih FE ISPIŠE | **mali** (samo FE) |
 | B9 | **Ekran „Kontni plan"** — `searchAccounts` **već radi** (18 pogodaka od 1.397 konta) | Servis je gotov, fali samo ekran | **mali** |
 | B10 | **Poslati `from`/`to` i `asOf` iz UI** za karticu konta i IOS — backend to **potpuno podržava** (dokazano) | Otključava godišnji IOS na 31.12. i karticu po periodu | **mali** |
 | B11 | **Nivelacija: prikazati `stockLevelingItems`** (danas piše „Dokument nema stavki" a stavka postoji sa staro 100 → novo 150) | Otklanja poruku koja laže | **mali** |
@@ -621,14 +682,14 @@ uraditi pre bilo čega drugog osim A1.
 | C11 | **Narudžbenica: ekran detalja + PDF** (backend `getOrder` **već radi**) + naziv dobavljača u listi | srednji |
 | C12 | **RFQ: GET ruta za PDF** (danas dostupan samo kao prilog auto-mejla) | mali |
 | C13 | **IBAN/SWIFT za izvoznu fakturu** — dodati kolone u `Company`, popuniti `loadIssuer` (kod za ispis već postoji, `invoice-pdf.service.ts:541–545`, ali je mrtav) | mali |
-| C14 | **Vrste dokumenata za izlaz i prenos** u `document_types` seed (danas samo UFROB/VISAR/MANJR/NIV — izdatnica pada sa 422) | mali |
+| C14 | ~~**Vrste dokumenata za izlaz i prenos** u `document_types` seed~~ | **✅ URAĐENO 27.07.2026** — migracija `20260727120000` seje `PREIZ`, `PREUL` i `IFR` (izdatnica više ne pada sa 422) |
 | C15 | **Paginacija SEF ulaznih** (tvrd `take:500`, parametri se ignorišu) i **paginacija kartice konta** (7.816 stavki odjednom) | mali |
 
 ### 6.D. Redosled koji preporučujem
 
 1. **A1 + A2** — dok su KIF/KUF brojevi besmisleni, PDV se ne može voditi paralelno ni u probi.
 2. **B1** — jedan potez otključava ~20 dokumenata; bez toga svaka nova štampa ostaje nedostupna.
-3. **B3** (blokada prenosa) — dok se ne popravi, da se ne izgubi zaliha.
+3. ~~**B3** (blokada prenosa)~~ — **✅ zatvoreno 27.07.2026**: prenos je POPRAVLJEN (par dokumenata + storno), ne blokiran.
 4. **B2, B4, B5, B6, B7, B8, B9, B10, B11, B12** — sve mali poslovi, zajedno menjaju utisak sistema.
 5. **A3–A9** — ostatak PDV grupe.
 6. **C1, C2, C6, C12, C13, C14** — jeftini dokumenti gde motor već postoji.

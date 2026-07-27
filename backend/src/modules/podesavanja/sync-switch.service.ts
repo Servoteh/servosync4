@@ -157,7 +157,10 @@ export class SyncSwitchService {
     // uskraćen GRANT) ne sme da obori ceo prikaz na 500. Bolje delimično stanje
     // uz jasno upozorenje nego prazan ekran.
     const degraded: string[] = [];
-    const safe = async <T>(what: string, fn: () => Promise<T>): Promise<T | null> => {
+    const safe = async <T>(
+      what: string,
+      fn: () => Promise<T>,
+    ): Promise<T | null> => {
       try {
         return await fn();
       } catch (e) {

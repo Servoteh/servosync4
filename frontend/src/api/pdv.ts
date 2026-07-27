@@ -373,6 +373,26 @@ export function usePpPdvPdf() {
   });
 }
 
+/**
+ * Preuzmi KNJIGU EVIDENCIJE PROMETA (KEP) — GET /pdv/print/kepu?year=&month=&warehouseId=.
+ * `month` je opcion: izostavljen štampa celu godinu. Strana papira = strana
+ * knjige (45 redova) sa DONOS / ZA PRENOS prenosom zbirova. read=PDV_READ.
+ */
+export function useKepuPdf() {
+  return useMutation({
+    mutationFn: (args: {
+      year: number;
+      month?: number;
+      warehouseId?: number;
+    }) =>
+      apiBlob(
+        `${BASE}/print/kepu?year=${args.year}` +
+          (args.month != null ? `&month=${args.month}` : '') +
+          (args.warehouseId != null ? `&warehouseId=${args.warehouseId}` : ''),
+      ),
+  });
+}
+
 /** Preuzmi KIF/KUF specifikaciju (GET /pdv/print/kif|kuf?year=&month=). read=PDV_READ. */
 export function useLedgerSpecPdf() {
   return useMutation({

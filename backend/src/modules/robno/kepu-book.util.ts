@@ -38,6 +38,12 @@ export interface KepuSourceDoc {
   warehouseId: number;
   targetWarehouseId: number | null;
   documentDate: Date;
+  /**
+   * Parni dokument prenosa (27.07.2026). Kad je postavljen, prenos je PAR dokumenata
+   * (PREIZ izlaz + PREUL ulaz) i SVAKI upisuje SAMO SVOJ KEPU red — inače bi obe strane
+   * upisale po dva reda i knjiga bi duplirala i zaduženje i razduženje.
+   */
+  transferPairDocId?: number | null;
 }
 
 /** Cenovna polja stavke (StockDocumentItem) korišćena za MP/VP vrednost. */
@@ -63,6 +69,8 @@ export interface KepuSourceLeveling {
 export interface KepuDocTypeFlags {
   kepuDefaultCharge: string | null;
   kepuDefaultDischarge: string | null;
+  /** Smer zalihe iz `DocumentType.isInbound` — jedini pouzdan smer za stranu para prenosa. */
+  isInbound?: boolean | null;
 }
 
 type KepuDirection = "charge" | "discharge" | "signed" | "transfer" | "skip";
@@ -182,6 +190,18 @@ export function computeKepuEntries(
   if (value.isZero()) return [];
 
   if (dir === "transfer") {
+    // NOVI TOK (27.07.2026): prenos je PAR dokumenata i svaki knjiži SAMO svoj magacin.
+    // Smer se čita iz `DocumentType.isInbound` — iste vrste (PREIZ/PREUL) koje voze i
+    // zalihu, pa knjiga i lager ne mogu da se raziđu.
+    if (doc.transferPairDocId != null) {
+      return [
+        flags?.isInbound === true
+          ? entry(doc, doc.warehouseId, value, ZERO, "(prenos ulaz)")
+          : entry(doc, doc.warehouseId, ZERO, value, "(prenos izlaz)"),
+      ];
+    }
+    // STARI, JEDNOSTRANI dokument (pre para) — knjiga je i tada znala za oba magacina,
+    // iako robna evidencija nije. Ostavljeno da se zatečeni redovi ne izgube pri rebuild-u.
     const entries = [
       entry(doc, doc.warehouseId, ZERO, value, "(prenos izlaz)"),
     ];

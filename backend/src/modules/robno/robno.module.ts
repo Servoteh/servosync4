@@ -5,6 +5,7 @@ import { DocumentsModule } from "../documents/documents.module";
 import { StockDocumentPdfService } from "./print/stock-document-pdf.service";
 import { InventoryCountPdfService } from "./print/inventory-count-pdf.service";
 import { StockReportPdfService } from "./print/stock-report-pdf.service";
+import { GoodsReceiptReportPdfService } from "./print/goods-receipt-report-pdf.service";
 import { RobnoController } from "./robno.controller";
 import { RobnoService } from "./robno.service";
 import { CalculationService } from "./calculation.service";
@@ -15,6 +16,7 @@ import { NIVELACIJA_HOOK } from "./nivelacija.hook";
 import { InventoryService } from "./inventory.service";
 import { CarryOverService } from "./carry-over.service";
 import { ReservationService } from "./reservation.service";
+import { TransferService } from "./transfer.service";
 
 /**
  * Robno / magacin (Faza 3) — costing, kalkulacija (landed cost), nivelacija, lager, popis (doc 39).
@@ -40,6 +42,7 @@ import { ReservationService } from "./reservation.service";
     StockDocumentPdfService, // štampa robnih dokumenata (primka/izdatnica/otpremnica/…)
     InventoryCountPdfService, // popisna lista (zakonski obrazac, 2 varijante)
     StockReportPdfService, // lager lista + kartica artikla
+    GoodsReceiptReportPdfService, // zapisnik o prijemu robe (kvantitativno-kvalitativni)
     CalculationService,
     StockDocumentNumberingService,
     CostingService,
@@ -47,6 +50,7 @@ import { ReservationService } from "./reservation.service";
     InventoryService, // E2 popis/inventura (predpunjenje → unos → VISAK/MANJAK)
     CarryOverService, // Batch B: PO → primka, predračun → izdatnica
     ReservationService, // Batch C: rezervacija zaliha (raspoloživo = stanje − rezervisano)
+    TransferService, // prenos između magacina — PAR dokumenata (izlaz+ulaz) + storno
     { provide: COSTING_SERVICE, useExisting: CostingService },
     { provide: NIVELACIJA_HOOK, useExisting: NivelacijaService },
   ],

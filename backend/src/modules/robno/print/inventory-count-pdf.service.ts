@@ -8,6 +8,11 @@ import type {
 import { PrismaService } from "../../../prisma/prisma.service";
 import { PdfService } from "../../documents/pdf.service";
 import {
+  DocumentPrintService,
+  DOCUMENT_PRINT_KIND,
+  type PrintTrace,
+} from "../../documents/document-print.service";
+import {
   DEFAULT_STYLE,
   GRID_LAYOUT,
   PAGE_LANDSCAPE,
@@ -17,6 +22,8 @@ import {
   buildEmptyNotice,
   buildFilterStrip,
   buildPageFooter,
+  copyLabel,
+  copyWatermark,
   fmtDate,
   fmtMoney,
   fmtQty,
@@ -63,12 +70,15 @@ export class InventoryCountPdfService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly pdf: PdfService,
+    private readonly prints: DocumentPrintService,
   ) {}
 
   async buildPdf(
     countId: number,
     variant: InventoryPrintVariant = "popunjena",
     userId?: number | null,
+    /** `true` samo kad je korisnik pokrenuo štampu (ne pri pregledu) — v. `registerTrace`. */
+    isPrintAction = false,
   ): Promise<{ buffer: Buffer; fileName: string }> {
     const count = await this.prisma.inventoryCount.findUnique({
       where: { id: countId },
@@ -108,6 +118,21 @@ export class InventoryCountPdfService {
       return an.localeCompare(bn, "sr");
     });
 
+    // Trag štampe (`document_prints`) — popisna lista se rutinski vadi više puta
+    // (jedna za komisiju, jedna za knjigovodstvo), pa je „koji je ovo primerak"
+    // ovde jednako važno kao na otpremnici. Upisuje se SAMO pri stvarnoj štampi:
+    // pregled popisa ne sme da potroši primerak (v. `StockDocumentPdfService`).
+    const trace: PrintTrace = isPrintAction
+      ? await this.prints.register({
+          kind: DOCUMENT_PRINT_KIND.INVENTORY_COUNT,
+          documentId: count.id,
+          variant,
+          userId,
+          printedByName: printedBy,
+          companyId: count.companyId,
+        })
+      : { id: null, copyNo: null, isCopy: false, printedBy };
+
     const docDefinition = this.buildDocDefinition({
       count,
       rowsSource: sorted,
@@ -118,9 +143,17 @@ export class InventoryCountPdfService {
       warehouseAddress:
         [warehouse?.street, warehouse?.city].filter(Boolean).join(", ") || null,
       variant,
+      trace,
     });
 
-    const buffer = await this.pdf.render(docDefinition);
+    // Neuspeo render ne sme da potroši broj primerka — v. `DocumentPrintService.discard`.
+    let buffer: Buffer;
+    try {
+      buffer = await this.pdf.render(docDefinition);
+    } catch (e) {
+      await this.prints.discard(trace.id);
+      throw e;
+    }
     return {
       buffer,
       fileName: `POPIS-${safeFileName(count.countNumber)}-${variant}.pdf`,
@@ -145,9 +178,17 @@ export class InventoryCountPdfService {
     warehouseName: string;
     warehouseAddress: string | null;
     variant: InventoryPrintVariant;
+    trace?: PrintTrace;
   }): TDocumentDefinitions {
-    const { count, rowsSource, itemById, issuer, printedBy, variant } = args;
+    const { count, rowsSource, itemById, issuer, printedBy, variant, trace } =
+      args;
 
+    // PRAZNA popisna lista se NIKAD ne žigoše kao kopija: to je obrazac koji
+    // komisija na terenu POPUNJAVA i POTPISUJE — taj papir TEK POSTAJE original.
+    // Žig „KOPIJA" na njemu bi obezvredio dokument koji ide u knjigovodstvo, a
+    // druga komisija sa drugim primerkom radi jednako validan popis.
+    const stampCopy = variant !== "prazna";
+    const copyText = stampCopy ? copyLabel(trace?.copyNo) : null;
     const header = buildDocHeader({
       issuer,
       title: "POPISNA LISTA",
@@ -156,7 +197,12 @@ export class InventoryCountPdfService {
           ? "sa stanjem na dan ______________________"
           : `sa stanjem na dan ${fmtDate(count.countDate)}`,
       formCode: "Obrazac — popisna lista",
-      badge: statusBadge(count.status, variant),
+      badge: copyText
+        ? [
+            statusBadge(count.status, variant),
+            { text: copyText, tone: "danger" },
+          ]
+        : statusBadge(count.status, variant),
       compact: true,
     });
 
@@ -203,6 +249,10 @@ export class InventoryCountPdfService {
 
     return {
       ...PAGE_LANDSCAPE,
+      // Popisna lista nema „NACRT" žig (obrazac je upotrebljiv i prazan), pa je
+      // „KOPIJA" jedini žig na ovom dokumentu — i to samo na POPUNJENOJ varijanti
+      // (v. `stampCopy`: prazan obrazac tek postaje original kad ga komisija potpiše).
+      watermark: stampCopy ? copyWatermark(trace?.copyNo) : undefined,
       content: [header, filters, orgUnit, ...body, this.buildSignatures()],
       styles: ROBNO_STYLES,
       defaultStyle: DEFAULT_STYLE,
@@ -210,6 +260,8 @@ export class InventoryCountPdfService {
         `Popisna lista br. ${count.countNumber}/${count.year}`,
         printedBy,
         24,
+        undefined,
+        stampCopy ? (trace?.copyNo ?? null) : null,
       ),
     };
   }

@@ -1,4 +1,10 @@
-import { IsEmail, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
+import {
+  IsEmail,
+  IsIn,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from "class-validator";
 
 /**
  * DTO-ovi za Sistem/Podaci deo Podešavanja (Talas D):

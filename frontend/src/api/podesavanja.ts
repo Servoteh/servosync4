@@ -232,6 +232,7 @@ const KEYS = {
   audit: ['admin', 'audit-log'] as const,
   aiModels: ['admin', 'ai-models'] as const,
   bigbitSync: ['admin', 'sync', 'bigbit'] as const,
+  companyDetails: ['admin', 'firma'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -761,4 +762,54 @@ export const useDeleteCompetenceQuestion = () =>
   useAdminMutation<{ id: number }, unknown>(
     (v) => apiFetch<unknown>(`${COMP}/questions/${v.id}`, { method: 'DELETE' }),
     KEYS.competence,
+  );
+
+// ---------------------------------------------------- Podaci firme (memorandum + IBAN/SWIFT)
+// Tabela `companies` do 27.07.2026. NIJE IMALA NIJEDNOG PISCA u backendu — podaci su stizali
+// isključivo iz BigBit sinhronizacije. Zato IBAN i SWIFT, koje štampa ino faktura, nisu mogli
+// nigde da se unesu i račun je izlazio bez podataka za plaćanje.
+// Skup polja je NAMERNO uzak: samo ono što se ŠTAMPA. BigBit zastavice ponašanja
+// (`kepu*`, `pos*`, `autoLock*`…) nisu deo ove forme — one su knjigovodstvena odluka.
+
+export interface CompanyDetails {
+  id: number;
+  companyName: string;
+  address: string | null;
+  city: string | null;
+  municipality: string | null;
+  phone: string | null;
+  fax: string | null;
+  email: string | null;
+  webAddress: string | null;
+  /** PIB. */
+  taxId: string | null;
+  /** Matični broj. */
+  registrationNumber: string | null;
+  businessActivity: string | null;
+  businessActivityCode: string | null;
+  /** Tekući račun (domaći) — ide u zaglavlje svakog dokumenta. */
+  bankAccount: string | null;
+  /** IBAN za ino plaćanje — čuva se bez razmaka; backend proverava MOD-97. */
+  iban: string | null;
+  /** SWIFT/BIC (8 ili 11 znakova, ISO 9362). */
+  swift: string | null;
+  owner: string | null;
+  invoiceIssuingPlace: string | null;
+  footerText: string | null;
+}
+
+/** Polje izostavljeno = ne dira se; `null`/prazno = briše (papir tada taj red ne ispisuje). */
+export type SaveCompanyDetailsVars = Partial<Omit<CompanyDetails, 'id'>> & { id?: number };
+
+export function useCompanyDetails() {
+  return useQuery({
+    queryKey: KEYS.companyDetails,
+    queryFn: () => apiFetch<{ data: CompanyDetails }>(`${BASE}/firma`),
+  });
+}
+
+export const useSaveCompanyDetails = () =>
+  useAdminMutation<SaveCompanyDetailsVars, { data: CompanyDetails }>(
+    (v) => apiFetch<{ data: CompanyDetails }>(`${BASE}/firma`, { method: 'PUT', body: JSON.stringify(v) }),
+    KEYS.companyDetails,
   );

@@ -53,6 +53,26 @@ export class LookupsService {
     return { data };
   }
 
+  /**
+   * Magacini za biranje iz liste (bez paginacije — šifarnik je mali).
+   *
+   * Zašto ovde, a ne u robnom modulu: magacin biraju i ekrani van robnog —
+   * KEP knjiga u PDV-u (Pravilnik 99/2015 čl. 3: knjiga se vodi POSEBNO za svako
+   * prodajno mesto, pa štampa bez izbora magacina nije obrazac) i prenos između
+   * magacina. Da lista stoji pod `robno.read`, knjigovođa bez robnog modula ne bi
+   * mogao da odštampa zakonsku knjigu.
+   */
+  async warehouses(q?: string) {
+    const where: Prisma.WarehouseWhereInput = {};
+    if (q) where.name = { contains: q, mode: "insensitive" };
+    const data = await this.prisma.warehouse.findMany({
+      where,
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      select: { id: true, name: true, city: true, warehouseType: true },
+    });
+    return { data };
+  }
+
   async customers(q?: string) {
     const where: Prisma.CustomerWhereInput = {};
     if (q) {

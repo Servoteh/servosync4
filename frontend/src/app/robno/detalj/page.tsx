@@ -13,6 +13,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { Select } from '@/components/ui-kit/select';
 import { UndoToast } from '@/components/undo-toast';
+import { ShippingPanel } from './shipping-panel';
+import { TransferPanel } from './transfer-panel';
 import { formatDate, formatDecimal } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
@@ -23,6 +25,7 @@ import {
   useDeleteStockItem,
   useRestoreStockItem,
   useStockDocumentPdf,
+  useGoodsReceiptReportPdf,
   openPdf,
   printVariantsForKind,
   ROBNO_PRINT_LABEL,
@@ -338,6 +341,14 @@ export default function RobnoDetailPage() {
           <>
             <DocumentHeader doc={doc} />
 
+            {/* Prenos: obe strane para + storno. Detalj jedne strane bez druge ne
+                govori gde je roba otišla. */}
+            <TransferPanel doc={doc} />
+
+            {/* Uslovi otpreme — polja koja štampa otpremnica. Dok su prazna, papir
+                ostavlja liniju za ručni upis (ranije je štampao izmišljene konstante). */}
+            <ShippingPanel doc={doc} />
+
             <section className="space-y-2">
               <h2 className="text-md font-semibold text-ink">Stavke</h2>
               <DataTable
@@ -418,14 +429,9 @@ function DocumentHeader({ doc }: { doc: StockDocumentDetail }) {
           <span className="tnums text-ink">{doc.items.length}</span>
         </Field>
       </dl>
-      {doc.note && (
-        <div className="mt-4 border-t border-line-soft pt-4">
-          <dt className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
-            Napomena
-          </dt>
-          <dd className="mt-1 whitespace-pre-wrap text-sm text-ink">{doc.note}</dd>
-        </div>
-      )}
+      {/* Napomena se prikazuje i menja u panelu „Uslovi otpreme" (ShippingPanel) —
+          ovde je ranije stajala kopija bez načina da se upiše, jer kolone `note`
+          uopšte nije bilo (FE tip ju je deklarisao, baza nije imala polje). */}
     </section>
   );
 }
@@ -451,6 +457,7 @@ function PrintActions({ doc }: { doc: StockDocumentDetail }) {
   const variants = printVariantsForKind(doc.kind);
   const [variant, setVariant] = useState<RobnoPrintVariant>(variants[0]);
   const pdf = useStockDocumentPdf();
+  const receiptReport = useGoodsReceiptReportPdf();
 
   // Promena vrste dokumenta (novi detalj) vraća izbor na podrazumevani obrazac.
   useEffect(() => {
@@ -470,12 +477,14 @@ function PrintActions({ doc }: { doc: StockDocumentDetail }) {
           />
         </div>
       )}
+      {/* `trackPrint` = ovo JESTE štampa: backend upisuje trag i od drugog primerka
+          papir nosi žig „KOPIJA". Otvaranje dokumenta se ne broji. */}
       <Button
         variant="secondary"
         loading={pdf.isPending}
-        title={`Štampa: ${ROBNO_PRINT_LABEL[variant]}`}
+        title={`Štampa: ${ROBNO_PRINT_LABEL[variant]} — svaka štampa se beleži; ponovljena nosi oznaku „KOPIJA"`}
         onClick={() =>
-          pdf.mutate({ id: doc.id, variant }, {
+          pdf.mutate({ id: doc.id, variant, trackPrint: true }, {
             onSuccess: (blob) => openPdf(blob),
             onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
           })
@@ -484,6 +493,38 @@ function PrintActions({ doc }: { doc: StockDocumentDetail }) {
         <Printer className="h-4 w-4" aria-hidden />
         Štampaj
       </Button>
+      {/* Pregled je odvojen od štampe upravo zato da ne troši primerak. */}
+      <Button
+        variant="ghost"
+        loading={pdf.isPending}
+        title="Otvori PDF radi provere — ne beleži se kao štampa i ne nosi oznaku „KOPIJA”"
+        onClick={() =>
+          pdf.mutate({ id: doc.id, variant }, {
+            onSuccess: (blob) => openPdf(blob),
+            onError: (e) => toast(`Pregled nije uspeo: ${(e as Error).message}`),
+          })
+        }
+      >
+        Pregled
+      </Button>
+      {/* Zapisnik o prijemu je ODVOJEN dokument od prijemnice (poredi naručeno sa
+          primljenim + nalaz kontrole), pa ima svoje dugme, ne stavku u meniju. */}
+      {doc.kind === ROBNO_KIND.UL && (
+        <Button
+          variant="secondary"
+          loading={receiptReport.isPending}
+          title="Zapisnik o prijemu robe (kvantitativno-kvalitativni) — poređenje sa narudžbenicom + prazne kolone za nalaz kontrole"
+          onClick={() =>
+            receiptReport.mutate(doc.id, {
+              onSuccess: (blob) => openPdf(blob),
+              onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+            })
+          }
+        >
+          <Printer className="h-4 w-4" aria-hidden />
+          Zapisnik o prijemu
+        </Button>
+      )}
     </div>
   );
 }

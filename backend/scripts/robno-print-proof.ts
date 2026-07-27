@@ -9,6 +9,7 @@ import { PrismaClient, Prisma } from "@prisma/client";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { PdfService } from "../src/modules/documents/pdf.service";
 import { BarcodeService } from "../src/modules/documents/barcode.service";
+import { DocumentPrintService } from "../src/modules/documents/document-print.service";
 import { StockDocumentPdfService } from "../src/modules/robno/print/stock-document-pdf.service";
 import { InventoryCountPdfService } from "../src/modules/robno/print/inventory-count-pdf.service";
 import { StockReportPdfService } from "../src/modules/robno/print/stock-report-pdf.service";
@@ -40,8 +41,11 @@ async function main() {
   const costing = new CostingService(prisma);
   const numbering = new StockDocumentNumberingService(); // bez zavisnosti (prima `tx` po pozivu)
   const robno = new RobnoService(prisma, numbering, costing);
-  const stockPdf = new StockDocumentPdfService(prisma, pdf, barcode);
-  const countPdf = new InventoryCountPdfService(prisma, pdf);
+  // Trag štampe piše u `document_prints` iste baze — dokazna štampa ga vozi PRAVI,
+  // da se u dokazima vidi i drugi primerak sa žigom „KOPIJA".
+  const prints = new DocumentPrintService(prisma);
+  const stockPdf = new StockDocumentPdfService(prisma, pdf, barcode, prints);
+  const countPdf = new InventoryCountPdfService(prisma, pdf, prints);
   const reportPdf = new StockReportPdfService(prisma, pdf, robno);
 
   mkdirSync(OUT_DIR, { recursive: true });

@@ -10,6 +10,7 @@ import {
 } from './sync.types';
 import {
   additiveDedupFieldFor,
+  hasNativeColumns,
   isAdditiveRefreshTable,
   isOwnedProductionTable,
   sourceUniqueFieldFor,
@@ -101,6 +102,26 @@ export class GenericSyncer implements EntitySyncer {
     let rowsSkipped = 0;
 
     if (incremental) {
+      const delegate = this.delegate();
+      for (const d of data) {
+        try {
+          await delegate.upsert({
+            where: this.pkWhere(d),
+            create: d,
+            update: d,
+          });
+          rowsUpserted++;
+        } catch (err) {
+          rowsSkipped++;
+          const message = err instanceof Error ? err.message : String(err);
+          if (errors.length < 20) errors.push(`${this.pkLabel(d)}: ${message}`);
+        }
+      }
+    } else if (hasNativeColumns(this.entity)) {
+      // TABELA SA 3.0-NATIVE KOLONAMA (npr. `companies.iban`/`swift`): full refresh
+      // bi ih obrisao bez traga, jer `createMany` vraća samo MAPIRANE kolone.
+      // Zato: upsert red-po-red, `update` samo nad mapiranim poljima — sve što izvor
+      // ne zna ostaje netaknuto. Nikad `deleteMany`. (v. `NATIVE_COLUMN_TABLES`)
       const delegate = this.delegate();
       for (const d of data) {
         try {

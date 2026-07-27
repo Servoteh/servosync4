@@ -18,6 +18,7 @@ import { ExportCsvButton } from '@/components/export-csv-button';
 import { SendMailDialog } from '@/components/send-mail-dialog';
 import { type CsvColumn } from '@/lib/table-csv';
 import { ApiError } from '@/api/client';
+import { useWarehousesLookup } from '@/api/lookups';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useKif,
@@ -32,6 +33,7 @@ import {
   useDeleteManualVatEntry,
   usePpPdvPdf,
   useLedgerSpecPdf,
+  useKepuPdf,
   useSendPpPdvMail,
   openPdf,
   type VatLedgerRow,
@@ -341,7 +343,15 @@ export default function PdvPage() {
   const deleteEntry = useDeleteManualVatEntry();
   const ppPdvPdf = usePpPdvPdf();
   const ledgerPdf = useLedgerSpecPdf();
+  const kepuPdf = useKepuPdf();
   const sendPpPdvMail = useSendPpPdvMail();
+
+  // Magacin (prodajno mesto) za KEP knjigu — prazno = objedinjen interni pregled.
+  // Po čl. 3 Pravilnika 99/2015 knjiga se vodi POSEBNO za svako prodajno mesto,
+  // pa izbor magacina odlučuje da li je papir zakonski obrazac ili samo pregled.
+  const warehouses = useWarehousesLookup();
+  const [kepuWarehouseId, setKepuWarehouseId] = useState('');
+  const kepuWarehouseIdNum = kepuWarehouseId ? Number(kepuWarehouseId) : undefined;
 
   // Greška mutacije nije vezana za period ni za tab, pa je preživljavala promenu
   // meseca: pad punjenja za mart ostajao je crven i pošto se pređe na april, i
@@ -352,6 +362,7 @@ export default function PdvPage() {
     postReturn.reset();
     ppPdvPdf.reset();
     ledgerPdf.reset();
+    kepuPdf.reset();
     // Namerno samo period/tab u zavisnostima — mutacije su stabilne reference,
     // a njihovo uvrštavanje bi vrtelo efekat u krug.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -406,7 +417,8 @@ export default function PdvPage() {
     (updateEntry.error as Error | null) ||
     (deleteEntry.error as Error | null) ||
     (ppPdvPdf.error as Error | null) ||
-    (ledgerPdf.error as Error | null);
+    (ledgerPdf.error as Error | null) ||
+    (kepuPdf.error as Error | null);
 
   const ledgerColumnsActive = ledgerColumnsWithActions(
     (row) => setEntryDialog({ row }),
@@ -589,6 +601,65 @@ export default function PdvPage() {
                 >
                   Ipak napuni (sa oznakom)
                 </Button>
+              )}
+            </div>
+          ) : view === 'kepu' ? (
+            /* KEP knjiga je ZAKONSKA evidencija — štampa je obavezna, ne dodatak.
+               Papir prati knjigu: 45 redova po strani, DONOS i ZA PRENOS.
+               Magacin je OBAVEZAN izbor za obrazac: po čl. 3 Pravilnika o evidenciji
+               prometa („Sl. glasnik RS" 99/2015) knjiga se vodi posebno za svako
+               prodajno mesto. Bez izbora se dobija interni pregled (papir to i kaže),
+               pa dugmad tu razliku moraju da najave PRE klika, ne posle. */
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                aria-label="Magacin (prodajno mesto) za knjigu evidencije prometa"
+                value={kepuWarehouseId}
+                onChange={(e) => setKepuWarehouseId(e.target.value)}
+                disabled={warehouses.isLoading}
+                placeholder="Svi magacini (interni pregled)"
+                options={(warehouses.data?.data ?? []).map((w) => ({
+                  value: String(w.id),
+                  label: w.name,
+                }))}
+              />
+              <Button
+                variant="secondary"
+                title={
+                  kepuWarehouseId
+                    ? 'Obrazac KEP za izabrani magacin i mesec (45 redova po strani, DONOS / ZA PRENOS)'
+                    : 'Bez izabranog magacina papir NIJE obrazac KEP nego interni pregled svih magacina'
+                }
+                onClick={() =>
+                  kepuPdf.mutate(
+                    { year, month, warehouseId: kepuWarehouseIdNum },
+                    {
+                      onSuccess: (blob) => openPdf(blob),
+                    },
+                  )
+                }
+                loading={kepuPdf.isPending}
+              >
+                <Printer className="h-4 w-4" aria-hidden />
+                Štampa (mesec)
+              </Button>
+              <Button
+                variant="secondary"
+                title="Štampa cele godine — numeracija redova i strana knjige je godišnja"
+                onClick={() =>
+                  kepuPdf.mutate(
+                    { year, warehouseId: kepuWarehouseIdNum },
+                    { onSuccess: (blob) => openPdf(blob) },
+                  )
+                }
+                loading={kepuPdf.isPending}
+              >
+                <Printer className="h-4 w-4" aria-hidden />
+                Cela godina
+              </Button>
+              {!kepuWarehouseId && (
+                <span className="text-xs text-[var(--color-warning-fg,#8a5a00)]">
+                  Bez izabranog magacina papir je interni pregled, ne obrazac KEP.
+                </span>
               )}
             </div>
           ) : undefined

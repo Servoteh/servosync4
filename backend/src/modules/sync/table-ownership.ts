@@ -192,6 +192,33 @@ export function isAdditiveRefreshTable(entity: string): boolean {
 }
 
 /**
+ * TABELE SA 3.0-NATIVE KOLONAMA KOJE IZVOR NE ZNA (Nenad, 27.07.2026).
+ *
+ * Full refresh je `deleteMany({}) + createMany(mapirane kolone)`. Za tabelu koja
+ * pored mapiranih kolona nosi i kolone kojih u BigBit-u NEMA, to znači TIHI
+ * GUBITAK: red se obriše i vrati bez njih, bez ijedne greške u logu.
+ *
+ * Konkretan povod: `companies.iban` i `companies.swift` (dodate 27.07.2026, unose
+ * se kroz Podešavanja → Podaci firme, štampaju se na ino fakturi i idu u UBL
+ * `cac:PaymentMeans`). BigBit te kolone nema, pa ih mapa ne pokriva — jedno
+ * pokretanje sinhronizacije bez ove zaštite obrisalo bi ih, a strani kupac bi
+ * dobio račun bez podataka za uplatu.
+ *
+ * Za ove tabele syncer NIKAD ne briše red: radi UPSERT samo nad MAPIRANIM
+ * kolonama (`update` bez nemapiranih polja ih ostavlja netaknutim). Tabele su
+ * male (šifarnik firme), pa je red-po-red upsert jeftin.
+ *
+ * Razlika prema `OWNED_PRODUCTION_TABLES`: tamo 3.0 vlasnik CELE tabele pa se
+ * sync preskače; ovde izvor i dalje vlada SVOJIM kolonama i sme da ih osvežava —
+ * štiti se samo ono što u izvoru ne postoji.
+ */
+export const NATIVE_COLUMN_TABLES = new Set<string>(["companies"]);
+
+export function hasNativeColumns(entity: string): boolean {
+  return NATIVE_COLUMN_TABLES.has(entity);
+}
+
+/**
  * PARITET BROJA za aditivne tabele (Nenad, 22.07.2026): u prelaznom periodu
  * predmeti se otvaraju RUČNO U OBA sistema — prvo u 3.0 (koji dodeljuje broj),
  * pa se ISTI broj prekuca u BigBit (BigBit ostaje nosilac fakturisanja do F5).

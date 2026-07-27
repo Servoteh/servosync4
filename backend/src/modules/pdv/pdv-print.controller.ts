@@ -5,6 +5,7 @@ import {
   Get,
   Post,
   Query,
+  Req,
   Res,
   UseGuards,
 } from "@nestjs/common";
@@ -15,6 +16,8 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { MailService } from "../../common/mail/mail.service";
 import { PdvPrintService } from "./pdv-print.service";
+import { KepuPdfService } from "./print/kepu-pdf.service";
+import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
  * PDV štampa (Talas 1D §D2). Regulatorni PDF izlazi — sve rute pod PDV_READ.
@@ -22,6 +25,7 @@ import { PdvPrintService } from "./pdv-print.service";
  *   GET /api/v1/pdv/print/pp-pdv?period=YYYY-MM|YYYY-Qn  — obrazac PP-PDV
  *   GET /api/v1/pdv/print/kif?year=&month=               — KIF specifikacija
  *   GET /api/v1/pdv/print/kuf?year=&month=               — KUF specifikacija
+ *   GET /api/v1/pdv/print/kepu?year=&month=&warehouseId= — knjiga evidencije prometa (KEP)
  *
  * PDF se vraća inline (`application/pdf`) — pregled u browseru + download; isti
  * obrazac kao `SalesController.invoicePdfDownload`.
@@ -39,7 +43,34 @@ export class PdvPrintController {
   constructor(
     private readonly print: PdvPrintService,
     private readonly mail: MailService,
+    private readonly kepuPdf: KepuPdfService,
   ) {}
+
+  /**
+   * KNJIGA EVIDENCIJE PROMETA (KEP; BigBit „Knjiga KEPU") — zakonski obrazac.
+   * `month` je opcion (izostavljen = cela godina), `warehouseId` filtrira magacin.
+   * Strana papira = strana knjige (45 redova) sa DONOS / ZA PRENOS prenosom
+   * zbirova; donos se računa od početka godine i kad se štampa jedan mesec.
+   */
+  @Get("kepu")
+  async kepu(
+    @Query("year") year: string,
+    @Query("month") month: string | undefined,
+    @Query("warehouseId") warehouseId: string | undefined,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } = await this.kepuPdf.buildKepuPdf({
+      year: Number(year),
+      month: month != null && month !== "" ? Number(month) : undefined,
+      warehouseId:
+        warehouseId != null && warehouseId !== ""
+          ? Number(warehouseId)
+          : undefined,
+      userId: req.user?.userId ?? null,
+    });
+    this.sendPdf(res, buffer, fileName);
+  }
 
   @Get("pp-pdv")
   async ppPdv(

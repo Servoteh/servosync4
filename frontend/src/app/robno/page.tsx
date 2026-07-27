@@ -12,6 +12,7 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Pager } from '@/components/ui-kit/pager';
 import { Select } from '@/components/ui-kit/select';
+import { Input } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatNumber } from '@/lib/format';
 import {
@@ -26,6 +27,7 @@ import { LagerPanel } from './lager-panel';
 import { ItemCardPanel } from './item-card-panel';
 import { NewDocumentDialog } from './new-document-dialog';
 import { CarryOverDialog, type CarryOverMode } from './carry-over-dialog';
+import { TransferDialog } from './transfer-dialog';
 
 /**
  * Robno / magacin: radna lista robnih dokumenata (Faza 3). Obrazac „Lista"
@@ -93,6 +95,16 @@ const columns: Column<StockDocument>[] = [
     render: (d) => <span className="text-ink">{KIND_LABEL[d.kind] ?? d.kind}</span>,
   },
   {
+    // Bez ove kolone se dve strane prenosa (PREIZ izlaz i PREUL ulaz) u listi ne
+    // razlikuju: obe su „Prenos", istog datuma, a numeracija im je po vrsti pa obe
+    // nose isti broj („0001/2026"). Referent nije imao po čemu da zna koju otvara.
+    key: 'documentTypeCode',
+    header: 'Vrsta',
+    render: (d) => (
+      <span className="text-ink-secondary">{d.documentTypeCode}</span>
+    ),
+  },
+  {
     key: 'warehouseId',
     header: 'Magacin',
     align: 'right',
@@ -133,10 +145,12 @@ export default function RobnoPage() {
   const { values, setValues } = useListQueryState({
     vrsta: '',
     status: '',
+    broj: '',
     strana: '1',
   });
   const kind = values.vrsta as RobnoKind | '';
   const status = values.status as RobnoStatus | '';
+  const search = values.broj;
   const page = Math.max(1, Number(values.strana) || 1);
   const setKind = (v: RobnoKind | '') => setValues({ vrsta: v, strana: '1' });
   const setStatus = (v: RobnoStatus | '') => setValues({ status: v, strana: '1' });
@@ -145,14 +159,32 @@ export default function RobnoPage() {
       strana: String(typeof updater === 'function' ? updater(page) : updater),
     });
   const [newOpen, setNewOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
   const [carryOverMode, setCarryOverMode] = useState<CarryOverMode | null>(null);
   const resetPage = () => setValues({ strana: '1' });
+
+  // Pretraga po broju: u URL-u se čuva potvrđena vrednost, u polju se kuca slobodno.
+  // Odlaganje od 300 ms — bez njega bi svako slovo bilo jedan upit nad listom.
+  const [searchDraft, setSearchDraft] = useState(search);
+  useEffect(() => setSearchDraft(search), [search]);
+  useEffect(() => {
+    if (searchDraft === search) return;
+    const t = setTimeout(() => setValues({ broj: searchDraft, strana: '1' }), 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchDraft]);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  const list = useStockDocuments({ page, pageSize: PAGE_SIZE, kind, status });
+  const list = useStockDocuments({
+    page,
+    pageSize: PAGE_SIZE,
+    kind,
+    status,
+    q: search,
+  });
   const rows = list.data?.data ?? [];
   const total = list.data?.meta.pagination.total ?? 0;
   const totalPages = list.data?.meta.pagination.totalPages ?? 1;
@@ -165,7 +197,7 @@ export default function RobnoPage() {
     );
   }
 
-  const hasFilter = kind !== '' || status !== '';
+  const hasFilter = kind !== '' || status !== '' || search !== '';
 
   return (
     <AppShell>
@@ -183,6 +215,12 @@ export default function RobnoPage() {
             <Button variant="secondary" onClick={() => setCarryOverMode('invoice')}>
               Iz predračuna
             </Button>
+            {/* Prenos je ZASEBNA radnja, ne vrsta u „Novi dokument": pravi PAR
+                dokumenata u jednoj transakciji. Bez ovog dugmeta je magacioner
+                improvizovao Izlaz + Ulaz, što je pravilo lažan trošak u GK. */}
+            <Button variant="secondary" onClick={() => setTransferOpen(true)}>
+              Prenos u drugi magacin
+            </Button>
             <Button onClick={() => setNewOpen(true)}>
               <Plus className="h-4 w-4" aria-hidden />
               Novi dokument
@@ -194,6 +232,12 @@ export default function RobnoPage() {
       <NewDocumentDialog
         open={newOpen}
         onClose={() => setNewOpen(false)}
+        onCreated={(id) => router.push(`/robno/detalj?id=${id}`)}
+      />
+
+      <TransferDialog
+        open={transferOpen}
+        onClose={() => setTransferOpen(false)}
         onCreated={(id) => router.push(`/robno/detalj?id=${id}`)}
       />
 
@@ -209,6 +253,20 @@ export default function RobnoPage() {
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         <div className="flex flex-wrap items-end gap-3">
+          {/* Pretraga po broju dokumenta (§3.17): bez nje se konkretna primka među
+              hiljadama tražila prelistavanjem strana. Filtrira se u SQL-u, pa je i
+              ukupan broj tačan. */}
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            Broj dokumenta
+            <div className="w-56">
+              <Input
+                value={searchDraft}
+                onChange={(e) => setSearchDraft(e.target.value)}
+                placeholder="npr. 0347/2026"
+              />
+            </div>
+          </label>
+
           <label className="flex flex-col gap-1 text-xs text-ink-secondary">
             Tip
             <div className="w-48">
@@ -242,9 +300,8 @@ export default function RobnoPage() {
           {hasFilter && (
             <button
               onClick={() => {
-                setKind('');
-                setStatus('');
-                resetPage();
+                setSearchDraft('');
+                setValues({ vrsta: '', status: '', broj: '', strana: '1' });
               }}
               className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
             >

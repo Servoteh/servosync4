@@ -48,6 +48,12 @@ export interface KepuBookRow {
   strana: number; // strana knjige = (rbr-1 \ 45) + 1 (BigBit)
   entryDate: Date;
   documentNumber: string | null; // broj izvornog robnog dokumenta
+  /**
+   * Datum ISPRAVE (robnog dokumenta) — Pravilnik 99/2015 čl. 15 traži da kolona 3
+   * („opis promene") sadrži naziv, BROJ I DATUM dokumenta. `entryDate` je datum
+   * evidentiranja (kolona 2) i ne sme da ga zameni.
+   */
+  documentDate: Date | null;
   description: string | null;
   charge: Prisma.Decimal; // zaduženje (MagUlaz)
   discharge: Prisma.Decimal; // razduženje (MagStvarniIzlaz)
@@ -59,6 +65,7 @@ interface KepuBookRawRow {
   rbr: bigint;
   entry_date: Date;
   document_number: string | null;
+  document_date: Date | null;
   description: string | null;
   charge: Prisma.Decimal;
   discharge: Prisma.Decimal;
@@ -160,6 +167,7 @@ export class KepuService {
             ROW_NUMBER() OVER (ORDER BY kbe.entry_date, kbe.id) AS rbr,
             kbe.entry_date,
             sd.document_number,
+            sd.document_date,
             kbe.description,
             kbe.charge,
             kbe.discharge,
@@ -185,6 +193,7 @@ export class KepuService {
         strana: Math.floor((rbr - 1) / KEPU_ROWS_PER_PAGE) + 1,
         entryDate: r.entry_date,
         documentNumber: r.document_number,
+        documentDate: r.document_date,
         description: r.description,
         charge: new D(r.charge),
         discharge: new D(r.discharge),

@@ -29,6 +29,8 @@ import {
 } from "./carry-over.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
 import { ReservationService } from "./reservation.service";
+import { TransferService } from "./transfer.service";
+import type { CreateTransferDto, ReverseTransferDto } from "./dto/transfer.dto";
 import {
   StockDocumentPdfService,
   STOCK_PRINT_VARIANTS,
@@ -40,13 +42,21 @@ import {
   type InventoryPrintVariant,
 } from "./print/inventory-count-pdf.service";
 import { StockReportPdfService } from "./print/stock-report-pdf.service";
+import { GoodsReceiptReportPdfService } from "./print/goods-receipt-report-pdf.service";
+import {
+  DOCUMENT_PRINT_KIND,
+  DocumentPrintService,
+} from "../documents/document-print.service";
 import type {
   CreateReservationDto,
   ListReservationsQuery,
   ReleaseReservationDto,
 } from "./dto/reservation.dto";
 import type { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
-import type { CreateStockDocumentDto } from "./dto/create-stock-document.dto";
+import type {
+  CreateStockDocumentDto,
+  UpdateStockDocumentShippingDto,
+} from "./dto/create-stock-document.dto";
 import type {
   CreateInventoryCountDto,
   FinalizeInventoryCountDto,
@@ -58,8 +68,14 @@ import type {
  *   GET  /api/v1/robno/documents          — lista (kind/tip/magacin/status/godina/opseg datuma), paginirano
  *   GET  /api/v1/robno/documents/:id      — detalj (zaglavlje + stavke + nivelacioni parovi)
  *   POST /api/v1/robno/documents          — kreiranje (kind u body; broj NNNN/god server), DRAFT
+ *   PATCH /api/v1/robno/documents/:id/shipping — uslovi otpreme + napomena (polja koja štampa otpremnica)
  *   POST /api/v1/robno/documents/:id/calculate — kalkulacija landed cost (DRAFT → CALCULATED); UL okida nivelaciju
  *   POST /api/v1/robno/documents/:id/post — knjiženje u glavnu knjigu (StockDocument → nalog GK)
+ *
+ * Prenos između magacina (međuskladišnica) — PAR dokumenata u jednoj transakciji:
+ *   POST /api/v1/robno/transfers            — razduži izvorni + zaduži odredišni magacin
+ *   GET  /api/v1/robno/transfers/:id        — detalj (obe strane para + status storna)
+ *   POST /api/v1/robno/transfers/:id/reverse — storno (ogledalni par)
  *
  * Popis / inventura (doc 39 §D) — predpunjenje → unos KolPop → razlika → knjiženje VISAK/MANJAK:
  *   GET   /api/v1/robno/inventory-counts               — lista (opciono ?year)
@@ -71,7 +87,9 @@ import type {
  *
  * Štampa (PDF, inline; sve pod ROBNO_READ — štampa je pregled):
  *   GET /api/v1/robno/documents/:id/pdf?variant=  — primka | izdatnica | otpremnica |
- *                                                   nivelacija | prenosnica | kalkulacija | zapisnik
+ *                                                   nivelacija | prenosnica | kalkulacija | zapisnik |
+ *                                                   trebovanje
+ *   GET /api/v1/robno/documents/:id/prijem-zapisnik/pdf — ZAPISNIK O PRIJEMU (uz UL)
  *   GET /api/v1/robno/inventory-counts/:id/pdf?variant=prazna|popunjena — POPISNA LISTA
  *   GET /api/v1/robno/lager/pdf                   — lager lista (A4 položeno)
  *   GET /api/v1/robno/item-card/pdf               — kartica artikla
@@ -89,16 +107,25 @@ export class RobnoController {
     private readonly inventory: InventoryService,
     private readonly carryOver: CarryOverService,
     private readonly reservation: ReservationService,
+    private readonly transfer: TransferService,
     private readonly stockPdf: StockDocumentPdfService,
     private readonly inventoryPdf: InventoryCountPdfService,
     private readonly reportPdf: StockReportPdfService,
+    private readonly receiptReportPdf: GoodsReceiptReportPdfService,
+    private readonly prints: DocumentPrintService,
   ) {}
 
   // ─── Štampa (PDF) ──────────────────────────────────────────────────────────
   // Sve štampe robnog modula dele isti obrazac izgleda (`print/robno-doc-layout.ts`):
   // zaglavlje firme, telo sa stavkama i ponovljenim zaglavljem kolona preko strana,
   // zbirovi, potpisna mesta i noga „strana N/M" sa tragom štampe. Permisija ROBNO_READ
-  // (kao ostale read rute modula) — štampa je pregled, ne izmena.
+  // (kao ostale read rute modula) — generisanje PDF-a JESTE pregled.
+  //
+  // PREGLED vs ŠTAMPA (`?stampa=1`): trag u `document_prints` i žig „KOPIJA" se
+  // upisuju SAMO kad klijent pošalje `stampa=1`, tj. kad je čovek pritisnuo dugme
+  // „Štampaj". Bez toga bi svako otvaranje dokumenta radi provere trošilo redni broj
+  // primerka i prvi fizički otisak bi izašao sa žigom KOPIJA (nalaz revizije
+  // 27.07.2026). Ruta zato ostaje pod READ: samo eksplicitna štampa piše trag.
 
   /**
    * Štampa robnog dokumenta u PDF (inline). `variant` bira obrazac:
@@ -111,6 +138,7 @@ export class RobnoController {
   async documentPdf(
     @Param("id", ParseIntPipe) id: number,
     @Query("variant") variant: string | undefined,
+    @Query("stampa") stampa: string | undefined,
     @Req() req: { user?: AuthUser },
     @Res() res: Response,
   ): Promise<void> {
@@ -122,6 +150,27 @@ export class RobnoController {
     const { buffer, fileName } = await this.stockPdf.buildPdf(
       id,
       v,
+      req.user?.userId ?? null,
+      isPrintAction(stampa),
+    );
+    sendPdf(res, buffer, fileName);
+  }
+
+  /**
+   * ZAPISNIK O PRIJEMU ROBE (kvantitativno-kvalitativni) uz ULAZNI dokument.
+   * Odvojen obrazac od prijemnice: poredi naručeno (narudžbenica) sa primljenim i
+   * ostavlja prazne kolone „Rok trajanja / Serija / Nalaz kontrole" za komisiju —
+   * te kolone još nemaju polja u evidenciji, pa se ništa ne pretpostavlja.
+   */
+  @Get("documents/:id/prijem-zapisnik/pdf")
+  @Header("Content-Type", "application/pdf")
+  async receiptReportPdfRoute(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } = await this.receiptReportPdf.buildPdf(
+      id,
       req.user?.userId ?? null,
     );
     sendPdf(res, buffer, fileName);
@@ -137,6 +186,7 @@ export class RobnoController {
   async inventoryCountPdf(
     @Param("id", ParseIntPipe) id: number,
     @Query("variant") variant: string | undefined,
+    @Query("stampa") stampa: string | undefined,
     @Req() req: { user?: AuthUser },
     @Res() res: Response,
   ): Promise<void> {
@@ -150,6 +200,7 @@ export class RobnoController {
       id,
       v,
       req.user?.userId ?? null,
+      isPrintAction(stampa),
     );
     sendPdf(res, buffer, fileName);
   }
@@ -245,6 +296,19 @@ export class RobnoController {
     return this.robno.getStockDocument(id);
   }
 
+  /**
+   * Istorija štampe dokumenta: ko je, kada i koji obrazac odštampao, i koji je to
+   * bio primerak. Bez ovoga se broj primerka i žig „KOPIJA" na papiru ne mogu
+   * proveriti ni objasniti — a to je jedini razlog zbog kog `document_prints`
+   * postoji. Permisija ROBNO_READ: isti podatak korisnik već vidi u nozi papira.
+   */
+  @Get("documents/:id/prints")
+  documentPrints(@Param("id", ParseIntPipe) id: number) {
+    return this.prints
+      .history(DOCUMENT_PRINT_KIND.STOCK, id)
+      .then((data) => ({ data }));
+  }
+
   @Post("documents")
   @RequirePermission(PERMISSIONS.ROBNO_WRITE)
   create(@Body() body: { kind: StockDocumentKind } & CreateStockDocumentDto) {
@@ -289,6 +353,23 @@ export class RobnoController {
   async calculate(@Param("id", ParseIntPipe) id: number) {
     await this.robno.assertNotLocked(id); // zaključan dokument = immutable
     return this.calculation.calculate(id);
+  }
+
+  /**
+   * Uslovi otpreme i napomena (`fco`, način/datum otpreme, mesto isporuke, ruta,
+   * „po porudžbini od", napomena). Ova polja štampa OTPREMNICA; dok nisu uneta,
+   * papir ostavlja prazne linije za ručni upis (nikad pretpostavljenu vrednost).
+   *
+   * Dozvoljeno i na PROKNJIŽENOM dokumentu (podaci se saznaju posle knjiženja i ne
+   * ulaze u zalihu/GK), ali NE na zaključanom (409). Permisija ROBNO_WRITE.
+   */
+  @Patch("documents/:id/shipping")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  updateShipping(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateStockDocumentShippingDto,
+  ) {
+    return this.robno.updateShipping(id, dto);
   }
 
   /**
@@ -355,6 +436,46 @@ export class RobnoController {
     const y = year != null && year.trim() !== "" ? Number(year) : undefined;
     const result = await this.robno.rebuildKepu({ year: y });
     return { data: result };
+  }
+
+  // ─── Prenos između magacina (međuskladišnica) ──────────────────────────────
+  // Prenos NIJE jedan dokument: stanje se računa po magacinu iz stavki, sa znakom iz
+  // vrste dokumenta, pa jedan dokument može da promeni SAMO jedan magacin. Zato ove rute
+  // prave PAR (PREIZ izlaz + PREUL ulaz) u jednoj transakciji. Kreiranje prenosa kroz
+  // opštu rutu `POST /robno/documents` sa `kind=PRENOS` je namerno odbijeno (422).
+
+  /**
+   * Napravi prenos između magacina — razduži izvorni i zaduži odredišni magacin
+   * (dva povezana dokumenta, jedna transakcija). Nedovoljno stanje u izvornom
+   * magacinu = 422. Permisija ROBNO_WRITE.
+   */
+  @Post("transfers")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  createTransfer(
+    @Body() body: CreateTransferDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.transfer.createTransfer(body, req.user?.userId ?? null);
+  }
+
+  /** Detalj prenosa (sa bilo koje strane para) — obe strane, oba magacina, status storna. */
+  @Get("transfers/:id")
+  getTransfer(@Param("id", ParseIntPipe) id: number) {
+    return this.transfer.get(id);
+  }
+
+  /**
+   * Storniraj prenos — ogledalni par koji vraća robu u izvorni magacin. Već storniran
+   * prenos = 409; roba potrošena iz odredišnog magacina = 422. Permisija ROBNO_WRITE.
+   */
+  @Post("transfers/:id/reverse")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  reverseTransfer(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: ReverseTransferDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.transfer.reverse(id, body ?? {}, req.user?.userId ?? null);
   }
 
   // ─── Popis / inventura (doc 39 §D) ─────────────────────────────────────────
@@ -500,6 +621,20 @@ function parseVariant<T extends string>(
       `${message}: „${v}". Dozvoljeno: ${allowed.join(", ")}.`,
     );
   return v as T;
+}
+
+/**
+ * `?stampa=1` — klijent izričito traži ŠTAMPU, ne pregled.
+ *
+ * Samo tada se upisuje trag u `document_prints` i troši redni broj primerka, pa
+ * samo tada papir može da nosi žig „KOPIJA". Sve ostalo (otvaranje dokumenta,
+ * ponovno preuzimanje istog PDF-a, tuđi pregled) je pregled i ne pomera brojač.
+ * Prihvata se samo `1`/`true`/`da` — nepoznata vrednost je pregled, jer je tiho
+ * potrošen primerak gora greška od nezabeležene štampe.
+ */
+function isPrintAction(value: string | undefined): boolean {
+  const v = (value ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "da";
 }
 
 /** Isporuka PDF-a inline (pregled u browseru + preuzimanje) — isti obrazac kao sales/gl. */

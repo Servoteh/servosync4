@@ -9,6 +9,11 @@ import { PrismaService } from "../../../prisma/prisma.service";
 import { PdfService } from "../../documents/pdf.service";
 import { BarcodeService } from "../../documents/barcode.service";
 import {
+  DocumentPrintService,
+  DOCUMENT_PRINT_KIND,
+  type PrintTrace,
+} from "../../documents/document-print.service";
+import {
   DEFAULT_STYLE,
   PAGE_LANDSCAPE,
   PAGE_PORTRAIT,
@@ -22,6 +27,8 @@ import {
   buildParties,
   buildPageFooter,
   buildSignatureRow,
+  copyLabel,
+  copyWatermark,
   fmtDate,
   fmtMoney,
   fmtPercent,
@@ -48,6 +55,12 @@ import {
  *   `prenosnica`  — Prenos između magacina (BigBit `Prenosnica - DEFAULT`), za PRENOS
  *   `kalkulacija` — Kalkulacija nabavne/prodajne cene, obrazac KL (landed cost), za UL
  *   `zapisnik`    — Zapisnik o višku/manjku iz popisa, za VISAK/MANJAK
+ *   `trebovanje`  — Trebovanje materijala iz magacina (BigBit `CL_TrebovanjeZaProizvodnju`), za IZ
+ *
+ * NE MEŠATI: BigBit obrazac „Trebovanje - DEFAULT" je NARUDŽBENICA DOBAVLJAČU i kod nas
+ * je već živa štampa (`nabavka/print/purchase-order-pdf.service.ts`). Varijanta ovde je
+ * DRUGI BigBit obrazac — zahtev magacinu da izda materijal za proizvodnju (radni nalog /
+ * predmet), sa potpisima „Trebovao / Robu izdao / Robu primio".
  *
  * Nadgradnja u odnosu na BigBit (v. `robno-doc-layout`):
  *   - PRENOSNICA nosi OBA magacina („IZ MAGACINA → U MAGACIN") — BigBit štampa samo odredište,
@@ -66,7 +79,8 @@ export type StockPrintVariant =
   | "nivelacija"
   | "prenosnica"
   | "kalkulacija"
-  | "zapisnik";
+  | "zapisnik"
+  | "trebovanje";
 
 export const STOCK_PRINT_VARIANTS: StockPrintVariant[] = [
   "primka",
@@ -76,13 +90,48 @@ export const STOCK_PRINT_VARIANTS: StockPrintVariant[] = [
   "prenosnica",
   "kalkulacija",
   "zapisnik",
+  "trebovanje",
 ];
 
 const ZERO = new Prisma.Decimal(0);
 
+/**
+ * Linija za ručni upis. Prazan podatak na PRATEĆOJ ISPRAVI (otpremnica) ne sme da se
+ * odštampa kao „—" (to izgleda kao „nema/nije primenljivo") ni kao pretpostavljena
+ * vrednost — mora ostati mesto na koje magacioner upiše olovkom.
+ */
+const BLANK_LINE = "____________________";
+
+/**
+ * Obrasci koji PUTUJU SA ROBOM — na njima prazan uslov otpreme ostaje LINIJA za
+ * ručni upis (vozač/magacioner dopisuju rutu i stvarni dan otpreme na papiru).
+ * Na internim obrascima (izdatnica, primka, nivelacija, kalkulacija, zapisnik)
+ * prazno polje se ne štampa uopšte — tamo linije nemaju kome da služe.
+ */
+const SHIPPING_LINES_VARIANTS = new Set<StockPrintVariant>([
+  "otpremnica",
+  "prenosnica",
+  "trebovanje",
+]);
+
 type DocWithItems = Prisma.StockDocumentGetPayload<{
   include: { items: true; stockLevelingItems: true };
 }>;
+
+/**
+ * Brojevi (ne interni id-jevi) koje papir sme da pokaže čoveku, i rekonstrukcija
+ * smera prenosa za ULAZNU stranu para. Sve je `null`-safe: kad red ne postoji,
+ * obrazac ostavlja prazno mesto umesto da odštampa primarni ključ iz baze.
+ */
+interface DocReferences {
+  /** `work_orders.ident_number` */
+  workOrderNumber: string | null;
+  /** `projects.project_number` */
+  projectNumber: string | null;
+  /** Izvorni magacin prenosa — popunjen SAMO za ulaznu stranu para (PREUL). */
+  transferSourceWarehouseId: number | null;
+  transferSourceWarehouseName: WarehouseMeta | null;
+}
 
 interface ItemMeta {
   id: number;
@@ -118,6 +167,7 @@ export class StockDocumentPdfService {
     private readonly prisma: PrismaService,
     private readonly pdf: PdfService,
     private readonly barcode: BarcodeService,
+    private readonly prints: DocumentPrintService,
   ) {}
 
   /** Podrazumevani obrazac po vrsti dokumenta (kad korisnik ne bira varijantu). */
@@ -148,6 +198,12 @@ export class StockDocumentPdfService {
     documentId: number,
     variant?: StockPrintVariant,
     userId?: number | null,
+    /**
+     * `true` SAMO kad je korisnik izričito pokrenuo štampu (dugme „Štampaj"), ne
+     * pri pregledu/preuzimanju. Od toga zavisi da li se troši redni broj primerka
+     * i da li papir nosi žig „KOPIJA" — v. `registerTrace` niže.
+     */
+    isPrintAction = false,
   ): Promise<{ buffer: Buffer; fileName: string }> {
     const doc = await this.prisma.stockDocument.findUnique({
       where: { id: documentId },
@@ -182,6 +238,7 @@ export class StockDocumentPdfService {
       party,
       docTypeName,
       taxRates,
+      references,
     ] = await Promise.all([
       loadIssuer(this.prisma, doc.companyId),
       loadPrintedBy(this.prisma, userId),
@@ -191,7 +248,18 @@ export class StockDocumentPdfService {
       this.loadParty(doc.supplierId ?? doc.customerId ?? null),
       this.loadDocumentTypeName(doc.documentTypeCode),
       this.loadTaxRates(),
+      this.loadReferences(doc),
     ]);
+
+    // TRAG ŠTAMPE — samo za STVARNU štampu (v. `registerTrace`).
+    const trace = await this.registerTrace({
+      documentId: doc.id,
+      variant: effective,
+      userId,
+      printedBy,
+      companyId: doc.companyId,
+      isPrintAction,
+    });
 
     const docDefinition = this.buildDocDefinition({
       doc,
@@ -204,13 +272,110 @@ export class StockDocumentPdfService {
       party,
       docTypeName,
       taxRates,
+      trace,
+      references,
     });
 
-    const buffer = await this.pdf.render(docDefinition);
+    // Broj primerka je već potrošen, a papir možda neće nastati (pad rendera,
+    // prekinut odgovor). Bez ovoga bi sledeća — prva STVARNA — štampa dobila
+    // „primerak br. 2" i žig KOPIJA, iako original nikad nije izašao.
+    let buffer: Buffer;
+    try {
+      buffer = await this.pdf.render(docDefinition);
+    } catch (e) {
+      await this.prints.discard(trace.id);
+      throw e;
+    }
     const prefix = FILE_PREFIX[effective];
     return {
       buffer,
       fileName: `${prefix}-${safeFileName(doc.documentNumber)}.pdf`,
+    };
+  }
+
+  /**
+   * Trag štampe se upisuje SAMO kad je korisnik zaista pokrenuo štampu.
+   *
+   * ZAŠTO (nalaz revizije 27.07.2026): ranije se `register()` zvao na svaki GET
+   * PDF-a, a ruta stoji pod ROBNO_READ. Svako otvaranje dokumenta radi provere —
+   * od bilo kog korisnika sa pravom čitanja — trošilo je redni broj primerka, pa
+   * je PRVI fizički otisak koji ide uz robu nosio žig „KOPIJA" i „primerak br. N"
+   * iako original nikad nije odštampan. To je ista klasa greške koju je ovaj talas
+   * ispravljao na uslovima otpreme: papir tvrdi činjenicu koju niko nije potvrdio.
+   */
+  private async registerTrace(args: {
+    documentId: number;
+    variant: StockPrintVariant;
+    userId?: number | null;
+    printedBy: string | null;
+    companyId: number;
+    isPrintAction: boolean;
+  }): Promise<PrintTrace> {
+    if (!args.isPrintAction) {
+      return {
+        id: null,
+        copyNo: null,
+        isCopy: false,
+        printedBy: args.printedBy,
+      };
+    }
+    return this.prints.register({
+      kind: DOCUMENT_PRINT_KIND.STOCK,
+      documentId: args.documentId,
+      variant: args.variant,
+      userId: args.userId,
+      printedByName: args.printedBy,
+      companyId: args.companyId,
+    });
+  }
+
+  /**
+   * BROJEVI radnog naloga i predmeta (ne interni id-jevi iz baze).
+   *
+   * Nalaz revizije: trebovanje je u zaglavlje štampalo „Radni nalog {id}" — a to je
+   * primarni ključ reda, dok je pravi broj `work_orders.ident_number`. Magacioner je
+   * po tom broju tražio nalog u aplikaciji, nalazio POGREŠAN ili nijedan, i izdavao
+   * materijal na tuđi nalog. Kad broj ne postoji, vraća se `null` i papir ostavlja
+   * praznu liniju — nikad goli id.
+   */
+  private async loadReferences(doc: DocWithItems): Promise<DocReferences> {
+    const workOrderId = doc.workOrderId;
+    const projectId = doc.projectId;
+    // Izvorni magacin se traži SAMO za ulaznu stranu prenosa: to je jedini
+    // dokument kome sopstveni `warehouseId` NIJE izvor robe (v. `buildPartyBlock`).
+    const needsTransferSource =
+      doc.kind === "PRENOS" &&
+      doc.targetWarehouseId == null &&
+      doc.transferPairDocId != null;
+
+    const [wo, pr, pair] = await Promise.all([
+      workOrderId != null && workOrderId > 0
+        ? this.prisma.workOrder.findUnique({
+            where: { id: workOrderId },
+            select: { identNumber: true },
+          })
+        : Promise.resolve(null),
+      projectId != null && projectId > 0
+        ? this.prisma.project.findUnique({
+            where: { id: projectId },
+            select: { projectNumber: true },
+          })
+        : Promise.resolve(null),
+      needsTransferSource
+        ? this.prisma.stockDocument.findUnique({
+            where: { id: doc.transferPairDocId as number },
+            select: { warehouseId: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const sourceId = pair?.warehouseId ?? null;
+    return {
+      workOrderNumber: wo?.identNumber?.trim() || null,
+      projectNumber: pr?.projectNumber?.trim() || null,
+      transferSourceWarehouseId: sourceId,
+      transferSourceWarehouseName:
+        sourceId != null ? await this.loadWarehouse(sourceId) : null,
     };
   }
 
@@ -314,15 +479,21 @@ export class StockDocumentPdfService {
     party: PartyMeta | null;
     docTypeName: string | null;
     taxRates: Map<string, number>;
+    trace?: PrintTrace;
+    references: DocReferences;
   }): TDocumentDefinitions {
-    const { doc, variant, issuer, printedBy } = args;
+    const { doc, variant, issuer, printedBy, trace } = args;
     // Nivelacija ima 10 kolona od kojih 5 novčanih: na uspravnom A4 fiksne
     // širine + padding prelaze širinu sadržaja, pa poslednja kolona
     // („Nivelacija" — ono zbog čega dokument postoji) ispadne van papira.
     const landscape = variant === "kalkulacija" || variant === "nivelacija";
     const page = landscape ? PAGE_LANDSCAPE : PAGE_PORTRAIT;
 
-    const badge = statusBadge(doc.status);
+    // Značke: status dokumenta + (od drugog primerka) „KOPIJA · primerak br. N".
+    // Kopija je `danger` ton namerno — u ruci mora da vikne da papir NIJE original.
+    const copyText = copyLabel(trace?.copyNo);
+    const badges: DocBadge[] = [statusBadge(doc.status)];
+    if (copyText) badges.push({ text: copyText, tone: "danger" });
     const title = TITLES[variant](doc.kind);
     const formCode = variant === "kalkulacija" ? "Obrazac - KL" : null;
 
@@ -331,7 +502,7 @@ export class StockDocumentPdfService {
       title,
       subtitle: `br. ${doc.documentNumber}   ·   ${fmtDate(doc.documentDate)}`,
       formCode,
-      badge,
+      badge: badges,
       barcodeSvg: this.code128(
         `SD:${doc.documentTypeCode}:${doc.documentNumber}`,
       ),
@@ -355,6 +526,18 @@ export class StockDocumentPdfService {
     if (variant === "kalkulacija") {
       content.push(this.buildImportStrip(doc));
     }
+    // Napomena sa dokumenta — ispisuje se SAMO kad postoji (prazna napomena nije
+    // prazna linija za upis nego podatak kog nema, pa se ne štampa nikakav okvir).
+    const note = doc.note?.trim();
+    if (note) {
+      content.push({
+        margin: [0, 10, 0, 0],
+        stack: [
+          { text: "NAPOMENA", style: "sectionLbl" },
+          { text: sanitizeText(note), fontSize: 8 },
+        ],
+      });
+    }
     content.push(
       buildSignatureRow(SIGNATURES[variant], { stampOn: STAMP_ON[variant] }),
     );
@@ -362,7 +545,9 @@ export class StockDocumentPdfService {
     return {
       ...page,
       // Neknjižen dokument nosi vidljiv žig — BigBit ovo NEMA, pa se nacrt i
-      // proknjižen dokument u ruci ne razlikuju.
+      // proknjižen dokument u ruci ne razlikuju. „NACRT" ima PRVENSTVO nad
+      // „KOPIJA" (pdfmake nosi jedan žig po dokumentu): nacrt nacrta je i dalje
+      // pre svega nacrt, i to je opasnija tvrdnja ako se izgubi.
       watermark:
         doc.status === "DRAFT"
           ? {
@@ -371,7 +556,7 @@ export class StockDocumentPdfService {
               bold: true,
               angle: -30,
             }
-          : undefined,
+          : copyWatermark(trace?.copyNo),
       content,
       styles: ROBNO_STYLES,
       defaultStyle: DEFAULT_STYLE,
@@ -379,6 +564,8 @@ export class StockDocumentPdfService {
         `${title} br. ${doc.documentNumber}`,
         printedBy,
         landscape ? 24 : 32,
+        undefined,
+        trace?.copyNo ?? null,
       ),
     };
   }
@@ -390,8 +577,10 @@ export class StockDocumentPdfService {
     warehouse: WarehouseMeta | null;
     targetWarehouse: WarehouseMeta | null;
     party: PartyMeta | null;
+    references: DocReferences;
   }): Content {
-    const { doc, variant, warehouse, targetWarehouse, party } = args;
+    const { doc, variant, warehouse, targetWarehouse, party, references } =
+      args;
 
     const whBlock = (
       label: string,
@@ -423,6 +612,22 @@ export class StockDocumentPdfService {
     if (variant === "prenosnica") {
       // Nadgradnja: BigBit `Prenosnica - DEFAULT` imenuje SAMO odredište („U prodavnicu:"),
       // pa se iz papira ne vidi odakle je roba otišla.
+      //
+      // ULAZNA STRANA PARA (PREUL) nosi `warehouseId` = ODREDIŠTE i `targetWarehouseId`
+      // = NULL (namerno — inače bi pisalo „iz Y u Y"). Bez ispravke je papir tvrdio
+      // „IZ MAGACINA <odredište>" i „U MAGACIN —", tj. suprotan smer od stvarnog, pod
+      // naslovom PRENOSNICA i sa potpisom „Robu izdao / Robu primio". Odakle je roba
+      // stigla zna se preko para, pa se smer rekonstruiše iz njega.
+      if (references.transferSourceWarehouseId != null) {
+        return buildParties(
+          whBlock(
+            "IZ MAGACINA",
+            references.transferSourceWarehouseName,
+            references.transferSourceWarehouseId,
+          ),
+          whBlock("U MAGACIN", warehouse, doc.warehouseId),
+        );
+      }
       return buildParties(
         whBlock("IZ MAGACINA", warehouse, doc.warehouseId),
         whBlock("U MAGACIN", targetWarehouse, doc.targetWarehouseId),
@@ -440,6 +645,24 @@ export class StockDocumentPdfService {
         whBlock("Magacin izdavanja", warehouse, doc.warehouseId),
       );
     }
+    if (variant === "trebovanje") {
+      // Trebovanje ide IZ magacina ZA proizvodnju — druga strana nije kupac nego
+      // radni nalog / predmet. Kad ih dokument nema, ostaje prazna linija za
+      // ručni upis, nikad izmišljeno odredište.
+      // BROJEVI, ne interni id-jevi: `ident_number` naloga i `project_number`
+      // predmeta. Kad broja nema (obrisan/nepoznat red), ostaje linija za upis.
+      const wo = references.workOrderNumber;
+      const pr = references.projectNumber;
+      return buildParties(whBlock("Iz magacina", warehouse, doc.warehouseId), {
+        label: "Za potrebe (radni nalog / predmet)",
+        name: wo
+          ? `Radni nalog ${wo}`
+          : pr
+            ? `Predmet ${pr}`
+            : "____________________",
+        lines: [wo && pr ? `Predmet ${pr}` : null],
+      });
+    }
     return buildParties(whBlock("Magacin", warehouse, doc.warehouseId), null);
   }
 
@@ -447,8 +670,9 @@ export class StockDocumentPdfService {
     doc: DocWithItems;
     variant: StockPrintVariant;
     docTypeName: string | null;
+    references: DocReferences;
   }): Array<[string, string]> {
-    const { doc, docTypeName, variant } = args;
+    const { doc, docTypeName, variant, references } = args;
     const pairs: Array<[string, string]> = [
       ["Broj dokumenta", doc.documentNumber],
       [
@@ -458,15 +682,36 @@ export class StockDocumentPdfService {
       ["Datum dokumenta", fmtDate(doc.documentDate)],
       ["Datum knjiženja", fmtDate(doc.postingDate)],
     ];
-    if (variant === "otpremnica") {
-      // BigBit `OtpremnicaBezCena` traka od 4 polja iznad tabele.
-      pairs.push(["Roba je FCO", "magacin isporučioca"]);
-      pairs.push(["Način otpreme", "sopstveni prevoz"]);
-      pairs.push(["Datum otpreme", fmtDate(doc.documentDate)]);
-      pairs.push(["Mesto prometa", "magacin"]);
-    }
-    if (doc.projectId) pairs.push(["Predmet", String(doc.projectId)]);
-    if (doc.workOrderId) pairs.push(["Radni nalog", String(doc.workOrderId)]);
+    // USLOVI OTPREME. Do 27.07.2026. su ova četiri reda bila TVRDE KONSTANTE
+    // („FCO magacin isporučioca", „sopstveni prevoz", „mesto prometa: magacin",
+    // datum otpreme = datum dokumenta) — otpremnica je prateća isprava uz robu, pa
+    // je papir tvrdio činjenice koje niko nije uneo. Sada se štampa ono što je
+    // UNETO, a prazno polje ostaje LINIJA ZA RUČNI UPIS (`BLANK_LINE`), nikad
+    // pretpostavka. Na otpremnici se linije ispisuju uvek (obrazac se dopunjava u
+    // magacinu, na papiru); na ostalim obrascima samo kad su popunjene.
+    // Linije za ručni upis dobijaju SVI obrasci koji PUTUJU SA ROBOM (otpremnica,
+    // prenosnica, trebovanje) — vozač i magacioner na njima dopisuju rutu i stvarni
+    // dan otpreme. Ranije ih je imala samo otpremnica, a panel „Uslovi otpreme" je
+    // za svaki dokument obećavao „na papiru ostaje linija za ručni upis" — pa je na
+    // prenosnici i trebovanju to bilo neistinito obećanje (nalaz revizije).
+    const alwaysShip = SHIPPING_LINES_VARIANTS.has(variant);
+    const ship = (label: string, value: string | null) => {
+      if (value) pairs.push([label, value]);
+      else if (alwaysShip) pairs.push([label, BLANK_LINE]);
+    };
+    ship("Roba je FCO", doc.fco);
+    ship("Način otpreme", doc.shippingMethod);
+    ship("Datum otpreme", doc.shippingDate ? fmtDate(doc.shippingDate) : null);
+    ship("Mesto isporuke", doc.deliveryPlace);
+    ship("Ruta", doc.route);
+    ship("Po porudžbini od", doc.customerOrderRef);
+
+    // BROJEVI predmeta i radnog naloga — v. `loadReferences`. Kad broj ne postoji,
+    // red se ne štampa (goli id bi uputio magacionera na pogrešan nalog).
+    if (references.projectNumber)
+      pairs.push(["Predmet", references.projectNumber]);
+    if (references.workOrderNumber)
+      pairs.push(["Radni nalog", references.workOrderNumber]);
     if (doc.purchaseOrderId)
       pairs.push(["Narudžbenica", String(doc.purchaseOrderId)]);
     if (doc.inventoryCountId)
@@ -955,6 +1200,7 @@ const TITLES: Record<StockPrintVariant, (kind: string) => string> = {
   kalkulacija: () => "KALKULACIJA CENE",
   zapisnik: (kind) =>
     kind === "MANJAK" ? "ZAPISNIK O MANJKU" : "ZAPISNIK O VIŠKU",
+  trebovanje: () => "TREBOVANJE MATERIJALA",
 };
 
 const FILE_PREFIX: Record<StockPrintVariant, string> = {
@@ -965,6 +1211,7 @@ const FILE_PREFIX: Record<StockPrintVariant, string> = {
   prenosnica: "PRENOSNICA",
   kalkulacija: "KALKULACIJA",
   zapisnik: "ZAPISNIK",
+  trebovanje: "TREBOVANJE",
 };
 
 /** Natpisi potpisa preuzeti DOSLOVNO iz BigBit obrazaca. */
@@ -976,6 +1223,9 @@ const SIGNATURES: Record<StockPrintVariant, string[]> = {
   prenosnica: ["Robu izdao", "Robu primio"],
   kalkulacija: ["Sastavio", "Kontrolisao", "Odgovorno lice"],
   zapisnik: ["Članovi komisije", "Za knjigovodstvo", "Odgovorno lice"],
+  // BigBit `CL_TrebovanjeZaProizvodnju` ima „Robu izdao" i „Robu primio";
+  // „Trebovao" je dodato jer bez potpisa tražioca dokument ne kaže ko je tražio.
+  trebovanje: ["Trebovao", "Robu izdao", "Robu primio"],
 };
 
 /** Indeksi potpisnih mesta koja nose (M.P.). */
@@ -987,6 +1237,7 @@ const STAMP_ON: Record<StockPrintVariant, number[]> = {
   prenosnica: [],
   kalkulacija: [2],
   zapisnik: [2],
+  trebovanje: [],
 };
 
 function statusBadge(status: string): DocBadge {

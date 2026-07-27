@@ -13,6 +13,26 @@ import { TableMapping } from './sync.types';
  */
 describe('GenericSyncer — full-refresh brisanje', () => {
   function makeMapping(targetDb: string): TableMapping {
+    if (targetDb === 'companies') {
+      // Mapa zna SAMO ono što BigBit ima; `iban`/`swift` su 3.0-native i nemapirani.
+      return {
+        source: 'Radni fajlovi',
+        model: 'Company',
+        targetDb,
+        pk: { kind: 'single', field: 'id' },
+        watermark: null,
+        columns: [
+          { src: 'IDBaze', field: 'id', type: 'Int', nullable: false, isId: true },
+          {
+            src: 'Firma',
+            field: 'companyName',
+            type: 'String',
+            nullable: false,
+            isId: false,
+          },
+        ],
+      };
+    }
     if (targetDb === 'items') {
       return {
         source: 'R_Artikli',
@@ -59,6 +79,7 @@ describe('GenericSyncer — full-refresh brisanje', () => {
   ) {
     const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
     const createMany = jest.fn().mockResolvedValue({ count: 0 });
+    const upsert = jest.fn().mockResolvedValue({});
     const count = jest.fn().mockResolvedValue(0);
     const findMany = jest.fn().mockResolvedValue(existingByNumber);
 
@@ -67,7 +88,9 @@ describe('GenericSyncer — full-refresh brisanje', () => {
         ? 'project'
         : targetDb === 'items'
           ? 'item'
-          : 'warehouse';
+          : targetDb === 'companies'
+            ? 'company'
+            : 'warehouse';
     const txDelegate = { deleteMany, createMany };
     const tx: Record<string, unknown> = {
       [delegateName]: txDelegate,
@@ -76,7 +99,7 @@ describe('GenericSyncer — full-refresh brisanje', () => {
 
     const prisma = {
       // owned-table protection precheck (not owned here, but keep it safe)
-      [delegateName]: { count, findMany },
+      [delegateName]: { count, findMany, upsert },
       $transaction: jest
         .fn()
         .mockImplementation((fn: (t: unknown) => Promise<void>) => fn(tx)),
@@ -87,7 +110,7 @@ describe('GenericSyncer — full-refresh brisanje', () => {
     } as unknown as MssqlClient;
 
     const syncer = new GenericSyncer(makeMapping(targetDb), mssql, prisma);
-    return { syncer, deleteMany, createMany, findMany };
+    return { syncer, deleteMany, createMany, findMany, upsert };
   }
 
   it('obična tabela: briše SVE (deleteMany({}))', async () => {
@@ -110,6 +133,39 @@ describe('GenericSyncer — full-refresh brisanje', () => {
     expect(deleteMany).toHaveBeenCalledWith({ where: { id: { in: [101, 102] } } });
     // native predmet (npr. id 900001) nije u `in`, pa se ne dira.
     expect(createMany).toHaveBeenCalled();
+  });
+
+  /**
+   * REGRESIJA 27.07.2026 (nalaz KRITIČNO). `companies` je mapirana sa
+   * `watermark: null` → full refresh → `deleteMany({})` + `createMany(mapirane
+   * kolone)`. Kolone `iban`/`swift` (unose se u Podešavanjima, štampaju na ino
+   * fakturi, idu u UBL `cac:PaymentMeans`) BigBit NEMA, pa nisu u mapi — jedno
+   * pokretanje sinhronizacije bi ih obrisalo TIHO, bez greške u logu, i strani
+   * kupac bi dobio račun bez podataka za uplatu.
+   */
+  it('companies: NIKAD ne briše — upsert samo nad mapiranim kolonama (iban/swift preživljavaju)', async () => {
+    const { syncer, deleteMany, createMany, upsert } = setup('companies', [
+      { IDBaze: 1, Firma: 'SERVOTEH d.o.o.' },
+    ]);
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    // Brisanja NEMA ni u kom obliku — to je cela poenta zaštite.
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
+
+    expect(upsert).toHaveBeenCalledTimes(1);
+    const arg = upsert.mock.calls[0][0] as {
+      where: unknown;
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    };
+    expect(arg.where).toEqual({ id: 1 });
+    // `update` sme da dira SAMO mapirane kolone; nemapirano se ne pominje, pa
+    // Prisma te kolone ne dira i ručno unet IBAN ostaje u bazi.
+    expect(Object.keys(arg.update).sort()).toEqual(['companyName', 'id']);
+    expect(arg.update).not.toHaveProperty('iban');
+    expect(arg.update).not.toHaveProperty('swift');
+    expect(result.rowsUpserted).toBe(1);
   });
 
   it('projects (additive) sa praznim izvorom: NE briše ništa', async () => {

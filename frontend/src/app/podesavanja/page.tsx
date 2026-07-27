@@ -16,6 +16,7 @@ import { OrganizacijaTab } from './_components/organizacija-tab';
 import { KompetencijeTab } from './_components/kompetencije-tab';
 import { PredmetAktivacijaTab } from './_components/predmet-aktivacija-tab';
 import { CompanyProfileTab } from './_components/company-profile-tab';
+import { FirmaTab } from './_components/firma-tab';
 import { ExpectationsTab } from './_components/expectations-tab';
 import { NotifikacijeTab } from './_components/notifikacije-tab';
 import { IntegracijeTab } from './_components/integracije-tab';
@@ -28,6 +29,7 @@ type TabKey =
   | 'grid'
   | 'organizacija'
   | 'masters'
+  | 'firma'
   | 'vrednosti'
   | 'ocekivanja'
   | 'kompetencije'
@@ -44,6 +46,9 @@ const TAB_DEFS: { key: TabKey; label: string; requires: Permission }[] = [
   { key: 'grid', label: 'Grid urednici', requires: PERMISSIONS.SETTINGS_USERS },
   { key: 'organizacija', label: 'Organizacija', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'masters', label: 'Matični podaci', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
+  // Podaci firme = ono što se ŠTAMPA (memorandum + IBAN/SWIFT). Kapija je settings.system,
+  // ista kao ostala matična podešavanja — ovo nije korisnički podatak nego identitet na papiru.
+  { key: 'firma', label: 'Podaci firme', requires: PERMISSIONS.SETTINGS_SYSTEM },
   { key: 'vrednosti', label: 'Vrednosti firme', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'ocekivanja', label: 'Očekivanja', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'kompetencije', label: 'Kompetencije', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
@@ -116,6 +121,7 @@ export default function PodesavanjaPage() {
         {tab === 'grid' && <GridEditorsTab />}
         {tab === 'organizacija' && <OrganizacijaTab />}
         {tab === 'masters' && <MastersTab onNavigate={(t) => setTab(t as TabKey)} />}
+        {tab === 'firma' && <FirmaTab />}
         {tab === 'vrednosti' && <CompanyProfileTab />}
         {tab === 'ocekivanja' && <ExpectationsTab />}
         {tab === 'kompetencije' && <KompetencijeTab />}

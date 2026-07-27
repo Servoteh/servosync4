@@ -203,9 +203,15 @@ export class InvoicePdfService {
   // ------------------------------------------------------------ učitavanje
 
   /**
-   * Firma izdavalac iz `companies` (multi-firma numeracija). SWIFT/IBAN za ino
-   * fakturu je best-effort iz `bankAccount` (BigBit ih je držao slobodno); ako
-   * firma ne postoji (legacy companyId=0 bez reda) → Servoteh fallback header.
+   * Firma izdavalac iz `companies` (multi-firma numeracija). Ako firma ne postoji
+   * (legacy companyId=0 bez reda) → Servoteh fallback header.
+   *
+   * IBAN/SWIFT: štampa ih je ČITALA i pre nego što su kolone postojale (`IssuerInfo`
+   * ih deklariše, ino faktura ih ispisuje) — polja su uvek bila `undefined`, pa je
+   * izvozni račun izlazio BEZ podataka za plaćanje. Kolone `companies.iban` i
+   * `companies.swift` su dodate 27.07.2026. i unose se u Podešavanja → Podaci firme.
+   * Kad nisu popunjene, ino faktura i dalje ne ispisuje ništa — to je i dalje ispravno:
+   * bolje bez reda nego red sa izmišljenim brojem.
    */
   private async loadIssuer(companyId: number): Promise<IssuerInfo> {
     const company = await this.prisma.company.findUnique({
@@ -219,6 +225,8 @@ export class InvoicePdfService {
         bankAccount: true,
         phone: true,
         email: true,
+        iban: true,
+        swift: true,
       },
     });
     if (!company) {
@@ -231,6 +239,8 @@ export class InvoicePdfService {
         bankAccount: null,
         phone: null,
         email: null,
+        iban: null,
+        swift: null,
       };
     }
     return {
@@ -242,6 +252,8 @@ export class InvoicePdfService {
       bankAccount: company.bankAccount,
       phone: company.phone,
       email: company.email,
+      iban: company.iban,
+      swift: company.swift,
     };
   }
 
@@ -824,8 +836,13 @@ export class InvoicePdfService {
         style: "note",
       });
     // Ino faktura: SWIFT/IBAN instrukcije (INO plaćanje, §izvoz).
+    // IBAN se ČUVA kanonski (bez razmaka), a ŠTAMPA u grupama po 4 — tako ga
+    // propisuje ISO 13616 za prikaz na papiru i tako se prekucava bez greške.
     if (english && issuer.iban)
-      lines.push({ text: `IBAN: ${issuer.iban}`, style: "note" });
+      lines.push({
+        text: `IBAN: ${groupIban(issuer.iban)}`,
+        style: "note",
+      });
     if (english && issuer.swift)
       lines.push({ text: `SWIFT: ${issuer.swift}`, style: "note" });
 
@@ -1299,4 +1316,13 @@ function fmtMoney(
   english: boolean,
 ): string {
   return `${formatDecimal(value, 2, english)} ${currency}`;
+}
+
+/**
+ * IBAN za PAPIR: grupe od po 4 znaka (ISO 13616 prikazni oblik).
+ * U bazi ostaje kanonski oblik bez razmaka — poređenje sa bankarskim izvorom mora
+ * da radi nad kanonskim, a čovek prekucava iz grupisanog.
+ */
+function groupIban(iban: string): string {
+  return iban.replace(/\s+/g, "").replace(/(.{4})/g, "$1 ").trim();
 }

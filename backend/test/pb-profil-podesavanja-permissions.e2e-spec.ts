@@ -17,6 +17,7 @@ import { PodesavanjaService } from "../src/modules/podesavanja/podesavanja.servi
 import { PodesavanjaUsersService } from "../src/modules/podesavanja/podesavanja-users.service";
 import { PredmetPlaneriService } from "../src/modules/podesavanja/predmet-planeri.service";
 import { SyncSwitchService } from "../src/modules/podesavanja/sync-switch.service";
+import { CompanyDetailsService } from "../src/modules/podesavanja/company-details.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -160,6 +161,7 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         { provide: PredmetPlaneriService, useValue: planeriMock },
         // Prekidač noćnog BigBit uvoza (26.07.2026) — DI za PodesavanjaController.
         { provide: SyncSwitchService, useValue: { bigbitStatus: jest.fn(), setEnabled: jest.fn() } },
+        { provide: CompanyDetailsService, useValue: { get: jest.fn(), update: jest.fn() } },
       ],
     })
       .overrideGuard(JwtAuthGuard)

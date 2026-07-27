@@ -3,6 +3,10 @@ import { Prisma } from "@prisma/client";
 import type { TDocumentDefinitions } from "pdfmake/interfaces";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { PdfService } from "../../documents/pdf.service";
+import type {
+  DocumentPrintService,
+  PrintTrace,
+} from "../../documents/document-print.service";
 import { RobnoService } from "../robno.service";
 import { StockDocumentPdfService } from "./stock-document-pdf.service";
 import { InventoryCountPdfService } from "./inventory-count-pdf.service";
@@ -23,6 +27,37 @@ import {
  */
 
 const D = (v: string | number) => new Prisma.Decimal(v);
+
+/**
+ * Zamena za `DocumentPrintService` u testu: broji primerke u memoriji po istom ključu
+ * kao tabela (`kind:id:variant`), pa druga štampa istog obrasca vraća `copyNo = 2` i
+ * povlači žig „KOPIJA" — bez ijednog upita u bazu.
+ */
+function makePrintsStub() {
+  const counters = new Map<string, number>();
+  return {
+    register: jest.fn(
+      (args: {
+        kind: string;
+        documentId: number;
+        variant?: string | null;
+        printedByName?: string | null;
+      }): Promise<PrintTrace> => {
+        const key = `${args.kind}:${args.documentId}:${args.variant ?? ""}`;
+        const next = (counters.get(key) ?? 0) + 1;
+        counters.set(key, next);
+        return Promise.resolve({
+          id: next,
+          copyNo: next,
+          isCopy: next > 1,
+          printedBy: args.printedByName ?? null,
+        });
+      },
+    ),
+    discard: jest.fn().mockResolvedValue(undefined),
+    history: jest.fn().mockResolvedValue([]),
+  };
+}
 
 /** Rekurzivno kupi sav `text` iz docDefinition-a (uključujući ugnežđene tabele/kolone). */
 function allText(node: unknown, acc: string[] = []): string[] {
@@ -209,14 +244,20 @@ function setupStock(doc: ReturnType<typeof makeDoc>) {
     }),
   };
   const barcode = { code128Svg: jest.fn().mockReturnValue("<svg/>") };
+  // Trag štampe (`document_prints`): u testu se ne piše u bazu — dupli `register`
+  // vraća drugi primerak, čime se pokriva i put „KOPIJA" bez Prisma mock-a.
+  const prints = makePrintsStub();
   const service = new StockDocumentPdfService(
     prisma as unknown as PrismaService,
     pdf as unknown as PdfService,
     barcode,
+    prints as unknown as DocumentPrintService,
   );
   return {
     service,
     prisma,
+    pdf,
+    prints,
     get docDef() {
       return captured as unknown as TDocumentDefinitions;
     },
@@ -417,6 +458,7 @@ describe("StockDocumentPdfService", () => {
       "prenosnica",
       "kalkulacija",
       "zapisnik",
+      "trebovanje",
     ] as const) {
       const s = setupStock(makeDoc({ isImport: variant === "kalkulacija" }));
       await s.service.buildPdf(1, variant, null);
@@ -528,6 +570,7 @@ describe("InventoryCountPdfService — popisna lista (zakonski obrazac)", () => 
     const service = new InventoryCountPdfService(
       prisma as unknown as PrismaService,
       pdf as unknown as PdfService,
+      makePrintsStub() as unknown as DocumentPrintService,
     );
     return {
       service,
@@ -739,5 +782,154 @@ describe("StockReportPdfService — lager i kartica artikla", () => {
     const s = setupReport([lagerRow], { ...card, stateAsOf: "80.000000" });
     await s.service.buildItemCardPdf({ itemId: 1, warehouseId: 1 }, null);
     expect(textOf(s.docDef)).toContain("NEUSKLAĐENO");
+  });
+});
+
+/**
+ * GRUPA B (27.07.2026) — uslovi otpreme i trag štampe.
+ *
+ * Do ovog talasa je otpremnica štampala ČETIRI TVRDE KONSTANTE („Roba je FCO: magacin
+ * isporučioca", „Način otpreme: sopstveni prevoz", „Mesto prometa: magacin", datum
+ * otpreme = datum dokumenta) kao da su podaci. Otpremnica je prateća isprava uz robu, pa
+ * je papir tvrdio činjenice koje niko nije uneo. Ovi testovi drže to zatvorenim: bez
+ * njih regresija „vrati podrazumevanu vrednost, lepše izgleda" prolazi neprimećeno.
+ */
+describe("uslovi otpreme + trag štampe (grupa B)", () => {
+  const SHIP = {
+    fco: "FCO kupac — Novi Sad",
+    shippingMethod: "kurir (Bex)",
+    shippingDate: new Date("2026-07-29T00:00:00Z"),
+    deliveryPlace: "Bulevar oslobođenja 12, Novi Sad",
+    route: "Beograd — Novi Sad",
+    customerOrderRef: "PO-2026/443 od 20.07.2026.",
+    note: "Roba se isporučuje u dve palete; ambalaža povratna.",
+  };
+
+  it("otpremnica štampa UNETE uslove otpreme, a ne izmišljene konstante", async () => {
+    const s = setupStock(makeDoc({ kind: "IZ", customerId: 7, ...SHIP }));
+    await s.service.buildPdf(1, "otpremnica", null);
+    const t = textOf(s.docDef);
+    for (const v of [
+      SHIP.fco,
+      SHIP.shippingMethod,
+      "29.07.2026.",
+      SHIP.deliveryPlace,
+      SHIP.route,
+      SHIP.customerOrderRef,
+    ]) {
+      expect(t).toContain(v);
+    }
+    expect(t).toContain("NAPOMENA");
+    expect(t).toContain("ambalaža povratna");
+  });
+
+  it("neuneti uslovi otpreme = LINIJA ZA RUČNI UPIS, nikad pretpostavka", async () => {
+    const s = setupStock(makeDoc({ kind: "IZ", customerId: 7 }));
+    await s.service.buildPdf(1, "otpremnica", null);
+    const t = textOf(s.docDef);
+    // Natpisi ostaju (obrazac se dopunjava u magacinu), vrednosti su prazne linije.
+    for (const label of [
+      "Roba je FCO",
+      "Način otpreme",
+      "Datum otpreme",
+      "Mesto isporuke",
+    ]) {
+      expect(t).toContain(label);
+    }
+    expect(t).toContain("____________________");
+    // Stare izmišljene konstante NE SMEJU da se vrate.
+    expect(t).not.toContain("magacin isporučioca");
+    expect(t).not.toContain("sopstveni prevoz");
+    expect(t).not.toContain("Mesto prometa");
+  });
+
+  it("izdatnica ne dodaje prazne linije otpreme (samo prateća isprava ih traži)", async () => {
+    const s = setupStock(makeDoc({ kind: "IZ", customerId: 7 }));
+    await s.service.buildPdf(1, "izdatnica", null);
+    expect(textOf(s.docDef)).not.toContain("Roba je FCO");
+  });
+
+  it("ponovljena štampa nosi značku KOPIJA i broj primerka u nozi", async () => {
+    const s = setupStock(
+      makeDoc({ kind: "IZ", customerId: 7, status: "POSTED" }),
+    );
+    await s.service.buildPdf(1, "otpremnica", null, true);
+    expect(allText(s.docDef).join(" ")).not.toContain("KOPIJA");
+
+    await s.service.buildPdf(1, "otpremnica", null, true);
+    const all = allText(s.docDef).join(" ");
+    expect(all).toContain("KOPIJA · primerak br. 2");
+    expect(
+      (s.docDef as { watermark?: { text?: string } }).watermark?.text,
+    ).toBe("KOPIJA");
+    // Noga je funkcija (currentPage, pageCount) — trag primerka mora biti i tamo.
+    const footer = (
+      s.docDef as unknown as {
+        footer: (p: number, c: number) => unknown;
+      }
+    ).footer(1, 1);
+    expect(allText(footer).join(" ")).toContain("primerak br. 2");
+  });
+
+  it("NACRT ima prvenstvo nad KOPIJA (pdfmake nosi jedan žig po dokumentu)", async () => {
+    const s = setupStock(
+      makeDoc({ kind: "IZ", customerId: 7, status: "DRAFT" }),
+    );
+    await s.service.buildPdf(1, "otpremnica", null, true);
+    await s.service.buildPdf(1, "otpremnica", null, true);
+    expect(
+      (s.docDef as { watermark?: { text?: string } }).watermark?.text,
+    ).toBe("NACRT — nije knjiženo");
+    // Značka i noga i dalje KAŽU da je kopija — gubi se samo žig.
+    expect(allText(s.docDef).join(" ")).toContain("KOPIJA · primerak br. 2");
+  });
+
+  /**
+   * REGRESIJA 27.07.2026 (nalaz VISOK). Trag se upisivao na SVAKI GET PDF-a, a ruta
+   * je pod ROBNO_READ — pa je svako otvaranje dokumenta radi provere trošilo redni
+   * broj primerka. Prvi FIZIČKI otisak koji ide uz robu izlazio je sa žigom „KOPIJA"
+   * i „primerak br. N", iako original nikad nije odštampan.
+   */
+  it("REGRESIJA: PREGLED ne troši primerak — tek štampa broji", async () => {
+    const s = setupStock(
+      makeDoc({ kind: "IZ", customerId: 7, status: "POSTED" }),
+    );
+
+    // Tri pregleda (bez `isPrintAction`) — nijedan ne sme da upiše trag.
+    await s.service.buildPdf(1, "otpremnica", null);
+    await s.service.buildPdf(1, "otpremnica", null);
+    await s.service.buildPdf(1, "otpremnica", null);
+    expect(s.prints.register).not.toHaveBeenCalled();
+    expect(allText(s.docDef).join(" ")).not.toContain("KOPIJA");
+
+    // Prva STVARNA štampa je original, ne „primerak br. 4".
+    await s.service.buildPdf(1, "otpremnica", null, true);
+    expect(s.prints.register).toHaveBeenCalledTimes(1);
+    const all = allText(s.docDef).join(" ");
+    expect(all).not.toContain("KOPIJA");
+    expect(
+      (s.docDef as { watermark?: { text?: string } }).watermark,
+    ).toBeUndefined();
+  });
+
+  /**
+   * REGRESIJA 27.07.2026 (nalaz NIZAK). Broj primerka se dodeljuje PRE rendera (deo
+   * je sadržaja papira), pa neuspeo render mora da ga PONIŠTI — inače prva uspešna
+   * štampa dobije „primerak br. 2" i žig KOPIJA nad nepostojećim originalom.
+   */
+  it("REGRESIJA: pad rendera poništava potrošen primerak", async () => {
+    const s = setupStock(
+      makeDoc({ kind: "IZ", customerId: 7, status: "POSTED" }),
+    );
+    (s.pdf.render as jest.Mock).mockRejectedValueOnce(
+      new Error("render pukao"),
+    );
+
+    await expect(
+      s.service.buildPdf(1, "otpremnica", null, true),
+    ).rejects.toThrow("render pukao");
+    // Trag je upisan pa poništen — brojač se ne pomera.
+    expect(s.prints.register).toHaveBeenCalledTimes(1);
+    expect(s.prints.discard).toHaveBeenCalledTimes(1);
   });
 });

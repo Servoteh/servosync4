@@ -31,6 +31,8 @@ import type {
   TableLayout,
   TDocumentDefinitions,
 } from "pdfmake/interfaces";
+import { SERVOTEH_LOGO_DATA_URL } from "../servoteh-logo";
+import type { PrismaService } from "../../../prisma/prisma.service";
 
 // ─────────────────────────────────────────────────────────────────── tema
 
@@ -490,11 +492,19 @@ export function buildPageFooter(
   marginX = PAGE_MARGINS[0],
   /** Natpisi za dokumente na stranom jeziku (ino faktura). */
   labels?: { printedBy: string; page: string },
+  /**
+   * Redni broj primerka iz traga štampe (`document_prints`). 1 = original (ne piše se),
+   * >= 2 → „· primerak br. N" uz trag štampe. `null`/izostavljeno = trag nije upisan, pa
+   * se NE tvrdi ništa (v. `copyWatermark`).
+   */
+  copyNo?: number | null,
 ): (currentPage: number, pageCount: number) => Content {
   const who = printedBy && printedBy.trim() !== "" ? printedBy.trim() : "—";
   const printedLbl = labels?.printedBy ?? "Štampao";
   const pageLbl = labels?.page ?? "strana";
-  const stamp = `${printedLbl}: ${who} · ${fmtDateTime(new Date())} · ServoSync 4.0`;
+  const copyPart =
+    copyNo != null && copyNo >= 2 ? ` · primerak br. ${copyNo}` : "";
+  const stamp = `${printedLbl}: ${who} · ${fmtDateTime(new Date())} · ServoSync 4.0${copyPart}`;
   return (currentPage: number, pageCount: number): Content => ({
     margin: [marginX, 8, marginX, 0],
     columns: [
@@ -564,6 +574,287 @@ export function draftWatermark(
   text: string,
 ): TDocumentDefinitions["watermark"] {
   return { text: sanitizeText(text), opacity: 0.12, bold: true, angle: -35 };
+}
+
+/**
+ * Žig „KOPIJA" na PONOVLJENOJ štampi (trag štampe, `document_prints`).
+ * JEDAN izvor izgleda za sve obrasce — ne prekucavati po servisima.
+ *
+ * `copyNo` je redni broj primerka: 1 = original (nema žiga), >= 2 = kopija. `null`
+ * znači da trag nije upisan — tada NEMA žiga, jer ne znamo koji je primerak u ruci
+ * i lakše je opravdati odsustvo žiga nego lažnu tvrdnju „original".
+ *
+ * Opacitet je 0.10 (a ne 0.12 kao „NACRT"), jer se KOPIJA štampa preko punog
+ * dokumenta sa tabelom, pa jači žig guta brojeve.
+ */
+export function copyWatermark(
+  copyNo: number | null | undefined,
+): TDocumentDefinitions["watermark"] | undefined {
+  if (copyNo == null || copyNo < 2) return undefined;
+  return { text: "KOPIJA", opacity: 0.1, bold: true, angle: -35 };
+}
+
+/**
+ * Natpis primerka za nogu/značku: `null` (original ili nepoznato) → bez natpisa.
+ * Tekst je namerno pun („KOPIJA · primerak br. 3"), da se sa papira u ruci vidi
+ * i to KOJI je primerak, ne samo da nije original.
+ */
+export function copyLabel(copyNo: number | null | undefined): string | null {
+  if (copyNo == null || copyNo < 2) return null;
+  return `KOPIJA · primerak br. ${copyNo}`;
+}
+
+// ──────────────────────────────────────────── izdavalac i zaglavlje obrasca
+
+/**
+ * Podaci firme izdavaoca za memorandum. `isFallback` znači da u `companies` NEMA
+ * nijednog reda — zaglavlje tada ispisuje vidljivo upozorenje, nikad tihi default.
+ */
+export interface IssuerInfo {
+  companyName: string;
+  address: string | null;
+  city: string | null;
+  taxId: string | null;
+  registrationNumber: string | null;
+  bankAccount: string | null;
+  phone: string | null;
+  email: string | null;
+  businessActivity: string | null;
+  isFallback: boolean;
+}
+
+/**
+ * Podaci firme izdavaoca. Dokument vezan za firmu → `companyId`; kad tog reda nema
+ * (moduli koji su jednofirmni pišu `companyId = 0`), uzima se primarna firma po
+ * najmanjem id.
+ *
+ * NIKAD tihi fallback: kad u bazi nema nijedne firme, vraća se `isFallback: true`,
+ * pa zaglavlje ispisuje „(podaci firme nisu podešeni)" — knjigovođa odmah vidi da
+ * dokument nije za predaju.
+ *
+ * Uvoz `PrismaService` je TYPE-ONLY: ovaj fajl namerno nema NestJS DI ni runtime
+ * zavisnost na Prismu (v. blok na vrhu).
+ */
+export async function loadIssuer(
+  prisma: PrismaService,
+  companyId?: number | null,
+): Promise<IssuerInfo> {
+  const select = {
+    companyName: true,
+    address: true,
+    city: true,
+    taxId: true,
+    registrationNumber: true,
+    bankAccount: true,
+    phone: true,
+    email: true,
+    businessActivity: true,
+  } as const;
+
+  const byId =
+    companyId != null && companyId > 0
+      ? await prisma.company.findUnique({ where: { id: companyId }, select })
+      : null;
+  const company =
+    byId ??
+    (await prisma.company.findFirst({ orderBy: { id: "asc" }, select }));
+
+  if (!company) {
+    return {
+      companyName: "Servoteh d.o.o.",
+      address: null,
+      city: null,
+      taxId: null,
+      registrationNumber: null,
+      bankAccount: null,
+      phone: null,
+      email: null,
+      businessActivity: null,
+      isFallback: true,
+    };
+  }
+  return { ...company, isFallback: false };
+}
+
+/** Ime korisnika koji štampa (trag u nozi). Nikad ne baca — štampa ne sme da padne zbog imena. */
+export async function loadPrintedBy(
+  prisma: PrismaService,
+  userId?: number | null,
+): Promise<string | null> {
+  if (userId == null || userId <= 0) return null;
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { fullName: true, email: true },
+    });
+    return user?.fullName?.trim() || user?.email || null;
+  } catch {
+    return null;
+  }
+}
+
+export interface DocBadge {
+  text: string;
+  tone: BadgeTone;
+}
+
+/**
+ * Statusna značka dokumenta (NACRT / PROKNJIŽEN / „KOPIJA · primerak br. 3").
+ * BigBit je nema nigde — storniran i važeći dokument tamo izgledaju isto.
+ */
+export function buildStatusBadge(badge: DocBadge): Content {
+  const c = BADGE_PALETTE[badge.tone];
+  return {
+    table: {
+      widths: ["auto"],
+      body: [
+        [
+          {
+            text: sanitizeText(badge.text),
+            fontSize: 8,
+            bold: true,
+            color: c.text,
+            fillColor: c.fill,
+            alignment: "center",
+            margin: [4, 2, 4, 2],
+          },
+        ],
+      ],
+    },
+    layout: {
+      hLineWidth: () => 0.8,
+      vLineWidth: () => 0.8,
+      hLineColor: () => c.border,
+      vLineColor: () => c.border,
+      paddingLeft: () => 0,
+      paddingRight: () => 0,
+      paddingTop: () => 0,
+      paddingBottom: () => 0,
+    },
+    alignment: "right",
+    margin: [0, 6, 0, 0],
+  };
+}
+
+export interface FormHeaderArgs {
+  issuer: IssuerInfo;
+  title: string;
+  subtitle?: string | null;
+  /** Npr. „Obrazac - KL" / „Obrazac KEP" — propisana oznaka, gore desno kao u BigBitu. */
+  formCode?: string | null;
+  /** Jedna značka ili više njih; ispisuju se jedna ispod druge, redom kojim su predate. */
+  badge?: DocBadge | DocBadge[] | null;
+  /** Code 128 SVG (broj dokumenta) — desno od naslova; magacioner skenira dokument. */
+  barcodeSvg?: string | null;
+  /** Uža leva kolona za položene (landscape) obrasce. */
+  compact?: boolean;
+  /**
+   * Dodatni redovi ispod naslova (npr. „Period: Jul 2026." i „Magacin: …" na
+   * knjigama). Ispisuju se stilom `subtitle`, desno poravnati, pre oznake obrasca.
+   */
+  extraLines?: Array<string | null | undefined>;
+}
+
+/**
+ * ZAGLAVLJE OBRASCA — JEDAN izvor za sve module.
+ *
+ * Levo: logo + memorandum firme (BigBit `Memorandum_Header_STD` skup).
+ * Desno: naslov, podnaslov, dodatni redovi, oznaka obrasca, značke i barkod.
+ *
+ * Do 27.07.2026. je ova funkcija živela u `robno/print/robno-doc-layout.ts`, pa su
+ * knjige iz drugih modula (KEP u PDV-u, blagajnički izveštaj) crtale SVOJE zaglavlje
+ * rukom — isti podaci, druge marže i drugi redosled. Korisniku je to izgledalo kao
+ * dve aplikacije. Robni `buildDocHeader` je sada tanak omotač oko ove funkcije.
+ */
+export function buildFormHeader(args: FormHeaderArgs): Content {
+  const {
+    issuer,
+    title,
+    subtitle,
+    formCode,
+    badge,
+    barcodeSvg,
+    compact,
+    extraLines,
+  } = args;
+
+  const issuerLines: Content[] = [
+    { text: sanitizeText(issuer.companyName), style: "issuerName" },
+  ];
+  const line = (t: string | null | undefined) => {
+    if (t && t.trim())
+      issuerLines.push({ text: t.trim(), style: "issuerLine" });
+  };
+  line([issuer.address, issuer.city].filter(Boolean).join(", "));
+  line(issuer.businessActivity);
+  line(
+    [
+      issuer.taxId ? `PIB: ${issuer.taxId}` : null,
+      issuer.registrationNumber ? `MB: ${issuer.registrationNumber}` : null,
+    ]
+      .filter(Boolean)
+      .join("   ·   "),
+  );
+  line(issuer.bankAccount ? `Tekući račun: ${issuer.bankAccount}` : null);
+  line(
+    [issuer.phone ? `Tel: ${issuer.phone}` : null, issuer.email]
+      .filter(Boolean)
+      .join("   ·   "),
+  );
+  if (issuer.isFallback) {
+    issuerLines.push({
+      text: "(podaci firme nisu podešeni — dokument nije za predaju)",
+      style: "warn",
+    });
+  }
+
+  const rightStack: Content[] = [
+    { text: sanitizeText(title), style: "title", alignment: "right" },
+  ];
+  if (subtitle)
+    rightStack.push({
+      text: sanitizeText(subtitle),
+      style: "subtitle",
+      alignment: "right",
+    });
+  for (const extra of extraLines ?? [])
+    if (extra && extra.trim())
+      rightStack.push({
+        text: sanitizeText(extra),
+        style: "subtitle",
+        alignment: "right",
+      });
+  if (formCode)
+    rightStack.push({
+      text: formCode,
+      style: "legalForm",
+      alignment: "right",
+      margin: [0, 4, 0, 0],
+    });
+  for (const b of Array.isArray(badge) ? badge : badge ? [badge] : [])
+    rightStack.push(buildStatusBadge(b));
+  if (barcodeSvg)
+    rightStack.push({
+      svg: barcodeSvg,
+      fit: [compact ? 150 : 180, 34],
+      alignment: "right",
+      margin: [0, 6, 0, 0],
+    });
+
+  return {
+    columns: [
+      {
+        width: compact ? 210 : 250,
+        stack: [
+          { image: SERVOTEH_LOGO_DATA_URL, width: LOGO_WIDTH },
+          ...issuerLines,
+        ],
+      },
+      { width: "*", stack: rightStack },
+    ],
+    columnGap: 12,
+    margin: [0, 0, 0, 10],
+  };
 }
 
 // ────────────────────────────────────────────────────────── zbirovi / kontrole

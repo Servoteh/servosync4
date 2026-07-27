@@ -5,15 +5,15 @@ import type {
   TableCell,
   TableLayout,
 } from "pdfmake/interfaces";
-import { SERVOTEH_LOGO_DATA_URL } from "../../documents/servoteh-logo";
-import type { PrismaService } from "../../../prisma/prisma.service";
 import {
   BADGE_PALETTE,
   BASE_STYLES,
-  LOGO_WIDTH,
   TABLE_LAYOUT as SHARED_TABLE_LAYOUT,
   amountInWords,
+  buildFormHeader,
+  buildStatusBadge as buildSharedStatusBadge,
   sanitizeText,
+  type IssuerInfo,
 } from "../../documents/doc-layout";
 
 /**
@@ -45,6 +45,8 @@ export {
   amountInWords,
   buildPageFooter,
   draftWatermark,
+  copyWatermark,
+  copyLabel,
   safeFileName,
   sanitizeText,
   sumRounded,
@@ -65,85 +67,14 @@ export const ROBNO_STYLES: StyleDictionary = {
 
 // ─────────────────────────────────────────────────────── podaci izdavaoca
 
-export interface IssuerInfo {
-  companyName: string;
-  address: string | null;
-  city: string | null;
-  taxId: string | null;
-  registrationNumber: string | null;
-  bankAccount: string | null;
-  phone: string | null;
-  email: string | null;
-  businessActivity: string | null;
-  /** true = tabela `companies` nema red — zaglavlje nosi vidljivo upozorenje, ne tihi fallback. */
-  isFallback: boolean;
-}
+// `IssuerInfo` živi u zajedničkom `documents/doc-layout` (koristе ga i knjige van
+// robnog); ovde se samo re-eksportuje da robni pozivaoci ne menjaju uvoze.
+export type { IssuerInfo };
 
-/**
- * Podaci firme izdavaoca. Dokument vezan za firmu → `companyId`; kad tog reda nema
- * (robno je jednofirmno, companyId=0), uzima se primarna firma po najmanjem id.
- *
- * NIKAD tihi fallback: kad u bazi nema nijedne firme, vraća se `isFallback: true`, pa
- * zaglavlje ispisuje „(podaci firme nisu podešeni)" — knjigovođa odmah vidi da dokument
- * nije za predaju.
- */
-export async function loadIssuer(
-  prisma: PrismaService,
-  companyId?: number | null,
-): Promise<IssuerInfo> {
-  const select = {
-    companyName: true,
-    address: true,
-    city: true,
-    taxId: true,
-    registrationNumber: true,
-    bankAccount: true,
-    phone: true,
-    email: true,
-    businessActivity: true,
-  } as const;
-
-  const byId =
-    companyId != null && companyId > 0
-      ? await prisma.company.findUnique({ where: { id: companyId }, select })
-      : null;
-  const company =
-    byId ??
-    (await prisma.company.findFirst({ orderBy: { id: "asc" }, select }));
-
-  if (!company) {
-    return {
-      companyName: "Servoteh d.o.o.",
-      address: null,
-      city: null,
-      taxId: null,
-      registrationNumber: null,
-      bankAccount: null,
-      phone: null,
-      email: null,
-      businessActivity: null,
-      isFallback: true,
-    };
-  }
-  return { ...company, isFallback: false };
-}
-
-/** Ime korisnika koji štampa (trag u nozi). Nikad ne baca — štampa ne sme da padne zbog imena. */
-export async function loadPrintedBy(
-  prisma: PrismaService,
-  userId?: number | null,
-): Promise<string | null> {
-  if (userId == null || userId <= 0) return null;
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { fullName: true, email: true },
-    });
-    return user?.fullName?.trim() || user?.email || null;
-  } catch {
-    return null;
-  }
-}
+// `loadIssuer` / `loadPrintedBy` takođe žive u zajedničkom `documents/doc-layout` —
+// isti izbor firme (po `companyId`, inače najmanji id) koriste SVE štampe, pa ekran
+// „Podaci firme" i papir nikad ne gledaju u različit red. Ovde samo re-eksport.
+export { loadIssuer, loadPrintedBy } from "../../documents/doc-layout";
 
 // ───────────────────────────────────────────────────────────── zaglavlje
 
@@ -162,39 +93,15 @@ export interface DocBadge {
   tone: BadgeTone;
 }
 
-/** Statusna značka dokumenta — BigBit je nema nigde (storniran i važeći izgledaju isto). */
+/**
+ * Statusna značka — zajednički crtač, uz prevod robnog tona (`success` → `ok`).
+ * BigBit je nema nigde (storniran i važeći dokument tamo izgledaju isto).
+ */
 export function buildStatusBadge(badge: DocBadge): Content {
-  const c = BADGE_PALETTE[TONE_MAP[badge.tone]];
-  return {
-    table: {
-      widths: ["auto"],
-      body: [
-        [
-          {
-            text: sanitizeText(badge.text),
-            fontSize: 8,
-            bold: true,
-            color: c.text,
-            fillColor: c.fill,
-            alignment: "center",
-            margin: [4, 2, 4, 2],
-          },
-        ],
-      ],
-    },
-    layout: {
-      hLineWidth: () => 0.8,
-      vLineWidth: () => 0.8,
-      hLineColor: () => c.border,
-      vLineColor: () => c.border,
-      paddingLeft: () => 0,
-      paddingRight: () => 0,
-      paddingTop: () => 0,
-      paddingBottom: () => 0,
-    },
-    alignment: "right",
-    margin: [0, 6, 0, 0],
-  };
+  return buildSharedStatusBadge({
+    text: badge.text,
+    tone: TONE_MAP[badge.tone],
+  });
 }
 
 export interface DocHeaderArgs {
@@ -203,7 +110,11 @@ export interface DocHeaderArgs {
   subtitle?: string | null;
   /** Npr. „Obrazac - KL" — propisana oznaka obrasca, gore desno kao u BigBitu. */
   formCode?: string | null;
-  badge?: DocBadge | null;
+  /**
+   * Jedna značka ili više njih (npr. status dokumenta + „KOPIJA · primerak br. 3"
+   * iz traga štampe). Niz se ispisuje jedna ispod druge, redom kojim je predat.
+   */
+  badge?: DocBadge | DocBadge[] | null;
   /** Code 128 SVG (broj dokumenta) — desno od naslova; magacioner skenira dokument. */
   barcodeSvg?: string | null;
   /** Uža leva kolona za položene (landscape) obrasce. */
@@ -211,82 +122,19 @@ export interface DocHeaderArgs {
 }
 
 /**
- * Zaglavlje dokumenta: levo logo + memorandum firme (BigBit `Memorandum_Header_STD` skup),
- * desno naslov dokumenta, oznaka obrasca, statusna značka i barkod broja dokumenta.
+ * Zaglavlje robnog dokumenta — TANAK OMOTAČ oko zajedničkog `buildFormHeader`.
+ *
+ * Izgled (logo, memorandum, naslov, oznaka obrasca, značke, barkod) živi u
+ * `documents/doc-layout` i deli ga CELA aplikacija; ovde ostaje samo prevod robnog
+ * rečnika tonova (`success` → `ok`), da robni pozivaoci ne moraju da ga menjaju.
  */
 export function buildDocHeader(args: DocHeaderArgs): Content {
-  const { issuer, title, subtitle, formCode, badge, barcodeSvg, compact } =
-    args;
-
-  const issuerLines: Content[] = [
-    { text: issuer.companyName, style: "issuerName" },
-  ];
-  const line = (t: string | null | undefined) => {
-    if (t && t.trim())
-      issuerLines.push({ text: t.trim(), style: "issuerLine" });
-  };
-  line([issuer.address, issuer.city].filter(Boolean).join(", "));
-  line(issuer.businessActivity);
-  line(
-    [
-      issuer.taxId ? `PIB: ${issuer.taxId}` : null,
-      issuer.registrationNumber ? `MB: ${issuer.registrationNumber}` : null,
-    ]
-      .filter(Boolean)
-      .join("   ·   "),
-  );
-  line(issuer.bankAccount ? `Tekući račun: ${issuer.bankAccount}` : null);
-  line(
-    [issuer.phone ? `Tel: ${issuer.phone}` : null, issuer.email]
-      .filter(Boolean)
-      .join("   ·   "),
-  );
-  if (issuer.isFallback) {
-    issuerLines.push({
-      text: "(podaci firme nisu podešeni — dokument nije za predaju)",
-      style: "warn",
-    });
-  }
-
-  const rightStack: Content[] = [
-    { text: sanitizeText(title), style: "title", alignment: "right" },
-  ];
-  if (subtitle)
-    rightStack.push({
-      text: sanitizeText(subtitle),
-      style: "subtitle",
-      alignment: "right",
-    });
-  if (formCode)
-    rightStack.push({
-      text: formCode,
-      style: "legalForm",
-      alignment: "right",
-      margin: [0, 4, 0, 0],
-    });
-  if (badge) rightStack.push(buildStatusBadge(badge));
-  if (barcodeSvg)
-    rightStack.push({
-      svg: barcodeSvg,
-      fit: [compact ? 150 : 180, 34],
-      alignment: "right",
-      margin: [0, 6, 0, 0],
-    });
-
-  return {
-    columns: [
-      {
-        width: compact ? 210 : 250,
-        stack: [
-          { image: SERVOTEH_LOGO_DATA_URL, width: LOGO_WIDTH },
-          ...issuerLines,
-        ],
-      },
-      { width: "*", stack: rightStack },
-    ],
-    columnGap: 12,
-    margin: [0, 0, 0, 10],
-  };
+  const { badge, ...rest } = args;
+  const list = Array.isArray(badge) ? badge : badge ? [badge] : [];
+  return buildFormHeader({
+    ...rest,
+    badge: list.map((b) => ({ text: b.text, tone: TONE_MAP[b.tone] })),
+  });
 }
 
 // ──────────────────────────────────────────────────── strane / meta / filteri
