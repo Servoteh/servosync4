@@ -37,7 +37,9 @@ import type { UpdateDraftItemDto } from "./dto/update-draft-item.dto";
  *   POST   /api/v1/handover-drafts            — kreiranje (zaglavlje + stavke), broj generiše server
  *   POST   /api/v1/handover-drafts/:id/items  — „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..50)
  *                                               u POSTOJEĆI nezaključan nacrt; dedup preskače postojeće → meta.skipped
- *   PATCH  /api/v1/handover-drafts/:id        — izmena zaglavlja (samo dok nije zaključan)
+ *   PATCH  /api/v1/handover-drafts/:id        — izmena zaglavlja (samo dok nije zaključan); `statusId` ide kroz
+ *                                               ALLOWLIST prelaza (Nenad 27.07) — „Predat"/„Odbijen"/„Lansiran"
+ *                                               se ovim putem NE postavljaju (422), oni su izvod svojih tokova
  *   DELETE /api/v1/handover-drafts/:id        — brisanje (samo dok nije zaključan; hard delete — vidi servis)
  *   POST   /api/v1/handover-drafts/:id/submit — predaja u primopredaju (§6.3): zaključa nacrt i kreira drawing_handovers redove;
  *                                               odbija (422) dok postoje sporne stavke bez odluke (P4_SPEC §6.5.4 gate);

@@ -241,6 +241,45 @@ export function draftStatusMeta(status: StatusRef | null): { tone: Tone; label: 
 }
 
 /**
+ * `handover_draft_statuses` — vrednosti 1:1 sa backend `DRAFT_STATUS`
+ * (handover-drafts.service.ts). Koriste se SAMO za pravila prelaza; labele i
+ * dalje dolaze iz lookup API-ja (`draftStatuses`), da se ne dupliraju nazivi.
+ */
+export const DRAFT_STATUS = {
+  FOR_CREATION: 0,
+  FOR_HANDOVER: 1,
+  SUBMITTED: 2,
+  REJECTED: 3,
+  LAUNCHED: 4,
+  CANCELLED: 5,
+} as const;
+
+/**
+ * Ogledalo backend allowliste `ALLOWED_DRAFT_STATUS_TRANSITIONS` (presuda Nenad
+ * 27.07): kroz izmenu nacrta (PATCH) se pišu samo radni statusi. „Predat" (2)
+ * postavlja predaja nacrta, a „Odbijen" (3) / „Lansiran" (4) tok primopredaja —
+ * server ih odbija sa 422, pa se ni ne nude u dropdown-u. Redovi 2/3/4 nose
+ * samo put sanacije nazad na „Za kreiranje" (zatečeni redovi iz doba pre brave).
+ * Izmena OVDE mora da prati backend mapu — server je jedini autoritet.
+ */
+const ALLOWED_DRAFT_STATUS_TRANSITIONS: Record<number, number[]> = {
+  [DRAFT_STATUS.FOR_CREATION]: [DRAFT_STATUS.FOR_HANDOVER, DRAFT_STATUS.CANCELLED],
+  [DRAFT_STATUS.FOR_HANDOVER]: [DRAFT_STATUS.FOR_CREATION, DRAFT_STATUS.CANCELLED],
+  [DRAFT_STATUS.CANCELLED]: [DRAFT_STATUS.FOR_CREATION, DRAFT_STATUS.FOR_HANDOVER],
+  [DRAFT_STATUS.SUBMITTED]: [DRAFT_STATUS.FOR_CREATION],
+  [DRAFT_STATUS.REJECTED]: [DRAFT_STATUS.FOR_CREATION],
+  [DRAFT_STATUS.LAUNCHED]: [DRAFT_STATUS.FOR_CREATION],
+};
+
+/**
+ * Statusi koje select „Status nacrta" sme da ponudi za nacrt u statusu
+ * `current`: zatečeni (ne-promena, FE ga uvek šalje) + dozvoljeni prelazi.
+ */
+export function draftStatusTargets(current: number): number[] {
+  return [current, ...(ALLOWED_DRAFT_STATUS_TRANSITIONS[current] ?? [])];
+}
+
+/**
  * Tip nacrta (`handover_drafts.draft_type`, SmallInt 0/1/2 — vrednosti iz
  * backend `dto/create-handover-draft.dto.ts`, NE menjati). Labele po legacy
  * rečniku (P4_SPEC §0 default: „Parcijalna predaja delova/podsklopova" /

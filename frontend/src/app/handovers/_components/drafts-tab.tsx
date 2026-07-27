@@ -48,6 +48,7 @@ import {
   NativeSelect,
   Textarea,
   draftStatusMeta,
+  draftStatusTargets,
   draftTypeLabel,
   errorBox,
   isUnresolvedDisputedItem,
@@ -630,16 +631,21 @@ function DraftFormDialog({
           )}
           {isEdit && (
             <FormField label="Status nacrta">
+              {/* Samo prelazi koje server prima (allowlist, Nenad 27.07):
+                  „Predat" postavlja predaja nacrta, „Odbijen"/„Lansiran" tok
+                  primopredaja — ručno postavljanje je 422, pa se ne nudi. */}
               <NativeSelect
                 value={form.statusId}
                 onChange={(e) => set({ statusId: Number(e.target.value) })}
                 className="w-full"
               >
-                {(lookups.data?.data.draftStatuses ?? []).map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
+                {(lookups.data?.data.draftStatuses ?? [])
+                  .filter((s) => draftStatusTargets(draft.statusId).includes(s.id))
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
               </NativeSelect>
             </FormField>
           )}
