@@ -29,10 +29,21 @@ export class WorkOrderNumberingService {
       where: { projectId },
       select: { identNumber: true },
     });
+    // Bug 030/26: legacy typo redovi bez kose crte (npr. '770171831' — ukucano
+    // „7" umesto „/" pa uvezeno sync-om) su preko split('/').pop() davali
+    // maxOrd od stotina miliona. Zato: (1) broji se SAMO ident sa ispravnim
+    // `<projectNumber>/` prefiksom (radi i za predmete sa '/' u broju, npr.
+    // '9400/7'); (2) sanity-cap ignoriše apsurdne ordinale — tri zatečena RN-a
+    // iz jula 2026 (7701/770171832…34, presuda 27.07: ostaju kakvi jesu) ne
+    // smeju da hrane brojač.
+    const prefix = `${project.projectNumber}/`;
+    const MAX_SANE_ORDINAL = 100_000;
     let maxOrd = 0;
     for (const r of rows) {
-      const ord = Number.parseInt(r.identNumber.split("/").pop() ?? "", 10);
-      if (!Number.isNaN(ord) && ord > maxOrd) maxOrd = ord;
+      if (!r.identNumber.startsWith(prefix)) continue;
+      const ord = Number.parseInt(r.identNumber.slice(prefix.length), 10);
+      if (Number.isNaN(ord) || ord > MAX_SANE_ORDINAL) continue;
+      if (ord > maxOrd) maxOrd = ord;
     }
 
     // V1: prva varijanta = 0. (Varijante iste kombinacije crtež/predmet — kasnije.)
