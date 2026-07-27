@@ -251,6 +251,55 @@ describe("HandoversService", () => {
         containing({ where: containing({ id: { in: [] } }) }),
       );
     });
+
+    it("filtrira po BROJU NACRTA (022/26): nacrt contains-insensitive → crteži stavki → where.drawingId.in (dedup)", async () => {
+      // Nacrt nema FK ka primopredaji — razrešava se preko handover_draft_items.
+      prisma.handoverDraft.findMany.mockResolvedValue([{ id: 2 }, { id: 3 }]);
+      prisma.handoverDraftItem.findMany.mockResolvedValue([
+        { drawingId: 10 },
+        { drawingId: 11 },
+        { drawingId: 10 }, // isti crtež u dva nacrta — dedup
+      ]);
+
+      await service.list({ draftNumber: "N-1" });
+
+      expect(prisma.handoverDraft.findMany).toHaveBeenCalledWith({
+        where: { draftNumber: { contains: "N-1", mode: "insensitive" } },
+        select: { id: true },
+      });
+      expect(prisma.handoverDraftItem.findMany).toHaveBeenCalledWith({
+        where: { draftId: { in: [2, 3] }, excludeFromHandover: false },
+        select: { drawingId: true },
+      });
+      expect(prisma.drawingHandover.findMany).toHaveBeenCalledWith(
+        containing({ where: containing({ drawingId: { in: [10, 11] } }) }),
+      );
+    });
+
+    it("broj nacrta bez pogotka → prazan skup crteža (prazna strana je tačno)", async () => {
+      prisma.handoverDraft.findMany.mockResolvedValue([]);
+
+      await service.list({ draftNumber: "NEMA" });
+
+      expect(prisma.drawingHandover.findMany).toHaveBeenCalledWith(
+        containing({ where: containing({ drawingId: { in: [] } }) }),
+      );
+    });
+
+    it("nacrt + crtež zajedno = PRESEK skupova crteža", async () => {
+      prisma.drawing.findMany.mockResolvedValue([{ id: 10 }, { id: 12 }]);
+      prisma.handoverDraft.findMany.mockResolvedValue([{ id: 2 }]);
+      prisma.handoverDraftItem.findMany.mockResolvedValue([
+        { drawingId: 10 },
+        { drawingId: 11 },
+      ]);
+
+      await service.list({ drawingNumber: "12345", draftNumber: "N-1" });
+
+      expect(prisma.drawingHandover.findMany).toHaveBeenCalledWith(
+        containing({ where: containing({ drawingId: { in: [10] } }) }),
+      );
+    });
   });
 
   // -------------------------------------------------------- TECHNOLOGISTS

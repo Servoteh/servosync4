@@ -527,6 +527,14 @@ export interface HandoverListParams {
   pageSize?: number;
   statusId?: number | '';
   drawingNumber?: string;
+  /**
+   * Broj NACRTA primopredaje (`handover_drafts.draft_number`, kolona „Nacrt" u
+   * listi) — contains, case-insensitive. Zahtev 022/26. `drawing_handovers`
+   * nema `draft_id`, pa backend razrešava nacrt → crteže preko stavki nacrta
+   * (isti soft odnos koji puni `draftContext`), i preseca sa ostalim filterima
+   * po crtežu (`drawingNumber`, `projectId`).
+   */
+  draftNumber?: string;
   /** Broj RN (`work_orders.ident_number`) — contains, case-insensitive; razrešava se u primopredaje preko soft FK-a. */
   rn?: string;
   projectId?: number | '';
@@ -542,6 +550,7 @@ function buildHandoverQuery(params: HandoverListParams): string {
     pageSize: params.pageSize,
     statusId: params.statusId === '' ? undefined : params.statusId,
     drawingNumber: params.drawingNumber,
+    draftNumber: params.draftNumber,
     rn: params.rn,
     projectId: params.projectId === '' ? undefined : params.projectId,
     handoverWorkerId: params.handoverWorkerId === '' ? undefined : params.handoverWorkerId,

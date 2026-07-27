@@ -12,7 +12,13 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { formatDate, formatNumber } from '@/lib/format';
-import { LegacyBadge, NativeSelect, UrgentBadge, errorBox } from './common';
+import {
+  LegacyBadge,
+  NativeSelect,
+  UrgentBadge,
+  errorBox,
+  useDebouncedValue,
+} from './common';
 import { HandoverDetailPanel } from './handover-detail';
 
 const columns: Column<Handover>[] = [
@@ -73,12 +79,17 @@ const columns: Column<Handover>[] = [
 /** Tab "Na čekanju" — tehnolog inbox (§6.5): status U OBRADI, dugmad Odobri/Odbij/Lansiraj u expand-u. */
 export function PendingTab() {
   const [q, setQ] = useState('');
+  const [draftNumber, setDraftNumber] = useState('');
   const [handoverWorkerId, setHandoverWorkerId] = useState<number | ''>('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<number | null>(null);
   const resetPage = () => setPage(1);
+
+  // Filter „Nacrt" (zahtev 022/26) — isti server-side filter kao u tabu „Sve",
+  // odložen dok kucanje ne stane.
+  const draftNumberQuery = useDebouncedValue(draftNumber);
 
   // Filter „Predao" ide po `handoverWorkerId` = PROJEKTANT koji je predao —
   // opcije su inženjeri (novi endpoint); dok backend ne stigne (404) fallback
@@ -89,6 +100,7 @@ export function PendingTab() {
   const list = usePendingApprovalHandovers({
     page,
     drawingNumber: q.trim() || undefined,
+    draftNumber: draftNumberQuery.trim() || undefined,
     handoverWorkerId,
     from: from || undefined,
     to: to || undefined,
@@ -109,6 +121,17 @@ export function PendingTab() {
               resetPage();
             }}
             placeholder="Broj crteža…"
+          />
+        </div>
+        <div className="flex flex-col gap-1 text-xs text-ink-secondary">
+          Nacrt
+          <SearchBox
+            value={draftNumber}
+            onChange={(v) => {
+              setDraftNumber(v);
+              resetPage();
+            }}
+            placeholder="Broj nacrta…"
           />
         </div>
         <label className="flex flex-col gap-1 text-xs text-ink-secondary">
@@ -152,10 +175,11 @@ export function PendingTab() {
             className="rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
           />
         </label>
-        {(q || handoverWorkerId !== '' || from || to) && (
+        {(q || draftNumber || handoverWorkerId !== '' || from || to) && (
           <button
             onClick={() => {
               setQ('');
+              setDraftNumber('');
               setHandoverWorkerId('');
               setFrom('');
               setTo('');
