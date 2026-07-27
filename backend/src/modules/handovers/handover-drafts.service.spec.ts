@@ -180,6 +180,7 @@ function fullPrismaMock(drawings: DrawingRow[]) {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
       update: jest.fn(),
+      delete: jest.fn().mockResolvedValue({ id: 21 }),
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     handoverDraftStatus: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -1053,6 +1054,174 @@ describe("HandoverDraftsService — appendItems (Dodaj u nacrt iz PDM-a)", () =>
 
     expect(err).toBeInstanceOf(BadRequestException);
     expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zahtev 027/26 (Igor 26.07) — izmena količine i brisanje stavke nacrta
+// ---------------------------------------------------------------------------
+
+describe("HandoverDraftsService — updateItem / removeItem (zahtev 027/26)", () => {
+  /** Radni nacrt (nezaključan, statusId 0) + stavka 21 koja mu pripada. */
+  async function itemSetup(
+    draftOver: Record<string, unknown> = {},
+    itemOver: Record<string, unknown> = {},
+  ) {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: false,
+      statusId: 0,
+      ...draftOver,
+    });
+    prisma.handoverDraftItem.findUnique.mockResolvedValue({
+      id: 21,
+      draftId: 8,
+      ...itemOver,
+    });
+    prisma.handoverDraftItem.update.mockResolvedValue({
+      id: 21,
+      draftId: 8,
+      drawingId: 10,
+      mainDrawingId: null,
+      quantityToProduce: 12,
+      note: null,
+    });
+    return { service, prisma };
+  }
+
+  // ---------------------------------------------------------------- izmena
+
+  it("nova količina → upisuje quantity_to_produce, vraća stavku sa crtežom", async () => {
+    const { service, prisma } = await itemSetup();
+
+    const res = await service.updateItem(8, 21, { quantityToProduce: 12 });
+
+    expect(prisma.handoverDraftItem.update).toHaveBeenCalledWith({
+      where: { id: 21 },
+      data: { quantityToProduce: 12 },
+    });
+    expect(res.data.drawing).toEqual(containing({ id: 10 }));
+  });
+
+  it("napomena se trimuje, prazna → null (isti obrazac kao update zaglavlja)", async () => {
+    const { service, prisma } = await itemSetup();
+
+    await service.updateItem(8, 21, { note: "  pogrešna pozicija  " });
+    await service.updateItem(8, 21, { note: "   " });
+
+    const calls = prisma.handoverDraftItem.update.mock.calls as [
+      { data: { note?: string | null } },
+    ][];
+    expect(calls[0][0].data.note).toBe("pogrešna pozicija");
+    expect(calls[1][0].data.note).toBeNull();
+  });
+
+  it("količina 0 / decimala / negativna → 400, bez upisa", async () => {
+    const { service, prisma } = await itemSetup();
+
+    for (const q of [0, -3, 2.5]) {
+      const err = await errorOf(
+        service.updateItem(8, 21, { quantityToProduce: q }),
+      );
+      expect(err).toBeInstanceOf(BadRequestException);
+    }
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("prazno telo (ni količina ni napomena) → 400, bez upisa", async () => {
+    const { service, prisma } = await itemSetup();
+
+    const err = await errorOf(service.updateItem(8, 21, {}));
+
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("zaključan nacrt → 422, bez upisa", async () => {
+    const { service, prisma } = await itemSetup({ isLocked: true });
+
+    const err = await errorOf(
+      service.updateItem(8, 21, { quantityToProduce: 5 }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("zaključan");
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("predat nacrt (statusId=2) → 422, bez upisa (ista kapija kao appendItems)", async () => {
+    const { service, prisma } = await itemSetup({ statusId: 2 });
+
+    const err = await errorOf(
+      service.updateItem(8, 21, { quantityToProduce: 5 }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("nepostojeći nacrt → 404, bez upisa", async () => {
+    const { service, prisma } = await itemSetup();
+    prisma.handoverDraft.findUnique.mockResolvedValue(null);
+
+    const err = await errorOf(
+      service.updateItem(999, 21, { quantityToProduce: 5 }),
+    );
+
+    expect((err as { status?: number }).status).toBe(404);
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("stavka sa TUĐEG nacrta → 404, bez upisa", async () => {
+    const { service, prisma } = await itemSetup({}, { draftId: 9 });
+
+    const err = await errorOf(
+      service.updateItem(8, 21, { quantityToProduce: 5 }),
+    );
+
+    expect((err as { status?: number }).status).toBe(404);
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------- brisanje
+
+  it("brisanje stavke radnog nacrta → hard delete + potvrda", async () => {
+    const { service, prisma } = await itemSetup();
+
+    const res = await service.removeItem(8, 21);
+
+    expect(prisma.handoverDraftItem.delete).toHaveBeenCalledWith({
+      where: { id: 21 },
+    });
+    expect(res.data).toEqual({ id: 21, draftId: 8, deleted: true });
+  });
+
+  it("brisanje na zaključanom nacrtu → 422, ništa se ne briše", async () => {
+    const { service, prisma } = await itemSetup({ isLocked: true });
+
+    const err = await errorOf(service.removeItem(8, 21));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.handoverDraftItem.delete).not.toHaveBeenCalled();
+  });
+
+  it("brisanje na predatom nacrtu (statusId=2) → 422, ništa se ne briše", async () => {
+    const { service, prisma } = await itemSetup({ statusId: 2 });
+
+    const err = await errorOf(service.removeItem(8, 21));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.handoverDraftItem.delete).not.toHaveBeenCalled();
+  });
+
+  it("brisanje tuđe/nepostojeće stavke → 404, ništa se ne briše", async () => {
+    const { service, prisma } = await itemSetup({}, { draftId: 9 });
+
+    const err = await errorOf(service.removeItem(8, 21));
+
+    expect((err as { status?: number }).status).toBe(404);
+    expect(prisma.handoverDraftItem.delete).not.toHaveBeenCalled();
   });
 });
 

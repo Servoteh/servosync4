@@ -6,15 +6,22 @@
 // (useAppendDraftItems), ili (2) NOVI nacrt sa ovim crtežom — router.push('/nacrti?noviCrtez=…')
 // (Agent D taj param obrađuje u /nacrti). Toast po `meta.added/skipped`. Tastatura
 // (DESIGN_SYSTEM §8): Esc zatvara (kit Dialog), Enter potvrđuje kad je izbor validan.
+//
+// Zahtev 027/26 (Igor 26.07): „kada se dodaje iz PDM crteži treba staviti polje gde
+// upisujemo broj komada pre ubacivanja u nacrt primopredaje" — polje „Broj komada"
+// (default 1) šalje se kao `quantity` uz stavku. Kod puta „novi nacrt" količina ide
+// kroz URL (`?kom=`), pa je forma novog nacrta preuzme za glavni crtež.
 
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { FilePlus2 } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
+import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { toast } from '@/lib/toast';
+import { formatNumber } from '@/lib/format';
 import { useAppendDraftItems, useOpenDraftsLookup } from '@/api/handovers';
 
 /** Broj + naziv crteža koji se dodaje — prikaz u zaglavlju dijaloga. */
@@ -47,6 +54,8 @@ export function AddToDraftDialog({
 
   const [mode, setMode] = useState<Mode>('existing');
   const [draftId, setDraftId] = useState<number | ''>('');
+  // Broj komada za izradu (027/26) — unosi se PRE ubacivanja; default 1.
+  const [quantity, setQuantity] = useState('1');
   const [error, setError] = useState<string | null>(null);
 
   // Reset pri svakom otvaranju; ako nema otvorenih nacrta forsiraj „novi".
@@ -54,16 +63,19 @@ export function AddToDraftDialog({
     if (!open) return;
     setMode('existing');
     setDraftId('');
+    setQuantity('1');
     setError(null);
   }, [open, target.drawingId]);
 
   const noOpenDrafts = !lookup.isLoading && drafts.length === 0;
   const effectiveMode: Mode = noOpenDrafts ? 'new' : mode;
 
+  // Ista validacija kao backend DTO: ceo broj ≥ 1 (inače 400).
+  const qty = Number(quantity);
+  const qtyValid = Number.isInteger(qty) && qty >= 1;
+
   const canSubmit =
-    effectiveMode === 'new'
-      ? true
-      : draftId !== '' && !append.isPending;
+    qtyValid && (effectiveMode === 'new' ? true : draftId !== '' && !append.isPending);
 
   function submit() {
     if (!canSubmit) return;
@@ -71,23 +83,27 @@ export function AddToDraftDialog({
 
     if (effectiveMode === 'new') {
       onClose();
-      router.push(`/nacrti?noviCrtez=${target.drawingId}`);
+      // `kom` = broj komada sklopa u novom nacrtu (forma ga preuzme u zaglavlje,
+      // a auto-popuna sastavnice množi količine pozicija njime).
+      router.push(`/nacrti?noviCrtez=${target.drawingId}&kom=${qty}`);
       return;
     }
 
-    // Postojeći nacrt — dodaj jednu stavku (crtež) preko Agent D ugovora.
+    // Postojeći nacrt — dodaj jednu stavku (crtež + količina) preko Agent D ugovora.
     append.mutate(
-      { id: draftId as number, items: [{ drawingId: target.drawingId }] },
+      { id: draftId as number, items: [{ drawingId: target.drawingId, quantity: qty }] },
       {
         onSuccess: (res) => {
           const { added, skipped } = res.meta;
           const draft = drafts.find((d) => d.id === draftId);
           const label = draft ? draft.draftNumber : String(draftId);
+          // `skipped` su BROJEVI crteža (string niz) — crtež koji je već u nacrtu.
           const msg =
             added > 0
-              ? `Dodato u nacrt ${label}.`
+              ? `Dodato u nacrt ${label} — ${formatNumber(qty)} kom.`
               : `Crtež je već u nacrtu ${label} (preskočeno).`;
-          const extra = added > 0 && skipped > 0 ? ` Preskočeno: ${skipped}.` : '';
+          const extra =
+            added > 0 && skipped.length > 0 ? ` Preskočeno: ${skipped.join(', ')}.` : '';
           toast(msg + extra);
           onClose();
         },
@@ -138,6 +154,29 @@ export function AddToDraftDialog({
           <span className="tnums font-semibold text-ink">{target.drawingNumber}</span>
           {target.name ? ` · ${target.name}` : ''}
         </p>
+
+        {/* 027/26: broj komada se upisuje PRE ubacivanja u nacrt. U postojeći
+            nacrt ide kao količina za izradu te stavke; u novi nacrt kao broj
+            komada sklopa (auto-popuna sastavnice njime množi pozicije). */}
+        <FormField
+          label="Broj komada"
+          required
+          error={qtyValid ? undefined : 'Mora biti ceo broj ≥ 1.'}
+          hint={
+            effectiveMode === 'new'
+              ? 'Broj komada sklopa u novom nacrtu.'
+              : 'Količina za izradu ove stavke u nacrtu.'
+          }
+        >
+          <Input
+            type="number"
+            min={1}
+            step={1}
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            className="w-28"
+          />
+        </FormField>
 
         <fieldset className="space-y-2">
           <label

@@ -41,6 +41,10 @@ import {
   AppendDraftItemsDto,
   validateAppendDraftItems,
 } from "./dto/append-draft-items.dto";
+import {
+  UpdateDraftItemDto,
+  validateUpdateDraftItem,
+} from "./dto/update-draft-item.dto";
 import { DraftNumberingService } from "./draft-numbering.service";
 import { HANDOVER_STATUS } from "./handovers.service";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -702,6 +706,109 @@ export class HandoverDraftsService {
     // Zadrži redosled ulaznih id-jeva; nepoznat id (teorijski) → padne na id string.
     const byIdMap = new Map(rows.map((r) => [r.id, r.drawingNumber]));
     return uniq.map((dId) => byIdMap.get(dId) ?? String(dId));
+  }
+
+  // ----------------------------------------- ITEM UPDATE / DELETE (027/26)
+
+  /**
+   * Kapija ITEM-level izmena nacrta (append / izmena / brisanje stavke): nacrt
+   * mora da postoji i da je još „radni" — NIJE zaključan (`is_locked`) i NIJE u
+   * statusu „Predat" (`DRAFT_STATUS_SUBMITTED`). Isti kriterijum koji
+   * `appendItems` koristi od 16.07: posle predaje dokument živi kao
+   * `drawing_handovers` (tok odobravanja), nacrt je samo trag — zato se njegove
+   * stavke tada ne diraju ni dodavanjem ni izmenom/brisanjem.
+   * `tail` je nastavak srpske poruke (rod se slaže sa radnjom).
+   */
+  private async loadEditableDraft(id: number, tail: string) {
+    const draft = await this.prisma.handoverDraft.findUnique({
+      where: { id },
+      select: { id: true, isLocked: true, statusId: true },
+    });
+    if (!draft) throw new NotFoundException(`Nacrt ${id} ne postoji.`);
+    if (draft.isLocked || draft.statusId === DRAFT_STATUS_SUBMITTED)
+      throw new UnprocessableEntityException(
+        `Nacrt je zaključan (predat) — ${tail}`,
+      );
+    return draft;
+  }
+
+  /** Stavka mora da pripada BAŠ tom nacrtu (tuđa/nepostojeća → 404, ne 403). */
+  private async loadDraftItem(draftId: number, itemId: number) {
+    const item = await this.prisma.handoverDraftItem.findUnique({
+      where: { id: itemId },
+      select: { id: true, draftId: true },
+    });
+    if (!item || item.draftId !== draftId)
+      throw new NotFoundException(
+        `Stavka ${itemId} ne postoji na nacrtu ${draftId}.`,
+      );
+    return item;
+  }
+
+  /**
+   * Izmena postojeće stavke nacrta — zahtev 027/26 (Igor 26.07): „izmeni dugme
+   * ne dozvoljava da se menja broj komada". Menja `quantity_to_produce` i/ili
+   * `note` dok je nacrt radni (vidi `loadEditableDraft`). Crtež stavke se ovim
+   * putem NE menja (zamena crteža bi zaobišla §6.5.3 preduslove i §6.5.4
+   * pre-check koji se računaju nad crtežom pri dodavanju) — za to služe
+   * brisanje stavke + „Dodaj u nacrt".
+   *
+   * Odluka projektanta (§6.5.4) se NE dira: sporna stavka ostaje sporna i posle
+   * korekcije količine, pa `submit()` gate i dalje traži odluku. `decideItem`
+   * akcija 3 („Dopuni") ostaje zaseban, evidentiran put (upisuje
+   * `decision_action`/`decision_date_time`); ovo je obična ispravka unosa.
+   *
+   * Ko je menjao se vidi u `audit_log` — globalni `AuditInterceptor` beleži
+   * svaku mutirajuću HTTP rutu (aktera, telo, entitet).
+   */
+  async updateItem(draftId: number, itemId: number, dto: UpdateDraftItemDto) {
+    validateUpdateDraftItem(dto);
+    await this.loadEditableDraft(draftId, "izmena stavke više nije moguća.");
+    await this.loadDraftItem(draftId, itemId);
+
+    const data: Prisma.HandoverDraftItemUncheckedUpdateInput = {};
+    if (dto.quantityToProduce !== undefined)
+      data.quantityToProduce = dto.quantityToProduce;
+    if (dto.note !== undefined) data.note = dto.note?.trim() || null;
+
+    const updated = await this.prisma.handoverDraftItem.update({
+      where: { id: itemId },
+      data,
+    });
+
+    const drawings = await this.resolveDrawingsByIds(
+      uniqueIds([updated.drawingId, updated.mainDrawingId]),
+    );
+    return {
+      data: {
+        ...updated,
+        drawing: drawings.get(updated.drawingId) ?? null,
+        mainDrawing: updated.mainDrawingId
+          ? (drawings.get(updated.mainDrawingId) ?? null)
+          : null,
+      },
+    };
+  }
+
+  /**
+   * Brisanje pogrešno ubačene stavke nacrta — zahtev 027/26 (Igor 26.07):
+   * „treba da se brišu delovi u primopredaji ako se pogrešno ubace".
+   *
+   * HARD delete, kao i `remove()` nad zaglavljem: `handover_draft_items` NEMA
+   * `deleted_at` u šemi (vidi napomenu na vrhu fajla), a izmena šeme nije u
+   * skopu ovog zahteva. Trag ko je i šta obrisao ostaje u `audit_log`
+   * (globalni `AuditInterceptor` beleži DELETE rutu sa akterom).
+   *
+   * Razlika u odnosu na §6.5.4 „Isključi" (odluka 1): isključena stavka OSTAJE
+   * u nacrtu kao evidentirana odluka i samo ne ide u primopredaju; brisanje je
+   * za stavku koja tu uopšte nije trebalo da se nađe.
+   */
+  async removeItem(draftId: number, itemId: number) {
+    await this.loadEditableDraft(draftId, "brisanje stavke više nije moguće.");
+    await this.loadDraftItem(draftId, itemId);
+
+    await this.prisma.handoverDraftItem.delete({ where: { id: itemId } });
+    return { data: { id: itemId, draftId, deleted: true } };
   }
 
   // ------------------------- §6.5.3 / §6.5.4 preduslovi i pre-check stavki
