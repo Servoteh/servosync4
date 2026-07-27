@@ -29,6 +29,7 @@ import { OnboardingSection } from './_components/onboarding-section';
 import { AbsencesSection } from './_components/absences-section';
 import { DocumentsDeadlinesSection } from './_components/documents-deadlines-section';
 import { TeamSection } from './_components/team-section';
+import { SistematizacijaSection } from './_components/sistematizacija-section';
 
 /** 'MMDD' → 'DD.MM.' (paritet 1.0 `_formatSlavaDay`). */
 function formatSlavaDay(mmdd: string | null | undefined): string {
@@ -177,6 +178,9 @@ export default function ProfilPage() {
         )}
         {/* Neusaglašenosti (K3) — scope po worker_id (server); prikaz i bez employee profila. */}
         <NonconformitySection />
+        {/* Sistematizacija radnih mesta (PDF/Word) — admin+menadžment; van `hasProfile`
+            jer je org-dokument, ne lični podatak (kartica se sama sakrije). */}
+        <SistematizacijaSection />
         <CompanyValuesSection />
       </div>
     </AppShell>

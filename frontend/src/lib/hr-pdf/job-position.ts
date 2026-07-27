@@ -1,52 +1,19 @@
 import { newPdf, drawLogo, safeName, PAGE_W, PAGE_H, MARGIN, CONTENT_W } from './pdf-core';
+import { POSITION_SECTIONS as SECTIONS, hasText, mdToBlocks } from './position-sections';
 import type { JobPosition } from '@/api/kadrovska';
 
 // PDF „Opis radnog mesta" (job_positions) — A4 portret, Roboto/UTF-8 (srpska
 // latinica), selektabilan tekst. Port 1.0 `src/lib/jobPositionPdf.js`: 8 sekcija
 // sistematizacije + „Linijski odgovara" box + laki markdown render + logo header/
 // footer sa paginacijom. Bez ćirilizacije (opisi su latinica u bazi).
+// Sekcije/markdown parser su deljeni sa izvozom cele sistematizacije →
+// `position-sections.ts`.
 
 const HEADER_H = 14;
 const FOOTER_H = 10;
 const LINE_H = 5.4;
 const BODY_TOP = MARGIN + HEADER_H + 4;
 const BODY_BOTTOM = PAGE_H - MARGIN - FOOTER_H;
-
-/** 8 sekcija opisa pozicije (redosled = „Moj profil"). */
-const SECTIONS: [keyof JobPosition, string][] = [
-  ['summaryMd', 'Svrha radnog mesta'],
-  ['responsibilitiesMd', 'Ključne odgovornosti'],
-  ['authorityMd', 'Ovlašćenja'],
-  ['dutiesMd', 'Odgovornost (accountability)'],
-  ['kpiMd', 'KPI / merila uspeha'],
-  ['qualificationsMd', 'Kvalifikacije i iskustvo'],
-  ['collaborationMd', 'Ključna saradnja'],
-  ['expectationsMd', 'Očekivanja'],
-];
-
-function hasText(s: unknown): s is string {
-  return typeof s === 'string' && s.trim().length > 0;
-}
-
-type Block = { kind: 'h' | 'li' | 'p' | 'gap'; text?: string };
-
-/** Lagani markdown u blokove: skida bold/code markere, hvata # naslove i - liste. */
-function mdToBlocks(md: string): Block[] {
-  const out: Block[] = [];
-  for (const raw of String(md || '').replace(/\r\n/g, '\n').split('\n')) {
-    const line = raw.replace(/\*\*(.+?)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1').trimEnd();
-    const trimmed = line.trim();
-    if (!trimmed) { out.push({ kind: 'gap' }); continue; }
-    const h = trimmed.match(/^#{1,4}\s+(.*)$/);
-    if (h) { out.push({ kind: 'h', text: h[1].trim() }); continue; }
-    const li = trimmed.match(/^[-*•]\s+(.*)$/);
-    if (li) { out.push({ kind: 'li', text: li[1].trim() }); continue; }
-    const ol = trimmed.match(/^(\d+[.)])\s+(.*)$/);
-    if (ol) { out.push({ kind: 'li', text: `${ol[1]} ${ol[2].trim()}` }); continue; }
-    out.push({ kind: 'p', text: trimmed });
-  }
-  return out;
-}
 
 export interface JobPositionEmployee {
   fullName?: string;
