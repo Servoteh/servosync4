@@ -475,8 +475,11 @@ export class MojProfilService {
       const emp = await this.resolveEmployee(tx, email);
       if (emp == null) return this.emptyProfile();
       const [balance, openReq, presence, talks] = await Promise.all([
-        tx.$queryRaw<{ days_remaining: number | null }[]>(
-          Prisma.sql`SELECT days_remaining FROM v_vacation_balance WHERE employee_id = ${emp.id}::uuid AND year = ${year}`,
+        // ZAHTEV 028/26: `SELECT *` (ne samo `days_remaining`) jer prikaz „Preostalo GO"
+        // ide po 1.0 kanonu `days_remaining_accrued ?? days_remaining` — kalendarski
+        // saldo je pravo do KRAJA godine, a radniku se prikazuje stečeno DO DANAS.
+        tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT * FROM v_vacation_balance WHERE employee_id = ${emp.id}::uuid AND year = ${year}`,
         ),
         tx.$queryRaw<{ n: bigint }[]>(
           Prisma.sql`SELECT count(*) AS n FROM vacation_requests
@@ -494,7 +497,9 @@ export class MojProfilService {
       return {
         data: {
           employee: { id: emp.id, fullName: emp.full_name },
-          vacationDaysRemaining: balance[0]?.days_remaining ?? null,
+          vacationDaysRemaining:
+            numOrNull(balance[0]?.days_remaining_accrued) ??
+            numOrNull(balance[0]?.days_remaining),
           openVacationRequests: Number(openReq[0]?.n ?? 0),
           monthPresenceHours: Number(presence[0]?.hours ?? 0),
           unacknowledgedTalks: Number(talks[0]?.n ?? 0),
@@ -678,6 +683,22 @@ export class MojProfilService {
    * GO submit — paritet 1.0 (mojProfil submit): server re-provera min-datuma/salda/preklapanja,
    * INSERT vacation_requests (submitted_by=email — RLS WITH CHECK), pa
    * kadr_queue_vacation_submission_notification + pulse. RLS pušta i za člana tima (submitted_by).
+   *
+   * ⚠️ ZAHTEV 028/26 (27.07) — tri serverske rupe zatvorene odjednom:
+   *  (a) `days_count` se VIŠE NE UZIMA sa klijenta. DTO ga je puštao 0–366, a broj
+   *      je išao i u `vacation_requests.days_count` (osnov za `hr_vacreq_approve`
+   *      exceeds_balance proveru) i u `absences`. Sada ga računa server istim
+   *      pravilom po kom `kadr_grid_set_go` upisuje GO ćelije (Pon–Pet minus
+   *      `kadr_holidays` sa `is_workday=false`), pa je evidencija po konstrukciji
+   *      jednaka gridu. Klijentski broj se i dalje poredi (detekcija drifta/
+   *      manipulacije) — vidi toleranciju ispod.
+   *  (b) FAIL-OPEN → FAIL-CLOSED: kad za zaposlenog+godinu NEMA reda u
+   *      `v_vacation_balance` (na produ 21 aktivan zaposleni bez 2026 reda!), stara
+   *      grana `remaining != null` je tiho PROPUŠTALA zahtev bez ikakve kape.
+   *  (c) Kapa ostaje kalendarski `days_remaining` (tvrd plafon fonda — avansno
+   *      korišćenje pre nego što se dan „stekne" je dozvoljeno), ali poruka
+   *      prijavljuje i `days_remaining_accrued` (stečeno do danas) da radnik vidi
+   *      isti broj koji mu piše u profilu (1.0 kanon prikaza).
    */
   async submitVacation(email: string, dto: SubmitVacationDto) {
     if (dto.dateTo < dto.dateFrom)
@@ -695,19 +716,52 @@ export class MojProfilService {
         // Podnošenje ZA DRUGOG (paritet 1.0 canManageEmployee): samo za člana kojim
         // upravljam — vidi `resolveSubmitTarget` (jedina brana protiv IDOR-a).
         const empId = await this.resolveSubmitTarget(tx, email, dto.employeeId);
-        const balRows = await tx.$queryRaw<{ days_remaining: number | null }[]>(
-          Prisma.sql`SELECT days_remaining FROM v_vacation_balance
-             WHERE employee_id = ${empId}::uuid AND year = ${year} LIMIT 1`,
+
+        // (a) MERODAVAN broj dana računa server (isto pravilo kao kadr_grid_set_go).
+        const { workDays: serverDays, weekdays } = await this.workDaysDetail(
+          tx,
+          dto.dateFrom,
+          dto.dateTo,
         );
-        const remaining = balRows[0]?.days_remaining;
+        if (serverDays <= 0)
+          throw new UnprocessableEntityException(
+            "U izabranom periodu nema nijednog radnog dana (vikendi i državni praznici se ne troše iz fonda).",
+          );
+        // Klijent ne zna praznike (radnik nema pravo čitanja `kadr_holidays`), pa je
+        // dozvoljen opseg [serverDays, weekdays] — tačan broj ili „Pon–Pet bez praznika"
+        // koji forma prikazuje. Sve van toga je zastarela forma ili ručno slat zahtev.
         if (
-          remaining != null &&
-          Number.isFinite(Number(remaining)) &&
-          dto.daysCount > Number(remaining)
+          !Number.isFinite(Number(dto.daysCount)) ||
+          Number(dto.daysCount) < serverDays ||
+          Number(dto.daysCount) > weekdays
         )
           throw new UnprocessableEntityException(
-            `Traženo ${dto.daysCount} radnih dana prelazi preostali saldo (${remaining}) za ${year}.`,
+            `Broj radnih dana iz forme (${dto.daysCount}) ne odgovara izabranom periodu ` +
+              `${dto.dateFrom} – ${dto.dateTo} (server je izbrojao ${serverDays}). ` +
+              "Osveži stranicu i pošalji zahtev ponovo.",
           );
+
+        // (b) FAIL-CLOSED: bez reda fonda nema podnošenja (ranije se tiho propuštalo).
+        const balRows = await tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT * FROM v_vacation_balance
+             WHERE employee_id = ${empId}::uuid AND year = ${year} LIMIT 1`,
+        );
+        const remaining = numOrNull(balRows[0]?.days_remaining);
+        if (remaining == null)
+          throw new UnprocessableEntityException(
+            `Za ${year}. godinu nema evidencije fonda godišnjeg odmora za tog zaposlenog — kontaktirajte HR.`,
+          );
+        // (c) Kapa = kalendarski saldo; accrued ide u poruku kao informacija.
+        if (serverDays > remaining) {
+          const accrued = numOrNull(balRows[0]?.days_remaining_accrued);
+          const info =
+            accrued != null && accrued !== remaining
+              ? ` Do danas je stečeno ${accrued} dana.`
+              : "";
+          throw new UnprocessableEntityException(
+            `Traženo ${serverDays} radnih dana prelazi preostali saldo (${remaining}) za ${year}.${info}`,
+          );
+        }
         const overlap = await tx.$queryRaw<{ id: string }[]>(
           Prisma.sql`SELECT id FROM vacation_requests
              WHERE employee_id = ${empId}::uuid
@@ -723,7 +777,7 @@ export class MojProfilService {
           Prisma.sql`INSERT INTO vacation_requests
              (employee_id, year, date_from, date_to, days_count, note, submitted_by, status)
              VALUES (${empId}::uuid, ${year}, ${dto.dateFrom}::date, ${dto.dateTo}::date,
-               ${dto.daysCount}, ${dto.note ?? ""}, lower(${email}), 'pending')
+               ${serverDays}, ${dto.note ?? ""}, lower(${email}), 'pending')
              RETURNING *`,
         );
         const req = jsonSafe(rows)[0] as { id: string } | undefined;
@@ -906,28 +960,48 @@ export class MojProfilService {
   // ---------- Plaćeno odsustvo (paid leave) ----------
 
   /**
-   * Broj RADNIH dana u inkluzivnom rasponu: bez vikenda i bez državnih praznika
-   * (`kadr_holidays` uz `is_workday=false` — red sa `is_workday=true` je radni
-   * izuzetak, npr. radna subota, i NE izuzima se). Paritet 1.0
-   * `workDaysInclusive(from, to, holidayDateSet())`.
+   * Radni dani u inkluzivnom rasponu, u JEDNOM upitu, dve mere:
+   *  - `workDays` — bez vikenda I bez državnih praznika (`kadr_holidays` uz
+   *    `is_workday=false`; red sa `is_workday=true` je radni izuzetak, npr. radna
+   *    subota, i NE izuzima se). Paritet 1.0 `workDaysInclusive(from, to,
+   *    holidayDateSet())` i, što je važnije, IDENTIČNO onome što `kadr_grid_set_go`
+   *    stvarno upiše u grid pri odobrenju → to je broj dana koji fond zaista troši.
+   *  - `weekdays` — samo Pon–Pet (bez praznika). To je broj koji računa FE forma
+   *    (radnik nema pravo čitanja `kadr_holidays`), pa služi kao gornja granica
+   *    tolerancije pri poređenju sa klijentskim brojem.
    */
+  private async workDaysDetail(
+    tx: Sy15Tx,
+    from: string,
+    to: string,
+  ): Promise<{ workDays: number; weekdays: number }> {
+    const rows = await tx.$queryRaw<{ n: bigint; weekdays: bigint }[]>(
+      Prisma.sql`
+        SELECT COUNT(*) FILTER (
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM kadr_holidays h
+                    WHERE h.holiday_date = d.day::date
+                      AND COALESCE(h.is_workday, false) = false
+                 )
+               )::bigint AS n,
+               COUNT(*)::bigint AS weekdays
+          FROM generate_series(${from}::date, ${to}::date, interval '1 day') AS d(day)
+         WHERE EXTRACT(ISODOW FROM d.day) < 6`,
+    );
+    const workDays = Number(rows[0]?.n ?? 0);
+    return {
+      workDays,
+      weekdays: Number(rows[0]?.weekdays ?? rows[0]?.n ?? 0),
+    };
+  }
+
+  /** Broj RADNIH dana (bez vikenda i praznika) — vidi `workDaysDetail`. */
   private async workDaysBetween(
     tx: Sy15Tx,
     from: string,
     to: string,
   ): Promise<number> {
-    const rows = await tx.$queryRaw<{ n: bigint }[]>(
-      Prisma.sql`
-        SELECT COUNT(*)::bigint AS n
-          FROM generate_series(${from}::date, ${to}::date, interval '1 day') AS d(day)
-         WHERE EXTRACT(ISODOW FROM d.day) < 6
-           AND NOT EXISTS (
-                 SELECT 1 FROM kadr_holidays h
-                  WHERE h.holiday_date = d.day::date
-                    AND COALESCE(h.is_workday, false) = false
-               )`,
-    );
-    return Number(rows[0]?.n ?? 0);
+    return (await this.workDaysDetail(tx, from, to)).workDays;
   }
 
   /** Plaćeno submit — INSERT paid_leave_requests (submitted_by=email) + queue 'submitted' + pulse. */
@@ -2053,6 +2127,16 @@ export interface MonthlyHoursDay {
 
 /** Slova dana (dow 0=Ned; paritet 1.0 GRID_DAY_LETTERS). */
 const GRID_DAY_LETTERS = ["N", "P", "U", "S", "Č", "P", "S"];
+
+/** Decimal/Prisma-num → number ILI null (razlikuje „nema reda/kolone" od nule). */
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  const n =
+    typeof v === "object" && v !== null && "toNumber" in v
+      ? (v as { toNumber(): number }).toNumber()
+      : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
 /** Decimal/Prisma-num → number (bez NaN). */
 function num(v: unknown): number {

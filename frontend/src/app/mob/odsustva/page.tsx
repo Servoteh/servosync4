@@ -40,6 +40,7 @@ import {
   useTeam,
   useProfileMe,
   usePosition,
+  vacationRemaining,
   type VacationRequest,
 } from '@/api/moj-profil';
 import type { GoLedgerBlock, GoLedgerPeriod } from '@/api/kadrovska';
@@ -80,7 +81,8 @@ export default function MobOdsustvaPage() {
   const balance = data?.balance;
   const requests = data?.requests ?? [];
   const ledger = data?.ledger ?? [];
-  const remaining = balance ? (balance.days_remaining ?? null) : null;
+  // ZAHTEV 028/26: prikazuje se STEČENO do danas (1.0 kanon), ne kalendarsko pravo.
+  const remaining = vacationRemaining(balance);
 
   const meQ = useProfileMe();
   const positionQ = usePosition();
@@ -221,7 +223,7 @@ export default function MobOdsustvaPage() {
               <RequestForm
                 key={form.mode === 'edit' ? form.req.id : 'new'}
                 state={form}
-                remaining={remaining}
+                selfRemaining={remaining}
                 onClose={() => setForm(null)}
               />
             ) : (
@@ -353,14 +355,21 @@ function Stat({
   );
 }
 
-/** Novi/izmena zahteva — inline kartica (na telefonu bolja od modala: tastatura + skrol). */
+/**
+ * Novi/izmena zahteva — inline kartica (na telefonu bolja od modala: tastatura + skrol).
+ *
+ * ⚠️ ZAHTEV 028/26: kao i desktop `vacation-section.tsx`, ovaj obrazac je uz „Za koga"
+ * picker prikazivao saldo PODNOSIOCA i kad se podnosi za člana tima. Saldo se sada čita
+ * iz `useTeam()` reda izabranog člana; bez podatka se piše upozorenje, ne tuđi broj.
+ */
 function RequestForm({
   state,
-  remaining,
+  selfRemaining,
   onClose,
 }: {
   state: NonNullable<FormState>;
-  remaining: number | null;
+  /** Saldo PODNOSIOCA (prikazuje se samo kad zahtev ide za sebe). */
+  selfRemaining: number | null;
   onClose: () => void;
 }) {
   const req = state.mode === 'edit' ? state.req : undefined;
@@ -378,6 +387,11 @@ function RequestForm({
   const teamQ = useTeam();
   const team = state.mode === 'new' ? (teamQ.data?.data?.members ?? []) : [];
   const teamOpts = team.map((m) => ({ value: m.id, label: m.fullName ?? '—' }));
+
+  // Saldo koji se prikazuje MORA pripadati onome za koga se zahtev podnosi.
+  const selected = forEmp ? team.find((m) => m.id === forEmp) : undefined;
+  const remaining = forEmp ? vacationRemaining(selected?.balance) : selfRemaining;
+  const remainingFor = forEmp ? (selected?.fullName ?? 'izabranog zaposlenog') : null;
 
   async function save() {
     setErr(null);
@@ -452,7 +466,17 @@ function RequestForm({
       </div>
       <p className="text-sm text-ink-secondary">
         Radnih dana: <b className="tnums">{days}</b>
-        {remaining != null && <span> · Preostalo GO: {remaining}</span>}
+        {remaining != null ? (
+          <span>
+            {' · '}
+            Preostalo GO{remainingFor ? ` (${remainingFor})` : ''}: <b className="tnums">{remaining}</b>
+          </span>
+        ) : forEmp ? (
+          <span className="text-status-warn"> · nema podatka o fondu za izabranog zaposlenog</span>
+        ) : null}
+      </p>
+      <p className="text-2xs text-ink-disabled">
+        Broj dana je informativan (Pon–Pet). Državne praznike oduzima server pri upisu.
       </p>
       <FormField label="Napomena">
         <Textarea
