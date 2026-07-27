@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import type { ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
 import {
   DRAFT_ITEM_DECISION,
@@ -99,6 +100,24 @@ export function ConfirmDialog({
       </div>
     </Dialog>
   );
+}
+
+// ─────────────────────────────────────────────────────────────── odloženi filteri
+
+/**
+ * Odloženo (debounce) čitanje unosa filtera: vraćena vrednost se pomera tek kad
+ * kucanje stane, pa server-side upit liste ne krene na svaki taster. Prag 250ms
+ * je isti kao kod pretraga u Reversima (`magacin-tab.tsx`) — repo nema deljen
+ * `useDebounce`, svaki potrošač drži svoj `setTimeout` (bez novih zavisnosti).
+ * Sam `input` ostaje kontrolisan sirovom vrednošću (kucanje je trenutno).
+ */
+export function useDebouncedValue(value: string, delayMs = 250): string {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
 }
 
 // ─────────────────────────────────────────────────────────────── sitni kontrolisani elementi

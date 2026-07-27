@@ -160,6 +160,14 @@ export interface ListHandoversQuery {
   pageSize?: string;
   statusId?: string;
   drawingNumber?: string;
+  /**
+   * Broj NACRTA primopredaje (`handover_drafts.draft_number`) — contains,
+   * case-insensitive (zahtev 022/26). `drawing_handovers` nema `draft_id`, pa
+   * se razrešava u crteže preko `handover_draft_items.drawing_id` (isti soft
+   * odnos koji `enrich` koristi za kolonu „Nacrt") i preseca sa ostalim
+   * filterima po crtežu.
+   */
+  draftNumber?: string;
   projectId?: string;
   /** Filter "moje primopredaje" (tehnolog) — dok ne postoji User↔Worker veza, prosleđuje se eksplicitno. */
   handoverWorkerId?: string;
@@ -235,6 +243,11 @@ export class HandoversService {
         select: { id: true },
       });
       drawingIdSets.push(drawings.map((d) => d.id));
+    }
+    if (query.draftNumber) {
+      drawingIdSets.push(
+        await this.resolveDraftNumberDrawingIds(query.draftNumber),
+      );
     }
     const projectId = intEq(query.projectId);
     if (projectId !== undefined) {
@@ -1639,6 +1652,33 @@ export class HandoversService {
       });
     }
     return map;
+  }
+
+  /**
+   * Crteži svih nacrta čiji BROJ sadrži zadati niz (contains, case-insensitive)
+   * — filter „Nacrt" u listi primopredaja (zahtev 022/26, Strahinja). Nema FK-a
+   * nacrt↔primopredaja, pa se koristi ista best-effort veza kao
+   * `resolveDraftContext`: `handover_draft_items.drawing_id`. Isključene stavke
+   * (`exclude_from_handover`) se preskaču — one i ne uđu u primopredaju, a i
+   * kolona „Nacrt" ih ne prikazuje, pa se skupovi poklapaju. Prazan rezultat →
+   * prazna strana (tačno), isto kao kod filtera po RN-u.
+   */
+  private async resolveDraftNumberDrawingIds(
+    draftNumber: string,
+  ): Promise<number[]> {
+    const drafts = await this.prisma.handoverDraft.findMany({
+      where: { draftNumber: { contains: draftNumber, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (!drafts.length) return [];
+    const items = await this.prisma.handoverDraftItem.findMany({
+      where: {
+        draftId: { in: drafts.map((d) => d.id) },
+        excludeFromHandover: false,
+      },
+      select: { drawingId: true },
+    });
+    return [...new Set(items.map((i) => i.drawingId))];
   }
 
   private async resolveProjectDrawingIds(projectId: number): Promise<number[]> {
