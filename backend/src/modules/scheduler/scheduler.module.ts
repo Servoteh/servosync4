@@ -7,6 +7,7 @@ import { NotifyDispatchService } from "./dispatch/notify-dispatch.service";
 import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
 import { RetentionJobsService } from "./retention-jobs.service";
 import { BigbitSyncJobs } from "./bigbit-sync-jobs.service";
+import { DailyBriefService } from "./daily-brief.service";
 import { RobnoModule } from "../robno/robno.module";
 import { ReservationService } from "../robno/reservation.service";
 import { SyncModule } from "../sync/sync.module";
@@ -31,6 +32,11 @@ import { SyncModule } from "../sync/sync.module";
  * Pruga P (26.07) — bigbit-sync-jobs.service.ts: noćno povlačenje BigBit master
  * podataka umesto ručnog dugmeta. Ima SVOJ prekidač `BIGBIT_NIGHTLY_SYNC`; bez
  * njega `buildJobs()` vraća prazno pa se posao ni ne registruje.
+ *
+ * Talas AI-3 (27.07) — daily-brief.service.ts: proaktivan jutarnji brief
+ * direktoru/menadžmentu (mejl, rangirano, izvor uz svaku stavku). SVOJ prekidač
+ * `DAILY_BRIEF_ENABLED`; bez njega `buildJobs()` vraća prazno (posao se ne
+ * registruje). Deli isti @Global infrastrukturni sloj (Prisma/Mail/AI) + Sy15Module.
  */
 @Module({
   // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
@@ -46,6 +52,7 @@ import { SyncModule } from "../sync/sync.module";
     SastanciDispatchService,
     RetentionJobsService,
     BigbitSyncJobs,
+    DailyBriefService,
   ],
   // NotifyDispatchService se izvozi da bi Kadrovska/Moj profil mogli da okinu
   // ISTI dispečer sinhrono („Pošalji čekaće" / pulse posle mutacije) umesto da
@@ -61,6 +68,7 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly sastanciDispatchJobs: SastanciDispatchService,
     private readonly retentionJobs: RetentionJobsService,
     private readonly bigbitSyncJobs: BigbitSyncJobs,
+    private readonly dailyBrief: DailyBriefService,
     private readonly reservation: ReservationService,
   ) {}
 
@@ -76,6 +84,8 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     // redom registracije — brza brisanja prva, pa dugačak sync.
     for (const job of this.bigbitSyncJobs.buildJobs())
       this.scheduler.register(job);
+    // Talas AI-3 — dnevni brief (iza DAILY_BRIEF_ENABLED; bez flag-a prazno).
+    for (const job of this.dailyBrief.buildJobs()) this.scheduler.register(job);
 
     // Istekle rezervacije zaliha (Batch C). `expiresAt` puni rok važenja
     // predračuna; bez ovog posla istekla rezervacija večno drži robu jer je
