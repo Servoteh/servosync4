@@ -98,6 +98,14 @@ function sy15RestUrl(): string {
  */
 const REUSE_GRACE_MS = 30_000;
 
+/**
+ * Gornja granica čekanja na sy15 čitanje role pri DIREKTNOM login-u. Rola-sync je
+ * best-effort dodatak prijavi — zaglavljena sy15 baza NE sme da drži korisnika na
+ * ekranu za prijavu. Prekoračenje → login se nastavlja sa zatečenom 3.0 rolom.
+ * (SSO grana ima svoj `AbortSignal.timeout(8000)` na PostgREST pozivu.)
+ */
+const ROLE_SYNC_DB_TIMEOUT_MS = 5000;
+
 const SY15_ROLE_PRIORITY: string[] = [
   ROLES.ADMIN,
   ROLES.LEADPM,
@@ -114,6 +122,30 @@ const SY15_ROLE_PRIORITY: string[] = [
   ROLES.PROIZVODNI_RADNIK,
   ROLES.VIEWER,
 ];
+
+/**
+ * Redovi 1.0 `user_roles` (već filtrirani na aktivne) → jedna efektivna rola po
+ * lestvici `SY15_ROLE_PRIORITY` (bit-paritet sa 1.0 `effectiveRoleFromMatches`).
+ *
+ * `null` znači „korisnik NEMA nijedan red u 1.0" i razlikuje se od `viewer`:
+ * pri sync-u postojećeg naloga to je razlog da se 3.0 rola NE dira, a pri JIT
+ * kreiranju novog naloga se prevodi u `viewer` (vidi `fetchSy15EffectiveRole`).
+ * Nepoznata/nova 1.0 rola koja nije u lestvici → `viewer` (kao 1.0 front).
+ */
+function effectiveRoleFromRows(rows: unknown): string | null {
+  const list = Array.isArray(rows)
+    ? (rows as Array<{ role?: string | null }>)
+    : [];
+  if (list.length === 0) return null;
+  const have = new Set(
+    list.map((r) =>
+      String(r?.role ?? "")
+        .toLowerCase()
+        .trim(),
+    ),
+  );
+  return SY15_ROLE_PRIORITY.find((r) => have.has(r)) ?? ROLES.VIEWER;
+}
 
 @Injectable()
 export class AuthService {
@@ -162,7 +194,14 @@ export class AuthService {
     req?: RequestMeta,
   ): Promise<AuthSession> {
     const user = await this.validate(email, password);
-    return this.issueSession(user, req);
+    /* ROLA-SYNC i na DIREKTNOM login-u (odluka Nenada 27.07): do sada je samo SSO
+     * poravnavao `users.role` sa živom 1.0 rolom, pa su nalozi koji ulaze email+
+     * lozinkom ostajali na rolu zamrznutom pri poslednjem SSO ulazu (27.07 nađeno
+     * 12 raskoraka). Sync ide TEK POSLE uspešne provere lozinke (nikad ne curi
+     * podatak o nepostojećem nalogu) i best-effort je — pad sy15 NE obara prijavu.
+     * Rola se sinhronizuje PRE `issueSession` da JWT nosi svežu rolu. */
+    const synced = await this.syncRoleByEmail(user);
+    return this.issueSession(synced, req);
   }
 
   /** Signed access JWT (postojeći claims/potpis) za već-validiranog korisnika. */
@@ -339,7 +378,8 @@ export class AuthService {
       /* ROLA-SYNC (odluka vlasnika 21.07): postojeći nalog na SVAKOM SSO login-u
        * poravna `users.role` sa ŽIVOM 1.0 rolom (get_my_user_roles), da svako u
        * 3.0 ima tačno svoja 1.0 prava — a ne rolu zamrznutu pri prvom login-u.
-       * ⚠️ Ručne 2.0 izmene role se time GUBE (svesno; 1.0 = izvor istine).
+       * ⚠️ Ručne 2.0 izmene role se time GUBE (svesno; 1.0 = izvor istine),
+       * IZUZEV 3.0 admina (odluka 27.07) — vidi `applyRoleSync`.
        * Fail-safe: pad čitanja 1.0 role NE obara login (zadrži zatečenu rolu).
        * Zarade su nezavisno zaključane (salaryEmailAllowed) — rola-sync ih ne otvara. */
       user = await this.syncRoleFromSy15(ssToken, user);
@@ -354,36 +394,96 @@ export class AuthService {
   }
 
   /**
-   * Poravna `users.role` postojećeg naloga sa živom 1.0 rolom. Ako se rola nije
-   * promenila ILI čitanje 1.0 role padne → vraća nalog netaknut (login ne pada).
+   * SSO grana rola-sync-a: živa 1.0 rola se čita RPC-om `get_my_user_roles`
+   * (Bearer = verifikovani SSO token). Pravila poravnanja su zajednička sa
+   * direktnim login-om → `applyRoleSync`. Pad čitanja NE obara login.
    */
   private async syncRoleFromSy15<
     T extends { id: number; email: string; role: string },
   >(ssToken: string, user: T): Promise<T> {
-    let liveRole: string;
+    let liveRole: string | null;
     try {
-      liveRole = await this.fetchSy15EffectiveRole(ssToken);
+      liveRole = await this.fetchSy15LiveRole(ssToken);
     } catch {
       /* Pad čitanja 1.0 role NE obara login — zadrži zatečenu rolu. */
       return user;
     }
+    return this.applyRoleSync(user, liveRole, "SSO");
+  }
+
+  /**
+   * Grana rola-sync-a za DIREKTAN login (email+lozinka, 27.07): nema SSO tokena
+   * kojim bi se pozvao `get_my_user_roles`, pa se ista istina čita direktno iz
+   * sy15 `user_roles` po email-u (isti filter kao RPC: `lower(email)` +
+   * `is_active IS TRUE`). Best-effort: SVAKI pad (sy15 nije konfigurisan, baza
+   * nedostupna, timeout) → warn + zatečena 3.0 rola, prijava se nastavlja.
+   */
+  private async syncRoleByEmail<
+    T extends { id: number; email: string; role: string },
+  >(user: T): Promise<T> {
+    let liveRole: string | null;
+    try {
+      liveRole = await this.fetchSy15RoleByEmail(user.email);
+    } catch (e) {
+      this.logger.warn(
+        `rola-sync (login): čitanje 1.0 role za ${user.email} nije uspelo, zadržana rola "${user.role}": ${String(e)}`,
+      );
+      return user;
+    }
+    return this.applyRoleSync(user, liveRole, "login");
+  }
+
+  /**
+   * ZAJEDNIČKA pravila poravnanja 3.0 role sa živom 1.0 rolom — jedina tačka
+   * odluke za obe ulazne putanje (SSO i direktan login), da se ponašanje više
+   * nikad ne raziđe. Redom:
+   *
+   *  1. `liveRole === null` (korisnik NEMA nijedan aktivan red u 1.0 `user_roles`)
+   *     → 3.0 rola se NE dira. Bezrolni 1.0 nalog nije dokaz da čovek nema prava
+   *     u 3.0 (4.0 moduli, servisni nalozi); tiho spuštanje na `viewer` bi ih
+   *     obesmislilo. `viewer` fallback ostaje SAMO za JIT provisioning novog naloga.
+   *  2. Ista rola → nema upisa (bez suvišnog pisanja na svaku prijavu).
+   *  3. **Admin se NE degradira sync-om** (odluka 27.07): 3.0 `admin` je namerno
+   *     dodeljen i van 1.0 (Zoran/Luka su admini u 3.0 iako 1.0 kaže `menadzment`).
+   *     Skidanje admina je svesna ručna radnja, ne posledica prijave. Podizanje NA
+   *     admin (1.0 kaže admin) prolazi normalno — pravilo je jednosmerno.
+   *  4. Inače → upiši živu 1.0 rolu (i naviše i naniže).
+   *
+   * Zarade su nezavisno zaključane email allowlistom (`salaryEmailAllowed`) —
+   * rola-sync ih ne otvara ni kad podigne nekoga na admina.
+   */
+  private async applyRoleSync<
+    T extends { id: number; email: string; role: string },
+  >(user: T, liveRole: string | null, source: string): Promise<T> {
+    if (liveRole === null) return user;
     if (liveRole === user.role) return user;
-    this.logger.log(`SSO rola-sync: ${user.email} ${user.role} → ${liveRole}`);
-    const updated = await this.prisma.user.update({
+    if (user.role === ROLES.ADMIN) {
+      this.logger.log(
+        `rola-sync (${source}): ${user.email} ostaje admin (1.0 kaže "${liveRole}") — admin se ne degradira`,
+      );
+      return user;
+    }
+    this.logger.log(
+      `rola-sync (${source}): ${user.email} ${user.role} → ${liveRole}`,
+    );
+    await this.prisma.user.update({
       where: { id: user.id },
       data: { role: liveRole },
     });
-    return updated as unknown as T;
+    /* Vraćamo POLAZNI objekat sa novom rolom (ne red iz update-a): pozivaoci
+     * prosleđuju bogatije tipove (AuthenticatedUser sa `readOnly`), koje `User`
+     * red iz baze nema. */
+    return { ...user, role: liveRole };
   }
 
   /**
    * Efektivna 1.0 rola za nosioca SSO tokena — server-side (klijentu se rola
    * NE veruje): sy15 PostgREST RPC `get_my_user_roles` (SECURITY DEFINER,
    * uparuje po `email` claim-u, vraća samo aktivne redove), pa ista lestvica
-   * prioriteta kao 1.0 front. Bez ijednog reda u `user_roles` 1.0 tretira
-   * korisnika kao `viewer` — i mi.
+   * prioriteta kao 1.0 front. `null` = nema NIJEDNOG reda u `user_roles`
+   * (razlika bitna za sync — vidi `applyRoleSync` §1).
    */
-  private async fetchSy15EffectiveRole(ssToken: string): Promise<string> {
+  private async fetchSy15LiveRole(ssToken: string): Promise<string | null> {
     let rows: Array<{ role?: string }>;
     try {
       const res = await fetch(`${sy15RestUrl()}/rpc/get_my_user_roles`, {
@@ -401,14 +501,43 @@ export class AuthService {
       /* Fail-closed: bez pouzdane role nema auto-naloga; front pada na 2.0 login. */
       throw new UnauthorizedException("SSO: čitanje 1.0 role nije uspelo");
     }
-    const have = new Set(
-      (Array.isArray(rows) ? rows : []).map((r) =>
-        String(r?.role ?? "")
-          .toLowerCase()
-          .trim(),
+    return effectiveRoleFromRows(rows);
+  }
+
+  /**
+   * Ista živa 1.0 rola, ali po EMAIL-u — za direktan login (nema tokena za RPC).
+   * Čita se pravo iz sy15 `user_roles` sa ISTIM filterom kao `get_my_user_roles`
+   * (`lower(email)` + `is_active IS TRUE`); scope je u WHERE-u, pa BYPASSRLS
+   * konekciona rola ne širi vidljivost. `null` = nema nijednog aktivnog reda.
+   */
+  private async fetchSy15RoleByEmail(email: string): Promise<string | null> {
+    /* `sy15.db` baca 503 kad SY15_DATABASE_URL nije postavljen — pozivalac hvata. */
+    const query = this.sy15.db.$queryRaw<Array<{ role: string | null }>>`
+      SELECT role FROM user_roles
+      WHERE lower(email) = lower(${email}) AND is_active IS TRUE`;
+    /* Zakači handler ODMAH: ako race istekne, kasnija greška upita ne sme da
+     * postane unhandled rejection. */
+    void query.catch(() => undefined);
+    const rows = await Promise.race([
+      query,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("sy15 rola-sync timeout")),
+          ROLE_SYNC_DB_TIMEOUT_MS,
+        ).unref?.(),
       ),
-    );
-    return SY15_ROLE_PRIORITY.find((r) => have.has(r)) ?? ROLES.VIEWER;
+    ]);
+    return effectiveRoleFromRows(rows);
+  }
+
+  /**
+   * Efektivna 1.0 rola za nosioca SSO tokena — kompatibilni omotač za JIT
+   * provisioning: bez ijednog reda u `user_roles` 1.0 tretira korisnika kao
+   * `viewer`, pa nov nalog dobija `viewer` (a NE „ne diraj", što nema smisla
+   * za nalog koji tek nastaje).
+   */
+  private async fetchSy15EffectiveRole(ssToken: string): Promise<string> {
+    return (await this.fetchSy15LiveRole(ssToken)) ?? ROLES.VIEWER;
   }
 
   /**
