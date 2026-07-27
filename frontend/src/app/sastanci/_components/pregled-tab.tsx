@@ -10,7 +10,14 @@ import {
   usePredmetPrioritet,
   useTeme,
 } from '@/api/sastanci';
-import { AkcijaStatusBadge, formatDatum, formatVreme, SASTANAK_TIP_LABEL } from './common';
+import {
+  AkcijaStatusBadge,
+  formatDatum,
+  formatVreme,
+  najavaSedmicnog,
+  najavaSedmicnogTekst,
+  SASTANAK_TIP_LABEL,
+} from './common';
 import { KpiTile } from './tabs';
 import { useDetailNav } from './detail-nav';
 
@@ -47,6 +54,10 @@ export function PregledTab({
 
   const s = stats.data?.data;
   const nextS = next.data?.data ?? null;
+  // Zahtev 024/26 (a): posle zatvaranja sedmičnog nema više nijednog predstojećeg reda
+  // sve do petka 08h — bez ove najave kartica bi ćutala („Nema zakazanih sastanaka"),
+  // a lista bi pokazivala zatvoreni stari termin. `?.` jer stariji backend polje ne vraća.
+  const najava = najavaSedmicnog(next.data?.sedmicni);
 
   const openAkcije = (myAkcije.data?.data ?? [])
     .filter((a) => ['otvoren', 'u_toku', 'kasni'].includes(a.effective_status))
@@ -116,6 +127,20 @@ export function PregledTab({
             </div>
           ) : (
             <p className="text-sm text-ink-secondary">Nema zakazanih sastanaka.</p>
+          )}
+
+          {/* Najava sedmičnog koji automatika tek treba da napravi (zahtev 024/26 a).
+              Prikazuje se i kad „Sledeći sastanak" postoji — jer to ume da bude neki
+              drugi tip, pa bi sedmični termin i dalje ostao neizrečen. */}
+          {najava && (
+            <div className={`space-y-0.5 border-t border-line pt-3 ${nextS ? 'mt-3' : 'mt-2'}`}>
+              <p className="text-xs font-medium text-ink-secondary">Sledeći sedmični</p>
+              <p className="tnums text-sm font-medium text-ink">
+                {formatDatum(najava.datum)}
+                {najava.vreme ? ` · ${formatVreme(najava.vreme)}` : ''}
+              </p>
+              <p className="text-xs text-ink-disabled">{najavaSedmicnogTekst(najava)}</p>
+            </div>
           )}
         </section>
 

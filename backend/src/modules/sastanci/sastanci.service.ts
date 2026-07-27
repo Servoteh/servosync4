@@ -76,6 +76,7 @@ import type {
   WeeklyVratiDto,
 } from "./dto/sastanci-mutation.dto";
 import { nextOccurrence } from "./templates-cadence";
+import { sledeciSedmicniTermin } from "./weekly-rollover";
 
 /**
  * Sastanci — 3.0 TALAS B, R1 read sloj (MODULE_SPEC_sastanci_ai_30.md §3).
@@ -202,21 +203,66 @@ export class SastanciService {
    * Sledeći PLANIRAN sastanak — paritet 1.0 loadNextPlaniranSastanak (sastanci.js:148):
    * BEZ tip filtera (bilo koji tip), datum >= DANAS po LOKALNOM (Europe/Belgrade)
    * kalendaru, datum asc, prvi red.
+   *
+   * Uz `data` vraća i `sedmicni` (zahtev 024/26 a) — termin sledećeg SEDMIČNOG
+   * sastanka. Kad ga automatika još nije kreirala (`sastanakId === null`), to je
+   * NAJAVA izračunata iz istog pravila po kojem radi pg_cron posao `sast-weekly-auto`
+   * (petak 08h → `sast_auto_create_weekly`); vidi `weekly-rollover.ts`. Bez toga UI
+   * posle zatvaranja sedmičnog nema šta da pokaže osim poslednjeg (zatvorenog)
+   * termina, pa deluje kao da je datum „zaglavljen".
    */
   async nextWeekly(email: string) {
     // en-CA locale daje YYYY-MM-DD; sidro je Beograd, ne UTC (posle 22h leti UTC ide u sutra).
+    const now = new Date();
     const todayBelgrade = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Europe/Belgrade",
-    }).format(new Date());
+    }).format(now);
+    // h23 (ne hour12:false) — u pojedinim ICU verzijama „2-digit + hour12:false" daje 24 u ponoć.
+    const satBelgrade =
+      Number(
+        new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Europe/Belgrade",
+          hour: "2-digit",
+          hourCycle: "h23",
+        }).format(now),
+      ) % 24;
+    const odDanas = new Date(todayBelgrade);
     return this.withUserMapped(email, async (tx) => {
-      const data = await tx.sastanak.findFirst({
-        where: {
-          status: "planiran",
-          datum: { gte: new Date(todayBelgrade) },
-        },
-        orderBy: [{ datum: "asc" }],
+      const [data, sedmicniRedovi, praznici] = await Promise.all([
+        tx.sastanak.findFirst({
+          where: { status: "planiran", datum: { gte: odDanas } },
+          orderBy: [{ datum: "asc" }],
+        }),
+        tx.sastanak.findMany({
+          where: { tip: "sedmicni", datum: { gte: odDanas } },
+          select: { id: true, datum: true, vreme: true, status: true },
+          orderBy: [{ datum: "asc" }],
+          take: 60,
+        }),
+        // Prozor pokriva 8 nedelja unapred koliko simulacija gleda (+ rezerva).
+        tx.kadrHoliday.findMany({
+          where: {
+            holidayDate: {
+              gte: odDanas,
+              lte: new Date(odDanas.getTime() + 90 * 86_400_000),
+            },
+            isWorkday: false,
+          },
+          select: { holidayDate: true },
+        }),
+      ]);
+      const sedmicni = sledeciSedmicniTermin({
+        danas: todayBelgrade,
+        sat: satBelgrade,
+        sedmicni: sedmicniRedovi.map((s) => ({
+          id: s.id,
+          datum: this.ymd(s.datum),
+          vreme: this.hhmm(s.vreme),
+          status: s.status,
+        })),
+        praznici: praznici.map((p) => this.ymd(p.holidayDate)),
       });
-      return { data };
+      return { data, sedmicni };
     });
   }
 
@@ -905,6 +951,18 @@ export class SastanciService {
     if (v === null || v === "") return null;
     const t = v.length === 5 ? `${v}:00` : v;
     return new Date(`1970-01-01T${t}Z`);
+  }
+
+  /** @db.Date → 'YYYY-MM-DD' (kolona je UTC ponoć, pa nema TZ pomaka). */
+  private ymd(d: Date | string): string {
+    return (d instanceof Date ? d.toISOString() : String(d)).slice(0, 10);
+  }
+
+  /** @db.Time → 'HH:MM' (obrnuto od `toDbTime`). */
+  private hhmm(v: Date | string | null): string | null {
+    if (!v) return null;
+    const s = v instanceof Date ? v.toISOString() : String(v);
+    return s.includes("T") ? s.slice(11, 16) : s.slice(0, 5);
   }
 
   /** Posle updateMany/deleteMany sa 0 pogodaka: 404 ako red ne postoji (po SELECT-u),

@@ -2,7 +2,7 @@
 
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
-import type { AkcijaRow } from '@/api/sastanci';
+import type { AkcijaRow, SledeciSedmicni } from '@/api/sastanci';
 
 // Zajednički mapiranja/labeli za Sastanci (paritet 1.0 rečnika). Domenske statuse
 // prikazujemo isključivo kroz StatusBadge (DESIGN_SYSTEM §7).
@@ -42,6 +42,27 @@ export const SASTANAK_TIP_LABEL: Record<string, string> = {
   tematski: 'Tematski',
   dnevni: 'Dnevni',
 };
+
+/**
+ * Zahtev 024/26 (a) — sledeći sedmični sastanak NE nastaje kad se prethodni zatvori,
+ * nego ga automatika (`sast_auto_create_weekly`) kreira PETKOM u 08:00. Dok reda nema,
+ * i pregled i lista pokazuju poslednji, zatvoreni termin — što izgleda kao „zaglavljen
+ * datum". Ovaj helper izdvaja NAJAVU (termin koji tek treba da nastane) iz odgovora
+ * `/next-weekly`; kad sastanak već postoji, najave nema jer ga liste ionako prikazuju.
+ */
+export function najavaSedmicnog(
+  s: SledeciSedmicni | null | undefined,
+): SledeciSedmicni | null {
+  return s && !s.sastanakId && s.datum ? s : null;
+}
+
+/** Rečenica najave — jedan tekst za sve prikaze (Pregled i lista sastanaka). */
+export function najavaSedmicnogTekst(n: SledeciSedmicni): string {
+  const kada = n.kreiraSeDatum
+    ? `automatika ga kreira u petak ${formatDatum(n.kreiraSeDatum)} u 08:00`
+    : 'automatika ga kreira petkom u 08:00';
+  return `Termin još nije kreiran — ${kada}, kad kreću i pozivnice.`;
+}
 
 const SASTANAK_STATUS: Record<string, { tone: Tone; label: string }> = {
   planiran: { tone: 'neutral', label: 'Planiran' },

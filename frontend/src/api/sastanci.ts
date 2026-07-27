@@ -327,6 +327,18 @@ export interface WeeklyStatus {
   can_move: boolean;
 }
 
+/**
+ * Termin sledećeg SEDMIČNOG sastanka (BE `weekly-rollover.ts`, zahtev 024/26 a).
+ * `sastanakId !== null` → red već postoji. `sastanakId === null` → NAJAVA: sastanak
+ * još ne postoji jer ga automatika kreira tek u petak (`kreiraSeDatum`) u 08:00.
+ */
+export interface SledeciSedmicni {
+  datum: string;
+  vreme: string | null;
+  sastanakId: string | null;
+  kreiraSeDatum: string | null;
+}
+
 /** sast_dashboard_stats() JSON — KPI brojke (snake_case, snapshot 12.07). */
 export interface DashboardStats {
   sastanc_upcoming: number;
@@ -435,10 +447,14 @@ export function useMyMeetings() {
   });
 }
 
+/** Sledeći planiran sastanak + najava sledećeg SEDMIČNOG termina (zahtev 024/26 a). */
 export function useNextWeekly() {
   return useQuery({
     queryKey: [...KEYS.all, 'next-weekly'],
-    queryFn: () => apiFetch<{ data: Sastanak | null }>(`${BASE}/next-weekly`),
+    queryFn: () =>
+      apiFetch<{ data: Sastanak | null; sedmicni?: SledeciSedmicni | null }>(
+        `${BASE}/next-weekly`,
+      ),
   });
 }
 

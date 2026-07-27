@@ -6,10 +6,12 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
-import { useSastanci, type Sastanak } from '@/api/sastanci';
+import { useNextWeekly, useSastanci, type Sastanak } from '@/api/sastanci';
 import {
   formatDatum,
   formatVreme,
+  najavaSedmicnog,
+  najavaSedmicnogTekst,
   SASTANAK_TIP_LABEL,
   SastanakStatusBadge,
   tableEmpty,
@@ -40,6 +42,13 @@ export function SastanciTab() {
   // >50 predstojećih); kalendar/nedelja ionako nikad nisu dobijali više od 200.
   const listQ = useSastanci({ q, tip, status, pageSize: 200 });
   const rows = listQ.data?.data ?? [];
+
+  // Zahtev 024/26 (a): kad je poslednji sedmični zatvoren, a novi još nije kreiran
+  // (automatika ga pravi petkom u 08h), na vrhu liste stoji ZATVOREN stari termin i
+  // ništa ne govori šta sledi. Traka iznad tabele izgovara sledeći termin unapred.
+  // Deli keš sa karticom „Sledeći sastanak" na Pregledu (isti query-key).
+  const nextQ = useNextWeekly();
+  const najava = najavaSedmicnog(nextQ.data?.sedmicni);
 
   // „Danas" van useMemo — inače bi ga dep [rows] zamrznuo pa bi preko ponoći, dok se
   // lista ne osveži, klasifikacija predstojećih bila bajata (izračun je jeftin).
@@ -130,6 +139,21 @@ export function SastanciTab() {
           </Can>
         </div>
       </div>
+
+      {najava && (
+        <p
+          role="status"
+          className="rounded-panel border border-line bg-surface-2 px-3 py-2 text-xs text-ink-secondary"
+        >
+          Sledeći sedmični sastanak:{' '}
+          <strong className="tnums text-ink">{formatDatum(najava.datum)}</strong>
+          {najava.vreme ? ` u ${formatVreme(najava.vreme)}` : ''}. {najavaSedmicnogTekst(najava)}
+          <Can permission={PERMISSIONS.SASTANCI_EDIT}>
+            {' '}
+            Ako treba ranije, napravi ga dugmetom „Sedmični + prenos“.
+          </Can>
+        </p>
+      )}
 
       {view === 'lista' && (
         <DataTable
