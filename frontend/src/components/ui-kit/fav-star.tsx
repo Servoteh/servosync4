@@ -10,18 +10,25 @@ import { cn } from '@/lib/cn';
 
 export type FavStarVariant = 'sidebar' | 'hub';
 
-const VARIANT: Record<FavStarVariant, { ring: string; on: string; off: string }> = {
+const VARIANT: Record<FavStarVariant, { ring: string; on: string; off: string; box: string }> = {
   // Sidebar = tamna površina (sidebar tokeni) + sidebar fokus-prsten.
   sidebar: {
     ring: 'focus-visible:shadow-[var(--focus-ring-sidebar)]',
     on: 'text-sidebar-accent hover:text-sidebar-ink-active',
     off: 'text-sidebar-ink/50 hover:text-sidebar-ink-active',
+    box: '',
   },
   // Hub = svetla površina (standardni tokeni) + standardni fokus-prsten.
   hub: {
     ring: 'focus-visible:shadow-[var(--focus-ring)]',
     on: 'text-accent hover:text-accent-hover',
     off: 'text-ink-disabled hover:text-accent',
+    // Kompaktan masonry hub (27.07.2026) steže red na ~25px koraka, pa bi 28px meta
+    // preklapala zvezdicu susednog reda (~3px) i klik u toj traci bi pogodio pogrešan
+    // modul. Na PRECIZNOM pokazivaču od `lg` naviše meta je 24px — spoj `lg` +
+    // `(pointer:fine)` je uzajamno isključiv sa coarse bump-om ispod, pa 44px touch
+    // meta ostaje netaknuta i na velikim ekranima osetljivim na dodir.
+    box: 'lg:[@media(pointer:fine)]:h-6 lg:[@media(pointer:fine)]:w-6',
   },
 };
 
@@ -76,6 +83,7 @@ export function FavStar({
         'absolute right-1 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-control transition-opacity motion-reduce:transition-none',
         'max-lg:h-11 max-lg:w-11 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11',
         'focus-visible:outline-none focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100',
+        v.box,
         v.ring,
         favorite ? cn('opacity-100', v.on) : cn('opacity-0 group-hover:opacity-100', v.off),
       )}

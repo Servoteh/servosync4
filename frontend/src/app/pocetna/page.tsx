@@ -11,6 +11,16 @@
 // iz useUiPrefs (isti store koji shell/paleta pune preko pushRecentModule). Guard i
 // vidljivost = svaki prijavljen korisnik (bez posebne permisije; redirect na /login ako
 // nema user — obrazac iz ostalih page.tsx).
+//
+// RASPORED = KOMPAKTAN MASONRY (presuda 27.07.2026). Domenske pločice stoje u CSS
+// kolonama (`columns-*`), NE u gridu: grid razvlači sve pločice u vrsti na visinu
+// najviše (Kvalitet sa 2 stavke bio visok kao Finansije sa 9 → pola ekrana prazno),
+// dok kolona pušta svaku pločicu na TAČNO svoju visinu. Cena je što redosled čitanja
+// ide po kolonama (gore-dole, pa sledeća kolona) — prihvatljivo za hub, jer je
+// domenski redosled iz NAV_DOMAINS očuvan i pločice su samostalne celine.
+// Gustina je stepenasta: mobil/tablet zadržavaju krupan touch ritam (44px meta preko
+// `max-lg:*`), a od `lg` naviše sve se steže (manja ikona/naslov, `text-sm` redovi,
+// `p-3`, manji gap-ovi) da većini uloga hub stane na jedan ekran bez skrola.
 
 import { useEffect } from 'react';
 import Link from 'next/link';
@@ -113,13 +123,15 @@ export default function PocetnaPage() {
           // Touch-meta min 44×44px na tablet/telefon (DS §11) — isti bump kao sidebar
           // (app-shell max-lg:py-2.5); min-h-11 garant. Desni gutter za zvezdicu samo kad
           // JE omiljen (popunjena zvezdica uvek vidljiva) ili na touch-u (coarse).
+          // `lg:*` = kompaktan desktop ritam (12,5px red, py-1) — `max-lg:*` i `lg:*` su
+          // uzajamno isključivi upiti, pa touch meta ostaje netaknuta.
           className={cn(
-            'flex min-w-0 flex-1 items-center gap-2.5 rounded-control pl-2 py-1.5 text-base text-ink group-hover:text-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] max-lg:min-h-11 max-lg:py-2.5',
+            'flex min-w-0 flex-1 items-center gap-2.5 rounded-control pl-2 py-1.5 text-base text-ink group-hover:text-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] max-lg:min-h-11 max-lg:py-2.5 lg:gap-2 lg:py-1 lg:text-sm',
             favorite ? 'pr-8' : 'pr-2 [@media(pointer:coarse)]:pr-8',
           )}
         >
           <MIcon
-            className="h-4 w-4 shrink-0 text-ink-secondary group-hover:text-accent"
+            className="h-4 w-4 shrink-0 text-ink-secondary group-hover:text-accent lg:h-3.5 lg:w-3.5"
             aria-hidden
           />
           <span className="min-w-0 flex-1 truncate">{m.label}</span>
@@ -133,13 +145,13 @@ export default function PocetnaPage() {
   return (
     <AppShell>
       <PageHeader title="Početna" />
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6 lg:p-4">
         {/* tabIndex/data-fav-focus-fallback: stabilan roditelj za fokus kad zvezdica ukloni
             POSLEDNJI omiljeni (sekcija „Omiljeno" nestane) — FavStar tada ovde vraća fokus
             umesto na <body> (review 010/26 §4). */}
-        <div className="space-y-8" tabIndex={-1} data-fav-focus-fallback="">
+        <div className="space-y-8 lg:space-y-5" tabIndex={-1} data-fav-focus-fallback="">
           {/* Pozdrav */}
-          <h2 className="text-lg text-ink-secondary">
+          <h2 className="text-lg text-ink-secondary lg:text-md">
             Dobrodošli, <span className="font-medium text-ink">{user.fullName ?? user.email}</span>
           </h2>
 
@@ -149,13 +161,13 @@ export default function PocetnaPage() {
             <section aria-labelledby="hub-omiljeno">
               <h2
                 id="hub-omiljeno"
-                className="mb-2 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-ink-secondary"
+                className="mb-2 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-ink-secondary lg:mb-1.5"
               >
                 <Star className="h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
                 Omiljeno
               </h2>
-              <div className="rounded-panel border border-line bg-surface p-4">
-                <ul className="grid gap-0.5 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="rounded-panel border border-line bg-surface p-4 lg:p-3">
+                <ul className="grid gap-0.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   {favoriteModules.map(renderModule)}
                 </ul>
               </div>
@@ -167,11 +179,11 @@ export default function PocetnaPage() {
             <section aria-labelledby="hub-brzo">
               <h2
                 id="hub-brzo"
-                className="mb-2 text-2xs font-semibold uppercase tracking-wider text-ink-secondary"
+                className="mb-2 text-2xs font-semibold uppercase tracking-wider text-ink-secondary lg:mb-1.5"
               >
                 Brzo
               </h2>
-              <ul className="flex flex-wrap gap-2">
+              <ul className="flex flex-wrap gap-2 lg:gap-1.5">
                 {quickModules.map((m) => {
                   const Icon = m.icon;
                   return (
@@ -181,9 +193,9 @@ export default function PocetnaPage() {
                         onClick={() => pushRecentModule(m.href)}
                         // Touch-meta min 44×44px na tablet/telefon (DS §11) — isti bump
                         // kao sidebar (app-shell max-lg:py-2.5); min-h-11 garantuje visinu.
-                        className="inline-flex items-center gap-2 rounded-full bg-accent-subtle px-3 py-1.5 text-sm font-medium text-accent hover:bg-accent hover:text-accent-fg focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] max-lg:min-h-11 max-lg:py-2.5"
+                        className="inline-flex items-center gap-2 rounded-full bg-accent-subtle px-3 py-1.5 text-sm font-medium text-accent hover:bg-accent hover:text-accent-fg focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] max-lg:min-h-11 max-lg:py-2.5 lg:gap-1.5 lg:py-1"
                       >
-                        <Icon className="h-4 w-4 shrink-0" aria-hidden />
+                        <Icon className="h-4 w-4 shrink-0 lg:h-3.5 lg:w-3.5" aria-hidden />
                         <span className="truncate">{m.label}</span>
                       </Link>
                     </li>
@@ -193,7 +205,7 @@ export default function PocetnaPage() {
             </section>
           )}
 
-          {/* Mreža domenskih pločica — jedan izvor = NAV_DOMAINS, RBAC-filtrirano. */}
+          {/* Masonry domenskih pločica — jedan izvor = NAV_DOMAINS, RBAC-filtrirano. */}
           {visibleDomains.length === 0 ? (
             // Dozvole učitane (permissionsPending je iznad odsekao loading): prazno je
             // ili stvarno-nula-modula ili PAD upita dozvola (retry:false → ostaje za
@@ -210,24 +222,29 @@ export default function PocetnaPage() {
               />
             )
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            // CSS kolone = masonry: pločica zauzima tačno svoju visinu (nema izjednačavanja
+            // po vrsti kao u gridu). `break-inside-avoid` drži pločicu na okupu, `mb-*` je
+            // vertikalni razmak (row-gap ne postoji u multi-kolonama).
+            <div className="columns-1 gap-4 sm:columns-2 lg:columns-3 lg:gap-3 xl:columns-4">
               {visibleDomains.map((domain) => {
                 const DIcon = domain.icon;
                 return (
                   <section
                     key={domain.id}
-                    className="rounded-panel border border-line bg-surface p-4 transition hover:-translate-y-0.5 hover:border-accent hover:shadow-sm motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+                    className="mb-4 break-inside-avoid rounded-panel border border-line bg-surface p-4 transition hover:-translate-y-0.5 hover:border-accent hover:shadow-sm motion-reduce:transition-none motion-reduce:hover:translate-y-0 lg:mb-3 lg:p-3"
                   >
-                    <div className="mb-3 flex items-center gap-3">
+                    <div className="mb-3 flex items-center gap-3 lg:mb-2 lg:gap-2">
                       <span
-                        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-subtle text-accent"
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-subtle text-accent lg:h-7 lg:w-7"
                         aria-hidden
                       >
-                        <DIcon className="h-5 w-5" />
+                        <DIcon className="h-5 w-5 lg:h-4 lg:w-4" />
                       </span>
                       <div className="min-w-0">
-                        <h3 className="truncate text-md font-semibold text-ink">{domain.title}</h3>
-                        <p className="tnums text-xs text-ink-secondary">
+                        <h3 className="truncate text-md font-semibold text-ink lg:text-base">
+                          {domain.title}
+                        </h3>
+                        <p className="tnums text-xs text-ink-secondary lg:text-2xs">
                           {/* Broji i direktne stavke i module pod-grupa (allModules). */}
                           {moduliLabel(allModules(domain).length)}
                         </p>
@@ -241,8 +258,8 @@ export default function PocetnaPage() {
                     {domain.groups?.map((g) => {
                       const GIcon = g.icon;
                       return (
-                        <div key={g.id} className="mt-2">
-                          <div className="mb-1 flex items-center gap-1.5 px-2 text-2xs font-semibold uppercase tracking-wider text-ink-secondary">
+                        <div key={g.id} className="mt-2 lg:mt-1.5">
+                          <div className="mb-1 flex items-center gap-1.5 px-2 text-2xs font-semibold uppercase tracking-wider text-ink-secondary lg:mb-0.5">
                             <GIcon className="h-3 w-3 shrink-0" aria-hidden />
                             <span className="min-w-0 flex-1 truncate">{g.title}</span>
                           </div>
