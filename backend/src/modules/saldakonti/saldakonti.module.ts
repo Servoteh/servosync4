@@ -6,6 +6,7 @@ import { SaldakontiController } from "./saldakonti.controller";
 import { OpenItemsService } from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
 import { CompensationService } from "./compensation.service";
+import { CompensationPdfService } from "./compensation-pdf.service";
 import { IosPdfService } from "./ios-pdf.service";
 import { PartnerCardService } from "./partner-card.service";
 import { CollectionDashboardService } from "./collection-dashboard.service";
@@ -33,7 +34,7 @@ import { IzvodiModule } from "../izvodi/izvodi.module";
   // revalorizacija deviznih stavki (nalog kursnih razlika + kurs na dan), Batch C.
   imports: [PrismaModule, PostingModule, DocumentsModule, GlModule, IzvodiModule],
   controllers: [SaldakontiController],
-  providers: [OpenItemsService, ReconciliationService, CompensationService, IosPdfService, PartnerCardService, CollectionDashboardService, DunningService, DunningPdfService, FxRevaluationService],
+  providers: [OpenItemsService, ReconciliationService, CompensationService, CompensationPdfService, IosPdfService, PartnerCardService, CollectionDashboardService, DunningService, DunningPdfService, FxRevaluationService],
   exports: [OpenItemsService, ReconciliationService, CompensationService],
 })
 export class SaldakontiModule {}

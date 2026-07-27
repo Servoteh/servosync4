@@ -12,14 +12,53 @@ ne slažu, u tekstu piše izričito i **veruje se probi**.
 
 ## 0. ŠTA JE U MEĐUVREMENU POPRAVLJENO (27.07.2026, grana `feat/4.0-bigbit-nocni-sync`)
 
-Od 21 nabrojanog kvara popravljena su **DVA — ona koja su blokirala paralelni PDV obračun**.
-Ostatak ovog dokumenta ostaje na snazi; ništa drugo nije dirano.
+> **TALAS ŠTAMPI ZAVRŠEN 27.07.2026.** Registar svih obrazaca sa rutama, dugmadima i
+> spiskom onoga što još fali: **[docs/STAMPE_4.0.md](STAMPE_4.0.md)**.
+> Ispod je stanje po nalazima ove revizije.
+
+Od 21 nabrojanog kvara **zatvoreno je 15**, od čega 13 u talasu štampi. Ostatak ostaje na snazi.
 
 | # | Kvar | Stanje |
 |---|------|--------|
 | 3.1 | Detalj dokumenta se ne otvara u objavljenoj aplikaciji (5 modula) | **POPRAVLJENO** |
 | 3.3 | KIF/KUF/PP-PDV daju besmislene iznose bez upozorenja | **POPRAVLJENO** |
-| 3.2, 3.4–3.21 | sve ostalo | **OSTAJE — nije dirano** |
+| 3.4 | Ulazna e-faktura sa SEF-a prihvata se bez uvida u stavke | **ZATVORENO** — `GET /v1/sef/incoming/:id/pdf` + dugme „Štampa" na `/sef` (ljudski čitljiv prikaz UBL-a, rok od 15 dana, kontrola iznosa XML↔evidencija) |
+| 3.5 | Izlazna e-faktura: poslati UBL se ne može ni videti ni preuzeti | **ZATVORENO** — `GET /v1/sef/outbox/:id/pdf`; štampa se SAČUVAN UBL, ne trenutno stanje baze |
+| 3.6 | Storniran račun izlazi iz štampe identično važećem | **ZATVORENO** — statusna značka + dijagonalni vodeni žig (NACRT / STORNIRANO / ODBIJENO) na svim obrascima |
+| 3.7 | Svi domaći dokumenti štampaju se sa naslovom „RAČUN" | **ZATVORENO** — AVR/KO/KZ imaju svoje obrasce i naslove; AVR se bira sam po `documentType` |
+| 3.9 | Otpremnica savršeno radi, a ne može da se odštampa | **ZATVORENO** — dugme na `/fakturisanje/detalj` (Select „Vrsta štampe") i nezavisan robni obrazac `?variant=otpremnica` sa Code 128 po stavci |
+| 3.10 | Popisna lista se ne može odštampati | **ZATVORENO** — `GET /v1/robno/inventory-counts/:id/pdf` (popunjena i prazna), zakonski obrazac, dugmad na `/robno/popis` |
+| 3.11 | Opomena i kompenzacija postoje kao radnja, ne kao dokument | **ZATVORENO** — `dunning/pdf` sa IZBOROM nivoa 1/2/3 i potpisnim mestom; `compensation/:id/pdf` + **spisak kompenzacija** (`GET /v1/saldakonti/compensation`), pa se izjava štampa i sutradan |
+| 3.12 | Knjižno odobrenje / zaduženje ne postoji | **ZATVORENO** — `?variant=credit-note` / `debit-note`, vrednosni obrazac po BigBit `KnjiznoZadOd` + klauzula o potvrdi primaoca |
+| 3.13 | Zapisnik o prijemu ne postoji kao dokument | **DELIMIČNO** — postoji Zapisnik o višku/manjku iz popisa (`?variant=zapisnik`); kvalitativni zapisnik o prijemu i dalje fali |
+| 3.14 | Bilans stanja i bilans uspeha nemaju štampu | **ZATVORENO** — `GET /v1/zavrsni/statements/:id/pdf`, propisani obrazac (Sl. glasnik RS 89/2020), isti izvor kao APR XML |
+| 3.15 | Dnevnik knjiženja se ne može odštampati kao knjiga | **ZATVORENO** — `journal-book/pdf`, uz kartica konta, nalog i bruto bilans; obim je OBAVEZAN (godina ili period) + kapa od 20.000 stavki |
+| 3.16 | Skriveni limiti i tihi filteri — korisnik ne zna da nešto ne vidi | **ZATVORENO** — traka primenjenih filtera na svakom izveštaju, upozorenje „PRIKAZANO PRVIH N OD M", ispisan obim bruto bilansa; lager pretraga prebačena u SQL (bila je post-filter posle paginacije i gubila redove) |
+| 3.19 | Nivelacija prikazuje „Dokument nema stavki" a ima | **ZATVORENO** — obrazac čita `stock_leveling_items`, a kad parova nema ispisuje uputstvo umesto pada |
+| 3.2, 3.8, 3.17, 3.18, 3.20, 3.21 | ostalo | **OSTAJE — nije dirano** |
+
+### Uz to — ujednačen izgled svih štampi (najvidljiviji deo za korisnika)
+
+Četiri paketa štampi su građena odvojeno i napravila tri kopije istog zaglavlja: logo 110/120/128 px,
+tri različite noge, dva formata para, dva pravopisa novca (`28857900,62` naspram `28.857.900,62`) na
+DVA dugmeta istog ekrana. Sve je svedeno na `backend/src/modules/documents/doc-layout/` — jedan izvor
+teme, formatiranja, noge i potpisnog bloka. Uz to su ispravljeni nalazi revizije obrazaca:
+
+- kolone koje su se **štampale van papira** (nivelacija — kolona „Nivelacija"; kalkulacija — „MP cena")
+  i naziv artikla stisnut na jednu reč po redu; dodat test koji pada čim zbir širina pređe stranu;
+- **lažno „NEUSKLAĐENO"** na kartici konta (razlika duguje/potražuje na kartici je SALDO, ne greška)
+  i na nivelaciji/kalkulaciji (fiksna tolerancija naspram zaokruženja po stavci);
+- **red UKUPNO se nije slagao sa zbirom odštampane kolone** (narudžbenica, 3-way match);
+- „Artikal #62" umesto naziva robe na izveštaju poređenja;
+- iznos u slovima: „hiljadu dinara i **100/100**", „jedan **dinara**", i tiho „nula dinara" preko 10¹²;
+- `⌀` u nazivima artikala se štampao kao prazan kvadratić, `↔` je Roboto tiho brisao;
+- devizni izvod je dinarske zbirove ispisivao slovima u EUR;
+- štampa koja padne sada to i KAŽE (do sada se spinner ugasio i ništa se ne desi), a kad blokator
+  preseče iskačući prozor dokument se preuzima pod ispravnim imenom umesto `blob:…` (jedan
+  `frontend/src/lib/open-pdf.ts` umesto devet kopija).
+
+**Verifikacija (27.07.2026):** backend `tsc` ✅ · `nest build` ✅ · boot smoke ✅ ·
+`jest` 2502/2502 ✅ · `jest e2e` 4086/4086 ✅ · frontend `tsc` ✅ · `npm run build` (static export) ✅.
 
 **3.1 — dokumenta se otvaraju.** Pet modula je prebačeno sa `[id]` ruta na statičku rutu
 `/<modul>/detalj?id=N`. Posle čistog build-a u `frontend/out` postoje stvarni fajlovi

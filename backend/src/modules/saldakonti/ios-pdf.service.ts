@@ -4,6 +4,12 @@ import type { Column, Content, TableCell, TDocumentDefinitions } from "pdfmake/i
 import { PrismaService } from "../../prisma/prisma.service";
 import { PdfService } from "../documents/pdf.service";
 import { SERVOTEH_LOGO_DATA_URL } from "../documents/servoteh-logo";
+import {
+  LOGO_WIDTH,
+  buildPageFooter,
+  fmtMoney,
+  sanitizeText,
+} from "../documents/doc-layout";
 import { OpenItemsService, type OpenItem } from "./open-items.service";
 
 /**
@@ -226,20 +232,17 @@ export class IosPdfService {
         signLbl: { fontSize: 8, color: "#555", alignment: "center", margin: [0, 2, 0, 0] },
       },
       defaultStyle: { font: "Roboto", fontSize: 9 },
-      footer: (currentPage: number, pageCount: number): Content => ({
-        text: `IOS komitent ${partnerId} · ${fmtDate(asOf)} · strana ${currentPage}/${pageCount}`,
-        alignment: "center",
-        fontSize: 7,
-        color: "#888",
-        margin: [0, 8, 0, 0],
-      }),
+      footer: buildPageFooter(
+        `IOS · komitent ${partnerId} · na dan ${fmtDate(asOf)}`,
+        null,
+      ),
     };
   }
 
   private buildHeader(asOf: Date): Content {
     return {
       columns: [
-        { image: SERVOTEH_LOGO_DATA_URL, width: 128 },
+        { image: SERVOTEH_LOGO_DATA_URL, width: LOGO_WIDTH },
         {
           width: "*",
           margin: [12, 4, 0, 0],

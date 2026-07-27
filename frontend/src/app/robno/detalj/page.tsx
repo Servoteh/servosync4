@@ -2,7 +2,7 @@
 
 import { useEffect, useCallback, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Trash2 } from 'lucide-react';
+import { ArrowLeft, Printer, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useIdParam, listHref } from '@/lib/use-id-param';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -11,6 +11,7 @@ import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
+import { Select } from '@/components/ui-kit/select';
 import { UndoToast } from '@/components/undo-toast';
 import { formatDate, formatDecimal } from '@/lib/format';
 import { toast } from '@/lib/toast';
@@ -21,10 +22,15 @@ import {
   useLockDocument,
   useDeleteStockItem,
   useRestoreStockItem,
+  useStockDocumentPdf,
+  openPdf,
+  printVariantsForKind,
+  ROBNO_PRINT_LABEL,
   ROBNO_STATUS,
   ROBNO_KIND,
   type RobnoStatus,
   type RobnoKind,
+  type RobnoPrintVariant,
   type StockDocumentDetail,
   type StockDocumentItem,
 } from '@/api/robno';
@@ -281,6 +287,7 @@ export default function RobnoDetailPage() {
               <ArrowLeft className="h-4 w-4" aria-hidden />
               Nazad
             </Button>
+            {doc && <PrintActions doc={doc} />}
             {doc && (
               <PrimaryActions
                 doc={doc}
@@ -430,6 +437,53 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
         {label}
       </dt>
       <dd className="mt-1 text-sm">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * Štampa dokumenta — izbor obrasca (kad ih vrsta dokumenta ima više) + „Štampaj".
+ * Ulaz (UL) nudi Prijemnicu i Kalkulaciju (obrazac KL), izlaz (IZ) Izdatnicu i
+ * Otpremnicu (bez cena, za vozača). PDF se otvara u novom tabu — ruta traži
+ * Authorization header, pa ide kroz `apiBlob`, ne kroz običan link.
+ */
+function PrintActions({ doc }: { doc: StockDocumentDetail }) {
+  const variants = printVariantsForKind(doc.kind);
+  const [variant, setVariant] = useState<RobnoPrintVariant>(variants[0]);
+  const pdf = useStockDocumentPdf();
+
+  // Promena vrste dokumenta (novi detalj) vraća izbor na podrazumevani obrazac.
+  useEffect(() => {
+    setVariant(variants[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.kind]);
+
+  return (
+    <div className="flex items-center gap-2">
+      {variants.length > 1 && (
+        <div className="w-52">
+          <Select
+            aria-label="Obrazac štampe"
+            value={variant}
+            onChange={(e) => setVariant(e.target.value as RobnoPrintVariant)}
+            options={variants.map((v) => ({ value: v, label: ROBNO_PRINT_LABEL[v] }))}
+          />
+        </div>
+      )}
+      <Button
+        variant="secondary"
+        loading={pdf.isPending}
+        title={`Štampa: ${ROBNO_PRINT_LABEL[variant]}`}
+        onClick={() =>
+          pdf.mutate({ id: doc.id, variant }, {
+            onSuccess: (blob) => openPdf(blob),
+            onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+          })
+        }
+      >
+        <Printer className="h-4 w-4" aria-hidden />
+        Štampaj
+      </Button>
     </div>
   );
 }

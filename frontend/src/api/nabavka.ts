@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 
 /**
  * NACRT — data sloj modula Nabavka (Traka B §B). TanStack Query hooks nad NestJS
@@ -719,5 +719,63 @@ export function useAcceptQuote() {
         body: JSON.stringify({ items }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────── štampa (PDF)
+//
+// Sve štampe modula idu kroz JWT-zaštićene GET rute koje vraćaju `application/pdf`
+// inline, pa se povlače kroz `apiBlob` (Authorization header) i otvaraju
+// `openPdf`-om u novom tabu. Permisija je NABAVKA_READ (klasna na kontroleru) —
+// ko vidi dokument, sme i da ga odštampa.
+
+/** Otvori PDF Blob u novom tabu (pregled u browseru + preuzimanje). */
+export { openPdf } from '@/lib/open-pdf';
+
+/**
+ * Štampa upita za ponudu — GET /nabavka/rfqs/:id/pdf. Opcioni `deadline` (ISO
+ * datum) ispisuje rok za dostavu ponude na dokumentu.
+ */
+export function useRfqPdf() {
+  return useMutation({
+    mutationFn: ({ id, deadline }: { id: number; deadline?: string }) =>
+      apiBlob(`${BASE}/rfqs/${id}/pdf${buildQuery({ deadline })}`),
+  });
+}
+
+/**
+ * Štampa narudžbenice dobavljaču — GET /nabavka/orders/:id/pdf.
+ * `variant: 'bezCena'` daje primerak za magacin (bez cena i iznosa).
+ */
+export function usePurchaseOrderPdf() {
+  return useMutation({
+    mutationFn: ({ id, variant }: { id: number; variant?: 'bezCena' }) =>
+      apiBlob(`${BASE}/orders/${id}/pdf${buildQuery({ variant })}`),
+  });
+}
+
+/** Štampa poređenja naručeno/primljeno/fakturisano — GET /nabavka/orders/:id/match/pdf. */
+export function useOrderMatchPdf() {
+  return useMutation({
+    mutationFn: (id: number) => apiBlob(`${BASE}/orders/${id}/match/pdf`),
+  });
+}
+
+/**
+ * Štampa pregleda odstupanja — GET /nabavka/match-summary/pdf. Prima ISTE filtere
+ * kao ekran; `skip` se namerno ne šalje (izveštaj pokriva period, ne stranu ekrana).
+ */
+export function useMatchSummaryPdf() {
+  return useMutation({
+    mutationFn: (filters: MatchSummaryFilters = {}) =>
+      apiBlob(
+        `${BASE}/match-summary/pdf${buildQuery({
+          from: filters.from,
+          to: filters.to,
+          supplierId: filters.supplierId,
+          onlyWithFindings: filters.onlyWithFindings ? 'true' : undefined,
+          take: filters.take,
+        })}`,
+      ),
   });
 }

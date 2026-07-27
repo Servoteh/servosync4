@@ -9,11 +9,15 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
+import { Select } from '@/components/ui-kit/select';
 import { CustomerPicker } from '@/components/customer-picker';
 import { formatDate, formatDecimal } from '@/lib/format';
+import { toast } from '@/lib/toast';
 import {
   usePartnerCard,
   usePartnerCardPdf,
+  useDunningPdf,
+  useIosPdf,
   openPdf,
   type PartnerCardRow,
 } from '@/api/saldakonti';
@@ -43,6 +47,8 @@ export default function KarticaKomitentaPage() {
       setPartner((prev) => prev ?? { id: linkedPartnerId, name: '' });
     }
   }, [linkedPartnerId]);
+  // Nivo opomene (1|2|3) — backend za svaki nivo štampa drugi tekst i rok.
+  const [dunningLevel, setDunningLevel] = useState(1);
   const [accountCode, setAccountCode] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -67,6 +73,11 @@ export default function KarticaKomitentaPage() {
   });
 
   const pdf = usePartnerCardPdf();
+  // Kartica je jedini ekran gde je komitent već izabran, pa ovde stoje i dve
+  // štampe vezane za NJEGA: opomena (dosad se mogla samo poslati mejlom, bez
+  // GET rute) i IOS obrazac usaglašavanja.
+  const dunningPdf = useDunningPdf();
+  const iosPdf = useIosPdf();
 
   const data = card.data?.data;
   const rows = data?.rows ?? [];
@@ -219,9 +230,9 @@ export default function KarticaKomitentaPage() {
           </div>
         )}
 
-        {pdf.error && (
+        {(pdf.error || dunningPdf.error || iosPdf.error) && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
-            {(pdf.error as Error).message}
+            {((pdf.error ?? dunningPdf.error ?? iosPdf.error) as Error).message}
           </div>
         )}
 
@@ -267,27 +278,89 @@ export default function KarticaKomitentaPage() {
                 )}
               </div>
 
-              <Button
-                type="button"
-                variant="secondary"
-                loading={pdf.isPending}
-                disabled={partner == null}
-                title="Štampa kartice komitenta (PDF)"
-                onClick={() =>
-                  partner != null &&
-                  pdf.mutate(
-                    {
-                      partnerId: partner.id,
-                      accountCode: applied.accountCode.trim() || undefined,
-                      from: applied.from || undefined,
-                      to: applied.to || undefined,
-                    },
-                    { onSuccess: openPdf },
-                  )
-                }
-              >
-                Štampa PDF
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  loading={pdf.isPending}
+                  disabled={partner == null}
+                  title="Štampa kartice komitenta (PDF)"
+                  onClick={() =>
+                    partner != null &&
+                    pdf.mutate(
+                      {
+                        partnerId: partner.id,
+                        accountCode: applied.accountCode.trim() || undefined,
+                        from: applied.from || undefined,
+                        to: applied.to || undefined,
+                      },
+                      { onSuccess: (blob) => openPdf(blob) },
+                    )
+                  }
+                >
+                  Štampa PDF
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  loading={iosPdf.isPending}
+                  disabled={partner == null}
+                  title="IOS — izvod otvorenih stavki (obrazac usaglašavanja salda)"
+                  onClick={() =>
+                    partner != null &&
+                    iosPdf.mutate(
+                      { partnerId: partner.id, asOf: applied.to || undefined },
+                      { onSuccess: (blob) => openPdf(blob) },
+                    )
+                  }
+                >
+                  IOS (PDF)
+                </Button>
+
+                {/* Nivo opomene se BIRA: backend za nivo 3 štampa „OPOMENA PRED
+                    UTUŽENJEM" sa drugim tekstom i kraćim rokom, a tvrdo zakucan
+                    nivo 1 je te obrasce činio nedostupnim iz aplikacije. */}
+                <label className="flex items-center gap-2 text-xs text-ink-secondary">
+                  Nivo opomene
+                  <div className="w-28">
+                    <Select
+                      value={String(dunningLevel)}
+                      onChange={(e) => setDunningLevel(Number(e.target.value))}
+                      options={[
+                        { value: '1', label: 'Nivo 1' },
+                        { value: '2', label: 'Nivo 2' },
+                        { value: '3', label: 'Nivo 3 — utuženje' },
+                      ]}
+                    />
+                  </div>
+                </label>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  loading={dunningPdf.isPending}
+                  disabled={partner == null}
+                  title={`Opomena za naplatu — pregled dospelih neizmirenih stavki (nivo ${dunningLevel})`}
+                  onClick={() =>
+                    partner != null &&
+                    dunningPdf.mutate(
+                      {
+                        partnerId: partner.id,
+                        level: dunningLevel,
+                        asOf: applied.to || undefined,
+                      },
+                      {
+                        onSuccess: (blob) =>
+                          openPdf(blob, `Opomena-${partner.id}-N${dunningLevel}.pdf`),
+                        onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+                      },
+                    )
+                  }
+                >
+                  Opomena (PDF)
+                </Button>
+              </div>
             </div>
 
             <DataTable

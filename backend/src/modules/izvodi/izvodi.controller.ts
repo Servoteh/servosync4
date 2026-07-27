@@ -9,14 +9,17 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { BankStatementService } from "./bank-statement.service";
+import { BankStatementPrintService } from "./bank-statement-print.service";
 import type { ImportStatementDto } from "./dto/import-statement.dto";
 import type { PostStatementDto } from "./dto/post-statement.dto";
 import type {
@@ -39,7 +42,10 @@ import type {
 @RequirePermission(PERMISSIONS.IZVODI_READ)
 @Controller({ path: "izvodi", version: "1" })
 export class IzvodiController {
-  constructor(private readonly statements: BankStatementService) {}
+  constructor(
+    private readonly statements: BankStatementService,
+    private readonly statementPrint: BankStatementPrintService,
+  ) {}
 
   @Post("preview")
   @RequirePermission(PERMISSIONS.IZVODI_IMPORT)
@@ -71,6 +77,30 @@ export class IzvodiController {
   @Get(":id")
   get(@Param("id", ParseIntPipe) id: number) {
     return this.statements.getStatement(id);
+  }
+
+  /**
+   * ŠTAMPA IZVODA — PDF inline (`application/pdf`): zaglavlje firme, tabela stavki
+   * (komitent / žiro / poziv na broj / odliv / priliv), rekapitulacija stanja sa
+   * kontrolom salda i potpisi. Devizni izvod dobija i kolone valuta/kurs.
+   * Nasleđuje klasnu IZVODI_READ (read-only izlaz).
+   */
+  @Get(":id/pdf")
+  async statementPdf(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } = await this.statementPrint.buildStatementPdf(
+      id,
+      req.user?.email ?? null,
+    );
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(fileName)}"`,
+    );
+    res.send(buffer);
   }
 
   /**

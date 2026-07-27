@@ -28,6 +28,8 @@ import {
   useStornoInvoice,
   SALES_STATUS,
   SALES_DOCUMENT_TYPE,
+  INVOICE_PRINT_VARIANT,
+  type InvoicePrintVariant,
   type InvoiceDetail,
   type InvoiceItem,
 } from '@/api/sales';
@@ -61,6 +63,20 @@ const PROFORMA_TYPES = new Set<string>([
   SALES_DOCUMENT_TYPE.PON,
   SALES_DOCUMENT_TYPE.PROF,
 ]);
+
+/**
+ * Vrste štampe jednog dokumenta (BigBit paritet). Motor za sve postoji na backendu
+ * (`?variant=…`); bez ovog izbora korisnik je mogao da odštampa SAMO račun — otpremnica,
+ * knjižno odobrenje i knjižno zaduženje su bili nedostupni iako servis radi.
+ */
+const PRINT_VARIANT_OPTIONS: { value: InvoicePrintVariant; label: string }[] = [
+  { value: INVOICE_PRINT_VARIANT.STANDARD, label: 'Račun' },
+  { value: INVOICE_PRINT_VARIANT.DELIVERY, label: 'Otpremnica (bez cena)' },
+  { value: INVOICE_PRINT_VARIANT.EXPORT, label: 'Ino faktura (engleski)' },
+  { value: INVOICE_PRINT_VARIANT.ADVANCE, label: 'Avansni račun' },
+  { value: INVOICE_PRINT_VARIANT.CREDIT_NOTE, label: 'Knjižno odobrenje' },
+  { value: INVOICE_PRINT_VARIANT.DEBIT_NOTE, label: 'Knjižno zaduženje' },
+];
 
 /** Ciljne level-0 vrste za prepis predračuna → račun (backend carry-over). */
 const TARGET_TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -200,6 +216,11 @@ export default function FakturisanjeDetailPage() {
 
   // Ciljna vrsta prepisa (predračun → račun). Default IFR (roba u zemlji).
   const [targetType, setTargetType] = useState<string>(SALES_DOCUMENT_TYPE.IFR);
+  // Vrsta štampe (račun / otpremnica / KO / KZ / …). Prazno = backend bira po vrsti
+  // dokumenta (AVR → avansni obrazac, izvoz → ino faktura).
+  const [printVariant, setPrintVariant] = useState<InvoicePrintVariant>(
+    INVOICE_PRINT_VARIANT.STANDARD,
+  );
   // SEF feedback (enqueue uspeh/upozorenje/greška) — nezavisan od carry-over/knjiži bannera.
   const [sefBanner, setSefBanner] = useState<{
     tone: 'success' | 'warn' | 'danger';
@@ -238,6 +259,7 @@ export default function FakturisanjeDetailPage() {
     setStornoOpen(false);
     setAdvanceOpen(false);
     setTargetType(SALES_DOCUMENT_TYPE.IFR);
+    setPrintVariant(INVOICE_PRINT_VARIANT.STANDARD);
   }, [validId]);
 
   // D8: zaključan (proknjižen) dokument ne nudi izmene (prepis/knjiženje) — samo storno-put.
@@ -377,16 +399,31 @@ export default function FakturisanjeDetailPage() {
             </Button>
 
             {doc && (
-              <Button
-                variant="secondary"
-                loading={pdf.isPending}
-                onClick={() =>
-                  pdf.mutate({ id: doc.id }, { onSuccess: (blob) => openPdf(blob) })
-                }
-              >
-                <Printer className="h-4 w-4" aria-hidden />
-                Štampaj
-              </Button>
+              <div className="flex items-center gap-2">
+                <div className="w-52">
+                  <Select
+                    value={printVariant}
+                    onChange={(e) =>
+                      setPrintVariant(e.target.value as InvoicePrintVariant)
+                    }
+                    options={PRINT_VARIANT_OPTIONS}
+                    aria-label="Vrsta štampe"
+                  />
+                </div>
+                <Button
+                  variant="secondary"
+                  loading={pdf.isPending}
+                  onClick={() =>
+                    pdf.mutate(
+                      { id: doc.id, variant: printVariant || undefined },
+                      { onSuccess: (blob) => openPdf(blob) },
+                    )
+                  }
+                >
+                  <Printer className="h-4 w-4" aria-hidden />
+                  Štampaj
+                </Button>
+              </div>
             )}
 
             {doc && canWrite && (

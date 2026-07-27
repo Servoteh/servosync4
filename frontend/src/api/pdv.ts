@@ -420,8 +420,4 @@ export function useSendPpPdvMail() {
 }
 
 /** Otvori PDF Blob u novom tabu (browser preview + download). */
-export function openPdf(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener');
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
+export { openPdf } from '@/lib/open-pdf';

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Printer } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -20,7 +21,10 @@ import {
   useComputeIncomeStatement,
   useFinalizeStatement,
   useAprXmlDownload,
+  useStatementPdf,
+  openStatementPdf,
   downloadXml,
+  STATEMENT_PRINT_UNIT,
   STATEMENT_TYPE,
   STATEMENT_STATUS,
   type GrossTrialBalanceRow,
@@ -222,6 +226,7 @@ export default function ZavrsniRacunPage() {
   const computeBU = useComputeIncomeStatement();
   const finalize = useFinalizeStatement();
   const aprXml = useAprXmlDownload();
+  const statementPdf = useStatementPdf();
 
   // Sačuvani obračuni za tekuću godinu, po tipu.
   const byType = useMemo(() => {
@@ -274,6 +279,26 @@ export default function ZavrsniRacunPage() {
         actions={
           tab !== 'bruto' ? (
             <div className="flex items-center gap-2">
+              {/* Propisani obrazac kao PDF (u hiljadama dinara) — isti izvor podataka
+                  kao APR XML. Bez ovoga se bilans nije mogao odštampati ni potpisati. */}
+              {activeStatement && (
+                <Button
+                  variant="secondary"
+                  loading={statementPdf.isPending}
+                  onClick={() =>
+                    statementPdf.mutate(
+                      {
+                        id: activeStatement.id,
+                        unit: STATEMENT_PRINT_UNIT.THOUSANDS,
+                      },
+                      { onSuccess: (blob) => openStatementPdf(blob) },
+                    )
+                  }
+                >
+                  <Printer className="h-4 w-4" aria-hidden />
+                  Štampaj obrazac
+                </Button>
+              )}
               {activeStatement && (
                 <Button
                   variant="secondary"

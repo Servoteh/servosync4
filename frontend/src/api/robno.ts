@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiFetch, apiBlob } from './client';
 
 /**
  * Robno / magacin — data sloj (Faza 3). TanStack Query hooks nad NestJS
@@ -680,3 +680,113 @@ export function useItemCard(filters: ItemCardFilters) {
     enabled,
   });
 }
+
+// ─────────────────────────────────── štampa (PDF, BigBit paritet + nadgradnja)
+
+/**
+ * Obrasci štampe robnog dokumenta — 1:1 sa backend `StockPrintVariant`.
+ * Kad se varijanta ne prosledi, backend je izvodi iz vrste dokumenta
+ * (UL→primka, IZ→izdatnica, NIV→nivelacija, PRENOS→prenosnica, VISAK/MANJAK→zapisnik).
+ */
+export const ROBNO_PRINT_VARIANT = {
+  primka: 'primka',
+  izdatnica: 'izdatnica',
+  otpremnica: 'otpremnica',
+  nivelacija: 'nivelacija',
+  prenosnica: 'prenosnica',
+  kalkulacija: 'kalkulacija',
+  zapisnik: 'zapisnik',
+} as const;
+
+export type RobnoPrintVariant =
+  (typeof ROBNO_PRINT_VARIANT)[keyof typeof ROBNO_PRINT_VARIANT];
+
+/** Srpski nazivi obrazaca za meni „Štampaj". */
+export const ROBNO_PRINT_LABEL: Record<RobnoPrintVariant, string> = {
+  primka: 'Prijemnica (primka)',
+  izdatnica: 'Izdatnica',
+  otpremnica: 'Otpremnica (bez cena)',
+  nivelacija: 'Nivelacija cena',
+  prenosnica: 'Prenosnica',
+  kalkulacija: 'Kalkulacija cene (obrazac KL)',
+  zapisnik: 'Zapisnik o višku/manjku',
+};
+
+/**
+ * Obrasci koji imaju smisla za datu vrstu dokumenta. Prvi u nizu je podrazumevani.
+ * Otpremnica se nudi i uz izdatnicu — magacin izdaje robu, vozač nosi otpremnicu.
+ */
+export function printVariantsForKind(kind: RobnoKind): RobnoPrintVariant[] {
+  switch (kind) {
+    case ROBNO_KIND.UL:
+      return ['primka', 'kalkulacija'];
+    case ROBNO_KIND.IZ:
+      return ['izdatnica', 'otpremnica'];
+    case ROBNO_KIND.NIV:
+      return ['nivelacija'];
+    case ROBNO_KIND.PRENOS:
+      return ['prenosnica'];
+    case ROBNO_KIND.VISAK:
+    case ROBNO_KIND.MANJAK:
+      return ['zapisnik'];
+    default:
+      return ['izdatnica'];
+  }
+}
+
+/**
+ * PDF robnog dokumenta (GET /robno/documents/:id/pdf?variant). Statička štampa ide
+ * kroz `apiBlob` jer ruta traži Authorization header (ne može običan `<a href>`).
+ * Permisija ROBNO_READ.
+ */
+export function useStockDocumentPdf() {
+  return useMutation({
+    mutationFn: ({ id, variant }: { id: number; variant?: RobnoPrintVariant }) =>
+      apiBlob(`${BASE}/documents/${id}/pdf${variant ? `?variant=${variant}` : ''}`),
+  });
+}
+
+/** Varijante popisne liste — `prazna` za teren, `popunjena` sa razlikama. */
+export type PopisPrintVariant = 'prazna' | 'popunjena';
+
+/** PDF POPISNE LISTE (GET /robno/inventory-counts/:id/pdf?variant). */
+export function useInventoryCountPdf() {
+  return useMutation({
+    mutationFn: ({ id, variant }: { id: number; variant: PopisPrintVariant }) =>
+      apiBlob(`${BASE}/inventory-counts/${id}/pdf?variant=${variant}`),
+  });
+}
+
+/** PDF LAGER LISTE (GET /robno/lager/pdf) — isti filteri kao lista na ekranu. */
+export function useLagerPdf() {
+  return useMutation({
+    mutationFn: (filters: { warehouseId?: number; onlyInStock?: boolean; q?: string } = {}) => {
+      const params = new URLSearchParams();
+      if (filters.warehouseId != null) params.set('warehouseId', String(filters.warehouseId));
+      if (filters.onlyInStock) params.set('onlyInStock', 'true');
+      if (filters.q) params.set('q', filters.q);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      return apiBlob(`${BASE}/lager/pdf${query}`);
+    },
+  });
+}
+
+/** PDF KARTICE ARTIKLA (GET /robno/item-card/pdf) — isti parametri kao panel. */
+export function useItemCardPdf() {
+  return useMutation({
+    mutationFn: (filters: ItemCardFilters) => {
+      const params = new URLSearchParams();
+      params.set('itemId', String(filters.itemId ?? ''));
+      params.set('warehouseId', String(filters.warehouseId ?? ''));
+      if (filters.from) params.set('from', filters.from);
+      if (filters.to) params.set('to', filters.to);
+      return apiBlob(`${BASE}/item-card/pdf?${params.toString()}`);
+    },
+  });
+}
+
+/**
+ * Otvori PDF Blob u novom tabu (pregled u browseru + preuzimanje). Isti idiom kao
+ * `sales`/`glavna-knjiga`; URL se oslobađa posle 30 s da ne curi memorija.
+ */
+export { openPdf } from '@/lib/open-pdf';

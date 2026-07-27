@@ -1,12 +1,16 @@
 'use client';
 
 import { useState } from 'react';
+import { Printer } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
+import { Button } from '@/components/ui-kit/button';
 import { formatDate } from '@/lib/format';
 import {
   useSupplierRfqs,
+  useRfqPdf,
+  openPdf,
   type SupplierRfqListRow,
   type SupplierRfqDetail,
 } from '@/api/nabavka';
@@ -46,6 +50,19 @@ export function RfqPanel() {
   // cene odmah po prihvatanju (sema ih ne cuva na upitu).
   const [acceptRfq, setAcceptRfq] = useState<SupplierRfqDetail | null>(null);
 
+  // Štampa upita (PDF). Servis je postojao od pocetka, ali samo kao prilog
+  // auto-mailu — bez ovog dugmeta upit se nije mogao odstampati iz aplikacije.
+  const rfqPdf = useRfqPdf();
+  const [printError, setPrintError] = useState<string | null>(null);
+  async function onPrint(id: number): Promise<void> {
+    setPrintError(null);
+    try {
+      openPdf(await rfqPdf.mutateAsync({ id }));
+    } catch (e) {
+      setPrintError((e as Error).message);
+    }
+  }
+
   const columns: Column<SupplierRfqListRow>[] = [
     {
       key: 'rfqNumber',
@@ -83,6 +100,27 @@ export function RfqPanel() {
         return <StatusBadge tone={m.tone} label={m.label} />;
       },
     },
+    {
+      key: 'akcije',
+      header: '',
+      align: 'right',
+      render: (r) => (
+        <div className="flex justify-end">
+          <Button
+            variant="ghost"
+            title="Štampa upita za ponudu (PDF)"
+            loading={rfqPdf.isPending && rfqPdf.variables?.id === r.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onPrint(r.id);
+            }}
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Štampa
+          </Button>
+        </div>
+      ),
+    },
   ];
 
   return (
@@ -92,6 +130,12 @@ export function RfqPanel() {
       {query.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
           {(query.error as Error).message}
+        </div>
+      )}
+
+      {printError && (
+        <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
+          Štampa nije uspela: {printError}
         </div>
       )}
 

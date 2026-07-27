@@ -1,11 +1,14 @@
 'use client';
 
+import { toast } from '@/lib/toast';
+
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   ArrowLeft,
   Plus,
+  Printer,
   Pencil,
   Trash2,
   Link2,
@@ -28,6 +31,8 @@ import {
   usePostStatement,
   useDeleteStatementLine,
   useDeleteStatement,
+  useStatementPdf,
+  openPdf,
   isForeignCurrency,
   STATEMENT_STATUS,
   LINE_STATUS,
@@ -252,6 +257,10 @@ export default function IzvodDetailPage() {
     setLinkOpen(true);
   }, []);
 
+  // Štampa izvoda (PDF): zaglavlje firme, stavke, rekapitulacija stanja sa
+  // kontrolom salda i potpisi. Do sada izvod nije imao nijednu štampu.
+  const statementPdf = useStatementPdf();
+
   // Povratak na listu VRAĆA I FILTERE (`listHref` čita poslednje stanje
   // liste) — bez toga se posle svakog otvorenog dokumenta gubio filter i strana.
   const goBack = useCallback(() => router.push(listHref('/izvodi')), [router]);
@@ -294,6 +303,7 @@ export default function IzvodDetailPage() {
     (match.error as Error | null)?.message ??
     (post.error as Error | null)?.message ??
     (deleteStatement.error as Error | null)?.message ??
+    (statementPdf.error as Error | null)?.message ??
     null;
 
   return (
@@ -307,6 +317,22 @@ export default function IzvodDetailPage() {
               <ArrowLeft className="h-4 w-4" aria-hidden />
               Nazad
             </Button>
+            {doc && (
+              <Button
+                variant="secondary"
+                title="Štampa izvoda (PDF)"
+                loading={statementPdf.isPending}
+                onClick={() =>
+                  statementPdf.mutate(doc.id, {
+            onSuccess: (blob) => openPdf(blob),
+            onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+          })
+                }
+              >
+                <Printer className="h-4 w-4" aria-hidden />
+                Štampa
+              </Button>
+            )}
             {doc && <PrimaryActions doc={doc} match={match} post={post} />}
             {doc && doc.status !== STATEMENT_STATUS.POSTED && (
               <Button

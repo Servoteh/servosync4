@@ -63,8 +63,15 @@ export class SalesController {
 
   /**
    * Štampa fakture kao PDF (BigBit paritet — dosad je print servis postojao bez rute).
-   * variant: standardni/otpremnica/izvozni. Vraća application/pdf inline (browser preview
-   * + download). Permisija SALES_READ (pregled/štampa).
+   * `variant` bira šablon:
+   *   (izostavljen) — račun; za AVR se sam bira avansni obrazac
+   *   `delivery`    — otpremnica (bez cena)
+   *   `export`      — ino faktura (engleski)
+   *   `advance`     — avansni račun (osnov avansa + stanje naplate)
+   *   `credit-note` — knjižno odobrenje (vrednosni dokument, umanjenje)
+   *   `debit-note`  — knjižno zaduženje (vrednosni dokument, uvećanje)
+   * Vraća application/pdf inline (browser preview + download). Ime korisnika ide u
+   * nogu kao trag štampe. Permisija SALES_READ (pregled/štampa).
    */
   @Get("invoices/:id/pdf")
   @Header("Content-Type", "application/pdf")
@@ -72,13 +79,21 @@ export class SalesController {
     @Param("id", ParseIntPipe) id: number,
     @Query("variant") variant: string | undefined,
     @Res() res: Response,
+    @Req() req: { user: AuthUser },
   ): Promise<void> {
+    const printedBy = req.user?.email;
     const { buffer, fileName } =
       variant === "delivery"
-        ? await this.invoicePdf.buildDeliveryNotePdf(id)
+        ? await this.invoicePdf.buildDeliveryNotePdf(id, printedBy)
         : variant === "export"
-          ? await this.invoicePdf.buildExportInvoicePdf(id)
-          : await this.invoicePdf.buildInvoicePdf(id);
+          ? await this.invoicePdf.buildExportInvoicePdf(id, printedBy)
+          : variant === "advance"
+            ? await this.invoicePdf.buildAdvanceInvoicePdf(id, printedBy)
+            : variant === "credit-note"
+              ? await this.invoicePdf.buildCreditNotePdf(id, printedBy)
+              : variant === "debit-note"
+                ? await this.invoicePdf.buildDebitNotePdf(id, printedBy)
+                : await this.invoicePdf.buildInvoicePdf(id, undefined, printedBy);
     res.setHeader(
       "Content-Disposition",
       `inline; filename="${encodeURIComponent(fileName)}"`,

@@ -19,6 +19,8 @@ import {
   usePullIncoming,
   useAcceptIncoming,
   useRejectIncoming,
+  useSefIncomingPdf,
+  openPdf,
   canDecideIncoming,
   SEF_INCOMING_STATUS,
   type SefIncoming,
@@ -122,6 +124,23 @@ export function IncomingTab() {
   const pull = usePullIncoming();
   const accept = useAcceptIncoming();
   const reject = useRejectIncoming();
+  // Štampa ulazne e-fakture — čitljiv prikaz UBL-a (dokument koji ide u KUF dosije).
+  const incomingPdf = useSefIncomingPdf();
+
+  async function runPrint(row: SefIncoming): Promise<void> {
+    setNotice(null);
+    setBusyId(row.id);
+    try {
+      openPdf(await incomingPdf.mutateAsync(row.id));
+    } catch (e) {
+      setNotice({
+        tone: 'danger',
+        text: e instanceof ApiError ? e.message : 'Štampa nije uspela — pokušaj ponovo.',
+      });
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function runPull(): Promise<void> {
     setNotice(null);
@@ -324,6 +343,15 @@ export function IncomingTab() {
                 Odbij
               </Button>
             )}
+            <Button
+              variant="ghost"
+              loading={busy && incomingPdf.isPending}
+              disabled={busy}
+              onClick={() => void runPrint(r)}
+              title="Štampa ulazne e-fakture (čitljiv prikaz UBL-a sa SEF-a)"
+            >
+              Štampa
+            </Button>
             <Button
               variant="ghost"
               onClick={() => setTimelineRow(r)}

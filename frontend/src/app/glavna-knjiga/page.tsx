@@ -15,9 +15,15 @@ import { Input } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
+import { toast } from '@/lib/toast';
+import { Printer } from 'lucide-react';
 import {
   useJournalEntries,
   useAccountCard,
+  useJournalBookPdf,
+  useAccountCardPdf,
+  useTrialBalancePdf,
+  openPdf,
   GL_STATUS,
   type GlStatus,
   type JournalEntry,
@@ -191,6 +197,11 @@ function DnevnikView({ onOpen }: { onOpen: (id: number) => void }) {
   const resetPage = () => setValues({ strana: '1' });
 
   const list = useJournalEntries({ page, pageSize: PAGE_SIZE, orderType, year, status });
+  // Štampa knjiga GK: dnevnik knjiženja (isti filteri kao lista) i bruto bilans za
+  // izabranu godinu. Bez ovih dugmadi se knjige nisu mogle odštampati (nalaz revizije).
+  const bookPdf = useJournalBookPdf();
+  const trialPdf = useTrialBalancePdf();
+  const printYear = year === '' ? new Date().getFullYear() : year;
   const rows = list.data?.data ?? [];
   const total = list.data?.meta.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -260,10 +271,53 @@ function DnevnikView({ onOpen }: { onOpen: (id: number) => void }) {
           </button>
         )}
 
-        <span className="ml-auto self-center text-sm text-ink-secondary">
-          {list.data ? `${formatNumber(total)} naloga` : ''}
-        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="self-center text-sm text-ink-secondary">
+            {list.data ? `${formatNumber(total)} naloga` : ''}
+          </span>
+          <Button
+            variant="secondary"
+            title={`Štampa dnevnika glavne knjige za ${printYear}. godinu (proknjižene i zaključane stavke)${
+              status === 'DRAFT'
+                ? ' — dnevnik obuhvata samo proknjižene naloge, ne nacrte'
+                : ''
+            }`}
+            loading={bookPdf.isPending}
+            onClick={() =>
+              bookPdf.mutate(
+                // Godina je OBAVEZNA: bez nje bi se renderovao ceo ledger u jedan
+                // PDF (stotine strana) i blokirao backend. Isto pravilo kao kod
+                // bruto bilansa — kad polje nije popunjeno, uzima se tekuća godina.
+                { orderType: orderType || undefined, year: printYear },
+                {
+                  onSuccess: (blob) => openPdf(blob, `Dnevnik-knjizenja-${printYear}.pdf`),
+                  onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+                },
+              )
+            }
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Dnevnik (PDF)
+          </Button>
+          <Button
+            variant="secondary"
+            title={`Štampa bruto bilansa (zaključni list) za ${printYear}. godinu`}
+            loading={trialPdf.isPending}
+            onClick={() =>
+              trialPdf.mutate({ year: printYear }, { onSuccess: (blob) => openPdf(blob) })
+            }
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Bruto bilans (PDF)
+          </Button>
+        </div>
       </div>
+
+      {(bookPdf.error || trialPdf.error) && (
+        <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+          {((bookPdf.error ?? trialPdf.error) as Error).message}
+        </div>
+      )}
 
       {list.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
@@ -374,6 +428,8 @@ function KarticaKontaView() {
     analyticalCode: applied.komitent,
     costCenter: applied.costCenter || undefined,
   });
+  // Štampa kartice konta ide nad PRIMENJENIM filterima — isto što korisnik vidi.
+  const cardPdf = useAccountCardPdf();
   const rows = card.data?.data ?? [];
   const meta = card.data?.meta;
 
@@ -457,6 +513,26 @@ function KarticaKontaView() {
           Prikaži
         </Button>
 
+        <Button
+          variant="secondary"
+          title="Štampa kartice konta (A4 položeno, zaglavlje kolona se ponavlja na svakoj strani)"
+          disabled={applied.account === ''}
+          loading={cardPdf.isPending}
+          onClick={() =>
+            cardPdf.mutate(
+              {
+                accountCode: applied.account,
+                analyticalCode: applied.komitent,
+                costCenter: applied.costCenter || undefined,
+              },
+              { onSuccess: (blob) => openPdf(blob) },
+            )
+          }
+        >
+          <Printer className="h-4 w-4" aria-hidden />
+          Štampa (PDF)
+        </Button>
+
         {summary && (
           <div className="ml-auto flex flex-wrap items-end gap-6">
             {summary.map((s) => (
@@ -471,9 +547,9 @@ function KarticaKontaView() {
         )}
       </div>
 
-      {card.error && (
+      {(card.error || cardPdf.error) && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
-          {(card.error as Error).message}
+          {((card.error ?? cardPdf.error) as Error).message}
         </div>
       )}
 

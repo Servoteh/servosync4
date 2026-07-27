@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 
 /**
  * IZVODI (bankovni izvodi) — data sloj (Faza 4 §B). TanStack Query hooks nad NestJS
@@ -399,3 +399,21 @@ export function useLinkStatementLine() {
     onSuccess: invalidate,
   });
 }
+
+// ─────────────────────────────────────────────────── štampa izvoda (PDF)
+
+/**
+ * Štampa bankovnog izvoda — GET /izvodi/:id/pdf. Zaglavlje firme, tabela stavki
+ * (komitent / žiro / poziv na broj / odliv / priliv), rekapitulacija stanja sa
+ * kontrolom salda i potpisi; devizni izvod dobija i kolone valuta/kurs.
+ * Endpoint traži JWT, pa PDF ide kroz `apiBlob` i otvara se `openPdf`-om.
+ * Permisija IZVODI_READ.
+ */
+export function useStatementPdf() {
+  return useMutation({
+    mutationFn: (id: number) => apiBlob(`${BASE}/${id}/pdf`),
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + download). */
+export { openPdf } from '@/lib/open-pdf';

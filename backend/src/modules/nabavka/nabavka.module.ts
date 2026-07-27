@@ -9,6 +9,8 @@ import { NabavkaService } from "./nabavka.service";
 import { PurchaseNumberingService } from "./purchase-numbering.service";
 import { RfqPdfService } from "./rfq-pdf.service";
 import { ThreeWayMatchService } from "./three-way-match.service";
+import { PurchaseOrderPdfService } from "./print/purchase-order-pdf.service";
+import { MatchReportPdfService } from "./print/match-report-pdf.service";
 
 /**
  * Modul Nabavka (Traka B §B). Zavisnosti:
@@ -18,9 +20,23 @@ import { ThreeWayMatchService } from "./three-way-match.service";
  *   `receiveOrder` posle prijema automatski pravi UL StockDocument, kalkuliše i knjiži (Faza 3 veza).
  */
 @Module({
-  imports: [PrismaModule, MailModule, DocumentsModule, RobnoModule, PostingModule],
+  imports: [
+    PrismaModule,
+    MailModule,
+    DocumentsModule,
+    RobnoModule,
+    PostingModule,
+  ],
   controllers: [NabavkaController],
-  providers: [NabavkaService, PurchaseNumberingService, RfqPdfService, ThreeWayMatchService],
+  providers: [
+    NabavkaService,
+    PurchaseNumberingService,
+    RfqPdfService,
+    ThreeWayMatchService,
+    // Štampa (svi kroz PdfService iz DocumentsModule — bez novih zavisnosti):
+    PurchaseOrderPdfService, // narudžbenica dobavljaču
+    MatchReportPdfService, // poređenje naručeno/primljeno/fakturisano (detalj + pregled)
+  ],
   exports: [ThreeWayMatchService], // Batch C: 3-way match upozorenja u pripremi plaćanja
 })
 export class NabavkaModule {}

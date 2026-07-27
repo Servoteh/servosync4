@@ -3,14 +3,18 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   Param,
   ParseIntPipe,
   Patch,
   Post,
   Query,
   Req,
+  Res,
+  UnprocessableEntityException,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
@@ -25,6 +29,17 @@ import {
 } from "./carry-over.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
 import { ReservationService } from "./reservation.service";
+import {
+  StockDocumentPdfService,
+  STOCK_PRINT_VARIANTS,
+  type StockPrintVariant,
+} from "./print/stock-document-pdf.service";
+import {
+  InventoryCountPdfService,
+  INVENTORY_PRINT_VARIANTS,
+  type InventoryPrintVariant,
+} from "./print/inventory-count-pdf.service";
+import { StockReportPdfService } from "./print/stock-report-pdf.service";
 import type {
   CreateReservationDto,
   ListReservationsQuery,
@@ -54,6 +69,13 @@ import type {
  *   PATCH /api/v1/robno/inventory-counts/:id/items/:itemId — unos popisane količine (KolPop)
  *   POST  /api/v1/robno/inventory-counts/:id/finalize  — zaključi (VISAK/MANJAK dokumenti, COUNTING→POSTED)
  *
+ * Štampa (PDF, inline; sve pod ROBNO_READ — štampa je pregled):
+ *   GET /api/v1/robno/documents/:id/pdf?variant=  — primka | izdatnica | otpremnica |
+ *                                                   nivelacija | prenosnica | kalkulacija | zapisnik
+ *   GET /api/v1/robno/inventory-counts/:id/pdf?variant=prazna|popunjena — POPISNA LISTA
+ *   GET /api/v1/robno/lager/pdf                   — lager lista (A4 položeno)
+ *   GET /api/v1/robno/item-card/pdf               — kartica artikla
+ *
  * read = ROBNO_READ; kreiranje/kalkulacija/popis-write = ROBNO_WRITE; knjiženje = ROBNO_POST.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -67,7 +89,114 @@ export class RobnoController {
     private readonly inventory: InventoryService,
     private readonly carryOver: CarryOverService,
     private readonly reservation: ReservationService,
+    private readonly stockPdf: StockDocumentPdfService,
+    private readonly inventoryPdf: InventoryCountPdfService,
+    private readonly reportPdf: StockReportPdfService,
   ) {}
+
+  // ─── Štampa (PDF) ──────────────────────────────────────────────────────────
+  // Sve štampe robnog modula dele isti obrazac izgleda (`print/robno-doc-layout.ts`):
+  // zaglavlje firme, telo sa stavkama i ponovljenim zaglavljem kolona preko strana,
+  // zbirovi, potpisna mesta i noga „strana N/M" sa tragom štampe. Permisija ROBNO_READ
+  // (kao ostale read rute modula) — štampa je pregled, ne izmena.
+
+  /**
+   * Štampa robnog dokumenta u PDF (inline). `variant` bira obrazac:
+   * `primka | izdatnica | otpremnica | nivelacija | prenosnica | kalkulacija | zapisnik`.
+   * Kad se ne prosledi, obrazac se izvodi iz `kind` dokumenta (UL→primka, IZ→izdatnica,
+   * NIV→nivelacija, PRENOS→prenosnica, VISAK/MANJAK→zapisnik).
+   */
+  @Get("documents/:id/pdf")
+  @Header("Content-Type", "application/pdf")
+  async documentPdf(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("variant") variant: string | undefined,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const v = parseVariant(
+      variant,
+      STOCK_PRINT_VARIANTS,
+      "Nepoznat obrazac štampe",
+    ) as StockPrintVariant | undefined;
+    const { buffer, fileName } = await this.stockPdf.buildPdf(
+      id,
+      v,
+      req.user?.userId ?? null,
+    );
+    sendPdf(res, buffer, fileName);
+  }
+
+  /**
+   * Štampa POPISNE LISTE (zakonski obrazac) u PDF. `variant`:
+   *   `prazna`    — za teren (bez knjigovodstvenog stanja i cena, sa bar kodom i praznim poljima),
+   *   `popunjena` — puni obrazac sa višak/manjak razlikama i zbirovima (podrazumevano).
+   */
+  @Get("inventory-counts/:id/pdf")
+  @Header("Content-Type", "application/pdf")
+  async inventoryCountPdf(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("variant") variant: string | undefined,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const v =
+      (parseVariant(
+        variant,
+        INVENTORY_PRINT_VARIANTS,
+        "Nepoznata varijanta popisne liste",
+      ) as InventoryPrintVariant | undefined) ?? "popunjena";
+    const { buffer, fileName } = await this.inventoryPdf.buildPdf(
+      id,
+      v,
+      req.user?.userId ?? null,
+    );
+    sendPdf(res, buffer, fileName);
+  }
+
+  /** Štampa LAGER LISTE (A4 položeno) — isti filteri kao GET /robno/lager. */
+  @Get("lager/pdf")
+  @Header("Content-Type", "application/pdf")
+  async lagerPdf(
+    @Query("warehouseId") warehouseId: string | undefined,
+    @Query("onlyInStock") onlyInStock: string | undefined,
+    @Query("q") q: string | undefined,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } = await this.reportPdf.buildLagerPdf(
+      {
+        warehouseId: warehouseId ? Number(warehouseId) : undefined,
+        onlyInStock: onlyInStock === "true",
+        q,
+      },
+      req.user?.userId ?? null,
+    );
+    sendPdf(res, buffer, fileName);
+  }
+
+  /** Štampa KARTICE ARTIKLA — isti parametri kao GET /robno/item-card. */
+  @Get("item-card/pdf")
+  @Header("Content-Type", "application/pdf")
+  async itemCardPdf(
+    @Query("itemId") itemId: string | undefined,
+    @Query("warehouseId") warehouseId: string | undefined,
+    @Query("from") from: string | undefined,
+    @Query("to") to: string | undefined,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } = await this.reportPdf.buildItemCardPdf(
+      {
+        itemId: Number(itemId),
+        warehouseId: Number(warehouseId),
+        from,
+        to,
+      },
+      req.user?.userId ?? null,
+    );
+    sendPdf(res, buffer, fileName);
+  }
 
   @Get("documents")
   list(@Query() query: ListStockDocumentsQuery) {
@@ -352,4 +481,32 @@ export class RobnoController {
   expireReservations() {
     return this.reservation.expireDue();
   }
+}
+
+/**
+ * Validacija `?variant=` — prazno vraća `undefined` (servis bira podrazumevani obrazac),
+ * nepoznata vrednost je 422 sa spiskom dozvoljenih (ne tiho pada na default, da se
+ * pogrešan link u UI-ju odmah vidi).
+ */
+function parseVariant<T extends string>(
+  value: string | undefined,
+  allowed: readonly T[],
+  message: string,
+): T | undefined {
+  const v = (value ?? "").trim();
+  if (v === "") return undefined;
+  if (!(allowed as readonly string[]).includes(v))
+    throw new UnprocessableEntityException(
+      `${message}: „${v}". Dozvoljeno: ${allowed.join(", ")}.`,
+    );
+  return v as T;
+}
+
+/** Isporuka PDF-a inline (pregled u browseru + preuzimanje) — isti obrazac kao sales/gl. */
+function sendPdf(res: Response, buffer: Buffer, fileName: string): void {
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename="${encodeURIComponent(fileName)}"`,
+  );
+  res.send(buffer);
 }

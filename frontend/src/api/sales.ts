@@ -358,10 +358,33 @@ export function useSendInvoiceMail() {
 
 // ─────────────────────────────────── PDF štampa fakture (BigBit paritet)
 
-/** Preuzmi PDF fakture (GET /sales/invoices/:id/pdf?variant). variant: standard|delivery|export. */
+/**
+ * Varijante štampe računa (GET /sales/invoices/:id/pdf?variant) — 1:1 sa
+ * `SalesController.invoicePdfDownload`. Izostavljena varijanta = račun (za AVR
+ * backend sam bira avansni obrazac).
+ */
+export const INVOICE_PRINT_VARIANT = {
+  /** Račun / avansni račun (backend bira po vrsti dokumenta). */
+  STANDARD: '',
+  /** Otpremnica — bez cena, tri potpisna mesta. */
+  DELIVERY: 'delivery',
+  /** Ino faktura (engleski, izvoz). */
+  EXPORT: 'export',
+  /** Avansni račun — osnov avansa + stanje naplate. */
+  ADVANCE: 'advance',
+  /** Knjižno odobrenje — vrednosni dokument (umanjenje). */
+  CREDIT_NOTE: 'credit-note',
+  /** Knjižno zaduženje — vrednosni dokument (uvećanje). */
+  DEBIT_NOTE: 'debit-note',
+} as const;
+
+export type InvoicePrintVariant =
+  (typeof INVOICE_PRINT_VARIANT)[keyof typeof INVOICE_PRINT_VARIANT];
+
+/** Preuzmi PDF fakture (GET /sales/invoices/:id/pdf?variant). */
 export function useInvoicePdf() {
   return useMutation({
-    mutationFn: (args: { id: number; variant?: 'delivery' | 'export' }) => {
+    mutationFn: (args: { id: number; variant?: InvoicePrintVariant }) => {
       const q = args.variant ? `?variant=${args.variant}` : '';
       return apiBlob(`${BASE}/invoices/${args.id}/pdf${q}`);
     },
@@ -369,8 +392,4 @@ export function useInvoicePdf() {
 }
 
 /** Otvori PDF Blob u novom tabu (browser preview + download). */
-export function openPdf(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener');
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
+export { openPdf } from '@/lib/open-pdf';

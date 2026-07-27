@@ -166,6 +166,18 @@ export class RobnoService {
     const havingInStock = query.onlyInStock
       ? Prisma.sql`HAVING SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) > 0`
       : Prisma.empty;
+    // Pretraga MORA u SQL, pre LIMIT/OFFSET: post-filter nad već izvučenom stranom
+    // pravi prazne međustrane (pogoci na 3. strani se izgube) i ostavlja `total`
+    // nefiltriran, pa i ekran i štampa tiho gube redove.
+    const term = query.q?.trim();
+    const itemFilter =
+      term && term !== ""
+        ? Prisma.sql`AND sdi.item_id IN (
+            SELECT i.id FROM items i
+            WHERE lower(i.name) LIKE ${`%${term.toLowerCase()}%`}
+               OR lower(i.catalog_number) LIKE ${`%${term.toLowerCase()}%`}
+          )`
+        : Prisma.empty;
     const aggregate = Prisma.sql`
       SELECT sdi.item_id,
              sdi.warehouse_id,
@@ -182,6 +194,7 @@ export class RobnoService {
         AND COALESCE(dt.affects_stock, TRUE) = TRUE
         AND sdi.deleted_at IS NULL
         ${warehouseFilter}
+        ${itemFilter}
       GROUP BY sdi.item_id, sdi.warehouse_id
       ${havingInStock}
     `;
@@ -241,7 +254,7 @@ export class RobnoService {
       levels.map((l) => ({ itemId: l.itemId, warehouseId: l.warehouseId })),
     );
 
-    let data = levels.map((l) => {
+    const data = levels.map((l) => {
       const it = itemById.get(l.itemId);
       const reserved =
         reservedByKey.get(stockKeyOf(l.itemId, l.warehouseId)) ??
@@ -266,16 +279,8 @@ export class RobnoService {
       };
     });
 
-    // Pretraga po nazivu/šifri (posle join-a — mali skup po strani).
-    if (query.q && query.q.trim() !== "") {
-      const term = query.q.trim().toLowerCase();
-      data = data.filter(
-        (r) =>
-          (r.itemName ?? "").toLowerCase().includes(term) ||
-          (r.itemCode ?? "").toLowerCase().includes(term),
-      );
-    }
-
+    // Pretraga je već primenjena u agregatu (`itemFilter`), pa je `total` filtriran
+    // i strane se ne mogu razići sa prikazom.
     return { data, meta: { total, skip, take } };
   }
 

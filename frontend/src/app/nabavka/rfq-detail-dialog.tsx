@@ -1,5 +1,8 @@
 'use client';
 
+import { toast } from '@/lib/toast';
+
+import { Printer } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -8,6 +11,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { formatDate, formatDecimal } from '@/lib/format';
 import {
   useSupplierRfq,
+  useRfqPdf,
+  openPdf,
   SUPPLIER_RFQ_STATUS,
   type SupplierRfqDetail,
   type SupplierRfqItem,
@@ -87,6 +92,12 @@ export function RfqDetailDialog({
     rfq.status !== SUPPLIER_RFQ_STATUS.QUOTED &&
     rfq.status !== SUPPLIER_RFQ_STATUS.CLOSED;
 
+  // Štampa upita (PDF) — isti dokument koji dobavljač dobija u prilogu mejla.
+  const rfqPdf = useRfqPdf();
+  async function onPrint(): Promise<void> {
+    openPdf(await rfqPdf.mutateAsync({ id }));
+  }
+
   return (
     <Dialog
       open
@@ -97,6 +108,15 @@ export function RfqDetailDialog({
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
             Zatvori
+          </Button>
+          <Button
+            variant="ghost"
+            title="Štampa upita za ponudu (PDF)"
+            loading={rfqPdf.isPending}
+            onClick={() => void onPrint()}
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Štampa
           </Button>
           {canAccept && rfq && (
             <Button onClick={() => onAccept(rfq)}>Prihvati ponudu</Button>

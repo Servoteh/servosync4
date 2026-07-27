@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseIntPipe,
   Post,
@@ -19,6 +20,10 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import { BalanceSheetService } from "./balance-sheet.service";
 import { AprXmlService } from "./apr-xml.service";
 import { ControlRulesService } from "./control-rules.service";
+import {
+  StatementPdfService,
+  type StatementPrintUnit,
+} from "./statement-pdf.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
@@ -31,8 +36,9 @@ import type { AuthUser } from "../auth/jwt.strategy";
  *   GET  /api/v1/zavrsni/statements/:id/controls  — kontrolna pravila (zeleno/crveno)
  *   POST /api/v1/zavrsni/statements/:id/finalize  — DRAFT → FINALIZED (uz kontrole)
  *   GET  /api/v1/zavrsni/statements/:id/apr-xml   — APR eFI FiForma XML (download)
+ *   GET  /api/v1/zavrsni/statements/:id/pdf       — propisani obrazac kao PDF (inline)
  *
- * Permisije: read = ZR_READ, generisanje/finalize = ZR_COMPUTE, APR export = ZR_EXPORT.
+ * Permisije: read/štampa = ZR_READ, generisanje/finalize = ZR_COMPUTE, APR export = ZR_EXPORT.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.ZR_READ)
@@ -42,6 +48,7 @@ export class ZavrsniController {
     private readonly balanceSheet: BalanceSheetService,
     private readonly aprXml: AprXmlService,
     private readonly controlRules: ControlRulesService,
+    private readonly statementPdf: StatementPdfService,
   ) {}
 
   @Get("bruto-bilans")
@@ -128,6 +135,35 @@ export class ZavrsniController {
       "Content-Disposition": `attachment; filename="${fileName}"`,
     });
     return new StreamableFile(Buffer.from(xml, "utf-8"), { type: contentType });
+  }
+
+  /**
+   * PROPISANI OBRAZAC KAO PDF (bilans stanja / bilans uspeha / statistički izveštaj)
+   * za sačuvani obračun — `application/pdf` inline. Isti izvor podataka kao APR XML
+   * (FinancialStatementLine), pa se štampa i predaja ne mogu raziću.
+   *
+   * `jedinica`: `hiljade` (podrazumevano — obrazac se predaje u hiljadama dinara) ili
+   * `dinari` (sirovi iznosi iz glavne knjige). Ime korisnika ide u nogu kao trag štampe.
+   * Permisija ZR_READ (klasni default — štampa je pregled, ne izvoz).
+   */
+  @Get("statements/:id/pdf")
+  @Header("Content-Type", "application/pdf")
+  async printStatement(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("jedinica") jedinica: string | undefined,
+    @Res() res: Response,
+    @Req() req: { user: AuthUser },
+  ): Promise<void> {
+    const unit: StatementPrintUnit = jedinica === "dinari" ? "dinari" : "hiljade";
+    const { buffer, fileName } = await this.statementPdf.buildStatementPdf(id, {
+      unit,
+      printedBy: req.user?.email,
+    });
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(fileName)}"`,
+    );
+    res.send(buffer);
   }
 }
 

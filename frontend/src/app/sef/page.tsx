@@ -20,6 +20,8 @@ import {
   useSend,
   useRefresh,
   useCancel,
+  useSefOutboxPdf,
+  openPdf,
   canSend,
   canCancel,
   SEF_STATUS,
@@ -110,6 +112,22 @@ export default function SefPage() {
   const send = useSend();
   const refresh = useRefresh();
   const cancel = useCancel();
+  // Štampa e-fakture — ljudski čitljiv prikaz UBL-a koji je poslat na SEF.
+  const outboxPdf = useSefOutboxPdf();
+
+  async function onPrint(row: SefOutbox): Promise<void> {
+    setBanner(null);
+    setBusyId(row.id);
+    try {
+      openPdf(await outboxPdf.mutateAsync(row.id));
+    } catch (e) {
+      setBanner(
+        e instanceof ApiError ? e.message : 'Štampa nije uspela — pokušaj ponovo.',
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function run(action: 'send' | 'refresh' | 'cancel', row: SefOutbox): Promise<void> {
     setBanner(null);
@@ -227,6 +245,15 @@ export default function SefPage() {
                 Storno
               </Button>
             )}
+            <Button
+              variant="ghost"
+              loading={busy && outboxPdf.isPending}
+              disabled={busy}
+              onClick={() => void onPrint(o)}
+              title="Štampa e-fakture (čitljiv prikaz UBL-a poslatog na SEF)"
+            >
+              Štampa
+            </Button>
             <Button
               variant="ghost"
               onClick={() => setTimelineRow(o)}

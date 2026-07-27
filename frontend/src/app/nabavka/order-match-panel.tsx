@@ -1,12 +1,16 @@
 'use client';
 
-import { AlertTriangle, Info } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, Info, Printer } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
+import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDecimal } from '@/lib/format';
 import {
   useOrderMatch,
+  useOrderMatchPdf,
+  openPdf,
   MATCH_FINDING_LABEL,
   type MatchFinding,
   type MatchFindingLevel,
@@ -145,6 +149,18 @@ export function OrderMatchPanel({ orderId }: { orderId: number }) {
   const query = useOrderMatch(orderId);
   const match = query.data?.data ?? null;
 
+  // Štampa poređenja (A4 položeno) — knjigovođi treba papir uz ulaznu fakturu.
+  const matchPdf = useOrderMatchPdf();
+  const [printError, setPrintError] = useState<string | null>(null);
+  async function onPrint(): Promise<void> {
+    setPrintError(null);
+    try {
+      openPdf(await matchPdf.mutateAsync(orderId));
+    } catch (e) {
+      setPrintError((e as Error).message);
+    }
+  }
+
   if (query.isLoading) {
     return (
       <div className="px-4 py-6 text-sm text-ink-secondary">Učitavanje poređenja…</div>
@@ -170,6 +186,24 @@ export function OrderMatchPanel({ orderId }: { orderId: number }) {
 
   return (
     <div className="space-y-3 p-4">
+      <div className="flex justify-end">
+        <Button
+          variant="ghost"
+          title="Štampa poređenja naručeno / primljeno / fakturisano (PDF)"
+          loading={matchPdf.isPending}
+          onClick={() => void onPrint()}
+        >
+          <Printer className="h-4 w-4" aria-hidden />
+          Štampa poređenja
+        </Button>
+      </div>
+
+      {printError && (
+        <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
+          Štampa nije uspela: {printError}
+        </div>
+      )}
+
       <MatchSummaryHeader match={match} />
       <MatchFindingsBanner match={match} />
 

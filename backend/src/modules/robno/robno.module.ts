@@ -1,6 +1,10 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { PostingModule } from "../gl/posting/posting.module";
+import { DocumentsModule } from "../documents/documents.module";
+import { StockDocumentPdfService } from "./print/stock-document-pdf.service";
+import { InventoryCountPdfService } from "./print/inventory-count-pdf.service";
+import { StockReportPdfService } from "./print/stock-report-pdf.service";
 import { RobnoController } from "./robno.controller";
 import { RobnoService } from "./robno.service";
 import { CalculationService } from "./calculation.service";
@@ -27,10 +31,15 @@ import { ReservationService } from "./reservation.service";
  * Registracija u `app.module.ts` je posao integratora (dodati `RobnoModule` u `imports`).
  */
 @Module({
-  imports: [PrismaModule, PostingModule],
+  // `DocumentsModule` daje deljeni `PdfService` (pdfmake) + `BarcodeService` (Code 128) —
+  // isti put štampe kao work-orders/sales; bez novih zavisnosti.
+  imports: [PrismaModule, PostingModule, DocumentsModule],
   controllers: [RobnoController],
   providers: [
     RobnoService,
+    StockDocumentPdfService, // štampa robnih dokumenata (primka/izdatnica/otpremnica/…)
+    InventoryCountPdfService, // popisna lista (zakonski obrazac, 2 varijante)
+    StockReportPdfService, // lager lista + kartica artikla
     CalculationService,
     StockDocumentNumberingService,
     CostingService,

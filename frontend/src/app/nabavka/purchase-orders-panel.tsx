@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, Printer } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -10,6 +10,9 @@ import { formatDate } from '@/lib/format';
 import {
   usePurchaseOrders,
   usePurchaseOrderTransition,
+  usePurchaseOrderPdf,
+  useMatchSummaryPdf,
+  openPdf,
   type PurchaseOrder,
 } from '@/api/nabavka';
 import { ReceiveOrderDialog } from './receive-order-dialog';
@@ -47,6 +50,42 @@ export function PurchaseOrdersPanel() {
   const transition = usePurchaseOrderTransition();
   const [receiveOrder, setReceiveOrder] = useState<PurchaseOrder | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+
+  // Štampa: narudžbenica (sa cenama / bez cena za magacin) i pregled odstupanja.
+  const orderPdf = usePurchaseOrderPdf();
+  const summaryPdf = useMatchSummaryPdf();
+  const [printError, setPrintError] = useState<string | null>(null);
+  // Obim pregleda odstupanja se BIRA: bez perioda se štampalo „sve" (prvih 200
+  // narudžbenica, tiho odsečeno), pa je izveštaj bio neupotrebljiv za mesečnu
+  // kontrolu, a red UKUPNO je zbrajao samo deo dokumenata.
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [onlyWithFindings, setOnlyWithFindings] = useState(false);
+
+  async function onPrintOrder(id: number, variant?: 'bezCena'): Promise<void> {
+    setPrintError(null);
+    try {
+      openPdf(await orderPdf.mutateAsync({ id, variant }));
+    } catch (e) {
+      setPrintError((e as Error).message);
+    }
+  }
+
+  async function onPrintSummary(): Promise<void> {
+    setPrintError(null);
+    try {
+      openPdf(
+        await summaryPdf.mutateAsync({
+          from: from || undefined,
+          to: to || undefined,
+          onlyWithFindings: onlyWithFindings || undefined,
+        }),
+        `pregled-odstupanja-${from || 'sve'}_${to || 'sve'}.pdf`,
+      );
+    } catch (e) {
+      setPrintError((e as Error).message);
+    }
+  }
 
   const toggle = (id: number) => setExpanded((e) => (e === id ? null : id));
 
@@ -109,6 +148,28 @@ export function PurchaseOrdersPanel() {
       align: 'right',
       render: (o) => (
         <div className="flex justify-end gap-1">
+          <Button
+            variant="ghost"
+            title="Štampa narudžbenice (PDF, sa cenama)"
+            loading={orderPdf.isPending && orderPdf.variables?.id === o.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onPrintOrder(o.id);
+            }}
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Štampa
+          </Button>
+          <Button
+            variant="ghost"
+            title="Primerak za magacin — bez cena i iznosa"
+            onClick={(e) => {
+              e.stopPropagation();
+              void onPrintOrder(o.id, 'bezCena');
+            }}
+          >
+            Bez cena
+          </Button>
           {o.status === 'ORDERED' && (
             <Button
               variant="ghost"
@@ -138,7 +199,18 @@ export function PurchaseOrdersPanel() {
 
   return (
     <section className="space-y-3">
-      <h2 className="text-md font-semibold text-ink">Narudžbenice</h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-md font-semibold text-ink">Narudžbenice</h2>
+        <Button
+          variant="ghost"
+          title="Štampa pregleda odstupanja naručeno / primljeno / fakturisano (PDF)"
+          loading={summaryPdf.isPending}
+          onClick={() => void onPrintSummary()}
+        >
+          <FileText className="h-4 w-4" aria-hidden />
+          Pregled odstupanja (PDF)
+        </Button>
+      </div>
       <p className="text-xs text-ink-secondary">
         Otvori red (Enter ili klik) za poređenje naručeno / primljeno / fakturisano.
         Odstupanja su obaveštenje — ne blokiraju prijem ni plaćanje.
@@ -147,6 +219,12 @@ export function PurchaseOrdersPanel() {
       {transition.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
           {(transition.error as Error).message}
+        </div>
+      )}
+
+      {printError && (
+        <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
+          Štampa nije uspela: {printError}
         </div>
       )}
 

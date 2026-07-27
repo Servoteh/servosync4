@@ -2,18 +2,27 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseIntPipe,
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { NabavkaService } from "./nabavka.service";
+import { RfqPdfService } from "./rfq-pdf.service";
+import {
+  PurchaseOrderPdfService,
+  type PurchaseOrderPrintVariant,
+} from "./print/purchase-order-pdf.service";
+import { MatchReportPdfService } from "./print/match-report-pdf.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { CreatePurchaseRequestDto } from "./dto/create-purchase-request.dto";
 import type { CreatePurchaseOrderDto } from "./dto/create-purchase-order.dto";
@@ -38,7 +47,32 @@ import type { AcceptQuoteDto } from "./dto/accept-quote.dto";
 @RequirePermission(PERMISSIONS.NABAVKA_READ)
 @Controller({ path: "nabavka", version: "1" })
 export class NabavkaController {
-  constructor(private readonly nabavka: NabavkaService) {}
+  constructor(
+    private readonly nabavka: NabavkaService,
+    private readonly rfqPdf: RfqPdfService,
+    private readonly orderPdf: PurchaseOrderPdfService,
+    private readonly matchPdf: MatchReportPdfService,
+  ) {}
+
+  /**
+   * Jedinstvena isporuka PDF-a: `application/pdf` inline (pregled u browseru +
+   * download), naziv fajla iz servisa. Isti obrazac kao `sales.controller`.
+   */
+  private sendPdf(
+    res: Response,
+    doc: { buffer: Buffer; fileName: string },
+  ): void {
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(doc.fileName)}"`,
+    );
+    res.send(doc.buffer);
+  }
+
+  /** Trag štampe u nozi dokumenta (BigBit štampa samo Now(), bez korisnika). */
+  private printedBy(user: AuthUser | undefined): string | null {
+    return user?.email ?? null;
+  }
 
   @Get("requests")
   listRequests(
@@ -128,6 +162,26 @@ export class NabavkaController {
     return this.nabavka.getRfq(id);
   }
 
+  /**
+   * Štampa upita za ponudu (PDF). `RfqPdfService` je postojao od početka, ali samo
+   * kao prilog auto-mailu — bez ove rute upit se NIJE mogao odštampati iz aplikacije.
+   * Opcioni `deadline` (ISO datum) ispisuje rok za dostavu ponude. Permisija NABAVKA_READ.
+   */
+  @Get("rfqs/:id/pdf")
+  @Header("Content-Type", "application/pdf")
+  async rfqPdfDownload(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("deadline") deadline: string | undefined,
+    @Res() res: Response,
+  ): Promise<void> {
+    const parsed = deadline ? new Date(deadline) : undefined;
+    const doc = await this.rfqPdf.buildRfqPdf(
+      id,
+      parsed && !Number.isNaN(parsed.getTime()) ? parsed : undefined,
+    );
+    this.sendPdf(res, doc);
+  }
+
   @Post("rfqs/:id/accept")
   @RequirePermission(PERMISSIONS.NABAVKA_WRITE)
   acceptQuote(
@@ -157,6 +211,28 @@ export class NabavkaController {
   @Get("orders/:id")
   getOrder(@Param("id", ParseIntPipe) id: number) {
     return this.nabavka.getOrder(id);
+  }
+
+  /**
+   * Štampa narudžbenice dobavljaču (PDF). `variant=bezCena` daje primerak za
+   * magacin (BigBit ima dva odvojena izveštaja — kod nas jedan šablon).
+   * Permisija NABAVKA_READ (štampa je pregled).
+   */
+  @Get("orders/:id/pdf")
+  @Header("Content-Type", "application/pdf")
+  async orderPdfDownload(
+    @Param("id", ParseIntPipe) id: number,
+    @Query("variant") variant: string | undefined,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const v: PurchaseOrderPrintVariant =
+      variant === "bezCena" ? "withoutPrices" : "withPrices";
+    const doc = await this.orderPdf.buildPurchaseOrderPdf(id, {
+      variant: v,
+      printedBy: this.printedBy(req.user),
+    });
+    this.sendPdf(res, doc);
   }
 
   @Post("orders")
@@ -207,6 +283,23 @@ export class NabavkaController {
     return this.nabavka.getOrderMatch(id);
   }
 
+  /**
+   * Štampa poređenja jedne narudžbenice (A4 položeno, po stavci + spisak nalaza).
+   * Nalazi ostaju OBAVEŠTENJE — štampa ništa ne blokira. Permisija NABAVKA_READ.
+   */
+  @Get("orders/:id/match/pdf")
+  @Header("Content-Type", "application/pdf")
+  async orderMatchPdf(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const doc = await this.matchPdf.buildOrderMatchPdf(id, {
+      printedBy: this.printedBy(req.user),
+    });
+    this.sendPdf(res, doc);
+  }
+
   /** Pregled odstupanja po više narudžbenica. */
   @Get("match-summary")
   getMatchSummary(
@@ -220,10 +313,45 @@ export class NabavkaController {
     return this.nabavka.getMatchSummary({
       from,
       to,
-      supplierId: supplierId != null && supplierId !== "" ? Number(supplierId) : undefined,
+      supplierId:
+        supplierId != null && supplierId !== ""
+          ? Number(supplierId)
+          : undefined,
       onlyWithFindings: onlyWithFindings === "true",
       skip: skip != null && skip !== "" ? Number(skip) : undefined,
       take: take != null && take !== "" ? Number(take) : undefined,
     });
+  }
+
+  /**
+   * Štampa pregleda odstupanja (A4 položeno) sa trakom primenjenih filtera.
+   * Isti filteri kao ekran; `skip` se namerno ne prima — izveštaj pokriva ceo
+   * period, ne stranu ekrana. Permisija NABAVKA_READ.
+   */
+  @Get("match-summary/pdf")
+  @Header("Content-Type", "application/pdf")
+  async matchSummaryPdf(
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
+    @Query("supplierId") supplierId?: string,
+    @Query("onlyWithFindings") onlyWithFindings?: string,
+    @Query("take") take?: string,
+  ): Promise<void> {
+    const doc = await this.matchPdf.buildMatchSummaryPdf(
+      {
+        from,
+        to,
+        supplierId:
+          supplierId != null && supplierId !== ""
+            ? Number(supplierId)
+            : undefined,
+        onlyWithFindings: onlyWithFindings === "true",
+        take: take != null && take !== "" ? Number(take) : undefined,
+      },
+      { printedBy: this.printedBy(req.user) },
+    );
+    this.sendPdf(res, doc);
   }
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Link2, Plus, Wallet } from 'lucide-react';
+import { ArrowLeft, Link2, Plus, Printer, Wallet } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -21,6 +21,7 @@ import {
   type Advance,
   type AdvanceDirection,
 } from '@/api/avansi';
+import { useInvoicePdf, openPdf, INVOICE_PRINT_VARIANT } from '@/api/sales';
 import { salesStatusMeta } from '../page';
 import {
   IncomingAdvanceDialog,
@@ -75,6 +76,10 @@ export default function AvansiPage() {
   const [linkFinalFor, setLinkFinalFor] = useState<Advance | null>(null);
   const [incomingOpen, setIncomingOpen] = useState(false);
   const [banner, setBanner] = useState<Banner | null>(null);
+  // Štampa avansnog obrasca; `printingId` drži spinner na redu koji se štampa
+  // (mutacija je jedna za celu tabelu, pa bi bez njega sva dugmad bila „u toku").
+  const pdf = useInvoicePdf();
+  const [printingId, setPrintingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -190,6 +195,34 @@ export default function AvansiPage() {
       align: 'right',
       render: (a) => (
         <div className="flex justify-end gap-2">
+          {/* Štampa avansnog obrasca (osnov avansa, rekapitulacija PDV-a, stanje
+              naplate). Do sada avansni račun nije mogao da se odštampa sa ovog ekrana. */}
+          <Button
+            variant="ghost"
+            loading={pdf.isPending && printingId === a.id}
+            onClick={() => {
+              setBanner(null);
+              setPrintingId(a.id);
+              pdf.mutate(
+                { id: a.id, variant: INVOICE_PRINT_VARIANT.ADVANCE },
+                {
+                  onSuccess: (blob) => openPdf(blob),
+                  onError: (e) =>
+                    setBanner({
+                      tone: 'danger',
+                      msg:
+                        e instanceof Error
+                          ? e.message
+                          : 'Štampa avansnog računa nije uspela.',
+                    }),
+                },
+              );
+            }}
+            title="Štampaj avansni račun"
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Štampaj
+          </Button>
           {!a.paidAt && canActOn(a) && (
             <Button
               variant="secondary"

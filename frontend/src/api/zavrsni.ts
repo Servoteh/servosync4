@@ -242,6 +242,39 @@ export function useAprXmlDownload() {
   });
 }
 
+// ─────────────────────────────────── PDF obrasca (bilans stanja / uspeha)
+
+/** Jedinica u kojoj se štampaju iznosi na obrascu. */
+export const STATEMENT_PRINT_UNIT = {
+  /** Propisano za predaju APR-u — iznosi svedeni na hiljade dinara. */
+  THOUSANDS: 'hiljade',
+  /** Sirovi iznosi iz glavne knjige (dinari, dve decimale). */
+  DINARS: 'dinari',
+} as const;
+
+export type StatementPrintUnit =
+  (typeof STATEMENT_PRINT_UNIT)[keyof typeof STATEMENT_PRINT_UNIT];
+
+/**
+ * PDF propisanog obrasca za sačuvani obračun — GET /zavrsni/statements/:id/pdf.
+ * Isti izvor podataka kao APR XML (FinancialStatementLine), pa se štampa i predaja
+ * ne mogu raziću. Vraća Blob (Authorization header); otvara se `openStatementPdf`.
+ * Permisija ZR_READ.
+ */
+export function useStatementPdf() {
+  return useMutation({
+    mutationFn: ({ id, unit }: { id: number; unit?: StatementPrintUnit }) =>
+      apiBlob(`${BASE}/statements/${id}/pdf${unit ? `?jedinica=${unit}` : ''}`),
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + štampa). */
+export function openStatementPdf(blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
 /** Pokreni download Blob-a kao .xml fajl (isti obrazac kao FX TXT izvoz). */
 export function downloadXml(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);

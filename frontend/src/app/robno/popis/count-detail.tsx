@@ -1,7 +1,10 @@
 'use client';
 
+import { toast } from '@/lib/toast';
+
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Printer } from 'lucide-react';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -22,6 +25,7 @@ import {
   type DifferenceItem,
   type FinalizeResult,
 } from '@/api/inventory';
+import { useInventoryCountPdf, openPdf } from '@/api/robno';
 
 /** POPIS status -> { tone, label } (kanonska mapa DESIGN_SYSTEM 7). */
 export function popisStatusMeta(status: PopisStatus): { tone: Tone; label: string } {
@@ -129,6 +133,7 @@ export function CountDetail({ countId }: { countId: number }) {
   const detail = useInventoryCount(countId);
   const differences = useInventoryDifferences(countId, view === 'differences');
   const finalize = useFinalizeInventoryCount();
+  const pdf = useInventoryCountPdf();
 
   // Reset lokalnog stanja pri promeni selektovanog popisa.
   useEffect(() => {
@@ -257,6 +262,47 @@ export function CountDetail({ countId }: { countId: number }) {
           )}
         </div>
 
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Popisna lista je ZAKONSKI obrazac — dve varijante iz istog šablona:
+              „prazna" ide na teren (bez knjigovodstvenog stanja i cena, sa bar kodom),
+              „popunjena" nosi razlike višak/manjak i zbirove. */}
+          <Button
+            variant="secondary"
+            disabled={!count}
+            loading={pdf.isPending && pdf.variables?.variant === 'prazna'}
+            title="Popisna lista za teren — bez knjigovodstvenog stanja i cena, sa bar kodom i praznim poljima"
+            onClick={() =>
+              pdf.mutate(
+                { id: countId, variant: 'prazna' },
+                {
+            onSuccess: (blob) => openPdf(blob),
+            onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+          },
+              )
+            }
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Prazna lista
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={!count}
+            loading={pdf.isPending && pdf.variables?.variant === 'popunjena'}
+            title="Popisna lista sa knjigovodstvenim stanjem, popisanim količinama, viškom/manjkom i zbirovima"
+            onClick={() =>
+              pdf.mutate(
+                { id: countId, variant: 'popunjena' },
+                {
+            onSuccess: (blob) => openPdf(blob),
+            onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+          },
+              )
+            }
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Štampaj popisnu listu
+          </Button>
+
         {canPost && (
           <Button
             variant="primary"
@@ -272,7 +318,14 @@ export function CountDetail({ countId }: { countId: number }) {
             Zakljuci popis
           </Button>
         )}
+        </div>
       </div>
+
+      {pdf.error && (
+        <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
+          {(pdf.error as Error).message}
+        </div>
+      )}
 
       {detail.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">

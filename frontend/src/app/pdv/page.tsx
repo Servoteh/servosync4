@@ -460,7 +460,7 @@ export default function PdvPage() {
                   onClick={() =>
                     ppPdvPdf.mutate(
                       { period: `${year}-${String(month).padStart(2, '0')}` },
-                      { onSuccess: openPdf },
+                      { onSuccess: (blob) => openPdf(blob) },
                     )
                   }
                   loading={ppPdvPdf.isPending}
@@ -482,7 +482,7 @@ export default function PdvPage() {
                         period: `${year}-${String(month).padStart(2, '0')}`,
                         force: true,
                       },
-                      { onSuccess: openPdf },
+                      { onSuccess: (blob) => openPdf(blob) },
                     )
                   }
                   loading={ppPdvPdf.isPending}
@@ -539,7 +539,7 @@ export default function PdvPage() {
                 onClick={() =>
                   ledgerPdf.mutate(
                     { book: view === 'kuf' ? 'kuf' : 'kif', year, month },
-                    { onSuccess: openPdf },
+                    { onSuccess: (blob) => openPdf(blob) },
                   )
                 }
                 loading={ledgerPdf.isPending}
@@ -559,7 +559,7 @@ export default function PdvPage() {
                         month,
                         force: true,
                       },
-                      { onSuccess: openPdf },
+                      { onSuccess: (blob) => openPdf(blob) },
                     )
                   }
                   loading={ledgerPdf.isPending}

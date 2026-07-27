@@ -1,9 +1,20 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import type { Content, TableCell, TDocumentDefinitions } from "pdfmake/interfaces";
+import type {
+  Content,
+  TableCell,
+  TDocumentDefinitions,
+} from "pdfmake/interfaces";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PdfService } from "../documents/pdf.service";
 import { SERVOTEH_LOGO_DATA_URL } from "../documents/servoteh-logo";
+import {
+  LOGO_WIDTH,
+  buildPageFooter,
+  buildSignatureRow,
+  fmtMoney,
+  sanitizeText,
+} from "../documents/doc-layout";
 import { OpenItemsService, type OpenItem } from "./open-items.service";
 
 /**
@@ -86,6 +97,7 @@ export class DunningPdfService {
     partnerId: number,
     level: number,
     asOf?: Date,
+    printedBy?: string | null,
   ): Promise<{ buffer: Buffer; fileName: string }> {
     const cutoff = asOf ?? new Date();
     const lvl = level < 1 ? 1 : level > 3 ? 3 : level;
@@ -106,6 +118,7 @@ export class DunningPdfService {
       partnerId,
       level: lvl,
       asOf: cutoff,
+      printedBy: printedBy ?? null,
     });
 
     const buffer = await this.pdf.render(docDefinition);
@@ -188,30 +201,55 @@ export class DunningPdfService {
     partnerId: number;
     level: number;
     asOf: Date;
+    printedBy: string | null;
   }): TDocumentDefinitions {
-    const { items, issuer, partner, partnerId, level, asOf } = args;
+    const { items, issuer, partner, partnerId, level, asOf, printedBy } = args;
 
     // Dospele stavke = dugovni saldo sa poznatim dospećem u docnji (daysOverdue ≥ 1).
     const overdue = items.filter(
-      (it) => it.balance.greaterThan(0) && it.daysOverdue != null && it.daysOverdue >= 1,
+      (it) =>
+        it.balance.greaterThan(0) &&
+        it.daysOverdue != null &&
+        it.daysOverdue >= 1,
     );
     let overdueTotal = new D(0);
     let maxDays = 0;
     for (const it of overdue) {
       overdueTotal = overdueTotal.add(it.balance);
-      if (it.daysOverdue != null && it.daysOverdue > maxDays) maxDays = it.daysOverdue;
+      if (it.daysOverdue != null && it.daysOverdue > maxDays)
+        maxDays = it.daysOverdue;
     }
 
     const header = this.buildHeader(level, asOf);
     const parties = this.buildParties(issuer, partner, partnerId);
     const intro = this.buildIntro(level, asOf);
     const table = this.buildItemsTable(overdue, overdueTotal);
-    const summary = this.buildSummary(level, overdueTotal, maxDays, issuer, asOf);
+    const summary = this.buildSummary(
+      level,
+      overdueTotal,
+      maxDays,
+      issuer,
+      asOf,
+    );
 
     return {
       pageSize: "A4",
       pageMargins: [32, 32, 32, 40],
-      content: [header, parties, intro, table, summary],
+      content: [
+        header,
+        parties,
+        intro,
+        table,
+        summary,
+        // Nepotpisan akt kojim se preti utuženjem dužnik u sporu odbacuje kao
+        // neovlašćenu ispravu — BigBit opomenu nema uopšte, mi je potpisujemo.
+        {
+          margin: [0, 18, 0, 0],
+          text: `U ${issuer.city ?? "________"}, dana ${fmtDate(asOf)}`,
+          style: "note",
+        },
+        buildSignatureRow(["Odgovorno lice"], true),
+      ],
       styles: {
         title: { fontSize: 18, bold: true },
         titleDanger: { fontSize: 18, bold: true, color: "#b42318" },
@@ -228,22 +266,25 @@ export class DunningPdfService {
         saldo: { fontSize: 12, bold: true, margin: [0, 12, 0, 0] },
         note: { fontSize: 8, color: "#555", margin: [0, 4, 0, 0] },
         pay: { fontSize: 9, color: "#333", margin: [0, 8, 0, 0] },
+        signLbl: {
+          fontSize: 8,
+          color: "#333",
+          alignment: "center",
+          margin: [0, 2, 0, 0],
+        },
       },
       defaultStyle: { font: "Roboto", fontSize: 9 },
-      footer: (currentPage: number, pageCount: number): Content => ({
-        text: `Opomena nivo ${level} · komitent ${partnerId} · ${fmtDate(asOf)} · strana ${currentPage}/${pageCount}`,
-        alignment: "center",
-        fontSize: 7,
-        color: "#888",
-        margin: [0, 8, 0, 0],
-      }),
+      footer: buildPageFooter(
+        `Opomena nivo ${level} · komitent ${partnerId} · na dan ${fmtDate(asOf)}`,
+        printedBy,
+      ),
     };
   }
 
   private buildHeader(level: number, asOf: Date): Content {
     return {
       columns: [
-        { image: SERVOTEH_LOGO_DATA_URL, width: 128 },
+        { image: SERVOTEH_LOGO_DATA_URL, width: LOGO_WIDTH },
         {
           width: "*",
           margin: [12, 4, 0, 0],
@@ -323,7 +364,13 @@ export class DunningPdfService {
     overdue: OpenItem[],
     overdueTotal: Prisma.Decimal,
   ): Content {
-    const head = ["R.br.", "Dokument", "Dospeće", "Kašnjenje (dana)", "Dospeli iznos"];
+    const head = [
+      "R.br.",
+      "Dokument",
+      "Dospeće",
+      "Kašnjenje (dana)",
+      "Dospeli iznos",
+    ];
     const widths: (string | number)[] = ["auto", "*", "auto", "auto", "auto"];
     const headerCells: Content[] = head.map((text, i) => ({
       text,
@@ -352,7 +399,10 @@ export class DunningPdfService {
           { text: String(idx + 1), style: "td" },
           { text: it.documentNumber ?? "—", style: "td" },
           { text: fmtDate(it.dueDate), style: "tdNum" },
-          { text: it.daysOverdue != null ? String(it.daysOverdue) : "—", style: "tdNum" },
+          {
+            text: it.daysOverdue != null ? String(it.daysOverdue) : "—",
+            style: "tdNum",
+          },
           { text: formatDecimal(it.balance, 2), style: "tdNum" },
         ]);
       });
@@ -430,6 +480,15 @@ function fmtDate(d: Date | null): string {
   return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}.`;
 }
 
+/**
+ * Novac u srpskom zapisu SA razdelnikom hiljada (`1.234.567,89`). Ranije se
+ * štampalo `1234567,89` — na opomeni sa milionskim dugom to je nečitljivo i lako
+ * se pogrešno pročita za red veličine. NIKAD Float: `toFixed` ide nad Decimal-om.
+ */
 function formatDecimal(value: Prisma.Decimal, decimals: number): string {
-  return value.toFixed(decimals).replace(".", ",");
+  const fixed = value.toFixed(decimals);
+  const neg = fixed.startsWith("-");
+  const [intPart, decPart] = (neg ? fixed.slice(1) : fixed).split(".");
+  const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${neg ? "-" : ""}${grouped},${decPart}`;
 }

@@ -1,9 +1,11 @@
 'use client';
 
+import { toast } from '@/lib/toast';
+
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useListQueryState } from '@/lib/use-id-param';
-import { Upload } from 'lucide-react';
+import { Printer, Upload } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -19,6 +21,8 @@ import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useStatements,
   useImportStatement,
+  useStatementPdf,
+  openPdf,
   STATEMENT_STATUS,
   STATEMENT_CURRENCIES,
   type StatementStatus,
@@ -60,7 +64,7 @@ const STATUS_OPTIONS: { value: StatementStatus; label: string }[] = [
   { value: STATEMENT_STATUS.POSTED, label: 'Proknjižen' },
 ];
 
-const columns: Column<BankStatement>[] = [
+const baseColumns: Column<BankStatement>[] = [
   {
     key: 'bankAccount',
     header: 'Žiro račun',
@@ -139,6 +143,32 @@ export default function IzvodiPage() {
   }, [user, isLoading, router]);
 
   const list = useStatements({ status, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE });
+  // Štampa izvoda direktno iz liste (bez ulaska u detalj) — `stopPropagation` da
+  // klik na dugme ne otvori i red.
+  const statementPdf = useStatementPdf();
+  const columns: Column<BankStatement>[] = [
+    ...baseColumns,
+    {
+      key: 'print',
+      header: 'Štampa',
+      render: (s) => (
+        <Button
+          variant="ghost"
+          aria-label={`Štampaj izvod ${s.statementNumber}`}
+          title="Štampa izvoda (PDF)"
+          onClick={(e) => {
+            e.stopPropagation();
+            statementPdf.mutate(s.id, {
+            onSuccess: (blob) => openPdf(blob),
+            onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+          });
+          }}
+        >
+          <Printer className="h-4 w-4" aria-hidden />
+        </Button>
+      ),
+    },
+  ];
   const rows = list.data?.data ?? [];
   const total = list.data?.meta.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -196,9 +226,9 @@ export default function IzvodiPage() {
           )}
         </div>
 
-        {list.error && (
+        {(list.error || statementPdf.error) && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
-            {(list.error as Error).message}
+            {((list.error ?? statementPdf.error) as Error).message}
           </div>
         )}
 
