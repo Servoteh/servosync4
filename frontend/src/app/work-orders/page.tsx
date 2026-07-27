@@ -35,6 +35,7 @@ import {
 import { useOperations, type Operation } from '@/api/structures';
 import { openDrawingPdf } from '@/api/pdm';
 import { OperationsTable } from '@/app/work-orders/_components/operations-table';
+import { useWorkOrderTimeEstimate } from '@/api/time-estimate';
 import { PrintDrawingsDialog } from '@/app/handovers/_components/print-drawings-dialog';
 import { ApiError } from '@/api/client';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -135,6 +136,8 @@ function WorkOrderDetail({
 }) {
   const { can } = useAuth();
   const q = useWorkOrder(id);
+  // TALAS AI-5: statistička procena vremena po radnom mestu (read-only, nenametljivo).
+  const est = useWorkOrderTimeEstimate(id);
   const approve = useApproveWorkOrder();
   const launch = useLaunchWorkOrder();
   const lock = useLockWorkOrder();
@@ -458,6 +461,8 @@ function WorkOrderDetail({
               setConfirmDeleteOp(op);
             }}
             deleteDisabled={busy}
+            estimates={est.data?.byOp}
+            drawingHistory={est.data?.drawing}
           />
         )}
         {/* Greška brisanja operacije se prikazuje u dijalogu potvrde (BUG-P2-08). */}

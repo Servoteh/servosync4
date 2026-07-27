@@ -1,6 +1,10 @@
 import { Prisma } from "@prisma/client";
 import { PERMISSIONS } from "../../../common/authz/permissions";
 import type { AiTool, ToolScope } from "./tool-registry";
+import {
+  estimateByWorkCenter,
+  estimateForDrawing,
+} from "../../work-orders/time-estimate.service";
 
 /**
  * TALAS AI-1, tačka 3 — alati nad GLAVNOM bazom (proizvodno jezgro).
@@ -647,6 +651,41 @@ export const CORE_TOOLS: readonly AiTool[] = [
           x.odeljenje.localeCompare(y.odeljenje),
         ),
         napomena: `Izvor je kapija (poslednji prolaz u 24 h). Ko nema prolaz — nije u brojkama.`,
+      };
+    },
+  },
+  {
+    // TALAS AI-5 — statistička (NE LLM) procena vremena. Deli tačno istu SQL
+    // logiku kao endpoint `/tehnologija/time-estimate/*` (pure funkcije iz
+    // work-orders/time-estimate.service). Filter šuma i simetrična agregacija
+    // (po nalogu+radnom mestu) su isti kao u `istorija_crteza`.
+    name: "procena_vremena",
+    description: `PROCENA STVARNOG VREMENA iz istorije proizvodnje (statistika, ne norma). Dva režima: (1) po RADNOM MESTU (šifra RC, npr. „3.18") → koliko slični poslovi STVARNO traju po komadu na tom radnom mestu, kao interval p25–p75 h/kom sa medijanom i brojem opservacija (n); (2) po BROJU CRTEŽA (ili ident broju RN-a) → koliko je puta taj crtež rađen i koliko je trajao po radnom mestu (sati po nalogu, plan vs stvarno). Vremena u SATIMA; mali n je označen kao nepouzdan; ne menja normativ. Koristi za „koliko traje glodanje po komadu", „koliko je trajao ovaj crtež ranije".`,
+    schema: {
+      type: "object",
+      properties: {
+        radno_mesto: {
+          type: "string",
+          description: `šifra radnog mesta (RC), npr. „3.18" ili „2.1"`,
+        },
+        crtez: {
+          type: "string",
+          description: `broj crteža ili ident broj RN-a (za istoriju istog crteža)`,
+        },
+      },
+      required: [],
+    },
+    kind: "read",
+    requiredPermission: PERMISSIONS.TEHNOLOGIJA_READ,
+    scopes: LICNI,
+    execute: async (a, ctx) => {
+      const crtez = term(a.crtez);
+      const rm = term(a.radno_mesto);
+      if (crtez) return estimateForDrawing(ctx.deps.prisma, crtez);
+      if (rm) return estimateByWorkCenter(ctx.deps.prisma, rm);
+      return {
+        greska: "prazan_upit",
+        poruka: "Navedi radno mesto (RC šifra) ili broj crteža.",
       };
     },
   },

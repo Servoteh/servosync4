@@ -95,8 +95,11 @@ export const SYSTEM_PROMPT =
   `mestu — OBAVEZNO pozovi za „koliko je puta rađen ovaj crtež", „koliko je trajalo ` +
   `prošli put"), tehnoloski_postupak_naloga (operacije naloga redom: plan, prijave ` +
   `rada, utrošeni sati, dokle se stiglo), nadji_artikal (šifarnik robe po nazivu ili ` +
-  `kataloškom broju + zaliha ako se vodi), stanje_predmeta (predmet + otvoreni nalozi) ` +
-  `i prisustvo_danas (sa kapije: prisutno/pauza/odsutno). VREMENA IZ OVIH ALATA SU U ` +
+  `kataloškom broju + zaliha ako se vodi), stanje_predmeta (predmet + otvoreni nalozi), ` +
+  `prisustvo_danas (sa kapije: prisutno/pauza/odsutno) i procena_vremena (STATISTIČKA ` +
+  `procena koliko posao STVARNO traje: po radnom mestu — interval p25–p75 h/kom sa ` +
+  `medijanom i brojem opservacija n; ili po crtežu — koliko je puta rađen i koliko ` +
+  `trajao; mali n je nepouzdan, ne menja normativ). VREMENA IZ OVIH ALATA SU U ` +
   `SATIMA i navode se isključivo iz rezultata alata, nikad procenom; ako rezultat kaže ` +
   `da je uzorak filtriran ili da ima još redova, reci i to. Ako ti neki od ovih alata ` +
   `NIJE ponuđen ili vrati nema_prava, znači samo da taj podatak NE MOGU da dam kroz ` +
