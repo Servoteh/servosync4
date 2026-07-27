@@ -94,9 +94,37 @@ for mp in /m /m/montaza /m/odrzavanje; do
   else bad "$mp → neočekivano (${BODY:0:40})"; fi
 done
 
+# 7) UPIS — DB privilegije app role (incident 27.07: setval bez UPDATE prava).
+# Verify je do 27.07 proveravao samo ČITANJE (boot/login/strane) pa je rupa u
+# privilegijama preživela vikend i oborila proizvodnju u ponedeljak ujutru.
+# Ovde: (a) sve sekvence moraju imati USAGE+UPDATE (setval!), (b) sve tabele
+# INSERT, (c) stvarni upis-put: 3-arg setval poravnanje POD APP ROLOM —
+# idempotentno (poravna sekvencu na MAX(id), isto što app radi pre svakog
+# INSERT-a), ne menja podatke.
+say "7) Upis — DB privilegije app role"
+DBCONTAINER="${DBCONTAINER:-servosync-pg}"
+DBSUPER="${DBSUPER:-servosync}"   # superuser klastera (rola 'postgres' NE postoji!)
+DBNAME="${DBNAME:-servosync}"
+APPROLE="${APPROLE:-servosync_app}"
+psqlq() { docker exec -i "$DBCONTAINER" psql -U "$DBSUPER" -d "$DBNAME" -At 2>/dev/null; }
+if ! docker ps --filter "name=${DBCONTAINER}" --format '{{.Names}}' | grep -q "$DBCONTAINER"; then
+  bad "DB kontejner $DBCONTAINER ne radi — upis-provere preskočene"
+else
+  SEQMISS=$(printf "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname='public' AND (NOT has_sequence_privilege('%s', c.oid, 'USAGE') OR NOT has_sequence_privilege('%s', c.oid, 'UPDATE'));" "$APPROLE" "$APPROLE" | psqlq)
+  if [ "${SEQMISS:-x}" = "0" ]; then ok "sekvence: sve imaju USAGE+UPDATE za $APPROLE"
+  else bad "sekvence BEZ USAGE/UPDATE za $APPROLE: ${SEQMISS:-provera pala} (setval pada sa 42501 → kiosk/TP/RN upisi mrtvi)"; fi
+  TABMISS=$(printf "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='r' AND n.nspname='public' AND NOT has_table_privilege('%s', c.oid, 'INSERT');" "$APPROLE" | psqlq)
+  if [ "${TABMISS:-x}" = "0" ]; then ok "tabele: sve imaju INSERT za $APPROLE"
+  else bad "tabele BEZ INSERT za $APPROLE: ${TABMISS:-provera pala}"; fi
+  # psql -At štampa i komandne tagove (SET/RESET) — hvatamo isključivo t/f red.
+  SVOK=$(printf "SET ROLE %s; SELECT setval(pg_get_serial_sequence('work_orders','id'), COALESCE((SELECT MAX(id) FROM work_orders),1), EXISTS(SELECT 1 FROM work_orders)) IS NOT NULL; RESET ROLE;" "$APPROLE" | psqlq | grep -m1 -E '^[tf]$')
+  if [ "$SVOK" = "t" ]; then ok "stvarni upis-put: setval poravnanje pod $APPROLE prolazi"
+  else bad "setval pod $APPROLE NE prolazi (42501? — vidi memory incident-sekvence-2026-07-27)"; fi
+fi
+
 say ""
 if [ "$FAIL" = "0" ]; then
-  say "🟢 DEPLOY OK — web + LAN + boot svi zeleni."
+  say "🟢 DEPLOY OK — web + LAN + boot + upis svi zeleni."
 else
   say "🔴 DEPLOY DEFEKTAN — NE javljati 'radi'. Vidi ❌ iznad. (docs: incident 21.07, memory incident-4.0-deploy-crash-lan)"
 fi
