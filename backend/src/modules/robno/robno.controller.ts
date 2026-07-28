@@ -57,6 +57,12 @@ import type {
   CreateStockDocumentDto,
   UpdateStockDocumentShippingDto,
 } from "./dto/create-stock-document.dto";
+import { DocumentEditService } from "./document-edit.service";
+import {
+  CreateStockDocumentItemBodyDto,
+  UpdateStockDocumentDto,
+  UpdateStockDocumentItemDto,
+} from "./dto/update-stock-document.dto";
 import type {
   CreateInventoryCountDto,
   FinalizeInventoryCountDto,
@@ -68,6 +74,10 @@ import type {
  *   GET  /api/v1/robno/documents          — lista (kind/tip/magacin/status/godina/opseg datuma), paginirano
  *   GET  /api/v1/robno/documents/:id      — detalj (zaglavlje + stavke + nivelacioni parovi)
  *   POST /api/v1/robno/documents          — kreiranje (kind u body; broj NNNN/god server), DRAFT
+ *   PATCH /api/v1/robno/documents/:id     — IZMENA ZAGLAVLJA (datum, dobavljač/kupac, magacin,
+ *                                           način otpreme, napomena) — nacrt; meka polja i posle knjiženja
+ *   POST  /api/v1/robno/documents/:id/items          — DODAJ stavku (nacrt)
+ *   PATCH /api/v1/robno/documents/:id/items/:lineId  — IZMENI stavku (nacrt)
  *   PATCH /api/v1/robno/documents/:id/shipping — uslovi otpreme + napomena (polja koja štampa otpremnica)
  *   POST /api/v1/robno/documents/:id/calculate — kalkulacija landed cost (DRAFT → CALCULATED); UL okida nivelaciju
  *   POST /api/v1/robno/documents/:id/post — knjiženje u glavnu knjigu (StockDocument → nalog GK)
@@ -106,6 +116,7 @@ export class RobnoController {
     private readonly posting: PostingEngineService,
     private readonly inventory: InventoryService,
     private readonly carryOver: CarryOverService,
+    private readonly documentEdit: DocumentEditService,
     private readonly reservation: ReservationService,
     private readonly transfer: TransferService,
     private readonly stockPdf: StockDocumentPdfService,
@@ -373,6 +384,31 @@ export class RobnoController {
   }
 
   /**
+   * IZMENA ZAGLAVLJA robnog dokumenta — datum dokumenta/knjiženja, dobavljač, kupac, magacin,
+   * način otpreme, napomena. Do 28.07.2026. ovog puta NIJE BILO: pogrešno ukucan datum ili
+   * dobavljač značili su „obriši sve stavke i unesi dokument ponovo", a broj je već potrošen
+   * (`PLAN_UNOS_DOKUMENATA §5.7`).
+   *
+   * GUARD PO POSLEDICI: polja koja ulaze u zalihu/costing (datum, magacin, komitent) menjaju se
+   * samo dok je dokument NACRT (proknjižen/kalkulisan/zaključan = 409 sa uputstvom); način
+   * otpreme i napomena su dozvoljeni i posle knjiženja (kao `PATCH …/shipping`), jer se ti
+   * podaci saznaju kasnije. Promena magacina POVLAČI i stavke koje su pratile zaglavlje i za
+   * izlazni dokument prolazi kroz proveru zaliha NOVOG magacina.
+   *
+   * Prenos između magacina, storno i dokument iz popisa se ODBIJAJU (ne popravljaju se ovuda).
+   * Permisija ROBNO_WRITE.
+   */
+  @Patch("documents/:id")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  updateDocument(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateStockDocumentDto,
+    @Req() req: { user?: AuthUser },
+  ) {
+    return this.documentEdit.updateHeader(id, dto, req.user?.userId ?? null);
+  }
+
+  /**
    * Zaključaj proknjižen dokument (booked → LOCKED). CAS na status; naredne mutacije (calculate/post)
    * su blokirane guardom `assertNotLocked`. Permisija ROBNO_WRITE.
    */
@@ -394,6 +430,49 @@ export class RobnoController {
     return {
       data: { docId: id, ledgerLines: lines.length, kepuEntries, posted: true },
     };
+  }
+
+  // ─── Stavke: dodavanje / izmena ────────────────────────────────────────────
+  // Cene NE računa ova ruta — kalkulativne kolone piše isključivo `CalculationService`.
+  // `recalculate: true` u telu ga pozove odmah, ali time dokument prelazi u CALCULATED i
+  // zatvara se za dalje izmene stavki; zato je podrazumevano `false` (v. DTO).
+
+  /**
+   * DODAJ stavku na nacrt robnog dokumenta. Telo = ista polja kao stavka pri kreiranju
+   * (`itemId`, `quantity`, `warehouseId`, fakturna cena, rabat, kasa, zavisni troškovi…).
+   * `lineNo` izostavljen → sledeći slobodan. Količina 0 ili negativna = 422 (smer se izvodi
+   * iz vrste dokumenta). Za IZLAZNI dokument prolazi kroz proveru zaliha magacina te stavke.
+   * Permisija ROBNO_WRITE.
+   */
+  @Post("documents/:id/items")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  addItem(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: CreateStockDocumentItemBodyDto,
+    @Req() req: { user?: AuthUser },
+  ) {
+    return this.documentEdit.addItem(id, dto, req.user?.userId ?? null);
+  }
+
+  /**
+   * IZMENI postojeću stavku nacrta (artikal, magacin, količina, redni broj, cene/rabati).
+   * Prosleđuju se samo polja koja se menjaju. Meko obrisana stavka = 409 sa uputstvom
+   * („poništi brisanje pa menjaj"). Permisija ROBNO_WRITE.
+   */
+  @Patch("documents/:id/items/:lineId")
+  @RequirePermission(PERMISSIONS.ROBNO_WRITE)
+  updateItem(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("lineId", ParseIntPipe) lineId: number,
+    @Body() dto: UpdateStockDocumentItemDto,
+    @Req() req: { user?: AuthUser },
+  ) {
+    return this.documentEdit.updateItem(
+      id,
+      lineId,
+      dto,
+      req.user?.userId ?? null,
+    );
   }
 
   // ─── Stavke: soft-delete + Undo (Batch B) ──────────────────────────────────

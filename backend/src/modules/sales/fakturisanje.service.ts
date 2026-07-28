@@ -149,6 +149,10 @@ export class FakturisanjeService {
         description: row.input.description ?? null,
         quantity: p.quantity,
         unitPrice: p.unitPrice,
+        // Osnovica za koeficijent (§8/O1). Dokument se pravi sa koeficijentom 1,
+        // pa je bazna cena jednaka cenovnoj. Bez ovog upisa kolona ostaje na
+        // `DEFAULT 0`, a prvi dodir stavke bi cenu izveo iz nule.
+        baseUnitPrice: p.unitPrice,
         discountPercent: p.discountPercent,
         cashDiscountPercent: p.cashDiscountPercent,
         vatRateCode: isExport ? "0" : p.vatRateCode,

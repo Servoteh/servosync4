@@ -84,9 +84,42 @@ export class BigbitMdbJobs {
    */
   private async runWatchdog(): Promise<string> {
     const status = await this.switches.bigbitStatus();
-    const danger = status.data.warnings.filter((w) => w.level === "danger");
+
+    // KANAL KOJI NIJE PODIGNUT NIJE KANAL KOJI JE PUKAO (stavka D, nalaz V7).
+    // Prekidač se od 28.07.2026. seje ISKLJUČEN (migracija 20260728130000), jer
+    // se prvi uvoz radi ručno i danju. U tom stanju `bigbitStatus()` s pravom
+    // vraća dva `danger` upozorenja za EKRAN („isključen" + „nije proradio
+    // nijednom") — ali nadzornik ih ne sme GURATI: svakom aktivnom adminu bi
+    // od prvog jutra posle deploy-a stizala po jedna poruka dnevno, zauvek, za
+    // odluku koju je čovek svesno doneo. Alarm koji se ne može ugasiti se
+    // ignoriše, pa bi s njim propao i pravi.
+    // Ćuti se SAMO u tom jednom stanju: prekidač isključen I nijedan uvoz nikad
+    // nije uspeo. Čim je uvoz jednom radio, gašenje prekidača ponovo alarmira
+    // („ugašen mesec dana, a niko ne zna" je razlog zbog kog nadzornik postoji).
+    //
+    // ⚠️ TIŠINA JE USKA, NE ŠIROKA (ispravka posle drugog kruga pregleda 28.07.):
+    // rani `return` je stajao PRE filtriranja, pa je u tom stanju gutao SVA `danger`
+    // upozorenja — i „Poslednji pokušaj uvoza je PAO", i „Stanje uvoza se ne može
+    // pročitati", i „Uvoz je počeo pre 20 h i nikad se nije završio". A to je tačno
+    // stanje u kome se paket uvodi (prvi uvoz ručno i danju), pa bi pad ručnog uvoza
+    // prošao bez ijednog signala. Sada se izuzimaju SAMO ona dva upozorenja koja
+    // opisuju svesnu odluku; sve ostalo i dalje zvoni.
+    // Poređenje ide po STABILNOJ ŠIFRI, ne po srpskom tekstu — tekst se menja, a
+    // utišavanje po tekstu tiho prestane da važi (ili počne da važi preširoko).
+    const decisionCodes = new Set([
+      "PREKIDAC_ISKLJUCEN",
+      "NIKAD_NIJE_PRORADIO",
+    ]);
+    const decisionState = !status.data.enabled && !status.data.lastSuccessAt;
+
+    const danger = status.data.warnings
+      .filter((w) => w.level === "danger")
+      .filter((w) => !(decisionState && w.code && decisionCodes.has(w.code)));
     if (!danger.length)
-      return "sve u redu — nema upozorenja, ništa nije poslato";
+      return !status.data.enabled && !status.data.lastSuccessAt
+        ? "noćni uvoz još nije pušten u rad (prekidač isključen, nijedan uvoz nije uspeo) — " +
+            "to je odluka, ne kvar, pa obaveštenje nije poslato"
+        : "sve u redu — nema upozorenja, ništa nije poslato";
 
     const recipients = await this.adminWorkerIds();
     if (!recipients.length)

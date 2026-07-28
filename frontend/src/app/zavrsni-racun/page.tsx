@@ -27,6 +27,7 @@ import {
   STATEMENT_PRINT_UNIT,
   STATEMENT_TYPE,
   STATEMENT_STATUS,
+  isBlockingControlFailure,
   type GrossTrialBalanceRow,
   type StatementLine,
   type FinancialStatement,
@@ -138,7 +139,38 @@ const lineColumns: Column<StatementLine>[] = [
 
 // ─────────────────────────────────────────────────────────────── kontrolna pravila
 
-/** Sekcija kontrolnih pravila (zeleno/crveno) ispod bilansa. */
+/** Izgled reda po ishodu pravila — četiri stanja, ne dva. */
+const CONTROL_TONE: Record<string, { tone: Tone; label: string; box: string }> = {
+  PROLAZI: {
+    tone: 'success',
+    label: 'Prolazi',
+    box: 'border-status-success/40 bg-status-success-bg',
+  },
+  PADA: {
+    tone: 'danger',
+    label: 'Ne prolazi',
+    box: 'border-status-danger/40 bg-status-danger-bg',
+  },
+  UPOZORENJE: {
+    tone: 'warn',
+    label: 'Upozorenje',
+    box: 'border-status-warn/40 bg-status-warn-bg',
+  },
+  NEPRIMENLJIVO: {
+    tone: 'neutral',
+    label: 'Neprimenljivo',
+    box: 'border-status-neutral/40 bg-status-neutral-bg',
+  },
+};
+
+/**
+ * Sekcija kontrolnih pravila ispod bilansa.
+ *
+ * Ranije su postojala samo dva izgleda (zeleno/crveno) i prikazivao se samo naziv
+ * pravila — pa je „Neprimenljivo" izgledalo isto kao „Prolazi", „Upozorenje" isto kao
+ * pad, a poruka pravila (jedino mesto gde piše ZAŠTO, uključujući imena neuravnoteženih
+ * naloga i sirove iznose odsečenih pozicija) nije se videla nigde.
+ */
 function ControlsSection({ controls }: { controls: ControlResult[] }) {
   if (controls.length === 0) return null;
   return (
@@ -147,27 +179,38 @@ function ControlsSection({ controls }: { controls: ControlResult[] }) {
         Kontrolna pravila
       </div>
       <div className="space-y-1.5">
-        {controls.map((c) => (
-          <div
-            key={c.name}
-            className={`flex flex-wrap items-center justify-between gap-3 rounded-panel border px-4 py-2 text-sm ${
-              c.passed
-                ? 'border-status-success/40 bg-status-success-bg'
-                : 'border-status-danger/40 bg-status-danger-bg'
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <StatusBadge
-                tone={c.passed ? 'success' : 'danger'}
-                label={c.passed ? 'Prolazi' : 'Ne prolazi'}
-              />
-              <span className="text-ink">{c.name}</span>
-            </span>
-            <span className="tnums text-ink-secondary">
-              {formatDecimal(c.left)} = {formatDecimal(c.right)}
-            </span>
-          </div>
-        ))}
+        {controls.map((c) => {
+          const status = c.status ?? (c.passed ? 'PROLAZI' : 'PADA');
+          const look = CONTROL_TONE[status] ?? CONTROL_TONE.PADA;
+          const side = (v: string) =>
+            c.valueKind === 'BROJ' ? v : formatDecimal(v);
+          return (
+            <div
+              key={c.code ?? c.name}
+              className={`space-y-1 rounded-panel border px-4 py-2 text-sm ${look.box}`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="flex items-center gap-2">
+                  <StatusBadge tone={look.tone} label={look.label} />
+                  <span className="text-ink">{c.name}</span>
+                </span>
+                <span className="tnums text-ink-secondary">
+                  {side(c.left)} {status === 'PROLAZI' ? '=' : '/'} {side(c.right)}
+                </span>
+              </div>
+              {c.message && (
+                <p className="text-2xs leading-snug text-ink-secondary">{c.message}</p>
+              )}
+              {(c.details?.length ?? 0) > 0 && (
+                <ul className="list-disc space-y-0.5 pl-4 text-2xs text-ink-secondary">
+                  {(c.details ?? []).slice(0, 8).map((d, i) => (
+                    <li key={i}>{d}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -263,12 +306,34 @@ export default function ZavrsniRacunPage() {
 
   function onFinalize() {
     if (!activeStatement) return;
-    const anyFail = controlResults.some((c) => !c.passed);
-    const msg = anyFail
-      ? 'Kontrolna pravila NE prolaze (npr. aktiva razlicito od pasive). Finalizovati uprkos tome (force)?'
-      : 'Finalizovati bilans? Posle finalizacije se ne moze ponovo generisati.';
-    if (!window.confirm(msg)) return;
-    finalize.mutate({ id: activeStatement.id, force: anyFail });
+    // BLOKIRAJU samo pad i blokirajuće „neprimenljivo". Upozorenja (neuravnoteženi
+    // nalozi iz BigBita, propisano odsecanje) NE blokiraju — ranije su brojana kao pad,
+    // pa je ekran slao force=true na SVAKOJ finalizaciji i navikavao korisnika da gazi
+    // kontrole. Forsiranje se sada upisuje u trajan trag, pa mora biti izuzetak.
+    const blocking = controlResults.filter(isBlockingControlFailure);
+    if (blocking.length === 0) {
+      if (
+        !window.confirm(
+          'Finalizovati bilans? Posle finalizacije se ne može ponovo generisati.',
+        )
+      )
+        return;
+      finalize.mutate({ id: activeStatement.id, force: false });
+      return;
+    }
+    const reason = window.prompt(
+      `Kontrolna pravila koja BLOKIRAJU finalizaciju:\n` +
+        blocking.map((c) => `• ${c.name}`).join('\n') +
+        `\n\nFinalizacija uprkos tome ostavlja TRAJAN TRAG (ko, kada, koja pravila su ` +
+        `pala). Upiši obrazloženje da bi se nastavilo, ili otkaži.`,
+      '',
+    );
+    if (reason === null || reason.trim() === '') return;
+    finalize.mutate({
+      id: activeStatement.id,
+      force: true,
+      reason: reason.trim(),
+    });
   }
 
   return (

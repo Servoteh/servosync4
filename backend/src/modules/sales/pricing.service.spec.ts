@@ -1,0 +1,412 @@
+import { Test, TestingModule } from "@nestjs/testing";
+import { BadRequestException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
+import { PrismaService } from "../../prisma/prisma.service";
+import { PricingService } from "./pricing.service";
+
+/**
+ * Cenovni motor — lanac `fakturna → rabat → kasa → PDV` i DVA kanala prekucane cene
+ * (PLAN_UNOS_DOKUMENATA §4.2/§4.4 „Zamka u našem kodu" + §8/O2).
+ *
+ * Srce paketa je test „prekucana cena + rabat kupca = ta ista cena": pre ispravke je
+ * ekran imao SAMO `overrideUnitPrice` (baznu cenu), pa je dogovorena krajnja cena od 85
+ * uz rabat kupca 10% završavala na 76,50 — umanjena DRUGI put. Sad postoji kanal
+ * `netUnitPrice` koji rabat izvodi unazad, a stari kanal ostaje „cena pre rabata"
+ * (odluka vlasnika §8/O2).
+ */
+
+const D = Prisma.Decimal;
+
+function prismaMock() {
+  return {
+    item: { findUnique: jest.fn().mockResolvedValue(null) },
+    priceListEntry: { findFirst: jest.fn().mockResolvedValue(null) },
+    customerDiscount: { findMany: jest.fn().mockResolvedValue([]) },
+    customer: { findUnique: jest.fn().mockResolvedValue(null) },
+    stockLevel: { findUnique: jest.fn().mockResolvedValue(null) },
+  };
+}
+
+/** Artikal bez kapa rabata (max 100%), PDV 20%. */
+function item(overrides: Record<string, unknown> = {}) {
+  return {
+    wholesalePrice: 100,
+    maxDiscountPercent: 100,
+    goodsTaxRateCode: "3",
+    groupCode: "01",
+    ...overrides,
+  };
+}
+
+describe("PricingService", () => {
+  let service: PricingService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [PricingService, { provide: PrismaService, useValue: prisma }],
+    }).compile();
+    service = mod.get(PricingService);
+  });
+
+  /** Rabat kupca 10% (flat, u važnosti). */
+  function customerWith10Percent() {
+    prisma.customerDiscount.findMany.mockResolvedValue([
+      { itemGroupCode: null, discountPercent: new D("10"), validFrom: new Date("2020-01-01") },
+    ]);
+  }
+
+  // ── DVOSTRUKO UMANJENJE (§4.4 / §8/O2) ────────────────────────────────────
+
+  describe("prekucana cena i rabat kupca", () => {
+    it("kanal NETO: prekucana cena 85 + rabat kupca 10% = TAČNO 85 (pre ispravke: 76,50)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      customerWith10Percent();
+
+      const p = await service.priceItem({
+        customerId: 5,
+        itemId: 1,
+        quantity: 1,
+        netUnitPrice: 85,
+      });
+
+      // Ovo je red zbog kog paket postoji: staro ponašanje je davalo 76.5000.
+      expect(p.unitPrice.toFixed(4)).toBe("85.0000");
+      expect(p.priceSource).toBe("OVERRIDE_NET");
+      expect(p.priceOverridden).toBe(true);
+      // Rabat je izveden unazad iz cenovnika (100 → 85), a ne rabat kupca od 10%.
+      expect(p.discountPercent.toFixed(4)).toBe("15.0000");
+      expect(p.basePrice.toFixed(4)).toBe("100.0000");
+      expect(p.discountCapped).toBe(false);
+
+      // Kontrola razlike: isti broj kroz STARI (jedini) kanal i dalje daje 76,50.
+      // Baš zato kanal NETO postoji — ekran mora da bira kroz koji šalje.
+      const staroPonasanje = await service.priceItem({
+        customerId: 5,
+        itemId: 1,
+        quantity: 1,
+        overrideUnitPrice: 85,
+      });
+      expect(staroPonasanje.unitPrice.toFixed(4)).toBe("76.5000");
+    });
+
+    it("kanal CENA ostaje BigBit ponašanje: prekucano 100 + rabat 10% = 90 (rabat OSTAJE, §8/O2)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      customerWith10Percent();
+
+      const p = await service.priceItem({
+        customerId: 5,
+        itemId: 1,
+        quantity: 1,
+        overrideUnitPrice: 100,
+      });
+
+      expect(p.unitPrice.toFixed(4)).toBe("90.0000");
+      expect(p.basePrice.toFixed(4)).toBe("100.0000");
+      expect(p.priceSource).toBe("OVERRIDE");
+      expect(p.discountPercent.toFixed(4)).toBe("10.0000");
+    });
+
+    it("rabat se primenjuje TAČNO JEDNOM i pri kasi (85 neto uz kasu 5% ostaje 85)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      customerWith10Percent();
+
+      const p = await service.priceItem({
+        customerId: 5,
+        itemId: 1,
+        quantity: 1,
+        netUnitPrice: 85,
+        cashDiscountPercent: 5,
+      });
+
+      expect(p.unitPrice.toFixed(4)).toBe("85.0000");
+      expect(p.cashDiscountPercent.toFixed(4)).toBe("5.0000");
+      // Invarijanta §4.2: base × (1−r) × (1−k) == neto.
+      const recomputed = p.basePrice
+        .mul(new D(100).sub(p.discountPercent).div(100))
+        .mul(new D(100).sub(p.cashDiscountPercent).div(100));
+      expect(recomputed.toFixed(2)).toBe("85.00");
+    });
+
+    it("povratak vrednosti iz odgovora u isti kanal NE umanjuje drugi put (round-trip)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      customerWith10Percent();
+
+      const first = await service.priceItem({ customerId: 5, itemId: 1, quantity: 1 });
+      expect(first.unitPrice.toFixed(4)).toBe("90.0000");
+
+      // Ekran vraća `basePrice` u kanal CENA…
+      const echoBase = await service.priceItem({
+        customerId: 5,
+        itemId: 1,
+        quantity: 1,
+        overrideUnitPrice: first.basePrice,
+      });
+      expect(echoBase.unitPrice.toFixed(4)).toBe(first.unitPrice.toFixed(4));
+
+      // …a `unitPrice` u kanal NETO. Oba puta ista cena — nema drugog umanjenja.
+      const echoNet = await service.priceItem({
+        customerId: 5,
+        itemId: 1,
+        quantity: 1,
+        netUnitPrice: first.unitPrice,
+      });
+      expect(echoNet.unitPrice.toFixed(4)).toBe(first.unitPrice.toFixed(4));
+    });
+
+    it("oba kanala zajedno → 400 (protivrečan unos se ne razrešava tiho)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      await expect(
+        service.priceItem({
+          itemId: 1,
+          quantity: 1,
+          overrideUnitPrice: 100,
+          netUnitPrice: 85,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("neto cena + eksplicitan rabat → 400 (neto sam određuje rabat)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      await expect(
+        service.priceItem({
+          itemId: 1,
+          quantity: 1,
+          netUnitPrice: 85,
+          requestedDiscountPercent: 10,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("negativna cena → 400 (u oba kanala)", async () => {
+      await expect(
+        service.priceItem({ itemId: 1, quantity: 1, overrideUnitPrice: -1 }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        service.priceItem({ itemId: 1, quantity: 1, netUnitPrice: -1 }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("neto IZNAD fakturne → rabat 0, fakturna se podiže (bez negativnog rabata)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1, netUnitPrice: 120 });
+
+      expect(p.unitPrice.toFixed(4)).toBe("120.0000");
+      expect(p.discountPercent.toFixed(4)).toBe("0.0000");
+      expect(p.basePrice.toFixed(4)).toBe("120.0000");
+    });
+
+    it("kap rabata pobeđuje otkucanu neto cenu, ali GLASNO (warning + discountCapped)", async () => {
+      // Artikal dozvoljava najviše 5% rabata; neto 85 bi tražio 15%.
+      prisma.item.findUnique.mockResolvedValue(item({ maxDiscountPercent: 5 }));
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1, netUnitPrice: 85 });
+
+      expect(p.discountCapped).toBe(true);
+      expect(p.discountPercent.toFixed(4)).toBe("5.0000");
+      expect(p.unitPrice.toFixed(4)).toBe("95.0000");
+      expect(p.warnings.join(" ")).toContain("rabat");
+    });
+  });
+
+  // ── LANAC, KAP, BRANE ──────────────────────────────────────────────────────
+
+  describe("lanac cene", () => {
+    it("cenovnik ima prednost nad VP sa artikla i vraća poreklo PRICE_LIST", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      prisma.priceListEntry.findFirst.mockResolvedValue({
+        priceWithoutVat: new D("200"),
+      });
+
+      const p = await service.priceItem({ itemId: 1, quantity: 2, documentType: "IFR" });
+
+      expect(p.basePrice.toFixed(4)).toBe("200.0000");
+      expect(p.priceSource).toBe("PRICE_LIST");
+      expect(p.vatBase.toFixed(4)).toBe("400.0000");
+      expect(p.vatAmount.toFixed(4)).toBe("80.0000");
+      expect(p.lineTotal.toFixed(4)).toBe("480.0000");
+    });
+
+    it("`priceListCode` ima prioritet nad `documentType` kao ključ cenovnika (§4.3)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      prisma.priceListEntry.findFirst.mockResolvedValue({
+        priceWithoutVat: new D("150"),
+      });
+
+      await service.priceItem({
+        itemId: 1,
+        quantity: 1,
+        documentType: "IFR",
+        priceListCode: "MP01",
+      });
+
+      expect(prisma.priceListEntry.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ documentTypeId: "MP01" }),
+        }),
+      );
+    });
+
+    it("bez cenovnika pada na VP sa artikla (ITEM_WHOLESALE), bez cene → NONE", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      const withPrice = await service.priceItem({ itemId: 1, quantity: 1 });
+      expect(withPrice.priceSource).toBe("ITEM_WHOLESALE");
+
+      prisma.item.findUnique.mockResolvedValue(item({ wholesalePrice: 0 }));
+      const without = await service.priceItem({ itemId: 1, quantity: 1 });
+      expect(without.priceSource).toBe("NONE");
+      expect(without.unitPrice.toFixed(4)).toBe("0.0000");
+    });
+
+    it("rabat po grupi artikla pobeđuje flat rabat kupca", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      prisma.customerDiscount.findMany.mockResolvedValue([
+        { itemGroupCode: "01", discountPercent: new D("20"), validFrom: new Date("2024-01-01") },
+        { itemGroupCode: null, discountPercent: new D("10"), validFrom: new Date("2024-01-01") },
+      ]);
+
+      const p = await service.priceItem({ customerId: 5, itemId: 1, quantity: 1 });
+
+      expect(p.discountPercent.toFixed(4)).toBe("20.0000");
+      expect(p.unitPrice.toFixed(4)).toBe("80.0000");
+    });
+
+    it("kap na max rabat artikla seče traženi rabat i prijavljuje ga", async () => {
+      prisma.item.findUnique.mockResolvedValue(item({ maxDiscountPercent: 15 }));
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 1,
+        requestedDiscountPercent: 40,
+      });
+
+      expect(p.discountCapped).toBe(true);
+      expect(p.discountPercent.toFixed(4)).toBe("15.0000");
+      expect(p.maxDiscountPercent.toFixed(4)).toBe("15.0000");
+      expect(p.warnings.length).toBeGreaterThan(0);
+    });
+
+    it("pokvaren šifarnik (max rabat 200%) NE sme dati negativnu cenu", async () => {
+      prisma.item.findUnique.mockResolvedValue(item({ maxDiscountPercent: 200 }));
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 1,
+        requestedDiscountPercent: 150,
+      });
+
+      expect(p.discountPercent.toFixed(4)).toBe("100.0000");
+      expect(p.unitPrice.toFixed(4)).toBe("0.0000");
+      expect(p.unitPrice.isNegative()).toBe(false);
+    });
+
+    it("kasa iznad 100% se ograničava (cena ne postaje negativna)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 1,
+        cashDiscountPercent: 150,
+      });
+
+      expect(p.cashDiscountPercent.toFixed(4)).toBe("100.0000");
+      expect(p.unitPrice.toFixed(4)).toBe("0.0000");
+    });
+
+    it("nepoznata poreska šifra i dalje daje 0% PDV, ali se sada PRIJAVI", async () => {
+      prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "9" }));
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1 });
+
+      expect(p.vatAmount.toFixed(4)).toBe("0.0000");
+      expect(p.vatRatePercent.toFixed(2)).toBe("0.00");
+      expect(p.warnings.join(" ")).toContain("Nepoznata poreska šifra");
+    });
+
+    it("PDV 10% po šifri 2 (stopa ne curi iz šifre 3)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "2" }));
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1 });
+
+      expect(p.vatRatePercent.toFixed(2)).toBe("10.00");
+      expect(p.vatAmount.toFixed(4)).toBe("10.0000");
+    });
+  });
+
+  // ── NABAVNA / RUC ──────────────────────────────────────────────────────────
+
+  describe("nabavna neto i RUC", () => {
+    it("bez magacina se NE izmišljaju (oba null) i zaliha se ne čita", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1 });
+
+      expect(p.purchasePriceNet).toBeNull();
+      expect(p.markupPercent).toBeNull();
+      expect(prisma.stockLevel.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("uz magacin daje prosečnu nabavnu i RUC %", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      prisma.stockLevel.findUnique.mockResolvedValue({
+        avgPurchaseNet: new D("80"),
+        lastPurchaseNet: new D("70"),
+      });
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1, warehouseId: 3 });
+
+      expect(p.purchasePriceNet?.toFixed(4)).toBe("80.0000");
+      // (100 − 80)/80 = 25%
+      expect(p.markupPercent?.toFixed(4)).toBe("25.0000");
+      expect(p.warnings).toEqual([]);
+    });
+
+    it("kad prosek nije obračunat uzima poslednju nabavnu", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      prisma.stockLevel.findUnique.mockResolvedValue({
+        avgPurchaseNet: new D("0"),
+        lastPurchaseNet: new D("50"),
+      });
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1, warehouseId: 3 });
+
+      expect(p.purchasePriceNet?.toFixed(4)).toBe("50.0000");
+      expect(p.markupPercent?.toFixed(4)).toBe("100.0000");
+    });
+
+    it("cena ispod nabavne → negativan RUC + upozorenje", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      prisma.stockLevel.findUnique.mockResolvedValue({
+        avgPurchaseNet: new D("120"),
+        lastPurchaseNet: new D("120"),
+      });
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1, warehouseId: 3 });
+
+      expect(p.markupPercent?.isNegative()).toBe(true);
+      expect(p.warnings.join(" ")).toContain("ispod nabavne");
+    });
+  });
+
+  // ── KOMPATIBILNOST SA ŽIVIM TOKOM (createProforma) ─────────────────────────
+
+  it("stari ulaz (bez novih polja) daje isti rezultat kao pre — 100 × rabat 10% = 90", async () => {
+    prisma.item.findUnique.mockResolvedValue(item());
+    customerWith10Percent();
+
+    const p = await service.priceItem({
+      customerId: 5,
+      itemId: 1,
+      quantity: 3,
+      documentType: "PROF",
+    });
+
+    expect(p.unitPrice.toFixed(4)).toBe("90.0000");
+    expect(p.vatBase.toFixed(4)).toBe("270.0000");
+    expect(p.vatAmount.toFixed(4)).toBe("54.0000");
+    expect(p.lineTotal.toFixed(4)).toBe("324.0000");
+    expect(p.priceOverridden).toBe(false);
+  });
+});

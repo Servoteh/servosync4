@@ -64,16 +64,90 @@
 --     modulu koji je tek popravljen. Vidljivi su preko `popdv_account_map`
 --     (oznake 8а.2NE / 8а.7NE = „ne priznaje se").
 --
--- Idempotentno (dev + prod). PAZI PRE PRODA: izmena registra retroaktivno menja
--- svaki VEĆ izračunat period — proveri da nema `vat_returns` u statusu POSTED.
+-- Idempotentno (dev + prod).
+--
+-- BRANA I ARHIVA (dopuna 28.07.2026 — stavka D nezavisnog pregleda, nalaz V2)
+--   Zaglavlje je do sada PISALO „PAZI PRE PRODA: proveri da nema `vat_returns` u
+--   statusu POSTED", a sama migracija NIJE proveravala ništa — revizor je to
+--   dokazao ubacivanjem predatog povraćaja pre `migrate deploy`: prošlo bez
+--   ijedne poruke, registar promenjen ispod već predatog perioda. Napomena koja
+--   se oslanja na to da će je neko pročitati nije brana.
+--   Sada: (a) svaki red koji ispada iz registra prvo ide u `arch_vat_account_map`;
+--   (b) postojanje PREDATE PDV prijave zaustavlja migraciju.
+--   Merilo „predata": `status NOT IN ('DRAFT','CALCULATED')` — namerno se nabraja
+--   ono što je BEZBEDNO preračunati, a ne ono što nije. Svaka buduća vrednost
+--   (SUBMITTED, POSTED, LOCKED…) tako po difoltu ZAUSTAVLJA, umesto da se tiho
+--   provuče jer je spisak zabrana zaboravljen.
+--   IZLAZ ZA OPERATERA (svesna, zapisana odluka):
+--     Prekidač se postavlja NA NIVOU BAZE, pa migracija prolazi kroz REDOVAN
+--     `prisma migrate deploy` i UREDNO UĐE U `_prisma_migrations`:
+--       ALTER DATABASE <baza> SET servosync.dozvoli_prepis_pdv_registra = 'on';
+--       npx prisma migrate resolve --rolled-back 20260727090000_pdv_registar_ispravka
+--         (samo ako je prethodni deploy već pao na ovoj brani)
+--       npx prisma migrate deploy
+--       ALTER DATABASE <baza> RESET servosync.dozvoli_prepis_pdv_registra;
+--     ⚠️ NE puštati fajl ručno kroz psql/`prisma db execute`: efekat uđe u bazu a
+--     evidencija ga ne zna (nalaz V2), pa bi ga sledeći deploy izvršio DRUGI PUT.
+--   PRE MERGE-a NA MAIN proveri na produ:
+--     SELECT id, period_year, period_month, period_quarter, status FROM vat_returns
+--      WHERE status NOT IN ('DRAFT','CALCULATED');
 -- =============================================================================
+
+-- ── 0) BRANA + ARHIVA ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS "arch_vat_account_map" (
+  "arch_id"        BIGSERIAL PRIMARY KEY,
+  "arch_migration" TEXT NOT NULL,
+  "arch_at"        TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
+  "account"        TEXT,
+  "name"           TEXT,
+  "direction"      TEXT,
+  "rate"           NUMERIC(19,4),
+  "role"           TEXT
+);
+
+DO $stavka_d$
+DECLARE
+  predate TEXT;
+BEGIN
+  SELECT string_agg(
+           format('%s/%s (status %s)', period_year,
+                  coalesce(period_month::text, 'K' || period_quarter::text, '?'), status),
+           ', ' ORDER BY period_year, period_month, period_quarter)
+    INTO predate
+    FROM vat_returns
+   WHERE status NOT IN ('DRAFT', 'CALCULATED');
+
+  IF predate IS NOT NULL
+     AND coalesce(current_setting('servosync.dozvoli_prepis_pdv_registra', true), 'off') <> 'on' THEN
+    RAISE EXCEPTION
+      'PDV_PRIJAVA_PREDATA: postoji predata PDV prijava — %. Ova migracija menja registar '
+      'PDV konta, čime bi se retroaktivno promenili KIF/KUF i POPDV baš za taj period, a '
+      'predata prijava bi ostala na starim brojevima. Zaustavljeno. '
+      'POSTUPAK IMA TRI KORAKA, I DRUGI SE NE SME PRESKOČITI: '
+      '(1) odštampajte/sačuvajte predate prijave i njihove knjige pre izmene registra '
+      '(ili, ako je izmena svesna odluka, postavite ALTER DATABASE <baza> SET '
+      'servosync.dozvoli_prepis_pdv_registra = ''on''); '
+      '(2) OBAVEZNO odmrznite neuspelu migraciju: npx prisma migrate resolve '
+      '--rolled-back 20260727090000_pdv_registar_ispravka — bez ovoga svaki sledeći deploy '
+      'pada sa P3009 („failed migrations in the target database"), uključujući i deploy-e '
+      'drugih modula; (3) ponovite deploy. '
+      '[tehnički: vat_returns.status NOT IN (DRAFT, CALCULATED); stari redovi registra se u '
+      'svakom slučaju arhiviraju u arch_vat_account_map]',
+      predate;
+  END IF;
+END
+$stavka_d$;
 
 -- ── 1) ukloni zastavicu „konto bez osnovice" (uzrok C) ───────────────────────
 -- IF EXISTS: na produ kolone nema (ova migracija se tamo pušta prvi put), na dev
 -- bazi je nastala ranijim ručnim prolazom istog fajla i mora da nestane.
 ALTER TABLE "vat_account_map" DROP COLUMN IF EXISTS "has_base";
 
--- ── 2) izbaci konta koja NISU PDV konta ──────────────────────────────────────
+-- ── 2) izbaci konta koja NISU PDV konta (uz arhivu starog reda) ──────────────
+INSERT INTO "arch_vat_account_map" (arch_migration, account, name, direction, rate, role)
+SELECT '20260727090000_pdv_registar_ispravka', account, name, direction, rate, role
+  FROM "vat_account_map" WHERE "account" IN ('2050', '4331', '2780');
+
 DELETE FROM "vat_account_map" WHERE "account" IN ('2050', '4331', '2780');
 
 -- ── 3) upiši/ispravi PDV konta ───────────────────────────────────────────────

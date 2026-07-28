@@ -215,6 +215,7 @@ export class SyncSwitchService {
     // isto kao „sve je u redu, samo još nije bilo uvoza".
     if (degraded.length)
       warnings.push({
+        code: "STANJE_NECITLJIVO",
         level: "danger",
         message:
           `Stanje uvoza se ne može pročitati u celosti (${degraded.join(", ")}) — ` +
@@ -224,6 +225,7 @@ export class SyncSwitchService {
     if (!enabled) {
       const since = sw?.updatedAt ? hoursSince(sw.updatedAt, now) : null;
       warnings.push({
+        code: "PREKIDAC_ISKLJUCEN",
         level: "danger",
         message:
           "Noćni uvoz iz BigBita je ISKLJUČEN" +
@@ -240,6 +242,7 @@ export class SyncSwitchService {
       const waiting = sw?.createdAt ? hoursSince(sw.createdAt, now) : null;
       const fresh = waiting != null && waiting < NEVER_IMPORTED_GRACE_HOURS;
       warnings.push({
+        code: "NIKAD_NIJE_PRORADIO",
         level: fresh ? "warn" : "danger",
         message: fresh
           ? "Uvoz iz BigBita još nijednom nije završen — čeka se prvi noćni prolaz."
@@ -257,6 +260,7 @@ export class SyncSwitchService {
       // slanje istog čoveka da traži kvar koji ne postoji je pogrešan savet.
       if (age >= IMPORT_STALE_AFTER_HOURS && enabled) {
         warnings.push({
+          code: "UVOZ_ZASTAREO",
           level: age >= IMPORT_CRITICAL_AFTER_HOURS ? "danger" : "warn",
           message:
             `Poslednji uspešan uvoz je bio ${humanAge(age)}, a očekuje se svake noći. ` +
@@ -268,6 +272,7 @@ export class SyncSwitchService {
       // ne bi izašlo (`bb_sync_state` je jedina tabela u lancu bez zone).
       if (lastSuccessAt.getTime() - now > 5 * 60_000)
         warnings.push({
+          code: "SAT_U_BUDUCNOSTI",
           level: "warn",
           message:
             "Vreme poslednjeg uvoza je u BUDUĆNOSTI — sat ili vremenska zona servera nisu tačni. " +
@@ -281,6 +286,7 @@ export class SyncSwitchService {
       // u kome uvoz svake noći puca, a ekran pokazuje blago žuto upozorenje.
       if (age >= MAX_DROP_AGE_HOURS) {
         warnings.push({
+          code: "IZVOR_ZASTAREO",
           level: "danger",
           message:
             `Podaci iz BigBita nisu stigli — poslednji fajl (${cursor.sourceFile ?? "nepoznat"}) je od ` +
@@ -290,6 +296,7 @@ export class SyncSwitchService {
         });
       } else if (age >= SOURCE_STALE_AFTER_HOURS) {
         warnings.push({
+          code: "IZVOR_ZASTAREO",
           level: age >= SOURCE_CRITICAL_AFTER_HOURS ? "danger" : "warn",
           message:
             `Izvorni fajl iz BigBita (${cursor.sourceFile ?? "nepoznat"}) star je ${humanAge(age)}. ` +
@@ -301,6 +308,7 @@ export class SyncSwitchService {
 
     if (lastRun && lastRun.status === "FAILED") {
       warnings.push({
+        code: "UVOZ_PAO",
         level: "danger",
         message:
           "Poslednji pokušaj uvoza je PAO. Pokušajte ručno pokretanje (Sistem → Zakazani poslovi); " +
@@ -317,6 +325,7 @@ export class SyncSwitchService {
       hoursSince(lastRun.startedAt, now) >= RUN_STUCK_AFTER_HOURS
     ) {
       warnings.push({
+        code: "UVOZ_ZAGLAVLJEN",
         level: "danger",
         message:
           `Uvoz je počeo ${humanAge(hoursSince(lastRun.startedAt, now))} i nikad se nije završio — ` +
@@ -372,9 +381,28 @@ export class SyncSwitchService {
 
 // -------------------------------------------------------------------- tipovi / pomoćno
 
+/**
+ * Stabilna šifra upozorenja. Postoji da bi potrošači (jutarnji nadzornik) mogli da
+ * razlikuju upozorenja BEZ poređenja srpskog teksta — prvo utišavanje nadzornika je
+ * bilo napisano nad tekstom i nad ranim `return`-om, pa je gutalo i „poslednji uvoz
+ * je PAO" (nalaz drugog kruga pregleda). Nedostatak šifre nije greška: upozorenja bez
+ * nje se nikad ne utišavaju.
+ */
+export type SyncWarningCode =
+  | "PREKIDAC_ISKLJUCEN"
+  | "NIKAD_NIJE_PRORADIO"
+  | "STANJE_NECITLJIVO"
+  | "UVOZ_PAO"
+  | "UVOZ_ZAGLAVLJEN"
+  | "IZVOR_ZASTAREO"
+  | "UVOZ_ZASTAREO"
+  | "SAT_U_BUDUCNOSTI";
+
 export interface SyncWarning {
   level: "warn" | "danger";
   message: string;
+  /** Stabilna šifra (vidi `SyncWarningCode`); može izostati na starijim porukama. */
+  code?: SyncWarningCode;
 }
 
 /** Ono što posao (stavka A) sme da ostavi u `bb_sync_state.cursor` za prikaz stanja. */

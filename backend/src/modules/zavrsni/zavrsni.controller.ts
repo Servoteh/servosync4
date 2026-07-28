@@ -57,10 +57,7 @@ export class ZavrsniController {
   }
 
   @Get("statements")
-  listStatements(
-    @Query("type") type?: string,
-    @Query("year") year?: string,
-  ) {
+  listStatements(@Query("type") type?: string, @Query("year") year?: string) {
     return this.balanceSheet.listStatements({
       statementType: type,
       year: year ? Number(year) : undefined,
@@ -109,12 +106,18 @@ export class ZavrsniController {
   @RequirePermission(PERMISSIONS.ZR_COMPUTE)
   finalizeStatement(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { force?: boolean } | undefined,
+    @Body() body: { force?: boolean; reason?: string } | undefined,
     @Req() req: { user: AuthUser },
   ) {
     return this.balanceSheet.finalizeStatement(id, {
       force: body?.force === true,
       userId: req.user?.userId,
+      // Obrazloženje forsiranja: kolona `reason` u tragu je postojala od početka, ali
+      // je kontroler nije čitao — trag je znao KO i KADA, a nikad ZAŠTO.
+      reason:
+        typeof body?.reason === "string" && body.reason.trim() !== ""
+          ? body.reason.trim().slice(0, 500)
+          : undefined,
     });
   }
 
@@ -128,8 +131,7 @@ export class ZavrsniController {
     @Param("id", ParseIntPipe) id: number,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
-    const { xml, fileName, contentType } =
-      await this.aprXml.exportFiForma(id);
+    const { xml, fileName, contentType } = await this.aprXml.exportFiForma(id);
     res.set({
       "Content-Type": contentType,
       "Content-Disposition": `attachment; filename="${fileName}"`,
@@ -154,7 +156,8 @@ export class ZavrsniController {
     @Res() res: Response,
     @Req() req: { user: AuthUser },
   ): Promise<void> {
-    const unit: StatementPrintUnit = jedinica === "dinari" ? "dinari" : "hiljade";
+    const unit: StatementPrintUnit =
+      jedinica === "dinari" ? "dinari" : "hiljade";
     const { buffer, fileName } = await this.statementPdf.buildStatementPdf(id, {
       unit,
       printedBy: req.user?.email,
@@ -169,7 +172,8 @@ export class ZavrsniController {
 
 /** Godina iz query/body ili tekuća; validacija opsega (1990..2100). */
 function resolveYear(raw?: string | number): number {
-  const y = raw !== undefined && raw !== null ? Number(raw) : new Date().getFullYear();
+  const y =
+    raw !== undefined && raw !== null ? Number(raw) : new Date().getFullYear();
   if (!Number.isInteger(y) || y < 1990 || y > 2100) {
     return new Date().getFullYear();
   }

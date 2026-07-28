@@ -379,3 +379,356 @@ describe("AdvanceVatService.linkIncomingAdvanceToFinal", () => {
     expect(prisma.invoice.updateMany).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * STANJE AVANSA U LISTI (nalaz K2 nezavisnog pregleda 27.07).
+ *
+ * Ekran je dugme „Veži na konačni račun" prikazivao dok je denormalizovana kolona
+ * `invoices.advance_invoice_id` bila prazna — a ona se puni pri PRVOJ primeni, pa
+ * se ostatak naplaćenog avansa posle toga nije mogao odbiti nigde u aplikaciji.
+ * Uslov je sada `remainingAmount > 0`, što lista mora da izračuna.
+ *
+ * Test namerno vozi slučaj „avans JESTE jednom primenjen, ali ostatak postoji":
+ * na starom kodu `linkedFinalInvoiceId != null` je bio jedini signal i ostatka
+ * uopšte nije bilo u odgovoru.
+ */
+describe("AdvanceVatService.listAdvances — naplaćeno / iskorišćeno / ostatak", () => {
+  /** AVR 37.902 naplaćen u celosti (BigBit AVR-00013/2025). */
+  const AVR = {
+    id: 13,
+    documentNumber: "AVR-00013/2025",
+    documentDate: new Date("2025-05-05T00:00:00.000Z"),
+    advanceDirection: "out",
+    customerId: 501,
+    currency: "RSD",
+    netTotal: D("31585"),
+    vatTotal: D("6317"),
+    grossTotal: D("37902"),
+    advancePaidAt: new Date("2025-05-06T00:00:00.000Z"),
+    advancePaidAmount: D("37902"),
+    status: "PAID",
+    note: null,
+  };
+
+  function makeListPrisma(opts: {
+    applications?: unknown[];
+    legacy?: unknown[];
+  }) {
+    return {
+      invoice: {
+        count: jest.fn().mockResolvedValue(1),
+        // Dva RAZLIČITA poziva: stranica liste i legacy 1:1 veze — mock ih razlikuje
+        // po tome da li `where` filtrira po `advanceInvoiceId`.
+        findMany: jest
+          .fn()
+          .mockImplementation((args: { where?: Record<string, unknown> }) => {
+            if (args?.where && "advanceInvoiceId" in args.where) {
+              return Promise.resolve(opts.legacy ?? []);
+            }
+            return Promise.resolve([AVR]);
+          }),
+      },
+      invoiceAdvanceApplication: {
+        findMany: jest.fn().mockResolvedValue(opts.applications ?? []),
+      },
+      customer: {
+        findMany: jest.fn().mockResolvedValue([{ id: 501, name: "KUPAC DOO" }]),
+      },
+    };
+  }
+
+  it("bez primena: ostatak = naplaćeno (dugme se nudi)", async () => {
+    const prisma = makeListPrisma({});
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+
+    const res = await service.listAdvances({});
+    const row = res.data[0];
+    expect(row.appliedAmount.toFixed(2)).toBe("0.00");
+    expect(row.remainingAmount.toFixed(2)).toBe("37902.00");
+    expect(row.applications).toHaveLength(0);
+    expect(row.linkedFinalInvoiceId).toBeNull();
+  });
+
+  it("posle PRVE primene 20.802 ostatak je 17.100 — iako je veza već upisana", async () => {
+    const prisma = makeListPrisma({
+      applications: [
+        {
+          advanceInvoiceId: 13,
+          invoiceId: 353,
+          appliedAmount: D("20802"),
+          invoice: { documentNumber: "IFR 353/25" },
+        },
+      ],
+    });
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+
+    const row = (await service.listAdvances({})).data[0];
+    expect(row.appliedAmount.toFixed(2)).toBe("20802.00");
+    expect(row.remainingAmount.toFixed(2)).toBe("17100.00");
+    // Stari uslov ekrana (`linkedFinalInvoiceId == null`) je ovde već false —
+    // zato je i sakrivao dugme dok je 17.100 bilo neiskorišćeno.
+    expect(row.linkedFinalInvoiceId).toBe(353);
+    expect(row.remainingAmount.greaterThan(0)).toBe(true);
+  });
+
+  it("posle OBE primene (20.802 + 17.100) ostatak je 0 i vide se oba računa", async () => {
+    const prisma = makeListPrisma({
+      applications: [
+        {
+          advanceInvoiceId: 13,
+          invoiceId: 353,
+          appliedAmount: D("20802"),
+          invoice: { documentNumber: "IFR 353/25" },
+        },
+        {
+          advanceInvoiceId: 13,
+          invoiceId: 370,
+          appliedAmount: D("17100"),
+          invoice: { documentNumber: "IFR 370/25" },
+        },
+      ],
+    });
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+
+    const row = (await service.listAdvances({})).data[0];
+    expect(row.appliedAmount.toFixed(2)).toBe("37902.00");
+    expect(row.remainingAmount.toFixed(2)).toBe("0.00");
+    expect(row.applications.map((a) => a.documentNumber)).toEqual([
+      "IFR 353/25",
+      "IFR 370/25",
+    ]);
+  });
+
+  it("legacy veza bez reda u spojnoj tabeli i dalje troši avans (isto pravilo kao applyAdvance)", async () => {
+    const prisma = makeListPrisma({
+      legacy: [
+        {
+          id: 353,
+          documentNumber: "IFR 353/25",
+          advanceInvoiceId: 13,
+          advanceAppliedAmount: D("20802"),
+        },
+      ],
+    });
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+
+    const row = (await service.listAdvances({})).data[0];
+    expect(row.appliedAmount.toFixed(2)).toBe("20802.00");
+    expect(row.remainingAmount.toFixed(2)).toBe("17100.00");
+  });
+
+  it("nenaplaćen avans: ostatak 0 (nenaplaćen se ne može odbiti — dugme se ne nudi)", async () => {
+    const prisma = makeListPrisma({});
+    prisma.invoice.findMany.mockImplementation(
+      (args: { where?: Record<string, unknown> }) => {
+        if (args?.where && "advanceInvoiceId" in args.where)
+          return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            ...AVR,
+            advancePaidAt: null,
+            advancePaidAmount: D(0),
+            status: "POSTED",
+          },
+        ]);
+      },
+    );
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+
+    const row = (await service.listAdvances({})).data[0];
+    expect(row.remainingAmount.toFixed(2)).toBe("0.00");
+    // …ali NENAPLAĆENI deo postoji → „Označi naplatu" se nudi.
+    expect(row.unpaidAmount.toFixed(2)).toBe("37902.00");
+  });
+
+  it("delimično naplaćen avans: nenaplaćeno 2.000 → naplata u RATAMA ostaje dostupna", async () => {
+    const prisma = makeListPrisma({});
+    prisma.invoice.findMany.mockImplementation(
+      (args: { where?: Record<string, unknown> }) => {
+        if (args?.where && "advanceInvoiceId" in args.where)
+          return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            ...AVR,
+            grossTotal: D("12000"),
+            advancePaidAmount: D("10000"),
+            status: "POSTED",
+          },
+        ]);
+      },
+    );
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+
+    const row = (await service.listAdvances({})).data[0];
+    expect(row.unpaidAmount.toFixed(2)).toBe("2000.00");
+    expect(row.remainingAmount.toFixed(2)).toBe("10000.00");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGRESIJE IZ DRUGOG KRUGA NEZAVISNOG PREGLEDA (28.07.2026)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("listAdvances — unija primena i legacy veza, filter nenaplaćenih", () => {
+  const AVR5000 = {
+    id: 21,
+    documentNumber: "AVR-00021/2026",
+    documentDate: new Date("2026-03-01T00:00:00.000Z"),
+    advanceDirection: "out",
+    customerId: 501,
+    currency: "RSD",
+    netTotal: D("4166.67"),
+    vatTotal: D("833.33"),
+    grossTotal: D("5000"),
+    advancePaidAt: new Date("2026-03-02T00:00:00.000Z"),
+    advancePaidAmount: D("5000"),
+    status: "PAID",
+    note: null,
+  };
+
+  function prismaFor(opts: {
+    applications?: unknown[];
+    legacy?: unknown[];
+    row?: Record<string, unknown>;
+    capture?: { where?: unknown; appWhere?: unknown };
+  }) {
+    return {
+      invoice: {
+        count: jest.fn().mockResolvedValue(1),
+        findMany: jest
+          .fn()
+          .mockImplementation((args: { where?: Record<string, unknown> }) => {
+            if (args?.where && "advanceInvoiceId" in args.where) {
+              return Promise.resolve(opts.legacy ?? []);
+            }
+            if (opts.capture) opts.capture.where = args?.where;
+            return Promise.resolve([{ ...AVR5000, ...(opts.row ?? {}) }]);
+          }),
+        // Prisma field reference — poređenje kolone sa kolonom bez sirovog SQL-a.
+        fields: { grossTotal: { name: "grossTotal" } },
+      },
+      invoiceAdvanceApplication: {
+        findMany: jest.fn().mockImplementation((args: { where?: unknown }) => {
+          if (opts.capture) opts.capture.appWhere = args?.where;
+          return Promise.resolve(opts.applications ?? []);
+        }),
+      },
+      customer: {
+        findMany: jest.fn().mockResolvedValue([{ id: 501, name: "KUPAC DOO" }]),
+      },
+    };
+  }
+
+  it("legacy veza I N:M primena se SABIRAJU (avans se ne sme prekoračiti)", async () => {
+    // Zatečeno stanje: 1:1 kolone nose 2.000 na računu L1, a spojna tabela nosi 3.000
+    // na računu L2. Ranije je važilo „ili-ili" (legacy se čita samo kad primene nema),
+    // pa je iskorišćeno padalo na 3.000 i ekran je nudio ostatak 2.000 koji ne postoji
+    // — pa je dozvoljavao ukupno 7.000 primene na avans naplaćen 5.000.
+    const prisma = prismaFor({
+      applications: [
+        {
+          advanceInvoiceId: 21,
+          invoiceId: 902,
+          appliedAmount: D("3000"),
+          invoice: { documentNumber: "IFR 902/26" },
+        },
+      ],
+      legacy: [
+        {
+          id: 901,
+          documentNumber: "IFR 901/26",
+          advanceInvoiceId: 21,
+          advanceAppliedAmount: D("2000"),
+        },
+      ],
+    });
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+
+    const row = (await service.listAdvances({})).data[0];
+    expect(row.appliedAmount.toFixed(2)).toBe("5000.00");
+    expect(row.remainingAmount.toFixed(2)).toBe("0.00");
+    expect(row.applications).toHaveLength(2);
+  });
+
+  it("isti račun u OBA izvora se broji JEDNOM", async () => {
+    const prisma = prismaFor({
+      applications: [
+        {
+          advanceInvoiceId: 21,
+          invoiceId: 901,
+          appliedAmount: D("2000"),
+          invoice: { documentNumber: "IFR 901/26" },
+        },
+      ],
+      legacy: [
+        {
+          id: 901,
+          documentNumber: "IFR 901/26",
+          advanceInvoiceId: 21,
+          advanceAppliedAmount: D("2000"),
+        },
+      ],
+    });
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+
+    const row = (await service.listAdvances({})).data[0];
+    expect(row.appliedAmount.toFixed(2)).toBe("2000.00");
+    expect(row.remainingAmount.toFixed(2)).toBe("3000.00");
+    expect(row.applications).toHaveLength(1);
+  });
+
+  it("čita SAMO aktivne primene — stornirana primena ne troši avans", async () => {
+    // Storno konačnog računa postavlja primene na REVERSED. Da filter ikad ispadne,
+    // stornirani odbitak bi i dalje trošio avans i dugme bi trajno nestalo — isti
+    // ishod kao nalaz K2, samo kroz storno umesto kroz prvu primenu.
+    const capture: { appWhere?: unknown } = {};
+    const prisma = prismaFor({ capture });
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+    await service.listAdvances({});
+    expect(capture.appWhere).toMatchObject({ status: "ACTIVE" });
+  });
+
+  it("filter samo-nenaplaćeni znači NENAPLAĆEN DEO, ne nikad naplaćen", async () => {
+    // Avans od 45.000 sa uplaćenih 30.000 mora ostati u listi nenaplaćenih — inače
+    // knjigovođa ne može da nađe ono što još čeka uplatu (naplata ide u ratama).
+    const capture: { where?: Record<string, unknown> } = {};
+    const prisma = prismaFor({ capture });
+    const service = new AdvanceVatService(
+      prisma as never,
+      makeTaxRates() as never,
+    );
+    await service.listAdvances({ unpaidOnly: true });
+    expect(capture.where).toBeDefined();
+    expect(capture.where!.advancePaidAt).toBeUndefined();
+    expect(capture.where!.advancePaidAmount).toEqual({
+      lt: { name: "grossTotal" },
+    });
+  });
+});

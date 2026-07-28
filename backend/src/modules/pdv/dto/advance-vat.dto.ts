@@ -260,13 +260,29 @@ function dateErrors(
   return [];
 }
 
+/**
+ * Pozitivan novčani iznos: BROJ ili DECIMAL-STRING („6000.00").
+ *
+ * String se prima namerno (BACKEND_RULES §3: novac ne sme kroz JS Float) i tako ga
+ * šalju ekrani — izlazni smer avansa (`parseAmount` u sales DTO-u) to prima od početka.
+ * Ulazni smer je do drugog kruga pregleda tražio isključivo `number`, pa je dijalog
+ * „Označi plaćanje" za ULAZNI avans vraćao 400 „Plaćen iznos mora biti broj." i
+ * pretporez po plaćenom avansu nije imao gde da uđe. Asimetrija dva DTO-a je koren.
+ */
 function positiveAmountErrors(label: string, value: unknown): string[] {
   if (value === undefined || value === null) return [`${label} je obavezan.`];
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return [`${label} mora biti broj.`];
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return [`${label} mora biti broj.`];
+    return value <= 0 ? [`${label} mora biti veći od nule.`] : [];
   }
-  if (value <= 0) return [`${label} mora biti veći od nule.`];
-  return [];
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!/^\d+(\.\d+)?$/.test(text)) {
+      return [`${label} mora biti broj (decimale odvoji tačkom).`];
+    }
+    return Number(text) <= 0 ? [`${label} mora biti veći od nule.`] : [];
+  }
+  return [`${label} mora biti broj.`];
 }
 
 function rateCodeErrors(vatRateCode: unknown): string[] {

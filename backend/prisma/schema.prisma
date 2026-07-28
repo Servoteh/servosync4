@@ -914,8 +914,43 @@ model DocumentType {
   isFr                 Boolean? @default(false) @map("is_fr")
   affectsStock         Boolean? @default(true) @map("affects_stock")
 
+  // ── Registar kao KONFIGURACIJA EKRANA UNOSA (PLAN_UNOS_DOKUMENATA §5.1) ────
+  // BigBit nema 57 ekrana za 57 vrsta — ima jedan skelet koji ovaj red konfiguriše.
+  // Nova vrsta = nov red ovde, bez izmene frontenda.
+
+  /// Grupa numeracije — više vrsta deli JEDAN godišnji niz (§8/O4.2, izmereno):
+  /// INVOICE_OUT (IFR, IFGP, IFUSL, IZVRO, IZVGP, IZVUS) | OFFER (PON, PROF, OTP) |
+  /// ADVANCE (AVR) | CREDIT (KNO, KNZ) | PURCHASE …
+  /// NAPOMENA: ključ `document_number_sequences` je JOŠ UVEK po vrsti — prebacivanje
+  /// na grupu je korak 3 redosleda iz §8/O4.4 i sme tek POSLE uvoza istorije.
+  numberingGroup          String?  @map("numbering_group") @db.VarChar(20)
+  /// SEQ (brojač) | MAX (prvi slobodan broj iz grupe) | COUNT — oba BigBit mehanizma.
+  numberingMode           String?  @map("numbering_mode") @db.VarChar(10)
+  /// Profil ekrana: GOODS | SERVICE | ORDER. PREDLOG, ne tvrdo pravilo (§8/O4.5) —
+  /// dokument ga prekucava preko `Invoice.lineProfile`.
+  screenKind              String?  @map("screen_kind") @db.VarChar(10)
+  /// BLOCK | WARN | OFF. Blokira se SAMO ako i magacin vodi zalihe — provera je
+  /// konjunkcija dva uslova (§2.7); na ponudi/predračunu je namerno OFF.
+  stockCheck              String?  @map("stock_check") @db.VarChar(10)
+  /// PROF sa „Rezerviši" — vrsta rezerviše zalihe umesto da ih razduži.
+  reservesStock           Boolean  @default(false) @map("reserves_stock")
+  /// MP tok: dokument upisuje svoje cene nazad u cenovnik (§4.7).
+  writesPriceList         Boolean  @default(false) @map("writes_price_list")
+  /// Cenovnik koji vrsta otvara (meki ref na šifru cenovnika).
+  defaultPriceListCode    String?  @map("default_price_list_code") @db.VarChar(20)
+  /// Podrazumevano poresko oslobođenje (npr. IZVRO → čl. 24 st. 1 tač. 5).
+  defaultVatExemptionCode String?  @map("default_vat_exemption_code") @db.VarChar(20)
+  requiresProject         Boolean  @default(false) @map("requires_project")
+  requiresWorkOrder       Boolean  @default(false) @map("requires_work_order")
+  requiresPoNumber        Boolean  @default(false) @map("requires_po_number")
+  /// Šifre varijanti štampe koje vrsta nudi (Ctrl+P meni). Prazno = podrazumevana.
+  allowedPrintVariants    String[] @default([]) @map("allowed_print_variants")
+  /// Dozvoljeni ciljevi prepisa (PON → PROF → AVR → IFR). Prazno = bez prepisa.
+  carryOverTargets        String[] @default([]) @map("carry_over_targets")
+
   // Sve meke reference (price_list, stock_documents, kepu) idu po code — mora biti jedinstven (DB-013).
   @@unique([code], map: "uq_document_types_code")
+  @@index([numberingGroup], map: "idx_document_types_numbering_group")
   @@map("document_types")
 }
 
@@ -3836,6 +3871,24 @@ model Invoice {
   /// NULL = koristi se broj dokumenta (BigBit paritet), ne prazno polje.
   paymentReference String?   @map("payment_reference") @db.VarChar(50)
 
+  /// PROFIL STAVKI OVOG DOKUMENTA: GOODS | SERVICE. NULL = uzmi predlog iz
+  /// registra vrsta (`DocumentType.screenKind`). Postoji zato što vrsta NE
+  /// određuje tabelu ni formu (§8/O4.5): u BigBitovoj uslužnoj tabeli žive i IFR,
+  /// IZVRO i IFGP — uključujući `IFGP 068/26` iz tekuće godine, unet bez ijedne
+  /// robne stavke. Tvrda validacija po vrsti bi odbila stvarne podatke pri uvozu.
+  lineProfile String? @map("line_profile") @db.VarChar(10)
+
+  // — Koeficijent cene (masovna akcija nad svim stavkama; §8/O1) —
+  /// MNOŽILAC SVIH STAVKI. Cena se NIKAD ne upisuje pomnožena:
+  /// `InvoiceItem.unitPrice = InvoiceItem.baseUnitPrice × priceCoefficient` je
+  /// IZVEDENO. Zato se dugme sme pritisnuti više puta (rezultat isti), koeficijent
+  /// se sme ispraviti i sme se vratiti na 1 — u BigBitu je „primeni pa upiši"
+  /// nepovratno i drugi klik pomnoži već pomnoženo. DB CHECK: mora biti > 0.
+  priceCoefficient          Decimal   @default(1) @map("price_coefficient") @db.Decimal(19, 6)
+  priceCoefficientAppliedAt DateTime? @map("price_coefficient_applied_at") @db.Timestamptz(6)
+  /// Ko je poslednji primenio koeficijent (meki ref users.id) — idempotencija + audit.
+  priceCoefficientAppliedBy Int?      @map("price_coefficient_applied_by")
+
   /// DRAFT | POSTED | SENT | PAID | CANCELLED
   status   String  @default("DRAFT") @map("status") @db.VarChar(20)
   isExport Boolean @default(false) @map("is_export") // izvoz (ExportInvoicePolicy: konto 2050, PDV Z/čl.24, van domaćeg SEF-a)
@@ -3891,6 +3944,13 @@ model InvoiceItem {
 
   quantity  Decimal @map("quantity") @db.Decimal(19, 6) // količina
   unitPrice Decimal @default(0) @map("unit_price") @db.Decimal(19, 4) // actualWholesalePrice (transakciona VP iz PricingService)
+
+  /// OSNOVNA cena — ono što je došlo iz cenovnika ili je operater prekucao, PRE
+  /// koeficijenta dokumenta (§8/O1). Istina je: `unitPrice = baseUnitPrice ×
+  /// Invoice.priceCoefficient`. Koeficijent se NIKAD ne upisuje u `unitPrice`, da
+  /// drugi klik na „Primeni koeficijent" ne pomnoži već pomnoženo. Kod dokumenata
+  /// bez koeficijenta (=1) obe cene su jednake; migracija je tako i backfill-ovala.
+  baseUnitPrice Decimal @default(0) @map("base_unit_price") @db.Decimal(19, 4)
 
   discountPercent     Decimal @default(0) @map("discount_percent") @db.Decimal(19, 4) // Rabat %
   cashDiscountPercent Decimal @default(0) @map("cash_discount_percent") @db.Decimal(19, 4) // Kasa %
@@ -4246,12 +4306,40 @@ model FinancialStatement {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   finalizedAt     DateTime? @map("finalized_at") @db.Timestamptz(6) // popuni se pri FINALIZED (immutable posle predaje)
 
-  lines FinancialStatementLine[]
+  lines            FinancialStatementLine[]
+  controlOverrides StatementControlOverride[]
 
   // Najviše jedan obračun po (tip obrasca, godina).
   @@unique([statementType, periodYear], map: "uq_financial_statements_type_year")
   @@index([status], map: "idx_financial_statements_status")
   @@map("financial_statements")
+}
+
+// -----------------------------------------------------------------------------
+// StatementControlOverride — trag forsirane finalizacije završnog računa
+// -----------------------------------------------------------------------------
+// `finalize {force:true}` je do 28.07.2026. tiho gasio SVA kontrolna pravila i
+// nigde nije ostavljao trag. Svaki takav prelaz od sada upisuje jedan red ovde
+// (istorija, ne stanje), a `ControlRulesService.evaluateControls` ga vraća kao
+// pseudo-pravilo `FORSIRANA_FINALIZACIJA` u istom odgovoru kao i prava pravila.
+// App-owned tabela (nula legacy veza) — nema `/// Was:` para u BigBitu.
+model StatementControlOverride {
+  id              Int      @id(map: "pk_statement_control_overrides") @default(autoincrement()) @map("id")
+  statementId     Int      @map("statement_id")
+  forcedByUserId  Int?     @map("forced_by_user_id") // meki ref users.id
+  forcedByEmail   String?  @map("forced_by_email") @db.VarChar(255) // denormalizovano: trag mora ostati čitljiv i kad korisnik nestane
+  forcedAt        DateTime @default(now()) @map("forced_at") @db.Timestamptz(6)
+  /// Pravila koja su PALA i blokirala finalizaciju: [{code,name,left,right,diff,message}].
+  failedRules     Json     @map("failed_rules") @db.JsonB
+  /// Snimak SVIH pravila u trenutku forsiranja (prošla, upozorenja i pala) — dokaz
+  /// koji mora ostati nepromenjen i kad se katalog pravila kasnije izmeni.
+  controlSnapshot Json     @map("control_snapshot") @db.JsonB
+  reason          String?  @map("reason") @db.VarChar(500) // obrazloženje korisnika (API ga još ne traži)
+
+  statement FinancialStatement @relation(fields: [statementId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_statement_control_overrides_statement")
+
+  @@index([statementId, forcedAt(sort: Desc)], map: "idx_statement_control_overrides_statement")
+  @@map("statement_control_overrides")
 }
 
 // -----------------------------------------------------------------------------

@@ -71,20 +71,70 @@ legitimno 0.
 
 ## 2. SEMANTIKA `D`/`P` — jedina promena je izuzimanje `ZAK` naloga
 
-### Šta se NE menja
+> ⛔ **POVUČENO 28.07.2026.** Ceo pododeljak „Šta se NE menja" ispod je bio **pogrešan u oba dela** i
+> zamenjen je odeljkom **2a** koji sledi. Ostavljen je zapisan, precrtan, jer je izvor defekta K1 iz
+> `docs/NEZAVISAN_PREGLED_27-07.md` i jer se ista greška lako ponovi ako se ne vidi zašto je nastala.
 
-**`D`/`P` ostaju kumulativni (`posting_date <= asOf`, bez donje granice) i NASTAVLJAJU da uključuju
-`PS` naloge.** To je **ispravno** i mora tako ostati:
+### ~~Šta se NE menja~~ (POVUČENO — vidi §2a)
 
-- Bilans stanja je **stanje na dan** — kumulativ je definicija.
-- `PS` nalog nije duplikat: `year-open.service.ts` prenosi saldo klasa 0–4 u novu godinu, ali se
-  prethodna godina posle toga više ne knjiži; `D`/`P` kumulativno daju tačno stanje.
-- **Zato se `PSD`/`PSP` NE koriste ni u jednoj od 179 novih formula.** Stari seed je pisao
-  `PSD01*+D01*` — to broji početno stanje **dvaput**, jer `ZR_BrutoStanje.Duguje` = `UkPrometDuguje`
-  (PS uključen), a `PSDuguje` je njegov **podskup** (`APGK_BrutoStanje.sql`).
+~~**`D`/`P` ostaju kumulativni (`posting_date <= asOf`, bez donje granice) i NASTAVLJAJU da uključuju
+`PS` naloge.** To je **ispravno** i mora tako ostati:~~
 
-Predlog „dodati donju granicu `posting_date >= 01.01.` i vratiti PSD/PSP u formule" je **odbačen** —
-pokvario bi bilans stanja, a bilans uspeha ne bi popravio (razlog u nastavku).
+- ~~Bilans stanja je **stanje na dan** — kumulativ je definicija.~~
+- ~~`PS` nalog nije duplikat: `year-open.service.ts` prenosi saldo klasa 0–4 u novu godinu, ali se
+  prethodna godina posle toga više ne knjiži; `D`/`P` kumulativno daju tačno stanje.~~
+- **Ovo je tačno i ostaje:** `PSD`/`PSP` se NE koriste ni u jednoj od 179 novih formula. Stari seed je
+  pisao `PSD01*+D01*` — to broji početno stanje **dvaput**, jer `ZR_BrutoStanje.Duguje` =
+  `UkPrometDuguje` (PS uključen), a `PSDuguje` je njegov **podskup** (`APGK_BrutoStanje.sql`).
+
+~~Predlog „dodati donju granicu `posting_date >= 01.01.` i vratiti PSD/PSP u formule" je **odbačen** —
+pokvario bi bilans stanja, a bilans uspeha ne bi popravio.~~
+
+---
+
+## 2a. PROZOR AGREGACIJE = JEDNA FISKALNA GODINA (`je.year`) — presuđeno 28.07.2026.
+
+**Šta je bilo pogrešno gore, i zašto.** Rečenica „bilans stanja je stanje na dan, kumulativ je
+definicija" je tačna za knjigu **bez** naloga početnog stanja. Čim `year-open.service.ts` svake godine
+knjiži `PS` nalog, taj nalog **restatira saldo prethodne godine** — pa kumulativ od početka knjige
+sabira i prethodnu godinu i njen sopstveni sažetak. Odbijanje predloga o donjoj granici je bilo tačno
+u jednom detalju (donja granica **ne** rešava `ZAK` unutar iste godine) i iz tog tačnog detalja je
+izveden pogrešan zaključak da granica uopšte nije potrebna. Potrebna je — zbog **ranijih** godina.
+
+**Kanon (BigBit).** `ZR_BrutoStanjeUpit` prima **dva opsega datuma** kao parametre, a sopstveni režim
+`APGK_BrutoStanje` filtrira po **`T_Nalozi.Godina`** (`BIGBIT_ZR_MOTOR.md` §1.1/§1.4). „Bruto stanje" je
+dakle zaključni list **jedne godine**: početno stanje + promet te godine. Naš `aggregate()` je do
+28.07. imao samo `je.posting_date <= asOf`, tj. BigBit sa `OdDatumaNaloga = 1/1/1901`.
+
+**Ugovor koji je sproveden** (`gkeval.service.ts`, `balance-sheet.service.ts`):
+
+- predikat perioda je `AND je.year = ${fiscalYear}` — ne `posting_date`, ne `document_date`, ne
+  „datum poslednjeg PS naloga", ne kumulativ;
+- potpis je `evalFormula(formula, period, resolveAop)` i `grossTrialBalance(period)` gde je
+  `period = { fiscalYear: number; asOf?: Date }`; godišnji obračun šalje **samo** `{ fiscalYear }`;
+- `asOf` postoji isključivo za međuperiodni presek unutar godine i radi nad `document_date`
+  (uz `posting_date` bi nalog godine Y proknjižen u januaru Y+1 ispao iz sopstvene godine);
+- `D`/`P` i dalje **uključuju** `PS` nalog te godine (BigBit paritet) — dvostruko brojanje je uklonjeno
+  time što ranija godina uopšte nije u prozoru, a NE izuzimanjem `PS`-a;
+- izuzimanje `ZAK` klasa 5/6 ostaje netaknuto. **Prozor i izuzimanje rešavaju dva različita kvara i
+  nijedan sam nije dovoljan:** prozor bez izuzimanja → BU godine Y je egzaktna nula posle prenosa;
+  izuzimanje bez prozora → BU sabira sve ranije godine;
+- `LIKE 'PS%'` → `= 'PS'` (vidi „Sporedno" niže — sada je popravljeno);
+- **formule se ne diraju**, `PSD`/`PSP` se i dalje ne koriste u 179 formula. Pod prozorom godine
+  `D`/`P` već sadrže `PS`, pa bi `PSD01*+D01*` i dalje brojalo dvaput.
+
+**Dokaz brojevima** (`backend/scripts/proof-zr-godisnja-granica.ts`, dev baza, tri fiskalne godine sa
+`PS` i `ZAK` nalozima):
+
+| pozicija | 2022 | 2023 | 2024 |
+|---|---|---|---|
+| `P6010*-D6010*` — **stari motor** | 100 | **350** | **650** |
+| `P6010*-D6010*` — **novi motor** = tačno | 100 | **250** | **300** |
+| `D2410*-P2410*` — **stari motor** | 60 | **110** | **165** |
+| `D2410*-P2410*` — **novi motor** = tačno | 60 | **50** | **55** |
+
+Regresija je zaključana u `gkeval.service.spec.ts` (tro-godišnja knjiga, interpreter sastavljenog SQL-a
+razume i staru i novu semantiku, pa povratak na kumulativ vraća 350/110 i test pada).
 
 ### Šta se MENJA — bloker za bilans uspeha
 
@@ -135,9 +185,8 @@ BS ionako dolazi kroz `PS` nalog naredne godine (AOP 0410 = `P341*-D341*` = 34.6
 
 ### Sporedno (nije bloker)
 
-`gkeval.service.ts:386` koristi `LIKE 'PS%'` umesto `= 'PS'` — hvatao bi i izmišljene vrste `PSX`.
-Pošto se `PSD`/`PSP` u novim formulama uopšte ne koriste, ovo nema efekta; popraviti kad se bude
-diralo isto mesto.
+~~`gkeval.service.ts:386` koristi `LIKE 'PS%'` umesto `= 'PS'`~~ — **urađeno 28.07.2026.** uz izmenu
+prozora (§2a): sada je `je.order_type_code = 'PS'`, egzaktno.
 
 ---
 

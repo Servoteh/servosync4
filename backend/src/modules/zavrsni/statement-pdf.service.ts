@@ -48,7 +48,10 @@ import {
   buildPageFooter,
   sanitizeText,
 } from "../documents/doc-layout";
-import { ControlRulesService, type ControlResult } from "./control-rules.service";
+import {
+  ControlRulesService,
+  type ControlResult,
+} from "./control-rules.service";
 import { STATEMENT_TYPE } from "./statement-type";
 
 const D = Prisma.Decimal;
@@ -113,7 +116,9 @@ export class StatementPdfNotFoundException extends NotFoundException {
 export class StatementPdfUnsupportedFormException extends NotFoundException {
   readonly code = "ZR_PRINT_FORM_UNSUPPORTED";
   constructor(statementType: string) {
-    super(`Tip obrasca "${statementType}" nema definisanu štampu (podržani: BS/BU/SI).`);
+    super(
+      `Tip obrasca "${statementType}" nema definisanu štampu (podržani: BS/BU/SI).`,
+    );
     this.name = "StatementPdfUnsupportedFormException";
   }
 }
@@ -145,12 +150,15 @@ export class StatementPdfService {
       throw new StatementPdfUnsupportedFormException(statement.statementType);
     }
 
-    const unit: StatementPrintUnit = opts.unit === "dinari" ? "dinari" : "hiljade";
+    const unit: StatementPrintUnit =
+      opts.unit === "dinari" ? "dinari" : "hiljade";
     const [obveznik, controls] = await Promise.all([
       this.loadObveznik(),
       // Kontrolna pravila se štampaju uz obrazac (aktiva=pasiva, rezultat) — BigBit
       // ih štampa nigde, a bez njih se predaje bilans za koji se ne zna da li zatvara.
-      this.controlRules.evaluateControls(statementId).catch(() => [] as ControlResult[]),
+      this.controlRules
+        .evaluateControls(statementId)
+        .catch(() => [] as ControlResult[]),
     ]);
 
     const docDefinition = this.buildDocDefinition({
@@ -246,14 +254,24 @@ export class StatementPdfService {
         partyName: { fontSize: 11, bold: true },
         partyLine: { fontSize: 9, color: "#333" },
         th: { fontSize: 7, bold: true, fillColor: "#f0f0f0" },
-        thNum: { fontSize: 6, bold: true, fillColor: "#f0f0f0", alignment: "center" },
+        thNum: {
+          fontSize: 6,
+          bold: true,
+          fillColor: "#f0f0f0",
+          alignment: "center",
+        },
         td: { fontSize: 7 },
         tdBold: { fontSize: 7, bold: true },
         tdNum: { fontSize: 7, alignment: "right" },
         tdNumBold: { fontSize: 7, bold: true, alignment: "right" },
         note: { fontSize: 8, color: "#555", margin: [0, 10, 0, 0] },
         signLbl: { fontSize: 8, color: "#555", alignment: "center" },
-        emptyNote: { fontSize: 12, bold: true, alignment: "center", color: "#a00" },
+        emptyNote: {
+          fontSize: 12,
+          bold: true,
+          alignment: "center",
+          color: "#a00",
+        },
       },
       defaultStyle: { font: "Roboto", fontSize: 9 },
       footer: buildPageFooter(`${spec.title} ${year}`, args.printedBy ?? null),
@@ -455,17 +473,48 @@ export class StatementPdfService {
     statement: StatementWithLines,
     unit: StatementPrintUnit,
   ): Content {
-    const rows: Content[][] = controls.map((c) => [
-      {
-        text: c.passed ? "PROLAZI" : "NE PROLAZI",
-        style: "td",
-        bold: true,
-        color: c.passed ? "#276749" : "#a00",
-      },
-      { text: c.name, style: "td" },
-      { text: fmtAmount(new D(c.left), unit), style: "tdNum" },
-      { text: fmtAmount(new D(c.right), unit), style: "tdNum" },
-    ]);
+    // ČETIRI ISHODA, ne dva (nalaz drugog kruga pregleda 28.07.): ranije je papir imao
+    // samo `passed ? PROLAZI : NE PROLAZI`, pa je NEPRIMENLJIVO izlazilo kao ZELENO
+    // „PROLAZI" iznad aktive i pasive koje se vidno razlikuju, a UPOZORENJE (zatečeni
+    // neuravnoteženi nalozi, propisano odsecanje) kao CRVENO „NE PROLAZI".
+    const outcome = (c: ControlResult): { label: string; color: string } => {
+      switch (c.status) {
+        case "PROLAZI":
+          return { label: "PROLAZI", color: "#276749" };
+        case "PADA":
+          return { label: "NE PROLAZI", color: "#a00" };
+        case "UPOZORENJE":
+          return { label: "UPOZORENJE", color: "#8a6d00" };
+        default:
+          return { label: "NEPRIMENLJIVO", color: "#555555" };
+      }
+    };
+    // BROJAČ (konta, pozicije) se NE provlači kroz formatter za hiljade dinara — tako
+    // je „169 od 169 konta" na papiru izlazilo kao „0 | 0".
+    const side = (c: ControlResult, value: string): string =>
+      c.valueKind === "BROJ" ? value : fmtAmount(new D(value), unit);
+    const rows: Content[][] = controls.map((c) => {
+      const o = outcome(c);
+      // Poruka pravila je jedino mesto na kome piše ZAŠTO — bez nje je papir do sada
+      // tvrdio „PROLAZI" bez ijedne reči objašnjenja.
+      const explain: Content[] = [{ text: c.name, style: "td" }];
+      if (c.message) {
+        explain.push({ text: c.message, style: "note", margin: [0, 1, 0, 0] });
+      }
+      if (c.details.length > 0) {
+        explain.push({
+          text: c.details.slice(0, 5).join(" · "),
+          style: "note",
+          margin: [0, 1, 0, 0],
+        });
+      }
+      return [
+        { text: o.label, style: "td", bold: true, color: o.color },
+        { stack: explain },
+        { text: side(c, c.left), style: "tdNum" },
+        { text: side(c, c.right), style: "tdNum" },
+      ];
+    });
 
     const stack: Content[] = [
       {
@@ -478,7 +527,7 @@ export class StatementPdfService {
       stack.push({
         table: {
           headerRows: 1,
-          widths: [60, "*", 80, 80],
+          widths: [78, "*", 80, 80],
           body: [
             [
               { text: "Ishod", style: "th" },
@@ -528,7 +577,11 @@ export class StatementPdfService {
         {
           width: "*",
           stack: [
-            { canvas: [{ type: "line", x1: 0, y1: 0, x2: 180, y2: 0, lineWidth: 0.5 }] },
+            {
+              canvas: [
+                { type: "line", x1: 0, y1: 0, x2: 180, y2: 0, lineWidth: 0.5 },
+              ],
+            },
             {
               text: "U ______________________ , dana ______________ 20____. godine",
               style: "signLbl",
@@ -539,8 +592,16 @@ export class StatementPdfService {
         {
           width: "*",
           stack: [
-            { canvas: [{ type: "line", x1: 0, y1: 0, x2: 180, y2: 0, lineWidth: 0.5 }] },
-            { text: "Zakonski zastupnik", style: "signLbl", margin: [0, 2, 0, 0] },
+            {
+              canvas: [
+                { type: "line", x1: 0, y1: 0, x2: 180, y2: 0, lineWidth: 0.5 },
+              ],
+            },
+            {
+              text: "Zakonski zastupnik",
+              style: "signLbl",
+              margin: [0, 2, 0, 0],
+            },
             { text: "(M.P.)", style: "signLbl", margin: [0, 1, 0, 0] },
           ],
         },

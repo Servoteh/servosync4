@@ -112,6 +112,12 @@ export class DocumentCarryOverService {
               description: it.description,
               quantity: it.quantity,
               unitPrice: it.unitPrice,
+              // Osnovica za koeficijent (§8/O1) se PRENOSI sa izvorne stavke; ako
+              // je izvor stariji od kolone, pada na njegovu cenu. Bez ovoga bi
+              // prepisan dokument imao baznu cenu 0 i prvi dodir bi ga nulirao.
+              baseUnitPrice: it.baseUnitPrice?.greaterThan(0)
+                ? it.baseUnitPrice
+                : it.unitPrice,
               discountPercent: it.discountPercent,
               cashDiscountPercent: it.cashDiscountPercent,
               vatRateCode: it.vatRateCode,

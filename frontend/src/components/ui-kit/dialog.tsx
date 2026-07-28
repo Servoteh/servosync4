@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { X } from 'lucide-react';
+import { useEscapeLayer } from './escape-layer';
 
 const SIZE_CLASS = {
   md: 'max-w-lg',
@@ -38,23 +39,24 @@ export function Dialog({
   const downOnBackdrop = useRef(false);
 
   // Esc PRIPADA OTVORENOM DIJALOGU, i kad dijalog nije `dismissable`.
-  // Slušalac ide u CAPTURE fazi na `window` (dakle pre svih ostalih) i zaustavlja
-  // propagaciju: ekran ispod takođe sluša `window` za Esc („Nazad na listu"), pa
-  // su se ranije okidala OBA — dijalog bi se zatvorio, uneseni tekst nestao, a
-  // korisnik bi usput bio izbačen na listu (dokazano na 4 od 5 ekrana detalja;
-  // samo je nabavka imala ručni `&& !rfqOpen` guard). Umesto da se to pravilo
-  // ponavlja na svakom ekranu, drži se ovde — na jedinom mestu koje zna da je
-  // modalni sloj otvoren.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      e.stopPropagation();
-      if (dismissable) onClose();
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [open, onClose, dismissable]);
+  // Ekran ispod takođe sluša `window` za Esc („Nazad na listu"), pa su se ranije
+  // okidala OBA — dijalog bi se zatvorio, uneseni tekst nestao, a korisnik bi
+  // usput bio izbačen na listu (dokazano na 4 od 5 ekrana detalja; samo je
+  // nabavka imala ručni `&& !rfqOpen` guard). Umesto da se to pravilo ponavlja
+  // na svakom ekranu, drži se ovde — na jedinom mestu koje zna da je modalni
+  // sloj otvoren.
+  //
+  // Sloj se prijavljuje `useEscapeLayer`-u umesto da sam kači capture-slušalac
+  // na `window`. Sopstveni slušalac je rešavao sukob sa ekranom ispod, ali je
+  // stvarao gori: `stopPropagation` ne zaustavlja druge slušaoce na ISTOM čvoru,
+  // pa su se kod ugnežđenih slojeva okidali svi odjednom i Esc nad karticom
+  // potvrde zatvarao ceo tok (regresija V11 — v. `escape-layer.ts`).
+  //
+  // Sloj se drži i kad `dismissable` nije uključen: tada Esc ne zatvara ništa,
+  // ali ga dijalog i dalje MORA progutati, da ne procuri na ekran ispod.
+  useEscapeLayer(open, () => {
+    if (dismissable) onClose();
+  });
 
   if (!open) return null;
   return (

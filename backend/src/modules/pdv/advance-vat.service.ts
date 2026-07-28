@@ -49,6 +49,9 @@ import {
   type RecordIncomingAdvanceDto,
 } from "./dto/advance-vat.dto";
 import type { AuthUser } from "../auth/jwt.strategy";
+// Status AKTIVNE primene avansa — jedna tačka istine je sales/advance-invoice.service
+// (tamo se primena i upisuje i stornira); ovde se samo ČITA za zbir iskorišćenosti.
+import { APPLICATION_ACTIVE } from "../sales/advance-invoice.service";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -60,6 +63,18 @@ const STATUS_PAID = "PAID";
 
 /** KUF smer poreske evidencije (`vat_ledger_entries.direction`). */
 const VAT_DIRECTION_INPUT = "input";
+
+/**
+ * Jedna PRIMENA avansa na konačnom računu (N:M). Lista vraća SVE primene, ne samo
+ * prvu — ekran po njima prikazuje na koje je račune avans već odbijen.
+ */
+export interface AdvanceApplicationRef {
+  /** `Invoice.id` konačnog računa. */
+  invoiceId: number;
+  documentNumber: string;
+  /** BRUTO iznos ove primene. */
+  appliedAmount: Prisma.Decimal;
+}
 
 /** Jedan red liste avansa (oba smera) — Decimal polja idu u JSON kao string. */
 export interface AdvanceRow {
@@ -79,7 +94,28 @@ export interface AdvanceRow {
   paidAt: Date | null;
   paidAmount: Prisma.Decimal;
   status: string;
-  /** Konačni račun na koji je avans vezan (null = još nije iskorišćen). */
+  /**
+   * NENAPLAĆEN deo = `grossTotal − paidAmount`. > 0 → naplata se još može upisati
+   * (izlazni avans se naplaćuje u RATAMA — `advance-invoice.markAdvancePaid`).
+   * Ulazni avans se plaća jednokratno (drugi poziv → 409), pa se za njega gleda
+   * `paidAt`, ne ovo polje.
+   */
+  unpaidAmount: Prisma.Decimal;
+  /** ISKORIŠĆENO = Σ AKTIVNIH primena avansa na konačnim računima. */
+  appliedAmount: Prisma.Decimal;
+  /**
+   * OSTATAK = `paidAmount − appliedAmount`. > 0 → avans se još može odbiti na
+   * konačnom računu. Isti račun koji `applyAdvance` radi pod bravom (tamo je
+   * merodavan), ovde samo za prikaz i za uslov prikaza dugmeta.
+   */
+  remainingAmount: Prisma.Decimal;
+  /** SVE primene avansa (N:M) — prazan niz = avans još nije iskorišćen. */
+  applications: AdvanceApplicationRef[];
+  /**
+   * PRVA primena — zadržano zbog kompatibilnosti (kolona „Vezan za"). NIJE uslov
+   * za dugme „Veži na konačni račun": popunjava se već pri PRVOJ primeni, pa je
+   * ekran po njemu sakrivao vezivanje ostatka (nalaz K2 nezavisnog pregleda).
+   */
   linkedFinalInvoiceId: number | null;
   linkedFinalDocumentNumber: string | null;
   note: string | null;
@@ -437,8 +473,12 @@ export class AdvanceVatService {
   /**
    * Lista avansnih računa (`Invoice` sa `documentType = 'AVR'`) za OBA smera.
    * Filteri: smer, komitent, „samo nenaplaćeni". Server-side paginacija.
-   * Uz svaki red ide naziv komitenta i konačni račun na koji je avans vezan
-   * (FE po tome sakriva dugme „Veži na konačni račun").
+   *
+   * Uz svaki red idu naziv komitenta i STANJE AVANSA — naplaćeno / iskorišćeno /
+   * ostatak + sve primene. Ekran po `remainingAmount > 0` nudi „Veži na konačni
+   * račun", a po `unpaidAmount > 0` (izlazni smer) „Označi naplatu". Ranije je red
+   * nosio samo PRVU vezu, pa je ekran posle prve primene trajno sakrivao vezivanje
+   * i ostatak naplaćenog avansa nije mogao da se odbije nigde (nalaz K2).
    */
   async listAdvances(query: ListAdvancesQuery): Promise<{
     data: AdvanceRow[];
@@ -451,7 +491,16 @@ export class AdvanceVatService {
       documentType: ADVANCE_DOCUMENT_TYPE,
       ...(query.direction ? { advanceDirection: query.direction } : {}),
       ...(query.partnerId ? { customerId: query.partnerId } : {}),
-      ...(query.unpaidOnly ? { advancePaidAt: null } : {}),
+      // „Samo nenaplaćeni" = ima NENAPLAĆEN DEO, ne „nikad naplaćen". Naplata je
+      // namerno kumulativna (rate), pa je stari filter `advancePaidAt: null` sakrivao
+      // baš avanse zbog kojih su rate i uvedene: avans od 45.000 sa uplaćenih 30.000
+      // nije se pojavljivao u listi nenaplaćenih. Poređenje kolona ide kroz Prisma
+      // field reference (`invoice.fields.grossTotal`), bez sirovog SQL-a.
+      ...(query.unpaidOnly
+        ? {
+            advancePaidAmount: { lt: this.prisma.invoice.fields.grossTotal },
+          }
+        : {}),
     };
 
     const [total, rows] = await Promise.all([
@@ -471,36 +520,107 @@ export class AdvanceVatService {
     ];
     const advanceIds = rows.map((r) => r.id);
 
-    const [partners, links] = await Promise.all([
+    const [partners, applicationRows, legacyLinks] = await Promise.all([
       partnerIds.length
         ? this.prisma.customer.findMany({
             where: { id: { in: partnerIds } },
             select: { id: true, name: true },
           })
         : Promise.resolve([] as { id: number; name: string }[]),
+      // N:M primene (`invoice_advance_applications`) — pravi izvor iskorišćenosti.
+      advanceIds.length
+        ? this.prisma.invoiceAdvanceApplication.findMany({
+            where: {
+              advanceInvoiceId: { in: advanceIds },
+              status: APPLICATION_ACTIVE,
+            },
+            orderBy: { id: "asc" },
+            select: {
+              advanceInvoiceId: true,
+              invoiceId: true,
+              appliedAmount: true,
+              invoice: { select: { documentNumber: true } },
+            },
+          })
+        : Promise.resolve(
+            [] as {
+              advanceInvoiceId: number;
+              invoiceId: number;
+              appliedAmount: Prisma.Decimal;
+              invoice: { documentNumber: string };
+            }[],
+          ),
+      // LEGACY / CROSS-MODUL veze: pre N:M migracije i kroz `linkIncomingAdvanceToFinal`
+      // (ulazni smer) veza živi SAMO u denormalizovanim `invoices.advance_*` kolonama,
+      // bez reda u spojnoj tabeli.
       advanceIds.length
         ? this.prisma.invoice.findMany({
-            where: { advanceInvoiceId: { in: advanceIds } },
-            select: { id: true, documentNumber: true, advanceInvoiceId: true },
+            where: {
+              advanceInvoiceId: { in: advanceIds },
+              status: { not: "CANCELLED" },
+            },
+            orderBy: { id: "asc" },
+            select: {
+              id: true,
+              documentNumber: true,
+              advanceInvoiceId: true,
+              advanceAppliedAmount: true,
+            },
           })
         : Promise.resolve(
             [] as {
               id: number;
               documentNumber: string;
               advanceInvoiceId: number | null;
+              advanceAppliedAmount: Prisma.Decimal;
             }[],
           ),
     ]);
 
     const partnerName = new Map(partners.map((p) => [p.id, p.name]));
-    const linkByAdvance = new Map(
-      links
-        .filter((l) => l.advanceInvoiceId != null)
-        .map((l) => [l.advanceInvoiceId as number, l]),
-    );
+
+    const appsByAdvance = new Map<number, AdvanceApplicationRef[]>();
+    for (const a of applicationRows) {
+      const list = appsByAdvance.get(a.advanceInvoiceId) ?? [];
+      list.push({
+        invoiceId: a.invoiceId,
+        documentNumber: a.invoice.documentNumber,
+        appliedAmount: a.appliedAmount,
+      });
+      appsByAdvance.set(a.advanceInvoiceId, list);
+    }
+    const legacyByAdvance = new Map<number, AdvanceApplicationRef[]>();
+    for (const l of legacyLinks) {
+      if (l.advanceInvoiceId == null) continue;
+      const list = legacyByAdvance.get(l.advanceInvoiceId) ?? [];
+      list.push({
+        invoiceId: l.id,
+        documentNumber: l.documentNumber,
+        appliedAmount: l.advanceAppliedAmount,
+      });
+      legacyByAdvance.set(l.advanceInvoiceId, list);
+    }
 
     const data: AdvanceRow[] = rows.map((r) => {
-      const link = linkByAdvance.get(r.id) ?? null;
+      // ISTO PRAVILO KAO `AdvanceInvoiceService.applyAdvance`: UNIJA aktivnih primena
+      // iz spojne tabele i onih legacy 1:1 veza koje u njoj nemaju svoj red. Ranije je
+      // bilo „ili-ili" (legacy se gleda samo kad primena nema), pa je posle prve N:M
+      // primene legacy deo nestajao iz iskorišćenosti i ekran je nudio ostatak koji
+      // avans nema. Bilo koje drugo pravilo bi dalo ekran koji pokazuje jedan ostatak,
+      // a server dozvoljava drugi.
+      const apps = appsByAdvance.get(r.id) ?? [];
+      const appliedInvoiceIds = new Set(apps.map((a) => a.invoiceId));
+      const applications = [
+        ...apps,
+        ...(legacyByAdvance.get(r.id) ?? []).filter(
+          (l) => !appliedInvoiceIds.has(l.invoiceId),
+        ),
+      ];
+      const appliedAmount = applications.reduce(
+        (acc, a) => acc.add(a.appliedAmount),
+        ZERO,
+      );
+      const first = applications[0] ?? null;
       return {
         id: r.id,
         documentNumber: r.documentNumber,
@@ -516,8 +636,12 @@ export class AdvanceVatService {
         paidAt: r.advancePaidAt,
         paidAmount: r.advancePaidAmount,
         status: r.status,
-        linkedFinalInvoiceId: link?.id ?? null,
-        linkedFinalDocumentNumber: link?.documentNumber ?? null,
+        unpaidAmount: r.grossTotal.sub(r.advancePaidAmount),
+        appliedAmount,
+        remainingAmount: r.advancePaidAmount.sub(appliedAmount),
+        applications,
+        linkedFinalInvoiceId: first?.invoiceId ?? null,
+        linkedFinalDocumentNumber: first?.documentNumber ?? null,
         note: r.note,
       };
     });

@@ -203,6 +203,10 @@ describe("BigbitMdbImportService", () => {
         "saldakonto_accounts",
         "journal_entries",
         "ledger_entries",
+        // ZAKLJUČAVANJE JE POSLEDNJE i to nije kozmetika: dok se BigBit-ova zastavica
+        // primenjivala u koraku zaglavlja, korak stavki je isti nalog zaticao kao
+        // LOCKED i odbijao iznose IZ ISTOG FAJLA koji ga je zaključao.
+        "journal_entries_lock",
       ]);
     });
 
@@ -306,7 +310,18 @@ describe("BigbitMdbImportService", () => {
       });
       const res = await svc(prisma).runImport({ force: true });
       expect(res.status).toBe("DONE");
-      expect(res.steps).toHaveLength(5);
+      // Šest koraka: 5 uvoznih + ZAKLJUČAVANJE NA KRAJU (`journal_entries_lock`).
+      // Zaključavanje je odvojeno od koraka zaglavlja da korak stavki ne bi zatekao
+      // nalog kao LOCKED i odbio iznose iz ISTOG fajla koji ga je zaključao.
+      expect(res.steps).toHaveLength(6);
+      expect(res.steps.map((s) => s.entity)).toEqual([
+        "accounts",
+        "order_types",
+        "saldakonto_accounts",
+        "journal_entries",
+        "ledger_entries",
+        "journal_entries_lock",
+      ]);
     });
 
     it("MUTEX: kad drugi uvoz već drži drop, drugi poziv ne piše NIŠTA", async () => {
@@ -461,6 +476,113 @@ describe("BigbitMdbJobs — definicija poslova", () => {
     expect(imp.schedule).toEqual({ kind: "daily", at: "03:45" });
     expect(imp.catchUpMinutes).toBe(240);
     expect(watchdog.schedule).toEqual({ kind: "daily", at: "07:15" });
+  });
+
+  /**
+   * Stavka D / nalaz V7. Prekidač se od 28.07.2026. seje ISKLJUČEN, pa bi
+   * nadzornik od prvog jutra posle deploy-a gurao poruku svakom adminu — svaki
+   * dan, zauvek, za odluku koju je čovek svesno doneo. Ćutanje mora da važi
+   * SAMO dok uvoz nijednom nije uspeo; posle toga gašenje prekidača opet mora
+   * da alarmira.
+   */
+  describe("jutarnji nadzornik — kanal koji nije podignut nije kanal koji je pukao", () => {
+    const watchdogWith = (
+      enabled: boolean,
+      lastSuccessAt: string | null,
+      createMany = jest.fn().mockResolvedValue({ count: 0 }),
+      extraWarnings: Array<{
+        code?: string;
+        level: string;
+        message: string;
+      }> = [],
+    ) => {
+      const switches = {
+        bigbitStatus: jest.fn().mockResolvedValue({
+          data: {
+            enabled,
+            lastSuccessAt,
+            warnings: [
+              {
+                code: "PREKIDAC_ISKLJUCEN",
+                level: "danger",
+                message: "isključen",
+              },
+              {
+                code: "NIKAD_NIJE_PRORADIO",
+                level: "danger",
+                message: "nije proradio nijednom",
+              },
+              ...extraWarnings,
+            ],
+          },
+        }),
+      } as unknown as SyncSwitchService;
+      const prisma = {
+        user: {
+          findMany: jest.fn().mockResolvedValue([{ workerId: 5 }]),
+        },
+        appNotification: {
+          findMany: jest.fn().mockResolvedValue([]),
+          createMany,
+        },
+      } as unknown as never;
+      const [, watchdog] = new BigbitMdbJobs(
+        {} as BigbitMdbImportService,
+        switches,
+        prisma,
+      ).buildJobs();
+      return { watchdog, createMany };
+    };
+
+    it("ugašen prekidač PRE prvog uspešnog uvoza — nijedno zvonce", async () => {
+      const { watchdog, createMany } = watchdogWith(false, null);
+      const res = await watchdog.run({ scheduledFor: new Date() });
+      expect(res).toContain("nije pušten u rad");
+      expect(createMany).not.toHaveBeenCalled();
+    });
+
+    it("ugašen prekidač POSLE uspešnog uvoza — zvonce ide (ugašen a niko ne zna)", async () => {
+      const { watchdog, createMany } = watchdogWith(
+        false,
+        "2026-07-20T03:45:00.000Z",
+      );
+      await watchdog.run({ scheduledFor: new Date() });
+      expect(createMany).toHaveBeenCalled();
+    });
+
+    it("uključen prekidač koji nikad nije proradio — zvonce ide", async () => {
+      const { watchdog, createMany } = watchdogWith(true, null);
+      await watchdog.run({ scheduledFor: new Date() });
+      expect(createMany).toHaveBeenCalled();
+    });
+
+    // TIŠINA JE USKA (ispravka posle drugog kruga pregleda): prva verzija je u ovom
+    // stanju gutala SVA `danger` upozorenja, jer je rani `return` stajao pre filtera.
+    // A to je tačno stanje u kome se paket uvodi (prvi uvoz ručno i danju), pa bi pad
+    // TOG uvoza prošao bez ijednog signala.
+    it.each([
+      ["UVOZ_PAO", "Poslednji pokušaj uvoza je PAO."],
+      ["STANJE_NECITLJIVO", "Stanje uvoza se ne može pročitati u celosti."],
+      ["UVOZ_ZAGLAVLJEN", "Uvoz je počeo pre 20 h i nikad se nije završio."],
+    ])(
+      "ugašen prekidač PRE prvog uvoza, ali stiglo %s — zvonce IPAK ide",
+      async (code, message) => {
+        const { watchdog, createMany } = watchdogWith(false, null, undefined, [
+          { code, level: "danger", message },
+        ]);
+        const res = await watchdog.run({ scheduledFor: new Date() });
+        expect(createMany).toHaveBeenCalled();
+        expect(res).toContain("1 upozorenje(a)");
+      },
+    );
+
+    it("upozorenje BEZ šifre se nikad ne utišava", async () => {
+      const { watchdog, createMany } = watchdogWith(false, null, undefined, [
+        { level: "danger", message: "nepoznat kvar iz starije verzije" },
+      ]);
+      await watchdog.run({ scheduledFor: new Date() });
+      expect(createMany).toHaveBeenCalled();
+    });
   });
 
   it("summary uvoza ide u dnevnik scheduler-a", async () => {

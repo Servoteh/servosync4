@@ -67,6 +67,15 @@ export interface MdbStepResult {
    * ima, a 4.0 nema, ne sme da izgleda kao „nepromenjen".
    */
   filtered: number;
+  /**
+   * BRANA ZAKLJUČANIH NALOGA (stavka D, nalaz V6). Izmena iz BigBita koja bi
+   * pogodila nalog u statusu `LOCKED` — dakle zaključan period, već predatu PDV
+   * prijavu, već izračunat bilans. Uvoz je NE primenjuje, nego je upisuje u
+   * `bb_import_rejected_changes` (staro → novo) i čeka ljudsku odluku.
+   * Odvojeno od `skipped` NAMERNO: `skipped` (sudar broja naloga) obara ceo
+   * uvoz, a odbijena izmena zaključanog naloga je normalno, očekivano stanje.
+   */
+  blockedLocked: number;
   durationMs: number;
   notes: string[];
 }
@@ -97,6 +106,10 @@ interface CountRow {
   updated: bigint | number;
   skipped: bigint | number;
   fetched: bigint | number;
+  /** Odbijene izmene nad ZAKLJUČANIM nalozima (stavka D); nema ga u koracima bez brane. */
+  blocked_locked?: bigint | number;
+  /** Koliko je odbijenih izmena PRVI put upisano u dnevnik u ovom prolazu. */
+  logged_now?: bigint | number;
 }
 
 interface LedgerPageRow {
@@ -104,6 +117,8 @@ interface LedgerPageRow {
   eligible: bigint | number;
   inserted: bigint | number;
   updated: bigint | number;
+  blocked_locked: bigint | number;
+  logged_now: bigint | number;
   max_key: bigint | number;
 }
 
@@ -268,6 +283,11 @@ export class BigbitMdbImportService {
       steps.push(await this.importSaldakontoAccounts(drop.id));
       steps.push(await this.importJournalEntries(drop.id));
       steps.push(await this.importLedgerEntries(drop.id));
+      // ZAKLJUČAVANJE IDE POSLEDNJE (ispravka posle drugog kruga pregleda 28.07.):
+      // dok se BigBit-ova zastavica primenjivala u koraku zaglavlja, korak stavki je
+      // isti nalog zaticao kao LOCKED i odbijao iznose IZ ISTOG FAJLA koji ga je
+      // zaključao — zaglavlje preuzeto, iznosi stari. Sada stavke prvo uđu.
+      steps.push(await this.applyBigbitLocks(drop.id));
 
       // ── NESTALO IZ BIGBITA ───────────────────────────────────────────────
       // Uvoz je čist upsert i NIKAD ne briše, pa nalog obrisan/prekontiran u
@@ -513,8 +533,14 @@ export class BigbitMdbImportService {
       (s) =>
         `${s.entity} +${s.inserted}/~${s.updated}/=${s.unchanged}` +
         (s.skipped ? `/preskočeno ${s.skipped}` : "") +
-        (s.filtered ? `/odbačeno ${s.filtered}` : ""),
+        (s.filtered ? `/odbačeno ${s.filtered}` : "") +
+        (s.blockedLocked ? `/zaključano ${s.blockedLocked}` : ""),
     );
+    const locked = steps.reduce((a, s) => a + s.blockedLocked, 0);
+    const lockedNote = locked
+      ? ` ⚠ ${locked} izmena iz BigBita nad ZAKLJUČANIM nalozima NIJE preuzeta — čeka odluku ` +
+        "(bb_import_rejected_changes)"
+      : "";
     const van =
       vanished.journalEntries + vanished.ledgerEntries > 0
         ? ` ⚠ nestalo iz BigBita: ${vanished.journalEntries} nalog(a) / ${vanished.ledgerEntries} stavki (ostaju u 4.0 — proveri)`
@@ -523,6 +549,7 @@ export class BigbitMdbImportService {
       `${fileName} (star ${ageHours.toFixed(1)} h) za ${(durationMs / 1000).toFixed(1)} s — ` +
       parts.join("; ") +
       " [novi/izmenjeni/nepromenjeni]" +
+      lockedNote +
       van
     );
   }
@@ -757,6 +784,48 @@ export class BigbitMdbImportService {
         UNION
         SELECT bb_nalog_id FROM ranked WHERE rn > 1
       ),
+      -- BRANA ZAKLJUČANIH (stavka D, nalaz V6): nalog koji je u 4.0 LOCKED nosi
+      -- zaključan period — na njemu stoje predata PDV prijava i izračunat bilans.
+      -- Uvoz ga NE prepisuje; razlika se zapisuje i čeka ljudsku odluku.
+      --
+      -- ⚠️ STATUS SE NAMERNO NE POREDI (ispravka posle drugog kruga pregleda 28.07.):
+      -- 4.0 ima SOPSTVENO zaključavanje perioda (gl-write.lockOlderThan, dugme
+      -- „Zaključaj starije") koje uvezene naloge prevodi POSTED→LOCKED, dok BigBit za
+      -- iste naloge i dalje šalje Zakljucano=0. Dok je status bio deo poređenja, ta
+      -- razlika je bila TRAJNA: svaki takav nalog se SVAKE noći brojao kao „odbijena
+      -- izmena" (mereno: 3/3, tj. 100% naloga u zaključanom periodu) i TRAJNO ispadao
+      -- iz upsert-a, a dnevnik se punio redovima koje niko ne može da reši. Stvarna
+      -- izmena bi se u toj buci izgubila. Status se ovde i ne sme preuzeti: 4.0
+      -- zaključavanje je jače i BigBit ga ne sme skinuti (vidi CASE u DO UPDATE).
+      locked AS (
+        SELECT r.bb_nalog_id, j.id AS target_id,
+               to_jsonb(j) - 'created_at' - 'updated_at' AS old_value,
+               to_jsonb(r) - 'rn'                        AS new_value
+        FROM ranked r
+        JOIN journal_entries j ON j.bb_nalog_id = r.bb_nalog_id
+        WHERE upper(j.status) = 'LOCKED'
+          AND (j.number, j.order_type_code, j.year, j.company_id, j.document_date,
+               j.posting_date, j.description, j.signature)
+            IS DISTINCT FROM
+              (r.number, r.order_type_code, r.year, r.company_id, r.document_date,
+               r.posting_date, r.description, r.signature)
+      ),
+      -- Dnevnik odbijenih izmena. NOT EXISTS drži TAČNO JEDAN nerešen red po
+      -- nalogu — inače bi svaka noć dodavala novi duplikat istog problema.
+      logged AS (
+        INSERT INTO bb_import_rejected_changes
+          (drop_id, entity, bb_nalog_id, target_id, reason, old_value, new_value)
+        SELECT ${dropId}, 'journal_entries', l.bb_nalog_id, l.target_id,
+               'LOCKED_ENTRY', l.old_value, l.new_value
+        FROM locked l
+        WHERE NOT EXISTS (
+          SELECT 1 FROM bb_import_rejected_changes x
+           WHERE x.resolved_at IS NULL
+             AND x.reason = 'LOCKED_ENTRY'
+             AND x.entity = 'journal_entries'
+             AND x.bb_nalog_id = l.bb_nalog_id)
+        RETURNING 1
+      ),
       ins AS (
         INSERT INTO journal_entries (bb_nalog_id, number, order_type_code, year, company_id,
                                      document_date, posting_date, status, description,
@@ -766,6 +835,7 @@ export class BigbitMdbImportService {
                signature, ${dropId}, now(), now()
         FROM ranked
         WHERE bb_nalog_id NOT IN (SELECT bb_nalog_id FROM blocked)
+          AND bb_nalog_id NOT IN (SELECT bb_nalog_id FROM locked)
         ON CONFLICT (bb_nalog_id) DO UPDATE SET
           number           = EXCLUDED.number,
           order_type_code  = EXCLUDED.order_type_code,
@@ -773,18 +843,26 @@ export class BigbitMdbImportService {
           company_id       = EXCLUDED.company_id,
           document_date    = EXCLUDED.document_date,
           posting_date     = EXCLUDED.posting_date,
-          status           = EXCLUDED.status,
+          -- STATUS SE OVDE NE MENJA. Dva razloga, oba mereno:
+          --  1) BigBit ne sme da SKINE 4.0 zaključavanje (lockOlderThan) — inače bi
+          --     noćni uvoz tiho otključavao periode za koje je predata PDV prijava;
+          --  2) ni da ga POSTAVI u ovom koraku: korak stavki ide POSLE ovog i status
+          --     bi zatekao kao LOCKED, pa bi odbio iznose IZ ISTOG FAJLA koji je taj
+          --     nalog i zaključao (mereno: zaglavlje preuzeto, iznos ostao stari).
+          -- Zaključavanje po BigBit-ovoj zastavici radi poseban korak NA KRAJU uvoza
+          -- (applyBigbitLocks), kad su stavke već unutra.
+          status           = journal_entries.status,
           description      = EXCLUDED.description,
           signature        = EXCLUDED.signature,
           updated_at       = now()
         WHERE (journal_entries.number, journal_entries.order_type_code, journal_entries.year,
                journal_entries.company_id, journal_entries.document_date,
-               journal_entries.posting_date, journal_entries.status,
+               journal_entries.posting_date,
                journal_entries.description, journal_entries.signature)
           IS DISTINCT FROM
               (EXCLUDED.number, EXCLUDED.order_type_code, EXCLUDED.year,
                EXCLUDED.company_id, EXCLUDED.document_date,
-               EXCLUDED.posting_date, EXCLUDED.status,
+               EXCLUDED.posting_date,
                EXCLUDED.description, EXCLUDED.signature)
         RETURNING (xmax = 0) AS was_insert
       )
@@ -792,8 +870,17 @@ export class BigbitMdbImportService {
              (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
              (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated,
              (SELECT count(*) FROM blocked)                  AS skipped,
+             (SELECT count(*) FROM locked)                   AS blocked_locked,
+             (SELECT count(*) FROM logged)                   AS logged_now,
              (SELECT count(*) FROM src)                      AS fetched`;
     const step = this.toStep("journal_entries", row, t0, notes);
+    if (step.blockedLocked > 0)
+      step.notes.push(
+        `${step.blockedLocked} nalog(a) je izmenjen u BigBitu, ali je u 4.0 ZAKLJUČAN — izmena NIJE ` +
+          `preuzeta (na zaključanom periodu stoje predata PDV prijava i izračunat bilans). ` +
+          `Novo zapisano za odluku: ${n(row?.logged_now)}. Pregled i odjava: tabela ` +
+          "bb_import_rejected_changes (reason='LOCKED_ENTRY', resolved_at IS NULL).",
+      );
 
     if (step.filtered > 0) {
       // Razlog se traži SAMO kad nešto stvarno otpadne (retko) — nije na vrelom putu.
@@ -852,6 +939,8 @@ export class BigbitMdbImportService {
     let inserted = 0;
     let updated = 0;
     let skipped = 0;
+    let blockedLocked = 0; // odbijene izmene nad zaključanim nalozima (stavka D)
+    let loggedNow = 0; // koliko ih je PRVI put ušlo u dnevnik odluka
     let processed = 0; // redovi koji su uopšte ušli u obradu (numerički stavka_id)
     let lastKey = 0;
     let batches = 0;
@@ -908,6 +997,68 @@ export class BigbitMdbImportService {
           JOIN journal_entries j ON j.bb_nalog_id = nullif(btrim(coalesce(p.id_naloga, '')), '')::int
           JOIN accounts a        ON a.code = btrim(p.konto)
         ),
+        -- BRANA ZAKLJUČANIH (stavka D, nalaz V6): stavka čiji je nalog u 4.0
+        -- LOCKED se ne dira — ni izmena postojeće, ni unos nove. Blokira se SAMO
+        -- ako bi stvarno nešto promenila; identičan red prolazi kao i do sada,
+        -- inače bi svaka noć prijavljivala hiljade „odbijenih" nepromenjenih redova.
+        --
+        -- PRVI UVOZ SAMOG NALOGA JE IZUZETAK, i to nije sitnica: BigBit svoje
+        -- zaključane naloge donosi kao Zakljucano=1 → 4.0 ih upisuje kao LOCKED.
+        -- Bez izuzetka bi zaključan nalog dobio zaglavlje BEZ IJEDNE STAVKE (u
+        -- snimku 11.07. to je 10 naloga / 46 stavki), glavna knjiga ne bi zatvarala,
+        -- a dnevnik odbijenih bi se napunio „izmenama" koje niko nije napravio.
+        -- Zato: nalog koji je u knjigu ušao BAŠ OVIM drop-om (imported_drop_id =
+        -- dropId; upsert zaglavlja tu kolonu NE prepisuje) sme da dobije svoje stavke.
+        --
+        -- DRUGI IZUZETAK — POPRAVKA PREKINUTOG UVOZA (nalaz drugog kruga pregleda):
+        -- uvoz stavki je STRANIČEN (svaka stranica zaseban commit), pa pad usred
+        -- koraka ostavlja zaključan nalog sa DELOM stavki. Sledeći fajl je drugi
+        -- drop, izuzetak iznad više ne važi, i te stavke ne bi ušle NIKAD — nalog
+        -- trajno ne zatvara, a uvoz vraća DONE. Zato: NEDOSTAJUĆA stavka (le.id IS
+        -- NULL) sme da uđe na nalog koji trenutno NE ZBRAJA U NULU (ili nema nijednu
+        -- stavku) — takav nalog je pokvaren i BigBit je izvor istine. Nalog koji
+        -- zatvara ostaje netaknut, pa dopisivanje nove stavke na ispravan zaključan
+        -- nalog i dalje pada u dnevnik.
+        locked AS (
+          SELECT s.bb_stavka_id, j.bb_nalog_id, le.id AS target_id,
+                 to_jsonb(le) - 'created_at' AS old_value,
+                 to_jsonb(s)                 AS new_value
+          FROM src s
+          JOIN journal_entries j ON j.id = s.journal_entry_id AND upper(j.status) = 'LOCKED'
+          LEFT JOIN ledger_entries le ON le.bb_stavka_id = s.bb_stavka_id
+          WHERE (le.id IS NULL
+                 AND j.imported_drop_id IS DISTINCT FROM ${dropId}
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM ledger_entries x
+                   WHERE x.journal_entry_id = j.id
+                   HAVING coalesce(sum(x.debit), 0) <> coalesce(sum(x.credit), 0)
+                          OR count(*) = 0))
+             OR (le.id IS NOT NULL
+             AND (le.journal_entry_id, le.account_code, le.analytical_code, le.debit, le.credit,
+                 le.fx_debit, le.fx_credit, le.fx_currency, le.currency, le.description,
+                 le.document_origin, le.document_number, le.due_date, le.source_goods_doc_id,
+                 le.source_service_doc_id, le.source_project_id, le.source_work_order_id)
+               IS DISTINCT FROM
+                (s.journal_entry_id, s.account_code, s.analytical_code, s.debit, s.credit,
+                 s.fx_debit, s.fx_credit, s.fx_currency, s.currency, s.description,
+                 s.document_origin, s.document_number, s.due_date, s.source_goods_doc_id,
+                 s.source_service_doc_id, s.source_project_id, s.source_work_order_id))
+        ),
+        logged AS (
+          INSERT INTO bb_import_rejected_changes
+            (drop_id, entity, bb_nalog_id, bb_stavka_id, target_id, reason, old_value, new_value)
+          SELECT ${dropId}, 'ledger_entries', l.bb_nalog_id, l.bb_stavka_id, l.target_id,
+                 'LOCKED_ENTRY', l.old_value, l.new_value
+          FROM locked l
+          WHERE NOT EXISTS (
+            SELECT 1 FROM bb_import_rejected_changes x
+             WHERE x.resolved_at IS NULL
+               AND x.reason = 'LOCKED_ENTRY'
+               AND x.entity = 'ledger_entries'
+               AND x.bb_stavka_id = l.bb_stavka_id)
+          RETURNING 1
+        ),
         ins AS (
           INSERT INTO ledger_entries (bb_stavka_id, journal_entry_id, account_code, analytical_code,
                                       debit, credit, fx_debit, fx_credit, fx_currency, currency,
@@ -922,6 +1073,7 @@ export class BigbitMdbImportService {
                  source_project_id, source_work_order_id,
                  ${dropId}, now()
           FROM src
+          WHERE bb_stavka_id NOT IN (SELECT bb_stavka_id FROM locked)
           ON CONFLICT (bb_stavka_id) DO UPDATE SET
             journal_entry_id      = EXCLUDED.journal_entry_id,
             account_code          = EXCLUDED.account_code,
@@ -965,6 +1117,8 @@ export class BigbitMdbImportService {
                (SELECT count(*) FROM src)                      AS eligible,
                (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
                (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated,
+               (SELECT count(*) FROM locked)                   AS blocked_locked,
+               (SELECT count(*) FROM logged)                   AS logged_now,
                (SELECT coalesce(max(stavka_id::int), 0) FROM page) AS max_key`;
 
       const pageRows = n(row?.page_rows);
@@ -973,6 +1127,8 @@ export class BigbitMdbImportService {
 
       inserted += n(row?.inserted);
       updated += n(row?.updated);
+      blockedLocked += n(row?.blocked_locked);
+      loggedNow += n(row?.logged_now);
       skipped += pageRows - n(row?.eligible);
       processed += pageRows;
       lastKey = pageMax;
@@ -991,13 +1147,24 @@ export class BigbitMdbImportService {
       updated,
       // `unchanged` se računa nad OBRAĐENIM redovima, ne nad celim staging-om —
       // inače bi redovi koje filter nikad nije ni video ispali „nepromenjeni".
-      unchanged: Math.max(0, processed - inserted - updated - skipped),
+      unchanged: Math.max(
+        0,
+        processed - inserted - updated - skipped - blockedLocked,
+      ),
       skipped,
       filtered: Math.max(0, staged - processed),
+      blockedLocked,
       durationMs: Date.now() - t0,
       notes,
     };
     step.notes.push(`${batches} serija po ${GK_BATCH} redova`);
+    if (blockedLocked > 0)
+      step.notes.push(
+        `${blockedLocked} stavki glavne knjige pripada nalogu koji je u 4.0 ZAKLJUČAN — izmena iz ` +
+          `BigBita NIJE preuzeta (zaključan period nosi predatu PDV prijavu i izračunat bilans). ` +
+          `Novo zapisano za odluku: ${loggedNow}. Pregled i odjava: tabela ` +
+          "bb_import_rejected_changes (reason='LOCKED_ENTRY', resolved_at IS NULL).",
+      );
     if (skipped > 0)
       step.notes.push(
         `${skipped} stavki preskočeno — nema nalog (bb_nalog_id) ili konto u kontnom planu`,
@@ -1010,8 +1177,57 @@ export class BigbitMdbImportService {
   }
 
   /**
+   * ZAKLJUČAVANJE PO BIGBIT-OVOJ ZASTAVICI — POSLEDNJI korak uvoza.
+   *
+   * Zašto zaseban korak, a ne kolona u upsert-u zaglavlja (ispravka posle drugog
+   * kruga nezavisnog pregleda, 28.07.2026): koraci uvoza idu redom
+   * `journal_entries` → `ledger_entries`, svaki u svojoj transakciji. Dok se
+   * `Zakljucano=1` primenjivao u prvom koraku, drugi korak je isti nalog zaticao kao
+   * `LOCKED` i brana zaključanih je odbijala IZNOSE IZ ISTOG FAJLA koji je taj nalog
+   * i zaključao. Ishod je bio najgori mogući: NOVO zaglavlje + STARI iznosi, uz zapis
+   * u dnevniku o „odbijenoj izmeni" za sasvim običnu knjigovodstvenu radnju (ispravi
+   * pa zaključi mesec). Mereno: BigBit šalje 777, u 4.0 ostaje 700.
+   *
+   * SMER JE JEDNOSMERAN: samo POSTED → LOCKED. Otključavanje se NE preuzima —
+   * 4.0 ima sopstveno zaključavanje perioda (`lockOlderThan`) koje nosi predatu PDV
+   * prijavu i izračunat bilans, i BigBit ga ne sme skinuti.
+   */
+  private async applyBigbitLocks(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const [row] = await this.prisma.$queryRaw<CountRow[]>`
+      WITH src AS (
+        SELECT DISTINCT ON (id_naloga::int) id_naloga::int AS bb_nalog_id
+        FROM bb_mdb_stage_nalozi
+        WHERE drop_id = ${dropId}
+          AND btrim(coalesce(id_naloga, '')) ~ '^[0-9]+$'
+          AND btrim(coalesce(zakljucano, '0')) = '1'
+        ORDER BY id_naloga::int
+      ),
+      upd AS (
+        UPDATE journal_entries j
+           SET status = 'LOCKED', updated_at = now()
+          FROM src s
+         WHERE j.bb_nalog_id = s.bb_nalog_id
+           AND upper(j.status) = 'POSTED'
+        RETURNING 1
+      )
+      SELECT (SELECT count(*) FROM src) AS staged,
+             0                          AS inserted,
+             (SELECT count(*) FROM upd) AS updated,
+             0                          AS skipped,
+             (SELECT count(*) FROM src) AS fetched`;
+    const step = this.toStep("journal_entries_lock", row, t0, []);
+    if (step.updated > 0)
+      step.notes.push(
+        `${step.updated} nalog(a) zaključano po BigBit-ovoj zastavici (Zakljucano=1), ` +
+          "posle unosa stavki. Otključavanje se NE preuzima iz BigBita.",
+      );
+    return step;
+  }
+
+  /**
    * Brojači jednog koraka, tako da UVEK važi
-   * `staged = inserted + updated + unchanged + skipped + filtered`.
+   * `staged = inserted + updated + unchanged + skipped + filtered + blockedLocked`.
    *
    * `fetched` = redovi koji su ušli u upsert pokušaj (`src`). Dva koraka imaju
    * različit odnos `skipped` prema `src`, pa se to mora reći eksplicitno —
@@ -1031,9 +1247,13 @@ export class BigbitMdbImportService {
     const updated = n(row?.updated);
     const skipped = n(row?.skipped);
     const fetched = n(row?.fetched);
+    // Odbijena izmena zaključanog naloga MORA da se odbije i od `unchanged` —
+    // inače bi red koji se u BigBitu stvarno promenio izlazio kao „nepromenjen",
+    // tj. tačno ona tišina zbog koje je brana i uvedena.
+    const blockedLocked = n(row?.blocked_locked);
     const unchanged = skippedOutsideSrc
-      ? fetched - inserted - updated
-      : fetched - inserted - updated - skipped;
+      ? fetched - inserted - updated - blockedLocked
+      : fetched - inserted - updated - skipped - blockedLocked;
     const filtered = skippedOutsideSrc
       ? staged - fetched - skipped
       : staged - fetched;
@@ -1045,6 +1265,7 @@ export class BigbitMdbImportService {
       unchanged: Math.max(0, unchanged),
       skipped,
       filtered: Math.max(0, filtered),
+      blockedLocked,
       durationMs: Date.now() - t0,
       notes,
     };

@@ -16,6 +16,8 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useAdvances,
+  advanceRemainderCents,
+  canMarkAdvancePaid,
   ADVANCE_DIRECTION,
   ADVANCE_DIRECTION_LABEL,
   type Advance,
@@ -27,6 +29,7 @@ import {
   IncomingAdvanceDialog,
   LinkFinalDialog,
   MarkPaidDialog,
+  OutgoingAdvanceDialog,
   type Banner,
 } from './advance-dialogs';
 
@@ -75,6 +78,7 @@ export default function AvansiPage() {
   const [markPaidFor, setMarkPaidFor] = useState<Advance | null>(null);
   const [linkFinalFor, setLinkFinalFor] = useState<Advance | null>(null);
   const [incomingOpen, setIncomingOpen] = useState(false);
+  const [outgoingOpen, setOutgoingOpen] = useState(false);
   const [banner, setBanner] = useState<Banner | null>(null);
   // Štampa avansnog obrasca; `printingId` drži spinner na redu koji se štampa
   // (mutacija je jedna za celu tabelu, pa bi bez njega sva dugmad bila „u toku").
@@ -90,13 +94,13 @@ export default function AvansiPage() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (markPaidFor || linkFinalFor || incomingOpen) return;
+      if (markPaidFor || linkFinalFor || incomingOpen || outgoingOpen) return;
       e.preventDefault();
       router.push('/fakturisanje');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [router, markPaidFor, linkFinalFor, incomingOpen]);
+  }, [router, markPaidFor, linkFinalFor, incomingOpen, outgoingOpen]);
 
   const list = useAdvances({ page, pageSize: PAGE_SIZE, direction, unpaidOnly });
   const rows = list.data?.data ?? [];
@@ -107,6 +111,9 @@ export default function AvansiPage() {
   // ulazni PDV_COMPUTE. Dugme se nudi samo kad korisnik ima pravo za taj smer.
   const canPostSales = can(PERMISSIONS.SALES_POST);
   const canComputePdv = can(PERMISSIONS.PDV_COMPUTE);
+  // Izrada AVR-a je unos dokumenta (bez knjiženja) → SALES_WRITE, kao i „Napravi
+  // avansni račun" na detalju predračuna.
+  const canWriteSales = can(PERMISSIONS.SALES_WRITE);
   const canActOn = (adv: Advance) =>
     adv.direction === ADVANCE_DIRECTION.IN ? canComputePdv : canPostSales;
 
@@ -172,6 +179,70 @@ export default function AvansiPage() {
         ),
     },
     {
+      key: 'appliedAmount',
+      header: 'Iskorišćeno',
+      align: 'right',
+      numeric: true,
+      render: (a) => {
+        // `?? []` NIJE kozmetika: FE ide na Cloudflare zasebno od backend image-a, pa
+        // u prozoru između dva deploy-a nov ekran dobija stari odgovor bez polja
+        // `applications` — bez ovoga ceo ekran Avansi puca u renderu reda.
+        const apps = a.applications ?? [];
+        return apps.length > 0 ? (
+          <span className="tnums text-ink">
+            {formatDecimal(a.appliedAmount)}
+            <span className="ml-2 text-xs text-ink-secondary">
+              {apps.length === 1 ? '1 račun' : `${apps.length} računa`}
+            </span>
+          </span>
+        ) : (
+          <span className="text-ink-disabled">—</span>
+        );
+      },
+    },
+    {
+      // OSTATAK je odgovor na pitanje „zašto dugme „Veži na konačni račun" jeste
+      // ili nije tu" — dugme se nudi tačno dok je ovo > 0.
+      key: 'remainingAmount',
+      header: 'Ostatak',
+      align: 'right',
+      numeric: true,
+      render: (a) => {
+        // ULAZNI avans nema ekran za vezivanje na konačni račun (ruta postoji, dugmeta
+        // nema) — podebljan iznos bi obećavao radnju koje nema.
+        if (a.direction === ADVANCE_DIRECTION.IN) {
+          return (
+            <span
+              className="text-ink-disabled"
+              title="Vezivanje ulaznog avansa na konačni račun čeka evidenciju ulaznih faktura."
+            >
+              —
+            </span>
+          );
+        }
+        if (!a.paidAt) {
+          return (
+            <span className="text-ink-disabled" title="Avans još nije naplaćen — nenaplaćen avans se ne može odbiti na računu.">
+              nenaplaćen
+            </span>
+          );
+        }
+        const rest = advanceRemainderCents(a);
+        if (rest > 0) {
+          return (
+            <span className="tnums font-semibold text-ink">
+              {formatDecimal(a.remainingAmount)}
+            </span>
+          );
+        }
+        return (
+          <span className="text-ink-secondary" title="Naplaćen iznos avansa je u celosti odbijen na računima.">
+            iskorišćen
+          </span>
+        );
+      },
+    },
+    {
       key: 'status',
       header: 'Status',
       render: (a) => {
@@ -180,14 +251,29 @@ export default function AvansiPage() {
       },
     },
     {
+      // Avans se deli na VIŠE računa — kolona nabraja sve primene, ne samo prvu
+      // (ranije je prikazivala isključivo denormalizovanu 1:1 kolonu).
       key: 'linked',
       header: 'Vezan za',
-      render: (a) =>
-        a.linkedFinalDocumentNumber ? (
-          <span className="tnums text-ink-secondary">{a.linkedFinalDocumentNumber}</span>
+      render: (a) => {
+        const apps = a.applications ?? [];
+        return apps.length > 0 ? (
+          <span
+            className="tnums text-ink-secondary"
+            title={apps
+              .map((ap) => `${ap.documentNumber}: ${formatDecimal(ap.appliedAmount)}`)
+              .join('\n')}
+          >
+            {apps
+              .slice(0, 2)
+              .map((ap) => ap.documentNumber)
+              .join(', ')}
+            {apps.length > 2 ? ` +${apps.length - 2}` : ''}
+          </span>
         ) : (
           <span className="text-ink-disabled">—</span>
-        ),
+        );
+      },
     },
     {
       key: 'actions',
@@ -223,7 +309,13 @@ export default function AvansiPage() {
             <Printer className="h-4 w-4" aria-hidden />
             Štampaj
           </Button>
-          {!a.paidAt && canActOn(a) && (
+          {/* Naplata se nudi dok ima NENAPLAĆENOG dela (izlazni avans se plaća u
+              ratama — backend `markAdvancePaid` je kumulativan), a ne samo dok
+              avans nije nijednom naplaćen: uslov `!a.paidAt` je posle prve rate
+              trajno sakrivao dugme i ostatak PDV-a po avansu nije imao gde da se
+              proknjiži. Ulazni avans se plaća jednokratno — to `canMarkAdvancePaid`
+              razlikuje po smeru. */}
+          {canMarkAdvancePaid(a) && canActOn(a) && (
             <Button
               variant="secondary"
               onClick={() => {
@@ -239,8 +331,14 @@ export default function AvansiPage() {
               računa sadrži isključivo naša izlazna dokumenta, pa bi vezivanje
               ulaznog (dobavljačevog) avansa umanjilo iznos za uplatu na NAŠEM
               računu kupcu — i to bi otišlo na SEF. Za ulazni smer veza čeka
-              evidenciju ulaznih faktura. */}
-          {a.linkedFinalInvoiceId == null &&
+              evidenciju ulaznih faktura.
+
+              Uslov je NEISKORIŠĆEN OSTATAK, ne „nije nijednom primenjen": veza je
+              N:M i jedan avans se deli na više računa. Stari uslov
+              (`linkedFinalInvoiceId == null`) je čitao denormalizovanu kolonu koja
+              se puni pri PRVOJ primeni — ostatak avansa se posle toga nije mogao
+              odbiti nigde u aplikaciji (nalaz K2 nezavisnog pregleda 27.07). */}
+          {advanceRemainderCents(a) > 0 &&
             a.direction !== ADVANCE_DIRECTION.IN &&
             canActOn(a) && (
               <Button
@@ -272,6 +370,22 @@ export default function AvansiPage() {
               <ArrowLeft className="h-4 w-4" aria-hidden />
               Fakturisanje
             </Button>
+            {/* Avans PO UGOVORU (bez predračuna): ruta postoji od početka, ali je
+                jedini ulaz bio „Napravi avansni račun" sa detalja PREDRAČUNA — pa
+                se avans po ugovoru nije mogao napraviti nigde, iako su u BigBitu
+                dva najveća avansa 2025. izdata baš tako. */}
+            {canWriteSales && (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setBanner(null);
+                  setOutgoingOpen(true);
+                }}
+              >
+                <Plus className="h-4 w-4" aria-hidden />
+                Novi avans (po ugovoru)
+              </Button>
+            )}
             {canComputePdv && (
               <Button
                 onClick={() => {
@@ -389,6 +503,13 @@ export default function AvansiPage() {
         <LinkFinalDialog
           advance={linkFinalFor}
           onClose={() => setLinkFinalFor(null)}
+          onDone={setBanner}
+        />
+      )}
+
+      {outgoingOpen && (
+        <OutgoingAdvanceDialog
+          onClose={() => setOutgoingOpen(false)}
           onDone={setBanner}
         />
       )}

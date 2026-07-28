@@ -46,6 +46,8 @@ import { SaldakontiModule } from "./modules/saldakonti/saldakonti.module";
 import { IzvodiModule } from "./modules/izvodi/izvodi.module";
 import { PlacanjaModule } from "./modules/placanja/placanja.module";
 import { SalesModule } from "./modules/sales/sales.module";
+import { PricingModule } from "./modules/sales/pricing.module";
+import { DocumentTypesModule } from "./modules/document-types/document-types.module";
 import { SefModule } from "./modules/sales/sef/sef.module";
 import { SalesPrintModule } from "./modules/sales/print/sales-print.module";
 import { PdvModule } from "./modules/pdv/pdv.module";
@@ -120,6 +122,10 @@ import { MontazaNeusaglasenostiModule } from "./modules/montaza-neusaglasenosti/
     PlacanjaModule,
     // 4.0 Faza 5 — Fakturisanje (izlazni računi PROF→IFR + knjiženje), SEF e-fakture (UBL), štampa/mail.
     SalesModule,
+    // Ruta cenovnog motora (POST /v1/sales/price-preview) — PricingService je radio bez rute.
+    PricingModule,
+    // Registar vrsta dokumenata kao konfiguracija ekrana unosa (GET /v1/document-types).
+    DocumentTypesModule,
     SefModule,
     SalesPrintModule,
     // 4.0 Faza 2 — Glavna knjiga READ (dnevnik naloga + kartica konta).

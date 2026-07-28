@@ -13,6 +13,7 @@ import {
   Type,
 } from 'lucide-react';
 import { lookupLocBarcode, type LocBarcodeKind, type LocBarcodeResult } from '@/api/lokacije';
+import { useEscapeLayer } from '@/components/ui-kit/escape-layer';
 import {
   cropTopRightLabelRegion,
   isOcrEngineAvailable,
@@ -384,6 +385,10 @@ export function ScanOverlay({
   useEffect(() => {
     cbRef.current = { accept, onResult, onClose };
   });
+
+  // Skener je najgornji modalni sloj dok je otvoren — Esc zatvara NJEGA, i ne
+  // curi na dijalog ispod (v. `ui-kit/escape-layer.ts`).
+  useEscapeLayer(true, () => cbRef.current.onClose());
   const continuousRef = useRef(continuousOn);
   useEffect(() => {
     continuousRef.current = continuousOn;
@@ -998,12 +1003,9 @@ export function ScanOverlay({
     };
 
     // ── Globalni event-i ────────────────────────────────────────────────────
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        cbRef.current.onClose();
-      }
-    };
+    // Esc NIJE ovde — skener je modalni sloj i prijavljuje se `useEscapeLayer`-u
+    // (v. `ui-kit/escape-layer.ts`), da Esc zatvori samo njega a ne i dijalog
+    // ispod. Sopstveni capture-slušalac je zatvarao oba.
     const onPageHide = () => {
       try {
         stopStream();
@@ -1014,7 +1016,6 @@ export function ScanOverlay({
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') onPageHide();
     };
-    window.addEventListener('keydown', onKey, true);
     window.addEventListener('pagehide', onPageHide);
     document.addEventListener('visibilitychange', onVisibility);
 
@@ -1032,7 +1033,6 @@ export function ScanOverlay({
       stopped = true;
       if (zoomTimer) clearTimeout(zoomTimer);
       if (vvUnbind) vvUnbind();
-      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('visibilitychange', onVisibility);
       stopStream();

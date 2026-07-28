@@ -80,11 +80,135 @@
 --   Uz definicije brišemo i IZRAČUNATE linije BS/BU i vraćamo zaglavlja u DRAFT, jer
 --   loadPriorYearAmounts() mapira kolone 2/3 po SIROVOM `aop` stringu — stari red
 --   aop='0001' sa vrednošću ukupne aktive bi zatrovao kolonu „prethodna godina".
+--
+-- BRANA I ARHIVA (dopuna 28.07.2026 — stavka D nezavisnog pregleda, nalaz V2)
+--   Prva verzija ovog fajla je gornja tri naloga izvršavala BEZUSLOVNO. Na produ
+--   `/zavrsni-racun` živi za pilot krug od 22.07., pa bi isti `DELETE` pogodio i
+--   VEĆ PREDAT (FINALIZED) obrazac — bez arhive, bez `down` puta, bez ijedne
+--   poruke. Revizor je to i izveo nad prod-slikom: dva `FINAL` obračuna → oba
+--   `DRAFT`, `finalized_at = NULL`, 0 linija.
+--   Sada:
+--     (a) sve što se briše PRVO ide u `arch_*` tabele (staro stanje je vraćivo);
+--     (b) ako postoji ijedan BS/BU obračun u statusu različitom od `DRAFT`,
+--         migracija PADA sa razumljivom porukom umesto da ga prepiše.
+--   Zašto PAD a ne „preskoči predate": preskakanje ostavlja predat obrazac sa
+--   linijama po STAROM AOP rečniku dok registar definicija nosi NOVI — a baš to
+--   trovanje `loadPriorYearAmounts()` je razlog zbog kog se linije i brišu. Dva
+--   nespojiva rečnika u istoj tabeli su gora tišina od zaustavljenog deploy-a.
+--   IZLAZ ZA OPERATERA (svesna, zapisana odluka — nikad automatski):
+--     Prekidač se postavlja NA NIVOU BAZE, pa migracija prolazi kroz REDOVAN
+--     `prisma migrate deploy` i UREDNO UĐE U `_prisma_migrations`:
+--       ALTER DATABASE <baza> SET servosync.dozvoli_prepis_bilansa = 'on';
+--       npx prisma migrate resolve --rolled-back 20260726090000_seed_balance_formulas_autenticne
+--         (samo ako je prethodni deploy već pao na ovoj brani)
+--       npx prisma migrate deploy
+--       ALTER DATABASE <baza> RESET servosync.dozvoli_prepis_bilansa;
+--     ⚠️ NE puštati fajl ručno kroz psql/`prisma db execute` (`\i migration.sql`):
+--     tako se efekat upiše u bazu a evidencija ga ne zna — to je TAČNO nalaz V2
+--     zbog kog je ceo ovaj paket i nastao, i sledeći `migrate deploy` bi migraciju
+--     izvršio DRUGI PUT (arhiva se udvostruči).
+--   PRE MERGE-a NA MAIN proveri na produ:
+--     SELECT id, statement_type, period_year, status FROM financial_statements
+--      WHERE statement_type IN ('BALANCE_SHEET','INCOME_STATEMENT') AND status <> 'DRAFT';
+--   Prazan rezultat = deploy prolazi bez ijedne ručne radnje.
 -- ============================================================================
 
--- ── 0. Ukloni stare (rekonstrukcione) definicije i izračune BS/BU ───────────
+-- ── 0a. Arhiva (jedan red = jedan obrisan red, uz ime migracije koja ga je uzela)
+CREATE TABLE IF NOT EXISTS "arch_balance_formula_definitions" (
+  "arch_id"        BIGSERIAL PRIMARY KEY,
+  "arch_migration" TEXT NOT NULL,
+  "arch_at"        TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
+  "id"             INTEGER,
+  "statement_type" TEXT,
+  "aop"            TEXT,
+  "label"          TEXT,
+  "formula"        TEXT,
+  "ordinal"        INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS "arch_financial_statement_lines" (
+  "arch_id"          BIGSERIAL PRIMARY KEY,
+  "arch_migration"   TEXT NOT NULL,
+  "arch_at"          TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
+  "id"               INTEGER,
+  "statement_id"     INTEGER,
+  "statement_type"   TEXT,
+  "period_year"      INTEGER,
+  "statement_status" TEXT,
+  "aop"              TEXT,
+  "label"            TEXT,
+  "amount"           NUMERIC(19,4),
+  "amount_2"         NUMERIC(19,4),
+  "amount_3"         NUMERIC(19,4),
+  "formula"          TEXT,
+  "ordinal"          INTEGER
+);
+
+-- DATUM ZAKLJUČENJA je deo onoga što se briše (`finalized_at = NULL` niže), pa mora
+-- u arhivu — inače „sve što se briše je vraćivo" ne bi bilo tačno, a Servoteh je
+-- obveznik revizije kojoj taj datum treba. `ADD COLUMN IF NOT EXISTS` je zbog baza
+-- na kojima je arhivska tabela već napravljena prethodnom verzijom ovog fajla.
+ALTER TABLE "arch_financial_statement_lines"
+  ADD COLUMN IF NOT EXISTS "statement_finalized_at" TIMESTAMPTZ(6);
+
+-- ── 0b. BRANA: predat obračun se ne prepisuje ───────────────────────────────
+DO $stavka_d$
+DECLARE
+  predati TEXT;
+BEGIN
+  SELECT string_agg(
+           format('%s %s (status %s)', statement_type, period_year, status),
+           ', ' ORDER BY statement_type, period_year)
+    INTO predati
+    FROM financial_statements
+   WHERE statement_type IN ('BALANCE_SHEET', 'INCOME_STATEMENT')
+     AND status <> 'DRAFT';
+
+  IF predati IS NOT NULL
+     AND coalesce(current_setting('servosync.dozvoli_prepis_bilansa', true), 'off') <> 'on' THEN
+    RAISE EXCEPTION
+      'ZAVRSNI_RACUN_PREDAT: u bazi postoji predat (zaključen) obrazac — %. '
+      'Ova migracija menja rečnik AOP pozicija i morala bi da obriše njegove izračunate '
+      'linije, pa je zaustavljena da predat obrazac ne bi tiho promenio sadržaj. '
+      'POSTUPAK IMA TRI KORAKA, I DRUGI SE NE SME PRESKOČITI: '
+      '(1) sačuvajte predat obrazac izvan aplikacije i vratite ga u status DRAFT '
+      '(ili, ako je prepis svesna odluka, postavite ALTER DATABASE <baza> SET '
+      'servosync.dozvoli_prepis_bilansa = ''on''); '
+      '(2) OBAVEZNO odmrznite neuspelu migraciju: npx prisma migrate resolve '
+      '--rolled-back 20260726090000_seed_balance_formulas_autenticne — bez ovoga svaki '
+      'sledeći deploy pada sa P3009 („failed migrations in the target database"), '
+      'uključujući i deploy-e drugih modula, jer je ovaj pokušaj ostao zapisan kao '
+      'nezavršen (finished_at IS NULL); '
+      '(3) ponovite deploy. '
+      '[tehnički: financial_statements.status <> ''DRAFT''; stare linije se u svakom '
+      'slučaju arhiviraju u arch_financial_statement_lines]',
+      predati;
+  END IF;
+END
+$stavka_d$;
+
+-- ── 0c. Arhiviraj pa ukloni stare (rekonstrukcione) definicije i izračune BS/BU
+INSERT INTO "arch_balance_formula_definitions"
+  (arch_migration, id, statement_type, aop, label, formula, ordinal)
+SELECT '20260726090000_seed_balance_formulas_autenticne',
+       id, statement_type, aop, label, formula, ordinal
+  FROM balance_formula_definitions
+ WHERE statement_type IN ('BALANCE_SHEET', 'INCOME_STATEMENT');
+
 DELETE FROM balance_formula_definitions
  WHERE statement_type IN ('BALANCE_SHEET', 'INCOME_STATEMENT');
+
+INSERT INTO "arch_financial_statement_lines"
+  (arch_migration, id, statement_id, statement_type, period_year, statement_status,
+   statement_finalized_at,
+   aop, label, amount, amount_2, amount_3, formula, ordinal)
+SELECT '20260726090000_seed_balance_formulas_autenticne',
+       l.id, l.statement_id, s.statement_type, s.period_year, s.status,
+       s.finalized_at,
+       l.aop, l.label, l.amount, l.amount_2, l.amount_3, l.formula, l.ordinal
+  FROM financial_statement_lines l
+  JOIN financial_statements s ON s.id = l.statement_id
+ WHERE s.statement_type IN ('BALANCE_SHEET', 'INCOME_STATEMENT');
 
 DELETE FROM financial_statement_lines
  WHERE statement_id IN (
@@ -92,9 +216,12 @@ DELETE FROM financial_statement_lines
     WHERE statement_type IN ('BALANCE_SHEET', 'INCOME_STATEMENT')
  );
 
+-- Posle brane ovde po pravilu stoje samo DRAFT zaglavlja (osim uz svestan
+-- `dozvoli_prepis_bilansa`), pa je ovo mreža a ne rutinsko vraćanje statusa.
 UPDATE financial_statements
    SET status = 'DRAFT', finalized_at = NULL
- WHERE statement_type IN ('BALANCE_SHEET', 'INCOME_STATEMENT');
+ WHERE statement_type IN ('BALANCE_SHEET', 'INCOME_STATEMENT')
+   AND (status <> 'DRAFT' OR finalized_at IS NOT NULL);
 
 -- ============================================================================
 -- 1. BILANS STANJA (BALANCE_SHEET) — 117 pozicija

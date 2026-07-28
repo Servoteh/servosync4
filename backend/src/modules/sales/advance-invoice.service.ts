@@ -552,10 +552,14 @@ export class AdvanceInvoiceService {
         },
         data: {
           // Datum PRVE naplate ostaje — to je dan nastanka PDV obaveze po avansu.
-          ...(advance.advancePaidAt == null ? { advancePaidAt: input.paidAt } : {}),
+          ...(advance.advancePaidAt == null
+            ? { advancePaidAt: input.paidAt }
+            : {}),
           advancePaidAmount: paidTotal,
           // POSTED → PAID tek kad je avans naplaćen U CELOSTI; ne gazi SEF status.
-          ...(fullyPaid && advance.status === "POSTED" ? { status: "PAID" } : {}),
+          ...(fullyPaid && advance.status === "POSTED"
+            ? { status: "PAID" }
+            : {}),
           updatedByUserId: actor.userId,
         },
       });
@@ -763,21 +767,32 @@ export class AdvanceInvoiceService {
 
       // LEGACY / CROSS-MODUL: veze nastale pre N:M migracije ili kroz pdv modul
       // (`advance-vat.linkIncomingAdvanceToFinal` piše `invoices.advance_*` bez reda
-      // u spojnoj tabeli) nemaju primenu — čitaju se iz kolona, inače bi se isti
-      // avans potrošio dvaput.
-      if (advanceApps.length === 0) {
-        const legacyLinks = await tx.invoice.findMany({
-          where: { advanceInvoiceId: advance.id, status: { not: "CANCELLED" } },
-          select: { id: true, advanceAppliedAmount: true },
-        });
-        advanceUsed = legacyLinks.reduce(
-          (acc, l) => acc.add(l.advanceAppliedAmount),
-          ZERO,
-        );
-        duplicatePair ||= legacyLinks.some((l) => l.id === invoice.id);
-      }
-      if (invoiceApps.length === 0) {
-        invoiceUsed = invoice.advanceAppliedAmount;
+      // u spojnoj tabeli) nemaju primenu — čitaju se iz kolona.
+      //
+      // UNIJA, NE „ILI-ILI" (ispravka posle drugog kruga pregleda 28.07.): ranije se
+      // legacy iznos čitao SAMO kad primena nema nijedne, pa je posle prve N:M primene
+      // legacy deo bio zaboravljen i avans se mogao prekoračiti (mereno: naplaćeno
+      // 5.000 → primenjeno 2.000 + 3.000 + 2.000 = 7.000). Sada se sabiraju primene
+      // PLUS one legacy veze koje nemaju svoj red u spojnoj tabeli.
+      const legacyLinks = await tx.invoice.findMany({
+        where: { advanceInvoiceId: advance.id, status: { not: "CANCELLED" } },
+        select: { id: true, advanceAppliedAmount: true },
+      });
+      const appliedInvoiceIds = new Set(advanceApps.map((a) => a.invoiceId));
+      advanceUsed = legacyLinks
+        .filter((l) => !appliedInvoiceIds.has(l.id))
+        .reduce((acc, l) => acc.add(l.advanceAppliedAmount), advanceUsed);
+      duplicatePair ||= legacyLinks.some((l) => l.id === invoice.id);
+
+      // Ista unija na strani RAČUNA: legacy 1:1 veza računa se dodaje samo ako taj
+      // avans nema svoj red u spojnoj tabeli.
+      if (
+        invoice.advanceInvoiceId != null &&
+        !invoiceApps.some(
+          (a) => a.advanceInvoiceId === invoice.advanceInvoiceId,
+        )
+      ) {
+        invoiceUsed = invoiceUsed.add(invoice.advanceAppliedAmount);
       }
 
       const advanceRemaining = advance.advancePaidAmount.sub(advanceUsed);

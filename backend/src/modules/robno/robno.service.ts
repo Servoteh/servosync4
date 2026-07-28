@@ -47,7 +47,10 @@ export type StockDocumentKind =
  * (zaliha po artiklu + numeracija), pa Prisma default (maxWait 2 s / timeout 5 s) pod
  * kontencijom vraća P2028 umesto da sačeka red.
  */
-const STOCK_DOCUMENT_TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 } as const;
+export const STOCK_DOCUMENT_TX_OPTIONS = {
+  maxWait: 10_000,
+  timeout: 20_000,
+} as const;
 
 const VALID_KINDS: readonly StockDocumentKind[] = [
   "UL",
@@ -63,7 +66,7 @@ const VALID_KINDS: readonly StockDocumentKind[] = [
  * Ručno napravljen dokument sa ovom vrstom bio bi po konstrukciji polovina
  * transakcije — v. guard u `createStockDocument`.
  */
-const TRANSFER_ONLY_TYPES = new Set<string>(["PREIZ", "PREUL"]);
+export const TRANSFER_ONLY_TYPES = new Set<string>(["PREIZ", "PREUL"]);
 
 /** Vrste dokumenta koje ZADUŽUJU magacin (`document_types.is_inbound = true`). */
 const INBOUND_KINDS = new Set<StockDocumentKind>(["UL", "VISAK"]);
@@ -73,7 +76,7 @@ const INBOUND_KINDS = new Set<StockDocumentKind>(["UL", "VISAK"]);
  * uneto": ako bi se sačuvao kao `""`, štampa bi videla „podatak postoji" i prestala bi da
  * crta liniju za ručni upis — papir bi ostao bez mesta za dopunu.
  */
-function trimOrNull(v: string | null | undefined): string | null {
+export function trimOrNull(v: string | null | undefined): string | null {
   if (v == null) return null;
   const t = v.trim();
   return t === "" ? null : t;
@@ -961,6 +964,12 @@ export class RobnoService {
    *
    * `label` ulazi u poruku (`IZ`, `MANJAK`, `PRENOS`, `STORNO PRENOSA`) da korisnik zna
    * koja ga radnja odbija.
+   *
+   * `opts.excludeDocId` izbacuje JEDAN dokument iz obračuna stanja. Treba ga IZMENI postojećeg
+   * dokumenta (`DocumentEditService`): `stateAsOf` ne gleda status, pa su stavke tog dokumenta
+   * VEĆ uračunate u stanje — bez izbacivanja bi se sopstvena potražnja oduzela dvaput i
+   * ispravka izdatnice bi padala na sopstvenoj robi. Kreiranje ga ne prosleđuje (dokument
+   * još ne postoji), pa se zatečeno ponašanje ne menja.
    */
   async assertStockAvailable(
     tx: Prisma.TransactionClient,
@@ -972,6 +981,7 @@ export class RobnoService {
     documentDate: Date,
     reservedByKey: ReadonlyMap<string, Prisma.Decimal> = new Map(),
     label = "IZ",
+    opts: { excludeDocId?: number } = {},
   ): Promise<void> {
     const shortages: Array<{
       itemId: number;
@@ -989,16 +999,22 @@ export class RobnoService {
     const checkNowToo = documentDate.getTime() < now.getTime();
 
     for (const r of requests) {
+      const stateOpts = { tx, excludeDocId: opts.excludeDocId };
       const onHandAsOf = await this.costing.stateAsOf(
         r.itemId,
         r.warehouseId,
         documentDate,
-        { tx },
+        stateOpts,
       );
       const onHand = checkNowToo
         ? minDec(
             onHandAsOf,
-            await this.costing.stateAsOf(r.itemId, r.warehouseId, now, { tx }),
+            await this.costing.stateAsOf(
+              r.itemId,
+              r.warehouseId,
+              now,
+              stateOpts,
+            ),
           )
         : onHandAsOf;
       // Raspoloživo = stanje − tuđe otvorene rezervacije (C3); rezervacije ovog dokumenta
