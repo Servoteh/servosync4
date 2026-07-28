@@ -507,6 +507,23 @@ const rnColumns: Column<RnProgress>[] = [
     render: (r) => <span className="font-semibold text-ink">{formatNumber(r.madeGoodPieces)}</span>,
   },
   {
+    // 036/26: koliko je operacija RUTINGA otkucano u punoj količini. Bez ove kolone
+    // „Gotovost" je gola tvrdnja koja može da protivreči tabu „Kucanja"; ovako se vidi
+    // da deo sa 5/15 operacija nije gotov. „—" kad nalog nema ruting (nema šta da se meri).
+    key: 'ops',
+    header: 'Operacije',
+    align: 'right',
+    numeric: true,
+    render: (r) =>
+      r.routingOperationCount > 0 ? (
+        <span className="tnums text-ink-secondary">
+          {formatNumber(r.routingOperationsCompleted)}/{formatNumber(r.routingOperationCount)}
+        </span>
+      ) : (
+        <span className="text-ink-secondary">—</span>
+      ),
+  },
+  {
     key: 'progress',
     header: 'Gotovost',
     render: (r) => <ProgressBar percent={r.completionPercent} />,
