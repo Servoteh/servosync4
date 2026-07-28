@@ -2564,6 +2564,32 @@ model WorkOrderLaunchNotification {
   @@map("work_order_launch_notifications")
 }
 
+/// App-owned (zahtev 037/26 dopuna, presuda Nenada 28.07). IMENOVANI primaoci obaveštenja
+/// o otpisu mašine — zamena za razrešenje po roli `users.role = 'sef'`, koja na produ nema
+/// nijednog čoveka (jedini nosilac je servisni nalog PDM Bridge, bez `worker_id`), pa
+/// obaveštenje nije imalo kome da ode.
+///
+/// Lista je PODEŠAVANJE, ne kod: menja se INSERT/UPDATE-om nad ovom tabelom (`active = FALSE`
+/// gasi primaoca), bez deploy-a, i važi od sledećeg otpisa — servis je čita pri svakom slanju.
+/// Ključ je mejl (a ne `users.id`) jer je čitljiv onome ko menja tabelu i jer primalac ne mora
+/// imati nalog u aplikaciji; `users` se gleda samo da bi se našao `worker_id` za zvonce.
+model MasinaOtpisPrimalac {
+  id              Int      @id(map: "pk_masina_otpis_primaoci") @default(autoincrement()) @map("id")
+  /// Malim slovima, bez razmaka (DB CHECK) — inače bi „ista" osoba mogla ući dvaput.
+  email           String   @unique(map: "uq_masina_otpis_primaoci_email") @map("email") @db.VarChar(200)
+  /// Oznaka za čoveka koji čita tabelu; ime u poruci se preuzima iz `users` kad nalog postoji.
+  fullName        String?  @map("full_name") @db.VarChar(150)
+  /// FALSE = primalac ugašen (istorija ostaje). Servis šalje samo aktivnima.
+  active          Boolean  @default(true) @map("active")
+  note            String?  @map("note")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Meki ref → users.id (ko je dodao red; NULL za seed iz migracije).
+  createdByUserId Int?     @map("created_by_user_id")
+
+  @@map("masina_otpis_primaoci")
+}
+
 /// App-owned (2.0, plan §3.2-6, odluka O3). Šifarnik odeljenja (7 redova iz sy15
 /// `core.odeljenje`); nose boju i vođu — semantika drugačija od `work_units` / `workers`.
 /// `leadUserId` / `leadWorkerId` meki ref-ovi (users / workers, bez DB FK). Referencira ga

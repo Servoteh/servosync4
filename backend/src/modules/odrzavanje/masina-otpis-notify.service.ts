@@ -1,9 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { MailService } from "../../common/mail/mail.service";
 import {
-  resolveSefRecipients,
-  resolveSefWorkerIds,
-} from "../../common/workers/sef-criteria";
+  resolveOtpisPrimaoci,
+  type OtpisPrimalac,
+} from "../../common/workers/otpis-primaoci";
 import { PrismaService } from "../../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
 
@@ -22,8 +22,14 @@ export interface OtpisNotifyInput {
 }
 
 /**
- * Obaveštenje ŠEFU PROIZVODNJE o otpisu mašine (zahtev 037/26): „Mašina X je
- * otpisana — preraspodeli poslove predviđene za nju."
+ * Obaveštenje o otpisu mašine (zahtev 037/26): „Mašina X je otpisana —
+ * preraspodeli poslove predviđene za nju."
+ *
+ * KO GA DOBIJA (dopuna, presuda Nenada 28.07): imenovana lista iz tabele
+ * `masina_otpis_primaoci`, a NE rola `sef` — ta rola na produ nema nijednog čoveka
+ * (jedini nosilac je servisni nalog PDM Bridge), pa je obaveštenje završavalo kao
+ * warn u logu. Lista je podešavanje i menja se SQL-om bez deploy-a; obrazloženje i
+ * recept za izmenu stoje u `common/workers/otpis-primaoci.ts` i u migraciji.
  *
  * ZAŠTO GLAVNA BAZA, A NE CMMS OUTBOX (`maint_notification_log`): sy15 outbox je
  * za mejl MRTAV PO DIZAJNU — `maint_dispatch_fanout` upisuje `recipient` =
@@ -71,15 +77,42 @@ export class MasinaOtpisNotifyService {
   }
 
   /**
-   * Zvonce + mail šefovima proizvodnje. Nikad ne baca; greške se samo loguju.
+   * Zvonce + mail primaocima iz `masina_otpis_primaoci`. Nikad ne baca; greške se
+   * samo loguju. Lista se razrešava JEDNOM i deli oba kanala — inače bi izmena
+   * tabele između dva upita mogla da mejluje jedan skup, a zvonce drugom.
    */
   async notifyOtpis(input: OtpisNotifyInput): Promise<void> {
     const label = `${input.machineCode} · ${input.machineName}`;
     const openCount = input.openWorkOrders.length;
+
+    let primaoci: OtpisPrimalac[];
     try {
-      // In-app zvonce (worker-scoped). Nalog bez vezanog radnika nema inbox red —
-      // to nije greška (deljeni terminali); mail ga svejedno pokriva.
-      const workerIds = await resolveSefWorkerIds(this.prisma);
+      primaoci = await resolveOtpisPrimaoci(this.prisma);
+    } catch (err) {
+      this.logger.warn(
+        `Otpis mašine ${label}: primaoci nisu razrešeni (${(err as Error).message}) — obaveštenje preskočeno.`,
+      );
+      return;
+    }
+    if (primaoci.length === 0) {
+      // Namerno BEZ tihog fallback-a na rolu `sef`: prazna lista je greška u
+      // podešavanju koja mora da se vidi, a ne da se maskira slanjem servisnom nalogu.
+      this.logger.warn(
+        `Otpis mašine ${label}: tabela masina_otpis_primaoci nema aktivnih primalaca — obaveštenje preskočeno.`,
+      );
+      return;
+    }
+
+    try {
+      // In-app zvonce (worker-scoped). Primalac bez vezanog radnika nema inbox red —
+      // to nije greška (deljeni terminali, nalozi bez radnika); mail ga svejedno pokriva.
+      const workerIds = [
+        ...new Set(
+          primaoci
+            .map((p) => p.workerId)
+            .filter((id): id is number => id != null),
+        ),
+      ];
       if (workerIds.length) {
         // `ref_id` je Int, a mašina je ključana TEKSTOM (machine_code) — zato bez
         // deep-link id-ja: refTable vodi na registar mašina, šifra je u poruci.
@@ -95,7 +128,7 @@ export class MasinaOtpisNotifyService {
         });
       } else {
         this.logger.warn(
-          `Otpis mašine ${label}: nema aktivnog šefa proizvodnje sa vezanim radnikom — zvonce preskočeno.`,
+          `Otpis mašine ${label}: nijedan primalac nema vezanog radnika — zvonce preskočeno (mail ide).`,
         );
       }
     } catch (err) {
@@ -105,24 +138,18 @@ export class MasinaOtpisNotifyService {
     }
 
     // Mail je fire-and-forget (samostalno guarded, ne baca).
-    void this.sendMail(input, label).catch(() => undefined);
+    void this.sendMail(input, label, primaoci).catch(() => undefined);
   }
 
   private async sendMail(
     input: OtpisNotifyInput,
     label: string,
+    primaoci: OtpisPrimalac[],
   ): Promise<boolean> {
     if (!this.mailEnabled) return false;
     try {
-      const recipients = await resolveSefRecipients(this.prisma);
-      if (recipients.length === 0) {
-        this.logger.warn(
-          `Otpis mašine ${label}: nema email-ova šefa proizvodnje — mail preskočen.`,
-        );
-        return false;
-      }
       return await this.mail.send({
-        to: recipients.map((r) => r.email),
+        to: primaoci.map((r) => r.email),
         subject: `Održavanje — otpisana mašina ${label}`,
         html: this.buildHtml(input, label),
       });
