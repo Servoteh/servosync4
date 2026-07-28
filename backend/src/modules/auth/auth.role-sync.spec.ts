@@ -16,8 +16,11 @@ import type { Sy15AuthAdminService } from "../../common/sy15/sy15-auth-admin.ser
  *  2. ista rola → NEMA update (bez suvišnog pisanja);
  *  3. 3.0 `admin` se NE degradira (Zoran/Luka su namerno admini iako 1.0 kaže
  *     `menadzment`); podizanje NA admin prolazi normalno;
- *  4. inače → upiši živu 1.0 rolu (i naviše i naniže);
- *  5. pad čitanja 1.0 role → login NE pada, zadrži zatečenu rolu (fail-safe).
+ *  4. 3.0-native rola (koje NEMA u 1.0 katalogu: `tehnolog`, `sef`, `kontrolor`…)
+ *     se NE prepisuje — zahtev 035/26: cutover 10.07 je u 1.0 ukinuo `tehnolog`,
+ *     pa je svaki SSO login spuštao tehnologe na `viewer` i gasio im dugmad;
+ *  5. inače → upiši živu 1.0 rolu (i naviše i naniže);
+ *  6. pad čitanja 1.0 role → login NE pada, zadrži zatečenu rolu (fail-safe).
  *
  * Zarade su nezavisno zaključane (`salaryEmailAllowed`) — nije predmet ovog fajla.
  */
@@ -25,14 +28,17 @@ function makeSvc() {
   const update = jest.fn((arg: { data: { role: string } }) =>
     Promise.resolve({ id: 42, email: "x@y", role: arg.data.role }),
   );
-  const prisma = { user: { update } } as unknown as PrismaService;
+  const create = jest.fn((arg: { data: { role: string; email: string } }) =>
+    Promise.resolve({ id: 99, email: arg.data.email, role: arg.data.role }),
+  );
+  const prisma = { user: { update, create } } as unknown as PrismaService;
   const svc = new AuthService(
     prisma,
     {} as JwtService,
     {} as Sy15Service,
     {} as Sy15AuthAdminService,
   );
-  return { svc, update };
+  return { svc, update, create };
 }
 
 /** Pozovi privatnu SSO granu sa stub-ovanim čitanjem žive 1.0 role. */
@@ -142,6 +148,36 @@ describe.each([
     expect(out.role).toBe("poslovni_admin");
   });
 
+  /* Zahtev 035/26 („Nestale opcije", Dragan Ristanić): cutover 10.07 je u 1.0
+   * UKINUO rolu `tehnolog` i spustio tehnologe na `viewer`. Bez ovog pravila je
+   * svaki SSO login gasio `rn.write` i dugmad u Tehnologiji tiho nestajala. */
+  it("3.0-native rola tehnolog se NE obara na viewer (zahtev 035/26)", async () => {
+    const { svc, update } = makeSvc();
+    const out = await run(svc, { ...USER, role: "tehnolog" }, "viewer");
+    expect(update).not.toHaveBeenCalled();
+    expect(out.role).toBe("tehnolog");
+  });
+
+  it.each(["sef", "kontrolor", "cnc_programer", "tehnicar_odrzavanja"])(
+    "3.0-native rola %s ostaje netaknuta i kad 1.0 kaže nešto drugo",
+    async (native) => {
+      const { svc, update } = makeSvc();
+      const out = await run(svc, { ...USER, role: native }, "menadzment");
+      expect(update).not.toHaveBeenCalled();
+      expect(out.role).toBe(native);
+    },
+  );
+
+  it("1.0-poznata rola i dalje prati 1.0 (pm → inzenjer)", async () => {
+    const { svc, update } = makeSvc();
+    const out = await run(svc, { ...USER, role: "pm" }, "inzenjer");
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: { role: "inzenjer" },
+    });
+    expect(out.role).toBe("inzenjer");
+  });
+
   it("pad čitanja 1.0 role → login NE pada, zadrži zatečenu rolu (fail-safe)", async () => {
     const { svc, update } = makeSvc();
     const out = await run(
@@ -151,6 +187,71 @@ describe.each([
     );
     expect(update).not.toHaveBeenCalled();
     expect(out.role).toBe("menadzment"); // zatečena rola ostaje
+  });
+});
+
+/**
+ * JIT provisioning je NEPROMENJEN zaštitom 3.0-native rola (035/26): nov nalog
+ * nema šta da se „zadrži", pa uvek dobija svoju živu 1.0 rolu.
+ */
+describe("AuthService — JIT provisioning novog naloga", () => {
+  it("nov korisnik dobija 1.0 rolu", async () => {
+    const { svc, create } = makeSvc();
+    jest
+      .spyOn(
+        svc as unknown as {
+          fetchSy15LiveRole: (t: string) => Promise<string | null>;
+        },
+        "fetchSy15LiveRole",
+      )
+      .mockResolvedValue("magacioner");
+    const out = await (
+      svc as unknown as {
+        jitProvisionFromSy15: (
+          t: string,
+          e: string,
+          p: unknown,
+        ) => Promise<{ role: string }>;
+      }
+    ).jitProvisionFromSy15("sso-token", "novi@servoteh.com", {
+      user_metadata: { full_name: "Novi Korisnik" },
+    });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          email: "novi@servoteh.com",
+          role: "magacioner",
+          active: true,
+        }),
+      }),
+    );
+    expect(out.role).toBe("magacioner");
+  });
+
+  it("nov korisnik bez ijednog reda u 1.0 dobija viewer (fallback ostaje)", async () => {
+    const { svc, create } = makeSvc();
+    jest
+      .spyOn(
+        svc as unknown as {
+          fetchSy15LiveRole: (t: string) => Promise<string | null>;
+        },
+        "fetchSy15LiveRole",
+      )
+      .mockResolvedValue(null);
+    await (
+      svc as unknown as {
+        jitProvisionFromSy15: (
+          t: string,
+          e: string,
+          p: unknown,
+        ) => Promise<{ role: string }>;
+      }
+    ).jitProvisionFromSy15("sso-token", "bezrole@servoteh.com", {});
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ role: "viewer" }),
+      }),
+    );
   });
 });
 
