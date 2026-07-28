@@ -21,6 +21,7 @@ import type {
   AttendanceRangeQueryDto,
   MonthlyHoursQueryDto,
 } from "./dto/moj-profil-query.dto";
+import { withPresenceDisplay, sumPresence } from "./presence-hours.util";
 import type {
   AckDocumentDto,
   OpenSelfAssessmentDto,
@@ -196,18 +197,23 @@ export class MojProfilService {
     });
   }
 
-  /** Moje prisustvo (v_attendance_daily, dnevni pregled u opsegu; default tekući mesec). */
+  /**
+   * Moje prisustvo (v_attendance_daily, dnevni pregled u opsegu; default tekući mesec).
+   * Zahtev 032/26: uz sirovi `presence_hours` ide i `presence_hm` („8:00") sa primenjenim
+   * pravilom zaokruživanja, plus mesečni zbir TIH zaokruženih dana (`totals`).
+   */
   attendance(email: string, q: AttendanceRangeQueryDto) {
     const { from, to } = monthRange(q.from, q.to);
     return this.withUserMapped(email, async (tx) => {
       const emp = await this.resolveEmployee(tx, email);
       if (emp == null) return this.emptyProfile();
-      const rows = await tx.$queryRaw<unknown[]>(
+      const rows = await tx.$queryRaw<Record<string, unknown>[]>(
         Prisma.sql`SELECT * FROM v_attendance_daily
            WHERE employee_id = ${emp.id}::uuid AND day >= ${from}::date AND day <= ${to}::date
            ORDER BY day DESC`,
       );
-      return { data: { from, to, days: jsonSafe(rows) } };
+      const days = withPresenceDisplay(jsonSafe(rows));
+      return { data: { from, to, days, totals: sumPresence(days) } };
     });
   }
 
@@ -485,8 +491,11 @@ export class MojProfilService {
           Prisma.sql`SELECT count(*) AS n FROM vacation_requests
              WHERE employee_id = ${emp.id}::uuid AND status IN ('pending', 'sef_approved')`,
         ),
-        tx.$queryRaw<{ hours: unknown }[]>(
-          Prisma.sql`SELECT COALESCE(sum(presence_hours), 0) AS hours FROM v_attendance_daily
+        // ZAHTEV 032/26: NE `sum(presence_hours)` u SQL-u — mesečni zbir mora biti suma
+        // ZAOKRUŽENIH dnevnih vrednosti (pravilo „prekovremeno <30 min se ne prikazuje"),
+        // da se presek slaže sa onim što korisnik vidi po danima.
+        tx.$queryRaw<{ presence_hours: unknown }[]>(
+          Prisma.sql`SELECT presence_hours FROM v_attendance_daily
              WHERE employee_id = ${emp.id}::uuid AND day >= ${from}::date AND day <= ${to}::date`,
         ),
         tx.$queryRaw<{ n: bigint }[]>(
@@ -494,6 +503,7 @@ export class MojProfilService {
              WHERE employee_id = ${emp.id}::uuid AND shared_at IS NOT NULL AND acknowledged_at IS NULL`,
         ),
       ]);
+      const monthPresence = sumPresence(presence);
       return {
         data: {
           employee: { id: emp.id, fullName: emp.full_name },
@@ -501,7 +511,8 @@ export class MojProfilService {
             numOrNull(balance[0]?.days_remaining_accrued) ??
             numOrNull(balance[0]?.days_remaining),
           openVacationRequests: Number(openReq[0]?.n ?? 0),
-          monthPresenceHours: Number(presence[0]?.hours ?? 0),
+          monthPresenceHours: monthPresence.hours,
+          monthPresenceHm: monthPresence.hm,
           unacknowledgedTalks: Number(talks[0]?.n ?? 0),
         },
       };
@@ -2021,17 +2032,19 @@ export class MojProfilService {
         throw new NotFoundException(
           "Član nije pronađen ili nije u vašem timu.",
         );
-      const rows = await tx.$queryRaw<unknown[]>(
+      const rows = await tx.$queryRaw<Record<string, unknown>[]>(
         Prisma.sql`SELECT * FROM v_attendance_daily
            WHERE employee_id = ${employeeId}::uuid AND day >= ${from}::date AND day <= ${to}::date
            ORDER BY day DESC`,
       );
+      const days = withPresenceDisplay(jsonSafe(rows));
       return {
         data: {
           from,
           to,
           employee: { id: emp.id, fullName: emp.full_name },
-          days: jsonSafe(rows),
+          days,
+          totals: sumPresence(days),
         },
       };
     });

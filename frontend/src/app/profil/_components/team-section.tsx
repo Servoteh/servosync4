@@ -578,7 +578,7 @@ function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
                 <th className="py-1.5">Dan</th>
                 <th className="py-1.5">Ulaz</th>
                 <th className="py-1.5">Izlaz</th>
-                <th className="py-1.5">Sati</th>
+                <th className="py-1.5" title="Sati i minuti — prekovremeno ispod 30 min se ne prikazuje">Sati (h:mm)</th>
               </tr>
             </thead>
             <tbody>
@@ -607,7 +607,7 @@ function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
                       <td className="py-1.5 tnums">
                         {lastOut ? hhmm(lastOut) : missingOut ? <span className="text-status-warn">nije otkucan</span> : '—'}
                       </td>
-                      <td className="py-1.5 tnums">{d.presence_hours != null ? num(d.presence_hours).toFixed(2) : '—'}</td>
+                      <td className="py-1.5 tnums">{d.presence_hm ?? '—'}</td>
                     </tr>
                     {isOpen && (
                       <tr>
@@ -620,6 +620,12 @@ function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
                 );
               })}
             </tbody>
+            <tfoot>
+              <tr className="border-t border-line text-left font-semibold">
+                <td className="py-1.5" colSpan={3}>Ukupno u mesecu</td>
+                <td className="py-1.5 tnums">{q.data?.data?.totals?.hm ?? '—'}</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       )}
