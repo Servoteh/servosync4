@@ -31,6 +31,8 @@ export interface CreateNonconformityDto {
   drawingNumber?: string | null;
   /** RN broj (slobodan tekst, meki). */
   workOrderCode?: string | null;
+  /** Naziv dela (zahtev 034/26) — skeniranje kartice ili ručni unos. */
+  partName?: string | null;
 }
 
 export function validateCreateNonconformity(dto: CreateNonconformityDto): void {

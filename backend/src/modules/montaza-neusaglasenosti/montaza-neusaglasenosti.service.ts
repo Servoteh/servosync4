@@ -25,6 +25,8 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import { NotificationsService } from "../notifications/notifications.service";
 import { MontazaNmNumberingService } from "./montaza-nm-numbering.service";
 import { MontazaNmMailService } from "./montaza-nm-mail.service";
+import { MontazaNmKarticaService } from "./montaza-nm-kartica.service";
+import { PdmService } from "../pdm/pdm.service";
 import {
   SEVERITIES,
   validateCreateNonconformity,
@@ -142,7 +144,40 @@ export class MontazaNeusaglasenostiService {
     private readonly numbering: MontazaNmNumberingService,
     private readonly notifications: NotificationsService,
     private readonly mail: MontazaNmMailService,
+    private readonly kartica: MontazaNmKarticaService,
+    private readonly pdm: PdmService,
   ) {}
+
+  // ------------------------------------------------------------------ KARTICA / CRTEŽ (034/26)
+
+  /** `GET /montaza/neusaglasenosti/lookup/kartica?code=…` — skeniranje kartice dela. */
+  lookupKartica(code: string) {
+    return this.kartica.lookupKartica(code);
+  }
+
+  /**
+   * `GET /montaza/neusaglasenosti/:id/crtez/content` — PDF crteža IZ PRIJAVE.
+   * Namerno je vezan za `:id` (a ne slobodan `?code=`) da ruta ne postane opšti
+   * pregledač crteža izvan montaža gate-a — služi samo crtežu koji prijava već nosi.
+   */
+  async getDrawingPdf(
+    id: number,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    const nc = await this.prisma.montageNonconformity.findUnique({
+      where: { id },
+      select: { id: true, drawingNumber: true },
+    });
+    if (!nc) throw new NotFoundException(`Neusaglašenost ${id} ne postoji.`);
+    if (!nc.drawingNumber?.trim())
+      throw new NotFoundException("Prijava nema upisan broj crteža.");
+
+    const drawing = await this.kartica.resolveDrawing(nc.drawingNumber);
+    if (!drawing)
+      throw new NotFoundException(
+        `Crtež ${nc.drawingNumber} nije pronađen u bazi crteža.`,
+      );
+    return this.pdm.getPdfContent(drawing.id);
+  }
 
   // ------------------------------------------------------------------ LISTA
 
@@ -187,6 +222,10 @@ export class MontazaNeusaglasenostiService {
         { description: { contains: q, mode: "insensitive" } },
         { projectNumber: { contains: q, mode: "insensitive" } },
         { workOrderCode: { contains: q, mode: "insensitive" } },
+        // Naziv dela i broj crteža (034/26) — kad se popune skeniranjem kartice,
+        // pretraga po njima je prvi refleks montaže.
+        { partName: { contains: q, mode: "insensitive" } },
+        { drawingNumber: { contains: q, mode: "insensitive" } },
         { responsibleDepartment: { contains: q, mode: "insensitive" } },
         { reportNumber: { contains: q, mode: "insensitive" } },
       ];
@@ -244,6 +283,7 @@ export class MontazaNeusaglasenostiService {
             dto.locationKind === "TEREN" ? clip(dto.locationNote, 200) : null,
           drawingNumber: clip(dto.drawingNumber, 60),
           workOrderCode: clip(dto.workOrderCode, 40),
+          partName: clip(dto.partName, 250),
           status: "CEKA_ANALIZU",
           reportedByUserId: actor.userId,
         },
@@ -562,9 +602,23 @@ export class MontazaNeusaglasenostiService {
     ]);
     const workers = await this.resolveWorkers([nc.responsibleWorkerId]);
 
+    // Crtež (034/26): razrešava se pri čitanju detalja da bi dugme „Otvori crtež" bilo
+    // gasivo — prijava nosi samo TEKST broja crteža, a crtež/PDF ne mora postojati.
+    // Best-effort: greška u razrešavanju ne sme da obori prikaz prijave.
+    let drawing: { id: number; revision: string; hasPdf: boolean } | null =
+      null;
+    try {
+      drawing = await this.kartica.resolveDrawing(nc.drawingNumber);
+    } catch (e) {
+      this.logger.warn(
+        `Razrešavanje crteža za NM ${nc.reportNumber} nije uspelo: ${(e as Error).message}`,
+      );
+    }
+
     return {
       data: {
         ...this.mapRow(nc, users, workers),
+        drawing,
         photos: photos.map((p) => ({
           id: p.id,
           fileName: p.fileName,
@@ -613,6 +667,7 @@ export class MontazaNeusaglasenostiService {
       locationNote: r.locationNote,
       drawingNumber: r.drawingNumber,
       workOrderCode: r.workOrderCode,
+      partName: r.partName,
       status: r.status,
       reportedByUserId: r.reportedByUserId,
       reportedBy: {

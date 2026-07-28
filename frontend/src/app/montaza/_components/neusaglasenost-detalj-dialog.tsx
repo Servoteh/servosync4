@@ -21,6 +21,7 @@ import {
   fetchNonconformityPhotoBlob,
   ncSeverityTone,
   ncStatusTone,
+  openNonconformityDrawing,
   openNonconformityPhoto,
   useAddNonconformityPhotos,
   useChangeNonconformityStatus,
@@ -86,6 +87,19 @@ export function NeusaglasenostDetaljDialog({ id, onClose }: { id: number; onClos
   const updateInvestigation = useUpdateInvestigation();
   const changeStatus = useChangeNonconformityStatus();
   const addPhotos = useAddNonconformityPhotos();
+
+  // Otvaranje crteža prijave (034/26) — blob kroz JWT, tab se otvara sinhrono u kliku.
+  const [drawingBusy, setDrawingBusy] = useState(false);
+  async function openDrawing() {
+    setDrawingBusy(true);
+    try {
+      await openNonconformityDrawing(id);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Crtež nije dostupan.');
+    } finally {
+      setDrawingBusy(false);
+    }
+  }
 
   // Istraga forma. Seed SAMO jednom po nc.id (ne na svaki refetch — inače upload fotki /
   // promena statusa gaze ukucan tekst; review 004/26 #1). `seededId` ref pamti seedovan id.
@@ -191,7 +205,30 @@ export function NeusaglasenostDetaljDialog({ id, onClose }: { id: number; onClos
                 />
                 <Field label="Broj crteža" value={nc.drawingNumber} mono />
                 <Field label="Radni nalog" value={nc.workOrderCode} mono />
+                <Field label="Naziv dela" value={nc.partName} />
               </dl>
+
+              {/*
+                Otvaranje crteža (034/26). Dugme postoji samo kad je backend razrešio
+                `drawing_number` u crtež sa PDF-om — prijava nosi samo TEKST broja, pa
+                bi bezuslovno dugme vodilo u 404. Kad crtež postoji bez PDF-a, kažemo to.
+              */}
+              {nc.drawingNumber && (
+                <div className="flex items-center gap-3">
+                  {nc.drawing?.hasPdf ? (
+                    <Button variant="secondary" onClick={openDrawing} loading={drawingBusy}>
+                      <FileText className="mr-2 h-4 w-4" />
+                      Otvori crtež
+                    </Button>
+                  ) : (
+                    <p className="text-xs text-ink-secondary">
+                      {nc.drawing
+                        ? `Crtež ${nc.drawingNumber} (rev ${nc.drawing.revision}) nema uskladišten PDF.`
+                        : `Crtež ${nc.drawingNumber} nije pronađen u bazi crteža.`}
+                    </p>
+                  )}
+                </div>
+              )}
               <div>
                 <dt className="text-2xs uppercase tracking-wider text-ink-secondary">Opis problema</dt>
                 <dd className="mt-0.5 whitespace-pre-wrap text-sm text-ink">{nc.description}</dd>

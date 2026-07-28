@@ -2257,6 +2257,9 @@ model MontageNonconformity {
   drawingNumber         String?   @map("drawing_number") @db.VarChar(60)
   /// RN broj — string, meki (bez FK).
   workOrderCode         String?   @map("work_order_code") @db.VarChar(40)
+  /// Naziv dela (zahtev 034/26) — popunjava ga skeniranje kartice (work_orders.part_name)
+  /// ili ručni unos. Slobodan tekst, meki (bez FK); kolona je 250 u work_orders pa se klipuje.
+  partName              String?   @map("part_name") @db.VarChar(250)
   /// CEKA_ANALIZU | U_TOKU | ZAVRSENO (ZAVRSENO je terminalan — bez brisanja).
   status                String    @default("CEKA_ANALIZU") @map("status") @db.VarChar(15)
   reportedByUserId      Int       @map("reported_by_user_id")
