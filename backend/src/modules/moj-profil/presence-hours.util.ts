@@ -71,8 +71,12 @@ export function withPresenceDisplay<T extends Record<string, unknown>>(
   });
 }
 
-/** Mesečni zbir = suma ZAOKRUŽENIH dnevnih vrednosti (minuti + h:mm + decimalni sati). */
-export function sumPresence(rowsOrHours: (Record<string, unknown> | unknown)[]): {
+/**
+ * Mesečni zbir = suma ZAOKRUŽENIH dnevnih vrednosti (minuti + h:mm + decimalni sati).
+ * Prima ili redove sa `presence_hours`, ili same decimalne sate — oba oblika se javljaju
+ * (dnevna lista vs. presek), pa `unknown[]` sa raspoznavanjem po ključu.
+ */
+export function sumPresence(rowsOrHours: unknown[]): {
   minutes: number;
   hm: string;
   hours: number;
