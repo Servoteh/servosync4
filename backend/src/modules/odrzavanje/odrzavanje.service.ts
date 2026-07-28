@@ -10,6 +10,7 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
 import type {
   CreateAssetServicePlanDto,
   CreateBookingDto,
@@ -208,6 +209,7 @@ export class OdrzavanjeService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
+    private readonly otpisNotify: MasinaOtpisNotifyService,
   ) {}
 
   // ==========================================================================
@@ -1864,41 +1866,144 @@ export class OdrzavanjeService {
     });
   }
 
-  /** Soft-delete mašine: archived_at = now(), tracked = false (paritet archiveMaintMachine). */
-  async archiveMachine(email: string, code: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+  /**
+   * OTPIS mašine (zahtev 037/26) — mašina se izbacuje iz upotrebe, ali se NE briše
+   * nego ARHIVIRA: karton i cela istorija (kontrole, kvarovi, nalozi, napomene,
+   * dokumenta) ostaju dostupni. Nasleđuje raniji `archiveMachine` i dodaje tri stvari
+   * koje su nedostajale:
+   *
+   *  1. RAZLOG + trag ko je otpisao. `maint_machines` NEMA te kolone, ali ogledalo u
+   *     `maint_assets` ima (`archive_reason`/`archived_by`) — a sy15 šema se iz ovog
+   *     repoa NE migrira (`prisma migrate` gađa samo glavnu bazu, `sy15.prisma` je
+   *     `db pull` introspekcija), pa se piše tamo gde kolone već postoje.
+   *  2. PROPAGACIJA na `maint_assets` (`archived_at`, `active=false`). Bez toga je
+   *     otpis bio pola posla: `listAssets(activeOnly)` filtrira po `maint_assets`, pa
+   *     bi se otpisana mašina i dalje nudila u pickeru novog radnog naloga i prijave
+   *     kvara. RLS je isti kao za `maint_machines` (`maint_assets_update`:
+   *     erp-admin ∨ chief/admin) — ko sme da otpiše, sme i ogledalo.
+   *  3. OBAVEŠTENJE ŠEFU PROIZVODNJE da preraspodeli poslove (posle commit-a).
+   *
+   * SELECT ostaje nedirnut: `maint_asset_visible()` za mašine gleda
+   * `maint_machine_visible(machine_code)` i NE filtrira `archived_at` — zato karton
+   * otpisane mašine i dalje otvara.
+   */
+  async otpisMachine(email: string, code: string, reason: string) {
+    const razlog = reason.trim();
+    const out = await this.withUserMapped(email, async (tx) => {
+      const machine = await tx.maintMachine.findUnique({
+        where: { machineCode: code },
+        select: {
+          machineCode: true,
+          name: true,
+          assetId: true,
+          archivedAt: true,
+        },
+      });
+      const exists = machine !== null;
       const uid = await this.uid(tx);
+      const now = new Date();
+
       const { count } = await tx.maintMachine.updateMany({
         where: { machineCode: code },
         data: {
-          archivedAt: new Date(),
+          archivedAt: now,
           tracked: false,
           updatedBy: uid,
-          updatedAt: new Date(),
+          updatedAt: now,
         },
       });
       this.assertAffected(exists, count, `Mašina ${code}`);
-      return { data: { ok: true } };
+
+      // Otvoreni nalozi se čitaju PRE nego što ih iko preraspodeli — broj ide i u
+      // poruku šefu. `notIn` je isti skup kao `openOnly` u listWorkOrders.
+      const openWorkOrders = await tx.maintWorkOrder.findMany({
+        where: {
+          assetId: machine!.assetId,
+          status: { notIn: ["zavrsen", "otkazan"] as never[] },
+        },
+        select: { woNumber: true, title: true, status: true },
+        orderBy: { createdAt: "asc" },
+        take: 50,
+      });
+
+      await tx.maintAsset.updateMany({
+        where: { assetId: machine!.assetId },
+        data: {
+          archivedAt: now,
+          archiveReason: razlog,
+          archivedBy: uid,
+          active: false,
+          updatedBy: uid,
+          updatedAt: now,
+        },
+      });
+
+      return {
+        alreadyArchived: machine!.archivedAt != null,
+        machineName: machine!.name,
+        openWorkOrders: openWorkOrders.map((w) => ({
+          woNumber: w.woNumber ?? null,
+          title: w.title,
+          status: String(w.status),
+        })),
+      };
     });
+
+    // Obaveštenje TEK po uspešnom otpisu i fire-and-forget: mail (N primalaca ×
+    // Resend timeout) ne sme da drži odgovor otvoren, a pad slanja ne sme da obori
+    // već izvršen otpis (PLAN_dorade §D8). Ponovljeni otpis već otpisane mašine NE
+    // šalje ponovo — inače bi „dupli klik" zasuo šefa istim obaveštenjem.
+    if (!out.alreadyArchived) {
+      void this.otpisNotify
+        .notifyOtpis({
+          machineCode: code,
+          machineName: out.machineName,
+          reason: razlog,
+          openWorkOrders: out.openWorkOrders,
+        })
+        .catch(() => undefined);
+    }
+
+    return {
+      data: {
+        ok: true,
+        alreadyArchived: out.alreadyArchived,
+        openWorkOrders: out.openWorkOrders.length,
+      },
+    };
   }
 
+  /** Vraćanje otpisane mašine u upotrebu — simetrično čisti i ogledalo u `maint_assets`. */
   async restoreMachine(email: string, code: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+      const machine = await tx.maintMachine.findUnique({
+        where: { machineCode: code },
+        select: { assetId: true },
+      });
+      const exists = machine !== null;
       const uid = await this.uid(tx);
+      const now = new Date();
       const { count } = await tx.maintMachine.updateMany({
         where: { machineCode: code },
         data: {
           archivedAt: null,
           tracked: true,
           updatedBy: uid,
-          updatedAt: new Date(),
+          updatedAt: now,
         },
       });
       this.assertAffected(exists, count, `Mašina ${code}`);
+      await tx.maintAsset.updateMany({
+        where: { assetId: machine!.assetId },
+        data: {
+          archivedAt: null,
+          archiveReason: null,
+          archivedBy: null,
+          active: true,
+          updatedBy: uid,
+          updatedAt: now,
+        },
+      });
       return { data: { ok: true } };
     });
   }
@@ -2392,6 +2497,17 @@ export class OdrzavanjeService {
       dto.clientEventId,
       "odrzavanje.create-work-order",
       async (tx) => {
+        // Otpisano/arhivirano sredstvo ne prima NOVE naloge (zahtev 037/26). Picker ga
+        // već ne nudi (`listAssets(activeOnly)`), ali API mora da drži pravilo i kad
+        // asset_id stigne iz starog taba, deep-linka ili direktnog poziva.
+        const asset = await tx.maintAsset.findUnique({
+          where: { assetId: dto.assetId },
+          select: { archivedAt: true, name: true },
+        });
+        if (asset?.archivedAt)
+          throw new UnprocessableEntityException(
+            `Sredstvo „${asset.name}" je otpisano — novi radni nalog nije moguć. Vratite ga u upotrebu ili izaberite drugo.`,
+          );
         const uid = await this.uid(tx);
         return tx.maintWorkOrder.create({
           data: {
