@@ -34,6 +34,14 @@ export interface TechProcess {
   finishedAt: string | null;
   isProcessFinished: boolean | null;
   workOrderId: number;
+  /**
+   * Kvalitet otkucanih komada (`part_quality_types`): 0=dobar, 1=dorada, 2=škart.
+   * Backend ga vraća oduvek (`list()` select + `findOne`) — samo nije bio deklarisan.
+   * Kolona „Status" ga čita da bi škart pregazio „Završen" (zahtev 033/26).
+   */
+  qualityTypeId: number;
+  /** Razrešen naziv kvaliteta; vraća ga lista, ne i `findOne` detalj. */
+  qualityType?: { id: number; name: string } | null;
   signature: string | null;
   note: string | null;
   /** Radnik koji je otkucao red (postojeće polje — NE tehnolog). */

@@ -18,6 +18,7 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { ComboBox } from '@/components/ui-kit/combo-box';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { QualityBadge, TechEntryStatusBadge } from '@/components/tech-entry-status';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDateTime, formatNumber } from '@/lib/format';
@@ -32,13 +33,6 @@ import { StatCard, toDateInput } from './helpers';
 
 const filterInput =
   'rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink';
-
-/** Kvalitet dela (0/1/2) — ista mapa kao „Evidencija u proizvodnji". */
-const QUALITY_META: Record<number, { tone: Tone; label: string }> = {
-  0: { tone: 'success', label: 'Dobar' },
-  1: { tone: 'warn', label: 'Dorada' },
-  2: { tone: 'danger', label: 'Škart' },
-};
 
 /** Vrsta unosa (backend `entryKind`) → badge. */
 const ENTRY_KIND_META: Record<TechProcessEntryKind, { tone: Tone; label: string }> = {
@@ -71,7 +65,7 @@ function EntryDetail({ entry }: { entry: ProductionLogEntry }) {
     <div className="space-y-4 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         {entry.entryKind && <StatusBadge {...ENTRY_KIND_META[entry.entryKind]} />}
-        <StatusBadge {...(QUALITY_META[entry.qualityTypeId] ?? QUALITY_META[0])} />
+        <QualityBadge qualityTypeId={entry.qualityTypeId} />
         <span className="flex-1" />
         {hasWorkOrder && (
           <Link
@@ -236,17 +230,19 @@ export function AktivnostTab() {
     {
       key: 'quality',
       header: 'Kvalitet',
-      render: (r) => <StatusBadge {...(QUALITY_META[r.qualityTypeId] ?? QUALITY_META[0])} />,
+      render: (r) => <QualityBadge qualityTypeId={r.qualityTypeId} />,
     },
     {
       key: 'status',
       header: 'Status',
-      render: (r) =>
-        r.isProcessFinished ? (
-          <StatusBadge tone="success" label="Završen" />
-        ) : (
-          <StatusBadge tone="info" label="Otvoren" />
-        ),
+      // 033/26: škart pregazi „Završen" (crveno „ŠKART") — vidi tech-entry-status.
+      render: (r) => (
+        <TechEntryStatusBadge
+          qualityTypeId={r.qualityTypeId}
+          isProcessFinished={r.isProcessFinished}
+          openLabel="Otvoren"
+        />
+      ),
     },
   ];
 
