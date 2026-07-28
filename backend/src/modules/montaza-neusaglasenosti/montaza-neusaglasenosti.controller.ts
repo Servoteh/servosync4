@@ -59,9 +59,46 @@ export class MontazaNeusaglasenostiController {
     return this.service.create(dto, req.user);
   }
 
+  /**
+   * Skeniranje kartice koja prati deo (zahtev 034/26) — razrešava barkod naloga
+   * (`RNZ:…`) u br. crteža / naziv dela / RN. MORA biti deklarisano PRE `@Get(":id")`
+   * (Nest mečuje redom; inače bi "lookup" pao na ParseIntPipe → 400).
+   * WRITE jer je alat prijave, ne pregleda.
+   */
+  @Get("lookup/kartica")
+  @RequirePermission(PERMISSIONS.MONTAZA_NEUSAGLASENOSTI_WRITE)
+  lookupKartica(@Query("code") code: string) {
+    return this.service.lookupKartica(code);
+  }
+
   @Get(":id")
   detail(@Param("id", ParseIntPipe) id: number) {
     return this.service.getOne(id);
+  }
+
+  /**
+   * PDF crteža koji prijava nosi (034/26) — „Otvori crtež" u pregledu neusaglašenosti.
+   * Ostaje pod class-level READ-om: praćenje/PDM rute traže `pracenje.read`/`pdm.read`
+   * koje ceo montaža krug nema (isti razlog zbog kog kiosk ima svoju PDF rutu).
+   */
+  @Get(":id/crtez/content")
+  async drawingContent(
+    @Param("id", ParseIntPipe) id: number,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { buffer, fileName } = await this.service.getDrawingPdf(id);
+    const asciiName =
+      fileName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_") ||
+      "crtez.pdf";
+    const utf8Name = encodeURIComponent(fileName).replace(
+      /['()*]/g,
+      (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
+    });
+    return new StreamableFile(buffer);
   }
 
   /**

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ScanLine } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
@@ -12,12 +13,14 @@ import {
   NC_SEVERITY_LABEL,
   NC_LOCATION_KINDS,
   NC_LOCATION_LABEL,
+  fetchKarticaLookup,
   useAddNonconformityPhotos,
   useCreateNonconformity,
   type NcLocationKind,
   type NcSeverity,
 } from '@/api/montaza-neusaglasenosti';
 import { PredmetPicker, type PredmetSelection } from './predmet-picker';
+import { KarticaScanOverlay } from './kartica-scan-overlay';
 
 const MAX_PHOTOS = 6;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // paritet BE (≤8 MB/fajl)
@@ -51,8 +54,12 @@ export function PrijavaNeusaglasenostiDialog({
   const [locationNote, setLocationNote] = useState('');
   const [drawingNumber, setDrawingNumber] = useState('');
   const [workOrderCode, setWorkOrderCode] = useState('');
+  const [partName, setPartName] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
+  /** Polja koja je popunio sken — samo za vizuelnu potvrdu montažeru. */
+  const [scanned, setScanned] = useState(false);
 
   const create = useCreateNonconformity();
   const addPhotos = useAddNonconformityPhotos();
@@ -60,6 +67,31 @@ export function PrijavaNeusaglasenostiDialog({
 
   function onPredmet(sel: PredmetSelection) {
     setPredmet({ number: sel.predmet_broj, id: sel.predmet_item_id });
+  }
+
+  /**
+   * Skeniranje kartice dela (034/26): sirov barkod → backend lookup → auto-popuna.
+   * Baca dalje (skener ostaje otvoren i prikaže poruku) kad ident nije prepoznat.
+   * Ručni unos ostaje netaknut — sken samo popunjava polja koja i dalje mogu da se menjaju.
+   */
+  async function onScan(code: string) {
+    const { data } = await fetchKarticaLookup(code);
+    if (data.drawingNumber) setDrawingNumber(data.drawingNumber);
+    if (data.workOrderCode) setWorkOrderCode(data.workOrderCode);
+    if (data.partName) setPartName(data.partName);
+    // Predmet: popunjavamo SAMO ako još nije izabran i sken ga je nedvosmisleno dao.
+    // `id` ostaje null — picker-ov id dolazi iz drugog izvora nego work_orders.project_id
+    // (dva id-prostora), pa bi prepisivanje upisalo tuđi ref.
+    if (!predmet?.number && data.projectNumber)
+      setPredmet({ number: data.projectNumber, id: null });
+    setScanned(true);
+    setErr(null);
+
+    if (data.matchCount > 1)
+      toast(
+        `Ident ${data.identNumber} postoji na ${data.matchCount} naloga — proverite polja koja su ostala prazna.`,
+      );
+    else toast(`Učitano sa kartice: ${data.partName ?? data.identNumber}`);
   }
 
   async function submit() {
@@ -79,6 +111,7 @@ export function PrijavaNeusaglasenostiDialog({
         locationNote: locationKind === 'TEREN' ? locationNote.trim() : undefined,
         drawingNumber: drawingNumber.trim() || undefined,
         workOrderCode: workOrderCode.trim() || undefined,
+        partName: partName.trim() || undefined,
       });
       const id = res.data.id;
       if (files.length) {
@@ -121,6 +154,25 @@ export function PrijavaNeusaglasenostiDialog({
               {err}
             </p>
           )}
+
+          {/*
+            Skeniranje kartice dela (034/26) — stoji NA VRHU jer popunjava više polja
+            odjednom (RN, br. crteža, naziv dela, po potrebi predmet). Ručni unos ostaje
+            ravnopravan: sva popunjena polja se i dalje mogu izmeniti.
+          */}
+          <div className="rounded-control border border-line bg-surface-2 p-3">
+            <div className="flex items-center gap-3">
+              <Button variant="secondary" onClick={() => setScanOpen(true)} disabled={busy}>
+                <ScanLine className="mr-2 h-4 w-4" />
+                Skeniraj karticu
+              </Button>
+              <p className="text-xs text-ink-secondary">
+                {scanned
+                  ? 'Podaci su učitani sa kartice — proverite i po potrebi izmenite.'
+                  : 'Barkod sa kartice koja prati deo popunjava RN, crtež i naziv dela.'}
+              </p>
+            </div>
+          </div>
 
           <FormField label="Predmet" required hint="Broj predmeta na kom je nastala neusaglašenost.">
             <div className="flex items-center gap-2">
@@ -216,6 +268,14 @@ export function PrijavaNeusaglasenostiDialog({
             </FormField>
           </div>
 
+          <FormField label="Naziv dela" hint="Opciono — popunjava se skeniranjem kartice.">
+            <Input
+              value={partName}
+              onChange={(e) => setPartName(e.target.value)}
+              placeholder="npr. Nosač ležaja"
+            />
+          </FormField>
+
           <FormField label="Fotografije" hint={`Slikaj ili priloži sliku/PDF (do ${MAX_PHOTOS}).`}>
             <AttachmentInput
               value={files}
@@ -234,6 +294,10 @@ export function PrijavaNeusaglasenostiDialog({
         onClose={() => setPickerOpen(false)}
         onSelect={onPredmet}
       />
+
+      {scanOpen && (
+        <KarticaScanOverlay onCode={onScan} onClose={() => setScanOpen(false)} />
+      )}
     </>
   );
 }

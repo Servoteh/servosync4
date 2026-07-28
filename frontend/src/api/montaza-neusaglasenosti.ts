@@ -16,6 +16,8 @@ import type { Tone } from '@/components/ui-kit/status-badge';
  *   POST /v1/montaza/neusaglasenosti/:id/photos · upload fotki (multipart)
  *   PATCH /v1/montaza/neusaglasenosti/:id/istraga · polja istrage (manage)
  *   POST /v1/montaza/neusaglasenosti/:id/status   · prelaz statusa (manage)
+ *   GET  /v1/montaza/neusaglasenosti/lookup/kartica · skeniranje kartice dela (034/26)
+ *   GET  /v1/montaza/neusaglasenosti/:id/crtez/content · PDF crteža iz prijave (034/26)
  */
 
 // ─────────────────────────────────────────────────────────────── konstante
@@ -95,6 +97,8 @@ export interface Nonconformity {
   locationNote: string | null;
   drawingNumber: string | null;
   workOrderCode: string | null;
+  /** Naziv dela (034/26) — skeniranje kartice ili ručni unos. */
+  partName: string | null;
   status: NcStatus;
   reportedByUserId: number;
   reportedBy: UserRef;
@@ -111,6 +115,29 @@ export interface Nonconformity {
   // Samo u detalju:
   photos?: NcPhoto[];
   events?: NcEvent[];
+  /**
+   * Razrešeni crtež prijave (034/26) — samo u detalju. `null` kad prijava nema broj
+   * crteža ili crtež nije u bazi; `hasPdf=false` kad crtež postoji ali PDF ne.
+   */
+  drawing?: NcDrawing | null;
+}
+
+/** Crtež razrešen iz `drawingNumber` prijave (detalj). */
+export interface NcDrawing {
+  id: number;
+  revision: string;
+  hasPdf: boolean;
+}
+
+/** Odgovor lookupa skenirane kartice dela (034/26). */
+export interface KarticaLookup {
+  identNumber: string;
+  workOrderCode: string;
+  drawingNumber: string | null;
+  partName: string | null;
+  projectNumber: string | null;
+  /** Broj RN-ova sa tim identom — >1 znači da su nejednaka polja ostala prazna. */
+  matchCount: number;
 }
 
 /** Telo prijave (POST). */
@@ -123,6 +150,7 @@ export interface CreateNonconformityInput {
   locationNote?: string | null;
   drawingNumber?: string | null;
   workOrderCode?: string | null;
+  partName?: string | null;
 }
 
 /** Telo istrage (PATCH). */
@@ -269,4 +297,39 @@ export async function openNonconformityPhoto(id: number, photoId: number): Promi
  */
 export function fetchNonconformityPhotoBlob(id: number, photoId: number): Promise<Blob> {
   return apiBlob(`/v1/montaza/neusaglasenosti/${id}/photos/${photoId}`);
+}
+
+// ─────────────────────────────────────────────── 034/26: kartica dela + crtež
+
+/**
+ * Razreši skeniranu karticu dela u polja prijave (RN / br. crteža / naziv dela).
+ * Barkod se šalje SIROV — parsiranje je na backendu (`parseBarcode`, isti kod koji
+ * čita pogon), da format kartice ostane na jednom mestu. Imperativno (ne hook): poziva
+ * se iz callback-a skenera, ne pri renderu.
+ */
+export function fetchKarticaLookup(code: string): Promise<{ data: KarticaLookup }> {
+  return apiFetch<{ data: KarticaLookup }>(
+    `/v1/montaza/neusaglasenosti/lookup/kartica?code=${encodeURIComponent(code)}`,
+  );
+}
+
+/**
+ * Otvori PDF crteža koji prijava nosi (034/26). Ruta traži JWT → blob kroz `apiBlob`;
+ * prazan tab se otvara SINHRONO u okviru klika (popup-blocker), kao kod fotki.
+ */
+export async function openNonconformityDrawing(id: number): Promise<void> {
+  const win = window.open('about:blank', '_blank');
+  if (win) win.opener = null;
+  try {
+    const blob = await apiBlob(`/v1/montaza/neusaglasenosti/${id}/crtez/content`);
+    const url = URL.createObjectURL(
+      blob.type === 'application/pdf' ? blob : new Blob([blob], { type: 'application/pdf' }),
+    );
+    if (win) win.location.href = url;
+    else window.location.href = url; // popup blokiran → isti tab (fallback)
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (e) {
+    win?.close();
+    throw e;
+  }
 }
