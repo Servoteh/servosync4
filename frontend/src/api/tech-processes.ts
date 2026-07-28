@@ -382,9 +382,18 @@ export interface RnProgress {
   worker: WorkerRef | null;
   plannedPieces: number;
   madeGoodPieces: number;
-  madeGoodSource: 'significant' | 'any';
+  /**
+   * Čime je gotovost izmerena (036/26): završnom kontrolom naloga, a ako je ruting
+   * nema — uskim grlom (najslabijom operacijom). Nikad „bilo kojom operacijom".
+   */
+  madeGoodSource: 'zavrsna-kontrola' | 'usko-grlo' | 'nema-rutinga';
+  /** Broj redova kucanja (ne operacija) — istorijska semantika, ostavljena netaknuta. */
   operationCount: number;
   finishedOperationCount: number;
+  /** Operacija u RUTINGU naloga (isto što tab „Kucanja" vidi) — bez `withoutProcess`. */
+  routingOperationCount: number;
+  /** Koliko tih operacija je otkucano u punoj planiranoj količini. */
+  routingOperationsCompleted: number;
   /** null kada planirano = 0 (nedefinisan procenat). */
   completionPercent: number | null;
   isCompleted: boolean;
