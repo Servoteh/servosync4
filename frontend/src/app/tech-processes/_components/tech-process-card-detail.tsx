@@ -35,6 +35,7 @@ import {
   openQualityDoc,
 } from '@/api/kvalitet';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { TechEntryStatusBadge } from '@/components/tech-entry-status';
 import { type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Dialog } from '@/components/ui-kit/dialog';
@@ -117,12 +118,13 @@ const cardRowColumns: Column<TechProcessCardRow>[] = [
   {
     key: 'status',
     header: 'Status',
-    render: (r) =>
-      r.isProcessFinished ? (
-        <StatusBadge tone="success" label="Završen" />
-      ) : (
-        <StatusBadge tone="info" label="U izradi" />
-      ),
+    // 033/26: škart pregazi „Završen" (crveno „ŠKART") — vidi tech-entry-status.
+    render: (r) => (
+      <TechEntryStatusBadge
+        qualityTypeId={r.qualityTypeId}
+        isProcessFinished={r.isProcessFinished}
+      />
+    ),
   },
   {
     key: 'worker',

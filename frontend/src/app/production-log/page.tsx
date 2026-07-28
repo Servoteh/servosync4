@@ -22,16 +22,11 @@ import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { ComboBox } from '@/components/ui-kit/combo-box';
-import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { QualityBadge, TechEntryStatusBadge } from '@/components/tech-entry-status';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDateTime, formatNumber } from '@/lib/format';
 
-const QUALITY_META: Record<number, { tone: Tone; label: string }> = {
-  0: { tone: 'success', label: 'Dobar' },
-  1: { tone: 'warn', label: 'Dorada' },
-  2: { tone: 'danger', label: 'Škart' },
-};
 
 /** Storno otkucane operacije — kontra-red sa negativnim komadima. */
 function StornoDialog({ entry, onClose }: { entry: ProductionLogEntry; onClose: () => void }) {
@@ -229,20 +224,19 @@ export default function ProductionLogPage() {
     {
       key: 'quality',
       header: 'Kvalitet',
-      render: (r) => {
-        const m = QUALITY_META[r.qualityTypeId] ?? QUALITY_META[0];
-        return <StatusBadge tone={m.tone} label={m.label} />;
-      },
+      render: (r) => <QualityBadge qualityTypeId={r.qualityTypeId} />,
     },
     {
       key: 'status',
       header: 'Status',
-      render: (r) =>
-        r.isProcessFinished ? (
-          <StatusBadge tone="success" label="Završen" />
-        ) : (
-          <StatusBadge tone="info" label="Otvoren" />
-        ),
+      // 033/26: škart pregazi „Završen" (crveno „ŠKART") — vidi tech-entry-status.
+      render: (r) => (
+        <TechEntryStatusBadge
+          qualityTypeId={r.qualityTypeId}
+          isProcessFinished={r.isProcessFinished}
+          openLabel="Otvoren"
+        />
+      ),
     },
     {
       key: 'enteredAt',
