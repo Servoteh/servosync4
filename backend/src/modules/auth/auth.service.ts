@@ -124,6 +124,16 @@ const SY15_ROLE_PRIORITY: string[] = [
 ];
 
 /**
+ * Isti katalog kao skup — „da li 1.0 uopšte POZNAJE ovu rolu?".
+ *
+ * Bitno za rola-sync (vidi `applyRoleSync` §4): 3.0 ima role kojih u 1.0
+ * `user_roles` CHECK-u NEMA (`tehnolog`, `sef`, `kontrolor`, `cnc_programer`,
+ * `nabavka_view`, `tehnicar_odrzavanja`…). Takvu rolu je dodelio 3.0 admin i
+ * 1.0 je ne može ni potvrditi ni opovrgnuti — sync je zato ne sme prepisati.
+ */
+const SY15_KNOWN_ROLES = new Set<string>(SY15_ROLE_PRIORITY);
+
+/**
  * Redovi 1.0 `user_roles` (već filtrirani na aktivne) → jedna efektivna rola po
  * lestvici `SY15_ROLE_PRIORITY` (bit-paritet sa 1.0 `effectiveRoleFromMatches`).
  *
@@ -379,7 +389,8 @@ export class AuthService {
        * poravna `users.role` sa ŽIVOM 1.0 rolom (get_my_user_roles), da svako u
        * 3.0 ima tačno svoja 1.0 prava — a ne rolu zamrznutu pri prvom login-u.
        * ⚠️ Ručne 2.0 izmene role se time GUBE (svesno; 1.0 = izvor istine),
-       * IZUZEV 3.0 admina (odluka 27.07) — vidi `applyRoleSync`.
+       * IZUZEV 3.0 admina (odluka 27.07) i 3.0-native rola koje 1.0 katalog ne
+       * poznaje (zahtev 035/26, 28.07) — vidi `applyRoleSync`.
        * Fail-safe: pad čitanja 1.0 role NE obara login (zadrži zatečenu rolu).
        * Zarade su nezavisno zaključane (salaryEmailAllowed) — rola-sync ih ne otvara. */
       user = await this.syncRoleFromSy15(ssToken, user);
@@ -447,7 +458,14 @@ export class AuthService {
    *     dodeljen i van 1.0 (Zoran/Luka su admini u 3.0 iako 1.0 kaže `menadzment`).
    *     Skidanje admina je svesna ručna radnja, ne posledica prijave. Podizanje NA
    *     admin (1.0 kaže admin) prolazi normalno — pravilo je jednosmerno.
-   *  4. Inače → upiši živu 1.0 rolu (i naviše i naniže).
+   *  4. **3.0-native rola se NE prepisuje** (zahtev 035/26, 28.07): ako zatečena
+   *     3.0 rola uopšte NE postoji u 1.0 katalogu (`SY15_KNOWN_ROLES`) — npr.
+   *     `tehnolog`, `sef`, `kontrolor` — dodelio ju je 3.0 admin i 1.0 o njoj
+   *     nema mišljenje. Cutover 10.07 je u 1.0 UKINUO rolu `tehnolog` i spustio
+   *     tehnologe na `viewer`; bez ovog pravila im je SVAKI SSO login tiho brisao
+   *     `rn.write` i gasio dugmad u Tehnologiji. Podizanje IZ 1.0-poznate role u
+   *     bilo šta prolazi normalno — pravilo štiti samo ono što 1.0 ne poznaje.
+   *  5. Inače → upiši živu 1.0 rolu (i naviše i naniže).
    *
    * Zarade su nezavisno zaključane email allowlistom (`salaryEmailAllowed`) —
    * rola-sync ih ne otvara ni kad podigne nekoga na admina.
@@ -460,6 +478,12 @@ export class AuthService {
     if (user.role === ROLES.ADMIN) {
       this.logger.log(
         `rola-sync (${source}): ${user.email} ostaje admin (1.0 kaže "${liveRole}") — admin se ne degradira`,
+      );
+      return user;
+    }
+    if (!SY15_KNOWN_ROLES.has(user.role)) {
+      this.logger.log(
+        `rola-sync (${source}): ${user.email} zadržava 3.0-native rolu "${user.role}" (1.0 kaže "${liveRole}") — 1.0 katalog tu rolu ne poznaje`,
       );
       return user;
     }
