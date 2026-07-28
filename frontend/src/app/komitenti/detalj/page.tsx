@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Pencil } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -11,11 +11,22 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDateTime, formatDecimal } from '@/lib/format';
 import { useKomitent, codeRefLabel, salespersonLabel, type CustomerDetail } from '@/api/masters';
+import { MaticniEkran } from '@/app/artikli/_forma/polja';
+import { BRANA_KOMITENT } from '@/app/artikli/_forma/pravila';
+import {
+  NEPOKRIVENO_KOMITENT,
+  SEKCIJE_KOMITENT,
+  vrednostiIzKomitenta,
+} from '../_forma/komitent-polja';
 
 /**
  * Kartica komitenta — pun matični slog (57 BigBit kolona), grupisan po sekcijama iz
- * `backend/docs/migration/BIGBIT_KOMITENTI.md` §1. Čist pregled: `customers` je BigBit
- * cache i piše ga samo `customer.syncer.ts` (BACKEND_RULES §3) — nema akcija izmene.
+ * `backend/docs/migration/BIGBIT_KOMITENTI.md` §1.
+ *
+ * Dva režima na istoj ruti: `pregled` (kartica) i `izmena` (pun ekran, `?rezim=izmena`).
+ * Izmena je ZAKLJUČANA odlukom vlasnika od 26.07.2026 — `customers` piše samo sync, a
+ * `CustomerSyncer` u delta prolazu prepisuje svih 56 mapiranih polja, pa bi ispravka
+ * tiho nestala čim neko u BigBitu takne tog komitenta (v. `BRANA_KOMITENT`).
  *
  * ⚠️ STATIČKA RUTA `?id=N`, ne `[id]` segment (static export; isti razlog kao kod
  * artikla). Id se čita iz `window.location.search`, nikad kroz `useSearchParams`.
@@ -219,11 +230,14 @@ export default function KomitentDetaljPage() {
 
   const [validId, setValidId] = useState<number | null>(null);
   const [idResolved, setIdResolved] = useState(false);
+  const [rezim, setRezim] = useState<'pregled' | 'izmena'>('pregled');
   useEffect(() => {
-    const raw = new URLSearchParams(window.location.search).get('id');
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('id');
     const n = raw ? Number(raw) : NaN;
     // Komitent 0 je legitiman (Servoteh d.o.o., interni) — zato `>= 0`, ne `> 0`.
     setValidId(Number.isInteger(n) && n >= 0 ? n : null);
+    setRezim(params.get('rezim') === 'izmena' ? 'izmena' : 'pregled');
     setIdResolved(true);
   }, []);
 
@@ -231,16 +245,33 @@ export default function KomitentDetaljPage() {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  // Esc = nazad na listu (DESIGN_SYSTEM §8).
+  // Esc = nazad na listu (DESIGN_SYSTEM §8). U izmeni Esc pripada formi.
   useEffect(() => {
+    if (rezim === 'izmena') return;
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') router.push('/komitenti');
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [router]);
+  }, [router, rezim]);
 
   const q = useKomitent(validId);
+
+  const [vrednosti, setVrednosti] = useState<Record<string, string> | null>(null);
+  const ucitan = q.data?.data;
+  useEffect(() => {
+    if (ucitan) setVrednosti(vrednostiIzKomitenta(ucitan));
+  }, [ucitan]);
+  /** Polazni slog — po njemu se broji šta je operater dirao. */
+  const polazne = useMemo(() => (ucitan ? vrednostiIzKomitenta(ucitan) : null), [ucitan]);
+
+  /** Režim ide i u URL (`replace`) — osvežavanje strane ne izbacuje iz izmene. */
+  function promeniRezim(sledeci: 'pregled' | 'izmena') {
+    setRezim(sledeci);
+    if (validId === null) return;
+    const put = sledeci === 'izmena' ? `?id=${validId}&rezim=izmena` : `?id=${validId}`;
+    window.history.replaceState(null, '', `${window.location.pathname}${put}`);
+  }
 
   if (isLoading || !user) {
     return (
@@ -252,16 +283,50 @@ export default function KomitentDetaljPage() {
 
   const k = q.data?.data;
 
+  if (rezim === 'izmena' && k && vrednosti) {
+    return (
+      <MaticniEkran
+        naslov={`Izmena komitenta — ${k.name}`}
+        oznaka={<span className="tnums">Šifra {k.id}</span>}
+        brana={BRANA_KOMITENT}
+        rezim="izmena"
+        sekcije={SEKCIJE_KOMITENT}
+        nepokriveno={NEPOKRIVENO_KOMITENT}
+        vrednosti={vrednosti}
+        polazneVrednosti={polazne}
+        onPromena={setVrednosti}
+        onIzlaz={() => {
+          setVrednosti(vrednostiIzKomitenta(k));
+          promeniRezim('pregled');
+        }}
+      />
+    );
+  }
+
   return (
     <AppShell>
       <PageHeader
         title={k ? k.name : 'Komitent'}
         count={k ? <span className="tnums">Šifra {k.id}</span> : undefined}
         actions={
-          <Button variant="secondary" onClick={() => router.push('/komitenti')}>
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-            Nazad
-          </Button>
+          <div className="flex items-center gap-2">
+            {k && (
+              <Button
+                variant="secondary"
+                onClick={() => promeniRezim('izmena')}
+                title="Otvori pun ekran izmene (upis je zaključan — ekran objašnjava zašto)"
+                aria-label="Izmeni"
+                className="max-sm:w-9 max-sm:px-0"
+              >
+                <Pencil className="h-4 w-4" aria-hidden />
+                <span className="max-sm:hidden">Izmeni</span>
+              </Button>
+            )}
+            <Button variant="secondary" onClick={() => router.push('/komitenti')}>
+              <ArrowLeft className="h-4 w-4" aria-hidden />
+              Nazad
+            </Button>
+          </div>
         }
       />
 

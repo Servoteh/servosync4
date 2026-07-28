@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Pencil } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -11,16 +11,28 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { formatDateTime, formatDecimal } from '@/lib/format';
 import { useArtikal, codeRefLabel, type ItemDetail } from '@/api/masters';
+import { MaticniEkran } from '../_forma/polja';
+import { BRANA_ARTIKAL } from '../_forma/pravila';
+import {
+  NEPOKRIVENO_ARTIKAL,
+  SEKCIJE_ARTIKAL,
+  vrednostiIzArtikla,
+} from '../_forma/artikal-polja';
 
 /**
  * Kartica artikla — pun matični slog (67 BigBit kolona), grupisan po sekcijama iz
- * `backend/docs/migration/BIGBIT_ARTIKLI.md` §1. Čist pregled: `items` je BigBit
- * cache i piše ga samo sync (BACKEND_RULES §3), pa ekran nema nijednu akciju izmene.
+ * `backend/docs/migration/BIGBIT_ARTIKLI.md` §1.
+ *
+ * Ekran ima DVA REŽIMA na istoj ruti: `pregled` (kartica) i `izmena` (pun ekran forme,
+ * `?rezim=izmena`). Izmena je danas ZAKLJUČANA — `items` piše samo sync, a full refresh
+ * radi `deleteMany({})`, pa bi svaka ispravka nestala na sledećem sync-u (v. `BRANA_ARTIKAL`).
+ * Zato režim postoji, ali „Snimi“ ne prolazi i ekran kaže šta da se uradi umesto toga.
  *
  * ⚠️ STATIČKA RUTA `?id=N`, ne `[id]` segment: dinamički segmenti NE rade na static
  * exportu (`output: "export"`) — klijentska navigacija traži neizvezen prerender pa
  * hard-404 (incident 22.07). Id se čita iz `window.location.search` u `useEffect`-u,
- * NIKAD kroz `useSearchParams` (on bi tražio Suspense oko cele strane).
+ * NIKAD kroz `useSearchParams` (on bi tražio Suspense oko cele strane). Isto važi i za
+ * `?rezim=` — režim je u URL-u da osvežavanje strane ne izbaci korisnika iz izmene.
  */
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -199,16 +211,21 @@ function ItemSections({ a }: { a: ItemDetail }) {
   );
 }
 
+type Rezim = 'pregled' | 'izmena';
+
 export default function ArtikalDetaljPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
   const [validId, setValidId] = useState<number | null>(null);
   const [idResolved, setIdResolved] = useState(false);
+  const [rezim, setRezim] = useState<Rezim>('pregled');
   useEffect(() => {
-    const raw = new URLSearchParams(window.location.search).get('id');
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('id');
     const n = raw ? Number(raw) : NaN;
     setValidId(Number.isInteger(n) && n > 0 ? n : null);
+    setRezim(params.get('rezim') === 'izmena' ? 'izmena' : 'pregled');
     setIdResolved(true);
   }, []);
 
@@ -216,16 +233,35 @@ export default function ArtikalDetaljPage() {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  // Esc = nazad na listu (DESIGN_SYSTEM §8 — Esc zatvara najviši sloj).
+  // Esc = nazad na listu (DESIGN_SYSTEM §8 — Esc zatvara najviši sloj). U režimu
+  // izmene Esc pripada formi (vraća na karticu), pa se ovaj slušalac gasi.
   useEffect(() => {
+    if (rezim === 'izmena') return;
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') router.push('/artikli');
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [router]);
+  }, [router, rezim]);
 
   const q = useArtikal(validId);
+
+  // Vrednosti forme se pune iz serverskog sloga i drže zasebno — kartica se ne dira.
+  const [vrednosti, setVrednosti] = useState<Record<string, string> | null>(null);
+  const ucitan = q.data?.data;
+  useEffect(() => {
+    if (ucitan) setVrednosti(vrednostiIzArtikla(ucitan));
+  }, [ucitan]);
+  /** Polazni slog — po njemu se broji šta je operater dirao. */
+  const polazne = useMemo(() => (ucitan ? vrednostiIzArtikla(ucitan) : null), [ucitan]);
+
+  /** Režim ide i u URL (`replace`, ne `push`) — osvežavanje ne izbacuje iz izmene. */
+  function promeniRezim(sledeci: Rezim) {
+    setRezim(sledeci);
+    if (validId === null) return;
+    const put = sledeci === 'izmena' ? `?id=${validId}&rezim=izmena` : `?id=${validId}`;
+    window.history.replaceState(null, '', `${window.location.pathname}${put}`);
+  }
 
   if (isLoading || !user) {
     return (
@@ -236,6 +272,27 @@ export default function ArtikalDetaljPage() {
   }
 
   const a = q.data?.data;
+
+  if (rezim === 'izmena' && a && vrednosti) {
+    return (
+      <MaticniEkran
+        naslov={`Izmena artikla — ${a.name}`}
+        oznaka={<span className="tnums">{a.catalogNumber}</span>}
+        brana={BRANA_ARTIKAL}
+        rezim="izmena"
+        sekcije={SEKCIJE_ARTIKAL}
+        nepokriveno={NEPOKRIVENO_ARTIKAL}
+        vrednosti={vrednosti}
+        polazneVrednosti={polazne}
+        onPromena={setVrednosti}
+        onIzlaz={() => {
+          setVrednosti(vrednostiIzArtikla(a));
+          promeniRezim('pregled');
+        }}
+      />
+    );
+  }
+
   const back = (
     <Button variant="secondary" onClick={() => router.push('/artikli')}>
       <ArrowLeft className="h-4 w-4" aria-hidden />
@@ -256,6 +313,18 @@ export default function ArtikalDetaljPage() {
               <StatusBadge tone="neutral" label="Neaktivan" />
             ))}
             {a?.toDelete && <StatusBadge tone="warn" label="Za brisanje" />}
+            {a && (
+              <Button
+                variant="secondary"
+                onClick={() => promeniRezim('izmena')}
+                title="Otvori pun ekran izmene (upis je zaključan — ekran objašnjava zašto)"
+                aria-label="Izmeni"
+                className="max-sm:w-9 max-sm:px-0"
+              >
+                <Pencil className="h-4 w-4" aria-hidden />
+                <span className="max-sm:hidden">Izmeni</span>
+              </Button>
+            )}
             {back}
           </div>
         }

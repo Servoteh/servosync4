@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -10,6 +11,7 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Select } from '@/components/ui-kit/select';
+import { Button } from '@/components/ui-kit/button';
 import { Pager } from '@/components/ui-kit/pager';
 import { formatDecimal, formatNumber } from '@/lib/format';
 import { useArtikli, codeRefLabel, type ItemRow } from '@/api/masters';
@@ -18,10 +20,11 @@ import { useArtikli, codeRefLabel, type ItemRow } from '@/api/masters';
  * Matični podaci — Artikli (obrazac „Lista", DESIGN_SYSTEM §4.1): pretraga u
  * komandnoj traci + filter „Aktivan" + gusta tabela sa server-side paginacijom.
  *
- * Podatak je BigBit cache (`items`, ~91k redova) — ekran je ČIST PREGLED: unos i
- * izmena artikla ostaju u BigBit-u (prelazni režim, BACKEND_RULES §3). Detalj se
- * otvara kao STATIČKA ruta `/artikli/detalj?id=N` (nikad `[id]` segment — static
- * export ga ne izvozi, v. `artikli/detalj/page.tsx`).
+ * Podatak je BigBit cache (`items`, ~91k redova). Unos i izmena imaju pun ekran
+ * (`/artikli/nov`, `/artikli/detalj?id=N&rezim=izmena`), ali su ZAKLJUČANI dok
+ * `items` ne uđe u zaštićeni skup sync-a — ekran to objašnjava i kaže šta da se uradi
+ * (v. `_forma/pravila.ts`, `BRANA_ARTIKAL`). Detalj je STATIČKA ruta `?id=N` (nikad
+ * `[id]` segment — static export ga ne izvozi, v. `artikli/detalj/page.tsx`).
  */
 
 const PAGE_SIZE = 50;
@@ -85,6 +88,20 @@ export default function ArtikliPage() {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
+  // Alt+N = nov zapis u aktivnom modulu (DESIGN_SYSTEM §8). Ne otima kucanje u polju.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.altKey || e.key.toLowerCase() !== 'n') return;
+      const cilj = e.target as HTMLElement | null;
+      const tag = cilj?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      e.preventDefault();
+      router.push('/artikli/nov');
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [router]);
+
   const list = useArtikli({
     page,
     pageSize: PAGE_SIZE,
@@ -109,14 +126,26 @@ export default function ArtikliPage() {
         title="Artikli"
         count={meta ? `${formatNumber(meta.total)} artikala` : undefined}
         actions={
-          <SearchBox
-            value={q}
-            onChange={(v) => {
-              setQ(v);
-              setPage(1);
-            }}
-            placeholder="Naziv, kataloški broj, barkod…"
-          />
+          <div className="flex items-center gap-2">
+            <SearchBox
+              value={q}
+              onChange={(v) => {
+                setQ(v);
+                setPage(1);
+              }}
+              placeholder="Naziv, kataloški broj, barkod…"
+            />
+            {/* Na 360 px ostaje samo ikona — naslov i pretraga imaju prednost (§11). */}
+            <Button
+              onClick={() => router.push('/artikli/nov')}
+              title="Nov artikal (Alt+N)"
+              aria-label="Nov artikal"
+              className="max-sm:w-9 max-sm:px-0"
+            >
+              <Plus className="h-4 w-4" aria-hidden />
+              <span className="max-sm:hidden">Nov artikal</span>
+            </Button>
+          </div>
         }
       />
 
@@ -137,7 +166,7 @@ export default function ArtikliPage() {
             </div>
           </label>
           <p className="text-sm text-ink-disabled">
-            Podaci iz BigBit-a — samo pregled (unos artikla ostaje u BigBit-u)
+            Podaci iz BigBit-a — unos i izmena su zaključani (ekran unosa objašnjava zašto)
           </p>
         </div>
 

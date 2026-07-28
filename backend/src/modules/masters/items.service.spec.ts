@@ -1,6 +1,10 @@
 import "reflect-metadata";
 import { Test, TestingModule } from "@nestjs/testing";
-import { BadRequestException, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ItemsService } from "./items.service";
@@ -8,6 +12,11 @@ import { ItemsController } from "./items.controller";
 import { DirectoryController } from "../directory/directory.controller";
 import { PERMISSION_KEY_METADATA } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
+import {
+  ITEM_WRITE_BLOCKED_MESSAGE,
+  NATIVE_ITEM_ID_BASE,
+} from "./items.write-policy";
+import type { AuthUser } from "../auth/jwt.strategy";
 
 /** Mock PrismaService — samo modeli koje `ItemsService` čita. */
 function prismaMock() {
@@ -151,6 +160,61 @@ describe("ItemsService (matični podaci — Artikli)", () => {
   });
 });
 
+// ==================================================== Brana upisa (zatečeno stanje)
+
+describe("ItemsService — unos/izmena su DANAS zatvoreni branom", () => {
+  let service: ItemsService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  const user: AuthUser = {
+    userId: 1,
+    email: "test@servoteh.rs",
+    role: "admin",
+    workerId: null,
+  };
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [ItemsService, { provide: PrismaService, useValue: prisma }],
+    }).compile();
+    service = mod.get(ItemsService);
+  });
+
+  it("create(): 409 pre ijednog upita — `items` ide kroz full refresh koji briše native red", async () => {
+    let thrown: unknown;
+    try {
+      await service.create(
+        { catalogNumber: "00042", name: "Lim", groupCode: "SIR" },
+        user,
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ConflictException);
+    expect(
+      ((thrown as ConflictException).getResponse() as { code: string }).code,
+    ).toBe("BIGBIT_OWNED_READ_ONLY");
+    // Brana je PRVA: nijedan red se ne čita niti piše.
+    expect(prisma.item.findUnique).not.toHaveBeenCalled();
+    expect(prisma.item.findMany).not.toHaveBeenCalled();
+  });
+
+  it("update(): isti odgovor, takođe bez dodira baze", async () => {
+    await expect(
+      service.update(NATIVE_ITEM_ID_BASE + 1, { name: "X" }, user),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.item.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("poruka je srpska (latinica) i kaže ŠTA DA SE URADI, ne samo „nije dozvoljeno”", () => {
+    expect(ITEM_WRITE_BLOCKED_MESSAGE).toContain("BigBit");
+    expect(ITEM_WRITE_BLOCKED_MESSAGE).toContain("Pokreni sync");
+    // Latinica — nijedan ćirilični znak (BACKEND_RULES: poruke na srpskom, latinica).
+    expect(ITEM_WRITE_BLOCKED_MESSAGE).not.toMatch(/[Ѐ-ӿ]/);
+  });
+});
+
 // ================================================================ Guard
 
 describe("ItemsController — permisija", () => {
@@ -172,6 +236,18 @@ describe("ItemsController — permisija", () => {
       expect(
         Reflect.getMetadata(PERMISSION_KEY_METADATA, handler),
       ).toBeUndefined();
+    }
+  });
+
+  it("mutacije traže UŽI ključ od čitanja (`sync.run`, ne `directory.read`)", () => {
+    for (const name of ["create", "update"]) {
+      const handler = Object.getOwnPropertyDescriptor(
+        ItemsController.prototype,
+        name,
+      )?.value as object;
+      expect(Reflect.getMetadata(PERMISSION_KEY_METADATA, handler)).toBe(
+        PERMISSIONS.SYNC_RUN,
+      );
     }
   });
 });

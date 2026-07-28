@@ -6,13 +6,24 @@ import type { Paginated } from './tech-processes';
 
 /**
  * Matični podaci 4.0 — Artikli i Komitenti (read-only pregled BigBit cache tabela).
- * Backend: `src/modules/masters` (BACKEND_RULES §3 — BigBit je vlasnik ovih tabela do
- * cutover-a; unos ostaje u BigBit-u, prelazni režim). Zato ovde postoje SAMO `useQuery`
- * hook-ovi — nijedna mutacija ne sme da nastane.
+ * Backend: `src/modules/masters` — modul ima ISKLJUČIVO GET rute
+ * (`items.controller.ts`, `customers.controller.ts`).
  *   GET /v1/artikli        · lista (q: naziv/kat. broj/barkod; groupCode, active)
  *   GET /v1/artikli/:id    · pun slog + nazivi grupe/podgrupe/porekla
  *   GET /v1/komitenti      · lista (q: naziv/PIB/mesto; codeTypeCode)
  *   GET /v1/komitenti/:id  · pun slog + vrsta šifre / prodavac / uplatni račun
+ *
+ * ⚠️ OVDE NE SME NASTATI NIJEDNA MUTACIJA — i to iz dva različita razloga, koje ne
+ * treba mešati:
+ *   • `customers`: ODLUKA VLASNIKA 26.07.2026 — read-only za celu aplikaciju, jedini
+ *     pisac je sync modul; `POST/PATCH /v1/directory/customers` namerno vraćaju 409
+ *     `BIGBIT_OWNED_READ_ONLY` (`backend/src/modules/directory/bigbit-owned.ts`).
+ *   • `items`: tehnički — sync radi `full_refresh` (`watermark: null`), tj.
+ *     `deleteMany({})` + `createMany`, pa bi 4.0-native artikal nestao bez traga, a
+ *     `price_list_entries` / `work_order_item_components` ostali kao siročad.
+ * Ekrani unosa/izmene postoje (`/artikli/nov`, `/komitenti/nov`, `?rezim=izmena`), ali
+ * stoje ZAKLJUČANI; jedan izvor te odluke za frontend je `app/artikli/_forma/pravila.ts`
+ * (`BRANA_ARTIKAL`, `BRANA_KOMITENT`) — tamo se menja kad odluka padne, i nigde više.
  *
  * Napomena o tipovima: `Decimal` kolone stižu kao STRING (BACKEND_RULES §6), a
  * legacy `Double` kolone (cene, procenti, dimenzije) kao broj — otud mešavina
