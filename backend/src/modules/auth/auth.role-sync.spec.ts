@@ -5,11 +5,21 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { Sy15AuthAdminService } from "../../common/sy15/sy15-auth-admin.service";
 
 /**
- * ROLA-SYNC na SSO login (odluka vlasnika 21.07): postojeći nalog na svakom SSO
- * login-u dobija ŽIVU 1.0 rolu (izvor istine = sy15 user_roles). Pinuje:
- * (1) rola se promenila → users.update na novu rolu; (2) rola ista → NEMA update
- * (bez suvišnog pisanja); (3) pad čitanja 1.0 role → login NE pada, zadrži rolu
- * (fail-safe). Zarade su nezavisno zaključane (salaryEmailAllowed) — nije ovde.
+ * ROLA-SYNC: 3.0 `users.role` prati ŽIVU 1.0 rolu (izvor istine = sy15 `user_roles`).
+ *
+ * Istorijat: SSO grana živi od 21.07 (odluka vlasnika). 27.07 (odluka Nenada)
+ * proširena je na DIREKTAN login (email+lozinka) — dotad su nalozi koji ne ulaze
+ * kroz 1.0 shell zadržavali zamrznutu rolu i role su odlutale (12 raskoraka).
+ *
+ * Pinovana pravila (`applyRoleSync`, zajednička za obe putanje):
+ *  1. nema reda u 1.0 (`null`) → 3.0 rola se NE dira;
+ *  2. ista rola → NEMA update (bez suvišnog pisanja);
+ *  3. 3.0 `admin` se NE degradira (Zoran/Luka su namerno admini iako 1.0 kaže
+ *     `menadzment`); podizanje NA admin prolazi normalno;
+ *  4. inače → upiši živu 1.0 rolu (i naviše i naniže);
+ *  5. pad čitanja 1.0 role → login NE pada, zadrži zatečenu rolu (fail-safe).
+ *
+ * Zarade su nezavisno zaključane (`salaryEmailAllowed`) — nije predmet ovog fajla.
  */
 function makeSvc() {
   const update = jest.fn((arg: { data: { role: string } }) =>
@@ -25,18 +35,18 @@ function makeSvc() {
   return { svc, update };
 }
 
-// Pozovi privatnu syncRoleFromSy15 sa stub-ovanim fetchSy15EffectiveRole.
-async function runSync(
+/** Pozovi privatnu SSO granu sa stub-ovanim čitanjem žive 1.0 role. */
+async function runSsoSync(
   svc: AuthService,
   user: { id: number; email: string; role: string },
-  live: string | Error,
+  live: string | null | Error,
 ) {
   const spy = jest
     .spyOn(
       svc as unknown as {
-        fetchSy15EffectiveRole: (t: string) => Promise<string>;
+        fetchSy15LiveRole: (t: string) => Promise<string | null>;
       },
-      "fetchSy15EffectiveRole",
+      "fetchSy15LiveRole",
     )
     .mockImplementation(() =>
       live instanceof Error ? Promise.reject(live) : Promise.resolve(live),
@@ -50,12 +60,40 @@ async function runSync(
   return out;
 }
 
-describe("AuthService rola-sync (SSO login → živa 1.0 rola)", () => {
-  const USER = { id: 42, email: "zoran.jarakovic@servoteh.com", role: "admin" };
+/** Pozovi privatnu granu DIREKTNOG login-a (čitanje 1.0 role po email-u). */
+async function runLoginSync(
+  svc: AuthService,
+  user: { id: number; email: string; role: string },
+  live: string | null | Error,
+) {
+  const spy = jest
+    .spyOn(
+      svc as unknown as {
+        fetchSy15RoleByEmail: (e: string) => Promise<string | null>;
+      },
+      "fetchSy15RoleByEmail",
+    )
+    .mockImplementation(() =>
+      live instanceof Error ? Promise.reject(live) : Promise.resolve(live),
+    );
+  const out = await (
+    svc as unknown as {
+      syncRoleByEmail: (u: unknown) => Promise<{ role: string }>;
+    }
+  ).syncRoleByEmail(user);
+  spy.mockRestore();
+  return out;
+}
 
-  it("rola se promenila (admin → menadzment) → users.update na novu rolu", async () => {
+const USER = { id: 42, email: "zoran.jarakovic@servoteh.com", role: "admin" };
+
+describe.each([
+  ["SSO login", runSsoSync],
+  ["direktan login (email+lozinka)", runLoginSync],
+] as const)("AuthService rola-sync — %s", (_label, run) => {
+  it("viša 1.0 rola (viewer → menadzment) → users.update na novu rolu", async () => {
     const { svc, update } = makeSvc();
-    const out = await runSync(svc, USER, "menadzment");
+    const out = await run(svc, { ...USER, role: "viewer" }, "menadzment");
     expect(update).toHaveBeenCalledWith({
       where: { id: 42 },
       data: { role: "menadzment" },
@@ -63,21 +101,69 @@ describe("AuthService rola-sync (SSO login → živa 1.0 rola)", () => {
     expect(out.role).toBe("menadzment");
   });
 
+  it("niža 1.0 rola (menadzment → viewer) → spušta se", async () => {
+    const { svc, update } = makeSvc();
+    const out = await run(svc, { ...USER, role: "menadzment" }, "viewer");
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: { role: "viewer" },
+    });
+    expect(out.role).toBe("viewer");
+  });
+
+  it("3.0 admin se NE degradira (1.0 kaže menadzment) — odluka 27.07", async () => {
+    const { svc, update } = makeSvc();
+    const out = await run(svc, USER, "menadzment");
+    expect(update).not.toHaveBeenCalled();
+    expect(out.role).toBe("admin");
+  });
+
+  it("podizanje NA admin prolazi (pravilo je jednosmerno)", async () => {
+    const { svc, update } = makeSvc();
+    const out = await run(svc, { ...USER, role: "menadzment" }, "admin");
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: { role: "admin" },
+    });
+    expect(out.role).toBe("admin");
+  });
+
   it("rola ista → NEMA update (bez suvišnog pisanja), vrati nalog netaknut", async () => {
     const { svc, update } = makeSvc();
-    const out = await runSync(
-      svc,
-      { ...USER, role: "menadzment" },
-      "menadzment",
-    );
+    const out = await run(svc, { ...USER, role: "menadzment" }, "menadzment");
     expect(update).not.toHaveBeenCalled();
     expect(out.role).toBe("menadzment");
   });
 
+  it("bez reda u 1.0 (null) → 3.0 rola netaknuta (ne pada na viewer)", async () => {
+    const { svc, update } = makeSvc();
+    const out = await run(svc, { ...USER, role: "poslovni_admin" }, null);
+    expect(update).not.toHaveBeenCalled();
+    expect(out.role).toBe("poslovni_admin");
+  });
+
   it("pad čitanja 1.0 role → login NE pada, zadrži zatečenu rolu (fail-safe)", async () => {
     const { svc, update } = makeSvc();
-    const out = await runSync(svc, USER, new Error("sy15 down"));
+    const out = await run(
+      svc,
+      { ...USER, role: "menadzment" },
+      new Error("sy15 down"),
+    );
     expect(update).not.toHaveBeenCalled();
-    expect(out.role).toBe("admin"); // zatečena rola ostaje
+    expect(out.role).toBe("menadzment"); // zatečena rola ostaje
+  });
+});
+
+describe("AuthService rola-sync — dodatna polja naloga", () => {
+  it("sync ne gubi polja koja Prisma `User` red nema (npr. readOnly)", async () => {
+    const { svc } = makeSvc();
+    const out = (await runLoginSync(
+      svc,
+      { ...USER, role: "viewer", readOnly: true, workerId: 7 } as never,
+      "menadzment",
+    )) as unknown as Record<string, unknown>;
+    expect(out.role).toBe("menadzment");
+    expect(out.readOnly).toBe(true);
+    expect(out.workerId).toBe(7);
   });
 });

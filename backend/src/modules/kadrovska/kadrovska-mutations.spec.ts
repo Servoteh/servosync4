@@ -1,4 +1,8 @@
-import { ConflictException, ForbiddenException } from "@nestjs/common";
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from "@nestjs/common";
 import { KadrovskaMutationsService } from "./kadrovska-mutations.service";
 
 /**
@@ -76,6 +80,8 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
       sy15 as never,
       storage as never,
       mail as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
   });
 
@@ -448,16 +454,24 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       sy15 as never,
       storage as never,
       mail as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
+      { kadrGridDayLock: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn(), deleteMany: jest.fn() } } as never,
     );
   }
 
   // tx sa: bez praznika, jedan zaposleni, zadatim work_hours + term redom.
-  // $queryRaw redosled u recompute: (1) salary_payroll (postojeći) → [], (2) salary_terms → [term].
+  // ⚠️ AUDIT-K5: mock je SADRŽAJNI (po tekstu upita), ne pozicioni — recompute
+  // sada prvo pita KOJI REDOVI MESECA postoje (`SELECT employee_id FROM
+  // salary_payroll`) umesto da uzima sve aktivne zaposlene, pa bi
+  // `mockResolvedValueOnce` lanac pukao na svaku izmenu redosleda.
   function makeTx(opts: {
     workType?: string;
     workHours: Array<Record<string, unknown>>;
     term: Record<string, unknown>;
+    /** Postojeći salary_payroll red (za CRITICAL #2 prenos datuma isplate). */
+    existing?: Record<string, unknown> | null;
   }) {
+    type SqlLike = { strings: string[]; values: unknown[] };
     return {
       kadrHoliday: { findMany: jest.fn().mockResolvedValue([]) },
       employee: {
@@ -472,10 +486,18 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
       },
       workHours: { findMany: jest.fn().mockResolvedValue(opts.workHours) },
       salaryPayroll: { findFirst: jest.fn().mockResolvedValue(null) },
-      $queryRaw: jest
-        .fn()
-        .mockResolvedValueOnce([]) // postojeći salary_payroll red
-        .mockResolvedValueOnce([opts.term]), // salary_terms
+      $queryRaw: jest.fn(async (sql: SqlLike) => {
+        const t = sql?.strings?.join("?") ?? "";
+        // 1) Koji redovi meseca postoje (izbor skupa).
+        if (t.includes("SELECT employee_id FROM salary_payroll"))
+          return [{ employee_id: EMP }];
+        // 2) Postojeći red tog zaposlenog (advance/teren/optimistic token).
+        if (t.includes("FROM salary_payroll"))
+          return opts.existing ? [opts.existing] : [];
+        // 3) Aktivni uslovi zarade.
+        if (t.includes("FROM salary_terms")) return [opts.term];
+        return [{ v: { applied: true } }];
+      }),
     };
   }
 
@@ -568,35 +590,39 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
           ]),
       },
       workHours: { findMany: jest.fn().mockResolvedValue([]) },
-      $queryRaw: jest
-        .fn()
-        // (1) postojeći salary_payroll red — sa datumima isplate
-        .mockResolvedValueOnce([
-          {
-            id: EMP,
-            status: "u_obradi",
-            advance_amount: 0,
-            domestic_days: 0,
-            foreign_days: 0,
-            apo: "2026-07-10",
-            fpo: "2026-08-05",
-            u: "2026-07-31 10:00:00+00",
-          },
-        ])
-        // (2) salary_terms
-        .mockResolvedValueOnce([
-          {
-            salary_type: "ugovor",
-            compensation_model: "fiksno",
-            fixed_amount: 100000,
-            amount: 0,
-          },
-        ])
-        // (3) hr_upsert_salary_payroll — uhvati JSON row
-        .mockImplementationOnce((sql: { values: unknown[] }) => {
-          captured.push(sql);
-          return Promise.resolve([{ v: { applied: true } }]);
-        }),
+      // Sadržajni mock (AUDIT-K5): recompute prvo pita koji redovi meseca postoje.
+      $queryRaw: jest.fn((sql: { strings?: string[]; values: unknown[] }) => {
+        const t = sql?.strings?.join("?") ?? "";
+        if (t.includes("SELECT employee_id FROM salary_payroll"))
+          return Promise.resolve([{ employee_id: EMP }]);
+        if (t.includes("FROM salary_payroll"))
+          return Promise.resolve([
+            {
+              id: EMP,
+              status: "u_obradi",
+              advance_amount: 0,
+              domestic_days: 0,
+              foreign_days: 0,
+              per_diem_rsd: 0,
+              per_diem_eur: 0,
+              apo: "2026-07-10",
+              fpo: "2026-08-05",
+              u: "2026-07-31 10:00:00+00",
+            },
+          ]);
+        if (t.includes("FROM salary_terms"))
+          return Promise.resolve([
+            {
+              salary_type: "ugovor",
+              compensation_model: "fiksno",
+              fixed_amount: 100000,
+              amount: 0,
+            },
+          ]);
+        // hr_upsert_salary_payroll — uhvati JSON row
+        captured.push(sql);
+        return Promise.resolve([{ v: { applied: true } }]);
+      }),
     };
     const svc = makeService(tx);
     await svc.payrollRecompute(EMAIL, {
@@ -752,5 +778,61 @@ describe("payrollRecompute — integracija (mapTerm/fond wiring, novac)", () => 
     // PUN fond (22×8=176) — NE umanjen (136); jedna proporcionalna redukcija 17/22.
     expect(out.data.rows[0].fond_sati_meseca).toBe(176);
     expect(out.data.rows[0].ukupna_zarada).toBe(77272.73);
+  });
+});
+
+/**
+ * REGRESIJA: signEmployeeDocument mora vratiti GO STRING URL.
+ * Sy15StorageService.signUrl vraća { url, expiresIn }; ranije se ceo objekat
+ * vraćao kao { data: {...} }, pa je FE radio window.open('[object Object]')
+ * → Next.js 404 pri „Generiši i sačuvaj" ugovora (prijava Dragane, 27.07).
+ */
+describe("Kadrovska — signEmployeeDocument vraća string URL (404 regresija)", () => {
+  const EMAIL = "test@servoteh.com";
+  const DOC_ID = "3b241101-e2bb-4255-8caf-4136c566a962";
+  const SIGNED_URL =
+    "https://api.servosync.servoteh.com/storage/v1/object/sign/employee-docs/x?token=t";
+
+  const mkService = (docRow: unknown) => {
+    const findFirst = jest.fn().mockResolvedValue(docRow);
+    const withUserRls = jest.fn(
+      async (_e: string, fn: (tx: unknown) => Promise<unknown>) =>
+        fn({ employeeDocument: { findFirst } }),
+    );
+    const signUrl = jest
+      .fn()
+      .mockResolvedValue({ url: SIGNED_URL, expiresIn: 3600 });
+    const service = new KadrovskaMutationsService(
+      { withUserRls, runIdempotentRls: jest.fn() } as never,
+      { upload: jest.fn(), signUrl, remove: jest.fn() } as never,
+      { configured: true, send: jest.fn() } as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
+      {} as never,
+    );
+    return { service, signUrl, findFirst };
+  };
+
+  it("vraća { data: string } (ne objekat) sa .url iz storage servisa", async () => {
+    const { service, signUrl } = mkService({
+      id: DOC_ID,
+      storagePath: "emp/1/ugovor.pdf",
+      deletedAt: null,
+    });
+    const out = await service.signEmployeeDocument(EMAIL, DOC_ID);
+    expect(typeof out.data).toBe("string");
+    expect(out.data).toBe(SIGNED_URL);
+    expect(signUrl).toHaveBeenCalledWith(
+      "employee-docs",
+      "emp/1/ugovor.pdf",
+      3600,
+    );
+  });
+
+  it("dokument ne postoji → NotFoundException, signUrl se ne poziva", async () => {
+    const { service, signUrl } = mkService(null);
+    await expect(
+      service.signEmployeeDocument(EMAIL, DOC_ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(signUrl).not.toHaveBeenCalled();
   });
 });

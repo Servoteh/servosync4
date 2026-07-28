@@ -712,10 +712,23 @@ export function useAbsences(params: { employeeId?: string; from?: string; to?: s
     queryFn: () => apiFetch<{ data: Absence[] }>(`${BASE}/absences${qs({ ...params })}`),
   });
 }
+/** Red iz grida (work_hours) za današnji dan — drugi izvor rostera odsutnih. */
+export interface AbsentNowGridRow {
+  employee_id: string;
+  absence_code: string;
+  absence_subtype: string | null;
+  full_name: string | null;
+  department: string | null;
+}
+/** Roster odsutnih danas: `absences` periodi + GRID dani (AUDIT-K5b — 1.0
+ *  odsutniTab spaja oba izvora; sa samo jednim lista je bila skoro prazna). */
 export function useAbsentNow() {
   return useQuery({
     queryKey: [...KEYS.absences, 'now'],
-    queryFn: () => apiFetch<{ data: Absence[] }>(`${BASE}/absences/absent-now`),
+    queryFn: () =>
+      apiFetch<{ data: { absences: Absence[]; grid: AbsentNowGridRow[] } }>(
+        `${BASE}/absences/absent-now`,
+      ),
   });
 }
 
@@ -920,8 +933,9 @@ export interface SubmitVacationVars {
 export const useSubmitVacation = () =>
   useKadrMutation<SubmitVacationVars>((v) => post('/requests/vacation', v));
 
-export const useVacationApprove = () =>
-  useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/vacation/${v.id}/approve`, { clientEventId: v.clientEventId }));
+// `useVacationApprove` (ruta …/approve) uklonjen — nije imao nijednog pozivaoca, a
+// vodio je na zastareli jednostepeni tok bez opsega/dvostepenosti/brane salda
+// (AUDIT-K2). Odobravanje ide isključivo kroz `useVacationVacreqApprove`.
 export const useVacationVacreqApprove = () =>
   useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/vacation/${v.id}/vacreq-approve`, { clientEventId: v.clientEventId }));
 export const useVacationReject = () =>
@@ -1059,6 +1073,30 @@ export const useCreateContract = () =>
 export const useUpdateContract = () => useKadrMutation<{ id: string; patch: Partial<Contract> }>((v) => patch(`/contracts/${v.id}`, v.patch), KEYS.contracts);
 export const useArchiveContract = () => useKadrMutation<{ id: string }>((v) => post(`/contracts/${v.id}/archive`), KEYS.contracts);
 export const useRestoreContract = () => useKadrMutation<{ id: string }>((v) => post(`/contracts/${v.id}/restore`), KEYS.contracts);
+/** Ugovorna zarada NETO/BRUTO sa kartona (kadr_get_contract_salary) — `kadrovska.pii`
+ *  (admin ∨ poslovni_admin). Odluka 26.07: poslovni admin unosi ugovornu zaradu
+ *  BEZ pristupa tabu Zarade (AUDIT-K4, paritet 1.0 canEditEmployeeSensitiveFields). */
+export interface ContractSalary {
+  term_id?: string | null;
+  neto_rsd?: number | null;
+  bruto_rsd?: number | null;
+  amount?: number | null;
+  amount_type?: string | null;
+  currency?: string | null;
+  salary_type?: string | null;
+  effective_from?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+}
+export function useContractSalary(employeeId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ['kadrovska', 'contract-salary', employeeId] as const,
+    queryFn: () =>
+      apiFetch<{ data: ContractSalary | null }>(`${BASE}/employees/${employeeId}/contract-salary`),
+    enabled: !!employeeId && enabled,
+  });
+}
+
 export const useSetContractSalary = () =>
   useKadrMutation<{ employeeId: string; neto: number; bruto: number; effectiveFrom?: string; clientEventId?: string }>((v) => {
     const { employeeId, ...body } = v;
@@ -1579,6 +1617,13 @@ export function monthsInRange(from: string, to: string): { year: number; month: 
  * GET /kadrovska/holidays?from&to (kb1). Greška se NE guta: nepotpun holidaySet
  * bi tiho pogrešno ekspandovao period odsustva na praznične dane.
  */
+/** Dokumenta zaposlenog — imperativno (za petlje gde hook ne može), npr. dedup
+ *  karneta pri zaključavanju meseca (AUDIT-K5b). */
+export async function fetchEmployeeDocuments(employeeId: string): Promise<EmployeeDocument[]> {
+  const r = await apiFetch<{ data: EmployeeDocument[] }>(`${BASE}/employees/${employeeId}/documents`);
+  return r.data ?? [];
+}
+
 export async function fetchHolidaySet(from: string, to: string): Promise<Set<string>> {
   const set = new Set<string>();
   const res = await apiFetch<{ data: KadrHoliday[] }>(`${BASE}/holidays${qs({ from, to })}`);
@@ -1706,6 +1751,28 @@ export function useAttendanceVsGrid(params: { employeeId?: string; from?: string
   return useQuery({
     queryKey: [...KEYS.attendance, 'vs-grid', params],
     enabled: enabled && !!params.employeeId,
+    retry: false,
+    queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/attendance/vs-grid${qs({ ...params })}`),
+  });
+}
+
+/** Zaključaj / otključaj potvrđene dane grida (AUDIT-K7c). `unlock: true` skida
+ *  bravu — sme urednik grida (Nikola) i admin, i tek tada smeju da izmene dan. */
+export const useGridLock = () =>
+  useKadrMutation<{
+    days: { employeeId: string; workDate: string }[];
+    unlock?: boolean;
+    note?: string;
+    clientEventId?: string;
+  }>((v) => post('/grid/lock', v), KEYS.grid);
+
+/** „Prisustvo vs grid" za CEO tim u periodu (bez employeeId) — osnova bloka
+ *  „Zahteva pažnju" u Prisustvo → Za potvrdu (AUDIT-K7c). BE ruta oduvek prima
+ *  prazan employeeId; postojeći hook ga je tražio jer je služio drill-u po radniku. */
+export function useAttendanceVsGridAll(params: { from?: string; to?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.attendance, 'vs-grid-all', params],
+    enabled,
     retry: false,
     queryFn: () => apiFetch<{ data: ViewRow[] }>(`${BASE}/attendance/vs-grid${qs({ ...params })}`),
   });

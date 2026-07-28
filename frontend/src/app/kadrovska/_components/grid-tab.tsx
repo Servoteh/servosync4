@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { FileText, FileSpreadsheet, History, RefreshCw, MessageSquare, FileSignature, Save, Undo2, DoorOpen } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -279,8 +280,18 @@ export function GridTab() {
           const res = await fetchGridMonth({ year: prev.getFullYear(), month: prev.getMonth() + 1 });
           const map = new Map<string, WorkHours>();
           for (const r of res.data.rows) if (r.employeeId === empId) map.set(String(r.workDate).slice(0, 10), r);
-          editor.applyCopyPrev(empId, map);
-          showToast('Prethodni mesec preslikan — sačuvaj izmene');
+          // Prazan prethodni mesec = odustani uz poruku (paritet 1.0) — ranije je
+          // takav klik brisao ceo tekući mesec radniku (AUDIT-K1).
+          if (map.size === 0) {
+            showToast('⚠ Prethodni mesec nema nijedan unos za ovog radnika — ništa nije preslikano');
+            return;
+          }
+          const copied = editor.applyCopyPrev(empId, map);
+          showToast(
+            copied > 0
+              ? `Prethodni mesec preslikan (${copied} d) — sačuvaj izmene`
+              : '⚠ Nema dana za preslikavanje',
+          );
         } catch {
           showToast('⚠ Greška pri učitavanju prethodnog meseca');
         }
@@ -513,9 +524,12 @@ export function GridTab() {
             <div className="ml-auto flex flex-wrap items-center gap-2">
               {editable && (
                 <>
-                  <Button variant="primary" disabled={dirtyN === 0} loading={batch.isPending} onClick={startSave}>
-                    <Save className="h-4 w-4" aria-hidden /> Sačuvaj izmene{dirtyN ? ` (${dirtyN})` : ''}
-                  </Button>
+                  {/* Uputstvo (info režim): grid je izvor istine za sate i saldo GO. */}
+                  <HelpSpot id="kadrovska.sati.grid" variant="inline">
+                    <Button variant="primary" disabled={dirtyN === 0} loading={batch.isPending} onClick={startSave}>
+                      <Save className="h-4 w-4" aria-hidden /> Sačuvaj izmene{dirtyN ? ` (${dirtyN})` : ''}
+                    </Button>
+                  </HelpSpot>
                   <Button variant="secondary" disabled={dirtyN === 0} onClick={discard}>
                     <Undo2 className="h-4 w-4" aria-hidden /> Odbaci
                   </Button>

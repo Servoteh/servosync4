@@ -82,6 +82,46 @@
   **„Wide" ekrani** (Gantt): auto-sklanjanje sidebara uz pin — cela ruta preko `wide` flaga
   u nav modelu (`src/lib/navigation.ts`) ili pogled kroz `<WideMode/>`. Zvonce se pri
   sklonjenom sidebaru seli u komandnu traku (`HeaderBell`) — ne sme nestati sa ekrana.
+* **Podmeniji — treći nivo** (PLAN_NAV_PODMENIJI, 26.07.2026): modul sme da nosi `children`
+  (`NavSubItem` — pogledi/tabovi modula, npr. „Montaža: Gantt"). Red modula tada dobija
+  chevron; podmeni je **auto-razgranat dok si u modulu**, inače po ručnom stanju
+  (`servosync.ui.openModules`). Podstavke su uvučene, manje i u okviru sa levom linijom (isti
+  jezik kao imenovana pod-grupa); u rail režimu su ugnježdene u flyout panelu domena.
+  **Jedan `aria-current` po ekranu:** kad je podstavka aktivna, ONA ga nosi, roditelj samo stil.
+  `href` podstavke sme da nosi query (`/montaza?view=gantt`) — poređenje rute ide preko
+  `hrefPath()`, a aktivnost traži i da svi query parovi postoje u tekućem URL-u.
+  Query se čita iz `window.location.search` (nikad `useSearchParams` — static export).
+  U dnu punog sidebara stoji diskretno **„Razgranaj sve / Skupi sve"** (prevrće se po stanju).
+* **Vidljivost u nav-u (RBAC) — tri pravila, jedan izvor** (`navigation.ts`, F1 26.07.2026):
+  modul se filtrira `canAccessNavModule` (`requires` = jedna permisija; **`requiresAny` = OR i
+  ima prednost**), podstavka `visibleNavChildren` (**dete bez `requires` nasleđuje roditelja**,
+  dete sa `requires` je stroži gate — npr. admin tabovi). Modul čija deca nose RAZLIČITE
+  permisije (Podešavanja: admin konzola + „Izgled" za svakoga) dobija `requiresAny` = **unija
+  `requires` vrednosti dece**, pa je vidljiv kad je vidljivo bar jedno dete. Vidljivost se
+  NE izvodi automatski iz `children` — dete bez `requires` je „nasledi roditelja", pa bi
+  izvedeno pravilo otvorilo module tipa Sastanci/Održavanje svima. Sve troje čitaju sidebar
+  (3 layouta + rail flyout), hub `/pocetna` i Ctrl+K paleta — nema lokalnih kopija gate-a.
+  Nav krije samo afordanse; rutu i podatke čuva backend guard, a strana ekran bez prava
+  **tiho preusmerava** na prvi dostupan tab (bez poruke — obrazac guard-redirecta).
+* **Tab strane = query parametar, obavezno kroz `useQueryTab`** (`src/lib/use-query-tab.ts`, F1):
+  strana koja ima tabove/poglede drži izabrani tab u `?tab=`/`?view=`, nikad u golom
+  `useState`. Hook čita param na mount-u, sluša `popstate` i custom event **`servosync:nav`**,
+  a `setTab` upisuje URL kroz `history.replaceState` (tab nije „stranica" — bez novog unosa u
+  istoriji) i emituje isti event. Razlog: Next App Router **ne remount-uje** stranu kad se
+  menja samo query, pa bi bez ovoga klik na podstavku dok si već u modulu bio bez efekta.
+  Sidebar/paleta emituju `servosync:nav` PRE navigacije (cilj putuje u `detail.href`, jer je
+  `onClick` pre promene URL-a); strana emituje POSLE `replaceState` (bez detalja). Stara imena
+  tabova idu u `alias` mapu — deep-link iz 1.0 mejlova mora da preživi.
+  **F2 (26.07.2026) dopune:** (a) ime parametra prati mentalni model strane — Kadrovska vozi
+  **`?grupa=`** (5 grupa huba), ne `?tab=`; kad odsustvo parametra ima svoje značenje (hub
+  landing), koristi se sentinel ključ uz `omitDefault` (`/kadrovska` i `/montaza` ostaju „goli").
+  (b) Dete modula NE mora biti tab — sme biti i **prava podruta** (`/saldakonti/kartica`,
+  `/pdv/stope`); tada je `href` bez query-ja, aktivnost je čist pathname pogodak, a
+  `screenContextForPath` je imenuje po detetu (inače bi AI-ju izgledala kao roditelj).
+  (c) Strana koja pamti tab u `localStorage` (Reversi) mora da propusti URL: kad `?tab=` postoji,
+  zapamćen izbor se NE primenjuje. ⚠️ **Omiljeno/MRU i dalje rade na nivou MODULA** — favorit na
+  href koji je F2 preselio u decu tiho ispada iz „Omiljeno" u sidebaru i na hub-u (Ctrl+K ga i
+  dalje nalazi); širenje na podstavke je F3.
 * **Tri obrasca ekrana** — svaki novi ekran je jedan od ovih, ništa četvrto bez izmene ovog dokumenta:
   1. **Lista** — filter bar + gusta tabela (+ opcioni KPI red iznad, max 4 pločice);
   2. **Master–detalj** — lista levo, detalj panel desno (288–320 px); selekcija reda puni panel;
@@ -90,6 +130,13 @@
   fullscreen): pozdrav + „Brzo" prečice (MRU `recentModules` iz `useUiPrefs`) + mreža domenskih pločica
   (moduli-linkovi po `NAV_DOMAINS`, RBAC-filtrirano, „u razvoju" badge za WIP). Namena je agregacija ulaza
   u module, nije lista/forma/master-detalj — ostali ekrani i dalje moraju biti jedan od gornja tri obrasca.
+  **Raspored je kompaktan masonry (presuda 27.07.2026):** pločice stoje u CSS kolonama
+  (`columns-1 sm:columns-2 lg:columns-3 xl:columns-4` + `break-inside-avoid` i donja margina umesto
+  `grid`), pa svaka zauzima tačno visinu svog sadržaja — grid je izjednačavao vrstu po najvišoj pločici
+  i pravio prazninu. Gustina je stepenasta: od `lg` naviše ide zbijen desktop ritam (ikona domena 7×7,
+  naslov `text-base`, redovi `text-sm` sa `py-1`, kartica `p-3`), dok mobil/tablet zadržavaju krupan
+  `max-lg:*` touch ritam sa 44px metom (§11). Cilj je da većini uloga hub stane na jedan ekran bez skrola;
+  redosled čitanja postaje po kolonama, što je za hub prihvatljivo jer je redosled `NAV_DOMAINS` očuvan.
 * Detaljniji pregled entiteta (RN sa operacijama, materijalom, dokumentima) = **object-page**:
   zaglavlje sa šifrom/statusom + tabovi sekcija (obrazac pozajmljen od Fiori-ja).
 
@@ -185,6 +232,9 @@
 | Montaža — neusaglašenost (ozbiljnost) | Mala (`MALA`) | info plava | `--status-info` |
 | Montaža — neusaglašenost (ozbiljnost) | Srednja (`SREDNJA`) | narandžasta | `--status-warn` |
 | Montaža — neusaglašenost (ozbiljnost) | Visoka (`VISOKA`) | crvena | `--status-danger` |
+| Kvalitet — škart/dorada | Prijavljen (`PRIJAVLJEN`, kiosk signal, čeka kontrolora) | narandžasta | `--status-warn` |
+| Kvalitet — škart/dorada | Potvrđen (`POTVRDJEN`, ulazi u izveštaje/Pareto) | zelena | `--status-success` |
+| Kvalitet — škart/dorada | Odbačen (`ODBACEN`, prijava nije validna) | neutralna | `--status-neutral` |
 
 Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.
 
@@ -230,6 +280,9 @@ Dopune kita:
   (dijakritika-neosetljiva, `src/lib/fuzzy.ts`), „Nedavno" MRU na praznom upitu, pun
   tastaturni combobox/listbox obrazac. Jedna instanca, montira je `AppShell`; vidljiva
   afordansa = Search dugme u `PageHeader`-u. Izvor stavki = nav model + RBAC `can()`.
+  Indeksira i **podstavke modula** (podmeniji, §4) kao „Modul: Podstavka" — dedup po punom
+  href-u; „T-kod" šifra ekrana iz `keywords` (npr. `MNT-G` → „Montaža: Gantt") vodi direktno
+  na pogled. MRU/„Omiljeno" ostaju na nivou modula.
 * `PageHeader` uz F1 shell nosi: hamburger (kad je sidebar sklonjen), Search dugme
   (Ctrl+K) i `HeaderBell` (zvonce kad sidebar nema kolonu). Van AppShell-a se sve tri
   afordanse preskaču (kontekst je null).
@@ -291,7 +344,8 @@ Dopune kita:
   `HelpSpot` id-jeve (`data-help-id`) i preskaču se ako cilj nije u DOM-u. Tekstovi pomoći žive po
   modulu u `app/<modul>/_lib/help.ts` (`HelpRegistry` + definicije tura), ne u kitu.
 * **`AiWidget`** (`ui-kit/ai-widget.tsx`, zahtev 003/26) — plutajući AI asistent: okruglo dugme dole
-  desno (`Bot`, z-40 — iznad sadržaja, ispod modala) koje otvara kompaktni chat panel (~380px; na
+  desno (`Bot`, z-40 — iznad sadržaja, ispod modala), podignuto 5rem od dna da ne pada preko
+  `Pager` strelica na dnu lista (zahtev 025/26), koje otvara kompaktni chat panel (~380px; na
   telefonu donji sheet) sa `AiChat variant="widget"`. Non-modal (strana ostaje interaktivna, bez
   scrim-a), minimizacija (X u headeru ili Esc) vraća na dugme. Otvorenost i aktivna nit žive u
   modul-scope store-u (ne u komponenti) pa preživljavaju per-page remount `AppShell`-a — razgovor

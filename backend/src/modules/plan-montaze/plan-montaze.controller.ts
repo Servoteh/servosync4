@@ -140,7 +140,10 @@ export class PlanMontazeController {
 
   @Delete("phases/:id")
   @RequirePermission(PERMISSIONS.MONTAZA_EDIT)
-  deletePhase(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
+  deletePhase(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
     return this.montaza.deletePhase(req.user.email, id);
   }
 
@@ -161,7 +164,9 @@ export class PlanMontazeController {
   @Post("reports/ai-generate")
   @RequirePermission(PERMISSIONS.MONTAZA_IZVESTAJI)
   aiGenerate(@Req() req: AuthedRequest, @Body() dto: AiGenerateDto) {
-    return this.montaza.aiGenerate(req.user.email, dto);
+    return this.montaza.aiGenerate(req.user.email, dto, {
+      userId: req.user.userId,
+    });
   }
 
   // Presigned fotke (po foto id-ju) — literal pre `reports/:id`.
@@ -252,12 +257,18 @@ export class PlanMontazeController {
   // ---------- Lookups ----------
 
   @Get("lookups/predmeti")
-  lookupPredmeti(@Req() req: AuthedRequest, @Query() q: PredmetiLookupQueryDto) {
+  lookupPredmeti(
+    @Req() req: AuthedRequest,
+    @Query() q: PredmetiLookupQueryDto,
+  ) {
     return this.montaza.lookupPredmeti(req.user.email, q.q, q.onlyActive);
   }
 
   @Get("lookups/drawings")
-  lookupDrawings(@Req() req: AuthedRequest, @Query() q: DrawingsLookupQueryDto) {
+  lookupDrawings(
+    @Req() req: AuthedRequest,
+    @Query() q: DrawingsLookupQueryDto,
+  ) {
     return this.montaza.lookupDrawings(req.user.email, q.codes);
   }
 

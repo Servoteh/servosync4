@@ -327,6 +327,61 @@ export function useDecideDraftItem() {
   });
 }
 
+/** Telo PATCH-a stavke nacrta — backend `dto/update-draft-item.dto.ts` (027/26). */
+export interface UpdateDraftItemInput {
+  /** Broj komada za izradu — ceo broj ≥ 1 (backend 400 inače). */
+  quantityToProduce?: number;
+  /** Napomena stavke (≤ 250); prazno/`null` briše napomenu. */
+  note?: string | null;
+}
+
+/**
+ * Izmena stavke nacrta (zahtev 027/26) — PATCH /v1/handover-drafts/:id/items/:itemId.
+ * Menja SAMO broj komada i/ili napomenu; crtež se ne menja (za zamenu: obriši
+ * stavku pa je dodaj ponovo, da prođu §6.5.3/§6.5.4 provere nad crtežom).
+ * 422 za zaključan/predat nacrt, 404 za tuđu stavku, 400 za količinu < 1.
+ * Za razliku od odluke „Dopuni" (§6.5.4) ovo NE upisuje `decision_action` —
+ * sporna stavka i dalje traži odluku pre predaje.
+ */
+export function useUpdateDraftItem() {
+  const invalidate = useInvalidateDrafts();
+  return useMutation({
+    mutationFn: ({
+      draftId,
+      itemId,
+      data,
+    }: {
+      draftId: number;
+      itemId: number;
+      data: UpdateDraftItemInput;
+    }) =>
+      apiFetch<{ data: HandoverDraftItem }>(
+        `/v1/handover-drafts/${draftId}/items/${itemId}`,
+        { method: 'PATCH', body: JSON.stringify(data) },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Brisanje pogrešno ubačene stavke nacrta (zahtev 027/26) —
+ * DELETE /v1/handover-drafts/:id/items/:itemId. Hard delete (tabela nema
+ * `deleted_at`), trag ostaje u `audit_log`. Dozvoljeno samo dok je nacrt radni
+ * (nije zaključan ni „Predat" — backend 422). Razlika od „Isključi" (§6.5.4):
+ * isključena stavka OSTAJE u nacrtu kao evidentirana odluka.
+ */
+export function useDeleteDraftItem() {
+  const invalidate = useInvalidateDrafts();
+  return useMutation({
+    mutationFn: ({ draftId, itemId }: { draftId: number; itemId: number }) =>
+      apiFetch<{ data: { id: number; draftId: number; deleted: boolean } }>(
+        `/v1/handover-drafts/${draftId}/items/${itemId}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
 /** Izmena zaglavlja nacrta (samo dok nije zaključan). */
 export function useUpdateHandoverDraft() {
   const invalidate = useInvalidateDrafts();
@@ -420,27 +475,41 @@ export function useOpenDraftsLookup() {
   });
 }
 
-/** Ulazna stavka za `useAppendDraftItems` (isti oblik kao `CreateHandoverDraftItemInput`). */
-export type AppendDraftItemInput = CreateHandoverDraftItemInput;
+/**
+ * Ulazna stavka za `useAppendDraftItems` — 1:1 sa backend
+ * `dto/append-draft-items.dto.ts`. NAMERNO UŽE od `CreateHandoverDraftItemInput`:
+ * append ruta prima samo crtež i količinu, a polje se zove `quantity` (NE
+ * `quantityToProduce` kao pri kreiranju) — backend ostala polja stavke puni
+ * default-ima. Ranije je ovo bio alias na `CreateHandoverDraftItemInput`, pa bi
+ * poslata količina tiho pala na default 1 (nikad se nije slala; zahtev 027/26
+ * uvodi polje „Broj komada" u PDM dijalogu i time ugovor postaje bitan).
+ */
+export interface AppendDraftItemInput {
+  drawingId: number;
+  /** Broj komada za izradu; izostavljeno = 1 (backend default). */
+  quantity?: number;
+}
 
 /**
  * Dodaj stavke (crteže) u POSTOJEĆI otvoren nacrt (Agent B ugovor) — POST
- * /v1/handover-drafts/:id/items { items }. Backend vraća `meta.added` (koliko je
- * upisano) i `meta.skipped` (već postojeći / neodobreni preskočeni). Menja
- * detalj nacrta i broj stavki u listi, pa invalidira ceo `handover-drafts`
- * ključ (uklj. `open-lookup` i detalj otvorenog reda).
+ * /v1/handover-drafts/:id/items { items }. Backend vraća OSVEŽEN nacrt (isti
+ * oblik kao `GET :id`) i `meta`: `added` (koliko je upisano), `skipped`
+ * (BROJEVI crteža koji su već u nacrtu — string niz, ne broj) i `warnings`
+ * (soft §6.5.3/§6.5.4 upozorenja). Menja detalj nacrta i broj stavki u listi,
+ * pa invalidira ceo `handover-drafts` ključ (uklj. `open-lookup` i detalj
+ * otvorenog reda).
  */
 export function useAppendDraftItems() {
   const invalidate = useInvalidateDrafts();
   return useMutation({
     mutationFn: ({ id, items }: { id: number; items: AppendDraftItemInput[] }) =>
-      apiFetch<{ data: HandoverDraftItem[]; meta: { added: number; skipped: number } }>(
-        `/v1/handover-drafts/${id}/items`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ items }),
-        },
-      ),
+      apiFetch<{
+        data: HandoverDraftDetail;
+        meta: { added: number; skipped: string[]; warnings: DraftItemWarning[] };
+      }>(`/v1/handover-drafts/${id}/items`, {
+        method: 'POST',
+        body: JSON.stringify({ items }),
+      }),
     onSuccess: invalidate,
   });
 }
@@ -527,6 +596,14 @@ export interface HandoverListParams {
   pageSize?: number;
   statusId?: number | '';
   drawingNumber?: string;
+  /**
+   * Broj NACRTA primopredaje (`handover_drafts.draft_number`, kolona „Nacrt" u
+   * listi) — contains, case-insensitive. Zahtev 022/26. `drawing_handovers`
+   * nema `draft_id`, pa backend razrešava nacrt → crteže preko stavki nacrta
+   * (isti soft odnos koji puni `draftContext`), i preseca sa ostalim filterima
+   * po crtežu (`drawingNumber`, `projectId`).
+   */
+  draftNumber?: string;
   /** Broj RN (`work_orders.ident_number`) — contains, case-insensitive; razrešava se u primopredaje preko soft FK-a. */
   rn?: string;
   projectId?: number | '';
@@ -542,6 +619,7 @@ function buildHandoverQuery(params: HandoverListParams): string {
     pageSize: params.pageSize,
     statusId: params.statusId === '' ? undefined : params.statusId,
     drawingNumber: params.drawingNumber,
+    draftNumber: params.draftNumber,
     rn: params.rn,
     projectId: params.projectId === '' ? undefined : params.projectId,
     handoverWorkerId: params.handoverWorkerId === '' ? undefined : params.handoverWorkerId,

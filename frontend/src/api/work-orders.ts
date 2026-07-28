@@ -245,7 +245,12 @@ export function useWorkOrder(id: number | null) {
 
 function useInvalidate() {
   const qc = useQueryClient();
-  return () => qc.invalidateQueries({ queryKey: ['work-orders'] });
+  return () => {
+    qc.invalidateQueries({ queryKey: ['work-orders'] });
+    // TALAS AI-5 (review [15]): izmena operacije/količine menja plan i procenu —
+    // osveži i statistiku vremena (staleTime bi je inače držao zastarelom).
+    qc.invalidateQueries({ queryKey: ['time-estimate'] });
+  };
 }
 
 /** Kreiranje novog RN-a. */

@@ -32,6 +32,12 @@ export interface UiPrefs {
   theme: ThemePref;
   /** Ručno otvoreni domeni u accordion-u (stabilni slug-ovi NavDomain.id). */
   openDomains: string[];
+  /**
+   * Ručno razgranati moduli sa podmenijem (href-ovi NavModule-a) — PLAN_NAV_PODMENIJI §4.2.
+   * Paritet sa `openDomains`: AppShell se montira per-page, pa lokalni state ne bi preživeo
+   * navigaciju. Aktivni modul je razgranat automatski (ne mora biti u ovoj listi).
+   */
+  openModules: string[];
   /** Poslednje korišćeni moduli (href-ovi, MRU, max 8) — „Brzo"/Ctrl+K. */
   recentModules: string[];
 }
@@ -47,6 +53,7 @@ const KEYS = {
   layout: 'servosync.ui.layout',
   theme: 'servosync.ui.theme',
   openDomains: 'servosync.ui.openDomains',
+  openModules: 'servosync.ui.openModules',
   recentModules: 'servosync.ui.recentModules',
 } as const;
 
@@ -58,6 +65,7 @@ const DEFAULTS: UiPrefs = {
   sidebarLayout: 'C',
   theme: 'light',
   openDomains: [],
+  openModules: [],
   recentModules: [],
 };
 
@@ -137,6 +145,7 @@ function hydrateFromStorage(): void {
   const layout = safeGet(KEYS.layout);
   const theme = safeGet(KEYS.theme);
   const openDomains = parseStringArray(safeGet(KEYS.openDomains));
+  const openModules = parseStringArray(safeGet(KEYS.openModules));
   const recentModules = parseStringArray(safeGet(KEYS.recentModules));
   const resolvedTheme = isTheme(theme) ? theme : DEFAULTS.theme;
   state = {
@@ -145,6 +154,7 @@ function hydrateFromStorage(): void {
     sidebarLayout: isLayout(layout) ? layout : DEFAULTS.sidebarLayout,
     theme: resolvedTheme,
     openDomains: openDomains ?? DEFAULTS.openDomains,
+    openModules: openModules ?? DEFAULTS.openModules,
     recentModules: recentModules ? recentModules.slice(0, RECENT_MAX) : DEFAULTS.recentModules,
     hydrated: true,
   };
@@ -211,6 +221,21 @@ export function toggleDomain(id: string): void {
   setOpenDomains(next);
 }
 
+/** Zameni listu ručno razgranatih modula (persist). */
+export function setOpenModules(hrefs: string[]): void {
+  state = { ...state, openModules: hrefs };
+  safeSet(KEYS.openModules, JSON.stringify(hrefs));
+  emit();
+}
+
+/** Razgranaj/skupi podmeni jednog modula (ključ = href modula). */
+export function toggleModule(href: string): void {
+  const next = state.openModules.includes(href)
+    ? state.openModules.filter((h) => h !== href)
+    : [...state.openModules, href];
+  setOpenModules(next);
+}
+
 /** Upiši href na vrh MRU liste poslednje korišćenih modula (max 8). */
 export function pushRecentModule(href: string): void {
   const next = [href, ...state.recentModules.filter((h) => h !== href)].slice(0, RECENT_MAX);
@@ -243,6 +268,8 @@ export interface UseUiPrefs extends UiStore {
   setTheme: (theme: ThemePref) => void;
   setOpenDomains: (ids: string[]) => void;
   toggleDomain: (id: string) => void;
+  setOpenModules: (hrefs: string[]) => void;
+  toggleModule: (href: string) => void;
   pushRecentModule: (href: string) => void;
 }
 
@@ -264,6 +291,8 @@ export function useUiPrefs(): UseUiPrefs {
     setTheme,
     setOpenDomains,
     toggleDomain,
+    setOpenModules,
+    toggleModule,
     pushRecentModule,
   };
 }

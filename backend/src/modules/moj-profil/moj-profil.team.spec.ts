@@ -39,7 +39,7 @@ function makeSvc() {
       ) => ({ idempotent: false, result: await fn(tx) }),
     ),
   };
-  const svc = new MojProfilService(sy15 as unknown as Sy15Service);
+  const svc = new MojProfilService(sy15 as unknown as Sy15Service, { enabled: false, dispatchKadr: jest.fn() } as never);
   return { svc, sy15, tx };
 }
 

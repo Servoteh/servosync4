@@ -1,6 +1,9 @@
 # PLAN — ServoSync 3.0 mobilna aplikacija (`/mob`)
 
-**Datum:** 25.07.2026 · **Odluka:** Nenad (posle istraživanja stanja) · **Status:** Faza 0 u izradi
+**Datum:** 25.07.2026 · **Odluka:** Nenad (posle istraživanja stanja) ·
+**Status: FAZE 0–2 + SVE ODLUKE ŽIVE (26.07); ⏸ PAUZA do posle 03.08 (Nenad na odmoru) —
+BEZ flipa `/m`, svi ostaju na 1.0; Faza 3 tek po povratku.**
+**Kompletan presek stanja + šta posle: [MOB_STANJE_2026-07-26.md](MOB_STANJE_2026-07-26.md).**
 
 ## 1. Odluka
 
@@ -47,9 +50,44 @@ samo na LAN `:3000` bake-u). `/mob` je isti origin kao `/m`, pa APK WebView pri 
 | Faza | Sadržaj | Status |
 |---|---|---|
 | **0** | `/mob` hub (kartice po pravima) + seoba 9 gotovih 3.0 ekrana sa `/m/*` na `/mob/*` (stari `/m/*` = redirect stubovi za LAN) | u izradi |
-| **1** | Prečice sa 1.0 huba na `/mob` ekrane sa `#ss_token` (obrazac Kadrovska → `/mob/prisustvo`); modul po modul, trenutno reverzibilno. Prioritet: **praćenje** (1.0 `/m/pracenje` čita zamrznute sy15 podatke — plan F5 O8) | čeka Fazu 0 |
-| **2** | Popuna pariteta: odsustva/GO, za-mene, profil, sati, odobravanja, onboarding, reversi, kadrovska, projektovanje, magacin ekstre (batch/lookup/istorija), sastanci write dopune, app-lock | plan |
+| **1** | Prečice sa 1.0 huba na `/mob` ekrane sa `#ss_token` (obrazac Kadrovska → `/mob/prisustvo`); modul po modul, trenutno reverzibilno. Prioritet: **praćenje** (1.0 `/m/pracenje` čita zamrznute sy15 podatke — plan F5 O8) | **ŽIVA 25.07** — 1.0 `9de4d6f`: hub kartica „ServoSync 3.0" (svi) + `/m/pracenje` auto-forward na `/mob/pracenje` (`location.replace`, ručno dugme fallback, beg `localStorage ss2_cutover='off'`); deploy verifikovan na pages.dev i kroz `/m` proxy |
+| **2** | Popuna pariteta: odsustva/GO, za-mene, profil, sati, odobravanja, onboarding, reversi, kadrovska, projektovanje, magacin ekstre (batch/lookup/istorija), sastanci write dopune, app-lock | **IZGRAĐENA 26.07** (v. §4a) — izuzeci: onboarding self-check (BE gap), sastanci write ekrani (desktop), app-lock (Faza 3) |
 | **3** | Nova Capacitor ljuska za 3.0 (`server.url → /mob`), push (FCM), pa flip `/m` → redirect na `/mob` i gašenje pages.dev (poklapa se sa RADNI_PLAN Blok B4 + Blok D) | kraj |
+
+## 4a. Faza 2 — realizacija (26.07, grana feat/mob-faza2)
+
+**11 novih `/mob` ekrana** (tanki omotači nad postojećim API-jima; nula duplirane poslovne
+logike): `sati` · `odsustva` (sa PDF rešenja za odobrene) · `odobravanja` (dvostepeno,
++1 dan GO za makeup) · `za-mene` · `profil` · `kadrovska` (read, `?id=` detalj, bez PII) ·
+`neusaglasenosti` · `lokacije/istorija` („moja istorija", BE `mine=true`) ·
+`lokacije/pretraga` („gde je crtež?") · `lokacije/batch` (kontinuirani sken + queue) ·
+`reversi` (read; akcije samo `reversi.manage`) · `projektovanje` (progres + komentari).
+Hub: grupe **Montaža** (Izveštaj, Neusaglašenosti) i **Magacin** (Gde je crtež?, Batch,
+Moja istorija) + kartice za sve novo. Popravka: `mob/sastanci` write dugmad iza
+`sastanci.edit` (ranije 403). Jedina BE izmena: `mine=true` na
+`GET /v1/locations/movements` (fail-closed, permisija nepromenjena).
+
+### Otvorene permisijske ODLUKE (Nenad) — ne implementirati unapred
+
+1. ✅ **Reversi self-return — PRESUĐENO 26.07 (Nenad): NE.** Radnik nikad ne vraća sam;
+   magacioner potvrđuje i vraća umesto njega (`reversi.manage`). Mobilni je već bio
+   takav; desktop defekt (dugmad „Brzi povraćaj"/„Vrati rezni" vidljiva svima → 403)
+   ispravljen istog dana — sva tri dugmeta u „Moji alati" iza `reversi.manage`.
+2. ✅ **Onboarding self-check — PRESUĐENO 26.07 (Nenad): DA.** Implementirano:
+   `PATCH /v1/profile/onboarding/tasks/:id` + sy15 RPC `profile_set_my_onboarding_task`
+   (SECURITY DEFINER; vlasništvo = zadatak u AKTIVNOM run-u mog zaposlenog; done ↔
+   pending; 'skipped' ostaje HR-u) + ekran `/mob/onboarding` sa hub karticom.
+3. ✅ **Sastanci — PRESUĐENO 26.07 (Nenad): DA za oba.** Implementirano kroz sy15
+   RPC-ove po RSVP obrascu (RLS politike NETAKNUTE): `sastanci_set_my_akcija_status`
+   (status SOPSTVENE akcije, otvoren/u_toku/zavrsen) i `sastanci_set_my_priprema`
+   (samo pripremljen + tekst; pozvan/prisutan ostaje zapisničaru). Nove read-level
+   rute `POST /akcije/:id/moj-status` i `POST /:id/moja-priprema`; `/mob/za-mene`
+   status dugmad za sve, `/mob/sastanci` vlasnički status + „Moja priprema" blok.
+   SQL: `backend/docs/design/authz-snapshots/odluke23-self-rpc-2026-07-26.sql`
+   (primenjen na živu sy15 26.07).
+4. ⏸ **Reversi LZO grupisanje — ODLOŽENO 26.07 (Nenad)**: biće različite grupe
+   proizvoda, radi se tek POSLE migracije iz BigBit-a; reversi se do tada ne koristi
+   kompletno — postojeće regex grupisanje ostaje kao privremeno.
 
 ## 5. Mapa modula: 1.0 `/m` → 3.0 `/mob`
 
@@ -83,6 +121,19 @@ samo na LAN `:3000` bake-u). `/mob` je isti origin kao `/m`, pa APK WebView pri 
 Obim 1.0 mobilnog (popis 25.07): 25 ruta, ~9.400 LOC ekrana + ~1.900 CSS + ~950 mobilnih
 servisa; **bez sopstvenog backenda** (sve reuse desktop servisa) — zato je 3.0 mobilni ekran
 po pravilu tanak omotač nad postojećim komponentama (dokaz: `/m/montaza` = 61 linija).
+
+## 5a. Deploy 1.0 (naučeno u Fazi 1, 25.07)
+
+- **Živa produkcijska grana 1.0 repoa = `cutover/front-repoint`** (main je zastareo i divergiran
+  — 210/148 komita razlike; NE spajati bez posebne odluke).
+- Push na cutover granu pravi samo **preview** deployment (branch alias). **Produkcija
+  pages.dev** = GH workflow **„Deploy Cloudflare Pages"** `workflow_dispatch` nad
+  `cutover/front-repoint` sa input-om **`promote_to_production=true`** (dodato `9e77b51`;
+  dodaje `--branch=main` wrangler-u).
+- ⚠️ **Nikad lokalni `vite build` + wrangler deploy za 1.0**: lokalni `.env` i dalje pokazuje
+  na ugašeni cloud Supabase — samo CI build sa GH secrets.
+- SSO prelaz 1.0→3.0: `src/lib/ss2Go.js` (klon `goLivePrisustvo`); auto-forward UVEK sa
+  `replace: true` (back-petlja).
 
 ## 6. Otvorena pitanja
 

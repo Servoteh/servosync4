@@ -170,27 +170,39 @@ describe("Radni nalozi permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // READ rute — SAMO JwtAuthGuard (bez PermissionsGuard): svaki prijavljen prolazi.
+  // READ rute — sada gate-ovane rn.read (fix/rn-get-guardovi): rola sa rn.read
+  // prolazi, bez nje 403. Ranije su bile samo iza JwtAuthGuard (svaki prijavljen).
   // ---------------------------------------------------------------------------
-  describe("READ rute (ungated iza JWT-a) — svaki prijavljen 200, bez identiteta 403", () => {
-    it("GET / (list) → 200 čak i za user/nepoznatu (nema PermissionsGuard)", async () => {
-      await get("", "user").expect(200);
-      await get("", "nepoznata_rola").expect(200);
-      await get("", "proizvodni_radnik").expect(200);
+  const RN_READ_ROLES = rolesWith(PERMISSIONS.RN_READ);
+  const NO_RN_READ = rolesWithout(PERMISSIONS.RN_READ);
+  describe("READ rute (rn.read gate) — sa pravom 200, bez prava 403", () => {
+    it.each(RN_READ_ROLES)("GET / (list) → 200 za %s (ima rn.read)", async (role) => {
+      await get("", role).expect(200);
     });
-    it("GET /:id (findOne) → 200 za bilo koju prijavljenu rolu", async () => {
-      await get("/1", "user").expect(200);
+    it.each(NO_RN_READ)("GET / (list) → 403 za %s (nema rn.read)", async (role) => {
+      await get("", role).expect(403);
+    });
+    it.each(["user", "nepoznata_rola"])(
+      "GET / → 403 za %s (default deny — dokaz enforcement-a)",
+      async (role) => {
+        await get("", role).expect(403);
+      },
+    );
+    it("GET /:id (findOne) → 200 za viewer (baseline rn.read), 403 bez prava", async () => {
       await get("/1", "viewer").expect(200);
+      await get("/1", "user").expect(403);
     });
-    it("GET /operations/queue → 200 (literal pre :id)", async () => {
-      await get("/operations/queue", "user").expect(200);
+    it("GET /operations/queue → 200 sa rn.read, 403 bez (literal pre :id)", async () => {
+      await get("/operations/queue", "viewer").expect(200);
       expect(svcMock.operationQueue).toHaveBeenCalled();
+      await get("/operations/queue", "user").expect(403);
     });
-    it("GET /:id/print → 200 (PDF stream, ungated)", async () => {
-      await get("/1/print", "user").expect(200);
+    it("GET /:id/print → 200 sa rn.read (PDF stream), 403 bez", async () => {
+      await get("/1/print", "viewer").expect(200);
       expect(printMock.buildRnPdf).toHaveBeenCalled();
+      await get("/1/print", "user").expect(403);
     });
-    it("GET /:id → 400 za ne-integer param (ParseIntPipe)", async () => {
+    it("GET /:id → 400 za ne-integer param (ParseIntPipe, posle guarda za admin)", async () => {
       await get("/nije-broj", "admin").expect(400);
     });
     it("bez identiteta → 403 (JwtAuthGuard stub)", async () => {

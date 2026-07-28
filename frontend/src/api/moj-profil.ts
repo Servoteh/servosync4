@@ -67,7 +67,33 @@ export interface ProfileSummary {
   unacknowledgedTalks: number;
 }
 
-export type VacationBalance = { days_remaining?: number | null; year?: number } & Record<string, unknown>;
+export type VacationBalance = {
+  /** Kalendarski saldo: pravo za CELU godinu − iskorišćeno − planirano. */
+  days_remaining?: number | null;
+  /** Saldo po pravu STEČENOM do danas (1/12 po navršenom mesecu) — ono što 1.0 prikazuje. */
+  days_remaining_accrued?: number | null;
+  year?: number;
+} & Record<string, unknown>;
+
+/**
+ * „Preostalo dana GO" za PRIKAZ korisniku — 1.0 kanon (`mojProfil/index.js:1222, 2719`):
+ * `days_remaining_accrued ?? days_remaining`.
+ *
+ * ⚠️ ZAHTEV 028/26: 3.0 je svuda prikazivao KALENDARSKI `days_remaining` (pravo do kraja
+ * godine), pa je npr. radnik koji je do jula stekao 7 dana video 15. Pogađalo je 132/135
+ * zaposlenih. Kalendarski broj ostaje tvrda kapa na serveru (avansno korišćenje je
+ * dozvoljeno), ali se KORISNIKU prikazuje stečeno. Jedno mesto istine za sve ekrane.
+ */
+export function vacationRemaining(
+  balance: { days_remaining?: number | null; days_remaining_accrued?: number | null } | null | undefined,
+): number | null {
+  if (!balance) return null;
+  const accrued = balance.days_remaining_accrued;
+  if (accrued != null && Number.isFinite(Number(accrued))) return Number(accrued);
+  const calendar = balance.days_remaining;
+  if (calendar != null && Number.isFinite(Number(calendar))) return Number(calendar);
+  return null;
+}
 export type VacationRequest = {
   id: string;
   year: number;
@@ -198,7 +224,8 @@ export interface TalkCorrectivePlan {
   followup_date: string | null;
   measures: TalkMeasure[];
 }
-export type TalkDetail = {
+/** Jedan red `employee_talks` (snake_case — BE ga vraća kao sirov red iz baze). */
+export type TalkRecord = {
   id: string;
   talk_type?: string;
   title?: string | null;
@@ -211,8 +238,23 @@ export type TalkDetail = {
   raise_percent?: number | null;
   raise_effective_from?: string | null;
   raise_note?: string | null;
+};
+
+/**
+ * Odgovor `GET /moj-profil/talks/:id`.
+ *
+ * ⚠️ AUDIT-K3 (26.07): BE gnezdi red razgovora pod ključ `talk`, a ovaj tip je
+ * ranije bio RAVAN uz `& Record<string, unknown>` — taj catch-all je ugasio
+ * proveru tipova, pa je modal čitao `d.zapisnik_md` (uvek `undefined`) umesto
+ * `d.talk.zapisnik_md`. Posledica: zaposleni je otvarao „zapisnik" i video
+ * prazno, a blok „Odluka o zaradi" (procenat povišice, datum, obrazloženje) se
+ * uopšte nije renderovao. Catch-all je namerno UKLONJEN da tsc hvata ovaj drift.
+ */
+export type TalkDetail = {
+  talk: TalkRecord;
   correctivePlans?: TalkCorrectivePlan[];
-} & Record<string, unknown>;
+  correctiveMeasures?: unknown[];
+};
 
 export interface Expectation {
   id: string;
@@ -282,6 +324,8 @@ export type TeamAbsence = {
 /** GO saldo člana — sirov `v_vacation_balance` red (snake kolone). */
 export type TeamBalance = {
   days_remaining?: number | null;
+  /** Stečeno do danas — za prikaz se koristi ovo (vidi `vacationRemaining`). */
+  days_remaining_accrued?: number | null;
   days_earned?: number | null;
   days_total?: number | null;
   days_carried_over?: number | null;
@@ -438,6 +482,22 @@ export function useOnboarding() {
     queryFn: () => apiFetch<{ data: OnboardingData | null; meta?: EnvelopeMeta }>(`${BASE}/onboarding`),
   });
 }
+/** ✅ Radnik štiklira SOPSTVENI onboarding zadatak (odluka 26.07): done ↔ pending.
+ *  Server (SECURITY DEFINER RPC) presuđuje vlasništvo; 'skipped' ostaje HR-u. */
+export function useSetMyOnboardingTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; done: boolean }) =>
+      apiFetch<{ data: { status: string } }>(`${BASE}/onboarding/tasks/${v.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ done: v.done }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: KEYS.onboarding });
+    },
+  });
+}
+
 /** 🗓 Moja odsustva (tekuća godina). */
 export function useAbsences() {
   return useQuery({
@@ -641,6 +701,67 @@ export function useSelfAssessment(period?: string, enabled = true) {
     queryFn: () => apiFetch<{ data: SelfAssessmentData | null; meta?: EnvelopeMeta }>(`${BASE}/assessment/self${qs({ period })}`),
   });
 }
+
+/* ── 360° OCENJIVAČ (peer/leader) — nativni tok (AUDIT-K6) ──────────────────
+ * Zamena za 1.0 `ocena.html?token=`: ocenjivači su zaposleni sa nalogom, pa se
+ * ocena predaje autentifikovano, bez tajne u mejlu. */
+export interface RaterInboxRow {
+  rater_id: string;
+  rater_kind: string;
+  rater_status: string | null;
+  submitted_at: string | null;
+  assessment_id: string;
+  assessment_status: string | null;
+  period_label: string | null;
+  employee_name: string | null;
+}
+/** `SELECT a.*` iz `assessments` — SIROV red (snake_case), za razliku od
+ *  `SelfAssessmentInfo` koji BE mapira u camelCase. */
+export interface RaterAssessmentInfo {
+  id: string;
+  status: string; // draft | collecting | closed | shared
+  period_label?: string | null;
+  employee_name?: string | null;
+}
+export interface RaterAssessmentData {
+  raterId: string;
+  raterKind: string;
+  assessmentId: string;
+  assessment: RaterAssessmentInfo | null;
+  scope: AssessmentScopeRow[];
+  framework: FrameworkGroup[];
+  questions: CompetenceQuestion[];
+  scores: SelfScore[];
+  answers: SelfAnswer[];
+}
+
+/** Moja zaduženja za ocenjivanje kolega/podređenih koja čekaju popunjavanje. */
+export function useRaterInbox(enabled = true) {
+  return useQuery({
+    queryKey: ['profile', 'assessment', 'rater-inbox'] as const,
+    enabled,
+    retry: false,
+    queryFn: () => apiFetch<{ data: RaterInboxRow[] }>(`${BASE}/assessment/rater`),
+  });
+}
+export function useRaterAssessment(raterId: string | null) {
+  return useQuery({
+    queryKey: ['profile', 'assessment', 'rater', raterId] as const,
+    enabled: !!raterId,
+    retry: false,
+    queryFn: () => apiFetch<{ data: RaterAssessmentData | null }>(`${BASE}/assessment/rater/${raterId}`),
+  });
+}
+export const useSaveRaterScores = () =>
+  useProfileMutation<{ raterId: string; items: { competenceId: number; level?: number | null; comment?: string }[] }>((v) =>
+    post(`/assessment/rater/${v.raterId}/scores`, { raterId: v.raterId, items: v.items }),
+  );
+export const useSaveRaterAnswers = () =>
+  useProfileMutation<{ raterId: string; items: { questionCode: string; answerText?: string }[] }>((v) =>
+    post(`/assessment/rater/${v.raterId}/answers`, { raterId: v.raterId, items: v.items }),
+  );
+export const useSubmitRater = () =>
+  useProfileMutation<{ raterId: string }>((v) => post(`/assessment/rater/${v.raterId}/submit`, {}));
 
 export const useOpenSelfAssessment = () =>
   useProfileMutation<{ period?: string }, TxResponse<{ assessmentId: unknown }>>((v) => post('/assessment/self/open', v));

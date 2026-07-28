@@ -115,8 +115,10 @@ function TalkDetailModal({ talk, onClose }: { talk: TalkRow; onClose: () => void
   const q = useTalkDetail(talk.id);
   const ackM = useAcknowledgeTalk();
   const d = q.data?.data;
+  // AUDIT-K3: polja razgovora su UGNJEŽDENA pod `talk` (korektivni planovi nisu).
+  const t = d?.talk;
   const typeLabel = (talk.talk_type && TALK_TYPE_LABEL[talk.talk_type]) || 'Razgovor';
-  const acked = !!(d?.acknowledged_at ?? talk.acknowledged_at);
+  const acked = !!(t?.acknowledged_at ?? talk.acknowledged_at);
   const canAck = !acked && !!talk.shared_at;
 
   const plans = d?.correctivePlans ?? [];
@@ -147,29 +149,29 @@ function TalkDetailModal({ talk, onClose }: { talk: TalkRow; onClose: () => void
       ) : (
         <div className="space-y-3">
           <p className="text-xs text-ink-secondary">
-            {d?.talk_date ? formatDate(d.talk_date) : talk.talk_date ? formatDate(talk.talk_date) : ''}
-            {d?.conducted_by ? ` · Vodio: ${d.conducted_by}` : ''}
-            {acked && d?.acknowledged_at ? ` · potvrdio/la si ${formatDate(d.acknowledged_at)}` : ''}
+            {t?.talk_date ? formatDate(t.talk_date) : talk.talk_date ? formatDate(talk.talk_date) : ''}
+            {t?.conducted_by ? ` · Vodio: ${t.conducted_by}` : ''}
+            {acked && t?.acknowledged_at ? ` · potvrdio/la si ${formatDate(t.acknowledged_at)}` : ''}
           </p>
 
           <div className="rounded-control border border-line-soft p-3">
             <h4 className="mb-1 text-sm font-semibold text-ink">Zapisnik</h4>
-            {d?.zapisnik_md ? (
-              <Markdown source={d.zapisnik_md} className="text-sm text-ink-secondary" />
+            {t?.zapisnik_md ? (
+              <Markdown source={t.zapisnik_md} className="text-sm text-ink-secondary" />
             ) : (
               <p className="text-sm text-ink-disabled">—</p>
             )}
           </div>
 
-          {talk.talk_type === 'godisnji' && d?.raise_decision && (
+          {talk.talk_type === 'godisnji' && t?.raise_decision && (
             <div className="rounded-control border border-line-soft p-3">
               <h4 className="mb-1 flex items-center gap-1.5 text-sm font-semibold text-ink"><Coins className="h-4 w-4" aria-hidden /> Odluka o zaradi</h4>
               <p className="text-sm text-ink">
-                <strong>{RAISE_DECISION_LABEL[d.raise_decision] ?? d.raise_decision}</strong>
-                {d.raise_percent != null ? ` · ${d.raise_percent}%` : ''}
-                {d.raise_effective_from ? ` · važi od ${formatDate(d.raise_effective_from)}` : ''}
+                <strong>{RAISE_DECISION_LABEL[t.raise_decision] ?? t.raise_decision}</strong>
+                {t.raise_percent != null ? ` · ${t.raise_percent}%` : ''}
+                {t.raise_effective_from ? ` · važi od ${formatDate(t.raise_effective_from)}` : ''}
               </p>
-              {d.raise_note && <p className="mt-1 text-sm text-ink-secondary">{d.raise_note}</p>}
+              {t.raise_note && <p className="mt-1 text-sm text-ink-secondary">{t.raise_note}</p>}
             </div>
           )}
 

@@ -41,6 +41,10 @@ import {
   AppendDraftItemsDto,
   validateAppendDraftItems,
 } from "./dto/append-draft-items.dto";
+import {
+  UpdateDraftItemDto,
+  validateUpdateDraftItem,
+} from "./dto/update-draft-item.dto";
 import { DraftNumberingService } from "./draft-numbering.service";
 import { HANDOVER_STATUS } from "./handovers.service";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -58,12 +62,87 @@ const DRAWING_SELECT = {
 } satisfies Prisma.DrawingSelect;
 
 /**
- * `handover_draft_statuses.id` za "Predat" (§3.2). Seed je nepotvrđen (isti
- * razlog zbog kog `create()` upisuje `statusId: 0` bez lookup provere), pa se u
- * `submit()` postavlja SAMO ako taj lookup red postoji — inače se nacrt samo
- * zaključa (`isLocked`), bez FK 500 na nepostojeći status.
+ * `handover_draft_statuses` (§3.2 + seed migracija `20260710090000`): id-jevi su
+ * fiksni, nazivi izvedeni iz legacy semantike (potvrda biroa u §8). Seed je
+ * nepotvrđen (isti razlog zbog kog `create()` upisuje `statusId: 0` bez lookup
+ * provere), pa `submit()` status „Predat" postavlja SAMO ako taj lookup red
+ * postoji — inače se nacrt samo zaključa (`isLocked`), bez FK 500.
  */
-const DRAFT_STATUS_SUBMITTED = 2;
+export const DRAFT_STATUS = {
+  /** 0 — nacrt tek započet (jedini status koji `create()` upisuje). */
+  FOR_CREATION: 0,
+  /** 1 — „Spreman za primopredaju" (§5.2): gotov, čeka predaju. */
+  FOR_HANDOVER: 1,
+  /** 2 — predat; postavlja ga ISKLJUČIVO `submit()`, uz `is_locked = true`. */
+  SUBMITTED: 2,
+  /** 3 — sve njegove primopredaje odbijene (sistemski izvod, §5.2). */
+  REJECTED: 3,
+  /** 4 — sve njegove primopredaje lansirane (sistemski izvod, §5.2). */
+  LAUNCHED: 4,
+  /** 5 — projektant otkazao nacrt (§5.2; samo dok nije zaključan). */
+  CANCELLED: 5,
+} as const;
+
+const DRAFT_STATUS_NAME: Readonly<Record<number, string>> = {
+  [DRAFT_STATUS.FOR_CREATION]: "Za kreiranje",
+  [DRAFT_STATUS.FOR_HANDOVER]: "Za primopredaju",
+  [DRAFT_STATUS.SUBMITTED]: "Predat",
+  [DRAFT_STATUS.REJECTED]: "Odbijen",
+  [DRAFT_STATUS.LAUNCHED]: "Lansiran",
+  [DRAFT_STATUS.CANCELLED]: "Storniran",
+};
+
+/** „Lansiran" (4) — naziv + id u poruci greške (id je ono što FE šalje). */
+const draftStatusLabel = (id: number): string =>
+  `„${DRAFT_STATUS_NAME[id] ?? "nepoznat"}" (${id})`;
+
+/**
+ * ALLOWLIST statusnih prelaza kroz `PATCH /handover-drafts/:id` (presuda Nenad
+ * 27.07). Do sada je PATCH upisivao BILO KOJI postojeći `status_id` — nacrt se
+ * ručno dizao npr. na „Lansiran" (4), a i dalje je bio radni (`is_locked=false`,
+ * status ≠ „Predat"), pa je primao izmene stavki (append/PATCH/DELETE item,
+ * `loadEditableDraft`). Rupa zatečena uz zahtev 027/26.
+ *
+ * Pravilo: kroz PATCH se pišu SAMO radni statusi — „Za kreiranje" (0),
+ * „Za primopredaju" (1) i „Storniran" (5). Statusi 2/3/4 pripadaju SVOJIM
+ * tokovima i ovim putem se ne postavljaju nikad:
+ *  - „Predat" (2) ⇒ `POST :id/submit` (zaključa nacrt i kreira `drawing_handovers`),
+ *  - „Odbijen" (3) / „Lansiran" (4) ⇒ izvod iz toka primopredaja (odobravanje /
+ *    lansiranje RN-a nad `drawing_handovers`), §5.2 „Automatski (sistemski compute)".
+ *
+ * Ključ = zatečeni status, vrednost = dozvoljeni ciljevi. Prelaz „u samog sebe"
+ * (FE uvek šalje `statusId`, i kad se menja samo napomena) se ne proverava —
+ * ne-promena nije prelaz. Redovi 2/3/4 nose SAMO put sanacije nazad na „Za
+ * kreiranje": nacrt u tim statusima je ovde uopšte dostupan jedino ako je
+ * `is_locked=false` (redovan tok ga zaključava pri predaji), tj. ako je zatečen
+ * iz doba pre ove brave — bez tog puta bi ostao zauvek zamrznut.
+ * §5.2 „Bilo koji → Storniran" je pokriven: `update()` odbija zaključan nacrt.
+ */
+const ALLOWED_DRAFT_STATUS_TRANSITIONS: Readonly<
+  Record<number, readonly number[]>
+> = {
+  [DRAFT_STATUS.FOR_CREATION]: [
+    DRAFT_STATUS.FOR_HANDOVER,
+    DRAFT_STATUS.CANCELLED,
+  ],
+  [DRAFT_STATUS.FOR_HANDOVER]: [
+    DRAFT_STATUS.FOR_CREATION,
+    DRAFT_STATUS.CANCELLED,
+  ],
+  [DRAFT_STATUS.CANCELLED]: [
+    DRAFT_STATUS.FOR_CREATION,
+    DRAFT_STATUS.FOR_HANDOVER,
+  ],
+  [DRAFT_STATUS.SUBMITTED]: [DRAFT_STATUS.FOR_CREATION],
+  [DRAFT_STATUS.REJECTED]: [DRAFT_STATUS.FOR_CREATION],
+  [DRAFT_STATUS.LAUNCHED]: [DRAFT_STATUS.FOR_CREATION],
+};
+
+/** Statusi iz kojih se nacrt sme predati (§6.3 t.1) — radni, pre predaje. */
+const SUBMITTABLE_DRAFT_STATUSES: readonly number[] = [
+  DRAFT_STATUS.FOR_CREATION,
+  DRAFT_STATUS.FOR_HANDOVER,
+];
 
 const DRAFT_SELECT = {
   id: true,
@@ -591,7 +670,7 @@ export class HandoverDraftsService {
       },
     });
     if (!draft) throw new NotFoundException(`Nacrt ${id} ne postoji.`);
-    if (draft.isLocked || draft.statusId === DRAFT_STATUS_SUBMITTED)
+    if (draft.isLocked || draft.statusId === DRAFT_STATUS.SUBMITTED)
       throw new UnprocessableEntityException(
         "Nacrt je zaključan (predat) — dodavanje stavki više nije moguće; napravite novi nacrt.",
       );
@@ -702,6 +781,109 @@ export class HandoverDraftsService {
     // Zadrži redosled ulaznih id-jeva; nepoznat id (teorijski) → padne na id string.
     const byIdMap = new Map(rows.map((r) => [r.id, r.drawingNumber]));
     return uniq.map((dId) => byIdMap.get(dId) ?? String(dId));
+  }
+
+  // ----------------------------------------- ITEM UPDATE / DELETE (027/26)
+
+  /**
+   * Kapija ITEM-level izmena nacrta (append / izmena / brisanje stavke): nacrt
+   * mora da postoji i da je još „radni" — NIJE zaključan (`is_locked`) i NIJE u
+   * statusu „Predat" (`DRAFT_STATUS.SUBMITTED`). Isti kriterijum koji
+   * `appendItems` koristi od 16.07: posle predaje dokument živi kao
+   * `drawing_handovers` (tok odobravanja), nacrt je samo trag — zato se njegove
+   * stavke tada ne diraju ni dodavanjem ni izmenom/brisanjem.
+   * `tail` je nastavak srpske poruke (rod se slaže sa radnjom).
+   */
+  private async loadEditableDraft(id: number, tail: string) {
+    const draft = await this.prisma.handoverDraft.findUnique({
+      where: { id },
+      select: { id: true, isLocked: true, statusId: true },
+    });
+    if (!draft) throw new NotFoundException(`Nacrt ${id} ne postoji.`);
+    if (draft.isLocked || draft.statusId === DRAFT_STATUS.SUBMITTED)
+      throw new UnprocessableEntityException(
+        `Nacrt je zaključan (predat) — ${tail}`,
+      );
+    return draft;
+  }
+
+  /** Stavka mora da pripada BAŠ tom nacrtu (tuđa/nepostojeća → 404, ne 403). */
+  private async loadDraftItem(draftId: number, itemId: number) {
+    const item = await this.prisma.handoverDraftItem.findUnique({
+      where: { id: itemId },
+      select: { id: true, draftId: true },
+    });
+    if (!item || item.draftId !== draftId)
+      throw new NotFoundException(
+        `Stavka ${itemId} ne postoji na nacrtu ${draftId}.`,
+      );
+    return item;
+  }
+
+  /**
+   * Izmena postojeće stavke nacrta — zahtev 027/26 (Igor 26.07): „izmeni dugme
+   * ne dozvoljava da se menja broj komada". Menja `quantity_to_produce` i/ili
+   * `note` dok je nacrt radni (vidi `loadEditableDraft`). Crtež stavke se ovim
+   * putem NE menja (zamena crteža bi zaobišla §6.5.3 preduslove i §6.5.4
+   * pre-check koji se računaju nad crtežom pri dodavanju) — za to služe
+   * brisanje stavke + „Dodaj u nacrt".
+   *
+   * Odluka projektanta (§6.5.4) se NE dira: sporna stavka ostaje sporna i posle
+   * korekcije količine, pa `submit()` gate i dalje traži odluku. `decideItem`
+   * akcija 3 („Dopuni") ostaje zaseban, evidentiran put (upisuje
+   * `decision_action`/`decision_date_time`); ovo je obična ispravka unosa.
+   *
+   * Ko je menjao se vidi u `audit_log` — globalni `AuditInterceptor` beleži
+   * svaku mutirajuću HTTP rutu (aktera, telo, entitet).
+   */
+  async updateItem(draftId: number, itemId: number, dto: UpdateDraftItemDto) {
+    validateUpdateDraftItem(dto);
+    await this.loadEditableDraft(draftId, "izmena stavke više nije moguća.");
+    await this.loadDraftItem(draftId, itemId);
+
+    const data: Prisma.HandoverDraftItemUncheckedUpdateInput = {};
+    if (dto.quantityToProduce !== undefined)
+      data.quantityToProduce = dto.quantityToProduce;
+    if (dto.note !== undefined) data.note = dto.note?.trim() || null;
+
+    const updated = await this.prisma.handoverDraftItem.update({
+      where: { id: itemId },
+      data,
+    });
+
+    const drawings = await this.resolveDrawingsByIds(
+      uniqueIds([updated.drawingId, updated.mainDrawingId]),
+    );
+    return {
+      data: {
+        ...updated,
+        drawing: drawings.get(updated.drawingId) ?? null,
+        mainDrawing: updated.mainDrawingId
+          ? (drawings.get(updated.mainDrawingId) ?? null)
+          : null,
+      },
+    };
+  }
+
+  /**
+   * Brisanje pogrešno ubačene stavke nacrta — zahtev 027/26 (Igor 26.07):
+   * „treba da se brišu delovi u primopredaji ako se pogrešno ubace".
+   *
+   * HARD delete, kao i `remove()` nad zaglavljem: `handover_draft_items` NEMA
+   * `deleted_at` u šemi (vidi napomenu na vrhu fajla), a izmena šeme nije u
+   * skopu ovog zahteva. Trag ko je i šta obrisao ostaje u `audit_log`
+   * (globalni `AuditInterceptor` beleži DELETE rutu sa akterom).
+   *
+   * Razlika u odnosu na §6.5.4 „Isključi" (odluka 1): isključena stavka OSTAJE
+   * u nacrtu kao evidentirana odluka i samo ne ide u primopredaju; brisanje je
+   * za stavku koja tu uopšte nije trebalo da se nađe.
+   */
+  async removeItem(draftId: number, itemId: number) {
+    await this.loadEditableDraft(draftId, "brisanje stavke više nije moguće.");
+    await this.loadDraftItem(draftId, itemId);
+
+    await this.prisma.handoverDraftItem.delete({ where: { id: itemId } });
+    return { data: { id: itemId, draftId, deleted: true } };
   }
 
   // ------------------------- §6.5.3 / §6.5.4 preduslovi i pre-check stavki
@@ -1026,12 +1208,17 @@ export class HandoverDraftsService {
 
   // ------------------------------------------------------------- UPDATE
 
+  /**
+   * Izmena ZAGLAVLJA nacrta (§6.1). Status se NE postavlja slobodno: prelaz mora
+   * biti u `ALLOWED_DRAFT_STATUS_TRANSITIONS` (presuda Nenad 27.07) — vidi
+   * `assertStatusTransition`.
+   */
   async update(id: number, dto: UpdateHandoverDraftDto) {
     validateUpdateHandoverDraft(dto);
 
     const existing = await this.prisma.handoverDraft.findUnique({
       where: { id },
-      select: { id: true, isLocked: true, projectId: true },
+      select: { id: true, isLocked: true, projectId: true, statusId: true },
     });
     if (!existing) throw new NotFoundException(`Nacrt ${id} ne postoji.`);
     if (existing.isLocked)
@@ -1068,7 +1255,9 @@ export class HandoverDraftsService {
         );
     }
 
-    if (dto.statusId !== undefined) {
+    // Status: ALLOWLIST prelaza (presuda Nenad 27.07). Ne-promena (FE šalje
+    // `statusId` i kad menja samo napomenu) nije prelaz — prolazi bez provere.
+    if (dto.statusId !== undefined && dto.statusId !== existing.statusId) {
       const status = await this.prisma.handoverDraftStatus.findUnique({
         where: { id: dto.statusId },
         select: { id: true },
@@ -1077,6 +1266,21 @@ export class HandoverDraftsService {
         throw new UnprocessableEntityException(
           `Nepoznat status nacrta (${dto.statusId}).`,
         );
+      this.assertStatusTransition(existing.statusId, dto.statusId);
+
+      // §5.2: „Za primopredaju" znači SPREMAN — prazan nacrt tamo ne ide
+      // (isti smisao kao `submit()` gate „Nacrt nema stavki za predaju").
+      if (dto.statusId === DRAFT_STATUS.FOR_HANDOVER) {
+        const itemCount = await this.prisma.handoverDraftItem.count({
+          where: { draftId: id },
+        });
+        if (itemCount === 0)
+          throw new UnprocessableEntityException(
+            `Nacrt bez stavki ne može u status ${draftStatusLabel(
+              DRAFT_STATUS.FOR_HANDOVER,
+            )} — dodajte bar jednu stavku (§5.2).`,
+          );
+      }
     }
 
     // UncheckedUpdateInput dozvoljava direktno postavljanje skalarnih FK-ova
@@ -1091,6 +1295,28 @@ export class HandoverDraftsService {
 
     await this.prisma.handoverDraft.update({ where: { id }, data });
     return this.findOne(id);
+  }
+
+  /**
+   * Kapija statusnog prelaza kroz PATCH (`ALLOWED_DRAFT_STATUS_TRANSITIONS`).
+   * Nedozvoljen prelaz → 422 sa spiskom mogućih ciljeva i objašnjenjem KOJI tok
+   * postavlja odbijeni status (da korisnik ne traži „dugme za Lansiran").
+   */
+  private assertStatusTransition(from: number, to: number): void {
+    const allowed = ALLOWED_DRAFT_STATUS_TRANSITIONS[from] ?? [];
+    if (allowed.includes(to)) return;
+
+    const targets = allowed.length
+      ? allowed.map(draftStatusLabel).join(", ")
+      : "nijedan status (ovaj nacrt više ne menja status kroz izmenu)";
+    throw new UnprocessableEntityException(
+      `Nedozvoljen prelaz statusa nacrta: ${draftStatusLabel(from)} → ${draftStatusLabel(to)}. ` +
+        `Kroz izmenu nacrta je moguć prelaz na: ${targets}. ` +
+        `Status ${draftStatusLabel(DRAFT_STATUS.SUBMITTED)} postavlja isključivo predaja nacrta ` +
+        `(dugme „Predaj na primopredaju"), a ${draftStatusLabel(DRAFT_STATUS.REJECTED)} i ` +
+        `${draftStatusLabel(DRAFT_STATUS.LAUNCHED)} slede iz toka primopredaja (odobravanje / lansiranje RN-a) — ` +
+        `ne postavljaju se ručno.`,
+    );
   }
 
   // ------------------------------------------------------------- DELETE
@@ -1162,12 +1388,20 @@ export class HandoverDraftsService {
 
     const existing = await this.prisma.handoverDraft.findUnique({
       where: { id },
-      select: { id: true, isLocked: true, designerId: true },
+      select: { id: true, isLocked: true, designerId: true, statusId: true },
     });
     if (!existing) throw new NotFoundException(`Nacrt ${id} ne postoji.`);
     if (existing.isLocked)
       throw new ConflictException(
         "Nacrt je već predat (zaključan) — ne može se ponovo predati.",
+      );
+    // §6.3 t.1: u primopredaju ide SAMO radni nacrt („Za kreiranje" /
+    // „Za primopredaju"). Uz allowlist prelaza (27.07) ovo zatvara i storno:
+    // otkazan nacrt se ne predaje dok ga projektant ne vrati u rad.
+    if (!SUBMITTABLE_DRAFT_STATUSES.includes(existing.statusId))
+      throw new UnprocessableEntityException(
+        `Nacrt u statusu ${draftStatusLabel(existing.statusId)} se ne predaje — u primopredaju idu samo nacrti u statusu ` +
+          `${SUBMITTABLE_DRAFT_STATUSES.map(draftStatusLabel).join(" ili ")} (§6.3).`,
       );
 
     const items = await this.prisma.handoverDraftItem.findMany({
@@ -1283,16 +1517,16 @@ export class HandoverDraftsService {
       }
 
       // Zaključaj nacrt; status "Predat" postavi SAMO ako taj lookup postoji
-      // (seed §3.2 nepotvrđen — vidi DRAFT_STATUS_SUBMITTED). UncheckedUpdateInput
+      // (seed §3.2 nepotvrđen — vidi DRAFT_STATUS). UncheckedUpdateInput
       // dozvoljava direktnu skalarno-FK dodelu (isti obrazac kao update()).
       const submittedStatus = await tx.handoverDraftStatus.findUnique({
-        where: { id: DRAFT_STATUS_SUBMITTED },
+        where: { id: DRAFT_STATUS.SUBMITTED },
         select: { id: true },
       });
       const draftUpdate: Prisma.HandoverDraftUncheckedUpdateInput = {
         isLocked: true,
       };
-      if (submittedStatus) draftUpdate.statusId = DRAFT_STATUS_SUBMITTED;
+      if (submittedStatus) draftUpdate.statusId = DRAFT_STATUS.SUBMITTED;
       await tx.handoverDraft.update({ where: { id }, data: draftUpdate });
 
       return ids;

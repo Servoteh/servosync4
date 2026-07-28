@@ -75,9 +75,11 @@ function makeSvc() {
     ),
   };
   // 2.0 prisma se u ovim testovima ne dira (mirror je samo za grid urednike) — prazan stub.
+  // Talas AI-0: registar AI modela se u ovim testovima ne dira — prazan stub.
   const svc = new PodesavanjaService(
     sy15 as unknown as Sy15Service,
     {} as import("../../prisma/prisma.service").PrismaService,
+    {} as import("../../common/ai/ai-model-policy.service").AiModelPolicyService,
   );
   return { svc, tx };
 }

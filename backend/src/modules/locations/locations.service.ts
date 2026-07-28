@@ -77,6 +77,12 @@ export interface ListPlacementsQuery {
 export interface ListMovementsQuery {
   search?: string; // item_ref_id / order_no (ilike)
   userId?: string; // moved_by
+  /**
+   * "1"/"true" → SAMO pokreti prijavljenog korisnika (server razreši sy15
+   * `auth.users.id` po email-u iz tokena i njime filtrira `moved_by`); `userId`
+   * iz query-ja se tada IGNORIŠE. Mobilna „Moja istorija" ne zna svoj sy15 UUID.
+   */
+  mine?: string;
   locationId?: string; // from OR to
   movementType?: string; // loc_movement_type_enum
   orderNo?: string; // striktno
@@ -318,7 +324,7 @@ export class LocationsService {
   // Filteri: korisnik / lokacija / tip / nalog / datum (spec §3 — SVI zadržani).
   // ==========================================================================
 
-  async listMovements(query: ListMovementsQuery) {
+  async listMovements(query: ListMovementsQuery, email?: string) {
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
@@ -331,8 +337,18 @@ export class LocationsService {
     if (movementType && MOVEMENT_TYPES.has(movementType))
       where.movementType = movementType as LocMovementTypeEnum;
 
-    if (query.userId && UUID_RE.test(query.userId.trim()))
+    // `mine=1` (mobilna „Moja istorija"): server razreši sy15 uid prijavljenog i
+    // njime filtrira `moved_by` — klijent NE šalje svoj UUID (ne zna ga). Ima
+    // prednost nad `userId` (fail-closed: nerazrešiv nalog → prazna strana, ne
+    // cela istorija firme; NIJE greška — nov 3.0 nalog bez sy15 para nema pokrete).
+    const mine = ["1", "true"].includes((query.mine ?? "").trim().toLowerCase());
+    if (mine) {
+      const uid = email ? await this.authUserIdByEmail(email) : null;
+      if (!uid) return { data: [], meta: pageMeta(page, pageSize, 0) };
+      where.movedBy = uid;
+    } else if (query.userId && UUID_RE.test(query.userId.trim())) {
       where.movedBy = query.userId.trim();
+    }
 
     if (query.orderNo && query.orderNo.trim())
       where.orderNo = query.orderNo.trim();
@@ -510,6 +526,38 @@ export class LocationsService {
       );
     return { data };
   }
+
+  /**
+   * OBRNUT smer od `resolveUserNames`: email prijavljenog → sy15 `auth.users.id`
+   * (= `moved_by` u `loc_location_movements`). Isti upit i isti put kao
+   * `Sy15Service.setClaims` (case-insensitive email, `deleted_at IS NULL`,
+   * `sy15.db` BYPASSRLS — `authenticated` nema SELECT na `auth.users`); ovde je
+   * ponovljen jer je `setClaims` privatan i vezan za transakciju.
+   *
+   * Keš: samo POZITIVNI pogodak (uid naloga se ne menja). Promašaj se NE kešira —
+   * nalog kreiran posle prvog pokušaja bi inače ostao „nevidljiv" do restarta.
+   * Greška (privilegije/nedostupan auth šem) → `null` = prazna lista, ne 500.
+   */
+  private async authUserIdByEmail(email: string): Promise<string | null> {
+    const key = email.trim().toLowerCase();
+    if (!key) return null;
+    const cached = this.authUidByEmail.get(key);
+    if (cached) return cached;
+    try {
+      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT id::text AS id FROM auth.users
+                   WHERE lower(email) = ${key} AND deleted_at IS NULL
+                   LIMIT 1`,
+      );
+      const uid = rows[0]?.id ?? null;
+      if (uid) this.authUidByEmail.set(key, uid);
+      return uid;
+    } catch {
+      return null;
+    }
+  }
+
+  private readonly authUidByEmail = new Map<string, string>();
 
   /**
    * Batch-resolve auth uid → prikazno ime (paritet 1.0 „Korisnik" kolone). Primarno

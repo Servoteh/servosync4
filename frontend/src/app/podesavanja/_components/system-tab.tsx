@@ -5,7 +5,13 @@ import { Settings } from 'lucide-react';
 import { ApiError } from '@/api/client';
 import { toast } from '@/lib/toast';
 import { formatDateTime } from '@/lib/format';
-import { useAiModels, useSetAiModel, type AiModelSetting, type AiModelTarget } from '@/api/podesavanja';
+import {
+  useAiModels,
+  useSetAiModel,
+  type AiModelPolicyRow,
+  type AiModelSetting,
+  type AiModelTarget,
+} from '@/api/podesavanja';
 
 // ============================================================================
 // Sistem tab — dijagnostika + WRITE za dva AI modela (paritet 1.0
@@ -35,6 +41,49 @@ const MONTAZA_MODELI: AiModelOption[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', opis: 'Najbrži i najjeftiniji' },
 ];
 const MONTAZA_DEFAULT = 'claude-sonnet-4-6';
+
+/**
+ * Talas AI-0 (stavka 7c): zadaci koji žive SAMO u registru `ai_model_policy`
+ * (chat i dva AI prolaza Zahteva). Prazan red u registru = potrošač i dalje čita
+ * svoj postojeći izvor (env/default), pa je „Podrazumevano" legitimno stanje.
+ */
+const REGISTAR_MODELI: AiModelOption[] = [
+  { id: 'claude-opus-5', label: 'Opus 5', opis: 'Najjači — za teške zadatke' },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', opis: 'Najkvalitetniji iz 4.x serije' },
+  { id: 'claude-sonnet-5', label: 'Sonnet 5', opis: 'Balans kvaliteta i cene' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', opis: 'Prethodna Sonnet generacija' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', opis: 'Najbrži i najjeftiniji' },
+];
+
+const REGISTAR_KARTICE: {
+  target: AiModelTarget;
+  task: string;
+  title: string;
+  sub: string;
+  fallback: string;
+}[] = [
+  {
+    target: 'chat-claude',
+    task: 'chat-claude',
+    title: 'AI model — Asistent (Claude engine)',
+    sub: 'Model koji chat koristi kad je izabran Claude. Prazno = vrednost iz env-a (AI_CHAT_CLAUDE_MODEL).',
+    fallback: 'claude-sonnet-5',
+  },
+  {
+    target: 'zahtevi-triage',
+    task: 'zahtevi-triage',
+    title: 'AI model — Zahtevi: trijaža',
+    sub: 'Jeftin prolaz na svaki podnet zahtev (sažetak, klasifikacija, ocena, duplikati).',
+    fallback: 'claude-haiku-4-5',
+  },
+  {
+    target: 'zahtevi-analysis',
+    task: 'zahtevi-analysis',
+    title: 'AI model — Zahtevi: detaljna analiza',
+    sub: 'Skup prolaz koji admin pokreće ručno (analiza + Claude paket).',
+    fallback: 'claude-sonnet-5',
+  },
+];
 
 function modelLabel(models: AiModelOption[], id: string): string {
   return models.find((m) => m.id === id)?.label ?? id;
@@ -87,7 +136,7 @@ export function SistemTab() {
         title="AI model — Sažmi zapisnik (Sastanci)"
         sub="Bira se koji Claude model generiše rezime sastanaka. Menja se odmah, bez restarta."
         target="sastanci"
-        models={SASTANCI_MODELI}
+        models={allowedOptions(SASTANCI_MODELI, data?.allowlist?.sastanci)}
         setting={data?.sastanci ?? null}
         fallback={SASTANCI_DEFAULT}
         loading={q.isLoading}
@@ -96,13 +145,47 @@ export function SistemTab() {
         title="AI model — Izveštaji montera (Montaža)"
         sub="Bira se koji Claude model analizira tekst i fotke montera (Montaža → Izveštaji). Menja se odmah."
         target="montaza"
-        models={MONTAZA_MODELI}
+        models={allowedOptions(MONTAZA_MODELI, data?.allowlist?.montaza)}
         setting={data?.montaza ?? null}
         fallback={MONTAZA_DEFAULT}
         loading={q.isLoading}
       />
+
+      {/* Registar `ai_model_policy` — zadaci bez sy15 podešavanja (Talas AI-0).
+          Opcije se sužavaju na serverski allowlist (jedini autoritet) kad stigne. */}
+      {REGISTAR_KARTICE.map((k) => (
+        <AiModelCard
+          key={k.target}
+          title={k.title}
+          sub={k.sub}
+          target={k.target}
+          models={allowedOptions(REGISTAR_MODELI, data?.allowlist?.[k.target])}
+          setting={policyAsSetting(data?.policy, k.task)}
+          fallback={k.fallback}
+          loading={q.isLoading}
+        />
+      ))}
     </div>
   );
+}
+
+/**
+ * Suzi ponuđene opcije na serverski allowlist (jedini autoritet — 422 dolazi
+ * odatle). Dok allowlist ne stigne, prikazujemo lokalni spisak. Model iz
+ * allowliste koji FE ne poznaje dobija sopstvenu, golu opciju.
+ */
+function allowedOptions(local: AiModelOption[], allowed?: string[]): AiModelOption[] {
+  if (!allowed?.length) return local;
+  return allowed.map(
+    (id) => local.find((m) => m.id === id) ?? { id, label: id, opis: 'Model sa servera' },
+  );
+}
+
+/** Red registra → oblik koji kartica već ume da prikaže (`AiModelSetting`). */
+function policyAsSetting(rows: AiModelPolicyRow[] | undefined, task: string): AiModelSetting {
+  const row = rows?.find((r) => r.task === task);
+  if (!row) return null;
+  return { id: 1, model: row.model, updated_at: row.updatedAt, updated_by: row.updatedBy };
 }
 
 function Kpi({ label, value, sub, tone }: { label: string; value: string; sub: string; tone: 'ok' | 'warn' | 'neutral' }) {
@@ -203,11 +286,17 @@ function AiModelCard({
       <p className="mt-3 text-xs text-ink-disabled">
         {loading ? (
           'Učitavam trenutni izbor…'
-        ) : (
+        ) : setting ? (
           <>
             Trenutno: <span className="font-mono text-ink-secondary">{modelLabel(models, selected)}</span>
-            {setting?.updated_at && <span> · {formatDateTime(setting.updated_at)}</span>}
-            {setting?.updated_by && <span> · {setting.updated_by}</span>}
+            {setting.updated_at && <span> · {formatDateTime(setting.updated_at)}</span>}
+            {setting.updated_by && <span> · {setting.updated_by}</span>}
+          </>
+        ) : (
+          // Nema reda u bazi → NE tvrdimo da je izabran baš ovaj model. FE fallback je
+          // samo predizbor radio dugmeta; stvarnu vrednost drži env/default na serveru.
+          <>
+            Podrazumevano (env/default) — nije ručno podešeno.
           </>
         )}
       </p>

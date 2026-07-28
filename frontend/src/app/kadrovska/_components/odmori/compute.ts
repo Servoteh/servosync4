@@ -50,7 +50,9 @@ export function computeBalanceRows(params: {
     const daysUsed = num(bal?.days_used);
     const daysPlanned = num(bal?.days_planned);
     const daysCommitted = num(bal?.days_committed);
-    const daysEarned = bal?.days_earned == null ? (ent ? null : null) : num(bal.days_earned);
+    // AUDIT-K5: ranije `bal?.days_earned == null ? (ent ? null : null) : …` —
+    // ternar sa identičnim granama (uvek null). Isto ponašanje, bez mrtve grane.
+    const daysEarned = bal?.days_earned == null ? null : num(bal.days_earned);
     const daysRemaining = daysTotal + daysCarried - daysUsed - daysPlanned;
     const daysRemainingAccrued = bal && bal.days_remaining_accrued != null
       ? num(bal.days_remaining_accrued)

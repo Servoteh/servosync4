@@ -18,6 +18,10 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { AiChatService } from "./ai-chat.service";
+import {
+  AiProviderService,
+  ENGINE_LABEL,
+} from "../../common/ai/ai-provider.service";
 import { ChatDto } from "./dto/ai-chat.dto";
 
 interface AuthedRequest {
@@ -34,16 +38,35 @@ interface AuthedRequest {
 @RequirePermission(PERMISSIONS.AI_CHAT)
 @Controller({ path: "ai", version: "1" })
 export class AiChatController {
-  constructor(private readonly ai: AiChatService) {}
+  constructor(
+    private readonly ai: AiChatService,
+    private readonly provider: AiProviderService,
+  ) {}
 
   @Get("me")
   me(@Req() req: AuthedRequest) {
     return this.ai.me(req.user.email);
   }
 
+  /**
+   * Engine-i koji su STVARNO konfigurisani (Talas AI-0, stavka 7a). FE nudi samo
+   * njih — do sada su Gemini/Kimi dugmad garantovano vraćala 503 jer ključeva nema.
+   */
+  @Get("engines")
+  engines() {
+    return {
+      data: this.provider
+        .configuredEngines()
+        .map((engine) => ({ engine, label: ENGINE_LABEL[engine] })),
+    };
+  }
+
   @Get("limit")
   limit(@Req() req: AuthedRequest) {
-    return this.ai.limit(req.user.email);
+    return this.ai.limit({
+      userId: req.user.userId,
+      role: req.user.role,
+    });
   }
 
   @Get("conversations")
@@ -80,7 +103,10 @@ export class AiChatController {
     @Body() dto: ChatDto,
     @UploadedFile() image?: Express.Multer.File,
   ) {
-    return this.ai.chat(req.user.email, dto, image);
+    return this.ai.chat(req.user.email, dto, image, {
+      userId: req.user.userId,
+      role: req.user.role,
+    });
   }
 
   /** Brisanje svoje LIČNE niti (RLS delete_own). */

@@ -15,6 +15,7 @@ import {
   UrgentBadge,
   errorBox,
   handoverStatusMeta,
+  useDebouncedValue,
 } from './common';
 import { HandoverDetailPanel } from './handover-detail';
 
@@ -99,6 +100,7 @@ const columns: Column<Handover>[] = [
 /** Tab "Sve primopredaje" — lista + filter po statusu (§6.4), expand = isti detalj/dugmad kao "Na čekanju". */
 export function AllHandoversTab() {
   const [q, setQ] = useState('');
+  const [draftNumber, setDraftNumber] = useState('');
   const [rn, setRn] = useState('');
   const [statusId, setStatusId] = useState<number | ''>('');
   const [technologistId, setTechnologistId] = useState<number | ''>('');
@@ -108,10 +110,15 @@ export function AllHandoversTab() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const resetPage = () => setPage(1);
 
+  // Filter „Nacrt" (zahtev 022/26) je server-side (backend razrešava nacrt →
+  // crteže), pa se šalje ODLOŽENO — broj nacrta se kuca u više poteza.
+  const draftNumberQuery = useDebouncedValue(draftNumber);
+
   const technologists = useTechnologists();
   const list = useHandovers({
     page,
     drawingNumber: q.trim() || undefined,
+    draftNumber: draftNumberQuery.trim() || undefined,
     rn: rn.trim() || undefined,
     statusId,
     technologistId,
@@ -121,7 +128,15 @@ export function AllHandoversTab() {
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
-  const hasFilter = !!(q || rn || statusId !== '' || technologistId !== '' || from || to);
+  const hasFilter = !!(
+    q ||
+    draftNumber ||
+    rn ||
+    statusId !== '' ||
+    technologistId !== '' ||
+    from ||
+    to
+  );
 
   return (
     <div className="space-y-4">
@@ -135,6 +150,17 @@ export function AllHandoversTab() {
               resetPage();
             }}
             placeholder="Broj crteža…"
+          />
+        </div>
+        <div className="flex flex-col gap-1 text-xs text-ink-secondary">
+          Nacrt
+          <SearchBox
+            value={draftNumber}
+            onChange={(v) => {
+              setDraftNumber(v);
+              resetPage();
+            }}
+            placeholder="Broj nacrta…"
           />
         </div>
         <div className="flex flex-col gap-1 text-xs text-ink-secondary">
@@ -210,6 +236,7 @@ export function AllHandoversTab() {
           <button
             onClick={() => {
               setQ('');
+              setDraftNumber('');
               setRn('');
               setStatusId('');
               setTechnologistId('');

@@ -4,10 +4,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Check, ChevronRight, X } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { PERMISSIONS } from '@/lib/permissions';
 import {
   usePatchAkcija,
   useSastanci,
   useSastanakFull,
+  useSetMyAkcijaStatus,
+  useSetMyPriprema,
   useSetMyRsvp,
   useUpdateAktivnost,
   type Sastanak,
@@ -20,9 +23,13 @@ import {
 } from '../../sastanci/_components/common';
 
 /** Mobilni Sastanci (/mob/sastanci) — lista → detalj (read + RSVP/status/obrađeno).
- *  Deep-link `?open=<id>` (paritet 1.0 mySastanci). Vidljivost = sastanci.read. */
+ *  Deep-link `?open=<id>` (paritet 1.0 mySastanci). Vidljivost = sastanci.read.
+ *
+ *  PERMISIJE (odluka Nenada 26.07): status SOPSTVENE akcije i SOPSTVENA priprema
+ *  idu pod read-nivoom kroz self RPC-ove (server presuđuje vlasništvo); pun patch
+ *  akcija i „Obradi" tačke i dalje traže `sastanci.edit`. RSVP read-level svima. */
 export default function MobileSastanciPage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, can } = useAuth();
   const router = useRouter();
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -40,7 +47,12 @@ export default function MobileSastanciPage() {
   }
 
   return openId ? (
-    <MobileDetail id={openId} myEmail={user.email} onBack={() => setOpenId(null)} />
+    <MobileDetail
+      id={openId}
+      myEmail={user.email}
+      canEdit={can(PERMISSIONS.SASTANCI_EDIT)}
+      onBack={() => setOpenId(null)}
+    />
   ) : (
     <MobileList onOpen={setOpenId} />
   );
@@ -104,15 +116,30 @@ function Section({ title, items, onOpen, loading, empty }: { title: string; item
   );
 }
 
-function MobileDetail({ id, myEmail, onBack }: { id: string; myEmail: string; onBack: () => void }) {
+function MobileDetail({
+  id,
+  myEmail,
+  canEdit,
+  onBack,
+}: {
+  id: string;
+  myEmail: string;
+  canEdit: boolean;
+  onBack: () => void;
+}) {
   const fullQ = useSastanakFull(id);
   const rsvp = useSetMyRsvp();
   const patchAkcija = usePatchAkcija();
+  const myStatus = useSetMyAkcijaStatus();
+  const myPriprema = useSetMyPriprema();
   const updateAkt = useUpdateAktivnost();
 
   const sast = fullQ.data?.data;
   const locked = sast?.status === 'zakljucan' || sast?.status === 'otkazan';
   const mine = sast?.ucesnici.find((u) => u.email.toLowerCase() === myEmail.toLowerCase());
+
+  // „Moja priprema" (odluka 26.07): lokalni draft teksta, snima se dugmetom.
+  const [pripremaDraft, setPripremaDraft] = useState<string | null>(null);
 
   return (
     <div className="min-h-screen bg-app">
@@ -155,6 +182,44 @@ function MobileDetail({ id, myEmail, onBack }: { id: string; myEmail: string; on
             </section>
           )}
 
+          {/* Moja priprema (odluka 26.07): pripremljen + tekst pod read-nivoom —
+              server (RPC) presuđuje učešće; pozvan/prisutan vodi zapisničar. */}
+          {mine && (
+            <section className="space-y-2">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-secondary">Moja priprema</h2>
+              <button
+                disabled={locked || myPriprema.isPending}
+                onClick={() => myPriprema.mutate({ id, pripremljen: !mine.pripremljen })}
+                className={`flex w-full items-center justify-center gap-1 rounded-control border px-3 py-2 text-sm ${mine.pripremljen ? 'border-status-success bg-status-success-bg text-status-success' : 'border-line text-ink'} disabled:opacity-40`}
+              >
+                <Check className="h-4 w-4" aria-hidden />
+                {mine.pripremljen ? 'Pripremljen ✓' : 'Označi da si pripremljen'}
+              </button>
+              <textarea
+                value={pripremaDraft ?? mine.priprema ?? ''}
+                onChange={(e) => setPripremaDraft(e.target.value)}
+                disabled={locked}
+                rows={3}
+                placeholder="Beleške za pripremu…"
+                className="w-full rounded-control border border-line bg-surface p-2 text-sm text-ink disabled:opacity-40"
+              />
+              {pripremaDraft !== null && pripremaDraft !== (mine.priprema ?? '') && (
+                <button
+                  disabled={locked || myPriprema.isPending}
+                  onClick={() => {
+                    myPriprema.mutate(
+                      { id, priprema: pripremaDraft },
+                      { onSuccess: () => setPripremaDraft(null) },
+                    );
+                  }}
+                  className="w-full rounded-control border border-accent bg-accent-subtle px-3 py-2 text-sm font-semibold text-accent disabled:opacity-40"
+                >
+                  Sačuvaj pripremu
+                </button>
+              )}
+            </section>
+          )}
+
           {/* Zapisnik — tačke read + obrađeno */}
           <section className="space-y-2">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-secondary">Zapisnik</h2>
@@ -167,13 +232,20 @@ function MobileDetail({ id, myEmail, onBack }: { id: string; myEmail: string; on
                   <div key={a.id} className="rounded-panel border border-line bg-surface p-3">
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-sm font-medium text-ink">{a.naslov}</span>
-                      <button
-                        disabled={locked || updateAkt.isPending}
-                        onClick={() => updateAkt.mutate({ aktId: a.id, patch: { status: done ? 'u_toku' : 'zavrsen' } })}
-                        className={`shrink-0 rounded-control border px-2 py-0.5 text-xs ${done ? 'border-status-success bg-status-success-bg text-status-success' : 'border-line text-ink-secondary'} disabled:opacity-40`}
-                      >
-                        {done ? '✓ Obrađeno' : 'Obradi'}
-                      </button>
+                      {canEdit ? (
+                        <button
+                          disabled={locked || updateAkt.isPending}
+                          onClick={() => updateAkt.mutate({ aktId: a.id, patch: { status: done ? 'u_toku' : 'zavrsen' } })}
+                          className={`shrink-0 rounded-control border px-2 py-0.5 text-xs ${done ? 'border-status-success bg-status-success-bg text-status-success' : 'border-line text-ink-secondary'} disabled:opacity-40`}
+                        >
+                          {done ? '✓ Obrađeno' : 'Obradi'}
+                        </button>
+                      ) : (
+                        /* Bez `sastanci.edit` PATCH vraća 403 → status je čist prikaz. */
+                        <span className={`shrink-0 rounded-control border px-2 py-0.5 text-xs ${done ? 'border-status-success bg-status-success-bg text-status-success' : 'border-line text-ink-secondary'}`}>
+                          {done ? '✓ Obrađeno' : 'Nije obrađeno'}
+                        </span>
+                      )}
                     </div>
                     {a.sadrzajText && <p className="mt-1 whitespace-pre-wrap text-sm text-ink-secondary">{a.sadrzajText}</p>}
                   </div>
@@ -185,30 +257,50 @@ function MobileDetail({ id, myEmail, onBack }: { id: string; myEmail: string; on
           {/* Akcije — status sheet (otvoren/u_toku/zavrsen) */}
           <section className="space-y-2">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-secondary">Akcioni plan</h2>
+            {!canEdit && sast.akcije.length > 0 && (
+              <p className="text-xs text-ink-disabled">
+                Svojim akcijama menjaš status; tuđima ga menja zapisničar (odluka 26.07).
+              </p>
+            )}
             {sast.akcije.length === 0 ? (
               <p className="text-sm text-ink-disabled">Nema akcija.</p>
             ) : (
-              sast.akcije.map((a) => (
-                <div key={a.id} className="rounded-panel border border-line bg-surface p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm text-ink">{a.naslov}</span>
-                    <AkcijaStatusBadge status={a.effective_status} />
-                  </div>
-                  {!locked && (
-                    <div className="mt-2 flex gap-1">
-                      {['otvoren', 'u_toku', 'zavrsen'].map((st) => (
-                        <button
-                          key={st}
-                          onClick={() => patchAkcija.mutate({ id: a.id, patch: { status: st } })}
-                          className={`rounded-control border px-2 py-0.5 text-xs ${a.status === st ? 'border-accent bg-accent-subtle text-accent' : 'border-line text-ink-secondary'}`}
-                        >
-                          {st === 'otvoren' ? 'Otvoren' : st === 'u_toku' ? 'U toku' : 'Završen'}
-                        </button>
-                      ))}
+              sast.akcije.map((a) => {
+                const isMine =
+                  (a.odgovoran_email ?? '').toLowerCase() === myEmail.toLowerCase();
+                const canSetStatus = canEdit || isMine;
+                return (
+                  <div key={a.id} className="rounded-panel border border-line bg-surface p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm text-ink">{a.naslov}</span>
+                      <AkcijaStatusBadge status={a.effective_status} />
                     </div>
-                  )}
-                </div>
-              ))
+                    {canSetStatus && !locked && (
+                      <div className="mt-2 flex gap-1">
+                        {['otvoren', 'u_toku', 'zavrsen'].map((st) => (
+                          <button
+                            key={st}
+                            disabled={patchAkcija.isPending || myStatus.isPending}
+                            onClick={() =>
+                              /* Edit krug ima pun patch; vlasnik bez edit-a ide kroz
+                                 self RPC (server presuđuje vlasništvo — odluka 26.07). */
+                              canEdit
+                                ? patchAkcija.mutate({ id: a.id, patch: { status: st } })
+                                : myStatus.mutate({
+                                    id: a.id,
+                                    status: st as 'otvoren' | 'u_toku' | 'zavrsen',
+                                  })
+                            }
+                            className={`rounded-control border px-2 py-0.5 text-xs ${a.status === st ? 'border-accent bg-accent-subtle text-accent' : 'border-line text-ink-secondary'} disabled:opacity-40`}
+                          >
+                            {st === 'otvoren' ? 'Otvoren' : st === 'u_toku' ? 'U toku' : 'Završen'}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </section>
 

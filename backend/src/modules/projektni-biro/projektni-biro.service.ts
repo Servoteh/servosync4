@@ -481,7 +481,7 @@ export class ProjektniBiroService {
       const rows = await tx.$queryRaw<unknown[]>(
         Prisma.sql`SELECT * FROM pb_update_task_progress(${id}::uuid, ${
           dto.status ?? null
-        }, ${dto.procenat ?? null})`,
+        }, ${dto.procenat ?? null}::int)`,
       );
       return { data: jsonSafe(rows)[0] ?? null };
     });
@@ -835,7 +835,7 @@ export class ProjektniBiroService {
       async (tx) => {
         const metaRows = await tx.$queryRaw<{ result: { id?: string } }[]>(
           Prisma.sql`SELECT pb_add_eng_tip_file(${tipId}::uuid, ${storagePath}, ${origName},
-             ${file.mimetype ?? null}, ${file.size ?? null}) AS result`,
+             ${file.mimetype ?? null}, ${file.size ?? null}::bigint) AS result`,
         );
         const meta = jsonSafe(metaRows[0]?.result ?? null) as {
           id?: string;

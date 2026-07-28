@@ -18,6 +18,7 @@ import {
   useCancelVacation,
   useDeleteVacation,
   useTeam,
+  vacationRemaining,
   type VacationRequest,
 } from '@/api/moj-profil';
 import type { GoLedgerBlock, GoLedgerPeriod } from '@/api/kadrovska';
@@ -53,7 +54,8 @@ export function VacationSection() {
 
   const balance = data?.balance;
   const requests = data?.requests ?? [];
-  const remaining = balance ? (balance.days_remaining ?? null) : null;
+  // ZAHTEV 028/26: prikazuje se STEČENO do danas (1.0 kanon), ne kalendarsko pravo.
+  const remaining = vacationRemaining(balance);
 
   return (
     <Section
@@ -154,7 +156,7 @@ export function VacationSection() {
         </>
       )}
 
-      {modal && <VacationModal mode={modal.mode} req={modal.req} remaining={remaining} onClose={() => setModal(null)} />}
+      {modal && <VacationModal mode={modal.mode} req={modal.req} selfRemaining={remaining} onClose={() => setModal(null)} />}
     </Section>
   );
 }
@@ -217,15 +219,27 @@ function StatCard({ label, value, hint, tone }: { label: string; value: string |
   );
 }
 
+/**
+ * Obrazac GO zahteva.
+ *
+ * ⚠️ ZAHTEV 028/26 (KRITIČAN, uveden 21.07 sa „Za koga" pickerom / commit 92e4590):
+ * modal je prikazivao saldo ULOGOVANOG korisnika i onda kad je u pickeru izabran član
+ * tima. Šef sa 41 danom je, podnoseći za radnika koji stvarno ima 7, u formi video 41 —
+ * pa je zahtev slat preko fonda i padao tek kod odobravanja (ili prolazio, jer je
+ * serverska provera bila fail-open). Saldo se sada čita iz `useTeam()` reda IZABRANOG
+ * člana (roster ga već nosi — nema novog API poziva), a kad člana nema u rosteru ili
+ * nema `balance`, prikazuje se „nema podatka o fondu" umesto tuđeg broja.
+ */
 function VacationModal({
   mode,
   req,
-  remaining,
+  selfRemaining,
   onClose,
 }: {
   mode: 'new' | 'edit';
   req?: VacationRequest;
-  remaining: number | null;
+  /** Saldo PODNOSIOCA (prikazuje se samo kad zahtev ide za sebe). */
+  selfRemaining: number | null;
   onClose: () => void;
 }) {
   const [dateFrom, setDateFrom] = useState(req?.date_from?.slice(0, 10) ?? '');
@@ -243,6 +257,11 @@ function VacationModal({
   const teamQ = useTeam();
   const team = mode === 'new' ? (teamQ.data?.data?.members ?? []) : [];
   const teamOpts = team.map((m) => ({ value: m.id, label: m.fullName ?? '—' }));
+
+  // Saldo koji se prikazuje MORA pripadati onome za koga se zahtev podnosi.
+  const selected = forEmp ? team.find((m) => m.id === forEmp) : undefined;
+  const remaining = forEmp ? vacationRemaining(selected?.balance) : selfRemaining;
+  const remainingFor = forEmp ? (selected?.fullName ?? 'izabranog zaposlenog') : null;
 
   async function save() {
     setErr(null);
@@ -303,7 +322,18 @@ function VacationModal({
         </div>
         <p className="text-sm text-ink-secondary">
           Radnih dana: <b className="tnums">{days}</b>
-          {remaining != null && <span> · Preostalo GO: {remaining}</span>}
+          {remaining != null ? (
+            <span>
+              {' · '}
+              Preostalo GO{remainingFor ? ` (${remainingFor})` : ''}: <b className="tnums">{remaining}</b>
+            </span>
+          ) : forEmp ? (
+            <span className="text-status-warn"> · nema podatka o fondu za izabranog zaposlenog</span>
+          ) : null}
+        </p>
+        <p className="text-2xs text-ink-disabled">
+          Broj dana je informativan (Pon–Pet). Državne praznike oduzima server pri
+          upisu — on je autoritet za saldo i evidenciju.
         </p>
         <FormField label="Napomena">
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={500} />

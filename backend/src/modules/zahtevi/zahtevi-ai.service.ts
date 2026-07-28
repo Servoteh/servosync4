@@ -10,6 +10,11 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
+import { AI_MODULE } from "../../common/ai/ai-limits.service";
+import {
+  AI_TASK,
+  AiModelPolicyService,
+} from "../../common/ai/ai-model-policy.service";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { roleHasPermission } from "../../common/authz/role-permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -53,17 +58,26 @@ export class ZahteviAiService {
     private readonly prisma: PrismaService,
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
+    private readonly policy: AiModelPolicyService,
   ) {}
 
   private isAdmin(actor: AuthUser): boolean {
     return roleHasPermission(actor.role, PERMISSIONS.ZAHTEVI_ADMIN);
   }
 
-  private triageModel(): string {
-    return process.env.ZAHTEVI_TRIAGE_MODEL || TRIAGE_DEFAULT_MODEL;
+  /**
+   * Talas AI-0 (stavka 7c): PRVO registar `ai_model_policy`, pa postojeći izvor
+   * (env → default). Prazan registar = ponašanje kao pre, bez ijedne izmene.
+   */
+  private async triageModel(): Promise<string> {
+    const fallback = process.env.ZAHTEVI_TRIAGE_MODEL || TRIAGE_DEFAULT_MODEL;
+    return (await this.policy.resolve(AI_TASK.ZAHTEVI_TRIAGE, fallback)).model;
   }
-  private analysisModel(): string {
-    return process.env.ZAHTEVI_ANALYSIS_MODEL || ANALYSIS_DEFAULT_MODEL;
+  private async analysisModel(): Promise<string> {
+    const fallback =
+      process.env.ZAHTEVI_ANALYSIS_MODEL || ANALYSIS_DEFAULT_MODEL;
+    return (await this.policy.resolve(AI_TASK.ZAHTEVI_ANALYSIS, fallback))
+      .model;
   }
 
   // ── TRIJAŽA (§4.1) ──────────────────────────────────────────────────────────
@@ -116,11 +130,15 @@ export class ZahteviAiService {
 
       const content = await this.buildTriageContent(requestId, req);
       const res = await this.ai.extractWithTool({
-        model: this.triageModel(),
+        model: await this.triageModel(),
         system: TRIAGE_SYSTEM_PROMPT,
         tool: TRIAGE_TOOL,
         content,
         maxTokens: 2000,
+        ctx: {
+          module: AI_MODULE.ZAHTEVI_TRIAGE,
+          userId: startedByUserId ?? null,
+        },
       });
       const triage = normalizeTriage(res.toolInput);
       const { tokensIn, tokensOut } = usageTokens(res.usage);
@@ -462,11 +480,15 @@ export class ZahteviAiService {
     try {
       const content = await this.buildAnalysisContent(requestId);
       const res = await this.ai.extractWithTool({
-        model: this.analysisModel(),
+        model: await this.analysisModel(),
         system: `${ANALYSIS_SYSTEM_PROMPT}\n\n---\nSISTEMSKI KONTEKST:\n${ZAHTEVI_SYSTEM_CONTEXT}`,
         tool: ANALYSIS_TOOL,
         content,
         maxTokens: 8000,
+        ctx: {
+          module: AI_MODULE.ZAHTEVI_ANALYSIS,
+          userId: startedByUserId,
+        },
       });
       const analysisResult = normalizeAnalysis(res.toolInput);
       const { tokensIn, tokensOut } = usageTokens(res.usage);
@@ -688,13 +710,17 @@ export class ZahteviAiService {
    * bucket-a, pozovi transcribe, upiši transcript. Immutable: ne prepisuje postojeći.
    * Pozива se iz ZahteviService.transcribeAttachment posle row-scope/allow provera.
    */
-  async retryTranscribe(attachment: {
-    id: number;
-    bucket: string;
-    storagePath: string;
-    contentType: string;
-    transcript: string | null;
-  }) {
+  async retryTranscribe(
+    attachment: {
+      id: number;
+      bucket: string;
+      storagePath: string;
+      contentType: string;
+      transcript: string | null;
+    },
+    /** Ko je tražio retry — za `ai_usage_log.user_id` i dnevni STT budžet. */
+    userId?: number | null,
+  ) {
     if (attachment.transcript)
       throw new UnprocessableEntityException(
         "Prilog već ima transkript (immutable od nastanka).",
@@ -706,6 +732,7 @@ export class ZahteviAiService {
     const res = await this.ai.transcribe({
       bytes,
       mime: attachment.contentType,
+      ctx: { module: AI_MODULE.STT, userId: userId ?? null },
     });
     const updated = await this.prisma.changeRequestAttachment.update({
       where: { id: attachment.id },

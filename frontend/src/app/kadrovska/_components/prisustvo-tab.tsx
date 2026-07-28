@@ -4,10 +4,12 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { QrCode, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
+import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { LiveView } from './prisustvo/live-view';
 import { ShadowView } from './prisustvo/shadow-view';
+import { KontrolaView } from './prisustvo/kontrola-view';
 import { BadgeDialog } from './prisustvo/badge-dialog';
 
 /**
@@ -23,7 +25,7 @@ export function PrisustvoTab() {
   const { can } = useAuth();
   const canLive = can(PERMISSIONS.KADROVSKA_ATTENDANCE);
   const canShadow = can(PERMISSIONS.KADROVSKA_ATTENDANCE_SHADOW);
-  const [view, setView] = useState<'live' | 'shadow'>(canLive ? 'live' : 'shadow');
+  const [view, setView] = useState<'live' | 'shadow' | 'kontrola'>(canLive ? 'live' : 'shadow');
   const [badgeOpen, setBadgeOpen] = useState(false);
 
   return (
@@ -45,6 +47,18 @@ export function PrisustvoTab() {
             >
               📊 Poređenje sa gridom
             </button>
+          )}
+          {/* AUDIT-K7: mesto gde se zatvara tok ispravke kucanja — ispravke radnika
+              (uz obrazloženje) + auto-predlozi iz kapije koji čekaju potvrdu urednika. */}
+          {canShadow && (
+            <HelpSpot id="kadrovska.prisustvo.kontrola" variant="inline">
+              <button
+                onClick={() => setView('kontrola')}
+                className={`rounded-control px-3 py-1.5 text-sm font-medium ${view === 'kontrola' ? 'bg-accent text-accent-fg' : 'text-ink-secondary'}`}
+              >
+                ✅ Za potvrdu
+              </button>
+            </HelpSpot>
           )}
         </div>
         {/* Mobilni pregled uživo (zahtev 019/26) — /mob/prisustvo, namerno VAN /m/*
@@ -69,6 +83,7 @@ export function PrisustvoTab() {
 
       {view === 'live' && canLive && <LiveView />}
       {view === 'shadow' && canShadow && <ShadowView />}
+      {view === 'kontrola' && canShadow && <KontrolaView />}
 
       {badgeOpen && <BadgeDialog onClose={() => setBadgeOpen(false)} />}
     </div>

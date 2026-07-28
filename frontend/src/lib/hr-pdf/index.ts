@@ -1,8 +1,9 @@
 // HR PDF generatori (ćirilica) + QR bedževi — R3 TEŽIŠTE Talasa G.
 // Fontovi: /public/fonts/Roboto-*.ttf (bundlovan jsPDF, offline). Logo:
-// /public/logo-servoteh.jpg. Latinica→ćirilica: toCyrillic.
+// /public/logo-servoteh.jpg. Latinica→ćirilica: toCyrillic; ćirilica→latinica:
+// toLatin (Ugovor o radu je od 27.07.2026. latinični, ostala dokumenta ćirilica).
 
-export { toCyrillic } from './cyrillic';
+export { toCyrillic, toLatin } from './cyrillic';
 export {
   generateVacationDecisionPdf,
   generateEmploymentCertificatePdf,
@@ -28,6 +29,10 @@ export { generateContractPdf } from './contract';
 export type { ContractInput } from './contract';
 export { generateJobPositionPdf } from './job-position';
 export type { JobPositionEmployee } from './job-position';
+export { generateSistematizacijaPdf } from './sistematizacija';
+export type { SistematizacijaOptions } from './sistematizacija';
+export { generateSistematizacijaDoc } from './sistematizacija-doc';
+export type { SistematizacijaDocOptions } from './sistematizacija-doc';
 export { generateKarnetPdf } from './karnet';
 export type { KarnetInput, KarnetEmployee, KarnetDay, KarnetRow, KarnetTotals } from './karnet';
 export { generateBadgeSheetPdf, generateBadgeToken, downloadBlob, openBlob } from './badges';

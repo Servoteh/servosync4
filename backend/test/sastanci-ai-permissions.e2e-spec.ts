@@ -12,6 +12,7 @@ import { SastanciController } from "../src/modules/sastanci/sastanci.controller"
 import { SastanciService } from "../src/modules/sastanci/sastanci.service";
 import { AiChatController } from "../src/modules/ai-chat/ai-chat.controller";
 import { AiChatService } from "../src/modules/ai-chat/ai-chat.service";
+import { AiProviderService } from "../src/common/ai/ai-provider.service";
 import { MediaAiController } from "../src/modules/media-ai/media-ai.controller";
 import { MediaAiService } from "../src/modules/media-ai/media-ai.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
@@ -147,6 +148,12 @@ describe("Sastanci + AI permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         
         { provide: SastanciService, useValue: sastanciMock },
         { provide: AiChatService, useValue: aiMock },
+        // AI-0: AiChatController sada injektuje i AiProviderService (GET /ai/engines).
+        // Bez ovog mock-a ceo modul pada na DI i svih 200+ matrix testova crveni.
+        {
+          provide: AiProviderService,
+          useValue: { configuredEngines: () => ["openai", "claude"] },
+        },
         { provide: MediaAiService, useValue: mediaMock },
       ],
     })

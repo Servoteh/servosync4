@@ -15,8 +15,21 @@ import {
 
 /** Postavi AI model (target = potrošač; model = allowlist string; servis+RPC re-validiraju). */
 export class SetAiModelDto {
-  @IsIn(["sastanci", "montaza"])
-  target!: "sastanci" | "montaza";
+  // Talas AI-0 (stavka 7c): pored dva sy15 potrošača i zadaci koji žive samo u
+  // registru `ai_model_policy` (chat + dva AI prolaza Zahteva).
+  @IsIn([
+    "sastanci",
+    "montaza",
+    "chat-claude",
+    "zahtevi-triage",
+    "zahtevi-analysis",
+  ])
+  target!:
+    | "sastanci"
+    | "montaza"
+    | "chat-claude"
+    | "zahtevi-triage"
+    | "zahtevi-analysis";
 
   @IsString()
   @MaxLength(80)

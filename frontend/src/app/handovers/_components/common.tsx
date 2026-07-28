@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import type { ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
 import {
   DRAFT_ITEM_DECISION,
@@ -99,6 +100,24 @@ export function ConfirmDialog({
       </div>
     </Dialog>
   );
+}
+
+// ─────────────────────────────────────────────────────────────── odloženi filteri
+
+/**
+ * Odloženo (debounce) čitanje unosa filtera: vraćena vrednost se pomera tek kad
+ * kucanje stane, pa server-side upit liste ne krene na svaki taster. Prag 250ms
+ * je isti kao kod pretraga u Reversima (`magacin-tab.tsx`) — repo nema deljen
+ * `useDebounce`, svaki potrošač drži svoj `setTimeout` (bez novih zavisnosti).
+ * Sam `input` ostaje kontrolisan sirovom vrednošću (kucanje je trenutno).
+ */
+export function useDebouncedValue(value: string, delayMs = 250): string {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
 }
 
 // ─────────────────────────────────────────────────────────────── sitni kontrolisani elementi
@@ -219,6 +238,45 @@ export function draftStatusMeta(status: StatusRef | null): { tone: Tone; label: 
   else if (/\bpredat\b/.test(n)) tone = 'info';
   else if (/primopredaj/.test(n)) tone = 'warn';
   return { tone, label };
+}
+
+/**
+ * `handover_draft_statuses` — vrednosti 1:1 sa backend `DRAFT_STATUS`
+ * (handover-drafts.service.ts). Koriste se SAMO za pravila prelaza; labele i
+ * dalje dolaze iz lookup API-ja (`draftStatuses`), da se ne dupliraju nazivi.
+ */
+export const DRAFT_STATUS = {
+  FOR_CREATION: 0,
+  FOR_HANDOVER: 1,
+  SUBMITTED: 2,
+  REJECTED: 3,
+  LAUNCHED: 4,
+  CANCELLED: 5,
+} as const;
+
+/**
+ * Ogledalo backend allowliste `ALLOWED_DRAFT_STATUS_TRANSITIONS` (presuda Nenad
+ * 27.07): kroz izmenu nacrta (PATCH) se pišu samo radni statusi. „Predat" (2)
+ * postavlja predaja nacrta, a „Odbijen" (3) / „Lansiran" (4) tok primopredaja —
+ * server ih odbija sa 422, pa se ni ne nude u dropdown-u. Redovi 2/3/4 nose
+ * samo put sanacije nazad na „Za kreiranje" (zatečeni redovi iz doba pre brave).
+ * Izmena OVDE mora da prati backend mapu — server je jedini autoritet.
+ */
+const ALLOWED_DRAFT_STATUS_TRANSITIONS: Record<number, number[]> = {
+  [DRAFT_STATUS.FOR_CREATION]: [DRAFT_STATUS.FOR_HANDOVER, DRAFT_STATUS.CANCELLED],
+  [DRAFT_STATUS.FOR_HANDOVER]: [DRAFT_STATUS.FOR_CREATION, DRAFT_STATUS.CANCELLED],
+  [DRAFT_STATUS.CANCELLED]: [DRAFT_STATUS.FOR_CREATION, DRAFT_STATUS.FOR_HANDOVER],
+  [DRAFT_STATUS.SUBMITTED]: [DRAFT_STATUS.FOR_CREATION],
+  [DRAFT_STATUS.REJECTED]: [DRAFT_STATUS.FOR_CREATION],
+  [DRAFT_STATUS.LAUNCHED]: [DRAFT_STATUS.FOR_CREATION],
+};
+
+/**
+ * Statusi koje select „Status nacrta" sme da ponudi za nacrt u statusu
+ * `current`: zatečeni (ne-promena, FE ga uvek šalje) + dozvoljeni prelazi.
+ */
+export function draftStatusTargets(current: number): number[] {
+  return [current, ...(ALLOWED_DRAFT_STATUS_TRANSITIONS[current] ?? [])];
 }
 
 /**

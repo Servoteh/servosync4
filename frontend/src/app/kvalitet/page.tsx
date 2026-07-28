@@ -1,20 +1,33 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { cn } from '@/lib/cn';
 import { NONCONFORMITY_TYPE, useQualityMini } from '@/api/kvalitet';
+import { QUALITY_EVENT_STATUS, useQualityEvents } from '@/api/kvalitet-events';
 import { EvidencijaTab } from './_components/evidencija-tab';
 import { AktivnostTab } from './_components/aktivnost-tab';
 import { IzvestajiTab } from './_components/izvestaji-tab';
 import { DokumentiTab } from './_components/dokumenti-tab';
 import { KontrolaPogonTab } from './_components/kontrola-pogon-tab';
+import { SkartDoradaTab } from './_components/skart-dorada-tab';
 import { PERMISSIONS } from '@/lib/permissions';
 
-type TabKey = 'skart' | 'dorada' | 'aktivnost' | 'izvestaji' | 'dokumenti' | 'pogon';
+type TabKey =
+  | 'skart'
+  | 'dorada'
+  | 'skart-dorada'
+  | 'aktivnost'
+  | 'izvestaji'
+  | 'dokumenti'
+  | 'pogon';
+
+/** Ključevi `?tab=` — ujedno OGLEDALO dece modula „Kontrola kvaliteta" u `navigation.ts`. */
+const TAB_KEYS: readonly TabKey[] = ['skart', 'dorada', 'skart-dorada', 'aktivnost', 'izvestaji', 'dokumenti', 'pogon'];
 
 /** Broj draft-ova na tab labeli (žuti bedž) — radna lista kontrolora. */
 function DraftBadge({ count }: { count: number }) {
@@ -27,14 +40,34 @@ function DraftBadge({ count }: { count: number }) {
 }
 
 export default function KvalitetPage() {
-  const { user, isLoading, can } = useAuth();
+  const { user, isLoading, can, permissionsPending } = useAuth();
   const router = useRouter();
-  const [tab, setTab] = useState<TabKey>('skart');
+  // Tab živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2): čita na mount-u,
+  // prati `popstate` i `servosync:nav` (podstavka „Kontrola kvaliteta → Dokumenti" menja tab
+  // i kad smo VEĆ ovde — Next ne remount-uje stranu na promenu samog query-ja), a promena
+  // taba u strani upisuje URL nazad (`history.replaceState`) → sidebar highlight prati.
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'skart', { valid: TAB_KEYS });
   const mini = useQualityMini();
+  // Red čekanja prijava (novi tab „Škart i dorada") — brojač na labeli.
+  const pending = useQualityEvents({ status: QUALITY_EVENT_STATUS.PRIJAVLJEN });
+  const pendingCount = pending.data?.meta.pendingCount ?? 0;
+
+  // „Aktivnost kontrole" (K4) čita evidenciju kucanja (`tech-processes`) — bez
+  // `tehnologija.read` bi svaki upit vratio 403, pa se tab tada i ne nudi.
+  const mayReadLog = can(PERMISSIONS.TEHNOLOGIJA_READ);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
+
+  // Tihi guard-redirect (obrazac iz podesavanja/sastanci, F1): deep-link `?tab=aktivnost` bez
+  // `tehnologija.read` vraća na „Evidenciju škarta" i prepravlja URL. Čeka `permissionsPending`
+  // (dva paralelna upita — `can()` je dotle fail-closed), da tehnologa ne baci sa deep-linka.
+  // Napomena: `?tab=skart-dorada` (mejl/zvonce) hvata sam `useQueryTab` jer je u TAB_KEYS.
+  useEffect(() => {
+    if (isLoading || permissionsPending || !user) return;
+    if (tab === 'aktivnost' && !mayReadLog) setTab('skart');
+  }, [isLoading, permissionsPending, user, tab, mayReadLog, setTab]);
 
   if (isLoading || !user) {
     return (
@@ -47,14 +80,36 @@ export default function KvalitetPage() {
   const draftScrap = mini.data?.data.skart.drafts ?? 0;
   const draftRework = mini.data?.data.dorada.drafts ?? 0;
 
-  // „Aktivnost kontrole" (K4) čita evidenciju kucanja (`tech-processes`) — bez
-  // `tehnologija.read` bi svaki upit vratio 403, pa se tab tada i ne nudi.
-  const mayReadLog = can(PERMISSIONS.TEHNOLOGIJA_READ);
-
-  const tabs: { key: TabKey; label: string; badge?: number }[] = [
-    { key: 'skart', label: 'Evidencija škarta', badge: draftScrap },
-    { key: 'dorada', label: 'Evidencija dorada', badge: draftRework },
-    ...(mayReadLog ? ([{ key: 'aktivnost', label: 'Aktivnost kontrole' }] as const) : []),
+  // Podnaslovi razdvajaju tri „škart" toka (review [13]): starija Excel evidencija
+  // (izveštaji NNN/YY), živi događaj-tok iz pogona, i kucanja kontrole.
+  const tabs: { key: TabKey; label: string; badge?: number; hint?: string }[] = [
+    {
+      key: 'skart',
+      label: 'Evidencija škarta',
+      badge: draftScrap,
+      hint: 'Starija evidencija izveštaja o neusaglašenosti (broj NNN/YY, digitalizacija Excel-a).',
+    },
+    {
+      key: 'dorada',
+      label: 'Evidencija dorada',
+      badge: draftRework,
+      hint: 'Starija evidencija izveštaja o neusaglašenosti (broj NNN/YY, digitalizacija Excel-a).',
+    },
+    {
+      key: 'skart-dorada',
+      label: 'Škart i dorada',
+      badge: pendingCount,
+      hint: 'Živi tok iz pogona: prijava sa kioska → potvrda/odbacivanje kontrolora → Pareto.',
+    },
+    ...(mayReadLog
+      ? ([
+          {
+            key: 'aktivnost',
+            label: 'Aktivnost kontrole',
+            hint: 'Kucanja završne kontrole sa kioska (evidencija rada), ne pojedinačni događaji.',
+          },
+        ] as const)
+      : []),
     { key: 'izvestaji', label: 'Izveštaji' },
     { key: 'dokumenti', label: 'Dokumenti' },
     { key: 'pogon', label: 'Kontrola pogon' },
@@ -75,6 +130,7 @@ export default function KvalitetPage() {
                   type="button"
                   role="tab"
                   aria-selected={active}
+                  title={t.hint}
                   onClick={() => setTab(t.key)}
                   className={cn(
                     '-mb-px flex items-center border-b-2 px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none',
@@ -94,6 +150,7 @@ export default function KvalitetPage() {
         <div className="flex-1 overflow-auto p-6">
           {tab === 'skart' && <EvidencijaTab type={NONCONFORMITY_TYPE.SCRAP} />}
           {tab === 'dorada' && <EvidencijaTab type={NONCONFORMITY_TYPE.REWORK} />}
+          {tab === 'skart-dorada' && <SkartDoradaTab />}
           {tab === 'aktivnost' && mayReadLog && <AktivnostTab />}
           {tab === 'izvestaji' && <IzvestajiTab />}
           {tab === 'dokumenti' && <DokumentiTab />}

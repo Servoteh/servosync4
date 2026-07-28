@@ -52,10 +52,21 @@ export interface AiJa {
   odeljenje?: string | null;
 }
 
+/**
+ * Talas AI-0: dnevni limit je budžet ULAZNIH tokena (ne više „50 poruka").
+ * `limit: -1` = bez limita (admin) → brojač se ne prikazuje.
+ */
 export interface AiLimit {
   used: number;
   limit: number;
   remaining: number;
+  unit?: 'tokens' | 'sekunde' | 'pozivi';
+}
+
+/** Engine koji je STVARNO konfigurisan na serveru (GET /v1/ai/engines). */
+export interface AiEngineInfo {
+  engine: Engine;
+  label: string;
 }
 
 export interface AiProject {
@@ -83,6 +94,7 @@ const KEYS = {
   messages: (id: string) => ['ai', 'conversations', id, 'messages'] as const,
   me: ['ai', 'me'] as const,
   limit: ['ai', 'limit'] as const,
+  engines: ['ai', 'engines'] as const,
   projects: ['ai', 'projects'] as const,
 };
 
@@ -99,6 +111,19 @@ export function useAiLimit() {
   return useQuery({
     queryKey: KEYS.limit,
     queryFn: () => apiFetch<{ data: AiLimit }>(`${BASE}/limit`),
+  });
+}
+
+/**
+ * Talas AI-0 (stavka 7a): server javlja koje engine-e ima. Bez ovoga su Gemini i
+ * Kimi dugmad garantovano vraćala 503 (ključevi nisu postavljeni). Pad upita →
+ * pada se na ceo statički spisak (bolje ponuditi previše nego ništa).
+ */
+export function useAiEngines() {
+  return useQuery({
+    queryKey: KEYS.engines,
+    staleTime: 5 * 60 * 1000,
+    queryFn: () => apiFetch<{ data: AiEngineInfo[] }>(`${BASE}/engines`),
   });
 }
 
@@ -148,7 +173,7 @@ export interface ChatVars {
 
 /**
  * `/ai/chat` — sa slikom multipart, bez slike JSON. Odgovor nosi remaining/limit
- * (upozorenje „još X poruka danas") i conversationId (retry ne pravi orphan nit).
+ * (upozorenje „još ~Xk tokena danas") i conversationId (retry ne pravi orphan nit).
  * Invalidiramo niti + poruke te niti + limit posle uspeha.
  */
 export function useAiChat() {

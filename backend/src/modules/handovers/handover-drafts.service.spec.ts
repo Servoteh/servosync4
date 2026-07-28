@@ -180,7 +180,11 @@ function fullPrismaMock(drawings: DrawingRow[]) {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
       update: jest.fn(),
+      delete: jest.fn().mockResolvedValue({ id: 21 }),
       createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      // `update()` broji stavke (zabrana promene predmeta; prelaz na „Za
+      // primopredaju" traži ≥1 stavku) — default: nacrt IMA stavke.
+      count: jest.fn().mockResolvedValue(1),
     },
     handoverDraftStatus: { findUnique: jest.fn().mockResolvedValue(null) },
     drawingHandover: {
@@ -553,6 +557,8 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
       id: 8,
       isLocked: false,
       designerId: 33,
+      // §6.3: predaje se samo radni nacrt („Za kreiranje" / „Za primopredaju").
+      statusId: 0,
     });
     prisma.handoverDraftItem.findMany.mockResolvedValue([
       { id: 1, drawingId: 10, preCheckDuplicate: true, decisionAction: 0 },
@@ -571,6 +577,8 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
       id: 8,
       isLocked: false,
       designerId: 33,
+      // §6.3: predaje se samo radni nacrt („Za kreiranje" / „Za primopredaju").
+      statusId: 0,
     });
     prisma.handoverDraftItem.findMany.mockResolvedValue([
       { id: 1, drawingId: 10, preCheckDuplicate: true, decisionAction: 2 },
@@ -601,6 +609,8 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
       id: 8,
       isLocked: false,
       designerId: 33,
+      // §6.3: predaje se samo radni nacrt („Za kreiranje" / „Za primopredaju").
+      statusId: 0,
     });
     prisma.handoverDraftItem.findMany.mockResolvedValue([
       { id: 1, drawingId: 12, preCheckDuplicate: false, decisionAction: 0 },
@@ -621,6 +631,8 @@ describe("HandoverDraftsService — §6.5.4 gate na submit()", () => {
       id: 8,
       isLocked: false,
       designerId: 33,
+      // §6.3: predaje se samo radni nacrt („Za kreiranje" / „Za primopredaju").
+      statusId: 0,
     });
     prisma.handoverDraftItem.findMany.mockResolvedValue([
       { id: 1, drawingId: 13, preCheckDuplicate: false, decisionAction: 0 },
@@ -651,6 +663,8 @@ describe("HandoverDraftsService — tvrda kapija predaje (Nenad 14.07)", () => {
       id: 8,
       isLocked: false,
       designerId: 33,
+      // §6.3: predaje se samo radni nacrt („Za kreiranje" / „Za primopredaju").
+      statusId: 0,
     });
     prisma.handoverDraftItem.findMany.mockResolvedValue([
       { id: 1, drawingId: 10, preCheckDuplicate: false, decisionAction: 0 },
@@ -1053,6 +1067,372 @@ describe("HandoverDraftsService — appendItems (Dodaj u nacrt iz PDM-a)", () =>
 
     expect(err).toBeInstanceOf(BadRequestException);
     expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zahtev 027/26 (Igor 26.07) — izmena količine i brisanje stavke nacrta
+// ---------------------------------------------------------------------------
+
+describe("HandoverDraftsService — updateItem / removeItem (zahtev 027/26)", () => {
+  /** Radni nacrt (nezaključan, statusId 0) + stavka 21 koja mu pripada. */
+  async function itemSetup(
+    draftOver: Record<string, unknown> = {},
+    itemOver: Record<string, unknown> = {},
+  ) {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: false,
+      statusId: 0,
+      ...draftOver,
+    });
+    prisma.handoverDraftItem.findUnique.mockResolvedValue({
+      id: 21,
+      draftId: 8,
+      ...itemOver,
+    });
+    prisma.handoverDraftItem.update.mockResolvedValue({
+      id: 21,
+      draftId: 8,
+      drawingId: 10,
+      mainDrawingId: null,
+      quantityToProduce: 12,
+      note: null,
+    });
+    return { service, prisma };
+  }
+
+  // ---------------------------------------------------------------- izmena
+
+  it("nova količina → upisuje quantity_to_produce, vraća stavku sa crtežom", async () => {
+    const { service, prisma } = await itemSetup();
+
+    const res = await service.updateItem(8, 21, { quantityToProduce: 12 });
+
+    expect(prisma.handoverDraftItem.update).toHaveBeenCalledWith({
+      where: { id: 21 },
+      data: { quantityToProduce: 12 },
+    });
+    expect(res.data.drawing).toEqual(containing({ id: 10 }));
+  });
+
+  it("napomena se trimuje, prazna → null (isti obrazac kao update zaglavlja)", async () => {
+    const { service, prisma } = await itemSetup();
+
+    await service.updateItem(8, 21, { note: "  pogrešna pozicija  " });
+    await service.updateItem(8, 21, { note: "   " });
+
+    const calls = prisma.handoverDraftItem.update.mock.calls as [
+      { data: { note?: string | null } },
+    ][];
+    expect(calls[0][0].data.note).toBe("pogrešna pozicija");
+    expect(calls[1][0].data.note).toBeNull();
+  });
+
+  it("količina 0 / decimala / negativna → 400, bez upisa", async () => {
+    const { service, prisma } = await itemSetup();
+
+    for (const q of [0, -3, 2.5]) {
+      const err = await errorOf(
+        service.updateItem(8, 21, { quantityToProduce: q }),
+      );
+      expect(err).toBeInstanceOf(BadRequestException);
+    }
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("prazno telo (ni količina ni napomena) → 400, bez upisa", async () => {
+    const { service, prisma } = await itemSetup();
+
+    const err = await errorOf(service.updateItem(8, 21, {}));
+
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("zaključan nacrt → 422, bez upisa", async () => {
+    const { service, prisma } = await itemSetup({ isLocked: true });
+
+    const err = await errorOf(
+      service.updateItem(8, 21, { quantityToProduce: 5 }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("zaključan");
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("predat nacrt (statusId=2) → 422, bez upisa (ista kapija kao appendItems)", async () => {
+    const { service, prisma } = await itemSetup({ statusId: 2 });
+
+    const err = await errorOf(
+      service.updateItem(8, 21, { quantityToProduce: 5 }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("nepostojeći nacrt → 404, bez upisa", async () => {
+    const { service, prisma } = await itemSetup();
+    prisma.handoverDraft.findUnique.mockResolvedValue(null);
+
+    const err = await errorOf(
+      service.updateItem(999, 21, { quantityToProduce: 5 }),
+    );
+
+    expect((err as { status?: number }).status).toBe(404);
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  it("stavka sa TUĐEG nacrta → 404, bez upisa", async () => {
+    const { service, prisma } = await itemSetup({}, { draftId: 9 });
+
+    const err = await errorOf(
+      service.updateItem(8, 21, { quantityToProduce: 5 }),
+    );
+
+    expect((err as { status?: number }).status).toBe(404);
+    expect(prisma.handoverDraftItem.update).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------- brisanje
+
+  it("brisanje stavke radnog nacrta → hard delete + potvrda", async () => {
+    const { service, prisma } = await itemSetup();
+
+    const res = await service.removeItem(8, 21);
+
+    expect(prisma.handoverDraftItem.delete).toHaveBeenCalledWith({
+      where: { id: 21 },
+    });
+    expect(res.data).toEqual({ id: 21, draftId: 8, deleted: true });
+  });
+
+  it("brisanje na zaključanom nacrtu → 422, ništa se ne briše", async () => {
+    const { service, prisma } = await itemSetup({ isLocked: true });
+
+    const err = await errorOf(service.removeItem(8, 21));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.handoverDraftItem.delete).not.toHaveBeenCalled();
+  });
+
+  it("brisanje na predatom nacrtu (statusId=2) → 422, ništa se ne briše", async () => {
+    const { service, prisma } = await itemSetup({ statusId: 2 });
+
+    const err = await errorOf(service.removeItem(8, 21));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.handoverDraftItem.delete).not.toHaveBeenCalled();
+  });
+
+  it("brisanje tuđe/nepostojeće stavke → 404, ništa se ne briše", async () => {
+    const { service, prisma } = await itemSetup({}, { draftId: 9 });
+
+    const err = await errorOf(service.removeItem(8, 21));
+
+    expect((err as { status?: number }).status).toBe(404);
+    expect(prisma.handoverDraftItem.delete).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Allowlist statusnih prelaza nacrta kroz PATCH (presuda Nenad 27.07)
+// ---------------------------------------------------------------------------
+
+describe("HandoverDraftsService — allowlist statusnih prelaza (update)", () => {
+  /**
+   * Nezaključan nacrt u zadatom statusu; svaki ciljni status POSTOJI u lookup-u
+   * (da 422 dolazi od allowliste, a ne od „Nepoznat status"). `itemCount` je broj
+   * stavki (prelaz na „Za primopredaju" traži ≥1).
+   */
+  async function statusSetup(currentStatusId: number, itemCount = 1) {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: false,
+      projectId: 4,
+      statusId: currentStatusId,
+    });
+    prisma.handoverDraftStatus.findUnique.mockImplementation((args: unknown) =>
+      Promise.resolve({ id: (args as { where: { id: number } }).where.id }),
+    );
+    prisma.handoverDraftItem.count.mockResolvedValue(itemCount);
+    return { service, prisma };
+  }
+
+  const wrote = (statusId: number) => ({
+    where: { id: 8 },
+    data: { statusId },
+  });
+
+  it("„Spreman za primopredaju“ (0 → 1) prolazi — status se upisuje", async () => {
+    const { service, prisma } = await statusSetup(0);
+
+    await service.update(8, { statusId: 1 });
+
+    expect(prisma.handoverDraft.update).toHaveBeenCalledWith(wrote(1));
+  });
+
+  it("storno (0 → 5) i povratak u rad (1 → 0) prolaze", async () => {
+    const storno = await statusSetup(0);
+    await storno.service.update(8, { statusId: 5 });
+    expect(storno.prisma.handoverDraft.update).toHaveBeenCalledWith(wrote(5));
+
+    const nazad = await statusSetup(1);
+    await nazad.service.update(8, { statusId: 0 });
+    expect(nazad.prisma.handoverDraft.update).toHaveBeenCalledWith(wrote(0));
+  });
+
+  it("radni → „Lansiran“ (4) direktno → 422 sa objašnjenjem, bez upisa", async () => {
+    const { service, prisma } = await statusSetup(0);
+
+    const err = await errorOf(service.update(8, { statusId: 4 }));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("Nedozvoljen prelaz");
+    expect((err as Error).message).toContain("Lansiran");
+    expect(prisma.handoverDraft.update).not.toHaveBeenCalled();
+  });
+
+  it("radni → „Predat“ (2) → 422 (predaja ide kroz submit, ne kroz PATCH)", async () => {
+    const { service, prisma } = await statusSetup(0);
+
+    const err = await errorOf(service.update(8, { statusId: 2 }));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("Predat");
+    expect(prisma.handoverDraft.update).not.toHaveBeenCalled();
+  });
+
+  it("NIJEDAN prelaz kroz PATCH ne upisuje 2/3/4 — ručno „lansiran“ radni nacrt je nedostižan", async () => {
+    for (const from of [0, 1, 2, 3, 4, 5]) {
+      for (const to of [2, 3, 4]) {
+        if (from === to) continue;
+        const { service, prisma } = await statusSetup(from);
+
+        const err = await errorOf(service.update(8, { statusId: to }));
+
+        expect(err).toBeInstanceOf(UnprocessableEntityException);
+        expect(prisma.handoverDraft.update).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("ista vrednost statusa (FE je uvek šalje) nije prelaz — prolazi bez lookup-a", async () => {
+    const { service, prisma } = await statusSetup(0);
+
+    await service.update(8, { statusId: 0, note: "  ispravka  " });
+
+    expect(prisma.handoverDraftStatus.findUnique).not.toHaveBeenCalled();
+    expect(prisma.handoverDraft.update).toHaveBeenCalledWith({
+      where: { id: 8 },
+      data: { note: "ispravka", statusId: 0 },
+    });
+  });
+
+  it("prelaz na „Za primopredaju“ bez stavki → 422 (§5.2), bez upisa", async () => {
+    const { service, prisma } = await statusSetup(0, 0);
+
+    const err = await errorOf(service.update(8, { statusId: 1 }));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("bez stavki");
+    expect(prisma.handoverDraft.update).not.toHaveBeenCalled();
+  });
+
+  it("nepoznat status (99) → 422 „Nepoznat status“ (provera lookup-a ostaje prva)", async () => {
+    const { service, prisma } = await statusSetup(0);
+    prisma.handoverDraftStatus.findUnique.mockResolvedValue(null);
+
+    const err = await errorOf(service.update(8, { statusId: 99 }));
+
+    expect((err as Error).message).toContain("Nepoznat status");
+    expect(prisma.handoverDraft.update).not.toHaveBeenCalled();
+  });
+
+  it("zatečen nezaključan nacrt u „Lansiran“ (4): sanacija na 0 prolazi, na 1 ne", async () => {
+    const sanacija = await statusSetup(4);
+    await sanacija.service.update(8, { statusId: 0 });
+    expect(sanacija.prisma.handoverDraft.update).toHaveBeenCalledWith(wrote(0));
+
+    const ne = await statusSetup(4);
+    const err = await errorOf(ne.service.update(8, { statusId: 1 }));
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(ne.prisma.handoverDraft.update).not.toHaveBeenCalled();
+  });
+
+  it("zaključan nacrt → 422 i pre allowliste (status se ne dira posle predaje)", async () => {
+    const { service, prisma } = await statusSetup(0);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: true,
+      projectId: 4,
+      statusId: 2,
+    });
+
+    const err = await errorOf(service.update(8, { statusId: 0 }));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("zaključan");
+    expect(prisma.handoverDraft.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("HandoverDraftsService — submit() prima samo radni nacrt (§6.3)", () => {
+  /** Predajiv nacrt u zadatom statusu (nesporna stavka, poslednja revizija). */
+  async function submitSetup(statusId: number) {
+    const { service, prisma } = await makeFullService([APPROVED]);
+    prisma.handoverDraft.findUnique.mockResolvedValue({
+      id: 8,
+      isLocked: false,
+      designerId: 33,
+      statusId,
+    });
+    prisma.handoverDraftItem.findMany.mockResolvedValue([
+      { id: 1, drawingId: 10, preCheckDuplicate: false, decisionAction: 0 },
+    ]);
+    prisma.drawingHandover.findMany.mockResolvedValue([
+      {
+        id: 100,
+        drawingId: 10,
+        handoverDate: new Date(),
+        handoverWorkerId: 33,
+        statusId: 0,
+        isLocked: false,
+        createdAt: null,
+      },
+    ]);
+    return { service, prisma };
+  }
+
+  it("„Za primopredaju“ (1) se predaje", async () => {
+    const { service } = await submitSetup(1);
+
+    const res = await service.submit(8, SUBMIT_ACTOR);
+
+    expect(res.data.handoversCreated).toBe(1);
+  });
+
+  it("storniran nacrt (5) → 422, transakcija se ne otvara", async () => {
+    const { service, prisma } = await submitSetup(5);
+
+    const err = await errorOf(service.submit(8, SUBMIT_ACTOR));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("Storniran");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("zatečen „Lansiran“ (4) nezaključan nacrt se ne predaje → 422", async () => {
+    const { service, prisma } = await submitSetup(4);
+
+    const err = await errorOf(service.submit(8, SUBMIT_ACTOR));
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });
 

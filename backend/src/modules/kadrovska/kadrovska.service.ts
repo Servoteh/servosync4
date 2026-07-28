@@ -171,11 +171,34 @@ export class KadrovskaService {
     const view = KadrovskaService.REPORT_SOURCES[kind];
     if (view) {
       return this.withUserMapped(email, async (tx) => {
+        // ⚠️ AUDIT-K4 (26.07): ranije `SELECT * … ORDER BY 1` BEZ LIMIT-a i bez
+        // ijednog filtera. Za `audit` to znači povlačenje CELOG `kadr_audit_log`
+        // (trajno raste) u jedan JSON, unutar interaktivne `withUserRls`
+        // transakcije — predvidiv timeout. `ORDER BY 1` je uz to sortirao po
+        // PRVOJ KOLONI view-a, ne po vremenu, pa je „poslednja izmena" bila bilo
+        // gde u tabeli. 1.0 čita `order=changed_at.desc` sa limitom 1–500
+        // (default 100) i četiri filtera.
+        const isAudit = kind === "audit";
+        const limit = Math.min(Math.max(Number(q.limit ?? 100), 1), 500);
+        const order = isAudit
+          ? Prisma.sql`ORDER BY changed_at DESC`
+          : Prisma.sql`ORDER BY 1`;
+        const whereFrom =
+          isAudit && q.from
+            ? Prisma.sql`AND changed_at >= ${q.from}::date`
+            : Prisma.empty;
+        const whereTo =
+          isAudit && q.to
+            ? Prisma.sql`AND changed_at < (${q.to}::date + 1)`
+            : Prisma.empty;
         const data = await tx.$queryRaw(
-          Prisma.sql`SELECT * FROM ${Prisma.raw(view)} ORDER BY 1`,
+          Prisma.sql`SELECT * FROM ${Prisma.raw(view)}
+             WHERE true ${whereFrom} ${whereTo}
+             ${order}
+             LIMIT ${limit}`,
         );
         // v_kadr_audit_log.id je bigint → Number (res.json ne serijalizuje BigInt).
-        return { data: this.numify(data) };
+        return { data: this.numify(data), meta: { limit } };
       });
     }
     switch (kind) {
@@ -566,7 +589,30 @@ export class KadrovskaService {
   async requests(email: string, q: RequestsQueryDto) {
     const wantSource = (s: string) => !q.source || q.source === s;
     return this.withUserMapped(email, async (tx) => {
-      const empWhere = q.employeeId ? { employeeId: q.employeeId } : {};
+      // ⚠️ AUDIT-K2 (26.07): RLS ovde NIJE scope. Politike `vr_select`/`mu_select`/
+      // `pl_select` puštaju SVE redove svakome ko prođe `current_user_can_manage_vacreq()`,
+      // a ta fn vraća true za bilo koju aktivnu rolu iz
+      // {admin,hr,menadzment,leadpm,pm,poslovni_admin} — bez ograničenja na tim.
+      // 1.0 je inbox sužavao pozivom `canManageEmployee(emp)` po redu; za rolu
+      // `menadzment` to znači `sub_department_id ∈ managed_sub_department_ids`
+      // (i FALSE kad je lista prazna ili zaposleni nema pododeljenje).
+      // Scope zato presuđujemo OVDE, ISTOM DB funkcijom — FE filter ne može biti brana
+      // jer `v_employees_safe`/directory ne garantuje `sub_department_id` (PII maska).
+      // Uključeni su i sopstveni zahtevi (obrazac „self ∨ manages ∨ vacreq_admin").
+      const scope = await tx.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT e.id
+             FROM employees e
+            WHERE current_user_is_vacreq_admin()
+               OR current_user_manages_employee(e.id)
+               OR e.id = current_user_employee_id()`,
+      );
+      const scopeIds = scope.map((r) => r.id);
+      // Eksplicitan `?employeeId=` NE sme da zaobiđe opseg — presek, ne zamena.
+      const empWhere = {
+        employeeId: q.employeeId
+          ? { in: scopeIds.filter((id) => id === q.employeeId) }
+          : { in: scopeIds },
+      };
       const statusWhere = q.status ? { status: q.status } : {};
       const where = { ...empWhere, ...statusWhere };
       const [vacation, makeup, paidLeave, nop] = await Promise.all([
@@ -616,14 +662,13 @@ export class KadrovskaService {
           ...(q.employeeId ? { employeeId: q.employeeId } : {}),
           ...(q.archived === "active" ? { archivedAt: null } : {}),
           ...(q.archived === "archived" ? { NOT: { archivedAt: null } } : {}),
-          ...(q.from || q.to
-            ? {
-                dateFrom: {
-                  ...(q.from ? { gte: this.toDbDate(q.from)! } : {}),
-                },
-                ...(q.to ? { dateTo: { lte: this.toDbDate(q.to)! } } : {}),
-              }
-            : {}),
+          // ⚠️ AUDIT-K5 (26.07): PRESEK sa periodom, ne SADRŽANOST u periodu.
+          // Ranije `dateFrom >= from AND dateTo <= to` → odsustvo koje prelazi
+          // granicu (npr. bolovanje 25.06–10.07 pri filteru za jul) NESTAJALO je
+          // iz pregleda, iako u tom periodu traje. Preklapanje = počinje pre kraja
+          // perioda I završava se posle početka perioda.
+          ...(q.to ? { dateFrom: { lte: this.toDbDate(q.to)! } } : {}),
+          ...(q.from ? { dateTo: { gte: this.toDbDate(q.from)! } } : {}),
         },
         orderBy: [{ dateFrom: "desc" }],
       });
@@ -637,15 +682,42 @@ export class KadrovskaService {
       timeZone: "Europe/Belgrade",
     }).format(new Date());
     return this.withUserMapped(email, async (tx) => {
-      const data = await tx.absence.findMany({
-        where: {
-          archivedAt: null,
-          dateFrom: { lte: this.toDbDate(today)! },
-          dateTo: { gte: this.toDbDate(today)! },
+      // ⚠️ AUDIT-K5b (26.07): roster odsutnih mora da spoji DVA izvora. 1.0
+      // `odsutniTab` uz `absences` obavezno čita i GRID (`work_hours.absence_code`)
+      // jer se odsustva u praksi vode u gridu (grid je kanon za GO i bolovanje),
+      // dok tabela `absences` nosi uglavnom periode koje je HR uneo ručno.
+      // Sa samo jednim izvorom lista je bila skoro prazna — zato je i nije
+      // koristio nijedan ekran.
+      const [fromAbsences, fromGrid] = await Promise.all([
+        tx.absence.findMany({
+          where: {
+            archivedAt: null,
+            dateFrom: { lte: this.toDbDate(today)! },
+            dateTo: { gte: this.toDbDate(today)! },
+          },
+          orderBy: [{ dateFrom: "asc" }],
+        }),
+        tx.$queryRaw<Record<string, unknown>[]>(
+          Prisma.sql`SELECT w.employee_id, w.absence_code, w.absence_subtype,
+                    e.full_name, e.department
+               FROM work_hours w
+               JOIN v_employees_safe e ON e.id = w.employee_id
+              WHERE w.work_date = ${today}::date
+                AND w.absence_code IS NOT NULL
+                AND w.absence_code <> ''
+              ORDER BY e.full_name`,
+        ),
+      ]);
+      // Grid dan se izostavlja ako isti zaposleni već ima `absences` red za danas
+      // (isti događaj iz dva izvora — ne duplirati u rosteru).
+      const covered = new Set(fromAbsences.map((a) => a.employeeId));
+      const gridRows = this.numify(fromGrid) as Record<string, unknown>[];
+      return {
+        data: {
+          absences: fromAbsences,
+          grid: gridRows.filter((r) => !covered.has(String(r.employee_id))),
         },
-        orderBy: [{ dateFrom: "asc" }],
-      });
-      return { data };
+      };
     });
   }
 
@@ -710,7 +782,10 @@ export class KadrovskaService {
           },
         }),
         tx.kadrHoliday.findMany({
-          where: { holidayDate: { gte: start, lt: end } },
+          // isWorkday=false: radni izuzetak (radna subota) NIJE praznik — inače
+          // computePayableHours skida fond i knjiži praznične sate za radni dan
+          // (AUDIT-K1; paritet 1.0 holidaySet filtera !h.isWorkday).
+          where: { isWorkday: false, holidayDate: { gte: start, lt: end } },
           select: { holidayDate: true },
         }),
         tx.employee.findMany({
@@ -971,8 +1046,22 @@ export class KadrovskaService {
    *  ⚠️ event_ids je bigint[] → Number (JSON ne serijalizuje BigInt; §1 review). */
   async attendanceCorrections(email: string, q: AttendanceDailyQueryDto) {
     return this.withUserMapped(email, async (tx) => {
+      // ⚠️ AUDIT-K5 (26.07): from/to su stizali u DTO-u ali se NISU primenjivali —
+      // ekran je uvek dobijao poslednjih 300 korekcija bez obzira na izabrani
+      // period. Filtriramo po danu na koji se korekcija odnosi (`work_day`).
       const rows = await tx.attendanceCorrection.findMany({
-        where: { ...(q.employeeId ? { employeeId: q.employeeId } : {}) },
+        where: {
+          ...(q.employeeId ? { employeeId: q.employeeId } : {}),
+          ...(q.status === "all" ? {} : { status: "active" }),
+          ...(q.from || q.to
+            ? {
+                day: {
+                  ...(q.from ? { gte: this.toDbDate(q.from)! } : {}),
+                  ...(q.to ? { lte: this.toDbDate(q.to)! } : {}),
+                },
+              }
+            : {}),
+        },
         orderBy: [{ createdAt: "desc" }],
         take: 300,
       });
@@ -1204,6 +1293,46 @@ export class KadrovskaService {
       return {
         data: { employeeId: id, bruto: v == null ? null : Number(v) },
       };
+    });
+  }
+
+  /**
+   * Ugovorna zarada (NETO/BRUTO) sa kartona — `kadr_get_contract_salary` (DEFINER,
+   * interni gate `current_user_can_manage_employee_pii()`).
+   *
+   * ⚠️ AUDIT-K4 (26.07): ovaj RPC je bio JEDINI HR RPC iz 1.0 bez ijednog
+   * pozivaoca u 3.0 (kritičar pokrivenosti). Bez njega poslovni admin nije mogao
+   * ni da PROČITA ugovorni neto/bruto pri generisanju Ugovora o radu.
+   */
+  async contractSalary(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ v: unknown }[]>(
+        Prisma.sql`SELECT kadr_get_contract_salary(${id}::uuid) AS v`,
+      );
+      return { data: (rows[0]?.v ?? null) as unknown };
+    });
+  }
+
+  /**
+   * Jedan red procene (RLS presuđuje vidljivost).
+   *
+   * ⚠️ AUDIT-K5b (26.07): 3.0 nije imao `GET assessments/:id`, pa je 360 modal
+   * status uzimao iz reda LISTE i posle ga nikad nije osvežavao sa servera —
+   * zatvorena procena se tiho ponovo otvarala, a UI je ostajao read-only (i
+   * obrnuto). 1.0 posle `open360` OBAVEZNO ponovo pročita sam red i iz njega
+   * izvede `canEdit`.
+   */
+  async assessmentOne(email: string, id: string) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<Record<string, unknown>[]>(
+        Prisma.sql`SELECT a.*, e.full_name AS employee_name
+             FROM assessments a
+             LEFT JOIN v_employees_safe e ON e.id = a.employee_id
+            WHERE a.id = ${id}::uuid LIMIT 1`,
+      );
+      const row = (this.numify(rows) as Record<string, unknown>[])[0] ?? null;
+      if (!row) throw new NotFoundException("Procena nije pronađena.");
+      return { data: row };
     });
   }
 
@@ -1592,21 +1721,31 @@ export class KadrovskaService {
    *  rev_* SELECT je USING(true) za authenticated (paritet 1.0 — HR vidi za bilo koga). */
   async offboardingOutstandingReversi(email: string, employeeId: string) {
     return this.withUserMapped(email, async (tx) => {
+      // ⚠️ AUDIT-K5 (26.07): LIMIT je bio na SPOJU (linije), a 1.0 ga primenjuje na
+      // DOKUMENTE. Jedan revers sa mnogo stavki mogao je da potroši ceo limit i
+      // tiho odseče zaduženja drugih reversa — na ekranu za razduženje pri
+      // odlasku radnika to znači stavku koja se nikad ne vrati. Sada se limit
+      // odnosi na dokumente, a sve njihove otvorene linije se prikazuju.
       const data = await tx.$queryRaw(
         Prisma.sql`
+          WITH docs AS (
+            SELECT d.id, d.doc_number, d.doc_type, d.issued_at
+              FROM rev_documents d
+             WHERE d.recipient_employee_id = ${employeeId}::uuid
+               AND d.status IN ('OPEN', 'PARTIALLY_RETURNED')
+             ORDER BY d.issued_at DESC
+             LIMIT 200
+          )
           SELECT d.id AS doc_id, d.doc_number, d.doc_type, d.issued_at,
                  t.oznaka, COALESCE(t.naziv, l.part_name) AS naziv,
                  (l.quantity - COALESCE(l.returned_quantity, 0)) AS qty,
                  COALESCE(l.unit, 'kom') AS unit, l.napomena AS pribor
-            FROM rev_documents d
+            FROM docs d
             JOIN rev_document_lines l ON l.document_id = d.id
             LEFT JOIN rev_tools t ON t.id = l.tool_id
-           WHERE d.recipient_employee_id = ${employeeId}::uuid
-             AND d.status IN ('OPEN', 'PARTIALLY_RETURNED')
-             AND l.line_status = 'ISSUED'
+           WHERE l.line_status = 'ISSUED'
              AND (l.quantity - COALESCE(l.returned_quantity, 0)) > 0
-           ORDER BY d.issued_at DESC
-           LIMIT 200`,
+           ORDER BY d.issued_at DESC`,
       );
       // qty je numeric (Prisma.Decimal) → Number kroz Decimal-aware numify (review #22).
       return { data: this.numify(data) };

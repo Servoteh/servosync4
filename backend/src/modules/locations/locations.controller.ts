@@ -79,9 +79,18 @@ export class LocationsController {
     return this.locations.listPlacements(query, req.user.email);
   }
 
+  /**
+   * Istorija pokreta. `mine=1` → SAMO pokreti prijavljenog (servis razreši sy15
+   * `auth.users` uid po email-u iz tokena; `userId` se tada ignoriše) — mobilna
+   * „Moja istorija" ne zna svoj sy15 UUID. Permisija ostaje klasni `lokacije.read`
+   * (filter je suženje već dozvoljenog pogleda, ne novo pravo).
+   */
   @Get("movements")
-  listMovements(@Query() query: ListMovementsQuery) {
-    return this.locations.listMovements(query);
+  listMovements(
+    @Req() req: AuthedRequest,
+    @Query() query: ListMovementsQuery,
+  ) {
+    return this.locations.listMovements(query, req.user.email);
   }
 
   /**

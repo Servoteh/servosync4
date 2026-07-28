@@ -56,29 +56,51 @@ ssh ubuntusrv          # alias iz ~/.ssh/config: HostName 192.168.64.28, User ad
 Dev baza (za lokalni rad) je zasebna: Docker Postgres na `localhost:5435` iz [../../docker-compose.yml](../../docker-compose.yml),
 lozinka `servosync_dev`. Ista port-broj 5435, ali druga mašina — ne mešati.
 
-### 3b. ServoSync 1.0 baza — Supabase (cloud)
+### 3b. ServoSync 1.0 / sy15 baza — self-hosted na ubuntusrv
 
-1.0 (`servoteh-plan-montaze`) NE koristi on-prem PG nego **Supabase** (hostovani Postgres + PostgREST + GoTrue).
-Do gašenja u 3.0 živi paralelno sa 2.0.
+1.0 (`servoteh-plan-montaze`) NE koristi on-prem `servosync-pg` nego **zaseban self-hosted Supabase stack**
+(Postgres + PostgREST + GoTrue + Storage) na `ubuntusrv`. To je **ŽIVA sy15 baza** — kadrovska, sastanci,
+lokacije, `kadr_notification_log` outbox. Do gašenja u 3.0 živi paralelno sa 3.0 bazom.
 
 | | |
 |---|---|
-| Projekat (ref) | `fniruhsuotwsrjsbhrxd` · `https://fniruhsuotwsrjsbhrxd.supabase.co` |
-| Baza | Postgres, **198 tabela** u `public` (verifikovano 2026-07-08); ~360+ RLS politika = authz sloj |
-| Migrira se | u 1.5 (međukorak) na on-prem Ubuntu (PG + PostgREST + GoTrue), pa u 3.0 u 2.0 stack |
+| Gde radi | **Docker kontejneri na `ubuntusrv`** — `sy15-db`, `sy15-rest`, `sy15-auth`, `sy15-storage`, `sy15-gateway`, `sy15-functions`, `sy15-scheduler` |
+| Baza | Postgres u kontejneru `sy15-db` (`server_encoding = UTF8`) |
+| REST / Storage | kroz gateway **`https://api.servosync.servoteh.com`** (storage: `.../storage/v1` — v. memo „SY15 storage URL = javni gateway") |
 
-**Pristup (ključevi su u `servoteh-plan-montaze/.env` i `servoteh-bridge/.env` — NISU u git-u):**
+**Pristup — raw SQL (jedini pouzdan put, verifikovano 2026-07-27):**
 
-| Način | Ključ | Šta daje |
+```bash
+ssh ubuntusrv "docker exec sy15-db psql -U supabase_admin -d postgres -c \"...\""
+```
+
+> ⚠️ **Rola je bitna.** `supabase_admin` je superuser i **vlasnik** objekata (funkcije, tabele).
+> Rola `postgres` u ovom stack-u **nije superuser i nema ownership** — `CREATE OR REPLACE FUNCTION`
+> pod njom pada sa `must be owner of function`. Za čitanje je `postgres` dovoljna; za DDL koristi `supabase_admin`.
+
+> ⚠️ **Enkoding pri prenosu.** `psql` preko `ssh` na Windows-u ume da mrsi srpske dijakritike
+> (`Rešenje` → `Re<?>enje`). Kad ti definicija mora biti tačna, prenosi je base64-om:
+> `select encode(convert_to(pg_get_functiondef(...),'UTF8'),'base64')` pa dekodiraj lokalno;
+> SQL fajl šalji isto base64-om i proveri `md5sum` sa obe strane.
+
+#### ⚠️ LEGACY / UGAŠENO — Supabase cloud `fniruhsuotwsrjsbhrxd`
+
+**Ne koristiti.** Cloud projekat je ostatak pre-cutover stanja i **nije živa baza**.
+Stanje na **2026-07-27**: `SUPABASE_ACCESS_TOKEN` iz `servoteh-plan-montaze/.env` vraća
+**HTTP 401 `Unauthorized`** na svim endpointima (i `/v1/projects` i `database/query`) — token je
+revokiran; podaci u projektu su stari. Token je u `.env` zakomentarisan 2026-07-27.
+Pisanje u ovaj projekat tiho **ne utiče na produkciju** — promena bi otišla u mrtvu bazu.
+
+Tabela ključeva ostaje kao **istorijat** (svi su mrtvi zajedno sa projektom):
+
+| Način | Ključ | Šta je davalo (dok je projekat bio živ) |
 |---|---|---|
-| **Raw SQL** | `SUPABASE_ACCESS_TOKEN` (Management API) | pun SQL: `POST https://api.supabase.com/v1/projects/<ref>/database/query` — čita/piše sve, zaobilazi RLS |
-| **REST (podaci)** | `SUPABASE_SERVICE_ROLE_KEY` | `GET/POST https://<ref>.supabase.co/rest/v1/<tabela>` — pun CRUD nad podacima, zaobilazi RLS |
+| **Raw SQL** | `SUPABASE_ACCESS_TOKEN` (Management API) | `POST https://api.supabase.com/v1/projects/<ref>/database/query` — **401 od 2026-07-27** |
+| **REST (podaci)** | `SUPABASE_SERVICE_ROLE_KEY` | `GET/POST https://<ref>.supabase.co/rest/v1/<tabela>` — zaobilazi RLS |
 | **Klijentski** | `VITE_SUPABASE_ANON_KEY` | isto što i front 1.0 — poštuje RLS (ograničeno po roli) |
 
-> ⚠️ `SUPABASE_ACCESS_TOKEN` je **management token za ceo projekat** (može i da menja/obriše projekat) —
-> najosetljiviji od svih; tretirati kao root. `SERVICE_ROLE` zaobilazi RLS — ne stavljati ga u klijentski kod.
-> Direktne Postgres lozinke za Supabase (za psql/DBeaver) nema u fajlovima — bila bi u Supabase dashboard-u
-> (Project Settings → Database), ako zatreba raw psql umesto Management API-ja.
+> Istorijat: baza je imala **198 tabela** u `public` (verifikovano 2026-07-08) i ~360+ RLS politika.
+> Migracija je išla u 1.5 (međukorak) na on-prem Ubuntu — to je upravo `sy15-*` stack opisan gore.
 
 ---
 

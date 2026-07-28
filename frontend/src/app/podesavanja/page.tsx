@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { PERMISSIONS, type Permission } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -70,40 +71,45 @@ const TAB_DEFS: { key: TabKey; label: string; requires: Permission }[] = [
  * Tabovi Mašine + Održ. profili NE sele se u D (Talas F). Vidljivost tabova = per-permisija.
  */
 export default function PodesavanjaPage() {
-  const { user, isLoading, can } = useAuth();
+  const { user, isLoading, can, permissionsPending } = useAuth();
   const router = useRouter();
 
   const visibleTabs = useMemo(() => TAB_DEFS.filter((t) => can(t.requires)), [can]);
-  const [tab, setTab] = useState<TabKey>('korisnici');
+
+  // Deep-link na tab (npr. /podesavanja?tab=izgled iz „Moj profil" — jedini ulaz u
+  // Izgled za korisnike bez SETTINGS_ORG_PROFILE, koji ne vide Podešavanja u nav-u).
+  // Deljeni hook (PLAN_NAV_PODMENIJI §4.3), klijentski/static-export-safe: čita `?tab=` na
+  // mount-u, prati `popstate` i `servosync:nav` (podstavka „Podešavanja → Audit log" menja tab
+  // i kad smo VEĆ ovde), a promena taba u strani upisuje URL nazad (sidebar highlight prati).
+  // Guard efekat ispod koriguje ako tab nije dostupan ovoj ulozi.
+  const [tab, setTab] = useQueryTab<TabKey>('tab', 'korisnici', {
+    valid: TAB_DEFS.map((t) => t.key),
+  });
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  // Deep-link na tab (npr. /podesavanja?tab=izgled iz „Moj profil" — jedini ulaz u
-  // Izgled za korisnike bez SETTINGS_ORG_PROFILE, koji ne vide Podešavanja u nav-u).
-  // Klijentski (window), static-export-safe; guard efekat ispod koriguje ako tab nije
-  // dostupan ovoj ulozi.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const requested = new URLSearchParams(window.location.search).get('tab');
-    if (requested && TAB_DEFS.some((t) => t.key === requested)) setTab(requested as TabKey);
-  }, []);
-
   useEffect(() => {
     if (visibleTabs.length && !visibleTabs.some((t) => t.key === tab)) setTab(visibleTabs[0].key);
-  }, [visibleTabs, tab]);
+  }, [visibleTabs, tab, setTab]);
 
-  if (isLoading || !user) {
+  // Čeka i `permissionsPending`: `/auth/me` i `/auth/me/permissions` su dva paralelna upita
+  // (isLoading ne pokriva drugi), a dok dozvole stižu `visibleTabs` je prazan — bez ovoga bi
+  // svakom korisniku bljesnula poruka „nemate pristup". Od F1 nalaza 2 modul vide SVI
+  // (bar „Izgled"), pa je taj bljesak sad ulaz koji svako koristi.
+  if (isLoading || permissionsPending || !user) {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
+  // Fail-closed grana: uloga bez ijedne od 14 tab-permisija. `profile.self` („Izgled") ima
+  // svaka uloga u katalogu, pa se ovde stiže samo ako dozvole nisu stigle/uloga je nepoznata.
   if (visibleTabs.length === 0) {
     return (
       <AppShell>
         <PageHeader title="Podešavanja" />
         <div className="grid flex-1 place-items-center p-6 text-sm text-ink-secondary">
-          Podešavanja su dostupna korisnicima sa admin / menadžment / pm / lead pm rolom.
+          Nemate pristup nijednom odeljku Podešavanja.
         </div>
       </AppShell>
     );

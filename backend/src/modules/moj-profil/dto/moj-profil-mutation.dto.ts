@@ -64,10 +64,30 @@ export class SubmitMakeupDto extends ProfileIdempotentDto {
 }
 
 /** Plaćeno odsustvo submit (paid_leave_requests INSERT + kadr_queue_paidleave_notification). */
+/**
+ * Kodovi osnova plaćenog odsustva (paritet 1.0 `paidLeaveRequests.js:19-32`).
+ * ⚠️ AUDIT-K4: MORAJU se poklapati sa `paid_leave_reason_map(leave_type)` u sy15 —
+ * nepoznat string tamo pada na ELSE i u `absences` upiše `slobodan_reason='ostalo'`,
+ * čime se gubi pravni osnov. Ranije je polje bilo slobodan tekst do 40 znakova.
+ */
+export const PAID_LEAVE_CODES = [
+  "brak",
+  "rodjenje_deteta",
+  "bolest_uze",
+  "nepogoda",
+  "selidba",
+  "selidba_drugo",
+  "ispit",
+  "smrt_uze",
+  "krv",
+  "ostalo",
+] as const;
+
 export class SubmitPaidLeaveDto extends ProfileIdempotentDto {
-  @IsString() @MaxLength(40) leaveType!: string;
+  @IsIn(PAID_LEAVE_CODES as unknown as string[]) leaveType!: string;
   @IsISO8601() dateFrom!: string;
   @IsISO8601() dateTo!: string;
+  /** Prikazna vrednost klijenta; MERODAVAN broj računa server (bez vikenda i praznika). */
   @IsInt() @Min(0) @Max(60) daysCount!: number;
   @IsOptional() @IsString() @MaxLength(2000) reason?: string;
   @IsOptional() @IsString() @MaxLength(2000) proofNote?: string;
@@ -135,6 +155,12 @@ export class SubmitSelfAssessmentDto {
  * Paritet 1.0 gridRemarks.saveMonthRemark: prazan `text` + postojeći red = brisanje (servis
  * odlučuje). employee_id = rev_current_employee_id() ∨ resolveEmployee (self-scope kroz GUC).
  */
+/** Radnik štiklira SOPSTVENI onboarding zadatak (odluka Nenada 26.07): done ↔
+ *  pending; 'skipped' ostaje HR-u (kadr endpoint). Vlasništvo presuđuje RPC. */
+export class OnboardingTaskSelfDto {
+  @IsBoolean() done!: boolean;
+}
+
 export class SaveHoursRemarkDto extends ProfileIdempotentDto {
   @IsInt() @Min(2000) @Max(2100) year!: number;
   @IsInt() @Min(1) @Max(12) month!: number;

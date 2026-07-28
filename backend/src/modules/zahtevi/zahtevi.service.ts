@@ -20,6 +20,7 @@ import { RequestNumberingService } from "./request-numbering.service";
 import { ZahteviAiService } from "./zahtevi-ai.service";
 import { ZahteviDecisionsService } from "./zahtevi-decisions.service";
 import { ZahteviMailService } from "./zahtevi-mail.service";
+import { AI_MODULE, AiLimitsService } from "../../common/ai/ai-limits.service";
 import {
   type CreateChangeRequestDto,
   validateCreateChangeRequest,
@@ -137,6 +138,7 @@ export class ZahteviService {
     private readonly zahteviAi: ZahteviAiService,
     private readonly decisions: ZahteviDecisionsService,
     private readonly mail: ZahteviMailService,
+    private readonly limits: AiLimitsService,
   ) {}
 
   // ── ROW-SCOPE / AUTHZ ──────────────────────────────────────────────────────
@@ -384,18 +386,31 @@ export class ZahteviService {
 
   /** GET /zahtevi/:id — detalj + prilozi (živi) + analize + komentari + events; row-scope.
    *  Komentari i events se obogaćuju display imenom autora (meki ref na users — bez FK,
-   *  jedan findMany za sve id-jeve; obrazac iz zahtevi-rewards payoutReport). Fallback #id. */
+   *  jedan findMany za sve id-jeve; obrazac iz zahtevi-rewards payoutReport). Fallback #id.
+   *
+   *  Zahtev 029/26: prilozi su podeljeni po vlasništvu — `attachments` na vrhu su SAMO
+   *  prilozi samog zahteva (`commentId: null`), a prilozi komentara/pitanja idu uz svoj
+   *  komentar (`comments[].attachments`). Bez ovog filtera bi se isti fajl video dvaput
+   *  (u tabu „Zahtev" i uz komentar) i pokvario brojač priloga zahteva. */
   async getDetail(id: number, actor: AuthUser) {
     await this.getScopedOrThrow(id, actor);
     const req = await this.prisma.changeRequest.findUnique({
       where: { id },
       include: {
         attachments: {
-          where: { deletedAt: null },
+          where: { deletedAt: null, commentId: null },
           orderBy: { createdAt: "asc" },
         },
         analyses: { orderBy: { createdAt: "desc" } },
-        comments: { orderBy: { createdAt: "asc" } },
+        comments: {
+          orderBy: { createdAt: "asc" },
+          include: {
+            attachments: {
+              where: { deletedAt: null },
+              orderBy: { createdAt: "asc" },
+            },
+          },
+        },
         events: { orderBy: { createdAt: "asc" } },
       },
     });
@@ -727,12 +742,22 @@ export class ZahteviService {
         questionCount: questions.length,
         ...(note ? { note } : {}),
       });
+      // Zahtev 029/26: id-jevi upisanih pitanja se vraćaju pozivaocu — FE odmah posle
+      // ovog poziva kači izabrane fajlove na pitanje (POST /:id/attachments sa commentId).
+      // Bez toga bi admin morao da šalje pitanje pa da ga traži nazad kroz detalj.
+      const questionCommentIds: number[] = [];
       for (const body of questions) {
-        await tx.changeRequestComment.create({
+        const c = await tx.changeRequestComment.create({
           data: { requestId: id, authorUserId: actor.userId, body, isQuestion: true },
         });
+        questionCommentIds.push(c.id);
       }
-      return { ...req, status: "NEEDS_INFO", decisionNote: note };
+      return {
+        ...req,
+        status: "NEEDS_INFO",
+        decisionNote: note,
+        questionCommentIds,
+      };
     });
 
     // Mejl podnosiocu (§9) — kao decision needs-info. NIKAD ne obara radnju (§10.4).
@@ -917,27 +942,41 @@ export class ZahteviService {
   // ── PRILOZI (§5) ────────────────────────────────────────────────────────────
 
   /**
-   * POST /zahtevi/:id/attachments — multipart upload (do 10 fajlova/zahtev, 25MB/fajl).
-   * Dozvoljeno owner-u u DRAFT|SUBMITTED|NEEDS_INFO, adminu uvek. AUDIO → auto STT (try/catch).
+   * POST /zahtevi/:id/attachments — multipart upload (do 10 fajlova, 25MB/fajl).
+   * AUDIO → auto STT (try/catch). Dva opsega u ISTOJ ruti (zahtev 029/26 — svesno bez
+   * nove endpoint površine; `commentId` je opciono multipart polje uz `files`):
+   *
+   *  - BEZ `commentId` → prilog SAMOG zahteva: owner u DRAFT|SUBMITTED|NEEDS_INFO,
+   *    admin uvek; limit 10 po zahtevu (postojeće ponašanje §5, nepromenjeno).
+   *  - SA `commentId` → prilog uz komentar/pitanje: prati pravila KOMENTARA, ne priloga
+   *    zahteva — komentar se sme napisati u bilo kom statusu, pa ni prilog uz njega nema
+   *    statusni prozor; zauzvrat sme ga dodati SAMO autor tog komentara (ni admin ne
+   *    dopisuje fajl tuđem komentaru — zapisnik ostaje veran). Limit 10 po KOMENTARU,
+   *    odvojeno od limita zahteva (inače bi duža prepiska pojela kvotu zahteva).
    */
   async addAttachments(
     id: number,
     files: Express.Multer.File[],
     actor: AuthUser,
+    commentIdRaw?: string | number,
   ) {
     const req = await this.getScopedOrThrow(id, actor);
-    this.assertAttachMutationAllowed(req, actor);
+    const commentId = this.parseCommentId(commentIdRaw);
+    if (commentId == null) this.assertAttachMutationAllowed(req, actor);
+    else await this.assertCommentAttachAllowed(id, commentId, actor);
     if (!files || files.length === 0)
       throw new BadRequestException(
         "Nije priložen nijedan fajl (polje `files`).",
       );
 
     const existing = await this.prisma.changeRequestAttachment.count({
-      where: { requestId: id, deletedAt: null },
+      where: { requestId: id, commentId, deletedAt: null },
     });
     if (existing + files.length > MAX_ATTACHMENTS)
       throw new UnprocessableEntityException(
-        `Najviše ${MAX_ATTACHMENTS} priloga po zahtevu (trenutno ${existing}).`,
+        commentId == null
+          ? `Najviše ${MAX_ATTACHMENTS} priloga po zahtevu (trenutno ${existing}).`
+          : `Najviše ${MAX_ATTACHMENTS} priloga po komentaru (trenutno ${existing}).`,
       );
 
     const created: unknown[] = [];
@@ -946,7 +985,10 @@ export class ZahteviService {
       this.validateFile(file, kind);
       const ext =
         EXT_BY_MIME[file.mimetype.split(";")[0].toLowerCase()] ?? "bin";
-      const storagePath = `req/${id}/${randomUUID()}.${ext}`;
+      const storagePath =
+        commentId == null
+          ? `req/${id}/${randomUUID()}.${ext}`
+          : `req/${id}/comment/${commentId}/${randomUUID()}.${ext}`;
 
       await this.storage.upload(
         ATTACHMENT_BUCKET,
@@ -960,9 +1002,14 @@ export class ZahteviService {
       let transcriptModel: string | null = null;
       if (kind === "AUDIO") {
         try {
+          // Talas AI-0: diktiranje kroz Zahteve troši ISTI dnevni STT budžet kao
+          // `/v1/ai/stt` i pripisuje se podnosiocu — inače bi ovaj put bio rupa
+          // kroz koju se limit zaobilazi (module='unknown', user_id=null).
+          await this.limits.assertStt(actor.userId, actor.role);
           const res = await this.ai.transcribe({
             bytes: new Uint8Array(file.buffer),
             mime: file.mimetype,
+            ctx: { module: AI_MODULE.STT, userId: actor.userId },
           });
           transcript = res.text;
           transcriptModel = res.model;
@@ -976,6 +1023,7 @@ export class ZahteviService {
       const row = await this.prisma.changeRequestAttachment.create({
         data: {
           requestId: id,
+          commentId,
           kind,
           bucket: ATTACHMENT_BUCKET,
           storagePath,
@@ -1007,14 +1055,20 @@ export class ZahteviService {
     return { data: { url: signed.url, expiresIn: signed.expiresIn } };
   }
 
-  /** DELETE /zahtevi/:id/attachments/:attId — soft-delete + best-effort remove. */
+  /** DELETE /zahtevi/:id/attachments/:attId — soft-delete + best-effort remove.
+   *  Prilog KOMENTARA se ne briše (zahtev 029/26): komentar je nepromenjiv posle slanja,
+   *  pa je i fajl uz njega deo poslate poruke — ni podnosilac ni admin ga ne uklanjaju. */
   async removeAttachment(id: number, attId: number, actor: AuthUser) {
     const req = await this.getScopedOrThrow(id, actor);
-    this.assertAttachMutationAllowed(req, actor);
     const att = await this.prisma.changeRequestAttachment.findFirst({
       where: { id: attId, requestId: id, deletedAt: null },
     });
     if (!att) throw new NotFoundException(`Prilog ${attId} ne postoji.`);
+    if (att.commentId != null)
+      throw new UnprocessableEntityException(
+        "Prilog uz komentar se ne briše — komentar je nepromenjiv posle slanja.",
+      );
+    this.assertAttachMutationAllowed(req, actor);
     await this.prisma.changeRequestAttachment.update({
       where: { id: attId },
       data: { deletedAt: new Date() },
@@ -1027,11 +1081,17 @@ export class ZahteviService {
   /** POST /zahtevi/:id/attachments/:attId/transcribe — retry STT ako je pao (audio). */
   async transcribeAttachment(id: number, attId: number, actor: AuthUser) {
     const req = await this.getScopedOrThrow(id, actor);
-    this.assertAttachMutationAllowed(req, actor);
     const att = await this.prisma.changeRequestAttachment.findFirst({
       where: { id: attId, requestId: id, deletedAt: null },
     });
     if (!att) throw new NotFoundException(`Prilog ${attId} ne postoji.`);
+    // Audio uz komentar (029/26) prati pravila komentara — retry sme autor komentara
+    // (ili admin, koji i inače sme sve nad prilozima); statusni prozor zahteva ne važi.
+    if (att.commentId != null)
+      await this.assertCommentAttachAllowed(id, att.commentId, actor, {
+        allowAdmin: true,
+      });
+    else this.assertAttachMutationAllowed(req, actor);
     if (att.kind !== "AUDIO")
       throw new UnprocessableEntityException(
         "Transkripcija je moguća samo za audio prilog.",
@@ -1039,16 +1099,64 @@ export class ZahteviService {
     // F3: pun retry — dohvati bajtove iz bucket-a, pozovi STT, upiši transcript.
     // Immutable guard (postojeći ne-null transcript) je i u AI servisu, ali proveravamo
     // rano radi jasne poruke. NE pregazuje postojeći transkript.
-    return this.zahteviAi.retryTranscribe({
-      id: att.id,
-      bucket: att.bucket,
-      storagePath: att.storagePath,
-      contentType: att.contentType,
-      transcript: att.transcript,
-    });
+    // Talas AI-0: ručni retry takođe troši STT budžet i pripisuje se pozivaocu.
+    await this.limits.assertStt(actor.userId, actor.role);
+    return this.zahteviAi.retryTranscribe(
+      {
+        id: att.id,
+        bucket: att.bucket,
+        storagePath: att.storagePath,
+        contentType: att.contentType,
+        transcript: att.transcript,
+      },
+      actor.userId,
+    );
   }
 
   // ── helpers (prilozi) ──────────────────────────────────────────────────────
+
+  /**
+   * `commentId` iz multipart tela stiže kao STRING (multer ne tipizuje polja) — normalizuj
+   * u pozitivan ceo broj ili `null` (prilog samog zahteva). Smeće → 400, da se ne bi tiho
+   * pretvorilo u prilog zahteva (fajl bi „nestao" iz prepiske).
+   */
+  private parseCommentId(raw?: string | number | null): number | null {
+    if (raw === undefined || raw === null || raw === "") return null;
+    const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+    if (!Number.isInteger(n) || n <= 0)
+      throw new BadRequestException(
+        `Neispravan "commentId" (${String(raw)}) — očekivan ceo broj.`,
+      );
+    return n;
+  }
+
+  /**
+   * Zahtev 029/26 — sme li `actor` da okači fajl na komentar `commentId` zahteva `id`?
+   * Komentar mora pripadati OVOM zahtevu (inače 404 — bez curenja tuđih id-jeva) i, po
+   * pravilu nepromenjivosti prepiske, prilog dodaje SAMO autor komentara. Admin nije
+   * izuzetak pri dodavanju (ne dopisuje se tuđoj poruci); `allowAdmin` ga pušta samo na
+   * tehničkim radnjama nad već postojećim prilogom (retry STT-a).
+   */
+  private async assertCommentAttachAllowed(
+    id: number,
+    commentId: number,
+    actor: AuthUser,
+    opts: { allowAdmin?: boolean } = {},
+  ): Promise<void> {
+    const comment = await this.prisma.changeRequestComment.findFirst({
+      where: { id: commentId, requestId: id },
+      select: { id: true, authorUserId: true },
+    });
+    if (!comment)
+      throw new NotFoundException(
+        `Komentar ${commentId} ne postoji na zahtevu ${id}.`,
+      );
+    if (opts.allowAdmin && this.isAdmin(actor)) return;
+    if (comment.authorUserId !== actor.userId)
+      throw new ForbiddenException(
+        "Prilog se dodaje uz sopstveni komentar — tuđa poruka se ne dopunjuje.",
+      );
+  }
 
   private assertAttachMutationAllowed(
     req: { status: string; createdByUserId: number },

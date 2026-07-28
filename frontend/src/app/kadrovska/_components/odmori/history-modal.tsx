@@ -202,12 +202,24 @@ export function HistoryModal({
     );
   }
 
-  function noteRow(key: string, n: number, text: string) {
+  /** `note` = interna napomena uz „ranije evidentirano" (go_ledger.ranije_napomena).
+   *  AUDIT-K5b: polje je postojalo i u API tipu, ali se nigde nije čitalo — HR je
+   *  gubio jedini trag ZAŠTO je stari saldo takav kakav je. 1.0 ga prikazuje kao
+   *  ⓘ tooltip i samo HR-u/adminu (`opts.showNote`). */
+  function noteRow(key: string, n: number, text: string, note?: string | null) {
+    const showNote = canResenje && !!note;
     return (
       <tr key={key} className="border-t border-line-soft align-top">
         <td className="py-1 tnums font-semibold">{n}</td>
         <td><span className="rounded border px-1.5 py-0.5 text-[0.65rem]" style={{ color: 'var(--status-neutral)', borderColor: 'color-mix(in srgb, var(--status-neutral) 40%, transparent)' }}>ranije</span></td>
-        <td colSpan={colSpan - 2} className="text-ink-secondary">{text}</td>
+        <td colSpan={colSpan - 2} className="text-ink-secondary">
+          {text}
+          {showNote && (
+            <span className="ml-1 cursor-help text-ink-disabled" title={note ?? undefined} aria-label={`Napomena: ${note}`}>
+              ⓘ
+            </span>
+          )}
+        </td>
       </tr>
     );
   }
@@ -277,7 +289,7 @@ export function HistoryModal({
         : <tr><td colSpan={colSpan} className="py-1 text-ink-disabled">nema pojedinačnih unosa</td></tr>;
     } else {
       const rows: React.ReactNode[] = (b.iskorisceno_periodi ?? []).map((p, i) => periodRow(b.godina, p, false, i));
-      if (b.ranije_evidentirano > 0) rows.push(noteRow('earlier', b.ranije_evidentirano, 'bez preciznog datuma (ranija evidencija)'));
+      if (b.ranije_evidentirano > 0) rows.push(noteRow('earlier', b.ranije_evidentirano, 'bez preciznog datuma (ranija evidencija)', b.ranije_napomena));
       usedRows = rows.length ? rows : <tr><td colSpan={colSpan} className="py-1 text-ink-disabled">nema iskorišćenih dana</td></tr>;
     }
 

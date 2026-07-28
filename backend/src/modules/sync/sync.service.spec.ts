@@ -1,8 +1,15 @@
 import { PrismaService } from "../../prisma/prisma.service";
 import { MssqlClient } from "./mssql.client";
 import { SyncService } from "./sync.service";
-import { QBIGTEHN_CHAIN_ENTITIES } from "./table-ownership";
+import { SYNC_MAP } from "./sync-map.generated";
+import {
+  isOwnedProductionTable,
+  QBIGTEHN_CHAIN_ENTITIES,
+} from "./table-ownership";
 import type { CustomerSyncer } from "./syncers/customer.syncer";
+import type { ItemGroupSyncer } from "./syncers/item-group.syncer";
+import type { ItemOriginSyncer } from "./syncers/item-origin.syncer";
+import type { ItemSubgroupSyncer } from "./syncers/item-subgroup.syncer";
 
 /**
  * Cutover izvršen 2026-07-14 (runbook §17 korak 6): QBigTehn lanac je ugašen.
@@ -18,6 +25,9 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
       {} as PrismaService,
       {} as MssqlClient,
       { entity: "customers" } as CustomerSyncer,
+      { entity: "item_groups" } as ItemGroupSyncer,
+      { entity: "item_subgroups" } as ItemSubgroupSyncer,
+      { entity: "item_origins" } as ItemOriginSyncer,
     );
   }
 
@@ -30,6 +40,16 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
     const entities = buildService().availableEntities;
     expect(entities).toContain("projects");
     expect(entities).toContain("items");
+  });
+
+  // Registri artikala (R_Grupa / R_Podgrupa / R_Poreklo) nisu u generisanoj mapi
+  // — imaju sopstvene lagane syncere, pa moraju biti vidljivi i za `/sync/run` i
+  // za noćni posao (koji uzima `availableEntities` minus isključene).
+  it("registruje registre artikala (item_groups / item_subgroups / item_origins)", () => {
+    const entities = buildService().availableEntities;
+    expect(entities).toContain("item_groups");
+    expect(entities).toContain("item_subgroups");
+    expect(entities).toContain("item_origins");
   });
 
   it("NE registruje nijedan QBigTehn chain entitet (ugašeni lanac)", () => {
@@ -53,5 +73,106 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
     const entities = buildService().availableEntities;
     expect(entities).toContain("goods_documents_mirror");
     expect(entities).toContain("goods_document_items_mirror");
+  });
+
+  // Presuda Nenada 26.07.2026: registar PDV tarifa je 4.0-owned (POST/PATCH
+  // /api/v1/pdv/tax-rates). `R_Tarife` je izbačen iz mape — ne sme da postoji ni
+  // kao ručno okidiv tok, jer bi full refresh obrisao 4.0 unose.
+  it("NE registruje tax_rates (4.0-owned registar, mapiranje uklonjeno 26.07)", () => {
+    const entities = buildService().availableEntities;
+    expect(entities).not.toContain("tax_rates");
+    expect(SYNC_MAP.some((m) => m.source === "R_Tarife")).toBe(false);
+    expect(SYNC_MAP.some((m) => m.targetDb === "tax_rates")).toBe(false);
+  });
+
+  it("tax_rates je u OWNED_PRODUCTION_TABLES (zaštita ako se mapiranje vrati)", () => {
+    expect(isOwnedProductionTable("tax_rates")).toBe(true);
+  });
+});
+
+/**
+ * Review 26.07.2026, nalaz [6]: in-process brava je bez TTL-a trajno zaključavala
+ * SVAKI sledeći sync ako jedan prolaz visi (proces živ, promise nikad ne završi).
+ */
+describe("SyncService — TTL in-process brave", () => {
+  function serviceWithSlowSync(finish: Promise<void>) {
+    const prisma = {
+      bbSyncLog: {
+        create: jest.fn().mockResolvedValue({ id: 1 }),
+        update: jest
+          .fn()
+          .mockImplementation(
+            ({ data }: { data: Record<string, unknown> }) => ({
+              id: 1,
+              ...data,
+            }),
+          ),
+      },
+      bbSyncState: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+    const svc = new SyncService(
+      prisma,
+      {} as MssqlClient,
+      { entity: "customers" } as CustomerSyncer,
+      { entity: "item_groups" } as ItemGroupSyncer,
+      { entity: "item_subgroups" } as ItemSubgroupSyncer,
+      { entity: "item_origins" } as ItemOriginSyncer,
+    );
+    // Jedan „viseći" syncer koji drži bravu dok mu se ne kaže da završi.
+    (svc as unknown as { syncers: Map<string, unknown> }).syncers.set(
+      "customers",
+      {
+        entity: "customers",
+        defaultStrategy: "incremental",
+        sync: jest.fn().mockImplementation(async () => {
+          await finish;
+          return {
+            entity: "customers",
+            rowsFetched: 0,
+            rowsUpserted: 0,
+            rowsSkipped: 0,
+            newCursor: null,
+            errors: [],
+          };
+        }),
+      },
+    );
+    return svc;
+  }
+
+  it("paralelan poziv dok brava traje → 409 sa trajanjem u poruci", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const svc = serviceWithSlowSync(gate);
+
+    const first = svc.run({ entities: ["customers"] });
+    await expect(svc.run({ entities: ["customers"] })).rejects.toThrow(
+      /already in progress/,
+    );
+    release();
+    await first;
+  });
+
+  it("posle TTL-a se zaglavljena brava PREUZIMA (sync se ne zaključava zauvek)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const svc = serviceWithSlowSync(gate);
+
+    const stuck = svc.run({ entities: ["customers"] });
+    // Pomeri početak brave 91 min unazad (TTL je 90 min).
+    (svc as unknown as { runningSince: number }).runningSince =
+      Date.now() - 91 * 60_000;
+
+    const second = svc.run({ entities: ["customers"] });
+    release();
+    await expect(second).resolves.toBeDefined();
+    await stuck;
+    // Zaglavljeni prolaz NE sme da otključa tuđu bravu kad se konačno vrati.
+    expect(
+      (svc as unknown as { runningSince: number | null }).runningSince,
+    ).toBeNull();
   });
 });

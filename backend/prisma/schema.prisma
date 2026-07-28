@@ -285,6 +285,9 @@ model Drawing {
   assembliesAsParent DrawingAssembly[]   @relation("DrawingAssemblyParent")
 
   @@unique([drawingNumber, revision], map: "uq_drawings_drawing_number_revision")
+  // SQL-only trigram GIN indeksi (20260726160000): idx_drawings_name_trgm i
+  // idx_drawings_drawing_number_trgm nad `immutable_unaccent(lower(...))` —
+  // pretraga bez kvačica (Prisma ne ume izraz/GIN indeks u @@index).
   @@map("drawings")
 }
 
@@ -741,6 +744,8 @@ model Project {
 
   // SQL-only parcijalni unique uq_projects_project_number (WHERE btrim<>'', 20260725200000)
   // — broj predmeta je poslovni identitet dual unosa 3.0→BigBit (DB-005).
+  // SQL-only trigram GIN idx_projects_description_trgm (20260726160000) nad
+  // `immutable_unaccent(lower(description))` — pretraga predmeta po opisu.
   @@map("projects")
 }
 
@@ -857,6 +862,9 @@ model Item {
   priceListEntries        PriceListEntry[]
   workOrderItemComponents WorkOrderItemComponent[]
 
+  // SQL-only trigram GIN indeksi (20260726160000): idx_items_name_trgm i
+  // idx_items_catalog_number_trgm nad `immutable_unaccent(lower(...))` —
+  // 92k redova, pretraga bez kvačica (alat `nadji_artikal`, kasnije i UI).
   @@map("items")
 }
 
@@ -1629,6 +1637,9 @@ model WorkOrder {
   @@index([drawingId], map: "idx_work_orders_drawing_id")
   @@index([parentWorkOrderId], map: "idx_work_orders_parent")
   @@index([drawingHandoverId], map: "idx_work_orders_drawing_handover")
+  // SQL-only trigram GIN indeksi (20260726160000): idx_work_orders_ident_number_trgm
+  // i idx_work_orders_part_name_trgm nad `immutable_unaccent(lower(...))` — 40.860
+  // redova, „nađi RN po identu ili nazivu dela" bez Seq Scan-a i bez kvačica.
   @@map("work_orders")
 }
 
@@ -1825,6 +1836,10 @@ model TechProcess {
   @@index([workOrderId], map: "idx_tp_work_order")
   @@index([enteredAt], map: "idx_tp_entered_at")
   @@index([workerId], map: "idx_tp_worker")
+  // AI-5 (review [10]): procena vremena po radnom mestu (estimateByWorkCenter,
+  // 2× po pozivu) filtrira po work_center_code — bez indeksa Seq Scan 99k (~114ms).
+  // Vodeći stolbac idx_tp_trojka_op je project_id, pa NE služi ovaj predikat.
+  @@index([workCenterCode], map: "idx_tech_processes_work_center_code")
   @@map("tech_processes")
 }
 
@@ -1858,6 +1873,11 @@ model WorkTimeEntry {
   // stopped_at IS NULL) za kiosk „moje otvorene sesije" i auto-close — Prisma ne
   // ume partial, živi samo u migraciji 20260725160000 (kao uq_stock_documents_po).
   @@index([workerId], map: "idx_work_time_entries_worker")
+  // AI-1 (20260726160000): sve dosadašnje putanje idu preko tech_process_id, pa
+  // je „stvarno vreme po operaciji naloga" radilo Seq Scan preko 99k redova PO
+  // OPERACIJI. Alati istorija_crteza / tehnoloski_postupak_naloga filtriraju baš
+  // po ovoj dvojci.
+  @@index([workOrderId, operationNumber], map: "idx_work_time_entries_work_order")
   @@map("work_time_entries")
 }
 
@@ -2342,6 +2362,77 @@ model MontageNonconformityEvent {
 
   @@index([nonconformityId], map: "idx_montage_nc_events_nonconformity")
   @@map("montage_nonconformity_events")
+}
+
+/// App-owned (2.0-native). Škart i dorada — evidencija događaja kvaliteta
+/// (MODULE_SPEC_kvalitet_skart_dorada §2, presuda 26.07). ODVOJENO od
+/// `nonconformity_reports` (starija Excel-digitalizacija): ovo je čist događaj-tok
+/// sa TRI statusa (PRIJAVLJEN → POTVRDJEN/ODBACEN); u izveštaje (Pareto) ulazi
+/// SAMO POTVRDJEN. Kontrolor unosi direktno kao POTVRDJEN (autoritet); radnik na
+/// kiosku šalje PRIJAVLJEN signal koji kontrolor potvrđuje/odbacuje. Meki ref-ovi
+/// (work_order_id/tech_process_id/machine_id/reported_by_worker_id) su BEZ DB FK
+/// (batch-resolve, legacy orphan — kućni obrazac work_orders); jedini pravi FK je
+/// reason_code_id. Statusi/tipovi su String (BACKEND_RULES §2 — DTO/servis validira,
+/// NE DB CHECK). Timestamptz (§11.5). qty Decimal (§3 — nikad Float).
+model QualityEvent {
+  id                 Int                @id(map: "pk_quality_events") @default(autoincrement()) @map("id")
+  /// 'SKART' | 'DORADA' (String, ne enum — BACKEND_RULES §2; validira servis, 422).
+  type               String             @map("type") @db.VarChar(10)
+  /// 'PRIJAVLJEN' (kiosk signal) | 'POTVRDJEN' (kontrolor autoritet) | 'ODBACEN'.
+  status             String             @default("PRIJAVLJEN") @map("status") @db.VarChar(12)
+  /// RN (work_orders.id) — obavezno (§2); meki ref bez DB FK (batch-resolve).
+  workOrderId        Int                @map("work_order_id")
+  /// Konkretna operacija (tech_processes.id) ako postoji; meki ref (nullable).
+  techProcessId      Int?               @map("tech_process_id")
+  /// Količina (>0; servis validira); Decimal (BACKEND_RULES §3). unit default 'kom'.
+  qty                Decimal            @map("qty") @db.Decimal(12, 3)
+  unit               String             @default("kom") @map("unit") @db.VarChar(10)
+  /// Razlog (quality_reason_codes) — OBAVEZAN za POTVRDJEN (servis enforce-uje); meki za PRIJAVLJEN.
+  reasonCodeId       Int?               @map("reason_code_id")
+  note               String?            @map("note")
+  /// Mašina (meki ref) / radna jedinica (RC kod) — iz operacije ili ručno (§2).
+  machineId          Int?               @map("machine_id")
+  workUnitCode       String?            @map("work_unit_code") @db.VarChar(20)
+  /// Radnik koji je prijavio / čiji je rad (workers.id) — meki ref. Kiosk: iz kartice;
+  /// kontrolor unos: iz konteksta (JWT worker) ili DTO. NULL za kancelarijski nalog bez radnika.
+  reportedByWorkerId Int?               @map("reported_by_worker_id")
+  reportedAt         DateTime           @default(now()) @map("reported_at") @db.Timestamptz(6)
+  confirmedByUserId  Int?               @map("confirmed_by_user_id")
+  confirmedAt        DateTime?          @map("confirmed_at") @db.Timestamptz(6)
+  rejectedByUserId   Int?               @map("rejected_by_user_id")
+  rejectedAt         DateTime?          @map("rejected_at") @db.Timestamptz(6)
+  rejectReason       String?            @map("reject_reason")
+  /// Foto storage putanja (opciono; §2). V1 čuva referencu ako je zadata — upload
+  /// pipeline (multipart/blob) je van V1 (kolona spremna za kasnije wiring).
+  photoPath          String?            @map("photo_path") @db.VarChar(500)
+  createdByUserId    Int?               @map("created_by_user_id")
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  reasonCode         QualityReasonCode? @relation(fields: [reasonCodeId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_quality_events_reason_code")
+
+  @@index([reportedAt], map: "idx_quality_events_reported_at")
+  @@index([workOrderId], map: "idx_quality_events_work_order")
+  @@index([workUnitCode], map: "idx_quality_events_work_unit")
+  @@index([reasonCodeId], map: "idx_quality_events_reason")
+  @@index([status, type], map: "idx_quality_events_status_type")
+  @@map("quality_events")
+}
+
+/// App-owned (2.0-native). Šifarnik razloga škarta/dorade (MODULE_SPEC_kvalitet_skart_dorada
+/// §2). Soft-delete kroz `active` (nikad hard-delete — događaji ga referenciraju). Održava se
+/// u Podešavanjima (admin/menadzment) — V1 dobija samo seed. `code` je stabilan ključ (unique).
+model QualityReasonCode {
+  id        Int            @id(map: "pk_quality_reason_codes") @default(autoincrement()) @map("id")
+  code      String         @map("code") @db.VarChar(30)
+  label     String         @map("label") @db.VarChar(120)
+  active    Boolean        @default(true) @map("active")
+  sortOrder Int            @default(0) @map("sort_order")
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  events    QualityEvent[]
+
+  @@unique([code], map: "uq_quality_reason_codes_code")
+  @@map("quality_reason_codes")
 }
 
 /// Incremental sync cursor per logical scope (`entity` = stable key, e.g. `customers`).
@@ -4446,9 +4537,10 @@ model ChangeRequest {
 model ChangeRequestAttachment {
   id              Int       @id(map: "pk_change_request_attachments") @default(autoincrement()) @map("id")
   requestId       Int       @map("request_id")
+  commentId       Int?      @map("comment_id") /// zahtev 029/26: prilog uz KOMENTAR/pitanje; null = prilog samog zahteva (§5)
   kind            String    @map("kind") @db.VarChar(10) /// IMAGE | AUDIO | FILE
   bucket          String    @map("bucket") @db.VarChar(60) /// "zahtevi-prilozi"
-  storagePath     String    @map("storage_path") @db.VarChar(300) /// "req/<requestId>/<uuid>.<ext>"
+  storagePath     String    @map("storage_path") @db.VarChar(300) /// "req/<requestId>/<uuid>.<ext>" (komentar: "req/<requestId>/comment/<commentId>/<uuid>.<ext>")
   originalName    String    @map("original_name") @db.VarChar(200)
   contentType     String    @map("content_type") @db.VarChar(80)
   sizeBytes       Int       @map("size_bytes")
@@ -4458,9 +4550,11 @@ model ChangeRequestAttachment {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6) /// soft-delete (fajl best-effort remove)
 
-  request ChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
+  request ChangeRequest        @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
+  comment ChangeRequestComment? @relation(fields: [commentId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_comment")
 
   @@index([requestId], map: "idx_cr_attachments_request")
+  @@index([commentId], map: "idx_cr_attachments_comment")
   @@map("change_request_attachments")
 }
 
@@ -4495,7 +4589,8 @@ model ChangeRequestComment {
   isQuestion   Boolean  @default(false) @map("is_question") /// true = pitanje prosleđeno podnosiocu (može poteći iz AI analize)
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  request ChangeRequest @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_comments_request")
+  request     ChangeRequest             @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_comments_request")
+  attachments ChangeRequestAttachment[] /// zahtev 029/26: slike/fajlovi uz komentar ili pitanje
 
   @@index([requestId], map: "idx_cr_comments_request")
   @@map("change_request_comments")
@@ -5032,4 +5127,101 @@ model BbMdbStagePopdvGk {
 
   @@index([dropId], map: "idx_bb_mdb_stage_popdv_gk_drop")
   @@map("bb_mdb_stage_popdv_gk")
+}
+
+/// Talas AI-3 — idempotencija + trag dnevnog brifa (docs/PLAN_AI_OS_2026-07.md §5).
+/// Jedan red po (dan, primalac): scheduler posao `daily-brief` PRE slanja radi
+/// atomski claim `INSERT ... ON CONFLICT (for_date, recipient_email) DO NOTHING` —
+/// nema reda znači „već poslato danas" pa se preskače (nema duplog mejla ni uz
+/// catch-up/retry). Piše ga ISKLJUČIVO DailyBriefService. App-owned → Timestamptz.
+/// status: pending (claim, još nije poslato) | sent | dry_run (RESEND nekonfigurisan).
+/// Claim upisuje 'pending'; 'pending'/'dry_run' su re-claim-abilni, 'sent' nije.
+model DailyBriefSend {
+  id             Int      @id(map: "pk_daily_brief_sends") @default(autoincrement()) @map("id")
+  forDate        DateTime @map("for_date") @db.Date
+  recipientEmail String   @map("recipient_email") @db.VarChar(255)
+  sentAt         DateTime @default(now()) @map("sent_at") @db.Timestamptz(6)
+  status         String   @default("pending") @map("status") @db.VarChar(10)
+  sectionsCount  Int      @default(0) @map("sections_count")
+  itemsCount     Int      @default(0) @map("items_count")
+
+  @@unique([forDate, recipientEmail], map: "uq_daily_brief_sends_date_recipient")
+  @@index([forDate], map: "idx_daily_brief_sends_for_date")
+  @@map("daily_brief_sends")
+}
+
+/// Zaključan dan mesečnog grida (AUDIT-K7c, odluka Nenad 26.07).
+///
+/// ⚠️ Brava živi u 3.0 bazi, NE u sy15 `work_hours` — ta tabela je deljena sa
+/// ŽIVIM 1.0, pa joj se šema ne dira (doktrina). Posledica koju treba znati:
+/// dok 1.0 radi paralelno, on piše direktno u sy15 i OVU bravu ne vidi. Brava je
+/// puna tek po gašenju 1.0; do tada štiti 3.0 stranu (gde se i radi grid).
+///
+/// Auto-predlog iz kapije NIJE razlog za ovu bravu — on ionako nikad ne gazi
+/// postojeći red (`INSERT … ON CONFLICT DO NOTHING`, grid-autofill.service.ts).
+/// Brava je protiv LJUDSKE izmene posle potvrde.
+///
+/// Otključati sme urednik grida (Nikola) i admin — oni tada smeju i da izmene.
+model KadrGridDayLock {
+  id         Int      @id(map: "pk_kadr_grid_day_locks") @default(autoincrement()) @map("id")
+  employeeId String   @map("employee_id") @db.Uuid
+  workDate   DateTime @map("work_date") @db.Date
+  lockedBy   String   @map("locked_by") @db.VarChar(160)
+  lockedAt   DateTime @default(now()) @map("locked_at") @db.Timestamptz(6)
+  note       String?  @map("note")
+
+  @@unique([employeeId, workDate], map: "uq_kadr_grid_day_locks_emp_date")
+  @@index([workDate], map: "idx_kadr_grid_day_locks_date")
+  @@map("kadr_grid_day_locks")
+}
+
+// ============================================================================
+// AI (Talas AI-0) — merenje i registar modela. Piše ih ISKLJUČIVO gateway
+// (src/common/ai). Vidi docs/PLAN_AI_OS_2026-07.md §5 TALAS AI-0.
+// ============================================================================
+
+/// Jedan red po LLM pozivu (chat, STT, refine, embed, naslov, trijaža, rezime…).
+/// Upisuje ga `AiUsageService` iz gateway-a — nijedan pozivalac ne piše ovde
+/// direktno. Ujedno je izvor za dnevne token-limite (AiLimitsService).
+/// module: chat | stt | refine | embed | title | zahtevi-triage | zahtevi-analysis
+///         | sastanci-summary | montaza-izvestaj (String, ne enum — BACKEND_RULES §2)
+/// outcome: ok | error | fallback
+model AiUsageLog {
+  id         Int      @id(map: "pk_ai_usage_log") @default(autoincrement()) @map("id")
+  userId     Int?     @map("user_id") // null = sistemski poziv (scheduler, fire-and-forget trijaža)
+  module     String   @map("module") @db.VarChar(40)
+  provider   String   @map("provider") @db.VarChar(20) /// openai | anthropic
+  model      String   @map("model") @db.VarChar(80)
+  /// PUN ulaz (svež + keširan). Za STT nosi AUDIO tokene iz odgovora — iz njih se
+  /// izvodi stvarno trajanje snimka; null kad provajder ne vrati `usage`.
+  tokensIn   Int?     @map("tokens_in")
+  tokensOut  Int?     @map("tokens_out")
+  /// Deo `tokens_in` naplaćen po keš-čitaj ceni (~0,1× ulazne) — samo Anthropic.
+  tokensCacheRead  Int? @map("tokens_cache_read")
+  /// Deo `tokens_in` naplaćen po keš-upis ceni (1,25× ulazne, 5-min TTL).
+  tokensCacheWrite Int? @map("tokens_cache_write")
+  durationMs Int      @map("duration_ms") // trajanje poziva, ne dužina audija
+  outcome    String   @map("outcome") @db.VarChar(10)
+  estCostUsd Decimal? @map("est_cost_usd") @db.Decimal(10, 6) // null kad cena modela nije poznata
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, module, createdAt], map: "idx_ai_usage_log_user_module_created")
+  @@index([createdAt], map: "idx_ai_usage_log_created")
+  @@index([module, createdAt], map: "idx_ai_usage_log_module_created")
+  @@map("ai_usage_log")
+}
+
+/// Minimalni registar „zadatak → model" (Talas AI-0, stavka 7). NIJE nova
+/// paralelna istina: prazan red = fallback na postojeći izvor (sy15
+/// sastanci_ai_settings / montaza_ai_settings, odn. env za zahteve i chat).
+/// task: chat-claude | sastanci-summary | montaza-izvestaj | zahtevi-triage | zahtevi-analysis
+/// effort: low | medium | high | xhigh | max (null = podrazumevani za model)
+model AiModelPolicy {
+  task      String   @id(map: "pk_ai_model_policy") @map("task") @db.VarChar(40)
+  model     String   @map("model") @db.VarChar(80)
+  effort    String?  @map("effort") @db.VarChar(10)
+  updatedBy String?  @map("updated_by") @db.VarChar(200)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("ai_model_policy")
 }

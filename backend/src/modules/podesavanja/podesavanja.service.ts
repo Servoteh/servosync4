@@ -15,6 +15,11 @@ import { ROLE_CATALOG } from "../../common/authz/roles";
 import { ROLE_PERMISSIONS } from "../../common/authz/role-permissions";
 import { OVERRIDE_KEYS, PERMISSIONS } from "../../common/authz/permissions";
 import { MONTAZA_AI_ALLOWED_MODELS } from "../plan-montaze/montaza-ai";
+import {
+  AI_TASK,
+  AiModelPolicyService,
+  type AiTask,
+} from "../../common/ai/ai-model-policy.service";
 import type {
   AuditLogQueryDto,
   ListUsersQueryDto,
@@ -51,9 +56,41 @@ import type {
  * je 1:1 sa `set_sastanci_ai_model` CHECK-om (sql/migrations/sastanci_ai_model_setting.sql) i
  * 1.0 `sastanciAi.js`; Montaža reuse-uje `MONTAZA_AI_ALLOWED_MODELS` (montaza-ai.ts).
  */
-const AI_MODEL_ALLOWLIST: Record<"sastanci" | "montaza", readonly string[]> = {
+/**
+ * Talas AI-0 (stavka 7c): pored dva sy15 potrošača, ekran sada pokriva i zadatke
+ * koji žive samo u registru `ai_model_policy` (chat i dva AI prolaza Zahteva).
+ */
+export type AiModelTarget =
+  | "sastanci"
+  | "montaza"
+  | "chat-claude"
+  | "zahtevi-triage"
+  | "zahtevi-analysis";
+
+const CLAUDE_MODELS = [
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-sonnet-5",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5",
+];
+
+const AI_MODEL_ALLOWLIST: Record<AiModelTarget, readonly string[]> = {
+  // sy15 RPC-i imaju sopstvenu (užu) allowlist — ove dve ostaju nepromenjene.
   sastanci: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
   montaza: MONTAZA_AI_ALLOWED_MODELS,
+  "chat-claude": CLAUDE_MODELS,
+  "zahtevi-triage": CLAUDE_MODELS,
+  "zahtevi-analysis": CLAUDE_MODELS,
+};
+
+/** Ključ zadatka u registru za svaki target sa ekrana. */
+const AI_TASK_BY_TARGET: Record<AiModelTarget, AiTask> = {
+  sastanci: AI_TASK.SASTANCI_SUMMARY,
+  montaza: AI_TASK.MONTAZA_REPORT,
+  "chat-claude": AI_TASK.CHAT_CLAUDE,
+  "zahtevi-triage": AI_TASK.ZAHTEVI_TRIAGE,
+  "zahtevi-analysis": AI_TASK.ZAHTEVI_ANALYSIS,
 };
 
 /**
@@ -75,6 +112,7 @@ export class PodesavanjaService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly prisma: PrismaService,
+    private readonly policy: AiModelPolicyService,
   ) {}
 
   // ---------- Korisnici i pristup (user_roles — ALL=admin) ----------
@@ -358,8 +396,8 @@ export class PodesavanjaService {
    * (strukturiranje izveštaja montera). Oba singleton (id=1); SELECT je authenticated u obe
    * tabele (paritet 1.0 systemTab prikaza trenutnog modela). Setter je odvojena PUT ruta (RPC).
    */
-  aiModels(email: string) {
-    return this.withUserMapped(email, async (tx) => {
+  async aiModels(email: string) {
+    const legacy = await this.withUserMapped(email, async (tx) => {
       const [sastanci, montaza] = await Promise.all([
         tx.$queryRaw<unknown[]>(
           Prisma.sql`SELECT id, model, updated_at, updated_by FROM sastanci_ai_settings WHERE id = 1`,
@@ -369,12 +407,20 @@ export class PodesavanjaService {
         ),
       ]);
       return {
-        data: {
-          sastanci: jsonSafe(sastanci)[0] ?? null,
-          montaza: jsonSafe(montaza)[0] ?? null,
-        },
+        sastanci: jsonSafe(sastanci)[0] ?? null,
+        montaza: jsonSafe(montaza)[0] ?? null,
       };
     });
+    // Talas AI-0 (stavka 7c): uz dva sy15 podešavanja ide i registar iz glavne
+    // baze. Prazan registar = svaki potrošač i dalje čita svoj postojeći izvor.
+    const policy = await this.policy.list().catch(() => []);
+    return {
+      data: {
+        ...legacy,
+        policy,
+        allowlist: AI_MODEL_ALLOWLIST,
+      },
+    };
   }
 
   /**
@@ -383,21 +429,47 @@ export class PodesavanjaService {
    * (42501→403 kroz rethrowSy15; 23514 nepoznat model→422). Allowlist se BE-strani proverava
    * rano (400 pre RPC-a) — paritet 1.0 (systemTab + oba servisa dele iste 3 modela).
    */
-  setAiModel(email: string, target: "sastanci" | "montaza", model: string) {
+  async setAiModel(email: string, target: AiModelTarget, model: string) {
     // Normalizuj kao RPC (lower(trim(...))) — allowlist provera ne sme da padne na
     // razmak/velika slova dok bi RPC prihvatio ("defense-in-depth" simetrija).
     const norm = model.trim().toLowerCase();
     const allow = AI_MODEL_ALLOWLIST[target];
     if (!allow.includes(norm))
       throw new UnprocessableEntityException(`Nepoznat model: ${model}`);
-    const rpc =
-      target === "montaza"
-        ? Prisma.sql`SELECT set_montaza_ai_model(${norm}::text) AS model`
-        : Prisma.sql`SELECT set_sastanci_ai_model(${norm}::text) AS model`;
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ model: string }[]>(rpc);
-      return { data: { target, model: rows[0]?.model ?? model } };
+
+    // Sastanci/Montaža: DUAL WRITE — sy15 RPC (da 1.0 nastavi da radi) i registar.
+    // Ostali zadaci (chat, zahtevi) žive SAMO u registru; sy15 ih nema.
+    let written = norm;
+    if (target === "sastanci" || target === "montaza") {
+      const rpc =
+        target === "montaza"
+          ? Prisma.sql`SELECT set_montaza_ai_model(${norm}::text) AS model`
+          : Prisma.sql`SELECT set_sastanci_ai_model(${norm}::text) AS model`;
+      written = await this.withUserMapped(email, async (tx) => {
+        const rows = await tx.$queryRaw<{ model: string }[]>(rpc);
+        return rows[0]?.model ?? norm;
+      });
+    } else {
+      // sy15 RPC nema (nema ni tabele) — pravo upisa presuđuje guard rute
+      // (settings.system = admin), isto kao za druga sistemska podešavanja.
+      await this.assertSystemAdmin(email);
+    }
+    await this.policy.set(AI_TASK_BY_TARGET[target], written, null, email);
+    return { data: { target, model: written } };
+  }
+
+  /**
+   * Registar nema RLS (glavna baza), pa se pravo dokazuje nad sy15: `is_admin()`
+   * kroz `withUserRls` — isti izvor istine koji koriste set_*_ai_model DEFINER RPC-i.
+   */
+  private async assertSystemAdmin(email: string): Promise<void> {
+    const ok = await this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ ok: boolean | null }[]>(
+        Prisma.sql`SELECT current_user_is_admin() AS ok`,
+      );
+      return rows[0]?.ok === true;
     });
+    if (!ok) throw new ForbiddenException("AI model menja administrator.");
   }
 
   // ============================================================================

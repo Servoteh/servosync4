@@ -156,12 +156,36 @@ export type AuditRow = {
   changed_fields?: string[] | null;
 } & Record<string, unknown>;
 export type AiModelSetting = { id: number; model: string; updated_at: string; updated_by: string | null } | null;
-/** Cilj (target) AI podešavanja u Sistem tabu. */
-export type AiModelTarget = 'sastanci' | 'montaza';
-/** Odgovor `GET /system/ai-models` — oba modela; svaki `null` ako još nije podešen. */
+/**
+ * Cilj (target) AI podešavanja u Sistem tabu. Talas AI-0 (stavka 7c): pored dva
+ * sy15 potrošača tu su i zadaci koji žive samo u registru `ai_model_policy`.
+ */
+export type AiModelTarget =
+  | 'sastanci'
+  | 'montaza'
+  | 'chat-claude'
+  | 'zahtevi-triage'
+  | 'zahtevi-analysis';
+
+/** Red registra „zadatak → model" (glavna baza). */
+export interface AiModelPolicyRow {
+  task: string;
+  model: string;
+  effort: string | null;
+  updatedBy: string | null;
+  updatedAt: string;
+}
+
+/**
+ * Odgovor `GET /system/ai-models` — dva sy15 podešavanja (svako `null` ako još
+ * nije podešeno), registar (prazan = svaki potrošač čita svoj postojeći izvor) i
+ * allowlist dozvoljenih modela po zadatku.
+ */
 export interface AiModelsResponse {
   sastanci: AiModelSetting;
   montaza: AiModelSetting;
+  policy: AiModelPolicyRow[];
+  allowlist: Record<AiModelTarget, string[]>;
 }
 
 // ------------------------------------------------------------------ prekidač BigBit uvoza

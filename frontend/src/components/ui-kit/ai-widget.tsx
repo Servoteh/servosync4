@@ -102,7 +102,14 @@ export function AiWidget({ screenContext }: { screenContext?: string }) {
   return (
     <>
       {/* Plutajuće dugme (dole desno) — sakriveno dok je panel otvoren. Podiže se iznad
-          „nova verzija" trake. */}
+          „nova verzija" trake.
+          Zahtev 025/26: `bottom` je 5rem (80px), ne 1rem — na 1rem je krug (h-14 = 56px,
+          zona 16–72px od dna) padao tačno preko `Pager` strelice „sledeća strana", koja
+          na dnu `p-6` skrol-kontejnera zauzima ~24–54px od dna, pa je bio neklikabilan
+          (dugme je fixed z-40, pager je običan sadržaj). 80px diže krug u zonu 80–136px
+          → čist razmak iznad pagera na SVIM listama (radni nalozi, primopredaje, …).
+          Panel dole zadržava svoj 1rem anker: dugme je sakriveno dok je panel otvoren,
+          panel ionako prekriva pager, a njegov `max-h` računa 1rem. */}
       {!open && (
         <button
           ref={btnRef}
@@ -111,7 +118,7 @@ export function AiWidget({ screenContext }: { screenContext?: string }) {
           title="AI asistent"
           aria-label="Otvori AI asistenta"
           className={cn(
-            'fixed bottom-[calc(1rem+var(--update-banner-h,0px))] right-4 z-40 grid h-14 w-14 place-items-center rounded-full',
+            'fixed bottom-[calc(5rem+var(--update-banner-h,0px))] right-4 z-40 grid h-14 w-14 place-items-center rounded-full',
             'bg-accent text-accent-fg shadow-lg transition-colors hover:bg-accent-hover',
             'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]',
           )}

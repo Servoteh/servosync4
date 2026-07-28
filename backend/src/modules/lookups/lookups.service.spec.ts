@@ -1,6 +1,11 @@
+import "reflect-metadata";
 import { Test, TestingModule } from "@nestjs/testing";
 import { PrismaService } from "../../prisma/prisma.service";
 import { LookupsService } from "./lookups.service";
+import { LookupsController } from "./lookups.controller";
+import { DirectoryController } from "../directory/directory.controller";
+import { PERMISSION_KEY_METADATA } from "../../common/authz/require-permission.decorator";
+import { PERMISSIONS } from "../../common/authz/permissions";
 
 /** Mock PrismaService — samo modeli koje lookups čita. */
 function prismaMock() {
@@ -96,5 +101,38 @@ describe("LookupsService (D9: komitent uz predmet)", () => {
       select: { id: true, name: true },
     });
     expect(res.data[0].customer).toEqual({ id: 0, name: "Servoteh d.o.o." });
+  });
+});
+
+// ============================================================ Guard (bezbednosni dug, 26.07)
+
+/**
+ * Regresija: `/v1/lookups/*` je vraćalo ISTI šifarnik kao `/v1/directory/*`
+ * (komitenti + predmeti) uz SAMO JWT, pa je bilo zaobilaznica za `directory.read` —
+ * `proizvodni_radnik` (kome je taj ključ NAMERNO uskraćen: „matrica §3: RADNIK nema
+ * komitente/predmete") dobijao je 403 na `/directory/customers`, a naziv/mesto/PIB
+ * je uredno čitao sa `/lookups/customers`. Ključ MORA ostati identičan onom na
+ * `DirectoryController` — ako se ovaj test sruši, rupa je vraćena.
+ */
+describe("LookupsController — permisija", () => {
+  it("klasa je iza `directory.read` — istog ključa kao DirectoryController", () => {
+    expect(
+      Reflect.getMetadata(PERMISSION_KEY_METADATA, LookupsController),
+    ).toBe(PERMISSIONS.DIRECTORY_READ);
+    expect(
+      Reflect.getMetadata(PERMISSION_KEY_METADATA, LookupsController),
+    ).toBe(Reflect.getMetadata(PERMISSION_KEY_METADATA, DirectoryController));
+  });
+
+  it("nijedna GET ruta nema svoj (širi) ključ — sve nasleđuju klasni", () => {
+    for (const name of ["projects", "customers"]) {
+      const handler = Object.getOwnPropertyDescriptor(
+        LookupsController.prototype,
+        name,
+      )?.value as object;
+      expect(
+        Reflect.getMetadata(PERMISSION_KEY_METADATA, handler),
+      ).toBeUndefined();
+    }
   });
 });

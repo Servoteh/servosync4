@@ -268,6 +268,7 @@ interface RnProgressRaw {
   made_good_any: number;
   operation_count: number;
   finished_operation_count: number;
+  last_completed_at: Date | null;
 }
 
 interface SessionDailyRaw {
@@ -1447,6 +1448,7 @@ export class TechProcessesService {
    * (spec §3, migration/15 §5). Prednost imaju operacije `significant_for_finishing`;
    * ako ih nema, pada na max dobar preko svih operacija. Endpoint živi u
    * tech-processes kontroleru (ne dira se work-orders folder).
+   * `completedAt` (zahtev 023/26) = datum realizacije RN-a; vidi SQL komentar dole.
    */
   async rnProgress(query: RnProgressQuery) {
     const { page, pageSize, skip, take } = parsePagination(
@@ -1500,7 +1502,19 @@ export class TechProcessesService {
                        WHERE tp.project_id = wo.project_id
                          AND tp.ident_number = wo.ident_number
                          AND tp.variant = wo.variant
-                         AND COALESCE(tp.is_process_finished, false) = true), 0)::int AS finished_operation_count
+                         AND COALESCE(tp.is_process_finished, false) = true), 0)::int AS finished_operation_count,
+             -- „Datum realizacije" (zahtev 023/26): poslednji DOBAR završetak na RN-u =
+             -- max(tech_processes.finished_at) FILTER (is_process_finished AND GOOD). Isti
+             -- kanon kao last_completed_at u pracenje-read (docx §4.9 „datum završetka
+             -- operacije"), samo rolovan sa operacije na ceo RN — poslednja zatvorena
+             -- operacija JESTE trenutak kad je nalog realizovan. NULL dok nijedna operacija
+             -- nije zatvorena sa dobrim komadima. work_orders nema kolonu datuma gotovosti.
+             (SELECT MAX(tp.finished_at) FROM tech_processes tp
+               WHERE tp.project_id = wo.project_id
+                 AND tp.ident_number = wo.ident_number
+                 AND tp.variant = wo.variant
+                 AND COALESCE(tp.is_process_finished, false) = true
+                 AND tp.quality_type_id = ${PART_QUALITY.GOOD}) AS last_completed_at
       FROM work_orders wo
       ${whereSql}
       ORDER BY wo.production_deadline ASC NULLS LAST, wo.id ASC
@@ -1545,6 +1559,7 @@ export class TechProcessesService {
         finishedOperationCount: r.finished_operation_count,
         completionPercent,
         isCompleted: planned > 0 && madeGood >= planned,
+        completedAt: r.last_completed_at,
       };
     });
 

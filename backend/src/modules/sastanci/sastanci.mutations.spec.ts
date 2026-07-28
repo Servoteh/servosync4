@@ -7,6 +7,17 @@ import {
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
 import { SastanciService } from "./sastanci.service";
+import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
+
+/** Prazan registar modela — `resolve` vraća prosleđen fallback (Talas AI-0). */
+const aiPolicyStub = (): AiModelPolicyService =>
+  ({
+    resolve: jest
+      .fn()
+      .mockImplementation((_t: string, fb: string) =>
+        Promise.resolve({ model: fb, effort: null }),
+      ),
+  }) as unknown as AiModelPolicyService;
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import {
   ArhivaPdfDto,
@@ -128,10 +139,12 @@ function makeSvc() {
     remove: jest.fn().mockResolvedValue(undefined),
   };
   const ai = { summarize: jest.fn().mockResolvedValue({ summary: "s" }) };
+  // Talas AI-0: prazan registar → `resolve` vraća fallback (sy15 podešavanje).
   const svc = new SastanciService(
     sy15 as unknown as Sy15Service,
     storage as never,
     ai as never,
+    aiPolicyStub(),
   );
   return { svc, sy15, tx, storage, ai };
 }
@@ -1037,5 +1050,51 @@ describe("SastanciService — datum zapisnika (zahtev 014/26)", () => {
       zakljucanByEmail: null,
       zapisnikDatum: null,
     });
+  });
+});
+
+// ---------- Self-service RPC-ovi (odluke Nenada 26.07) ----------
+describe("SastanciService self-service (odluke 26.07)", () => {
+  const EMAIL = "radnik@servoteh.rs";
+
+  it("setMyAkcijaStatus zove RPC i vraća status", async () => {
+    const { svc, tx } = makeSvc();
+    (tx.$queryRaw as jest.Mock).mockResolvedValueOnce([{ result: "u_toku" }]);
+    const r = await svc.setMyAkcijaStatus(EMAIL, ID, { status: "u_toku" });
+    expect(sqlText(tx.$queryRaw as jest.Mock)).toContain(
+      "sastanci_set_my_akcija_status",
+    );
+    expect(r).toEqual({ data: { status: "u_toku" } });
+  });
+
+  it("setMyAkcijaStatus: not_owner → 403 (tuđa akcija)", async () => {
+    const { svc, tx } = makeSvc();
+    (tx.$queryRaw as jest.Mock).mockResolvedValueOnce([{ result: "not_owner" }]);
+    await expect(
+      svc.setMyAkcijaStatus(EMAIL, ID, { status: "zavrsen" }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("setMyPriprema zove RPC i vraća ok", async () => {
+    const { svc, tx } = makeSvc();
+    (tx.$queryRaw as jest.Mock).mockResolvedValueOnce([{ result: "ok" }]);
+    const r = await svc.setMyPriprema(EMAIL, ID, {
+      pripremljen: true,
+      priprema: "beleške",
+    });
+    expect(sqlText(tx.$queryRaw as jest.Mock)).toContain(
+      "sastanci_set_my_priprema",
+    );
+    expect(r).toEqual({ data: { ok: true } });
+  });
+
+  it("setMyPriprema: not_participant → 403", async () => {
+    const { svc, tx } = makeSvc();
+    (tx.$queryRaw as jest.Mock).mockResolvedValueOnce([
+      { result: "not_participant" },
+    ]);
+    await expect(
+      svc.setMyPriprema(EMAIL, ID, { pripremljen: true }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

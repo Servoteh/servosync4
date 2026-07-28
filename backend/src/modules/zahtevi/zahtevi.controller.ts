@@ -245,6 +245,12 @@ export class ZahteviController {
 
   // ── PRILOZI (§5) ────────────────────────────────────────────────────────────
 
+  /**
+   * Multipart upload priloga. Opciono polje `commentId` (zahtev 029/26) veže prilog za
+   * komentar/pitanje umesto za sam zahtev — svesno BEZ nove rute: ista validacija tipova/
+   * veličine, isti signed-URL i soft-delete put, samo drugi vlasnik reda. Multer popuni
+   * `req.body` tekstualnim poljima pre nego što handler krene, pa `@Body` ovde radi.
+   */
   @Post(":id/attachments")
   @RequirePermission(PERMISSIONS.ZAHTEVI_WRITE)
   // Hard DoS cap 25MB/fajl, do 10 fajlova (servis dodatno primenjuje mime/audio pravila).
@@ -254,9 +260,10 @@ export class ZahteviController {
   addAttachments(
     @Param("id", ParseIntPipe) id: number,
     @UploadedFiles() files: Express.Multer.File[],
+    @Body("commentId") commentId: string | undefined,
     @Req() req: { user: AuthUser },
   ) {
-    return this.zahtevi.addAttachments(id, files ?? [], req.user);
+    return this.zahtevi.addAttachments(id, files ?? [], req.user, commentId);
   }
 
   @Get(":id/attachments/:attId/url")

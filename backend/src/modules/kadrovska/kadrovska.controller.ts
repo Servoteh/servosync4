@@ -72,7 +72,15 @@ export class KadrovskaController {
 
   // ---------- Pregled ----------
 
+  /**
+   * ⚠️ AUDIT-K5b (26.07): `me()` je JEDINI način da FE sazna `employeeId` i
+   * efektivna prava prijavljenog, a nasleđivao je klasni `kadrovska.read` — koji
+   * običan radnik nema. Posledica: 3.0 ekran `/mob/prisustvo` (i svaki self-service
+   * koji traži svoj employeeId) bio je neupotrebljiv, iako je UPIS korekcije
+   * namerno na `profile.self`. Ruta vraća ISKLJUČIVO podatke o pozivaocu.
+   */
   @Get("me")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   me(@Req() req: AuthedRequest) {
     return this.kadrovska.me(req.user.email);
   }
@@ -85,10 +93,11 @@ export class KadrovskaController {
   // Izveštaji nad NON-INVOKER view-ovima — namenske rute sa TAČNOM baznom permisijom
   // (guard = jedina zaštita; RLS ne pomaže jer view radi kao postgres). Deklarisane PRE
   // generičke `reports/:kind` (Express: literal pre param).
+  /** AUDIT-K4: prima from/to/limit (1.0 paritet: changed_at.desc, limit 1–500). */
   @Get("reports/audit")
   @RequirePermission(PERMISSIONS.KADROVSKA_ADMIN)
-  reportAudit(@Req() req: AuthedRequest) {
-    return this.kadrovska.report(req.user.email, "audit");
+  reportAudit(@Req() req: AuthedRequest, @Query() q: ReportQueryDto) {
+    return this.kadrovska.report(req.user.email, "audit", q);
   }
 
   @Get("reports/medical")
@@ -263,7 +272,14 @@ export class KadrovskaController {
     return this.kadrovska.attendanceVsGrid(req.user.email, q);
   }
 
+  /* AUDIT-K5b: self-service čitanja prisustva — `profile.self`, kao i UPIS
+   * korekcije (POST attendance/corrections). Red-po-red i dalje presuđuje RLS:
+   * `attendance_events` = own ∨ manages ∨ hr_or_admin/gridEditor,
+   * `attendance_corrections` = own ∨ manager ∨ hr_or_admin — tuđi employeeId
+   * u query-ju ne vraća redove. Bez ovoga radnik nije mogao da vidi SVOJE
+   * prolaze ni svoje korekcije. */
   @Get("attendance/daily")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   attendanceDaily(
     @Req() req: AuthedRequest,
     @Query() q: AttendanceDailyQueryDto,
@@ -272,6 +288,7 @@ export class KadrovskaController {
   }
 
   @Get("attendance/corrections")
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   attendanceCorrections(
     @Req() req: AuthedRequest,
     @Query() q: AttendanceDailyQueryDto,
@@ -371,6 +388,17 @@ export class KadrovskaController {
     return this.kadrovska.contractBruto(req.user.email, id);
   }
 
+  /** Ugovorna zarada NETO/BRUTO (kadr_get_contract_salary) — poslovni admin
+   *  unosi/čita ugovornu zaradu BEZ pristupa tabu Zarade (AUDIT-K4, odluka 26.07). */
+  @Get("employees/:id/contract-salary")
+  @RequirePermission(PERMISSIONS.KADROVSKA_PII)
+  contractSalary(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.contractSalary(req.user.email, id);
+  }
+
   /** Istorija lekarskih pregleda zaposlenog — SVI pregledi (exam_date DESC), pun red po
    *  pregledu za Izmeni/Obriši (status view `medical-exams` daje samo 1 zbirni red bez exam
    *  id; zero-loss review #4). Pod `kadrovska.manage` kao i medical mutacije
@@ -418,8 +446,18 @@ export class KadrovskaController {
     return this.kadrovska.onboardingTemplates(req.user.email);
   }
 
+  /**
+   * AUDIT-K5b: čitanje toka uvođenja spušteno na `profile.self` — RLS ima
+   * `p_onb_tasks_own_read`/`p_onb_runs_own_read`, pa zaposleni vidi SVOJ tok
+   * (1.0 self-service paritet), a HR i dalje vidi sve kroz `kadr_can_manage_hr`.
+   * ⚠️ ČEKIRANJE zadatka OSTAJE na `kadrovska.manage`: politika
+   * `p_onb_tasks_own_read` je SELECT-only, a jedina write politika je
+   * `kadr_can_manage_hr()` — dakle ni u 1.0 zaposleni NE MOŽE sam da zatvori
+   * zadatak (nalaz je tvrdio own-write; u snapshotu ga nema). Spuštanje write
+   * gate-a bi samo pomerilo odbijenicu na RLS i dalo zbunjujuću grešku.
+   */
   @Get("onboarding")
-  @RequirePermission(PERMISSIONS.KADROVSKA_MANAGE)
+  @RequirePermission(PERMISSIONS.PROFILE_SELF)
   onboarding(@Req() req: AuthedRequest, @Query() q: ByEmployeeQueryDto) {
     return this.kadrovska.onboarding(req.user.email, q);
   }
@@ -474,6 +512,17 @@ export class KadrovskaController {
     @Param("raterId", ParseUUIDPipe) raterId: string,
   ) {
     return this.kadrovska.assessmentRaterScores(req.user.email, raterId);
+  }
+
+  /** Jedan red procene — sveži status za 360 modal (AUDIT-K5b).
+   *  ⚠️ Deklarisana POSLE `assessments/campaign` i `assessments/framework`:
+   *  one su na istoj dubini i `:id` bi ih zasenčio da stoji pre njih. */
+  @Get("assessments/:id")
+  assessmentOne(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return this.kadrovska.assessmentOne(req.user.email, id);
   }
 
   @Get("assessments/:id/scope")

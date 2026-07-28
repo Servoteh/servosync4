@@ -63,6 +63,19 @@ const activeUser = {
   passwordHash: "bcrypt-hash",
 };
 
+/**
+ * Role upisane kroz `user.update` — rola-sync testovi. `validate()` na svakoj
+ * prijavi piše `lastLoginAt` istim mock-om, pa se broji SAMO `data.role`.
+ */
+function roleWrites(prisma: PrismaMock): string[] {
+  const calls = prisma.user.update.mock.calls as Array<
+    [{ data?: { role?: string } }]
+  >;
+  return calls
+    .map((c) => c[0]?.data?.role)
+    .filter((r): r is string => typeof r === "string");
+}
+
 /** Valjan, aktivan refresh token red (nije opozvan, nije zamenjen, nije istekao). */
 function liveToken(overrides: Record<string, unknown> = {}) {
   return {
@@ -80,7 +93,7 @@ describe("AuthService refresh tokens", () => {
   let service: AuthService;
   let prisma: PrismaMock;
   let jwt: { signAsync: jest.Mock; verifyAsync: jest.Mock };
-  let sy15: { withUser: jest.Mock };
+  let sy15: { withUser: jest.Mock; db: { $queryRaw: jest.Mock } };
   let authAdmin: { findUserIdByEmail: jest.Mock; resetPassword: jest.Mock };
 
   beforeEach(async () => {
@@ -89,7 +102,12 @@ describe("AuthService refresh tokens", () => {
       signAsync: jest.fn().mockResolvedValue("access.jwt"),
       verifyAsync: jest.fn(),
     };
-    sy15 = { withUser: jest.fn().mockResolvedValue(undefined) };
+    sy15 = {
+      withUser: jest.fn().mockResolvedValue(undefined),
+      // Rola-sync na direktnom login-u čita 1.0 `user_roles` po email-u.
+      // Default: nema reda → 3.0 rola ostaje netaknuta (nema `user.update`).
+      db: { $queryRaw: jest.fn().mockResolvedValue([]) },
+    };
     authAdmin = {
       findUserIdByEmail: jest.fn().mockResolvedValue("auth-1"),
       resetPassword: jest.fn().mockResolvedValue(undefined),
@@ -149,6 +167,69 @@ describe("AuthService refresh tokens", () => {
         "workerId",
       );
       expect(prisma.refreshToken.create).toHaveBeenCalledTimes(1);
+    });
+
+    /* ROLA-SYNC na direktnom login-u (odluka Nenada 27.07) — dotad je samo SSO
+     * poravnavao rolu, pa su nalozi koji ulaze lozinkom odlutali od 1.0. */
+    it("sinhronizuje rolu sa živom 1.0 (viewer → menadzment) i JWT nosi novu rolu", async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        role: "viewer",
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+      sy15.db.$queryRaw.mockResolvedValue([{ role: "menadzment" }]);
+
+      const res = await service.login("ana@servoteh", "pw");
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { role: "menadzment" },
+      });
+      expect(res.user.role).toBe("menadzment");
+      // JWT se potpisuje POSLE sync-a → claim nosi svežu rolu, ne zatečenu.
+      expect(jwt.signAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ role: "menadzment" }),
+      );
+    });
+
+    it("pad čitanja 1.0 role NE obara prijavu (best-effort) — rola ostaje zatečena", async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        role: "viewer",
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+      sy15.db.$queryRaw.mockRejectedValue(new Error("sy15 nedostupan"));
+
+      const res = await service.login("ana@servoteh", "pw");
+
+      expect(res.accessToken).toBe("access.jwt");
+      expect(res.user.role).toBe("viewer");
+      expect(roleWrites(prisma)).toEqual([]);
+    });
+
+    it("bez reda u 1.0 `user_roles` → 3.0 rola netaknuta (ne pada na viewer)", async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        role: "poslovni_admin",
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+      sy15.db.$queryRaw.mockResolvedValue([]);
+
+      const res = await service.login("ana@servoteh", "pw");
+
+      expect(res.user.role).toBe("poslovni_admin");
+      expect(roleWrites(prisma)).toEqual([]);
+    });
+
+    it("3.0 admin se NE degradira ni na direktnom login-u (1.0 kaže menadzment)", async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUser); // role: admin
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+      sy15.db.$queryRaw.mockResolvedValue([{ role: "menadzment" }]);
+
+      const res = await service.login("ana@servoteh", "pw");
+
+      expect(res.user.role).toBe("admin");
+      expect(roleWrites(prisma)).toEqual([]);
     });
   });
 

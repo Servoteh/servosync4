@@ -82,17 +82,9 @@ export function PlacenoTab() {
   }, [dirQ.data]);
   const empName = (id: string) => emps.get(id)?.name || id.slice(0, 8);
 
-  // Row-scope: RLS/BE presuđuje; FE filtrira po managedSubDeptIds kad postoji sub_department_id.
-  const items = useMemo(() => {
-    const all = reqQ.data?.data?.paidLeave ?? [];
-    const managed = me?.managedSubDeptIds;
-    if (!managed || managed.length === 0 || isAdmin || isHr) return all;
-    const set = new Set(managed);
-    return all.filter((r) => {
-      const sd = emps.get(r.employeeId)?.subDepartmentId;
-      return sd == null ? true : set.has(sd);
-    });
-  }, [reqQ.data, me, isAdmin, isHr, emps]);
+  // Row-scope presuđuje BACKEND (GET /kadrovska/requests — AUDIT-K2); vidi
+  // nadoknada-tab.tsx za obrazloženje zašto FE filter ovde nije bio brana.
+  const items = useMemo(() => reqQ.data?.data?.paidLeave ?? [], [reqQ.data]);
 
   const filtered = useMemo(() => {
     const lq = q.trim().toLowerCase();

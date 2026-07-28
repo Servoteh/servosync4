@@ -3367,7 +3367,7 @@ export class OdrzavanjeService {
   vehicleDeadlineCheck(email: string, dto: DeadlineCheckDto) {
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ enqueued: number; skipped: number }[]>(
-        Prisma.sql`SELECT * FROM public.maint_check_vehicle_deadlines(${dto.lookaheadDays ?? 30})`,
+        Prisma.sql`SELECT * FROM public.maint_check_vehicle_deadlines(${dto.lookaheadDays ?? 30}::int)`,
       );
       const r = rows[0];
       return {

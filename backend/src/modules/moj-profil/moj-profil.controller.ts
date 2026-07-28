@@ -26,6 +26,7 @@ import {
   AckDocumentDto,
   OpenSelfAssessmentDto,
   ReviseVacationDto,
+  OnboardingTaskSelfDto,
   SaveHoursRemarkDto,
   SaveSelfAnswersDto,
   SaveSelfScoresDto,
@@ -148,6 +149,18 @@ export class MojProfilController {
   @Get("onboarding")
   onboarding(@Req() req: AuthedRequest) {
     return this.profil.onboarding(req.user.email);
+  }
+
+  /** Radnik štiklira SOPSTVENI zadatak uvođenja (odluka Nenada 26.07): done ↔
+   *  pending. Vlasništvo (zadatak u AKTIVNOM run-u tog zaposlenog) presuđuje
+   *  SECURITY DEFINER RPC; 'skipped' ostaje HR-u kroz kadr endpoint. */
+  @Patch("onboarding/tasks/:id")
+  onboardingTaskSelf(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: OnboardingTaskSelfDto,
+  ) {
+    return this.profil.setMyOnboardingTask(req.user.email, id, dto.done);
   }
 
   /** Moja odsustva (absences, tekuća godina). */
@@ -296,6 +309,48 @@ export class MojProfilController {
   }
 
   // ---------- 360 samoprocena ----------
+
+  /* ── 360° ocenjivač (peer/leader) — nativni tok umesto 1.0 ocena.html ──────
+   * AUDIT-K6: svi ocenjivači su zaposleni sa nalogom, pa magic-link token
+   * (`assessment_submit_by_token`, bez auth-a) više nije potreban. */
+  @Get("assessment/rater")
+  raterInbox(@Req() req: AuthedRequest) {
+    return this.profil.raterInbox(req.user.email);
+  }
+
+  @Get("assessment/rater/:raterId")
+  raterRead(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+  ) {
+    return this.profil.raterRead(req.user.email, raterId);
+  }
+
+  @Post("assessment/rater/:raterId/scores")
+  saveRaterScores(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+    @Body() dto: SaveSelfScoresDto,
+  ) {
+    return this.profil.saveRaterScores(req.user.email, raterId, dto);
+  }
+
+  @Post("assessment/rater/:raterId/answers")
+  saveRaterAnswers(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+    @Body() dto: SaveSelfAnswersDto,
+  ) {
+    return this.profil.saveRaterAnswers(req.user.email, raterId, dto);
+  }
+
+  @Post("assessment/rater/:raterId/submit")
+  submitRater(
+    @Req() req: AuthedRequest,
+    @Param("raterId", ParseUUIDPipe) raterId: string,
+  ) {
+    return this.profil.submitRater(req.user.email, raterId);
+  }
 
   @Post("assessment/self/open")
   openSelfAssessment(

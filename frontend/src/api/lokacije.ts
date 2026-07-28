@@ -334,6 +334,12 @@ export interface PlacementsParams {
 export interface MovementsParams {
   search?: string;
   userId?: string;
+  /**
+   * `true` → SAMO moji pokreti. Server razreši sy15 `auth.users` uid prijavljenog
+   * (klijent svoj UUID ne zna) i njime filtrira `moved_by`; `userId` se tada
+   * ignoriše. Nerazrešiv nalog → prazna strana (ne greška). Mobilna „Moja istorija".
+   */
+  mine?: boolean;
   locationId?: string;
   movementType?: string;
   orderNo?: string;

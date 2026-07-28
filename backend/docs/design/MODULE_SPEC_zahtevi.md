@@ -205,6 +205,7 @@ model ChangeRequest {
 model ChangeRequestAttachment {
   id            Int      @id @default(autoincrement())
   requestId     Int
+  commentId     Int?                       /// 029/26: prilog uz komentar/pitanje; null = prilog zahteva
   kind          String   @db.VarChar(10)   /// IMAGE | AUDIO | FILE
   bucket        String   @db.VarChar(60)   /// "zahtevi-prilozi"
   storagePath   String   @db.VarChar(300)  /// "req/<requestId>/<uuid>.<ext>"
@@ -418,6 +419,18 @@ hard cap 25 MB/fajl (obrazac media-ai). Servis validira: mime allowlist
 audio ≤15 MB (STT pravilo 1.0), ukupno ≤10 priloga po zahtevu, prazan/<200 B → 400.
 Dozvoljeno owner-u u `DRAFT|SUBMITTED|NEEDS_INFO`, adminu uvek.
 
+**Prilog uz komentar/pitanje (zahtev 029/26).** Ista ruta, opciono multipart polje
+`commentId` → prilog se veže za komentar umesto za zahtev (`change_request_attachments.
+comment_id`, putanja `req/<requestId>/comment/<commentId>/<uuid>.<ext>`). Pravila su
+KOMENTARSKA, ne priložna: komentar se piše u bilo kom statusu, pa ni prilog uz njega
+nema statusni prozor; zauzvrat ga dodaje **samo autor tog komentara** (ni admin ne
+dopisuje fajl tuđoj poruci) i **ne briše se** (`DELETE` → 422 — komentar je nepromenjiv
+posle slanja). Limit 10 važi **po komentaru**, odvojeno od limita zahteva. `GET
+/zahtevi/:id` vraća priloge zahteva (`commentId IS NULL`) na vrhu, a priloge poruka pod
+`comments[].attachments`; signed URL ide postojećom rutom (isti `requestId`).
+`POST /:id/return-for-info` vraća `questionCommentIds` da FE odmah zakači fajl na
+poslato pitanje.
+
 **Audio diktat — dva režima (oba u V1):**
 
 1. **Diktat u polje** (već postoji): `DictateButton` iz
@@ -474,9 +487,9 @@ Zaseban tab u modulu (`/zahtevi` → tab „Odluke"), nezavisan životni ciklus 
 | `DELETE /zahtevi/:id` | `write` | hard delete SAMO owner + SAMO `DRAFT` |
 | `POST /zahtevi/:id/submit` | `write` | `DRAFT→SUBMITTED` (+ iz `NEEDS_INFO` re-submit); okida trijažu §4.1 |
 | `POST /zahtevi/:id/withdraw` | `write` | §1.3 |
-| `POST /zahtevi/:id/attachments` | `write` | multipart §5; AUDIO → auto STT |
+| `POST /zahtevi/:id/attachments` | `write` | multipart §5; AUDIO → auto STT; opciono `commentId` = prilog uz komentar (029/26) |
 | `GET /zahtevi/:id/attachments/:attId/url` | `read` | signed URL |
-| `DELETE /zahtevi/:id/attachments/:attId` | `write` | soft-delete (owner u DRAFT/SUBMITTED/NEEDS_INFO; admin uvek) |
+| `DELETE /zahtevi/:id/attachments/:attId` | `write` | soft-delete (owner u DRAFT/SUBMITTED/NEEDS_INFO; admin uvek); prilog komentara → 422 |
 | `POST /zahtevi/:id/attachments/:attId/transcribe` | `write` | retry STT ako je pao |
 | `POST /zahtevi/:id/comments` | `write` | owner + admin (admin i `isQuestion:true`) |
 | `POST /zahtevi/:id/retriage` | `admin` | ponovi trijažu |

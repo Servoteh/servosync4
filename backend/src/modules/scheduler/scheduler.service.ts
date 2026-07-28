@@ -7,6 +7,7 @@ import {
   shiftBelgradeDate,
 } from "./belgrade-time";
 import {
+  DEFAULT_STALE_AFTER_MINUTES,
   JOB_STATUS,
   MAX_ATTEMPTS,
   type JobSchedule,
@@ -167,11 +168,18 @@ export class SchedulerService implements OnModuleDestroy {
       // Termin već postoji. Re-claim (atomski UPDATE — samo jedan dobije red):
       //  • FAILED sa preostalim pokušajima — uz BACKOFF 10min×attempts (bez ovoga
       //    bi sva 3 pokušaja izgorela za ~90s pa kratak sy15 ispad pojede slot);
-      //  • zaglavljeni RUNNING stariji od 10min (crash/SIGTERM usred izvršenja bi
-      //    inače TRAJNO progutao slot — sy15 fn su idempotentne pa je re-run bezbedan).
-      const retried = await this.prisma.$queryRaw<
-        { id: number; attempts: number }[]
-      >`
+      //  • zaglavljeni RUNNING stariji od `staleAfterMinutes` (crash/SIGTERM usred
+      //    izvršenja bi inače TRAJNO progutao slot — sy15 fn su idempotentne pa je
+      //    re-run bezbedan). Prag je PO POSLU: default 10 min važi za kratke sy15
+      //    pozive, a dug posao (npr. BigBit sync) ga mora podići iznad svog
+      //    najdužeg trajanja, inače bi sam sebe pokrenuo drugi put (review [7]).
+      // ⚠️ `${staleAfter}::int` — Prisma vezuje JS broj kao int8/bigint, a
+      // `make_interval(mins => …)` prima int, pa je bez cast-a upit padao na
+      // `42883: function make_interval(mins => bigint) does not exist` i RUSIO
+      // SVAKI TIK pogona (532 greske za sat vremena na produ, 26.07). Susedni
+      // `mins => 10 * attempts` radi jer je `attempts` KOLONA (int), ne parametar.
+      const staleAfter = job.staleAfterMinutes ?? DEFAULT_STALE_AFTER_MINUTES;
+      const retried = await this.prisma.$queryRaw<{ id: number; attempts: number }[]>`
         UPDATE scheduled_job_runs
            SET status = ${JOB_STATUS.RUNNING}, attempts = attempts + 1,
                started_at = now(), finished_at = NULL, error = NULL
@@ -181,7 +189,7 @@ export class SchedulerService implements OnModuleDestroy {
              (status = ${JOB_STATUS.FAILED}
                AND finished_at < now() - make_interval(mins => 10 * attempts))
              OR (status = ${JOB_STATUS.RUNNING}
-               AND started_at < now() - interval '10 minutes')
+               AND started_at < now() - make_interval(mins => ${staleAfter}::int))
            )
         RETURNING id, attempts`;
       runId = retried[0]?.id ?? null;
@@ -288,11 +296,15 @@ export class SchedulerService implements OnModuleDestroy {
     // dugme mora da vidi zašto se ništa nije desilo.
     if (!(await this.isJobEnabled(job)))
       throw new Error(switchDisabledReason(job.switchKey as string));
+    const blockMinutes =
+      job.runNowBlockMinutes ??
+      job.staleAfterMinutes ??
+      DEFAULT_STALE_AFTER_MINUTES;
     const running = await this.prisma.scheduledJobRun.findFirst({
       where: {
         jobKey: job.key,
         status: JOB_STATUS.RUNNING,
-        startedAt: { gt: new Date(Date.now() - 10 * 60_000) },
+        startedAt: { gt: new Date(Date.now() - blockMinutes * 60_000) },
       },
       select: { id: true },
     });

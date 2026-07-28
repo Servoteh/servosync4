@@ -11,6 +11,15 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
+import { AI_MODULE } from "../../common/ai/ai-limits.service";
+import {
+  AI_TASK,
+  AiModelPolicyService,
+} from "../../common/ai/ai-model-policy.service";
+import {
+  SASTANCI_INJECTION_FENCE,
+  fenceUserInput,
+} from "../../common/ai/injection-fence";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import {
   SUMMARY_ALLOWED_MODELS,
@@ -44,6 +53,8 @@ import type {
   PrenosDto,
   ReorderDto,
   ReorderRangDto,
+  MyAkcijaStatusDto,
+  MyPripremaDto,
   RsvpDto,
   SetAiModelDto,
   SetZapisnikDatumDto,
@@ -65,6 +76,7 @@ import type {
   WeeklyVratiDto,
 } from "./dto/sastanci-mutation.dto";
 import { nextOccurrence } from "./templates-cadence";
+import { sledeciSedmicniTermin } from "./weekly-rollover";
 
 /**
  * Sastanci — 3.0 TALAS B, R1 read sloj (MODULE_SPEC_sastanci_ai_30.md §3).
@@ -123,6 +135,7 @@ export class SastanciService {
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
+    private readonly policy: AiModelPolicyService,
   ) {}
 
   // ---------- Liste / pretraga ----------
@@ -190,21 +203,66 @@ export class SastanciService {
    * Sledeći PLANIRAN sastanak — paritet 1.0 loadNextPlaniranSastanak (sastanci.js:148):
    * BEZ tip filtera (bilo koji tip), datum >= DANAS po LOKALNOM (Europe/Belgrade)
    * kalendaru, datum asc, prvi red.
+   *
+   * Uz `data` vraća i `sedmicni` (zahtev 024/26 a) — termin sledećeg SEDMIČNOG
+   * sastanka. Kad ga automatika još nije kreirala (`sastanakId === null`), to je
+   * NAJAVA izračunata iz istog pravila po kojem radi pg_cron posao `sast-weekly-auto`
+   * (petak 08h → `sast_auto_create_weekly`); vidi `weekly-rollover.ts`. Bez toga UI
+   * posle zatvaranja sedmičnog nema šta da pokaže osim poslednjeg (zatvorenog)
+   * termina, pa deluje kao da je datum „zaglavljen".
    */
   async nextWeekly(email: string) {
     // en-CA locale daje YYYY-MM-DD; sidro je Beograd, ne UTC (posle 22h leti UTC ide u sutra).
+    const now = new Date();
     const todayBelgrade = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Europe/Belgrade",
-    }).format(new Date());
+    }).format(now);
+    // h23 (ne hour12:false) — u pojedinim ICU verzijama „2-digit + hour12:false" daje 24 u ponoć.
+    const satBelgrade =
+      Number(
+        new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Europe/Belgrade",
+          hour: "2-digit",
+          hourCycle: "h23",
+        }).format(now),
+      ) % 24;
+    const odDanas = new Date(todayBelgrade);
     return this.withUserMapped(email, async (tx) => {
-      const data = await tx.sastanak.findFirst({
-        where: {
-          status: "planiran",
-          datum: { gte: new Date(todayBelgrade) },
-        },
-        orderBy: [{ datum: "asc" }],
+      const [data, sedmicniRedovi, praznici] = await Promise.all([
+        tx.sastanak.findFirst({
+          where: { status: "planiran", datum: { gte: odDanas } },
+          orderBy: [{ datum: "asc" }],
+        }),
+        tx.sastanak.findMany({
+          where: { tip: "sedmicni", datum: { gte: odDanas } },
+          select: { id: true, datum: true, vreme: true, status: true },
+          orderBy: [{ datum: "asc" }],
+          take: 60,
+        }),
+        // Prozor pokriva 8 nedelja unapred koliko simulacija gleda (+ rezerva).
+        tx.kadrHoliday.findMany({
+          where: {
+            holidayDate: {
+              gte: odDanas,
+              lte: new Date(odDanas.getTime() + 90 * 86_400_000),
+            },
+            isWorkday: false,
+          },
+          select: { holidayDate: true },
+        }),
+      ]);
+      const sedmicni = sledeciSedmicniTermin({
+        danas: todayBelgrade,
+        sat: satBelgrade,
+        sedmicni: sedmicniRedovi.map((s) => ({
+          id: s.id,
+          datum: this.ymd(s.datum),
+          vreme: this.hhmm(s.vreme),
+          status: s.status,
+        })),
+        praznici: praznici.map((p) => this.ymd(p.holidayDate)),
       });
-      return { data };
+      return { data, sedmicni };
     });
   }
 
@@ -480,7 +538,12 @@ export class SastanciService {
     tx: Sy15Tx,
     since: string | null,
     projekatId: string | null,
-  ): Promise<{ novo: number; zavrseno: number; kasni: number; aktivnih: number }> {
+  ): Promise<{
+    novo: number;
+    zavrseno: number;
+    kasni: number;
+    aktivnih: number;
+  }> {
     const where = projekatId
       ? Prisma.sql`WHERE projekat_id = ${projekatId}::uuid`
       : Prisma.empty;
@@ -888,6 +951,18 @@ export class SastanciService {
     if (v === null || v === "") return null;
     const t = v.length === 5 ? `${v}:00` : v;
     return new Date(`1970-01-01T${t}Z`);
+  }
+
+  /** @db.Date → 'YYYY-MM-DD' (kolona je UTC ponoć, pa nema TZ pomaka). */
+  private ymd(d: Date | string): string {
+    return (d instanceof Date ? d.toISOString() : String(d)).slice(0, 10);
+  }
+
+  /** @db.Time → 'HH:MM' (obrnuto od `toDbTime`). */
+  private hhmm(v: Date | string | null): string | null {
+    if (!v) return null;
+    const s = v instanceof Date ? v.toISOString() : String(v);
+    return s.includes("T") ? s.slice(11, 16) : s.slice(0, 5);
   }
 
   /** Posle updateMany/deleteMany sa 0 pogodaka: 404 ako red ne postoji (po SELECT-u),
@@ -1329,6 +1404,34 @@ export class SastanciService {
         Prisma.sql`SELECT sastanci_set_my_rsvp(${id}::uuid, ${dto.status ?? null}) AS result`,
       );
       return { data: { rsvp: rows[0]?.result ?? null } };
+    });
+  }
+
+  /** Status SOPSTVENE akcije (sastanci_set_my_akcija_status — odluka 26.07): RPC
+   *  presuđuje vlasništvo po odgovoran_email; zavrsen → zatvoren_* snapshot u bazi. */
+  setMyAkcijaStatus(email: string, id: string, dto: MyAkcijaStatusDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: string }[]>(
+        Prisma.sql`SELECT sastanci_set_my_akcija_status(${id}::uuid, ${dto.status}::text) AS result`,
+      );
+      if ((rows[0]?.result ?? null) === "not_owner")
+        throw new ForbiddenException(
+          "Niste odgovorni za ovu akciju — status menja zapisničar.",
+        );
+      return { data: { status: rows[0]?.result ?? null } };
+    });
+  }
+
+  /** Moja priprema (sastanci_set_my_priprema — odluka 26.07): samo pripremljen +
+   *  tekst; prazan tekst čisti polje; pozvan/prisutan ostaje zapisničaru. */
+  setMyPriprema(email: string, id: string, dto: MyPripremaDto) {
+    return this.withUserMapped(email, async (tx) => {
+      const rows = await tx.$queryRaw<{ result: string }[]>(
+        Prisma.sql`SELECT sastanci_set_my_priprema(${id}::uuid, ${dto.pripremljen ?? null}::boolean, ${dto.priprema ?? null}::text) AS result`,
+      );
+      if ((rows[0]?.result ?? null) === "not_participant")
+        throw new ForbiddenException("Niste učesnik ovog sastanka.");
+      return { data: { ok: true } };
     });
   }
 
@@ -2283,13 +2386,17 @@ export class SastanciService {
    * sastanci_ai_settings (fallback SAST_AI_MODEL env pa opus), Anthropic one-shot.
    * Guard = sastanci.read (prijavljen korisnik). FE sklopi objekat sastanka.
    */
-  async aiSummary(email: string, sastanak: Record<string, unknown>) {
+  async aiSummary(
+    email: string,
+    sastanak: Record<string, unknown>,
+    actor?: { userId: number },
+  ) {
     if (JSON.stringify(sastanak).length > 40000) {
       throw new UnprocessableEntityException(
         "Sastanak je prevelik za sažimanje.",
       );
     }
-    const model = await this.withUserMapped(email, async (tx) => {
+    const legacyModel = await this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ model: string | null }[]>(
         Prisma.sql`SELECT model FROM sastanci_ai_settings WHERE id = 1 LIMIT 1`,
       );
@@ -2298,8 +2405,23 @@ export class SastanciService {
       const env = process.env.SAST_AI_MODEL ?? "";
       return SUMMARY_ALLOWED_MODELS.includes(env) ? env : "claude-opus-4-8";
     });
-    const content = buildSummaryContent(sastanak);
-    const out = await this.ai.summarize(model, SUMMARY_SYSTEM_PROMPT, content);
+    // Talas AI-0 (stavka 7c): registar prvi, sy15 podešavanje kao fallback.
+    const resolved = await this.policy.resolve(
+      AI_TASK.SASTANCI_SUMMARY,
+      legacyModel,
+    );
+    const model = SUMMARY_ALLOWED_MODELS.includes(resolved.model)
+      ? resolved.model
+      : legacyModel;
+    // Talas AI-0 (stavka 6): zapisnik i akcioni plan kucaju učesnici sastanka —
+    // nepouzdan unos ide obmotan ogradom, a ograda u system prompt.
+    const content = fenceUserInput(buildSummaryContent(sastanak));
+    const out = await this.ai.summarize(
+      model,
+      `${SUMMARY_SYSTEM_PROMPT}\n\n${SASTANCI_INJECTION_FENCE}`,
+      content,
+      { module: AI_MODULE.SASTANCI_SUMMARY, userId: actor?.userId ?? null },
+    );
     return { data: out };
   }
 

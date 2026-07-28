@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Mail } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useQueryTab } from '@/lib/use-query-tab';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -62,6 +63,10 @@ const TABS = [
   { key: 'compensation' as const, label: 'Kompenzacije' },
 ];
 
+/** Ključevi `?tab=` — ujedno OGLEDALO tab-dece modula „Saldakonti" u `navigation.ts`
+ *  (podrute „Kartica komitenta" i „Kursne razlike" su tamo zasebna deca). */
+const VIEW_KEYS: readonly View[] = TABS.map((t) => t.key);
+
 /** Zbir Decimal-as-string salda (za prikaz; knjiženje presuđuje backend). */
 function sumBalances(values: string[]): number {
   return values.reduce((acc, v) => {
@@ -85,7 +90,10 @@ export default function SaldakontiPage() {
   const can = useCan();
   const canReconcile = can(PERMISSIONS.SALDAKONTI_RECONCILE);
 
-  const [view, setView] = useState<View>('open');
+  // Pogled živi u `?tab=` kroz deljeni hook (PLAN_NAV_PODMENIJI §4.3, F2): deep-link
+  // („/saldakonti?tab=aging"), klik na podstavku dok si već ovde i write-back URL-a pri
+  // promeni taba u strani.
+  const [view, setView] = useQueryTab<View>('tab', 'open', { valid: VIEW_KEYS });
   const [accountCode, setAccountCode] = useState('');
   const [partnerId, setPartnerId] = useState('');
   // Primenjeni filteri (dugme „Primeni" / Enter) — odvojeni od unosa da svaki
