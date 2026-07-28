@@ -63,7 +63,10 @@ export interface ProfileSummary {
   employee: { id: string; fullName: string | null };
   vacationDaysRemaining: number | null;
   openVacationRequests: number;
+  /** Suma ZAOKRUŽENIH dnevnih vrednosti prisustva (zahtev 032/26), decimalno. */
   monthPresenceHours: number;
+  /** Isti zbir u h:mm — ovo se prikazuje korisniku. */
+  monthPresenceHm?: string | null;
   unacknowledgedTalks: number;
 }
 
@@ -145,6 +148,13 @@ export interface MakeupPaidLeaveData {
 export type AttendanceDay = {
   day: string;
   presence_hours?: number | null;
+  /**
+   * Prisustvo u h:mm sa primenjenim pravilom zaokruživanja (zahtev 032/26) — BE je
+   * jedini vlasnik pravila („prekovremeno <30 min se ne prikazuje": [8:00, 8:30) → 8:00).
+   * FE samo ispisuje; NIKAD ne računati sate iz `presence_hours` na klijentu.
+   */
+  presence_hm?: string | null;
+  presence_minutes?: number | null;
   time_in?: string | null;
   time_out?: string | null;
   /** Raw kolone iz v_attendance_daily (paritet 1.0: first_in/last_out/open_intervals). */
@@ -155,10 +165,17 @@ export type AttendanceDay = {
   corrected?: boolean | null;
   status?: string | null;
 } & Record<string, unknown>;
+/** Mesečni zbir prisustva — suma ZAOKRUŽENIH dana (da se slaže sa prikazom po danima). */
+export interface AttendanceTotals {
+  minutes: number;
+  hm: string;
+  hours: number;
+}
 export interface AttendanceData {
   from: string;
   to: string;
   days: AttendanceDay[];
+  totals?: AttendanceTotals;
 }
 
 export type TalkRow = {
