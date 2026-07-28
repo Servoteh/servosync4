@@ -225,6 +225,9 @@ const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
   // Ton/labela prate kanonsku mapu statusa RN-a (DESIGN_SYSTEM §7) — „Lansiran" je
   // info svuda drugde (work-orders, handovers), pa ne sme ovde biti success.
   'primopredaja.lansirana': { tone: 'info', label: 'Lansiran' },
+  // Zahtev 037/26: šef proizvodnje dobija zvonce kad se mašina otpiše (treba da
+  // preraspodeli poslove). `warn`, ne `danger` — nije kvar nego planska radnja.
+  'odrzavanje.masina-otpis': { tone: 'warn', label: 'Otpis mašine' },
 };
 
 /** refTable → ruta modula (funkcija prima refId za deep-link kad modul to podržava). */
@@ -236,6 +239,9 @@ const NOTIFICATION_ROUTE: Record<string, (refId: number | null) => string> = {
   // Neusaglašenosti na montaži (zahtev 004/26): deep-link otvara detalj u tabu.
   montage_nonconformities: (id) =>
     `/montaza?view=neusaglasenosti${id != null ? `&id=${id}` : ''}`,
+  // Mašina je ključana TEKSTOM (machine_code), a `ref_id` je Int → nema deep-linka na
+  // karton; vodimo na registar mašina, a šifra stoji u tekstu notifikacije.
+  maint_machines: () => '/odrzavanje?tab=masine',
 };
 
 type BellVariant = 'sidebar' | 'rail' | 'header';

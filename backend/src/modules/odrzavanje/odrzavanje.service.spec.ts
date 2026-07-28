@@ -6,6 +6,7 @@ import {
 import { OdrzavanjeService } from "./odrzavanje.service";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
 
 /** Storage proxy nikad ne sme da se dodirne u read sloju — svaki poziv = greška. */
 const storageStub = {
@@ -19,6 +20,14 @@ const storageStub = {
     throw new Error("storage.remove korišćen u read sloju");
   }),
 } as unknown as Sy15StorageService;
+
+/**
+ * Obaveštenje o otpisu mašine (037/26) je fire-and-forget sporedni efekat — u testovima
+ * koji ga ne proveravaju dovoljan je nem stub. Testovi otpisa prave svoj i asertuju nad njim.
+ */
+const makeNotify = () => ({ notifyOtpis: jest.fn().mockResolvedValue(undefined) });
+const notifyStub = () =>
+  makeNotify() as unknown as MasinaOtpisNotifyService;
 
 /**
  * OdrzavanjeService (TALAS F, R1) unit — dva invarijanta bez žive baze:
@@ -87,7 +96,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
   it("listMachines ide kroz withUserRls sa email-om pozivaoca (RLS enforce, ne db.*)", async () => {
     const tx = makeTx();
     const { sy15, withUserRls } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     await svc.listMachines("monter@servoteh.com", {});
     expect(withUserRls).toHaveBeenCalledTimes(1);
     expect(withUserRls.mock.calls[0][0]).toBe("monter@servoteh.com");
@@ -100,7 +109,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
   it("listIncidents (prijava kvara vidljivost) takođe ide kroz withUserRls", async () => {
     const tx = makeTx();
     const { sy15, withUserRls } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     await svc.listIncidents("operator@servoteh.com", {});
     expect(withUserRls).toHaveBeenCalledTimes(1);
     expect(withUserRls.mock.calls[0][0]).toBe("operator@servoteh.com");
@@ -136,7 +145,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     const res = (await svc.me("x@servoteh.com")) as {
       data: {
         maintRole: string | null;
@@ -225,7 +234,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       maintWorkOrder: { count: jest.fn().mockResolvedValue(5) },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     const res = (await svc.dashboard("x@servoteh.com")) as unknown as {
       data: { dailySummary: Record<string, unknown> };
     };
@@ -256,7 +265,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     const res = (await svc.listIncidents("x@servoteh.com", {})) as {
       data: { id: string; workOrder: { woNumber: string } | null }[];
     };
@@ -289,7 +298,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     const res = (await svc.reportWorkOrderCosts("x@servoteh.com", "90")) as {
       data: {
         partsCost: number;
@@ -319,7 +328,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     await svc.updateWorkOrder("x@servoteh.com", "w1", {
       status: "zavrsen",
     } as never);
@@ -341,7 +350,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     await svc.updateWorkOrder("x@servoteh.com", "w1", {
       status: "zavrsen",
     } as never);
@@ -374,7 +383,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       maintWoEvent: { create: jest.fn().mockResolvedValue({}) },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     await svc.createWoPart("x@servoteh.com", "w1", {
       clientEventId: CID2,
       partName: "slobodan (pogrešan) naziv",
@@ -410,7 +419,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       maintWoEvent: { create: jest.fn().mockResolvedValue({}) },
     });
     const { sy15 } = makeSy15(tx);
-    const svc = new OdrzavanjeService(sy15, storageStub);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
     await svc.createWoPart("x@servoteh.com", "w1", {
       clientEventId: CID3,
       partName: "Zaptivka (ručno)",
@@ -460,7 +469,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       });
       const { sy15, withUserRls } = makeSy15(tx);
       const storage = makeStorage();
-      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const svc = new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
       const res = (await svc.uploadVehiclePhoto(
         "chief@servoteh.com",
         VEH,
@@ -497,7 +506,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       });
       const { sy15 } = makeSy15(tx);
       const storage = makeStorage();
-      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const svc = new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
       await expect(
         svc.uploadVehiclePhoto("x@servoteh.com", VEH, imgFile()),
       ).rejects.toThrow(NotFoundException);
@@ -512,7 +521,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       });
       const { sy15 } = makeSy15(tx);
       const storage = makeStorage();
-      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const svc = new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
       await expect(
         svc.uploadVehiclePhoto(
           "x@servoteh.com",
@@ -536,7 +545,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       });
       const { sy15 } = makeSy15(tx);
       const storage = makeStorage();
-      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const svc = new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
       await expect(
         svc.vehiclePhotoUrl("x@servoteh.com", VEH),
       ).rejects.toThrow(NotFoundException);
@@ -557,7 +566,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       });
       const { sy15 } = makeSy15(tx);
       const storage = makeStorage();
-      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const svc = new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
       await svc.vehiclePhotoUrl("x@servoteh.com", VEH);
       expect(storage.signUrl).toHaveBeenCalledWith(
         "maint-machine-files",
@@ -580,7 +589,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       });
       const { sy15 } = makeSy15(tx);
       const storage = makeStorage();
-      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const svc = new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
       await svc.deleteVehiclePhoto("x@servoteh.com", VEH);
       expect(updateMany.mock.calls[0][0].data.primaryPhotoStoragePath).toBeNull();
       expect(storage.remove).toHaveBeenCalledWith("maint-machine-files", path);
@@ -598,7 +607,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       });
       const { sy15 } = makeSy15(tx);
       const storage = makeStorage();
-      const svc = new OdrzavanjeService(sy15, asStorage(storage));
+      const svc = new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
       const res = (await svc.deleteVehiclePhoto("x@servoteh.com", VEH)) as {
         data: { ok: boolean };
       };
@@ -630,7 +639,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
 
     it("listProfiles: NE-erp-admin (WRITE-holder) → 403 (ne curi ceo registar)", async () => {
       const { sy15 } = makeSy15(profileTx(false));
-      const svc = new OdrzavanjeService(sy15, storageStub);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
       await expect(svc.listProfiles("magacioner@servoteh.com")).rejects.toThrow(
         ForbiddenException,
       );
@@ -639,7 +648,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     it("createProfile: NE-erp-admin → 403 PRE ijednog upisa (privilege-escalation blok)", async () => {
       const tx = profileTx(false);
       const { sy15 } = makeSy15(tx);
-      const svc = new OdrzavanjeService(sy15, storageStub);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
       await expect(
         svc.createProfile("menadzment@servoteh.com", {
           clientEventId: CID,
@@ -656,7 +665,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     it("updateProfile: NE-erp-admin → 403 PRE updateMany", async () => {
       const tx = profileTx(false);
       const { sy15 } = makeSy15(tx);
-      const svc = new OdrzavanjeService(sy15, storageStub);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
       await expect(
         svc.updateProfile("magacioner@servoteh.com", "u2", {
           fullName: "X",
@@ -669,7 +678,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
 
     it("erp-admin: listProfiles prolazi (registar dostupan)", async () => {
       const { sy15 } = makeSy15(profileTx(true));
-      const svc = new OdrzavanjeService(sy15, storageStub);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
       const res = (await svc.listProfiles("erp@servoteh.com")) as {
         data: unknown[];
       };
@@ -679,7 +688,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     it("erp-admin: createProfile upisuje (assertErpAdmin propušta)", async () => {
       const tx = profileTx(true);
       const { sy15 } = makeSy15(tx);
-      const svc = new OdrzavanjeService(sy15, storageStub);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
       await svc.createProfile("erp@servoteh.com", {
         clientEventId: CID,
         userId: "u2",
@@ -712,7 +721,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       );
       const tx = noteTx(jest.fn().mockRejectedValue(rlsErr));
       const { sy15 } = makeSy15(tx);
-      const svc = new OdrzavanjeService(sy15, storageStub);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
       await expect(
         svc.updateNote("erp@servoteh.com", "note-1", {
           deleted: true,
@@ -723,7 +732,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     it("updateNote pinned (bez RLS greške) → prolazi { ok: true }", async () => {
       const tx = noteTx(jest.fn().mockResolvedValue({ count: 1 }));
       const { sy15 } = makeSy15(tx);
-      const svc = new OdrzavanjeService(sy15, storageStub);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
       const res = (await svc.updateNote("erp@servoteh.com", "note-1", {
         pinned: true,
       } as never)) as { data: { ok: boolean } };
@@ -734,12 +743,235 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       const other = new Error("neka druga DB greška (npr. konekcija/timeout)");
       const tx = noteTx(jest.fn().mockRejectedValue(other));
       const { sy15 } = makeSy15(tx);
-      const svc = new OdrzavanjeService(sy15, storageStub);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
       await expect(
         svc.updateNote("erp@servoteh.com", "note-1", {
           deleted: true,
         } as never),
       ).rejects.not.toThrow(ForbiddenException);
+    });
+  });
+
+  // ------- Otpis mašine (zahtev 037/26) -------
+
+  describe("otpisMachine — arhiviranje umesto brisanja + obaveštenje šefu", () => {
+    const ASSET = "a1111111-1111-4111-8111-111111111111";
+
+    /** tx sa mašinom, ogledalom u maint_assets i (opciono) otvorenim nalozima. */
+    const otpisTx = (over: {
+      archivedAt?: Date | null;
+      openWos?: Array<{ woNumber: string | null; title: string; status: string }>;
+      machineUpdate?: jest.Mock;
+      assetUpdate?: jest.Mock;
+    }) => {
+      const machineUpdate =
+        over.machineUpdate ?? jest.fn().mockResolvedValue({ count: 1 });
+      const assetUpdate =
+        over.assetUpdate ?? jest.fn().mockResolvedValue({ count: 1 });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintMachine: {
+          findUnique: jest.fn().mockResolvedValue({
+            machineCode: "M-01",
+            name: "Presa 100t",
+            assetId: ASSET,
+            archivedAt: over.archivedAt ?? null,
+          }),
+          updateMany: machineUpdate,
+          count: jest.fn().mockResolvedValue(1),
+        },
+        maintAsset: { updateMany: assetUpdate, findUnique: jest.fn() },
+        maintWorkOrder: {
+          findMany: jest.fn().mockResolvedValue(over.openWos ?? []),
+          count: jest.fn().mockResolvedValue(0),
+        },
+      });
+      return { tx, machineUpdate, assetUpdate };
+    };
+
+    it("arhivira mašinu (archived_at + tracked=false) — NE briše je", async () => {
+      const { tx, machineUpdate } = otpisTx({});
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.otpisMachine("sef@servoteh.com", "M-01", "rashodovana 2026");
+      const data = machineUpdate.mock.calls[0][0].data;
+      expect(data.archivedAt).toBeInstanceOf(Date);
+      expect(data.tracked).toBe(false);
+      // Nigde nema delete — istorija (kontrole/kvarovi/nalozi) ostaje netaknuta.
+      expect(
+        (tx.maintMachine as Record<string, unknown>).delete,
+      ).toBeUndefined();
+    });
+
+    it("PROPAGIRA otpis na maint_assets (active=false + razlog + ko) → ispada iz aktivnih pickera", async () => {
+      const { tx, assetUpdate } = otpisTx({});
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.otpisMachine("sef@servoteh.com", "M-01", "  rashodovana 2026  ");
+      const call = assetUpdate.mock.calls[0][0];
+      expect(call.where).toEqual({ assetId: ASSET });
+      expect(call.data.active).toBe(false);
+      expect(call.data.archivedAt).toBeInstanceOf(Date);
+      // Razlog se trimuje, a `archived_by` nosi auth.uid() pozivaoca (RLS WITH CHECK).
+      expect(call.data.archiveReason).toBe("rashodovana 2026");
+      expect(call.data.archivedBy).toBe("u1");
+    });
+
+    it("obaveštava šefa proizvodnje i NAVODI zatečene otvorene naloge", async () => {
+      const openWos = [
+        { woNumber: "RN-12", title: "Zamena ležaja", status: "potvrden" },
+        { woNumber: "RN-13", title: "Podmazivanje", status: "novi" },
+      ];
+      const { tx } = otpisTx({ openWos });
+      const { sy15 } = makeSy15(tx);
+      const notify = makeNotify();
+      const svc = new OdrzavanjeService(
+        sy15,
+        storageStub,
+        notify as unknown as MasinaOtpisNotifyService,
+      );
+      const res = (await svc.otpisMachine(
+        "sef@servoteh.com",
+        "M-01",
+        "rashodovana",
+      )) as { data: { openWorkOrders: number } };
+
+      expect(notify.notifyOtpis).toHaveBeenCalledTimes(1);
+      const arg = notify.notifyOtpis.mock.calls[0][0];
+      expect(arg.machineCode).toBe("M-01");
+      expect(arg.machineName).toBe("Presa 100t");
+      expect(arg.reason).toBe("rashodovana");
+      expect(arg.openWorkOrders).toHaveLength(2);
+      expect(arg.openWorkOrders[0].woNumber).toBe("RN-12");
+      // Broj otvorenih naloga se vraća i pozivaocu (FE ga prikazuje u potvrdi).
+      expect(res.data.openWorkOrders).toBe(2);
+    });
+
+    it("čita SAMO otvorene naloge (zavrsen/otkazan se ne broje kao posao za preraspodelu)", async () => {
+      const { tx } = otpisTx({});
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.otpisMachine("sef@servoteh.com", "M-01", "rashodovana");
+      const where = (
+        (tx.maintWorkOrder as { findMany: jest.Mock }).findMany.mock
+          .calls[0][0] as { where: Record<string, unknown> }
+      ).where;
+      expect(where.assetId).toBe(ASSET);
+      expect(where.status).toEqual({ notIn: ["zavrsen", "otkazan"] });
+    });
+
+    it("ponovljeni otpis već otpisane mašine NE šalje obaveštenje ponovo", async () => {
+      const { tx } = otpisTx({ archivedAt: new Date("2026-07-01T10:00:00Z") });
+      const { sy15 } = makeSy15(tx);
+      const notify = makeNotify();
+      const svc = new OdrzavanjeService(
+        sy15,
+        storageStub,
+        notify as unknown as MasinaOtpisNotifyService,
+      );
+      const res = (await svc.otpisMachine(
+        "sef@servoteh.com",
+        "M-01",
+        "rashodovana",
+      )) as { data: { alreadyArchived: boolean } };
+      expect(notify.notifyOtpis).not.toHaveBeenCalled();
+      expect(res.data.alreadyArchived).toBe(true);
+    });
+
+    it("nepostojeća mašina → 404 (i bez obaveštenja)", async () => {
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintMachine: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+          count: jest.fn().mockResolvedValue(0),
+        },
+        maintAsset: { updateMany: jest.fn(), findUnique: jest.fn() },
+      });
+      const { sy15 } = makeSy15(tx);
+      const notify = makeNotify();
+      const svc = new OdrzavanjeService(
+        sy15,
+        storageStub,
+        notify as unknown as MasinaOtpisNotifyService,
+      );
+      await expect(
+        svc.otpisMachine("sef@servoteh.com", "NEMA", "rashodovana"),
+      ).rejects.toThrow(NotFoundException);
+      expect(notify.notifyOtpis).not.toHaveBeenCalled();
+    });
+
+    it("restoreMachine vraća u upotrebu i ČISTI ogledalo (active=true, razlog obrisan)", async () => {
+      const assetUpdate = jest.fn().mockResolvedValue({ count: 1 });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintMachine: {
+          findUnique: jest.fn().mockResolvedValue({ assetId: ASSET }),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          count: jest.fn().mockResolvedValue(1),
+        },
+        maintAsset: { updateMany: assetUpdate, findUnique: jest.fn() },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.restoreMachine("sef@servoteh.com", "M-01");
+      const data = assetUpdate.mock.calls[0][0].data;
+      expect(data.active).toBe(true);
+      expect(data.archivedAt).toBeNull();
+      expect(data.archiveReason).toBeNull();
+    });
+
+    it("createWorkOrder na OTPISANOM sredstvu → 422 (nalog se ne kreira)", async () => {
+      const create = jest.fn();
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintAsset: {
+          findUnique: jest.fn().mockResolvedValue({
+            archivedAt: new Date("2026-07-01T10:00:00Z"),
+            name: "Presa 100t",
+          }),
+          updateMany: jest.fn(),
+        },
+        maintWorkOrder: { create, count: jest.fn().mockResolvedValue(0) },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await expect(
+        svc.createWorkOrder("sef@servoteh.com", {
+          clientEventId: "3b241101-e2bb-4255-8caf-4136c566a963",
+          assetId: ASSET,
+          assetType: "machine",
+          type: "korektivni",
+          title: "Test",
+          priority: "p3_manje",
+        } as never),
+      ).rejects.toThrow(UnprocessableEntityException);
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it("createWorkOrder na AKTIVNOM sredstvu i dalje prolazi (guard ne lomi normalan tok)", async () => {
+      const create = jest.fn().mockResolvedValue({ woId: "w1" });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintAsset: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({ archivedAt: null, name: "Presa 100t" }),
+          updateMany: jest.fn(),
+        },
+        maintWorkOrder: { create, count: jest.fn().mockResolvedValue(0) },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.createWorkOrder("sef@servoteh.com", {
+        clientEventId: "3b241101-e2bb-4255-8caf-4136c566a963",
+        assetId: ASSET,
+        assetType: "machine",
+        type: "korektivni",
+        title: "Test",
+        priority: "p3_manje",
+      } as never);
+      expect(create).toHaveBeenCalledTimes(1);
     });
   });
 });

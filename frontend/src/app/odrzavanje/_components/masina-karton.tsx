@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Download, FileWarning,
+  AlertCircle, Archive, ArrowLeft, ChevronDown, ChevronRight, Download, FileWarning,
   Pencil, Pin, Plus, Trash2, Upload, Wrench,
 } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
@@ -15,7 +15,6 @@ import { formatDate, formatDateTime } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
   signMachineFileUrl,
-  useArchiveMachine,
   useAssignableUsers,
   useClearStatusOverride,
   useCreateCheck,
@@ -30,8 +29,10 @@ import {
   useMachineFiles,
   useMachineNotes,
   useMachineTasks,
+  useOtpisMachine,
   useRenameMachine,
   useRestoreMachine,
+  useWorkOrders,
   useSetStatusOverride,
   useUpdateMachine,
   useUpdateMachineFile,
@@ -153,8 +154,8 @@ export function MasinaKarton({ code, me }: { code: string; me: MaintMe | undefin
 
           {d.archivedAt && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm text-ink">
-              <span className="flex items-center gap-2"><AlertCircle className="h-4 w-4 text-status-warn" aria-hidden /> Mašina je ARHIVIRANA ({formatDate(d.archivedAt)}).</span>
-              {canManage && <Button variant="secondary" onClick={() => restore.mutate({ code }, { onSuccess: () => toast('Mašina vraćena iz arhive') })}>Vrati iz arhive</Button>}
+              <span className="flex items-center gap-2"><AlertCircle className="h-4 w-4 text-status-warn" aria-hidden /> Mašina je OTPISANA ({formatDate(d.archivedAt)}) — nije u upotrebi. Karton i istorija ostaju dostupni.</span>
+              {canManage && <Button variant="secondary" onClick={() => restore.mutate({ code }, { onSuccess: () => toast('Mašina vraćena u upotrebu') })}>Vrati u upotrebu</Button>}
             </div>
           )}
 
@@ -290,25 +291,84 @@ function MachineAdmin({ code, d, onEdit, filesCount }: {
   code: string; d: MachineDetail; onEdit: () => void; filesCount: number;
 }) {
   const rename = useRenameMachine();
-  const archive = useArchiveMachine();
   const restore = useRestoreMachine();
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [otpisujem, setOtpisujem] = useState(false);
 
   return (
     <div className="flex flex-wrap gap-2 rounded-panel border border-line p-3">
       <Button variant="secondary" onClick={onEdit}>Uredi podatke</Button>
       <Button variant="secondary" onClick={() => setRenaming(true)}>Preimenuj šifru</Button>
       {d.archivedAt ? (
-        <Button variant="secondary" onClick={() => restore.mutate({ code }, { onSuccess: () => toast('Vraćeno iz arhive') })}>Vrati iz arhive</Button>
+        <Button variant="secondary" onClick={() => restore.mutate({ code }, { onSuccess: () => toast('Mašina vraćena u upotrebu') })}>Vrati u upotrebu</Button>
       ) : (
-        <Button variant="secondary" onClick={() => archive.mutate({ code }, { onSuccess: () => toast('Mašina arhivirana') })}>Arhiviraj</Button>
+        <Button variant="secondary" onClick={() => setOtpisujem(true)}><Archive className="h-4 w-4" aria-hidden /> Otpiši mašinu</Button>
       )}
       <Button variant="danger" className="ml-auto" onClick={() => setDeleting(true)}><Trash2 className="h-4 w-4" aria-hidden /> Trajno obriši</Button>
 
       {renaming && <RenameDialog code={code} rename={rename} onClose={() => setRenaming(false)} />}
+      {otpisujem && <OtpisDialog code={code} name={d.name} assetId={d.assetId} onClose={() => setOtpisujem(false)} />}
       {deleting && <HardDeleteDialog code={code} name={d.name} filesCount={filesCount} onClose={() => setDeleting(false)} />}
     </div>
+  );
+}
+
+/**
+ * Otpis mašine (zahtev 037/26). Namerno NIJE `confirm()` nego pun dijalog: razlog je
+ * obavezan (ide u obaveštenje šefu proizvodnje i u `archive_reason`), a korisnik pre
+ * potvrde mora da vidi da mašina OSTAJE u sistemu (arhivira se, ne briše) i koliko
+ * otvorenih radnih naloga treba preraspodeliti. Obrazac = `HardDeleteDialog`.
+ */
+function OtpisDialog({ code, name, assetId, onClose }: {
+  code: string; name: string; assetId: string; onClose: () => void;
+}) {
+  const otpis = useOtpisMachine();
+  const [reason, setReason] = useState('');
+  const [confirm, setConfirm] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // Otvoreni nalozi na ovoj mašini — `openOnly` je BE default ON.
+  const openQ = useWorkOrders({ assetId, pageSize: 100 });
+  const openCount = openQ.data?.data.length ?? 0;
+  const ok = reason.trim().length >= 5 && confirm;
+
+  return (
+    <Dialog open onClose={onClose} title="Otpis mašine"
+      footer={<><Button variant="ghost" onClick={onClose}>Otkaži</Button>
+        <Button loading={otpis.isPending} disabled={!ok} onClick={() => {
+          setErr(null);
+          otpis.mutate({ code, reason: reason.trim() }, {
+            onSuccess: () => { toast('Mašina otpisana — šef proizvodnje je obavešten'); onClose(); },
+            onError: (e) => setErr((e as Error).message),
+          });
+        }}>Otpiši mašinu</Button></>}>
+      <div className="space-y-3">
+        {err && <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">{err}</p>}
+        <div className="flex items-start gap-2 rounded-control bg-status-warn-bg px-3 py-2 text-sm text-ink">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-status-warn" aria-hidden />
+          <span>
+            <strong>{code} · {name}</strong> se izbacuje iz upotrebe. Mašina se <strong>NE briše</strong> —
+            arhivira se, pa karton i cela istorija (kontrole, kvarovi, nalozi, napomene, dokumenta) ostaju
+            dostupni. Prestaje da se nudi pri otvaranju novih naloga i prijavi kvara. Otpis se može poništiti
+            dugmetom „Vrati u upotrebu".
+          </span>
+        </div>
+        {openCount > 0 && (
+          <div className="flex items-start gap-2 rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <span>Mašina ima <strong>{openCount}</strong> otvorenih radnih naloga. Šef proizvodnje dobija
+              obaveštenje sa njihovim spiskom da ih preraspodeli na druge mašine.</span>
+          </div>
+        )}
+        <FormField label="Razlog otpisa (min 5 znakova)" required hint="Vidi ga šef proizvodnje u obaveštenju i ostaje zapisan uz mašinu.">
+          <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Npr. rashodovana — neisplativa popravka" />
+        </FormField>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+          <input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} />
+          Potvrđujem otpis i obaveštavanje šefa proizvodnje.
+        </label>
+      </div>
+    </Dialog>
   );
 }
 
@@ -362,7 +422,7 @@ function HardDeleteDialog({ code, name, filesCount, onClose }: { code: string; n
         {err && <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">{err}</p>}
         <div className="flex items-start gap-2 rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-          <span>Trajno se briše <strong>{code} · {name}</strong> sa celom istorijom (kontrole, kvarovi, nalozi, napomene) i <strong>{filesCount}</strong> dokumenata. Radnja je nepovratna — razmotrite arhiviranje.</span>
+          <span>Trajno se briše <strong>{code} · {name}</strong> sa celom istorijom (kontrole, kvarovi, nalozi, napomene) i <strong>{filesCount}</strong> dokumenata. Radnja je nepovratna — razmotrite otpis (mašina ostaje sa istorijom).</span>
         </div>
         <FormField label="Razlog (min 5 znakova)" required><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Zašto se trajno briše" /></FormField>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">

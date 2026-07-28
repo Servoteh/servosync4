@@ -329,6 +329,15 @@ export class ArchiveAssetDto {
   @IsString() @MinLength(1) @MaxLength(500) reason!: string;
 }
 
+/**
+ * Otpis mašine (zahtev 037/26). Razlog je OBAVEZAN i min 5 znakova — kao kod
+ * `DeleteHardDto`, a ne kao kod `ArchiveAssetDto` (min 1): otpis je trajna
+ * poslovna odluka koja ide u obaveštenje šefu proizvodnje, pa „x" nije razlog.
+ */
+export class OtpisMachineDto {
+  @IsString() @MinLength(5) @MaxLength(500) reason!: string;
+}
+
 /** PUT upsert details (vozilo/IT/objekat) — service allowlist-uje kolone iz `details`. */
 export class DetailsUpsertDto {
   @IsObject() details!: Record<string, unknown>;

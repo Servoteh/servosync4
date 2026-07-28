@@ -1136,8 +1136,9 @@ export function useOdrMutate<V extends object>(
 export const useCreateMachine = () => useOdrCreate<Record<string, unknown>>(`${BASE}/machines`);
 export const useUpdateMachine = () =>
   useOdrMutate<{ code: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}`, (v) => v.patch);
-export const useArchiveMachine = () =>
-  useOdrMutate<{ code: string }>('POST', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/archive`);
+/** Otpis mašine (037/26) — arhivira je (istorija ostaje) i obaveštava šefa proizvodnje. */
+export const useOtpisMachine = () =>
+  useOdrMutate<{ code: string; reason: string }>('POST', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/otpis`, (v) => ({ reason: v.reason }));
 export const useRestoreMachine = () =>
   useOdrMutate<{ code: string }>('POST', (v) => `${BASE}/machines/${encodeURIComponent(v.code)}/restore`);
 export const useRenameMachine = () =>
