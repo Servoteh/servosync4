@@ -91,6 +91,14 @@ export const PERMISSIONS = {
   ZR_COMPUTE: 'zr.compute',
   ZR_EXPORT: 'zr.export',
   DIRECTORY_READ: 'directory.read',
+  // Matični podaci (artikli + komitenti) — UPIS. Mirror BE kataloga (28.07.2026).
+  // Čitanje oba šifarnika ide na `directory.read` iznad; ovaj ključ nosi samo
+  // mutacije (POST/PATCH /v1/artikli i /v1/komitenti).
+  // ⚠️ Ključ NE znači da je unos otvoren: backend obe rute i dalje odbija sa 409
+  // (`CUSTOMERS_WRITE_OPEN=false`, `ITEMS_WRITE_OPEN=false`). Navigacija za
+  // /artikli i /komitenti zato ostaje na DIRECTORY_READ — ovo je za dugmad
+  // „Sačuvaj"/„Novi", da `can()` na dan otvaranja odmah kaže istinu.
+  MASTERS_WRITE: 'masters.write',
   // RFQ kupca — 4.0-native (mirror backend kataloga).
   // `projects.write` je uklonjen 26.07.2026: komitente i predmete vodi BigBit,
   // ServoSync ih samo čita (nema više write ekrana ni dugmadi).

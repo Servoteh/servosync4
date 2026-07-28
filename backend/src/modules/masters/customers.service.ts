@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -8,8 +9,10 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { byId, uniqueIds } from "../../common/relations";
-import { alignIdSequence } from "../../common/db-sequences";
-import { rejectCustomerWrite } from "../directory/bigbit-owned";
+import {
+  BigBitOwnedDataException,
+  rejectCustomerWrite,
+} from "../directory/bigbit-owned";
 import type { AuthUser } from "../auth/jwt.strategy";
 import type { ListCustomersQuery } from "./dto/list-customers.dto";
 import {
@@ -20,6 +23,7 @@ import {
 } from "./dto/upsert-customer.dto";
 import {
   assertTaxIdAcceptable,
+  describeCustomer,
   duplicateTaxIdWarning,
   isDriverCodeType,
   isPlaceholderTaxId,
@@ -62,21 +66,36 @@ const PAYMENT_ACCOUNT_SELECT = {
  * 26.07.2026, izvor teksta: `modules/directory/bigbit-owned.ts`).
  * =========================================================================
  * Unos/izmena komitenta je OVDE IMPLEMENTIRAN U CELOSTI, ali se ne izvršava dok
- * ovaj prekidač stoji na `false`. Tri uslova moraju biti ispunjena PRE otvaranja,
- * i nijedan nije u granicama ovog modula:
+ * ovaj prekidač stoji na `false`. Tri uslova su morala biti ispunjena PRE otvaranja;
+ * od 28.07.2026 su DVA TEHNIČKA REŠENA (2 i 3), pa ostaje SAMO ODLUKA VLASNIKA (1) —
+ * otvaranje je od tada jedan red, bez novih otkrića:
  *
  *   1. **Vlasnik povlači odluku od 26.07.2026.** Dok stoji, jedini pisac tabele je
  *      sync modul; poruka korisniku dolazi iz `bigbit-owned.ts` (jedan izvor teksta
  *      i za backend i za ekrane).
- *   2. **`customers` mora ući u `sync/table-ownership.ts`** (`NATIVE_COLUMN_TABLES`)
- *      sa testom koji to pinuje. Danas komitent nastao u 4.0 preživljava SLUČAJNO —
- *      zato što je `CustomerSyncer` bespoke i nikad ne briše; čim se on ukloni kao
- *      „duplikat generičkog", `full_refresh` radi `deleteMany({})` nad celom tabelom.
- *   3. **Sekvenca `customers_id_seq` mora biti klampovana IZNAD BigBit prostora
- *      ključeva** (migracija). `Customer.id` JESTE BigBit `Sifra` (PK se ne remapira),
- *      sync upisuje eksplicitne id-jeve i ne pomera sekvencu, pa bi prvi 4.0-native
- *      unos ili pao na 23505 ili tiho seo na tuđu šifru koju sledeći sync prebriše.
- *      `alignIdSequence` ispod uklanja SAMO trenutni 23505, ne i „squatter" scenario.
+ *   2. ~~`customers` mora ući u zaštićeni skup u `sync/table-ownership.ts`.~~
+ *      **REŠENO 28.07.2026** — ali DRUGIM mehanizmom nego što je ovde pisalo.
+ *      Umesto `NATIVE_COLUMN_TABLES` (koji čuva samo kolone kojih izvor NEMA, a
+ *      komitent takvih nema — mapirano je 56 od 57), `customers` je upisan u
+ *      `NATIVE_ID_RANGE_TABLES`. Zaštita je time na DVA nezavisna mesta:
+ *        • `GenericSyncer` — full refresh briše samo `id < NATIVE_ID_BASE`, pa ni
+ *          ručni `POST /sync/run` ni `force: true` ne dohvataju native prostor.
+ *          Time otpada i stara zamka „čim se bespoke syncer ukloni kao duplikat
+ *          generičkog, `deleteMany({})` pobriše sve".
+ *        • `CustomerSyncer` — izvorni red se preskače ako mu `Sifra` upada u
+ *          rezervisan opseg ILI ako 4.0 red nosi `source='NATIVE'`.
+ *      Komitent nastao u 4.0 dakle više NE preživljava slučajno, nego po pravilu
+ *      koje pinuju `table-ownership.spec.ts`, `generic.syncer.spec.ts` i
+ *      `syncers/customer.syncer.spec.ts`.
+ *   3. ~~Sekvenca `customers_id_seq` klampovana iznad BigBit prostora ključeva.~~
+ *      **REŠENO migracijom `20260728170000_maticni_native_opseg_i_poreklo`**:
+ *      sekvenca je pomerena na 899.999.999 (prvi `nextval` = 900.000.000), red je
+ *      dobio marker porekla `source`/`bb_sifra`, a granicu čuva CHECK
+ *      `chk_customers_native_id_range` (`source='NATIVE'` ⇔ `id >= 900000000`) koji
+ *      važi i u `replica` režimu sync-a. Native unos ispod te granice fizički ne
+ *      može da sedne, pa `CustomerSyncer.upsert({where:{id}})` više ne može da
+ *      prepiše 4.0-red tuđom firmom. `create()` ispod zato dodeljuje šifru IZ
+ *      NATIVE OPSEGA i upisuje `source='NATIVE'` (v. `nextNativeCustomerId`).
  *
  * Tip je namerno `boolean` (ne literal `false`) da provera ostane prava grana toka,
  * a ne mrtav kod za TypeScript.
@@ -86,6 +105,125 @@ export const CUSTOMERS_WRITE_OPEN: boolean = false;
 /** Baci 409 `BIGBIT_OWNED_READ_ONLY` dok je upis zatvoren. */
 export function assertCustomerWriteAllowed(): void {
   if (!CUSTOMERS_WRITE_OPEN) rejectCustomerWrite();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POREKLO REDA — ko sme da menja kog komitenta
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * BigBit-origin komitent se u 4.0 NE MENJA. Ekvivalent `assertItemIsNative`
+ * (`items.write-policy.ts`), ali za komitente odluku donosi MARKER, ne opseg id-a:
+ * migracija `20260728170000` je uvela `customers.source` (`BIGBIT` | `NATIVE`,
+ * NOT NULL DEFAULT `'BIGBIT'`) i `customers.bb_sifra`.
+ *
+ * ZAŠTO JE PROVERA OBAVEZNA: `CustomerSyncer` radi `upsert({ where: { id },
+ * update: <svih 56 kolona> })` — svaka izmena BigBit-reda urađena ovde preživi
+ * tačno do sledećeg uvoza, pa nestane bez greške i bez traga. To je najgori oblik
+ * kvara: ispravljen žiro račun „radi" nedeljama, a plaćanje ode na stari račun.
+ */
+
+/** Dozvoljene vrednosti `customers.source` (CHECK `chk_customers_source`). */
+export const CUSTOMER_SOURCE_BIGBIT = "BIGBIT";
+export const CUSTOMER_SOURCE_NATIVE = "NATIVE";
+
+/**
+ * Prva šifra rezervisana za komitenta nastalog u 4.0. ISTA vrednost kao
+ * `NATIVE_ITEM_ID_BASE` za artikle — jedan broj, jedno pravilo (spec pinuje
+ * jednakost). Granicu ne čuva konvencija nego CHECK `chk_customers_native_id_range`.
+ */
+export const NATIVE_CUSTOMER_ID_BASE = 900_000_000;
+
+/** `customers.id` je PG `integer` — gornja granica opsega. */
+export const NATIVE_CUSTOMER_ID_MAX = 2_147_483_647;
+
+/** Podskup kolona po kojima se određuje poreklo reda. */
+export interface CustomerOrigin {
+  id: number;
+  name?: string | null;
+  source?: string | null;
+  bbSifra?: number | null;
+}
+
+/**
+ * Da li je red nastao u 4.0.
+ *
+ * Merodavan je MARKER (`source`); opseg id-a je REZERVNI kriterijum i koristi se
+ * samo kad marker nije pročitan (stari `select` bez kolone, fixture u testu). Ta
+ * rezerva je namerno konzervativna — „ne znam" znači BigBit, nikad native: kolona je
+ * u bazi NOT NULL sa `DEFAULT 'BIGBIT'`, pa bi suprotan izbor tiho otvorio izmenu
+ * svega što neko zaboravi da selektuje.
+ */
+export function isNativeCustomer(customer: CustomerOrigin): boolean {
+  const marker = customer.source?.trim().toUpperCase();
+  if (marker === CUSTOMER_SOURCE_NATIVE) return true;
+  if (marker === CUSTOMER_SOURCE_BIGBIT) return false;
+  return customer.id >= NATIVE_CUSTOMER_ID_BASE;
+}
+
+/**
+ * Šifra pod kojom korisnik traži komitenta u BigBit-u.
+ *
+ * ⚠️ `??`, nikad `||`: `customers.id = 0` je **Servoteh d.o.o.** (sentinel na koji
+ * pokazuju svi legacy `*_id = 0`), pa mu je `bbSifra = 0` — falsy vrednost koja je
+ * ispravna šifra.
+ */
+export function bigBitSifraOf(customer: CustomerOrigin): number {
+  return customer.bbSifra ?? customer.id;
+}
+
+/** Poruka koja IMENUJE komitenta i kaže gde se ispravlja (u BigBit-u, ne ovde). */
+export function customerBigBitOriginMessage(customer: CustomerOrigin): string {
+  const sifra = bigBitSifraOf(customer);
+  const name = customer.name?.trim();
+  const who = name ? `Komitent „${name}" (šifra ${sifra})` : `Komitent ${sifra}`;
+  return (
+    `${who} vodi se u BigBit-u i ovde se ne menja. Izmena bi ostala samo do ` +
+    "sledećeg uvoza: BigBit ponovo upisuje sva polja tog komitenta, pa bi tiho " +
+    "nestala (ispravljen žiro račun bi se vratio na stari, a plaćanje otišlo na " +
+    `pogrešan račun). Ispravite komitenta u BigBit-u — „Unos komitenata", šifra ` +
+    `${sifra} — pa javite administratoru da pokrene uvoz (Sinhronizacije → ` +
+    "Pokreni sync); izmena se tada vidi i ovde."
+  );
+}
+
+/**
+ * Izmena je dozvoljena SAMO nad 4.0-native redom (isti obrazac kao
+ * `assertItemIsNative`). 409, ne 403 — nije stvar prava korisnika nego vlasništva
+ * nad podatkom; `code` je isti stabilan `BIGBIT_OWNED_READ_ONLY` koji frontend već
+ * razume, samo je tekst konkretniji (imenuje komitenta).
+ */
+export function assertCustomerIsNative(customer: CustomerOrigin): void {
+  if (!isNativeCustomer(customer))
+    throw new BigBitOwnedDataException(customerBigBitOriginMessage(customer));
+}
+
+/**
+ * Isti PIB već postoji na BigBit-redu → 409 koji UPUĆUJE NA POSTOJEĆEG komitenta.
+ *
+ * Ovo je jedino odstupanje od BigBit-ove tolerancije duplog PIB-a (§3.3, gde je
+ * duplikat samo upozorenje) i namerno je uže: BigBit duplikat unutar SVOG šifarnika
+ * bar vidi i ima izveštaj `00_FirmeSaDuplimPIBovima`, dok komitent otvoren ovde
+ * BigBit NIKAD ne vidi — promet i plaćanja bi se trajno razdvojili na dve šifre u
+ * dva sistema koja niko ne spaja. Duplikat prema drugom 4.0-native komitentu ostaje
+ * UPOZORENJE (oba reda su ovde, mogu se spojiti).
+ */
+export function bigBitTwinException(
+  taxId: string,
+  twins: ExistingTaxIdHolder[],
+): ConflictException {
+  const shown = twins.slice(0, 3).map(describeCustomer).join("; ");
+  return new ConflictException({
+    statusCode: 409,
+    error: "Conflict",
+    code: "KOMITENT_VEC_POSTOJI",
+    message:
+      `PIB ${taxId} već vodi komitent iz BigBit-a: ${shown}. Otvorite postojećeg ` +
+      "komitenta umesto unosa novog — dupla šifra bi razdvojila promet i plaćanja " +
+      "na dva mesta, a BigBit ih ne bi spojio. Ako je ovo stvarno drugo pravno lice " +
+      "sa istim PIB-om, unesite ga u BigBit-u pa javite administratoru da pokrene " +
+      "uvoz (Sinhronizacije → Pokreni sync).",
+    taxId,
+  });
 }
 
 /** Podrazumevana vrsta šifre (`Komitenti.Vrsta sifre` je NOT NULL u originalu). */
@@ -201,9 +339,10 @@ export class MasterCustomersService {
    *   2. zaključano polje `paymentMethod` → 403
    *   3. PIB polu-tvrda brana       → 422 `PIB_NIJE_DOBAR` (BigBit dijalog)
    *   4. FK provere                 → 422 sa imenovanom vrednošću
-   *   5. meka upozorenja (GLN/računi/dupli PIB) — ne obaraju zahtev
-   *   6. **BRANA UPISA**            → 409 `BIGBIT_OWNED_READ_ONLY` (danas uvek)
-   *   7. upis u transakciji
+   *   5. PIB već postoji na BigBit-redu → 409 `KOMITENT_VEC_POSTOJI` (imenuje ga)
+   *   6. meka upozorenja (GLN/računi/dupli native PIB) — ne obaraju zahtev
+   *   7. **BRANA UPISA**            → 409 `BIGBIT_OWNED_READ_ONLY` (danas uvek)
+   *   8. upis u transakciji, šifra iz NATIVE opsega + `source='NATIVE'`
    *
    * Provere idu PRE brane da bi klijent koji sprema podatak dobio tačnu grešku
    * (npr. „PIB nije dobar") umesto da mu se tek u BigBit-u ispostavi da je pogrešan.
@@ -232,6 +371,7 @@ export class MasterCustomersService {
     });
 
     await this.assertReferences(data);
+    await this.assertNoBigBitTwin(data.taxId ?? null, null);
 
     const upozorenja = [
       ...softValidationWarnings(data),
@@ -247,14 +387,17 @@ export class MasterCustomersService {
     const needsPlaceholder = !data.taxId;
 
     const id = await this.prisma.$transaction(async (tx) => {
-      // Sync upisuje eksplicitne id-jeve i ne pomera sekvencu → poravnaj je pre
-      // insert-a, inače `nextval` vraća zauzetu šifru (23505). NAPOMENA: ovo NE
-      // rešava „squatter" scenario (v. `CUSTOMERS_WRITE_OPEN`, uslov 3).
-      await alignIdSequence(tx, "customers");
+      // Šifra IZ REZERVISANOG OPSEGA + `source='NATIVE'` — jedini oblik reda koji
+      // CHECK `chk_customers_native_id_range` propušta i koji `CustomerSyncer`
+      // (upsert po `id` iz BigBit prostora) ne može da pogodi. `bb_sifra` se NE
+      // upisuje: trigger `trg_customers_bb_sifra` ga za native red drži na NULL.
+      const nextId = await nextNativeCustomerId(tx);
 
       const row = await tx.customer.create({
         data: {
           ...(data as Prisma.CustomerUncheckedCreateInput),
+          id: nextId,
+          source: CUSTOMER_SOURCE_NATIVE,
           name: data.name as string,
           taxId: data.taxId ?? "",
           createdAt: now,
@@ -289,6 +432,12 @@ export class MasterCustomersService {
    *
    * PIB odluka se donosi nad SPOJENIM stanjem (staro + novo), da isključivanje
    * `skipTaxIdValidation` na već upisanom lošem PIB-u ne prođe nemo.
+   *
+   * BigBit-origin red se odbija sa 409 (`assertCustomerIsNative`) — bez toga bi
+   * izmena „radila" do sledećeg uvoza pa nestala. Provera stoji POSLE provera
+   * korisnikovog podatka (400/422) a PRE svega što se tiče upisa: ovaj modul
+   * namerno prvo objašnjava podatak („PIB nije dobar") pa tek onda stanje sistema
+   * — isti redosled pinuje `customers.service.spec.ts`, van ove granice.
    */
   async update(id: number, body: unknown, user?: AuthUser) {
     const data = validateUpdateCustomer(body);
@@ -299,6 +448,11 @@ export class MasterCustomersService {
       where: { id },
       select: {
         id: true,
+        // `name`/`source`/`bbSifra` NISU za upis nego za PORUKU i odluku o poreklu:
+        // bez njih bi provera pala na opseg id-a, a poruka ne bi imenovala komitenta.
+        name: true,
+        source: true,
+        bbSifra: true,
         taxId: true,
         skipTaxIdValidation: true,
         codeTypeCode: true,
@@ -323,6 +477,16 @@ export class MasterCustomersService {
     });
 
     await this.assertReferences(data);
+
+    // Poreklo PRE svega ostalog što se tiče upisa: za BigBit-ov red nema smisla
+    // raspravljati o duplikatu PIB-a — taj red se ovde uopšte ne menja.
+    assertCustomerIsNative(current); // ← 409 za red koji je došao iz BigBit-a
+
+    // Samo kad se PIB STVARNO menja: zatečeni duplikat ne sme da zaključa izmenu
+    // telefona (isti razlog zbog kojeg je cela PATCH semantika „proveri poslato").
+    if (data.taxId !== undefined) {
+      await this.assertNoBigBitTwin(mergedTaxId, id);
+    }
 
     const upozorenja = [
       ...softValidationWarnings(data),
@@ -417,6 +581,52 @@ export class MasterCustomersService {
     }
   }
 
+  /**
+   * PIB koji već postoji na BigBit-redu → 409 sa imenom postojećeg komitenta.
+   *
+   * Namerno ODVOJEN upit od `duplicateTaxIdWarnings`: to su dva različita pitanja
+   * („ko još ima ovaj PIB" vs. „da li ga BigBit već vodi"), a oblik upita upozorenja
+   * pinuje spec izvan ove granice, pa mu se `select` ne proširuje.
+   *
+   * Poreklo se filtrira i u bazi i u kodu (`isNativeCustomer`): filter u `where`
+   * je za performanse, odluku donosi ista funkcija koja je donosi i za izmenu —
+   * jedno pravilo, jedno mesto.
+   */
+  private async assertNoBigBitTwin(
+    taxId: string | null,
+    excludeId: number | null,
+  ): Promise<void> {
+    const value = (taxId ?? "").trim();
+    // Placeholder `XX_<šifra>` je po definiciji jedinstven po šifri, a prazan PIB
+    // nije podatak — ni jedno ni drugo nije duplikat.
+    if (value === "" || isPlaceholderTaxId(value)) return;
+
+    const rows = await this.prisma.customer.findMany({
+      where: {
+        taxId: value,
+        source: CUSTOMER_SOURCE_BIGBIT,
+        ...(excludeId !== null ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true, name: true, city: true, source: true, bbSifra: true },
+      orderBy: { id: "asc" },
+      take: 10,
+    });
+
+    const twins = rows.filter((row) => !isNativeCustomer(row));
+    if (!twins.length) return;
+
+    throw bigBitTwinException(
+      value,
+      // Poruka pokazuje BigBit šifru (`bb_sifra`), jer nju korisnik kuca u BigBit-u;
+      // za BigBit redove je jednaka `id`, ali `bb_sifra` je izvor te istine.
+      twins.map((twin) => ({
+        id: bigBitSifraOf(twin),
+        name: twin.name,
+        city: twin.city,
+      })),
+    );
+  }
+
   /** Dupli PIB → UPOZORENJE koje imenuje zatečene komitente (§3.3 — nije brana). */
   private async duplicateTaxIdWarnings(
     taxId: string | null,
@@ -479,6 +689,43 @@ export class MasterCustomersService {
       })) ?? null
     );
   }
+}
+
+/**
+ * Sledeća šifra iz NATIVE opsega — `MAX(id) + 1` UNUTAR opsega, pod
+ * `pg_advisory_xact_lock` (bez brave dve paralelne transakcije dobiju isti broj;
+ * isti obrazac kao `nextNativeItemId` za artikle).
+ *
+ * ZAŠTO NE `nextval`: migracija `20260728170000` jeste pomerila `customers_id_seq`
+ * na 899.999.999, ali sekvenca nije otporna na restore/`setval` iz nekog drugog
+ * posla, a `alignIdSequence` (koji je ovde ranije stajao) bi je VRATIO na
+ * `MAX(id)` ≈ 1.006.067 — pravo u BigBit prostor. Računica iz opsega ne zavisi ni
+ * od jednog takvog stanja, a CHECK u bazi ostaje poslednja odbrana.
+ *
+ * `::int` kastovi su obavezni: bez njih Prisma vezuje JS broj kao `bigint`, pa
+ * izraz pređe u `bigint` i vrati `BigInt` (isto kao kod artikala).
+ */
+async function nextNativeCustomerId(
+  tx: Prisma.TransactionClient,
+): Promise<number> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('customers_native_id'))`;
+  const rows = await tx.$queryRaw<{ next_id: number | bigint }[]>`
+    SELECT COALESCE(MAX(id), ${NATIVE_CUSTOMER_ID_BASE - 1}::int) + 1 AS next_id
+    FROM customers
+    WHERE id >= ${NATIVE_CUSTOMER_ID_BASE}::int`;
+
+  const next = Number(rows[0]?.next_id ?? NATIVE_CUSTOMER_ID_BASE);
+  if (!Number.isInteger(next) || next < NATIVE_CUSTOMER_ID_BASE)
+    throw new Error(`Neispravna šifra iz native opsega: ${String(next)}`);
+  if (next > NATIVE_CUSTOMER_ID_MAX)
+    throw new UnprocessableEntityException({
+      statusCode: 422,
+      error: "Unprocessable Entity",
+      code: "OPSEG_SIFARA_POPUNJEN",
+      message:
+        "Opseg šifara za komitente unete u ServoSync-u je popunjen — javite administratoru.",
+    });
+  return next;
 }
 
 /** `{ code, description }`; kod bez reda u šifarniku → `description: null`. */

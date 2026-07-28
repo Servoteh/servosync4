@@ -381,7 +381,9 @@ export class PricingService {
 
   /**
    * Bazna cena: PriceListEntry.priceWithoutVat po (itemId, šifra cenovnika) →
-   * fallback Item.wholesalePrice (Float → Decimal na granici) → 0, uz poreklo.
+   * fallback Item.wholesalePrice → 0, uz poreklo. `wholesalePrice` je Decimal u šemi
+   * (migracija Float → Decimal), pa `toDecimal` ovde samo propušta vrednost dalje —
+   * novac nikad ne prolazi kroz Float.
    *
    * NAPOMENA (§4.3): BigBit redosled je „poslednja kalkulacija za magacin → prosečna
    * nabavna → cenovnik", i put „cena iz artikla" je namerno ugašen 2009. Ovde je i dalje
@@ -391,7 +393,7 @@ export class PricingService {
   private async resolveBasePrice(
     itemId: number | null | undefined,
     priceListKey: string | null | undefined,
-    item: { wholesalePrice: number | null } | null,
+    item: { wholesalePrice: Prisma.Decimal | null } | null,
   ): Promise<{ price: Prisma.Decimal; source: PriceSource }> {
     if (itemId != null) {
       const entry = await this.prisma.priceListEntry.findFirst({

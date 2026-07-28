@@ -24,6 +24,7 @@ import {
   isCatalogDuplicateError,
   NATIVE_ITEM_ID_BASE,
   NATIVE_ITEM_ID_MAX,
+  NATIVE_ITEM_SOURCE,
 } from "./items.write-policy";
 import type { AuthUser } from "../auth/jwt.strategy";
 
@@ -173,6 +174,15 @@ export class ItemsService {
           data: {
             ...columns,
             id,
+            // MARKER POREKLA — bez njega upis fizički ne prolazi.
+            // `chk_items_native_id_range` traži `(source='NATIVE') = (id >= 900000000)`,
+            // a kolona ima DB default `'BIGBIT'`. Red se pravi sa id-jem iz native
+            // opsega, pa bi bez ovog polja CHECK bio prekršen i baza vratila 23514 —
+            // koji `runGuarded` ne prepoznaje (hvata samo duplikat kataloškog broja),
+            // pa bi korisnik dobio 500 sa sirovim engleskim tekstom baze. Dakle: unos
+            // ne bi radio NIJEDNOM, i to tek na dan preklapanja prekidača.
+            // (Adversarni pregled 28.07.2026, KRITIČNO — dokazano izvršavanjem.)
+            source: NATIVE_ITEM_SOURCE,
             // 0 = „nema BigBit porekla" (`BBSifra artikla` ne postoji za native red).
             externalItemId: 0,
             signature: signatureFor(user),
@@ -209,14 +219,20 @@ export class ItemsService {
     const columns = toItemColumns(dto);
     applyRasterWeight(columns, dto, existing.thickness ?? null);
     // `PotpisArt` — ko je poslednji dirao slog (BigBit `PotpisiArt`, §4.8).
-    // Vremena izmene nema gde da se upiše: `items` nosi samo `created_at`
-    // (traži migraciju — v. ITEM_FIELDS_REQUIRING_MIGRATION).
     columns.signature = signatureFor(user);
 
     await this.runGuarded(catalogNumber ?? existing.catalogNumber, () =>
       this.prisma.item.update({
         where: { id },
-        data: columns as unknown as Prisma.ItemUncheckedUpdateInput,
+        data: {
+          ...(columns as unknown as Prisma.ItemUncheckedUpdateInput),
+          // TRAG IZMENE. Kolone su stigle migracijom 20260728170000; bez ovog
+          // upisa stajale bi prazne, a kod bi tvrdio trag koji ne postoji — što
+          // je gore nego da ih nema, jer se na njih računa pri svakom pitanju
+          // „ko je ovo promenio". Vreme je vreme UPISA (server), ne sa ekrana.
+          updatedAt: new Date(),
+          updatedBy: signatureFor(user),
+        },
         select: { id: true },
       }),
     );

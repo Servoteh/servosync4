@@ -162,68 +162,174 @@ model Notification {
 
 /// Was: Komitenti
 model Customer {
-  id                         Int          @id(map: "pk_customers") @default(autoincrement()) @map("id")
-  name                       String       @map("name") @db.VarChar(50)
-  branch                     String?      @map("branch") @db.VarChar(50)
-  city                       String?      @map("city") @db.VarChar(30)
-  address                    String?      @map("address") @db.VarChar(50)
-  postalCode                 String?      @map("postal_code") @db.VarChar(20)
-  bankAccount1               String?      @map("bank_account_1") @db.VarChar(30)
-  bankAccount2               String?      @map("bank_account_2") @db.VarChar(30)
-  bankAccount3               String?      @map("bank_account_3") @db.VarChar(30)
-  phone                      String?      @map("phone") @db.VarChar(20)
-  fax                        String?      @map("fax") @db.VarChar(20)
-  contact                    String?      @map("contact") @db.VarChar(50)
-  note                       String?      @map("note")
-  country                    String?      @map("country") @db.VarChar(30)
-  region                     Int?         @default(0) @map("region")
-  codeTypeCode               String?      @default("KUPDOB") @map("code_type_code") @db.VarChar(10)
-  email                      String?      @map("email") @db.VarChar(50)
-  mobile                     String?      @map("mobile") @db.VarChar(20)
-  birthDate                  DateTime?    @map("birth_date") @db.Timestamp(6)
-  webAddress                 String?      @map("web_address") @db.VarChar(50)
-  salespersonId              Int?         @default(0) @map("salesperson_id")
-  customerDiscount           Float?       @default(0) @map("customer_discount")
-  buyerProtectionCode        String?      @map("buyer_protection_code") @db.VarChar(50)
-  taxId                      String       @map("tax_id") @db.VarChar(20)
-  vatStatus                  Int?         @default(0) @map("vat_status")
-  externalCode               String?      @map("external_code") @db.VarChar(10)
-  paymentTermDays            Int?         @default(0) @map("payment_term_days") @db.SmallInt
-  routeId                    Int?         @default(0) @map("route_id")
-  driverId                   Int?         @default(0) @map("driver_id")
-  paymentAccountId           Int?         @default(0) @map("payment_account_id")
-  invoicePerDeliveryAddress  Boolean?     @default(true) @map("invoice_per_delivery_address")
-  priceListCode              String?      @map("price_list_code") @db.VarChar(5)
-  createdAt                  DateTime?    @map("created_at") @db.Timestamp(6)
-  updatedAt                  DateTime?    @map("updated_at") @db.Timestamp(6)
-  createdBy                  String?      @map("created_by") @db.VarChar(20)
-  updatedBy                  String?      @map("updated_by") @db.VarChar(20)
-  commissionPercent          Float?       @default(0) @map("commission_percent")
-  fictitiousDiscount         Float?       @default(0) @map("fictitious_discount")
-  paymentMethod              String?      @map("payment_method") @db.VarChar(50)
-  signature                  String?      @map("signature") @db.VarChar(50)
-  shortName                  String?      @map("short_name") @db.VarChar(30)
-  recordCreatedAt            DateTime?    @default(now()) @map("record_created_at") @db.Timestamp(6)
-  checkDebt                  Boolean?     @default(false) @map("check_debt")
-  creditLimit                Decimal?     @default(0) @map("credit_limit") @db.Decimal(19, 4)
-  skipTaxIdValidation        Boolean?     @default(false) @map("skip_tax_id_validation")
-  pantheonId                 String?      @map("pantheon_id") @db.VarChar(30)
-  newsletter                 Boolean?     @default(false) @map("newsletter")
-  mailToDifferentAddress     Boolean?     @default(false) @map("mail_to_different_address")
-  gln                        String?      @map("gln") @db.VarChar(30)
-  manualMarkupPercent        Decimal?     @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
-  balanceNote                String?      @map("balance_note")
-  hideInOverview             Boolean?     @default(false) @map("hide_in_overview")
-  publicSectorId             String?      @map("public_sector_id") @db.VarChar(10)
-  registrationNumber         String?      @map("registration_number") @db.VarChar(20)
-  einvoiceXmlPerItemDiscount Boolean?     @default(false) @map("einvoice_xml_per_item_discount")
-  centralInvoiceRegistry     Boolean?     @default(false) @map("central_invoice_registry")
-  salesperson                Salesperson? @relation(fields: [salespersonId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_salespeople")
-  driver                     Customer?    @relation("CustomerDriver", fields: [driverId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_driver")
-  customersWithThisDriver    Customer[]   @relation("CustomerDriver")
-  codeType                   CodeType?    @relation(fields: [codeTypeCode], references: [code], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_code_types")
+  id                         Int       @id(map: "pk_customers") @default(autoincrement()) @map("id")
+  name                       String    @map("name") @db.VarChar(50)
+  branch                     String?   @map("branch") @db.VarChar(50)
+  city                       String?   @map("city") @db.VarChar(30)
+  address                    String?   @map("address") @db.VarChar(50)
+  postalCode                 String?   @map("postal_code") @db.VarChar(20)
+  bankAccount1               String?   @map("bank_account_1") @db.VarChar(30)
+  bankAccount2               String?   @map("bank_account_2") @db.VarChar(30)
+  bankAccount3               String?   @map("bank_account_3") @db.VarChar(30)
+  phone                      String?   @map("phone") @db.VarChar(20)
+  fax                        String?   @map("fax") @db.VarChar(20)
+  contact                    String?   @map("contact") @db.VarChar(50)
+  note                       String?   @map("note")
+  country                    String?   @map("country") @db.VarChar(30)
+  region                     Int?      @default(0) @map("region")
+  codeTypeCode               String?   @default("KUPDOB") @map("code_type_code") @db.VarChar(10)
+  email                      String?   @map("email") @db.VarChar(50)
+  mobile                     String?   @map("mobile") @db.VarChar(20)
+  birthDate                  DateTime? @map("birth_date") @db.Timestamp(6)
+  webAddress                 String?   @map("web_address") @db.VarChar(50)
+  salespersonId              Int?      @default(0) @map("salesperson_id")
+  customerDiscount           Float?    @default(0) @map("customer_discount")
+  buyerProtectionCode        String?   @map("buyer_protection_code") @db.VarChar(50)
+  taxId                      String    @map("tax_id") @db.VarChar(20)
+  vatStatus                  Int?      @default(0) @map("vat_status")
+  externalCode               String?   @map("external_code") @db.VarChar(10)
+  paymentTermDays            Int?      @default(0) @map("payment_term_days") @db.SmallInt
+  routeId                    Int?      @default(0) @map("route_id")
+  driverId                   Int?      @default(0) @map("driver_id")
+  paymentAccountId           Int?      @default(0) @map("payment_account_id")
+  invoicePerDeliveryAddress  Boolean?  @default(true) @map("invoice_per_delivery_address")
+  priceListCode              String?   @map("price_list_code") @db.VarChar(5)
+  createdAt                  DateTime? @map("created_at") @db.Timestamp(6)
+  updatedAt                  DateTime? @map("updated_at") @db.Timestamp(6)
+  createdBy                  String?   @map("created_by") @db.VarChar(20)
+  updatedBy                  String?   @map("updated_by") @db.VarChar(20)
+  commissionPercent          Float?    @default(0) @map("commission_percent")
+  fictitiousDiscount         Float?    @default(0) @map("fictitious_discount")
+  paymentMethod              String?   @map("payment_method") @db.VarChar(50)
+  signature                  String?   @map("signature") @db.VarChar(50)
+  shortName                  String?   @map("short_name") @db.VarChar(30)
+  recordCreatedAt            DateTime? @default(now()) @map("record_created_at") @db.Timestamp(6)
+  checkDebt                  Boolean?  @default(false) @map("check_debt")
+  creditLimit                Decimal?  @default(0) @map("credit_limit") @db.Decimal(19, 4)
+  skipTaxIdValidation        Boolean?  @default(false) @map("skip_tax_id_validation")
+  pantheonId                 String?   @map("pantheon_id") @db.VarChar(30)
+  newsletter                 Boolean?  @default(false) @map("newsletter")
+  mailToDifferentAddress     Boolean?  @default(false) @map("mail_to_different_address")
+  gln                        String?   @map("gln") @db.VarChar(30)
+  manualMarkupPercent        Decimal?  @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
+  balanceNote                String?   @map("balance_note")
+  hideInOverview             Boolean?  @default(false) @map("hide_in_overview")
+  publicSectorId             String?   @map("public_sector_id") @db.VarChar(10)
+  registrationNumber         String?   @map("registration_number") @db.VarChar(20)
+  einvoiceXmlPerItemDiscount Boolean?  @default(false) @map("einvoice_xml_per_item_discount")
+  centralInvoiceRegistry     Boolean?  @default(false) @map("central_invoice_registry")
+
+  /// BigBit `KoristiPNBZadModel` — 57. kolona originala, jedina koju šema do
+  /// 28.07.2026 nije nosila. ⚠️ `customer.syncer.ts` je još ne čita iz izvora.
+  usesPaymentReferenceModel Boolean @default(false) @map("uses_payment_reference_model")
+
+  /// OZNAKA POREKLA (20260728170000). `BIGBIT` = matični podatak kojim vlada
+  /// BigBit (READ-ONLY u 4.0) | `NATIVE` = red nastao u 4.0. Default je namerno
+  /// `BIGBIT`: pisac koji za kolonu ne zna (npr. `customer.syncer.ts`, koji
+  /// mapira 56 kolona) ne sme da proizvede izmenjiv red.
+  /// DB brana `chk_customers_native_id_range`: `NATIVE` ⇔ `id >= 900000000`.
+  source String @default("BIGBIT") @map("source") @db.VarChar(10)
+
+  /// BigBit `Komitenti.Sifra` ovog reda; NULL = nastalo u 4.0. Za BigBit redove
+  /// jednako `id` (PK se NE remapira — BIGBIT_KOMITENTI.md §5.1) i popunjava ga
+  /// trigger `trg_customers_bb_sifra` (ENABLE ALWAYS), pa syncer ostaje netaknut.
+  /// Kad 4.0 jednom bude čitao BigBit direktno, upsert ključa OVDE, ne na `id`.
+  bbSifra Int? @unique(map: "uq_customers_bb_sifra") @map("bb_sifra")
+
+  salesperson             Salesperson?               @relation(fields: [salespersonId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_salespeople")
+  driver                  Customer?                  @relation("CustomerDriver", fields: [driverId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_driver")
+  customersWithThisDriver Customer[]                 @relation("CustomerDriver")
+  codeType                CodeType?                  @relation(fields: [codeTypeCode], references: [code], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_code_types")
+  contacts                CustomerContact[]
+  deliveryLocations       CustomerDeliveryLocation[]
 
   @@map("customers")
+}
+
+/// Was: KomitentiKontaktOsobe (BigBit, 1:N uz komitenta)
+///
+/// 4.0-NATIVE TABELA. BigBit je ima u originalu, ali je NE šalje kroz QBigTehn
+/// kopiju kroz koju ide sync — NE dodavati je ni u `sync-map.generated.ts` ni u
+/// dedicated syncer. Zato nema kolonu `source`: svaki red je po definiciji 4.0.
+///
+/// `Customer.contact` je jedan string od 50 znakova; komitent sa više kontakata
+/// (nabavka, knjigovodstvo, direktor) je do sada gubio sve sem jednog.
+model CustomerContact {
+  id          Int       @id(map: "pk_customer_contacts") @default(autoincrement()) @map("id")
+  customerId  Int       @map("customer_id")
+  contactName String    @map("contact_name") @db.VarChar(50)
+  phone       String?   @map("phone") @db.VarChar(20)
+  fax         String?   @map("fax") @db.VarChar(20)
+  mobile      String?   @map("mobile") @db.VarChar(20)
+  email       String?   @map("email") @db.VarChar(50)
+  birthDate   DateTime? @map("birth_date") @db.Timestamp(6)
+  /// Podrazumevana kontakt osoba. SQL-only parcijalni uniq indeks
+  /// `uq_customer_contacts_default` (`ON (customer_id) WHERE is_default`) drži
+  /// najviše JEDNU po komitentu — Prisma parcijalne indekse ne ume da opiše.
+  isDefault   Boolean   @default(false) @map("is_default")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime? @map("updated_at") @db.Timestamp(6)
+  createdBy String?   @map("created_by") @db.VarChar(50)
+  updatedBy String?   @map("updated_by") @db.VarChar(50)
+
+  /// `Restrict` je svesno (ne `Cascade`): ovaj paket postoji zbog TIHOG gubitka
+  /// podataka — brisanje komitenta sa kontaktima treba da padne glasno.
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "fk_customer_contacts_customer")
+
+  @@index([customerId], map: "idx_customer_contacts_customer")
+  @@map("customer_contacts")
+}
+
+/// Was: MestaIsporuke (BigBit, 1:N uz komitenta)
+///
+/// 4.0-NATIVE TABELA — isto kao `CustomerContact`: BigBit je ne šalje kroz našu
+/// kopiju baze, NE dodavati je ni u kakav sync.
+///
+/// `Customer.invoicePerDeliveryAddress` je do sada bio SAMO flag („fakturiši po
+/// mestima isporuke") bez ijednog modelovanog mesta. Mesto nosi SOPSTVENI GLN
+/// (SEF e-faktura ide na GLN lokacije), sopstveni uplatni račun i sopstvenog
+/// prodavca/rutu/vozača — praktično je pod-komitent.
+model CustomerDeliveryLocation {
+  id         Int    @id(map: "pk_customer_delivery_locations") @default(autoincrement()) @map("id")
+  customerId Int    @map("customer_id")
+  name       String @map("name") @db.VarChar(50)
+  city       String @map("city") @db.VarChar(30)
+  address    String @map("address") @db.VarChar(50)
+
+  postalCode       String? @map("postal_code") @db.VarChar(20)
+  phone            String? @map("phone") @db.VarChar(20)
+  fax              String? @map("fax") @db.VarChar(20)
+  area             String? @map("area") @db.VarChar(30)
+  /// SEF e-faktura ide na GLN LOKACIJE, ne komitenta. SQL-only parcijalni uniq
+  /// `uq_customer_delivery_locations_gln` na `(customer_id, gln) WHERE gln IS NOT NULL`.
+  gln              String? @map("gln") @db.VarChar(30)
+  contractCategory String? @map("contract_category") @db.VarChar(30)
+  generalCategory  String? @map("general_category") @db.VarChar(30)
+  salesChannel     String? @map("sales_channel") @db.VarChar(30)
+  locationNumber   String? @map("location_number") @db.VarChar(20)
+
+  /// MEKE reference (bez FK, obrazac `Customer.paymentAccountId` + `common/relations.ts`):
+  /// legacy vrednosti su 0-teške, a tvrd FK bi vezao ovu 4.0-native tabelu za tuđi sync.
+  salespersonId    Int? @map("salesperson_id")
+  paymentAccountId Int? @map("payment_account_id")
+  /// Tabela ruta u 4.0 NE POSTOJI (rute se ne sinkuju) — čist broj.
+  routeId          Int? @map("route_id")
+  /// BigBit `IDVozacMestaIsporuke` — vozač je i sam komitent (meka ref na `customers.id`).
+  driverId         Int? @map("driver_id")
+  region           Int? @map("region")
+
+  active Boolean @default(true) @map("active")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime? @map("updated_at") @db.Timestamp(6)
+  createdBy String?   @map("created_by") @db.VarChar(50)
+  updatedBy String?   @map("updated_by") @db.VarChar(50)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "fk_customer_delivery_locations_customer")
+
+  @@index([customerId], map: "idx_customer_delivery_locations_customer")
+  @@map("customer_delivery_locations")
 }
 
 // ============================================================================
@@ -791,74 +897,95 @@ model Salesperson {
 
 /// Was: R_Artikli
 model Item {
-  id                      Int                      @id(map: "pk_items") @default(autoincrement()) @map("id")
-  catalogNumber           String                   @default("-") @map("catalog_number") @db.VarChar(20)
-  barCode                 String?                  @map("bar_code") @db.VarChar(50)
-  plu                     Int?                     @default(0) @map("plu")
-  externalCode            String?                  @map("external_code") @db.VarChar(20)
-  name                    String                   @map("name") @db.VarChar(50)
-  unit                    String?                  @map("unit") @db.VarChar(5)
-  packaging               String?                  @map("packaging") @db.VarChar(10)
-  foreignUnit             String?                  @map("foreign_unit") @db.VarChar(5)
-  box                     Float?                   @default(0) @map("box")
-  transportPackaging      Float?                   @default(0) @map("transport_packaging")
-  originCode              String                   @default("0") @map("origin_code") @db.VarChar(5)
-  groupCode               String                   @map("group_code") @db.VarChar(10)
-  subgroupCode            String                   @default("0") @map("subgroup_code") @db.VarChar(10)
-  goodsTaxRateCode        String                   @default("3") @map("goods_tax_rate_code") @db.VarChar(5)
-  serviceTaxRateCode      String                   @default("1") @map("service_tax_rate_code") @db.VarChar(5)
-  alwaysTaxGoods          Boolean?                 @default(true) @map("always_tax_goods")
-  alwaysTaxServices       Boolean?                 @default(false) @map("always_tax_services")
-  wholesalePrice          Float?                   @default(0) @map("wholesale_price")
-  retailPrice             Float?                   @default(0) @map("retail_price")
-  fxPurchasePrice         Float?                   @default(0) @map("fx_purchase_price")
-  fxSalePrice             Float?                   @default(0) @map("fx_sale_price")
-  minQuantity             Float?                   @default(0) @map("min_quantity")
-  itemFee                 Float?                   @default(0) @map("item_fee")
-  paymentTermDays         Int?                     @default(0) @map("payment_term_days") @db.SmallInt
-  nonTaxablePart          Float?                   @default(0) @map("non_taxable_part")
-  maxDiscountPercent      Float?                   @default(100) @map("max_discount_percent")
-  memo                    String?                  @map("memo")
-  accountingCode          String?                  @default("0") @map("accounting_code") @db.VarChar(10)
-  itemExcise              Float?                   @default(0) @map("item_excise")
-  accountingCode2         String?                  @default("0") @map("accounting_code_2") @db.VarChar(10)
-  finalProcessingCost     Float?                   @default(0) @map("final_processing_cost")
-  customsRate             Float?                   @default(0) @map("customs_rate")
-  rasterId                Int?                     @default(0) @map("raster_id")
-  customsTariff           String?                  @map("customs_tariff") @db.VarChar(20)
-  originCountry           String?                  @map("origin_country") @db.VarChar(20)
-  shelf                   String?                  @map("shelf") @db.VarChar(10)
-  foreignName             String?                  @map("foreign_name") @db.VarChar(50)
-  supplierId              Int?                     @default(1) @map("supplier_id")
-  webDescription          String?                  @map("web_description") @db.VarChar(255)
-  itemDescription         String?                  @map("item_description") @db.VarChar(50)
-  weight                  Float?                   @default(0) @map("weight")
-  pdfLink                 String?                  @map("pdf_link") @db.VarChar(255)
-  toDelete                Boolean?                 @default(false) @map("to_delete")
-  active                  Boolean?                 @default(true) @map("active")
-  priceToWritePricelist   Float?                   @default(0) @map("price_to_write_pricelist")
-  issuePlaceId            Int?                     @default(0) @map("issue_place_id")
-  manufacturer            String?                  @map("manufacturer") @db.VarChar(50)
-  hps                     String?                  @default("O") @map("hps") @db.VarChar(50)
-  signature               String?                  @map("signature") @db.VarChar(50)
-  createdAt               DateTime?                @default(now()) @map("created_at") @db.Timestamp(6)
-  quantityInPackage       Float?                   @default(1) @map("quantity_in_package")
-  manualMarkupPercent     Decimal?                 @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
-  baseUnit                String?                  @map("base_unit") @db.VarChar(5)
-  symbolImageLink         String?                  @map("symbol_image_link") @db.VarChar(250)
-  retailLossPercent       Float?                   @default(0) @map("retail_loss_percent")
-  wordLocation            String?                  @map("word_location") @db.VarChar(250)
-  wholesaleLossPercent    Float?                   @default(0) @map("wholesale_loss_percent")
-  notStockTracked         Boolean?                 @default(false) @map("not_stock_tracked")
-  weightKg                Float?                   @default(0) @map("weight_kg")
-  volume                  Float?                   @default(0) @map("volume")
-  area                    Float?                   @default(0) @map("area")
-  sortOrder               Int?                     @default(0) @map("sort_order")
-  promotionDiscount       Float?                   @default(0) @map("promotion_discount")
-  note2                   String?                  @map("note_2") @db.VarChar(255)
-  qualityTypeId           Int?                     @default(0) @map("quality_type_id")
-  thickness               Float?                   @default(0) @map("thickness")
-  externalItemId          Int                      @default(0) @map("external_item_id")
+  id                    Int       @id(map: "pk_items") @default(autoincrement()) @map("id")
+  catalogNumber         String    @default("-") @map("catalog_number") @db.VarChar(20)
+  barCode               String?   @map("bar_code") @db.VarChar(50)
+  plu                   Int?      @default(0) @map("plu")
+  externalCode          String?   @map("external_code") @db.VarChar(20)
+  name                  String    @map("name") @db.VarChar(50)
+  unit                  String?   @map("unit") @db.VarChar(5)
+  packaging             String?   @map("packaging") @db.VarChar(10)
+  foreignUnit           String?   @map("foreign_unit") @db.VarChar(5)
+  box                   Float?    @default(0) @map("box")
+  transportPackaging    Float?    @default(0) @map("transport_packaging")
+  originCode            String    @default("0") @map("origin_code") @db.VarChar(5)
+  groupCode             String    @map("group_code") @db.VarChar(10)
+  subgroupCode          String    @default("0") @map("subgroup_code") @db.VarChar(10)
+  goodsTaxRateCode      String    @default("3") @map("goods_tax_rate_code") @db.VarChar(5)
+  serviceTaxRateCode    String    @default("1") @map("service_tax_rate_code") @db.VarChar(5)
+  alwaysTaxGoods        Boolean?  @default(true) @map("always_tax_goods")
+  alwaysTaxServices     Boolean?  @default(false) @map("always_tax_services")
+  // NOVAC = Decimal(19,4), nikad Float (BACKEND_RULES). Konvertovano migracijom
+  // 20260728170000; izmereno na svih 92.511 produkcionih redova: 0 vrednosti
+  // promenjeno, 0 overflow, 0 NaN — konverzija je bila tačna.
+  wholesalePrice        Decimal?  @default(0) @map("wholesale_price") @db.Decimal(19, 4)
+  retailPrice           Decimal?  @default(0) @map("retail_price") @db.Decimal(19, 4)
+  fxPurchasePrice       Decimal?  @default(0) @map("fx_purchase_price") @db.Decimal(19, 4)
+  fxSalePrice           Decimal?  @default(0) @map("fx_sale_price") @db.Decimal(19, 4)
+  minQuantity           Float?    @default(0) @map("min_quantity")
+  itemFee               Decimal?  @default(0) @map("item_fee") @db.Decimal(19, 4)
+  paymentTermDays       Int?      @default(0) @map("payment_term_days") @db.SmallInt
+  nonTaxablePart        Decimal?  @default(0) @map("non_taxable_part") @db.Decimal(19, 4)
+  maxDiscountPercent    Float?    @default(100) @map("max_discount_percent")
+  memo                  String?   @map("memo")
+  accountingCode        String?   @default("0") @map("accounting_code") @db.VarChar(10)
+  itemExcise            Decimal?  @default(0) @map("item_excise") @db.Decimal(19, 4)
+  accountingCode2       String?   @default("0") @map("accounting_code_2") @db.VarChar(10)
+  finalProcessingCost   Decimal?  @default(0) @map("final_processing_cost") @db.Decimal(19, 4)
+  customsRate           Float?    @default(0) @map("customs_rate")
+  rasterId              Int?      @default(0) @map("raster_id")
+  customsTariff         String?   @map("customs_tariff") @db.VarChar(20)
+  originCountry         String?   @map("origin_country") @db.VarChar(20)
+  /// BigBit `Polica` je Text(20); QBigTehn kopija ju je suzila na 10 i mi smo to
+  /// nasledili. Prošireno na 20 (20260728170000) — 82 artikla na produkciji imaju
+  /// tačno 10 znakova, tj. već odsečenu vrednost (dopunjuje ih sledeći pun uvoz).
+  shelf                 String?   @map("shelf") @db.VarChar(20)
+  foreignName           String?   @map("foreign_name") @db.VarChar(50)
+  supplierId            Int?      @default(1) @map("supplier_id")
+  webDescription        String?   @map("web_description") @db.VarChar(255)
+  itemDescription       String?   @map("item_description") @db.VarChar(50)
+  weight                Float?    @default(0) @map("weight")
+  pdfLink               String?   @map("pdf_link") @db.VarChar(255)
+  toDelete              Boolean?  @default(false) @map("to_delete")
+  active                Boolean?  @default(true) @map("active")
+  priceToWritePricelist Decimal?  @default(0) @map("price_to_write_pricelist") @db.Decimal(19, 4)
+  issuePlaceId          Int?      @default(0) @map("issue_place_id")
+  manufacturer          String?   @map("manufacturer") @db.VarChar(50)
+  hps                   String?   @default("O") @map("hps") @db.VarChar(50)
+  signature             String?   @map("signature") @db.VarChar(50)
+  createdAt             DateTime? @default(now()) @map("created_at") @db.Timestamp(6)
+  quantityInPackage     Float?    @default(1) @map("quantity_in_package")
+  manualMarkupPercent   Decimal?  @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
+  baseUnit              String?   @map("base_unit") @db.VarChar(5)
+  symbolImageLink       String?   @map("symbol_image_link") @db.VarChar(250)
+  retailLossPercent     Float?    @default(0) @map("retail_loss_percent")
+  wordLocation          String?   @map("word_location") @db.VarChar(250)
+  wholesaleLossPercent  Float?    @default(0) @map("wholesale_loss_percent")
+  notStockTracked       Boolean?  @default(false) @map("not_stock_tracked")
+  weightKg              Float?    @default(0) @map("weight_kg")
+  volume                Float?    @default(0) @map("volume")
+  area                  Float?    @default(0) @map("area")
+  sortOrder             Int?      @default(0) @map("sort_order")
+  promotionDiscount     Float?    @default(0) @map("promotion_discount")
+  note2                 String?   @map("note_2") @db.VarChar(255)
+  qualityTypeId         Int?      @default(0) @map("quality_type_id")
+  thickness             Float?    @default(0) @map("thickness")
+  externalItemId        Int       @default(0) @map("external_item_id")
+
+  /// Vreme poslednje izmene IZ 4.0 (do 28.07.2026 artikal je imao samo
+  /// `createdAt`, pa `PATCH` nije ostavljao trag u vremenu). NULL = nikad menjan
+  /// iz 4.0 — BigBit izmene stižu kroz sync i ovo polje ne diraju.
+  updatedAt DateTime? @map("updated_at") @db.Timestamp(6)
+  /// Ko je poslednji menjao artikal iz 4.0 (`auditName`). Razlikuje se od
+  /// `signature` (BigBit `PotpisArt`).
+  updatedBy String?   @map("updated_by") @db.VarChar(50)
+
+  /// OZNAKA POREKLA (20260728170000) — isti obrazac i isti default kao
+  /// `Customer.source`. `externalItemId` NIJE dovoljan: 1.417 od 92.511 BigBit
+  /// artikala na produkciji ima `external_item_id = 0`.
+  /// DB brana `chk_items_native_id_range`: `NATIVE` ⇔ `id >= 900000000`.
+  source String @default("BIGBIT") @map("source") @db.VarChar(10)
+
   priceListEntries        PriceListEntry[]
   workOrderItemComponents WorkOrderItemComponent[]
 
@@ -1045,8 +1172,8 @@ model Company {
   /// a kolona nije bilo — izvozna faktura je izlazila bez podataka za plaćanje. Dužine su tačne
   /// granice standarda, ne „za svaki slučaj": IBAN 34 (ISO 13616, srpski je 22), BIC 8 ili 11
   /// (ISO 9362). Čuvati BEZ razmaka; formatiranje je posao štampe.
-  iban                      String?  @map("iban") @db.VarChar(34)
-  swift                     String?  @map("swift") @db.VarChar(11)
+  iban  String? @map("iban") @db.VarChar(34)
+  swift String? @map("swift") @db.VarChar(11)
 
   @@map("companies")
 }
@@ -4550,7 +4677,7 @@ model ChangeRequestAttachment {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6) /// soft-delete (fajl best-effort remove)
 
-  request ChangeRequest        @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
+  request ChangeRequest         @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
   comment ChangeRequestComment? @relation(fields: [commentId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_comment")
 
   @@index([requestId], map: "idx_cr_attachments_request")
@@ -4891,7 +5018,7 @@ model BbMdbDrop {
   stageError      String?   @map("stage_error")
 
   /// PENDING | DONE | FAILED — stanje koraka 2 (staging → 4.0 modeli).
-  importStatus String @default("PENDING") @map("import_status") @db.VarChar(10)
+  importStatus     String    @default("PENDING") @map("import_status") @db.VarChar(10)
   /// MUTEX uvoza. Claim je atomski CAS nad ovom kolonom, jer scheduler-ov guard
   /// („svež RUNNING mlađi od 10 min") ne pokriva uvoz koji traje duže od 10 min.
   /// Stariji od IMPORT_LOCK_STALE_HOURS = zaostao posle pada, sme da se preotme.
@@ -5187,23 +5314,23 @@ model KadrGridDayLock {
 ///         | sastanci-summary | montaza-izvestaj (String, ne enum — BACKEND_RULES §2)
 /// outcome: ok | error | fallback
 model AiUsageLog {
-  id         Int      @id(map: "pk_ai_usage_log") @default(autoincrement()) @map("id")
-  userId     Int?     @map("user_id") // null = sistemski poziv (scheduler, fire-and-forget trijaža)
-  module     String   @map("module") @db.VarChar(40)
-  provider   String   @map("provider") @db.VarChar(20) /// openai | anthropic
-  model      String   @map("model") @db.VarChar(80)
+  id               Int      @id(map: "pk_ai_usage_log") @default(autoincrement()) @map("id")
+  userId           Int?     @map("user_id") // null = sistemski poziv (scheduler, fire-and-forget trijaža)
+  module           String   @map("module") @db.VarChar(40)
+  provider         String   @map("provider") @db.VarChar(20) /// openai | anthropic
+  model            String   @map("model") @db.VarChar(80)
   /// PUN ulaz (svež + keširan). Za STT nosi AUDIO tokene iz odgovora — iz njih se
   /// izvodi stvarno trajanje snimka; null kad provajder ne vrati `usage`.
-  tokensIn   Int?     @map("tokens_in")
-  tokensOut  Int?     @map("tokens_out")
+  tokensIn         Int?     @map("tokens_in")
+  tokensOut        Int?     @map("tokens_out")
   /// Deo `tokens_in` naplaćen po keš-čitaj ceni (~0,1× ulazne) — samo Anthropic.
-  tokensCacheRead  Int? @map("tokens_cache_read")
+  tokensCacheRead  Int?     @map("tokens_cache_read")
   /// Deo `tokens_in` naplaćen po keš-upis ceni (1,25× ulazne, 5-min TTL).
-  tokensCacheWrite Int? @map("tokens_cache_write")
-  durationMs Int      @map("duration_ms") // trajanje poziva, ne dužina audija
-  outcome    String   @map("outcome") @db.VarChar(10)
-  estCostUsd Decimal? @map("est_cost_usd") @db.Decimal(10, 6) // null kad cena modela nije poznata
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tokensCacheWrite Int?     @map("tokens_cache_write")
+  durationMs       Int      @map("duration_ms") // trajanje poziva, ne dužina audija
+  outcome          String   @map("outcome") @db.VarChar(10)
+  estCostUsd       Decimal? @map("est_cost_usd") @db.Decimal(10, 6) // null kad cena modela nije poznata
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([userId, module, createdAt], map: "idx_ai_usage_log_user_module_created")
   @@index([createdAt], map: "idx_ai_usage_log_created")

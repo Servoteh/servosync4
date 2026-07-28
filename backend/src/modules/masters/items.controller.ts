@@ -38,12 +38,11 @@ import type { AuthUser } from "../auth/jwt.strategy";
  * `sync/table-ownership.ts` — v. `items.write-policy.ts` (tamo su i uslovi).
  *
  * Permisije:
- *   • čitanje = `directory.read` (isti ključ kao `DirectoryController` — isti domen);
- *   • upis    = `sync.run` (administrator matičnih podataka). NAMERNO se ne uvodi nov
- *     ključ `masters.write`: katalog permisija (`common/authz/permissions.ts`) i mapa
- *     rola su van granice ovog posla, a nov ključ koji nijedna rola nema dao bi 403
- *     umesto poruke koja objašnjava stanje. Pre puštanja unosa u rad TREBA uvesti
- *     zaseban ključ — prijavljeno u izveštaju.
+ *   • čitanje = `directory.read` (klasna, isti ključ kao `DirectoryController` — isti domen);
+ *   • upis    = `masters.write` (METHOD-LEVEL, nadjačava klasnu — `getAllAndOverride`
+ *     uzima handler pre klase). Do 28.07.2026 je upis visio na `sync.run`, što je
+ *     semantički pogrešno (to je „pokreni sinhronizaciju", admin-only) — v. obrazloženje
+ *     uz `PERMISSIONS.MASTERS_WRITE`. Krug: admin (ALL) + menadzment + nabavka_view.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.DIRECTORY_READ)
@@ -62,13 +61,13 @@ export class ItemsController {
   }
 
   @Post()
-  @RequirePermission(PERMISSIONS.SYNC_RUN)
+  @RequirePermission(PERMISSIONS.MASTERS_WRITE)
   create(@Body() dto: CreateItemDto, @Req() req: { user: AuthUser }) {
     return this.items.create(dto, req.user);
   }
 
   @Patch(":id")
-  @RequirePermission(PERMISSIONS.SYNC_RUN)
+  @RequirePermission(PERMISSIONS.MASTERS_WRITE)
   update(
     @Param("id", ParseIntPipe) id: number,
     @Body() dto: UpdateItemDto,

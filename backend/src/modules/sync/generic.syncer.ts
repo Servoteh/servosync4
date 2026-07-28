@@ -11,8 +11,11 @@ import {
 import {
   additiveDedupFieldFor,
   hasNativeColumns,
+  hasNativeIdRange,
   isAdditiveRefreshTable,
+  isNativeRow,
   isOwnedProductionTable,
+  NATIVE_ID_BASE,
   sourceFkFiltersFor,
   sourceUniqueFieldFor,
 } from './table-ownership';
@@ -30,6 +33,9 @@ import {
  *   For ADDITIVE_REFRESH_TABLES (e.g. `projects`) the wipe is narrowed to only
  *   the ids the source returned, so 2.0-native rows the source never sends are
  *   preserved (see `isAdditiveRefreshTable`).
+ *   For NATIVE_ID_RANGE_TABLES (`items`, `customers`) the wipe is narrowed to the
+ *   BigBit key space (`id < NATIVE_ID_BASE`), pa 4.0-native red ne može da nestane
+ *   ni noćnim poslom ni ručnim `POST /sync/run` (v. `hasNativeIdRange`).
  * - incremental: per-row `upsert` filtered by `PoslednjaIzmena > cursor`.
  */
 export class GenericSyncer implements EntitySyncer {
@@ -94,7 +100,41 @@ export class GenericSyncer implements EntitySyncer {
       incremental ? { cursor: new Date(options.cursor!.lastModifiedAt!) } : {},
     );
 
-    const data = rows.map((r) => this.mapRow(r));
+    let data = rows.map((r) => this.mapRow(r));
+
+    let rowsUpserted = 0;
+    let rowsSkipped = 0;
+    /** Poruke za `note` (za razliku od `errors`, `note` STIŽE u `bb_sync_log`). */
+    const notes: string[] = [];
+
+    // ── REZERVISAN OPSEG KLJUČEVA (adversarni pregled 28.07.2026, nalaz [1]/[2]) ──
+    // Izvorni red čiji `id` upada u 4.0-native opseg NE SME da uđe ni jednom
+    // granom: u full refresh-u bi `createMany` pao na `chk_*_native_id_range`
+    // (i oborio CEO chunk), a u inkrementalnoj/upsert grani bi PREGAZIO
+    // 4.0-native red tuđim podacima — tiho, jer upsert ne razlikuje poreklo.
+    // Filtrira se PRE računanja watermark-a, da preskočen red ne pomeri kursor.
+    const nativeRange = hasNativeIdRange(this.entity);
+    if (nativeRange) {
+      this.assertSingleIdPk('Zaštita rezervisanog opsega ključeva');
+      const kept: typeof data = [];
+      for (const d of data) {
+        if (isNativeRow(this.entity, d.id as number)) {
+          rowsSkipped++;
+          if (errors.length < 20)
+            errors.push(
+              `${this.pkLabel(d)}: id je u rezervisanom 4.0 opsegu (≥ ${NATIVE_ID_BASE}) — BigBit red PRESKOČEN da ne pregazi 4.0-native red (28.07)`,
+            );
+          continue;
+        }
+        kept.push(d);
+      }
+      if (kept.length !== data.length) {
+        notes.push(
+          `⚠️ ${data.length - kept.length} izvornih redova ima id iz rezervisanog 4.0 opsega (≥ ${NATIVE_ID_BASE}) — PRESKOČENI (BigBit tu šifru ne sme da koristi).`,
+        );
+        data = kept;
+      }
+    }
 
     // Track the newest watermark seen so the next run can go incremental.
     let maxModified: Date | null = options.cursor?.lastModifiedAt
@@ -106,9 +146,6 @@ export class GenericSyncer implements EntitySyncer {
         if (v && (!maxModified || v > maxModified)) maxModified = v;
       }
     }
-
-    let rowsUpserted = 0;
-    let rowsSkipped = 0;
 
     if (incremental) {
       const delegate = this.delegate();
@@ -309,6 +346,19 @@ export class GenericSyncer implements EntitySyncer {
         insertData = kept;
       }
 
+      // Koliko 4.0-native redova brisanje NEĆE dohvatiti — broji se PRE upisa da
+      // bi ušlo u `bb_sync_log` kao dokaz da je zaštita radila, a ne ćutala.
+      let nativeProtected = 0;
+      if (nativeRange) {
+        nativeProtected = await this.delegate().count({
+          where: { id: { gte: NATIVE_ID_BASE } },
+        });
+        if (nativeProtected > 0)
+          notes.push(
+            `Zaštićeno ${nativeProtected} 4.0-native redova (id ≥ ${NATIVE_ID_BASE}) — brisanje ih nije dohvatilo.`,
+          );
+      }
+
       await this.prisma.$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(
@@ -321,6 +371,12 @@ export class GenericSyncer implements EntitySyncer {
             if (deleteIds!.length > 0) {
               await del.deleteMany({ where: { id: { in: deleteIds } } });
             }
+          } else if (nativeRange) {
+            // REZERVISAN OPSEG: obriši SAMO BigBit prostor ključeva. Izvor i dalje
+            // vlada svojim redovima (pun refresh ispod granice), a 4.0-native red
+            // (id ≥ NATIVE_ID_BASE) brisanje ni ne vidi — ni noću, ni na ručni
+            // `POST /sync/run`, ni sa `force: true`.
+            await del.deleteMany({ where: { id: { lt: NATIVE_ID_BASE } } });
           } else {
             await del.deleteMany({});
           }
@@ -351,6 +407,9 @@ export class GenericSyncer implements EntitySyncer {
       rowsSkipped,
       newCursor,
       errors,
+      // `errors` NE stižu u `bb_sync_log.metadata` (SyncService prenosi samo
+      // brojeve i `note`), pa zaštita native redova mora da izveštava kroz `note`.
+      ...(notes.length ? { note: notes.join(" ") } : {}),
     };
   }
 
@@ -364,12 +423,7 @@ export class GenericSyncer implements EntitySyncer {
    * against a config mistake that would otherwise silently wipe or under-delete.
    */
   private collectSourceIds(data: Record<string, unknown>[]): number[] {
-    const pk = this.mapping.pk;
-    if (!pk || pk.kind !== 'single' || pk.field !== 'id') {
-      throw new Error(
-        `Additive refresh for ${this.entity} requires a single-field "id" PK`,
-      );
-    }
+    this.assertSingleIdPk('Additive refresh');
     const ids: number[] = [];
     for (const d of data) {
       const v = d.id;
@@ -377,6 +431,20 @@ export class GenericSyncer implements EntitySyncer {
       else if (v != null) ids.push(Number(v));
     }
     return ids;
+  }
+
+  /**
+   * Obe uže grane brisanja (`id IN (...)` za aditivne, `id < BASE` za tabele sa
+   * rezervisanim opsegom) pretpostavljaju jednostavan `id` PK. Bez ove provere
+   * greška u mapiranju bi značila TIHO pogrešno brisanje.
+   */
+  private assertSingleIdPk(what: string): void {
+    const pk = this.mapping.pk;
+    if (!pk || pk.kind !== 'single' || pk.field !== 'id') {
+      throw new Error(
+        `${what} for ${this.entity} requires a single-field "id" PK`,
+      );
+    }
   }
 
   /**

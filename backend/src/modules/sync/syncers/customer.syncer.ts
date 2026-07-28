@@ -7,6 +7,11 @@ import {
   SyncEntityResult,
   SyncStrategy,
 } from '../sync.types';
+import {
+  isNativeRow,
+  NATIVE_ID_BASE,
+  NATIVE_SOURCE_MARKER,
+} from '../table-ownership';
 
 /**
  * Komitenti (QBigTehn) -> customers (Postgres).
@@ -15,6 +20,21 @@ import {
  * - Incremental watermark: `PoslednjaIzmena` (datetime) -> `updatedAt`.
  * - Column order in QBigTehn is a 1:1 port to the Prisma model, so the
  *   mapping below is exhaustive (all 57 source columns).
+ *
+ * ZAŠTITA 4.0-NATIVE REDOVA (adversarni pregled 28.07.2026, nalaz [1]).
+ * `upsert({ where: { id }, update: data })` prepisuje SVIH 56 mapiranih kolona i
+ * ne razlikuje poreklo reda. Da je BigBit šifra ikad srela 4.0-native komitenta,
+ * tuđa firma bi mu prepisala naziv, PIB, račune — bez greške i bez traga u logu.
+ * Zato se PRE upsert-a proverava poreklo, na dva nezavisna načina:
+ *
+ *   1. `isNativeRow('customers', Sifra)` — rezervisan opseg ključeva
+ *      (`NATIVE_ID_BASE`, isti broj koji baza drži kao `chk_customers_native_id_range`);
+ *   2. marker porekla iz šeme (`customers.source = 'NATIVE'`) — pročitan iz baze
+ *      pre prolaza, za slučaj da CHECK ikad padne ili da red uđe zaobilazno.
+ *
+ * Danas su ta dva kriterijuma ekvivalentna (CHECK ih vezuje), pa je drugi
+ * namerna rezerva. Preskočen red se BROJI (`rowsSkipped`) i PRIJAVLJUJE
+ * (`note`, koji jedini stiže u `bb_sync_log.metadata`) — nikad tiho.
  */
 @Injectable()
 export class CustomerSyncer implements EntitySyncer {
@@ -44,22 +64,54 @@ export class CustomerSyncer implements EntitySyncer {
 
     // Resolve FK targets up front so unsatisfiable references are nulled out
     // instead of aborting the row (lookups may not be synced yet).
-    const [salespersonIds, codeTypeCodes] = await Promise.all([
+    // Uz njih i popis 4.0-native komitenata: ceo skup se čita jednim upitom
+    // (native redova je malo), umesto `id IN (...)` sa hiljadama šifri.
+    const [salespersonIds, codeTypeCodes, nativeIds] = await Promise.all([
       this.prisma.salesperson
         .findMany({ select: { id: true } })
         .then((r) => new Set(r.map((x) => x.id))),
       this.prisma.codeType
         .findMany({ select: { code: true } })
         .then((r) => new Set(r.map((x) => x.code))),
+      this.prisma.customer
+        .findMany({
+          where: { source: NATIVE_SOURCE_MARKER },
+          select: { id: true },
+        })
+        .then((r) => new Set(r.map((x) => x.id))),
     ]);
 
     let rowsUpserted = 0;
     let rowsSkipped = 0;
+    /** Preskočeno zbog porekla — odvojeno od običnih grešaka reda. */
+    let nativeSkipped = 0;
     let maxModifiedAt: Date | null = options.cursor?.lastModifiedAt
       ? new Date(options.cursor.lastModifiedAt)
       : null;
 
     for (const row of rows) {
+      // ── ZAŠTITA 4.0-NATIVE REDA (28.07.2026) ────────────────────────────
+      // Ide PRE `mapRow` i PRE pomeranja kursora: preskočen red ne sme da
+      // odnese watermark sa sobom, da bi se anomalija ponovo prijavila.
+      const sifra = Number(row['Sifra']);
+      const nativeById = isNativeRow(this.entity, sifra);
+      const nativeByMarker = nativeIds.has(sifra);
+      if (nativeById || nativeByMarker) {
+        rowsSkipped++;
+        nativeSkipped++;
+        const razlog = nativeById
+          ? `id je u rezervisanom 4.0 opsegu (≥ ${NATIVE_ID_BASE})`
+          : `red u 4.0 nosi marker porekla source='${NATIVE_SOURCE_MARKER}'`;
+        if (errors.length < 20)
+          errors.push(
+            `Sifra=${row['Sifra']}: ${razlog} — BigBit red PRESKOČEN, 4.0-native komitent NIJE prepisan (28.07)`,
+          );
+        this.logger.warn(
+          `Preskočen komitent Sifra=${row['Sifra']}: ${razlog} (zaštita 4.0-native reda)`,
+        );
+        continue;
+      }
+
       try {
         const data = this.mapRow(row, salespersonIds, codeTypeCodes);
         await this.prisma.customer.upsert({
@@ -95,6 +147,17 @@ export class CustomerSyncer implements EntitySyncer {
       rowsSkipped,
       newCursor,
       errors,
+      // `errors` ne stižu u `bb_sync_log.metadata` (SyncService prenosi brojeve i
+      // `note`), pa zaštita mora da izveštava kroz `note` — inače bi „preskočeno"
+      // ostalo vidljivo samo u konzoli procesa.
+      ...(nativeSkipped
+        ? {
+            note:
+              `⚠️ ${nativeSkipped} BigBit redova PRESKOČENO zbog sudara sa 4.0-native komitentima ` +
+              `(rezervisan opseg ≥ ${NATIVE_ID_BASE} / marker source='${NATIVE_SOURCE_MARKER}'). ` +
+              `Native red nije prepisan; proveri šifre u BigBit-u.`,
+          }
+        : {}),
     };
   }
 

@@ -406,11 +406,8 @@ describe("MasterCustomersController — permisija", () => {
     ).toBe(Reflect.getMetadata(PERMISSION_KEY_METADATA, DirectoryController));
   });
 
-  it("nijedna ruta nema svoj (širi) ključ — sve nasleđuju klasni", () => {
-    // `create`/`update` su ovde namerno: dok stoji brana one NE PIŠU nego objašnjavaju,
-    // isti presedan kao POST/PATCH u `DirectoryController`. Kad se upis otvori, moraju
-    // dobiti sopstveni `*.write` ključ i ovaj test se menja zajedno sa njima.
-    for (const name of ["list", "findOne", "create", "update"]) {
+  it("nijedna GET ruta nema svoj (širi) ključ — sve nasleđuju klasni", () => {
+    for (const name of ["list", "findOne"]) {
       const handler = Object.getOwnPropertyDescriptor(
         MasterCustomersController.prototype,
         name,
@@ -418,6 +415,26 @@ describe("MasterCustomersController — permisija", () => {
       expect(
         Reflect.getMetadata(PERMISSION_KEY_METADATA, handler),
       ).toBeUndefined();
+    }
+  });
+
+  it("mutacije imaju SVOJ ključ `masters.write` — ne nasleđuju čitalački", () => {
+    // Ovaj test je do 28.07.2026 tvrdio suprotno („ni create/update nemaju svoj
+    // ključ") i sam je najavio sopstvenu izmenu: dok je stajala brana, POST/PATCH
+    // nisu pisali nego objašnjavali, pa im je čitalački ključ bio dovoljan. Sada
+    // ključ postoji, pa mutacija mora biti iza njega — inače bi na dan otvaranja
+    // upisa svako sa `directory.read` (npr. kontrolor) mogao da menja komitente.
+    for (const name of ["create", "update"]) {
+      const handler = Object.getOwnPropertyDescriptor(
+        MasterCustomersController.prototype,
+        name,
+      )?.value as object;
+      expect(Reflect.getMetadata(PERMISSION_KEY_METADATA, handler)).toBe(
+        PERMISSIONS.MASTERS_WRITE,
+      );
+      expect(Reflect.getMetadata(PERMISSION_KEY_METADATA, handler)).not.toBe(
+        PERMISSIONS.DIRECTORY_READ,
+      );
     }
   });
 });

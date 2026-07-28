@@ -1,10 +1,6 @@
 import { ConflictException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import {
-  hasNativeColumns,
-  isAdditiveRefreshTable,
-  isOwnedProductionTable,
-} from "../sync/table-ownership";
+import { nativeRowsSurviveSync } from "../sync/table-ownership";
 
 /**
  * BRANE ZA UPIS U `items` — preduslovi bez kojih unos artikla NIJE bezbedan.
@@ -12,52 +8,96 @@ import {
  * ─────────────────────────────────────────────────────────────────────────────
  * ZAŠTO OVAJ FAJL UOPŠTE POSTOJI
  * ─────────────────────────────────────────────────────────────────────────────
- * `items` se danas sinhronizuje kao FULL REFRESH: `sync-map.generated.ts` daje
- * `watermark: null`, pa `GenericSyncer` radi `deleteMany({})` + `createMany(...)`
- * pod `SET LOCAL session_replication_role='replica'`. Tabela NIJE ni u
- * `ADDITIVE_REFRESH_TABLES`, ni u `NATIVE_COLUMN_TABLES`, ni u
- * `OWNED_PRODUCTION_TABLES`. Posledice, redom:
+ * `items` se sinhronizuje kao FULL REFRESH: `sync-map.generated.ts` daje
+ * `watermark: null`, pa `GenericSyncer` briše pa ponovo unosi skup, pod
+ * `SET LOCAL session_replication_role='replica'`. Do 28.07.2026 je to brisanje
+ * bilo `deleteMany({})` — dakle SVE — pa je red nastao u 4.0 nestajao pri prvom
+ * `POST /api/v1/sync/run`, bez greške i bez traga, ostavljajući
+ * `price_list_entries.item_id` i `work_order_item_components.item_id` kao siročad
+ * (u `replica` režimu FK trigeri ćute).
  *
- *   1. Red nastao u 4.0 se pri prvom `POST /api/v1/sync/run` OBRIŠE — bez greške
- *      i bez traga. Pošto brisanje ide u `replica` režimu (FK trigeri isključeni),
- *      `price_list_entries.item_id` i `work_order_item_components.item_id` ostaju
- *      kao siročad koja se ne restore-uje čisto.
- *   2. Izmena BigBit-origin reda nestaje na istom mestu — red se ne ažurira nego
- *      briše i ponovo unosi iz izvora.
- *   3. Ni `NATIVE_COLUMN_TABLES` to ne bi spasao: sve 68 kolona modela `Item` su u
- *      sync mapi (provereno diff-om), pa je skup „nemapiranih kolona koje zaštita
- *      čuva" PRAZAN. Za `items` ta zaštita ne štiti nijedno polje.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ŠTA SE PROMENILO 28.07.2026 — I ZAŠTO UNOS I DALJE STOJI
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Sync od tada čuva 4.0-native redove REZERVISANIM OPSEGOM KLJUČEVA
+ * (`sync/table-ownership.ts`: `NATIVE_ID_RANGE_TABLES`). Full refresh za `items`
+ * briše samo `id < NATIVE_ID_BASE`, a izvorni red koji bi upao u native opseg se
+ * preskače. Migracija `20260728170000` istu granicu ukiva u bazu kao CHECK i
+ * pomera sekvencu iznad BigBit prostora. Praktično: artikal unet u 4.0 VIŠE NE
+ * NESTAJE pri sync-u — `itemsSurviveSync()` je zato od 28.07 `true`.
  *
- * Zato rute za upis postoje i validiraju pun skup polja, ali servis PRE upisa pita
- * `assertItemWritesAllowed()`. Dok `items` ne uđe u neki od zaštićenih skupova u
- * `sync/table-ownership.ts`, svaki upis se odbija sa 409 i porukom koja korisniku
- * kaže šta da radi. `sync/` je tuđa granica — zaštita se NE dodaje odavde.
+ * ⚠️ ALI TO NIJE ISTO ŠTO I DOZVOLA ZA UNOS. Dve stvari su NAMERNO ODVOJENE:
  *
- * Provera je NAMERNO dinamička (čita iste skupove koje čita i syncer), a ne ručni
- * prekidač: onog dana kad sync tim upiše `items` u zaštićeni skup, unos proradi sam
- * i bez izmene ovog fajla — a test to pinuje u oba smera.
+ *   • `itemsSurviveSync()` = ČINJENICA o sync-u (preživljava li native red).
+ *     Odgovor čita `sync/table-ownership.ts`, jedno mesto odluke za obe matične
+ *     tabele — ne prepisuje se ovde.
+ *   • `ITEMS_WRITE_OPEN`   = ODLUKA VLASNIKA (sme li se unositi iz 4.0).
+ *     Isti oblik prekidača koji komitenti već imaju (`CUSTOMERS_WRITE_OPEN`).
  *
- * ISKLJUČENOST IZ NOĆNOG POSLA NIJE ZAŠTITA: `NIGHTLY_SYNC_EXCLUDED = {"items"}`
- * je privremena (do čišćenja duplikata kataloških brojeva u BigBit-u) i važi samo
- * za noćni posao — ručni `POST /api/v1/sync/run` i dalje radi pun `deleteMany`.
+ * Ranije je jedna funkcija bila i činjenica i prekidač, pa bi je onaj ko ispravi
+ * činjenicu USPUT otvorio unos — tačno „novo otkriće" koje ceo ovaj talas
+ * sprečava. `assertItemWritesAllowed()` zato traži OBOJE, a otvaranje unosa je
+ * jedan red (`ITEMS_WRITE_OPEN = true`) i ništa drugo.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ŠTA JOŠ STOJI IZMEĐU DANAŠNJEG STANJA I OTVARANJA
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   1. ODLUKA VLASNIKA — artikli se do daljeg vode u BigBit-u (isti režim koji
+ *      za komitente drži odluka od 26.07.2026).
+ *   2. DUPLIKATI KATALOŠKIH BROJEVA u BigBit-u (1.980 grupa / 4.298 artikala,
+ *      mereno 25.07). Zbog njih je `items` i u `NIGHTLY_SYNC_EXCLUDED`
+ *      (`scheduler/bigbit-sync-jobs.service.ts`) — to isključenje NIJE zaštita
+ *      od brisanja (ručni sync i dalje radi), nego zaštita od pada uvoza.
+ *   3. Prateće tabele forme „Unos artikala" koje šema još nema — v.
+ *      `ITEM_FIELDS_REQUIRING_MIGRATION` na dnu fajla.
  */
 
 /** Ime tabele kako ga vidi `GenericSyncer` (`targetDb` u sync mapi). */
 export const ITEMS_ENTITY = "items";
 
-/** Da li bi red nastao u 4.0 preživeo sledeći sync artikala. */
+/**
+ * ČINJENICA: da li bi red nastao u 4.0 preživeo sledeći sync artikala.
+ *
+ * Odgovor se NE računa ovde — pita se `sync/table-ownership.ts`, koje je jedino
+ * mesto odluke o vlasništvu i o rezervisanom opsegu ključeva (`items` je od
+ * 28.07 u `NATIVE_ID_RANGE_TABLES`, pa je odgovor `true`). Kad bi se ovde držala
+ * kopija pravila, sync bi štitio jedan skup a masters pretpostavljao drugi.
+ *
+ * ⚠️ NIJE dozvola za unos — v. `ITEMS_WRITE_OPEN`.
+ */
 export function itemsSurviveSync(): boolean {
-  return (
-    isAdditiveRefreshTable(ITEMS_ENTITY) ||
-    hasNativeColumns(ITEMS_ENTITY) ||
-    isOwnedProductionTable(ITEMS_ENTITY)
-  );
+  return nativeRowsSurviveSync(ITEMS_ENTITY);
 }
 
+/**
+ * ODLUKA VLASNIKA: sme li se artikal unositi/menjati iz 4.0.
+ *
+ * `false` = svaki `POST`/`PATCH` vraća 409, ma koliko sync bio bezbedan. Blizanac
+ * je `CUSTOMERS_WRITE_OPEN` u `customers.service.ts` — obe matične tabele imaju
+ * ISTI oblik prekidača, pa se unos otvara jednim redom po tabeli.
+ *
+ * PRE PREVRTANJA na `true` proveriti tačke 1–3 iz zaglavlja ovog fajla.
+ */
+export const ITEMS_WRITE_OPEN: boolean = false;
+
+/**
+ * Poruka za DANAŠNJE stanje: tehnički je bezbedno, ali unos još nije pušten.
+ * Namerno ne obećava rok — odluku donosi vlasnik, ne kod.
+ */
 export const ITEM_WRITE_BLOCKED_MESSAGE =
-  "Artikli se za sada unose i menjaju isključivo u BigBit-u. Sinhronizacija artikala " +
-  "briše i ponovo unosi celu tabelu, pa bi artikal unet ovde nestao pri prvom uvozu — " +
-  "zajedno sa vezama na cenovnik i radne naloge. Unesite artikal u BigBit-u, pa javite " +
+  "Artikli se za sada unose i menjaju isključivo u BigBit-u — unos iz ovog ekrana " +
+  "još nije pušten u rad. Unesite artikal u BigBit-u, pa javite administratoru da " +
+  "pokrene uvoz (Sinhronizacije → Pokreni sync).";
+
+/**
+ * Poruka za slučaj da sync zaštita NESTANE (`items` izbačen iz rezervisanog
+ * opsega). Tada unos nije samo nepušten nego i OPASAN — red bi se obrisao pri
+ * prvom uvozu. Danas nedostižna; postoji da bi otkaz zaštite imao svoj glas.
+ */
+export const ITEM_WRITE_UNSAFE_MESSAGE =
+  "Artikli se trenutno ne mogu unositi iz ovog ekrana: sinhronizacija artikala briše " +
+  "i ponovo unosi celu tabelu, pa bi artikal unet ovde nestao pri prvom uvozu — zajedno " +
+  "sa vezama na cenovnik i radne naloge. Unesite artikal u BigBit-u, pa javite " +
   "administratoru da pokrene uvoz (Sinhronizacije → Pokreni sync).";
 
 export const ITEM_BIGBIT_ORIGIN_MESSAGE =
@@ -81,9 +121,18 @@ export class ItemWriteBlockedException extends ConflictException {
   }
 }
 
-/** Upis u `items` je dozvoljen tek kad sync prestane da briše native redove. */
+/**
+ * Upis u `items` traži OBOJE: da native red preživi sync (tehnička bezbednost) i
+ * da ga vlasnik pusti (poslovna odluka). Otkaz bilo kog uslova = 409.
+ *
+ * Redosled provere je namеran: ako sync zaštita ikad NESTANE (neko izbaci `items`
+ * iz `NATIVE_ID_RANGE_TABLES`), upis se zatvara SAM — čak i ako je prekidač
+ * ostao na `true`.
+ */
 export function assertItemWritesAllowed(): void {
   if (!itemsSurviveSync())
+    throw new ItemWriteBlockedException(ITEM_WRITE_UNSAFE_MESSAGE);
+  if (!ITEMS_WRITE_OPEN)
     throw new ItemWriteBlockedException(ITEM_WRITE_BLOCKED_MESSAGE);
 }
 
@@ -111,6 +160,17 @@ export const NATIVE_ITEM_ID_BASE = 900_000_000;
 
 /** `Int` kolona je PG `integer` — gornja granica opsega. */
 export const NATIVE_ITEM_ID_MAX = 2_147_483_647;
+
+/**
+ * Vrednost kolone `items.source` za red nastao u 4.0.
+ *
+ * NIJE ukras: `chk_items_native_id_range` traži `(source='NATIVE') = (id >= 900000000)`,
+ * a kolona ima DB default `'BIGBIT'`. Pisac koji je izostavi pravi red sa native
+ * id-jem i pogrešnim markerom, pa ga baza odbija kodom 23514 — koji `runGuarded`
+ * ne prepoznaje, pa korisnik dobija 500 sa sirovim tekstom baze umesto poruke.
+ * Konstanta stoji ovde, uz opseg id-jeva, da marker i granica ostanu jedno pravilo.
+ */
+export const NATIVE_ITEM_SOURCE = "NATIVE";
 
 export function isNativeItemId(id: number): boolean {
   return id >= NATIVE_ITEM_ID_BASE;
@@ -162,6 +222,22 @@ export function catalogDuplicateException(
  *
  * Ništa od ovoga se ne izmišlja u kodu — popis je ulaz za migraciju i za odluku
  * vlasnika. Redosled prati prioritet iz `BIGBIT_ARTIKLI.md` §7.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ISPORUČENO migracijom `20260728170000_maticni_native_opseg_i_poreklo` i zato
+ * SKINUTO sa ovog popisa (28.07.2026) — popis koji nabraja urađeno šalje vlasnika
+ * da dvaput plati isti posao:
+ *
+ *   • `items.source` — marker porekla (`BIGBIT`/`NATIVE`), uz CHECK koji ga vezuje
+ *     za rezervisan opseg id-a. `external_item_id` je 0 na 1.417 BigBit redova pa
+ *     sam za sebe nikad nije razlikovao poreklo.
+ *   • `items.updated_at` + `items.updated_by` — `PATCH` sada ostavlja trag u vremenu.
+ *   • `items.shelf` VarChar(10) → VarChar(20) — više se ne odseca BigBit `Polica`.
+ *     (Već odsečenih 82 vrednosti ovim se NE vraćaju — dopuni ih sledeći pun uvoz.)
+ *   • 9 cenovnih kolona `Float` → `Decimal(19,4)` — novac je Decimal po
+ *     BACKEND_RULES; izmereno 0 promenjenih vrednosti na 92.511 redova.
+ *   • `setval` nad sekvencom `items` — pomerena na 899.999.999, iznad BigBit prostora.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 export const ITEM_FIELDS_REQUIRING_MIGRATION: readonly {
   what: string;
@@ -202,25 +278,5 @@ export const ITEM_FIELDS_REQUIRING_MIGRATION: readonly {
   {
     what: "`Rabati` / `RabatiPoArt` / `Akcije` / `AkcijeArtikli`",
     why: "Komercijalna politika cena; `promotionDiscount` je jedini ostatak na artiklu (§2.3).",
-  },
-  {
-    what: "`items.updated_at` (+ ko je izmenio)",
-    why: "Artikal ima samo `created_at` (`DatumIVremeArt`) i `signature` (ko) — vreme izmene se nema gde upisati, pa `PATCH` ne ostavlja trag u vremenu.",
-  },
-  {
-    what: "Marker porekla (`source` / nullable `bb_sifra`)",
-    why: "Danas se native red prepoznaje samo po opsegu id-a; eksplicitna kolona (obrazac noćnog .mdb uvoza, `bb_stavka_id IS NULL`) bila bi provera upitom, a ne konvencijom.",
-  },
-  {
-    what: "Cenovne kolone `Float` → `Decimal(19,4)`",
-    why: "`wholesalePrice`, `retailPrice`, `fxPurchasePrice`, `fxSalePrice`, `priceToWritePricelist`, `itemFee`, `itemExcise`, `nonTaxablePart`, `finalProcessingCost` su legacy `Float` (BigBit `Double`) — BACKEND_RULES traži `Decimal`. API ih već prima i validira kao decimalne, ali kolona ih zaokružuje u binarni float.",
-  },
-  {
-    what: "`items.shelf` VarChar(10) → VarChar(20)",
-    why: "BigBit `Polica` je Text(20); naša kolona je uža (F1 nalaz o truncation-u) pa forma mora da odbije duži unos koji BigBit prima.",
-  },
-  {
-    what: "`setval` nad sekvencom `items` (ili `items` u zaštićeni skup)",
-    why: "Sekvenca nikad nije klampovana iznad BigBit prostora; obilazi se odvojenim opsegom id-a, ali `nextval` i dalje vraća vrednosti iz BigBit prostora ako ih iko upotrebi.",
   },
 ];

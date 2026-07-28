@@ -239,14 +239,21 @@ describe("ItemsController — permisija", () => {
     }
   });
 
-  it("mutacije traže UŽI ključ od čitanja (`sync.run`, ne `directory.read`)", () => {
+  it("mutacije traže UŽI ključ od čitanja (`masters.write`, ne `directory.read`)", () => {
+    // Do 28.07.2026 je ovde stajao `sync.run` — pozajmljen ključ, jer svog nije
+    // bilo: „ko sme da pokrene uvoz, sme i da upiše". Sa uvođenjem `masters.write`
+    // (isti ključ za artikle i komitente) pozajmica prestaje. Test i dalje pinuje
+    // ISTU stvar: mutacija NE SME da prođe na čitalačkom ključu.
     for (const name of ["create", "update"]) {
       const handler = Object.getOwnPropertyDescriptor(
         ItemsController.prototype,
         name,
       )?.value as object;
       expect(Reflect.getMetadata(PERMISSION_KEY_METADATA, handler)).toBe(
-        PERMISSIONS.SYNC_RUN,
+        PERMISSIONS.MASTERS_WRITE,
+      );
+      expect(Reflect.getMetadata(PERMISSION_KEY_METADATA, handler)).not.toBe(
+        PERMISSIONS.DIRECTORY_READ,
       );
     }
   });

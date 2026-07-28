@@ -11,6 +11,7 @@ import {
   assertItemWritesAllowed,
   isNativeItemId,
   ITEMS_ENTITY,
+  ITEMS_WRITE_OPEN,
   ITEM_FIELDS_REQUIRING_MIGRATION,
   itemsSurviveSync,
   NATIVE_ITEM_ID_BASE,
@@ -45,14 +46,24 @@ function messagesOf(e: unknown): string[] {
 // ═════════════════════════════════════════════ brana upisa (stanje sinhronizacije)
 
 describe("items.write-policy — brana upisa", () => {
-  it("ZATEČENO STANJE: `items` nije ni u jednom zaštićenom skupu → upis zatvoren", () => {
-    // Ovo NIJE stilski test — to je razlog zašto POST/PATCH danas vraćaju 409.
-    // Ako neko doda `items` u zaštićeni skup, ovaj test pada i tera ga da otvori
-    // unos svesno (a ne da ga „slučajno" ostavi zatvorenim).
+  it("ZATEČENO STANJE: sync ČUVA native artikal, ali je unos i dalje zatvoren", () => {
+    // Do 28.07.2026 je ovaj test tvrdio da `items` nije ni u jednom zaštićenom
+    // skupu i da je zato upis zatvoren. Rezervisan opseg ključeva je to promenio:
+    // native artikal SADA preživljava sync. Razlog za 409 se time PREMESTIO sa
+    // tehnike na odluku — i test to mora da kaže, inače bi sledeći čitalac
+    // zaključio da je zaštita i dalje jedini razlog.
     expect(ADDITIVE_REFRESH_TABLES.has(ITEMS_ENTITY)).toBe(false);
     expect(NATIVE_COLUMN_TABLES.has(ITEMS_ENTITY)).toBe(false);
     expect(OWNED_PRODUCTION_TABLES.has(ITEMS_ENTITY)).toBe(false);
-    expect(itemsSurviveSync()).toBe(false);
+    expect(itemsSurviveSync()).toBe(true); // ← činjenica (rezervisan opseg)
+    expect(ITEMS_WRITE_OPEN).toBe(false); // ← odluka (drži 409)
+  });
+
+  it("činjenica i prekidač su ODVOJENI — ispravka jednog ne otvara unos", () => {
+    // Srž integracije: jedna funkcija je nekad bila i „preživljava li red" i
+    // „sme li se pisati". Ko bi ispravio prvu, otvorio bi drugu bez namere.
+    expect(itemsSurviveSync()).toBe(true);
+    expect(() => assertItemWritesAllowed()).toThrow(); // i dalje 409
   });
 
   it("assertItemWritesAllowed(): 409 sa stabilnim `code` i srpskim uputstvom", () => {
@@ -86,14 +97,25 @@ describe("items.write-policy — brana upisa", () => {
     expect(unmapped).toEqual([]);
   });
 
-  it("popis „traži migraciju” pominje raster, multi-barkod i marker porekla", () => {
+  it("popis „traži migraciju” pominje raster i multi-barkod — prateće tabele", () => {
     const all = ITEM_FIELDS_REQUIRING_MIGRATION.map((x) => x.what).join(" | ");
     expect(all).toContain("RasterDef");
     expect(all).toContain("R_Artikli_BarKod");
-    expect(all).toContain("Marker porekla");
     expect(ITEM_FIELDS_REQUIRING_MIGRATION.every((x) => x.why.length > 20)).toBe(
       true,
     );
+  });
+
+  it("popis NE nabraja ono što je migracija 20260728170000 već isporučila", () => {
+    // Popis je radni nalog za vlasnika. Da su isporučene stavke ostale u njemu,
+    // sledeći talas bi drugi put platio `source`, `updated_at`, Decimal cene,
+    // širi `shelf` i pomerenu sekvencu. Test pada ako se ijedna vrati.
+    const all = ITEM_FIELDS_REQUIRING_MIGRATION.map((x) => x.what).join(" | ");
+    expect(all).not.toContain("Marker porekla");
+    expect(all).not.toContain("updated_at");
+    expect(all).not.toContain("Decimal(19,4)");
+    expect(all).not.toContain("shelf");
+    expect(all).not.toContain("setval");
   });
 });
 

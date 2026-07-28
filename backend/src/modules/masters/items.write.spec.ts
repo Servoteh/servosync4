@@ -5,14 +5,23 @@ import "reflect-metadata";
  *
  * Danas `assertItemWritesAllowed()` odbija svaki upis (v. `items.service.spec.ts`),
  * pa bi cela logika kreiranja ostala neproverena. Ovde se simulira BUDUĆE stanje —
- * `items` upisan u `ADDITIVE_REFRESH_TABLES` — da bi se pinovalo šta se tačno
- * dešava onog dana kad sync tim doda zaštitu: dodela id-a iz native opsega, marker
- * porekla, obračun kg/kom, brana kataloškog broja, odbijanje BigBit-origin reda.
+ * dan kad vlasnik otvori unos — da bi se pinovalo šta se tačno tada dešava: dodela
+ * id-a iz native opsega, marker porekla, obračun kg/kom, brana kataloškog broja,
+ * odbijanje BigBit-origin reda.
+ *
+ * NEUTRALIŠE SE SAMO PREKIDAČ, ne i pravila. Do integracije 28.07.2026 je ovaj
+ * spec mokovao ceo `../sync/table-ownership` (`items` kao aditivna tabela), jer je
+ * tada zaštita sync-a BILA prekidač za unos. Sada su to dve stvari:
+ * `itemsSurviveSync()` (činjenica — `items` je u rezervisanom opsegu, već `true`)
+ * i `ITEMS_WRITE_OPEN` (odluka — `false`). Mok zato pogađa samo `assertItemWrites-
+ * Allowed`, a sve ostalo iz modula ostaje STVARNO — `assertItemIsNative`,
+ * `NATIVE_ITEM_ID_BASE`, brana kataloškog broja se testiraju u pravom obliku.
  */
-jest.mock("../sync/table-ownership", () => ({
-  isAdditiveRefreshTable: (entity: string) => entity === "items",
-  hasNativeColumns: () => false,
-  isOwnedProductionTable: () => false,
+jest.mock("./items.write-policy", () => ({
+  ...jest.requireActual<typeof import("./items.write-policy")>(
+    "./items.write-policy",
+  ),
+  assertItemWritesAllowed: jest.fn(), // vlasnik otvorio unos
 }));
 
 import { Test, TestingModule } from "@nestjs/testing";
@@ -358,10 +367,15 @@ describe("ItemsService.update — kad `items` uđe u zaštićeni skup", () => {
       data: Record<string, unknown>;
     };
     expect(args.where.id).toBe(nativeRow.id);
+    // Uz poslata polja idu i potpis i TRAG IZMENE — kolone `updated_at`/`updated_by`
+    // iz migracije 20260728170000. Ranije su stajale prazne, pa je pitanje „ko je
+    // ovo promenio" ostajalo bez odgovora iako kolone postoje.
     expect(args.data).toEqual({
       name: "Lim 4mm",
       active: false,
       signature: "nenad@servoteh.rs",
+      updatedAt: expect.any(Date),
+      updatedBy: "nenad@servoteh.rs",
     });
   });
 

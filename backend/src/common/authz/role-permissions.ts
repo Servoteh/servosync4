@@ -760,6 +760,38 @@ const RAZVOJ_FAZA_ROLES: readonly RoleKey[] = [
 for (const role of RAZVOJ_FAZA_ROLES) addPerms(role, [P.RAZVOJ_READ]);
 
 /**
+ * UPIS matičnih podataka (`masters.write`) — artikli + komitenti (`modules/masters`).
+ *
+ * Ključ je UZAK NAMERNO: čitanje šifarnika ima skoro svaka rola (`directory.read` je
+ * u `VIEWER_READ_BASELINE`), a unos/izmenu matičnog podatka radi mali komercijalni krug.
+ * Dodela je PREPIS postojećeg kruga za `nabavka.write` — nijedna nova semantika:
+ *
+ *   admin        — kroz ALL (bez dodele ovde).
+ *   menadzment   — već nosi ceo 4.0 komercijalni write (nabavka/robno/sales/gl/…);
+ *                  izuzeti ga baš kod šifarnika bilo bi nedosledno.
+ *   nabavka_view — kurirana komercijalna rola. ⚠️ Labela „Nabavka (uvid)" u
+ *                  `roles.ts` je ZASTARELA: rola već ima `nabavka.write`/`approve`
+ *                  i `rfq.write` (odluka Nenad, 4.0 komercijala — „nabavka klikće,
+ *                  preuzima, odobrava"). Artikal i komitent nastaju upravo u tom
+ *                  toku (nov dobavljač / nova pozicija za nabavku), pa je ovo
+ *                  dodela poslu koji rola već radi, ne proširenje role.
+ *
+ * SVE OSTALO je namerno izostavljeno — uključujući `sef`/`tehnolog` (koji imaju
+ * `strukture.write`) i ceo biro/pogon krug. Pojedinac van ovog kruga kome zatreba
+ * upis dobija ga per-user grantom (`user_permission_overrides`, deny > grant > rola),
+ * kao `tehnologija.cam_prioritet` — imenovana dodela ne traži širenje role.
+ *
+ * ⚠️ Ovaj grant NE otvara unos: obe rute i dalje vraćaju 409 (`CUSTOMERS_WRITE_OPEN=false`,
+ * `assertItemWritesAllowed()`). Nosilac ključa danas prolazi guard i staje na brani —
+ * dobija poruku šta da uradi u BigBit-u, a ne „nemate pravo".
+ */
+const MASTERS_WRITE_ROLES: readonly RoleKey[] = [
+  ROLES.MENADZMENT,
+  ROLES.NABAVKA_VIEW,
+];
+for (const role of MASTERS_WRITE_ROLES) addPerms(role, [P.MASTERS_WRITE]);
+
+/**
  * Normalise a stored role value to the catalog key.
  * Live `users.role` data predates the lowercase convention ("ADMIN"/"USER") — without this,
  * activating the guard on prod would deny EVERYONE including admin (lockout). The V2 activation

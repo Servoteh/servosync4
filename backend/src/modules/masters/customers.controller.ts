@@ -32,8 +32,9 @@ import type { ListCustomersQuery } from "./dto/list-customers.dto";
  * (npr. `PIB_NIJE_DOBAR`) pre nego što ga uputimo u BigBit. Uslovi za otvaranje su
  * popisani uz `CUSTOMERS_WRITE_OPEN` u `customers.service.ts`.
  *
- * Permisija: `directory.read` — isti ključ kao `DirectoryController` (isti domen
- * podataka). ⚠️ SVESNO ODSTUPANJE od `directory`: matični karton vraća i komercijalne
+ * Permisije: čitanje = `directory.read` (klasna) — isti ključ kao `DirectoryController`
+ * (isti domen podataka); upis = `masters.write` (method-level, v. dole).
+ * ⚠️ SVESNO ODSTUPANJE od `directory`: matični karton vraća i komercijalne
  * kolone koje `directory` NAMERNO izostavlja (žiro računi, rabati, kreditni limit,
  * provizija, marža). `directory.read` je u `VIEWER_READ_BASELINE` (svaka SSO uloga
  * osim onih kojima je namerno uskraćen) — ako se te kolone budu smatrale užim
@@ -57,21 +58,25 @@ export class MasterCustomersController {
   }
 
   // ── UNOS / IZMENA ───────────────────────────────────────────────────────────
-  // Permisija je nasleđena klasna `directory.read` — isti presedan kao kod
-  // `DirectoryController`, gde POST/PATCH nad komitentom takođe stoje iza `read`
-  // ključa jer NE PIŠU, nego objašnjavaju („svako ko sme da gleda šifarnik dobija
-  // objašnjenje, a ne ,nemate pravo'").
-  // TODO(auth): pre nego što se `CUSTOMERS_WRITE_OPEN` prebaci na `true`, ove dve
-  // rute MORAJU dobiti sopstveni ključ za upis (`masters.write` / `komitenti.write`)
-  // u `common/authz/permissions.ts` — taj fajl je van granica ovog modula, pa je
-  // ključ prijavljen, ne dodat.
+  // Permisija je METHOD-LEVEL `masters.write` i nadjačava klasnu `directory.read`
+  // (`getAllAndOverride` uzima handler pre klase). Do 28.07.2026 su ove dve rute
+  // nasleđivale klasni READ ključ — a `directory.read` je u `VIEWER_READ_BASELINE`,
+  // tj. ima ga skoro svaka rola. Presedan `DirectoryController`-a (POST iza `read`
+  // ključa jer „ne piše, nego objašnjava") OVDE NE VAŽI: tamo je telo metode gola
+  // `rejectCustomerWrite()` koja nikad ne dodirne bazu, a ovde iza brane stoji pun
+  // upis. Kad se `CUSTOMERS_WRITE_OPEN` preklopi, ključ je već na mestu.
+  //
+  // Objašnjavajuću ulogu ruta ZADRŽAVA za svog nosioca: `masters.write` ga pušta
+  // kroz guard do 409 `BIGBIT_OWNED_READ_ONLY` sa uputstvom, umesto do „nemate pravo".
 
   @Post()
+  @RequirePermission(PERMISSIONS.MASTERS_WRITE)
   create(@Body() body: unknown, @Req() req: { user?: AuthUser }) {
     return this.customers.create(body, req.user);
   }
 
   @Patch(":id")
+  @RequirePermission(PERMISSIONS.MASTERS_WRITE)
   update(
     @Param("id", ParseIntPipe) id: number,
     @Body() body: unknown,
