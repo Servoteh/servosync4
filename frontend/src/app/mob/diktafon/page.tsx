@@ -41,6 +41,18 @@ const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring
 /** Serverski limit (DictationInboxService.MAX_TEXT_LEN) — guard pre round-tripa. */
 const MAX_TEXT_LEN = 10_000;
 
+/**
+ * Minimalni tipovi za Screen Wake Lock — ne oslanjamo se na lib.dom (radi i kroz
+ * starije TS lib-ove). Wake Lock drži ekran budnim dok traje snimanje pa iPhone
+ * auto-lock ne zamrzne stranicu usred dugog diktata.
+ */
+interface WakeLockSentinelLike {
+  release(): Promise<void>;
+}
+interface WakeLockLike {
+  request(type: 'screen'): Promise<WakeLockSentinelLike>;
+}
+
 /** Best-effort kopija: Clipboard API (siguran kontekst) → legacy execCommand fallback. */
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
@@ -98,17 +110,35 @@ export default function MobDiktafonPage() {
   const recRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
+  // Ogledalo `recording` za slušače događaja (visibilitychange) — bez stale closure-a.
+  const recordingRef = useRef(false);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  // Čišćenje: zaustavi tajmer i mikrofon na unmount-u (ne curi stream/track).
+  // Čišćenje: zaustavi tajmer, mikrofon i otpusti wake lock na unmount-u.
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       recRef.current?.stream?.getTracks().forEach((t) => t.stop());
+      const wl = wakeLockRef.current;
+      wakeLockRef.current = null;
+      void wl?.release().catch(() => {});
     };
+  }, []);
+
+  // Wake lock se sam otpusti kad stranica ode u pozadinu (poziv, prebacivanje app-a);
+  // kad se vratiš u prvi plan a još snimaš, ponovo ga uzmi da se ekran opet ne zaključa.
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible' && recordingRef.current && !wakeLockRef.current) {
+        void acquireWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
 
   // Touch (coarse pointer) → sakrij „Kopiraj". Medijaupit, NE `navigator.clipboard`
@@ -157,6 +187,29 @@ export default function MobDiktafonPage() {
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
+  // Screen Wake Lock: dok snima, ekran telefona se NE gasi (iOS 16.4+/Chrome).
+  // Bez ovoga iOS auto-lock zamrzne stranicu usred dugog diktata → snimak pukne.
+  async function acquireWakeLock() {
+    try {
+      const nav = navigator as Navigator & { wakeLock?: WakeLockLike };
+      if (nav.wakeLock?.request) {
+        wakeLockRef.current = await nav.wakeLock.request('screen');
+      }
+    } catch {
+      /* Wake Lock nedostupan (stariji iOS/odbijeno) — snimanje radi, ekran se može zaključati. */
+    }
+  }
+
+  function releaseWakeLock() {
+    const wl = wakeLockRef.current;
+    wakeLockRef.current = null;
+    try {
+      void wl?.release();
+    } catch {
+      /* ignore */
+    }
+  }
+
   async function start() {
     setError(null);
     setErrKind(null);
@@ -175,21 +228,27 @@ export default function MobDiktafonPage() {
           clearInterval(timerRef.current);
           timerRef.current = null;
         }
+        recordingRef.current = false;
+        releaseWakeLock();
         setRecording(false);
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
         // Snimak se ODMAH transkribuje pa odbacuje — nikad se ne čuva ni šalje.
         if (blob.size < 200) {
-          setError('Snimak je prekratak — drži dugme dok govoriš, pa zaustavi.');
+          setError('Snimak je prekratak — tapni „Snimaj", govori, pa tapni „Zaustavi".');
           setErrKind('stt');
           return;
         }
         void transcribeThenRefine(blob);
       };
-      rec.start();
+      // Parčić svake sekunde: dug govor preživi i ako se tok naglo prekine (poziv/prebacivanje app-a).
+      rec.start(1000);
       recRef.current = rec;
+      recordingRef.current = true;
       setRecording(true);
       setElapsed(0);
       timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
+      // Drži ekran budnim dok snima (posle start-a; ako brava padne, snimanje i dalje radi).
+      void acquireWakeLock();
     } catch {
       setError('Mikrofon nije dostupan (dozvola odbijena ili nema uređaja). Dozvoli mikrofon u pregledaču pa pokušaj ponovo.');
       setErrKind('stt');
@@ -307,12 +366,12 @@ export default function MobDiktafonPage() {
         : busy === 'send'
           ? 'Šaljem…'
           : recording
-            ? 'Snima… govori, pa zaustavi'
+            ? 'Snima… govori koliko treba, pa tapni Zaustavi'
             : sent
               ? 'Poslato ✓ — reci Claude-u: „diktat"'
               : text
                 ? 'Proveri tekst pa pošalji'
-                : 'Pritisni mikrofon i govori';
+                : 'Tapni „Snimaj" i govori';
 
   // Dedup ugrađen u gejt: isti nepromenjen tekst kao poslednji poslati → onemogućeno.
   const canSend = !!text.trim() && !busy && text.trim() !== lastSentText;
@@ -492,8 +551,9 @@ export default function MobDiktafonPage() {
         {/* Prazno stanje — kratko uputstvo (bez teksta i bez snimanja). */}
         {!text && !recording && !busy && errKind !== 'stt' && (
           <p className="px-2 text-center text-sm text-ink-secondary">
-            Govori srpski normalnim tempom. Kad zaustaviš, tekst se prepiše i doteri, pa ga
-            jednim dugmetom pošalješ Claude-u na računar.
+            Tapni „Snimaj", govori srpski koliko god treba — ekran se neće ugasiti dok snimaš.
+            Kad tapneš „Zaustavi", tekst se prepiše i doteri, pa ga jednim dugmetom pošalješ
+            Claude-u na računar.
           </p>
         )}
       </main>
