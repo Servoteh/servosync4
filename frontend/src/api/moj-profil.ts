@@ -957,6 +957,25 @@ export const useTeamCorrection = () =>
     KEYS.team,
   );
 
+/** Unos BOLOVANJA u grid za člana tima (zahtev 041/26). Šef sa pravom odobravanja
+ *  GO (`kadrovska.vacreq_manage`) piše bo/subtip u `work_hours` (Opcija A). Ruta je
+ *  na kadrovska modulu (`/v1/kadrovska/grid/sick`), pa NE ide kroz profile `post`
+ *  helper (druga BASE); DB gejt je opseg tima (`current_user_manages_employee`). */
+export const useTeamSick = () =>
+  useProfileMutation<{ employeeId: string; clientEventId: string; dateFrom: string; dateTo: string; subtype: string }>(
+    (v) => apiFetch<TxResponse>('/v1/kadrovska/grid/sick', {
+      method: 'POST',
+      body: JSON.stringify({
+        employeeId: v.employeeId,
+        clientEventId: v.clientEventId,
+        dateFrom: v.dateFrom,
+        dateTo: v.dateTo,
+        subtype: v.subtype,
+      }),
+    }),
+    KEYS.team,
+  );
+
 /* ── Prisustvo člana tima (ulazi/izlazi) — zahtev 011/26 ── */
 // Isti prikaz kao „Moje prisustvo" (self /attendance) ali za člana kroz DB scope
 // (`current_user_manages_employee`). BE 404 ako član nije u opsegu pozivaoca. Lazy —
