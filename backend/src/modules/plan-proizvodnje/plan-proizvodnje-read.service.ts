@@ -126,7 +126,7 @@ export class PlanProizvodnjeReadService {
       const machine = q.machine.trim();
       const limit = clampInt(q.limit, 100, 1, 250);
       const offset = clampInt(q.offset, 0, 0, Number.MAX_SAFE_INTEGER);
-      return this.machineOps(machine, limit, offset);
+      return this.machineOps(machine, limit, offset, q.q);
     }
     if (q.dept) {
       const cond = this.deptWhere(q.dept);
@@ -147,15 +147,27 @@ export class PlanProizvodnjeReadService {
    * operacije mašine → RPC sort → grupisanje po RN (MIN sort idx) → prozor
    * [offset, offset+limit) RN-ova. `has_more` = ima li RN iza prozora.
    */
-  private async machineOps(machine: string, limit: number, offset: number) {
+  private async machineOps(
+    machine: string,
+    limit: number,
+    offset: number,
+    q?: string,
+  ) {
     if (machine === "") {
       return { data: { rows: [], has_more: false, next_work_order_offset: 0 } };
     }
     // Mašinski filter u BAZI (perf): laterali se računaju SAMO za redove te mašine.
     const baseFilter = Prisma.sql`AND COALESCE(o.assigned_machine_code, NULLIF(BTRIM(l.work_center_code),'')) = ${machine}`;
+    // 040/26: crtež/RN filter u bazi PRE paginacije po RN, pa filter dohvata i pozicije
+    // iza prvih 100 RN (mirror ILIKE stila iz operationsSearch; parametrizovan Prisma.sql).
+    const term = (q ?? "").trim();
+    const search =
+      term.length > 0
+        ? Prisma.sql`AND (broj_crteza ILIKE ${"%" + term + "%"} OR rn_ident_broj ILIKE ${"%" + term + "%"})`
+        : Prisma.empty;
     const rows = (await this.prisma.$queryRaw(Prisma.sql`
       SELECT * FROM (${this.effectiveOpsInner(baseFilter)}) eff
-      WHERE ${EFF_FILTER} AND ${OPEN_OPS} ${RPC_SORT}`)) as {
+      WHERE ${EFF_FILTER} AND ${OPEN_OPS} ${search} ${RPC_SORT}`)) as {
       work_order_id: string;
     }[];
 
@@ -195,7 +207,11 @@ export class PlanProizvodnjeReadService {
     };
   }
 
-  /** Pretraga operacija po crtežu/RN/nazivu (paritet loadOperationsByRnOrDrawingQuery). */
+  /**
+   * Pretraga operacija po crtežu/RN/nazivu (paritet loadOperationsByRnOrDrawingQuery).
+   * 043/26: redosled grupiše po crtežu/RN pa po TP redosledu (`operacija` = TP broj) —
+   * NAMERNO se ne vodi `effective_machine_code` (to je „Po mašini" red, ne „Po crtežu").
+   */
   async operationsSearch(_email: string, q?: string) {
     const term = (q ?? "").trim();
     if (term.length < SEARCH_MIN_LEN) return { data: [] };
@@ -204,7 +220,7 @@ export class PlanProizvodnjeReadService {
       SELECT * FROM (${this.effectiveOpsInner(Prisma.empty)}) eff
       WHERE ${EFF_FILTER} AND ${OPEN_OPS}
         AND (broj_crteza ILIKE ${like} OR rn_ident_broj ILIKE ${like} OR naziv_dela ILIKE ${like})
-      ORDER BY effective_machine_code ASC NULLS LAST, broj_crteza ASC, rn_ident_broj ASC, operacija ASC
+      ORDER BY broj_crteza ASC NULLS LAST, rn_ident_broj ASC, operacija ASC
       LIMIT ${SEARCH_LIMIT}`);
     return { data: jsonSafe(data) };
   }

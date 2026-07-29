@@ -217,12 +217,15 @@ export function useMachines() {
 }
 
 /** Red operacija po mašini (RPC paginacija) — vraća { rows, has_more, next_… }. */
-export function useMachineOperations(machine: string | null, offset = 0, limit = 100) {
+export function useMachineOperations(machine: string | null, offset = 0, limit = 100, q = '') {
+  const term = q.trim();
   return useQuery({
-    queryKey: [...KEYS.operations, 'machine', machine, offset, limit],
+    queryKey: [...KEYS.operations, 'machine', machine, offset, limit, term],
     enabled: !!machine,
     queryFn: () =>
-      apiFetch<{ data: MachineOpsResult }>(`${BASE}/operations${qs({ machine: machine ?? '', offset, limit })}`),
+      apiFetch<{ data: MachineOpsResult }>(
+        `${BASE}/operations${qs({ machine: machine ?? '', offset, limit, q: term || undefined })}`,
+      ),
   });
 }
 
@@ -236,17 +239,20 @@ export const MACHINE_WO_PAGE = 100;
  * (append + re-sort BE-a je već primenjen po strani, pa je append dovoljan uz stabilan
  * BE redosled prioriteta). Vraća { rows, hasMore, loadMore, loadingMore, ...query }.
  */
-export function useMachineOperationsAccum(machine: string | null) {
+export function useMachineOperationsAccum(machine: string | null, q = '') {
   const qc = useQueryClient();
   const [loadingMore, setLoadingMore] = useState(false);
-  const key = [...KEYS.operations, 'machine', machine, 0, MACHINE_WO_PAGE] as const;
+  // 040/26: crtež/RN filter je sad SERVER-side (u ključu + URL-u), pa „Još RN" paginacija
+  // radi i nad filtriranim skupom (crtež iza prvih 100 RN). Prazan term = ceo red mašine.
+  const term = q.trim();
+  const key = [...KEYS.operations, 'machine', machine, 0, MACHINE_WO_PAGE, term] as const;
 
   const query = useQuery({
     queryKey: key,
     enabled: !!machine,
     queryFn: () =>
       apiFetch<{ data: MachineOpsResult }>(
-        `${BASE}/operations${qs({ machine: machine ?? '', offset: 0, limit: MACHINE_WO_PAGE })}`,
+        `${BASE}/operations${qs({ machine: machine ?? '', offset: 0, limit: MACHINE_WO_PAGE, q: term || undefined })}`,
       ),
   });
 
@@ -259,7 +265,7 @@ export function useMachineOperationsAccum(machine: string | null) {
     setLoadingMore(true);
     try {
       const next = await apiFetch<{ data: MachineOpsResult }>(
-        `${BASE}/operations${qs({ machine, offset: result.next_work_order_offset, limit: MACHINE_WO_PAGE })}`,
+        `${BASE}/operations${qs({ machine, offset: result.next_work_order_offset, limit: MACHINE_WO_PAGE, q: term || undefined })}`,
       );
       const cur = qc.getQueryData<{ data: MachineOpsResult }>(key);
       const curRows = cur?.data.rows ?? rows;
@@ -271,7 +277,7 @@ export function useMachineOperationsAccum(machine: string | null) {
     } finally {
       setLoadingMore(false);
     }
-  }, [machine, result, rows, loadingMore, qc, key]);
+  }, [machine, result, rows, loadingMore, qc, key, term]);
 
   return { rows, hasMore, loadMore, loadingMore, isLoading: query.isLoading, isError: query.isError, isFetching: query.isFetching, refetch: query.refetch };
 }

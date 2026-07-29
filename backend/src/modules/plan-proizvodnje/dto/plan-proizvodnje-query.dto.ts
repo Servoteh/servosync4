@@ -14,6 +14,12 @@ export class OperationsQueryDto {
   @IsOptional() @IsString() dept?: string;
   @IsOptional() @IsNumberString() limit?: string;
   @IsOptional() @IsNumberString() offset?: string;
+  /**
+   * Server-side crtež/RN filter za „Po mašini" (040/26). Klijentski filter je radio SAMO
+   * nad prvih ~100 učitanih RN, pa crtež van tog prozora nikad nije bio pronađen; `q` se
+   * primenjuje u bazi PRE paginacije po RN (ILIKE broj_crteza/rn_ident_broj).
+   */
+  @IsOptional() @IsString() q?: string;
 }
 
 export class SearchOpsQueryDto {

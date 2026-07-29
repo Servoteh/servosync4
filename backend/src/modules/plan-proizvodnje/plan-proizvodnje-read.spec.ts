@@ -115,3 +115,54 @@ describe("effectiveOpsInner — kanon v_production_operations_effective", () => 
     expect(idxFilter).toBeLessThan(idxLateral);
   });
 });
+
+describe("machineOps — 040/26 server-side crtež/RN filter", () => {
+  function svcWithCapture() {
+    const calls: Prisma.Sql[] = [];
+    const prisma = {
+      $queryRaw: jest.fn(async (sql: Prisma.Sql) => {
+        calls.push(sql);
+        return [] as unknown[];
+      }),
+    };
+    const svc = new PlanProizvodnjeReadService(prisma as never, {} as never);
+    const priv = svc as unknown as {
+      machineOps: (m: string, l: number, o: number, q?: string) => Promise<unknown>;
+    };
+    return { priv, calls };
+  }
+
+  it("q prisutan → ILIKE broj_crteza/rn_ident_broj u WHERE (dohvat i iza prvih 100 RN)", async () => {
+    const { priv, calls } = svcWithCapture();
+    await priv.machineOps("12.1", 100, 0, "12345");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain("broj_crteza ILIKE");
+    expect(calls[0].sql).toContain("rn_ident_broj ILIKE");
+    // filter je parametrizovan (bez string concat) — vrednost je bind, ne literal.
+    expect(calls[0].values).toContain("%12345%");
+  });
+
+  it("q prazan → bez ILIKE filtera (ceo red mašine)", async () => {
+    const { priv, calls } = svcWithCapture();
+    await priv.machineOps("12.1", 100, 0, "");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).not.toContain("broj_crteza ILIKE");
+  });
+
+  it("q izostavljen → bez ILIKE filtera", async () => {
+    const { priv, calls } = svcWithCapture();
+    await priv.machineOps("12.1", 100, 0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).not.toContain("broj_crteza ILIKE");
+  });
+
+  it("prazna mašina → nema query-ja (rani izlaz)", async () => {
+    const { priv, calls } = svcWithCapture();
+    const res = (await priv.machineOps("", 100, 0, "x")) as {
+      data: { rows: unknown[]; has_more: boolean };
+    };
+    expect(calls).toHaveLength(0);
+    expect(res.data.rows).toEqual([]);
+    expect(res.data.has_more).toBe(false);
+  });
+});
