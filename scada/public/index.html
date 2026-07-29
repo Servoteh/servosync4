@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kotlarnica SCADA — Servoteh</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hdr">
+    <div class="brand"><span class="logo">❄</span><span class="logo flame">🔥</span> KOTLARNICA <small>SERVOTEH · SCADA</small></div>
+    <div class="hdr-right">
+      <nav class="nav"><a href="/" class="active">Kotlarnica</a><a href="/loxone.html">Nova zgrada</a><a href="/sigen.html">Solarna</a><a href="/bluelog.html">FNE</a><a href="/hala5.html">Hala 5</a></nav>
+      <span id="conn" class="badge">--</span>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <div id="alarmbar" class="alarmbar hidden"></div>
+
+  <!-- Trenutni rezim (cita se sa PLC-a) -->
+  <section class="modebar" id="modebar"></section>
+
+  <!-- Sinoptik postrojenja -->
+  <section class="plantwrap"><div id="plant"></div></section>
+
+  <main>
+    <h2 class="sec">ZONE</h2>
+    <section class="zones" id="zones"></section>
+
+    <div class="grid2">
+      <div>
+        <h2 class="sec">RASPORED · TAJMERI</h2>
+        <section id="sched"></section>
+      </div>
+      <div>
+        <h2 class="sec">STATUS &amp; ALARMI</h2>
+        <section id="statusbox"></section>
+      </div>
+    </div>
+
+    <h2 class="sec">RUCNE KOMANDE <small>(klik traži potvrdu — menja PLC uživo)</small></h2>
+    <section class="manual" id="manual"></section>
+
+    <h2 class="sec">TRENDOVI <small>(poslednja 24h)</small></h2>
+    <section><div class="panel glass"><canvas id="trend" height="220"></canvas>
+      <div id="trendleg" class="trendleg"></div></div></section>
+  </main>
+
+  <footer class="foot">
+    <span>Unitronics JZ20-J-T40 · PCOM/TCP 192.168.75.25:502</span>
+    <span id="modeinfo"></span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

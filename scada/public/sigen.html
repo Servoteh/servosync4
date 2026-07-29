@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solarna elektrana — Sigenergy</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hdr">
+    <div class="brand">☀️ SOLARNA <small>SERVOTEH · Sigenergy</small></div>
+    <div class="hdr-right">
+      <nav class="nav"><a href="/">Kotlarnica</a><a href="/loxone.html">Nova zgrada</a><a href="/sigen.html" class="active">Solarna</a><a href="/bluelog.html">FNE</a><a href="/hala5.html">Hala 5</a></nav>
+      <span id="conn" class="badge">--</span>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <main>
+    <h2 class="sec">SISTEMI <small>(uživo, osvežavanje ~5 min — cloud limit · svi sistemi odjednom)</small></h2>
+    <section id="systems"></section>
+  </main>
+
+  <footer class="foot">
+    <span id="hostinfo">Sigenergy Cloud OpenAPI</span>
+    <span id="modeinfo"></span>
+  </footer>
+
+  <script src="sigen.js"></script>
+</body>
+</html>

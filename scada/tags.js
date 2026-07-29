@@ -1,0 +1,117 @@
+// Tag mapa kotlarnice - ZVANICNI opisi iz ZIVOG PLC programa (program_29_06_2026.U90)
+// PLC: Unitronics JZ20-J-T40, Modbus/TCP slave @ 192.168.75.25:502 (SI214=1).
+//
+// UNITRONICS MODBUS SLAVE ADRESIRANJE (offset po tipu operanda):
+//   MI -> Holding Register, adresa = index           (FC03 read / FC06,16 write)
+//   MB -> Coil,            adresa = index             (FC01 read / FC05 write)
+//   I  -> Coil (read-only),adresa = 4000 + index      (FC01 read)
+//   O  -> Coil,            adresa = 5000 + index      (FC01 read / FC05 write)
+// (Ako vrednosti budu pomerene za 1, probati +1 - "Modbus 1-based, Unitronics 0-based".)
+//
+// scale: vrednost / scale za prikaz (temperature x10: 235 -> 23.5)
+// kind: temp|setpoint|sched|device|zoneout|status|swinput|alarm|manual|mode|cmd
+
+const TAGS = [
+  // ---------------- MERENE TEMPERATURE (MI, R) ----------------
+  { name:'T_SPOLJA',    op:'MI20', type:'MI', addr:20, access:'r', kind:'temp', scale:10, unit:'°C', label:'Spolja',        zone:'SPOLJA' },
+  { name:'T_SUDA',      op:'MI21', type:'MI', addr:21, access:'r', kind:'temp', scale:10, unit:'°C', label:'Sud',           zone:'SUDA' },
+  { name:'T_CNC',       op:'MI22', type:'MI', addr:22, access:'r', kind:'temp', scale:10, unit:'°C', label:'CNC radionica', zone:'CNC' },
+  { name:'T_ZAVAR',     op:'MI23', type:'MI', addr:23, access:'r', kind:'temp', scale:10, unit:'°C', label:'Zavarivanje',   zone:'ZAVARIVANJE' },
+  { name:'T_MONTAZA1',  op:'MI24', type:'MI', addr:24, access:'r', kind:'temp', scale:10, unit:'°C', label:'Montaza 1',     zone:'MONTAZA' },
+  { name:'T_MONTAZA2',  op:'MI25', type:'MI', addr:25, access:'r', kind:'temp', scale:10, unit:'°C', label:'Montaza 2',     zone:'MONTAZA' },
+  { name:'T_HIDRAULIKA',op:'MI26', type:'MI', addr:26, access:'r', kind:'temp', scale:10, unit:'°C', label:'Hidraulika',    zone:'HIDRAULIKA' },
+
+  // ---------------- ZADATE TEMPERATURE / SETPOINT (MI, R/W) ----------------
+  { name:'SP_SPOLJA',    op:'MI30', type:'MI', addr:30, access:'rw', kind:'setpoint', scale:10, unit:'°C', label:'Zadata spolja',      zone:'SPOLJA' },
+  { name:'SP_SUDA_H',    op:'MI31', type:'MI', addr:31, access:'rw', kind:'setpoint', scale:10, unit:'°C', label:'Zadata sud H',       zone:'SUDA' },
+  { name:'SP_SUDA_L',    op:'MI32', type:'MI', addr:32, access:'rw', kind:'setpoint', scale:10, unit:'°C', label:'Zadata sud L',       zone:'SUDA' },
+  { name:'SP_MONTAZA',   op:'MI33', type:'MI', addr:33, access:'rw', kind:'setpoint', scale:10, unit:'°C', label:'Zadata montaza',     zone:'MONTAZA' },
+  { name:'SP_CNC',       op:'MI35', type:'MI', addr:35, access:'rw', kind:'setpoint', scale:10, unit:'°C', label:'Zadata CNC',         zone:'CNC' },
+  { name:'SP_HIDRAULIKA',op:'MI37', type:'MI', addr:37, access:'rw', kind:'setpoint', scale:10, unit:'°C', label:'Zadata hidraulika',  zone:'HIDRAULIKA' },
+  { name:'SP_ZAVAR',     op:'MI39', type:'MI', addr:39, access:'rw', kind:'setpoint', scale:10, unit:'°C', label:'Zadata zavarivanje', zone:'ZAVARIVANJE' },
+
+  // ---------------- RASPORED: SATNICE paljenja/gasenja (MI60-63, BCD HH:MM) ----------------
+  { name:'T_PONPET_ON',  op:'MI60', type:'MI', addr:60, access:'rw', kind:'schedtime', window:'PON-PET', edge:'ON',  label:'PON-PET ukljucenje' },
+  { name:'T_PONPET_OFF', op:'MI61', type:'MI', addr:61, access:'rw', kind:'schedtime', window:'PON-PET', edge:'OFF', label:'PON-PET iskljucenje' },
+  { name:'T_SUBNED_ON',  op:'MI62', type:'MI', addr:62, access:'rw', kind:'schedtime', window:'SUB-NED', edge:'ON',  label:'SUB-NED ukljucenje' },
+  { name:'T_SUBNED_OFF', op:'MI63', type:'MI', addr:63, access:'rw', kind:'schedtime', window:'SUB-NED', edge:'OFF', label:'SUB-NED iskljucenje' },
+
+  // ---------------- RASPORED: aktivni dani (MI50-56, 0/1) ----------------
+  { name:'D_PON', op:'MI50', type:'MI', addr:50, access:'rw', kind:'schedday', label:'Pon' },
+  { name:'D_UTO', op:'MI51', type:'MI', addr:51, access:'rw', kind:'schedday', label:'Uto' },
+  { name:'D_SRE', op:'MI52', type:'MI', addr:52, access:'rw', kind:'schedday', label:'Sre' },
+  { name:'D_CET', op:'MI53', type:'MI', addr:53, access:'rw', kind:'schedday', label:'Cet' },
+  { name:'D_PET', op:'MI54', type:'MI', addr:54, access:'rw', kind:'schedday', label:'Pet' },
+  { name:'D_SUB', op:'MI55', type:'MI', addr:55, access:'rw', kind:'schedday', label:'Sub' },
+  { name:'D_NED', op:'MI56', type:'MI', addr:56, access:'rw', kind:'schedday', label:'Ned' },
+
+  // ---------------- UREDJAJI: status (O) + rucna komanda (MB) + fizicki prekidac (I) ----------------
+  { name:'K1', op:'O0', type:'O', addr:0, access:'r', kind:'device', label:'Kalorifer 1', zone:'MONTAZA',    manual:'RK_K1', sw:null   },
+  { name:'K2', op:'O1', type:'O', addr:1, access:'r', kind:'device', label:'Kalorifer 2', zone:'MONTAZA',    manual:'RK_K2', sw:'SW_K2' },
+  { name:'K3', op:'O2', type:'O', addr:2, access:'r', kind:'device', label:'Kalorifer 3', zone:'MONTAZA',    manual:'RK_K3', sw:'SW_K3' },
+  { name:'K4', op:'O3', type:'O', addr:3, access:'r', kind:'device', label:'Kalorifer 4', zone:'CNC',        manual:'RK_K4', sw:'SW_K4' },
+  { name:'K5', op:'O4', type:'O', addr:4, access:'r', kind:'device', label:'Kalorifer 5', zone:'HIDRAULIKA', manual:'RK_K5', sw:null   },
+  { name:'P1', op:'O5',  type:'O', addr:5,  access:'r', kind:'device', label:'P1 Radionice',          zone:'CNC',        manual:'RK_P1', sw:'SW_P1' },
+  { name:'P2', op:'O6',  type:'O', addr:6,  access:'r', kind:'device', label:'P2 Zavarivanje',        zone:'ZAVARIVANJE',manual:'RK_P2', sw:'SW_P2' },
+  { name:'P3', op:'O7',  type:'O', addr:7,  access:'r', kind:'device', label:'P3 Kancelarije',        zone:'KANCELARIJE',manual:'RK_P3', sw:'SW_P3' },
+  { name:'P4', op:'O17', type:'O', addr:17, access:'r', kind:'device', label:'P4 Montaza i Hidraulika',zone:'MONTAZA',   manual:'RK_P4', sw:null   },
+
+  // rucne komande (MB, R/W) - zvanicni opisi iz programa
+  { name:'RK_K1', op:'MB8',  type:'MB', addr:8,  access:'rw', kind:'manual', label:'Rucno K1' },
+  { name:'RK_K2', op:'MB9',  type:'MB', addr:9,  access:'rw', kind:'manual', label:'Rucno K2' },
+  { name:'RK_K3', op:'MB10', type:'MB', addr:10, access:'rw', kind:'manual', label:'Rucno K3' },
+  { name:'RK_K4', op:'MB11', type:'MB', addr:11, access:'rw', kind:'manual', label:'Rucno K4' },
+  { name:'RK_K5', op:'MB12', type:'MB', addr:12, access:'rw', kind:'manual', label:'Rucno K5' },
+  { name:'RK_P1', op:'MB16', type:'MB', addr:16, access:'rw', kind:'manual', label:'Rucno P1' },
+  { name:'RK_P2', op:'MB17', type:'MB', addr:17, access:'rw', kind:'manual', label:'Rucno P2' },
+  { name:'RK_P3', op:'MB18', type:'MB', addr:18, access:'rw', kind:'manual', label:'Rucno P3 (proveriti)' },
+  { name:'RK_P4', op:'MB19', type:'MB', addr:19, access:'rw', kind:'manual', label:'Rucno P4' },
+
+  // fizicki prekidaci (I, R) - povratna info polozaja rucnog prekidaca
+  { name:'SW_K2', op:'I13', type:'I', addr:13, access:'r', kind:'swinput', label:'K2 prekidac' },
+  { name:'SW_K3', op:'I12', type:'I', addr:12, access:'r', kind:'swinput', label:'K3 prekidac' },
+  { name:'SW_K4', op:'I11', type:'I', addr:11, access:'r', kind:'swinput', label:'K4 prekidac' },
+  { name:'SW_P1', op:'I9',  type:'I', addr:9,  access:'r', kind:'swinput', label:'P1 prekidac' },
+  { name:'SW_P2', op:'I8',  type:'I', addr:8,  access:'r', kind:'swinput', label:'P2 prekidac' },
+  { name:'SW_P3', op:'I7',  type:'I', addr:7,  access:'r', kind:'swinput', label:'P3 prekidac' },
+
+  // ---------------- IZLAZI PO ZONI (T1-T7 grejanje, O) ----------------
+  { name:'T1', op:'O8',  type:'O', addr:8,  access:'r', kind:'zoneout', label:'T1 grejanje', zone:'SPOLJA' },
+  { name:'T2', op:'O9',  type:'O', addr:9,  access:'r', kind:'zoneout', label:'T2 grejanje', zone:'SUDA' },
+  { name:'T3', op:'O10', type:'O', addr:10, access:'r', kind:'zoneout', label:'T3 grejanje', zone:'CNC' },
+  { name:'T4', op:'O11', type:'O', addr:11, access:'r', kind:'zoneout', label:'T4 grejanje', zone:'ZAVARIVANJE' },
+  { name:'T5', op:'O12', type:'O', addr:12, access:'r', kind:'zoneout', label:'T5 grejanje', zone:'MONTAZA' },
+  { name:'T6', op:'O13', type:'O', addr:13, access:'r', kind:'zoneout', label:'T6 grejanje', zone:'MONTAZA' },
+  { name:'T7', op:'O14', type:'O', addr:14, access:'r', kind:'zoneout', label:'T7 grejanje', zone:'HIDRAULIKA' },
+
+  // ---------------- STATUSI (I, R) ----------------
+  { name:'FREKVENTNI_RUN', op:'I2',  type:'I', addr:2,  access:'r', kind:'status', label:'Run frekventni regulator' },
+  { name:'TOPLOTNA_PUMPA', op:'I3',  type:'I', addr:3,  access:'r', kind:'status', label:'Rad toplotne pumpe' },
+  { name:'KOTAO_RAD',      op:'I6',  type:'I', addr:6,  access:'r', kind:'status', label:'Kotao rad' },
+  { name:'PREKIDAC_ONOFF', op:'I15', type:'I', addr:15, access:'r', kind:'status', label:'OFF/ON prekidac' },
+
+  // ---------------- ALARMI ----------------
+  { name:'ALARM_PUMPE',   op:'I4',  type:'I', addr:4,  access:'r', kind:'alarm', label:'Alarm toplotne pumpe' },
+  { name:'ALARM_ZASTITE', op:'I5',  type:'I', addr:5,  access:'r', kind:'alarm', label:'Zastite' },
+  { name:'ALARM_OUT',     op:'O16', type:'O', addr:16, access:'r', kind:'alarm', label:'Alarm (izlaz)' },
+
+  // ---------------- REZIMI / KOMANDE ----------------
+  { name:'GREJ_HLAD',  op:'MB26', type:'MB', addr:26, access:'rw', kind:'mode', label:'GREJANJE / HLADJENJE' },
+  { name:'AUTO_MAN',   op:'MB14', type:'MB', addr:14, access:'rw', kind:'mode', label:'Auto / Rucno (scada)' },
+  { name:'RESET_VFD',  op:'O18',  type:'O',  addr:18, access:'rw', kind:'cmd',  label:'Reset greske frekventnog regulatora' },
+];
+
+const ZONES = [
+  { key:'SPOLJA',      title:'SPOLJNA TEMPERATURA' },
+  { key:'SUDA',        title:'SUD / HAP FLUID' },
+  { key:'CNC',         title:'CNC RADIONICA' },
+  { key:'HIDRAULIKA',  title:'HIDRAULIKA' },
+  { key:'MONTAZA',     title:'MONTAZA' },
+  { key:'ZAVARIVANJE', title:'ZAVARIVANJE' },
+  { key:'KANCELARIJE', title:'KANCELARIJE' },
+];
+
+// Modbus offset po tipu operanda (Unitronics slave)
+const MODBUS_OFFSET = { MI: 0, SI: 4000, MB: 0, I: 4000, O: 5000 };
+
+module.exports = { TAGS, ZONES, MODBUS_OFFSET };

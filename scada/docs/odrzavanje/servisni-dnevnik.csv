@@ -1,0 +1,4 @@
+Datum;Sistem;Ko;Vrsta;Opis radova;Backup (Da/Ne + fajl);Rezultat/Napomena
+29.06.2026;Unitronics;[ime] PRIMER;izmena programa;Dodat senzor temperature za zonu 3, nova MI adresa, azuriran app/tags.js;Da - program_29_06_2026.U90;OK - zona 3 se cita u SCADA, restartovan servis
+15.05.2026;Siemens;[ime] PRIMER;kvar;Hala 5 ne greje zonu 2 - olabavljena stezaljka na kontaktoru pritegnuta;Da - TIA arhiva Hala5_15_05_2026.zip;Reseno - zona 2 ponovo greje, bez dijagnostike u CPU
+;;;;;;

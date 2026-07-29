@@ -1,0 +1,343 @@
+{
+  "host": "192.168.75.15",
+  "user": "FNEServoteh",
+  "fetchedAt": "2026-06-30T07:33:29.700Z",
+  "endpoints": {
+    "/system/information": {
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "body": {
+        "loggerName": "798108 2221 0181",
+        "isFirstVisit": false,
+        "isTrackerModeEnabled": false,
+        "serialNumber": "79810822210181",
+        "model": "X-Control",
+        "licence": {
+          "creationDate": 1626267356,
+          "model": "X-Control",
+          "maxPower": 1000000,
+          "maxDevices": 30,
+          "powerControlSlave": true,
+          "activePowerControl": true,
+          "reactivePowerControl": true,
+          "powerControlMaster": true,
+          "ftpPush": false,
+          "openVpn": false,
+          "ldap": false,
+          "ssl": false,
+          "scep": false,
+          "powerControlModbus": false,
+          "scada": false,
+          "zeroFeedIn": false,
+          "weblogSlaveMode": false,
+          "modbusConfigurator": false,
+          "remotePowerControl": false
+        },
+        "firmware": "30.1.7",
+        "timestamp": 1782804809692,
+        "timeZone": "Europe/Belgrade",
+        "hasAnyUser": true,
+        "hasSupportAccess": true,
+        "operatingMode": "STANDALONE",
+        "hostname": "blue-x22210181"
+      }
+    },
+    "/current-user": {
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "body": {
+        "username": "FNEServoteh",
+        "accessLevel": 2
+      }
+    },
+    "/logger-name": {
+      "status": 405,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "Method Not Allowed"
+    },
+    "/system/licence": {
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "body": {
+        "creationDate": 1626267356,
+        "model": "X-Control",
+        "maxPower": 1000000,
+        "maxDevices": 30,
+        "powerControlSlave": true,
+        "activePowerControl": true,
+        "reactivePowerControl": true,
+        "powerControlMaster": true,
+        "ftpPush": false,
+        "openVpn": false,
+        "ldap": false,
+        "ssl": false,
+        "scep": false,
+        "powerControlModbus": false,
+        "scada": false,
+        "zeroFeedIn": false,
+        "weblogSlaveMode": false,
+        "modbusConfigurator": false,
+        "remotePowerControl": false
+      }
+    },
+    "/overview/system-overview": {
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "body": {
+        "useDhcp": false,
+        "ipAddress": "192.168.75.15",
+        "gateway": "192.168.64.1",
+        "subnetMask": "255.255.224.0",
+        "macAddress": "00:24:80:01:63:fd",
+        "primaryDns": "192.168.64.10",
+        "timeZone": "Europe/Belgrade",
+        "isAlarmActive": true,
+        "plantName": "FNE SERVOTEH",
+        "isFtpPushActive": false,
+        "isOpenVpnActive": false,
+        "isActivePowerActive": true,
+        "isReactivePowerActive": false,
+        "isDirectMarketerEnabled": false
+      }
+    },
+    "/plant": {
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "body": {
+        "loggerName": "798108 2221 0181",
+        "powerDisplay": {
+          "min": 0,
+          "max": 312000,
+          "dataSource": "INVERTER_SUM_SYSTEM",
+          "valueSource": {
+            "deviceId": "atlas",
+            "abbreviationFilter": [
+              "INVERTER_SUM"
+            ]
+          }
+        },
+        "isFirstVisit": false,
+        "loggerPatchState": {
+          "isPatched": false
+        },
+        "isScadaEnabled": false,
+        "isTrackerModeEnabled": false,
+        "hasSupportAccess": true
+      }
+    },
+    "/plant/scada": {
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "body": {
+        "isEnabled": false
+      }
+    },
+    "/plant/scada-get-devices": {
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "body": [
+        {
+          "id": "17407638",
+          "type": "METER",
+          "name": "Janitza UMG 96RM 17407638",
+          "vendor": "Janitza",
+          "model": "UMG 96RM",
+          "address": 1,
+          "doesSupportBroadcast": false,
+          "serial": "17407638",
+          "firmware": "3.08",
+          "driverName": "JANITZA_UMG_SERIES",
+          "settings": {
+            "arrowDirection": "CONSUMER",
+            "role": "IMPORT_FEED_IN",
+            "transformerRatio": {
+              "voltage": {
+                "numerator": 1,
+                "denominator": 1
+              },
+              "current": {
+                "numerator": 1,
+                "denominator": 1
+              }
+            }
+          },
+          "ports": [
+            {
+              "portId": "BM_RS485_2"
+            }
+          ],
+          "capabilities": []
+        },
+        {
+          "id": "500TL01731160",
+          "type": "INVERTER",
+          "name": "KACO blueplanet 50.0 TL3 WM 50.0TL01731160",
+          "vendor": "KACO",
+          "model": "blueplanet 50.0 TL3 WM",
+          "address": 6,
+          "doesSupportBroadcast": true,
+          "serial": "50.0TL01731160",
+          "firmware": "V5.67",
+          "driverName": "KACO_XP_TL3_SERIES",
+          "settings": {
+            "role": "PV"
+          },
+          "ports": [
+            {
+              "portId": "BM_RS485_1"
+            }
+          ],
+          "capabilities": []
+        },
+        {
+          "id": "500TL01741306",
+          "type": "INVERTER",
+          "name": "KACO blueplanet 50.0 TL3 WM 50.0TL01741306",
+          "vendor": "KACO",
+          "model": "blueplanet 50.0 TL3 WM",
+          "address": 4,
+          "doesSupportBroadcast": true,
+          "serial": "50.0TL01741306",
+          "firmware": "V5.67",
+          "driverName": "KACO_XP_TL3_SERIES",
+          "settings": {
+            "role": "PV"
+          },
+          "ports": [
+            {
+              "portId": "BM_RS485_1"
+            }
+          ],
+          "capabilities": []
+        },
+        {
+          "id": "500TL01741307",
+          "type": "INVERTER",
+          "name": "KACO blueplanet 50.0 TL3 WM 50.0TL01741307",
+          "vendor": "KACO",
+          "model": "blueplanet 50.0 TL3 WM",
+          "address": 2,
+          "doesSupportBroadcast": true,
+          "serial": "50.0TL01741307",
+          "firmware": "V5.67",
+          "driverName": "KACO_XP_TL3_SERIES",
+          "settings": {
+            "role": "PV"
+          },
+          "ports": [
+            {
+              "portId": "BM_RS485_1"
+            }
+          ],
+          "capabilities": []
+        },
+        {
+          "id": "500TL01741342",
+          "type": "INVERTER",
+          "name": "KACO blueplanet 50.0 TL3 WM 50.0TL01741342",
+          "vendor": "KACO",
+          "model": "blueplanet 50.0 TL3 WM",
+          "address": 1,
+          "doesSupportBroadcast": true,
+          "serial": "50.0TL01741342",
+          "firmware": "V5.67",
+          "driverName": "KACO_XP_TL3_SERIES",
+          "settings": {
+            "role": "PV"
+          },
+          "ports": [
+            {
+              "portId": "BM_RS485_1"
+            }
+          ],
+          "capabilities": []
+        },
+        {
+          "id": "500TL01742243",
+          "type": "INVERTER",
+          "name": "KACO blueplanet 50.0 TL3 WM 50.0TL01742243",
+          "vendor": "KACO",
+          "model": "blueplanet 50.0 TL3 WM",
+          "address": 3,
+          "doesSupportBroadcast": true,
+          "serial": "50.0TL01742243",
+          "firmware": "V5.67",
+          "driverName": "KACO_XP_TL3_SERIES",
+          "settings": {
+            "role": "PV"
+          },
+          "ports": [
+            {
+              "portId": "BM_RS485_1"
+            }
+          ],
+          "capabilities": []
+        },
+        {
+          "id": "500TL01747753",
+          "type": "INVERTER",
+          "name": "KACO blueplanet 50.0 TL3 WM 50.0TL01747753",
+          "vendor": "KACO",
+          "model": "blueplanet 50.0 TL3 WM",
+          "address": 5,
+          "doesSupportBroadcast": true,
+          "serial": "50.0TL01747753",
+          "firmware": "V5.73",
+          "driverName": "KACO_XP_TL3_SERIES",
+          "settings": {
+            "role": "PV"
+          },
+          "ports": [
+            {
+              "portId": "BM_RS485_1"
+            }
+          ],
+          "capabilities": []
+        },
+        {
+          "id": "SYSTEM",
+          "type": "PLANT",
+          "name": "SYSTEM",
+          "vendor": "meteocontrol GmbH",
+          "model": "SYSTEM",
+          "doesSupportBroadcast": false,
+          "serial": "",
+          "firmware": "",
+          "driverName": "",
+          "settings": {},
+          "ports": []
+        }
+      ]
+    },
+    "/devices": {
+      "status": 400,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "WEB_SERVER_INVALID_REQUEST_DATA"
+    },
+    "/device/values": {
+      "status": 405,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "Method Not Allowed"
+    },
+    "/device/status": {
+      "status": 405,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "Method Not Allowed"
+    },
+    "/device/energy-meter": {
+      "status": 405,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "Method Not Allowed"
+    },
+    "/power-display": {
+      "status": 405,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "Method Not Allowed"
+    },
+    "/alarm/alarms": {
+      "status": 405,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "Method Not Allowed"
+    }
+  }
+}

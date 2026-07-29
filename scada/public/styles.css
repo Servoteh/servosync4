@@ -1,0 +1,230 @@
+/* ===== Kotlarnica SCADA — moderni dark glassmorphism ===== */
+:root{
+  --txt:#e7eef6; --mut:#93a6bb; --edge:rgba(255,255,255,.10); --edge2:rgba(255,255,255,.20);
+  --grn:#2ee27a; --red:#ff5a5a; --amb:#f2b53c; --blue:#3aa0ff; --cyan:#3fe0d8; --orange:#ff8a3c;
+  --glass:rgba(22,32,46,.55); --glass2:rgba(30,44,62,.55);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;color:var(--txt);font-family:"Segoe UI",Tahoma,Arial,sans-serif;font-size:14px;
+  background:#070b11;position:relative;overflow-x:hidden}
+/* ambijentalni obojeni orbovi iza UI-a */
+body::before{content:"";position:fixed;inset:0;z-index:-1;
+  background:
+    radial-gradient(40vw 40vw at 12% 8%, rgba(58,160,255,.18), transparent 60%),
+    radial-gradient(45vw 45vw at 88% 14%, rgba(255,138,60,.14), transparent 60%),
+    radial-gradient(50vw 50vw at 75% 95%, rgba(63,224,216,.14), transparent 60%),
+    linear-gradient(180deg,#091018,#0b1018);}
+
+.glass{background:var(--glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--edge);border-radius:16px;
+  box-shadow:0 8px 30px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.06)}
+
+.hdr{display:flex;justify-content:space-between;align-items:center;padding:12px 20px;
+  background:rgba(12,18,26,.6);backdrop-filter:blur(12px);border-bottom:1px solid var(--edge);position:sticky;top:0;z-index:5}
+.brand{font-size:19px;font-weight:800;letter-spacing:2px;display:flex;align-items:center;gap:6px}
+.brand small{font-size:11px;font-weight:500;color:var(--mut);letter-spacing:1px;margin-left:8px}
+.logo{font-size:16px}.flame{margin-left:-3px}
+.hdr-right{display:flex;gap:14px;align-items:center}
+.clock{font-variant-numeric:tabular-nums;color:var(--mut)}
+.badge{padding:5px 13px;border-radius:20px;font-size:11px;font-weight:800;letter-spacing:1px;background:#445;color:#fff}
+.badge.online{background:linear-gradient(135deg,#1f9d54,#2ee27a);box-shadow:0 0 16px rgba(46,226,122,.45)}
+.badge.sim{background:linear-gradient(135deg,#9a6a16,#e8a13a)}
+.badge.offline{background:linear-gradient(135deg,#7a1f1f,#ff5a5a)}
+
+.alarmbar{margin:12px 18px 0;padding:11px 18px;border-radius:14px;font-weight:800;letter-spacing:.5px;
+  background:linear-gradient(90deg,rgba(255,90,90,.92),rgba(150,30,30,.9));color:#fff;
+  box-shadow:0 0 24px rgba(255,90,90,.35)}
+.alarmbar.hidden{display:none}
+
+/* ===== MODE BAR ===== */
+.modebar{display:flex;gap:16px;padding:16px 18px;flex-wrap:wrap}
+.modecard{flex:1;min-width:300px;padding:16px 18px;display:flex;align-items:center;gap:18px}
+.mc-icon{font-size:40px;width:50px;text-align:center;filter:drop-shadow(0 0 10px rgba(255,255,255,.15))}
+.mc-mid{flex:1}
+.mc-label{font-size:11px;color:var(--mut);letter-spacing:2px;font-weight:700}
+.mc-value{font-size:28px;font-weight:900;letter-spacing:1px;line-height:1.1}
+.mc-value.grej{color:var(--orange);text-shadow:0 0 18px rgba(255,138,60,.5)}
+.mc-value.hlad{color:var(--blue);text-shadow:0 0 18px rgba(58,160,255,.5)}
+.mc-value.auto{color:var(--grn);text-shadow:0 0 16px rgba(46,226,122,.45)}
+.mc-value.man{color:var(--amb)}
+.mtoggle{display:flex;align-items:center;gap:10px}
+.mt-l,.mt-r{font-size:11px;font-weight:800;color:var(--mut);letter-spacing:1px}
+
+/* ===== TOGGLE SWITCH ===== */
+.tgl{display:inline-block;width:56px;height:30px;border-radius:20px;background:rgba(120,140,160,.35);
+  border:1px solid var(--edge2);position:relative;cursor:pointer;transition:background .25s,box-shadow .25s;flex:none}
+.tgl .knob{position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;
+  background:#eef4fb;box-shadow:0 2px 5px rgba(0,0,0,.4);transition:left .25s}
+.tgl.on{background:linear-gradient(135deg,#1f9d54,#2ee27a);box-shadow:0 0 14px rgba(46,226,122,.5)}
+.tgl.on .knob{left:31px}
+/* mode toggle posebne boje */
+.tgl.mgrej.on{background:linear-gradient(135deg,#1c6fb8,#3aa0ff);box-shadow:0 0 14px rgba(58,160,255,.5)}   /* hladjenje */
+.tgl.mgrej.off{background:linear-gradient(135deg,#b5611c,#ff8a3c);box-shadow:0 0 14px rgba(255,138,60,.45)} /* grejanje */
+
+main{padding:4px 18px 28px}
+.sec{font-size:12px;letter-spacing:2px;color:var(--cyan);margin:22px 4px 12px;font-weight:800;
+  display:flex;align-items:center;gap:10px}
+.sec::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--edge2),transparent)}
+.sec small{color:var(--mut);font-weight:500;letter-spacing:.5px}
+
+/* ===== PLANT SYNOPTIC ===== */
+.plantwrap{padding:8px 18px}
+.plant{padding:14px;overflow-x:auto}
+.plant svg{display:block;min-width:780px;width:100%;height:auto}
+.p-box{fill:rgba(40,58,80,.6);stroke:rgba(255,255,255,.22);stroke-width:1.5}
+.p-lbl{fill:#cfe0ef;font:700 12px Segoe UI,Arial;letter-spacing:.5px}
+.p-val{fill:#3fe0d8;font:800 14px Consolas,monospace}
+.p-pipe{stroke:rgba(120,150,180,.4);stroke-width:6;fill:none}
+.p-pipe.flow{stroke:#3aa0ff;stroke-dasharray:10 8;animation:flow 1s linear infinite}
+.p-pipe.flow.heat{stroke:#ff8a3c}
+@keyframes flow{to{stroke-dashoffset:-18}}
+
+/* ===== ZONE TILES ===== */
+.zones{display:grid;grid-template-columns:repeat(auto-fill,minmax(258px,1fr));gap:16px}
+.tile{padding:16px}
+.tile h3{margin:0 0 10px;font-size:13px;letter-spacing:1px;color:#d7e6f4}
+.seg{font-family:"Consolas",monospace;font-size:40px;font-weight:800;color:var(--cyan);
+  text-shadow:0 0 16px rgba(63,224,216,.4);line-height:1}
+.seg .u{font-size:16px;color:var(--mut);margin-left:3px}
+.sub{font-size:11px;color:var(--mut);margin-top:4px}
+
+.spbox{display:flex;align-items:center;gap:6px;margin-top:12px;background:rgba(8,14,22,.5);
+  border:1px solid var(--edge);border-radius:10px;padding:6px 8px}
+.spbox label{font-size:11px;color:var(--mut);flex:1}
+.spbox input{width:62px;background:rgba(0,0,0,.3);border:1px solid var(--edge2);color:var(--txt);border-radius:7px;padding:5px;text-align:right}
+.spbox button{padding:5px 10px;border:1px solid var(--edge2);background:rgba(58,160,255,.25);color:var(--txt);border-radius:7px;cursor:pointer;font-weight:700}
+.spbox button:hover{background:rgba(58,160,255,.4)}
+
+.devrow{display:flex;align-items:center;gap:11px;margin-top:11px;padding-top:10px;border-top:1px solid var(--edge)}
+.devrow .dn{font-size:12px;flex:1}
+.devrow .dst{font-size:10px;font-weight:800;letter-spacing:.5px;padding:2px 7px;border-radius:10px}
+.dst.on{background:rgba(46,226,122,.18);color:var(--grn)}
+.dst.off{background:rgba(255,255,255,.07);color:var(--mut)}
+.swled{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--mut)}
+
+/* ventilator */
+.fan{width:34px;height:34px}
+.fan .blades{transform-origin:20px 20px}
+.fan.on .blades{animation:spin 1.05s linear infinite}
+.fan .ring{fill:none;stroke:rgba(255,255,255,.2);stroke-width:2}
+.fan.on .ring{stroke:rgba(46,226,122,.5)}
+.fan .bl{fill:#6f8aa6}.fan.on .bl{fill:var(--grn)}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* LED */
+.led{width:13px;height:13px;border-radius:50%;background:rgba(255,255,255,.12)}
+.led.on{background:var(--grn);box-shadow:0 0 10px rgba(46,226,122,.8)}
+.led.off{background:rgba(255,255,255,.10)}
+.led.alarm{background:var(--red);box-shadow:0 0 12px rgba(255,90,90,.9);animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:.25}}
+
+.btn-cmd{padding:6px 16px;border:1px solid rgba(242,181,60,.6);background:linear-gradient(135deg,#f2b53c,#d98e1c);color:#1b1206;border-radius:10px;font-weight:800;cursor:pointer}
+
+/* status & alarm panels */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:840px){.grid2{grid-template-columns:1fr}}
+.panel{padding:16px}
+.panel h3{margin:0 0 12px;font-size:12px;letter-spacing:1px;color:#d7e6f4}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--edge);font-size:13px}
+.row .right{display:flex;align-items:center;gap:10px}
+.stxt{font-size:11px;font-weight:800;letter-spacing:.5px;padding:2px 9px;border-radius:11px}
+.stxt.on{background:rgba(46,226,122,.16);color:var(--grn)}
+.stxt.off{background:rgba(255,255,255,.06);color:var(--mut)}
+.stxt.alarm{background:rgba(255,90,90,.2);color:var(--red)}
+
+/* raspored */
+.schedrow{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 2px;border-bottom:1px solid var(--edge)}
+.schedrow .swin{font-weight:800;color:var(--cyan);min-width:92px;letter-spacing:1px}
+.stime{font-size:12px;color:var(--mut);display:flex;align-items:center;gap:6px}
+.stime input[type=time]{background:rgba(0,0,0,.3);border:1px solid var(--edge2);color:var(--txt);border-radius:7px;padding:5px 7px;font-size:14px}
+.stime button{padding:5px 10px;border:1px solid var(--edge2);background:rgba(58,160,255,.25);color:var(--txt);border-radius:7px;cursor:pointer}
+.daystrip{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px}
+.daystrip .dlab{font-size:12px;color:var(--mut);margin-right:4px}
+.daybtn{width:50px;padding:9px 0;border:1px solid var(--edge2);border-radius:12px;background:rgba(255,255,255,.06);color:#fff;font-weight:800;cursor:pointer;transition:.2s}
+.daybtn.on{background:linear-gradient(135deg,#1f9d54,#2ee27a);border-color:transparent;box-shadow:0 0 12px rgba(46,226,122,.4)}
+.daybtn.off{background:rgba(255,255,255,.05);color:#7d92a6}
+
+/* manual grid */
+.manual{margin-top:4px}
+.switchgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+.swcell{display:flex;align-items:center;gap:11px;padding:12px}
+.swcell .swlbl{font-size:12px;line-height:1.25}
+.swcell .swlbl small{color:var(--mut)}
+
+/* navigacija izmedju sajtova */
+.nav{display:flex;gap:4px;margin-right:6px}
+.nav a{color:var(--mut);text-decoration:none;font-size:12px;font-weight:700;padding:5px 11px;border-radius:8px;border:1px solid var(--edge)}
+.nav a.active{color:#fff;background:rgba(58,160,255,.25);border-color:transparent}
+/* Loxone redovi */
+.lxrow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--edge);font-size:13px}
+.lxrow .ln{color:#cfe0ef}
+.lxrow .vread{color:var(--cyan);font-family:Consolas,monospace;font-weight:700}
+.vset{display:flex;align-items:center;gap:6px}
+.vset b{color:var(--cyan);font-family:Consolas,monospace;min-width:30px;text-align:right}
+.vset input{width:58px;background:rgba(0,0,0,.3);border:1px solid var(--edge2);color:var(--txt);border-radius:6px;padding:4px;text-align:right}
+.vset button{padding:4px 9px;border:1px solid var(--edge2);background:rgba(58,160,255,.25);color:var(--txt);border-radius:6px;cursor:pointer}
+/* Loxone sobna pločica */
+.rtop{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px}
+.rmeta{text-align:right}
+.rt{font-size:12px;color:var(--mut);margin-top:8px}
+.rt b{color:var(--cyan);font-family:Consolas,monospace}
+.badge2{font-size:10px;font-weight:800;letter-spacing:.5px;padding:3px 9px;border-radius:11px;background:rgba(255,255,255,.08);color:var(--mut)}
+.badge2.b-cool{background:rgba(58,160,255,.2);color:var(--blue)}
+.badge2.b-heat{background:rgba(255,138,60,.2);color:var(--orange)}
+.badge2.b-ok{background:rgba(46,226,122,.16);color:var(--grn)}
+.steps{display:flex;gap:5px}
+.stepbtn{width:30px;height:30px;border-radius:8px;border:1px solid var(--edge2);background:rgba(255,255,255,.06);color:var(--txt);font-weight:800;cursor:pointer}
+.stepbtn.on{background:linear-gradient(135deg,#1c6fb8,#3aa0ff);border-color:transparent;box-shadow:0 0 10px rgba(58,160,255,.4)}
+.stepbtn.sm{width:26px;height:26px;font-size:16px;line-height:1}
+.cilj{display:flex;align-items:center;gap:6px;justify-content:flex-end;margin-top:8px;font-size:11px;color:var(--mut);font-weight:700;letter-spacing:.5px}
+.cilj b{color:var(--cyan);font-family:Consolas,monospace;font-size:18px;min-width:38px;text-align:center}
+.cilj .cu{font-size:11px;color:var(--mut)}
+.cmode{font-size:11px;color:var(--mut);text-align:right;margin-top:3px}
+
+#trend{width:100%;display:block}
+.trendleg{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--mut)}
+.trendleg .lg{display:flex;align-items:center;gap:5px}
+.trendleg i{width:12px;height:3px;border-radius:2px;display:inline-block}
+
+.foot{display:flex;justify-content:space-between;padding:12px 18px;font-size:11px;color:var(--mut);border-top:1px solid var(--edge)}
+
+/* ===== SIGENERGY / blue'Log (solarna) ===== */
+.zone{padding:15px 16px}
+.zone.dim{opacity:.45}
+/* paneli po sistemu (Solarna — svi sistemi odjednom) */
+.sysblock{padding:14px 16px;margin:14px 0}
+.syshead{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;
+  padding-bottom:10px;border-bottom:1px solid var(--edge)}
+.sysn{font-size:15px;font-weight:800;letter-spacing:.5px;color:#dfeaf5}
+.sysmode{font-size:11px;font-weight:700;color:var(--mut);background:rgba(255,255,255,.06);
+  border:1px solid var(--edge);border-radius:12px;padding:4px 10px;white-space:nowrap}
+.zname{font-size:11px;letter-spacing:1px;color:var(--mut);font-weight:700;text-transform:uppercase}
+.zval{margin-top:8px;font-family:"Consolas",monospace;font-size:34px;font-weight:800;color:var(--cyan);
+  text-shadow:0 0 16px rgba(63,224,216,.35);line-height:1;display:flex;align-items:baseline;gap:4px}
+.zval .zu{font-size:14px;color:var(--mut);font-weight:600}
+.sysbar{display:flex;align-items:center;gap:10px;margin:14px 2px 2px}
+.syslbl{font-size:11px;letter-spacing:1px;color:var(--mut);font-weight:700;text-transform:uppercase}
+.sysbar select{background:rgba(8,14,22,.7);border:1px solid var(--edge2);color:var(--txt);
+  border-radius:9px;padding:7px 12px;font-size:14px;font-weight:600;cursor:pointer}
+.sysbar b{color:var(--cyan)}
+.modebtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.modebtn{padding:8px 14px;border:1px solid var(--edge2);background:rgba(255,255,255,.05);color:var(--txt);
+  border-radius:10px;font-weight:700;cursor:pointer;transition:.2s;font-size:12px}
+.modebtn:hover{background:rgba(58,160,255,.25)}
+.modebtn.active{background:linear-gradient(135deg,#1f9d54,#2ee27a);border-color:transparent;
+  box-shadow:0 0 12px rgba(46,226,122,.4);color:#06210f}
+
+/* ===== HALA 5 (Siemens) ===== */
+.kalgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px}
+.kalcell{display:flex;flex-direction:column;align-items:center;gap:5px;padding:12px 8px;cursor:pointer;
+  border-radius:14px;transition:.15s;position:relative}
+.kalcell:hover{border-color:var(--edge2);transform:translateY(-1px)}
+.kalcell.on{box-shadow:0 0 14px rgba(46,226,122,.35);border-color:rgba(46,226,122,.4)}
+.kalcell .kln{font-weight:800;letter-spacing:1px;font-size:15px}
+.kalcell .klc{font-size:11px;color:var(--grn);height:14px}
+.warn-note{color:var(--amb)}
+.schedrow2{display:flex;align-items:center;gap:7px;margin-top:9px}
+.schedrow2 .sl{font-size:11px;color:var(--mut);min-width:54px}
+.schedrow2 b{font-family:Consolas,monospace;color:var(--cyan);min-width:22px;text-align:right;font-size:16px}
+.modebtn.sm{padding:5px 9px;font-size:12px}

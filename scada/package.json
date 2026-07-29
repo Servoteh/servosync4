@@ -1,0 +1,21 @@
+{
+  "name": "kotlarnica-scada",
+  "version": "0.2.0",
+  "description": "Servoteh kotlarnica SCADA — PCOM most ka Unitronics JZ20-J-T40 + web UI. Deploy: Windows servis na Win2019 VM, pristup preko Cloudflare Tunnel.",
+  "main": "server.js",
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "start": "node server.js",
+    "test:connection": "node test-connection.js",
+    "loxone:discover": "node loxone/discover.js",
+    "bluelog:discover": "node bluelog/discover.js",
+    "sigen:discover": "node sigen/discover.js",
+    "service:install": "node service/install.js",
+    "service:uninstall": "node service/uninstall.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0",
+    "node-windows": "^1.0.0-beta.8"
+  }
+}
