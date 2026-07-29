@@ -9,8 +9,16 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
+import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { formatDateTime, formatDecimal } from '@/lib/format';
-import { useArtikal, codeRefLabel, type ItemDetail } from '@/api/masters';
+import {
+  useArtikal,
+  codeRefLabel,
+  type ItemBarcode,
+  type ItemDetail,
+  type ItemSupplier,
+  type ItemTranslation,
+} from '@/api/masters';
 
 /**
  * Kartica artikla — pun matični slog (67 BigBit kolona), grupisan po sekcijama iz
@@ -27,6 +35,13 @@ import { useArtikal, codeRefLabel, type ItemDetail } from '@/api/masters';
  * zato ne crta prazne sekcije: cela sekcija „Cene, marže i rabati" i pojedinačna
  * komercijalna polja u mešovitim sekcijama se izostavljaju, a u zaglavlju stoji
  * oznaka „Ograničen prikaz". FE ništa ne sakriva sam — samo ne crta ono čega nema.
+ *
+ * CHILD KOLEKCIJE (Talas B): „Barkodovi" (`R_Artikli_BarKod`), „Prevodi"
+ * (`R_Artikli_Ino`), naziv kvaliteta (`R_KvalitetArtikla`) i „Dobavljači"
+ * (`DobavljaciZaArtikal`) dolaze iz BigBit `.mdb`-a kroz `backend/tools/bigbit-bridge`.
+ * Prve tri su u baznom sloju, „Dobavljači" su KOMERCIJALNI (otkrivaju od koga i uz koji
+ * rok kupujemo). Dok bridge ne odradi prvi prolaz kolekcije su prazne — tada se sekcija
+ * UOPŠTE NE CRTA (prazna tabela izgleda kao izgubljen podatak).
  */
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -84,6 +99,90 @@ function pathValue(v: string | null | undefined): ReactNode {
   );
 }
 
+/**
+ * Sekcija sa tabelom (child kolekcije iz BigBit-a). Telo nije `dl` nego `DataTable`,
+ * koja nosi sopstveni okvir panela — zato ovde nema `rounded-panel` (dupli okvir),
+ * samo naslov istog ranga kao u ostalim sekcijama.
+ */
+function TableSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-2">
+      <h2 className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * Barkodovi ambalaže (`R_Artikli_BarKod`). `multiFactor` je množilac količine za taj
+ * konkretan barkod — kutija od 12 kom nosi 12 (BIGBIT_ARTIKLI.md §3.1).
+ */
+const BARCODE_COLUMNS: Column<ItemBarcode>[] = [
+  {
+    key: 'barCode',
+    header: 'Barkod',
+    render: (r) => <span className="tnums font-medium text-ink">{r.barCode}</span>,
+  },
+  {
+    key: 'multiFactor',
+    header: 'Faktor pakovanja',
+    align: 'right',
+    numeric: true,
+    render: (r) => <span className="tnums">{formatDecimal(r.multiFactor, 3)}</span>,
+  },
+];
+
+/**
+ * Prevodi (`R_Artikli_Ino`). Jezik ostaje BROJ: šifarnik jezika nije pronađen u BigBit
+ * izvozu (BIGBIT_ARTIKLI.md §8, otvoreno pitanje 4) — izmišljati nazive bi bilo pogađanje.
+ */
+const TRANSLATION_COLUMNS: Column<ItemTranslation>[] = [
+  {
+    key: 'languageId',
+    header: 'Jezik (ID)',
+    render: (r) => <span className="tnums">{r.languageId}</span>,
+  },
+  {
+    key: 'foreignName',
+    header: 'Naziv',
+    render: (r) => <span className="text-ink">{r.foreignName}</span>,
+  },
+  { key: 'foreignUnit', header: 'Jedinica mere', render: (r) => txt(r.foreignUnit) },
+];
+
+/** Dobavljači (`DobavljaciZaArtikal`) — KOMERCIJALNO; primarni je boldovan i ide prvi. */
+const SUPPLIER_COLUMNS: Column<ItemSupplier>[] = [
+  {
+    key: 'supplier',
+    header: 'Dobavljač',
+    render: (r) => (
+      <span className="flex flex-wrap items-center gap-2">
+        <span className={r.isPrimary ? 'font-semibold text-ink' : undefined}>
+          {/* Meki ref: dobavljača može i da nema u `customers` — tada ostaje šifra. */}
+          {r.supplier ? r.supplier.name : `Šifra ${r.supplierId}`}
+        </span>
+        {r.isPrimary && <StatusBadge tone="info" label="Primarni" />}
+      </span>
+    ),
+  },
+  {
+    key: 'supplierId',
+    header: 'Šifra',
+    align: 'right',
+    numeric: true,
+    render: (r) => <span className="tnums">{r.supplierId}</span>,
+  },
+  {
+    key: 'leadTimeDays',
+    header: 'Rok isporuke',
+    align: 'right',
+    numeric: true,
+    render: (r) => <span className="tnums">{r.leadTimeDays} dana</span>,
+  },
+];
+
 function ItemSections({ a, commercial }: { a: ItemDetail; commercial: boolean }) {
   return (
     <>
@@ -110,10 +209,43 @@ function ItemSections({ a, commercial }: { a: ItemDetail; commercial: boolean })
         <Field label="Grupa">{codeRefLabel(a.group) ?? txt(a.groupCode)}</Field>
         <Field label="Podgrupa">{codeRefLabel(a.subgroup) ?? txt(a.subgroupCode)}</Field>
         <Field label="Poreklo">{codeRefLabel(a.origin) ?? txt(a.originCode)}</Field>
-        <Field label="Kvalitet (ID)">{num(a.qualityTypeId, 0)}</Field>
+        {/* `item_quality_types` (Talas B) razrešava naziv klase; dok tabela ne stigne
+            iz BigBit-a `qualityType` je null pa ostaje gola šifra. */}
+        <Field label="Kvalitet">
+          {a.qualityType
+            ? `${a.qualityType.qualityCode} — ${a.qualityType.description}`
+            : num(a.qualityTypeId, 0)}
+        </Field>
         <Field label="Tip (HPS)">{txt(a.hps)}</Field>
         <Field label="Redosled">{num(a.sortOrder, 0)}</Field>
       </Section>
+
+      {/* Child kolekcije iz BigBit-a (Talas B). Prazna kolekcija = sekcije NEMA:
+          tabele su na produkciji prazne dok bigbit-bridge ne odradi prvi prolaz, a
+          prazna tabela sa zaglavljem bi izgledala kao izgubljen podatak. */}
+      {a.barcodes.length > 0 && (
+        <TableSection title="Barkodovi">
+          <DataTable columns={BARCODE_COLUMNS} rows={a.barcodes} rowKey={(r) => r.id} />
+        </TableSection>
+      )}
+
+      {a.translations.length > 0 && (
+        <TableSection title="Prevodi">
+          <DataTable
+            columns={TRANSLATION_COLUMNS}
+            rows={a.translations}
+            rowKey={(r) => r.languageId}
+          />
+        </TableSection>
+      )}
+
+      {/* Dobavljači stižu SAMO uz `masters.read` — `a.suppliers` je tada `undefined`,
+          ne prazan niz, pa `?.length` sam po sebi zatvara i taj slučaj. */}
+      {!!a.suppliers?.length && (
+        <TableSection title="Dobavljači">
+          <DataTable columns={SUPPLIER_COLUMNS} rows={a.suppliers} rowKey={(r) => r.id} />
+        </TableSection>
+      )}
 
       {/* Komercijalna sekcija u celini — bez `masters.read` je odgovor uopšte nema,
           pa se ne crta prazna tabla sa samim crticama. */}

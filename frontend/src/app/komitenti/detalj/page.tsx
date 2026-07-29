@@ -9,8 +9,16 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
+import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { formatDate, formatDateTime, formatDecimal } from '@/lib/format';
-import { useKomitent, codeRefLabel, salespersonLabel, type CustomerDetail } from '@/api/masters';
+import {
+  useKomitent,
+  codeRefLabel,
+  salespersonLabel,
+  type CustomerContact,
+  type CustomerDeliveryLocation,
+  type CustomerDetail,
+} from '@/api/masters';
 
 /**
  * Kartica komitenta — pun matični slog (57 BigBit kolona), grupisan po sekcijama iz
@@ -25,6 +33,11 @@ import { useKomitent, codeRefLabel, salespersonLabel, type CustomerDetail } from
  * bezbedan podskup koji je nekad prikazivao stariji ekran `/customers` (sada ugašen
  * i preusmeren ovamo). Ekran zato izostavlja cele sekcije kojih u odgovoru nema i u
  * zaglavlju nosi oznaku „Ograničen prikaz". Redakciju radi backend, ne ovaj fajl.
+ *
+ * CHILD KOLEKCIJE (Talas B): „Kontakt osobe" (`KomitentiKontaktOsobe`) i „Mesta isporuke"
+ * (`MestaIsporuke`) dolaze iz BigBit `.mdb`-a kroz `backend/tools/bigbit-bridge`. Oba su
+ * u BAZNOM sloju (operativni podaci). Dok bridge ne odradi prvi prolaz kolekcije su
+ * prazne — tada se sekcija UOPŠTE NE CRTA (prazna tabela izgleda kao izgubljen podatak).
  */
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -63,6 +76,88 @@ function bool(v: boolean | null | undefined): ReactNode {
   if (v === null || v === undefined) return '—';
   return v ? 'Da' : 'Ne';
 }
+
+/**
+ * Sekcija sa tabelom (child kolekcije iz BigBit-a). Za razliku od `Section`, telo nije
+ * `dl` nego `DataTable`, koja nosi sopstveni okvir panela — zato ovde nema `rounded-panel`
+ * (dupli okvir), samo naslov istog ranga kao u ostalim sekcijama.
+ */
+function TableSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-2">
+      <h2 className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * Kontakt osobe (`KomitentiKontaktOsobe`) — podrazumevana je označena i ide prva
+ * (redosled presuđuje backend). Prazan podatak je „—", nikad prazna ćelija.
+ */
+const CONTACT_COLUMNS: Column<CustomerContact>[] = [
+  {
+    key: 'contactPerson',
+    header: 'Ime',
+    render: (r) => (
+      <span className="flex flex-wrap items-center gap-2">
+        <span className={r.isDefault ? 'font-semibold text-ink' : undefined}>
+          {txt(r.contactPerson)}
+        </span>
+        {r.isDefault && <StatusBadge tone="info" label="Podrazumevani" />}
+      </span>
+    ),
+  },
+  { key: 'phone', header: 'Telefon', render: (r) => <span className="tnums">{txt(r.phone)}</span> },
+  {
+    key: 'mobile',
+    header: 'Mobilni',
+    render: (r) => <span className="tnums">{txt(r.mobile)}</span>,
+  },
+  { key: 'fax', header: 'Faks', render: (r) => <span className="tnums">{txt(r.fax)}</span> },
+  { key: 'email', header: 'Email', render: (r) => txt(r.email) },
+];
+
+/**
+ * Mesta isporuke (`MestaIsporuke`) — GLN je PO LOKACIJI (ne komitentov) i regulatorno
+ * je bitan za SEF e-fakturu, pa ima svoju kolonu.
+ */
+const DELIVERY_COLUMNS: Column<CustomerDeliveryLocation>[] = [
+  {
+    key: 'name',
+    header: 'Naziv',
+    render: (r) => (
+      <span className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-ink">{txt(r.name)}</span>
+        {r.locationNumber && <span className="tnums text-ink-disabled">{r.locationNumber}</span>}
+      </span>
+    ),
+  },
+  {
+    key: 'city',
+    header: 'Mesto',
+    render: (r) => (
+      <span>
+        {txt(r.city)}
+        {r.postalCode ? <span className="tnums text-ink-disabled"> {r.postalCode}</span> : null}
+      </span>
+    ),
+  },
+  { key: 'address', header: 'Adresa', render: (r) => txt(r.address) },
+  { key: 'gln', header: 'GLN', render: (r) => <span className="tnums">{txt(r.gln)}</span> },
+  {
+    key: 'active',
+    header: 'Aktivno',
+    render: (r) =>
+      r.active ? (
+        <StatusBadge tone="success" label="Aktivno" />
+      ) : (
+        <StatusBadge tone="neutral" label="Neaktivno" />
+      ),
+  },
+];
 
 type PibState = 'empty' | 'placeholder' | 'valid' | 'invalid';
 
@@ -141,6 +236,26 @@ function CustomerSections({ k, commercial }: { k: CustomerDetail; commercial: bo
           </>
         )}
       </Section>
+
+      {/* Child kolekcije iz BigBit-a (Talas B). Prazna kolekcija = sekcije NEMA:
+          `customer_contacts` / `customer_delivery_locations` su na produkciji prazne
+          dok bigbit-bridge ne odradi prvi prolaz, a prazna tabela sa zaglavljem bi
+          izgledala kao izgubljen podatak. Oba su u baznom sloju — vidi ih svako. */}
+      {k.contacts.length > 0 && (
+        <TableSection title="Kontakt osobe">
+          <DataTable columns={CONTACT_COLUMNS} rows={k.contacts} rowKey={(r) => r.id} />
+        </TableSection>
+      )}
+
+      {k.deliveryLocations.length > 0 && (
+        <TableSection title="Mesta isporuke">
+          <DataTable
+            columns={DELIVERY_COLUMNS}
+            rows={k.deliveryLocations}
+            rowKey={(r) => r.id}
+          />
+        </TableSection>
+      )}
 
       {commercial && (
         <Section title="Računi">
