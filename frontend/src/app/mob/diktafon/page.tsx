@@ -113,6 +113,8 @@ export default function MobDiktafonPage() {
   const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
   // Ogledalo `recording` za slušače događaja (visibilitychange) — bez stale closure-a.
   const recordingRef = useRef(false);
+  // Tekst zatečen na početku novog snimanja — novi komad se DODAJE na njega (spajanje diktata).
+  const baseTextRef = useRef('');
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -215,6 +217,8 @@ export default function MobDiktafonPage() {
     setErrKind(null);
     setSent(false);
     setCopied(false);
+    // Zapamti tekst na koji ćemo dodati novi komad (spajanje više snimaka u jedan diktat).
+    baseTextRef.current = text;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const rec = new MediaRecorder(stream);
@@ -274,12 +278,17 @@ export default function MobDiktafonPage() {
         setErrKind('stt');
         return;
       }
-      setText(raw); // pokaži sirov prepis odmah (doterivanje ga zamenjuje ako uspe)
+      // Spajanje: novi komad se DODAJE na tekst zatečen na početku snimanja (baseTextRef),
+      // a ne zamenjuje ga — tako se više snimaka spoji u jedan diktat. Doteruje se samo
+      // novi komad (raw), pa se nakači na (već doteranu) bazu.
+      const base = baseTextRef.current.trimEnd();
+      const prefix = base ? base + '\n\n' : '';
+      setText(prefix + raw); // sirov prepis novog komada odmah (refine ga zamenjuje ako uspe)
       setBusy('refine');
       try {
         const ref = await refineText(raw, 'napomena');
         const doter = ref.data.text?.trim();
-        if (doter) setText(doter);
+        if (doter) setText(prefix + doter);
         setBusy(null);
       } catch (e) {
         // Refine je „lepše, ne obavezno": zadrži sirov prepis, javi mekim tonom.
@@ -332,6 +341,10 @@ export default function MobDiktafonPage() {
       await sendDictation(t);
       setLastSentText(t);
       setSent(true);
+      // Očisti kompoziciju posle slanja: svaki poslati komad je zaseban red, a „diktat"
+      // (povlačenje) spaja SVE neposlate komade u jedan. Mikrofon ostaje za sledeći.
+      setText('');
+      setErrKind(null);
     } catch (e) {
       setError(humanMsg(e, 'Slanje nije uspelo — proveri vezu i pokušaj ponovo.'));
       setErrKind('send');
@@ -368,9 +381,9 @@ export default function MobDiktafonPage() {
           : recording
             ? 'Snima… govori koliko treba, pa tapni Zaustavi'
             : sent
-              ? 'Poslato ✓ — reci Claude-u: „diktat"'
+              ? 'Poslato ✓ — reci „diktat" ili diktiraj još'
               : text
-                ? 'Proveri tekst pa pošalji'
+                ? 'Dodaj još (Snimaj) ili pošalji'
                 : 'Tapni „Snimaj" i govori';
 
   // Dedup ugrađen u gejt: isti nepromenjen tekst kao poslednji poslati → onemogućeno.
@@ -417,7 +430,7 @@ export default function MobDiktafonPage() {
             onClick={() => (recording ? stop() : void start())}
             disabled={!!busy}
             aria-pressed={recording}
-            aria-label={recording ? 'Zaustavi snimanje' : 'Snimaj glas'}
+            aria-label={recording ? 'Zaustavi snimanje' : text ? 'Dodaj još snimak' : 'Snimaj glas'}
             className={`flex min-h-24 w-full items-center justify-center gap-3 rounded-panel border-2 text-xl font-semibold transition-colors disabled:opacity-50 ${FOCUS} ${
               recording
                 ? 'border-status-danger/60 bg-status-danger-bg text-status-danger active:bg-status-danger/15'
@@ -432,7 +445,7 @@ export default function MobDiktafonPage() {
             ) : (
               <>
                 <Mic className="h-7 w-7" aria-hidden />
-                Snimaj
+                {text ? 'Dodaj još' : 'Snimaj'}
               </>
             )}
           </button>
@@ -441,6 +454,14 @@ export default function MobDiktafonPage() {
             Snimanje glasa nije dostupno na ovom uređaju/pregledaču. Otvori stranicu u
             novijem pregledaču (Chrome/Safari) uz dozvolu za mikrofon.
           </p>
+        )}
+
+        {/* Poslato + tekst očišćen: potvrda i poziv da diktira još (spajanje komada). */}
+        {sent && !text && (
+          <div className="flex items-center gap-2 rounded-control border border-status-success/40 bg-status-success-bg px-3 py-2.5 text-sm font-medium text-status-success">
+            <Check className="h-5 w-5 shrink-0" aria-hidden />
+            Poslato ✓ — reci Claude-u „diktat". Možeš odmah da diktiraš još; spojiću sve.
+          </div>
         )}
 
         {/* Greška prepisa (nema teksta) — mikrofon iznad je „pokušaj ponovo". */}
@@ -549,11 +570,11 @@ export default function MobDiktafonPage() {
         )}
 
         {/* Prazno stanje — kratko uputstvo (bez teksta i bez snimanja). */}
-        {!text && !recording && !busy && errKind !== 'stt' && (
+        {!text && !recording && !busy && !sent && errKind !== 'stt' && (
           <p className="px-2 text-center text-sm text-ink-secondary">
             Tapni „Snimaj", govori srpski koliko god treba — ekran se neće ugasiti dok snimaš.
-            Kad tapneš „Zaustavi", tekst se prepiše i doteri, pa ga jednim dugmetom pošalješ
-            Claude-u na računar.
+            Možeš da snimaš više puta zaredom: svaki novi snimak se DODAJE na postojeći tekst.
+            Kad završiš, jednim dugmetom pošalješ sve Claude-u.
           </p>
         )}
       </main>
