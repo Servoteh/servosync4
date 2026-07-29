@@ -38,6 +38,9 @@ import { refineText, sendDictation, transcribeAudio } from '@/api/ai';
 
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
 
+/** Serverski limit (DictationInboxService.MAX_TEXT_LEN) — guard pre round-tripa. */
+const MAX_TEXT_LEN = 10_000;
+
 /** Best-effort kopija: Clipboard API (siguran kontekst) → legacy execCommand fallback. */
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
@@ -85,6 +88,12 @@ export default function MobDiktafonPage() {
   const [errKind, setErrKind] = useState<ErrKind>(null);
   const [sent, setSent] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Dedup: tačan tekst poslednjeg uspešnog slanja — isti nepromenjen tekst se ne
+  // može poslati opet (stari duplikat = mina za sledeći Claude pull; review [8]).
+  const [lastSentText, setLastSentText] = useState('');
+  // „Kopiraj" nema smisla na telefonu (klipbord ne prelazi na Cursor — cela poenta
+  // scenarija B); prikazuje se samo na fine-pointer (desktop) uređajima (review [9]).
+  const [coarsePointer, setCoarsePointer] = useState(false);
 
   const recRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -100,6 +109,17 @@ export default function MobDiktafonPage() {
       if (timerRef.current) clearInterval(timerRef.current);
       recRef.current?.stream?.getTracks().forEach((t) => t.stop());
     };
+  }, []);
+
+  // Touch (coarse pointer) → sakrij „Kopiraj". Medijaupit, NE `navigator.clipboard`
+  // (Clipboard API postoji i na telefonu, pa nije dobar signal — review [9]).
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(pointer: coarse)');
+    const update = () => setCoarsePointer(mq.matches);
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
   }, []);
 
   const supported =
@@ -209,8 +229,9 @@ export default function MobDiktafonPage() {
         setErrKind('refine');
       }
     } catch (e) {
+      // NE brisati postojeći tekst: ponovno snimanje pri grešci ne sme progutati
+      // ono što je već prepisano/dotereno (review MEDIUM [7]).
       setBusy(null);
-      setText('');
       setError(humanMsg(e, 'Prepisivanje nije uspelo. Pokušaj ponovo.'));
       setErrKind('stt');
     }
@@ -237,11 +258,20 @@ export default function MobDiktafonPage() {
   async function send() {
     const t = text.trim();
     if (!t || busy) return;
+    // Klijentski guard dužine — javi pre round-tripa umesto da server vrati 422.
+    if (t.length > MAX_TEXT_LEN) {
+      setError(`Tekst je predugačak (${t.length}/${MAX_TEXT_LEN} znakova). Skrati pa pošalji.`);
+      setErrKind('send');
+      return;
+    }
+    // Dedup: isti nepromenjen tekst se ne šalje dvaput (review [8]).
+    if (sent && t === lastSentText) return;
     setBusy('send');
     setError(null);
     setErrKind(null);
     try {
       await sendDictation(t);
+      setLastSentText(t);
       setSent(true);
     } catch (e) {
       setError(humanMsg(e, 'Slanje nije uspelo — proveri vezu i pokušaj ponovo.'));
@@ -265,6 +295,7 @@ export default function MobDiktafonPage() {
     setErrKind(null);
     setSent(false);
     setCopied(false);
+    setLastSentText('');
     setElapsed(0);
   }
 
@@ -277,11 +308,14 @@ export default function MobDiktafonPage() {
           ? 'Šaljem…'
           : recording
             ? 'Snima… govori, pa zaustavi'
-            : text
-              ? 'Proveri tekst pa pošalji'
-              : 'Pritisni mikrofon i govori';
+            : sent
+              ? 'Poslato ✓ — reci Claude-u: „diktat"'
+              : text
+                ? 'Proveri tekst pa pošalji'
+                : 'Pritisni mikrofon i govori';
 
-  const canSend = !!text.trim() && !busy;
+  // Dedup ugrađen u gejt: isti nepromenjen tekst kao poslednji poslati → onemogućeno.
+  const canSend = !!text.trim() && !busy && text.trim() !== lastSentText;
 
   return (
     <div className="min-h-screen bg-app pb-24">
@@ -302,8 +336,13 @@ export default function MobDiktafonPage() {
       </header>
 
       <main className="mx-auto max-w-2xl space-y-4 p-4">
-        {/* Status linija — jasno stanje toka (snimanje/prepis/doterivanje/slanje). */}
-        <div className="flex items-center justify-center gap-2 text-center text-sm font-medium text-ink-secondary">
+        {/* Status linija — jasno stanje toka (snimanje/prepis/doterivanje/slanje).
+            role=status + aria-live: čitač ekrana najavljuje promene i „Poslato ✓". */}
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center justify-center gap-2 text-center text-sm font-medium text-ink-secondary"
+        >
           {busy && <Loader2 className="h-4 w-4 animate-spin text-accent" aria-hidden />}
           {recording && (
             <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-status-danger" aria-hidden />
@@ -368,6 +407,17 @@ export default function MobDiktafonPage() {
               placeholder="Ovde se pojavljuje prepisan i doteran tekst…"
             />
 
+            {/* Brojač se pojavljuje tek pri dužini blizu limita (review [11]). */}
+            {text.length > 8000 && (
+              <p
+                className={`-mt-1 text-right text-xs tnums ${
+                  text.length > MAX_TEXT_LEN ? 'text-status-danger' : 'text-ink-secondary'
+                }`}
+              >
+                {text.length} / {MAX_TEXT_LEN}
+              </p>
+            )}
+
             {/* Refine je pao — sirov prepis je tu; ponudi ponovni pokušaj (nije blokada). */}
             {errKind === 'refine' && error && (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-sm text-status-warn">
@@ -400,7 +450,7 @@ export default function MobDiktafonPage() {
             )}
 
             <div className="grid grid-cols-1 gap-2">
-              {/* PRIMARNO: pošalji u sanduče (44px+). */}
+              {/* PRIMARNO: pošalji u sanduče (44px+). Onemogućeno dok je isti tekst već poslat. */}
               <Button
                 onClick={() => void send()}
                 loading={busy === 'send'}
@@ -408,25 +458,33 @@ export default function MobDiktafonPage() {
                 className="h-14 text-lg"
               >
                 <Send className="h-5 w-5" aria-hidden />
-                {sent ? 'Pošalji ponovo' : 'Pošalji Claude-u'}
+                Pošalji Claude-u
               </Button>
 
-              <div className="grid grid-cols-2 gap-2">
-                {/* BONUS: kopija za isti-uređaj (best-effort, ne oslanjati se). */}
-                <Button
-                  variant="secondary"
-                  onClick={() => void copy()}
-                  disabled={!text.trim()}
-                  className="h-12"
-                >
-                  {copied ? <Check className="h-5 w-5 text-status-success" aria-hidden /> : <Copy className="h-5 w-5" aria-hidden />}
-                  {copied ? 'Kopirano' : 'Kopiraj'}
-                </Button>
+              {coarsePointer ? (
+                // Telefon (touch): klipbord ne prelazi na Cursor → „Novo" u punu širinu.
                 <Button variant="ghost" onClick={reset} disabled={!!busy} className="h-12">
                   <RotateCcw className="h-5 w-5" aria-hidden />
                   Novo
                 </Button>
-              </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {/* BONUS: kopija za isti-uređaj (desktop, best-effort). */}
+                  <Button
+                    variant="secondary"
+                    onClick={() => void copy()}
+                    disabled={!text.trim()}
+                    className="h-12"
+                  >
+                    {copied ? <Check className="h-5 w-5 text-status-success" aria-hidden /> : <Copy className="h-5 w-5" aria-hidden />}
+                    {copied ? 'Kopirano' : 'Kopiraj'}
+                  </Button>
+                  <Button variant="ghost" onClick={reset} disabled={!!busy} className="h-12">
+                    <RotateCcw className="h-5 w-5" aria-hidden />
+                    Novo
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         )}

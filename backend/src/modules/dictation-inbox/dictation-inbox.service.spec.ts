@@ -1,4 +1,4 @@
-import { UnprocessableEntityException } from "@nestjs/common";
+import { HttpException, UnprocessableEntityException } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
 import { PrismaService } from "../../prisma/prisma.service";
 import { DictationInboxService } from "./dictation-inbox.service";
@@ -15,6 +15,8 @@ function prismaMock() {
         deliveredAt: null,
       }),
       findFirst: jest.fn().mockResolvedValue(null),
+      // Default: 0 nepreuzetih → ispod MAX_UNDELIVERED, insert prolazi.
+      count: jest.fn().mockResolvedValue(0),
     },
   };
 }
@@ -72,6 +74,33 @@ describe("DictationInboxService", () => {
     expect(prisma.dictationInbox.create).toHaveBeenCalledWith({
       data: { userId: 42, text: exact },
     });
+  });
+
+  it("create: MAX_UNDELIVERED nagomilanih → 429 (TooManyRequests), bez upisa", async () => {
+    prisma.dictationInbox.count.mockResolvedValue(
+      DictationInboxService.MAX_UNDELIVERED,
+    );
+    let status = 0;
+    try {
+      await service.create(42, "još jedan diktat");
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpException);
+      status = (e as HttpException).getStatus();
+    }
+    expect(status).toBe(429);
+    expect(prisma.dictationInbox.create).not.toHaveBeenCalled();
+    // Brojanje je skopirano na korisnika (ne globalno).
+    expect(prisma.dictationInbox.count).toHaveBeenCalledWith({
+      where: { userId: 42, deliveredAt: null },
+    });
+  });
+
+  it("create: ispod MAX_UNDELIVERED (49) i dalje upisuje", async () => {
+    prisma.dictationInbox.count.mockResolvedValue(
+      DictationInboxService.MAX_UNDELIVERED - 1,
+    );
+    await service.create(42, "u redu");
+    expect(prisma.dictationInbox.create).toHaveBeenCalled();
   });
 
   // ------------------------------------------------------------------ latest

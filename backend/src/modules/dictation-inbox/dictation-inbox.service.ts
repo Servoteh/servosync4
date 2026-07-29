@@ -1,4 +1,9 @@
-import { Injectable, UnprocessableEntityException } from "@nestjs/common";
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 
 /**
@@ -18,6 +23,12 @@ import { PrismaService } from "../../prisma/prisma.service";
 export class DictationInboxService {
   /** Gornja granica dužine teksta (paritet DTO note; 422 iznad). */
   static readonly MAX_TEXT_LEN = 10_000;
+  /**
+   * Backpressure: koliko NEPREUZETIH diktata korisnik sme da nagomila. Ako Claude
+   * ne povlači (ili neko spamuje), sanduče ne raste beskonačno, a stari duplikati ne
+   * postaju mine za sledeći pull. Preko limita → 429 dok se postojeći ne preuzmu.
+   */
+  static readonly MAX_UNDELIVERED = 50;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -35,6 +46,17 @@ export class DictationInboxService {
     if (text.length > DictationInboxService.MAX_TEXT_LEN) {
       throw new UnprocessableEntityException(
         `Tekst je predugačak (${text.length} znakova; maksimum ${DictationInboxService.MAX_TEXT_LEN}). Pošalji u kraćim delovima.`,
+      );
+    }
+
+    // Backpressure: ne gomilaj beskonačno ako Claude ne povlači (429, ne 500).
+    const undelivered = await this.prisma.dictationInbox.count({
+      where: { userId, deliveredAt: null },
+    });
+    if (undelivered >= DictationInboxService.MAX_UNDELIVERED) {
+      throw new HttpException(
+        `Previše nepreuzetih diktata (${undelivered}). Sačekaj da Claude povuče postojeće pa pošalji ponovo.`,
+        HttpStatus.TOO_MANY_REQUESTS,
       );
     }
 
