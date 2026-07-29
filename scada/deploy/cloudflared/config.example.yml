@@ -1,0 +1,13 @@
+# Cloudflare Tunnel config za "Kotlarnica SCADA".
+# Kopiraj u: C:\Users\<user>\.cloudflared\config.yml  (ili pored cloudflared.exe)
+# Zameni <TUNNEL-ID> i hostname svojim vrednostima.
+
+tunnel: <TUNNEL-ID>
+credentials-file: C:\Servoteh\.cloudflared\<TUNNEL-ID>.json
+
+ingress:
+  # SCADA web aplikacija (lokalni Node servis na VM-u)
+  - hostname: kotlarnica.tvoj-domen.rs
+    service: http://localhost:3000
+  # sve ostalo -> 404
+  - service: http_status:404

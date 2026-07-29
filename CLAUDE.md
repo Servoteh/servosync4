@@ -11,6 +11,8 @@ Ovaj repo je **jedinstven monorepo** — nastao spajanjem ranijih `servosync/bac
 - Frontend (Next.js, dizajn sistem): [frontend/CLAUDE.md](frontend/CLAUDE.md) →
   [frontend/docs/DESIGN_SYSTEM.md](frontend/docs/DESIGN_SYSTEM.md)
 - E2E (Playwright smoke): [e2e/](e2e/) — `npm test` + `npm run summary`.
+- SCADA gateway (PLC/kotlarnice/solarne elektrane): [scada/CLAUDE.md](scada/CLAUDE.md) —
+  **obavezno pre bilo kakvog rada**: Unitronics PLC drži jednu jedinu konekciju i ume da se blokira.
 
 ## Aktivni cilj vs referenca
 
@@ -29,7 +31,7 @@ materijal — ne dira se, ne refaktoriše, i NIJE u gitu** (`.gitignore`, ~2 GB 
 ## Higijena repoa — gde šta ide (pravilo)
 
 **Koren repoa sadrži samo:** `CLAUDE.md`, `README.md`, `.gitignore` i foldere
-(`backend/`, `frontend/`, `e2e/`, `docs/`, `_legacy/`, `.github/`, `.claude/`).
+(`backend/`, `frontend/`, `e2e/`, `scada/`, `docs/`, `_legacy/`, `.github/`, `.claude/`).
 Nikakvi radni/doneseni fajlovi ne stoje u korenu. Kad se pojavi novi fajl, odmah ga smesti:
 
 - **Korisnički zahtevi / doneseni dokumenti** (docx, pdf, skice sa sastanaka) →
@@ -49,6 +51,9 @@ ovoj šemi (uz `git mv` ako je verzionisan i ažuriranje referenci u docs).
 - **backend** → `.github/workflows/deploy-backend.yml` (push na `main`, paths `backend/**`) na
   self-hosted runner-u; usput bake-uje `frontend/out` u image za same-origin `:3000`.
 - **frontend** → Cloudflare Git-integracija vezana za ovaj repo, root dir `frontend/`.
+- **scada** → NE deployuje se odavde: `scada/**` ne okida nijedan workflow. Isporuka je mirror
+  u `servoteh-bridge/scada-app/`, pa `git pull` + restart Windows servisa na bridge VM-u
+  (detalji: [scada/CLAUDE.md](scada/CLAUDE.md)).
 
 Otvorene arhitektonske odluke (blokiraju — potvrda sa Negovanom/Nesom) su u
 [BACKEND_RULES.md §11](backend/docs/BACKEND_RULES.md); ne implementirati ih unapred.

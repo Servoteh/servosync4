@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nova zgrada — Loxone SCADA</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hdr">
+    <div class="brand">🏢 NOVA ZGRADA <small>SERVOTEH · Loxone</small></div>
+    <div class="hdr-right">
+      <nav class="nav"><a href="/">Kotlarnica</a><a href="/loxone.html" class="active">Nova zgrada</a><a href="/sigen.html">Solarna</a><a href="/bluelog.html">FNE</a><a href="/hala5.html">Hala 5</a></nav>
+      <span id="conn" class="badge">--</span>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <main>
+    <h2 class="sec">TEHNIČKA SOBA · POSTROJENJE</h2>
+    <section id="plant" class="zones"></section>
+
+    <h2 class="sec">PROSTORIJE</h2>
+    <section id="rooms" class="zones"></section>
+
+    <h2 class="sec">DVORIŠTE</h2>
+    <section id="yard" class="zones"></section>
+  </main>
+
+  <footer class="foot">
+    <span id="hostinfo">Loxone Miniserver</span>
+    <span id="modeinfo"></span>
+  </footer>
+
+  <script src="loxone.js"></script>
+</body>
+</html>
