@@ -33,4 +33,19 @@ Magacini   | warehouses     | warehouses.sql
 # Cenovnik   | price_list_entries | price_list_entries.sql (TODO: author; needs ple business-key unique + item remap)
 #     (Prodavci: NEVER expose [Password] - plain-text; needs a projection since
 #      mdb-export dumps the whole table).
+#
+# --- TALAS B: 6 child tables that exist ONLY in the .mdb (they are NOT in the
+#     QBigTehn MSSQL copy, so the live sync cannot own them -> no cutover wait,
+#     ACTIVE right away; migration 20260729120000_talas_b_bigbit_child_tables).
+#     Parents (customers/items) stay owned by the MSSQL sync and are untouched here.
+#
+#     NOTE on item_* tables: their item_id is the BIGBIT item code, which maps to
+#     items.external_item_id -- NOT items.id (BIGBIT_ARTIKLI.md 5.1). It is stored
+#     RAW; the masters API resolves the item via external_item_id.
+KomitentiKontaktOsobe | customer_contacts           | customer_contacts.sql
+MestaIsporuke         | customer_delivery_locations | customer_delivery_locations.sql
+R_Artikli_BarKod      | item_barcodes               | item_barcodes.sql
+R_Artikli_Ino         | item_translations           | item_translations.sql
+R_KvalitetArtikla     | item_quality_types          | item_quality_types.sql
+DobavljaciZaArtikal   | item_suppliers              | item_suppliers.sql
 # --- phase 3: the rest of KEEP-SYNC from BB_T_26-analiza-F3-inventar-207-tabela.md

@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import { byId, uniqueIds } from "../../common/relations";
 import { parseBoolParam, type ListItemsQuery } from "./dto/list-items.dto";
 import { canReadCommercial, type MastersActor } from "./masters-access";
 
@@ -124,10 +125,42 @@ const ITEM_FULL_SELECT = {
   ...ITEM_COMMERCIAL_SELECT,
 } as const;
 
+/**
+ * Barkod ambalaže (`item_barcodes`) — uz svaki ide množilac količine (`multiFactor`).
+ * `Decimal` → string u JSON-u (BACKEND_RULES §6).
+ */
+const ITEM_BARCODE_SELECT = {
+  id: true,
+  barCode: true,
+  multiFactor: true,
+} as const;
+
+/** Prevod naziva/JM po jeziku (`item_translations`). Šifarnika jezika nema — ide go broj. */
+const ITEM_TRANSLATION_SELECT = {
+  languageId: true,
+  foreignName: true,
+  foreignUnit: true,
+} as const;
+
+/** Dobavljač artikla (`item_suppliers`) — KOMERCIJALNO (v. `findOne`). */
+const ITEM_SUPPLIER_SELECT = {
+  id: true,
+  supplierId: true,
+  isPrimary: true,
+  leadTimeDays: true,
+} as const;
+
 /** Razrešen šifarnički kod: `{ code, description }`; `description` = null kad šifarnik nije sinkovan. */
 export interface CodeRef {
   code: string;
   description: string | null;
+}
+
+/** Klasa kvaliteta artikla (`item_quality_types`), razrešena po `items.quality_type_id`. */
+export interface ItemQualityTypeRef {
+  id: number;
+  qualityCode: string;
+  description: string;
 }
 
 /**
@@ -148,6 +181,16 @@ export interface CodeRef {
  * `null` — nikad izuzetak, nikad required-relation JOIN (koji bi na praznom
  * šifarniku dao `Inconsistent query result` → 500; isti razlog kao u
  * `common/relations.ts`).
+ *
+ * ⚠️⚠️ CHILD TABELE SE ČITAJU PREKO `external_item_id`, NE PREKO `id`.
+ * `item_barcodes` / `item_translations` / `item_suppliers` dolaze direktno iz BigBit
+ * `.mdb`-a (Talas B, `tools/bigbit-bridge`) i njihov `item_id` je **BigBit šifra
+ * artikla**. `items.id` je QBigTehn-lokalni IDENTITY iz kopije — BigBit šifra živi u
+ * `items.external_item_id` (BIGBIT_ARTIKLI.md §5.1). Upit po `items.id` bi tiho vraćao
+ * TUĐE barkodove/prevode/dobavljače. `external_item_id = 0` znači „nema BigBit
+ * parnjaka" → child upiti se preskaču i kolekcije su prazne.
+ * `quality_type_id` NIJE u tom prostoru — on je pravi FK na `R_KvalitetArtikla` i
+ * razrešava se direktno.
  */
 @Injectable()
 export class ItemsService {
@@ -205,8 +248,9 @@ export class ItemsService {
   }
 
   /**
-   * Jedan artikal + razrešeni nazivi grupe/podgrupe/porekla. Skup kolona zavisi od
-   * `masters.read` (bazni vs. pun karton) — v. `ITEM_BASE_SELECT`.
+   * Jedan artikal + razrešeni nazivi grupe/podgrupe/porekla + child kolekcije
+   * (barkodovi, prevodi, kvalitet; dobavljači samo uz `masters.read`).
+   * Skup kolona zavisi od `masters.read` (bazni vs. pun karton) — v. `ITEM_BASE_SELECT`.
    */
   async findOne(id: number, actor?: MastersActor) {
     const commercial = await canReadCommercial(this.prisma, actor);
@@ -221,11 +265,22 @@ export class ItemsService {
         });
     if (!item) throw new NotFoundException(`Artikal ${id} ne postoji`);
 
-    const [groups, subgroups, origins] = await Promise.all([
-      this.resolveGroups([item.groupCode]),
-      this.resolveSubgroups([item.subgroupCode]),
-      this.resolveOrigins([item.originCode]),
-    ]);
+    // BigBit šifra artikla — jedini ključ pod kojim child tabele znaju ovaj artikal.
+    const bbId = item.externalItemId;
+    const [groups, subgroups, origins, barcodes, translations, qualityType] =
+      await Promise.all([
+        this.resolveGroups([item.groupCode]),
+        this.resolveSubgroups([item.subgroupCode]),
+        this.resolveOrigins([item.originCode]),
+        this.resolveBarcodes(bbId),
+        this.resolveTranslations(bbId),
+        this.resolveQualityType(item.qualityTypeId),
+      ]);
+    // Dobavljač i njegov lead time su komercijalni podatak (od koga i pod kojim
+    // uslovima kupujemo) — bez `masters.read` se i NE ČITAJU iz baze.
+    const suppliers = commercial
+      ? await this.resolveSuppliers(bbId)
+      : undefined;
 
     // Decimal → string u JSON-u (BACKEND_RULES §6). Ostale novčane kolone su u
     // legacy portu `Float` (BigBit `Double`) i ostaju brojevi — to je zatečena
@@ -238,8 +293,78 @@ export class ItemsService {
       group: codeRef(item.groupCode, groups),
       subgroup: codeRef(item.subgroupCode, subgroups),
       origin: codeRef(item.originCode, origins),
+      qualityType,
+      barcodes,
+      translations,
+      ...(suppliers ? { suppliers } : {}),
     };
     return { data, meta: { restricted: !commercial } };
+  }
+
+  // --- child kolekcije iz BigBit `.mdb`-a (Talas B) ---------------------------
+  // Sve tri gađaju `item_id = items.external_item_id` (v. doc-komentar klase).
+  // Tabele su na produkciji PRAZNE dok bridge ne odradi prvi prolaz — prazan niz
+  // je normalno stanje, ne greška.
+
+  /** Barkodovi ambalaže; `multiFactor` (Decimal) → string. */
+  private async resolveBarcodes(externalItemId: number) {
+    if (!externalItemId) return [];
+    const rows = await this.prisma.itemBarcode.findMany({
+      where: { itemId: externalItemId },
+      orderBy: [{ id: "asc" }],
+      select: ITEM_BARCODE_SELECT,
+    });
+    return rows.map((r) => ({ ...r, multiFactor: r.multiFactor.toString() }));
+  }
+
+  /** Prevodi po jeziku; `languageId` ostaje broj (šifarnik jezika ne postoji). */
+  private async resolveTranslations(externalItemId: number) {
+    if (!externalItemId) return [];
+    return this.prisma.itemTranslation.findMany({
+      where: { itemId: externalItemId },
+      orderBy: [{ languageId: "asc" }],
+      select: ITEM_TRANSLATION_SELECT,
+    });
+  }
+
+  /**
+   * Dobavljači artikla + razrešeno ime iz `customers` (meki ref — dobavljač koga
+   * nema u `customers` daje `supplier: null`, nikad 500). Primarni ide prvi.
+   */
+  private async resolveSuppliers(externalItemId: number) {
+    if (!externalItemId) return [];
+    const rows = await this.prisma.itemSupplier.findMany({
+      where: { itemId: externalItemId },
+      orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
+      select: ITEM_SUPPLIER_SELECT,
+    });
+    if (!rows.length) return [];
+    const names = byId(
+      await this.prisma.customer.findMany({
+        where: { id: { in: uniqueIds(rows.map((r) => r.supplierId)) } },
+        select: { id: true, name: true },
+      }),
+    );
+    return rows.map((r) => ({
+      ...r,
+      supplier: names.get(r.supplierId) ?? null,
+    }));
+  }
+
+  /**
+   * Klasa kvaliteta po `items.quality_type_id`. Ovo NIJE BigBit-item prostor —
+   * `IDKvalitetArtikla` je isti broj u originalu i u kopiji. 0 = „nije zadato".
+   */
+  private async resolveQualityType(
+    qualityTypeId: number | null | undefined,
+  ): Promise<ItemQualityTypeRef | null> {
+    if (typeof qualityTypeId !== "number" || qualityTypeId <= 0) return null;
+    return (
+      (await this.prisma.itemQualityType.findUnique({
+        where: { id: qualityTypeId },
+        select: { id: true, qualityCode: true, description: true },
+      })) ?? null
+    );
   }
 
   // --- batch resolveri šifarnika (prazan šifarnik → description null, ne 500) ---

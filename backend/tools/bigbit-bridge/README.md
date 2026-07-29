@@ -111,6 +111,10 @@ unchanged / missing_in_source / trajanje`.
 Podatke pune **samo** ove tabele odavde, pa je rollback bezbedan:
 ```sql
 DELETE FROM item_groups; DELETE FROM item_subgroups; DELETE FROM item_origins;
+-- Talas B
+DELETE FROM customer_contacts; DELETE FROM customer_delivery_locations;
+DELETE FROM item_barcodes; DELETE FROM item_translations;
+DELETE FROM item_quality_types; DELETE FROM item_suppliers;
 ```
 Uklanjanje taska: `bash uninstall-timer.sh` (ostavlja podatke).
 
@@ -124,6 +128,15 @@ Uklanjanje taska: `bash uninstall-timer.sh` (ostavlja podatke).
   `mdb-export` izvozi celu tabelu, faza 2 traži projekciju (ili scrub CSV-a).
   ⚠️ Za tekstualne tabele (imena sa `,` i `"`) proveriti `mdb-export` quoting/escape
   pre uključivanja.
+- **Talas B (aktivno):** `KomitentiKontaktOsobe`, `MestaIsporuke`, `R_Artikli_BarKod`,
+  `R_Artikli_Ino`, `R_KvalitetArtikla`, `DobavljaciZaArtikal` → `customer_contacts`,
+  `customer_delivery_locations`, `item_barcodes`, `item_translations`,
+  `item_quality_types`, `item_suppliers`. Ovih 6 **postoji samo u `.mdb`-u** (nema ih u
+  QBigTehn MSSQL kopiji), pa ih živi MSSQL sync ne poseduje — nema čekanja na cutover,
+  aktivne su odmah. Roditelji (`customers`/`items`) ostaju netaknuti.
+  ⚠️ `item_*` tabele nose **BigBit šifru artikla** u `item_id`; ona odgovara
+  `items.external_item_id`, **ne** `items.id` (v. BIGBIT_ARTIKLI.md §5.1). Bridge je
+  upisuje sirovu, a `masters` API razrešava artikal preko `external_item_id`.
 - **Faza 3:** ostatak KEEP-SYNC liste iz
   [`BB_T_26-analiza-F3-inventar-207-tabela.md`](../../docs/migration/BB_T_26-analiza-F3-inventar-207-tabela.md).
 

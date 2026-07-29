@@ -49,6 +49,9 @@ const ITEM_ROW: Record<string, unknown> = {
   groupCode: "SIR",
   subgroupCode: "SIR-1",
   originCode: "D",
+  qualityTypeId: 3,
+  // BigBit šifra artikla — jedini ključ pod kojim child tabele znaju ovaj artikal
+  // (items.id = 7 je QBigTehn IDENTITY, BIGBIT_ARTIKLI.md §5.1).
   externalItemId: 4711,
   itemDescription: "Lim hladno valjani",
   thickness: 3,
@@ -99,6 +102,14 @@ function prismaMock() {
     itemGroup: { findMany: jest.fn().mockResolvedValue([]) },
     itemSubgroup: { findMany: jest.fn().mockResolvedValue([]) },
     itemOrigin: { findMany: jest.fn().mockResolvedValue([]) },
+    // Talas B child tabele — na produkciji PRAZNE dok bridge ne odradi prvi
+    // prolaz, pa je prazan niz podrazumevano stanje mock-a (kao i u bazi).
+    itemBarcode: { findMany: jest.fn().mockResolvedValue([]) },
+    itemTranslation: { findMany: jest.fn().mockResolvedValue([]) },
+    itemSupplier: { findMany: jest.fn().mockResolvedValue([]) },
+    itemQualityType: { findUnique: jest.fn().mockResolvedValue(null) },
+    // dobavljač = komitent (meki ref); koristi se samo za razrešavanje imena
+    customer: { findMany: jest.fn().mockResolvedValue([]) },
     // `resolvePermissionDecision` čita override sveže iz baze na svaki poziv.
     userPermissionOverride: { findUnique: jest.fn().mockResolvedValue(null) },
     $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
@@ -342,6 +353,173 @@ describe("ItemsService (matični podaci — Artikli)", () => {
       expect(meta.restricted).toBe(true);
       for (const key of COMMERCIAL_KEYS) expect(data).not.toHaveProperty(key);
       expect(prisma.userPermissionOverride.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  // ================================ child kolekcije iz BigBit `.mdb`-a (Talas B)
+
+  describe("child kolekcije — barkodovi, prevodi, kvalitet, dobavljači", () => {
+    const BARKODOVI = [
+      {
+        id: 1,
+        barCode: "8600001",
+        multiFactor: new Prisma.Decimal("1.0000"),
+      },
+      {
+        id: 2,
+        barCode: "8600002",
+        multiFactor: new Prisma.Decimal("12.0000"),
+      },
+    ];
+    const PREVODI = [
+      { languageId: 1, foreignName: "Sheet 3mm", foreignUnit: "pcs" },
+      { languageId: 2, foreignName: "Blech 3mm", foreignUnit: "St" },
+    ];
+    const DOBAVLJACI = [
+      { id: 5, supplierId: 42, isPrimary: true, leadTimeDays: 7 },
+      { id: 9, supplierId: 777, isPrimary: false, leadTimeDays: 21 },
+    ];
+
+    it("prazne tabele (bridge još nije prošao) daju prazne nizove i null kvalitet, ne izuzetak", async () => {
+      mockItem({ ...ITEM_ROW, qualityTypeId: 0 });
+
+      const { data } = await service.findOne(7, KOMERCIJALA);
+
+      expect(data.barcodes).toEqual([]);
+      expect(data.translations).toEqual([]);
+      expect(data.suppliers).toEqual([]);
+      expect(data.qualityType).toBeNull();
+      // qualityTypeId = 0 je legacy „nije zadat" → tabela se i ne dira.
+      expect(prisma.itemQualityType.findUnique).not.toHaveBeenCalled();
+    });
+
+    /**
+     * SRŽ TALASA B: child tabele znaju artikal po BIGBIT šifri
+     * (`items.external_item_id`), a NE po `items.id` (QBigTehn IDENTITY).
+     * Upit po `items.id` bi tiho vratio tuđe barkodove — zato je ovo zaseban test.
+     */
+    it("join ide preko external_item_id (4711), NE preko items.id (7)", async () => {
+      mockItem(ITEM_ROW);
+
+      await service.findOne(7, KOMERCIJALA);
+
+      for (const call of [
+        prisma.itemBarcode.findMany.mock.calls[0],
+        prisma.itemTranslation.findMany.mock.calls[0],
+        prisma.itemSupplier.findMany.mock.calls[0],
+      ]) {
+        const [args] = call as [{ where: { itemId: number } }];
+        expect(args.where).toEqual({ itemId: 4711 });
+        expect(args.where.itemId).not.toBe(7);
+      }
+    });
+
+    it("artikal bez BigBit parnjaka (external_item_id = 0) uopšte ne dira child tabele", async () => {
+      mockItem({ ...ITEM_ROW, externalItemId: 0 });
+
+      const { data } = await service.findOne(7, KOMERCIJALA);
+
+      expect(prisma.itemBarcode.findMany).not.toHaveBeenCalled();
+      expect(prisma.itemTranslation.findMany).not.toHaveBeenCalled();
+      expect(prisma.itemSupplier.findMany).not.toHaveBeenCalled();
+      expect(data.barcodes).toEqual([]);
+      expect(data.translations).toEqual([]);
+      expect(data.suppliers).toEqual([]);
+    });
+
+    it("barkodovi: multiFactor (Decimal) izlazi kao string (BACKEND_RULES §6)", async () => {
+      mockItem(ITEM_ROW);
+      prisma.itemBarcode.findMany.mockResolvedValue(BARKODOVI);
+
+      const { data } = await service.findOne(7, KOMERCIJALA);
+
+      expect(data.barcodes).toEqual([
+        { id: 1, barCode: "8600001", multiFactor: "1" },
+        { id: 2, barCode: "8600002", multiFactor: "12" },
+      ]);
+    });
+
+    it("prevodi i kvalitet stižu i u BAZNOM sloju (nisu komercijalni podatak)", async () => {
+      mockItem(ITEM_ROW);
+      prisma.itemBarcode.findMany.mockResolvedValue(BARKODOVI);
+      prisma.itemTranslation.findMany.mockResolvedValue(PREVODI);
+      prisma.itemQualityType.findUnique.mockResolvedValue({
+        id: 3,
+        qualityCode: "K1",
+        description: "Prva klasa",
+      });
+
+      const { data, meta } = await service.findOne(7, OSNOVNI);
+
+      expect(meta.restricted).toBe(true);
+      expect(data.translations).toEqual(PREVODI);
+      expect(data.barcodes).toHaveLength(2);
+      expect(data.qualityType).toEqual({
+        id: 3,
+        qualityCode: "K1",
+        description: "Prva klasa",
+      });
+      expect(prisma.itemQualityType.findUnique).toHaveBeenCalledWith({
+        where: { id: 3 },
+        select: { id: true, qualityCode: true, description: true },
+      });
+    });
+
+    it("kvalitet: šifra bez reda u šifarniku → null, ne izuzetak", async () => {
+      mockItem(ITEM_ROW);
+      prisma.itemQualityType.findUnique.mockResolvedValue(null);
+
+      const { data } = await service.findOne(7, KOMERCIJALA);
+      expect(data.qualityType).toBeNull();
+    });
+
+    it("dobavljači SA masters.read: primarni prvi, ime iz customers, orphan → supplier null", async () => {
+      mockItem(ITEM_ROW);
+      prisma.itemSupplier.findMany.mockResolvedValue(DOBAVLJACI);
+      // 777 je orphan (dobavljač ne postoji u `customers`) — meki ref, ne 500.
+      prisma.customer.findMany.mockResolvedValue([
+        { id: 42, name: "Metalka d.o.o." },
+      ]);
+
+      const { data } = await service.findOne(7, KOMERCIJALA);
+
+      const [args] = prisma.itemSupplier.findMany.mock.calls[0] as [
+        { orderBy: unknown },
+      ];
+      expect(args.orderBy).toEqual([{ isPrimary: "desc" }, { id: "asc" }]);
+      expect(prisma.customer.findMany).toHaveBeenCalledWith({
+        where: { id: { in: [42, 777] } },
+        select: { id: true, name: true },
+      });
+      expect(data.suppliers).toEqual([
+        {
+          id: 5,
+          supplierId: 42,
+          isPrimary: true,
+          leadTimeDays: 7,
+          supplier: { id: 42, name: "Metalka d.o.o." },
+        },
+        {
+          id: 9,
+          supplierId: 777,
+          isPrimary: false,
+          leadTimeDays: 21,
+          supplier: null,
+        },
+      ]);
+    });
+
+    it("dobavljači BEZ masters.read: ključa nema u odgovoru i tabela se NE ČITA", async () => {
+      mockItem(ITEM_ROW);
+      prisma.itemSupplier.findMany.mockResolvedValue(DOBAVLJACI);
+
+      const { data, meta } = await service.findOne(7, OSNOVNI);
+
+      expect(meta.restricted).toBe(true);
+      // Ključ ne postoji (nije prazan niz) — dobavljač i lead time su komercijala.
+      expect(data).not.toHaveProperty("suppliers");
+      expect(prisma.itemSupplier.findMany).not.toHaveBeenCalled();
+      expect(prisma.customer.findMany).not.toHaveBeenCalled();
     });
   });
 });

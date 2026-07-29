@@ -27,8 +27,10 @@ Konvencije:
 | `CFG_Global` | `global_config` | `GlobalConfig` |
 | `CFG_Sys` | `system_config` | `SystemConfig` |
 | `Cenovnik` | `price_list_entries` | `PriceListEntry` |
+| `DobavljaciZaArtikal` | `item_suppliers` | `ItemSupplier` | 🆕 Talas B — samo u `.mdb`, puni `tools/bigbit-bridge`; `item_id` = BigBit šifra → `items.external_item_id` |
 | `Info` | `notifications` | `Notification` |
 | `Komitenti` | `customers` | `Customer` |
+| `KomitentiKontaktOsobe` | `customer_contacts` | `CustomerContact` | 🆕 Talas B — samo u `.mdb`, puni `tools/bigbit-bridge` |
 | `KomponentePDMCrteza` | `drawing_components` | `DrawingComponent` |
 | `MRP_Potrebe` | `mrp_demands` | `MrpDemand` |
 | `MRP_PotrebeStavke` | `mrp_demand_items` | `MrpDemandItem` |
@@ -36,6 +38,7 @@ Konvencije:
 | `MRP_StanjeArtikala_TMP` | `mrp_item_stock_tmp` | `MrpItemStockTmp` |
 | `MRP_SyncStatus` | `mrp_sync_status` | `MrpSyncStatus` |
 | `Magacini` | `warehouses` | `Warehouse` |
+| `MestaIsporuke` | `customer_delivery_locations` | `CustomerDeliveryLocation` | 🆕 Talas B — samo u `.mdb`, puni `tools/bigbit-bridge`; svaka lokacija nosi svoj GLN |
 | `NacrtPrimopredaje` | `handover_drafts` | `HandoverDraft` |
 | `NacrtPrimopredajeStavke` | `handover_draft_items` | `HandoverDraftItem` |
 | `Nalepnice` | `labels` | `Label` |
@@ -51,7 +54,10 @@ Konvencije:
 | `PrimopredajaPDFCrteza` | `drawing_handover_pdfs` | `DrawingHandoverPdf` |
 | `Prodavci` | `salespeople` | `Salesperson` |
 | `R_Artikli` | `items` | `Item` |
+| `R_Artikli_BarKod` | `item_barcodes` | `ItemBarcode` | 🆕 Talas B — samo u `.mdb`, puni `tools/bigbit-bridge`; `item_id` = BigBit šifra → `items.external_item_id` |
+| `R_Artikli_Ino` | `item_translations` | `ItemTranslation` | 🆕 Talas B — samo u `.mdb`; **composite PK** (`item_id`, `language_id`), izvor nema surogat id |
 | `R_Grupa` | `item_groups` | `ItemGroup` |
+| `R_KvalitetArtikla` | `item_quality_types` | `ItemQualityType` | 🆕 Talas B — samo u `.mdb`; cilj za `items.quality_type_id`; `id` bez sekvence (legacy dodela) |
 | `R_Podgrupa` | `item_subgroups` | `ItemSubgroup` |
 | `R_Poreklo` | `item_origins` | `ItemOrigin` |
 | `R_Tarife` | `tax_rates` | `TaxRate` | ⚠️ van sync-a od 26.07.2026 (4.0-owned) |

@@ -62,7 +62,48 @@ export interface PaymentAccountRef {
   countryCode: string | null;
 }
 
+/*
+ * CHILD KOLEKCIJE (Talas B) — 6 BigBit tabela koje postoje samo u `.mdb` originalu i
+ * stižu kroz `backend/tools/bigbit-bridge`. Dok bridge ne odradi prvi prolaz na produ
+ * SVE su prazne — to je normalno stanje, pa ekrani prazne sekcije prosto ne crtaju.
+ */
+
 // ---------------------------------------------------------------------- ARTIKLI
+
+/** Barkod ambalaže (`R_Artikli_BarKod`); `multiFactor` = množilac količine (Decimal → string). */
+export interface ItemBarcode {
+  id: number;
+  barCode: string;
+  /** Decimal → string. Kutija od 12 kom → „12“. */
+  multiFactor: string;
+}
+
+/**
+ * Prevod naziva/JM po jeziku (`R_Artikli_Ino`). `languageId` je go BROJ — šifarnik
+ * jezika nije pronađen u BigBit izvozu (BIGBIT_ARTIKLI.md §8, otvoreno pitanje 4).
+ */
+export interface ItemTranslation {
+  languageId: number;
+  foreignName: string;
+  foreignUnit: string | null;
+}
+
+/** Klasa kvaliteta (`R_KvalitetArtikla`) razrešena po `qualityTypeId`. */
+export interface ItemQualityTypeRef {
+  id: number;
+  qualityCode: string;
+  description: string;
+}
+
+/** Dobavljač artikla (`DobavljaciZaArtikal`) — KOMERCIJALNO; `supplier` je meki ref. */
+export interface ItemSupplier {
+  id: number;
+  supplierId: number;
+  isPrimary: boolean;
+  leadTimeDays: number;
+  /** Ime iz `customers`; `null` kad dobavljača nema u matičnim podacima. */
+  supplier: { id: number; name: string } | null;
+}
 
 /** Artikal u listi — samo kolone koje tabela prikazuje (VP cena traži `masters.read`). */
 export interface ItemRow {
@@ -142,6 +183,11 @@ export interface ItemBase {
   active: boolean | null;
   signature: string | null;
   createdAt: string | null;
+  // Child kolekcije (Talas B) — prazne dok bridge ne odradi prvi prolaz.
+  /** Razrešen naziv klase kvaliteta za `qualityTypeId` (0 / nepoznat → null). */
+  qualityType: ItemQualityTypeRef | null;
+  barcodes: ItemBarcode[];
+  translations: ItemTranslation[];
 }
 
 /**
@@ -167,6 +213,8 @@ export interface ItemCommercial {
   accountingCode: string | null;
   accountingCode2: string | null;
   supplierId: number | null;
+  /** Puna lista dobavljača sa lead time-om — otkriva od koga i pod kojim uslovima kupujemo. */
+  suppliers: ItemSupplier[];
   // Takse / akcize / carine / uslovi plaćanja
   itemFee: number | null;
   itemExcise: number | null;
@@ -217,6 +265,44 @@ export function useArtikal(id: number | null) {
 
 // -------------------------------------------------------------------- KOMITENTI
 
+/**
+ * Kontakt osoba komitenta (`KomitentiKontaktOsobe`). `Customer.contact` je samo JEDAN
+ * string — ova lista je pravi 1:N (nabavka, knjigovodstvo, direktor…).
+ * Datum rođenja backend NE vraća (lični podatak — v. `customers.service.ts`).
+ */
+export interface CustomerContact {
+  id: number;
+  contactPerson: string | null;
+  phone: string | null;
+  mobile: string | null;
+  fax: string | null;
+  email: string | null;
+  /** `KontaktDefault` — podrazumevana kontakt osoba komitenta. */
+  isDefault: boolean;
+}
+
+/**
+ * Mesto isporuke (`MestaIsporuke`) — svaka lokacija nosi SVOJ GLN (bitno za SEF).
+ * Komercijalna zaduženja lokacije (prodavac, uplatni račun, ruta, kanal prodaje)
+ * backend namerno ne vraća.
+ */
+export interface CustomerDeliveryLocation {
+  id: number;
+  name: string;
+  city: string | null;
+  address: string | null;
+  postalCode: string | null;
+  phone: string | null;
+  fax: string | null;
+  /** `Podrucje` — područje/region isporuke. */
+  area: string | null;
+  gln: string | null;
+  /** `AktivnoMISP`. */
+  active: boolean;
+  /** `BrojMestaIsporuke` — interni broj lokacije kod komitenta. */
+  locationNumber: string | null;
+}
+
 /** Komitent u listi — samo kolone koje tabela prikazuje. */
 export interface CustomerRow {
   id: number;
@@ -257,6 +343,10 @@ export interface CustomerBase {
   note: string | null;
   salespersonId: number | null;
   salesperson: SalespersonRef | null;
+  // Child kolekcije (Talas B) — operativni podaci, pa su i u baznom sloju.
+  // Prazne dok bridge ne odradi prvi prolaz.
+  contacts: CustomerContact[];
+  deliveryLocations: CustomerDeliveryLocation[];
 }
 
 /**

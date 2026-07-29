@@ -69,6 +69,49 @@ const PAYMENT_ACCOUNT_SELECT = {
 } as const;
 
 /**
+ * Kontakt osoba komitenta (`customer_contacts`, Talas B). BAZNI SLOJ — ime i način da
+ * se čovek dobije nisu finansijska tajna, isto kao `Customer.contact`/`phone`/`email`
+ * koji su već ovde.
+ *
+ * `birthDate` NAMERNO nije u listi: `Customer.birthDate` je i danas komercijalni sloj,
+ * pa bi rođendan kontakt osobe bio veća izloženost ličnog podatka nego rođendan samog
+ * komitenta. Kolona se uvozi i čuva, samo se ne servira.
+ */
+const CUSTOMER_CONTACT_SELECT = {
+  id: true,
+  contactPerson: true,
+  phone: true,
+  mobile: true,
+  fax: true,
+  email: true,
+  isDefault: true,
+} as const;
+
+/**
+ * Mesto isporuke (`customer_delivery_locations`, Talas B). BAZNI SLOJ — gde se roba
+ * fizički vozi je operativni podatak (magacin/otprema), a GLN je javni SEF identifikator
+ * lokacije (isto je i na komitentu javno vidljiv podatak kod obveznika e-fakture).
+ *
+ * NEMA ovde (isti fail-closed princip kao na samom komitentu): `salespersonId`,
+ * `paymentAccountId`, `routeId`, `driverId`, `contractCategory`, `generalCategory`,
+ * `salesChannel` — to su komercijalna zaduženja i uslovi po lokaciji. Ako zatrebaju,
+ * dodaju se u zaseban komercijalni `select`, ne u ovaj.
+ */
+const DELIVERY_LOCATION_SELECT = {
+  id: true,
+  name: true,
+  city: true,
+  address: true,
+  postalCode: true,
+  phone: true,
+  fax: true,
+  area: true,
+  gln: true,
+  active: true,
+  locationNumber: true,
+} as const;
+
+/**
  * Read-only pregled matičnog podatka „Komitenti" (BigBit cache `customers`).
  *
  * BACKEND_RULES §3/§11.1: `customers` piše ISKLJUČIVO `customer.syncer.ts` — ovaj
@@ -86,6 +129,14 @@ const PAYMENT_ACCOUNT_SELECT = {
  * „orphan" reference (`salesperson_id = 0` bez prodavca 0, `payment_account_id = 0`)
  * i required-relation JOIN bi dao `Inconsistent query result` → 500
  * (v. `common/relations.ts`).
+ *
+ * CHILD KOLEKCIJE (Talas B): `contacts[]` (`KomitentiKontaktOsobe`) i
+ * `deliveryLocations[]` (`MestaIsporuke`) dolaze direktno iz BigBit `.mdb`-a kroz
+ * `tools/bigbit-bridge` — nema ih u QBigTehn MSSQL kopiji, pa ih `customer.syncer.ts`
+ * ni ne vidi. Oba su u BAZNOM sloju i vezuju se po `customer_id = customers.id`:
+ * PK komitenta se pri BigBit→QBigTehn transferu NE remapira (BIGBIT_KOMITENTI.md §5.1),
+ * pa je ovde — za razliku od artikla — veza direktna. Dok bridge ne odradi prvi prolaz
+ * tabele su prazne; prazan niz je normalno stanje, ne greška.
  */
 @Injectable()
 export class MasterCustomersService {
@@ -154,10 +205,18 @@ export class MasterCustomersService {
     const customer = await this.prisma.customer.findUnique({ where: { id } });
     if (!customer) throw new NotFoundException(`Komitent ${id} ne postoji`);
 
-    const [salespeople, codeTypes, paymentAccount] = await Promise.all([
+    const [
+      salespeople,
+      codeTypes,
+      paymentAccount,
+      contacts,
+      deliveryLocations,
+    ] = await Promise.all([
       this.resolveSalespeople([customer.salespersonId]),
       this.resolveCodeTypes([customer.codeTypeCode]),
       this.resolvePaymentAccount(customer.paymentAccountId),
+      this.resolveContacts(id),
+      this.resolveDeliveryLocations(id),
     ]);
 
     // Decimal → string u JSON-u (BACKEND_RULES §6); ostale procentualne kolone su
@@ -170,6 +229,8 @@ export class MasterCustomersService {
       salesperson: salespeople.get(customer.salespersonId ?? 0) ?? null,
       codeType: codeRef(customer.codeTypeCode, codeTypes),
       paymentAccount,
+      contacts,
+      deliveryLocations,
     };
     return { data, meta: { restricted: false } };
   }
@@ -177,6 +238,7 @@ export class MasterCustomersService {
   /**
    * Bazni karton (samo `directory.read`): isti podskup koji vraća `directory`.
    * Uplatni račun se i NE ČITA — bez `masters.read` nema šta da se prikaže.
+   * Kontakti i mesta isporuke SU ovde: operativni podaci, ne finansijska tajna.
    */
   private async findOneBase(id: number) {
     const customer = await this.prisma.customer.findUnique({
@@ -185,12 +247,38 @@ export class MasterCustomersService {
     });
     if (!customer) throw new NotFoundException(`Komitent ${id} ne postoji`);
 
-    const salespeople = await this.resolveSalespeople([customer.salespersonId]);
+    const [salespeople, contacts, deliveryLocations] = await Promise.all([
+      this.resolveSalespeople([customer.salespersonId]),
+      this.resolveContacts(id),
+      this.resolveDeliveryLocations(id),
+    ]);
     const data = {
       ...customer,
       salesperson: salespeople.get(customer.salespersonId ?? 0) ?? null,
+      contacts,
+      deliveryLocations,
     };
     return { data, meta: { restricted: true } };
+  }
+
+  // --- child kolekcije iz BigBit `.mdb`-a (Talas B) ---------------------------
+
+  /** Kontakt osobe; podrazumevana ide prva. Prazna tabela → prazan niz. */
+  private async resolveContacts(customerId: number) {
+    return this.prisma.customerContact.findMany({
+      where: { customerId },
+      orderBy: [{ isDefault: "desc" }, { id: "asc" }],
+      select: CUSTOMER_CONTACT_SELECT,
+    });
+  }
+
+  /** Mesta isporuke; aktivna prva, pa po nazivu. Prazna tabela → prazan niz. */
+  private async resolveDeliveryLocations(customerId: number) {
+    return this.prisma.customerDeliveryLocation.findMany({
+      where: { customerId },
+      orderBy: [{ active: "desc" }, { name: "asc" }, { id: "asc" }],
+      select: DELIVERY_LOCATION_SELECT,
+    });
   }
 
   // --- batch resolveri (orphan FK → null, nikad 500) ---
