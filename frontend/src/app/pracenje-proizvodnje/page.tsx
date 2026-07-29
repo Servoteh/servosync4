@@ -84,9 +84,16 @@ export default function PracenjePage() {
     async (bigtehnRnId: string) => {
       try {
         const res = await ensureRn.mutateAsync({ workOrderId: bigtehnRnId });
-        if (res.data.id) openRnUuid(res.data.id);
-      } catch {
-        /* ne uspeva ensure → ostani */
+        if (res.data.id) {
+          openRnUuid(String(res.data.id));
+        } else {
+          toast('RN nije pronađen.');
+        }
+      } catch (e) {
+        // Bug 042/26: ranije je greška ovde nestajala bez traga (prazan catch) — klik na
+        // RN kolonu bi „ne radio ništa", što korisnik doživljava kao da se stranica ne
+        // učitava. Sad se svaki neuspeh vidi kroz postojeći toast obrazac.
+        toast(e instanceof ApiError ? e.message : 'RN nije moguće otvoriti.');
       }
     },
     [ensureRn, openRnUuid],
@@ -127,6 +134,7 @@ export default function PracenjePage() {
             rootRn={screen.rootRn}
             onBack={() => backToTab('predmeti')}
             onOpenRnBigtehn={openRnBigtehn}
+            onOpenRnUuid={openRnUuid}
           />
         )}
         {screen.kind === 'rn' && <RnView key={screen.rnId} rnId={screen.rnId} onBack={() => backToTab('predmeti')} />}
