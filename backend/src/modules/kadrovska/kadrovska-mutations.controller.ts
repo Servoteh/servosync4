@@ -275,6 +275,24 @@ export class KadrovskaMutationsController {
   gridUnsetGo(@Req() req: AuthedRequest, @Body() dto: D.GridGoDto) {
     return this.m.gridUnsetGo(this.email(req), dto);
   }
+
+  /**
+   * BOLOVANJE u grid za člana tima (zahtev 041/26). Šef sa pravom odobravanja GO
+   * (`kadrovska.vacreq_manage`, NE urednik grida) unosi bolovanje SVOM članu.
+   * NAMERNO nije `grid_edit` — pun mesečni grid ostaje zatvoren za allowlistu.
+   * Opseg tima presuđuje DB: servis radi belt-proveru `current_user_manages_employee`,
+   * a RPC `kadr_grid_set_sick` ima i interni gejt (SECURITY DEFINER).
+   */
+  @Post("grid/sick")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  gridSetSick(@Req() req: AuthedRequest, @Body() dto: D.GridSickDto) {
+    return this.m.gridSetSick(this.email(req), dto);
+  }
+  @Post("grid/sick/unset")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  gridUnsetSick(@Req() req: AuthedRequest, @Body() dto: D.GridGoDto) {
+    return this.m.gridUnsetSick(this.email(req), dto);
+  }
   @Post("grid/audit")
   @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
   gridAudit(

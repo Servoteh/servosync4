@@ -914,6 +914,62 @@ export class KadrovskaMutationsService {
     );
   }
 
+  /** BOLOVANJE u grid za člana tima (zahtev 041/26). Šef koji SME da odobrava GO
+   *  (ruta iza `kadrovska.vacreq_manage`) unosi bolovanje SVOM članu — Opcija A:
+   *  piše u `work_hours` (bo/subtip), obračunski ispravno, ne samo u `absences`.
+   *
+   *  Dve brane: (1) endpoint guard `vacreq_manage`; (2) RPC `kadr_grid_set_sick`
+   *  ima INTERNI gejt `current_user_manages_employee` (SECURITY DEFINER, štiti i
+   *  vanaplikacione puteve). Ovde je i EKSPLICITNA belt-provera opsega u ISTOJ tx
+   *  (isti obrazac kao `submitVacation` za drugog i `assertGridEditor` — DB je
+   *  autoritet, servis rano odbija van-opsegni IDOR sa jasnom porukom). */
+  gridSetSick(email: string, dto: D.GridSickDto) {
+    return this.mutate(
+      email,
+      dto.clientEventId,
+      "kadr.grid.set_sick",
+      async (tx) => {
+        await this.assertManagesEmployee(tx, dto.employeeId);
+        return this.rpcScalar(
+          tx,
+          Prisma.sql`SELECT kadr_grid_set_sick(${dto.employeeId}::uuid, ${dto.dateFrom}::date, ${dto.dateTo}::date, ${dto.subtype ?? "obicno"}, ${email}) AS v`,
+        );
+      },
+    );
+  }
+  gridUnsetSick(email: string, dto: D.GridGoDto) {
+    return this.mutate(
+      email,
+      dto.clientEventId,
+      "kadr.grid.unset_sick",
+      async (tx) => {
+        await this.assertManagesEmployee(tx, dto.employeeId);
+        return this.rpcScalar(
+          tx,
+          Prisma.sql`SELECT kadr_grid_unset_sick(${dto.employeeId}::uuid, ${dto.dateFrom}::date, ${dto.dateTo}::date) AS v`,
+        );
+      },
+    );
+  }
+
+  /** Belt-provera opsega tima za DEFINER RPC-ove bez allowlist gejta (bolovanje).
+   *  sy15 `current_user_manages_employee` presuđuje (RLS/DEFINER autoritet); servis
+   *  ranom proverom vraća jasan 403 umesto sirovog RAISE-a iz RPC-a (isti obrazac
+   *  kao `submitVacation` za drugog, linija ~100). RPC ionako ponavlja gejt. */
+  private async assertManagesEmployee(
+    tx: Sy15Tx,
+    employeeId: string,
+  ): Promise<void> {
+    const rows = await tx.$queryRaw<{ ok: boolean }[]>(
+      Prisma.sql`SELECT current_user_manages_employee(${employeeId}::uuid) AS ok`,
+    );
+    if (rows[0]?.ok !== true) {
+      throw new ForbiddenException(
+        "Bolovanje možete uneti samo za člana svog tima.",
+      );
+    }
+  }
+
   /** Živa allowlist odluka za DEFINER RPC-ove bez sopstvenog gejta: sy15 presuđuje,
    *  2.0 override je samo ogledalo (guard = gruba kapija, DB = autoritet reda). */
   private async assertGridEditor(tx: Sy15Tx): Promise<void> {
