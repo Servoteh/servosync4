@@ -3,8 +3,10 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  StreamableFile,
   UnprocessableEntityException,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { Prisma, WorkOrder } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
@@ -41,6 +43,12 @@ import {
 } from "./dto/work-order-operation.dto";
 import { WorkOrderNumberingService } from "./work-order-numbering.service";
 import { LaunchNotifyService } from "../handovers/launch-notify.service";
+import {
+  assertPdfMagicBytes,
+  DRAWING_PDF_SELECT,
+  drawingPdfHeaders,
+  drawingPdfMeta,
+} from "../../common/work-order-drawing-pdf.util";
 
 /** Radni status (MODULE_SPEC_radni_nalozi §4): handover_statuses id. */
 export const WO_STATUS = {
@@ -1911,5 +1919,87 @@ export class WorkOrdersService {
     await this.alignSeq(tx, "work_order_nonstandard_parts");
     await this.alignSeq(tx, "work_order_machined_parts");
     await this.alignSeq(tx, "work_order_blanks");
+  }
+
+  // ==========================================================================
+  // Crtež (PDF) za RN bez PDM crteža (038/26) — `work_order_drawing_pdfs`, bytea
+  // u bazi (M1 — nema object storage, isti obrazac kao `plan_proizvodnje_drawings`).
+  // Namenjeno RN-ovima koji su mašinska usluga i NEMAJU PDM crtež (`drawingId`
+  // 0/nepostojeći) — FE ponuda otpremanja se gejtuje na `!rn.drawingId`, ali
+  // backend to ne enforce-uje (RN sa PDM crtežom sme dodatno da nosi i ručno
+  // otpremljen PDF, npr. dopunski crtež kooperacije).
+  // ==========================================================================
+
+  /** RN mora postojati pre otpremanja/listanja crteža. */
+  private async assertWorkOrderExists(workOrderId: number): Promise<void> {
+    const wo = await this.prisma.workOrder.findUnique({
+      where: { id: workOrderId },
+      select: { id: true },
+    });
+    if (!wo) throw new NotFoundException(`RN ${workOrderId} ne postoji`);
+  }
+
+  /**
+   * Otpremi PDF crteža za RN (multipart `file`, ≤20MB — kontroler). Magic-byte
+   * provera (`%PDF-`, isti obrazac kao `pdm-import.service.ts`) jer MIME
+   * zaglavlje iz browsera nije pouzdano.
+   */
+  async uploadDrawingPdf(
+    workOrderId: number,
+    file: Express.Multer.File | undefined,
+    user: AuthUser,
+  ) {
+    await this.assertWorkOrderExists(workOrderId);
+    assertPdfMagicBytes(file);
+
+    const row = await this.prisma.workOrderDrawingPdf.create({
+      data: {
+        workOrderId,
+        fileName: file.originalname,
+        contentType: file.mimetype || "application/pdf",
+        pdfBinary: new Uint8Array(file.buffer),
+        sizeBytes: file.size ? BigInt(file.size) : null,
+        uploadedBy: user.email,
+      },
+      select: DRAWING_PDF_SELECT,
+    });
+    return { data: drawingPdfMeta(row) };
+  }
+
+  /** Lista otpremljenih crteža RN-a (meta, bez binarnog sadržaja). */
+  async listDrawingPdfs(workOrderId: number) {
+    await this.assertWorkOrderExists(workOrderId);
+    const rows = await this.prisma.workOrderDrawingPdf.findMany({
+      where: { workOrderId, deletedAt: null },
+      orderBy: { uploadedAt: "desc" },
+      select: DRAWING_PDF_SELECT,
+    });
+    return { data: rows.map(drawingPdfMeta) };
+  }
+
+  /** Strim PDF sadržaja (inline) — isti obrazac kao `plan-proizvodnje-read.service.ts` streamDrawing. */
+  async streamDrawingPdf(pdfId: number, res: Response): Promise<StreamableFile> {
+    const row = await this.prisma.workOrderDrawingPdf.findFirst({
+      where: { id: pdfId, deletedAt: null },
+      select: { fileName: true, contentType: true, pdfBinary: true },
+    });
+    if (!row?.pdfBinary)
+      throw new NotFoundException(`Crtež ${pdfId} nema sadržaj.`);
+    res.set(drawingPdfHeaders(row.fileName ?? "crtez.pdf", row.contentType));
+    return new StreamableFile(Buffer.from(row.pdfBinary));
+  }
+
+  /** Soft-delete otpremljenog crteža (deleted_at/by). Idempotentno. */
+  async removeDrawingPdf(pdfId: number, user: AuthUser) {
+    const row = await this.prisma.workOrderDrawingPdf.findUnique({
+      where: { id: pdfId },
+      select: { deletedAt: true },
+    });
+    if (!row) throw new NotFoundException(`Crtež ${pdfId} ne postoji`);
+    await this.prisma.workOrderDrawingPdf.updateMany({
+      where: { id: pdfId, deletedAt: null },
+      data: { deletedAt: new Date(), deletedBy: user.email },
+    });
+    return { data: { id: pdfId } };
   }
 }

@@ -2,21 +2,29 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { FileText, Upload } from 'lucide-react';
 import {
   HANDOVER_STATUS,
+  openHandoverDrawingPdf,
   usePendingHandoversByDraft,
   usePrepareHandoverWorkOrder,
+  useDeleteHandoverDrawingPdf,
+  useHandoverDrawingPdfs,
   useRejectHandover,
+  useUploadHandoverDrawingPdf,
   type Handover,
 } from '@/api/handovers';
 import { openDrawingPdf } from '@/api/pdm';
+import { ApiError } from '@/api/client';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField } from '@/components/ui-kit/form-field';
+import { AttachmentInput } from '@/components/ui-kit/attachment-input';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatDateTime } from '@/lib/format';
+import { toast } from '@/lib/toast';
 import {
   ErrorText,
   Field,
@@ -107,6 +115,135 @@ function RejectDialog({
 }
 
 /**
+ * 038/26 — otpremi PDF crteža primopredaje „na pisanju" (pre nego što RN
+ * postoji; ako RN već postoji, backend ga veže na taj isti RN). Isti obrazac
+ * kao `DrawingPdfUploadDialog` u `work-orders/page.tsx` (jedan fajl,
+ * `AttachmentInput` sa `max={1}`).
+ */
+function HandoverDrawingPdfUploadDialog({
+  handoverId,
+  open,
+  onClose,
+}: {
+  handoverId: number;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [files, setFiles] = useState<File[]>([]);
+  const upload = useUploadHandoverDrawingPdf();
+
+  function close() {
+    setFiles([]);
+    upload.reset();
+    onClose();
+  }
+
+  async function submit() {
+    if (!files[0]) return;
+    try {
+      await upload.mutateAsync({ handoverId, file: files[0] });
+      close();
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  const err =
+    upload.error instanceof ApiError ? upload.error.message : (upload.error as Error)?.message;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title="Otpremi crtež (PDF)"
+      footer={
+        <>
+          <button
+            onClick={close}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            Otkaži
+          </button>
+          <Button onClick={submit} loading={upload.isPending} disabled={!files.length}>
+            Otpremi
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-ink-disabled">
+          Dopunski PDF uz ovu primopredaju (npr. crtež koji ne stiže kroz PDM) — do 20 MB.
+        </p>
+        <AttachmentInput
+          value={files}
+          onChange={setFiles}
+          onReject={(m) => toast(m)}
+          max={1}
+          accept={['FILE']}
+          maxBytes={20 * 1024 * 1024}
+        />
+        {err && (
+          <p className="text-sm text-status-danger" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Lista otpremljenih PDF-ova crteža primopredaje (038/26) — pregled + brisanje. */
+function HandoverDrawingPdfList({ handoverId }: { handoverId: number }) {
+  const list = useHandoverDrawingPdfs(handoverId);
+  const del = useDeleteHandoverDrawingPdf();
+  const [openBusyId, setOpenBusyId] = useState<number | null>(null);
+  const rows = list.data?.data ?? [];
+
+  async function onOpen(pdfId: number) {
+    setOpenBusyId(pdfId);
+    try {
+      await openHandoverDrawingPdf(pdfId);
+    } finally {
+      setOpenBusyId(null);
+    }
+  }
+
+  if (list.isLoading || !rows.length) return null;
+
+  return (
+    <ul className="space-y-1.5">
+      {rows.map((r) => (
+        <li
+          key={r.id}
+          className="flex items-center gap-2 rounded-control border border-line bg-surface px-3 py-1.5 text-sm"
+        >
+          <FileText className="h-3.5 w-3.5 shrink-0 text-ink-secondary" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-ink" title={r.fileName}>
+            {r.fileName}
+          </span>
+          <button
+            disabled={openBusyId === r.id}
+            onClick={() => onOpen(r.id)}
+            className="rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
+          >
+            Pregled
+          </button>
+          <Can permission={PERMISSIONS.PRIMOPREDAJE_WRITE}>
+            <button
+              disabled={del.isPending}
+              onClick={() => del.mutate(r.id)}
+              className="rounded-control border border-status-danger px-2 py-1 text-xs text-status-danger hover:bg-status-danger-bg"
+            >
+              Obriši
+            </button>
+          </Can>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
  * Zajednički detalj primopredaje + workflow dugmad "po statusu" — koristi se u
  * tabovima "Na čekanju", "Odobrene" i "Sve primopredaje" (DataTable
  * `renderExpanded`). Podaci dolaze iz reda liste (već enriched na backendu) —
@@ -126,6 +263,8 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
   const [printOpen, setPrintOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  // 038/26: otpremanje crteža (PDF) primopredaje bez RN.
+  const [uploadDrawingPdfOpen, setUploadDrawingPdfOpen] = useState(false);
   const busy = reject.isPending || prepare.isPending;
 
   // Grupno odobri/odbij cele primopredaje (runda 2 t.4) — prikupi SVE PENDING
@@ -209,6 +348,16 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
         >
           Štampaj sve crteže
         </button>
+        {/* 038/26: dopunski PDF crteža uz primopredaju (npr. dok RN još ne postoji). */}
+        <Can permission={PERMISSIONS.PRIMOPREDAJE_WRITE}>
+          <button
+            onClick={() => setUploadDrawingPdfOpen(true)}
+            className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+          >
+            <Upload className="h-3.5 w-3.5" aria-hidden />
+            Otpremi crtež
+          </button>
+        </Can>
         {/* Permission gate po obrascu sa work-orders/page.tsx — dugmad bez
             permisije se kriju (backend enforce vraća 403). Odobri/Odbij/
             Lansiraj/Vrati = primopredaje.approve; Otkucaj TP kreira RN = rn.write. */}
@@ -324,6 +473,9 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
           {pdfError}
         </p>
       )}
+
+      {/* 038/26: pregled/brisanje ručno otpremljenih PDF-ova ove primopredaje. */}
+      <HandoverDrawingPdfList handoverId={handover.id} />
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
         <Field label="Crtež" value={drawing ? `${drawing.drawingNumber} / ${drawing.revision}` : '—'} />
@@ -459,6 +611,11 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
               ? `Crtež ${drawing.drawingNumber} / ${drawing.revision}`
               : `Primopredaja #${handover.id}`
         }
+      />
+      <HandoverDrawingPdfUploadDialog
+        handoverId={handover.id}
+        open={uploadDrawingPdfOpen}
+        onClose={() => setUploadDrawingPdfOpen(false)}
       />
     </div>
   );

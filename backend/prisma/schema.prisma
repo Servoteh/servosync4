@@ -4661,3 +4661,34 @@ model AiModelPolicy {
 
   @@map("ai_model_policy")
 }
+
+/// Zahtev 038/26: crtež (PDF) za RN koji je mašinska usluga bez PDM crteža —
+/// ISTI bytea-u-bazi obrazac kao `PlanProizvodnjeDrawing` (M1, nema object
+/// storage). Otpremanje je dozvoljeno na dva ekrana: „radni nalozi" (RN već
+/// postoji → `workOrderId`) i primopredaje „na pisanju" PRE nego što RN nastane
+/// (`handoverId`, `workOrderId` NULL). Kad kasnije nastane RN iz te primopredaje
+/// (`HandoversService.createHandoverWorkOrder` — „Otkucaj TP"/lansiranje), servis
+/// backfilluje `workOrderId` na postojeće redove sa `handoverId` = ta primopredaja
+/// (isti crtež postaje vidljiv i na RN ekranu). Oba ref-a su MEKI (bez DB FK-a,
+/// isti obrazac kao `plan_proizvodnje_drawings.work_order_id`).
+model WorkOrderDrawingPdf {
+  id          Int       @id(map: "pk_work_order_drawing_pdfs") @default(autoincrement()) @map("id")
+  /// Meki ref → work_orders.id. NULL dok RN još ne postoji (vidi handoverId).
+  workOrderId Int?      @map("work_order_id")
+  /// Meki ref → drawing_handovers.id. Popunjen SAMO za otpremanje sa primopredaje
+  /// „na pisanju" pre nego što RN postoji; inače NULL.
+  handoverId  Int?      @map("handover_id")
+  fileName    String    @map("file_name") @db.VarChar(255)
+  contentType String?   @map("content_type") @db.VarChar(100)
+  /// PDF sadržaj (bytea, M1 obrazac).
+  pdfBinary   Bytes?    @map("pdf_binary")
+  sizeBytes   BigInt?   @map("size_bytes")
+  uploadedBy  String?   @map("uploaded_by")
+  uploadedAt  DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by")
+
+  @@index([workOrderId], map: "idx_work_order_drawing_pdfs_work_order")
+  @@index([handoverId], map: "idx_work_order_drawing_pdfs_handover")
+  @@map("work_order_drawing_pdfs")
+}

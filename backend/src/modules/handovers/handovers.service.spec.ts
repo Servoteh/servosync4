@@ -46,6 +46,15 @@ function prismaMock() {
     },
     // `create` vraća id: to je ključ idempotencije obaveštenja o lansiranju (016/26 dopuna).
     workOrderLaunch: { create: jest.fn().mockResolvedValue({ id: 900 }) },
+    // 038/26: backfill workOrderId na handoverId-only crteže kad RN nastane
+    // (createHandoverWorkOrder) + upload/list/delete (uploadDrawingPdf i sl.).
+    workOrderDrawingPdf: {
+      create: jest.fn(),
+      findFirst: jest.fn(),
+      findUnique: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     // Claim red obaveštenja: count 1 = prvi poziv za taj launch → sme da šalje.
     workOrderLaunchNotification: {
       createMany: jest.fn().mockResolvedValue({ count: 1 }),

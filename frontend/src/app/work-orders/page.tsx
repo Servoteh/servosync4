@@ -2,7 +2,18 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, Copy, CopyPlus, Pencil, Plus, Printer, Recycle, Trash2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  Copy,
+  CopyPlus,
+  FileText,
+  Pencil,
+  Plus,
+  Printer,
+  Recycle,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import {
   REWORK_QUALITY,
@@ -15,15 +26,19 @@ import {
   useCreateWorkOrder,
   useDeleteOperation,
   useDeleteWorkOrder,
+  useDeleteWorkOrderDrawingPdf,
   useForceDeleteWorkOrder,
   useLaunchWorkOrder,
   useLockWorkOrder,
   useReworkWorkOrder,
   useUpdateOperation,
   useUpdateWorkOrder,
+  useUploadWorkOrderDrawingPdf,
   useWorkOrder,
+  useWorkOrderDrawingPdfs,
   useWorkOrders,
   useWorkOrdersLookup,
+  openWorkOrderDrawingPdf,
   openWorkOrderRnPdf,
   type BulkCloneResult,
   type CreateWorkOrderInput,
@@ -47,6 +62,7 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
 import { Pager } from '@/components/ui-kit/pager';
 import { Button } from '@/components/ui-kit/button';
+import { AttachmentInput } from '@/components/ui-kit/attachment-input';
 import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
@@ -60,6 +76,7 @@ import {
   type ProjectLookup,
 } from '@/api/lookups';
 import { formatDate, formatNumber } from '@/lib/format';
+import { toast } from '@/lib/toast';
 
 const STATUS_META: Record<number, { tone: Tone; label: string }> = {
   [WO_STATUS.IN_PROGRESS]: { tone: 'neutral', label: 'U obradi' },
@@ -124,6 +141,134 @@ function Field({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+/**
+ * 038/26 — otpremi PDF crteža za RN koji je mašinska usluga bez PDM crteža
+ * (`!rn.drawingId`). Isti bytea-u-bazi obrazac kao plan-proizvodnje skice;
+ * jedan fajl po otpremanju (`AttachmentInput` sa `max={1}`).
+ */
+function DrawingPdfUploadDialog({
+  workOrderId,
+  open,
+  onClose,
+}: {
+  workOrderId: number;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [files, setFiles] = useState<File[]>([]);
+  const upload = useUploadWorkOrderDrawingPdf();
+
+  function close() {
+    setFiles([]);
+    upload.reset();
+    onClose();
+  }
+
+  async function submit() {
+    if (!files[0]) return;
+    try {
+      await upload.mutateAsync({ workOrderId, file: files[0] });
+      close();
+    } catch {
+      /* greška se prikazuje ispod */
+    }
+  }
+
+  const err =
+    upload.error instanceof ApiError ? upload.error.message : (upload.error as Error)?.message;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title="Otpremi crtež (PDF)"
+      footer={
+        <>
+          <button
+            onClick={close}
+            className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
+          >
+            Otkaži
+          </button>
+          <Button onClick={submit} loading={upload.isPending} disabled={!files.length}>
+            Otpremi
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-ink-disabled">
+          Za radne naloge bez PDM crteža (mašinska usluga) — ručno otpremljen PDF (do 20 MB).
+        </p>
+        <AttachmentInput
+          value={files}
+          onChange={setFiles}
+          onReject={(m) => toast(m)}
+          max={1}
+          accept={['FILE']}
+          maxBytes={20 * 1024 * 1024}
+        />
+        {err && (
+          <p className="text-sm text-status-danger" role="alert">
+            {err}
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Lista otpremljenih PDF-ova crteža RN-a (038/26) — pregled + brisanje. */
+function DrawingPdfList({ workOrderId }: { workOrderId: number }) {
+  const list = useWorkOrderDrawingPdfs(workOrderId);
+  const del = useDeleteWorkOrderDrawingPdf();
+  const [openBusyId, setOpenBusyId] = useState<number | null>(null);
+  const rows = list.data?.data ?? [];
+
+  async function onOpen(pdfId: number) {
+    setOpenBusyId(pdfId);
+    try {
+      await openWorkOrderDrawingPdf(pdfId);
+    } finally {
+      setOpenBusyId(null);
+    }
+  }
+
+  if (list.isLoading || !rows.length) return null;
+
+  return (
+    <ul className="space-y-1.5">
+      {rows.map((r) => (
+        <li
+          key={r.id}
+          className="flex items-center gap-2 rounded-control border border-line bg-surface px-3 py-1.5 text-sm"
+        >
+          <FileText className="h-3.5 w-3.5 shrink-0 text-ink-secondary" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-ink" title={r.fileName}>
+            {r.fileName}
+          </span>
+          <button
+            disabled={openBusyId === r.id}
+            onClick={() => onOpen(r.id)}
+            className="rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
+          >
+            Pregled
+          </button>
+          <Can permission={PERMISSIONS.RN_WRITE}>
+            <button
+              disabled={del.isPending}
+              onClick={() => del.mutate(r.id)}
+              className="rounded-control border border-status-danger px-2 py-1 text-xs text-status-danger hover:bg-status-danger-bg"
+            >
+              Obriši
+            </button>
+          </Can>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 const actionBtn =
   'rounded-control px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40';
 
@@ -181,6 +326,8 @@ function WorkOrderDetail({
   // PDF crteža RN-a (pojedinačno) — isti obrazac kao „PDF crteža" na primopredaji.
   const [drawingPdfBusy, setDrawingPdfBusy] = useState(false);
   const [bundleOpen, setBundleOpen] = useState(false);
+  // 038/26: otpremanje crteža (PDF) za RN bez PDM crteža.
+  const [uploadDrawingPdfOpen, setUploadDrawingPdfOpen] = useState(false);
   async function onOpenDrawingPdf(drawingId: number) {
     setDrawingPdfBusy(true);
     setPrintError(null);
@@ -243,6 +390,18 @@ function WorkOrderDetail({
           >
             {drawingPdfBusy ? 'Otvaranje…' : 'PDF crteža'}
           </button>
+        )}
+        {/* 038/26: RN bez PDM crteža (mašinska usluga) — ponudi ručno otpremanje PDF-a. */}
+        {!rn.drawingId && (
+          <Can permission={PERMISSIONS.RN_WRITE}>
+            <button
+              onClick={() => setUploadDrawingPdfOpen(true)}
+              className={`${actionBtn} inline-flex items-center gap-1.5 border border-line text-ink-secondary`}
+            >
+              <Upload className="h-3.5 w-3.5" aria-hidden />
+              Otpremi crtež
+            </button>
+          </Can>
         )}
         {/* Svi crteži cele primopredaje (nacrta) — skriveno za ručne/dorada RN
             bez razrešivog nacrta. */}
@@ -368,6 +527,9 @@ function WorkOrderDetail({
           {rn.drawingRevision.current ?? '—'})
         </div>
       )}
+
+      {/* 038/26: RN bez PDM crteža — pregled/brisanje ručno otpremljenih PDF-ova. */}
+      {!rn.drawingId && <DrawingPdfList workOrderId={id} />}
 
       <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4">
         <Field label="Materijal" value={rn.material || '—'} />
@@ -531,6 +693,11 @@ function WorkOrderDetail({
         onClose={() => setOpDialog({ open: false, op: null })}
       />
       <EditHeaderDialog rn={rn} open={headerOpen} onClose={() => setHeaderOpen(false)} />
+      <DrawingPdfUploadDialog
+        workOrderId={id}
+        open={uploadDrawingPdfOpen}
+        onClose={() => setUploadDrawingPdfOpen(false)}
+      />
       <Dialog
         open={confirmDelete}
         onClose={() => {
