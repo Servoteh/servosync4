@@ -28,6 +28,7 @@ import { ReversiModule } from "./modules/reversi/reversi.module";
 import { SastanciModule } from "./modules/sastanci/sastanci.module";
 import { AiChatModule } from "./modules/ai-chat/ai-chat.module";
 import { MediaAiModule } from "./modules/media-ai/media-ai.module";
+import { DictationInboxModule } from "./modules/dictation-inbox/dictation-inbox.module";
 import { PlanMontazeModule } from "./modules/plan-montaze/plan-montaze.module";
 import { PlanProizvodnjeModule } from "./modules/plan-proizvodnje/plan-proizvodnje.module";
 import { PracenjeModule } from "./modules/pracenje/pracenje.module";
@@ -92,6 +93,8 @@ import { MontazaNeusaglasenostiModule } from "./modules/montaza-neusaglasenosti/
     AiChatModule,
     // Zajednički media/AI (STT + refine) — presuda B4; C/D/G reuse.
     MediaAiModule,
+    // Diktafon „sanduče" (scenario B) — telefon diktira, Claude povlači tekst iz baze.
+    DictationInboxModule,
     // 3.0 TALAS C — Plan montaže + Plan proizvodnje + Praćenje (MODULE_SPEC_planovi_pracenje_30.md §0)
     PlanMontazeModule,
     PlanProizvodnjeModule,

@@ -4622,6 +4622,27 @@ model AiUsageLog {
   @@map("ai_usage_log")
 }
 
+/// Diktafon „sanduče" (scenario B — telefon diktira, Claude povlači). Telefon u
+/// pogonu diktira srpski (STT + doterivanje), a sređen TEKST se ovde ODLAŽE; Claude
+/// Code na Windows radnoj stanici ga POVLAČI read-only preko infra pristupa
+/// (`ssh ubuntusrv 'docker exec servosync-pg psql -U servosync -d servosync -c "SELECT …"'`)
+/// i markira `delivered_at` istim kanalom — Claude NE koristi JWT/HTTP. `GET
+/// /dictation-inbox/latest` je za samu aplikaciju (eventualni prikaz istorije).
+/// Piše ga ISKLJUČIVO DictationInboxService (V1: samo insert; nema edit/delete).
+/// App-owned → Timestamptz(6) (BACKEND_RULES §2.3); `user_id` = users.id iz JWT-a.
+/// Čuva se SAMO tekst posle transkripcije — audio snimak se odbacuje, ne ulazi ovde.
+model DictationInbox {
+  id          Int       @id(map: "pk_dictation_inbox") @default(autoincrement()) @map("id")
+  userId      Int       @map("user_id")
+  text        String    @map("text") @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// null = još nepreuzeto; NON-null = Claude povukao i markirao (idempotentni „latest").
+  deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(6)
+
+  @@index([userId, deliveredAt, createdAt], map: "idx_dictation_inbox_user_delivered_created")
+  @@map("dictation_inbox")
+}
+
 /// Minimalni registar „zadatak → model" (Talas AI-0, stavka 7). NIJE nova
 /// paralelna istina: prazan red = fallback na postojeći izvor (sy15
 /// sastanci_ai_settings / montaza_ai_settings, odn. env za zahteve i chat).

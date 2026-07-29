@@ -20,6 +20,7 @@ import {
   History,
   Layers,
   ListTodo,
+  Mic,
   Monitor,
   Radar,
   Repeat,
@@ -252,6 +253,15 @@ const CARDS: MobEntry[] = [
     label: 'AI asistent',
     hint: 'pitaj o nalozima, predmetima, planu',
     icon: Bot,
+    requires: PERMISSIONS.AI_CHAT,
+  },
+  {
+    // Diktafon (scenario B): telefon diktira srpski, tekst ide u „sanduče", Claude
+    // Code ga povuče na računaru. Isti gate kao STT/refine (ai.chat).
+    href: '/mob/diktafon',
+    label: 'Diktiraj za Claude',
+    hint: 'govori srpski → tekst → pošalji na računar',
+    icon: Mic,
     requires: PERMISSIONS.AI_CHAT,
   },
 ];
