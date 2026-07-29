@@ -4,6 +4,7 @@ import {
   Param,
   ParseIntPipe,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
@@ -11,6 +12,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { MasterCustomersService } from "./customers.service";
+import type { AuthUser } from "../auth/jwt.strategy";
 import type { ListCustomersQuery } from "./dto/list-customers.dto";
 
 /**
@@ -21,13 +23,16 @@ import type { ListCustomersQuery } from "./dto/list-customers.dto";
  * NEMA mutacija (BACKEND_RULES §3 — tabelu piše samo `customer.syncer.ts`), pa nema
  * ni `TODO(auth)` markera (§8 važi za mutirajuće rute).
  *
- * Permisija: `directory.read` — isti ključ kao `DirectoryController` (isti domen
- * podataka). ⚠️ SVESNO ODSTUPANJE od `directory`: matični karton vraća i komercijalne
- * kolone koje `directory` NAMERNO izostavlja (žiro računi, rabati, kreditni limit,
- * provizija, marža). `directory.read` je u `VIEWER_READ_BASELINE` (svaka SSO uloga
- * osim onih kojima je namerno uskraćen) — ako se te kolone budu smatrale užim
- * podatkom, uvodi se zaseban `masters.read` ključ i dodeljuje kuriranim ulogama
- * (odluka za Nenada/Nesu, nije stvar implementacije).
+ * PERMISIJE — dvoslojno (odluka Nenad 29.07.2026; ranije je ceo karton stajao samo
+ * na `directory.read`, što je bilo šire od `directory` pregleda):
+ *   kapija rute  = `directory.read` — isti ključ kao `DirectoryController` (isti domen
+ *                  podataka); u `VIEWER_READ_BASELINE`, dakle svaka SSO uloga;
+ *   sloj kolona  = `masters.read` — žiro/uplatni računi, rabati, provizija, marža,
+ *                  kreditni limit, cenovnik, uslovi plaćanja i audit izlaze SAMO uz
+ *                  ovaj ključ. Bez njega karton vraća isti bezbedan podskup koji
+ *                  `directory.service.ts` (CUSTOMER_BUSINESS_SELECT) ionako prikazuje.
+ * Kontroler zato prosleđuje `req.user` servisu; odluku donosi `masters-access.ts`
+ * kroz isti `resolvePermissionDecision` koji koristi i `PermissionsGuard`.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.DIRECTORY_READ)
@@ -36,12 +41,15 @@ export class MasterCustomersController {
   constructor(private readonly customers: MasterCustomersService) {}
 
   @Get()
-  list(@Query() query: ListCustomersQuery) {
-    return this.customers.list(query);
+  list(@Query() query: ListCustomersQuery, @Req() req: { user?: AuthUser }) {
+    return this.customers.list(query, req.user);
   }
 
   @Get(":id")
-  findOne(@Param("id", ParseIntPipe) id: number) {
-    return this.customers.findOne(id);
+  findOne(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user?: AuthUser },
+  ) {
+    return this.customers.findOne(id, req.user);
   }
 }

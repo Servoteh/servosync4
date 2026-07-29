@@ -8,8 +8,87 @@ import { ItemsController } from "./items.controller";
 import { DirectoryController } from "../directory/directory.controller";
 import { PERMISSION_KEY_METADATA } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
+import { ROLES } from "../../common/authz/roles";
 
-/** Mock PrismaService — samo modeli koje `ItemsService` čita. */
+/**
+ * KOMERCIJALNA POLJA artikla — ne smeju da postoje u odgovoru bez `masters.read`.
+ * Lista je NAMERNO prepisana ovde, a ne uvezena iz servisa: da premeštanje kolone
+ * iz `ITEM_COMMERCIAL_SELECT` u bazni sloj obori test, umesto da se test tiho
+ * prilagodi izmeni (test je granica, ne ogledalo implementacije).
+ */
+const COMMERCIAL_KEYS = [
+  "wholesalePrice",
+  "retailPrice",
+  "fxPurchasePrice",
+  "fxSalePrice",
+  "priceToWritePricelist",
+  "manualMarkupPercent",
+  "maxDiscountPercent",
+  "promotionDiscount",
+  "retailLossPercent",
+  "wholesaleLossPercent",
+  "finalProcessingCost",
+  "accountingCode",
+  "accountingCode2",
+  "supplierId",
+  "itemFee",
+  "itemExcise",
+  "customsRate",
+  "customsTariff",
+  "paymentTermDays",
+  "nonTaxablePart",
+] as const;
+
+/** Pun red iz baze — mock ga seče po `select`-u, kao pravi Prisma. */
+const ITEM_ROW: Record<string, unknown> = {
+  id: 7,
+  catalogNumber: "A-7",
+  barCode: "123456",
+  name: "Lim 3mm",
+  unit: "kom",
+  groupCode: "SIR",
+  subgroupCode: "SIR-1",
+  originCode: "D",
+  externalItemId: 4711,
+  itemDescription: "Lim hladno valjani",
+  thickness: 3,
+  minQuantity: 5,
+  active: true,
+  // komercijalne
+  wholesalePrice: 1200,
+  retailPrice: 1440,
+  fxPurchasePrice: 10.2,
+  fxSalePrice: 12.5,
+  priceToWritePricelist: 1250,
+  manualMarkupPercent: new Prisma.Decimal("12.5000"),
+  maxDiscountPercent: 20,
+  promotionDiscount: 5,
+  retailLossPercent: 1,
+  wholesaleLossPercent: 2,
+  finalProcessingCost: 30,
+  accountingCode: "1320",
+  accountingCode2: "0",
+  supplierId: 42,
+  itemFee: 3,
+  itemExcise: 0,
+  customsRate: 5,
+  customsTariff: "7208",
+  paymentTermDays: 45,
+  nonTaxablePart: 0,
+};
+
+/** Prisma `select` semantika u mock-u: vrati SAMO tražene ključeve. */
+function pickBySelect(
+  row: Record<string, unknown>,
+  select?: Record<string, boolean>,
+): Record<string, unknown> {
+  if (!select) return { ...row };
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(select)) if (key in row) out[key] = row[key];
+  return out;
+}
+
+/** Mock PrismaService — samo modeli koje `ItemsService` čita (+ authz override). */
 function prismaMock() {
   return {
     item: {
@@ -20,9 +99,19 @@ function prismaMock() {
     itemGroup: { findMany: jest.fn().mockResolvedValue([]) },
     itemSubgroup: { findMany: jest.fn().mockResolvedValue([]) },
     itemOrigin: { findMany: jest.fn().mockResolvedValue([]) },
+    // `resolvePermissionDecision` čita override sveže iz baze na svaki poziv.
+    userPermissionOverride: { findUnique: jest.fn().mockResolvedValue(null) },
     $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
   };
 }
+
+/** Akter sa `masters.read` kroz rolu (menadzment) i akter bez njega (viewer). */
+const KOMERCIJALA = {
+  userId: 1,
+  role: ROLES.MENADZMENT,
+  email: "sef@servoteh.com",
+};
+const OSNOVNI = { userId: 2, role: ROLES.VIEWER, email: "radnik@servoteh.com" };
 
 describe("ItemsService (matični podaci — Artikli)", () => {
   let service: ItemsService;
@@ -36,8 +125,16 @@ describe("ItemsService (matični podaci — Artikli)", () => {
     service = mod.get(ItemsService);
   });
 
+  /** Mock koji poštuje `select` (bez njega bi redakcija bila neproverljiva). */
+  function mockItem(row: Record<string, unknown> | null) {
+    prisma.item.findUnique.mockImplementation(
+      (args: { select?: Record<string, boolean> }) =>
+        Promise.resolve(row ? pickBySelect(row, args?.select) : null),
+    );
+  }
+
   it("list(): pretraga `q` gađa naziv/kataloški broj/barkod (case-insensitive), sort po kat. broju", async () => {
-    await service.list({ q: " ku-12 " });
+    await service.list({ q: " ku-12 " }, KOMERCIJALA);
 
     const [args] = prisma.item.findMany.mock.calls[0] as [
       { where: Prisma.ItemWhereInput; orderBy: unknown; take: number },
@@ -55,7 +152,7 @@ describe("ItemsService (matični podaci — Artikli)", () => {
   });
 
   it("list(): filteri groupCode + active se prevode u tačno poklapanje", async () => {
-    await service.list({ groupCode: "SIR", active: "false" });
+    await service.list({ groupCode: "SIR", active: "false" }, KOMERCIJALA);
 
     const [args] = prisma.item.findMany.mock.calls[0] as [
       { where: Prisma.ItemWhereInput },
@@ -66,9 +163,9 @@ describe("ItemsService (matični podaci — Artikli)", () => {
   });
 
   it("list(): `active` koji nije true/false je 400, ne tiho ignorisanje", async () => {
-    await expect(service.list({ active: "da" })).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(
+      service.list({ active: "da" }, KOMERCIJALA),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it("list(): grupa se razrešava batch-om; prazan šifarnik → description null (ne greška)", async () => {
@@ -81,7 +178,7 @@ describe("ItemsService (matični podaci — Artikli)", () => {
     // `item_groups` je DANAS PRAZNA (BIGBIT_ARTIKLI.md §2.1) → nijedan opis.
     prisma.itemGroup.findMany.mockResolvedValue([]);
 
-    const res = await service.list({});
+    const res = await service.list({}, KOMERCIJALA);
 
     expect(prisma.itemGroup.findMany).toHaveBeenCalledWith({
       where: { code: { in: ["SIR", "ALU"] } },
@@ -109,45 +206,143 @@ describe("ItemsService (matični podaci — Artikli)", () => {
       { code: "SIR", description: "Sirovine" },
     ]);
 
-    const res = await service.list({});
+    const res = await service.list({}, KOMERCIJALA);
     expect(res.data[0].group).toEqual({ code: "SIR", description: "Sirovine" });
   });
 
-  it("findOne(): vraća pun slog, Decimal kao string i sva tri razrešena šifarnika", async () => {
-    prisma.item.findUnique.mockResolvedValue({
-      id: 7,
-      catalogNumber: "A-7",
-      name: "Lim 3mm",
-      groupCode: "SIR",
-      subgroupCode: "SIR-1",
-      originCode: "D",
-      manualMarkupPercent: new Prisma.Decimal("12.5000"),
-      thickness: 3,
-    });
-    prisma.itemGroup.findMany.mockResolvedValue([
-      { code: "SIR", description: "Sirovine" },
-    ]);
-    prisma.itemSubgroup.findMany.mockResolvedValue([]);
-    prisma.itemOrigin.findMany.mockResolvedValue([
-      { code: "D", description: "Domaće" },
-    ]);
-
-    const { data } = await service.findOne(7);
-
-    expect(data.manualMarkupPercent).toBe("12.5");
-    expect(typeof data.manualMarkupPercent).toBe("string");
-    expect(data.group).toEqual({ code: "SIR", description: "Sirovine" });
-    // Podgrupa ima kod, ali šifarnik je prazan → naziv null, NE izuzetak.
-    expect(data.subgroup).toEqual({ code: "SIR-1", description: null });
-    expect(data.origin).toEqual({ code: "D", description: "Domaće" });
-    expect(data.thickness).toBe(3);
-  });
-
   it("findOne(): nepostojeći artikal je 404, ne 500", async () => {
-    prisma.item.findUnique.mockResolvedValue(null);
-    await expect(service.findOne(999)).rejects.toBeInstanceOf(
+    mockItem(null);
+    await expect(service.findOne(999, KOMERCIJALA)).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+
+  // ============================================ dvoslojni odgovor (masters.read)
+
+  describe("dvoslojni odgovor — komercijalna polja traže masters.read", () => {
+    it("findOne() SA masters.read: pun karton, Decimal kao string, sva tri šifarnika", async () => {
+      mockItem(ITEM_ROW);
+      prisma.itemGroup.findMany.mockResolvedValue([
+        { code: "SIR", description: "Sirovine" },
+      ]);
+      prisma.itemOrigin.findMany.mockResolvedValue([
+        { code: "D", description: "Domaće" },
+      ]);
+
+      const { data, meta } = await service.findOne(7, KOMERCIJALA);
+
+      expect(meta.restricted).toBe(false);
+      for (const key of COMMERCIAL_KEYS) expect(data).toHaveProperty(key);
+      // Decimal → string u JSON-u (BACKEND_RULES §6).
+      expect(data).toHaveProperty("manualMarkupPercent", "12.5");
+      expect(data.group).toEqual({ code: "SIR", description: "Sirovine" });
+      // Podgrupa ima kod, ali šifarnik je prazan → naziv null, NE izuzetak.
+      expect(data.subgroup).toEqual({ code: "SIR-1", description: null });
+      expect(data.origin).toEqual({ code: "D", description: "Domaće" });
+      expect(data.thickness).toBe(3);
+    });
+
+    it("findOne() BEZ masters.read: nijedno komercijalno polje — ni u `select`-u ni u odgovoru", async () => {
+      mockItem(ITEM_ROW);
+
+      const { data, meta } = await service.findOne(7, OSNOVNI);
+
+      expect(meta.restricted).toBe(true);
+      // 1) kolone se ne TRAŽE od baze…
+      const [args] = prisma.item.findUnique.mock.calls[0] as [
+        { select: Record<string, boolean> },
+      ];
+      for (const key of COMMERCIAL_KEYS) {
+        expect(Object.keys(args.select)).not.toContain(key);
+      }
+      // 2) …pa ih nema ni u odgovoru (ključ ne postoji, nije samo `null`).
+      for (const key of COMMERCIAL_KEYS) expect(data).not.toHaveProperty(key);
+    });
+
+    it("findOne() BEZ masters.read: bazni sloj i dalje nosi identitet/klasifikaciju/dimenzije/opise", async () => {
+      mockItem(ITEM_ROW);
+      prisma.itemGroup.findMany.mockResolvedValue([
+        { code: "SIR", description: "Sirovine" },
+      ]);
+
+      const { data } = await service.findOne(7, OSNOVNI);
+
+      expect(data.catalogNumber).toBe("A-7");
+      expect(data.barCode).toBe("123456");
+      expect(data.name).toBe("Lim 3mm");
+      expect(data.unit).toBe("kom");
+      expect(data.externalItemId).toBe(4711);
+      expect(data.itemDescription).toBe("Lim hladno valjani");
+      expect(data.thickness).toBe(3);
+      expect(data.active).toBe(true);
+      expect(data.group).toEqual({ code: "SIR", description: "Sirovine" });
+    });
+
+    it("list() SA masters.read: VP cena je u redovima, meta.restricted = false", async () => {
+      prisma.item.findMany.mockResolvedValue([
+        { id: 1, catalogNumber: "A-1", groupCode: "SIR", wholesalePrice: 1200 },
+      ]);
+      prisma.item.count.mockResolvedValue(1);
+
+      const res = await service.list({}, KOMERCIJALA);
+
+      expect(res.meta.restricted).toBe(false);
+      expect(res.data[0]).toHaveProperty("wholesalePrice", 1200);
+    });
+
+    it("list() BEZ masters.read: VP cena otpada iz svakog reda, meta.restricted = true", async () => {
+      prisma.item.findMany.mockResolvedValue([
+        { id: 1, catalogNumber: "A-1", groupCode: "SIR", wholesalePrice: 1200 },
+        { id: 2, catalogNumber: "A-2", groupCode: "SIR", wholesalePrice: 900 },
+      ]);
+      prisma.item.count.mockResolvedValue(2);
+
+      const res = await service.list({}, OSNOVNI);
+
+      expect(res.meta.restricted).toBe(true);
+      for (const row of res.data)
+        expect(row).not.toHaveProperty("wholesalePrice");
+      // Ostatak reda ostaje netaknut.
+      expect(res.data[0]).toMatchObject({ id: 1, catalogNumber: "A-1" });
+    });
+
+    it("GRANT override otvara komercijalni sloj ulozi koja ga nema po roli", async () => {
+      prisma.userPermissionOverride.findUnique.mockResolvedValue({
+        allow: true,
+      });
+      mockItem(ITEM_ROW);
+
+      const { data, meta } = await service.findOne(7, OSNOVNI);
+
+      expect(prisma.userPermissionOverride.findUnique).toHaveBeenCalledWith({
+        where: { userId_key: { userId: 2, key: PERMISSIONS.MASTERS_READ } },
+        select: { allow: true },
+      });
+      expect(meta.restricted).toBe(false);
+      expect(data).toHaveProperty("wholesalePrice", 1200);
+    });
+
+    it("DENY override skida komercijalni sloj i ulozi koja ga ima po roli (deny > rola)", async () => {
+      prisma.userPermissionOverride.findUnique.mockResolvedValue({
+        allow: false,
+      });
+      mockItem(ITEM_ROW);
+
+      const { data, meta } = await service.findOne(7, KOMERCIJALA);
+
+      expect(meta.restricted).toBe(true);
+      for (const key of COMMERCIAL_KEYS) expect(data).not.toHaveProperty(key);
+    });
+
+    it("bez aktera (zahtev bez identiteta) pada na bazni sloj — fail-closed", async () => {
+      mockItem(ITEM_ROW);
+
+      const { data, meta } = await service.findOne(7, undefined);
+
+      expect(meta.restricted).toBe(true);
+      for (const key of COMMERCIAL_KEYS) expect(data).not.toHaveProperty(key);
+      expect(prisma.userPermissionOverride.findUnique).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -173,5 +368,15 @@ describe("ItemsController — permisija", () => {
         Reflect.getMetadata(PERMISSION_KEY_METADATA, handler),
       ).toBeUndefined();
     }
+  });
+
+  /**
+   * Kapija OSTAJE široka (`directory.read`) — `masters.read` NE sme da procuri na
+   * rutu, inače bi bazni sloj (koji svako sme da vidi) postao 403.
+   */
+  it("ruta NIJE iza `masters.read` — taj ključ bira sloj kolona, ne pristup", () => {
+    expect(
+      Reflect.getMetadata(PERMISSION_KEY_METADATA, ItemsController),
+    ).not.toBe(PERMISSIONS.MASTERS_READ);
   });
 });

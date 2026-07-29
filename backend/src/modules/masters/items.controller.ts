@@ -4,6 +4,7 @@ import {
   Param,
   ParseIntPipe,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
@@ -11,6 +12,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { ItemsService } from "./items.service";
+import type { AuthUser } from "../auth/jwt.strategy";
 import type { ListItemsQuery } from "./dto/list-items.dto";
 
 /**
@@ -24,9 +26,13 @@ import type { ListItemsQuery } from "./dto/list-items.dto";
  * NEMA mutacija (BACKEND_RULES §3 — tabelu piše samo bigbit-sync), pa nema ni
  * `TODO(auth)` markera (§8 važi za mutirajuće rute).
  *
- * Permisija: `directory.read` — ISTI ključ kao `DirectoryController`/`LookupsController`,
- * jer je ovo isti domen podataka (BigBit šifarnici). Ne uvodi se nov ključ da se ne
- * bi napravila ruta koju nijedna rola nema (guard je u produkciji fail-closed).
+ * PERMISIJE — dvoslojno (odluka Nenad 29.07.2026):
+ *   kapija rute  = `directory.read` (ISTI ključ kao `DirectoryController`/`LookupsController`
+ *                  — isti domen podataka; širok read, praktično svaka SSO uloga);
+ *   sloj kolona  = `masters.read` — komercijalne kolone (cene, marže, rabati, GK konta,
+ *                  dobavljač, carine) vraća SAMO servis akteru koji taj ključ ima.
+ * Kontroler zato prosleđuje `req.user` servisu; odluku donosi `masters-access.ts`
+ * kroz isti `resolvePermissionDecision` koji koristi i `PermissionsGuard`.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.DIRECTORY_READ)
@@ -35,12 +41,15 @@ export class ItemsController {
   constructor(private readonly items: ItemsService) {}
 
   @Get()
-  list(@Query() query: ListItemsQuery) {
-    return this.items.list(query);
+  list(@Query() query: ListItemsQuery, @Req() req: { user?: AuthUser }) {
+    return this.items.list(query, req.user);
   }
 
   @Get(":id")
-  findOne(@Param("id", ParseIntPipe) id: number) {
-    return this.items.findOne(id);
+  findOne(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user?: AuthUser },
+  ) {
+    return this.items.findOne(id, req.user);
   }
 }
