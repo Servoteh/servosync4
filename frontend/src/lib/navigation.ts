@@ -37,6 +37,7 @@ import {
   ListChecks,
   ListOrdered,
   MapPin,
+  Package,
   PackageCheck,
   PencilRuler,
   Radar,
@@ -502,6 +503,23 @@ export const NAV_DOMAINS: NavDomain[] = [
     ],
     groups: [
       {
+        // Matični podaci 4.0 (backend `masters`) — READ-ONLY pregled BigBit cache
+        // tabela `items`/`customers`. Unos ostaje u BigBit-u (prelazni režim), pa
+        // ovde nema „Novi artikal/komitent" — samo pretraga i kartica.
+        // Od 29.07.2026 nema duplikata: stariji „Komitenti" iz domena „Sistem"
+        // (`/customers`) je ugašen i preusmeren ovamo, a njegove ključne reči su
+        // spojene u ovu stavku. Obe stavke stoje na `directory.read` — širinu
+        // podatka (bezbedan podskup vs. komercijalne kolone) presuđuje BACKEND
+        // kroz `masters.read`, ne vidljivost stavke u meniju.
+        id: 'maticni-podaci',
+        title: 'Matični podaci',
+        icon: Layers,
+        modules: [
+          { label: 'Artikli', href: '/artikli', icon: Package, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['artikli', 'roba', 'sifarnik artikala', 'kataloski broj', 'barkod', 'maticni podaci'] },
+          { label: 'Komitenti', href: '/komitenti', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['komitenti', 'kupci', 'klijenti', 'dobavljaci', 'pib', 'sifarnik komitenata', 'maticni podaci'] },
+        ],
+      },
+      {
         id: 'fakturisanje',
         title: 'Fakturisanje',
         icon: ListOrdered,
@@ -652,7 +670,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Zahtevi — AI PM modul (bug/dorada/nova funkcija + Decision Log). Domen „Sistem"
       // (presuda §13.5); vidljivost = zahtevi.read (svima; row-scope u servisu sužava na svoje).
       { label: 'Zahtevi', href: '/zahtevi', icon: Lightbulb, requires: PERMISSIONS.ZAHTEVI_READ, keywords: ['zahtevi', 'ideje', 'bug', 'greska', 'predlog', 'dorada', 'inbox'] },
-      { label: 'Komitenti', href: '/customers', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['komitenti', 'kupci', 'klijenti'] },
+      // „Komitenti" (/customers) je UKLONJEN 29.07.2026 — ekran je ujedinjen sa
+      // „Matični podaci → Komitenti" (/komitenti); ruta /customers je sad samo
+      // preusmerenje, a ključne reči su preseljene u novu stavku.
       { label: 'Predmeti', href: '/projects', icon: Briefcase, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['predmeti', 'projekti'] },
       { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw, requires: PERMISSIONS.SYNC_READ, keywords: ['sync', 'sinhronizacija'] },
     ],

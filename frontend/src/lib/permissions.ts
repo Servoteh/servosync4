@@ -91,6 +91,13 @@ export const PERMISSIONS = {
   ZR_COMPUTE: 'zr.compute',
   ZR_EXPORT: 'zr.export',
   DIRECTORY_READ: 'directory.read',
+  // Matični podaci 4.0 — komercijalni sloj kartona artikla/komitenta (odluka 29.07.2026;
+  // mirror BE kataloga). `directory.read` otvara ekrane /artikli i /komitenti sa bezbednim
+  // podskupom (identitet/adresa/kontakt/klasifikacija/dimenzije/opisi); ovaj ključ dodatno
+  // otključava cene, marže, rabate, provizije, žiro račune, kreditni limit i GK konta.
+  // ⚠️ Redakciju radi BACKEND — FE ovim ključem samo nagoveštava sloj („ograničen prikaz"),
+  // nikad ne odlučuje šta se vidi (odgovor prosto nema kolone koje korisnik ne sme).
+  MASTERS_READ: 'masters.read',
   // Predmeti write-path + RFQ kupca — 4.0 Traka B (mirror backend kataloga)
   PROJECTS_WRITE: 'projects.write',
   RFQ_READ: 'rfq.read',
