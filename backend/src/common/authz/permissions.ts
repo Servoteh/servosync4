@@ -134,6 +134,18 @@ export const PERMISSIONS = {
   PDV_COMPUTE: "pdv.compute",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
+  // Matični podaci 4.0 — KOMERCIJALNI SLOJ kartona artikla/komitenta (odluka Nenad
+  // 29.07.2026). `directory.read` (u VIEWER_READ_BASELINE — praktično svi prijavljeni)
+  // otvara BEZBEDAN podskup: identitet, adresa, kontakt, klasifikacija, dimenzije,
+  // opisi. Ovaj ključ otključava ono što je `directory.service.ts` NAMERNO krio:
+  //   komitent — žiro računi, uplatni račun, rabati, provizija, marža, kreditni
+  //              limit, cenovnik, valuta/način plaćanja, provera duga, PDV/GLN/CRF,
+  //              audit kolone;
+  //   artikal  — sve cene (VP/MP/devizne), marže i rabati, GK konta, dobavljač,
+  //              takse/akcize/carine, valuta plaćanja, neoporezivi deo.
+  // Dvoslojnost presuđuje BACKEND (redakcija u `modules/masters` servisima), ne FE —
+  // ulazna kapija rute ostaje `directory.read`, a ovaj ključ samo širi skup kolona.
+  MASTERS_READ: "masters.read",
   // Predmeti write-path + RFQ kupca — 4.0 Traka B (2.0 postaje master za predmete).
   // write = poslovni administrator kreira/menja predmet; rfq read/write = prodaja.
   PROJECTS_WRITE: "projects.write",

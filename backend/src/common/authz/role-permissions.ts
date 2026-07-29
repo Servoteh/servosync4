@@ -763,6 +763,23 @@ const RAZVOJ_FAZA_ROLES: readonly RoleKey[] = [
 ];
 for (const role of RAZVOJ_FAZA_ROLES) addPerms(role, [P.RAZVOJ_READ]);
 
+// Matični podaci 4.0 — komercijalni sloj kartona artikla/komitenta (odluka Nenad
+// 29.07.2026). `directory.read` ostaje ulazna kapija ekrana /artikli i /komitenti i
+// daje BEZBEDAN podskup (identitet/adresa/kontakt/klasifikacija/dimenzije/opisi); ovaj
+// ključ dodatno otključava cene, marže, rabate, provizije, žiro račune, kreditni limit
+// i GK konta — zato je kuriran, a NE u VIEWER_READ_BASELINE (koji ima svaka SSO uloga).
+// Krug = ko po poslu radi sa cenama i uslovima plaćanja: menadžment, šefovi, nabavka i
+// vođe projekata. `admin` je već pokriven kroz ALL (no-op merge). Pojedinačni izuzeci
+// (npr. jedan komercijalista) idu kroz `UserPermissionOverride` grant, ne kroz rolu.
+const MASTERS_KOMERCIJALA_ROLES: readonly RoleKey[] = [
+  ROLES.MENADZMENT,
+  ROLES.SEF,
+  ROLES.NABAVKA_VIEW,
+  ROLES.PM,
+  ROLES.LEADPM,
+];
+for (const role of MASTERS_KOMERCIJALA_ROLES) addPerms(role, [P.MASTERS_READ]);
+
 /**
  * Normalise a stored role value to the catalog key.
  * Live `users.role` data predates the lowercase convention ("ADMIN"/"USER") — without this,
