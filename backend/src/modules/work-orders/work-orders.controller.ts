@@ -11,9 +11,12 @@ import {
   Req,
   Res,
   StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
 import type { Response } from "express";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
@@ -36,6 +39,8 @@ import type {
   UpdateWorkOrderOperationDto,
 } from "./dto/work-order-operation.dto";
 
+const MB = 1024 * 1024;
+
 /**
  * API za radne naloge (Radni nalozi / RN).
  *   GET  /api/v1/work-orders            — lista (filteri: q, statusId, projectId, workerId, customerId, from, to)
@@ -50,6 +55,10 @@ import type {
  *   POST /api/v1/work-orders/:id/quality-child { qualityTypeId, quantity, note? } — ručni dorada/škart child (RN_WRITE)
  *   POST /api/v1/work-orders/projects/:projectId/bulk-clone { targetProjectId, coefficient, workOrderIds? } — bulk-clone (RN_WRITE)
  *   PATCH /api/v1/work-orders/operations/:opId/priority { priority } — CAM prioritet (TEHNOLOGIJA_WRITE)
+ *   POST   /api/v1/work-orders/:id/drawing-pdf              — otpremi PDF crteža (038/26, RN bez PDM crteža; RN_WRITE)
+ *   GET    /api/v1/work-orders/:id/drawing-pdfs             — lista otpremljenih PDF-ova RN-a
+ *   GET    /api/v1/work-orders/drawing-pdfs/:pdfId/content  — PDF sadržaj (inline)
+ *   DELETE /api/v1/work-orders/drawing-pdfs/:pdfId          — soft-delete otpremljenog PDF-a (RN_WRITE)
  *
  * Traži JWT. Klasa nosi `rn.read` kao PODRAZUMEVANU permisiju (pokriva sve GET rute:
  * lista, `operations/queue`, detalj, štampa); mutacije je nadjačavaju svojim ključem —
@@ -84,6 +93,26 @@ export class WorkOrdersController {
   @Get("operations/queue")
   operationQueue(@Query() query: ListOperationQueueQuery) {
     return this.workOrders.operationQueue(query);
+  }
+
+  /**
+   * PDF sadržaj otpremljenog crteža (038/26) — literalni `drawing-pdfs/:pdfId/*`
+   * MORA pre `:id` (isti razlog kao `operations/queue`). `pdfId` je
+   * `work_order_drawing_pdfs.id`, NE RN id.
+   */
+  @Get("drawing-pdfs/:pdfId/content")
+  async drawingPdfContent(
+    @Param("pdfId", ParseIntPipe) pdfId: number,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    return this.workOrders.streamDrawingPdf(pdfId, res);
+  }
+
+  /** Soft-delete otpremljenog PDF-a crteža (038/26). Literalna ruta — vidi napomenu iznad. */
+  @Delete("drawing-pdfs/:pdfId")
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  removeDrawingPdf(@Param("pdfId", ParseIntPipe) pdfId: number, @Req() req: { user: AuthUser }) {
+    return this.workOrders.removeDrawingPdf(pdfId, req.user);
   }
 
   @Get(":id")
@@ -220,6 +249,28 @@ export class WorkOrdersController {
     @Body() body: { locked?: boolean },
   ) {
     return this.workOrders.setLock(id, body?.locked !== false);
+  }
+
+  /**
+   * Otpremi PDF crteža (038/26) — RN koji je mašinska usluga bez PDM crteža
+   * (`drawingId` 0/nepostojeći). Isti obrazac kao `plan-proizvodnje` skice:
+   * 20MB kapa + magic-byte provera u servisu.
+   */
+  @Post(":id/drawing-pdf")
+  @RequirePermission(PERMISSIONS.RN_WRITE)
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 20 * MB } }))
+  uploadDrawingPdf(
+    @Param("id", ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.workOrders.uploadDrawingPdf(id, file, req.user);
+  }
+
+  /** Lista otpremljenih PDF-ova crteža ovog RN-a (038/26). */
+  @Get(":id/drawing-pdfs")
+  listDrawingPdfs(@Param("id", ParseIntPipe) id: number) {
+    return this.workOrders.listDrawingPdfs(id);
   }
 
   /** Kopiraj sve 4 vrste stavki iz `sourceId` u prazan `id` (cilj ne sme biti zaključan/lansiran). */

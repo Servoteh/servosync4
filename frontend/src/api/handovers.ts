@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiBlob, apiFetch, getToken } from './client';
+import { apiBlob, apiFetch, apiUpload, getToken } from './client';
 import type { Paginated, WorkerRef } from './tech-processes';
 import { useDrawings, type Drawing } from './pdm';
+import type { WorkOrderDrawingPdf } from './work-orders';
 
 /**
  * Status primopredaje (`drawing_handovers.status_id`) — ISTA `handover_statuses`
@@ -909,6 +910,70 @@ export function usePrepareHandoverWorkOrder() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['handovers'] });
       qc.invalidateQueries({ queryKey: ['work-orders'] });
+    },
+  });
+}
+
+// ─────────────────────────────────────── crtež (PDF) primopredaje bez RN (038/26)
+
+/**
+ * Otvori otpremljeni PDF crteža primopredaje (038/26) u novom tabu — isti
+ * obrazac kao `openDrawingPdf`/`openWorkOrderDrawingPdf`: endpoint traži JWT,
+ * pa se PDF povlači kroz `apiBlob`.
+ */
+export async function openHandoverDrawingPdf(pdfId: number): Promise<void> {
+  const blob = await apiBlob(`/v1/handovers/drawing-pdfs/${pdfId}/content`);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
+ * Lista otpremljenih PDF-ova primopredaje — i pre-RN uploadi (dok primopredaja
+ * „na pisanju" još nema RN) i post-RN (backend ih spaja u jedan pregled).
+ */
+export function useHandoverDrawingPdfs(handoverId: number | null) {
+  return useQuery({
+    queryKey: ['handovers', 'drawing-pdfs', handoverId],
+    queryFn: () =>
+      apiFetch<{ data: WorkOrderDrawingPdf[] }>(
+        `/v1/handovers/${handoverId}/drawing-pdfs`,
+      ),
+    enabled: handoverId != null,
+  });
+}
+
+/**
+ * Otpremi PDF crteža primopredaje (multipart `file`). Backend kapira na 20MB
+ * i odbija sve što ne počinje sa `%PDF-` (magic bytes), bez obzira na MIME.
+ */
+export function useUploadHandoverDrawingPdf() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ handoverId, file }: { handoverId: number; file: File }) => {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      return apiUpload<{ data: WorkOrderDrawingPdf }>(
+        `/v1/handovers/${handoverId}/drawing-pdf`,
+        form,
+      );
+    },
+    onSuccess: (_data, { handoverId }) => {
+      qc.invalidateQueries({ queryKey: ['handovers', 'drawing-pdfs', handoverId] });
+    },
+  });
+}
+
+/** Soft-delete otpremljenog PDF-a crteža primopredaje. */
+export function useDeleteHandoverDrawingPdf() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (pdfId: number) =>
+      apiFetch<{ data: { id: number } }>(`/v1/handovers/drawing-pdfs/${pdfId}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['handovers', 'drawing-pdfs'] });
     },
   });
 }

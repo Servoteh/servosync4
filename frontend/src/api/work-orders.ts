@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiBlob, apiFetch } from './client';
+import { apiBlob, apiFetch, apiUpload } from './client';
 import type { Paginated, WorkerRef } from './tech-processes';
 
 /**
@@ -19,6 +19,35 @@ export async function openWorkOrderRnPdf(
   const url = URL.createObjectURL(blob);
   window.open(url, '_blank', 'noopener');
   // Oslobodi objectURL kad se tab otvori (dovoljno vremena da browser učita PDF).
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
+ * Otpremljeni PDF crteža za RN bez PDM crteža (038/26, `work_order_drawing_pdfs`)
+ * — meta bez binarnog sadržaja. Deli tabelu sa primopredajom „na pisanju"
+ * (api/handovers.ts) — `workOrderId`/`handoverId` su meki ref-ovi, jedan od
+ * njih je uvek postavljen (vidi backend komentar uz model).
+ */
+export interface WorkOrderDrawingPdf {
+  id: number;
+  workOrderId: number | null;
+  handoverId: number | null;
+  fileName: string;
+  contentType: string | null;
+  sizeBytes: number | null;
+  uploadedAt: string;
+  uploadedBy: string | null;
+}
+
+/**
+ * Otvori otpremljeni PDF crteža (038/26) u novom tabu — isti obrazac kao
+ * `openDrawingPdf` (api/pdm.ts): endpoint traži JWT, pa se PDF povlači kroz
+ * `apiBlob` (Authorization header), ne prostim `window.open` na URL.
+ */
+export async function openWorkOrderDrawingPdf(pdfId: number): Promise<void> {
+  const blob = await apiBlob(`/v1/work-orders/drawing-pdfs/${pdfId}/content`);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
@@ -553,5 +582,55 @@ export function useBulkCloneWorkOrders() {
         },
       ),
     onSuccess: invalidate,
+  });
+}
+
+// ─────────────────────────────────────── crtež (PDF) za RN bez PDM crteža (038/26)
+
+/** Lista otpremljenih PDF-ova crteža ovog RN-a (meta, bez sadržaja). */
+export function useWorkOrderDrawingPdfs(workOrderId: number | null) {
+  return useQuery({
+    queryKey: ['work-orders', 'drawing-pdfs', workOrderId],
+    queryFn: () =>
+      apiFetch<{ data: WorkOrderDrawingPdf[] }>(
+        `/v1/work-orders/${workOrderId}/drawing-pdfs`,
+      ),
+    enabled: workOrderId != null,
+  });
+}
+
+/**
+ * Otpremi PDF crteža RN-a (multipart `file`). Backend kapira na 20MB i
+ * odbija sve što ne počinje sa `%PDF-` (magic bytes), bez obzira na MIME.
+ */
+export function useUploadWorkOrderDrawingPdf() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workOrderId, file }: { workOrderId: number; file: File }) => {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      return apiUpload<{ data: WorkOrderDrawingPdf }>(
+        `/v1/work-orders/${workOrderId}/drawing-pdf`,
+        form,
+      );
+    },
+    onSuccess: (_data, { workOrderId }) => {
+      qc.invalidateQueries({ queryKey: ['work-orders', 'drawing-pdfs', workOrderId] });
+    },
+  });
+}
+
+/** Soft-delete otpremljenog PDF-a crteža. */
+export function useDeleteWorkOrderDrawingPdf() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (pdfId: number) =>
+      apiFetch<{ data: { id: number } }>(`/v1/work-orders/drawing-pdfs/${pdfId}`, {
+        method: 'DELETE',
+      }),
+    // `pdfId` ne nosi workOrderId nazad — invalidiraj sve drawing-pdfs upite ove vrste.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['work-orders', 'drawing-pdfs'] });
+    },
   });
 }
