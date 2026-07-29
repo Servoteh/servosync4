@@ -17,7 +17,28 @@ import type { Paginated } from './tech-processes';
  * Napomena o tipovima: `Decimal` kolone stižu kao STRING (BACKEND_RULES §6), a
  * legacy `Double` kolone (cene, procenti, dimenzije) kao broj — otud mešavina
  * `number | null` i `string | null` ispod. Prikaz oba ide kroz `formatDecimal`.
+ *
+ * DVA SLOJA ODGOVORA (odluka 29.07.2026): rute stoje na `directory.read` i vidi ih
+ * svako, ali KOMERCIJALNE kolone (cene, marže, rabati, računi, limiti, GK konta)
+ * backend vraća samo akteru sa `masters.read`. Zato su tipovi `Osnovno & Partial<
+ * Komercijalno>` — polja koja korisnik ne sme da vidi prosto NE POSTOJE u JSON-u
+ * (nisu `null`), a `meta.restricted` kaže koji je sloj stigao. FE ništa ne krije
+ * sam od sebe; samo ne crta ono čega nema.
  */
+
+/** `{ restricted }` uz svaki odgovor: true = stigao je bazni (suženi) sloj. */
+export interface MastersMeta {
+  restricted: boolean;
+}
+
+/** Paginirani odgovor matičnih podataka (`Paginated` + oznaka sloja). */
+export type MastersPaginated<T> = Paginated<T> & { meta: MastersMeta };
+
+/** Detalj matičnog podatka (`{ data }` + oznaka sloja). */
+export interface MastersDetail<T> {
+  data: T;
+  meta: MastersMeta;
+}
 
 /** Razrešen šifarnički kod. `description` = null dok šifarnik nije sinkovan. */
 export interface CodeRef {
@@ -43,7 +64,7 @@ export interface PaymentAccountRef {
 
 // ---------------------------------------------------------------------- ARTIKLI
 
-/** Artikal u listi — samo kolone koje tabela prikazuje. */
+/** Artikal u listi — samo kolone koje tabela prikazuje (VP cena traži `masters.read`). */
 export interface ItemRow {
   id: number;
   catalogNumber: string;
@@ -51,17 +72,18 @@ export interface ItemRow {
   name: string;
   unit: string | null;
   groupCode: string;
-  wholesalePrice: number | null;
+  /** Komercijalno — postoji samo uz `masters.read`. */
+  wholesalePrice?: number | null;
   active: boolean | null;
   group: CodeRef | null;
 }
 
 /**
- * Pun slog artikla (`R_Artikli`, 67 kolona — v. `docs/migration/BIGBIT_ARTIKLI.md` §1).
- * Redosled polja prati sekcije detalja: identitet · klasifikacija · cene · PDV/carina ·
- * dimenzije · opisi · linkovi · ostalo.
+ * BAZNI SLOJ kartona artikla — stiže svakome ko sme da otvori ekran (`directory.read`):
+ * identitet · klasifikacija · poreske tarife (šifre stopa) · dimenzije/pakovanje ·
+ * opisi i prevodi · linkovi · status. `minQuantity` je logistička količina, ne cena.
  */
-export interface ItemDetail {
+export interface ItemBase {
   id: number;
   // Identitet
   catalogNumber: string;
@@ -75,37 +97,17 @@ export interface ItemDetail {
   subgroupCode: string;
   originCode: string;
   qualityTypeId: number | null;
+  hps: string | null;
+  sortOrder: number | null;
   group: CodeRef | null;
   subgroup: CodeRef | null;
   origin: CodeRef | null;
-  // Cene / marže / rabati
-  wholesalePrice: number | null;
-  retailPrice: number | null;
-  fxPurchasePrice: number | null;
-  fxSalePrice: number | null;
-  priceToWritePricelist: number | null;
-  /** Decimal → string. */
-  manualMarkupPercent: string | null;
-  maxDiscountPercent: number | null;
-  promotionDiscount: number | null;
-  finalProcessingCost: number | null;
-  retailLossPercent: number | null;
-  wholesaleLossPercent: number | null;
-  minQuantity: number | null;
-  paymentTermDays: number | null;
-  // PDV / carina
+  // Poreske tarife (šifre stopa i zemlja porekla — ne iznosi)
   goodsTaxRateCode: string;
   serviceTaxRateCode: string;
   alwaysTaxGoods: boolean | null;
   alwaysTaxServices: boolean | null;
-  nonTaxablePart: number | null;
-  itemFee: number | null;
-  itemExcise: number | null;
-  customsRate: number | null;
-  customsTariff: string | null;
   originCountry: string | null;
-  accountingCode: string | null;
-  accountingCode2: string | null;
   // Dimenzije / pakovanje
   unit: string | null;
   baseUnit: string | null;
@@ -113,6 +115,7 @@ export interface ItemDetail {
   quantityInPackage: number | null;
   box: number | null;
   transportPackaging: number | null;
+  minQuantity: number | null;
   weight: number | null;
   weightKg: number | null;
   volume: number | null;
@@ -130,19 +133,54 @@ export interface ItemDetail {
   pdfLink: string | null;
   wordLocation: string | null;
   // Ostalo
-  supplierId: number | null;
   manufacturer: string | null;
   shelf: string | null;
   issuePlaceId: number | null;
   rasterId: number | null;
-  sortOrder: number | null;
-  hps: string | null;
   notStockTracked: boolean | null;
   toDelete: boolean | null;
   active: boolean | null;
   signature: string | null;
   createdAt: string | null;
 }
+
+/**
+ * KOMERCIJALNI SLOJ kartona artikla — stiže SAMO uz `masters.read`. Bez tog ključa
+ * backend ove kolone ni ne pročita iz baze, pa su u tipu `Partial` (`undefined`).
+ */
+export interface ItemCommercial {
+  // Cene
+  wholesalePrice: number | null;
+  retailPrice: number | null;
+  fxPurchasePrice: number | null;
+  fxSalePrice: number | null;
+  priceToWritePricelist: number | null;
+  // Marže / rabati / kalo
+  /** Decimal → string. */
+  manualMarkupPercent: string | null;
+  maxDiscountPercent: number | null;
+  promotionDiscount: number | null;
+  retailLossPercent: number | null;
+  wholesaleLossPercent: number | null;
+  finalProcessingCost: number | null;
+  // GK konta i dobavljač
+  accountingCode: string | null;
+  accountingCode2: string | null;
+  supplierId: number | null;
+  // Takse / akcize / carine / uslovi plaćanja
+  itemFee: number | null;
+  itemExcise: number | null;
+  customsRate: number | null;
+  customsTariff: string | null;
+  paymentTermDays: number | null;
+  nonTaxablePart: number | null;
+}
+
+/**
+ * Karton artikla (`R_Artikli`, 67 kolona — v. `docs/migration/BIGBIT_ARTIKLI.md` §1).
+ * Komercijalna polja su opciona jer ih odgovor NEMA bez `masters.read`.
+ */
+export type ItemDetail = ItemBase & Partial<ItemCommercial>;
 
 export interface ItemListParams {
   page?: number;
@@ -164,15 +202,15 @@ export function useArtikli(params: ItemListParams) {
   const query = qs.toString();
   return useQuery({
     queryKey: ['masters', 'artikli', params],
-    queryFn: () => apiFetch<Paginated<ItemRow>>(`/v1/artikli${query ? `?${query}` : ''}`),
+    queryFn: () => apiFetch<MastersPaginated<ItemRow>>(`/v1/artikli${query ? `?${query}` : ''}`),
   });
 }
 
-/** Jedan artikal — pun slog za karticu artikla. */
+/** Jedan artikal — karton (skup kolona zavisi od `masters.read`, v. `meta.restricted`). */
 export function useArtikal(id: number | null) {
   return useQuery({
     queryKey: ['masters', 'artikli', 'detail', id],
-    queryFn: () => apiFetch<{ data: ItemDetail }>(`/v1/artikli/${id}`),
+    queryFn: () => apiFetch<MastersDetail<ItemDetail>>(`/v1/artikli/${id}`),
     enabled: id != null,
   });
 }
@@ -192,33 +230,48 @@ export interface CustomerRow {
 }
 
 /**
- * Pun slog komitenta (`Komitenti`, 57 kolona — v. `docs/migration/BIGBIT_KOMITENTI.md` §1).
- * Redosled polja prati sekcije detalja: osnovno · adresa/kontakt · računi · porezi/SEF ·
- * komercijala · napomene · audit.
+ * BAZNI SLOJ kartona komitenta — stiže svakome ko sme da otvori ekran (`directory.read`).
+ * Skup je NAMERNO identičan starijem `directory` pregledu (CUSTOMER_BUSINESS_SELECT):
+ * identitet, adresa, kontakt, PIB/matični broj, napomena i prodavac.
  */
-export interface CustomerDetail {
+export interface CustomerBase {
   id: number;
-  // Osnovno
   name: string;
   shortName: string | null;
   branch: string | null;
-  codeTypeCode: string | null;
-  codeType: CodeRef | null;
   // Adresa / kontakt
   address: string | null;
   city: string | null;
   postalCode: string | null;
   country: string | null;
-  region: number | null;
   phone: string | null;
   fax: string | null;
   mobile: string | null;
   email: string | null;
   webAddress: string | null;
   contact: string | null;
+  // Identifikacija
+  taxId: string;
+  registrationNumber: string | null;
+  // Ostalo
+  note: string | null;
+  salespersonId: number | null;
+  salesperson: SalespersonRef | null;
+}
+
+/**
+ * KOMERCIJALNI SLOJ kartona komitenta — stiže SAMO uz `masters.read`. Bez tog ključa
+ * backend ove kolone ni ne pročita iz baze, pa su u tipu `Partial` (`undefined`).
+ */
+export interface CustomerCommercial {
+  // Klasifikacija / marketing
+  codeTypeCode: string | null;
+  codeType: CodeRef | null;
+  region: number | null;
   birthDate: string | null;
   mailToDifferentAddress: boolean | null;
   newsletter: boolean | null;
+  hideInOverview: boolean | null;
   // Računi
   bankAccount1: string | null;
   bankAccount2: string | null;
@@ -226,18 +279,14 @@ export interface CustomerDetail {
   paymentAccountId: number | null;
   paymentAccount: PaymentAccountRef | null;
   // Porezi / SEF
-  taxId: string;
   skipTaxIdValidation: boolean | null;
   gln: string | null;
   publicSectorId: string | null;
-  registrationNumber: string | null;
   vatStatus: number | null;
   centralInvoiceRegistry: boolean | null;
   einvoiceXmlPerItemDiscount: boolean | null;
   invoicePerDeliveryAddress: boolean | null;
   // Komercijala
-  salespersonId: number | null;
-  salesperson: SalespersonRef | null;
   customerDiscount: number | null;
   fictitiousDiscount: number | null;
   commissionPercent: number | null;
@@ -254,9 +303,7 @@ export interface CustomerDetail {
   buyerProtectionCode: string | null;
   routeId: number | null;
   driverId: number | null;
-  hideInOverview: boolean | null;
   // Napomene
-  note: string | null;
   balanceNote: string | null;
   // Audit
   createdAt: string | null;
@@ -266,6 +313,12 @@ export interface CustomerDetail {
   recordCreatedAt: string | null;
   signature: string | null;
 }
+
+/**
+ * Karton komitenta (`Komitenti`, 57 kolona — v. `docs/migration/BIGBIT_KOMITENTI.md` §1).
+ * Komercijalna polja su opciona jer ih odgovor NEMA bez `masters.read`.
+ */
+export type CustomerDetail = CustomerBase & Partial<CustomerCommercial>;
 
 export interface CustomerListParams {
   page?: number;
@@ -284,15 +337,16 @@ export function useKomitenti(params: CustomerListParams) {
   const query = qs.toString();
   return useQuery({
     queryKey: ['masters', 'komitenti', params],
-    queryFn: () => apiFetch<Paginated<CustomerRow>>(`/v1/komitenti${query ? `?${query}` : ''}`),
+    queryFn: () =>
+      apiFetch<MastersPaginated<CustomerRow>>(`/v1/komitenti${query ? `?${query}` : ''}`),
   });
 }
 
-/** Jedan komitent — pun slog za karticu komitenta. */
+/** Jedan komitent — karton (skup kolona zavisi od `masters.read`, v. `meta.restricted`). */
 export function useKomitent(id: number | null) {
   return useQuery({
     queryKey: ['masters', 'komitenti', 'detail', id],
-    queryFn: () => apiFetch<{ data: CustomerDetail }>(`/v1/komitenti/${id}`),
+    queryFn: () => apiFetch<MastersDetail<CustomerDetail>>(`/v1/komitenti/${id}`),
     enabled: id != null,
   });
 }

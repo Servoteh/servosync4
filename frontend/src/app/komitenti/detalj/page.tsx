@@ -19,6 +19,12 @@ import { useKomitent, codeRefLabel, salespersonLabel, type CustomerDetail } from
  *
  * ⚠️ STATIČKA RUTA `?id=N`, ne `[id]` segment (static export; isti razlog kao kod
  * artikla). Id se čita iz `window.location.search`, nikad kroz `useSearchParams`.
+ *
+ * DVA SLOJA (odluka 29.07.2026): bez `masters.read` odgovor NEMA račune, rabate,
+ * proviziju, maržu, limit, uslove plaćanja, PDV/GLN/CRF ni audit — vraća isti
+ * bezbedan podskup koji je nekad prikazivao stariji ekran `/customers` (sada ugašen
+ * i preusmeren ovamo). Ekran zato izostavlja cele sekcije kojih u odgovoru nema i u
+ * zaglavlju nosi oznaku „Ograničen prikaz". Redakciju radi backend, ne ovaj fajl.
  */
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -93,7 +99,7 @@ function PibBadge({ state }: { state: PibState }) {
   return <StatusBadge tone="warn" label="Neispravan format" />;
 }
 
-function CustomerSections({ k }: { k: CustomerDetail }) {
+function CustomerSections({ k, commercial }: { k: CustomerDetail; commercial: boolean }) {
   const pib = pibState(k.taxId);
   return (
     <>
@@ -104,8 +110,15 @@ function CustomerSections({ k }: { k: CustomerDetail }) {
         <Field label="Naziv">{txt(k.name)}</Field>
         <Field label="Skraćeni naziv">{txt(k.shortName)}</Field>
         <Field label="Poslovnica">{txt(k.branch)}</Field>
-        <Field label="Vrsta šifre">{codeRefLabel(k.codeType) ?? txt(k.codeTypeCode)}</Field>
-        <Field label="Sakriven u pregledu">{bool(k.hideInOverview)}</Field>
+        {/* Prodavac je u baznom sloju (isto kao u starijem `directory` pregledu), pa
+            stoji ovde — sekcija „Komercijala" tako ostaje čisto komercijalna. */}
+        <Field label="Prodavac">{salespersonLabel(k.salesperson) ?? '—'}</Field>
+        {commercial && (
+          <>
+            <Field label="Vrsta šifre">{codeRefLabel(k.codeType) ?? txt(k.codeTypeCode)}</Field>
+            <Field label="Sakriven u pregledu">{bool(k.hideInOverview)}</Field>
+          </>
+        )}
       </Section>
 
       <Section title="Adresa i kontakt">
@@ -113,40 +126,48 @@ function CustomerSections({ k }: { k: CustomerDetail }) {
         <Field label="Mesto">{txt(k.city)}</Field>
         <Field label="Poštanski broj">{txt(k.postalCode)}</Field>
         <Field label="Država">{txt(k.country)}</Field>
-        <Field label="Region">{num(k.region, 0)}</Field>
         <Field label="Telefon">{txt(k.phone)}</Field>
         <Field label="Faks">{txt(k.fax)}</Field>
         <Field label="Mobilni">{txt(k.mobile)}</Field>
         <Field label="Email">{txt(k.email)}</Field>
         <Field label="Web adresa">{txt(k.webAddress)}</Field>
         <Field label="Kontakt osoba">{txt(k.contact)}</Field>
-        <Field label="Datum rođenja">{k.birthDate ? formatDate(k.birthDate) : '—'}</Field>
-        <Field label="Pošta na drugu adresu">{bool(k.mailToDifferentAddress)}</Field>
-        <Field label="Newsletter">{bool(k.newsletter)}</Field>
+        {commercial && (
+          <>
+            <Field label="Region">{num(k.region, 0)}</Field>
+            <Field label="Datum rođenja">{k.birthDate ? formatDate(k.birthDate) : '—'}</Field>
+            <Field label="Pošta na drugu adresu">{bool(k.mailToDifferentAddress)}</Field>
+            <Field label="Newsletter">{bool(k.newsletter)}</Field>
+          </>
+        )}
       </Section>
 
-      <Section title="Računi">
-        <Field label="Žiro račun 1">
-          <span className="tnums">{txt(k.bankAccount1)}</span>
-        </Field>
-        <Field label="Žiro račun 2">
-          <span className="tnums">{txt(k.bankAccount2)}</span>
-        </Field>
-        <Field label="Žiro račun 3">
-          <span className="tnums">{txt(k.bankAccount3)}</span>
-        </Field>
-        <Field label="Uplatni račun">
-          {k.paymentAccount ? (
-            <span className="tnums">
-              {k.paymentAccount.accountNumber}
-              {k.paymentAccount.bankName ? ` — ${k.paymentAccount.bankName}` : ''}
-            </span>
-          ) : (
-            '—'
-          )}
-        </Field>
-      </Section>
+      {commercial && (
+        <Section title="Računi">
+          <Field label="Žiro račun 1">
+            <span className="tnums">{txt(k.bankAccount1)}</span>
+          </Field>
+          <Field label="Žiro račun 2">
+            <span className="tnums">{txt(k.bankAccount2)}</span>
+          </Field>
+          <Field label="Žiro račun 3">
+            <span className="tnums">{txt(k.bankAccount3)}</span>
+          </Field>
+          <Field label="Uplatni račun">
+            {k.paymentAccount ? (
+              <span className="tnums">
+                {k.paymentAccount.accountNumber}
+                {k.paymentAccount.bankName ? ` — ${k.paymentAccount.bankName}` : ''}
+              </span>
+            ) : (
+              '—'
+            )}
+          </Field>
+        </Section>
+      )}
 
+      {/* Mešovita sekcija: PIB i matični broj su javni podaci (bazni sloj), a
+          GLN/JBKJS/PDV status/CRF idu uz `masters.read`. */}
       <Section title="Porezi i SEF">
         <div className="col-span-2">
           <Field label="PIB">
@@ -156,59 +177,72 @@ function CustomerSections({ k }: { k: CustomerDetail }) {
             </span>
           </Field>
         </div>
-        <Field label="Ne proveravaj PIB">{bool(k.skipTaxIdValidation)}</Field>
         <Field label="Matični broj">
           <span className="tnums">{txt(k.registrationNumber)}</span>
         </Field>
-        <Field label="GLN">
-          <span className="tnums">{txt(k.gln)}</span>
-        </Field>
-        <Field label="JBKJS (javni sektor)">
-          <span className="tnums">{txt(k.publicSectorId)}</span>
-        </Field>
-        <Field label="PDV status">{num(k.vatStatus, 0)}</Field>
-        <Field label="CRF (centralni registar faktura)">{bool(k.centralInvoiceRegistry)}</Field>
-        <Field label="e-Faktura: popust po stavci">{bool(k.einvoiceXmlPerItemDiscount)}</Field>
-        <Field label="Fakturisanje po mestima isporuke">
-          {bool(k.invoicePerDeliveryAddress)}
-        </Field>
+        {commercial && (
+          <>
+            <Field label="Ne proveravaj PIB">{bool(k.skipTaxIdValidation)}</Field>
+            <Field label="GLN">
+              <span className="tnums">{txt(k.gln)}</span>
+            </Field>
+            <Field label="JBKJS (javni sektor)">
+              <span className="tnums">{txt(k.publicSectorId)}</span>
+            </Field>
+            <Field label="PDV status">{num(k.vatStatus, 0)}</Field>
+            <Field label="CRF (centralni registar faktura)">
+              {bool(k.centralInvoiceRegistry)}
+            </Field>
+            <Field label="e-Faktura: popust po stavci">
+              {bool(k.einvoiceXmlPerItemDiscount)}
+            </Field>
+            <Field label="Fakturisanje po mestima isporuke">
+              {bool(k.invoicePerDeliveryAddress)}
+            </Field>
+          </>
+        )}
       </Section>
 
-      <Section title="Komercijala">
-        <Field label="Prodavac">{salespersonLabel(k.salesperson) ?? '—'}</Field>
-        <Field label="Rabat komitenta (%)">{num(k.customerDiscount)}</Field>
-        <Field label="Fiktivni rabat (%)">{num(k.fictitiousDiscount)}</Field>
-        <Field label="Provizija (%)">{num(k.commissionPercent)}</Field>
-        <Field label="Ručna marža (%)">{num(k.manualMarkupPercent)}</Field>
-        <Field label="Cenovnik">{txt(k.priceListCode)}</Field>
-        <Field label="Valuta plaćanja (dana)">{num(k.paymentTermDays, 0)}</Field>
-        <Field label="Način plaćanja">{txt(k.paymentMethod)}</Field>
-        <Field label="Kreditni limit">{num(k.creditLimit)}</Field>
-        <Field label="Provera duga">{bool(k.checkDebt)}</Field>
-        <Field label="Eksterna šifra">{txt(k.externalCode)}</Field>
-        <Field label="Pantheon ID">{txt(k.pantheonId)}</Field>
-        <Field label="Zaštitni kod kupca">{txt(k.buyerProtectionCode)}</Field>
-        <Field label="Ruta (ID)">{num(k.routeId, 0)}</Field>
-        <Field label="Vozač (šifra)">{num(k.driverId, 0)}</Field>
-      </Section>
+      {commercial && (
+        <Section title="Komercijala">
+          <Field label="Rabat komitenta (%)">{num(k.customerDiscount)}</Field>
+          <Field label="Fiktivni rabat (%)">{num(k.fictitiousDiscount)}</Field>
+          <Field label="Provizija (%)">{num(k.commissionPercent)}</Field>
+          <Field label="Ručna marža (%)">{num(k.manualMarkupPercent)}</Field>
+          <Field label="Cenovnik">{txt(k.priceListCode)}</Field>
+          <Field label="Valuta plaćanja (dana)">{num(k.paymentTermDays, 0)}</Field>
+          <Field label="Način plaćanja">{txt(k.paymentMethod)}</Field>
+          <Field label="Kreditni limit">{num(k.creditLimit)}</Field>
+          <Field label="Provera duga">{bool(k.checkDebt)}</Field>
+          <Field label="Eksterna šifra">{txt(k.externalCode)}</Field>
+          <Field label="Pantheon ID">{txt(k.pantheonId)}</Field>
+          <Field label="Zaštitni kod kupca">{txt(k.buyerProtectionCode)}</Field>
+          <Field label="Ruta (ID)">{num(k.routeId, 0)}</Field>
+          <Field label="Vozač (šifra)">{num(k.driverId, 0)}</Field>
+        </Section>
+      )}
 
       <Section title="Napomene">
         <div className="col-span-2 sm:col-span-3 lg:col-span-2">
           <Field label="Napomena">{txt(k.note)}</Field>
         </div>
-        <div className="col-span-2 sm:col-span-3 lg:col-span-2">
-          <Field label="Napomena za salda">{txt(k.balanceNote)}</Field>
-        </div>
+        {commercial && (
+          <div className="col-span-2 sm:col-span-3 lg:col-span-2">
+            <Field label="Napomena za salda">{txt(k.balanceNote)}</Field>
+          </div>
+        )}
       </Section>
 
-      <Section title="Audit">
-        <Field label="Prvi unos">{formatDateTime(k.createdAt)}</Field>
-        <Field label="Uneo">{txt(k.createdBy)}</Field>
-        <Field label="Poslednja izmena">{formatDateTime(k.updatedAt)}</Field>
-        <Field label="Izmenio">{txt(k.updatedBy)}</Field>
-        <Field label="Datum sloga">{formatDateTime(k.recordCreatedAt)}</Field>
-        <Field label="Potpis">{txt(k.signature)}</Field>
-      </Section>
+      {commercial && (
+        <Section title="Audit">
+          <Field label="Prvi unos">{formatDateTime(k.createdAt)}</Field>
+          <Field label="Uneo">{txt(k.createdBy)}</Field>
+          <Field label="Poslednja izmena">{formatDateTime(k.updatedAt)}</Field>
+          <Field label="Izmenio">{txt(k.updatedBy)}</Field>
+          <Field label="Datum sloga">{formatDateTime(k.recordCreatedAt)}</Field>
+          <Field label="Potpis">{txt(k.signature)}</Field>
+        </Section>
+      )}
     </>
   );
 }
@@ -251,6 +285,8 @@ export default function KomitentDetaljPage() {
   }
 
   const k = q.data?.data;
+  // Sloj odgovora presuđuje backend (`masters.read`); ekran ga samo prati.
+  const commercial = q.data?.meta.restricted === false;
 
   return (
     <AppShell>
@@ -258,10 +294,17 @@ export default function KomitentDetaljPage() {
         title={k ? k.name : 'Komitent'}
         count={k ? <span className="tnums">Šifra {k.id}</span> : undefined}
         actions={
-          <Button variant="secondary" onClick={() => router.push('/komitenti')}>
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-            Nazad
-          </Button>
+          <div className="flex items-center gap-2">
+            {k && !commercial && (
+              <span title="Računi, rabati, provizija, limit i uslovi plaćanja traže dozvolu „masters.read“.">
+                <StatusBadge tone="neutral" label="Ograničen prikaz" />
+              </span>
+            )}
+            <Button variant="secondary" onClick={() => router.push('/komitenti')}>
+              <ArrowLeft className="h-4 w-4" aria-hidden />
+              Nazad
+            </Button>
+          </div>
         }
       />
 
@@ -283,7 +326,7 @@ export default function KomitentDetaljPage() {
           </div>
         )}
 
-        {k && <CustomerSections k={k} />}
+        {k && <CustomerSections k={k} commercial={commercial} />}
       </div>
     </AppShell>
   );

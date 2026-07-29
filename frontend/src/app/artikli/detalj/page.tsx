@@ -21,6 +21,12 @@ import { useArtikal, codeRefLabel, type ItemDetail } from '@/api/masters';
  * exportu (`output: "export"`) — klijentska navigacija traži neizvezen prerender pa
  * hard-404 (incident 22.07). Id se čita iz `window.location.search` u `useEffect`-u,
  * NIKAD kroz `useSearchParams` (on bi tražio Suspense oko cele strane).
+ *
+ * DVA SLOJA (odluka 29.07.2026): komercijalne kolone (cene, marže, rabati, GK konta,
+ * dobavljač, carine) stižu samo uz `masters.read` — bez njega ih odgovor NEMA. Ekran
+ * zato ne crta prazne sekcije: cela sekcija „Cene, marže i rabati" i pojedinačna
+ * komercijalna polja u mešovitim sekcijama se izostavljaju, a u zaglavlju stoji
+ * oznaka „Ograničen prikaz". FE ništa ne sakriva sam — samo ne crta ono čega nema.
  */
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -78,7 +84,7 @@ function pathValue(v: string | null | undefined): ReactNode {
   );
 }
 
-function ItemSections({ a }: { a: ItemDetail }) {
+function ItemSections({ a, commercial }: { a: ItemDetail; commercial: boolean }) {
   return (
     <>
       <Section title="Identitet">
@@ -109,36 +115,45 @@ function ItemSections({ a }: { a: ItemDetail }) {
         <Field label="Redosled">{num(a.sortOrder, 0)}</Field>
       </Section>
 
-      <Section title="Cene, marže i rabati">
-        <Field label="VP cena">{num(a.wholesalePrice)}</Field>
-        <Field label="MP cena">{num(a.retailPrice)}</Field>
-        <Field label="Devizna nabavna">{num(a.fxPurchasePrice)}</Field>
-        <Field label="Devizna prodajna">{num(a.fxSalePrice)}</Field>
-        <Field label="Cena za upis u cenovnik">{num(a.priceToWritePricelist)}</Field>
-        <Field label="Ručna marža (%)">{num(a.manualMarkupPercent)}</Field>
-        <Field label="Maks. rabat (%)">{num(a.maxDiscountPercent)}</Field>
-        <Field label="Akcijski rabat (%)">{num(a.promotionDiscount)}</Field>
-        <Field label="Zavisni trošak proizvodnje">{num(a.finalProcessingCost)}</Field>
-        <Field label="Kalo VP (%)">{num(a.wholesaleLossPercent)}</Field>
-        <Field label="Kalo MP (%)">{num(a.retailLossPercent)}</Field>
-        <Field label="Minimalna količina">{num(a.minQuantity, 3)}</Field>
-        <Field label="Valuta plaćanja (dana)">{num(a.paymentTermDays, 0)}</Field>
-      </Section>
+      {/* Komercijalna sekcija u celini — bez `masters.read` je odgovor uopšte nema,
+          pa se ne crta prazna tabla sa samim crticama. */}
+      {commercial && (
+        <Section title="Cene, marže i rabati">
+          <Field label="VP cena">{num(a.wholesalePrice)}</Field>
+          <Field label="MP cena">{num(a.retailPrice)}</Field>
+          <Field label="Devizna nabavna">{num(a.fxPurchasePrice)}</Field>
+          <Field label="Devizna prodajna">{num(a.fxSalePrice)}</Field>
+          <Field label="Cena za upis u cenovnik">{num(a.priceToWritePricelist)}</Field>
+          <Field label="Ručna marža (%)">{num(a.manualMarkupPercent)}</Field>
+          <Field label="Maks. rabat (%)">{num(a.maxDiscountPercent)}</Field>
+          <Field label="Akcijski rabat (%)">{num(a.promotionDiscount)}</Field>
+          <Field label="Zavisni trošak proizvodnje">{num(a.finalProcessingCost)}</Field>
+          <Field label="Kalo VP (%)">{num(a.wholesaleLossPercent)}</Field>
+          <Field label="Kalo MP (%)">{num(a.retailLossPercent)}</Field>
+          <Field label="Valuta plaćanja (dana)">{num(a.paymentTermDays, 0)}</Field>
+        </Section>
+      )}
 
+      {/* Mešovita sekcija: tarifne ŠIFRE i zemlja porekla vidi svako, a iznosi
+          (takse/akcize/carine) i GK konta traže `masters.read`. */}
       <Section title="PDV i carina">
         <Field label="Tarifa robe">{txt(a.goodsTaxRateCode)}</Field>
         <Field label="Tarifa usluga">{txt(a.serviceTaxRateCode)}</Field>
         <Field label="Uvek porez na robu">{bool(a.alwaysTaxGoods)}</Field>
         <Field label="Uvek porez na usluge">{bool(a.alwaysTaxServices)}</Field>
-        <Field label="Neoporezivi deo">{num(a.nonTaxablePart)}</Field>
-        <Field label="Taksa">{num(a.itemFee)}</Field>
-        <Field label="Akciza">{num(a.itemExcise)}</Field>
-        <Field label="Carinska stopa (%)">{num(a.customsRate)}</Field>
-        <Field label="Carinska tarifa">{txt(a.customsTariff)}</Field>
         <Field label="Zemlja porekla">{txt(a.originCountry)}</Field>
-        <Field label="Konto (GK)">{txt(a.accountingCode)}</Field>
-        {/* BIGBIT_ARTIKLI.md §4.7: `KngSifra_2` se koristi i kao „zamenska šifra". */}
-        <Field label="Konto 2 / zamena">{txt(a.accountingCode2)}</Field>
+        {commercial && (
+          <>
+            <Field label="Neoporezivi deo">{num(a.nonTaxablePart)}</Field>
+            <Field label="Taksa">{num(a.itemFee)}</Field>
+            <Field label="Akciza">{num(a.itemExcise)}</Field>
+            <Field label="Carinska stopa (%)">{num(a.customsRate)}</Field>
+            <Field label="Carinska tarifa">{txt(a.customsTariff)}</Field>
+            <Field label="Konto (GK)">{txt(a.accountingCode)}</Field>
+            {/* BIGBIT_ARTIKLI.md §4.7: `KngSifra_2` se koristi i kao „zamenska šifra". */}
+            <Field label="Konto 2 / zamena">{txt(a.accountingCode2)}</Field>
+          </>
+        )}
       </Section>
 
       <Section title="Dimenzije i pakovanje">
@@ -148,6 +163,8 @@ function ItemSections({ a }: { a: ItemDetail }) {
         <Field label="Količina u pakovanju">{num(a.quantityInPackage, 3)}</Field>
         <Field label="Kutija">{num(a.box, 3)}</Field>
         <Field label="Transportno pakovanje">{num(a.transportPackaging, 3)}</Field>
+        {/* Logistička količina (ne cena) — zato je u baznom sloju, uz pakovanje. */}
+        <Field label="Minimalna količina">{num(a.minQuantity, 3)}</Field>
         <Field label="Težina">{num(a.weight, 3)}</Field>
         <Field label="Težina (kg)">{num(a.weightKg, 3)}</Field>
         <Field label="Zapremina">{num(a.volume, 3)}</Field>
@@ -184,7 +201,8 @@ function ItemSections({ a }: { a: ItemDetail }) {
       </Section>
 
       <Section title="Ostalo">
-        <Field label="Dobavljač (šifra)">{num(a.supplierId, 0)}</Field>
+        {/* Dobavljač je komercijalni podatak (od koga i pod kojim uslovima kupujemo). */}
+        {commercial && <Field label="Dobavljač (šifra)">{num(a.supplierId, 0)}</Field>}
         <Field label="Proizvođač">{txt(a.manufacturer)}</Field>
         <Field label="Polica">{txt(a.shelf)}</Field>
         <Field label="Mesto izdavanja (ID)">{num(a.issuePlaceId, 0)}</Field>
@@ -236,6 +254,8 @@ export default function ArtikalDetaljPage() {
   }
 
   const a = q.data?.data;
+  // Sloj odgovora presuđuje backend (`masters.read`); ekran ga samo prati.
+  const commercial = q.data?.meta.restricted === false;
   const back = (
     <Button variant="secondary" onClick={() => router.push('/artikli')}>
       <ArrowLeft className="h-4 w-4" aria-hidden />
@@ -250,6 +270,11 @@ export default function ArtikalDetaljPage() {
         count={a ? <span className="tnums">{a.catalogNumber}</span> : undefined}
         actions={
           <div className="flex items-center gap-2">
+            {a && !commercial && (
+              <span title="Cene, marže, rabati i GK konta traže dozvolu „masters.read“.">
+                <StatusBadge tone="neutral" label="Ograničen prikaz" />
+              </span>
+            )}
             {a && (a.active ? (
               <StatusBadge tone="success" label="Aktivan" />
             ) : (
@@ -276,7 +301,7 @@ export default function ArtikalDetaljPage() {
           </div>
         )}
 
-        {a && <ItemSections a={a} />}
+        {a && <ItemSections a={a} commercial={commercial} />}
       </div>
     </AppShell>
   );

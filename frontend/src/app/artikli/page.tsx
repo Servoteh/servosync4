@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -22,6 +22,10 @@ import { useArtikli, codeRefLabel, type ItemRow } from '@/api/masters';
  * izmena artikla ostaju u BigBit-u (prelazni režim, BACKEND_RULES §3). Detalj se
  * otvara kao STATIČKA ruta `/artikli/detalj?id=N` (nikad `[id]` segment — static
  * export ga ne izvozi, v. `artikli/detalj/page.tsx`).
+ *
+ * DVA SLOJA (odluka 29.07.2026): kolona „VP cena" je komercijalna i stiže samo uz
+ * `masters.read`. Kolona se ne „siva" niti prazni — prosto je nema, jer je nema ni
+ * u odgovoru (`meta.restricted`); redakciju radi backend, ekran je samo prati.
  */
 
 const PAGE_SIZE = 50;
@@ -31,7 +35,8 @@ const ACTIVE_OPTIONS = [
   { value: 'false', label: 'Samo neaktivni' },
 ];
 
-const columns: Column<ItemRow>[] = [
+/** Kolone koje vidi svako ko sme da otvori ekran (`directory.read`). */
+const BASE_COLUMNS: Column<ItemRow>[] = [
   {
     key: 'catalogNumber',
     header: 'Kataloški broj',
@@ -54,24 +59,27 @@ const columns: Column<ItemRow>[] = [
       <span className="text-ink-secondary">{codeRefLabel(a.group) ?? a.groupCode}</span>
     ),
   },
-  {
-    key: 'wholesalePrice',
-    header: 'VP cena',
-    align: 'right',
-    numeric: true,
-    render: (a) => <span className="tnums text-ink">{formatDecimal(a.wholesalePrice)}</span>,
-  },
-  {
-    key: 'active',
-    header: 'Aktivan',
-    render: (a) =>
-      a.active ? (
-        <StatusBadge tone="success" label="Da" />
-      ) : (
-        <span className="text-ink-disabled">Ne</span>
-      ),
-  },
 ];
+
+/** Komercijalna kolona — samo uz `masters.read` (backend je i ne vrati bez njega). */
+const PRICE_COLUMN: Column<ItemRow> = {
+  key: 'wholesalePrice',
+  header: 'VP cena',
+  align: 'right',
+  numeric: true,
+  render: (a) => <span className="tnums text-ink">{formatDecimal(a.wholesalePrice ?? null)}</span>,
+};
+
+const STATUS_COLUMN: Column<ItemRow> = {
+  key: 'active',
+  header: 'Aktivan',
+  render: (a) =>
+    a.active ? (
+      <StatusBadge tone="success" label="Da" />
+    ) : (
+      <span className="text-ink-disabled">Ne</span>
+    ),
+};
 
 export default function ArtikliPage() {
   const { user, isLoading } = useAuth();
@@ -92,6 +100,14 @@ export default function ArtikliPage() {
     active: active === '' ? undefined : active === 'true',
   });
 
+  const columns = useMemo(
+    () =>
+      list.data?.meta.restricted === false
+        ? [...BASE_COLUMNS, PRICE_COLUMN, STATUS_COLUMN]
+        : [...BASE_COLUMNS, STATUS_COLUMN],
+    [list.data?.meta.restricted],
+  );
+
   if (isLoading || !user) {
     return (
       <main className="grid flex-1 place-items-center text-sm text-ink-secondary">
@@ -102,6 +118,9 @@ export default function ArtikliPage() {
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
+  // Dok podaci ne stignu pretpostavljamo suženi sloj — kolona koja se pojavi je
+  // manje neprijatna od kolone koja nestane pod rukom.
+  const restricted = list.data?.meta.restricted ?? true;
 
   return (
     <AppShell>
@@ -109,14 +128,21 @@ export default function ArtikliPage() {
         title="Artikli"
         count={meta ? `${formatNumber(meta.total)} artikala` : undefined}
         actions={
-          <SearchBox
-            value={q}
-            onChange={(v) => {
-              setQ(v);
-              setPage(1);
-            }}
-            placeholder="Naziv, kataloški broj, barkod…"
-          />
+          <div className="flex items-center gap-2">
+            {restricted && (
+              <span title="Cene i drugi komercijalni podaci traže dozvolu „masters.read“.">
+                <StatusBadge tone="neutral" label="Ograničen prikaz" />
+              </span>
+            )}
+            <SearchBox
+              value={q}
+              onChange={(v) => {
+                setQ(v);
+                setPage(1);
+              }}
+              placeholder="Naziv, kataloški broj, barkod…"
+            />
+          </div>
         }
       />
 

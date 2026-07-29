@@ -8,6 +8,7 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { SearchBox } from '@/components/ui-kit/search-box';
+import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { Pager } from '@/components/ui-kit/pager';
 import { formatNumber } from '@/lib/format';
 import { useKomitenti, codeRefLabel, salespersonLabel, type CustomerRow } from '@/api/masters';
@@ -19,6 +20,10 @@ import { useKomitenti, codeRefLabel, salespersonLabel, type CustomerRow } from '
  * Podatak je BigBit cache (`customers`) — ekran je ČIST PREGLED: unos i izmena
  * komitenta ostaju u BigBit-u (prelazni režim, BACKEND_RULES §3). Detalj se otvara
  * kao STATIČKA ruta `/komitenti/detalj?id=N` (nikad `[id]` segment — static export).
+ *
+ * JEDINI ekran za komitente od 29.07.2026 — stariji `/customers` je ugašen i
+ * preusmeren ovamo. Lista sama ne nosi komercijalne kolone; širina KARTONA zavisi od
+ * `masters.read` (backend redakcija), pa zaglavlje samo nagoveštava sloj.
  */
 
 const PAGE_SIZE = 50;
@@ -87,6 +92,7 @@ export default function KomitentiPage() {
 
   const rows = list.data?.data ?? [];
   const meta = list.data?.meta.pagination;
+  const restricted = list.data?.meta.restricted ?? true;
 
   return (
     <AppShell>
@@ -94,14 +100,21 @@ export default function KomitentiPage() {
         title="Komitenti"
         count={meta ? `${formatNumber(meta.total)} komitenata` : undefined}
         actions={
-          <SearchBox
-            value={q}
-            onChange={(v) => {
-              setQ(v);
-              setPage(1);
-            }}
-            placeholder="Naziv, PIB, mesto…"
-          />
+          <div className="flex items-center gap-2">
+            {restricted && (
+              <span title="Računi, rabati, provizija, limit i uslovi plaćanja traže dozvolu „masters.read“.">
+                <StatusBadge tone="neutral" label="Ograničen prikaz" />
+              </span>
+            )}
+            <SearchBox
+              value={q}
+              onChange={(v) => {
+                setQ(v);
+                setPage(1);
+              }}
+              placeholder="Naziv, PIB, mesto…"
+            />
+          </div>
         }
       />
 

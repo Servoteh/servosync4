@@ -41,7 +41,9 @@ export const MODULES: ModuleDef[] = [
   { key: 'odrzavanje-sredstva', name: 'Održavanje — Sredstva', route: '/odrzavanje/sredstva', group: 'Oprema' },
   { key: 'odrzavanje-vozila', name: 'Održavanje — Vozila', route: '/odrzavanje/vozila', group: 'Oprema' },
   // Šifarnici / master data
-  { key: 'customers', name: 'Komitenti', route: '/customers', group: 'Šifarnici' },
+  // Komitenti: ekran je 29.07.2026 ujedinjen na /komitenti (matični podaci 4.0);
+  // /customers je od tada samo preusmerenje, pa smoke gađa stvarnu rutu.
+  { key: 'komitenti', name: 'Komitenti', route: '/komitenti', group: 'Šifarnici' },
   { key: 'projects', name: 'Predmeti', route: '/projects', group: 'Šifarnici' },
   { key: 'structures', name: 'Proizvodne strukture', route: '/structures', group: 'Šifarnici' },
   // Sistem
