@@ -14,26 +14,44 @@ a ume i da ga zablokira (traži restart u pogonu). Zato:
 
 - **Nikad** ne pokretati drugi `server.js` sa `SIMULATE=false` dok radi produkcijski servis.
   Za svaku lokalnu probu: `SIMULATE=true` (+ `LOXONE_HOST=`, `S7_HOST=` da se ne diraju ni oni).
-- Ni „bezopasan" `Test-NetConnection`/`nc` na `192.168.75.25:502` nije bezopasan — radi ga
-  samo kad je servis „Kotlarnica SCADA" zaustavljen i kad znaš zašto ti treba.
+- **`ECONNREFUSED` na 502 obično znači da PLC RADI**, a ne da je pokvaren — socket već drži
+  živi `scada-app` na ubuntusrv. Provereno 29.07.2026: sa druge mašine veza je odbijena, a
+  `journalctl` živog servisa u istom trenutku pokazuje `[PLC] PCOM povezan`. Pre nego što
+  nekoga pošalješ da resetuje PLC, proveri log živog servisa.
 - PCOM nema transaction-id, pa servis šalje zahteve **serijski**; to je razlog zašto sme
   postojati samo jedan klijent.
 
-## Lanac isporuke (ovo NIJE deo backend/frontend deploy-a)
+## Gde ovo ZAISTA radi (provereno 29.07.2026)
+
+Preseljeno na **ubuntusrv (192.168.64.28)** 20.07.2026. Windows bridge VM (192.168.64.24)
+je **napušten** — servisi su tamo `Stopped / Disabled` i takvi moraju i ostati.
 
 ```
-servosync4/scada/            ← IZVOR (ovaj folder)
-   └─ mirror ─► servoteh-bridge/scada-app/   (deploy repo)
-                    └─ VM: C:\Servoteh\servoteh-bridge  →  git pull + Restart-Service
+servosync4/scada/                        ← IZVOR (ovaj folder)
+   └─ kopija ─► ubuntusrv:/home/admnenad/scada-app     (systemd --user: scada-app.service, port 3010)
+                    ▲ /api/*
+                    │
+        ubuntusrv:/home/admnenad/bridge-scada          (servoteh-bridge-scada.service)
+                    └─► sy15 (self-host, SUPABASE_URL=http://localhost:8080)
+                          scada_snapshots · scada_history · scada_alarms  →  4.0 /energetika
 ```
 
-Servis se vrti kao Windows servis („Kotlarnica SCADA", node-windows) na bridge VM-u
-192.168.64.24, zajedno sa servisom „Servoteh Bridge" koji čita ovaj API (`SCADA_BASE_URL=
-http://127.0.0.1:3000`) i puni `scada_snapshots` / `scada_alarms` za 4.0.
-Planirano preseljenje oba servisa na Ubuntu (systemd) — v.
-`servoteh-bridge/docs/SCADA-RELAY.md §Prelazak na Ubuntu`.
+Uz to na istoj mašini radi `servoteh-bridge.service` (BigTehn + Katze sync) — zaseban posao.
 
-`scada/**` **ne okida** ni backend ni frontend deploy — isporuka je ručna, kroz mirror.
+```bash
+# isporuka
+scp <fajlovi> ubuntusrv:/home/admnenad/scada-app/
+ssh ubuntusrv 'systemctl --user restart scada-app.service'
+ssh ubuntusrv 'journalctl --user -u scada-app.service -n 30'
+```
+
+`Linger=yes` je uključen, pa se servisi dižu i posle restarta mašine. `node` nije u PATH-u
+za neinteraktivni SSH — koristi `/home/admnenad/.nvm/versions/node/v22.23.1/bin/node`.
+
+⚠️ **Windows VM se NE sme paliti** — bio bi drugi PCOM klijent na PLC-u (v. dole).
+`servoteh-bridge/scada-app/` je i dalje mirror za istoriju, ali ga niko ne pokreće.
+
+`scada/**` **ne okida** ni backend ni frontend deploy — isporuka je ručna, gore opisana.
 
 ## HMI ekrani postoje u dve kopije (privremeno)
 
