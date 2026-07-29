@@ -226,6 +226,78 @@ model Customer {
   @@map("customers")
 }
 
+// ----------------------------------------------------------------------------
+// CUSTOMER CHILD TABLES (Talas B) -- BigBit-only, absent from the QBigTehn MSSQL
+// copy, so they arrive through tools/bigbit-bridge (mdb-export -> CSV -> UPSERT),
+// never through src/modules/sync. Read-only for the app (BACKEND_RULES 3).
+//
+// customer_id is a SOFT reference to customers.id -- deliberately NO @relation:
+//   * customers.id IS the BigBit Sifra 1:1 (docs/migration/BIGBIT_KOMITENTI.md 5.1),
+//     so the value matches, but
+//   * the bridge UPSERTs child rows with no FK-resolve step; a real FK would abort
+//     the whole table transaction on the first orphan (a contact whose customer was
+//     deleted in BigBit, or a child CSV loaded before its parent). Same reasoning as
+//     payment_account_id / route_id on Customer, which are also plain Int columns.
+// ----------------------------------------------------------------------------
+
+/// Was: KomitentiKontaktOsobe
+/// 1:N kontakt osobe komitenta (Customer.contact je samo JEDAN string -- BIGBIT_KOMITENTI.md 2.1).
+model CustomerContact {
+  id            Int       @id(map: "pk_customer_contacts") @default(autoincrement()) @map("id")
+  /// Meki ref -> customers.id (= BigBit Sifra). Bez @relation, v. komentar iznad.
+  customerId    Int       @map("customer_id")
+  contactPerson String?   @map("contact_person") @db.VarChar(50)
+  phone         String?   @map("phone") @db.VarChar(20)
+  fax           String?   @map("fax") @db.VarChar(20)
+  mobile        String?   @map("mobile") @db.VarChar(20)
+  email         String?   @map("email") @db.VarChar(50)
+  birthDate     DateTime? @map("birth_date") @db.Timestamp(6)
+  /// KontaktDefault -- podrazumevana kontakt osoba komitenta.
+  isDefault     Boolean   @default(false) @map("is_default")
+
+  @@index([customerId], map: "idx_customer_contacts_customer")
+  @@map("customer_contacts")
+}
+
+/// Was: MestaIsporuke
+/// 1:N mesta isporuke komitenta -- svako nosi SVOJ GLN, uplatni racun, rutu/vozaca i
+/// prodavca (prakticno pod-komitent, BIGBIT_KOMITENTI.md 2.2). Customer.invoicePerDeliveryAddress
+/// je do sada bio flag bez ijedne stvarne lokacije.
+model CustomerDeliveryLocation {
+  id               Int     @id(map: "pk_customer_delivery_locations") @default(autoincrement()) @map("id")
+  /// Meki ref -> customers.id (= BigBit Sifra). Bez @relation, v. komentar iznad.
+  customerId       Int     @map("customer_id")
+  /// NazivMestaIsporuke, npr. „Magacin 2" / „Filijala Novi Sad".
+  name             String  @map("name") @db.VarChar(50)
+  city             String? @map("city") @db.VarChar(30)
+  address          String? @map("address") @db.VarChar(50)
+  phone            String? @map("phone") @db.VarChar(20)
+  /// Podrucje -- podrucje/region isporuke (tekst, ne sifarnik).
+  area             String? @map("area") @db.VarChar(30)
+  fax              String? @map("fax") @db.VarChar(20)
+  /// SifraProdavcaMestaIsporuke -- meki ref -> salespeople.id; moze se razlikovati
+  /// od glavnog prodavca komitenta.
+  salespersonId    Int?    @map("salesperson_id")
+  contractCategory String? @map("contract_category") @db.VarChar(30)
+  generalCategory  String? @map("general_category") @db.VarChar(30)
+  salesChannel     String? @map("sales_channel") @db.VarChar(30)
+  routeId          Int?    @map("route_id")
+  driverId         Int?    @map("driver_id")
+  /// Meki ref -> payment_accounts.id (fakturise se na drugi racun po lokaciji).
+  paymentAccountId Int?    @map("payment_account_id")
+  /// GLN po LOKACIJI -- bitno za SEF e-fakturu (nije isti kao Customer.gln).
+  gln              String? @map("gln") @db.VarChar(30)
+  region           Int?    @map("region")
+  /// AktivnoMISP.
+  active           Boolean @default(true) @map("active")
+  postalCode       String? @map("postal_code") @db.VarChar(20)
+  /// BrojMestaIsporuke -- interni broj lokacije kod komitenta.
+  locationNumber   String? @map("location_number") @db.VarChar(20)
+
+  @@index([customerId], map: "idx_delivery_locations_customer")
+  @@map("customer_delivery_locations")
+}
+
 // ============================================================================
 // DRAWINGS (was PDM*)
 // ============================================================================
@@ -893,6 +965,91 @@ model ItemOrigin {
   discountPercent Decimal? @default(0) @map("discount_percent") @db.Decimal(19, 4)
 
   @@map("item_origins")
+}
+
+// ----------------------------------------------------------------------------
+// ITEM CHILD TABLES (Talas B) -- BigBit-only (nema ih u QBigTehn MSSQL kopiji), pa
+// stizu iskljucivo kroz tools/bigbit-bridge, ne kroz src/modules/sync.
+//
+// !!! item_id NIJE items.id !!!
+// item_id ovde je BIGBIT sifra artikla (R_Artikli.[Sifra artikla] u originalu).
+// items.id je QBigTehn-lokalni IDENTITY iz kopije, a BigBit sifra zivi u
+// items.external_item_id (BIGBIT_ARTIKLI.md 5.1 -- transfer radi
+// ExportujTabeluUSQLBezIdentityKolone, pa se PK remapira). Svako citanje ovih
+// tabela ide preko items.external_item_id, NIKAD preko items.id.
+//
+// Zato je item_id i meki ref (bez @relation): ciljna kolona nije PK (FK bi trazio
+// UNIQUE na external_item_id, kog nema), a i da jeste -- bridge UPSERT nema
+// FK-resolve korak, pa bi tvrd FK oborio celu tabelu na prvom siroceti (barkod
+// artikla koji jos nije stigao u kopiju).
+// ----------------------------------------------------------------------------
+
+/// Was: R_Artikli_BarKod
+/// Vise barkodova po artiklu (Item.barCode je samo PRIMARNI). Skener u BigBit-u trazi
+/// prvo R_Artikli.BarKod pa tek onda ovde (F_IDArtikalZaBarKod, BIGBIT_ARTIKLI.md 3.1).
+model ItemBarcode {
+  id          Int     @id(map: "pk_item_barcodes") @default(autoincrement()) @map("id")
+  /// BIGBIT sifra artikla -> items.external_item_id (NE items.id!), v. komentar iznad.
+  itemId      Int     @map("item_id")
+  barCode     String  @map("bar_code") @db.VarChar(20)
+  /// MultiFaktor -- mnozilac kolicine za tu ambalazu (kutija od 12 kom -> 12).
+  /// Access Currency -> Decimal(19,4), nikad Float (BACKEND_RULES 2).
+  multiFactor Decimal @default(1) @map("multi_factor") @db.Decimal(19, 4)
+
+  @@index([itemId], map: "idx_item_barcodes_item")
+  /// Nosilac lookup-a „skeniran barkod -> artikal" (razlog postojanja tabele).
+  @@index([barCode], map: "idx_item_barcodes_bar_code")
+  @@map("item_barcodes")
+}
+
+/// Was: R_Artikli_Ino
+/// Naziv/JM artikla po jeziku (1:N), za razliku od Item.foreignName koji je 1:1 precica.
+/// Sifarnik jezika NIJE pronadjen u BigBit izvozu (BIGBIT_ARTIKLI.md 8, otvoreno pitanje 4)
+/// -- languageId zato ostaje go broj dok se ne utvrdi koji ID je koji jezik.
+model ItemTranslation {
+  /// BIGBIT sifra artikla -> items.external_item_id (NE items.id!), v. komentar iznad.
+  itemId      Int     @map("item_id")
+  /// IDJezik -- bez sifarnika, v. opis modela.
+  languageId  Int     @map("language_id")
+  foreignName String  @map("foreign_name") @db.VarChar(50)
+  foreignUnit String? @map("foreign_unit") @db.VarChar(5)
+
+  /// Izvor NEMA surogat id kolonu -- PK je poslovni par (IDArtikal, IDJezik).
+  /// Taj PK vec indeksira item_id kao vodecu kolonu, pa zaseban @@index([itemId])
+  /// ne bi doneo nista osim troska pri upisu.
+  @@id([itemId, languageId], map: "pk_item_translations")
+  @@map("item_translations")
+}
+
+/// Was: R_KvalitetArtikla
+/// Klasa kvaliteta artikla -- ciljna tabela za Item.qualityTypeId, koji je do sada
+/// visio u prazno (tabele nema ni u QBigTehn kopiji, BIGBIT_ARTIKLI.md 2.1).
+model ItemQualityType {
+  /// IDKvalitetArtikla -- legacy dodela, BEZ autoincrement-a: id dolazi iz BigBit-a.
+  id          Int    @id(map: "pk_item_quality_types") @map("id")
+  /// KvalitetArtikal -- kratka oznaka klase.
+  qualityCode String @map("quality_code") @db.VarChar(20)
+  description String @map("description") @db.VarChar(20)
+
+  @@map("item_quality_types")
+}
+
+/// Was: DobavljaciZaArtikal
+/// Puna lista dobavljaca po artiklu sa lead time-om; Item.supplierId nosi samo JEDNOG
+/// (BIGBIT_ARTIKLI.md 2.2 -- MRP danas zna samo za njega).
+model ItemSupplier {
+  id           Int     @id(map: "pk_item_suppliers") @default(autoincrement()) @map("id")
+  /// BIGBIT sifra artikla -> items.external_item_id (NE items.id!), v. komentar iznad.
+  itemId       Int     @map("item_id")
+  /// [Sifra dobavljaca] -- meki ref -> customers.id (dobavljac je komitent).
+  supplierId   Int     @map("supplier_id")
+  /// Primarni -- jedan dobavljac po artiklu je oznacen kao glavni.
+  isPrimary    Boolean @default(false) @map("is_primary")
+  /// VremeIsporuke -- lead time u danima.
+  leadTimeDays Int     @default(0) @map("lead_time_days")
+
+  @@index([itemId], map: "idx_item_suppliers_item")
+  @@map("item_suppliers")
 }
 
 /// Was: R_Vrste_dokumenata
