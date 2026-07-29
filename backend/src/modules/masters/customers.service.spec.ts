@@ -36,6 +36,10 @@ const BASE_KEYS = [
   "note",
   "salespersonId",
   "salesperson",
+  // Talas B — child kolekcije su OPERATIVNE (ko je kontakt, gde se roba vozi),
+  // pa su svesno u baznom sloju, uz adresu i telefon.
+  "contacts",
+  "deliveryLocations",
 ];
 
 /** Komercijalna/interna polja — ne smeju da postoje u odgovoru bez `masters.read`. */
@@ -143,6 +147,10 @@ function prismaMock() {
     salesperson: { findMany: jest.fn().mockResolvedValue([]) },
     codeType: { findMany: jest.fn().mockResolvedValue([]) },
     paymentAccount: { findUnique: jest.fn().mockResolvedValue(null) },
+    // Talas B child tabele — na produkciji PRAZNE dok bridge ne odradi prvi
+    // prolaz, pa je prazan niz podrazumevano stanje mock-a (kao i u bazi).
+    customerContact: { findMany: jest.fn().mockResolvedValue([]) },
+    customerDeliveryLocation: { findMany: jest.fn().mockResolvedValue([]) },
     // `resolvePermissionDecision` čita override sveže iz baze na svaki poziv.
     userPermissionOverride: { findUnique: jest.fn().mockResolvedValue(null) },
     $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
@@ -380,6 +388,126 @@ describe("MasterCustomersService (matični podaci — Komitenti)", () => {
       expect(meta.restricted).toBe(true);
       for (const key of COMMERCIAL_KEYS) expect(data).not.toHaveProperty(key);
       expect(prisma.userPermissionOverride.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  // ================================ child kolekcije iz BigBit `.mdb`-a (Talas B)
+
+  describe("child kolekcije — kontakt osobe i mesta isporuke", () => {
+    const KONTAKTI = [
+      {
+        id: 2,
+        contactPerson: "Marko Marković",
+        phone: "011/111-111",
+        mobile: null,
+        fax: null,
+        email: "marko@kupac.rs",
+        isDefault: true,
+      },
+      {
+        id: 7,
+        contactPerson: "Jelena Jelić",
+        phone: null,
+        mobile: "064/222-222",
+        fax: null,
+        email: null,
+        isDefault: false,
+      },
+    ];
+    const LOKACIJE = [
+      {
+        id: 11,
+        name: "Magacin 2",
+        city: "Novi Sad",
+        address: "Bulevar 5",
+        postalCode: "21000",
+        phone: null,
+        fax: null,
+        area: "Vojvodina",
+        gln: "9876543210987",
+        active: true,
+        locationNumber: "MS-02",
+      },
+    ];
+
+    it("prazne tabele (bridge još nije prošao) daju prazne nizove, ne izuzetak", async () => {
+      mockCustomer(CUSTOMER_ROW);
+
+      const bazni = await service.findOne(42, OSNOVNI);
+      const pun = await service.findOne(42, KOMERCIJALA);
+
+      expect(bazni.data.contacts).toEqual([]);
+      expect(bazni.data.deliveryLocations).toEqual([]);
+      expect(pun.data.contacts).toEqual([]);
+      expect(pun.data.deliveryLocations).toEqual([]);
+    });
+
+    it("kolekcije stižu i u BAZNOM sloju (operativni podaci, ne finansijska tajna)", async () => {
+      mockCustomer(CUSTOMER_ROW);
+      prisma.customerContact.findMany.mockResolvedValue(KONTAKTI);
+      prisma.customerDeliveryLocation.findMany.mockResolvedValue(LOKACIJE);
+
+      const { data, meta } = await service.findOne(42, OSNOVNI);
+
+      expect(meta.restricted).toBe(true);
+      expect(data.contacts).toEqual(KONTAKTI);
+      expect(data.deliveryLocations).toEqual(LOKACIJE);
+      // …ali komercijalni sloj i dalje NIJE procurio uz njih.
+      for (const key of COMMERCIAL_KEYS) expect(data).not.toHaveProperty(key);
+    });
+
+    it("veza je customer_id = customers.id (PK komitenta se NE remapira); podrazumevani kontakt i aktivna lokacija idu prvi", async () => {
+      mockCustomer(CUSTOMER_ROW);
+
+      await service.findOne(42, KOMERCIJALA);
+
+      const [kontakti] = prisma.customerContact.findMany.mock.calls[0] as [
+        { where: { customerId: number }; orderBy: unknown },
+      ];
+      expect(kontakti.where).toEqual({ customerId: 42 });
+      expect(kontakti.orderBy).toEqual([{ isDefault: "desc" }, { id: "asc" }]);
+
+      const [lokacije] = prisma.customerDeliveryLocation.findMany.mock
+        .calls[0] as [{ where: { customerId: number }; orderBy: unknown }];
+      expect(lokacije.where).toEqual({ customerId: 42 });
+      expect(lokacije.orderBy).toEqual([
+        { active: "desc" },
+        { name: "asc" },
+        { id: "asc" },
+      ]);
+    });
+
+    it("select mesta isporuke NE nosi komercijalna zaduženja lokacije (fail-closed)", async () => {
+      mockCustomer(CUSTOMER_ROW);
+
+      await service.findOne(42, KOMERCIJALA);
+
+      const [lokacije] = prisma.customerDeliveryLocation.findMany.mock
+        .calls[0] as [{ select: Record<string, boolean> }];
+      for (const key of [
+        "salespersonId",
+        "paymentAccountId",
+        "routeId",
+        "driverId",
+        "contractCategory",
+        "generalCategory",
+        "salesChannel",
+      ]) {
+        expect(Object.keys(lokacije.select)).not.toContain(key);
+      }
+      // GLN po lokaciji JESTE tu — SEF ga traži (BIGBIT_KOMITENTI.md §2.2).
+      expect(Object.keys(lokacije.select)).toContain("gln");
+    });
+
+    it("kontakt osoba ne odaje datum rođenja (lični podatak; Customer.birthDate je komercijalni sloj)", async () => {
+      mockCustomer(CUSTOMER_ROW);
+
+      await service.findOne(42, KOMERCIJALA);
+
+      const [kontakti] = prisma.customerContact.findMany.mock.calls[0] as [
+        { select: Record<string, boolean> },
+      ];
+      expect(Object.keys(kontakti.select)).not.toContain("birthDate");
     });
   });
 });
