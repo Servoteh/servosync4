@@ -123,6 +123,12 @@ function render(s) {
   const systems = (s && s.systems) || [];
   if (systems.length && (!CUR || !systems.some(x => x.systemId === CUR))) CUR = systems[0].systemId;
 
+  // ---- svežina realtime (energyFlow) bloka: server označi stale kad je zamrznut (rate-limit/prekid) ----
+  // dnevni kWh brojači (summary) i dalje idu, ali PV/baterija/mreža/SOC su poslednje poznate (ne aktuelne).
+  const fst = (s && s.flow && CUR) ? s.flow[CUR] : null;
+  const flowStale = !!(fst && fst.stale);
+  const flowAgeMin = (fst && fst.ageMs != null) ? Math.round(fst.ageMs / 60000) : null;
+
   const pv   = V(s, 'pvPower');
   const load = V(s, 'loadPower');
   const grid = V(s, 'gridPower');     // >0 import iz mreže, <0 export u mrežu
@@ -143,6 +149,7 @@ function render(s) {
   document.getElementById('strip').innerHTML = `
     ${systems.length ? `<div class="sysbar">${sysSel}</div>` : ''}
     <span class="badge ${online ? 'online' : 'offline'}">${online ? 'SIGEN ONLINE' : 'SIGEN OFFLINE'}</span>
+    ${flowStale ? `<span class="badge offline" title="Realtime (PV/baterija/mreža/SOC) — cloud vraća grešku (HTTP 502) ili rate-limit na energyFlow. Trenutne vrednosti NISU aktuelne; dnevni kWh brojači jesu.">⚠ ${flowAgeMin != null ? ('ZASTARELO ' + flowAgeMin + ' min') : 'REALTIME NEDOSTUPAN'}</span>` : ''}
     <div class="item"><span class="v seg">${f1(pv)}<small> kW</small></span><span class="l">PV</span></div>
     <div class="item"><span class="v seg">${f1(daily)}<small> kWh</small></span><span class="l">Danas</span></div>
     <div class="item"><span class="v seg">${soc == null ? '—' : f1(soc)}<small> %</small></span><span class="l">Baterija</span></div>
@@ -234,6 +241,9 @@ function render(s) {
   if (!online) rows.push(['p3', err ? ('Sigen offline — ' + err) : 'Sigen offline — prekid veze sa cloud-om']);
   else if (s && s.values == null) rows.push(['p4', 'Nema svežih vrednosti (cloud rate-limit ~5 min)']);
   else if (err) rows.push(['p4', err]);
+  if (online && flowStale) rows.push(['p3', flowAgeMin != null
+    ? `⚠ Realtime (PV/baterija/mreža/SOC) zastareo ~${flowAgeMin} min — vrednosti nisu aktuelne (dnevni kWh brojači jesu). Uzrok: cloud greška/rate-limit na energyFlow.`
+    : `⚠ Realtime (PV/baterija/mreža/SOC) trenutno NEDOSTUPAN — cloud vraća grešku (HTTP 502) ili rate-limit na energyFlow. Dnevni kWh brojači rade.`]);
   ab.innerHTML = modeRow + ctrlRow + (rows.length
     ? rows.map(r => `<div class="alrow"><span class="prio ${r[0]}"></span><span>${r[1]}</span><span class="at">${new Date().toLocaleTimeString('sr-RS')}</span></div>`).join('')
     : `<div class="empty">Nema aktivnih alarma.</div>`);

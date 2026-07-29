@@ -233,3 +233,22 @@ svg.syn{display:block;width:100%;min-width:760px;height:auto}
 .flow-val{fill:var(--text);font:800 13px var(--mono)}
 .flow-unit{fill:var(--muted);font:600 9px 'Inter',sans-serif;letter-spacing:.5px}
 .flow-chip .flow-val{paint-order:stroke;stroke:var(--bg);stroke-width:3}
+
+/* ==== v2 dopune (SCADA review 2026-07-03) ==================================
+   .badge je ziveo samo u orphan styles.css (nikad linkovan) — online/offline
+   pilula je bila obican tekst (nalaz B8). + vece dodirne mete (nalaz G6). */
+.badge{padding:5px 13px;border-radius:20px;font-size:11px;font-weight:800;letter-spacing:1px;background:#445;color:#fff}
+.badge.online{background:linear-gradient(135deg,#1f9d54,#2ee27a);box-shadow:0 0 16px rgba(46,226,122,.45)}
+.badge.sim{background:linear-gradient(135deg,#9a6a16,#e8a13a)}
+.badge.offline{background:linear-gradient(135deg,#7a1f1f,#ff5a5a)}
+.cstep{min-width:36px;min-height:36px}
+.cstep.sm{min-width:34px;min-height:34px}
+.cbtn{min-height:34px}
+.cbtn.sm{min-height:32px;padding:4px 12px}
+
+/* Uski ekrani: sinoptik se skalira umesto horizontalnog skrola (nalaz G14).
+   SVG sa viewBox-om zadrzava proporcije; tekst postaje sitniji ali sve stane. */
+@media (max-width: 700px){
+  .syn{min-width:0 !important;width:100%;height:auto}
+  .synbox{overflow-x:hidden}
+}

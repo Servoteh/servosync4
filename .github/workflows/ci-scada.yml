@@ -1,0 +1,37 @@
+name: ci-scada
+
+# Čuvar HMI ekrana solarne/kotlarnice. Isti ekrani žive u dve kopije:
+#   scada/public/            → izvor, servira ga gateway na LAN-u
+#   frontend/public/scada-hmi/ → portovana kopija koju 4.0 servira u iframe-u
+# Kopije se moraju razlikovati (ERP ljuska traži async modal, prikaz svežine…), ali su
+# se već jednom TIHO razišle: badge „⚠ ZASTARELO" mesecima je postojao samo u jednoj
+# (PLAN_PARITET §Energetika). Ova kapija ne spaja ništa — samo pada kad se pojavi
+# razilaženje koje nije popisano u FORKED spisku skripte.
+#
+# GitHub-hosted namerno: ne treba mu ni baza ni self-hosted runner, traje sekundu.
+
+on:
+  push:
+    paths:
+      - "scada/public/**"
+      - "frontend/public/scada-hmi/**"
+      - "scada/scripts/hmi-drift.mjs"
+      - ".github/workflows/ci-scada.yml"
+  pull_request:
+    paths:
+      - "scada/public/**"
+      - "frontend/public/scada-hmi/**"
+      - "scada/scripts/hmi-drift.mjs"
+  workflow_dispatch:
+
+jobs:
+  hmi-drift:
+    name: HMI kopije nisu se razišle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Provera razilaženja HMI ekrana
+        run: node scada/scripts/hmi-drift.mjs --check

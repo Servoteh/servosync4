@@ -53,13 +53,27 @@ za neinteraktivni SSH — koristi `/home/admnenad/.nvm/versions/node/v22.23.1/bi
 
 `scada/**` **ne okida** ni backend ni frontend deploy — isporuka je ručna, gore opisana.
 
-## HMI ekrani postoje u dve kopije (privremeno)
+## HMI ekrani postoje u dve kopije — i to je namerno
 
-`scada/public/*.js` su izvor; `frontend/public/scada-hmi/*` je portovana kopija koju 4.0
-servira kroz iframe (čita `scada_snapshots.payload` umesto `/api/*`, v. `scada-bridge-shim.js`).
-**Svaka izmena ekrana mora u obe.** Razilaženje se već dešavalo (badge „⚠ ZASTARELO"
-postojao je samo u jednoj kopiji). Cilj je build-korak koji kopira `scada/public` →
-`frontend/public/scada-hmi` i ukine ručnu sinhronizaciju.
+`scada/public/*` je izvor (LAN); `frontend/public/scada-hmi/*` je kopija koju 4.0 servira
+kroz iframe (čita `scada_snapshots.payload` umesto `/api/*`, v. `scada-bridge-shim.js`).
+
+Kopije **ne mogu** biti identične jer ERP ljuska traži drugačije ponašanje — zato ovde
+nema build-koraka koji prepisuje jednu preko druge; to bi obrisalo pravi rad. Umesto toga
+postoji kapija koja hvata **novo** razilaženje:
+
+```bash
+node scada/scripts/hmi-drift.mjs           # izveštaj po fajlu
+node scada/scripts/hmi-drift.mjs --check   # izlaz 1 na neočekivano razilaženje (ci-scada.yml)
+```
+
+Kad namerno raziđeš još jedan ekran, upiši ga u `FORKED` u toj skripti **sa razlogom** —
+inače CI pada. Trenutno razdvojeni: `kot1.js`, `kot2.{js,html}`, `kot3.{js,html}`,
+`overview.js` (async modal `__scadaConfirm`, trend grafik, prikaz svežine snapshot-a).
+Shim linija u `<head>`-u HTML-a je mehanička razlika i ne broji se.
+
+Zašto ovo postoji: badge „⚠ ZASTARELO" na Sigen ekranu mesecima je živeo samo u jednoj
+kopiji (PLAN_PARITET §Energetika) — ERP je zamrznute vrednosti crtao kao aktuelne.
 
 ## Tajne
 

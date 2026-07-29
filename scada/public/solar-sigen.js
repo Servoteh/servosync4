@@ -14,6 +14,15 @@ const f1 = v => (v == null || isNaN(Number(v))) ? '—' : Number(v).toFixed(1);
 // znak snage uz mali prag da se mir ne tretira kao protok
 const SGN = v => (v == null || isNaN(Number(v))) ? 0 : (Number(v) > 0.05 ? 1 : (Number(v) < -0.05 ? -1 : 0));
 
+// ---- ime režima: iz MODES (cloud), inače lokalni fallback — nikad sirov broj ako znamo ime ----
+const SIGEN_MODE_NAMES = { 0:'Maksimalna samopotrošnja', 5:'Pun izvoz u mrežu', 6:'VPP', 8:'Northbound', 9:'Samopotrošnja (prilagođeni profil)' };
+const modeName = v => {
+  if (v == null) return null;
+  if (isNaN(Number(v))) return String(v);   // cloud već vratio ime
+  const m = (MODES || []).find(x => Number(x.value) === Number(v));
+  return (m && m.name) || SIGEN_MODE_NAMES[Number(v)] || null;
+};
+
 // ---- statički SVG energy-flow dijagram (PV -> Inverter -> čvor -> Potrošnja/Mreža/Baterija) ----
 function buildSyn() {
   document.getElementById('syn').innerHTML = `
@@ -74,7 +83,7 @@ function buildSyn() {
     <text class="sy-badge off" x="952" y="412" text-anchor="end" data-batttag>—</text>
     <text class="sy-val big" x="778" y="452" data-temp="batteryPower">—</text>
     <text class="sy-unit" x="868" y="452">kW</text>
-    <text class="sy-sub" x="888" y="452">SOC <tspan class="sy-val" style="font-size:13px" data-temp="batterySoc">—</tspan> %</text>
+    <text class="sy-sub" x="888" y="452">Baterija <tspan class="sy-val" style="font-size:13px" data-temp="batterySoc">—</tspan>%</text>
   </svg>`;
 }
 
@@ -144,7 +153,7 @@ function render(s) {
     <div class="item"><span class="v seg">${f1(pv)}<small> kW</small></span><span class="l">PV</span></div>
     <div class="item"><span class="v seg">${f1(daily)}<small> kWh</small></span><span class="l">Danas</span></div>
     <div class="item"><span class="v seg">${soc == null ? '—' : f1(soc)}<small> %</small></span><span class="l">Baterija</span></div>
-    <div class="item"><span class="v">${online && mode != null ? mode : '—'}</span><span class="l">Režim</span></div>`;
+    <div class="item"><span class="v">${online && mode != null ? (modeName(mode) || ('Režim ' + mode)) : '—'}</span><span class="l">Režim</span></div>`;
 
   // ---- vrednosti u SVG ----
   document.querySelectorAll('[data-temp]').forEach(el => el.textContent = f1(V(s, el.dataset.temp)));
@@ -207,7 +216,7 @@ function render(s) {
     <div class="crow2"><span>Mesec</span><span class="right"><b>${f1(monthly)} kWh</b></span></div>
     <div class="crow2"><span>Godina</span><span class="right"><b>${f1(annual)} kWh</b></span></div>
     <div class="crow2"><span>Ukupno (lifetime)</span><span class="right"><b>${f1(lifetime)} kWh</b></span></div>
-    <div class="crow2"><span>Baterija SOC</span><span class="right"><b>${soc == null ? '—' : f1(soc) + ' %'}</b></span></div>`;
+    <div class="crow2"><span>Nivo baterije</span><span class="right"><b>${soc == null ? '—' : f1(soc) + ' %'}</b></span></div>`;
 
   // ---- desni panel: Snaga (svi tokovi, uključujući EV i toplotnu pumpu) ----
   const pw = [
@@ -220,7 +229,7 @@ function render(s) {
   // ---- desni panel: Režim i status (alarmi) ----
   const ab = document.getElementById('alarms');
   const modeRow = `<div class="crow2"><span>Režim rada</span>
-    <span class="right"><span class="pill ${online && mode != null ? 'ok' : 'off'}">${online && mode != null ? mode : '—'}</span></span></div>`;
+    <span class="right"><span class="pill ${online && mode != null ? 'ok' : 'off'}">${online && mode != null ? (modeName(mode) || ('Režim ' + mode)) : '—'}</span></span></div>`;
   // raw mod (broj) za isticanje aktivnog dugmeta — iz _modeRaw kao u staroj strani
   const rawMode = V(s, '_modeRaw');
   // kontrola režima — vidljiva SAMO ako cloud dozvoljava (control=true). Inače read-only tekst gore.
@@ -323,8 +332,7 @@ function sgDraw(){
 }
 function sgUpdate(s, online){
   const mode = V(s,'operatingMode');
-  const ml = (MODES.find(m => Number(m.value) === Number(mode)) || {}).name;
-  const mEl = document.getElementById('sgMode'); if (mEl) mEl.textContent = online ? (ml || (mode != null ? ('Režim ' + mode) : '—')) : '—';
+  const mEl = document.getElementById('sgMode'); if (mEl) mEl.textContent = online ? (modeName(mode) || (mode != null ? ('Režim ' + mode) : '—')) : '—';
   const cur = (LAST && LAST.systems || []).find(x => x.systemId === CUR);
   const subEl = document.getElementById('sgModeSub'); if (subEl) subEl.textContent = (cur && cur.name) ? cur.name : 'Sigenergy';
   const soc = V(s,'batterySoc');
@@ -355,7 +363,7 @@ function renderAggregate(s, systems, online) {
   const kpis = [
     ['PV', sum('pvPower'), 'kW'], ['Potrošnja', sum('loadPower'), 'kW'],
     ['Mreža (±)', sum('gridPower'), 'kW'], ['Baterija (±)', sum('batteryPower'), 'kW'],
-    ['SOC (prosek)', socAvg, '%'],
+    ['Nivo baterije (prosek)', socAvg, '%'],
     ['Danas', sum('dailyPowerGeneration'), 'kWh'], ['Mesec', sum('monthlyPowerGeneration'), 'kWh'],
     ['Godina', sum('annualPowerGeneration'), 'kWh'], ['Ukupno', sum('lifetimePowerGeneration'), 'kWh'],
   ];
@@ -381,7 +389,7 @@ function renderSystemList(s, systems, online) {
     return `<a class="${cls}" data-sys="${id}">
       <span class="halo"></span>
       <h3>☀ ${sy.name || id}</h3>
-      <div class="ctype">režim: ${online && md != null ? md : '—'}</div>
+      <div class="ctype">režim: ${online && md != null ? (modeName(md) || md) : '—'}</div>
       ${rows || `<div class="empty">nema podataka (čeka osvežavanje ~5 min)</div>`}
     </a>`;
   }).join('');
@@ -402,7 +410,7 @@ document.addEventListener('click', e => {
   const b = e.target.closest('.cbtn[data-mode]'); if (!b) return;
   const mode = Number(b.dataset.mode), name = b.dataset.modename || b.textContent;
   const sys = ((LAST && LAST.systems || []).find(x => x.systemId === CUR) || {}).name || CUR;
-  if (confirm(`[${sys}] Prebaciti režim rada na "${name}"?\n(menja solarnu elektranu UŽIVO)`)) setMode(CUR, mode);
+  window.__scadaConfirm(`[${sys}] Prebaciti režim rada na "${name}"?`).then(ok => { if (ok) setMode(CUR, mode); });
 });
 
 function clock() { document.getElementById('clock').textContent = new Date().toLocaleString('sr-RS'); }
