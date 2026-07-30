@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Modul** | `zahtevi` — centralni sistem zahteva korisnika (bug / dorada / nova funkcija) sa AI trijažom, admin kontrolom, generisanjem „Claude paketa" i Decision Log-om |
-| **Verzija spec** | 1.3 (2026-07-21) — Fable razrada; v1.1 nagrađivanje (§12); v1.2 presude §13; v1.3 korigovana tarifa (blaža skala) + kompletna lista ideja za AI duplikate + živa provera sličnih u formi |
+| **Verzija spec** | 1.4 (2026-07-30) — Fable razrada; v1.1 nagrađivanje (§12); v1.2 presude §13; v1.3 korigovana tarifa (blaža skala) + kompletna lista ideja za AI duplikate + živa provera sličnih u formi; **v1.4 duplikati po SUŠTINI (ne po naslovu) i sumnja na duplikat NIKAD ne odbacuje — presuda §13.16 posle incidenta 039/26** |
 | **Pozicija** | **Platformski modul** — NIJE BigBit/4.0 domen niti 1.0 seoba; novi native modul na glavnoj bazi (kao `sastanci`, `nabavka`). Može na `main` nezavisno od 4.0 talasa. |
 | **Izvor zahteva** | Razgovor Nenad ↔ Fable 21.07.2026 (Owner Inbox → prošireno na sve korisnike; dva odvojena odobrenja; Decision Log). Papirna preteča: [docs/zahtevi/](../../../docs/zahtevi/) docx fajlovi. |
 | **Status** | **PRESUĐEN 21.07.2026** (svih 12 pitanja, §13) — spreman za izvođenje F0→F5 |
@@ -256,7 +256,7 @@ model ChangeRequestComment {
 model ChangeRequestEvent {
   id          Int      @id @default(autoincrement())
   requestId   Int
-  type        String   @db.VarChar(30)  /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED
+  type        String   @db.VarChar(30)  /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|AI_REJECTED|AI_DUPLICATE_SUSPECTED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED
   actorUserId Int?     /// null = sistem/AI
   data        Json?    /// npr. {from,to} za STATUS_CHANGED, {field,old,new} za META_CHANGED
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
@@ -318,8 +318,13 @@ modul normalno radi bez AI). Strukturisan izlaz preko `extractWithTool`
 - **Ulaz:** naslov + opis + expected/current + transkripti audio priloga + slike
   (base64, kroz resize ≤1568px — vision blokovi kao u `extractWithTool` pozivima) +
   **kandidati za duplikate — KOMPLETNA lista postojećih ideja** (presuda §13.13):
-  svi zahtevi (id, reqNo, naslov, jednoredni sažetak, status) sem davno arhiviranih;
-  naslovi su jeftini po tokenima. Tek preko ~500 zahteva uvesti pre-filter sličnošću.
+  svi zahtevi sem davno arhiviranih. **v1.4 (§13.16):** kandidat nosi SUŠTINU —
+  `id, reqNo, status, module, kind, areas, mergedIntoId, naslov` + izvod opisa i
+  `SADA/TREBA` ponašanja, budžet 600/300/150 znakova po kandidatu (≤40 / ≤150 / više
+  kandidata — `dupSnippetBudget`). Kandidati ISTOG modula idu PRVI (bez tvrdog filtera
+  — `module` ume da bude null ili pogrešan). Preko 500 zahteva pre-filter je TRIGRAM
+  sličnost nad naslovom I opisom (`immutable_unaccent`, migracija 20260726160000) +
+  uvek ceo isti modul; ako trigram upit padne → ILIKE fallback nad naslovom i opisom.
 - **Izlazna šema (tool input):**
   ```json
   {
@@ -331,14 +336,21 @@ modul normalno radi bez AI). Strukturisan izlaz preko `extractWithTool`
     "duplicates": [{ "requestId": 12, "confidence": "HIGH|MEDIUM", "reason": "..." }],
     "score": 3,
     "scoreReason": "obrazloženje ocene u 1-2 rečenice (prikazuje se podnosiocu)",
+    "unusable": false,
     "questions": ["nejasnoća 1", "..."]
   }
   ```
+  `unusable` (v1.4) = neupotrebljiva prijava (spam / nerazumljivo / prazno) — **jedini**
+  signal koji vodi u automatsko odbijanje. Duplikat NIKAD nije `unusable`.
 - AI predlozi `module/kind/priority` se upisuju u red zahteva SAMO ako su polja prazna
   (podnosiočev izbor se ne pregazi); admin uvek može da preinači (event `META_CHANGED`).
-- `score` se upisuje u `aiScore` + `rewardStatus=PROPOSED` (za ≥1); **ocena 0 →
-  automatski `REJECTED`** (event `AI_REJECTED`) — rubrika i pravila u §12.1.
+- `score` se upisuje u `aiScore` + `rewardStatus=PROPOSED` (za ≥1); **`unusable: true`
+  → automatski `REJECTED`** (event `AI_REJECTED`) — rubrika i pravila u §12.1.
   Trijaža bez ocene (AI pad) → admin ocenjuje ručno.
+- **Sumnja na duplikat NE menja status** (v1.4, §13.16): zahtev ostaje `SUBMITTED`,
+  nalaz ide u `duplicates` (result + `TRIAGED`) i u zaseban event
+  `AI_DUPLICATE_SUSPECTED` (`candidates[]` sa reqNo + pouzdanost + razlog,
+  `decision: "PENDING_HUMAN"`) — spajanje ili odbijanje odlučuje ČOVEK.
 - Pad trijaže: event `TRIAGE_FAILED`, zahtev ostaje `SUBMITTED`, admin ima dugme
   „Ponovi trijažu" (`POST /:id/retriage`).
 
@@ -528,7 +540,7 @@ NestJS exception-i (404/409/422) kao u nabavci.
   korisnik kuca naslov (debounce ~400 ms), panel „Ovo možda već postoji" prikazuje
   pogotke `GET /zahtevi/slicni` sa linkovima — PRE podnošenja, bez AI troška.
   Posle podnošenja detalj polluje trijažu, pa podnosilac u roku od par sekundi
-  vidi i AI presudu (duplikat → obaveštenje sa linkom na original + auto-reject).
+  vidi trijažu (moguć duplikat → link na original, ali BEZ odbijanja — §13.16).
 - `/zahtevi/[id]` — detalj: header (reqNo + naslov + StatusBadge + meta čipovi),
   admin action-bar uslovljen statusom (§1.3); tabovi:
   1. **Zahtev** — original (immutable prikaz), prilozi (slike lightbox; audio
@@ -629,17 +641,20 @@ Svaka faza = zaokružen, deploy-abilan komad; jedan Opus prolaz po fazi sa ovim 
 ### F3 — AI trijaža + detaljna analiza + Claude paket
 - `zahtevi-ai.service.ts` (poseban servis u modulu, koristi `AiProviderService`):
   trijaža §4.1 (fire-and-forget na submit + retriage), detaljna §4.2, paket §4.3.
-- Ocena 0–5 u trijaži (§12.1): rubrika u promptu, auto-reject na 0 + restore,
-  `PROPOSED` reward status; admin potvrda ocene (`POST /:id/score`).
+- Ocena 0–5 u trijaži (§12.1): rubrika u promptu, auto-reject na `unusable` + restore
+  (v1.4 §13.16 — ne na oceni 0), `PROPOSED` reward status; admin potvrda ocene
+  (`POST /:id/score`).
 - Env: `ZAHTEVI_TRIAGE_MODEL`, `ZAHTEVI_ANALYSIS_MODEL` → `.env.example`.
 - FE: AI tab §8 (trijaža u inbox redu, detaljna kartica, paket copy/download/edit,
   „Prosledi pitanja"); ocena ★ u listi/detalju + jedan-klik potvrda u inboxu.
 - **AC:** submit bez ijednog AI ključa radi (analiza FAILED not_configured, tok
   netaknut); trijaža klasifikuje i nađe očigledan duplikat (test sa 2 slična
-  zahteva → duplikat dobija ocenu 0 i auto-reject); detaljna analiza vraća sve
+  zahteva → sumnja upisana, status OSTAJE `SUBMITTED`, event `AI_DUPLICATE_SUSPECTED`
+  — §13.16); detaljna analiza vraća sve
   sekcije šeme; paket sadrži AC + ograničenja; tokeni zabeleženi; restore vraća
   AI-odbačen zahtev u SUBMITTED. **Testovi:** ai service spec sa mock provider-om
-  (DONE/FAILED putevi, ne-pregazivanje korisničkih polja, ocena 0/≥1 grane).
+  (DONE/FAILED putevi, ne-pregazivanje korisničkih polja, `unusable`/duplikat/ocena
+  ≥1 grane, suština kandidata + isti modul prvi, trigram pre-filter i fallback).
 
 ### F4 — Decision Log + nagrade + praćenje + mail
 - Decision Log BE+FE §6 (tab „Odluke", supersede tok, prečica sa odluke zahteva).
@@ -678,18 +693,21 @@ ideje. Tarifa je NEPROMENJENA — štednja se postiže strožim ocenjivanjem. Ru
 
 | Ocena | Značenje |
 |---|---|
-| **0** | Neupotrebljiv: spam, nerazumljiv, već postoji u sistemu, ili **duplikat** (ocenu zadržava PRVI podnosilac) |
+| **0** | **Neupotrebljiva prijava: spam, nerazumljiv tekst, prazan sadržaj** → uz `unusable: true`. „Već postoji u sistemu" može dobiti 0, ali BEZ `unusable`. **DUPLIKAT VIŠE NIJE 0** (v1.4, §13.16) |
 | **1** | Kozmetika, sitna ispravka, mala operativna molba, dorada koja pomaže uglavnom podnosiocu |
 | **2** | Korisna manja dorada ili validan bag ograničenog dometa — **podrazumevana ocena za dobre, obične predloge** |
 | **3** | RETKO: značajno poboljšanje sa jasnim efektom na rad VIŠE ljudi/tima, ili bag koji iskrivljuje evidenciju (sati/količine/novac) |
 | **4** | VRLO RETKO: menja tok posla odeljenja, ili bag koji pravi direktnu štetu/trošak |
 | **5** | IZUZETAK: revolucionarna ideja — novi tok rada, velika merljiva ušteda/prihod (u dilemi 4 vs 5 → 4) |
 
-- **Ocena 0 → zahtev se AUTOMATSKI odbacuje** (`REJECTED`, event `AI_REJECTED`;
+- **`unusable: true` → zahtev se AUTOMATSKI odbacuje** (`REJECTED`, event `AI_REJECTED`;
   podnosilac vidi obrazloženje). Ovo je jedina AI izmena statusa u modulu (izuzetak
   doktrine §10.1 — Nenadova presuda). Sigurnosni ventil: admin „Vrati u obradu"
   (`POST /:id/restore`) + AI-odbačeni imaju svoj filter u admin inboxu (uvid da AI
   ne baca dobre predloge).
+  **v1.4 (§13.16):** auto-odbijanje VIŠE NE VISI na `score === 0` — ranije je rubrika u
+  ocenu 0 ubrajala i duplikat, pa je jedna pogrešna „duplikat po naslovu" procena
+  odbila ispravan zahtev (039/26). Sumnja na duplikat sada ostavlja `SUBMITTED`.
 - **Ocena ≥1 = predlog prihvaćen u obradu** i kandidat za nagradu. Tumačenje:
   „prihvaćen" = ušao u tok; NE znači odobrenu realizaciju (dva odobrenja iz §1.1 ostaju).
 - AI pad / bez ocene → admin ocenjuje ručno (`POST /:id/score` radi i bez AI ocene).
@@ -731,8 +749,9 @@ ideje. Tarifa je NEPROMENJENA — štednja se postiže strožim ocenjivanjem. Ru
 
 ### 12.3 Zaštita od zloupotrebe („farmanje" predloga)
 
-1. **Duplikat = 0** — prvi podnosilac zadržava ocenu; kasniji dobija auto-reject sa
-   linkom na original.
+1. **Duplikat → ČOVEK odlučuje** (v1.4, §13.16; ranije „duplikat = 0 + auto-reject"):
+   AI samo prijavljuje SUMNJU (`AI_DUPLICATE_SUSPECTED`), status ostaje `SUBMITTED`,
+   a admin spaja (`MERGED`, prvi podnosilac zadržava ocenu) ili odbija.
 2. **Svaki dinar prolazi kroz admin potvrdu** — AI ne dodeljuje novac (doktrina §10.1).
 3. Admin akcija **`EXCLUDED`** — predlog validan ali bez nagrade (npr. proistekao iz
    redovnog radnog zadatka; pravilo §13.11).
@@ -786,3 +805,25 @@ gore; ovde je registar radi referenci (§13.N).
     AUTORITATIVNA „to" lista (override, ne fallback — neki admini ne žele te mejlove),
     a `ZAHTEVI_ADMIN_CC` (CSV, opciono) ide kao CC; ako env nije postavljen → svi
     aktivni admini iz baze (fallback).
+16. **Duplikati: dublja analiza, bez auto-odbijanja (30.07.2026 — posle incidenta)** →
+    Jovica je podneo 039/26 „Nestala opcija" (modul `tech-processes`: nestala dugmad
+    za brisanje/izmenu KUCANJA). AI ga je AUTOMATSKI ODBIO kao „vrlo verovatno duplikat
+    035/26 «Nestale opcije»" — a 035/26 je bio problem sinhronizacije role. Jedina veza
+    bio je GENERIČKI NASLOV; čovek to nije video, podnosilac je dobio samo „odbijen".
+    **Presuda vlasnika: „ne sme duplikat da gleda po naslovu — mora dublja analiza."**
+    Otud tri izmene: (a) kandidati modelu idu sa SUŠTINOM (modul, tip, oblasti, izvod
+    opisa + `SADA/TREBA`), isti modul prvi; (b) prompt zabranjuje duplikat na osnovu
+    naslova — traži poklapanje modula I ekrana I simptoma/cilja, imenovana preklapanja u
+    `reason`, `HIGH` samo kad se poklapaju i modul i simptom, a radije ništa nego
+    pogađanje; (c) **sumnja na duplikat NIKAD ne odbacuje** — auto-reject ostaje samo za
+    neupotrebljivu prijavu (`unusable`), a duplikat ide čoveku (`AI_DUPLICATE_SUSPECTED`).
+    Podnosiocu se duplikat saopštava kao MOGUĆNOST („Moguće se preklapa sa 035/26 —
+    proverava se."), nikad kao odbijanje.
+    **Drugi incident istog dana (021/26)** dodaje podslučaj: Zoranov „Brisanje sastanaka"
+    odbijen je kao duplikat 013/26 „Brisanje sastanaka" — ali 013/26 je bio ZAHTEV za tu
+    funkciju (isporučena 24.07), dok 021/26 (27.07) javlja da brisanje „i dalje nije
+    moguće" (ispao stvarni produkcijski 500 — kod je zvao nepostojeću sy15 funkciju).
+    Otud (d) prompt ima izričito pravilo: prijava da nešto već traženo/isporučeno **„i
+    dalje ne radi" je NOV bug (regresija ili nepotpuna ispravka), NIKAD duplikat
+    originala** — i kad su naslovi identični. Obe prijave (039/26 i 021/26) imale su
+    `decided_by_user_id` NULL — nijedan čovek ih nije video pre odbijanja.

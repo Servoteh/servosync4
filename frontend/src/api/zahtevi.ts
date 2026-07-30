@@ -560,9 +560,12 @@ export interface TriageResult {
   kind: string | null;
   areas: string[];
   priorityProposal: string | null;
+  /** SUMNJA na preklapanje — nikad odluka; status ostaje, proverava čovek (30.07.2026). */
   duplicates: { requestId: number; confidence: 'HIGH' | 'MEDIUM'; reason: string }[];
   score: number | null;
   scoreReason: string | null;
+  /** Neupotrebljiva prijava (spam/nerazumljivo/prazno) — JEDINI osnov auto-odbijanja. */
+  unusable?: boolean;
   questions: string[];
 }
 
@@ -607,7 +610,7 @@ export function useApproveAnalysis() {
   });
 }
 
-/** Vrati AI-odbačen (ocena 0) zahtev u obradu (admin) — sigurnosni ventil auto-reject-a. */
+/** Vrati AI-odbačen (neupotrebljiva prijava) zahtev u obradu (admin) — ventil auto-reject-a. */
 export function useRestore() {
   const invalidate = useInvalidate();
   return useMutation({
