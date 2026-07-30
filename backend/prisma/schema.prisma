@@ -5210,6 +5210,28 @@ model BbMdbStageKomitent {
   fiktRabatKomitenta           String? @map("fikt_rabat_komitenta") // FiktRabatKomitenta
   komitentiNacinPlacanja       String? @map("komitenti_nacin_placanja") // KomitentiNacinPlacanja
   potpisKom                    String? @map("potpis_kom") // PotpisKom
+  // ── 17 kolona koje je otkrila brana zaglavlja (30.07.2026) ────────────────
+  // Deklaracija je pravljena po starijoj kopiji baze; PRAVA tabela ih nosi.
+  // Među njima su GLN, MaticniBroj, JBKJS i CRF — polja od kojih zavisi SEF.
+  // Uvoz je do sada mislio da ih .mdb NE donosi i namerno ih je ostavljao na
+  // miru; donosi ih, pa se sada mogu i preslikati.
+  skraceniNaziv                String? @map("skraceni_naziv") // SkraceniNaziv
+  datumIVremeKom               String? @map("datum_i_vreme_kom") // DatumIVremeKom
+  proveraDuga                  String? @map("provera_duga") // ProveraDuga
+  kreditLimit                  String? @map("kredit_limit") // KreditLimit
+  neProveravajPib              String? @map("ne_proveravaj_pib") // NeProveravajPIB
+  idPantheon                   String? @map("id_pantheon") // IDPantheon
+  newsLetter                   String? @map("news_letter") // NewsLetter
+  postaNaDruguAdresu           String? @map("posta_na_drugu_adresu") // PostaNaDruguAdresu
+  gln                          String? @map("gln") // GLN — e-faktura
+  klRucProc                    String? @map("kl_ruc_proc") // KLRucProc
+  napomenaZaSalda              String? @map("napomena_za_salda") // NapomenaZaSalda
+  nePrikazatiUPregledu         String? @map("ne_prikazati_u_pregledu") // NePrikazatiUPregledu
+  jbkjs                        String? @map("jbkjs") // JBKJS — javni sektor
+  maticniBroj                  String? @map("maticni_broj") // MaticniBroj
+  erXmlSaPopustomPoArtiklu     String? @map("er_xml_sa_popustom_po_artiklu") // ER_XMLSaPopustomPoArtiklu
+  crf                          String? @map("crf") // CRF — centralni registar faktura
+  koristiPnbZadModel           String? @map("koristi_pnb_zad_model") // KoristiPNBZadModel
 
   drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_komitenti_drop")
 
@@ -5328,6 +5350,7 @@ model BbMdbStageMagacin {
   kontoMag         String? @map("konto_mag") // KontoMag
   imeMagacionera   String? @map("ime_magacionera") // ImeMagacionera
   brLkMagacionera  String? @map("br_lk_magacionera") // BrLkMagacionera
+  potpisSlika      String? @map("potpis_slika") // PotpisSlika (slika potpisa — staging je prima, uvoz je ne koristi)
 
   drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_magacini_drop")
 

@@ -77,11 +77,15 @@ die() { log "GREŠKA: $*" >&2; exit 1; }
 # premesti kolonu, poređenje zaglavlja padne i skripta stane — umesto da tiho
 # upiše pomerene vrednosti u pogrešne kolone.
 #
-# NAMERNO NIJE OVDE: `Komitenti` i `Predmeti`. Njih već vozi ŽIVI MSSQL sync
-# (CustomerSyncer + GenericSyncer nad `sync-map.generated.ts`), koji čita bazu
-# UŽIVO i time je SVEŽIJI od noćnog fajla; uz to su `Predmeti` u dual-unos režimu
-# (3.0 dodeljuje broj -> isti broj se prekuca u BigBit) pa bi .mdb kanal bio drugi
-# pisac po istim redovima. Vidi zahtev 4 i BIGBIT_NOCNI_SYNC.md §„Šta se NE uvozi".
+# ⚠️ ISPRAVKA 30.07.2026 — `Komitenti` i `Predmeti` SU SADA OVDE.
+# Do tada je ovde stajalo da namerno nisu, jer ih „vozi ŽIVI MSSQL sync koji je
+# svežiji od noćnog fajla". To je prestalo da važi: prenos iz BigBita u QBigTehn
+# se više ne radi (poslednji uspešan prolaz 22.07.2026 07:14). Mereno 30.07:
+# BigBit na predmetu 10014, QBigTehn i 4.0 na 10005 — sync ispravan, izvor mrtav
+# osam dana, i to niko nije video jer uvoz bajatih podataka i dalje javlja uspeh.
+# Dual-unos predmeta ostaje stvaran rizik i rešava se PARITET-GUARDOM u koraku
+# uvoza (BigBit predmet čiji broj već drži 4.0-native red se odbija i imenuje),
+# a ne izostavljanjem tabele iz izvoza.
 # -----------------------------------------------------------------------------
 TABLES=(
   "T_Glavna knjiga|bb_mdb_stage_gk|gk|StavkaID|Konto|InoKonto|Analiticka sifra|Broj dokumenta|Datum dokumenta|Valuta dokumenta|Datum knjizenja|IDNaloga|Opis dokumenta|Duguje|Potrazuje|Povezan|IDDokIzRobnog|Temeljnica|DevDuguje|DevPotrazuje|DevValuta|Pozicija|IDDokMP|IDProdavnicaMP|IDPredmet|IDDokIzUsluga|PG_IDDokIzRobnog|OJ|Potpis|DatumIVreme|OD|IDRadniNalog|PNBOdobBrojGK"
@@ -108,7 +112,7 @@ TABLES=(
   # bila preslikana kopija ove iste. Zadržavanjem imena menja se SAMO izvor
   # redova — razrešavanje veza, zaštita 4.0-native redova i validacija ostaju
   # netaknuti i već testirani.
-  "Komitenti|bb_mdb_stage_komitenti|komitenti|Sifra|Naziv|Poslovnica|Mesto|Adresa|Postanski broj|Ziro racun_1|Ziro racun_2|Ziro racun_3|Telefon|Fax|Kontakt|Napomena|Drzava|Region|Vrsta sifre|Email|Mobilni|Datum rodjenja|Web adresa|Sifra prodavca|RabatKomitenta|ZastKodKupca|PIB|PDVStatus|MSifra|Odlozeno|IDRuta|IDVozac|IDUplatniRacun|FakturisanjePoMestimaIsporuke|Cenovnik|PrviUnos|PoslednjaIzmena|PrviUnosUser|PoslednjaIzmenaUser|ProcenatProvizije|FiktRabatKomitenta|KomitentiNacinPlacanja|PotpisKom"
+  "Komitenti|bb_mdb_stage_komitenti|komitenti|Sifra|Naziv|Poslovnica|Mesto|Adresa|Postanski broj|Ziro racun_1|Ziro racun_2|Ziro racun_3|Telefon|Fax|Kontakt|Napomena|Drzava|Region|Vrsta sifre|Email|Mobilni|Datum rodjenja|Web adresa|Sifra prodavca|RabatKomitenta|ZastKodKupca|PIB|PDVStatus|MSifra|Odlozeno|IDRuta|IDVozac|IDUplatniRacun|FakturisanjePoMestimaIsporuke|Cenovnik|PrviUnos|PoslednjaIzmena|PrviUnosUser|PoslednjaIzmenaUser|ProcenatProvizije|FiktRabatKomitenta|KomitentiNacinPlacanja|PotpisKom|SkraceniNaziv|DatumIVremeKom|ProveraDuga|KreditLimit|NeProveravajPIB|IDPantheon|NewsLetter|PostaNaDruguAdresu|GLN|KLRucProc|NapomenaZaSalda|NePrikazatiUPregledu|JBKJS|MaticniBroj|ER_XMLSaPopustomPoArtiklu|CRF|KoristiPNBZadModel"
   "Predmeti|bb_mdb_stage_predmeti|predmeti|IDPredmet|BrojPredmeta|Opis|DatumOtvaranja|IDProdavac|IDKomitent|NextAction|DatumZakljucenja|Memo|Status|NasaRef|NasKontakt1|NasKontakt2|NasTel1|NasTel2|VasaRef|VasKontakt1|VasKontakt2|VasTel1|VasTel2|NabavnaVrednost|Carina|Spedicija|Prevoz|Ostalo|InoDobavljac|RJ|devvaluta|kurs|IDVrstaPosla|NazivPredmeta|RokZavrsetka|Potpis|DatumIVreme|BrojUgovora|DatumUgovora|BrojNarudzbenice|DatumNarudzbenice"
 
   # ── ŠIFARNICI ARTIKALA I MAGACINI (30.07.2026) ─────────────────────────────
@@ -125,7 +129,7 @@ TABLES=(
   "R_Grupa|bb_mdb_stage_grupe|grupe|Grupa|Opis"
   "R_Podgrupa|bb_mdb_stage_podgrupe|podgrupe|Podgrupa|Opis|GrupaVeza"
   "R_Poreklo|bb_mdb_stage_poreklo|poreklo|Poreklo|Opis|PodgrupaVeza|PopustProc"
-  "Magacini|bb_mdb_stage_magacini|magacini|IDFirma|IDMagacin|Magacin|UlicaIBroj|Mesto|ProsecneCene|VrstaMag|KontoMag|ImeMagacionera|BrLkMagacionera"
+  "Magacini|bb_mdb_stage_magacini|magacini|IDFirma|IDMagacin|Magacin|UlicaIBroj|Mesto|ProsecneCene|VrstaMag|KontoMag|ImeMagacionera|BrLkMagacionera|PotpisSlika"
 )
 
 # psql u kontejneru, na host mreži, sa UTF-8 klijentom.
@@ -213,11 +217,8 @@ log "bb_mdb_drops.id=$DROP_ID (stage_status=$STAGE_STATUS)"
 # transakcije (autocommit), pa ga `ROLLBACK` na kraju NE poništava — bez ovoga bi
 # proba ostavila drop koji sledeći pravi prolaz vidi kao „već obrađen" i preskoči.
 # Briše se na izlazu, kako god skripta završila; staging pada kaskadno.
-if [ "$DRY_RUN" = "1" ]; then
-  # shellcheck disable=SC2064  # DROP_ID se namerno širi SADA, ne pri izlazu
-  trap "log 'PROBNI REŽIM — brišem probni drop $DROP_ID'; \
-        psql_q \"DELETE FROM bb_mdb_drops WHERE id=$DROP_ID;\" >/dev/null 2>&1 || true" EXIT
-fi
+PROBE_DROP_ID=""
+[ "$DRY_RUN" = "1" ] && PROBE_DROP_ID="$DROP_ID"
 
 if [ "$STAGE_STATUS" = "LOADED" ] && [ "$FORCE" -ne 1 ]; then
   log "već je stagovan — nema šta da se radi (koristi --force za ponovni izvoz). IZLAZ 0."
@@ -229,7 +230,17 @@ WORK="$WORK_ROOT/$DROP_ID"
 rm -rf "$WORK"; mkdir -p "$WORK"; chmod 755 "$WORK_ROOT" "$WORK"
 # Radni CSV-ovi se brišu po završetku. BB_KEEP_WORK=1 ih ostavlja — koristi kad
 # treba da se vidi ŠTA je tačno mdbtools izvezao (npr. posle pada `\copy`-ja).
-[ "${BB_KEEP_WORK:-0}" = "1" ] || trap 'rm -rf "$WORK"' EXIT
+# JEDAN EXIT trap za SVE čišćenje. U bash-u drugi `trap ... EXIT` ZAMENJUJE prvi,
+# ne dodaje se — zbog toga je prvi probni prolaz 30.07.2026 ostavio drop red za
+# sobom: čišćenje probe bilo je registrovano gore, pa ga je ovaj red pregazio.
+cleanup() {
+  [ "${BB_KEEP_WORK:-0}" = "1" ] || rm -rf "$WORK"
+  if [ -n "${PROBE_DROP_ID:-}" ]; then
+    log "PROBNI REŽIM — brišem probni drop $PROBE_DROP_ID (staging pada kaskadno)"
+    psql_q "DELETE FROM bb_mdb_drops WHERE id=$PROBE_DROP_ID;" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
 T0=$(date +%s%3N)
 COUNTS_JSON=""
@@ -344,7 +355,13 @@ psql_q "UPDATE bb_mdb_drops SET stage_duration_ms=$MS WHERE id=$DROP_ID;" >/dev/
 # $BB_KEEP_DAYS koji NISU tekući drop; `bb_mdb_drops` (zapisnik) ostaje netaknut.
 KEEP_DAYS="${BB_KEEP_DAYS:-7}"
 OLD="$(find "$DROP_DIR" -maxdepth 1 -type f -iname '*.mdb' -mtime "+$KEEP_DAYS" ! -samefile "$MDB" -print 2>/dev/null | wc -l)"
-if [ "$OLD" -gt 0 ]; then
+if [ "$DRY_RUN" = "1" ] && [ "$OLD" -gt 0 ]; then
+  # PROBNI REŽIM NE BRIŠE FAJLOVE. `ROLLBACK` vraća bazu, ali obrisan .mdb se ne
+  # vraća — a proba po definiciji ne sme ništa da promeni. (Nađeno na prvom
+  # probnom prolazu 30.07.2026: retencija je odnela drop od 11.07 iako ništa
+  # nije upisano u bazu.)
+  log "PROBNI REŽIM — retencija PRESKOČENA ($OLD fajl(ova) bi bilo obrisano)"
+elif [ "$OLD" -gt 0 ]; then
   find "$DROP_DIR" -maxdepth 1 -type f -iname '*.mdb' -mtime "+$KEEP_DAYS" ! -samefile "$MDB" -delete
   find "$DROP_DIR" -maxdepth 1 -type f -iname '*.mdb.ready' -mtime "+$KEEP_DAYS" -delete 2>/dev/null || true
   log "retencija: obrisano $OLD .mdb fajl(ova) starijih od ${KEEP_DAYS} dana"
