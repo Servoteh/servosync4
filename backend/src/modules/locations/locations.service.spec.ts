@@ -41,6 +41,7 @@ describe("LocationsService — R2 mutacije", () => {
     withUserRls: jest.Mock;
     db: {
       locItemPlacement: { findMany: jest.Mock; count: jest.Mock };
+      locLocation: { findMany: jest.Mock };
       locLocationMovement: { findMany: jest.Mock; count: jest.Mock };
       userRoleSy15: { findMany: jest.Mock };
       $queryRaw: jest.Mock;
@@ -65,6 +66,9 @@ describe("LocationsService — R2 mutacije", () => {
       // sy15.db = BYPASSRLS put; placements reads NE smeju ovuda (leak).
       db: {
         locItemPlacement: { findMany: jest.fn(), count: jest.fn() },
+        // Indeks aktivnih lokacija (SHELF put lookupBarcode-a) — mock je tu da bi
+        // testovi mogli da DOKAŽU da se za ITEM/OPERATION ne dira.
+        locLocation: { findMany: jest.fn().mockResolvedValue([]) },
         locLocationMovement: { findMany: jest.fn(), count: jest.fn() },
         userRoleSy15: { findMany: jest.fn() },
         $queryRaw: jest.fn(),
@@ -410,6 +414,30 @@ describe("LocationsService — R2 mutacije", () => {
     expect((out.data as { kind: string }).kind).toBe("ITEM");
     expect(sy15.withUserRls).toHaveBeenCalledWith(EMAIL, expect.any(Function));
     expect(sy15.db.locItemPlacement.findMany).not.toHaveBeenCalled();
+  });
+
+  it("lookupBarcode: naš štampan nalog sa SLOVNOM revizijom (RNZ:…:0:A) je ITEM", async () => {
+    tx.locItemPlacement.findMany.mockResolvedValue([]);
+    const out = await service.lookupBarcode(EMAIL, "RNZ:10354:9811-3/77:0:A");
+    expect(out.data).toMatchObject({
+      kind: "ITEM",
+      parsed: { orderNo: "9811-3", itemRefId: "77", format: "rnz" },
+    });
+  });
+
+  it("lookupBarcode: barkod OPERACIJE (S:…) → kind OPERATION + konkretna poruka, bez upita", async () => {
+    const out = await service.lookupBarcode(EMAIL, "S:20:8.4:0:A");
+    expect(out.data).toMatchObject({
+      kind: "OPERATION",
+      parsed: { format: "operation", raw: "S:20:8.4:0:A" },
+      records: [],
+    });
+    expect((out.data as { message?: string }).message).toContain(
+      "barkod OPERACIJE",
+    );
+    // Nije ni ITEM (nema placements upita) ni SHELF (nema indeksa lokacija).
+    expect(sy15.withUserRls).not.toHaveBeenCalled();
+    expect(sy15.db.locLocation.findMany).not.toHaveBeenCalled();
   });
 
   // ---------- R1 read dopune: „Korisnik" ime + Početna KPI (paritet FE) ----------

@@ -19,8 +19,10 @@ import { LabelPrintService } from "../../common/printing/label-print.service";
 import type { PrintLabelDto } from "../../common/printing/print-label.dto";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import {
+  isOperationBarcode,
   normalizeBarcodeText,
   normalizeLocMovementKeys,
+  OPERATION_BARCODE_MESSAGE,
   parseBigTehnBarcode,
   placementRowMatchesPredmetTp,
   resolveCompositeShelfScan,
@@ -788,7 +790,9 @@ export class LocationsService {
    * Razrešavanje skeniranog/otkucanog barkoda → tip + zapis (server-side paritet
    * 1.0 `barcodeParse.js` + `shelfBarcode.js`). Prvo ITEM (RNZ/short/compact) jer
    * ti formati imaju cifru/separator; ako ne prođe → SHELF (LP:/HALA-POLICA/šifra
-   * police). `kind:'UNKNOWN'` = format nije prepoznat. Row-vidljivost placements-a
+   * police). `kind:'OPERATION'` = barkod operacije (`S:…`) koji za magacin nije
+   * upotrebljiv, ali se prepoznaje da bi poruka bila konkretna;
+   * `kind:'UNKNOWN'` = format nije prepoznat. Row-vidljivost placements-a
    * (RLS rev_tools) ostaje u bazi.
    */
   async lookupBarcode(email: string, raw: string | undefined) {
@@ -807,6 +811,21 @@ export class LocationsService {
         parsed.drawingNo,
       );
       return { data: { kind: "ITEM" as const, parsed, records } };
+    }
+
+    // 1b) OPERACIJA (`S:op:radniCentar:0:revizija`) — red u tabeli štampanog RN-a.
+    // Za magacin je bez upotrebe (ne nosi nalog/TP), ali se prepoznaje PRE SHELF-a
+    // da bi korisnik dobio konkretno objašnjenje umesto „Nepoznat format" i da se
+    // ne troši upit nad indeksom lokacija. Šifra police sa 4 separatora ne postoji.
+    if (isOperationBarcode(clean)) {
+      return {
+        data: {
+          kind: "OPERATION" as const,
+          parsed: { format: "operation", raw: clean },
+          records: [],
+          message: OPERATION_BARCODE_MESSAGE,
+        },
+      };
     }
 
     // 2) SHELF (polica) — potreban indeks aktivnih lokacija (kao 1.0 scan modal).

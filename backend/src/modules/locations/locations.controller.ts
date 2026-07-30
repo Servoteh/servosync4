@@ -156,7 +156,11 @@ export class LocationsController {
     return this.locations.validateOrder(orderNo, req.user.email);
   }
 
-  /** Skener resolver (RNZ/short/compact stavke + shelf) — paritet 1.0 (spec §3). */
+  /**
+   * Skener resolver (RNZ/short/compact stavke + shelf) — paritet 1.0 (spec §3).
+   * Vraća i `kind:'OPERATION'` za skeniran barkod operacije (`S:…`) — nije greška
+   * skenera nego pogrešan red na papiru, pa poruka mora biti konkretna.
+   */
   @Get("lookups/barcode")
   lookupBarcode(@Req() req: AuthedRequest, @Query("code") code?: string) {
     // ITEM razrešenje čita loc_item_placements (row-scoped) → withUserRls (email → GUC).
