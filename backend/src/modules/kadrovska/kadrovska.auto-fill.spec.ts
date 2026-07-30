@@ -3,14 +3,17 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
 
 /**
  * Auto-unos iz kapije (kucanje → grid) — READ-ONLY predlozi. Poravnat sa noćnim
- * auto-tikom (deli `proposeHoursFromPresence`) posle zahteva 044/26. Pinuje:
+ * auto-tikom (deli `proposeHoursForDay`) posle zahteva 044/26. Pinuje:
  * (1) SQL bira SAMO PRAZNE dane (grid_covered=false, absence NULL, teren=0,
  *     open_intervals=0, ulaz+izlaz) iz v_attendance_vs_grid — BEZ uskog opsega
  *     prisustva u SQL-u (opseg + predlog sati računa JS = izvor istine);
- * (2) vikend/praznik SA čistim kucanjem se PREDLAŽU kao redovni (D1, 044/26 — više
- *     se ne izbacuju); skraćena smena se seče NANIŽE na pola sata (D2);
- * (3) izlaz = hours (predlog) + kontekst (presenceHours/firstIn/lastOut) za pregled;
- * (4) sve kroz withUserRls (RLS), NIKAD this.sy15.db (BYPASSRLS) — auto ne sme da
+ * (2) VIKEND SA čistim kucanjem se PREDLAŽE kao redovni (D1, 044/26 — više se ne
+ *     izbacuje); skraćena smena se seče NANIŽE na pola sata (D2);
+ * (3) NERADNI PRAZNIK samo kao PUN dan (8h) — delimično kucanje bi u obračunu pojelo
+ *     garantovanih 8h plaćenog praznika; is_workday=true (radna subota) NIJE praznik;
+ * (4) KLAMP na JUČE — dan koji još traje se NIKAD ne predlaže (isto kao noćni tik);
+ * (5) izlaz = hours (predlog) + kontekst (presenceHours/firstIn/lastOut) za pregled;
+ * (6) sve kroz withUserRls (RLS), NIKAD this.sy15.db (BYPASSRLS) — auto ne sme da
  *     probije PII/row-scope.
  */
 type SqlLike = { strings: string[]; values: unknown[] };
@@ -18,25 +21,55 @@ const firstSql = (m: jest.Mock): SqlLike =>
   (m.mock.calls as unknown[][])[0]?.[0] as SqlLike;
 const sqlText = (m: jest.Mock): string => firstSql(m).strings.join(" ? ");
 
+/** Prvi argument prvog poziva mock-a (bez `any` curenja). */
+const firstArg = (m: jest.Mock): unknown =>
+  (m.mock.calls as unknown[][])[0]?.[0];
+
+/** Praznik u fixture-u: string = pravi NERADNI praznik; objekat = eksplicitan is_workday. */
+type HolidayFixture = string | { date: string; isWorkday: boolean };
+
+/** kadr_holidays redovi iz fixture-a, uz poštovanje `where.isWorkday` filtera. */
+function holidayRowsFor(
+  fixtures: HolidayFixture[] | undefined,
+  wantIsWorkday: boolean | undefined,
+): { holidayDate: Date }[] {
+  return (fixtures ?? [])
+    .map((h) => (typeof h === "string" ? { date: h, isWorkday: false } : h))
+    .filter((h) => wantIsWorkday === undefined || h.isWorkday === wantIsWorkday)
+    .map((h) => ({ holidayDate: new Date(`${h.date}T00:00:00Z`) }));
+}
+
+/** „Danas"/„juče" u pogonskoj zoni — nezavisan izračun (ne uvozi se iz servisa). */
+function belgradeDay(offset: number): string {
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Belgrade",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const d = new Date(`${today}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + offset);
+  return d.toISOString().slice(0, 10);
+}
+
 function makeSvc(opts: {
   vsGridRows?: Record<string, unknown>[];
-  holidays?: string[];
+  holidays?: HolidayFixture[];
 }) {
   const queryRaw = jest.fn().mockResolvedValue(opts.vsGridRows ?? []);
   let dbAccessed = false;
+  // Mock POŠTUJE `where.isWorkday` — inače bi test „radna subota" prošao lažno.
+  const holidayFindMany = jest
+    .fn()
+    .mockImplementation((args?: { where?: { isWorkday?: boolean } }) =>
+      Promise.resolve(holidayRowsFor(opts.holidays, args?.where?.isWorkday)),
+    );
   const tx = new Proxy(
     {},
     {
       get(_t, prop) {
         if (prop === "$queryRaw") return queryRaw;
-        if (prop === "kadrHoliday")
-          return {
-            findMany: jest.fn().mockResolvedValue(
-              (opts.holidays ?? []).map((d) => ({
-                holidayDate: new Date(`${d}T00:00:00Z`),
-              })),
-            ),
-          };
+        if (prop === "kadrHoliday") return { findMany: holidayFindMany };
         return { findMany: jest.fn().mockResolvedValue([]) };
       },
     },
@@ -55,7 +88,16 @@ function makeSvc(opts: {
     },
   });
   const svc = new KadrovskaService(sy15 as unknown as Sy15Service);
-  return { svc, queryRaw, dbAccessed: () => dbAccessed };
+  return { svc, queryRaw, holidayFindMany, dbAccessed: () => dbAccessed };
+}
+
+/** Predlozi iz odgovora (kraće u testovima). */
+async function suggestionsOf(
+  svc: KadrovskaService,
+  q: { year: number; month: number },
+): Promise<Record<string, unknown>[]> {
+  const out = await svc.gridAutoFillSuggestions("hr@x", q);
+  return (out.data as { suggestions: Record<string, unknown>[] }).suggestions;
 }
 
 // v_attendance_vs_grid red — samo kolone koje servis čita.
@@ -127,19 +169,38 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     expect(s[0]).toMatchObject({ workDate: "2026-07-25", hours: 6.5 });
   });
 
-  it("praznik (2026-07-07) SA kucanjem → PREDLAŽE se; holidays se više ne pita (044/26)", async () => {
-    const { svc } = makeSvc({
+  it("NERADNI praznik + PUN dan → PREDLAŽE se kao 8 (praznični rad zamenjuje plaćeni praznik)", async () => {
+    const { svc, holidayFindMany } = makeSvc({
       vsGridRows: [vsRow("2026-07-07")], // default presence 8.0 → hours 8
       holidays: ["2026-07-07"],
     });
-    const out = await svc.gridAutoFillSuggestions("hr@x", {
-      year: 2026,
-      month: 7,
-    });
-    const s = (out.data as { suggestions: Record<string, unknown>[] })
-      .suggestions;
+    const s = await suggestionsOf(svc, { year: 2026, month: 7 });
     expect(s).toHaveLength(1);
     expect(s[0]).toMatchObject({ workDate: "2026-07-07", hours: 8 });
+    // praznik-upit MORA tražiti samo is_workday=false (radni-dan izuzeci nisu praznik)
+    expect(firstArg(holidayFindMany)).toMatchObject({
+      where: { isWorkday: false },
+    });
+  });
+
+  it("NERADNI praznik + DELIMIČNO kucanje (2.5h) → NIJE predlog (čuva garantovanih 8h plaćenog praznika)", async () => {
+    // Identično noćnom tiku: payroll-calc bi 2.5h upisao kao praznikRadSati i time
+    // ubio automatskih 8h praznikPlaceniSati; unosi ga kadrovska svesno.
+    const { svc } = makeSvc({
+      vsGridRows: [vsRow("2026-07-07", { presence_hours: 2.5 })],
+      holidays: ["2026-07-07"],
+    });
+    expect(await suggestionsOf(svc, { year: 2026, month: 7 })).toHaveLength(0);
+  });
+
+  it("kadr_holidays sa is_workday=TRUE (radna subota) NIJE praznik → predlog po običnom pravilu", async () => {
+    const { svc } = makeSvc({
+      vsGridRows: [vsRow("2026-07-25", { presence_hours: 6.52 })], // subota
+      holidays: [{ date: "2026-07-25", isWorkday: true }],
+    });
+    const s = await suggestionsOf(svc, { year: 2026, month: 7 });
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ workDate: "2026-07-25", hours: 6.5 });
   });
 
   it("skraćena smena (6.75h) → predlog sečen NANIŽE na 6.5 (D2), NE 8h", async () => {
@@ -167,6 +228,26 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     expect((out.data as { suggestions: unknown[] }).suggestions).toHaveLength(
       0,
     );
+  });
+
+  it("KLAMP: DANAS (dan koji još traje) NIJE predlog, JUČE jeste — isto kao noćni tik", async () => {
+    // Ranije je uski SQL opseg (7.6–8.4h) slučajno držao tekući dan napolju; posle
+    // 044/26 bi čovek koji je ušao u 08:00 i izašao u 10:00 bio predložen sa 2h.
+    const today = belgradeDay(0);
+    const yesterday = belgradeDay(-1);
+    const [y, m] = yesterday.split("-").map(Number);
+    const { svc, queryRaw } = makeSvc({
+      vsGridRows: [
+        vsRow(yesterday, { presence_hours: 8.0 }),
+        vsRow(today, { presence_hours: 2.0 }), // dan u toku (izlaz zatvoren, ali nije kraj)
+      ],
+    });
+    const s = await suggestionsOf(svc, { year: y, month: m });
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ workDate: yesterday, hours: 8 });
+    // gornja granica ide i u SQL (indeksni raspon), ne samo u JS
+    expect(firstSql(queryRaw).values).toContain(yesterday);
+    expect(sqlText(queryRaw)).toContain("day <=");
   });
 
   it("employeeId suženje ide u SQL (::uuid) kad je zadat", async () => {
