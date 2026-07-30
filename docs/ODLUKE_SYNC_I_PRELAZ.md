@@ -221,3 +221,17 @@ ne traži izmenu koda.
 3. Uvodi se **trajan spisak duplikata** (izveštaj u Podešavanjima) da se zna
    koliko ih je i da broj pada — inače „rešićemo kasnije" ostane zauvek.
 4. Kad spisak dođe na nulu, tvrda brana se sme uvesti bez rizika po uvoz.
+
+---
+
+## 5. ODLUKA O-8 (31.07.2026) — aktivacija predmeta: JEDNA BAZA
+
+> „ekran piše u jednu bazu, plan proizvodnje u drugu — to mi se ne sviđa, moramo to
+> razrešiti da se u jednu bazu piše, a ne da se duplira i da ide u keš."
+
+Izvor istine = **app baza** (`predmet_aktivacije`). 4.0 se u potpunosti odriče sy15
+strane (koja ostaje živa SAMO za 1.0 — P3 provera: 15 fajlova u 1.0 je koristi).
+Nov predmet iz sync-a rađa se **ugašen**; admin + menadžment ručno pale „aktivan"
+i „projektovanje/montaža". ⭐ prioritet: app baza je istina, redosled važi za sve.
+Pun plan sa fazama: `docs/PLAN_AKTIVACIJA_JEDNA_BAZA.md`.
+Faza 0 (24 predmeta → pogon, kao aktivni) IZVRŠENA 31.07: pogon 110 = ekran 110.
