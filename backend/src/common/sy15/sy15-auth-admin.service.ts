@@ -144,7 +144,9 @@ export class Sy15AuthAdminService {
   /**
    * Welcome/reset mejl u sy15 `kadr_notification_log` outbox (best-effort — greška se GUTA, ne sme
    * da obori kreiranje naloga; paritet 1.0 edge queueWelcomeEmail). Privremena lozinka se NE upisuje
-   * (perzistira kao plaintext) — korisnik je postavlja sam kroz „Zaboravljena lozinka".
+   * (perzistira kao plaintext) — nema self-service „zaboravljena lozinka" toka (ne postoji nigde u
+   * 3.0), pa je admin taj koji lozinku prosleđuje korisniku direktno (van ovog mejla). Ovaj mejl je
+   * samo obaveštenje; stvarna lozinka je u API odgovoru poziva koji ga je pokrenuo (§ D1 doc).
    */
   async queueWelcomeEmail(
     email: string,
