@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { KeyRound, Pencil, Trash2, Ban, Check } from 'lucide-react';
+import { KeyRound, Pencil, Trash2, Ban, Check, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
@@ -28,6 +28,26 @@ function roleLabel(catalog: { key: string; label: string }[] | undefined, key: s
   return catalog?.find((r) => r.key === key)?.label ?? key;
 }
 
+type SortKey = 'name' | 'email' | 'role' | 'team' | 'status';
+type SortState = { key: SortKey; dir: 'asc' | 'desc' };
+
+function sortValue(u: UserRoleRow, key: SortKey, catalog: { key: string; label: string }[] | undefined): string {
+  switch (key) {
+    case 'name':
+      return (u.full_name || u.email).toLowerCase();
+    case 'email':
+      return u.email.toLowerCase();
+    case 'role':
+      return roleLabel(catalog, u.role).toLowerCase();
+    case 'team':
+      return (u.team || '').toLowerCase();
+    case 'status':
+      return u.is_active ? '0' : '1';
+    default:
+      return '';
+  }
+}
+
 export function KorisniciTab() {
   const [q, setQ] = useState('');
   const [role, setRole] = useState('');
@@ -37,9 +57,21 @@ export function KorisniciTab() {
   const [modal, setModal] = useState<{ mode: 'invite' | 'edit'; user?: UserRoleRow } | null>(null);
   const [deleteUser, setDeleteUser] = useState<UserRoleRow | null>(null);
   const [resetUser, setResetUser] = useState<UserRoleRow | null>(null);
+  const [sort, setSort] = useState<SortState>({ key: 'name', dir: 'asc' });
 
   const rows = usersQ.data?.data ?? [];
   const catalog = rolesQ.data?.data;
+
+  const sortedRows = useMemo(() => {
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    return [...rows].sort(
+      (a, b) => sortValue(a, sort.key, catalog).localeCompare(sortValue(b, sort.key, catalog), 'sr') * dir,
+    );
+  }, [rows, sort, catalog]);
+
+  function toggleSort(key: SortKey) {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
+  }
 
   const stats = useMemo(() => {
     const total = rows.length;
@@ -98,16 +130,16 @@ export function KorisniciTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line bg-surface-2 text-left text-2xs uppercase text-ink-secondary">
-                <th className="px-3 py-2">Ime i prezime</th>
-                <th className="px-3 py-2">Email</th>
-                <th className="px-3 py-2">Uloga</th>
-                <th className="px-3 py-2">Tim</th>
-                <th className="px-3 py-2">Status</th>
+                <ThSort label="Ime i prezime" sortKey="name" sort={sort} onSort={toggleSort} />
+                <ThSort label="Email" sortKey="email" sort={sort} onSort={toggleSort} />
+                <ThSort label="Uloga" sortKey="role" sort={sort} onSort={toggleSort} />
+                <ThSort label="Tim" sortKey="team" sort={sort} onSort={toggleSort} />
+                <ThSort label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
                 <th className="px-3 py-2 text-right">Akcije</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((u) => (
+              {sortedRows.map((u) => (
                 <tr key={u.id} className="border-b border-line-soft hover:bg-surface-2">
                   <td className="px-3 py-2">
                     <span className="font-medium text-ink">{u.full_name || '—'}</span>
@@ -185,6 +217,36 @@ function StatCard({ label, value, accent }: { label: string; value: number; acce
     </div>
   );
 }
+function ThSort({
+  label,
+  sortKey,
+  sort,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: SortState;
+  onSort: (key: SortKey) => void;
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th className="px-3 py-2">
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+        className={`inline-flex items-center gap-1 uppercase hover:text-ink ${active ? 'text-ink' : ''}`}
+      >
+        {label}
+        {active ? (
+          sort.dir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-40" />
+        )}
+      </button>
+    </th>
+  );
+}
 function IconBtn({ title, onClick, children, danger }: { title: string; onClick: () => void; children: React.ReactNode; danger?: boolean }) {
   return (
     <button onClick={onClick} title={title} aria-label={title} className={`rounded p-1 text-ink-secondary hover:bg-surface-2 ${danger ? 'hover:text-status-danger' : ''}`}>
@@ -242,8 +304,9 @@ function UserModal({ mode, user, allUsers, onClose }: { mode: 'invite' | 'edit';
         if (!email.trim()) return setErr('Email je obavezan.');
         const res = await inviteM.mutateAsync({ email: email.trim(), role, password: password || undefined, ...fields });
         const d = res.data;
+        const pwLine = d.password ? ` Lozinka: ${d.password} — pošalji je korisniku direktno (nema mejla sa lozinkom).` : '';
         setResult(
-          `Nalog kreiran (${d.email}).${d.sy15Synced === false ? ' ⚠ sy15 sinhronizacija nije uspela — ponovi.' : ''}`,
+          `Nalog kreiran (${d.email}).${pwLine}${d.sy15Synced === false ? ' ⚠ sy15 sinhronizacija nije uspela — ponovi.' : ''}`,
         );
       } else if (user) {
         const res = await updateM.mutateAsync({ id: user.id, role, isActive, mustChangePassword: mustChange, ...fields });
@@ -363,16 +426,27 @@ function UserModal({ mode, user, allUsers, onClose }: { mode: 'invite' | 'edit';
 
 function ResetModal({ user, onClose }: { user: UserRoleRow; onClose: () => void }) {
   const resetM = useResetPassword();
-  const [result, setResult] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [result, setResult] = useState<{ email: string; password?: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   async function go() {
     setErr(null);
     try {
-      const res = await resetM.mutateAsync({ id: user.id });
-      setResult(`Lozinka resetovana za ${res.data.email}. Korisnik dobija mejl i mora je promeniti.`);
+      const res = await resetM.mutateAsync({ id: user.id, password: password.trim() || undefined });
+      setResult({ email: res.data.email, password: res.data.password });
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : 'Reset nije uspeo.');
+    }
+  }
+  async function copy() {
+    if (!result?.password) return;
+    try {
+      await navigator.clipboard.writeText(result.password);
+      setCopied(true);
+    } catch {
+      /* clipboard nije dostupan (npr. bez HTTPS) — lozinka je i dalje vidljiva za ručno kopiranje */
     }
   }
   return (
@@ -397,9 +471,31 @@ function ResetModal({ user, onClose }: { user: UserRoleRow; onClose: () => void 
     >
       {err && <p className="mb-2 rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}
       {result ? (
-        <p className="text-sm text-status-success">{result}</p>
+        <div className="space-y-2">
+          <p className="text-sm text-status-success">Lozinka resetovana za {result.email}.</p>
+          <p className="text-sm text-ink">
+            Nema mejla sa lozinkom niti samostalnog resetovanja — <strong>pošalji je korisniku direktno</strong>{' '}
+            (WhatsApp/SMS/lično). Nakon prijave, aplikacija će sama tražiti da postavi svoju lozinku.
+          </p>
+          {result.password && (
+            <div className="flex items-center gap-2 rounded-control border border-line bg-surface-2 px-3 py-2">
+              <code className="flex-1 select-all font-mono text-sm text-ink">{result.password}</code>
+              <Button variant="secondary" onClick={copy}>
+                {copied ? 'Kopirano' : 'Kopiraj'}
+              </Button>
+            </div>
+          )}
+        </div>
       ) : (
-        <p className="text-sm text-ink">Generisati novu privremenu lozinku za {user.email}? Korisnik dobija mejl sa novom lozinkom.</p>
+        <div className="space-y-3">
+          <p className="text-sm text-ink">
+            Generisati novu privremenu lozinku za {user.email}? Nema mejla sa lozinkom niti samostalnog resetovanja —
+            moraš je poslati korisniku direktno.
+          </p>
+          <FormField label="Lozinka (opciono)" hint="Prazno = auto-generisana; prikazaće se posle klika na Resetuj">
+            <Input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="auto-generisana" />
+          </FormField>
+        </div>
       )}
     </Dialog>
   );

@@ -90,10 +90,13 @@ export class PodesavanjaUsersService {
     // (D) welcome mejl (best-effort).
     await this.authAdmin.queueWelcomeEmail(email, dto.fullName ?? "", false);
 
+    // Nema self-service "zaboravljena lozinka" toka — admin MORA lozinku proslediti
+    // korisniku direktno, pa je odgovor jedino mesto gde je iko može videti.
     return {
       data: {
         email,
         role,
+        password,
         authUserId: auth.id,
         authCreated: auth.created,
         twoZeroUserId,
@@ -190,7 +193,9 @@ export class PodesavanjaUsersService {
     );
     await this.authAdmin.queueWelcomeEmail(row.email, "", true); // (D)
 
-    return { data: { email: row.email, reset: true, ...sy15 } };
+    // Nema self-service "zaboravljena lozinka" toka — admin MORA lozinku proslediti
+    // korisniku direktno, pa je odgovor jedino mesto gde je iko može videti.
+    return { data: { email: row.email, reset: true, password: newPassword, ...sy15 } };
   }
 
   // ==================== DEACTIVATE / ACTIVATE (soft) ====================

@@ -172,14 +172,14 @@ export class Sy15AuthAdminService {
         ? "🔑 Resetovana lozinka"
         : "👋 Dobrodošli u Servoteh aplikaciju";
       const intro = isReset
-        ? "<p>Administrator je zatražio reset Vaše lozinke. Iz bezbednosnih razloga lozinku podešavate sami:</p>"
-        : "<p>Kreiran je Vaš nalog. Iz bezbednosnih razloga lozinku podešavate sami:</p>";
+        ? "<p>Administrator je zatražio reset Vaše lozinke.</p>"
+        : "<p>Kreiran je Vaš nalog.</p>";
       const body =
         '<div style="font-family:sans-serif;max-width:520px;margin:0 auto;color:#1a1a1a;">' +
         `<h2 style="color:#2563eb;margin-bottom:4px;">${heading}</h2>` +
         `<p>Poštovani/a <strong>${esc(fullName || email)}</strong>,</p>` +
         intro +
-        `<p style="font-size:.95em;color:#334155;">Otvorite aplikaciju, izaberite <strong>„Zaboravljena lozinka"</strong> i unesite <strong>${esc(email)}</strong> — dobićete link za postavljanje sopstvene lozinke.</p>` +
+        `<p style="font-size:.95em;color:#334155;">Administrator će Vam poslati privremenu lozinku posebnim putem (mejl/poruka). Prijavite se sa email-om <strong>${esc(email)}</strong> i tom lozinkom — aplikacija će odmah tražiti da postavite sopstvenu.</p>` +
         `<p><a href="${appUrl}" style="display:inline-block;padding:10px 18px;background:#2563eb;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">Otvori aplikaciju</a></p>` +
         '<hr style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;">' +
         '<p style="font-size:.85em;color:#64748b;"><em>Servoteh — automatsko obaveštenje</em></p>' +

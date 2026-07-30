@@ -192,6 +192,9 @@ export interface AiModelsResponse {
 export interface DualWriteResult {
   email: string;
   role?: string;
+  /** Postavljena lozinka (invite/reset) — nema self-service "zaboravljena lozinka" toka, pa je
+   * ovo jedino mesto gde je admin vidi da bi je prosledio korisniku direktno. */
+  password?: string;
   sy15Synced?: boolean;
   sy15Error?: string;
   [k: string]: unknown;
