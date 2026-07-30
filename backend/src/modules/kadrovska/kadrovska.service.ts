@@ -23,6 +23,7 @@ import {
   PRESENCE_FLOOR,
   PRESENCE_CEIL,
 } from "./grid-autofill.service";
+import { buildVacationPeriods, type VacationPeriod } from "./vacation-periods";
 import type {
   AbsencesQueryDto,
   AttendanceDailyQueryDto,
@@ -571,6 +572,82 @@ export class KadrovskaService {
       );
       const v = rows?.[0]?.v;
       return { data: Array.isArray(v) ? v : [] };
+    });
+  }
+
+  /**
+   * GO periodi „od–do" za karticu zaposlenog (Kadrovska → Odmori i odsustva).
+   *
+   * Merodavan izvor je `vacation_requests`: JEDAN zahtev = JEDAN neprekidan
+   * raspon + status (pending / sef_approved / approved). NAMERNO se NE koristi
+   * `go_ledger`/grid — tamo je jedan red po RADNOM danu, pa jedan odmor
+   * (04.08.–17.08.) ispadne kao tri komada rasečena vikendima. `absences` ulazi
+   * samo kao dopuna za odmore bez zahteva (`source: 'evidencija'`).
+   *
+   * ⚠️ Opseg: kao u `requests()` (AUDIT-K2) — RLS `vr_select` NIJE scope
+   * (pušta sve redove svakoj roli koju `current_user_manages_employee` propusti),
+   * pa opseg presuđujemo OVDE istom DB funkcijom, a `?employeeId` je PRESEK.
+   * Ruta nosi klasnu `kadrovska.read` (isto kao `vacation/balance|ledger` i
+   * `absences` koji već hrane ovaj ekran); projekcija je uža od `/requests`
+   * (bez napomene, razloga odbijanja i podnosioca).
+   */
+  async vacationPeriods(email: string, q: VacationQueryDto) {
+    const today = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Belgrade",
+    }).format(new Date());
+    const year = q.year ?? Number(today.slice(0, 4));
+    // Presek sa godinom (ne sadržanost) — odmor preko Nove godine mora da uđe.
+    const yearFrom = this.toDbDate(`${year}-01-01`)!;
+    const yearTo = this.toDbDate(`${year}-12-31`)!;
+    return this.withUserMapped(email, async (tx) => {
+      const scope = await tx.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT e.id
+             FROM employees e
+            WHERE current_user_is_vacreq_admin()
+               OR current_user_manages_employee(e.id)
+               OR e.id = current_user_employee_id()`,
+      );
+      const scopeIds = scope.map((r) => r.id);
+      const ids = q.employeeId
+        ? scopeIds.filter((id) => id === q.employeeId)
+        : scopeIds;
+      if (!ids.length) return { data: [] as VacationPeriod[], year };
+      const range = {
+        dateFrom: { lte: yearTo },
+        dateTo: { gte: yearFrom },
+      };
+      const [requests, absences] = await Promise.all([
+        tx.vacationRequest.findMany({
+          where: { employeeId: { in: ids }, ...range },
+          select: {
+            id: true,
+            employeeId: true,
+            dateFrom: true,
+            dateTo: true,
+            daysCount: true,
+            status: true,
+          },
+        }),
+        tx.absence.findMany({
+          where: {
+            employeeId: { in: ids },
+            type: "godisnji",
+            archivedAt: null,
+            ...range,
+          },
+          select: {
+            id: true,
+            employeeId: true,
+            dateFrom: true,
+            dateTo: true,
+            daysCount: true,
+          },
+        }),
+      ]);
+      return {
+        data: buildVacationPeriods({ requests, absences, today }),
+        year,
+      };
     });
   }
 

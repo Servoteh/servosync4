@@ -48,6 +48,7 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "vacationBalance",
     "vacationHistory",
     "vacationEntitlements",
+    "vacationPeriods",
     "requests",
     "absentNow",
     "absences",
@@ -169,6 +170,14 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       path: "/kadrovska/vacation/balance",
       perm: PERMISSIONS.KADROVSKA_READ,
       label: "vacation/balance",
+    },
+    {
+      // GO periodi „od–do" na kartici zaposlenog — ista permisija kao ostatak
+      // pregleda odmora/odsustva na tom ekranu (balance/ledger/absences);
+      // opseg redova sužava servis (AUDIT-K2), ne ruta.
+      path: "/kadrovska/vacation/periods",
+      perm: PERMISSIONS.KADROVSKA_READ,
+      label: "vacation/periods",
     },
     {
       path: "/kadrovska/grid",

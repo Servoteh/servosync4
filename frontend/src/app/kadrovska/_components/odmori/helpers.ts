@@ -1,6 +1,23 @@
 // Deljeni pure helperi za GO (P5). Port 1.0 date/gantt/dept logike bez JSX.
 
 import type { KadrHoliday } from '@/api/kadrovska';
+import { formatDate } from '@/lib/format';
+
+/**
+ * Kompaktan raspon za usku ćeliju: „04–17.08.2026." kad su oba datuma u istom
+ * mesecu, inače „28.12.2026. – 05.01.2027.". Jedan dan → samo taj datum.
+ * (Izdvojeno iz `history-modal.tsx` da isti format koristi i kolona u saldu.)
+ */
+export function fmtRange(fromIso?: string | null, toIso?: string | null): string {
+  const od = (fromIso ?? '').slice(0, 10);
+  const dod = (toIso ?? '').slice(0, 10);
+  if (!od) return '—';
+  if (!dod || od === dod) return formatDate(od);
+  const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(od);
+  const b = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dod);
+  if (a && b && a[1] === b[1] && a[2] === b[2]) return `${a[3]}–${b[3]}.${b[2]}.${b[1]}.`;
+  return `${formatDate(od)} – ${formatDate(dod)}`;
+}
 
 /* ── dept paleta (1.0 vacationTab DEPT_COLORS) ─────────────────────────── */
 export const DEPT_COLORS = [

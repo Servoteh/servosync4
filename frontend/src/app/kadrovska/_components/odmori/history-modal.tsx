@@ -23,7 +23,7 @@ import { formatDate } from '@/lib/format';
 import { entryDateRangeIso } from '@/lib/vacation-regroup';
 import { sv } from '../common';
 import { useOdmoriUi } from './ui';
-import { holidaySetFromRows, nextWorkingDay } from './helpers';
+import { fmtRange, holidaySetFromRows, nextWorkingDay } from './helpers';
 
 // Boje su tokeni (tema-svesno, radi u dark-u); ivica bedža se izvodi color-mix-om.
 const KIND_BADGE: Record<string, { label: string; color: string }> = {
@@ -34,13 +34,9 @@ const KIND_BADGE: Record<string, { label: string; color: string }> = {
   other: { label: '—', color: 'var(--status-neutral)' },
 };
 
+/** Format je izdvojen u `odmori/helpers.ts` (deli ga i kolona „Odmor (od–do)"). */
 function fmtPeriod(p: GoLedgerPeriod): string {
-  if (!p.od) return '—';
-  if (!p.do || p.od === p.do) return formatDate(p.od);
-  const a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.od);
-  const b = /^(\d{4})-(\d{2})-(\d{2})$/.exec(p.do);
-  if (a && b && a[1] === b[1] && a[2] === b[2]) return `${a[3]}–${b[3]}.${b[2]}.${b[1]}.`;
-  return `${formatDate(p.od)} – ${formatDate(p.do)}`;
+  return fmtRange(p.od, p.do);
 }
 
 /**

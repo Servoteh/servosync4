@@ -698,6 +698,32 @@ export function useVacationLedger(params: { employeeId?: string } = {}, enabled 
     queryFn: () => apiFetch<{ data: GoLedgerBlock[] }>(`${BASE}/vacation/ledger${qs({ ...params })}`),
   });
 }
+/**
+ * GO periodi „od–do" po zaposlenom — JEDAN zahtev = JEDAN neprekidan raspon.
+ * NE koristiti `go_ledger`/grid za raspone: tamo je jedan red po RADNOM danu,
+ * pa jedan odmor (04.08.–17.08.) ispadne kao tri komada rasečena vikendima.
+ * Ruta je pod `kadrovska.read` (kao balance/ledger/absences), pa kolonu vidi
+ * svako ko uopšte otvara modul — u granicama svog opsega zaposlenih.
+ */
+export type VacationPeriodPhase = 'planiran' | 'u_toku' | 'iskorisceno';
+export interface VacationPeriod {
+  id: string;
+  employeeId: string;
+  dateFrom: string;
+  dateTo: string;
+  daysCount: number;
+  status: string;
+  approved: boolean;
+  phase: VacationPeriodPhase;
+  source: 'zahtev' | 'evidencija';
+}
+export function useVacationPeriods(params: { employeeId?: string; year?: number } = {}) {
+  return useQuery({
+    queryKey: [...KEYS.vacation, 'periods', params],
+    queryFn: () =>
+      apiFetch<{ data: VacationPeriod[]; year: number }>(`${BASE}/vacation/periods${qs({ ...params })}`),
+  });
+}
 export function useRequests(params: { status?: string; source?: string; employeeId?: string } = {}, enabled = true) {
   return useQuery({
     queryKey: [...KEYS.requests, params],

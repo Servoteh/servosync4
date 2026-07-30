@@ -189,6 +189,16 @@ export class KadrovskaController {
     return this.kadrovska.vacationLedger(req.user.email, q);
   }
 
+  /** GO periodi „od–do" po zaposlenom (kartica u pregledu Odmora): jedan zahtev =
+   *  jedan neprekidan raspon + status, BEZ cepanja na radne dane kao u gridu.
+   *  Permisija je klasna `kadrovska.read` — ista koja već štiti pregled odsustva
+   *  na tom ekranu (`vacation/balance`, `vacation/ledger`, `absences`); opseg
+   *  redova servis sužava istom DB funkcijom kao `requests()` (AUDIT-K2). */
+  @Get("vacation/periods")
+  vacationPeriods(@Req() req: AuthedRequest, @Query() q: VacationQueryDto) {
+    return this.kadrovska.vacationPeriods(req.user.email, q);
+  }
+
   @Get("vacation/entitlements")
   vacationEntitlements(
     @Req() req: AuthedRequest,
