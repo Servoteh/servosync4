@@ -37,9 +37,23 @@ function clean(raw: unknown): string {
   return [...t].filter((ch) => !ZW.has(ch.codePointAt(0)!)).join('').trim();
 }
 
-/** `RNZ:…` — barkod naloga / nalepnica TP (polje 5 alfanumeričko: revizija ili PrnTimer). */
+/**
+ * `RNZ:…` — barkod naloga / nalepnica TP (polje 5 alfanumeričko: revizija ili PrnTimer).
+ *
+ * Poravnato sa backend `parseBigTehnBarcode` (30.07): separator `[:|;]` (stoni
+ * keyboard-wedge čitač ume da pošalje `;` umesto `:`) i polje 5 `[A-Za-z0-9._-]{1,10}`
+ * (`work_orders.revision` je slobodan tekst — „A-1", „1.2"). Ranije uži oblik je
+ * značio da NAŠ odštampan nalog ne prođe predikat, pa bi kamera u koraku stavke
+ * mogla da izabere susedni red — barkod OPERACIJE.
+ *
+ * SR raspored tastature se ovde NE normalizuje, i to namerno: izobličenje nastaje
+ * na putu TASTATURE (HID čitač), a taj put ide pravo na backend (`resolve` u
+ * `scan-overlay`), bez ovih predikata. Predikati rade nad tekstom koji je dekodirala
+ * KAMERA, gde raspored tastature ne postoji. Dupliranje SR mape ovde ne bi ništa
+ * popravilo, a moglo bi da pokvari šifre polica sa „Č"/„Ž".
+ */
 const RNZ_SHAPE =
-  /^RNZ\s*[:|]\s*\d{1,10}\s*[:|]\s*[0-9][0-9-]{0,12}\s*[/\\]\s*[A-Za-z0-9._/-]{1,64}\s*[:|]\s*\d+\s*[:|]\s*[A-Za-z0-9]{1,8}\s*$/i;
+  /^RNZ\s*[:|;]\s*\d{1,10}\s*[:|;]\s*[0-9][0-9-]{0,12}\s*[/\\]\s*[A-Za-z0-9._/-]{1,64}\s*[:|;]\s*\d+\s*[:|;]\s*[A-Za-z0-9._-]{1,10}\s*$/i;
 
 /** `{nalog}/{crtez}` — stara short nalepnica. */
 const SHORT_SHAPE = /^\d{1,8}\s*[/\\\-_ ]\s*\d{1,10}$/;
