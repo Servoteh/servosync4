@@ -208,7 +208,28 @@ export const PREDMET_SRC_TO_STAGE_FIELD: Record<string, string> = {
 /** Staging je SAV tekst; prazan string i beline znače „nema vrednosti". */
 const stageText = (v: unknown): string | null => {
   if (v === null || v === undefined) return null;
-  const s = String(v).trim();
+  // PRELOMI REDA SE SAŽIMAJU U RAZMAK — nalaz prvog pravog uvoza, 30.07.2026.
+  //
+  // U BigBitu se u jednoredna polja ume upisati više redova. Nađeno u živim
+  // podacima: PIB `109110666\r\n109110666` (isti broj otkucan dvaput) i mobilni
+  // `064/8\r\n064 86 34 707`. Izvoz radi `mdb-export -e`, pa se svaki prelom
+  // pretvori u DVA znaka (`\` + `n`) — vrednost od 9 znakova naraste na 22 i
+  // prelije kolonu, a Prisma tada odbije CEO RED: komitent prosto nedostaje, uz
+  // upozorenje koje ne kaže ni koja je kolona kriva.
+  //
+  // Zato se prelomi sažimaju umesto da se kolone šire na meru smeća: podatak
+  // ostaje veran (ništa se ne odbacuje, samo se spaja u jedan red), red prolazi,
+  // a pogrešan PIB i dalje pada na validaciji — što je tačno i poželjno, jer se
+  // ispravlja u BigBitu, ne kod nas.
+  // ⚠️ DVA OBLIKA, OBA MORAJU: izvoz se poziva sa `mdb-export -e` (C-escape), pa u
+  // CSV-u NE STOJE pravi kontrolni znakovi nego DOSLOVNI niz `\` + `n`. Prva
+  // verzija ove ispravke gađala je samo prave prelome i nije promenila ništa —
+  // pet komitenata je i dalje otpadalo. Zato se hvata i jedno i drugo.
+  const s = String(v)
+    .replace(/\\[rnt]/g, " ") // doslovno `\r` `\n` `\t` iz `-e` escape-a
+    .replace(/[\r\n\t]+/g, " ") // pravi kontrolni znakovi (ako izvoz ikad izgubi -e)
+    .replace(/ {2,}/g, " ")
+    .trim();
   return s === "" ? null : s;
 };
 
