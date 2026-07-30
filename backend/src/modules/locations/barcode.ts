@@ -177,8 +177,11 @@ export function parseBigTehnBarcode(raw: unknown): ParsedBarcode | null {
   // a stari BigTehn nalog (`RNZ:8693:7351/1088:0:39757`) je prolazio. Novi oblik je
   // NADSKUP starog (cifre i dalje prolaze) i ne dira ostala 4 polja; short/compact
   // grane su nedostupne za `RNZ…` ulaz (traže vodeću cifru), pa se ne mogu zamagliti.
+  // Skup znakova polja 5 je namerno ŠIRI od „samo slova i cifre": `work_orders.revision`
+  // je slobodan tekst (VarChar(3), bez validacije skupa znakova), pa enkoder sme da
+  // otisne i „A-1" ili „1.2" — sa užim obrascem bi se isti kvar tiho vratio (review 30.07).
   const rnz = clean.match(
-    /^RNZ\s*[:|]\s*(\d{1,10})\s*[:|]\s*([0-9][0-9-]{0,12})\s*[/\\]\s*([A-Za-z0-9._/-]{1,64})\s*[:|]\s*(\d+)\s*[:|]\s*([A-Za-z0-9]{1,8})\s*$/i,
+    /^RNZ\s*[:|]\s*(\d{1,10})\s*[:|]\s*([0-9][0-9-]{0,12})\s*[/\\]\s*([A-Za-z0-9._/-]{1,64})\s*[:|]\s*(\d+)\s*[:|]\s*([A-Za-z0-9._-]{1,10})\s*$/i,
   );
   if (rnz) {
     const [, idrn, orderNo, itemRefId, varijanta, field4] = rnz;

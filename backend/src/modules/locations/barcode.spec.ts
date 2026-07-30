@@ -124,6 +124,20 @@ describe("parseBigTehnBarcode — RNZ polje 5 alfanumeričko (revizija, ne PrnTi
     });
   });
 
+  // `work_orders.revision` je slobodan tekst (VarChar(3), bez validacije skupa
+  // znakova) — enkoder sme da otisne i „A-1"/„1.2". Da se kvar ne vrati tiho.
+  it.each(["A-1", "1.2", "A_1", "v2"])(
+    "revizija sa znakom van [A-Za-z0-9]: RNZ:10354:9811-3/77:0:%s",
+    (rev) => {
+      expect(parseBigTehnBarcode(`RNZ:10354:9811-3/77:0:${rev}`)).toMatchObject({
+        orderNo: "9811-3",
+        itemRefId: "77",
+        format: "rnz",
+        field4: rev,
+      });
+    },
+  );
+
   it("naš 3.0 nalog sa revizijom A: RNZ:2597:06/93-4:0:A", () => {
     expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:A")).toMatchObject({
       orderNo: "06",
@@ -180,7 +194,9 @@ describe("parseBigTehnBarcode — RNZ polje 5 alfanumeričko (revizija, ne PrnTi
   it("prazno / predugačko polje 5 i dalje pada (nije zamagljen oblik)", () => {
     expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:")).toBeNull();
     expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0")).toBeNull();
-    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:AAAAAAAAA")).toBeNull();
+    // Gornja granica polja 5 je 10 znakova (revizija je VarChar(3) — 10 je već
+    // velikodušno); 11 i dalje pada, da oblik ostane jednoznačan.
+    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:AAAAAAAAAAA")).toBeNull();
     expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:A:X")).toBeNull();
     // Polje 4 (varijanta) je i dalje SAMO cifre — nije prošireno.
     expect(parseBigTehnBarcode("RNZ:2597:06/93-4:A:A")).toBeNull();
