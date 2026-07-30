@@ -247,10 +247,62 @@ describe("SyncSwitchService — prekidač (stavka B)", () => {
     );
     expect(stale).toBeDefined();
     expect(stale?.level).toBe("danger");
-    expect(stale?.message).toContain("pre 15 dana");
+    // Od 31.07.2026. starost se meri po DATUMU IZ IMENA (11-07-26), ne po mtime-u —
+    // ista osnova kojom meri i uvoz. Tačan broj dana zato zavisi od današnjeg
+    // datuma i ne pinuje se; pinuje se ono što ne sme da se izgubi: crveno +
+    // „ZAUSTAVLJA" + broj dana u poruci.
+    expect(stale?.message).toMatch(/pre \d+ dan/);
     expect(stale?.message).toMatch(/ZAUSTAVLJA/);
     // rowsImported iz kursora ima prednost nad log fallback-om
     expect(res.data.rowsImported).toBe(20366);
+  });
+
+  // ── SVEŽINA PO IMENU FAJLA, NE PO mtime-u (31.07.2026) — ista osnova kao uvoz ──
+  it("PONEDELJAK: današnje ime + mtime star 3 dana → izvor NIJE zastareo", async () => {
+    const d = new Date();
+    const ime = `BB_T_26_${String(d.getUTCDate()).padStart(2, "0")}-${String(
+      d.getUTCMonth() + 1,
+    ).padStart(2, "0")}-${String(d.getUTCFullYear() % 100).padStart(2, "0")}.mdb`;
+    const { svc } = makeSvc({
+      state: {
+        entity: BIGBIT_MDB_SYNC_STATE_ENTITY,
+        lastSuccessAt: hoursAgo(2),
+        lastAttemptAt: hoursAgo(2),
+        lastErrorMessage: null,
+        // U BigBitu se od petka nije radilo — mtime nasleđen, star 72 h. Ime kaže
+        // DANAS. Po staroj osnovi ovo je bilo crveno dok uvoz uredno prolazi.
+        cursor: {
+          sourceFile: ime,
+          sourceFileModifiedAt: hoursAgo(72).toISOString(),
+          rowsImported: 20366,
+        },
+        lastSuccessSyncLog: null,
+      },
+    });
+    const res = await svc.bigbitStatus();
+    expect(
+      res.data.warnings.filter((w) => w.code === "IZVOR_ZASTAREO"),
+    ).toHaveLength(0);
+  });
+
+  it("obrnuto: svež mtime + STARO ime → danger (lažna svežina od pukog kopiranja)", async () => {
+    const { svc } = makeSvc({
+      state: {
+        entity: BIGBIT_MDB_SYNC_STATE_ENTITY,
+        lastSuccessAt: hoursAgo(2),
+        lastAttemptAt: hoursAgo(2),
+        lastErrorMessage: null,
+        cursor: {
+          sourceFile: "BB_T_26_01-01-26.mdb",
+          sourceFileModifiedAt: hoursAgo(1).toISOString(),
+          rowsImported: 20366,
+        },
+        lastSuccessSyncLog: null,
+      },
+    });
+    const res = await svc.bigbitStatus();
+    const stale = res.data.warnings.find((w) => w.code === "IZVOR_ZASTAREO");
+    expect(stale?.level).toBe("danger");
   });
 
   it("bigbitStatus: uvoz stariji od praga → upozorenje o zastarelosti", async () => {

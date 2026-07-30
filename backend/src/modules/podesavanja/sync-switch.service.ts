@@ -4,6 +4,7 @@ import {
   BIGBIT_MDB_SYNC_JOB_KEY,
   BIGBIT_MDB_SYNC_STATE_ENTITY,
   BIGBIT_MDB_SYNC_SWITCH,
+  dropDateFromFileName,
   IMPORT_CRITICAL_AFTER_HOURS,
   IMPORT_STALE_AFTER_HOURS,
   MAX_DROP_AGE_HOURS,
@@ -199,12 +200,19 @@ export class SyncSwitchService {
     const rowsImported =
       cursor.rowsImported ?? state?.lastSuccessSyncLog?.rowsUpserted ?? null;
 
+    // SVEŽINA PO DATUMU IZ IMENA FAJLA, ne po `mtime`-u — ISTA osnova kojom meri
+    // i sam uvoz (ispravka 31.07.2026). `mtime` se kopiranjem nasleđuje od izvorne
+    // baze, pa posle mirnog vikenda ekran pokaže crveno „izvor zastareo" i
+    // nadzornik digne admine — dok uvoz (koji meri po imenu) uredno prolazi.
+    // Dve istine o istom fajlu su gore od pogrešne jedne.
     const sourceModifiedAt = cursor.sourceFileModifiedAt;
+    const sourceNameDate = dropDateFromFileName(cursor.sourceFile);
+    const sourceFreshBasis = sourceNameDate ?? sourceModifiedAt;
     const source = cursor.sourceFile
       ? {
           fileName: cursor.sourceFile,
           modifiedAt: sourceModifiedAt ? sourceModifiedAt.toISOString() : null,
-          ageHours: sourceModifiedAt ? hoursSince(sourceModifiedAt, now) : null,
+          ageHours: sourceFreshBasis ? hoursSince(sourceFreshBasis, now) : null,
         }
       : null;
 
@@ -280,8 +288,8 @@ export class SyncSwitchService {
         });
     }
 
-    if (sourceModifiedAt) {
-      const age = hoursSince(sourceModifiedAt, now);
+    if (sourceFreshBasis) {
+      const age = hoursSince(sourceFreshBasis, now);
       // Tvrd prag (posao PADA) mora da se vidi kao takav — inače postoji prozor
       // u kome uvoz svake noći puca, a ekran pokazuje blago žuto upozorenje.
       if (age >= MAX_DROP_AGE_HOURS) {

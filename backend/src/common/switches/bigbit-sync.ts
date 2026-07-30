@@ -63,3 +63,33 @@ export function switchDisabledReason(key: string): string {
   const label = SWITCH_LABELS[key] ?? key;
   return `${label} je isključen u Podešavanjima → Integracije. Uključite ga da bi se posao ponovo izvršavao.`;
 }
+
+/**
+ * Datum dnevne dostave IZ IMENA FAJLA: `BB_T_26_30-07-26.mdb` -> 30.07.2026 (podne UTC).
+ *
+ * OVDE je (a ne u sync modulu) zato što svežinu po istoj osnovi mere DVE strane:
+ * uvoz (`bigbit-mdb-import.service.ts`, brana bajatog drop-a) i ekran/nadzornik
+ * (`sync-switch.service.ts`, upozorenje IZVOR_ZASTAREO). Da mere različito,
+ * ponedeljak posle mirnog vikenda bi na ekranu bio crven dok uvoz uredno prolazi —
+ * dve istine o istom fajlu. (Podešavanja ne smeju da uvoze iz sync modula: sync
+ * uvozi Podešavanja radi prekidača, pa bi nastao krug.)
+ *
+ * ZAŠTO IME A NE `mtime`: dostava pravi jedan backup dnevno i datum stavlja u ime;
+ * `mtime` se kopiranjem NASLEĐUJE od izvorne baze, pa govori kad je BigBit
+ * poslednji put pisao — ne kad je dostava radila. Izmereno 30.07.2026: ime nosi
+ * 30.07, `mtime` 16:03, na server legao 21:38.
+ *
+ * Vraća PODNE tog dana (dostava stiže po podne; ponoć bi dala ~18 h lažne
+ * starosti već na dan dolaska). `null` kad ime ne prati obrazac — pozivalac pada
+ * na svoju rezervu.
+ */
+export function dropDateFromFileName(fileName: string | null | undefined): Date | null {
+  if (!fileName) return null;
+  const m = /_(\d{2})-(\d{2})-(\d{2})\.mdb$/i.exec(fileName);
+  if (!m) return null;
+  const [, dd, mm, yy] = m;
+  const d = new Date(
+    Date.UTC(2000 + Number(yy), Number(mm) - 1, Number(dd), 12, 0, 0),
+  );
+  return Number.isNaN(d.getTime()) ? null : d;
+}

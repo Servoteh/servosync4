@@ -7,6 +7,7 @@ import {
   BIGBIT_MDB_SYNC_SWITCH,
   MAX_DROP_AGE_HOURS,
   switchDisabledReason,
+  dropDateFromFileName,
 } from "../../common/switches/bigbit-sync";
 // MAPIRANJE KOMITENATA JE JEDNA ISTINA: `mapKomitentiRow` je isti mapper koji
 // vozi (mrtvi) MSSQL sync — MSSQL tabela je bila preslikana kopija ISTE Access
@@ -206,28 +207,6 @@ export const PREDMET_SRC_TO_STAGE_FIELD: Record<string, string> = {
 };
 
 /** Staging je SAV tekst; prazan string i beline znače „nema vrednosti". */
-/**
- * Datum dnevne dostave IZ IMENA FAJLA: `BB_T_26_30-07-26.mdb` -> 30.07.2026.
- *
- * Dostava pravi JEDAN backup dnevno i datum stavlja u ime — to je jedini podatak
- * koji govori ZA KOJI DAN je fajl. `mtime` se nasleđuje od izvorne baze (kad je
- * BigBit poslednji put pisao), a `ctime` zna samo kad je fajl legao na disk.
- *
- * Vraća PODNE tog dana, ne ponoć: dostava stiže po podne, pa bi ponoć proizvela
- * lažnih ~18 h starosti već na dan dolaska.
- *
- * `null` kad ime ne prati obrazac — pozivalac tada pada na vreme dolaska.
- */
-function dropDateFromFileName(fileName: string): Date | null {
-  const m = /_(\d{2})-(\d{2})-(\d{2})\.mdb$/i.exec(fileName);
-  if (!m) return null;
-  const [, dd, mm, yy] = m;
-  const d = new Date(
-    Date.UTC(2000 + Number(yy), Number(mm) - 1, Number(dd), 12, 0, 0),
-  );
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 const stageText = (v: unknown): string | null => {
   if (v === null || v === undefined) return null;
   // PRELOMI REDA SE SAŽIMAJU U RAZMAK — nalaz prvog pravog uvoza, 30.07.2026.
