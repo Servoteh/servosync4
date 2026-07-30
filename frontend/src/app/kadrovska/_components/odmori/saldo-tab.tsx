@@ -64,6 +64,12 @@ export function SaldoTab() {
   // GO raspani „od–do" (vacation_requests + evidencija bez zahteva). Pod
   // `kadrovska.read` kao i saldo — NE zavisi od `vacreq_manage` kao `reqQ`.
   const periodsQ = useVacationPeriods({ year });
+  // NE koristiti `isLoading` kao jedini uslov: u TanStack Query v5 upit u stanju
+  // `paused` (browser offline, networkMode='online') ima `isLoading=false` I
+  // `isError=false`, pa bi ćelija tvrdila „nema planiranog odmora" za SVAKOGA,
+  // a izvoz bi prošao sa praznom kolonom — tj. povratak F2 na drugom ulazu.
+  // Merodavno je „nije uspelo" (`!isSuccess`), ne „učitava se".
+  const periodsNotReady = !periodsQ.isSuccess && !periodsQ.isError;
   const whQ = useWorkHours({ from: `${year}-01-01`, to: `${year}-12-31` });
   const holQ = useHolidays({ from: `${year}-01-01`, to: `${year + 1}-01-31` });
   const saveCarry = useSaveEntitlement();
@@ -196,7 +202,7 @@ export function SaldoTab() {
     // F2: kolona „Odmor (od–do)" bi u ovim stanjima izašla PRAZNA za svakoga, a
     // tabela se deli dalje kao da je tačna. Radije se izvoz odbije nego da se
     // pošalje dokument koji potcenjuje odmore.
-    if (periodsQ.isLoading) { showToast('⏳ Odmori se još učitavaju — pokušaj za koji trenutak'); return; }
+    if (periodsNotReady) { showToast('⏳ Odmori se još učitavaju (ili nema mreže) — pokušaj za koji trenutak'); return; }
     if (periodsQ.isError) { showToast('⚠ Odmori (od–do) nisu učitani — izvoz je zaustavljen da tabela ne bi bila lažno prazna'); return; }
     const data = [
       ['Zaposleni', 'Odeljenje', 'Preneto', 'Zarađeno do danas', 'Ukupno (do danas)', `Iskorišćeno ${year}`, 'od toga pre 01.05', 'Planirano', 'Odmor (od–do)', 'Preostalo', 'Avans (CEO/CFO)'],
@@ -308,7 +314,7 @@ export function SaldoTab() {
       render: (r) => (
         <GoPeriodCell
           periods={goByEmp.get(r.emp.id) ?? []}
-          loading={periodsQ.isLoading}
+          loading={periodsNotReady}
           error={periodsQ.isError}
           // Saldo istog reda — brana da ćelija ne tvrdi „nema odmora" dok
           // „Iskorišćeno/Planirano" pokazuju dane (F1 brana konzistentnosti).
@@ -414,7 +420,7 @@ export function SaldoTab() {
               periods={goByEmp.get(r.emp.id) ?? []}
               employeeName={r.emp.name}
               year={year}
-              loading={periodsQ.isLoading}
+              loading={periodsNotReady}
               error={periodsQ.isError}
             />
           )}
