@@ -470,6 +470,13 @@ const FNE = 'FNE SERVOTEH';
 function blPollMs() { return Math.max(15000, parseInt(process.env.BLUELOG_POLL_MS || '30000', 10)); }
 function blAlarmPollMs() { return Math.max(30000, parseInt(process.env.BLUELOG_ALARM_POLL_MS || '120000', 10)); }
 function blOfflineMs() { return Math.max(5, parseInt(process.env.BLUELOG_OFFLINE_MIN || '15', 10)) * 60000; }
+// --- Uzak spisak za MEJL. Sve ostalo ide samo na Telegram. ---
+// Mereno 30.07.2026: zastitne sklopke kot2 podizu se ~68x dnevno po kodu — zato mejl
+// NIKAD ne ide po kodu koji nije ovde, i nikad pre nego sto kvar potraje.
+function blMailCodes() { return (process.env.ALERT_MAIL_CODES || 'NOCOMM_RS485').split(',').map(s => s.trim()).filter(Boolean); }
+function blMailAfterMs() { return Math.max(1, parseInt(process.env.ALERT_MAIL_AFTER_MIN || '10', 10)) * 60000; }
+function blHotC() { return parseFloat(process.env.BLUELOG_HOT_C || '75'); }
+let blHotSince = {};   // deviceId -> otkad je invertor iznad praga (da trenutni skok ne salje mejl)
 function blInit() {
   if (!process.env.BLUELOG_HOST) return;
   if (!process.env.BLUELOG_USER || !process.env.BLUELOG_PASS) {
@@ -541,6 +548,35 @@ function blCheckAlarms(st) {
     if (last && now - last > blOfflineMs() && !alarmed.has(inv.id)) {
       notifier.alarm(key, `${label} ${Math.round((now - last) / 60000)} min`, FNE);
     }
+  }
+
+  // ---- KRITICNO → MEJL (uzak spisak + kvar mora POTRAJATI) ----
+  const p = st.plant || {};
+  for (const a of activeAlarms) {
+    if (!blMailCodes().includes(a.code)) continue;              // nije na spisku → nikad mejl
+    if (!a.start || now - a.start < blMailAfterMs()) continue;  // trepće → ne šalji
+    const who = a.address != null ? `INV ${a.address}` : (a.deviceName || a.deviceId);
+    notifier.critical(`bl:crit:${a.deviceId}:${a.code}`,
+      `FNE Servoteh — ${who} ne radi`,
+      [`Uređaj: ${a.deviceName || a.deviceId}`,
+       `Greška: ${a.message || a.code}${a.port ? ` [${a.port}]` : ''}`,
+       `Traje od: ${new Date(a.start).toLocaleString('sr-RS')} (${Math.round((now - a.start) / 60000)} min)`,
+       `Invertora javlja: ${p.reportingInverters}/${p.count}`,
+       `Proizvodnja danas: ${p.kwhDay} kWh`], FNE);
+  }
+
+  // ---- TEMPERATURNA ANOMALIJA: invertor iznad praga, održano ----
+  for (const inv of st.inverters || []) {
+    if (inv.temp == null || inv.temp <= blHotC()) { delete blHotSince[inv.id]; continue; }
+    if (!blHotSince[inv.id]) blHotSince[inv.id] = now;
+    if (now - blHotSince[inv.id] < blMailAfterMs()) continue;
+    notifier.critical(`bl:hot:${inv.id}`,
+      `FNE Servoteh — invertor INV ${inv.address} pregrejan (${inv.temp} °C)`,
+      [`Uređaj: ${inv.name || inv.id}`,
+       `Temperatura: ${inv.temp} °C (prag ${blHotC()} °C)`,
+       `Iznad praga: ${Math.round((now - blHotSince[inv.id]) / 60000)} min`,
+       `Trenutna snaga: ${inv.pAc != null ? (inv.pAc / 1000).toFixed(1) + ' kW' : '—'}`,
+       `Proizvodnja danas: ${inv.eDay != null ? (inv.eDay / 1000).toFixed(1) + ' kWh' : '—'}`], FNE);
   }
 }
 
