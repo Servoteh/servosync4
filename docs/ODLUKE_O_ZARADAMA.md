@@ -14,6 +14,22 @@ datum, autora i obrazloženje — može se kasnije analizirati „kad smo i zaš
 
 ---
 
+## 0. Od kada je mesečni grid izvor istine — ⚠️ PROČITAJ PRE ANALIZE STARIH PODATAKA
+
+**Odluka/činjenica (Nenad, 30.07.2026):** mesečni grid (`work_hours`) se vodi **detaljno tek od
+JUNA 2026**. Pre toga se zarada obračunavala iz **drugog izvora**, pa podaci u gridu za period
+**do maja 2026 zaključno NISU merodavni** i ne smeju se koristiti za zaključke o plaćanju.
+
+**Praktično:** svaka analiza „ko je koliko radio/dobio" počinje od **01.06.2026**. Rupe, nule i
+neslaganja pre tog datuma su očekivani i **ne prijavljuju se kao greške**.
+
+**Primer zašto ovo stoji ovde:** 30.07. je automatska provera našla da su 01.05.2026 (Praznik rada)
+dva čoveka imala kucanje na kapiji (7,87 h i 7,32 h) a u gridu 0 — što bi ličilo na neplaćen rad na
+praznik. Nenad: „to je sve davno prošlo vreme, nismo ni vodili u ovom gridu od maja već od juna sve
+detaljno, imali smo drugi izvor istine za plate." Prijava je zato **odbačena, ne prosleđena kadrovskoj**.
+
+---
+
 ## 1. Odluke na snazi
 
 ### O-1 · Rad na praznik = 8 sati + stvarno odrađeni sati
@@ -103,3 +119,4 @@ praznik sa upisanim satima **pojeo 8 h plaćenog praznika**, pa se pravilo drži
 | Datum | Šta je promenjeno | Ko |
 |-------|-------------------|-----|
 | 30.07.2026 | Registar osnovan; upisane odluke O-1…O-6 i pitanja Č-1…Č-4. | Nenad (odluke), zapisao Claude |
+| 30.07.2026 | Dodat §0 — grid je merodavan tek **od juna 2026**; raniji period imao drugi izvor istine za plate. Povod: odbačena prijava o 01.05. | Nenad, zapisao Claude |
