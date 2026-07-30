@@ -829,6 +829,11 @@ export class LocationsService {
     }
 
     // 2) SHELF (polica) — potreban indeks aktivnih lokacija (kao 1.0 scan modal).
+    // NAMERNO ide SIROVO `clean`, bez keyboard-wedge popravke: `parseBigTehnBarcode`
+    // i `isOperationBarcode` popravku rade INTERNO (i samo kao drugi pokušaj), dok
+    // šifre lokacija smeju da sadrže naša slova — „Č"/„Ž" u šifri police bi kroz
+    // `normalizeScannerLayout` postali `:`/`|` i polica se više ne bi našla.
+    // Ne „popravljati" ovo naknadno (30.07).
     const { locs, locById } = await this.loadActiveLocationIndex();
     const shelf = resolveCompositeShelfScan(clean, locs, locById);
     if (shelf) {

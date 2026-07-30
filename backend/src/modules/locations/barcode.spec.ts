@@ -239,6 +239,204 @@ describe("isOperationBarcode — S:{op}:{rc}:0:{rev}", () => {
   });
 });
 
+/**
+ * REGRESIJA 30.07 — „stoni čitač radi na kiosku, a u magacinu ne".
+ *
+ * Ista dva kvara iz pogona zabeležena su u `tech-processes/barcode.ts`, gde su i
+ * izlečena, ali lek nikad nije stigao do lokacija. UZORCI SU DOSLOVNO ISTI kao u
+ * `tech-processes/barcode.spec.ts` — namerno, da oba parsera stoje pred istim
+ * dokazom; ako se ovde promene, više nisu isti čitač:
+ *   • 2026-07-10 — `;` umesto `:` (propušten Shift),
+ *   • 2026-07-17 — SR raspored tastature (`Z`→`Y`, `:`→`Č`, `/`→`-`, `-`→`'`).
+ * Očekivanja se razlikuju samo po SEMANTICI polja: kiosk čita `identNumber` kao
+ * celinu, a magacin ga cepa na `orderNo` + `itemRefId` (nalog + TP ref).
+ */
+describe("parseBigTehnBarcode — keyboard-wedge čitač (paritet sa kioskom)", () => {
+  it("';' umesto ':' + mala slova (pogon 2026-07-10): rnz;10350;9400/3/120;0;44474", () => {
+    expect(parseBigTehnBarcode("rnz;10350;9400/3/120;0;44474")).toMatchObject({
+      orderNo: "9400",
+      itemRefId: "3/120",
+      drawingNo: "",
+      format: "rnz",
+      idrn: "10350",
+      varijanta: "0",
+      field4: "44474",
+    });
+  });
+
+  it("SR raspored (pogon 2026-07-17): RNYČ9470Č9000-236Č0Č33769", () => {
+    expect(parseBigTehnBarcode("RNYČ9470Č9000-236Č0Č33769")).toMatchObject({
+      orderNo: "9000",
+      itemRefId: "236",
+      format: "rnz",
+      idrn: "9470",
+      varijanta: "0",
+      field4: "33769",
+      // `raw` je POPRAVLJEN tekst (isto kao kiosk) — FE njime osvežava upit.
+      raw: "RNZ:9470:9000/236:0:33769",
+    });
+  });
+
+  it("SR raspored mala slova ('č'→';'→':'): rnyč9470č9000-236č0č33769", () => {
+    expect(parseBigTehnBarcode("rnyč9470č9000-236č0č33769")).toMatchObject({
+      orderNo: "9000",
+      itemRefId: "236",
+      format: "rnz",
+      idrn: "9470",
+      field4: "33769",
+    });
+  });
+
+  it("SR ćirilica (Р→R, Н→N, Ѕ→Z, Ч→':'): РНЅЧ9470Ч9000-236Ч0Ч33769", () => {
+    expect(parseBigTehnBarcode("РНЅЧ9470Ч9000-236Ч0Ч33769")).toMatchObject({
+      orderNo: "9000",
+      itemRefId: "236",
+      format: "rnz",
+      field4: "33769",
+    });
+  });
+
+  it("pravi minus preživljava round-trip: RNYČ2597Č06-93'4Č0ČA → 06 / 93-4", () => {
+    expect(parseBigTehnBarcode("RNYČ2597Č06-93'4Č0ČA")).toMatchObject({
+      orderNo: "06",
+      itemRefId: "93-4",
+      format: "rnz",
+      idrn: "2597",
+      field4: "A",
+    });
+  });
+
+  it("razmaci i Code39 okvir oko izobličenog očitanja", () => {
+    expect(
+      parseBigTehnBarcode("  rnz;10350;9400/3/120;0;44474  "),
+    ).toMatchObject({ orderNo: "9400", itemRefId: "3/120", format: "rnz" });
+    expect(parseBigTehnBarcode("*RNYČ9470Č9000-236Č0Č33769*\r\n")).toMatchObject(
+      { orderNo: "9000", itemRefId: "236", format: "rnz" },
+    );
+  });
+
+  it("BEZ SR signala nema izmene: 'y'/'z'/'-' u TP ostaju kakvi jesu", () => {
+    expect(parseBigTehnBarcode("RNZ:1:9400/ABY-1:0:B")).toMatchObject({
+      orderNo: "9400",
+      itemRefId: "ABY-1",
+      format: "rnz",
+      raw: "RNZ:1:9400/ABY-1:0:B",
+    });
+  });
+
+  it("popravka NE otvara nove oblike: 5 separatora i dalje pada", () => {
+    expect(parseBigTehnBarcode("RNZ;2597;06/93-4;0;A;X")).toBeNull();
+    expect(parseBigTehnBarcode("RNYČ2597Č06-93'4Č0ČAČX")).toBeNull();
+    // Polje 4 (varijanta) je i dalje SAMO cifre.
+    expect(parseBigTehnBarcode("RNZ;2597;06/93-4;A;A")).toBeNull();
+  });
+
+  it("ostali oblici netaknuti (short / compact / šifra police / operacija)", () => {
+    expect(parseBigTehnBarcode("7351/1091063")).toMatchObject({
+      orderNo: "7351",
+      itemRefId: "1091063",
+      drawingNo: "1091063",
+      format: "short",
+    });
+    expect(parseBigTehnBarcode("9833:9400/7-5:0")).toMatchObject({
+      format: "compact",
+      orderNo: "9400",
+      itemRefId: "7-5",
+    });
+    expect(parseBigTehnBarcode("9833;9400/7-5;0")).toMatchObject({
+      format: "compact",
+    });
+    expect(parseBigTehnBarcode("H1 - P1")).toBeNull();
+    expect(parseBigTehnBarcode("P1")).toBeNull();
+    expect(parseBigTehnBarcode("S:20:8.4:0:A")).toBeNull();
+    expect(parseBigTehnBarcode("SČ5Č1.10Č0Č33769")).toBeNull();
+  });
+
+  it("naš 3.0 nalog i legacy PrnTimer i dalje prolaze (bez izobličenja)", () => {
+    expect(parseBigTehnBarcode("RNZ:10354:9811-3/77:0:A")).toMatchObject({
+      orderNo: "9811-3",
+      itemRefId: "77",
+      format: "rnz",
+      field4: "A",
+    });
+    expect(parseBigTehnBarcode("RNZ:8693:7351/1088:0:39757")).toMatchObject({
+      orderNo: "7351",
+      itemRefId: "1088",
+      format: "rnz",
+    });
+  });
+});
+
+describe("isOperationBarcode — keyboard-wedge čitač", () => {
+  it("prepoznaje izobličen barkod OPERACIJE (uputstvo umesto „Nepoznat format“)", () => {
+    expect(isOperationBarcode("S;5;1.10;0;44474")).toBe(true);
+    expect(isOperationBarcode("SČ5Č1.10Č0Č33769")).toBe(true);
+    expect(isOperationBarcode("sč5č1.10č0č33769")).toBe(true);
+  });
+
+  it("izobličen barkod NALOGA se NE proglašava operacijom", () => {
+    expect(isOperationBarcode("rnz;10350;9400/3/120;0;44474")).toBe(false);
+    expect(isOperationBarcode("RNYČ9470Č9000-236Č0Č33769")).toBe(false);
+    expect(isOperationBarcode("H1 - P1")).toBe(false);
+    expect(isOperationBarcode("9833;9400/7-5;0")).toBe(false);
+  });
+});
+
+/**
+ * Popravka SME da živi samo u parserima stavke/operacije. Šifre lokacija su naš
+ * slobodan tekst i smeju da sadrže „Č"/„Ž" — kad bi `normalizeScannerLayout`
+ * dohvatio i njih, polica „Č1" bi postala „:1" i više se ne bi našla.
+ */
+describe("polica ne prolazi kroz keyboard-wedge popravku", () => {
+  const HALL_ID = "33333333-3333-4333-8333-333333333333";
+  const SHELF_ID = "44444444-4444-4444-8444-444444444444";
+  const hall: ShelfLoc = {
+    id: HALL_ID,
+    locationCode: "Č1",
+    locationType: "WAREHOUSE",
+    parentId: null,
+    isActive: true,
+  };
+  const shelf: ShelfLoc = {
+    id: SHELF_ID,
+    locationCode: "ŽP-2",
+    locationType: "SHELF",
+    parentId: HALL_ID,
+    isActive: true,
+  };
+  const locs = [hall, shelf];
+  const locById = new Map(locs.map((l) => [l.id, l]));
+
+  it("normalizeBarcodeText ne dira naša slova (samo skida šum)", () => {
+    expect(normalizeBarcodeText("Č1 - ŽP-2")).toBe("Č1 - ŽP-2");
+    expect(normalizeBarcodeText("RNYČ9470Č9000-236Č0Č33769")).toBe(
+      "RNYČ9470Č9000-236Č0Č33769",
+    );
+  });
+
+  it("polica sa dijakritikom se i dalje razrešava", () => {
+    expect(parseShortShelfBarcodePair("Č1 - ŽP-2")).toEqual({
+      hallCode: "Č1",
+      shelfCode: "ŽP-2",
+    });
+    const res = resolveCompositeShelfScan("Č1 - ŽP-2", locs, locById);
+    expect(res).toMatchObject({ ok: true, presetHallFilterId: HALL_ID });
+    expect(res && res.ok && res.loc.id).toBe(SHELF_ID);
+    expect(resolveCompositeShelfScan("ŽP-2", locs, locById)).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("LP:uuid:uuid kompozit i dalje prolazi", () => {
+    expect(
+      parseShelfCompositeBarcodeToken(`LP:${HALL_ID}:${SHELF_ID}`),
+    ).toEqual({ hallId: HALL_ID, shelfId: SHELF_ID });
+    expect(
+      resolveCompositeShelfScan(`LP:${HALL_ID}:${SHELF_ID}`, locs, locById),
+    ).toEqual({ ok: true, loc: shelf, presetHallFilterId: HALL_ID });
+  });
+});
+
 describe("normalizeBarcodeText / normalizeLocMovementKeys", () => {
   it("skida Code39 *...* okvir", () => {
     expect(normalizeBarcodeText("*7351/1088*")).toBe("7351/1088");

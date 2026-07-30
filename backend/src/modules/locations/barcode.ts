@@ -7,7 +7,13 @@
  * za 2.0 (Prisma camelCase polja umesto snake_case) — semantika je netaknuta.
  * Fajl je čist (bez DB) da bude unit-testabilan kao 1.0 Vitest. Nevidljivi
  * znakovi u regexima su \uXXXX escape (izvor ostaje čist ASCII).
+ *
+ * Keyboard-wedge tolerancija (magacin, 30.07): isti stoni čitač koji radi na
+ * kiosku pada u magacinu, jer je LEK postojao samo u `tech-processes/barcode.ts`.
+ * Ovde se NE prepisuje — uvozi se (`normalizeScannerLayout`), vidi `repairWedgeScan`.
  */
+
+import { normalizeScannerLayout } from "../tech-processes/barcode";
 
 // ============================================================================
 // 1) Item barkod: BigTehn RNZ / short / compact (barcodeParse.js)
@@ -23,7 +29,11 @@ export interface ParsedBarcode {
   /** Broj crteža ako je u barkodu (short format); prazno u RNZ. */
   drawingNo: string;
   format: BarcodeFormat;
-  /** Originalni očišćeni tekst. */
+  /**
+   * Očišćeni tekst koji je STVARNO parsiran. Kod keyboard-wedge očitanja to je
+   * POPRAVLJENA verzija (`repairWedgeScan`), ne izobličeni original — isto kao
+   * `parseBarcode.raw` na kiosku, i namerno: FE tim `raw`-om ponovo pita backend.
+   */
   raw: string;
   /** RNZ: prvi broj (ID dokumenta). */
   idrn?: string;
@@ -52,7 +62,35 @@ export function normalizeBarcodeText(raw: unknown): string {
   return t;
 }
 
-/** Zamena tipičnih „šumova" samo za formate bez `RNZ` prefiksa (ne dirati `RNZ|…`). */
+/**
+ * Popravka očitanja sa STONOG (keyboard-wedge) čitača — identična kiosk lekovima
+ * iz `tech-processes/barcode.ts` (dva zabeležena kvara iz pogona):
+ *   1. 2026-07-17 — pogonski OS je na SR rasporedu, a čitač „kuca" US: svaki
+ *      taster daje znak SR pozicije (`Z`→`Y`, `:`→`Č`, `/`→`-`, `-`→`'`).
+ *      `normalizeScannerLayout` to vraća nazad, i to SAMO kad postoji nedvosmislen
+ *      signal (SR dijakritik ili ćirilica) — bez signala vraća ulaz NEIZMENJEN,
+ *      pa legitiman sadržaj sa `y`/`z`/`-` (npr. polica „ABY-1") ostaje netaknut.
+ *   2. 2026-07-10 — `;` umesto `:` (čitač ne stigne da „drži" Shift). Redosled je
+ *      isti kao na kiosku: prvo raspored, pa `;`→`:`, jer malo SR `č` daje `;`.
+ *
+ * Funkcija se koristi ISKLJUČIVO kao DRUGI POKUŠAJ (kad sirovo očitanje nije
+ * prepoznato) — vidi `parseBigTehnBarcode`/`isOperationBarcode`. Time je nemoguće
+ * da pokvari ijedan kod koji danas prolazi.
+ */
+function repairWedgeScan(clean: string): string {
+  return normalizeScannerLayout(clean).trim().replace(/;/g, ":");
+}
+
+/**
+ * Zamena tipičnih „šumova" samo za formate bez `RNZ` prefiksa (ne dirati `RNZ|…`).
+ *
+ * Zašto preskače `RNZ` (provereno 30.07): to je konzervativnost, NE poslovno
+ * pravilo — nijedno polje RNZ oblika ne sme da sadrži `;`/`|` (`itemRefId` je
+ * `[A-Za-z0-9._/-]`, a enkoder `assertNoSeparator` zabranjuje `:` u identu), pa
+ * ovde nema šta da se pokvari. Gard ipak OSTAJE: RNZ grana `;` rešava u samom
+ * regexu (klasa `[:|;]`, kao `OPERATION_BARCODE_RE`/`compactRe` u ovom fajlu),
+ * a SR raspored kroz `repairWedgeScan` — pa je ovo mrtav put za RNZ.
+ */
 function normalizeNonRnzSeparators(s: string): string {
   if (!s || /^RNZ/i.test(s)) return s;
   return s
@@ -161,11 +199,31 @@ function applyPredmet9400BranchFold(parsed: ParsedBarcode): ParsedBarcode {
 /**
  * Parsiraj BigTehn barkod iz RNZ, short ili kompaktne nalepnice.
  * `null` ako ni jedan format ne odgovara. Paritet 1.0 `parseBigTehnBarcode`.
+ *
+ * Keyboard-wedge (30.07): ako sirovo očitanje ne odgovara nijednom obliku, isti
+ * ulaz se probava JOŠ JEDNOM kroz `repairWedgeScan` (SR raspored + `;`→`:`) —
+ * tako stoni čitač koji već radi na kiosku radi i u magacinu. Prvi prolaz je
+ * bajt-identičan dosadašnjem ponašanju, pa regresija nije moguća; drugi prolaz
+ * se preskače kad popravka ništa ne menja (nema SR signala ni `;`).
+ *
+ * `raw` u rezultatu je tekst koji je STVARNO parsiran (dakle popravljen, kad je
+ * popravka bila potrebna) — isto kao `parseBarcode` na kiosku. Bitno je jer FE
+ * (`/mob/lokacije`) tim `raw`-om radi „osveži" upit ka backendu.
  */
 export function parseBigTehnBarcode(raw: unknown): ParsedBarcode | null {
   const clean = normalizeBarcodeText(raw);
   if (!clean) return null;
 
+  const direct = parseCleanBigTehnBarcode(clean);
+  if (direct) return direct;
+
+  const repaired = repairWedgeScan(clean);
+  if (!repaired || repaired === clean) return null;
+  return parseCleanBigTehnBarcode(repaired);
+}
+
+/** Jedan prolaz parsiranja nad već očišćenim tekstom (RNZ → short → compact). */
+function parseCleanBigTehnBarcode(clean: string): ParsedBarcode | null {
   // RNZ — orderNo dozvoljava internu crticu (BigTehn revizijski sufiks), a
   // separator do tpNo je sužen na `/`/`\`; u itemRefId je dozvoljen i `/`.
   //
@@ -180,8 +238,14 @@ export function parseBigTehnBarcode(raw: unknown): ParsedBarcode | null {
   // Skup znakova polja 5 je namerno ŠIRI od „samo slova i cifre": `work_orders.revision`
   // je slobodan tekst (VarChar(3), bez validacije skupa znakova), pa enkoder sme da
   // otisne i „A-1" ili „1.2" — sa užim obrascem bi se isti kvar tiho vratio (review 30.07).
+  //
+  // SEPARATOR `;` (30.07): stoni keyboard-wedge čitač ume da propusti Shift pa
+  // umesto `:` pošalje `;` (kvar iz pogona 2026-07-10, „rnz;10350;9400/3/120;0;44474").
+  // Klasa je zato `[:|;]` — identično `OPERATION_BARCODE_RE` i `compactRe` NIŽE U
+  // OVOM FAJLU, koji `;` primaju oduvek. Dvosmislenost ne nastaje: nijedno polje
+  // RNZ oblika ne sme da sadrži `;` (`itemRefId` je `[A-Za-z0-9._/-]`, orderNo `[0-9-]`).
   const rnz = clean.match(
-    /^RNZ\s*[:|]\s*(\d{1,10})\s*[:|]\s*([0-9][0-9-]{0,12})\s*[/\\]\s*([A-Za-z0-9._/-]{1,64})\s*[:|]\s*(\d+)\s*[:|]\s*([A-Za-z0-9._-]{1,10})\s*$/i,
+    /^RNZ\s*[:|;]\s*(\d{1,10})\s*[:|;]\s*([0-9][0-9-]{0,12})\s*[/\\]\s*([A-Za-z0-9._/-]{1,64})\s*[:|;]\s*(\d+)\s*[:|;]\s*([A-Za-z0-9._-]{1,10})\s*$/i,
   );
   if (rnz) {
     const [, idrn, orderNo, itemRefId, varijanta, field4] = rnz;
@@ -254,11 +318,19 @@ export function parseBigTehnBarcode(raw: unknown): ParsedBarcode | null {
 const OPERATION_BARCODE_RE =
   /^S\s*[:|;]\s*([A-Za-z0-9._-]{1,16})\s*[:|;]\s*([A-Za-z0-9._-]{1,32})\s*[:|;]\s*([A-Za-z0-9._-]{1,16})\s*[:|;]\s*([A-Za-z0-9]{1,8})\s*$/i;
 
-/** Da li je sirov tekst barkod OPERACIJE (`S:…`) — vidi `OPERATION_BARCODE_RE`. */
+/**
+ * Da li je sirov tekst barkod OPERACIJE (`S:…`) — vidi `OPERATION_BARCODE_RE`.
+ *
+ * Isti keyboard-wedge drugi pokušaj kao u `parseBigTehnBarcode`: `;` regex prima
+ * oduvek, ali SR raspored („SČ5Č1.10Č0Č33769") ne — bez popravke bi takav sken
+ * ispao „Nepoznat format" umesto da dobije uputstvo gde je barkod naloga.
+ */
 export function isOperationBarcode(raw: unknown): boolean {
   const clean = normalizeBarcodeText(raw);
   if (!clean) return false;
-  return OPERATION_BARCODE_RE.test(clean);
+  if (OPERATION_BARCODE_RE.test(clean)) return true;
+  const repaired = repairWedgeScan(clean);
+  return repaired !== clean && OPERATION_BARCODE_RE.test(repaired);
 }
 
 /**
