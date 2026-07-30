@@ -1,5 +1,6 @@
 import {
   isHallType,
+  isOperationBarcode,
   isShelfType,
   normalizeBarcodeText,
   normalizeLocMovementKeys,
@@ -101,6 +102,124 @@ describe("parseBigTehnBarcode — RNZ / short / compact", () => {
     expect(parseBigTehnBarcode("HELLO WORLD")).toBeNull();
     expect(parseBigTehnBarcode("")).toBeNull();
     expect(parseBigTehnBarcode(null)).toBeNull();
+  });
+});
+
+/**
+ * REGRESIJA 30.07 — „barkod naloga koji SAMI štampamo se ne može pročitati".
+ * Polje 5 RNZ-a je verzioni pečat: legacy BigTehn je tu imao numerički `PrnTimer`,
+ * a 3.0 `formatOrderBarcode` štampa SLOVNU `work_orders.revision` (default „A").
+ * Regex je tražio samo cifre pa je magacin odbijao NAŠE naloge. Uzorci su stvarni
+ * (testirani na pogonskim nalozima) i moraju svi ostati zeleni.
+ */
+describe("parseBigTehnBarcode — RNZ polje 5 alfanumeričko (revizija, ne PrnTimer)", () => {
+  it("naš 3.0 nalog sa revizijom A: RNZ:10354:9811-3/77:0:A", () => {
+    expect(parseBigTehnBarcode("RNZ:10354:9811-3/77:0:A")).toMatchObject({
+      orderNo: "9811-3",
+      itemRefId: "77",
+      format: "rnz",
+      idrn: "10354",
+      varijanta: "0",
+      field4: "A",
+    });
+  });
+
+  it("naš 3.0 nalog sa revizijom A: RNZ:2597:06/93-4:0:A", () => {
+    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:A")).toMatchObject({
+      orderNo: "06",
+      itemRefId: "93-4",
+      format: "rnz",
+      idrn: "2597",
+      varijanta: "0",
+      field4: "A",
+    });
+  });
+
+  it("stari BigTehn PrnTimer i dalje prolazi: RNZ:8693:7351/1088:0:39757", () => {
+    expect(parseBigTehnBarcode("RNZ:8693:7351/1088:0:39757")).toMatchObject({
+      orderNo: "7351",
+      itemRefId: "1088",
+      format: "rnz",
+      field4: "39757",
+    });
+  });
+
+  it("nalepnica TP i dalje prolazi: RNZ:0:9811-17/158:0:0", () => {
+    expect(parseBigTehnBarcode("RNZ:0:9811-17/158:0:0")).toMatchObject({
+      orderNo: "9811-17",
+      itemRefId: "158",
+      format: "rnz",
+      idrn: "0",
+      field4: "0",
+    });
+  });
+
+  it("mala slova revizije (nestabilan CapsLock na wedge čitaču)", () => {
+    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:a")).toMatchObject({
+      orderNo: "06",
+      itemRefId: "93-4",
+      format: "rnz",
+      field4: "a",
+    });
+  });
+
+  it("applyPredmet9400BranchFold radi i sa slovnom revizijom", () => {
+    expect(parseBigTehnBarcode("RNZ:100:9400-2/415:0:A")).toMatchObject({
+      orderNo: "9400",
+      itemRefId: "2/415",
+      format: "rnz",
+      field4: "A",
+    });
+  });
+
+  it("barkod OPERACIJE ostaje null (S: nije stavka za magacin)", () => {
+    expect(parseBigTehnBarcode("S:20:8.4:0:A")).toBeNull();
+    expect(parseBigTehnBarcode("S:30:7351:0:39757")).toBeNull();
+  });
+
+  it("prazno / predugačko polje 5 i dalje pada (nije zamagljen oblik)", () => {
+    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:")).toBeNull();
+    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0")).toBeNull();
+    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:AAAAAAAAA")).toBeNull();
+    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:0:A:X")).toBeNull();
+    // Polje 4 (varijanta) je i dalje SAMO cifre — nije prošireno.
+    expect(parseBigTehnBarcode("RNZ:2597:06/93-4:A:A")).toBeNull();
+  });
+
+  it("short i compact grane ostaju nedirnute (bez pogrešnog svrstavanja)", () => {
+    expect(parseBigTehnBarcode("7351/1091063")).toMatchObject({
+      format: "short",
+      drawingNo: "1091063",
+    });
+    expect(parseBigTehnBarcode("9833:9400/7-5:0")).toMatchObject({
+      format: "compact",
+    });
+  });
+});
+
+describe("isOperationBarcode — S:{op}:{rc}:0:{rev}", () => {
+  it("prepoznaje barkod operacije", () => {
+    expect(isOperationBarcode("S:20:8.4:0:A")).toBe(true);
+    expect(isOperationBarcode("S:30:7351:0:39757")).toBe(true);
+    expect(isOperationBarcode("s|20|8.4|0|A")).toBe(true);
+    expect(isOperationBarcode("*S:20:8.4:0:A*")).toBe(true); // Code39 okvir
+  });
+
+  it("NE prijavljuje ni jedan drugi format kao operaciju", () => {
+    expect(isOperationBarcode("RNZ:10354:9811-3/77:0:A")).toBe(false);
+    expect(isOperationBarcode("RNZ:0:9811-17/158:0:0")).toBe(false);
+    expect(isOperationBarcode("7351/1091063")).toBe(false);
+    expect(isOperationBarcode("9833:9400/7-5:0")).toBe(false);
+    expect(isOperationBarcode("H1 - P1")).toBe(false);
+    expect(isOperationBarcode("P1")).toBe(false);
+    expect(
+      isOperationBarcode(
+        "LP:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222",
+      ),
+    ).toBe(false);
+    expect(isOperationBarcode("S:20:8.4:0")).toBe(false); // 3 separatora
+    expect(isOperationBarcode("")).toBe(false);
+    expect(isOperationBarcode(null)).toBe(false);
   });
 });
 

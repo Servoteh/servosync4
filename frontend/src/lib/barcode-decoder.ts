@@ -163,12 +163,48 @@ interface NativeDetectorLike {
 }
 
 /**
+ * Izbor MEĐU više kodova u istom kadru (dodato 30.07 — „kamera uzima prvi barkod
+ * iz kadra"). Na štampanom radnom nalogu barkodovi operacija stoje jedan pod
+ * drugim, pa nativni `BarcodeDetector` lako vrati SUSEDNI red umesto barkoda
+ * naloga; kako su barkodovi operacija međusobno slični i nisu jedinstveni,
+ * promašaj se ne vidi.
+ *
+ * PONAŠANJE BEZ PREDIKATA JE BIT-EXACT KAO PRE: `prefer == null` → `values[0]`
+ * (isto što je radio `found[0]?.rawValue`, uključujući prazan prvi element koji
+ * ljuska ionako odbacuje). Sa predikatom: prvi NEPRAZAN kod koji ga zadovolji, a
+ * ako nijedan ne zadovolji — ipak `values[0]` (pa ljuska/backend daju konkretnu
+ * poruku o pogrešnom barkodu, umesto tišine). Predikat koji baci grešku se
+ * ignoriše — pozivaočev kod ne sme da obori decode petlju.
+ */
+export function pickPreferredRaw(
+  values: readonly string[],
+  prefer?: (raw: string) => boolean,
+): string {
+  const first = values[0] ?? '';
+  if (!prefer) return first;
+  for (const v of values) {
+    if (!v) continue;
+    try {
+      if (prefer(v)) return v;
+    } catch {
+      /* predikat pozivaoca ne sme da obori dekoder */
+    }
+  }
+  return first;
+}
+
+/**
  * Zakači dekoder na VEĆ pokrenut <video> (stream-om upravlja pozivalac — lens
  * picker/zoom/torch ostaju netaknuti). Bira put po 1.0 pravilima:
  *   1. nativni BarcodeDetector ako postoji (Chromium — 3.0 status-quo),
  *   2. iOS + QR u formatima → jsQR hibrid (canvas: jsQR/78ms + ZXing-1D/400ms),
  *   3. inače ZXing `decodeFromVideoElement` (iPhone item, Firefox, Safari desktop).
  * `onRaw` prima SIROV string — dedup/re-arm i BE lookup ostaju u ljusci.
+ *
+ * `preferMatching` je OPCIONO i menja SAMO izbor kada nativni detektor nađe VIŠE
+ * kodova u jednom kadru (vidi `pickPreferredRaw`); ZXing/jsQR putevi po dizajnu
+ * javljaju jedan kod po pogotku pa tamo nema šta da se bira. Bez predikata je
+ * ponašanje bit-po-bit isto kao pre.
  */
 export async function attachVideoDecoder(opts: {
   video: HTMLVideoElement;
@@ -176,8 +212,10 @@ export async function attachVideoDecoder(opts: {
   onRaw: (raw: string) => void;
   /** Ljuska javlja da li je još živa (stop-guard za async init). */
   isStopped?: () => boolean;
+  /** Kad je u kadru više kodova — koji je „naš" (ekranu odgovarajući) format. */
+  preferMatching?: (raw: string) => boolean;
 }): Promise<VideoDecoderHandle> {
-  const { video, formats, onRaw } = opts;
+  const { video, formats, onRaw, preferMatching } = opts;
   const isStopped = opts.isStopped ?? (() => false);
 
   // 1) Nativni BarcodeDetector (rAF nad <video> — isti loop kao dosadašnji 3.0).
@@ -204,7 +242,12 @@ export async function attachVideoDecoder(opts: {
         try {
           if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             const found = await det.detect(video);
-            const raw = found[0]?.rawValue ? String(found[0].rawValue) : '';
+            // Više kodova u kadru (npr. susedni red operacije na štampanom RN-u) →
+            // pozivalac kroz `preferMatching` bira svoj format; bez predikata = prvi.
+            const raw = pickPreferredRaw(
+              found.map((f) => (f?.rawValue ? String(f.rawValue) : '')),
+              preferMatching,
+            );
             if (raw) onRaw(raw);
           }
         } catch {

@@ -25,9 +25,15 @@ import {
   buildVideoConstraints,
   decodeImageFile,
   isCameraDecodeSupported,
+  pickPreferredRaw,
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
+import {
+  looksLikeLocItemBarcode,
+  looksLikeOperationBarcode,
+  OPERATION_BARCODE_HINT,
+} from '@/lib/loc-barcode-shape';
 
 /*
  * Punoekranski skener barkoda za Lokacije — pun port bogatog 1.0 scanModal-a
@@ -148,6 +154,7 @@ function normalize(raw: string): string {
 const KIND_HINT: Record<LocBarcodeKind, string> = {
   ITEM: 'Stavka (predmet/TP)',
   SHELF: 'Polica / lokacija',
+  OPERATION: 'Barkod operacije (prijava rada)',
   UNKNOWN: 'Nepoznat format',
 };
 
@@ -511,7 +518,19 @@ export function ScanOverlay({
       setBusy(true);
       try {
         const { data } = await lookupLocBarcode(code);
+        // Barkod OPERACIJE (`S:…`) nije „nepoznat format" nego POGREŠAN RED na
+        // papiru — reci tačno gde je barkod naloga (poruka dolazi sa BE-a, pa su
+        // mobilni i desktop identični; `OPERATION_BARCODE_HINT` je fallback).
+        if (data.kind === 'OPERATION') {
+          say(data.message ?? OPERATION_BARCODE_HINT, 'warn');
+          return;
+        }
         if (data.kind === 'UNKNOWN') {
+          // Stariji backend (pre `kind:'OPERATION'`) vrati UNKNOWN — prepoznaj lokalno.
+          if (looksLikeOperationBarcode(code)) {
+            say(OPERATION_BARCODE_HINT, 'warn');
+            return;
+          }
           say(`Nepoznat format: ${code}`, 'error');
           return;
         }
@@ -540,6 +559,24 @@ export function ScanOverlay({
         busyRef.v = false;
         setBusy(false);
       }
+    };
+
+    // ── Koji kod iz kadra je „naš" (ispravka 30.07: kamera je uzimala PRVI) ──
+    // Na štampanom radnom nalogu barkodovi operacija stoje jedan pod drugim (u
+    // štampi je čak dodato razmicanje jer su operateri „omašivali sken"), pa
+    // nativni detektor ume da vrati SUSEDNI red. Kako su barkodovi operacija
+    // međusobno slični i NISU jedinstveni (`S:{op}:{rc}:0:{rev}` je isti za svaki
+    // nalog revizije A sa istom operacijom na istom radnom centru), promašaj se
+    // NE VIDI. Zato dekoderu dajemo predikat izbora:
+    //   • korak stavke (accept samo ITEM) → uzmi RNZ/short/compact, preskoči `S:`;
+    //   • ostali koraci → barem nikad ne biraj `S:` kad u kadru ima drugog koda.
+    // Kad NIJEDAN kod ne zadovolji predikat, dekoder vraća prvi kao i dosad — pa
+    // korisnik i dalje dobije konkretnu poruku (kind:'OPERATION'), ne tišinu.
+    const preferMatching = (raw: string): boolean => {
+      const acc = cbRef.current.accept;
+      if (acc.includes('ITEM') && !acc.includes('SHELF'))
+        return looksLikeLocItemBarcode(raw);
+      return !looksLikeOperationBarcode(raw);
     };
 
     // ── Live decode: „kod napustio kadar" gejt nad pogocima decode-engine-a ──
@@ -838,6 +875,8 @@ export function ScanOverlay({
           formats,
           onRaw: onDecoderRaw,
           isStopped: () => stopped || mySeq !== decoderSeq,
+          // Više kodova u kadru → biraj format koji ovaj korak očekuje (N3).
+          preferMatching,
         });
         if (stopped || mySeq !== decoderSeq) {
           handle.stop(); // restart/close u toku lazy učitavanja ZXing-a
@@ -883,9 +922,15 @@ export function ScanOverlay({
               detector = new Ctor();
             }
             const found = await detector.detect(bitmap);
-            if (found[0]?.rawValue) {
+            // Screenshot celog RN-a lako sadrži i barkodove operacija — isti izbor
+            // kao u kamera-petlji (bez pogotka po predikatu ostaje prvi, kao pre).
+            const hitRaw = pickPreferredRaw(
+              found.map((f) => (f?.rawValue ? String(f.rawValue) : '')),
+              preferMatching,
+            );
+            if (hitRaw) {
               navigator.vibrate?.(80);
-              await resolve(found[0].rawValue);
+              await resolve(hitRaw);
               return;
             }
           } catch {

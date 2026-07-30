@@ -29,7 +29,11 @@ export interface ParsedBarcode {
   idrn?: string;
   /** RNZ: segment posle TP (ERP kolona `varijanta`). */
   varijanta?: string;
-  /** RNZ: poslednji broj u barkodu (npr. timer — ne koristi se za lookup). */
+  /**
+   * RNZ polje 5 — verzioni pečat, NE koristi se za lookup. Legacy BigTehn je tu
+   * imao numerički `PrnTimer` (npr. `39757`), a 3.0 štampa alfanumeričku
+   * `work_orders.revision` (npr. `A`) — vidi `tech-processes/barcode.ts`.
+   */
   field4?: string;
 }
 
@@ -164,8 +168,17 @@ export function parseBigTehnBarcode(raw: unknown): ParsedBarcode | null {
 
   // RNZ — orderNo dozvoljava internu crticu (BigTehn revizijski sufiks), a
   // separator do tpNo je sužen na `/`/`\`; u itemRefId je dozvoljen i `/`.
+  //
+  // POLJE 5 JE ALFANUMERIČKO (ispravka 30.07): legacy BigTehn je tu imao
+  // numerički `PrnTimer` pa je regex tražio `(\d+)`, ali zaglavlje NAŠEG
+  // štampanog radnog naloga nosi `work_orders.revision` — SLOVO (`A`, VarChar(3),
+  // default „A"; `formatOrderBarcode` u tech-processes/barcode.ts). Zbog toga
+  // magacin NIJE mogao da pročita nalog koji sami štampamo (`RNZ:10354:9811-3/77:0:A`),
+  // a stari BigTehn nalog (`RNZ:8693:7351/1088:0:39757`) je prolazio. Novi oblik je
+  // NADSKUP starog (cifre i dalje prolaze) i ne dira ostala 4 polja; short/compact
+  // grane su nedostupne za `RNZ…` ulaz (traže vodeću cifru), pa se ne mogu zamagliti.
   const rnz = clean.match(
-    /^RNZ\s*[:|]\s*(\d{1,10})\s*[:|]\s*([0-9][0-9-]{0,12})\s*[/\\]\s*([A-Za-z0-9._/-]{1,64})\s*[:|]\s*(\d+)\s*[:|]\s*(\d+)\s*$/i,
+    /^RNZ\s*[:|]\s*(\d{1,10})\s*[:|]\s*([0-9][0-9-]{0,12})\s*[/\\]\s*([A-Za-z0-9._/-]{1,64})\s*[:|]\s*(\d+)\s*[:|]\s*([A-Za-z0-9]{1,8})\s*$/i,
   );
   if (rnz) {
     const [, idrn, orderNo, itemRefId, varijanta, field4] = rnz;
@@ -222,6 +235,36 @@ export function parseBigTehnBarcode(raw: unknown): ParsedBarcode | null {
 
   return null;
 }
+
+/**
+ * Barkod OPERACIJE — `S:{operacija}:{radniCentar}:0:{revizija}` (red u tabeli
+ * štampanog RN-a). Za MAGACIN je bez upotrebe: ne nosi ni nalog ni TP, pa ne
+ * identifikuje deo; služi PRIJAVI RADA na kiosku (kiosk skenira prvo nalog, pa
+ * operaciju — `tech-processes/barcode.ts`). Prepoznajemo ga SAMO da bi korisnik
+ * dobio konkretnu poruku umesto „Nepoznat format" (na štampanom RN-u barkodovi
+ * operacija stoje jedan pod drugim pa kamera lako uhvati susedni red).
+ *
+ * Regex je NAMERNO strog (tačno 5 polja, marker `S`) — ne sme da proglasi
+ * operacijom nijedan drugi format (RNZ ima svoj prefiks, short/compact počinju
+ * cifrom, `LP:` polica ima `LP` marker, a šifra police ne nosi 4 separatora).
+ */
+const OPERATION_BARCODE_RE =
+  /^S\s*[:|;]\s*([A-Za-z0-9._-]{1,16})\s*[:|;]\s*([A-Za-z0-9._-]{1,32})\s*[:|;]\s*([A-Za-z0-9._-]{1,16})\s*[:|;]\s*([A-Za-z0-9]{1,8})\s*$/i;
+
+/** Da li je sirov tekst barkod OPERACIJE (`S:…`) — vidi `OPERATION_BARCODE_RE`. */
+export function isOperationBarcode(raw: unknown): boolean {
+  const clean = normalizeBarcodeText(raw);
+  if (!clean) return false;
+  return OPERATION_BARCODE_RE.test(clean);
+}
+
+/**
+ * Jedinstvena poruka za skeniran barkod operacije — backend je vraća u
+ * `lookupBarcode`, pa i mobilni i desktop skener kažu ISTO (bez dupliranja
+ * teksta po ekranima).
+ */
+export const OPERATION_BARCODE_MESSAGE =
+  "Ovo je barkod OPERACIJE (red u tabeli naloga). Za magacin skeniraj barkod GORE DESNO u zaglavlju naloga ili nalepnicu TP.";
 
 /**
  * Da li placement pripada paru (predmet, TP, crtež) — ista semantika kao JOIN u
