@@ -5050,6 +5050,10 @@ model BbMdbDrop {
   stagePopdvGk    BbMdbStagePopdvGk[]
   stageKomitenti  BbMdbStageKomitent[]
   stagePredmeti   BbMdbStagePredmet[]
+  stageGrupe      BbMdbStageGrupa[]
+  stagePodgrupe   BbMdbStagePodgrupa[]
+  stagePoreklo    BbMdbStagePoreklo[]
+  stageMagacini   BbMdbStageMagacin[]
 
   @@unique([fileName, fileMtime, fileSize], map: "uq_bb_mdb_drops_file")
   @@index([stageStatus, importStatus], map: "idx_bb_mdb_drops_status")
@@ -5262,6 +5266,73 @@ model BbMdbStagePredmet {
 
   @@index([dropId], map: "idx_bb_mdb_stage_predmeti_drop")
   @@map("bb_mdb_stage_predmeti")
+}
+
+/// Was: R_Grupa / R_Podgrupa / R_Poreklo / Magacini — staging (30.07.2026).
+///
+/// Preuzeto iz starijeg `bigbit-bridge` mehanizma, koji je baš ove četiri tabele
+/// vukao iz .mdb-a — ali mu tajmer nikad nije instaliran, pa nije odradio nijedan
+/// prolaz. Hitne su zato što 4.0 za njih ima tri syncera (`syncers/item-group`,
+/// `item-subgroup`, `item-origin`) koji čitaju kroz `MssqlClient`, dakle iz
+/// QBigTehna — a on je ugašen. Ti synceri su MRTVI ROĐENI: registrovani su i
+/// izgledaju živi, a ne mogu doneti nijedan red.
+model BbMdbStageGrupa {
+  id     Int     @id(map: "pk_bb_mdb_stage_grupe") @default(autoincrement()) @map("id")
+  dropId Int     @map("drop_id")
+  grupa  String? @map("grupa") // Grupa
+  opis   String? @map("opis") // Opis
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_grupe_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_grupe_drop")
+  @@map("bb_mdb_stage_grupe")
+}
+
+model BbMdbStagePodgrupa {
+  id        Int     @id(map: "pk_bb_mdb_stage_podgrupe") @default(autoincrement()) @map("id")
+  dropId    Int     @map("drop_id")
+  podgrupa  String? @map("podgrupa") // Podgrupa
+  opis      String? @map("opis") // Opis
+  grupaVeza String? @map("grupa_veza") // GrupaVeza -> R_Grupa.Grupa
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_podgrupe_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_podgrupe_drop")
+  @@map("bb_mdb_stage_podgrupe")
+}
+
+model BbMdbStagePoreklo {
+  id            Int     @id(map: "pk_bb_mdb_stage_poreklo") @default(autoincrement()) @map("id")
+  dropId        Int     @map("drop_id")
+  poreklo       String? @map("poreklo") // Poreklo
+  opis          String? @map("opis") // Opis
+  podgrupaVeza  String? @map("podgrupa_veza") // PodgrupaVeza -> R_Podgrupa.Podgrupa
+  popustProc    String? @map("popust_proc") // PopustProc
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_poreklo_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_poreklo_drop")
+  @@map("bb_mdb_stage_poreklo")
+}
+
+model BbMdbStageMagacin {
+  id               Int     @id(map: "pk_bb_mdb_stage_magacini") @default(autoincrement()) @map("id")
+  dropId           Int     @map("drop_id")
+  idFirma          String? @map("id_firma") // IDFirma
+  idMagacin        String? @map("id_magacin") // IDMagacin -> warehouses.id
+  magacin          String? @map("magacin") // Magacin (naziv)
+  ulicaIBroj       String? @map("ulica_i_broj") // UlicaIBroj
+  mesto            String? @map("mesto") // Mesto
+  prosecneCene     String? @map("prosecne_cene") // ProsecneCene (Access Boolean → '0'/'1')
+  vrstaMag         String? @map("vrsta_mag") // VrstaMag
+  kontoMag         String? @map("konto_mag") // KontoMag
+  imeMagacionera   String? @map("ime_magacionera") // ImeMagacionera
+  brLkMagacionera  String? @map("br_lk_magacionera") // BrLkMagacionera
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_magacini_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_magacini_drop")
+  @@map("bb_mdb_stage_magacini")
 }
 
 /// Was: Vrsta naloga — staging.

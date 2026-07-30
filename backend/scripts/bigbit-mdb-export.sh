@@ -22,6 +22,9 @@
 #     bash /put/do/bigbit-mdb-export.sh
 #   Opcije:  --force   ponovo odradi i drop koji je već LOADED
 #            --dir D   drugi drop folder (default /srv/bigbit-incoming)
+#            --proba   PROBNI REŽIM: sve se odradi i prebroji, pa ROLLBACK —
+#                      baza ostaje netaknuta, a u logu stoje pravi brojevi.
+#                      Za prvi prolaz nad pravim fajlom. (= BB_DRY_RUN=1)
 #
 # IDEMPOTENCIJA: identitet drop-a = (ime fajla, mtime, veličina). Drugo pokretanje
 # nad ISTIM fajlom bez --force ne radi ništa i izlazi sa 0. Sa --force staging se
@@ -37,10 +40,21 @@ PSQL_IMAGE="${BB_PSQL_IMAGE:-postgres:18}"
 WORK_ROOT="${BB_WORK_DIR:-/tmp/bigbit-mdb-export}"
 FORCE=0
 
+# PROBNI REŽIM (`--proba`): odradi SVE — pročitaj .mdb, prebroj redove, napuni
+# staging — pa na kraju `ROLLBACK` umesto `COMMIT`. Baza ostaje bajt u bajt ista,
+# a u logu stoje pravi brojevi po tabeli.
+#
+# Zašto postoji: prvi prolaz nad pravim fajlom dira 6.251 komitenta, 7.624
+# predmeta i 91.000 artikala. Brojeve treba VIDETI pre nego što se išta upiše —
+# suvo pokretanje je jedini način da se to uradi bez rizika. Ideja preuzeta iz
+# starijeg `bigbit-bridge.sh` (`BB_DRY_RUN`), koji je isti obrazac imao od jula.
+DRY_RUN="${BB_DRY_RUN:-0}"
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --force) FORCE=1; shift ;;
     --dir) DROP_DIR="$2"; shift 2 ;;
+    --proba|--dry-run) DRY_RUN=1; shift ;;
     -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "Nepoznat argument: $1" >&2; exit 2 ;;
   esac
@@ -96,6 +110,22 @@ TABLES=(
   # netaknuti i već testirani.
   "Komitenti|bb_mdb_stage_komitenti|komitenti|Sifra|Naziv|Poslovnica|Mesto|Adresa|Postanski broj|Ziro racun_1|Ziro racun_2|Ziro racun_3|Telefon|Fax|Kontakt|Napomena|Drzava|Region|Vrsta sifre|Email|Mobilni|Datum rodjenja|Web adresa|Sifra prodavca|RabatKomitenta|ZastKodKupca|PIB|PDVStatus|MSifra|Odlozeno|IDRuta|IDVozac|IDUplatniRacun|FakturisanjePoMestimaIsporuke|Cenovnik|PrviUnos|PoslednjaIzmena|PrviUnosUser|PoslednjaIzmenaUser|ProcenatProvizije|FiktRabatKomitenta|KomitentiNacinPlacanja|PotpisKom"
   "Predmeti|bb_mdb_stage_predmeti|predmeti|IDPredmet|BrojPredmeta|Opis|DatumOtvaranja|IDProdavac|IDKomitent|NextAction|DatumZakljucenja|Memo|Status|NasaRef|NasKontakt1|NasKontakt2|NasTel1|NasTel2|VasaRef|VasKontakt1|VasKontakt2|VasTel1|VasTel2|NabavnaVrednost|Carina|Spedicija|Prevoz|Ostalo|InoDobavljac|RJ|devvaluta|kurs|IDVrstaPosla|NazivPredmeta|RokZavrsetka|Potpis|DatumIVreme|BrojUgovora|DatumUgovora|BrojNarudzbenice|DatumNarudzbenice"
+
+  # ── ŠIFARNICI ARTIKALA I MAGACINI (30.07.2026) ─────────────────────────────
+  # Preuzeto iz starijeg `bigbit-bridge` (`~/bigbit-bridge/tables.manifest`), koji
+  # je baš ove četiri tabele vukao iz .mdb-a od jula — ali mu tajmer nikad nije
+  # instaliran, pa nije odradio nijedan prolaz.
+  #
+  # ZAŠTO SU HITNE: 4.0 za njih ima tri syncera (`syncers/item-group.syncer.ts`,
+  # `item-subgroup`, `item-origin`) koji čitaju kroz `MssqlClient`, dakle iz
+  # QBigTehna — a on je ugašen. Ti synceri su MRTVI ROĐENI: registrovani su i
+  # izgleda da rade, a ne mogu doneti nijedan red. Bez ovih tabela provera grupe i
+  # podgrupe artikla radi po pravilu „prazan šifarnik se preskače", što znači da
+  # se u praksi ne proverava ništa.
+  "R_Grupa|bb_mdb_stage_grupe|grupe|Grupa|Opis"
+  "R_Podgrupa|bb_mdb_stage_podgrupe|podgrupe|Podgrupa|Opis|GrupaVeza"
+  "R_Poreklo|bb_mdb_stage_poreklo|poreklo|Poreklo|Opis|PodgrupaVeza|PopustProc"
+  "Magacini|bb_mdb_stage_magacini|magacini|IDFirma|IDMagacin|Magacin|UlicaIBroj|Mesto|ProsecneCene|VrstaMag|KontoMag|ImeMagacionera|BrLkMagacionera"
 )
 
 # psql u kontejneru, na host mreži, sa UTF-8 klijentom.
@@ -178,6 +208,16 @@ DROP_INFO="$(psql_q "
 DROP_ID="${DROP_INFO%%|*}"
 STAGE_STATUS="${DROP_INFO##*|}"
 log "bb_mdb_drops.id=$DROP_ID (stage_status=$STAGE_STATUS)"
+
+# PROBNI REŽIM ne sme da ostavi trag. Red u `bb_mdb_drops` je upisan van velike
+# transakcije (autocommit), pa ga `ROLLBACK` na kraju NE poništava — bez ovoga bi
+# proba ostavila drop koji sledeći pravi prolaz vidi kao „već obrađen" i preskoči.
+# Briše se na izlazu, kako god skripta završila; staging pada kaskadno.
+if [ "$DRY_RUN" = "1" ]; then
+  # shellcheck disable=SC2064  # DROP_ID se namerno širi SADA, ne pri izlazu
+  trap "log 'PROBNI REŽIM — brišem probni drop $DROP_ID'; \
+        psql_q \"DELETE FROM bb_mdb_drops WHERE id=$DROP_ID;\" >/dev/null 2>&1 || true" EXIT
+fi
 
 if [ "$STAGE_STATUS" = "LOADED" ] && [ "$FORCE" -ne 1 ]; then
   log "već je stagovan — nema šta da se radi (koristi --force za ponovni izvoz). IZLAZ 0."
@@ -282,7 +322,9 @@ UPDATE bb_mdb_drops SET
   stage_duration_ms=NULL, stage_error=NULL,
   import_status='PENDING', imported_at=NULL, import_error=NULL
 WHERE id=$DROP_ID;
-COMMIT;
+$( [ "$DRY_RUN" = "1" ] \
+     && echo "ROLLBACK;  -- PROBNI REŽIM: ništa nije upisano" \
+     || echo "COMMIT;" )
 SQL
 
 log "učitavam u staging ..."
