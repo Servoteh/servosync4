@@ -174,7 +174,12 @@ describe("Kadrovska permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     {
       // GO periodi „od–do" na kartici zaposlenog — ista permisija kao ostatak
       // pregleda odmora/odsustva na tom ekranu (balance/ledger/absences);
-      // opseg redova sužava servis (AUDIT-K2), ne ruta.
+      // opseg REDOVA sužava servis (AUDIT-K2), ne ruta.
+      // ⚠️ F3 (30.07.2026): ruta namerno OSTAJE `kadrovska.read` (inače bi kolona
+      // bila prazna svima koji ekran uopšte otvaraju), ali PROJEKCIJU dodatno
+      // sužava `kadrovska.vacreq_manage` U SERVISU: bez nje izlaze samo odobreni
+      // zahtevi (+ realizovan odmor iz evidencije/grida). Jedinični dokaz oba
+      // smera: `src/modules/kadrovska/vacation-periods.spec.ts`.
       path: "/kadrovska/vacation/periods",
       perm: PERMISSIONS.KADROVSKA_READ,
       label: "vacation/periods",

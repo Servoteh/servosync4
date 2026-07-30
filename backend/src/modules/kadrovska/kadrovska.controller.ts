@@ -193,10 +193,12 @@ export class KadrovskaController {
    *  jedan neprekidan raspon + status, BEZ cepanja na radne dane kao u gridu.
    *  Permisija je klasna `kadrovska.read` — ista koja već štiti pregled odsustva
    *  na tom ekranu (`vacation/balance`, `vacation/ledger`, `absences`); opseg
-   *  redova servis sužava istom DB funkcijom kao `requests()` (AUDIT-K2). */
+   *  redova servis sužava istom DB funkcijom kao `requests()` (AUDIT-K2).
+   *  ⚠️ F3: servis dobija CELOG `req.user` jer PROJEKCIJU sužava permisija
+   *  pozivaoca — bez `kadrovska.vacreq_manage` izlaze samo odobreni zahtevi. */
   @Get("vacation/periods")
   vacationPeriods(@Req() req: AuthedRequest, @Query() q: VacationQueryDto) {
-    return this.kadrovska.vacationPeriods(req.user.email, q);
+    return this.kadrovska.vacationPeriods(req.user, q);
   }
 
   @Get("vacation/entitlements")

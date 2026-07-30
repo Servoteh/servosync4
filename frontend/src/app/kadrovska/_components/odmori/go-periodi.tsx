@@ -7,10 +7,16 @@ import { fmtRange } from './helpers';
  * Prikaz GO raspona „od–do" na kartici/redu zaposlenog (zahtev vlasnika 30.07.2026:
  * „da imam neki prikaz tu od kad do kada ima PLANIRAN i ODOBREN odmor").
  *
- * ⚠️ Izvor je `/kadrovska/vacation/periods` (vacation_requests) — JEDAN zahtev =
- * JEDAN neprekidan raspon. NIKAD grid (`work_hours`)/`go_ledger`: tamo je jedan
- * red po RADNOM danu, pa se odmor 04.08.–17.08. prikaže kao tri komada rasečena
+ * ⚠️ Izvor je `/kadrovska/vacation/periods` — kanon je `vacation_requests`
+ * (JEDAN zahtev = JEDAN neprekidan raspon). Grid (`work_hours`) ulazi tek kao
+ * treći izvor i to VEĆ SPOJEN na backendu (vikendi/neradni praznici premošćeni),
+ * jer bi sirov grid odmor 04.08.–17.08. prikazao kao tri komada rasečena
  * vikendima (04–07 / 10–14 / 17.08) — baš ono što je vlasnik nazvao greškom.
+ *
+ * ⚠️ NALAZ F2 (review 30.07.2026): ovde se NIKAD ne sme tvrditi „nema planiranog
+ * odmora" ako podatak nije stigao. Pad upita (403/500/mreža/400 na godinu van
+ * opsega) je do sada izgledao kao „niko nema odmor" — za SVE zaposlene, i u
+ * tabeli i u Excel izvozu. Otud `error`/`loading` grane i saldo-brana ispod.
  */
 
 const PHASE_LABEL: Record<VacationPeriod['phase'], string> = {
@@ -21,6 +27,15 @@ const PHASE_LABEL: Record<VacationPeriod['phase'], string> = {
 
 /** Boja/oznaka po statusu odobravanja (5 statusa; rejected/canceled BE ne šalje). */
 export function periodMeta(p: VacationPeriod): { color: string; label: string; tip: string } {
+  if (p.source === 'grid')
+    return {
+      color: 'var(--status-neutral)',
+      label: 'iz evidencije (bez zahteva)',
+      tip:
+        'Nema zahteva za GO ni evidencije odsustva — dani su upisani u mesečni grid ' +
+        'kao „go". To je isti izvor koji broji kolone „Iskorišćeno" i „Planirano". ' +
+        'Vikendi i neradni praznici unutar raspona su premošćeni.',
+    };
   if (p.source === 'evidencija')
     return {
       color: 'var(--status-neutral)',
@@ -72,34 +87,82 @@ function Badge({ p }: { p: VacationPeriod }) {
 }
 
 /**
+ * Saldo istog reda — brana protiv lažne tvrdnje „nema planiranog odmora" kad
+ * saldo pokazuje dane. `openingUsed` su dani PRE cutover-a (`vacation_entitlements
+ * .opening_used`) koji NEMAJU datume, pa im raspon ni ne može postojati — zato
+ * se za njih ispisuje „bez datuma", a ne negacija.
+ */
+export interface GoBalanceHint {
+  used: number;
+  planned: number;
+  openingUsed: number;
+}
+
+/** Neutralna poruka „nije učitano" — NIKAD tvrdnja da odmora nema (F2). */
+function NotLoaded({ what }: { what: string }) {
+  return (
+    <span
+      className="whitespace-nowrap text-xs text-status-warn"
+      title={`Podatak o rasponima GO nije učitan (${what}). Prikaz NE znači da zaposleni nema odmor — osveži stranicu ili proveri godinu.`}
+    >
+      ⚠ podatak nije učitan
+    </span>
+  );
+}
+
+/**
  * Ćelija kolone „Odmor (od–do)". Klik širi red i pokazuje SVE raspone godine
  * (bez ulaska u rešenje ili 📜 modal — to je bila vlasnikova zamerka).
  */
 export function GoPeriodCell({
   periods,
   loading,
+  error,
+  balance,
   year,
   expanded,
   onToggle,
 }: {
   periods: VacationPeriod[];
   loading?: boolean;
+  error?: boolean;
+  balance?: GoBalanceHint;
   year: number;
   expanded: boolean;
   onToggle: () => void;
 }) {
+  // Redosled je bitan: greška pre praznog stanja, inače pad upita izgleda
+  // kao „niko nema odmor" (F2).
+  if (error) return <NotLoaded what="upit nije uspeo" />;
   if (loading) return <span className="text-xs text-ink-disabled">…</span>;
 
   const cur = pickCurrent(periods);
-  if (!cur)
+  if (!cur) {
+    // Brana konzistentnosti: saldo i ova ćelija čitaju ISTE `work_hours` redove,
+    // pa „nema odmora" uz saldo > 0 ne sme da se desi. Ako se ipak desi (dani
+    // bez datuma iz `opening_used`), kaže se ŠTA se zna, ne što se ne zna.
+    const saldoDana = (balance?.used ?? 0) + (balance?.planned ?? 0);
+    if (saldoDana > 0)
+      return (
+        <span
+          className="whitespace-nowrap text-xs text-ink-secondary"
+          title={
+            `U saldu za ${year}. stoji ${saldoDana} d. (iskorišćeno ${balance?.used ?? 0}, planirano ${balance?.planned ?? 0}), ` +
+            `ali bez datuma — ${balance?.openingUsed ? `${balance.openingUsed} d. je preneseno stanje pre cutover-a (bez datuma u sistemu)` : 'raspon nije evidentiran ni kao zahtev, ni kao odsustvo, ni u gridu'}.`
+          }
+        >
+          {saldoDana} d. bez datuma
+        </span>
+      );
     return (
       <span
         className="text-xs text-ink-disabled"
-        title={`Nema zahteva ni evidencije GO za ${year}. Napomena: prikazuju se samo zaposleni iz vašeg opsega.`}
+        title={`Nema zahteva, odsustva ni GO dana u gridu za ${year}. Napomena: prikazuju se samo zaposleni iz vašeg opsega.`}
       >
         nema planiranog odmora
       </span>
     );
+  }
 
   const rest = periods.length - 1;
   return (
@@ -127,18 +190,31 @@ export function GoPeriodList({
   periods,
   employeeName,
   year,
+  loading,
+  error,
 }: {
   periods: VacationPeriod[];
   employeeName: string;
   year: number;
+  loading?: boolean;
+  error?: boolean;
 }) {
   return (
     <div className="space-y-1.5">
       <div className="text-2xs uppercase tracking-[0.08em] text-ink-secondary">
         Godišnji odmor {year} — {employeeName || '—'}
       </div>
-      {periods.length === 0 ? (
-        <div className="text-xs text-ink-disabled">Nema zahteva ni evidencije GO za {year}.</div>
+      {error ? (
+        // F2: ne tvrdi da odmora nema kad upit nije prošao.
+        <div className="text-xs text-status-warn">
+          ⚠ Podatak o rasponima GO nije učitan — osveži stranicu ili proveri godinu.
+        </div>
+      ) : loading ? (
+        <div className="text-xs text-ink-disabled">Učitavanje…</div>
+      ) : periods.length === 0 ? (
+        <div className="text-xs text-ink-disabled">
+          Nema zahteva, odsustva ni GO dana u gridu za {year}.
+        </div>
       ) : (
         <ul className="space-y-1">
           {periods.map((p) => (

@@ -193,6 +193,11 @@ export function SaldoTab() {
 
   function exportExcel() {
     if (!rows.length) { showToast('Nema podataka za izvoz'); return; }
+    // F2: kolona „Odmor (od–do)" bi u ovim stanjima izašla PRAZNA za svakoga, a
+    // tabela se deli dalje kao da je tačna. Radije se izvoz odbije nego da se
+    // pošalje dokument koji potcenjuje odmore.
+    if (periodsQ.isLoading) { showToast('⏳ Odmori se još učitavaju — pokušaj za koji trenutak'); return; }
+    if (periodsQ.isError) { showToast('⚠ Odmori (od–do) nisu učitani — izvoz je zaustavljen da tabela ne bi bila lažno prazna'); return; }
     const data = [
       ['Zaposleni', 'Odeljenje', 'Preneto', 'Zarađeno do danas', 'Ukupno (do danas)', `Iskorišćeno ${year}`, 'od toga pre 01.05', 'Planirano', 'Odmor (od–do)', 'Preostalo', 'Avans (CEO/CFO)'],
       ...rows.map((r) => [
@@ -304,6 +309,10 @@ export function SaldoTab() {
         <GoPeriodCell
           periods={goByEmp.get(r.emp.id) ?? []}
           loading={periodsQ.isLoading}
+          error={periodsQ.isError}
+          // Saldo istog reda — brana da ćelija ne tvrdi „nema odmora" dok
+          // „Iskorišćeno/Planirano" pokazuju dane (F1 brana konzistentnosti).
+          balance={{ used: r.daysUsed, planned: r.daysPlanned, openingUsed: r.openingUsed }}
           year={year}
           expanded={expanded === r.emp.id}
           onToggle={() => setExpanded((k) => (k === r.emp.id ? null : r.emp.id))}
@@ -405,6 +414,8 @@ export function SaldoTab() {
               periods={goByEmp.get(r.emp.id) ?? []}
               employeeName={r.emp.name}
               year={year}
+              loading={periodsQ.isLoading}
+              error={periodsQ.isError}
             />
           )}
         />

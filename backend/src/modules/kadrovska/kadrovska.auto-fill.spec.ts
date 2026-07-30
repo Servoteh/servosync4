@@ -87,7 +87,7 @@ function makeSvc(opts: {
       );
     },
   });
-  const svc = new KadrovskaService(sy15 as unknown as Sy15Service);
+  const svc = new KadrovskaService(sy15 as unknown as Sy15Service, {} as never);
   return { svc, queryRaw, holidayFindMany, dbAccessed: () => dbAccessed };
 }
 

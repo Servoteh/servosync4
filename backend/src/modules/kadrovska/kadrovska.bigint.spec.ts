@@ -17,7 +17,7 @@ describe("Kadrovska R1 read — BigInt view kolone → Number (nema 500)", () =>
         async (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
       ),
     } as Record<string, unknown>;
-    return new KadrovskaService(sy15 as never);
+    return new KadrovskaService(sy15 as never, {} as never);
   };
 
   it("devPlans: goals_total/goals_done bigint → Number (JSON.stringify ne baca)", async () => {

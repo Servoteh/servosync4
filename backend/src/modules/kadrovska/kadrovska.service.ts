@@ -8,7 +8,12 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
-import { salaryEmailAllowed } from "../../common/authz/effective-permission";
+import { PrismaService } from "../../prisma/prisma.service";
+import {
+  resolvePermissionDecision,
+  salaryEmailAllowed,
+} from "../../common/authz/effective-permission";
+import { PERMISSIONS } from "../../common/authz/permissions";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import {
   aggregateWorkHoursForMonth,
@@ -23,7 +28,12 @@ import {
   PRESENCE_FLOOR,
   PRESENCE_CEIL,
 } from "./grid-autofill.service";
-import { buildVacationPeriods, type VacationPeriod } from "./vacation-periods";
+import {
+  buildVacationPeriods,
+  VACATION_PERIOD_STATUSES,
+  VACATION_PERIOD_STATUSES_PUBLIC,
+  type VacationPeriod,
+} from "./vacation-periods";
 import type {
   AbsencesQueryDto,
   AttendanceDailyQueryDto,
@@ -74,7 +84,15 @@ const RATER_SAFE_SELECT = {
  */
 @Injectable()
 export class KadrovskaService {
-  constructor(private readonly sy15: Sy15Service) {}
+  /**
+   * `prisma` je GLAVNA (3.0) baza i koristi se ISKLJUČIVO za odluku o permisiji
+   * pozivaoca (`resolvePermissionDecision` nad `user_permission_overrides`) —
+   * NIKAD za HR podatke, koji žive u sy15 i idu kroz `withUserMapped` (RLS).
+   */
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly prisma: PrismaService,
+  ) {}
 
   // ==========================================================================
   // PREGLED (dashboard + izveštaji + notifikacije)
@@ -579,19 +597,35 @@ export class KadrovskaService {
    * GO periodi „od–do" za karticu zaposlenog (Kadrovska → Odmori i odsustva).
    *
    * Merodavan izvor je `vacation_requests`: JEDAN zahtev = JEDAN neprekidan
-   * raspon + status (pending / sef_approved / approved). NAMERNO se NE koristi
-   * `go_ledger`/grid — tamo je jedan red po RADNOM danu, pa jedan odmor
-   * (04.08.–17.08.) ispadne kao tri komada rasečena vikendima. `absences` ulazi
-   * samo kao dopuna za odmore bez zahteva (`source: 'evidencija'`).
+   * raspon + status (pending / sef_approved / approved). Grid se NE koristi za
+   * rasparčavanje odobrenog odmora — tamo je jedan red po RADNOM danu, pa jedan
+   * odmor (04.08.–17.08.) ispadne kao tri komada rasečena vikendima. `absences`
+   * ulazi kao dopuna za odmore bez zahteva (`source: 'evidencija'`).
    *
-   * ⚠️ Opseg: kao u `requests()` (AUDIT-K2) — RLS `vr_select` NIJE scope
-   * (pušta sve redove svakoj roli koju `current_user_manages_employee` propusti),
+   * ⚠️ NALAZ F1 (review 30.07.2026): grid je ipak TREĆI izvor, ali samo za dane
+   * koje ne pokriva nijedan zahtev/odsustvo i uz premošćavanje vikenda/neradnih
+   * praznika (`buildVacationPeriods`). Bez toga je ćelija tvrdila „nema
+   * planiranog odmora" za 61 zaposlenog kojima isti red pokazuje iskorišćene/
+   * planirane dane (`v_vacation_balance` broji upravo `work_hours.absence_code='go'`).
+   *
+   * ⚠️ NALAZ F3 (isti review): ruta nosi klasnu `kadrovska.read`, a red-opseg joj
+   * je `current_user_manages_employee()` koja na živoj bazi vraća TRUE za SVE
+   * zaposlene svakome sa rolom pm/leadpm/projektant_vodja. `projektant_vodja`
+   * ima `kadrovska.read` bez `kadrovska.vacreq_manage`, pa bi video ne-odobrene
+   * zahteve cele firme. Zato PROJEKCIJU sužava sama permisija pozivaoca —
+   * `resolvePermissionDecision` (isti mehanizam kojim guard štiti `/requests`,
+   * deny > grant > rola), NE DB funkcija: `current_user_can_manage_vacreq()` je
+   * baš ona koja te role propušta. Bez `vacreq_manage` → samo `approved`
+   * (+ evidencija/grid = već realizovan odmor, nije osetljiva klasa).
+   *
+   * ⚠️ Opseg REDOVA: kao u `requests()` (AUDIT-K2) — RLS `vr_select` NIJE scope,
    * pa opseg presuđujemo OVDE istom DB funkcijom, a `?employeeId` je PRESEK.
-   * Ruta nosi klasnu `kadrovska.read` (isto kao `vacation/balance|ledger` i
-   * `absences` koji već hrane ovaj ekran); projekcija je uža od `/requests`
-   * (bez napomene, razloga odbijanja i podnosioca).
+   * Projekcija je uža od `/requests` (bez napomene, razloga odbijanja i podnosioca).
    */
-  async vacationPeriods(email: string, q: VacationQueryDto) {
+  async vacationPeriods(
+    user: { userId: number; email: string; role: string },
+    q: VacationQueryDto,
+  ) {
     const today = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Europe/Belgrade",
     }).format(new Date());
@@ -599,7 +633,21 @@ export class KadrovskaService {
     // Presek sa godinom (ne sadržanost) — odmor preko Nove godine mora da uđe.
     const yearFrom = this.toDbDate(`${year}-01-01`)!;
     const yearTo = this.toDbDate(`${year}-12-31`)!;
-    return this.withUserMapped(email, async (tx) => {
+    // F3: sme li pozivalac da vidi pending/sef_approved? Ista odluka koju bi
+    // doneo PermissionsGuard na `/kadrovska/requests` — override-i se čitaju
+    // sveži iz baze, pa deny posle izdavanja tokena odmah važi.
+    const includeUnapproved =
+      (await resolvePermissionDecision(
+        this.prisma,
+        user.userId,
+        user.role,
+        PERMISSIONS.KADROVSKA_VACREQ_MANAGE,
+        user.email,
+      )) === "allow";
+    const statuses = includeUnapproved
+      ? [...VACATION_PERIOD_STATUSES]
+      : [...VACATION_PERIOD_STATUSES_PUBLIC];
+    return this.withUserMapped(user.email, async (tx) => {
       const scope = await tx.$queryRaw<{ id: string }[]>(
         Prisma.sql`SELECT e.id
              FROM employees e
@@ -616,9 +664,11 @@ export class KadrovskaService {
         dateFrom: { lte: yearTo },
         dateTo: { gte: yearFrom },
       };
-      const [requests, absences] = await Promise.all([
+      const [requests, absences, gridDays, holidays] = await Promise.all([
         tx.vacationRequest.findMany({
-          where: { employeeId: { in: ids }, ...range },
+          // Statusi se sužavaju već u upitu (F3) — pored `includeUnapproved`
+          // brave u `buildVacationPeriods`; ne-odobreni zahtev ne izlazi ni iz baze.
+          where: { employeeId: { in: ids }, status: { in: statuses }, ...range },
           select: {
             id: true,
             employeeId: true,
@@ -643,9 +693,31 @@ export class KadrovskaService {
             daysCount: true,
           },
         }),
+        // F1: GO dani iz grida — ISTI opseg zaposlenih (`ids`), bez proširivanja.
+        // Ovo je izvor koji broji i `v_vacation_balance` (days_used/days_planned).
+        tx.workHours.findMany({
+          where: {
+            employeeId: { in: ids },
+            absenceCode: "go",
+            workDate: { gte: yearFrom, lte: yearTo },
+          },
+          select: { employeeId: true, workDate: true },
+        }),
+        // Neradni praznici — da premošćavanje ne pukne na Uskrsu/Novoj godini.
+        tx.kadrHoliday.findMany({
+          where: { holidayDate: { gte: yearFrom, lte: yearTo } },
+          select: { holidayDate: true, isWorkday: true },
+        }),
       ]);
       return {
-        data: buildVacationPeriods({ requests, absences, today }),
+        data: buildVacationPeriods({
+          requests,
+          absences,
+          gridDays,
+          holidays,
+          today,
+          includeUnapproved,
+        }),
         year,
       };
     });

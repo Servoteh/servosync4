@@ -715,7 +715,8 @@ export interface VacationPeriod {
   status: string;
   approved: boolean;
   phase: VacationPeriodPhase;
-  source: 'zahtev' | 'evidencija';
+  /** `grid` = dani iz `work_hours` (absence_code='go') bez zahteva i odsustva. */
+  source: 'zahtev' | 'evidencija' | 'grid';
 }
 export function useVacationPeriods(params: { employeeId?: string; year?: number } = {}) {
   return useQuery({

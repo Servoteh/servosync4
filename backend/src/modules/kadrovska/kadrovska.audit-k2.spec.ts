@@ -126,7 +126,7 @@ describe("Kadrovska AUDIT-K2 — sigurnost", () => {
     const sy15 = {
       withUserRls: jest.fn(async (_e: string, fn: (t: unknown) => unknown) => fn(tx)),
     };
-    const svc = new KadrovskaService(sy15 as never);
+    const svc = new KadrovskaService(sy15 as never, {} as never);
 
     // Bez filtera → samo opseg.
     await svc.requests(EMAIL, {} as never);
