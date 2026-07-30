@@ -1103,16 +1103,26 @@ export class SastanciService {
    *
    * OTKAZ vs BRISANJE (PRESUDA 013/26): brisanje UKLANJA sastanak (za razliku od
    * otkaza koji ga čuva sa status='otkazan'). Ako sastanak još NIJE gotov
-   * (status ∈ {planiran,u_toku}), prvo se UVEK pušta POSTOJEĆI cancel tok (RPC
-   * `sastanci_cancel_sastanak`: status='otkazan' + 'meeting_cancel' mejl svakom
-   * `pozvan=true`), pa se briše — da pozvani ne ostanu bez obaveštenja da sastanak
-   * više ne postoji. NAMERNO bez count-gejta pozvanih: DEFINER RPC sam enumeriše
-   * pozvane (0 pozvanih = 0 mejlova, bez greške), a brojanje pozvanih OVDE bi teklo
-   * pod su_select RLS-om POZIVAOCA — ako se ta politika ikad suzi (postoji
-   * `harden_sastanci_rls_phase2` varijanta), pogrešan 0 bi TIHO preskočio otkazne
-   * mejlove. Gotovi (zakljucan/zavrsen/otkazan) → samo brisanje. Gejt je na STATUS
-   * (ne na datum) — status je izvor istine o životnom ciklusu i identičan je gejtu
-   * postojećeg „Otkaži sastanak" dugmeta (paritet UX-a).
+   * (status ∈ {planiran,u_toku}), prvo se UVEK enqueue-uju otkazna obaveštenja
+   * (`sast_enqueue_cancel(uuid)` → 'meeting_cancel' red u `sastanci_notification_log`
+   * za svakog `pozvan=true`), pa se briše — da pozvani ne ostanu bez obaveštenja da
+   * sastanak više ne postoji. Status se OVDE ne dira (red ionako nestaje). NAMERNO
+   * bez count-gejta pozvanih: DEFINER fn sam enumeriše pozvane (0 pozvanih = 0
+   * mejlova, bez greške), a brojanje pozvanih OVDE bi teklo pod su_select RLS-om
+   * POZIVAOCA — ako se ta politika ikad suzi (postoji `harden_sastanci_rls_phase2`
+   * varijanta), pogrešan 0 bi TIHO preskočio otkazne mejlove. Gotovi
+   * (zakljucan/zavrsen/otkazan) → samo brisanje. Gejt je na STATUS (ne na datum) —
+   * status je izvor istine o životnom ciklusu i identičan je gejtu postojećeg
+   * „Otkaži sastanak" dugmeta (paritet UX-a).
+   *
+   * ⚠️ 021/26 (bug-fix 30.07.2026): ranije je ovde stajao poziv
+   * `sastanci_cancel_sastanak(uuid)` — fn koja na živoj sy15 NIKAD NIJE KREIRANA
+   * (skripta `backend/docs/sql/sy15/sastanci-lifecycle-2026-07-18/10_…` nije
+   * primenjena). Svako brisanje planiranog/u_toku sastanka je zato padalo na
+   * 42883 undefined_function → 500 „Neočekivana greška na serveru". Zamenjeno
+   * POSTOJEĆOM `sast_enqueue_cancel` (SECURITY DEFINER, EXECUTE ima `authenticated`
+   * — provereno na živoj bazi 30.07.2026). Nova sy15 fn se NE pravi (doktrina: na
+   * sy15 se više ništa ne gradi).
    *
    * FK DECA (sy15 add_sastanci_module.sql / odluke tabela): ON DELETE CASCADE —
    * `sastanak_ucesnici`, `presek_aktivnosti`, `presek_slike`, `sastanak_arhiva`,
@@ -1135,25 +1145,26 @@ export class SastanciService {
       });
       if (!sastanak) throw new NotFoundException(`Sastanak ${id} ne postoji`);
 
-      // Otkaz-pre-brisanja za žive sastanke: UVEK pozovi cancel RPC (bez count-gejta
-      // pozvanih — DEFINER sam enumeriše `pozvan=true`; vidi doc gore).
+      // Otkaz-pre-brisanja za žive sastanke: UVEK enqueue-uj otkazne mejlove (bez
+      // count-gejta pozvanih — DEFINER sam enumeriše `pozvan=true`; vidi doc gore).
+      //
+      // AUTORIZACIJA NIJE OVDE: `sast_enqueue_cancel` je pozadinska DEFINER fn BEZ
+      // ijedne provere prava (samo enumeriše pozvane i puni outbox). Pravo presuđuje
+      // ISKLJUČIVO RLS politika `sastanci_delete` na DELETE-u ispod. Bezbedno je jer
+      // je enqueue u ISTOJ transakciji PRE brisanja: ako RLS odbije DELETE (0 redova
+      // → 403) ili guard-triger digne 23514 (zaključan, ne-mgmt → 422), ceo tx se
+      // rollback-uje i enqueue-ovani redovi nestaju — neovlašćen pokušaj NE može da
+      // ostavi mejlove u redu za slanje. Zato redosled (enqueue → delete) mora ostati.
+      //
+      // Bez try/catch: `sast_enqueue_cancel` NE diže greške — ako je red u
+      // međuvremenu nestao (konkurentno brisanje) vraća 0, a 404 tada uredno stiže
+      // iz `deleteMany`/`assertAffected` grane ispod. (Stara P0002→404 mapa je
+      // pripadala `sastanci_cancel_sastanak`-ovom `SELECT … FOR UPDATE`; ta fn ne
+      // postoji, pa je i grana bila mrtva.)
       if (sastanak.status === "planiran" || sastanak.status === "u_toku") {
-        try {
-          // Isti guard kao brisanje (has_edit_role ∧ (mgmt ∨ trio ∨ creator)); ako
-          // cancel odbije (42501 → 403) ceo tx pada PRE brisanja i mejlovi se
-          // rollback-uju.
-          await tx.$queryRaw(
-            Prisma.sql`SELECT sastanci_cancel_sastanak(${id}::uuid) AS result`,
-          );
-        } catch (e) {
-          // Konkurentno brisanje: drugi tx je obrisao red između našeg SELECT-a i
-          // `FOR UPDATE` u RPC-u → RPC diže P0002 ('nije pronađen'). Za brisanje to
-          // je 404 (nema šta da se briše), NE 422 (generičko P0002 → Unprocessable).
-          if (this.sy15Code(e) === "P0002") {
-            throw new NotFoundException(`Sastanak ${id} ne postoji`);
-          }
-          throw e;
-        }
+        await tx.$queryRaw(
+          Prisma.sql`SELECT sast_enqueue_cancel(${id}::uuid) AS result`,
+        );
       }
 
       const { count } = await tx.sastanak.deleteMany({ where: { id } });
@@ -1219,14 +1230,41 @@ export class SastanciService {
   }
 
   /**
-   * Otkaži sastanak sa obaveštenjem učesnicima (S2) — RPC `sastanci_cancel_sastanak`
-   * (sy15 DEFINER; guard `has_edit_role ∧ (mgmt ∨ organizator-trio)` kao kod lock-a,
-   * `status='otkazan'` + `sast_enqueue_cancel` → 'meeting_cancel' svim `pozvan=true`).
-   * Ide kroz RPC, a NE kroz `updateSastanak`, jer je enqueue mejlova rezervisan za
-   * DEFINER fn (INSERT u `sastanci_notification_log` iz BE-a je zabranjen — presuda
-   * B10). Idempotentno (clientEventId) — dupli POST ne šalje mejlove dvaput.
-   * RPC vraća `{ ok:false, reason:'locked'|'already_cancelled' }` bez greške; to je
-   * legitiman 200 (kao `already_locked` kod lock-a) i FE ga prikazuje kao poruku.
+   * Otkaži sastanak sa obaveštenjem učesnicima (S2): `status='otkazan'` +
+   * 'meeting_cancel' mejl svakom `pozvan=true`.
+   *
+   * ⚠️ 021/26 (bug-fix 30.07.2026): ranije je ceo tok išao kroz RPC
+   * `sastanci_cancel_sastanak(uuid)` koji na živoj sy15 NIKAD NIJE KREIRAN (skripta
+   * `docs/sql/sy15/sastanci-lifecycle-2026-07-18/10_…` nije primenjena) — „Otkaži i
+   * obavesti" je zato SVIMA padalo na 42883 undefined_function → 500. Nova sy15 fn se
+   * NE pravi (doktrina: sy15 se gasi, ništa novo se tamo ne gradi), pa je tok
+   * sastavljen od POSTOJEĆIH delova, u ISTOJ transakciji i istom redosledu kao
+   * `sast_weekly_odlozi` (prvo status, pa enqueue — mejl nosi već otkazano stanje):
+   *   1. `updateMany status='otkazan'` kroz Prisma (dakle POD RLS-om `authenticated`);
+   *   2. `sast_enqueue_cancel(uuid)` — postojeća DEFINER fn (EXECUTE ima
+   *      `authenticated`, provereno na živoj bazi 30.07.2026) koja puni
+   *      `sastanci_notification_log`. Direktan INSERT iz BE-a ostaje zabranjen
+   *      (presuda B10) — enqueue radi isključivo DEFINER fn.
+   *
+   * AUTORIZACIJA: klasni guard `sastanci.edit` (VIDLJIVOST) + RED presuđuje RLS
+   * politika `sastanci_update` (`mgmt ∨ vodio ∨ zapisnicar ∨ created_by`) — ISTI
+   * scope kao običan PATCH statusa, tj. otkazivanje NIJE šire od onoga što korisnik
+   * ionako sme. `sast_enqueue_cancel` sam NEMA nikakav guard; bezbedno je jer je
+   * pozvan POSLE RLS-guarded UPDATE-a u istoj transakciji — RLS-odbijen UPDATE
+   * (0 redova → 403) prekida tok PRE enqueue-a, a svaka kasnija greška rollback-uje
+   * i već enqueue-ovane redove.
+   *
+   * ZAKLJUČAN/VEĆ OTKAZAN → meki `{ ok:false, reason:'locked'|'already_cancelled' }`
+   * (legitiman 200, kao `already_locked` kod lock-a; FE ga prikazuje kao poruku, vidi
+   * `sastanak-detalj.tsx`). Rana provera statusa čuva tu poruku i za rukovodstvo
+   * (koje bi na UPDATE-u prošlo); guard-triger `sast_trg_locked_guard_sastanci`
+   * ostaje brana za trku (sastanak zaključan između SELECT-a i UPDATE-a): ne-mgmt
+   * dobija 23514 → 422.
+   *
+   * IDEMPOTENCIJA — dva sloja, oba očuvana: (a) `runIdempotentRls` sa clientEventId
+   * (dupli POST vraća sačuvan rezultat, fn se NE izvršava ponovo → nema drugog talasa
+   * mejlova); (b) status-provera `already_cancelled` (nov clientEventId nad već
+   * otkazanim sastankom ne dira bazu i ne enqueue-uje).
    */
   cancel(email: string, id: string, dto: CancelSastanakDto) {
     return this.runIdem(
@@ -1234,10 +1272,42 @@ export class SastanciService {
       dto.clientEventId,
       "sastanci.cancel",
       async (tx) => {
-        const rows = await tx.$queryRaw<{ result: unknown }[]>(
-          Prisma.sql`SELECT sastanci_cancel_sastanak(${id}::uuid) AS result`,
+        const sastanak = await tx.sastanak.findUnique({
+          where: { id },
+          select: { status: true },
+        });
+        if (!sastanak) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+        if (sastanak.status === "zakljucan") {
+          return { ok: false, reason: "locked", sastanak_id: id };
+        }
+        if (sastanak.status === "otkazan") {
+          return { ok: false, reason: "already_cancelled", sastanak_id: id };
+        }
+
+        const otkazanAt = new Date();
+        const { count } = await tx.sastanak.updateMany({
+          where: { id },
+          data: { status: "otkazan", updatedAt: otkazanAt },
+        });
+        if (count === 0) {
+          // RLS odbio (red postoji → 403) ili je red nestao (→ 404) — isto
+          // razdvajanje kao u deleteSastanak. Enqueue se NE izvršava.
+          const stillExists = (await tx.sastanak.count({ where: { id } })) > 0;
+          this.assertAffected(stillExists, 0, `Sastanak ${id}`);
+        }
+
+        const rows = await tx.$queryRaw<{ result: number | null }[]>(
+          Prisma.sql`SELECT sast_enqueue_cancel(${id}::uuid) AS result`,
         );
-        return rows[0]?.result ?? null;
+        // `obavesteno` = broj pozvanih za koje je fn pozvala enqueue (opt-out red
+        // uđe kao 'skipped', pa je to gornja granica poslatih — isti broj koji je
+        // vraćao i planirani RPC).
+        return {
+          ok: true,
+          sastanak_id: id,
+          otkazan_at: otkazanAt.toISOString(),
+          obavesteno: Number(rows[0]?.result ?? 0),
+        };
       },
     );
   }

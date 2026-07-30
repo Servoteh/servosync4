@@ -538,8 +538,9 @@ export class SastanciController {
   }
 
   /** Otkaži sastanak + obavesti pozvane učesnike ('meeting_cancel'). Guard je isti
-   *  kao na /lock — `sastanci.edit` ovde, row-odluka (mgmt ∨ organizator-trio) u
-   *  sy15 DEFINER fn `sastanci_cancel_sastanak`. */
+   *  kao na /lock — `sastanci.edit` ovde, row-odluka (mgmt ∨ organizator-trio) u sy15
+   *  RLS politici `sastanci_update` (servis radi status='otkazan' pod `authenticated`,
+   *  pa enqueue kroz DEFINER `sast_enqueue_cancel`; 021/26). */
   @Post(":id/cancel")
   @RequirePermission(PERMISSIONS.SASTANCI_EDIT)
   cancel(
