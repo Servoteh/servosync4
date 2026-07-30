@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import type { BbMdbStageKomitent } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   BIGBIT_MDB_SYNC_STATE_ENTITY,
@@ -7,6 +8,19 @@ import {
   MAX_DROP_AGE_HOURS,
   switchDisabledReason,
 } from "../../common/switches/bigbit-sync";
+// MAPIRANJE KOMITENATA JE JEDNA ISTINA: `mapKomitentiRow` je isti mapper koji
+// vozi (mrtvi) MSSQL sync — MSSQL tabela je bila preslikana kopija ISTE Access
+// tabele, pa se menja SAMO izvor redova. Duplirano mapiranje bi se razišlo na
+// prvoj izmeni i dve rute bi tiho pisale različit sadržaj u iste kolone.
+import { mapKomitentiRow } from "./syncers/customer.syncer";
+import {
+  additiveDedupFieldFor,
+  isNativeRow,
+  NATIVE_ID_BASE,
+  NATIVE_SOURCE_MARKER,
+} from "./table-ownership";
+import { SYNC_MAP } from "./sync-map.generated";
+import type { ColumnMapping, TableMapping } from "./sync.types";
 
 /**
  * KORAK 2 od noćnog BigBit uvoza: `bb_mdb_stage_*` -> 4.0 modeli.
@@ -33,8 +47,31 @@ import {
  *    sa razlogom, `skipped` sa razlogom). Sudar broja naloga i prazan izvoz
  *    OBARAJU posao — status DONE sme da znači samo „sve je stvarno ušlo".
  *  • NE DIRA MSSQL SYNC: `SyncService`/`SYNC_MAP` su zaseban put i rade dalje.
- *  • NE DIRA `customers`/`projects`: njih vozi živi MSSQL sync. Zabrana unosa iz
- *    stavke C je HTTP-nivo (korisnik), ne DB-nivo — uvoz je izuzet po definiciji.
+ *
+ * MATIČNI PODACI OD 30.07.2026. IDU OVIM KANALOM (izmena prethodne odluke)
+ * ────────────────────────────────────────────────────────────────────────────
+ * Do 30.07. je ovde stajalo „NE DIRA `customers`/`projects` — njih vozi živi
+ * MSSQL sync, koji čita bazu uživo i time je svežiji od noćnog fajla". To je
+ * PRESTALO da bude tačno i mereno je istog dana:
+ *
+ *   BigBit (Access, živi)   → predmet 10014
+ *   QBigTehn (MSSQL izvor)  → predmet 10005, poslednja izmena 22.07. 08:47
+ *   ServoSync 4.0           → predmet 10005 (savršeno usklađen sa svojim izvorom)
+ *
+ * Prenos BigBit→QBigTehn se više ne radi (modul ugašen), pa je MSSQL izvor MRTAV
+ * od 22.07. Naša karika je zdrava — ručno pokretanje sync-a 30.07. pročitalo je i
+ * upisalo svih 7.617 predmeta bez ijedne greške; podataka prosto nema u izvoru.
+ * „Svežiji od noćnog fajla" je zato postalo obrnuto: `.mdb` je jedini izvor koji
+ * uopšte prati BigBit. Od sada `Komitenti` i `Predmeti` ulaze ovde.
+ *
+ * DVA PRAVILA KOJA VAŽE SAMO ZA MATIČNE PODATKE (i skupo su naučena):
+ *  • NIŠTA SE NE BRIŠE. BigBit PRAZNI zatvorene godine (Access ima granicu
+ *    veličine baze), pa red koji nestane iz drop-a je najčešće normalno godišnje
+ *    arhiviranje, a ne brisanje. Zato je full refresh (`deleteMany`) zabranjen
+ *    obrazac — radi se ISKLJUČIVO upsert, a nestajanje se MERI (v. `countVanishedMasters`).
+ *  • 4.0-NATIVE RED SE NE DIRA. `customers` ima rezervisan opseg ključeva
+ *    (`NATIVE_ID_BASE` = 900.000.000 + CHECK `chk_customers_native_id_range`), a
+ *    `projects` paritet-guard po broju predmeta (`ADDITIVE_DEDUP_FIELDS.projects`).
  *
  * Uputstvo (ručno pokretanje, gašenje, kvarovi): docs/migration/BIGBIT_NOCNI_SYNC.md
  */
@@ -48,6 +85,172 @@ const GK_BATCH = 2000;
  * trajanja uvoza (danas ~5 s za 20k redova; puna istorija je red veličine minuta).
  */
 const IMPORT_LOCK_STALE_HOURS = 2;
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * PRAG: KADA JE NESTAJANJE MATIČNIH REDOVA ARHIVIRANJE, A KADA ALARM
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Presuđeno 30.07.2026:
+ *  • MASOVNO nestajanje (BigBit prazni zatvorenu godinu jer Access ima granicu
+ *    veličine baze) je OČEKIVANO → ne zvoni.
+ *  • POJEDINAČNO nestajanje usred godine (neko je obrisao komitenta/predmet
+ *    rukom u Access formi) je STVARAN ALARM → zvoni.
+ *
+ * Prag je zato PAR (broj redova I udeo), a ne osećaj. Brojevi na kojima stoji:
+ *
+ *  1. VELIČINE TABELA, izmerene: `Komitenti` 6.669 redova (F1 merenje,
+ *     docs/migration/BIGBIT_KOMITENTI.md §Metod), `Predmeti` 7.617 redova
+ *     (ručno pokretanje sync-a 30.07.2026). Dakle ~7k po tabeli.
+ *  2. GORNJI POJAS JE VEĆ ZATVOREN U KORAKU 1: `bigbit-mdb-export.sh` obara
+ *     izvoz kad broj redova padne preko 20 % (1.334 / 1.523 reda), i pušta ga
+ *     samo uz eksplicitno `BB_ALLOW_SHRINK=1` — a to je baš procedura za novu
+ *     poslovnu godinu. Zato ovaj prag ne mora da presuđuje o padovima >20 %:
+ *     njih je čovek već odobrio ili su oborili korak 1. Ostaje pojas 0–20 %.
+ *  3. GODIŠNJA SERIJA: 7.617 predmeta nakupljeno kroz ~19 godina Access
+ *     istorije ≈ 400 redova/god ≈ 5,3 % tabele. I slaba godina (150 redova) je
+ *     ~2 %. Dakle svaka stvarna godišnja serija je REDA VELIČINE iznad 1 %.
+ *  4. RUČNO BRISANJE: predmet ima `IDPredmet` kao FK u 25+ tabela
+ *     (docs/migration/22-predmeti-domen-rekonstrukcija.md §2), pa se u BigBitu
+ *     briše pojedinačno — realno 1–10 redova. 25 je 2,5× iznad tog maksimuma i
+ *     16× ispod najmanje očekivane godišnje serije (400).
+ *
+ * ZAŠTO OBA USLOVA: sam udeo se lomi na maloj tabeli (kad bi `Predmeti` imali
+ * 50 redova, jedan obrisan red = 2 % = „arhiviranje" — tačno tiho ćutanje koje
+ * ovaj prag treba da spreči). Sam broj se lomi na velikoj (25 obrisanih redova
+ * od 200.000 nije serija). Zato: ARHIVIRANJE = i dovoljno redova I dovoljan udeo.
+ *
+ * PREOSTALI RIZIK, pošteno: skript-greška u BigBitu koja obriše ~100 predmeta
+ * usred godine (1,3 %) proći će kao „arhiviranje" i neće zvoniti. Korak 1 to ne
+ * hvata (prag mu je 20 %). Svesno primljeno: presuda je da masovno nestajanje ne
+ * zvoni, a brojevi ostaju u `import_row_counts` i u summary-ju.
+ */
+const MASTER_VANISHED_MASS_ROWS = 25;
+const MASTER_VANISHED_MASS_SHARE = 0.01;
+
+/**
+ * Ljudska imena matičnih tabela za poruke. Poruka koja čoveku kaže „customers"
+ * nije poruka za čoveka; tehnički naziv ide u uglaste zagrade, kao svuda u ovom
+ * kanalu.
+ */
+const MASTER_LABELS: Record<string, string> = {
+  customers: "komitenti",
+  projects: "predmeti",
+};
+
+/** Serija za predmete. Mereno 30.07.2026: 7.617 predmeta = osam stranica. */
+const PROJECTS_BATCH = 1000;
+
+/** Koliko preskočenih redova se IMENUJE u `notes` (ostatak se sabere u broj). */
+const MAX_NAMED_SKIPS = 20;
+
+/**
+ * `Predmeti` (BigBit) -> `bb_mdb_stage_predmeti`: ime IZVORNE kolone, tačno kako
+ * ga zna `sync-map.generated.ts`, -> polje staging modela `BbMdbStagePredmet`.
+ *
+ * ŠTA OVO NIJE: nije mapiranje. Šta u koju kolonu `projects` ide i kog je tipa
+ * govori ISKLJUČIVO `SYNC_MAP` (`targetDb: "projects"`, 38 kolona) — isti izvor
+ * istine koji je vozio MSSQL sync, jer je MSSQL tabela bila preslikana kopija
+ * ove iste Access tabele. Ovde stoji SAMO fizička veza „BigBit ime -> staging
+ * kolona", koja se iz imena NE DA izvesti bez nagađanja: `IDPredmet`->`idPredmet`
+ * (dvoslovni akronim se spušta), ali `RJ`->`rj` (ceo naziv je akronim),
+ * `NasKontakt1`->`nasKontakt1` (cifra ostaje prilepljena) i `DatumIVreme`->
+ * `datumIVreme` (jednoslovna reč u sredini ostaje veliko). Automatska konverzija
+ * bi na jednom od ta četiri oblika pukla — u najboljem slučaju greškom, u
+ * najgorem tihim NULL-om u koloni koju niko ne gleda.
+ *
+ * Potpunost pinuje test (`bigbit-mdb-import.projects.spec.ts`): svaka kolona iz
+ * `SYNC_MAP` mora imati red ovde, a svaki red mora biti postojeće polje modela
+ * (poređeno sa `Prisma.dmmf`). I sam uvoz pada glasno ako red nedostaje —
+ * nedostajuća kolona ne sme da se pretvori u prazno polje bez ijedne poruke.
+ */
+export const PREDMET_SRC_TO_STAGE_FIELD: Record<string, string> = {
+  IDPredmet: "idPredmet",
+  BrojPredmeta: "brojPredmeta",
+  Opis: "opis",
+  DatumOtvaranja: "datumOtvaranja",
+  IDProdavac: "idProdavac",
+  IDKomitent: "idKomitent",
+  NextAction: "nextAction",
+  DatumZakljucenja: "datumZakljucenja",
+  Memo: "memo",
+  Status: "status",
+  NasaRef: "nasaRef",
+  NasKontakt1: "nasKontakt1",
+  NasKontakt2: "nasKontakt2",
+  NasTel1: "nasTel1",
+  NasTel2: "nasTel2",
+  VasaRef: "vasaRef",
+  VasKontakt1: "vasKontakt1",
+  VasKontakt2: "vasKontakt2",
+  VasTel1: "vasTel1",
+  VasTel2: "vasTel2",
+  NabavnaVrednost: "nabavnaVrednost",
+  Carina: "carina",
+  Spedicija: "spedicija",
+  Prevoz: "prevoz",
+  Ostalo: "ostalo",
+  InoDobavljac: "inoDobavljac",
+  RJ: "rj",
+  devvaluta: "devvaluta",
+  kurs: "kurs",
+  IDVrstaPosla: "idVrstaPosla",
+  NazivPredmeta: "nazivPredmeta",
+  RokZavrsetka: "rokZavrsetka",
+  Potpis: "potpis",
+  DatumIVreme: "datumIVreme",
+  BrojUgovora: "brojUgovora",
+  DatumUgovora: "datumUgovora",
+  BrojNarudzbenice: "brojNarudzbenice",
+  DatumNarudzbenice: "datumNarudzbenice",
+};
+
+/** Staging je SAV tekst; prazan string i beline znače „nema vrednosti". */
+const stageText = (v: unknown): string | null => {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s === "" ? null : s;
+};
+
+/**
+ * `YYYY-MM-DD[ HH:MM:SS]` -> `Date` u UTC ZIDNOM vremenu.
+ *
+ * NE koristi se `new Date(tekst)`, i to nije stilska sitnica. `mdb-export` se
+ * poziva sa `-T '%Y-%m-%d %H:%M:%S' -D '%Y-%m-%d'` (v. `bigbit-mdb-export.sh`),
+ * a Node ta dva oblika parsira RAZLIČITO: `"2026-06-26 00:00:00"` kao LOKALNO
+ * vreme, a `"2026-06-26"` kao UTC. Na serveru u Europe/Belgrade prvi oblik bi
+ * postao `2026-06-25T22:00:00Z`, a ciljne kolone su `timestamp` BEZ zone — pa bi
+ * se u bazu upisao PRETHODNI DAN, i to samo za deo kolona. Datum otvaranja,
+ * zaključenja i rok predmeta bi tiho otišli dan unazad. Zato se komponente čitaju
+ * regularnim izrazom i sastavljaju kroz `Date.UTC` — isti efekat koji koraci
+ * glavne knjige postižu sa `::timestamp AT TIME ZONE 'UTC'`.
+ */
+const stageDate = (v: unknown): Date | null => {
+  const s = stageText(v);
+  if (!s) return null;
+  const m =
+    /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(s);
+  if (!m) return null;
+  const d = new Date(
+    Date.UTC(
+      Number(m[1]),
+      Number(m[2]) - 1,
+      Number(m[3]),
+      Number(m[4] ?? 0),
+      Number(m[5] ?? 0),
+      Number(m[6] ?? 0),
+    ),
+  );
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
+/** Celobrojna vrednost iz teksta; `null` kad je prazno ili nije broj. */
+const stageInt = (v: unknown): number | null => {
+  const s = stageText(v);
+  if (!s) return null;
+  const num = Number(s);
+  return Number.isFinite(num) ? Math.trunc(num) : null;
+};
 
 export interface MdbStepResult {
   entity: string;
@@ -80,6 +283,46 @@ export interface MdbStepResult {
   notes: string[];
 }
 
+/**
+ * Presuda o nestalim MATIČNIM redovima (`customers`, `projects`).
+ *
+ * Merenje je namerno DRUGAČIJE od knjigovodstvenog (`MdbImportResult.vanished`):
+ * tamo se 4.0 tabela poredi sa TEKUĆIM staging-om, ovde se staging PRETHODNOG
+ * drop-a poredi sa staging-om tekućeg. Dva razloga, oba obavezujuća:
+ *
+ *  1. NEMA OZNAKE POREKLA NA MATIČNIM REDOVIMA. `projects` nema
+ *     `imported_drop_id`, pa se „3.0-native predmet" (id koji izvor nikad nije
+ *     poslao) i „BigBit predmet koji je nestao" u tabeli ne mogu razlikovati —
+ *     poređenje 4.0↔staging bi svih ~1.000 nasleđenih native redova svake noći
+ *     prijavljivalo kao nestale. Staging↔staging je čist BigBit sa OBE strane.
+ *  2. RAZLIKA, NE STANJE. Obrisan komitent je EVENT: pojavi se u razlici tačno
+ *     ONE noći kad je obrisan, a sutra ga nema ni u jednom od dva drop-a. Zato
+ *     alarm zvoni jednom i sam se gasi — alarm koji se ne može ugasiti se
+ *     ignoriše, pa bi s njim propao i pravi (isto načelo kao u `runWatchdog`).
+ */
+export interface MdbVanishedMaster {
+  /** 4.0 tabela na koju se odnosi (`customers` | `projects`). */
+  entity: string;
+  /** Drop sa kojim je poređeno (`null` = nema sa čim, v. `verdict`). */
+  baselineDropId: number | null;
+  /** Koliko je redova nosio taj prethodni drop. */
+  baselineRows: number;
+  /** Koliko ih ovaj drop VIŠE NE NOSI. */
+  vanished: number;
+  /** `vanished / baselineRows`, zaokruženo na 4 decimale. */
+  share: number;
+  /**
+   * `NEMA` — ništa nije nestalo.
+   * `ARHIVIRANJE` — masovno (BigBit prazni zatvorenu godinu) → ne zvoni.
+   * `ALARM` — pojedinačno usred godine → obara uvoz da bi nadzornik zvonio.
+   * `BEZ_POREDJENJA` — prvi drop sa matičnim podacima ili je staging
+   *   prethodnog drop-a već očišćen retention-om; NE tumači se kao „sve u redu".
+   */
+  verdict: "NEMA" | "ARHIVIRANJE" | "ALARM" | "BEZ_POREDJENJA";
+  /** Do 10 primera (šifra + naziv / broj predmeta) za poruku čoveku. */
+  examples: string | null;
+}
+
 export interface MdbImportResult {
   dropId: number | null;
   fileName: string | null;
@@ -90,6 +333,12 @@ export interface MdbImportResult {
   steps: MdbStepResult[];
   /** Uvezeni redovi kojih u ovom drop-u VIŠE NEMA (obrisani/prekontirani u BigBitu). */
   vanished: { journalEntries: number; ledgerEntries: number };
+  /**
+   * Matični podaci — nestajanje mereno DROP-NA-DROP i presuđeno
+   * (arhiviranje vs alarm). Zaseban ključ, a ne polje u `vanished`, jer je i
+   * merenje zaseban pojam (v. `MdbVanishedMaster`).
+   */
+  vanishedMasters: MdbVanishedMaster[];
   durationMs: number;
   summary: string;
 }
@@ -99,6 +348,15 @@ export class BigbitMdbDropStaleError extends Error {}
 
 /** Baca se kad izvorni dokument NIJE mogao da uđe (sudar broja naloga). */
 export class BigbitMdbConflictError extends Error {}
+
+/**
+ * Baca se kad su matični redovi nestali POJEDINAČNO (dakle ne godišnjim
+ * arhiviranjem). Pad je JEDINI kanal koji sam dolazi do čoveka: run postaje
+ * `FAILED` → `bigbitStatus()` diže `danger` upozorenje `UVOZ_PAO` → jutarnji
+ * `bigbit-sync-watchdog` gura zvonce adminima. Broj u summary-ju to ne ume
+ * (nalaz S7: nadzornik čita samo status i grešku, ne tekst summary-ja).
+ */
+export class BigbitMdbVanishedMasterError extends Error {}
 
 interface CountRow {
   staged: bigint | number;
@@ -110,6 +368,13 @@ interface CountRow {
   blocked_locked?: bigint | number;
   /** Koliko je odbijenih izmena PRVI put upisano u dnevnik u ovom prolazu. */
   logged_now?: bigint | number;
+}
+
+interface VanishedMasterRow {
+  baseline_drop: number | null;
+  baseline_rows: bigint | number;
+  vanished: bigint | number;
+  examples: string | null;
 }
 
 interface LedgerPageRow {
@@ -137,6 +402,11 @@ export class BigbitMdbImportService {
    * @param opts.force     uvezi i drop koji je već `import_status='DONE'`
    * @param opts.skipFreshnessCheck  SAMO za ručno vraćanje istorije; noćni posao ga NIKAD ne šalje
    * @param opts.maxAgeHours override praga svežine (ručno pokretanje)
+   * @param opts.acceptVanishedMasters  RUČNO potvrđivanje pojedinačno nestalih matičnih
+   *   redova: uvoz ih i dalje BROJI i piše u `import_row_counts`, ali ne obara run.
+   *   Isti obrazac kao `BB_ALLOW_SHRINK=1` u koraku 1 — čovek je pogledao brojeve i
+   *   rekao „znam, tako treba". Noćni posao ga NIKAD ne šalje; bez ovoga bi drop sa
+   *   priznatim brisanjem zaglavio u `FAILED` i nikad ne bi dobio `imported_at`.
    */
   async runImport(
     opts: {
@@ -144,6 +414,7 @@ export class BigbitMdbImportService {
       force?: boolean;
       skipFreshnessCheck?: boolean;
       maxAgeHours?: number;
+      acceptVanishedMasters?: boolean;
     } = {},
   ): Promise<MdbImportResult> {
     const startedAt = Date.now();
@@ -155,6 +426,7 @@ export class BigbitMdbImportService {
       dropAgeHours: null,
       steps: [],
       vanished: { journalEntries: 0, ledgerEntries: 0 },
+      vanishedMasters: [],
     };
 
     // ── PREKIDAČ ────────────────────────────────────────────────────────────
@@ -243,6 +515,7 @@ export class BigbitMdbImportService {
         status: "SKIPPED",
         steps: [],
         vanished: { journalEntries: 0, ledgerEntries: 0 },
+        vanishedMasters: [],
         durationMs: Date.now() - startedAt,
         summary:
           `drop ${drop.id} (${drop.fileName}) je već uvezen ` +
@@ -260,6 +533,7 @@ export class BigbitMdbImportService {
         status: "BUSY",
         steps: [],
         vanished: { journalEntries: 0, ledgerEntries: 0 },
+        vanishedMasters: [],
         durationMs: Date.now() - startedAt,
         summary:
           `uvoz drop-a ${drop.id} (${drop.fileName}) je VEĆ U TOKU (pokrenut ` +
@@ -270,11 +544,37 @@ export class BigbitMdbImportService {
 
     const steps: MdbStepResult[] = [];
     let vanished = { journalEntries: 0, ledgerEntries: 0 };
+    let vanishedMasters: MdbVanishedMaster[] = [];
     try {
       // ── PRAZAN IZVOZ NIJE USPEH ──────────────────────────────────────────
       // Polovično prekopiran 375 MB Access fajl daje ISPRAVNO zaglavlje i manje
       // redova; bez ove brane drop bi prošao kao DONE i nikad se ne bi ponovio.
       await this.assertStagingNotEmpty(drop.id);
+
+      // ═══ MATIČNI PODACI IDU PRVI ═══════════════════════════════════════
+      // Redosled UNUTAR matičnih je iznuđen: `Predmeti.IDKomitent` pokazuje na
+      // `customers.id`, pa komitent mora da postoji pre predmeta — inače korak
+      // predmeta mora da preskoči red bez para (isti obrazac kao
+      // `importSaldakontoAccounts`, koji preskače konto kog nema u kontnom planu).
+      //
+      // A ZAŠTO PRE KNJIGOVODSTVA, a ne posle (odluka, ne navika):
+      //  1. GK STAVKA POKAZUJE NA PREDMET, nikad obrnuto:
+      //     `ledger_entries.source_project_id` se puni iz `IDPredmet`, a
+      //     `source_work_order_id` iz `IDRadniNalog`. To su MEKE reference (nema
+      //     FK — provereno u schema.prisma: `ledger_entries` ima FK samo na
+      //     `journal_entries`, `accounts` i `bb_mdb_drops`), pa obrnut redosled ne
+      //     bi pao — tiho bi ostavio prozor u kome je stavka glavne knjige u bazi,
+      //     a predmet na koji pokazuje nije, i svaki ekran koji ih spaja u tom
+      //     prozoru prikazuje prazno. Tiho je gore od glasno.
+      //  2. NIJEDAN MATIČNI KORAK NE ZAVISI OD KNJIGOVODSTVA. `customers` i
+      //     `projects` ne referišu ni `accounts`, ni `order_types`, ni naloge —
+      //     dakle obrnut redosled ne kupuje NIŠTA, a rizik iz (1) nosi.
+      //  3. JEFTINO PADA PRVO. Matični koraci su ~6,7k + ~7,6k redova upsert-a,
+      //     glavna knjiga je 20k+ u serijama. Ako matični korak padne (sudar
+      //     broja predmeta, komitent bez para), padne pre nego što se potroši
+      //     najteži deo posla.
+      steps.push(await this.importCustomers(drop.id));
+      steps.push(await this.importProjects(drop.id));
 
       // Redosled je OBAVEZAN (zahtev 4 + FK lanac):
       //   accounts -> order_types -> saldakonto -> journal_entries -> ledger_entries
@@ -295,6 +595,9 @@ export class BigbitMdbImportService {
       // automatski (to je knjigovodstvena odluka) — ali se GLASNO broji.
       vanished = await this.countVanished(drop.id);
 
+      // ── NESTALO IZ MATIČNIH: ARHIVIRANJE ĆUTI, POJEDINAČNO ZVONI ─────────
+      vanishedMasters = await this.countVanishedMasters(drop.id);
+
       // ── SUDAR BROJA NALOGA = KVAR, NE FUSNOTA ────────────────────────────
       // Preskočen nalog povuče i sve svoje GK stavke (JOIN po bb_nalog_id), pa
       // ceo dokument sa svojom PDV osnovicom nikad ne uđe. Ranije je to bio broj
@@ -310,6 +613,62 @@ export class BigbitMdbImportService {
             "sporni 4.0 nalog na slobodan broj. [tehnički: uq_journal_entries_number]",
         );
       }
+
+      // ── SUDAR BROJA PREDMETA = IMENOVANA GREŠKA, ALI NE OBARA UVOZ ───────
+      // Predmeti se u prelaznom režimu otvaraju RUČNO U OBA sistema (4.0 dodeli
+      // broj → isti broj se prekuca u BigBit), pa BigBit kopija stiže sa SVOJIM
+      // `IDPredmet`-om ali ISTIM `BrojPredmeta`. `uq_projects_project_number` je
+      // tvrd (parcijalni unique iz 20260725200000), pa slep insert ne bi napravio
+      // dupli predmet — oborio bi CEO uvoz na unique violation. Zato korak
+      // predmeta takvu kopiju PRESKAČE i broji u `skipped`.
+      //
+      // ZAŠTO OVDE NEMA `throw` (svesna razlika prema sudaru broja NALOGA):
+      // takvih redova u bazi VEĆ IMA — nasleđene „senke predmeta" (3.0-native
+      // predmeti nastali pre paritet-guarda; BIGBIT_NOCNI_SYNC.md §11.8). Uslov
+      // je trajan i nerešiv jednom noćnom odlukom, pa bi `throw` obarao uvoz
+      // SVAKE noći od prvog dana — a alarm koji se ne može ugasiti se ignoriše i
+      // sa njim propadne i pravi (isto načelo kao u nadzorniku). Sudar naloga
+      // obara run jer promašuje PDV osnovicu; dupli predmet ne ulazi u PDV.
+      // Zato: glasno u summary, u `import_row_counts` i u log — ne u pad.
+      const proj = steps.find((s) => s.entity === "projects");
+      if (proj && proj.skipped > 0) {
+        this.logger.warn(
+          `SUDAR BROJA PREDMETA: ${proj.skipped} BigBit predmet(a) nije ušlo — isti broj već drži ` +
+            "predmet nastao u 4.0. Predmeti se otvaraju ručno u oba sistema; postupak za operatera: " +
+            "docs/migration/BIGBIT_NOCNI_SYNC.md §9.",
+        );
+      }
+
+      // ── POJEDINAČNO NESTALI MATIČNI RED = ALARM KOJI MORA DA ZVONI ───────
+      // Pad je JEDINI kanal koji sam dolazi do čoveka (run FAILED → `UVOZ_PAO` →
+      // jutarnje zvonce). Nadzornik čita STATUS i GREŠKU, nikad tekst summary-ja
+      // — zato broj u summary-ju do sada nije video niko (nalaz S7).
+      //
+      // ALARM SE SAM GASI: merenje je razlika drop-na-drop, pa je obrisan
+      // komitent odsutan i iz SUTRAŠNJEG i iz prekosutrašnjeg drop-a → sutra
+      // verdikt više nije ALARM i uvoz je opet DONE. Nema stanja koje zvoni
+      // zauvek; ako čovek hoće da ISTI drop propusti, postoji `acceptVanishedMasters`.
+      const alarms = vanishedMasters.filter((v) => v.verdict === "ALARM");
+      if (alarms.length && !opts.acceptVanishedMasters) {
+        throw new BigbitMdbVanishedMasterError(
+          "Iz BigBita su NESTALI matični podaci, i to POJEDINAČNO — dakle nije godišnje " +
+            "arhiviranje zatvorene godine, nego je neko obrisao redove. " +
+            alarms
+              .map(
+                (v) =>
+                  `${MASTER_LABELS[v.entity] ?? v.entity}: ${v.vanished} od ${v.baselineRows} ` +
+                  `(${(v.share * 100).toFixed(2)} %)${v.examples ? ` — ${v.examples}` : ""}`,
+              )
+              .join("; ") +
+            ". Uvoz JE upisao sve što je u fajlu (ništa se ne briše), ali je run označen kao " +
+            "neuspešan da bi ova poruka došla do čoveka. Proverite u BigBitu da li je brisanje " +
+            "namerno: obrisan komitent/predmet u 4.0 OSTAJE (na njemu vise fakture, radni nalozi " +
+            "i knjiženja), pa se dva sistema od te tačke razilaze. " +
+            `[tehnički: poređenje drop-na-drop, prag ARHIVIRANJA je ${MASTER_VANISHED_MASS_ROWS} redova I ` +
+            `${(MASTER_VANISHED_MASS_SHARE * 100).toFixed(0)} % tabele; da se drop svesno propusti — ` +
+            "runImport({ acceptVanishedMasters: true }); docs/migration/BIGBIT_NOCNI_SYNC.md §9]",
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this.prisma.bbMdbDrop.update({
@@ -318,7 +677,15 @@ export class BigbitMdbImportService {
           importStatus: "FAILED",
           importStartedAt: null,
           importError: message.slice(0, 4000),
-          importRowCounts: steps as unknown as Prisma.InputJsonValue,
+          // ISTI OBLIK KAO NA USPEHU (`{ steps, vanished, vanishedMasters }`), a ne
+          // goli niz koraka: alarm o nestalim matičnim redovima OBARA run, pa bi se
+          // baš u tom slučaju izgubili brojevi zbog kojih je i pao — a čovek koji
+          // ujutru dobije zvonce prvo otvara ovaj JSON.
+          importRowCounts: {
+            steps,
+            vanished,
+            vanishedMasters,
+          } as unknown as Prisma.InputJsonValue,
           importDurationMs: Date.now() - startedAt,
         },
       });
@@ -337,6 +704,7 @@ export class BigbitMdbImportService {
         importRowCounts: {
           steps,
           vanished,
+          vanishedMasters,
         } as unknown as Prisma.InputJsonValue,
         importError: null,
       },
@@ -347,6 +715,7 @@ export class BigbitMdbImportService {
       ageHours,
       steps,
       vanished,
+      vanishedMasters,
       durationMs,
     );
     // HEARTBEAT za ekran Podešavanja → Integracije. Bez ovog reda kartica doveka
@@ -358,6 +727,7 @@ export class BigbitMdbImportService {
       status: "DONE",
       steps,
       vanished,
+      vanishedMasters,
       durationMs,
       summary,
     };
@@ -483,14 +853,71 @@ export class BigbitMdbImportService {
       this.prisma.bbMdbStageNalog.count({ where: { dropId } }),
       this.prisma.bbMdbStageAccount.count({ where: { dropId } }),
     ]);
-    if (gk > 0 && nalozi > 0 && konta > 0) return;
-    throw new BigbitMdbDropStaleError(
-      "Fajl iz BigBita je prazan ili nepotpun — nema šta da se uveze " +
-        `(glavna knjiga ${gk} redova, nalozi ${nalozi}, kontni plan ${konta}). ` +
-        "Najčešći uzrok: kopiranje .mdb fajla nije bilo završeno kad je izvoz krenuo. " +
-        "Uvoz je zaustavljen; sledeća noćna dostava se pokušava normalno. " +
-        "Ako se ponovi, javite osobi zaduženoj za BigBit izvoz.",
-    );
+    if (!(gk > 0 && nalozi > 0 && konta > 0))
+      throw new BigbitMdbDropStaleError(
+        "Fajl iz BigBita je prazan ili nepotpun — nema šta da se uveze " +
+          `(glavna knjiga ${gk} redova, nalozi ${nalozi}, kontni plan ${konta}). ` +
+          "Najčešći uzrok: kopiranje .mdb fajla nije bilo završeno kad je izvoz krenuo. " +
+          "Uvoz je zaustavljen; sledeća noćna dostava se pokušava normalno. " +
+          "Ako se ponovi, javite osobi zaduženoj za BigBit izvoz.",
+      );
+
+    // ── BAJAT DROP NAD MATIČNIM PODACIMA ────────────────────────────────────
+    // Ovo NIJE ista provera kao gore. Gornja štiti od praznog fajla; ovde je fajl
+    // pun (glavna knjiga uredno stigla), ali su MATIČNE tabele u njemu nula —
+    // izvoz je izgubio dve tabele (preimenovana tabela u BigBitu, ispao red iz
+    // manifesta `TABLES` u koraku 1, `mdb-export` pao samo za njih). Bez ove
+    // brane uvoz bi prošao kao DONE sa „customers +0/~0/=0" i šifarnik u 4.0 bi
+    // ostao na jučerašnjem stanju — tiho, dok ne zafali komitent na fakturi.
+    //
+    // USLOV JE „A RANIJE IH JE NOSIO": drop-ovi napravljeni pre 30.07.2026.
+    // legitimno ne nose matične tabele (korak 1 ih tada nije izvozio), pa bi
+    // bezuslovna provera oborila svaki ručni uvoz istorije. Poredi se sa
+    // STROGO STARIJIM drop-om (`file_mtime <`), da ponovni uvoz starog fajla ne
+    // pada zbog novijih drop-ova.
+    const [m] = await this.prisma.$queryRaw<
+      {
+        kom_now: bigint | number;
+        pre_now: bigint | number;
+        had_kom: boolean;
+        had_pre: boolean;
+      }[]
+    >`
+      SELECT
+        (SELECT count(*) FROM bb_mdb_stage_komitenti WHERE drop_id = ${dropId}) AS kom_now,
+        (SELECT count(*) FROM bb_mdb_stage_predmeti  WHERE drop_id = ${dropId}) AS pre_now,
+        EXISTS (SELECT 1 FROM bb_mdb_stage_komitenti k
+                  JOIN bb_mdb_drops d ON d.id = k.drop_id
+                 WHERE k.drop_id <> ${dropId}
+                   AND d.file_mtime < (SELECT file_mtime FROM bb_mdb_drops WHERE id = ${dropId})) AS had_kom,
+        EXISTS (SELECT 1 FROM bb_mdb_stage_predmeti p
+                  JOIN bb_mdb_drops d ON d.id = p.drop_id
+                 WHERE p.drop_id <> ${dropId}
+                   AND d.file_mtime < (SELECT file_mtime FROM bb_mdb_drops WHERE id = ${dropId})) AS had_pre`;
+    const komNow = n(m?.kom_now);
+    const preNow = n(m?.pre_now);
+    const hadBefore = Boolean(m?.had_kom) || Boolean(m?.had_pre);
+    if (komNow === 0 && preNow === 0 && hadBefore) {
+      throw new BigbitMdbDropStaleError(
+        "Fajl iz BigBita je stigao BEZ ŠIFARNIKA — ni jedan komitent ni jedan predmet, " +
+          "a prethodni fajl ih je nosio. Uvoz je zaustavljen: da je prošao, komitenti i " +
+          "predmeti u 4.0 ostali bi na jučerašnjem stanju, bez ijedne poruke, i to bi se " +
+          "otkrilo tek kad zafali kupac na fakturi. Javite osobi zaduženoj za BigBit izvoz. " +
+          "[tehnički: bb_mdb_stage_komitenti i bb_mdb_stage_predmeti imaju 0 redova za ovaj " +
+          "drop; proveri manifest TABLES u bigbit-mdb-export.sh i da li su tabele " +
+          "„Komitenti”/„Predmeti” preimenovane u BigBitu — docs/migration/BIGBIT_NOCNI_SYNC.md §5.6]",
+      );
+    }
+    // JEDNA PRAZNA (a druga puna) je isto kvar, ali ne isti: tada je pao izvoz
+    // TAČNO JEDNE tabele, pa se to imenuje i ne meša sa „fajl bez šifarnika".
+    if ((komNow === 0) !== (preNow === 0) && hadBefore) {
+      throw new BigbitMdbDropStaleError(
+        `Iz BigBita je stigla samo jedna od dve matične tabele (komitenti ${komNow} redova, ` +
+          `predmeti ${preNow}). Uvoz je zaustavljen jer predmet bez svog komitenta ne može da ` +
+          "uđe, a nepun šifarnik je gori od nikakvog. Javite osobi zaduženoj za BigBit izvoz. " +
+          "[tehnički: korak 1 je verovatno pao na jednoj tabeli — vidi bb_mdb_drops.stage_row_counts]",
+      );
+    }
   }
 
   /**
@@ -522,11 +949,147 @@ export class BigbitMdbImportService {
     return { journalEntries: n(je?.c), ledgerEntries: n(le?.c) };
   }
 
+  /**
+   * NESTALO IZ MATIČNIH TABELA — mereno DROP-NA-DROP i PRESUĐENO.
+   *
+   * Zašto se ne poredi sa 4.0 tabelom (kao `countVanished` za knjigovodstvo) i
+   * zašto se razlika sama gasi — v. `MdbVanishedMaster`. Zašto je prag ovakav i
+   * na kojim brojevima stoji — v. `MASTER_VANISHED_MASS_ROWS`.
+   *
+   * Ako prethodnog drop-a NEMA (prvi drop sa matičnim tabelama, ili je staging
+   * starijih drop-ova već očistio noćni `retention-cleanup` — drži poslednjih 7),
+   * verdikt je `BEZ_POREDJENJA`. To NIJE „sve u redu" i tako se i prikazuje:
+   * ćutanje bi ovde značilo da posle svakog čišćenja staging-a jedna noć nema
+   * nadzor nad šifarnikom, a nikad se ne bi videlo koja.
+   */
+  private async countVanishedMasters(
+    dropId: number,
+  ): Promise<MdbVanishedMaster[]> {
+    return [
+      await this.countVanishedMaster(dropId, "customers"),
+      await this.countVanishedMaster(dropId, "projects"),
+    ];
+  }
+
+  private async countVanishedMaster(
+    dropId: number,
+    entity: "customers" | "projects",
+  ): Promise<MdbVanishedMaster> {
+    // BAZNI DROP = poslednji STROGO STARIJI drop koji je NOSIO ovu tabelu.
+    // Redosled ide po `file_mtime` (poslovno vreme snimka), a ne po `id`
+    // (redosled ubacivanja): ručna dostava starijeg fajla dobija veći `id`, pa bi
+    // po id-u „prethodni" bio noviji snimak i razlika bi izašla naopako.
+    //
+    // NEMA `id::int` kastova jer se ključevi porede KAO TEKST, trimovano: to je
+    // isti ključ na obe strane (isti izvoz, ista kolona), pa kast ništa ne kupuje
+    // a nenumerička šifra (koje u `Sifra` istorijski ima) ne sme da obori upit.
+    const rows =
+      entity === "customers"
+        ? await this.prisma.$queryRaw<VanishedMasterRow[]>`
+            WITH base AS (
+              SELECT k.drop_id, d.file_mtime
+              FROM bb_mdb_stage_komitenti k
+              JOIN bb_mdb_drops d ON d.id = k.drop_id
+              WHERE k.drop_id <> ${dropId}
+                AND d.file_mtime < (SELECT file_mtime FROM bb_mdb_drops WHERE id = ${dropId})
+              GROUP BY k.drop_id, d.file_mtime
+              ORDER BY d.file_mtime DESC
+              LIMIT 1
+            ),
+            gone AS (
+              SELECT DISTINCT btrim(k.sifra) AS key,
+                     btrim(k.sifra) || ' ' || left(coalesce(btrim(k.naziv), ''), 30) AS label
+              FROM bb_mdb_stage_komitenti k
+              WHERE k.drop_id = (SELECT drop_id FROM base)
+                AND nullif(btrim(coalesce(k.sifra, '')), '') IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM bb_mdb_stage_komitenti c
+                  WHERE c.drop_id = ${dropId}
+                    AND btrim(coalesce(c.sifra, '')) = btrim(k.sifra))
+            )
+            SELECT (SELECT drop_id FROM base) AS baseline_drop,
+                   (SELECT count(*) FROM bb_mdb_stage_komitenti WHERE drop_id = (SELECT drop_id FROM base)) AS baseline_rows,
+                   (SELECT count(*) FROM gone) AS vanished,
+                   (SELECT string_agg(label, ', ' ORDER BY key)
+                      FROM (SELECT key, label FROM gone ORDER BY key LIMIT 10) x) AS examples`
+        : await this.prisma.$queryRaw<VanishedMasterRow[]>`
+            WITH base AS (
+              SELECT p.drop_id, d.file_mtime
+              FROM bb_mdb_stage_predmeti p
+              JOIN bb_mdb_drops d ON d.id = p.drop_id
+              WHERE p.drop_id <> ${dropId}
+                AND d.file_mtime < (SELECT file_mtime FROM bb_mdb_drops WHERE id = ${dropId})
+              GROUP BY p.drop_id, d.file_mtime
+              ORDER BY d.file_mtime DESC
+              LIMIT 1
+            ),
+            gone AS (
+              SELECT DISTINCT btrim(p.id_predmet) AS key,
+                     coalesce(nullif(btrim(coalesce(p.broj_predmeta, '')), ''), 'IDPredmet ' || btrim(p.id_predmet)) AS label
+              FROM bb_mdb_stage_predmeti p
+              WHERE p.drop_id = (SELECT drop_id FROM base)
+                AND nullif(btrim(coalesce(p.id_predmet, '')), '') IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM bb_mdb_stage_predmeti c
+                  WHERE c.drop_id = ${dropId}
+                    AND btrim(coalesce(c.id_predmet, '')) = btrim(p.id_predmet))
+            )
+            SELECT (SELECT drop_id FROM base) AS baseline_drop,
+                   (SELECT count(*) FROM bb_mdb_stage_predmeti WHERE drop_id = (SELECT drop_id FROM base)) AS baseline_rows,
+                   (SELECT count(*) FROM gone) AS vanished,
+                   (SELECT string_agg(label, ', ' ORDER BY key)
+                      FROM (SELECT key, label FROM gone ORDER BY key LIMIT 10) x) AS examples`;
+
+    const row = rows[0];
+    const baselineDropId = row?.baseline_drop == null ? null : n(row.baseline_drop);
+    const baselineRows = n(row?.baseline_rows);
+    const vanished = n(row?.vanished);
+    const share = baselineRows > 0 ? vanished / baselineRows : 0;
+    return {
+      entity,
+      baselineDropId,
+      baselineRows,
+      vanished,
+      share: Number(share.toFixed(4)),
+      verdict: this.judgeVanished(baselineDropId, baselineRows, vanished, share),
+      examples: vanished > 0 ? (row?.examples ?? null) : null,
+    };
+  }
+
+  /**
+   * Presuda: masovno = godišnje arhiviranje (ćuti), pojedinačno = alarm (zvoni).
+   * Oba uslova su obavezna i to je namerno — obrazloženje sa brojevima stoji nad
+   * `MASTER_VANISHED_MASS_ROWS`.
+   */
+  private judgeVanished(
+    baselineDropId: number | null,
+    baselineRows: number,
+    vanished: number,
+    share: number,
+  ): MdbVanishedMaster["verdict"] {
+    if (baselineDropId === null || baselineRows === 0) return "BEZ_POREDJENJA";
+    if (vanished === 0) return "NEMA";
+    return vanished >= MASTER_VANISHED_MASS_ROWS &&
+      share >= MASTER_VANISHED_MASS_SHARE
+      ? "ARHIVIRANJE"
+      : "ALARM";
+  }
+
+  /**
+   * Jedna log linija koju čita i scheduler (`scheduled_job_runs.summary`) i ekran
+   * (`bb_sync_state.cursor.lastSummary`, ODSEČENA NA 500 ZNAKOVA).
+   *
+   * ZATO UPOZORENJA IDU NA POČETAK, pre brojača po koracima: sa 8 koraka brojači
+   * pojedu ~300 znakova, pa je „⚠ nestalo iz BigBita" na kraju niza umelo da
+   * padne izvan reza i da na ekranu ne postoji. Identitet fajla ostaje prvi (bez
+   * njega se ne zna o kom snimku je reč).
+   */
   private describe(
     fileName: string,
     ageHours: number,
     steps: MdbStepResult[],
     vanished: { journalEntries: number; ledgerEntries: number },
+    vanishedMasters: MdbVanishedMaster[],
     durationMs: number,
   ): string {
     const parts = steps.map(
@@ -536,21 +1099,55 @@ export class BigbitMdbImportService {
         (s.filtered ? `/odbačeno ${s.filtered}` : "") +
         (s.blockedLocked ? `/zaključano ${s.blockedLocked}` : ""),
     );
+    const alerts: string[] = [];
+
+    // Sudar broja predmeta ne obara uvoz (nasleđene senke predmeta bi ga obarale
+    // svake noći), ali mora da se VIDI i da kaže šta je posledica.
+    const projSkipped =
+      steps.find((s) => s.entity === "projects")?.skipped ?? 0;
+    if (projSkipped > 0)
+      alerts.push(
+        `⚠ SUDAR BROJA PREDMETA: ${projSkipped} BigBit predmet(a) nije ušlo (isti broj već drži ` +
+          "predmet nastao u 4.0) — ta dva sistema se na tim predmetima razilaze",
+      );
+
+    for (const v of vanishedMasters) {
+      const label = MASTER_LABELS[v.entity] ?? v.entity;
+      if (v.verdict === "ALARM")
+        alerts.push(
+          `⚠ ALARM: ${label} — ${v.vanished} red(ova) NESTALO iz BigBita usred godine ` +
+            `(${(v.share * 100).toFixed(2)} % od ${v.baselineRows}; drop ${v.baselineDropId})` +
+            (v.examples ? `: ${v.examples}` : ""),
+        );
+      else if (v.verdict === "ARHIVIRANJE")
+        // Bez ⚠ i bez pada: presuda je da masovno nestajanje o promeni godine
+        // NIJE alarm. Broj i dalje stoji u liniji — ćuti se zvonce, ne merenje.
+        alerts.push(
+          `${label}: ${v.vanished} red(ova) više nema u BigBitu ` +
+            `(${(v.share * 100).toFixed(1)} % — masovno, čita se kao godišnje arhiviranje zatvorene godine)`,
+        );
+      else if (v.verdict === "BEZ_POREDJENJA")
+        alerts.push(
+          `${label}: nema prethodnog snimka za poređenje (nestajanje NIJE proveravano)`,
+        );
+    }
+
     const locked = steps.reduce((a, s) => a + s.blockedLocked, 0);
-    const lockedNote = locked
-      ? ` ⚠ ${locked} izmena iz BigBita nad ZAKLJUČANIM nalozima NIJE preuzeta — čeka odluku ` +
-        "(bb_import_rejected_changes)"
-      : "";
-    const van =
-      vanished.journalEntries + vanished.ledgerEntries > 0
-        ? ` ⚠ nestalo iz BigBita: ${vanished.journalEntries} nalog(a) / ${vanished.ledgerEntries} stavki (ostaju u 4.0 — proveri)`
-        : "";
+    if (locked)
+      alerts.push(
+        `⚠ ${locked} izmena iz BigBita nad ZAKLJUČANIM nalozima NIJE preuzeta — čeka odluku ` +
+          "(bb_import_rejected_changes)",
+      );
+    if (vanished.journalEntries + vanished.ledgerEntries > 0)
+      alerts.push(
+        `⚠ nestalo iz BigBita: ${vanished.journalEntries} nalog(a) / ${vanished.ledgerEntries} stavki (ostaju u 4.0 — proveri)`,
+      );
+
     return (
       `${fileName} (star ${ageHours.toFixed(1)} h) za ${(durationMs / 1000).toFixed(1)} s — ` +
+      (alerts.length ? `${alerts.join(" | ")} — ` : "") +
       parts.join("; ") +
-      " [novi/izmenjeni/nepromenjeni]" +
-      lockedNote +
-      van
+      " [novi/izmenjeni/nepromenjeni]"
     );
   }
 
@@ -558,6 +1155,10 @@ export class BigbitMdbImportService {
   // KORACI
   // ───────────────────────────────────────────────────────────────────────────
 
+  // MATIČNI PODACI (30.07.2026): `importCustomers` i `importProjects` su niže u
+  // fajlu, uz ostale korake. Idu ISTIM kanalom kao knjigovodstvo otkad je prenos
+  // BigBit→QBigTehn prestao da se radi (mereno 30.07: BigBit na predmetu 10014,
+  // QBigTehn i 4.0 na 10005 — naš sync ispravan, izvor mrtav osam dana).
   /** `Kontni plan` -> `accounts`. FK meta za `ledger_entries.account_code`. */
   private async importAccounts(dropId: number): Promise<MdbStepResult> {
     const t0 = Date.now();
@@ -1225,6 +1826,551 @@ export class BigbitMdbImportService {
     return step;
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // PREDMETI (`Predmeti` -> `projects`)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * `bb_mdb_stage_predmeti` -> `projects`. ISKLJUČIVO UPSERT po `id` (=`IDPredmet`).
+   *
+   * ZAŠTO OVAJ KORAK NIJE JEDAN SQL KAO OSTALI: ostali koraci pišu u tabele u
+   * kojima je BigBit jedini pisac, pa je `INSERT ... ON CONFLICT` dovoljan. Ovde
+   * su DVA pisca nad istom tabelom — BigBit i 4.0 — i svaki izvorni red mora da
+   * prođe kroz tri odluke o vlasništvu PRE upisa (vidi brane niže). Te odluke se
+   * donose istim mehanizmom koji već vozi MSSQL grana (`GenericSyncer`, aditivna
+   * putanja), pa se ovde PONAVLJA ta logika, a ne izmišlja druga.
+   *
+   * MAPIRANJE SE OVDE NE PIŠE: kolone, ciljna polja i tipovi dolaze iz
+   * `SYNC_MAP` (`targetDb: "projects"`) — iz iste mape koja je vozila MSSQL sync,
+   * jer je MSSQL tabela bila preslikana kopija ove iste Access tabele. Menja se
+   * SAMO izvor redova (`bb_mdb_stage_predmeti` umesto `dbo.Predmeti`).
+   *
+   * NIŠTA SE NE BRIŠE. `projects` nema rezervisan opseg ključeva (4.0-native
+   * predmet dobija `id` iz iste PG sekvence kao BigBit), pa je svako brisanje po
+   * izvornom skupu — obrazac koji `GenericSyncer` koristi — ovde nepotrebno
+   * opasno. Red koji nestane iz drop-a ostaje u 4.0; nestajanje MERI zaseban
+   * korak, ne ovaj.
+   *
+   * TRI BRANE VLASNIŠTVA, u ovom redosledu (sve tri PRESKAČU red i IMENUJU ga):
+   *
+   *  1. `id` ZAUZET 4.0-NATIVE PREDMETOM. Predmet koji u 4.0 već sedi na
+   *     `IDPredmet`-u, a čiji broj se NE POJAVLJUJE nigde u ovom drop-u, nije
+   *     BigBit red — BigBit taj broj ne poznaje. Slep upsert bi mu prepisao svih
+   *     38 kolona tuđim predmetom. (Isto prepoznavanje kao `squatterIds` u
+   *     `GenericSyncer`.) Svesna posledica, prepisana odande: ako BigBit
+   *     PREIMENUJE broj postojećeg predmeta, ovde se to vidi kao kolizija i
+   *     PRIJAVI, umesto da tiho prepiše red koji je možda 4.0-native.
+   *
+   *  2. PARITET BROJA PREDMETA — glavna brana ovog koraka. U prelaznom režimu
+   *     predmet se otvara RUČNO U OBA sistema: 4.0 dodeli broj, pa se ISTI broj
+   *     prekuca u BigBit. BigBit kopija zato stiže sa SVOJIM `IDPredmet`-om ali
+   *     ISTIM `BrojPredmeta`. Kako radni nalozi, aktivacije i lokacije pokazuju na
+   *     4.0-native `id`, slep insert bi napravio DVA predmeta sa istim brojem —
+   *     jedan „pravi" i jedan prazan blizanac. Takav red se PRESKAČE, a u `notes`
+   *     ide broj predmeta i OBA id-ja, da se sudar može rešiti u BigBitu.
+   *     Ključ brane nije zakucan ovde nego se čita iz
+   *     `ADDITIVE_DEDUP_FIELDS.projects` — jedno mesto za obe grane sync-a.
+   *
+   *  3. DUPLIKAT BROJA U SAMOM IZVORU. Dva različita `IDPredmet`-a sa istim
+   *     `BrojPredmeta` — na produkciji stoji parcijalni `uq_projects_project_number`
+   *     (migracija 20260725200000, `WHERE btrim(project_number) <> ''`), pa bi
+   *     drugi red pao na 23505. Zadržava se PRVI, ostali se preskaču i imenuju.
+   *
+   * `IDKomitent` KOJI NE POSTOJI SE NULIRA, PREDMET SE NE ODBIJA (zahtev 5):
+   * predmet bez kupca je i dalje predmet, a predmet koga nema je izgubljen podatak.
+   * ⚠️ `projects.customer_id` je u bazi `integer NOT NULL` BEZ default-a (provereno
+   * na dev bazi 30.07.2026), pa „nuliranje" fizički ne može da bude SQL `NULL` —
+   * upisuje se `0`, zatečena sentinela „nema veze" u ovoj istoj tabeli
+   * (`salesperson_id`, `work_type_id`, `foreign_supplier_id` svi imaju `DEFAULT 0`).
+   * Broj takvih predmeta ide u `notes`.
+   */
+  private async importProjects(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const mapping = this.projectsMapping();
+    /** Polje po kome se pravi paritet — iz registra, ne zakucano ovde. */
+    const dedupField = additiveDedupFieldFor("projects") ?? "projectNumber";
+
+    const staged = await this.prisma.bbMdbStagePredmet.count({
+      where: { dropId },
+    });
+
+    // „Izvor ga poznaje" se mora znati za CEO drop, ne za stranicu: predmet koji
+    // drži sporni broj može biti BigBit red iz sasvim druge stranice. Zato se
+    // ključevi i brojevi celog drop-a čitaju unaprijed (7.617 redova = par stotina
+    // kilobajta), pa su obe brane vlasništva odluke nad PUNIM skupom.
+    const { ids: sourceIds, numbers: sourceNumbers } =
+      await this.stagedProjectKeys(dropId);
+
+    let inserted = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let skipped = 0;
+    let filtered = 0;
+    let nulledCustomers = 0;
+    let missingNumbers = 0;
+    let unparsedDates = 0;
+    /** Broj predmeta -> `IDPredmet` koji ga je u OVOM prolazu već zauzeo. */
+    const acceptedNumbers = new Map<string, number>();
+    const seenSourceIds = new Set<number>();
+    const named: string[] = [];
+    let extraNamed = 0;
+    const name = (msg: string): void => {
+      if (named.length < MAX_NAMED_SKIPS) named.push(msg);
+      else extraNamed++;
+    };
+
+    let lastKey = 0;
+    let batches = 0;
+    for (;;) {
+      const page = await this.prisma.bbMdbStagePredmet.findMany({
+        where: { dropId, id: { gt: lastKey } },
+        orderBy: { id: "asc" },
+        take: PROJECTS_BATCH,
+      });
+      if (page.length === 0) break;
+      const pageMax = page[page.length - 1].id;
+      // Bez ovoga bi zaustavljena sekvenca (ili mock koji vraća istu stranicu)
+      // vrtela beskonačnu petlju umesto da posao padne.
+      if (pageMax <= lastKey) {
+        notes.push(
+          `keyset ne napreduje na staging id=${lastKey} — stranicanje prekinuto (proveri bb_mdb_stage_predmeti)`,
+        );
+        break;
+      }
+      lastKey = pageMax;
+      batches++;
+
+      // ── 1) TIPIZACIJA: staging je sav tekst, mapa kaže u što ─────────────
+      const candidates: {
+        sourceId: number;
+        number: string;
+        data: Record<string, unknown>;
+      }[] = [];
+      for (const raw of page) {
+        const row = raw as unknown as Record<string, unknown>;
+        const sourceId = stageInt(row[PREDMET_SRC_TO_STAGE_FIELD.IDPredmet]);
+        // Bez upotrebljivog `IDPredmet`-a nema ni ključa idempotencije — red se
+        // ODBACUJE (`filtered`), kao nenumerički `IDNaloga` u koraku naloga.
+        if (sourceId === null || sourceId <= 0) {
+          filtered++;
+          name(
+            `odbačeno: IDPredmet="${String(row[PREDMET_SRC_TO_STAGE_FIELD.IDPredmet] ?? "")}" nije upotrebljiv broj`,
+          );
+          continue;
+        }
+        if (seenSourceIds.has(sourceId)) {
+          filtered++;
+          name(`odbačeno: IDPredmet=${sourceId} se u drop-u ponavlja`);
+          continue;
+        }
+        seenSourceIds.add(sourceId);
+
+        const mapped = this.mapStagedProject(row, mapping.columns);
+        unparsedDates += mapped.unparsedDates;
+        candidates.push({
+          sourceId,
+          number: String(mapped.data[dedupField] ?? "").trim(),
+          data: mapped.data,
+        });
+      }
+      if (candidates.length === 0) continue;
+
+      // ── 2) TRI POGLEDA U BAZU, po jedan upit ────────────────────────────
+      const ids = candidates.map((c) => c.sourceId);
+      const numbers = [
+        ...new Set(candidates.map((c) => c.number).filter((v) => v !== "")),
+      ];
+      const customerIds = [
+        ...new Set(
+          candidates
+            .map((c) => Number(c.data.customerId ?? 0))
+            .filter((v) => v > 0),
+        ),
+      ];
+      const [existingById, holdersByNumber, knownCustomers] = await Promise.all([
+        this.prisma.project.findMany({ where: { id: { in: ids } } }),
+        numbers.length
+          ? this.prisma.project.findMany({
+              where: { [dedupField]: { in: numbers } },
+              select: { id: true, [dedupField]: true },
+            })
+          : Promise.resolve([] as { id: number }[]),
+        customerIds.length
+          ? this.prisma.customer.findMany({
+              where: { id: { in: customerIds } },
+              select: { id: true },
+            })
+          : Promise.resolve([] as { id: number }[]),
+      ]);
+      const existing = new Map(
+        (existingById as { id: number }[]).map((r) => [r.id, r]),
+      );
+      /** Broj predmeta -> id-jevi predmeta koji ga TRENUTNO drže u 4.0. */
+      const holders = new Map<string, number[]>();
+      for (const h of holdersByNumber as Record<string, unknown>[]) {
+        const key = String(h[dedupField] ?? "").trim();
+        const list = holders.get(key);
+        if (list) list.push(Number(h.id));
+        else holders.set(key, [Number(h.id)]);
+      }
+      const customersPresent = new Set(
+        (knownCustomers as { id: number }[]).map((r) => r.id),
+      );
+
+      for (const c of candidates) {
+        const current = existing.get(c.sourceId) as
+          | Record<string, unknown>
+          | undefined;
+
+        // ── BRANA 1: `id` zauzet 4.0-native predmetom ────────────────────
+        // Rezervisan opseg ključeva se pita kroz `isNativeRow` — jedino mesto
+        // gde se poreklo po id-u presuđuje. Danas `projects` nije u
+        // `NATIVE_ID_RANGE_TABLES` pa vraća `false`; ako tabela ikad dobije
+        // rezervisan opseg, brana se aktivira sama, bez izmene ovde.
+        if (isNativeRow("projects", c.sourceId)) {
+          skipped++;
+          name(
+            `preskočeno: IDPredmet=${c.sourceId} je u rezervisanom 4.0 opsegu ključeva — BigBit tu šifru ne sme da koristi`,
+          );
+          continue;
+        }
+        if (current) {
+          const currentNumber = String(current[dedupField] ?? "").trim();
+          if (currentNumber !== "" && !sourceNumbers.has(currentNumber)) {
+            skipped++;
+            name(
+              `preskočeno: id=${c.sourceId} u 4.0 drži predmet ${dedupField}="${currentNumber}" koji BigBit ne poznaje — ` +
+                `4.0-native red NIJE prepisan (BigBit je poslao ${dedupField}="${c.number}")`,
+            );
+            continue;
+          }
+        }
+
+        // ── BRANA 2: PARITET BROJA PREDMETA ─────────────────────────────
+        // Broj koji već stoji na predmetu sa DRUGIM id-em, a taj id izvor NE
+        // vraća → to je 4.0-native predmet (ili siroče iz starijeg režima), na
+        // koji su vezani radni nalozi i aktivacije. BigBit kopija ne ulazi.
+        if (c.number !== "") {
+          const foreign = (holders.get(c.number) ?? []).filter(
+            (id) => id !== c.sourceId && !sourceIds.has(id),
+          );
+          if (foreign.length > 0) {
+            skipped++;
+            name(
+              `paritet: broj predmeta "${c.number}" već stoji na 4.0-native predmetu id=${foreign.join("/")} — ` +
+                `BigBit kopija (IDPredmet=${c.sourceId}) PRESKOČENA; reši sudar u BigBitu`,
+            );
+            continue;
+          }
+          // ── BRANA 3: duplikat broja u samom izvoru ────────────────────
+          const firstOwner = acceptedNumbers.get(c.number);
+          if (firstOwner !== undefined && firstOwner !== c.sourceId) {
+            skipped++;
+            name(
+              `duplikat u izvoru: broj predmeta "${c.number}" je u ovom drop-u već donet sa IDPredmet=${firstOwner} — ` +
+                `IDPredmet=${c.sourceId} PRESKOČEN (očisti duplikat u BigBitu)`,
+            );
+            continue;
+          }
+        } else {
+          missingNumbers++;
+        }
+
+        // ── FK KOMITENTA: nuliraj, ne odbijaj ───────────────────────────
+        const customerId = Number(c.data.customerId ?? 0);
+        if (customerId > 0 && !customersPresent.has(customerId)) {
+          c.data.customerId = 0;
+          nulledCustomers++;
+          name(
+            `komitent: IDPredmet=${c.sourceId} (broj "${c.number}") pokazuje na komitenta ${customerId} koga u 4.0 nema — veza NULIRANA (0), predmet uvezen`,
+          );
+        }
+
+        // ── UPSERT, i to samo kad se sadržaj STVARNO razlikuje ───────────
+        // Isto načelo kao u ostalim koracima: „ažurirano" mora da znači da se
+        // nešto promenilo u BigBitu. Bez ovog poređenja bi svaka noć prijavila
+        // 7.617 „izmenjenih" predmeta i stvarna ispravka bi se izgubila u šumu.
+        if (current && this.sameProjectRow(current, c.data, mapping.columns)) {
+          unchanged++;
+          if (c.number !== "") acceptedNumbers.set(c.number, c.sourceId);
+          continue;
+        }
+        const update = { ...c.data };
+        delete update.id;
+        try {
+          await this.prisma.project.upsert({
+            where: { id: c.sourceId },
+            create: c.data as never,
+            update: update as never,
+          });
+          if (current) updated++;
+          else inserted++;
+          if (c.number !== "") acceptedNumbers.set(c.number, c.sourceId);
+        } catch (err) {
+          skipped++;
+          const message = err instanceof Error ? err.message : String(err);
+          name(
+            `preskočeno: IDPredmet=${c.sourceId} (broj "${c.number}") — ${message}`,
+          );
+          this.logger.warn(
+            `Predmet IDPredmet=${c.sourceId} nije uvezen: ${message}`,
+          );
+        }
+      }
+    }
+
+    // SEKVENCA MORA DA PREĐE UVEZENE KLJUČEVE (isti nalaz kao review 26.07 [0] za
+    // aditivnu granu MSSQL sync-a): `projects` NEMA rezervisan opseg, pa 4.0-native
+    // predmet uzima `id` iz iste sekvence. Upsert sa eksplicitnim `id`-em sekvencu ne
+    // pomera, pa bi prvi sledeći „Novi predmet" u 4.0 dobio broj koji BigBit već
+    // koristi → 23505 na `pk_projects`, i to na ekranu korisnika.
+    if (inserted > 0) await this.bumpProjectsSequence();
+
+    if (nulledCustomers > 0)
+      notes.push(
+        `${nulledCustomers} predmet(a) pokazuje na komitenta koga u 4.0 nema — veza je NULIRANA (customer_id=0, ` +
+          "kolona je NOT NULL bez default-a pa SQL NULL nije moguć), predmeti su uvezeni. " +
+          "Najčešći uzrok: uvoz komitenata je pao ili je komitent obrisan u BigBitu.",
+      );
+    if (missingNumbers > 0)
+      notes.push(
+        `${missingNumbers} predmet(a) je došao BEZ broja predmeta — uvezen je sa praznim brojem (ništa se ne odbacuje), ` +
+          "ali paritet-brana za njega ne može da radi. Proveri te redove u BigBitu.",
+      );
+    if (unparsedDates > 0)
+      notes.push(
+        `${unparsedDates} datumsko polje nije bilo u obliku YYYY-MM-DD i upisano je kao prazno — ` +
+          "proveri `mdb-export -T/-D` u koraku 1 (bigbit-mdb-export.sh).",
+      );
+    if (named.length > 0) notes.push(...named);
+    if (extraNamed > 0)
+      notes.push(
+        `…i još ${extraNamed} sličnih redova (imenovano je prvih ${MAX_NAMED_SKIPS}; puna slika je u bb_mdb_drops.import_row_counts)`,
+      );
+    notes.push(`${batches} serija po ${PROJECTS_BATCH} redova`);
+
+    const step: MdbStepResult = {
+      entity: "projects",
+      staged,
+      inserted,
+      updated,
+      unchanged,
+      skipped,
+      filtered,
+      // Predmeti nemaju pojam zaključanog perioda — brana zaključanih naloga se
+      // na njih ne primenjuje (nema PDV prijave koja stoji na predmetu).
+      blockedLocked: 0,
+      durationMs: Date.now() - t0,
+      notes,
+    };
+    // SAMOKONTROLA BROJAČA: ugovor `MdbStepResult` je da se svih šest bucket-a
+    // zbraja u `staged`. Ako se ikad raziđu, red je negde nestao iz svih brojača
+    // — tačno onaj tihi kvar zbog koga su brojači i uvedeni.
+    const counted =
+      inserted + updated + unchanged + skipped + filtered + step.blockedLocked;
+    if (counted !== staged)
+      notes.push(
+        `⚠️ brojači se ne zbrajaju: staged=${staged}, sabrano=${counted} — ` +
+          `${Math.abs(staged - counted)} red(ova) nije ni u jednom brojaču (prijavi kao kvar uvoza)`,
+      );
+    return step;
+  }
+
+  /**
+   * Mapiranje `Predmeti` -> `projects` iz `SYNC_MAP`, sa proverama koje moraju da
+   * padnu GLASNO. Mapa je generisana iz šeme i može da se promeni bez ovog fajla:
+   * nova kolona bez reda u `PREDMET_SRC_TO_STAGE_FIELD` bi se tiho upisala kao
+   * prazna, a promenjen PK bi obesmislio ključ idempotencije.
+   */
+  private projectsMapping(): TableMapping {
+    const mapping = SYNC_MAP.find((m) => m.targetDb === "projects");
+    if (!mapping)
+      throw new Error(
+        "sync-map.generated.ts nema mapiranje za `projects` — uvoz predmeta ne može da zna " +
+          "u koje kolone piše. Proveri generator mape (targetDb: 'projects').",
+      );
+    if (
+      !mapping.pk ||
+      mapping.pk.kind !== "single" ||
+      mapping.pk.field !== "id"
+    )
+      throw new Error(
+        "Uvoz predmeta radi upsert po jednostavnom `id` ključu, a mapiranje `projects` " +
+          "više nema takav primarni ključ — ključ idempotencije bi tiho otkazao.",
+      );
+    const missing = mapping.columns
+      .filter((c) => !PREDMET_SRC_TO_STAGE_FIELD[c.src])
+      .map((c) => c.src);
+    if (missing.length)
+      throw new Error(
+        `Kolone ${missing.join(", ")} postoje u mapiranju \`projects\`, ali nemaju staging kolonu ` +
+          "u PREDMET_SRC_TO_STAGE_FIELD. Dopuni tu tabelu (i zaglavlje `Predmeti` u " +
+          "bigbit-mdb-export.sh + model BbMdbStagePredmet) — inače bi se te kolone tiho uvezle prazne.",
+      );
+    return mapping;
+  }
+
+  /**
+   * Ključevi i brojevi CELOG drop-a — ulaz za obe brane vlasništva.
+   * `ids` = „izvor poznaje taj id", `numbers` = „izvor poznaje taj broj".
+   */
+  private async stagedProjectKeys(
+    dropId: number,
+  ): Promise<{ ids: Set<number>; numbers: Set<string> }> {
+    const rows = await this.prisma.bbMdbStagePredmet.findMany({
+      where: { dropId },
+      select: { idPredmet: true, brojPredmeta: true },
+    });
+    const ids = new Set<number>();
+    const numbers = new Set<string>();
+    for (const r of rows) {
+      const id = stageInt(r.idPredmet);
+      if (id !== null && id > 0) ids.add(id);
+      const number = stageText(r.brojPredmeta);
+      if (number !== null) numbers.add(number);
+    }
+    return { ids, numbers };
+  }
+
+  /**
+   * Jedan staging red -> `projects` oblik, po `SYNC_MAP`. Sve dolazi kao tekst, pa
+   * je tipizacija ovde jedina.
+   *
+   * NOT NULL kolone (`project_number`, `salesperson_id`, `customer_id`) ne smeju da
+   * ostanu prazne — prazan tekst postaje `''` / `0`, jer bi `NULL` oborio red, a
+   * red koga BigBit ima a 4.0 nema je gubitak podatka. Sve takve zamene se BROJE
+   * i prijavljuju u `notes`, nikad tiho.
+   */
+  private mapStagedProject(
+    row: Record<string, unknown>,
+    columns: ColumnMapping[],
+  ): { data: Record<string, unknown>; unparsedDates: number } {
+    const data: Record<string, unknown> = {};
+    let unparsedDates = 0;
+    for (const col of columns) {
+      const raw = row[PREDMET_SRC_TO_STAGE_FIELD[col.src]];
+      const text = stageText(raw);
+      let value: unknown;
+      switch (col.type) {
+        case "Int":
+          value = stageInt(raw);
+          break;
+        case "Float":
+          value = text === null || !Number.isFinite(Number(text))
+            ? null
+            : Number(text);
+          break;
+        case "Decimal":
+          value = this.toDecimal(text);
+          break;
+        case "DateTime":
+          value = stageDate(raw);
+          if (value === null && text !== null) unparsedDates++;
+          break;
+        case "Boolean":
+          value =
+            text === null
+              ? null
+              : ["1", "true", "yes", "da", "-1"].includes(text.toLowerCase());
+          break;
+        default:
+          value = text;
+      }
+      if (value === null && !col.nullable)
+        value = col.type === "String" ? "" : 0;
+      data[col.field] = value;
+    }
+    return { data, unparsedDates };
+  }
+
+  /** `Decimal` iz teksta; neupotrebljiva vrednost je `null`, ne pad reda. */
+  private toDecimal(text: string | null): Prisma.Decimal | null {
+    if (text === null) return null;
+    try {
+      const d = new Prisma.Decimal(text);
+      return d.isNaN() ? null : d;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Da li je uvezeni red IDENTIČAN onome što BigBit sada nosi — po MAPIRANIM
+   * kolonama, po tipu iz mape. `Decimal` se poredi vrednosno (`100` i `100.0000`
+   * su ista suma), `DateTime` po trenutku; string-poređenje bi ta dva slučaja
+   * prijavilo kao izmenu i uvoz bi svake noći prepisivao celu tabelu.
+   */
+  private sameProjectRow(
+    current: Record<string, unknown>,
+    next: Record<string, unknown>,
+    columns: ColumnMapping[],
+  ): boolean {
+    for (const col of columns) {
+      if (col.field === "id") continue;
+      const a = current[col.field] ?? null;
+      const b = next[col.field] ?? null;
+      if (a === null || b === null) {
+        if (a !== b) return false;
+        continue;
+      }
+      switch (col.type) {
+        case "DateTime": {
+          const ta = a instanceof Date ? a.getTime() : NaN;
+          const tb = b instanceof Date ? b.getTime() : NaN;
+          if (!(ta === tb)) return false;
+          break;
+        }
+        case "Decimal": {
+          const da = this.toDecimal(String(a));
+          const db = this.toDecimal(String(b));
+          if (da === null || db === null || !da.equals(db)) return false;
+          break;
+        }
+        case "Int":
+        case "Float":
+          if (Number(a) !== Number(b)) return false;
+          break;
+        case "Boolean":
+          if (Boolean(a) !== Boolean(b)) return false;
+          break;
+        default:
+          if (String(a) !== String(b)) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Podigni `projects_id_seq` iznad najvišeg uvezenog `id`-a — ali NIKAD unazad.
+   *
+   * Razlika prema `GenericSyncer.bumpIdSequence`, koji radi `setval(..., MAX(id))`
+   * bezuslovno: tamo brisanju prethodi pun izvorni skup, a ovde se ništa ne briše i
+   * 4.0 je u međuvremenu mogao da izda (pa i obriše) svoj predmet — bezuslovan
+   * `setval` bi tada sekvencu VRATIO i sledeći ručni unos bi pao na `pk_projects`.
+   * Zato se piše samo kad je `MAX(id)` iznad trenutne vrednosti sekvence.
+   * `pg_sequence_last_value` vraća `NULL` za nekorišćenu sekvencu (otud COALESCE),
+   * a `pg_get_serial_sequence` `NULL` ako kolona nije serial (otud WHERE).
+   */
+  private async bumpProjectsSequence(): Promise<void> {
+    try {
+      await this.prisma.$queryRaw`
+        WITH s AS (SELECT pg_get_serial_sequence('projects', 'id') AS seq),
+             m AS (SELECT coalesce(max(id), 0) AS mx FROM projects)
+        SELECT setval(s.seq, m.mx, true) AS moved
+        FROM s, m
+        WHERE s.seq IS NOT NULL
+          AND m.mx > coalesce(pg_sequence_last_value(s.seq::regclass), 0)`;
+    } catch (e) {
+      // Sekvenca je zaštita od BUDUĆEG ručnog unosa, ne uslov uvoza — njen pad ne
+      // sme da poništi 7.617 uvezenih predmeta. Ali mora da ostavi trag.
+      this.logger.error(
+        `projects_id_seq nije podignuta posle uvoza predmeta (sledeći ručni unos predmeta može da padne na pk_projects): ` +
+          (e instanceof Error ? e.message : String(e)),
+      );
+    }
+  }
+
   /**
    * Brojači jednog koraka, tako da UVEK važi
    * `staged = inserted + updated + unchanged + skipped + filtered + blockedLocked`.
@@ -1270,4 +2416,492 @@ export class BigbitMdbImportService {
       notes,
     };
   }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // MATIČNI PODACI — KOMITENTI (30.07.2026)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * `Komitenti` (staging) -> `customers`. ISKLJUČIVO UPSERT po `Sifra` (= `id`).
+   *
+   * ZAŠTO OVAJ KORAK POSTOJI: komitenti su do 22.07.2026 stizali kroz MSSQL kopiju
+   * (`CustomerSyncer`), a prenos BigBit -> QBigTehn se više ne radi — izvor je MRTAV.
+   * Naša karika je zdrava (ručno pokretanje 30.07.: 7.617 predmeta pročitano i
+   * upisano, 0 grešaka), samo podataka u izvoru nema. Zato matični podaci od sada
+   * idu ISTIM kanalom kao knjigovodstvo: iz kopije BigBit baze.
+   *
+   * ČETIRI PRAVILA KOJA OVAJ KORAK POŠTUJE:
+   *
+   *  1. NIŠTA SE NE BRIŠE — nema `deleteMany` ni „obriši pa vrati" obrasca (kao
+   *     `items` full refresh). BigBit PRAZNI zatvorene godine (Access ima granicu
+   *     veličine baze), pa red koji nestane iz drop-a je najčešće godišnje
+   *     arhiviranje, a ne obrisan komitent.
+   *  2. 4.0-NATIVE RED SE NE DIRA — provera je dvostruka i ista kao u
+   *     `CustomerSyncer`: rezervisan opseg ključeva (`isNativeRow`) I marker
+   *     porekla iz šeme (`source='NATIVE'`). Preskočen red se BROJI i IMENUJE u
+   *     `notes` (ne tiho — `notes` je jedino što stiže do čoveka).
+   *  3. MAPIRANJE JE JEDNA ISTINA — `mapKomitentiRow` (v. import na vrhu). Ovaj
+   *     korak samo TIPIZIRA sirov staging tekst u ono što mapper očekuje.
+   *  4. NEPOSTOJEĆA VEZA SE NULIRA, RED SE NE ODBIJA — prodavac, vrsta šifre i
+   *     vozač; komitent bez para u šifarniku je i dalje komitent.
+   *
+   * ⚠️ NIJE UVEZANO U `runImport`. Korak stoji sam i poziva se namerno (ručno
+   * pokretanje / poseban posao), jer `runImport` danas obara ceo uvoz na sudaru
+   * broja naloga i zaključava red koraka po FK lancu knjigovodstva — uvezivanje
+   * matičnih podataka u taj lanac je zasebna odluka (i zaseban prolaz kroz
+   * `assertStagingNotEmpty`, koji za komitente još ne zna).
+   *
+   * ⚠️ 17 KOLONA IZVOR DANAS NE ŠALJE — v. `KOMITENTI_FIELDS_NOT_IN_MDB`. To NIJE
+   * kozmetika: bez tog izuzetka bi prvi noćni prolaz obrisao `MaticniBroj`,
+   * `JBKJS`, `GLN` i `CRF` svakom komitentu, tj. podatke od kojih zavisi SEF.
+   */
+  async importCustomers(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const staged = await this.prisma.bbMdbStageKomitent.count({
+      where: { dropId },
+    });
+
+    // Ciljevi stranih ključeva + popis 4.0-native komitenata: jednim upitom PRE
+    // prolaza (native redova je malo), isto kao `CustomerSyncer`.
+    const [salespersonIds, codeTypeCodes, nativeIds] = await Promise.all([
+      this.prisma.salesperson
+        .findMany({ select: { id: true } })
+        .then((r) => new Set(r.map((x) => x.id))),
+      this.prisma.codeType
+        .findMany({ select: { code: true } })
+        .then((r) => new Set(r.map((x) => x.code))),
+      this.prisma.customer
+        .findMany({
+          where: { source: NATIVE_SOURCE_MARKER },
+          select: { id: true },
+        })
+        .then((r) => new Set(r.map((x) => x.id))),
+    ]);
+
+    let inserted = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let skippedNative = 0;
+    let skippedError = 0;
+    let filteredNoKey = 0;
+    let filteredDupe = 0;
+    let nulledSalesperson = 0;
+    let nulledCodeType = 0;
+    let nulledDriver = 0;
+    const nativeExamples: number[] = [];
+    const errorExamples: string[] = [];
+    /** `Sifra` je IDENTITY — duplikat unutar jednog drop-a je anomalija. */
+    const seen = new Set<number>();
+    let lastStageId = 0;
+    let batches = 0;
+
+    for (;;) {
+      // Keyset po staging PK — `skip`/`OFFSET` se namerno ne koristi (isti razlog
+      // kao u `importLedgerEntries`), a cela tabela se nikad ne drži u memoriji.
+      const page = await this.prisma.bbMdbStageKomitent.findMany({
+        where: { dropId, id: { gt: lastStageId } },
+        orderBy: { id: "asc" },
+        take: CUSTOMERS_BATCH,
+      });
+      if (page.length === 0) break;
+      lastStageId = page[page.length - 1].id;
+      batches++;
+
+      // ── 1) FILTER + ZAŠTITA POREKLA (pre ijednog upisa) ──────────────────
+      const rows: { row: BbMdbStageKomitent; sifra: number }[] = [];
+      for (const row of page) {
+        const sifraText = (row.sifra ?? "").trim();
+        if (!/^\d+$/.test(sifraText) || Number(sifraText) === 0) {
+          filteredNoKey++;
+          continue;
+        }
+        const sifra = Number(sifraText);
+        if (seen.has(sifra)) {
+          filteredDupe++;
+          continue;
+        }
+        seen.add(sifra);
+
+        const nativeById = isNativeRow("customers", sifra);
+        const nativeByMarker = nativeIds.has(sifra);
+        if (nativeById || nativeByMarker) {
+          skippedNative++;
+          if (nativeExamples.length < 20) nativeExamples.push(sifra);
+          this.logger.warn(
+            `Preskočen komitent Sifra=${sifra}: ` +
+              (nativeById
+                ? `id je u rezervisanom 4.0 opsegu (≥ ${NATIVE_ID_BASE})`
+                : `red u 4.0 nosi marker porekla source='${NATIVE_SOURCE_MARKER}'`) +
+              " (zaštita 4.0-native reda)",
+          );
+          continue;
+        }
+        rows.push({ row, sifra });
+      }
+      if (rows.length === 0) continue;
+
+      // ── 2) MAPIRANJE (jedna istina) ──────────────────────────────────────
+      const mapped = rows.map(({ row, sifra }) => ({
+        sifra,
+        // Sirove vrednosti se pamte SAMO da bi se nulirana veza mogla PRIJAVITI:
+        // mapper nuluje tiho, a tišina je ovde zabranjena.
+        rawSalesperson: stageNum(row.sifraProdavca),
+        rawCodeType: stageText(row.vrstaSifre),
+        data: komitentPayload(row, salespersonIds, codeTypeCodes),
+      }));
+
+      // ── 3) VEZE I POREĐENJE — dva upita po SERIJI, ne po redu ────────────
+      // `customers.driver_id` ima TVRD self-FK (`fk_customers_driver`), a mapper
+      // proverava samo `> 0`. Vozač koji još nije uvezen bi oborio red, pa se
+      // veza nuluje; kad vozač uđe (isti ili sledeći prolaz), sledeći upsert je
+      // sam uspostavi — zato se ovde ništa ne gubi trajno.
+      const driverIds = [
+        ...new Set(
+          mapped
+            .map((m) => m.data.driverId)
+            .filter((x): x is number => typeof x === "number"),
+        ),
+      ];
+      const driverExists = new Set<number>();
+      if (driverIds.length > 0)
+        for (const r of await this.prisma.customer.findMany({
+          where: { id: { in: driverIds } },
+          select: { id: true },
+        }))
+          driverExists.add(r.id);
+
+      // Postojeći redovi se čitaju da bi „ažurirano" značilo ISKLJUČIVO da se
+      // sadržaj promenio u BigBitu (isto načelo kao `IS DISTINCT FROM` u SQL
+      // koracima) — inače bi svaka noć prepisala celu maticu i stvarna izmena
+      // bi se izgubila u šumu.
+      const before = new Map<number, Record<string, unknown>>();
+      for (const r of await this.prisma.customer.findMany({
+        where: { id: { in: mapped.map((m) => m.sifra) } },
+      }))
+        before.set(r.id, r as unknown as Record<string, unknown>);
+
+      // ── 4) UPSERT ────────────────────────────────────────────────────────
+      for (const m of mapped) {
+        const data = m.data;
+        if (
+          m.rawSalesperson !== null &&
+          m.rawSalesperson > 0 &&
+          data.salespersonId === null
+        )
+          nulledSalesperson++;
+        if (m.rawCodeType !== null && data.codeTypeCode === null)
+          nulledCodeType++;
+        if (
+          typeof data.driverId === "number" &&
+          !driverExists.has(data.driverId)
+        ) {
+          data.driverId = null;
+          nulledDriver++;
+        }
+
+        const existing = before.get(m.sifra);
+        try {
+          if (existing && sameCustomerContent(existing, data)) {
+            unchanged++;
+            continue;
+          }
+          // UPSERT, a ne create/update po pročitanom stanju: između čitanja i
+          // upisa red može da nastane (drugi prolaz, ručni unos), pa `create`
+          // ne sme da bude uslovljen keširanim „nema ga".
+          await this.prisma.customer.upsert({
+            where: { id: m.sifra },
+            create: data,
+            update: data,
+          });
+          if (existing) updated++;
+          else inserted++;
+        } catch (err) {
+          skippedError++;
+          const message = err instanceof Error ? err.message : String(err);
+          if (errorExamples.length < 10)
+            errorExamples.push(`Sifra=${m.sifra}: ${message.slice(0, 200)}`);
+          this.logger.warn(`Komitent Sifra=${m.sifra} nije upisan: ${message}`);
+        }
+      }
+
+      if (batches > 10_000) {
+        notes.push("prekinuto na 10.000 serija — proveri izvor");
+        break;
+      }
+    }
+
+    const skipped = skippedNative + skippedError;
+    const filtered = filteredNoKey + filteredDupe;
+
+    notes.push(
+      `${KOMITENTI_FIELDS_NOT_IN_MDB.size} kolona koje .mdb izvoz NE donosi nije dirano ` +
+        `(${[...KOMITENTI_FIELDS_NOT_IN_MDB].slice(0, 4).join(", ")}…) — ` +
+        "postojeće vrednosti u 4.0 ostaju netaknute",
+    );
+    if (staged === 0)
+      notes.push(
+        "⚠️ u ovom drop-u NEMA nijednog komitenta — proveri manifest u " +
+          "scripts/bigbit-mdb-export.sh i stage_error za tabelu `Komitenti`",
+      );
+    if (skippedNative > 0)
+      notes.push(
+        `⚠️ ${skippedNative} BigBit red(ova) PRESKOČENO — šifra pripada 4.0-native komitentu ` +
+          `(rezervisan opseg ≥ ${NATIVE_ID_BASE} ili marker source='${NATIVE_SOURCE_MARKER}'). ` +
+          `Native red NIJE prepisan; proveri šifre u BigBitu: ${nativeExamples.join(", ")}` +
+          (skippedNative > nativeExamples.length ? ", …" : ""),
+      );
+    if (skippedError > 0)
+      notes.push(
+        `⚠️ ${skippedError} red(ova) NIJE upisano: ${errorExamples.join(" | ")}`,
+      );
+    if (filteredNoKey > 0)
+      notes.push(
+        `${filteredNoKey} red(ova) ODBAČENO — Sifra nije broj ili je 0; ti komitenti NISU u 4.0`,
+      );
+    if (filteredDupe > 0)
+      notes.push(
+        `${filteredDupe} red(ova) ODBAČENO — duplikat Sifre u istom drop-u ` +
+          "(Sifra je IDENTITY u BigBitu, pa je ovo znak pokvarenog izvoza)",
+      );
+    if (nulledSalesperson > 0)
+      notes.push(
+        `${nulledSalesperson} red(ova): „Sifra prodavca" nema par u salespeople → NULL (red je ušao)`,
+      );
+    if (nulledCodeType > 0)
+      notes.push(
+        `${nulledCodeType} red(ova): „Vrsta sifre" nema par u code_types → NULL (red je ušao)`,
+      );
+    if (nulledDriver > 0)
+      notes.push(
+        `${nulledDriver} red(ova): „IDVozac" još ne postoji u customers → NULL ` +
+          "(tvrd FK fk_customers_driver); veza se sama uspostavi u sledećem prolazu",
+      );
+    notes.push(
+      `„IDUplatniRacun" ide kakav je — customers.payment_account_id NEMA FK (meka referenca); ` +
+        "PIB: prazan je LEGITIMAN (ino kupci ga ne moraju imati), tax_id je NOT NULL pa prazno " +
+        "ulazi kao '' — nikakva provera koje BigBit nema se NE uvodi",
+    );
+
+    const step: MdbStepResult = {
+      entity: "customers",
+      staged,
+      inserted,
+      updated,
+      unchanged,
+      skipped,
+      filtered,
+      // Brana zaključanih ne postoji za matične podatke: komitent ne pripada
+      // knjigovodstvenom periodu, pa nema šta da bude „u zaključanom nalogu".
+      blockedLocked: 0,
+      durationMs: Date.now() - t0,
+      notes,
+    };
+    // BROJAČI MORAJU DA SE ZBRAJAJU (isto načelo kao `toStep`): red koga izvor
+    // ima, a 4.0 nema, ne sme da ispadne iz svih brojača i time da izgleda kao
+    // „nepromenjen". Ako se ikad ne zbroje, to je kvar OVOG koraka i kaže se.
+    const sum = inserted + updated + unchanged + skipped + filtered;
+    if (sum !== staged)
+      step.notes.push(
+        `⚠️ brojači se ne zbrajaju: staged ${staged} ≠ ${sum} ` +
+          "(novi+izmenjeni+nepromenjeni+preskočeni+odbačeni) — neki red je ispao iz svih " +
+          "brojača; kvar je u ovom koraku, ne u izvoru",
+      );
+    return step;
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// KOMITENTI: TIPIZACIJA STAGING TEKSTA + IZUZETE KOLONE
+// ═════════════════════════════════════════════════════════════════════════════
+// Stoji ISPOD klase namerno (a ne uz `GK_BATCH` na vrhu) da bi ceo dodatak za
+// komitente bio jedan blok koji se čita — i menja — na jednom mestu.
+
+/** Serija za komitente: 500 × ~40 kolona po prolazu. */
+const CUSTOMERS_BATCH = 500;
+
+/**
+ * POLJA KOJA MAPPER PUNI, A BIGBIT `.mdb` IZVOZ IH NE DONOSI — i zato se NIKAD
+ * ne upisuju iz ovog kanala.
+ *
+ * BigBitova `Komitenti` ima 57 kolona (DDL: `_legacy/_analiza/bigbit/BB_T_26_schema.sql`
+ * red 2426–2485; popis i mapiranje: docs/migration/BIGBIT_KOMITENTI.md §1), a
+ * manifest izvoza (`scripts/bigbit-mdb-export.sh`) danas prenosi PRVIH 40 —
+ * staje na `PotpisKom`. Staging model `BbMdbStageKomitent` je deklarisan po tom
+ * manifestu, pa 17 poslednjih kolona u bazi 4.0 uopšte ne stiže.
+ *
+ * ⚠️ ZAŠTO JE OVO BRANA, A NE FUSNOTA: mapper za kolonu koje u redu nema vraća
+ * `null` (`str`/`num`/`bool` gledaju `undefined`). Slep upsert bi svake noći
+ * upisao te nule i time OBRISAO `MaticniBroj`, `JBKJS`, `GLN`, `CRF`,
+ * `KreditLimit`… — dakle podatke od kojih zavise SEF, e-faktura i kontrola duga.
+ * Bez greške i bez traga u logu, tačno onaj tihi gubitak zbog koga postoji i
+ * `NATIVE_COLUMN_TABLES` u `table-ownership.ts`.
+ *
+ * KAD MANIFEST DOBIJE TE KOLONE (i schema.prisma + migracija uz njega): izbaci
+ * odgovarajuće polje odavde i dopuni projekciju u `komitentPayload`. Broj članova
+ * pinuje spec, pa promena mora biti namerna.
+ *
+ * `KoristiPNBZadModel` (57. kolona) nije u ovom setu jer ga ni mapper ne čita —
+ * `Customer.usesPaymentReferenceModel` ostaje na default-u sve dok se ne mapira.
+ */
+export const KOMITENTI_FIELDS_NOT_IN_MDB: ReadonlySet<string> = new Set([
+  "shortName", // SkraceniNaziv
+  "recordCreatedAt", // DatumIVremeKom
+  "checkDebt", // ProveraDuga
+  "creditLimit", // KreditLimit
+  "skipTaxIdValidation", // NeProveravajPIB
+  "pantheonId", // IDPantheon
+  "newsletter", // NewsLetter
+  "mailToDifferentAddress", // PostaNaDruguAdresu
+  "gln", // GLN
+  "manualMarkupPercent", // KLRucProc
+  "balanceNote", // NapomenaZaSalda
+  "hideInOverview", // NePrikazatiUPregledu
+  "publicSectorId", // JBKJS
+  "registrationNumber", // MaticniBroj
+  "einvoiceXmlPerItemDiscount", // ER_XMLSaPopustomPoArtiklu
+  "centralInvoiceRegistry", // CRF
+]);
+
+/**
+ * Staging tekst -> broj. Nečitljiva vrednost daje `null` (veza/količina se
+ * NULIRA), nikad `NaN` — `NaN` bi oborio ceo red na upisu.
+ */
+const stageNum = (v: string | null): number | null => {
+  const s = stageText(v);
+  if (s === null) return null;
+  const x = Number(s.includes(".") ? s : s.replace(",", "."));
+  return Number.isFinite(x) ? x : null;
+};
+
+/**
+ * Staging tekst -> boolean. ⚠️ OVO JE OBAVEZNO: Access `Boolean` kroz
+ * `mdb-export` izlazi kao TEKST `'0'`/`'1'`, a mapper radi `Boolean(v)` —
+ * `Boolean('0')` je `true`, pa bi svaki komitent dobio uključene zastavice
+ * (npr. „fakturisanje po mestima isporuke").
+ */
+const stageBool = (v: string | null): boolean | null => {
+  const s = stageText(v)?.toLowerCase();
+  if (s === null || s === undefined) return null;
+  if (s === "1" || s === "-1" || s === "true" || s === "yes" || s === "da")
+    return true;
+  if (s === "0" || s === "false" || s === "no" || s === "ne") return false;
+  return null;
+};
+
+/**
+ * Staging tekst -> ISO instant sa `Z`.
+ *
+ * Korak 1 poziva `mdb-export -T '%Y-%m-%d %H:%M:%S' -D '%Y-%m-%d'`, dakle datum
+ * BEZ zone. Tekst se tumači kao UTC — ISTA konvencija kao `::timestamp AT TIME
+ * ZONE 'UTC'` u knjigovodstvenim koracima, pa se zapisani zid-sat ne pomera.
+ * Da se prosledi sirov tekst, `new Date('2026-07-26 08:47:00')` bi ga pročitao
+ * kao LOKALNO vreme i upisao 2 h pomereno u `Timestamp(6)` bez zone.
+ * Neprepoznat format daje `null` (kolona ostaje prazna) — nikad `Invalid Date`,
+ * koji obara upis celog reda.
+ */
+const stageDateIso = (v: string | null): string | null => {
+  const s = stageText(v);
+  if (s === null) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(
+    s,
+  );
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}T${m[4] ?? "00"}:${m[5] ?? "00"}:${m[6] ?? "00"}.000Z`;
+};
+
+/**
+ * Staging red -> `customers` upis, kroz POSTOJEĆI mapper.
+ *
+ * Ključevi objekta su BIGBIT imena kolona jer mapper čita njih (`Sifra`,
+ * `Ziro racun_1`, `Sifra prodavca`…) — MSSQL tabela je bila preslikana kopija
+ * ISTE Access tabele. Ovde se dešava samo tipizacija (tekst -> broj/boolean/ISO
+ * datum) i izbacivanje kolona kojih u izvoru nema.
+ */
+function komitentPayload(
+  row: BbMdbStageKomitent,
+  salespersonIds: Set<number>,
+  codeTypeCodes: Set<string>,
+): Prisma.CustomerUncheckedCreateInput {
+  const bb: Record<string, unknown> = {
+    Sifra: Number((row.sifra ?? "").trim()),
+    // `customers.name` je NOT NULL; mapper radi `String(r['Naziv'])`, pa bi
+    // `null` upisao literal 'null'. Prazan naziv ulazi kao '' — red se NE
+    // odbacuje (BigBit ga ima, znači postoji).
+    Naziv: stageText(row.naziv) ?? "",
+    Poslovnica: stageText(row.poslovnica),
+    Mesto: stageText(row.mesto),
+    Adresa: stageText(row.adresa),
+    "Postanski broj": stageText(row.postanskiBroj),
+    "Ziro racun_1": stageText(row.ziroRacun1),
+    "Ziro racun_2": stageText(row.ziroRacun2),
+    "Ziro racun_3": stageText(row.ziroRacun3),
+    Telefon: stageText(row.telefon),
+    Fax: stageText(row.fax),
+    Kontakt: stageText(row.kontakt),
+    Napomena: stageText(row.napomena),
+    Drzava: stageText(row.drzava),
+    Region: stageNum(row.region),
+    "Vrsta sifre": stageText(row.vrstaSifre),
+    Email: stageText(row.email),
+    Mobilni: stageText(row.mobilni),
+    "Datum rodjenja": stageDateIso(row.datumRodjenja),
+    "Web adresa": stageText(row.webAdresa),
+    "Sifra prodavca": stageNum(row.sifraProdavca),
+    RabatKomitenta: stageNum(row.rabatKomitenta),
+    ZastKodKupca: stageText(row.zastKodKupca),
+    // PIB: PRAZAN JE LEGITIMAN (ino kupci ga ne moraju imati; u BigBitu je
+    // kolona NULL-abilna, a validacija je u VBA formi, ne u bazi). `tax_id` je
+    // NOT NULL, pa prazno ide kao ''. Nikakva NOVA provera se ne uvodi.
+    PIB: stageText(row.pib) ?? "",
+    PDVStatus: stageNum(row.pdvStatus),
+    MSifra: stageText(row.msifra),
+    Odlozeno: stageNum(row.odlozeno),
+    IDRuta: stageNum(row.idRuta),
+    IDVozac: stageNum(row.idVozac),
+    IDUplatniRacun: stageNum(row.idUplatniRacun),
+    FakturisanjePoMestimaIsporuke: stageBool(row.fakturisanjePoMestimaIsporuke),
+    Cenovnik: stageText(row.cenovnik),
+    PrviUnos: stageDateIso(row.prviUnos),
+    PoslednjaIzmena: stageDateIso(row.poslednjaIzmena),
+    PrviUnosUser: stageText(row.prviUnosUser),
+    PoslednjaIzmenaUser: stageText(row.poslednjaIzmenaUser),
+    ProcenatProvizije: stageNum(row.procenatProvizije),
+    FiktRabatKomitenta: stageNum(row.fiktRabatKomitenta),
+    KomitentiNacinPlacanja: stageText(row.komitentiNacinPlacanja),
+    PotpisKom: stageText(row.potpisKom),
+  };
+
+  const data = mapKomitentiRow(bb, salespersonIds, codeTypeCodes);
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data))
+    if (!KOMITENTI_FIELDS_NOT_IN_MDB.has(key)) out[key] = value;
+  return out as Prisma.CustomerUncheckedCreateInput;
+}
+
+/**
+ * Da li postojeći `customers` red već nosi TAČNO ovaj sadržaj.
+ *
+ * Poredi se SAMO ono što upis nosi — kolone koje izvor ne šalje (v.
+ * `KOMITENTI_FIELDS_NOT_IN_MDB`), `source`, `bb_sifra` i
+ * `uses_payment_reference_model` nisu u upisu i ne ulaze u poređenje.
+ */
+function sameCustomerContent(
+  before: Record<string, unknown>,
+  data: Prisma.CustomerUncheckedCreateInput,
+): boolean {
+  const norm = (v: unknown): string | null => {
+    if (v === null || v === undefined) return null;
+    if (v instanceof Date) return v.toISOString();
+    if (v instanceof Prisma.Decimal) return v.toString();
+    if (typeof v === "string") return v;
+    if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint")
+      return String(v);
+    return JSON.stringify(v) ?? null;
+  };
+  for (const [key, value] of Object.entries(data)) {
+    if (key === "id") continue;
+    if (norm(before[key]) !== norm(value)) return false;
+  }
+  return true;
 }

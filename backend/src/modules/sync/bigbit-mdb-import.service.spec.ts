@@ -155,6 +155,27 @@ describe("BigbitMdbImportService", () => {
         bbMdbStageGk: { count: jest.fn().mockResolvedValue(counts.gk) },
         bbMdbStageNalog: { count: jest.fn().mockResolvedValue(counts.nalozi) },
         bbMdbStageAccount: { count: jest.fn().mockResolvedValue(counts.konta) },
+        // Matični podaci (30.07.2026) — prazan staging: ovaj spec meri REDOSLED i
+        // brane celog lanca, a sadržaj koraka komitenti/predmeti pokrivaju
+        // `bigbit-mdb-import.projects.spec.ts` i `…customers.spec.ts`.
+        bbMdbStageKomitent: {
+          count: jest.fn().mockResolvedValue(0),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        bbMdbStagePredmet: {
+          count: jest.fn().mockResolvedValue(0),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        customer: {
+          findMany: jest.fn().mockResolvedValue([]),
+          upsert: jest.fn().mockResolvedValue({ id: 1 }),
+        },
+        project: {
+          findMany: jest.fn().mockResolvedValue([]),
+          upsert: jest.fn().mockResolvedValue({ id: 1 }),
+        },
+        salesperson: { findMany: jest.fn().mockResolvedValue([]) },
+        codeType: { findMany: jest.fn().mockResolvedValue([]) },
         bbSyncState: { upsert: syncStateUpsert },
         $queryRaw: queryRaw,
       } as unknown as PrismaService,
@@ -197,7 +218,12 @@ describe("BigbitMdbImportService", () => {
       const res = await svc(prisma).runImport();
       expect(res.status).toBe("DONE");
       expect(res.steps.map((s) => s.entity)).toEqual([
-        // redosled je obavezan zbog FK lanca accounts -> ... -> ledger_entries
+        // MATIČNI PODACI IDU PRVI (30.07.2026): stavka glavne knjige nosi
+        // `IDPredmet`, pa predmet mora postojati pre nje; a predmet vezuje
+        // komitenta, pa komitenti idu pre predmeta.
+        "customers",
+        "projects",
+        // dalje je redosled obavezan zbog FK lanca accounts -> ... -> ledger_entries
         "accounts",
         "order_types",
         "saldakonto_accounts",
@@ -310,11 +336,13 @@ describe("BigbitMdbImportService", () => {
       });
       const res = await svc(prisma).runImport({ force: true });
       expect(res.status).toBe("DONE");
-      // Šest koraka: 5 uvoznih + ZAKLJUČAVANJE NA KRAJU (`journal_entries_lock`).
+      // Osam koraka: 2 matična + 5 uvoznih + ZAKLJUČAVANJE NA KRAJU.
       // Zaključavanje je odvojeno od koraka zaglavlja da korak stavki ne bi zatekao
       // nalog kao LOCKED i odbio iznose iz ISTOG fajla koji ga je zaključao.
-      expect(res.steps).toHaveLength(6);
+      expect(res.steps).toHaveLength(8);
       expect(res.steps.map((s) => s.entity)).toEqual([
+        "customers",
+        "projects",
         "accounts",
         "order_types",
         "saldakonto_accounts",

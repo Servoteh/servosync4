@@ -113,7 +113,7 @@ export class CustomerSyncer implements EntitySyncer {
       }
 
       try {
-        const data = this.mapRow(row, salespersonIds, codeTypeCodes);
+        const data = mapKomitentiRow(row, salespersonIds, codeTypeCodes);
         await this.prisma.customer.upsert({
           where: { id: data.id },
           create: data,
@@ -161,88 +161,103 @@ export class CustomerSyncer implements EntitySyncer {
     };
   }
 
-  /** Map a single Komitenti row to the Prisma Customer shape. */
-  private mapRow(
-    r: Record<string, unknown>,
-    salespersonIds: Set<number>,
-    codeTypeCodes: Set<string>,
-  ) {
-    const num = (v: unknown): number | null =>
-      v === null || v === undefined ? null : Number(v);
-    const str = (v: unknown): string | null =>
-      v === null || v === undefined ? null : String(v);
-    const bool = (v: unknown): boolean | null =>
-      v === null || v === undefined ? null : Boolean(v);
-    const date = (v: unknown): Date | null => (v ? new Date(v as string) : null);
+}
 
-    const salespersonId = num(r['Sifra prodavca']);
-    const driverId = num(r['IDVozac']);
-    const codeTypeCode = str(r['Vrsta sifre']);
+/**
+ * Map a single Komitenti row to the Prisma Customer shape.
+ *
+ * IZDVOJENO IZ KLASE 30.07.2026, BEZ IJEDNE PROMENE PONAŠANJA. Od tog dana isti
+ * BigBit red dolazi DVEMA rutama: živi MSSQL sync (`CustomerSyncer` — izvor mu je
+ * mrtav od 22.07.2026, prenos BigBit -> QBigTehn se više ne radi) i noćni .mdb
+ * uvoz (`BigbitMdbImportService.importCustomers`). Mapiranje sme da postoji SAMO
+ * na jednom mestu: dva primerka bi se razišla na prvoj izmeni i dve rute bi tiho
+ * pisale različit sadržaj u iste kolone.
+ *
+ * ULAZ su BIGBIT imena kolona (`Sifra`, `Ziro racun_1`, `Sifra prodavca`…) sa
+ * VEĆ TIPIZIRANIM vrednostima — broj/boolean/Date/string, tačno kako ih vraća
+ * MSSQL drajver. Ko zove iz .mdb staginga (sirov TEKST) mora prvo da tipizira:
+ * `bool()` ispod je `Boolean(v)`, pa bi tekst `'0'` postao `true`.
+ */
+export function mapKomitentiRow(
+  r: Record<string, unknown>,
+  salespersonIds: Set<number>,
+  codeTypeCodes: Set<string>,
+) {
+  const num = (v: unknown): number | null =>
+    v === null || v === undefined ? null : Number(v);
+  const str = (v: unknown): string | null =>
+    v === null || v === undefined ? null : String(v);
+  const bool = (v: unknown): boolean | null =>
+    v === null || v === undefined ? null : Boolean(v);
+  const date = (v: unknown): Date | null => (v ? new Date(v as string) : null);
 
-    return {
-      id: Number(r['Sifra']),
-      name: String(r['Naziv']),
-      branch: str(r['Poslovnica']),
-      city: str(r['Mesto']),
-      address: str(r['Adresa']),
-      postalCode: str(r['Postanski broj']),
-      bankAccount1: str(r['Ziro racun_1']),
-      bankAccount2: str(r['Ziro racun_2']),
-      bankAccount3: str(r['Ziro racun_3']),
-      phone: str(r['Telefon']),
-      fax: str(r['Fax']),
-      contact: str(r['Kontakt']),
-      note: str(r['Napomena']),
-      country: str(r['Drzava']),
-      region: num(r['Region']),
-      // FK -> code_types.code; null out if the code is not present yet.
-      codeTypeCode:
-        codeTypeCode && codeTypeCodes.has(codeTypeCode) ? codeTypeCode : null,
-      email: str(r['Email']),
-      mobile: str(r['Mobilni']),
-      birthDate: date(r['Datum rodjenja']),
-      webAddress: str(r['Web adresa']),
-      // FK -> salespeople.id; null out 0 / unknown references.
-      salespersonId:
-        salespersonId && salespersonIds.has(salespersonId)
-          ? salespersonId
-          : null,
-      customerDiscount: num(r['RabatKomitenta']),
-      buyerProtectionCode: str(r['ZastKodKupca']),
-      taxId: String(r['PIB']),
-      vatStatus: num(r['PDVStatus']),
-      externalCode: str(r['MSifra']),
-      paymentTermDays: num(r['Odlozeno']),
-      routeId: num(r['IDRuta']),
-      // self-FK -> customers.id; only keep if it points to an existing row.
-      driverId: driverId && driverId > 0 ? driverId : null,
-      paymentAccountId: num(r['IDUplatniRacun']),
-      invoicePerDeliveryAddress: bool(r['FakturisanjePoMestimaIsporuke']),
-      priceListCode: str(r['Cenovnik']),
-      createdAt: date(r['PrviUnos']),
-      updatedAt: date(r['PoslednjaIzmena']),
-      createdBy: str(r['PrviUnosUser']),
-      updatedBy: str(r['PoslednjaIzmenaUser']),
-      commissionPercent: num(r['ProcenatProvizije']),
-      fictitiousDiscount: num(r['FiktRabatKomitenta']),
-      paymentMethod: str(r['KomitentiNacinPlacanja']),
-      signature: str(r['PotpisKom']),
-      shortName: str(r['SkraceniNaziv']),
-      recordCreatedAt: date(r['DatumIVremeKom']),
-      checkDebt: bool(r['ProveraDuga']),
-      creditLimit: num(r['KreditLimit']),
-      skipTaxIdValidation: bool(r['NeProveravajPIB']),
-      pantheonId: str(r['IDPantheon']),
-      newsletter: bool(r['NewsLetter']),
-      mailToDifferentAddress: bool(r['PostaNaDruguAdresu']),
-      gln: str(r['GLN']),
-      manualMarkupPercent: num(r['KLRucProc']),
-      balanceNote: str(r['NapomenaZaSalda']),
-      hideInOverview: bool(r['NePrikazatiUPregledu']),
-      publicSectorId: str(r['JBKJS']),
-      registrationNumber: str(r['MaticniBroj']),
-      einvoiceXmlPerItemDiscount: bool(r['ER_XMLSaPopustomPoArtiklu']),
-      centralInvoiceRegistry: bool(r['CRF']),
-    };
-  }
+  const salespersonId = num(r['Sifra prodavca']);
+  const driverId = num(r['IDVozac']);
+  const codeTypeCode = str(r['Vrsta sifre']);
+
+  return {
+    id: Number(r['Sifra']),
+    name: String(r['Naziv']),
+    branch: str(r['Poslovnica']),
+    city: str(r['Mesto']),
+    address: str(r['Adresa']),
+    postalCode: str(r['Postanski broj']),
+    bankAccount1: str(r['Ziro racun_1']),
+    bankAccount2: str(r['Ziro racun_2']),
+    bankAccount3: str(r['Ziro racun_3']),
+    phone: str(r['Telefon']),
+    fax: str(r['Fax']),
+    contact: str(r['Kontakt']),
+    note: str(r['Napomena']),
+    country: str(r['Drzava']),
+    region: num(r['Region']),
+    // FK -> code_types.code; null out if the code is not present yet.
+    codeTypeCode:
+      codeTypeCode && codeTypeCodes.has(codeTypeCode) ? codeTypeCode : null,
+    email: str(r['Email']),
+    mobile: str(r['Mobilni']),
+    birthDate: date(r['Datum rodjenja']),
+    webAddress: str(r['Web adresa']),
+    // FK -> salespeople.id; null out 0 / unknown references.
+    salespersonId:
+      salespersonId && salespersonIds.has(salespersonId)
+        ? salespersonId
+        : null,
+    customerDiscount: num(r['RabatKomitenta']),
+    buyerProtectionCode: str(r['ZastKodKupca']),
+    taxId: String(r['PIB']),
+    vatStatus: num(r['PDVStatus']),
+    externalCode: str(r['MSifra']),
+    paymentTermDays: num(r['Odlozeno']),
+    routeId: num(r['IDRuta']),
+    // self-FK -> customers.id; only keep if it points to an existing row.
+    driverId: driverId && driverId > 0 ? driverId : null,
+    paymentAccountId: num(r['IDUplatniRacun']),
+    invoicePerDeliveryAddress: bool(r['FakturisanjePoMestimaIsporuke']),
+    priceListCode: str(r['Cenovnik']),
+    createdAt: date(r['PrviUnos']),
+    updatedAt: date(r['PoslednjaIzmena']),
+    createdBy: str(r['PrviUnosUser']),
+    updatedBy: str(r['PoslednjaIzmenaUser']),
+    commissionPercent: num(r['ProcenatProvizije']),
+    fictitiousDiscount: num(r['FiktRabatKomitenta']),
+    paymentMethod: str(r['KomitentiNacinPlacanja']),
+    signature: str(r['PotpisKom']),
+    shortName: str(r['SkraceniNaziv']),
+    recordCreatedAt: date(r['DatumIVremeKom']),
+    checkDebt: bool(r['ProveraDuga']),
+    creditLimit: num(r['KreditLimit']),
+    skipTaxIdValidation: bool(r['NeProveravajPIB']),
+    pantheonId: str(r['IDPantheon']),
+    newsletter: bool(r['NewsLetter']),
+    mailToDifferentAddress: bool(r['PostaNaDruguAdresu']),
+    gln: str(r['GLN']),
+    manualMarkupPercent: num(r['KLRucProc']),
+    balanceNote: str(r['NapomenaZaSalda']),
+    hideInOverview: bool(r['NePrikazatiUPregledu']),
+    publicSectorId: str(r['JBKJS']),
+    registrationNumber: str(r['MaticniBroj']),
+    einvoiceXmlPerItemDiscount: bool(r['ER_XMLSaPopustomPoArtiklu']),
+    centralInvoiceRegistry: bool(r['CRF']),
+  };
 }

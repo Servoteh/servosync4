@@ -5048,6 +5048,8 @@ model BbMdbDrop {
   stageSchemeLine BbMdbStageSchemeLine[]
   stagePdvGk      BbMdbStagePdvGk[]
   stagePopdvGk    BbMdbStagePopdvGk[]
+  stageKomitenti  BbMdbStageKomitent[]
+  stagePredmeti   BbMdbStagePredmet[]
 
   @@unique([fileName, fileMtime, fileSize], map: "uq_bb_mdb_drops_file")
   @@index([stageStatus, importStatus], map: "idx_bb_mdb_drops_status")
@@ -5146,6 +5148,120 @@ model BbMdbStageAccount {
 
   @@index([dropId], map: "idx_bb_mdb_stage_kontni_plan_drop")
   @@map("bb_mdb_stage_kontni_plan")
+}
+
+/// Was: Komitenti — staging (matični podaci, 30.07.2026).
+///
+/// ZAŠTO SU MATIČNI PODACI DOŠLI U .mdb KANAL: do 22.07.2026 su komitenti i
+/// predmeti stizali kroz MSSQL kopiju `QBigTehn`. Tog dana je prenos iz BigBita
+/// u tu kopiju prestao da se radi — mereno 30.07: BigBit na predmetu 10014,
+/// QBigTehn i 4.0 na 10005. Dakle 4.0 je bio savršeno usklađen sa svojim
+/// izvorom, a izvor je bio mrtav osam dana i to niko nije video. Otud isti
+/// kanal kao knjigovodstvo: direktno iz kopije BigBit baze.
+///
+/// SVE KOLONE SU `String?` (sirov tekst iz CSV-a) — kao i ostale staging tabele.
+/// Tipizacija i validacija su posao uvoza, da bajat ili čudan red padne TAMO gde
+/// se može imenovati, a ne na `COPY` sa porukom o broju kolone.
+model BbMdbStageKomitent {
+  id     Int @id(map: "pk_bb_mdb_stage_komitenti") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  sifra                        String? @map("sifra") // Sifra (IDENTITY → customers.id)
+  naziv                        String? @map("naziv") // Naziv
+  poslovnica                   String? @map("poslovnica") // Poslovnica
+  mesto                        String? @map("mesto") // Mesto
+  adresa                       String? @map("adresa") // Adresa
+  postanskiBroj                String? @map("postanski_broj") // Postanski broj
+  ziroRacun1                   String? @map("ziro_racun_1") // Ziro racun_1
+  ziroRacun2                   String? @map("ziro_racun_2") // Ziro racun_2
+  ziroRacun3                   String? @map("ziro_racun_3") // Ziro racun_3
+  telefon                      String? @map("telefon") // Telefon
+  fax                          String? @map("fax") // Fax
+  kontakt                      String? @map("kontakt") // Kontakt
+  napomena                     String? @map("napomena") // Napomena (Memo — nosi CR/LF)
+  drzava                       String? @map("drzava") // Drzava
+  region                       String? @map("region") // Region
+  vrstaSifre                   String? @map("vrsta_sifre") // Vrsta sifre
+  email                        String? @map("email") // Email
+  mobilni                      String? @map("mobilni") // Mobilni
+  datumRodjenja                String? @map("datum_rodjenja") // Datum rodjenja
+  webAdresa                    String? @map("web_adresa") // Web adresa
+  sifraProdavca                String? @map("sifra_prodavca") // Sifra prodavca
+  rabatKomitenta               String? @map("rabat_komitenta") // RabatKomitenta
+  zastKodKupca                 String? @map("zast_kod_kupca") // ZastKodKupca
+  pib                          String? @map("pib") // PIB (prazan je legitiman — ino kupci ga nemaju)
+  pdvStatus                    String? @map("pdv_status") // PDVStatus
+  msifra                       String? @map("msifra") // MSifra
+  odlozeno                     String? @map("odlozeno") // Odlozeno
+  idRuta                       String? @map("id_ruta") // IDRuta
+  idVozac                      String? @map("id_vozac") // IDVozac
+  idUplatniRacun               String? @map("id_uplatni_racun") // IDUplatniRacun
+  fakturisanjePoMestimaIsporuke String? @map("fakturisanje_po_mestima_isporuke") // FakturisanjePoMestimaIsporuke
+  cenovnik                     String? @map("cenovnik") // Cenovnik
+  prviUnos                     String? @map("prvi_unos") // PrviUnos
+  poslednjaIzmena              String? @map("poslednja_izmena") // PoslednjaIzmena (vodeni žig za razliku)
+  prviUnosUser                 String? @map("prvi_unos_user") // PrviUnosUser
+  poslednjaIzmenaUser          String? @map("poslednja_izmena_user") // PoslednjaIzmenaUser
+  procenatProvizije            String? @map("procenat_provizije") // ProcenatProvizije
+  fiktRabatKomitenta           String? @map("fikt_rabat_komitenta") // FiktRabatKomitenta
+  komitentiNacinPlacanja       String? @map("komitenti_nacin_placanja") // KomitentiNacinPlacanja
+  potpisKom                    String? @map("potpis_kom") // PotpisKom
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_komitenti_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_komitenti_drop")
+  @@map("bb_mdb_stage_komitenti")
+}
+
+/// Was: Predmeti — staging (matični podaci, 30.07.2026). Obrazloženje kanala:
+/// vidi `BbMdbStageKomitent`.
+model BbMdbStagePredmet {
+  id     Int @id(map: "pk_bb_mdb_stage_predmeti") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  idPredmet          String? @map("id_predmet") // IDPredmet → projects.id
+  brojPredmeta       String? @map("broj_predmeta") // BrojPredmeta (ljudski ključ; paritet-guard!)
+  opis               String? @map("opis") // Opis
+  datumOtvaranja     String? @map("datum_otvaranja") // DatumOtvaranja
+  idProdavac         String? @map("id_prodavac") // IDProdavac
+  idKomitent         String? @map("id_komitent") // IDKomitent → customers.id
+  nextAction         String? @map("next_action") // NextAction
+  datumZakljucenja   String? @map("datum_zakljucenja") // DatumZakljucenja
+  memo               String? @map("memo") // Memo (nosi CR/LF i zareze)
+  status             String? @map("status") // Status
+  nasaRef            String? @map("nasa_ref") // NasaRef
+  nasKontakt1        String? @map("nas_kontakt1") // NasKontakt1
+  nasKontakt2        String? @map("nas_kontakt2") // NasKontakt2
+  nasTel1            String? @map("nas_tel1") // NasTel1
+  nasTel2            String? @map("nas_tel2") // NasTel2
+  vasaRef            String? @map("vasa_ref") // VasaRef
+  vasKontakt1        String? @map("vas_kontakt1") // VasKontakt1
+  vasKontakt2        String? @map("vas_kontakt2") // VasKontakt2
+  vasTel1            String? @map("vas_tel1") // VasTel1
+  vasTel2            String? @map("vas_tel2") // VasTel2
+  nabavnaVrednost    String? @map("nabavna_vrednost") // NabavnaVrednost
+  carina             String? @map("carina") // Carina
+  spedicija          String? @map("spedicija") // Spedicija
+  prevoz             String? @map("prevoz") // Prevoz
+  ostalo             String? @map("ostalo") // Ostalo
+  inoDobavljac       String? @map("ino_dobavljac") // InoDobavljac
+  rj                 String? @map("rj") // RJ
+  devvaluta          String? @map("devvaluta") // devvaluta
+  kurs               String? @map("kurs") // kurs
+  idVrstaPosla       String? @map("id_vrsta_posla") // IDVrstaPosla
+  nazivPredmeta      String? @map("naziv_predmeta") // NazivPredmeta
+  rokZavrsetka       String? @map("rok_zavrsetka") // RokZavrsetka
+  potpis             String? @map("potpis") // Potpis
+  datumIVreme        String? @map("datum_i_vreme") // DatumIVreme (vodeni žig za razliku)
+  brojUgovora        String? @map("broj_ugovora") // BrojUgovora
+  datumUgovora       String? @map("datum_ugovora") // DatumUgovora
+  brojNarudzbenice   String? @map("broj_narudzbenice") // BrojNarudzbenice
+  datumNarudzbenice  String? @map("datum_narudzbenice") // DatumNarudzbenice
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_predmeti_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_predmeti_drop")
+  @@map("bb_mdb_stage_predmeti")
 }
 
 /// Was: Vrsta naloga — staging.

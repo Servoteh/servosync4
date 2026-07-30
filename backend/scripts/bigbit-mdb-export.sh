@@ -79,6 +79,23 @@ TABLES=(
   "Stavke seme za kontiranje|bb_mdb_stage_sema_stavke|sema_stavke|IDStavkeSeme|IDSeme|Konto|Opis|DefDug|DefPot|Analitika|Poreklo|KngSifra_2"
   "T_PDV_GK|bb_mdb_stage_pdv_gk|pdv_gk|ID|StavkaID|DatPorPerioda|PDVEvidencija|PDVStopa|PDVOsnovica|ObracunPDVOsnovica|PDVIznos|ObracunPDVIznos|PDVGrupa"
   "T_POPDV_GK|bb_mdb_stage_popdv_gk|popdv_gk|StavkaID|PDVOznaka|DatPorPerioda|K1Iznos|K2Iznos|K3Iznos|K4Iznos"
+
+  # ── MATIČNI PODACI (30.07.2026) ────────────────────────────────────────────
+  # Dodati kad je QBigTehn lanac ugašen: do sada su komitenti i predmeti stizali
+  # kroz MSSQL kopiju (`QBigTehn`), a ona je stala 22.07.2026 jer se prenos iz
+  # BigBita u nju više ne radi. Mereno tog dana: BigBit je bio na predmetu 10014,
+  # QBigTehn i 4.0 na 10005 — dakle 4.0 je bio savršeno usklađen sa svojim
+  # izvorom, a izvor je bio mrtav. Zato matični podaci od sada idu ISTIM kanalom
+  # kao knjigovodstvo: direktno iz kopije BigBit baze.
+  #
+  # KOLONE SE ZOVU TAČNO KAO U BIGBITU I TO NIJE SLUČAJNO: postojeći mapper
+  # (`syncers/customer.syncer.ts`, `sync-map.generated.ts`) čita `Sifra`,
+  # `Naziv`, `Ziro racun_1`, `IDPredmet`, `BrojPredmeta`… jer je MSSQL tabela
+  # bila preslikana kopija ove iste. Zadržavanjem imena menja se SAMO izvor
+  # redova — razrešavanje veza, zaštita 4.0-native redova i validacija ostaju
+  # netaknuti i već testirani.
+  "Komitenti|bb_mdb_stage_komitenti|komitenti|Sifra|Naziv|Poslovnica|Mesto|Adresa|Postanski broj|Ziro racun_1|Ziro racun_2|Ziro racun_3|Telefon|Fax|Kontakt|Napomena|Drzava|Region|Vrsta sifre|Email|Mobilni|Datum rodjenja|Web adresa|Sifra prodavca|RabatKomitenta|ZastKodKupca|PIB|PDVStatus|MSifra|Odlozeno|IDRuta|IDVozac|IDUplatniRacun|FakturisanjePoMestimaIsporuke|Cenovnik|PrviUnos|PoslednjaIzmena|PrviUnosUser|PoslednjaIzmenaUser|ProcenatProvizije|FiktRabatKomitenta|KomitentiNacinPlacanja|PotpisKom"
+  "Predmeti|bb_mdb_stage_predmeti|predmeti|IDPredmet|BrojPredmeta|Opis|DatumOtvaranja|IDProdavac|IDKomitent|NextAction|DatumZakljucenja|Memo|Status|NasaRef|NasKontakt1|NasKontakt2|NasTel1|NasTel2|VasaRef|VasKontakt1|VasKontakt2|VasTel1|VasTel2|NabavnaVrednost|Carina|Spedicija|Prevoz|Ostalo|InoDobavljac|RJ|devvaluta|kurs|IDVrstaPosla|NazivPredmeta|RokZavrsetka|Potpis|DatumIVreme|BrojUgovora|DatumUgovora|BrojNarudzbenice|DatumNarudzbenice"
 )
 
 # psql u kontejneru, na host mreži, sa UTF-8 klijentom.
