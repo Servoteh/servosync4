@@ -2,13 +2,16 @@ import { KadrovskaService } from "./kadrovska.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 
 /**
- * Auto-unos iz kapije (kucanje → grid) — READ-ONLY predlozi (odluka Nenad 20.07:
- * regular ~8h ±tol / dugme+pregled / SAMO prazni dani; Nikola verifikuje). Pinuje:
- * (1) SQL bira SAMO regularne PRAZNE dane (grid_covered=false, absence NULL, teren=0,
- *     open_intervals=0, ulaz+izlaz, prisustvo u opsegu) iz v_attendance_vs_grid;
- * (2) JS izbacuje vikend I praznike (holSet iz baze); (3) izlaz = hours=8 + kontekst
- *     (presenceHours/firstIn/lastOut) za pregled; (4) sve kroz withUserRls (RLS),
- *     NIKAD this.sy15.db (BYPASSRLS) — auto ne sme da probije PII/row-scope.
+ * Auto-unos iz kapije (kucanje → grid) — READ-ONLY predlozi. Poravnat sa noćnim
+ * auto-tikom (deli `proposeHoursFromPresence`) posle zahteva 044/26. Pinuje:
+ * (1) SQL bira SAMO PRAZNE dane (grid_covered=false, absence NULL, teren=0,
+ *     open_intervals=0, ulaz+izlaz) iz v_attendance_vs_grid — BEZ uskog opsega
+ *     prisustva u SQL-u (opseg + predlog sati računa JS = izvor istine);
+ * (2) vikend/praznik SA čistim kucanjem se PREDLAŽU kao redovni (D1, 044/26 — više
+ *     se ne izbacuju); skraćena smena se seče NANIŽE na pola sata (D2);
+ * (3) izlaz = hours (predlog) + kontekst (presenceHours/firstIn/lastOut) za pregled;
+ * (4) sve kroz withUserRls (RLS), NIKAD this.sy15.db (BYPASSRLS) — auto ne sme da
+ *     probije PII/row-scope.
  */
 type SqlLike = { strings: string[]; values: unknown[] };
 const firstSql = (m: jest.Mock): SqlLike =>
@@ -69,7 +72,7 @@ function vsRow(day: string, over: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", () => {
-  it("SQL bira SAMO regularne prazne dane iz v_attendance_vs_grid", async () => {
+  it("SQL bira SAMO prazne dane iz v_attendance_vs_grid — BEZ uskog opsega prisustva", async () => {
     const { svc, queryRaw } = makeSvc({ vsGridRows: [] });
     await svc.gridAutoFillSuggestions("hr@x", { year: 2026, month: 7 });
     const t = sqlText(queryRaw);
@@ -80,10 +83,13 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     expect(t).toContain("open_intervals = 0");
     expect(t).toContain("first_in IS NOT NULL");
     expect(t).toContain("last_out IS NOT NULL");
-    // opseg prisustva parametrizovan (7.6–8.4)
+    // opseg prisustva se više NE zida u SQL (računa ga proposeHoursFromPresence u JS-u);
+    // parametri su samo granice meseca.
     expect(firstSql(queryRaw).values).toEqual(
-      expect.arrayContaining([7.6, 8.4]),
+      expect.arrayContaining(["2026-07-01", "2026-08-01"]),
     );
+    expect(firstSql(queryRaw).values).not.toContain(7.6);
+    expect(firstSql(queryRaw).values).not.toContain(8.4);
   });
 
   it("regularan radni dan (uto 2026-07-07) → predlog hours=8 + kontekst za pregled", async () => {
@@ -106,21 +112,53 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     expect(dbAccessed()).toBe(false); // NIKAD BYPASSRLS
   });
 
-  it("vikend (subota 2026-07-04) se izbacuje iako je regularan po kucanju", async () => {
-    const { svc } = makeSvc({ vsGridRows: [vsRow("2026-07-04")] });
+  it("vikend (subota 2026-07-25) SA kucanjem → PREDLAŽE se kao redovni (D1, 044/26)", async () => {
+    // Duško: subota 08:00–14:31 = 6.52h → predlog 6.5h (D1 vikend + D2 floor).
+    const { svc } = makeSvc({
+      vsGridRows: [vsRow("2026-07-25", { presence_hours: 6.52 })],
+    });
     const out = await svc.gridAutoFillSuggestions("hr@x", {
       year: 2026,
       month: 7,
     });
-    expect((out.data as { suggestions: unknown[] }).suggestions).toHaveLength(
-      0,
-    );
+    const s = (out.data as { suggestions: Record<string, unknown>[] })
+      .suggestions;
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ workDate: "2026-07-25", hours: 6.5 });
   });
 
-  it("praznik (2026-07-07 u holSet) se izbacuje", async () => {
+  it("praznik (2026-07-07) SA kucanjem → PREDLAŽE se; holidays se više ne pita (044/26)", async () => {
     const { svc } = makeSvc({
-      vsGridRows: [vsRow("2026-07-07")],
+      vsGridRows: [vsRow("2026-07-07")], // default presence 8.0 → hours 8
       holidays: ["2026-07-07"],
+    });
+    const out = await svc.gridAutoFillSuggestions("hr@x", {
+      year: 2026,
+      month: 7,
+    });
+    const s = (out.data as { suggestions: Record<string, unknown>[] })
+      .suggestions;
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ workDate: "2026-07-07", hours: 8 });
+  });
+
+  it("skraćena smena (6.75h) → predlog sečen NANIŽE na 6.5 (D2), NE 8h", async () => {
+    const { svc } = makeSvc({
+      vsGridRows: [vsRow("2026-07-07", { presence_hours: 6.75 })],
+    });
+    const out = await svc.gridAutoFillSuggestions("hr@x", {
+      year: 2026,
+      month: 7,
+    });
+    const s = (out.data as { suggestions: Record<string, unknown>[] })
+      .suggestions;
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ hours: 6.5, presenceHours: 6.75 });
+  });
+
+  it("van opsega prisustva (0.5h) → NIJE predlog (proposeHoursFromPresence → null)", async () => {
+    const { svc } = makeSvc({
+      vsGridRows: [vsRow("2026-07-07", { presence_hours: 0.5 })],
     });
     const out = await svc.gridAutoFillSuggestions("hr@x", {
       year: 2026,

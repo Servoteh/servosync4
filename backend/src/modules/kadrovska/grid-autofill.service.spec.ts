@@ -22,12 +22,14 @@ function belgradeYesterday(): string {
 }
 
 /**
- * Zahtev 012/26 — dnevni auto-predlog grida iz kapije (presuda Nenad 24.07). Pinuje:
- * (1) predlog iz STVARNOG prisustva (NE paušalno 8h) — skraćeno vreme 5h → 5.0;
+ * Zahtev 012/26 + 044/26 — dnevni auto-predlog grida iz kapije. Pinuje:
+ * (1) predlog iz STVARNOG prisustva (NE paušalno 8h) — sečeno NANIŽE na pola sata
+ *     (D2, 044/26): 6.52 → 6.5, 6.75 → 6.5, 5.05 → 5.0;
  * (2) upis je INSERT … ON CONFLICT (employee_id, work_date) DO NOTHING (idempotentno,
  *     nikad ne gazi ručni unos) + marker last_edited_by='auto:kapija';
- * (3) vikend/praznik/opseg se preskaču; (4) kill-switch KADROVSKA_GRID_AUTOFILL=false → no-op;
- * (5) dryRun ne piše.
+ * (3) vikend/praznik SA čistim kucanjem se predlažu kao REDOVNI sati (D1, 044/26 — više
+ *     se NE preskaču); van-opsega [1h..14h] se preskače; (4) kill-switch
+ *     KADROVSKA_GRID_AUTOFILL=false → no-op; (5) dryRun ne piše.
  */
 
 type SqlLike = { strings: string[]; values: unknown[] };
@@ -85,11 +87,18 @@ afterEach(() => {
 });
 
 describe("proposeHoursFromPresence (STVARNI sati, NE paušalno 8h)", () => {
-  it("skraćeno radno vreme (~5h) → 5.0, NE 8h (Antić/Pavlović)", () => {
+  it("skraćeno radno vreme (~5h) → sečeno NANIŽE, NE 8h (Antić/Pavlović)", () => {
     expect(proposeHoursFromPresence(5.0)).toBe(5.0);
     expect(proposeHoursFromPresence(5.05)).toBe(5.0);
-    expect(proposeHoursFromPresence(5.3)).toBe(5.5);
-    expect(proposeHoursFromPresence(4.8)).toBe(5.0);
+    expect(proposeHoursFromPresence(5.3)).toBe(5.0); // FLOOR: 5.3 → 5.0 (ne 5.5)
+    expect(proposeHoursFromPresence(4.8)).toBe(4.5); // FLOOR: 4.8 → 4.5 (ne 5.0)
+  });
+
+  it("D2 (044/26) — sečenje NANIŽE na pola sata (Duško: 6.52h → 6.5)", () => {
+    expect(proposeHoursFromPresence(6.52)).toBe(6.5); // Duško subota 2026-07-25
+    expect(proposeHoursFromPresence(6.75)).toBe(6.5); // FLOOR: 6.75 → 6.5 (ne 7.0)
+    expect(proposeHoursFromPresence(6.99)).toBe(6.5); // tik ispod 7 → 6.5
+    expect(proposeHoursFromPresence(6.5)).toBe(6.5); // tačno pola → ostaje
   });
 
   it("pun dan (prisustvo u/preko regularnog opsega) → 8", () => {
@@ -100,10 +109,10 @@ describe("proposeHoursFromPresence (STVARNI sati, NE paušalno 8h)", () => {
     expect(proposeHoursFromPresence(9.5)).toBe(8); // duži dan → 8 redovnih; prekovremeni ručno
   });
 
-  it("srednje kratko (6–7.5h) → zaokruženo na pola sata", () => {
+  it("srednje kratko (6–7.5h) → sečeno NANIŽE na pola sata", () => {
     expect(proposeHoursFromPresence(6.7)).toBe(6.5);
-    expect(proposeHoursFromPresence(7.5)).toBe(7.5);
-    expect(proposeHoursFromPresence(7.4)).toBe(7.5);
+    expect(proposeHoursFromPresence(7.5)).toBe(7.5); // tačno pola → ostaje
+    expect(proposeHoursFromPresence(7.4)).toBe(7.0); // FLOOR: 7.4 → 7.0 (ne 7.5)
   });
 
   it("van opsega → null (preskoči): <1h slučajno kucanje, >14h anomalija, null", () => {
@@ -160,25 +169,30 @@ describe("KadrovskaGridAutofillService.run", () => {
     expect(valuesOf(executeRaw)).toEqual(expect.arrayContaining([[8]]));
   });
 
-  it("vikend (subota 2026-07-04) se preskače — bez upisa", async () => {
+  it("vikend (subota 2026-07-25) SA čistim kucanjem → predlaže se kao REDOVNI (D1) — NIJE preskočen", async () => {
+    // Duško Kostić: subota 08:00–14:31 = 6.52h prisustva → 6.5h redovnih (D1+D2).
     const { svc, executeRaw } = makeSvc({
-      vsGridRows: [vsRow("2026-07-04", 8.0)],
+      vsGridRows: [vsRow("2026-07-25", 6.52)],
+      executeResult: 1,
     });
-    const { data } = await svc.run({ from: "2026-07-04", to: "2026-07-04" });
-    expect(data.proposed).toBe(0);
-    expect(data.skippedWeekendHoliday).toBe(1);
-    expect(executeRaw).not.toHaveBeenCalled();
+    const { data } = await svc.run({ from: "2026-07-25", to: "2026-07-25" });
+    expect(data.proposed).toBe(1);
+    expect(data.inserted).toBe(1);
+    expect(data.skippedWeekendHoliday).toBe(0); // polje zadržano radi API-compat, uvek 0
+    expect(valuesOf(executeRaw)).toEqual(expect.arrayContaining([[6.5]]));
   });
 
-  it("praznik u holSet se preskače — bez upisa", async () => {
-    const { svc, executeRaw } = makeSvc({
+  it("praznik (dan sa kucanjem) → predlaže se kao REDOVNI (D1); kadrHoliday se više NE pita", async () => {
+    const { svc, executeRaw, holidayFindMany } = makeSvc({
       vsGridRows: [vsRow("2026-07-07", 8.0)],
       holidays: ["2026-07-07"],
+      executeResult: 1,
     });
     const { data } = await svc.run({ from: "2026-07-07", to: "2026-07-07" });
-    expect(data.proposed).toBe(0);
-    expect(data.skippedWeekendHoliday).toBe(1);
-    expect(executeRaw).not.toHaveBeenCalled();
+    expect(data.proposed).toBe(1);
+    expect(data.inserted).toBe(1);
+    expect(data.skippedWeekendHoliday).toBe(0);
+    expect(holidayFindMany).not.toHaveBeenCalled(); // praznik-upit uklonjen (044/26)
   });
 
   it("idempotentno / ne-prepisivanje: već popunjen dan (DO NOTHING → 0 upisa) iako je predložen", async () => {
@@ -237,10 +251,13 @@ describe("KadrovskaGridAutofillService.run", () => {
     expect(valuesOf(queryRaw)).not.toContain("2999-12-31");
   });
 
-  it("praznik upit filtrira isWorkday=false (radni-dan izuzetak se NE preskače)", async () => {
-    const { svc, holidayFindMany } = makeSvc({ vsGridRows: [] });
+  it("kadrHoliday se NE pita (praznik-upit uklonjen u 044/26 — praznik ide kao redovni)", async () => {
+    const { svc, holidayFindMany } = makeSvc({
+      vsGridRows: [vsRow("2026-07-07", 8.0)],
+      executeResult: 1,
+    });
     await svc.run({ from: "2026-07-07", to: "2026-07-07" });
-    expect(holidayFindMany.mock.calls[0]?.[0]?.where?.isWorkday).toBe(false);
+    expect(holidayFindMany).not.toHaveBeenCalled();
   });
 });
 

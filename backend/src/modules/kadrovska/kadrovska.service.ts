@@ -16,6 +16,12 @@ import {
   computePayableHours,
   sanitizeHoursForWorkType,
 } from "./payroll/payroll-calc";
+import {
+  proposeHoursFromPresence,
+  FULL_DAY_HOURS,
+  PRESENCE_FLOOR,
+  PRESENCE_CEIL,
+} from "./grid-autofill.service";
 import type {
   AbsencesQueryDto,
   AttendanceDailyQueryDto,
@@ -852,8 +858,9 @@ export class KadrovskaService {
 
   /**
    * Predlozi auto-unosa iz kapije (kucanje → mesečni grid). READ-ONLY: NE piše
-   * ništa; vraća predlog redovnih sati za „regularne" PRAZNE dane koje urednik
-   * (Nikola) verifikuje pa snima kroz `grid/batch`.
+   * ništa; vraća predlog sati za „regularne" PRAZNE dane koje urednik (Nikola)
+   * verifikuje pa snima kroz `grid/batch`. Isti izvor istine kao noćni auto-tik
+   * (`proposeHoursFromPresence`) → oba puta predlažu IDENTIČNO.
    *
    * Izvor je `v_attendance_vs_grid` (kucanje već izvedeno u `v_attendance_daily`:
    * dedup <60s, službeni izlaz = radno vreme, deterministički). „Regularan" dan =
@@ -862,8 +869,11 @@ export class KadrovskaService {
    *   - ima ulaz I izlaz, bez zaboravljenog izlaza (first_in/last_out NOT NULL,
    *     open_intervals=0);
    *   - bez terena (grid_field_hours=0 — teren badge ≠ sati);
-   *   - prisustvo u opsegu [MIN,MAX] (parametri) → predlog = REGULAR_HOURS (8).
-   * Vikendi/praznici se preskaču (kucanje van rasporeda nije redovan rad — ide ručno).
+   *   - prisustvo u opsegu [FLOOR..CEIL] → predlog = STVARNI sati sečeni NANIŽE na
+   *     pola sata (≥7.6h → 8), NE paušalnih 8h (D2, zahtev 044/26).
+   * Vikend/praznik sa čistim kucanjem SE predlaže kao redovni sati (D1, zahtev
+   * 044/26): kucanje je dokaz da je čovek radio, grid iz datuma vidi da je neradni
+   * dan (bez posebnog flag-a). Ranije se preskakalo — Nikola je vikende ručno unosio.
    *
    * Zašto view a ne sirovi events: `v_attendance_vs_grid` je već SECURITY INVOKER
    * (RLS „svoje ∨ attendance"); ide kroz withUserMapped (SET LOCAL ROLE
@@ -875,31 +885,13 @@ export class KadrovskaService {
     const month = q.month ?? now.getUTCMonth() + 1;
     const start = `${year}-${String(month).padStart(2, "0")}-01`;
     const endExcl = `${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, "0")}-01`;
-    // Parametri „regularnog" dana (odluka: standardan ~8h ±tolerancija).
-    const REGULAR_HOURS = 8;
-    const PRESENCE_MIN = 7.6;
-    const PRESENCE_MAX = 8.4;
 
     return this.withUserMapped(email, async (tx) => {
-      const holidays = await tx.kadrHoliday.findMany({
-        where: {
-          // isWorkday=false → SAMO pravi neradni praznik; red sa isWorkday=true je
-          // radni-dan IZUZETAK (npr. radna subota) i NE sme se preskočiti.
-          isWorkday: false,
-          holidayDate: {
-            gte: new Date(`${start}T00:00:00Z`),
-            lt: new Date(`${endExcl}T00:00:00Z`),
-          },
-        },
-        select: { holidayDate: true },
-      });
-      const holSet = new Set(
-        holidays.map((h) => h.holidayDate.toISOString().slice(0, 10)),
-      );
-
-      // Regularni prazni dani iz shadow view-a. Filtriranje „praznog" i signala
-      // radi SQL (indeksni raspon po danu); vikend/praznik izbacujemo u JS-u
-      // (holSet je iz baze, a EXTRACT(dow) bi zavisio od TZ).
+      // Regularni prazni dani iz shadow view-a. „Prazan" + signali radnog dana
+      // (ulaz+izlaz, bez zaboravljenog izlaza/terena/odsustva) filtrira SQL; predlog
+      // sati + opseg prisustva [FLOOR..CEIL] računa `proposeHoursFromPresence` u JS-u
+      // (JEDINI izvor istine, deljen sa noćnim auto-tikom). Vikend/praznik se NE
+      // izbacuju (D1, zahtev 044/26) — čisto kucanje na neradni dan = redovni sati.
       const rows = await tx.$queryRaw<
         {
           employee_id: string;
@@ -920,38 +912,37 @@ export class KadrovskaService {
           AND first_in IS NOT NULL
           AND last_out IS NOT NULL
           AND presence_hours IS NOT NULL
-          AND presence_hours >= ${PRESENCE_MIN}
-          AND presence_hours <= ${PRESENCE_MAX}
           ${q.employeeId ? Prisma.sql`AND employee_id = ${q.employeeId}::uuid` : Prisma.empty}
         ORDER BY employee_id, day
       `);
 
-      const suggestions = rows
-        .filter((r) => {
-          const ymd = r.day.toISOString().slice(0, 10);
-          const dow = r.day.getUTCDay(); // 0=ned, 6=sub
-          return dow !== 0 && dow !== 6 && !holSet.has(ymd);
-        })
-        .map((r) => ({
-          employeeId: r.employee_id,
-          fullName: r.full_name,
-          workDate: r.day.toISOString().slice(0, 10),
-          hours: REGULAR_HOURS,
-          presenceHours:
-            r.presence_hours == null ? null : Number(r.presence_hours),
-          firstIn: r.first_in ? r.first_in.toISOString() : null,
-          lastOut: r.last_out ? r.last_out.toISOString() : null,
-        }));
+      const suggestions = rows.flatMap((r) => {
+        const presence =
+          r.presence_hours == null ? null : Number(r.presence_hours);
+        const hours = proposeHoursFromPresence(presence);
+        if (hours == null) return []; // van opsega [FLOOR..CEIL] → nije predlog
+        return [
+          {
+            employeeId: r.employee_id,
+            fullName: r.full_name,
+            workDate: r.day.toISOString().slice(0, 10),
+            hours,
+            presenceHours: presence,
+            firstIn: r.first_in ? r.first_in.toISOString() : null,
+            lastOut: r.last_out ? r.last_out.toISOString() : null,
+          },
+        ];
+      });
 
       return {
         data: {
           year,
           month,
           rule: {
-            regularHours: REGULAR_HOURS,
-            presenceMin: PRESENCE_MIN,
-            presenceMax: PRESENCE_MAX,
-            note: "Samo regularni prazni dani (ulaz+izlaz, bez zaboravljenog izlaza/terena/odsustva); vikend/praznik preskočeni.",
+            regularHours: FULL_DAY_HOURS,
+            presenceMin: PRESENCE_FLOOR,
+            presenceMax: PRESENCE_CEIL,
+            note: "Regularni prazni dani (ulaz+izlaz, bez zaboravljenog izlaza/terena/odsustva); prisustvo [1h..14h] → sati sečeni NANIŽE na pola sata, ≥7.6h → 8; vikend/praznik sa čistim kucanjem se predlažu kao redovni (isto kao noćni auto-tik).",
           },
           suggestions,
         },
