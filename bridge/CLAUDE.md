@@ -24,6 +24,17 @@ Dve odvojene instance istog koda, razdvojene `.env`-om — jedna ne sme da čeka
 Isporuka je ručna: `scp` u odgovarajući folder pa `systemctl --user restart <jedinica>`.
 `node` nije u PATH-u za neinteraktivni SSH → `/home/admnenad/.nvm/versions/node/v22.23.1/bin/node`.
 
+⚠️ **Isporuka sa Windows mašine šalje CRLF.** U git-u je LF i na serveru je LF, ali Windows
+checkout ima CRLF (autocrlf), pa `scp` iz radnog stabla unosi CR na server. Node to ne
+smeta, ali `cmp`/`diff` posle toga prijavljuju razliku na svakom fajlu i provera „da li
+server odgovara git-u" postaje beskorisna. Zato:
+
+```bash
+tr -d '\r' < src/scada/normalize.js | ssh ubuntusrv 'cat > /home/admnenad/bridge-scada/src/scada/normalize.js'
+# ili posle scp-a:  ssh ubuntusrv "tr -d '\r' < F > F.tmp && mv F.tmp F"
+# provera pravih razlika:  diff --strip-trailing-cr server_fajl repo_fajl
+```
+
 ⚠️ Windows bridge VM (192.168.64.24) je **napušten**; tamošnji servisi su `Stopped / Disabled`
 i takvi ostaju. [docs/INSTALACIJA-VM.md](docs/INSTALACIJA-VM.md) opisuje **to staro** stanje —
 drži se kao istorijat, ne kao uputstvo.

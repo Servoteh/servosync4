@@ -48,6 +48,10 @@ ssh ubuntusrv 'journalctl --user -u scada-app.service -n 30'
 `Linger=yes` je uključen, pa se servisi dižu i posle restarta mašine. `node` nije u PATH-u
 za neinteraktivni SSH — koristi `/home/admnenad/.nvm/versions/node/v22.23.1/bin/node`.
 
+⚠️ `scp` sa Windows mašine unosi **CRLF** (u git-u i na serveru je LF). Node to ne smeta,
+ali posle toga `cmp` prijavljuje razliku na svakom fajlu pa provera „server = git" ne radi.
+Skini CR pri isporuci (`tr -d '\r'`), a razlike gledaj sa `diff --strip-trailing-cr`.
+
 ⚠️ **Windows VM se NE sme paliti** — bio bi drugi PCOM klijent na PLC-u (v. dole).
 `servoteh-bridge/scada-app/` je i dalje mirror za istoriju, ali ga niko ne pokreće.
 
