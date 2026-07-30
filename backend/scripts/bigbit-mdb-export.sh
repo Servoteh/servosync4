@@ -185,9 +185,23 @@ FILE_MTIME="$(date -u -d "@$(stat -c '%Y' "$MDB")" '+%Y-%m-%d %H:%M:%S+00')"
 # mtime se kopiranjem NASLEDJUJE od izvorne baze, pa govori kad je BigBit poslednji
 # put pisao — ne kad je dostava radila. Bez ovoga bi prvi ponedeljak posle mirnog
 # vikenda odbio savrseno svez fajl kao "star tri dana", i to svake nedelje.
-NAME_DATE="$(printf '%s' "$FILE_NAME" | sed -nE 's/.*_([0-9]{2})-([0-9]{2})-([0-9]{2}).[Mm][Dd][Bb]$/20--/p')"
+# Bez `sed` i bez povratnih referenci: bash-ovo podudaranje obrasca ne prolazi
+# kroz jos jedan sloj citiranja, pa ne moze da ostane bez obrnutih kosih crta —
+# tacno tako je prva verzija ovog reda tiho postala "20--" (sa kontrolnim
+# bajtovima) i oborila servis pri prvom pokretanju: uhvaceno 30.07.2026 rucnim
+# `systemctl --user start`, dakle PRE nego sto je tajmer prvi put opalio.
+NAME_DATE=""
+if [[ "$FILE_NAME" =~ _([0-9]{2})-([0-9]{2})-([0-9]{2})[.][Mm][Dd][Bb]$ ]]; then
+  NAME_DATE="20${BASH_REMATCH[3]}-${BASH_REMATCH[2]}-${BASH_REMATCH[1]}"
+fi
+NAME_EPOCH=""
 if [ -n "$NAME_DATE" ]; then
-  AGE_H=$(( ( $(date +%s) - $(date -u -d "${NAME_DATE} 12:00:00" +%s) ) / 3600 ))
+  # Neispravan datum iz imena (npr. _32-13-26) NE sme da obori izvoz — pada na
+  # rezervu, jer je ime pomocni signal a ne uslov da posao moze da radi.
+  NAME_EPOCH="$(date -u -d "${NAME_DATE} 12:00:00" +%s 2>/dev/null || true)"
+fi
+if [ -n "$NAME_EPOCH" ]; then
+  AGE_H=$(( ( $(date +%s) - NAME_EPOCH ) / 3600 ))
   AGE_BASIS="datum iz imena"
 else
   AGE_H=$(( ( $(date +%s) - $(stat -c '%Y' "$MDB") ) / 3600 ))

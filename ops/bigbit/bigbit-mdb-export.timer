@@ -1,0 +1,16 @@
+[Unit]
+Description=Dnevni BigBit izvoz u 17:30 po beogradskom (odluka vlasnika O-3, 30.07.2026)
+
+[Timer]
+# Server radi u UTC; 15:30 UTC = 17:30 CEST. Zimi (CET) to postaje 16:30 lokalno —
+# zato je zapisano U LOKALNOJ ZONI, da preklop na zimsko racunanje ne pomeri termin.
+OnCalendar=*-*-* 17:30:00 Europe/Belgrade
+# Ako je server bio ugasen u trenutku termina, odradi na startu — inace bi se dan
+# preskocio bez ijedne greske, sto je tacno oblik kvara od kog se ovde branimo.
+Persistent=true
+# Rasporedi udar do 3 min, da se ne poklopi sekunda-u-sekundu sa dostavom.
+RandomizedDelaySec=180
+Unit=bigbit-mdb-export.service
+
+[Install]
+WantedBy=timers.target

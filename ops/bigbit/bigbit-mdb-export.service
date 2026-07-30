@@ -1,0 +1,15 @@
+[Unit]
+Description=BigBit .mdb -> Postgres staging (korak 1 od 2)
+Documentation=file:///home/admnenad/bigbit-mdb/bigbit-mdb-export.sh
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/bigbit-mdb/env
+ExecStart=/usr/bin/env bash %h/bigbit-mdb/bigbit-mdb-export.sh
+# Izvoz cita 387 MB .mdb i pisе u staging; 30 min je 30x iznad izmerenih ~55 s.
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
