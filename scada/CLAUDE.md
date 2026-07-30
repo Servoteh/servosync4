@@ -4,8 +4,13 @@ Node servis koji **jedini fizički priča sa uređajima** u pogonu: Unitronics P
 Siemens S7-1200 (AWP web), Loxone Miniserver, meteocontrol blue'Log (lokalni REST) i
 Sigenergy Cloud. Služi lokalni API na `:3000` + LAN UI (HMI ekrani u `public/`).
 
-Detaljna dokumentacija je u [docs/](docs/) — arhitektura, mapa registara, dijagnostika,
-instalacija i servis. **Pre rada pročitaj [docs/scada-aplikacija/README.md](docs/scada-aplikacija/README.md).**
+**Pre rada pročitaj dvoje:**
+[docs/00-pregled-i-mreza.md](docs/00-pregled-i-mreza.md) — opis modula i pravila komunikacije
+(ceo lanac, RS485 lanac, jedna PCOM veza, rate-limit, adrese, dojava) · i
+[docs/OTVORENI-POSLOVI.md](docs/OTVORENI-POSLOVI.md) — gde smo stali, šta je otvoreno i šta je
+odbijeno sa obrazloženjem.
+
+Ostatak dokumentacije (mapa registara, logika rada, dijagnostika, održavanje) je u [docs/](docs/).
 
 ## ⛔ Unitronics drži JEDNU konekciju — i ume da se blokira
 

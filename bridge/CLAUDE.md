@@ -11,6 +11,9 @@ Node servis (ESM) sa dva posla:
 **Bridge NIKAD ne priča direktno sa uređajima** — sve ide kroz gateway, da drajveri i
 validacija ostanu na jednom mestu. Zato bridge nema ni jedan PLC/Modbus kod.
 
+Opis celog lanca i pravila komunikacije: [../scada/docs/00-pregled-i-mreza.md](../scada/docs/00-pregled-i-mreza.md).
+Gde smo stali i šta je otvoreno: [../scada/docs/OTVORENI-POSLOVI.md](../scada/docs/OTVORENI-POSLOVI.md).
+
 ## Gde radi (provereno 30.07.2026)
 
 Sve na **ubuntusrv**, kao `systemd --user` jedinice (`Linger=yes`, dižu se posle reboota):

@@ -25,7 +25,10 @@ Solarne elektrane (blue'Log / Sigenergy) su integrisane u istu SCADA aplikaciju 
 ## Mapa dokumentacije
 
 - 🔖 [**CHEAT SHEET**](cheat-sheet.md) — sve ključne adrese, komande i postupci na jednoj strani (za teren)
-- [00-pregled-i-mreza.md](00-pregled-i-mreza.md) — arhitektura svih sistema + tabela IP adresa i pristupa
+- 📋 [**OTVORENI-POSLOVI.md**](OTVORENI-POSLOVI.md) — **prvo ovde kad nastavljaš rad**: šta je
+  urađeno, šta je otvoreno i zašto, šta je odbijeno i sa kojim obrazloženjem
+- [00-pregled-i-mreza.md](00-pregled-i-mreza.md) — **opis modula**: ceo lanac uređaj → gateway →
+  relej → baza → ERP, pravila komunikacije (RS485 lanac, jedna PCOM veza, rate-limit), adrese, dojava
 - **Kotlarnica Unitronics (stara hala)**
   - [Pregled](kotlarnica-unitronics/README.md) — model PLC-a, kako se povezuje, kako radi ukratko
   - [Mapa registara / tagova](kotlarnica-unitronics/mapa-registara.md) — kompletna tabela MI/MB/I/O
