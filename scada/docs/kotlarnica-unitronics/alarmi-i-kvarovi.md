@@ -40,9 +40,32 @@ Kad alarm pređe iz 0 → 1, SCADA šalje **Telegram** poruku (ako je podešen
 - Verovatno **senzor/ožičenje** (prekid ili kratak spoj na PT/termoparu).
 - Proveri senzor i vezu na ulaz PLC-a. Do popravke tu zonu drži na RUČNO ako je potrebno grejanje.
 
+### D1) ⚠️ ZNAN NASLEĐEN KVAR — temperature na Jazz-u nisu verodostojne
+
+**Ne dijagnostikuj ovo ponovo i NE resetuj PLC.** Analogni ulazi / sonde na ovom Jazz-u ne rade
+(nasleđeno stanje, potvrdio vlasnik 30.07.2026). Posledica u SCADA/ERP-u:
+
+- `T_SPOLJA` stoji na **8,3 °C** — proveravano 30.07.2026: 14.389 uzoraka kroz 10 dana,
+  **jedna jedina vrednost**; `T_CNC` i `T_SUDA` isto zamrznuti na 10.
+- Hale pokazuju 2–3 °C u julu; `SP_SUDA_H/L` čitaju 4,5 / 10,5 umesto ~80 / 60.
+- Deo tagova se ipak menja (`T_ZAVAR`, `T_MONTAZA1/2`, `T_HIDRAULIKA`) — to je šum na
+  ulazima, ne merenje.
+
+Šta ovo **nije**: nije prekid komunikacije (PCOM je povezan, `online=true`), nije zamrznut
+poller, i nije pomerena mapa registara. Rešenje je servis analogne kartice/sondi u pogonu,
+ne dodirivanje PLC-a ni tag-mape. Kotlarnica 2 (Siemens) je zdrava i služi za uporedjenje —
+tamo ista provera daje 32–54 različite vrednosti po metrici u 24 h.
+
+Provera stanja u jednoj komandi:
+```sql
+select metric, count(*) uzoraka, count(distinct value) razlicitih
+from scada_history where site_key='kot1' and ts > now() - interval '24 hours'
+group by metric order by razlicitih;
+```
+
 ### E) Senzor čita ×10 pogrešno / čudna skala
 - Podsetnik: PLC čuva temperature **×10** (`235` = `23.5 °C`). SCADA to već deli. Ako neki
-  novi tag pokazuje 10× veću/manju vrednost → fali/višak `scale:10` u [`app/tags.js`](../../app/tags.js).
+  novi tag pokazuje 10× veću/manju vrednost → fali/višak `scale:10` u [`tags.js`](../../tags.js).
 
 ---
 
