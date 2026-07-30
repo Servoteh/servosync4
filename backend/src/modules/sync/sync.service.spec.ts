@@ -7,9 +7,6 @@ import {
   QBIGTEHN_CHAIN_ENTITIES,
 } from "./table-ownership";
 import type { CustomerSyncer } from "./syncers/customer.syncer";
-import type { ItemGroupSyncer } from "./syncers/item-group.syncer";
-import type { ItemOriginSyncer } from "./syncers/item-origin.syncer";
-import type { ItemSubgroupSyncer } from "./syncers/item-subgroup.syncer";
 
 /**
  * Cutover izvršen 2026-07-14 (runbook §17 korak 6): QBigTehn lanac je ugašen.
@@ -25,9 +22,6 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
       {} as PrismaService,
       {} as MssqlClient,
       { entity: "customers" } as CustomerSyncer,
-      { entity: "item_groups" } as ItemGroupSyncer,
-      { entity: "item_subgroups" } as ItemSubgroupSyncer,
-      { entity: "item_origins" } as ItemOriginSyncer,
     );
   }
 
@@ -45,11 +39,17 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
   // Registri artikala (R_Grupa / R_Podgrupa / R_Poreklo) nisu u generisanoj mapi
   // — imaju sopstvene lagane syncere, pa moraju biti vidljivi i za `/sync/run` i
   // za noćni posao (koji uzima `availableEntities` minus isključene).
-  it("registruje registre artikala (item_groups / item_subgroups / item_origins)", () => {
+  // ⚠️ OBRNUTO 30.07.2026: šifarnici artikala se VIŠE NE registruju kao MSSQL
+  // synceri. Čitali su kroz `MssqlClient`, dakle iz QBigTehna — koji je mrtav od
+  // 22.07.2026 — pa su bili MRTVI ROĐENI: registrovani, naizgled živi, nesposobni
+  // da donesu red. Tabele su stajale prazne, a provera grupe artikla radi po
+  // pravilu „prazan šifarnik se preskače", dakle nije proveravala ništa.
+  // Sada ih vozi `.mdb` kanal (`importItemGroups`/`Subgroups`/`Origins`).
+  it("NE registruje šifarnike artikala — njih vozi .mdb kanal, ne MSSQL", () => {
     const entities = buildService().availableEntities;
-    expect(entities).toContain("item_groups");
-    expect(entities).toContain("item_subgroups");
-    expect(entities).toContain("item_origins");
+    expect(entities).not.toContain("item_groups");
+    expect(entities).not.toContain("item_subgroups");
+    expect(entities).not.toContain("item_origins");
   });
 
   it("NE registruje nijedan QBigTehn chain entitet (ugašeni lanac)", () => {
@@ -117,9 +117,6 @@ describe("SyncService — TTL in-process brave", () => {
       prisma,
       {} as MssqlClient,
       { entity: "customers" } as CustomerSyncer,
-      { entity: "item_groups" } as ItemGroupSyncer,
-      { entity: "item_subgroups" } as ItemSubgroupSyncer,
-      { entity: "item_origins" } as ItemOriginSyncer,
     );
     // Jedan „viseći" syncer koji drži bravu dok mu se ne kaže da završi.
     (svc as unknown as { syncers: Map<string, unknown> }).syncers.set(

@@ -180,8 +180,20 @@ fi
 FILE_NAME="$(basename "$MDB")"
 FILE_SIZE="$(stat -c '%s' "$MDB")"
 FILE_MTIME="$(date -u -d "@$(stat -c '%Y' "$MDB")" '+%Y-%m-%d %H:%M:%S+00')"
-AGE_H=$(( ( $(date +%s) - $(stat -c '%Y' "$MDB") ) / 3600 ))
-log "drop: $FILE_NAME  ($FILE_SIZE B, mtime $FILE_MTIME, star ${AGE_H}h)"
+# STAROST SE MERI PO DATUMU IZ IMENA FAJLA, NE PO mtime-u (ispravka 30.07.2026).
+# Dostava pravi JEDAN backup dnevno i datum stavlja u ime (BB_T_26_30-07-26.mdb).
+# mtime se kopiranjem NASLEDJUJE od izvorne baze, pa govori kad je BigBit poslednji
+# put pisao — ne kad je dostava radila. Bez ovoga bi prvi ponedeljak posle mirnog
+# vikenda odbio savrseno svez fajl kao "star tri dana", i to svake nedelje.
+NAME_DATE="$(printf '%s' "$FILE_NAME" | sed -nE 's/.*_([0-9]{2})-([0-9]{2})-([0-9]{2}).[Mm][Dd][Bb]$/20--/p')"
+if [ -n "$NAME_DATE" ]; then
+  AGE_H=$(( ( $(date +%s) - $(date -u -d "${NAME_DATE} 12:00:00" +%s) ) / 3600 ))
+  AGE_BASIS="datum iz imena"
+else
+  AGE_H=$(( ( $(date +%s) - $(stat -c '%Y' "$MDB") ) / 3600 ))
+  AGE_BASIS="mtime (rezerva)"
+fi
+log "drop: $FILE_NAME  ($FILE_SIZE B, mtime $FILE_MTIME, star ${AGE_H}h po $AGE_BASIS)"
 
 # ── 2) Registruj drop (identitet = ime+mtime+veličina) ───────────────────────
 # Napomena: sha256 se računa kao DOKAZ SADRŽAJA, ali NIJE ključ — Access fajl nije

@@ -206,6 +206,28 @@ export const PREDMET_SRC_TO_STAGE_FIELD: Record<string, string> = {
 };
 
 /** Staging je SAV tekst; prazan string i beline znače „nema vrednosti". */
+/**
+ * Datum dnevne dostave IZ IMENA FAJLA: `BB_T_26_30-07-26.mdb` -> 30.07.2026.
+ *
+ * Dostava pravi JEDAN backup dnevno i datum stavlja u ime — to je jedini podatak
+ * koji govori ZA KOJI DAN je fajl. `mtime` se nasleđuje od izvorne baze (kad je
+ * BigBit poslednji put pisao), a `ctime` zna samo kad je fajl legao na disk.
+ *
+ * Vraća PODNE tog dana, ne ponoć: dostava stiže po podne, pa bi ponoć proizvela
+ * lažnih ~18 h starosti već na dan dolaska.
+ *
+ * `null` kad ime ne prati obrazac — pozivalac tada pada na vreme dolaska.
+ */
+function dropDateFromFileName(fileName: string): Date | null {
+  const m = /_(\d{2})-(\d{2})-(\d{2})\.mdb$/i.exec(fileName);
+  if (!m) return null;
+  const [, dd, mm, yy] = m;
+  const d = new Date(
+    Date.UTC(2000 + Number(yy), Number(mm) - 1, Number(dd), 12, 0, 0),
+  );
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 const stageText = (v: unknown): string | null => {
   if (v === null || v === undefined) return null;
   // PRELOMI REDA SE SAŽIMAJU U RAZMAK — nalaz prvog pravog uvoza, 30.07.2026.
@@ -486,12 +508,34 @@ export class BigbitMdbImportService {
       );
     }
 
-    const ageHours = (Date.now() - drop.fileMtime.getTime()) / (1000 * 60 * 60);
+    // SVEŽINA SE MERI PO DATUMU IZ IMENA FAJLA, NE PO `mtime`-u (ispravka 30.07.2026).
+    //
+    // Dostava pravi JEDAN backup dnevno i datum stavlja U IME: `BB_T_26_30-07-26.mdb`.
+    // To je najpošteniji signal koji imamo, i jedini koji meri ono što nas zanima —
+    // „da li je dostava radila danas".
+    //
+    // `mtime` to NE meri: kopiranje ga nasleđuje od izvorne baze, pa on govori kad
+    // je BigBit poslednji put nešto upisao. Izmereno na živom fajlu: ime nosi 30.07,
+    // `mtime` 16:03, a na server je legao u 21:38. Da smo ostali na `mtime`-u, prvi
+    // ponedeljak posle mirnog vikenda odbio bi savršeno svežu dostavu kao „staru tri
+    // dana" — i to bez ijednog stvarnog kvara, svake nedelje.
+    //
+    // Rezerva je `ctime` (vreme dolaska na disk), pa `mtime` — u tom redosledu, da
+    // fajl neobičnog imena ne prođe bez ijedne provere.
+    const nameDate = dropDateFromFileName(drop.fileName);
+    const freshnessBasis = nameDate ?? drop.stagedAt ?? drop.fileMtime;
+    const basisLabel = nameDate
+      ? "datum iz imena fajla"
+      : drop.stagedAt
+        ? "vreme dolaska na server"
+        : "mtime (rezerva)";
+    const ageHours = (Date.now() - freshnessBasis.getTime()) / (1000 * 60 * 60);
     const maxAge = opts.maxAgeHours ?? MAX_DROP_AGE_HOURS;
     if (!opts.skipFreshnessCheck && ageHours > maxAge) {
       throw new BigbitMdbDropStaleError(
-        `Podaci iz BigBita nisu stigli od ${drop.fileMtime.toISOString().slice(0, 16).replace("T", " ")} ` +
-          `(fajl "${drop.fileName}" je star ${ageHours.toFixed(1)} h, dozvoljeno je ${maxAge} h). ` +
+        `Podaci iz BigBita nisu stigli od ${freshnessBasis.toISOString().slice(0, 16).replace("T", " ")} ` +
+          `(fajl "${drop.fileName}" je star ${ageHours.toFixed(1)} h po ${basisLabel}, ` +
+          `dozvoljeno je ${maxAge} h). ` +
           "Uvoz je zaustavljen da se PDV ne bi računao nad starim podacima. " +
           "Noćni izvoz iz BigBita ne radi — javite osobi zaduženoj za BigBit; kvar NIJE u 4.0. " +
           "[tehnički: docs/migration/BIGBIT_NOCNI_SYNC.md §Kad padne]",
@@ -601,6 +645,14 @@ export class BigbitMdbImportService {
       //   accounts -> order_types -> saldakonto -> journal_entries -> ledger_entries
       steps.push(await this.importAccounts(drop.id));
       steps.push(await this.importOrderTypes(drop.id));
+      // ŠIFARNICI ARTIKALA (O-4, 30.07.2026) — redosled je OBAVEZAN jer se vezuju
+      // jedno na drugo: grupa -> podgrupa (`GrupaVeza`) -> poreklo (`PodgrupaVeza`).
+      // Obrnut redosled bi svaku vezu nulirao pri prvom prolazu i popravio je tek
+      // sledeće noći — dakle šifarnik bi jedan dan bio bez hijerarhije.
+      steps.push(await this.importItemGroups(drop.id));
+      steps.push(await this.importItemSubgroups(drop.id));
+      steps.push(await this.importItemOrigins(drop.id));
+      steps.push(await this.importWarehouses(drop.id));
       steps.push(await this.importSaldakontoAccounts(drop.id));
       steps.push(await this.importJournalEntries(drop.id));
       steps.push(await this.importLedgerEntries(drop.id));
@@ -1281,6 +1333,225 @@ export class BigbitMdbImportService {
     if (step.filtered > 0)
       step.notes.push(
         `${step.filtered} vrsta naloga odbačena — prazna, duplikat ili šifra duža od 5 znakova`,
+      );
+    return step;
+  }
+
+  // ╔═══════════════════════════════════════════════════════════════════════════╗
+  // ║  ŠIFARNICI ARTIKALA I MAGACINI (odluka vlasnika O-4, 30.07.2026)          ║
+  // ║                                                                            ║
+  // ║  ZAŠTO SU BILI PRVI NA REDU: tabele su bile PRAZNE, a provera grupe i      ║
+  // ║  podgrupe artikla radi po pravilu „prazan šifarnik se preskače" — dakle    ║
+  // ║  nije proveravala ništa, a izgledala je kao da radi. To je gore od         ║
+  // ║  nedostatka provere, jer se na nju računa.                                  ║
+  // ║                                                                            ║
+  // ║  ZAŠTO SU BILE PRAZNE: 4.0 za njih ima tri syncera (`syncers/item-group`,  ║
+  // ║  `item-subgroup`, `item-origin`) koji čitaju kroz `MssqlClient`, dakle iz  ║
+  // ║  QBigTehna — a on je mrtav od 22.07.2026. Bili su MRTVI ROĐENI:            ║
+  // ║  registrovani u `SyncService`, naizgled živi, nesposobni da donesu red.     ║
+  // ╚═══════════════════════════════════════════════════════════════════════════╝
+
+  /** `R_Grupa` -> `item_groups`. Roditelj podgrupa, pa ide prvi. */
+  private async importItemGroups(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const [row] = await this.prisma.$queryRaw<CountRow[]>`
+      WITH src AS (
+        SELECT DISTINCT ON (btrim(grupa))
+          btrim(grupa)                                    AS code,
+          left(coalesce(nullif(btrim(coalesce(opis, '')), ''), btrim(grupa)), 50) AS description
+        FROM bb_mdb_stage_grupe
+        WHERE drop_id = ${dropId}
+          AND nullif(btrim(coalesce(grupa, '')), '') IS NOT NULL
+          -- Šifra se NE skraćuje: "left(...,10)" bi tiho spojio dve različite
+          -- grupe u jednu i time prevezao artikle na pogrešnu. Izmereno: najduža
+          -- je tačno 10, dakle na granici — zato se predugačka ODBACUJE i broji.
+          AND length(btrim(grupa)) <= 10
+        ORDER BY btrim(grupa)
+      ),
+      ins AS (
+        INSERT INTO item_groups (code, description)
+        SELECT code, description FROM src
+        ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description
+        WHERE (item_groups.description) IS DISTINCT FROM (EXCLUDED.description)
+        RETURNING (xmax = 0) AS was_insert
+      )
+      SELECT (SELECT count(*) FROM bb_mdb_stage_grupe WHERE drop_id = ${dropId}) AS staged,
+             (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
+             (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated,
+             0::bigint                                       AS skipped,
+             (SELECT count(*) FROM src)                      AS fetched`;
+    const step = this.toStep("item_groups", row, t0, notes);
+    if (step.filtered > 0)
+      step.notes.push(
+        `${step.filtered} grupa odbačena — prazna, duplikat ili šifra duža od 10 znakova`,
+      );
+    return step;
+  }
+
+  /** `R_Podgrupa` -> `item_subgroups`. Posle grupa (`GrupaVeza` -> `item_groups.code`). */
+  private async importItemSubgroups(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const [row] = await this.prisma.$queryRaw<CountRow[]>`
+      WITH src AS (
+        SELECT DISTINCT ON (btrim(podgrupa))
+          btrim(podgrupa)                                 AS code,
+          left(coalesce(nullif(btrim(coalesce(opis, '')), ''), btrim(podgrupa)), 50) AS description,
+          -- Veza na grupu se NULIRA ako te grupe nema — podgrupa i dalje ulazi.
+          -- Odbaciti je zbog pokvarene veze značilo bi izgubiti podatak koji
+          -- postoji, a veza se popravi sledećim prolazom kad grupa stigne.
+          nullif(btrim(coalesce(grupa_veza, '')), '')      AS parent_group
+        FROM bb_mdb_stage_podgrupe
+        WHERE drop_id = ${dropId}
+          AND nullif(btrim(coalesce(podgrupa, '')), '') IS NOT NULL
+          AND length(btrim(podgrupa)) <= 10
+        ORDER BY btrim(podgrupa)
+      ),
+      ins AS (
+        INSERT INTO item_subgroups (code, description, parent_group)
+        SELECT s.code, s.description,
+               CASE WHEN g.code IS NULL THEN NULL ELSE s.parent_group END
+        FROM src s
+        LEFT JOIN item_groups g ON g.code = s.parent_group
+        ON CONFLICT (code) DO UPDATE SET
+          description  = EXCLUDED.description,
+          parent_group = EXCLUDED.parent_group
+        WHERE (item_subgroups.description, item_subgroups.parent_group)
+              IS DISTINCT FROM (EXCLUDED.description, EXCLUDED.parent_group)
+        RETURNING (xmax = 0) AS was_insert
+      )
+      SELECT (SELECT count(*) FROM bb_mdb_stage_podgrupe WHERE drop_id = ${dropId}) AS staged,
+             (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
+             (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated,
+             0::bigint                                       AS skipped,
+             (SELECT count(*) FROM src)                      AS fetched`;
+    const step = this.toStep("item_subgroups", row, t0, notes);
+    if (step.filtered > 0)
+      step.notes.push(
+        `${step.filtered} podgrupa odbačena — prazna, duplikat ili šifra duža od 10 znakova`,
+      );
+    return step;
+  }
+
+  /** `R_Poreklo` -> `item_origins`. Posle podgrupa (`PodgrupaVeza`). */
+  private async importItemOrigins(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const [row] = await this.prisma.$queryRaw<CountRow[]>`
+      WITH src AS (
+        SELECT DISTINCT ON (btrim(poreklo))
+          btrim(poreklo)                                  AS code,
+          left(coalesce(nullif(btrim(coalesce(opis, '')), ''), btrim(poreklo)), 50) AS description,
+          nullif(btrim(coalesce(podgrupa_veza, '')), '')   AS subgroup_code,
+          -- Procenat popusta: nečitljiva vrednost daje NULL, nikad grešku koja bi
+          -- oborila ceo red. Zarez se prima kao decimalni znak (Access ume oboje).
+          NULLIF(regexp_replace(replace(coalesce(popust_proc, ''), ',', '.'),
+                                '[^0-9.\\-]', '', 'g'), '')::numeric AS discount_percent
+        FROM bb_mdb_stage_poreklo
+        WHERE drop_id = ${dropId}
+          AND nullif(btrim(coalesce(poreklo, '')), '') IS NOT NULL
+          -- Kolona je VarChar(5) i izvor je tačno na granici (5/5).
+          AND length(btrim(poreklo)) <= 5
+        ORDER BY btrim(poreklo)
+      ),
+      ins AS (
+        INSERT INTO item_origins (code, description, subgroup_code, discount_percent)
+        SELECT s.code, s.description,
+               CASE WHEN sg.code IS NULL THEN NULL ELSE s.subgroup_code END,
+               COALESCE(s.discount_percent, 0)
+        FROM src s
+        LEFT JOIN item_subgroups sg ON sg.code = s.subgroup_code
+        ON CONFLICT (code) DO UPDATE SET
+          description      = EXCLUDED.description,
+          subgroup_code    = EXCLUDED.subgroup_code,
+          discount_percent = EXCLUDED.discount_percent
+        WHERE (item_origins.description, item_origins.subgroup_code, item_origins.discount_percent)
+              IS DISTINCT FROM (EXCLUDED.description, EXCLUDED.subgroup_code, EXCLUDED.discount_percent)
+        RETURNING (xmax = 0) AS was_insert
+      )
+      SELECT (SELECT count(*) FROM bb_mdb_stage_poreklo WHERE drop_id = ${dropId}) AS staged,
+             (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
+             (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated,
+             0::bigint                                       AS skipped,
+             (SELECT count(*) FROM src)                      AS fetched`;
+    const step = this.toStep("item_origins", row, t0, notes);
+    if (step.filtered > 0)
+      step.notes.push(
+        `${step.filtered} porekla odbačeno — prazno, duplikat ili šifra duža od 5 znakova`,
+      );
+    return step;
+  }
+
+  /**
+   * `Magacini` -> `warehouses`.
+   *
+   * ⚠️ `IDMagacin` JE naš `warehouses.id` (kao i kod komitenata: BigBit šifra je
+   * primarni ključ). Zato se NIKAD ne dira red iznad rezervisanog opsega ključeva
+   * — magacin nastao u 4.0 nije BigBit-ov i sync ga ne sme prepisati.
+   *
+   * `PotpisSlika` se NE preslikava: staging je prima da brana zaglavlja prođe, ali
+   * to je slika i nema šta da traži u `signature_image_path`, koji nosi PUTANJU.
+   */
+  private async importWarehouses(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const [row] = await this.prisma.$queryRaw<CountRow[]>`
+      WITH src AS (
+        SELECT DISTINCT ON (btrim(id_magacin)::int)
+          btrim(id_magacin)::int                          AS id,
+          left(coalesce(nullif(btrim(coalesce(magacin, '')), ''), 'Magacin ' || btrim(id_magacin)), 50) AS name,
+          left(nullif(btrim(coalesce(ulica_i_broj, '')), ''), 50) AS street,
+          left(nullif(btrim(coalesce(mesto, '')), ''), 30)        AS city,
+          -- Access Boolean kroz mdb-export izlazi kao TEKST '0'/'1'; "Boolean('0')"
+          -- u JS-u je "true", pa se poređenje radi u SQL-u, eksplicitno.
+          (btrim(coalesce(prosecne_cene, '0')) IN ('1', 'True', 'true', '-1')) AS average_prices,
+          left(nullif(btrim(coalesce(vrsta_mag, '')), ''), 5)     AS warehouse_type,
+          left(nullif(btrim(coalesce(konto_mag, '')), ''), 10)    AS account,
+          left(nullif(btrim(coalesce(ime_magacionera, '')), ''), 30) AS manager_name,
+          left(nullif(btrim(coalesce(br_lk_magacionera, '')), ''), 20) AS manager_id_number,
+          COALESCE(nullif(btrim(coalesce(id_firma, '')), '')::int, 0) AS company_id
+        FROM bb_mdb_stage_magacini
+        WHERE drop_id = ${dropId}
+          AND btrim(coalesce(id_magacin, '')) ~ '^[0-9]+$'
+        ORDER BY btrim(id_magacin)::int
+      ),
+      ins AS (
+        INSERT INTO warehouses (id, company_id, name, street, city, average_prices,
+                                warehouse_type, account, manager_name, manager_id_number)
+        SELECT id, company_id, name, street, city, average_prices,
+               warehouse_type, account, manager_name, manager_id_number
+        FROM src
+        -- ZAŠTITA 4.0-NATIVE REDA: rezervisan opseg ključeva se NE dira.
+        WHERE id < ${NATIVE_ID_BASE}
+        ON CONFLICT (id) DO UPDATE SET
+          company_id        = EXCLUDED.company_id,
+          name              = EXCLUDED.name,
+          street            = EXCLUDED.street,
+          city              = EXCLUDED.city,
+          average_prices    = EXCLUDED.average_prices,
+          warehouse_type    = EXCLUDED.warehouse_type,
+          account           = EXCLUDED.account,
+          manager_name      = EXCLUDED.manager_name,
+          manager_id_number = EXCLUDED.manager_id_number
+        WHERE (warehouses.name, warehouses.street, warehouses.city, warehouses.average_prices,
+               warehouses.warehouse_type, warehouses.account, warehouses.manager_name,
+               warehouses.manager_id_number)
+              IS DISTINCT FROM
+              (EXCLUDED.name, EXCLUDED.street, EXCLUDED.city, EXCLUDED.average_prices,
+               EXCLUDED.warehouse_type, EXCLUDED.account, EXCLUDED.manager_name,
+               EXCLUDED.manager_id_number)
+        RETURNING (xmax = 0) AS was_insert
+      )
+      SELECT (SELECT count(*) FROM bb_mdb_stage_magacini WHERE drop_id = ${dropId}) AS staged,
+             (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
+             (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated,
+             0::bigint                                       AS skipped,
+             (SELECT count(*) FROM src WHERE id >= ${NATIVE_ID_BASE}) AS fetched`;
+    const step = this.toStep("warehouses", row, t0, notes);
+    if (step.filtered > 0)
+      step.notes.push(
+        `${step.filtered} magacin(a) odbačeno — prazna ili nenumerička šifra`,
       );
     return step;
   }

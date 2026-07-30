@@ -162,6 +162,10 @@ describe("BigbitMdbImportService", () => {
           count: jest.fn().mockResolvedValue(0),
           findMany: jest.fn().mockResolvedValue([]),
         },
+        bbMdbStageGrupa: { count: jest.fn().mockResolvedValue(0) },
+        bbMdbStagePodgrupa: { count: jest.fn().mockResolvedValue(0) },
+        bbMdbStagePoreklo: { count: jest.fn().mockResolvedValue(0) },
+        bbMdbStageMagacin: { count: jest.fn().mockResolvedValue(0) },
         bbMdbStagePredmet: {
           count: jest.fn().mockResolvedValue(0),
           findMany: jest.fn().mockResolvedValue([]),
@@ -213,6 +217,51 @@ describe("BigbitMdbImportService", () => {
       );
     });
 
+    // ── SVEŽINA SE MERI PO DATUMU IZ IMENA, NE PO `mtime`-u (30.07.2026) ────
+    // Dostava pravi JEDAN backup dnevno i datum stavlja u ime
+    // (`BB_T_26_30-07-26.mdb`). `mtime` se kopiranjem NASLEĐUJE od izvorne baze,
+    // pa govori kad je BigBit poslednji put pisao — a ne kad je dostava radila.
+    it("PONEDELJAK POSLE MIRNOG VIKENDA: današnji fajl prolazi i kad mu je mtime star 3 dana", async () => {
+      const danas = new Date();
+      const dd = String(danas.getUTCDate()).padStart(2, "0");
+      const mm = String(danas.getUTCMonth() + 1).padStart(2, "0");
+      const yy = String(danas.getUTCFullYear() % 100).padStart(2, "0");
+      const { prisma } = makePrisma({
+        drop: makeDrop({
+          fileName: `BB_T_26_${dd}-${mm}-${yy}.mdb`,
+          // U BigBitu se od petka nije radilo — mtime je star 72 h.
+          fileMtime: new Date(Date.now() - 72 * HOUR),
+        }),
+      });
+      const res = await svc(prisma).runImport();
+      expect(res.status).toBe("DONE");
+    });
+
+    it("stvarni zastoj dostave PADA — ime nosi stari datum, pa ni svež mtime ne pomaže", async () => {
+      const { prisma } = makePrisma({
+        drop: makeDrop({
+          fileName: "BB_T_26_01-01-26.mdb",
+          // `cp` bez --times pomeri mtime na sada; bez datuma iz imena bi ovo
+          // prošlo kao „star 0,2 h" — tačno lažna svežina od koje branimo.
+          fileMtime: new Date(),
+        }),
+      });
+      await expect(svc(prisma).runImport()).rejects.toBeInstanceOf(
+        BigbitMdbDropStaleError,
+      );
+    });
+
+    it("poruka kaže PO ČEMU je starost merena (da se ne lovi u kodu)", async () => {
+      const { prisma } = makePrisma({
+        drop: makeDrop({
+          fileName: "BB_T_26_01-01-26.mdb",
+          fileMtime: new Date(),
+        }),
+      });
+      await expect(svc(prisma).runImport()).rejects.toThrow(
+        /po datum iz imena fajla/,
+      );
+    });
     it("prolazi kad je fajl svež (2 h) i radi korake tačnim redosledom", async () => {
       const { prisma } = makePrisma({});
       const res = await svc(prisma).runImport();
@@ -226,6 +275,12 @@ describe("BigbitMdbImportService", () => {
         // dalje je redosled obavezan zbog FK lanca accounts -> ... -> ledger_entries
         "accounts",
         "order_types",
+        // ŠIFARNICI ARTIKALA (O-4, 30.07.2026) — redosled je obavezan jer se
+        // vezuju jedno na drugo: grupa -> podgrupa -> poreklo.
+        "item_groups",
+        "item_subgroups",
+        "item_origins",
+        "warehouses",
         "saldakonto_accounts",
         "journal_entries",
         "ledger_entries",
@@ -336,15 +391,21 @@ describe("BigbitMdbImportService", () => {
       });
       const res = await svc(prisma).runImport({ force: true });
       expect(res.status).toBe("DONE");
-      // Osam koraka: 2 matična + 5 uvoznih + ZAKLJUČAVANJE NA KRAJU.
+      // Dvanaest koraka: 2 matična + 4 šifarnika + 5 uvoznih + ZAKLJUČAVANJE.
       // Zaključavanje je odvojeno od koraka zaglavlja da korak stavki ne bi zatekao
       // nalog kao LOCKED i odbio iznose iz ISTOG fajla koji ga je zaključao.
-      expect(res.steps).toHaveLength(8);
+      expect(res.steps).toHaveLength(12);
       expect(res.steps.map((s) => s.entity)).toEqual([
         "customers",
         "projects",
         "accounts",
         "order_types",
+        // ŠIFARNICI ARTIKALA (O-4, 30.07.2026) — redosled je obavezan jer se
+        // vezuju jedno na drugo: grupa -> podgrupa -> poreklo.
+        "item_groups",
+        "item_subgroups",
+        "item_origins",
+        "warehouses",
         "saldakonto_accounts",
         "journal_entries",
         "ledger_entries",

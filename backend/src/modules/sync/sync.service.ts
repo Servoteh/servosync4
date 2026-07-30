@@ -8,9 +8,6 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { MssqlClient } from "./mssql.client";
 import { CustomerSyncer } from "./syncers/customer.syncer";
-import { ItemGroupSyncer } from "./syncers/item-group.syncer";
-import { ItemOriginSyncer } from "./syncers/item-origin.syncer";
-import { ItemSubgroupSyncer } from "./syncers/item-subgroup.syncer";
 import { GenericSyncer } from "./generic.syncer";
 import { SYNC_MAP } from "./sync-map.generated";
 import { EntitySyncer, SyncCursor, SyncStrategy } from "./sync.types";
@@ -49,18 +46,12 @@ export class SyncService {
     private readonly prisma: PrismaService,
     private readonly mssql: MssqlClient,
     customerSyncer: CustomerSyncer,
-    itemGroupSyncer: ItemGroupSyncer,
-    itemSubgroupSyncer: ItemSubgroupSyncer,
-    itemOriginSyncer: ItemOriginSyncer,
   ) {
     // Hand-written syncers take precedence (e.g. customers has bespoke FK logic).
     this.register(customerSyncer);
     // Registri artikala: nisu u generisanoj mapi (R_Grupa / R_Podgrupa /
     // R_Poreklo nemaju watermark), pa idu kao lagani upsert po šifri.
     // Redosled = grupa -> podgrupa -> poreklo, prateći hijerarhiju izvora.
-    this.register(itemGroupSyncer);
-    this.register(itemSubgroupSyncer);
-    this.register(itemOriginSyncer);
     // Generic, map-driven syncers for every other mapped table.
     for (const mapping of SYNC_MAP) {
       if (this.syncers.has(mapping.targetDb)) continue;
