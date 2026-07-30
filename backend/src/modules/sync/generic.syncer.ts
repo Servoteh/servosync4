@@ -359,6 +359,43 @@ export class GenericSyncer implements EntitySyncer {
           );
       }
 
+      // ╔═══════════════════════════════════════════════════════════════════════╗
+      // ║  PRAZAN IZVOR NIKAD NE BRIŠE (odluka vlasnika O-2, 30.07.2026:         ║
+      // ║  „kada obrišemo predmet u BigBitu da ne obrišemo u ServoSync-u da nam  ║
+      // ║  ne pukne baza")                                                       ║
+      // ║                                                                        ║
+      // ║  Pun refresh je „obriši pa vrati". Ako izvor vrati NULA redova, prvi    ║
+      // ║  deo se izvrši a drugi nema šta da vrati — tabela ostane prazna, i to   ║
+      // ║  uz status „uspešno". Nula redova nikad nije poslovna činjenica nego     ║
+      // ║  kvar izvora: prazna kopija baze, oborena veza, pogrešna baza u URL-u.  ║
+      // ║                                                                        ║
+      // ║  Ovo NIJE teorijski rizik: QBigTehn je 22.07.2026 prestao da se puni i  ║
+      // ║  osam dana je vraćao zamrznute podatke. Da je vratio prazno, jedan      ║
+      // ║  `POST /sync/run` obrisao bi 92.511 artikala — sa svom decom u          ║
+      // ║  cenovnicima i sastavnicama.                                            ║
+      // ║                                                                        ║
+      // ║  DVE ISPRAVKE POSLE PADA POSTOJEĆIH TESTOVA (oba su bila u pravu):      ║
+      // ║                                                                        ║
+      // ║  1. Brana važi SAMO za grane koje PRAZNE tabelu (`nativeRange` i slepa). ║
+      // ║     Aditivna grana (predmeti) briše isključivo id-jeve koje je izvor     ║
+      // ║     poslao, pa je prazan izvor tamo bezopasan „nema šta da se radi" —    ║
+      // ║     obarati ga značilo bi pretvoriti bezopasnu ništicu u kvar.           ║
+      // ║                                                                        ║
+      // ║  2. Meri se SIROVI izvor (`data`), ne `insertData`. `insertData` je već   ║
+      // ║     prošao dedup po broju/šifri, pa izvor koji JESTE poslao redove — a    ║
+      // ║     svi su preskočeni paritet-guardom — ima `insertData.length === 0`.    ║
+      // ║     To nije prazan izvor nego uspešno odrađen guard.                     ║
+      // ╚═══════════════════════════════════════════════════════════════════════╝
+      if (!additive && data.length === 0) {
+        throw new Error(
+          `Sync „${this.entity}" ZAUSTAVLJEN: izvor je vratio 0 redova, a strategija je ` +
+            "pun refresh (obriši pa vrati). Nastavak bi ISPRAZNIO tabelu i prijavio uspeh. " +
+            "Nula redova nije poslovno stanje nego kvar izvora — prazna kopija BigBit baze, " +
+            "oborena veza ili pogrešna baza u konfiguraciji. Postojeći podaci su NETAKNUTI. " +
+            "Proveri izvor pa ponovi.",
+        );
+      }
+
       await this.prisma.$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(

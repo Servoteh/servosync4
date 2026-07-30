@@ -671,6 +671,29 @@ export class BigbitMdbImportService {
       // ── NESTALO IZ MATIČNIH: ARHIVIRANJE ĆUTI, POJEDINAČNO ZVONI ─────────
       vanishedMasters = await this.countVanishedMasters(drop.id);
 
+      // ── DRUGI SMER: ŠTA IZVOR NOSI A KOD NAS GA NEMA (O-2, 30.07.2026) ───
+      // Ovo NE obara uvoz — red koji fali se dopuni sledećim prolazom čim se
+      // ukloni uzrok. Ali se GLASNO imenuje, jer je pravi kvar i jer se kroz
+      // brojače jednog prolaza ne vidi: red otpao pre tri noći od tada ne pravi
+      // nikakvu razliku, izvor ga nosi a kod nas ga nema, i to se ćutke ponavlja.
+      for (const m of await this.countMissingFromOurSide(drop.id)) {
+        const step = steps.find((s) => s.entity === m.entity);
+        if (m.missing > 0) {
+          const poruka =
+            `${m.missing} od ${m.inSource} redova iz BigBita NIJE u 4.0 — ` +
+            `izvor ih nosi, kod nas ih nema. Primeri: ${m.examples.join(", ") || "(nema)"}. ` +
+            "Nije nastalo brisanjem (uvoz nikad ne briše) nego odbijanjem pri upisu — " +
+            "vidi upozorenja ovog prolaza.";
+          step?.notes.push(poruka);
+          this.logger.warn(`NEDOSTAJE U 4.0 (${m.entity}): ${poruka}`);
+        }
+        if (m.nativeOnly > 0)
+          step?.notes.push(
+            `${m.nativeOnly} red(ova) u 4.0 nema parnjaka u BigBitu — to su redovi ` +
+              "nastali u 4.0 (bivši dvojni unos). Očekivano, ne traži radnju.",
+          );
+      }
+
       // ── SUDAR BROJA NALOGA = KVAR, NE FUSNOTA ────────────────────────────
       // Preskočen nalog povuče i sve svoje GK stavke (JOIN po bb_nalog_id), pa
       // ceo dokument sa svojom PDV osnovicom nikad ne uđe. Ranije je to bio broj
@@ -1035,6 +1058,85 @@ export class BigbitMdbImportService {
    * ćutanje bi ovde značilo da posle svakog čišćenja staging-a jedna noć nema
    * nadzor nad šifarnikom, a nikad se ne bi videlo koja.
    */
+  /**
+   * DRUGI SMER: šta izvor NOSI a kod nas GA NEMA (odluka vlasnika O-2, 30.07.2026:
+   * „porediti da se slučajno nešto ne nestane iz ServoSync-a").
+   *
+   * `countVanishedMasters` meri nestajanje IZ BIGBITA (jučerašnji drop vs današnji).
+   * Ovo meri obrnuto i to je drugi kvar: red koji BigBit ima, a uvoz ga NIJE upisao.
+   *
+   * ZAŠTO NE STIŽE DA SE VIDI KROZ BROJAČE: `staged` vs `inserted+updated+unchanged`
+   * hvata razliku samo unutar JEDNOG prolaza. Red koji je otpao pre tri noći (npr.
+   * na predugačkoj vrednosti, kako se i desilo 30.07 sa 12 komitenata) posle toga
+   * više ne pravi nikakvu razliku u brojačima: izvor ga nosi, kod nas ga nema, i
+   * svaki sledeći prolaz to ćutke ponavlja. Zato se poređenje radi nad STANJEM, ne
+   * nad prolazom.
+   *
+   * OVO NIJE ISTO ŠTO I 4.0-NATIVE RED. Red nastao u 4.0 (rezervisan opseg ključeva,
+   * odnosno bivši dvojni unos predmeta) po definiciji nema parnjaka u BigBitu i tu
+   * NIJE greška — zato se broji ODVOJENO i ne zvoni.
+   */
+  private async countMissingFromOurSide(
+    dropId: number,
+  ): Promise<{ entity: string; inSource: number; missing: number; nativeOnly: number; examples: string[] }[]> {
+    const [kom] = await this.prisma.$queryRaw<
+      { in_source: bigint; missing: bigint; native_only: bigint; examples: string[] }[]
+    >`
+      SELECT
+        (SELECT count(*) FROM bb_mdb_stage_komitenti WHERE drop_id = ${dropId}) AS in_source,
+        (SELECT count(*) FROM bb_mdb_stage_komitenti s
+          WHERE s.drop_id = ${dropId}
+            AND btrim(coalesce(s.sifra, '')) ~ '^[0-9]+$'
+            AND NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = btrim(s.sifra)::int)) AS missing,
+        (SELECT count(*) FROM customers c WHERE c.id >= ${NATIVE_ID_BASE}) AS native_only,
+        (SELECT coalesce(array_agg(x.sifra ORDER BY x.sifra), '{}')
+           FROM (SELECT btrim(s.sifra) AS sifra FROM bb_mdb_stage_komitenti s
+                  WHERE s.drop_id = ${dropId}
+                    AND btrim(coalesce(s.sifra, '')) ~ '^[0-9]+$'
+                    AND NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = btrim(s.sifra)::int)
+                  LIMIT 10) x) AS examples`;
+
+    const [pred] = await this.prisma.$queryRaw<
+      { in_source: bigint; missing: bigint; native_only: bigint; examples: string[] }[]
+    >`
+      SELECT
+        (SELECT count(*) FROM bb_mdb_stage_predmeti WHERE drop_id = ${dropId}) AS in_source,
+        (SELECT count(*) FROM bb_mdb_stage_predmeti s
+          WHERE s.drop_id = ${dropId}
+            AND btrim(coalesce(s.id_predmet, '')) ~ '^[0-9]+$'
+            AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = btrim(s.id_predmet)::int)
+            -- Predmet PRESKOČEN paritet-guardom nije „nestao": njegov broj drži
+            -- 4.0-native red, što je poznat i imenovan slučaj iz dvojnog unosa.
+            AND NOT EXISTS (SELECT 1 FROM projects p2
+                             WHERE p2.project_number = btrim(s.broj_predmeta))) AS missing,
+        (SELECT count(*) FROM projects p WHERE p.id >= ${NATIVE_ID_BASE}) AS native_only,
+        (SELECT coalesce(array_agg(x.br ORDER BY x.br), '{}')
+           FROM (SELECT btrim(s.broj_predmeta) AS br FROM bb_mdb_stage_predmeti s
+                  WHERE s.drop_id = ${dropId}
+                    AND btrim(coalesce(s.id_predmet, '')) ~ '^[0-9]+$'
+                    AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = btrim(s.id_predmet)::int)
+                    AND NOT EXISTS (SELECT 1 FROM projects p2
+                                     WHERE p2.project_number = btrim(s.broj_predmeta))
+                  LIMIT 10) x) AS examples`;
+
+    return [
+      {
+        entity: "customers",
+        inSource: n(kom?.in_source),
+        missing: n(kom?.missing),
+        nativeOnly: n(kom?.native_only),
+        examples: kom?.examples ?? [],
+      },
+      {
+        entity: "projects",
+        inSource: n(pred?.in_source),
+        missing: n(pred?.missing),
+        nativeOnly: n(pred?.native_only),
+        examples: pred?.examples ?? [],
+      },
+    ];
+  }
+
   private async countVanishedMasters(
     dropId: number,
   ): Promise<MdbVanishedMaster[]> {

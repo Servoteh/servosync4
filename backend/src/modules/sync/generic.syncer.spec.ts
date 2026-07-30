@@ -178,6 +178,18 @@ describe('GenericSyncer — full-refresh brisanje', () => {
     expect(createMany).toHaveBeenCalled();
   });
 
+  // ── PRAZAN IZVOR NIKAD NE PRAZNI TABELU (O-2, 30.07.2026) ──────────────────
+  // Pun refresh je „obriši pa vrati". Ako izvor vrati nulu, prvi deo se izvrši a
+  // drugi nema šta da vrati — tabela ostane prazna, uz status „uspešno". Nula
+  // nikad nije poslovno stanje nego kvar izvora (prazna kopija baze, oborena veza).
+  it('items (pun refresh) sa PRAZNIM izvorom PADA i NE briše ništa', async () => {
+    const { syncer, deleteMany, createMany } = setup('items', []);
+    await expect(
+      syncer.sync({ strategy: 'full_refresh', cursor: null }),
+    ).rejects.toThrow(/0 redova[\s\S]*NETAKNUTI/);
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
+  });
   it('projects (additive) sa praznim izvorom: NE briše ništa', async () => {
     const { syncer, deleteMany } = setup('projects', []);
     await syncer.sync({ strategy: 'full_refresh', cursor: null });
