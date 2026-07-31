@@ -319,7 +319,12 @@ describe("PodesavanjaUsersService (D1 dual-write)", () => {
         { email: "u@servoteh.com", role: "viewer", is_active: true },
       ]);
       const res = await svc.resetPassword(ADMIN, ROLE_ID, {});
-      expect(resetPassword).toHaveBeenCalledWith("auth-1", "rnd-pass");
+      // 3. argument (expectedEmail) je P0 brana — GoTrue nalog se pred upisom potvrđuje.
+      expect(resetPassword).toHaveBeenCalledWith(
+        "auth-1",
+        "rnd-pass",
+        "u@servoteh.com",
+      );
       expect(res.data.reset).toBe(true);
       expect(queueWelcomeEmail).toHaveBeenCalledWith(
         "u@servoteh.com",

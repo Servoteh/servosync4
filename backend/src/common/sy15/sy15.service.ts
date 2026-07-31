@@ -47,6 +47,15 @@ export class Sy15Service implements OnModuleDestroy {
   }
 
   /**
+   * Da li je sy15 datasource konfigurisan — provera BEZ bacanja, za grananje na
+   * pozivnom mestu (npr. `Sy15AuthAdminService` bira DB rezoluciju naloga pa tek
+   * onda GoTrue REST fallback). `db` i dalje baca 503 kad nije konfigurisan.
+   */
+  get isConfigured(): boolean {
+    return this.client !== null;
+  }
+
+  /**
    * GUC most (spec §3): sy15 DB funkcije i „moji/tim" view-ovi čitaju identitet iz
    * `auth.jwt()` = `current_setting('request.jwt.claims')`. Postavljamo claims
    * transakciono (`set_config(..., true)` = important: local na tx), pa postojeće

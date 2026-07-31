@@ -335,8 +335,10 @@ export class AuthService {
   ): Promise<boolean> {
     try {
       const authUserId = await this.authAdmin.findUserIdByEmail(email);
+      // `email` kao obavezan `expectedEmail`: GoTrue nalog se pred upisom potvrđuje (P0 31.07 —
+      // rezolucija po email-u je vraćala tuđi nalog, pa je korisnikova lozinka išla drugome).
       if (authUserId)
-        await this.authAdmin.resetPassword(authUserId, newPassword);
+        await this.authAdmin.resetPassword(authUserId, newPassword, email);
       await this.sy15.withUser(
         email,
         (tx) =>

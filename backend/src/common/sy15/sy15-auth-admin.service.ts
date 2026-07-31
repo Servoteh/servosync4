@@ -5,6 +5,23 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
+import { Sy15Service } from "./sy15.service";
+
+/** Maksimalan broj strana koje `listUsers` fallback prolazi (brana od beskonačne petlje). */
+const MAX_LIST_PAGES = 50;
+/** Tražena veličina strane; GoTrue je sme sklopiti na manju (kod to podnosi). */
+const LIST_PER_PAGE = 1000;
+
+/** Sirov GoTrue korisnik iz admin liste — treba nam samo id + email. */
+interface GoTrueUser {
+  id?: string;
+  email?: string;
+}
+
+/** Normalizacija email-a za poređenje (GoTrue emailove čuva malim slovima). */
+function normEmail(email: string | null | undefined): string {
+  return (email ?? "").trim().toLowerCase();
+}
 
 /**
  * GoTrue admin klijent za sy15 (1.0) auth stack — Talas D / D1 (dvostrano upravljanje nalozima).
@@ -18,10 +35,17 @@ import { randomBytes } from "node:crypto";
  *
  * Boot-safe: bez `SY15_SERVICE_KEY` (+ auth/rest baze) → 503 (aplikacija se diže normalno; tek
  * upotreba admin-write endpointa vraća 503). GoTrue/format IDENTIČNI 1.0 — NE menjati (doktrina §C).
+ *
+ * 🔴 P0 31.07.2026 — rezolucija naloga po email-u: `GET /admin/users?email=` NIJE filter na živom
+ * GoTrue-u (v2.189.0) i vraćao je prvu stranu SVIH naloga → lozinka je odlazila tuđem nalogu.
+ * Otud invarijanta ovog fajla: nijedan upis lozinke ne sme krenuti bez potvrđenog poklapanja
+ * email ↔ `auth.users.id` (vidi `findUserIdByEmail` i `resetPassword`).
  */
 @Injectable()
 export class Sy15AuthAdminService {
   private readonly logger = new Logger(Sy15AuthAdminService.name);
+
+  constructor(private readonly sy15: Sy15Service) {}
 
   /** Da li je GoTrue admin konfigurisan (bez bacanja) — za grananje u servisu. */
   isConfigured(): boolean {
@@ -72,19 +96,104 @@ export class Sy15AuthAdminService {
     return out;
   }
 
-  /** Nađi GoTrue auth.users id po email-u; null ako ne postoji. */
+  /**
+   * Nađi GoTrue `auth.users.id` po email-u; `null` ako ne postoji.
+   *
+   * 🔴 P0 (31.07.2026): raniji kod je zvao `GET /admin/users?email=<mejl>` i uzimao `users[0].id`.
+   * Živi GoTrue (v2.189.0) **IGNORIŠE `?email=`** i vraća prvu stranu SVIH naloga sortiranu po
+   * `created_at DESC` — pa je funkcija vraćala NAJSKORIJE KREIRAN nalog, ne traženi. Posledica:
+   * upis lozinke je išao TUĐEM korisniku (dogodilo se u produkciji). NIKAD `users[0]` bez provere.
+   *
+   * Rezolucija sada, redom:
+   *   1) sy15 baza — `SELECT id FROM auth.users WHERE lower(email)=lower($1)` kroz `Sy15Service`
+   *      (konekciona rola je BYPASSRLS; isti upit koji `setClaims` već radi za `sub`). Merodavno.
+   *   2) fallback GoTrue REST — paginira admin listu i traži TAČNO poklapanje email-a
+   *      (case-insensitive). Bez poklapanja → `null`.
+   */
   async findUserIdByEmail(email: string): Promise<string | null> {
+    const wanted = normEmail(email);
+    if (!wanted) return null;
+    const viaDb = await this.resolveViaSy15Db(wanted);
+    if (viaDb) return viaDb.id;
+    return this.resolveViaGoTrueList(wanted);
+  }
+
+  /**
+   * DB rezolucija (merodavna). Vraća `{ id }` kad je odgovor pouzdan (`id` može biti `null` =
+   * nalog ne postoji), ili `null` kad sy15 baza nije upotrebljiva → pozivalac pada na REST.
+   */
+  private async resolveViaSy15Db(
+    wanted: string,
+  ): Promise<{ id: string | null } | null> {
+    if (!this.sy15?.isConfigured) return null;
+    let rows: Array<{ id: string }>;
+    try {
+      rows = await this.sy15.db.$queryRaw<Array<{ id: string }>>`
+        SELECT id::text AS id
+        FROM auth.users
+        WHERE lower(email) = lower(${wanted}) AND deleted_at IS NULL
+        LIMIT 2`;
+    } catch (e) {
+      this.logger.warn(
+        `sy15 DB rezolucija naloga nije uspela, padam na GoTrue REST: ${String(e)}`,
+      );
+      return null;
+    }
+    if (rows.length > 1) {
+      // Ne nagađamo kad baza ima više redova za isti mejl — bolje „nema naloga" nego pogrešan.
+      this.logger.error(
+        `auth.users ima ${rows.length} reda za ${wanted} — odbijam da izaberem nalog.`,
+      );
+      return { id: null };
+    }
+    return { id: rows[0]?.id ?? null };
+  }
+
+  /**
+   * GoTrue REST fallback: paginira `/admin/users` i vraća id SAMO uz tačno poklapanje email-a.
+   * `per_page` GoTrue sme da sklopi na manju vrednost, zato se petlja vodi po „prazna strana =
+   * kraj", a ne po `length < per_page`. Ako server ignoriše i `page` (isti prvi id kao na strani
+   * 1), petlja se prekida — nema smisla vrteti isti odgovor.
+   */
+  private async resolveViaGoTrueList(wanted: string): Promise<string | null> {
+    const { auth, key } = this.cfg();
+    let firstPageHeadId: string | undefined;
+    for (let page = 1; page <= MAX_LIST_PAGES; page++) {
+      const res = await fetch(
+        `${auth}/admin/users?page=${page}&per_page=${LIST_PER_PAGE}`,
+        { headers: this.headers(key), signal: AbortSignal.timeout(8000) },
+      );
+      if (!res.ok) return null;
+      const body = (await res.json()) as
+        | { users?: GoTrueUser[] }
+        | GoTrueUser[];
+      const users = Array.isArray(body) ? body : (body?.users ?? []);
+      if (users.length === 0) return null;
+      const hit = users.find((u) => normEmail(u?.email) === wanted);
+      if (hit?.id) return hit.id;
+      if (page === 1) firstPageHeadId = users[0]?.id;
+      else if (users[0]?.id && users[0].id === firstPageHeadId) return null;
+    }
+    this.logger.warn(
+      `GoTrue lista prešla ${MAX_LIST_PAGES} strana bez poklapanja za ${wanted}.`,
+    );
+    return null;
+  }
+
+  /**
+   * Email koji GoTrue nalog STVARNO nosi (`GET /admin/users/{id}`), normalizovan; `null` kad
+   * nalog nije čitljiv. Ovo je „tregeri" provera pred svaki upis lozinke.
+   */
+  private async fetchAccountEmail(userId: string): Promise<string | null> {
     const { auth, key } = this.cfg();
     const res = await fetch(
-      `${auth}/admin/users?email=${encodeURIComponent(email)}`,
+      `${auth}/admin/users/${encodeURIComponent(userId)}`,
       { headers: this.headers(key), signal: AbortSignal.timeout(8000) },
     );
     if (!res.ok) return null;
-    const list = (await res.json()) as
-      | { users?: Array<{ id?: string }> }
-      | Array<{ id?: string }>;
-    const users = Array.isArray(list) ? list : (list?.users ?? []);
-    return users[0]?.id ?? null;
+    const user = (await res.json()) as GoTrueUser;
+    const email = normEmail(user?.email);
+    return email || null;
   }
 
   /**
@@ -117,23 +226,67 @@ export class Sy15AuthAdminService {
     }
     const errText = (await res.text()).slice(0, 400);
     if (res.status === 422 || errText.toLowerCase().includes("already")) {
+      // P0 brana: id iz rezolucije se DODATNO potvrđuje protiv živog naloga — idempotentna
+      // grana sme da vrati postojeći nalog samo ako on stvarno nosi traženi mejl.
       const existing = await this.findUserIdByEmail(input.email);
-      if (existing) return { id: existing, created: false };
+      if (existing) {
+        const actual = await this.fetchAccountEmail(existing);
+        if (actual === normEmail(input.email)) {
+          return { id: existing, created: false };
+        }
+        throw new BadGatewayException(
+          `Bezbednosna brana: GoTrue nalog ${existing} ne nosi email ${input.email} — nalog NIJE preuzet.`,
+        );
+      }
     }
     throw new BadGatewayException(
       `GoTrue create nije uspeo (${res.status}: ${errText})`,
     );
   }
 
-  /** Postavi novu lozinku postojećem GoTrue nalogu (reset tok, paritet 1.0 edge reset_password). */
-  async resetPassword(userId: string, newPassword: string): Promise<void> {
+  /**
+   * Postavi novu lozinku postojećem GoTrue nalogu (reset tok, paritet 1.0 edge reset_password).
+   *
+   * `expectedEmail` je OBAVEZAN (P0, 31.07.2026): pre PUT-a se čita `GET /admin/users/{id}` i
+   * potvrđuje da nalog stvarno nosi taj mejl (case-insensitive). Neusklađenost → izuzetak i
+   * NIKAKAV upis. Pojas uz tregere: i kad bi rezolucija id-a opet promašila, lozinka ne može
+   * otići tuđem nalogu.
+   */
+  async resetPassword(
+    userId: string,
+    newPassword: string,
+    expectedEmail: string,
+  ): Promise<void> {
     const { auth, key } = this.cfg();
-    const res = await fetch(`${auth}/admin/users/${userId}`, {
-      method: "PUT",
-      headers: this.headers(key),
-      body: JSON.stringify({ password: newPassword }),
-      signal: AbortSignal.timeout(10000),
-    });
+    const wanted = normEmail(expectedEmail);
+    if (!wanted) {
+      throw new BadGatewayException(
+        "resetPassword: expectedEmail je obavezan (brana od upisa lozinke tuđem nalogu).",
+      );
+    }
+    const actual = await this.fetchAccountEmail(userId);
+    if (actual === null) {
+      throw new BadGatewayException(
+        `GoTrue nalog ${userId} nije čitljiv — lozinka NIJE promenjena.`,
+      );
+    }
+    if (actual !== wanted) {
+      this.logger.error(
+        `BLOKIRAN reset: GoTrue nalog ${userId} nosi "${actual}", traženo "${wanted}" — lozinka NIJE upisana.`,
+      );
+      throw new BadGatewayException(
+        `Bezbednosna brana: GoTrue nalog ne odgovara email-u ${expectedEmail} — lozinka NIJE promenjena.`,
+      );
+    }
+    const res = await fetch(
+      `${auth}/admin/users/${encodeURIComponent(userId)}`,
+      {
+        method: "PUT",
+        headers: this.headers(key),
+        body: JSON.stringify({ password: newPassword }),
+        signal: AbortSignal.timeout(10000),
+      },
+    );
     if (!res.ok) {
       throw new BadGatewayException(
         `GoTrue reset lozinke nije uspeo (${res.status}: ${(await res.text()).slice(0, 200)})`,
