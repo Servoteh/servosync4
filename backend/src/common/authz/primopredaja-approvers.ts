@@ -14,6 +14,18 @@
  * Prod worker_id/email potvrđeni 13.07 (users JOIN workers); zoran vezan
  * 14.07 (`users.worker_id=1203` za user 10 — bez veze in-app notifikacija
  * po worker id-u ne bi stizala do njegovog naloga).
+ *
+ * ⚠️ ZAHTEV 045/26 (31.07.2026): biti na OVOJ listi NIJE dovoljno da bi
+ * odobravač video kolonu „ODLUKA" i dugme „Predaj u primopredaju" na ekranu
+ * nacrta (`/handovers` → tab Nacrti). Frontend te kontrole gejtuje na
+ * permisiji `primopredaje.write` (+ `primopredaje.read` za sam ekran), a neke
+ * role odobravača (npr. `leadpm`) tu permisiju NEMAJU po roli. Zato svaki novi
+ * odobravač mora dobiti i `primopredaje.read` + `primopredaje.write` — preko
+ * role ili ciljanog `user_permission_overrides` grant-a (tako je rešeno za
+ * Milana Stojadinovića, `users.id=29`, rola `leadpm`). Odluka vlasnika: rola
+ * `leadpm` se NE menja globalno — samo ciljani override po čoveku.
+ * Ako odobravač prijavi „nema dugmeta", PRVO proveri override, pa tek onda kod;
+ * FE od 045/26 prikazuje i eksplicitno upozorenje u tom slučaju.
  */
 export interface PrimopredajaApprover {
   workerId: number;
