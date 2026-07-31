@@ -48,6 +48,31 @@ export function toIsoAtWorkStart(day: string | Date): string {
 }
 
 /**
+ * 'yyyy-MM-dd' (ili Date) → ISO timestamp na KRAJU tog dana (23:59:59.999 lokalno).
+ *
+ * Osa je dan-granularna: kucan „planirani kraj" znači „zaključno sa tim danom", pa bar
+ * pokriva ceo taj dan. Sat je FIKSAN (ne zavisi od trajanja operacije) — zato ponovljeno
+ * snimanje istog dana daje identičan timestamp i plan ne može da odlazi unapred.
+ */
+export function toIsoAtDayEnd(day: string | Date): string {
+  const d = typeof day === 'string' ? new Date(`${day}T00:00:00`) : new Date(day);
+  d.setHours(23, 59, 59, 999);
+  return d.toISOString();
+}
+
+/**
+ * Sačuvan timestamp AKO pada na isti lokalni dan koji stoji u polju (inače null).
+ * Snimanje bez promene dana tako ne dira ni minut zatečenog termina — satnica dobijena
+ * prevlačenjem/`resize`-om preživljava „Sačuvaj termin" (snimanje je idempotentno).
+ */
+export function keepIfSameDay(stored: string | null | undefined, day: string): string | null {
+  if (!stored || !day) return null;
+  const d = new Date(stored);
+  if (Number.isNaN(d.getTime())) return null;
+  return isoDay(d) === day ? d.toISOString() : null;
+}
+
+/**
  * Kraj bara: `planned_end_at` ako je zadat, inače početak + efektivno trajanje
  * (override ili TPZ + TK × kom iz tehnologije). Bez ijednog podatka → +1 dan, da bar
  * postoji i može da se uhvati mišem.

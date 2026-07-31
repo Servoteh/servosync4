@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Factory, Link2, Plus, Search } from 'lucide-react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { CalendarDays, ChevronLeft, ChevronRight, Factory, Link2, Plus, Search } from 'lucide-react';
 import {
   useGantt,
   useGanttOverlay,
@@ -50,6 +50,20 @@ const DAY_W = 44;
 const LABEL_W = 300;
 /** Ponuđene dužine prozora (dana). */
 const RANGES = [14, 30, 60] as const;
+/**
+ * Tvrda granica broja iscrtanih redova. BE feed ide do 5000 stavki (a „Prikaži i stavke
+ * van plana" ih pušta SVE na osu), pa bi jedan klik pravio stotine hiljada DOM čvorova i
+ * ledio tab na pogonskim mašinama. Plan se planira filtrirano (hala/mašina/RN) — višak se
+ * odseca uz vidljivu poruku, a ne uz zamrznutu karticu.
+ */
+const MAX_ROWS = 300;
+/** Prevlačenje preko ovog praga (px) NIJE klik — bar se pomerao, dijalog se ne otvara. */
+const DRAG_SLOP = 4;
+/**
+ * Vertikalne linije mreže dana kao CSS pozadina — ranije `days` (do 60) zasebnih div-ova
+ * PO REDU; boje se samo vikend/danas kolone (v. `DayGrid`).
+ */
+const DAY_GRID_BG = `repeating-linear-gradient(to right, transparent 0 ${DAY_W - 1}px, var(--color-line-soft) ${DAY_W - 1}px ${DAY_W}px)`;
 
 type DragMode = 'move' | 'resize';
 interface DragState {
@@ -77,7 +91,12 @@ export function GanttTab() {
 
   const rows = useMemo(() => gantt.data?.data ?? [], [gantt.data]);
   const planned = useMemo(() => rows.filter((r) => !!r.planned_start_at), [rows]);
-  const visible = showUnplanned ? rows : planned;
+  const candidates = showUnplanned ? rows : planned;
+  const visible = useMemo(
+    () => (candidates.length > MAX_ROWS ? candidates.slice(0, MAX_ROWS) : candidates),
+    [candidates],
+  );
+  const cutOff = candidates.length - visible.length;
   const groups = useMemo(() => groupRows(visible), [visible]);
 
   /** Spisak hala za filter (iz šifrarnika, ne iz feed-a — vidi se i prazna hala). */
@@ -92,6 +111,15 @@ export function GanttTab() {
     [rangeStart, days],
   );
   const todayIdx = dayDiff(startOfDay(new Date()), rangeStart);
+
+  /** Samo kolone koje se BOJE (vikend/danas) — linije mreže crta CSS pozadina. */
+  const gridCells = useMemo(
+    () =>
+      dayList
+        .map((d, i) => ({ i, weekend: isWeekend(d), today: i === todayIdx }))
+        .filter((c) => c.weekend || c.today),
+    [dayList, todayIdx],
+  );
 
   // ── Drag (pomeranje / promena trajanja bara) ───────────────────────────────
   // Pointer eventi na `window` dok traje prevlačenje: bar sme da izađe iz svog reda,
@@ -349,20 +377,7 @@ export function GanttTab() {
                             </span>
                           </div>
                           <div className="relative" style={{ width: timelineW }}>
-                            {/* mreža dana */}
-                            <div className="absolute inset-0 flex">
-                              {dayList.map((dd, i) => (
-                                <div
-                                  key={i}
-                                  className={cn(
-                                    'shrink-0 border-r border-line-soft',
-                                    isWeekend(dd) && 'bg-surface-2/50',
-                                    i === todayIdx && 'bg-accent/5',
-                                  )}
-                                  style={{ width: DAY_W }}
-                                />
-                              ))}
-                            </div>
+                            <DayGrid cells={gridCells} width={timelineW} />
                             {r.planned_start_at ? (
                               <Bar
                                 row={r}
@@ -395,6 +410,12 @@ export function GanttTab() {
         </div>
       )}
 
+      {cutOff > 0 ? (
+        <p className="text-2xs text-status-warn">
+          Iscrtano prvih {MAX_ROWS} redova (još {cutOff} nije prikazano) — suzi filter
+          (hala / crtež / RN) ili skloni „Prikaži i stavke van plana".
+        </p>
+      ) : null}
       {gantt.data?.meta?.truncated ? (
         <p className="text-2xs text-status-warn">
           Prikaz je skraćen na {gantt.data.meta.limit} stavki — suzi filter (hala / crtež / RN).
@@ -421,6 +442,34 @@ export function GanttTab() {
   );
 }
 
+interface GridCell {
+  i: number;
+  weekend: boolean;
+  today: boolean;
+}
+
+/**
+ * Pozadinska mreža jednog reda: linije dana su CSS gradijent, a div-ovi postoje SAMO za
+ * obojene kolone (vikend/danas) — sa ~60 na ~10 čvorova po redu. `memo` + stabilne props
+ * (memoizovan `cells`) drže mrežu van re-rendera koji prati prevlačenje bara.
+ */
+const DayGrid = memo(function DayGrid({ cells, width }: { cells: GridCell[]; width: number }) {
+  return (
+    <div
+      className="absolute inset-0"
+      style={{ width, backgroundImage: DAY_GRID_BG, backgroundSize: `${DAY_W}px 100%` }}
+    >
+      {cells.map((c) => (
+        <div
+          key={c.i}
+          className={cn('absolute inset-y-0', c.weekend && 'bg-surface-2/50', c.today && 'bg-accent/5')}
+          style={{ left: c.i * DAY_W, width: DAY_W }}
+        />
+      ))}
+    </div>
+  );
+});
+
 /** Bar jedne stavke: pozicija/širina iz termina, boja iz spremnosti/završenosti. */
 function Bar({
   row,
@@ -441,6 +490,11 @@ function Bar({
   onKeyDown: (e: React.KeyboardEvent) => void;
   onDragStart: (mode: DragMode, clientX: number) => void;
 }) {
+  // Prevlačenje završava pointerup-om nad ISTIM dugmetom → pregledač ispali i `click`.
+  // Bez praga (`DRAG_SLOP`) bi se posle svakog pomeranja bara otvarao i modal stavke.
+  // Hook mora pre svakog uslovnog `return` (bar ume da ispadne iz prozora).
+  const down = useRef<{ x: number; y: number } | null>(null);
+
   const start = new Date(row.planned_start_at as string);
   const end = barEnd(row);
   const shiftMs = (dragMode === 'move' ? dragDelta : 0) * DAY_MS;
@@ -448,11 +502,20 @@ function Bar({
   const s = start.getTime() + shiftMs;
   const e = Math.max(end.getTime() + shiftMs + growMs, s + 30 * 60_000);
 
-  const left = ((s - rangeStart.getTime()) / DAY_MS) * DAY_W;
-  const width = Math.max(((e - s) / DAY_MS) * DAY_W, 10);
+  const rawLeft = ((s - rangeStart.getTime()) / DAY_MS) * DAY_W;
+  const rawWidth = Math.max(((e - s) / DAY_MS) * DAY_W, 10);
+  const rawRight = rawLeft + rawWidth;
   const total = days * DAY_W;
   // Van prozora → ne crtaj (i ne pravi vodoravni skrol duplo šireg bara).
-  if (left + width < 0 || left > total) return null;
+  if (rawRight < 0 || rawLeft > total) return null;
+
+  // Odsečen bar mora da izgubi i ŠIRINU odsečenog dela, ne samo početak — inače bi se
+  // stavka koja je počela pre prozora crtala u punoj dužini od ivice i pokazivala kraj
+  // danima kasnije nego što jeste (planer po tome pomera druge stavke).
+  const clipLeft = rawLeft < 0;
+  const clipRight = rawRight > total;
+  const left = clipLeft ? 0 : rawLeft;
+  const width = Math.max((clipRight ? total : rawRight) - left, 10);
 
   const done = row.is_completed_effective === true;
   const ready = row.is_ready_for_machine === true;
@@ -463,43 +526,52 @@ function Bar({
       : 'bg-status-danger-bg border-status-danger/50 text-status-danger';
 
   return (
-    <div
-      className="absolute top-1 z-10 h-6"
-      style={{ left: Math.max(left, -4), width: Math.min(width, total - Math.max(left, 0) + 4) }}
-    >
+    <div className="absolute top-1 z-10 h-6" style={{ left, width }}>
       <button
         type="button"
-        onClick={onOpen}
+        onClick={(ev) => {
+          const d = down.current;
+          down.current = null;
+          if (d && (Math.abs(ev.clientX - d.x) > DRAG_SLOP || Math.abs(ev.clientY - d.y) > DRAG_SLOP)) return;
+          onOpen();
+        }}
         onKeyDown={onKeyDown}
         onPointerDown={(ev) => {
           if (ev.button !== 0) return;
+          down.current = { x: ev.clientX, y: ev.clientY };
           onDragStart('move', ev.clientX);
         }}
-        title={`${row.rn_ident_broj ?? ''} · ${row.naziv_dela ?? ''}\n${formatDate(start.toISOString())} → ${formatDate(end.toISOString())}\n${row.is_urgent ? 'HITNO · ' : ''}${ready ? 'Spremno' : 'Nije spremno'}`}
+        title={`${row.rn_ident_broj ?? ''} · ${row.naziv_dela ?? ''}\n${formatDate(start.toISOString())} → ${formatDate(end.toISOString())}\n${row.is_urgent ? 'HITNO · ' : ''}${ready ? 'Spremno' : 'Nije spremno'}${clipLeft || clipRight ? '\n(bar se nastavlja van vidljivog prozora)' : ''}`}
         className={cn(
-          'flex h-6 w-full cursor-grab items-center gap-1 overflow-hidden rounded-control border px-1.5 text-2xs',
+          'flex h-6 w-full cursor-grab items-center gap-1 overflow-hidden border px-1.5 text-2xs',
           'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] active:cursor-grabbing',
+          // Odsečena ivica ostaje ravna (ravan rub = „ima još van prozora").
+          clipLeft ? 'rounded-r-control' : clipRight ? 'rounded-l-control' : 'rounded-control',
           tone,
           row.is_urgent && !done && 'ring-1 ring-status-danger',
         )}
       >
+        {clipLeft ? <ChevronLeft className="h-3 w-3 shrink-0 opacity-70" aria-hidden /> : null}
         {row.predecessor_work_order_id ? <Link2 className="h-3 w-3 shrink-0" aria-hidden /> : null}
         {done ? <span aria-hidden>✓</span> : null}
         <span className="truncate">
           {row.broj_crteza ?? row.rn_ident_broj ?? '—'} · op. {String(row.operacija ?? '—')}
         </span>
+        {clipRight ? <ChevronRight className="ml-auto h-3 w-3 shrink-0 opacity-70" aria-hidden /> : null}
       </button>
-      {/* hvatište za promenu trajanja */}
-      <span
-        role="separator"
-        aria-label="Promeni trajanje"
-        onPointerDown={(ev) => {
-          ev.stopPropagation();
-          if (ev.button !== 0) return;
-          onDragStart('resize', ev.clientX);
-        }}
-        className="absolute right-0 top-0 h-6 w-1.5 cursor-ew-resize rounded-r-control bg-ink/20 hover:bg-ink/40"
-      />
+      {/* Hvatište za promenu trajanja — samo kad je pravi kraj bara u prozoru. */}
+      {clipRight ? null : (
+        <span
+          role="separator"
+          aria-label="Promeni trajanje"
+          onPointerDown={(ev) => {
+            ev.stopPropagation();
+            if (ev.button !== 0) return;
+            onDragStart('resize', ev.clientX);
+          }}
+          className="absolute right-0 top-0 h-6 w-1.5 cursor-ew-resize rounded-r-control bg-ink/20 hover:bg-ink/40"
+        />
+      )}
     </div>
   );
 }

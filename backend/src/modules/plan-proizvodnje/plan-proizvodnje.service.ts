@@ -129,22 +129,19 @@ export class PlanProizvodnjeService {
       patch.predecessorLine =
         dto.predecessorLine === null ? null : Number(dto.predecessorLine);
 
-    // Kraj < početak je besmislen plan → 422 (a ne tiho obrnut bar).
-    const ps = patch.plannedStartAt as Date | null | undefined;
-    const pe = patch.plannedEndAt as Date | null | undefined;
-    if (ps instanceof Date && pe instanceof Date && pe.getTime() < ps.getTime()) {
-      throw new UnprocessableEntityException("planned_end_before_start");
-    }
-
-    // Samo-uslov (stavka zavisi od sebe) bi napravio ciklus dužine 1 → 422.
-    if (
-      patch.predecessorWorkOrderId === wo &&
-      (patch.predecessorLine as number | null | undefined) === line
-    ) {
-      throw new UnprocessableEntityException("predecessor_self_reference");
-    }
+    const touchesTerms =
+      patch.plannedStartAt !== undefined || patch.plannedEndAt !== undefined;
+    const touchesPredecessor =
+      patch.predecessorWorkOrderId !== undefined ||
+      patch.predecessorLine !== undefined;
 
     return this.prisma.$transaction(async (tx) => {
+      // Termini/uslov se validiraju nad SPOJENIM stanjem (postojeći red ⊕ patch) —
+      // v. `assertPlanConsistent`; provera nad samim patch-om propušta svaki poziv
+      // koji nosi samo jedno od dva polja (FE resize/Shift+strelice).
+      if (touchesTerms || touchesPredecessor) {
+        await this.assertPlanConsistent(tx, wo, line, patch, touchesTerms, touchesPredecessor);
+      }
       if (isPinMarker) {
         patch.shiftSortOrder = await this.resolvePinOrder(tx, wo, line);
       }
@@ -161,6 +158,66 @@ export class PlanProizvodnjeService {
       });
       return { data: jsonSafe(row) };
     });
+  }
+
+  /**
+   * Validacija termina i uslova nad SPOJENIM stanjem (postojeći red ⊕ patch).
+   *
+   * API je merge-patch, pa provera nad SAMIM patch-om propušta svaki poziv koji nosi
+   * jedno od dva polja: FE resize bara i Shift+←/→ šalju samo `plannedEndAt`, a uslov
+   * ume da stigne kao dva odvojena poziva (prvo linija, pa RN). Zato se postojeći red
+   * čita u ISTOJ transakciji i `FOR UPDATE` — drugi planer čeka do commit-a umesto da
+   * nad zastarelim kešom upiše kraj pre početka.
+   *
+   * Pravila (sva → 422; naopak interval se NIKAD ne upisuje):
+   *   • `planned_end_before_start`    — kraj pre početka,
+   *   • `predecessor_self_reference`  — stavka kao sopstveni uslov (ciklus dužine 1),
+   *   • `predecessor_pair_incomplete` — uslov je PAR (RN + linija); pola para je siroče
+   *     na kome bi se F2 auto-pomeranje po uslovu zavrtelo.
+   */
+  private async assertPlanConsistent(
+    tx: Tx,
+    wo: number,
+    line: number,
+    patch: Record<string, unknown>,
+    checkTerms: boolean,
+    checkPredecessor: boolean,
+  ): Promise<void> {
+    const rows = await tx.$queryRaw<
+      {
+        planned_start_at: Date | null;
+        planned_end_at: Date | null;
+        predecessor_work_order_id: number | null;
+        predecessor_line: number | null;
+      }[]
+    >(Prisma.sql`
+      SELECT planned_start_at, planned_end_at,
+             predecessor_work_order_id, predecessor_line
+        FROM plan_proizvodnje_overlays
+       WHERE work_order_id = ${wo} AND line_id = ${line}
+       FOR UPDATE`);
+    const cur = rows[0];
+    /** Spojena vrednost: patch ima prednost (uklj. eksplicitni null), inače baza. */
+    const merged = <T>(key: string, existing: T | null | undefined): T | null =>
+      patch[key] !== undefined ? ((patch[key] as T | null) ?? null) : (existing ?? null);
+
+    if (checkTerms) {
+      const start = merged<Date>("plannedStartAt", cur?.planned_start_at);
+      const end = merged<Date>("plannedEndAt", cur?.planned_end_at);
+      if (start && end && end.getTime() < start.getTime()) {
+        throw new UnprocessableEntityException("planned_end_before_start");
+      }
+    }
+    if (checkPredecessor) {
+      const pwo = merged<number>("predecessorWorkOrderId", cur?.predecessor_work_order_id);
+      const pline = merged<number>("predecessorLine", cur?.predecessor_line);
+      if (pwo === wo && pline === line) {
+        throw new UnprocessableEntityException("predecessor_self_reference");
+      }
+      if ((pwo === null) !== (pline === null)) {
+        throw new UnprocessableEntityException("predecessor_pair_incomplete");
+      }
+    }
   }
 
   /**

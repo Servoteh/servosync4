@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link2, X } from 'lucide-react';
 import {
   useGanttOverlay,
@@ -19,8 +19,10 @@ import { toast } from '@/lib/toast';
 import {
   effectiveMinutes,
   isoDay,
+  keepIfSameDay,
   readyReason,
   technologyMinutes,
+  toIsoAtDayEnd,
   toIsoAtWorkStart,
 } from './gant-utils';
 
@@ -43,7 +45,7 @@ export function GantStavkaDialog({
   row: GanttRow;
   onClose: () => void;
 }) {
-  const save = useGanttOverlay({ ok: 'Sačuvano' });
+  const save = useGanttOverlay({ ok: 'Sačuvano', err: overlayErrorMessage });
   const reassign = useGanttReassign();
   const machines = useMachines();
 
@@ -53,13 +55,35 @@ export function GantStavkaDialog({
   const [machine, setMachine] = useState('');
   const [pred, setPred] = useState<OpRow | null>(null);
 
+  // `row` dobija NOVU identičnost posle svake optimističke izmene/refetch-a (npr. čekiranje
+  // „Završeno" iz ovog istog dijaloga). Init sme da se odigra SAMO pri otvaranju i promeni
+  // stavke — inače bi nesnimljen unos termina tiho pao na stare serverske vrednosti.
+  const rowKey = `${row.work_order_id}:${row.line_id}`;
+  const rowRef = useRef(row);
+  rowRef.current = row;
+
   useEffect(() => {
-    setStart(row.planned_start_at ? isoDay(new Date(row.planned_start_at)) : '');
-    setEnd(row.planned_end_at ? isoDay(new Date(row.planned_end_at)) : '');
-    setDur(row.planned_duration_minutes != null ? String(row.planned_duration_minutes) : '');
-    setMachine(row.effective_machine_code ?? '');
+    const r = rowRef.current;
+    setStart(r.planned_start_at ? isoDay(new Date(r.planned_start_at)) : '');
+    setEnd(r.planned_end_at ? isoDay(new Date(r.planned_end_at)) : '');
+    setDur(r.planned_duration_minutes != null ? String(r.planned_duration_minutes) : '');
+    setMachine(r.effective_machine_code ?? '');
     setPred(null);
-  }, [row]);
+  }, [rowKey, open]);
+
+  /**
+   * Pretraga prethodne operacije BEZ same stavke — samo-uslov je ciklus dužine 1 koji
+   * backend ionako odbija (422 `predecessor_self_reference`); planeru se ne nudi.
+   */
+  const useOpsSearchBezSebe = (q: string) => {
+    const res = useOperationsSearch(q);
+    const data = useMemo(() => {
+      const list = res.data?.data;
+      if (!list) return res.data;
+      return { ...res.data, data: list.filter((o) => `${o.work_order_id}:${o.line_id}` !== rowKey) };
+    }, [res.data, rowKey]);
+    return { ...res, data };
+  };
 
   const tech = technologyMinutes(row);
   const eff = effectiveMinutes(row);
@@ -67,23 +91,43 @@ export function GantStavkaDialog({
   const done = row.is_completed_effective === true;
   const overrideDone = row.planned_done !== null && row.planned_done !== undefined;
 
+  /**
+   * Snimanje termina. Kraj je TAČNO ono što je planer uneo (dan koji je ukucao), a
+   * trajanje se dodaje na početak SAMO kad je polje kraja prazno. Trajanje se nikad ne
+   * sabira sa kucanim krajem — to je pravilo koje čini snimanje IDEMPOTENTNIM: otvaranje
+   * dijaloga i „Sačuvaj termin" bez ijedne izmene daje identičan interval (ranije je
+   * svako snimanje guralo kraj za po jedan dan, pa je plan tiho odlazio unapred).
+   */
   function saveTermini() {
     if (!start) {
       toast('⚠ Zadaj planirani početak.');
       return;
     }
-    const startIso = toIsoAtWorkStart(start);
     const durNum = dur.trim() === '' ? null : Number(dur.trim());
     if (durNum !== null && (!Number.isFinite(durNum) || durNum < 1)) {
       toast('⚠ Trajanje mora biti broj minuta veći od 0.');
       return;
     }
-    // Kraj: eksplicitno kucan dan (kraj radnog dana istog dana) ili izveden iz trajanja.
-    const endIso = end
-      ? new Date(new Date(toIsoAtWorkStart(end)).getTime() + (durNum ?? eff) * 60_000).toISOString()
-      : new Date(new Date(startIso).getTime() + (durNum ?? eff) * 60_000).toISOString();
-    if (new Date(endIso).getTime() < new Date(startIso).getTime()) {
-      toast('⚠ Kraj ne može biti pre početka.');
+    // Dan-nivo provera (polja su `input[type=date]`, pa 'yyyy-MM-dd' poredi leksikografski).
+    if (end && end < start) {
+      toast('⚠ Kraj ne može biti pre početka — ispravi datum kraja (ili ga isprazni).');
+      return;
+    }
+    // Nepromenjen dan zadržava zatečeni sat (drag/resize satnica preživljava snimanje);
+    // promenjen dan dobija kanonski sat: početak = 07:00, kraj = kraj tog dana.
+    const startIso = keepIfSameDay(row.planned_start_at, start) ?? toIsoAtWorkStart(start);
+    const startMs = new Date(startIso).getTime();
+    let endIso: string;
+    if (end) {
+      const kept = keepIfSameDay(row.planned_end_at, end);
+      // Zatečen sat se odbacuje ako bi dao naopak interval (nasleđen loš podatak).
+      endIso = kept && new Date(kept).getTime() >= startMs ? kept : toIsoAtDayEnd(end);
+    } else {
+      const min = durNum ?? (eff > 0 ? eff : 24 * 60);
+      endIso = new Date(startMs + min * 60_000).toISOString();
+    }
+    if (new Date(endIso).getTime() < startMs) {
+      toast('⚠ Kraj ne može biti pre početka — ispravi datume.');
       return;
     }
     save.mutate(
@@ -131,13 +175,21 @@ export function GantStavkaDialog({
   }
 
   function setPredecessor(op: OpRow | null) {
+    if (op && `${op.work_order_id}:${op.line_id}` === rowKey) {
+      toast('⚠ Stavka ne može da zavisi od same sebe.');
+      return;
+    }
     setPred(op);
-    save.mutate({
-      workOrderId: row.work_order_id,
-      lineId: row.line_id,
-      predecessorWorkOrderId: op ? op.work_order_id : null,
-      predecessorLine: op ? op.line_id : null,
-    });
+    save.mutate(
+      {
+        workOrderId: row.work_order_id,
+        lineId: row.line_id,
+        predecessorWorkOrderId: op ? op.work_order_id : null,
+        predecessorLine: op ? op.line_id : null,
+      },
+      // Odbijen izbor ne sme da ostane prikazan kao da je prihvaćen (razlog javlja hook).
+      { onError: () => setPred(null) },
+    );
   }
 
   function toggleDone(checked: boolean) {
@@ -254,7 +306,9 @@ export function GantStavkaDialog({
               onChange={(e) => setEnd(e.target.value)}
               className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
             />
-            <p className="mt-1 text-2xs text-ink-disabled">Prazno = izvedeno iz početka + trajanja.</p>
+            <p className="mt-1 text-2xs text-ink-disabled">
+              Zaključno sa tim danom. Prazno = izvedeno iz početka + trajanja.
+            </p>
           </Field>
 
           <Field label="Uslov (prethodna stavka)">
@@ -277,7 +331,7 @@ export function GantStavkaDialog({
               <ComboBox<OpRow>
                 value={pred}
                 onChange={setPredecessor}
-                useSearch={useOperationsSearch}
+                useSearch={useOpsSearchBezSebe}
                 getKey={(o) => `${o.work_order_id}:${o.line_id}`}
                 getLabel={(o) => `${o.rn_ident_broj ?? o.work_order_id} · op. ${String(o.operacija ?? '—')}`}
                 getSublabel={(o) => `${o.broj_crteza ?? ''} ${o.naziv_dela ?? ''}`.trim()}
@@ -318,6 +372,25 @@ export function GantStavkaDialog({
       </div>
     </Dialog>
   );
+}
+
+/**
+ * Prevod BE 422 kodova u razlog na srpskom — planer mora da vidi ZAŠTO nije sačuvano,
+ * a ne generično „Nije sačuvano". Nepoznat kod → undefined (hook javlja podrazumevanu).
+ */
+const BE_RAZLOZI: Record<string, string> = {
+  predecessor_self_reference: 'Stavka ne može da zavisi od same sebe.',
+  predecessor_pair_incomplete: 'Uslov mora imati i RN i liniju prethodne operacije.',
+  planned_end_before_start: 'Kraj ne može biti pre početka — ispravi datume.',
+  invalid_timestamp: 'Neispravan datum termina.',
+};
+
+function overlayErrorMessage(e: unknown): string | undefined {
+  const msg = String((e as Error)?.message ?? '');
+  for (const [code, razlog] of Object.entries(BE_RAZLOZI)) {
+    if (msg.includes(code)) return razlog;
+  }
+  return undefined;
 }
 
 function Fact({ label, value }: { label: string; value: string | number | null | undefined }) {

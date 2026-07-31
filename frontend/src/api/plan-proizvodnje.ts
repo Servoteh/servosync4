@@ -586,7 +586,11 @@ export const useOptimisticOverlay = (msgs?: { ok?: string; err?: string }) =>
  * na grešku; `onSettled` invalidira gant (i „operations", jer mašina/spremnost mogu da se
  * promene iz istog popovera).
  */
-export const useGanttOverlay = (msgs?: { ok?: string; err?: string }) => {
+export const useGanttOverlay = (msgs?: {
+  ok?: string;
+  /** Funkcija dobija grešku i sme da vrati konkretan razlog (npr. prevod BE 422 koda). */
+  err?: string | ((e: unknown) => string | null | undefined);
+}) => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (v: OverlayPatch) => post<PpOverlay>('/overlays', v),
@@ -608,17 +612,26 @@ export const useGanttOverlay = (msgs?: { ok?: string; err?: string }) => {
         if (!d || !Array.isArray(d.data)) continue;
         qc.setQueryData(key, {
           ...d,
-          data: d.data.map((r) =>
-            r.work_order_id === v.workOrderId && r.line_id === v.lineId ? { ...r, ...p } : r,
-          ),
+          data: d.data.map((r) => {
+            if (!(r.work_order_id === v.workOrderId && r.line_id === v.lineId)) return r;
+            const next = { ...r, ...p };
+            // `is_completed_effective` je BE izvedeno polje (COALESCE(planned_done,
+            // is_done_in_bigtehn)) koje čitaju i checkbox „Završeno" i boja bara — bez
+            // ovog koraka klik izgleda mrtvo dok ne prođe mrežni krug.
+            if (v.plannedDone !== undefined) {
+              next.is_completed_effective = v.plannedDone ?? r.is_done_in_bigtehn ?? false;
+            }
+            return next;
+          }),
         });
       }
       return { prev };
     },
-    onError: (_e, _v, ctx) => {
+    onError: (e, _v, ctx) => {
       const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
       if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
-      toast(`⚠ ${msgs?.err ?? 'Nije sačuvano — osvežavam.'}`);
+      const razlog = typeof msgs?.err === 'function' ? msgs.err(e) : msgs?.err;
+      toast(`⚠ ${razlog || 'Nije sačuvano — osvežavam.'}`);
     },
     onSuccess: () => {
       if (msgs?.ok) toast(`✓ ${msgs.ok}`);
