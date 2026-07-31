@@ -384,6 +384,43 @@ describe("uvoz artikala iz .mdb — ključ je BigBit šifra, ne naš id", () => 
     expect(res.notes.join(" ")).toMatch(/BigBit više ne šalje/);
   });
 
+  it("POSTOJEĆI artikal se ažurira i kad neko drugi deli isti katbroj", async () => {
+    // Nalaz probe 31.07.2026: brana je bila stroža od baze i preskakala 12
+    // artikala koji kod nas VEĆ POSTOJE sa istim tim brojem, samo zato što ga
+    // deli i naš artikal bez BigBit porekla — pa nikad ne bi primili izmenu.
+    // Produkciona brana `guard_catalog_unique` takav upis dozvoljava.
+    const { service, update, create } = makeService({
+      items: [
+        { id: 12640, externalItemId: 34811, catalogNumber: "R900407394", name: "staro" },
+        { id: 89022, externalItemId: 0, catalogNumber: "R900407394", name: "naš, bez BigBit porekla" },
+      ],
+      stage: [artikal(1, "34811", "R900407394", "novo ime iz BigBita")],
+    });
+
+    const res = await runItems(service);
+
+    expect(res.updated).toBe(1);
+    expect(res.skipped).toBe(0);
+    expect(update.mock.calls[0][0].where).toEqual({ id: 12640 });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("ali IZMENA katbroja na tuđi i dalje pada na paritet-branu", async () => {
+    const { service, update } = makeService({
+      items: [
+        { id: 12640, externalItemId: 34811, catalogNumber: "STARI-BROJ", name: "x" },
+        { id: 89022, externalItemId: 0, catalogNumber: "TUDJI-BROJ", name: "drži broj" },
+      ],
+      stage: [artikal(1, "34811", "TUDJI-BROJ", "hoće tuđi broj")],
+    });
+
+    const res = await runItems(service);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(res.skipped).toBe(1);
+    expect(res.notes.join(" ")).toMatch(/TUDJI-BROJ/);
+  });
+
   it("BigBit sme da ima svoje duplikate katbroja — oni se NE preskaču", async () => {
     const { service, create } = makeService({
       items: [],

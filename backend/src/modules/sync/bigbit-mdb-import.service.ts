@@ -2889,7 +2889,20 @@ export class BigbitMdbImportService {
           continue;
         }
 
-        if (c.catalog !== "") {
+        // PARITET SE MERI SAMO KAD BI DUBL ZAISTA NASTAO — dakle na ubacivanju,
+        // ili na izmeni koja MENJA sam kataloški broj. Ispravka posle probe na
+        // dev-u sa produkcijskom slikom (31.07.2026): brana je bila stroža od
+        // baze i preskakala 12 artikala koji kod nas VEĆ POSTOJE sa istim tim
+        // brojem (npr. BigBit 34811 = naš id=12640, katbroj R900407394), samo
+        // zato što isti broj deli i neki naš artikal bez BigBit porekla. Ti
+        // artikli nikad ne bi primili nijednu izmenu iz BigBita. Produkciona
+        // brana `guard_catalog_unique` upravo takav upis DOZVOLJAVA (postojeći
+        // duplikati se smeju održavati; čiste se u BigBitu), pa se sada
+        // ponašamo isto.
+        const menjaKatbroj =
+          !current ||
+          String(current[dedupField] ?? "").trim() !== c.catalog;
+        if (c.catalog !== "" && menjaKatbroj) {
           const foreign = (holders.get(c.catalog) ?? []).filter(
             (h) =>
               h.id !== Number(current?.id ?? -1) && !sourceExts.has(h.ext),
