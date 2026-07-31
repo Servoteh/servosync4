@@ -260,6 +260,39 @@ export class KadrovskaMutationsService {
     );
   }
 
+  /**
+   * ZAHTEV 026/26 — odluka o molbi za IZMENU/OTKAZ potvrđenog GO termina.
+   *
+   * Sva poslovna logika je u `kadr_vacreq_change_decide` (SECURITY DEFINER): proverava
+   * da odlučilac pripada istom krugu koji odobrava GO (`current_user_can_manage_vacreq`
+   * + opseg ∨ `vacreq_admin`), pa odobreno IZVRŠAVA kroz postojeće RPC-ove —
+   * `hr_cancel_vacation_request` (dani se vraćaju u fond) odnosno
+   * `hr_revise_vacation_request` (otkaz starog + potvrda novog u jednoj transakciji).
+   * Notifikacija ide istim kanalom (`kadr_notification_log`), pa se posle odluke
+   * pulsira 3.0 dispečer kao i kod ostalih GO odluka.
+   */
+  async vacationChangeDecide(
+    email: string,
+    id: string,
+    approve: boolean,
+    dto: D.RejectDto,
+  ) {
+    const out = await this.mutate(
+      email,
+      dto.clientEventId,
+      approve ? "kadr.vacation.change_approve" : "kadr.vacation.change_reject",
+      (tx) =>
+        this.rpcJson(
+          tx,
+          Prisma.sql`SELECT kadr_vacreq_change_decide(${id}::uuid, ${approve}::boolean,
+             ${dto.note ?? null}, ${email}) AS v`,
+        ),
+    );
+    if (this.dispatcher?.enabled)
+      void this.dispatcher.dispatchKadr().catch(() => undefined);
+    return out;
+  }
+
   /** saveEntitlement — upsert akrual/salda (can_edit_vacation_balance; RLS presuđuje).
    *  Nema jedinstvenog RPC-a → find+create/update (composite emp+year nije @@unique). */
   saveEntitlement(email: string, dto: D.SaveEntitlementDto) {

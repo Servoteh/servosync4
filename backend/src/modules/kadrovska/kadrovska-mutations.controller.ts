@@ -147,6 +147,20 @@ export class KadrovskaMutationsController {
   vacCancel(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
     return this.m.vacationCancel(this.email(req), id, dto);
   }
+  /** ZAHTEV 026/26 — odluka o molbi za izmenu/otkaz POTVRĐENOG termina.
+   *  Guard je isti kao za GO odluke; opseg (moj tim ∨ vacreq_admin) i „ne odobravaj
+   *  sam sebi" presuđuje `kadr_vacreq_change_decide`. */
+  @Post("requests/vacation-changes/:id/approve")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  vacChangeApprove(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.RejectDto) {
+    return this.m.vacationChangeDecide(this.email(req), id, true, dto);
+  }
+  @Post("requests/vacation-changes/:id/reject")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  vacChangeReject(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.RejectDto) {
+    return this.m.vacationChangeDecide(this.email(req), id, false, dto);
+  }
+
   @Delete("requests/vacation/:id")
   @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
   vacDelete(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {

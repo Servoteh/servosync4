@@ -215,6 +215,17 @@ export class KadrovskaController {
     return this.kadrovska.requests(req.user.email, q);
   }
 
+  /** ZAHTEV 026/26 — molbe za izmenu/otkaz potvrđenog GO termina (isti krug
+   *  odobravača kao i sam GO → ista permisija kao `requests`). */
+  @Get("requests/vacation-changes")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  vacationChangeRequests(
+    @Req() req: AuthedRequest,
+    @Query("status") status?: string,
+  ) {
+    return this.kadrovska.vacationChangeRequests(req.user.email, status);
+  }
+
   @Get("absences/absent-now")
   absentNow(@Req() req: AuthedRequest) {
     return this.kadrovska.absentNow(req.user.email);

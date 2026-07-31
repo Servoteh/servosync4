@@ -736,6 +736,42 @@ export function useRequests(params: { status?: string; source?: string; employee
     queryFn: () => apiFetch<{ data: RequestsBundle }>(`${BASE}/requests${qs({ ...params })}`),
   });
 }
+/**
+ * ZAHTEV 026/26 — molbe zaposlenih za izmenu/otkaz POTVRĐENOG GO termina.
+ * Sirov `vacation_change_requests` red (snake kolone, sy15 tabela) + `request_status`
+ * matičnog zahteva iz join-a. Prazna lista + `meta.pending_sql` dok SQL nije primenjen.
+ */
+export interface VacationChangeRequest {
+  id: string;
+  vacation_request_id: string;
+  employee_id: string;
+  kind: 'cancel' | 'revise';
+  old_date_from: string;
+  old_date_to: string;
+  new_date_from: string | null;
+  new_date_to: string | null;
+  new_days_count: number | null;
+  reason: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  submitted_by: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  created_at: string;
+  request_status?: string;
+  request_year?: number;
+}
+export function useVacationChangeRequests(params: { status?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: [...KEYS.requests, 'vacation-changes', params],
+    enabled,
+    retry: false,
+    queryFn: () =>
+      apiFetch<{ data: VacationChangeRequest[]; meta?: { pending_sql?: boolean } }>(
+        `${BASE}/requests/vacation-changes${qs({ ...params })}`,
+      ),
+  });
+}
 export function useAbsences(params: { employeeId?: string; from?: string; to?: string } = {}) {
   return useQuery({
     queryKey: [...KEYS.absences, params],
@@ -984,6 +1020,15 @@ export const useVacationCancel = () =>
   useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/vacation/${v.id}/cancel`, { clientEventId: v.clientEventId }));
 export const useVacationDelete = () =>
   useKadrMutation<{ id: string }>((v) => del(`/requests/vacation/${v.id}`));
+
+/* ZAHTEV 026/26 — odluka o molbi za izmenu/otkaz potvrđenog termina. Odobreno
+   izvršava sy15 RPC (otkaz vraća dane u fond; izmena = otkaz starog + novi termin). */
+export const useVacationChangeApprove = () =>
+  useKadrMutation<{ id: string; note?: string; clientEventId?: string }>((v) =>
+    post(`/requests/vacation-changes/${v.id}/approve`, { note: v.note, clientEventId: v.clientEventId }));
+export const useVacationChangeReject = () =>
+  useKadrMutation<{ id: string; note?: string; clientEventId?: string }>((v) =>
+    post(`/requests/vacation-changes/${v.id}/reject`, { note: v.note, clientEventId: v.clientEventId }));
 
 /* Nadoknada / plaćeno / neplaćeno (odobravanje) */
 export const useMakeupApprove = () => useKadrMutation<{ id: string; clientEventId?: string }>((v) => post(`/requests/makeup/${v.id}/approve`, { clientEventId: v.clientEventId }));

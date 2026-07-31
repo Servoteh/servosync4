@@ -563,6 +563,41 @@ export class KadrovskaService {
     });
   }
 
+  /**
+   * ZAHTEV 026/26 — molbe za izmenu/otkaz POTVRĐENOG GO termina (HR inbox).
+   *
+   * Opseg redova presuđuje se ISTIM izrazom kao u `requests()` (AUDIT-K2 pouka: RLS
+   * `*_select` politike puštaju sve svakome ko prođe `current_user_can_manage_vacreq`,
+   * pa scope mora u upit). Tabela je sy15-only (nema Prisma modela) → raw SQL.
+   * Dok `ZAHTEV_026_GO_IZMENA_OTKAZ.sql` nije primenjen na živu bazu, upit puca na
+   * 42P01 → vraćamo praznu listu uz `meta.pending_sql` umesto 500 na HR ekranu.
+   */
+  async vacationChangeRequests(email: string, status?: string) {
+    const wanted = ["pending", "approved", "rejected"].includes(status ?? "")
+      ? status
+      : undefined;
+    try {
+      return await this.withUserMapped(email, async (tx) => {
+        const statusCond = wanted
+          ? Prisma.sql`AND c.status = ${wanted}`
+          : Prisma.empty;
+        const data = await tx.$queryRaw(
+          Prisma.sql`SELECT c.*, vr.status AS request_status, vr.year AS request_year
+               FROM vacation_change_requests c
+               JOIN vacation_requests vr ON vr.id = c.vacation_request_id
+              WHERE (current_user_is_vacreq_admin()
+                     OR current_user_manages_employee(c.employee_id)
+                     OR c.employee_id = current_user_employee_id())
+                ${statusCond}
+              ORDER BY c.created_at DESC`,
+        );
+        return { data };
+      });
+    } catch {
+      return { data: [], meta: { pending_sql: true } };
+    }
+  }
+
   /** Istorija GO (Excel uvoz, ODVOJENO od salda) — SELECT-only. */
   async vacationHistory(email: string, q: VacationQueryDto) {
     return this.withUserMapped(email, async (tx) => {

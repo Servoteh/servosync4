@@ -49,6 +49,19 @@ export class ReviseVacationDto {
   @IsOptional() @IsBoolean() forceReapproval?: boolean;
 }
 
+/**
+ * ZAHTEV 026/26 — molba za IZMENU/OTKAZ već POTVRĐENOG (approved) GO termina.
+ * Ne menja ništa sama po sebi: pravi red u `vacation_change_requests` koji HR
+ * odobrava (`kadr_vacreq_change_submit`). Za `kind='revise'` datumi su obavezni.
+ */
+export class SubmitVacationChangeDto extends ProfileIdempotentDto {
+  @IsIn(["cancel", "revise"]) kind!: "cancel" | "revise";
+  @IsOptional() @IsISO8601() dateFrom?: string;
+  @IsOptional() @IsISO8601() dateTo?: string;
+  @IsOptional() @IsInt() @Min(0) @Max(366) daysCount?: number;
+  @IsOptional() @IsString() @MaxLength(2000) reason?: string;
+}
+
 /** Nadoknada sati submit (makeup_requests INSERT + kadr_queue_makeup_notification 'submitted'). */
 export class SubmitMakeupDto extends ProfileIdempotentDto {
   @IsISO8601() absenceDate!: string;

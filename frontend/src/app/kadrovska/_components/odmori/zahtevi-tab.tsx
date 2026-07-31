@@ -21,12 +21,16 @@ import {
   useVacationReschedule,
   useVacationRevise,
   useVacationDelete,
+  useVacationChangeRequests,
+  useVacationChangeApprove,
+  useVacationChangeReject,
   useUploadDocument,
   useDispatchNotifications,
   signDocument,
   fetchEmployeePii,
   newClientEventId,
   type VacationRequest,
+  type VacationChangeRequest,
 } from '@/api/kadrovska';
 import { SummaryChips, sv } from '../common';
 import { toRosterEmp, type RosterEmp } from './types';
@@ -340,6 +344,9 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
         </div>
       </div>
 
+      {/* ZAHTEV 026/26 — molbe radnika za izmenu/otkaz POTVRĐENOG termina */}
+      <ChangeRequestsPanel empName={(id: string) => empById.get(id)?.name || id.slice(0, 8)} />
+
       <DataTable
         columns={cols}
         rows={filtered}
@@ -366,6 +373,96 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
           onClose={() => setReschedFor(null)}
         />
       )}
+    </section>
+  );
+}
+
+/**
+ * ZAHTEV 026/26 — molbe zaposlenih za IZMENU/OTKAZ već potvrđenog GO termina.
+ *
+ * Odobreno izvršava baza (`kadr_vacreq_change_decide`) pozivom postojećih RPC-ova:
+ * otkaz vraća dane u fond (`hr_cancel_vacation_request`), izmena je otkaz starog +
+ * potvrda novog u JEDNOJ transakciji (`hr_revise_vacation_request`). Ovde nema
+ * poslovne logike — samo lista i dve odluke.
+ *
+ * Panel se prikazuje samo kad ima molbi (ili kad je odluka u toku), da ne pravi buku
+ * na ekranu kad ih nema — i tiho izostaje dok sy15 SQL (026) nije primenjen.
+ */
+function ChangeRequestsPanel({ empName }: { empName: (employeeId: string) => string }) {
+  const { showToast, confirm } = useOdmoriUi();
+  const q = useVacationChangeRequests({ status: 'pending' });
+  const approve = useVacationChangeApprove();
+  const reject = useVacationChangeReject();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const rows = q.data?.data ?? [];
+
+  if (q.data?.meta?.pending_sql) {
+    return (
+      <p className="rounded-control border border-line bg-surface-2 px-3 py-2 text-xs text-ink-secondary">
+        Zahtevi za izmenu/otkazivanje GO — modul čeka primenu SQL-a na glavnoj bazi
+        (<code>ZAHTEV_026_GO_IZMENA_OTKAZ.sql</code>).
+      </p>
+    );
+  }
+  if (rows.length === 0) return null;
+
+  async function decide(c: VacationChangeRequest, ok: boolean) {
+    const what = c.kind === 'cancel' ? 'otkazivanje' : 'izmenu termina';
+    const period = `${formatDate(c.old_date_from)} – ${formatDate(c.old_date_to)}`;
+    const target = c.kind === 'revise' && c.new_date_from && c.new_date_to
+      ? ` → ${formatDate(c.new_date_from)} – ${formatDate(c.new_date_to)}`
+      : '';
+    const body = ok
+      ? `Odobriti ${what} za ${empName(c.employee_id)} (${period}${target})?` +
+        (c.kind === 'cancel'
+          ? ' Dani se vraćaju u fond, a odsustvo briše iz evidencije.'
+          : ' Stari termin se poništava, a novi upisuje u evidenciju.')
+      : `Odbiti ${what} za ${empName(c.employee_id)} (${period}${target})? Termin ostaje nepromenjen.`;
+    if (!(await confirm({ title: 'Odluka o zahtevu', body, confirmLabel: ok ? 'Odobri' : 'Odbij', danger: !ok })))
+      return;
+    setBusyId(c.id);
+    try {
+      const res = ok
+        ? await approve.mutateAsync({ id: c.id, clientEventId: newClientEventId() })
+        : await reject.mutateAsync({ id: c.id, clientEventId: newClientEventId() });
+      const status = rpcStatus(res).status;
+      if (status === 'already_processed') showToast('ℹ Zahtev je u međuvremenu već obrađen — lista osvežena');
+      else if (status === 'dual_control') showToast('⚠ Sopstvenu molbu ne možete sami odobriti — odlučuje druga osoba.');
+      else if (status === 'failed') showToast('⚠ Izmena nije mogla da se izvrši (saldo/preklapanje) — zahtev ostaje na čekanju.');
+      else if (status === 'approved') showToast('✅ Odobreno — evidencija ažurirana');
+      else if (status === 'rejected') showToast('🚫 Zahtev odbijen');
+      else showToast('✅ Obrađeno');
+    } catch (e) {
+      showToast(e instanceof ApiError && e.status === 403 ? '⚠ Nemate dozvolu (rola/opseg)' : '⚠ Greška pri odlučivanju');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <section className="space-y-2 rounded-control border border-status-warn/40 bg-surface-2 p-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-secondary">
+        Zahtevi za izmenu / otkazivanje potvrđenog termina ({rows.length})
+      </h3>
+      <ul className="space-y-1.5">
+        {rows.map((c) => (
+          <li key={c.id} className="flex flex-wrap items-center gap-2 rounded-control border border-line bg-surface px-3 py-2 text-sm">
+            <StatusBadge tone={c.kind === 'cancel' ? 'danger' : 'info'} label={c.kind === 'cancel' ? 'Otkazivanje' : 'Izmena'} />
+            <b>{empName(c.employee_id)}</b>
+            <span className="tnums text-ink-secondary">
+              {formatDate(c.old_date_from)} – {formatDate(c.old_date_to)}
+              {c.kind === 'revise' && c.new_date_from && c.new_date_to
+                ? ` → ${formatDate(c.new_date_from)} – ${formatDate(c.new_date_to)} (${c.new_days_count ?? '—'} d)`
+                : ''}
+            </span>
+            {c.reason ? <span className="text-xs text-ink-secondary">— {c.reason}</span> : null}
+            <span className="ml-auto flex gap-1">
+              <Button variant="secondary" className="h-7 px-2 text-xs" disabled={busyId === c.id} onClick={() => void decide(c, true)}>✔ Odobri</Button>
+              <Button variant="danger" className="h-7 px-2 text-xs" disabled={busyId === c.id} onClick={() => void decide(c, false)}>✘ Odbij</Button>
+            </span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
