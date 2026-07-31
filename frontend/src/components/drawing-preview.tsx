@@ -110,6 +110,7 @@ export function DrawingPreviewButton({
   // upotrebljiv režim na tabletu, gde `mouseenter` ne postoji.
   const [pinned, setPinned] = useState(false);
   const btnRef = useRef<HTMLButtonElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const aliveRef = useRef(true);
@@ -203,7 +204,13 @@ export function DrawingPreviewButton({
       setPinned(false);
       close();
     };
-    const onMove = () => {
+    const onMove = (e?: Event) => {
+      // Skrol UNUTAR same kartice ne sme da je zatvori: `scroll` ne bubla, ali
+      // capture faza ide kroz window do cilja, pa bi točkić nad visokim crtežom
+      // (portretni list je viši od `max-h`) zatvorio pregled i donji deo bi
+      // ostao nedohvatljiv — a `overflow-auto` na kartici bi bio mrtvo slovo.
+      const t = e?.target;
+      if (t instanceof Node && cardRef.current?.contains(t)) return;
       setPinned(false);
       close();
     };
@@ -216,6 +223,30 @@ export function DrawingPreviewButton({
       window.removeEventListener('resize', onMove);
     };
   }, [state, close]);
+
+  // Prava visina kartice se zna tek kad se crtež iscrta (canvas stiže asinhrono),
+  // a `computeAnchor` radi sa procenom — portretni list je viši od nje i iscurio bi
+  // ispod ivice ekrana. `fixed` element se ne može doskrolovati, pa se pozicija
+  // koriguje po izmerenoj visini čim se promeni.
+  useEffect(() => {
+    const el = cardRef.current;
+    if (state == null || anchor == null || el == null) return;
+    const fit = () => {
+      const h = el.getBoundingClientRect().height;
+      setAnchor((a) => {
+        if (a == null) return a;
+        const top = Math.min(
+          Math.max(GAP, a.top),
+          Math.max(GAP, window.innerHeight - h - GAP),
+        );
+        return top === a.top ? a : { ...a, top };
+      });
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [state, anchor]);
 
   return (
     <>
@@ -249,6 +280,7 @@ export function DrawingPreviewButton({
 
       {state != null && anchor != null && (
         <div
+          ref={cardRef}
           role="dialog"
           aria-label={title ? `Pregled crteža ${title}` : 'Pregled crteža'}
           style={{ top: anchor.top, left: anchor.left, width: cardWidth }}
