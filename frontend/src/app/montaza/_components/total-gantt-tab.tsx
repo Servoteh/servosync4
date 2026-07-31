@@ -304,8 +304,8 @@ export function TotalGanttTab() {
         {rows.length > 0 && (
           <button
             type="button"
-            onClick={() => void generateGanttPdf('Ukupan Gant', days, rows, { singlePage: true })}
-            title="Izvezi Ukupan Gant u PDF (jedna strana)"
+            onClick={() => void generateGanttPdf('Ukupan Gant', days, rows, { singlePage: true, showPeople: true })}
+            title="Izvezi Ukupan Gant u PDF (jedna strana, sa odgovornim inženjerom i vođom montaže)"
             className="flex items-center gap-1 rounded-control border border-line px-2 py-1.5 text-xs text-ink-secondary hover:bg-surface-2"
           >
             <FileDown className="h-3.5 w-3.5" aria-hidden /> PDF
