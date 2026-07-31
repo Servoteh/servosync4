@@ -171,6 +171,9 @@ export interface MakeupRequest {
   createdAt: string;
   updatedAt: string;
   source: 'makeup';
+  /** Da li je +1 dan GO STVARNO upisan (vacation_bonus_days red za ovaj zahtev) —
+   *  "approved" bez upisa je istorijski moguć (ne-atomski FE grant do 31.07.2026). */
+  bonusGranted?: boolean;
   [k: string]: unknown;
 }
 export interface PaidLeaveRequest {

@@ -351,7 +351,10 @@ export class KadrovskaMutationsService {
     );
   }
 
-  grantBonusGo(email: string, dto: D.BonusGoDto) {
+  async grantBonusGo(email: string, dto: D.BonusGoDto) {
+    // AUDIT-K7c paritet: fn briše sate tog dana, a 3.0 bravu zaključanog dana
+    // grida NE VIDI (živi u 3.0 bazi) — provera mora ovde, kao u gridBatch.
+    await this.assertGridDayUnlocked(dto.employeeId, dto.workDate);
     return this.create(email, dto.clientEventId, "kadr.vacation.bonus", (tx) =>
       this.rpcJson(
         tx,
@@ -360,17 +363,86 @@ export class KadrovskaMutationsService {
     );
   }
 
+  /** ConflictException ako je dan grida zaključan 3.0 bravom (poruka kao gridBatch). */
+  private async assertGridDayUnlocked(
+    employeeId: string,
+    workDate: string,
+  ): Promise<void> {
+    const ymd = workDate.slice(0, 10);
+    const locked = await this.lockedGridDays([{ employeeId, workDate: ymd }]);
+    if (locked.has(`${employeeId}|${ymd}`)) {
+      throw new ConflictException(
+        `Dan ${ymd} je zaključan (potvrđen unos). Otključava urednik mesečnog ` +
+          "grida ili admin, pa se tek onda upisuje zamena dana.",
+      );
+    }
+  }
+
   /* Nadoknada — posle odluke queue mejl (1.0 makeupTab:288,295,403). */
   async makeupApprove(email: string, id: string, dto: D.OptIdempotentDto) {
     const out = await this.mutate(
       email,
       dto.clientEventId,
       "kadr.makeup.approve",
-      (tx) =>
-        this.rpcJson(
+      async (tx) => {
+        const decision = await this.rpcJson(
           tx,
           Prisma.sql`SELECT makeup_approve(${id}::uuid, ${email}) AS v`,
-        ),
+        );
+        const status = (decision as { status?: unknown } | null)?.status;
+        if (status !== "approved") return decision;
+        // Finalno odobrenje 'dan_odmora' → +1 dan GO U ISTOJ TRANSAKCIJI.
+        // Ranije je grant slao FE posebnim POST-om posle odobrenja; kad taj poziv
+        // izostane/padne, zahtev ostane "approved" bez upisanog dana (incident
+        // Stamenić 04.07.2026) i jedini trag je toast. Fn (31.07) je soft-dedup:
+        // postojeći red za isti dan → already_granted:true bez duplog entitlementa,
+        // a čišćenje kucanih sati tog dana se SVEJEDNO izvrši (zamena ⊕ sati).
+        const req = await tx.$queryRaw<
+          {
+            employee_id: string;
+            compensation_type: string | null;
+            weekend_work_date: Date | null;
+            absence_date: Date | null;
+            reason: string | null;
+          }[]
+        >(
+          Prisma.sql`SELECT employee_id, compensation_type, weekend_work_date, absence_date, reason
+             FROM makeup_requests WHERE id = ${id}::uuid`,
+        );
+        const r = req[0];
+        if (!r || r.compensation_type !== "dan_odmora") return decision;
+        const workDate = r.weekend_work_date ?? r.absence_date;
+        if (!workDate) return decision;
+        // AUDIT-K7c: fn briše sate tog dana, a 3.0 bravu zaključanog dana grida ne
+        // vidi — provera ovde obara CELO odobrenje (tx rollback) sa jasnom porukom.
+        await this.assertGridDayUnlocked(
+          r.employee_id,
+          workDate.toISOString(),
+        );
+        const bonus = (await this.rpcJson(
+          tx,
+          Prisma.sql`SELECT kadr_grant_bonus_go(${r.employee_id}::uuid, ${workDate}::date, 1::numeric, ${r.reason ?? "Rad vikendom"}, ${id}::uuid) AS v`,
+        )) as {
+          hours_cleared?: number;
+          already_granted?: boolean;
+        } | null;
+        // Fail-loud guard redosleda primene: stara fn (bez hours_cleared ključa)
+        // znači da zamena-dana-2026-07-31.sql NIJE primenjen na sy15 — odbij
+        // odobrenje (rollback) umesto tihe duple kompenzacije (sati + dan).
+        if (!bonus || bonus.hours_cleared === undefined) {
+          throw new ServiceUnavailableException(
+            "sy15 kadr_grant_bonus_go je zastarela — primeni " +
+              "backend/docs/design/authz-snapshots/zamena-dana-2026-07-31.sql " +
+              "na sy15 bazu, pa ponovi odobrenje.",
+          );
+        }
+        return {
+          ...(decision as object),
+          bonus_granted: true,
+          already_granted: bonus.already_granted === true,
+          hours_cleared: bonus.hours_cleared,
+        } as unknown;
+      },
     );
     const status = this.decisionStatus(out);
     if (status === "sef_approved" || status === "approved") {
@@ -413,13 +485,40 @@ export class KadrovskaMutationsService {
       ),
     );
   }
-  makeupStorno(email: string, id: string, dto: D.StornoMakeupDto) {
-    return this.mutate(email, dto.clientEventId, "kadr.makeup.storno", (tx) =>
-      this.rpcJson(
-        tx,
-        Prisma.sql`SELECT kadr_storno_makeup(${id}::uuid, ${dto.note ?? ""}) AS v`,
-      ),
+  async makeupStorno(email: string, id: string, dto: D.StornoMakeupDto) {
+    const out = await this.mutate(
+      email,
+      dto.clientEventId,
+      "kadr.makeup.storno",
+      (tx) =>
+        this.rpcJson(
+          tx,
+          Prisma.sql`SELECT kadr_storno_makeup(${id}::uuid, ${dto.note ?? ""}) AS v`,
+        ),
     );
+    // Storno 'dan_odmora' vraća -1 dan GO, ali NE vraća sate koje je grant obrisao
+    // (original postoji samo u audit_log-u — restauracija je svesna ručna radnja).
+    // Bez ovog flaga radnik posle storna tiho ostane i bez dana i bez sati; FE na
+    // osnovu njega glasno traži ručni povraćaj u grid. Best-effort read (BYPASSRLS,
+    // usko skopovan) — pad provere ne sme da obori storno koji je već prošao.
+    try {
+      const rows = await this.sy15.db.$queryRaw<{ needs: boolean }[]>(
+        Prisma.sql`SELECT EXISTS (
+            SELECT 1 FROM makeup_requests m
+            JOIN work_hours wh ON wh.employee_id = m.employee_id
+              AND wh.work_date = COALESCE(m.weekend_work_date, m.absence_date)
+            WHERE m.id = ${id}::uuid AND m.compensation_type = 'dan_odmora'
+              AND wh.hours = 0 AND wh.absence_code IS NULL
+              AND wh.note LIKE '%zamena dana — sati kompenzovani%'
+          ) AS needs`,
+      );
+      if (rows[0]?.needs && out && typeof out.data === "object" && out.data) {
+        (out.data as Record<string, unknown>).hours_need_manual_restore = true;
+      }
+    } catch {
+      /* provera je informativna — storno je već izvršen */
+    }
+    return out;
   }
   makeupDelete(email: string, id: string, dto: D.OptIdempotentDto) {
     return this.mutate(email, dto.clientEventId, "kadr.makeup.delete", (tx) =>

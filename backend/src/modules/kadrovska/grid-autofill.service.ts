@@ -343,18 +343,29 @@ export class KadrovskaGridAutofillService
 
     // 1) Kandidati: „regularni prazni dani" iz v_attendance_vs_grid (isti signali kao
     //    „Popuni iz kapije"; opseg prisustva se filtrira u JS-u da uhvati i skraćeno vreme).
+    //    ZAMENA DANA (31.07.2026): dan sa odobrenim 'dan_odmora' zahtevom se PRESKAČE —
+    //    radnik za taj vikend-dan dobija +1 dan GO umesto plaćenih sati (nikad oboje);
+    //    bez ovog filtera bi autofill vratio sate koje je kadr_grant_bonus_go obrisao
+    //    (grant briše postojeći red na 0h, ali dan BEZ reda bi autofill ponovo upisao).
     const rows = await db.$queryRaw<VsGridRow[]>(Prisma.sql`
-      SELECT employee_id, day, presence_hours
-      FROM v_attendance_vs_grid
-      WHERE day >= ${from}::date AND day <= ${to}::date
-        AND grid_covered = false
-        AND absence_code IS NULL
-        AND COALESCE(grid_field_hours, 0) = 0
-        AND open_intervals = 0
-        AND first_in IS NOT NULL
-        AND last_out IS NOT NULL
-        AND presence_hours IS NOT NULL
-      ORDER BY employee_id, day
+      SELECT v.employee_id, v.day, v.presence_hours
+      FROM v_attendance_vs_grid v
+      WHERE v.day >= ${from}::date AND v.day <= ${to}::date
+        AND v.grid_covered = false
+        AND v.absence_code IS NULL
+        AND COALESCE(v.grid_field_hours, 0) = 0
+        AND v.open_intervals = 0
+        AND v.first_in IS NOT NULL
+        AND v.last_out IS NOT NULL
+        AND v.presence_hours IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM makeup_requests mr
+          WHERE mr.employee_id = v.employee_id
+            AND mr.compensation_type = 'dan_odmora'
+            AND mr.status IN ('approved', 'completed')
+            AND COALESCE(mr.weekend_work_date, mr.absence_date) = v.day
+        )
+      ORDER BY v.employee_id, v.day
     `);
     summary.candidates = rows.length;
 

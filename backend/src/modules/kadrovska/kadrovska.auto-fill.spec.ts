@@ -121,10 +121,15 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     expect(t).toContain("FROM v_attendance_vs_grid");
     expect(t).toContain("grid_covered = false");
     expect(t).toContain("absence_code IS NULL");
-    expect(t).toContain("COALESCE(grid_field_hours, 0) = 0");
+    expect(t).toContain("COALESCE(v.grid_field_hours, 0) = 0");
     expect(t).toContain("open_intervals = 0");
     expect(t).toContain("first_in IS NOT NULL");
     expect(t).toContain("last_out IS NOT NULL");
+    // Zamena dana (31.07.2026): dan sa odobrenim 'dan_odmora' zahtevom se NE predlaže
+    // (+1 dan GO umesto plaćenih sati — nikad oboje; isti filter kao noćni tik).
+    expect(t).toContain("FROM makeup_requests");
+    expect(t).toContain("'dan_odmora'");
+    expect(t).toContain("COALESCE(mr.weekend_work_date, mr.absence_date) = v.day");
     // opseg prisustva se više NE zida u SQL (računa ga proposeHoursFromPresence u JS-u);
     // parametri su samo granice meseca.
     expect(firstSql(queryRaw).values).toEqual(

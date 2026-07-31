@@ -37,10 +37,12 @@ import {
   useReviseVacation,
   useCancelVacation,
   useDeleteVacation,
+  useMakeupPaidLeave,
   useTeam,
   useProfileMe,
   usePosition,
   vacationRemaining,
+  type MakeupRequest,
   type VacationRequest,
 } from '@/api/moj-profil';
 import type { GoLedgerBlock, GoLedgerPeriod } from '@/api/kadrovska';
@@ -326,10 +328,76 @@ export default function MobOdsustvaPage() {
                 </p>
               </section>
             )}
+
+            {/* Nadoknade / rad vikendom — read-only samouvid (podnošenje: desktop Moj profil) */}
+            <MakeupList />
           </>
         )}
       </main>
     </div>
+  );
+}
+
+/**
+ * Nadoknade sati / dan odmora za rad vikendom — TANAK read-only omotač nad
+ * `GET /v1/profile/makeup-paid-leave` (isti izvor kao desktop Moj profil).
+ * Za 'dan_odmora' bedž razlikuje UPISAN +1 dan GO od odobrenog-bez-upisa
+ * (istorijski ne-atomski grant — incident 04.07.2026); podnošenje novog
+ * zahteva ostaje na desktopu („Moj profil" → Nadoknada sati).
+ */
+function MakeupList() {
+  const q = useMakeupPaidLeave();
+  const rows = q.data?.data?.makeup ?? [];
+  if (q.isLoading || rows.length === 0) return null;
+  return (
+    <section className="space-y-2">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-secondary">
+        Nadoknade / rad vikendom
+      </h2>
+      <ul className="space-y-2">
+        {rows.map((r) => (
+          <MakeupCard key={r.id} r={r} />
+        ))}
+      </ul>
+      <p className="text-2xs text-ink-disabled">
+        Dan odmora za odrađen vikend menja plaćene sate tog dana (zamena, ne duplo).
+        Novi zahtev se podnosi u „Moj profil" na računaru.
+      </p>
+    </section>
+  );
+}
+
+function MakeupCard({ r }: { r: MakeupRequest }) {
+  const danOdmora = r.compensation_type === 'dan_odmora';
+  const datum = danOdmora ? r.weekend_work_date || r.absence_date : r.absence_date;
+  // Tri stanja: true = upisan; false = nije (warn); undefined (stari BE bez
+  // polja) = neutralan status bez tvrdnje.
+  const badge =
+    danOdmora && (r.status === 'approved' || r.status === 'completed') && r.bonus_granted === true ? (
+      <StatusBadge tone="success" label="+1 dan GO upisan" />
+    ) : danOdmora && (r.status === 'approved' || r.status === 'completed') && r.bonus_granted === false ? (
+      <StatusBadge tone="warn" label="Dan još nije upisan" />
+    ) : (
+      <StatusBadge tone={statusTone(r.status)} label={statusLabel(r.status)} />
+    );
+  return (
+    <li className="rounded-panel border border-line bg-surface p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-ink">
+            {danOdmora ? '🏖 Dan odmora (rad vikendom)' : 'Nadoknada sati'}
+          </p>
+          <p className="tnums text-sm text-ink-secondary">
+            {formatDate(datum)} · {Number(r.absence_hours)}h
+            {!danOdmora && r.makeup_deadline ? ` · rok ${formatDate(r.makeup_deadline)}` : ''}
+          </p>
+        </div>
+        <span className="shrink-0">{badge}</span>
+      </div>
+      {(r.reason || r.makeup_plan) && (
+        <p className="mt-2 text-xs text-ink-secondary">{r.reason || r.makeup_plan}</p>
+      )}
+    </li>
   );
 }
 

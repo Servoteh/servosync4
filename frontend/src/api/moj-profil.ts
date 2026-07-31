@@ -128,6 +128,8 @@ export type MakeupRequest = {
   weekend_work_date: string | null;
   status: string;
   created_at?: string;
+  /** Da li je +1 dan GO STVARNO upisan u saldo (samo za compensation_type='dan_odmora'). */
+  bonus_granted?: boolean;
 } & Record<string, unknown>;
 export type PaidLeaveRequest = {
   id: string;

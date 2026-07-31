@@ -797,10 +797,33 @@ export class KadrovskaService {
             })
           : Promise.resolve([]),
       ]);
+      // 'dan_odmora' zahtev može biti "approved" a da +1 dan GO NIKAD nije upisan
+      // (istorijski ne-atomski FE grant — incident Stamenić 04.07.2026). Flag
+      // `bonusGranted` govori da li vacation_bonus_days STVARNO ima red za zahtev.
+      // Match je ŠIRI od makeup_request_id linka: i red bez linka za ISTI
+      // (employee, dan) se broji kao upisan — dedup granta ide po tom ključu, pa
+      // ručno dodeljen dan ne sme večno da nosi bedž „dan NIJE upisan".
+      const bonusRows = makeup.length
+        ? await tx.$queryRaw<{ id: string }[]>(
+            Prisma.sql`SELECT m.id FROM makeup_requests m
+               WHERE m.id = ANY(${makeup.map((r) => r.id)}::uuid[])
+                 AND EXISTS (
+                   SELECT 1 FROM vacation_bonus_days b
+                   WHERE b.makeup_request_id = m.id
+                      OR (m.compensation_type = 'dan_odmora'
+                          AND b.employee_id = m.employee_id
+                          AND b.work_date = COALESCE(m.weekend_work_date, m.absence_date)))`,
+          )
+        : [];
+      const granted = new Set(bonusRows.map((b) => b.id));
       return {
         data: {
           vacation: vacation.map((r) => ({ ...r, source: "vacation" })),
-          makeup: makeup.map((r) => ({ ...r, source: "makeup" })),
+          makeup: makeup.map((r) => ({
+            ...r,
+            source: "makeup",
+            bonusGranted: granted.has(r.id),
+          })),
           paidLeave: paidLeave.map((r) => ({ ...r, source: "paid_leave" })),
           nop: nop.map((r) => ({ ...r, source: "nop" })),
         },
@@ -1080,19 +1103,28 @@ export class KadrovskaService {
           last_out: Date | null;
         }[]
       >(Prisma.sql`
-        SELECT employee_id, full_name, day, presence_hours, first_in, last_out
-        FROM v_attendance_vs_grid
-        WHERE day >= ${start}::date AND day < ${endExcl}::date
-          AND day <= ${maxDay}::date
-          AND grid_covered = false
-          AND absence_code IS NULL
-          AND COALESCE(grid_field_hours, 0) = 0
-          AND open_intervals = 0
-          AND first_in IS NOT NULL
-          AND last_out IS NOT NULL
-          AND presence_hours IS NOT NULL
-          ${q.employeeId ? Prisma.sql`AND employee_id = ${q.employeeId}::uuid` : Prisma.empty}
-        ORDER BY employee_id, day
+        SELECT v.employee_id, v.full_name, v.day, v.presence_hours, v.first_in, v.last_out
+        FROM v_attendance_vs_grid v
+        WHERE v.day >= ${start}::date AND v.day < ${endExcl}::date
+          AND v.day <= ${maxDay}::date
+          AND v.grid_covered = false
+          AND v.absence_code IS NULL
+          AND COALESCE(v.grid_field_hours, 0) = 0
+          AND v.open_intervals = 0
+          AND v.first_in IS NOT NULL
+          AND v.last_out IS NOT NULL
+          AND v.presence_hours IS NOT NULL
+          -- ZAMENA DANA (31.07.2026): odobren 'dan_odmora' za taj dan → +1 dan GO
+          -- umesto plaćenih sati; dan se NE predlaže (isti filter kao noćni tik).
+          AND NOT EXISTS (
+            SELECT 1 FROM makeup_requests mr
+            WHERE mr.employee_id = v.employee_id
+              AND mr.compensation_type = 'dan_odmora'
+              AND mr.status IN ('approved', 'completed')
+              AND COALESCE(mr.weekend_work_date, mr.absence_date) = v.day
+          )
+          ${q.employeeId ? Prisma.sql`AND v.employee_id = ${q.employeeId}::uuid` : Prisma.empty}
+        ORDER BY v.employee_id, v.day
       `);
 
       const suggestions = rows.flatMap((r) => {

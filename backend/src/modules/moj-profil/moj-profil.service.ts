@@ -184,8 +184,19 @@ export class MojProfilService {
       const emp = await this.resolveEmployee(tx, email);
       if (emp == null) return this.emptyProfile();
       const [makeup, paidLeave] = await Promise.all([
+        // bonus_granted: da li je +1 dan GO za 'dan_odmora' zahtev STVARNO upisan
+        // (vacation_bonus_days red) — "approved" bez upisa je istorijski moguć
+        // (ne-atomski FE grant; incident Stamenić 04.07.2026), pa zaposleni mora
+        // da vidi razliku. Match širi od linka (i ručni red za isti dan se broji).
+        // RLS bonus_go_read pušta SELECT svakom prijavljenom.
         tx.$queryRaw<unknown[]>(
-          Prisma.sql`SELECT * FROM makeup_requests WHERE employee_id = ${emp.id}::uuid ORDER BY created_at DESC`,
+          Prisma.sql`SELECT m.*, EXISTS (SELECT 1 FROM vacation_bonus_days b
+               WHERE b.makeup_request_id = m.id
+                  OR (m.compensation_type = 'dan_odmora'
+                      AND b.employee_id = m.employee_id
+                      AND b.work_date = COALESCE(m.weekend_work_date, m.absence_date))) AS bonus_granted
+             FROM makeup_requests m
+            WHERE m.employee_id = ${emp.id}::uuid ORDER BY m.created_at DESC`,
         ),
         tx.$queryRaw<unknown[]>(
           Prisma.sql`SELECT * FROM paid_leave_requests WHERE employee_id = ${emp.id}::uuid ORDER BY created_at DESC`,
