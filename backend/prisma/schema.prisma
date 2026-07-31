@@ -2791,6 +2791,24 @@ model PlanProizvodnjeOverlay {
   cooperationExpectedReturn DateTime? @map("cooperation_expected_return") @db.Date
   archivedAt                DateTime? @map("archived_at") @db.Timestamptz(6)
   archivedReason            String?   @map("archived_reason")
+  // ── Zahtev 046/26 (F0+F1) — „MS Project" gant nad planom mašinske proizvodnje.
+  // PARALELAN pogled: ručni redosled (`shiftSortOrder`) OSTAJE master rasporeda; termini
+  // ispod su planerska vremenska osa i NE utiču ni na jedan postojeći sort/bucket.
+  /// Planirani početak stavke na gantu (ručni unos / drag). NULL = stavka NIJE na gantu (nema bara).
+  plannedStartAt            DateTime? @map("planned_start_at") @db.Timestamptz(6)
+  /// Planirani kraj stavke na gantu. NULL uz postavljen start = trajanje se izvodi iz tehnologije.
+  plannedEndAt              DateTime? @map("planned_end_at") @db.Timestamptz(6)
+  /// Ručni OVERRIDE trajanja u minutima. NULL = default iz tehnologije (TPZ + TK × komada).
+  plannedDurationMinutes    Int?      @map("planned_duration_minutes")
+  /// Ručni OVERRIDE završenosti (tri-state): NULL = auto iz kucanja operatera
+  /// (tech_processes.is_process_finished), true/false = planer je presudio.
+  plannedDone               Boolean?  @map("planned_done")
+  plannedDoneAt             DateTime? @map("planned_done_at") @db.Timestamptz(6)
+  plannedDoneBy             String?   @map("planned_done_by")
+  /// „Uslov" (FS zavisnost, RUČNO): meki ref → work_orders.id prethodnika. NULL = bez uslova.
+  predecessorWorkOrderId    Int?      @map("predecessor_work_order_id")
+  /// „Uslov" (FS zavisnost, RUČNO): meki ref → work_order_operations.id prethodnika.
+  predecessorLine           Int?      @map("predecessor_line")
   /// Legacy audit — sy15 tekst (email/uid), preneseno verbatim (COPY bez remape).
   createdBy                 String?   @map("created_by")
   updatedBy                 String?   @map("updated_by")
@@ -2798,7 +2816,27 @@ model PlanProizvodnjeOverlay {
   updatedAt                 DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   @@unique([workOrderId, lineId], map: "uq_plan_proizvodnje_overlays_wo_line")
+  @@index([plannedStartAt], map: "idx_plan_proizvodnje_overlays_planned_start")
   @@map("plan_proizvodnje_overlays")
+}
+
+/// App-owned (2.0, zahtev 046/26 F0). RUČNI ŠIFRARNIK hala: mašina (`operations.work_center_code`)
+/// → hala. Odluka vlasnika: mapa hala↔mašina se NE izvodi iz šifre/odeljenja nego se kuca ručno.
+/// Koristi ga gant (grupisanje redova Hala → mašina); mašine bez reda ovde idu u grupu „Bez hale".
+/// `machineCode` je PK (jedna hala po mašini); meki ref → operations.work_center_code (bez DB FK —
+/// `operations` je sync-ovan keš, BACKEND_RULES §3 vlasništvo).
+model PlanProizvodnjeMachineHall {
+  machineCode String   @id(map: "pk_plan_proizvodnje_machine_halls") @map("machine_code") @db.VarChar(50)
+  /// Naziv hale (slobodan tekst iz šifrarnika, npr. „Hala 1", „Hala 2", „Alatnica").
+  hall        String   @map("hall") @db.VarChar(100)
+  sortOrder   Int?     @map("sort_order")
+  note        String?  @map("note")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?  @map("updated_by")
+
+  @@index([hall], map: "idx_plan_proizvodnje_machine_halls_hall")
+  @@map("plan_proizvodnje_machine_halls")
 }
 
 /// App-owned (2.0, plan §4.2 (b), F5b). HITNO flag Plana proizvodnje po RN-u (1 red /
