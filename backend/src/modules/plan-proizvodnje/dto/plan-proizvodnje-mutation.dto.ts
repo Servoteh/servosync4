@@ -11,7 +11,9 @@ import {
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
   ValidateNested,
 } from "class-validator";
 
@@ -43,6 +45,27 @@ export class OverlayUpsertDto {
   @IsOptional() @IsString() cooperationStatus?: string;
   @IsOptional() @IsString() cooperationPartner?: string | null;
   @IsOptional() @IsISO8601() cooperationExpectedReturn?: string | null;
+  // ── Zahtev 046/26 (gant). Sva polja su merge-patch: `undefined` = ne diraj,
+  //    `null` = obriši. Termini su PARALELNI pogled — `shiftSortOrder` ostaje master.
+  /** Planirani početak (ISO). null = skini stavku sa gant ose. */
+  @IsOptional() @IsISO8601() plannedStartAt?: string | null;
+  /** Planirani kraj (ISO). null = izvedi iz trajanja. */
+  @IsOptional() @IsISO8601() plannedEndAt?: string | null;
+  /** Override trajanja u minutima (1..100000). null = vrati na tehnologiju (TPZ+TK×kom). */
+  @IsOptional() @IsInt() @Min(1) @Max(100000) plannedDurationMinutes?: number | null;
+  /** Override završenosti. null = auto iz kucanja operatera. */
+  @IsOptional() @IsBoolean() plannedDone?: boolean | null;
+  /** „Uslov" (FS) — RN prethodnika. null = bez uslova (nosi i predecessorLine na null). */
+  @IsOptional() @Matches(DIGITS) predecessorWorkOrderId?: string | null;
+  @IsOptional() @Matches(DIGITS) predecessorLine?: string | null;
+}
+
+/* ── Šifrarnik hala (mašina → hala), zahtev 046/26 F0 ── */
+
+export class MachineHallUpsertDto {
+  @IsString() @MaxLength(100) hall!: string;
+  @IsOptional() @IsInt() sortOrder?: number | null;
+  @IsOptional() @IsString() @MaxLength(500) note?: string | null;
 }
 
 export class OverlayReorderItemDto {

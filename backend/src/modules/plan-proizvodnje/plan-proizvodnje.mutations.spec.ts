@@ -242,3 +242,141 @@ describe("overlay merge + pin-to-top + urgency", () => {
     expect(u.update.clearedAt).toBeNull();
   });
 });
+
+/**
+ * Gant (zahtev 046/26 F0+F1) — termini/uslov/završenost na overlay-u + šifrarnik hala.
+ * Ključna invarijanta: gant NE dira `shiftSortOrder` (ručni redosled ostaje master).
+ */
+describe("gant: termini, uslov i završenost (046/26)", () => {
+  it("upisuje planirane termine i override trajanja, BEZ diranja shiftSortOrder", async () => {
+    const { svc, captured } = makeService();
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: "2026-08-03T05:00:00.000Z",
+      plannedEndAt: "2026-08-05T05:00:00.000Z",
+      plannedDurationMinutes: 480,
+    });
+    const c = captured.overlay!.create;
+    expect(c.plannedStartAt).toBeInstanceOf(Date);
+    expect(c.plannedEndAt).toBeInstanceOf(Date);
+    expect(c.plannedDurationMinutes).toBe(480);
+    expect(c.shiftSortOrder).toBeUndefined();
+  });
+
+  it("null skida stavku sa ose (planned_start_at → NULL)", async () => {
+    const { svc, captured } = makeService();
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: null,
+      plannedEndAt: null,
+    });
+    expect(captured.overlay!.update.plannedStartAt).toBeNull();
+    expect(captured.overlay!.update.plannedEndAt).toBeNull();
+  });
+
+  it("kraj pre početka → 422 (plan se ne upisuje naopako)", async () => {
+    const { svc } = makeService();
+    await expect(
+      svc.upsertOverlay(email, {
+        workOrderId: "9400",
+        lineId: "12",
+        plannedStartAt: "2026-08-10T05:00:00.000Z",
+        plannedEndAt: "2026-08-03T05:00:00.000Z",
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it("uslov na samog sebe → 422", async () => {
+    const { svc } = makeService();
+    await expect(
+      svc.upsertOverlay(email, {
+        workOrderId: "9400",
+        lineId: "12",
+        predecessorWorkOrderId: "9400",
+        predecessorLine: "12",
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it("brisanje uslova nosi i liniju prethodnika", async () => {
+    const { svc, captured } = makeService();
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      predecessorWorkOrderId: null,
+    });
+    expect(captured.overlay!.update.predecessorWorkOrderId).toBeNull();
+    expect(captured.overlay!.update.predecessorLine).toBeNull();
+  });
+
+  it("plannedDone: true stampuje audit, null vraća na automatski", async () => {
+    const on = makeService();
+    await on.svc.upsertOverlay(email, { workOrderId: "1", lineId: "1", plannedDone: true });
+    expect(on.captured.overlay!.create.plannedDone).toBe(true);
+    expect(on.captured.overlay!.create.plannedDoneBy).toBe(email);
+
+    const off = makeService();
+    await off.svc.upsertOverlay(email, { workOrderId: "1", lineId: "1", plannedDone: null });
+    expect(off.captured.overlay!.update.plannedDone).toBeNull();
+    expect(off.captured.overlay!.update.plannedDoneAt).toBeNull();
+    expect(off.captured.overlay!.update.plannedDoneBy).toBeNull();
+  });
+
+  it("neispravan timestamp → 422 (a ne Invalid Date u bazi)", async () => {
+    const { svc } = makeService();
+    await expect(
+      svc.upsertOverlay(email, { workOrderId: "1", lineId: "1", plannedStartAt: "juce" }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+});
+
+describe("šifrarnik hala (046/26 F0)", () => {
+  /** Hall CRUD ide van transakcije → mock na `prisma` nivou, ne na `tx`. */
+  function makeHallService(machineExists: boolean) {
+    const captured: { upsert?: { where: unknown; create: Record<string, unknown>; update: Record<string, unknown> }; deleted?: unknown } = {};
+    const prisma = {
+      $queryRaw: jest.fn(async () => [{ ok: machineExists }]),
+      planProizvodnjeMachineHall: {
+        upsert: jest.fn(async (a: typeof captured.upsert) => {
+          captured.upsert = a;
+          return { machineCode: "G01", hall: "Hala 1" };
+        }),
+        deleteMany: jest.fn(async (a: unknown) => {
+          captured.deleted = a;
+          return { count: 1 };
+        }),
+      },
+    } as unknown as PrismaService;
+    return { svc: new PlanProizvodnjeService(prisma), captured };
+  }
+
+  it("dodela hale postojećoj mašini (upsert po machine_code)", async () => {
+    const { svc, captured } = makeHallService(true);
+    await svc.upsertMachineHall(email, " G01 ", { hall: " Hala 1 " });
+    expect(captured.upsert!.where).toEqual({ machineCode: "G01" });
+    expect(captured.upsert!.create.hall).toBe("Hala 1");
+    expect(captured.upsert!.update.updatedBy).toBe(email);
+  });
+
+  it("nepoznata mašina → 422 machine_not_found", async () => {
+    const { svc } = makeHallService(false);
+    await expect(svc.upsertMachineHall(email, "XXX", { hall: "Hala 1" })).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+  });
+
+  it("prazna hala → 422 (uklanjanje ide kroz DELETE)", async () => {
+    const { svc } = makeHallService(true);
+    await expect(svc.upsertMachineHall(email, "G01", { hall: "   " })).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+  });
+
+  it("skidanje dodele je idempotentno (deleteMany)", async () => {
+    const { svc, captured } = makeHallService(true);
+    await svc.deleteMachineHall(email, "G01");
+    expect(captured.deleted).toEqual({ where: { machineCode: "G01" } });
+  });
+});

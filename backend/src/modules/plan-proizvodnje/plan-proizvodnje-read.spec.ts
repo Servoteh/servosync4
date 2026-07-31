@@ -166,3 +166,69 @@ describe("machineOps — 040/26 server-side crtež/RN filter", () => {
     expect(res.data.has_more).toBe(false);
   });
 });
+
+/**
+ * Gant (zahtev 046/26 F0+F1) — strukturne invarijante feed-a: planirana polja izlaze iz
+ * overlay-a, hala dolazi iz RUČNOG šifrarnika (LEFT JOIN, ne izvođenje iz šifre mašine),
+ * trajanje je COALESCE(override, TPZ + TK × kom), a završenost COALESCE(override, kucanja).
+ */
+describe("gant feed (046/26)", () => {
+  function makeGanttSvc() {
+    const calls: Prisma.Sql[] = [];
+    const prisma = {
+      $queryRaw: jest.fn(async (sql: Prisma.Sql) => {
+        calls.push(sql);
+        return [];
+      }),
+    } as never;
+    const svc = new PlanProizvodnjeReadService(prisma, {} as never);
+    return { svc, calls };
+  }
+
+  it("effectiveOpsInner nosi planirana polja + halu + izvedeno trajanje/završenost", () => {
+    const { priv } = makeSvc();
+    const sql = priv.effectiveOpsInner(Prisma.empty).sql;
+    expect(sql).toContain("planned_start_at");
+    expect(sql).toContain("planned_end_at");
+    expect(sql).toContain("predecessor_work_order_id");
+    // hala = ručni šifrarnik po EFEKTIVNOJ mašini (poštuje reassign), bez izvođenja iz šifre
+    expect(sql).toContain("LEFT JOIN plan_proizvodnje_machine_halls mh ON mh.machine_code = base.effective_machine_code");
+    expect(sql).toContain("effective_duration_minutes");
+    expect(sql).toContain("is_completed_effective");
+  });
+
+  it("trajanje = COALESCE(override, TPZ + TK × komada)", () => {
+    const { priv } = makeSvc();
+    const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
+    expect(sql).toContain("COALESCE( base.planned_duration_minutes, (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int )");
+  });
+
+  it("gantt() zadržava i ZATVORENE stavke koje su već na osi (planned_start_at IS NOT NULL)", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com");
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain("OR planned_start_at IS NOT NULL");
+    expect(sql).toContain("effective_machine_code IS NOT NULL");
+  });
+
+  it("gantt(hall='-') filtrira grupu bez hale", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com", { hall: "-" });
+    expect(calls[0].sql.replace(/\s+/g, " ")).toContain("hall IS NULL");
+  });
+
+  it("gantt(hall=…) je parametrizovan (bez interpolacije u SQL tekst)", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com", { hall: "Hala 1", machine: "G01", q: "9400" });
+    expect(calls[0].values).toEqual(expect.arrayContaining(["Hala 1", "G01", "%9400%"]));
+    expect(calls[0].sql).not.toContain("Hala 1");
+  });
+
+  it("machineHalls() vraća SVE mašine (LEFT JOIN šifrarnika), ne samo dodeljene", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.machineHalls("pm@servoteh.com");
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain("FROM operations m");
+    expect(sql).toContain("LEFT JOIN plan_proizvodnje_machine_halls mh");
+  });
+});

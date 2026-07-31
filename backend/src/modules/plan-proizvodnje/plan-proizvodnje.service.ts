@@ -14,6 +14,7 @@ import type {
   BulkReassignDto,
   CooperationGroupPatchDto,
   CooperationGroupUpsertDto,
+  MachineHallUpsertDto,
   OverlayReorderDto,
   OverlayUpsertDto,
   ReassignDto,
@@ -104,6 +105,45 @@ export class PlanProizvodnjeService {
         patch.cooperationSetAt = now;
       }
     }
+    // ── Zahtev 046/26 (gant). Termini/uslov/završenost — merge patch (undefined = ne
+    //    diraj, null = obriši). Ne dodiruju `shiftSortOrder` (ručni redosled = master).
+    if (dto.plannedStartAt !== undefined)
+      patch.plannedStartAt = this.toDbTs(dto.plannedStartAt);
+    if (dto.plannedEndAt !== undefined)
+      patch.plannedEndAt = this.toDbTs(dto.plannedEndAt);
+    if (dto.plannedDurationMinutes !== undefined)
+      patch.plannedDurationMinutes = dto.plannedDurationMinutes;
+    if (dto.plannedDone !== undefined) {
+      patch.plannedDone = dto.plannedDone;
+      // null = skini override (vrati auto iz kucanja) → i audit se briše.
+      patch.plannedDoneAt = dto.plannedDone === null ? null : now;
+      patch.plannedDoneBy = dto.plannedDone === null ? null : email;
+    }
+    if (dto.predecessorWorkOrderId !== undefined) {
+      const pw = dto.predecessorWorkOrderId;
+      patch.predecessorWorkOrderId = pw === null ? null : Number(pw);
+      // Brisanje RN prethodnika nosi i liniju (uslov je par, ne dva nezavisna polja).
+      if (pw === null) patch.predecessorLine = null;
+    }
+    if (dto.predecessorLine !== undefined && dto.predecessorWorkOrderId !== null)
+      patch.predecessorLine =
+        dto.predecessorLine === null ? null : Number(dto.predecessorLine);
+
+    // Kraj < početak je besmislen plan → 422 (a ne tiho obrnut bar).
+    const ps = patch.plannedStartAt as Date | null | undefined;
+    const pe = patch.plannedEndAt as Date | null | undefined;
+    if (ps instanceof Date && pe instanceof Date && pe.getTime() < ps.getTime()) {
+      throw new UnprocessableEntityException("planned_end_before_start");
+    }
+
+    // Samo-uslov (stavka zavisi od sebe) bi napravio ciklus dužine 1 → 422.
+    if (
+      patch.predecessorWorkOrderId === wo &&
+      (patch.predecessorLine as number | null | undefined) === line
+    ) {
+      throw new UnprocessableEntityException("predecessor_self_reference");
+    }
+
     return this.prisma.$transaction(async (tx) => {
       if (isPinMarker) {
         patch.shiftSortOrder = await this.resolvePinOrder(tx, wo, line);
@@ -488,5 +528,68 @@ export class PlanProizvodnjeService {
     if (v === undefined) return undefined;
     if (v === null || v === "") return null;
     return new Date(`${v.slice(0, 10)}T00:00:00Z`);
+  }
+
+  /** ISO string → Date za @db.Timestamptz (undefined = ne diraj, null/'' = obriši). */
+  private toDbTs(v?: string | null): Date | null | undefined {
+    if (v === undefined) return undefined;
+    if (v === null || v === "") return null;
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) {
+      throw new UnprocessableEntityException("invalid_timestamp");
+    }
+    return d;
+  }
+
+  // ==========================================================================
+  // Šifrarnik hala (zahtev 046/26 F0) — mašina → hala, ručno
+  // ==========================================================================
+
+  /**
+   * Dodela hale mašini (upsert po `machine_code`). Mašina mora postojati u `operations`
+   * (šifarnik radnih mesta) — inače 422 `machine_not_found`. Prazan `hall` NIJE dozvoljen;
+   * uklanjanje dodele ide kroz `deleteMachineHall` (mašina tad pada u grupu „Bez hale").
+   */
+  async upsertMachineHall(
+    email: string,
+    machineCode: string,
+    dto: MachineHallUpsertDto,
+  ) {
+    const code = (machineCode ?? "").trim();
+    const hall = (dto.hall ?? "").trim();
+    if (!code) throw new BadRequestException("Nedostaje šifra mašine.");
+    if (!hall) throw new UnprocessableEntityException("hall_required");
+    const exists = await this.prisma.$queryRaw<{ ok: boolean }[]>(Prisma.sql`
+      SELECT EXISTS (SELECT 1 FROM operations m WHERE m.work_center_code = ${code}) AS ok`);
+    if (!exists[0]?.ok) {
+      throw new UnprocessableEntityException("machine_not_found");
+    }
+    const row = await this.prisma.planProizvodnjeMachineHall.upsert({
+      where: { machineCode: code },
+      create: {
+        machineCode: code,
+        hall,
+        sortOrder: dto.sortOrder ?? null,
+        note: dto.note ?? null,
+        updatedBy: email,
+      },
+      update: {
+        hall,
+        sortOrder: dto.sortOrder ?? null,
+        note: dto.note ?? null,
+        updatedBy: email,
+      },
+    });
+    return { data: jsonSafe(row) };
+  }
+
+  /** Skidanje dodele (mašina → „Bez hale"). Idempotentno (nema reda → 200). */
+  async deleteMachineHall(_email: string, machineCode: string) {
+    const code = (machineCode ?? "").trim();
+    if (!code) throw new BadRequestException("Nedostaje šifra mašine.");
+    await this.prisma.planProizvodnjeMachineHall.deleteMany({
+      where: { machineCode: code },
+    });
+    return { data: { machineCode: code } };
   }
 }

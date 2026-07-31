@@ -30,6 +30,13 @@ export class CooperationQueryDto {
   @IsOptional() @IsString() q?: string;
 }
 
+/** Gant feed (046/26). Svi filteri opcioni; `hall=-` = grupa „Bez hale". */
+export class GanttQueryDto {
+  @IsOptional() @IsString() hall?: string;
+  @IsOptional() @IsString() machine?: string;
+  @IsOptional() @IsString() q?: string;
+}
+
 export class DrawingsQueryDto {
   @Matches(DIGITS) workOrder!: string;
   @Matches(DIGITS) line!: string;
