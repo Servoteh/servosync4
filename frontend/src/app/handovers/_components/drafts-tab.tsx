@@ -156,8 +156,13 @@ function isApprovedPdmStatus(pdmStatus: string): boolean {
   return APPROVED_PDM_STATES.has(pdmStatus.trim().toLowerCase());
 }
 
-/** `DrawingSummary` (BOM čvor) → `Drawing` oblik za stavku (isti obrazac kao `toFormState`). */
-function summaryToDrawing(s: DrawingSummary): Drawing {
+/**
+ * `DrawingSummary` (BOM čvor) → `Drawing` oblik za stavku (isti obrazac kao `toFormState`).
+ * `hasPdf` NIJE deo `DrawingSummary` — dolazi kao zasebno polje BOM reda
+ * (`BomFlatRow.hasPdf`) i mora se proslediti, inače stavke popunjene iz
+ * sastavnice ostaju bez oznake o PDF-u i afordanse za crtež nema.
+ */
+function summaryToDrawing(s: DrawingSummary, hasPdf?: boolean): Drawing {
   return {
     id: s.id,
     drawingNumber: s.drawingNumber,
@@ -180,7 +185,21 @@ function summaryToDrawing(s: DrawingSummary): Drawing {
     workOrderRef: null,
     createdAt: null,
     status: null,
+    hasPdf,
   };
+}
+
+/**
+ * Prikaz IZABRANOG crteža u ComboBox-u (zahtev 052/26, Đorđe Arsić): sama
+ * oznaka „1141072 / A" ne kaže projektantu ŠTA bira, a naziv koji vidi u
+ * padajućoj listi nestane čim izabere. Zato uz oznaku ide i naziv; kad naziva
+ * nema (≈0,4% crteža) pada na kataloški broj, pa na „—" (da se vidi da je
+ * polje prazno, a ne da je tekst odsečen).
+ */
+function drawingValueLabel(d: Drawing): string {
+  const code = `${d.drawingNumber} / ${d.revision}`;
+  const desc = d.name?.trim() || d.catalogNumber?.trim() || '—';
+  return `${code} · ${desc}`;
 }
 
 /** Srpska množina za upozorenje o preskočenim delovima (1 deo / 2 dela / 5 delova). */
@@ -429,6 +448,9 @@ function DraftFormDialog({
     const skipped = producible
       .filter((r) => !isApprovedPdmStatus(r.drawing!.pdmStatus))
       .map((r) => r.drawing!.drawingNumber);
+    // Sklop (prva stavka): kad je izabran kroz ComboBox/prefill nosi i `hasPdf`,
+    // pa se koristi taj objekat. Fallback iz sastavnice ga nema (backend šalje
+    // `hasPdf` samo za komponentne redove, ne i za koren) → ostaje `undefined`.
     const rootDrawing =
       form.mainDrawing && form.mainDrawing.id === data.drawing.id
         ? form.mainDrawing
@@ -445,7 +467,7 @@ function DraftFormDialog({
         .filter((r) => isApprovedPdmStatus(r.drawing!.pdmStatus))
         .map((r) => ({
           ...newItemRow(),
-          drawing: summaryToDrawing(r.drawing!),
+          drawing: summaryToDrawing(r.drawing!, r.hasPdf),
           quantityToProduce: String(r.totalQuantity * pieces),
           mainDrawingId: data.drawing.id,
           quantityDefinedInDrawing: r.totalQuantity,
@@ -711,6 +733,8 @@ function DraftFormDialog({
             getKey={(d) => d.id}
             getLabel={(d) => `${d.drawingNumber} / ${d.revision}`}
             getSublabel={(d) => d.name}
+            // 052/26: posle izbora dugme prikazuje i naziv, ne samo oznaku.
+            getValueLabel={drawingValueLabel}
             placeholder="Broj crteža…"
           />
         </FormField>
@@ -784,6 +808,9 @@ function DraftFormDialog({
                           getKey={(d) => d.id}
                           getLabel={(d) => `${d.drawingNumber} / ${d.revision}`}
                           getSublabel={(d) => d.name}
+                          // 052/26: izabrana stavka mora da nosi i naziv —
+                          // gola oznaka „1141072 / A" ne kaže šta je stavka.
+                          getValueLabel={drawingValueLabel}
                           placeholder="Broj crteža…"
                         />
                       </div>

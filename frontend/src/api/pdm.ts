@@ -134,6 +134,13 @@ export interface BomFlatRow {
   totalQuantity: number;
   occurrences: number;
   minDepth: number;
+  /**
+   * Postoji li uskladišten PDF za crtež ovog reda — backend ga računa isto kao
+   * za `BomTreeNode.hasPdf` (pdm.service.ts, flat agregacija). Opciono da
+   * stariji backend (koji polje nije slao) ne obara tipiziranje: `undefined` se
+   * u UI čita kao „ne znam" → afordansa za PDF se ne nudi.
+   */
+  hasPdf?: boolean;
 }
 
 export interface BomResponse {
