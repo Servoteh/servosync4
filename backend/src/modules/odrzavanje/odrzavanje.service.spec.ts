@@ -366,13 +366,11 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     const tx = makeTx({
       $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
       maintPart: {
-        findUnique: jest
-          .fn()
-          .mockResolvedValue({
-            name: "Ležaj 6203",
-            unit: "kom",
-            unitCost: 12.5,
-          }),
+        findUnique: jest.fn().mockResolvedValue({
+          name: "Ležaj 6203",
+          unit: "kom",
+          unitCost: 12.5,
+        }),
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn().mockResolvedValue(0),
       },
@@ -765,6 +763,22 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
   describe("otpisMachine — arhiviranje umesto brisanja + obaveštenje šefu", () => {
     const ASSET = "a1111111-1111-4111-8111-111111111111";
 
+    /**
+     * `$queryRaw` u toku otpisa/restore-a opslužuje TRI različita upita, a razlikuju
+     * se po broju vezanih vrednosti: `auth.uid()` (0), izbor prve slobodne šifre (1)
+     * i `maint_machine_rename` RPC (2). `free: null` = nijedan kandidat nije slobodan.
+     */
+    const smartQueryRaw = (free?: string | null) =>
+      jest.fn((sql: { values?: unknown[] }) => {
+        const values = sql?.values ?? [];
+        if (values.length === 1)
+          return Promise.resolve(
+            free === null ? [] : [{ code: free ?? String(values[0]) }],
+          );
+        if (values.length === 2) return Promise.resolve([{ result: {} }]);
+        return Promise.resolve([{ uid: "u1" }]);
+      });
+
     /** tx sa mašinom, ogledalom u maint_assets i (opciono) otvorenim nalozima. */
     const otpisTx = (over: {
       archivedAt?: Date | null;
@@ -775,13 +789,15 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       }>;
       machineUpdate?: jest.Mock;
       assetUpdate?: jest.Mock;
+      /** `null` → nema slobodne šifre (svih 50 kandidata zauzeto). */
+      freeCode?: string | null;
     }) => {
       const machineUpdate =
         over.machineUpdate ?? jest.fn().mockResolvedValue({ count: 1 });
       const assetUpdate =
         over.assetUpdate ?? jest.fn().mockResolvedValue({ count: 1 });
       const tx = makeTx({
-        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        $queryRaw: smartQueryRaw(over.freeCode),
         maintMachine: {
           findUnique: jest.fn().mockResolvedValue({
             machineCode: "M-01",
@@ -1063,6 +1079,113 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       );
       // INSERT se NIKAD nije ni pokušao → nema P2002 iz baze.
       expect(insert).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Review PR #64 — otpis mora da arhivira sredstvo PRE nego što rename premesti
+     * mašinu: popravljen `maint_machine_rename` (ZAHTEV_047_MASINA_RENAME_FIX.sql)
+     * nosi `asset_id` u kopiju reda, pa razlog/„ko je otpisao" ostaju na sredstvu
+     * koje mašina i dalje drži (a ne na osirotelom redu).
+     */
+    it("razlog otpisa se upisuje na sredstvo PRE rename-a (sredstvo prati mašinu)", async () => {
+      const assetUpdate = jest.fn().mockResolvedValue({ count: 1 });
+      const { tx } = otpisTx({ assetUpdate });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.otpisMachine("sef@servoteh.com", "M-01", "rashodovana");
+      const q = $queryRawOf(tx);
+      const renameIdx = q.mock.calls.findIndex(
+        (c) => ((c[0] as { values?: unknown[] })?.values ?? []).length === 2,
+      );
+      expect(renameIdx).toBeGreaterThanOrEqual(0);
+      expect(assetUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+        q.mock.invocationCallOrder[renameIdx],
+      );
+    });
+
+    it("otpis kad je SVIH 50 kandidat-šifri zauzeto → 409, a ne rename na zauzetu šifru", async () => {
+      const { tx } = otpisTx({ freeCode: null });
+      const { sy15 } = makeSy15(tx);
+      const notify = makeNotify();
+      const svc = new OdrzavanjeService(
+        sy15,
+        storageStub,
+        notify as unknown as MasinaOtpisNotifyService,
+      );
+      await expect(
+        svc.otpisMachine("sef@servoteh.com", "M-01", "rashodovana"),
+      ).rejects.toThrow(ConflictException);
+      // Nema poziva RPC-a sa zauzetom šifrom (koji bi pao unutar transakcije),
+      // i nema obaveštenja šefu za otpis koji se nije desio.
+      expect(rpcCalls(tx)).toHaveLength(0);
+      expect(notify.notifyOtpis).not.toHaveBeenCalled();
+    });
+
+    it("restore kad je SVIH 50 kandidat-šifri zauzeto → 409 (fallback ne vraća zauzetu baznu)", async () => {
+      const tx = makeTx({
+        $queryRaw: smartQueryRaw(null),
+        maintMachine: {
+          findUnique: jest.fn().mockResolvedValue({ assetId: ASSET }),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          count: jest.fn().mockResolvedValue(1),
+        },
+        maintAsset: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findUnique: jest.fn(),
+        },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await expect(
+        svc.restoreMachine("sef@servoteh.com", "M-01#ARH-20260730"),
+      ).rejects.toThrow(ConflictException);
+      expect(rpcCalls(tx)).toHaveLength(0);
+    });
+
+    /**
+     * `#ARH-` je rezervisan marker arhive: ručno unet u šifru, otpis bi ga skinuo
+     * (`baseMachineCode`) i mašina se posle restore-a NE bi vratila pod svojom
+     * oznakom. Zato se odbija na ulazu — i pri unosu i pri ručnom preimenovanju.
+     */
+    it("createMachine sa rezervisanim '#ARH-' u šifri → 422 (bez ijednog upita/upisa)", async () => {
+      const insert = jest.fn();
+      const findUnique = jest.fn();
+      const tx = makeTx({
+        $queryRaw: jest.fn(),
+        $executeRaw: insert,
+        maintMachine: { findUnique, count: jest.fn().mockResolvedValue(0) },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await expect(
+        svc.createMachine("sef@servoteh.com", {
+          clientEventId: "ev-arh",
+          machineCode: "PRESA#ARH-20250101",
+          name: "Presa",
+        } as never),
+      ).rejects.toThrow(UnprocessableEntityException);
+      expect(insert).not.toHaveBeenCalled();
+      expect(findUnique).not.toHaveBeenCalled();
+    });
+
+    it("renameMachine na šifru sa '#ARH-' → 422 (RPC se ne zove)", async () => {
+      const q = jest.fn();
+      const tx = makeTx({ $queryRaw: q });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await expect(
+        svc.renameMachine("sef@servoteh.com", "M-01", " m-01#arh-20260101 "),
+      ).rejects.toThrow(UnprocessableEntityException);
+      expect(q).not.toHaveBeenCalled();
+    });
+
+    it("renameMachine na običnu šifru i dalje prolazi (guard ne lomi normalan tok)", async () => {
+      const tx = makeTx({ $queryRaw: smartQueryRaw() });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.renameMachine("sef@servoteh.com", "M-01", "  M-02  ");
+      // Trim se dešava pre RPC-a — u bazu ide čista šifra.
+      expect(rpcCalls(tx)).toContainEqual(["M-01", "M-02"]);
     });
 
     it("createWorkOrder na OTPISANOM sredstvu → 422 (nalog se ne kreira)", async () => {
