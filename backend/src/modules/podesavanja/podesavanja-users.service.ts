@@ -164,7 +164,9 @@ export class PodesavanjaUsersService {
       );
     }
     const newPassword = dto.password?.trim() || this.authAdmin.randomPassword();
-    await this.authAdmin.resetPassword(authUserId, newPassword); // (A) stvarna akcija
+    // (A) stvarna akcija — `row.email` je obavezan `expectedEmail`: GoTrue nalog se pred upisom
+    // proverava da stvarno nosi taj mejl (P0 31.07: lozinka je umela da ode tuđem nalogu).
+    await this.authAdmin.resetPassword(authUserId, newPassword, row.email);
 
     // B1: the SAME new password is written to native 3.0 auth (users.password_hash) as to
     // GoTrue — invariant "one password in both apps while sy15 lives". Without this a direct
@@ -195,7 +197,9 @@ export class PodesavanjaUsersService {
 
     // Nema self-service "zaboravljena lozinka" toka — admin MORA lozinku proslediti
     // korisniku direktno, pa je odgovor jedino mesto gde je iko može videti.
-    return { data: { email: row.email, reset: true, password: newPassword, ...sy15 } };
+    return {
+      data: { email: row.email, reset: true, password: newPassword, ...sy15 },
+    };
   }
 
   // ==================== DEACTIVATE / ACTIVATE (soft) ====================

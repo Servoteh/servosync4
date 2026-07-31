@@ -272,9 +272,11 @@ describe("AuthService refresh tokens", () => {
       expect(updArg.data.mustChangePassword).toBe(false);
       // Dual-write u stari sistem: GoTrue reset na istu lozinku + user_roles flag.
       expect(authAdmin.findUserIdByEmail).toHaveBeenCalledWith("ana@servoteh");
+      // 3. argument (expectedEmail) je P0 brana — bez njega bi lozinka mogla otići tuđem nalogu.
       expect(authAdmin.resetPassword).toHaveBeenCalledWith(
         "auth-1",
         "novaLozinka1",
+        "ana@servoteh",
       );
       expect(sy15.withUser).toHaveBeenCalledTimes(1);
     });
