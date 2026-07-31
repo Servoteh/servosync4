@@ -4,10 +4,12 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { isMissingDbObject } from "../../common/sy15/db-object-missing";
 import { jsonSafe } from "../../common/sy15/json-safe";
 import { assertRpcOk } from "../../common/sy15/rpc-ok";
 import { NotifyDispatchService } from "../scheduler/dispatch/notify-dispatch.service";
@@ -188,7 +190,14 @@ export class MojProfilService {
     };
   }
 
-  /** Moje molbe za izmenu/otkaz (best-effort — prazno dok SQL 026 nije primenjen). */
+  /**
+   * Moje molbe za izmenu/otkaz (prazno dok SQL 026 nije primenjen na sy15).
+   *
+   * ⚠️ REVIEW 31.07: catch je SUŽEN na „objekat ne postoji" (`isMissingDbObject`) —
+   * ranije je prazan `catch {}` gutao i prave greške, pa bi radniku ponovo iskočila
+   * dugmad „Zatraži…" iako molba već postoji (dupli submit bi zaustavio tek unique
+   * indeks porukom `already_pending`).
+   */
   private async myVacationChanges(email: string): Promise<unknown[]> {
     try {
       return await this.withUserMapped(email, async (tx) => {
@@ -201,7 +210,8 @@ export class MojProfilService {
         );
         return jsonSafe(rows);
       });
-    } catch {
+    } catch (e) {
+      if (!isMissingDbObject(e)) throw e;
       return [];
     }
   }
@@ -903,7 +913,41 @@ export class MojProfilService {
           `Najraniji dozvoljeni datum je ${REQUEST_MIN_DATE}.`,
         );
     }
-    const out = await this.runIdem(
+    const out = await this.submitVacationChangeRpc(email, id, dto);
+    this.pulseHrDispatch();
+    // `runIdem` već vraća { data, meta } — bez dodatnog omotača (FE čita res.data.status).
+    return out;
+  }
+
+  /**
+   * ⚠️ REVIEW 31.07 (deploy-prozor): dok `ZAHTEV_026_GO_IZMENA_OTKAZ.sql` nije primenjen
+   * na sy15, `kadr_vacreq_change_submit` ne postoji (42883) i poziv je propadao kao sirov
+   * 500 („Slanje nije uspelo."). Pošto FE istovremeno sklanja direktnu izmenu/otkaz nad
+   * potvrđenim terminom, radnik bi ostao BEZ ijedne akcije i bez objašnjenja. Zato SAMO
+   * ta klasa greške (nepostojeća funkcija/tabela) → 503 sa jasnom porukom; sve ostalo
+   * ide dalje kao prava greška.
+   */
+  private async submitVacationChangeRpc(
+    email: string,
+    id: string,
+    dto: SubmitVacationChangeDto,
+  ) {
+    try {
+      return await this.runIdemVacationChange(email, id, dto);
+    } catch (e) {
+      if (!isMissingDbObject(e)) throw e;
+      throw new ServiceUnavailableException(
+        "Zahtev za izmenu/otkazivanje još nije aktiviran na glavnoj bazi — javite se kadrovskoj službi.",
+      );
+    }
+  }
+
+  private runIdemVacationChange(
+    email: string,
+    id: string,
+    dto: SubmitVacationChangeDto,
+  ) {
+    return this.runIdem(
       email,
       dto.clientEventId,
       "profile.vacation-change-submit",
@@ -924,9 +968,6 @@ export class MojProfilService {
         return jsonSafe(rows[0]?.result ?? null);
       },
     );
-    this.pulseHrDispatch();
-    // `runIdem` već vraća { data, meta } — bez dodatnog omotača (FE čita res.data.status).
-    return out;
   }
 
   /** GO obriši (hr_delete_vacation_request). */

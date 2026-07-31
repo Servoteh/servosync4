@@ -428,10 +428,13 @@ function ChangeRequestsPanel({ empName }: { empName: (employeeId: string) => str
       const status = rpcStatus(res).status;
       if (status === 'already_processed') showToast('ℹ Zahtev je u međuvremenu već obrađen — lista osvežena');
       else if (status === 'dual_control') showToast('⚠ Sopstvenu molbu ne možete sami odobriti — odlučuje druga osoba.');
-      else if (status === 'failed') showToast('⚠ Izmena nije mogla da se izvrši (saldo/preklapanje) — zahtev ostaje na čekanju.');
+      else if (status === 'failed') showToast('⚠ Izmena nije mogla da se izvrši (saldo/preklapanje/termin više nije potvrđen) — zahtev ostaje na čekanju.');
+      else if (status === 'not_found') showToast('⚠ Zahtev više ne postoji (u međuvremenu obrisan) — ništa nije izvršeno.');
       else if (status === 'approved') showToast('✅ Odobreno — evidencija ažurirana');
       else if (status === 'rejected') showToast('🚫 Zahtev odbijen');
-      else showToast('✅ Obrađeno');
+      // Nepoznat ishod NIJE uspeh (review 31.07): lažno „✅ Obrađeno" je HR-a ubeđivalo
+      // da je odluka izvršena i kad baza ništa nije promenila.
+      else showToast(`⚠ Nepoznat ishod odluke (${status || 'bez statusa'}) — proverite listu pre nego što nastavite.`);
     } catch (e) {
       showToast(e instanceof ApiError && e.status === 403 ? '⚠ Nemate dozvolu (rola/opseg)' : '⚠ Greška pri odlučivanju');
     } finally {

@@ -275,6 +275,10 @@ function ChangeRequestModal({
       if (status === 'already_pending') return setErr('Za ovaj termin već postoji zahtev koji čeka odluku.');
       if (status === 'not_approved') return setErr('Termin više nije potvrđen — osveži stranicu.');
       if (status === 'overlap') return setErr('Predloženi termin se preklapa sa drugim odsustvom.');
+      // Uspeh je SAMO 'pending' (molba je zavedena). 'not_found' ili nepoznat status
+      // ne smeju da zatvore formu kao da je poslata — red u bazi tada ne postoji.
+      if (status !== 'pending')
+        return setErr('Zahtev nije zaveden — osveži stranicu i pokušaj ponovo.');
       onClose();
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : 'Slanje nije uspelo.');
