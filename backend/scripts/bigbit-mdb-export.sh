@@ -130,6 +130,15 @@ TABLES=(
   "R_Podgrupa|bb_mdb_stage_podgrupe|podgrupe|Podgrupa|Opis|GrupaVeza"
   "R_Poreklo|bb_mdb_stage_poreklo|poreklo|Poreklo|Opis|PodgrupaVeza|PopustProc"
   "Magacini|bb_mdb_stage_magacini|magacini|IDFirma|IDMagacin|Magacin|UlicaIBroj|Mesto|ProsecneCene|VrstaMag|KontoMag|ImeMagacionera|BrLkMagacionera|PotpisSlika"
+
+  # ── ARTIKLI (31.07.2026) — poslednji veliki šifarnik bez živog kanala ──────
+  # R_Artikli (91.000 redova) je do 22.07. stizao kroz MSSQL (QBigTehn full
+  # refresh sa deleteMany — obrazac koji je pregled zabranio); od tada NIŠTA.
+  # Uvoz je upsert bez brisanja, sa zaštitom native opsega (id >= 900M) i
+  # paritetom kataloškog broja — v. importItems u bigbit-mdb-import.service.ts.
+  # NAPOMENA: nema "BBSifra artikla" — tu kolonu je IZMISLIO MSSQL transfer
+  # (remap šifre); u direktnom kanalu Sifra artikla JESTE BigBit šifra.
+  "R_Artikli|bb_mdb_stage_artikli|artikli|Sifra artikla|Kataloski broj|BarKod|PLU|ExtSifra|Naziv|Jedinica mere|Pakovanje|InoJm|Kutija|Transportno pakovanje|Poreklo|Grupa|Podgrupa|Tarifa robe|Tarifa usluga|Uvek porez na robu|Uvek porez na usluge|VP cena|MP cena|NabDevCena|ProdDevCena|Minimalna kolicina|ArtTaksa|Odlozeno|Neoporezivi deo|MaxRabatProc|Memo|KngSifra|ArtAkciza|KngSifra_2|ZavTrosProiz|CarStopa|IDRaster|CarTarifa|ZemljaPorekla|Polica|INONaziv|SifDob|WebOpis|OpisArtikla|Tezina|PDFLink|ZaBrisanje|Aktivan|CenaZaUpisUCen|IDMestoIzdavanja|Proizvodjac|HPS|PotpisArt|DatumIVremeArt|KolUPak|KLRucProc|OsnJM|SlikaSimbolaLink|MPKaloProc|WordLokacija|VPKaloProc|NeVodiZalihe|TezinaKg|Zapremina|Povrsina|RSort|AkcijskiRabat|Napomena2|IDKvalitetArtikla|Debljina"
 )
 
 # psql u kontejneru, na host mreži, sa UTF-8 klijentom.

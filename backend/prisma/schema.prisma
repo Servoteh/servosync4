@@ -5054,6 +5054,7 @@ model BbMdbDrop {
   stagePodgrupe   BbMdbStagePodgrupa[]
   stagePoreklo    BbMdbStagePoreklo[]
   stageMagacini   BbMdbStageMagacin[]
+  stageArtikli    BbMdbStageArtikal[]
 
   @@unique([fileName, fileMtime, fileSize], map: "uq_bb_mdb_drops_file")
   @@index([stageStatus, importStatus], map: "idx_bb_mdb_drops_status")
@@ -5356,6 +5357,89 @@ model BbMdbStageMagacin {
 
   @@index([dropId], map: "idx_bb_mdb_stage_magacini_drop")
   @@map("bb_mdb_stage_magacini")
+}
+
+/// Was: R_Artikli — staging (31.07.2026). Poslednji veliki šifarnik bez živog
+/// kanala: MSSQL put (QBigTehn) mrtav od 22.07, pa artikli na produ stoje od tada.
+/// Sve kolone `String?` kao i ostale staging tabele — tipizacija je posao uvoza.
+/// NEMA `BBSifra artikla`: tu kolonu je izmislio MSSQL transfer (remap šifre);
+/// u direktnom kanalu `Sifra artikla` JESTE BigBit šifra (= items.id).
+model BbMdbStageArtikal {
+  id     Int @id(map: "pk_bb_mdb_stage_artikli") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  sifraArtikla           String? @map("sifra_artikla") // Sifra artikla
+  kataloskiBroj          String? @map("kataloski_broj") // Kataloski broj
+  barKod                 String? @map("bar_kod") // BarKod
+  plu                    String? @map("plu") // PLU
+  extSifra               String? @map("ext_sifra") // ExtSifra
+  naziv                  String? @map("naziv") // Naziv
+  jedinicaMere           String? @map("jedinica_mere") // Jedinica mere
+  pakovanje              String? @map("pakovanje") // Pakovanje
+  inoJm                  String? @map("ino_jm") // InoJm
+  kutija                 String? @map("kutija") // Kutija
+  transportnoPakovanje   String? @map("transportno_pakovanje") // Transportno pakovanje
+  poreklo                String? @map("poreklo") // Poreklo
+  grupa                  String? @map("grupa") // Grupa
+  podgrupa               String? @map("podgrupa") // Podgrupa
+  tarifaRobe             String? @map("tarifa_robe") // Tarifa robe
+  tarifaUsluga           String? @map("tarifa_usluga") // Tarifa usluga
+  uvekPorezNaRobu        String? @map("uvek_porez_na_robu") // Uvek porez na robu
+  uvekPorezNaUsluge      String? @map("uvek_porez_na_usluge") // Uvek porez na usluge
+  vpCena                 String? @map("vp_cena") // VP cena
+  mpCena                 String? @map("mp_cena") // MP cena
+  nabDevCena             String? @map("nab_dev_cena") // NabDevCena
+  prodDevCena            String? @map("prod_dev_cena") // ProdDevCena
+  minimalnaKolicina      String? @map("minimalna_kolicina") // Minimalna kolicina
+  artTaksa               String? @map("art_taksa") // ArtTaksa
+  odlozeno               String? @map("odlozeno") // Odlozeno
+  neoporeziviDeo         String? @map("neoporezivi_deo") // Neoporezivi deo
+  maxRabatProc           String? @map("max_rabat_proc") // MaxRabatProc
+  memo                   String? @map("memo") // Memo
+  kngSifra               String? @map("kng_sifra") // KngSifra
+  artAkciza              String? @map("art_akciza") // ArtAkciza
+  kngSifra2              String? @map("kng_sifra2") // KngSifra_2
+  zavTrosProiz           String? @map("zav_tros_proiz") // ZavTrosProiz
+  carStopa               String? @map("car_stopa") // CarStopa
+  idRaster               String? @map("id_raster") // IDRaster
+  carTarifa              String? @map("car_tarifa") // CarTarifa
+  zemljaPorekla          String? @map("zemlja_porekla") // ZemljaPorekla
+  polica                 String? @map("polica") // Polica
+  inoNaziv               String? @map("ino_naziv") // INONaziv
+  sifDob                 String? @map("sif_dob") // SifDob
+  webOpis                String? @map("web_opis") // WebOpis
+  opisArtikla            String? @map("opis_artikla") // OpisArtikla
+  tezina                 String? @map("tezina") // Tezina
+  pdfLink                String? @map("pdf_link") // PDFLink
+  zaBrisanje             String? @map("za_brisanje") // ZaBrisanje
+  aktivan                String? @map("aktivan") // Aktivan
+  cenaZaUpisUCen         String? @map("cena_za_upis_u_cen") // CenaZaUpisUCen
+  idMestoIzdavanja       String? @map("id_mesto_izdavanja") // IDMestoIzdavanja
+  proizvodjac            String? @map("proizvodjac") // Proizvodjac
+  hps                    String? @map("hps") // HPS
+  potpisArt              String? @map("potpis_art") // PotpisArt
+  datumIVremeArt         String? @map("datum_i_vreme_art") // DatumIVremeArt
+  kolUPak                String? @map("kol_u_pak") // KolUPak
+  klRucProc              String? @map("kl_ruc_proc") // KLRucProc
+  osnJm                  String? @map("osn_jm") // OsnJM
+  slikaSimbolaLink       String? @map("slika_simbola_link") // SlikaSimbolaLink
+  mpKaloProc             String? @map("mp_kalo_proc") // MPKaloProc
+  wordLokacija           String? @map("word_lokacija") // WordLokacija
+  vpKaloProc             String? @map("vp_kalo_proc") // VPKaloProc
+  neVodiZalihe           String? @map("ne_vodi_zalihe") // NeVodiZalihe
+  tezinaKg               String? @map("tezina_kg") // TezinaKg
+  zapremina              String? @map("zapremina") // Zapremina
+  povrsina               String? @map("povrsina") // Povrsina
+  rSort                  String? @map("r_sort") // RSort
+  akcijskiRabat          String? @map("akcijski_rabat") // AkcijskiRabat
+  napomena2              String? @map("napomena2") // Napomena2
+  idKvalitetArtikla      String? @map("id_kvalitet_artikla") // IDKvalitetArtikla
+  debljina               String? @map("debljina") // Debljina
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_artikli_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_artikli_drop")
+  @@map("bb_mdb_stage_artikli")
 }
 
 /// Was: Vrsta naloga — staging.

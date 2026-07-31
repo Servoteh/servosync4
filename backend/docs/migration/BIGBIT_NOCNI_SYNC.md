@@ -109,26 +109,41 @@ upravo kvar zbog kog postoji.
 
 ## 4. Šta se uvozi, a šta namerno NE
 
-**Uvozi se u 4.0 modele** (redosled je obavezan zbog FK lanca):
+**Uvozi se u 4.0 modele — 13 koraka, redosled je obavezan** (matični pre knjige zbog
+`IDPredmet` na stavci; šifarnici artikala pre artikala; zaključavanje poslednje):
 
-| Izvor (.mdb) | Cilj | Redova (snimak 11.07.2026) |
-|---|---|---|
-| `Kontni plan` | `accounts` | 1.389 |
-| `Vrsta naloga` | `order_types` | 117 |
-| `PSF_AnalitickaKonta_T` | `saldakonto_accounts` | 9 |
-| `T_Nalozi` | `journal_entries` | 1.126 |
-| `T_Glavna knjiga` | `ledger_entries` | **20.366** |
+| # | Izvor (.mdb) | Cilj | Redova (snimak 30.07.2026) |
+|---|---|---|---|
+| 1 | `Komitenti` | `customers` | 6.241 |
+| 2 | `Predmeti` | `projects` | 7.624 |
+| 3 | `Kontni plan` | `accounts` | 1.389 |
+| 4 | `Vrsta naloga` | `order_types` | 117 |
+| 5 | `R_Grupa` | `item_groups` | 19 |
+| 6 | `R_Podgrupa` | `item_subgroups` | 86 |
+| 7 | `R_Poreklo` | `item_origins` | 128 |
+| 8 | `Magacini` | `warehouses` | 3 |
+| 9 | `R_Artikli` | `items` | **91.151** |
+| 10 | `PSF_AnalitickaKonta_T` | `saldakonto_accounts` | 9 |
+| 11 | `T_Nalozi` | `journal_entries` | 1.215 |
+| 12 | `T_Glavna knjiga` | `ledger_entries` | **21.750** |
+| 13 | (zastavica iz `T_Nalozi`) | zaključavanje naloga | — |
 
 **Staguje se, ali se NE uvozi** (kontrolni „zlatni uzorak” za poređenje PDV obračuna):
-`T_PDV_GK` (1.965), `T_POPDV_GK` (4.486), `Sema za kontiranje` (30),
+`T_PDV_GK` (2.100), `T_POPDV_GK` (4.485), `Sema za kontiranje` (30),
 `Stavke seme za kontiranje` (105).
+
+> **ISPRAVKA 30–31.07.2026 — matični podaci i artikli SU sada ovde.** Do tada je na ovom
+> mestu pisalo da se `Komitenti`, `Predmeti` i artikli namerno ne diraju, jer ih „vozi živi
+> MSSQL sync koji je svežiji od noćnog fajla". To je prestalo da važi: prenos iz BigBita u
+> `QBigTehn` se **više ne radi** (poslednji uspešan prolaz 22.07.2026 07:14), a modul je
+> ugašen odlukom vlasnika. Mereno 30.07: BigBit na predmetu 10014, QBigTehn i 4.0 na 10005 —
+> naš sync ispravan, izvor mrtav osam dana, i **niko to nije video jer uvoz bajatih podataka
+> i dalje javlja uspeh**. Dual-unos predmeta ostaje stvaran rizik i rešava se **paritet-guardom**
+> u koraku uvoza (BigBit red čiji broj već drži 4.0-native red se odbija i **imenuje**), a ne
+> izostavljanjem tabele.
 
 **Ne dira se uopšte:**
 
-* **`Komitenti` i `Predmeti`** — njih već vozi **živi MSSQL sync**, koji čita bazu *uživo* i time
-  je **svežiji od noćnog fajla**. Uz to su `Predmeti` u dual-unos režimu (3.0 dodeljuje broj →
-  isti broj se prekuca u BigBit), pa bi `.mdb` kanal bio drugi pisac po istim redovima.
-  `.mdb` kopija se koristi samo za kontrolu integriteta.
 * **`Sema za kontiranje` / `Stavke seme`** — 4.0 seed je **ručno ispravljen** (šema 31 gađa
   nepostojeća konta 470/471; 37/38 su jednostrane pa ne balansiraju), a slepi uvoz bi te
   ispravke pregazio. Šeme voze *buduće* automatsko knjiženje, ne paralelni PDV obračun

@@ -142,6 +142,9 @@ const MASTER_LABELS: Record<string, string> = {
 /** Serija za predmete. Mereno 30.07.2026: 7.617 predmeta = osam stranica. */
 const PROJECTS_BATCH = 1000;
 
+/** Serija za artikle — 91k redova × 67 kolona; 2000 drži memoriju ispod ~40 MB. */
+const ITEMS_BATCH = 2000;
+
 /** Koliko preskočenih redova se IMENUJE u `notes` (ostatak se sabere u broj). */
 const MAX_NAMED_SKIPS = 20;
 
@@ -204,6 +207,88 @@ export const PREDMET_SRC_TO_STAGE_FIELD: Record<string, string> = {
   DatumUgovora: "datumUgovora",
   BrojNarudzbenice: "brojNarudzbenice",
   DatumNarudzbenice: "datumNarudzbenice",
+};
+
+/**
+ * `R_Artikli` -> staging kolone (31.07.2026). Isti ugovor kao PREDMET tabela
+ * iznad: `itemsMapping()` proverava da SVAKA kolona iz sync mape ima red ovde,
+ * pa nova kolona u BigBitu ne može tiho da se uveze prazna.
+ *
+ * ⚠️ ALIAS `BBSifra artikla` -> `sifraArtikla`: tu kolonu je IZMISLIO MSSQL
+ * transfer (remap šifre artikla pri prepisu u QBigTehn). U direktnom .mdb kanalu
+ * remapa nema — `Sifra artikla` JESTE BigBit šifra i ona je i `items.id` i
+ * `items.external_item_id`. Alias postoji da mapa (koja je pisana za MSSQL
+ * izvor) prođe proveru bez izmene generisanog fajla.
+ */
+export const ARTIKAL_SRC_TO_STAGE_FIELD: Record<string, string> = {
+  "Sifra artikla": "sifraArtikla",
+  "Kataloski broj": "kataloskiBroj",
+  "BarKod": "barKod",
+  "PLU": "plu",
+  "ExtSifra": "extSifra",
+  "Naziv": "naziv",
+  "Jedinica mere": "jedinicaMere",
+  "Pakovanje": "pakovanje",
+  "InoJm": "inoJm",
+  "Kutija": "kutija",
+  "Transportno pakovanje": "transportnoPakovanje",
+  "Poreklo": "poreklo",
+  "Grupa": "grupa",
+  "Podgrupa": "podgrupa",
+  "Tarifa robe": "tarifaRobe",
+  "Tarifa usluga": "tarifaUsluga",
+  "Uvek porez na robu": "uvekPorezNaRobu",
+  "Uvek porez na usluge": "uvekPorezNaUsluge",
+  "VP cena": "vpCena",
+  "MP cena": "mpCena",
+  "NabDevCena": "nabDevCena",
+  "ProdDevCena": "prodDevCena",
+  "Minimalna kolicina": "minimalnaKolicina",
+  "ArtTaksa": "artTaksa",
+  "Odlozeno": "odlozeno",
+  "Neoporezivi deo": "neoporeziviDeo",
+  "MaxRabatProc": "maxRabatProc",
+  "Memo": "memo",
+  "KngSifra": "kngSifra",
+  "ArtAkciza": "artAkciza",
+  "KngSifra_2": "kngSifra2",
+  "ZavTrosProiz": "zavTrosProiz",
+  "CarStopa": "carStopa",
+  "IDRaster": "idRaster",
+  "CarTarifa": "carTarifa",
+  "ZemljaPorekla": "zemljaPorekla",
+  "Polica": "polica",
+  "INONaziv": "inoNaziv",
+  "SifDob": "sifDob",
+  "WebOpis": "webOpis",
+  "OpisArtikla": "opisArtikla",
+  "Tezina": "tezina",
+  "PDFLink": "pdfLink",
+  "ZaBrisanje": "zaBrisanje",
+  "Aktivan": "aktivan",
+  "CenaZaUpisUCen": "cenaZaUpisUCen",
+  "IDMestoIzdavanja": "idMestoIzdavanja",
+  "Proizvodjac": "proizvodjac",
+  "HPS": "hps",
+  "PotpisArt": "potpisArt",
+  "DatumIVremeArt": "datumIVremeArt",
+  "KolUPak": "kolUPak",
+  "KLRucProc": "klRucProc",
+  "OsnJM": "osnJm",
+  "SlikaSimbolaLink": "slikaSimbolaLink",
+  "MPKaloProc": "mpKaloProc",
+  "WordLokacija": "wordLokacija",
+  "VPKaloProc": "vpKaloProc",
+  "NeVodiZalihe": "neVodiZalihe",
+  "TezinaKg": "tezinaKg",
+  "Zapremina": "zapremina",
+  "Povrsina": "povrsina",
+  "RSort": "rSort",
+  "AkcijskiRabat": "akcijskiRabat",
+  "Napomena2": "napomena2",
+  "IDKvalitetArtikla": "idKvalitetArtikla",
+  "Debljina": "debljina",
+  "BBSifra artikla": "sifraArtikla",
 };
 
 /** Staging je SAV tekst; prazan string i beline znače „nema vrednosti". */
@@ -632,6 +717,10 @@ export class BigbitMdbImportService {
       steps.push(await this.importItemSubgroups(drop.id));
       steps.push(await this.importItemOrigins(drop.id));
       steps.push(await this.importWarehouses(drop.id));
+      // Artikli POSLE svojih šifarnika (grupa/podgrupa/poreklo/magacin su im
+      // roditelji po smislu, iako FK u 4.0 nisu tvrdi) — tako artikal nikad ne
+      // pokazuje na grupu koja ove noći još nije ušla.
+      steps.push(await this.importItems(drop.id));
       steps.push(await this.importSaldakontoAccounts(drop.id));
       steps.push(await this.importJournalEntries(drop.id));
       steps.push(await this.importLedgerEntries(drop.id));
@@ -2556,6 +2645,273 @@ export class BigbitMdbImportService {
    * nova kolona bez reda u `PREDMET_SRC_TO_STAGE_FIELD` bi se tiho upisala kao
    * prazna, a promenjen PK bi obesmislio ključ idempotencije.
    */
+  /**
+   * `R_Artikli` -> `items` (31.07.2026) — poslednji veliki šifarnik bez živog
+   * kanala: MSSQL put (full refresh sa `deleteMany`, obrazac koji je pregled
+   * zabranio) mrtav je od 22.07, pa artikli na produ stoje od tada.
+   *
+   * NAČELA (ista kao komitenti/predmeti):
+   *  1. UPSERT, NIKAD BRISANJE — artikal ugašen u BigBitu ostaje ovde (deca u
+   *     cenovnicima i sastavnicama); nestajanje se MERI, ne izvršava.
+   *  2. NATIVE OPSEG SE NE DIRA — `isNativeRow("items", id)` (≥ 900M); BigBit
+   *     red sa takvom šifrom se preskače i imenuje.
+   *  3. PARITET KATALOŠKOG BROJA — broj koji drži 4.0-native artikal (id koji
+   *     izvor NE zna) ne sme dobiti BigBit dubl.
+   *  4. „ažurirano" znači da se u BigBitu STVARNO nešto promenilo (poređenje po
+   *     koloni) — inače bi svaka noć javila 91.000 „izmenjenih".
+   *
+   * DUPLI KATALOŠKI BROJEVI UNUTAR IZVORA SE NE PRESKAČU: BigBit ih ima (~2.000
+   * grupa, mereno 25.07) i to je NJEGOVO stanje koje se preslikava. Tvrdu odluku
+   * donosi DB brana `guard_catalog_unique` na upisu — njen pad se hvata po redu
+   * i imenuje, pa se vidi TAČNO koji artikal nije ušao i zašto.
+   *
+   * `source` NIJE u mapi → na update se NE dira (native marker preživljava);
+   * na insert važi DB default 'BIGBIT'. `external_item_id` = šifra (alias u
+   * ARTIKAL_SRC_TO_STAGE_FIELD — direktan kanal nema remap).
+   *
+   * Sekvenca se NE pomera: native artikli ne koriste PG sekvencu nego
+   * `nextNativeItemId` (MAX u native opsegu, pod advisory bravom).
+   */
+  private async importItems(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const mapping = this.itemsMapping();
+    const dedupField = additiveDedupFieldFor("items") ?? "catalogNumber";
+
+    const staged = await this.prisma.bbMdbStageArtikal.count({
+      where: { dropId },
+    });
+
+    // Ključevi CELOG drop-a unapred (91k × int ≈ par MB) — paritet-brana mora da
+    // zna da li izvor poznaje id koji drži sporni kataloški broj.
+    const sourceIds = new Set<number>();
+    {
+      let k = 0;
+      for (;;) {
+        const keyPage = await this.prisma.bbMdbStageArtikal.findMany({
+          where: { dropId, id: { gt: k } },
+          orderBy: { id: "asc" },
+          take: 10_000,
+          select: { id: true, sifraArtikla: true },
+        });
+        if (keyPage.length === 0) break;
+        k = keyPage[keyPage.length - 1].id;
+        for (const r of keyPage) {
+          const v = stageInt(r.sifraArtikla);
+          if (v !== null && v > 0) sourceIds.add(v);
+        }
+      }
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let skipped = 0;
+    let filtered = 0;
+    let unparsedDates = 0;
+    const seenSourceIds = new Set<number>();
+    const named: string[] = [];
+    let extraNamed = 0;
+    const name = (msg: string): void => {
+      if (named.length < MAX_NAMED_SKIPS) named.push(msg);
+      else extraNamed++;
+    };
+
+    let lastKey = 0;
+    let batches = 0;
+    for (;;) {
+      const page = await this.prisma.bbMdbStageArtikal.findMany({
+        where: { dropId, id: { gt: lastKey } },
+        orderBy: { id: "asc" },
+        take: ITEMS_BATCH,
+      });
+      if (page.length === 0) break;
+      const pageMax = page[page.length - 1].id;
+      if (pageMax <= lastKey) {
+        notes.push(
+          `keyset ne napreduje na staging id=${lastKey} — stranicanje prekinuto (proveri bb_mdb_stage_artikli)`,
+        );
+        break;
+      }
+      lastKey = pageMax;
+      batches++;
+
+      const candidates: {
+        sourceId: number;
+        catalog: string;
+        data: Record<string, unknown>;
+      }[] = [];
+      for (const raw of page) {
+        const row = raw as unknown as Record<string, unknown>;
+        const sourceId = stageInt(
+          row[ARTIKAL_SRC_TO_STAGE_FIELD["Sifra artikla"]],
+        );
+        if (sourceId === null || sourceId <= 0) {
+          filtered++;
+          name(
+            `odbačeno: Sifra artikla="${String(row[ARTIKAL_SRC_TO_STAGE_FIELD["Sifra artikla"]] ?? "")}" nije upotrebljiv broj`,
+          );
+          continue;
+        }
+        if (seenSourceIds.has(sourceId)) {
+          filtered++;
+          name(`odbačeno: Sifra artikla=${sourceId} se u drop-u ponavlja`);
+          continue;
+        }
+        seenSourceIds.add(sourceId);
+
+        const mapped = this.mapStagedProject(
+          row,
+          mapping.columns,
+          ARTIKAL_SRC_TO_STAGE_FIELD,
+        );
+        unparsedDates += mapped.unparsedDates;
+        candidates.push({
+          sourceId,
+          catalog: String(mapped.data[dedupField] ?? "").trim(),
+          data: mapped.data,
+        });
+      }
+      if (candidates.length === 0) continue;
+
+      const ids = candidates.map((c) => c.sourceId);
+      const catalogs = [
+        ...new Set(candidates.map((c) => c.catalog).filter((v) => v !== "")),
+      ];
+      const [existingById, holdersByCatalog] = await Promise.all([
+        this.prisma.item.findMany({ where: { id: { in: ids } } }),
+        catalogs.length
+          ? this.prisma.item.findMany({
+              where: { [dedupField]: { in: catalogs } },
+              select: { id: true, [dedupField]: true },
+            })
+          : Promise.resolve([] as { id: number }[]),
+      ]);
+      const existing = new Map(
+        (existingById as { id: number }[]).map((r) => [r.id, r]),
+      );
+      const holders = new Map<string, number[]>();
+      for (const h of holdersByCatalog as Record<string, unknown>[]) {
+        const key = String(h[dedupField] ?? "").trim();
+        const list = holders.get(key);
+        if (list) list.push(Number(h.id));
+        else holders.set(key, [Number(h.id)]);
+      }
+
+      for (const c of candidates) {
+        if (isNativeRow("items", c.sourceId)) {
+          skipped++;
+          name(
+            `preskočeno: Sifra artikla=${c.sourceId} je u rezervisanom 4.0 opsegu ključeva — BigBit tu šifru ne sme da koristi`,
+          );
+          continue;
+        }
+        if (c.catalog !== "") {
+          const foreign = (holders.get(c.catalog) ?? []).filter(
+            (id) => id !== c.sourceId && !sourceIds.has(id),
+          );
+          if (foreign.length > 0) {
+            skipped++;
+            name(
+              `paritet: kataloški broj "${c.catalog}" već stoji na 4.0-native artiklu id=${foreign.join("/")} — ` +
+                `BigBit kopija (Sifra artikla=${c.sourceId}) PRESKOČENA; reši sudar u BigBitu`,
+            );
+            continue;
+          }
+        }
+
+        const current = existing.get(c.sourceId) as
+          | Record<string, unknown>
+          | undefined;
+        if (current && this.sameProjectRow(current, c.data, mapping.columns)) {
+          unchanged++;
+          continue;
+        }
+        const update = { ...c.data };
+        delete update.id;
+        try {
+          await this.prisma.item.upsert({
+            where: { id: c.sourceId },
+            create: c.data as never,
+            update: update as never,
+          });
+          if (current) updated++;
+          else inserted++;
+        } catch (err) {
+          skipped++;
+          const message = err instanceof Error ? err.message : String(err);
+          name(
+            `preskočeno: Sifra artikla=${c.sourceId} (katbroj "${c.catalog}") — ${message.slice(0, 160)}`,
+          );
+          this.logger.warn(
+            `Artikal Sifra=${c.sourceId} nije uvezen: ${message.slice(0, 300)}`,
+          );
+        }
+      }
+    }
+
+    if (unparsedDates > 0)
+      notes.push(
+        `${unparsedDates} datumsko polje nije bilo u obliku YYYY-MM-DD i upisano je kao prazno — ` +
+          "proveri `mdb-export -T/-D` u koraku 1 (bigbit-mdb-export.sh).",
+      );
+    if (named.length > 0) notes.push(...named);
+    if (extraNamed > 0)
+      notes.push(
+        `…i još ${extraNamed} sličnih redova (imenovano je prvih ${MAX_NAMED_SKIPS}; puna slika je u bb_mdb_drops.import_row_counts)`,
+      );
+    notes.push(`${batches} serija po ${ITEMS_BATCH} redova`);
+
+    const step: MdbStepResult = {
+      entity: "items",
+      staged,
+      inserted,
+      updated,
+      unchanged,
+      skipped,
+      filtered,
+      blockedLocked: 0,
+      durationMs: Date.now() - t0,
+      notes,
+    };
+    const counted =
+      inserted + updated + unchanged + skipped + filtered + step.blockedLocked;
+    if (counted !== staged)
+      notes.push(
+        `⚠️ brojači se ne zbrajaju: staged=${staged}, sabrano=${counted} — ` +
+          `${Math.abs(staged - counted)} red(ova) nije ni u jednom brojaču (prijavi kao kvar uvoza)`,
+      );
+    return step;
+  }
+
+  /** Mapiranje `R_Artikli` -> `items` iz `SYNC_MAP` — iste glasne provere kao predmeti. */
+  private itemsMapping(): TableMapping {
+    const mapping = SYNC_MAP.find((m) => m.targetDb === "items");
+    if (!mapping)
+      throw new Error(
+        "sync-map.generated.ts nema mapiranje za `items` — uvoz artikala ne može da zna " +
+          "u koje kolone piše. Proveri generator mape (targetDb: 'items').",
+      );
+    if (
+      !mapping.pk ||
+      mapping.pk.kind !== "single" ||
+      mapping.pk.field !== "id"
+    )
+      throw new Error(
+        "Uvoz artikala radi upsert po jednostavnom `id` ključu, a mapiranje `items` " +
+          "više nema takav primarni ključ — ključ idempotencije bi tiho otkazao.",
+      );
+    const missing = mapping.columns
+      .filter((c) => !ARTIKAL_SRC_TO_STAGE_FIELD[c.src])
+      .map((c) => c.src);
+    if (missing.length)
+      throw new Error(
+        `Kolone ${missing.join(", ")} postoje u mapiranju \`items\`, ali nemaju staging kolonu ` +
+          "u ARTIKAL_SRC_TO_STAGE_FIELD. Dopuni tu tabelu (i zaglavlje `R_Artikli` u " +
+          "bigbit-mdb-export.sh + model BbMdbStageArtikal) — inače bi se te kolone tiho uvezle prazne.",
+      );
+    return mapping;
+  }
   private projectsMapping(): TableMapping {
     const mapping = SYNC_MAP.find((m) => m.targetDb === "projects");
     if (!mapping)
@@ -2618,11 +2974,14 @@ export class BigbitMdbImportService {
   private mapStagedProject(
     row: Record<string, unknown>,
     columns: ColumnMapping[],
+    // Generalizovano 31.07.2026: isti pretvarač služi i predmete i artikle —
+    // dva pretvarača bi bila dve istine o istim tipovima.
+    srcToStage: Record<string, string> = PREDMET_SRC_TO_STAGE_FIELD,
   ): { data: Record<string, unknown>; unparsedDates: number } {
     const data: Record<string, unknown> = {};
     let unparsedDates = 0;
     for (const col of columns) {
-      const raw = row[PREDMET_SRC_TO_STAGE_FIELD[col.src]];
+      const raw = row[srcToStage[col.src]];
       const text = stageText(raw);
       let value: unknown;
       switch (col.type) {

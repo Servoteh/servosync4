@@ -166,6 +166,10 @@ describe("BigbitMdbImportService", () => {
         bbMdbStagePodgrupa: { count: jest.fn().mockResolvedValue(0) },
         bbMdbStagePoreklo: { count: jest.fn().mockResolvedValue(0) },
         bbMdbStageMagacin: { count: jest.fn().mockResolvedValue(0) },
+        bbMdbStageArtikal: {
+          count: jest.fn().mockResolvedValue(0),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
         bbMdbStagePredmet: {
           count: jest.fn().mockResolvedValue(0),
           findMany: jest.fn().mockResolvedValue([]),
@@ -175,6 +179,10 @@ describe("BigbitMdbImportService", () => {
           upsert: jest.fn().mockResolvedValue({ id: 1 }),
         },
         project: {
+          findMany: jest.fn().mockResolvedValue([]),
+          upsert: jest.fn().mockResolvedValue({ id: 1 }),
+        },
+        item: {
           findMany: jest.fn().mockResolvedValue([]),
           upsert: jest.fn().mockResolvedValue({ id: 1 }),
         },
@@ -281,6 +289,9 @@ describe("BigbitMdbImportService", () => {
         "item_subgroups",
         "item_origins",
         "warehouses",
+        // ARTIKLI POSLE SVOJIH ŠIFARNIKA (31.07.2026): artikal nosi grupu/
+        // podgrupu/poreklo, pa oni moraju ući iste noći PRE njega.
+        "items",
         "saldakonto_accounts",
         "journal_entries",
         "ledger_entries",
@@ -391,10 +402,10 @@ describe("BigbitMdbImportService", () => {
       });
       const res = await svc(prisma).runImport({ force: true });
       expect(res.status).toBe("DONE");
-      // Dvanaest koraka: 2 matična + 4 šifarnika + 5 uvoznih + ZAKLJUČAVANJE.
+      // Trinaest koraka: 2 matična + 4 šifarnika + artikli + 5 uvoznih + ZAKLJUČAVANJE.
       // Zaključavanje je odvojeno od koraka zaglavlja da korak stavki ne bi zatekao
       // nalog kao LOCKED i odbio iznose iz ISTOG fajla koji ga je zaključao.
-      expect(res.steps).toHaveLength(12);
+      expect(res.steps).toHaveLength(13);
       expect(res.steps.map((s) => s.entity)).toEqual([
         "customers",
         "projects",
@@ -406,6 +417,7 @@ describe("BigbitMdbImportService", () => {
         "item_subgroups",
         "item_origins",
         "warehouses",
+        "items",
         "saldakonto_accounts",
         "journal_entries",
         "ledger_entries",
