@@ -2,6 +2,8 @@
 // direktno (vektorski, oštro — bolje od 1.0 rasterizovanog screenshot-a). Podrazumevano A4
 // landscape, multi-page: dan-chunkovi (horizontalno) × red-chunkovi (vertikalno).
 // Uz `opts.singlePage` (Ukupan gant) — jedna strana custom formata po meri sadržaja.
+// Uz `opts.showPeople` — dve dodatne kolone levo od mreže: „Odgovorni inženjer" i
+// „Vođa montaže" (naslovi usklađeni sa XLSX exportom).
 // Boje = lokacija faze.
 
 import { jsPDF } from 'jspdf';
@@ -16,6 +18,8 @@ const A4_W = 297;
 const A4_H = 210;
 const M = 10;
 const BASE_LABEL_W = 60;
+/** Širina jedne kolone sa osobom (odgovorni inženjer / vođa montaže). */
+const BASE_PERSON_W = 24;
 const BASE_DAY_W = 4;
 const BASE_ROW_H = 6;
 const BASE_HEAD_H = 12;
@@ -24,6 +28,9 @@ const FOOTER_H = 8;
 const MAX_MM = 3000;
 /** Ispod ovoga tekst postaje nečitljiv — dalje se ne smanjuje. */
 const MIN_FONT_PT = 3.5;
+
+const COL_ENGINEER = 'Odgovorni inženjer';
+const COL_LEAD = 'Vođa montaže';
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -37,26 +44,51 @@ function todayMs(): number {
 }
 
 /**
+ * Skrati tekst na `maxW` (mm) uz „…". Za razliku od splitTextToSize (prelama po REČIMA,
+ * pa `lines[0]` ume da odseče celo prezime) ovde se gubi samo rep — i nikad ne curi
+ * preko granice kolone.
+ */
+function fitText(doc: jsPDF, text: string, maxW: number): string {
+  const t = (text ?? '').trim();
+  if (!t || maxW <= 0) return '';
+  if (doc.getTextWidth(t) <= maxW) return t;
+  let s = t;
+  while (s.length > 1 && doc.getTextWidth(s + '…') > maxW) s = s.slice(0, -1);
+  return s + '…';
+}
+
+/**
  * Generiši Gantt PDF (download preko doc.save).
  * `opts.singlePage` — cela mreža na JEDNU stranu: format se računa po sadržaju
  * (custom mm format), a ako bi prešao MAX_MM primenjuje se uniformno skaliranje.
+ * `opts.showPeople` — dodaj kolone „Odgovorni inženjer" i „Vođa montaže"
+ * (ulaze i u račun širine, pa fit/clamp ostaje tačan).
  */
 export async function generateGanttPdf(
   title: string,
   days: Date[],
   rows: GanttRow[],
-  opts?: { singlePage?: boolean },
+  opts?: { singlePage?: boolean; showPeople?: boolean },
 ): Promise<void> {
   const singlePage = opts?.singlePage === true;
+  const showPeople = opts?.showPeople === true;
+
+  /** Levi blok = naziv faze + (opciono) dve kolone sa osobama. */
+  const baseLeftW = BASE_LABEL_W + (showPeople ? 2 * BASE_PERSON_W : 0);
 
   // Skaliranje: 1 za A4 režim; kod single-page samo ako sadržaj probija MAX_MM.
   let scale = 1;
   if (singlePage) {
-    const wNeed = BASE_LABEL_W + Math.max(days.length, 1) * BASE_DAY_W;
-    const hNeed = BASE_HEAD_H + Math.max(rows.length, 1) * BASE_ROW_H + FOOTER_H;
-    scale = Math.min(1, (MAX_MM - M * 2) / wNeed, (MAX_MM - M * 2) / hNeed);
+    // Deli se samo ono što se STVARNO skalira. FOOTER_H (kao i margine) ostaje u mm,
+    // pa mora iz brojioca — inače pageH probije MAX_MM za do 8 mm pri jakom smanjenju.
+    const wNeed = baseLeftW + Math.max(days.length, 1) * BASE_DAY_W;
+    const hNeed = BASE_HEAD_H + Math.max(rows.length, 1) * BASE_ROW_H;
+    scale = Math.min(1, (MAX_MM - M * 2) / wNeed, (MAX_MM - M * 2 - FOOTER_H) / hNeed);
   }
   const LABEL_W = BASE_LABEL_W * scale;
+  const PERSON_W = showPeople ? BASE_PERSON_W * scale : 0;
+  /** Ukupna širina levog (fiksnog) bloka — sve levo od dan-mreže. */
+  const LEFT_W = LABEL_W + 2 * PERSON_W;
   const DAY_W = BASE_DAY_W * scale;
   const ROW_H = BASE_ROW_H * scale;
   const HEAD_H = BASE_HEAD_H * scale;
@@ -66,8 +98,9 @@ export async function generateGanttPdf(
   let pageW = A4_W;
   let pageH = A4_H;
   if (singlePage) {
-    pageW = M * 2 + LABEL_W + Math.max(days.length, 1) * DAY_W;
-    pageH = M * 2 + HEAD_H + Math.max(rows.length, 1) * ROW_H + FOOTER_H;
+    // Math.min je samo brana od float-repa — posle fit-skaliranja granica je već MAX_MM.
+    pageW = Math.min(MAX_MM, M * 2 + LEFT_W + Math.max(days.length, 1) * DAY_W);
+    pageH = Math.min(MAX_MM, M * 2 + HEAD_H + Math.max(rows.length, 1) * ROW_H + FOOTER_H);
   }
 
   const doc = singlePage
@@ -77,10 +110,10 @@ export async function generateGanttPdf(
 
   const DAYS_PER_PAGE = singlePage
     ? Math.max(days.length, 1)
-    : Math.floor((A4_W - M * 2 - LABEL_W) / DAY_W);
+    : Math.max(1, Math.floor((A4_W - M * 2 - LEFT_W) / DAY_W));
   const ROWS_PER_PAGE = singlePage
     ? Math.max(rows.length, 1)
-    : Math.floor((A4_H - M * 2 - HEAD_H) / ROW_H);
+    : Math.max(1, Math.floor((A4_H - M * 2 - HEAD_H) / ROW_H));
 
   const tMs = todayMs();
   const dayChunks = chunk(days, DAYS_PER_PAGE);
@@ -98,15 +131,24 @@ export async function generateGanttPdf(
       const chRows = rowChunks[rc];
 
       // ── Naslov (samo prva vertikalna stranica u chunk-u) ──
-      const daysX = M + LABEL_W;
+      const daysX = M + LEFT_W;
+      const engX = M + LABEL_W;
+      const leadX = M + LABEL_W + PERSON_W;
+      const pad = 2 * scale;
+      const personTextW = Math.max(0, PERSON_W - 2 * pad);
 
       // Label header + „Faza"
       doc.setFillColor(240, 243, 243);
-      doc.rect(M, M, LABEL_W, HEAD_H, 'F');
+      doc.rect(M, M, LEFT_W, HEAD_H, 'F');
       doc.setFont('Roboto', 'bold');
       doc.setFontSize(fs(7));
       doc.setTextColor(90, 90, 90);
-      doc.text(title, M + 2 * scale, M + HEAD_H * 0.58);
+      doc.text(fitText(doc, title, LABEL_W - 2 * pad), M + pad, M + HEAD_H * 0.58);
+      if (showPeople) {
+        doc.setFontSize(fs(5.5));
+        doc.text(fitText(doc, COL_ENGINEER, personTextW), engX + pad, M + HEAD_H * 0.58);
+        doc.text(fitText(doc, COL_LEAD, personTextW), leadX + pad, M + HEAD_H * 0.58);
+      }
 
       // Mesečni red
       const bandH = HEAD_H / 2;
@@ -148,12 +190,12 @@ export async function generateGanttPdf(
       for (const row of chRows) {
         if (row.kind === 'group') {
           doc.setFillColor(235, 238, 238);
-          doc.rect(M, y, LABEL_W + chDays.length * DAY_W, ROW_H, 'F');
+          doc.rect(M, y, LEFT_W + chDays.length * DAY_W, ROW_H, 'F');
           doc.setFont('Roboto', 'bold');
           doc.setFontSize(fs(6.5));
           doc.setTextColor(40, 40, 40);
-          const gl = doc.splitTextToSize(`${row.label}${row.sub ? ' · ' + row.sub : ''}`, LABEL_W + chDays.length * DAY_W - 4 * scale);
-          doc.text(gl[0], M + 2 * scale, y + ROW_H * 0.67);
+          const gl = doc.splitTextToSize(`${row.label}${row.sub ? ' · ' + row.sub : ''}`, LEFT_W + chDays.length * DAY_W - 2 * pad);
+          doc.text(gl[0], M + pad, y + ROW_H * 0.67);
         } else {
           const p = row.phase;
           const color = hexToRgb(locationColor(p.location));
@@ -165,12 +207,21 @@ export async function generateGanttPdf(
           doc.setFont('Roboto', 'normal');
           doc.setFontSize(fs(6));
           doc.setTextColor(30, 30, 30);
-          const nm = doc.splitTextToSize(p.phaseName || '—', LABEL_W - 4 * scale);
-          doc.text(nm[0], M + 2 * scale, y + ROW_H * 0.5);
+          doc.text(fitText(doc, p.phaseName || '—', LABEL_W - 2 * pad), M + pad, y + ROW_H * 0.5);
           doc.setFontSize(fs(5));
           doc.setTextColor(120, 120, 120);
           const badge = phaseStatusBadge(p.status);
-          doc.text(`${p.location || '—'} · ${STATUSES[p.status] ?? badge.label} ${p.pct}%`, M + 2 * scale, y + ROW_H * 0.9);
+          // fitText (a ne goli doc.text) — sub je ranije umeo da procuri preko labele u mrežu.
+          const sub = `${p.location || '—'} · ${STATUSES[p.status] ?? badge.label} ${p.pct}%`;
+          doc.text(fitText(doc, sub, LABEL_W - 2 * pad), M + pad, y + ROW_H * 0.9);
+
+          // Osobe — pun „Ime Prezime" (PDF se čita i van tima), klampovano na kolonu.
+          if (showPeople) {
+            doc.setFontSize(fs(5.5));
+            doc.setTextColor(60, 60, 60);
+            doc.text(fitText(doc, p.responsibleEngineer || '—', personTextW), engX + pad, y + ROW_H * 0.65);
+            doc.text(fitText(doc, p.montageLead || '—', personTextW), leadX + pad, y + ROW_H * 0.65);
+          }
 
           // Trake
           const sMs = parseDateLocal(p.startDate)?.getTime() ?? null;
@@ -188,8 +239,16 @@ export async function generateGanttPdf(
         }
         // grid linija
         doc.setDrawColor(232, 236, 236);
-        doc.line(M, y + ROW_H, M + LABEL_W + chDays.length * DAY_W, y + ROW_H);
+        doc.line(M, y + ROW_H, M + LEFT_W + chDays.length * DAY_W, y + ROW_H);
         y += ROW_H;
+      }
+
+      // Vertikalne linije između naziva faze i kolona sa osobama (kroz header i redove).
+      if (showPeople) {
+        doc.setDrawColor(220, 224, 224);
+        doc.line(engX, M, engX, y);
+        doc.line(leadX, M, leadX, y);
+        doc.line(daysX, M, daysX, y);
       }
 
       // Footer
