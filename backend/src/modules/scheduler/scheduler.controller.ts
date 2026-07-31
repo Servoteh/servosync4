@@ -13,6 +13,7 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { PrismaService } from "../../prisma/prisma.service";
 import { SchedulerService } from "./scheduler.service";
+import { SecurityAuditService } from "./security-audit.service";
 
 /**
  * Talas A — pregled i ručno okidanje zakazanih poslova (admin). `run-now` radi
@@ -24,6 +25,7 @@ export class SchedulerController {
   constructor(
     private readonly scheduler: SchedulerService,
     private readonly prisma: PrismaService,
+    private readonly securityAudit: SecurityAuditService,
   ) {}
 
   @Get("jobs")
@@ -61,6 +63,28 @@ export class SchedulerController {
         })),
       },
     };
+  }
+
+  /**
+   * Bezbednosna provera sy15 NA ZAHTEV — da se ne čeka ponedeljak. Vraća ISTI
+   * strukturiran rezultat koji nedeljni posao upisuje u dnevnik.
+   *
+   * GET namerno: cela provera je čitanje sistemskih kataloga, ništa se ne menja
+   * (pa je ponavljanje poziva bezopasno). Mejl se odavde NE šalje — izveštaj se
+   * vidi u odgovoru; za pun tok (uklj. mejl na nalaz) ide
+   * `POST jobs/sy15-anon-security-audit/run-now`.
+   */
+  @Get("security-audit")
+  @RequirePermission(PERMISSIONS.SCHEDULER_READ)
+  async securityAuditNow() {
+    try {
+      return { data: await this.securityAudit.audit() };
+    } catch (e) {
+      throw new HttpException(
+        e instanceof Error ? e.message : "Provera nije uspela.",
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
   }
 
   @Post("jobs/:key/run-now")
