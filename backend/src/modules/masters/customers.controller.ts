@@ -52,6 +52,25 @@ export class MasterCustomersController {
     return this.customers.list(query);
   }
 
+  /**
+   * TRAJAN SPISAK DUPLIH PIB-ova (odluka vlasnika O-7, 30.07.2026).
+   *
+   * BigBit dupli PIB TOLERIŠE (ima samo izveštaj, ne branu), pa ga toleriše i
+   * uvoz — tvrda zabrana bi odbijala redove. Ali „rešićemo kasnije" bez spiska
+   * ostane zauvek: ovaj izveštaj drži duplikate pred očima da broj PADA, i tek
+   * kad padne na nulu sme se uvesti tvrda brana bez rizika po uvoz.
+   *
+   * Izmereno 31.07.2026 na svežoj BigBit kopiji: 12 grupa, sve parovi — tipično
+   * ISTA firma uneta dvaput pod starim i novim imenom (EPS → Elektrodistribucija,
+   * Trelleborg → Yokohama, PPT…). Rešava se u BigBitu (on je vlasnik do prelaza).
+   *
+   * MORA PRE `:id` rute — inače bi `dupli-pib` bio progutan kao ParseInt greška.
+   */
+  @Get("dupli-pib")
+  duplicateTaxIds() {
+    return this.customers.duplicateTaxIds();
+  }
+
   @Get(":id")
   findOne(@Param("id", ParseIntPipe) id: number) {
     return this.customers.findOne(id);

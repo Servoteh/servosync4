@@ -305,6 +305,60 @@ export class MasterCustomersService {
   }
 
   /** Sva polja komitenta + razrešeni vrsta šifre / prodavac / uplatni račun. */
+  /**
+   * Grupe komitenata sa ISTIM PIB-om (O-7). Placeholder `XX_<Sifra>` (prazan PIB
+   * iz starog transfera) i prazno se NE broje — to nisu duplikati nego odsustvo
+   * podatka; ino kupci legitimno nemaju PIB. Sortirano po veličini grupe pa PIB-u,
+   * da najveći problemi stoje na vrhu i da redosled bude stabilan iz dana u dan.
+   */
+  async duplicateTaxIds() {
+    const rows = await this.prisma.$queryRaw<
+      {
+        tax_id: string;
+        id: number;
+        name: string;
+        city: string | null;
+        source: string;
+      }[]
+    >`
+      WITH d AS (
+        SELECT tax_id FROM customers
+        WHERE tax_id IS NOT NULL AND btrim(tax_id) <> '' AND tax_id !~ '^XX_'
+        GROUP BY tax_id HAVING count(*) > 1
+      )
+      SELECT c.tax_id, c.id, c.name, c.city, c.source
+      FROM customers c JOIN d ON d.tax_id = c.tax_id
+      ORDER BY (SELECT count(*) FROM customers x WHERE x.tax_id = c.tax_id) DESC,
+               c.tax_id, c.id`;
+
+    const groups = new Map<
+      string,
+      { taxId: string; customers: { id: number; name: string; city: string | null; source: string }[] }
+    >();
+    for (const r of rows) {
+      if (!groups.has(r.tax_id)) groups.set(r.tax_id, { taxId: r.tax_id, customers: [] });
+      groups.get(r.tax_id)!.customers.push({
+        id: r.id,
+        name: r.name,
+        city: r.city,
+        source: r.source,
+      });
+    }
+
+    return {
+      data: [...groups.values()],
+      meta: {
+        groups: groups.size,
+        customers: rows.length,
+        /** Ugovor sa vlasnikom: broj treba da PADA; na nuli sme tvrda brana. */
+        note:
+          groups.size === 0
+            ? "Nema duplih PIB-ova — sme se razmotriti tvrda brana."
+            : "Duplikati se rešavaju u BigBitu (vlasnik podatka do prelaza); ovaj broj treba da pada.",
+      },
+    };
+  }
+
   async findOne(id: number) {
     const customer = await this.prisma.customer.findUnique({ where: { id } });
     if (!customer) throw new NotFoundException(`Komitent ${id} ne postoji`);

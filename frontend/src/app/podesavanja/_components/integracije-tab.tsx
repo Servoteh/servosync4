@@ -12,6 +12,7 @@ import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { useSyncLogs } from '@/api/sync';
 import { useBigbitSync, useSetBigbitSync, type SyncWarning } from '@/api/podesavanja';
+import { useDupliPib } from '@/api/masters';
 
 // ============================================================================
 // Podešavanja → Integracije — spoljni sistemi + platforma (paritet 1.0
@@ -134,6 +135,8 @@ export function IntegracijeTab() {
       </div>
 
       <BigbitSyncCard />
+
+      <DupliPibCard />
 
       {/* Tabela integracija */}
       <div className="overflow-x-auto rounded-panel border border-line bg-surface">
@@ -384,6 +387,91 @@ function Kpi({ label, value, sub, tone }: { label: string; value: string; sub: s
       <div className="text-2xs uppercase text-ink-secondary">{label}</div>
       <div className="text-sm font-semibold text-ink">{value}</div>
       <div className="text-xs text-ink-secondary">{sub}</div>
+    </div>
+  );
+}
+
+/**
+ * O-7 (odluka vlasnika 30.07.2026): dupli PIB se toleriše, ali uz TRAJAN SPISAK —
+ * da broj pada, a ne da „rešićemo kasnije" ostane zauvek. Rešava se u BigBitu
+ * (vlasnik podatka do prelaza); kad spisak dođe na nulu, sme tvrda brana.
+ */
+function DupliPibCard() {
+  const { data, isLoading, error } = useDupliPib();
+
+  if (isLoading) return null;
+  if (error) {
+    return (
+      <div className="rounded-panel border border-line bg-surface p-4 text-sm text-ink-secondary">
+        Spisak duplih PIB-ova nije mogao da se učita — pokušajte ponovo ili javite IT.
+      </div>
+    );
+  }
+
+  const groups = data?.data ?? [];
+  const meta = data?.meta;
+
+  return (
+    <div className="rounded-panel border border-line bg-surface">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <div className="flex items-center gap-2">
+          <AlertTriangle
+            className={`h-4 w-4 ${groups.length ? 'text-amber-500' : 'text-ink-secondary'}`}
+            aria-hidden
+          />
+          <h3 className="text-sm font-semibold text-ink">
+            Dupli PIB kod komitenata
+            {groups.length > 0 && (
+              <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                {groups.length} {groups.length === 1 ? 'grupa' : 'grupe/a'}
+              </span>
+            )}
+          </h3>
+        </div>
+      </div>
+      <div className="px-4 py-3">
+        {groups.length === 0 ? (
+          <p className="text-sm text-ink-secondary">
+            Nema duplih PIB-ova. {meta?.note}
+          </p>
+        ) : (
+          <>
+            <p className="mb-3 text-xs text-ink-secondary">{meta?.note}</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-line text-left text-2xs uppercase text-ink-secondary">
+                    <th className="py-1.5 pr-3">PIB</th>
+                    <th className="py-1.5 pr-3">Komitenti sa tim PIB-om</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groups.map((g) => (
+                    <tr key={g.taxId} className="border-b border-line-soft align-top">
+                      <td className="py-2 pr-3 font-mono text-xs">{g.taxId}</td>
+                      <td className="py-2 pr-3">
+                        {g.customers.map((c) => (
+                          <div key={c.id}>
+                            <Link
+                              href={`/komitenti/detalj?id=${c.id}`}
+                              className="text-accent underline underline-offset-2 hover:opacity-80"
+                            >
+                              {c.name}
+                            </Link>
+                            {c.city ? (
+                              <span className="text-ink-secondary"> · {c.city}</span>
+                            ) : null}
+                          </div>
+                        ))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

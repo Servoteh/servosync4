@@ -321,3 +321,27 @@ export function codeRefLabel(ref: CodeRef | null | undefined): string | null {
   if (!ref) return null;
   return ref.description ? `${ref.code} — ${ref.description}` : ref.code;
 }
+
+// ------------------------------------------------------ dupli PIB (O-7, 30.07.2026)
+
+export interface DupliPibGrupa {
+  taxId: string;
+  customers: { id: number; name: string; city: string | null; source: string }[];
+}
+
+/**
+ * Trajan spisak duplih PIB-ova. Dupli PIB se TOLERIŠE (BigBit ga toleriše, tvrda
+ * brana bi obarala uvoz) — ali broj treba da PADA; rešava se u BigBitu dok je on
+ * vlasnik podatka. Na nuli sme tvrda brana.
+ */
+export function useDupliPib() {
+  return useQuery({
+    queryKey: ['masters', 'komitenti', 'dupli-pib'],
+    queryFn: () =>
+      apiFetch<{
+        data: DupliPibGrupa[];
+        meta: { groups: number; customers: number; note: string };
+      }>('/v1/komitenti/dupli-pib'),
+    staleTime: 5 * 60_000, // spisak se menja samo posle noćnog uvoza
+  });
+}
