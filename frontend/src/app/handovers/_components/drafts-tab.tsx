@@ -38,6 +38,7 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { FormField, Input } from '@/components/ui-kit/form-field';
 import { ComboBox } from '@/components/ui-kit/combo-box';
+import { DrawingPreviewButton } from '@/components/drawing-preview';
 import { formatDate, formatNumber } from '@/lib/format';
 import {
   ConfirmDialog,
@@ -156,8 +157,13 @@ function isApprovedPdmStatus(pdmStatus: string): boolean {
   return APPROVED_PDM_STATES.has(pdmStatus.trim().toLowerCase());
 }
 
-/** `DrawingSummary` (BOM čvor) → `Drawing` oblik za stavku (isti obrazac kao `toFormState`). */
-function summaryToDrawing(s: DrawingSummary): Drawing {
+/**
+ * `DrawingSummary` (BOM čvor) → `Drawing` oblik za stavku (isti obrazac kao `toFormState`).
+ * `hasPdf` NIJE deo `DrawingSummary` — dolazi kao zasebno polje BOM reda
+ * (`BomFlatRow.hasPdf`) i mora se proslediti, inače stavke popunjene iz
+ * sastavnice ostaju bez oznake o PDF-u i afordanse za crtež nema.
+ */
+function summaryToDrawing(s: DrawingSummary, hasPdf?: boolean): Drawing {
   return {
     id: s.id,
     drawingNumber: s.drawingNumber,
@@ -180,7 +186,21 @@ function summaryToDrawing(s: DrawingSummary): Drawing {
     workOrderRef: null,
     createdAt: null,
     status: null,
+    hasPdf,
   };
+}
+
+/**
+ * Prikaz IZABRANOG crteža u ComboBox-u (zahtev 052/26, Đorđe Arsić): sama
+ * oznaka „1141072 / A" ne kaže projektantu ŠTA bira, a naziv koji vidi u
+ * padajućoj listi nestane čim izabere. Zato uz oznaku ide i naziv; kad naziva
+ * nema (≈0,4% crteža) pada na kataloški broj, pa na „—" (da se vidi da je
+ * polje prazno, a ne da je tekst odsečen).
+ */
+function drawingValueLabel(d: Drawing): string {
+  const code = `${d.drawingNumber} / ${d.revision}`;
+  const desc = d.name?.trim() || d.catalogNumber?.trim() || '—';
+  return `${code} · ${desc}`;
 }
 
 /** Srpska množina za upozorenje o preskočenim delovima (1 deo / 2 dela / 5 delova). */
@@ -429,6 +449,9 @@ function DraftFormDialog({
     const skipped = producible
       .filter((r) => !isApprovedPdmStatus(r.drawing!.pdmStatus))
       .map((r) => r.drawing!.drawingNumber);
+    // Sklop (prva stavka): kad je izabran kroz ComboBox/prefill nosi i `hasPdf`,
+    // pa se koristi taj objekat. Fallback iz sastavnice ga nema (backend šalje
+    // `hasPdf` samo za komponentne redove, ne i za koren) → ostaje `undefined`.
     const rootDrawing =
       form.mainDrawing && form.mainDrawing.id === data.drawing.id
         ? form.mainDrawing
@@ -445,7 +468,7 @@ function DraftFormDialog({
         .filter((r) => isApprovedPdmStatus(r.drawing!.pdmStatus))
         .map((r) => ({
           ...newItemRow(),
-          drawing: summaryToDrawing(r.drawing!),
+          drawing: summaryToDrawing(r.drawing!, r.hasPdf),
           quantityToProduce: String(r.totalQuantity * pieces),
           mainDrawingId: data.drawing.id,
           quantityDefinedInDrawing: r.totalQuantity,
@@ -683,36 +706,50 @@ function DraftFormDialog({
               : 'Opciono — izbor sklopa automatski izlistava sve pozicije iz sastavnice u stavke.'
           }
         >
-          <ComboBox<Drawing>
-            value={form.mainDrawing}
-            onChange={(d) => {
-              set({ mainDrawing: d });
-              if (isEdit) return;
-              // Auto-BOM okidač: izbor sklopa pokreće učitavanje sastavnice;
-              // postojeće stavke se zamenjuju uz potvrdu (legacy: projektant
-              // posle može ručno isključiti/menjati pojedine).
-              setSkippedDrawings([]);
-              if (!d) {
-                setAutoFillId(null);
-                return;
-              }
-              if (
-                items.length > 0 &&
-                !window.confirm(
-                  'Izbor sklopa zamenjuje postojeće stavke pozicijama iz njegove sastavnice. Nastaviti?',
-                )
-              ) {
-                setAutoFillId(null);
-                return;
-              }
-              setAutoFillId(d.id);
-            }}
-            useSearch={useDrawingsLookup}
-            getKey={(d) => d.id}
-            getLabel={(d) => `${d.drawingNumber} / ${d.revision}`}
-            getSublabel={(d) => d.name}
-            placeholder="Broj crteža…"
-          />
+          <div className="flex items-center gap-2">
+            <div className="flex-1">
+              <ComboBox<Drawing>
+                value={form.mainDrawing}
+                onChange={(d) => {
+                  set({ mainDrawing: d });
+                  if (isEdit) return;
+                  // Auto-BOM okidač: izbor sklopa pokreće učitavanje sastavnice;
+                  // postojeće stavke se zamenjuju uz potvrdu (legacy: projektant
+                  // posle može ručno isključiti/menjati pojedine).
+                  setSkippedDrawings([]);
+                  if (!d) {
+                    setAutoFillId(null);
+                    return;
+                  }
+                  if (
+                    items.length > 0 &&
+                    !window.confirm(
+                      'Izbor sklopa zamenjuje postojeće stavke pozicijama iz njegove sastavnice. Nastaviti?',
+                    )
+                  ) {
+                    setAutoFillId(null);
+                    return;
+                  }
+                  setAutoFillId(d.id);
+                }}
+                useSearch={useDrawingsLookup}
+                getKey={(d) => d.id}
+                getLabel={(d) => `${d.drawingNumber} / ${d.revision}`}
+                getSublabel={(d) => d.name}
+                // 052/26: posle izbora dugme prikazuje i naziv, ne samo oznaku.
+                getValueLabel={drawingValueLabel}
+                placeholder="Broj crteža…"
+              />
+            </div>
+            {/* 052/26: pregled sklopa na prelaz mišem — potvrda da je izabran
+                pravi crtež pre nego što auto-popuna izlista celu sastavnicu. */}
+            {form.mainDrawing?.hasPdf && (
+              <DrawingPreviewButton
+                drawingId={form.mainDrawing.id}
+                title={drawingValueLabel(form.mainDrawing)}
+              />
+            )}
+          </div>
         </FormField>
         <FormField label="Napomena">
           <Textarea
@@ -784,6 +821,9 @@ function DraftFormDialog({
                           getKey={(d) => d.id}
                           getLabel={(d) => `${d.drawingNumber} / ${d.revision}`}
                           getSublabel={(d) => d.name}
+                          // 052/26: izabrana stavka mora da nosi i naziv —
+                          // gola oznaka „1141072 / A" ne kaže šta je stavka.
+                          getValueLabel={drawingValueLabel}
                           placeholder="Broj crteža…"
                         />
                       </div>
@@ -801,9 +841,17 @@ function DraftFormDialog({
                         className="w-20"
                         title="Količina za izradu"
                       />
-                      {/* PDF crteža — samo kad stavka ima izabran crtež sa PDF-om. */}
+                      {/* Crtež — samo kad stavka ima izabran crtež sa PDF-om:
+                          „oko" je pregled prve strane na prelaz mišem (052/26),
+                          drugo dugme i dalje otvara pun PDF u novom tabu. */}
                       {it.drawing && it.drawing.hasPdf && (
-                        <DraftItemPdfButton drawingId={it.drawing.id} />
+                        <>
+                          <DrawingPreviewButton
+                            drawingId={it.drawing.id}
+                            title={drawingValueLabel(it.drawing)}
+                          />
+                          <DraftItemPdfButton drawingId={it.drawing.id} />
+                        </>
                       )}
                       <button
                         type="button"
@@ -866,7 +914,16 @@ function buildItemColumns(opts: {
         <span className="inline-flex items-center gap-1.5">
           <span>{r.drawing?.name || '—'}</span>
           {/* PDF crteža uz naziv (detalj nacrta): aktivno kad crtež ima PDF,
-              onemogućeno („Nema PDF") kad ga nema; skriveno bez razrešenog crteža. */}
+              onemogućeno („Nema PDF") kad ga nema; skriveno bez razrešenog crteža.
+              Uz njega i pregled na prelaz mišem (052/26) — samo kad PDF postoji. */}
+          {r.drawing?.hasPdf === true && (
+            <DrawingPreviewButton
+              drawingId={r.drawing.id}
+              title={`${r.drawing.drawingNumber} / ${r.drawing.revision}${
+                r.drawing.name ? ` · ${r.drawing.name}` : ''
+              }`}
+            />
+          )}
           {r.drawing && (
             <DraftItemPdfButton drawingId={r.drawing.id} noPdf={r.drawing.hasPdf !== true} />
           )}
