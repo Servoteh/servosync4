@@ -26,9 +26,16 @@ import {
   decodeImageFile,
   isCameraDecodeSupported,
   pickPreferredRaw,
+  preloadVideoDecoder,
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
+import {
+  hasStoredCameraChoice,
+  pickPreferredBackCamera,
+  rememberManualCameraChoice,
+  shouldRunCameraPicker,
+} from '@/lib/camera-picker';
 import {
   looksLikeLocItemBarcode,
   looksLikeOperationBarcode,
@@ -43,7 +50,10 @@ import {
  * kamera RADI i na iPhone-u (1.0 lekcija: gejt je getUserMedia, ne BarcodeDetector).
  * HID/„Unesi ručno" put ostaje. Napredni kamera-režimi iznad toga:
  *   • Multi-lens izbor objektiva (Samsung A-serija macro/ultra-wide fix) sa
- *     zapamćenim izborom + auto-skok sa „lošeg" objektiva (label + capability heuristika).
+ *     zapamćenim izborom + auto-skok sa „lošeg" objektiva (label + capability heuristika)
+ *     + capability picker (`@/lib/camera-picker`) za PRVI izbor sočiva na Androidu.
+ *   • Otvaranje kamere sa retry-jem na prolazne greške (NotReadableError/AbortError/
+ *     TrackStartError) i duplim rAF-om posle release-a — 1.0 barcode.js:1120-1144.
  *   • Zoom (auto 2× + slider/±) gde uređaj izlaže track zoom capability (Android Chrome/desktop).
  *   • Baterijska lampa (torch) toggle (gde je podržan; Android web ga skriva kao 1.0).
  *   • Tap-to-focus na video (single-shot pointsOfInterest) + vizuelni focus ring.
@@ -502,6 +512,35 @@ export function ScanOverlay({
       setTorchOn(false);
     };
 
+    // Dva rAF ciklusa posle release-a kamere (1.0 barcode.js: „release pa dva
+    // frejma"): tek kad kompozitor obradi dva frejma je prethodni video pipeline
+    // stvarno srušen — inače sledeći getUserMedia na Androidu/SI ume da vrati
+    // NotReadableError ili zaglavljen (crn) stream.
+    const twoRafs = (): Promise<void> =>
+      new Promise<void>((r) => {
+        if (typeof requestAnimationFrame !== 'function') {
+          r();
+          return;
+        }
+        requestAnimationFrame(() => requestAnimationFrame(() => r()));
+      });
+
+    // „Kamera zauzeta" odmah po otvaranju NIJE trajna greška (1.0 barcode.js:1120-1144):
+    // OS oslobađa senzor sa zakašnjenjem posle prethodne sesije/aplikacije, pa
+    // isti constraints iz drugog pokušaja prolaze. Proveravamo i name i poruku —
+    // pregledači ih različito pune (Chrome: „Could not start video source").
+    const isTransientCameraError = (err: unknown): boolean => {
+      const e = err as { name?: string; message?: string } | null;
+      const re = /NotReadableError|AbortError|TrackStartError|could not start video source/i;
+      return re.test(String(e?.name || '')) || re.test(String(e?.message || ''));
+    };
+
+    // Formati po koraku (ITEM-only nema QR) — jedno mesto za kameru, sliku i preload.
+    const decodeFormats = (): DecodeFormat[] =>
+      cbRef.current.accept.includes('SHELF')
+        ? ['code_128', 'code_39', 'itf', 'ean_13', 'qr_code']
+        : ['code_128', 'code_39', 'itf', 'ean_13'];
+
     // ── BE razrešavanje (paritet: ITEM/SHELF/UNKNOWN poruke iz 1.0) ──────────
     const resolve = async (raw: string): Promise<void> => {
       const code = normalize(raw);
@@ -656,7 +695,11 @@ export function ScanOverlay({
       const auto = Math.min(max, Math.max(min, 2));
       setZoomCap({ min, max, step });
       setZoomValue(auto);
-      await safeApplyFlat(track, { zoom: auto }, isAndroidWebPlatform());
+      const ok = await safeApplyFlat(track, { zoom: auto }, isAndroidWebPlatform());
+      // 1.0 runRefocusAfterZoom važi i za POČETNI auto-zoom, ne samo za klizač:
+      // promena zoom-a na Android Chrome-u razbija AF, pa bi prvi kadar ostao
+      // mutan i skener „gluv" dok korisnik sam ne tapne fokus.
+      if (ok && !stopped && isAndroidChromeBrowser()) await applyAFBestEffort(track);
     };
     const applyZoomDebounced = (value: number) => {
       if (isAndroidWebPlatform() && !isAndroidChromeBrowser()) return;
@@ -665,7 +708,11 @@ export function ScanOverlay({
         zoomTimer = 0;
         const track = getTrack();
         if (!track) return;
-        await safeApplyFlat(track, { zoom: value }, isAndroidWebPlatform());
+        const ok = await safeApplyFlat(track, { zoom: value }, isAndroidWebPlatform());
+        // 1.0 runRefocusAfterZoom: promena zoom-a na Android Chrome-u razbija AF
+        // (kadar ostane mutan i dekoder „gluv"), pa posle uspešne primene ponovo
+        // nateramo fokus. iOS/desktop to ne traže — tamo AF prati zoom sam.
+        if (ok && !stopped && isAndroidChromeBrowser()) await applyAFBestEffort(track);
       }, 220);
     };
 
@@ -722,7 +769,12 @@ export function ScanOverlay({
       const dev = backCams[next];
       if (!dev?.deviceId) return;
       say(`📷 Prebacujem na: ${dev.label || `objektiv ${next + 1}`}…`);
-      if (manualPick) writeCamChoice(dev.deviceId, dev.label || '');
+      if (manualPick) {
+        writeCamChoice(dev.deviceId, dev.label || '');
+        // Isti izbor upiši i u keš capability-pickera (lib/camera-picker) —
+        // inače bi auto-picker pri sledećem otvaranju „ispravljao" korisnika.
+        rememberManualCameraChoice(dev.deviceId, dev.label || '');
+      }
       await startCamera(dev.deviceId);
     };
     const autoSwitchBadLens = async (track: MediaStreamTrack) => {
@@ -800,39 +852,106 @@ export function ScanOverlay({
         return;
       }
       stopStream();
+      // `stopStream` podiže decoderSeq — pamtimo „našu" generaciju da zakasneli
+      // async koraci (picker probe, retry pauze) prestanu čim neko drugi (cycleLens,
+      // force-back, zatvaranje) pokrene svoj start.
+      let startSeq = decoderSeq;
+      const aborted = () => stopped || startSeq !== decoderSeq;
       // Samsung Internet: OS release prethodne sesije kasni ~350ms; iOS WebKit
       // traži ~180ms pre novog getUserMedia (1.0 barcode.js:772-774).
       if (isSamsungInternetBrowser()) await new Promise((r) => setTimeout(r, 350));
       else if (isIOSWebPlatform()) await new Promise((r) => setTimeout(r, 180));
-      if (stopped) return;
+      // …a povrh pauze i dva rAF ciklusa: pauza pokriva OS, rAF pokriva pipeline.
+      await twoRafs();
+      if (aborted()) return;
 
       const acceptShelf = cbRef.current.accept.includes('SHELF');
-      const formats: DecodeFormat[] = acceptShelf
-        ? ['code_128', 'code_39', 'itf', 'ean_13', 'qr_code']
-        : ['code_128', 'code_39', 'itf', 'ean_13'];
+      const formats: DecodeFormat[] = decodeFormats();
       // iOS item profil = 2880×1620 (RNZ Code128 na 1080p nema dovoljno piksela
       // za ZXing — 1.0 fd252cb/e48b763); ostalo 1920×1080.
       const videoBase: MediaTrackConstraints = buildVideoConstraints(
         acceptShelf ? 'mixed' : 'item',
       );
+
+      // ── Capability picker: PRVI izbor sočiva na Android multi-lens telefonima ─
+      // Bez ovoga `facingMode:'environment'` na Samsung A-seriji ume da vrati macro
+      // objektiv (fiksni fokus ~3cm) → preview radi, barkod se nikad ne dekodira.
+      // Prednost imaju: eksplicitan deviceId (cycleLens/force-back) i zapamćen
+      // ručni izbor ove ljuske — picker se pita SAMO kad izbora nema.
+      let pickedDeviceId: string | null = null;
+      if (!deviceId && !readCamChoice() && shouldRunCameraPicker()) {
+        say('📷 Biram najbolji objektiv…');
+        try {
+          pickedDeviceId = await pickPreferredBackCamera();
+        } catch {
+          pickedDeviceId = null; // pad pickera = nastavi starim putem (facingMode)
+        }
+        if (aborted()) return;
+      }
+      const useDeviceId = deviceId ?? pickedDeviceId ?? null;
+
       const constraints: MediaStreamConstraints = {
-        video: deviceId
-          ? { ...videoBase, deviceId: { exact: deviceId } }
+        video: useDeviceId
+          ? { ...videoBase, deviceId: { exact: useDeviceId } }
           : { ...videoBase, facingMode: { ideal: 'environment' } },
       };
 
+      // Otvaranje sa RETRY-jem (1.0 barcode.js:1120-1144): na prolaznu grešku
+      // („kamera zauzeta" jer OS još drži senzor) pusti stream, sačekaj 700ms +
+      // dva frejma i probaj JOŠ JEDNOM istim constraint-ima. Samsung Internet je
+      // najgori pa dobija dva ponavljanja. Tek kad se pokušaji istroše ide
+      // postojeći fallback (keširani deviceId → environment) i formatCameraError.
+      const openStream = async (c: MediaStreamConstraints): Promise<MediaStream> => {
+        const maxRetries = isSamsungInternetBrowser() ? 2 : 1;
+        let lastErr: unknown = null;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          if (attempt > 0) {
+            // PRVO provera, TEK ONDA stopStream(): ako je neko drugi (cycleLens,
+            // force-back, zatvaranje) već podigao decoderSeq, ovaj retry je mrtav —
+            // njegov stopStream bi ubio TUĐI živi stream, a `startSeq = decoderSeq`
+            // bi mu „ukrao" generaciju i nastavio da radi kao da je aktuelan.
+            if (aborted()) throw lastErr ?? new Error('Skener je zatvoren');
+            const expected = decoderSeq + 1;
+            stopStream();
+            // Re-arm SAMO kad je bump napravio baš ovaj retry (inače je između
+            // provere i stopStream-a neko drugi preuzeo — ostajemo abortirani).
+            if (decoderSeq === expected) startSeq = decoderSeq;
+            await new Promise((r) => setTimeout(r, 700));
+            await twoRafs();
+            if (aborted()) throw lastErr ?? new Error('Skener je zatvoren');
+            say(`📷 Kamera je bila zauzeta — pokušavam ponovo (${attempt}/${maxRetries})…`);
+          }
+          // Ne otvaraj kameru za mrtvu generaciju (uklj. prvi pokušaj: između
+          // pickera/pauza i ovog reda je mogao stići cycleLens ili zatvaranje).
+          if (aborted()) throw lastErr ?? new Error('Skener je zatvoren');
+          try {
+            return await navigator.mediaDevices.getUserMedia(c);
+          } catch (e) {
+            lastErr = e;
+            if (!isTransientCameraError(e)) throw e;
+          }
+        }
+        throw lastErr;
+      };
+
+      // Poruka prati NAMERU korisnika (ručni cycle), ne to što je picker izabrao
+      // deviceId — inače bi prvo otvaranje na Androidu pisalo „Prebacujem objektiv".
       say(deviceId ? 'Prebacujem objektiv…' : '📷 Tražim kameru…');
       let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        stream = await openStream(constraints);
       } catch (e) {
-        // Ako je izabrani (keširan) deviceId nestao, probaj default environment.
-        if (deviceId) {
+        // Mrtva generacija (drugi start / zatvaranje) — bez fallback getUserMedia-a
+        // i bez poruke: aktuelan start ima svoj tok i svoju poruku.
+        if (aborted()) return;
+        // Ako je izabrani (keširan/picker) deviceId nestao, probaj default environment.
+        if (useDeviceId) {
           try {
-            stream = await navigator.mediaDevices.getUserMedia({
+            stream = await openStream({
               video: { ...videoBase, facingMode: { ideal: 'environment' } },
             });
           } catch (e2) {
+            if (aborted()) return; // isti razlog kao gore — poruka pripada novom startu
             say(formatCameraError(e2), 'error');
             return;
           }
@@ -841,7 +960,7 @@ export function ScanOverlay({
           return;
         }
       }
-      if (stopped) {
+      if (aborted()) {
         stream.getTracks().forEach((t) => t.stop());
         return;
       }
@@ -853,6 +972,9 @@ export function ScanOverlay({
       v.srcObject = stream;
       try {
         v.setAttribute('playsinline', '');
+        // Stariji iOS WebKit (i neki Android WebView-i) gledaju SAMO prefiksovani
+        // atribut — bez njega video ide u fullscreen plejer i sken „nestane".
+        v.setAttribute('webkit-playsinline', '');
         v.playsInline = true;
         v.muted = true;
         await v.play();
@@ -861,7 +983,7 @@ export function ScanOverlay({
       }
       const track = stream.getVideoTracks()[0] ?? null;
       curDeviceId =
-        deviceId ?? (track?.getSettings() as unknown as CamSettings)?.deviceId ?? null;
+        useDeviceId ?? (track?.getSettings() as unknown as CamSettings)?.deviceId ?? null;
       cameraOnRef.v = true;
       setCameraOn(true);
       say(acceptShelf ? 'Usmeri kameru na barkod police / naloga' : 'Usmeri kameru na barkod nalepnice');
@@ -904,10 +1026,7 @@ export function ScanOverlay({
         return;
       }
       say('🔍 Čitam sliku…');
-      const acceptShelf = cbRef.current.accept.includes('SHELF');
-      const formats: DecodeFormat[] = acceptShelf
-        ? ['code_128', 'code_39', 'itf', 'ean_13', 'qr_code']
-        : ['code_128', 'code_39', 'itf', 'ean_13'];
+      const formats: DecodeFormat[] = decodeFormats();
       try {
         // Brzi pokušaj nativnim detektorom (Chromium) — jedan detect, bez pipeline-a.
         const Ctor = getDetectorCtor();
@@ -1064,12 +1183,24 @@ export function ScanOverlay({
     document.addEventListener('visibilitychange', onVisibility);
 
     // ── Init ────────────────────────────────────────────────────────────────
+    // Dekoder chunk se vuče LAZY (ZXing ~250KB) — pokreni ga ODMAH, paralelno sa
+    // traženjem kamere: Android sada ide na ZXing put (1.0 kanon 3cffea5), pa bi
+    // bez ovoga prvi sken na pogonskoj mreži čekao mrežu sa upaljenim preview-om.
+    // I „Iz slike" put koristi isti chunk, pa se isplati i kad je kamera blokirana.
+    preloadVideoDecoder(decodeFormats());
     if (pitfalls.blocker) {
       setIosBlocker(pitfalls.blocker);
       say(pitfalls.blocker, 'error');
     } else {
       if (needsVV()) bindVV();
       const saved = readCamChoice();
+      // Most ka zajedničkom kešu pickera: ova ljuska ima STARIJI sopstveni keš
+      // ručnog izbora (`loc_scan_cam_choice_v1`, od pre postojanja camera-pickera).
+      // Ako korisnik već ima svoj objektiv ovde, a picker nema nikakav zapis —
+      // prenesi ga jednokratno, da maint/reversi skeneri vide isti izbor umesto
+      // da auto-picker „ispravlja" korisnika na svakom drugom ekranu.
+      if (saved?.deviceId && !hasStoredCameraChoice())
+        rememberManualCameraChoice(saved.deviceId, saved.label || '');
       void startCamera(saved?.deviceId);
     }
 
