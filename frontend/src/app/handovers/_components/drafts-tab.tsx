@@ -1234,6 +1234,21 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
   const [editing, setEditing] = useState<HandoverDraftDetail | null>(null);
   const resetPage = () => setPage(1);
 
+  // 045/26: biti na fiksnoj listi odobravača (backend
+  // `primopredaja-approvers.ts`) NE donosi automatski `primopredaje.write` —
+  // neke role odobravača (npr. `leadpm`) je nemaju, pa su im kolona „ODLUKA" i
+  // dugme „Predaj u primopredaju" tiho nestajali bez ijedne poruke. Umesto tihe
+  // praznine, odobravaču bez prava izmene kažemo šta je problem. Čekamo da se
+  // i lista odobravača i /auth/me/permissions učitaju (`can` je fail-closed dok
+  // traje upit) da upozorenje ne bi zatreperilo svima.
+  const { iAmApprover, approvers: approversForHint } = useCanSubmitHandover();
+  const { permissionsPending, can } = useAuth();
+  const approverMissingWrite =
+    iAmApprover &&
+    !approversForHint.isLoading &&
+    !permissionsPending &&
+    !can(PERMISSIONS.PRIMOPREDAJE_WRITE);
+
   // D2: /nacrti?noviCrtez=<drawingId> — glavni crtež novog nacrta iz PDM
   // sastavnice. Param se čita JEDNOM iz `window.location.search` (isti obrazac
   // kao work-orders/page.tsx `?open=` — NE `useSearchParams`, jer je build
@@ -1277,6 +1292,18 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
 
   return (
     <div className="space-y-4">
+      {/* 045/26 */}
+      {approverMissingWrite && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-control border border-line bg-surface-2 px-3 py-2 text-xs text-ink-secondary"
+        >
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            Na listi ste odobravača, ali nemate pravo izmene primopredaja — javite administratoru.
+          </span>
+        </div>
+      )}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1 text-xs text-ink-secondary">
