@@ -310,6 +310,34 @@ noći nad bajatim fajlom — to stanje se mora videti). Upisuje se kroz Prisma (
 
 ## 8. Odluke o preslikavanju (i zašto)
 
+* **🔴 ARTIKLI SE KLJUČAJU PO `external_item_id`, NE PO `items.id`.** Ovo je jedina tabela u
+  lancu gde se ključ razlikuje, i to je uhvaćeno **merenjem, posle napisanog i „zelenog" koda**
+  (31.07.2026):
+
+  | provera na produkciji | rezultat |
+  |---|---|
+  | `items.id = items.external_item_id` | **0 od 92.511** redova |
+  | prod `id=2` | `external_item_id=17048`, „Razvodni blok, 4-položajni, CD01" |
+  | BigBit `Sifra artikla=17048` | isti taj artikal |
+  | BigBit šifre 2…6 | **ne postoje** |
+
+  Razlog: prenos BigBit→QBigTehn je artiklima dodeljivao **svoju** numeraciju, a BigBit-ovu
+  čuvao u koloni `BBSifra artikla` (→ `items.external_item_id`). Komitenti i predmeti taj remap
+  **nemaju** — kod njih je `Sifra` / `IDPredmet` ujedno i naš ključ, pa je zamka samo kod artikala.
+
+  Da se ključalo po `id`-u, BigBit artikal bi bio upisan **preko nepovezanog** našeg artikla sa
+  istim brojem. Poređenje istog izvoza dvema ključevima:
+
+  | ključ | poklapa se | „novih" | „nestalih" |
+  |---|---|---|---|
+  | `items.id` (pogrešno) | 58.143 | 33.008 | 34.368 |
+  | `external_item_id` (ispravno) | **91.092** | **59** | **2** |
+
+  Zato: `items.id` se **nikad ne upisuje iz izvora** (`isId` kolona se izbacuje iz upisa),
+  postojeći red se ažurira po svom `id`-u, a nov artikal dobija prvi slobodan broj **ispod**
+  native opsega — `items_id_seq` stoji na `1` jer je nikad niko nije koristio. Brana je u
+  `itemsMapping()` (pad ako `externalItemId` ikad nestane iz mape) i u
+  `bigbit-mdb-import.items.spec.ts` (test „artikal 17048 ažurira id=2, ne id=17048").
 * **Negativni iznosi.** 592 od 20.366 GK stavki ima negativno `Duguje`/`Potrazuje`. Živi
   `chk_ledger_entries_nonnegative` ih je odbijao. Guard **nije ukinut** — sužen je na
   4.0-native redove:
