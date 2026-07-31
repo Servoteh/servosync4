@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, Star } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -19,6 +19,7 @@ import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import {
   useZahtevi,
   useInboxMeta,
+  usePodnosioci,
   ZAHTEV_STATUS,
   REQUEST_KIND_LABEL,
   type ChangeRequest,
@@ -112,16 +113,25 @@ const baseColumns: Column<ChangeRequest>[] = [
   },
 ];
 
-/** Admin lista ima i kolonu podnosioca (row-scope ne krije od admina). */
-const adminColumns: Column<ChangeRequest>[] = [
-  ...baseColumns.slice(0, 5),
-  {
-    key: 'author',
-    header: 'Podnosilac',
-    render: (r) => <span className="tnums text-ink-secondary">#{r.createdByUserId}</span>,
-  },
-  ...baseColumns.slice(5),
-];
+/**
+ * Admin lista ima i kolonu podnosioca (row-scope ne krije od admina). Ime se čita iz mape
+ * id→ime (GET /zahtevi/podnosioci); ako mapa još nije stigla, fallback je `#id`.
+ */
+function makeAdminColumns(nameById: Map<number, string>): Column<ChangeRequest>[] {
+  return [
+    ...baseColumns.slice(0, 5),
+    {
+      key: 'author',
+      header: 'Podnosilac',
+      render: (r) => (
+        <span className="text-ink-secondary">
+          {nameById.get(r.createdByUserId) ?? `#${r.createdByUserId}`}
+        </span>
+      ),
+    },
+    ...baseColumns.slice(5),
+  ];
+}
 
 /**
  * Korisnički pogled „Moji zahtevi" — BEZ kolona „Ocena ★" i „Iznos" (tihi režim nagrada,
@@ -252,8 +262,21 @@ function AdminView() {
   const [kind, setKind] = useState('');
   const [q, setQ] = useState('');
   const [qInput, setQInput] = useState('');
+  const [createdBy, setCreatedBy] = useState('');
 
   const inboxMeta = useInboxMeta(true);
+  // Podnosioci (admin): opcije filtera + izvor imena za kolonu „Podnosilac".
+  const podnosioci = usePodnosioci(true);
+  const podnosiociRows = useMemo(() => podnosioci.data?.data ?? [], [podnosioci.data]);
+  const podnosilacOptions = useMemo(
+    () => podnosiociRows.map((p) => ({ value: String(p.id), label: `${p.name} (${p.count})` })),
+    [podnosiociRows],
+  );
+  const nameById = useMemo(
+    () => new Map(podnosiociRows.map((p) => [p.id, p.name])),
+    [podnosiociRows],
+  );
+  const adminColumns = useMemo(() => makeAdminColumns(nameById), [nameById]);
 
   const resetPage = () => setPage(1);
 
@@ -272,6 +295,8 @@ function AdminView() {
     module: module || undefined,
     kind: kind || undefined,
     q: q || undefined,
+    // Filter po podnosiocu radi samo na tabu „Svi zahtevi" (tamo je i kontrola).
+    createdBy: tab === 'all' && createdBy ? Number(createdBy) : undefined,
   });
 
   const allRows = list.data?.data ?? [];
@@ -298,6 +323,7 @@ function AdminView() {
     setStatus('');
     setModule('');
     setKind('');
+    setCreatedBy('');
     setQ('');
     setQInput('');
     resetPage();
@@ -423,6 +449,20 @@ function AdminView() {
             </div>
           </label>
           <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+            Podnosilac
+            <div className="w-56">
+              <Select
+                placeholder="Svi"
+                value={createdBy}
+                onChange={(e) => {
+                  setCreatedBy(e.target.value);
+                  resetPage();
+                }}
+                options={podnosilacOptions}
+              />
+            </div>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-ink-secondary">
             Pretraga
             <input
               value={qInput}
@@ -434,7 +474,7 @@ function AdminView() {
               className="h-9 w-56 rounded-control border border-line bg-surface px-3 text-sm text-ink placeholder:text-ink-disabled focus-visible:border-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
             />
           </label>
-          {(status || module || kind || q) && (
+          {(status || module || kind || createdBy || q) && (
             <button
               onClick={clearFilters}
               className="rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"

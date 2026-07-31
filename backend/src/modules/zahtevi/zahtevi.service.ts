@@ -337,6 +337,37 @@ export class ZahteviService {
     };
   }
 
+  /**
+   * GET /zahtevi/podnosioci (admin) — distinct podnosioci koji imaju BAR JEDAN zahtev,
+   * sa imenom za prikaz. Služi filteru „Podnosilac" i koloni u admin listi (zahtev 048/26).
+   * Namerno lagano: groupBy nad change_requests + jedan findMany nad users (bez novog modula).
+   */
+  async podnosioci() {
+    const groups = await this.prisma.changeRequest.groupBy({
+      by: ["createdByUserId"],
+      _count: { _all: true },
+    });
+    const ids = groups.map((g) => g.createdByUserId);
+    const users = ids.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, fullName: true, email: true },
+        })
+      : [];
+    const byId = new Map(users.map((u) => [u.id, u]));
+    const data = groups
+      .map((g) => {
+        const u = byId.get(g.createdByUserId);
+        return {
+          id: g.createdByUserId,
+          name: u?.fullName?.trim() || u?.email || `#${g.createdByUserId}`,
+          count: g._count._all,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, "sr"));
+    return { data };
+  }
+
   /** GET /zahtevi/inbox-meta — brojači statusa koji čekaju admina (§7). */
   async inboxMeta() {
     const waiting = ["SUBMITTED", "ANALYZED", "TESTING"] as const;

@@ -59,7 +59,7 @@ export const HELP: HelpRegistry = {
   /* ─────────────────────────────────────────────────── /zahtevi (lista — admin) */
   'zahtevi.admin.tabovi': {
     title: 'Prikaz zahteva',
-    text: '„Inbox" = zahtevi koji čekaju vašu akciju (broj u zagradi). „Svi zahtevi" = pretraga i filteri. „Nagrade" = mesečni obračun i tarifa. „Odluke" = Decision Log. „Arhiva" = zatvoreni zahtevi.',
+    text: '„Inbox" = zahtevi koji čekaju vašu akciju (broj u zagradi). „Svi zahtevi" = pretraga i filteri (status, modul, tip i podnosilac). „Nagrade" = mesečni obračun i tarifa. „Odluke" = Decision Log. „Arhiva" = zatvoreni zahtevi.',
   },
   'zahtevi.admin.inbox.kpi': {
     title: 'Šta čeka vas',
