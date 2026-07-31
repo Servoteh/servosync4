@@ -1240,13 +1240,18 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
   // dugme „Predaj u primopredaju" tiho nestajali bez ijedne poruke. Umesto tihe
   // praznine, odobravaču bez prava izmene kažemo šta je problem. Čekamo da se
   // i lista odobravača i /auth/me/permissions učitaju (`can` je fail-closed dok
-  // traje upit) da upozorenje ne bi zatreperilo svima.
+  // traje upit) da upozorenje ne bi zatreperilo svima. Isto važi i kad upit
+  // dozvola PADNE (`permissionsError`, npr. backend restart tokom deploy-a):
+  // tada stanje prava NIJE poznato — `can()` je fail-closed, pa bi odobravač
+  // koji prava IMA dobio pogrešnu dijagnozu („javite administratoru") i prijavio
+  // nepostojeći problem. Poruku palimo samo kad su dozvole stvarno učitane.
   const { iAmApprover, approvers: approversForHint } = useCanSubmitHandover();
-  const { permissionsPending, can } = useAuth();
+  const { permissionsPending, permissionsError, can } = useAuth();
   const approverMissingWrite =
     iAmApprover &&
     !approversForHint.isLoading &&
     !permissionsPending &&
+    !permissionsError &&
     !can(PERMISSIONS.PRIMOPREDAJE_WRITE);
 
   // D2: /nacrti?noviCrtez=<drawingId> — glavni crtež novog nacrta iz PDM
