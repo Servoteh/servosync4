@@ -81,6 +81,20 @@ function readTab(): CardTab {
 }
 
 /**
+ * Otpis i vraćanje iz arhive MENJAJU šifru mašine (zahtev 047/26 — šifra se oslobađa
+ * za novu mašinu), a karton je ruta `?code=<šifra>` čiji se parametar čita samo pri
+ * montiranju → posle takve akcije URL mora da se prepiše, inače karton gađa šifru
+ * koje više nema. `location.replace` (a ne `router.replace`) jer je build statički
+ * export i isti pathname sa drugim query-jem ne remount-uje stranicu.
+ */
+function gotoMachine(res: unknown, fallback: string): void {
+  const next =
+    (res as { data?: { machineCode?: string } } | undefined)?.data?.machineCode ?? fallback;
+  if (next === fallback || typeof window === 'undefined') return;
+  window.location.replace(`/odrzavanje/masine?code=${encodeURIComponent(next)}`);
+}
+
+/**
  * Karton mašine kao RUTA (presuda §8.3). Deep-linkabilan tab (`?tab=`), browser Nazad radi
  * (pushState po tabu). Sadrži pun paritet 6 tabova + header quick-akcije + QR (lokalni render).
  */
@@ -155,7 +169,7 @@ export function MasinaKarton({ code, me }: { code: string; me: MaintMe | undefin
           {d.archivedAt && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm text-ink">
               <span className="flex items-center gap-2"><AlertCircle className="h-4 w-4 text-status-warn" aria-hidden /> Mašina je OTPISANA ({formatDate(d.archivedAt)}) — nije u upotrebi. Karton i istorija ostaju dostupni.</span>
-              {canManage && <Button variant="secondary" onClick={() => restore.mutate({ code }, { onSuccess: () => toast('Mašina vraćena u upotrebu') })}>Vrati u upotrebu</Button>}
+              {canManage && <Button variant="secondary" onClick={() => restore.mutate({ code }, { onSuccess: (res) => { toast('Mašina vraćena u upotrebu'); gotoMachine(res, code); } })}>Vrati u upotrebu</Button>}
             </div>
           )}
 
@@ -301,7 +315,7 @@ function MachineAdmin({ code, d, onEdit, filesCount }: {
       <Button variant="secondary" onClick={onEdit}>Uredi podatke</Button>
       <Button variant="secondary" onClick={() => setRenaming(true)}>Preimenuj šifru</Button>
       {d.archivedAt ? (
-        <Button variant="secondary" onClick={() => restore.mutate({ code }, { onSuccess: () => toast('Mašina vraćena u upotrebu') })}>Vrati u upotrebu</Button>
+        <Button variant="secondary" onClick={() => restore.mutate({ code }, { onSuccess: (res) => { toast('Mašina vraćena u upotrebu'); gotoMachine(res, code); } })}>Vrati u upotrebu</Button>
       ) : (
         <Button variant="secondary" onClick={() => setOtpisujem(true)}><Archive className="h-4 w-4" aria-hidden /> Otpiši mašinu</Button>
       )}
@@ -338,7 +352,7 @@ function OtpisDialog({ code, name, assetId, onClose }: {
         <Button loading={otpis.isPending} disabled={!ok} onClick={() => {
           setErr(null);
           otpis.mutate({ code, reason: reason.trim() }, {
-            onSuccess: () => { toast('Mašina otpisana — šef proizvodnje je obavešten'); onClose(); },
+            onSuccess: (res) => { toast('Mašina otpisana — šef proizvodnje je obavešten'); onClose(); gotoMachine(res, code); },
             onError: (e) => setErr((e as Error).message),
           });
         }}>Otpiši mašinu</Button></>}>
@@ -350,7 +364,8 @@ function OtpisDialog({ code, name, assetId, onClose }: {
             <strong>{code} · {name}</strong> se izbacuje iz upotrebe. Mašina se <strong>NE briše</strong> —
             arhivira se, pa karton i cela istorija (kontrole, kvarovi, nalozi, napomene, dokumenta) ostaju
             dostupni. Prestaje da se nudi pri otvaranju novih naloga i prijavi kvara. Otpis se može poništiti
-            dugmetom „Vrati u upotrebu".
+            dugmetom „Vrati u upotrebu". Šifra <strong>{code}</strong> se pri otpisu OSLOBAĐA (arhivska mašina
+            dobija oznaku <span className="tnums">{code}#ARH-…</span>) da bi se ista šifra mogla dodeliti novoj mašini.
           </span>
         </div>
         {openCount > 0 && (

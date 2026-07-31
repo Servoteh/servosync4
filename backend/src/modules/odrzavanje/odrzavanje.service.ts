@@ -714,7 +714,9 @@ export class OdrzavanjeService {
       if (statusFilter)
         statusConds.push({ status: { in: statusFilter as never[] } });
       if (openOnly || overdue)
-        statusConds.push({ status: { notIn: ["zavrsen", "otkazan"] as never[] } });
+        statusConds.push({
+          status: { notIn: ["zavrsen", "otkazan"] as never[] },
+        });
       const where: Prisma.MaintWorkOrderWhereInput = {
         ...(statusConds.length ? { AND: statusConds } : {}),
         ...(query.priority && WO_PRIORITIES.has(query.priority)
@@ -1593,7 +1595,10 @@ export class OdrzavanjeService {
     tx: Sy15Tx,
     assetIds: (string | null)[],
   ): Promise<
-    Map<string, { assetId: string; assetCode: string; name: string; assetType: string }>
+    Map<
+      string,
+      { assetId: string; assetCode: string; name: string; assetType: string }
+    >
   > {
     const ids = [...new Set(assetIds.filter((x): x is string => !!x))];
     if (!ids.length) return new Map();
@@ -1719,6 +1724,12 @@ export class OdrzavanjeService {
     )
       throw new UnprocessableEntityException(message);
     if (code === "23505") throw new ConflictException(message);
+    // Zaštitna mreža za trku „provera → INSERT" (zahtev 047/26): sirova P2002 poruka
+    // („Unique constraint failed on the fields: (`machine_code`)") ne sme do korisnika.
+    if (code === "P2002")
+      throw new ConflictException(
+        "Šifra je već zauzeta (moguće otpisanom mašinom) — osveži listu i probaj ponovo",
+      );
     if (code === "P2025") throw new ForbiddenException(message);
     throw e;
   }
@@ -1789,12 +1800,59 @@ export class OdrzavanjeService {
 
   // ---------- Mašine: katalog CRUD / arhiva / rename / import / hard-delete ----------
 
+  /**
+   * Sufiks kojim se šifra otpisane mašine sklanja s puta (zahtev 047/26).
+   * `machine_code` je PRIMARNI KLJUČ, a otpis je soft-delete — bez preimenovanja bi
+   * šifra ostala zauzeta zauvek, pa nova mašina sa istom oznakom ne može da se unese.
+   */
+  private static readonly ARCHIVE_SUFFIX_RE = /#ARH-\d{8}(?:-\d+)?$/;
+
+  /** Bazna (upotrebljiva) šifra: `3.10#ARH-20260730` → `3.10`. */
+  private baseMachineCode(code: string): string {
+    return code.replace(OdrzavanjeService.ARCHIVE_SUFFIX_RE, "");
+  }
+
+  /**
+   * Prva slobodna šifra iz niza `base`, `base-2`, `base-3`… (do 50).
+   * Bira je baza u JEDNOM upitu — bez petlje sa neuspelim rename-ovima, jer bi
+   * greška unutar transakcije oborila ceo otpis.
+   */
+  private async firstFreeMachineCode(
+    tx: Sy15Tx,
+    base: string,
+  ): Promise<string> {
+    const rows = await tx.$queryRaw<{ code: string }[]>(Prisma.sql`
+      SELECT c.code
+        FROM (SELECT g,
+                     ${base}::text || CASE WHEN g = 1 THEN '' ELSE '-' || g END AS code
+                FROM generate_series(1, 50) g) c
+       WHERE NOT EXISTS (SELECT 1 FROM maint_machines m WHERE m.machine_code = c.code)
+       ORDER BY c.g
+       LIMIT 1`);
+    return rows[0]?.code ?? base;
+  }
+
   createMachine(email: string, dto: CreateMachineDto) {
     return this.runIdem(
       email,
       dto.clientEventId,
       "odrzavanje.create-machine",
       async (tx) => {
+        // Zauzeta šifra se presuđuje PRE INSERT-a — inače korisnik dobije sirovu
+        // Prisma P2002 poruku („Unique constraint failed"), koja ne kaže ni koja je
+        // mašina zauzela šifru ni šta da uradi (zahtev 047/26).
+        const code = dto.machineCode.trim();
+        const taken = await tx.maintMachine.findUnique({
+          where: { machineCode: code },
+          select: { machineCode: true, name: true, archivedAt: true },
+        });
+        if (taken) {
+          throw new ConflictException(
+            taken.archivedAt
+              ? `Šifra ${code} pripada otpisanoj mašini „${taken.name}" — vrati je iz arhive ili je preimenuj u arhivi`
+              : `Mašina sa šifrom ${code} već postoji`,
+          );
+        }
         // asset_id je NOT NULL ali ga popunjava trigger `maint_machines_ensure_asset`
         // PRE INSERT-a → koristimo $executeRaw (Prisma create traži asset_id u tipu).
         const uid = await this.uid(tx);
@@ -1938,9 +1996,26 @@ export class OdrzavanjeService {
         },
       });
 
+      // Zahtev 047/26: šifra se OSLOBAĐA za novu mašinu. PK se menja atomski kroz
+      // isti RPC koji koristi `renameMachine` (propagira kroz sve child tabele), i to
+      // TEK POSLE update-a — tako RLS provera prava (`assertAffected`) i dalje presuđuje
+      // nad izvornom šifrom. Već otpisana mašina se ne preimenuje drugi put.
+      let newCode = code;
+      if (machine!.archivedAt == null) {
+        const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+        newCode = await this.firstFreeMachineCode(
+          tx,
+          `${this.baseMachineCode(code)}#ARH-${stamp}`,
+        );
+        await tx.$queryRaw(
+          Prisma.sql`SELECT public.maint_machine_rename(${code}, ${newCode}) AS result`,
+        );
+      }
+
       return {
         alreadyArchived: machine!.archivedAt != null,
         machineName: machine!.name,
+        newCode,
         openWorkOrders: openWorkOrders.map((w) => ({
           woNumber: w.woNumber ?? null,
           title: w.title,
@@ -1969,6 +2044,8 @@ export class OdrzavanjeService {
         ok: true,
         alreadyArchived: out.alreadyArchived,
         openWorkOrders: out.openWorkOrders.length,
+        // Nova (arhivska) šifra — FE mora da je zna da bi otvorio karton otpisane mašine.
+        machineCode: out.newCode,
       },
     };
   }
@@ -2004,7 +2081,24 @@ export class OdrzavanjeService {
           updatedAt: now,
         },
       });
-      return { data: { ok: true } };
+
+      // Simetrično otpisu: `#ARH-…` sufiks se skida i mašina se vraća pod svojom
+      // izvornom šifrom — ali samo ako je u međuvremenu niko nije zauzeo (zahtev 047/26).
+      let newCode = code;
+      const base = this.baseMachineCode(code);
+      if (base !== code && base.length > 0) {
+        const free = await this.firstFreeMachineCode(tx, base);
+        if (free !== base) {
+          throw new ConflictException(
+            `Šifra ${base} je u međuvremenu zauzeta drugom mašinom — preimenuj tu mašinu ili ovu vrati pod drugom šifrom`,
+          );
+        }
+        await tx.$queryRaw(
+          Prisma.sql`SELECT public.maint_machine_rename(${code}, ${base}) AS result`,
+        );
+        newCode = base;
+      }
+      return { data: { ok: true, machineCode: newCode } };
     });
   }
 
@@ -3003,9 +3097,7 @@ export class OdrzavanjeService {
       );
     }
     if (file.mimetype && !file.mimetype.startsWith("image/")) {
-      throw new UnprocessableEntityException(
-        "Fajl mora biti slika (image/*)",
-      );
+      throw new UnprocessableEntityException("Fajl mora biti slika (image/*)");
     }
     const uuid = randomUUID().replace(/-/g, "").slice(0, 16);
     const storagePath = `documents/asset/${assetId}/${uuid}_${this.safeFileName(file.originalname)}`;
@@ -3116,7 +3208,9 @@ export class OdrzavanjeService {
       });
       // Red je vidljiv (findUnique ga vratio) ali UPDATE politika odbila → 403.
       if (count === 0)
-        throw new ForbiddenException(`Nemate pravo nad: Foto vozila ${assetId}`);
+        throw new ForbiddenException(
+          `Nemate pravo nad: Foto vozila ${assetId}`,
+        );
       return p;
     });
     if (path) await this.storage.remove(MAINT_BUCKET, path);
