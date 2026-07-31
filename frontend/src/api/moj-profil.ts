@@ -109,12 +109,35 @@ export type VacationRequest = {
   created_at?: string;
 } & Record<string, unknown>;
 export type VacationHistoryRow = { year: number } & Record<string, unknown>;
+/**
+ * ZAHTEV 026/26 — molba za izmenu/otkaz VEĆ POTVRĐENOG termina (sy15
+ * `vacation_change_requests`, snake kolone). Ne menja termin sama — čeka HR odluku.
+ */
+export type VacationChangeRequest = {
+  id: string;
+  vacation_request_id: string;
+  /** 'cancel' = otkazivanje · 'revise' = predlog novog termina */
+  kind: 'cancel' | 'revise';
+  old_date_from: string;
+  old_date_to: string;
+  new_date_from: string | null;
+  new_date_to: string | null;
+  new_days_count: number | null;
+  reason: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  submitted_by: string | null;
+  decided_by: string | null;
+  decision_note: string | null;
+  created_at?: string;
+} & Record<string, unknown>;
 export interface VacationData {
   balance: VacationBalance | null;
   requests: VacationRequest[];
   history: VacationHistoryRow[];
   /** Jedinstveni presek GO po godinama (grid ∪ Excel po datumu, usklađeno sa saldom). */
   ledger?: GoLedgerBlock[];
+  /** Moje molbe za izmenu/otkaz potvrđenog termina (026/26). */
+  changeRequests?: VacationChangeRequest[];
 }
 
 export type MakeupRequest = {
@@ -588,6 +611,20 @@ export const useCancelVacation = () =>
   useProfileMutation<{ id: string }>((v) => post(`/vacation-requests/${v.id}/cancel`), KEYS.vacation);
 export const useDeleteVacation = () =>
   useProfileMutation<{ id: string }>((v) => del(`/vacation-requests/${v.id}`), KEYS.vacation);
+/**
+ * ZAHTEV 026/26 — molba nad POTVRĐENIM terminom. Za razliku od `useReviseVacation`/
+ * `useCancelVacation` (koje odmah menjaju termin i smeju samo dok zahtev NIJE odobren),
+ * ovde se pravi red koji HR odobrava; termin se menja tek posle odluke.
+ */
+export const useSubmitVacationChange = () =>
+  useProfileMutation<{
+    id: string;
+    clientEventId: string;
+    kind: 'cancel' | 'revise';
+    dateFrom?: string;
+    dateTo?: string;
+    reason?: string;
+  }>((v) => post(`/vacation-requests/${v.id}/change-request`, v), KEYS.vacation);
 
 /* ── Nadoknada / plaćeno ── */
 

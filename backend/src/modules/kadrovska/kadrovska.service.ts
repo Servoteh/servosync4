@@ -8,6 +8,7 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { isMissingDbObject } from "../../common/sy15/db-object-missing";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   resolvePermissionDecision,
@@ -561,6 +562,47 @@ export class KadrovskaService {
       );
       return { data };
     });
+  }
+
+  /**
+   * ZAHTEV 026/26 — molbe za izmenu/otkaz POTVRĐENOG GO termina (HR inbox).
+   *
+   * Opseg redova presuđuje se ISTIM izrazom kao u `requests()` (AUDIT-K2 pouka: RLS
+   * `*_select` politike puštaju sve svakome ko prođe `current_user_can_manage_vacreq`,
+   * pa scope mora u upit). Tabela je sy15-only (nema Prisma modela) → raw SQL.
+   * Dok `ZAHTEV_026_GO_IZMENA_OTKAZ.sql` nije primenjen na živu bazu, upit puca na
+   * 42P01 → vraćamo praznu listu uz `meta.pending_sql` umesto 500 na HR ekranu.
+   *
+   * ⚠️ REVIEW 31.07: catch je SUŽEN na „objekat ne postoji" (`isMissingDbObject`).
+   * Ranije je prazan `catch {}` gutao SVAKU grešku — posle primene SQL-a bi RLS/GRANT
+   * regresija ili pad konekcije HR-u prikazali baner „modul čeka SQL", a molbe
+   * zaposlenih bi tiho nestale sa ekrana i niko ih ne bi odlučio.
+   */
+  async vacationChangeRequests(email: string, status?: string) {
+    const wanted = ["pending", "approved", "rejected"].includes(status ?? "")
+      ? status
+      : undefined;
+    try {
+      return await this.withUserMapped(email, async (tx) => {
+        const statusCond = wanted
+          ? Prisma.sql`AND c.status = ${wanted}`
+          : Prisma.empty;
+        const data = await tx.$queryRaw(
+          Prisma.sql`SELECT c.*, vr.status AS request_status, vr.year AS request_year
+               FROM vacation_change_requests c
+               JOIN vacation_requests vr ON vr.id = c.vacation_request_id
+              WHERE (current_user_is_vacreq_admin()
+                     OR current_user_manages_employee(c.employee_id)
+                     OR c.employee_id = current_user_employee_id())
+                ${statusCond}
+              ORDER BY c.created_at DESC`,
+        );
+        return { data };
+      });
+    } catch (e) {
+      if (!isMissingDbObject(e)) throw e;
+      return { data: [], meta: { pending_sql: true } };
+    }
   }
 
   /** Istorija GO (Excel uvoz, ODVOJENO od salda) — SELECT-only. */

@@ -195,6 +195,53 @@ describe("MojProfilService R2 mutacije", () => {
     expect(qText(s2.tx.$queryRaw)).toContain("hr_delete_vacation_request(");
   });
 
+  // ---------- ZAHTEV 026/26: molba za izmenu/otkaz potvrđenog termina ----------
+
+  it("submitVacationChange(cancel): kadr_vacreq_change_submit + idem akcija; ne dira hr_cancel", async () => {
+    const { svc, sy15, tx } = makeSvc();
+    tx.$queryRaw.mockResolvedValue([{ result: { status: "pending" } }]);
+    await svc.submitVacationChange("u@x", ID, {
+      clientEventId: CID,
+      kind: "cancel",
+      reason: "Selidba",
+    });
+    expect(qText(tx.$queryRaw)).toContain("kadr_vacreq_change_submit(");
+    // Kritično: molba NE sme sama da otkaže odobren termin — to radi tek HR odluka.
+    expect(qAny(tx.$queryRaw, "hr_cancel_vacation_request")).toBe(false);
+    expect(sy15.runIdempotentRls.mock.calls[0][2]).toBe(
+      "profile.vacation-change-submit",
+    );
+  });
+
+  it("submitVacationChange(revise): broj dana računa SERVER (generate_series), ne klijent", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockImplementation(async (sql: unknown) => {
+      const t = (sql as SqlLike).strings.join("?");
+      if (t.includes("generate_series")) return [{ n: BigInt(4), weekdays: BigInt(5) }];
+      return [{ result: { status: "pending" } }];
+    });
+    await svc.submitVacationChange("u@x", ID, {
+      clientEventId: CID,
+      kind: "revise",
+      dateFrom: "2026-08-10",
+      dateTo: "2026-08-14",
+      reason: "Pomeram odmor",
+    });
+    expect(qAny(tx.$queryRaw, "generate_series")).toBe(true);
+    const call = tx.$queryRaw.mock.calls.find((c) =>
+      (c[0] as SqlLike).strings.join("?").includes("kadr_vacreq_change_submit"),
+    );
+    expect((call![0] as SqlLike).values).toContain(4); // serverski izbrojani radni dani
+  });
+
+  it("submitVacationChange(revise): bez novog perioda → 422 pre transakcije", async () => {
+    const { svc, sy15 } = makeSvc();
+    await expect(
+      svc.submitVacationChange("u@x", ID, { clientEventId: CID, kind: "revise" }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(sy15.runIdempotentRls).not.toHaveBeenCalled();
+  });
+
   // ---------- Nadoknada / plaćeno ----------
 
   it("submitMakeup: INSERT makeup_requests + queue 'submitted'; runIdem action", async () => {

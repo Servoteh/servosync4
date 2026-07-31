@@ -17,9 +17,11 @@ import {
   useReviseVacation,
   useCancelVacation,
   useDeleteVacation,
+  useSubmitVacationChange,
   useTeam,
   vacationRemaining,
   type VacationRequest,
+  type VacationChangeRequest,
 } from '@/api/moj-profil';
 import type { GoLedgerBlock, GoLedgerPeriod } from '@/api/kadrovska';
 import { Section, statusLabel, statusTone } from './section';
@@ -49,11 +51,18 @@ export function VacationSection() {
   const q = useVacation();
   const data = q.data?.data;
   const [modal, setModal] = useState<{ mode: 'new' | 'edit'; req?: VacationRequest } | null>(null);
+  // ZAHTEV 026/26 — molba nad POTVRĐENIM terminom (ne menja termin, ide HR-u).
+  const [changeFor, setChangeFor] = useState<{ req: VacationRequest; kind: 'cancel' | 'revise' } | null>(null);
   const cancelM = useCancelVacation();
   const deleteM = useDeleteVacation();
 
   const balance = data?.balance;
   const requests = data?.requests ?? [];
+  const changeRequests = data?.changeRequests ?? [];
+  // Otvorena (pending) molba blokira novu — isti uslov kao unique indeks u bazi.
+  const openChangeByReq = new Map<string, VacationChangeRequest>(
+    changeRequests.filter((c) => c.status === 'pending').map((c) => [c.vacation_request_id, c]),
+  );
   // ZAHTEV 028/26: prikazuje se STEČENO do danas (1.0 kanon), ne kalendarsko pravo.
   const remaining = vacationRemaining(balance);
 
@@ -98,7 +107,11 @@ export function VacationSection() {
                 </thead>
                 <tbody>
                   {requests.map((r) => {
-                    const editable = ['pending', 'sef_approved', 'approved'].includes(r.status);
+                    // ZAHTEV 026/26: dok zahtev NIJE potvrđen, radnik ga i dalje menja/otkazuje
+                    // sam (nema šta da se vraća u fond). Nad POTVRĐENIM terminom ide molba HR-u.
+                    const editable = ['pending', 'sef_approved'].includes(r.status);
+                    const confirmed = r.status === 'approved';
+                    const openChange = openChangeByReq.get(r.id);
                     return (
                       <tr key={r.id} className="border-b border-line-soft">
                         <td className="py-1.5 tnums">{formatDate(r.date_from)}</td>
@@ -123,14 +136,36 @@ export function VacationSection() {
                                 </button>
                               </>
                             )}
-                            <button
-                              onClick={() => confirm('Trajno obrisati zahtev?') && deleteM.mutate({ id: r.id })}
-                              className="rounded px-1.5 py-0.5 text-status-danger hover:bg-surface-2"
-                              aria-label="Trajno obriši zahtev"
-                              title="Trajno obriši zahtev"
-                            >
-                              <Trash2 className="h-4 w-4" aria-hidden />
-                            </button>
+                            {confirmed && (openChange ? (
+                              <span className="rounded px-1.5 py-0.5 text-2xs text-status-warn" title="Molba je poslata — čeka odluku HR-a">
+                                ⏳ {openChange.kind === 'cancel' ? 'otkazivanje' : 'izmena'} na čekanju
+                              </span>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => setChangeFor({ req: r, kind: 'revise' })}
+                                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ink-secondary hover:bg-surface-2"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" aria-hidden /> Zatraži izmenu
+                                </button>
+                                <button
+                                  onClick={() => setChangeFor({ req: r, kind: 'cancel' })}
+                                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ink-secondary hover:bg-surface-2"
+                                >
+                                  <X className="h-3.5 w-3.5" aria-hidden /> Zatraži otkazivanje
+                                </button>
+                              </>
+                            ))}
+                            {!confirmed && (
+                              <button
+                                onClick={() => confirm('Trajno obrisati zahtev?') && deleteM.mutate({ id: r.id })}
+                                className="rounded px-1.5 py-0.5 text-status-danger hover:bg-surface-2"
+                                aria-label="Trajno obriši zahtev"
+                                title="Trajno obriši zahtev"
+                              >
+                                <Trash2 className="h-4 w-4" aria-hidden />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -138,6 +173,30 @@ export function VacationSection() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* ZAHTEV 026/26 — moje molbe za izmenu/otkaz potvrđenog termina */}
+          {changeRequests.length > 0 && (
+            <div className="mt-4">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-secondary">
+                Zahtevi za izmenu / otkazivanje
+              </h3>
+              <div className="space-y-1">
+                {changeRequests.map((c) => (
+                  <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-control border border-line bg-surface-2 px-3 py-1.5 text-sm">
+                    <StatusBadge tone={changeTone(c.status)} label={changeStatusLabel(c.status)} />
+                    <span className="tnums">
+                      {c.kind === 'cancel' ? 'Otkazivanje' : 'Izmena'}: {formatDate(c.old_date_from)} – {formatDate(c.old_date_to)}
+                      {c.kind === 'revise' && c.new_date_from && c.new_date_to
+                        ? ` → ${formatDate(c.new_date_from)} – ${formatDate(c.new_date_to)}`
+                        : ''}
+                    </span>
+                    {c.reason ? <span className="text-xs text-ink-secondary">— {c.reason}</span> : null}
+                    {c.decision_note ? <span className="text-xs text-ink-secondary">· odluka: {c.decision_note}</span> : null}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -157,7 +216,117 @@ export function VacationSection() {
       )}
 
       {modal && <VacationModal mode={modal.mode} req={modal.req} selfRemaining={remaining} onClose={() => setModal(null)} />}
+      {changeFor && (
+        <ChangeRequestModal req={changeFor.req} kind={changeFor.kind} onClose={() => setChangeFor(null)} />
+      )}
     </Section>
+  );
+}
+
+function changeStatusLabel(s: string): string {
+  return s === 'pending' ? 'Čeka odluku' : s === 'approved' ? 'Odobreno' : 'Odbijeno';
+}
+function changeTone(s: string): 'warn' | 'success' | 'danger' {
+  return s === 'pending' ? 'warn' : s === 'approved' ? 'success' : 'danger';
+}
+
+/**
+ * ZAHTEV 026/26 — molba za izmenu/otkaz POTVRĐENOG termina.
+ *
+ * Ništa ne menja odmah: pravi red u `vacation_change_requests` koji odobrava isti krug
+ * kao i sam GO. Odobreno otkazivanje vraća dane u fond, odobrena izmena je otkaz starog
+ * + potvrda novog u JEDNOJ operaciji (sve u sy15 RPC-u). Broj radnih dana računa server.
+ */
+function ChangeRequestModal({
+  req,
+  kind,
+  onClose,
+}: {
+  req: VacationRequest;
+  kind: 'cancel' | 'revise';
+  onClose: () => void;
+}) {
+  const [dateFrom, setDateFrom] = useState(req.date_from?.slice(0, 10) ?? '');
+  const [dateTo, setDateTo] = useState(req.date_to?.slice(0, 10) ?? '');
+  const [reason, setReason] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const submitM = useSubmitVacationChange();
+  const days = kind === 'revise' && dateFrom && dateTo ? workDays(dateFrom, dateTo) : 0;
+
+  async function save() {
+    setErr(null);
+    if (!reason.trim()) return setErr('Razlog je obavezan — HR na osnovu njega odlučuje.');
+    if (kind === 'revise') {
+      if (!dateFrom || !dateTo) return setErr('Izaberi novi period.');
+      if (dateTo < dateFrom) return setErr('„Do" ne može biti pre „Od".');
+      if (dateFrom < MIN_DATE) return setErr(`Najraniji dozvoljeni datum je ${formatDate(MIN_DATE)}`);
+      if (dateFrom === req.date_from?.slice(0, 10) && dateTo === req.date_to?.slice(0, 10))
+        return setErr('Novi termin je isti kao postojeći.');
+    }
+    try {
+      const res = await submitM.mutateAsync({
+        id: req.id,
+        clientEventId: newClientEventId(),
+        kind,
+        ...(kind === 'revise' ? { dateFrom, dateTo } : {}),
+        reason: reason.trim(),
+      });
+      const status = ((res as { data?: { status?: string } } | null)?.data ?? {}).status;
+      if (status === 'already_pending') return setErr('Za ovaj termin već postoji zahtev koji čeka odluku.');
+      if (status === 'not_approved') return setErr('Termin više nije potvrđen — osveži stranicu.');
+      if (status === 'overlap') return setErr('Predloženi termin se preklapa sa drugim odsustvom.');
+      // Uspeh je SAMO 'pending' (molba je zavedena). 'not_found' ili nepoznat status
+      // ne smeju da zatvore formu kao da je poslata — red u bazi tada ne postoji.
+      if (status !== 'pending')
+        return setErr('Zahtev nije zaveden — osveži stranicu i pokušaj ponovo.');
+      onClose();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Slanje nije uspelo.');
+    }
+  }
+
+  const footer = (
+    <>
+      <Button variant="secondary" onClick={onClose}>Odustani</Button>
+      <Button onClick={save} loading={submitM.isPending}>Pošalji zahtev</Button>
+    </>
+  );
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={kind === 'cancel' ? 'Zahtev za otkazivanje godišnjeg' : 'Zahtev za izmenu termina godišnjeg'}
+      footer={footer}
+    >
+      <div className="space-y-3">
+        {err && <p className="rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}
+        <p className="text-sm text-ink-secondary">
+          Potvrđen termin: <b className="tnums">{formatDate(req.date_from)} – {formatDate(req.date_to)}</b> ({req.days_count} radnih dana)
+        </p>
+        {kind === 'revise' && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="Novo od" required>
+                <Input type="date" min={MIN_DATE} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              </FormField>
+              <FormField label="Novo do" required>
+                <Input type="date" min={MIN_DATE} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+              </FormField>
+            </div>
+            <p className="text-sm text-ink-secondary">Radnih dana: <b className="tnums">{days}</b></p>
+          </>
+        )}
+        <FormField label="Razlog" required>
+          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} maxLength={500} />
+        </FormField>
+        <p className="text-2xs text-ink-disabled">
+          {kind === 'cancel'
+            ? 'Termin ostaje na snazi dok HR ne odobri otkazivanje; posle odobrenja dani se vraćaju u fond.'
+            : 'Termin ostaje na snazi dok HR ne odobri izmenu; posle odobrenja stari termin se poništava, a novi upisuje.'}
+        </p>
+      </div>
+    </Dialog>
   );
 }
 
