@@ -785,11 +785,24 @@ for (const role of RAZVOJ_FAZA_ROLES) addPerms(role, [P.RAZVOJ_READ]);
  * `assertItemWritesAllowed()`). Nosilac ključa danas prolazi guard i staje na brani —
  * dobija poruku šta da uradi u BigBit-u, a ne „nemate pravo".
  */
-const MASTERS_WRITE_ROLES: readonly RoleKey[] = [
-  ROLES.MENADZMENT,
-  ROLES.NABAVKA_VIEW,
-];
-for (const role of MASTERS_WRITE_ROLES) addPerms(role, [P.MASTERS_WRITE]);
+// ⚠️ PREGAŽENO ODLUKOM VLASNIKA O-6 (30.07.2026): „svako može da menja šifarnik."
+// Uzak krug iznad (menadzment + nabavka_view) važio je jedan dan; komentar ostaje
+// kao istorijat ZAŠTO je prvobitno bio uzak — ta razmatranja i dalje stoje, samo
+// je vlasnik presudio suprotno, svesno (zapisano u docs/ODLUKE_SYNC_I_PRELAZ.md §4).
+//
+// „Svako" se sprovodi kao PRAVILO, ne kao spisak imena: ključ dobija svaka rola
+// koja sme da ČITA šifarnik (`directory.read`). Time su automatski isključene
+// samo role kojima je i čitanje namerno uskraćeno (proizvodni_radnik,
+// tehnicar_odrzavanja) — pravo upisa bez prava čitanja bilo bi besmisleno.
+// Spisak imena bi zastareo prvom novom rolom; pravilo ne stari.
+//
+// Brana i dalje stoji: rute vraćaju 409 dok je `CUSTOMERS_WRITE_OPEN=false` /
+// `assertItemWritesAllowed()` — ključ otvara guard, ne i unos.
+for (const role of Object.keys(ROLE_PERMISSIONS) as RoleKey[]) {
+  if ((ROLE_PERMISSIONS[role] ?? []).includes(P.DIRECTORY_READ)) {
+    addPerms(role, [P.MASTERS_WRITE]);
+  }
+}
 
 /**
  * Normalise a stored role value to the catalog key.

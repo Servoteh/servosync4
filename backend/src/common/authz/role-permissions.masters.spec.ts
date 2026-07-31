@@ -141,11 +141,16 @@ describe("masters.write — ključ za upis matičnih podataka", () => {
       expect(roleHasPermission(role, P.MASTERS_WRITE)).toBe(true);
     });
 
-    it("nosioci su TAČNO admin + menadzment + nabavka_view (bez tihog širenja)", () => {
-      const holders = ALL_ROLE_KEYS.filter((r) =>
-        roleHasPermission(r, P.MASTERS_WRITE),
-      ).sort();
-      expect(holders).toEqual([...WRITE_CIRCLE].sort());
+    // ⚠️ ODLUKA O-6 (vlasnik, 30.07.2026): „svako može da menja šifarnik."
+    // Uzak krug je važio jedan dan; sada je pravilo: KO SME DA ČITA, SME I DA MENJA.
+    it("O-6: SVAKA rola sa directory.read ima masters.write (pravilo, ne spisak)", () => {
+      const readers = ALL_ROLE_KEYS.filter((r) =>
+        roleHasPermission(r, P.DIRECTORY_READ),
+      );
+      expect(readers.length).toBeGreaterThan(5); // sanity: pravilo mora nešto da pokrije
+      for (const role of readers) {
+        expect(roleHasPermission(role, P.MASTERS_WRITE)).toBe(true);
+      }
     });
 
     /**
@@ -153,23 +158,21 @@ describe("masters.write — ključ za upis matičnih podataka", () => {
      * (svaka rola sa read-om van kruga), pa nova rola sa read baseline-om automatski
      * ulazi u proveru — test se ne mora dopunjavati da bi uhvatio regresiju.
      */
-    it("nijedna rola sa `directory.read` van kruga nema masters.write", () => {
-      const readOnly = ALL_ROLE_KEYS.filter(
-        (r) =>
-          roleHasPermission(r, P.DIRECTORY_READ) &&
-          !(WRITE_CIRCLE as string[]).includes(r),
+    it("rola BEZ directory.read nema ni masters.write (upis bez čitanja je besmislen)", () => {
+      const nonReaders = ALL_ROLE_KEYS.filter(
+        (r) => !roleHasPermission(r, P.DIRECTORY_READ),
       );
-      // Sanity: lista ne sme biti prazna, inače test ništa ne dokazuje.
-      expect(readOnly.length).toBeGreaterThan(5);
-      for (const role of readOnly) {
+      // Sanity: proizvodni_radnik i tehnicar_odrzavanja namerno nemaju read.
+      expect(nonReaders.length).toBeGreaterThan(0);
+      for (const role of nonReaders) {
         expect(roleHasPermission(role, P.MASTERS_WRITE)).toBe(false);
       }
     });
 
-    it("kontrolor/viewer/tim_lider: read DA, write NE", () => {
+    it("kontrolor/viewer/tim_lider: read DA → write DA (O-6)", () => {
       for (const role of [ROLES.KONTROLOR, ROLES.VIEWER, ROLES.TIM_LIDER]) {
         expect(roleHasPermission(role, P.DIRECTORY_READ)).toBe(true);
-        expect(roleHasPermission(role, P.MASTERS_WRITE)).toBe(false);
+        expect(roleHasPermission(role, P.MASTERS_WRITE)).toBe(true);
       }
     });
 
@@ -225,12 +228,15 @@ describe("masters.write — ključ za upis matičnih podataka", () => {
       role: ROLES.KONTROLOR,
     };
 
+    // O-6: kontrolor (čitalac) sada NOSI ključ → guard ga pušta do 409 brane.
+    // Guard i dalje ume da odbije: to pinuje DENY-override test niže i
+    // proizvodni_radnik (bez read → bez write).
     it.each(WRITE_ROUTES)(
-      "%s: nosilac samo directory.read → DENY (403)",
+      "%s: čitalac (kontrolor) prolazi guard — staje tek na 409 brani (O-6)",
       async (_name, handler, cls) => {
         const guard = makeGuard(null);
         expect(await guard.canActivate(ctx(handler, cls, READ_ONLY_USER))).toBe(
-          false,
+          true,
         );
       },
     );
