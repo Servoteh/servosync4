@@ -23,7 +23,12 @@ import { SERVOTEH_LOGO_DATA_URL } from "../../documents/servoteh-logo";
  */
 export type InvoicePrintVariant = "withPrices" | "withoutPrices" | "export";
 
-/** Injektovani (denormalizovani) podaci firme izdavaoca za zaglavlje. */
+/**
+ * Injektovani (denormalizovani) podaci firme izdavaoca za zaglavlje.
+ *
+ * Struktura namerno pokriva `MemorandumIssuer` (`print/memorandum.ts`) — memorandum
+ * ume da se odštampa direktno iz ovoga, bez zasebnog učitavanja firme.
+ */
 interface IssuerInfo {
   companyName: string;
   address: string | null;
@@ -33,6 +38,18 @@ interface IssuerInfo {
   bankAccount: string | null;
   phone: string | null;
   email: string | null;
+  /** Mesto izdavanja računa („Beograd") — desni blok domaćih obrazaca. */
+  invoiceIssuingPlace: string | null;
+  /** Registarski broj (APR) — registarski red u podnožju. */
+  registryNumber: string | null;
+  /** Šifra delatnosti — registarski red u podnožju. */
+  businessActivityCode: string | null;
+  /** Faks — red firme u zaglavlju memoranduma. */
+  fax: string | null;
+  /** Web adresa — red firme u zaglavlju memoranduma (`web::`). */
+  webAddress: string | null;
+  /** Rečenica o upisu u APR — poslednji red podnožja. */
+  aprText: string | null;
   swift?: string | null;
   iban?: string | null;
 }
@@ -146,9 +163,20 @@ export class InvoicePdfService {
         bankAccount: true,
         phone: true,
         email: true,
+        // Memorandum (korak 1): sve već postoji u `companies`, samo se do sada nije
+        // učitavalo — zato je podnožje na štampi bilo prazno.
+        invoiceIssuingPlace: true,
+        registryNumber: true,
+        businessActivityCode: true,
+        fax: true,
+        webAddress: true,
+        aprText: true,
       },
     });
     if (!company) {
+      // Legacy `companyId` bez reda u `companies`. Podaci firme se NE prepisuju u kod:
+      // memorandum tada ostane bez registarskog reda umesto da odštampa nešto što
+      // možda više nije tačno. Ispravka je unos firme, ne konstanta ovde.
       return {
         companyName: "Servoteh d.o.o.",
         address: null,
@@ -158,6 +186,12 @@ export class InvoicePdfService {
         bankAccount: null,
         phone: null,
         email: null,
+        invoiceIssuingPlace: null,
+        registryNumber: null,
+        businessActivityCode: null,
+        fax: null,
+        webAddress: null,
+        aprText: null,
       };
     }
     return {
@@ -169,6 +203,12 @@ export class InvoicePdfService {
       bankAccount: company.bankAccount,
       phone: company.phone,
       email: company.email,
+      invoiceIssuingPlace: company.invoiceIssuingPlace,
+      registryNumber: company.registryNumber,
+      businessActivityCode: company.businessActivityCode,
+      fax: company.fax,
+      webAddress: company.webAddress,
+      aprText: company.aprText,
     };
   }
 
