@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus } from 'lucide-react';
+import { Plus, Printer } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { openPdf } from '@/lib/open-pdf';
+import { toast } from '@/lib/toast';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -14,6 +16,7 @@ import { formatDate, formatDecimal } from '@/lib/format';
 import {
   useCashJournals,
   useCashEntries,
+  useCashJournalPdf,
   type CashJournal,
   type CashEntry,
 } from '@/api/blagajna';
@@ -91,6 +94,13 @@ export default function BlagajnaPage() {
   const [entryDir, setEntryDir] = useState<'IN' | 'OUT' | null>(null);
 
   const entries = useCashEntries(selectedId);
+  const reportPdf = useCashJournalPdf();
+
+  // Period blagajničkog izveštaja — podrazumevano DANAS (dnevni obračun je
+  // pravilo; širi period se bira ručno).
+  const today = new Date().toISOString().slice(0, 10);
+  const [reportFrom, setReportFrom] = useState(today);
+  const [reportTo, setReportTo] = useState(today);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -169,14 +179,56 @@ export default function BlagajnaPage() {
         <div className="flex-1 space-y-3 overflow-auto">
           {selected ? (
             <>
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-end justify-between gap-3">
                 <div className="text-sm text-ink-secondary">
                   Stanje:{' '}
                   <span className="tnums text-md font-semibold text-ink">
                     {formatDecimal(selected.balance)} {selected.currency}
                   </span>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-end gap-2">
+                  {/* Blagajnički izveštaj (dnevnik) — preneti i novi saldo, iznos u
+                      slovima, prazna apoenska specifikacija za brojanje gotovine. */}
+                  <label className="flex flex-col gap-1 text-2xs text-ink-secondary">
+                    Izveštaj od
+                    <input
+                      type="date"
+                      value={reportFrom}
+                      onChange={(e) => {
+                        setReportFrom(e.target.value);
+                        if (e.target.value > reportTo) setReportTo(e.target.value);
+                      }}
+                      className="rounded-control border border-line bg-surface px-2 py-1 text-sm text-ink"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-2xs text-ink-secondary">
+                    do
+                    <input
+                      type="date"
+                      value={reportTo}
+                      min={reportFrom}
+                      onChange={(e) => setReportTo(e.target.value)}
+                      className="rounded-control border border-line bg-surface px-2 py-1 text-sm text-ink"
+                    />
+                  </label>
+                  <Button
+                    variant="secondary"
+                    loading={reportPdf.isPending}
+                    title="Blagajnički izveštaj (dnevnik) za izabrani period — PDF"
+                    onClick={() =>
+                      reportPdf.mutate(
+                        { journalId: selected.id, from: reportFrom, to: reportTo },
+                        {
+                          onSuccess: (blob) => openPdf(blob),
+                          onError: (e) =>
+                            toast(`Štampa nije uspela: ${(e as Error).message}`),
+                        },
+                      )
+                    }
+                  >
+                    <Printer className="h-4 w-4" aria-hidden />
+                    Blagajnički izveštaj
+                  </Button>
                   <Button onClick={() => setEntryDir('IN')}>Uplatnica</Button>
                   <Button variant="secondary" onClick={() => setEntryDir('OUT')}>
                     Isplatnica

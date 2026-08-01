@@ -55,7 +55,10 @@ function makeSvc(opts: {
 
   const sy15QueryRaw = jest.fn(() => Promise.resolve(opts.sy15Rows));
   const withUserRls = jest.fn((_e: string, fn: (tx: unknown) => unknown) =>
-    fn({ $queryRaw: sy15QueryRaw, $executeRaw: jest.fn(() => Promise.resolve(1)) }),
+    fn({
+      $queryRaw: sy15QueryRaw,
+      $executeRaw: jest.fn(() => Promise.resolve(1)),
+    }),
   );
   const sy15 = { withUserRls };
   const authAdmin = {
@@ -87,12 +90,14 @@ describe("PodesavanjaUsersService.backfillOverrides (#44)", () => {
       userByEmail: { "sef@x": { id: 7 } },
     });
     const out = await svc.backfillOverrides(ADMIN);
-    const calls = ovUpsert.mock.calls.map((c) => c[0] as OvUpsertCall);
+    const calls = ovUpsert.mock.calls.map((c) => c[0]);
     const byKey = new Map(calls.map((c) => [c.create.key, c.create.allow]));
     expect(byKey.get(OVERRIDE_KEYS.MONTAZA_EDIT)).toBe(false); // deny edit
     expect(byKey.get(OVERRIDE_KEYS.KADROVSKA_READ)).toBe(true); // grant
     expect(byKey.get(OVERRIDE_KEYS.KADROVSKA_CONTRACTS_READ)).toBe(false); // deny
-    expect((out.data as { overridesUpserted: number }).overridesUpserted).toBe(3);
+    expect((out.data as { overridesUpserted: number }).overridesUpserted).toBe(
+      3,
+    );
     // svaki upsert nišani (userId,key) — idempotentno
     for (const c of calls)
       expect(c.where.userId_key).toEqual({ userId: 7, key: c.create.key });
@@ -115,13 +120,13 @@ describe("PodesavanjaUsersService.backfillOverrides (#44)", () => {
     const out = await svc.backfillOverrides(ADMIN);
     expect(ovUpsert).not.toHaveBeenCalled();
     // sva 3 ključa se brišu (forceAll)
-    const deleted = ovDeleteMany.mock.calls.map(
-      (c) => (c[0] as OvDeleteCall).where.key,
-    );
+    const deleted = ovDeleteMany.mock.calls.map((c) => c[0].where.key);
     expect(deleted).toContain(OVERRIDE_KEYS.MONTAZA_EDIT);
     expect(deleted).toContain(OVERRIDE_KEYS.KADROVSKA_READ);
     expect(deleted).toContain(OVERRIDE_KEYS.KADROVSKA_CONTRACTS_READ);
-    expect((out.data as { overridesUpserted: number }).overridesUpserted).toBe(0);
+    expect((out.data as { overridesUpserted: number }).overridesUpserted).toBe(
+      0,
+    );
   });
 
   it("agregacija: OR preko aktivnih redova istog email-a (jedan red true)", async () => {
@@ -147,9 +152,7 @@ describe("PodesavanjaUsersService.backfillOverrides (#44)", () => {
       userByEmail: { "a@x": { id: 3 } },
     });
     await svc.backfillOverrides(ADMIN);
-    const upserted = ovUpsert.mock.calls.map(
-      (c) => (c[0] as OvUpsertCall).create.key,
-    );
+    const upserted = ovUpsert.mock.calls.map((c) => c[0].create.key);
     expect(upserted).toContain(OVERRIDE_KEYS.MONTAZA_EDIT); // OR → true
   });
 
@@ -189,7 +192,7 @@ describe("PodesavanjaUsersService.backfillOverrides (#44)", () => {
       userByEmail: { "m@x": { id: 9 } },
     });
     const out = await svc.backfillOverrides(ADMIN);
-    const call = roleUpdateMany.mock.calls[0][0] as RoleUpdCall;
+    const call = roleUpdateMany.mock.calls[0][0];
     expect(call.where).toEqual({ userId: 9, scopeType: "global" });
     expect(call.data.managedSubDepartmentIds).toEqual([4, 7]);
     expect((out.data as { scopesUpdated: number }).scopesUpdated).toBe(1);

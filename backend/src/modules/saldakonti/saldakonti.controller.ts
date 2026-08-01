@@ -3,6 +3,8 @@ import {
   Body,
   Controller,
   Get,
+  Param,
+  ParseIntPipe,
   Post,
   Query,
   Req,
@@ -19,6 +21,8 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import { OpenItemsService } from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
 import { CompensationService } from "./compensation.service";
+import { CompensationPdfService } from "./compensation-pdf.service";
+import { DunningPdfService } from "./dunning-pdf.service";
 import { IosPdfService } from "./ios-pdf.service";
 import { CollectionDashboardService } from "./collection-dashboard.service";
 import { PartnerCardService } from "./partner-card.service";
@@ -69,6 +73,8 @@ export class SaldakontiController {
     private readonly openItems: OpenItemsService,
     private readonly reconciliation: ReconciliationService,
     private readonly compensation: CompensationService,
+    private readonly compensationPdf: CompensationPdfService,
+    private readonly dunningPdf: DunningPdfService,
     private readonly iosPdf: IosPdfService,
     private readonly partnerCard: PartnerCardService,
     private readonly mail: MailService,
@@ -257,6 +263,28 @@ export class SaldakontiController {
     return { data };
   }
 
+  /**
+   * SPISAK KOMPENZACIJA (za štampu izjave i posle zatvaranja ekrana).
+   *
+   * Bez ove liste se izjava o kompenzaciji mogla odštampati SAMO iz prolazne
+   * trake odmah posle kreiranja: promena taba je brisala lokalno stanje i
+   * proknjižen dokument više nije imao nijedan put do štampe.
+   */
+  @Get("compensation")
+  async listCompensations(
+    @Query("partnerId") partnerId?: string,
+    @Query("status") status?: string,
+    @Query("skip") skip?: string,
+    @Query("take") take?: string,
+  ) {
+    return this.compensation.list({
+      partnerId: parseOptionalInt(partnerId),
+      status: status?.trim() || undefined,
+      skip: parseOptionalInt(skip) ?? 0,
+      take: parseOptionalInt(take) ?? 50,
+    });
+  }
+
   @Post("compensation")
   @RequirePermission(PERMISSIONS.SALDAKONTI_RECONCILE)
   async createCompensation(
@@ -265,6 +293,25 @@ export class SaldakontiController {
   ) {
     const data = await this.compensation.create(dto, req.user.userId);
     return { data };
+  }
+
+  /**
+   * IZJAVA O KOMPENZACIJI (PDF inline) — obrazac prebijanja po nalogu kompenzacije:
+   * dve tabele (naša potraživanja / naše obaveze), zbir svake strane, prebijeni
+   * iznos brojem i slovima, kontrola bilateralnog bilansa i dva potpisa sa M.P.
+   * Nepostojeći nalog → 404. Nasleđuje klasnu SALDAKONTI_READ (read-only izlaz).
+   */
+  @Get("compensation/:id/pdf")
+  async compensationPdfObrazac(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } = await this.compensationPdf.buildCompensationPdf(
+      id,
+      req.user?.email ?? null,
+    );
+    sendPdf(res, buffer, fileName);
   }
 
   // ── Talas 3 §A7: dashboard naplate + MaxSaldo (dodato na kraj kontrolera) ────
@@ -312,6 +359,32 @@ export class SaldakontiController {
   async dunningCandidates(@Query("asOf") asOf?: string) {
     const data = await this.dunning.candidates(parseOptionalDate(asOf));
     return { data, meta: { count: data.length } };
+  }
+
+  /**
+   * ŠTAMPA OPOMENE (PDF inline) — isti obrazac koji ide u prilogu mejla, ali za
+   * ruku: pregled dospelih neizmirenih stavki komitenta na dan preseka, po nivou
+   * (1|2|3; bez `level` = 1). Do sada je PDF servis postojao BEZ ijedne GET rute,
+   * pa se opomena mogla samo poslati mejlom, nikad odštampati (nalaz revizije).
+   * `asOf` default danas. Nasleđuje klasnu SALDAKONTI_READ (read-only izlaz).
+   */
+  @Get("dunning/pdf")
+  async dunningPdfObrazac(
+    @Query("partnerId") partnerId: string,
+    @Query("level") level: string | undefined,
+    @Query("asOf") asOf: string | undefined,
+    @Res() res: Response,
+  ): Promise<void> {
+    const id = parseOptionalInt(partnerId);
+    if (id == null) {
+      throw new BadRequestException("Parametar partnerId je obavezan.");
+    }
+    const { buffer, fileName } = await this.dunningPdf.buildDunningPdf(
+      id,
+      parseOptionalLevel(level) ?? 1,
+      parseOptionalDate(asOf),
+    );
+    sendPdf(res, buffer, fileName);
   }
 
   /**
@@ -418,6 +491,16 @@ export class SaldakontiController {
     const data = await this.fxRevaluation.reverse(dto, { userId: req.user.userId });
     return { data };
   }
+}
+
+/** Inline isporuka PDF-a (isti obrazac na svim štampama modula). */
+function sendPdf(res: Response, buffer: Buffer, fileName: string): void {
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename="${encodeURIComponent(fileName)}"`,
+  );
+  res.send(buffer);
 }
 
 function parseOptionalInt(v?: string): number | undefined {

@@ -49,6 +49,9 @@ export class SyncService {
   ) {
     // Hand-written syncers take precedence (e.g. customers has bespoke FK logic).
     this.register(customerSyncer);
+    // Registri artikala: nisu u generisanoj mapi (R_Grupa / R_Podgrupa /
+    // R_Poreklo nemaju watermark), pa idu kao lagani upsert po šifri.
+    // Redosled = grupa -> podgrupa -> poreklo, prateći hijerarhiju izvora.
     // Generic, map-driven syncers for every other mapped table.
     for (const mapping of SYNC_MAP) {
       if (this.syncers.has(mapping.targetDb)) continue;

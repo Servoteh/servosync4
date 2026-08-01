@@ -134,7 +134,20 @@ export default function CustomersPage() {
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
-        <p className="text-sm text-ink-disabled">Podaci iz BigBit-a — samo pregled</p>
+        {/*
+          Odluka vlasnika 26.07.2026: komitenti se unose ISKLJUČIVO u BigBit. Zato ovde
+          nema dugmeta „Novi komitent" ni forme — umesto toga stoji objašnjenje odakle
+          podaci dolaze i šta korisnik radi kad mu treba nov komitent.
+        */}
+        <div className="rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
+          <p className="font-semibold text-ink">Komitente vodi BigBit — ovde je samo pregled</p>
+          <p className="mt-1">
+            Novog komitenta unesite u BigBit, pa javite administratoru da pokrene uvoz
+            (Sinhronizacije → Pokreni sync) — tek tada se komitent vidi ovde i može da se bira na
+            dokumentima. Izmena podataka (adresa, PIB, kontakt) radi se isto u BigBit-u — ovde se
+            ne menja ništa.
+          </p>
+        </div>
 
         {list.error && (
           <div className="rounded-panel border border-status-danger/30 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">

@@ -452,7 +452,7 @@ export default function SaldakontiPage() {
                     onClick={() =>
                       iosPdf.mutate(
                         { partnerId: appliedPartnerId },
-                        { onSuccess: openPdf },
+                        { onSuccess: (blob) => openPdf(blob) },
                       )
                     }
                   >

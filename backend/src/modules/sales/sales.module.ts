@@ -9,6 +9,7 @@ import { PricingService } from "./pricing.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { DocumentCarryOverService } from "./carry-over.service";
 import { AdvanceInvoiceService } from "./advance-invoice.service";
+import { SalesService } from "./sales.service";
 import { RobnoModule } from "../robno/robno.module";
 
 /**
@@ -33,6 +34,7 @@ import { RobnoModule } from "../robno/robno.module";
     DocumentNumberSequenceService,
     DocumentCarryOverService,
     AdvanceInvoiceService, // Batch C: avansni računi (AVR)
+    SalesService, // izmena nacrta prodajnog dokumenta (zaglavlje + stavke)
   ],
   exports: [
     FakturisanjeService,
@@ -40,6 +42,7 @@ import { RobnoModule } from "../robno/robno.module";
     DocumentNumberSequenceService,
     DocumentCarryOverService,
     AdvanceInvoiceService,
+    SalesService,
   ],
 })
 export class SalesModule {}

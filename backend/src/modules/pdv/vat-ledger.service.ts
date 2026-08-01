@@ -18,6 +18,16 @@
  * Osnovica (vat_base) po dokumentu se ne vodi na PDV kontu — PDV konto nosi samo
  * iznos poreza. Osnovicu izvodimo iz nominalne stope registra (rate):
  *   osnovica = iznosPDV / (rate/100). Konto bez stope (transit/uplatni) → 0.
+ * Izvodi se za SVAKO konto sa stopom — i za korekcije („zatvaranje/pokrivanje
+ * avansa", „interni račun"), jer i one nose osnovicu, samo sa suprotnim znakom.
+ * Raniji `has_base = false` je te osnovice gutao i naduvavao zbir za stotine
+ * miliona (implicitna stopa KIF 02/2026 je bila 6,99% umesto 20%) — kolona je
+ * ukinuta (migracija 20260727090000), a provera P5 u `vat-sanity.ts` čuva da se
+ * greška ne vrati: Σ PDV mora odgovarati Σ osnovica × stopa unutar svake stope.
+ *
+ * TEHNIČKI NALOG ZATVARANJA PDV KONTA (vrsta `PDV`) se IZUZIMA — vidi
+ * `VAT_SETTLEMENT_ORDER_TYPE` u `vat-sanity.ts` za razlog i za obrazac
+ * preciznog izuzimanja (isti kao `CLOSING_ORDER_TYPE` u zavrsni/gkeval).
  *
  * Raw SQL (`$queryRaw`) jer grupišemo Σ po (dokument, partner, konto) uz JOIN na
  * registar PDV konta — Decimal se vraća egzaktno (BACKEND_RULES §2: nikad Float).
@@ -31,6 +41,12 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { assertVatPeriodNotLocked } from "./vat-period-lock";
+import {
+  assertVatPeriodSane,
+  checkVatPeriodSanity,
+  VAT_SETTLEMENT_ORDER_TYPE,
+  type VatSanityReport,
+} from "./vat-sanity";
 import {
   type CreateManualVatEntryDto,
   type UpdateManualVatEntryDto,
@@ -68,6 +84,10 @@ export interface BuildKifKufResult {
   kufCount: number; // broj upisanih ulaznih redova
   outputVat: Prisma.Decimal; // Σ izlazni PDV (KIF)
   inputVat: Prisma.Decimal; // Σ ulazni PDV (KUF)
+  outputBase: Prisma.Decimal; // Σ osnovica KIF (izvedena iz stope)
+  inputBase: Prisma.Decimal; // Σ osnovica KUF (izvedena iz stope)
+  /** Provera ispravnosti perioda (problemi + upozorenja + kontrola vs BigBit). */
+  sanity: VatSanityReport;
 }
 
 /** Agregat po (dokument, partner, konto) iz glavne knjige za PDV konta. */
@@ -93,8 +113,20 @@ export class VatLedgerService {
    *
    * Period se određuje po `journal_entries.posting_date` (datum knjiženja =
    * poreski period). Uzima se SAMO proknjižen nalog (status = 'POSTED').
+   *
+   * ZAŠTITA: posle punjenja (u ISTOJ transakciji) radi se provera ispravnosti
+   * (`vat-sanity.ts`). Ako je rezultat očigledno besmislen — stavke postoje a
+   * zbir je nula, osnovica je nula uz PDV različit od nule, ili se rezultat ne
+   * slaže sa BigBit-ovim nalogom zatvaranja — baca se 409 i CELO punjenje se
+   * poništava (rollback), pa knjige ostaju u prethodnom stanju umesto da tiho
+   * prime besmislice. `force = true` upisuje i takav period (za dijagnostiku),
+   * ali izveštaj o problemima ostaje u odgovoru.
    */
-  async buildKifKuf(year: number, month: number): Promise<BuildKifKufResult> {
+  async buildKifKuf(
+    year: number,
+    month: number,
+    opts: { force?: boolean } = {},
+  ): Promise<BuildKifKufResult> {
     this.assertPeriod(year, month);
 
     // D3: reknjiženje zaključanog (POSTED) perioda nije dozvoljeno — inače bi
@@ -121,7 +153,10 @@ export class VatLedgerService {
       // 2) Agregacija PDV konta iz GK po (nalog, partner, konto) za period.
       //    Sabira iznos PDV po smeru: output = kredit − debit (obaveza raste
       //    potraživanjem 47x), input = debit − credit (pretporez raste
-      //    dugovanjem 27x). Uzimamo apsolutnu neto vrednost po grupi.
+      //    dugovanjem 27x). Uzimamo neto vrednost po grupi SA ZNAKOM —
+      //    negativne linije (knjižna odobrenja, korekcije: BigBit ne stornira
+      //    kontra-nalogom nego negativnim iznosom na istoj strani) su legitimne
+      //    i NE SMEJU se odbacivati ni filterom ni ABS()-om.
       const rows = await tx.$queryRaw<VatAggregateRow[]>(
         Prisma.sql`
           SELECT
@@ -145,6 +180,16 @@ export class VatLedgerService {
           WHERE je.status IN ('POSTED', 'LOCKED')
             AND EXTRACT(YEAR FROM je.posting_date) = ${year}
             AND EXTRACT(MONTH FROM je.posting_date) = ${month}
+            -- TEHNIČKI NALOG ZATVARANJA PDV KONTA (vrsta 'PDV') — izuzet PRECIZNO.
+            -- Uslov stoji UZ JOIN na vat_account_map, dakle iz tog naloga ispadaju
+            -- SAMO stavke na PDV kontima (ogledalo mesečnog prometa sa suprotnim
+            -- znakom — bez ovoga se ceo mesec poništi u nulu: KUF 03/2026 je imao
+            -- 625 stavki i UKUPNO 0,00). Stavke istog naloga na transitnom kontu
+            -- 2790/4790 i na zaokruženju 6799/5799 NAMERNO ostaju u glavnoj
+            -- knjizi — to je rezultat obračuna prema PU i kontrolna tačka provere.
+            -- COALESCE je obavezan: uz NULL vrstu, NULL <> 'PDV' daje NULL i red
+            -- bi ispao iz WHERE (stari nalozi bez upisane vrste bi nestali).
+            AND COALESCE(je.order_type_code, '') <> ${VAT_SETTLEMENT_ORDER_TYPE}
           GROUP BY
             le.journal_entry_id, le.document_number, le.analytical_code,
             je.posting_date, le.account_code, vam.direction, vam.rate
@@ -154,12 +199,14 @@ export class VatLedgerService {
       const toInsert: Prisma.VatLedgerEntryCreateManyInput[] = [];
       let outputVat = ZERO;
       let inputVat = ZERO;
+      let outputBase = ZERO;
+      let inputBase = ZERO;
       let kifCount = 0;
       let kufCount = 0;
 
       for (const r of rows) {
         const vatAmount = r.vat_amount ?? ZERO;
-        // Preskoči nulte grupe (npr. dug=pot na tranzitnom kontu).
+        // Preskoči nulte grupe (npr. dug=pot na istom kontu u istom dokumentu).
         if (new D(vatAmount).isZero()) continue;
 
         const rate = r.rate ?? null;
@@ -180,9 +227,11 @@ export class VatLedgerService {
 
         if (r.direction === "output") {
           outputVat = outputVat.add(vatAmount);
+          outputBase = outputBase.add(vatBase);
           kifCount += 1;
         } else {
           inputVat = inputVat.add(vatAmount);
+          inputBase = inputBase.add(vatBase);
           kufCount += 1;
         }
       }
@@ -191,8 +240,37 @@ export class VatLedgerService {
         await tx.vatLedgerEntry.createMany({ data: toInsert });
       }
 
-      return { year, month, kifCount, kufCount, outputVat, inputVat };
+      // 3) ZAŠTITA OD TIHE GREŠKE — čita TEK UPISANE knjige (uključujući ručne
+      //    stavke) u istoj transakciji. Pad provere ⇒ throw ⇒ rollback punjenja.
+      const sanity = await checkVatPeriodSanity(tx, year, [month]);
+      if (!opts.force) {
+        assertVatPeriodSane(sanity, `Punjenje KIF/KUF za ${sanity.periodLabel}`);
+      }
+
+      return {
+        year,
+        month,
+        kifCount,
+        kufCount,
+        outputVat,
+        inputVat,
+        outputBase,
+        inputBase,
+        sanity,
+      };
     });
+  }
+
+  /**
+   * Provera ispravnosti perioda BEZ punjenja i bez štampe — da ekran i CSV izvoz
+   * ne budu jedini put kojim neispravan period izlazi iz aplikacije bez oznake.
+   * Ranije je zaštita stajala samo na PDF-u i mejlu, pa je „Izvezi CSV" (koji
+   * gradi fajl iz redova već u memoriji) tiho iznosio period koji se NE SME
+   * odštampati. Vezano za PODATAK, ne za format izlaza.
+   */
+  async checkPeriod(year: number, month: number): Promise<VatSanityReport> {
+    this.assertPeriod(year, month);
+    return checkVatPeriodSanity(this.prisma, year, [month]);
   }
 
   /** KIF (izlazne fakture) za period — proknjižena evidencija. */
@@ -414,8 +492,22 @@ export class VatLedgerService {
   }
 
   /**
-   * Osnovica iz iznosa PDV i nominalne stope: base = vat / (rate/100).
-   * Konto bez stope (transit/uplatni 2790/4790) → osnovica 0 (nosi samo PDV).
+   * Osnovica iz iznosa PDV i nominalne stope: base = vat / (rate/100). To je
+   * BigBit-ov metod (POPDV_SemeKontaZaKnjizenje ima kolone tipa `D/0.2` = Σ
+   * duguje / 0,2 = osnovica) i formula je tačna.
+   *
+   * Izvodi se za SVAKO konto sa stopom, uključujući korekcije („zatvaranje /
+   * pokrivanje avansa", „interni račun") — one su promet po istoj stopi, samo sa
+   * suprotnim znakom odn. na obe strane; izuzimanje im je gutalo osnovicu i
+   * naduvavalo zbir (v. migraciju 20260727090000, uzrok C).
+   *
+   * DVA slučaja daju osnovicu 0:
+   *   - `rate = null` — konto bez stope,
+   *   - `rate = 0` — deljenje nulom; stopa 0 nosi promet BEZ poreza, a takav
+   *     promet se u POPDV ne izvodi iz PDV konta nego iz PROMETNIH konta preko
+   *     `popdv_account_map` (zato izvozni/0% konto i nije u ovom registru).
+   * Oba su vidljiva: provera P5 (`vat-sanity.ts`) traži da Σ PDV odgovara
+   * Σ osnovica × stopa unutar svake stope, pa nula uz PDV ≠ 0 obara period.
    */
   private deriveBase(
     vatAmount: Prisma.Decimal,

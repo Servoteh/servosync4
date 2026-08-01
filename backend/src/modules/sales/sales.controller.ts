@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -17,6 +19,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { FakturisanjeService } from "./fakturisanje.service";
+import { SalesService } from "./sales.service";
 import { DocumentCarryOverService } from "./carry-over.service";
 import { InvoicePdfService } from "./print/invoice-pdf.service";
 import { InvoiceMailService } from "./print/invoice-mail.service";
@@ -37,15 +40,25 @@ import {
   normalizeInvoiceMailTo,
   normalizeMailNote,
 } from "./dto/send-invoice-mail.dto";
+import type {
+  CreateInvoiceItemDto,
+  UpdateInvoiceHeaderDto,
+  UpdateInvoiceItemDto,
+} from "./dto/update-invoice.dto";
 
 /**
  * Sales / Fakturisanje (Faza 5 §A). Izlazni računi nad Invoice (tip + level).
  *
- *   GET  /api/v1/sales/invoices                       — lista računa/predračuna
- *   GET  /api/v1/sales/invoices/:id                   — detalj
- *   POST /api/v1/sales/proformas                      — kreiraj predračun/ponudu (PON/PROF, level 250)
- *   POST /api/v1/sales/invoices/:id/from-proforma     — carry-over PROF → IFR/… (level 0 draft)
- *   POST /api/v1/sales/invoices/:id/post              — knjiženje (rezerviši broj + nalog GK)
+ *   GET    /api/v1/sales/invoices                       — lista računa/predračuna
+ *   GET    /api/v1/sales/invoices/:id                   — detalj
+ *   POST   /api/v1/sales/proformas                      — kreiraj predračun/ponudu (PON/PROF, level 250)
+ *   POST   /api/v1/sales/invoices/:id/from-proforma     — carry-over PROF → IFR/… (level 0 draft)
+ *   POST   /api/v1/sales/invoices/:id/post              — knjiženje (rezerviši broj + nalog GK)
+ *
+ *   PATCH  /api/v1/sales/documents/:id                  — izmena zaglavlja nacrta
+ *   POST   /api/v1/sales/documents/:id/items            — dodaj stavku
+ *   PATCH  /api/v1/sales/documents/:id/items/:lineId    — izmeni stavku
+ *   DELETE /api/v1/sales/documents/:id/items/:lineId    — obriši stavku
  *
  * Permisije: read=SALES_READ, mutacije=SALES_WRITE, knjiženje=SALES_POST, odobrenje=SALES_APPROVE.
  */
@@ -59,12 +72,90 @@ export class SalesController {
     private readonly invoicePdf: InvoicePdfService,
     private readonly invoiceMail: InvoiceMailService,
     private readonly advanceInvoice: AdvanceInvoiceService,
+    private readonly sales: SalesService,
   ) {}
+
+  // ── IZMENA DOKUMENTA (nacrt) ────────────────────────────────────────────────
+  // Dosad modul nije imao NIJEDNU rutu izmene: dokument je mogao da se napravi i
+  // proknjiži, ali ne i da se ispravi. Sve četiri rute rade SAMO nad nacrtom —
+  // proknjižen/zaključan dokument vraća 409 sa uputstvom (protivdokument/storno).
+  //
+  // Putanja je `documents/*` (dokument, ne samo račun — isti tok važi za ponudu,
+  // predračun i revers), uz alias `invoices/*` radi doslednosti sa postojećim
+  // rutama modula. Ista metoda, dva imena — bez dupliranja logike.
+
+  /**
+   * Izmena zaglavlja nacrta: datum, komitent, valuta, kursevi, rok plaćanja,
+   * datum prometa, napomena, broj narudžbenice, poziv na broj, profil stavki
+   * (`lineProfile`) i koeficijent cene (`priceCoefficient`).
+   *
+   * Koeficijent je PONOVLJIV (§8/O1): stavke pamte `baseUnitPrice`, a
+   * `unitPrice = baseUnitPrice × koeficijent` se izvodi, pa dva ista poziva daju
+   * isti dokument i povratak na 1 vraća polazne cene.
+   */
+  @Patch(["documents/:id", "invoices/:id"])
+  @RequirePermission(PERMISSIONS.SALES_WRITE)
+  async updateDocument(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateInvoiceHeaderDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.sales.updateHeader(id, dto, req.user);
+    return { data };
+  }
+
+  /** Dodaj stavku na nacrt (cena kroz PricingService; zbirovi se preračunavaju). */
+  @Post(["documents/:id/items", "invoices/:id/items"])
+  @RequirePermission(PERMISSIONS.SALES_WRITE)
+  async addDocumentItem(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: CreateInvoiceItemDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.sales.addItem(id, dto, req.user);
+    return { data };
+  }
+
+  /**
+   * Izmena stavke nacrta. Telo koje dira cenu (artikal/cena/rabat/kasa/PDV šifra)
+   * ide ponovo kroz cenovnik; telo koje menja samo količinu/opis zadržava
+   * dogovorenu cenu stavke.
+   */
+  @Patch(["documents/:id/items/:lineId", "invoices/:id/items/:lineId"])
+  @RequirePermission(PERMISSIONS.SALES_WRITE)
+  async updateDocumentItem(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("lineId", ParseIntPipe) lineId: number,
+    @Body() dto: UpdateInvoiceItemDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.sales.updateItem(id, lineId, dto, req.user);
+    return { data };
+  }
+
+  /** Obriši stavku nacrta (preostale se prenumerišu, zbirovi se preračunavaju). */
+  @Delete(["documents/:id/items/:lineId", "invoices/:id/items/:lineId"])
+  @RequirePermission(PERMISSIONS.SALES_WRITE)
+  async removeDocumentItem(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("lineId", ParseIntPipe) lineId: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    const data = await this.sales.removeItem(id, lineId, req.user);
+    return { data };
+  }
 
   /**
    * Štampa fakture kao PDF (BigBit paritet — dosad je print servis postojao bez rute).
-   * variant: standardni/otpremnica/izvozni. Vraća application/pdf inline (browser preview
-   * + download). Permisija SALES_READ (pregled/štampa).
+   * `variant` bira šablon:
+   *   (izostavljen) — račun; za AVR se sam bira avansni obrazac
+   *   `delivery`    — otpremnica (bez cena)
+   *   `export`      — ino faktura (engleski)
+   *   `advance`     — avansni račun (osnov avansa + stanje naplate)
+   *   `credit-note` — knjižno odobrenje (vrednosni dokument, umanjenje)
+   *   `debit-note`  — knjižno zaduženje (vrednosni dokument, uvećanje)
+   * Vraća application/pdf inline (browser preview + download). Ime korisnika ide u
+   * nogu kao trag štampe. Permisija SALES_READ (pregled/štampa).
    */
   @Get("invoices/:id/pdf")
   @Header("Content-Type", "application/pdf")
@@ -72,13 +163,25 @@ export class SalesController {
     @Param("id", ParseIntPipe) id: number,
     @Query("variant") variant: string | undefined,
     @Res() res: Response,
+    @Req() req: { user: AuthUser },
   ): Promise<void> {
+    const printedBy = req.user?.email;
     const { buffer, fileName } =
       variant === "delivery"
-        ? await this.invoicePdf.buildDeliveryNotePdf(id)
+        ? await this.invoicePdf.buildDeliveryNotePdf(id, printedBy)
         : variant === "export"
-          ? await this.invoicePdf.buildExportInvoicePdf(id)
-          : await this.invoicePdf.buildInvoicePdf(id);
+          ? await this.invoicePdf.buildExportInvoicePdf(id, printedBy)
+          : variant === "advance"
+            ? await this.invoicePdf.buildAdvanceInvoicePdf(id, printedBy)
+            : variant === "credit-note"
+              ? await this.invoicePdf.buildCreditNotePdf(id, printedBy)
+              : variant === "debit-note"
+                ? await this.invoicePdf.buildDebitNotePdf(id, printedBy)
+                : await this.invoicePdf.buildInvoicePdf(
+                    id,
+                    undefined,
+                    printedBy,
+                  );
     res.setHeader(
       "Content-Disposition",
       `inline; filename="${encodeURIComponent(fileName)}"`,
@@ -205,16 +308,29 @@ export class SalesController {
     return { data };
   }
 
-  /** Odbij naplaćen avans na konačnom (proknjiženom) računu. */
+  /**
+   * Odbij naplaćen avans na konačnom (proknjiženom) računu.
+   *
+   * `amount` (BRUTO iznos OVE primene) je opcion — bez njega servis odbija ceo
+   * preostali naplaćen avans. Bez njega je i DELIMIČNO odbijanje bilo nemoguće
+   * kroz rutu: telo je bilo tipizirano samo sa `advanceInvoiceId`, pa je iznos
+   * koji ekran pošalje tiho otpadao ovde i N:M podela avansa na više računa
+   * (37.902 → 20.802 + 17.100) nije mogla da prođe ni jednim putem osim direktnog
+   * poziva servisa.
+   */
   @Post("invoices/:id/apply-advance")
   @RequirePermission(PERMISSIONS.SALES_POST)
   async applyAdvance(
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { advanceInvoiceId: number },
+    @Body() body: { advanceInvoiceId: number; amount?: string | number },
     @Req() req: { user: AuthUser },
   ) {
     const data = await this.advanceInvoice.applyAdvance(
-      { invoiceId: id, advanceInvoiceId: body?.advanceInvoiceId },
+      {
+        invoiceId: id,
+        advanceInvoiceId: body?.advanceInvoiceId,
+        amount: body?.amount,
+      },
       req.user,
     );
     return { data };

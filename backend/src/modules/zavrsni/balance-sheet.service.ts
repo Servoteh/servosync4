@@ -33,8 +33,12 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
-import { GkEvalService } from "./gkeval.service";
-import { ControlRulesService, ControlResult } from "./control-rules.service";
+import { GkEvalService, fiscalYearPeriod } from "./gkeval.service";
+import {
+  ControlRulesService,
+  ControlResult,
+  isBlockingFailure,
+} from "./control-rules.service";
 
 const D = Prisma.Decimal;
 
@@ -62,6 +66,13 @@ export interface StatementResult {
   status: string;
   seeded: boolean; // false = pao na sirovi bruto bilans (nema AOP definicija)
   note?: string;
+  /**
+   * Pozicije čija je SIROVA vrednost bila negativna pa je odsečena na nulu (clamp).
+   * Obrazac ne poznaje negativan iznos, ali negativan rezultat je istovremeno i signal
+   * da je u formuli možda okrenut smer (duguje/potražuje) — zato se odsečene vrednosti
+   * PRIJAVLJUJU, a ne gutaju. Prazno = nijedna formula nije dala negativan rezultat.
+   */
+  clamped?: Array<{ aop: string; rawAmount: string }>;
   lines: StatementLineResult[];
 }
 
@@ -72,7 +83,11 @@ export interface FinalizeResult {
   periodYear: number;
   status: string;
   finalizedAt: string; // ISO
-  forced: boolean; // true = finalizovano uprkos padu kontrolnih pravila (force=true)
+  forced: boolean; // true = finalizovano uprkos padu BLOKIRAJUĆIH pravila (force=true)
+  /** Šifre blokirajućih pravila koja su pala i bila pregažena (prazno ako forced=false). */
+  forcedRules: string[];
+  /** Šifre pravila koja NE blokiraju a nisu prošla (neuravnotežen izvor, odsecanje). */
+  warnings: string[];
   controls: ControlResult[];
 }
 
@@ -86,7 +101,11 @@ export class BalanceSheetService {
 
   /**
    * Sirovi bruto bilans za godinu — svako konto Σdebit/Σcredit/saldo.
-   * Uvek radi, bez ikakvog seed-a (doc 37 §C). asOf = 31.12. te godine.
+   * Uvek radi, bez ikakvog seed-a (doc 37 §C).
+   *
+   * PROZOR = FISKALNA GODINA (`je.year`), isti kao u AOP obrascu. Polje `asOf` u
+   * odgovoru je SAMO informativni ispis kraja godine (31.12.) za zaglavlje izveštaja
+   * — NIJE granica agregacije i ne šalje se motoru.
    */
   async getGrossTrialBalance(year: number): Promise<{
     year: number;
@@ -100,8 +119,8 @@ export class BalanceSheetService {
     }>;
     totals: { totalDebit: string; totalCredit: string; balance: string };
   }> {
-    const asOf = endOfYear(year);
-    const rows = await this.gkEval.grossTrialBalance(asOf);
+    const displayAsOf = endOfYear(year);
+    const rows = await this.gkEval.grossTrialBalance(fiscalYearPeriod(year));
 
     let sumDebit = new D(0);
     let sumCredit = new D(0);
@@ -112,7 +131,7 @@ export class BalanceSheetService {
 
     return {
       year,
-      asOf: asOf.toISOString(),
+      asOf: displayAsOf.toISOString(),
       rows: rows.map((r) => ({
         accountCode: r.accountCode,
         accountName: r.accountName,
@@ -187,7 +206,14 @@ export class BalanceSheetService {
     year: number,
     userId?: number,
   ): Promise<StatementResult> {
-    const asOf = endOfYear(year);
+    // PROZOR AGREGACIJE = CELA FISKALNA GODINA `year`, bez međuperiodnog preseka.
+    // Ranije je ovde stajalo `asOf = endOfYear(year)` kao JEDINA vremenska granica —
+    // to je bio kumulativ od početka knjige (BigBit sa OdDatumaNaloga = 1/1/1901) i
+    // koren dva kvara: bilans uspeha je sabirao sve ranije godine, a bilans stanja je
+    // brojao početno stanje dvaput (PS nalog + promet godine koju taj PS restatira).
+    // `asOf` se NAMERNO ne prosleđuje: uz 31.12.Y bi nalog godine Y datiran u januaru
+    // Y+1 ispao iz sopstvene godine. Vidi zaglavlje `gkeval.service.ts`.
+    const period = fiscalYearPeriod(year);
 
     const definitions = await this.prisma.balanceFormulaDefinition.findMany({
       where: { statementType },
@@ -202,7 +228,10 @@ export class BalanceSheetService {
     // pun re-eval formule sa bruto stanjem te godine. Isti map služi i AB/AC<aop>
     // referencama u formuli (resolveAop kolona 2→year-1, 3→year-2). Pun AB/AC eval
     // (ponovni GKEval prolaz nad prošlogodišnjim saldima) ide u Talas 2.
-    const prevYearAmounts = await this.loadPriorYearAmounts(statementType, year - 1);
+    const prevYearAmounts = await this.loadPriorYearAmounts(
+      statementType,
+      year - 1,
+    );
     const prevPrevYearAmounts = await this.loadPriorYearAmounts(
       statementType,
       year - 2,
@@ -220,6 +249,12 @@ export class BalanceSheetService {
     }> = [];
 
     let note: string | undefined;
+    /**
+     * AOP → SIROVA negativna vrednost pre odsecanja na nulu. Bez ovog traga se greška
+     * u smeru (D umesto P) ne razlikuje od pozicije koja je legitimno nula, a takvih
+     * je u predatom obrascu za 2023. preko 60.
+     */
+    const clampedAops = new Map<string, Prisma.Decimal>();
 
     if (seeded) {
       // Kešuj izračunate AOP vrednosti radi A/AB/AC<aop> referenci (isti obrazac).
@@ -264,7 +299,23 @@ export class BalanceSheetService {
         for (const def of formulaDefs) {
           // evalFormula rešava D/P/PSD/PSP iz baze (isto u svakom prolazu) i
           // A/AB/AC<aop> iz `aopValues` (menja se između prolaza dok ne konvergira).
-          const next = await this.gkEval.evalFormula(def.formula, asOf, resolveAop);
+          const raw = await this.gkEval.evalFormula(
+            def.formula,
+            period,
+            resolveAop,
+          );
+          // CLAMP ≥ 0 — obrazac ne poznaje negativan iznos: znak nose PAROVI pozicija
+          // („dobitak" / „gubitak"), a sam iznos je uvek nenegativan. BigBit klampuje
+          // SVAKI upis (svih 8 ZR_Upisi* upita ima IIf(izraz > 0, izraz, 0)).
+          // MORA biti UNUTAR iteracije: A<aop> reference čitaju VEĆ klampovanu vrednost,
+          // pa clamp tek na kraju daje drugačiji — pogrešan — rezultat (neto dobitak
+          // izlazi 70.794 umesto 34.636). Vidi ZR_ISPRAVKE_MOTORA.md §1.
+          const next = raw.isNegative() ? new D(0) : raw;
+          if (raw.isNegative()) {
+            clampedAops.set(def.aop, raw);
+          } else {
+            clampedAops.delete(def.aop);
+          }
           const prev = aopValues.get(def.aop);
           if (prev === undefined || !prev.equals(next)) {
             changed = true;
@@ -297,7 +348,7 @@ export class BalanceSheetService {
       note =
         "Nema seed-ovanih AOP formula (BalanceFormulaDefinition prazna za ovaj tip) — " +
         "vraćen sirovi bruto bilans po kontu. Pun AOP-bilans traži seed formula (doc 37 §F).";
-      const rows = await this.gkEval.grossTrialBalance(asOf);
+      const rows = await this.gkEval.grossTrialBalance(period);
       let ordinal = 0;
       for (const r of rows) {
         linesToWrite.push({
@@ -372,6 +423,10 @@ export class BalanceSheetService {
       status: statement.status,
       seeded,
       note,
+      clamped: [...clampedAops.entries()].map(([aop, raw]) => ({
+        aop,
+        rawAmount: raw.toFixed(4),
+      })),
       lines: statement.lines.map((l) => ({
         aop: l.aop,
         label: l.label,
@@ -414,9 +469,20 @@ export class BalanceSheetService {
 
   /**
    * FINALIZE obračuna (D9): DRAFT → FINALIZED + finalizedAt. Pre prelaska proverava
-   * KONTROLNA PRAVILA (ControlRulesService) — ako ijedno pada, finalizacija se ODBIJA
-   * (StatementControlsFailedException) OSIM ako je `force=true` (dokumentovani escape
-   * hatch, npr. dok su OS pozicije ručne pa aktiva≠pasiva privremeno).
+   * KONTROLNA PRAVILA (ControlRulesService).
+   *
+   * ŠTA BLOKIRA, A ŠTA NE (izmena 28.07.2026, nalazi V1/S3 nezavisnog pregleda)
+   * ─────────────────────────────────────────────────────────────────────────
+   * Finalizaciju odbija samo pad pravila označenog kao `blocking` — dakle onog koje
+   * tvrdi da je OBRAZAC pogrešan. Pravila koja opisuju kvar u ULAZNIM PODACIMA
+   * (neuravnoteženi nalozi iz BigBita) ili prijavljuju odsecanje na nulu NE blokiraju:
+   * knjigovođa ih ne može popraviti gaženjem kontrole, a ranije su ga baš ona terala
+   * na `force=true` — koji je onda gasio i sva ostala pravila.
+   *
+   * TRAG FORSIRANJA: ako se ipak forsira, upisuje se red u `statement_control_overrides`
+   * (ko, kada, koja pravila su pala, pun snimak kontrola) — U ISTOJ TRANSAKCIJI sa
+   * prelaskom u FINALIZED, da ne može postojati forsiran obračun bez traga. Trag se
+   * vidi na obračunu kao pseudo-pravilo `FORSIRANA_FINALIZACIJA`.
    *
    * ATOMIČNOST: prelaz radi `updateMany` CAS guard-om (WHERE status<>FINALIZED) — ako
    * je između čitanja i upisa neko drugi već finalizovao (count=0), baca Conflict
@@ -425,7 +491,7 @@ export class BalanceSheetService {
    */
   async finalizeStatement(
     id: number,
-    opts: { force?: boolean; userId?: number } = {},
+    opts: { force?: boolean; userId?: number; reason?: string } = {},
   ): Promise<FinalizeResult> {
     const statement = await this.prisma.financialStatement.findUnique({
       where: { id },
@@ -437,23 +503,65 @@ export class BalanceSheetService {
       throw new StatementAlreadyFinalizedException(id);
     }
 
-    // Kontrolna pravila — blokiraju finalizaciju osim uz force=true.
+    // Kontrolna pravila — finalizaciju blokiraju SAMO ona označena kao `blocking`.
     const controls = await this.controlRules.evaluateControls(id);
-    const failed = controls.filter((c) => !c.passed);
-    const forced = failed.length > 0 && opts.force === true;
-    if (failed.length > 0 && !opts.force) {
-      throw new StatementControlsFailedException(failed.map((f) => f.name));
+    // `isBlockingFailure` (jedan izvor istine, deljen sa ekranom kroz `status`):
+    // blokiraju PADA i blokirajuće NEPRIMENLJIVO. UPOZORENJE (zatečeni neuravnoteženi
+    // nalozi, propisano odsecanje) NIKAD ne blokira — inače bi knjigovođa svaki put
+    // morao na `force` zbog tuđih podataka.
+    const blockingFailures = controls.filter(isBlockingFailure);
+    const warnings = controls.filter(
+      (c) => !isBlockingFailure(c) && c.status !== "PROLAZI",
+    );
+    const forced = blockingFailures.length > 0 && opts.force === true;
+    if (blockingFailures.length > 0 && !opts.force) {
+      throw new StatementControlsFailedException(
+        blockingFailures.map((f) => f.name),
+      );
     }
 
-    // CAS: samo iz ne-FINALIZED stanja (sprečava dvostruki finalize u trci).
-    const finalizedAt = new Date();
-    const res = await this.prisma.financialStatement.updateMany({
-      where: { id, status: { not: "FINALIZED" } },
-      data: { status: "FINALIZED", finalizedAt },
-    });
-    if (res.count === 0) {
-      throw new StatementAlreadyFinalizedException(id);
+    // E-mail forsiraoca se snima denormalizovano: trag mora ostati čitljiv i kad
+    // korisnik nestane iz `users` (meki ref, bez FK — konvencija repoa).
+    let forcedByEmail: string | null = null;
+    if (forced && opts.userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: opts.userId },
+        select: { email: true },
+      });
+      forcedByEmail = user?.email ?? null;
     }
+
+    const finalizedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      // CAS: samo iz ne-FINALIZED stanja (sprečava dvostruki finalize u trci).
+      const res = await tx.financialStatement.updateMany({
+        where: { id, status: { not: "FINALIZED" } },
+        data: { status: "FINALIZED", finalizedAt },
+      });
+      if (res.count === 0) {
+        throw new StatementAlreadyFinalizedException(id);
+      }
+      if (forced) {
+        await tx.statementControlOverride.create({
+          data: {
+            statementId: id,
+            forcedByUserId: opts.userId ?? null,
+            forcedByEmail,
+            forcedAt: finalizedAt,
+            failedRules: blockingFailures.map((c) => ({
+              code: c.code,
+              name: c.name,
+              left: c.left,
+              right: c.right,
+              diff: c.diff,
+              message: c.message,
+            })),
+            controlSnapshot: controls as unknown as Prisma.InputJsonValue,
+            reason: opts.reason ?? null,
+          },
+        });
+      }
+    });
 
     return {
       id: statement.id,
@@ -462,6 +570,8 @@ export class BalanceSheetService {
       status: "FINALIZED",
       finalizedAt: finalizedAt.toISOString(),
       forced,
+      forcedRules: blockingFailures.map((c) => c.code),
+      warnings: warnings.map((c) => c.code),
       controls,
     };
   }
@@ -496,19 +606,25 @@ export class StatementAlreadyFinalizedException extends ConflictException {
   }
 }
 
-/** Kontrolna pravila padaju — finalizacija odbijena (osim uz force=true). */
+/** Blokirajuća kontrolna pravila padaju — finalizacija odbijena (osim uz force=true). */
 export class StatementControlsFailedException extends ConflictException {
   readonly code = "ZR_STATEMENT_CONTROLS_FAILED";
   constructor(failedRuleNames: string[]) {
     super(
       `Finalizacija odbijena — kontrolna pravila ne prolaze: ${failedRuleNames.join("; ")}. ` +
-        `Za finalizaciju uprkos tome pošalji force=true.`,
+        `Ta pravila tvrde da je OBRAZAC pogrešan (upozorenja o ulaznim podacima ne ` +
+        `blokiraju finalizaciju i ne traže force). Finalizacija uprkos tome je moguća ` +
+        `sa force=true, ali se TRAJNO BELEŽI uz ime korisnika, vreme i spisak palih ` +
+        `pravila, i prikazuje se na obračunu.`,
     );
     this.name = "StatementControlsFailedException";
   }
 }
 
-/** 31.12. HH:MM te godine (kraj poslovne godine, gornja granica postingDate). */
+/**
+ * 31.12. te godine — SAMO informativni ispis u zaglavlju bruto bilansa („stanje na
+ * dan"). NIJE granica agregacije; prozor motora je `je.year` (vidi `fiscalYearPeriod`).
+ */
 function endOfYear(year: number): Date {
   return new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
 }

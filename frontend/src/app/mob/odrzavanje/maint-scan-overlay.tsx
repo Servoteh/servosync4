@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { useEscapeLayer } from '@/components/ui-kit/escape-layer';
 import {
   applyAndroidPostStartTuning,
   attachVideoDecoder,
@@ -310,16 +311,11 @@ export function MaintScanOverlay({
     };
   }, [resolve, say]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        cbRef.current.onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, []);
+  // Skener je najgornji modalni sloj dok je otvoren — Esc zatvara NJEGA i ne
+  // curi na sloj ispod. Sopstveni capture-slušalac na `window` je zatvarao oba,
+  // jer `stopPropagation` ne zaustavlja slušaoce na istom čvoru
+  // (v. `ui-kit/escape-layer.ts`).
+  useEscapeLayer(true, () => cbRef.current.onClose());
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black" role="dialog" aria-modal="true" aria-label={title}>

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog } from '@/components/ui-kit/dialog';
+import { useEscapeLayer } from '@/components/ui-kit/escape-layer';
 import { Button } from '@/components/ui-kit/button';
 import { ScanLine } from 'lucide-react';
 import { formatNumber } from '@/lib/format';
@@ -179,8 +180,15 @@ export function QuickReturnDialog({
     }
   }
 
-  // Potvrda (kad je match aktivan): Enter=Vrati, Esc=Otkaži. Capture faza da presretne
-  // Esc pre skenera/Dialog-a (inače Esc zatvori ceo tok umesto samo potvrde).
+  // Esc nad karticom potvrde otkazuje SAMO potvrdu, ne ceo tok skeniranja.
+  // Kartica se otvara posle dijaloga, pa je na vrhu steka slojeva i Esc je njen.
+  // (Ranije je i ovde stajao sopstveni capture-slušalac na `window`; pošto
+  // `stopPropagation` ne zaustavlja slušaoce na istom čvoru, okidali su se i
+  // dijalog i kartica, i ceo tok se zatvarao — v. `ui-kit/escape-layer.ts`.)
+  useEscapeLayer(!!match, () => setMatch(null));
+
+  // Enter = Vrati. Ostaje sopstveni slušalac: Enter nema slojevitost kao Esc,
+  // a stiže i sa skenera koji ga šalje kao završni znak.
   useEffect(() => {
     if (!match) return;
     const onKey = (e: KeyboardEvent) => {
@@ -188,9 +196,6 @@ export function QuickReturnDialog({
         e.preventDefault();
         e.stopPropagation();
         void confirmReturn();
-      } else if (e.key === 'Escape') {
-        e.stopPropagation();
-        setMatch(null);
       }
     };
     window.addEventListener('keydown', onKey, true);

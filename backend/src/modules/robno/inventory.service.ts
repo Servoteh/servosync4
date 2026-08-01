@@ -68,14 +68,40 @@ export class InventoryService {
     return { data: rows };
   }
 
-  /** Detalj popisa (zaglavlje + stavke). */
+  /**
+   * Detalj popisa (zaglavlje + stavke).
+   *
+   * Stavke nose i NAZIV/ŠIFRU/JM artikla (meki ref `items.id`, jedan upit po skupu id-jeva).
+   * Bez toga je glavni tab popisa prikazivao samo `#90001` — komisija je brojala robu koju
+   * ekran ne imenuje (nalaz §3.10). Tab „Razlike" je to već imao; sada su oba ista.
+   */
   async get(id: number) {
     const count = await this.prisma.inventoryCount.findUnique({
       where: { id },
       include: { items: { orderBy: { id: "asc" } } },
     });
     if (!count) throw new NotFoundException(`Popis ${id} ne postoji.`);
-    return { data: count };
+
+    const itemIds = [...new Set(count.items.map((i) => i.itemId))];
+    const meta = itemIds.length
+      ? await this.prisma.item.findMany({
+          where: { id: { in: itemIds } },
+          select: { id: true, name: true, catalogNumber: true, unit: true },
+        })
+      : [];
+    const byId = new Map(meta.map((m) => [m.id, m]));
+
+    return {
+      data: {
+        ...count,
+        items: count.items.map((it) => ({
+          ...it,
+          itemName: byId.get(it.itemId)?.name ?? null,
+          itemCode: byId.get(it.itemId)?.catalogNumber ?? null,
+          unit: byId.get(it.itemId)?.unit ?? null,
+        })),
+      },
+    };
   }
 
   /**
@@ -153,7 +179,7 @@ export class InventoryService {
    * Status: DRAFT → COUNTING odmah (stavke spremne za unos KolPop).
    */
   async createCount(dto: CreateInventoryCountDto, userId?: number) {
-    if (!Number.isInteger(dto?.warehouseId) || (dto.warehouseId as number) <= 0)
+    if (!Number.isInteger(dto?.warehouseId) || dto.warehouseId <= 0)
       throw new UnprocessableEntityException(
         "warehouseId je obavezan — pozitivan ceo broj.",
       );
@@ -261,7 +287,9 @@ export class InventoryService {
         throw new ConflictException(
           `Unos količine je moguć samo u statusu COUNTING (trenutno: ${count.status}).`,
         );
-      throw new NotFoundException(`Artikal ${itemId} nije u popisu ${countId}.`);
+      throw new NotFoundException(
+        `Artikal ${itemId} nije u popisu ${countId}.`,
+      );
     }
 
     return { data: { countId, itemId, countedQuantity: qty.toFixed(6) } };
@@ -304,7 +332,9 @@ export class InventoryService {
     });
     if (!count) throw new NotFoundException(`Popis ${countId} ne postoji.`);
     if (count.status === "POSTED")
-      throw new ConflictException(`Popis ${countId} je već zaključen (POSTED).`);
+      throw new ConflictException(
+        `Popis ${countId} je već zaključen (POSTED).`,
+      );
     if (count.status !== "COUNTING")
       throw new ConflictException(
         `Zaključivanje je moguće samo iz statusa COUNTING (trenutno: ${count.status}).`,

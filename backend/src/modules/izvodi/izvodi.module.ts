@@ -1,7 +1,9 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
+import { DocumentsModule } from "../documents/documents.module";
 import { IzvodiController } from "./izvodi.controller";
 import { BankStatementService } from "./bank-statement.service";
+import { BankStatementPrintService } from "./bank-statement-print.service";
 import { BankStatementParserService } from "./bank-statement-parser.service";
 import { ExchangeRateController } from "./exchange-rate.controller";
 import { ExchangeRateService } from "./exchange-rate.service";
@@ -16,9 +18,15 @@ import { ExchangeRateService } from "./exchange-rate.service";
  * uplate↔faktura (ReconciliationService iz modula saldakonti) je cross-modul hook (TODO u servisu).
  */
 @Module({
-  imports: [PrismaModule],
+  // DocumentsModule → PdfService (štampa izvoda; renderer je zajednički, v. bank-statement-print.service.ts).
+  imports: [PrismaModule, DocumentsModule],
   controllers: [IzvodiController, ExchangeRateController],
-  providers: [BankStatementService, BankStatementParserService, ExchangeRateService],
+  providers: [
+    BankStatementService,
+    BankStatementParserService,
+    BankStatementPrintService,
+    ExchangeRateService,
+  ],
   exports: [BankStatementService, ExchangeRateService], // ExchangeRateService: devizna konverzija (E6) + budući cross-modul (blagajna srednji kurs)
 })
 export class IzvodiModule {}

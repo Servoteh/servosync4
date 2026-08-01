@@ -1,10 +1,9 @@
 import {
+  ConflictException,
   Injectable,
   NotFoundException,
-  UnprocessableEntityException,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
-import { ProjectNumberingService } from "./project-numbering.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   type CreateCustomerRfqDto,
@@ -14,27 +13,21 @@ import {
 } from "./dto/customer-rfq.dto";
 
 /**
- * NACRT — CustomerRfq (zahtev kupca za ponudu) + „Napravi predmet iz zahteva".
- * App-owned tabela (`customer_rfqs`) visi na projects mekim ref-om (Traka B §A).
+ * CustomerRfq — zahtev kupca za ponudu. App-owned tabela (`customer_rfqs`) koja na
+ * predmet i komitenta visi MEKIM ref-om (bez DB FK).
  *
- * createProjectFromRfq (BigBit „Napravi predmet iz zahteva", :234):
- *   • samo ako projectId == null && description postoji (inače 422)
- *   • u JEDNOJ $transaction: projects.create (kopira customerId, generiše broj,
- *     workTypeId=1 TRGOVINA, prenese description) → write-back rfq.projectId
- *   • IDEMPOTENTNO: ako rfq već ima projectId, vraća postojeći predmet (bez duplog kreiranja)
+ * ODLUKA VLASNIKA 26.07.2026: predmeti se otvaraju samo u BigBit-u, pa je tok
+ * „Napravi predmet iz zahteva" (BigBit :234, `createProjectFromRfq`) OBRISAN zajedno
+ * sa `ProjectNumberingService`. Zamenjuje ga vezivanje POSTOJEĆEG predmeta:
+ * `PATCH /rfqs/:id` sa `{ projectId }` — predmet mora već da postoji (stigao uvozom iz
+ * BigBit-a), servis ga samo PROVERAVA čitanjem i nikad ne kreira.
  *
- * .nacrt = van build-a. Poslovne greške = NestJS ugrađeni exception-i (404/422).
+ * Poslovne greške = NestJS ugrađeni exception-i (404/409/422); poruke srpski.
  * `AuthUser` polje je `userId` (ne `id`).
  */
 @Injectable()
 export class CustomerRfqService {
-  /** Vrsta posla „TRGOVINA" — predmet iz zahteva kupca podrazumevano je trgovina (BigBit). */
-  private static readonly WORK_TYPE_TRGOVINA = 1;
-
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly numbering: ProjectNumberingService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   // ── CRUD ────────────────────────────────────────────────────────────────────
 
@@ -61,10 +54,13 @@ export class CustomerRfqService {
   async update(id: number, dto: UpdateCustomerRfqDto, actor: AuthUser) {
     validateUpdateCustomerRfq(dto);
     await this.getOrThrow(id);
+    if (dto.projectId !== undefined && dto.projectId !== null)
+      await this.assertProjectLinkable(dto.projectId, id);
 
     return this.prisma.customerRfq.update({
       where: { id },
       data: {
+        ...(dto.projectId !== undefined ? { projectId: dto.projectId } : {}),
         ...(dto.quoteDeadline !== undefined
           ? {
               quoteDeadline: dto.quoteDeadline
@@ -117,64 +113,36 @@ export class CustomerRfqService {
     return { data, meta: { total } };
   }
 
-  // ── NAPRAVI PREDMET IZ ZAHTEVA ──────────────────────────────────────────────
+  // ── helpers ─────────────────────────────────────────────────────────────────
 
   /**
-   * BigBit „Napravi predmet iz zahteva" (:234). Kreira predmet iz RFQ-a i vezuje ga
-   * (write-back rfq.projectId) u JEDNOJ transakciji. Idempotentno: ako je predmet već
-   * napravljen, vraća ga bez ponovnog kreiranja.
+   * Predmet na koji se zahtev vezuje mora VEĆ da postoji (uvezen iz BigBit-a) i ne sme
+   * biti zauzet drugim zahtevom (`uq_customer_rfqs_project` je 1:1). Ovde se predmet
+   * SAMO ČITA — kreiranje predmeta u 3.0 ne postoji (odluka 26.07.2026).
    */
-  async createProjectFromRfq(rfqId: number, actor: AuthUser) {
-    const rfq = await this.getOrThrow(rfqId);
-
-    // Idempotencija: već napravljen predmet → vrati postojeći.
-    if (rfq.projectId != null) {
-      const existing = await this.prisma.project.findUnique({
-        where: { id: rfq.projectId },
-      });
-      if (existing) return { project: existing, rfq, created: false };
-      // rfq pokazuje na nepostojeći predmet (očišćen ručno) → dozvoli ponovno kreiranje.
-    }
-
-    // Preduslovi (BigBit): mora imati opis; predmet se pravi samo iz nespojenog zahteva.
-    if (!rfq.description || rfq.description.trim().length === 0)
-      throw new UnprocessableEntityException(
-        "Zahtev nema opis — nije moguće napraviti predmet.",
+  private async assertProjectLinkable(
+    projectId: number,
+    rfqId: number,
+  ): Promise<void> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true },
+    });
+    if (!project)
+      throw new NotFoundException(
+        `Predmet ${projectId} ne postoji u ServoSync-u. Otvorite ga u BigBit-u i ` +
+          `sačekajte sledeći uvoz, pa ga onda vežite na zahtev.`,
       );
 
-    await this.assertCustomerExists(rfq.customerId);
-
-    const result = await this.prisma.$transaction(async (tx) => {
-      const projectNumber = await this.numbering.next(tx);
-      const project = await tx.project.create({
-        data: {
-          projectNumber,
-          customerId: rfq.customerId, // kopira komitenta iz zahteva
-          workTypeId: CustomerRfqService.WORK_TYPE_TRGOVINA, // 1 = TRGOVINA (BigBit)
-          salespersonId: rfq.salespersonId ?? actor.userId,
-          status: "UNKNOWN",
-          description: rfq.description,
-          // openedAt / createdAt: DB default (CURRENT_DATE / now())
-        },
-      });
-
-      // write-back: veži zahtev na novonapravljeni predmet + status QUOTED
-      const linkedRfq = await tx.customerRfq.update({
-        where: { id: rfq.id },
-        data: {
-          projectId: project.id,
-          status: "QUOTED",
-          updatedByUserId: actor.userId,
-        },
-      });
-
-      return { project, rfq: linkedRfq, created: true };
+    const taken = await this.prisma.customerRfq.findFirst({
+      where: { projectId, id: { not: rfqId } },
+      select: { id: true },
     });
-
-    return result;
+    if (taken)
+      throw new ConflictException(
+        `Predmet ${projectId} je već vezan za zahtev ${taken.id}.`,
+      );
   }
-
-  // ── helpers ─────────────────────────────────────────────────────────────────
 
   private async getOrThrow(id: number) {
     const rfq = await this.prisma.customerRfq.findUnique({ where: { id } });
@@ -182,12 +150,16 @@ export class CustomerRfqService {
     return rfq;
   }
 
+  /** Komitent se SAMO ČITA — u ServoSync-u se ne otvara (odluka 26.07.2026). */
   private async assertCustomerExists(customerId: number): Promise<void> {
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
       select: { id: true },
     });
     if (!customer)
-      throw new NotFoundException(`Komitent ${customerId} ne postoji.`);
+      throw new NotFoundException(
+        `Komitent ${customerId} ne postoji u ServoSync-u. Unesite ga u BigBit, pa javite ` +
+          `administratoru da pokrene uvoz (Sinhronizacije → Pokreni sync) — tek onda može na zahtev.`,
+      );
   }
 }

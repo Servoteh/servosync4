@@ -20,6 +20,9 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import { GlReadService } from "./gl-read.service";
 import { GlWriteService } from "./gl-write.service";
 import { JournalPrintService } from "./journal-print.service";
+import { JournalBookPrintService } from "./print/journal-book-print.service";
+import { AccountCardPrintService } from "./print/account-card-print.service";
+import { TrialBalancePrintService } from "./print/trial-balance-print.service";
 import { YearOpenService, type YearOpenDto } from "./year-open.service";
 import type { CreateJournalEntryDto } from "./dto/create-journal-entry.dto";
 
@@ -39,6 +42,9 @@ export class GlController {
     private readonly glRead: GlReadService,
     private readonly glWrite: GlWriteService,
     private readonly journalPrint: JournalPrintService,
+    private readonly journalBookPrint: JournalBookPrintService,
+    private readonly accountCardPrint: AccountCardPrintService,
+    private readonly trialBalancePrint: TrialBalancePrintService,
     private readonly yearOpen: YearOpenService,
   ) {}
 
@@ -190,6 +196,81 @@ export class GlController {
     res.send(buffer);
   }
 
+  /**
+   * ŠTAMPA DNEVNIKA KNJIŽENJA (dnevnik glavne knjige) — PDF inline. Filteri su
+   * isti kao na ekranu dnevnika (vrsta/godina) + period po datumu knjiženja.
+   * Nasleđuje klasnu GL_READ (read-only izlaz).
+   */
+  @Get("journal-book/pdf")
+  async journalBookPdf(
+    @Query("from") from: string | undefined,
+    @Query("to") to: string | undefined,
+    @Query("orderType") orderType: string | undefined,
+    @Query("year") year: string | undefined,
+    @Req() req: { user: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer, fileName } = await this.journalBookPrint.buildJournalBookPdf({
+      from: parseOptionalDate(from),
+      to: parseOptionalDate(to),
+      orderType: orderType?.trim() || undefined,
+      year: parseOptionalInt(year),
+      printedBy: req.user?.email ?? null,
+    });
+    sendPdf(res, buffer, fileName);
+  }
+
+  /**
+   * ŠTAMPA KARTICE KONTA — PDF inline; isti filteri kao `GET /gl/account-card`
+   * (konto obavezan, komitent/mesto troška/period opcioni). GL_READ.
+   */
+  @Get("account-card/pdf")
+  async accountCardPdf(
+    @Query("accountCode") accountCode: string,
+    @Query("analyticalCode") analyticalCode: string | undefined,
+    @Query("from") from: string | undefined,
+    @Query("to") to: string | undefined,
+    @Query("costCenter") costCenter: string | undefined,
+    @Req() req: { user: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    if (!accountCode || accountCode.trim() === "") {
+      throw new BadRequestException("Parametar accountCode je obavezan.");
+    }
+    const { buffer, fileName } = await this.accountCardPrint.buildAccountCardPdf({
+      accountCode,
+      analyticalCode: parseOptionalInt(analyticalCode),
+      costCenter: costCenter?.trim() || undefined,
+      from: parseOptionalDate(from),
+      to: parseOptionalDate(to),
+      printedBy: req.user?.email ?? null,
+    });
+    sendPdf(res, buffer, fileName);
+  }
+
+  /**
+   * ŠTAMPA BRUTO BILANSA (zaključni list) za godinu — PDF inline. Isti ledger
+   * obim kao `/zavrsni/bruto-bilans`; `class` sužava na jednu klasu konta. GL_READ.
+   */
+  @Get("trial-balance/pdf")
+  async trialBalancePdf(
+    @Query("year") year: string | undefined,
+    @Query("class") accountClass: string | undefined,
+    @Req() req: { user: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const parsedYear = parseOptionalInt(year) ?? new Date().getFullYear();
+    if (parsedYear < 2000 || parsedYear > 2100) {
+      throw new BadRequestException("Parametar year nije ispravna poslovna godina.");
+    }
+    const { buffer, fileName } = await this.trialBalancePrint.buildTrialBalancePdf({
+      year: parsedYear,
+      accountClass: accountClass?.trim() || undefined,
+      printedBy: req.user?.email ?? null,
+    });
+    sendPdf(res, buffer, fileName);
+  }
+
   @Get("account-card")
   accountCard(
     @Query("accountCode") accountCode: string,
@@ -207,4 +288,26 @@ export class GlController {
         costCenter && costCenter.trim() !== "" ? costCenter.trim() : undefined,
     });
   }
+}
+
+/** Inline isporuka PDF-a (isti obrazac na svim štampama). */
+function sendPdf(res: Response, buffer: Buffer, fileName: string): void {
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `inline; filename="${encodeURIComponent(fileName)}"`,
+  );
+  res.send(buffer);
+}
+
+function parseOptionalInt(v?: string): number | undefined {
+  if (v == null || v === "") return undefined;
+  const n = Number(v);
+  return Number.isInteger(n) ? n : undefined;
+}
+
+function parseOptionalDate(v?: string): Date | undefined {
+  if (v == null || v === "") return undefined;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? undefined : d;
 }

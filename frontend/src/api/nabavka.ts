@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 
 /**
  * NACRT — data sloj modula Nabavka (Traka B §B). TanStack Query hooks nad NestJS
@@ -391,28 +391,29 @@ export function useNabavkaRequests(filters: NabavkaRequestFilters = {}) {
 }
 
 /**
- * Detalj jednog zahteva (zaglavlje + stavke) — izveden iz radne liste. Backend
- * (nabavka.controller.ts) NEMA `GET /nabavka/requests/:id`; lista već vraća pune
- * zahteve sa stavkama (`include: { items }`), pa detalj čitamo iz iste liste
- * (velika strana, `take=500`) i biramo po `id`. `enabled` gasi upit dok id nije
- * poznat. Isti izbor kao `usePendingHandoversByDraft` (klijentski filter nad
- * širokom stranom kad nema zasebnog detalj-endpointa).
+ * Detalj jednog zahteva (zaglavlje + stavke) — `GET /nabavka/requests/:id`.
+ *
+ * Ranije se izvodio klijentski iz prvih 500 redova radne liste. To je radilo dok
+ * se detalj uopšte nije mogao otvoriti; čim je otvaranje po linku postalo redovan
+ * put, zahtev van prvih 500 se VIDEO u listi a nije se otvarao — uz poruku
+ * „možda je obrisan", koja nije tačna. `enabled` gasi upit dok id nije poznat,
+ * pa se nikad ne šalje zahtev na `/requests/null`.
  */
 export function useNabavkaRequest(id: number | null) {
   const query = useQuery({
-    queryKey: [...KEYS.requests, 'detail-source'],
-    queryFn: () =>
-      apiFetch<PaginatedTotal<PurchaseRequest>>(`${BASE}/requests?take=500`),
+    queryKey: [...KEYS.requests, 'detail', id],
+    queryFn: () => apiFetch<PurchaseRequest>(`${BASE}/requests/${id}`),
     enabled: id != null,
-    staleTime: 15_000,
   });
-  const request = id != null ? (query.data?.data.find((r) => r.id === id) ?? null) : null;
+  const err = query.error as (Error & { status?: number }) | null;
+  // 404 sa servera je „ne postoji", sve ostalo je greška veze/prava i NE sme se
+  // prikazati kao „dokument je obrisan".
+  const isMissing = err != null && err.status === 404;
   return {
-    request,
+    request: query.data ?? null,
     isLoading: query.isLoading,
-    error: query.error as Error | null,
-    /** true kad je lista učitana ali zahtev sa tim id-em ne postoji. */
-    notFound: id != null && !query.isLoading && !query.error && request === null,
+    error: isMissing ? null : err,
+    notFound: id != null && !query.isLoading && (isMissing || (!err && query.data == null)),
   };
 }
 
@@ -718,5 +719,63 @@ export function useAcceptQuote() {
         body: JSON.stringify({ items }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEYS.all }),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────── štampa (PDF)
+//
+// Sve štampe modula idu kroz JWT-zaštićene GET rute koje vraćaju `application/pdf`
+// inline, pa se povlače kroz `apiBlob` (Authorization header) i otvaraju
+// `openPdf`-om u novom tabu. Permisija je NABAVKA_READ (klasna na kontroleru) —
+// ko vidi dokument, sme i da ga odštampa.
+
+/** Otvori PDF Blob u novom tabu (pregled u browseru + preuzimanje). */
+export { openPdf } from '@/lib/open-pdf';
+
+/**
+ * Štampa upita za ponudu — GET /nabavka/rfqs/:id/pdf. Opcioni `deadline` (ISO
+ * datum) ispisuje rok za dostavu ponude na dokumentu.
+ */
+export function useRfqPdf() {
+  return useMutation({
+    mutationFn: ({ id, deadline }: { id: number; deadline?: string }) =>
+      apiBlob(`${BASE}/rfqs/${id}/pdf${buildQuery({ deadline })}`),
+  });
+}
+
+/**
+ * Štampa narudžbenice dobavljaču — GET /nabavka/orders/:id/pdf.
+ * `variant: 'bezCena'` daje primerak za magacin (bez cena i iznosa).
+ */
+export function usePurchaseOrderPdf() {
+  return useMutation({
+    mutationFn: ({ id, variant }: { id: number; variant?: 'bezCena' }) =>
+      apiBlob(`${BASE}/orders/${id}/pdf${buildQuery({ variant })}`),
+  });
+}
+
+/** Štampa poređenja naručeno/primljeno/fakturisano — GET /nabavka/orders/:id/match/pdf. */
+export function useOrderMatchPdf() {
+  return useMutation({
+    mutationFn: (id: number) => apiBlob(`${BASE}/orders/${id}/match/pdf`),
+  });
+}
+
+/**
+ * Štampa pregleda odstupanja — GET /nabavka/match-summary/pdf. Prima ISTE filtere
+ * kao ekran; `skip` se namerno ne šalje (izveštaj pokriva period, ne stranu ekrana).
+ */
+export function useMatchSummaryPdf() {
+  return useMutation({
+    mutationFn: (filters: MatchSummaryFilters = {}) =>
+      apiBlob(
+        `${BASE}/match-summary/pdf${buildQuery({
+          from: filters.from,
+          to: filters.to,
+          supplierId: filters.supplierId,
+          onlyWithFindings: filters.onlyWithFindings ? 'true' : undefined,
+          take: filters.take,
+        })}`,
+      ),
   });
 }

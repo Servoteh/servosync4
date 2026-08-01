@@ -38,6 +38,12 @@ export interface KepuSourceDoc {
   warehouseId: number;
   targetWarehouseId: number | null;
   documentDate: Date;
+  /**
+   * Parni dokument prenosa (27.07.2026). Kad je postavljen, prenos je PAR dokumenata
+   * (PREIZ izlaz + PREUL ulaz) i SVAKI upisuje SAMO SVOJ KEPU red — inače bi obe strane
+   * upisale po dva reda i knjiga bi duplirala i zaduženje i razduženje.
+   */
+  transferPairDocId?: number | null;
 }
 
 /** Cenovna polja stavke (StockDocumentItem) korišćena za MP/VP vrednost. */
@@ -63,6 +69,8 @@ export interface KepuSourceLeveling {
 export interface KepuDocTypeFlags {
   kepuDefaultCharge: string | null;
   kepuDefaultDischarge: string | null;
+  /** Smer zalihe iz `DocumentType.isInbound` — jedini pouzdan smer za stranu para prenosa. */
+  isInbound?: boolean | null;
 }
 
 type KepuDirection = "charge" | "discharge" | "signed" | "transfer" | "skip";
@@ -82,11 +90,35 @@ function unitMpValue(it: KepuSourceItem): Prisma.Decimal {
   return it.actualWholesalePrice; // StvarnaVP (poslednji fallback)
 }
 
+/**
+ * VP (veleprodajna) jedinična vrednost — ogledalo `unitMpValue`, sa obrnutim lancem.
+ * Postoji jer se KEP knjiga po Pravilniku može voditi PO MALOPRODAJNOJ ILI PO
+ * VELEPRODAJNOJ ceni, a koji princip važi je odluka obveznika (Nenad, 27.07.2026:
+ * „obe opcije moraju da se podešavaju"). Da preklop ne bi menjao samo BUDUĆE redove,
+ * upisuju se OBA iznosa pri knjiženju — pa je izbor principa retroaktivan i ranije
+ * odštampana knjiga se može ponovo izdati po drugom principu bez ponovnog knjiženja.
+ */
+function unitVpValue(it: KepuSourceItem): Prisma.Decimal {
+  if (it.calculatedWholesalePrice.gt(ZERO)) return it.calculatedWholesalePrice; // KalkVP (UL)
+  if (it.actualWholesalePrice.gt(ZERO)) return it.actualWholesalePrice; // StvarnaVP (IZ/prodaja)
+  if (it.calculatedRetailPrice.gt(ZERO)) return it.calculatedRetailPrice; // KalkMP fallback
+  return it.actualRetailPrice; // StvarnaMP (poslednji fallback)
+}
+
 /** Σ |Kol| × jedinična MP vrednost (količina se čuva pozitivno; abs za svaki slučaj). */
 function sumMpValue(items: KepuSourceItem[]): Prisma.Decimal {
   let total = ZERO;
   for (const it of items) {
     total = total.add(it.quantity.abs().mul(unitMpValue(it)));
+  }
+  return total.toDecimalPlaces(4, D.ROUND_HALF_UP);
+}
+
+/** Σ |Kol| × jedinična VP vrednost — isti obračun, druga cena. */
+function sumVpValue(items: KepuSourceItem[]): Prisma.Decimal {
+  let total = ZERO;
+  for (const it of items) {
+    total = total.add(it.quantity.abs().mul(unitVpValue(it)));
   }
   return total.toDecimalPlaces(4, D.ROUND_HALF_UP);
 }
@@ -104,6 +136,23 @@ function nivSignedValue(levelingItems: KepuSourceLeveling[]): Prisma.Decimal {
       total = total.add(li.quantityRevalued.mul(retailDelta));
     } else {
       total = total.add(li.valueAdjustment);
+    }
+  }
+  return total.toDecimalPlaces(4, D.ROUND_HALF_UP);
+}
+
+/**
+ * NIV po VELEPRODAJNOJ ceni — ogledalo `nivSignedValue`. Ovde je `valueAdjustment`
+ * (VP razlika, doc 39 §F) PRVI izbor, a MP razlika fallback; kod MP verzije je obrnuto.
+ */
+function nivSignedValueVp(levelingItems: KepuSourceLeveling[]): Prisma.Decimal {
+  let total = ZERO;
+  for (const li of levelingItems) {
+    if (!li.valueAdjustment.isZero()) {
+      total = total.add(li.valueAdjustment);
+    } else {
+      const wholesaleDelta = li.newWholesalePrice.sub(li.oldWholesalePrice);
+      total = total.add(li.quantityRevalued.mul(wholesaleDelta));
     }
   }
   return total.toDecimalPlaces(4, D.ROUND_HALF_UP);
@@ -135,11 +184,18 @@ function resolveDirection(
   }
 }
 
+/**
+ * Jedan KEPU red. Nosi OBA vrednovanja — maloprodajno (`charge`/`discharge`) i
+ * veleprodajno (`chargeVp`/`dischargeVp`) — da bi izbor principa u Podešavanjima bio
+ * retroaktivan. Smer (zaduženje/razduženje) je isti za oba; razlikuje se samo cena.
+ */
 function entry(
   doc: KepuSourceDoc,
   warehouseId: number,
   charge: Prisma.Decimal,
   discharge: Prisma.Decimal,
+  chargeVp: Prisma.Decimal,
+  dischargeVp: Prisma.Decimal,
   descriptionSuffix?: string,
 ): Prisma.KepuBookEntryCreateManyInput {
   const base = `${doc.documentTypeCode} ${doc.documentNumber}`;
@@ -150,6 +206,8 @@ function entry(
     entryDate: doc.documentDate,
     charge,
     discharge,
+    chargeVp,
+    dischargeVp,
     description: descriptionSuffix ? `${base} ${descriptionSuffix}` : base,
   };
 }
@@ -169,25 +227,45 @@ export function computeKepuEntries(
 
   if (dir === "signed") {
     const net = nivSignedValue(levelingItems);
-    if (net.isZero()) return [];
+    const netVp = nivSignedValueVp(levelingItems);
+    // Smer određuje MP iznos (zatečeno ponašanje); ako je MP nula a VP nije, smer se
+    // uzima iz VP-a da red ne ispadne iz knjige kad se vodi po veleprodajnoj ceni.
+    const sign = net.isZero() ? netVp : net;
+    if (sign.isZero()) return [];
     const abs = net.abs();
+    const absVp = netVp.abs();
     return [
-      net.isPositive()
-        ? entry(doc, doc.warehouseId, abs, ZERO, "(nivelacija)")
-        : entry(doc, doc.warehouseId, ZERO, abs, "(nivelacija)"),
+      sign.isPositive()
+        ? entry(doc, doc.warehouseId, abs, ZERO, absVp, ZERO, "(nivelacija)")
+        : entry(doc, doc.warehouseId, ZERO, abs, ZERO, absVp, "(nivelacija)"),
     ];
   }
 
   const value = sumMpValue(items);
-  if (value.isZero()) return [];
+  const valueVp = sumVpValue(items);
+  // Red se preskače samo ako je NULA po OBA principa — inače bi knjiga vođena po
+  // veleprodajnoj ceni tiho izgubila stavku koja MP vrednost nema.
+  if (value.isZero() && valueVp.isZero()) return [];
 
   if (dir === "transfer") {
+    // NOVI TOK (27.07.2026): prenos je PAR dokumenata i svaki knjiži SAMO svoj magacin.
+    // Smer se čita iz `DocumentType.isInbound` — iste vrste (PREIZ/PREUL) koje voze i
+    // zalihu, pa knjiga i lager ne mogu da se raziđu.
+    if (doc.transferPairDocId != null) {
+      return [
+        flags?.isInbound === true
+          ? entry(doc, doc.warehouseId, value, ZERO, valueVp, ZERO, "(prenos ulaz)")
+          : entry(doc, doc.warehouseId, ZERO, value, ZERO, valueVp, "(prenos izlaz)"),
+      ];
+    }
+    // STARI, JEDNOSTRANI dokument (pre para) — knjiga je i tada znala za oba magacina,
+    // iako robna evidencija nije. Ostavljeno da se zatečeni redovi ne izgube pri rebuild-u.
     const entries = [
-      entry(doc, doc.warehouseId, ZERO, value, "(prenos izlaz)"),
+      entry(doc, doc.warehouseId, ZERO, value, ZERO, valueVp, "(prenos izlaz)"),
     ];
     if (doc.targetWarehouseId != null) {
       entries.push(
-        entry(doc, doc.targetWarehouseId, value, ZERO, "(prenos ulaz)"),
+        entry(doc, doc.targetWarehouseId, value, ZERO, valueVp, ZERO, "(prenos ulaz)"),
       );
     }
     return entries;
@@ -195,8 +273,8 @@ export function computeKepuEntries(
 
   return [
     dir === "charge"
-      ? entry(doc, doc.warehouseId, value, ZERO)
-      : entry(doc, doc.warehouseId, ZERO, value),
+      ? entry(doc, doc.warehouseId, value, ZERO, valueVp, ZERO)
+      : entry(doc, doc.warehouseId, ZERO, value, ZERO, valueVp),
   ];
 }
 

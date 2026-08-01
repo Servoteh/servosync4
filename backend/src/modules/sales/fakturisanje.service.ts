@@ -22,7 +22,11 @@ import {
 import {
   type ListInvoicesQuery,
 } from "./dto/list-invoices.dto";
-import { computePayableAmount } from "./advance-invoice.service";
+import {
+  APPLICATION_ACTIVE,
+  APPLICATION_REVERSED,
+  computePayableAmount,
+} from "./advance-invoice.service";
 
 /**
  * FakturisanjeService — izlazni računi (PLAN_FAZA_5 §A).
@@ -145,6 +149,10 @@ export class FakturisanjeService {
         description: row.input.description ?? null,
         quantity: p.quantity,
         unitPrice: p.unitPrice,
+        // Osnovica za koeficijent (§8/O1). Dokument se pravi sa koeficijentom 1,
+        // pa je bazna cena jednaka cenovnoj. Bez ovog upisa kolona ostaje na
+        // `DEFAULT 0`, a prvi dodir stavke bi cenu izveo iz nule.
+        baseUnitPrice: p.unitPrice,
         discountPercent: p.discountPercent,
         cashDiscountPercent: p.cashDiscountPercent,
         vatRateCode: isExport ? "0" : p.vatRateCode,
@@ -225,10 +233,16 @@ export class FakturisanjeService {
 
   /**
    * Detalj računa. Batch C §C1a: uz dokument se vraća i IZRAČUNATO
-   * `payableAmount = grossTotal − advanceAppliedAmount` (avans umanjuje samo
+   * `payableAmount = grossTotal − Σ AKTIVNIH primena avansa` (avans umanjuje samo
    * iznos za plaćanje — `grossTotal` se NE menja), plus broj avansnog računa
    * (`advanceInvoiceNumber`) kad je avans odbijen, da FE/štampa ne moraju
    * dodatni upit.
+   *
+   * Od migracije 20260726120000 veza avans↔račun je N:M
+   * (`invoice_advance_applications`), pa se vraća i pun spisak primena
+   * (`advanceApplications`) — jedan račun sme zatvarati više avansa. Kolona
+   * `advance_applied_amount` je denormalizacija istog zbira i služi kao rezerva
+   * za dokumente knjižene pre migracije.
    */
   async getInvoice(id: number) {
     const invoice = await this.prisma.invoice.findUnique({
@@ -236,6 +250,25 @@ export class FakturisanjeService {
       include: { items: { orderBy: { lineNo: "asc" } } },
     });
     if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
+
+    const applications = await this.prisma.invoiceAdvanceApplication.findMany({
+      where: { invoiceId: id, status: APPLICATION_ACTIVE },
+      orderBy: { id: "asc" },
+      select: {
+        id: true,
+        advanceInvoiceId: true,
+        appliedAmount: true,
+        appliedNet: true,
+        appliedVat: true,
+        closingEntryId: true,
+        createdAt: true,
+        advance: { select: { documentNumber: true, advancePaidAt: true } },
+      },
+    });
+
+    const appliedTotal = applications.length
+      ? applications.reduce((acc, a) => acc.add(a.appliedAmount), new D(0))
+      : invoice.advanceAppliedAmount;
 
     const advance =
       invoice.advanceInvoiceId != null
@@ -247,11 +280,27 @@ export class FakturisanjeService {
 
     return {
       ...invoice,
-      payableAmount: computePayableAmount(invoice),
+      payableAmount: computePayableAmount({
+        grossTotal: invoice.grossTotal,
+        advanceAppliedAmount: appliedTotal,
+      }),
+      advanceAppliedAmount: appliedTotal,
       advanceInvoiceNumber: advance?.documentNumber ?? null,
       // Datum naplate ODBIJENOG avansa (polje `advancePaidAt` na SAMOM dokumentu
       // ostaje netaknuto — ono važi samo za AVR, ne za konačni račun).
       advanceInvoicePaidAt: advance?.advancePaidAt ?? null,
+      /** Sve aktivne primene avansa na ovom računu (N:M, redom nastanka). */
+      advanceApplications: applications.map((a) => ({
+        id: a.id,
+        advanceInvoiceId: a.advanceInvoiceId,
+        advanceDocumentNumber: a.advance.documentNumber,
+        advancePaidAt: a.advance.advancePaidAt,
+        appliedAmount: a.appliedAmount,
+        appliedNet: a.appliedNet,
+        appliedVat: a.appliedVat,
+        closingEntryId: a.closingEntryId,
+        appliedAt: a.createdAt,
+      })),
     };
   }
 
@@ -424,14 +473,18 @@ export class FakturisanjeService {
     // PDV obavezu drugi put, a konačni račun bi i dalje prikazivao umanjenje za
     // storniran avans (review Batch C, nalaz 2). Prvo se stornira konačni račun.
     if (invoice.documentType === "AVR") {
-      const appliedOn = await this.prisma.invoice.findFirst({
-        where: { advanceInvoiceId: id, status: { not: "CANCELLED" } },
-        select: { documentNumber: true },
+      // N:M: avans može biti primenjen na VIŠE računa — svaki od njih blokira storno.
+      const appliedOn = await this.prisma.invoiceAdvanceApplication.findMany({
+        where: { advanceInvoiceId: id, status: APPLICATION_ACTIVE },
+        select: { invoice: { select: { documentNumber: true, status: true } } },
       });
-      if (appliedOn) {
+      const blocking = appliedOn
+        .filter((a) => a.invoice.status !== "CANCELLED")
+        .map((a) => a.invoice.documentNumber);
+      if (blocking.length) {
         throw new ConflictException(
-          `Avansni račun ${invoice.documentNumber} je odbijen na računu ` +
-            `${appliedOn.documentNumber} — prvo storniraj taj račun, pa onda avans.`,
+          `Avansni račun ${invoice.documentNumber} je odbijen na računu/ima primene na: ` +
+            `${blocking.join(", ")} — prvo storniraj te račune, pa onda avans.`,
         );
       }
     }
@@ -495,36 +548,71 @@ export class FakturisanjeService {
       }
     }
 
-    // 2b) NALOG ZATVARANJA AVANSA (Batch C). `applyAdvance` knjiži zaseban nalog
-    //     (4300 DUG / PDV DUG / kupac POT) koji NIJE `invoice.journalEntryId`. Bez
-    //     njegovog storna, poništenje računa ostavlja obavezu po primljenom avansu
-    //     i PDV po avansu zatvorene — iako je avans naplaćen i novac je u kasi.
-    //     Posle storna se veza na avans briše, pa se avans može ponovo iskoristiti.
+    // 2b) NALOZI ZATVARANJA AVANSA (Batch C; N:M od migracije 20260726120000).
+    //     `applyAdvance` po SVAKOJ primeni knjiži zaseban nalog (4300 DUG / PDV DUG /
+    //     kupac POT) koji NIJE `invoice.journalEntryId`. Bez njihovog storna
+    //     poništenje računa ostavlja obavezu po primljenom avansu i PDV po avansu
+    //     zatvorene — iako je avans naplaćen i novac je u kasi. Storno reverzira
+    //     naloge SVOJIH primena, označava ih REVERSED (time OSLOBAĐA te iznose —
+    //     avans se odmah može ponovo iskoristiti) i čisti kompatibilne kolone.
+    const advanceStornoEntryIds: number[] = [];
     let advanceStornoEntryId: number | null = null;
-    if (invoice.advanceClosingEntryId != null) {
-      const advEntry = await this.prisma.journalEntry.findUnique({
-        where: { id: invoice.advanceClosingEntryId },
-        select: { id: true, status: true, reversedByEntryId: true },
-      });
-      if (
-        advEntry &&
-        advEntry.status !== "draft" &&
-        advEntry.reversedByEntryId == null
-      ) {
-        try {
-          const rev = await this.glWrite.reverse(advEntry.id, actor.userId);
-          advanceStornoEntryId = rev.stornoEntryId;
-        } catch (err) {
-          this.logger.error(
-            `STORNO SANACIJA: faktura ${id} je označena CANCELLED, ali reverse naloga ` +
-              `zatvaranja avansa ${advEntry.id} nije uspeo — ručno proknjižiti obrnuti ` +
-              `nalog kroz Glavnu knjigu (GK). Uzrok: ` +
-              `${err instanceof Error ? err.message : String(err)}`,
-            err instanceof Error ? err.stack : undefined,
-          );
-          throw err;
+    const applications = await this.prisma.invoiceAdvanceApplication.findMany({
+      where: { invoiceId: id, status: APPLICATION_ACTIVE },
+      orderBy: { id: "asc" },
+      select: { id: true, closingEntryId: true },
+    });
+    // Rezerva za dokumente knjižene pre N:M migracije (veza samo u koloni).
+    const toReverse: Array<{
+      id: number | null;
+      closingEntryId: number | null;
+    }> =
+      applications.length === 0 && invoice.advanceClosingEntryId != null
+        ? [{ id: null, closingEntryId: invoice.advanceClosingEntryId }]
+        : applications;
+
+    for (const application of toReverse) {
+      let reversalEntryId: number | null = null;
+      if (application.closingEntryId != null) {
+        const advEntry = await this.prisma.journalEntry.findUnique({
+          where: { id: application.closingEntryId },
+          select: { id: true, status: true, reversedByEntryId: true },
+        });
+        if (
+          advEntry &&
+          advEntry.status !== "DRAFT" &&
+          advEntry.reversedByEntryId == null
+        ) {
+          try {
+            const rev = await this.glWrite.reverse(advEntry.id, actor.userId);
+            reversalEntryId = rev.stornoEntryId;
+            advanceStornoEntryIds.push(rev.stornoEntryId);
+            advanceStornoEntryId ??= rev.stornoEntryId;
+          } catch (err) {
+            this.logger.error(
+              `STORNO SANACIJA: faktura ${id} je označena CANCELLED, ali reverse naloga ` +
+                `zatvaranja avansa ${advEntry.id} nije uspeo — ručno proknjižiti obrnuti ` +
+                `nalog kroz Glavnu knjigu (GK). Uzrok: ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+              err instanceof Error ? err.stack : undefined,
+            );
+            throw err;
+          }
         }
       }
+      if (application.id != null) {
+        await this.prisma.invoiceAdvanceApplication.update({
+          where: { id: application.id },
+          data: {
+            status: APPLICATION_REVERSED,
+            reversalEntryId,
+            reversedAt: new Date(),
+          },
+        });
+      }
+    }
+
+    if (toReverse.length > 0) {
       await this.prisma.invoice.update({
         where: { id },
         data: {
@@ -584,7 +672,10 @@ export class FakturisanjeService {
     return {
       ...stornoed,
       stornoEntryId,
+      /** Prvi storno-nalog primene avansa (kompatibilnost sa 1:1 odgovorom). */
       advanceStornoEntryId,
+      /** Svi storno-nalozi primena avansa ovog računa (N:M). */
+      advanceStornoEntryIds,
       sefCancelledOutboxIds,
       sefCancelledPendingIds,
     };
@@ -627,6 +718,11 @@ export class FakturisanjeService {
           AND le.reconciled_at IS NULL
           AND sa.tracks_open_items = TRUE
           AND sa.side = 'receivable'
+          -- Vrsta partnera, ne samo strana salda: dati avansi DOBAVLJAČIMA (1520/1521/1530)
+          -- su takođe 'receivable'. Bez ovog filtera bi kooperantu koji je i kupac i
+          -- dobavljač plaćen avans sužavao kreditni limit i obarao legitimnu fakturu
+          -- sa CREDIT_LIMIT_EXCEEDED (revizija).
+          AND sa.partner_scope = 'customer'
           AND le.analytical_code = ${customerId}
       `,
     );

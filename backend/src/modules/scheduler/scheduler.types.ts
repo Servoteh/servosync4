@@ -26,6 +26,13 @@ export interface ScheduledJob {
    */
   catchUpMinutes?: number;
   /**
+   * `app_switches.key` korisničkog prekidača. Kad je postavljen, scheduler PRE
+   * svakog izvršenja (i zakazanog i `run-now`) proverava red u `app_switches` —
+   * to je JEDNA kapija za sve poslove, umesto da svaki ulaz pamti da je pozove.
+   * Nema reda = uključeno (OFF-prekidač: odsustvo reda ne sme tiho da ugasi posao).
+   */
+  switchKey?: string;
+  /**
    * Posle koliko minuta se RUNNING red smatra zaglavljenim i sme da se preuzme
    * (crash/SIGTERM usred izvršenja). Default 10 — dobro za kratke sy15 pozive,
    * ali OPASNO za duge poslove: posao koji normalno traje 30 min bi sam sebe

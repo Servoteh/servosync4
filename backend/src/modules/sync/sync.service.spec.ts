@@ -36,6 +36,22 @@ describe("SyncService — posle cutover-a (trajni BigBit sync)", () => {
     expect(entities).toContain("items");
   });
 
+  // Registri artikala (R_Grupa / R_Podgrupa / R_Poreklo) nisu u generisanoj mapi
+  // — imaju sopstvene lagane syncere, pa moraju biti vidljivi i za `/sync/run` i
+  // za noćni posao (koji uzima `availableEntities` minus isključene).
+  // ⚠️ OBRNUTO 30.07.2026: šifarnici artikala se VIŠE NE registruju kao MSSQL
+  // synceri. Čitali su kroz `MssqlClient`, dakle iz QBigTehna — koji je mrtav od
+  // 22.07.2026 — pa su bili MRTVI ROĐENI: registrovani, naizgled živi, nesposobni
+  // da donesu red. Tabele su stajale prazne, a provera grupe artikla radi po
+  // pravilu „prazan šifarnik se preskače", dakle nije proveravala ništa.
+  // Sada ih vozi `.mdb` kanal (`importItemGroups`/`Subgroups`/`Origins`).
+  it("NE registruje šifarnike artikala — njih vozi .mdb kanal, ne MSSQL", () => {
+    const entities = buildService().availableEntities;
+    expect(entities).not.toContain("item_groups");
+    expect(entities).not.toContain("item_subgroups");
+    expect(entities).not.toContain("item_origins");
+  });
+
   it("NE registruje nijedan QBigTehn chain entitet (ugašeni lanac)", () => {
     const entities = buildService().availableEntities;
     const leaked = entities.filter((e) => QBIGTEHN_CHAIN_ENTITIES.has(e));
@@ -83,16 +99,25 @@ describe("SyncService — TTL in-process brave", () => {
     const prisma = {
       bbSyncLog: {
         create: jest.fn().mockResolvedValue({ id: 1 }),
-        update: jest.fn().mockImplementation(({ data }) => ({ id: 1, ...data })),
+        update: jest
+          .fn()
+          .mockImplementation(
+            ({ data }: { data: Record<string, unknown> }) => ({
+              id: 1,
+              ...data,
+            }),
+          ),
       },
       bbSyncState: {
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn().mockResolvedValue({}),
       },
     } as unknown as PrismaService;
-    const svc = new SyncService(prisma, {} as MssqlClient, {
-      entity: "customers",
-    } as CustomerSyncer);
+    const svc = new SyncService(
+      prisma,
+      {} as MssqlClient,
+      { entity: "customers" } as CustomerSyncer,
+    );
     // Jedan „viseći" syncer koji drži bravu dok mu se ne kaže da završi.
     (svc as unknown as { syncers: Map<string, unknown> }).syncers.set(
       "customers",

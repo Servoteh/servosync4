@@ -27,6 +27,34 @@
  * slova A–Z i `*` JESTE množenje. Ovde su „promenljive" celi atomi `D200*` i `*`
  * je wildcard. Zato GKEval ima SOPSTVENI tokenizer/evaluator, ne deli parser.
  *
+ * PROZOR AGREGACIJE = TAČNO JEDNA FISKALNA GODINA (`je.year = Y`).
+ * ─────────────────────────────────────────────────────────────────────────
+ * Ovo je KOREN motora, ne detalj filtera. BigBit-ov `ZR_BrutoStanjeUpit` prima DVA
+ * opsega datuma kao parametre, a sopstveni režim (`APGK_BrutoStanje`) filtrira po
+ * `T_Nalozi.Godina` — dakle „bruto stanje" je uvek ZAKLJUČNI LIST JEDNE GODINE
+ * (početno stanje + promet te godine), nikad kumulativ od početka knjige
+ * (`docs/migration/BIGBIT_ZR_MOTOR.md` §1.1/§1.4).
+ *
+ * Bez tog prozora ista jedna izostavljena granica proizvodi DVA odvojena kvara:
+ *   (a) BILANS USPEHA sabira sve ranije godine — konto 6010 sa prihodom 100 (2022),
+ *       250 (2023), 300 (2024) daje 100 / 350 / 650 umesto 100 / 250 / 300;
+ *   (b) BILANS STANJA broji POČETNO STANJE DVAPUT — konto sa saldom 60 na kraju
+ *       2022. daje 110 umesto 50 za 2023, jer se PS nalog (koji taj isti saldo
+ *       restatira) sabira SA prometom godine koju restatira.
+ * Dvostruko brojanje se ne izbegava izuzimanjem PS naloga iz D/P (BigBit ga
+ * uračunava: `ZR_BrutoStanje.Duguje = UkPrometDuguje`), nego time što ranija
+ * godina UOPŠTE NIJE U PROZORU.
+ *
+ * KOLONA JE `je.year`, NE `posting_date`/`document_date`. `year` je verbatim iz
+ * BigBit-ove `T_Nalozi.Godina` (`bigbit-mdb-import.service.ts`), pa je jedini
+ * atribut imun na: PS datiran van 01.01., nalog godine Y proknjižen u januaru Y+1,
+ * i razilaženje document_date/posting_date. `Datum knjizenja` (= `posting_date`) se
+ * u BigBit ZR upitima ne pojavljuje nigde.
+ *
+ * `GkEvalPeriod.asOf` je OPCIONI međuperiodni presek UNUTAR godine (npr. 30.06.) i
+ * radi nad `document_date`. Godišnji obračun ga NE prosleđuje: uz `asOf = 31.12.Y`
+ * bi nalog godine Y datiran/proknjižen u januaru Y+1 tiho ispao.
+ *
  * DECIMAL, NIKAD FLOAT (BACKEND_RULES §2): agregacija ide kroz `$queryRaw` SUM
  * nad `Decimal(19,4)` kolonama; rezultat je `Prisma.Decimal`. Aritmetika izraza
  * takođe nad `Prisma.Decimal`.
@@ -44,8 +72,65 @@ import { PrismaService } from "../../prisma/prisma.service";
 
 const D = Prisma.Decimal;
 
-/** Vrsta naloga za početno stanje (doc 37 §B: „Otvaranje nove godine = nalog vrste PS"). */
-const PS_ORDER_TYPE_PREFIX = "PS";
+/**
+ * Vrsta naloga za početno stanje (doc 37 §B: „Otvaranje nove godine = nalog vrste PS").
+ * EGZAKTNO poređenje, ne `LIKE 'PS%'`: u živim podacima postoji tačno jedna vrsta
+ * naloga koja počinje sa „PS" i to je „PS"; `LIKE` bi hvatao izmišljene vrste tipa
+ * `PSD`/`PSP` (to su prefiksi ATOMA u formuli, nikad vrste naloga).
+ */
+const PS_ORDER_TYPE = "PS";
+
+/**
+ * Vrsta ZAKLJUČNOG naloga (`year-open.service.ts`). Taj nalog nosi DVE VRSTE stavki i
+ * one se moraju tretirati RAZLIČITO:
+ *
+ *   1. kontra-stavke klasa 5 i 6 — knjiže se NAZAD NA ISTO konto da bi ga zatvorile.
+ *      Moraju ispasti iz D/P, inače svaka maska bilansa uspeha daje EGZAKTNU NULU za
+ *      godinu za koju je urađen prenos. Donja granica datuma to ne rešava: nalog je
+ *      datiran 31.12., dakle unutar same godine koju zatvara.
+ *   2. stavka REZULTATA na klasu 3 (konto 341 dobitak / 351 gubitak) — to je JEDINO
+ *      mesto gde rezultat tekuće godine ulazi u kapital. Mora OSTATI, inače AOP 0410
+ *      (`P341*-D341*`) čita nulu i pasiva je manja od aktive za tačan iznos dobiti,
+ *      pa se bilans stanja ne može zatvoriti bez `force`.
+ *
+ * Zato se izuzimanje vezuje za KLASU KONTA unutar zaključnog naloga, ne za nalog u
+ * celini. (Studija BigBita: `docs/migration/ZR_ISPRAVKE_MOTORA.md` §2 + zapisnik
+ * `docs/ZAPISNIK_ZR_SAP_PANTHEON_PROPISI.md`, rizik 1.)
+ *
+ * ⚠️ PROZOR GODINE I OVO IZUZIMANJE REŠAVAJU DVA RAZLIČITA KVARA — POTREBNA SU OBA:
+ *   • prozor `je.year = Y` izbacuje ZAK naloge RANIJIH godina (i njihov promet);
+ *   • izuzimanje klasa 5/6 izbacuje kontra-stavke ZAK naloga TEKUĆE godine, koji je
+ *     datiran 31.12.Y i po definiciji pada unutar prozora.
+ * Prozor bez izuzimanja → bilans uspeha godine Y je egzaktna nula čim je urađen
+ * prenos. Izuzimanje bez prozora → bilans uspeha sabira sve ranije godine.
+ */
+const CLOSING_ORDER_TYPE = "ZAK";
+
+/**
+ * Klase konta koje zaključni nalog ZATVARA (prva cifra šifre konta). Samo njihove
+ * stavke u ZAK nalogu ispadaju iz prometa; ostale (klasa 3 = rezultat) ostaju.
+ */
+const CLOSED_ACCOUNT_CLASSES = ["5", "6"];
+
+/**
+ * PERIOD OBRAČUNA — prozor nad kojim se agregira SVAKI atom (D/P/PSD/PSP).
+ *
+ * `fiscalYear` je JEDINI obavezni predikat perioda i preslikava se u `je.year = Y`.
+ * `asOf` je opcioni presek UNUTAR te godine (`je.document_date <= asOf`) i služi
+ * isključivo za međuperiodne izveštaje (npr. bruto bilans na 30.06.). Godišnji
+ * obračun ga NE šalje — vidi zaglavlje fajla.
+ */
+export interface GkEvalPeriod {
+  /** Fiskalna godina obračuna (`journal_entries.year`). */
+  fiscalYear: number;
+  /** Opcioni presek unutar godine — gornja granica `document_date` (uključivo). */
+  asOf?: Date;
+}
+
+/** Prozor cele fiskalne godine (bez međuperiodnog preseka) — godišnji obračun. */
+export function fiscalYearPeriod(year: number): GkEvalPeriod {
+  return { fiscalYear: year };
+}
 
 /** Greška parsiranja/evaluacije bilansne formule. */
 export class GkEvalError extends Error {
@@ -250,10 +335,11 @@ export class GkEvalService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Izračunaj vrednost bilansne formule na dan `asOf` (uključivo).
+   * Izračunaj vrednost bilansne formule nad prozorom `period` (jedna fiskalna godina).
    *
    * @param formula   npr. "D200* + P433* - PSD021*", "D202*+D203*", "A0071", "AB0002-AC0002"
-   * @param asOf       gornja granica posting datuma (Date); stavke sa postingDate <= asOf
+   * @param period     `{ fiscalYear }` = cela godina (godišnji obračun); uz opcioni
+   *                   `asOf` = presek unutar te godine (`document_date <= asOf`).
    * @param resolveAop callback za `A/AB/AC<aop>` reference (druge pozicije istog obrasca).
    *                   Prima `(aop, column)` gde je `column` ∈ {1,2,3} (A→1, AB→2, AC→3;
    *                   doc 44 §2.4). Ako izostane a formula sadrži A/AB/AC<aop> → GkEvalError.
@@ -263,12 +349,13 @@ export class GkEvalService {
    */
   async evalFormula(
     formula: string,
-    asOf: Date,
+    period: GkEvalPeriod,
     resolveAop?: (
       aop: string,
       column: AopColumn,
     ) => Promise<Prisma.Decimal> | Prisma.Decimal,
   ): Promise<Prisma.Decimal> {
+    assertPeriod(period);
     const tokens = tokenize(formula);
     if (tokens.length === 0) {
       throw new GkEvalError("Prazna formula");
@@ -278,16 +365,20 @@ export class GkEvalService {
     const cache = new Map<string, Prisma.Decimal>();
     const parser = new AtomEvaluator(
       tokens,
-      (atom) => this.resolveAtom(atom, asOf, resolveAop, cache),
+      (atom) => this.resolveAtom(atom, period, resolveAop, cache),
     );
     return parser.evaluate();
   }
 
   /**
-   * Bruto bilans: za SVAKO konto koje ima stavke do `asOf`, vrati Σdebit, Σcredit
-   * i saldo (debit − credit). MORA raditi bez ikakvog seed-a formula (doc 37 §C).
+   * Bruto bilans: za SVAKO konto koje ima stavke u prozoru `period`, vrati Σdebit,
+   * Σcredit i saldo (debit − credit). MORA raditi bez ikakvog seed-a formula (doc 37 §C).
+   *
+   * PROZOR JE IDENTIČAN prozoru `aggregate()` — inače bi bruto bilans i AOP obrazac
+   * od druge godine u knjizi davali različite brojeve, a bruto bilans je jedini izlaz
+   * koji knjigovođa stvarno dobija (BIGBIT_ZR_MOTOR §6.3).
    */
-  async grossTrialBalance(asOf: Date): Promise<
+  async grossTrialBalance(period: GkEvalPeriod): Promise<
     Array<{
       accountCode: string;
       accountName: string | null;
@@ -296,6 +387,7 @@ export class GkEvalService {
       balance: Prisma.Decimal;
     }>
   > {
+    assertPeriod(period);
     const rows = await this.prisma.$queryRaw<
       Array<{
         account_code: string;
@@ -311,7 +403,8 @@ export class GkEvalService {
       FROM ledger_entries le
       JOIN journal_entries je ON je.id = le.journal_entry_id
       LEFT JOIN accounts a ON a.code = le.account_code
-      WHERE je.posting_date <= ${asOf}
+      WHERE je.year = ${period.fiscalYear}
+        ${asOfFilter(period)}
         -- 'LOCKED' MORA biti uključen: godišnji obračun se radi POSLE zaključavanja
         -- perioda — bez ovoga bilans stanja/uspeha i APR XML izlaze nula.
         AND je.status IN ('POSTED', 'LOCKED')
@@ -336,7 +429,7 @@ export class GkEvalService {
 
   private async resolveAtom(
     raw: string,
-    asOf: Date,
+    period: GkEvalPeriod,
     resolveAop:
       | ((
           aop: string,
@@ -366,32 +459,49 @@ export class GkEvalService {
     }
 
     const like = toLikePattern(parsed.operand);
-    const value = await this.aggregate(parsed.kind, like, asOf);
+    const value = await this.aggregate(parsed.kind, like, period);
     cache.set(raw, value);
     return value;
   }
 
   /**
-   * Σ prometa (D/P) ili početnog stanja (PSD/PSP) za konta koja LIKE maski.
-   * PSD/PSP filtriraju naloge vrste PS (početno stanje); D/P uzimaju sav promet.
+   * Σ prometa (D/P) ili početnog stanja (PSD/PSP) za konta koja LIKE maski, nad
+   * prozorom JEDNE FISKALNE GODINE (`je.year`).
+   *
+   * D/P uzimaju SAV promet te godine — UKLJUČUJUĆI PS nalog te godine. To je BigBit
+   * paritet (`ZR_BrutoStanje.Duguje = UkPrometDuguje`, a `PSDuguje` je njegov PODSKUP)
+   * i razlog zašto PSD/PSP NE SMEJU da se dodaju uz D/P u istoj formuli — brojali bi
+   * početno stanje dvaput. PSD/PSP su rezervisani za pozicije koje traže BAŠ početno
+   * stanje (BS kolona 7 „stanje na 01.01.", SI deo II bruto/ispravka/neto).
    */
   private async aggregate(
     kind: Exclude<AtomKind, "AOP">,
     likePattern: string,
-    asOf: Date,
+    period: GkEvalPeriod,
   ): Promise<Prisma.Decimal> {
     const column = kind === "D" || kind === "PSD" ? Prisma.sql`le.debit` : Prisma.sql`le.credit`;
-    const psFilter =
-      kind === "PSD" || kind === "PSP"
-        ? Prisma.sql`AND je.order_type_code LIKE ${PS_ORDER_TYPE_PREFIX + "%"}`
-        : Prisma.empty;
+    const isOpeningBalance = kind === "PSD" || kind === "PSP";
+    const psFilter = isOpeningBalance
+      ? Prisma.sql`AND je.order_type_code = ${PS_ORDER_TYPE}`
+      : // D/P = poslovni promet. Iz zaključnog naloga ispadaju SAMO kontra-stavke
+        // klasa koje on zatvara (5 i 6); stavka rezultata na klasi 3 ostaje, jer je
+        // to jedini upis dobiti/gubitka u kapital. Vidi CLOSING_ORDER_TYPE.
+        // `IS NULL` grana zadržava stare naloge bez upisane vrste.
+        // COALESCE je OBAVEZAN: uz NULL vrstu naloga `NULL = 'ZAK'` daje NULL, pa bi
+        // `NOT (NULL AND TRUE)` bilo NULL — a red sa NULL uslovom WHERE odbacuje.
+        // Stari nalozi bez upisane vrste bi tako nestali iz bilansa uspeha.
+        Prisma.sql`AND NOT (
+          COALESCE(je.order_type_code, '') = ${CLOSING_ORDER_TYPE}
+          AND LEFT(le.account_code, 1) IN (${Prisma.join(CLOSED_ACCOUNT_CLASSES)})
+        )`;
 
     const rows = await this.prisma.$queryRaw<Array<{ total: Prisma.Decimal }>>(Prisma.sql`
       SELECT COALESCE(SUM(${column}), 0)::numeric(19,4) AS total
       FROM ledger_entries le
       JOIN journal_entries je ON je.id = le.journal_entry_id
       WHERE le.account_code LIKE ${likePattern}
-        AND je.posting_date <= ${asOf}
+        AND je.year = ${period.fiscalYear}
+        ${asOfFilter(period)}
         -- 'LOCKED' MORA biti uključen: godišnji obračun se radi POSLE zaključavanja
         -- perioda — bez ovoga bilans stanja/uspeha i APR XML izlaze nula.
         AND je.status IN ('POSTED', 'LOCKED')
@@ -399,6 +509,35 @@ export class GkEvalService {
     `);
 
     return new D(rows[0]?.total ?? 0);
+  }
+}
+
+/**
+ * Opcioni međuperiodni presek UNUTAR fiskalne godine. Namerno `document_date`, ne
+ * `posting_date`: BigBit ZR upiti `Datum knjizenja` ne koriste nigde, a nalog godine Y
+ * proknjižen u januaru Y+1 bi uz `posting_date` ispao iz sopstvene godine.
+ */
+function asOfFilter(period: GkEvalPeriod): Prisma.Sql {
+  return period.asOf
+    ? Prisma.sql`AND je.document_date <= ${period.asOf}`
+    : Prisma.empty;
+}
+
+/** Prozor mora nositi fiskalnu godinu — bez nje bi `je.year = NULL` tiho dalo nulu. */
+function assertPeriod(period: GkEvalPeriod): void {
+  if (
+    period == null ||
+    typeof period !== "object" ||
+    !Number.isInteger(period.fiscalYear)
+  ) {
+    throw new GkEvalError(
+      "Prozor obračuna mora imati celobrojnu fiskalnu godinu " +
+        "({ fiscalYear }); primljeno: " +
+        JSON.stringify(period),
+    );
+  }
+  if (period.asOf !== undefined && Number.isNaN(period.asOf?.getTime?.())) {
+    throw new GkEvalError("Presek unutar godine (asOf) nije ispravan datum.");
   }
 }
 

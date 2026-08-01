@@ -223,6 +223,33 @@ export function isAdditiveRefreshTable(entity: string): boolean {
 }
 
 /**
+ * TABELE SA 3.0-NATIVE KOLONAMA KOJE IZVOR NE ZNA (Nenad, 27.07.2026).
+ *
+ * Full refresh je `deleteMany({}) + createMany(mapirane kolone)`. Za tabelu koja
+ * pored mapiranih kolona nosi i kolone kojih u BigBit-u NEMA, to znači TIHI
+ * GUBITAK: red se obriše i vrati bez njih, bez ijedne greške u logu.
+ *
+ * Konkretan povod: `companies.iban` i `companies.swift` (dodate 27.07.2026, unose
+ * se kroz Podešavanja → Podaci firme, štampaju se na ino fakturi i idu u UBL
+ * `cac:PaymentMeans`). BigBit te kolone nema, pa ih mapa ne pokriva — jedno
+ * pokretanje sinhronizacije bez ove zaštite obrisalo bi ih, a strani kupac bi
+ * dobio račun bez podataka za uplatu.
+ *
+ * Za ove tabele syncer NIKAD ne briše red: radi UPSERT samo nad MAPIRANIM
+ * kolonama (`update` bez nemapiranih polja ih ostavlja netaknutim). Tabele su
+ * male (šifarnik firme), pa je red-po-red upsert jeftin.
+ *
+ * Razlika prema `OWNED_PRODUCTION_TABLES`: tamo 3.0 vlasnik CELE tabele pa se
+ * sync preskače; ovde izvor i dalje vlada SVOJIM kolonama i sme da ih osvežava —
+ * štiti se samo ono što u izvoru ne postoji.
+ */
+export const NATIVE_COLUMN_TABLES = new Set<string>(["companies"]);
+
+export function hasNativeColumns(entity: string): boolean {
+  return NATIVE_COLUMN_TABLES.has(entity);
+}
+
+/**
  * PARITET BROJA za aditivne tabele (Nenad, 22.07.2026): u prelaznom periodu
  * predmeti se otvaraju RUČNO U OBA sistema — prvo u 3.0 (koji dodeljuje broj),
  * pa se ISTI broj prekuca u BigBit (BigBit ostaje nosilac fakturisanja do F5).
@@ -322,4 +349,103 @@ export const SOURCE_FK_FILTERS: Record<string, SourceFkFilter[]> = {
 
 export function sourceFkFiltersFor(entity: string): SourceFkFilter[] {
   return SOURCE_FK_FILTERS[entity] ?? [];
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * REZERVISAN OPSEG KLJUČEVA ZA 4.0-NATIVE REDOVE (adversarni pregled 28.07.2026)
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Matične tabele `items` i `customers` dele PK prostor sa BigBit-om: `Item.id`
+ * je BigBit `Sifra artikla`, a `Customer.id` je BigBit `Sifra` (PK se NE
+ * remapira — BIGBIT_KOMITENTI.md §5.1). Zato red nastao u 4.0 mora da sedne
+ * IZNAD celog BigBit prostora, inače se dva sistema sretnu na istom broju:
+ *
+ *   - nalaz [1] (komitenti): `alignIdSequence` postavlja sekvencu na `MAX(id)`,
+ *     pa prvi 4.0-native komitent uzme `MAX+1` = tačno broj koji BigBit sledeći
+ *     dodeljuje. Kad ta šifra stigne na sync, `upsert({ where: { id } })`
+ *     prepiše svih 56 kolona TUĐOM firmom — bez greške i bez traga.
+ *   - nalaz [2] (artikli): `items` je full refresh (`watermark: null`), pa
+ *     `deleteMany({})` OBRIŠE 4.0-native artikal, a `price_list_entries` i
+ *     `work_order_item_components` ostanu siročad (brisanje ide pod
+ *     `session_replication_role='replica'`, gde FK trigeri ćute).
+ *
+ * GRANICA = 900.000.000 za OBE tabele, ista vrednost namerno (jedan broj, jedno
+ * pravilo). Izmereno na produkciji 28.07.2026: `items` MAX(id)=93.513,
+ * `customers` MAX(id)=1.006.067 → ostaje ~899,87M BigBit headroom-a i
+ * 1.247.483.647 native ključeva ispod `int4` plafona.
+ *
+ * Migracija `20260728170000_maticni_native_opseg_i_poreklo` istu granicu ukiva u
+ * bazu kao CHECK (`chk_items_native_id_range`, `chk_customers_native_id_range`:
+ * `source='NATIVE' ⇔ id >= 900000000`) i pomera sekvence na 899.999.999. CHECK
+ * važi i pod `session_replication_role='replica'`, gde trigeri ne rade — zato
+ * native red FIZIČKI ne može da sedne u BigBit prostor.
+ *
+ * OVDE je odluka za sync stranu — jedno mesto koje čita i sync (brisanje/upsert)
+ * i masters (dodela id-a, provera porekla), da granica ne bi postala konvencija
+ * prepisana na dva mesta. `masters/items.write-policy.ts` drži svoju kopiju
+ * (`NATIVE_ITEM_ID_BASE`) jer je nastala pre ovog fajla; jednakost te dve
+ * vrednosti PINUJE test (`table-ownership.spec.ts`), pa razilaženje pada glasno.
+ */
+export const NATIVE_ID_BASE = 900_000_000;
+
+/** `Int` kolona je PG `integer` — gornja granica rezervisanog opsega. */
+export const NATIVE_ID_MAX = 2_147_483_647;
+
+/**
+ * Tabele u kojima 4.0-native red živi IZNAD `NATIVE_ID_BASE`, a BigBit ispod.
+ * Za njih syncer NIKAD ne briše ceo skup (`deleteMany({})` → `id < BASE`) i
+ * NIKAD ne upisuje izvorni red čiji `id` upada u native opseg.
+ *
+ * ⚠️ NIJE prekidač za otvaranje unosa. `CUSTOMERS_WRITE_OPEN` i
+ * `assertItemWritesAllowed()` i dalje vraćaju 409 — ovaj skup samo garantuje da
+ * unos, KAD SE OTVORI, ne može tiho da nestane. Cilj: otvaranje = jedan
+ * prekidač, bez ijednog novog otkrića u tom trenutku.
+ */
+export const NATIVE_ID_RANGE_TABLES = new Set<string>(["items", "customers"]);
+
+export function hasNativeIdRange(entity: string): boolean {
+  return NATIVE_ID_RANGE_TABLES.has(entity);
+}
+
+/**
+ * Da li je `id` u tabeli `entity` red nastao u 4.0 (a ne BigBit matični podatak).
+ *
+ * JEDINO mesto na kome se ta odluka donosi — i sync i masters treba da pitaju
+ * ovde, umesto da svako svoje poređenje piše ručno. Za tabelu koja nema
+ * rezervisan opseg vraća `false` (tamo poreklo ne postoji kao pojam).
+ */
+export function isNativeRow(
+  entity: string,
+  id: number | bigint | null | undefined,
+): boolean {
+  if (!NATIVE_ID_RANGE_TABLES.has(entity)) return false;
+  if (id === null || id === undefined) return false;
+  const value = typeof id === "bigint" ? Number(id) : Number(id);
+  return Number.isFinite(value) && value >= NATIVE_ID_BASE;
+}
+
+/** Vrednost markera porekla iz šeme (`items.source` / `customers.source`). */
+export const NATIVE_SOURCE_MARKER = "NATIVE";
+export const BIGBIT_SOURCE_MARKER = "BIGBIT";
+
+/**
+ * Da li 4.0-native red u ovoj tabeli PREŽIVLJAVA sync — bilo kojim mehanizmom.
+ *
+ * Jedna funkcija umesto četiri odvojena pitanja: tabela je zaštićena ako je
+ * ServoSync-owned (sync je preskače), aditivna (briše samo izvorne id-jeve),
+ * ima nemapirane native kolone (upsert bez brisanja) ili ima rezervisan opseg
+ * ključeva (brisanje ne dohvata native prostor).
+ *
+ * ⚠️ `masters/items.write-policy.ts::itemsSurviveSync()` je stariji, UŽI oblik
+ * ovog pitanja (ne zna za rezervisan opseg) i namerno NIJE menjan u ovom talasu
+ * — on je prekidač koji otvara unos artikala, a ovaj talas unos ne otvara.
+ */
+export function nativeRowsSurviveSync(entity: string): boolean {
+  return (
+    isOwnedProductionTable(entity) ||
+    isAdditiveRefreshTable(entity) ||
+    hasNativeColumns(entity) ||
+    hasNativeIdRange(entity)
+  );
 }

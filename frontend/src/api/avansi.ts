@@ -57,6 +57,14 @@ export interface AdvanceListResponse {
   meta: { total: number; page: number; pageSize: number };
 }
 
+/** Jedna primena avansa na konačnom računu (N:M) — 1:1 sa `AdvanceApplicationRef`. */
+export interface AdvanceApplicationRef {
+  invoiceId: number;
+  documentNumber: string;
+  /** BRUTO iznos te primene (Decimal string). */
+  appliedAmount: string;
+}
+
 /**
  * Red liste avansa — 1:1 sa backend `AdvanceRow` (advance-vat.service.ts).
  * Decimal polja su STRING; datumi ISO string.
@@ -78,10 +86,76 @@ export interface Advance {
   paidAt: string | null;
   paidAmount: string;
   status: string;
-  /** Konačni račun na koji je avans već vezan (null = slobodan za vezivanje). */
+  /** NENAPLAĆEN deo = bruto − naplaćeno (izlazni avans se naplaćuje u ratama). */
+  unpaidAmount: string;
+  /** ISKORIŠĆENO — zbir svih aktivnih primena na konačnim računima. */
+  appliedAmount: string;
+  /** OSTATAK = naplaćeno − iskorišćeno; > 0 → avans se još može odbiti. */
+  remainingAmount: string;
+  /** SVE primene (N:M) — prazan niz = avans još nije iskorišćen. */
+  applications: AdvanceApplicationRef[];
+  /**
+   * PRVA primena (kompatibilnost). NE koristiti kao uslov za dugme „Veži na
+   * konačni račun" — puni se već pri prvoj primeni, pa je ekran po njemu sakrivao
+   * odbijanje OSTATKA avansa (nalaz K2 nezavisnog pregleda 27.07). Uslov je
+   * `advanceRemainderCents(a) > 0`.
+   */
   linkedFinalInvoiceId: number | null;
   linkedFinalDocumentNumber: string | null;
   note: string | null;
+}
+
+// ────────────────────────────────────────────────── novac bez Float aritmetike
+
+/**
+ * Decimal-as-string („17100.0000", „17100,50") → celobrojne PARE. Poređenja
+ * iznosa se rade nad ovim, ne nad `Number` vrednostima: `0.1 + 0.2 > 0.3` je u
+ * Float-u tačno, pa bi „iznos je veći od ostatka" umelo da opali na jednakim
+ * iznosima. Vraća `NaN` za neparsiv unos (poziv mora to proveriti).
+ */
+export function decimalToCents(value: string | number | null | undefined): number {
+  if (value === null || value === undefined) return NaN;
+  const raw = String(value).trim().replace(',', '.');
+  if (raw === '') return NaN;
+  const m = /^(-?)(\d+)(?:\.(\d*))?$/.exec(raw);
+  if (!m) return NaN;
+  const sign = m[1] === '-' ? -1 : 1;
+  // Treća decimala samo zaokružuje: baza drži Decimal(19,4), a dinar ima 2 decimale.
+  const frac = (m[3] ?? '').padEnd(3, '0');
+  const cents = Number(m[2]) * 100 + Number(frac.slice(0, 2));
+  return sign * (cents + (Number(frac[2]) >= 5 ? 1 : 0));
+}
+
+/** Pare → iznos za slanje backendu / za `<input>` („1710000" → „17100.00"). */
+export function centsToAmount(cents: number): string {
+  const sign = cents < 0 ? '-' : '';
+  const abs = Math.abs(Math.round(cents));
+  return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`;
+}
+
+/** OSTATAK avansa u parama = naplaćeno − iskorišćeno. */
+export function advanceRemainderCents(a: Advance): number {
+  const rem = decimalToCents(a.remainingAmount);
+  return Number.isNaN(rem) ? 0 : rem;
+}
+
+/** NENAPLAĆEN deo avansa u parama = bruto − naplaćeno. */
+export function advanceUnpaidCents(a: Advance): number {
+  const unpaid = decimalToCents(a.unpaidAmount);
+  return Number.isNaN(unpaid) ? 0 : unpaid;
+}
+
+/**
+ * Sme li se na avans upisati (još jedna) naplata?
+ *   IZLAZNI — da, dok ima nenaplaćenog dela: backend prima naplatu u RATAMA
+ *             (`markAdvancePaid`, kumulativni CAS nad `advancePaidAmount`).
+ *   ULAZNI  — samo jednom: `markIncomingAdvancePaid` odbija drugi poziv sa 409
+ *             (pretporez bi bio priznat dvaput), pa se gleda `paidAt`.
+ */
+export function canMarkAdvancePaid(a: Advance): boolean {
+  if (a.status === 'CANCELLED') return false;
+  if (a.direction === ADVANCE_DIRECTION.IN) return a.paidAt == null;
+  return advanceUnpaidCents(a) > 0;
 }
 
 /**
@@ -199,6 +273,50 @@ export function useCreateAdvanceFromProforma() {
   });
 }
 
+/**
+ * Telo avansnog računa PO UGOVORU (bez predračuna) — ista ruta
+ * `POST /sales/advance-invoices`, samo bez `proformaId`.
+ *
+ * Backend ovo podržava od početka (`validateCreateAdvanceInvoice`: bez predračuna
+ * su obavezni `customerId`, `amount` i `basis`), i to sa razlogom — u BigBit
+ * produkciji 2025. su DVA NAJVEĆA avansa izdata po Ugovoru, ne po predračunu. U
+ * aplikaciji do sada nije postojao nijedan ekran koji taj oblik zahteva sastavlja:
+ * jedini ulaz je bio „Napravi avansni račun" sa detalja PREDRAČUNA.
+ */
+export interface CreateAdvanceByContractInput {
+  /** Kupac (obavezan — nema predračuna sa kog bi se preuzeo). */
+  customerId: number;
+  /** BRUTO iznos avansa (osnovica + PDV) kao string — bez Float aritmetike. */
+  amount: string;
+  /** OSNOV: broj ugovora ili opis („po Ugovoru br. 12/2026"). Obavezan. */
+  basis: string;
+  /** Datum avansnog računa (ISO); bez njega backend uzima danas. */
+  documentDate?: string;
+  /** Šifra PDV stope (podrazumevano '3' = opšta; izvoz uvek '0'). */
+  vatRateCode?: string;
+  /** Izvoz (bez PDV-a). */
+  isExport?: boolean;
+  currency?: string;
+  note?: string;
+}
+
+/**
+ * Napravi avansni račun PO UGOVORU (izlazni smer, KIF) — POST
+ * /sales/advance-invoices bez `proformaId`. PDV obaveza nastaje tek naplatom.
+ * Permisija SALES_WRITE.
+ */
+export function useCreateAdvanceByContract() {
+  const invalidate = useInvalidateAdvances();
+  return useMutation({
+    mutationFn: (input: CreateAdvanceByContractInput) =>
+      apiFetch<Envelope<Advance>>(`${SALES_BASE}`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
 /** Telo evidencije ULAZNOG avansnog računa dobavljača (POST /pdv/advances/incoming). */
 export interface RecordIncomingAdvanceInput {
   /** Dobavljač — šifra komitenta. */
@@ -251,8 +369,11 @@ export interface MarkAdvancePaidInput {
   direction: AdvanceDirection | string | null;
   /** Datum naplate (ISO) — određuje PORESKI PERIOD stavke. */
   paidAt: string;
-  /** Naplaćen bruto iznos (može biti delimičan). */
-  amount: number;
+  /**
+   * Naplaćen bruto iznos (može biti delimičan — izlazni avans se plaća u ratama).
+   * STRING je preporučen oblik: novac ne prolazi kroz Float ni ovde ni u DTO-u.
+   */
+  amount: string | number;
 }
 
 /** Rezultat označavanja naplate — poreski period je po datumu naplate. */
@@ -306,6 +427,12 @@ export interface LinkAdvanceToFinalInput {
   direction: AdvanceDirection | string | null;
   /** `Invoice.id` konačnog računa na koji se avans odbija. */
   finalInvoiceId: number;
+  /**
+   * BRUTO iznos odbitka (delimično odbijanje, samo izlazni smer). Bez njega se
+   * odbija ceo preostali naplaćen iznos avansa. Jedan avans se tako deli na više
+   * računa (BigBit AVR-00013/2025 → 20.802 + 17.100).
+   */
+  amount?: string | number;
 }
 
 /** Rezultat vezivanja — `reversalEntryId` je storno stavka avansnog PDV-a. */
@@ -321,21 +448,32 @@ export interface LinkAdvanceToFinalResult {
   reversalEntryId?: number | null;
   /** Izlazni smer. */
   advanceInvoiceNumber?: string;
+  /** Zbir SVIH primena na tom računu (ne samo ove). */
   advanceAppliedAmount?: string;
   payableAmount?: string;
   advanceClosingEntryNumber?: string;
+  /** OSTATAK avansa POSLE ove primene — 0 = avans je potrošen. */
+  advanceRemainingAmount?: string;
 }
 
 /**
  * Veži avans na KONAČNI račun — konačni račun dobija „Umanjenje za primljeni avans"
  * (`advanceAppliedAmount`), a PDV avansa se STORNIRA suprotnom poreskom stavkom da
- * se isti porez ne prizna dvaput. Avans se sme iskoristiti samo jednom (409).
- * Permisija: SALES_POST (izlazni) / PDV_COMPUTE (ulazni).
+ * se isti porez ne prizna dvaput.
+ *
+ * Veza je N:M: isti avans se deli na VIŠE računa dok se ne potroši naplaćen iznos
+ * (`amount` po primeni), i jedan račun zatvara više avansa. Dvaput isti avans na
+ * ISTOM računu → 409. Permisija: SALES_POST (izlazni) / PDV_COMPUTE (ulazni).
  */
 export function useLinkAdvanceToFinal() {
   const invalidate = useInvalidateAdvances();
   return useMutation({
-    mutationFn: ({ advanceId, direction, finalInvoiceId }: LinkAdvanceToFinalInput) => {
+    mutationFn: ({
+      advanceId,
+      direction,
+      finalInvoiceId,
+      amount,
+    }: LinkAdvanceToFinalInput) => {
       const url =
         direction === ADVANCE_DIRECTION.IN
           ? `${PDV_BASE}/incoming/${advanceId}/link-final`
@@ -345,7 +483,9 @@ export function useLinkAdvanceToFinal() {
       const body =
         direction === ADVANCE_DIRECTION.IN
           ? { finalInvoiceId }
-          : { advanceInvoiceId: advanceId };
+          : amount !== undefined && amount !== null && `${amount}`.trim() !== ''
+            ? { advanceInvoiceId: advanceId, amount }
+            : { advanceInvoiceId: advanceId };
       return apiFetch<Envelope<LinkAdvanceToFinalResult>>(url, {
         method: 'POST',
         body: JSON.stringify(body),

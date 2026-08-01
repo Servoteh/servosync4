@@ -1,3 +1,5 @@
+import { IsOptional, IsString } from "class-validator";
+
 /**
  * Kreiranje robnog dokumenta (`stock_documents` + `stock_document_items`).
  *
@@ -66,6 +68,21 @@ export interface CreateStockDocumentDto {
   otherDependentCosts?: string | number;
   customsRefundBase?: string | number; // PovCarOsn
 
+  // — Uslovi otpreme (BigBit traka na otpremnici) —
+  // SVE opciono i SVE se čuva kako je uneto. Izostavljeno polje ostaje NULL i štampa se
+  // kao prazna linija za ručni upis — nikad se ne izvodi iz drugog podatka (posebno
+  // `shippingDate` NE sme da padne na `documentDate`).
+  fco?: string;
+  shippingMethod?: string;
+  /** ISO datum otpreme (odvojen od `documentDate` — otprema ume da bude kasnije). */
+  shippingDate?: string;
+  deliveryPlace?: string;
+  route?: string;
+  /** BigBit „Po porudžbini od" — kupčev broj/datum porudžbine (tekst, ne FK). */
+  customerOrderRef?: string;
+  /** Napomena na dokumentu (slobodan tekst). */
+  note?: string;
+
   // — Traceback (meki ref-ovi) —
   purchaseOrderId?: number;
   projectId?: number;
@@ -76,4 +93,54 @@ export interface CreateStockDocumentDto {
   createdByUserId?: number;
 
   items: CreateStockDocumentItemDto[];
+}
+
+/**
+ * Izmena USLOVA OTPREME i napomene na postojećem robnom dokumentu
+ * (`PATCH /robno/documents/:id/shipping`).
+ *
+ * Ovo je jedini put kojim ta polja ulaze u bazu posle kreiranja i namerno je ODVOJEN
+ * od ostalih izmena dokumenta: otprema se popunjava kasnije (kad vozač krene), pa mora
+ * biti dozvoljena i na dokumentu koji je već proknjižen — ali NE i na zaključanom.
+ *
+ * SEMANTIKA POLJA (bitna, jer razlikuje „nije dirano" od „obriši"):
+ *   - polje IZOSTAVLJENO (`undefined`) → ne dira se;
+ *   - polje `null` ili prazan string   → briše se (vraća na prazno, tj. na liniju za
+ *     ručni upis na papiru).
+ *
+ * KLASA, NE INTERFEJS (ispravka 27.07.2026): globalni `ValidationPipe` validira samo
+ * klase sa `class-validator` dekoratorima. Dok je ovo bio interfejs, telo je prolazilo
+ * nevalidirano — `{"fco": 123}` je padao na `v.trim is not a function` i vraćao 500
+ * umesto srpskog 422. (Ostatak modula je i dalje na interfejsima; nove mutacione rute
+ * ne nasleđuju taj obrazac.)
+ */
+export class UpdateStockDocumentShippingDto {
+  @IsOptional()
+  @IsString()
+  fco?: string | null;
+
+  @IsOptional()
+  @IsString()
+  shippingMethod?: string | null;
+
+  /** ISO datum; `null`/prazno briše. */
+  @IsOptional()
+  @IsString()
+  shippingDate?: string | null;
+
+  @IsOptional()
+  @IsString()
+  deliveryPlace?: string | null;
+
+  @IsOptional()
+  @IsString()
+  route?: string | null;
+
+  @IsOptional()
+  @IsString()
+  customerOrderRef?: string | null;
+
+  @IsOptional()
+  @IsString()
+  note?: string | null;
 }

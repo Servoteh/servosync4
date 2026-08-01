@@ -1,6 +1,9 @@
 'use client';
 
+import { toast } from '@/lib/toast';
+
 import { useState } from 'react';
+import { Printer } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { FormField, Input } from '@/components/ui-kit/form-field';
@@ -8,6 +11,8 @@ import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDecimal } from '@/lib/format';
 import {
   useItemCard,
+  useItemCardPdf,
+  openPdf,
   ROBNO_KIND,
   type ItemCardLine,
   type RobnoKind,
@@ -98,6 +103,7 @@ export function ItemCardPanel() {
 
   const query = useItemCard(applied);
   const card = query.data?.data ?? null;
+  const pdf = useItemCardPdf();
 
   const apply = () => {
     const itemId = Number(itemInput);
@@ -153,6 +159,21 @@ export function ItemCardPanel() {
           </FormField>
         </div>
         <Button type="submit">Prikaži</Button>
+        {/* Štampa je moguća tek kad je kartica prikazana — inače nema šta da se štampa. */}
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={applied.itemId == null || applied.warehouseId == null}
+          loading={pdf.isPending}
+          title="Kartica artikla u PDF-u (period, donos, ulaz/izlaz/stanje, kontrolno stanje)"
+          onClick={() => pdf.mutate(applied, {
+            onSuccess: (blob) => openPdf(blob),
+            onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+          })}
+        >
+          <Printer className="h-4 w-4" aria-hidden />
+          Štampaj
+        </Button>
       </form>
 
       {query.error && (

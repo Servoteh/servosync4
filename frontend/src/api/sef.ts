@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiBlob, apiFetch } from './client';
 
 /**
  * SEF e-fakture (izlazne) — data sloj (Faza 5 §B). TanStack Query hooks nad NestJS
@@ -142,7 +142,7 @@ export function useSefOutbox(filters: SefFilters = {}) {
 
 /**
  * SEF outbox redovi za JEDNU fakturu — status-prikaz na detalju fakture
- * (fakturisanje/[id]). Odvojen keš-ključ od radne liste da paginacija liste ne
+ * (fakturisanje/detalj?id=N). Odvojen keš-ključ od radne liste da paginacija liste ne
  * meša ovaj pogled. Rezultat je sortiran po `id` desc (najnoviji red = `data[0]`).
  * `enabled` gasi upit dok faktura nije poznata / korisnik nema SEF_READ.
  */
@@ -418,5 +418,28 @@ export function useSefStatusLog(
     queryFn: () =>
       apiFetch<Envelope<SefStatusLogEntry[]>>(`${BASE}/status-log${query}`),
     enabled: enabled && (outboxId != null || incomingId != null),
+  });
+}
+
+// ─────────────────────────────────────────────────────────── štampa e-faktura (PDF)
+//
+// Ljudski čitljiv prikaz UBL dokumenta: ono što je STVARNO poslato na SEF (izlazna)
+// odnosno primljeno sa SEF-a (ulazna). Do sada se poslati dokument mogao videti samo
+// kao XML u bazi. Rute vraćaju `application/pdf` inline; permisija SEF_READ.
+
+/** Otvori PDF Blob u novom tabu (pregled u browseru + preuzimanje). */
+export { openPdf } from '@/lib/open-pdf';
+
+/** Štampa izlazne e-fakture (prikaz UBL-a) — GET /sef/outbox/:id/pdf. */
+export function useSefOutboxPdf() {
+  return useMutation({
+    mutationFn: (outboxId: number) => apiBlob(`${BASE}/outbox/${outboxId}/pdf`),
+  });
+}
+
+/** Štampa ulazne e-fakture (prikaz UBL-a + rok od 15 dana) — GET /sef/incoming/:id/pdf. */
+export function useSefIncomingPdf() {
+  return useMutation({
+    mutationFn: (incomingId: number) => apiBlob(`${BASE}/incoming/${incomingId}/pdf`),
   });
 }

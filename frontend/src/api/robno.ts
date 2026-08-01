@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiFetch, apiBlob } from './client';
 
 /**
  * Robno / magacin — data sloj (Faza 3). TanStack Query hooks nad NestJS
@@ -131,6 +131,24 @@ export interface StockDocument {
   projectId: number | null;
   workOrderId: number | null;
   purchaseOrderId: number | null;
+
+  // — Uslovi otpreme (ono što štampa OTPREMNICA) —
+  // Do 27.07.2026. ovih kolona nije bilo, pa je otpremnica štampala tvrde konstante
+  // („FCO magacin isporučioca", „sopstveni prevoz"…). Sada: prazno → papir ostavlja
+  // liniju za ručni upis. Menja se kroz `useUpdateShipping`.
+  /** Paritet isporuke (FCO magacin isporučioca / FCO kupac / Incoterms). */
+  fco: string | null;
+  /** Način otpreme (sopstveni prevoz / kurir / dobavljač / preuzimanje). */
+  shippingMethod: string | null;
+  /** Datum otpreme — ODVOJEN od `documentDate` (otprema ume da bude kasnije). */
+  shippingDate: string | null;
+  /** Mesto isporuke / mesto prometa. */
+  deliveryPlace: string | null;
+  /** Ruta (relacija prevoza). */
+  route: string | null;
+  /** „Po porudžbini od" — kupčev broj i datum porudžbine (tekst, ne veza). */
+  customerOrderRef: string | null;
+
   note: string | null;
   createdByUserId: number | null;
   createdAt: string;
@@ -166,6 +184,8 @@ export interface RobnoFilters {
   /** Opseg po `documentDate` (ISO). */
   from?: string;
   to?: string;
+  /** Pretraga po BROJU dokumenta (podniz, bez razlike u veličini slova). */
+  q?: string;
 }
 
 function buildQuery(params: Record<string, string | number | undefined>): string {
@@ -198,6 +218,7 @@ export function useStockDocuments(filters: RobnoFilters = {}) {
     year: filters.year === '' ? undefined : filters.year,
     from: filters.from || undefined,
     to: filters.to || undefined,
+    q: filters.q?.trim() || undefined,
   });
   return useQuery({
     queryKey: [...KEYS.documents, filters],
@@ -237,6 +258,41 @@ export function useCalculate() {
       apiFetch<Envelope<StockDocumentDetail>>(`${BASE}/documents/${id}/calculate`, {
         method: 'POST',
         body: '{}',
+      }),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Izmena uslova otpreme i napomene — PATCH /robno/documents/:id/shipping.
+ *
+ * SEMANTIKA (mora se poklopiti sa backendom): polje IZOSTAVLJENO se ne dira, `null` ili
+ * prazan string BRIŠE vrednost (papir se vraća na liniju za ručni upis). Zato forma šalje
+ * SAMO izmenjena polja, a nikad ceo objekat sa `''` na neizmenjenim mestima.
+ */
+export interface UpdateShippingPayload {
+  fco?: string | null;
+  shippingMethod?: string | null;
+  /** ISO datum (`yyyy-MM-dd`) ili `null` za brisanje. */
+  shippingDate?: string | null;
+  deliveryPlace?: string | null;
+  route?: string | null;
+  customerOrderRef?: string | null;
+  note?: string | null;
+}
+
+/**
+ * Snimi uslove otpreme. Dozvoljeno i na PROKNJIŽENOM dokumentu (ti podaci ne ulaze u
+ * zalihu ni u glavnu knjigu i saznaju se posle knjiženja), ali NE na zaključanom — tada
+ * backend vraća 409. Permisija ROBNO_WRITE.
+ */
+export function useUpdateShipping() {
+  const invalidate = useInvalidateRobno();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: UpdateShippingPayload }) =>
+      apiFetch<Envelope<StockDocument>>(`${BASE}/documents/${id}/shipping`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
       }),
     onSuccess: invalidate,
   });
@@ -570,6 +626,87 @@ export function useCreateStockDocument() {
   });
 }
 
+// ───────────────────────────────────────── prenos između magacina (grupa C)
+
+export interface TransferItemInput {
+  itemId: number;
+  quantity: number | string;
+  lineNo?: number;
+  /** Izostavljeno = ponderisani prosek izvornog magacina (preporučeno). */
+  purchasePriceNet?: number | string;
+  wholesalePrice?: number | string;
+}
+
+export interface CreateTransferInput {
+  sourceWarehouseId: number;
+  targetWarehouseId: number;
+  items: TransferItemInput[];
+  documentDate?: string;
+  postingDate?: string;
+  note?: string;
+  projectId?: number;
+  workOrderId?: number;
+}
+
+/** Jedna strana para (PREIZ izlaz / PREUL ulaz) — obe nastaju u istoj transakciji. */
+export interface TransferSide {
+  id: number;
+  documentNumber: string;
+  documentTypeCode: string;
+  warehouseId: number;
+  documentDate: string;
+  status: string;
+  items: StockDocumentItem[];
+}
+
+export interface TransferPair {
+  outbound: TransferSide;
+  inbound: TransferSide;
+  sourceWarehouseId: number;
+  targetWarehouseId: number;
+  reversed: boolean;
+  reversalDocId: number | null;
+}
+
+/**
+ * Prenos između magacina — PAR dokumenata u JEDNOJ transakciji (razduženje izvora +
+ * zaduženje odredišta). Nikad kroz `useCreateStockDocument`: taj put pravi JEDAN
+ * dokument sa jednim magacinom, pa roba nestane iz lagera (nalaz §3.2).
+ */
+export function useCreateTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateTransferInput) =>
+      apiFetch<Envelope<TransferPair>>(`${BASE}/transfers`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
+  });
+}
+
+/** Detalj prenosa sa OBE strane para (bilo koja strana kao ulaz). */
+export function useTransfer(id: number | null) {
+  return useQuery({
+    queryKey: ['robno', 'transfer', id],
+    queryFn: () => apiFetch<Envelope<TransferPair>>(`${BASE}/transfers/${id}`),
+    enabled: id != null && id > 0,
+  });
+}
+
+/** Storno prenosa — ogledalni par. Dvostruki storno = 409. */
+export function useReverseTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: number; reason?: string }) =>
+      apiFetch<Envelope<TransferPair>>(`${BASE}/transfers/${input.id}/reverse`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: input.reason }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['robno'] }),
+  });
+}
+
 // ─────────────────────────────────── carry-over (prepis dokumenata, Batch B)
 
 /**
@@ -680,3 +817,184 @@ export function useItemCard(filters: ItemCardFilters) {
     enabled,
   });
 }
+
+// ─────────────────────────────────── štampa (PDF, BigBit paritet + nadgradnja)
+
+/**
+ * Obrasci štampe robnog dokumenta — 1:1 sa backend `StockPrintVariant`.
+ * Kad se varijanta ne prosledi, backend je izvodi iz vrste dokumenta
+ * (UL→primka, IZ→izdatnica, NIV→nivelacija, PRENOS→prenosnica, VISAK/MANJAK→zapisnik).
+ */
+export const ROBNO_PRINT_VARIANT = {
+  primka: 'primka',
+  izdatnica: 'izdatnica',
+  otpremnica: 'otpremnica',
+  nivelacija: 'nivelacija',
+  prenosnica: 'prenosnica',
+  kalkulacija: 'kalkulacija',
+  zapisnik: 'zapisnik',
+  trebovanje: 'trebovanje',
+} as const;
+
+export type RobnoPrintVariant =
+  (typeof ROBNO_PRINT_VARIANT)[keyof typeof ROBNO_PRINT_VARIANT];
+
+/** Srpski nazivi obrazaca za meni „Štampaj". */
+export const ROBNO_PRINT_LABEL: Record<RobnoPrintVariant, string> = {
+  primka: 'Prijemnica (primka)',
+  izdatnica: 'Izdatnica',
+  otpremnica: 'Otpremnica (bez cena)',
+  nivelacija: 'Nivelacija cena',
+  prenosnica: 'Prenosnica',
+  kalkulacija: 'Kalkulacija cene (obrazac KL)',
+  zapisnik: 'Zapisnik o višku/manjku',
+  // NIJE narudžbenica dobavljaču (to je BigBit „Trebovanje - DEFAULT" i kod nas
+  // živi u Nabavci) — ovo je zahtev magacinu da izda materijal za proizvodnju.
+  trebovanje: 'Trebovanje materijala (magacin)',
+};
+
+/**
+ * Obrasci koji imaju smisla za datu vrstu dokumenta. Prvi u nizu je podrazumevani.
+ * Otpremnica se nudi i uz izdatnicu — magacin izdaje robu, vozač nosi otpremnicu.
+ */
+export function printVariantsForKind(kind: RobnoKind): RobnoPrintVariant[] {
+  switch (kind) {
+    case ROBNO_KIND.UL:
+      return ['primka', 'kalkulacija'];
+    case ROBNO_KIND.IZ:
+      return ['izdatnica', 'otpremnica', 'trebovanje'];
+    case ROBNO_KIND.NIV:
+      return ['nivelacija'];
+    case ROBNO_KIND.PRENOS:
+      return ['prenosnica'];
+    case ROBNO_KIND.VISAK:
+    case ROBNO_KIND.MANJAK:
+      return ['zapisnik'];
+    default:
+      return ['izdatnica'];
+  }
+}
+
+/**
+ * PDF robnog dokumenta (GET /robno/documents/:id/pdf?variant). Statička štampa ide
+ * kroz `apiBlob` jer ruta traži Authorization header (ne može običan `<a href>`).
+ * Permisija ROBNO_READ.
+ */
+export function useStockDocumentPdf() {
+  return useMutation({
+    mutationFn: ({
+      id,
+      variant,
+      /**
+       * `true` = korisnik je pritisnuo „Štampaj". SAMO tada backend upisuje trag u
+       * `document_prints` i papir može da nosi žig „KOPIJA · primerak br. N".
+       * Pregled dokumenta se NE broji — inače bi prvi fizički otisak izašao kao
+       * kopija, iako original nikad nije odštampan (nalaz revizije 27.07.2026).
+       */
+      trackPrint,
+    }: {
+      id: number;
+      variant?: RobnoPrintVariant;
+      trackPrint?: boolean;
+    }) => {
+      const params = new URLSearchParams();
+      if (variant) params.set('variant', variant);
+      if (trackPrint) params.set('stampa', '1');
+      const q = params.toString();
+      return apiBlob(`${BASE}/documents/${id}/pdf${q ? `?${q}` : ''}`);
+    },
+  });
+}
+
+/** Istorija štampe dokumenta (ko je, kada i koji primerak izvadio). */
+export interface DocumentPrintRow {
+  copyNo: number;
+  variant: string;
+  printedAt: string;
+  printedByName: string | null;
+}
+
+/**
+ * GET /robno/documents/:id/prints — objašnjava odakle broj primerka i žig „KOPIJA"
+ * na papiru. Bez ovoga se tvrdnja sa papira ne može proveriti u aplikaciji.
+ */
+export function useDocumentPrints(id: number | null) {
+  return useQuery({
+    queryKey: ['robno', 'prints', id],
+    queryFn: () =>
+      apiFetch<{ data: DocumentPrintRow[] }>(`${BASE}/documents/${id}/prints`),
+    enabled: id != null && id > 0,
+  });
+}
+
+/**
+ * ZAPISNIK O PRIJEMU ROBE (kvantitativno-kvalitativni) uz ULAZNI dokument —
+ * GET /robno/documents/:id/prijem-zapisnik/pdf. Odvojen obrazac od prijemnice:
+ * poredi naručeno (narudžbenica) sa primljenim; kolone „Rok trajanja",
+ * „Serija / LOT" i „Nalaz kontrole" ostaju PRAZNE za ručni upis komisije jer
+ * evidencija za njih još nema polja po stavci. Permisija ROBNO_READ.
+ */
+export function useGoodsReceiptReportPdf() {
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiBlob(`${BASE}/documents/${id}/prijem-zapisnik/pdf`),
+  });
+}
+
+/** Varijante popisne liste — `prazna` za teren, `popunjena` sa razlikama. */
+export type PopisPrintVariant = 'prazna' | 'popunjena';
+
+/** PDF POPISNE LISTE (GET /robno/inventory-counts/:id/pdf?variant). */
+export function useInventoryCountPdf() {
+  return useMutation({
+    mutationFn: ({
+      id,
+      variant,
+      /** v. `useStockDocumentPdf` — pregled ne troši primerak, štampa da. */
+      trackPrint,
+    }: {
+      id: number;
+      variant: PopisPrintVariant;
+      trackPrint?: boolean;
+    }) =>
+      apiBlob(
+        `${BASE}/inventory-counts/${id}/pdf?variant=${variant}${
+          trackPrint ? '&stampa=1' : ''
+        }`,
+      ),
+  });
+}
+
+/** PDF LAGER LISTE (GET /robno/lager/pdf) — isti filteri kao lista na ekranu. */
+export function useLagerPdf() {
+  return useMutation({
+    mutationFn: (filters: { warehouseId?: number; onlyInStock?: boolean; q?: string } = {}) => {
+      const params = new URLSearchParams();
+      if (filters.warehouseId != null) params.set('warehouseId', String(filters.warehouseId));
+      if (filters.onlyInStock) params.set('onlyInStock', 'true');
+      if (filters.q) params.set('q', filters.q);
+      const query = params.toString() ? `?${params.toString()}` : '';
+      return apiBlob(`${BASE}/lager/pdf${query}`);
+    },
+  });
+}
+
+/** PDF KARTICE ARTIKLA (GET /robno/item-card/pdf) — isti parametri kao panel. */
+export function useItemCardPdf() {
+  return useMutation({
+    mutationFn: (filters: ItemCardFilters) => {
+      const params = new URLSearchParams();
+      params.set('itemId', String(filters.itemId ?? ''));
+      params.set('warehouseId', String(filters.warehouseId ?? ''));
+      if (filters.from) params.set('from', filters.from);
+      if (filters.to) params.set('to', filters.to);
+      return apiBlob(`${BASE}/item-card/pdf?${params.toString()}`);
+    },
+  });
+}
+
+/**
+ * Otvori PDF Blob u novom tabu (pregled u browseru + preuzimanje). Isti idiom kao
+ * `sales`/`glavna-knjiga`; URL se oslobađa posle 30 s da ne curi memorija.
+ */
+export { openPdf } from '@/lib/open-pdf';

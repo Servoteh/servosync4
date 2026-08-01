@@ -97,6 +97,71 @@ export class CompensationService {
   }
 
   /**
+   * Spisak kompenzacija (najnovije prvo) sa brojem stavki — izvor za tabelu na
+   * ekranu i za dugme „Štampaj izjavu". Bez ove liste proknjižena kompenzacija
+   * nije imala nijedan put do štampe posle zatvaranja ekrana.
+   */
+  async list(query: {
+    partnerId?: number | null;
+    status?: string;
+    skip?: number;
+    take?: number;
+  }) {
+    const take = Math.min(query.take ?? 50, 200);
+    const skip = query.skip ?? 0;
+    const where = {
+      ...(query.partnerId != null && query.partnerId > 0
+        ? { partnerId: query.partnerId }
+        : {}),
+      ...(query.status ? { status: query.status } : {}),
+    };
+    const [rows, total] = await Promise.all([
+      this.prisma.compensationOrder.findMany({
+        where,
+        orderBy: [{ date: "desc" }, { id: "desc" }],
+        skip,
+        take,
+        select: {
+          id: true,
+          compensationNumber: true,
+          partnerId: true,
+          date: true,
+          status: true,
+          totalAmount: true,
+          journalEntryId: true,
+          _count: { select: { lines: true } },
+        },
+      }),
+      this.prisma.compensationOrder.count({ where }),
+    ]);
+
+    // Naziv komitenta je meki ref (customers.id) — batch, bez JOIN-a.
+    const partnerIds = [...new Set(rows.map((r) => r.partnerId))];
+    const partners = partnerIds.length
+      ? await this.prisma.customer.findMany({
+          where: { id: { in: partnerIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const nameById = new Map(partners.map((p) => [p.id, p.name]));
+
+    return {
+      data: rows.map((r) => ({
+        id: r.id,
+        compensationNumber: r.compensationNumber,
+        partnerId: r.partnerId,
+        partnerName: nameById.get(r.partnerId) ?? null,
+        date: r.date,
+        status: r.status,
+        totalAmount: r.totalAmount.toFixed(2),
+        journalEntryId: r.journalEntryId,
+        lineCount: r._count.lines,
+      })),
+      meta: { total, skip, take },
+    };
+  }
+
+  /**
    * Kreira kompenzaciju (CompensationOrder + linije). Validira bilateralni
    * bilans (Σ receivable == Σ payable). Ako dto.post=true → knjiži (TODO hook).
    */

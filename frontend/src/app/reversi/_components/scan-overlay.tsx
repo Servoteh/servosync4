@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Flashlight, RefreshCw, Camera } from 'lucide-react';
 import { lookupBarcode, type BarcodeKind, type BarcodeResult } from '@/api/reversi';
+import { useEscapeLayer } from '@/components/ui-kit/escape-layer';
 import {
   applyAndroidPostStartTuning,
   attachVideoDecoder,
@@ -485,18 +486,12 @@ export function ScanOverlay({
     };
   }, [resolve, say, hint]);
 
-  // Esc zatvara SAMO skener. Capture-faza + stopPropagation presreće događaj pre
-  // roditeljskog Dialog-a (koji takođe sluša window keydown).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        cbRef.current.onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, []);
+  // Esc zatvara SAMO skener. Skener se otvara POSLE roditeljskog dijaloga, pa je
+  // na vrhu steka slojeva i Esc je njegov (v. `ui-kit/escape-layer.ts`).
+  // Ranije je ovde stajao sopstveni capture-slušalac na `window`: `stopPropagation`
+  // ne zaustavlja slušaoce na ISTOM čvoru, pa su se okidali i skener i dijalog i
+  // ceo tok skeniranja se zatvarao.
+  useEscapeLayer(true, () => cbRef.current.onClose());
 
   async function toggleTorch() {
     const track = trackRef.current;
