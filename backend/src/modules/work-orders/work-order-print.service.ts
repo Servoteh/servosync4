@@ -34,9 +34,17 @@ export function mmToPt(mm: number): number {
  *   - zaglavlje `Barcode0`: 3552 × 734 tw = 62.65 × 12.95 mm
  *     (varijante `rRN_STD` / `rRN_BezBarKoda`: 3120 × 734 tw = 55.03 × 12.95 mm)
  *   - red operacije `BarKod`: 2340 × 389 tw = 41.28 × 6.86 mm
+ *
+ * Zašto 62.65 a ne 55/57: merodavan je `rRN`, jedini legacy izveštaj koji ima I
+ * barkodove operacija (kao naš); `rRN_STD` (55.03 mm) ih uopšte nema. Širina je
+ * bitna jer određuje X-dimenziju (širinu najuže crte) = širina / broj modula, a
+ * broj modula raste sa dužinom sadržaja. Nad svih 40.942 naloga u živoj bazi
+ * (01.08.2026): na 57 mm 228 naloga (0.56%) padne ispod praga čitljivosti od
+ * 0.19 mm, na 62.65 mm samo 30 (0.07%); najčešća dužina (21 znak, 34% naloga)
+ * ide sa 0.214 na 0.236 mm.
  */
-/** Nalog-barkod u zaglavlju: 57 × 13 mm (vlasnikova mera; legacy visina 12.95 mm). */
-export const RN_ORDER_BARCODE_MM = { width: 57, height: 13 } as const;
+/** Nalog-barkod u zaglavlju: 62.65 × 13 mm (legacy `Barcode0`; visina 12.95 → 13). */
+export const RN_ORDER_BARCODE_MM = { width: 62.65, height: 13 } as const;
 /** Barkod u redu operacije: 41.3 × 6.9 mm (legacy 41.28 × 6.86, zaokruženo na 0.1 mm). */
 export const RN_OPERATION_BARCODE_MM = { width: 41.3, height: 6.9 } as const;
 
@@ -232,7 +240,7 @@ export class WorkOrderPrintService {
           ? {
               svg: orderBarcodeSvg,
               // NE `fit` — `fit` čuva odnos stranica pa visina varira sa dužinom
-              // sadržaja. Eksplicitni width+height daju konstantnih 57 × 13 mm.
+              // sadržaja. Eksplicitni width+height daju konstantnih 62.65 × 13 mm.
               width: RN_ORDER_BARCODE_PT.width,
               height: RN_ORDER_BARCODE_PT.height,
               alignment: "right",

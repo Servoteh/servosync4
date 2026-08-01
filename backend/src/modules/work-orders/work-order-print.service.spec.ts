@@ -206,8 +206,8 @@ describe("WorkOrderPrintService — dimenzije barkoda (docDefinition)", () => {
     height: mmToPt(RN_OPERATION_BARCODE_MM.height),
   };
 
-  it("cilj je 57 x 13 mm (nalog) i 41.3 x 6.9 mm (operacija)", () => {
-    expect(RN_ORDER_BARCODE_MM).toEqual({ width: 57, height: 13 });
+  it("cilj je 62.65 x 13 mm (nalog) i 41.3 x 6.9 mm (operacija)", () => {
+    expect(RN_ORDER_BARCODE_MM).toEqual({ width: 62.65, height: 13 });
     expect(RN_OPERATION_BARCODE_MM).toEqual({ width: 41.3, height: 6.9 });
     expect(mmToPt(25.4)).toBeCloseTo(72, 10);
   });
@@ -223,7 +223,7 @@ describe("WorkOrderPrintService — dimenzije barkoda (docDefinition)", () => {
   ];
 
   it.each(payloads)(
-    "%s: nalog-barkod je fiksnih 57 x 13 mm, bez `fit`",
+    "%s: nalog-barkod je fiksnih 62.65 x 13 mm, bez `fit`",
     async (_l, o) => {
       const { service, prisma, pdf } = setup();
       prisma.workOrder.findUnique.mockResolvedValue(
@@ -304,7 +304,7 @@ describe("WorkOrderPrintService — dimenzije barkoda (docDefinition)", () => {
 /**
  * Minimalni citac PDF content stream-a — meri gde su crte barkoda STVARNO
  * odstampane. Cvor u `docDefinition`-u nije dovoljan dokaz: ako se izgubi
- * `preserveAspectRatio="none"`, okvir ostaje 57 x 13 mm ali se simbol u njemu
+ * `preserveAspectRatio="none"`, okvir ostaje 62.65 x 13 mm ali se simbol u njemu
  * uklapa uz ocuvanje odnosa stranica (letterbox) i odstampana visina opet pada.
  */
 interface Bar {
@@ -486,7 +486,7 @@ describe("WorkOrderPrintService — izmereno na stvarnom PDF-u", () => {
   ];
 
   it.each(cases)(
-    "%s: zaglavlje 57 x 13 mm, operacije 41.3 x 6.9 mm",
+    "%s: zaglavlje 62.65 x 13 mm, operacije 41.3 x 6.9 mm",
     async (_l, o) => {
       const service = setupReal(makeWo({ ...o, operations: SIX_OPS }));
       const { buffer } = await service.buildRnPdf(1);
