@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { ScanLine, X } from 'lucide-react';
 import { LOC_TYPE_LABEL, type LocLocation } from '@/api/lokacije';
+import { formatNumber } from '@/lib/format';
 
 /**
  * Pretraživi izbor lokacije iz učitane liste aktivnih lokacija (klijentski filter
@@ -10,6 +11,75 @@ import { LOC_TYPE_LABEL, type LocLocation } from '@/api/lokacije';
  * `kinds` opciono ograničava tipove (npr. samo hale za premeštaj kaveza).
  */
 const HALL_SET = new Set(['WAREHOUSE', 'PRODUCTION', 'ASSEMBLY', 'FIELD', 'TEMP']);
+
+/** Police u širem smislu (paritet `SHELF_TYPES`) — mete magacionerskih tokova. */
+const SHELF_SET = new Set(['SHELF', 'RACK', 'BIN']);
+
+/**
+ * Koliko opcija ulazi u DOM (i na prazan upit i na rezultat pretrage).
+ *
+ * Prijava iz pogona 01.08: „aplikacija ne prikazuje sve police, a stara ih
+ * prikazuje". Podaci su bili tu (1.357 aktivnih lokacija, 1.111 polica; backend
+ * ih uredno vraća) — lista je sekla na 40 BEZ ijedne poruke da ostatak postoji,
+ * pa je tražena polica često bila van liste i bez traga da je treba iskucati.
+ * 200 redova je za DOM bezbolno, a drastično smanjuje šansu za taj promašaj.
+ */
+export const LOC_OPTION_LIMIT = 200;
+
+/**
+ * Klijentski filter opcija lokacije + „police prvo" + sečenje na `limit`.
+ *
+ * Izdvojeno iz komponente jer mobilni batch ekran (`/mob/lokacije/batch`) ima
+ * SVOJ punoekranski izbor police — semantika (šta se pretražuje, koliko se
+ * prikazuje, šta ide prvo) mora biti identična na oba mesta, inače se ista
+ * prijava vraća sa drugog ekrana.
+ *
+ * `total` je broj kandidata PRE sečenja — pozivalac iz njega gradi poruku o
+ * ostatku (v. `locOptionsTruncatedHint`).
+ */
+export function filterLocationOptions(
+  base: LocLocation[],
+  query: string,
+  opts: { shelvesFirst?: boolean; limit?: number } = {},
+): { items: LocLocation[]; total: number } {
+  const limit = opts.limit ?? LOC_OPTION_LIMIT;
+  const s = query.trim().toLowerCase();
+  const hits = s
+    ? base.filter(
+        (l) =>
+          l.locationCode.toLowerCase().includes(s) ||
+          (l.name ?? '').toLowerCase().includes(s) ||
+          (l.pathCached ?? '').toLowerCase().includes(s),
+      )
+    : base;
+  // Prazan upit: police pre ostalih tipova (magacioner najčešće bira policu).
+  // `sort` je stabilan → unutar obe grupe ostaje serverski redosled (pathCached asc).
+  // Uz upit se redosled NE dira — tada korisnik gleda pogotke, ne katalog.
+  const ordered =
+    !s && opts.shelvesFirst
+      ? [...hits].sort(
+          (a, b) =>
+            Number(SHELF_SET.has(b.locationType)) - Number(SHELF_SET.has(a.locationType)),
+        )
+      : hits;
+  return { items: ordered.slice(0, limit), total: hits.length };
+}
+
+/**
+ * Diskretna poruka o odsečenom ostatku; `null` kad lista nije odsečena.
+ * Bez nje korisnik nema NAČIN da sazna da lista ima nastavak — to je bio ceo
+ * bug (3 vidljive police od 1.111), pa je poruka deo popravke, ne ukras.
+ */
+export function locOptionsTruncatedHint(
+  shown: number,
+  total: number,
+  hasQuery: boolean,
+): string | null {
+  if (total <= shown) return null;
+  return `Prikazano prvih ${formatNumber(shown)} od ${formatNumber(total)} — ${
+    hasQuery ? 'dopuni upit da suziš listu.' : 'kucaj deo šifre ili naziva za pretragu.'
+  }`;
+}
 
 export function LocationSelect({
   locations,
@@ -19,6 +89,7 @@ export function LocationSelect({
   placeholder = 'Pretraži lokaciju…',
   kinds,
   groupByHall = false,
+  shelvesFirst = false,
 }: {
   locations: LocLocation[];
   value: string | null;
@@ -28,6 +99,13 @@ export function LocationSelect({
   kinds?: string[];
   /** Grupiši rezultate po nadređenoj hali (optgroup — paritet 1.0 grupisana destinacija). */
   groupByHall?: boolean;
+  /**
+   * Na prazan upit prvo ponudi police/regale/kese — magacionerski tokovi („sa
+   * lokacije" / „na lokaciju", batch odredište) skoro uvek ciljaju policu.
+   * NE uključivati tamo gde se bira HALA (roditelj lokacije u formi): tamo bi
+   * police potisnule tačan odgovor sa vrha liste.
+   */
+  shelvesFirst?: boolean;
 }) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
@@ -37,19 +115,15 @@ export function LocationSelect({
     [value, locations],
   );
 
-  const filtered = useMemo(() => {
-    const base = kinds ? locations.filter((l) => kinds.includes(l.locationType)) : locations;
-    const s = q.trim().toLowerCase();
-    if (!s) return base.slice(0, 40);
-    return base
-      .filter(
-        (l) =>
-          l.locationCode.toLowerCase().includes(s) ||
-          l.name.toLowerCase().includes(s) ||
-          l.pathCached.toLowerCase().includes(s),
-      )
-      .slice(0, 40);
-  }, [locations, q, kinds]);
+  const base = useMemo(
+    () => (kinds ? locations.filter((l) => kinds.includes(l.locationType)) : locations),
+    [locations, kinds],
+  );
+  const { items: filtered, total } = useMemo(
+    () => filterLocationOptions(base, q, { shelvesFirst }),
+    [base, q, shelvesFirst],
+  );
+  const moreHint = locOptionsTruncatedHint(filtered.length, total, q.trim() !== '');
 
   // Grupisanje po hali: nađi najbližeg pretka tipa HALA (šetnja parentId unutar liste).
   const groups = useMemo(() => {
@@ -117,18 +191,34 @@ export function LocationSelect({
           className="w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink placeholder:text-ink-disabled outline-none focus:border-accent"
         />
         {open && (
-          <div className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-control border border-line bg-surface shadow-lg">
+          // Visina: na telefonu 60vh (≈ 6+ stavki od po dva reda) pa se ODMAH vidi
+          // da lista ima nastavak; na ≥640px ostaje zatečenih 224px (dropdown u
+          // dijalogu ne sme da preraste modal, a miš ima vidljiv scrollbar).
+          <div className="absolute z-10 mt-1 max-h-[min(60vh,26rem)] w-full overflow-auto rounded-control border border-line bg-surface shadow-lg sm:max-h-56">
             {filtered.length === 0 ? (
               <div className="px-3 py-2 text-sm text-ink-disabled">Nema rezultata.</div>
-            ) : groups ? (
-              groups.map(([label, items]) => (
-                <div key={label}>
-                  <div className="sticky top-0 bg-surface-2 px-3 py-1 text-2xs font-semibold uppercase tracking-wide text-ink-secondary">{label}</div>
-                  {items.map(renderOption)}
-                </div>
-              ))
             ) : (
-              filtered.map(renderOption)
+              <>
+                {groups
+                  ? groups.map(([label, items]) => (
+                      <div key={label}>
+                        <div className="sticky top-0 bg-surface-2 px-3 py-1 text-2xs font-semibold uppercase tracking-wide text-ink-secondary">{label}</div>
+                        {items.map(renderOption)}
+                      </div>
+                    ))
+                  : filtered.map(renderOption)}
+                {moreHint && (
+                  // Lepljivo na dnu — poruka na kraju 200 redova ne bi bila viđena,
+                  // a ceo smisao joj je da se vidi bez skrolovanja. `preventDefault`
+                  // sprečava da slučajan tap po poruci zatvori listu (blur).
+                  <div
+                    onMouseDown={(e) => e.preventDefault()}
+                    className="sticky bottom-0 border-t border-line bg-surface-2 px-3 py-1.5 text-2xs leading-snug text-ink-secondary"
+                  >
+                    {moreHint}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

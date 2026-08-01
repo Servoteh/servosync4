@@ -32,6 +32,10 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui-kit/button';
 import { ScanOverlay } from '@/app/lokacije/_components/scan-overlay';
+import {
+  filterLocationOptions,
+  locOptionsTruncatedHint,
+} from '@/app/lokacije/_components/location-select';
 import { normalizeLocMovementKeys } from '@/app/lokacije/_components/label-build';
 import {
   newClientEventUuid,
@@ -138,20 +142,24 @@ export default function MobLokacijeBatchPage() {
   const locById = useMemo(() => new Map(locList.map((l) => [l.id, l])), [locList]);
 
   // Kandidati za odredište: sve sem mašina (paritet MovementDialog `destLocations`
-  // bez čekiranog „Prikaži i mašine kao destinaciju").
-  const destOptions = useMemo(() => {
-    const q = destQuery.trim().toLowerCase();
-    const base = locList.filter((l) => l.locationType !== 'MACHINE');
-    if (!q) return base.slice(0, 30);
-    return base
-      .filter(
-        (l) =>
-          l.locationCode.toLowerCase().includes(q) ||
-          (l.name ?? '').toLowerCase().includes(q) ||
-          (l.pathCached ?? '').toLowerCase().includes(q),
-      )
-      .slice(0, 30);
-  }, [locList, destQuery]);
+  // bez čekiranog „Prikaži i mašine kao destinaciju"). Filter/limit/redosled idu
+  // kroz ZAJEDNIČKI `filterLocationOptions` sa `LocationSelect`-om — ovaj ekran
+  // je sekao na 30 od 1.357 lokacija bez ijedne poruke, ista prijava iz pogona
+  // kao za desktop picker (01.08). `shelvesFirst`: korak je „izaberi policu".
+  const { items: destOptions, total: destTotal } = useMemo(
+    () =>
+      filterLocationOptions(
+        locList.filter((l) => l.locationType !== 'MACHINE'),
+        destQuery,
+        { shelvesFirst: true },
+      ),
+    [locList, destQuery],
+  );
+  const destHint = locOptionsTruncatedHint(
+    destOptions.length,
+    destTotal,
+    destQuery.trim() !== '',
+  );
 
   // Offline queue: broj neposlatih + auto-flush kad se mreža vrati (paritet `/mob/lokacije`).
   useEffect(() => {
@@ -370,28 +378,36 @@ export default function MobLokacijeBatchPage() {
             {locs.isLoading ? (
               <p className="py-6 text-center text-sm text-ink-secondary">Učitavam lokacije…</p>
             ) : (
-              <ul className="divide-y divide-line-soft overflow-hidden rounded-panel border border-line bg-surface">
-                {destOptions.map((l) => (
-                  <li key={l.id}>
-                    <button
-                      onClick={() => setDest(l)}
-                      className={`flex min-h-12 w-full items-center gap-2 px-4 py-2 text-left active:bg-surface-2 ${FOCUS}`}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold text-ink">{l.locationCode}</span>
-                        {l.name && (
-                          <span className="block truncate text-xs text-ink-secondary">{l.name}</span>
-                        )}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-                {destOptions.length === 0 && (
-                  <li className="px-4 py-6 text-center text-sm text-ink-secondary">
-                    Nema lokacije za taj upit.
-                  </li>
+              <>
+                {/* Poruka o ostatku stoji IZNAD liste (ne na dnu kao u dropdown-u):
+                    ovde lista skroluje celu stranu, pa red posle 200 stavki niko
+                    ne bi video — a poruka postoji baš da bi se videla odmah. */}
+                {destHint && (
+                  <p className="px-1 text-xs leading-snug text-ink-secondary">{destHint}</p>
                 )}
-              </ul>
+                <ul className="divide-y divide-line-soft overflow-hidden rounded-panel border border-line bg-surface">
+                  {destOptions.map((l) => (
+                    <li key={l.id}>
+                      <button
+                        onClick={() => setDest(l)}
+                        className={`flex min-h-12 w-full items-center gap-2 px-4 py-2 text-left active:bg-surface-2 ${FOCUS}`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold text-ink">{l.locationCode}</span>
+                          {l.name && (
+                            <span className="block truncate text-xs text-ink-secondary">{l.name}</span>
+                          )}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                  {destOptions.length === 0 && (
+                    <li className="px-4 py-6 text-center text-sm text-ink-secondary">
+                      Nema lokacije za taj upit.
+                    </li>
+                  )}
+                </ul>
+              </>
             )}
           </>
         ) : (
