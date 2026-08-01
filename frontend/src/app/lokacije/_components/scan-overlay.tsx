@@ -341,6 +341,36 @@ function writeCamChoice(deviceId: string, label: string): void {
   }
 }
 
+/**
+ * Zagrevanje capability-pickera PRI ZATVARANJU skenera (01.08).
+ *
+ * ZAŠTO: na Chrome-u/Androidu pre nego što je kamera ijednom odobrena,
+ * `enumerateDevices()` vraća JEDAN placeholder bez labele — picker tada
+ * strukturno ne može da radi (`backs.length <= 1` → null), pa je PRVA sesija na
+ * multi-lens telefonu uvek `facingMode` lutrija (Samsung A-serija ume da vrati
+ * macro objektiv: preview radi, barkod se nikad ne dekodira). Posle prve sesije
+ * permisija POSTOJI i labele su vidljive — pa se izbor može izmeriti mirno, dok
+ * niko ne skenira, i keširati za sledeće otvaranje (svih ljuski, keš je zajednički).
+ *
+ * Zove se iz cleanup-a TEK POSLE `stopStream()` — probe otvara kameru, pa naš
+ * stream mora prvo da bude pušten; povrh toga se čeka OS cooldown, inače prvi
+ * probe padne NotReadableError i picker uzorak ostane nepotpun (tada se namerno
+ * NE kešira). Sve je fire-and-forget: ništa se ne čeka i ništa se ne prijavljuje.
+ */
+function warmCameraPickerAfterClose(): void {
+  if (typeof window === 'undefined') return;
+  if (!shouldRunCameraPicker() || hasStoredCameraChoice()) return;
+  window.setTimeout(() => {
+    // Stranica je u međuvremenu otišla u pozadinu (ili je drugi skener već upisao
+    // izbor) — ne otimaj kameru u pozadini i ne troši probe bez potrebe.
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    if (hasStoredCameraChoice()) return;
+    void pickPreferredBackCamera().catch(() => {
+      /* best-effort zagrevanje — regularni put i dalje radi bez keša */
+    });
+  }, 600);
+}
+
 type StatusKind = 'info' | 'ok' | 'warn' | 'error';
 type BatchRow = { code: string; kind: LocBarcodeKind; at: number };
 
@@ -430,7 +460,15 @@ export function ScanOverlay({
     // se NE duplira. REPEAT_GUARD_MS = kratki anti-double gard za ručni/HID unos.
     const REARM_GAP_MS = 900;
     const REPEAT_GUARD_MS = 700;
-    const heldRef = { code: '', seenAt: 0 };
+    // DVA ODVOJENA re-arm slota (ISPRAVKA 01.08): prihvaćen i odbijen kod se pamte
+    // nezavisno. Ranije je postojao jedan slot koji je `resolve` punio PRE BE
+    // lookup-a, pa je odbijen kod (barkod operacije `S:…` iz susednog reda na
+    // štampanom RN-u, tuđi tip u ovom koraku…) IZBACIVAO prihvaćeni nalog iz slota
+    // — čim se nalog vrati u kadar, u kontinuiranom režimu bi bio obrađen DRUGI PUT.
+    // Odbijeni kod svejedno mora da ima svoj slot: bez njega bi stacionaran pogrešan
+    // barkod terao BE lookup na svaki frejm (mrežni spam + treperenje poruke).
+    const heldRef = { code: '', seenAt: 0 }; // poslednji PRIHVAĆEN kod
+    const rejectedRef = { code: '', seenAt: 0 }; // poslednji ODBIJEN kod
 
     const say = (msg: string, kind: StatusKind = 'info') => {
       setStatus(msg);
@@ -546,15 +584,15 @@ export function ScanOverlay({
       const code = normalize(raw);
       if (!code || busyRef.v) return;
       const now = Date.now();
-      // Kratki gard protiv slučajnog dvostrukog slanja (ručni/HID); kontinuirani
-      // kamera-put re-arm rešava „napustio kadar" gejt u decode petlji (heldRef).
+      // Kratki gard protiv slučajnog dvostrukog slanja VEĆ PRIHVAĆENOG koda
+      // (ručni/HID); kontinuirani kamera-put re-arm rešava „napustio kadar" gejt
+      // u decode petlji (heldRef/rejectedRef).
       if (code === lastRef.code && now - lastRef.at < REPEAT_GUARD_MS) return;
-      lastRef.code = code;
-      lastRef.at = now;
-      heldRef.code = code; // latch: isti kod u kadru se ne procesira dok ne izađe
-      heldRef.seenAt = now;
       busyRef.v = true;
       setBusy(true);
+      // Slotovi se pune TEK PO ISHODU (v. deklaracije iznad): dok lookup traje,
+      // ponovljeni pogoci istog koda su ionako odbijeni `busyRef` gardom.
+      let accepted = false;
       try {
         const { data } = await lookupLocBarcode(code);
         // Barkod OPERACIJE (`S:…`) nije „nepoznat format" nego POGREŠAN RED na
@@ -584,6 +622,7 @@ export function ScanOverlay({
         }
         if (data.kind === 'ITEM' && (!data.records || data.records.length === 0))
           say(`Stavka ${code} nije trenutno smeštena (nema aktivnog placement-a)`, 'info');
+        accepted = true;
         navigator.vibrate?.(80);
         cbRef.current.onResult(data);
         if (continuousRef.current) {
@@ -595,6 +634,20 @@ export function ScanOverlay({
       } catch (e) {
         say(e instanceof Error ? e.message : 'Greška pri razrešavanju.', 'error');
       } finally {
+        // Slot se meri od KRAJA obrade (BE roundtrip ume da traje) — dekoder tek
+        // odavde nadalje ponovo javlja isti kod, pa se re-arm prozor računa odatle.
+        const done = Date.now();
+        if (accepted) {
+          lastRef.code = code;
+          lastRef.at = done;
+          heldRef.code = code; // latch: prihvaćen kod se ne obrađuje dok ne izađe iz kadra
+          heldRef.seenAt = done;
+          if (rejectedRef.code === code) rejectedRef.code = ''; // više nije odbijen
+        } else {
+          // Odbijen (ili pao) kod ima SVOJ slot — prihvaćeni ostaje netaknut.
+          rejectedRef.code = code;
+          rejectedRef.seenAt = done;
+        }
         busyRef.v = false;
         setBusy(false);
       }
@@ -623,22 +676,33 @@ export function ScanOverlay({
     // odsustvo koda meri od poslednjeg viđenja: isti kod posle pauze duže od
     // REARM_GAP_MS = kod je izlazio iz kadra → prihvati ponovo (re-arm);
     // isti kod bez pauze = stacionaran u kadru → ignoriši (bez dupliranja).
+    /**
+     * Gejt nad JEDNIM slotom. `true` = ovaj pogodak se ignoriše (kod je i dalje u
+     * kadru). Usput stari slot koji niko nije video duže od REARM_GAP_MS — tako
+     * dva slota (prihvaćen/odbijen) žive nezavisno i nijedan ne blokira drugi.
+     */
+    const gateSlot = (slot: { code: string; seenAt: number }, nrv: string, now: number): boolean => {
+      if (slot.code === nrv) {
+        if (now - slot.seenAt > REARM_GAP_MS) {
+          slot.code = ''; // napustio kadar → re-arm
+          return false;
+        }
+        slot.seenAt = now;
+        return true;
+      }
+      if (slot.code && now - slot.seenAt > REARM_GAP_MS) slot.code = '';
+      return false;
+    };
     const onDecoderRaw = (raw: string) => {
       if (stopped) return;
       const nrv = normalize(raw);
       if (!nrv) return;
       const now = Date.now();
-      if (nrv === heldRef.code) {
-        if (now - heldRef.seenAt > REARM_GAP_MS) {
-          heldRef.code = '';
-        } else {
-          heldRef.seenAt = now;
-          return;
-        }
-      } else if (heldRef.code && now - heldRef.seenAt > REARM_GAP_MS) {
-        heldRef.code = '';
-      }
-      if (nrv !== heldRef.code) void resolve(raw);
+      // OBA slota se gejtuju (bez short-circuit-a — i drugi mora da ostari/osveži se).
+      const heldHit = gateSlot(heldRef, nrv, now);
+      const rejectedHit = gateSlot(rejectedRef, nrv, now);
+      if (heldHit || rejectedHit) return;
+      void resolve(raw);
     };
 
     // ── AF fix + anti-glare (best-effort, Android) — paritet barcode.js ──────
@@ -769,13 +833,18 @@ export function ScanOverlay({
       const dev = backCams[next];
       if (!dev?.deviceId) return;
       say(`📷 Prebacujem na: ${dev.label || `objektiv ${next + 1}`}…`);
-      if (manualPick) {
+      const opened = await startCamera(dev.deviceId);
+      // KEŠ TEK POSLE USPEHA (ISPRAVKA 01.08): ranije su se oba keša pisala PRE
+      // `startCamera`, pa je objektiv koji se NE otvori (nestao, zauzet, odbijen
+      // constraint) trovao i ovaj ekran i zajednički picker keš narednih 30 dana —
+      // korisnik bi na svakom sledećem otvaranju dobijao kameru koja ne radi, bez
+      // ijednog načina da to poništi osim brisanja podataka sajta.
+      if (opened && manualPick) {
         writeCamChoice(dev.deviceId, dev.label || '');
         // Isti izbor upiši i u keš capability-pickera (lib/camera-picker) —
         // inače bi auto-picker pri sledećem otvaranju „ispravljao" korisnika.
         rememberManualCameraChoice(dev.deviceId, dev.label || '');
       }
-      await startCamera(dev.deviceId);
     };
     const autoSwitchBadLens = async (track: MediaStreamTrack) => {
       if (backCams.length < 2) return;
@@ -840,8 +909,20 @@ export function ScanOverlay({
     };
 
     // ── Start / restart kamere (deviceId override za lens/force-back) ────────
-    const startCamera = async (deviceId?: string): Promise<void> => {
-      if (stopped) return;
+    /**
+     * Vraća `true` SAMO kad je otvoren i pušten baš TRAŽENI `deviceId` — to je
+     * ugovor za pozivaoca koji na osnovu ishoda pamti izbor objektiva
+     * (`cycleLens`). Fallback na `facingMode` (traženi objektiv nestao/zauzet)
+     * NIJE uspeh: keširati taj deviceId značilo bi zaključati korisnika 30 dana
+     * na kameru koja se ne otvara.
+     * `reason: 'resume'` = povratak iz pozadine (v. `onResume`) — samo utišava
+     * poruku „Prebacujem objektiv…", tok je isti.
+     */
+    const startCamera = async (
+      deviceId?: string,
+      reason?: 'resume',
+    ): Promise<boolean> => {
+      if (stopped) return false;
       // 1.0 lekcija (isScanSupported): podrška se gejtuje SAMO na getUserMedia.
       // BarcodeDetector NIJE uslov — iPhone/Firefox dobijaju ZXing/jsQR put.
       if (!isCameraDecodeSupported()) {
@@ -849,7 +930,7 @@ export function ScanOverlay({
           'Kamera nije dostupna u ovom pregledaču (getUserMedia) — proveri HTTPS, ili koristi HID čitač / ručni unos.',
           'error',
         );
-        return;
+        return false;
       }
       stopStream();
       // `stopStream` podiže decoderSeq — pamtimo „našu" generaciju da zakasneli
@@ -857,13 +938,16 @@ export function ScanOverlay({
       // force-back, zatvaranje) pokrene svoj start.
       let startSeq = decoderSeq;
       const aborted = () => stopped || startSeq !== decoderSeq;
-      // Samsung Internet: OS release prethodne sesije kasni ~350ms; iOS WebKit
-      // traži ~180ms pre novog getUserMedia (1.0 barcode.js:772-774).
-      if (isSamsungInternetBrowser()) await new Promise((r) => setTimeout(r, 350));
+      // Samsung Internet: OS release prethodne sesije kasni 350-450ms; iOS WebKit
+      // traži ~180ms pre novog getUserMedia (1.0 barcode.js:298-314 / 772-774).
+      // 450ms je KANON (isto što vraća `cameraCooldownMs()` koji koriste maint i
+      // reversi ljuska i picker) — na 350ms je Samsung Internet i dalje umeo da
+      // vrati NotReadableError na drugom skenu u sesiji.
+      if (isSamsungInternetBrowser()) await new Promise((r) => setTimeout(r, 450));
       else if (isIOSWebPlatform()) await new Promise((r) => setTimeout(r, 180));
       // …a povrh pauze i dva rAF ciklusa: pauza pokriva OS, rAF pokriva pipeline.
       await twoRafs();
-      if (aborted()) return;
+      if (aborted()) return false;
 
       const acceptShelf = cbRef.current.accept.includes('SHELF');
       const formats: DecodeFormat[] = decodeFormats();
@@ -886,9 +970,11 @@ export function ScanOverlay({
         } catch {
           pickedDeviceId = null; // pad pickera = nastavi starim putem (facingMode)
         }
-        if (aborted()) return;
+        if (aborted()) return false;
       }
       const useDeviceId = deviceId ?? pickedDeviceId ?? null;
+      // Prati da li je na kraju otvoren BAŠ traženi objektiv (v. JSDoc iznad).
+      let openedRequested = !!useDeviceId;
 
       const constraints: MediaStreamConstraints = {
         video: useDeviceId
@@ -936,38 +1022,40 @@ export function ScanOverlay({
 
       // Poruka prati NAMERU korisnika (ručni cycle), ne to što je picker izabrao
       // deviceId — inače bi prvo otvaranje na Androidu pisalo „Prebacujem objektiv".
-      say(deviceId ? 'Prebacujem objektiv…' : '📷 Tražim kameru…');
+      // Pri povratku iz pozadine ostaje „Vraćam kameru…" koje je već postavio `onResume`.
+      if (reason !== 'resume') say(deviceId ? 'Prebacujem objektiv…' : '📷 Tražim kameru…');
       let stream: MediaStream;
       try {
         stream = await openStream(constraints);
       } catch (e) {
         // Mrtva generacija (drugi start / zatvaranje) — bez fallback getUserMedia-a
         // i bez poruke: aktuelan start ima svoj tok i svoju poruku.
-        if (aborted()) return;
+        if (aborted()) return false;
         // Ako je izabrani (keširan/picker) deviceId nestao, probaj default environment.
         if (useDeviceId) {
           try {
             stream = await openStream({
               video: { ...videoBase, facingMode: { ideal: 'environment' } },
             });
+            openedRequested = false; // otvoren je fallback, ne traženi objektiv
           } catch (e2) {
-            if (aborted()) return; // isti razlog kao gore — poruka pripada novom startu
+            if (aborted()) return false; // isti razlog kao gore — poruka pripada novom startu
             say(formatCameraError(e2), 'error');
-            return;
+            return false;
           }
         } else {
           say(formatCameraError(e), 'error');
-          return;
+          return false;
         }
       }
       if (aborted()) {
         stream.getTracks().forEach((t) => t.stop());
-        return;
+        return false;
       }
       const v = videoRef.current;
       if (!v) {
         stream.getTracks().forEach((t) => t.stop());
-        return;
+        return false;
       }
       v.srcObject = stream;
       try {
@@ -980,6 +1068,16 @@ export function ScanOverlay({
         await v.play();
       } catch {
         /* autoplay guard — muted playsInline obično prolazi */
+      }
+      // `play()` je asinhron: dok se čekao, mogao je krenuti NOVI start (cycleLens,
+      // force-back, povratak iz pozadine) ili zatvaranje skenera. Bez ove provere
+      // stale start ide dalje i u `++decoderSeq` ispod KRADE generaciju aktuelnom
+      // startu — dekoder aktuelnog starta se tada sam ugasi (`isStopped`), a mi
+      // ostajemo zakačeni na kadar koji smo taman ugasili. Isti guard postoji u
+      // maint (maint-scan-overlay:248-251) i reversi ljusci (:390-393).
+      if (aborted()) {
+        stream.getTracks().forEach((t) => t.stop());
+        return false;
       }
       const track = stream.getVideoTracks()[0] ?? null;
       curDeviceId =
@@ -1016,6 +1114,7 @@ export function ScanOverlay({
       }
 
       window.setTimeout(() => void afterCameraReady(getTrack()), 500);
+      return openedRequested;
     };
 
     // ── Decode iz slike — 1.0 paritet: ZXing 11-pokušaja pipeline (radi i na
@@ -1158,7 +1257,11 @@ export function ScanOverlay({
         applyZoomDebounced(v);
       },
       tapFocus,
-      restart: () => startCamera(),
+      // `startCamera` vraća „da li je otvoren traženi objektiv" — ljusci to ovde
+      // ne treba, pa se ishod namerno guta (ugovor kontrole ostaje Promise<void>).
+      restart: async () => {
+        await startCamera();
+      },
     };
 
     // ── Globalni event-i ────────────────────────────────────────────────────
@@ -1168,18 +1271,46 @@ export function ScanOverlay({
         cbRef.current.onClose();
       }
     };
+    // Pozadina / zaključan ekran / prelazak u drugu aplikaciju mora da PUSTI
+    // kameru — inače povratak daje zamrznut preview ili NotReadableError.
     const onPageHide = () => {
       try {
         stopStream();
       } catch {
         /* ignore */
       }
+      // Bez ovoga retikla i status i dalje „glume" živu kameru nad crnim <video>.
+      cameraOnRef.v = false;
+      setCameraOn(false);
+    };
+    /**
+     * Put NAZAD (ISPRAVKA 01.08 — obrazac maint ljuske, maint-scan-overlay:289-300):
+     * ranije je postojala samo `hidden` grana, pa je posle zaključavanja ekrana,
+     * prelaska u drugu aplikaciju ili Android „Iz slike" file picker-a (koji takođe
+     * okida `hidden`!) kamera ostajala TRAJNO crna — a `cameraOn` je ostajao `true`,
+     * pa su retikla i status glumili da skener radi. U magacinu je to svakodnevno.
+     *
+     * Gejt je ŽIVI stream (`getTrack()`), pa dupli okidač (`pageshow` + `visibilitychange`
+     * stižu jedan za drugim na bfcache povratku) ne pravi dva starta. A i kad bi ga
+     * napravio — start koji je u letu još nema `srcObject` — kolabira ga generacijska
+     * disciplina: `startCamera` odmah zove `stopStream()` koji podiže `decoderSeq`,
+     * pa stariji start na prvoj `aborted()` proveri sam odustane i ugasi svoj stream.
+     */
+    const onResume = () => {
+      if (stopped || pitfalls.blocker) return; // zatvoreno / iOS blokada (kamera nikad nije ni krenula)
+      if (getTrack()) return; // kamera je već živa — ništa se nije ni gasilo
+      say('📷 Vraćam kameru…');
+      // Zadrži objektiv koji je bio aktivan (ručni cycle / picker izbor) — bez
+      // ovoga bi se na Androidu ponovo plaćao pun picker probe ciklus.
+      void startCamera(curDeviceId ?? undefined, 'resume');
     };
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') onPageHide();
+      else onResume();
     };
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onResume); // bfcache povratak (iOS Safari)
     document.addEventListener('visibilitychange', onVisibility);
 
     // ── Init ────────────────────────────────────────────────────────────────
@@ -1210,10 +1341,13 @@ export function ScanOverlay({
       if (vvUnbind) vvUnbind();
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onResume);
       document.removeEventListener('visibilitychange', onVisibility);
       stopStream();
       void terminateLabelOcrWorker();
       ctrlRef.current = null;
+      // Kamera je TEK SADA slobodna → zagrej picker za sledeće otvaranje (v. JSDoc).
+      warmCameraPickerAfterClose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -23,7 +23,7 @@
  * `lokacije.read`. Static export: čista statička ruta, bez `[id]`/`useSearchParams`.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Check, ChevronLeft, ScanLine, Search, Trash2, X } from 'lucide-react';
@@ -124,6 +124,15 @@ export default function MobLokacijeBatchPage() {
   const [sending, setSending] = useState<{ done: number; total: number } | null>(null);
   const [pending, setPending] = useState(0);
 
+  // `sendAll` je DUGA sekvencijalna petlja (red po red, mreža između): korisnik u
+  // međuvremenu menja količinu ili briše red, a `patch()` pravi NOVE objekte —
+  // snapshot iz zatvarača petlje bi poslao ZASTARELU količinu i tiho progutao
+  // ispravku (ISPRAVKA 01.08). Zato petlja čita svež red iz ovog ref-a, po ključu.
+  const linesRef = useRef<BatchLine[]>(lines);
+  useEffect(() => {
+    linesRef.current = lines;
+  }, [lines]);
+
   const locs = useAllLocations('true');
   const locList = useMemo<LocLocation[]>(() => locs.data ?? [], [locs.data]);
   const locById = useMemo(() => new Map(locList.map((l) => [l.id, l])), [locList]);
@@ -218,7 +227,16 @@ export default function MobLokacijeBatchPage() {
 
     setSending({ done: 0, total: targets.length });
     let done = 0;
-    for (const l of targets) {
+    for (const t of targets) {
+      // SVEŽE stanje reda (ključ je stabilan: nalog+stavka) — količina koju je
+      // korisnik izmenio dok slanje traje MORA da bude ona koja se šalje; red
+      // obrisan u međuvremenu se preskače, ali i dalje broji u progresu N/M.
+      const l = linesRef.current.find((x) => x.key === t.key);
+      if (!l || l.status === 'done' || l.status === 'queued') {
+        done += 1;
+        setSending({ done, total: targets.length });
+        continue;
+      }
       const qty = Number(l.qty);
       if (!Number.isFinite(qty) || qty <= 0) {
         patch(l.key, { status: 'error', error: 'Količina mora biti veća od 0.' });

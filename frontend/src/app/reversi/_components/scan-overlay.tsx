@@ -285,6 +285,11 @@ export function ScanOverlay({
       } catch {
         /* ignore */
       }
+      // Lampa se GASI zajedno sa track-om (torch je constraint na streamu), pa
+      // `torchOn` mora da padne s njim: bez ovoga posle povratka iz pozadine UI
+      // i dalje pokazuje upaljenu lampu nad ugašenim LED-om — korisnik onda tapne
+      // dugme (koje šalje torch:false) i tek DRUGI tap upali svetlo.
+      setTorchOn(false);
     };
 
     // Prolazna greška (OS još drži senzor) vs prava — 1.0 barcode.js:1120-1144.

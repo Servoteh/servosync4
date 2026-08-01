@@ -221,6 +221,9 @@ interface NativeDetectorLike {
   detect: (source: CanvasImageSource) => Promise<{ rawValue: string }[]>;
 }
 
+/** Koliko se čeka `BarcodeDetector.getSupportedFormats()` pre nego što je servis proglašen mrtvim. */
+const BD_SANITY_TIMEOUT_MS = 1500;
+
 /**
  * Izbor MEĐU više kodova u istom kadru (dodato 30.07 — „kamera uzima prvi barkod
  * iz kadra"). Na štampanom radnom nalogu barkodovi operacija stoje jedan pod
@@ -298,10 +301,21 @@ export async function attachVideoDecoder(opts: {
       };
     }).BarcodeDetector;
     // Sanity (rupa i u 1.0): prazan getSupportedFormats() = servis iza API-ja mrtav.
+    // TIMEOUT (01.08): mrtav GmsCore barcode modul ume da NIKAD ne razreši ovaj
+    // poziv — bez trke sa tajmerom bi ceo `attachVideoDecoder` visio zauvek, pa bi
+    // ljuska imala živ preview BEZ ijednog dekodera („kamera radi, ne skenira").
+    // Istek se tretira kao nesposoban servis → ZXing put, isto kao prazan odgovor.
     let bdSane = true;
     try {
       if (typeof BD.getSupportedFormats === 'function') {
-        const sup = await BD.getSupportedFormats();
+        let t = 0;
+        const sup = await Promise.race([
+          BD.getSupportedFormats(),
+          new Promise<null>((r) => {
+            t = window.setTimeout(() => r(null), BD_SANITY_TIMEOUT_MS);
+          }),
+        ]);
+        if (t) clearTimeout(t);
         if (!Array.isArray(sup) || sup.length === 0) bdSane = false;
       }
     } catch {
@@ -366,6 +380,12 @@ export async function attachVideoDecoder(opts: {
         try {
           if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             const found = await det.detect(video);
+            // `detect()` je asinhron: ljuska je DOK JE ON BIO U LETU mogla da
+            // zatvori skener ili da restartuje kameru (novi start = nova
+            // generacija) — pogodak iz starog kadra tada ne sme da ode u `onRaw`
+            // (1.0 guard barcode.js:1031). Bez ovoga zatvoren skener ume da
+            // „ispali" još jedan rezultat u roditelja posle zatvaranja.
+            if (dead()) return;
             consecErrors = 0; // uspešan poziv servisa (i prazan kadar je uspeh)
             // Više kodova u kadru (npr. susedni red operacije na štampanom RN-u) →
             // pozivalac kroz `preferMatching` bira svoj format; bez predikata = prvi.

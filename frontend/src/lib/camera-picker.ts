@@ -269,13 +269,31 @@ async function probeCamera(
   }
 }
 
+/** Discovery koji je U LETU — v. `pickPreferredBackCamera`. */
+let inFlightPick: Promise<string | null> | null = null;
+
 /**
  * Vrati deviceId NAJBOLJE zadnje kamere ili null (= koristi facingMode ideal).
  * Skupo pri prvom pozivu (probe po kameri) — rezultat se kešira 30 dana; pri
  * slabom rezultatu se kešira NEGATIVNO, pa sledeći poziv odmah vrati null bez
  * ijednog probe-a (v. `CachedChoice`).
+ *
+ * PARALELNI POZIVI SE SPAJAJU (01.08): probe je niz open/close ciklusa nad istim
+ * senzorom, pa bi dva istovremena discovery-ja (npr. zagrevanje pri zatvaranju
+ * skenera + ljuska koju je korisnik odmah ponovo otvorio) jedan drugom oteli
+ * kameru — oba uzorka „transient", oba bez keša, i još izabran nasumičan
+ * objektiv. Drugi pozivalac zato dobija ISTI promise, ne novi ciklus.
  */
-export async function pickPreferredBackCamera(): Promise<string | null> {
+export function pickPreferredBackCamera(): Promise<string | null> {
+  if (!inFlightPick) {
+    inFlightPick = runCameraDiscovery().finally(() => {
+      inFlightPick = null;
+    });
+  }
+  return inFlightPick;
+}
+
+async function runCameraDiscovery(): Promise<string | null> {
   if (!shouldRunCameraPicker()) return null;
 
   const cached = readCache();
