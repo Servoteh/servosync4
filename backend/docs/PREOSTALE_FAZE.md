@@ -5,6 +5,101 @@
 > radne linije koje su u toku, sa jasnim gate-ovima. Detalji BigBit sync-a:
 > [migration/BB_T_26_ANALIZA_I_PLAN.md](migration/BB_T_26_ANALIZA_I_PLAN.md).
 
+---
+
+# 🔶 OTVORENO NA DAN 01.08.2026
+
+> Sve što je te sesije **započeto a nije dovršeno**, ili čeka nečiju odluku. Deo ispod je
+> noviji od svega u nastavku dokumenta. Stavke sa 🔴 **blokiraju** dalji rad na svojoj liniji.
+
+## A. Čeka odluku vlasnika
+
+| # | pitanje | zašto ne može bez odluke |
+|---|---|---|
+| 🔴 A1 | **Avansni račun se sudara sa avansima dobavljača.** Ulazni avansi dobavljača upisuju se u **istu** tabelu `invoices`, sa istom vrstom `AVR` i **ručno kucanim** brojem (`pdv/advance-vat.service.ts:531-588`). Pošto naš AVR po odluci O-F1 sada izgleda `1/26` — tačno kao broj koji srpski dobavljači kucaju — moguć je sudar. | Ishod je ili 409 legitimnom dobavljačevom dokumentu, ili neuhvaćen P2002 koji obara izdavanje našeg avansa. Rešenje traži izmenu šeme (zasebna vrsta dokumenta ili stvaran `companyId`). |
+| 🔴 A2 | **„Preuzeo za prevoz" nosi `MB: 20748346`** na IFR/IFGP, a to je matični broj **kupca** (naš je 17400169). | Ili je BigBit bag, ili greška u prepisu papira. Mi zasad štampamo naš broj. Traži pogled u originalni papir. |
+| 🔴 A3 | **Ino faktura ima dva različita podatka o plaćanju** — gore `Payment terms: virmanom`, dole `Način plaćanja: avansno`. BigBit je imao dve kolone, 4.0 ima jedno polje `Invoice.paymentMethod`. | Dok se druga kolona ne uvede, oba mesta na papiru nose istu vrednost — jedino mesto gde naš izlaz sadržinski odstupa od originala. |
+| A4 | **1.0 ekran „Podešavanja → Predmeti" prelazi u režim „samo za gledanje"** kad aktivacija bude živela u app bazi (Faza 2). | Bez toga bi dva sistema pisala isti podatak. |
+
+## B. Štampa faktura — otvoreno iz gap-analize
+
+Puna lista je u [STAMPA_FAKTURA_GAP.md](STAMPA_FAKTURA_GAP.md) §5; presuđeno je u
+[STAMPA_FAKTURA_ODLUKE.md](STAMPA_FAKTURA_ODLUKE.md) (O-F1…O-F5). Ostaje nerešeno:
+
+* **Mesto istovara** — na papiru je isto kao adresa kupca. Pravilo (izvodi se) ili zaseban
+  šifarnik adresa isporuke? Zasad slobodan tekst.
+* **Kilaža i dimenzije** — ručni unos po fakturi ili obračun iz `Item.weightKg`? Ako obračun —
+  odakle težina palete (brutto − netto = 20 kg na 060/26)?
+* **Špediter** — slobodan tekst ili šifarnik (isti se ponavljaju)?
+* **Devizni račun za valute osim EUR** — biramo po valuti pa fallback na prvi račun sa IBAN-om;
+  postoji li više deviznih računa?
+* **`web::` sa dve dvotačke** i **„Trgovinski sud u Beogradu"** (zastareo naziv) — prepisuje se
+  doslovno sa papira dok se ne odluči drugačije.
+* **Otpremnica bez cena** — obrazac nije donet; zasad se štampa isti šablon bez novčanih kolona.
+* **Prelom domaćeg računa preko jedne strane** — nijedan doneti primer nema drugu stranu, pa se
+  ne vidi gde ide blok potpisa. **NEPOZNATO.**
+* **Adresa u bloku „Robu izdao"** je adresa sedišta, ne magacina — `Warehouse.street/city`
+  postoje, ali `PrintCtx` nosi samo naziv. Vidi se tek kad magacin nije na adresi sedišta.
+* **QR kod** u podnožju vodi na `https://goo.gl/w9bnHq` (dekodovano sa papira) — Google je
+  ugasio `goo.gl` skraćivač, pa link treba proveriti i verovatno zameniti.
+* **Fajlovi logotipa** (TÜV/ISO znak, partnerska traka) izvučeni su iz samih PDF-ova; vredi
+  potvrditi da je spisak partnera i dalje tačan.
+* **Font** je Roboto (jedini u `PdfService`), original je Arial-oid — širine kolona su
+  procenjene, ne izmerene. Pikselno poređenje nije bilo moguće (nema `pdftoppm` na mašini).
+* **50 zatečenih prettier grešaka** u `sales/print/templates/*` iz ranijih commitova; CI lint je
+  neblokirajući, ali dug stoji.
+
+## C. BigBit noćni kanal (.mdb) — posle isporuke na prod
+
+* **Prekidač `bigbit_mdb_sync` na produkciji** — tabela `app_switches` je stigla tek sa ovim
+  deploy-om i **prazna je**, a odsustvo reda znači UKLJUČENO. Posao ide u 03:45; dok prod nema
+  svoj drop, svaki termin bi pao. Pre nego što se pusti: ili upisati red `enabled=false`, ili
+  prebaciti izvoz da puni prod.
+* **Tajmer izvoza i dalje puni DEV** (`~/bigbit-mdb/env` na ubuntusrv). Prebacivanje na prod je
+  svesna radnja, ne usputna.
+* **„Rađa se ugašen"** — nov predmet iz BigBita treba da dobije red u `predmet_aktivacije` sa
+  `is_active=false` (migracija: kolona default `true` → `false`). Bez toga svaki nov predmet
+  odmah upada u plan proizvodnje.
+* **Četiri test-naloga na DEV bazi** (`IFR/2026/260203`, `IFGP/2026/260709`, `TREB1/2026/260709`,
+  `ULGP/2026/260709`) sudaraju se sa BigBit brojevima i obaraju korak knjiženja. Na produkciji ne
+  prete — tamo je glavna knjiga prazna.
+* **Razlika po vodenom žigu + sedmično usaglašavanje** — 58,7 % artikala u BigBitu nema datum
+  izmene, pa se „šta se promenilo" ne može čitati iz njega; treba periodično puno poređenje.
+* **Raster** (dimenzije lima + kg/kom) i **prateće tabele artikala** (barkod, multifaktor,
+  kvalitet, mesta izdavanja, ino nazivi, dobavljači) — posle prvih proba unosa.
+
+## D. Gašenje sy15 — nije „ostatak 1.0" nego seoba naših modula
+
+Mapa i put su u [docs/](../../docs/) i u razgovoru 01.08; ukratko:
+
+1. **Prvi korak (lako):** `bigtehn_*_cache` (predmeti, komitenti, radnici, mašine, radna mesta,
+   sektori) okrenuti da se **pune iz proda** umesto iz mrtvog QBigTehn-a. 1.0 ih samo čita, a
+   obrazac već postoji — `loc-tp-feed.service.ts` to radi za radne naloge.
+2. **Zamrznuti rast** — svaki nov modul ide u prod (već se poštuje).
+3. **Jedan ceo modul kao šablon** — predlog **Projektni biro**: najmanji je, a ima sve elemente
+   (podaci, bazne funkcije, prava, fajlovi). Tek kad on prođe, zna se prava cena kadrovske.
+4. **Poslednje:** identitet/SSO i kadrovska/sastanci — 1.0 ih još piše, a pravila im žive u
+   ~60 SQL funkcija **unutar same baze**, kojih u repou nema.
+
+⚠️ Pravilo: modul se ne može preseliti dok **1.0 ekran još piše** u njegove tabele.
+
+## E. Čeka knjigovođu
+
+* Šeme knjiženja **30/31** i **37/38**.
+* Konta grupe **49** → AOP pozicije 0428/0430/0454.
+* **27200 vs 2720** — koje konto je pravo.
+* **KEP** za maloprodaju i veleprodaju.
+
+## F. Sitno, ali zapisano
+
+* Dve zatečene TypeScript greške u `kadrovska.zahtev-026.spec.ts` i `moj-profil.zahtev-026.spec.ts`
+  (union tip povratne vrednosti sy15 servisa) — postoje i na čistom stablu, CI ih ne hvata jer
+  proverava samo produkcioni kod.
+* **Dupli PIB-ovi u BigBitu** — spisak od 12 grupa predat administraciji 31.07; broj pada sam kako
+  ih ispravljaju (Podešavanja → Integracije → „Dupli PIB kod komitenata").
+
+---
+
 ## 1. ServoSync 2.0 — modul „Tehnologija" (praktično završen)
 
 Proizvodni core je **živ na produkciji** i spojen u 1.5 na `servosync.servoteh.com/tehnologija`.

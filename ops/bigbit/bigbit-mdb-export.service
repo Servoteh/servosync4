@@ -6,6 +6,7 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 EnvironmentFile=%h/bigbit-mdb/env
+ExecStartPre=/usr/bin/env bash %h/bigbit-mdb/fetch-drop.sh
 ExecStart=/usr/bin/env bash %h/bigbit-mdb/bigbit-mdb-export.sh
 # Izvoz cita 387 MB .mdb i pisе u staging; 30 min je 30x iznad izmerenih ~55 s.
 TimeoutStartSec=30min

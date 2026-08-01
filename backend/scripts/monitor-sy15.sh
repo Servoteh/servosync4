@@ -71,9 +71,25 @@ fi
 # 7) katbroj duplikati (DB audit DB-081) — ratchet: alarm SAMO ako broj duplikat-grupa
 # poraste (dokaz da BigBit brana ne drži); čišćenje sme samo da ga smanjuje.
 # Case-insensitive grupisanje (odluka 25.07). Baseline se sam spušta pri čišćenju.
+#
+# ISPRAVKA 01.08.2026 — MERI SE ISTOM FORMULOM KAO BRANA (`lower` + `btrim`).
+# Do danas je nadzor grupisao po golom `lower(catalog_number)`, BEZ skidanja belina,
+# a brana `trg_items_catalog_unique` poredi `lower(btrim(...))`. Dve različite mere
+# nad istim podatkom neizbežno se razilaze, i to se i dogodilo:
+#
+#   pre .mdb uvoza:  nadzor 2028  ·  brana 2166   (razlika 138 — sakrivena belinama)
+#   posle uvoza:     nadzor 2158  ·  brana 2158   (poklapaju se)
+#
+# Uzrok razlike: 1.361 kataloški broj je nosio beline na krajevima (tabulator/razmak,
+# nastalo kopiranjem sa sajta u BigBit). Nadzoru su `"  ABC"` i `"ABC"` bile DVE
+# različite vrednosti, pa duplikat nije ni video; brani su oduvek bile ista vrednost.
+# Kad je .mdb uvoz očistio beline (1.361 → 2), nadzor je te duplikate NAJZAD UGLEDAO
+# i prijavio "rast" — a broj je po brani u istom prolazu PAO sa 2166 na 2158.
+#
+# Zato: ista formula na oba mesta. Alarm sada znači stvarno novi duplikat.
 psq2() { docker exec servosync-pg psql -U servosync -d servosync -tAc "$1" 2>/dev/null; }
 KB_BASE_FILE="$HOME/ops/.katbroj_baseline"
-KB_CUR=$(psq2 "select count(*) from (select lower(catalog_number) from items where btrim(coalesce(catalog_number,''))<>'' group by lower(catalog_number) having count(*)>1) d")
+KB_CUR=$(psq2 "select count(*) from (select lower(btrim(catalog_number)) k from items where btrim(coalesce(catalog_number,''))<>'' group by 1 having count(*)>1) d")
 if [ -n "${KB_CUR:-}" ]; then
   if [ -f "$KB_BASE_FILE" ]; then KB_BASE=$(cat "$KB_BASE_FILE"); else KB_BASE="$KB_CUR"; echo "$KB_CUR" > "$KB_BASE_FILE"; fi
   [ "$KB_CUR" -gt "$KB_BASE" ] && add "items: duplikat-grupe kataloškog broja PORASLE ($KB_BASE → $KB_CUR) — BigBit brana ne drži? (DB-081)"
