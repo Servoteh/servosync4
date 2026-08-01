@@ -30,10 +30,10 @@ function belgradeYesterday(): string {
  *     nikad ne gazi ručni unos) + marker last_edited_by='auto:kapija';
  * (3) VIKEND SA čistim kucanjem se predlaže kao REDOVNI sati (D1, 044/26 — više se NE
  *     preskače); van-opsega [1h..14h] se preskače;
- * (4) NERADNI PRAZNIK (kadr_holidays.is_workday=false) se predlaže SAMO kad je pun dan
- *     (8h) — delimično kucanje bi u obračunu pojelo garantovanih 8h plaćenog praznika
- *     (payroll-calc: praznik sa satima → praznikRadSati, praznik bez sati → 8h plaćeno);
- *     red sa is_workday=true (radna subota) NIJE praznik i ide po običnom pravilu;
+ * (4) NERADNI PRAZNIK od 01.08.2026 NEMA nikakav poseban tretman — i delimično kucanje
+ *     se predlaže (ranije se preskakalo jer bi pojelo garantovanih 8h; O-1 je to
+ *     promenio → sati se sada DODAJU na 8h, pa autofill samo beleži evidenciju, a
+ *     kontrolu radi kadrovska mesečno). Autofill zato uopšte VIŠE NE ČITA kadr_holidays;
  * (5) kill-switch KADROVSKA_GRID_AUTOFILL=false → no-op; (6) dryRun ne piše.
  */
 
@@ -42,10 +42,6 @@ const textOf = (m: jest.Mock): string =>
   ((m.mock.calls[0]?.[0] as SqlLike)?.strings ?? []).join(" ? ");
 const valuesOf = (m: jest.Mock): unknown[] =>
   (m.mock.calls[0]?.[0] as SqlLike)?.values ?? [];
-
-/** Prvi argument prvog poziva mock-a (bez `any` curenja). */
-const firstArg = (m: jest.Mock): unknown =>
-  (m.mock.calls as unknown[][])[0]?.[0];
 
 /** Praznik u fixture-u: string = pravi NERADNI praznik; objekat = eksplicitan is_workday. */
 type HolidayFixture = string | { date: string; isWorkday: boolean };
@@ -148,38 +144,25 @@ describe("proposeHoursFromPresence (STVARNI sati, NE paušalno 8h)", () => {
   });
 });
 
-describe("proposeHoursForDay (kapija za NERADNI praznik povrh predloga sati)", () => {
-  it("običan dan (nije neradni praznik) → isti rezultat kao proposeHoursFromPresence", () => {
-    expect(proposeHoursForDay(6.52, false)).toEqual({
-      hours: 6.5,
-      reason: null,
-    });
-    expect(proposeHoursForDay(8.2, false)).toEqual({ hours: 8, reason: null });
-    expect(proposeHoursForDay(0.5, false)).toEqual({
+describe("proposeHoursForDay (odluka za JEDAN dan — bez kalendarskih izuzetaka)", () => {
+  it("prosleđuje rezultat proposeHoursFromPresence 1:1 (nema više kapije za dan)", () => {
+    expect(proposeHoursForDay(6.52)).toEqual({ hours: 6.5, reason: null });
+    expect(proposeHoursForDay(8.2)).toEqual({ hours: 8, reason: null });
+    expect(proposeHoursForDay(7.6)).toEqual({ hours: 8, reason: null }); // granica punog dana
+    expect(proposeHoursForDay(2.5)).toEqual({ hours: 2.5, reason: null });
+    expect(proposeHoursForDay(7.5)).toEqual({ hours: 7.5, reason: null });
+  });
+
+  it("van opsega → jedini preostali razlog preskakanja je out_of_band", () => {
+    expect(proposeHoursForDay(0.5)).toEqual({
       hours: null,
       reason: "out_of_band",
     });
-  });
-
-  it("neradni praznik: pun dan prolazi (8), delimično se preskače sa razlogom", () => {
-    expect(proposeHoursForDay(8.2, true)).toEqual({ hours: 8, reason: null });
-    expect(proposeHoursForDay(7.6, true)).toEqual({ hours: 8, reason: null }); // granica punog dana
-    expect(proposeHoursForDay(2.5, true)).toEqual({
-      hours: null,
-      reason: "holiday_partial",
-    });
-    expect(proposeHoursForDay(7.5, true)).toEqual({
-      hours: null,
-      reason: "holiday_partial",
-    }); // tik ispod punog dana
-  });
-
-  it("van opsega ima prednost nad prazničnim razlogom (uredan brojač)", () => {
-    expect(proposeHoursForDay(0.5, true)).toEqual({
+    expect(proposeHoursForDay(15)).toEqual({
       hours: null,
       reason: "out_of_band",
     });
-    expect(proposeHoursForDay(null, true)).toEqual({
+    expect(proposeHoursForDay(null)).toEqual({
       hours: null,
       reason: "out_of_band",
     });
@@ -247,7 +230,7 @@ describe("KadrovskaGridAutofillService.run", () => {
     expect(valuesOf(executeRaw)).toEqual(expect.arrayContaining([[6.5]]));
   });
 
-  it("NERADNI praznik + PUN dan (8.2h) → predlaže se kao 8 (praznični rad zamenjuje plaćeni praznik)", async () => {
+  it("NERADNI praznik + PUN dan (8.2h) → predlaže se kao 8", async () => {
     const { svc, executeRaw } = makeSvc({
       vsGridRows: [vsRow("2026-05-01", 8.2)], // Praznik rada (petak), neradni
       holidays: ["2026-05-01"],
@@ -260,23 +243,29 @@ describe("KadrovskaGridAutofillService.run", () => {
     expect(valuesOf(executeRaw)).toEqual(expect.arrayContaining([[8]]));
   });
 
-  it("NERADNI praznik + DELIMIČNO kucanje (2.5h) → NE upisuje se (čuva garantovanih 8h plaćenog praznika)", async () => {
-    // payroll-calc: praznik SA satima → praznikRadSati(2.5); praznik BEZ sati →
-    // praznikPlaceniSati(8). Upis 2.5h bi TIHO pojeo 8h i nikad se ne bi revidirao.
+  it("NERADNI praznik + DELIMIČNO kucanje (2.5h) → SADA SE UPISUJE kao 2.5 (kapija ukinuta 01.08.2026)", async () => {
+    // Ranije preskočeno: upis sati je pojeo garantovanih 8h plaćenog praznika. Posle
+    // O-1 (263a4db6) obračun sate DODAJE na 8h (praznikRadSati 2.5 + praznikPlaceniSati
+    // 8), pa autofill beleži evidenciju ko je dodatno radio (O-4 + presuda 01.08.2026);
+    // dvostruka isplata je NAMERNA, kontrolu radi kadrovska mesečno.
     const { svc, executeRaw } = makeSvc({
       vsGridRows: [vsRow("2026-05-01", 2.5)],
       holidays: ["2026-05-01"],
+      executeResult: 1,
     });
     const { data } = await svc.run({ from: "2026-05-01", to: "2026-05-01" });
     expect(data.candidates).toBe(1);
-    expect(data.proposed).toBe(0);
-    expect(data.inserted).toBe(0);
-    expect(data.skippedWeekendHoliday).toBe(1); // brojač: praznik-delimično
+    expect(data.proposed).toBe(1);
+    expect(data.inserted).toBe(1);
     expect(data.skippedOutOfBand).toBe(0);
-    expect(executeRaw).not.toHaveBeenCalled();
+    expect(valuesOf(executeRaw)).toEqual(expect.arrayContaining([[2.5]]));
+    // Sažetak zadržava polje radi API-kompatibilnosti, ali ono je TRAJNO 0.
+    expect(data.skippedWeekendHoliday).toBe(0);
   });
 
-  it("kadr_holidays sa is_workday=TRUE (radna subota) NIJE praznik → ide po običnom pravilu (6.52h → 6.5)", async () => {
+  it("kadr_holidays sa is_workday=TRUE (radna subota) → običan dan (6.52h → 6.5)", async () => {
+    // Trivijalno tačno otkad autofill uopšte ne gleda kalendar praznika; test ostaje
+    // kao brana da se radni-dan izuzetak nikad ne počne tretirati kao praznik.
     const { svc, executeRaw } = makeSvc({
       vsGridRows: [vsRow("2026-07-25", 6.52)], // subota
       holidays: [{ date: "2026-07-25", isWorkday: true }],
@@ -344,22 +333,41 @@ describe("KadrovskaGridAutofillService.run", () => {
     expect(valuesOf(queryRaw)).not.toContain("2999-12-31");
   });
 
-  it("praznik-upit traži SAMO is_workday=false (radni-dan izuzeci se ne smeju tretirati kao praznik)", async () => {
+  it("kalendar praznika se VIŠE UOPŠTE NE ČITA (kapija ukinuta → nema kadr_holidays upita)", async () => {
     const { svc, holidayFindMany } = makeSvc({
-      vsGridRows: [vsRow("2026-07-07", 8.0)],
+      vsGridRows: [vsRow("2026-05-01", 3.0)], // neradni praznik, delimično kucanje
+      holidays: ["2026-05-01"],
       executeResult: 1,
     });
-    await svc.run({ from: "2026-07-07", to: "2026-07-07" });
-    expect(holidayFindMany).toHaveBeenCalledTimes(1);
-    expect(firstArg(holidayFindMany)).toMatchObject({
-      where: { isWorkday: false },
-    });
+    const { data } = await svc.run({ from: "2026-05-01", to: "2026-05-01" });
+    expect(holidayFindMany).not.toHaveBeenCalled();
+    expect(data.proposed).toBe(1); // praznik ne menja ishod
   });
 
-  it("bez kandidata → praznik-upit se uopšte ne pravi (noć bez kucanja = 0 dodatnih upita)", async () => {
+  it("bez kandidata → i dalje nula dodatnih upita (noć bez kucanja)", async () => {
     const { svc, holidayFindMany } = makeSvc({ vsGridRows: [] });
     await svc.run({ from: "2026-07-07", to: "2026-07-07" });
     expect(holidayFindMany).not.toHaveBeenCalled();
+  });
+
+  it("pokriven dan / dan sa odsustvom se NIKAD ne dira (SQL filter + DO NOTHING)", async () => {
+    // Dve nezavisne brane: (1) kandidatski SQL izbacuje grid_covered=true i
+    // absence_code IS NOT NULL, pa takvi dani nikad ni ne stignu do predloga;
+    // (2) i da stignu, INSERT … ON CONFLICT DO NOTHING ne prepisuje postojeći red.
+    const { svc, queryRaw, executeRaw } = makeSvc({
+      vsGridRows: [vsRow("2026-05-01", 2.5)], // neradni praznik, delimično
+      holidays: ["2026-05-01"],
+      executeResult: 0, // red već postoji (ručni unos / odsustvo) → 0 upisa
+    });
+    const { data } = await svc.run({ from: "2026-05-01", to: "2026-05-01" });
+    const t = textOf(queryRaw);
+    expect(t).toContain("grid_covered = false");
+    expect(t).toContain("absence_code IS NULL");
+    expect(data.proposed).toBe(1);
+    expect(data.inserted).toBe(0);
+    expect(textOf(executeRaw)).toContain(
+      "ON CONFLICT (employee_id, work_date) DO NOTHING",
+    );
   });
 });
 

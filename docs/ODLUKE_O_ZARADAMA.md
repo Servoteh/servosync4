@@ -69,9 +69,10 @@ sa koeficijentom 1,0. Kod **fiksno/jednokratno** (68 ljudi) `praznikPlaceniSati`
 
 **Uticaj na već obračunate mesece: NIKAKAV.** Provera nad živom bazom 01.08.2026 (v. §4).
 
-**Posledica za automatiku:** autofill iz kapije **i dalje ne upisuje** delimično kucanje na neradni
-praznik — ali razlog više nije „pojelo bi 8 h" (ne bi), nego to što bi automatski upis sada sam
-generisao duplu isplatu bez pogleda kadrovske. Vidi O-4 i novo pitanje Č-5.
+**Posledica za automatiku:** autofill iz kapije od **01.08.2026 upisuje i delimično** kucanje na
+neradni praznik — vlasnik je presudio da je evidencija važnija od automatske brane (v. O-4 i
+zatvoreno pitanje Č-5). Time automatika **sama može da napravi duplu isplatu** (8 h + odrađeni sati);
+to je **namerno**, a brana je Nikolina mesečna kontrola grida.
 
 ### O-2 · Vikendom i praznikom ne radi niko osim portira
 **Odluka (Nenad, 30.07.2026):** subotom/nedeljom kad je praznik **ne radi niko**; izuzetak je
@@ -105,10 +106,28 @@ kod fiksnih plaća prekovremeno + rad na praznik + dve mašine, a redovni sati n
 praznik **evidentiraju svima** — uključujući ljude na **fiksnoj plati**, kojima ti sati u obračunu
 (za sada) ne donose novac. Plaćanje takvih sati je **odluka vlasnika po slučaju**, ne automatika.
 
-**Status:** ✅ **ŽIVO U KODU** (`main e36554d0`, 30.07 — zahtev 044/26). Vikend/praznik sa čistim
-kucanjem ulazi u grid kao **redovni sati**; ručni unosi i odsustva se **nikad ne prepisuju**
-(`ON CONFLICT DO NOTHING`, oznaka `auto:kapija`). Na **neradni praznik** upisuje se **samo pun dan**
-— delimično kucanje se ostavlja kadrovskoj da unese ručno, upravo zbog O-1.
+**Status:** ✅ **ŽIVO U KODU** (`main e36554d0`, 30.07 — zahtev 044/26; dopuna 01.08.2026).
+Vikend/praznik sa čistim kucanjem ulazi u grid kao **redovni sati**; ručni unosi i odsustva se
+**nikad ne prepisuju** (`ON CONFLICT DO NOTHING`, oznaka `auto:kapija`).
+
+**Dopuna (Nenad, 01.08.2026) — neradni praznik se više NE izuzima:** upisuje se **svako** kucanje u
+opsegu, i **delimično** (npr. 2,5 h), po istim pravilima kao bilo koji drugi dan (O-5: naniže na pola
+sata, ≥ 7,6 h → 8 h).
+> ✏️ Ispravka 01.08.2026: prethodni tekst je glasio „na neradni praznik upisuje se **samo pun dan** —
+> delimično kucanje se ostavlja kadrovskoj da unese ručno, upravo zbog O-1." **Taj razlog je bio
+> tačan do 01.08.2026 i danas više ne važi:** dok je obračun na praznik sa upisanim satima *gutao*
+> 8 h, delimičan automatski upis bi radniku tiho zamenio 8 h sa 2,5 h. Otkad O-1 živi u kodu, sati se
+> **dodaju** na 8 h, pa te štete nema.
+
+**Vlasnička presuda (Nenad, 01.08.2026):** *„nemoj da preskače, jednostavno nam treba evidencija iz
+automatike ko je dodatno radio za praznik. Nikola Mrkajić u svakom slučaju radi kontrolu sati i
+potvrdu za svaki mesec."*
+
+⚠️ **Šta ovo znači za novac:** automatika sada **sama može da generiše duplu isplatu** za praznik
+(8 h plaćenog praznika + odrađeni sati) **bez ijednog ljudskog klika u trenutku upisa**. To je
+**namerno**. Brana više nije tehnička nego **ljudska** — Nikola Mrkajić mesečno kontroliše i
+potvrđuje grid, a upis ostaje samo **predlog** (`auto:kapija`, nikad ne gazi ručni unos ni odsustvo).
+Ko ovo bude čitao kasnije: **nije bug, ne „popravljati" nazad** bez nove vlasničke odluke ovde.
 
 ### O-5 · Sati iz kapije se zaokružuju NANIŽE na pola sata
 **Odluka (Nenad, 30.07.2026):** 6,52 h → **6,5 h** (naniže, ne na najbliže). Prisustvo od **7,6 h i
@@ -134,7 +153,7 @@ sa provere „je li admin" na listu). Dodavanje/skidanje = jedan upis u tu tabel
 | Č-2 | Uvećanje za **rad nedeljom** i **noćni rad** — postoji li i koliko? | U kodu **nema nijednog** takvog množioca. |
 | Č-3 | Formalizovati **portirski dogovor** (O-2) kao tip ugovora? | Sada se rešava ručnim unosom. |
 | Č-4 | Da li se vikend sati ljudima na **fiksnoj plati** ikad plaćaju, i po kom pravilu? | O-4 kaže „odluka po slučaju" — nije pravilo. |
-| Č-5 | Sad kad obračun sam dodaje 8 h, da li autofill iz kapije sme da upisuje **delimično** kucanje na neradni praznik? | Stari razlog za preskakanje je otpao (v. O-1), ali bi upis sada sam pravio duplu isplatu bez pogleda kadrovske. **Namerno nije menjano** uz O-1. |
+| ~~Č-5~~ | ~~Sad kad obračun sam dodaje 8 h, da li autofill iz kapije sme da upisuje **delimično** kucanje na neradni praznik?~~ | ✅ **ZATVORENO 01.08.2026** — Nenad: **sme, i treba**; „nemoj da preskače, treba nam evidencija ko je dodatno radio za praznik", uz Nikolinu mesečnu kontrolu kao branu. Izvedeno u kodu, v. O-4 i §4. |
 
 ---
 
@@ -151,6 +170,7 @@ ispravlja (ili se odluka svesno menja kroz §4). Od 01.08.2026 **nema poznatih r
 | 30.07.2026 | Registar osnovan; upisane odluke O-1…O-6 i pitanja Č-1…Č-4. | Nenad (odluke), zapisao Claude |
 | 30.07.2026 | Dodat §0 — grid je merodavan tek **od juna 2026**; raniji period imao drugi izvor istine za plate. Povod: odbačena prijava o 01.05. | Nenad, zapisao Claude |
 | 01.08.2026 | **O-1 prešao iz „RUČNO" u „ŽIVO U KODU"**; zatvoreno pitanje **Č-1**; otvoreno **Č-5** (autofill). | Nenad (odluka), izveo Claude |
+| 01.08.2026 | **O-4 dopunjen: autofill iz kapije više NE preskače delimično kucanje na neradni praznik**; zatvoreno **Č-5**; ispravljeno zastarelo obrazloženje u O-4 (staro „pojelo bi 8 h" prepisano iznad) i posledica u O-1. | Nenad (odluka), izveo Claude |
 
 ### 4.1 O-1 — prethodni tekst (važio 30.07.–01.08.2026)
 
@@ -182,3 +202,26 @@ Dakle izmena **ne dira nijedan već obračunat mesec** — ni u nemerodavnom per
 pogođeni red pripada čoveku koji po tipu ugovora ionako nema pravo na plaćen praznik. Prvi dan na
 koji će se pravilo uopšte primeniti je **11.11.2026 (sreda)** — jedini preostali neradni praznik u
 2026. U celoj 2026. **nema nijednog** reda `kadr_holidays` sa `is_workday = true`.
+
+### 4.3 Ukidanje praznične kapije u autofill-u — merenje nad živom bazom (01.08.2026)
+
+Koliko (radnik, dan) parova autofill **novo upisuje** posle ukidanja kapije = kandidati koji prođu
+pun filter (`grid_covered = false`, `absence_code IS NULL`, teren 0, `open_intervals = 0`,
+ulaz+izlaz, bez odobrenog `dan_odmora`) na **neradni praznik**, sa prisustvom u opsegu
+[1 h … 14 h] ali **ispod punog dana** (< 7,6 h). Samo čitanje:
+
+| Period | Novih upisa | Napomena |
+|--------|-------------|----------|
+| 2026. do danas | **44** | svi u **nemerodavnom periodu** (§0), i **samo** ako neko ručno pokrene backfill |
+| od 01.06.2026 (merodavni period) | **0** | na neradni praznik od juna **nema nijednog kandidata** |
+
+Raspored tih 44: **15.02. — 2**, **16.02. — 18**, **17.02. — 23**, **02.05. — 1**
+(prisustvo 3,68–7,55 h). Svi su pre juna, pa po §0 **nisu merodavni**.
+
+⚠️ **Zašto 44, a ne 0:** noćni tik obrađuje **isključivo „juče"**, pa sam od sebe **nikad** neće
+dodirnuti te dane. Do upisa može doći **samo** ako čovek svesno pokrene backfill
+(`POST /kadrovska/grid/autofill-run` sa `from`/`to` u februar/maj) ili otvori „Popuni iz kapije" za
+te mesece i snimi predloge. **Ne raditi to** za period pre juna 2026.
+
+**Prvi dan kad ovo može stvarno da opali: 11.11.2026 (sreda)** — jedini preostali neradni praznik u
+2026. (`kadr_holidays`, `is_workday = false`).
