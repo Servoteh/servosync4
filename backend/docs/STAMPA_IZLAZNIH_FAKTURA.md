@@ -181,14 +181,26 @@ Najsloženiji obrazac; nosi tri zahteva koje ostali nemaju.
 
 ---
 
-## 7. Stanje koda (01.08.2026)
+## 7. Stanje koda (01.08.2026, posle vezivanja obrazaca)
 
-`backend/src/modules/sales/print/invoice-pdf.service.ts` (735 linija) već ima:
-`buildInvoicePdf` / `buildDeliveryNotePdf` / `buildExportInvoicePdf`, varijante
-`withPrices | withoutPrices | export`, zaglavlje, stranke, tabelu stavki, zbir, IBAN/SWIFT za izvoz.
+`backend/src/modules/sales/print/invoice-pdf.service.ts` više ne crta fakturu — on je **spona**:
+učita `PrintCtx` (jedno učitavanje za sve), izabere obrazac **po vrsti dokumenta** i obmota ga
+memorandumom u pdfmake `header:`/`footer:` funkcijama.
 
-Nedostaje ono što ovi obrasci traže: podela **roba/usluga** (danas ne postoji kao vrsta štampe),
-traka uslova, četvorodelni potpisni blok sa magacinom, član oslobođenja po vrsti prometa,
-ponavljanje zaglavlja na višestranom ino dokumentu i otpremni blok.
+| gde | šta |
+|---|---|
+| `print/templates/domaca-roba.ts` | IFR, IFGP |
+| `print/templates/domaca-usluga.ts` | IFUSL |
+| `print/templates/ino-roba.ts` | IZVRO, IZVGP |
+| `print/templates/ino-usluga.ts` | IZVUS (višestran; `header:` + `Strana X od Y`) |
+| `print/memorandum.ts` | zaglavlje i podnožje strane, isto na sva četiri |
+| `print/format.ts` | brojevi, datumi, broj računa |
 
-Detaljan popis razlika i redosled izvođenja: [STAMPA_FAKTURA_GAP.md](STAMPA_FAKTURA_GAP.md).
+Varijante su svedene na `withPrices | withoutPrices` — stara `export` je uklonjena, jer engleski
+obrazac sada dolazi od vrste dokumenta, a ne od prekidača. `PON`/`PROF`/`AVR`/`REV` nemaju doneti
+obrazac: štampaju se na najbližem uz **upozorenje u logu**, a nepoznata vrsta baca izuzetak
+umesto da tiho izabere pogrešan papir.
+
+Ostaje otvoreno (v. [STAMPA_FAKTURA_GAP.md](STAMPA_FAKTURA_GAP.md) §5): adresa magacina u bloku
+„Robu izdao" (štampa se adresa sedišta), `Način plaćanja` i `Payment terms` na ino robi čitaju
+isto polje, prelom domaćeg računa preko jedne strane i devizni račun za valute osim EUR.
