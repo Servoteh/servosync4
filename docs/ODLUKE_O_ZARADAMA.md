@@ -77,11 +77,17 @@ generisao duplu isplatu bez pogleda kadrovske. Vidi O-4 i novo pitanje Č-5.
 **Odluka (Nenad, 30.07.2026):** subotom/nedeljom kad je praznik **ne radi niko**; izuzetak je
 **portir**, koji ima **poseban dogovor** (nije obuhvaćen pravilom O-1).
 
-Živi primer sa 01.05.2026: Sarić Srećko, kapija 06:50–20:51 → u gridu **14,00 h** (puna portirska
-smena, ne 8+6).
+Živi primer sa **01.05.2026 (PETAK — praznik, ne vikend)**: Sarić Srećko, kapija 06:50–20:51 → u
+gridu **14,00 h** (puna portirska smena, ne 8+6).
+> ✏️ Ispravka 01.08.2026: prvobitno je ovaj primer stajao kao dokaz za VIKEND, što je bilo netačno —
+> 1. maj 2026. pada u petak. Primer i dalje ilustruje portirski izuzetak, ali na PRAZNIK, ne na vikend.
+> Za sam vikend nemamo zabeležen primer, što je u skladu sa odlukom (niko ne radi).
 
-**Status:** ODLUKA — portirski dogovor **nije formalizovan u kodu** (nema tipa ugovora „portir");
-obračun ga tretira po opštim pravilima za taj tip ugovora.
+**Status:** ODLUKA — portirski dogovor **nije formalizovan u kodu** (nema tipa ugovora „portir").
+U praksi ga sistem ipak razlikuje: Sarić je `work_type = penzioner`, a taj tip je isključen iz
+automatskog priznavanja 8 h plaćenog praznika (`isAutoPaidHolidayEligible`) — dakle O-1 se na njega
+ne primenjuje ni danas, bez ijedne posebne brane. Ako se portirski dogovor ikad bude formalizovao,
+ovo je mesto gde treba zapisati šta tačno obuhvata.
 
 ### O-3 · Rad na praznik koji padne u subotu/nedelju knjiži se kao rad na praznik
 **Odluka (Nenad, 30.07.2026):** takav dan **nije** običan vikend rad — knjiži se kao **rad na
