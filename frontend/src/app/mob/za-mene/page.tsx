@@ -24,7 +24,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Check, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Check, ChevronRight, X } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { EmptyState } from '@/components/ui-kit/empty-state';
@@ -46,6 +46,7 @@ import {
   SastanakStatusBadge,
   TemaStatusBadge,
 } from '@/app/sastanci/_components/common';
+import { MobShell } from '../_components/mob-shell';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -93,10 +94,10 @@ export default function MobZaMenePage() {
 
   // Podaci se montiraju TEK posle gejta — inače bi upiti krenuli sa praznim
   // `odgovoranEmail`/`predlozioEmail` (nescopovan `/akcije`) dok /auth/me stiže.
-  return <ZaMene myEmail={user.email} userLabel={user.fullName ?? user.email} />;
+  return <ZaMene myEmail={user.email} />;
 }
 
-function ZaMene({ myEmail, userLabel }: { myEmail: string; userLabel: string }) {
+function ZaMene({ myEmail }: { myEmail: string }) {
   const meetingsQ = useMyMeetings();
   const akcijeQ = useAkcije({ odgovoranEmail: myEmail });
   const temeQ = useTeme({ predlozioEmail: myEmail });
@@ -160,23 +161,11 @@ function ZaMene({ myEmail, userLabel }: { myEmail: string; userLabel: string }) 
     }
   }
 
+  // Zaglavlje i donja tab-traka su u `MobShell` (F1); povratak na početnu je tab
+  // „Početna", pa ekran više ne crta svoje dugme nazad. Podnaslov = 1.0 tekst.
   return (
-    <div className="min-h-screen bg-app pb-16">
-      <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-md font-semibold text-ink">Za mene</h1>
-          <p className="truncate text-xs text-ink-secondary">{userLabel}</p>
-        </div>
-        <Link
-          href="/mob"
-          className={`inline-flex h-11 shrink-0 items-center gap-1 rounded-control border border-line bg-surface-2 pl-2 pr-4 text-sm font-semibold text-ink active:bg-surface ${FOCUS}`}
-        >
-          <ChevronLeft className="h-4 w-4" aria-hidden />
-          Početna
-        </Link>
-      </header>
-
-      <main className="space-y-5 p-4">
+    <MobShell title="Za mene" subtitle="Moji zadaci i obaveze" active="zaMene">
+      <div className="space-y-5">
         {/* ── Moje akcije (otvorene / u toku / kasne) ── */}
         <section className="space-y-2">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-secondary">
@@ -349,7 +338,7 @@ function ZaMene({ myEmail, userLabel }: { myEmail: string; userLabel: string }) 
             </ul>
           )}
         </section>
-      </main>
-    </div>
+      </div>
+    </MobShell>
   );
 }
