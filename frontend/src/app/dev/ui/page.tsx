@@ -15,6 +15,7 @@ import {
 import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { HelpTour, type HelpTourStep } from '@/components/ui-kit/help-tour';
 import { FavStar } from '@/components/ui-kit/fav-star';
+import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 
 /**
  * `/dev/ui` — interni katalog kit komponenti u svim stanjima (DESIGN_SYSTEM.md §12).
@@ -301,6 +302,50 @@ export default function DevUiPage() {
           </div>
         </Demo>
       </Section>
+
+      <Section
+        title="ScanReticle — nišan skenera"
+        note="Port vizuelnog jezika iz 1.0 (.loc-scan-reticle): širok 3:1 prozor za 1D nalepnicu, kvadrat za QR, vinjeta koja zatamni okolinu i crvena linija skena. Dimenzije su viewport-relativne (min(78vw,360px) / min(70vw,280px)) — suzi prozor pregledača i okvir se sam skuplja. Podloga ispod je lažna „kamera“ (šahovnica), da se vidi šta vinjeta radi."
+      >
+        <div className="sm:col-span-2 lg:col-span-3 space-y-4">
+          <Demo title="barcode (podrazumevano, sa laserom) — lokacije i reversi">
+            <FakeCamera>
+              <ScanReticle variant="barcode" />
+            </FakeCamera>
+          </Demo>
+          <Demo title="qr bez lasera — mobilno Održavanje (QR karton sredstva)">
+            <FakeCamera>
+              <ScanReticle variant="qr" laser={false} />
+            </FakeCamera>
+          </Demo>
+          <Demo title="qr sa laserom (kombinovana nalepnica)">
+            <FakeCamera>
+              <ScanReticle variant="qr" laser />
+            </FakeCamera>
+          </Demo>
+        </div>
+      </Section>
     </main>
+  );
+}
+
+/**
+ * Lažna „slika kamere" za katalog: šahovnica pokazuje šta vinjeta (box-shadow 9999px)
+ * zaista radi — na ravnoj crnoj podlozi se zatamnjenje ne bi videlo.
+ */
+function FakeCamera({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className="relative h-64 w-full overflow-hidden rounded-panel"
+      style={{
+        backgroundColor: '#3b4348',
+        backgroundImage:
+          'linear-gradient(45deg, #566065 25%, transparent 25%, transparent 75%, #566065 75%), linear-gradient(45deg, #566065 25%, transparent 25%, transparent 75%, #566065 75%)',
+        backgroundSize: '32px 32px',
+        backgroundPosition: '0 0, 16px 16px',
+      }}
+    >
+      {children}
+    </div>
   );
 }

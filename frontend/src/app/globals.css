@@ -151,7 +151,63 @@ td.kg-hol .kg-cell:not(.kg-abs):not(.kg-fd):not(.kg-ff):not(.kg-tm):not(.kg-dirt
 .kg-ff { background: color-mix(in srgb, var(--status-info) 20%, transparent); color: var(--status-info); font-weight: 600; }
 .kg-tm { background: color-mix(in srgb, var(--status-warn) 22%, transparent); color: var(--status-warn); font-weight: 700; }
 
+/* ── Skener: laser linija nišana (ui-kit/scan-reticle.tsx) ───────────────────
+ * Doslovan port 1.0 `.loc-scan-laser` (plan-montaze/src/styles/legacy.css) — crvena
+ * linija preko sredine kadra koja klizi gore-dole ("poravnaj barkod sa linijom").
+ * Ovde, a ne u Tailwind klasama, jer se sedmostepeni gradijent + trostruki glow +
+ * @keyframes ne mogu izraziti utilitijima.
+ *
+ * NAMERNO BEZ TOKENA (izuzetak od §3, obrazložen i u komponenti): nišan stoji preko
+ * ŽIVE slike kamere, ne preko naše površine — crvena mora da bude ista i u svetloj i
+ * u tamnoj temi, inače „nestane" na sjajnom limu ili u mračnom magacinu.
+ */
+.scan-laser {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 50, 50, 0.35) 10%,
+    rgba(255, 90, 90, 0.95) 42%,
+    #ff2020 50%,
+    rgba(255, 90, 90, 0.95) 58%,
+    rgba(255, 50, 50, 0.35) 90%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 10px rgba(255, 40, 40, 0.95),
+    0 0 24px rgba(255, 0, 0, 0.5),
+    0 0 42px rgba(255, 60, 60, 0.22);
+  animation: scan-laser-sweep 2.35s ease-in-out infinite;
+}
+
+@keyframes scan-laser-sweep {
+  0%,
+  100% {
+    opacity: 0.8;
+    transform: translateY(-7px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(7px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  /* Linija ostaje (nosi informaciju „ovde je linija skena"), samo prestaje da klizi.
+   * Globalno pravilo ispod gasi trajanje, ali `animation: none` skida i ime, pa
+   * element sigurno stoji u mirnom stanju umesto da „trza" na 0.01 ms. */
+  .scan-laser {
+    animation: none;
+    opacity: 0.9;
+    transform: none;
+  }
+
   * {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;

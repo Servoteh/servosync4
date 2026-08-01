@@ -17,6 +17,7 @@ import {
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
 import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-picker';
+import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 
 /** Formati skenera reversa (isti set za živu kameru, „Slikaj barkod" i preload). */
 const SCAN_FORMATS: DecodeFormat[] = ['code_128', 'code_39', 'ean_13', 'qr_code'];
@@ -610,11 +611,7 @@ export function ScanOverlay({
           onPointerDown={(e) => void tapFocus(e)}
           className="h-full w-full object-cover"
         />
-        {cameraOn && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            <div className="h-40 w-72 rounded-panel border-2 border-white/70" />
-          </div>
-        )}
+        {cameraOn && <ScanReticle variant="barcode" />}
         {continuous && chips.length > 0 && (
           <div className="absolute inset-x-0 bottom-0 flex flex-wrap gap-1.5 bg-gradient-to-t from-black/80 to-transparent p-3">
             {chips.map((c) => (

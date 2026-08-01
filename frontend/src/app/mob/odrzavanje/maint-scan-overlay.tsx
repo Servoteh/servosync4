@@ -15,6 +15,7 @@ import {
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
 import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-picker';
+import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 
 /**
  * Punoekranski QR/barkod skener sredstava za mobilno Održavanje (H21). Za razliku od
@@ -332,11 +333,8 @@ export function MaintScanOverlay({
       <div className="relative flex-1 overflow-hidden bg-black">
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} playsInline muted className="h-full w-full object-cover" />
-        {cameraOn && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            <div className="h-56 w-56 rounded-panel border-2 border-white/70" />
-          </div>
-        )}
+        {/* QR karton sredstva → kvadratni nišan; laser je 1D pomagalo, pa je ovde ugašen. */}
+        {cameraOn && <ScanReticle variant="qr" laser={false} />}
       </div>
 
       <div className="space-y-3 bg-black/80 px-4 py-4 text-white">

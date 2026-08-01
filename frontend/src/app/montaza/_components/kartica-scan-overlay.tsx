@@ -11,6 +11,7 @@ import {
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
+import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 
 /**
  * Punoekranski skener KARTICE KOJA PRATI DEO do montaže (zahtev 034/26).
@@ -217,12 +218,8 @@ export function KarticaScanOverlay({
       <div className="relative flex-1 overflow-hidden bg-black">
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} playsInline muted className="h-full w-full object-cover" />
-        {cameraOn && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            {/* Široki pravougaonik — 1D barkod, ne QR kvadrat. */}
-            <div className="h-32 w-72 max-w-[85%] rounded-panel border-2 border-white/70" />
-          </div>
-        )}
+        {/* Barkod RN kartice je 1D → široki 3:1 nišan sa laserom (isto kao lokacije/reversi). */}
+        {cameraOn && <ScanReticle variant="barcode" />}
       </div>
 
       <div className="space-y-3 bg-black/80 px-4 py-4 text-white">

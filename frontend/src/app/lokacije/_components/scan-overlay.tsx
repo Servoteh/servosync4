@@ -41,6 +41,7 @@ import {
   looksLikeOperationBarcode,
   OPERATION_BARCODE_HINT,
 } from '@/lib/loc-barcode-shape';
+import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 
 /*
  * Punoekranski skener barkoda za Lokacije — pun port bogatog 1.0 scanModal-a
@@ -1420,11 +1421,7 @@ export function ScanOverlay({
           className="h-full w-full object-cover"
           onPointerDown={(e) => void ctrlRef.current?.tapFocus(e.clientX, e.clientY)}
         />
-        {cameraOn && !iosBlocker && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            <div className="h-40 w-72 rounded-panel border-2 border-white/70" />
-          </div>
-        )}
+        {cameraOn && !iosBlocker && <ScanReticle variant="barcode" />}
         {focusRing && (
           <div
             className="pointer-events-none absolute h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-status-success"

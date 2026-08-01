@@ -362,6 +362,23 @@ Dopune kita:
   samo korisnicima sa `ai.chat` permisijom i van `/ai` strane; `/dev/ui` prikazuje samo izgled
   dugmeta (živi widget traži prijavu i API).
 
+* **`ScanReticle`** (`ui-kit/scan-reticle.tsx`, 01.08.2026) — nišan (retikl) preko žive slike
+  kamere u punoekranskim skenerima. **Doslovan port vizuelnog jezika iz 1.0**
+  (`legacy.css` `.loc-scan-reticle` / `.loc-scan-laser`) — ljudi u pogonu skeniraju po tom
+  obliku godinama, a 3.0 je dotad crtao skoro kvadratni okvir fiksan u px, bez vinjete.
+  `variant="barcode"` = široki prozor `aspect-ratio 3/1`, `w: min(78vw, 360px)` ·
+  `variant="qr"` = kvadrat `min(70vw, 280px)`. **Vinjeta** (`box-shadow: 0 0 0 9999px
+  rgba(0,0,0,.45)`) zatamnjuje okolinu i fokusira oko na prozor skena — nosi najveći deo
+  prepoznatljivosti. `laser` (default: uključen za `barcode`) je crvena linija skena preko
+  sredine kadra, animacija 2.35 s (klasa `.scan-laser` u `globals.css` — gradijent + glow +
+  `@keyframes` se ne mogu izraziti utilitijima; `prefers-reduced-motion` je gasi, linija ostaje).
+  Dimenzije su **viewport-relativne**, ne px, pa isti nišan radi na telefonu i na tabletu (§11).
+  **Izuzetak od §3 (tokeni):** boje ivice i lasera su fiksne (`white/90`, crvena iz 1.0) jer
+  okvir stoji preko slike kamere, ne preko naše površine — ne sme da se menja sa temom.
+  Uvećani „presentation" režim iz 1.0 nije portovan (3.0 nema taj koncept).
+  Potrošači: `lokacije`/`reversi` ScanOverlay i `montaza` KarticaScanOverlay (`barcode`),
+  mobilno Održavanje (`qr`). Svaki nov skener uzima ovu komponentu — nišan se više ne crta ručno.
+
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.
 
