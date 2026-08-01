@@ -264,3 +264,19 @@ export function visibleMobModules(can: (permission: Permission) => boolean): Mob
     m.children ? { ...m, children: m.children.filter((s) => !s.requires || can(s.requires)) } : m,
   );
 }
+
+/**
+ * Skup href-ova (grupe + pod-ulazi) koje dati korisnik sme da vidi — za ekrane
+ * koji NE crtaju listu modula nego svoje pločice ka istim ciljevima (magacinska
+ * početna, F2). Gate ostaje JEDAN: pravila žive u `MOB_MODULES.requires`, a
+ * pozivalac samo pita „smem li na ovaj href" — bez lokalne kopije permisija koja
+ * bi vremenom odlutala od huba i „Više".
+ */
+export function visibleMobHrefs(can: (permission: Permission) => boolean): Set<string> {
+  const hrefs = new Set<string>();
+  for (const m of visibleMobModules(can)) {
+    hrefs.add(m.href);
+    for (const s of m.children ?? []) hrefs.add(s.href);
+  }
+  return hrefs;
+}

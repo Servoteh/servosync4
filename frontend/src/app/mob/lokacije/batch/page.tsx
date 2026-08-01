@@ -1,18 +1,35 @@
 'use client';
 
 /**
- * Mobilno BATCH premeštanje (/mob/lokacije/batch) — PLAN_MOB_3.0 Faza 2, talas C
- * (1.0 `/m/batch` „mobileBatch" paritet): izaberi JEDNU odredišnu policu → skeniraj
- * delove u nizu → pošalji sve.
+ * Mobilno BATCH dodavanje na policu (/mob/lokacije/batch) — PLAN_MOB_3.0 Faza 2,
+ * talas C (1.0 `/m/batch` „mobileBatch" paritet): izaberi JEDNU odredišnu policu →
+ * skeniraj delove u nizu → pošalji sve.
  *
- * Poslovna logika je 1:1 sa `app/lokacije/_components/movement-dialog.tsx` — ovde
- * NEMA nove odluke, samo drugačiji redosled koraka (jedna destinacija, N stavki):
- *  - tip pokreta: stavka ima aktivan smeštaj → `TRANSFER`, inače `INITIAL_PLACEMENT`
- *    (isto kao `openMoveFromItem` u `/mob/lokacije`),
- *  - polazna lokacija: čip-izbor iz stvarnih placement-a (MovementDialog „klik =
- *    polazna"); kad je smeštaj na više mesta, podrazumeva se onaj sa najviše komada,
- *  - količina: podrazumevano PUNA količina sa te izvorne lokacije (izmenjiva),
- *  - `itemRefTable`: iz placement-a, fallback `bigtehn_rn` (MovementDialog default),
+ * ── SEMANTIKA „DODAJ NA POLICU" (odluka Nenada 01.08.2026) ───────────────────
+ * Batch UVEK šalje `INITIAL_PLACEMENT` BEZ `fromLocationId`: količina se DODAJE na
+ * odredišnu policu, izvorna se NE prazni. To je doslovan paritet 1.0
+ * (`src/ui/mobile/mobileBatch.js` → „Härd-1: INITIAL_PLACEMENT akumulira, opcija B"),
+ * gde je batch alat za „upiši šta si stavio na ovu policu", a ne za strogo
+ * premeštanje. Nenad: „može semantika i u 3.0 da bude dodaj na policu da ne menjamo
+ * navike ljudi".
+ *
+ * Šta je time OTPALO (ekran je ranije sam birao tip pokreta):
+ *  · heuristika „ima aktivan smeštaj → TRANSFER" — tip je sada uvek INITIAL_PLACEMENT;
+ *  · izbor POLAZNE lokacije (čipovi) — `fromLocationId` se ne šalje, pa bi kontrola
+ *    postavljala vrednost koju niko ne čita; smeštaji su ostali samo kao INFORMACIJA
+ *    („deo sad stoji tu i tu"), da radnik vidi zatečeno stanje pre slanja;
+ *  · preskakanje stavke koja je već na odredišnoj polici — pod novom semantikom to
+ *    NIJE greška nego dopuna: DB trigger `loc_after_movement_insert` radi
+ *    `ON CONFLICT (…) DO UPDATE SET quantity = quantity + EXCLUDED.quantity`, dakle
+ *    uredno sabira. Umesto tihog preskakanja stoji vidljivo upozorenje da se DODAJE.
+ *  · podrazumevana količina „sve sa izvorne police" — imala je smisla samo za
+ *    premeštanje; sada je 1 po skenu, kao u 1.0 (ponovljen sken iste stavke = +1).
+ *
+ * ⚠️ Pojedinačno premeštanje (`MovementDialog` sa `/mob/lokacije`) se NE menja —
+ * tamo ostaje pun izbor tipa pokreta (TRANSFER / INITIAL / korekcija).
+ *
+ * Ostalo je nepromenjeno u odnosu na `movement-dialog.tsx`:
+ *  - `itemRefTable`: iz placement-a, fallback `bigtehn_rn` (ne zavisi od tipa pokreta),
  *  - ključevi naloga/stavke kroz `normalizeLocMovementKeys` pre slanja,
  *  - offline: `enqueueMovement` sa ISTIM `clientEventUuid` (idempotentan retry).
  *
@@ -26,7 +43,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Check, ChevronLeft, ScanLine, Search, Trash2, X } from 'lucide-react';
+import { Check, ChevronLeft, Plus, ScanLine, Search, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { toast } from '@/lib/toast';
@@ -43,7 +60,6 @@ import {
   useAllLocations,
   type LocBarcodeItemResult,
   type LocLocation,
-  type LocMovementType,
   type LocPlacement,
   type MovementVars,
 } from '@/api/lokacije';
@@ -80,10 +96,12 @@ interface BatchLine {
   itemRefId: string;
   drawingNo: string;
   itemRefTable: string;
-  movementType: LocMovementType;
-  /** Stvarni smeštaji (qty > 0) — čipovi za izbor polazne lokacije. */
+  /**
+   * Zatečeni smeštaji (qty > 0) — čisto INFORMATIVNO („deo sad stoji tu i tu").
+   * Pod semantikom „dodaj na policu" se NE šalju: `fromLocationId` ne postoji, pa
+   * ovo nije izbor nego prikaz stanja pre slanja.
+   */
   placements: LocPlacement[];
-  fromLocationId: string | null;
   qty: string;
   status: LineStatus;
   error: string | null;
@@ -98,20 +116,20 @@ function activePlacements(r: LocBarcodeItemResult): LocPlacement[] {
 
 function lineFromScan(r: LocBarcodeItemResult): BatchLine {
   const placements = [...activePlacements(r)].sort((a, b) => num(b.quantity) - num(a.quantity));
-  // Podrazumevana polazna = smeštaj sa najviše komada; količina = puna sa nje.
-  const src = placements[0] ?? null;
   return {
     key: `${r.parsed.orderNo}|${r.parsed.itemRefId}`,
     clientEventUuid: newClientEventUuid(),
     orderNo: r.parsed.orderNo,
     itemRefId: r.parsed.itemRefId,
     drawingNo: r.parsed.drawingNo || '',
-    itemRefTable: src?.itemRefTable || 'bigtehn_rn',
-    // Paritet `openMoveFromItem`: bez ijednog smeštaja = prvo zaduženje.
-    movementType: placements.length > 0 ? 'TRANSFER' : 'INITIAL_PLACEMENT',
+    // Tabela stavke ne zavisi od tipa pokreta — uzima se iz zatečenog smeštaja,
+    // fallback `bigtehn_rn` (isti default kao MovementDialog).
+    itemRefTable: placements[0]?.itemRefTable || 'bigtehn_rn',
     placements,
-    fromLocationId: src?.locationId ?? null,
-    qty: src ? String(num(src.quantity)) : '1',
+    // 1 po skenu (paritet 1.0 `mobileBatch`): radnik u ruci ima jedan komad koji
+    // stavlja na policu. „Sve sa izvorne police" je bila podrazumevana vrednost
+    // PREMEŠTANJA; pod „dodaj na policu" bi ista brojka udvostručila stanje.
+    qty: '1',
     status: 'pending',
     error: null,
   };
@@ -201,23 +219,31 @@ export default function MobLokacijeBatchPage() {
     );
   }
 
-  /** Već na odredištu → nema šta da se premešta (TRANSFER na istu policu je greška). */
+  /** Stavka već ima smeštaj na odredišnoj polici → količina se DODAJE na zatečenu. */
   function isAtDest(l: BatchLine): boolean {
-    return !!dest && l.fromLocationId === dest.id;
+    return !!dest && l.placements.some((p) => p.locationId === dest.id);
   }
-  const sendable = lines.filter(
-    (l) => !isAtDest(l) && l.status !== 'done' && l.status !== 'queued',
-  );
+  const sendable = lines.filter((l) => l.status !== 'done' && l.status !== 'queued');
 
   function addScanned(r: LocBarcodeItemResult) {
     const fresh = lineFromScan(r);
     setLines((prev) => {
-      // Ponovljen sken iste stavke NE duplira red (ključ = nalog + stavka).
-      if (prev.some((l) => l.key === fresh.key)) {
-        toast(`${fresh.itemRefId} je već na listi.`);
+      // Ponovljen sken iste stavke = +1 kom (paritet 1.0 `mobileBatch`: „skenirao
+      // jednom iste stvari = +1 automatski"). Red se NE duplira — ključ je
+      // nalog+stavka. Skener ne može da naduva brojku sam od sebe: `ScanOverlay`
+      // pušta isti kod tek kad napusti kadar (re-arm gejt), pa je jedan svestan
+      // sken = jedan komad. Već poslat/queue-ovan red se ne dira.
+      const idx = prev.findIndex((l) => l.key === fresh.key);
+      if (idx < 0) return [...prev, fresh];
+
+      const cur = prev[idx];
+      if (cur.status === 'done' || cur.status === 'queued' || cur.status === 'sending') {
+        toast(`${fresh.itemRefId} je već poslat — dodaj ga kao nov unos posle slanja.`);
         return prev;
       }
-      return [...prev, fresh];
+      const next = String((Number(cur.qty) || 0) + 1);
+      toast(`+1 ${fresh.itemRefId} (ukupno ${next})`);
+      return prev.map((l, i) => (i === idx ? { ...l, qty: next, status: 'pending', error: null } : l));
     });
   }
 
@@ -228,9 +254,7 @@ export default function MobLokacijeBatchPage() {
   /** Sekvencijalno slanje: red po red, progres N/M, greška ostavlja red u listi. */
   async function sendAll() {
     if (!dest || sending) return;
-    const targets = lines.filter(
-      (l) => !isAtDest(l) && l.status !== 'done' && l.status !== 'queued',
-    );
+    const targets = lines.filter((l) => l.status !== 'done' && l.status !== 'queued');
     if (targets.length === 0) return;
 
     setSending({ done: 0, total: targets.length });
@@ -260,15 +284,14 @@ export default function MobLokacijeBatchPage() {
         clientEventUuid: l.clientEventUuid,
         itemRefTable: l.itemRefTable,
         itemRefId: norm.itemRefId,
-        movementType: l.movementType,
+        // „Dodaj na policu" (odluka 01.08): UVEK INITIAL_PLACEMENT i BEZ polazne
+        // lokacije — 1:1 sa 1.0 `mobileBatch` payload-om. DB fn ionako nulira
+        // `from` za ovaj tip, ali ga ne šaljemo ni da bi namera bila očigledna.
+        movementType: 'INITIAL_PLACEMENT',
         orderNo: norm.orderNo || undefined,
         drawingNo: l.drawingNo || undefined,
         quantity: qty,
         toLocationId: dest.id,
-        // INITIAL_PLACEMENT ne traži polaznu (paritet `needsFrom`); prazno kod
-        // TRANSFER-a = auto-razrešavanje trenutne lokacije na BE-u.
-        fromLocationId:
-          l.movementType === 'INITIAL_PLACEMENT' ? undefined : (l.fromLocationId ?? undefined),
       };
 
       // Offline: bez pokušaja mreže — direktno u queue (paritet 1.0 !navigator.onLine).
@@ -324,9 +347,11 @@ export default function MobLokacijeBatchPage() {
       <header className="sticky top-0 z-10 border-b border-line bg-surface px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-md font-semibold text-ink">Batch premeštanje</h1>
+            <h1 className="truncate text-md font-semibold text-ink">Dodaj na policu</h1>
             <p className="truncate text-xs text-ink-secondary">
-              {dest ? `→ ${dest.locationCode}${dest.name ? ` — ${dest.name}` : ''}` : 'korak 1 — izaberi odredišnu policu'}
+              {dest
+                ? `dodajem na ${dest.locationCode}${dest.name ? ` — ${dest.name}` : ''}`
+                : 'korak 1 — izaberi policu na koju dodaješ'}
             </p>
           </div>
           <Link
@@ -356,7 +381,7 @@ export default function MobLokacijeBatchPage() {
               <span>
                 SKENIRAJ POLICU
                 <span className="block text-sm font-normal text-ink-secondary">
-                  odredište za celu seriju
+                  polica na koju dodaješ celu seriju
                 </span>
               </span>
             </button>
@@ -415,7 +440,7 @@ export default function MobLokacijeBatchPage() {
             {/* Izabrano odredište + promena */}
             <div className="flex items-center gap-3 rounded-panel border border-accent bg-accent-subtle p-3">
               <span className="min-w-0 flex-1">
-                <span className="block text-xs text-ink-secondary">Odredište</span>
+                <span className="block text-xs text-ink-secondary">Dodajem na policu</span>
                 <span className="block text-md font-bold text-ink">{dest.locationCode}</span>
                 {dest.name && <span className="block truncate text-xs text-ink-secondary">{dest.name}</span>}
               </span>
@@ -441,14 +466,15 @@ export default function MobLokacijeBatchPage() {
               <span>
                 SKENIRAJ DELOVE
                 <span className="block text-sm font-normal text-ink-secondary">
-                  neprekidno — skener ostaje otvoren
+                  neprekidno — svaki sken je +1 kom
                 </span>
               </span>
             </button>
 
             {lines.length === 0 ? (
               <p className="rounded-panel border border-line bg-surface px-4 py-6 text-center text-sm text-ink-secondary">
-                Skeniraj nalepnice delova koje premeštaš na {dest.locationCode}.
+                Skeniraj nalepnice delova koje stavljaš na {dest.locationCode}. Količina se
+                DODAJE na policu — izvorna polica se ne prazni.
               </p>
             ) : (
               <ul className="space-y-2">
@@ -461,7 +487,6 @@ export default function MobLokacijeBatchPage() {
                     locById={locById}
                     busy={!!sending}
                     onQty={(v) => patch(l.key, { qty: v })}
-                    onFrom={(id, q) => patch(l.key, { fromLocationId: id, qty: q })}
                     onRemove={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}
                   />
                 ))}
@@ -493,7 +518,7 @@ export default function MobLokacijeBatchPage() {
               ? `Šaljem ${sending.done}/${sending.total}…`
               : sendable.length === 0
                 ? 'Sve poslato'
-                : `Pošalji sve (${sendable.length})`}
+                : `Dodaj na ${dest.locationCode} (${sendable.length})`}
           </Button>
         </div>
       )}
@@ -537,7 +562,6 @@ function LineCard({
   locById,
   busy,
   onQty,
-  onFrom,
   onRemove,
 }: {
   l: BatchLine;
@@ -546,7 +570,6 @@ function LineCard({
   locById: Map<string, LocLocation>;
   busy: boolean;
   onQty: (v: string) => void;
-  onFrom: (id: string, qty: string) => void;
   onRemove: () => void;
 }) {
   const locked = l.status === 'done' || l.status === 'queued' || l.status === 'sending';
@@ -572,8 +595,8 @@ function LineCard({
           {l.drawingNo && (
             <span className="block text-xs text-ink-secondary">crtež {l.drawingNo}</span>
           )}
-          {l.movementType === 'INITIAL_PLACEMENT' && (
-            <span className="block text-xs text-ink-secondary">prvo zaduženje (nema smeštaja)</span>
+          {l.placements.length === 0 && (
+            <span className="block text-xs text-ink-secondary">nema zabeleženog smeštaja</span>
           )}
         </span>
         {l.status === 'done' ? (
@@ -594,24 +617,20 @@ function LineCard({
         )}
       </div>
 
-      {/* Polazna lokacija — čipovi stvarnih smeštaja (paritet MovementDialog „klik = polazna"). */}
-      {l.placements.length > 1 && !locked && (
+      {/* Zatečeno stanje — INFORMACIJA, ne izbor: pod „dodaj na policu" polazna
+          lokacija se ne šalje, ali radnik treba da vidi gde deo već stoji. */}
+      {l.placements.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {l.placements.map((p) => {
             const loc = locById.get(p.locationId);
-            const active = l.fromLocationId === p.locationId;
             return (
-              <button
+              <span
                 key={p.id}
-                onClick={() => onFrom(p.locationId, String(num(p.quantity)))}
-                className={`rounded-full border px-2.5 py-1 text-xs ${
-                  active
-                    ? 'border-accent bg-accent-subtle text-accent'
-                    : 'border-line text-ink-secondary active:bg-surface-2'
-                } ${FOCUS}`}
+                className="rounded-full border border-line px-2.5 py-1 text-xs text-ink-secondary"
               >
-                {loc ? loc.locationCode : p.locationId.slice(0, 8)} · <strong>{String(p.quantity)}</strong>
-              </button>
+                sad: {loc ? loc.locationCode : p.locationId.slice(0, 8)} ·{' '}
+                <strong>{String(p.quantity)}</strong>
+              </span>
             );
           })}
         </div>
@@ -619,9 +638,7 @@ function LineCard({
 
       <div className="mt-2 flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-xs text-ink-secondary">
-          {l.fromLocationId
-            ? `${locById.get(l.fromLocationId)?.locationCode ?? l.fromLocationId.slice(0, 8)} → ${destCode}`
-            : `→ ${destCode}`}
+          dodajem na {destCode}
         </span>
         <label className="flex shrink-0 items-center gap-1.5">
           <span className="text-xs text-ink-secondary">kom</span>
@@ -638,10 +655,12 @@ function LineCard({
         </label>
       </div>
 
+      {/* Nije greška (i ne preskače se) — ali mora da se VIDI: šalje se dopuna
+          količine na policu na kojoj deo već stoji. */}
       {atDest && l.status === 'pending' && (
         <p className="mt-1.5 flex items-center gap-1 text-xs text-status-warn">
-          <X className="h-3.5 w-3.5" aria-hidden />
-          Već je na {destCode} — neće biti poslato.
+          <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          Već stoji na {destCode} — količina se DODAJE na zatečenu.
         </p>
       )}
       {l.error && <p className="mt-1.5 text-xs text-status-danger">{l.error}</p>}

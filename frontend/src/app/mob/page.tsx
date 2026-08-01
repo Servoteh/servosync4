@@ -5,9 +5,12 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ChevronRight, Monitor } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import type { Permission } from '@/lib/permissions';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { MobShell } from './_components/mob-shell';
-import { visibleMobModules } from './_components/mob-modules';
+import { visibleMobHrefs, visibleMobModules } from './_components/mob-modules';
+import { MagacinHome } from './_components/magacin-home';
+import { useMagacinskiKrug } from './_components/use-magacinski-krug';
 
 /**
  * Mobilna početna `/mob` (PLAN_MOB_3.0.md, Faza 0) — kartice ka 3.0 mobilnim
@@ -17,6 +20,10 @@ import { visibleMobModules } from './_components/mob-modules';
  * Od F1 (PLAN_MOB_IZGLED_1.0_PARITET) ekran je uvijen u `MobShell` — zaglavlje i
  * donja tab-traka žive tamo, ovde je samo sadržaj. Spisak modula je zajednički sa
  * „Više" (`_components/mob-modules.ts`) — bez duplirane liste.
+ *
+ * F2 (odluka Nenada 01.08): sadržaj ima DVA rasporeda — „magacinski" (sken/premeštanje
+ * u prvom planu) za magacinsku ekipu po SISTEMATIZACIJI, i „opšti" (mreža svih modula)
+ * za sve ostale. Ljuska, gate-ovi i rute su isti; razlikuje se samo raspored.
  *
  * ⚠️ Prostor `/mob/*` je NAMERNO van `/m/*`: Cloudflare worker (`run_worker_first`)
  * sve `/m/*` na javnom domenu proksira na 1.0 mobilnu (pages.dev), pa 3.0 stranica
@@ -54,8 +61,6 @@ export default function MobHubPage() {
     );
   }
 
-  const visible = visibleMobModules(can);
-
   return (
     <MobShell
       active="pocetna"
@@ -69,6 +74,38 @@ export default function MobHubPage() {
         </Link>
       }
     >
+      <MobHubBody can={can} />
+    </MobShell>
+  );
+}
+
+/**
+ * Izbor rasporeda. Zasebna komponenta (a ne grana u `MobHubPage`) jer se radno
+ * mesto povlači hook-om: u stranici bi hook morao da stoji IZNAD gate-ova, pa bi
+ * `/v1/profile/position` odlazio i pre prijave i pre dozvola.
+ */
+function MobHubBody({ can }: { can: (permission: Permission) => boolean }) {
+  const { isMagacin, isLoading } = useMagacinskiKrug();
+
+  // Dok radno mesto stiže — OPŠTI raspored. On je bezbedan default (nosi sve
+  // module), pa ni u najgorem slučaju (spor/pao `/profile/position`) niko ne
+  // ostaje bez ulaza; magacincu ekran samo „sedne" kad odgovor stigne, umesto da
+  // prvo trepne prazno. Isti razlog i za grešku (v. `useMagacinskiKrug`).
+  //
+  // Magacinski ekran bez prava na lokacije bio bi prazna ljuska (sve njegove
+  // prečice vode na `/mob/lokacije*`) — tada takođe ide opšti hub.
+  if (!isLoading && isMagacin && visibleMobHrefs(can).has('/mob/lokacije')) {
+    return <MagacinHome can={can} />;
+  }
+  return <OpstiHub can={can} />;
+}
+
+/** „Opšti" raspored (svi ostali): mreža svih dostupnih modula — 1.0 „Više" duh. */
+function OpstiHub({ can }: { can: (permission: Permission) => boolean }) {
+  const visible = visibleMobModules(can);
+
+  return (
+    <>
       {visible.length === 0 ? (
         <EmptyState
           title="Nema dostupnih modula"
@@ -137,6 +174,6 @@ export default function MobHubPage() {
           })}
         </div>
       )}
-    </MobShell>
+    </>
   );
 }
