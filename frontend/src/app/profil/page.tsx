@@ -146,7 +146,7 @@ export default function ProfilPage() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MiniStat label="Preostalo GO" value={s.vacationDaysRemaining ?? '—'} />
             <MiniStat label="Otvoreni GO zahtevi" value={s.openVacationRequests} />
-            <MiniStat label="Sati (mesec)" value={Number(s.monthPresenceHours ?? 0).toFixed(0)} />
+            <MiniStat label="Sati (mesec)" value={s.monthPresenceHm ?? '—'} />
             <MiniStat label="Razgovori za potvrdu" value={s.unacknowledgedTalks} tone={s.unacknowledgedTalks > 0 ? 'warn' : undefined} />
           </div>
         )}

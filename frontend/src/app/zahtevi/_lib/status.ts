@@ -74,7 +74,9 @@ export function eventLabel(type: string): string {
     RESUBMITTED: 'Ponovo podnet (dopuna)',
     TRIAGED: 'AI trijaža završena',
     TRIAGE_FAILED: 'AI trijaža nije uspela',
-    AI_REJECTED: 'AI automatski odbio (ocena 0)',
+    AI_REJECTED: 'AI automatski odbio (neupotrebljiva prijava)',
+    // 30.07.2026: sumnja na duplikat NE odbija zahtev — samo trag da čovek proveri.
+    AI_DUPLICATE_SUSPECTED: 'AI uočio moguće preklapanje — čeka proveru',
     ANALYSIS_APPROVED: 'Odobrena AI analiza',
     ANALYZED: 'AI analiza završena',
     ANALYSIS_FAILED: 'AI analiza nije uspela',

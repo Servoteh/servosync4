@@ -189,6 +189,18 @@ export class KadrovskaController {
     return this.kadrovska.vacationLedger(req.user.email, q);
   }
 
+  /** GO periodi „od–do" po zaposlenom (kartica u pregledu Odmora): jedan zahtev =
+   *  jedan neprekidan raspon + status, BEZ cepanja na radne dane kao u gridu.
+   *  Permisija je klasna `kadrovska.read` — ista koja već štiti pregled odsustva
+   *  na tom ekranu (`vacation/balance`, `vacation/ledger`, `absences`); opseg
+   *  redova servis sužava istom DB funkcijom kao `requests()` (AUDIT-K2).
+   *  ⚠️ F3: servis dobija CELOG `req.user` jer PROJEKCIJU sužava permisija
+   *  pozivaoca — bez `kadrovska.vacreq_manage` izlaze samo odobreni zahtevi. */
+  @Get("vacation/periods")
+  vacationPeriods(@Req() req: AuthedRequest, @Query() q: VacationQueryDto) {
+    return this.kadrovska.vacationPeriods(req.user, q);
+  }
+
   @Get("vacation/entitlements")
   vacationEntitlements(
     @Req() req: AuthedRequest,
@@ -201,6 +213,17 @@ export class KadrovskaController {
   @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
   requests(@Req() req: AuthedRequest, @Query() q: RequestsQueryDto) {
     return this.kadrovska.requests(req.user.email, q);
+  }
+
+  /** ZAHTEV 026/26 — molbe za izmenu/otkaz potvrđenog GO termina (isti krug
+   *  odobravača kao i sam GO → ista permisija kao `requests`). */
+  @Get("requests/vacation-changes")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  vacationChangeRequests(
+    @Req() req: AuthedRequest,
+    @Query("status") status?: string,
+  ) {
+    return this.kadrovska.vacationChangeRequests(req.user.email, status);
   }
 
   @Get("absences/absent-now")

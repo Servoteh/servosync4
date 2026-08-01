@@ -55,6 +55,7 @@ import {
   FileMetaDto,
   IncidentEventDto,
   LinkPartDto,
+  OtpisMachineDto,
   PatchAssetCoreDto,
   RenameMachineDto,
   ReportIncidentDto,
@@ -536,10 +537,20 @@ export class OdrzavanjeController {
     return this.odr.deleteMachineHard(req.user.email, code, dto.reason);
   }
 
-  @Post("machines/:code/archive")
+  /**
+   * Otpis mašine (zahtev 037/26) — nasledio raniji `POST machines/:code/archive`,
+   * koji je bio bez razloga i bez propagacije na `maint_assets`. Ruta je preimenovana
+   * jer je i radnja druga (otpis = izbacivanje iz upotrebe + obaveštenje šefu), a stara
+   * nije imala nijednog korisnika na produ (0 arhiviranih mašina na dan izmene).
+   */
+  @Post("machines/:code/otpis")
   @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
-  archiveMachine(@Req() req: AuthedRequest, @Param("code") code: string) {
-    return this.odr.archiveMachine(req.user.email, code);
+  otpisMachine(
+    @Req() req: AuthedRequest,
+    @Param("code") code: string,
+    @Body() dto: OtpisMachineDto,
+  ) {
+    return this.odr.otpisMachine(req.user.email, code, dto.reason);
   }
 
   @Post("machines/:code/restore")

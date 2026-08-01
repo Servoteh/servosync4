@@ -147,6 +147,20 @@ export class KadrovskaMutationsController {
   vacCancel(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.OptIdempotentDto) {
     return this.m.vacationCancel(this.email(req), id, dto);
   }
+  /** ZAHTEV 026/26 — odluka o molbi za izmenu/otkaz POTVRĐENOG termina.
+   *  Guard je isti kao za GO odluke; opseg (moj tim ∨ vacreq_admin) i „ne odobravaj
+   *  sam sebi" presuđuje `kadr_vacreq_change_decide`. */
+  @Post("requests/vacation-changes/:id/approve")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  vacChangeApprove(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.RejectDto) {
+    return this.m.vacationChangeDecide(this.email(req), id, true, dto);
+  }
+  @Post("requests/vacation-changes/:id/reject")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  vacChangeReject(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string, @Body() dto: D.RejectDto) {
+    return this.m.vacationChangeDecide(this.email(req), id, false, dto);
+  }
+
   @Delete("requests/vacation/:id")
   @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
   vacDelete(@Req() req: AuthedRequest, @Param("id", ParseUUIDPipe) id: string) {
@@ -274,6 +288,24 @@ export class KadrovskaMutationsController {
   @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)
   gridUnsetGo(@Req() req: AuthedRequest, @Body() dto: D.GridGoDto) {
     return this.m.gridUnsetGo(this.email(req), dto);
+  }
+
+  /**
+   * BOLOVANJE u grid za člana tima (zahtev 041/26). Šef sa pravom odobravanja GO
+   * (`kadrovska.vacreq_manage`, NE urednik grida) unosi bolovanje SVOM članu.
+   * NAMERNO nije `grid_edit` — pun mesečni grid ostaje zatvoren za allowlistu.
+   * Opseg tima presuđuje DB: servis radi belt-proveru `current_user_manages_employee`,
+   * a RPC `kadr_grid_set_sick` ima i interni gejt (SECURITY DEFINER).
+   */
+  @Post("grid/sick")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  gridSetSick(@Req() req: AuthedRequest, @Body() dto: D.GridSickDto) {
+    return this.m.gridSetSick(this.email(req), dto);
+  }
+  @Post("grid/sick/unset")
+  @RequirePermission(PERMISSIONS.KADROVSKA_VACREQ_MANAGE)
+  gridUnsetSick(@Req() req: AuthedRequest, @Body() dto: D.GridGoDto) {
+    return this.m.gridUnsetSick(this.email(req), dto);
   }
   @Post("grid/audit")
   @RequirePermission(PERMISSIONS.KADROVSKA_GRID_EDIT)

@@ -59,7 +59,7 @@ describe("Kadrovska R1 read — PII leak guard (sve kroz withUserRls, NIKAD this
         );
       },
     });
-    service = new KadrovskaService(sy15 as never);
+    service = new KadrovskaService(sy15 as never, {} as never);
   });
 
   /** Svi R1 read pozivi (pokriva sve hub-grupe, sa naglaskom na PII + zarade). */

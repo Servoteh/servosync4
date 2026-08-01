@@ -24,29 +24,38 @@ const RUN_AFTER_HOUR = 5; // >= 05:00 Europe/Belgrade (juče je tad sigurno „z
 export const GRID_AUTOFILL_MARKER = "auto:kapija";
 
 // ── Pravila predloga sati (STVARNO prisustvo, NE paušalno 8h — presuda 24.07) ───────
+// JEDINI izvor istine za predlog sati: koriste ga i noćni auto-tik i ručno dugme
+// „Popuni iz kapije" (kadrovska.service.ts) → oba puta predlažu identično.
 /** Standardni pun dan. */
-const FULL_DAY_HOURS = 8;
-/** Prisustvo >= ovo → pun dan (8). Paritet postojećeg „Popuni iz kapije" (opseg [7.6,8.4]);
+export const FULL_DAY_HOURS = 8;
+/** Prisustvo >= ovo → pun dan (8). Isto pravilo za auto-tik i ručno „Popuni iz kapije";
  *  otvoreno nagore: i duži dan (npr. 9.5h uz prekovremeni) predlaže 8 REDOVNIH, a prekovremeni
  *  dodaje urednik (grid razdvaja redovne/prekovremene → auto ne pogađa prekovremeni). */
-const REGULAR_FULL_MIN = 7.6;
+export const REGULAR_FULL_MIN = 7.6;
 /** Prisustvo < ovo → preskoči (slučajno/kratko kucanje). Prag = shadow view `presence_hours > 1`. */
-const PRESENCE_FLOOR = 1.0;
+export const PRESENCE_FLOOR = 1.0;
 /** Prisustvo > ovo → preskoči (anomalija / neuobičajeno duga smena → urednik ručno). */
-const PRESENCE_CEIL = 14.0;
+export const PRESENCE_CEIL = 14.0;
 
-/** Zaokruživanje na pola sata (skraćeno radno vreme: 5.05h → 5.0, 6.7h → 6.5). */
+/**
+ * Zaokruživanje NANIŽE na pola sata (D2, zahtev 044/26): `Math.floor(x*2)/2` — POD,
+ * ne najbliže. Prisustvo (kucanje: dolazak→odlazak) je GORNJA granica stvarnog rada,
+ * pa se seče naniže: 6.52h → 6.5, 6.75h → 6.5, 5.05h → 5.0, 7.4h → 7.0.
+ */
 function roundToHalf(x: number): number {
-  return Math.round(x * 2) / 2;
+  return Math.floor(x * 2) / 2;
 }
 
 /**
  * Predlog sati iz STVARNOG prisustva (kucanje) — čista funkcija (testabilna).
  *  - < FLOOR ili > CEIL → null (preskoči);
- *  - >= REGULAR_FULL_MIN → pun dan (8) — paritet „Popuni iz kapije" + kapiranje redovnih na 8;
- *  - između → zaokruženo na pola sata (skraćeno vreme: Antić/Pavlović ~5h → 5.0, NE 8h).
+ *  - >= REGULAR_FULL_MIN → pun dan (8) — kapiranje redovnih na 8;
+ *  - između → sečeno NANIŽE na pola sata (D2: 6.52h → 6.5, 6.75h → 6.5; skraćeno
+ *    vreme Antić/Pavlović ~5h → 5.0, NE paušalnih 8h).
  */
-export function proposeHoursFromPresence(presence: number | null): number | null {
+export function proposeHoursFromPresence(
+  presence: number | null,
+): number | null {
   if (presence == null || !Number.isFinite(presence)) return null;
   if (presence < PRESENCE_FLOOR || presence > PRESENCE_CEIL) return null;
   if (presence >= REGULAR_FULL_MIN) return FULL_DAY_HOURS;
@@ -54,9 +63,92 @@ export function proposeHoursFromPresence(presence: number | null): number | null
   return h > 0 ? h : null;
 }
 
+/** Razlog preskakanja dana (za sažetak/brojače). */
+export type ProposalSkipReason = "out_of_band" | "holiday_partial";
+
+/** Ishod odluke za JEDAN dan: predlog sati ili razlog preskakanja. */
+export interface DayProposal {
+  /** Predlog sati; `null` = dan se NE upisuje automatski. */
+  hours: number | null;
+  /** Popunjeno SAMO kad je `hours === null`. */
+  reason: ProposalSkipReason | null;
+}
+
+/**
+ * Odluka za jedan dan = `proposeHoursFromPresence` (JEDINI izvor istine za SATE)
+ * + DODATNA KAPIJA za NERADNE praznike. Koriste je OBA puta (noćni tik i ručno
+ * dugme „Popuni iz kapije") → predlažu identično.
+ *
+ * ── ZAŠTO kapija za praznik (ispravka 044/26) ───────────────────────────────
+ * `payroll-calc` na praznik koji pada u pon–pet radi ovako: ako dan IMA sate →
+ * `praznikRadSati += h`; ako NEMA sate (i nema odsustva) → automatski priznaje
+ * `praznikPlaceniSati += 8` (garantovani plaćeni neradni praznik). Znači: upis
+ * DELIMIČNIH sati na neradni praznik TIHO UNIŠTAVA garantovanih 8h — npr. 2.5h
+ * kucanja na Dan primirja bi radniku dalo 2.5h umesto 8h, a red se više nikad ne
+ * revidira (`ON CONFLICT DO NOTHING` + dan postaje `grid_covered`).
+ *
+ * Zato: na NERADNOM prazniku (`kadr_holidays.is_workday = false`) auto predlaže
+ * SAMO PUN DAN (8h) — pun praznični rad legitimno zamenjuje plaćeni praznik i
+ * knjiži se kao `praznikRadSati` 8h (bez gubitka). DELIMIČNO kucanje se NE upisuje
+ * nego ostaje kadrovskoj službi da ga unese svesno (vidi se u „Moje prisustvo").
+ *
+ * VIKENDI SU NETAKNUTI (D1, 044/26): vikend sa čistim kucanjem se i dalje predlaže
+ * za bilo koje prisustvo u opsegu — payroll vikend h>0 vodi u `redovanRadSati`, pa
+ * se nikakvo pravo ne gubi. Redovi sa `is_workday = true` (npr. naložena radna
+ * subota) NISU praznik i uopšte ne ulaze u `holSet`.
+ */
+export function proposeHoursForDay(
+  presence: number | null,
+  isNonWorkingHoliday: boolean,
+): DayProposal {
+  const hours = proposeHoursFromPresence(presence);
+  if (hours == null) return { hours: null, reason: "out_of_band" };
+  if (isNonWorkingHoliday && hours !== FULL_DAY_HOURS)
+    return { hours: null, reason: "holiday_partial" };
+  return { hours, reason: null };
+}
+
+/**
+ * Trenutni datum + sat (0–23) u pogonskoj zoni. Deljeno: interni tik i ručno dugme
+ * (`kadrovska.service`) — TZ matematika postoji na JEDNOM mestu.
+ */
+export function belgradeNowParts(): { day: string; hour: number } {
+  // en-CA daje ISO oblik YYYY-MM-DD; hour12:false → 00–23 (ponoć '24' → 0).
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SHOP_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  let hour = Number(get("hour"));
+  if (!Number.isFinite(hour) || hour === 24) hour = 0;
+  return { day: `${get("year")}-${get("month")}-${get("day")}`, hour };
+}
+
+/** Dodaj `n` dana na YYYY-MM-DD (radi na UTC ponoći → bez TZ pomeraja). */
+export function shiftYmd(ymd: string, n: number): string {
+  const d = new Date(`${ymd.slice(0, 10)}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * „Juče" u pogonskoj zoni = GORNJA GRANICA svakog auto-predloga. DANAS se NIKAD ne
+ * predlaže: dan još traje, pa bi kucanje u toku dana (npr. 08:00→10:00, izlaz već
+ * upisan) dalo 2h koje niko posle ne ispravlja. Deljeno: noćni tik i ručno dugme.
+ */
+export function belgradeYesterday(): string {
+  return shiftYmd(belgradeNowParts().day, -1);
+}
+
 /** Da li je dnevni auto-predlog uključen (env kill-switch; default UKLJUČEN). */
 export function gridAutofillEnabled(): boolean {
-  const v = (process.env.KADROVSKA_GRID_AUTOFILL ?? "true").trim().toLowerCase();
+  const v = (process.env.KADROVSKA_GRID_AUTOFILL ?? "true")
+    .trim()
+    .toLowerCase();
   return !["false", "0", "off", "no"].includes(v);
 }
 
@@ -68,10 +160,17 @@ export interface GridAutofillSummary {
   dryRun: boolean;
   /** Redovi iz v_attendance_vs_grid koji prođu SQL filter (prazan grid + ulaz/izlaz…). */
   candidates: number;
-  /** Kandidati koji su dali validan predlog (posle vikend/praznik + opseg filtera). */
+  /** Kandidati koji su dali validan predlog (posle opseg [FLOOR..CEIL] filtera). */
   proposed: number;
   /** Stvarno UPISANIH redova (ON CONFLICT DO NOTHING → već popunjeni dani se ne diraju). */
   inserted: number;
+  /**
+   * Dani preskočeni zbog pravila NERADNOG PRAZNIKA: praznik (`kadr_holidays.is_workday
+   * = false`) sa DELIMIČNIM kucanjem (predlog < 8h) se NE upisuje — inače bi pojeo
+   * garantovanih 8h plaćenog praznika (v. `proposeHoursForDay`). Kadrovska ih unosi
+   * ručno. VIKENDI SE NE BROJE OVDE — oni se i dalje normalno predlažu (D1, 044/26);
+   * ime polja je zadržano radi API-kompatibilnosti (`autofill-run` odgovor).
+   */
   skippedWeekendHoliday: number;
   skippedOutOfBand: number;
 }
@@ -189,7 +288,7 @@ export class KadrovskaGridAutofillService
       this.lastRunDay = yesterday; // uspeh → ne ponavljaj isti dan (do restarta)
       this.logger.log(
         `Grid autofill tik ${yesterday}: kandidata ${data.candidates}, upisano ${data.inserted}, ` +
-          `preskočeno ${data.skippedWeekendHoliday + data.skippedOutOfBand}.`,
+          `van opsega ${data.skippedOutOfBand}, praznik-delimično ${data.skippedWeekendHoliday}.`,
       );
     } catch (e) {
       this.logger.error(
@@ -214,7 +313,7 @@ export class KadrovskaGridAutofillService
     // KLAMP na juče (Europe/Belgrade): DANAS se NIKAD ne obrađuje. Delimičan (tekući) dan
     // bi upisao pogrešne sate koje sutrašnji tik NE ispravlja (dan je tad grid_covered) →
     // ostali bi trajno krivi. Gornja granica = min(opts.to, juče).
-    const yesterday = this.addDays(this.belgradeToday(), -1);
+    const yesterday = belgradeYesterday();
     const requestedTo = (opts.to ?? yesterday).slice(0, 10);
     const to = requestedTo > yesterday ? yesterday : requestedTo;
     const from = (opts.from ?? to).slice(0, 10);
@@ -244,53 +343,69 @@ export class KadrovskaGridAutofillService
 
     // 1) Kandidati: „regularni prazni dani" iz v_attendance_vs_grid (isti signali kao
     //    „Popuni iz kapije"; opseg prisustva se filtrira u JS-u da uhvati i skraćeno vreme).
+    //    ZAMENA DANA (31.07.2026): dan sa odobrenim 'dan_odmora' zahtevom se PRESKAČE —
+    //    radnik za taj vikend-dan dobija +1 dan GO umesto plaćenih sati (nikad oboje);
+    //    bez ovog filtera bi autofill vratio sate koje je kadr_grant_bonus_go obrisao
+    //    (grant briše postojeći red na 0h, ali dan BEZ reda bi autofill ponovo upisao).
     const rows = await db.$queryRaw<VsGridRow[]>(Prisma.sql`
-      SELECT employee_id, day, presence_hours
-      FROM v_attendance_vs_grid
-      WHERE day >= ${from}::date AND day <= ${to}::date
-        AND grid_covered = false
-        AND absence_code IS NULL
-        AND COALESCE(grid_field_hours, 0) = 0
-        AND open_intervals = 0
-        AND first_in IS NOT NULL
-        AND last_out IS NOT NULL
-        AND presence_hours IS NOT NULL
-      ORDER BY employee_id, day
+      SELECT v.employee_id, v.day, v.presence_hours
+      FROM v_attendance_vs_grid v
+      WHERE v.day >= ${from}::date AND v.day <= ${to}::date
+        AND v.grid_covered = false
+        AND v.absence_code IS NULL
+        AND COALESCE(v.grid_field_hours, 0) = 0
+        AND v.open_intervals = 0
+        AND v.first_in IS NOT NULL
+        AND v.last_out IS NOT NULL
+        AND v.presence_hours IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM makeup_requests mr
+          WHERE mr.employee_id = v.employee_id
+            AND mr.compensation_type = 'dan_odmora'
+            AND mr.status IN ('approved', 'completed')
+            AND COALESCE(mr.weekend_work_date, mr.absence_date) = v.day
+        )
+      ORDER BY v.employee_id, v.day
     `);
     summary.candidates = rows.length;
 
-    // Praznici u rasponu (vikend/praznik ne diramo — nije redovan rad → ide ručno).
-    // isWorkday=false → SAMO pravi neradni praznik; red sa isWorkday=true je radni-dan
-    // IZUZETAK (npr. radna subota) i NE sme se preskočiti.
-    const holidays = await db.kadrHoliday.findMany({
-      where: {
-        isWorkday: false,
-        holidayDate: {
-          gte: new Date(`${from}T00:00:00Z`),
-          lte: new Date(`${to}T00:00:00Z`),
+    // 1b) NERADNI praznici u rasponu — potrebni samo kao KAPIJA za delimično kucanje
+    //     (v. `proposeHoursForDay`). `isWorkday: false` je obavezan: red sa
+    //     `is_workday = true` je radni-dan IZUZETAK (npr. naložena radna subota) i NIJE
+    //     praznik. Upit se preskače kad nema kandidata (noć bez kucanja = 0 upita).
+    const holSet = new Set<string>();
+    if (rows.length > 0) {
+      const holidays = await db.kadrHoliday.findMany({
+        where: {
+          isWorkday: false,
+          holidayDate: {
+            gte: new Date(`${from}T00:00:00Z`),
+            lte: new Date(`${to}T00:00:00Z`),
+          },
         },
-      },
-      select: { holidayDate: true },
-    });
-    const holSet = new Set(
-      holidays.map((h) => h.holidayDate.toISOString().slice(0, 10)),
-    );
+        select: { holidayDate: true },
+      });
+      for (const h of holidays)
+        holSet.add(h.holidayDate.toISOString().slice(0, 10));
+    }
 
-    // 2) Filtriraj vikend/praznik + izračunaj predlog iz STVARNOG prisustva.
+    // 2) Izračunaj predlog iz STVARNOG prisustva. VIKEND se NE preskače (D1, zahtev
+    //    044/26): dan sa čistim kucanjem = REDOVNI sati, isto kao radni dan. Kucanje je
+    //    dokaz da je čovek došao; ranije se preskakalo pa je Nikola vikende ručno unosio.
+    //    NERADNI PRAZNIK ima dodatnu kapiju: predlaže se SAMO pun dan (8h), jer bi
+    //    delimičan upis pojeo garantovanih 8h plaćenog praznika u obračunu.
+    //    `ON CONFLICT DO NOTHING` i dalje štiti ručni unos/odsustvo. (Kandidatski SQL
+    //    filter je već izbacio dane bez čistog kucanja.)
     const toInsert: { employeeId: string; workDate: string; hours: number }[] =
       [];
     for (const r of rows) {
       const ymd = r.day.toISOString().slice(0, 10);
-      const dow = r.day.getUTCDay(); // 0=ned, 6=sub (date-kolona = UTC ponoć → DOW tačan)
-      if (dow === 0 || dow === 6 || holSet.has(ymd)) {
-        summary.skippedWeekendHoliday++;
-        continue;
-      }
       const presence =
         r.presence_hours == null ? null : Number(r.presence_hours);
-      const hours = proposeHoursFromPresence(presence);
+      const { hours, reason } = proposeHoursForDay(presence, holSet.has(ymd));
       if (hours == null) {
-        summary.skippedOutOfBand++;
+        if (reason === "holiday_partial") summary.skippedWeekendHoliday++;
+        else summary.skippedOutOfBand++;
         continue;
       }
       toInsert.push({ employeeId: r.employee_id, workDate: ymd, hours });
@@ -302,7 +417,7 @@ export class KadrovskaGridAutofillService
     // 3) UPIS: INSERT … ON CONFLICT DO NOTHING (idempotentno; NIKAD ne gazi postojeći red).
     summary.inserted = await this.insertProposals(db, toInsert);
     this.logger.log(
-      `Grid autofill ${from}..${to}: kandidata ${summary.candidates}, predloženo ${summary.proposed}, upisano ${summary.inserted} (marker ${GRID_AUTOFILL_MARKER}).`,
+      `Grid autofill ${from}..${to}: kandidata ${summary.candidates}, predloženo ${summary.proposed}, upisano ${summary.inserted}, praznik-delimično preskočeno ${summary.skippedWeekendHoliday} (marker ${GRID_AUTOFILL_MARKER}).`,
     );
     return { data: summary };
   }
@@ -332,32 +447,13 @@ export class KadrovskaGridAutofillService
     return typeof affected === "number" ? affected : 0;
   }
 
-  /** Današnji datum u pogonskoj zoni (YYYY-MM-DD). */
-  private belgradeToday(): string {
-    return this.belgradeNow().day;
-  }
-
   /** Trenutni datum + sat (0–23) u pogonskoj zoni (za interni tik). */
   private belgradeNow(): { day: string; hour: number } {
-    // en-CA daje ISO oblik YYYY-MM-DD; hour12:false → 00–23 (ponoć '24' → 0).
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: SHOP_TZ,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      hour12: false,
-    }).formatToParts(new Date());
-    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
-    let hour = Number(get("hour"));
-    if (!Number.isFinite(hour) || hour === 24) hour = 0;
-    return { day: `${get("year")}-${get("month")}-${get("day")}`, hour };
+    return belgradeNowParts();
   }
 
   /** Dodaj `n` dana na YYYY-MM-DD (radi na UTC ponoći → bez TZ pomeraja). */
   private addDays(ymd: string, n: number): string {
-    const d = new Date(`${ymd.slice(0, 10)}T00:00:00Z`);
-    d.setUTCDate(d.getUTCDate() + n);
-    return d.toISOString().slice(0, 10);
+    return shiftYmd(ymd, n);
   }
 }

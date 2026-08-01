@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -9,9 +10,12 @@ import {
   Req,
   Res,
   StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
 import type { Response } from "express";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
@@ -30,6 +34,8 @@ import type { RejectHandoverDto } from "./dto/reject-handover.dto";
 import type { ReturnHandoverDto } from "./dto/return-handover.dto";
 import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
 
+const MB = 1024 * 1024;
+
 /**
  * Primopredaje crteža (`drawing_handovers`) — MODULE_SPEC_nacrti_primopredaje §6.4/§6.5.
  *   GET  /api/v1/handovers                  — lista (statusId, drawingNumber, projectId, technologistId, rn, from, to)
@@ -45,6 +51,10 @@ import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
  *   POST /api/v1/handovers/:id/take-over                               — "Preuzmi izradu" (§6.4): tehnolog preuzima zaduženje na SAGLASNOJ primopredaji
  *   POST /api/v1/handovers/:id/prepare-work-order                      — "Otkucaj TP": kreira RN bez lansiranja (idempotentno)
  *   POST /api/v1/handovers/:id/launch             { comment?, dueDate? } — lansiraj (SAGLASAN → LANSIRAN); reuse prepare RN-a ako postoji
+ *   POST   /api/v1/handovers/:id/drawing-pdf              — otpremi PDF crteža (038/26, primopredaja bez RN; PRIMOPREDAJE_WRITE)
+ *   GET    /api/v1/handovers/:id/drawing-pdfs             — lista otpremljenih PDF-ova (pre- i post-RN)
+ *   GET    /api/v1/handovers/drawing-pdfs/:pdfId/content  — PDF sadržaj (inline)
+ *   DELETE /api/v1/handovers/drawing-pdfs/:pdfId          — soft-delete otpremljenog PDF-a (PRIMOPREDAJE_WRITE)
  *
  * Kreiranje `drawing_handovers` redova (predaja nacrta u primopredaju) je na
  * `POST /handover-drafts/:id/submit` — vidi handover-drafts.controller.ts. Traži JWT;
@@ -55,7 +65,9 @@ import type { LaunchHandoverDto } from "./dto/launch-handover.dto";
  * KONTROLOR/MENADZMENT imaju WRITE pa je drugi gate obavezan, §6.4);
  * prepare-work-order=RN_WRITE (kreira `work_orders` red — isti gate kao
  * POST /work-orders; kontrolor bez RN_WRITE ne sme ovuda da kreira RN).
- * Bez novih ključeva.
+ * drawing-pdf upload/delete=PRIMOPREDAJE_WRITE (038/26, isti bytea-u-bazi
+ * obrazac kao `plan_proizvodnje_drawings` — vidi `work-orders.controller.ts`
+ * za RN-stranu istog toka; obe strane dele `work_order_drawing_pdfs`).
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermission(PERMISSIONS.PRIMOPREDAJE_READ)
@@ -94,6 +106,29 @@ export class HandoversController {
   @Get("pending-approval")
   pendingApproval(@Query() query: ListHandoversQuery) {
     return this.handovers.pendingApproval(query);
+  }
+
+  /**
+   * PDF sadržaj otpremljenog crteža (038/26) — literalni `drawing-pdfs/:pdfId/*`
+   * MORA pre `:id` (isti razlog kao `lookups`/`technologists`/…). `pdfId` je
+   * `work_order_drawing_pdfs.id`, NE id primopredaje.
+   */
+  @Get("drawing-pdfs/:pdfId/content")
+  async drawingPdfContent(
+    @Param("pdfId", ParseIntPipe) pdfId: number,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    return this.handovers.streamDrawingPdf(pdfId, res);
+  }
+
+  /** Soft-delete otpremljenog PDF-a crteža (038/26). Literalna ruta — vidi napomenu iznad. */
+  @Delete("drawing-pdfs/:pdfId")
+  @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
+  removeDrawingPdf(
+    @Param("pdfId", ParseIntPipe) pdfId: number,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.handovers.removeDrawingPdf(pdfId, req.user);
   }
 
   /** Brojači „na pisanju tehnologije" po tehnologu/predmetu (Miljan t.9). */
@@ -203,6 +238,28 @@ export class HandoversController {
     @Req() req: { user: AuthUser },
   ) {
     return this.handovers.takeOver(id, req.user);
+  }
+
+  /**
+   * Otpremi PDF crteža primopredaje (038/26) — „na pisanju" tehnologije PRE
+   * nego što RN nastane (ili dopunski crtež posle, ako RN već postoji). Isti
+   * obrazac kao `plan-proizvodnje` skice: 20MB kapa + magic-byte provera u servisu.
+   */
+  @Post(":id/drawing-pdf")
+  @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 20 * MB } }))
+  uploadDrawingPdf(
+    @Param("id", ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.handovers.uploadDrawingPdf(id, file, req.user);
+  }
+
+  /** Lista otpremljenih PDF-ova crteža ove primopredaje (038/26, pre- i post-RN). */
+  @Get(":id/drawing-pdfs")
+  listDrawingPdfs(@Param("id", ParseIntPipe) id: number) {
+    return this.handovers.listDrawingPdfs(id);
   }
 
   /** "Otkucaj TP" — kreiraj RN bez lansiranja (idempotentno; primopredaja ostaje SAGLASAN). Kreira `work_orders` red → RN_WRITE. */

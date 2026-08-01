@@ -25,10 +25,10 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   CalendarDays,
-  ChevronLeft,
   ChevronRight,
   Clock,
   FileText,
+  LogOut,
   UserCheck,
   Users,
   type LucideIcon,
@@ -47,6 +47,7 @@ import {
   useProfileSummary,
   useTeam,
 } from '@/api/moj-profil';
+import { MobShell } from '../_components/mob-shell';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -64,7 +65,7 @@ const ABS_TYPE_LABELS: Record<string, string> = {
 };
 
 export default function MobProfilPage() {
-  const { user, isLoading, can, permissionsPending, permissionsError } = useAuth();
+  const { user, isLoading, can, logout, permissionsPending, permissionsError } = useAuth();
   const router = useRouter();
 
   const meQ = useProfileMe();
@@ -73,6 +74,8 @@ export default function MobProfilPage() {
   const colleaguesQ = useColleaguesOnLeave();
 
   const [pdfBusy, setPdfBusy] = useState(false);
+  /** Dvokorakna odjava (bez native `confirm` — DS §6/§9: poruke su naše). */
+  const [logoutAsk, setLogoutAsk] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -123,23 +126,11 @@ export default function MobProfilPage() {
     }
   }
 
+  // Zaglavlje i donja tab-traka su u `MobShell` (F1); povratak na početnu je tab
+  // „Početna", pa ekran više ne crta svoje dugme nazad. Podnaslov = 1.0 tekst.
   return (
-    <div className="min-h-screen bg-app pb-16">
-      <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-md font-semibold text-ink">Moj profil</h1>
-          <p className="truncate text-xs text-ink-secondary">{user.fullName ?? user.email}</p>
-        </div>
-        <Link
-          href="/mob"
-          className={`inline-flex h-11 shrink-0 items-center gap-1 rounded-control border border-line bg-surface-2 pl-2 pr-4 text-sm font-semibold text-ink active:bg-surface ${FOCUS}`}
-        >
-          <ChevronLeft className="h-4 w-4" aria-hidden />
-          Početna
-        </Link>
-      </header>
-
-      <main className="space-y-4 p-4">
+    <MobShell title="Moj profil" subtitle="Nalog i podešavanja" active="profil">
+      <div className="space-y-4">
         {/* ── 1. Zaglavlje: ime · pozicija · email ── */}
         <section className="rounded-panel border border-line bg-surface p-4">
           <h2 className="text-lg font-semibold text-ink">{fullName}</h2>
@@ -253,8 +244,49 @@ export default function MobProfilPage() {
 
         {/* ── 5. Moj tim (samo `profile.team`) ── */}
         {can(PERMISSIONS.PROFILE_TEAM) && <TeamSection />}
-      </main>
-    </div>
+
+        {/* ── 6. Odjava (paritet 1.0 `myProfile.js` — dugme na DNU profila) ──
+            Namerno SAMO ovde: u zaglavlju ljuske ili donjoj traci bio bi na dohvat
+            slučajnog dodira usred posla u magacinu (rukavice, jedna ruka).
+            `logout()` sam ne preusmerava (isto kao desktop AppShell) → posle njega
+            eksplicitno idemo na /login, da se ne čeka reaktivni guard efekat. */}
+        <section className="mt-6 space-y-2 border-t border-line pt-4">
+          <p className="text-xs text-ink-secondary">
+            Prijavljen kao <span className="font-medium text-ink">{fullName}</span>
+            {fullName !== user.email && <span className="block truncate">{user.email}</span>}
+          </p>
+
+          {logoutAsk ? (
+            <div className="space-y-2 rounded-panel border border-status-danger/40 bg-status-danger-bg p-3">
+              <p className="text-sm text-ink">Odjaviti se sa ovog naloga?</p>
+              <div className="flex gap-2">
+                <Button
+                  variant="danger"
+                  className="h-11 flex-1"
+                  onClick={() => {
+                    logout();
+                    router.replace('/login');
+                  }}
+                >
+                  Da, odjavi me
+                </Button>
+                <Button
+                  variant="secondary"
+                  className="h-11 flex-1"
+                  onClick={() => setLogoutAsk(false)}
+                >
+                  Ne
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button variant="danger" className="h-11 w-full" onClick={() => setLogoutAsk(true)}>
+              <LogOut className="h-4 w-4" aria-hidden /> Odjavi se
+            </Button>
+          )}
+        </section>
+      </div>
+    </MobShell>
   );
 }
 

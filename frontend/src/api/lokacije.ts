@@ -223,8 +223,13 @@ export interface PredmetTpsResult {
 
 // ------------------------------------------------------------------ barkod (BE server-side resolve)
 
-/** Tip razrešenog barkoda (BE /locations/lookups/barcode — paritet barcodeParse+shelfBarcode). */
-export type LocBarcodeKind = 'ITEM' | 'SHELF' | 'UNKNOWN';
+/**
+ * Tip razrešenog barkoda (BE /locations/lookups/barcode — paritet barcodeParse+shelfBarcode).
+ * `OPERATION` = skeniran barkod OPERACIJE (`S:{op}:{rc}:0:{rev}`, red u tabeli
+ * štampanog RN-a): za magacin je neupotrebljiv jer ne nosi ni nalog ni TP, ali se
+ * prepoznaje da bi poruka bila konkretna umesto „Nepoznat format".
+ */
+export type LocBarcodeKind = 'ITEM' | 'SHELF' | 'OPERATION' | 'UNKNOWN';
 
 export interface LocBarcodeItemResult {
   kind: 'ITEM';
@@ -240,6 +245,14 @@ export interface LocBarcodeShelfResult {
   message?: string;
 }
 
+/** Barkod OPERACIJE (`S:…`) — prepoznat, ali za magacin bez upotrebe (vidi `message`). */
+export interface LocBarcodeOperationResult {
+  kind: 'OPERATION';
+  parsed: { format: string; raw: string };
+  records: [];
+  message?: string;
+}
+
 export interface LocBarcodeUnknownResult {
   kind: 'UNKNOWN';
   parsed: null;
@@ -249,6 +262,7 @@ export interface LocBarcodeUnknownResult {
 export type LocBarcodeResult =
   | LocBarcodeItemResult
   | LocBarcodeShelfResult
+  | LocBarcodeOperationResult
   | LocBarcodeUnknownResult;
 
 /**

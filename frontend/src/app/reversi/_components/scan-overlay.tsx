@@ -5,13 +5,22 @@ import { X, Flashlight, RefreshCw, Camera } from 'lucide-react';
 import { lookupBarcode, type BarcodeKind, type BarcodeResult } from '@/api/reversi';
 import { useEscapeLayer } from '@/components/ui-kit/escape-layer';
 import {
+  applyAndroidPostStartTuning,
   attachVideoDecoder,
   buildVideoConstraints,
+  cameraCooldownMs,
   decodeImageFile,
   isCameraDecodeSupported,
   isIOSWebKit,
+  isSamsungInternetBrowser,
+  preloadVideoDecoder,
+  type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
+import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-picker';
+
+/** Formati skenera reversa (isti set za živu kameru, „Slikaj barkod" i preload). */
+const SCAN_FORMATS: DecodeFormat[] = ['code_128', 'code_39', 'ean_13', 'qr_code'];
 
 // Nativni BarcodeDetector (Chrome/Edge/Android WebView) — brzi put; tamo gde ga
 // nema (iPhone/Firefox/Safari) decode-engine (@/lib/barcode-decoder) daje ZXing/jsQR.
@@ -101,6 +110,15 @@ async function forceAppReload(): Promise<void> {
  * Dekodiranje: decode-engine (@/lib/barcode-decoder) — BarcodeDetector (Chromium),
  * ZXing (iPhone/Firefox/Safari), jsQR hibrid (iOS QR); still-image = ZXing 11-pokušaja
  * pipeline. Paritet 1.0 dekodera je time potpun (22.07 — iPhone incident).
+ *
+ * Android higijena kamere (31.07, isti paket kao glavna ljuska — 1.0 barcode.js):
+ * cooldown pre getUserMedia, capability picker sočiva (`@/lib/camera-picker`), retry
+ * na prolaznu grešku, post-start tuning (anti-glare + AF) i release na
+ * pagehide/visibilitychange — uz OBAVEZAN put nazad: povratak u prvi plan
+ * (visible/pageshow) ponovo pokreće celu start-sekvencu (bez toga bi i „Slikaj
+ * barkod" trajno ugasio kameru), generacijski zaštićen od preklapanja startova.
+ * Dekoder na Androidu ide na NATIVNI put (`preferNative`, 1.0 per-profil kanon —
+ * gust 1D Code128). Auto-zoom 2× i tap-fokus ostaju nepromenjeni.
  */
 export function ScanOverlay({
   title = 'Skeniraj barkod',
@@ -209,17 +227,151 @@ export function ScanOverlay({
       say('Kamera nije dostupna u ovom pregledaču (getUserMedia/HTTPS) — koristi HID čitač, ručni unos ili „Slikaj barkod".', 'error');
       return;
     }
+    // Dekoder chunk (ZXing ~250KB) se vuče LAZY — zagrej ga paralelno sa kamerom.
+    // Ovaj ekran na Androidu ide nativnim putem (`preferNative`), ALI mu ZXing i
+    // dalje treba kao watchdog fallback (mrtav GmsCore barcode modul), pa se
+    // preload namerno ne preskače.
+    preloadVideoDecoder(SCAN_FORMATS);
+
     let stopped = false;
     let decoder: VideoDecoderHandle | null = null;
+    let tuneTimer = 0;
+    // Generacija starta kamere (isti obrazac kao `decoderSeq` u lokacije ljusci):
+    // `release()` je podiže, pa svaki start KOJI JE U LETU (cooldown, picker probe,
+    // retry pauza, lazy ZXing chunk) sam odustane čim ga pretekne noviji — pokriva
+    // i kameru puštenu zbog odlaska u pozadinu.
+    let gen = 0;
 
-    (async () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    // Dva rAF ciklusa posle release-a: tek tada je prethodni video pipeline srušen.
+    const twoRafs = (): Promise<void> =>
+      new Promise<void>((r) => {
+        if (typeof requestAnimationFrame !== 'function') {
+          r();
+          return;
+        }
+        requestAnimationFrame(() => requestAnimationFrame(() => r()));
+      });
+
+    // iOS release higijena (1.0 releaseVideoStream): pause → stop → srcObject null;
+    // bez toga sledeće otvaranje ume da padne NotReadableError. Deli je retry,
+    // pagehide/visibility i cleanup.
+    const release = () => {
+      gen++; // obara i start koji je u letu
+      if (tuneTimer) {
+        clearTimeout(tuneTimer);
+        tuneTimer = 0;
+      }
       try {
+        decoder?.stop();
+      } catch {
+        /* ignore */
+      }
+      decoder = null;
+      if (isIOSWebKit()) {
+        try {
+          videoRef.current?.pause();
+        } catch {
+          /* ignore */
+        }
+      }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      trackRef.current = null;
+      try {
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          videoRef.current.load();
+        }
+      } catch {
+        /* ignore */
+      }
+      // Lampa se GASI zajedno sa track-om (torch je constraint na streamu), pa
+      // `torchOn` mora da padne s njim: bez ovoga posle povratka iz pozadine UI
+      // i dalje pokazuje upaljenu lampu nad ugašenim LED-om — korisnik onda tapne
+      // dugme (koje šalje torch:false) i tek DRUGI tap upali svetlo.
+      setTorchOn(false);
+    };
+
+    // Prolazna greška (OS još drži senzor) vs prava — 1.0 barcode.js:1120-1144.
+    const isTransientCameraError = (err: unknown): boolean => {
+      const e = err as { name?: string; message?: string } | null;
+      const re = /NotReadableError|AbortError|TrackStartError|could not start video source/i;
+      return re.test(String(e?.name || '')) || re.test(String(e?.message || ''));
+    };
+
+    // CELA start-sekvenca kamere u jednoj funkciji — zove se na mount I na povratak
+    // iz pozadine (v. `onResume`). Svaki `await` proverava sopstvenu generaciju.
+    const startCamera = async (): Promise<void> => {
+      if (stopped) return;
+      let myGen = ++gen; // ovaj start je od sada „vlasnik" kamere
+      const aborted = () => stopped || myGen !== gen;
+
+      // getUserMedia sa retry-jem: pusti kameru, 700ms + dva frejma, pa isti
+      // constraints još jednom (Samsung Internet dva puta — najsporiji release).
+      const openStream = async (c: MediaStreamConstraints): Promise<MediaStream> => {
+        const maxRetries = isSamsungInternetBrowser() ? 2 : 1;
+        let lastErr: unknown = null;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          if (attempt > 0) {
+            // PRVO provera, TEK ONDA release(): ako je noviji start (povratak iz
+            // pozadine) već preuzeo, ovaj retry bi mu ubio stream i „ukrao" generaciju.
+            if (aborted()) throw lastErr ?? new Error('Skener je zatvoren');
+            const expected = gen + 1;
+            release();
+            if (gen === expected) myGen = gen; // re-arm samo ako je bump naš
+            await sleep(700);
+            await twoRafs();
+            if (aborted()) throw lastErr ?? new Error('Skener je zatvoren');
+            say(`Kamera je bila zauzeta — pokušavam ponovo (${attempt}/${maxRetries})…`);
+          }
+          if (aborted()) throw lastErr ?? new Error('Skener je zatvoren');
+          try {
+            return await navigator.mediaDevices.getUserMedia(c);
+          } catch (e) {
+            lastErr = e;
+            if (!isTransientCameraError(e)) throw e;
+          }
+        }
+        throw lastErr;
+      };
+
+      try {
+        // Cooldown pre PRVOG getUserMedia — Samsung Internet oslobađa kameru
+        // prethodne sesije sa ~350-450ms zakašnjenja (1.0 barcode.js:298-314).
+        const cd = cameraCooldownMs();
+        if (cd) await sleep(cd);
+        if (aborted()) return;
+
+        // Capability picker: na Android multi-lens telefonima `facingMode` ume da
+        // vrati macro objektiv (fiksni fokus ~3cm) — preview radi, barkod nikad
+        // ne dekodira. Pad pickera = nastavi starim (facingMode) putem.
+        let deviceId: string | null = null;
+        if (shouldRunCameraPicker()) {
+          try {
+            deviceId = await pickPreferredBackCamera();
+          } catch {
+            deviceId = null;
+          }
+          if (aborted()) return;
+        }
+
         // Rezolucija OBAVEZNA (1.0 lekcija): bez ideals-a iOS daje 640×480 pa
         // ZXing/jsQR nemaju piksele za Code128. 'mixed' = 1080p (QR+1D profil).
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { ...buildVideoConstraints('mixed'), facingMode: 'environment' },
-        });
-        if (stopped) {
+        const base = buildVideoConstraints('mixed');
+        let stream: MediaStream;
+        try {
+          stream = await openStream({
+            video: deviceId
+              ? { ...base, deviceId: { exact: deviceId } }
+              : { ...base, facingMode: 'environment' },
+          });
+        } catch (e) {
+          if (!deviceId || aborted()) throw e;
+          // Izabrani objektiv nestao/zauzet → default zadnja kamera (staro ponašanje).
+          stream = await openStream({ video: { ...base, facingMode: 'environment' } });
+        }
+        if (aborted()) {
           stream.getTracks().forEach((t) => t.stop());
           return;
         }
@@ -227,11 +379,33 @@ export function ScanOverlay({
         const track = stream.getVideoTracks()[0] ?? null;
         trackRef.current = track;
         const v = videoRef.current;
-        if (!v) return;
+        if (!v) {
+          stream.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+          trackRef.current = null;
+          return;
+        }
         v.srcObject = stream;
+        // JS asercija atributa pre play() (paritet glavne ljuske): bez
+        // playsinline/webkit-playsinline WebKit otvara fullscreen plejer i skena nema.
+        v.setAttribute('playsinline', '');
+        v.setAttribute('webkit-playsinline', '');
+        v.playsInline = true;
+        v.muted = true;
         await v.play();
+        if (aborted()) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
         setCameraOn(true);
         say(hint);
+
+        // Anti-glare ekspozicija + AF (samo Android) TEK kad se pipeline slegne —
+        // constraint-i odmah po play() umeju da budu tiho odbačeni (1.0 lekcija).
+        // Auto-zoom ispod ostaje netaknut; tuning ne dira zoom.
+        if (track) {
+          tuneTimer = window.setTimeout(() => void applyAndroidPostStartTuning(track), 500);
+        }
 
         // Capabilities: torch + auto-zoom ~2× (paritet 1.0 setupZoomUI).
         try {
@@ -246,16 +420,23 @@ export function ScanOverlay({
         } catch {
           /* capabilities nepodržane — skener i dalje radi bez torch/zoom */
         }
+        if (aborted()) return;
 
         const handle = await attachVideoDecoder({
           video: v,
-          formats: ['code_128', 'code_39', 'ean_13', 'qr_code'],
+          formats: SCAN_FORMATS,
           onRaw: (raw) => void resolve(raw),
-          isStopped: () => stopped,
+          isStopped: () => aborted(),
+          // 1.0 per-profil kanon (scanOverlay.js:431): reversi nalepnice su gust
+          // 1D Code128 — na Android Chrome-u nativni BarcodeDetector pouzdanije
+          // dekodira ŽIVI kadar od ZXing-a (koji na gustom kodu iz ruke promašuje).
+          // Mrtav GmsCore modul pokriva watchdog u engine-u (vrući prelaz na ZXing).
+          preferNative: true,
         });
-        if (stopped) handle.stop();
+        if (aborted()) handle.stop();
         else decoder = handle;
       } catch (e) {
+        if (aborted()) return; // tuđi start / zatvaranje — bez lažne greške
         // getUserMedia pad → poruka; pad učitavanja dekodera (mreža) → posebna.
         const msg = e instanceof Error ? e.message : String(e);
         say(
@@ -265,36 +446,42 @@ export function ScanOverlay({
           'error',
         );
       }
-    })();
+    };
+
+    void startCamera();
+
+    // Pozadina / zaključan ekran mora da PUSTI kameru — inače povratak u tab daje
+    // zamrznut preview ili NotReadableError (paritet glavne ljuske). POVRATAK mora
+    // da je VRATI: ovde `hidden` okida i „Slikaj barkod" (file picker!), pa bi bez
+    // resume-a jedan tap na kameru-ikonicu trajno ugasio živi skener.
+    const onHidden = () => {
+      try {
+        release();
+      } catch {
+        /* ignore */
+      }
+    };
+    const onResume = () => {
+      if (stopped || streamRef.current) return; // overlay zatvoren ili kamera već živa
+      say('Vraćam kameru…');
+      void startCamera();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') onHidden();
+      else onResume();
+    };
+    window.addEventListener('pagehide', onHidden);
+    window.addEventListener('pageshow', onResume); // bfcache povratak (iOS Safari)
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       stopped = true;
-      try {
-        decoder?.stop();
-      } catch {
-        /* ignore */
-      }
-      // iOS release higijena (1.0 releaseVideoStream): pause → stop → srcObject
-      // null; bez toga sledeće otvaranje ume da padne NotReadableError.
-      if (isIOSWebKit()) {
-        try {
-          videoRef.current?.pause();
-        } catch {
-          /* ignore */
-        }
-      }
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-      trackRef.current = null;
+      if (tuneTimer) clearTimeout(tuneTimer);
+      window.removeEventListener('pagehide', onHidden);
+      window.removeEventListener('pageshow', onResume);
+      document.removeEventListener('visibilitychange', onVisibility);
+      release();
       detectorRef.current = null;
-      try {
-        if (videoRef.current) {
-          videoRef.current.srcObject = null;
-          videoRef.current.load();
-        }
-      } catch {
-        /* ignore */
-      }
     };
   }, [resolve, say, hint]);
 
@@ -352,7 +539,7 @@ export function ScanOverlay({
       const Ctor = getDetectorCtor();
       if (Ctor) {
         try {
-          const detector = detectorRef.current ?? new Ctor({ formats: ['code_128', 'code_39', 'ean_13', 'qr_code'] });
+          const detector = detectorRef.current ?? new Ctor({ formats: SCAN_FORMATS });
           const bitmap = await createImageBitmap(file);
           const found = await detector.detect(bitmap);
           bitmap.close?.();
@@ -366,7 +553,7 @@ export function ScanOverlay({
         }
       }
       // 1.0 anti-glare pipeline (grayscale/kontrast/upscale + Code128-first).
-      const hit = await decodeImageFile(file, ['code_128', 'code_39', 'ean_13', 'qr_code']);
+      const hit = await decodeImageFile(file, SCAN_FORMATS);
       if (hit) {
         say('');
         await resolve(hit);

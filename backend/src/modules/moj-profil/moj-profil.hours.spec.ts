@@ -1,6 +1,11 @@
 import { UnprocessableEntityException } from "@nestjs/common";
 import { MojProfilService } from "./moj-profil.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
+import {
+  formatPresenceHm,
+  sumPresence,
+  withPresenceDisplay,
+} from "./presence-hours.util";
 
 /**
  * P1 — Mesečni sati + primedba (Moj profil). Pinuje: (1) GET /hours agregira work_hours meseca
@@ -209,5 +214,89 @@ describe("MojProfilService — mesečni sati (P1)", () => {
         text: "x",
       }),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+});
+
+/**
+ * ZAHTEV 032/26 — prisustvo se prikazuje u h:mm, a prekovremeno ispod 30 min se ne
+ * prikazuje ([8:00, 8:30) → „8:00"). Prijava je bila „8.17 sati" (= 8h10min, račun
+ * TAČAN, decimalni prikaz zbunjuje). Mesečni zbir = suma zaokruženih dana.
+ */
+describe("prisustvo — h:mm prikaz + pravilo zaokruživanja (032/26)", () => {
+  const HM = (h: number, m: number) => h + m / 60;
+
+  it.each([
+    ["7:45 (ispod pune smene) → stvarno vreme", HM(7, 45), "7:45"],
+    ["8:00 (tačno puna smena)", HM(8, 0), "8:00"],
+    ["8:10 (prekovremeno <30min) → 8:00", HM(8, 10), "8:00"],
+    ["8:29 (granica, još uvek <30min) → 8:00", HM(8, 29), "8:00"],
+    ["8:30 (granica, prikazuje se) → 8:30", HM(8, 30), "8:30"],
+    ["9:05 (prekovremeno >30min) → stvarno vreme", HM(9, 5), "9:05"],
+  ])("%s", (_label, hours, expected) => {
+    expect(formatPresenceHm(hours)).toBe(expected);
+  });
+
+  it("prijavljeni slučaj: 8.17 decimalnih sati = 8h10min → 8:00", () => {
+    expect(formatPresenceHm(8.17)).toBe("8:00");
+  });
+
+  it("null/prazno prisustvo → null (prikaz pada na crticu)", () => {
+    expect(formatPresenceHm(null)).toBeNull();
+    expect(formatPresenceHm(undefined)).toBeNull();
+  });
+
+  it("Decimal iz baze (toNumber) se podržava", () => {
+    const dec = { toNumber: () => 8.1667 };
+    expect(formatPresenceHm(dec)).toBe("8:00");
+  });
+
+  it("withPresenceDisplay: čuva sirov presence_hours, dodaje presence_hm", () => {
+    const [row] = withPresenceDisplay([
+      { day: "2026-07-15", presence_hours: 8.17 },
+    ]);
+    expect(row.presence_hours).toBe(8.17); // sirov podatak netaknut
+    expect(row.presence_hm).toBe("8:00");
+    expect(row.presence_minutes).toBe(480);
+  });
+
+  it("mesečni zbir = suma ZAOKRUŽENIH dana (ne sirovih)", () => {
+    // 8:10→8:00 (480) + 7:45 (465) + 8:30 (510) = 1455 min = 24:15
+    const days = [
+      { presence_hours: HM(8, 10) },
+      { presence_hours: HM(7, 45) },
+      { presence_hours: HM(8, 30) },
+    ];
+    const sum = sumPresence(days);
+    expect(sum.minutes).toBe(1455);
+    expect(sum.hm).toBe("24:15");
+    expect(sum.hours).toBe(24.25);
+    // sirova suma bi bila 24.42h — namerno se NE koristi
+    expect(sum.hours).not.toBeCloseTo(24.42, 2);
+  });
+
+  it("attendance(): dani nose presence_hm + totals po istom pravilu", async () => {
+    const { svc, tx } = makeSvc();
+    tx.$queryRaw.mockImplementation((sql: unknown) => {
+      const text = (sql as SqlLike).strings.join("?");
+      if (text.includes("v_employees_safe"))
+        return Promise.resolve([
+          { id: EMP, full_name: "X", position_id: 1, work_type: "ugovor", hire_date: null },
+        ]);
+      if (text.includes("v_attendance_daily"))
+        return Promise.resolve([
+          { day: "2026-07-15", first_in: "07:48", last_out: "15:58", presence_hours: 8.17 },
+          { day: "2026-07-16", first_in: "07:00", last_out: "16:35", presence_hours: HM(9, 35) },
+        ]);
+      return Promise.resolve([]);
+    });
+    const out = await svc.attendance("u@x", {} as never);
+    const d = out.data as {
+      days: { presence_hm: string }[];
+      totals: { hm: string; minutes: number };
+    };
+    expect(d.days[0].presence_hm).toBe("8:00"); // prijavljeni red 07:48→15:58
+    expect(d.days[1].presence_hm).toBe("9:35");
+    expect(d.totals.minutes).toBe(480 + 575);
+    expect(d.totals.hm).toBe("17:35");
   });
 });

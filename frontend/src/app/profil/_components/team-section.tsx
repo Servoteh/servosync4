@@ -8,20 +8,25 @@
 // (`useTeamCorrection`, allowDayPick min danas-3), PDF opisa pozicije (`generateJobPositionPdf`).
 
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
-import { Users, FileText, Wrench, Pencil, Clock, AlertTriangle, Moon, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
+import { Users, FileText, Wrench, Pencil, Clock, AlertTriangle, Moon, Thermometer, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Input, FormField } from '@/components/ui-kit/form-field';
+import { Select } from '@/components/ui-kit/select';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { toast } from '@/lib/toast';
 import { formatDate } from '@/lib/format';
+import { Can } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
+import { SICK_SUBTYPE_OPTS } from '@/app/kadrovska/_components/odsustva/shared';
 import { ApiError } from '@/api/client';
 import {
   newClientEventId,
   useTeam,
   useTeamTools,
   useTeamCorrection,
+  useTeamSick,
   useTeamAttendance,
   useTeamAttendanceEvents,
   teamHoursQuery,
@@ -130,6 +135,7 @@ function TeamCard({ members }: { members: TeamMember[] }) {
   const [filter, setFilter] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
   const [corrMember, setCorrMember] = useState<TeamMember | null>(null);
+  const [sickMember, setSickMember] = useState<TeamMember | null>(null);
 
   // Mesec za „Karnet tima" (default tekući). Karnet svih članova = jedan član / strana.
   const now = new Date();
@@ -292,6 +298,7 @@ function TeamCard({ members }: { members: TeamMember[] }) {
                 open={openId === m.id}
                 onToggle={() => setOpenId(openId === m.id ? null : m.id)}
                 onCorrect={() => setCorrMember(m)}
+                onSick={() => setSickMember(m)}
               />
             ))}
           </tbody>
@@ -300,6 +307,9 @@ function TeamCard({ members }: { members: TeamMember[] }) {
 
       {corrMember && (
         <TeamCorrectionModal member={corrMember} onClose={() => setCorrMember(null)} />
+      )}
+      {sickMember && (
+        <TeamSickModal member={sickMember} onClose={() => setSickMember(null)} />
       )}
     </Section>
   );
@@ -312,11 +322,13 @@ function TeamRow({
   open,
   onToggle,
   onCorrect,
+  onSick,
 }: {
   m: TeamMember;
   open: boolean;
   onToggle: () => void;
   onCorrect: () => void;
+  onSick: () => void;
 }) {
   const bal = m.balance;
   // ZAHTEV 028/26: „preostalo" u rosteru je isto što šef vidi u obrascu GO za tog
@@ -369,7 +381,7 @@ function TeamRow({
       {open && (
         <tr>
           <td colSpan={5} className="bg-surface-2 px-3 pb-3 pt-2">
-            <TeamMemberDetail m={m} onCorrect={onCorrect} />
+            <TeamMemberDetail m={m} onCorrect={onCorrect} onSick={onSick} />
           </td>
         </tr>
       )}
@@ -377,7 +389,7 @@ function TeamRow({
   );
 }
 
-function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => void }) {
+function TeamMemberDetail({ m, onCorrect, onSick }: { m: TeamMember; onCorrect: () => void; onSick: () => void }) {
   const toolsQ = useTeamTools(m.id);
   const tools = toolsQ.data?.data?.tools ?? [];
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -478,6 +490,13 @@ function TeamMemberDetail({ m, onCorrect }: { m: TeamMember; onCorrect: () => vo
         <Button variant="secondary" className="h-8" onClick={onCorrect}>
           <Pencil className="h-4 w-4" aria-hidden /> Korekcija kucanja
         </Button>
+        {/* Zahtev 041/26: šef sa pravom odobravanja GO unosi bolovanje svom članu.
+            Vidljivo iza `kadrovska.vacreq_manage` (isključuje običnog tim_lidera). */}
+        <Can permission={PERMISSIONS.KADROVSKA_VACREQ_MANAGE}>
+          <Button variant="secondary" className="h-8" onClick={onSick}>
+            <Thermometer className="h-4 w-4" aria-hidden /> Unesi bolovanje
+          </Button>
+        </Can>
         {m.positionId ? (
           <Button variant="secondary" className="h-8" onClick={downloadPositionPdf} loading={pdfBusy}>
             <FileText className="h-4 w-4" aria-hidden /> Opis pozicije (PDF A4)
@@ -578,7 +597,7 @@ function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
                 <th className="py-1.5">Dan</th>
                 <th className="py-1.5">Ulaz</th>
                 <th className="py-1.5">Izlaz</th>
-                <th className="py-1.5">Sati</th>
+                <th className="py-1.5" title="Sati i minuti — prekovremeno ispod 30 min se ne prikazuje">Sati (h:mm)</th>
               </tr>
             </thead>
             <tbody>
@@ -607,7 +626,7 @@ function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
                       <td className="py-1.5 tnums">
                         {lastOut ? hhmm(lastOut) : missingOut ? <span className="text-status-warn">nije otkucan</span> : '—'}
                       </td>
-                      <td className="py-1.5 tnums">{d.presence_hours != null ? num(d.presence_hours).toFixed(2) : '—'}</td>
+                      <td className="py-1.5 tnums">{d.presence_hm ?? '—'}</td>
                     </tr>
                     {isOpen && (
                       <tr>
@@ -620,6 +639,12 @@ function TeamMemberAttendance({ employeeId }: { employeeId: string }) {
                 );
               })}
             </tbody>
+            <tfoot>
+              <tr className="border-t border-line text-left font-semibold">
+                <td className="py-1.5" colSpan={3}>Ukupno u mesecu</td>
+                <td className="py-1.5 tnums">{q.data?.data?.totals?.hm ?? '—'}</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       )}
@@ -713,6 +738,74 @@ function TeamCorrectionModal({ member, onClose }: { member: TeamMember; onClose:
         </div>
         <FormField label="Obrazloženje (obavezno)" required>
           <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} placeholder="npr. Zaboravio da otkuca izlaz, otišao u 15:30" />
+        </FormField>
+      </div>
+    </Dialog>
+  );
+}
+
+// ── unos bolovanja za člana (zahtev 041/26) ───────────────────────
+// Šef sa pravom odobravanja GO (`kadrovska.vacreq_manage`) upisuje bolovanje SVOM
+// članu u grid (`work_hours`, bo/subtip — Opcija A, obračunski ispravno). Opseg tima
+// presuđuje BE (`current_user_manages_employee`); van opsega → 403.
+
+function TeamSickModal({ member, onClose }: { member: TeamMember; onClose: () => void }) {
+  const [from, setFrom] = useState(todayYmd());
+  const [to, setTo] = useState(todayYmd());
+  const [subtype, setSubtype] = useState(SICK_SUBTYPE_OPTS[0]?.v ?? 'obicno');
+  const [err, setErr] = useState<string | null>(null);
+  const sickM = useTeamSick();
+
+  async function save() {
+    setErr(null);
+    if (!from || !to) return setErr('Izaberite period.');
+    if (to < from) return setErr('„Do" ne sme biti pre „Od".');
+    try {
+      const res = await sickM.mutateAsync({
+        employeeId: member.id,
+        clientEventId: newClientEventId(),
+        dateFrom: from,
+        dateTo: to,
+        subtype,
+      });
+      const n = Number((res as { data?: unknown })?.data ?? 0);
+      toast(n > 0 ? `Bolovanje uneto (${n} radnih dana).` : 'Bolovanje uneto (vikendi/praznici preskočeni).');
+      onClose();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Slanje nije uspelo.');
+    }
+  }
+
+  const footer = (
+    <>
+      <Button variant="secondary" onClick={onClose}>
+        Odustani
+      </Button>
+      <Button onClick={save} loading={sickM.isPending}>
+        Unesi bolovanje
+      </Button>
+    </>
+  );
+
+  return (
+    <Dialog open onClose={onClose} title={`Unos bolovanja — ${member.fullName || ''}`} footer={footer}>
+      <div className="space-y-3">
+        <p className="text-sm text-ink-secondary">Bolovanje se upisuje u grid (radni dani perioda; vikendi i praznici se preskaču).</p>
+        {err && <p className="rounded-control bg-status-danger-bg px-2 py-1 text-sm text-status-danger">{err}</p>}
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label="Od" required>
+            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </FormField>
+          <FormField label="Do" required>
+            <Input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
+          </FormField>
+        </div>
+        <FormField label="Vrsta bolovanja" required>
+          <Select
+            value={subtype}
+            onChange={(e) => setSubtype(e.target.value)}
+            options={SICK_SUBTYPE_OPTS.map((o) => ({ value: o.v, label: o.l }))}
+          />
         </FormField>
       </div>
     </Dialog>

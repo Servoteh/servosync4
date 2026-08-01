@@ -16,6 +16,15 @@ interface ComboBoxProps<T> {
   getKey: (item: T) => string | number;
   getLabel: (item: T) => string;
   getSublabel?: (item: T) => string;
+  /**
+   * Prikaz IZABRANE vrednosti u dugmetu; podrazumevano isti kao `getLabel`
+   * (zahtev 052/26). U listi red ima dva sprata (`getLabel` + `getSublabel`),
+   * ali dugme posle izbora ima samo jedan — u šifarnicima gde je `getLabel`
+   * gola šifra (crteži: „1141072 / A") korisnik izgubi opis koji je video dok
+   * je birao. Ovim se za taj slučaj složi jednorednički prikaz sa opisom;
+   * pozivi koji prop ne prosleđuju rade tačno kao pre.
+   */
+  getValueLabel?: (item: T) => string;
   placeholder?: string;
 }
 
@@ -30,6 +39,7 @@ export function ComboBox<T>({
   getKey,
   getLabel,
   getSublabel,
+  getValueLabel,
   placeholder,
 }: ComboBoxProps<T>) {
   const [open, setOpen] = useState(false);
@@ -38,6 +48,9 @@ export function ComboBox<T>({
   const items = search.data?.data ?? [];
 
   if (value) {
+    // Tekst je `truncate` (dugme je usko), pa uz njega ide i `title` — pun
+    // sadržaj ostaje dostupan na prelaz mišem i kad ga stane samo pola.
+    const selected = (getValueLabel ?? getLabel)(value);
     return (
       <button
         type="button"
@@ -46,9 +59,10 @@ export function ComboBox<T>({
           setQ('');
           setOpen(true);
         }}
+        title={selected}
         className="flex w-full items-center justify-between rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
       >
-        <span className="truncate">{getLabel(value)}</span>
+        <span className="truncate">{selected}</span>
         <ChevronDown className="h-4 w-4 shrink-0 text-ink-disabled" aria-hidden />
       </button>
     );

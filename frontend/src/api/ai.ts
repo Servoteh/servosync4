@@ -257,3 +257,23 @@ export function refineText(tekst: string, profil?: RefineProfil): Promise<{ data
     body: JSON.stringify({ tekst, profil }),
   });
 }
+
+/* ── Diktafon „sanduče" (scenario B): telefon diktira → tekst u sanduče → Claude povlači ── */
+
+export interface DictationSendResult {
+  id: number;
+  createdAt: string;
+}
+
+/**
+ * Pošalji SREĐEN diktat u „sanduče" (`POST /v1/dictation-inbox`). Telefon u pogonu
+ * diktira srpski (STT + refine), a Claude Code na Windows radnoj stanici povlači
+ * tekst READ-ONLY iz baze (infra SSH/psql) — poslednji korak nije klipbord (telefon
+ * i Cursor su različiti uređaji). Nije pod `/ai/*` (zaseban modul), pa ne koristi BASE.
+ */
+export function sendDictation(text: string): Promise<{ data: DictationSendResult }> {
+  return apiFetch<{ data: DictationSendResult }>(`/v1/dictation-inbox`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  });
+}

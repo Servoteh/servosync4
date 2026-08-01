@@ -3,10 +3,18 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  StreamableFile,
   UnprocessableEntityException,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import {
+  assertPdfMagicBytes,
+  DRAWING_PDF_SELECT,
+  drawingPdfHeaders,
+  drawingPdfMeta,
+} from "../../common/work-order-drawing-pdf.util";
 import { MailService } from "../../common/mail/mail.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import {
@@ -1503,7 +1511,7 @@ export class HandoversService {
       ctx.project.id,
     );
 
-    return tx.workOrder.create({
+    const workOrder = await tx.workOrder.create({
       data: {
         projectId: ctx.project.id,
         externalCustomerId: ctx.project.customerId,
@@ -1536,6 +1544,16 @@ export class HandoversService {
       },
       select: HANDOVER_WO_SELECT,
     });
+
+    // 038/26: crteži otpremljeni SA primopredaje dok RN još nije postojao
+    // (`work_order_drawing_pdfs.handover_id`, `work_order_id` NULL) sad postaju
+    // vidljivi i na RN ekranu — jedini backfill, `handoverId` ostaje radi provenijencije.
+    await tx.workOrderDrawingPdf.updateMany({
+      where: { handoverId: handover.id, workOrderId: null },
+      data: { workOrderId: workOrder.id },
+    });
+
+    return workOrder;
   }
 
   /**
@@ -1811,5 +1829,99 @@ export class HandoversService {
         select: SAFE_WORKER_SELECT,
       }),
     );
+  }
+
+  // ==========================================================================
+  // Crtež (PDF) primopredaje bez RN (038/26) — deli `work_order_drawing_pdfs`
+  // tabelu sa `work-orders.service.ts` (bytea u bazi, M1). Primopredaja „na
+  // pisanju" još nema RN dok tehnolog piše TP — otpremljeni PDF se tad čuva sa
+  // `handoverId` (`workOrderId` NULL). Kad RN već postoji (`findHandoverWorkOrder`),
+  // otpremanje ide direktno na `workOrderId` — isti red je otad vidljiv i na RN
+  // ekranu. `createHandoverWorkOrder` (gore) backfilluje `workOrderId` na starije
+  // handoverId-only redove kad RN naknadno nastane ("Otkucaj TP"/lansiranje).
+  // ==========================================================================
+
+  private async assertHandoverExists(handoverId: number): Promise<void> {
+    const h = await this.prisma.drawingHandover.findUnique({
+      where: { id: handoverId },
+      select: { id: true },
+    });
+    if (!h) throw new NotFoundException(`Primopredaja ${handoverId} ne postoji`);
+  }
+
+  /**
+   * Otpremi PDF crteža primopredaje (multipart `file`, ≤20MB — kontroler).
+   * Ako primopredaja VEĆ ima RN, red se veže direktno na `workOrderId` (isti
+   * paritet kao da je otpremljeno sa RN ekrana); inače na `handoverId`.
+   */
+  async uploadDrawingPdf(
+    handoverId: number,
+    file: Express.Multer.File | undefined,
+    user: AuthUser,
+  ) {
+    await this.assertHandoverExists(handoverId);
+    assertPdfMagicBytes(file);
+
+    const workOrder = await this.findHandoverWorkOrder(this.prisma, handoverId);
+    const row = await this.prisma.workOrderDrawingPdf.create({
+      data: {
+        workOrderId: workOrder?.id ?? null,
+        handoverId: workOrder ? null : handoverId,
+        fileName: file.originalname,
+        contentType: file.mimetype || "application/pdf",
+        pdfBinary: new Uint8Array(file.buffer),
+        sizeBytes: file.size ? BigInt(file.size) : null,
+        uploadedBy: user.email,
+      },
+      select: DRAWING_PDF_SELECT,
+    });
+    return { data: drawingPdfMeta(row) };
+  }
+
+  /**
+   * Lista otpremljenih PDF-ova primopredaje: `handoverId` (pre-RN uploadi) I
+   * `workOrderId` ako RN već postoji (post-RN uploadi, uklj. one sa RN ekrana)
+   * — jedan pregled bez obzira KADA je crtež otpremljen.
+   */
+  async listDrawingPdfs(handoverId: number) {
+    await this.assertHandoverExists(handoverId);
+    const workOrder = await this.findHandoverWorkOrder(this.prisma, handoverId);
+    const rows = await this.prisma.workOrderDrawingPdf.findMany({
+      where: {
+        deletedAt: null,
+        OR: workOrder
+          ? [{ handoverId }, { workOrderId: workOrder.id }]
+          : [{ handoverId }],
+      },
+      orderBy: { uploadedAt: "desc" },
+      select: DRAWING_PDF_SELECT,
+    });
+    return { data: rows.map(drawingPdfMeta) };
+  }
+
+  /** Strim PDF sadržaja (inline) — ista tabela/logika kao `work-orders.service.ts`. */
+  async streamDrawingPdf(pdfId: number, res: Response): Promise<StreamableFile> {
+    const row = await this.prisma.workOrderDrawingPdf.findFirst({
+      where: { id: pdfId, deletedAt: null },
+      select: { fileName: true, contentType: true, pdfBinary: true },
+    });
+    if (!row?.pdfBinary)
+      throw new NotFoundException(`Crtež ${pdfId} nema sadržaj.`);
+    res.set(drawingPdfHeaders(row.fileName ?? "crtez.pdf", row.contentType));
+    return new StreamableFile(Buffer.from(row.pdfBinary));
+  }
+
+  /** Soft-delete otpremljenog crteža (deleted_at/by). Idempotentno. */
+  async removeDrawingPdf(pdfId: number, user: AuthUser) {
+    const row = await this.prisma.workOrderDrawingPdf.findUnique({
+      where: { id: pdfId },
+      select: { deletedAt: true },
+    });
+    if (!row) throw new NotFoundException(`Crtež ${pdfId} ne postoji`);
+    await this.prisma.workOrderDrawingPdf.updateMany({
+      where: { id: pdfId, deletedAt: null },
+      data: { deletedAt: new Date(), deletedBy: user.email },
+    });
+    return { data: { id: pdfId } };
   }
 }

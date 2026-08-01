@@ -25,6 +25,10 @@ const JOB_RUNS_DAYS = 60;
  */
 const MDB_STAGE_KEEP_DROPS = 7;
 
+// Diktafon „sanduče": preuzet (delivered) diktat je prolazni tekst — čisti se brzo;
+// NEPREUZETI (delivered_at IS NULL) se NIKAD ne diraju (čekaju Claude pull).
+const DICTATION_DELIVERED_DAYS = 30;
+
 @Injectable()
 export class RetentionJobsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -35,7 +39,8 @@ export class RetentionJobsService {
         key: "retention-cleanup",
         description:
           `Retention: audit_log > ${AUDIT_LOG_MONTHS} mes., pročitane notifikacije > ` +
-          `${NOTIFICATIONS_READ_DAYS} d, završeni job-runovi > ${JOB_RUNS_DAYS} d`,
+          `${NOTIFICATIONS_READ_DAYS} d, završeni job-runovi > ${JOB_RUNS_DAYS} d, ` +
+          `preuzeti diktati > ${DICTATION_DELIVERED_DAYS} d`,
         // 03:30 — POSLE noćnog backupa (02:30–02:35): sve što se briše već je u
         // sinoćnom dump-u, pa je svaki obrisani red i dalje povrativ iz kopije.
         schedule: { kind: "daily", at: "03:30" },
@@ -47,6 +52,9 @@ export class RetentionJobsService {
             now - NOTIFICATIONS_READ_DAYS * 86_400_000,
           );
           const runsCutoff = new Date(now - JOB_RUNS_DAYS * 86_400_000);
+          const dictCutoff = new Date(
+            now - DICTATION_DELIVERED_DAYS * 86_400_000,
+          );
 
           const audit = await this.prisma.auditLog.deleteMany({
             where: { createdAt: { lt: auditCutoff } },
@@ -63,10 +71,16 @@ export class RetentionJobsService {
               scheduledFor: { lt: runsCutoff },
             },
           });
+          // `deliveredAt < cutoff` implicira deliveredAt NOT NULL — nepreuzeti diktati
+          // (delivered_at IS NULL) se NE brišu, čekaju Claude pull koliko god treba.
+          const dict = await this.prisma.dictationInbox.deleteMany({
+            where: { deliveredAt: { lt: dictCutoff } },
+          });
           const stage = await this.purgeMdbStaging();
           return (
             `audit_log −${audit.count}, notifikacije −${notif.count}, ` +
-            `job-runovi −${runs.count}, bb_mdb staging −${stage}`
+            `job-runovi −${runs.count}, diktati −${dict.count}, ` +
+            `bb_mdb staging −${stage}`
           );
         },
       },

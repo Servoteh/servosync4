@@ -183,6 +183,71 @@ export interface PpOverlay {
   [k: string]: unknown;
 }
 
+/**
+ * Red gant feed-a (`/gantt`, zahtev 046/26). Auto-podaci stavke (pozicija/količina/crtež/
+ * RN/faza obrade/mašina) + planirani termini + spremnost/završenost. `planned_start_at`
+ * je NULL dok stavka nije stavljena na plan („Dodaj na plan") — tada nema bara na osi.
+ */
+export interface GanttRow {
+  line_id: string;
+  work_order_id: string;
+  operacija: number | string | null;
+  opis_rada: string | null;
+  effective_machine_code: string | null;
+  original_machine_code: string | null;
+  original_machine_name: string | null;
+  /** Iz ručnog šifrarnika hala; null = grupa „Bez hale". */
+  hall: string | null;
+  rn_ident_broj: string | null;
+  broj_crteza: string | null;
+  naziv_dela: string | null;
+  materijal: string | null;
+  komada_total: number | null;
+  komada_done: number | null;
+  rok_izrade: string | null;
+  tpz_min: number | null;
+  tk_min: number | null;
+  /** COALESCE(override, TPZ + TK × komada) u minutima. */
+  effective_duration_minutes: number | null;
+  planned_start_at: string | null;
+  planned_end_at: string | null;
+  planned_duration_minutes: number | null;
+  /** Tri-state override: null = auto iz kucanja operatera. */
+  planned_done: boolean | null;
+  planned_done_at: string | null;
+  planned_done_by: string | null;
+  /** COALESCE(planned_done, is_done_in_bigtehn) — checkbox „završeno". */
+  is_completed_effective: boolean | null;
+  predecessor_work_order_id: string | null;
+  predecessor_line: string | null;
+  is_ready_for_machine: boolean | null;
+  is_ready_manual: boolean | null;
+  previous_operation_status: string | null;
+  previous_operation_operacija: number | string | null;
+  previous_operation_machine_code: string | null;
+  local_status: string | null;
+  shift_sort_order: number | null;
+  shift_note: string | null;
+  is_urgent: boolean | null;
+  urgency_reason: string | null;
+  is_non_machining: boolean | null;
+  customer_short: string | null;
+  customer_name: string | null;
+  is_done_in_bigtehn: boolean | null;
+  [k: string]: unknown;
+}
+
+/** Red šifrarnika hala — SVE mašine iz `operations`, `hall` null kad dodela ne postoji. */
+export interface MachineHallRow {
+  machine_code: string;
+  machine_name: string | null;
+  hall: string | null;
+  sort_order: number | null;
+  note: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
 /** Deljeni ključ otvorene operacije. */
 export function opKey(o: { work_order_id: string; line_id: string }): string {
   return `${o.work_order_id}:${o.line_id}`;
@@ -205,6 +270,8 @@ const KEYS = {
   coopGroups: ['pp', 'coop-groups'] as const,
   drawings: ['pp', 'drawings'] as const,
   audit: ['pp', 'audit'] as const,
+  gantt: ['pp', 'gantt'] as const,
+  halls: ['pp', 'halls'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -217,12 +284,15 @@ export function useMachines() {
 }
 
 /** Red operacija po mašini (RPC paginacija) — vraća { rows, has_more, next_… }. */
-export function useMachineOperations(machine: string | null, offset = 0, limit = 100) {
+export function useMachineOperations(machine: string | null, offset = 0, limit = 100, q = '') {
+  const term = q.trim();
   return useQuery({
-    queryKey: [...KEYS.operations, 'machine', machine, offset, limit],
+    queryKey: [...KEYS.operations, 'machine', machine, offset, limit, term],
     enabled: !!machine,
     queryFn: () =>
-      apiFetch<{ data: MachineOpsResult }>(`${BASE}/operations${qs({ machine: machine ?? '', offset, limit })}`),
+      apiFetch<{ data: MachineOpsResult }>(
+        `${BASE}/operations${qs({ machine: machine ?? '', offset, limit, q: term || undefined })}`,
+      ),
   });
 }
 
@@ -236,17 +306,20 @@ export const MACHINE_WO_PAGE = 100;
  * (append + re-sort BE-a je već primenjen po strani, pa je append dovoljan uz stabilan
  * BE redosled prioriteta). Vraća { rows, hasMore, loadMore, loadingMore, ...query }.
  */
-export function useMachineOperationsAccum(machine: string | null) {
+export function useMachineOperationsAccum(machine: string | null, q = '') {
   const qc = useQueryClient();
   const [loadingMore, setLoadingMore] = useState(false);
-  const key = [...KEYS.operations, 'machine', machine, 0, MACHINE_WO_PAGE] as const;
+  // 040/26: crtež/RN filter je sad SERVER-side (u ključu + URL-u), pa „Još RN" paginacija
+  // radi i nad filtriranim skupom (crtež iza prvih 100 RN). Prazan term = ceo red mašine.
+  const term = q.trim();
+  const key = [...KEYS.operations, 'machine', machine, 0, MACHINE_WO_PAGE, term] as const;
 
   const query = useQuery({
     queryKey: key,
     enabled: !!machine,
     queryFn: () =>
       apiFetch<{ data: MachineOpsResult }>(
-        `${BASE}/operations${qs({ machine: machine ?? '', offset: 0, limit: MACHINE_WO_PAGE })}`,
+        `${BASE}/operations${qs({ machine: machine ?? '', offset: 0, limit: MACHINE_WO_PAGE, q: term || undefined })}`,
       ),
   });
 
@@ -259,7 +332,7 @@ export function useMachineOperationsAccum(machine: string | null) {
     setLoadingMore(true);
     try {
       const next = await apiFetch<{ data: MachineOpsResult }>(
-        `${BASE}/operations${qs({ machine, offset: result.next_work_order_offset, limit: MACHINE_WO_PAGE })}`,
+        `${BASE}/operations${qs({ machine, offset: result.next_work_order_offset, limit: MACHINE_WO_PAGE, q: term || undefined })}`,
       );
       const cur = qc.getQueryData<{ data: MachineOpsResult }>(key);
       const curRows = cur?.data.rows ?? rows;
@@ -271,7 +344,7 @@ export function useMachineOperationsAccum(machine: string | null) {
     } finally {
       setLoadingMore(false);
     }
-  }, [machine, result, rows, loadingMore, qc, key]);
+  }, [machine, result, rows, loadingMore, qc, key, term]);
 
   return { rows, hasMore, loadMore, loadingMore, isLoading: query.isLoading, isError: query.isError, isFetching: query.isFetching, refetch: query.refetch };
 }
@@ -302,6 +375,28 @@ export function useOperationsSearch(q: string) {
     queryKey: [...KEYS.operations, 'search', q],
     enabled: q.trim().length >= 2,
     queryFn: () => apiFetch<{ data: OpRow[] }>(`${BASE}/operations/search${qs({ q })}`),
+  });
+}
+
+/* ── Gant (046/26) ── */
+
+/** Gant feed (otvorene operacije + sve već isplanirane stavke). `hall='-'` = „Bez hale". */
+export function useGantt(filters: { hall?: string; machine?: string; q?: string } = {}) {
+  const term = (filters.q ?? '').trim();
+  return useQuery({
+    queryKey: [...KEYS.gantt, filters.hall ?? '', filters.machine ?? '', term],
+    queryFn: () =>
+      apiFetch<{ data: GanttRow[]; meta: { limit: number; truncated: boolean } }>(
+        `${BASE}/gantt${qs({ hall: filters.hall, machine: filters.machine, q: term || undefined })}`,
+      ),
+  });
+}
+
+/** Šifrarnik hala — sve mašine + dodeljena hala (null = nije dodeljena). */
+export function useMachineHalls() {
+  return useQuery({
+    queryKey: KEYS.halls,
+    queryFn: () => apiFetch<{ data: MachineHallRow[] }>(`${BASE}/halls`),
   });
 }
 
@@ -450,6 +545,13 @@ export interface OverlayPatch {
   cooperationStatus?: string;
   cooperationPartner?: string | null;
   cooperationExpectedReturn?: string | null;
+  // ── Gant (046/26). undefined = ne diraj, null = obriši.
+  plannedStartAt?: string | null;
+  plannedEndAt?: string | null;
+  plannedDurationMinutes?: number | null;
+  plannedDone?: boolean | null;
+  predecessorWorkOrderId?: string | null;
+  predecessorLine?: string | null;
 }
 export const useUpsertOverlay = () =>
   usePpMutation<OverlayPatch, TxResponse<PpOverlay>>((v) => post<PpOverlay>('/overlays', v));
@@ -476,6 +578,95 @@ export const useOptimisticOverlay = (msgs?: { ok?: string; err?: string }) =>
       return p;
     },
     msgs,
+  );
+
+/**
+ * Overlay upsert IZ GANTA (046/26) — optimistički patch keširanih `GanttRow[]` lista
+ * (drag bara/resize/popover mora da odgovori odmah, mreža stiže posle). Rollback + ⚠ toast
+ * na grešku; `onSettled` invalidira gant (i „operations", jer mašina/spremnost mogu da se
+ * promene iz istog popovera).
+ */
+export const useGanttOverlay = (msgs?: {
+  ok?: string;
+  /** Funkcija dobija grešku i sme da vrati konkretan razlog (npr. prevod BE 422 koda). */
+  err?: string | ((e: unknown) => string | null | undefined);
+}) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: OverlayPatch) => post<PpOverlay>('/overlays', v),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: KEYS.gantt });
+      const prev = qc.getQueriesData<unknown>({ queryKey: KEYS.gantt }).map(([k, d]) => [k, d] as const);
+      const p: Partial<GanttRow> = {};
+      if (v.plannedStartAt !== undefined) p.planned_start_at = v.plannedStartAt;
+      if (v.plannedEndAt !== undefined) p.planned_end_at = v.plannedEndAt;
+      if (v.plannedDurationMinutes !== undefined) p.planned_duration_minutes = v.plannedDurationMinutes;
+      if (v.plannedDone !== undefined) p.planned_done = v.plannedDone;
+      if (v.assignedMachineCode !== undefined) p.effective_machine_code = v.assignedMachineCode;
+      if (v.readyOverride !== undefined) p.is_ready_manual = v.readyOverride;
+      if (v.shiftNote !== undefined) p.shift_note = v.shiftNote;
+      if (v.predecessorWorkOrderId !== undefined) p.predecessor_work_order_id = v.predecessorWorkOrderId;
+      if (v.predecessorLine !== undefined) p.predecessor_line = v.predecessorLine;
+      for (const [key, data] of qc.getQueriesData<unknown>({ queryKey: KEYS.gantt })) {
+        const d = data as { data?: GanttRow[] } | undefined;
+        if (!d || !Array.isArray(d.data)) continue;
+        qc.setQueryData(key, {
+          ...d,
+          data: d.data.map((r) => {
+            if (!(r.work_order_id === v.workOrderId && r.line_id === v.lineId)) return r;
+            const next = { ...r, ...p };
+            // `is_completed_effective` je BE izvedeno polje (COALESCE(planned_done,
+            // is_done_in_bigtehn)) koje čitaju i checkbox „Završeno" i boja bara — bez
+            // ovog koraka klik izgleda mrtvo dok ne prođe mrežni krug.
+            if (v.plannedDone !== undefined) {
+              next.is_completed_effective = v.plannedDone ?? r.is_done_in_bigtehn ?? false;
+            }
+            return next;
+          }),
+        });
+      }
+      return { prev };
+    },
+    onError: (e, _v, ctx) => {
+      const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
+      if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
+      const razlog = typeof msgs?.err === 'function' ? msgs.err(e) : msgs?.err;
+      toast(`⚠ ${razlog || 'Nije sačuvano — osvežavam.'}`);
+    },
+    onSuccess: () => {
+      if (msgs?.ok) toast(`✓ ${msgs.ok}`);
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: KEYS.gantt });
+      void qc.invalidateQueries({ queryKey: KEYS.operations });
+    },
+  });
+};
+
+/**
+ * Promena mašine IZ GANTA (046/26). Ide kroz postojeći `/reassign` (a NE direktno na
+ * `assignedMachineCode`) da bi ostao na snazi guard grupe mašina + audit; prelaz u drugu
+ * grupu i dalje traži force iz taba „Po mašini" (422 `machine_group_mismatch`).
+ */
+export const useGanttReassign = () =>
+  usePpMutation<ReassignVars>((v) => post('/reassign', { clientEventId: newClientId(), ...v }), KEYS.all);
+
+/* ── Šifrarnik hala (046/26) ── */
+
+export const useUpsertMachineHall = () =>
+  usePpMutation<{ machineCode: string; hall: string; sortOrder?: number | null; note?: string | null }>(
+    (v) => {
+      const { machineCode, ...body } = v;
+      return put(`/halls/${encodeURIComponent(machineCode)}`, body);
+    },
+    // Hala menja GRUPISANJE ganta, ne samo šifarnik → invalidiraj ceo `pp` prostor.
+    KEYS.all,
+  );
+
+export const useDeleteMachineHall = () =>
+  usePpMutation<{ machineCode: string }>(
+    (v) => del(`/halls/${encodeURIComponent(v.machineCode)}`),
+    KEYS.all,
   );
 
 export const useReorderOverlays = () =>

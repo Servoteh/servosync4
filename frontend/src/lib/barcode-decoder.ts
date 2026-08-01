@@ -72,6 +72,65 @@ function isMobileLike(): boolean {
   return isIOSWebKit() || /Android/i.test(navigator.userAgent || '');
 }
 
+/** Android browser (ne iOS WebKit) — teren gde BarcodeDetector ume da laže. */
+export function isAndroidWeb(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return !isIOSWebKit() && /Android/i.test(navigator.userAgent || '');
+}
+
+/** Samsung Internet — treba mu 350–450ms „cooldown" posle stop() pre novog getUserMedia. */
+export function isSamsungInternetBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /SamsungBrowser/i.test(navigator.userAgent || '');
+}
+
+/**
+ * Debug prekidač dekodera (port 1.0 `loc_scan_decode_mode` — neprocenjiv na
+ * terenu): sessionStorage `ss3_scan_decode_mode` ∈ 'auto' | 'zxing' | 'native'.
+ */
+export type DecodeMode = 'auto' | 'zxing' | 'native';
+export function getDecodeModeOverride(): DecodeMode {
+  try {
+    const v = sessionStorage.getItem('ss3_scan_decode_mode');
+    return v === 'zxing' || v === 'native' ? v : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+export function setDecodeModeOverride(mode: DecodeMode): void {
+  try {
+    sessionStorage.setItem('ss3_scan_decode_mode', mode);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Da li uopšte probati nativni BarcodeDetector — 1.0 KANON (barcode.js:415-428 +
+ * commit 3cffea5): na Android web-u default je ZXING, ne BarcodeDetector. Razlozi
+ * iz terena (Samsung A-serija): API postoji ali delegira na Google Play Services
+ * barcode modul koji ume da fali/ne radi → `detect()` zauvek prazan ili baca, a
+ * simptom je „kamera radi, nikad ne skenira". 1.0 je posle debug-a ostavio BD
+ * samo kao eksplicitni opt-in; 3.0 ga zadržava na DESKTOP Chromium-u (tamo radi)
+ * i kroz debug override.
+ *
+ * `preferNative` je taj OPT-IN, per-profil kao u 1.0 (scanOverlay.js:431): ekran
+ * čije nalepnice nativni put čita bolje sme da ga traži i na Androidu. Bezbedno
+ * je tek od 31.07 jer BD put ima sanity (`getSupportedFormats`) + watchdog koji
+ * na uzastopne greške servisa vruće prelazi na ZXing bez restarta kamere.
+ * Debug override (`ss3_scan_decode_mode`) je i dalje JAČI od `preferNative`.
+ */
+export function shouldUseNativeDetector(preferNative?: boolean): boolean {
+  if (!hasNativeBarcodeDetector()) return false;
+  const mode = getDecodeModeOverride();
+  if (mode === 'zxing') return false;
+  if (mode === 'native') return true;
+  // auto: Android → ZXing (1.0 kanon), osim kad ekran eksplicitno traži nativni;
+  // desktop Chromium → BD.
+  if (isAndroidWeb()) return preferNative === true;
+  return true;
+}
+
 // ── ZXing lazy modul + hints/opcije (1.0 paritet) ───────────────────────────
 
 interface ZXingMod {
@@ -162,13 +221,56 @@ interface NativeDetectorLike {
   detect: (source: CanvasImageSource) => Promise<{ rawValue: string }[]>;
 }
 
+/** Koliko se čeka `BarcodeDetector.getSupportedFormats()` pre nego što je servis proglašen mrtvim. */
+const BD_SANITY_TIMEOUT_MS = 1500;
+
+/**
+ * Izbor MEĐU više kodova u istom kadru (dodato 30.07 — „kamera uzima prvi barkod
+ * iz kadra"). Na štampanom radnom nalogu barkodovi operacija stoje jedan pod
+ * drugim, pa nativni `BarcodeDetector` lako vrati SUSEDNI red umesto barkoda
+ * naloga; kako su barkodovi operacija međusobno slični i nisu jedinstveni,
+ * promašaj se ne vidi.
+ *
+ * PONAŠANJE BEZ PREDIKATA JE BIT-EXACT KAO PRE: `prefer == null` → `values[0]`
+ * (isto što je radio `found[0]?.rawValue`, uključujući prazan prvi element koji
+ * ljuska ionako odbacuje). Sa predikatom: prvi NEPRAZAN kod koji ga zadovolji, a
+ * ako nijedan ne zadovolji — ipak `values[0]` (pa ljuska/backend daju konkretnu
+ * poruku o pogrešnom barkodu, umesto tišine). Predikat koji baci grešku se
+ * ignoriše — pozivaočev kod ne sme da obori decode petlju.
+ */
+export function pickPreferredRaw(
+  values: readonly string[],
+  prefer?: (raw: string) => boolean,
+): string {
+  const first = values[0] ?? '';
+  if (!prefer) return first;
+  for (const v of values) {
+    if (!v) continue;
+    try {
+      if (prefer(v)) return v;
+    } catch {
+      /* predikat pozivaoca ne sme da obori dekoder */
+    }
+  }
+  return first;
+}
+
 /**
  * Zakači dekoder na VEĆ pokrenut <video> (stream-om upravlja pozivalac — lens
  * picker/zoom/torch ostaju netaknuti). Bira put po 1.0 pravilima:
- *   1. nativni BarcodeDetector ako postoji (Chromium — 3.0 status-quo),
+ *   1. nativni BarcodeDetector SAMO gde je pouzdan — desktop Chromium ili debug
+ *      override (v. `shouldUseNativeDetector`; 1.0 kanon 3cffea5: na ANDROID
+ *      web-u default je ZXing jer Samsung BD API ume tiho da ne radi) — uz
+ *      getSupportedFormats() sanity i no-hit-na-grešku watchdog → ZXing,
  *   2. iOS + QR u formatima → jsQR hibrid (canvas: jsQR/78ms + ZXing-1D/400ms),
- *   3. inače ZXing `decodeFromVideoElement` (iPhone item, Firefox, Safari desktop).
+ *   3. inače ZXing `decodeFromVideoElement` (ANDROID, iPhone item, Firefox…).
  * `onRaw` prima SIROV string — dedup/re-arm i BE lookup ostaju u ljusci.
+ *
+ * `preferMatching` je OPCIONO i menja izbor kada u kadru ima VIŠE kodova: na
+ * nativnom putu bira među kodovima istog frejma (vidi `pickPreferredRaw`), a na
+ * ZXing putu radi kao MEKI filter sa fallback-om (vidi `attachZXingToVideo`) —
+ * ZXing javlja jedan kod po pogotku, pa se „pogrešan" kratko zadrži da bi se
+ * sačekao pravi. Bez predikata je ponašanje bit-po-bit isto kao pre.
  */
 export async function attachVideoDecoder(opts: {
   video: HTMLVideoElement;
@@ -176,50 +278,149 @@ export async function attachVideoDecoder(opts: {
   onRaw: (raw: string) => void;
   /** Ljuska javlja da li je još živa (stop-guard za async init). */
   isStopped?: () => boolean;
+  /** Kad je u kadru više kodova — koji je „naš" (ekranu odgovarajući) format. */
+  preferMatching?: (raw: string) => boolean;
+  /**
+   * Traži nativni BarcodeDetector i na Androidu (per-profil opt-in, 1.0 kanon —
+   * v. `shouldUseNativeDetector`). Bez ovoga Android ostaje na ZXing-u.
+   */
+  preferNative?: boolean;
 }): Promise<VideoDecoderHandle> {
-  const { video, formats, onRaw } = opts;
+  const { video, formats, onRaw, preferMatching } = opts;
   const isStopped = opts.isStopped ?? (() => false);
 
-  // 1) Nativni BarcodeDetector (rAF nad <video> — isti loop kao dosadašnji 3.0).
-  if (hasNativeBarcodeDetector()) {
-    const Ctor = (window as unknown as {
-      BarcodeDetector: new (o?: { formats?: string[] }) => NativeDetectorLike;
+  // 1) Nativni BarcodeDetector — desktop Chromium / debug override / ekran koji
+  //    ga eksplicitno traži (`preferNative`). Na Androidu NIJE default (1.0 kanon
+  //    3cffea5): Samsung A-serija ima BD API koji delegira na GmsCore barcode
+  //    modul — kad on fali, detect() zauvek vraća prazno ili BACA, a simptom u
+  //    pogonu je „kamera radi, nikad ne skenira".
+  if (shouldUseNativeDetector(opts.preferNative)) {
+    const BD = (window as unknown as {
+      BarcodeDetector: (new (o?: { formats?: string[] }) => NativeDetectorLike) & {
+        getSupportedFormats?: () => Promise<string[]>;
+      };
     }).BarcodeDetector;
-    let detector: NativeDetectorLike | null = null;
+    // Sanity (rupa i u 1.0): prazan getSupportedFormats() = servis iza API-ja mrtav.
+    // TIMEOUT (01.08): mrtav GmsCore barcode modul ume da NIKAD ne razreši ovaj
+    // poziv — bez trke sa tajmerom bi ceo `attachVideoDecoder` visio zauvek, pa bi
+    // ljuska imala živ preview BEZ ijednog dekodera („kamera radi, ne skenira").
+    // Istek se tretira kao nesposoban servis → ZXing put, isto kao prazan odgovor.
+    let bdSane = true;
     try {
-      detector = new Ctor({ formats });
+      if (typeof BD.getSupportedFormats === 'function') {
+        let t = 0;
+        const sup = await Promise.race([
+          BD.getSupportedFormats(),
+          new Promise<null>((r) => {
+            t = window.setTimeout(() => r(null), BD_SANITY_TIMEOUT_MS);
+          }),
+        ]);
+        if (t) clearTimeout(t);
+        if (!Array.isArray(sup) || sup.length === 0) bdSane = false;
+      }
     } catch {
+      bdSane = false;
+    }
+    let detector: NativeDetectorLike | null = null;
+    if (bdSane) {
       try {
-        detector = new Ctor();
+        detector = new BD({ formats });
       } catch {
-        detector = null;
+        try {
+          detector = new BD();
+        } catch {
+          detector = null;
+        }
       }
     }
     if (detector) {
       let rafId = 0;
       let live = true;
+      let consecErrors = 0;
+      // Ljuska je pozvala handle.stop() — mora da važi i za ZXing swap koji je u
+      // letu (inače bi `await attachZXingToVideo` zakačio SIROČE petlju nad video
+      // elementom koji ljuska upravo gasi; `isStopped` pokriva samo ljuskin flag,
+      // a ovaj put se gasi i „lokalno", npr. pri zameni dekodera).
+      let stopRequested = false;
+      const dead = () => stopRequested || isStopped();
       const det = detector;
-      const tick = async () => {
-        if (!live || isStopped()) return;
-        try {
-          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-            const found = await det.detect(video);
-            const raw = found[0]?.rawValue ? String(found[0].rawValue) : '';
-            if (raw) onRaw(raw);
-          }
-        } catch {
-          /* prazan frejm — decode miss */
-        }
-        if (live && !isStopped()) rafId = requestAnimationFrame(() => void tick());
-      };
-      rafId = requestAnimationFrame(() => void tick());
-      return {
+      // Mutabilan handle — watchdog sme da zameni put bez restarta ljuske/streama.
+      const handle: VideoDecoderHandle = {
         path: 'native',
         stop: () => {
+          stopRequested = true;
           live = false;
           cancelAnimationFrame(rafId);
         },
       };
+      const swapToZXing = async () => {
+        live = false;
+        cancelAnimationFrame(rafId);
+        console.warn('[decoder] BarcodeDetector servis ne radi — prelazim na ZXing');
+        if (dead()) return;
+        try {
+          const inner = await attachZXingToVideo(video, formats, onRaw, dead, preferMatching);
+          // Ljuska je u međuvremenu (lazy ZXing chunk ume da traje) zatvorila skener
+          // → ugasi tek pokrenutu petlju i NE diraj handle.
+          if (dead()) {
+            inner.stop();
+            return;
+          }
+          handle.path = inner.path;
+          handle.stop = () => {
+            stopRequested = true;
+            inner.stop();
+          };
+        } catch (e) {
+          console.warn('[decoder] ZXing fallback nije uspeo:', e);
+        }
+      };
+      const tick = async () => {
+        if (!live || dead()) return;
+        try {
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            const found = await det.detect(video);
+            // `detect()` je asinhron: ljuska je DOK JE ON BIO U LETU mogla da
+            // zatvori skener ili da restartuje kameru (novi start = nova
+            // generacija) — pogodak iz starog kadra tada ne sme da ode u `onRaw`
+            // (1.0 guard barcode.js:1031). Bez ovoga zatvoren skener ume da
+            // „ispali" još jedan rezultat u roditelja posle zatvaranja.
+            if (dead()) return;
+            consecErrors = 0; // uspešan poziv servisa (i prazan kadar je uspeh)
+            // Više kodova u kadru (npr. susedni red operacije na štampanom RN-u) →
+            // pozivalac kroz `preferMatching` bira svoj format; bez predikata = prvi.
+            const raw = pickPreferredRaw(
+              found.map((f) => (f?.rawValue ? String(f.rawValue) : '')),
+              preferMatching,
+            );
+            if (raw) onRaw(raw);
+          }
+        } catch {
+          // detect() koji BACA nije „nema koda u kadru" (to je prazan niz) — to je
+          // servis koji ne radi („Barcode detection service unavailable"). Posle 10
+          // uzastopnih grešaka vrući prelaz na ZXing umesto večitog gluvog skenera.
+          //
+          // SVESNO NIJE POKRIVENO: varijanta kvara u kojoj `detect()` uredno
+          // resolve-uje ali VEČNO vraća prazan niz (GmsCore modul „instaliran a
+          // neispravan"). Nema signala na koji bi se watchdog okačio — prazan niz
+          // je nerazlučiv od legitimno praznog kadra (radnik koji traži barkod ili
+          // drži telefon u džepu), pa bi svaki tajmer pre ili kasnije lažno okinuo
+          // swap, a swap gasi i pali dekoder usred skeniranja. Ublaženja umesto
+          // toga: `getSupportedFormats()` sanity pre starta (hvata većinu mrtvih
+          // instalacija), nativni put NIJE Android default nego opt-in po ekranu
+          // (`preferNative`), a na terenu ostaju izlazi bez koda — „Iz slike"/
+          // „Slikaj barkod", ručni unos i debug prekidač `ss3_scan_decode_mode`
+          // = 'zxing' koji taj telefon trajno prebaci na ZXing.
+          consecErrors += 1;
+          if (consecErrors >= 10) {
+            void swapToZXing();
+            return;
+          }
+        }
+        if (live && !dead()) rafId = requestAnimationFrame(() => void tick());
+      };
+      rafId = requestAnimationFrame(() => void tick());
+      return handle;
     }
   }
 
@@ -292,10 +493,51 @@ export async function attachVideoDecoder(opts: {
     };
   }
 
-  // 3) ZXing nad <video> (iPhone item / Firefox / Safari desktop).
+  // 3) ZXing nad <video> (ANDROID default — 1.0 kanon / iPhone item / Firefox…).
+  return attachZXingToVideo(video, formats, onRaw, isStopped, preferMatching);
+}
+
+/** Koliko se „pogrešan" kod drži pre nego što se ipak pusti (v. `preferMatching`). */
+const ZX_PREFER_HOLD_MS = 400;
+
+/**
+ * ZXing `decodeFromVideoElement` put — izdvojen da bi ga koristio i BD watchdog
+ * (vrući fallback bez restarta streama). Kadenca/hints = 1.0 paritet: item mobile
+ * 28ms/150ms + TRY_HARDER + suženi formati; QR-mix 60ms/280ms.
+ *
+ * `preferMatching` (ISPRAVKA 01.08 — vraća N3 fix od 30.07 na Android, gde je
+ * ZXing default): na štampanom radnom nalogu barkodovi operacija (`S:…`) stoje
+ * jedan pod drugim iznad/ispod barkoda naloga, pa dekoder lako uhvati SUSEDNI
+ * red; kako su ti kodovi međusobno slični i nisu jedinstveni, promašaj se ne
+ * vidi. Nativni put bira među kodovima ISTOG frejma (`pickPreferredRaw`), ali
+ * ZXing javlja po jedan kod, pa je ovde predikat MEKI FILTER SA FALLBACK-OM:
+ *   • pogodak koji zadovoljava predikat (ili predikata nema) → `onRaw` odmah;
+ *   • pogodak koji ga NE zadovoljava se ZADRŽI i ne javlja — sledećih ~400ms
+ *     kamera ima priliku da uhvati pravi red; „istek" se meri na SLEDEĆEM pozivu
+ *     callback-a, a ZXing ga zove neprekidno (promašaj 28-60ms, ponovljen pogodak
+ *     150-280ms — v. `readerOptions`), pa zadržani kod ne može da ostane zarobljen;
+ *   • ako pravi ne stigne, zadržani se pusti JEDNOM — ljuska tada daje svoju
+ *     „pogrešan red / barkod operacije" poruku umesto tišine (isto kao pre fix-a).
+ */
+async function attachZXingToVideo(
+  video: HTMLVideoElement,
+  formats: DecodeFormat[],
+  onRaw: (raw: string) => void,
+  isStopped: () => boolean,
+  preferMatching?: (raw: string) => boolean,
+): Promise<VideoDecoderHandle> {
+  const hasQr = formats.includes('qr_code');
+  const oneD = formats.filter((f) => f !== 'qr_code');
   const zx = await loadZXing();
   // Item profil: suženi formati (CODE_128+CODE_39 brzina, 1.0 fd252cb/9388c8a);
   // TRY_HARDER na mobilnom (iPhone RNZ inače ne dekodira).
+  //
+  // SVESNA RAZLIKA OD ZATEČENOG BD PONAŠANJA: nativni detektor je na živoj kameri
+  // čitao i `itf`/`ean_13` iz prosleđenog seta; ovde se na mobilnom item profilu
+  // set namerno sužava na Code128+Code39 jer je to 1.0 kanon (sve što se skenira
+  // sa nalepnice — RNZ, crtež, polica — je Code128), a suženje je ~2× brže i
+  // manje sklono lažnom ITF čitanju gustog Code128. Pun set ostaje na „Iz slike"
+  // putu (`decodeImageFile`), gde brzina nije kritična.
   const liveFormats: DecodeFormat[] =
     !hasQr && isMobileLike()
       ? oneD.filter((f) => f === 'code_128' || f === 'code_39')
@@ -304,14 +546,39 @@ export async function attachVideoDecoder(opts: {
     buildHints(zx, liveFormats.length ? liveFormats : formats, isMobileLike()),
     readerOptions(hasQr),
   );
+  // Zadržani „pogrešan" pogodak (v. JSDoc iznad) — najviše jedan u datom trenutku.
+  let held: { raw: string; at: number } | null = null;
   let controls: { stop: () => void };
   try {
     controls = await reader.decodeFromVideoElement(video, (result, err) => {
       if (isStopped()) return;
-      if (result?.getText()) onRaw(result.getText());
-      else if (err && !isDecodeMissError(zx, err)) {
+      const now = Date.now();
+      const text = result?.getText() || '';
+      if (text) {
+        let matches = true;
+        if (preferMatching) {
+          try {
+            matches = preferMatching(text);
+          } catch {
+            matches = true; // predikat pozivaoca ne sme da obori dekoder
+          }
+        }
+        if (matches) {
+          held = null; // pravi kod uvek poništava zadržani
+          onRaw(text);
+          return;
+        }
+        // Nov „pogrešan" kod počinje svoj prozor; isti se NE osvežava (inače bi
+        // stacionaran susedni red zauvek odlagao fallback poruku).
+        if (!held || held.raw !== text) held = { raw: text, at: now };
+      } else if (err && !isDecodeMissError(zx, err)) {
         // Prava greška (ne miss) — samo log; ljuska ima svoj error-put za kameru.
         console.warn('[decoder] zxing:', err);
+      }
+      if (held && now - held.at >= ZX_PREFER_HOLD_MS) {
+        const raw = held.raw;
+        held = null;
+        onRaw(raw);
       }
     });
   } catch (e) {
@@ -331,6 +598,39 @@ export async function attachVideoDecoder(opts: {
       }
     },
   };
+}
+
+/**
+ * Zagrevanje dekoder chunk-ova PRE otvaranja skener overlay-a — fire-and-forget.
+ *
+ * ZAŠTO: ZXing se učitava LAZY (~250KB gzip) tek pri prvom dekodiranju, pa je u
+ * 1.0 postojao poznat simptom „crn ekran / kamera radi ali ništa ne skenira dok
+ * se chunk vuče" na slaboj pogonskoj mreži. Od prelaska Androida sa
+ * BarcodeDetector-a na ZXing (v. `shouldUseNativeDetector`) to više nije edge
+ * case nego SVAKI Android telefon u pogonu — zato ljuske ovo zovu na mount,
+ * paralelno sa `getUserMedia` (dok korisnik čeka permisiju/preview, chunk stiže).
+ *
+ * Ne vraća promise i NIKAD ne baca: pozivalac ne sme ništa da čeka, a neuspeh
+ * (mreža) se svejedno prijavljuje na regularnom putu kad dekoder zatreba.
+ */
+export function preloadVideoDecoder(formats: DecodeFormat[]): void {
+  if (typeof window === 'undefined') return;
+  // Namerno BEZ `preferNative`: ekran koji traži nativni put na Androidu i dalje
+  // može da sklizne na ZXing (watchdog kad GmsCore barcode modul ne radi), pa mu
+  // zagrejan chunk treba. Gate ostaje samo za teren gde je nativni put siguran
+  // (desktop Chromium / debug override) — tamo se chunk stvarno ne vuče.
+  if (shouldUseNativeDetector()) return; // nativni put ne vuče nikakav chunk
+  // `.catch` je obavezan — golo `void loadZXing()` bi na padu mreže dalo
+  // unhandled rejection u konzoli (i Sentry šum), a ovde je pad očekivan.
+  loadZXing().catch(() => {
+    /* best-effort zagrevanje */
+  });
+  if (isIOSWebKit() && formats.includes('qr_code')) {
+    // iOS QR ide kroz jsQR hibrid — i taj chunk ima smisla zagrejati.
+    import('jsqr').catch(() => {
+      /* best-effort zagrevanje */
+    });
+  }
 }
 
 // ── Slika iz fajla: ZXing 11-pokušaja pipeline (1.0 decodeBarcodeFromFile) ──
@@ -485,4 +785,101 @@ export function buildVideoConstraints(profile: 'item' | 'mixed'): MediaTrackCons
     height: { ideal: 1080 },
     frameRate: { ideal: 30, max: 30 },
   };
+}
+
+// ── Android post-start tuning (1.0 barcode.js:484-659) ─────────────────────
+
+/**
+ * `applyConstraints` compat wrapper (1.0 `safeApplyFlatCompat`, barcode.js:484-506):
+ * na ANDROIDU prvo `{advanced:[flat]}` pa flat; svuda drugde obrnuto. Redosled je
+ * load-bearing — pogrešan na Samsungu tiho ignoriše torch/zoom/focus podešavanja.
+ */
+export async function safeApplyFlatCompat(
+  track: MediaStreamTrack,
+  flat: Record<string, unknown>,
+): Promise<boolean> {
+  const attempts: MediaTrackConstraints[] = isAndroidWeb()
+    ? [{ advanced: [flat] } as MediaTrackConstraints, flat as MediaTrackConstraints]
+    : [flat as MediaTrackConstraints, { advanced: [flat] } as MediaTrackConstraints];
+  for (const c of attempts) {
+    try {
+      await track.applyConstraints(c);
+      return true;
+    } catch {
+      /* probaj sledeći oblik */
+    }
+  }
+  return false;
+}
+
+/**
+ * Best-effort štelovanje ZADNJE kamere posle starta — SAMO Android (1.0 lekcije
+ * sa Samsung A17/A26; iOS je namerno izuzet). Zvati kad je video spreman
+ * (`loadedmetadata`), nikad pre. Sve je try/catch — pad ne sme da obori sken.
+ *
+ * 1. Anti-glare: `exposureCompensation` ≈ −0.45 (tamniji kadar = manje specular
+ *    odsjaja kroz providnu foliju na nalepnici) — 1.0 barcode.js:640-659.
+ * 2. AF: ako je focusMode već `auto`/`continuous` — NE DIRATI (Samsung smart AF:
+ *    PDAF + laser + scene detection; forsiranje je pokvarilo i S26 — 1.0 revert
+ *    e126868). `manual`/prazan → probaj `continuous`, pa `single-shot` + centar
+ *    POI (1.0 barcode.js:588-632).
+ */
+export async function applyAndroidPostStartTuning(track: MediaStreamTrack): Promise<void> {
+  if (!isAndroidWeb()) return;
+  interface Caps {
+    exposureCompensation?: { min?: number; max?: number };
+    focusMode?: string[];
+  }
+  let caps: Caps = {};
+  try {
+    caps = (track.getCapabilities?.() ?? {}) as Caps;
+  } catch {
+    caps = {};
+  }
+  // 1) Anti-glare ekspozicija.
+  try {
+    const ec = caps.exposureCompensation;
+    const min = Number(ec?.min);
+    const max = Number(ec?.max);
+    if (ec && Number.isFinite(min) && min < -0.05) {
+      const target = Math.max(min, Math.min(Number.isFinite(max) ? max : 0, -0.45));
+      await safeApplyFlatCompat(track, { exposureCompensation: target });
+    }
+  } catch {
+    /* best-effort */
+  }
+  // 2) AF režim.
+  try {
+    const modes = Array.isArray(caps.focusMode) ? caps.focusMode : [];
+    let current = '';
+    try {
+      current = String(
+        (track.getSettings?.() as { focusMode?: string } | undefined)?.focusMode ?? '',
+      );
+    } catch {
+      current = '';
+    }
+    if (current === 'auto' || current === 'continuous') return; // Samsung smart AF — ne diraj
+    if (modes.includes('continuous')) {
+      await safeApplyFlatCompat(track, { focusMode: 'continuous' });
+    } else if (modes.includes('single-shot')) {
+      await safeApplyFlatCompat(track, {
+        focusMode: 'single-shot',
+        pointsOfInterest: [{ x: 0.5, y: 0.5 }],
+      });
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Pauza PRE novog getUserMedia posle stop() — Samsung Internet oslobađa kameru sa
+ * ~200-400ms kašnjenja (1.0 barcode.js:298-314); bez pauze drugi sken u sesiji
+ * vraća NotReadableError ili zaglavljen stream. iOS ima svoju manju pauzu.
+ */
+export function cameraCooldownMs(): number {
+  if (isSamsungInternetBrowser()) return 450;
+  if (isIOSWebKit()) return 180;
+  return 0;
 }

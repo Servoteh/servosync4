@@ -183,7 +183,8 @@ export function OpsTable({
     reorder.mutate({ machine: machine ?? null, orderedRows: arr });
   }
 
-  const colSpan = selectable ? 12 : 11;
+  // Baznih kolona = 11 (uklj. novu „Operacija" 043/26) + selectable(1) + reorderable(1).
+  const colSpan = selectable ? 13 : 12;
 
   if (ops.length === 0) {
     return (
@@ -221,6 +222,7 @@ export function OpsTable({
             <th className="px-2 py-1.5" title="Apsolutna pozicija u redosledu mašine — klik za unos">Redosled</th>
             <th className="px-2 py-1.5" title="Redni broj u prikazanoj listi">R.br.</th>
             <th className="px-3 py-1.5">Crtež / deo</th>
+            <th className="px-3 py-1.5" title="Operacija (broj = TP redosled) i naziv operacije">Operacija</th>
             <th className="px-3 py-1.5">RN</th>
             <th className="px-3 py-1.5">Kupac</th>
             <th className="px-3 py-1.5">Rok</th>
@@ -308,6 +310,13 @@ export function OpsTable({
                         <div className="text-xs text-ink-disabled">{o.naziv_dela ?? ''}</div>
                       </div>
                     </div>
+                  </td>
+                  {/* Operacija — broj (TP redosled) + naziv operacije (043/26) */}
+                  <td className="px-3 py-1.5">
+                    <span className="tnums font-medium text-ink">
+                      {o.operacija != null ? String(o.operacija).padStart(2, '0') : '—'}
+                    </span>
+                    <div className="text-xs text-ink-disabled">{o.opis_rada ?? ''}</div>
                   </td>
                   {/* RN */}
                   <td className="px-3 py-1.5 text-xs">{o.rn_ident_broj ?? '—'}</td>

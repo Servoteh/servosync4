@@ -94,7 +94,7 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "importMachines",
     "updateMachine",
     "deleteMachineHard",
-    "archiveMachine",
+    "otpisMachine",
     "restoreMachine",
     "renameMachine",
     "setStatusOverride",
@@ -396,15 +396,19 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
 
   describe("Write guard — POST (201 za write-role, 403 za bez-write)", () => {
     it.each(WRITE_ROLES)(
-      "POST /machines/:code/archive → 201 za %s",
+      "POST /machines/:code/otpis → 201 za %s",
       async (role) => {
-        await post("/maintenance/machines/M-01/archive", role).expect(201);
+        await post("/maintenance/machines/M-01/otpis", role, {
+          reason: "rashodovana",
+        }).expect(201);
       },
     );
     it.each(NO_WRITE)(
-      "POST /machines/:code/archive → 403 za %s (nema write)",
+      "POST /machines/:code/otpis → 403 za %s (nema write)",
       async (role) => {
-        await post("/maintenance/machines/M-01/archive", role).expect(403);
+        await post("/maintenance/machines/M-01/otpis", role, {
+          reason: "rashodovana",
+        }).expect(403);
       },
     );
     it.each(WRITE_ROLES)(

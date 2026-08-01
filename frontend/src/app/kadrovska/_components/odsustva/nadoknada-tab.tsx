@@ -38,9 +38,13 @@ import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 // Tok: pending → sef_approved → approved → completed; reject iz pending/
 // sef_approved; storno iz approved/completed (dan_odmora vraća −1 dan GO).
 // Dvostepenost + dual_control presuđuje RPC makeup_approve na sy15 (BE proxy).
-// „Dan odmora": posle FINALNOG odobrenja FE zove POST /vacation/bonus (+1 dan
-// GO, dedup already_granted). Mejl notifikacije statusa šalje BE (kadr_queue_
-// makeup_notification u approve/reject putanjama) — FE ih NE duplira.
+// „Dan odmora" (od 31.07.2026): +1 dan GO upisuje BE ATOMSKI u makeupApprove
+// (ista sy15 transakcija; kadr_grant_bonus_go pri tom BRIŠE kucane sate tog
+// dana — zamena ⊕ plaćeni sati, presuda vlasnika). FE više ne šalje odvojen
+// POST /vacation/bonus posle odobrenja; dugme „Upiši +1 dan" ostaje SAMO kao
+// sanacija za zatečene approved zahteve bez upisanog dana (bonusGranted=false).
+// Storno vraća −1 dan, ali obrisane sate NE vraća — FE tada glasno traži ručni
+// unos u grid (hours_need_manual_restore iz BE). Mejl notifikacije šalje BE.
 // ============================================================================
 
 const STATUS_META: Record<string, { tone: Tone; label: string }> = {
@@ -134,9 +138,22 @@ export function NadoknadaTab() {
     });
   }
 
+  /** Ručni upis +1 dana GO — SANACIJA za zatečene "approved" zahteve bez upisanog
+   *  dana (do 31.07.2026 grant je bio odvojen FE poziv pa je umeo da izostane —
+   *  incident Stamenić 04.07). Nova odobrenja upisuju dan atomski na BE. */
   async function grantBonusGo(r: MakeupRequest) {
+    if (busyIds.has(r.id)) return;
+    const datum = formatDate(s(r, 'weekendWorkDate') || r.absenceDate);
+    if (
+      !window.confirm(
+        `Upisati +1 dan GO za ${empName(r.employeeId)} (rad vikendom ${datum})? ` +
+          'Kucani sati za taj dan (ako postoje) se brišu — zamena, ne duplo plaćanje.',
+      )
+    )
+      return;
+    setBusy(r.id, true);
     try {
-      await grantBonus.mutateAsync({
+      const res = await grantBonus.mutateAsync({
         clientEventId: newClientEventId(),
         employeeId: r.employeeId,
         workDate: s(r, 'weekendWorkDate') || r.absenceDate,
@@ -144,11 +161,19 @@ export function NadoknadaTab() {
         reason: r.reason || 'Rad vikendom',
         makeupRequestId: r.id,
       });
-      show('ok', '🏖 +1 dan GO dodat u saldo');
+      const d = rpcData(res);
+      const cleared = Number(d.hours_cleared ?? 0);
+      const already = d.already_granted === true;
+      show(
+        'ok',
+        `${already ? 'ℹ Dan je već bio u saldu' : '🏖 +1 dan GO dodat u saldo'}${cleared > 0 ? ' · kucani sati tog dana su obrisani (zamena, ne duplo)' : ''}`,
+      );
     } catch (e) {
       const msg = String((e as ApiError)?.message || '');
       if (msg.includes('already_granted')) show('ok', 'Dan je već dodat u saldo');
-      else show('warn', 'Zahtev je odobren, ali +1 dan GO nije upisan — dodajte ručno.');
+      else show('warn', '+1 dan GO nije upisan — pokušajte ponovo dugmetom „Upiši +1 dan".');
+    } finally {
+      setBusy(r.id, false);
     }
   }
 
@@ -161,10 +186,15 @@ export function NadoknadaTab() {
       ? `rad vikendom ${formatDate(s(r, 'weekendWorkDate') || r.absenceDate)} (${r.absenceHours}h)`
       : `${formatDate(r.absenceDate)} (${r.absenceHours}h)`;
     const sta = danOdmora ? 'dan odmora (+1 dan GO)' : 'nadoknadu sati';
+    // Napomena o satima: zamena dana ISKLJUČUJE plaćene sate tog dana (presuda
+    // vlasnika 31.07.2026) — grant na BE briše kucane sate za odrađeni vikend-dan.
+    const danNapomena = danOdmora
+      ? ' Zaposlenom se dodaje +1 dan godišnjeg odmora u saldo; kucani sati za taj dan (ako postoje) se brišu — zamena, ne duplo plaćanje.'
+      : '';
     const body = isFinalize
-      ? `Finalizovati (HR) ${sta} zaposlenog ${who} za ${ctx}?${danOdmora ? ' Zaposlenom se dodaje +1 dan godišnjeg odmora u saldo.' : ''}`
+      ? `Finalizovati (HR) ${sta} zaposlenog ${who} za ${ctx}?${danNapomena}`
       : isAdmin
-        ? `Odobriti direktno ${sta} zaposlenog ${who} za ${ctx}?${danOdmora ? ' Zaposlenom se dodaje +1 dan godišnjeg odmora u saldo.' : ''}`
+        ? `Odobriti direktno ${sta} zaposlenog ${who} za ${ctx}?${danNapomena}`
         : `Odobriti kao šef (1. nivo) ${sta} zaposlenog ${who} za ${ctx}? Prosleđuje se HR-u.`;
     if (!window.confirm(body)) return;
 
@@ -188,9 +218,15 @@ export function NadoknadaTab() {
         show('warn', `Neočekivan status: ${status || '—'}`);
         return;
       }
-      show('ok', danOdmora ? 'Odobreno' : 'Nadoknada odobrena — radnik treba da nadoknadi do roka');
-      // FINALNO odobrenje 'dan_odmora' → +1 dan GO (dedup u RPC-u)
-      if (danOdmora) await grantBonusGo(r);
+      // FINALNO odobrenje 'dan_odmora': +1 dan GO upisuje BE ATOMSKI sa odobrenjem
+      // (makeupApprove poziva kadr_grant_bonus_go u istoj transakciji) — FE više
+      // NE šalje odvojen grant (ne-atomski obrazac je izgubio dan Stamenić 04.07).
+      if (danOdmora) {
+        const cleared = Number(rpcData(res).hours_cleared ?? 0);
+        show('ok', `Odobreno — +1 dan GO upisan u saldo${cleared > 0 ? ' · kucani sati tog dana su obrisani (zamena, ne duplo)' : ''}`);
+      } else {
+        show('ok', 'Nadoknada odobrena — radnik treba da nadoknadi do roka');
+      }
     } catch (e) {
       const ae = e as ApiError;
       show('warn', ae?.status === 403 ? 'Nemate dozvolu za ovu akciju' : 'Greška pri odobravanju');
@@ -233,7 +269,15 @@ export function NadoknadaTab() {
   async function doStorno(r: MakeupRequest, note: string) {
     try {
       const res = await storno.mutateAsync({ id: r.id, note });
-      show('ok', Number(rpcData(res).reversed_days ?? 0) > 0 ? 'Stornirano — −1 dan GO vraćen iz salda' : 'Stornirano');
+      const d = rpcData(res);
+      const base = Number(d.reversed_days ?? 0) > 0 ? 'Stornirano — −1 dan GO vraćen iz salda' : 'Stornirano';
+      // Obrisani sati se NE vraćaju automatski (original je samo u audit logu) —
+      // bez ovog upozorenja radnik tiho ostane i bez dana i bez plaćenih sati.
+      if (d.hours_need_manual_restore === true) {
+        show('warn', `${base}. ⚠ Kucani sati tog dana su ranije OBRISANI zamenom i NISU vraćeni — unesite ih ručno u mesečni grid.`);
+      } else {
+        show('ok', base);
+      }
       setStornoFor(null);
     } catch (e) {
       const msg = String((e as ApiError)?.message || '');
@@ -284,9 +328,16 @@ export function NadoknadaTab() {
       render: (r) => {
         const danOdmora = s(r, 'compensationType') === 'dan_odmora';
         const meta = STATUS_META[r.status] ?? { tone: 'neutral' as Tone, label: r.status };
-        const label =
-          danOdmora && (r.status === 'approved' || r.status === 'completed') ? 'Odobreno (+1 dan GO)' : meta.label;
-        return <StatusBadge tone={meta.tone} label={label} />;
+        // Bedž sme da tvrdi "+1 dan GO" SAMO kad je dan stvarno upisan (bonusGranted
+        // iz vacation_bonus_days) — "approved" bez upisa postoji istorijski
+        // (ne-atomski grant do 31.07.2026; incident Stamenić 04.07). TRI stanja:
+        // true = upisan; false = NIJE upisan (warn + sanacija); undefined = stari
+        // BE/keš bez polja → neutralan bedž bez tvrdnje (ne lažni warn).
+        if (danOdmora && (r.status === 'approved' || r.status === 'completed')) {
+          if (r.bonusGranted === true) return <StatusBadge tone={meta.tone} label="Odobreno (+1 dan GO)" />;
+          if (r.bonusGranted === false) return <StatusBadge tone="warn" label="Odobreno — dan GO NIJE upisan" />;
+        }
+        return <StatusBadge tone={meta.tone} label={meta.label} />;
       },
     },
     {
@@ -349,6 +400,17 @@ export function NadoknadaTab() {
             {r.status === 'approved' && !danOdmora && (
               <Button variant="secondary" className="h-7 px-2 text-xs" disabled={busy} onClick={() => doComplete(r)} title="Nadoknada izvršena — zatvori stavku">
                 ✔ Završeno
+              </Button>
+            )}
+            {danOdmora && ['approved', 'completed'].includes(r.status) && r.bonusGranted === false && (
+              <Button
+                variant="secondary"
+                className="h-7 px-2 text-xs"
+                disabled={busy}
+                onClick={() => grantBonusGo(r)}
+                title="Zahtev je odobren, ali +1 dan GO nikad nije upisan u saldo — upiši sada (briše i kucane sate tog dana)"
+              >
+                🏖 Upiši +1 dan
               </Button>
             )}
             {showStorno && (
@@ -432,7 +494,9 @@ export function NadoknadaTab() {
         <ReasonDialog
           title="↩ Storno zahteva za nadoknadu"
           subtitle={`${empName(stornoFor.employeeId)} — ${formatDate(stornoFor.absenceDate)} (${stornoFor.absenceHours}h)${
-            s(stornoFor, 'compensationType') === 'dan_odmora' ? ' · dan odmora: skida se +1 dan GO iz salda' : ''
+            s(stornoFor, 'compensationType') === 'dan_odmora'
+              ? ' · dan odmora: skida se +1 dan GO iz salda; obrisani sati tog dana se NE vraćaju automatski (ručni unos u grid)'
+              : ''
           }`}
           confirmLabel="↩ Storniraj"
           requireNote={false}

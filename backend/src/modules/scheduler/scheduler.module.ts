@@ -8,6 +8,7 @@ import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
 import { RetentionJobsService } from "./retention-jobs.service";
 import { BigbitSyncJobs } from "./bigbit-sync-jobs.service";
 import { DailyBriefService } from "./daily-brief.service";
+import { SecurityAuditService } from "./security-audit.service";
 import { RobnoModule } from "../robno/robno.module";
 import { ReservationService } from "../robno/reservation.service";
 import { SyncModule } from "../sync/sync.module";
@@ -38,6 +39,12 @@ import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
  * direktoru/menadžmentu (mejl, rangirano, izvor uz svaku stavku). SVOJ prekidač
  * `DAILY_BRIEF_ENABLED`; bez njega `buildJobs()` vraća prazno (posao se ne
  * registruje). Deli isti @Global infrastrukturni sloj (Prisma/Mail/AI) + Sy15Module.
+ *
+ * Bezbednost (31.07) — security-audit.service.ts: nedeljna provera da li je ijedan
+ * sy15 objekat otvoren roli `anon`. BEZ prekidača namerno (za razliku od gornjih):
+ * posao SAMO ČITA sistemske kataloge i ne šalje ništa dok ne nađe nalaz, pa nema
+ * šta da se „aktivira" — a prekidač na bezbednosnoj proveri je samo još jedno
+ * mesto na kome ona može tiho da ostane ugašena.
  */
 @Module({
   // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
@@ -54,6 +61,7 @@ import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
     RetentionJobsService,
     BigbitSyncJobs,
     DailyBriefService,
+    SecurityAuditService,
   ],
   // NotifyDispatchService se izvozi da bi Kadrovska/Moj profil mogli da okinu
   // ISTI dispečer sinhrono („Pošalji čekaće" / pulse posle mutacije) umesto da
@@ -70,6 +78,7 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly retentionJobs: RetentionJobsService,
     private readonly bigbitSyncJobs: BigbitSyncJobs,
     private readonly dailyBrief: DailyBriefService,
+    private readonly securityAudit: SecurityAuditService,
     private readonly reservation: ReservationService,
     private readonly bigbitMdbJobs: BigbitMdbJobs,
   ) {}
@@ -92,6 +101,9 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
       this.scheduler.register(job);
     // Talas AI-3 — dnevni brief (iza DAILY_BRIEF_ENABLED; bez flag-a prazno).
     for (const job of this.dailyBrief.buildJobs()) this.scheduler.register(job);
+    // Nedeljna bezbednosna provera sy15 (ponedeljak 07:15) — samo čitanje.
+    for (const job of this.securityAudit.buildJobs())
+      this.scheduler.register(job);
 
     // Istekle rezervacije zaliha (Batch C). `expiresAt` puni rok važenja
     // predračuna; bez ovog posla istekla rezervacija večno drži robu jer je

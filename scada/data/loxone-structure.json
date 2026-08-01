@@ -1,0 +1,1161 @@
+{
+  "msInfo": {
+    "serialNr": "504F94A2A5BF",
+    "msName": "Loxone Miniserver",
+    "projectName": "SERVOTEH doo",
+    "localUrl": "192.168.75.130",
+    "remoteUrl": "dns.loxonecloud.com/504F94A2A5BF",
+    "hostname": "",
+    "tempUnit": 0,
+    "currency": "€",
+    "squareMeasure": "sq m",
+    "location": "Beograd",
+    "latitude": 44.839,
+    "longitude": 20.214,
+    "altitude": 78,
+    "languageCode": "ENU",
+    "heatPeriodStart": "10-01",
+    "heatPeriodEnd": "04-30",
+    "coolPeriodStart": "05-01",
+    "coolPeriodEnd": "09-30",
+    "catTitle": "Kategorije",
+    "roomTitle": "Prostorije",
+    "miniserverType": 2,
+    "currentUser": {
+      "name": "admin",
+      "uuid": "15ea0aa5-0112-3b9c-ffffed57184a04d2",
+      "isAdmin": true,
+      "changePassword": true,
+      "userRights": 4294967295
+    }
+  },
+  "controls": [
+    {
+      "uuid": "1edb40c9-036b-894b-ffffed57184a04d2",
+      "name": "Automatski nocni rezim",
+      "type": "Switch",
+      "room": "Dvoriste",
+      "cat": "Osvetljenje",
+      "states": {
+        "jLocked": "9edb40c9-036b-8944-02fff8672406844e",
+        "active": "1edb40c9-036b-8947-05fff8672406844e",
+        "lockedOn": "1edb40c9-036b-8941-fffff8672406844e"
+      }
+    },
+    {
+      "uuid": "1edb4716-029f-bbf2-ffffe43481516782",
+      "name": "Rasveta 1",
+      "type": "Switch",
+      "room": "Dvoriste",
+      "cat": "Osvetljenje",
+      "states": {
+        "jLocked": "9edb4716-029f-bbf5-ffffe43481516782",
+        "active": "1edb4716-029f-bbf8-ffffe43481516782",
+        "lockedOn": "1edb4716-029f-bbfe-ffffe43481516782"
+      }
+    },
+    {
+      "uuid": "1edb4716-0388-ea3b-ffffd3f959b3686e",
+      "name": "Rasveta 2",
+      "type": "Switch",
+      "room": "Dvoriste",
+      "cat": "Osvetljenje",
+      "states": {
+        "jLocked": "9edb4716-0388-ea3e-ffffd3f959b3686e",
+        "active": "1edb4716-0388-ea41-ffffd3f959b3686e",
+        "lockedOn": "1edb4716-0388-ea47-ffffd3f959b3686e"
+      }
+    },
+    {
+      "uuid": "1edb408c-01e7-f3c0-ffffed57184a04d2",
+      "name": "Rasveta 3",
+      "type": "Switch",
+      "room": "Dvoriste",
+      "cat": "Osvetljenje",
+      "states": {
+        "jLocked": "9edb408c-01e7-f3b9-02ff386e39c5c48d",
+        "active": "1edb408c-01e7-f3bc-05ff386e39c5c48d",
+        "lockedOn": "1edb408c-01e7-f3b6-ffff386e39c5c48d"
+      }
+    },
+    {
+      "uuid": "1edb4091-03a0-0457-ffffed57184a04d2",
+      "name": "Rasveta 4",
+      "type": "Switch",
+      "room": "Dvoriste",
+      "cat": "Osvetljenje",
+      "states": {
+        "jLocked": "9edb4091-03a0-0450-02ff064eb145053d",
+        "active": "1edb4091-03a0-0453-05ff064eb145053d",
+        "lockedOn": "1edb4091-03a0-044d-ffff064eb145053d"
+      }
+    },
+    {
+      "uuid": "1edb4095-0395-14fb-ffffed57184a04d2",
+      "name": "Rasveta 5",
+      "type": "Switch",
+      "room": "Dvoriste",
+      "cat": "Osvetljenje",
+      "states": {
+        "jLocked": "9edb4095-0395-14f4-02ff74e6aead9a43",
+        "active": "1edb4095-0395-14f7-05ff74e6aead9a43",
+        "lockedOn": "1edb4095-0395-14f1-ffff74e6aead9a43"
+      }
+    },
+    {
+      "uuid": "1edb3e86-005c-0501-fffffba39f014bce",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Kuhinja",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb3e86-005c-0505-fffffba39f014bce",
+        "active": "1edb3e86-005c-04ae-fffffba39f014bce",
+        "lockedOn": "1edb3e86-005c-0551-fffffba39f014bce"
+      }
+    },
+    {
+      "uuid": "1edb3e86-005c-04a3-fffffba39f014bce",
+      "name": "Kuhinja prizemlje",
+      "type": "IRoomControllerV2",
+      "room": "Kuhinja",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb3e86-005c-04ad-fffffba39f014bce",
+        "tempActual": "1edb3e86-005c-04a6-fffffba39f014bce",
+        "tempTarget": "1edb3e86-005c-04d8-fffffba39f014bce",
+        "comfortTemperature": "1edb3e86-005c-04b4-fffffba39f014bce",
+        "comfortTemperatureCool": "1edb3e86-005c-04b5-fffffba39f014bce",
+        "comfortTolerance": "1edb3e86-005c-04b7-fffffba39f014bce",
+        "absentMinOffset": "1edb3e86-005c-04b8-fffffba39f014bce",
+        "absentMaxOffset": "1edb3e86-005c-04b9-fffffba39f014bce",
+        "frostProtectTemperature": "1edb3e86-005c-04bd-fffffba39f014bce",
+        "heatProtectTemperature": "1edb3e86-005c-04be-fffffba39f014bce",
+        "shadingCoolTemp": "1edb3e86-005c-04bc-fffffba39f014bce",
+        "shadingHeatTemp": "1edb3e86-005c-04bb-fffffba39f014bce",
+        "co2": "1edb3e86-005c-04b2-fffffba39f014bce",
+        "humidityActual": "1edb3e86-005c-04b3-fffffba39f014bce",
+        "actualOutdoorTemp": "1edb3e86-005c-04b1-fffffba39f014bce",
+        "currentMode": "1edb3e86-005c-04d5-fffffba39f014bce",
+        "shadingOut": "1edb3e86-005c-04d4-fffffba39f014bce",
+        "activeMode": "1edb3e86-005c-0545-fffffba39f014bce",
+        "comfortTemperatureOffset": "1edb3e86-005c-0540-fffffba39f014bce",
+        "overrideEntries": "1edb3e86-005c-0541-fffffba39f014bce",
+        "prepareState": "1edb3e86-005c-0542-fffffba39f014bce",
+        "useOutdoor": "1edb3e86-005c-0543-fffffba39f014bce",
+        "operatingMode": "1edb3e86-005c-0546-fffffba39f014bce",
+        "overrideReason": "1edb3e86-005c-0548-fffffba39f014bce",
+        "excessEnergyTempOffset": "1edb3e86-005c-0549-fffffba39f014bce",
+        "averageOutdoorTemp": "1edb3e86-005c-054a-fffffba39f014bce",
+        "temperatureBoundaryInfo": "1edb3e86-005c-054b-fffffba39f014bce",
+        "capabilities": "1edb3e86-005c-054d-fffffba39f014bce",
+        "openWindow": "1edb3e86-005c-04a8-fffffba39f014bce"
+      }
+    },
+    {
+      "uuid": "1edb3e86-005c-04de-fffffba39f014bce",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Kuhinja",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb3e86-005c-04e4-fffffba39f014bce",
+        "min": "1edb3e86-005c-04e8-fffffba39f014bce",
+        "max": "1edb3e86-005c-04e9-fffffba39f014bce",
+        "step": "1edb3e86-005c-04ea-fffffba39f014bce",
+        "value": "1edb3e86-005c-04ed-fffffba39f014bce"
+      }
+    },
+    {
+      "uuid": "1edb378f-006b-dfc0-fffff05d2bafca35",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Kuhinja sprat",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb378f-006b-dfc4-fffff05d2bafca35",
+        "active": "1edb378f-006b-df6d-fffff05d2bafca35",
+        "lockedOn": "1edb378f-006b-e010-fffff05d2bafca35"
+      }
+    },
+    {
+      "uuid": "1edb378f-006b-df62-fffff05d2bafca35",
+      "name": "Kuhinja sprat",
+      "type": "IRoomControllerV2",
+      "room": "Kuhinja sprat",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb378f-006b-df6c-fffff05d2bafca35",
+        "tempActual": "1edb378f-006b-df65-fffff05d2bafca35",
+        "tempTarget": "1edb378f-006b-df97-fffff05d2bafca35",
+        "comfortTemperature": "1edb378f-006b-df73-fffff05d2bafca35",
+        "comfortTemperatureCool": "1edb378f-006b-df74-fffff05d2bafca35",
+        "comfortTolerance": "1edb378f-006b-df76-fffff05d2bafca35",
+        "absentMinOffset": "1edb378f-006b-df77-fffff05d2bafca35",
+        "absentMaxOffset": "1edb378f-006b-df78-fffff05d2bafca35",
+        "frostProtectTemperature": "1edb378f-006b-df7c-fffff05d2bafca35",
+        "heatProtectTemperature": "1edb378f-006b-df7d-fffff05d2bafca35",
+        "shadingCoolTemp": "1edb378f-006b-df7b-fffff05d2bafca35",
+        "shadingHeatTemp": "1edb378f-006b-df7a-fffff05d2bafca35",
+        "co2": "1edb378f-006b-df71-fffff05d2bafca35",
+        "humidityActual": "1edb378f-006b-df72-fffff05d2bafca35",
+        "actualOutdoorTemp": "1edb378f-006b-df70-fffff05d2bafca35",
+        "currentMode": "1edb378f-006b-df94-fffff05d2bafca35",
+        "shadingOut": "1edb378f-006b-df93-fffff05d2bafca35",
+        "activeMode": "1edb378f-006b-e004-fffff05d2bafca35",
+        "comfortTemperatureOffset": "1edb378f-006b-dfff-fffff05d2bafca35",
+        "overrideEntries": "1edb378f-006b-e000-fffff05d2bafca35",
+        "prepareState": "1edb378f-006b-e001-fffff05d2bafca35",
+        "useOutdoor": "1edb378f-006b-e002-fffff05d2bafca35",
+        "operatingMode": "1edb378f-006b-e005-fffff05d2bafca35",
+        "overrideReason": "1edb378f-006b-e007-fffff05d2bafca35",
+        "excessEnergyTempOffset": "1edb378f-006b-e008-fffff05d2bafca35",
+        "averageOutdoorTemp": "1edb378f-006b-e009-fffff05d2bafca35",
+        "temperatureBoundaryInfo": "1edb378f-006b-e00a-fffff05d2bafca35",
+        "capabilities": "1edb378f-006b-e00c-fffff05d2bafca35",
+        "openWindow": "1edb378f-006b-df67-fffff05d2bafca35"
+      }
+    },
+    {
+      "uuid": "1edb378f-006b-df9d-fffff05d2bafca35",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Kuhinja sprat",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb378f-006b-dfa3-fffff05d2bafca35",
+        "min": "1edb378f-006b-dfa7-fffff05d2bafca35",
+        "max": "1edb378f-006b-dfa8-fffff05d2bafca35",
+        "step": "1edb378f-006b-dfa9-fffff05d2bafca35",
+        "value": "1edb378f-006b-dfac-fffff05d2bafca35"
+      }
+    },
+    {
+      "uuid": "1edb45d6-0255-c7f7-fffff249c05a3e6b",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Office 01",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb45d6-0255-c7fb-fffff249c05a3e6b",
+        "active": "1edb45d6-0255-c7a4-fffff249c05a3e6b",
+        "lockedOn": "1edb45d6-0255-c847-fffff249c05a3e6b"
+      }
+    },
+    {
+      "uuid": "1edb45d6-0255-c799-fffff249c05a3e6b",
+      "name": "Office 01",
+      "type": "IRoomControllerV2",
+      "room": "Office 01",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb45d6-0255-c7a3-fffff249c05a3e6b",
+        "tempActual": "1edb45d6-0255-c79c-fffff249c05a3e6b",
+        "tempTarget": "1edb45d6-0255-c7ce-fffff249c05a3e6b",
+        "comfortTemperature": "1edb45d6-0255-c7aa-fffff249c05a3e6b",
+        "comfortTemperatureCool": "1edb45d6-0255-c7ab-fffff249c05a3e6b",
+        "comfortTolerance": "1edb45d6-0255-c7ad-fffff249c05a3e6b",
+        "absentMinOffset": "1edb45d6-0255-c7ae-fffff249c05a3e6b",
+        "absentMaxOffset": "1edb45d6-0255-c7af-fffff249c05a3e6b",
+        "frostProtectTemperature": "1edb45d6-0255-c7b3-fffff249c05a3e6b",
+        "heatProtectTemperature": "1edb45d6-0255-c7b4-fffff249c05a3e6b",
+        "shadingCoolTemp": "1edb45d6-0255-c7b2-fffff249c05a3e6b",
+        "shadingHeatTemp": "1edb45d6-0255-c7b1-fffff249c05a3e6b",
+        "co2": "1edb45d6-0255-c7a8-fffff249c05a3e6b",
+        "humidityActual": "1edb45d6-0255-c7a9-fffff249c05a3e6b",
+        "actualOutdoorTemp": "1edb45d6-0255-c7a7-fffff249c05a3e6b",
+        "currentMode": "1edb45d6-0255-c7cb-fffff249c05a3e6b",
+        "shadingOut": "1edb45d6-0255-c7ca-fffff249c05a3e6b",
+        "activeMode": "1edb45d6-0255-c83b-fffff249c05a3e6b",
+        "comfortTemperatureOffset": "1edb45d6-0255-c836-fffff249c05a3e6b",
+        "overrideEntries": "1edb45d6-0255-c837-fffff249c05a3e6b",
+        "prepareState": "1edb45d6-0255-c838-fffff249c05a3e6b",
+        "useOutdoor": "1edb45d6-0255-c839-fffff249c05a3e6b",
+        "operatingMode": "1edb45d6-0255-c83c-fffff249c05a3e6b",
+        "overrideReason": "1edb45d6-0255-c83e-fffff249c05a3e6b",
+        "excessEnergyTempOffset": "1edb45d6-0255-c83f-fffff249c05a3e6b",
+        "averageOutdoorTemp": "1edb45d6-0255-c840-fffff249c05a3e6b",
+        "temperatureBoundaryInfo": "1edb45d6-0255-c841-fffff249c05a3e6b",
+        "capabilities": "1edb45d6-0255-c843-fffff249c05a3e6b",
+        "openWindow": "1edb45d6-0255-c79e-fffff249c05a3e6b"
+      }
+    },
+    {
+      "uuid": "1edb45d6-0255-c7d4-fffff249c05a3e6b",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Office 01",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb45d6-0255-c7da-fffff249c05a3e6b",
+        "min": "1edb45d6-0255-c7de-fffff249c05a3e6b",
+        "max": "1edb45d6-0255-c7df-fffff249c05a3e6b",
+        "step": "1edb45d6-0255-c7e0-fffff249c05a3e6b",
+        "value": "1edb45d6-0255-c7e3-fffff249c05a3e6b"
+      }
+    },
+    {
+      "uuid": "1edb4552-0200-688d-ffff1368716da235",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Office 02",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4552-0200-6891-ffff1368716da235",
+        "active": "1edb4552-0200-683a-ffff1368716da235",
+        "lockedOn": "1edb4552-0200-68dd-ffff1368716da235"
+      }
+    },
+    {
+      "uuid": "1edb4552-0200-682f-ffff1368716da235",
+      "name": "Office 02",
+      "type": "IRoomControllerV2",
+      "room": "Office 02",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4552-0200-6839-ffff1368716da235",
+        "tempActual": "1edb4552-0200-6832-ffff1368716da235",
+        "tempTarget": "1edb4552-0200-6864-ffff1368716da235",
+        "comfortTemperature": "1edb4552-0200-6840-ffff1368716da235",
+        "comfortTemperatureCool": "1edb4552-0200-6841-ffff1368716da235",
+        "comfortTolerance": "1edb4552-0200-6843-ffff1368716da235",
+        "absentMinOffset": "1edb4552-0200-6844-ffff1368716da235",
+        "absentMaxOffset": "1edb4552-0200-6845-ffff1368716da235",
+        "frostProtectTemperature": "1edb4552-0200-6849-ffff1368716da235",
+        "heatProtectTemperature": "1edb4552-0200-684a-ffff1368716da235",
+        "shadingCoolTemp": "1edb4552-0200-6848-ffff1368716da235",
+        "shadingHeatTemp": "1edb4552-0200-6847-ffff1368716da235",
+        "co2": "1edb4552-0200-683e-ffff1368716da235",
+        "humidityActual": "1edb4552-0200-683f-ffff1368716da235",
+        "actualOutdoorTemp": "1edb4552-0200-683d-ffff1368716da235",
+        "currentMode": "1edb4552-0200-6861-ffff1368716da235",
+        "shadingOut": "1edb4552-0200-6860-ffff1368716da235",
+        "activeMode": "1edb4552-0200-68d1-ffff1368716da235",
+        "comfortTemperatureOffset": "1edb4552-0200-68cc-ffff1368716da235",
+        "overrideEntries": "1edb4552-0200-68cd-ffff1368716da235",
+        "prepareState": "1edb4552-0200-68ce-ffff1368716da235",
+        "useOutdoor": "1edb4552-0200-68cf-ffff1368716da235",
+        "operatingMode": "1edb4552-0200-68d2-ffff1368716da235",
+        "overrideReason": "1edb4552-0200-68d4-ffff1368716da235",
+        "excessEnergyTempOffset": "1edb4552-0200-68d5-ffff1368716da235",
+        "averageOutdoorTemp": "1edb4552-0200-68d6-ffff1368716da235",
+        "temperatureBoundaryInfo": "1edb4552-0200-68d7-ffff1368716da235",
+        "capabilities": "1edb4552-0200-68d9-ffff1368716da235",
+        "openWindow": "1edb4552-0200-6834-ffff1368716da235"
+      }
+    },
+    {
+      "uuid": "1edb4552-0200-686a-ffff1368716da235",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Office 02",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4552-0200-6870-ffff1368716da235",
+        "min": "1edb4552-0200-6874-ffff1368716da235",
+        "max": "1edb4552-0200-6875-ffff1368716da235",
+        "step": "1edb4552-0200-6876-ffff1368716da235",
+        "value": "1edb4552-0200-6879-ffff1368716da235"
+      }
+    },
+    {
+      "uuid": "1edb4483-0373-a81b-ffff41009359b7fc",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Office 03",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4483-0373-a81f-ffff41009359b7fc",
+        "active": "1edb4483-0373-a7c8-ffff41009359b7fc",
+        "lockedOn": "1edb4483-0373-a86b-ffff41009359b7fc"
+      }
+    },
+    {
+      "uuid": "1edb4483-0373-a7bd-ffff41009359b7fc",
+      "name": "Office 03",
+      "type": "IRoomControllerV2",
+      "room": "Office 03",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4483-0373-a7c7-ffff41009359b7fc",
+        "tempActual": "1edb4483-0373-a7c0-ffff41009359b7fc",
+        "tempTarget": "1edb4483-0373-a7f2-ffff41009359b7fc",
+        "comfortTemperature": "1edb4483-0373-a7ce-ffff41009359b7fc",
+        "comfortTemperatureCool": "1edb4483-0373-a7cf-ffff41009359b7fc",
+        "comfortTolerance": "1edb4483-0373-a7d1-ffff41009359b7fc",
+        "absentMinOffset": "1edb4483-0373-a7d2-ffff41009359b7fc",
+        "absentMaxOffset": "1edb4483-0373-a7d3-ffff41009359b7fc",
+        "frostProtectTemperature": "1edb4483-0373-a7d7-ffff41009359b7fc",
+        "heatProtectTemperature": "1edb4483-0373-a7d8-ffff41009359b7fc",
+        "shadingCoolTemp": "1edb4483-0373-a7d6-ffff41009359b7fc",
+        "shadingHeatTemp": "1edb4483-0373-a7d5-ffff41009359b7fc",
+        "co2": "1edb4483-0373-a7cc-ffff41009359b7fc",
+        "humidityActual": "1edb4483-0373-a7cd-ffff41009359b7fc",
+        "actualOutdoorTemp": "1edb4483-0373-a7cb-ffff41009359b7fc",
+        "currentMode": "1edb4483-0373-a7ef-ffff41009359b7fc",
+        "shadingOut": "1edb4483-0373-a7ee-ffff41009359b7fc",
+        "activeMode": "1edb4483-0373-a85f-ffff41009359b7fc",
+        "comfortTemperatureOffset": "1edb4483-0373-a85a-ffff41009359b7fc",
+        "overrideEntries": "1edb4483-0373-a85b-ffff41009359b7fc",
+        "prepareState": "1edb4483-0373-a85c-ffff41009359b7fc",
+        "useOutdoor": "1edb4483-0373-a85d-ffff41009359b7fc",
+        "operatingMode": "1edb4483-0373-a860-ffff41009359b7fc",
+        "overrideReason": "1edb4483-0373-a862-ffff41009359b7fc",
+        "excessEnergyTempOffset": "1edb4483-0373-a863-ffff41009359b7fc",
+        "averageOutdoorTemp": "1edb4483-0373-a864-ffff41009359b7fc",
+        "temperatureBoundaryInfo": "1edb4483-0373-a865-ffff41009359b7fc",
+        "capabilities": "1edb4483-0373-a867-ffff41009359b7fc",
+        "openWindow": "1edb4483-0373-a7c2-ffff41009359b7fc"
+      }
+    },
+    {
+      "uuid": "1edb4483-0373-a7f8-ffff41009359b7fc",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Office 03",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4483-0373-a7fe-ffff41009359b7fc",
+        "min": "1edb4483-0373-a802-ffff41009359b7fc",
+        "max": "1edb4483-0373-a803-ffff41009359b7fc",
+        "step": "1edb4483-0373-a804-ffff41009359b7fc",
+        "value": "1edb4483-0373-a807-ffff41009359b7fc"
+      }
+    },
+    {
+      "uuid": "1edb4240-030b-47dd-ffff1e2f7cc25b82",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Office 04",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4240-030b-47e1-ffff1e2f7cc25b82",
+        "active": "1edb4240-030b-478a-ffff1e2f7cc25b82",
+        "lockedOn": "1edb4240-030b-482d-ffff1e2f7cc25b82"
+      }
+    },
+    {
+      "uuid": "1edb4240-030b-477f-ffff1e2f7cc25b82",
+      "name": "Office 04",
+      "type": "IRoomControllerV2",
+      "room": "Office 04",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4240-030b-4789-ffff1e2f7cc25b82",
+        "tempActual": "1edb4240-030b-4782-ffff1e2f7cc25b82",
+        "tempTarget": "1edb4240-030b-47b4-ffff1e2f7cc25b82",
+        "comfortTemperature": "1edb4240-030b-4790-ffff1e2f7cc25b82",
+        "comfortTemperatureCool": "1edb4240-030b-4791-ffff1e2f7cc25b82",
+        "comfortTolerance": "1edb4240-030b-4793-ffff1e2f7cc25b82",
+        "absentMinOffset": "1edb4240-030b-4794-ffff1e2f7cc25b82",
+        "absentMaxOffset": "1edb4240-030b-4795-ffff1e2f7cc25b82",
+        "frostProtectTemperature": "1edb4240-030b-4799-ffff1e2f7cc25b82",
+        "heatProtectTemperature": "1edb4240-030b-479a-ffff1e2f7cc25b82",
+        "shadingCoolTemp": "1edb4240-030b-4798-ffff1e2f7cc25b82",
+        "shadingHeatTemp": "1edb4240-030b-4797-ffff1e2f7cc25b82",
+        "co2": "1edb4240-030b-478e-ffff1e2f7cc25b82",
+        "humidityActual": "1edb4240-030b-478f-ffff1e2f7cc25b82",
+        "actualOutdoorTemp": "1edb4240-030b-478d-ffff1e2f7cc25b82",
+        "currentMode": "1edb4240-030b-47b1-ffff1e2f7cc25b82",
+        "shadingOut": "1edb4240-030b-47b0-ffff1e2f7cc25b82",
+        "activeMode": "1edb4240-030b-4821-ffff1e2f7cc25b82",
+        "comfortTemperatureOffset": "1edb4240-030b-481c-ffff1e2f7cc25b82",
+        "overrideEntries": "1edb4240-030b-481d-ffff1e2f7cc25b82",
+        "prepareState": "1edb4240-030b-481e-ffff1e2f7cc25b82",
+        "useOutdoor": "1edb4240-030b-481f-ffff1e2f7cc25b82",
+        "operatingMode": "1edb4240-030b-4822-ffff1e2f7cc25b82",
+        "overrideReason": "1edb4240-030b-4824-ffff1e2f7cc25b82",
+        "excessEnergyTempOffset": "1edb4240-030b-4825-ffff1e2f7cc25b82",
+        "averageOutdoorTemp": "1edb4240-030b-4826-ffff1e2f7cc25b82",
+        "temperatureBoundaryInfo": "1edb4240-030b-4827-ffff1e2f7cc25b82",
+        "capabilities": "1edb4240-030b-4829-ffff1e2f7cc25b82",
+        "openWindow": "1edb4240-030b-4784-ffff1e2f7cc25b82"
+      }
+    },
+    {
+      "uuid": "1edb4240-030b-47ba-ffff1e2f7cc25b82",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Office 04",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb4240-030b-47c0-ffff1e2f7cc25b82",
+        "min": "1edb4240-030b-47c4-ffff1e2f7cc25b82",
+        "max": "1edb4240-030b-47c5-ffff1e2f7cc25b82",
+        "step": "1edb4240-030b-47c6-ffff1e2f7cc25b82",
+        "value": "1edb4240-030b-47c9-ffff1e2f7cc25b82"
+      }
+    },
+    {
+      "uuid": "1edb43f8-00b0-4b91-ffff2a1a41db0fde",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Office 05",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb43f8-00b0-4b95-ffff2a1a41db0fde",
+        "active": "1edb43f8-00b0-4b3e-ffff2a1a41db0fde",
+        "lockedOn": "1edb43f8-00b0-4be1-ffff2a1a41db0fde"
+      }
+    },
+    {
+      "uuid": "1edb43f8-00b0-4b33-ffff2a1a41db0fde",
+      "name": "Office 05",
+      "type": "IRoomControllerV2",
+      "room": "Office 05",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb43f8-00b0-4b3d-ffff2a1a41db0fde",
+        "tempActual": "1edb43f8-00b0-4b36-ffff2a1a41db0fde",
+        "tempTarget": "1edb43f8-00b0-4b68-ffff2a1a41db0fde",
+        "comfortTemperature": "1edb43f8-00b0-4b44-ffff2a1a41db0fde",
+        "comfortTemperatureCool": "1edb43f8-00b0-4b45-ffff2a1a41db0fde",
+        "comfortTolerance": "1edb43f8-00b0-4b47-ffff2a1a41db0fde",
+        "absentMinOffset": "1edb43f8-00b0-4b48-ffff2a1a41db0fde",
+        "absentMaxOffset": "1edb43f8-00b0-4b49-ffff2a1a41db0fde",
+        "frostProtectTemperature": "1edb43f8-00b0-4b4d-ffff2a1a41db0fde",
+        "heatProtectTemperature": "1edb43f8-00b0-4b4e-ffff2a1a41db0fde",
+        "shadingCoolTemp": "1edb43f8-00b0-4b4c-ffff2a1a41db0fde",
+        "shadingHeatTemp": "1edb43f8-00b0-4b4b-ffff2a1a41db0fde",
+        "co2": "1edb43f8-00b0-4b42-ffff2a1a41db0fde",
+        "humidityActual": "1edb43f8-00b0-4b43-ffff2a1a41db0fde",
+        "actualOutdoorTemp": "1edb43f8-00b0-4b41-ffff2a1a41db0fde",
+        "currentMode": "1edb43f8-00b0-4b65-ffff2a1a41db0fde",
+        "shadingOut": "1edb43f8-00b0-4b64-ffff2a1a41db0fde",
+        "activeMode": "1edb43f8-00b0-4bd5-ffff2a1a41db0fde",
+        "comfortTemperatureOffset": "1edb43f8-00b0-4bd0-ffff2a1a41db0fde",
+        "overrideEntries": "1edb43f8-00b0-4bd1-ffff2a1a41db0fde",
+        "prepareState": "1edb43f8-00b0-4bd2-ffff2a1a41db0fde",
+        "useOutdoor": "1edb43f8-00b0-4bd3-ffff2a1a41db0fde",
+        "operatingMode": "1edb43f8-00b0-4bd6-ffff2a1a41db0fde",
+        "overrideReason": "1edb43f8-00b0-4bd8-ffff2a1a41db0fde",
+        "excessEnergyTempOffset": "1edb43f8-00b0-4bd9-ffff2a1a41db0fde",
+        "averageOutdoorTemp": "1edb43f8-00b0-4bda-ffff2a1a41db0fde",
+        "temperatureBoundaryInfo": "1edb43f8-00b0-4bdb-ffff2a1a41db0fde",
+        "capabilities": "1edb43f8-00b0-4bdd-ffff2a1a41db0fde",
+        "openWindow": "1edb43f8-00b0-4b38-ffff2a1a41db0fde"
+      }
+    },
+    {
+      "uuid": "1edb43f8-00b0-4b6e-ffff2a1a41db0fde",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Office 05",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb43f8-00b0-4b74-ffff2a1a41db0fde",
+        "min": "1edb43f8-00b0-4b78-ffff2a1a41db0fde",
+        "max": "1edb43f8-00b0-4b79-ffff2a1a41db0fde",
+        "step": "1edb43f8-00b0-4b7a-ffff2a1a41db0fde",
+        "value": "1edb43f8-00b0-4b7d-ffff2a1a41db0fde"
+      }
+    },
+    {
+      "uuid": "1edb42f4-03b1-f29f-ffff5f1168c86e5e",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Office 06",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb42f4-03b1-f2a3-ffff5f1168c86e5e",
+        "active": "1edb42f4-03b1-f24c-ffff5f1168c86e5e",
+        "lockedOn": "1edb42f4-03b1-f2ef-ffff5f1168c86e5e"
+      }
+    },
+    {
+      "uuid": "1edb42f4-03b1-f241-ffff5f1168c86e5e",
+      "name": "Office 06",
+      "type": "IRoomControllerV2",
+      "room": "Office 06",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb42f4-03b1-f24b-ffff5f1168c86e5e",
+        "tempActual": "1edb42f4-03b1-f244-ffff5f1168c86e5e",
+        "tempTarget": "1edb42f4-03b1-f276-ffff5f1168c86e5e",
+        "comfortTemperature": "1edb42f4-03b1-f252-ffff5f1168c86e5e",
+        "comfortTemperatureCool": "1edb42f4-03b1-f253-ffff5f1168c86e5e",
+        "comfortTolerance": "1edb42f4-03b1-f255-ffff5f1168c86e5e",
+        "absentMinOffset": "1edb42f4-03b1-f256-ffff5f1168c86e5e",
+        "absentMaxOffset": "1edb42f4-03b1-f257-ffff5f1168c86e5e",
+        "frostProtectTemperature": "1edb42f4-03b1-f25b-ffff5f1168c86e5e",
+        "heatProtectTemperature": "1edb42f4-03b1-f25c-ffff5f1168c86e5e",
+        "shadingCoolTemp": "1edb42f4-03b1-f25a-ffff5f1168c86e5e",
+        "shadingHeatTemp": "1edb42f4-03b1-f259-ffff5f1168c86e5e",
+        "co2": "1edb42f4-03b1-f250-ffff5f1168c86e5e",
+        "humidityActual": "1edb42f4-03b1-f251-ffff5f1168c86e5e",
+        "actualOutdoorTemp": "1edb42f4-03b1-f24f-ffff5f1168c86e5e",
+        "currentMode": "1edb42f4-03b1-f273-ffff5f1168c86e5e",
+        "shadingOut": "1edb42f4-03b1-f272-ffff5f1168c86e5e",
+        "activeMode": "1edb42f4-03b1-f2e3-ffff5f1168c86e5e",
+        "comfortTemperatureOffset": "1edb42f4-03b1-f2de-ffff5f1168c86e5e",
+        "overrideEntries": "1edb42f4-03b1-f2df-ffff5f1168c86e5e",
+        "prepareState": "1edb42f4-03b1-f2e0-ffff5f1168c86e5e",
+        "useOutdoor": "1edb42f4-03b1-f2e1-ffff5f1168c86e5e",
+        "operatingMode": "1edb42f4-03b1-f2e4-ffff5f1168c86e5e",
+        "overrideReason": "1edb42f4-03b1-f2e6-ffff5f1168c86e5e",
+        "excessEnergyTempOffset": "1edb42f4-03b1-f2e7-ffff5f1168c86e5e",
+        "averageOutdoorTemp": "1edb42f4-03b1-f2e8-ffff5f1168c86e5e",
+        "temperatureBoundaryInfo": "1edb42f4-03b1-f2e9-ffff5f1168c86e5e",
+        "capabilities": "1edb42f4-03b1-f2eb-ffff5f1168c86e5e",
+        "openWindow": "1edb42f4-03b1-f246-ffff5f1168c86e5e"
+      }
+    },
+    {
+      "uuid": "1edb42f4-03b1-f27c-ffff5f1168c86e5e",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Office 06",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb42f4-03b1-f282-ffff5f1168c86e5e",
+        "min": "1edb42f4-03b1-f286-ffff5f1168c86e5e",
+        "max": "1edb42f4-03b1-f287-ffff5f1168c86e5e",
+        "step": "1edb42f4-03b1-f288-ffff5f1168c86e5e",
+        "value": "1edb42f4-03b1-f28b-ffff5f1168c86e5e"
+      }
+    },
+    {
+      "uuid": "1edb414c-0235-91ab-ffffe8534b6cdb47",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Office 07",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb414c-0235-91af-ffffe8534b6cdb47",
+        "active": "1edb414c-0235-9158-ffffe8534b6cdb47",
+        "lockedOn": "1edb414c-0235-91fb-ffffe8534b6cdb47"
+      }
+    },
+    {
+      "uuid": "1edb414c-0235-914d-ffffe8534b6cdb47",
+      "name": "Office 07",
+      "type": "IRoomControllerV2",
+      "room": "Office 07",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb414c-0235-9157-ffffe8534b6cdb47",
+        "tempActual": "1edb414c-0235-9150-ffffe8534b6cdb47",
+        "tempTarget": "1edb414c-0235-9182-ffffe8534b6cdb47",
+        "comfortTemperature": "1edb414c-0235-915e-ffffe8534b6cdb47",
+        "comfortTemperatureCool": "1edb414c-0235-915f-ffffe8534b6cdb47",
+        "comfortTolerance": "1edb414c-0235-9161-ffffe8534b6cdb47",
+        "absentMinOffset": "1edb414c-0235-9162-ffffe8534b6cdb47",
+        "absentMaxOffset": "1edb414c-0235-9163-ffffe8534b6cdb47",
+        "frostProtectTemperature": "1edb414c-0235-9167-ffffe8534b6cdb47",
+        "heatProtectTemperature": "1edb414c-0235-9168-ffffe8534b6cdb47",
+        "shadingCoolTemp": "1edb414c-0235-9166-ffffe8534b6cdb47",
+        "shadingHeatTemp": "1edb414c-0235-9165-ffffe8534b6cdb47",
+        "co2": "1edb414c-0235-915c-ffffe8534b6cdb47",
+        "humidityActual": "1edb414c-0235-915d-ffffe8534b6cdb47",
+        "actualOutdoorTemp": "1edb414c-0235-915b-ffffe8534b6cdb47",
+        "currentMode": "1edb414c-0235-917f-ffffe8534b6cdb47",
+        "shadingOut": "1edb414c-0235-917e-ffffe8534b6cdb47",
+        "activeMode": "1edb414c-0235-91ef-ffffe8534b6cdb47",
+        "comfortTemperatureOffset": "1edb414c-0235-91ea-ffffe8534b6cdb47",
+        "overrideEntries": "1edb414c-0235-91eb-ffffe8534b6cdb47",
+        "prepareState": "1edb414c-0235-91ec-ffffe8534b6cdb47",
+        "useOutdoor": "1edb414c-0235-91ed-ffffe8534b6cdb47",
+        "operatingMode": "1edb414c-0235-91f0-ffffe8534b6cdb47",
+        "overrideReason": "1edb414c-0235-91f2-ffffe8534b6cdb47",
+        "excessEnergyTempOffset": "1edb414c-0235-91f3-ffffe8534b6cdb47",
+        "averageOutdoorTemp": "1edb414c-0235-91f4-ffffe8534b6cdb47",
+        "temperatureBoundaryInfo": "1edb414c-0235-91f5-ffffe8534b6cdb47",
+        "capabilities": "1edb414c-0235-91f7-ffffe8534b6cdb47",
+        "openWindow": "1edb414c-0235-9152-ffffe8534b6cdb47"
+      }
+    },
+    {
+      "uuid": "1edb414c-0235-9188-ffffe8534b6cdb47",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Office 07",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb414c-0235-918e-ffffe8534b6cdb47",
+        "min": "1edb414c-0235-9192-ffffe8534b6cdb47",
+        "max": "1edb414c-0235-9193-ffffe8534b6cdb47",
+        "step": "1edb414c-0235-9194-ffffe8534b6cdb47",
+        "value": "1edb414c-0235-9197-ffffe8534b6cdb47"
+      }
+    },
+    {
+      "uuid": "1edb2494-00eb-2f47-ffff5c01d6f3f941",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Recepcija",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb2494-00eb-2f4b-ffff5c01d6f3f941",
+        "active": "1edb2494-00eb-2ef4-ffff5c01d6f3f941",
+        "lockedOn": "1edb2494-00eb-2f97-ffff5c01d6f3f941"
+      }
+    },
+    {
+      "uuid": "1edb2494-00eb-2ee9-ffff5c01d6f3f941",
+      "name": "Recepcija",
+      "type": "IRoomControllerV2",
+      "room": "Recepcija",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb2494-00eb-2ef3-ffff5c01d6f3f941",
+        "tempActual": "1edb2494-00eb-2eec-ffff5c01d6f3f941",
+        "tempTarget": "1edb2494-00eb-2f1e-ffff5c01d6f3f941",
+        "comfortTemperature": "1edb2494-00eb-2efa-ffff5c01d6f3f941",
+        "comfortTemperatureCool": "1edb2494-00eb-2efb-ffff5c01d6f3f941",
+        "comfortTolerance": "1edb2494-00eb-2efd-ffff5c01d6f3f941",
+        "absentMinOffset": "1edb2494-00eb-2efe-ffff5c01d6f3f941",
+        "absentMaxOffset": "1edb2494-00eb-2eff-ffff5c01d6f3f941",
+        "frostProtectTemperature": "1edb2494-00eb-2f03-ffff5c01d6f3f941",
+        "heatProtectTemperature": "1edb2494-00eb-2f04-ffff5c01d6f3f941",
+        "shadingCoolTemp": "1edb2494-00eb-2f02-ffff5c01d6f3f941",
+        "shadingHeatTemp": "1edb2494-00eb-2f01-ffff5c01d6f3f941",
+        "co2": "1edb2494-00eb-2ef8-ffff5c01d6f3f941",
+        "humidityActual": "1edb2494-00eb-2ef9-ffff5c01d6f3f941",
+        "actualOutdoorTemp": "1edb2494-00eb-2ef7-ffff5c01d6f3f941",
+        "currentMode": "1edb2494-00eb-2f1b-ffff5c01d6f3f941",
+        "shadingOut": "1edb2494-00eb-2f1a-ffff5c01d6f3f941",
+        "activeMode": "1edb2494-00eb-2f8b-ffff5c01d6f3f941",
+        "comfortTemperatureOffset": "1edb2494-00eb-2f86-ffff5c01d6f3f941",
+        "overrideEntries": "1edb2494-00eb-2f87-ffff5c01d6f3f941",
+        "prepareState": "1edb2494-00eb-2f88-ffff5c01d6f3f941",
+        "useOutdoor": "1edb2494-00eb-2f89-ffff5c01d6f3f941",
+        "operatingMode": "1edb2494-00eb-2f8c-ffff5c01d6f3f941",
+        "overrideReason": "1edb2494-00eb-2f8e-ffff5c01d6f3f941",
+        "excessEnergyTempOffset": "1edb2494-00eb-2f8f-ffff5c01d6f3f941",
+        "averageOutdoorTemp": "1edb2494-00eb-2f90-ffff5c01d6f3f941",
+        "temperatureBoundaryInfo": "1edb2494-00eb-2f91-ffff5c01d6f3f941",
+        "capabilities": "1edb2494-00eb-2f93-ffff5c01d6f3f941",
+        "openWindow": "1edb2494-00eb-2eee-ffff5c01d6f3f941"
+      }
+    },
+    {
+      "uuid": "1edb2494-00eb-2f24-ffff5c01d6f3f941",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Recepcija",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb2494-00eb-2f2a-ffff5c01d6f3f941",
+        "min": "1edb2494-00eb-2f2e-ffff5c01d6f3f941",
+        "max": "1edb2494-00eb-2f2f-ffff5c01d6f3f941",
+        "step": "1edb2494-00eb-2f30-ffff5c01d6f3f941",
+        "value": "1edb2494-00eb-2f33-ffff5c01d6f3f941"
+      }
+    },
+    {
+      "uuid": "1edb327e-0218-4a87-ffffa80ba96d77c6",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Sala za sastanke 1",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb327e-0218-4a8b-ffffa80ba96d77c6",
+        "active": "1edb327e-0218-4a34-ffffa80ba96d77c6",
+        "lockedOn": "1edb327e-0218-4ad7-ffffa80ba96d77c6"
+      }
+    },
+    {
+      "uuid": "1edb327e-0218-4a29-ffffa80ba96d77c6",
+      "name": "Sala za sastanke 1",
+      "type": "IRoomControllerV2",
+      "room": "Sala za sastanke 1",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb327e-0218-4a33-ffffa80ba96d77c6",
+        "tempActual": "1edb327e-0218-4a2c-ffffa80ba96d77c6",
+        "tempTarget": "1edb327e-0218-4a5e-ffffa80ba96d77c6",
+        "comfortTemperature": "1edb327e-0218-4a3a-ffffa80ba96d77c6",
+        "comfortTemperatureCool": "1edb327e-0218-4a3b-ffffa80ba96d77c6",
+        "comfortTolerance": "1edb327e-0218-4a3d-ffffa80ba96d77c6",
+        "absentMinOffset": "1edb327e-0218-4a3e-ffffa80ba96d77c6",
+        "absentMaxOffset": "1edb327e-0218-4a3f-ffffa80ba96d77c6",
+        "frostProtectTemperature": "1edb327e-0218-4a43-ffffa80ba96d77c6",
+        "heatProtectTemperature": "1edb327e-0218-4a44-ffffa80ba96d77c6",
+        "shadingCoolTemp": "1edb327e-0218-4a42-ffffa80ba96d77c6",
+        "shadingHeatTemp": "1edb327e-0218-4a41-ffffa80ba96d77c6",
+        "co2": "1edb327e-0218-4a38-ffffa80ba96d77c6",
+        "humidityActual": "1edb327e-0218-4a39-ffffa80ba96d77c6",
+        "actualOutdoorTemp": "1edb327e-0218-4a37-ffffa80ba96d77c6",
+        "currentMode": "1edb327e-0218-4a5b-ffffa80ba96d77c6",
+        "shadingOut": "1edb327e-0218-4a5a-ffffa80ba96d77c6",
+        "activeMode": "1edb327e-0218-4acb-ffffa80ba96d77c6",
+        "comfortTemperatureOffset": "1edb327e-0218-4ac6-ffffa80ba96d77c6",
+        "overrideEntries": "1edb327e-0218-4ac7-ffffa80ba96d77c6",
+        "prepareState": "1edb327e-0218-4ac8-ffffa80ba96d77c6",
+        "useOutdoor": "1edb327e-0218-4ac9-ffffa80ba96d77c6",
+        "operatingMode": "1edb327e-0218-4acc-ffffa80ba96d77c6",
+        "overrideReason": "1edb327e-0218-4ace-ffffa80ba96d77c6",
+        "excessEnergyTempOffset": "1edb327e-0218-4acf-ffffa80ba96d77c6",
+        "averageOutdoorTemp": "1edb327e-0218-4ad0-ffffa80ba96d77c6",
+        "temperatureBoundaryInfo": "1edb327e-0218-4ad1-ffffa80ba96d77c6",
+        "capabilities": "1edb327e-0218-4ad3-ffffa80ba96d77c6",
+        "openWindow": "1edb327e-0218-4a2e-ffffa80ba96d77c6"
+      }
+    },
+    {
+      "uuid": "1edb327e-0218-4a64-ffffa80ba96d77c6",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Sala za sastanke 1",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb327e-0218-4a6a-ffffa80ba96d77c6",
+        "min": "1edb327e-0218-4a6e-ffffa80ba96d77c6",
+        "max": "1edb327e-0218-4a6f-ffffa80ba96d77c6",
+        "step": "1edb327e-0218-4a70-ffffa80ba96d77c6",
+        "value": "1edb327e-0218-4a73-ffffa80ba96d77c6"
+      }
+    },
+    {
+      "uuid": "1edb3538-0222-31aa-ffff97b17c423095",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Sala za sastanke 2",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb3538-0222-31ae-ffff97b17c423095",
+        "active": "1edb3538-0222-3157-ffff97b17c423095",
+        "lockedOn": "1edb3538-0222-31fa-ffff97b17c423095"
+      }
+    },
+    {
+      "uuid": "1edb3538-0222-314c-ffff97b17c423095",
+      "name": "Sala za sastanke 2",
+      "type": "IRoomControllerV2",
+      "room": "Sala za sastanke 2",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb3538-0222-3156-ffff97b17c423095",
+        "tempActual": "1edb3538-0222-314f-ffff97b17c423095",
+        "tempTarget": "1edb3538-0222-3181-ffff97b17c423095",
+        "comfortTemperature": "1edb3538-0222-315d-ffff97b17c423095",
+        "comfortTemperatureCool": "1edb3538-0222-315e-ffff97b17c423095",
+        "comfortTolerance": "1edb3538-0222-3160-ffff97b17c423095",
+        "absentMinOffset": "1edb3538-0222-3161-ffff97b17c423095",
+        "absentMaxOffset": "1edb3538-0222-3162-ffff97b17c423095",
+        "frostProtectTemperature": "1edb3538-0222-3166-ffff97b17c423095",
+        "heatProtectTemperature": "1edb3538-0222-3167-ffff97b17c423095",
+        "shadingCoolTemp": "1edb3538-0222-3165-ffff97b17c423095",
+        "shadingHeatTemp": "1edb3538-0222-3164-ffff97b17c423095",
+        "co2": "1edb3538-0222-315b-ffff97b17c423095",
+        "humidityActual": "1edb3538-0222-315c-ffff97b17c423095",
+        "actualOutdoorTemp": "1edb3538-0222-315a-ffff97b17c423095",
+        "currentMode": "1edb3538-0222-317e-ffff97b17c423095",
+        "shadingOut": "1edb3538-0222-317d-ffff97b17c423095",
+        "activeMode": "1edb3538-0222-31ee-ffff97b17c423095",
+        "comfortTemperatureOffset": "1edb3538-0222-31e9-ffff97b17c423095",
+        "overrideEntries": "1edb3538-0222-31ea-ffff97b17c423095",
+        "prepareState": "1edb3538-0222-31eb-ffff97b17c423095",
+        "useOutdoor": "1edb3538-0222-31ec-ffff97b17c423095",
+        "operatingMode": "1edb3538-0222-31ef-ffff97b17c423095",
+        "overrideReason": "1edb3538-0222-31f1-ffff97b17c423095",
+        "excessEnergyTempOffset": "1edb3538-0222-31f2-ffff97b17c423095",
+        "averageOutdoorTemp": "1edb3538-0222-31f3-ffff97b17c423095",
+        "temperatureBoundaryInfo": "1edb3538-0222-31f4-ffff97b17c423095",
+        "capabilities": "1edb3538-0222-31f6-ffff97b17c423095",
+        "openWindow": "1edb3538-0222-3151-ffff97b17c423095"
+      }
+    },
+    {
+      "uuid": "1edb3538-0222-3187-ffff97b17c423095",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Sala za sastanke 2",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb3538-0222-318d-ffff97b17c423095",
+        "min": "1edb3538-0222-3191-ffff97b17c423095",
+        "max": "1edb3538-0222-3192-ffff97b17c423095",
+        "step": "1edb3538-0222-3193-ffff97b17c423095",
+        "value": "1edb3538-0222-3196-ffff97b17c423095"
+      }
+    },
+    {
+      "uuid": "1edb465a-0283-1ee1-ffff5cabe95e5e6f",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "TV room",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb465a-0283-1ee5-ffff5cabe95e5e6f",
+        "active": "1edb465a-0283-1e8e-ffff5cabe95e5e6f",
+        "lockedOn": "1edb465a-0283-1f31-ffff5cabe95e5e6f"
+      }
+    },
+    {
+      "uuid": "1edb465a-0283-1e83-ffff5cabe95e5e6f",
+      "name": "TV Room",
+      "type": "IRoomControllerV2",
+      "room": "TV room",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb465a-0283-1e8d-ffff5cabe95e5e6f",
+        "tempActual": "1edb465a-0283-1e86-ffff5cabe95e5e6f",
+        "tempTarget": "1edb465a-0283-1eb8-ffff5cabe95e5e6f",
+        "comfortTemperature": "1edb465a-0283-1e94-ffff5cabe95e5e6f",
+        "comfortTemperatureCool": "1edb465a-0283-1e95-ffff5cabe95e5e6f",
+        "comfortTolerance": "1edb465a-0283-1e97-ffff5cabe95e5e6f",
+        "absentMinOffset": "1edb465a-0283-1e98-ffff5cabe95e5e6f",
+        "absentMaxOffset": "1edb465a-0283-1e99-ffff5cabe95e5e6f",
+        "frostProtectTemperature": "1edb465a-0283-1e9d-ffff5cabe95e5e6f",
+        "heatProtectTemperature": "1edb465a-0283-1e9e-ffff5cabe95e5e6f",
+        "shadingCoolTemp": "1edb465a-0283-1e9c-ffff5cabe95e5e6f",
+        "shadingHeatTemp": "1edb465a-0283-1e9b-ffff5cabe95e5e6f",
+        "co2": "1edb465a-0283-1e92-ffff5cabe95e5e6f",
+        "humidityActual": "1edb465a-0283-1e93-ffff5cabe95e5e6f",
+        "actualOutdoorTemp": "1edb465a-0283-1e91-ffff5cabe95e5e6f",
+        "currentMode": "1edb465a-0283-1eb5-ffff5cabe95e5e6f",
+        "shadingOut": "1edb465a-0283-1eb4-ffff5cabe95e5e6f",
+        "activeMode": "1edb465a-0283-1f25-ffff5cabe95e5e6f",
+        "comfortTemperatureOffset": "1edb465a-0283-1f20-ffff5cabe95e5e6f",
+        "overrideEntries": "1edb465a-0283-1f21-ffff5cabe95e5e6f",
+        "prepareState": "1edb465a-0283-1f22-ffff5cabe95e5e6f",
+        "useOutdoor": "1edb465a-0283-1f23-ffff5cabe95e5e6f",
+        "operatingMode": "1edb465a-0283-1f26-ffff5cabe95e5e6f",
+        "overrideReason": "1edb465a-0283-1f28-ffff5cabe95e5e6f",
+        "excessEnergyTempOffset": "1edb465a-0283-1f29-ffff5cabe95e5e6f",
+        "averageOutdoorTemp": "1edb465a-0283-1f2a-ffff5cabe95e5e6f",
+        "temperatureBoundaryInfo": "1edb465a-0283-1f2b-ffff5cabe95e5e6f",
+        "capabilities": "1edb465a-0283-1f2d-ffff5cabe95e5e6f",
+        "openWindow": "1edb465a-0283-1e88-ffff5cabe95e5e6f"
+      }
+    },
+    {
+      "uuid": "1edb465a-0283-1ebe-ffff5cabe95e5e6f",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "TV room",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb465a-0283-1ec4-ffff5cabe95e5e6f",
+        "min": "1edb465a-0283-1ec8-ffff5cabe95e5e6f",
+        "max": "1edb465a-0283-1ec9-ffff5cabe95e5e6f",
+        "step": "1edb465a-0283-1eca-ffff5cabe95e5e6f",
+        "value": "1edb465a-0283-1ecd-ffff5cabe95e5e6f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-71a3-fffff7c8f873107f",
+      "name": "Gasni kotao za buffer",
+      "type": "Switch",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-71a6-fffff7c8f873107f",
+        "active": "1edb47b9-010a-718d-fffff7c8f873107f",
+        "lockedOn": "1edb47b9-010a-72a2-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-7219-fffff7c8f873107f",
+      "name": "Podno mesanje vode",
+      "type": "Heatmixer",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-721e-fffff7c8f873107f",
+        "tempActual": "1edb47b9-010a-721c-fffff7c8f873107f",
+        "tempTarget": "1edb47b9-010a-721a-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb4873-00d6-1f3b-fffff38763f9e48e",
+      "name": "Pumpa Fan Coil prizemlje",
+      "type": "Switch",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb4873-00d6-1f3e-fffff38763f9e48e",
+        "active": "1edb4873-00d6-1f41-fffff38763f9e48e",
+        "lockedOn": "1edb4873-00d6-1f47-fffff38763f9e48e"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-7162-fffff7c8f873107f",
+      "name": "Pumpa Fan Coil sprat",
+      "type": "Switch",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-7165-fffff7c8f873107f",
+        "active": "1edb47b9-010a-7168-fffff7c8f873107f",
+        "lockedOn": "1edb47b9-010a-7297-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-716c-fffff7c8f873107f",
+      "name": "Pumpa Podno grejanje",
+      "type": "Switch",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-716f-fffff7c8f873107f",
+        "active": "1edb47b9-010a-7172-fffff7c8f873107f",
+        "lockedOn": "1edb47b9-010a-729a-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-7176-fffff7c8f873107f",
+      "name": "Pumpa Zidno grejanje",
+      "type": "Switch",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-7179-fffff7c8f873107f",
+        "active": "1edb47b9-010a-717c-fffff7c8f873107f",
+        "lockedOn": "1edb47b9-010a-729d-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-724f-fffff7c8f873107f",
+      "name": "Rezim rada mesanja vode",
+      "type": "Radio",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-725b-fffff7c8f873107f",
+        "activeOutput": "1edb47b9-010a-7268-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-71ad-fffff7c8f873107f",
+      "name": "Temperatura BUFFER gas",
+      "type": "ValueSelector",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-71b1-fffff7c8f873107f",
+        "min": "1edb47b9-010a-71b5-fffff7c8f873107f",
+        "max": "1edb47b9-010a-71b6-fffff7c8f873107f",
+        "step": "1edb47b9-010a-71b7-fffff7c8f873107f",
+        "value": "1edb47b9-010a-71ba-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-7180-fffff7c8f873107f",
+      "name": "Temperatura BUFFER tank",
+      "type": "InfoOnlyAnalog",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "value": "1edb47b9-010a-7180-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-7230-fffff7c8f873107f",
+      "name": "Temperatura pod",
+      "type": "ValueSelector",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-7234-fffff7c8f873107f",
+        "min": "1edb47b9-010a-7238-fffff7c8f873107f",
+        "max": "1edb47b9-010a-7239-fffff7c8f873107f",
+        "step": "1edb47b9-010a-723a-fffff7c8f873107f",
+        "value": "1edb47b9-010a-721b-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-7205-fffff7c8f873107f",
+      "name": "Temperatura zid",
+      "type": "ValueSelector",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-7209-fffff7c8f873107f",
+        "min": "1edb47b9-010a-720d-fffff7c8f873107f",
+        "max": "1edb47b9-010a-720e-fffff7c8f873107f",
+        "step": "1edb47b9-010a-720f-fffff7c8f873107f",
+        "value": "1edb47b9-010a-71ef-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb4b6a-0211-2ef9-ffffed57184a04d2",
+      "name": "Toplotna pumpa",
+      "type": "Switch",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb4b6a-0211-2ef2-02ff8392a26824f2",
+        "active": "1edb4b6a-0211-2ef5-05ff8392a26824f2",
+        "lockedOn": "1edb4b6a-0211-2eef-ffff8392a26824f2"
+      }
+    },
+    {
+      "uuid": "1edb47b9-010a-71ed-fffff7c8f873107f",
+      "name": "Zidno mesanje vode",
+      "type": "Heatmixer",
+      "room": "Tehnicka soba",
+      "cat": "Priprema vode",
+      "states": {
+        "jLocked": "9edb47b9-010a-71f2-fffff7c8f873107f",
+        "tempActual": "1edb47b9-010a-71f0-fffff7c8f873107f",
+        "tempTarget": "1edb47b9-010a-71ee-fffff7c8f873107f"
+      }
+    },
+    {
+      "uuid": "1edb2144-027a-765f-ffff3b3ca221bd10",
+      "name": "Klimatizacija",
+      "type": "Switch",
+      "room": "Velika sala",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb2144-027a-7662-ffff3b3ca221bd10",
+        "active": "1edb2144-027a-760e-ffff3b3ca221bd10",
+        "lockedOn": "1edb2144-027a-767a-ffff3b3ca221bd10"
+      }
+    },
+    {
+      "uuid": "1edb2144-027a-7603-ffff3b3ca221bd10",
+      "name": "Velika sala",
+      "type": "IRoomControllerV2",
+      "room": "Velika sala",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb2144-027a-760d-ffff3b3ca221bd10",
+        "tempActual": "1edb2144-027a-7606-ffff3b3ca221bd10",
+        "tempTarget": "1edb2144-027a-7639-ffff3b3ca221bd10",
+        "comfortTemperature": "1edb2144-027a-7615-ffff3b3ca221bd10",
+        "comfortTemperatureCool": "1edb2144-027a-7616-ffff3b3ca221bd10",
+        "comfortTolerance": "1edb2144-027a-7618-ffff3b3ca221bd10",
+        "absentMinOffset": "1edb2144-027a-7619-ffff3b3ca221bd10",
+        "absentMaxOffset": "1edb2144-027a-761a-ffff3b3ca221bd10",
+        "frostProtectTemperature": "1edb2144-027a-761e-ffff3b3ca221bd10",
+        "heatProtectTemperature": "1edb2144-027a-761f-ffff3b3ca221bd10",
+        "shadingCoolTemp": "1edb2144-027a-761d-ffff3b3ca221bd10",
+        "shadingHeatTemp": "1edb2144-027a-761c-ffff3b3ca221bd10",
+        "co2": "1edb2144-027a-7613-ffff3b3ca221bd10",
+        "humidityActual": "1edb2144-027a-7614-ffff3b3ca221bd10",
+        "actualOutdoorTemp": "1edb2144-027a-7611-ffff3b3ca221bd10",
+        "currentMode": "1edb2144-027a-7636-ffff3b3ca221bd10",
+        "shadingOut": "1edb2144-027a-7635-ffff3b3ca221bd10",
+        "activeMode": "1edb2144-027a-766e-ffff3b3ca221bd10",
+        "comfortTemperatureOffset": "1edb2144-027a-7669-ffff3b3ca221bd10",
+        "overrideEntries": "1edb2144-027a-766a-ffff3b3ca221bd10",
+        "prepareState": "1edb2144-027a-766b-ffff3b3ca221bd10",
+        "useOutdoor": "1edb2144-027a-766c-ffff3b3ca221bd10",
+        "operatingMode": "1edb2144-027a-766f-ffff3b3ca221bd10",
+        "overrideReason": "1edb2144-027a-7671-ffff3b3ca221bd10",
+        "excessEnergyTempOffset": "1edb2144-027a-7672-ffff3b3ca221bd10",
+        "averageOutdoorTemp": "1edb2144-027a-7673-ffff3b3ca221bd10",
+        "temperatureBoundaryInfo": "1edb2144-027a-7674-ffff3b3ca221bd10",
+        "capabilities": "1edb2144-027a-7676-ffff3b3ca221bd10",
+        "openWindow": "1edb2144-027a-7608-ffff3b3ca221bd10"
+      }
+    },
+    {
+      "uuid": "1edb2144-027a-763e-ffff3b3ca221bd10",
+      "name": "Ventilator Fan Coil",
+      "type": "ValueSelector",
+      "room": "Velika sala",
+      "cat": "Grejanje i hladjenje",
+      "states": {
+        "jLocked": "9edb2144-027a-7642-ffff3b3ca221bd10",
+        "min": "1edb2144-027a-7646-ffff3b3ca221bd10",
+        "max": "1edb2144-027a-7647-ffff3b3ca221bd10",
+        "step": "1edb2144-027a-7648-ffff3b3ca221bd10",
+        "value": "1edb2144-027a-764b-ffff3b3ca221bd10"
+      }
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import {
   buildVideoConstraints,
   isCameraDecodeSupported,
   isIOSWebKit,
+  preloadVideoDecoder,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
 
@@ -152,6 +153,13 @@ function Scanner({ deviceKey, onReset }: { deviceKey: string; onReset: () => voi
       setHint('Kamera nije dostupna u ovom pregledaču (getUserMedia/HTTPS) — koristi ručni/HID unos ispod.');
       return;
     }
+    // JEDINA namerna izmena kioska u ovom paketu (01.08): zagrej dekoder chunk.
+    // Kiosk je promenom engine-a (Android → ZXing, 1.0 kanon 3cffea5) prestao da
+    // ide nativnim BarcodeDetector-om, a ZXing se vuče LAZY (~250KB) tek pri
+    // `attachVideoDecoder` — na tabletu u pogonu to znači upaljen preview i
+    // reticle nad kojim nekoliko sekundi NIŠTA ne skenira. Poziv je
+    // fire-and-forget (ne baca, ne vraća promise) i ne pomera ostatak toka.
+    preloadVideoDecoder(['qr_code']);
     let stopped = false;
     let decoder: VideoDecoderHandle | null = null;
     (async () => {

@@ -295,7 +295,9 @@ function MachineOpsTable({
   onTp: (o: OpRow) => void;
   onSkice: (o: OpRow) => void;
 }) {
-  const q = useMachineOperationsAccum(machine || null);
+  // 040/26: crtež/RN filter ide SERVER-side (rn.applied → hook `q`), pa se dohvataju i
+  // pozicije iza prvih 100 RN. `filterOpsByRnOrDrawing` ostaje kao sekundarno prečišćavanje.
+  const q = useMachineOperationsAccum(machine || null, rn.applied);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
@@ -393,7 +395,10 @@ function MachineOpsTable({
             onTp={onTp}
             onSkice={onSkice}
           />
-          {q.hasMore && !rn.active && !reworkOnly && (
+          {/* 040/26: „Još RN" se prikazuje i dok je crtež/RN filter aktivan (filter je sad
+              server-side), pa paginacija stiže i do crteža iza prvih 100 RN. Dorada/škart
+              ostaje čist klijentski filter → tada „Još RN" i dalje krijemo. */}
+          {q.hasMore && !reworkOnly && (
             <div className="flex justify-center">
               <button
                 type="button"

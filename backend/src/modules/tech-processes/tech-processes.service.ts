@@ -264,8 +264,16 @@ interface RnProgressRaw {
   production_deadline: Date | null;
   handover_status_id: number;
   worker_id: number;
-  made_good_significant: number;
-  made_good_any: number;
+  /** Broj ZAVRŠNIH kontrola (significant_for_finishing) u RUTINGU naloga. */
+  final_op_count: number;
+  /** DOBRI I ZAVRŠENI komadi otkucani NA završnoj kontroli (kanon „RN završen"). */
+  made_good_final: number;
+  /** Usko grlo: najmanje urađena operacija rutinga — fallback kad nema završne kontrole. */
+  made_good_bottleneck: number;
+  /** Broj operacija u rutingu (bez `without_process` — one se po prirodi ne kucaju). */
+  routing_op_count: number;
+  /** Koliko operacija rutinga je otkucano u PUNOJ planiranoj količini. */
+  routing_ops_completed: number;
   operation_count: number;
   finished_operation_count: number;
   last_completed_at: Date | null;
@@ -1442,12 +1450,26 @@ export class TechProcessesService {
   // ---------------------------------------------------------------- RN PROGRESS
 
   /**
-   * „Pregled RN — statusi delova": po RN-u planirano vs napravljeno + procenat.
-   * JOIN work_orders × tech_processes po (projectId, identNumber, variant).
+   * „Pregled RN — statusi delova" (tab „Gotovost RN"): planirano vs napravljeno + procenat.
    * „Napravljeno" = DOBAR komadi (kvalitet 0) — samo dobar broji za pokriće plana
-   * (spec §3, migration/15 §5). Prednost imaju operacije `significant_for_finishing`;
-   * ako ih nema, pada na max dobar preko svih operacija. Endpoint živi u
-   * tech-processes kontroleru (ne dira se work-orders folder).
+   * (spec §3, migration/15 §5). Endpoint živi u tech-processes kontroleru (ne dira
+   * se work-orders folder).
+   *
+   * MERA GOTOVOSTI (ispravka 036/26) — po RUTINGU (`work_order_operations`), ne po
+   * skupu kucanja:
+   *   1. ruting ima ZAVRŠNU KONTROLU (`significant_for_finishing`) → napravljeno =
+   *      zbir DOBRIH I ZAVRŠENIH komada otkucanih na njoj. Isti kanon kao
+   *      `markWorkOrderIfComplete` (koji diže `work_orders.status`) i kao „gotovost"
+   *      u pracenje-read.service.ts, pa se tri prikaza ne mogu razići.
+   *   2. ruting nema završnu kontrolu → USKO GRLO: najmanje urađena operacija.
+   *   3. nema rutinga → 0 (nema se šta meriti; ne izmišlja se gotovost).
+   *
+   * BILO JE POGREŠNO: `MAX(piece_count)` preko BILO KOJE operacije kao fallback kad
+   * završna kontrola nije otkucana. Jedna jedina operacija otkucana u punom lotu
+   * dizala je ceo nalog na 100% iako ostatak rutinga nije ni počet — prijava 036/26
+   * (crtež 1138882, RN 9400/2/380: 15 operacija u rutingu, 7 kucanja, završna
+   * kontrola NIJE otkucana, a Gotovost je pisala 100%). Na produ je taj fallback
+   * lažno „završavao" ~10.200 od 23.700 naloga prikazanih kao 100%.
    * `completedAt` (zahtev 023/26) = datum realizacije RN-a; vidi SQL komentar dole.
    */
   async rnProgress(query: RnProgressQuery) {
@@ -1482,18 +1504,69 @@ export class TechProcessesService {
       SELECT wo.id, wo.project_id, wo.ident_number, wo.variant,
              wo.part_name, wo.drawing_number, wo.piece_count AS planned,
              wo.production_deadline, wo.handover_status_id, wo.worker_id,
-             COALESCE((SELECT MAX(tp.piece_count) FROM tech_processes tp
-                       JOIN operations op ON op.work_center_code = tp.work_center_code
-                       WHERE tp.project_id = wo.project_id
-                         AND tp.ident_number = wo.ident_number
-                         AND tp.variant = wo.variant
-                         AND tp.quality_type_id = ${PART_QUALITY.GOOD}
-                         AND COALESCE(op.significant_for_finishing, false) = true), 0)::int AS made_good_significant,
-             COALESCE((SELECT MAX(tp.piece_count) FROM tech_processes tp
-                       WHERE tp.project_id = wo.project_id
-                         AND tp.ident_number = wo.ident_number
-                         AND tp.variant = wo.variant
-                         AND tp.quality_type_id = ${PART_QUALITY.GOOD}), 0)::int AS made_good_any,
+             -- (1) Koliko ZAVRŠNIH kontrola RUTING naloga uopšte ima. Ruting je
+             -- work_order_operations (isti izvor koji tab „Kucanja" prikazuje kroz
+             -- /card), a NE skup otkucanih redova — nalog bez ijednog kucanja i dalje
+             -- ima svoje operacije, pa se zna da NIJE gotov.
+             COALESCE((SELECT COUNT(*)
+                         FROM work_order_operations op
+                         JOIN operations o ON o.work_center_code = op.work_center_code
+                        WHERE op.work_order_id = wo.id
+                          AND COALESCE(o.significant_for_finishing, false) = true), 0)::int AS final_op_count,
+             -- (2) „Napravljeno" = DOBRI I ZAVRŠENI komadi otkucani NA završnoj kontroli.
+             -- Kanon „RN završen" (markWorkOrderIfComplete, migration/15 §5; isti kanon u
+             -- pracenje-read.service.ts „finding #3"): završnu kontrolu prolazi samo dobar
+             -- komad, i to zatvorenim kucanjem. Kucanja se vezuju preko work_order_id +
+             -- operacija (idx_tp_work_order), ne preko trojke — trojka ne razlikuje operacije.
+             COALESCE((SELECT SUM(t.piece_count)
+                         FROM work_order_operations op
+                         JOIN operations o ON o.work_center_code = op.work_center_code
+                         JOIN tech_processes t
+                           ON t.work_order_id = op.work_order_id
+                          AND t.operation_number = op.operation_number
+                          AND t.work_center_code IS NOT DISTINCT FROM op.work_center_code
+                        WHERE op.work_order_id = wo.id
+                          AND COALESCE(o.significant_for_finishing, false) = true
+                          AND t.quality_type_id = ${PART_QUALITY.GOOD}
+                          AND COALESCE(t.is_process_finished, false) = true), 0)::int AS made_good_final,
+             -- (3) USKO GRLO = najslabija operacija rutinga (MIN, ne MAX!). Koristi se samo
+             -- kad ruting NEMA završnu kontrolu — tada nema ko da „overi" količinu, pa je
+             -- jedina poštena mera ona operacija koja je najmanje urađena. without_process
+             -- operacije (CAM programiranje, opšti nalog) se izuzimaju: po prirodi se ne
+             -- kucaju po komadu (na produ 52 od 1516 imaju ijedno kucanje).
+             COALESCE((SELECT MIN(x.done) FROM (
+                         SELECT COALESCE((SELECT SUM(t.piece_count)
+                                            FROM tech_processes t
+                                           WHERE t.work_order_id = op.work_order_id
+                                             AND t.operation_number = op.operation_number
+                                             AND t.work_center_code IS NOT DISTINCT FROM op.work_center_code
+                                             AND t.quality_type_id = ${PART_QUALITY.GOOD}), 0) AS done
+                           FROM work_order_operations op
+                           LEFT JOIN operations o ON o.work_center_code = op.work_center_code
+                          WHERE op.work_order_id = wo.id
+                            AND COALESCE(o.without_process, false) = false
+                       ) x), 0)::int AS made_good_bottleneck,
+             COALESCE((SELECT COUNT(*)
+                         FROM work_order_operations op
+                         LEFT JOIN operations o ON o.work_center_code = op.work_center_code
+                        WHERE op.work_order_id = wo.id
+                          AND COALESCE(o.without_process, false) = false), 0)::int AS routing_op_count,
+             -- Koliko operacija rutinga je otkucano u PUNOJ količini — „5/15 operacija" za UI.
+             -- wo.piece_count je u WHERE-u spoljnog COUNT-a, NIKAD u FILTER-u agregata:
+             -- outer-only referenca u agregatu diže PG 42803 (prod incident 19.07.2026,
+             -- isti zapis u pracenje-read.service.ts).
+             COALESCE((SELECT COUNT(*) FROM (
+                         SELECT COALESCE((SELECT SUM(t.piece_count)
+                                            FROM tech_processes t
+                                           WHERE t.work_order_id = op.work_order_id
+                                             AND t.operation_number = op.operation_number
+                                             AND t.work_center_code IS NOT DISTINCT FROM op.work_center_code
+                                             AND t.quality_type_id = ${PART_QUALITY.GOOD}), 0) AS done
+                           FROM work_order_operations op
+                           LEFT JOIN operations o ON o.work_center_code = op.work_center_code
+                          WHERE op.work_order_id = wo.id
+                            AND COALESCE(o.without_process, false) = false
+                       ) x WHERE x.done >= wo.piece_count), 0)::int AS routing_ops_completed,
              COALESCE((SELECT COUNT(*) FROM tech_processes tp
                        WHERE tp.project_id = wo.project_id
                          AND tp.ident_number = wo.ident_number
@@ -1534,8 +1607,18 @@ export class TechProcessesService {
     ]);
 
     const data = rows.map((r) => {
-      const madeGood =
-        r.made_good_significant > 0 ? r.made_good_significant : r.made_good_any;
+      // Gotovost se meri ZAVRŠNOM KONTROLOM naloga (kanon markWorkOrderIfComplete);
+      // ako je ruting nema, pada na USKO GRLO (najslabija operacija). Nikad na „bilo
+      // koja operacija" — to je bila greška zbog koje je deo sa 5/15 otkucanih
+      // operacija pisao 100% (zahtev 036/26).
+      const hasFinalOp = r.final_op_count > 0;
+      const madeGood = hasFinalOp ? r.made_good_final : r.made_good_bottleneck;
+      const madeGoodSource: "zavrsna-kontrola" | "usko-grlo" | "nema-rutinga" =
+        hasFinalOp
+          ? "zavrsna-kontrola"
+          : r.routing_op_count > 0
+            ? "usko-grlo"
+            : "nema-rutinga";
       const planned = r.planned;
       const cappedMade = Math.min(madeGood, planned);
       const completionPercent =
@@ -1554,9 +1637,13 @@ export class TechProcessesService {
         worker: workers.get(r.worker_id) ?? null,
         plannedPieces: planned,
         madeGoodPieces: madeGood,
-        madeGoodSource: r.made_good_significant > 0 ? "significant" : "any",
+        madeGoodSource,
         operationCount: r.operation_count,
         finishedOperationCount: r.finished_operation_count,
+        // Ruting naloga (isto što tab „Kucanja" vidi kroz /card) — da UI može da
+        // pokaže „X/Y operacija" i da 100% nikad ne protivreči listi kucanja.
+        routingOperationCount: r.routing_op_count,
+        routingOperationsCompleted: r.routing_ops_completed,
         completionPercent,
         isCompleted: planned > 0 && madeGood >= planned,
         completedAt: r.last_completed_at,

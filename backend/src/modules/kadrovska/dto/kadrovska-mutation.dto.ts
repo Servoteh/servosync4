@@ -177,6 +177,18 @@ export class GridGoDto extends OptIdempotentDto {
   @IsISO8601() dateTo!: string;
 }
 
+/** Unos bolovanja u grid za člana tima (zahtev 041/26). Ruta iza
+ *  `kadrovska.vacreq_manage`; RPC `kadr_grid_set_sick` ima interni gejt
+ *  `current_user_manages_employee`. Podtip = grid bo/bop/bot (SICK_SUBTYPE_OPTS). */
+export class GridSickDto extends OptIdempotentDto {
+  @IsUUID() employeeId!: string;
+  @IsISO8601() dateFrom!: string;
+  @IsISO8601() dateTo!: string;
+  @IsOptional()
+  @IsIn(["obicno", "povreda_na_radu", "odrzavanje_trudnoce"])
+  subtype?: string;
+}
+
 export class CreateRemarkDto extends IdempotentDto {
   @IsUUID() employeeId!: string;
   @IsInt() year!: number;

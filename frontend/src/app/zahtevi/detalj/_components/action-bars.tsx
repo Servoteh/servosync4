@@ -403,7 +403,7 @@ export function AdminActions({ detail }: { detail: ChangeRequestDetail }) {
       <ConfirmDialog
         open={confirmRestore}
         title="Vraćanje u obradu"
-        message="AI je automatski odbio ovaj zahtev (ocena 0). Vraćanjem se vraća u status Podnet i admin ga ponovo procenjuje. Nastaviti?"
+        message="AI je automatski odbio ovaj zahtev (neupotrebljiva prijava). Vraćanjem se vraća u status Podnet i admin ga ponovo procenjuje. Nastaviti?"
         confirmLabel="Vrati u obradu"
         loading={restore.isPending}
         onCancel={() => setConfirmRestore(false)}

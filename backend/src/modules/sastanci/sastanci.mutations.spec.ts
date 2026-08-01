@@ -292,9 +292,12 @@ describe("SastanciService R2 mutacije", () => {
     expect(sqlText(tx.$queryRaw)).toContain("sast_zakljucaj_sastanak");
   });
 
-  /* S2 — otkazivanje ide kroz DEFINER RPC (mejlovi 'meeting_cancel' se ne smeju
-   * slati iz BE-a) i mora biti idempotentno da dupli klik ne pošalje dva mejla. */
-  it("cancel: idempotentno + poziva sastanci_cancel_sastanak (ne UPDATE status)", async () => {
+  /* S2 — otkazivanje (021/26): status='otkazan' ide kroz Prisma UPDATE (RLS
+   * `sastanci_update` presuđuje red), a mejlovi 'meeting_cancel' ISKLJUČIVO kroz
+   * postojeću DEFINER fn `sast_enqueue_cancel` (BE ne sme da INSERT-uje u
+   * `sastanci_notification_log` — presuda B10). Pre fixa se zvala fn
+   * `sastanci_cancel_sastanak` koja na živoj sy15 NE POSTOJI → 42883 → 500. */
+  it("cancel: idempotentno (clientEventId + akcija) + enqueue kroz sast_enqueue_cancel", async () => {
     const { svc, sy15, tx } = makeSvc();
     await svc.cancel("u@servoteh.com", ID, { clientEventId: CID });
     expect(sy15.runIdempotentRls).toHaveBeenCalledWith(
@@ -303,27 +306,90 @@ describe("SastanciService R2 mutacije", () => {
       "sastanci.cancel",
       expect.any(Function),
     );
-    expect(sqlText(tx.$queryRaw)).toContain("sastanci_cancel_sastanak");
-    expect(tx.sastanak.updateMany).not.toHaveBeenCalled();
+    expect(sqlText(tx.$queryRaw)).toContain("sast_enqueue_cancel");
+    // Ime mrtve fn se ne sme vratiti, i BE ne dira outbox direktno.
+    expect(sqlText(tx.$queryRaw)).not.toContain("sastanci_cancel_sastanak");
+    expect(sqlText(tx.$queryRaw)).not.toContain("sastanci_notification_log");
   });
 
-  it("cancel: RPC {ok:false, reason} prolazi kao podatak (nije greška)", async () => {
+  /* Jezgro 021/26: otkaz MORA i da promeni status i da enqueue-uje — i to u tom
+   * redu (paritet `sast_weekly_odlozi`: mejl nosi već otkazano stanje). */
+  it("cancel: postavi status='otkazan' (RLS UPDATE) PA enqueue (order pin) + obavesteno iz fn", async () => {
     const { svc, tx } = makeSvc();
-    tx.$queryRaw.mockResolvedValueOnce([
-      { result: { ok: false, reason: "already_cancelled", sastanak_id: ID } },
-    ]);
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
+    const order: string[] = [];
+    tx.sastanak.updateMany.mockImplementationOnce(() => {
+      order.push("status");
+      return Promise.resolve({ count: 1 });
+    });
+    tx.$queryRaw.mockImplementationOnce(() => {
+      order.push("enqueue");
+      return Promise.resolve([{ result: 4 }]);
+    });
+    const out = await svc.cancel("u@servoteh.com", ID, { clientEventId: CID });
+    expect(argData(tx.sastanak.updateMany)).toMatchObject({
+      status: "otkazan",
+    });
+    expect(sqlValues(tx.$queryRaw)).toEqual([ID]);
+    expect(order).toEqual(["status", "enqueue"]);
+    expect(out).toMatchObject({
+      data: { ok: true, sastanak_id: ID, obavesteno: 4 },
+    });
+  });
+
+  it("cancel: zaključan → meki {ok:false, reason:'locked'} bez UPDATE-a i bez enqueue-a", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zakljucan" });
+    const out = await svc.cancel("u@servoteh.com", ID, { clientEventId: CID });
+    expect(out).toEqual({
+      data: { ok: false, reason: "locked", sastanak_id: ID },
+      meta: { idempotent: false },
+    });
+    expect(tx.sastanak.updateMany).not.toHaveBeenCalled();
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  /* Idempotencija, drugi sloj: nov clientEventId nad već otkazanim sastankom NE
+   * šalje drugi talas mejlova — {ok:false, reason} je legitiman 200 (nije greška). */
+  it("cancel: već otkazan → {ok:false, reason:'already_cancelled'} bez enqueue-a", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "otkazan" });
     const out = await svc.cancel("u@servoteh.com", ID, { clientEventId: CID });
     expect(out).toEqual({
       data: { ok: false, reason: "already_cancelled", sastanak_id: ID },
       meta: { idempotent: false },
     });
+    expect(tx.sastanak.updateMany).not.toHaveBeenCalled();
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("cancel: sastanak ne postoji → 404 (bez UPDATE-a i enqueue-a)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce(null);
+    await expect(
+      svc.cancel("u@servoteh.com", ID, { clientEventId: CID }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  /* Guard je RLS na UPDATE-u (fn `sast_enqueue_cancel` ga NEMA) — 0 redova uz
+   * postojeći red = 403, i enqueue NE sme da se izvrši (nema fantomskih mejlova). */
+  it("cancel: RLS odbio UPDATE (0 redova, red postoji) → 403 BEZ enqueue-a", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
+    tx.sastanak.updateMany.mockResolvedValueOnce({ count: 0 });
+    tx.sastanak.count.mockResolvedValueOnce(1);
+    await expect(
+      svc.cancel("u@servoteh.com", ID, { clientEventId: CID }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
   });
 
   /* Brisanje sastanka (zahtev 013/26). ROW-ishod (organizator sme svoj, tuđi ne
    * bez manage) presuđuje sy15 RLS politika `sastanci_delete` POD `authenticated`
    * — ovde se dokazuje mehanika: otkaz-pre-brisanja grana + 403/404 mapiranje
    * RLS-filtriranog 0-reda (živi organizator-scope je R4 smoke, kao ostali write). */
-  it("deleteSastanak: gotov sastanak (zakljucan) → BEZ cancel RPC, samo brisanje", async () => {
+  it("deleteSastanak: gotov sastanak (zakljucan) → BEZ enqueue fn, samo brisanje", async () => {
     const { svc, tx } = makeSvc();
     tx.sastanak.findUnique.mockResolvedValueOnce({ status: "zakljucan" });
     await svc.deleteSastanak("u@servoteh.com", ID);
@@ -331,23 +397,27 @@ describe("SastanciService R2 mutacije", () => {
     expect(tx.sastanak.deleteMany).toHaveBeenCalledWith({ where: { id: ID } });
   });
 
-  it("deleteSastanak: živ sastanak → UVEK cancel RPC (bez count-gejta pozvanih; DEFINER enumeriše)", async () => {
+  it("deleteSastanak: živ sastanak → UVEK sast_enqueue_cancel (bez count-gejta pozvanih; DEFINER enumeriše)", async () => {
     const { svc, tx } = makeSvc();
     tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
     await svc.deleteSastanak("u@servoteh.com", ID);
-    expect(sqlText(tx.$queryRaw)).toContain("sastanci_cancel_sastanak");
+    expect(sqlText(tx.$queryRaw)).toContain("sast_enqueue_cancel");
+    // 021/26: mrtvo ime (fn ne postoji na sy15 → 42883 → 500) se ne sme vratiti.
+    expect(sqlText(tx.$queryRaw)).not.toContain("sastanci_cancel_sastanak");
     // Gejt uklonjen: pozvani se NE broje pod su_select RLS-om pozivaoca.
     expect(tx.sastanakUcesnik.count).not.toHaveBeenCalled();
     expect(tx.sastanak.deleteMany).toHaveBeenCalledWith({ where: { id: ID } });
   });
 
-  it("deleteSastanak: cancel RPC PRE brisanja (order pin)", async () => {
+  /* Redosled je bezbednosni: enqueue PRE brisanja znači da RLS-odbijen DELETE
+   * rollback-uje i mejlove (nema fantomskih obaveštenja za sastanak koji je ostao). */
+  it("deleteSastanak: enqueue PRE brisanja (order pin)", async () => {
     const { svc, tx } = makeSvc();
     tx.sastanak.findUnique.mockResolvedValueOnce({ status: "u_toku" });
     const order: string[] = [];
     tx.$queryRaw.mockImplementationOnce(() => {
       order.push("cancel");
-      return Promise.resolve([{ result: { ok: true } }]);
+      return Promise.resolve([{ result: 2 }]);
     });
     tx.sastanak.deleteMany.mockImplementationOnce(() => {
       order.push("delete");
@@ -357,17 +427,18 @@ describe("SastanciService R2 mutacije", () => {
     expect(order).toEqual(["cancel", "delete"]);
   });
 
-  it("deleteSastanak: konkurentno brisanje tokom cancel RPC (P0002) → 404 (ne 422)", async () => {
+  /* 021/26: `sast_enqueue_cancel` NE diže P0002 — kad reda nema vraća 0. Zato je
+   * stara P0002→404 grana obrisana, a 404 na konkurentno brisanje uredno stiže iz
+   * `deleteMany`/`assertAffected` grane. */
+  it("deleteSastanak: konkurentno brisanje — enqueue vrati 0, pa 404 iz delete grane", async () => {
     const { svc, tx } = makeSvc();
     tx.sastanak.findUnique.mockResolvedValueOnce({ status: "planiran" });
-    tx.$queryRaw.mockRejectedValueOnce({
-      code: "P2010",
-      meta: { code: "P0002", message: "Sastanak nije pronađen." },
-    });
+    tx.$queryRaw.mockResolvedValueOnce([{ result: 0 }]);
+    tx.sastanak.deleteMany.mockResolvedValueOnce({ count: 0 });
+    tx.sastanak.count.mockResolvedValueOnce(0); // red je u međuvremenu nestao
     await expect(
       svc.deleteSastanak("u@servoteh.com", ID),
     ).rejects.toBeInstanceOf(NotFoundException);
-    expect(tx.sastanak.deleteMany).not.toHaveBeenCalled();
   });
 
   it("deleteSastanak: 0 pogodaka a red i dalje postoji (RLS odbio) → 403", async () => {

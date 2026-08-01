@@ -1,0 +1,138 @@
+{
+  "region": "eu",
+  "base": "https://openapi-eu.sigencloud.com",
+  "fetchedAt": "2026-07-29T16:55:57.063Z",
+  "systems": [
+    {
+      "systemId": "GFHXC1739358425",
+      "raw": {
+        "systemId": "GFHXC1739358425",
+        "systemName": "Nenad Jarakovic BB",
+        "addr": "129 Beograd, , Serbia",
+        "status": "Normal",
+        "isActivate": true,
+        "onOffGridStatus": "onGrid",
+        "timeZone": "Europe/Belgrade",
+        "gridConnectedTime": 1739358425000,
+        "pvCapacity": 4.4,
+        "batteryCapacity": 48.36
+      },
+      "energyFlow": {
+        "pvPower": 0.5,
+        "gridPower": 0,
+        "evPower": 0,
+        "acPower": 0,
+        "loadPower": 1.8,
+        "heatPumpPower": 0,
+        "batteryPower": -1.3,
+        "batterySoc": 92.1
+      },
+      "summary": {
+        "lifetimeCo2": 5,
+        "lifetimeCoal": 4.21,
+        "lifetimeTreeEquivalent": 6.83,
+        "dailyPowerGeneration": 34.64,
+        "monthlyPowerGeneration": 854.04,
+        "annualPowerGeneration": 4395.12,
+        "lifetimePowerGeneration": 10525.69
+      },
+      "mode": "9"
+    },
+    {
+      "systemId": "PEJKO1742894333",
+      "raw": {
+        "systemId": "PEJKO1742894333",
+        "systemName": "SERVOTEH",
+        "addr": "172 Dobanovci, , Serbia",
+        "status": "Normal",
+        "isActivate": true,
+        "onOffGridStatus": "onGrid",
+        "timeZone": "Europe/Belgrade",
+        "gridConnectedTime": 1742894333000,
+        "pvCapacity": 28,
+        "batteryCapacity": 48.36
+      },
+      "energyFlow": {
+        "pvPower": 2.9,
+        "gridPower": 0,
+        "evPower": 0,
+        "acPower": 0,
+        "loadPower": 11.8,
+        "heatPumpPower": 0,
+        "batteryPower": -8.9,
+        "batterySoc": 93.9
+      },
+      "summary": {
+        "lifetimeCo2": 75.93,
+        "lifetimeCoal": 63.94,
+        "lifetimeTreeEquivalent": 103.72,
+        "dailyPowerGeneration": 171.13,
+        "monthlyPowerGeneration": 4187.37,
+        "annualPowerGeneration": 144218.83,
+        "lifetimePowerGeneration": 159843.83
+      },
+      "mode": "0"
+    },
+    {
+      "systemId": "PPBTB1759573957",
+      "raw": {
+        "systemId": "PPBTB1759573957",
+        "systemName": "Servoteh_110",
+        "addr": "Ugrinovacka 163, 11272 Dobanovci",
+        "status": "Normal",
+        "isActivate": true,
+        "onOffGridStatus": "onGrid",
+        "timeZone": "Europe/Belgrade",
+        "gridConnectedTime": 1759573957000,
+        "pvCapacity": 135,
+        "batteryCapacity": 253.26
+      },
+      "energyFlow": null,
+      "summary": {
+        "lifetimeCo2": 96.52,
+        "lifetimeCoal": 81.28,
+        "lifetimeTreeEquivalent": 131.86,
+        "monthlyPowerGeneration": 18821.77,
+        "dailyPowerGeneration": 903.21,
+        "lifetimePowerGeneration": 203208.75,
+        "annualPowerGeneration": 187583.75
+      },
+      "mode": "9"
+    },
+    {
+      "systemId": "WJUBP1783340126",
+      "raw": {
+        "systemId": "WJUBP1783340126",
+        "systemName": "Servoteh_110 (2)",
+        "addr": "Угриновачка 183, 11272 Dobanovci, Serbia Central Serbia Surcin Urban Municipality Serbia",
+        "status": "Normal",
+        "isActivate": true,
+        "onOffGridStatus": "onGrid",
+        "timeZone": "Europe/Belgrade",
+        "gridConnectedTime": 1783340126000,
+        "pvCapacity": 110,
+        "batteryCapacity": 253.26
+      },
+      "energyFlow": {
+        "pvPower": 14.7,
+        "gridPower": 1.23,
+        "evPower": 0,
+        "acPower": 0,
+        "loadPower": 13.47,
+        "heatPumpPower": 0,
+        "batteryPower": 0,
+        "batterySoc": 100
+      },
+      "summary": {
+        "lifetimeCo2": 100.01,
+        "lifetimeCoal": 84.22,
+        "lifetimeTreeEquivalent": 136.63,
+        "dailyPowerGeneration": 982.29,
+        "monthlyPowerGeneration": 26159.83,
+        "annualPowerGeneration": 194921.81,
+        "lifetimePowerGeneration": 210546.81
+      },
+      "mode": "0"
+    }
+  ]
+}

@@ -68,6 +68,11 @@ const DA_NE_OPTS = [
   { v: 'ne', label: 'NE' },
 ] as const;
 
+/** Isti obrazac kao PretragaTab.openRow (uuid-first): 2.0 je RN id Int (work_orders.id) —
+ *  ovaj regex je zadržan defanzivno/za paritet, ali `r.rn_id` posle F1 migracije (32b986b,
+ *  „drop sy15 bridge") više nikad nije uuid, pa se ovde uvek pada na bigtehn granu. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const SKLOP_TYPE_LABEL: Record<string, string> = {
   glavni: 'Glavni sklop',
   pod: 'Podsklop',
@@ -311,11 +316,13 @@ export function PredmetView({
   rootRn,
   onBack,
   onOpenRnBigtehn,
+  onOpenRnUuid,
 }: {
   itemId: number;
   rootRn?: string;
   onBack: () => void;
   onOpenRnBigtehn: (bigtehnRnId: string) => void;
+  onOpenRnUuid: (rnId: string) => void;
 }) {
   const can = useCan();
   const canManage = can(PERMISSIONS.PRACENJE_MANAGE);
@@ -434,6 +441,23 @@ export function PredmetView({
       else next.add(node);
       return next;
     });
+  }
+
+  /** RN kolona klik (bug 042/26): isti uuid-first obrazac kao PretragaTab.openRow —
+   *  raniji kod je bezuslovno zvao onOpenRnBigtehn(node) čak i kad red nema iskoristiv
+   *  RN id, pa je BE odbijao mutaciju, a onOpenRnBigtehn (page.tsx) je grešku gutao bez
+   *  ijedne povratne informacije korisniku (klik „ne radi ništa"). */
+  function openRn(r: IzvestajRow, node: string) {
+    const rnId = r.rn_id;
+    if (typeof rnId === 'string' && UUID_RE.test(rnId)) {
+      onOpenRnUuid(rnId);
+      return;
+    }
+    if (node) {
+      onOpenRnBigtehn(node);
+      return;
+    }
+    showToast('Ovaj red nema RN broj — otvori preko predmeta u Praćenju.');
   }
 
   async function doExportXlsx() {
@@ -728,7 +752,7 @@ export function PredmetView({
                       >
                         {r.rn_broj ? (
                           <button
-                            onClick={() => onOpenRnBigtehn(node)}
+                            onClick={() => openRn(r, node)}
                             className="inline-flex items-center gap-1 text-accent hover:underline"
                             title="Otvori RN"
                           >

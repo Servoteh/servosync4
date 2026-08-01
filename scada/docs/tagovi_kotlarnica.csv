@@ -1,0 +1,75 @@
+Operand;Opis (iz PLC programa);Tip;R/W;wtp(ekran);Modbus_predlog;Napomena
+MI20;SPOLJNA TEMPERATURA;MI;R;-;HR 20;merena, skala /10
+MI21;TEMPERATURA SUDA;MI;R;-;HR 21;merena
+MI22;TEMPERATURA CNC RADIONICA;MI;R;-;HR 22;merena
+MI23;TEMPERATURA ZAVARIVANJE;MI;R;-;HR 23;merena (nije na glavnom ekranu)
+MI24;TEMPERATURA MONTAZA 1;MI;R;-;HR 24;merena
+MI25;TEMPERATURA MONTAZA 2;MI;R;-;HR 25;merena
+MI26;TEMPERATURA HIDRAULIKA;MI;R;-;HR 26;merena
+MI30;ZADATA SPOLJNA TEMPERATURA;MI;R/W;4 (unos);HR 30;setpoint
+MI31;ZADATA TEMPERATURA SUDA H;MI;R/W;4;HR 31;setpoint
+MI32;ZADATA TEMPERATURA SUDA L;MI;R/W;4;HR 32;setpoint
+MI33;ZADATA TEMPERATURA MONTAZA;MI;R/W;4;HR 33;setpoint
+MI34;ZADATA TEMPERATURA MONTAZA (2);MI;R/W;-;HR 34;drugi prag/histereza - proveriti (grej/hlad?)
+MI35;ZADATA TEMPERATURA CNC RADIONICA;MI;R/W;4;HR 35;setpoint
+MI36;ZADATA TEMPERATURA CNC RADIONICA (2);MI;R/W;-;HR 36;drugi prag - proveriti
+MI37;ZADATA TEMPERATURA HIDRAULIKA;MI;R/W;4;HR 37;setpoint
+MI38;ZADATA TEMPERATURA HIDRAULIKA (2);MI;R/W;-;HR 38;drugi prag - proveriti
+MI39;ZADATA TEMPERATURA ZAVARIVANJE;MI;R/W;4;HR 39;setpoint
+MI40;ZADATA TEMPERATURA ZAVARIVANJE (2);MI;R/W;-;HR 40;drugi prag - proveriti
+MI50;PONEDELJAK (radni sati);MI;R/W;2;HR 50;raspored
+MI51;UTORAK;MI;R/W;2;HR 51;raspored
+MI52;SREDA;MI;R/W;2;HR 52;raspored
+MI53;CETVRTAK;MI;R/W;2;HR 53;raspored
+MI54;PETAK;MI;R/W;2;HR 54;raspored
+MI55;SUBOTA;MI;R/W;2;HR 55;raspored
+MI56;NEDELJA;MI;R/W;2;HR 56;raspored
+MI60;Frekventni regulator parametar;MI;R/W;3 (+/-);HR 60;VFD - funkcija proveriti
+MI61;Frekventni regulator parametar;MI;R/W;3;HR 61;VFD - proveriti
+MI62;Frekventni regulator parametar;MI;R/W;3;HR 62;VFD - proveriti
+MI63;Frekventni regulator parametar;MI;R/W;3;HR 63;VFD - proveriti
+I2;FREKVENTNI RUN;I;R;-;DI 2;status VFD
+I3;TOPLOTNA PUMPA (status);I;R;-;DI 3;
+I4;ALARM TOPLOTNE PUMPE;I;R;-;DI 4;alarm
+I5;ZASTITE;I;R;-;DI 5;alarm
+I6;KOTAO RAD;I;R;-;DI 6;status kotla
+I7;P3 RAD PREKIDAC (Kancelarije);I;R;-;DI 7;fizicki prekidac
+I8;P2 RAD PREKIDAC (Zavarivanje);I;R;-;DI 8;
+I9;P1 RAD PREKIDAC (Radionice);I;R;-;DI 9;
+I10;K5 RAD PREKIDAC (Hidraulika);I;R;-;DI 10;
+I11;K4 RAD PREKIDAC (CNC);I;R;-;DI 11;
+I12;K3 RAD PREKIDAC (Montaza);I;R;-;DI 12;
+I13;K2 RAD PREKIDAC (Montaza);I;R;-;DI 13;
+I14;K1 RAD PREKIDAC (Montaza);I;R;-;DI 14;
+I15;ON/OFF PREKIDAC ZA PUMPE I KALORIFERE;I;R;-;DI 15;
+I16;Automatski rezim (zona);I;R;-;DI 16;sa ekrana
+O0;KALORIFER 1;O;R;-;Coil 0;
+O1;KALORIFER 2;O;R;-;Coil 1;
+O2;KALORIFER 3;O;R;-;Coil 2;
+O3;KALORIFER 4;O;R;-;Coil 3;
+O4;KALORIFER 5;O;R;-;Coil 4;
+O5;P1 RADIONICE (pumpa);O;R;-;Coil 5;
+O6;P2 ZAVARIVANJE (pumpa);O;R;-;Coil 6;
+O7;P3 KANCELARIJE (pumpa);O;R;-;Coil 7;
+O8;T1 SPOLJNA (grejanje zone);O;R;-;Coil 8;
+O9;T2 SUDA;O;R;-;Coil 9;
+O10;T3 CNC RADIONICA;O;R;-;Coil 10;
+O11;T4 ZAVARIVANJE;O;R;-;Coil 11;
+O12;T5 MONTAZA 1;O;R;-;Coil 12;
+O13;T6 MONTAZA 2;O;R;-;Coil 13;
+O14;T7 HIDRAULIKA;O;R;-;Coil 14;
+O15;T8 REZERVA;O;R;-;Coil 15;
+O16;ALARM;O;R;-;Coil 16;
+O17;Izlaz (pumpa/ventil);O;R;-;Coil 17;sa ekrana - proveriti
+O18;RESET GRESKE FREKVENTNOG REGULATORA;O;R/W;1 (momentary);Coil 18;dugme reset
+MB1;AUTOMATSKI REZIM RADA;MB;R/W;-;Coil(MB) 1;sa ekrana
+MB8;Rucna komanda (toggle);MB;R/W;2;Coil(MB) 8;verovatno rucno K/P - potvrditi
+MB9;Rucna komanda (toggle);MB;R/W;2;Coil(MB) 9;potvrditi
+MB10;Rucna komanda (toggle);MB;R/W;2;Coil(MB) 10;potvrditi
+MB11;Rucna komanda (toggle);MB;R/W;2;Coil(MB) 11;potvrditi
+MB12;Rucna komanda (toggle);MB;R/W;2;Coil(MB) 12;potvrditi
+MB14;REZIM UPRAVLJANJA KALORIFERIMA (glavni);MB;R/W;1 (set);Coil(MB) 14;
+MB16;Rezim/rucna komanda kalorifera (toggle);MB;R/W;2;Coil(MB) 16;potvrditi
+MB17;Rezim/rucna komanda kalorifera (toggle);MB;R/W;2;Coil(MB) 17;potvrditi
+MB18;Rezim/rucna komanda kalorifera (toggle);MB;R/W;2;Coil(MB) 18;potvrditi
+MB19;Rezim/rucna komanda kalorifera (toggle);MB;R/W;2;Coil(MB) 19;potvrditi

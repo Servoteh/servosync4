@@ -8,7 +8,13 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
-import { salaryEmailAllowed } from "../../common/authz/effective-permission";
+import { isMissingDbObject } from "../../common/sy15/db-object-missing";
+import { PrismaService } from "../../prisma/prisma.service";
+import {
+  resolvePermissionDecision,
+  salaryEmailAllowed,
+} from "../../common/authz/effective-permission";
+import { PERMISSIONS } from "../../common/authz/permissions";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import {
   aggregateWorkHoursForMonth,
@@ -16,6 +22,19 @@ import {
   computePayableHours,
   sanitizeHoursForWorkType,
 } from "./payroll/payroll-calc";
+import {
+  proposeHoursForDay,
+  belgradeYesterday,
+  FULL_DAY_HOURS,
+  PRESENCE_FLOOR,
+  PRESENCE_CEIL,
+} from "./grid-autofill.service";
+import {
+  buildVacationPeriods,
+  VACATION_PERIOD_STATUSES,
+  VACATION_PERIOD_STATUSES_PUBLIC,
+  type VacationPeriod,
+} from "./vacation-periods";
 import type {
   AbsencesQueryDto,
   AttendanceDailyQueryDto,
@@ -66,7 +85,15 @@ const RATER_SAFE_SELECT = {
  */
 @Injectable()
 export class KadrovskaService {
-  constructor(private readonly sy15: Sy15Service) {}
+  /**
+   * `prisma` je GLAVNA (3.0) baza i koristi se ISKLJUČIVO za odluku o permisiji
+   * pozivaoca (`resolvePermissionDecision` nad `user_permission_overrides`) —
+   * NIKAD za HR podatke, koji žive u sy15 i idu kroz `withUserMapped` (RLS).
+   */
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly prisma: PrismaService,
+  ) {}
 
   // ==========================================================================
   // PREGLED (dashboard + izveštaji + notifikacije)
@@ -537,6 +564,47 @@ export class KadrovskaService {
     });
   }
 
+  /**
+   * ZAHTEV 026/26 — molbe za izmenu/otkaz POTVRĐENOG GO termina (HR inbox).
+   *
+   * Opseg redova presuđuje se ISTIM izrazom kao u `requests()` (AUDIT-K2 pouka: RLS
+   * `*_select` politike puštaju sve svakome ko prođe `current_user_can_manage_vacreq`,
+   * pa scope mora u upit). Tabela je sy15-only (nema Prisma modela) → raw SQL.
+   * Dok `ZAHTEV_026_GO_IZMENA_OTKAZ.sql` nije primenjen na živu bazu, upit puca na
+   * 42P01 → vraćamo praznu listu uz `meta.pending_sql` umesto 500 na HR ekranu.
+   *
+   * ⚠️ REVIEW 31.07: catch je SUŽEN na „objekat ne postoji" (`isMissingDbObject`).
+   * Ranije je prazan `catch {}` gutao SVAKU grešku — posle primene SQL-a bi RLS/GRANT
+   * regresija ili pad konekcije HR-u prikazali baner „modul čeka SQL", a molbe
+   * zaposlenih bi tiho nestale sa ekrana i niko ih ne bi odlučio.
+   */
+  async vacationChangeRequests(email: string, status?: string) {
+    const wanted = ["pending", "approved", "rejected"].includes(status ?? "")
+      ? status
+      : undefined;
+    try {
+      return await this.withUserMapped(email, async (tx) => {
+        const statusCond = wanted
+          ? Prisma.sql`AND c.status = ${wanted}`
+          : Prisma.empty;
+        const data = await tx.$queryRaw(
+          Prisma.sql`SELECT c.*, vr.status AS request_status, vr.year AS request_year
+               FROM vacation_change_requests c
+               JOIN vacation_requests vr ON vr.id = c.vacation_request_id
+              WHERE (current_user_is_vacreq_admin()
+                     OR current_user_manages_employee(c.employee_id)
+                     OR c.employee_id = current_user_employee_id())
+                ${statusCond}
+              ORDER BY c.created_at DESC`,
+        );
+        return { data };
+      });
+    } catch (e) {
+      if (!isMissingDbObject(e)) throw e;
+      return { data: [], meta: { pending_sql: true } };
+    }
+  }
+
   /** Istorija GO (Excel uvoz, ODVOJENO od salda) — SELECT-only. */
   async vacationHistory(email: string, q: VacationQueryDto) {
     return this.withUserMapped(email, async (tx) => {
@@ -564,6 +632,136 @@ export class KadrovskaService {
       );
       const v = rows?.[0]?.v;
       return { data: Array.isArray(v) ? v : [] };
+    });
+  }
+
+  /**
+   * GO periodi „od–do" za karticu zaposlenog (Kadrovska → Odmori i odsustva).
+   *
+   * Merodavan izvor je `vacation_requests`: JEDAN zahtev = JEDAN neprekidan
+   * raspon + status (pending / sef_approved / approved). Grid se NE koristi za
+   * rasparčavanje odobrenog odmora — tamo je jedan red po RADNOM danu, pa jedan
+   * odmor (04.08.–17.08.) ispadne kao tri komada rasečena vikendima. `absences`
+   * ulazi kao dopuna za odmore bez zahteva (`source: 'evidencija'`).
+   *
+   * ⚠️ NALAZ F1 (review 30.07.2026): grid je ipak TREĆI izvor, ali samo za dane
+   * koje ne pokriva nijedan zahtev/odsustvo i uz premošćavanje vikenda/neradnih
+   * praznika (`buildVacationPeriods`). Bez toga je ćelija tvrdila „nema
+   * planiranog odmora" za 61 zaposlenog kojima isti red pokazuje iskorišćene/
+   * planirane dane (`v_vacation_balance` broji upravo `work_hours.absence_code='go'`).
+   *
+   * ⚠️ NALAZ F3 (isti review): ruta nosi klasnu `kadrovska.read`, a red-opseg joj
+   * je `current_user_manages_employee()` koja na živoj bazi vraća TRUE za SVE
+   * zaposlene svakome sa rolom pm/leadpm/projektant_vodja. `projektant_vodja`
+   * ima `kadrovska.read` bez `kadrovska.vacreq_manage`, pa bi video ne-odobrene
+   * zahteve cele firme. Zato PROJEKCIJU sužava sama permisija pozivaoca —
+   * `resolvePermissionDecision` (isti mehanizam kojim guard štiti `/requests`,
+   * deny > grant > rola), NE DB funkcija: `current_user_can_manage_vacreq()` je
+   * baš ona koja te role propušta. Bez `vacreq_manage` → samo `approved`
+   * (+ evidencija/grid = već realizovan odmor, nije osetljiva klasa).
+   *
+   * ⚠️ Opseg REDOVA: kao u `requests()` (AUDIT-K2) — RLS `vr_select` NIJE scope,
+   * pa opseg presuđujemo OVDE istom DB funkcijom, a `?employeeId` je PRESEK.
+   * Projekcija je uža od `/requests` (bez napomene, razloga odbijanja i podnosioca).
+   */
+  async vacationPeriods(
+    user: { userId: number; email: string; role: string },
+    q: VacationQueryDto,
+  ) {
+    const today = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Belgrade",
+    }).format(new Date());
+    const year = q.year ?? Number(today.slice(0, 4));
+    // Presek sa godinom (ne sadržanost) — odmor preko Nove godine mora da uđe.
+    const yearFrom = this.toDbDate(`${year}-01-01`)!;
+    const yearTo = this.toDbDate(`${year}-12-31`)!;
+    // F3: sme li pozivalac da vidi pending/sef_approved? Ista odluka koju bi
+    // doneo PermissionsGuard na `/kadrovska/requests` — override-i se čitaju
+    // sveži iz baze, pa deny posle izdavanja tokena odmah važi.
+    const includeUnapproved =
+      (await resolvePermissionDecision(
+        this.prisma,
+        user.userId,
+        user.role,
+        PERMISSIONS.KADROVSKA_VACREQ_MANAGE,
+        user.email,
+      )) === "allow";
+    const statuses = includeUnapproved
+      ? [...VACATION_PERIOD_STATUSES]
+      : [...VACATION_PERIOD_STATUSES_PUBLIC];
+    return this.withUserMapped(user.email, async (tx) => {
+      const scope = await tx.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT e.id
+             FROM employees e
+            WHERE current_user_is_vacreq_admin()
+               OR current_user_manages_employee(e.id)
+               OR e.id = current_user_employee_id()`,
+      );
+      const scopeIds = scope.map((r) => r.id);
+      const ids = q.employeeId
+        ? scopeIds.filter((id) => id === q.employeeId)
+        : scopeIds;
+      if (!ids.length) return { data: [] as VacationPeriod[], year };
+      const range = {
+        dateFrom: { lte: yearTo },
+        dateTo: { gte: yearFrom },
+      };
+      const [requests, absences, gridDays, holidays] = await Promise.all([
+        tx.vacationRequest.findMany({
+          // Statusi se sužavaju već u upitu (F3) — pored `includeUnapproved`
+          // brave u `buildVacationPeriods`; ne-odobreni zahtev ne izlazi ni iz baze.
+          where: { employeeId: { in: ids }, status: { in: statuses }, ...range },
+          select: {
+            id: true,
+            employeeId: true,
+            dateFrom: true,
+            dateTo: true,
+            daysCount: true,
+            status: true,
+          },
+        }),
+        tx.absence.findMany({
+          where: {
+            employeeId: { in: ids },
+            type: "godisnji",
+            archivedAt: null,
+            ...range,
+          },
+          select: {
+            id: true,
+            employeeId: true,
+            dateFrom: true,
+            dateTo: true,
+            daysCount: true,
+          },
+        }),
+        // F1: GO dani iz grida — ISTI opseg zaposlenih (`ids`), bez proširivanja.
+        // Ovo je izvor koji broji i `v_vacation_balance` (days_used/days_planned).
+        tx.workHours.findMany({
+          where: {
+            employeeId: { in: ids },
+            absenceCode: "go",
+            workDate: { gte: yearFrom, lte: yearTo },
+          },
+          select: { employeeId: true, workDate: true },
+        }),
+        // Neradni praznici — da premošćavanje ne pukne na Uskrsu/Novoj godini.
+        tx.kadrHoliday.findMany({
+          where: { holidayDate: { gte: yearFrom, lte: yearTo } },
+          select: { holidayDate: true, isWorkday: true },
+        }),
+      ]);
+      return {
+        data: buildVacationPeriods({
+          requests,
+          absences,
+          gridDays,
+          holidays,
+          today,
+          includeUnapproved,
+        }),
+        year,
+      };
     });
   }
 
@@ -641,10 +839,33 @@ export class KadrovskaService {
             })
           : Promise.resolve([]),
       ]);
+      // 'dan_odmora' zahtev može biti "approved" a da +1 dan GO NIKAD nije upisan
+      // (istorijski ne-atomski FE grant — incident Stamenić 04.07.2026). Flag
+      // `bonusGranted` govori da li vacation_bonus_days STVARNO ima red za zahtev.
+      // Match je ŠIRI od makeup_request_id linka: i red bez linka za ISTI
+      // (employee, dan) se broji kao upisan — dedup granta ide po tom ključu, pa
+      // ručno dodeljen dan ne sme večno da nosi bedž „dan NIJE upisan".
+      const bonusRows = makeup.length
+        ? await tx.$queryRaw<{ id: string }[]>(
+            Prisma.sql`SELECT m.id FROM makeup_requests m
+               WHERE m.id = ANY(${makeup.map((r) => r.id)}::uuid[])
+                 AND EXISTS (
+                   SELECT 1 FROM vacation_bonus_days b
+                   WHERE b.makeup_request_id = m.id
+                      OR (m.compensation_type = 'dan_odmora'
+                          AND b.employee_id = m.employee_id
+                          AND b.work_date = COALESCE(m.weekend_work_date, m.absence_date)))`,
+          )
+        : [];
+      const granted = new Set(bonusRows.map((b) => b.id));
       return {
         data: {
           vacation: vacation.map((r) => ({ ...r, source: "vacation" })),
-          makeup: makeup.map((r) => ({ ...r, source: "makeup" })),
+          makeup: makeup.map((r) => ({
+            ...r,
+            source: "makeup",
+            bonusGranted: granted.has(r.id),
+          })),
           paidLeave: paidLeave.map((r) => ({ ...r, source: "paid_leave" })),
           nop: nop.map((r) => ({ ...r, source: "nop" })),
         },
@@ -852,8 +1073,9 @@ export class KadrovskaService {
 
   /**
    * Predlozi auto-unosa iz kapije (kucanje → mesečni grid). READ-ONLY: NE piše
-   * ništa; vraća predlog redovnih sati za „regularne" PRAZNE dane koje urednik
-   * (Nikola) verifikuje pa snima kroz `grid/batch`.
+   * ništa; vraća predlog sati za „regularne" PRAZNE dane koje urednik (Nikola)
+   * verifikuje pa snima kroz `grid/batch`. Isti izvor istine kao noćni auto-tik
+   * (`proposeHoursFromPresence`) → oba puta predlažu IDENTIČNO.
    *
    * Izvor je `v_attendance_vs_grid` (kucanje već izvedeno u `v_attendance_daily`:
    * dedup <60s, službeni izlaz = radno vreme, deterministički). „Regularan" dan =
@@ -862,8 +1084,16 @@ export class KadrovskaService {
    *   - ima ulaz I izlaz, bez zaboravljenog izlaza (first_in/last_out NOT NULL,
    *     open_intervals=0);
    *   - bez terena (grid_field_hours=0 — teren badge ≠ sati);
-   *   - prisustvo u opsegu [MIN,MAX] (parametri) → predlog = REGULAR_HOURS (8).
-   * Vikendi/praznici se preskaču (kucanje van rasporeda nije redovan rad — ide ručno).
+   *   - prisustvo u opsegu [FLOOR..CEIL] → predlog = STVARNI sati sečeni NANIŽE na
+   *     pola sata (≥7.6h → 8), NE paušalnih 8h (D2, zahtev 044/26);
+   *   - dan <= JUČE (pogonska zona): DANAS se nikad ne predlaže jer dan još traje
+   *     (isti klamp kao noćni tik — `belgradeYesterday`).
+   * VIKEND sa čistim kucanjem SE predlaže kao redovni sati (D1, zahtev 044/26):
+   * kucanje je dokaz da je čovek radio, grid iz datuma vidi da je neradni dan (bez
+   * posebnog flag-a). Ranije se preskakalo — Nikola je vikende ručno unosio.
+   * NERADNI PRAZNIK ima dodatnu kapiju (`proposeHoursForDay`): predlaže se SAMO pun
+   * dan (8h); delimično kucanje bi u obračunu pojelo garantovanih 8h plaćenog
+   * praznika, pa ga kadrovska unosi svesno.
    *
    * Zašto view a ne sirovi events: `v_attendance_vs_grid` je već SECURITY INVOKER
    * (RLS „svoje ∨ attendance"); ide kroz withUserMapped (SET LOCAL ROLE
@@ -875,16 +1105,18 @@ export class KadrovskaService {
     const month = q.month ?? now.getUTCMonth() + 1;
     const start = `${year}-${String(month).padStart(2, "0")}-01`;
     const endExcl = `${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, "0")}-01`;
-    // Parametri „regularnog" dana (odluka: standardan ~8h ±tolerancija).
-    const REGULAR_HOURS = 8;
-    const PRESENCE_MIN = 7.6;
-    const PRESENCE_MAX = 8.4;
+
+    // KLAMP na juče (pogonska zona) — identično noćnom tiku: DANAS je dan koji još
+    // traje, pa bi čovek koji je ušao u 08:00 i izašao u 10:00 (izlaz zatvoren) bio
+    // predložen sa 2h usred svog radnog dana. Za prošle mesece je no-op.
+    const maxDay = belgradeYesterday();
 
     return this.withUserMapped(email, async (tx) => {
+      // NERADNI praznici u mesecu — kapija za delimično kucanje (v. proposeHoursForDay).
+      // `isWorkday: false` je obavezan: red sa `is_workday = true` je radni-dan IZUZETAK
+      // (npr. naložena radna subota) i NE sme se tretirati kao praznik.
       const holidays = await tx.kadrHoliday.findMany({
         where: {
-          // isWorkday=false → SAMO pravi neradni praznik; red sa isWorkday=true je
-          // radni-dan IZUZETAK (npr. radna subota) i NE sme se preskočiti.
           isWorkday: false,
           holidayDate: {
             gte: new Date(`${start}T00:00:00Z`),
@@ -897,9 +1129,12 @@ export class KadrovskaService {
         holidays.map((h) => h.holidayDate.toISOString().slice(0, 10)),
       );
 
-      // Regularni prazni dani iz shadow view-a. Filtriranje „praznog" i signala
-      // radi SQL (indeksni raspon po danu); vikend/praznik izbacujemo u JS-u
-      // (holSet je iz baze, a EXTRACT(dow) bi zavisio od TZ).
+      // Regularni prazni dani iz shadow view-a. „Prazan" + signali radnog dana
+      // (ulaz+izlaz, bez zaboravljenog izlaza/terena/odsustva) + gornja granica „juče"
+      // filtrira SQL; predlog sati + opseg prisustva [FLOOR..CEIL] + praznična kapija
+      // računa `proposeHoursForDay` u JS-u (JEDINI izvor istine, deljen sa noćnim
+      // auto-tikom). VIKEND se NE izbacuje (D1, zahtev 044/26) — čisto kucanje na
+      // vikend = redovni sati.
       const rows = await tx.$queryRaw<
         {
           employee_id: string;
@@ -910,48 +1145,60 @@ export class KadrovskaService {
           last_out: Date | null;
         }[]
       >(Prisma.sql`
-        SELECT employee_id, full_name, day, presence_hours, first_in, last_out
-        FROM v_attendance_vs_grid
-        WHERE day >= ${start}::date AND day < ${endExcl}::date
-          AND grid_covered = false
-          AND absence_code IS NULL
-          AND COALESCE(grid_field_hours, 0) = 0
-          AND open_intervals = 0
-          AND first_in IS NOT NULL
-          AND last_out IS NOT NULL
-          AND presence_hours IS NOT NULL
-          AND presence_hours >= ${PRESENCE_MIN}
-          AND presence_hours <= ${PRESENCE_MAX}
-          ${q.employeeId ? Prisma.sql`AND employee_id = ${q.employeeId}::uuid` : Prisma.empty}
-        ORDER BY employee_id, day
+        SELECT v.employee_id, v.full_name, v.day, v.presence_hours, v.first_in, v.last_out
+        FROM v_attendance_vs_grid v
+        WHERE v.day >= ${start}::date AND v.day < ${endExcl}::date
+          AND v.day <= ${maxDay}::date
+          AND v.grid_covered = false
+          AND v.absence_code IS NULL
+          AND COALESCE(v.grid_field_hours, 0) = 0
+          AND v.open_intervals = 0
+          AND v.first_in IS NOT NULL
+          AND v.last_out IS NOT NULL
+          AND v.presence_hours IS NOT NULL
+          -- ZAMENA DANA (31.07.2026): odobren 'dan_odmora' za taj dan → +1 dan GO
+          -- umesto plaćenih sati; dan se NE predlaže (isti filter kao noćni tik).
+          AND NOT EXISTS (
+            SELECT 1 FROM makeup_requests mr
+            WHERE mr.employee_id = v.employee_id
+              AND mr.compensation_type = 'dan_odmora'
+              AND mr.status IN ('approved', 'completed')
+              AND COALESCE(mr.weekend_work_date, mr.absence_date) = v.day
+          )
+          ${q.employeeId ? Prisma.sql`AND v.employee_id = ${q.employeeId}::uuid` : Prisma.empty}
+        ORDER BY v.employee_id, v.day
       `);
 
-      const suggestions = rows
-        .filter((r) => {
-          const ymd = r.day.toISOString().slice(0, 10);
-          const dow = r.day.getUTCDay(); // 0=ned, 6=sub
-          return dow !== 0 && dow !== 6 && !holSet.has(ymd);
-        })
-        .map((r) => ({
-          employeeId: r.employee_id,
-          fullName: r.full_name,
-          workDate: r.day.toISOString().slice(0, 10),
-          hours: REGULAR_HOURS,
-          presenceHours:
-            r.presence_hours == null ? null : Number(r.presence_hours),
-          firstIn: r.first_in ? r.first_in.toISOString() : null,
-          lastOut: r.last_out ? r.last_out.toISOString() : null,
-        }));
+      const suggestions = rows.flatMap((r) => {
+        const ymd = r.day.toISOString().slice(0, 10);
+        if (ymd > maxDay) return []; // pojas i tregeri uz SQL klamp (danas/budućnost)
+        const presence =
+          r.presence_hours == null ? null : Number(r.presence_hours);
+        // null = van opsega [FLOOR..CEIL] ILI delimično kucanje na neradni praznik
+        const { hours } = proposeHoursForDay(presence, holSet.has(ymd));
+        if (hours == null) return [];
+        return [
+          {
+            employeeId: r.employee_id,
+            fullName: r.full_name,
+            workDate: ymd,
+            hours,
+            presenceHours: presence,
+            firstIn: r.first_in ? r.first_in.toISOString() : null,
+            lastOut: r.last_out ? r.last_out.toISOString() : null,
+          },
+        ];
+      });
 
       return {
         data: {
           year,
           month,
           rule: {
-            regularHours: REGULAR_HOURS,
-            presenceMin: PRESENCE_MIN,
-            presenceMax: PRESENCE_MAX,
-            note: "Samo regularni prazni dani (ulaz+izlaz, bez zaboravljenog izlaza/terena/odsustva); vikend/praznik preskočeni.",
+            regularHours: FULL_DAY_HOURS,
+            presenceMin: PRESENCE_FLOOR,
+            presenceMax: PRESENCE_CEIL,
+            note: "Regularni prazni dani do juče (danas se ne predlaže — dan još traje); prisustvo [1h..14h] → sati sečeni NANIŽE na pola sata, ≥7.6h → 8; vikend sa čistim kucanjem se predlaže kao redovni; neradni praznik SAMO kad je pun dan (delimično kucanje na praznik unosi kadrovska, da se ne izgubi plaćenih 8h). Isto pravilo kao noćni auto-tik.",
           },
           suggestions,
         },

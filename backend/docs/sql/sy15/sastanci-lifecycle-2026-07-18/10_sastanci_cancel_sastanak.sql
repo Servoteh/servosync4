@@ -1,3 +1,13 @@
+-- ⛔ STATUS: NIKAD PRIMENJENO — I NE PRIMENJIVATI. (provereno na živoj sy15 30.07.2026:
+--    `sastanci_cancel_sastanak` NE POSTOJI). Backend je do 30.07.2026 zvao ovu fn, pa su
+--    „Otkaži sastanak" i brisanje planiranog/u_toku sastanka SVIMA vraćali 500
+--    (42883 undefined_function) — zahtev 021/26. FIX je u KODU (grana
+--    fix/sastanci-cancel-rpc-021): `SastanciService.cancel` sada radi
+--    `status='otkazan'` kroz Prisma POD RLS-om (`sastanci_update` = mgmt ∨ trio) pa
+--    poziva POSTOJEĆU `sast_enqueue_cancel(uuid)`; `deleteSastanak` poziva samo
+--    `sast_enqueue_cancel`. Doktrina (odluka „cutover april 2027"): na sy15 se više
+--    NIŠTA ne gradi — ovaj fajl ostaje samo kao istorijat namere.
+--
 -- Sastanci S2 — KORAK 1: nova DEFINER fn `sastanci_cancel_sastanak(uuid)` (sy15).
 --
 -- ZAŠTO: 1.0/2.0 danas nemaju „otkaži sastanak sa obaveštenjem". Otkazivanje kroz

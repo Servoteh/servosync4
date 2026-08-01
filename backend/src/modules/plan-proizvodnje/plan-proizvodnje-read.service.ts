@@ -89,6 +89,21 @@ const ALL_COLS = Prisma.sql`line_id, work_order_id, effective_machine_code, broj
   drawings_count, has_bigtehn_drawing, is_rework, is_scrap, rework_pieces, scrap_pieces,
   previous_operation_operacija, previous_operation_status, previous_operation_machine_code`;
 
+/** Kolone za gant feed (046/26) — auto-podaci stavke + termini + spremnost/završenost. */
+const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
+  effective_machine_code, original_machine_code, original_machine_name, hall,
+  rn_ident_broj, broj_crteza, naziv_dela, materijal, komada_total, komada_done,
+  rok_izrade, tpz_min, tk_min, effective_duration_minutes,
+  planned_start_at, planned_end_at, planned_duration_minutes,
+  planned_done, planned_done_at, planned_done_by, is_completed_effective,
+  predecessor_work_order_id, predecessor_line,
+  is_ready_for_machine, is_ready_manual, previous_operation_status,
+  previous_operation_operacija, previous_operation_machine_code,
+  local_status, shift_sort_order, shift_note, is_urgent, urgency_reason,
+  is_non_machining, customer_short, customer_name, is_done_in_bigtehn`;
+
+const GANTT_LIMIT = 5000;
+
 @Injectable()
 export class PlanProizvodnjeReadService {
   constructor(
@@ -126,7 +141,7 @@ export class PlanProizvodnjeReadService {
       const machine = q.machine.trim();
       const limit = clampInt(q.limit, 100, 1, 250);
       const offset = clampInt(q.offset, 0, 0, Number.MAX_SAFE_INTEGER);
-      return this.machineOps(machine, limit, offset);
+      return this.machineOps(machine, limit, offset, q.q);
     }
     if (q.dept) {
       const cond = this.deptWhere(q.dept);
@@ -147,15 +162,27 @@ export class PlanProizvodnjeReadService {
    * operacije mašine → RPC sort → grupisanje po RN (MIN sort idx) → prozor
    * [offset, offset+limit) RN-ova. `has_more` = ima li RN iza prozora.
    */
-  private async machineOps(machine: string, limit: number, offset: number) {
+  private async machineOps(
+    machine: string,
+    limit: number,
+    offset: number,
+    q?: string,
+  ) {
     if (machine === "") {
       return { data: { rows: [], has_more: false, next_work_order_offset: 0 } };
     }
     // Mašinski filter u BAZI (perf): laterali se računaju SAMO za redove te mašine.
     const baseFilter = Prisma.sql`AND COALESCE(o.assigned_machine_code, NULLIF(BTRIM(l.work_center_code),'')) = ${machine}`;
+    // 040/26: crtež/RN filter u bazi PRE paginacije po RN, pa filter dohvata i pozicije
+    // iza prvih 100 RN (mirror ILIKE stila iz operationsSearch; parametrizovan Prisma.sql).
+    const term = (q ?? "").trim();
+    const search =
+      term.length > 0
+        ? Prisma.sql`AND (broj_crteza ILIKE ${"%" + term + "%"} OR rn_ident_broj ILIKE ${"%" + term + "%"})`
+        : Prisma.empty;
     const rows = (await this.prisma.$queryRaw(Prisma.sql`
       SELECT * FROM (${this.effectiveOpsInner(baseFilter)}) eff
-      WHERE ${EFF_FILTER} AND ${OPEN_OPS} ${RPC_SORT}`)) as {
+      WHERE ${EFF_FILTER} AND ${OPEN_OPS} ${search} ${RPC_SORT}`)) as {
       work_order_id: string;
     }[];
 
@@ -195,7 +222,71 @@ export class PlanProizvodnjeReadService {
     };
   }
 
-  /** Pretraga operacija po crtežu/RN/nazivu (paritet loadOperationsByRnOrDrawingQuery). */
+  // ==========================================================================
+  // Gant (zahtev 046/26 F1)
+  // ==========================================================================
+
+  /**
+   * Feed za tab „Gant" — isti izvor kao ostali pogledi (`effectiveOpsInner`), samo drugi
+   * skup kolona + PROŠIREN opseg redova:
+   *   (a) sve efektivne OTVORENE operacije (kandidati za „Dodaj na plan"), PLUS
+   *   (b) sve stavke koje VEĆ imaju `planned_start_at` — i kad su u međuvremenu odrađene
+   *       ili zatvorene, jer bar mora ostati na osi (gant je istorija plana, ne samo TODO).
+   *
+   * Grupisanje Hala → mašina radi FE nad `hall` (ručni šifrarnik) + `effective_machine_code`;
+   * `hall IS NULL` → grupa „Bez hale". Stavke bez `planned_start_at` FE NE crta kao bar.
+   */
+  async gantt(_email: string, q?: { hall?: string; machine?: string; q?: string }) {
+    const machine = (q?.machine ?? "").trim();
+    const hall = (q?.hall ?? "").trim();
+    const term = (q?.q ?? "").trim();
+    const conds: Prisma.Sql[] = [
+      // (a) OR (b) — v. doc iznad. `planned_start_at` grana namerno zaobilazi OPEN_OPS.
+      Prisma.sql`((${EFF_FILTER} AND ${OPEN_OPS}) OR planned_start_at IS NOT NULL)`,
+      Prisma.sql`effective_machine_code IS NOT NULL`,
+    ];
+    if (machine)
+      conds.push(Prisma.sql`effective_machine_code = ${machine}`);
+    if (hall)
+      conds.push(
+        hall === "-"
+          ? Prisma.sql`hall IS NULL`
+          : Prisma.sql`hall = ${hall}`,
+      );
+    if (term.length > 0)
+      conds.push(
+        Prisma.sql`(broj_crteza ILIKE ${"%" + term + "%"} OR rn_ident_broj ILIKE ${"%" + term + "%"} OR naziv_dela ILIKE ${"%" + term + "%"})`,
+      );
+    const rows = await this.prisma.$queryRaw(Prisma.sql`
+      SELECT ${GANTT_COLS} FROM (${this.effectiveOpsInner(Prisma.empty)}) eff
+      WHERE ${Prisma.join(conds, " AND ")}
+      ORDER BY hall ASC NULLS LAST, effective_machine_code ASC,
+               planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST,
+               rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC
+      LIMIT ${GANTT_LIMIT}`);
+    return {
+      data: jsonSafe(rows),
+      meta: { limit: GANTT_LIMIT, truncated: (rows as unknown[]).length >= GANTT_LIMIT },
+    };
+  }
+
+  /** Šifrarnik hala (mašina → hala) + mašine BEZ hale, da UI ima pun spisak za dodelu. */
+  async machineHalls(_email: string) {
+    const data = await this.prisma.$queryRaw(Prisma.sql`
+      SELECT m.work_center_code AS machine_code,
+             m.work_center_name AS machine_name,
+             mh.hall, mh.sort_order, mh.note, mh.updated_at, mh.updated_by
+        FROM operations m
+        LEFT JOIN plan_proizvodnje_machine_halls mh ON mh.machine_code = m.work_center_code
+       ORDER BY mh.hall ASC NULLS LAST, m.work_center_code ASC`);
+    return { data: jsonSafe(data) };
+  }
+
+  /**
+   * Pretraga operacija po crtežu/RN/nazivu (paritet loadOperationsByRnOrDrawingQuery).
+   * 043/26: redosled grupiše po crtežu/RN pa po TP redosledu (`operacija` = TP broj) —
+   * NAMERNO se ne vodi `effective_machine_code` (to je „Po mašini" red, ne „Po crtežu").
+   */
   async operationsSearch(_email: string, q?: string) {
     const term = (q ?? "").trim();
     if (term.length < SEARCH_MIN_LEN) return { data: [] };
@@ -204,7 +295,7 @@ export class PlanProizvodnjeReadService {
       SELECT * FROM (${this.effectiveOpsInner(Prisma.empty)}) eff
       WHERE ${EFF_FILTER} AND ${OPEN_OPS}
         AND (broj_crteza ILIKE ${like} OR rn_ident_broj ILIKE ${like} OR naziv_dela ILIKE ${like})
-      ORDER BY effective_machine_code ASC NULLS LAST, broj_crteza ASC, rn_ident_broj ASC, operacija ASC
+      ORDER BY broj_crteza ASC NULLS LAST, rn_ident_broj ASC, operacija ASC
       LIMIT ${SEARCH_LIMIT}`);
     return { data: jsonSafe(data) };
   }
@@ -545,6 +636,19 @@ export class PlanProizvodnjeReadService {
       base.overlay_id, base.shift_sort_order, base.local_status, base.shift_note, base.assigned_machine_code,
       base.overlay_archived_at, base.overlay_archived_reason, base.overlay_updated_at, base.overlay_updated_by,
       base.overlay_created_at, base.overlay_created_by,
+      -- Zahtev 046/26 (gant): planirani termini + „uslov" + override završenosti.
+      -- PARALELNA polja — NIJEDAN postojeći sort/bucket/filter ih ne koristi.
+      base.planned_start_at, base.planned_end_at, base.planned_duration_minutes,
+      base.planned_done, base.planned_done_at, base.planned_done_by,
+      base.predecessor_work_order_id::text AS predecessor_work_order_id,
+      base.predecessor_line::text AS predecessor_line,
+      mh.hall,
+      -- Default trajanje iz tehnologije: TPZ + TK × komada (min); override gazi.
+      COALESCE(
+        base.planned_duration_minutes,
+        (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int
+      )::int AS effective_duration_minutes,
+      COALESCE(base.planned_done, COALESCE(tr.is_done, false)) AS is_completed_effective,
       COALESCE(tr.komada_done, 0)::bigint AS komada_done,
       COALESCE(tr.real_seconds, 0)::bigint AS real_seconds,
       COALESCE(tr.is_done, false) AS is_done_in_bigtehn,
@@ -628,6 +732,9 @@ export class PlanProizvodnjeReadService {
         COALESCE(o.cooperation_status, 'none') AS cooperation_status,
         o.cooperation_partner, o.cooperation_set_by, o.cooperation_set_at, o.cooperation_expected_return,
         COALESCE(o.ready_override, false) AS ready_override, o.ready_override_at, o.ready_override_by,
+        o.planned_start_at, o.planned_end_at, o.planned_duration_minutes,
+        o.planned_done, o.planned_done_at, o.planned_done_by,
+        o.predecessor_work_order_id, o.predecessor_line,
         COALESCE(o.local_status, 'waiting') AS local_status_eff
       FROM work_order_operations l
       JOIN work_orders wo ON wo.id = l.work_order_id
@@ -637,6 +744,7 @@ export class PlanProizvodnjeReadService {
       WHERE ${predmetGate}
         ${baseFilter}
     ) base
+    LEFT JOIN plan_proizvodnje_machine_halls mh ON mh.machine_code = base.effective_machine_code
     LEFT JOIN plan_proizvodnje_auto_cooperation_groups g ON g.rj_group_code = base.original_machine_code AND g.removed_at IS NULL
     LEFT JOIN plan_proizvodnje_urgency_overrides u ON u.work_order_id = base.wo_raw AND u.is_urgent IS TRUE AND u.cleared_at IS NULL
     LEFT JOIN LATERAL (

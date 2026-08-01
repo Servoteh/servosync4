@@ -17,6 +17,12 @@
     .sg-chartwrap{position:relative;width:100%;height:264px}
     #skChart{width:100%;height:100%;display:block}
     .sg-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;text-align:center;padding:0 20px}
+    /* Baner aktivnog kvara — vidljiv bez skrolovanja (prazan div se ne prikazuje) */
+    .al-banner{display:none}
+    .al-banner.on{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 20px 12px;padding:11px 16px;
+      border-radius:10px;border:1px solid var(--alarm);background:rgba(229,84,75,.14)}
+    .al-banner b{font-size:14px;font-weight:800;letter-spacing:.2px}
+    .al-banner span{font-size:13px;color:var(--muted)}
   </style>
 </head>
 <body>
@@ -37,6 +43,7 @@
   </header>
 
   <section class="statstrip" id="strip"></section>
+  <div class="al-banner" id="albanner"></div>
 
   <div class="synwrap">
     <div class="synbox"><div id="syn"></div></div>

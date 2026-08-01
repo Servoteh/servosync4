@@ -4,10 +4,12 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { isMissingDbObject } from "../../common/sy15/db-object-missing";
 import { jsonSafe } from "../../common/sy15/json-safe";
 import { assertRpcOk } from "../../common/sy15/rpc-ok";
 import { NotifyDispatchService } from "../scheduler/dispatch/notify-dispatch.service";
@@ -21,6 +23,7 @@ import type {
   AttendanceRangeQueryDto,
   MonthlyHoursQueryDto,
 } from "./dto/moj-profil-query.dto";
+import { withPresenceDisplay, sumPresence } from "./presence-hours.util";
 import type {
   AckDocumentDto,
   OpenSelfAssessmentDto,
@@ -32,6 +35,7 @@ import type {
   SubmitMakeupDto,
   SubmitPaidLeaveDto,
   SubmitSelfAssessmentDto,
+  SubmitVacationChangeDto,
   SubmitVacationDto,
 } from "./dto/moj-profil-mutation.dto";
 import type {
@@ -145,9 +149,9 @@ export class MojProfilService {
   }
 
   /** GO: saldo (v_vacation_balance, tekuća godina) + zahtevi + istorija (self-scope). */
-  vacation(email: string) {
+  async vacation(email: string) {
     const year = new Date().getFullYear();
-    return this.withUserMapped(email, async (tx) => {
+    const base = await this.withUserMapped(email, async (tx) => {
       const emp = await this.resolveEmployee(tx, email);
       if (emp == null) return this.emptyProfile();
       const [balance, requests, history, ledger] = await Promise.all([
@@ -175,6 +179,41 @@ export class MojProfilService {
         },
       };
     });
+    // ZAHTEV 026/26 — moje molbe za izmenu/otkaz potvrđenog termina. ODVOJENA
+    // transakcija namerno: tabela je sy15-only (nije u Prisma šemi) i dok se
+    // `ZAHTEV_026_GO_IZMENA_OTKAZ.sql` ne primeni na živu bazu upit puca — u istoj
+    // transakciji bi oborio i saldo/zahteve (42P01 abortuje ceo tx).
+    if (base.data == null) return base;
+    return {
+      ...base,
+      data: { ...base.data, changeRequests: await this.myVacationChanges(email) },
+    };
+  }
+
+  /**
+   * Moje molbe za izmenu/otkaz (prazno dok SQL 026 nije primenjen na sy15).
+   *
+   * ⚠️ REVIEW 31.07: catch je SUŽEN na „objekat ne postoji" (`isMissingDbObject`) —
+   * ranije je prazan `catch {}` gutao i prave greške, pa bi radniku ponovo iskočila
+   * dugmad „Zatraži…" iako molba već postoji (dupli submit bi zaustavio tek unique
+   * indeks porukom `already_pending`).
+   */
+  private async myVacationChanges(email: string): Promise<unknown[]> {
+    try {
+      return await this.withUserMapped(email, async (tx) => {
+        const rows = await tx.$queryRaw<unknown[]>(
+          Prisma.sql`SELECT c.* FROM vacation_change_requests c
+               JOIN employees e ON e.id = c.employee_id
+              WHERE lower(coalesce(e.email, '')) = lower(${email})
+                 OR lower(coalesce(c.submitted_by, '')) = lower(${email})
+              ORDER BY c.created_at DESC`,
+        );
+        return jsonSafe(rows);
+      });
+    } catch (e) {
+      if (!isMissingDbObject(e)) throw e;
+      return [];
+    }
   }
 
   /** Nadoknada sati + plaćeno odsustvo (self-scope). */
@@ -183,8 +222,19 @@ export class MojProfilService {
       const emp = await this.resolveEmployee(tx, email);
       if (emp == null) return this.emptyProfile();
       const [makeup, paidLeave] = await Promise.all([
+        // bonus_granted: da li je +1 dan GO za 'dan_odmora' zahtev STVARNO upisan
+        // (vacation_bonus_days red) — "approved" bez upisa je istorijski moguć
+        // (ne-atomski FE grant; incident Stamenić 04.07.2026), pa zaposleni mora
+        // da vidi razliku. Match širi od linka (i ručni red za isti dan se broji).
+        // RLS bonus_go_read pušta SELECT svakom prijavljenom.
         tx.$queryRaw<unknown[]>(
-          Prisma.sql`SELECT * FROM makeup_requests WHERE employee_id = ${emp.id}::uuid ORDER BY created_at DESC`,
+          Prisma.sql`SELECT m.*, EXISTS (SELECT 1 FROM vacation_bonus_days b
+               WHERE b.makeup_request_id = m.id
+                  OR (m.compensation_type = 'dan_odmora'
+                      AND b.employee_id = m.employee_id
+                      AND b.work_date = COALESCE(m.weekend_work_date, m.absence_date))) AS bonus_granted
+             FROM makeup_requests m
+            WHERE m.employee_id = ${emp.id}::uuid ORDER BY m.created_at DESC`,
         ),
         tx.$queryRaw<unknown[]>(
           Prisma.sql`SELECT * FROM paid_leave_requests WHERE employee_id = ${emp.id}::uuid ORDER BY created_at DESC`,
@@ -196,18 +246,23 @@ export class MojProfilService {
     });
   }
 
-  /** Moje prisustvo (v_attendance_daily, dnevni pregled u opsegu; default tekući mesec). */
+  /**
+   * Moje prisustvo (v_attendance_daily, dnevni pregled u opsegu; default tekući mesec).
+   * Zahtev 032/26: uz sirovi `presence_hours` ide i `presence_hm` („8:00") sa primenjenim
+   * pravilom zaokruživanja, plus mesečni zbir TIH zaokruženih dana (`totals`).
+   */
   attendance(email: string, q: AttendanceRangeQueryDto) {
     const { from, to } = monthRange(q.from, q.to);
     return this.withUserMapped(email, async (tx) => {
       const emp = await this.resolveEmployee(tx, email);
       if (emp == null) return this.emptyProfile();
-      const rows = await tx.$queryRaw<unknown[]>(
+      const rows = await tx.$queryRaw<Record<string, unknown>[]>(
         Prisma.sql`SELECT * FROM v_attendance_daily
            WHERE employee_id = ${emp.id}::uuid AND day >= ${from}::date AND day <= ${to}::date
            ORDER BY day DESC`,
       );
-      return { data: { from, to, days: jsonSafe(rows) } };
+      const days = withPresenceDisplay(jsonSafe(rows));
+      return { data: { from, to, days, totals: sumPresence(days) } };
     });
   }
 
@@ -485,8 +540,11 @@ export class MojProfilService {
           Prisma.sql`SELECT count(*) AS n FROM vacation_requests
              WHERE employee_id = ${emp.id}::uuid AND status IN ('pending', 'sef_approved')`,
         ),
-        tx.$queryRaw<{ hours: unknown }[]>(
-          Prisma.sql`SELECT COALESCE(sum(presence_hours), 0) AS hours FROM v_attendance_daily
+        // ZAHTEV 032/26: NE `sum(presence_hours)` u SQL-u — mesečni zbir mora biti suma
+        // ZAOKRUŽENIH dnevnih vrednosti (pravilo „prekovremeno <30 min se ne prikazuje"),
+        // da se presek slaže sa onim što korisnik vidi po danima.
+        tx.$queryRaw<{ presence_hours: unknown }[]>(
+          Prisma.sql`SELECT presence_hours FROM v_attendance_daily
              WHERE employee_id = ${emp.id}::uuid AND day >= ${from}::date AND day <= ${to}::date`,
         ),
         tx.$queryRaw<{ n: bigint }[]>(
@@ -494,6 +552,7 @@ export class MojProfilService {
              WHERE employee_id = ${emp.id}::uuid AND shared_at IS NOT NULL AND acknowledged_at IS NULL`,
         ),
       ]);
+      const monthPresence = sumPresence(presence);
       return {
         data: {
           employee: { id: emp.id, fullName: emp.full_name },
@@ -501,7 +560,8 @@ export class MojProfilService {
             numOrNull(balance[0]?.days_remaining_accrued) ??
             numOrNull(balance[0]?.days_remaining),
           openVacationRequests: Number(openReq[0]?.n ?? 0),
-          monthPresenceHours: Number(presence[0]?.hours ?? 0),
+          monthPresenceHours: monthPresence.hours,
+          monthPresenceHm: monthPresence.hm,
           unacknowledgedTalks: Number(talks[0]?.n ?? 0),
         },
       };
@@ -821,6 +881,93 @@ export class MojProfilService {
       );
       return { data: jsonSafe(rows[0]?.result ?? null) };
     });
+  }
+
+  /**
+   * ZAHTEV 026/26 — molba za IZMENU/OTKAZ već POTVRĐENOG (approved) GO termina.
+   *
+   * Zašto poseban tok, a ne postojeći `reviseVacation`/`cancelVacation`: te dve rute
+   * zovu `hr_revise_vacation_request`/`hr_cancel_vacation_request`, a obe u bazi puštaju
+   * PODNOSIOCA i kad je zahtev `approved` — radnik je time JEDNOSTRANO skidao odobren
+   * termin iz grida i menjao evidenciju, bez ijedne HR odluke. Ovde radnik samo podnosi
+   * molbu (`kadr_vacreq_change_submit` → `vacation_change_requests`, status `pending`),
+   * a izvršenje radi odobravač kroz `kadr_vacreq_change_decide`.
+   *
+   * Broj radnih dana za predloženi termin računa SERVER (ista pravila kao `submitVacation`
+   * / `kadr_grid_set_go`) — klijentski broj se ne prima (zahtev 028/26 pouka).
+   */
+  async submitVacationChange(
+    email: string,
+    id: string,
+    dto: SubmitVacationChangeDto,
+  ) {
+    if (dto.kind === "revise") {
+      if (!dto.dateFrom || !dto.dateTo)
+        throw new UnprocessableEntityException(
+          "Za izmenu termina obavezan je novi period.",
+        );
+      if (dto.dateTo < dto.dateFrom)
+        throw new UnprocessableEntityException('„Do" ne može biti pre „Od".');
+      if (dto.dateFrom < REQUEST_MIN_DATE)
+        throw new UnprocessableEntityException(
+          `Najraniji dozvoljeni datum je ${REQUEST_MIN_DATE}.`,
+        );
+    }
+    const out = await this.submitVacationChangeRpc(email, id, dto);
+    this.pulseHrDispatch();
+    // `runIdem` već vraća { data, meta } — bez dodatnog omotača (FE čita res.data.status).
+    return out;
+  }
+
+  /**
+   * ⚠️ REVIEW 31.07 (deploy-prozor): dok `ZAHTEV_026_GO_IZMENA_OTKAZ.sql` nije primenjen
+   * na sy15, `kadr_vacreq_change_submit` ne postoji (42883) i poziv je propadao kao sirov
+   * 500 („Slanje nije uspelo."). Pošto FE istovremeno sklanja direktnu izmenu/otkaz nad
+   * potvrđenim terminom, radnik bi ostao BEZ ijedne akcije i bez objašnjenja. Zato SAMO
+   * ta klasa greške (nepostojeća funkcija/tabela) → 503 sa jasnom porukom; sve ostalo
+   * ide dalje kao prava greška.
+   */
+  private async submitVacationChangeRpc(
+    email: string,
+    id: string,
+    dto: SubmitVacationChangeDto,
+  ) {
+    try {
+      return await this.runIdemVacationChange(email, id, dto);
+    } catch (e) {
+      if (!isMissingDbObject(e)) throw e;
+      throw new ServiceUnavailableException(
+        "Zahtev za izmenu/otkazivanje još nije aktiviran na glavnoj bazi — javite se kadrovskoj službi.",
+      );
+    }
+  }
+
+  private runIdemVacationChange(
+    email: string,
+    id: string,
+    dto: SubmitVacationChangeDto,
+  ) {
+    return this.runIdem(
+      email,
+      dto.clientEventId,
+      "profile.vacation-change-submit",
+      async (tx) => {
+        let serverDays: number | null = null;
+        if (dto.kind === "revise") {
+          serverDays = await this.workDaysBetween(tx, dto.dateFrom!, dto.dateTo!);
+          if (serverDays <= 0)
+            throw new UnprocessableEntityException(
+              "U izabranom periodu nema nijednog radnog dana (vikendi i državni praznici se ne troše iz fonda).",
+            );
+        }
+        const rows = await tx.$queryRaw<{ result: unknown }[]>(
+          Prisma.sql`SELECT kadr_vacreq_change_submit(${id}::uuid, ${dto.kind},
+             ${dto.dateFrom ?? null}::date, ${dto.dateTo ?? null}::date,
+             ${serverDays}::int, ${dto.reason ?? null}, lower(${email})) AS result`,
+        );
+        return jsonSafe(rows[0]?.result ?? null);
+      },
+    );
   }
 
   /** GO obriši (hr_delete_vacation_request). */
@@ -2021,17 +2168,19 @@ export class MojProfilService {
         throw new NotFoundException(
           "Član nije pronađen ili nije u vašem timu.",
         );
-      const rows = await tx.$queryRaw<unknown[]>(
+      const rows = await tx.$queryRaw<Record<string, unknown>[]>(
         Prisma.sql`SELECT * FROM v_attendance_daily
            WHERE employee_id = ${employeeId}::uuid AND day >= ${from}::date AND day <= ${to}::date
            ORDER BY day DESC`,
       );
+      const days = withPresenceDisplay(jsonSafe(rows));
       return {
         data: {
           from,
           to,
           employee: { id: emp.id, fullName: emp.full_name },
-          days: jsonSafe(rows),
+          days,
+          totals: sumPresence(days),
         },
       };
     });

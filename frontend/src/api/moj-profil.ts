@@ -63,7 +63,10 @@ export interface ProfileSummary {
   employee: { id: string; fullName: string | null };
   vacationDaysRemaining: number | null;
   openVacationRequests: number;
+  /** Suma ZAOKRUŽENIH dnevnih vrednosti prisustva (zahtev 032/26), decimalno. */
   monthPresenceHours: number;
+  /** Isti zbir u h:mm — ovo se prikazuje korisniku. */
+  monthPresenceHm?: string | null;
   unacknowledgedTalks: number;
 }
 
@@ -106,12 +109,35 @@ export type VacationRequest = {
   created_at?: string;
 } & Record<string, unknown>;
 export type VacationHistoryRow = { year: number } & Record<string, unknown>;
+/**
+ * ZAHTEV 026/26 — molba za izmenu/otkaz VEĆ POTVRĐENOG termina (sy15
+ * `vacation_change_requests`, snake kolone). Ne menja termin sama — čeka HR odluku.
+ */
+export type VacationChangeRequest = {
+  id: string;
+  vacation_request_id: string;
+  /** 'cancel' = otkazivanje · 'revise' = predlog novog termina */
+  kind: 'cancel' | 'revise';
+  old_date_from: string;
+  old_date_to: string;
+  new_date_from: string | null;
+  new_date_to: string | null;
+  new_days_count: number | null;
+  reason: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  submitted_by: string | null;
+  decided_by: string | null;
+  decision_note: string | null;
+  created_at?: string;
+} & Record<string, unknown>;
 export interface VacationData {
   balance: VacationBalance | null;
   requests: VacationRequest[];
   history: VacationHistoryRow[];
   /** Jedinstveni presek GO po godinama (grid ∪ Excel po datumu, usklađeno sa saldom). */
   ledger?: GoLedgerBlock[];
+  /** Moje molbe za izmenu/otkaz potvrđenog termina (026/26). */
+  changeRequests?: VacationChangeRequest[];
 }
 
 export type MakeupRequest = {
@@ -125,6 +151,8 @@ export type MakeupRequest = {
   weekend_work_date: string | null;
   status: string;
   created_at?: string;
+  /** Da li je +1 dan GO STVARNO upisan u saldo (samo za compensation_type='dan_odmora'). */
+  bonus_granted?: boolean;
 } & Record<string, unknown>;
 export type PaidLeaveRequest = {
   id: string;
@@ -145,6 +173,13 @@ export interface MakeupPaidLeaveData {
 export type AttendanceDay = {
   day: string;
   presence_hours?: number | null;
+  /**
+   * Prisustvo u h:mm sa primenjenim pravilom zaokruživanja (zahtev 032/26) — BE je
+   * jedini vlasnik pravila („prekovremeno <30 min se ne prikazuje": [8:00, 8:30) → 8:00).
+   * FE samo ispisuje; NIKAD ne računati sate iz `presence_hours` na klijentu.
+   */
+  presence_hm?: string | null;
+  presence_minutes?: number | null;
   time_in?: string | null;
   time_out?: string | null;
   /** Raw kolone iz v_attendance_daily (paritet 1.0: first_in/last_out/open_intervals). */
@@ -155,10 +190,17 @@ export type AttendanceDay = {
   corrected?: boolean | null;
   status?: string | null;
 } & Record<string, unknown>;
+/** Mesečni zbir prisustva — suma ZAOKRUŽENIH dana (da se slaže sa prikazom po danima). */
+export interface AttendanceTotals {
+  minutes: number;
+  hm: string;
+  hours: number;
+}
 export interface AttendanceData {
   from: string;
   to: string;
   days: AttendanceDay[];
+  totals?: AttendanceTotals;
 }
 
 export type TalkRow = {
@@ -569,6 +611,20 @@ export const useCancelVacation = () =>
   useProfileMutation<{ id: string }>((v) => post(`/vacation-requests/${v.id}/cancel`), KEYS.vacation);
 export const useDeleteVacation = () =>
   useProfileMutation<{ id: string }>((v) => del(`/vacation-requests/${v.id}`), KEYS.vacation);
+/**
+ * ZAHTEV 026/26 — molba nad POTVRĐENIM terminom. Za razliku od `useReviseVacation`/
+ * `useCancelVacation` (koje odmah menjaju termin i smeju samo dok zahtev NIJE odobren),
+ * ovde se pravi red koji HR odobrava; termin se menja tek posle odluke.
+ */
+export const useSubmitVacationChange = () =>
+  useProfileMutation<{
+    id: string;
+    clientEventId: string;
+    kind: 'cancel' | 'revise';
+    dateFrom?: string;
+    dateTo?: string;
+    reason?: string;
+  }>((v) => post(`/vacation-requests/${v.id}/change-request`, v), KEYS.vacation);
 
 /* ── Nadoknada / plaćeno ── */
 
@@ -936,6 +992,25 @@ export const useTeamCorrection = () =>
       timeIn: v.timeIn,
       timeOut: v.timeOut,
       reason: v.reason,
+    }),
+    KEYS.team,
+  );
+
+/** Unos BOLOVANJA u grid za člana tima (zahtev 041/26). Šef sa pravom odobravanja
+ *  GO (`kadrovska.vacreq_manage`) piše bo/subtip u `work_hours` (Opcija A). Ruta je
+ *  na kadrovska modulu (`/v1/kadrovska/grid/sick`), pa NE ide kroz profile `post`
+ *  helper (druga BASE); DB gejt je opseg tima (`current_user_manages_employee`). */
+export const useTeamSick = () =>
+  useProfileMutation<{ employeeId: string; clientEventId: string; dateFrom: string; dateTo: string; subtype: string }>(
+    (v) => apiFetch<TxResponse>('/v1/kadrovska/grid/sick', {
+      method: 'POST',
+      body: JSON.stringify({
+        employeeId: v.employeeId,
+        clientEventId: v.clientEventId,
+        dateFrom: v.dateFrom,
+        dateTo: v.dateTo,
+        subtype: v.subtype,
+      }),
     }),
     KEYS.team,
   );

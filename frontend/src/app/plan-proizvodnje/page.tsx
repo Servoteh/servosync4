@@ -13,11 +13,12 @@ import { PoCrtezuTab } from './_components/po-crtezu-tab';
 import { ZauzetostTab } from './_components/zauzetost-tab';
 import { PregledSvihTab } from './_components/pregled-svih-tab';
 import { KooperacijaTab } from './_components/kooperacija-tab';
+import { GanttTab } from './_components/gantt-tab';
 import { ReassignDialog } from './_components/reassign-dialog';
 import { TpProcedureModal } from './_components/tp-procedure-modal';
 import { SkiceModal } from './_components/skice-modal';
 
-type TabKey = 'po-masini' | 'po-crtezu' | 'zauzetost' | 'pregled' | 'kooperacija';
+type TabKey = 'po-masini' | 'po-crtezu' | 'zauzetost' | 'pregled' | 'kooperacija' | 'gant';
 
 const TABS: TabItem<TabKey>[] = [
   { key: 'po-masini', label: 'Po mašini' },
@@ -25,6 +26,8 @@ const TABS: TabItem<TabKey>[] = [
   { key: 'zauzetost', label: 'Zauzetost mašina' },
   { key: 'pregled', label: 'Pregled svih' },
   { key: 'kooperacija', label: 'Kooperacija' },
+  // 046/26 — terminski plan (MS Project stil): Hala → mašina → stavke na vremenskoj osi.
+  { key: 'gant', label: 'Gant' },
 ];
 
 /** Ključevi `?tab=` — ujedno OGLEDALO dece modula „Planiranje" u `navigation.ts`. */
@@ -90,6 +93,7 @@ export default function PlanProizvodnjePage() {
         {tab === 'zauzetost' && <ZauzetostTab onJumpToPoMasini={jumpToPoMasini} />}
         {tab === 'pregled' && <PregledSvihTab onJumpToPoMasini={jumpToPoMasini} />}
         {tab === 'kooperacija' && <KooperacijaTab />}
+        {tab === 'gant' && <GanttTab />}
       </main>
 
       {reassignRows && (

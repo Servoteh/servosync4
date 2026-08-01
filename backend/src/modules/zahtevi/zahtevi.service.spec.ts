@@ -1439,4 +1439,30 @@ describe("ZahteviService", () => {
       expect(res.data.total).toBe(4);
     });
   });
+
+  // ── PODNOSIOCI (048/26) ───────────────────────────────────────────────────
+  describe("podnosioci", () => {
+    it("vraća samo one koji imaju zahtev, sa imenom i brojem", async () => {
+      prisma.changeRequest.groupBy.mockResolvedValue([
+        { createdByUserId: 7, _count: { _all: 2 } },
+        { createdByUserId: 3, _count: { _all: 5 } },
+      ]);
+      prisma.user.findMany.mockResolvedValue([
+        { id: 7, fullName: "Ana Anić", email: "ana@x.rs" },
+        { id: 3, fullName: null, email: "bora@x.rs" },
+      ]);
+      const res = await service.podnosioci();
+      expect(res.data).toEqual([
+        { id: 7, name: "Ana Anić", count: 2 },
+        { id: 3, name: "bora@x.rs", count: 5 },
+      ]);
+    });
+
+    it("bez zahteva → prazna lista i BEZ upita nad users", async () => {
+      prisma.changeRequest.groupBy.mockResolvedValue([]);
+      const res = await service.podnosioci();
+      expect(res.data).toEqual([]);
+      expect(prisma.user.findMany).not.toHaveBeenCalled();
+    });
+  });
 });

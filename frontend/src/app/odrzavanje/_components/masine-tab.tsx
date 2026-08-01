@@ -151,7 +151,7 @@ export function MasineTab({ me, initFilter }: { me: MaintMe | undefined; initFil
       key: 'flags',
       header: '',
       render: (r) =>
-        r.openInc > 0 && /deo|part/i.test(r.override ?? '') ? <StatusBadge tone="warn" label="Čeka deo" /> : r.row.archivedAt ? <StatusBadge tone="neutral" label="Arhivirana" /> : null,
+        r.openInc > 0 && /deo|part/i.test(r.override ?? '') ? <StatusBadge tone="warn" label="Čeka deo" /> : r.row.archivedAt ? <StatusBadge tone="neutral" label="Otpisana" /> : null,
     },
   ];
 
@@ -178,7 +178,7 @@ export function MasineTab({ me, initFilter }: { me: MaintMe | undefined; initFil
           <Chip active={mine} onClick={() => setMine(!mine)}>Moje</Chip>
           <Chip active={inc} onClick={() => setInc(!inc)}>Otvoreni kvarovi</Chip>
           <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-sm text-ink-secondary">
-            <input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} /> Arhivirane
+            <input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} /> Otpisane
           </label>
         </div>
       </div>

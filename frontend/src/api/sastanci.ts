@@ -815,11 +815,13 @@ export const useSetZapisnikDatum = () =>
   );
 
 /**
- * Otkaži sastanak + obavesti pozvane učesnike (RPC sastanci_cancel_sastanak →
- * 'meeting_cancel' mejl svakom `pozvan=true`). Idempotentno (clientEventId) —
- * dupli klik ne šalje mejlove dvaput. Ključevi odgovora su snake_case jer je to
- * sirov jsonb iz sy15 RPC-a (isto kao weekly-status). `ok:false` NIJE greška:
- * `reason='locked'` (zaključan) / `'already_cancelled'` (već otkazan).
+ * Otkaži sastanak + obavesti pozvane učesnike (status='otkazan' pod RLS-om, pa
+ * DEFINER `sast_enqueue_cancel` → 'meeting_cancel' mejl svakom `pozvan=true`).
+ * Idempotentno (clientEventId) — dupli klik ne šalje mejlove dvaput. Ključevi
+ * odgovora su snake_case (zadržan oblik sy15 jsonb-a, isto kao weekly-status).
+ * `ok:false` NIJE greška: `reason='locked'` (zaključan) / `'already_cancelled'`
+ * (već otkazan). 021/26: pre fixa je BE zvao fn `sastanci_cancel_sastanak` koja na
+ * sy15 nikad nije kreirana → svako otkazivanje je vraćalo 500.
  */
 export interface CancelResult {
   ok: boolean;

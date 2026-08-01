@@ -14,6 +14,7 @@ import type {
   BulkReassignDto,
   CooperationGroupPatchDto,
   CooperationGroupUpsertDto,
+  MachineHallUpsertDto,
   OverlayReorderDto,
   OverlayUpsertDto,
   ReassignDto,
@@ -104,7 +105,43 @@ export class PlanProizvodnjeService {
         patch.cooperationSetAt = now;
       }
     }
+    // ── Zahtev 046/26 (gant). Termini/uslov/završenost — merge patch (undefined = ne
+    //    diraj, null = obriši). Ne dodiruju `shiftSortOrder` (ručni redosled = master).
+    if (dto.plannedStartAt !== undefined)
+      patch.plannedStartAt = this.toDbTs(dto.plannedStartAt);
+    if (dto.plannedEndAt !== undefined)
+      patch.plannedEndAt = this.toDbTs(dto.plannedEndAt);
+    if (dto.plannedDurationMinutes !== undefined)
+      patch.plannedDurationMinutes = dto.plannedDurationMinutes;
+    if (dto.plannedDone !== undefined) {
+      patch.plannedDone = dto.plannedDone;
+      // null = skini override (vrati auto iz kucanja) → i audit se briše.
+      patch.plannedDoneAt = dto.plannedDone === null ? null : now;
+      patch.plannedDoneBy = dto.plannedDone === null ? null : email;
+    }
+    if (dto.predecessorWorkOrderId !== undefined) {
+      const pw = dto.predecessorWorkOrderId;
+      patch.predecessorWorkOrderId = pw === null ? null : Number(pw);
+      // Brisanje RN prethodnika nosi i liniju (uslov je par, ne dva nezavisna polja).
+      if (pw === null) patch.predecessorLine = null;
+    }
+    if (dto.predecessorLine !== undefined && dto.predecessorWorkOrderId !== null)
+      patch.predecessorLine =
+        dto.predecessorLine === null ? null : Number(dto.predecessorLine);
+
+    const touchesTerms =
+      patch.plannedStartAt !== undefined || patch.plannedEndAt !== undefined;
+    const touchesPredecessor =
+      patch.predecessorWorkOrderId !== undefined ||
+      patch.predecessorLine !== undefined;
+
     return this.prisma.$transaction(async (tx) => {
+      // Termini/uslov se validiraju nad SPOJENIM stanjem (postojeći red ⊕ patch) —
+      // v. `assertPlanConsistent`; provera nad samim patch-om propušta svaki poziv
+      // koji nosi samo jedno od dva polja (FE resize/Shift+strelice).
+      if (touchesTerms || touchesPredecessor) {
+        await this.assertPlanConsistent(tx, wo, line, patch, touchesTerms, touchesPredecessor);
+      }
       if (isPinMarker) {
         patch.shiftSortOrder = await this.resolvePinOrder(tx, wo, line);
       }
@@ -121,6 +158,66 @@ export class PlanProizvodnjeService {
       });
       return { data: jsonSafe(row) };
     });
+  }
+
+  /**
+   * Validacija termina i uslova nad SPOJENIM stanjem (postojeći red ⊕ patch).
+   *
+   * API je merge-patch, pa provera nad SAMIM patch-om propušta svaki poziv koji nosi
+   * jedno od dva polja: FE resize bara i Shift+←/→ šalju samo `plannedEndAt`, a uslov
+   * ume da stigne kao dva odvojena poziva (prvo linija, pa RN). Zato se postojeći red
+   * čita u ISTOJ transakciji i `FOR UPDATE` — drugi planer čeka do commit-a umesto da
+   * nad zastarelim kešom upiše kraj pre početka.
+   *
+   * Pravila (sva → 422; naopak interval se NIKAD ne upisuje):
+   *   • `planned_end_before_start`    — kraj pre početka,
+   *   • `predecessor_self_reference`  — stavka kao sopstveni uslov (ciklus dužine 1),
+   *   • `predecessor_pair_incomplete` — uslov je PAR (RN + linija); pola para je siroče
+   *     na kome bi se F2 auto-pomeranje po uslovu zavrtelo.
+   */
+  private async assertPlanConsistent(
+    tx: Tx,
+    wo: number,
+    line: number,
+    patch: Record<string, unknown>,
+    checkTerms: boolean,
+    checkPredecessor: boolean,
+  ): Promise<void> {
+    const rows = await tx.$queryRaw<
+      {
+        planned_start_at: Date | null;
+        planned_end_at: Date | null;
+        predecessor_work_order_id: number | null;
+        predecessor_line: number | null;
+      }[]
+    >(Prisma.sql`
+      SELECT planned_start_at, planned_end_at,
+             predecessor_work_order_id, predecessor_line
+        FROM plan_proizvodnje_overlays
+       WHERE work_order_id = ${wo} AND line_id = ${line}
+       FOR UPDATE`);
+    const cur = rows[0];
+    /** Spojena vrednost: patch ima prednost (uklj. eksplicitni null), inače baza. */
+    const merged = <T>(key: string, existing: T | null | undefined): T | null =>
+      patch[key] !== undefined ? ((patch[key] as T | null) ?? null) : (existing ?? null);
+
+    if (checkTerms) {
+      const start = merged<Date>("plannedStartAt", cur?.planned_start_at);
+      const end = merged<Date>("plannedEndAt", cur?.planned_end_at);
+      if (start && end && end.getTime() < start.getTime()) {
+        throw new UnprocessableEntityException("planned_end_before_start");
+      }
+    }
+    if (checkPredecessor) {
+      const pwo = merged<number>("predecessorWorkOrderId", cur?.predecessor_work_order_id);
+      const pline = merged<number>("predecessorLine", cur?.predecessor_line);
+      if (pwo === wo && pline === line) {
+        throw new UnprocessableEntityException("predecessor_self_reference");
+      }
+      if ((pwo === null) !== (pline === null)) {
+        throw new UnprocessableEntityException("predecessor_pair_incomplete");
+      }
+    }
   }
 
   /**
@@ -488,5 +585,68 @@ export class PlanProizvodnjeService {
     if (v === undefined) return undefined;
     if (v === null || v === "") return null;
     return new Date(`${v.slice(0, 10)}T00:00:00Z`);
+  }
+
+  /** ISO string → Date za @db.Timestamptz (undefined = ne diraj, null/'' = obriši). */
+  private toDbTs(v?: string | null): Date | null | undefined {
+    if (v === undefined) return undefined;
+    if (v === null || v === "") return null;
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) {
+      throw new UnprocessableEntityException("invalid_timestamp");
+    }
+    return d;
+  }
+
+  // ==========================================================================
+  // Šifrarnik hala (zahtev 046/26 F0) — mašina → hala, ručno
+  // ==========================================================================
+
+  /**
+   * Dodela hale mašini (upsert po `machine_code`). Mašina mora postojati u `operations`
+   * (šifarnik radnih mesta) — inače 422 `machine_not_found`. Prazan `hall` NIJE dozvoljen;
+   * uklanjanje dodele ide kroz `deleteMachineHall` (mašina tad pada u grupu „Bez hale").
+   */
+  async upsertMachineHall(
+    email: string,
+    machineCode: string,
+    dto: MachineHallUpsertDto,
+  ) {
+    const code = (machineCode ?? "").trim();
+    const hall = (dto.hall ?? "").trim();
+    if (!code) throw new BadRequestException("Nedostaje šifra mašine.");
+    if (!hall) throw new UnprocessableEntityException("hall_required");
+    const exists = await this.prisma.$queryRaw<{ ok: boolean }[]>(Prisma.sql`
+      SELECT EXISTS (SELECT 1 FROM operations m WHERE m.work_center_code = ${code}) AS ok`);
+    if (!exists[0]?.ok) {
+      throw new UnprocessableEntityException("machine_not_found");
+    }
+    const row = await this.prisma.planProizvodnjeMachineHall.upsert({
+      where: { machineCode: code },
+      create: {
+        machineCode: code,
+        hall,
+        sortOrder: dto.sortOrder ?? null,
+        note: dto.note ?? null,
+        updatedBy: email,
+      },
+      update: {
+        hall,
+        sortOrder: dto.sortOrder ?? null,
+        note: dto.note ?? null,
+        updatedBy: email,
+      },
+    });
+    return { data: jsonSafe(row) };
+  }
+
+  /** Skidanje dodele (mašina → „Bez hale"). Idempotentno (nema reda → 200). */
+  async deleteMachineHall(_email: string, machineCode: string) {
+    const code = (machineCode ?? "").trim();
+    if (!code) throw new BadRequestException("Nedostaje šifra mašine.");
+    await this.prisma.planProizvodnjeMachineHall.deleteMany({
+      where: { machineCode: code },
+    });
+    return { data: { machineCode: code } };
   }
 }

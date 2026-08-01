@@ -26,7 +26,6 @@ export interface ScheduledJob {
    */
   catchUpMinutes?: number;
   /**
-<<<<<<< HEAD
    * `app_switches.key` korisničkog prekidača. Kad je postavljen, scheduler PRE
    * svakog izvršenja (i zakazanog i `run-now`) proverava red u `app_switches` —
    * to je JEDNA kapija za sve poslove, umesto da svaki ulaz pamti da je pozove.

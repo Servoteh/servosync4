@@ -80,8 +80,13 @@ function prismaMock() {
       findFirst: jest.fn().mockResolvedValue(null),
     },
     drawingPdf: { findFirst: jest.fn().mockResolvedValue(null) },
+    // rnProgress(): „Gotovost RN" — statusi primopredaje uz redove naloga.
+    handoverStatus: { findMany: jest.fn().mockResolvedValue([]) },
     $transaction: jest.fn(),
     $executeRawUnsafe: jest.fn().mockResolvedValue(0),
+    // rnProgress() radi kroz $queryRaw (redovi + COUNT). Default [] je bezbedan:
+    // nijedan drugi test u fajlu ne dodiruje sirovi SQL.
+    $queryRaw: jest.fn().mockResolvedValue([]),
   };
   m.$transaction.mockImplementation((arg: unknown) =>
     Array.isArray(arg)
@@ -3342,5 +3347,212 @@ describe("TechProcessesService — K4 lista: vrsta unosa / kontrolori / zbir", (
       "control-mid",
       "work",
     ]);
+  });
+});
+
+// ============================================================ 036/26 GOTOVOST RN
+
+/**
+ * Zahtev 036/26 (BUG): tab „Gotovost RN" je pisao 100% za deo koji u tabu „Kucanja"
+ * očigledno nije gotov. Uzrok: kad završna kontrola NIJE otkucana, gotovost je padala
+ * na `MAX(piece_count)` preko BILO KOJE operacije — pa je jedna operacija otkucana u
+ * punom lotu dizala ceo nalog na 100%.
+ *
+ * Sirovi red koji `rnProgress()` dobija iz SQL-a: `made_good_final` = dobri I završeni
+ * komadi NA završnoj kontroli, `made_good_bottleneck` = najslabija operacija rutinga.
+ */
+function rnProgressRow(over: Record<string, unknown> = {}) {
+  return {
+    id: 46967,
+    project_id: 10349,
+    ident_number: "9400/2/380",
+    variant: 0,
+    part_name: "Trn zabravljivanja novi",
+    drawing_number: "1138882",
+    planned: 2,
+    production_deadline: null,
+    handover_status_id: 3,
+    worker_id: 0,
+    final_op_count: 1,
+    made_good_final: 0,
+    made_good_bottleneck: 0,
+    routing_op_count: 14,
+    routing_ops_completed: 5,
+    operation_count: 7,
+    finished_operation_count: 6,
+    last_completed_at: null,
+    ...over,
+  };
+}
+
+describe("TechProcessesService — rnProgress „Gotovost RN” (036/26)", () => {
+  let service: TechProcessesService;
+  let prisma: ReturnType<typeof prismaMock>;
+
+  /** $queryRaw: 1. poziv = redovi, 2. poziv = COUNT. */
+  function mockRows(rows: Record<string, unknown>[]) {
+    prisma.$queryRaw
+      .mockResolvedValueOnce(rows)
+      .mockResolvedValueOnce([{ count: rows.length }]);
+  }
+
+  beforeEach(async () => {
+    prisma = prismaMock();
+    const mod: TestingModule = await Test.createTestingModule({
+      providers: [
+        TechProcessesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ScopeService, useValue: {} },
+        { provide: NotificationsService, useValue: notificationsMock() },
+        { provide: LabelPrintService, useValue: { printRawTspl: jest.fn() } },
+        { provide: QualityService, useValue: qualityMock() },
+        { provide: WorkOrdersService, useValue: workOrdersMock() },
+      ],
+    }).compile();
+    service = mod.get(TechProcessesService);
+  });
+
+  it("REGRESIJA 1138882: završna kontrola nije otkucana → NIJE 100% iako su ranije operacije pune", async () => {
+    // Stvarni prod obrazac RN 9400/2/380 (crtež 1138882): 15 operacija u rutingu,
+    // 7 kucanja, međufazne operacije otkucane u punom lotu (2/2), ZAVRŠNA KONTROLA
+    // (8.3) bez ijednog kucanja. Stara logika je uzimala MAX preko bilo koje
+    // operacije = 2 = plan → 100%.
+    mockRows([
+      rnProgressRow({
+        final_op_count: 1,
+        made_good_final: 0,
+        made_good_bottleneck: 0,
+      }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].madeGoodPieces).toBe(0);
+    expect(data[0].completionPercent).toBe(0);
+    expect(data[0].isCompleted).toBe(false);
+    expect(data[0].madeGoodSource).toBe("zavrsna-kontrola");
+  });
+
+  it("završna kontrola otkucana u punoj količini → 100% i „Gotovo”", async () => {
+    mockRows([
+      rnProgressRow({
+        planned: 2,
+        made_good_final: 2,
+        routing_ops_completed: 14,
+      }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].madeGoodPieces).toBe(2);
+    expect(data[0].completionPercent).toBe(100);
+    expect(data[0].isCompleted).toBe(true);
+  });
+
+  it("parcijalna završna kontrola (1 od 2) → 50%, nije gotovo", async () => {
+    mockRows([rnProgressRow({ planned: 2, made_good_final: 1 })]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].completionPercent).toBe(50);
+    expect(data[0].isCompleted).toBe(false);
+  });
+
+  it("prekoračenje na završnoj kontroli se klampuje na 100% (ne 150%)", async () => {
+    mockRows([rnProgressRow({ planned: 2, made_good_final: 3 })]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].completionPercent).toBe(100);
+    expect(data[0].isCompleted).toBe(true);
+  });
+
+  it("ruting BEZ završne kontrole → meri se USKO GRLO, ne najbolja operacija", async () => {
+    // Nema završne kontrole: 4 operacije, najslabija ima 1 od 2 komada.
+    mockRows([
+      rnProgressRow({
+        planned: 2,
+        final_op_count: 0,
+        made_good_final: 0,
+        made_good_bottleneck: 1,
+        routing_op_count: 4,
+        routing_ops_completed: 3,
+      }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].madeGoodSource).toBe("usko-grlo");
+    expect(data[0].madeGoodPieces).toBe(1);
+    expect(data[0].completionPercent).toBe(50);
+    expect(data[0].isCompleted).toBe(false);
+  });
+
+  it("ruting bez završne kontrole, sve operacije pune → 100%", async () => {
+    mockRows([
+      rnProgressRow({
+        planned: 2,
+        final_op_count: 0,
+        made_good_bottleneck: 2,
+        routing_op_count: 4,
+        routing_ops_completed: 4,
+      }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].completionPercent).toBe(100);
+    expect(data[0].isCompleted).toBe(true);
+  });
+
+  it("nalog bez rutinga → 0%, gotovost se ne izmišlja", async () => {
+    mockRows([
+      rnProgressRow({
+        final_op_count: 0,
+        made_good_bottleneck: 0,
+        routing_op_count: 0,
+        routing_ops_completed: 0,
+      }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].madeGoodSource).toBe("nema-rutinga");
+    expect(data[0].completionPercent).toBe(0);
+    expect(data[0].isCompleted).toBe(false);
+  });
+
+  it("planirano 0 → procenat je null (nedefinisan), nikad „gotovo”", async () => {
+    mockRows([rnProgressRow({ planned: 0, made_good_final: 0 })]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].completionPercent).toBeNull();
+    expect(data[0].isCompleted).toBe(false);
+  });
+
+  it("prosleđuje broj operacija RUTINGA (X/Y u tabeli), ne broj kucanja", async () => {
+    mockRows([
+      rnProgressRow({ routing_op_count: 14, routing_ops_completed: 5 }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].routingOperationCount).toBe(14);
+    expect(data[0].routingOperationsCompleted).toBe(5);
+  });
+
+  it("gotovost se računa iz RUTINGA naloga — SQL nema fallback na bilo koju operaciju", async () => {
+    // Brana protiv povratka uzroka 036/26: upit mora da se oslanja na ruting
+    // (`work_order_operations` + `significant_for_finishing`), a ne na goli MAX
+    // preko svih kucanja naloga.
+    mockRows([rnProgressRow()]);
+
+    await service.rnProgress({});
+
+    const sql = String(prisma.$queryRaw.mock.calls[0][0].strings.join(""));
+    expect(sql).toContain("work_order_operations");
+    expect(sql).toContain("significant_for_finishing");
+    expect(sql).not.toContain("made_good_any");
   });
 });

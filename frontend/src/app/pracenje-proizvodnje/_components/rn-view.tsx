@@ -190,6 +190,24 @@ export function RnView({ rnId, onBack }: { rnId: string; onBack: () => void }) {
     }
   }
 
+  // Bug 042/26: umesto tihog renderovanja praznog zaglavlja kad RN ne može da se učita
+  // (npr. loš/zastareo `?rn=` deep-link), pokaži jasnu grešku + izlaz — ne rušimo se, ali ni
+  // ne ostavljamo korisnika bez objašnjenja. `!rn.data` čuva prethodno uspešno učitan RN kroz
+  // prolazan neuspeh pollinga (30s, `useRn`).
+  if (rn.isError && !rn.data) {
+    return (
+      <div className="space-y-4">
+        <Button variant="secondary" onClick={onBack}>
+          <ArrowLeft className="h-4 w-4" /> Nazad
+        </Button>
+        <EmptyState
+          title="RN nije moguće učitati"
+          hint={rn.error instanceof Error ? rn.error.message : 'Proveri broj RN-a ili se vrati na prethodni ekran.'}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">

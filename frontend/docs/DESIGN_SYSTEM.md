@@ -169,6 +169,8 @@
 | RN / operacija | U proizvodnji / U toku | info plava | `--status-info` |
 | RN / operacija | Na čekanju | narandžasta | `--status-warn` |
 | RN / operacija | Završen(o) | zelena | `--status-success` |
+| Kucanje (`tech_processes`) | **ŠKART** (`qualityTypeId=2`) — **pregazi „Završen"** | crvena | `--status-danger` |
+| Kucanje (`tech_processes`) | Kvalitet: Dobar / Dorada / Škart | zelena / narandžasta / crvena | `--status-success` / `--status-warn` / `--status-danger` |
 | RN | Kasni (rok probijen) | crvena | `--status-danger` |
 | RN / primopredaja | Zaključan(a) (`isLocked`) | narandžasta | `--status-warn` |
 | Primopredaja | U obradi | neutralna | `--status-neutral` |
@@ -237,6 +239,12 @@
 | Kvalitet — škart/dorada | Odbačen (`ODBACEN`, prijava nije validna) | neutralna | `--status-neutral` |
 
 Novi status = nova vrsta u ovoj tabeli **pre** upotrebe u kodu.
+
+Status jednog kucanja (`tech_processes` red) renderuje se **isključivo** kroz
+`components/tech-entry-status.tsx` (`TechEntryStatusBadge` / `QualityBadge`) — jedna mapa za sve
+ekrane koji prikazuju kucanja (Realizacija: lista + kartica, Evidencija u proizvodnji, Kvalitet →
+Aktivnost kontrole). Prioritet je **ŠKART › Završen › otvoren**: red sa škartom jeste zatvoren, ali
+komadi nisu upotrebljivi, pa zeleno „Završen" dovodi u zabludu (zahtev 033/26).
 
 ## 8. Tastatura
 

@@ -29,6 +29,7 @@ import { PlanProizvodnjeReadService } from "./plan-proizvodnje-read.service";
 import {
   CooperationQueryDto,
   DrawingsQueryDto,
+  GanttQueryDto,
   OperationsQueryDto,
   SearchOpsQueryDto,
 } from "./dto/plan-proizvodnje-query.dto";
@@ -38,6 +39,7 @@ import {
   CooperationGroupUpsertDto,
   DrawingUploadDto,
   BigtehnDrawingSignQueryDto,
+  MachineHallUpsertDto,
   OverlayReorderDto,
   OverlayUpsertDto,
   ReassignDto,
@@ -95,6 +97,17 @@ export class PlanProizvodnjeController {
     return this.read.operations(req.user.email, q);
   }
 
+  // Zahtev 046/26 — gant feed + ručni šifrarnik hala.
+  @Get("gantt")
+  gantt(@Req() req: AuthedRequest, @Query() q: GanttQueryDto) {
+    return this.read.gantt(req.user.email, q);
+  }
+
+  @Get("halls")
+  halls(@Req() req: AuthedRequest) {
+    return this.read.machineHalls(req.user.email);
+  }
+
   @Get("cooperation/groups")
   cooperationGroups(@Req() req: AuthedRequest) {
     return this.read.cooperationGroups(req.user.email);
@@ -136,6 +149,27 @@ export class PlanProizvodnjeController {
   @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
   reorderOverlays(@Req() req: AuthedRequest, @Body() dto: OverlayReorderDto) {
     return this.pp.reorderOverlays(req.user.email, dto);
+  }
+
+  // ---------- Šifrarnik hala — 046/26 (edit) ----------
+
+  @Put("halls/:machineCode")
+  @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
+  upsertHall(
+    @Req() req: AuthedRequest,
+    @Param("machineCode") machineCode: string,
+    @Body() dto: MachineHallUpsertDto,
+  ) {
+    return this.pp.upsertMachineHall(req.user.email, machineCode, dto);
+  }
+
+  @Delete("halls/:machineCode")
+  @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
+  deleteHall(
+    @Req() req: AuthedRequest,
+    @Param("machineCode") machineCode: string,
+  ) {
+    return this.pp.deleteMachineHall(req.user.email, machineCode);
   }
 
   // ---------- Urgency (edit) ----------

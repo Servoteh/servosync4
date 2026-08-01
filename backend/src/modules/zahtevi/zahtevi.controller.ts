@@ -87,6 +87,13 @@ export class ZahteviController {
     return this.zahtevi.inboxMeta();
   }
 
+  /** GET /zahtevi/podnosioci (admin) — lista podnosilaca za filter/prikaz imena. */
+  @Get("podnosioci")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
+  podnosioci() {
+    return this.zahtevi.podnosioci();
+  }
+
   @Get("slicni")
   @RequirePermission(PERMISSIONS.ZAHTEVI_WRITE)
   slicni(@Query("q") q?: string) {

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solarna elektrana — FNE (blue'Log)</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hdr">
+    <div class="brand">☀️ FNE SERVOTEH <small>Solarna · blue'Log</small></div>
+    <div class="hdr-right">
+      <nav class="nav"><a href="/">Kotlarnica</a><a href="/loxone.html">Nova zgrada</a><a href="/sigen.html">Solarna</a><a href="/bluelog.html" class="active">FNE</a><a href="/hala5.html">Hala 5</a></nav>
+      <span id="conn" class="badge">--</span>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <main>
+    <h2 class="sec">POSTROJENJE <small>(uživo, ~30 s · rezolucija 1 min)</small></h2>
+    <section id="plant" class="zones"></section>
+
+    <h2 class="sec">MREŽA <small>(brojilo Janitza UMG 96RM)</small></h2>
+    <section id="meter" class="zones"></section>
+
+    <h2 class="sec">INVERTORI <small>(6× KACO blueplanet 50 TL3)</small></h2>
+    <section id="inverters" class="zones"></section>
+  </main>
+
+  <footer class="foot">
+    <span id="hostinfo">meteocontrol blue'Log (lokalni REST)</span>
+    <span id="tsinfo"></span>
+  </footer>
+
+  <script src="bluelog.js"></script>
+</body>
+</html>

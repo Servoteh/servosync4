@@ -157,7 +157,7 @@ export const NAV_DOMAINS: NavDomain[] = [
         requires: PERMISSIONS.PLAN_PROIZVODNJE_READ,
         wide: true,
         keywords: ['plan', 'proizvodnja', 'gantt'],
-        // PODMENIJI F2 (§3.1): 5 pogleda, `?tab=` uveden u strani (TABS u plan-proizvodnje/
+        // PODMENIJI F2 (§3.1): 6 pogleda (046/26 dodao „Gant"), `?tab=` uveden u strani (TABS u plan-proizvodnje/
         // page.tsx = izvor istine za ključeve). Ruta je `wide` — pun sidebar se auto-sklanja,
         // pa se podmeni koristi kroz RAIL FLYOUT (F0 ga renderuje) i Ctrl+K paletu.
         // Bez `requires` po detetu: strana tabove ne gejtuje dodatno (sve na plan_proizvodnje.read;
@@ -168,6 +168,7 @@ export const NAV_DOMAINS: NavDomain[] = [
           { label: 'Zauzetost mašina', href: '/plan-proizvodnje?tab=zauzetost', keywords: ['zauzetost', 'kapacitet', 'opterecenje', 'PLA-ZA'] },
           { label: 'Pregled svih', href: '/plan-proizvodnje?tab=pregled', keywords: ['pregled svih', 'sve operacije', 'PLA-PS'] },
           { label: 'Kooperacija', href: '/plan-proizvodnje?tab=kooperacija', keywords: ['kooperacija', 'koop', 'usluga', 'PLA-KO'] },
+          { label: 'Gant', href: '/plan-proizvodnje?tab=gant', keywords: ['gant', 'gantt', 'terminski plan', 'vremenska osa', 'hala', 'PLA-GA'] },
         ],
       },
       { label: 'Praćenje', href: '/pracenje-proizvodnje', icon: Radar, requires: PERMISSIONS.PRACENJE_READ, keywords: ['pracenje', 'status'] },

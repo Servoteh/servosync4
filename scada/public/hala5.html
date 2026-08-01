@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hala 5 — Termoregulacija (Siemens)</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hdr">
+    <div class="brand">🏭 HALA 5 <small>SERVOTEH · Siemens S7-1200</small></div>
+    <div class="hdr-right">
+      <nav class="nav">
+        <a href="/">Kotlarnica</a><a href="/loxone.html">Nova zgrada</a>
+        <a href="/sigen.html">Solarna</a><a href="/bluelog.html">FNE</a>
+        <a href="/hala5.html" class="active">Hala 5</a>
+      </nav>
+      <span id="conn" class="badge">--</span>
+      <span id="clock" class="clock"></span>
+    </div>
+  </header>
+
+  <div id="alarmbar" class="alarmbar hidden"></div>
+
+  <main>
+    <h2 class="sec">REŽIM <small>(klik traži potvrdu — menja postrojenje uživo)</small></h2>
+    <section id="modes" class="zones"></section>
+
+    <h2 class="sec">TEMPERATURE</h2>
+    <section id="temps" class="zones"></section>
+
+    <h2 class="sec">PUMPE</h2>
+    <section id="pumps" class="zones"></section>
+
+    <h2 class="sec">KALORIFERI <small>(K1–K10)</small></h2>
+    <section id="kal" class="kalgrid"></section>
+
+    <h2 class="sec">RASPORED · SATNICE <small>(početak/kraj rada po hali, 0–23 h)</small></h2>
+    <section id="sched" class="zones"></section>
+
+    <h2 class="sec">ALARMI</h2>
+    <section id="alarms"></section>
+  </main>
+
+  <footer class="foot">
+    <span id="hostinfo">Siemens S7-1200 · AWP web most</span>
+    <span class="warn-note">alarmi dekodovani iz živog HMI-a · W4/W5 = ispad zaštite (fizički reset)</span>
+  </footer>
+
+  <script src="hala5.js"></script>
+</body>
+</html>

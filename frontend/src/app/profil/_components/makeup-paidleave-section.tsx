@@ -44,7 +44,8 @@ export function MakeupSection() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-line text-left text-2xs uppercase text-ink-secondary">
-              <th className="py-1.5">Izostanak</th>
+              <th className="py-1.5">Vrsta</th>
+              <th className="py-1.5">Datum</th>
               <th className="py-1.5">Sati</th>
               <th className="py-1.5">Rok</th>
               <th className="py-1.5">Status</th>
@@ -53,24 +54,37 @@ export function MakeupSection() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className="border-b border-line-soft">
-                <td className="py-1.5 tnums">{formatDate(r.absence_date)}</td>
-                <td className="py-1.5 tnums">{r.absence_hours}h</td>
-                <td className="py-1.5 tnums">{r.makeup_deadline ? formatDate(r.makeup_deadline) : '—'}</td>
-                <td className="py-1.5">
-                  <StatusBadge tone={statusTone(r.status)} label={statusLabel(r.status)} />
-                </td>
-                <td className="py-1.5 text-ink-secondary">{r.reason || r.makeup_plan || '—'}</td>
-                <td className="py-1.5 text-right">
-                  {['pending', 'sef_approved', 'rejected'].includes(r.status) && (
-                    <button onClick={() => confirm('Obrisati zahtev?') && delM.mutate({ id: r.id })} className="text-status-danger hover:underline" aria-label="Obriši zahtev" title="Obriši zahtev">
-                      <Trash2 className="h-4 w-4" aria-hidden />
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {rows.map((r) => {
+              const danOdmora = r.compensation_type === 'dan_odmora';
+              return (
+                <tr key={r.id} className="border-b border-line-soft">
+                  <td className="py-1.5">{danOdmora ? '🏖 Dan odmora (rad vikendom)' : 'Nadoknada sati'}</td>
+                  <td className="py-1.5 tnums">{formatDate(danOdmora ? r.weekend_work_date || r.absence_date : r.absence_date)}</td>
+                  <td className="py-1.5 tnums">{r.absence_hours}h</td>
+                  <td className="py-1.5 tnums">{danOdmora ? '—' : r.makeup_deadline ? formatDate(r.makeup_deadline) : '—'}</td>
+                  <td className="py-1.5">
+                    {/* Za dan_odmora: bedž govori da li je +1 dan GO STVARNO u saldu —
+                        "odobreno" bez upisanog dana se desilo (incident 04.07.2026).
+                        Tri stanja: true/false/undefined (stari BE bez polja → neutralno). */}
+                    {danOdmora && (r.status === 'approved' || r.status === 'completed') && r.bonus_granted === true ? (
+                      <StatusBadge tone="success" label="+1 dan GO upisan u saldo" />
+                    ) : danOdmora && (r.status === 'approved' || r.status === 'completed') && r.bonus_granted === false ? (
+                      <StatusBadge tone="warn" label="Odobreno — dan još nije upisan" />
+                    ) : (
+                      <StatusBadge tone={statusTone(r.status)} label={statusLabel(r.status)} />
+                    )}
+                  </td>
+                  <td className="py-1.5 text-ink-secondary">{r.reason || r.makeup_plan || '—'}</td>
+                  <td className="py-1.5 text-right">
+                    {['pending', 'sef_approved', 'rejected'].includes(r.status) && (
+                      <button onClick={() => confirm('Obrisati zahtev?') && delM.mutate({ id: r.id })} className="text-status-danger hover:underline" aria-label="Obriši zahtev" title="Obriši zahtev">
+                        <Trash2 className="h-4 w-4" aria-hidden />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

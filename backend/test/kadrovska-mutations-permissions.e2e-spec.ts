@@ -119,6 +119,10 @@ describe("Kadrovska R2 mutacije — permission matrica (e2e)", () => {
     { method: "post", path: `/kadrovska/requests/nop/${U}/approve`, perm: PERMISSIONS.KADROVSKA_ADMIN, body: {}, ok: 201, label: "nop approve (admin)" },
     { method: "post", path: "/kadrovska/grid/batch", perm: PERMISSIONS.KADROVSKA_GRID_EDIT, body: { rows: [{ employeeId: U, workDate: "2026-07-01", hours: 8 }] }, ok: 201, label: "grid/batch (grid_edit)" },
     { method: "post", path: "/kadrovska/grid/go/set", perm: PERMISSIONS.KADROVSKA_GRID_EDIT, body: { employeeId: U, dateFrom: "2026-07-01", dateTo: "2026-07-05" }, ok: 201, label: "grid GO set (grid_edit)" },
+    // Zahtev 041/26: bolovanje za člana tima — NAMERNO iza vacreq_manage (šef koji sme
+    // da odobrava GO), NE grid_edit (pun grid ostaje zatvoren za allowlistu urednika).
+    { method: "post", path: "/kadrovska/grid/sick", perm: PERMISSIONS.KADROVSKA_VACREQ_MANAGE, body: { employeeId: U, dateFrom: "2026-07-01", dateTo: "2026-07-05", subtype: "obicno" }, ok: 201, label: "grid bolovanje set (vacreq_manage)" },
+    { method: "post", path: "/kadrovska/grid/sick/unset", perm: PERMISSIONS.KADROVSKA_VACREQ_MANAGE, body: { employeeId: U, dateFrom: "2026-07-01", dateTo: "2026-07-05" }, ok: 201, label: "grid bolovanje unset (vacreq_manage)" },
     { method: "post", path: "/kadrovska/employees", perm: PERMISSIONS.KADROVSKA_EDIT, body: { clientEventId: U, fullName: "X Y", workType: "ugovor" }, ok: 201, label: "employee create (edit)" },
     { method: "post", path: "/kadrovska/absences", perm: PERMISSIONS.KADROVSKA_EDIT, body: { clientEventId: U, employeeId: U, type: "godisnji", dateFrom: "2026-07-01", dateTo: "2026-07-02" }, ok: 201, label: "absence create (edit)" },
     { method: "post", path: `/kadrovska/employees/${U}/children`, perm: PERMISSIONS.KADROVSKA_PII, body: { clientEventId: U, firstName: "Ana" }, ok: 201, label: "child create (PII)" },

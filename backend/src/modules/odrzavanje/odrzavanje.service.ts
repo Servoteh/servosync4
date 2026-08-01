@@ -10,6 +10,7 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
 import type {
   CreateAssetServicePlanDto,
   CreateBookingDto,
@@ -208,6 +209,7 @@ export class OdrzavanjeService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
+    private readonly otpisNotify: MasinaOtpisNotifyService,
   ) {}
 
   // ==========================================================================
@@ -712,7 +714,9 @@ export class OdrzavanjeService {
       if (statusFilter)
         statusConds.push({ status: { in: statusFilter as never[] } });
       if (openOnly || overdue)
-        statusConds.push({ status: { notIn: ["zavrsen", "otkazan"] as never[] } });
+        statusConds.push({
+          status: { notIn: ["zavrsen", "otkazan"] as never[] },
+        });
       const where: Prisma.MaintWorkOrderWhereInput = {
         ...(statusConds.length ? { AND: statusConds } : {}),
         ...(query.priority && WO_PRIORITIES.has(query.priority)
@@ -1591,7 +1595,10 @@ export class OdrzavanjeService {
     tx: Sy15Tx,
     assetIds: (string | null)[],
   ): Promise<
-    Map<string, { assetId: string; assetCode: string; name: string; assetType: string }>
+    Map<
+      string,
+      { assetId: string; assetCode: string; name: string; assetType: string }
+    >
   > {
     const ids = [...new Set(assetIds.filter((x): x is string => !!x))];
     if (!ids.length) return new Map();
@@ -1717,6 +1724,12 @@ export class OdrzavanjeService {
     )
       throw new UnprocessableEntityException(message);
     if (code === "23505") throw new ConflictException(message);
+    // Zaštitna mreža za trku „provera → INSERT" (zahtev 047/26): sirova P2002 poruka
+    // („Unique constraint failed on the fields: (`machine_code`)") ne sme do korisnika.
+    if (code === "P2002")
+      throw new ConflictException(
+        "Šifra je već zauzeta (moguće otpisanom mašinom) — osveži listu i probaj ponovo",
+      );
     if (code === "P2025") throw new ForbiddenException(message);
     throw e;
   }
@@ -1787,12 +1800,88 @@ export class OdrzavanjeService {
 
   // ---------- Mašine: katalog CRUD / arhiva / rename / import / hard-delete ----------
 
+  /**
+   * Sufiks kojim se šifra otpisane mašine sklanja s puta (zahtev 047/26).
+   * `machine_code` je PRIMARNI KLJUČ, a otpis je soft-delete — bez preimenovanja bi
+   * šifra ostala zauzeta zauvek, pa nova mašina sa istom oznakom ne može da se unese.
+   */
+  private static readonly ARCHIVE_SUFFIX_RE = /#ARH-\d{8}(?:-\d+)?$/;
+
+  /** Bazna (upotrebljiva) šifra: `3.10#ARH-20260730` → `3.10`. */
+  private baseMachineCode(code: string): string {
+    return code.replace(OdrzavanjeService.ARCHIVE_SUFFIX_RE, "");
+  }
+
+  /**
+   * `#ARH-` je REZERVISAN marker arhive (047/26) — ručno unet u šifru pravi mašinu
+   * koju otpis/restore ne ume da vrati pod izvornom oznakom (`baseMachineCode` bi
+   * skinuo i taj „pravi" deo šifre). Zato ga zabranjujemo na ulazu, umesto da
+   * kasnije pogađamo šta je marker a šta deo imena.
+   */
+  private static readonly RESERVED_ARCHIVE_MARK = "#ARH-";
+
+  /** Trimuje i odbija rezervisani marker; vraća šifru spremnu za upis. */
+  private assertUsableMachineCode(code: string): string {
+    const c = String(code ?? "").trim();
+    if (!c) throw new UnprocessableEntityException("Šifra mašine je obavezna");
+    if (c.toUpperCase().includes(OdrzavanjeService.RESERVED_ARCHIVE_MARK))
+      throw new UnprocessableEntityException(
+        `„${OdrzavanjeService.RESERVED_ARCHIVE_MARK}" je rezervisan za šifre otpisanih mašina — izaberi drugu oznaku`,
+      );
+    return c;
+  }
+
+  /**
+   * Prva slobodna šifra iz niza `base`, `base-2`, `base-3`… (do 50).
+   * Bira je baza u JEDNOM upitu — bez petlje sa neuspelim rename-ovima, jer bi
+   * greška unutar transakcije oborila ceo otpis.
+   *
+   * Kad NIJEDAN kandidat nije slobodan, baca se 409 — vraćanje `base` (koji je po
+   * konstrukciji zauzet) bi u `restoreMachine` zaobišlo guard „bazna šifra je
+   * zauzeta", a u otpisu proizvelo sirovu RPC grešku umesto jasne poruke.
+   */
+  private async firstFreeMachineCode(
+    tx: Sy15Tx,
+    base: string,
+  ): Promise<string> {
+    const rows = await tx.$queryRaw<{ code: string }[]>(Prisma.sql`
+      SELECT c.code
+        FROM (SELECT g,
+                     ${base}::text || CASE WHEN g = 1 THEN '' ELSE '-' || g END AS code
+                FROM generate_series(1, 50) g) c
+       WHERE NOT EXISTS (SELECT 1 FROM maint_machines m WHERE m.machine_code = c.code)
+       ORDER BY c.g
+       LIMIT 1`);
+    const free = rows[0]?.code;
+    if (!free)
+      throw new ConflictException(
+        `Sve šifre od ${base} do ${base}-50 su zauzete — ručno preimenuj neku od njih pa ponovi`,
+      );
+    return free;
+  }
+
   createMachine(email: string, dto: CreateMachineDto) {
     return this.runIdem(
       email,
       dto.clientEventId,
       "odrzavanje.create-machine",
       async (tx) => {
+        // Zauzeta šifra se presuđuje PRE INSERT-a — inače korisnik dobije sirovu
+        // Prisma P2002 poruku („Unique constraint failed"), koja ne kaže ni koja je
+        // mašina zauzela šifru ni šta da uradi (zahtev 047/26). Rezervisani `#ARH-`
+        // marker se odbija istim tim putem (422), pre ijednog upisa.
+        const code = this.assertUsableMachineCode(dto.machineCode);
+        const taken = await tx.maintMachine.findUnique({
+          where: { machineCode: code },
+          select: { machineCode: true, name: true, archivedAt: true },
+        });
+        if (taken) {
+          throw new ConflictException(
+            taken.archivedAt
+              ? `Šifra ${code} pripada otpisanoj mašini „${taken.name}" — vrati je iz arhive ili je preimenuj u arhivi`
+              : `Mašina sa šifrom ${code} već postoji`,
+          );
+        }
         // asset_id je NOT NULL ali ga popunjava trigger `maint_machines_ensure_asset`
         // PRE INSERT-a → koristimo $executeRaw (Prisma create traži asset_id u tipu).
         const uid = await this.uid(tx);
@@ -1802,7 +1891,7 @@ export class OdrzavanjeService {
              year_of_manufacture, year_commissioned, location, department_id,
              power_kw, weight_kg, notes, tracked, source, responsible_user_id, updated_by)
           VALUES (
-            ${dto.machineCode.trim()}, ${dto.name.trim()}, ${dto.type ?? null},
+            ${code}, ${dto.name.trim()}, ${dto.type ?? null},
             ${dto.manufacturer ?? null}, ${dto.model ?? null}, ${dto.serialNumber ?? null},
             ${dto.yearOfManufacture ?? null}, ${dto.yearCommissioned ?? null},
             ${dto.location ?? null}, ${dto.departmentId ?? null},
@@ -1810,7 +1899,7 @@ export class OdrzavanjeService {
             ${dto.tracked !== false}, ${dto.source ?? "manual"},
             ${dto.responsibleUserId ?? null}::uuid, ${uid}::uuid)`);
         const row = await tx.maintMachine.findUnique({
-          where: { machineCode: dto.machineCode.trim() },
+          where: { machineCode: code },
         });
         return row;
       },
@@ -1864,42 +1953,195 @@ export class OdrzavanjeService {
     });
   }
 
-  /** Soft-delete mašine: archived_at = now(), tracked = false (paritet archiveMaintMachine). */
-  async archiveMachine(email: string, code: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+  /**
+   * OTPIS mašine (zahtev 037/26) — mašina se izbacuje iz upotrebe, ali se NE briše
+   * nego ARHIVIRA: karton i cela istorija (kontrole, kvarovi, nalozi, napomene,
+   * dokumenta) ostaju dostupni. Nasleđuje raniji `archiveMachine` i dodaje tri stvari
+   * koje su nedostajale:
+   *
+   *  1. RAZLOG + trag ko je otpisao. `maint_machines` NEMA te kolone, ali ogledalo u
+   *     `maint_assets` ima (`archive_reason`/`archived_by`) — a sy15 šema se iz ovog
+   *     repoa NE migrira (`prisma migrate` gađa samo glavnu bazu, `sy15.prisma` je
+   *     `db pull` introspekcija), pa se piše tamo gde kolone već postoje.
+   *  2. PROPAGACIJA na `maint_assets` (`archived_at`, `active=false`). Bez toga je
+   *     otpis bio pola posla: `listAssets(activeOnly)` filtrira po `maint_assets`, pa
+   *     bi se otpisana mašina i dalje nudila u pickeru novog radnog naloga i prijave
+   *     kvara. RLS je isti kao za `maint_machines` (`maint_assets_update`:
+   *     erp-admin ∨ chief/admin) — ko sme da otpiše, sme i ogledalo.
+   *  3. OBAVEŠTENJE ŠEFU PROIZVODNJE da preraspodeli poslove (posle commit-a).
+   *
+   * SELECT ostaje nedirnut: `maint_asset_visible()` za mašine gleda
+   * `maint_machine_visible(machine_code)` i NE filtrira `archived_at` — zato karton
+   * otpisane mašine i dalje otvara.
+   */
+  async otpisMachine(email: string, code: string, reason: string) {
+    const razlog = reason.trim();
+    const out = await this.withUserMapped(email, async (tx) => {
+      const machine = await tx.maintMachine.findUnique({
+        where: { machineCode: code },
+        select: {
+          machineCode: true,
+          name: true,
+          assetId: true,
+          archivedAt: true,
+        },
+      });
+      const exists = machine !== null;
       const uid = await this.uid(tx);
+      const now = new Date();
+
       const { count } = await tx.maintMachine.updateMany({
         where: { machineCode: code },
         data: {
-          archivedAt: new Date(),
+          archivedAt: now,
           tracked: false,
           updatedBy: uid,
-          updatedAt: new Date(),
+          updatedAt: now,
         },
       });
       this.assertAffected(exists, count, `Mašina ${code}`);
-      return { data: { ok: true } };
+
+      // Otvoreni nalozi se čitaju PRE nego što ih iko preraspodeli — broj ide i u
+      // poruku šefu. `notIn` je isti skup kao `openOnly` u listWorkOrders.
+      const openWorkOrders = await tx.maintWorkOrder.findMany({
+        where: {
+          assetId: machine!.assetId,
+          status: { notIn: ["zavrsen", "otkazan"] as never[] },
+        },
+        select: { woNumber: true, title: true, status: true },
+        orderBy: { createdAt: "asc" },
+        take: 50,
+      });
+
+      await tx.maintAsset.updateMany({
+        where: { assetId: machine!.assetId },
+        data: {
+          archivedAt: now,
+          archiveReason: razlog,
+          archivedBy: uid,
+          active: false,
+          updatedBy: uid,
+          updatedAt: now,
+        },
+      });
+
+      // Zahtev 047/26: šifra se OSLOBAĐA za novu mašinu. PK se menja atomski kroz
+      // isti RPC koji koristi `renameMachine` (propagira kroz sve child tabele), i to
+      // TEK POSLE update-a — tako RLS provera prava (`assertAffected`) i dalje presuđuje
+      // nad izvornom šifrom. Već otpisana mašina se ne preimenuje drugi put.
+      //
+      // ⚠️ ZAVISNOST: traži popravljen `maint_machine_rename` iz
+      // `backend/docs/migration/ZAHTEV_047_MASINA_RENAME_FIX.sql` (mora biti primenjen
+      // na sy15 PRE deploy-a). Popravljena verzija u kopiju reda nosi `asset_id` i u
+      // istoj transakciji preimenuje `maint_assets.asset_code` → sredstvo PRATI mašinu,
+      // pa arhiva (`archive_reason`/`archived_by` upisani gore) i cela istorija naloga i
+      // dokumenata ostaju uz otpisanu mašinu, a oslobođena šifra ne pokazuje ni na jedno
+      // sredstvo. Zato je redosled bitan: asset se arhivira PRE rename-a (isti red).
+      let newCode = code;
+      if (machine!.archivedAt == null) {
+        const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+        newCode = await this.firstFreeMachineCode(
+          tx,
+          `${this.baseMachineCode(code)}#ARH-${stamp}`,
+        );
+        await tx.$queryRaw(
+          Prisma.sql`SELECT public.maint_machine_rename(${code}, ${newCode}) AS result`,
+        );
+      }
+
+      return {
+        alreadyArchived: machine!.archivedAt != null,
+        machineName: machine!.name,
+        newCode,
+        openWorkOrders: openWorkOrders.map((w) => ({
+          woNumber: w.woNumber ?? null,
+          title: w.title,
+          status: String(w.status),
+        })),
+      };
     });
+
+    // Obaveštenje TEK po uspešnom otpisu i fire-and-forget: mail (N primalaca ×
+    // Resend timeout) ne sme da drži odgovor otvoren, a pad slanja ne sme da obori
+    // već izvršen otpis (PLAN_dorade §D8). Ponovljeni otpis već otpisane mašine NE
+    // šalje ponovo — inače bi „dupli klik" zasuo šefa istim obaveštenjem.
+    if (!out.alreadyArchived) {
+      void this.otpisNotify
+        .notifyOtpis({
+          machineCode: code,
+          machineName: out.machineName,
+          reason: razlog,
+          openWorkOrders: out.openWorkOrders,
+        })
+        .catch(() => undefined);
+    }
+
+    return {
+      data: {
+        ok: true,
+        alreadyArchived: out.alreadyArchived,
+        openWorkOrders: out.openWorkOrders.length,
+        // Nova (arhivska) šifra — FE mora da je zna da bi otvorio karton otpisane mašine.
+        machineCode: out.newCode,
+      },
+    };
   }
 
+  /** Vraćanje otpisane mašine u upotrebu — simetrično čisti i ogledalo u `maint_assets`. */
   async restoreMachine(email: string, code: string) {
     return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+      const machine = await tx.maintMachine.findUnique({
+        where: { machineCode: code },
+        select: { assetId: true },
+      });
+      const exists = machine !== null;
       const uid = await this.uid(tx);
+      const now = new Date();
       const { count } = await tx.maintMachine.updateMany({
         where: { machineCode: code },
         data: {
           archivedAt: null,
           tracked: true,
           updatedBy: uid,
-          updatedAt: new Date(),
+          updatedAt: now,
         },
       });
       this.assertAffected(exists, count, `Mašina ${code}`);
-      return { data: { ok: true } };
+      await tx.maintAsset.updateMany({
+        where: { assetId: machine!.assetId },
+        data: {
+          archivedAt: null,
+          archiveReason: null,
+          archivedBy: null,
+          active: true,
+          updatedBy: uid,
+          updatedAt: now,
+        },
+      });
+
+      // Simetrično otpisu: `#ARH-…` sufiks se skida i mašina se vraća pod svojom
+      // izvornom šifrom — ali samo ako je u međuvremenu niko nije zauzeo (zahtev 047/26).
+      //
+      // Odarhiviranje sredstva iznad gađa `machine.assetId`, a to je (sa popravljenim
+      // RPC-om iz ZAHTEV_047_MASINA_RENAME_FIX.sql) IZVORNO sredstvo mašine — ono koje
+      // nosi naloge i dokumenta. Rename ga zatim vraća i pod baznu `asset_code`, pa
+      // posle restore-a mašina ima AKTIVNO sredstvo sa očuvanom istorijom i nigde ne
+      // ostaje fantomski `#ARH` red (privremeno sredstvo se više i ne pravi).
+      let newCode = code;
+      const base = this.baseMachineCode(code);
+      if (base !== code && base.length > 0) {
+        const free = await this.firstFreeMachineCode(tx, base);
+        if (free !== base) {
+          throw new ConflictException(
+            `Šifra ${base} je u međuvremenu zauzeta drugom mašinom — preimenuj tu mašinu ili ovu vrati pod drugom šifrom`,
+          );
+        }
+        await tx.$queryRaw(
+          Prisma.sql`SELECT public.maint_machine_rename(${code}, ${base}) AS result`,
+        );
+        newCode = base;
+      }
+      return { data: { ok: true, machineCode: newCode } };
     });
   }
 
@@ -1913,11 +2155,18 @@ export class OdrzavanjeService {
     });
   }
 
-  /** Atomski rename PK kroz 6 tabela (RPC). NE dira loc_locations (skriveno pravilo §2.5.14). */
-  renameMachine(email: string, oldCode: string, newCode: string) {
+  /**
+   * Atomski rename PK kroz child tabele + ogledalo u `maint_assets` (RPC).
+   * NE dira loc_locations (skriveno pravilo §2.5.14).
+   *
+   * Ručni rename NE sme da uvede rezervisani `#ARH-` marker (047/26) — inače bi
+   * kasniji otpis/restore te mašine „skinuo" deo prave šifre.
+   */
+  async renameMachine(email: string, oldCode: string, newCode: string) {
+    const target = this.assertUsableMachineCode(newCode);
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: unknown }[]>(
-        Prisma.sql`SELECT public.maint_machine_rename(${oldCode}, ${newCode.trim()}) AS result`,
+        Prisma.sql`SELECT public.maint_machine_rename(${oldCode}, ${target}) AS result`,
       );
       return { data: rows[0]?.result ?? null };
     });
@@ -2392,6 +2641,17 @@ export class OdrzavanjeService {
       dto.clientEventId,
       "odrzavanje.create-work-order",
       async (tx) => {
+        // Otpisano/arhivirano sredstvo ne prima NOVE naloge (zahtev 037/26). Picker ga
+        // već ne nudi (`listAssets(activeOnly)`), ali API mora da drži pravilo i kad
+        // asset_id stigne iz starog taba, deep-linka ili direktnog poziva.
+        const asset = await tx.maintAsset.findUnique({
+          where: { assetId: dto.assetId },
+          select: { archivedAt: true, name: true },
+        });
+        if (asset?.archivedAt)
+          throw new UnprocessableEntityException(
+            `Sredstvo „${asset.name}" je otpisano — novi radni nalog nije moguć. Vratite ga u upotrebu ili izaberite drugo.`,
+          );
         const uid = await this.uid(tx);
         return tx.maintWorkOrder.create({
           data: {
@@ -2887,9 +3147,7 @@ export class OdrzavanjeService {
       );
     }
     if (file.mimetype && !file.mimetype.startsWith("image/")) {
-      throw new UnprocessableEntityException(
-        "Fajl mora biti slika (image/*)",
-      );
+      throw new UnprocessableEntityException("Fajl mora biti slika (image/*)");
     }
     const uuid = randomUUID().replace(/-/g, "").slice(0, 16);
     const storagePath = `documents/asset/${assetId}/${uuid}_${this.safeFileName(file.originalname)}`;
@@ -3000,7 +3258,9 @@ export class OdrzavanjeService {
       });
       // Red je vidljiv (findUnique ga vratio) ali UPDATE politika odbila → 403.
       if (count === 0)
-        throw new ForbiddenException(`Nemate pravo nad: Foto vozila ${assetId}`);
+        throw new ForbiddenException(
+          `Nemate pravo nad: Foto vozila ${assetId}`,
+        );
       return p;
     });
     if (path) await this.storage.remove(MAINT_BUCKET, path);

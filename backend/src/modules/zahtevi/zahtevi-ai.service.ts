@@ -25,7 +25,7 @@ import {
   TRIAGE_DEFAULT_MODEL,
   TRIAGE_MAX_DESC_CHARS,
   TRIAGE_MAX_IMAGES,
-  TRIAGE_DUP_SUMMARY_CHARS,
+  dupSnippetBudget,
   ANALYSIS_SYSTEM_PROMPT,
   ANALYSIS_TOOL,
   ANALYSIS_DEFAULT_MODEL,
@@ -41,13 +41,65 @@ import {
 const VISION_MIME = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 /** Preko ovoliko postojećih zahteva → pre-filter duplikata (§4.1). */
 const DUP_PREFILTER_THRESHOLD = 500;
+/** Koliko znakova (naslov + opis) ide u trigram pre-filter kao „seno" za poređenje. */
+const PREFILTER_QUERY_CHARS = 1200;
+/** Trigram pragovi pre-filtera — NISKO namerno (biramo kandidate, ne presuđujemo). */
+const PREFILTER_TITLE_SIM = 0.2;
+const PREFILTER_WORD_SIM = 0.35;
+
+/** Kandidat za duplikat — SUŠTINA, ne samo naslov (vidi `duplicateCandidates`). */
+interface DupCandidate {
+  id: number;
+  reqNo: string;
+  title: string;
+  status: string;
+  module: string | null;
+  kind: string | null;
+  areas: string[];
+  mergedIntoId: number | null;
+  sameModule: boolean;
+  snippet: string;
+}
+
+/** Jedan red teksta (višeredni unos bi pokvario listu kandidata „- red po kandidatu"). */
+const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+/**
+ * Suštinski izvod kandidata u zadatom budžetu znakova: OPIS (do 60% budžeta) +
+ * TRENUTNO/OČEKIVANO ponašanje (ostatak, podeljeno). Redosled je namerno takav —
+ * opis nosi najviše informacije, a ponašanja su ono što razlikuje dva buga sa
+ * istim naslovom (baš to je promašeno u incidentu 039/26).
+ */
+function substanceSnippet(
+  r: {
+    description: string;
+    expectedBehavior: string | null;
+    currentBehavior: string | null;
+  },
+  budget: number,
+): string {
+  const descBudget = Math.max(60, Math.floor(budget * 0.6));
+  const parts = [`OPIS: ${oneLine(r.description).slice(0, descBudget)}`];
+  const rest = Math.max(0, budget - parts[0].length);
+  const extras: string[] = [];
+  if (r.currentBehavior) extras.push(`SADA: ${oneLine(r.currentBehavior)}`);
+  if (r.expectedBehavior) extras.push(`TREBA: ${oneLine(r.expectedBehavior)}`);
+  if (extras.length && rest > 20) {
+    const per = Math.floor(rest / extras.length);
+    for (const e of extras) parts.push(e.slice(0, per));
+  }
+  return parts.join(" | ").slice(0, budget);
+}
 
 /**
  * Zahtevi AI cevovod (MODULE_SPEC_zahtevi §4) — poseban servis u modulu.
  * Sve ide kroz `AiProviderService` (jedini izlaz ka LLM-ovima). DOKTRINE §10:
  *  - AI pad NIKAD ne obara tok (sve u try/catch; FAILED + errorCode + event).
  *  - bez ključa → analiza FAILED not_configured, modul radi normalno.
- *  - AI menja status SAMO u dva izuzetka: ANALYSIS_APPROVED→ANALYZED i ocena 0→REJECTED.
+ *  - AI menja status SAMO u dva izuzetka: ANALYSIS_APPROVED→ANALYZED i
+ *    NEUPOTREBLJIVA prijava (`unusable`: spam/nerazumljivo/prazno) → REJECTED.
+ *  - SUMNJA NA DUPLIKAT NIJE odbijanje (ISPRAVKA 30.07.2026, incident 039/26): zahtev
+ *    ostaje SUBMITTED, nalaz se beleži (event AI_DUPLICATE_SUSPECTED) i odlučuje čovek.
  *  - original polja se NE prepisuju; predlozi module/kind/priority idu SAMO u prazna.
  */
 @Injectable()
@@ -164,6 +216,7 @@ export class ZahteviAiService {
       description: string;
       expectedBehavior: string | null;
       currentBehavior: string | null;
+      module: string | null;
     },
   ): Promise<unknown[]> {
     const attachments = await this.prisma.changeRequestAttachment.findMany({
@@ -174,10 +227,12 @@ export class ZahteviAiService {
       .filter((a) => a.kind === "AUDIO" && a.transcript)
       .map((a, i) => `Glasovna poruka ${i + 1}: ${a.transcript}`);
 
-    const candidates = await this.duplicateCandidates(requestId, req.title);
+    const candidates = await this.duplicateCandidates(requestId, req);
+    const sameModuleCount = candidates.filter((c) => c.sameModule).length;
 
     const innerBlock = [
       `NASLOV: ${req.title}`,
+      req.module ? `MODUL (naveo podnosilac): ${req.module}` : "",
       `OPIS:\n${req.description.slice(0, TRIAGE_MAX_DESC_CHARS)}`,
       req.expectedBehavior
         ? `OČEKIVANO PONAŠANJE:\n${req.expectedBehavior}`
@@ -187,15 +242,19 @@ export class ZahteviAiService {
         ? `TRANSKRIPTI GLASOVNIH PORUKA:\n${transcripts.join("\n")}`
         : "",
       "",
-      "POSTOJEĆI ZAHTEVI (kandidati za duplikate — proveri da li ovaj ponavlja neki od njih):",
+      // Zaglavlje IZRIČITO usmerava model na suštinu (modul/ekran/simptom), jer je
+      // presuđivanje po naslovu već izazvalo pogrešno odbijanje (incident 039/26).
+      [
+        "POSTOJEĆI ZAHTEVI (kandidati za duplikate — uporedi SUŠTINU: modul, ekran/formu i simptom/cilj; NE naslov):",
+        sameModuleCount > 0
+          ? `Sortirano: PRVIH ${sameModuleCount} je iz ISTOG modula ("${req.module}") — njima posveti najviše pažnje, ostali su iz drugih ili nepoznatih modula.`
+          : "Nijedan kandidat nije iz istog modula kao ovaj zahtev — utoliko je duplikat manje verovatan.",
+      ].join("\n"),
       candidates.length
-        ? candidates
-            .map(
-              (c) =>
-                `- id=${c.id} [${c.reqNo}] (${c.status}) ${c.title} — ${c.snippet}`,
-            )
-            .join("\n")
-        : "(nema drugih zahteva u sistemu)",
+        ? candidates.map((c) => this.renderCandidate(c)).join("\n")
+        : // Prazno može značiti i „registar je prazan" i „pre-filter nije našao ništa
+          // uporedivo" — modelu se ne sme sugerisati da duplikata nema u sistemu.
+          "(nema uporedivih zahteva za poređenje)",
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -234,48 +293,57 @@ export class ZahteviAiService {
   }
 
   /**
-   * Kandidati za duplikate (§4.1, presuda §13.13): KOMPLETNA lista postojećih zahteva
-   * (id, reqNo, naslov, sažetak ≤200, status) sem ARCHIVED starijih od godinu dana.
-   * Preko 500 → pre-filter ILIKE sličnošću po naslovu (jeftino).
+   * Jedan kandidat = jedan red: modul i tip PRE naslova (da naslov ne bude prvo što
+   * model vidi), pa suštinski izvod. `[isti modul]` je eksplicitna oznaka, a spojeni
+   * kandidat nosi na koji je zahtev spojen (da model ne predlaže spajanje u spojeno).
+   */
+  private renderCandidate(c: DupCandidate): string {
+    const bits = [
+      `- id=${c.id} [${c.reqNo}] (${c.status})`,
+      `modul=${c.module ?? "—"}${c.sameModule ? " [isti modul]" : ""}`,
+      `tip=${c.kind ?? "—"}`,
+      c.areas.length ? `oblasti=${c.areas.join(",")}` : "",
+      c.mergedIntoId ? `spojen-u=id${c.mergedIntoId}` : "",
+      `naslov="${oneLine(c.title)}"`,
+      c.snippet,
+    ].filter(Boolean);
+    return bits.join(" | ");
+  }
+
+  /**
+   * Kandidati za duplikate (§4.1, presuda §13.13) — KOMPLETNA lista postojećih zahteva
+   * sem ARCHIVED starijih od godinu dana, sa SUŠTINOM svakog kandidata (modul, tip,
+   * oblasti, izvod opisa i ponašanja), ne samo naslovom.
+   *
+   * ZAŠTO (incident 039/26, 30.07.2026): kandidati su išli kao „naslov + 200 znakova",
+   * pa je model presudio duplikat po GENERIČKOM NASLOVU („Nestala opcija" ≈ „Nestale
+   * opcije") i ispravan zahtev je auto-odbijen. Bez modula i dovoljno opisa model nema
+   * po čemu drugom da odlučuje. Snippet budžet je token-svestan — `dupSnippetBudget`.
+   *
+   * Isti modul ide PRVI (i time dobija najbogatiji kontekst), ali se modul NE koristi
+   * kao tvrd filter: `module` je opciono polje i često je null ili pogrešno postavljen.
    */
   private async duplicateCandidates(
     requestId: number,
-    title: string,
-  ): Promise<
-    {
-      id: number;
-      reqNo: string;
-      title: string;
-      status: string;
-      snippet: string;
-    }[]
-  > {
+    req: { title: string; description: string; module: string | null },
+  ): Promise<DupCandidate[]> {
     const yearAgo = new Date();
     yearAgo.setFullYear(yearAgo.getFullYear() - 1);
 
     const baseWhere: Prisma.ChangeRequestWhereInput = {
       id: { not: requestId },
-      // Isključi samo DAVNO arhivirane; sve ostalo je jeftino po tokenima (naslovi).
+      // Isključi samo DAVNO arhivirane; sve ostalo staje u budžet iz `dupSnippetBudget`.
       NOT: { status: "ARCHIVED", updatedAt: { lt: yearAgo } },
     };
 
     const total = await this.prisma.changeRequest.count({ where: baseWhere });
     let where = baseWhere;
     if (total > DUP_PREFILTER_THRESHOLD) {
-      // Pre-filter: reč-po-reč ILIKE nad naslovom (najduže reči; slabo, ali dovoljno V1).
-      const terms = title
-        .split(/\s+/)
-        .map((w) => w.replace(/[^\p{L}\p{N}]/gu, ""))
-        .filter((w) => w.length >= 4)
-        .slice(0, 6);
-      if (terms.length) {
-        where = {
-          ...baseWhere,
-          OR: terms.map((t) => ({
-            title: { contains: t, mode: "insensitive" as const },
-          })),
-        };
-      }
+      const ids = await this.prefilterIds(requestId, req, yearAgo);
+      // `not` se ponavlja izričito: spread bi ga pregazio poljem `id`.
+      where = ids
+        ? { ...baseWhere, id: { in: ids, not: requestId } }
+        : this.prefilterIlikeWhere(baseWhere, req);
     }
 
     const rows = await this.prisma.changeRequest.findMany({
@@ -286,24 +354,140 @@ export class ZahteviAiService {
         title: true,
         status: true,
         description: true,
+        module: true,
+        kind: true,
+        areas: true,
+        expectedBehavior: true,
+        currentBehavior: true,
+        mergedIntoId: true,
       },
       orderBy: { createdAt: "desc" },
       take: DUP_PREFILTER_THRESHOLD,
     });
-    return rows.map((r) => ({
+
+    // Isti modul PRVI (stabilna particija — unutar grupa ostaje createdAt desc).
+    const mod = req.module?.trim() || null;
+    const same = (r: { module: string | null }) =>
+      mod !== null && r.module === mod;
+    const ordered = mod
+      ? [...rows.filter(same), ...rows.filter((r) => !same(r))]
+      : rows;
+
+    const budget = dupSnippetBudget(ordered.length);
+    return ordered.map((r) => ({
       id: r.id,
       reqNo: r.reqNo,
       title: r.title,
       status: r.status,
-      snippet: r.description.slice(0, TRIAGE_DUP_SUMMARY_CHARS),
+      module: r.module,
+      kind: r.kind,
+      areas: r.areas,
+      mergedIntoId: r.mergedIntoId,
+      sameModule: same(r),
+      snippet: substanceSnippet(r, budget),
     }));
+  }
+
+  /**
+   * FIX 4 — pre-filter preko 500 zahteva: TRIGRAM sličnost nad naslovom I OPISOM
+   * (dijakritika nebitna), plus UVEK svi zahtevi istog modula.
+   *
+   * Stari pre-filter je bio `title contains reč` (ILIKE): promašivao je drugačije
+   * formulisane duplikate, a promovisao „isti naslov — nevezan problem" — tačno ono
+   * što je i dovelo do incidenta 039/26.
+   *
+   * Izraz je DOSLOVNO isti kao u migraciji 20260726160000 i `core-tools.ts`
+   * (`public.immutable_unaccent(lower(kolona))`) — da bi eventualni GIN trigram
+   * indeks bio upotrebljiv. `change_requests` danas NEMA takav indeks (tabela je
+   * mala i ova grana se pali samo preko 500 redova); kad zatreba, DDL je:
+   *   CREATE INDEX idx_change_requests_title_trgm ON "change_requests"
+   *     USING gin (public.immutable_unaccent(lower("title")) gin_trgm_ops);
+   *   (isto za "description")
+   *
+   * `word_similarity(igla, seno)` a ne `similarity` za opise: trigram sličnost kažnjava
+   * razliku u dužini, pa kratak naslov protiv dugog opisa daje ~0 — `word_similarity`
+   * traži najbolji poklapajući odsečak. Pragovi su NAMERNO nisko: ovo je samo izbor
+   * kandidata (recall), presudu o duplikatu donosi model po suštini, pa čovek.
+   *
+   * Vraća `null` ako upit padne (npr. ekstenzija/funkcija nedostupna) — pozivalac tada
+   * ide na ILIKE fallback; trijaža nikad ne sme da padne zbog pre-filtera (doktrina §10.4).
+   */
+  private async prefilterIds(
+    requestId: number,
+    req: { title: string; description: string; module: string | null },
+    yearAgo: Date,
+  ): Promise<number[] | null> {
+    const mod = req.module?.trim() || null;
+    const qTitle = req.title.trim();
+    const qText = `${req.title} ${req.description}`
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, PREFILTER_QUERY_CHARS);
+    try {
+      const rows = await this.prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
+        SELECT id FROM "change_requests"
+        WHERE id <> ${requestId}
+          AND NOT (status = 'ARCHIVED' AND updated_at < ${yearAgo}::timestamptz)
+          AND (
+            (${mod}::text IS NOT NULL AND module = ${mod}::text)
+            OR public.similarity(
+                 public.immutable_unaccent(lower("title")),
+                 public.immutable_unaccent(lower(${qTitle}))
+               ) >= ${PREFILTER_TITLE_SIM}
+            OR public.word_similarity(
+                 public.immutable_unaccent(lower(${qTitle})),
+                 public.immutable_unaccent(lower("description"))
+               ) >= ${PREFILTER_WORD_SIM}
+            OR public.word_similarity(
+                 public.immutable_unaccent(lower("title")),
+                 public.immutable_unaccent(lower(${qText}))
+               ) >= ${PREFILTER_WORD_SIM}
+          )
+        ORDER BY
+          CASE WHEN ${mod}::text IS NOT NULL AND module = ${mod}::text THEN 0 ELSE 1 END,
+          created_at DESC
+        LIMIT ${DUP_PREFILTER_THRESHOLD}
+      `);
+      return rows.map((r) => Number(r.id)).filter(Number.isFinite);
+    } catch (err) {
+      this.logger.warn(
+        `Trigram pre-filter duplikata (zahtev ${requestId}) nije prošao, idem na ILIKE: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /** Fallback pre-filter: ILIKE po rečima nad naslovom I OPISOM + svi iz istog modula. */
+  private prefilterIlikeWhere(
+    baseWhere: Prisma.ChangeRequestWhereInput,
+    req: { title: string; description: string; module: string | null },
+  ): Prisma.ChangeRequestWhereInput {
+    const mod = req.module?.trim() || null;
+    const terms = `${req.title} ${req.description}`
+      .split(/\s+/)
+      .map((w) => w.replace(/[^\p{L}\p{N}]/gu, ""))
+      .filter((w) => w.length >= 4)
+      .slice(0, 8);
+    const or: Prisma.ChangeRequestWhereInput[] = [
+      ...(mod ? [{ module: mod }] : []),
+      ...terms.flatMap((t) => [
+        { title: { contains: t, mode: "insensitive" as const } },
+        { description: { contains: t, mode: "insensitive" as const } },
+      ]),
+    ];
+    return or.length ? { ...baseWhere, OR: or } : baseWhere;
   }
 
   /**
    * Primena trijažnog rezultata (§4.1): predlozi module/kind/priority SAMO u prazna
    * polja (podnosiočev izbor se ne pregazi); aiScore+aiScoreReason UVEK; score ≥1 →
-   * rewardStatus=PROPOSED; score 0 → status REJECTED + event AI_REJECTED (duplicates u data).
-   * Sve u jednoj transakciji sa upisom rezultata na red analize.
+   * rewardStatus=PROPOSED.
+   *
+   * AUTO-ODBIJANJE (ISPRAVKA 30.07.2026, incident 039/26): visi na `triage.unusable`
+   * (spam / nerazumljivo / prazno), a NE više na `score === 0`. Sumnja na DUPLIKAT
+   * NIKAD ne menja status — zahtev ostaje `SUBMITTED` i o spajanju/odbijanju odlučuje
+   * čovek; nalaz se beleži u `duplicates` (result + TRIAGED) i u zasebnom event-u
+   * `AI_DUPLICATE_SUSPECTED` (reqNo + pouzdanost + razlog) da ga admin inbox istakne.
    */
   private async applyTriage(
     requestId: number,
@@ -329,7 +513,9 @@ export class ZahteviAiService {
       if (triage.score !== null) update.aiScore = triage.score;
       if (triage.scoreReason) update.aiScoreReason = triage.scoreReason;
 
-      const autoReject = triage.score === 0 && req.status === "SUBMITTED";
+      // SAMO neupotrebljiva prijava vodi u auto-reject. Duplikat NIJE u ovom uslovu
+      // (namerno) — jedan promašen „duplikat po naslovu" je ranije odbio ispravan zahtev.
+      const autoReject = triage.unusable && req.status === "SUBMITTED";
       if (autoReject) {
         // Jedina AI izmena statusa iz trijaže (§10.1, §12.1) — uz admin restore ventil.
         update.status = "REJECTED";
@@ -359,13 +545,35 @@ export class ZahteviAiService {
       await this.writeEvent(tx, requestId, "TRIAGED", null, {
         score: triage.score ?? undefined,
         duplicates: triage.duplicates,
+        unusable: triage.unusable || undefined,
       } as unknown as Prisma.InputJsonValue);
       if (autoReject)
         await this.writeEvent(tx, requestId, "AI_REJECTED", null, {
-          score: 0,
+          score: triage.score ?? undefined,
           reason: triage.scoreReason ?? undefined,
-          duplicates: triage.duplicates,
-        } as unknown as Prisma.InputJsonValue);
+          unusable: true,
+        });
+
+      // Sumnja na duplikat: BEZ promene statusa — samo trag za čoveka. reqNo se dohvata
+      // da admin u istoriji vidi „039/26 ≈ 035/26", a ne sirove id-jeve; nepostojeći id
+      // (model izmislio) ostaje sa reqNo=null umesto da tiho nestane.
+      if (triage.duplicates.length > 0) {
+        const known = await tx.changeRequest.findMany({
+          where: { id: { in: triage.duplicates.map((d) => d.requestId) } },
+          select: { id: true, reqNo: true },
+        });
+        const reqNoById = new Map(known.map((k) => [k.id, k.reqNo]));
+        await this.writeEvent(tx, requestId, "AI_DUPLICATE_SUSPECTED", null, {
+          candidates: triage.duplicates.map((d) => ({
+            requestId: d.requestId,
+            reqNo: reqNoById.get(d.requestId) ?? null,
+            confidence: d.confidence,
+            reason: d.reason,
+          })),
+          // Izričito: ovo NIJE odluka — status ostaje nepromenjen.
+          decision: "PENDING_HUMAN",
+        });
+      }
     });
   }
 
@@ -655,8 +863,10 @@ export class ZahteviAiService {
   // ── RESTORE (§12.1 sigurnosni ventil auto-reject-a) ─────────────────────────
 
   /**
-   * POST /:id/restore — admin vraća AI-odbačen (ocena 0) zahtev u SUBMITTED.
+   * POST /:id/restore — admin vraća AI-odbačen zahtev u SUBMITTED.
    * Guard: samo REJECTED koji je AI odbacio (postoji event AI_REJECTED) i nije spojen.
+   * Od 30.07.2026 AI odbacuje SAMO neupotrebljive prijave — duplikati ovde nikad ne
+   * dolaze jer se zbog sumnje na duplikat status i ne menja.
    */
   async restore(id: number, actor: AuthUser) {
     if (!this.isAdmin(actor))
@@ -676,15 +886,16 @@ export class ZahteviAiService {
     });
     if (!aiReject)
       throw new UnprocessableEntityException(
-        "Vraćanje je moguće samo za AI-odbačen zahtev (ocena 0).",
+        "Vraćanje je moguće samo za AI-odbačen zahtev (neupotrebljiva prijava).",
       );
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.changeRequest.update({
         where: { id },
         // F2: očisti AI ocenu pri restore-u. Inače bi jedan klik „potvrdi ocenu" bez
-        // izmene ponovo video aiScore=0 i auto-odbacio zahtev. Trag ostaje netaknut u
-        // redu analize i AI_REJECTED event-u — ništa se ne gubi, samo se ventil resetuje.
+        // izmene ponovo video aiScore=0 i (kroz admin `POST /:id/score`, §12.2) opet
+        // odbio zahtev. Trag ostaje netaknut u redu analize i AI_REJECTED event-u —
+        // ništa se ne gubi, samo se ventil resetuje.
         data: {
           status: "SUBMITTED",
           rewardStatus: "NONE",

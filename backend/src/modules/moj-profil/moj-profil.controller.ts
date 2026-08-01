@@ -34,6 +34,7 @@ import {
   SubmitMakeupDto,
   SubmitPaidLeaveDto,
   SubmitSelfAssessmentDto,
+  SubmitVacationChangeDto,
   SubmitVacationDto,
 } from "./dto/moj-profil-mutation.dto";
 import {
@@ -215,6 +216,18 @@ export class MojProfilController {
     @Param("id", ParseUUIDPipe) id: string,
   ) {
     return this.profil.cancelVacation(req.user.email, id);
+  }
+
+  /** ZAHTEV 026/26 — molba za izmenu/otkaz POTVRĐENOG termina (odluku donosi HR).
+   *  Guard ostaje `profile.self` (klasa) — ko sme nad KOJIM terminom presuđuje
+   *  `kadr_vacreq_change_submit` (self ∨ podnosilac ∨ upravljač). */
+  @Post("vacation-requests/:id/change-request")
+  submitVacationChange(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: SubmitVacationChangeDto,
+  ) {
+    return this.profil.submitVacationChange(req.user.email, id, dto);
   }
 
   @Delete("vacation-requests/:id")

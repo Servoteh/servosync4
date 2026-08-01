@@ -2431,6 +2431,9 @@ model MontageNonconformity {
   drawingNumber         String?   @map("drawing_number") @db.VarChar(60)
   /// RN broj — string, meki (bez FK).
   workOrderCode         String?   @map("work_order_code") @db.VarChar(40)
+  /// Naziv dela (zahtev 034/26) — popunjava ga skeniranje kartice (work_orders.part_name)
+  /// ili ručni unos. Slobodan tekst, meki (bez FK); kolona je 250 u work_orders pa se klipuje.
+  partName              String?   @map("part_name") @db.VarChar(250)
   /// CEKA_ANALIZU | U_TOKU | ZAVRSENO (ZAVRSENO je terminalan — bez brisanja).
   status                String    @default("CEKA_ANALIZU") @map("status") @db.VarChar(15)
   reportedByUserId      Int       @map("reported_by_user_id")
@@ -2735,6 +2738,32 @@ model WorkOrderLaunchNotification {
   @@map("work_order_launch_notifications")
 }
 
+/// App-owned (zahtev 037/26 dopuna, presuda Nenada 28.07). IMENOVANI primaoci obaveštenja
+/// o otpisu mašine — zamena za razrešenje po roli `users.role = 'sef'`, koja na produ nema
+/// nijednog čoveka (jedini nosilac je servisni nalog PDM Bridge, bez `worker_id`), pa
+/// obaveštenje nije imalo kome da ode.
+///
+/// Lista je PODEŠAVANJE, ne kod: menja se INSERT/UPDATE-om nad ovom tabelom (`active = FALSE`
+/// gasi primaoca), bez deploy-a, i važi od sledećeg otpisa — servis je čita pri svakom slanju.
+/// Ključ je mejl (a ne `users.id`) jer je čitljiv onome ko menja tabelu i jer primalac ne mora
+/// imati nalog u aplikaciji; `users` se gleda samo da bi se našao `worker_id` za zvonce.
+model MasinaOtpisPrimalac {
+  id              Int      @id(map: "pk_masina_otpis_primaoci") @default(autoincrement()) @map("id")
+  /// Malim slovima, bez razmaka (DB CHECK) — inače bi „ista" osoba mogla ući dvaput.
+  email           String   @unique(map: "uq_masina_otpis_primaoci_email") @map("email") @db.VarChar(200)
+  /// Oznaka za čoveka koji čita tabelu; ime u poruci se preuzima iz `users` kad nalog postoji.
+  fullName        String?  @map("full_name") @db.VarChar(150)
+  /// FALSE = primalac ugašen (istorija ostaje). Servis šalje samo aktivnima.
+  active          Boolean  @default(true) @map("active")
+  note            String?  @map("note")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Meki ref → users.id (ko je dodao red; NULL za seed iz migracije).
+  createdByUserId Int?     @map("created_by_user_id")
+
+  @@map("masina_otpis_primaoci")
+}
+
 /// App-owned (2.0, plan §3.2-6, odluka O3). Šifarnik odeljenja (7 redova iz sy15
 /// `core.odeljenje`); nose boju i vođu — semantika drugačija od `work_units` / `workers`.
 /// `leadUserId` / `leadWorkerId` meki ref-ovi (users / workers, bez DB FK). Referencira ga
@@ -2936,6 +2965,24 @@ model PlanProizvodnjeOverlay {
   cooperationExpectedReturn DateTime? @map("cooperation_expected_return") @db.Date
   archivedAt                DateTime? @map("archived_at") @db.Timestamptz(6)
   archivedReason            String?   @map("archived_reason")
+  // ── Zahtev 046/26 (F0+F1) — „MS Project" gant nad planom mašinske proizvodnje.
+  // PARALELAN pogled: ručni redosled (`shiftSortOrder`) OSTAJE master rasporeda; termini
+  // ispod su planerska vremenska osa i NE utiču ni na jedan postojeći sort/bucket.
+  /// Planirani početak stavke na gantu (ručni unos / drag). NULL = stavka NIJE na gantu (nema bara).
+  plannedStartAt            DateTime? @map("planned_start_at") @db.Timestamptz(6)
+  /// Planirani kraj stavke na gantu. NULL uz postavljen start = trajanje se izvodi iz tehnologije.
+  plannedEndAt              DateTime? @map("planned_end_at") @db.Timestamptz(6)
+  /// Ručni OVERRIDE trajanja u minutima. NULL = default iz tehnologije (TPZ + TK × komada).
+  plannedDurationMinutes    Int?      @map("planned_duration_minutes")
+  /// Ručni OVERRIDE završenosti (tri-state): NULL = auto iz kucanja operatera
+  /// (tech_processes.is_process_finished), true/false = planer je presudio.
+  plannedDone               Boolean?  @map("planned_done")
+  plannedDoneAt             DateTime? @map("planned_done_at") @db.Timestamptz(6)
+  plannedDoneBy             String?   @map("planned_done_by")
+  /// „Uslov" (FS zavisnost, RUČNO): meki ref → work_orders.id prethodnika. NULL = bez uslova.
+  predecessorWorkOrderId    Int?      @map("predecessor_work_order_id")
+  /// „Uslov" (FS zavisnost, RUČNO): meki ref → work_order_operations.id prethodnika.
+  predecessorLine           Int?      @map("predecessor_line")
   /// Legacy audit — sy15 tekst (email/uid), preneseno verbatim (COPY bez remape).
   createdBy                 String?   @map("created_by")
   updatedBy                 String?   @map("updated_by")
@@ -2943,7 +2990,27 @@ model PlanProizvodnjeOverlay {
   updatedAt                 DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   @@unique([workOrderId, lineId], map: "uq_plan_proizvodnje_overlays_wo_line")
+  @@index([plannedStartAt], map: "idx_plan_proizvodnje_overlays_planned_start")
   @@map("plan_proizvodnje_overlays")
+}
+
+/// App-owned (2.0, zahtev 046/26 F0). RUČNI ŠIFRARNIK hala: mašina (`operations.work_center_code`)
+/// → hala. Odluka vlasnika: mapa hala↔mašina se NE izvodi iz šifre/odeljenja nego se kuca ručno.
+/// Koristi ga gant (grupisanje redova Hala → mašina); mašine bez reda ovde idu u grupu „Bez hale".
+/// `machineCode` je PK (jedna hala po mašini); meki ref → operations.work_center_code (bez DB FK —
+/// `operations` je sync-ovan keš, BACKEND_RULES §3 vlasništvo).
+model PlanProizvodnjeMachineHall {
+  machineCode String   @id(map: "pk_plan_proizvodnje_machine_halls") @map("machine_code") @db.VarChar(50)
+  /// Naziv hale (slobodan tekst iz šifrarnika, npr. „Hala 1", „Hala 2", „Alatnica").
+  hall        String   @map("hall") @db.VarChar(100)
+  sortOrder   Int?     @map("sort_order")
+  note        String?  @map("note")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?  @map("updated_by")
+
+  @@index([hall], map: "idx_plan_proizvodnje_machine_halls_hall")
+  @@map("plan_proizvodnje_machine_halls")
 }
 
 /// App-owned (2.0, plan §4.2 (b), F5b). HITNO flag Plana proizvodnje po RN-u (1 red /
@@ -4727,7 +4794,7 @@ model ChangeRequestComment {
 model ChangeRequestEvent {
   id          Int      @id(map: "pk_change_request_events") @default(autoincrement()) @map("id")
   requestId   Int      @map("request_id")
-  type        String   @map("type") @db.VarChar(30) /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|AI_REJECTED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED|SCORE_CONFIRMED|REWARD_EXCLUDED|REWARD_PAID
+  type        String   @map("type") @db.VarChar(30) /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|AI_REJECTED|AI_DUPLICATE_SUSPECTED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED|SCORE_CONFIRMED|REWARD_EXCLUDED|REWARD_PAID
   actorUserId Int?     @map("actor_user_id") /// null = sistem/AI
   data        Json?    @map("data") /// npr. {from,to} za STATUS_CHANGED, {field,old,new} za META_CHANGED
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -5632,6 +5699,31 @@ model AiUsageLog {
   @@map("ai_usage_log")
 }
 
+/// Diktafon „sanduče" (scenario B — telefon diktira, Claude povlači). Telefon u
+/// pogonu diktira srpski (STT + doterivanje), a sređen TEKST se ovde ODLAŽE; Claude
+/// Code na Windows radnoj stanici ga POVLAČI read-only preko infra pristupa (SSH →
+/// `docker exec servosync-pg psql -U servosync`) i markira `delivered_at` istim
+/// kanalom — Claude NE koristi JWT/HTTP. Pull MORA nositi `user_id` filter (Nenad = 2):
+///   SELECT id, text FROM dictation_inbox WHERE user_id = 2 AND delivered_at IS NULL
+///   ORDER BY created_at DESC LIMIT 1;  -- pa UPDATE … SET delivered_at=now() WHERE id=<row_id>
+/// ⚠ Bez `user_id` filtera vraća TUĐI diktat (svaki ai.chat nalog piše ovde; baza bez
+/// RLS) = prompt-injection vektor. `GET /dictation-inbox/latest` je za samu aplikaciju.
+/// Piše ga ISKLJUČIVO DictationInboxService (V1: samo insert; nema edit/delete).
+/// App-owned → Timestamptz(6); `user_id` = users.id iz JWT-a. App rola = `servosync_app`
+/// (nextval radi preko default privilegija na `public`; NAMERNO bez eksplicitnog GRANT-a).
+/// Čuva se SAMO tekst posle transkripcije — audio snimak se odbacuje, ne ulazi ovde.
+model DictationInbox {
+  id          Int       @id(map: "pk_dictation_inbox") @default(autoincrement()) @map("id")
+  userId      Int       @map("user_id")
+  text        String    @map("text") @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// null = još nepreuzeto; NON-null = Claude povukao i markirao (idempotentni „latest").
+  deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(6)
+
+  @@index([userId, deliveredAt, createdAt], map: "idx_dictation_inbox_user_delivered_created")
+  @@map("dictation_inbox")
+}
+
 /// Minimalni registar „zadatak → model" (Talas AI-0, stavka 7). NIJE nova
 /// paralelna istina: prazan red = fallback na postojeći izvor (sy15
 /// sastanci_ai_settings / montaza_ai_settings, odn. env za zahteve i chat).
@@ -5645,4 +5737,35 @@ model AiModelPolicy {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("ai_model_policy")
+}
+
+/// Zahtev 038/26: crtež (PDF) za RN koji je mašinska usluga bez PDM crteža —
+/// ISTI bytea-u-bazi obrazac kao `PlanProizvodnjeDrawing` (M1, nema object
+/// storage). Otpremanje je dozvoljeno na dva ekrana: „radni nalozi" (RN već
+/// postoji → `workOrderId`) i primopredaje „na pisanju" PRE nego što RN nastane
+/// (`handoverId`, `workOrderId` NULL). Kad kasnije nastane RN iz te primopredaje
+/// (`HandoversService.createHandoverWorkOrder` — „Otkucaj TP"/lansiranje), servis
+/// backfilluje `workOrderId` na postojeće redove sa `handoverId` = ta primopredaja
+/// (isti crtež postaje vidljiv i na RN ekranu). Oba ref-a su MEKI (bez DB FK-a,
+/// isti obrazac kao `plan_proizvodnje_drawings.work_order_id`).
+model WorkOrderDrawingPdf {
+  id          Int       @id(map: "pk_work_order_drawing_pdfs") @default(autoincrement()) @map("id")
+  /// Meki ref → work_orders.id. NULL dok RN još ne postoji (vidi handoverId).
+  workOrderId Int?      @map("work_order_id")
+  /// Meki ref → drawing_handovers.id. Popunjen SAMO za otpremanje sa primopredaje
+  /// „na pisanju" pre nego što RN postoji; inače NULL.
+  handoverId  Int?      @map("handover_id")
+  fileName    String    @map("file_name") @db.VarChar(255)
+  contentType String?   @map("content_type") @db.VarChar(100)
+  /// PDF sadržaj (bytea, M1 obrazac).
+  pdfBinary   Bytes?    @map("pdf_binary")
+  sizeBytes   BigInt?   @map("size_bytes")
+  uploadedBy  String?   @map("uploaded_by")
+  uploadedAt  DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by")
+
+  @@index([workOrderId], map: "idx_work_order_drawing_pdfs_work_order")
+  @@index([handoverId], map: "idx_work_order_drawing_pdfs_handover")
+  @@map("work_order_drawing_pdfs")
 }

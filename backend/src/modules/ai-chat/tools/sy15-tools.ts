@@ -225,7 +225,8 @@ export const SY15_TOOLS: readonly AiTool[] = [
   },
   {
     name: "odsustva_lista",
-    description: `Periodi odsustva zaposlenog iz evidencije za godinu (od–do datumi + broj dana). Šifre: go=godišnji, bo=bolovanje, pr=praznik, sp=slobodan dan, np/nop=neplaćeno, sv=slava/verski. Bez employee_id → pozivalac; bez godine → tekuća; tip filtrira po šifri. Svaki period ima „vremenski_status" (iskorisceno/u_toku/planirano) — NIKAD ne opisuj „planirano" period kao već iskorišćen; koristi „ukupno_iskorisceno_po_tipu" za „koliko je iskoristio DO SADA" i „ukupno_planirano_po_tipu" za buduće/zakazano.`,
+    description: `Periodi odsustva zaposlenog iz evidencije za godinu (od–do datumi + broj dana). Šifre: go=godišnji, bo=bolovanje, pr=praznik, sp=slobodan dan, np/nop=neplaćeno, sv=slava/verski. Bez employee_id → pozivalac; bez godine → tekuća; tip filtrira po šifri. Svaki period ima „vremenski_status" (iskorisceno/u_toku/planirano) — NIKAD ne opisuj „planirano" period kao već iskorišćen; koristi „ukupno_iskorisceno_po_tipu" za „koliko je iskoristio DO SADA" i „ukupno_planirano_po_tipu" za buduće/zakazano.
+PAŽNJA (česta greška): ovi periodi su RADNI DANI istog odsustva RASECENI vikendima/praznicima — NISU zasebna odsustva. Odobren zahtev 04.08–17.08 se ovde vidi kao 04–07.08, 10–14.08 i 17.08. Kad odgovaraš „kada ide na odmor", navedi JEDAN neprekidan raspon (od prvog do poslednjeg dana), a NE listu delova; i NIKAD ne nabrajaj i zahtev i ove periode kao da su različiti odmori. Ako ipak nabrajaš delove, navedi ih SVE — uključujući jednodnevne (npr. 17.08) — jer zbir mora da se poklopi sa „ukupno_planirano_po_tipu".`,
     schema: {
       type: "object",
       properties: {
@@ -245,7 +246,8 @@ export const SY15_TOOLS: readonly AiTool[] = [
   },
   {
     name: "go_zahtevi",
-    description: `Zahtevi za godišnji odmor zaposlenog (od–do, broj dana, status odobravanja, napomena). Bez employee_id → pozivalac. Svaki zahtev ima i „vremenski_status" (iskorisceno/u_toku/planirano prema današnjem datumu) — odobren zahtev sa datumom u budućnosti je „planiran", NE „iskorišćen".`,
+    description: `Zahtevi za godišnji odmor zaposlenog (od–do, broj dana, status odobravanja, napomena). Bez employee_id → pozivalac. Svaki zahtev ima i „vremenski_status" (iskorisceno/u_toku/planirano prema današnjem datumu) — odobren zahtev sa datumom u budućnosti je „planiran", NE „iskorišćen".
+OVO JE MERODAVAN IZVOR za pitanje „kada X ide na odmor" — odgovori rasponom iz zahteva (npr. „od 04.08. do 17.08., 10 radnih dana, odobreno"). Periodi iz „odsustva_lista"/„go_pregled" su SAMO radni dani tog istog odmora rasečeni vikendima — ne prikazuj ih kao dodatne/zasebne odmore i ne sabiraj ih sa zahtevom.`,
     schema: {
       type: "object",
       properties: {
@@ -264,7 +266,8 @@ export const SY15_TOOLS: readonly AiTool[] = [
   },
   {
     name: "go_pregled",
-    description: `KOMPLETAN pregled godišnjeg odmora za tekuću godinu U JEDNOM POZIVU — koristi ga za „status/pregled godišnjeg sa danima koje sam koristio". Vraća: godišnje pravo, preneto iz prošle godine, (za novozaposlene sa srazmernim sticanjem) zarađeno do danas, ukupno na raspolaganju, iskorišćeno, planirano, preostalo zaključno sa danas, te odvojene liste „periodi_iskorisceno" i „periodi_planirano" (od–do + broj dana). Bez employee_id → za pozivaoca. Ne treba dodatno zvati go_saldo/odsustva_lista.`,
+    description: `KOMPLETAN pregled godišnjeg odmora za tekuću godinu U JEDNOM POZIVU — koristi ga za „status/pregled godišnjeg sa danima koje sam koristio". Vraća: godišnje pravo, preneto iz prošle godine, (za novozaposlene sa srazmernim sticanjem) zarađeno do danas, ukupno na raspolaganju, iskorišćeno, planirano, preostalo zaključno sa danas, te odvojene liste „periodi_iskorisceno" i „periodi_planirano" (od–do + broj dana). Bez employee_id → za pozivaoca. Ne treba dodatno zvati go_saldo/odsustva_lista.
+PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan odobren odmor daje više periodâ (04–07.08, 10–14.08, 17.08 = jedan odmor 04.08–17.08). Ne prikazuj ih kao zasebne odmore; ako ih nabrajaš, nabroj SVE (i jednodnevne) da se zbir poklopi sa poljem „planirano".`,
     schema: {
       type: "object",
       properties: {

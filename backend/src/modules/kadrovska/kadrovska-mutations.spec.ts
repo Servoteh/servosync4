@@ -111,6 +111,42 @@ describe("Kadrovska R2 mutacije — write-path guard + idempotencija", () => {
     expect(withUserRls).not.toHaveBeenCalled();
   });
 
+  it("ZAHTEV 026/26: odluka o molbi ide kroz kadr_vacreq_change_decide (approve/reject flag)", async () => {
+    const calls: { sql: unknown }[] = [];
+    withUserRls = jest.fn(async (_e, fn: (tx: unknown) => Promise<unknown>) =>
+      fn(
+        new Proxy(
+          {},
+          {
+            get(_t, prop) {
+              if (prop === "$queryRaw")
+                return jest.fn(async (sql: unknown) => {
+                  calls.push({ sql });
+                  return [{ v: { status: "approved" } }];
+                });
+              return modelStub;
+            },
+          },
+        ),
+      ),
+    );
+    service = new KadrovskaMutationsService(
+      { withUserRls, runIdempotentRls } as never,
+      {} as never,
+      { configured: false, send: jest.fn() } as never,
+      { enabled: false, dispatchKadr: jest.fn() } as never,
+      {} as never,
+    );
+    await service.vacationChangeDecide(EMAIL, UUID, true, {});
+    await service.vacationChangeDecide(EMAIL, UUID, false, { note: "ne moze" });
+    const texts = calls.map((c) =>
+      (c.sql as { strings: string[] }).strings.join("?"),
+    );
+    expect(texts[0]).toContain("kadr_vacreq_change_decide(");
+    expect((calls[0].sql as { values: unknown[] }).values).toContain(true);
+    expect((calls[1].sql as { values: unknown[] }).values).toContain(false);
+  });
+
   it("nijedna mutacija ne dodiruje this.sy15.db (BYPASSRLS sentinel)", async () => {
     await Promise.allSettled([
       service.submitVacation(EMAIL, {

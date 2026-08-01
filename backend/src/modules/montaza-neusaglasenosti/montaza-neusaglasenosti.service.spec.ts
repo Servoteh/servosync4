@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   PayloadTooLargeException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -14,6 +15,8 @@ import {
 } from "./montaza-neusaglasenosti.service";
 import { MontazaNmNumberingService } from "./montaza-nm-numbering.service";
 import { MontazaNmMailService } from "./montaza-nm-mail.service";
+import { MontazaNmKarticaService } from "./montaza-nm-kartica.service";
+import { PdmService } from "../pdm/pdm.service";
 import { ROLES } from "../../common/authz/roles";
 import type { AuthUser } from "../auth/jwt.strategy";
 
@@ -32,6 +35,7 @@ function baseNc(over: Record<string, unknown> = {}) {
     locationNote: null,
     drawingNumber: null,
     workOrderCode: null,
+    partName: null,
     status: "CEKA_ANALIZU",
     reportedByUserId: 7,
     responsibleDepartment: null,
@@ -64,6 +68,11 @@ interface PrismaMock {
   montageNonconformityEvent: { findMany: jest.Mock; create: jest.Mock };
   worker: { findMany: jest.Mock };
   user: { findMany: jest.Mock; findUnique: jest.Mock };
+  // 034/26 — kartica lookup (work_orders/projects) + razrešavanje crteža.
+  workOrder: { findMany: jest.Mock };
+  project: { findUnique: jest.Mock };
+  drawing: { findFirst: jest.Mock };
+  drawingPdf: { findFirst: jest.Mock };
   $executeRaw: jest.Mock;
   $transaction: jest.Mock;
 }
@@ -100,6 +109,10 @@ function prismaMock(): PrismaMock {
         ),
       findUnique: jest.fn().mockResolvedValue(null),
     },
+    workOrder: { findMany: jest.fn().mockResolvedValue([]) },
+    project: { findUnique: jest.fn().mockResolvedValue(null) },
+    drawing: { findFirst: jest.fn().mockResolvedValue(null) },
+    drawingPdf: { findFirst: jest.fn().mockResolvedValue(null) },
     $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn(),
   };
@@ -127,13 +140,19 @@ function makeService(prisma: PrismaMock) {
     notifyManagementNewReport: jest.fn().mockResolvedValue(true),
     notifyReporterClosed: jest.fn().mockResolvedValue(true),
   };
+  const kartica = new MontazaNmKarticaService(
+    prisma as unknown as PrismaService,
+  );
+  const pdm = { getPdfContent: jest.fn() };
   const service = new MontazaNeusaglasenostiService(
     prisma as unknown as PrismaService,
     new MontazaNmNumberingService(),
     notifications as unknown as NotificationsService,
     mail as unknown as MontazaNmMailService,
+    kartica,
+    pdm as unknown as PdmService,
   );
-  return { service, notifications, mail };
+  return { service, notifications, mail, kartica, pdm };
 }
 
 /** `data` prvog poziva mocka (tipiziran → izbegava no-unsafe-any na jest.Mock.mock.calls). */
@@ -522,6 +541,178 @@ describe("MontazaNeusaglasenostiService", () => {
       const next = await numbering.nextReportNumber(tx as never);
       expect(next).toBe(`NM-101/${YY}`); // 100 > 099 numerički
       expect(tx.$executeRaw).toHaveBeenCalled();
+    });
+  });
+
+  // ------------------------------------------------------------ 034/26 kartica + crtež
+
+  describe("skeniranje kartice dela (034/26)", () => {
+    const WO = {
+      id: 5,
+      identNumber: "9400/236",
+      drawingNumber: "123-45-06",
+      partName: "Nosač ležaja",
+      projectId: 11,
+    };
+
+    it("kratka nalepnica RNZ:0:{ident}:0:0 → RN + crtež + naziv + predmet", async () => {
+      prisma.workOrder.findMany.mockResolvedValue([WO]);
+      prisma.project.findUnique.mockResolvedValue({ projectNumber: "9400" });
+      const { service } = makeService(prisma);
+
+      const res = await service.lookupKartica("RNZ:0:9400/236:0:0");
+
+      expect(res.data).toMatchObject({
+        identNumber: "9400/236",
+        workOrderCode: "9400/236",
+        drawingNumber: "123-45-06",
+        partName: "Nosač ležaja",
+        projectNumber: "9400",
+        matchCount: 1,
+      });
+      // projectId=0 sa nalepnice se NE koristi kao filter (samo ident).
+      const where = (
+        prisma.workOrder.findMany.mock.calls[0] as [{ where: object }]
+      )[0].where;
+      expect(where).toEqual({ identNumber: "9400/236" });
+    });
+
+    it("pun oblik sa RN papira filtrira i po predmetu", async () => {
+      prisma.workOrder.findMany.mockResolvedValue([WO]);
+      prisma.project.findUnique.mockResolvedValue({ projectNumber: "9400" });
+      const { service } = makeService(prisma);
+
+      await service.lookupKartica("RNZ:11:9400/236:0:A");
+
+      const where = (
+        prisma.workOrder.findMany.mock.calls[0] as [{ where: object }]
+      )[0].where;
+      expect(where).toEqual({ identNumber: "9400/236", projectId: 11 });
+    });
+
+    it("SR raspored tastature se toleriše (postojeći parseBarcode)", async () => {
+      prisma.workOrder.findMany.mockResolvedValue([WO]);
+      prisma.project.findUnique.mockResolvedValue({ projectNumber: "9400" });
+      const { service } = makeService(prisma);
+
+      // „RNYČ…" = skener na US, OS na SR latinici (incident pogona 2026-07-17).
+      const res = await service.lookupKartica("RNYČ0Č9400/236Č0Č0");
+      expect(res.data.identNumber).toBe("9400/236");
+    });
+
+    it("ident u više predmeta → popunjava se samo ono u čemu su svi saglasni", async () => {
+      prisma.workOrder.findMany.mockResolvedValue([
+        WO,
+        { ...WO, id: 6, projectId: 12, drawingNumber: "999-99-99" },
+      ]);
+      const { service } = makeService(prisma);
+
+      const res = await service.lookupKartica("RNZ:0:9400/236:0:0");
+
+      expect(res.data.matchCount).toBe(2);
+      expect(res.data.partName).toBe("Nosač ležaja"); // isti kod oba
+      expect(res.data.drawingNumber).toBeNull(); // razlikuje se → radije prazno
+      expect(res.data.projectNumber).toBeNull(); // dva predmeta → bez pogađanja
+    });
+
+    it("barkod operacije (S:…) → 422, ident bez naloga → 404, smeće → 400", async () => {
+      const { service } = makeService(prisma);
+      await expect(
+        service.lookupKartica("S:10:BR1:0:A"),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      prisma.workOrder.findMany.mockResolvedValue([]);
+      await expect(
+        service.lookupKartica("RNZ:0:NEMA:0:0"),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      // Manje od 4 separatora (npr. skeniran barkod crteža) — poruka iz parseBarcode.
+      await expect(service.lookupKartica("123-45-06")).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe("otvaranje crteža iz prijave (034/26)", () => {
+    it("detalj nosi drawing={id,hasPdf} kad crtež i PDF postoje", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue(
+        baseNc({ drawingNumber: "123-45-06" }),
+      );
+      prisma.drawing.findFirst.mockResolvedValue({
+        id: 77,
+        drawingNumber: "123-45-06",
+        revision: "B",
+      });
+      prisma.drawingPdf.findFirst.mockResolvedValue({
+        drawingNumber: "123-45-06",
+      });
+      const { service } = makeService(prisma);
+
+      const res = await service.getOne(1);
+      expect(res.data.drawing).toEqual({ id: 77, revision: "B", hasPdf: true });
+    });
+
+    it("bez broja crteža → drawing=null (dugme ostaje ugašeno)", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue(baseNc());
+      const { service } = makeService(prisma);
+
+      const res = await service.getOne(1);
+      expect(res.data.drawing).toBeNull();
+      expect(prisma.drawing.findFirst).not.toHaveBeenCalled();
+    });
+
+    it("PDF ruta traži crtež iz TE prijave; bez broja crteža → 404", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue(
+        baseNc({ drawingNumber: null }),
+      );
+      const { service, pdm } = makeService(prisma);
+
+      await expect(service.getDrawingPdf(1)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(pdm.getPdfContent).not.toHaveBeenCalled();
+    });
+
+    it("PDF ruta streamuje razrešeni crtež kroz PdmService", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue(
+        baseNc({ drawingNumber: "123-45-06" }),
+      );
+      prisma.drawing.findFirst.mockResolvedValue({
+        id: 77,
+        drawingNumber: "123-45-06",
+        revision: "B",
+      });
+      prisma.drawingPdf.findFirst.mockResolvedValue({
+        drawingNumber: "123-45-06",
+      });
+      const { service, pdm } = makeService(prisma);
+      pdm.getPdfContent.mockResolvedValue({
+        buffer: Buffer.from("%PDF-"),
+        fileName: "123-45-06-B.pdf",
+      });
+
+      const out = await service.getDrawingPdf(1);
+      expect(pdm.getPdfContent).toHaveBeenCalledWith(77);
+      expect(out.fileName).toBe("123-45-06-B.pdf");
+    });
+  });
+
+  describe("naziv dela (034/26)", () => {
+    it("create upisuje partName (klipovan na 250)", async () => {
+      prisma.montageNonconformity.create.mockResolvedValue(baseNc());
+      const { service } = makeService(prisma);
+
+      await service.create(
+        {
+          projectNumber: "P-123",
+          description: "Deo ne ulazi",
+          severity: "SREDNJA",
+          locationKind: "SERVOTEH",
+          partName: `  ${"N".repeat(300)}  `,
+        },
+        REPORTER,
+      );
+
+      const data = firstCallData(prisma.montageNonconformity.create);
+      expect((data.partName as string).length).toBe(250);
     });
   });
 });

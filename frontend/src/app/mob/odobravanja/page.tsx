@@ -49,7 +49,6 @@ import {
   usePaidLeaveReject,
   useNopApprove,
   useNopReject,
-  useGrantBonusGo,
 } from '@/api/kadrovska';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
@@ -114,7 +113,6 @@ export default function MobOdobravanjaPage() {
   const plReject = usePaidLeaveReject();
   const nopApprove = useNopApprove();
   const nopReject = useNopReject();
-  const bonus = useGrantBonusGo();
 
   const [rejectFor, setRejectFor] = useState<InboxItem | null>(null);
   const [moveFor, setMoveFor] = useState<InboxItem | null>(null);
@@ -189,7 +187,7 @@ export default function MobOdobravanjaPage() {
     if (it.type === 'go') return `${formatDate(String(r.dateFrom))} – ${formatDate(String(r.dateTo))} · ${r.daysCount || ''} dana`;
     if (it.type === 'makeup') {
       return r.compensationType === 'dan_odmora'
-        ? `Rad vikendom ${formatDate(String(r.weekendWorkDate || r.absenceDate))} (${r.absenceHours}h) → +1 dan GO u saldo`
+        ? `Rad vikendom ${formatDate(String(r.weekendWorkDate || r.absenceDate))} (${r.absenceHours}h) → +1 dan GO u saldo (kucani sati tog dana se brišu — zamena, ne duplo)`
         : `Izostanak ${formatDate(String(r.absenceDate))} (${r.absenceHours}h)${r.makeupPlan ? ` · plan: ${r.makeupPlan}` : ''}`;
     }
     if (it.type === 'paid') return `${PAID_LEAVE_LABEL[String(r.leaveType)] || r.leaveType} · ${formatDate(String(r.dateFrom))} – ${formatDate(String(r.dateTo))} · ${r.daysCount || ''} dana`;
@@ -205,28 +203,19 @@ export default function MobOdobravanjaPage() {
         : it.type === 'makeup' ? await mkApprove.mutateAsync({ id: it.r.id, clientEventId: cid })
         : it.type === 'paid' ? await plApprove.mutateAsync({ id: it.r.id, clientEventId: cid })
         : await nopApprove.mutateAsync({ id: it.r.id, clientEventId: cid });
-      const data = (res as { data?: { status?: string; requested?: number; remaining?: number } }).data ?? {};
+      const data = (res as { data?: { status?: string; requested?: number; remaining?: number; hours_cleared?: number } }).data ?? {};
       const st = data.status;
       if (st === 'dual_control') { toast('⚠ Isti korisnik ne može oba nivoa istog zahteva.'); return; }
       if (st === 'exceeds_balance') { toast(`⚠ GO premašuje saldo (traženo ${data.requested}, preostalo ${data.remaining}).`); return; }
       if (st === 'already_processed') { toast('ℹ Zahtev je već obrađen — lista osvežena'); return; }
-      toast(st === 'sef_approved' ? '✅ Odobreno (1. nivo) — prosleđeno HR-u' : '✅ Odobreno');
-      // Rad vikendom → +1 dan GO (finalno odobrenje makeup 'dan_odmora') — isti tok kao desktop.
+      // Rad vikendom (makeup 'dan_odmora'): +1 dan GO upisuje BE ATOMSKI sa
+      // odobrenjem (i briše kucane sate tog dana — zamena, ne duplo plaćanje);
+      // FE više NE šalje odvojen POST /vacation/bonus — isti tok kao desktop.
       if (it.type === 'makeup' && st === 'approved' && it.r.compensationType === 'dan_odmora') {
-        try {
-          await bonus.mutateAsync({
-            clientEventId: newClientEventId(),
-            employeeId: it.r.employeeId,
-            workDate: String(it.r.weekendWorkDate || it.r.absenceDate),
-            days: 1,
-            reason: String(it.r.reason || 'Rad vikendom'),
-            makeupRequestId: it.r.id,
-          });
-          toast('🏖 +1 dan GO dodat u saldo');
-        } catch (e) {
-          if (String(e instanceof Error ? e.message : e).includes('already_granted')) toast('ℹ Dan je već dodat u saldo');
-          else toast('⚠ Zahtev odobren, ali +1 dan GO nije upisan — dodajte ručno.');
-        }
+        const cleared = Number(data.hours_cleared ?? 0);
+        toast(`✅ Odobreno — 🏖 +1 dan GO upisan u saldo${cleared > 0 ? ' · kucani sati tog dana su obrisani' : ''}`);
+      } else {
+        toast(st === 'sef_approved' ? '✅ Odobreno (1. nivo) — prosleđeno HR-u' : '✅ Odobreno');
       }
     } catch (e) {
       toast(e instanceof ApiError && e.status === 403 ? '⚠ Nemate dozvolu za ovu akciju.' : '⚠ Greška pri odobravanju.');

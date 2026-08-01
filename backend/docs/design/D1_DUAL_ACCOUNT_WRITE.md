@@ -80,15 +80,20 @@ ceo poziv i mogao da preskoči dovršavanje polu-naloga).
 Za **deactivate/delete** poredak (C pre B) je bezbedan i zbog JIT-a (§1): 2.0 `active=false` se upiše
 pre nego što 1.0 strana krene, pa nema prozora u kom JIT vaskrsava nalog.
 
-### RESET LOZINKE — GoTrue prvo (stvarna bezbednosna akcija), pa flagovi
+### RESET LOZINKE — GoTrue prvo (stvarna bezbednosna akcija), pa flagovi + 2.0 hash (B1)
 ```
-1. GoTrue (A)   findByEmail → PUT admin/users/:id { password: random }   PAD → ABORT (stara lozinka i dalje važi)
-2. flag (B+C)   must_change_password=true (sy15 user_roles + 2.0 users)  PAD → nebitno; korisnik i dalje resetuje
-3. reset mejl (D) best-effort
+1. GoTrue (A)   findByEmail → PUT admin/users/:id { password: newPassword }   PAD → ABORT (stara lozinka i dalje važi)
+2. 2.0 hash (C) bcrypt(newPassword) → users.passwordHash + mustChangePassword=true (B1 invarijanta:
+                ISTA lozinka u obe aplikacije dok sy15 živi — bez ovog koraka bi direktan 3.0 login
+                (bez 1.0 shell-a) zadržao STARI hash i odbio reset lozinku)
+3. flag (B)     must_change_password=true (sy15 user_roles)              PAD → nebitno; master primenjen
+4. reset mejl (D) best-effort — OBAVEŠTENJE, ne sadrži lozinku (v. §8)
 ```
-Reset NE menja 2.0 bcrypt lozinku (2.0 je SSO-only/odvojen login); postavlja `mustChangePassword` da
-force-change ekran (R3 FE) reaguje. Ne zaključava: korisnik postavlja lozinku sam kroz „Zaboravljena
-lozinka" tok (paritet 1.0 — privremena lozinka se NE šalje mejlom).
+> ⚠️ **§8 KOREKCIJA (30.07.2026):** ova sekcija je ORIGINALNO (12.07) pretpostavljala da 2.0 login
+> ostaje netaknut reset-om i da korisnik samostalno postavlja lozinku kroz „Zaboravljena lozinka".
+> B1 invarijanta (dual-write i u 2.0 hash) je dodata KASNIJE bez ažuriranja ovog dokumenta — a
+> self-service tok **nikad nije implementiran** (ne postoji nijedna ruta/stranica za njega u 3.0
+> frontendu). Vidi §8 za stvarno stanje i popravku.
 
 ### DEACTIVATE / ACTIVATE — soft, reverzibilno
 - deactivate: 2.0 `users.active=false` (**upsert** ako 2.0 red fali — zatvara JIT rupu) + sy15
@@ -150,3 +155,41 @@ managed_sub_department_ids/plan_montaze_readonly/kadrovska_access/kadrovska_hide
 iz DVA autoritativna izvora: `prisma/sy15.prisma` (`UserRoleSy15`, `prisma db pull` sa žive) I
 produkcioni 1.0 edge `admin-invite-user` koji te iste kolone piše svakodnevno. 2.0 `users` dobija NOVU
 kolonu `must_change_password` (migracija — D3 #4).
+
+## 8. Incident 30.07.2026 — admin reset nije imao kako da prosledi lozinku
+
+**Simptom:** korisnik (Aleksandar Ilić) se nije mogao ulogovati ni nakon admin reseta lozinke.
+Administrator (Nenad) nije imao ŠTA da mu pošalje — API odgovor reseta/pozivnice nikad nije sadržao
+generisanu lozinku.
+
+**Root cause (dva nezavisna propusta koji su se poklopili):**
+1. `resetPassword()`/`invite()` su generisale lozinku, upisale je u GoTrue (A) i 2.0 hash (C), pa je
+   **odbacile** — API odgovor je vraćao samo `{ email, reset: true, ... }`, nikad `password`.
+2. Reset/welcome mejl (D, `queueWelcomeEmail`) je korisnika upućivao da klikne „Zaboravljena lozinka"
+   — **opcija koja ne postoji nigde u 3.0** (nema je ni na `/login`, ni bilo gde u frontendu; nema ni
+   backend rute za self-service request). Nasleđeno iz 1.0 edge template-a bez provere da 3.0 ima
+   ekvivalent.
+   - Usput otkriven i TREĆI, nezavisan i NEPOPRAVLJEN nalaz: sy15 GoTrue je (verovatno iz 1.0 strane,
+     van ovog repoa) u nekom trenutku poslao svoj UGRAĐENI recovery mejl (engleski template, magic
+     link + OTP kod) čiji redirect vodi na `servosync.servoteh.com` — 3.0 domen koji NEMA stranicu
+     koja hvata GoTrue recovery callback → 404. Ovo je GoTrue/Supabase **Site URL** konfiguracija
+     (infrastruktura, ne kod u ovom repou) i ostaje otvoreno; korisnicima koji tu opciju pronađu treba
+     reći da je ignorišu dok se ne reši.
+
+**Fix (komit `d76a4e86`, 30.07.2026, push direktno na main + verifikovan deploy):**
+- `resetPassword()` i `invite()` vraćaju `password` u odgovoru (`DualWriteResult.password`) — jedino
+  mesto gde iko (uklj. admin) može videti lozinku, pošto self-service ne postoji.
+- Podešavanja → Korisnici: reset dijalog dobija opciono polje za ručni unos lozinke + prikazuje
+  rezultujuću lozinku (kopiraj dugme) nakon reseta; invite dijalog isto prikazuje lozinku u poruci.
+- Mejl (D) više ne pominje „Zaboravljena lozinka" — tekst sad kaže da administrator šalje lozinku
+  posebnim putem i da će aplikacija odmah tražiti promenu (`mustChangePassword`, već postojeći R3 FE
+  tok — jedini stvarni „self-service" korak koji postoji).
+
+**Operativni tok koji ostaje na snazi dok self-service ne postoji:** admin resetuje → vidi lozinku u
+dijalogu → šalje je korisniku direktno (WhatsApp/SMS/lično) → korisnik se uloguje → app ga odmah
+prebacuje na `/promena-lozinke`.
+
+**Otvoreno (nije urađeno u ovom fixu, svesno odloženo):**
+- Prava self-service „zaboravljena lozinka" stranica (token/magic-link + `/postavi-lozinku` ruta) —
+  veći posao, arhitektonska odluka za R0/kasnije.
+- GoTrue Site URL / redirect konfiguracija koja šalje na nepostojeću 3.0 rutu (infra, van koda).

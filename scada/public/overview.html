@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Servoteh — Control Center</title>
+  <link rel="stylesheet" href="theme.css" />
+</head>
+<body>
+  <header class="t-bar">
+    <div class="t-brand"><span class="t-logobox"><img class="t-logo" src="servoteh-logo.png" alt="Servoteh"></span><span class="bt">SCADA</span><span class="sub">Energy &amp; Thermal Control Center</span></div>
+    <div class="t-right">
+      <nav class="t-nav">
+        <a href="/" class="active">Pregled</a>
+        <a href="/kot1.html">Kotlarnica 1</a>
+        <a href="/kot2.html">Kotlarnica 2</a>
+        <a href="/kot3.html">Kotlarnica 3</a>
+        <a href="/solar-kaco.html">Solar KACO</a>
+        <a href="/solar-sigen.html">Solar Sigenergy</a>
+      </nav>
+      <span class="t-clock" id="clock"></span>
+      <button class="t-toggle" id="themeBtn">☾ Tamna</button>
+    </div>
+  </header>
+
+  <section class="gstat" id="gstat"></section>
+
+  <main>
+    <div class="grid cols">
+      <div>
+        <div class="sec-title">Sistemi</div>
+        <section class="cards" id="cards"></section>
+      </div>
+      <div>
+        <div class="sec-title">Komunikacija</div>
+        <div class="pnl" id="comms"></div>
+        <div class="sec-title" style="margin-top:16px">Aktivni alarmi</div>
+        <div class="pnl" id="alarms"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="overview.js"></script>
+</body>
+</html>

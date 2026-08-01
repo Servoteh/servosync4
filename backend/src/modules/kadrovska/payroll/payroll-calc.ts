@@ -562,12 +562,14 @@ export function aggregateWorkHoursForMonth(
     const isHol = hol.has(ymd);
 
     if (weekend) {
-      if (!abs && h > 0) {
-        out.redovanRadSati += h;
+      /* Praznik koji pada u subotu/nedelju: rad se vodi kao PRAZNIČNI rad
+         (zakonsko uvećanje), a ne kao redovan — zato se proverava PRVI. */
+      if (isHol && !abs && h > 0) {
+        out.praznikRadSati += h;
         continue;
       }
-      if (isHol && h > 0) {
-        out.praznikRadSati += h;
+      if (!abs && h > 0) {
+        out.redovanRadSati += h;
         continue;
       }
       if (isHol) {
@@ -695,8 +697,9 @@ export function gridRedovniUnitsOneDay(
   const isHol = hol.has(ymd);
 
   if (weekend) {
+    /* Rad na vikendu (i kad je praznik) daje h prikaznih jedinica; odsustvo
+       ima prednost nad satima — isto kao u aggregateWorkHoursForMonth. */
     if (!abs && h > 0) return h;
-    if (isHol && h > 0) return h;
     if (isHol) {
       if (abs === "go") return REGULAR_DAY_HOURS;
       if (abs === "bo") return REGULAR_DAY_HOURS;

@@ -14,18 +14,21 @@ import {
   useEmployees,
   useVacationBalance,
   useVacationEntitlements,
+  useVacationPeriods,
   useRequests,
   useWorkHours,
   useHolidays,
   useSaveEntitlement,
   fetchEmployeePii,
   newClientEventId,
+  type VacationPeriod,
 } from '@/api/kadrovska';
 import { SummaryChips, sv } from '../common';
 import { computeBalanceRows } from './compute';
 import { toRosterEmp, type BalanceRow, type RosterEmp } from './types';
 import { deptColor, REVIEW_FLAG_BADGE, nextWorkingDay, holidaySetFromRows, mergeConsecutiveDays } from './helpers';
 import type { GridSeg } from './gantt';
+import { GoPeriodCell, GoPeriodList, periodText } from './go-periodi';
 import { AccrualModal, AdvanceModal } from './entitlement-modals';
 import { HistoryModal } from './history-modal';
 import { VacationGantt } from './gantt';
@@ -51,11 +54,22 @@ export function SaldoTab() {
   const [hiddenDepts, setHiddenDepts] = useState<Set<string>>(new Set());
   const [view, setView] = useState<'table' | 'gantt'>('table');
   const [modal, setModal] = useState<ModalState>(null);
+  // Prošireni red = svi GO raspani tog zaposlenog u godini (bez ulaska u rešenje).
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const empQ = useEmployees({ pageSize: 1000 });
   const balanceQ = useVacationBalance({ year });
   const entQ = useVacationEntitlements({ year });
   const reqQ = useRequests({}, canEdit || can(PERMISSIONS.KADROVSKA_VACREQ_MANAGE));
+  // GO raspani „od–do" (vacation_requests + evidencija bez zahteva). Pod
+  // `kadrovska.read` kao i saldo — NE zavisi od `vacreq_manage` kao `reqQ`.
+  const periodsQ = useVacationPeriods({ year });
+  // NE koristiti `isLoading` kao jedini uslov: u TanStack Query v5 upit u stanju
+  // `paused` (browser offline, networkMode='online') ima `isLoading=false` I
+  // `isError=false`, pa bi ćelija tvrdila „nema planiranog odmora" za SVAKOGA,
+  // a izvoz bi prošao sa praznom kolonom — tj. povratak F2 na drugom ulazu.
+  // Merodavno je „nije uspelo" (`!isSuccess`), ne „učitava se".
+  const periodsNotReady = !periodsQ.isSuccess && !periodsQ.isError;
   const whQ = useWorkHours({ from: `${year}-01-01`, to: `${year}-12-31` });
   const holQ = useHolidays({ from: `${year}-01-01`, to: `${year + 1}-01-31` });
   const saveCarry = useSaveEntitlement();
@@ -73,6 +87,17 @@ export function SaldoTab() {
     for (const [emp, days] of byEmp) map.set(emp, mergeConsecutiveDays(days));
     return map;
   }, [whQ.data]);
+
+  // GO raspani po zaposlenom (BE ih već vraća sortirane po datumu početka).
+  const goByEmp = useMemo(() => {
+    const m = new Map<string, VacationPeriod[]>();
+    for (const p of periodsQ.data?.data ?? []) {
+      const list = m.get(p.employeeId);
+      if (list) list.push(p);
+      else m.set(p.employeeId, [p]);
+    }
+    return m;
+  }, [periodsQ.data]);
 
   const roster: RosterEmp[] = useMemo(
     () => (empQ.data?.data ?? []).map(toRosterEmp),
@@ -174,8 +199,13 @@ export function SaldoTab() {
 
   function exportExcel() {
     if (!rows.length) { showToast('Nema podataka za izvoz'); return; }
+    // F2: kolona „Odmor (od–do)" bi u ovim stanjima izašla PRAZNA za svakoga, a
+    // tabela se deli dalje kao da je tačna. Radije se izvoz odbije nego da se
+    // pošalje dokument koji potcenjuje odmore.
+    if (periodsNotReady) { showToast('⏳ Odmori se još učitavaju (ili nema mreže) — pokušaj za koji trenutak'); return; }
+    if (periodsQ.isError) { showToast('⚠ Odmori (od–do) nisu učitani — izvoz je zaustavljen da tabela ne bi bila lažno prazna'); return; }
     const data = [
-      ['Zaposleni', 'Odeljenje', 'Preneto', 'Zarađeno do danas', 'Ukupno (do danas)', `Iskorišćeno ${year}`, 'od toga pre 01.05', 'Planirano', 'Preostalo', 'Avans (CEO/CFO)'],
+      ['Zaposleni', 'Odeljenje', 'Preneto', 'Zarađeno do danas', 'Ukupno (do danas)', `Iskorišćeno ${year}`, 'od toga pre 01.05', 'Planirano', 'Odmor (od–do)', 'Preostalo', 'Avans (CEO/CFO)'],
       ...rows.map((r) => [
         r.emp.name,
         r.emp.department,
@@ -185,6 +215,7 @@ export function SaldoTab() {
         r.daysUsed,
         r.openingUsed || 0,
         r.daysPlanned || 0,
+        (goByEmp.get(r.emp.id) ?? []).map(periodText).join('; '),
         r.daysRemainingAccrued,
         r.isAdvance ? 'DA' : '',
       ]),
@@ -276,6 +307,25 @@ export function SaldoTab() {
       ),
     },
     {
+      // Zahtev vlasnika 30.07.2026: od–do odmora mora da se vidi ODMAH u redu,
+      // bez otvaranja rešenja. Stoji uz „Planirano" jer je njegov datumski par.
+      key: 'go-period',
+      header: 'Odmor (od–do)',
+      render: (r) => (
+        <GoPeriodCell
+          periods={goByEmp.get(r.emp.id) ?? []}
+          loading={periodsNotReady}
+          error={periodsQ.isError}
+          // Saldo istog reda — brana da ćelija ne tvrdi „nema odmora" dok
+          // „Iskorišćeno/Planirano" pokazuju dane (F1 brana konzistentnosti).
+          balance={{ used: r.daysUsed, planned: r.daysPlanned, openingUsed: r.openingUsed }}
+          year={year}
+          expanded={expanded === r.emp.id}
+          onToggle={() => setExpanded((k) => (k === r.emp.id ? null : r.emp.id))}
+        />
+      ),
+    },
+    {
       key: 'remaining',
       header: 'Preostalo',
       align: 'right',
@@ -364,6 +414,16 @@ export function SaldoTab() {
           rowKey={(r) => r.emp.id}
           loading={empQ.isLoading || balanceQ.isLoading}
           empty={<EmptyState title="Nema zaposlenih za prikaz" />}
+          expandedKey={expanded}
+          renderExpanded={(r) => (
+            <GoPeriodList
+              periods={goByEmp.get(r.emp.id) ?? []}
+              employeeName={r.emp.name}
+              year={year}
+              loading={periodsNotReady}
+              error={periodsQ.isError}
+            />
+          )}
         />
       ) : (
         <VacationGantt rows={rows} vac={reqQ.data?.data?.vacation ?? []} gridSegs={gridSegs} year={year} />
