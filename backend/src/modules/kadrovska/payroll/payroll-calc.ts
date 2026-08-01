@@ -597,7 +597,33 @@ export function aggregateWorkHoursForMonth(
     /* Radni dan kalendarski (pon–pet) */
     if (isHol) {
       if (h > 0) {
+        /* O-1 (vlasnik 30.07.2026, potvrđeno 01.08.2026) — rad na NERADNI praznik
+           se plaća DUPLO: praznik ide kao 8 h redovno (kao da se nije radilo) i
+           PORED toga se plaćaju stvarno odrađeni sati. Primer: 6 h na 1. maj →
+           8 h + 6 h. Ranije je ovde `continue` pucao pre grane plaćenog praznika,
+           pa je unos sati u kolonu „sati" TIHO pojeo garantovanih 8 h; kadrovska
+           je pravilo držala ručno (`sp` + sati u prekovremenom).
+
+           Rubni slučajevi — svesno odlučeni, ne menjati bez nove odluke vlasnika:
+           (1) RUČNI OBRAZAC OSTAJE: `sp` + prekovremeno (sati = 0) ide donjom
+               granom i daje isti zbir (8 h + prekovremeno), pa su oba puta
+               ravnopravna i kadrovska ne mora ništa da prepravlja unazad.
+           (2) ODSUSTVO + SATI: ponašanje NIJE dirano — sati i dalje pobeđuju
+               šifru odsustva i knjiže se kao praznični rad, ali BEZ 8 h (uslov
+               `!abs`). Ovo je zatečena semantika ove grane od porta iz 1.0.
+           (3) ELIGIBILITY: ista kapija kao grana bez sati — `isAutoPaidHolidayEligible`
+               isključuje sve tipove rada osim „ugovor" (praksa/dualno/penzioner)
+               i dane pre `hireDate`. Takvima se i dalje knjiži samo odrađeno.
+           (4) VIKEND-PRAZNIK: ne prolazi ovuda (gornja grana), i tamo se NE dodaje
+               8 h — za dan za koji čovek ionako nije bio raspoređen ne postoji
+               pravo na plaćen praznik (uvedeno u `main 98b33709`, ostaje kako jeste).
+           (5) `kadr_holidays.is_workday = true` (naložena radna subota) NIJE praznik —
+               pozivaoci grade `holSet` sa `where: { isWorkday: false }` (AUDIT-K1),
+               pa takav dan uopšte ne ulazi u ovu granu. */
         out.praznikRadSati += h;
+        if (!abs && isAutoPaidHolidayEligible(ymd, opts)) {
+          out.praznikPlaceniSati += REGULAR_DAY_HOURS;
+        }
         continue;
       }
       if (abs === "go") out.godisnjiSati += REGULAR_DAY_HOURS;
@@ -720,7 +746,15 @@ export function gridRedovniUnitsOneDay(
     return 0;
   }
   if (isHol) {
-    if (h > 0) return h;
+    /* O-1: rad na neradni praznik = odrađeni sati + 8 h plaćenog praznika.
+       MORA da prati `aggregateWorkHoursForMonth`, jer je `gridRedovniSumUnitsForMonth`
+       (mesečni Σ) izveden iz agregata, a ovaj helper daje doprinos PO DANU —
+       da se zbir dana i mesečni Σ ne raziđu za tih 8 h. */
+    if (h > 0) {
+      return !abs && isAutoPaidHolidayEligible(ymd, opts)
+        ? h + REGULAR_DAY_HOURS
+        : h;
+    }
     if (abs === "go") return REGULAR_DAY_HOURS;
     if (abs === "bo") return REGULAR_DAY_HOURS;
     if (abs === "sp") return REGULAR_DAY_HOURS;
