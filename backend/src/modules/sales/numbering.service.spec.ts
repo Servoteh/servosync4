@@ -1,13 +1,18 @@
 import { Prisma } from "@prisma/client";
-import { DocumentNumberSequenceService } from "./numbering.service";
+import {
+  DocumentNumberSequenceService,
+  INVOICE_SEQUENCE_KEY,
+} from "./numbering.service";
 
 /**
- * Numeracija izlaznih dokumenata — format `NNN/GG` (odluka O-F1).
+ * Numeracija izlaznih dokumenata — format `NNN/GG` (odluka O-F1) i JEDAN
+ * zajednički niz za sve izlazne fakture (dokaz sa donetih papira).
  *
  * Pokriveno: prvi broj u godini (`1/26`), deseti (`10/26`), bez vodećih nula,
  * prelaz godine (nov niz kreće od 1), dvocifrena godina za „okrugle" godine
  * (2005 → `/05`), NEMA prefiksa vrste dokumenta (papir = SEF = glavna knjiga),
- * i zaštita od trke (dva paralelna zahteva ne dobijaju isti broj).
+ * zajednički niz preko vrsta faktura (AVR/PROF ostaju na svom), i zaštita od
+ * trke (dva paralelna zahteva ne dobijaju isti broj).
  */
 
 /** Red u `document_number_sequences`. */
@@ -118,7 +123,7 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
   it("prvi broj u godini je 1/26 (nema reda sekvence → kreće od 1)", async () => {
     const db = makeDb();
     await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
-    expect(db.find("IFR", 2026, 0)?.lastNumber).toBe(1);
+    expect(db.find(INVOICE_SEQUENCE_KEY, 2026, 0)?.lastNumber).toBe(1);
   });
 
   it("deseti broj je 10/26 — bez vodećih nula i bez prefiksa vrste", async () => {
@@ -135,22 +140,19 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
 
   it("prelaz godine: nov niz kreće od 1 (657/26 → 1/27)", async () => {
     const db = makeDb([
-      { id: 1, documentType: "IFR", year: 2026, companyId: 0, lastNumber: 656 },
+      {
+        id: 1,
+        documentType: INVOICE_SEQUENCE_KEY,
+        year: 2026,
+        companyId: 0,
+        lastNumber: 656,
+      },
     ]);
 
     await expect(once(db, "IFR", 2026)).resolves.toBe("657/26");
     await expect(once(db, "IFR", 2027)).resolves.toBe("1/27");
     // Stara godina ostaje netaknuta (brojač se ne resetuje unazad).
-    expect(db.find("IFR", 2026, 0)?.lastNumber).toBe(657);
-  });
-
-  it("brojač je po VRSTI dokumenta — IFR i IFUSL teku nezavisno", async () => {
-    const db = makeDb([
-      { id: 1, documentType: "IFR", year: 2026, companyId: 0, lastNumber: 40 },
-    ]);
-
-    await expect(once(db, "IFR", 2026)).resolves.toBe("41/26");
-    await expect(once(db, "IFUSL", 2026)).resolves.toBe("1/26");
+    expect(db.find(INVOICE_SEQUENCE_KEY, 2026, 0)?.lastNumber).toBe(657);
   });
 
   it("godina je uvek dvocifrena: 2005 → /05", async () => {
@@ -165,25 +167,99 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
     await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
   });
 
-  it("nastavlja na zatečeni brojač (stari IFR0043/2026 → sledeći je 44/26, ne 1/26)", async () => {
-    // Zatečeni dokumenti u starom obliku se NE migriraju; sekvenca se ne resetuje,
-    // pa se redni broj 43 ne troši drugi put ni suštinski, ne samo kao string.
+  it("nastavlja na zatečeni brojač (43 → sledeći je 44/26, ne 1/26)", async () => {
+    // Zatečeni dokumenti se NE migriraju; sekvenca se ne resetuje, pa se redni broj
+    // 43 ne troši drugi put ni suštinski, ne samo kao string.
     const db = makeDb([
-      { id: 1, documentType: "IFR", year: 2026, companyId: 0, lastNumber: 43 },
+      {
+        id: 1,
+        documentType: INVOICE_SEQUENCE_KEY,
+        year: 2026,
+        companyId: 0,
+        lastNumber: 43,
+      },
     ]);
     await expect(once(db, "IFR", 2026)).resolves.toBe("44/26");
   });
 
-  describe("trka (dva paralelna zahteva)", () => {
-    it("postojeća sekvenca: brave serijalizuju → 2/26 i 3/26, nikad isti broj", async () => {
+  describe("jedan zajednički niz za izlazne fakture (dokaz sa papira)", () => {
+    it("dve RAZLIČITE vrste uzastopno: 1/26 pa 2/26 (nikad 1/26 i 1/26)", async () => {
+      const db = makeDb();
+
+      await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
+      await expect(once(db, "IFUSL", 2026)).resolves.toBe("2/26");
+
+      // Jedan jedini red sekvence — ne po red za svaku vrstu.
+      expect(db.rows).toHaveLength(1);
+      expect(db.rows[0].documentType).toBe(INVOICE_SEQUENCE_KEY);
+      expect(db.rows[0].lastNumber).toBe(2);
+    });
+
+    it("papir 22–25.12.2025: IFGP 650 → IFUSL 653 → IFR 657 (isprepleteno po datumu)", async () => {
+      // Doneti papiri nose tri RAZLIČITE vrste sa brojevima koji rastu hronološki.
+      // Sa brojačem po vrsti ovakav niz je nemoguć — zato je ovaj test brana.
       const db = makeDb([
-        { id: 1, documentType: "IFR", year: 2026, companyId: 0, lastNumber: 1 },
+        {
+          id: 1,
+          documentType: INVOICE_SEQUENCE_KEY,
+          year: 2025,
+          companyId: 0,
+          lastNumber: 649,
+        },
+      ]);
+
+      await expect(once(db, "IFGP", 2025)).resolves.toBe("650/25");
+      await expect(once(db, "IFUSL", 2025)).resolves.toBe("651/25");
+      await expect(once(db, "IFR", 2025)).resolves.toBe("652/25");
+    });
+
+    it("ino parnjaci (IZVRO/IZVGP/IZVUS) su u ISTOM nizu kao domaće fakture", async () => {
+      const db = makeDb();
+
+      await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
+      await expect(once(db, "IZVRO", 2026)).resolves.toBe("2/26");
+      await expect(once(db, "IZVGP", 2026)).resolves.toBe("3/26");
+      await expect(once(db, "IZVUS", 2026)).resolves.toBe("4/26");
+      expect(db.rows).toHaveLength(1);
+    });
+
+    it("AVR i PROF NISU u nizu faktura — zadržavaju svoj brojač po vrsti", async () => {
+      // Za avans i predračun nemamo papir koji pokazuje šta BigBit radi, pa se ne
+      // uvlače u zajednički niz (avansi imaju i zaseban zakonski niz).
+      const db = makeDb();
+
+      await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
+      await expect(once(db, "IFGP", 2026)).resolves.toBe("2/26");
+      // Avans i predračun kreću od svoje jedinice, nezavisno od faktura.
+      await expect(once(db, "AVR", 2026)).resolves.toBe("1/26");
+      await expect(once(db, "PROF", 2026)).resolves.toBe("1/26");
+
+      expect(db.rows.map((r) => r.documentType).sort()).toEqual([
+        INVOICE_SEQUENCE_KEY,
+        "AVR",
+        "PROF",
+      ]);
+    });
+  });
+
+  describe("trka (dva paralelna zahteva)", () => {
+    it("DVE RAZLIČITE vrste paralelno: brava je ista → 2/26 i 3/26, nikad isti broj", async () => {
+      // Ključ testa: IFR i IFUSL sada dele red sekvence, pa ih FOR UPDATE
+      // serijalizuje međusobno. Sa brojačem po vrsti oba bi dobila isti broj.
+      const db = makeDb([
+        {
+          id: 1,
+          documentType: INVOICE_SEQUENCE_KEY,
+          year: 2026,
+          companyId: 0,
+          lastNumber: 1,
+        },
       ]);
 
       const a = db.tx();
       const b = db.tx();
       const pa = service.next(a.client, "IFR", 2026, 0);
-      const pb = service.next(b.client, "IFR", 2026, 0);
+      const pb = service.next(b.client, "IFUSL", 2026, 0);
 
       // A commit-uje tek pošto je uzeo broj; B do tada čeka na bravi reda.
       const first = await pa;
@@ -193,7 +269,7 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
 
       expect([first, second].sort()).toEqual(["2/26", "3/26"]);
       expect(first).not.toBe(second);
-      expect(db.find("IFR", 2026, 0)?.lastNumber).toBe(3);
+      expect(db.find(INVOICE_SEQUENCE_KEY, 2026, 0)?.lastNumber).toBe(3);
     });
 
     it("prva sekvenca u godini: jedinstveni ključ obara gubitnika (P2002 → rollback)", async () => {

@@ -12,6 +12,15 @@
  * (najranije dospeće dokumenta). Aging bucket po (danas − dueDate):
  *   0-30 / 31-60 / 61-90 / 90+.
  *
+ * ZAŠTO JE GRUPISANJE BEZ VRSTE DOKUMENTA BEZBEDNO: sve izlazne fakture
+ * (IFR/IFGP/IFUSL + ino parnjaci) dele JEDAN niz brojeva po firmi i godini
+ * (`sales/numbering.service.ts` — dokaz sa donetih BigBit papira: IFGP 650/25,
+ * IFUSL 653/25, IFR 657/25, isprepleteno po datumu). Broj dokumenta je zato
+ * jedinstven i sam za sebe. Kad bi se numeracija vratila na brojač PO VRSTI,
+ * IFR `657/25` i IFUSL `657/25` bi ovde tiho pali u istu grupu i međusobno se
+ * netovali — dug jednog kupca bi sakrio dug drugog, bez ijedne greške u bazi
+ * (unique nad `invoices` uključuje i vrstu, pa baza to ne bi prijavila).
+ *
  * Raw SQL (prisma.$queryRaw) jer Prisma groupBy ne podržava HAVING nad
  * izračunatim izrazom niti join na registar; Decimal se vraća egzaktno.
  */
