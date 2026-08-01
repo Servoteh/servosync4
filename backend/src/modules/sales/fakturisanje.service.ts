@@ -104,12 +104,25 @@ export class FakturisanjeService {
     const isExport = dto.isExport ?? false;
     const currency = dto.currency ?? (isExport ? "EUR" : "RSD");
 
+    // Uz postojanje kupca uzimamo i dva podatka koja traži štampa (STAMPA_FAKTURA_GAP.md §3):
+    //   • salespersonId → „Odgovorno lice" u potpisnom bloku (polje na Invoice je postojalo,
+    //     ali ga niko nije punio, pa je ime na papiru bilo nemoguće);
+    //   • paymentMethod → „Način plaćanja" u traci uslova / `Payment terms:` na ino fakturi.
+    // Podrazumevaju se sa kupca; kad se napravi ekran za unos dokumenta, moći će da se pregaze
+    // po dokumentu (isto kao u legacy GoodsDocument-u, koji oba nosi na zaglavlju dokumenta).
     const customer = await this.prisma.customer.findUnique({
       where: { id: dto.customerId },
-      select: { id: true },
+      select: { id: true, salespersonId: true, paymentMethod: true },
     });
     if (!customer)
       throw new NotFoundException(`Kupac ${dto.customerId} ne postoji.`);
+
+    // Legacy „nema komercijalistu" se piše kao 0, a ne NULL — 0 nije ID nijednog prodavca.
+    const salespersonId =
+      customer.salespersonId != null && customer.salespersonId > 0
+        ? customer.salespersonId
+        : null;
+    const paymentMethod = customer.paymentMethod?.trim() || null;
 
     // Cena svake stavke (PricingService) — pre transakcije (čist read).
     const priced = [];
@@ -143,6 +156,8 @@ export class FakturisanjeService {
         lineNo: idx + 1,
         itemId: row.input.itemId ?? null,
         description: row.input.description ?? null,
+        // j.m. za štampu; za artikal ostaje prazno i štampa je uzima iz Item.unit.
+        unit: row.input.unit?.trim() || null,
         quantity: p.quantity,
         unitPrice: p.unitPrice,
         discountPercent: p.discountPercent,
@@ -184,6 +199,8 @@ export class FakturisanjeService {
           grossTotal,
           status: "DRAFT",
           poNumber: dto.poNumber?.trim() || null,
+          salespersonId,
+          paymentMethod,
           note: dto.note ?? null,
           createdByUserId: actor.userId,
           updatedByUserId: actor.userId,

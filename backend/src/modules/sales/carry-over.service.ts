@@ -104,12 +104,18 @@ export class DocumentCarryOverService {
           status: "DRAFT",
           isExport,
           poNumber: proforma.poNumber, // D6: broj narudžbenice se prenosi PROF → račun (UBL OrderReference)
+          // Podaci koje traži štampa (STAMPA_FAKTURA_GAP.md §3): bez prepisa bi ostali na
+          // predračunu, a papir se štampa sa RAČUNA — „Odgovorno lice" i „Način plaćanja" bi bili
+          // prazni na svakom računu nastalom prepisom.
+          salespersonId: proforma.salespersonId,
+          paymentMethod: proforma.paymentMethod,
           note: proforma.note,
           items: {
             create: proforma.items.map((it) => ({
               lineNo: it.lineNo,
               itemId: it.itemId,
               description: it.description,
+              unit: it.unit,
               quantity: it.quantity,
               unitPrice: it.unitPrice,
               discountPercent: it.discountPercent,

@@ -1199,6 +1199,23 @@ model PaymentAccount {
   sortOrder     Int             @default(0) @map("sort_order") @db.SmallInt
   countryCode   String?         @map("country_code") @db.VarChar(20)
   bankCode      String?         @map("bank_code") @db.VarChar(20)
+
+  // — Bankarske instrukcije za ino fakturu (blok na dnu Invoice 228/25 i na zasebnoj strani 060/26).
+  //   Domaća faktura ovaj blok NEMA — ona nosi samo `accountNumber` („Tekući račun: 160-110610-83")
+  //   u zaglavlju. Do sada su ova polja postojala samo kao tip u štampi (IssuerInfo.iban/swift) i
+  //   nikad se nisu punila, pa se blok banke nije štampao uopšte.
+
+  /// IBAN deviznog računa — red `IBAN :` u koloni „Beneficiary Customer:". ISO 13616, max 34 znaka.
+  iban        String? @map("iban") @db.VarChar(34)
+  /// SWIFT/BIC banke — red `SWIFT:` u koloni „Bank of beneficiary:". BIC je 8 ili 11 znakova.
+  swift       String? @map("swift") @db.VarChar(11)
+  /// Adresa banke ispod njenog naziva, višered („Milentija Popovića 7b, 11070 New Belgrade" +
+  /// „Republic of Serbia") — prelama se po \n, zato Text a ne VarChar kao ostale adrese.
+  bankAddress String? @map("bank_address") @db.Text
+  /// Valuta računa — štampa se uz naziv banke („Banca Intesa a.d. EUR") i po njoj se bira koji se
+  /// devizni račun uzima za valutu fakture. Ista dužina kao Invoice.currency.
+  currency    String? @map("currency") @db.VarChar(3)
+
   self          PaymentAccount  @relation("PaymentAccountSelf", fields: [id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_payment_accounts_self")
   selfReverse   PaymentAccount? @relation("PaymentAccountSelf")
 
@@ -3900,6 +3917,68 @@ model Invoice {
 
   note String? @map("note") @db.Text // napomena / memo (npr. JCI referenca kod izvoza)
 
+  // — Podaci koje traži štampa (docs/STAMPA_IZLAZNIH_FAKTURA.md — pet donetih BigBit obrazaca) —
+  // Imena i tipovi su preuzeti iz legacy `GoodsDocument` svuda gde podatak tamo već postoji,
+  // da dva modela ne govore različitim jezikom o istoj stvari. Sve je opciono — zatečeni računi
+  // nemaju ništa od ovoga i ne smeju da puknu.
+
+  /// Magacin sa kog roba izlazi. Štampa se SAMO na robnoj fakturi, u potpisnom bloku
+  /// „Robu izdao → iz magacina <naziv>"; to je i jedina razlika IFR („Magacin robe") od
+  /// IFGP („Gotovi proizvodi"). Meki ref warehouses.id; predlog vrednosti = DocumentType.defaultWarehouseId.
+  /// ODSTUPANJE od GoodsDocument.warehouseId (NOT NULL, default 1): ovde je opciono, jer usluga
+  /// (IFUSL/IZVUS) magacin nema, a zatečenim računima bi tiho podmetnuta „1" odštampala tuđi magacin.
+  warehouseId Int? @map("warehouse_id")
+
+  /// „Roba je FCO" — prva kolona trake uslova domaće robne fakture (npr. „magacin kupca").
+  /// Isto ime i tip kao GoodsDocument.fco.
+  fco String? @map("fco") @db.VarChar(30)
+
+  /// „Način otpreme robe" — treća kolona iste trake (npr. „lično"). = GoodsDocument.shipmentMethod.
+  shipmentMethod String? @map("shipment_method") @db.VarChar(30)
+
+  /// „Način plaćanja" — druga kolona trake uslova (npr. „virmanom"), a na ino fakturi red
+  /// `Payment terms:` (vrednost ostaje na srpskom — prepisuje se iz šifarnika, ne prevodi se).
+  /// Prepisuje se sa Customer.paymentMethod pri kreiranju predračuna. = GoodsDocument.paymentMethod.
+  paymentMethod String? @map("payment_method") @db.VarChar(50)
+
+  /// „Datum prometa dobara" (traka uslova IFR/IFGP), „Datum prometa" (IFUSL) i
+  /// `Date of delivery:` (ino usluga, štampa se uz mesto). Isti podatak puni i UBL
+  /// `cbc:ActualDeliveryDate`, koji SEF-u danas nedostaje.
+  deliveryDate DateTime? @map("delivery_date") @db.Timestamptz(6)
+
+  /// Broj izvozne deklaracije / JCI (npr. „25-0401-000005") — slobodan red ispod zbira na ino
+  /// robnoj fakturi. Do sada se lepio u `note`; sada ima svoje polje, pa `note` ostaje memo.
+  customsDeclarationNo String? @map("customs_declaration_no") @db.VarChar(30)
+
+  // — Otpremni blok ino usluge (Invoice 060/26; nijedan drugi obrazac ga nema) —
+
+  /// „Paritet:" — Incoterms pošiljke (npr. „FCA Dobanovci-Beograd"). NIJE isto što i domaći `fco`
+  /// (drugi šifarnik, drugi obrazac), zato zasebno polje.
+  deliveryTerm String? @map("delivery_term") @db.VarChar(60)
+
+  /// „Količina:" u otpremnom bloku — kolete/ambalaža kao tekst („1 paleta"), a ne količina robe
+  /// (ta je na stavkama).
+  packageDescription String? @map("package_description") @db.VarChar(60)
+
+  /// „Dimenzije:" pošiljke (npr. „400 x 800 x 2400 mm").
+  packageDimensions String? @map("package_dimensions") @db.VarChar(60)
+
+  /// „Ukupna brutto:" u kg. Ručni unos — brutto uključuje paletu/ambalažu, pa se NE može sabrati
+  /// iz Item.weightKg (na 060/26 je brutto − netto = 20 kg).
+  grossWeightKg Decimal? @map("gross_weight_kg") @db.Decimal(19, 3)
+
+  /// „Ukupna Netto:" u kg.
+  netWeightKg Decimal? @map("net_weight_kg") @db.Decimal(19, 3)
+
+  /// „Mesto istovara:" — višered (naziv, ulica, pošta + mesto, država), prelama se po \n.
+  /// ODSTUPANJE: legacy je imao GoodsDocument.deliveryPlaceId (šifarnik mesta isporuke), ali tabele
+  /// mesta isporuke u 4.0 nema — slobodan tekst dok se ne presudi treba li šifarnik (GAP §5.5).
+  unloadingPlace String? @map("unloading_place") @db.Text
+
+  /// „Kontakt špeditera u uvozu:" — firma + telefoni, višered. Slobodan tekst dok se ne presudi
+  /// da li špediteri idu u šifarnik (GAP §5.7).
+  forwarderContact String? @map("forwarder_contact") @db.Text
+
   // — Audit —
   createdByUserId Int?     @map("created_by_user_id")
   updatedByUserId Int?     @map("updated_by_user_id")
@@ -3930,6 +4009,12 @@ model InvoiceItem {
 
   itemId      Int?    @map("item_id") // meki ref items.id (artikal; null za slobodnu uslužnu stavku)
   description String? @map("description") @db.VarChar(255) // opis stavke (naziv artikla / usluge)
+
+  /// Jedinica mere stavke — kolona `j.m.` (domaći obrasci) / `Unit` (ino obrasci); štampa je na
+  /// sva četiri obrasca. Isti tip kao Item.unit (VarChar(5)). Popunjava se za SLOBODNU uslužnu
+  /// stavku (itemId = null), koja j.m. nema odakle drugde da dobije; kad je upisana, ima prednost
+  /// nad šifarnikom, pa štampa čita: `InvoiceItem.unit ?? Item.unit`.
+  unit String? @map("unit") @db.VarChar(5)
 
   quantity  Decimal @map("quantity") @db.Decimal(19, 6) // količina
   unitPrice Decimal @default(0) @map("unit_price") @db.Decimal(19, 4) // actualWholesalePrice (transakciona VP iz PricingService)

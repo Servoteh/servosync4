@@ -8,6 +8,8 @@ import { BadRequestException } from "@nestjs/common";
 export interface CreateProformaItemInput {
   itemId?: number; // artikal iz šifarnika (null za slobodnu uslužnu stavku)
   description?: string; // opis stavke (obavezan ako nema itemId)
+  /** j.m. za štampu (kolona `j.m.` / `Unit`); za slobodnu uslužnu stavku jedini izvor. Max 5. */
+  unit?: string;
   quantity: number;
   /** eksplicitna VP cena (za slobodnu uslužnu stavku); inače iz PricingService. */
   unitPrice?: number;
@@ -79,6 +81,14 @@ export function validateCreateProforma(dto: CreateProformaDto): void {
         errors.push(`Stavka ${i + 1}: artikal ili opis je obavezan.`);
       if (typeof it.quantity !== "number" || !(it.quantity > 0))
         errors.push(`Stavka ${i + 1}: količina mora biti veća od 0.`);
+      if (it.unit !== undefined) {
+        if (typeof it.unit !== "string")
+          errors.push(`Stavka ${i + 1}: jedinica mere mora biti tekst.`);
+        else if (it.unit.trim().length > 5)
+          errors.push(
+            `Stavka ${i + 1}: jedinica mere sme imati najviše 5 karaktera.`,
+          );
+      }
       if (
         it.discountPercent !== undefined &&
         (typeof it.discountPercent !== "number" ||
