@@ -227,14 +227,18 @@ export class UblBuilderService {
 
     // — PDF prilog (cac:AdditionalDocumentReference) —
     if (params.pdfBase64) {
+      // Rezervno ime fajla se izvodi iz broja dokumenta, a broj po odluci O-F1 nosi
+      // kosu crtu (`657/25`) — sirovo bi dalo „657/25.pdf", što je putanja, a ne ime
+      // fajla (SEF validatori i klijenti to odbijaju/seku). Zato ista sanitizacija
+      // kao u InvoicePdfService: separatori → crtica.
+      const pdfFileName =
+        params.pdfFileName ?? `${safeFileName(invoice.documentNumber)}.pdf`;
       parts.push("<cac:AdditionalDocumentReference>");
-      parts.push(
-        el("cbc:ID", params.pdfFileName ?? `${invoice.documentNumber}.pdf`),
-      );
+      parts.push(el("cbc:ID", pdfFileName));
       parts.push("<cac:Attachment>");
       parts.push(
         `<cbc:EmbeddedDocumentBinaryObject mimeCode="application/pdf" filename="${escapeXml(
-          params.pdfFileName ?? `${invoice.documentNumber}.pdf`,
+          pdfFileName,
         )}">${params.pdfBase64}</cbc:EmbeddedDocumentBinaryObject>`,
       );
       parts.push("</cac:Attachment>");
@@ -514,6 +518,14 @@ function fmtDate(d: Date): string {
 /** Količina — do 6 decimala bez trailing nula (UBL dozvoljava). */
 function fmtQty(v: Prisma.Decimal): string {
   return v.toDecimalPlaces(6).toString();
+}
+
+/**
+ * Broj dokumenta → bezbedno ime fajla. Broj po odluci O-F1 sadrži kosu crtu
+ * (`657/25`), a ime priloga ne sme da izgleda kao putanja.
+ */
+function safeFileName(documentNumber: string): string {
+  return documentNumber.replace(/[\\/:*?"<>|]+/g, "-");
 }
 
 /** XML escape za tekstualne čvorove i atribute. */

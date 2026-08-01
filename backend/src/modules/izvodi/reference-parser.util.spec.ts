@@ -72,6 +72,28 @@ describe("reference-parser.util — parseReference", () => {
     expect(candidates).toContain("123");
   });
 
+  it("broj-DVOCIFRENA godina (novi format O-F1) → normalizovan broj/GG", () => {
+    // Uplata na naš račun `657/25`: kupac u PNB kuca „657-25" ili „657/25".
+    const { candidates } = parseReference("657-25");
+    expect(candidates[0]).toBe("657-25");
+    expect(candidates).toContain("657/25");
+    expect(candidates).toContain("657");
+  });
+
+  it("četvorocifrena godina daje i skraćeni oblik broja (123/2026 → 123/26)", () => {
+    // Kupac kuca punu godinu, a naš dokument je u obliku `123/26` — mora se naći.
+    const { candidates } = parseReference("123-2026");
+    expect(candidates).toContain("123/2026");
+    expect(candidates).toContain("123/26");
+    expect(candidates[0]).toBe("123-2026"); // egzaktan ostaje prvi
+  });
+
+  it("model 97 + broj/GG → skinut kontrolni broj pa rekonstruisan broj/GG", () => {
+    const { candidates } = parseReference("97 12 657 25");
+    expect(candidates[0]).toBe("97 12 657 25");
+    expect(candidates).toContain("657/25");
+  });
+
   it("kombinacije susednih segmenata (3 segmenta)", () => {
     const { candidates } = parseReference("12 34 56");
     expect(candidates).toContain("1234"); // susedni 12+34

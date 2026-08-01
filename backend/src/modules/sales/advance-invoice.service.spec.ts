@@ -31,7 +31,9 @@ function proformaRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 10,
     documentType: "PROF",
-    documentNumber: "PROF0001/2026",
+    // Format `NNN/GG` (O-F1). Brojač je po VRSTI dokumenta, pa predračun i avansni
+    // račun imaju svoje nizove — otud „12/26" (PROF) uz „1/26" (AVR).
+    documentNumber: "12/26",
     level: 250,
     status: "DRAFT",
     companyId: 0,
@@ -57,7 +59,7 @@ function advanceRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 50,
     documentType: "AVR",
-    documentNumber: "AVR0001/2026",
+    documentNumber: "1/26",
     level: 0,
     status: "PAID",
     companyId: 0,
@@ -82,7 +84,7 @@ function finalInvoiceRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 100,
     documentType: "IFR",
-    documentNumber: "IFR0007/2026",
+    documentNumber: "7/26",
     level: 0,
     status: "POSTED",
     companyId: 0,
@@ -182,7 +184,7 @@ describe("AdvanceInvoiceService", () => {
         lineCount: 3,
       }),
     };
-    numbering = { next: jest.fn().mockResolvedValue("AVR0001/2026") };
+    numbering = { next: jest.fn().mockResolvedValue("1/26") };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -225,7 +227,7 @@ describe("AdvanceInvoiceService", () => {
       expect(data.documentType).toBe("AVR");
       expect(data.advanceDirection).toBe("out");
       expect(data.level).toBe(0);
-      expect(data.documentNumber).toBe("AVR0001/2026");
+      expect(data.documentNumber).toBe("1/26");
       expect(data.copiedFromDocId).toBe(10);
       expect(data.netTotal.toFixed(2)).toBe("10000.00");
       expect(data.vatTotal.toFixed(2)).toBe("2000.00");
@@ -268,7 +270,7 @@ describe("AdvanceInvoiceService", () => {
       prisma.invoice.findUnique.mockResolvedValue(proformaRow());
       prisma.invoice.findFirst.mockResolvedValue({
         id: 50,
-        documentNumber: "AVR0001/2026",
+        documentNumber: "1/26",
       });
 
       await expect(
@@ -457,7 +459,7 @@ describe("AdvanceInvoiceService", () => {
 
       expect(result.payableAmount.toFixed(2)).toBe("0.00");
       expect(result.grossTotal.toFixed(2)).toBe("12000.00");
-      expect(result.advanceInvoiceNumber).toBe("AVR0001/2026");
+      expect(result.advanceInvoiceNumber).toBe("1/26");
 
       // Upisana su SAMO polja veze avansa (grossTotal se ne dira).
       const updateArgs = firstArg<{ data: Record<string, unknown> }>(

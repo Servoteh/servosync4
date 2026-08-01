@@ -42,6 +42,15 @@ export interface ParsedReference {
 const YEAR_RE = /^(19|20)\d{2}$/;
 
 /**
+ * DVOCIFRENA godina — od odluke O-F1 naši izlazni dokumenti nose broj `657/25`
+ * (v. `sales/numbering.service.ts`), pa se i uplata poziva na `657-25` / `65725`.
+ * Bez ovog obrasca auto-uparivanje ne bi rekonstruisalo `657/25` i svaka uplata bi
+ * padala na slabiji fallback (uparivanje po iznosu) — a to je put do pogrešnog
+ * zatvaranja stavke. Opseg se ne sužava: `/GG` je za našu upotrebu uvek moguć.
+ */
+const YEAR2_RE = /^\d{2}$/;
+
+/**
  * Separatori za segmentaciju (FX_OdrediBrojDokumenta: `(`, `)`, `\`; prošireno na
  * `/`, `-` i razmak — realne varijante PNB-a). `\s` hvata i tabove/više razmaka.
  */
@@ -100,12 +109,20 @@ export function parseReference(
     }
   }
 
-  // (4) BROJ/GODINA — poslednji segment kao godina 20xx → „broj/godina" i goli „broj".
-  if (segments.length >= 2 && YEAR_RE.test(segments[segments.length - 1])) {
-    const year = segments[segments.length - 1];
+  // (4) BROJ/GODINA — poslednji segment kao godina → „broj/godina" i goli „broj".
+  //     (Goli „broj" je najčešće već dodat u koraku 3 kao segment, pa je `push`
+  //     ovde no-op zbog dedupa — ostaje radi slučajeva kada nije.)
+  if (segments.length >= 2) {
+    const last = segments[segments.length - 1];
     const num = segments[segments.length - 2];
-    push(`${num}/${year}`);
-    push(num);
+    if (YEAR_RE.test(last)) {
+      push(`${num}/${last}`); // „123/2026" — stari (zatečeni) oblik broja
+      push(`${num}/${last.slice(2)}`); // „123/26" — novi oblik (O-F1), isti dokument
+      push(num);
+    } else if (YEAR2_RE.test(last)) {
+      push(`${num}/${last}`); // „657-25" → „657/25"
+      push(num);
+    }
   }
 
   // (5) VARIJANTE BEZ VODEĆIH NULA — za svakog dosad skupljenog numeričkog kandidata.
