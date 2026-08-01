@@ -39,7 +39,7 @@ tog dana. Primer: 6 h rada na 1. maj → 8 h redovno **+** 6 h.
 
 **Potvrda (Nenad, 01.08.2026):** obračun **sam** da primenjuje pravilo (zatvoreno pitanje Č-1).
 
-**Status:** ✅ **ŽIVO U KODU** (grana `feat/obracun-praznik-8h-plus`, 01.08.2026). U
+**Status:** ✅ **ŽIVO U KODU** (`263a4db6`, grana `feat/obracun-praznik-8h-plus`, 01.08.2026). U
 `backend/src/modules/kadrovska/payroll/payroll-calc.ts` (grana „Radni dan kalendarski", `if (isHol)`)
 sada stoji `praznikRadSati += h` **i** `praznikPlaceniSati += 8`, uz istu kapiju prava
 (`isAutoPaidHolidayEligible`) koju već koristi grana bez sati. Ogledalo na frontendu
