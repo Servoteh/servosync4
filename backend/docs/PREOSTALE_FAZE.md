@@ -155,3 +155,98 @@ konto je zamenjeno vidljivim zaustavljanjem.
 
 **Gde se menja kad odgovor stigne:** `VAT_OUT_ACCOUNT_BY_PERCENT` u
 `backend/src/modules/sales/fakturisanje.service.ts` (jedan red) + seed konta + oba mapiranja.
+
+### S9 — brojač 2026. mora da se SEED-uje pre puštanja u rad (BigBit je već potrošio blok)
+
+**Nalaz (02.08.2026, peti krug provere).** `DocumentNumberSequenceService.next` kad reda
+sekvence nema **kreće od 1** (`numbering.service.ts`, „nema reda → `lastNumber = 1`"), a
+`INSERT INTO document_number_sequences` ne postoji nigde — ni u migracijama ni u seed-ovima.
+Za 2026. to nije tačno polazište: `docs/PLAN_UNOS_DOKUMENATA.md:1282,1289-1291` beleži da je
+**živi BigBit brojač profaktura za 2026. na 264**, i da je blok `254/26–261/26` već potrošen.
+
+**Posledica ako se ne uradi.** Prvi predračun iz 4.0 dobija `PROF-1/26` dok BigBit iste
+godine izdaje `0265-26` — dva sistema izdaju brojeve iz istog poslovnog niza, a kupac koji
+plati po BigBit predračunu iz ranije 2026. i otkuca `254/26` gađa naš dokument. Zbog paralelnog
+rada do cutovera (april 2027) to nije teorijski slučaj.
+
+**Šta konkretno treba uraditi PRE puštanja u rad** (ne izvršavati sad — traži potvrđene
+brojeve od knjigovodstva na dan prelaska):
+
+1. Očitati žive BigBit brojače po nizu za 2026: izlazne fakture (`NNN/YY`, §2.1 u
+   `migration/BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md`), profakture/ponude, avansne račune.
+2. Upisati po jedan red u `document_number_sequences` za (`company_id`, `year = 2026`):
+   `@FAKTURA`, `PROF`, `PON`, `AVR`, `REV` — `last_number` = poslednji potrošen broj.
+3. Za profakture to je **najmanje 264** (plan traži i evidentiranje potrošenog bloka
+   `254/26–261/26`, i **seed iz niskog bloka uz ručnu potvrdu**, nikad sirovi `MAX`).
+4. **Odlučiti dele li PON i PROF jedan brojač** (v. tačka ispod) — to se rešava OVDE, ne pre.
+5. Tek posle toga pustiti izdavanje dokumenata iz 4.0.
+
+**Vezano pitanje koje seed otvara (nalaz S8).** BigBit `PON` i `PROF` **dele niz** `NNNN-YY`
+(`migration/BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md:113`: `0938-24`, `0954-25`, `0407-25`), a
+`docs/PLAN_UNOS_DOKUMENATA.md:1281` ih grupiše zajedno sa `OTP` u grupu `OFFER`. Naša numeracija
+ih danas drži razdvojeno (`PROF-`/`PON-`, dva brojača). Dok oba kreću od nule to je bezopasno —
+prefiksi ih razdvajaju kao stringove. **Čim se oba seed-uju sa 264**, razdvojeni brojači izdaju
+`PROF-265/26` i `PON-265/26`, a u BigBit knjizi je 265 jedan jedini slot. Ako se pređe na
+zajednički brojač, `sequenceKeyFor` više ne sme da se izvodi isključivo iz prefiksa, pa
+ekvivalencija „bez prefiksa ⇔ u nizu faktura" (danas jedina strukturna brana od spajanja sa
+fakturom) mora da se zadrži kao **zaseban** invariant i test. `OTP` uz to još nije ni u registru.
+
+**Brana koja nedostaje:** nema provere „broj koji izdajem već postoji u `ledger_entries`".
+Dok se seed ne uradi, jedina zaštita je ručna.
+
+---
+
+## 🔶 OTVORENO — uparivanje uplata (peti krug, 02.08.2026)
+
+Nalazi koji su **svesno ostavljeni otvoreni** uz izmerene primere. Nisu krpljeni jer bi
+zakrpa oborila legitimne pogotke; svaki nosi posledicu koju treba znati.
+
+### S6 — prefiks serije ne preživi put kroz banku (`cbc:PaymentID`)
+
+`sales/sef/ubl-builder.service.ts:680-694` šalje `cbc:PaymentID = documentNumber`, pa kupcu
+na SEF za avansni račun ide `A-7/26`. Poziv na broj je numeričko polje: `placanja/mod97.util.ts`
+(`digitsOnly`) svodi `A-7/26`, `PROF-7/26` i `7/26` na isti niz `726`. Ako banka umesto celog
+prefiksa očisti **samo slovo**, PNB se vraća kao `7/26` → uplata na avans zatvara **fakturu
+7/26**. Prefiks je jedina stvar koja te serije razdvaja (O-F6/O-F7), a ovde otpada.
+
+**Predlog (nije izveden — `ubl-builder.service.ts` je u tuđem opsegu izmene):** za svaku vrstu
+sa serijom `cbc:PaymentID` uzimati iz `invoices.payment_reference` (`schema.prisma:4203`, već
+ima prednost nad brojem dokumenta) i tamo upisivati čisto numeričku osnovu koja u sebi nosi
+oznaku serije kao CIFRU (npr. vodeći `9` za avans), pa je poziv na broj jednoznačan i posle
+svakog čišćenja. Bez toga prefiks štiti knjigu, ali ne i put novca.
+
+Uz to je u `mod97.util.ts` (`digitsOnly`) upisano zašto broj dokumenta sa serijom **ne sme**
+da bude osnova poziva na broj.
+
+### S7 — `Opis(100,35)` se ne parsira, a slobodan tekst stiže baš tamo
+
+`izvodi/bank-statement-parser.service.ts` čita `PozivNaBroj(169,20)`, `Model(167,2)`, iznos,
+smer i datum — **`Opis` ne**. `parseReference` se zove samo nad `referenceNumber`. Reč-alijasi
+(`AVANS`, `PREDRAČUN`, `PONUDA`, ćirilica) zato rade samo na onome što stane u **20 znakova**
+PNB-a: `AVANS BR 1/26` (13) staje, „uplata po avansu A-1/26" (24) ne staje — raniji komentari i
+fixture-i koji su ga navodili kao primer su ispravljeni, jer su obmanjivali.
+
+**Zašto nije samo uključeno:** `Opis` je 35 znakova slobodnog teksta i vodi ka mnogo više
+lažnih kandidata nego PNB. Uvođenje traži zasebnu odluku (i najverovatnije stroži režim:
+kandidati iz `Opis`-a samo kad PNB nema nijedan pogodak).
+
+### V1 (ostatak) — četvorocifrena godina bez vodećih nula i dalje daje naš oblik
+
+Brana protiv zatečenih BigBit brojeva vezana je za **vodeće nule**, jer ih nose svi izmereni
+BigBit oblici (`AVR-00001/2026`, `0012-26`, `PON-00285/2026`, `IFG-00025/2025`). Skraćivanje
+`123/2026 → 123/26` je **namerno ostavljeno**: BigBit-ov auto-broj je uvek zero-padovan, a
+kupac koji plaća naš `123/26` realno ume da otkuca punu godinu. Ako se ikad pojavi zatečen
+dokument oblika `NNN/GGGG` **bez** vodećih nula, taj PNB bi i dalje mogao da proizvede naš broj.
+
+### S5 (ostatak) — PNB sa dva dokumenta vraća samo onaj uz oznaku
+
+`A-1/26 i 657/25` sada daje `A-1/26` (ranije nijedan od dva), ali **ne** i goli `657/25`: sve
+iza oznake serije pripada toj seriji, jer je to jedina odbrana od curenja golog broja. Uplata
+tada zatvori avans, a faktura ostaje otvorena — pošten, vidljiv ishod, ne tiho pogrešan.
+
+### V4 (ostatak) — vrsta sa dvosmislenom šifrom se ODBIJA, ne preimenuje
+
+`seriesPrefixFor` od sada odbija neupisanu vrstu čija bi šifra bila mešana sa postojećom
+serijom (`A`, `AVR2`, `PON2`) ili koju parser poziva na broj ne ume da pročita (nije 2–5 slova).
+To je 422 pri izdavanju broja. **Ako se u produkciji pojavi legitimna vrsta koja pada na ovu
+branu, rešenje je upisati je u `DOCUMENT_SERIES` sa svojim prefiksom** — ne opuštati branu.

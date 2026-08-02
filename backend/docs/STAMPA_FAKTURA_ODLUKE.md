@@ -132,9 +132,48 @@ strukturna, a ne stvar pamćenja.
 **Izlazne fakture ostaju nedirnute** — jedan zajednički niz, bez prefiksa (O-F1/O-F5).
 
 ⚠️ Menja se **pre prvih proba**, kao O-F1 i O-F6. Brane: „serije su međusobno disjunktne"
-(spisak vrsta se nabraja **iz mape**, ne prepisuje) i „parser poznaje sve prefikse iz
-registra numeracije" (`reference-parser.util.spec.ts`) — nova serija dodata samo u numeraciji
+(spisak vrsta se nabraja **iz mape**, ne prepisuje) i „svaki IZDAT broj se kroz parser vraća
+bez golog `N/GG`" (`reference-parser.util.spec.ts`) — nova serija dodata samo u numeraciji
 obara drugi test, jer bi njen poziv na broj i dalje proizvodio goli broj fakture.
+
+### Dopuna O-F7 (02.08.2026) — tri stvari koje odluka nije pokrivala
+
+**1. PON i PROF u BigBitu DELE jedan niz — mi ih svesno razdvajamo.** U kodu je do sada
+stajalo da za predračun i ponudu „nemamo papir koji pokazuje šta BigBit radi". **Papir postoji
+i kaže suprotno:** `migration/BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md:113` — „`PON` i `PROF` dele niz
+`NNNN-YY`" (`0938-24`, `0954-25`, `0407-25`). To je isti dokazni obrazac (isprepletani brojevi
+preko vrsta) kojim je opravdan zajednički niz faktura u O-F5.
+
+Isto traži i `docs/PLAN_UNOS_DOKUMENATA.md:1281` — grupa `OFFER` = PON + PROF + OTP, sa živim
+BigBit brojačem profaktura **264** za 2026.
+
+**Odluka za sada: brojač ostaje razdvojen** — ali ne zato što papira nema, nego zato što pitanje
+postaje materijalno **tek pri seed-u brojača**, a seed još nije urađen (v. `PREOSTALE_FAZE.md`,
+stavka S9). Dok oba niza kreću od nule, sudar je nemoguć u oba scenarija: `PROF-1/26` i `PON-1/26`
+su različiti stringovi zbog prefiksa. Razlika se vidi tek kad se oba seed-uju sa 264 — tada bi
+razdvojeni brojači izdali `PROF-265/26` **i** `PON-265/26`, a u BigBit knjizi je 265 jedan slot.
+
+Nije promenjeno odmah iz dva razloga: grupisanje iz plana je i samo nedovršeno (`OTP` nije u
+registru, grupe `ADVANCE` i `CREDIT` čekaju potvrdu vlasnika — §9, pitanja 15/16), i zajednički
+brojač traži da `sequenceKeyFor` prestane da se izvodi isključivo iz prefiksa, pa ekvivalencija
+„bez prefiksa ⇔ u nizu faktura" mora da preživi kao zaseban invariant. **Oboje se radi zajedno sa
+seed-om, ne pre njega.**
+
+**2. „Stari i novi broj se nikad ne sudaraju" važi za BAZU, ne za UPARIVANJE.** Uplata se ne
+uparuje po celom stringu nego po **kandidatima** koje parser poziva na broj izvodi iz PNB-a — a
+taj sloj je zatečeni BigBit broj **normalizovao u naš**. Izmereno nad stvarnim brojevima:
+`0012-26` → `12/26`, `AVR-00001/2026` → `A-1/26`, `AR-00001/2025` → `1/25`, `IFG-00025/2025` →
+`25/25`, `PON-00285/2026` → `PON-285/26`. Pošto BigBit i 4.0 rade paralelno do cutovera (april
+2027), to je svakodnevna, a ne teorijska pojava. Brana: **vodeće nule i šifra vrste uz crticu su
+potpis starog broja** — izveden kandidat ne sme da se izjednači sa našim novim brojem.
+
+**3. Registar je od sada JEDAN izvor za oba sloja.** Parser poziva na broj **uvozi**
+`DOCUMENT_SERIES` umesto da prepisuje prefikse (razišli su se čim je uveden fallback prefiks:
+broj `XYZ-1/26` je postojao, a parser ga je razlagao na goli `1/26`). Uz to, fallback prefiks za
+neupisanu vrstu se **proverava, ne izmišlja**: šifra mora biti 2–5 slova (oblik koji parser ume
+da pročita) i ne sme se preklapati ni sa jednom registrovanom serijom — inače izdavanje broja
+puca sa 422. Ranije je `seriesPrefixFor("A")` davao `A-` sa **drugim brojačem** (dva `A-1/26`),
+a `AVR2-1/26` je parser čitao kao avansnu seriju.
 
 ---
 

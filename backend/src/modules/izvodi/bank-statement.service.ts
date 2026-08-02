@@ -293,8 +293,15 @@ export class BankStatementService {
       // na fakturu čim se avansna stavka zatvori. Sada svaki izveden kandidat NOSI
       // prefiks serije (`reference-parser.util.ts` → `SERIES`), a oznaka serije se
       // traži po ZNAČENJU i bilo gde u PNB-u: i `AVANS 1/26`, `AVR 1/26`, `A) 1/26` i
-      // „uplata po avansu A-1/26" su do istog datuma davali goli `1/26` (izmereno), pa
-      // je uplata na avans zatvarala fakturu istog kupca.
+      // `po avansu A-1/26` su do istog datuma davali goli `1/26` (izmereno), pa je
+      // uplata na avans zatvarala fakturu istog kupca.
+      //
+      // TREĆI izvor lažnog pogotka je ZATEČENI BIGBIT BROJ (nalaz V1, 02.08.2026).
+      // BigBit i 4.0 rade paralelno do cutovera (april 2027) i kupci plaćaju i stare
+      // dokumente, a parser je stari broj NORMALIZOVAO u naš: `0012-26` → `12/26`,
+      // `AVR-00001/2026` → `A-1/26`, `AR-00001/2025` → `1/25`, `PON-00285/2026` →
+      // `PON-285/26`. Vodeće nule i šifra vrste uz crticu su potpis STAROG broja, pa
+      // izveden kandidat više ne sme da se izjednači sa našim novim brojem.
       //
       // Drugi izvor lažnog pogotka je bio sam PNB: kad platilac umesto broja fakture
       // upiše DATUM (`12-08-26`), `parseReference` je od njega pravio kandidat `8/26`

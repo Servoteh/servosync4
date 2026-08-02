@@ -1,5 +1,10 @@
+import { Prisma } from "@prisma/client";
 import { parseReference, SERIES_PREFIXES } from "./reference-parser.util";
-import { DOCUMENT_SERIES, seriesPrefixFor } from "../sales/numbering.service";
+import {
+  DOCUMENT_SERIES,
+  DocumentNumberSequenceService,
+  seriesPrefixFor,
+} from "../sales/numbering.service";
 
 /**
  * FX_OdrediBrojDokumenta port — kandidati broja dokumenta iz poziva na broj.
@@ -353,14 +358,20 @@ describe("reference-parser.util — parseReference", () => {
    *   `AVR 1/26`                → […, "1/26", "1"]   ❌
    *   `A. 1/26`                 → […, "1/26", "1"]   ❌  (tačka nije separator, ali „A." nije ni serija)
    *   `A) 1/26`                 → […, "1/26", "1"]   ❌
-   *   `uplata po avansu A-1/26` → […, "1/26", "1"]   ❌
+   *   `po avansu A-1/26`        → […, "1/26", "1"]   ❌
    *
    * Posledica je ista kao u nalazu iz kog je O-F6 nastala: uplata pozvana na avansni
    * račun `A-1/26` sleti na otvorenu stavku fakture `1/26` i zatvori tuđu obavezu
    * (`bank-statement.service.matchOpenItem` bira PRVI kandidat koji ima pogodak).
    */
   describe("oznaka serije se prepoznaje po ZNAČENJU, ne po obliku šuma (N10)", () => {
-    /** [sirov PNB, goli broj koji NE SME da izađe, kanonski broj koji MORA da izađe] */
+    /**
+     * [sirov PNB, goli broj koji NE SME da izađe, kanonski broj koji MORA da izađe]
+     *
+     * ⚠️ Svi primeri staju u 20 znakova — koliko nosi FX kolona `PozivNaBroj(169,20)`.
+     * Raniji red „uplata po avansu A-1/26" (24 znaka) je bio obmanjujuć: takav PNB do
+     * nas ne može ni da stigne kroz `bank-statement-parser.service.ts` (v. nalaz S7).
+     */
     const REDOVI: Array<[string, string, string]> = [
       ["A-1/26", "1/26", "A-1/26"],
       ["97 A-7/26", "7/26", "A-7/26"],
@@ -368,7 +379,7 @@ describe("reference-parser.util — parseReference", () => {
       ["AVR 1/26", "1/26", "A-1/26"],
       ["A. 1/26", "1/26", "A-1/26"],
       ["A) 1/26", "1/26", "A-1/26"],
-      ["uplata po avansu A-1/26", "1/26", "A-1/26"],
+      ["po avansu A-1/26", "1/26", "A-1/26"],
     ];
 
     it.each(REDOVI)(
@@ -487,4 +498,282 @@ describe("reference-parser.util — parseReference", () => {
       }
     });
   });
+
+  /**
+   * 🔴 ZATEČENI BIGBIT BROJ NE SME DA POGODI NAŠ NOV DOKUMENT (nalaz V1, 02.08.2026).
+   * ═══════════════════════════════════════════════════════════════════════════════
+   * BigBit i 4.0 rade PARALELNO do cutovera (april 2027): kupci u istom periodu plaćaju
+   * i stare BigBit dokumente, a produkcijski `ledger_entries` ih već nosi (~22.000
+   * redova). Parser je stari broj NORMALIZOVAO u naš — skidanjem vodećih nula i
+   * skraćivanjem četvorocifrene godine dobijao je tačno oblik koji izdaje O-F1.
+   *
+   * Brojevi su STVARNI, iz `migration/BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md:113-129,180-186`.
+   * IZMERENO na kodu pre ove izmene — svaki levi PNB je davao desni kandidat:
+   *
+   *     `0012-26` (BigBit AVR 2026)   → `12/26`       = NAŠA faktura
+   *     `AVR-00001/2026`              → `A-1/26`      = NAŠ avans
+   *     `AR-00001/2025` (GK zapis)    → `1/25`        = NAŠA faktura
+   *     `PRO-00002/2025`              → `2/25`        = NAŠA faktura
+   *     `IFG-00025/2025`              → `25/25`       = NAŠA faktura
+   *     `PON-00285/2026`              → `PON-285/26`  = NAŠA ponuda
+   *
+   * Tvrdnja iz `numbering.service.ts` da se stari i novi broj „nikad ne mogu sudariti"
+   * važila je samo za jedinstveni indeks nad `invoices` — uparivanje ne poredi ceo
+   * string nego kandidate, i tu je sudar bio svakodnevno moguć.
+   */
+  describe("stari (BigBit) broj se NE normalizuje u naš novi broj (V1)", () => {
+    /** [stvaran BigBit PNB, naš broj koji je pogađao] */
+    const STARI: Array<[string, string]> = [
+      ["0012-26", "12/26"],
+      ["0016-26", "16/26"],
+      ["0017-26", "17/26"],
+      ["AVR-00001/2026", "A-1/26"],
+      ["AR-00001/2025", "1/25"],
+      ["PRO-00002/2025", "2/25"],
+      ["IFG-00025/2025", "25/25"],
+      ["PON-00285/2026", "PON-285/26"],
+    ];
+
+    it.each(STARI)("PNB %s više ne daje naš broj %s", (raw, nas) => {
+      const { candidates } = parseReference(raw);
+      expect(candidates[0]).toBe(raw); // egzaktan pogodak na STARI dokument ostaje prvi
+      expect(candidates).not.toContain(nas);
+    });
+
+    it("egzaktan pogodak na stari dokument je očuvan u svim zapisima", () => {
+      // Ako stari broj u glavnoj knjizi stoji baš tako kako ga je kupac otkucao,
+      // uparivanje i dalje radi — brana gasi samo IZVEDENE oblike.
+      for (const [raw] of STARI) {
+        expect(parseReference(raw).candidates[0]).toBe(raw);
+      }
+    });
+
+    it("stara šifra vrste ostaje na SVAKOM izvedenom kandidatu (AR-/PRO-/IFG-)", () => {
+      for (const raw of [
+        "AR-00001/2025",
+        "PRO-00002/2025",
+        "IFG-00025/2025",
+      ]) {
+        const kod = `${raw.split("-")[0]}-`;
+        for (const c of parseReference(raw).candidates.slice(1)) {
+          expect(c.startsWith(kod)).toBe(true);
+        }
+      }
+    });
+
+    it("vodeće nule iz BANKE i dalje daju goli broj (nije naš oblik `N/GG`)", () => {
+      // Brana gađa samo prelaz „stari broj → naš broj". Zero-pad koji dolazi iz polja
+      // banke (`00123`, model 97 + kontrolni broj) mora da radi kao i pre — inače bi
+      // se izgubio legitiman pogodak.
+      expect(parseReference("00123").candidates).toContain("123");
+      expect(parseReference("9732001234").candidates).toContain("1234");
+      expect(parseReference("32001234", "97").candidates).toContain("1234");
+    });
+
+    it("naš broj bez nula i dalje prolazi (657-25 → 657/25)", () => {
+      expect(parseReference("657-25").candidates).toContain("657/25");
+      expect(parseReference("123-2026").candidates).toContain("123/26");
+    });
+  });
+
+  /**
+   * REČ-OZNAKA MORA DA PREŽIVI „BR" I ĆIRILICU (nalaz V2, 02.08.2026).
+   * ───────────────────────────────────────────────────────────────────────────────
+   * Razdelnik između oznake i broja primao je samo NE-slovne znakove, pa je oznaka
+   * padala čim se ubaci najčešći srpski oblik („br"/„broj"), čim se dokument imenuje
+   * punim imenom („avansni račun"), čim se predračun nazove „proformom" ili čim se PNB
+   * otkuca ćirilicom. IZMERENO — svi su davali GOLI broj, dakle broj tuđe fakture.
+   */
+  describe("reč-oznaka preživljava BR, puno ime i ćirilicu (V2)", () => {
+    it.each([
+      ["AVANS BR 1/26", "1/26", "A-1/26"],
+      ["AVANS BROJ 1/26", "1/26", "A-1/26"],
+      ["AVANSNI RACUN 1/26", "1/26", "A-1/26"],
+      ["AVANSNI RAČUN 1/26", "1/26", "A-1/26"],
+      ["PREDRACUN BR. 12/26", "12/26", "PROF-12/26"],
+      ["PROFORMA 12/26", "12/26", "PROF-12/26"],
+      ["PROFORMA BR 12/26", "12/26", "PROF-12/26"],
+      ["PONUDA BR. 5/26", "5/26", "PON-5/26"],
+      ["REVERS BR 8/26", "8/26", "REV-8/26"],
+      ["АВАНС 1/26", "1/26", "A-1/26"],
+      ["АВАНС БР 1/26", "1/26", "A-1/26"],
+      ["ПРЕДРАЧУН 12/26", "12/26", "PROF-12/26"],
+      ["ПОНУДА 5/26", "5/26", "PON-5/26"],
+      ["РЕВЕРС 8/26", "8/26", "REV-8/26"],
+    ])("PNB %s ne daje goli %s, nego kanonski %s", (raw, goli, kanonski) => {
+      const { candidates } = parseReference(raw);
+      expect(candidates[0]).toBe(raw);
+      expect(candidates).toContain(kanonski);
+      expect(candidates).not.toContain(goli);
+    });
+
+    it("sama reč BR ne pretvara tuđu reč u oznaku (PROFIT/PONOVO + BR)", () => {
+      // Popuna „br" sme da stoji samo IZA prave oznake; sama po sebi ne sme ništa da
+      // veže, inače bi svaka reč ispred „br" postala serija.
+      expect(parseReference("PROFIT BR 12/26").candidates).toContain("12/26");
+      expect(parseReference("PONOVO BR 12/26").candidates).toContain("12/26");
+      expect(parseReference("BR 12/26").candidates).toContain("12/26");
+    });
+
+    it("avansni račun DA, ali avans PO FAKTURI i dalje pušta broj fakture", () => {
+      // „Avansni račun 1/26" je IME dokumenta; „avans po fakturi 1/26" imenuje FAKTURU
+      // na koju se avansno plaća — tu broj mora da ostane go.
+      expect(parseReference("AVANS PO FAKTURI 1/26").candidates).toContain(
+        "1/26",
+      );
+    });
+  });
+
+  /**
+   * NEPOZNATA ŠIFRA VRSTE (nalaz V3, 02.08.2026).
+   * ───────────────────────────────────────────────────────────────────────────────
+   * Numeracija za vrstu koja nije u registru daje `XYZ-1/26` (`seriesPrefixFor`), a
+   * parser je znao samo četiri prefiksa — pa je taj broj razlagao na goli `1/26`, tj.
+   * na broj FAKTURE. Odluka O-F7 kaže da je disjunktnost „strukturna, a ne stvar
+   * pamćenja"; za sloj uparivanja to nije važilo dok je parser držao svoj prepis.
+   */
+  describe("nepoznata šifra vrste ne pada na goli broj (V3)", () => {
+    it("SCENARIO XYZ-1/26 → svi kandidati nose `XYZ-`", () => {
+      const { candidates } = parseReference("XYZ-1/26");
+      expect(candidates[0]).toBe("XYZ-1/26");
+      expect(candidates).not.toContain("1/26");
+      for (const c of candidates.slice(1)) expect(c.startsWith("XYZ-")).toBe(true);
+    });
+
+    it("šifra se normalizuje na velika slova (kao u broju dokumenta)", () => {
+      expect(parseReference("xyz-1/26").candidates).toContain("XYZ-1/26");
+    });
+
+    it("kratke reči uz crticu NISU šifra vrste (račun/br/po + broj ostaju)", () => {
+      // Bez ovog izuzetka bi „racun-657/25" pojeo legitiman broj fakture.
+      expect(parseReference("RACUN-657/25").candidates).toContain("657/25");
+      expect(parseReference("racun-657/25").candidates).toContain("657/25");
+      expect(parseReference("BR-657/25").candidates).toContain("657/25");
+      expect(parseReference("PO-657/25").candidates).toContain("657/25");
+    });
+
+    it("duga reč nije šifra vrste (šifre su 2–5 slova)", () => {
+      expect(parseReference("FAKTURA-657/25").candidates).toContain("657/25");
+      expect(parseReference("UPLATA-657/25").candidates).toContain("657/25");
+    });
+
+    it("jedno slovo uz crticu i dalje nije serija (B-7/26 → 7/26)", () => {
+      expect(parseReference("B-7/26").candidates).toContain("7/26");
+      expect(parseReference("97 B-7/26").candidates).toContain("7/26");
+    });
+
+    /**
+     * BRANA KOJA ZATVARA KRUG: registar numeracije je JEDAN izvor za oba sloja.
+     * Svaki broj koji `DocumentNumberSequenceService.next` ume da IZDA mora da se kroz
+     * parser vrati kao SVOJ kandidat i NIKAD kao goli `N/GG`. Nova serija dodata samo u
+     * numeraciju (ili fallback prefiks koji parser ne ume da pročita) obara ovaj test.
+     */
+    it("BRANA: svaki IZDAT broj se kroz parser vraća bez golog `N/GG`", async () => {
+      const service = new DocumentNumberSequenceService();
+      const nizFaktura = new Set<string>();
+      for (const [tip, prefix] of DOCUMENT_SERIES) {
+        if (prefix === "") nizFaktura.add(tip);
+      }
+      // Registrovane vrste + jedna NEUPISANA (fallback prefiks) — isti put kroz kod.
+      const vrste = [...DOCUMENT_SERIES.keys(), "XYZ"];
+
+      for (const tip of vrste) {
+        const broj = await service.next(fakeTx(6), tip, 2026, 0);
+        const { candidates } = parseReference(broj);
+
+        expect(candidates[0]).toBe(broj); // egzaktan pogodak uvek prvi
+        if (nizFaktura.has(tip)) {
+          expect(broj).toBe("7/26"); // faktura JE goli broj — to je O-F1
+          continue;
+        }
+        // Vrsta van niza faktura: broj mora da preživi parser sa svojim prefiksom, a
+        // goli oblik ne sme da postoji ni kao kandidat.
+        expect(candidates).toContain(broj);
+        expect(candidates).not.toContain("7/26");
+        for (const c of candidates.slice(1)) {
+          expect(c).not.toMatch(/^\d+\/\d{2}$/);
+        }
+      }
+    });
+  });
+
+  /**
+   * CIFRA IZA OZNAKE KOJA NIJE BROJ DOKUMENTA (nalaz S5, 02.08.2026).
+   * ───────────────────────────────────────────────────────────────────────────────
+   * Oznaka je vezivala PRVU cifru iza sebe, pa su procenat i redni broj rate pojeli
+   * ostatak PNB-a i tačan broj fakture je NESTAJAO iz kandidata — uparivanje je padalo
+   * na fallback po iznosu, koji sam kod naziva slabijim.
+   */
+  describe("procenat/rata iza oznake ne jedu broj dokumenta (S5)", () => {
+    it.each([
+      "AVANS 50% 657/25",
+      "AVANS 1. RATA 657/25",
+      "AVANS 30% PO FAKTURI 657/25",
+    ])("PNB %s i dalje daje 657/25", (raw) => {
+      expect(parseReference(raw).candidates).toContain("657/25");
+    });
+
+    it("prava oznaka + pravi broj se ne kvari ovim pravilom", () => {
+      expect(parseReference("AVANS 1/26").candidates).toContain("A-1/26");
+      expect(parseReference("A. 1/26").candidates).toContain("A-1/26");
+    });
+
+    it("PNB sa DVA dokumenta daje OBA broja (svaka oznaka drži svoj odsečak)", () => {
+      // Ranije je prva oznaka gutala ceo ostatak: `PROF-1/26 PROF-2/26` je davao
+      // besmislen `PROF-PROF-2/26` i nijedan stvaran broj.
+      const { candidates } = parseReference("PROF-1/26 PROF-2/26");
+      expect(candidates).toContain("PROF-1/26");
+      expect(candidates).toContain("PROF-2/26");
+      expect(candidates).not.toContain("PROF-PROF-2/26");
+    });
+
+    it("dve različite serije u istom PNB-u dobijaju svaka svoj prefiks", () => {
+      const { candidates } = parseReference("A-1/26 PROF-2/26");
+      expect(candidates).toContain("A-1/26");
+      expect(candidates).toContain("PROF-2/26");
+      expect(candidates).not.toContain("1/26");
+      expect(candidates).not.toContain("2/26");
+    });
+
+    it("avans + broj fakture u istom PNB-u: bar tačan avans preživi", () => {
+      // ⚠️ Delimično rešeno — v. PREOSTALE_FAZE.md „🔶 OTVORENO": goli `657/25` i dalje
+      // ne izlazi, jer sve iza oznake pripada njoj. Ranije se gubio i `A-1/26`.
+      const { candidates } = parseReference("A-1/26 i 657/25");
+      expect(candidates).toContain("A-1/26");
+    });
+  });
+
+  /**
+   * SLOVO IZMEĐU CIFARA NIJE OZNAKA SERIJE (nalaz N2, 02.08.2026).
+   * Cifra ispred oznake je dozvoljena zbog modela/kontrolnog broja (`97A-7/26`), ali
+   * bez razdelnika to nije serija nego deo šifre/šuma. IZMERENO na starom kodu:
+   * `123A456` → samo `A-456` (broj `123` je nestao), `00A12345` → samo `A-12345`.
+   */
+  describe("slovo usred cifara nije serija (N2)", () => {
+    it("123A456 i 00A12345 ne daju avansne kandidate", () => {
+      expect(parseReference("123A456").candidates).not.toContain("A-456");
+      expect(parseReference("00A12345").candidates).not.toContain("A-12345");
+    });
+
+    it("model/kontrolni broj ISPRED serije i dalje radi (razdelnik postoji)", () => {
+      expect(parseReference("97A-7/26").candidates).toContain("A-7/26");
+      expect(parseReference("9712-A-7/26").candidates).toContain("A-7/26");
+      expect(parseReference("A7/26").candidates).toContain("A-7/26");
+    });
+  });
 });
+
+/**
+ * Minimalna „transakcija" za `DocumentNumberSequenceService.next` — brojač zatečen na
+ * `lastNumber`, pa je sledeći broj uvek `lastNumber + 1`. Bez baze: testira se samo
+ * OBLIK izdatog broja, koji je jedino što parser vidi.
+ */
+function fakeTx(lastNumber: number): Prisma.TransactionClient {
+  return {
+    $queryRaw: async () => [{ id: 1, last_number: lastNumber }],
+    documentNumberSequence: {
+      create: async () => ({}),
+      update: async () => ({}),
+    },
+  } as unknown as Prisma.TransactionClient;
+}

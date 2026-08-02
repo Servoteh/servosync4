@@ -27,6 +27,15 @@ import { Prisma } from "@prisma/client";
  *
  * DATUM (189,8): 4-cifrena godina (dec spec). Format `ddmmyyyy` (FX export koristi ddmmyyyy,
  *   doc 21 §B) → parsiramo `DDMMYYYY`; ako je 8 cifara ali očito `YYYYMMDD`, detektujemo.
+ *
+ * ⚠️ `Opis(100,35)` SE NE ČITA (nalaz S7, 02.08.2026). Kolona je gore popisana, ali se
+ *   nigde ne vadi iz reda niti se prosleđuje dalje — `BankStatementLine` nema polje za
+ *   nju. Posledica za uparivanje: parser poziva na broj
+ *   (`reference-parser.util.ts`) dobija ISKLJUČIVO `PozivNaBroj(169,20)`, a slobodan
+ *   tekst kojim platilac imenuje dokument („avans", „predračun", „po ponudi") u praksi
+ *   stiže baš u `Opis`. Reč-alijasi zato danas rade samo na onome što stane u 20 znakova
+ *   PNB-a (`AVANS BR 1/26` staje, „uplata po avansu A-1/26" ne). Uvođenje `Opis`-a u
+ *   uparivanje je otvorena stavka — v. `backend/docs/PREOSTALE_FAZE.md`, „🔶 OTVORENO", S7.
  */
 
 const D = Prisma.Decimal;

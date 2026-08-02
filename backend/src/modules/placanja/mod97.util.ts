@@ -13,7 +13,24 @@
  *    BigInt iz istog razloga (broj računa + serijal ume da prebaci Number.MAX_SAFE).
  */
 
-/** Zadrži samo cifre iz stringa (legacy `IzbaciIzStCh` + poziv na broj bez crtica). */
+/**
+ * Zadrži samo cifre iz stringa (legacy `IzbaciIzStCh` + poziv na broj bez crtica).
+ *
+ * 🔴 PREFIKS SERIJE NE PREŽIVI OVU FUNKCIJU — I NE SME DA JE VIDI (nalaz S6, 02.08.2026).
+ * ─────────────────────────────────────────────────────────────────────────────────────
+ * Poziv na broj je po definiciji NUMERIČKO polje, pa `digitsOnly` svodi `A-7/26`,
+ * `PROF-7/26` i `7/26` na ISTI niz `726`. To ovde nije greška nego posao funkcije —
+ * greška je koristiti BROJ DOKUMENTA kao osnovu poziva na broj za vrstu koja nosi
+ * seriju (O-F6/O-F7): sve tri serije bi imale isti PNB, a kad bi banka umesto celog
+ * prefiksa očistila samo slovo, `A-7/26` bi stiglo natrag kao `7/26` — broj KONAČNE
+ * FAKTURE.
+ *
+ * PRAVILO: za dokument sa serijom osnova poziva na broj mora biti `invoices.payment_reference`
+ * (postoji u šemi i ima prednost nad brojem dokumenta), a ne `documentNumber`. Isto važi
+ * i za `cbc:PaymentID` u UBL-u koji ide na SEF. Stanje na dan 02.08.2026: to JOŠ NIJE
+ * sprovedeno u `sales/sef/ubl-builder.service.ts` — v. `backend/docs/PREOSTALE_FAZE.md`,
+ * odeljak „🔶 OTVORENO", stavka S6.
+ */
 export function digitsOnly(input: string): string {
   return (input ?? "").replace(/\D+/g, "");
 }

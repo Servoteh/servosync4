@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
 /**
@@ -50,11 +50,33 @@ import { Prisma } from "@prisma/client";
  *
  * ── ŠTA NIJE U ZAJEDNIČKOM NIZU ────────────────────────────────────────────────
  * Samo izlazne fakture su u njemu. Avansni račun (AVR), predračun (PROF), ponuda
- * (PON), revers (REV) i svaka druga vrsta ZADRŽAVAJU svoj niz po vrsti — za njih
- * nemamo papir koji pokazuje šta BigBit radi, a avansi imaju i zaseban zakonski niz.
- * Dok se to ne utvrdi, ne uvlače se u niz faktura. Uz sopstveni niz IDE I SOPSTVENI
- * PREFIKS (v. `DOCUMENT_SERIES`, odluka O-F7) — razdvojen brojač bez prefiksa ne
- * razdvaja ništa, jer dva nezavisna niza oba kreću od 1 i oba daju `1/26`.
+ * (PON), revers (REV) i svaka druga vrsta ZADRŽAVAJU svoj niz po vrsti. Uz sopstveni
+ * niz IDE I SOPSTVENI PREFIKS (v. `DOCUMENT_SERIES`, odluka O-F7) — razdvojen brojač
+ * bez prefiksa ne razdvaja ništa, jer dva nezavisna niza oba kreću od 1 i oba daju
+ * `1/26`.
+ *
+ * ⚠️ ISPRAVKA TVRDNJE (nalaz S8, 02.08.2026): ovde je ranije pisalo da za PROF i PON
+ * „nemamo papir koji pokazuje šta BigBit radi". Papir POSTOJI i kaže suprotno —
+ * `migration/BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md:113`: „`PON` i `PROF` dele niz
+ * `NNNN-YY`" (`0938-24`, `0954-25`, `0407-25`), dakle isti dokazni obrazac
+ * (isprepletani brojevi preko vrsta) kojim je opravdan zajednički niz faktura u O-F5.
+ *
+ * Isto traži i `docs/PLAN_UNOS_DOKUMENATA.md:1281` — grupa `OFFER` = PON + PROF + OTP,
+ * sa živim BigBit brojačem profaktura 264 za 2026.
+ *
+ * ODLUKA ZA SADA: BROJAČ OSTAJE RAZDVOJEN — ali ne zato što papira nema, nego zato što
+ * pitanje postaje MATERIJALNO tek pri SEED-u brojača, a seed još nije urađen (v.
+ * „SEED BROJAČA" u `backend/docs/PREOSTALE_FAZE.md`). Dok oba niza kreću od nule, sudar
+ * je nemoguć u oba scenarija: `PROF-1/26` i `PON-1/26` su različiti stringovi zbog
+ * prefiksa. Razlika se vidi tek kad se oba seed-uju sa BigBit vrednošću 264 — tada bi
+ * razdvojeni brojači izdali `PROF-265/26` I `PON-265/26`, a u BigBit knjizi je 265
+ * jedan jedini slot.
+ *
+ * ZAŠTO NIJE PROMENJENO ODMAH: (1) grupisanje iz plana je i samo nedovršeno (`OTP` nije
+ * u registru, `ADVANCE` i `CREDIT` grupe čekaju potvrdu vlasnika, §9 pitanja 15/16), i
+ * (2) zajednički brojač traži da `sequenceKeyFor` prestane da se izvodi ISKLJUČIVO iz
+ * prefiksa — ekvivalencija „bez prefiksa ⇔ u nizu faktura" mora da preživi tu izmenu
+ * kao zaseban invariant. Oboje se radi zajedno sa seed-om, ne pre njega.
  *
  * ── AVANSNI RAČUN NOSI PREFIKS `A-` (odluka O-F6) ──────────────────────────────
  * Naš izlazni avansni račun se ne numeriše samo iz drugog BROJAČA nego i u drugom
@@ -94,18 +116,37 @@ import { Prisma } from "@prisma/client";
  *
  * ── ODNOS PREMA VEĆ POSTOJEĆIM (STARIM) BROJEVIMA ──────────────────────────────
  * Zatečeni dokumenti u obliku `IFR0043/2026` se NE migriraju i NE preimenuju.
- * Sudar je nemoguć iz dva razloga:
- *   1) OBLIK: stari broj uvek nosi slovni prefiks i četvorocifrenu godinu, novi je
- *      samo cifre + '/' + dve cifre — `IFR0043/2026` i `43/26` nikad nisu isti
- *      string, pa jedinstveni indeks `uq_invoices_company_type_number` ne može da
- *      pukne zbog nasleđenog reda.
+ *
+ *   1) BAZA: kao STRING se stari i novi broj ne mogu sudariti — `IFR0043/2026` i
+ *      `43/26` nisu isti niz znakova, pa jedinstveni indeks
+ *      `uq_invoices_company_type_number` ne može da pukne zbog nasleđenog reda.
  *   2) BROJAČ: `document_number_sequences.last_number` se NE resetuje. Redovi po
  *      vrsti zatečeni od ranije se ne diraju i ne migriraju — oni su brojali
  *      dokumente izdate u STAROM obliku, pa nov (zajednički) red može mirno da
  *      krene od 1: nijedan `N/GG` string time ne postaje dvostruk.
- * „Kreće od 1" iz odluke O-F1 tako važi tamo gde reda sekvence još nema (nova
- * godina / nova firma), što je i stvarni slučaj jer se na softver prelazi od nove
- * godine.
+ *
+ * 🔴 ALI TO VAŽI SAMO ZA BAZU, NE I ZA UPARIVANJE (nalaz V1, 02.08.2026). Ovde je
+ * ranije pisalo da stari i novi broj „nikad nisu isti string" i da je sudar time
+ * NEMOGUĆ. Prva polovina je tačna, druga nije: uplata se ne uparuje po celom stringu
+ * nego po KANDIDATIMA koje `izvodi/reference-parser.util.ts` izvodi iz poziva na broj,
+ * a taj sloj je stari broj normalizovao u naš. Izmereno nad stvarnim BigBit brojevima
+ * (`migration/BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md:113-129,180-186`):
+ *
+ *     PNB `0012-26` (BigBit AVR 2026)  → kandidat `12/26`     = NAŠA faktura
+ *     PNB `AVR-00001/2026`             → kandidat `A-1/26`    = NAŠ avans
+ *     PNB `AR-00001/2025`              → kandidat `1/25`      = NAŠA faktura
+ *     PNB `IFG-00025/2025`             → kandidat `25/25`     = NAŠA faktura
+ *     PNB `PON-00285/2026`             → kandidat `PON-285/26` = NAŠA ponuda
+ *
+ * To nije teorija: BigBit i 4.0 rade PARALELNO do cutovera (april 2027), kupci u
+ * istom periodu plaćaju i stare BigBit dokumente, a produkcijski `ledger_entries` ih
+ * već nosi. Brana je zato u parseru — vodeće nule i četvorocifrena godina su POTPIS
+ * starog broja i izvedeni kandidat ne sme da se izjednači sa našim novim brojem
+ * (`reference-parser.util.ts` → `OUR_NUMBER_RE` i generička šifra vrste).
+ *
+ * „Kreće od 1" iz odluke O-F1 važi tamo gde reda sekvence još nema (nova godina /
+ * nova firma). ⚠️ Za 2026. to NIJE tačno — v. „SEED BROJAČA" u
+ * `backend/docs/PREOSTALE_FAZE.md` (živi BigBit brojač profaktura je 264).
  */
 
 /**
@@ -140,17 +181,24 @@ export const INVOICE_SEQUENCE_KEY = "@FAKTURA";
  *     `ledger_entries`, gde se stavke grupišu SAMO po broju dokumenta.
  *
  * NEUPISANA VRSTA (`documentType` van ove mape) NE pada na goli `N/GG` — dobija
- * prefiks iz sopstvene šifre (`XYZ-1/26`) i svoj brojač. Time je disjunktnost
- * STRUKTURNA, a ne stvar pamćenja: nijedna vrsta ne može tiho da se poklopi sa
- * fakturom zato što ju je neko zaboravio da upiše. Cena zaborava je kozmetička
- * (ružniji broj na papiru), a ne pogrešno zatvorena stavka.
+ * prefiks iz sopstvene šifre (`XYZ-1/26`) i svoj brojač, ali SAMO ako je ta šifra
+ * nedvosmislena (v. `seriesPrefixFor`, nalaz V4). Time je disjunktnost STRUKTURNA, a
+ * ne stvar pamćenja: nijedna vrsta ne može tiho da se poklopi sa fakturom zato što ju
+ * je neko zaboravio da upiše. Cena zaborava je kozmetička (ružniji broj na papiru)
+ * ili glasna (odbijeno izdavanje broja), a nikad tiho pogrešno zatvorena stavka.
  *
  * ⚠️ Nova vrsta se upisuje OVDE: ili sa praznim prefiksom (ulazi u niz faktura — samo
  * ako je zaista izlazna faktura, v. O-F5), ili sa svojim prefiksom. Prefiks mora biti
  * jedinstven; brana je test „serije su međusobno disjunktne" u `numbering.service.spec.ts`,
- * koji vrste nabraja IZ OVE MAPE. Prefiks mora znati i parser poziva na broj
- * (`izvodi/reference-parser.util.ts` → `SERIES`), inače uplata pozvana na tu seriju
- * i dalje proizvodi goli broj fakture — brana je test tamo.
+ * koji vrste nabraja IZ OVE MAPE.
+ *
+ * PARSER POZIVA NA BROJ ČITA OVU ISTU MAPU (`izvodi/reference-parser.util.ts` →
+ * `SERIES` je uvozi). Ranije je tamo stajao ručni prepis prefiksa, pa su se dva spiska
+ * razišla čim je uveden fallback prefiks (nalaz V3): `XYZ-1/26` je postojao kao broj, a
+ * parser ga nije poznavao i pravio je od njega goli `1/26`. Nova serija dodata ovde
+ * automatski postaje čitljiva; reč kojom je kupac zove (`AVANS`, `PREDRAČUN`…) je
+ * jedino što se dopunjuje tamo (`SERIES_ALIASES`). Brana je test „svaki izdat broj se
+ * vraća kroz parser bez golog `N/GG`" u `reference-parser.util.spec.ts`.
  */
 export const DOCUMENT_SERIES: ReadonlyMap<string, string> = new Map([
   // Izlazne fakture — jedan zajednički niz, bez prefiksa (O-F1/O-F5). Domaće
@@ -170,6 +218,13 @@ export const DOCUMENT_SERIES: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
+ * Oblik šifre vrste koji FALLBACK prefiks sme da napravi: 2–5 slova, bez cifara.
+ * Nije proizvoljno — to je tačno ono što parser poziva na broj ume da pročita kao
+ * nepoznatu seriju (`izvodi/reference-parser.util.ts` → `GENERIC_CODE_MAX_LEN`).
+ */
+const FALLBACK_CODE_RE = /^[A-ZČĆŽŠĐ]{2,5}$/;
+
+/**
  * Prefiks serije za datu vrstu dokumenta (`""` = niz faktura, bez prefiksa).
  *
  * ZAŠTO ŠIFRA VRSTE, A NE JEDNO SLOVO (`P-`, `R-`) ZA NOVE SERIJE: prefiks je ujedno
@@ -180,9 +235,60 @@ export const DOCUMENT_SERIES: ReadonlyMap<string, string> = new Map([
  * (v. „svesno odstupanje" u parseru), i ne umnožava se. Višeslovna šifra (`PROF`,
  * `PON`, `REV`) kao šum se praktično ne pojavljuje. `A-` ostaje kakav jeste jer je
  * odluka O-F6 već doneta i zapisana.
+ *
+ * 🔴 FALLBACK PREFIKS SE PROVERAVA, NE IZMIŠLJA (nalaz V4, 02.08.2026)
+ * ───────────────────────────────────────────────────────────────────────────────
+ * Fallback je ranije bio gol `${documentType}-` bez ijedne provere, pa je razdvajanje
+ * serija umeo i da PONIŠTI. Izmereno:
+ *   • `seriesPrefixFor("A")` → `"A-"` — identično avansnom prefiksu, ali sa DRUGIM
+ *     brojačem (`sequenceKeyFor` daje „A", ne „AVR"). Dva nezavisna niza, oba kreću od
+ *     1, oba upisuju `A-1/26` — tačno sudar zbog kog O-F6/O-F7 postoje.
+ *   • `seriesPrefixFor("AVR2")` → `"AVR2-"`; broj `AVR2-1/26` parser čita kao avansnu
+ *     seriju i daje kandidat `A-1/26` (isto `PON2-5/26` → `PON-5/26`) — uplata sleti na
+ *     TUĐI dokument iste serije.
+ *
+ * Zato neupisana vrsta dobija prefiks samo ako je nedvosmislena: šifra mora biti u
+ * obliku koji parser čita (`FALLBACK_CODE_RE`) i ne sme se preklapati ni sa jednom
+ * registrovanom serijom (ni kao njen početak, ni obrnuto). Sve ostalo je greška u
+ * podešavanju vrste dokumenta i puca GLASNO, pri izdavanju broja — jer je jedina
+ * alternativa tiho izdavanje broja koji se sudara sa tuđim.
  */
 export function seriesPrefixFor(documentType: string): string {
-  return DOCUMENT_SERIES.get(documentType) ?? `${documentType}-`;
+  const registered = DOCUMENT_SERIES.get(documentType);
+  if (registered !== undefined) return registered;
+
+  const code = (documentType ?? "").trim().toUpperCase();
+  const refuse = (razlog: string): never => {
+    throw new UnprocessableEntityException(
+      `Vrsta dokumenta „${documentType}" nema seriju u registru numeracije, a ` +
+        `automatski prefiks „${code}-" se ne sme koristiti: ${razlog}. ` +
+        `Upiši vrstu u DOCUMENT_SERIES (sales/numbering.service.ts) sa jedinstvenim ` +
+        `prefiksom i dodaj je u SERIES_ALIASES parsera poziva na broj.`,
+    );
+  };
+
+  // Sudar sa postojećom serijom se proverava PRVI — to je opasniji od dva razloga i
+  // poruka treba da imenuje seriju sa kojom bi se broj mešao.
+  if (code.length > 0) {
+    for (const [type, prefix] of DOCUMENT_SERIES) {
+      if (prefix === "") continue;
+      const token = prefix.replace(/-+$/, "").toUpperCase();
+      if (code.startsWith(token) || token.startsWith(code)) {
+        refuse(
+          `poziv na broj bi ga mešao sa serijom „${prefix}" (vrsta ${type})`,
+        );
+      }
+    }
+  }
+
+  if (!FALLBACK_CODE_RE.test(code)) {
+    refuse(
+      "šifra mora imati 2–5 slova bez cifara da bi je parser poziva na broj " +
+        "prepoznao kao seriju",
+    );
+  }
+
+  return `${code}-`;
 }
 
 /**

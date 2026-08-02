@@ -4,6 +4,7 @@ import {
   DocumentNumberSequenceService,
   INVOICE_SEQUENCE_KEY,
   sequenceKeyFor,
+  seriesPrefixFor,
 } from "./numbering.service";
 
 /**
@@ -321,12 +322,14 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
      * (`DOCUMENT_SERIES`) — vrsta dodata tamo automatski ulazi u ovu branu, a vrsta
      * dodata sa prefiksom koji već neko koristi je obara.
      *
-     * „NEPOZNATA_VRSTA" pokriva i suprotan propust — vrstu koju niko nije upisao u
-     * registar. Ona po konstrukciji dobija prefiks iz sopstvene šifre, pa ni ona ne
-     * može da se poklopi sa fakturom.
+     * „XYZ" pokriva i suprotan propust — vrstu koju niko nije upisao u registar. Ona
+     * po konstrukciji dobija prefiks iz sopstvene šifre, pa ni ona ne može da se
+     * poklopi sa fakturom. (Ranije je ovde stajalo „NEPOZNATA_VRSTA"; od nalaza V4
+     * fallback prefiks mora biti u obliku koji parser poziva na broj ume da pročita —
+     * 2–5 slova — pa takva šifra više ni ne dobija broj, v. testove ispod.)
      */
     it("BRANA: serije su međusobno disjunktne za SVAKI redni broj (spisak iz registra)", async () => {
-      const vrste = [...DOCUMENT_SERIES.keys(), "NEPOZNATA_VRSTA"];
+      const vrste = [...DOCUMENT_SERIES.keys(), "XYZ"];
       const nizFaktura = (tip: string) =>
         sequenceKeyFor(tip) === INVOICE_SEQUENCE_KEY;
 
@@ -448,6 +451,61 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
       const db = makeDb();
       await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
       await expect(once(db, "XYZ", 2026)).resolves.toBe("XYZ-1/26");
+    });
+  });
+
+  /**
+   * 🔴 FALLBACK PREFIKS SE PROVERAVA (nalaz V4, 02.08.2026).
+   * ─────────────────────────────────────────────────────────────────────────────
+   * Prefiks za neupisanu vrstu je bio gol `${documentType}-`, bez ijedne provere, pa
+   * je razdvajanje serija umeo i da PONIŠTI. IZMERENO na starom kodu:
+   *
+   *   `seriesPrefixFor("A")`    → `"A-"`     — identično avansu, ali `sequenceKeyFor`
+   *      daje „A" umesto „AVR": dva NEZAVISNA brojača oba kreću od 1 i oba upisuju
+   *      `A-1/26`. Tačno sudar zbog kog O-F6 postoji, samo unesen kroz sporedna vrata.
+   *   `seriesPrefixFor("AVR2")` → `"AVR2-"`  — broj `AVR2-1/26` parser poziva na broj
+   *      čita kao avansnu seriju i daje kandidat `A-1/26` (isto `PON2-5/26` →
+   *      `PON-5/26`): uplata sleti na TUĐI dokument iste serije.
+   *
+   * Test iznad („serije su međusobno disjunktne") to nije hvatao — nabrajao je registar
+   * plus jednu izmišljenu vrstu, a ovakve šifre nije video.
+   */
+  describe("fallback prefiks za neupisanu vrstu (V4)", () => {
+    it("nedvosmislena šifra i dalje dobija svoj prefiks", () => {
+      expect(seriesPrefixFor("XYZ")).toBe("XYZ-");
+      expect(seriesPrefixFor("OTP")).toBe("OTP-");
+    });
+
+    it("šifra koja se poklapa sa registrovanom serijom se ODBIJA", () => {
+      // `A` bi dalo prefiks avansa uz drugi brojač → dva `A-1/26`.
+      expect(() => seriesPrefixFor("A")).toThrow(/serijom/);
+      // `AVR2`/`PON2` parser čita kao `AVR`/`PON` + broj → pogodak u tuđi dokument.
+      expect(() => seriesPrefixFor("AVR2")).toThrow();
+      expect(() => seriesPrefixFor("PON2")).toThrow();
+      expect(() => seriesPrefixFor("PROFX")).toThrow(/serijom/);
+    });
+
+    it("šifra koju parser ne ume da pročita se ODBIJA (mora 2–5 slova)", () => {
+      expect(() => seriesPrefixFor("NEPOZNATA_VRSTA")).toThrow(/2–5 slova/);
+      expect(() => seriesPrefixFor("IZLAZNA1")).toThrow(/2–5 slova/);
+      expect(() => seriesPrefixFor("")).toThrow(/2–5 slova/);
+    });
+
+    it("odbijanje puca pri IZDAVANJU broja, ne tiho (rollback transakcije)", async () => {
+      const db = makeDb();
+      await expect(once(db, "AVR2", 2026)).rejects.toThrow();
+      // Nijedan red sekvence nije ostao za odbijenu vrstu.
+      expect(db.rows).toHaveLength(0);
+    });
+
+    it("BRANA: nijedan izdat prefiks se ne može ponoviti kroz fallback", () => {
+      const registrovani = [...DOCUMENT_SERIES.values()].filter((p) => p !== "");
+      for (const prefix of registrovani) {
+        const sifra = prefix.replace(/-+$/, "");
+        // Šifra jednaka registrovanoj oznaci mora da bude odbijena kao fallback —
+        // inače bi ista serija imala dva brojača.
+        expect(() => seriesPrefixFor(`${sifra}X`)).toThrow();
+      }
     });
   });
 
