@@ -11,6 +11,12 @@ import { PostingEngineService } from "../gl/posting/posting.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { grossToNet } from "../pdv/vat-bridge.util";
 import { assertVatPeriodNotLocked } from "../pdv/vat-period-lock";
+import {
+  APPLICATION_ACTIVE,
+  computeAdvanceDeductions,
+  computeAdvanceUsage,
+  loadAdvanceLinkedInvoices,
+} from "./advance-deduction";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   type ApplyAdvanceDto,
@@ -125,12 +131,8 @@ const ADVISORY_NS_ADVANCE_PER_PROFORMA = 4002;
 const ADVISORY_NS_APPLY_ON_INVOICE = 4003;
 const ADVISORY_NS_APPLY_OF_ADVANCE = 4004;
 
-/**
- * Status primene avansa (`invoice_advance_applications.status`). Izvezeno —
- * storno fakture (fakturisanje.service) radi nad istim vrednostima.
- */
-export const APPLICATION_ACTIVE = "ACTIVE";
-export const APPLICATION_REVERSED = "REVERSED";
+// Status primene avansa (`invoice_advance_applications.status`) živi uz PRAVILO o
+// odbijenom avansu — `./advance-deduction`. Ovde se samo uvozi i koristi.
 
 /** Minimalni oblik stavke iz koga se čita PDV stopa dokumenta. */
 interface VatRateSource {
@@ -159,14 +161,6 @@ interface AppliedRow {
   invoiceId: number;
   advanceInvoiceId: number;
   appliedAmount: Prisma.Decimal;
-}
-
-/** Zbir bruto iznosa primena. */
-function sumApplied(rows: AppliedRow[]): Prisma.Decimal {
-  return rows.reduce(
-    (acc, r) => acc.add(r.appliedAmount),
-    new Prisma.Decimal(0),
-  );
 }
 
 /** Osnovica + PDV izvedeni iz bruto avansa. */
@@ -751,49 +745,42 @@ export class AdvanceInvoiceService {
       }
 
       // ── N:M kontrola iznosa ────────────────────────────────────────────────
-      // Preostatak avansa = NAPLAĆENO − Σ aktivnih primena (BigBit ovu proveru
-      // NEMA — ni constraint ni VBA — pa se avans tamo može prekoračiti; doc §4.5).
+      // Preostatak avansa = NAPLAĆENO − iskorišćeno (BigBit ovu proveru NEMA — ni
+      // constraint ni VBA — pa se avans tamo može prekoračiti; doc §4.5).
+      //
+      // OBE strane (avans i račun) računa `./advance-deduction` — JEDINO mesto na kome
+      // pravilo „Σ aktivnih primena + zatečena 1:1 veza bez svog reda" postoji. Ranije
+      // je isti račun stajao ovde prepisan, pa se razišao sa ekranom, štampom i SEF-om
+      // (v. zaglavlje `advance-deduction.ts`).
       const advanceApps = await this.activeApplications(tx, {
         advanceInvoiceId: advance.id,
       });
       const invoiceApps = await this.activeApplications(tx, {
         invoiceId: invoice.id,
       });
-      let advanceUsed = sumApplied(advanceApps);
-      let invoiceUsed = sumApplied(invoiceApps);
-      let duplicatePair = invoiceApps.some(
-        (a) => a.advanceInvoiceId === advance.id,
-      );
 
-      // LEGACY / CROSS-MODUL: veze nastale pre N:M migracije ili kroz pdv modul
-      // (`advance-vat.linkIncomingAdvanceToFinal` piše `invoices.advance_*` bez reda
-      // u spojnoj tabeli) nemaju primenu — čitaju se iz kolona.
-      //
-      // UNIJA, NE „ILI-ILI" (ispravka posle drugog kruga pregleda 28.07.): ranije se
-      // legacy iznos čitao SAMO kad primena nema nijedne, pa je posle prve N:M primene
-      // legacy deo bio zaboravljen i avans se mogao prekoračiti (mereno: naplaćeno
-      // 5.000 → primenjeno 2.000 + 3.000 + 2.000 = 7.000). Sada se sabiraju primene
-      // PLUS one legacy veze koje nemaju svoj red u spojnoj tabeli.
-      const legacyLinks = await tx.invoice.findMany({
-        where: { advanceInvoiceId: advance.id, status: { not: "CANCELLED" } },
-        select: { id: true, advanceAppliedAmount: true },
-      });
-      const appliedInvoiceIds = new Set(advanceApps.map((a) => a.invoiceId));
-      advanceUsed = legacyLinks
-        .filter((l) => !appliedInvoiceIds.has(l.id))
-        .reduce((acc, l) => acc.add(l.advanceAppliedAmount), advanceUsed);
-      duplicatePair ||= legacyLinks.some((l) => l.id === invoice.id);
+      // Strana AVANSA: primene ovog avansa + zatečene veze računa koji na njega
+      // pokazuju kolonom. Iznos zatečenog dela je `kolona − Σ primena TOG računa`, pa
+      // se moraju učitati i tuđe primene tih računa (zato poseban upit, ne kolona).
+      const linkedInvoices = await loadAdvanceLinkedInvoices(tx, [advance.id]);
+      const advanceUsed = computeAdvanceUsage({
+        advanceInvoiceId: advance.id,
+        applicationsOfAdvance: advanceApps,
+        linkedInvoices,
+      }).total;
 
-      // Ista unija na strani RAČUNA: legacy 1:1 veza računa se dodaje samo ako taj
-      // avans nema svoj red u spojnoj tabeli.
-      if (
-        invoice.advanceInvoiceId != null &&
-        !invoiceApps.some(
-          (a) => a.advanceInvoiceId === invoice.advanceInvoiceId,
-        )
-      ) {
-        invoiceUsed = invoiceUsed.add(invoice.advanceAppliedAmount);
-      }
+      // Strana RAČUNA: isto pravilo nad ovim računom.
+      const invoiceUsed = computeAdvanceDeductions({
+        invoice,
+        applications: invoiceApps,
+      }).total;
+
+      // Isti avans dvaput na ISTOM računu — gleda se VEZA, ne iznos: zatečena veza
+      // čiji je iznos već pokriven primenama ne daje red u `lines`, ali i dalje znači
+      // da je taj avans na ovom računu jednom odbijen.
+      const duplicatePair =
+        invoiceApps.some((a) => a.advanceInvoiceId === advance.id) ||
+        invoice.advanceInvoiceId === advance.id;
 
       const advanceRemaining = advance.advancePaidAmount.sub(advanceUsed);
       const invoiceRemaining = invoice.grossTotal.sub(invoiceUsed);
@@ -957,9 +944,15 @@ export class AdvanceInvoiceService {
         data: { closingEntryId: entry.journalEntryId },
       });
 
-      // KOMPATIBILNOST: `advance_applied_amount` = zbir aktivnih primena, a
+      // KOMPATIBILNOST: `advance_applied_amount` = UKUPNO odbijeno na ovom računu, a
       // `advance_invoice_id` / `advance_closing_entry_id` pokazuju na PRVU primenu
       // (SEF BillingReference, štampa, pdv modul čitaju te kolone).
+      //
+      // ⚠️ `invoiceUsed` je UNIJA (primene + zatečena veza), pa se kolona i posle
+      // vezivanja preko pdv modula upisuje TAČNO. Dok se ovde sabirala cela kolona,
+      // svaka sledeća primena je N:M deo brojala dvaput i kolona je rasla u prazno —
+      // baš onu invariantu („kolona = ukupno odbijeno") na kojoj štampa i ekran izvode
+      // iznos zatečenog reda kao `kolona − Σ primena`.
       const totalApplied = invoiceUsed.add(applied);
       const isFirstApplication = !invoiceUsed.greaterThan(ZERO);
       await tx.invoice.update({

@@ -11,6 +11,7 @@ import { Prisma, type SefOutbox } from "@prisma/client";
 /** Red outbox liste — bez velikih tela (ublXml, pdfAttachmentBase64). */
 export type SefOutboxListItem = Omit<SefOutbox, "ublXml" | "pdfAttachmentBase64">;
 import { PrismaService } from "../../../prisma/prisma.service";
+import { loadInvoiceAdvanceDeductions } from "../advance-deduction";
 import { InvoicePdfService } from "../print/invoice-pdf.service";
 import { SefClientService } from "./sef-client.service";
 import {
@@ -195,38 +196,22 @@ export class SefService {
     //   (cac:BillingReference) + PrepaidAmount, pa SEF PayableAmount pokazuje
     //   STVARNI ostatak za uplatu (grossTotal − avans), a ne uvek 0.
     //   N:M (migracija 20260726120000): račun može zatvarati VIŠE avansa, pa ide
-    //   po jedan `cac:BillingReference` za svaku primenu. Zbir uz broj samo prvog
-    //   avansa bi bio netačna referenca na poreskom dokumentu (revizija, VISOK).
-    const applications = await this.prisma.invoiceAdvanceApplication.findMany({
-      where: { invoiceId: invoice.id, status: "ACTIVE" },
-      orderBy: { id: "asc" },
-      select: {
-        appliedAmount: true,
-        advance: { select: { documentNumber: true } },
-      },
-    });
-    const advanceInvoice =
-      applications.length === 0 && invoice.advanceInvoiceId != null
-        ? await this.prisma.invoice.findUnique({
-            where: { id: invoice.advanceInvoiceId },
-            select: { documentNumber: true },
-          })
-        : null;
-    const prepaymentReferences = applications
-      .map((a) => a.advance?.documentNumber)
+    //   po jedan `cac:BillingReference` za svaki odbijen avans. Zbir uz broj samo
+    //   prvog avansa bi bio netačna referenca na poreskom dokumentu (revizija, VISOK).
+    //
+    // ⚠️ IZNOS I REFERENCE IZ ISTOG PRAVILA (`./../advance-deduction`, ispravka
+    // 02.08.2026). Ovde je do sada stajalo „ILI-ILI": zbir primena kad ih ima, inače
+    // kolona. Za račun sa zatečenom 1:1 vezom (pdv modul, ruta `link-final`) I novom
+    // N:M primenom e-faktura je nosila PrepaidAmount samo za N:M deo — dakle veći
+    // PayableAmount nego što kupac duguje, i BillingReference bez jednog avansa.
+    // Papir je isti kvar zatvorio istog dana; sada oba čitaju jednu funkciju.
+    const deductions = await loadInvoiceAdvanceDeductions(this.prisma, invoice);
+    const prepaymentReferences = deductions.lines
+      .map((l) => l.advanceDocumentNumber)
       .filter((n): n is string => !!n);
-    // Iznos i reference se izvode iz ISTOG izvora — zbir primena kad ih ima,
-    // inače legacy kolona (dokumenti vezani pre N:M migracije).
-    const appliedTotal = applications.reduce(
-      (acc, a) => acc.add(a.appliedAmount),
-      new Prisma.Decimal(0),
-    );
-    const prepaidAmount =
-      applications.length > 0
-        ? appliedTotal
-        : advanceInvoice && invoice.advanceAppliedAmount.greaterThan(0)
-          ? invoice.advanceAppliedAmount
-          : null;
+    const prepaidAmount = deductions.total.greaterThan(0)
+      ? deductions.total
+      : null;
 
     // — D6: upozorenje javni sektor bez broja narudžbenice (ne blokira) —
     let warning: string | null = null;
@@ -258,7 +243,10 @@ export class SefService {
         note: invoice.note,
         poNumber: invoice.poNumber,
         isPrepayment: invoice.documentType === "AVR",
-        prepaymentReference: advanceInvoice?.documentNumber ?? null,
+        // Jednina (`prepaymentReference`) je stariji ulaz buildera i ostaje samo kao
+        // njegova rezerva — ovde uvek ide LISTA, jer je ona jedina tačna kad račun
+        // zatvara više avansa. Prazna lista = avansa nema, pa nema ni reference.
+        prepaymentReference: null,
         prepaymentReferences,
         prepaidAmount,
         // Datum prometa → cac:Delivery/cbc:ActualDeliveryDate. Knjižen račun ga uvek

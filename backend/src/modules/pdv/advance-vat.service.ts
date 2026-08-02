@@ -49,9 +49,13 @@ import {
   type RecordIncomingAdvanceDto,
 } from "./dto/advance-vat.dto";
 import type { AuthUser } from "../auth/jwt.strategy";
-// Status AKTIVNE primene avansa — jedna tačka istine je sales/advance-invoice.service
-// (tamo se primena i upisuje i stornira); ovde se samo ČITA za zbir iskorišćenosti.
-import { APPLICATION_ACTIVE } from "../sales/advance-invoice.service";
+// PRAVILO „koliko je avansa odbijeno" ima JEDNU tačku istine u modulu prodaje (tamo se
+// primena i upisuje i stornira); ovde se samo ČITA, za zbir iskorišćenosti na ekranu.
+import {
+  APPLICATION_ACTIVE,
+  computeAdvanceUsageByAdvance,
+  loadAdvanceLinkedInvoices,
+} from "../sales/advance-deduction";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -520,7 +524,7 @@ export class AdvanceVatService {
     ];
     const advanceIds = rows.map((r) => r.id);
 
-    const [partners, applicationRows, legacyLinks] = await Promise.all([
+    const [partners, applicationRows, linkedInvoices] = await Promise.all([
       partnerIds.length
         ? this.prisma.customer.findMany({
             where: { id: { in: partnerIds } },
@@ -552,74 +556,40 @@ export class AdvanceVatService {
           ),
       // LEGACY / CROSS-MODUL veze: pre N:M migracije i kroz `linkIncomingAdvanceToFinal`
       // (ulazni smer) veza živi SAMO u denormalizovanim `invoices.advance_*` kolonama,
-      // bez reda u spojnoj tabeli.
-      advanceIds.length
-        ? this.prisma.invoice.findMany({
-            where: {
-              advanceInvoiceId: { in: advanceIds },
-              status: { not: "CANCELLED" },
-            },
-            orderBy: { id: "asc" },
-            select: {
-              id: true,
-              documentNumber: true,
-              advanceInvoiceId: true,
-              advanceAppliedAmount: true,
-            },
-          })
-        : Promise.resolve(
-            [] as {
-              id: number;
-              documentNumber: string;
-              advanceInvoiceId: number | null;
-              advanceAppliedAmount: Prisma.Decimal;
-            }[],
-          ),
+      // bez reda u spojnoj tabeli. Uz svaki takav račun idu i NJEGOVE aktivne primene —
+      // iznos zatečene veze je `kolona − Σ primena TOG računa`, a kolona je zbir po SVIM
+      // avansima (v. `advance-deduction.ts`).
+      loadAdvanceLinkedInvoices(this.prisma, advanceIds),
     ]);
 
     const partnerName = new Map(partners.map((p) => [p.id, p.name]));
 
-    const appsByAdvance = new Map<number, AdvanceApplicationRef[]>();
-    for (const a of applicationRows) {
-      const list = appsByAdvance.get(a.advanceInvoiceId) ?? [];
-      list.push({
+    // JEDNO PRAVILO ZA CEO SISTEM (`sales/advance-deduction.ts`): UNIJA aktivnih primena
+    // i onih zatečenih 1:1 veza koje u spojnoj tabeli nemaju svoj red. Do 02.08.2026. je
+    // isti račun stajao prepisan ovde; „ili-ili" varijanta je posle prve N:M primene
+    // gubila legacy deo, pa je ekran nudio ostatak koji avans nema — a server ga je
+    // odbijao. Ekran i server sada dele funkciju, ne opis.
+    const usageByAdvance = computeAdvanceUsageByAdvance({
+      advanceInvoiceIds: advanceIds,
+      applicationsOfAdvances: applicationRows.map((a) => ({
+        advanceInvoiceId: a.advanceInvoiceId,
         invoiceId: a.invoiceId,
-        documentNumber: a.invoice.documentNumber,
         appliedAmount: a.appliedAmount,
-      });
-      appsByAdvance.set(a.advanceInvoiceId, list);
-    }
-    const legacyByAdvance = new Map<number, AdvanceApplicationRef[]>();
-    for (const l of legacyLinks) {
-      if (l.advanceInvoiceId == null) continue;
-      const list = legacyByAdvance.get(l.advanceInvoiceId) ?? [];
-      list.push({
-        invoiceId: l.id,
-        documentNumber: l.documentNumber,
-        appliedAmount: l.advanceAppliedAmount,
-      });
-      legacyByAdvance.set(l.advanceInvoiceId, list);
-    }
+        invoiceDocumentNumber: a.invoice.documentNumber,
+      })),
+      linkedInvoices,
+    });
 
     const data: AdvanceRow[] = rows.map((r) => {
-      // ISTO PRAVILO KAO `AdvanceInvoiceService.applyAdvance`: UNIJA aktivnih primena
-      // iz spojne tabele i onih legacy 1:1 veza koje u njoj nemaju svoj red. Ranije je
-      // bilo „ili-ili" (legacy se gleda samo kad primena nema), pa je posle prve N:M
-      // primene legacy deo nestajao iz iskorišćenosti i ekran je nudio ostatak koji
-      // avans nema. Bilo koje drugo pravilo bi dalo ekran koji pokazuje jedan ostatak,
-      // a server dozvoljava drugi.
-      const apps = appsByAdvance.get(r.id) ?? [];
-      const appliedInvoiceIds = new Set(apps.map((a) => a.invoiceId));
-      const applications = [
-        ...apps,
-        ...(legacyByAdvance.get(r.id) ?? []).filter(
-          (l) => !appliedInvoiceIds.has(l.invoiceId),
-        ),
-      ];
-      const appliedAmount = applications.reduce(
-        (acc, a) => acc.add(a.appliedAmount),
-        ZERO,
+      const usage = usageByAdvance.get(r.id);
+      const applications: AdvanceApplicationRef[] = (usage?.lines ?? []).map(
+        (l) => ({
+          invoiceId: l.invoiceId,
+          documentNumber: l.invoiceDocumentNumber ?? "",
+          appliedAmount: l.amount,
+        }),
       );
+      const appliedAmount = usage?.total ?? ZERO;
       const first = applications[0] ?? null;
       return {
         id: r.id,

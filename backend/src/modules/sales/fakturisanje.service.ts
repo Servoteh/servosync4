@@ -22,11 +22,12 @@ import {
 import {
   type ListInvoicesQuery,
 } from "./dto/list-invoices.dto";
+import { computePayableAmount } from "./advance-invoice.service";
 import {
   APPLICATION_ACTIVE,
   APPLICATION_REVERSED,
-  computePayableAmount,
-} from "./advance-invoice.service";
+  computeAdvanceDeductions,
+} from "./advance-deduction";
 
 /**
  * FakturisanjeService — izlazni računi (PLAN_FAZA_5 §A).
@@ -268,9 +269,14 @@ export class FakturisanjeService {
    *
    * Od migracije 20260726120000 veza avans↔račun je N:M
    * (`invoice_advance_applications`), pa se vraća i pun spisak primena
-   * (`advanceApplications`) — jedan račun sme zatvarati više avansa. Kolona
-   * `advance_applied_amount` je denormalizacija istog zbira i služi kao rezerva
-   * za dokumente knjižene pre migracije.
+   * (`advanceApplications`) — jedan račun sme zatvarati više avansa.
+   *
+   * ⚠️ „ODBIJENO" IDE KROZ `./advance-deduction` (ispravka 02.08.2026). Ovaj ekran je
+   * do tada radio po „ILI-ILI": zbir primena, a na kolonu `advance_applied_amount` je
+   * padao SAMO kad primena nema nijedne. Za račun sa zatečenom 1:1 vezom (upisuje je
+   * pdv modul rutom `link-final`) I novom N:M primenom to je značilo da ekran vidi
+   * SAMO N:M deo — papir je govorio „za uplatu 5.000", a ekran „8.000". Sada oba
+   * računaju isto: UNIJA primena i zatečene veze (obrazloženje u `advance-deduction.ts`).
    */
   async getInvoice(id: number) {
     const invoice = await this.prisma.invoice.findUnique({
@@ -294,10 +300,6 @@ export class FakturisanjeService {
       },
     });
 
-    const appliedTotal = applications.length
-      ? applications.reduce((acc, a) => acc.add(a.appliedAmount), new D(0))
-      : invoice.advanceAppliedAmount;
-
     const advance =
       invoice.advanceInvoiceId != null
         ? await this.prisma.invoice.findUnique({
@@ -305,6 +307,17 @@ export class FakturisanjeService {
             select: { documentNumber: true, advancePaidAt: true },
           })
         : null;
+
+    const deductions = computeAdvanceDeductions({
+      invoice,
+      applications: applications.map((a) => ({
+        advanceInvoiceId: a.advanceInvoiceId,
+        appliedAmount: a.appliedAmount,
+        advanceDocumentNumber: a.advance.documentNumber,
+      })),
+      legacyAdvanceDocumentNumber: advance?.documentNumber ?? null,
+    });
+    const appliedTotal = deductions.total;
 
     return {
       ...invoice,
@@ -317,7 +330,26 @@ export class FakturisanjeService {
       // Datum naplate ODBIJENOG avansa (polje `advancePaidAt` na SAMOM dokumentu
       // ostaje netaknuto — ono važi samo za AVR, ne za konačni račun).
       advanceInvoicePaidAt: advance?.advancePaidAt ?? null,
-      /** Sve aktivne primene avansa na ovom računu (N:M, redom nastanka). */
+      /**
+       * ODBIJENI AVANSI — isti spisak koji ide i na papir i na e-fakturu: po jedan
+       * unos PO AVANSU, sa iznosom BAŠ TOG avansa. Zbir mu je uvek `advanceAppliedAmount`.
+       *
+       * Razlikuje se od `advanceApplications` ispod: ovde je i zatečena 1:1 veza koja
+       * nema svoj red u spojnoj tabeli (`fromLegacyLink`), pa ekran ne može da prikaže
+       * spisak koji ne sabira u prikazan iznos.
+       */
+      advanceDeductions: deductions.lines.map((l) => ({
+        advanceInvoiceId: l.advanceInvoiceId,
+        advanceDocumentNumber: l.advanceDocumentNumber,
+        amount: l.amount,
+        fromLegacyLink: l.fromLegacyLink,
+      })),
+      /**
+       * Sve aktivne primene avansa na ovom računu (N:M, redom nastanka) — TEHNIČKI
+       * spisak redova spojne tabele (id primene, razbijena osnovica/PDV, nalog
+       * zatvaranja). Zatečena 1:1 veza ovde NEMA šta da traži: ona nema ni red ni
+       * nalog. Za prikaz „šta je sve odbijeno" koristi `advanceDeductions`.
+       */
       advanceApplications: applications.map((a) => ({
         id: a.id,
         advanceInvoiceId: a.advanceInvoiceId,

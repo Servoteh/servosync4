@@ -392,6 +392,28 @@ describe("AdvanceVatService.linkIncomingAdvanceToFinal", () => {
  * na starom kodu `linkedFinalInvoiceId != null` je bio jedini signal i ostatka
  * uopšte nije bilo u odgovoru.
  */
+/**
+ * Uz svaki račun sa zatečenom 1:1 vezom baza vraća i NJEGOVE aktivne primene —
+ * `loadAdvanceLinkedInvoices` ih traži u `select`-u, jer je iznos te veze
+ * `kolona − Σ primena TOG računa` (kolona je zbir po SVIM avansima).
+ *
+ * Lažni klijent to mora da odglumi, inače test opisuje bazu koja ne postoji: bez
+ * primena bi ispalo da kolonu ne pokriva ništa, pa bi se isti odbitak brojao i kao
+ * N:M primena i kao zatečena veza.
+ */
+function withOwnApplications(opts: {
+  applications?: unknown[];
+  legacy?: unknown[];
+}): unknown[] {
+  return (opts.legacy ?? []).map((l) => ({
+    ...(l as Record<string, unknown>),
+    advanceApplications: (opts.applications ?? []).filter(
+      (a) =>
+        (a as { invoiceId?: number }).invoiceId === (l as { id: number }).id,
+    ),
+  }));
+}
+
 describe("AdvanceVatService.listAdvances — naplaćeno / iskorišćeno / ostatak", () => {
   /** AVR 37.902 naplaćen u celosti (BigBit AVR-00013/2025). */
   const AVR = {
@@ -423,7 +445,7 @@ describe("AdvanceVatService.listAdvances — naplaćeno / iskorišćeno / ostata
           .fn()
           .mockImplementation((args: { where?: Record<string, unknown> }) => {
             if (args?.where && "advanceInvoiceId" in args.where) {
-              return Promise.resolve(opts.legacy ?? []);
+              return Promise.resolve(withOwnApplications(opts));
             }
             return Promise.resolve([AVR]);
           }),
@@ -617,7 +639,7 @@ describe("listAdvances — unija primena i legacy veza, filter nenaplaćenih", (
           .fn()
           .mockImplementation((args: { where?: Record<string, unknown> }) => {
             if (args?.where && "advanceInvoiceId" in args.where) {
-              return Promise.resolve(opts.legacy ?? []);
+              return Promise.resolve(withOwnApplications(opts));
             }
             if (opts.capture) opts.capture.where = args?.where;
             return Promise.resolve([{ ...AVR5000, ...(opts.row ?? {}) }]);

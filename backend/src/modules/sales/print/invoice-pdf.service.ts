@@ -11,6 +11,7 @@ import type {
   TDocumentDefinitions,
 } from "pdfmake/interfaces";
 import { PrismaService } from "../../../prisma/prisma.service";
+import { loadInvoiceAdvanceDeductions } from "../advance-deduction";
 import { BarcodeService } from "../../documents/barcode.service";
 import { buildPageFooter } from "../../documents/doc-layout";
 import { PdfService } from "../../documents/pdf.service";
@@ -1147,80 +1148,31 @@ export class InvoicePdfService {
   }
 
   /**
-   * Odbijeni avansi ovog računa — po JEDAN unos po primeni (N:M od migracije
+   * Odbijeni avansi ovog računa — po JEDAN unos po AVANSU (N:M od migracije
    * 20260726120000). Ranije se štampao ZBIR svih primena uz broj SAMO PRVOG AVR-a,
    * pa je kupac dobijao poreski dokument sa umanjenjem većim od referenciranog
-   * avansnog računa (revizija, VISOK). Rezerva: dokumenti vezani pre N:M migracije
-   * (veza samo u koloni `advance_invoice_id`) → jedan unos iz kolona.
+   * avansnog računa (revizija, VISOK).
    *
    * Od 02.08.2026. ovo hrani OBA puta štampe — i opšti renderer (AVR/KO/KZ) i četiri
    * obrasca kroz `PrintCtx.advanceDeductions`.
    *
-   * ═══ PRAVILO JE UNIJA, NE „ILI-ILI" ══════════════════════════════════════════════
-   * Papir nosi Σ AKTIVNIH PRIMENA **plus** zatečenu 1:1 vezu iz kolone `advance_invoice_id`
-   * KAD TA VEZA NEMA SVOJ RED u spojnoj tabeli. Isto pravilo, doslovno, već stoji na dva
-   * mesta u repou: `advance-invoice.service.ts` (`applyAdvance`, kontrola prekoračenja) i
-   * `pdv/advance-vat.service.ts` (`listAdvances`, iskorišćenost avansa).
+   * PRAVILO SE OVDE VIŠE NE PIŠE — jedina tačka istine je `sales/advance-deduction.ts`
+   * (`loadInvoiceAdvanceDeductions`): UNIJA aktivnih primena i zatečene 1:1 veze koja
+   * nema svoj red u spojnoj tabeli, sa iznosom zatečenog reda `kolona − Σ primena`.
+   * Puno obrazloženje (odakle zatečena veza, zašto ne „ili-ili", zašto ne cela kolona)
+   * stoji u zaglavlju tog fajla. Ovde ostaje samo prevod u oblik koji šablon traži.
    *
-   * ⚠️ ZAŠTO NIJE „ako ima primena, kolona se ne gleda" (izmeren kvar, treći krug
-   * 02.08.2026): pdv modul ume da poveže avans sa konačnim računom BEZ reda u spojnoj
-   * tabeli — ruta `link-final` (`advance-vat.service.ts`, `linkIncomingAdvanceToFinal`)
-   * upisuje `advance_invoice_id` + `advance_applied_amount` pravo u kolone. Izmereno:
-   * račun 10.000, `A-1/26` = 3.000 povezan tim starim putem, `A-2/26` = 2.000 novim →
-   * kolona nosi UNIJU (5.000), spojna tabela samo 2.000. Papir je tražio 8.000 umesto
-   * 5.000, a `A-1/26` na njemu nije postojao — kupcu je poslat veći dug nego što ga ima.
-   *
-   * ⚠️ IZNOS LEGACY REDA = `kolona − Σ primena`, ne cela kolona. Kolonu održava
-   * `applyAdvance` kao UKUPNO odbijeno (`totalApplied`), pa je deo koji ne pokriva nijedna
-   * primena upravo ono što je odbijeno starim putem (u primeru: 5.000 − 2.000 = 3.000 =
-   * `A-1/26`). Nula ili negativna razlika znači da primene pokrivaju sve — legacy red se
-   * tada ne štampa (kolona ume da zaostane, npr. posle ručne ispravke u bazi).
-   *
-   * Legacy veza ide PRVA: `advance_invoice_id` se upisuje samo pri PRVOM vezivanju
-   * (`isFirstApplication`, a `link-final` traži `advanceInvoiceId: null`), pa je taj avans
-   * hronološki stariji od svih N:M primena.
+   * Papir ne prikazuje `advanceInvoiceId` ni `fromLegacyLink` — kupca ne zanima kojim
+   * je putem veza nastala, nego KOJI avans i KOLIKO.
    */
   private async loadAdvanceDeductions(
     invoice: InvoiceWithItems,
   ): Promise<AdvanceDeduction[]> {
-    const applications = await this.prisma.invoiceAdvanceApplication.findMany({
-      where: { invoiceId: invoice.id, status: "ACTIVE" },
-      orderBy: { id: "asc" },
-      select: {
-        advanceInvoiceId: true,
-        appliedAmount: true,
-        advance: { select: { documentNumber: true } },
-      },
-    });
-    const deductions: AdvanceDeduction[] = applications.map((a) => ({
-      documentNumber: a.advance?.documentNumber ?? null,
-      amount: a.appliedAmount,
+    const { lines } = await loadInvoiceAdvanceDeductions(this.prisma, invoice);
+    return lines.map((l) => ({
+      documentNumber: l.advanceDocumentNumber,
+      amount: l.amount,
     }));
-
-    const legacyId = invoice.advanceInvoiceId;
-    // Veza iz kolone koja IMA svoj red u spojnoj tabeli je isti podatak dvaput — već je
-    // odštampana kao primena.
-    if (
-      legacyId == null ||
-      applications.some((a) => a.advanceInvoiceId === legacyId)
-    )
-      return deductions;
-
-    const appliedSum = applications.reduce(
-      (sum, a) => sum.add(a.appliedAmount),
-      new Prisma.Decimal(0),
-    );
-    const legacyAmount = invoice.advanceAppliedAmount.sub(appliedSum);
-    if (!legacyAmount.greaterThan(0)) return deductions;
-
-    const legacy = await this.prisma.invoice.findUnique({
-      where: { id: legacyId },
-      select: { documentNumber: true },
-    });
-    return [
-      { documentNumber: legacy?.documentNumber ?? null, amount: legacyAmount },
-      ...deductions,
-    ];
   }
 
   /**
