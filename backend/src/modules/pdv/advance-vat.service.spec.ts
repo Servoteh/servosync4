@@ -75,6 +75,9 @@ function makePrisma(
       updateMany: jest.fn().mockResolvedValue({ count: opts.claimCount ?? 1 }),
     },
     vatLedgerEntry: { create: jest.fn().mockResolvedValue({ id: 900 }) },
+    invoiceAdvanceApplication: { findMany: jest.fn().mockResolvedValue([]) },
+    // Advisory brava (`pg_advisory_xact_lock`) — v. test „ruta je zatvorena" niže.
+    $executeRaw: jest.fn().mockResolvedValue(1),
     vatReturn: { findMany: jest.fn().mockResolvedValue([]) }, // nijedan period nije zaključan
     customer: { findMany: jest.fn().mockResolvedValue([]) },
     $transaction: jest.fn(),
@@ -364,6 +367,54 @@ describe("AdvanceVatService.linkIncomingAdvanceToFinal", () => {
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
     expect(prisma.vatLedgerEntry.create).not.toHaveBeenCalled();
     expect(prisma.invoice.updateMany).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠️ RUTA JE ZATVORENA SA OBE STRANE — ovaj test to drži zaključano.
+   *
+   * `loadIncomingAdvanceOrThrow` traži `advanceDirection = 'in'`, a guard u samoj
+   * metodi baš ULAZNI avans odbija (Batch C, nalaz 4). Izlazni avans otpada na prvom,
+   * ulazni na drugom — nijedan poziv ne stigne ni do transakcije, pa se kroz
+   * aplikaciju VIŠE NE PRAVI nijedna zatečena 1:1 veza (na produkciji ih ima 0;
+   * preostale će doći uvozom BigBit istorije).
+   *
+   * Zato brane dodate 02.08.2026 UNUTAR transakcije (zajednička advisory brava sa
+   * `applyAdvance` i provera prekoračenja računa) danas nemaju izvršni put — nema
+   * poziva koji ih dohvati, pa ni testa koji bi ih vozio. Kad neko otvori rutu, ovaj
+   * test pada prvi i kaže šta se tačno otvara.
+   */
+  it("ruta je ZATVORENA za oba smera — nijedna veza se ne upisuje", async () => {
+    // (a) IZLAZNI avans (jedini smer koji uopšte sme na naš izlazni račun) — pada na
+    //     `loadIncomingAdvanceOrThrow`, pre svega ostalog.
+    const outPrisma = makePrisma({
+      advance: makeAdvance({ advanceDirection: "out" }),
+    });
+    const { service: outService } = makeService(outPrisma);
+    await expect(
+      outService.linkIncomingAdvanceToFinal({
+        advanceId: 42,
+        finalInvoiceId: 77,
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+    // (b) ULAZNI avans — prođe loader, pa ga odbije guard u metodi.
+    const inPrisma = makePrisma({});
+    inPrisma.invoice.findUnique
+      .mockResolvedValueOnce(makeAdvance())
+      .mockResolvedValueOnce(FINAL);
+    const { service: inService } = makeService(inPrisma);
+    await expect(
+      inService.linkIncomingAdvanceToFinal({
+        advanceId: 42,
+        finalInvoiceId: 77,
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+
+    for (const prisma of [outPrisma, inPrisma]) {
+      expect(prisma.invoice.updateMany).not.toHaveBeenCalled();
+      expect(prisma.$executeRaw).not.toHaveBeenCalled(); // ni do brave se ne stiže
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    }
   });
 
   it("veza na drugi AVANSNI račun → 422 (guard ostaje ispred provere smera)", async () => {

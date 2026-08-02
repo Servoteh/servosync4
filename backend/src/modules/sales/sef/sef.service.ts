@@ -206,6 +206,34 @@ export class SefService {
     // PayableAmount nego što kupac duguje, i BillingReference bez jednog avansa.
     // Papir je isti kvar zatvorio istog dana; sada oba čitaju jednu funkciju.
     const deductions = await loadInvoiceAdvanceDeductions(this.prisma, invoice);
+
+    // ⚠️ IZNOS BEZ REFERENCE SE NE ŠALJE — ceo dokument se ODBIJA (odluka 02.08.2026).
+    // `advance_invoice_id` je MEK ref (nema FK — schema.prisma, Invoice), a spojna
+    // tabela ima ON DELETE CASCADE. Kad AVR nestane (ručno čišćenje test-podataka
+    // 4.0, ispravka u bazi), kolona i pokazivač ostaju, pa red umanjenja postoji BEZ
+    // broja avansnog računa. Do sada je `filter` takav broj tiho izbacivao iz
+    // referenci, a ceo zbir je i dalje išao u `PrepaidAmount`: e-faktura tvrdi
+    // avansnu uplatu koju ne referencira nijedan `cac:BillingReference`.
+    //
+    // Zašto ODBIJANJE, a ne „izostavi iznos": obe tihe opcije šalju NETAČAN poreski
+    // dokument. Bez iznosa `PayableAmount` traži pun iznos — kupac plaća 3.000 više
+    // nego što duguje, i to na dokumentu koji se razilazi sa PDF prilogom ISTOG
+    // slanja (štampa umanjenje prikazuje). Sa iznosom bez reference dokument tvrdi
+    // avans koji ne dokazuje. Jedini ispravan ishod je da čovek popravi vezu pre
+    // slanja; SEF nije mesto za pogađanje. Isti obrazac kao builder kod praznog
+    // datuma prometa: glasan 400 umesto tihe laži.
+    const danglingAdvanceIds = deductions.lines
+      .filter((l) => !l.advanceDocumentNumber)
+      .map((l) => l.advanceInvoiceId);
+    if (danglingAdvanceIds.length > 0) {
+      throw new BadRequestException(
+        `Faktura ${invoice.documentNumber} odbija avans (#${danglingAdvanceIds.join(", #")}) ` +
+          `kome se ne može utvrditi broj avansnog računa — e-faktura bi nosila ` +
+          `PrepaidAmount ${deductions.total.toFixed(2)} bez reference na avansni račun ` +
+          `(cac:BillingReference). Popravi vezu avansa na računu pa ponovi slanje.`,
+      );
+    }
+
     const prepaymentReferences = deductions.lines
       .map((l) => l.advanceDocumentNumber)
       .filter((n): n is string => !!n);

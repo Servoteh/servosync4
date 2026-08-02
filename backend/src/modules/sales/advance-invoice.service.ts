@@ -127,9 +127,14 @@ const ADVISORY_NS_ADVANCE_PER_PROFORMA = 4002;
 /**
  * Advisory-lock namespace-i za primenu avansa. Uzimaju se UVEK istim redom
  * (prvo račun, pa avans) — obrnut redosled u drugoj sesiji bi dao deadlock.
+ *
+ * IZVEZENI su jer brava mora biti ZAJEDNIČKA sa svakim drugim putem koji dira odbitak
+ * avansa na računu: `pdv/advance-vat.service.ts` (`link-final`) piše kolone
+ * `advance_invoice_id` / `advance_applied_amount`, a `applyAdvance` ih čita pa upisuje
+ * (read-then-write). Svoja brava u svakom modulu = nikakva brava.
  */
-const ADVISORY_NS_APPLY_ON_INVOICE = 4003;
-const ADVISORY_NS_APPLY_OF_ADVANCE = 4004;
+export const ADVISORY_NS_APPLY_ON_INVOICE = 4003;
+export const ADVISORY_NS_APPLY_OF_ADVANCE = 4004;
 
 // Status primene avansa (`invoice_advance_applications.status`) živi uz PRAVILO o
 // odbijenom avansu — `./advance-deduction`. Ovde se samo uvozi i koristi.

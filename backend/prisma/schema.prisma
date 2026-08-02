@@ -4145,10 +4145,25 @@ model Invoice {
   /// (jedan avans ide na više računa i obrnuto — BigBit `T_AVR_Roba`/`T_AVR_Usluge`).
   /// Održava ga `AdvanceInvoiceService`; čitaoci (SEF BillingReference, štampa) ga smeju
   /// koristiti samo za prikaz „prvog" avansa.
+  /// ⚠️ Veza ume da postoji BEZ svog reda u `invoice_advance_applications` („zatečena
+  /// 1:1 veza"): dokumenti knjiženi pre migracije 20260726120000, uvoz BigBit istorije,
+  /// ručna ispravka u bazi (ruta `POST /pdv/advances/link-final` je od Batch C revizije
+  /// zatvorena, pa nove ne pravi). Takva veza NIJE samo prikaz — ona je punopravan
+  /// odbitak (v. komentar na `advanceAppliedAmount`).
   advanceInvoiceId      Int?      @map("advance_invoice_id")
-  /// DENORMALIZOVAN zbir svih AKTIVNIH primena avansa na ovom računu (bruto).
-  /// = SUM(invoice_advance_applications.applied_amount WHERE status='ACTIVE').
+  /// DENORMALIZOVAN zbir SVEGA što je na ovom računu odbijeno od avansa (bruto).
   /// Umanjuje iznos za plaćanje, ne osnovicu prihoda.
+  ///
+  /// ⚠️ NIJE `SUM(invoice_advance_applications.applied_amount WHERE status='ACTIVE')`
+  /// (ispravka komentara 02.08.2026 — ranije je ovde pisalo baš to). Pravilo je UNIJA:
+  /// Σ AKTIVNIH primena **plus** zatečena 1:1 veza iz `advance_invoice_id` kad ona nema
+  /// svoj red u spojnoj tabeli; iznos tog dela je `ova kolona − Σ primena`. Jedina
+  /// tačka istine je `backend/src/modules/sales/advance-deduction.ts` — štampa, SEF,
+  /// ekran računa, lista avansa i `applyAdvance` svi računaju kroz nju.
+  ///
+  /// Zato se kolona NE SME „popraviti" na SUM po spojnoj tabeli (ni skriptom ni
+  /// triger-om): time bi svi zatečeni odbici tiho nestali sa papira i sa e-faktura, a
+  /// kupcima bi porastao iznos za uplatu bez ijedne poruke.
   advanceAppliedAmount  Decimal   @default(0) @map("advance_applied_amount") @db.Decimal(19, 4)
   /// Na AVR-u: datum naplate avansa — PDV obaveza po avansu nastaje NAPLATOM, ne izdavanjem.
   advancePaidAt         DateTime? @map("advance_paid_at") @db.Timestamptz(6)

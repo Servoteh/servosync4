@@ -27,6 +27,8 @@ import {
   APPLICATION_ACTIVE,
   APPLICATION_REVERSED,
   computeAdvanceDeductions,
+  computeAdvanceUsage,
+  loadAdvanceLinkedInvoices,
 } from "./advance-deduction";
 
 /**
@@ -319,6 +321,31 @@ export class FakturisanjeService {
     });
     const appliedTotal = deductions.total;
 
+    /**
+     * KOMPATIBILNA POLJA „prvi avans" (`advanceInvoiceNumber` / `advanceInvoicePaidAt`)
+     * SMEJU da imenuju samo avans koji je STVARNO u spisku umanjenja.
+     *
+     * Do 02.08.2026. su se čitala pravo iz kolone-pokazivača `advance_invoice_id`, pa
+     * su bila DRUGI izvor za isti pojam. Kad je `advance_applied_amount ≤ Σ aktivnih
+     * primena` (zatečena 1:1 veza pokrivena N:M primenama, storno primene, ručna
+     * ispravka kolone u bazi), pravilo taj avans ne daje u `advanceDeductions` — a
+     * ekran je i dalje pisao „Avans: A-1/26", dokument kojeg u spisku umanjenja nema
+     * i čiji iznos nigde ne stoji. Knjigovođa tada traži 3.000 koje ne postoje.
+     *
+     * Sada oba polja opisuju PRVI red spiska (`deductions.lines[0]`): nema reda →
+     * nema ni imena. Broj se uzima iz samog reda, a datum naplate iz izvora tog reda
+     * (zatečena veza = učitan AVR iz kolone; N:M primena = AVR te primene).
+     */
+    const firstDeduction = deductions.lines[0] ?? null;
+    const firstAdvance =
+      firstDeduction == null
+        ? null
+        : firstDeduction.fromLegacyLink
+          ? advance
+          : (applications.find(
+              (a) => a.advanceInvoiceId === firstDeduction.advanceInvoiceId,
+            )?.advance ?? null);
+
     return {
       ...invoice,
       payableAmount: computePayableAmount({
@@ -326,10 +353,10 @@ export class FakturisanjeService {
         advanceAppliedAmount: appliedTotal,
       }),
       advanceAppliedAmount: appliedTotal,
-      advanceInvoiceNumber: advance?.documentNumber ?? null,
+      advanceInvoiceNumber: firstAdvance?.documentNumber ?? null,
       // Datum naplate ODBIJENOG avansa (polje `advancePaidAt` na SAMOM dokumentu
       // ostaje netaknuto — ono važi samo za AVR, ne za konačni račun).
-      advanceInvoicePaidAt: advance?.advancePaidAt ?? null,
+      advanceInvoicePaidAt: firstAdvance?.advancePaidAt ?? null,
       /**
        * ODBIJENI AVANSI — isti spisak koji ide i na papir i na e-fakturu: po jedan
        * unos PO AVANSU, sa iznosom BAŠ TOG avansa. Zbir mu je uvek `advanceAppliedAmount`.
@@ -545,6 +572,9 @@ export class FakturisanjeService {
         documentNumber: true,
         documentType: true,
         advanceClosingEntryId: true,
+        // Zatečena 1:1 veza nema ni red u spojnoj tabeli ni nalog zatvaranja —
+        // jedini trag joj je ova kolona, pa se mora pročitati da bi se očistila.
+        advanceInvoiceId: true,
       },
     });
     if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
@@ -566,6 +596,33 @@ export class FakturisanjeService {
       const blocking = appliedOn
         .filter((a) => a.invoice.status !== "CANCELLED")
         .map((a) => a.invoice.documentNumber);
+
+      // ⚠️ ZATEČENA 1:1 VEZA BLOKIRA ISTO KAO PRIMENA (ispravka 02.08.2026).
+      // Gornji upit vidi SAMO redove spojne tabele, a odbitak može da živi i u
+      // kolonama `invoices.advance_invoice_id` + `advance_applied_amount` BEZ svog
+      // reda (dokumenti knjiženi pre migracije 20260726120000, uvoz BigBit istorije,
+      // ručna ispravka u bazi; ruta `POST /pdv/advances/link-final` je od Batch C
+      // revizije zatvorena, pa nove ne pravi). Za takav račun je gornji spisak prazan, pa
+      // je storno AVR-a prolazio — a konačni račun je i dalje ŠTAMPAO „Umanjenje za
+      // primljeni avans (br. A-1/26): −3.000", slao `PrepaidAmount` 3.000 i
+      // `BillingReference` na STORNIRAN poreski dokument, i kupcu prikazivao 3.000
+      // manje za uplatu. Komentar iznad („prvo se stornira konačni račun") je taj
+      // scenario opisivao, ali ga brana nije pokrivala.
+      //
+      // Meri se ISTIM pravilom kojim se iznos ispisuje na papir („kolona − Σ primena
+      // tog računa", `./advance-deduction`): blokira tačno ono što se negde odbija.
+      // Račun kome primene pokriju celu kolonu ovde ne daje red — njega već blokira
+      // gornji spisak. Stornirani računi otpadaju u `loadAdvanceLinkedInvoices`.
+      const legacyUsage = computeAdvanceUsage({
+        advanceInvoiceId: id,
+        // Primene su gore već obrađene; ovde se traže SAMO zatečene veze.
+        applicationsOfAdvance: [],
+        linkedInvoices: await loadAdvanceLinkedInvoices(this.prisma, [id]),
+      });
+      for (const line of legacyUsage.lines) {
+        blocking.push(line.invoiceDocumentNumber ?? `#${line.invoiceId}`);
+      }
+
       if (blocking.length) {
         throw new ConflictException(
           `Avansni račun ${invoice.documentNumber} je odbijen na računu/ima primene na: ` +
@@ -697,7 +754,13 @@ export class FakturisanjeService {
       }
     }
 
-    if (toReverse.length > 0) {
+    // Kolone se čiste i kad NEMA šta da se reverzira: zatečena 1:1 veza nema ni red u
+    // spojnoj tabeli ni nalog zatvaranja, pa je `toReverse` za nju prazan i kolone su
+    // ostajale na storniranom računu ZAUVEK. Posledica nije kozmetička: `link-final`
+    // (i budući uvoznik) po toj koloni zaključuju „avans je već iskorišćen", pa se AVR
+    // posle storna svog jedinog računa nije mogao odbiti nigde — ćorsokak bez izlaza
+    // kroz aplikaciju. Storniran račun ništa ne duguje i ništa ne odbija.
+    if (toReverse.length > 0 || invoice.advanceInvoiceId != null) {
       await this.prisma.invoice.update({
         where: { id },
         data: {
