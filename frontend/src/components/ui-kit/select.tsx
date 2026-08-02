@@ -34,7 +34,9 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
       <select
         ref={ref}
         className={cn(
-          'h-9 w-full appearance-none rounded-control border border-line bg-surface pl-3 pr-9 text-base text-ink',
+          // Telefon (< sm): 44px meta + 16px tekst (ispod 16px iOS zumira stranu
+          // na fokus i ne vraća zum); desktop ritam od `sm` ostaje 36px / 14px.
+          'h-11 w-full appearance-none rounded-control border border-line bg-surface pl-3 pr-9 text-md text-ink sm:h-9 sm:text-base',
           'focus-visible:outline-none focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)]',
           'disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-ink-secondary',
           className,

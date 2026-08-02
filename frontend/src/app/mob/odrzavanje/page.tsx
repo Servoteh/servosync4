@@ -79,7 +79,7 @@ export default function MobileOdrzavanjePage() {
   }, [user, isLoading, router]);
 
   if (isLoading || !user) {
-    return <main className="grid min-h-screen place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
+    return <main className="grid min-h-dvh place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
   function openAsset(a: AssetPickerRow) {
@@ -137,7 +137,7 @@ export default function MobileOdrzavanjePage() {
   }
 
   return (
-    <main className="min-h-screen bg-app pb-24">
+    <main className="min-h-dvh bg-app pb-24">
       <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-line bg-surface px-4 py-3">
         {view !== 'hub' ? (
           <button onClick={back} aria-label="Nazad" className="text-ink-secondary">

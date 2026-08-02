@@ -163,21 +163,21 @@ export default function MobDiktafonPage() {
   // stigne, pa bi ovlašćen korisnik na svež login video lažni „Nemate pristup".
   if (isLoading || !user || permissionsPending) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
   }
   if (permissionsError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
       </main>
     );
   }
   if (!can(PERMISSIONS.AI_CHAT)) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Nemate pristup diktafonu — potrebno je pravo za AI (`ai.chat`). Javite se administratoru.
       </main>
     );
@@ -390,7 +390,7 @@ export default function MobDiktafonPage() {
   const canSend = !!text.trim() && !busy && text.trim() !== lastSentText;
 
   return (
-    <div className="min-h-screen bg-app pb-24">
+    <div className="min-h-dvh bg-app pb-24">
       <header className="sticky top-0 z-10 border-b border-line bg-surface px-4 py-3">
         <div className="flex items-center gap-3">
           <a

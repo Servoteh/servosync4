@@ -25,7 +25,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       disabled={disabled || loading}
       className={cn(
-        'inline-flex h-9 items-center justify-center gap-2 rounded-control px-4 text-base font-medium',
+        // Telefon (< sm): 44px visina = iOS HIG minimum mete (1.0 ide na 45px
+        // zbog rukavica u pogonu); od `sm` naviše ostaje gust desktop ritam 36px.
+        'inline-flex h-11 items-center justify-center gap-2 rounded-control px-4 text-base font-medium sm:h-9',
         'transition-colors focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]',
         'disabled:opacity-50 disabled:pointer-events-none',
         variants[variant],

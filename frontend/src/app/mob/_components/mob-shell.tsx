@@ -108,8 +108,14 @@ export function MobShell({
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-app">
-      <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
+    // `min-h-dvh` (ne `100vh`): `100vh` je na iOS Safariju VELIKI viewport
+    // (kao da je adresna traka uvučena), pa svaki ekran dobije suvišan skrol, a
+    // centrirana stanja padnu pod donju traku pregledača.
+    <div className="flex min-h-dvh flex-col bg-app">
+      {/* Gornji `env(safe-area-inset-top)` = status-bar/notch zona (živa tek uz
+          viewport-fit=cover); bočni insets čuvaju zaglavlje u pejzažu na
+          uređajima sa notch-om. U Safariju bez notch-a su sve tri nule. */}
+      <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-surface pt-[calc(0.75rem+env(safe-area-inset-top,0px))] pb-3 pl-[max(1rem,env(safe-area-inset-left,0px))] pr-[max(1rem,env(safe-area-inset-right,0px))]">
         <div className="min-w-0 flex-1">
           <h1 className="flex items-center gap-2 text-md font-semibold text-ink">
             <span className="truncate">{title ?? DEFAULT_TITLE}</span>
@@ -126,7 +132,7 @@ export function MobShell({
 
       {/* Donji razmak = visina trake + safe-area, da poslednji red sadržaja nikad
           ne ostane ispod fiksirane trake (1.0 `.ma-shell` radi isto). */}
-      <main className="flex-1 p-4 pb-[calc(6rem_+_env(safe-area-inset-bottom,0px))]">
+      <main className="flex-1 pt-4 pb-[calc(6rem_+_env(safe-area-inset-bottom,0px))] pl-[max(1rem,env(safe-area-inset-left,0px))] pr-[max(1rem,env(safe-area-inset-right,0px))]">
         {children}
       </main>
 
@@ -134,7 +140,7 @@ export function MobShell({
           (bez toga poslednji red trake pada pod sistemsku crtu). */}
       <nav
         aria-label="Glavna navigacija"
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line bg-surface pb-[env(safe-area-inset-bottom,0px)]"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line bg-surface pb-[env(safe-area-inset-bottom,0px)] pl-[env(safe-area-inset-left,0px)] pr-[env(safe-area-inset-right,0px)]"
       >
         {TABS.map((t) => {
           const Icon = t.icon;

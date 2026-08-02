@@ -83,14 +83,14 @@ export default function MobProfilPage() {
 
   if (isLoading || !user || permissionsPending) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
   }
   if (permissionsError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
       </main>
     );

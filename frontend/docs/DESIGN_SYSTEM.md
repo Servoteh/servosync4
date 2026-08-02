@@ -284,6 +284,15 @@ Dopune kita:
 * `Dialog` je dobio opcioni `size`: `'md'` (default) · `'lg'` (forme sa više polja — npr. akcija
   sastanka sa opisom/projektom) · `'xl'` (duge forme sa sekcijama — karton zaposlenog) ·
   `'xl2'` (guste tabele — Istorija zarada) · `'2xl'` (grid unosi — brzi/bulk unos zaposlenih).
+* `Dialog` je dobio i opcioni **`variant`** (02.08.2026): `'auto'` (podrazumevano) = **donji
+  sheet na telefonu, centriran modal od `sm` naviše** · `'sheet'` = sheet na svakoj širini ·
+  `'center'` = stari centrirani modal svuda. Sprovodi §11 („na telefonu full-screen sheet")
+  bez ijedne izmene u pozivima: `/mob` ekrani koriste ISTE dijaloge kao desktop
+  (`MovementDialog`, `PrijavaNeusaglasenostiDialog`), pa bi prop po pozivu razdvojio ono
+  što mora ostati jedna komponenta. Panel je flex kolona `max-h-[90dvh]` (zaglavlje i
+  footer uvek vidljivi, skroluje se telo), a footer nosi `env(safe-area-inset-bottom)` —
+  bez toga na iPhone-u dugme „Sačuvaj" završi ispod tastature ili pod home-indicator crtom
+  (iOS ne skroluje `position: fixed` elemente).
 * **`CommandPalette`** (F3 SIDEBAR_HUB): `Ctrl+K` skok na modul — fuzzy pretraga
   (dijakritika-neosetljiva, `src/lib/fuzzy.ts`), „Nedavno" MRU na praznom upitu, pun
   tastaturni combobox/listbox obrazac. Jedna instanca, montira je `AppShell`; vidljiva
@@ -366,10 +375,16 @@ Dopune kita:
   kamere u punoekranskim skenerima. **Doslovan port vizuelnog jezika iz 1.0**
   (`legacy.css` `.loc-scan-reticle` / `.loc-scan-laser`) — ljudi u pogonu skeniraju po tom
   obliku godinama, a 3.0 je dotad crtao skoro kvadratni okvir fiksan u px, bez vinjete.
-  `variant="barcode"` = široki prozor `aspect-ratio 3/1`, `w: min(78vw, 360px)` ·
+  `variant="barcode"` = široki prozor `aspect-ratio 3.2/1`, `w: min(92vw, 420px)` ·
   `variant="qr"` = kvadrat `min(70vw, 280px)`. **Vinjeta** (`box-shadow: 0 0 0 9999px
-  rgba(0,0,0,.45)`) zatamnjuje okolinu i fokusira oko na prozor skena — nosi najveći deo
-  prepoznatljivosti. `laser` (default: uključen za `barcode`) je crvena linija skena preko
+  rgba(0,0,0,.52)` za `barcode`, `.45` za `qr`) zatamnjuje okolinu i fokusira oko na
+  prozor skena — nosi najveći deo prepoznatljivosti.
+  ⚠️ **Merodavne su 1.0 vrednosti PREZENTACIONOG režima** (`legacy.css:4669-4681`), ne
+  osnovnog `.loc-scan-reticle` pravila: obe žive 1.0 ljuske bezuslovno rade
+  `classList.add('loc-scan-presentation')` čim kamera krene (`scanOverlay.js:423`,
+  `scanModal.js:513`). Prvi port (01.08) je uzeo osnovne vrednosti pa je nišan na
+  iPhone-u 390pt bio 304,2 × 101,4 px umesto 358,8 × 112,1 px (~15% uži, ~10% niži);
+  ispravljeno 02.08.2026. `vw` je viewport-relativan — roditeljski padding ga ne menja. `laser` (default: uključen za `barcode`) je crvena linija skena preko
   sredine kadra, animacija 2.35 s (klasa `.scan-laser` u `globals.css` — gradijent + glow +
   `@keyframes` se ne mogu izraziti utilitijima; `prefers-reduced-motion` je gasi, linija ostaje).
   Dimenzije su **viewport-relativne**, ne px, pa isti nišan radi na telefonu i na tabletu (§11).
@@ -378,6 +393,29 @@ Dopune kita:
   Uvećani „presentation" režim iz 1.0 nije portovan (3.0 nema taj koncept).
   Potrošači: `lokacije`/`reversi` ScanOverlay i `montaza` KarticaScanOverlay (`barcode`),
   mobilno Održavanje (`qr`). Svaki nov skener uzima ovu komponentu — nišan se više ne crta ručno.
+
+* **`ScanHint`** (`ui-kit/scan-hint.tsx`, 02.08.2026) — instrukcija radniku preko dna
+  kadra u punoekranskom skeneru: kako se drži telefon („10-15 cm od nalepnice") i šta se
+  radi sa folijom/odsjajem. **Doslovan tekst iz 1.0** (`scanModal.js:302-309`, klasa
+  `.loc-scan-hint`); 3.0 ga do 02.08.2026 nije imao ni u jednoj ljusci, pa radnik koji ne
+  uhvati barkod nije imao šta da proba. `extra` je jedan dodatni red specifičan za ekran
+  (OCR ugao u Lokacijama, „Slikaj barkod" u Reversima/Montaži). Za razliku od 1.0
+  (`position:absolute`) komponenta je običan blok koji ljuska stavlja u svoj plutajući
+  donji stek — ne može da se preklopi sa statusom, zoom klizačem ili ručnim unosom.
+  Isti izuzetak od §3 kao `ScanReticle` (bela preko crne, stoji nad slikom kamere);
+  emoji iz 1.0 stringa je izbačen (§2 — samo `lucide-react` ikone).
+
+* **Punoekranski skener = full-bleed kadar** (obrazac, 02.08.2026, ne komponenta):
+  `<video>` ide `absolute inset-0` preko CELOG overlay-a, a topbar i donje kontrole
+  **lebde preko njega** sa gradijentom (`from-black/55` gore, `from-black/90 via-black/70`
+  dole) + `env(safe-area-inset-*)`. Doslovan 1.0 raspored (`.loc-scan-video`
+  legacy.css:4634, `.loc-scan-topbar` :4695, `.loc-scan-hint` :4720). Raniji
+  `flex flex-col` sa neprozirnim trakama je na iPhone 390×844 obarao kadar na ~60-70%
+  visine — isti barkod izgledao manji nego u 1.0, pa je radnik menjao rastojanje.
+  Uz to: `useVisualViewportFix` (v. `lib/use-visual-viewport-fix.ts`) je OBAVEZAN u
+  svakoj takvoj ljusci — bez njega Safari URL traka pomera nišan ispod vidljivog kadra —
+  a `autoFocus` na polju za ručni unos ide samo uz `pointer: fine` (na telefonu bi soft
+  tastatura pokrila kadar pre svakog skena).
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.
@@ -400,6 +438,28 @@ Dopune kita:
   iz 1.0 iskustva se dograđuje u 3.0, ali **baseline responsivnost i telefonski unos su V1 zahtev**.
 * **Provera pre „gotovo":** svaki ekran se testira na **360 px / 768 px / 1024 px / 1440 px**; `/dev/ui` katalog
   prikazuje kit komponente na tim širinama (§12).
+* **iOS pravila (02.08.2026, paritet 1.0)** — telefon u pogonu je iPhone, a Safari ima
+  ponašanja koja se ne vide na desktopu. Sedam stvari koje ekran NE sme da pogazi:
+  1. **`viewport-fit=cover`** stoji u `app/layout.tsx` (`export const viewport`). Bez njega iOS
+     vraća `env(safe-area-inset-*) = 0` i **sav safe-area kod je mrtav** — donja traka `/mob`
+     pada pod home-indicator crtu. Zato svaka ivica koja dodiruje ekran (fiksirana traka,
+     sticky zaglavlje, footer sheeta) mora imati `env(safe-area-inset-*)` u padding-u.
+  2. **Polja ≥ 16px na telefonu** (`text-md`, ne `text-base`/`text-sm`): ispod 16px Safari
+     ZUMIRA celu stranu na fokus i **ne vraća zum na blur** — radnik ostane na uvećanoj strani.
+     Kit (`Input`/`Select`/`Textarea`/`ComboBox`/`SearchBox`) to nosi kroz `text-md sm:text-*`.
+  3. **Meta ≥ 44px na telefonu** (iOS HIG; 1.0 zbog rukavica ide na 45–48px): kit kontrole su
+     `h-11 sm:h-9`. Gustina desktopa se NE menja — sve je ispod `sm` prelomne tačke.
+  4. **Visina ekrana je `dvh`, nikad `vh`** (`min-h-dvh`/`h-dvh`): `100vh` je na iOS-u veliki
+     viewport, pa strana ima suvišan skrol, a centrirana stanja padnu pod donju traku Safarija.
+     Fallback za stare pregledače je u `globals.css` (`@supports not (height: 100dvh)`).
+  5. **Dijalozi sa unosom = sheet na telefonu** (`Dialog variant="auto"`, §10).
+  6. **`-webkit-tap-highlight-color: transparent`** (globalno, `globals.css`) — bez toga iOS crta
+     sivi pravougaonik na svaki tap; vidljiv fokus ostaje na `:focus-visible`.
+  7. **`overscroll-behavior-y: contain`** na `body` — povlačenje nadole na vrhu ne sme da okine
+     pull-to-refresh i pojede unos u toku.
+  Sve pod `/mob` dodatno pokriva `.mob-scope` (v. `app/mob/layout.tsx`): ista pravila (16px
+  polja, 44px meta) padaju i na **sirove** `<button>`/`<input>` elemente iz Faze 0 koji još
+  nisu prešli na kit. To je mreža ispod kita, ne dozvola da se ekran piše mimo kita.
 * `prefers-reduced-motion` se poštuje; animacije samo funkcionalne (otvaranje panela, toast), ≤ 200 ms.
 
 ## 12. Proces i kontrola

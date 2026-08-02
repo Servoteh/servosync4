@@ -192,28 +192,28 @@ export default function MobLokacijeBatchPage() {
 
   if (isLoading || !user || permissionsPending) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
   }
   if (permissionsError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
       </main>
     );
   }
   if (!can(PERMISSIONS.LOKACIJE_READ)) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Nemate pristup lokacijama — javite se administratoru (potrebno `lokacije.read`).
       </main>
     );
   }
   if (!can(PERMISSIONS.LOKACIJE_MOVE)) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Imate pregled bez prava premeštanja (`lokacije.move`) — batch nije dostupan.
       </main>
     );
@@ -343,7 +343,7 @@ export default function MobLokacijeBatchPage() {
   const errCount = lines.filter((l) => l.status === 'error').length;
 
   return (
-    <div className="min-h-screen bg-app pb-28">
+    <div className="min-h-dvh bg-app pb-28">
       <header className="sticky top-0 z-10 border-b border-line bg-surface px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="min-w-0 flex-1">

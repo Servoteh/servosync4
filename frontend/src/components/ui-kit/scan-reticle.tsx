@@ -18,8 +18,25 @@ import { cn } from '@/lib/cn';
  *  3. **Laser** — crvena linija preko sredine kadra koja lagano klizi gore-dole; služi
  *     kao „poravnaj 1D barkod sa linijom". Podrazumevano samo za `barcode`.
  *
- * Dimenzije su, kao u 1.0, **responsivne** (`min(78vw, 360px)` + `aspect-ratio`), ne
+ * Dimenzije su, kao u 1.0, **responsivne** (`min(…vw, …px)` + `aspect-ratio`), ne
  * fiksne u px: isti nišan radi i na 360 px telefonu i na tabletu u pogonu.
+ *
+ * **ISPRAVKA 02.08.2026 — nišan je bio ~15% uži i ~10% niži nego u 1.0.**
+ * Merenje na iPhone-u (390pt): 1.0 = 358,8 × 112,1 px, 3.0 = 304,2 × 101,4 px.
+ * Uzrok NIJE bio „širina koju pojede roditeljski padding" (`vw` je viewport-relativan
+ * pa ga padding ne može smanjiti — `min(78vw,360px)` na 390pt daje TAČNO 304,2 px,
+ * što je izmerena vrednost): portovane su vrednosti OSNOVNOG `.loc-scan-reticle`
+ * pravila, dok obe žive 1.0 ljuske skeniraju u **prezentacionom** režimu —
+ * `scanOverlay.js:423` (reversi) i `scanModal.js:513` (lokacije) bezuslovno rade
+ * `overlay.classList.add('loc-scan-presentation')` čim kamera krene. Merodavna su
+ * zato `legacy.css:4669-4681` pravila za taj režim (portret): `width:min(92vw,420px)`,
+ * `aspect-ratio:3.2/1`, vinjeta `rgba(0,0,0,.52)`.
+ *
+ * Račun posle ispravke (portret):
+ *   • iPhone 390pt → `min(0.92 × 390, 420) = 358,8 px` širine, `358,8 / 3,2 = 112,1 px`
+ *     visine → paritet sa 1.0 (bilo 304,2 × 101,4).
+ *   • 360 px telefon → `331,2 × 103,5 px` · 430pt (Pro Max) → `395,6 × 123,6 px`.
+ *   • ≥ 457 px (tablet) → poklopac `420 × 131,3 px` — isti kao u 1.0.
  *
  * **Zašto ovde nema tokena teme** (izuzetak od DESIGN_SYSTEM §3): nišan ne stoji na
  * našoj površini nego preko ŽIVE slike kamere. Bela ivica i crveni laser moraju da se
@@ -63,10 +80,12 @@ export function ScanReticle({
     >
       <div
         className={cn(
-          'rounded-panel border-2 border-white/90 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]',
+          'rounded-panel border-2 border-white/90',
           variant === 'barcode'
-            ? 'aspect-[3/1] w-[min(78vw,360px)]'
-            : 'aspect-square w-[min(70vw,280px)]',
+            ? // 1.0 prezentacioni režim, portret (legacy.css:4675-4680) — v. račun u JSDoc-u.
+              'aspect-[3.2/1] w-[min(92vw,420px)] shadow-[0_0_0_9999px_rgba(0,0,0,0.52)]'
+            : // QR kvadrat nema 1.0 pandan (3.0 koncept) — ostaje na osnovnoj vinjeti .45.
+              'aspect-square w-[min(70vw,280px)] shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]',
         )}
       />
       {/* Laser je pozicioniran (z-auto) i dolazi POSLE okvira, pa se crta iznad vinjete.

@@ -28,7 +28,7 @@ export default function MobileNeusaglasenostiPage() {
   // monter na svež login video lažno „Nemate pravo".
   if (isLoading || !user || permissionsPending) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
@@ -37,7 +37,7 @@ export default function MobileNeusaglasenostiPage() {
   // Pad učitavanja dozvola (retry:false — ostaje za sesiju) ≠ stvarna zabrana.
   if (permissionsError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
       </main>
     );
@@ -45,7 +45,7 @@ export default function MobileNeusaglasenostiPage() {
 
   if (!can(PERMISSIONS.MONTAZA_NEUSAGLASENOSTI_WRITE)) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6">
+      <main className="grid min-h-dvh place-items-center bg-app p-6">
         <div className="grid justify-items-center gap-3 text-center">
           <p className="text-sm text-ink-secondary">
             Nemate pravo prijave neusaglašenosti — javite se administratoru (potrebno
@@ -63,7 +63,7 @@ export default function MobileNeusaglasenostiPage() {
   }
 
   return (
-    <main className="min-h-screen bg-app p-3">
+    <main className="min-h-dvh bg-app p-3">
       <PrijavaNeusaglasenostiDialog onClose={() => router.push('/mob')} />
     </main>
   );

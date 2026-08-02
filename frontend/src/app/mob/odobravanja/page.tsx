@@ -161,21 +161,21 @@ export default function MobOdobravanjaPage() {
 
   if (isLoading || !user || permissionsPending) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
   }
   if (permissionsError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
       </main>
     );
   }
   if (!canVacreq && !me?.isAdmin) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Odobravanje zahteva vide rukovodioci sa pravom upravljanja GO zahtevima
         (potrebno `kadrovska.vacreq_manage`).
       </main>
@@ -270,7 +270,7 @@ export default function MobOdobravanjaPage() {
   );
 
   return (
-    <div className="min-h-screen bg-app pb-16">
+    <div className="min-h-dvh bg-app pb-16">
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-md font-semibold text-ink">Odobravanja</h1>

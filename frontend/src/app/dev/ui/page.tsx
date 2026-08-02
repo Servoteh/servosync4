@@ -16,6 +16,7 @@ import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { HelpTour, type HelpTourStep } from '@/components/ui-kit/help-tour';
 import { FavStar } from '@/components/ui-kit/fav-star';
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
+import { ScanHint } from '@/components/ui-kit/scan-hint';
 
 /**
  * `/dev/ui` — interni katalog kit komponenti u svim stanjima (DESIGN_SYSTEM.md §12).
@@ -305,10 +306,10 @@ export default function DevUiPage() {
 
       <Section
         title="ScanReticle — nišan skenera"
-        note="Port vizuelnog jezika iz 1.0 (.loc-scan-reticle): širok 3:1 prozor za 1D nalepnicu, kvadrat za QR, vinjeta koja zatamni okolinu i crvena linija skena. Dimenzije su viewport-relativne (min(78vw,360px) / min(70vw,280px)) — suzi prozor pregledača i okvir se sam skuplja. Podloga ispod je lažna „kamera“ (šahovnica), da se vidi šta vinjeta radi."
+        note="Port vizuelnog jezika iz 1.0 (.loc-scan-reticle u prezentacionom režimu — obe žive 1.0 ljuske ga pale čim kamera krene): širok 3,2:1 prozor za 1D nalepnicu, kvadrat za QR, vinjeta koja zatamni okolinu i crvena linija skena. Dimenzije su viewport-relativne (min(92vw,420px) / min(70vw,280px)) — suzi prozor pregledača i okvir se sam skuplja; na iPhone 390pt daje 358,8 × 112,1 px, tačno kao 1.0. Podloga ispod je lažna „kamera“ (šahovnica), da se vidi šta vinjeta radi."
       >
         <div className="sm:col-span-2 lg:col-span-3 space-y-4">
-          <Demo title="barcode (podrazumevano, sa laserom) — lokacije i reversi">
+          <Demo title="barcode (podrazumevano, sa laserom) — lokacije, reversi i montažna kartica">
             <FakeCamera>
               <ScanReticle variant="barcode" />
             </FakeCamera>
@@ -321,6 +322,28 @@ export default function DevUiPage() {
           <Demo title="qr sa laserom (kombinovana nalepnica)">
             <FakeCamera>
               <ScanReticle variant="qr" laser />
+            </FakeCamera>
+          </Demo>
+        </div>
+      </Section>
+
+      <Section
+        title="ScanHint — instrukcija radniku u skeneru"
+        note="Kratak savet kako se drži telefon i šta se radi sa folijom/odsjajem (doslovan tekst iz 1.0 .loc-scan-hint). Ljuska ga ubacuje u svoj plutajući donji stek preko kadra; „extra“ je red specifičan za ekran (OCR u Lokacijama, „Slikaj barkod“ u Reversima…)."
+      >
+        <div className="sm:col-span-2 lg:col-span-3 space-y-4">
+          <Demo title="podrazumevano (bez dodatnog reda)">
+            <FakeCamera>
+              <div className="absolute inset-x-0 bottom-0 p-3">
+                <ScanHint />
+              </div>
+            </FakeCamera>
+          </Demo>
+          <Demo title="sa dodatnim redom ljuske">
+            <FakeCamera>
+              <div className="absolute inset-x-0 bottom-0 p-3">
+                <ScanHint extra={'Ne ide? Probaj „Iz slike" ili OCR na gornji desni ugao (predmet/TP)'} />
+              </div>
             </FakeCamera>
           </Demo>
         </div>

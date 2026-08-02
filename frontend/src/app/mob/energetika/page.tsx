@@ -70,12 +70,12 @@ export default function MobileEnergetikaPage() {
   const commandsQ = useRecentCommands(10, readOk);
 
   if (isLoading || !user) {
-    return <main className="grid min-h-screen place-items-center text-ink-secondary">Učitavanje…</main>;
+    return <main className="grid min-h-dvh place-items-center text-ink-secondary">Učitavanje…</main>;
   }
 
   if (!readOk) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center">
         <div>
           <div className="text-4xl">🔒</div>
           <h1 className="mt-2 text-lg font-semibold text-ink">Nemaš pristup</h1>
@@ -340,7 +340,7 @@ export default function MobileEnergetikaPage() {
   const loading = snapshotsQ.isLoading && !snapshotsQ.data;
 
   return (
-    <div className="flex min-h-screen flex-col bg-app">
+    <div className="flex min-h-dvh flex-col bg-app">
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface px-3 py-2.5">
         <button
           type="button"

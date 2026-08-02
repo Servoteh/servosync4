@@ -78,7 +78,7 @@ export default function MobLokacijePage() {
   // stigne, pa bi ovlašćen radnik na svež login video lažni „Nemate pristup".
   if (isLoading || !user || permissionsPending) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
@@ -87,7 +87,7 @@ export default function MobLokacijePage() {
   // Pad učitavanja dozvola (retry:false — ostaje za sesiju) ≠ stvarna zabrana.
   if (permissionsError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
       </main>
     );
@@ -95,7 +95,7 @@ export default function MobLokacijePage() {
 
   if (!can(PERMISSIONS.LOKACIJE_READ)) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Nemate pristup lokacijama — javite se administratoru (potrebno `lokacije.read`).
       </main>
     );
@@ -161,7 +161,7 @@ export default function MobLokacijePage() {
     'flex w-full items-center gap-4 rounded-panel border-2 border-line bg-surface px-5 py-5 text-left text-lg font-semibold text-ink active:bg-surface-2';
 
   return (
-    <div className="min-h-screen bg-app pb-24">
+    <div className="min-h-dvh bg-app pb-24">
       <header className="sticky top-0 z-10 border-b border-line bg-surface px-4 py-3">
         <div className="flex items-center justify-between gap-2">
           <h1 className="text-lg font-bold text-ink">Lokacije — premeštanje</h1>

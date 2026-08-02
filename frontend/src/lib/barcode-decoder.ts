@@ -432,8 +432,17 @@ export async function attachVideoDecoder(opts: {
     const IOS_JSQR_EVERY_MS = 78; // 1.0 barcode.js:681
     const IOS_ONED_ZX_MS = 400; // 1.0 barcode.js:682
     const [{ default: jsQR }, zx] = await Promise.all([import('jsqr'), loadZXing()]);
-    const oneDReader = oneD.length
-      ? new zx.BrowserMultiFormatReader(buildHints(zx, oneD, true), readerOptions(false))
+    // 1D set se sužava ISTO kao na čistom ZXing putu (:541-544): sve sa naših
+    // nalepnica je Code128, suženje je ~2× brže i manje sklono lažnom ITF čitanju
+    // gustog Code128 — a ovde je brzina još kritičnija, jer 1D pokušaj u hibridu
+    // ionako dolazi na red tek svakih ~400 ms. Hibrid radi samo na iOS-u (uvek
+    // „mobile"), pa `isMobileLike()` gejt sa ZXing puta ovde nije potreban.
+    // Fallback na pun `oneD` je za slučaj da pozivalac uopšte ne traži Code128/39
+    // — bez njega bi takva ljuska ostala potpuno bez 1D čitanja.
+    const narrowedOneD = oneD.filter((f) => f === 'code_128' || f === 'code_39');
+    const hybridOneD = narrowedOneD.length ? narrowedOneD : oneD;
+    const oneDReader = hybridOneD.length
+      ? new zx.BrowserMultiFormatReader(buildHints(zx, hybridOneD, true), readerOptions(false))
       : null;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });

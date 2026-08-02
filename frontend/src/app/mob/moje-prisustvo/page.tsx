@@ -57,7 +57,7 @@ export default function MobMojePrisustvoPage() {
   }, [user, isLoading, router]);
 
   if (isLoading || !user) {
-    return <main className="grid min-h-screen place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
+    return <main className="grid min-h-dvh place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
   async function sendCorrection() {
@@ -85,7 +85,7 @@ export default function MobMojePrisustvoPage() {
   const corrections = corrQ.data?.data ?? [];
 
   return (
-    <div className="min-h-screen bg-app pb-10">
+    <div className="min-h-dvh bg-app pb-10">
       <header className="sticky top-0 z-10 border-b border-line bg-surface px-4 py-3">
         <h1 className="text-base font-semibold text-ink">Moje prisustvo</h1>
         <p className="text-xs text-ink-secondary">{user.email}</p>

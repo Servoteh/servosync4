@@ -32,7 +32,7 @@ export default function MobileProizvodnjaPage() {
   }, [user, isLoading, router]);
 
   if (isLoading || !user) {
-    return <main className="grid min-h-screen place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
+    return <main className="grid min-h-dvh place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
   const rows = ops.rows;
@@ -53,7 +53,7 @@ export default function MobileProizvodnjaPage() {
   }
 
   return (
-    <main className="min-h-screen bg-app p-3">
+    <main className="min-h-dvh bg-app p-3">
       <h1 className="mb-3 text-md font-semibold text-ink">Proizvodnja</h1>
       <select
         value={machine}

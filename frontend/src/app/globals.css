@@ -74,6 +74,63 @@ body {
   font-family: var(--font-sans);
   font-size: var(--text-base);
   -webkit-font-smoothing: antialiased;
+  /* Povlačenje nadole na vrhu strane okida „pull-to-refresh" (iOS 16+/Android) i
+   * usred unosa pojede zahtev za GO ili red popisa; usput odlepi sticky zaglavlje.
+   * `contain` (ne `none`) zaustavlja LANAC skrola i osvežavanje, a rubber-band
+   * unutar strane ostaje — na desktopu bez vidljive posledice.
+   * Paritet 1.0: `mobile-app.css` `.ma-body { overscroll-behavior-y: none }`. */
+  overscroll-behavior-y: contain;
+}
+
+/* ── iPhone paritet sa 1.0 (02.08.2026) ─────────────────────────────────────
+ * iOS crta sivi zaobljeni pravougaonik preko SVAKOG tapnutog elementa (tap
+ * highlight). 1.0 ga gasi (`mobile.css`, `reversi.css`), 3.0 nije — pa mobilna
+ * ljuska „blesne" na svaki dodir. Osobina se NASLEĐUJE, dovoljno je na korenu.
+ * Vidljiv fokus se NE dira — ostaje `:focus-visible` + `--focus-ring` (DS §11). */
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* `100vh` je na iOS Safariju VELIKI viewport (računa se kao da je adresna traka
+ * uvučena), pa `min-h-screen` strana uvek ima suvišan skrol, a centrirana stanja
+ * („Učitavanje…", „Nemaš pristup") padnu ispod optičkog centra / pod donju traku.
+ * Ekrani zato koriste `min-h-dvh`/`h-dvh`; ovde je fallback za pregledače bez
+ * `dvh` (Safari < 15.4, Chrome < 108) — isti obrazac kao 1.0
+ * (`min-height: 100vh; min-height: 100dvh`). */
+@supports not (height: 100dvh) {
+  .min-h-dvh { min-height: 100vh; }
+  .h-dvh { height: 100vh; }
+  .max-h-\[90dvh\] { max-height: 90vh; }
+  .max-h-\[70dvh\] { max-height: 70vh; }
+}
+
+/* ── `.mob-scope` — sve ispod rute `/mob` (`app/mob/layout.tsx`) ─────────────
+ * Ljuska mobilne aplikacije nosi dva pravila koja se ne mogu pouzdano naneti
+ * kroz kit, jer /mob ekrani imaju i sirove `<button>`/`<input>` elemente
+ * (nasleđe Faze 0). Oba važe SAMO ispod `sm` (telefon) — desktop i tablet su
+ * netaknuti. Kit komponente ista pravila nose kroz `sm:` klase, ovo je mreža
+ * ispod njih. */
+@media (max-width: 39.99rem) {
+  /* iOS ZUMIRA celu stranu kad fokusiraš polje sa `font-size < 16px` i zum NE
+   * vraća na blur — radnik ostaje na uvećanoj strani i mora ručno da odzumira.
+   * `--text-md` = 16px = tačan prag. Namerno bez `:where()`: mora da nadjača
+   * `text-sm`/`text-base` utiliti na sirovim poljima. */
+  .mob-scope input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  .mob-scope select,
+  .mob-scope textarea {
+    font-size: var(--text-md);
+  }
+
+  /* Meta ≥ 44px (iOS HIG; 1.0 zbog rukavica ide na 45–48px). `:where()` spušta
+   * specifičnost na 0 → ovo je POD koji ekran sme da poveća svojim utilitijem
+   * (npr. `min-h-14` na tabovima donje trake), a nikad da ga slučajno smanji. */
+  :where(.mob-scope) button,
+  :where(.mob-scope) a[role='button'],
+  :where(.mob-scope) input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  :where(.mob-scope) select,
+  :where(.mob-scope) textarea {
+    min-height: 44px;
+  }
 }
 
 /* Šifre i brojevi u tabelama — tabular-nums (DESIGN_SYSTEM.md §5). */
