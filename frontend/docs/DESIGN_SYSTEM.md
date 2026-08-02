@@ -391,6 +391,12 @@ Dopune kita:
   **Izuzetak od §3 (tokeni):** boje ivice i lasera su fiksne (`white/90`, crvena iz 1.0) jer
   okvir stoji preko slike kamere, ne preko naše površine — ne sme da se menja sa temom.
   Uvećani „presentation" režim iz 1.0 nije portovan (3.0 nema taj koncept).
+  ⚠️ **`bottomInset` je OBAVEZAN u svakoj ljusci** (02.08.2026): nišan se centrira u kadru
+  UMANJENOM za plutajući donji panel, a vrednost se MERI hook-om
+  `lib/use-scan-panel-inset.ts` (panel raste i pada uživo — zoom klizač, 1–3 reda statusa,
+  hint, lista skeniranog). Bez toga panel (`z-10`, do 62% visine) prosto prekrije nišan: na
+  360×640 telefonu u „neprekidnom" režimu panel počinje na y≈251 a nišan zauzima 278–382 —
+  radnik cilja u okvir koji ne vidi. iPhone 390×844 to nije pokazao.
   Potrošači: `lokacije`/`reversi` ScanOverlay i `montaza` KarticaScanOverlay (`barcode`),
   mobilno Održavanje (`qr`). Svaki nov skener uzima ovu komponentu — nišan se više ne crta ručno.
 
@@ -416,6 +422,18 @@ Dopune kita:
   svakoj takvoj ljusci — bez njega Safari URL traka pomera nišan ispod vidljivog kadra —
   a `autoFocus` na polju za ručni unos ide samo uz `pointer: fine` (na telefonu bi soft
   tastatura pokrila kadar pre svakog skena).
+  ⚠️ **Plutajuće trake su `pointer-events-none`, a njihova interaktivna deca
+  `pointer-events-auto`** (02.08.2026). Trake su providan gradijent preko ŽIVE slike, ali
+  su i dalje DOM elementi: bez ovoga gornjih ~56 px i donjih do 62% kadra gutaju tap i
+  tap-to-focus na `<video>` radi samo u uskoj traci po sredini. `auto` ide na svako dugme
+  POJEDINAČNO (ne na red dugmadi), da i razmaci ostanu površina za fokusiranje.
+  ⚠️ **HID/Bluetooth čitač**: pošto `autoFocus` na telefonu namerno izostaje, a globalni
+  hvatač radnog stola ćuti dok je otvoren `[role="dialog"][aria-modal="true"]` sloj, svaka
+  skener ljuska mora da zove `useHidScanBuffer` (`lib/use-hid-scan-buffer.ts`) — inače
+  keyboard-wedge sken nema gde da padne.
+  ⚠️ **„Osveži app" / „Ažuriraj app" ide isključivo kroz `lib/app-hard-reset.ts`**: origin
+  nosi i proksiranu 1.0 (`/m/*`, `/sw.js`), pa slepo `getRegistrations().unregister()` +
+  `caches.delete()` briše 1.0-inu offline ljusku radnicima u pogonu.
 
 **Pravilo kita:** ekrani se sklapaju **isključivo** od kit komponenti. Nova komponenta prvo ulazi u kit,
 `/dev/ui` katalog i ovaj spisak — pa tek onda u ekran. "Privremeni div sa stilovima" ne postoji.
@@ -438,28 +456,53 @@ Dopune kita:
   iz 1.0 iskustva se dograđuje u 3.0, ali **baseline responsivnost i telefonski unos su V1 zahtev**.
 * **Provera pre „gotovo":** svaki ekran se testira na **360 px / 768 px / 1024 px / 1440 px**; `/dev/ui` katalog
   prikazuje kit komponente na tim širinama (§12).
-* **iOS pravila (02.08.2026, paritet 1.0)** — telefon u pogonu je iPhone, a Safari ima
-  ponašanja koja se ne vide na desktopu. Sedam stvari koje ekran NE sme da pogazi:
-  1. **`viewport-fit=cover`** stoji u `app/layout.tsx` (`export const viewport`). Bez njega iOS
-     vraća `env(safe-area-inset-*) = 0` i **sav safe-area kod je mrtav** — donja traka `/mob`
-     pada pod home-indicator crtu. Zato svaka ivica koja dodiruje ekran (fiksirana traka,
-     sticky zaglavlje, footer sheeta) mora imati `env(safe-area-inset-*)` u padding-u.
-  2. **Polja ≥ 16px na telefonu** (`text-md`, ne `text-base`/`text-sm`): ispod 16px Safari
+* **Pravila dodirnih uređaja (02.08.2026, paritet 1.0; revidirano za Android istog dana)** —
+  telefon u pogonu je iPhone, ali tablet u pogonu i telefon u pejzažu su Android. Sedam stvari
+  koje ekran NE sme da pogazi:
+  1. **`viewport-fit=cover`** stoji u `app/layout.tsx` (`export const viewport`). Bez njega
+     uređaj vraća `env(safe-area-inset-*) = 0` i **sav safe-area kod je mrtav** — donja traka
+     `/mob` pada pod home-indicator crtu. Nije „bez efekta bez notch-a": uz `cover` i Android
+     (edge-to-edge, 15) crta stranu ispod sistemske navigacije. Zato svaka ivica koja dodiruje
+     ekran (fiksirana traka akcije, sticky zaglavlje, footer sheeta) mora imati
+     `env(safe-area-inset-*)` u padding-u — a element iznad nje odgovarajući `padding-bottom`.
+  2. **Polja ≥ 16px na dodiru** (`text-md`, ne `text-base`/`text-sm`): ispod 16px Safari
      ZUMIRA celu stranu na fokus i **ne vraća zum na blur** — radnik ostane na uvećanoj strani.
      Kit (`Input`/`Select`/`Textarea`/`ComboBox`/`SearchBox`) to nosi kroz `text-md sm:text-*`.
-  3. **Meta ≥ 44px na telefonu** (iOS HIG; 1.0 zbog rukavica ide na 45–48px): kit kontrole su
-     `h-11 sm:h-9`. Gustina desktopa se NE menja — sve je ispod `sm` prelomne tačke.
+  3. **Meta ≥ 44px na dodiru** (iOS HIG; 1.0 zbog rukavica ide na 45–48px) — ali kao **`min-height`
+     pod uslovom `pointer-coarse` / `max-sm`, nikad kao `sm:h-*`.** Kit `Button` je
+     `h-9 max-sm:min-h-11 pointer-coarse:min-h-11`. Dva razloga, oba izmerena:
+     · `cn()` je twMerge i poredi samo klase iz iste variant grupe, pa `twMerge('h-11 sm:h-9','h-14')`
+     **zadrži `sm:h-9`** — pozivaočeva visina je od 640px naviše tiho padala na 36px (glavno
+     magacinsko dugme „Dodaj na policu" 56 → 36px), dok je `min-height` čist POD koji `h-14` ne dira;
+     · prelomna tačka po ŠIRINI nije dodirni uređaj: Android telefon 360×800dp **u pejzažu** ima
+     800 CSS px, a tablet još više — oba su ispadala iz pravila. Gustina desktopa se ne menja
+     (miš = `pointer: fine`).
   4. **Visina ekrana je `dvh`, nikad `vh`** (`min-h-dvh`/`h-dvh`): `100vh` je na iOS-u veliki
      viewport, pa strana ima suvišan skrol, a centrirana stanja padnu pod donju traku Safarija.
      Fallback za stare pregledače je u `globals.css` (`@supports not (height: 100dvh)`).
   5. **Dijalozi sa unosom = sheet na telefonu** (`Dialog variant="auto"`, §10).
   6. **`-webkit-tap-highlight-color: transparent`** (globalno, `globals.css`) — bez toga iOS crta
-     sivi pravougaonik na svaki tap; vidljiv fokus ostaje na `:focus-visible`.
-  7. **`overscroll-behavior-y: contain`** na `body` — povlačenje nadole na vrhu ne sme da okine
-     pull-to-refresh i pojede unos u toku.
+     sivi pravougaonik na svaki tap; vidljiv fokus ostaje na `:focus-visible`. **Zato je `active:`
+     stanje obavezno na SVAKOJ interaktivnoj kontroli:** Tailwind v4 kompajlira `hover:` u
+     `@media (hover: hover)`, pa se na prstu nikad ne okine — dugme samo sa `hover:` je nemo na
+     dodir i radnik tapne drugi put. Kit `Button` ima `active:` na sve četiri varijante, a
+     `globals.css` drži i mrežu `:where(.mob-scope) button:active { opacity: .8 }` za sirove
+     `<button>` elemente Faze 0.
+  7. **`overscroll-behavior-y: contain` SAMO nad `/mob`** (`body:has(.mob-scope)`), ne nad celim
+     `body` — povlačenje nadole usred skeniranja ne sme da okine pull-to-refresh i pojede unos.
+     Na Chrome-u za Android `contain` gasi i **nativni** pull-to-refresh, pa je globalno pravilo
+     ostavljalo celu 3.0 bez osvežavanja povlačenjem (paritet 1.0: pravilo je na `.ma-body`, ne na
+     `body`). Pošto `/mob` time ostaje bez pull-to-refresh, a instalirana PWA nema ni adresnu
+     traku ni reload, mobilna zaglavlja nose **dugme „Osveži"**
+     (`app/mob/_components/mob-refresh.tsx` → `invalidateQueries()`); poruke o grešci upućuju na
+     njega, nikad na „osveži stranicu".
+  `interactive-widget` se **ne postavlja** — podrazumevano `resizes-visual`. `resizes-content`
+  na Androidu skraćuje layout viewport pri otvaranju tastature, pa se svaki `position: fixed`
+  element (skener overlay, donja traka akcije) sabija na traku iznad tastature.
   Sve pod `/mob` dodatno pokriva `.mob-scope` (v. `app/mob/layout.tsx`): ista pravila (16px
   polja, 44px meta) padaju i na **sirove** `<button>`/`<input>` elemente iz Faze 0 koji još
-  nisu prešli na kit. To je mreža ispod kita, ne dozvola da se ekran piše mimo kita.
+  nisu prešli na kit; uslov bloka je `@media (pointer: coarse), not all and (min-width: 40rem)`.
+  To je mreža ispod kita, ne dozvola da se ekran piše mimo kita.
 * `prefers-reduced-motion` se poštuje; animacije samo funkcionalne (otvaranje panela, toast), ≤ 200 ms.
 
 ## 12. Proces i kontrola

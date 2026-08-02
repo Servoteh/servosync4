@@ -50,6 +50,7 @@ import {
   useNopApprove,
   useNopReject,
 } from '@/api/kadrovska';
+import { MobPermissionsError, MobRefreshButton } from '../_components/mob-refresh';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -167,11 +168,7 @@ export default function MobOdobravanjaPage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
   if (!canVacreq && !me?.isAdmin) {
     return (
@@ -278,6 +275,9 @@ export default function MobOdobravanjaPage() {
             {inbox.length > 0 ? `${inbox.length} na čekanju` : (user.fullName ?? user.email)}
           </p>
         </div>
+        {/* Osvežavanje bez reload-a: pull-to-refresh je pod `/mob` ugašen,
+            a instalirana PWA nema adresnu traku (v. `_components/mob-refresh.tsx`). */}
+        <MobRefreshButton />
         <Link
           href="/mob"
           className={`inline-flex h-11 shrink-0 items-center gap-1 rounded-control border border-line bg-surface-2 pl-2 pr-4 text-sm font-semibold text-ink active:bg-surface ${FOCUS}`}
@@ -292,7 +292,7 @@ export default function MobOdobravanjaPage() {
           <p className="py-8 text-center text-sm text-ink-secondary">Učitavanje…</p>
         ) : reqQ.isError ? (
           <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-6 text-center text-sm text-status-danger">
-            Zahtevi nisu učitani (mreža ili dozvola). Osveži stranicu.
+            Zahtevi nisu učitani (mreža ili dozvola). Dodirni „Osveži" gore desno.
           </p>
         ) : inbox.length === 0 ? (
           <EmptyState title="Nema ničega za odobravanje 🎉" hint="Svi zahtevi u tvom opsegu su obrađeni." />

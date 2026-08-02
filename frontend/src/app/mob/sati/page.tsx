@@ -32,6 +32,7 @@ import {
   useDeleteHoursRemark,
   type ProfileHoursDay,
 } from '@/api/moj-profil';
+import { MobPermissionsError, MobRefreshButton } from '../_components/mob-refresh';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -109,11 +110,7 @@ export default function MobSatiPage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
 
   // Paritet desktopa (1.0 index.js:912): mesec se prikazuje i kad postoje SAMO
@@ -168,6 +165,9 @@ export default function MobSatiPage() {
           <h1 className="truncate text-md font-semibold text-ink">Moji sati</h1>
           <p className="truncate text-xs text-ink-secondary">{user.fullName ?? user.email}</p>
         </div>
+        {/* Osvežavanje bez reload-a: pull-to-refresh je pod `/mob` ugašen,
+            a instalirana PWA nema adresnu traku (v. `_components/mob-refresh.tsx`). */}
+        <MobRefreshButton />
         <Link
           href="/mob"
           className={`inline-flex h-11 shrink-0 items-center gap-1 rounded-control border border-line bg-surface-2 pl-2 pr-4 text-sm font-semibold text-ink active:bg-surface ${FOCUS}`}
@@ -203,7 +203,7 @@ export default function MobSatiPage() {
           <p className="py-8 text-center text-sm text-ink-secondary">Učitavanje…</p>
         ) : q.isError ? (
           <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-6 text-center text-sm text-status-danger">
-            Greška pri učitavanju sati. Proveri vezu pa osveži stranicu.
+            Greška pri učitavanju sati. Proveri vezu pa dodirni „Osveži" gore desno.
           </p>
         ) : !data ? (
           <p className="rounded-panel border border-line bg-surface px-4 py-6 text-center text-sm text-ink-secondary">

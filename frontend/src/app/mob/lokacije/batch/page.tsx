@@ -69,6 +69,7 @@ import {
   installAutoFlush,
   subscribeQueue,
 } from '@/lib/offlineQueue';
+import { MobPermissionsError } from '../../_components/mob-refresh';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -198,11 +199,7 @@ export default function MobLokacijeBatchPage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
   if (!can(PERMISSIONS.LOKACIJE_READ)) {
     return (
@@ -343,7 +340,9 @@ export default function MobLokacijeBatchPage() {
   const errCount = lines.filter((l) => l.status === 'error').length;
 
   return (
-    <div className="min-h-dvh bg-app pb-28">
+    // Donji razmak = visina lepljive trake akcije + safe-area, da poslednji red
+    // liste nikad ne ostane ispod nje (traka i sama nosi `env(safe-area-inset-bottom)`).
+    <div className="min-h-dvh bg-app pb-[calc(7rem+env(safe-area-inset-bottom,0px))]">
       <header className="sticky top-0 z-10 border-b border-line bg-surface px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="min-w-0 flex-1">
@@ -505,9 +504,13 @@ export default function MobLokacijeBatchPage() {
         )}
       </main>
 
-      {/* Lepljiva traka akcije — palac je uvek dohvati (paritet 1.0 mobileBatch). */}
+      {/* Lepljiva traka akcije — palac je uvek dohvati (paritet 1.0 mobileBatch).
+          `env(safe-area-inset-*)` je OBAVEZAN: uz `viewport-fit=cover` (root
+          `layout.tsx`) pregledač crta stranu preko sistemskih traka, pa je bez
+          ovoga glavni CTA „Dodaj na policu" ulazio u zonu Android gesture/nav
+          trake i pod iPhone home-indicator crtu. Isti obrazac kao `mob-shell.tsx`. */}
       {dest && lines.length > 0 && (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-surface p-3">
+        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-surface pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] pl-[max(0.75rem,env(safe-area-inset-left,0px))] pr-[max(0.75rem,env(safe-area-inset-right,0px))]">
           <Button
             onClick={() => void sendAll()}
             loading={!!sending}

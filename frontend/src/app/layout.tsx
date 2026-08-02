@@ -72,15 +72,28 @@ export const metadata: Metadata = {
 };
 
 /**
- * `viewport-fit=cover` je USLOV da iOS uopšte isporuči `env(safe-area-inset-*)`
+ * `viewport-fit=cover` je USLOV da uređaj uopšte isporuči `env(safe-area-inset-*)`
  * (bez njega vraća 0 i sav safe-area kod je mrtav): donja traka `/mob` ljuske
  * pada pod home-indicator crtu, a notch zona nije zaštićena. Paritet sa 1.0
- * (`index.html` meta viewport). Na uređajima bez notch-a je bez efekta, pa
- * desktop ostaje netaknut.
+ * (`index.html` meta viewport). NE UKLANJATI.
  *
- * `interactiveWidget: 'resizes-content'` traži od pregledača da pri otvaranju
- * tastature SKRATI sadržaj umesto da ga prekrije (Chrome/Android danas; iOS
- * ignoriše) — donji sheet sa dugmetom „Sačuvaj" tako ostaje vidljiv.
+ * ⚠ Nije „bez efekta na uređajima bez notch-a", kako je pisalo do 02.08.2026:
+ * `cover` znači da pregledač crta stranu PREKO sistemskih traka, pa i na Android
+ * uređajima bez notch-a (edge-to-edge, Android 15) sadržaj ulazi u zonu
+ * sistemske navigacije. Zato svaka ivica koja dodiruje ekran — fiksirana traka
+ * akcije, sticky zaglavlje, footer sheeta — MORA imati `env(safe-area-inset-*)`
+ * u padding-u; bez toga je CTA pod sistemskim dugmadima.
+ *
+ * `interactiveWidget` se NE postavlja — ostaje podrazumevano `resizes-visual`.
+ * Vrednost `resizes-content` je 02.08.2026 isporučena u iPhone commitu (gde je
+ * iOS ionako ignoriše), dakle bez ijedne probe na Androidu, a menja isključivo
+ * Android: tastatura tada skraćuje LAYOUT viewport, pa se svaki `position: fixed`
+ * element (skener overlay, donja traka akcije, tab traka) sabija na traku iznad
+ * tastature. U skenerima to udara i sa `useVisualViewportFix`, koji overlay
+ * dodatno lepi na visual viewport — tap u polje ručnog unosa je gasio kadar.
+ * Dobitak („Sačuvaj" ostaje vidljiv) ionako pokriva `Dialog` (`max-h-[90dvh]`,
+ * skroluje se telo, footer sa safe-area). Ako se ikad vrati, ide uz Android probu
+ * skener ljuske i ovo obrazloženje se menja.
  *
  * `themeColor` = boja UI hroma Safarija; vrednosti su doslovne kopije tokena
  * `--bg` (`styles/tokens.css`, svetla `#f7f9f9` / tamna `#0a1116`) jer meta tag
@@ -91,7 +104,6 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  interactiveWidget: "resizes-content",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#f7f9f9" },
     { media: "(prefers-color-scheme: dark)", color: "#0a1116" },

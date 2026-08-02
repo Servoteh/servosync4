@@ -11,6 +11,7 @@ import { MobShell } from './_components/mob-shell';
 import { visibleMobHrefs, visibleMobModules } from './_components/mob-modules';
 import { MagacinHome } from './_components/magacin-home';
 import { useMagacinskiKrug } from './_components/use-magacinski-krug';
+import { MobPermissionsError } from './_components/mob-refresh';
 
 /**
  * Mobilna početna `/mob` (PLAN_MOB_3.0.md, Faza 0) — kartice ka 3.0 mobilnim
@@ -54,11 +55,7 @@ export default function MobHubPage() {
 
   // Pad učitavanja dozvola (retry:false — ostaje za sesiju) ≠ stvarna zabrana.
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
 
   return (

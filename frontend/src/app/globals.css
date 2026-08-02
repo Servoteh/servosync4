@@ -74,11 +74,25 @@ body {
   font-family: var(--font-sans);
   font-size: var(--text-base);
   -webkit-font-smoothing: antialiased;
-  /* Povlačenje nadole na vrhu strane okida „pull-to-refresh" (iOS 16+/Android) i
-   * usred unosa pojede zahtev za GO ili red popisa; usput odlepi sticky zaglavlje.
-   * `contain` (ne `none`) zaustavlja LANAC skrola i osvežavanje, a rubber-band
-   * unutar strane ostaje — na desktopu bez vidljive posledice.
-   * Paritet 1.0: `mobile-app.css` `.ma-body { overscroll-behavior-y: none }`. */
+}
+
+/* Povlačenje nadole na vrhu strane okida „pull-to-refresh" (iOS 16+/Android) i
+ * usred unosa pojede zahtev za GO ili red popisa; usput odlepi sticky zaglavlje.
+ * `contain` zaustavlja LANAC skrola i osvežavanje, a rubber-band unutar strane
+ * ostaje.
+ *
+ * ⚠ VAŽI SAMO ZA MOBILNU LJUSKU `/mob`, ne za ceo `body` (paritet 1.0, gde je
+ * pravilo na `.ma-body`, a NE na `body`). Na Chrome-u za Android `contain` gasi
+ * i NATIVNI pull-to-refresh; dok je stajalo globalno, osvežavanje povlačenjem
+ * nije radilo nigde u 3.0 — a instalirana PWA (`display: standalone`) nema ni
+ * adresnu traku ni reload, pa uputstvo „osveži stranicu" iz poruka o grešci nije
+ * bilo izvodljivo. Van `/mob` je pull-to-refresh sada vraćen; unutar `/mob`
+ * osvežavanje ide kroz dugme „Osveži" u zaglavlju (`_components/mob-refresh.tsx`).
+ *
+ * Propagacija na viewport: vrednost sa `<body>` preuzima viewport dok je na
+ * `<html>` `auto` (ovde jeste), pa `:has()` selektor radi isto što je radilo
+ * pravilo direktno na `body`. */
+body:has(.mob-scope) {
   overscroll-behavior-y: contain;
 }
 
@@ -107,10 +121,19 @@ html {
 /* ── `.mob-scope` — sve ispod rute `/mob` (`app/mob/layout.tsx`) ─────────────
  * Ljuska mobilne aplikacije nosi dva pravila koja se ne mogu pouzdano naneti
  * kroz kit, jer /mob ekrani imaju i sirove `<button>`/`<input>` elemente
- * (nasleđe Faze 0). Oba važe SAMO ispod `sm` (telefon) — desktop i tablet su
- * netaknuti. Kit komponente ista pravila nose kroz `sm:` klase, ovo je mreža
- * ispod njih. */
-@media (max-width: 39.99rem) {
+ * (nasleđe Faze 0). Kit komponente ista pravila nose sam, ovo je mreža ispod
+ * njih.
+ *
+ * USLOV JE PRST, NE ŠIRINA. Dok je blok stajao pod `@media (max-width: 39.99rem)`,
+ * gasio se u celini na telefonu OKRENUTOM U PEJZAŽ (Android 360×800dp = 800 CSS px)
+ * i na svakom tabletu u pogonu — nestajali su i pod od 44px i polje od 16px, a
+ * 16px je jedina brana protiv iOS auto-zoom-a na fokus. Uz to je između
+ * `max-width: 39.99rem` i Tailwind `sm` (40rem) postojala mrtva zona 639.84–640px.
+ * `(pointer: coarse)` = primarni ulaz je prst (telefon/tablet u obe orijentacije);
+ * drugi član liste zadržava staro pravilo za uzak prozor na desktopu (razvoj) i
+ * `not all and (min-width: 40rem)` je TAČNO `< 40rem`, bez mrtve zone.
+ * Desktop sa mišem ostaje netaknut. */
+@media (pointer: coarse), not all and (min-width: 40rem) {
   /* iOS ZUMIRA celu stranu kad fokusiraš polje sa `font-size < 16px` i zum NE
    * vraća na blur — radnik ostaje na uvećanoj strani i mora ručno da odzumira.
    * `--text-md` = 16px = tačan prag. Namerno bez `:where()`: mora da nadjača
@@ -131,6 +154,19 @@ html {
   :where(.mob-scope) textarea {
     min-height: 44px;
   }
+}
+
+/* Odziv na dodir za SIROVE `<button>` elemente `/mob` ekrana (93 komada, samo 62
+ * linije imaju svoj `active:` utiliti). Bez ovoga radnik u pogonu nema nikakvu
+ * potvrdu da je pritisak primljen: `html { -webkit-tap-highlight-color: transparent }`
+ * gasi sistemski odsjaj, a Tailwind `hover:` se u v4 kompajlira u
+ * `@media (hover: hover)` → na prstu se ne okine. Posledica je dupli tap.
+ * `:where()` drži specifičnost na 0,1,1 (samo `button:active`), pa ekran koji ima
+ * svoje pritisnuto stanje (`active:bg-*`) ostaje merodavan — ovo se samo dodaje.
+ * Opacity (ne boja) jer radi isto u svetloj i tamnoj temi i preko svake pozadine. */
+:where(.mob-scope) button:active:not(:disabled),
+:where(.mob-scope) a[role='button']:active {
+  opacity: 0.8;
 }
 
 /* Šifre i brojevi u tabelama — tabular-nums (DESIGN_SYSTEM.md §5). */

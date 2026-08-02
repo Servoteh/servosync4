@@ -12,6 +12,7 @@ import {
 } from '@/api/moj-profil';
 import { formatDate } from '@/lib/format';
 import { EmptyState } from '@/components/ui-kit/empty-state';
+import { MobRefreshButton } from '../_components/mob-refresh';
 
 /**
  * Mobilno „Moje uvođenje" (/mob/onboarding) — 1.0 myOnboarding paritet.
@@ -65,6 +66,9 @@ export default function MobOnboardingPage() {
           <h1 className="truncate text-md font-semibold text-ink">Moje uvođenje</h1>
           <p className="truncate text-xs text-ink-secondary">{user.fullName ?? user.email}</p>
         </div>
+        {/* Osvežavanje bez reload-a: pull-to-refresh je pod `/mob` ugašen,
+            a instalirana PWA nema adresnu traku (v. `_components/mob-refresh.tsx`). */}
+        <MobRefreshButton />
         <Link
           href="/mob"
           className={`inline-flex h-11 shrink-0 items-center gap-1 rounded-control border border-line bg-surface-2 pl-2 pr-4 text-sm font-semibold text-ink active:bg-surface ${FOCUS}`}
@@ -79,7 +83,7 @@ export default function MobOnboardingPage() {
           <p className="py-6 text-center text-sm text-ink-secondary">Učitavanje…</p>
         ) : q.isError ? (
           <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-6 text-center text-sm text-status-danger">
-            Uvođenje nije učitano. Proveri vezu pa osveži stranicu.
+            Uvođenje nije učitano. Proveri vezu pa dodirni „Osveži" gore desno.
           </p>
         ) : runs.length === 0 ? (
           <EmptyState
