@@ -10,6 +10,7 @@ import {
   buildVideoConstraints,
   cameraCooldownMs,
   decodeImageFile,
+  isAndroidWeb,
   isCameraDecodeSupported,
   isIOSWebKit,
   isSamsungInternetBrowser,
@@ -22,6 +23,9 @@ import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-pic
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 import { ScanHint } from '@/components/ui-kit/scan-hint';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
+import { useScanPanelInset } from '@/lib/use-scan-panel-inset';
+import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
+import { hardResetApp } from '@/lib/app-hard-reset';
 
 /**
  * Formati ŽIVE kamere — **bez `qr_code`** (ISPRAVKA 02.08.2026, regresija na iPhone-u).
@@ -97,31 +101,9 @@ const KIND_HINT: Record<BarcodeKind, string> = {
   UNKNOWN: 'Nepoznat format',
 };
 
-/**
- * „Ažuriraj app" (RB-60) — odjavi service worker + obriši keš + reload sa cache-bust
- * parametrom. Kada mobilni SW servira stari bundle, ovo je jedini pouzdan izlaz.
- */
-async function forceAppReload(): Promise<void> {
-  try {
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map((r) => r.unregister().catch(() => {})));
-    }
-  } catch {
-    /* ignore */
-  }
-  try {
-    if ('caches' in window) {
-      const names = await caches.keys();
-      await Promise.all(names.map((n) => caches.delete(n).catch(() => {})));
-    }
-  } catch {
-    /* ignore */
-  }
-  const url = new URL(window.location.href);
-  url.searchParams.set('_r', String(Date.now()));
-  window.location.replace(url.toString());
-}
+// „Ažuriraj app" (RB-60) = `lib/app-hard-reset.ts` (zajednički sa lokacijskom ljuskom).
+// Ovde je do 02.08.2026 stajala lokalna kopija koja je brisala SVE SW registracije i
+// SVE keševe origin-a — a origin nosi i proksiranu 1.0 (v. JSDoc u tom modulu).
 
 /**
  * Punoekranski skener barkoda — paritet 1.0 `openReversiScanOverlay` (RB-60). Kamera
@@ -140,8 +122,8 @@ async function forceAppReload(): Promise<void> {
  * pagehide/visibilitychange — uz OBAVEZAN put nazad: povratak u prvi plan
  * (visible/pageshow) ponovo pokreće celu start-sekvencu (bez toga bi i „Slikaj
  * barkod" trajno ugasio kameru), generacijski zaštićen od preklapanja startova.
- * Dekoder na Androidu ide na NATIVNI put (`preferNative`, 1.0 per-profil kanon —
- * gust 1D Code128). Auto-zoom 2× i tap-fokus ostaju nepromenjeni.
+ * Dekoder ide ISTIM putem kao ostale tri ljuske: na Androidu ZXing (1.0 kanon), na
+ * desktop Chromium-u nativni BarcodeDetector. Auto-zoom 2× i tap-fokus nepromenjeni.
  */
 export function ScanOverlay({
   title = 'Skeniraj barkod',
@@ -179,11 +161,22 @@ export function ScanOverlay({
   const [torchSupported, setTorchSupported] = useState(false);
   const [zoom, setZoom] = useState<{ min: number; max: number; step: number; value: number } | null>(null);
   const [chips, setChips] = useState<{ barcode: string; label: string }[]>([]);
-  const [focusRing, setFocusRing] = useState<{ x: number; y: number; id: number } | null>(null);
+  // `ok:false` = tap primljen, ali uređaj ne podržava ručno izoštravanje (v. `tapFocus`).
+  const [focusRing, setFocusRing] = useState<{
+    x: number;
+    y: number;
+    id: number;
+    ok: boolean;
+  } | null>(null);
+  const noFocusSaidRef = useRef(false);
 
   // Safari URL traka guta gornji deo kadra (1.0 lekcija) — do 02.08. je ovo imala
   // samo lokacijska ljuska; sada je zajednički hook (v. `use-visual-viewport-fix`).
   useVisualViewportFix(rootRef);
+
+  // Plutajući donji panel se MERI i predaje nišanu kao donji odmak — inače panel
+  // (z-10, lebdi preko kadra) prekrije nišan na malom ekranu (v. `use-scan-panel-inset`).
+  const [panelRef, panelInset] = useScanPanelInset<HTMLDivElement>();
 
   // Roditelj prosleđuje callback-e kao inline literale (nov identitet po renderu).
   // Držimo ih u ref-u da kamera-efekat i `resolve` ostanu stabilni (kamera se ne gasi
@@ -256,10 +249,8 @@ export function ScanOverlay({
       say('Kamera nije dostupna u ovom pregledaču (getUserMedia/HTTPS) — koristi HID čitač, ručni unos ili „Slikaj barkod".', 'error');
       return;
     }
-    // Dekoder chunk (ZXing ~250KB) se vuče LAZY — zagrej ga paralelno sa kamerom.
-    // Ovaj ekran na Androidu ide nativnim putem (`preferNative`), ALI mu ZXing i
-    // dalje treba kao watchdog fallback (mrtav GmsCore barcode modul), pa se
-    // preload namerno ne preskače.
+    // Dekoder chunk (ZXing ~250KB) se vuče LAZY — zagrej ga paralelno sa kamerom
+    // (Android od 1.0 kanona 3cffea5 ide na ZXing put, ne na BarcodeDetector).
     preloadVideoDecoder(LIVE_FORMATS);
 
     let stopped = false;
@@ -459,11 +450,14 @@ export function ScanOverlay({
           formats: LIVE_FORMATS,
           onRaw: (raw) => void resolve(raw),
           isStopped: () => aborted(),
-          // 1.0 per-profil kanon (scanOverlay.js:431): reversi nalepnice su gust
-          // 1D Code128 — na Android Chrome-u nativni BarcodeDetector pouzdanije
-          // dekodira ŽIVI kadar od ZXing-a (koji na gustom kodu iz ruke promašuje).
-          // Mrtav GmsCore modul pokriva watchdog u engine-u (vrući prelaz na ZXing).
-          preferNative: true,
+          // BEZ `preferNative` (02.08.2026): ovaj ekran je jedini tražio nativni
+          // BarcodeDetector i na Androidu (i u APK WebView-u), izvan ZXing kanona koji
+          // 1.0 koristi i koji je na terenu dokazan. Nepokriven režim je bio „detect()
+          // uredno resolve-uje a VEČNO vraća prazan niz" (mrtav GmsCore barcode modul):
+          // watchdog u engine-u broji GREŠKE, a prazan niz nije greška — nerazlučiv je
+          // od praznog kadra, pa nema signala na koji bi se okačio. Simptom u pogonu:
+          // „kamera radi, ne skenira", bez ijedne poruke. Debug prekidač
+          // `ss3_scan_decode_mode='native'` i dalje forsira nativni put kad zatreba.
         });
         if (aborted()) handle.stop();
         else decoder = handle;
@@ -524,6 +518,12 @@ export function ScanOverlay({
   // ceo tok skeniranja se zatvarao.
   useEscapeLayer(true, () => cbRef.current.onClose());
 
+  // HID/Bluetooth čitač dok je skener otvoren: polje ručnog unosa NIJE fokusirano na
+  // telefonu (`autoFocus` je pod `pointer: fine` gardom), a globalni hvatač radnog
+  // stola (`lib/reversi-global-scanner.ts`) namerno ćuti dok je otvoren `[aria-modal]`
+  // sloj — a ovaj overlay je baš to. Bez lokalnog bafera sken pada u prazno.
+  useHidScanBuffer(true, (code) => void resolve(code));
+
   async function toggleTorch() {
     const track = trackRef.current;
     if (!track) return;
@@ -558,6 +558,13 @@ export function ScanOverlay({
    * Uz to je ispravljen i sam constraint: bio je `focusMode:'manual'` (koji ni na
    * Androidu nije podržan), sada je 1.0 sekvenca `single-shot` + `pointsOfInterest`
    * uz povratak na `continuous`, i to samo kad ih uređaj zaista izlaže.
+   *
+   * DOPUNA (regresija na Androidu): „ne crtaj ništa" važi SAMO za iOS, gde tap-fokus
+   * strukturno ne postoji pa bi prsten lagao. Na Androidu je to napravilo potpuno
+   * mrtvo dugme — telefon bez `single-shot`/`pointsOfInterest` na tap ne uradi i ne
+   * pokaže ništa, i radnik ne zna da li je promašio ili je aplikacija pukla. Zato
+   * Android uvek dobija odziv: puna bela = fokus primenjen, isprekidana prigušena =
+   * „tap primljen, ovaj telefon ne dozvoljava ručno izoštravanje".
    */
   async function tapFocus(e: React.PointerEvent<HTMLVideoElement>) {
     const track = trackRef.current;
@@ -583,13 +590,16 @@ export function ScanOverlay({
     } else if (modes.includes('continuous')) {
       applied = await safeApplyFlatCompat(track, { focusMode: 'continuous' });
     }
-    // Prsten je POTVRDA IZOŠTRAVANJA, ne potvrda tapa — bez primenjenog constraint-a
-    // se ne crta ništa (iOS), pa radnik odmah zna da mora da menja rastojanje.
-    if (applied) {
-      const id = Date.now();
-      setFocusRing({ ...at, id });
-      window.setTimeout(() => setFocusRing((r) => (r?.id === id ? null : r)), 600);
+    // Prsten je POTVRDA IZOŠTRAVANJA, ne potvrda tapa — na iOS-u se bez primenjenog
+    // constraint-a ne crta ništa, pa radnik odmah zna da mora da menja rastojanje.
+    if (!applied && !isAndroidWeb()) return;
+    if (!applied && !noFocusSaidRef.current) {
+      noFocusSaidRef.current = true;
+      say('Ovaj telefon ne dozvoljava ručno izoštravanje — menjaj rastojanje (10-15 cm).');
     }
+    const id = Date.now();
+    setFocusRing({ ...at, id, ok: applied });
+    window.setTimeout(() => setFocusRing((r) => (r?.id === id ? null : r)), 600);
   }
 
   async function onPickPhoto(file: File) {
@@ -641,18 +651,24 @@ export function ScanOverlay({
         onPointerDown={(e) => void tapFocus(e)}
         className="absolute inset-0 h-full w-full object-cover"
       />
-      {cameraOn && <ScanReticle variant="barcode" />}
+      {cameraOn && <ScanReticle variant="barcode" bottomInset={panelInset} />}
       {focusRing && (
         <div
-          className="pointer-events-none absolute z-10 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/90"
+          // Isprekidan i prigušen prsten = tap primljen, ali uređaj ne podržava ručno
+          // izoštravanje (samo Android — v. `tapFocus`).
+          className={`pointer-events-none absolute z-10 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 ${
+            focusRing.ok ? 'border-white/90' : 'border-dashed border-white/40'
+          }`}
           style={{ left: focusRing.x, top: focusRing.y }}
           aria-hidden
         />
       )}
 
-      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
+      {/* `pointer-events-none` na traci, `auto` na dugmadima: traka je providan
+          gradijent preko kadra, pa tap kroz nju mora da stigne do `<video>` (fokus). */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
         <span className="text-md font-semibold">{title}</span>
-        <div className="flex items-center gap-1">
+        <div className="pointer-events-auto flex items-center gap-1">
           {torchSupported && (
             <button
               type="button"
@@ -666,9 +682,10 @@ export function ScanOverlay({
           )}
           <button
             type="button"
-            onClick={() => void forceAppReload()}
+            // Odjavljuje SAMO 3.0 SW/keševe — 1.0 (`/sw.js`, `/m/*`) se ne dira.
+            onClick={() => void hardResetApp()}
             aria-label="Ažuriraj app"
-            title="Ažuriraj app (odjavi SW + obriši keš)"
+            title="Ažuriraj app (odjavi 3.0 SW + obriši 3.0 keš)"
             className="rounded-full p-1.5 text-white hover:bg-white/10"
           >
             <RefreshCw className="h-5 w-5" aria-hidden />
@@ -680,8 +697,13 @@ export function ScanOverlay({
       </div>
 
       {/* Sve kontrole LEBDE preko kadra (1.0 obrazac) — gradijent umesto neprozirne
-          trake, pa se kamera vidi i ispod njih. */}
-      <div className="absolute inset-x-0 bottom-0 z-10 space-y-2 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white">
+          trake, pa se kamera vidi i ispod njih. `pointer-events-none` na omotaču +
+          `auto` na svakoj kontroli: prazan prostor panela propušta tap na `<video>`
+          (tap-to-focus), a izmerena visina panela drži nišan iznad njega. */}
+      <div
+        ref={panelRef}
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 space-y-2 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white"
+      >
         {continuous && chips.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {chips.map((c) => (
@@ -693,7 +715,7 @@ export function ScanOverlay({
         )}
 
         {zoom && (
-          <div className="flex items-center gap-2 rounded-control bg-black/55 px-2 py-1">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-control bg-black/55 px-2 py-1">
             <button
               type="button"
               aria-label="Smanji zoom"
@@ -724,8 +746,12 @@ export function ScanOverlay({
           </div>
         )}
 
-        {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`) — 3.0 je do sada nije imao. */}
-        {cameraOn && <ScanHint extra={'Tap na kadar = fokus · „Slikaj barkod" kad ne ide iz ruke'} />}
+        {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`) — 3.0 je do sada nije imao.
+            Gasi se čim u kontinualnoj sesiji padne PRVI sken: radnik koji je već
+            skenirao zna kako se drži telefon, a tri reda tada samo dižu panel. */}
+        {cameraOn && !(continuous && chips.length > 0) && (
+          <ScanHint extra={'Tap na kadar = fokus · „Slikaj barkod" kad ne ide iz ruke'} />
+        )}
 
         {status && (
           <p className={statusKind === 'error' ? 'text-sm text-status-danger' : 'text-sm text-white/80'} aria-live="polite">
@@ -733,7 +759,7 @@ export function ScanOverlay({
           </p>
         )}
         <form
-          className="flex gap-2"
+          className="pointer-events-auto flex gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (manual.trim()) {

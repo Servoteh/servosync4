@@ -324,6 +324,16 @@ export default function DevUiPage() {
               <ScanReticle variant="qr" laser />
             </FakeCamera>
           </Demo>
+          <Demo title="bottomInset — nišan iznad plutajućeg donjeg panela ljuske">
+            <FakeCamera>
+              <ScanReticle variant="barcode" bottomInset={96} />
+              {/* Lažni panel: u ljusci je ovo pravi stek (zoom/hint/status/unos), a
+                  njegova IZMERENA visina (lib/use-scan-panel-inset.ts) ide u
+                  `bottomInset` — nišan i laser se centriraju iznad njega. Bez toga
+                  panel na 360×640 prekrije ceo nišan. */}
+              <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/90 via-black/70 to-transparent" />
+            </FakeCamera>
+          </Demo>
         </div>
       </Section>
 
