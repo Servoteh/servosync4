@@ -6,7 +6,7 @@ import { Bot, ImagePlus, Maximize2, Plus, Send, Trash2, X, MessagesSquare } from
 import { cn } from '@/lib/cn';
 import { ApiError } from '@/api/client';
 import { aiMdLite } from '@/lib/ai-md';
-import { resizeImageFile } from '@/lib/image-resize';
+import { prepareImageForUpload } from '@/lib/image-resize';
 import { DictateButton } from '@/components/voice-controls';
 import {
   ENGINES,
@@ -210,10 +210,13 @@ export function AiChat({
     if ((!msg && !image) || chat.isPending) return;
     let imgBlob: Blob | null = null;
     if (image) {
+      // Pad pretvaranja (HEIC van Safarija) NE šalje original — backend bi ga odbio
+      // tek posle otpremanja, a korisnik ne bi znao šta da uradi (v. image-resize.ts).
       try {
-        imgBlob = await resizeImageFile(image);
-      } catch {
-        imgBlob = image;
+        imgBlob = await prepareImageForUpload(image);
+      } catch (e) {
+        alert((e as Error).message);
+        return;
       }
     }
     try {

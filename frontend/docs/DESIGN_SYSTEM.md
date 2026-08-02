@@ -335,10 +335,19 @@ Dopune kita:
   **ne migriraju se masovno** — svaki prelazi na kit `Select` kad se taj ekran ionako dira.
 * **`AttachmentInput`** (`ui-kit/attachment-input.tsx`, modul Zahtevi §5) — dashed dropzone +
   native kamera (`accept="image/*" capture="environment"`) + audio/PDF, lista pending fajlova sa
-  uklanjanjem, klijentska validacija tipa/veličine (slike kroz `resizeImageFile` pre dodavanja,
-  audio ≤ 15 MB, ostalo ≤ 25 MB, ukupno ≤ `max`). Kontrolisan (`value: File[]` / `onChange`);
+  uklanjanjem, klijentska validacija tipa/veličine (slike kroz `prepareImageForUpload` pre
+  dodavanja → JPEG ≤ 1568px sa poštovanom EXIF rotacijom, audio ≤ 15 MB, ostalo ≤ 25 MB,
+  ukupno ≤ `max`). Kontrolisan (`value: File[]` / `onChange`);
   odbačene fajlove prijavljuje kroz `onReject(poruka)` (roditelj prikazuje toast/grešku — kit je
   bez zavisnosti na toast). Generalizacija ponovljenog upload obrasca (odrzavanje/kvalitet/kadrovska).
+  🔴 **Slika koja se ne može pretvoriti u JPEG se ODBIJA sa uputstvom, original se NIKAD ne šalje
+  tiho.** HEIC (podrazumevani format iPhone kamere) dekodira samo WebKit; u Chrome-u/Androidu
+  pretvaranje padne, a backend prilog presuđuje po magic bytes i prima samo JPG/PNG/PDF —
+  uz to je upis fotografija all-or-nothing, pa bi JEDAN HEIC oborio celu otpremu i fotografija
+  neusaglašenosti sa montaže bi nestala bez ijedne poruke. Zato `accept` liste ne nude
+  `image/heic` (iOS pri izboru iz Galerije tada sam pretvara u JPEG), a `onReject` poruka uvek
+  kaže šta korisnik dalje da uradi. Isto pravilo važi i van kita: svaki sirov `<input type="file">`
+  za slike ide kroz `lib/image-resize.ts` (`prepareImageForUpload` / `imageRejectionMessage`).
   Opcioni `accept?: AttachmentKind[]` (default sve: slike/audio/PDF — kontekst sme da suzi, npr.
   `['IMAGE','FILE']` sakriva „Slikaj/kamera" ako nema IMAGE i menja `accept` atribut) i
   `maxBytes?` (default 25 MB; audio dodatno kapiran na 15 MB) — usklađuje FE granice sa backendom
