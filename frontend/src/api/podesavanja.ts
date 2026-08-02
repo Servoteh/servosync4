@@ -260,6 +260,7 @@ const KEYS = {
   aiModels: ['admin', 'ai-models'] as const,
   bigbitSync: ['admin', 'sync', 'bigbit'] as const,
   companyDetails: ['admin', 'firma'] as const,
+  paymentAccounts: ['admin', 'firma', 'racuni'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -839,4 +840,53 @@ export const useSaveCompanyDetails = () =>
   useAdminMutation<SaveCompanyDetailsVars, { data: CompanyDetails }>(
     (v) => apiFetch<{ data: CompanyDetails }>(`${BASE}/firma`, { method: 'PUT', body: JSON.stringify(v) }),
     KEYS.companyDetails,
+  );
+
+// ------------------------------------------- Devizni računi (blok banke na izvoznoj fakturi)
+// Kolone `payment_accounts.iban/swift/bank_address/currency` su dodate 01.08.2026 i štampa ih
+// ČITA, ali ih nijedan ekran nije punio — izvozna faktura je izlazila bez ijedne bankarske
+// instrukcije, pa strani kupac nije imao gde da plati.
+//
+// SAMO IZMENA, BEZ DODAVANJA I BRISANJA: skup računa i njihove ključeve drži BigBit
+// (`UplatniRacuni`), a tabela nema rezervisan 4.0 opseg ključeva — red napravljen ovde bi se
+// sudario sa BigBit-ovim `id`-jem. Menjaju se samo četiri kolone koje sync ne poznaje.
+
+export interface PaymentAccount {
+  id: number;
+  companyId: number;
+  /** Broj računa — BigBit-ov, prikazuje se ali se ne menja odavde. */
+  accountNumber: string;
+  bankName: string | null;
+  isDefault: boolean;
+  sortOrder: number;
+  /** IBAN — čuva se bez razmaka; backend proverava MOD-97. */
+  iban: string | null;
+  /** SWIFT/BIC (8 ili 11 znakova, ISO 9362). */
+  swift: string | null;
+  /** Adresa banke; višered — prelomi su deo podatka. */
+  bankAddress: string | null;
+  /** Valuta računa (ISO 4217) — po njoj štampa bira račun za valutu fakture. */
+  currency: string | null;
+}
+
+/** Polje izostavljeno = ne dira se; `null`/prazno = briše (papir tada taj red ne ispisuje). */
+export type SavePaymentAccountVars = {
+  id: number;
+} & Partial<Pick<PaymentAccount, 'iban' | 'swift' | 'bankName' | 'bankAddress' | 'currency'>>;
+
+export function usePaymentAccounts() {
+  return useQuery({
+    queryKey: KEYS.paymentAccounts,
+    queryFn: () => apiFetch<{ data: PaymentAccount[] }>(`${BASE}/firma/racuni`),
+  });
+}
+
+export const useSavePaymentAccount = () =>
+  useAdminMutation<SavePaymentAccountVars, { data: PaymentAccount }>(
+    ({ id, ...body }) =>
+      apiFetch<{ data: PaymentAccount }>(`${BASE}/firma/racuni/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    KEYS.paymentAccounts,
   );

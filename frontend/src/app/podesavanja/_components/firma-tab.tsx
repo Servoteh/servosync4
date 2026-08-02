@@ -6,11 +6,16 @@ import { ApiError } from '@/api/client';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui-kit/button';
 import { FormField, Input } from '@/components/ui-kit/form-field';
+import { Textarea } from '@/components/ui-kit/textarea';
 import {
   useCompanyDetails,
+  usePaymentAccounts,
   useSaveCompanyDetails,
+  useSavePaymentAccount,
   type CompanyDetails,
+  type PaymentAccount,
   type SaveCompanyDetailsVars,
+  type SavePaymentAccountVars,
 } from '@/api/podesavanja';
 
 // ============================================================================
@@ -76,17 +81,17 @@ const PAYMENT: FieldDef[] = [
   },
   {
     key: 'iban',
-    label: 'IBAN (ino plaćanje)',
+    label: 'IBAN (rezerva)',
     maxLength: 40,
     placeholder: 'RS35 1600 0000 0000 0000 00',
-    hint: 'Razmaci su dozvoljeni pri kucanju — čuva se bez njih. Ispravnost se proverava (MOD-97).',
+    hint: 'Koristi se samo ako devizni račun ispod nije popunjen. Razmaci su dozvoljeni pri kucanju — čuva se bez njih (MOD-97).',
   },
   {
     key: 'swift',
-    label: 'SWIFT / BIC',
+    label: 'SWIFT / BIC (rezerva)',
     maxLength: 11,
     placeholder: 'DBDBRSBG',
-    hint: '8 ili 11 znakova. Bez IBAN-a i SWIFT-a ino faktura nema podatke za uplatu.',
+    hint: '8 ili 11 znakova. Za pun blok banke na izvoznoj fakturi popunite devizni račun ispod.',
   },
 ];
 
@@ -176,8 +181,10 @@ export function FirmaTab() {
         fields={PAYMENT}
         form={form}
         onChange={setField}
-        note="IBAN i SWIFT čita ino (izvozna) faktura. Dok su prazni, izvozni račun izlazi bez podataka za uplatu."
+        note="Tekući račun ide u zaglavlje svakog dokumenta. IBAN i SWIFT ovde su REZERVA — pun blok banke na izvoznoj fakturi dolazi sa deviznog računa ispod."
       />
+
+      <DevizniRacuni />
 
       <div className="flex items-center justify-end gap-3">
         {dirty && <span className="text-xs text-ink-secondary">Ima nesnimljenih izmena.</span>}
@@ -225,5 +232,220 @@ function Section({
         ))}
       </div>
     </section>
+  );
+}
+
+// ============================================================================
+// DEVIZNI RAČUNI — blok „Beneficiary Customer / Bank of beneficiary" na izvoznoj fakturi.
+//
+// ZAŠTO OVAJ ODELJAK POSTOJI: kolone `payment_accounts.iban/swift/bank_address/currency`
+// su dodate 01.08.2026. i štampa ih ČITA, ali ih nijedan ekran nije punio. Izvozna faktura
+// je zato izlazila bez ijedne bankarske instrukcije — kupac u inostranstvu nije imao na koji
+// račun da plati, a papir je izgledao potpuno ispravno. Od 02.08. štampa takav račun ODBIJA
+// da napravi i uputi ovde.
+//
+// SAMO IZMENA, BEZ DODAVANJA I BRISANJA: skup računa i njihove ključeve drži BigBit
+// (`UplatniRacuni`), a tabela nema rezervisan 4.0 opseg ključeva — red napravljen odavde
+// sudario bi se sa BigBit-ovim `id`-jem i dao bi račun sa dinarskim brojem i deviznim
+// IBAN-om. Ako devizni račun ne postoji ni kao red, unosi ga jednom administrator baze
+// (SQL je u backend/docs/STAMPA_IZLAZNIH_FAKTURA.md §8).
+// ============================================================================
+
+type AccountKey = 'iban' | 'swift' | 'bankName' | 'bankAddress' | 'currency';
+
+interface AccountFieldDef {
+  key: Exclude<AccountKey, 'bankAddress'>;
+  label: string;
+  maxLength: number;
+  placeholder?: string;
+  hint?: string;
+}
+
+const ACCOUNT_FIELDS: AccountFieldDef[] = [
+  {
+    key: 'currency',
+    label: 'Valuta računa',
+    maxLength: 3,
+    placeholder: 'EUR',
+    hint: 'Po njoj se bira račun za valutu fakture (ISO 4217).',
+  },
+  {
+    key: 'iban',
+    label: 'IBAN',
+    maxLength: 40,
+    placeholder: 'RS35 1600 0501 0003 5011 86',
+    hint: 'Razmaci su dozvoljeni pri kucanju — čuva se bez njih. Ispravnost se proverava (MOD-97).',
+  },
+  { key: 'swift', label: 'SWIFT / BIC', maxLength: 11, placeholder: 'DBDBRSBG' },
+  {
+    key: 'bankName',
+    label: 'Naziv banke',
+    maxLength: 50,
+    placeholder: 'Banca Intesa a.d.',
+    hint: 'Uz naziv se na papiru sama dopisuje valuta dokumenta.',
+  },
+];
+
+function DevizniRacuni() {
+  const q = usePaymentAccounts();
+  const saveM = useSavePaymentAccount();
+  const accounts = q.data?.data ?? [];
+
+  if (q.isLoading)
+    return (
+      <section className="rounded-panel border border-line bg-surface p-5">
+        <p className="text-sm text-ink-disabled">Učitavanje računa…</p>
+      </section>
+    );
+
+  return (
+    <section className="rounded-panel border border-line bg-surface p-5">
+      <h3 className="mb-1 flex items-center gap-2 text-md font-semibold text-ink">
+        <Landmark className="h-4 w-4 text-ink-secondary" aria-hidden />
+        Devizni računi (izvozna faktura)
+      </h3>
+      <p className="mb-4 text-xs text-ink-secondary">
+        Ovo je blok <strong>„Beneficiary Customer / Bank of beneficiary"</strong> na izvoznoj
+        fakturi. Dok za valutu računa nisu uneti IBAN i SWIFT, izvozna faktura u toj valuti{' '}
+        <strong>ne može da se odštampa</strong> — kupac u inostranstvu ne bi imao gde da plati.
+        Broj računa donosi BigBit i ne menja se ovde.
+      </p>
+
+      {accounts.length === 0 ? (
+        <p className="rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm text-status-warn">
+          Za ovu firmu nema nijednog računa za plaćanje. Račune donosi BigBit sinhronizacija; ako
+          devizni račun ne postoji ni tamo, mora ga jednom uneti administrator baze (uputstvo je u
+          dokumentaciji: STAMPA_IZLAZNIH_FAKTURA.md, odeljak „Devizni račun").
+        </p>
+      ) : (
+        <div className="space-y-4">
+          {accounts.map((a) => (
+            <AccountCard
+              key={a.id}
+              account={a}
+              onSave={(patch) => saveM.mutateAsync(patch)}
+              saving={saveM.isPending}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AccountCard({
+  account,
+  onSave,
+  saving,
+}: {
+  account: PaymentAccount;
+  onSave: (patch: SavePaymentAccountVars) => Promise<unknown>;
+  saving: boolean;
+}) {
+  const initial = useMemo(() => {
+    const out = {} as Record<AccountKey, string>;
+    for (const f of ACCOUNT_FIELDS) out[f.key] = account[f.key] ?? '';
+    out.bankAddress = account.bankAddress ?? '';
+    return out;
+  }, [account]);
+
+  const [form, setForm] = useState<Record<AccountKey, string>>(initial);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (!dirty) setForm(initial);
+  }, [initial, dirty]);
+
+  // Papir traži OBA podatka: IBAN je račun, SWIFT je banka. Zato se oznaka pali dok bilo
+  // koji nedostaje — polovična instrukcija kupcu ne vredi ništa.
+  const nepotpun = !account.iban?.trim() || !account.swift?.trim();
+
+  function setField(key: AccountKey, value: string) {
+    setDirty(true);
+    setForm((p) => ({ ...p, [key]: value }));
+  }
+
+  async function save() {
+    // Samo IZMENJENA polja — prazno polje znači „obriši", pa slanje celog objekta ne bi
+    // razlikovalo „nisam dirao" od „obriši".
+    const patch: SavePaymentAccountVars = { id: account.id };
+    let any = false;
+    (Object.keys(form) as AccountKey[]).forEach((k) => {
+      if (form[k] !== initial[k]) {
+        (patch as Record<string, string | null>)[k] =
+          form[k].trim() === '' ? null : form[k];
+        any = true;
+      }
+    });
+    if (!any) {
+      setDirty(false);
+      toast('Nema izmena za snimanje.');
+      return;
+    }
+    try {
+      await onSave(patch);
+      setDirty(false);
+      toast('Devizni račun je snimljen.');
+    } catch (e) {
+      // 422 sa backenda nosi razumljivu srpsku poruku (npr. „IBAN ne prolazi kontrolu
+      // ispravnosti (MOD-97)") — korisnija je od generičkog teksta.
+      const msg =
+        e instanceof ApiError && e.status === 403
+          ? 'Nemate dozvolu za izmenu računa za plaćanje.'
+          : (e as Error).message || 'Snimanje nije uspelo — pokušajte ponovo.';
+      toast(msg);
+    }
+  }
+
+  return (
+    <div className="rounded-panel border border-line-soft p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="font-mono text-sm text-ink">{account.accountNumber}</span>
+        {account.isDefault && (
+          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-ink-secondary">
+            podrazumevani
+          </span>
+        )}
+        {nepotpun && (
+          <span className="rounded-full bg-status-warn-bg px-2 py-0.5 text-xs text-status-warn">
+            bez podataka za ino uplatu
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {ACCOUNT_FIELDS.map((f) => (
+          <FormField key={f.key} label={f.label} hint={f.hint}>
+            <Input
+              value={form[f.key]}
+              maxLength={f.maxLength}
+              placeholder={f.placeholder}
+              onChange={(e) => setField(f.key, e.target.value)}
+            />
+          </FormField>
+        ))}
+      </div>
+
+      <div className="mt-4">
+        <FormField
+          label="Adresa banke"
+          hint="Više redova — svaki red izlazi kao poseban red na papiru."
+        >
+          <Textarea
+            rows={2}
+            value={form.bankAddress}
+            onChange={(e) => setField('bankAddress', e.target.value)}
+          />
+        </FormField>
+      </div>
+
+      <div className="mt-3 flex items-center justify-end gap-3">
+        {dirty && <span className="text-xs text-ink-secondary">Ima nesnimljenih izmena.</span>}
+        <Button variant="secondary" onClick={save} loading={saving} disabled={!dirty}>
+          <Save className="h-4 w-4" aria-hidden />
+          Snimi račun
+        </Button>
+      </div>
+    </div>
   );
 }

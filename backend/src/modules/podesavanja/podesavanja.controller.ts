@@ -52,6 +52,8 @@ import {
 } from "./sync-switch.service";
 import { CompanyDetailsService } from "./company-details.service";
 import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
+import { PaymentAccountsService } from "./payment-accounts.service";
+import type { UpdatePaymentAccountDto } from "./dto/podesavanja-payment-account.dto";
 import {
   BulkJobPositionProfileDto,
   CreateDepartmentDto,
@@ -92,6 +94,7 @@ export class PodesavanjaController {
     private readonly planeri: PredmetPlaneriService,
     private readonly syncSwitch: SyncSwitchService,
     private readonly companyDetails: CompanyDetailsService,
+    private readonly paymentAccounts: PaymentAccountsService,
   ) {}
 
   // ----- Korisnici i pristup (settings.users) -----
@@ -626,6 +629,27 @@ export class PodesavanjaController {
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
   updateCompanyDetails(@Body() dto: UpdateCompanyDetailsDto) {
     return this.companyDetails.update(dto.id ?? null, dto);
+  }
+
+  // ----- Devizni računi (blok banke na izvoznoj fakturi) -----
+  // IBAN, SWIFT, naziv i adresa banke i valuta. Bez njih izvozna faktura NEMA podatke za
+  // uplatu i štampa je odbija (`invoice-pdf.service.ts` → `loadForeignAccount`), pa je ovo
+  // ekran koji odblokira izvoz. Samo IZMENA zatečenih računa — skup redova i njihove
+  // ključeve drži BigBit (`payment-accounts.service.ts` objašnjava zašto).
+
+  @Get("firma/racuni")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  listPaymentAccounts(@Query("companyId") companyId?: string) {
+    return this.paymentAccounts.list(companyId ? Number(companyId) : null);
+  }
+
+  @Put("firma/racuni/:id")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  updatePaymentAccount(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdatePaymentAccountDto,
+  ) {
+    return this.paymentAccounts.update(id, dto);
   }
 
   // ----- :id rute POSLEDNJE -----

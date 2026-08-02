@@ -391,7 +391,11 @@ export class InvoicePdfService {
       advanceInvoiceNumber,
     ] = await Promise.all([
       this.loadCustomer(invoice.customerId),
-      this.loadIssuer(invoice.companyId, currency),
+      // Bankarske instrukcije se TRAŽE samo na ino računu sa cenama. Otpremnica
+      // (`withoutPrices`) na sebi nema nijedan iznos, pa ni podatke za uplatu ne
+      // očekuje — blokirati njeno štampanje zbog praznog IBAN-a bilo bi zaustavljanje
+      // isporuke robe zbog polja u podešavanjima.
+      this.loadIssuer(invoice.companyId, currency, foreign && !withoutPrices),
       this.loadItems(
         invoice.items.map((i) => i.itemId),
         foreign,
@@ -487,10 +491,15 @@ export class InvoicePdfService {
    * Kad firma ne postoji (legacy `companyId` bez reda u `companies`), podaci se NE
    * prepisuju u kod: memorandum ostane bez registarskog reda umesto da odštampa nešto
    * što možda više nije tačno. Ispravka je unos firme, ne konstanta ovde.
+   *
+   * `requireBankDetails` = ovo je ino račun sa cenama, dakle papir po kom kupac PLAĆA;
+   * bez bankarskih instrukcija takav papir nije upotrebljiv i štampa ga odbija
+   * (obrazloženje uz `loadForeignAccount`).
    */
   private async loadIssuer(
     companyId: number,
     currency: string,
+    requireBankDetails = false,
   ): Promise<PrintIssuer> {
     const [company, account] = await Promise.all([
       this.prisma.company.findUnique({
@@ -512,7 +521,7 @@ export class InvoicePdfService {
           aprText: true,
         },
       }),
-      this.loadForeignAccount(companyId, currency),
+      this.loadForeignAccount(companyId, currency, requireBankDetails),
     ]);
 
     return {
@@ -553,12 +562,36 @@ export class InvoicePdfService {
    * Domaći račun (RSD) se u tom drugom krugu ne traži: domaći obrasci blok banke nemaju,
    * a odštampan tuđ IBAN je gore od praznog mesta.
    *
+   * TREĆI KRUG — `companies.iban/swift` (dopuna 02.08.2026). Ta dva polja se od 27.07.
+   * unose u „Podešavanja → Firma → Podaci za plaćanje", ali ih ovaj obrazac nije čitao,
+   * pa je administrator mogao uredno da ih upiše i da NIŠTA ne stigne na papir. Uzimaju
+   * se tek kad nijedan račun nema bankarske podatke: nose samo IBAN i SWIFT (naziv i
+   * adresa banke u `companies` ne postoje), što je minimum po kom uplata može da se
+   * izvrši. Puni blok se dobija tek unosom deviznog računa.
+   *
    * ⚠️ Više deviznih računa po valuti je otvoreno pitanje (GAP §5 t.8) — do odluke se
    * uzima podrazumevani (`isDefault`), pa po `sortOrder`.
+   *
+   * ═══ ZAŠTO IZUZETAK, A NE UPOZORENJE ═════════════════════════════════════════════
+   * `requireBankDetails` je tačno kad se štampa IZVOZNI račun SA CENAMA — papir po kom
+   * strani kupac plaća. Bez IBAN-a i SWIFT-a šablon ceo blok banke izostavi (`ino-roba.ts`
+   * → `bankBlock` vraća `[]`), pa PDF izgleda potpuno ispravno i tiho izađe kupcu koji
+   * onda nema gde da uplati. Kvar se otkrije tek kad kupac pozove — a do tada je papir
+   * već otišao i ne može se povući.
+   *
+   * Zato: 422 sa uputstvom gde se podatak unosi. Alternativa (upozorenje u logu ili
+   * vodeni žig na papiru) odbačena je jer je log nevidljiv operateru, a žig bi značio da
+   * neispravan papir ipak postoji kao fajl koji neko sme da pošalje.
+   *
+   * Provera je NA ŠTAMPI, ne na knjiženju, i to je namerno: knjiženje je računovodstveni
+   * čin (glavna knjiga, saldakonti, SEF) i račun je po zakonu punovažan bez našeg bloka
+   * banke — zaustaviti knjiženje zbog praznog polja u podešavanjima značilo bi zaustaviti
+   * knjige zbog kozmetike. Papir je jedina tačka na kojoj podatak zaista nedostaje.
    */
   private async loadForeignAccount(
     companyId: number,
     currency: string,
+    requireBankDetails = false,
   ): Promise<{
     iban: string | null;
     swift: string | null;
@@ -583,9 +616,71 @@ export class InvoicePdfService {
     const byCurrency = accounts.find(
       (a) => (a.currency ?? "").trim().toUpperCase() === wanted,
     );
-    if (byCurrency) return byCurrency;
-    if (wanted === "RSD") return null;
-    return accounts.find((a) => a.iban?.trim() || a.swift?.trim()) ?? null;
+    const hasBankData = (a: {
+      iban: string | null;
+      swift: string | null;
+    }): boolean => Boolean(a.iban?.trim() || a.swift?.trim());
+
+    let chosen: {
+      iban: string | null;
+      swift: string | null;
+      bankName: string | null;
+      bankAddress: string | null;
+      currency: string | null;
+    } | null = null;
+
+    if (byCurrency) chosen = byCurrency;
+    else if (wanted !== "RSD")
+      chosen = accounts.find((a) => hasBankData(a)) ?? null;
+
+    // Rezerva iz `companies` — jedina dva polja koja ta tabela ima. Traži se samo kad
+    // izabrani račun nema ništa upotrebljivo, da uredno popunjen devizni račun nikad ne
+    // bude potisnut starijim podatkom sa firme.
+    if (wanted !== "RSD" && (!chosen || !hasBankData(chosen))) {
+      const company = await this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: { iban: true, swift: true },
+      });
+      if (company && (company.iban?.trim() || company.swift?.trim()))
+        chosen = {
+          iban: company.iban,
+          swift: company.swift,
+          // Naziv i adresa banke se NE izmišljaju: `companies` ih nema, a pogrešna banka
+          // uz tačan IBAN je gora od izostavljenog reda.
+          bankName: chosen?.bankName ?? null,
+          bankAddress: chosen?.bankAddress ?? null,
+          currency: chosen?.currency ?? null,
+        };
+    }
+
+    if (requireBankDetails) this.assertBankDetails(chosen, wanted);
+    return chosen;
+  }
+
+  /**
+   * Brana: izvozni račun bez bankarskih instrukcija se NE štampa.
+   *
+   * Poruka mora da kaže tri stvari — šta fali, za koju valutu i GDE se unosi — jer je
+   * čita komercijalista koji je pritisnuo „Štampaj", a ne onaj ko je pisao kod.
+   */
+  private assertBankDetails(
+    account: {
+      iban: string | null;
+      swift: string | null;
+    } | null,
+    currency: string,
+  ): void {
+    const missing: string[] = [];
+    if (!account?.iban?.trim()) missing.push("IBAN");
+    if (!account?.swift?.trim()) missing.push("SWIFT/BIC");
+    if (!missing.length) return;
+
+    throw new UnprocessableEntityException(
+      `Izvozna faktura se ne može odštampati: za valutu ${currency} nije unet ` +
+        `${missing.join(" ni ")}. Bez toga kupac u inostranstvu nema na koji račun da ` +
+        `plati. Podatak se unosi u Podešavanja → Firma → Devizni računi ` +
+        `(IBAN, SWIFT, naziv i adresa banke, valuta).`,
+    );
   }
 
   /**

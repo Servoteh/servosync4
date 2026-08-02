@@ -242,8 +242,18 @@ export function isAdditiveRefreshTable(entity: string): boolean {
  * Razlika prema `OWNED_PRODUCTION_TABLES`: tamo 3.0 vlasnik CELE tabele pa se
  * sync preskače; ovde izvor i dalje vlada SVOJIM kolonama i sme da ih osvežava —
  * štiti se samo ono što u izvoru ne postoji.
+ *
+ * `payment_accounts` (dopuna 02.08.2026): migracija `20260801100000_stampa_faktura_polja`
+ * je dodala `iban`, `swift`, `bank_address` i `currency` — blok „Beneficiary Customer /
+ * Bank of beneficiary" na izvoznoj fakturi. Sync mapa (`UplatniRacuni`) pokriva samo osam
+ * BigBit kolona i tabela nema `watermark`, dakle vozi FULL REFRESH: bez ovog upisa prvi
+ * noćni sync posle unosa obrisao bi IBAN bez traga u logu, a izvozna faktura bi opet
+ * izašla bez podataka za uplatu — isti kvar, samo sa nedelju dana zakašnjenja.
  */
-export const NATIVE_COLUMN_TABLES = new Set<string>(["companies"]);
+export const NATIVE_COLUMN_TABLES = new Set<string>([
+  "companies",
+  "payment_accounts",
+]);
 
 export function hasNativeColumns(entity: string): boolean {
   return NATIVE_COLUMN_TABLES.has(entity);
