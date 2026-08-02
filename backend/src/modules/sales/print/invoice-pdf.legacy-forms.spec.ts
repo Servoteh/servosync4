@@ -324,6 +324,71 @@ describe("InvoicePdfService — vrste bez donetog obrasca idu na opšti renderer
     expect(texts[i + 3]).toBe("132,03"); // NE 132,02 — zatvara se u naplaćen bruto
 
     // I dalje bez crvenog upozorenja — ali sada zato što se zbir STVARNO poklapa.
-    expect(joined).not.toContain("razlika");
+    expect(joined).not.toContain("NEUSKLAĐENO");
   });
+
+  /**
+   * 🔴 NALAZ Z1 (sedmi krug, 02.08.2026): KONTROLNI RED JE MERIO IZRAZ KOJI JE PO
+   * KONSTRUKCIJI NULA. Do sada je bio `Σosnovica + ΣPDV − grossTotal`, a `grossTotal` je
+   * u zaglavlju uvek `netTotal + vatTotal` (tako ga piše i uvoz i ručna izmena kroz UI),
+   * pa se izraz skraćivao u nulu ma koliko `vat_total` bio pogrešan.
+   *
+   * ULAZ (izmeren): 20 stavki × 1.000,00 uz 20 %. Tačan porez je 4.000,00, a zaglavlje
+   * nosi 3.999,80. Stari pojas (`0,01 × 20 redova` = 0,20) je razliku usisao u grupu, pa
+   * je papir štampao `20 % | 20.000,00 | 3.999,80 | 23.999,80` BEZ crvenog reda.
+   */
+  it("🔴 Z1 — rekapitulacija prijavljuje pogrešan `vat_total` (3.999,80 umesto 4.000,00)", async () => {
+    const items = Array.from({ length: 20 }, (_, n) => ({
+      id: n + 1,
+      lineNo: n + 1,
+      itemId: 100,
+      description: `Stavka ${n + 1}`,
+      unit: "kom",
+      quantity: D("1"),
+      unitPrice: D("1000.00"),
+      discountPercent: D("0"),
+      vatRateCode: "3",
+      vatBase: D("1000.00"),
+      vatAmount: D("200.00"),
+      lineTotal: D("1200.00"),
+    }));
+    const prisma = prismaFor(
+      row({
+        documentType: "KO",
+        documentNumber: "KO-9/26",
+        netTotal: D("20000.00"),
+        vatTotal: D("3999.80"),
+        // Zaglavlje je INTERNO DOSLEDNO — baš zato ga staro merilo nije videlo.
+        grossTotal: D("23999.80"),
+        items,
+      }),
+    );
+
+    const pdf = new PdfService();
+    let captured: { content?: unknown } | undefined;
+    jest.spyOn(pdf, "render").mockImplementation(async (dd) => {
+      captured = dd as { content?: unknown };
+      return Buffer.from("x");
+    });
+    const service = new InvoicePdfService(
+      prisma as unknown as PrismaService,
+      pdf,
+      new BarcodeService(),
+    );
+
+    await service.buildInvoicePdf(1, "creditNote");
+    const texts = collectText(captured?.content);
+    const i = texts.indexOf("20.000,00");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(texts[i + 1]).toBe("4.000,00"); // NE 3.999,80 — razlika se ne guta
+
+    const joined = texts.join("\n");
+    expect(joined).toContain("NEUSKLAĐENO");
+    // Natpis imenuje OBE strane: osnovica se poklapa, porez ne.
+    expect(joined).toContain("Osnovica 0,00");
+    expect(joined).toContain("PDV 0,20");
+  });
+
+  // Isti kontrolni red na ČETIRI DONESENA OBRASCA meri `invoice-pdf.service.spec.ts`
+  // (samo tamo postoji lažni klijent sa magacinima i vrstama dokumenata).
 });

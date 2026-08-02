@@ -13,10 +13,13 @@ import {
   FakturisanjeService,
 } from "./fakturisanje.service";
 import {
+  documentVatBreakdown,
   documentVatTotals,
   roundAmount,
   vatBreakdown,
+  vatRecapMismatch,
   VAT_RATE_BY_CODE,
+  vatIsDerivedFromGross,
   vatPercentOf,
 } from "./vat-totals";
 import { grossToNet } from "../pdv/vat-bridge.util";
@@ -219,12 +222,19 @@ describe("documentVatTotals — porez se računa iz osnovice po stopi", () => {
  * IZMERENO: AVR bruto 132,03 uz 20 % → osnovica 110,03, porez 22,00; a
  * `110,03 × 20 % = 22,006 → 22,01`.
  */
-describe("vatBreakdown — dokument objavljuje svoj porez (`documentVatTotal`)", () => {
-  /** Avansni račun ima TAČNO JEDNU stavku: osnovica i porez iz `grossToNet`. */
+describe("documentVatBreakdown — zaglađivanje SAMO tamo gde porez dolazi iz bruta", () => {
+  /** Avansni račun ima TAČNO JEDNU stavku i JEDNU stopu: iz `grossToNet`. */
   const advance = (gross: string, ratePct = 20) => {
     const { net, vat } = grossToNet(gross, ratePct);
     return { net, vat, gross: net.add(vat) };
   };
+
+  /** Zaglavlje dokumenta koji se PRIKAZUJE — vrsta odlučuje da li se zaglađuje. */
+  const header = (documentType: string, vatTotal: Prisma.Decimal) => ({
+    documentType,
+    isExport: false,
+    vatTotal,
+  });
 
   it("izmereni AVR 132,03 din: `grossToNet` daje 110,03 + 22,00, a množenje 22,01", () => {
     const a = advance("132.03");
@@ -234,11 +244,11 @@ describe("vatBreakdown — dokument objavljuje svoj porez (`documentVatTotal`)",
     expect(roundAmount(a.net.mul(20).div(100)).toFixed(2)).toBe("22.01");
   });
 
-  it("grupa preuzima OBJAVLJEN porez → osnovica + porez == bruto (132,03, ne 132,02)", () => {
+  it("AVANS preuzima objavljen porez → osnovica + porez == bruto (132,03, ne 132,02)", () => {
     const a = advance("132.03");
-    const groups = vatBreakdown([{ vatRateCode: "3", vatBase: a.net }], {
-      documentVatTotal: a.vat,
-    });
+    const groups = documentVatBreakdown(header("AVR", a.vat), [
+      { vatRateCode: "3", vatBase: a.net },
+    ]);
     expect(groups).toHaveLength(1);
     expect(groups[0].ratePercent.toFixed(0)).toBe("20");
     expect(groups[0].base.toFixed(2)).toBe("110.03");
@@ -246,10 +256,38 @@ describe("vatBreakdown — dokument objavljuje svoj porez (`documentVatTotal`)",
     expect(groups[0].base.add(groups[0].vat).toFixed(2)).toBe("132.03");
   });
 
-  it("bez `documentVatTotal` (put na kom se zaglavlje TEK računa) porez se množi", () => {
+  /**
+   * 🔴 NALAZ Z1 (sedmi krug): osobina „porez je izveden iz bruta" je osobina VRSTE
+   * DOKUMENTA, a ne poziva. Isti brojevi pod vrstom `IFR` NISU avans — tu je 22,00 uz
+   * osnovicu 110,03 obična greška u zaglavlju, i mora da ostane vidljiva.
+   */
+  it("🔴 Z1 — ISTI brojevi pod vrstom IFR se NE zaglađuju (22,01, ne 22,00)", () => {
+    const a = advance("132.03");
+    const lines = [{ vatRateCode: "3", vatBase: a.net }];
+    expect(vatIsDerivedFromGross({ documentType: "IFR" })).toBe(false);
+    expect(
+      documentVatBreakdown(header("IFR", a.vat), lines)[0].vat.toFixed(2),
+    ).toBe("22.01");
+    // Isto i za vrste koje ni ne postoje u spisku, i za prazan `documentType`.
+    expect(
+      documentVatBreakdown(header("", a.vat), lines)[0].vat.toFixed(2),
+    ).toBe("22.01");
+  });
+
+  it("goli `vatBreakdown` uopšte ne zna za objavljen porez — uvek množi", () => {
     const a = advance("132.03");
     const groups = vatBreakdown([{ vatRateCode: "3", vatBase: a.net }]);
     expect(groups[0].vat.toFixed(2)).toBe("22.01");
+  });
+
+  it("vrsta je neosetljiva na razmake i mala slova (`documentType` iz uvoza)", () => {
+    const a = advance("132.03");
+    expect(vatIsDerivedFromGross({ documentType: " avr " })).toBe(true);
+    expect(
+      documentVatBreakdown(header(" avr ", a.vat), [
+        { vatRateCode: "3", vatBase: a.net },
+      ])[0].vat.toFixed(2),
+    ).toBe("22.00");
   });
 
   /**
@@ -257,17 +295,16 @@ describe("vatBreakdown — dokument objavljuje svoj porez (`documentVatTotal`)",
    * 5.000,00 (499.901 iznos) po obe stope. Papir i e-faktura moraju da se zatvore na
    * SVAKOM od njih, a ne na „skoro svakom".
    */
-  it("svih 499.901 bruto iznosa 1,00–5.000,00 (20 % i 10 %): grupa se zatvara u bruto", () => {
+  it("svih 499.901 bruto iznosa 1,00–5.000,00 (20 % i 10 %): AVR se zatvara u bruto", () => {
     let divergedFromMultiplication = 0;
     let total = 0;
     for (const ratePct of [20, 10]) {
       for (let cents = 100; cents <= 500000; cents += 1) {
         const gross = new Prisma.Decimal(cents).div(100);
         const { net, vat } = grossToNet(gross, ratePct);
-        const groups = vatBreakdown(
-          [{ ratePercent: ratePct, vatBase: net }],
-          { documentVatTotal: vat },
-        );
+        const groups = documentVatBreakdown(header("AVR", vat), [
+          { ratePercent: ratePct, vatBase: net },
+        ]);
         total += 1;
         // JEDINA tvrdnja koja mora da važi uvek: papir se zatvara u naplaćen bruto.
         if (!groups[0].base.add(groups[0].vat).equals(gross)) {
@@ -289,31 +326,205 @@ describe("vatBreakdown — dokument objavljuje svoj porez (`documentVatTotal`)",
   });
 
   /**
-   * BRANA NAD PREUZIMANJEM: pokvareno zaglavlje se NE zaglađuje. Bez granice bi dokument
-   * sa `vat_total = 0` uz osnovicu od 500,00 dobio papir i XML koji ga POTVRĐUJU.
+   * BRANA NAD PREUZIMANJEM: pokvareno zaglavlje se NE zaglađuje ni na avansu. Bez granice
+   * bi dokument sa `vat_total = 0` uz osnovicu od 500,00 dobio papir i XML koji ga
+   * POTVRĐUJU.
    */
   it("razlika veća od zaokruživanja se NE preuzima — ostaje vidljiva", () => {
-    const groups = vatBreakdown([{ vatRateCode: "3", vatBase: D("500.00") }], {
-      documentVatTotal: D("0"),
-    });
+    const groups = documentVatBreakdown(header("AVR", D("0")), [
+      { vatRateCode: "3", vatBase: D("500.00") },
+    ]);
     expect(groups[0].vat.toFixed(2)).toBe("100.00"); // ne 0,00
   });
 
-  it("zatečeno zaglavlje po STAROM pravilu (Σ poreza po stavci) se preuzima", () => {
-    // 5 × 100,01 uz 20 %: staro pravilo je upisalo 100,00, novo računa 100,01.
-    const items = [1, 2, 3, 4, 5].map(() => ({
-      vatRateCode: "3",
-      vatBase: D("100.01"),
-    }));
-    const groups = vatBreakdown(items, { documentVatTotal: D("100.00") });
-    expect(groups[0].vat.toFixed(2)).toBe("100.00");
+  it("para poreza se NIKAD ne dodeljuje grupi od 0 % (oslobođen promet)", () => {
+    const groups = documentVatBreakdown(header("AVR", D("0.01")), [
+      { vatRateCode: "0", vatBase: D("100.00") },
+    ]);
+    expect(groups[0].vat.toFixed(2)).toBe("0.00");
   });
 
-  it("para poreza se NIKAD ne dodeljuje grupi od 0 % (oslobođen promet)", () => {
-    const groups = vatBreakdown([{ vatRateCode: "0", vatBase: D("100.00") }], {
-      documentVatTotal: D("0.01"),
+  /**
+   * 🔴 NALAZ Z2 — GRANICA JE BILA 2× ŠIRA NEGO ŠTO TREBA. Matematički
+   * `≤ 0,005n + 0,005G ≤ 0,01n`; brute force sedmog kruga (120.000 nasumičnih dokumenata)
+   * je izmerio najveći odnos `razlika/tolerancija` = 0,5000, tj. nijedan dokument nije ni
+   * prišao staroj granici. Stvarno potrebno je `max(0,01; 0,005 × n)`.
+   */
+  it("🔴 Z2 — tolerancija je `max(0,01; 0,005 × n)`, ne `0,01 × n`", () => {
+    // 4 reda sa iznosom → tolerancija 0,02. Razlika 0,02 prolazi ako je pripisiva…
+    const lines = [1, 2, 3, 4].map(() => ({
+      vatRateCode: "3",
+      vatBase: D("100.00"),
+    }));
+    // …a 0,03 (što je bilo unutar starog pojasa 0,04) više ne prolazi.
+    expect(
+      documentVatBreakdown(header("AVR", D("79.97")), lines)[0].vat.toFixed(2),
+    ).toBe("80.00");
+  });
+
+  /**
+   * 🔴 NALAZ Z1/B — pojas je rastao po `lines.length`, pa je 500 legitimnih redova od
+   * 0,00 (rabat 100 %) davalo toleranciju 5,01 RSD. Broje se samo redovi SA IZNOSOM.
+   */
+  it("🔴 Z1/B — redovi od 0,00 ne šire pojas (194,99 umesto 200,00 ne prolazi)", () => {
+    const lines = [{ vatRateCode: "3", vatBase: D("1000.00") }];
+    for (let i = 0; i < 500; i += 1)
+      lines.push({ vatRateCode: "3", vatBase: D("0.00") });
+    expect(
+      documentVatBreakdown(header("AVR", D("194.99")), lines)[0].vat.toFixed(2),
+    ).toBe("200.00");
+  });
+
+  /**
+   * 🔴 NALAZ Z1/A — meta se birala po najvećoj osnovici, bez odnosa prema iznosu koji joj
+   * se dodaje: 99 redova @ 0 % × 100,00 + 1 red @ 20 % sa osnovicom 0,05 uz
+   * `vat_total = 1,01` davalo je `20 % | 0,05 | 1,01`, tj. efektivnu stopu od 2020 %.
+   */
+  it("🔴 Z1/A — pripisana razlika ne sme da promeni efektivnu stopu grupe", () => {
+    const lines = Array.from({ length: 99 }, () => ({
+      vatRateCode: "0",
+      vatBase: D("100.00"),
+    }));
+    lines.push({ vatRateCode: "3", vatBase: D("0.05") });
+    const groups = documentVatBreakdown(header("AVR", D("1.01")), lines);
+    const taxed = groups.find((g) => g.ratePercent.equals(20));
+    expect(taxed?.vat.toFixed(2)).toBe("0.01"); // NE 1,01
+  });
+
+  /**
+   * 🔴 NALAZ Z3 — RAZLIKA ROĐENA U JEDNOJ GRUPI JE PADALA NA NEVINU. Izmereno: red
+   * 110,03 @ 20 % (porez izveden deljenjem) + red 1.000,00 @ 10 % uz `vat_total = 122,00`
+   * → 20 % je dobijala svoju tačnu matematiku (22,01), a 10 % je dobijala 99,99
+   * (efektivna stopa 9,999 %), pa je BR-CO-17 padao na grupi koja problem nije ni imala.
+   */
+  it("🔴 Z3 — razlika iz grupe od 20 % ne sme da završi na grupi od 10 %", () => {
+    const groups = documentVatBreakdown(header("AVR", D("122.00")), [
+      { vatRateCode: "3", vatBase: D("110.03") },
+      { vatRateCode: "4", vatBase: D("1000.00") },
+    ]);
+    const byRate = new Map(groups.map((g) => [g.ratePercent.toFixed(0), g]));
+    // Razlika se vraća TAMO GDE JE ROĐENA: 110,03 + 22,00 = 132,03 je valjan izvod iz
+    // bruta, a 1.000,00 + 99,99 nije (`grossToNet(1.099,99; 10) = (999,99; 100,00)`).
+    expect(byRate.get("20")?.vat.toFixed(2)).toBe("22.00");
+    expect(byRate.get("10")?.vat.toFixed(2)).toBe("100.00"); // NE 99,99 (staro ponašanje)
+    // Zbir i dalje zatvara objavljen porez — ali bez laži o efektivnoj stopi 10 % grupe.
+    expect(groups.reduce((s, g) => s.add(g.vat), D(0)).toFixed(2)).toBe(
+      "122.00",
+    );
+  });
+
+  /**
+   * 🔴 Z3, druga polovina — KAD SE NE ZNA ČIJA JE RAZLIKA, NE ZAGLAĐUJE SE.
+   *
+   * Konstruisan ulaz (iscrpna pretraga po osnovicama do 20.000,00): i grupa od 20 % sa
+   * osnovicom 0,13 i grupa od 10 % sa osnovicom 0,25 su, sa pripisanom razlikom od
+   * −0,01, valjan izvod iz bruta. Pripisivanje je dvosmisleno → nijedna se ne dira, a
+   * razlika ostaje VIDLJIVA (kontrolni red na papiru, pad BR-CO-14 na SEF-u).
+   */
+  it("🔴 Z3 — dvosmisleno pripisivanje se NE zaglađuje (0,13 @ 20 % + 0,25 @ 10 %)", () => {
+    const groups = documentVatBreakdown(header("AVR", D("0.05")), [
+      { vatRateCode: "3", vatBase: D("0.13") },
+      { vatRateCode: "4", vatBase: D("0.25") },
+    ]);
+    const byRate = new Map(groups.map((g) => [g.ratePercent.toFixed(0), g]));
+    expect(byRate.get("20")?.vat.toFixed(2)).toBe("0.03");
+    expect(byRate.get("10")?.vat.toFixed(2)).toBe("0.03");
+    expect(groups.reduce((s, g) => s.add(g.vat), D(0)).toFixed(2)).toBe("0.06");
+  });
+
+  /**
+   * 🔴 NALAZ Z4 — „nula pada glasno" nije važilo za male iznose: granica je apsolutna, a
+   * primer u komentaru (100,00) je prolazio samo zato što je bio mnogo veći od nje.
+   * 20 redova @ 20 % sa osnovicom 0,05 (grupa 1,00, tačan PDV 0,20) uz `vat_total = 0`
+   * davalo je papir `20 % | 1,00 | 0,00` bez crvenog reda.
+   */
+  it("🔴 Z4 — `vat_total = 0` na maloj grupi (1,00 uz 20 %) NE prolazi", () => {
+    const lines = Array.from({ length: 20 }, () => ({
+      vatRateCode: "3",
+      vatBase: D("0.05"),
+    }));
+    const groups = documentVatBreakdown(header("AVR", D("0")), lines);
+    expect(groups[0].base.toFixed(2)).toBe("1.00");
+    expect(groups[0].vat.toFixed(2)).toBe("0.20"); // NE 0,00
+  });
+
+  it("🔴 Z4 — ni JEDAN red od 0,05 uz `vat_total = 0` ne prolazi kroz toleranciju", () => {
+    // Razlika je tačno 0,01 (unutar tolerancije) i efektivna stopa se „ne menja" za više
+    // od pare — obara je četvrta brana: `grossToNet(0,05; 20) = (0,04; 0,01) ≠ (0,05; 0)`.
+    const groups = documentVatBreakdown(header("AVR", D("0")), [
+      { vatRateCode: "3", vatBase: D("0.05") },
+    ]);
+    expect(groups[0].vat.toFixed(2)).toBe("0.01");
+  });
+
+  /**
+   * 🔴 NALAZ Z5 — meta se birala `greaterThan` nad osnovicom, a to kod negativnih iznosa
+   * bira NAJMANJU po apsolutnoj vrednosti; ogledalski par (faktura i knjižno odobrenje)
+   * se zato nije poništavao PO STOPI. Sada je izbor po `|osnovica|`, pa je par simetričan.
+   */
+  it("🔴 Z5 — ogledalski avans: osnovica i porez se poništavaju do pare", () => {
+    const a = advance("132.03");
+    const plus = documentVatBreakdown(header("AVR", a.vat), [
+      { vatRateCode: "3", vatBase: a.net },
+    ]);
+    const minus = documentVatBreakdown(header("AVR", a.vat.neg()), [
+      { vatRateCode: "3", vatBase: a.net.neg() },
+    ]);
+    expect(minus[0].vat.toFixed(2)).toBe("-22.00");
+    expect(plus[0].base.add(minus[0].base).toFixed(2)).toBe("0.00");
+    expect(plus[0].vat.add(minus[0].vat).toFixed(2)).toBe("0.00");
+  });
+});
+
+/**
+ * 🔴 NALAZ Z1 (sedmi krug) — KONTROLNI RED JE MERIO IZRAZ KOJI JE PO KONSTRUKCIJI NULA.
+ * `Σosn + Σpdv − bruto` je nula kad god je zaglavlje interno dosledno (`bruto = neto +
+ * porez`), a tako ga piše i uvoz i ručna izmena kroz UI — pa kontrola nije mogla da vidi
+ * pogrešan `vat_total`.
+ */
+describe("vatRecapMismatch — merilo koje STVARNO hvata pogrešno zaglavlje", () => {
+  const groups = (base: string, vat: string) => [
+    { base: D(base), vat: D(vat) },
+  ];
+
+  it("zdrav dokument → `null` (nema crvenog reda)", () => {
+    expect(
+      vatRecapMismatch(groups("1000.00", "200.00"), {
+        netTotal: D("1000.00"),
+        vatTotal: D("200.00"),
+      }),
+    ).toBeNull();
+  });
+
+  it("pogrešan `vat_total` se vidi, iako je zaglavlje interno dosledno", () => {
+    // Staro merilo: (1000 + 200) − 1199,99 … ali je i `grossTotal` upisan kao 1.199,99,
+    // pa je izraz bio 0,00. Novo merilo poredi sa `vat_total` direktno.
+    const m = vatRecapMismatch(groups("1000.00", "200.00"), {
+      netTotal: D("1000.00"),
+      vatTotal: D("199.99"),
     });
-    expect(groups[0].vat.toFixed(2)).toBe("0.00");
+    expect(m?.baseDiff.toFixed(2)).toBe("0.00");
+    expect(m?.vatDiff.toFixed(2)).toBe("0.01");
+  });
+
+  it("osnovica i porez se mere ODVOJENO — u zbiru bi se poništili", () => {
+    // +0,01 na osnovici i −0,01 na porezu: zbirno merilo daje 0,00 i ćuti.
+    const m = vatRecapMismatch(groups("1000.01", "199.99"), {
+      netTotal: D("1000.00"),
+      vatTotal: D("200.00"),
+    });
+    expect(m).not.toBeNull();
+    expect(m?.baseDiff.toFixed(2)).toBe("0.01");
+    expect(m?.vatDiff.toFixed(2)).toBe("-0.01");
+  });
+
+  it("ostatak ispod pare (`Decimal(19,4)`) se ne prijavljuje — na papiru se ne vidi", () => {
+    expect(
+      vatRecapMismatch(groups("1000.0001", "200.00"), {
+        netTotal: D("1000.00"),
+        vatTotal: D("200.00"),
+      }),
+    ).toBeNull();
   });
 });
 

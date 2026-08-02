@@ -9,6 +9,8 @@ import {
   payableAfterAdvance,
   printableAdvanceDeductions,
   printableDeductions,
+  vatSummaryMismatch,
+  vatSummaryMismatchLabel,
   vatSummaryRows,
 } from "./totals";
 
@@ -482,11 +484,15 @@ describe("red sa negativnim iznosom (poništenje ranije fakture)", () => {
  */
 describe("redovi PDV-a u zbiru", () => {
   const ctxWith = (
-    invoice: { netTotal: string; vatTotal: string },
+    invoice: { netTotal: string; vatTotal: string; documentType?: string },
     rates: { rate: number | null; base: string }[],
   ): PrintCtx =>
     ({
       invoice: {
+        // ⚠️ VRSTA JE OBAVEZAN DEO ULAZA (sedmi krug): od nje zavisi da li se objavljen
+        // porez uopšte sme preuzeti. Podrazumevano `IFR` — redovan račun, koji porez
+        // MNOŽI; avans (`AVR`) ga deli, pa se navodi izričito.
+        documentType: invoice.documentType ?? "IFR",
         netTotal: D(invoice.netTotal),
         vatTotal: D(invoice.vatTotal),
       },
@@ -506,21 +512,41 @@ describe("redovi PDV-a u zbiru", () => {
     expect(rows[0].vat.toFixed(2)).toBe("3200.00");
   });
 
-  it("dve stope: zbir odštampanih redova je TAČNO `vatTotal`", () => {
-    // Izmeren ulaz: 16.000,00 (20 %) + 4.000,00 (10 %) uz `vatTotal` 3.599,99 sa dokumenta.
-    // Bez raspoređivanja razlike papir bi pisao 3.200,00 + 400,00 = 3.600,00 — paru više
-    // nego što je proknjiženo.
-    const rows = vatSummaryRows(
-      ctxWith({ netTotal: "20000.00", vatTotal: "3599.99" }, [
-        { rate: 20, base: "16000.00" },
-        { rate: 10, base: "4000.00" },
-      ]),
-    );
+  /**
+   * 🔴 NALAZ Z1/Z3 (sedmi krug, 02.08.2026) — ISHOD OVOG ULAZA JE PROMENJEN.
+   *
+   * Izmeren ulaz: 16.000,00 (20 %) + 4.000,00 (10 %) uz `vatTotal` 3.599,99 sa dokumenta.
+   * Do sedmog kruga je papir tu razliku ĆUTKE gutao i štampao `3.199,99 + 400,00`. Ali
+   * `round2` po grupama daje 3.200,00 + 400,00 = 3.600,00 — dakle ZAGLAVLJE je za paru
+   * pogrešno, a razlika je pripisana grupi po veličini osnovice, ne po poreklu (Z3).
+   * Istim pojasom je progutano i 1,00 RSD na 100 stavki (Z1).
+   *
+   * Redovan račun (IFR) porez MNOŽI, pa se ništa ne preuzima: papir štampa ono što
+   * osnovice po stopi daju, a razlika ide u KONTROLNI RED (`vatSummaryMismatch`).
+   */
+  it("🔴 dve stope, pogrešan `vatTotal`: papir štampa TAČAN porez i prijavi razliku", () => {
+    const ctx = ctxWith({ netTotal: "20000.00", vatTotal: "3599.99" }, [
+      { rate: 20, base: "16000.00" },
+      { rate: 10, base: "4000.00" },
+    ]);
+    const rows = vatSummaryRows(ctx);
     const sum = rows.reduce((s, r) => s.add(r.vat), D("0"));
-    expect(sum.toFixed(2)).toBe("3599.99");
-    // Razlika pada na grupu sa NAJVEĆOM osnovicom, gde je relativno najmanja.
-    expect(rows.find((r) => r.rate === 20)?.vat.toFixed(2)).toBe("3199.99");
+    expect(sum.toFixed(2)).toBe("3600.00"); // NE 3.599,99
+    expect(rows.find((r) => r.rate === 20)?.vat.toFixed(2)).toBe("3200.00");
     expect(rows.find((r) => r.rate === 10)?.vat.toFixed(2)).toBe("400.00");
+
+    const mismatch = vatSummaryMismatch(ctx);
+    expect(mismatch?.baseDiff.toFixed(2)).toBe("0.00");
+    expect(mismatch?.vatDiff.toFixed(2)).toBe("0.01");
+    expect(vatSummaryMismatchLabel(mismatch!)).toContain("NEUSKLAĐENO");
+  });
+
+  it("zdrav račun sa dve stope: nema kontrolnog reda", () => {
+    const ctx = ctxWith({ netTotal: "20000.00", vatTotal: "3600.00" }, [
+      { rate: 20, base: "16000.00" },
+      { rate: 10, base: "4000.00" },
+    ]);
+    expect(vatSummaryMismatch(ctx)).toBeNull();
   });
 
   /**
@@ -568,14 +594,29 @@ describe("redovi PDV-a u zbiru", () => {
    * 🔴 NALAZ R1: avansni račun (porez izveden deljenjem). Red mora da pokaže OBJAVLJEN
    * porez, da bi se zbir zatvorio u naplaćen bruto — v. `sales/vat-totals.ts`.
    */
-  it("avans 132,03: red nosi 110,03 + 22,00 (ne 21,99 iz ponovljenog množenja)", () => {
-    const rows = vatSummaryRows(
-      ctxWith({ netTotal: "110.03", vatTotal: "22.00" }, [
-        { rate: 20, base: "110.03" },
-      ]),
+  it("avans 132,03: red nosi 110,03 + 22,00 (ne 22,01 iz ponovljenog množenja)", () => {
+    const ctx = ctxWith(
+      { documentType: "AVR", netTotal: "110.03", vatTotal: "22.00" },
+      [{ rate: 20, base: "110.03" }],
     );
+    const rows = vatSummaryRows(ctx);
     expect(rows).toHaveLength(1);
     expect(rows[0].vat.toFixed(2)).toBe("22.00");
     expect(rows[0].base.add(rows[0].vat).toFixed(2)).toBe("132.03");
+    // Zaglađeno JESTE, pa kontrolnog reda nema — papir se zatvara u naplaćen bruto.
+    expect(vatSummaryMismatch(ctx)).toBeNull();
+  });
+
+  /**
+   * 🔴 NALAZ Z1 (sedmi krug): ISTI brojevi pod vrstom `IFR` nisu avans. Osobina „porez je
+   * izveden iz bruta" je osobina VRSTE DOKUMENTA, a ne poziva — dok je zavisila od toga
+   * ko prosleđuje `vat_total`, zaglađivalo se na svakom prikazanom dokumentu.
+   */
+  it("🔴 Z1 — isti brojevi na REDOVNOM računu se ne zaglađuju nego prijavljuju", () => {
+    const ctx = ctxWith({ netTotal: "110.03", vatTotal: "22.00" }, [
+      { rate: 20, base: "110.03" },
+    ]);
+    expect(vatSummaryRows(ctx)[0].vat.toFixed(2)).toBe("22.01");
+    expect(vatSummaryMismatch(ctx)?.vatDiff.toFixed(2)).toBe("0.01");
   });
 });

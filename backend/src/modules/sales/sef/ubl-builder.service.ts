@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import {
-  vatBreakdown,
+  documentVatBreakdown,
   vatCategoryOf,
   vatPercentOf as vatPercentOfCode,
 } from "../vat-totals";
@@ -864,21 +864,30 @@ export class UblBuilderService {
  * (Mapa je istog dana ispravljena po `R_Tarife` — par sa istom stopom sada čine „3" i „6";
  * brojevi su isti, jer ključ je stopa a ne šifra.)
  *
- * ⚠️ `documentVatTotal` = `invoice.vatTotal` (ispravka R1/R2): avansni račun porez IZVODI
- * IZ BRUTA (`grossToNet`), pa `round2(osnovica × stopa)` za 16,67 % bruto iznosa vraća
- * paru više nego što je proknjiženo — izmereno na AVR-u od 132,03 din (osnovica 110,03,
- * porez 22,00, a `110,03 × 20 % = 22,01`). Grupe zato preuzimaju OBJAVLJEN porez
- * dokumenta: BR-CO-14 i BR-CO-15 važe, a neizbežnih 0,01 na BR-CO-17 kod avansa je
+ * ⚠️ IDE KROZ `documentVatBreakdown` (ispravka R1/R2, pooštreno u sedmom krugu):
+ * avansni račun porez IZVODI IZ BRUTA (`grossToNet`), pa `round2(osnovica × stopa)` za
+ * 16,67 % bruto iznosa vraća paru više nego što je proknjiženo — izmereno na AVR-u od
+ * 132,03 din (osnovica 110,03, porez 22,00, a `110,03 × 20 % = 22,01`). Grupe zato
+ * preuzimaju OBJAVLJEN porez dokumenta — ali SAMO za vrste koje porez zaista dele
+ * (`GROSS_DERIVED_VAT_DOCUMENT_TYPES`), pa se prosleđuje CELO zaglavlje a ne samo
+ * `vatTotal`. Za avans: BR-CO-14 i BR-CO-15 važe, a neizbežnih 0,01 na BR-CO-17 je
  * svojstvo preračunate stope — obrazloženo u uvodu `vat-totals.ts`.
+ *
+ * ⚠️ REDOVAN RAČUN SA POGREŠNIM `vat_total` OD SEDMOG KRUGA VIŠE NE PROLAZI TIHO: grupe
+ * nose `round2(osnovica × stopa)`, pa `cac:TaxTotal/cbc:TaxAmount` (= `invoice.vatTotal`)
+ * i Σ `TaxSubtotal` više nisu jednaki i **BR-CO-14 pada na SEF-u**. To je namerno — dok
+ * su grupe ćutke preuzimale zaglavlje, dokument sa `vat_total = 19.999,00` umesto
+ * 20.000,00 (izmereno: 100 × 1.000,00 @ 20 %) prolazio je kao ispravan.
  */
 function groupTaxSubtotals(
   items: UblInvoiceItemInput[],
-  invoice: { isExport: boolean; vatTotal: Prisma.Decimal },
+  invoice: {
+    documentType: string;
+    isExport: boolean;
+    vatTotal: Prisma.Decimal;
+  },
 ): TaxGroup[] {
-  return vatBreakdown(items, {
-    isExport: invoice.isExport,
-    documentVatTotal: invoice.vatTotal,
-  }).map((g) => ({
+  return documentVatBreakdown(invoice, items).map((g) => ({
     percent: g.ratePercent.toNumber(),
     category: g.category,
     taxableAmount: g.base,

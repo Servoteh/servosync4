@@ -12,7 +12,11 @@ import type {
 } from "pdfmake/interfaces";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { loadInvoiceAdvanceDeductions } from "../advance-deduction";
-import { vatBreakdown, vatPercentOf } from "../vat-totals";
+import {
+  documentVatBreakdown,
+  vatPercentOf,
+  vatRecapMismatch,
+} from "../vat-totals";
 import { BarcodeService } from "../../documents/barcode.service";
 import { buildPageFooter } from "../../documents/doc-layout";
 import { PdfService } from "../../documents/pdf.service";
@@ -45,6 +49,8 @@ import {
   assertExportWithoutVat,
   NON_PAYMENT_DOCUMENT_TYPES as SHARED_NON_PAYMENT_DOCUMENT_TYPES,
   printableDeductions,
+  vatSummaryMismatch,
+  vatSummaryMismatchLabel,
 } from "./templates/totals";
 
 /**
@@ -972,7 +978,7 @@ export class InvoicePdfService {
             ),
           ],
         }),
-        content: inoUslugaTemplate(ctx),
+        content: this.withVatMismatchNotice(ctx, inoUslugaTemplate(ctx), true),
         styles: { ...MEMORANDUM_STYLES },
         defaultStyle: { font: "Roboto", fontSize: 9 },
       };
@@ -991,10 +997,54 @@ export class InvoicePdfService {
         margin: FOOTER_MARGIN,
         stack: [memorandumFooter(issuer, { qrSvg }, CONTENT_WIDTH)],
       }),
-      content: TEMPLATES[form](ctx),
+      content: this.withVatMismatchNotice(
+        ctx,
+        TEMPLATES[form](ctx),
+        form === "ino-roba",
+      ),
       styles: { ...MEMORANDUM_STYLES },
       defaultStyle: { font: "Roboto", fontSize: 9 },
     };
+  }
+
+  /**
+   * KONTROLNI RED NA ČETIRI DONESENA OBRASCA — vidi se samo kad se zbirni blok ne slaže
+   * sa zaglavljem dokumenta.
+   *
+   * ⚠️ ZAŠTO OD SEDMOG KRUGA POSTOJI (02.08.2026, nalaz Z1): opšti renderer (AVR/KO/KZ)
+   * ima rekapitulaciju sa kontrolnim redom, a četiri obrasca je nemaju — a upravo na
+   * njima se štampa REDOVAN račun. Dok su grupe ćutke preuzimale `vat_total`, papir je
+   * uvek „zatvarao"; sada se preuzima samo na dokumentu koji porez izvodi iz bruta, pa
+   * pogrešan `vat_total` daje Σ PDV redova ≠ `vat_total`. Bez ovog reda bi kupac dobio
+   * papir na kom `osnovica + Σ PDV redova` ne daje uokvireno „Za uplatu", a nigde ne
+   * piše zašto.
+   *
+   * ⚠️ NE OBARA ŠTAMPU (za razliku od `assertExportWithoutVat`): tamo papir TVRDI nešto
+   * netačno o poreskom tretmanu, ovde su brojevi tačno onakvi kakvi su u bazi — pa je
+   * pravi lek da se vidi šta ne valja, a ne da račun ostane bez papira.
+   *
+   * Ide na KRAJ sadržaja, ispod potpisnog bloka: dodavanje u sam zbirni blok bi značilo
+   * četiri kopije istog reda u četiri šablona, a upravo su kopije istog pravila (rabat,
+   * avans, raspored razlike) svaki put i proizvele razlaz među obrascima.
+   */
+  private withVatMismatchNotice(
+    ctx: PrintCtx,
+    content: Content[],
+    english: boolean,
+  ): Content[] {
+    if (ctx.withoutPrices) return content; // otpremnica nema novčane kolone
+    const mismatch = vatSummaryMismatch(ctx);
+    if (!mismatch) return content;
+    return [
+      ...content,
+      {
+        text: vatSummaryMismatchLabel(mismatch, english),
+        fontSize: 8,
+        bold: true,
+        color: "#a00",
+        margin: [0, 8, 0, 0],
+      },
+    ];
   }
 
   /**
@@ -1532,10 +1582,12 @@ export class InvoicePdfService {
    * `22,00 / 110,03` štampalo **19,99 %** i uz njega porez `round2(110,03 × 19,99 %) =
    * 21,99`; red „Ukupno" je davao 132,02, a „Ukupno za uplatu" ispod 132,03.
    *
-   * ⚠️ POREZ JE ONAJ KOJI JE DOKUMENT OBJAVIO (`invoice.vatTotal` → `documentVatTotal`),
-   * a ne ponovljeno množenje (nalaz R1). Kod avansa se to dvoje razlikuje za paru na
-   * 16,67 % bruto iznosa; papir mora da pokaže ono što je proknjiženo i ono što kupac
-   * plaća. Obrazloženje i granica preuzimanja su u uvodu `vat-totals.ts`.
+   * ⚠️ POREZ JE ONAJ KOJI JE DOKUMENT OBJAVIO (`invoice.vatTotal`), a ne ponovljeno
+   * množenje (nalaz R1) — ali SAMO na dokumentu koji porez zaista izvodi deljenjem
+   * (avans). Zato ide kroz `documentVatBreakdown`, kome se predaje ceo dokument, pa
+   * odluku donosi `vat-totals.ts` po `documentType`. Kod avansa se to dvoje razlikuje za
+   * paru na 16,67 % bruto iznosa; papir mora da pokaže ono što je proknjiženo i ono što
+   * kupac plaća. Na svakom drugom dokumentu razlika ide u KONTROLNI RED, ne u iznos.
    */
   private buildVatRecap(
     invoice: InvoiceWithItems,
@@ -1543,11 +1595,9 @@ export class InvoicePdfService {
     currency: string,
   ): Content {
     // Rastuće po stopi — redosled je izgled ovog bloka (BigBit papir), a ne iznos;
-    // `vatBreakdown` vraća opadajuće, jer je to redosled koji XML traži.
-    const rates = vatBreakdown(invoice.items, {
-      isExport: invoice.isExport,
-      documentVatTotal: invoice.vatTotal,
-    })
+    // `documentVatBreakdown` vraća opadajuće, jer je to redosled koji XML traži.
+    const groups = documentVatBreakdown(invoice, invoice.items);
+    const rates = groups
       .map((g) => ({ percent: g.ratePercent, base: g.base, vat: g.vat }))
       .sort((a, b) => a.percent.comparedTo(b.percent));
     const body: Content[][] = [
@@ -1581,24 +1631,33 @@ export class InvoicePdfService {
       },
     ]);
 
-    // Kontrola tihe greške: rekapitulacija MORA da se poklopi sa bruto iznosom.
+    // Kontrola tihe greške: rekapitulacija MORA da se poklopi sa ZAGLAVLJEM dokumenta.
     //
     // ⚠️ PRAG JE PARA, NE „VIŠE OD PARE" (ispravka 02.08.2026, nalaz R1): uslov je bio
     // `diff > 0,01`, pa je razlika od TAČNO 0,01 — jedina koja se u praksi i javljala —
     // prolazila nemo. Izmereno na avansu od 132,03 din: papir je štampao zbir 132,02 uz
-    // „Ukupno za uplatu 132,03", bez ijednog upozorenja. Sada se ispisuje sve što se na
-    // papiru sa dve decimale VIDI.
+    // „Ukupno za uplatu 132,03", bez ijednog upozorenja.
     //
-    // Od iste ispravke `sumVat` po definiciji jednak `invoice.vatTotal` (grupe preuzimaju
-    // objavljen porez), pa ovaj red od sada znači: **Σ osnovica stavki ≠ `netTotal`** —
-    // dakle stavke i zaglavlje su se razišle (prekinut uvoz, ručna izmena u bazi), ili je
-    // odstupanje poreza preveliko da bi bilo zaokruživanje (v. granicu u `vat-totals.ts`).
-    const diff = sumBase.add(sumVat).sub(invoice.grossTotal).toDecimalPlaces(2);
-    const mismatch: Content[] = !diff.isZero()
+    // 🔴 ⚠️ MERILO JE PROMENJENO (sedmi krug, 02.08.2026, nalaz Z1). Do sada je stajalo
+    // `Σosn + Σpdv − grossTotal`, a taj izraz je PO KONSTRUKCIJI NULA kad je zaglavlje
+    // interno dosledno (`bruto = neto + porez` — tako ga piše i uvoz i ručna izmena kroz
+    // UI). Kontrola dakle nije mogla da vidi pogrešan `vat_total`: papir sa 99 redova @
+    // 0 % i jednim redom @ 20 % sa osnovicom 0,05 uz `vat_total = 1,01` štampao je
+    // `20 % | 0,05 | 1,01` (efektivna stopa 2020 %) — bez crvenog reda.
+    //
+    // Sada se mere OBE strane ODVOJENO (`vatRecapMismatch`), jer se u zbiru poništavaju:
+    //   • Σ osnovica grupa ≠ `netTotal` → stavke i zaglavlje su se razišle;
+    //   • Σ poreza grupa   ≠ `vatTotal` → objavljen porez nije ono što osnovice po stopi
+    //     daju, a nije ni preuzet (dokument porez ne izvodi iz bruta, ili razlika nije
+    //     prošla brane iz `vat-totals.ts`).
+    const diff = vatRecapMismatch(groups, invoice);
+    const mismatch: Content[] = diff
       ? [
           {
             text:
-              `${t.recapMismatchLbl}: ${formatDecimal(diff, 2, false)} ${currency}`,
+              `${t.recapMismatchLbl} ${t.recapBaseLbl} ` +
+              `${formatDecimal(diff.baseDiff, 2, false)}, ${t.recapVatLbl} ` +
+              `${formatDecimal(diff.vatDiff, 2, false)} ${currency}`,
             fontSize: 8,
             bold: true,
             color: "#a00",
@@ -2005,8 +2064,10 @@ const SR_LABELS: Labels = {
   recapVatLbl: "PDV",
   recapTotalLbl: "Sa PDV-om",
   recapSumLbl: "Ukupno",
+  // ⚠️ Natpis imenuje OBE strane (osnovica i PDV) — v. `buildVatRecap`: u zbiru se te
+  // dve greške poništavaju, pa jedan broj ne bi rekao ništa.
   recapMismatchLbl:
-    "NEUSKLAĐENO — zbir rekapitulacije se razlikuje od iznosa dokumenta za",
+    "NEUSKLAĐENO — zbir rekapitulacije se razlikuje od zaglavlja dokumenta:",
   advanceBasisLbl: "Osnov avansa",
   advancePaidLbl: "Avans naplaćen",
   advanceUnpaidLbl:
@@ -2109,7 +2170,7 @@ const EN_LABELS: Labels = {
   recapVatLbl: "VAT",
   recapTotalLbl: "Gross",
   recapSumLbl: "Total",
-  recapMismatchLbl: "MISMATCH — recapitulation differs from document total by",
+  recapMismatchLbl: "MISMATCH — recapitulation differs from document header:",
   advanceBasisLbl: "Prepayment basis",
   advancePaidLbl: "Prepayment received",
   advanceUnpaidLbl: "Prepayment not received yet.",

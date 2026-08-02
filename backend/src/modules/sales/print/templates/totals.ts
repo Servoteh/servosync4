@@ -1,7 +1,11 @@
 import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { formatAmount } from "../format";
-import { vatBreakdown } from "../../vat-totals";
+import {
+  documentVatBreakdown,
+  vatRecapMismatch,
+  type VatRecapMismatch,
+} from "../../vat-totals";
 import type { PrintAdvanceDeduction, PrintCtx, PrintLine } from "./ctx";
 
 /**
@@ -231,7 +235,8 @@ export function discountFromLines(lines: PrintLine[]): Prisma.Decimal {
  * `vatTotal` razlikuje za 0,01, a na uslužnom ne. Izmereno: osnovice 16.000,00 (20 %) i
  * 4.000,00 (10 %) uz `vatTotal` 3.599,99 sa dokumenta → robni papir je štampao
  * 3.200,00 + 400,00 = 3.600,00, dakle jednu paru više nego što je proknjiženo.
- * Razlika ide na grupu sa NAJVEĆOM osnovicom, gde je relativno najmanja.
+ * (Ishod tog ulaza je od sedmog kruga drugačiji — v. dopunu na dnu ovog komentara — ali
+ * pravilo da OBA obrasca rade isti račun ostaje razlog zašto je račun ovde.)
  *
  * ⚠️ DOPUNA 02.08.2026 (nalaz R3, „tri računara, tri ključa"): grupisanje se VIŠE NE RADI
  * ovde. Ova funkcija samo prevodi rezultat JEDINE funkcije grupisanja u sistemu
@@ -246,9 +251,13 @@ export function discountFromLines(lines: PrintLine[]): Prisma.Decimal {
  * uvek onaj koji je dokument objavio (`documentVatTotal`), pa se papir i XML ne mogu
  * raziću ni na jednom dokumentu — ni na zdravom, ni na pokvarenom.
  *
- * Raspoređivanje razlike zaokruživanja (izmereno: osnovice 16.000,00 uz 20 % i 4.000,00
- * uz 10 %, `vatTotal` 3.599,99 → red od 20 % nosi 3.199,99) ostaje — ali sada u
- * `vat-totals.ts`, zajedno sa granicom preko koje se razlika NE preuzima.
+ * ⚠️ DOPUNA 02.08.2026 (sedmi krug): RASPOREĐIVANJE RAZLIKE VIŠE NE VAŽI ZA REDOVAN
+ * RAČUN. Izmereni ulaz iz nalaza N4 (osnovice 16.000,00 uz 20 % i 4.000,00 uz 10 %, uz
+ * `vatTotal` 3.599,99 sa dokumenta) ne postoji kao ispravno stanje: `round2` po grupama
+ * daje 3.200,00 + 400,00 = 3.600,00, dakle zaglavlje je za paru pogrešno. Do sedmog kruga
+ * je papir tu razliku ĆUTKE gutao — i to na NEVINU grupu (nalaz Z3), a istim pojasom je
+ * progutao i 1,00 RSD na 100 stavki. Sada se razlika preuzima samo na dokumentu koji
+ * porez izvodi iz bruta (avans), a inače se PRIJAVLJUJE — v. `vatSummaryMismatch`.
  *
  * Redosled je po stopi RASTUĆE; obrazac koji ga hoće drugačije neka sortira sam
  * (raspored je izgled, a ne iznos — v. uvodni komentar fajla).
@@ -265,17 +274,14 @@ export interface VatSummaryRow {
 }
 
 export function vatSummaryRows(ctx: PrintCtx): VatSummaryRow[] {
-  const groups = vatBreakdown(
+  const groups = documentVatBreakdown(
+    ctx.invoice,
     // `PrintLine` ne nosi poresku šifru nego već razrešen procenat — iz ISTE mape
     // (`VAT_RATE_BY_CODE`, v. `InvoicePdfService.loadPrintCtx`). `null` = ino promet.
     ctx.lines.map((l) => ({
       ratePercent: l.vatRatePercent ?? 0,
       vatBase: l.lineTotal,
     })),
-    {
-      isExport: ctx.invoice.isExport,
-      documentVatTotal: ctx.invoice.vatTotal,
-    },
   );
 
   // Račun bez ijedne stavke: red i dalje mora da postoji — obrazac ga ima uvek — pa
@@ -290,6 +296,40 @@ export function vatSummaryRows(ctx: PrintCtx): VatSummaryRow[] {
       vat: g.vat,
     }))
     .sort((a, b) => a.rate - b.rate);
+}
+
+/**
+ * KONTROLA NA ČETIRI DONESENA OBRASCA: da li se odštampani redovi PDV-a slažu sa
+ * zaglavljem dokumenta. `null` = slažu se (pa se ništa ne štampa).
+ *
+ * ⚠️ ZAŠTO OD SEDMOG KRUGA POSTOJI: do tada su grupe preuzimale `vat_total` bez obzira
+ * na to odakle je razlika došla, pa NEUSKLAĐENOSTI ni nije moglo da bude — papir je
+ * uvek „zatvarao". Od kad se zaglađuje SAMO dokument koji porez izvodi iz bruta (avans),
+ * redovan račun sa pogrešnim `vat_total` daje Σ redova ≠ `vat_total` — i to mora da se
+ * VIDI, jer je zbirni blok obrasca upravo mesto gde kupac sabira: osnovica + PDV redovi
+ * naspram uokvirenog „Za uplatu" (`grossTotal`).
+ */
+export function vatSummaryMismatch(ctx: PrintCtx): VatRecapMismatch | null {
+  return vatRecapMismatch(vatSummaryRows(ctx), ctx.invoice);
+}
+
+/**
+ * Kontrolni natpis za zbirni blok — jedan tekst za sva četiri obrasca, da se ne bi
+ * razišli u formulaciji (kao što su se razišli u računu, nalaz N4).
+ *
+ * Imenuje OBE strane odvojeno: u zbiru se greška osnovice i greška poreza poništavaju
+ * (+0,01 i −0,01 daju 0,00), pa je zbirno merilo slepo — v. `vatRecapMismatch`.
+ */
+export function vatSummaryMismatchLabel(
+  mismatch: VatRecapMismatch,
+  english = false,
+): string {
+  const base = formatAmount(mismatch.baseDiff);
+  const vat = formatAmount(mismatch.vatDiff);
+  return english
+    ? `MISMATCH — sum by rate differs from document header: net ${base}, VAT ${vat}`
+    : `NEUSKLAĐENO — zbir po stopama se razlikuje od zaglavlja dokumenta: ` +
+        `osnovica ${base}, PDV ${vat}`;
 }
 
 /**

@@ -553,8 +553,14 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
      * dva ishoda. Izmereno: osnovice 16.000,00 (20 %) i 4.000,00 (10 %) uz `vatTotal`
      * 3.599,99 sa dokumenta → robni papir je štampao 3.200,00 + 400,00 = 3.600,00, dakle
      * jednu paru više nego što je proknjiženo u glavnoj knjizi.
+     *
+     * 🔴 ISHOD PROMENJEN U SEDMOM KRUGU (02.08.2026, nalazi Z1/Z3): oba obrasca i dalje
+     * rade ISTI račun — ali taj račun više ne guta razliku na redovnom računu. Osnovice
+     * 16.000,00 i 4.000,00 daju 3.200,00 + 400,00 = 3.600,00, pa je `vatTotal 3.599,99`
+     * pogrešno ZAGLAVLJE i mora da se vidi, a ne da se razmaže po grupama (razliku je
+     * dobijala grupa po veličini osnovice, ne po poreklu — nalaz Z3).
      */
-    it("zbir odštampanih PDV redova je TAČNO `vatTotal` sa dokumenta", () => {
+    it("🔴 pogrešan `vatTotal` se ne guta: oba obrasca i dalje računaju isto", () => {
       const ctx = makeCtx({
         invoice: makeInvoice({
           netTotal: d("20000.00"),
@@ -581,12 +587,11 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
         ],
       });
       const texts = textOf(ctx);
-      // Razlika pada na grupu sa najvećom osnovicom: 3.199,99 + 400,00 = 3.599,99.
       expect(amountAfter(texts, "PDV po stopi 20% X 16,000.00 =")).toBe(
-        "3,199.99",
+        "3,200.00",
       );
       expect(amountAfter(texts, "PDV po stopi 10% X 4,000.00 =")).toBe("400.00");
-      expect(texts).not.toContain("3,200.00");
+      expect(texts).not.toContain("3,199.99");
     });
 
     it("bez avansa nema reda o avansu, a „Za uplatu“ je pun bruto zbir", () => {

@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { VAT_RATE_BY_CODE } from "../gl/posting/vat-rates";
+import { grossToNet } from "../pdv/vat-bridge.util";
 
 /**
  * PDV ZBIROVI DOKUMENTA — JEDNO PRAVILO ZA CEO IZLAZNI RAČUN.
@@ -114,6 +115,52 @@ import { VAT_RATE_BY_CODE } from "../gl/posting/vat-rates";
  * dakle biramo koji jedan prekršaj ostaje, a ne da li ga uopšte ima. Zapisano i u
  * `backend/docs/PREOSTALE_FAZE.md`, odeljak „🔶 OTVORENO NA DAN 01.08.2026".
  *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * DOPUNA 02.08.2026 (sedmi krug) — ZAGLAĐIVANJE SAMO TAMO GDE POREZ DOLAZI IZ BRUTA
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * Preuzimanje objavljenog poreza iz šestog kruga (odeljak iznad) bilo je tačno po
+ * NAMERI, ali je sprovedeno kao osobina POZIVA („neko je prosledio `documentVatTotal`"),
+ * a ne kao osobina DOKUMENTA. Pošto ga prosleđuje SVAKO ko prikazuje postojeći dokument,
+ * pojas od `0,01 × n` je usisavao razliku bez obzira odakle je došla. Izmereno (sedmi
+ * krug, izvršavanjem modula nad `Prisma.Decimal`):
+ *
+ *   ULAZ                                  tačan PDV   `vat_total`   stari ishod
+ *   20 × 1.000,00 @ 20 %                   4.000,00     3.999,80   grupa nosi 3.999,80
+ *   100 × 1.000,00 @ 20 %                 20.000,00    19.999,00   usisano 1,00 RSD
+ *
+ * Pojačivač A — meta se birala po NAJVEĆOJ osnovici, bez ikakve veze sa iznosom koji joj
+ * se dodaje: 99 redova @ 0 % × 100,00 + 1 red @ 20 % sa osnovicom 0,05 uz `vat_total`
+ * 1,01 → papir je štampao `20 % | 0,05 | 1,01`, dakle efektivnu stopu od **2020 %**.
+ * Pojačivač B — pojas je rastao po `lines.length`, a red sa osnovicom 0,00 je legitiman
+ * (rabat 100 %): 1 red 1.000,00 @ 20 % + 500 praznih redova davalo je toleranciju
+ * 5,01 RSD, pa je `vat_total = 194,99` (tačno 200,00) prolazio nemo.
+ *
+ * ZATO OD OVE IZMENE:
+ *
+ *  1. ZAGLAĐIVANJE JE OPT-IN PO VRSTI DOKUMENTA. Objavljen porez ne prima
+ *     `vatBreakdown` nego `documentVatBreakdown`, kome se predaje CEO dokument
+ *     (`documentType`, `isExport`, `vatTotal`) — i on sam odlučuje. Zaglađuje se samo
+ *     dokument koji porez STVARNO izvodi deljenjem (`GROSS_DERIVED_VAT_DOCUMENT_TYPES`
+ *     = danas `AVR`; v. `advance-invoice.service.ts` → `splitAdvance` → `grossToNet`).
+ *     Time otpada cela klasa gornjih primera: redovan račun se više ne zaglađuje NIKAD.
+ *     Opcija se ne prosleđuje „ručno" ni sa jednog mesta — pozivalac ne može da zaboravi
+ *     uslov koji ne postavlja.
+ *
+ *  2. ODBRANA U DUBINU, i kad je zaglađivanje dozvoljeno (v. `applyGrossDerivedVatTotal`):
+ *     tolerancija `max(0,01; 0,005 × broj redova SA IZNOSOM ≠ 0)`, meta po `|osnovica|`,
+ *     provera efektivne stope grupe i provera da je grupa i SAMA valjan izvod iz bruta.
+ *
+ *  3. NEZAGLAĐENO MORA DA SE VIDI. Kontrolni red na papiru je do sada merio
+ *     `Σosn + Σpdv − bruto`, a taj izraz je po konstrukciji NULA kad je zaglavlje interno
+ *     dosledno (`bruto = neto + pdv`) — dakle nije mogao da vidi pogrešan `vat_total`.
+ *     Merilo je sada `vatRecapMismatch`: Σ osnovica grupa naspram `netTotal` i
+ *     Σ poreza grupa naspram `vat_total`, ODVOJENO (u zbiru se te dve greške poništavaju).
+ *
+ * ŠTA OVO KOŠTA: zatečeno zaglavlje upisano po STAROM pravilu (Σ poreza po stavci) se
+ * više ne zaglađuje ćutke nego se prijavljuje. To je namerno — i bezbolno, jer na
+ * produkciji nema nijedne fakture ni stavke (izmereno 0/0, v. „ODBRANA PRI SABIRANJU").
+ *
  * ── ODBRANA PRI SABIRANJU (nalaz S2) ────────────────────────────────────────────
  * Osnovica svake stavke se ovde ponovo zaokružuje na paru pre sabiranja. Iznosi koje
  * piše `PricingService` su već zaokruženi, pa to nad njima ne menja ništa; ali kolona
@@ -187,8 +234,10 @@ export interface VatRateGroup {
   /** Osnovica grupe = Σ zaokruženih osnovica stavki. */
   base: Prisma.Decimal;
   /**
-   * PDV grupe. Podrazumevano `round2(base × stopa)`; kad dokument objavi svoj porez
-   * (`documentVatTotal` — avans), nosi OBJAVLJENI iznos. V. uvod fajla, „R1/R2".
+   * PDV grupe. UVEK `round2(base × stopa)` — osim kad dokument porez izvodi iz bruta
+   * (`documentVatBreakdown` nad vrstom iz `GROSS_DERIVED_VAT_DOCUMENT_TYPES`) i kad
+   * razlika prođe sve četiri brane; tada nosi OBJAVLJENI iznos. V. uvod fajla, „R1/R2"
+   * i „sedmi krug".
    */
   vat: Prisma.Decimal;
 }
@@ -220,13 +269,48 @@ export interface VatTotalsLine {
 export interface VatBreakdownOptions {
   /** Izvoz obara SVE redove na 0 % / kategoriju Z (čl. 24), ma kakvu šifru nosili. */
   isExport?: boolean;
-  /**
-   * POREZ KOJI JE DOKUMENT OBJAVIO (`invoice.vat_total`) — prosleđuje ga svako ko
-   * PRIKAZUJE postojeći dokument (papir, e-faktura), a NIKAD onaj ko ga tek računa.
-   * V. uvod fajla: avans porez izvodi deljenjem, pa ga grupe preuzimaju umesto da ga
-   * ponovo množe. Bez njega grupe nose `round2(base × stopa)`.
-   */
-  documentVatTotal?: Prisma.Decimal | null;
+}
+
+/**
+ * VRSTE DOKUMENATA KOJE POREZ IZVODE IZ BRUTA (deljenjem), a ne množenjem osnovice.
+ *
+ * Danas je to samo AVANSNI RAČUN: `advance-invoice.service.ts` → `splitAdvance` →
+ * `grossToNet` (pdv/vat-bridge.util). Bruto je naplaćen novac i dat je unapred, osnovica
+ * se DELI preračunatom stopom (20/120 = 16,6667 %), a porez je RAZLIKA — pa
+ * `round2(osnovica × stopa)` za 16,67 % bruto iznosa po 20 % (9,09 % po 10 %) vraća paru
+ * više. V. uvod fajla, „R1/R2".
+ *
+ * ⚠️ SPISAK, A NE „ima li dokument `vat_total`" (sedmi krug, 02.08.2026): `vat_total` ima
+ * SVAKI dokument, pa je pojas za zaokruživanje usisavao i greške koje sa deljenjem nemaju
+ * veze — 100 × 1.000,00 @ 20 % je uz `vat_total = 19.999,00` tiho progutalo 1,00 RSD.
+ * Osobina „porez je izveden iz bruta" je osobina VRSTE DOKUMENTA i tu se objavljuje.
+ *
+ * Ko doda novu takvu vrstu, dodaje je OVDE — i time automatski i za papir, i za
+ * rekapitulaciju, i za e-fakturu, jer sve tri prolaze kroz `documentVatBreakdown`.
+ */
+export const GROSS_DERIVED_VAT_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
+  "AVR",
+]);
+
+/** Da li dokument porez IZVODI IZ BRUTA (deljenjem) — v. spisak iznad. */
+export function vatIsDerivedFromGross(invoice: {
+  documentType?: string | null;
+}): boolean {
+  return GROSS_DERIVED_VAT_DOCUMENT_TYPES.has(
+    (invoice.documentType ?? "").trim().toUpperCase(),
+  );
+}
+
+/**
+ * Minimum zaglavlja koji je potreban da bi se POSTOJEĆI dokument prikazao (papir,
+ * rekapitulacija, e-faktura). Traži se CEO ovaj oblik, a ne samo `vatTotal`, baš zato da
+ * pozivalac ne bi mogao da objavi porez ne izjasnivši se o vrsti dokumenta.
+ */
+export interface VatDocumentHeader {
+  documentType?: string | null;
+  isExport: boolean;
+  /** `invoices.vat_total` — porez koji je dokument objavio (proknjižen, na ekranu, u GK). */
+  vatTotal: Prisma.Decimal;
 }
 
 function resolveRatePercent(line: VatTotalsLine): Prisma.Decimal {
@@ -237,9 +321,14 @@ function resolveRatePercent(line: VatTotalsLine): Prisma.Decimal {
 /**
  * JEDINA FUNKCIJA GRUPISANJA PDV-a U SISTEMU. Ključ = **(kategorija, stopa)**.
  *
- * Zovu je zaglavlje (`documentVatTotals`), papir (`buildVatRecap`, `vatSummaryRows`) i
- * e-faktura (`groupTaxSubtotals`). Ko grupiše mimo nje, pravi četvrtu podelu istog
- * dokumenta — a upravo su tri različite podele bile nalaz R3 (v. uvod fajla).
+ * Zovu je zaglavlje (`documentVatTotals`) i prikaz postojećeg dokumenta
+ * (`documentVatBreakdown` → papir, rekapitulacija, e-faktura). Ko grupiše mimo nje, pravi
+ * četvrtu podelu istog dokumenta — a upravo su tri različite podele bile nalaz R3.
+ *
+ * ⚠️ OVDE NEMA ZAGLAĐIVANJA (sedmi krug): porez grupe je UVEK `round2(osnovica × stopa)`.
+ * Objavljen porez dokumenta ume da preuzme samo `documentVatBreakdown`, i to samo za
+ * vrste iz `GROSS_DERIVED_VAT_DOCUMENT_TYPES`. Dok je preuzimanje bilo ovde, dovoljno je
+ * bilo proslediti `documentVatTotal` da se svaka razlika progura kao „zaokruživanje".
  */
 export function vatBreakdown(
   lines: ReadonlyArray<VatTotalsLine>,
@@ -272,52 +361,189 @@ export function vatBreakdown(
     }))
     .sort((a, b) => b.ratePercent.comparedTo(a.ratePercent));
 
-  applyPublishedVatTotal(groups, lines.length, opts.documentVatTotal);
   return groups;
 }
 
 /**
- * PREUZMI POREZ KOJI JE DOKUMENT OBJAVIO — ali samo koliko je zaokruživanje moglo da
- * napravi, i nikad na promet bez poreza.
+ * GRUPE ZA PRIKAZ POSTOJEĆEG DOKUMENTA — jedini ulaz za papir, rekapitulaciju i e-fakturu.
  *
- * ⚠️ ZAŠTO GRANICA, A NE SLEPO PREUZIMANJE: bez nje bi dokument sa pokvarenim
- * zaglavljem (`vat_total = 0` uz osnovicu od 500,00 — ručna izmena u bazi, prekinut
- * uvoz) tiho dobio papir i e-fakturu koji ga POTVRĐUJU: red „20 % | 500,00 | 0,00" i
- * `TaxSubtotal` sa nulom poreza. Zato se preuzima samo razlika koja MOŽE biti posledica
- * zaokruživanja: svaki red doprinosi najviše pola pare, pa `n` redova daje najviše
- * `0,005 × (n + 1)`, što je za `n ≥ 1` uvek ≤ `0,01 × n`. Preko toga se ne dira ništa —
- * neslaganje ostaje VIDLJIVO (crveni kontrolni red na papiru, odbijanje na SEF-u)
- * umesto da bude zaglađeno.
+ * Razlika u odnosu na goli `vatBreakdown`: OVDE se, i samo ovde, dokumentu koji porez
+ * izvodi iz bruta (`vatIsDerivedFromGross`) preuzima objavljen porez. Pozivalac ne
+ * prosleđuje „hoću li zaglađivanje" — prosleđuje DOKUMENT, a odluka je ovde, na jednom
+ * mestu, po `documentType`.
  *
- * Izmereni slučajevi koje granica pokriva: AVR (jedan red, razlika 0,01 — v. uvod) i
- * zatečeni dokument kome je zaglavlje upisano po STAROM pravilu (Σ poreza po stavci:
- * 5 stavki × 100,01 → razlika 0,01; 20 stavki → do 0,05).
- *
- * Razlika ide na grupu sa NAJVEĆOM OSNOVICOM MEĐU OPOREZOVANIMA (stopa > 0), gde je
- * relativno najmanja. Grupa sa 0 % je namerno isključena: para poreza na oslobođenom
- * prometu je poreska tvrdnja, ne zaokruživanje.
+ * ⚠️ ZAŠTO OVAKAV POTPIS (sedmi krug, 02.08.2026): dok je objavljen porez bio obična
+ * opcija `vatBreakdown`-a (`documentVatTotal`), prosleđivao ga je SVAKI prikaz, pa je
+ * pojas tolerancije usisavao razliku bez obzira odakle je došla — 20 × 1.000,00 @ 20 %
+ * uz `vat_total = 3.999,80` je tiho štampalo 3.999,80. Sada je nemoguće zatražiti
+ * zaglađivanje a ne izjasniti se koji je to dokument.
  */
-function applyPublishedVatTotal(
+export function documentVatBreakdown(
+  invoice: VatDocumentHeader,
+  lines: ReadonlyArray<VatTotalsLine>,
+): VatRateGroup[] {
+  const groups = vatBreakdown(lines, { isExport: invoice.isExport });
+  if (vatIsDerivedFromGross(invoice)) {
+    applyGrossDerivedVatTotal(groups, lines, invoice.vatTotal);
+  }
+  return groups;
+}
+
+/** Najveća razlika koju jedan red može da napravi zaokruživanjem osnovice — pola pare. */
+const HALF_CENT = new D("0.005");
+/** Najmanja tolerancija: jedan red uvek sme da odstupi za paru (izmereno: `grossToNet`). */
+const ONE_CENT = new D("0.01");
+
+/**
+ * PREUZMI POREZ KOJI JE DOKUMENT IZVEO IZ BRUTA — uz četiri nezavisne brane.
+ *
+ * Zove se SAMO iz `documentVatBreakdown`, i samo za vrste iz
+ * `GROSS_DERIVED_VAT_DOCUMENT_TYPES`. Sve ispod je odbrana u dubinu: i kad je
+ * zaglađivanje dozvoljeno, razlika mora da liči na zaokruživanje BAŠ TE grupe.
+ *
+ * ── (1) TOLERANCIJA `max(0,01; 0,005 × broj redova SA IZNOSOM) ─────────────────
+ * Matematički: svaki red doprinosi najviše pola pare, pa `n` redova daje najviše
+ * `0,005·n + 0,005·G`. Brute force sedmog kruga (120.000 nasumičnih dokumenata +
+ * iscrpna konstruktivna pretraga): **0 prekoračenja**, najveći izmeren odnos
+ * `razlika/tolerancija` = **0,5000** — dakle stari pojas `0,01 × n` je bio TAČNO
+ * dvostruko širi nego što treba. Iscrpno za `grossToNet` (svih 9.999.901 bruto iznosa
+ * 1,00–100.000,00): `max |razlika| = 0,01`, uvek na JEDNOM redu.
+ *
+ * ⚠️ BROJE SE SAMO REDOVI SA IZNOSOM ≠ 0. Red sa osnovicom 0,00 je legitiman (rabat
+ * 100 %), ali zaokruživanjem ne može da napravi ni pare razlike. Dok se brojao
+ * `lines.length`, 1 red od 1.000,00 uz **500 praznih redova** davao je toleranciju
+ * 5,01 RSD, pa je `vat_total = 194,99` (tačno 200,00) prolazio nemo; pojas je rastao
+ * linearno sa praznim redovima, do proizvoljne veličine.
+ *
+ * ── (2) META PO `|osnovica|`, NE PO OSNOVICI ────────────────────────────────────
+ * Obrazloženje „grupa gde je razlika relativno najmanja" važi za VELIČINU, a
+ * `greaterThan` nad negativnim iznosima bira NAJMANJU po apsolutnoj vrednosti — tačno
+ * suprotno. Izmereno na ogledalskom paru (faktura i njeno knjižno odobrenje): grupe se
+ * nisu poništavale po stopi, ostajalo je ±0,02 po stopi iako je dokumentarni zbir nula.
+ * Za KIF/POPDV, koji se vode PO STOPI, to je trajni ostatak.
+ *
+ * ── (3) EFEKTIVNA STOPA GRUPE SE NE SME PROMENITI ──────────────────────────────
+ * `|porez_mete − round2(osnovica × stopa)| ≤ 0,01`. Bez toga je meta birana po najvećoj
+ * osnovici primala iznos bez ikakve veze sa svojom osnovicom: 99 redova @ 0 % × 100,00 +
+ * 1 red @ 20 % sa osnovicom 0,05 uz `vat_total = 1,01` štampalo je `20 % | 0,05 | 1,01`,
+ * dakle **efektivnu stopu od 2020 %**, bez ijednog upozorenja.
+ *
+ * ── (4) GRUPA MORA I SAMA DA BUDE VALJAN IZVOD IZ BRUTA ────────────────────────
+ * `grossToNet(osnovica + porez, stopa) === (osnovica, porez)` — ISTOM funkcijom kojom je
+ * avans i nastao. Ovo je brana za nalaz Z3: razlika rođena u jednoj grupi ne sme da
+ * završi u drugoj. Izmereno: red 110,03 @ 20 % (porez izveden deljenjem) + red 1.000,00
+ * @ 10 % uz `vat_total = 122,00` → stara meta (10 %, veća osnovica) dobijala je 99,99,
+ * tj. efektivnu stopu 9,999 % i pad BR-CO-17 na grupi koja problem nije ni imala.
+ * Provera nevinu grupu ODBIJA (`grossToNet(1.099,99; 10) = (999,99; 100,00)`), a pravu
+ * PREPOZNAJE (`grossToNet(132,03; 20) = (110,03; 22,00)`) — pa razlika ide tamo gde je i
+ * nastala, umesto da se samo odustane. Ista provera hvata i mali iznos iz nalaza Z4
+ * (1 red @ 20 % sa osnovicom 0,05 uz `vat_total = 0`):
+ * `grossToNet(0,05; 20) = (0,04; 0,01) ≠ (0,05; 0,00)`.
+ *
+ * ── PRIPISIVANJE MORA DA BUDE JEDNOZNAČNO ──────────────────────────────────────
+ * Ako obe provere prođu za VIŠE od jedne grupe (ili ni za jednu), ne zna se čija je
+ * razlika — i ne zaglađuje se. Dvosmislenost je konstruktibilna (iscrpna pretraga po
+ * osnovicama do 20.000,00): grupa 0,13 @ 20 % i grupa 0,25 @ 10 % obe primaju −0,01 i
+ * obe ostaju valjan izvod iz bruta. Neslaganje tada ostaje VIDLJIVO: kontrolni red na
+ * papiru (`vatRecapMismatch`) i pad BR-CO-14 na SEF-u.
+ *
+ * Grupa sa 0 % nikad nije kandidat: para poreza na oslobođenom prometu je poreska
+ * tvrdnja, ne zaokruživanje.
+ */
+function applyGrossDerivedVatTotal(
   groups: VatRateGroup[],
-  lineCount: number,
-  documentVatTotal: Prisma.Decimal | null | undefined,
+  lines: ReadonlyArray<VatTotalsLine>,
+  publishedVatTotal: Prisma.Decimal | null | undefined,
 ): void {
-  if (documentVatTotal == null || groups.length === 0) return;
+  if (publishedVatTotal == null || groups.length === 0) return;
 
   const computed = groups.reduce((sum, g) => sum.add(g.vat), ZERO);
-  const drift = roundAmount(documentVatTotal).sub(computed);
+  const drift = roundAmount(publishedVatTotal).sub(computed);
   if (drift.isZero()) return;
 
-  const tolerance = new D("0.01").mul(Math.max(1, lineCount));
+  // (1) Tolerancija po redovima KOJI NOSE IZNOS.
+  const payingLines = lines.filter(
+    (l) => !roundAmount(l.vatBase).isZero(),
+  ).length;
+  const scaled = HALF_CENT.mul(payingLines);
+  const tolerance = scaled.greaterThan(ONE_CENT) ? scaled : ONE_CENT;
   if (drift.abs().greaterThan(tolerance)) return;
 
-  let target: VatRateGroup | null = null;
+  // (2) Kandidati: oporezovane grupe, najveća po APSOLUTNOJ osnovici prva.
+  const candidates = groups
+    .filter((g) => g.ratePercent.greaterThan(ZERO))
+    .sort((a, b) => b.base.abs().comparedTo(a.base.abs()));
+
+  // (3) + (4) Pripisati se sme samo grupi koja i posle razlike ostaje sama sebi verna.
+  const accepted = candidates.filter((g) => {
+    const vat = g.vat.add(drift);
+    const exact = roundAmount(g.base.mul(g.ratePercent).div(HUNDRED));
+    if (vat.sub(exact).abs().greaterThan(ONE_CENT)) return false;
+    return isGrossDerivation(g.base, vat, g.ratePercent);
+  });
+
+  // Jednoznačno ili nikako.
+  if (accepted.length !== 1) return;
+  accepted[0].vat = accepted[0].vat.add(drift);
+}
+
+/**
+ * Da li (osnovica, porez) MOŽE da nastane deljenjem bruta po datoj stopi — proverava se
+ * ISTOM funkcijom kojom avans i nastaje (`grossToNet`, pdv/vat-bridge.util), da provera i
+ * obračun ne bi mogli da se raziđu.
+ *
+ * Radi i na negativnom dokumentu (storno, knjižno odobrenje): `grossToNet` zaokružuje
+ * ROUND_HALF_UP (od nule), pa je ogledalski par simetričan do pare —
+ * `grossToNet(−132,03; 20) = (−110,03; −22,00)`.
+ */
+function isGrossDerivation(
+  base: Prisma.Decimal,
+  vat: Prisma.Decimal,
+  ratePercent: Prisma.Decimal,
+): boolean {
+  const split = grossToNet(base.add(vat), ratePercent);
+  return split.net.equals(base) && split.vat.equals(vat);
+}
+
+/**
+ * KONTROLA TIHE GREŠKE: da li se grupe za prikaz slažu sa zaglavljem dokumenta.
+ *
+ * ⚠️ ZAŠTO NE `Σosn + Σpdv − bruto` (sedmi krug, nalaz Z1): kad je zaglavlje interno
+ * dosledno — a jeste, jer `bruto = neto + porez` važi i za uvoz i za ručnu izmenu kroz
+ * UI — taj izraz je IDENTIČKI NULA, pa kontrola po konstrukciji nije mogla da vidi
+ * pogrešan `vat_total`. Papir je zato mogao da odštampa `20 % | 0,05 | 1,01` bez ijednog
+ * upozorenja.
+ *
+ * Zato se mere DVE stvari ODVOJENO:
+ *   • `baseDiff` = Σ osnovica grupa − `net_total`  → stavke i zaglavlje su se razišle;
+ *   • `vatDiff`  = Σ poreza grupa − `vat_total`    → objavljen porez nije ono što
+ *     osnovice po stopi daju (i nije preuzet, jer nije izveden iz bruta).
+ * Odvojeno, jer se u zbiru poništavaju: osnovica +0,01 i porez −0,01 daju zbir 0,00.
+ *
+ * `null` = sve se poklapa. Merilo je PARA — na papiru sa dve decimale se ispod pare
+ * ništa ne vidi, a `Decimal(19,4)` kolone umeju da nose ostatak od 0,0001.
+ */
+export interface VatRecapMismatch {
+  /** Σ osnovica grupa − `netTotal`, zaokruženo na paru. */
+  baseDiff: Prisma.Decimal;
+  /** Σ poreza grupa − `vatTotal`, zaokruženo na paru. */
+  vatDiff: Prisma.Decimal;
+}
+
+export function vatRecapMismatch(
+  groups: ReadonlyArray<{ base: Prisma.Decimal; vat: Prisma.Decimal }>,
+  invoice: { netTotal: Prisma.Decimal; vatTotal: Prisma.Decimal },
+): VatRecapMismatch | null {
+  let sumBase = ZERO;
+  let sumVat = ZERO;
   for (const g of groups) {
-    if (!g.ratePercent.greaterThan(ZERO)) continue;
-    if (target === null || g.base.greaterThan(target.base)) target = g;
+    sumBase = sumBase.add(g.base);
+    sumVat = sumVat.add(g.vat);
   }
-  if (target === null) return;
-  target.vat = target.vat.add(drift);
+  const baseDiff = roundAmount(sumBase.sub(invoice.netTotal));
+  const vatDiff = roundAmount(sumVat.sub(invoice.vatTotal));
+  if (baseDiff.isZero() && vatDiff.isZero()) return null;
+  return { baseDiff, vatDiff };
 }
 
 /**

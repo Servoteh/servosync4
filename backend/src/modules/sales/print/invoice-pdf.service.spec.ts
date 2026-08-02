@@ -919,6 +919,39 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
     }, 30000);
 
     /**
+     * 🔴 NALAZ Z1 (sedmi krug, 02.08.2026) — KONTROLNI RED NA DONESENOM OBRASCU.
+     *
+     * Rekapitulacija sa kontrolnim redom postoji samo na opštem rendereru (AVR/KO/KZ), a
+     * REDOVAN račun se štampa baš ovde. Dok su grupe ćutke preuzimale `vat_total`, papir
+     * je uvek „zatvarao"; od kad se preuzima samo na dokumentu koji porez izvodi iz bruta,
+     * pogrešan `vat_total` daje `osnovica + Σ PDV redova ≠` uokvireno „Za uplatu" — a bez
+     * ovog reda nigde ne bi pisalo zašto.
+     *
+     * ULAZ: osnovica 80.497,70 uz 20 % → tačan porez 16.099,54; zaglavlje nosi 16.098,54.
+     * Zaglavlje je INTERNO DOSLEDNO (`bruto = neto + porez`) — baš zato ga staro merilo
+     * (`Σosn + Σpdv − bruto`) nije moglo videti: taj izraz je bio identički nula.
+     */
+    it("🔴 Z1 — pogrešan `vat_total` daje kontrolni red, a redovi TAČAN porez", async () => {
+      const out = await build(
+        makeInvoice({
+          vatTotal: D("16098.54"),
+          grossTotal: D("96596.24"),
+        }),
+      );
+      expect(out.body).toContain("PDV po stopi 20% X 80,497.70 =");
+      expect(out.body).toContain("16,099.54"); // NE 16.098,54
+      expect(out.body).toContain("NEUSKLAĐENO");
+      // Natpis imenuje OBE strane: osnovica se poklapa, porez ne (u zbiru bi se poništili).
+      expect(out.body).toContain("osnovica 0.00");
+      expect(out.body).toContain("PDV 1.00");
+    }, 30000);
+
+    it("zdrav račun nema kontrolni red (crveno se pali samo kad ima zašto)", async () => {
+      const out = await build(makeInvoice());
+      expect(out.body).not.toContain("NEUSKLAĐENO");
+    }, 30000);
+
+    /**
      * `buildExportInvoicePdf` je ostao zbog rute `?variant=export`, ali obrazac više ne
      * bira on nego vrsta dokumenta — na domaćem računu namerno daje DOMAĆI papir.
      */

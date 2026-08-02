@@ -500,9 +500,18 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
       expect(amountAfter(mixed, "PDV po stopi 10% X 4,000.00 =")).toBe("400.00");
     });
 
-    it("zbir odštampanih PDV redova uvek daje PDV sa dokumenta", () => {
-      // Namerno „neokrugao" PDV na dokumentu (zaokruživanje po stavkama): razlika
-      // sme da padne na najveću osnovicu, ali papir mora da se poklopi sa knjiženjem.
+    /**
+     * 🔴 ISHOD PROMENJEN U SEDMOM KRUGU (02.08.2026, nalazi Z1/Z3). Ovde je stajalo da
+     * „razlika sme da padne na najveću osnovicu, ali papir mora da se poklopi sa
+     * knjiženjem". Izmereno je da to pravilo guta i ono što sa zaokruživanjem nema veze
+     * (100 × 1.000,00 uz `vat_total = 19.999,00` → progutan 1,00 RSD) i da razliku
+     * pripisuje grupi po VELIČINI, a ne po poreklu.
+     *
+     * Redovan račun (IFUSL) porez MNOŽI, pa papir sada štampa ono što osnovice po stopi
+     * daju: `vatTotal = 3.599,99` uz osnovice 16.000,00 i 4.000,00 je pogrešno ZAGLAVLJE,
+     * i prijavljuje se kontrolnim redom (`InvoicePdfService.withVatMismatchNotice`).
+     */
+    it("🔴 pogrešan `vatTotal` se ne guta: redovi nose porez iz osnovica po stopi", () => {
       const mixed = domacaUslugaTemplate(
         makeCtx({
           invoice: makeInvoice({
@@ -522,9 +531,9 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
           ],
         }),
       );
-      // 3,199.99 + 400.00 = 3,599.99 = `vatTotal`
+      // 3,200.00 + 400.00 = 3,600.00 — svaka grupa nosi `round2(osnovica × stopa)`.
       expect(amountAfter(mixed, "PDV po stopi 20% X 16,000.00 =")).toBe(
-        "3,199.99",
+        "3,200.00",
       );
       expect(amountAfter(mixed, "PDV po stopi 10% X 4,000.00 =")).toBe("400.00");
     });
