@@ -126,8 +126,16 @@ export interface IzvestajRow {
   /** docx §4.10: dokument primopredaje (null = nema). */
   primopredaja?: Primopredaja | null;
   status_override?: string | null;
+  /** Rang reda unutar sklopa (efektivnog roditelja) po ident broju — BE `sort_order`;
+   *  koristi se za redni broj pozicije u grupi i za poredak braće (zahtev 053/26 §2/§3). */
+  sort_order?: number | null;
+  /** true = ručni premeštaj u sklop je PRIMENJEN (BE `reparentNodes`). */
   has_parent_override?: boolean;
+  /** true = override postoji u bazi ali je odbijen (cilj van opsega / ciklus) → važi auto. */
+  override_ignored?: boolean;
+  /** SIROV cilj override-a (dijalog „Premesti u sklop") — nije nužno primenjen. */
   parent_override_rn_id?: number | string | null;
+  /** EFEKTIVNI roditelj (BE razrešio override) — jedini izvor istine za stablo. */
   parent_node_id?: number | string | null;
   korisnicka_napomena?: string | null;
   sistemska_napomena?: string | null;
@@ -212,6 +220,9 @@ export interface PodsklopNode {
   rn_id?: number | string | null;
   ident_broj?: string | null;
   naziv_dela?: string | null;
+  /** Efektivni roditelj u stablu — čvor koji se ovde pojavi JESTE sklop (ima decu). */
+  parent_rn_id?: number | string | null;
+  nivo?: number | null;
   [k: string]: unknown;
 }
 export function normalizePodsklopovi(data: unknown): PodsklopNode[] {

@@ -27,6 +27,7 @@ import {
   descendantsOf,
   computeRollups,
   collectAncestors,
+  effParentKey,
   visibleRows,
 } from '@/lib/pracenje-tree';
 import { exportIzvestajXlsx, exportIzvestajPdf } from '@/lib/pracenje-export';
@@ -116,6 +117,9 @@ function formatDate(v: unknown): string {
   return `${dd}.${mm}.${d.getFullYear()}.`;
 }
 
+/** Prazna („Sve") vrednost dropdown-a Crtež/Pozicija — vrednost iz podataka je uvek neprazna. */
+const ALL = '';
+
 /** Dijakritika-neosetljiv normalizator za pretragu po poziciji (docx §8). */
 function norm(s: unknown): string {
   const str = String(s ?? '').normalize('NFD');
@@ -141,6 +145,28 @@ function opsSummary(row: IzvestajRow): string {
   const lastFin = fin.length ? fin[fin.length - 1] : null;
   const tail = lastFin ? ` · završna ${formatNum(lastFin.completed_qty)}/${formatNum(lastFin.planned_qty)}` : '';
   return `${ops.length} operacija${tail}`;
+}
+
+/** Broj crteža reda za dropdown „Crtež" (zahtev 053/26 §4): pun broj, fallback bazni. */
+function rowCrtez(r: IzvestajRow): string {
+  return String(r.broj_crteza ?? '').trim() || String(r.crtez_drawing_no ?? '').trim();
+}
+
+/** Naziv pozicije reda za dropdown „Pozicija" (zahtev 053/26 §4). */
+function rowPozicija(r: IzvestajRow): string {
+  return String(r.naziv_pozicije ?? '').trim();
+}
+
+/** Distinct vrednosti za dropdown, sortirane sr-Latn (dijakritika po abecedi, ne po code-pointu). */
+function distinctSorted(rows: IzvestajRow[], pick: (r: IzvestajRow) => string): string[] {
+  const seen = new Map<string, string>(); // norm → prva viđena original vrednost
+  for (const r of rows) {
+    const v = pick(r);
+    if (!v) continue;
+    const k = norm(v);
+    if (!seen.has(k)) seen.set(k, v);
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b, 'sr-Latn'));
 }
 
 /** Tip čvora u stablu za bojenje/grupisanje (1.0 rowSklopType). */
@@ -334,6 +360,8 @@ export function PredmetView({
   const [filter, setFilter] = useState<string>('sve');
   const [masFilter, setMasFilter] = useState<string>('sve');
   const [povrsFilter, setPovrsFilter] = useState<string>('sve');
+  const [crtezFilter, setCrtezFilter] = useState<string>(ALL);
+  const [pozFilter, setPozFilter] = useState<string>(ALL);
   const [search, setSearch] = useState<string>('');
   const [matrix, setMatrix] = useState<boolean>(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set()); // sklopljeni sklopovi
@@ -354,10 +382,17 @@ export function PredmetView({
   const rollups = useMemo(() => computeRollups(rowsEff), [rowsEff]);
 
   const filterActive =
-    filter !== 'sve' || masFilter !== 'sve' || povrsFilter !== 'sve' || search.trim() !== '';
+    filter !== 'sve' ||
+    masFilter !== 'sve' ||
+    povrsFilter !== 'sve' ||
+    crtezFilter !== ALL ||
+    pozFilter !== ALL ||
+    search.trim() !== '';
 
   const passRow = useMemo(() => {
     const qq = norm(search);
+    const crtezQ = norm(crtezFilter);
+    const pozQ = norm(pozFilter);
     return (r: IzvestajRow): boolean => {
       const s = r.statusi ?? {};
       let ok = true;
@@ -386,13 +421,17 @@ export function PredmetView({
       if (!ok) return false;
       if (masFilter !== 'sve' && (masFilter === 'da') !== machiningState(r).da) return false;
       if (povrsFilter !== 'sve' && (povrsFilter === 'da') !== surfaceState(r).da) return false;
+      // Crtež / Pozicija (zahtev 053/26 §4): tačno poklapanje izabrane vrednosti, ali
+      // dijakritika-neosetljivo (isti `norm` kao pretraga) — „Č" i „C" ne prave dva unosa.
+      if (crtezQ && norm(rowCrtez(r)) !== crtezQ) return false;
+      if (pozQ && norm(rowPozicija(r)) !== pozQ) return false;
       if (qq) {
         const hay = norm(`${r.naziv_pozicije ?? ''} ${r.naziv_dela ?? ''} ${r.rn_broj ?? ''} ${r.broj_crteza ?? ''} ${r.ident_broj ?? ''}`);
         if (!hay.includes(qq)) return false;
       }
       return true;
     };
-  }, [filter, masFilter, povrsFilter, search]);
+  }, [filter, masFilter, povrsFilter, crtezFilter, pozFilter, search]);
 
   // Vidljivi (ekran) i izvozni redovi: filter zadržava predke sklopa radi konteksta;
   // bez filtera se poštuje sklapanje (izvoz ignoriše sklapanje = puno stablo).
@@ -410,17 +449,95 @@ export function PredmetView({
 
   const nSlots = matrix ? maxOpSlots(rows) : 0;
 
+  // Dropdown vrednosti Crtež/Pozicija (zahtev 053/26 §4) — iz UČITANIH redova (klijentski
+  // filter, bez BE izmene); računa se nad rowsEff da ostane stabilan dok se filtrira.
+  const crtezOptions = useMemo(() => distinctSorted(rowsEff, rowCrtez), [rowsEff]);
+  const pozOptions = useMemo(() => distinctSorted(rowsEff, rowPozicija), [rowsEff]);
+
   const flat = useMemo(() => normalizePodsklopovi(podsklopovi.data?.data), [podsklopovi.data]);
-  const scopeOptions = useMemo(
-    () => [
+  // „Opseg (sklop)" lista SAMO sklopove (zahtev 053/26 §4): čvor je sklop ako se u payload-u
+  // podsklopova pojavljuje kao nečiji `parent_rn_id`. Podatak već stiže sa BE — nema izmene rute.
+  const scopeOptions = useMemo(() => {
+    const assemblies = new Set(
+      flat.map((r) => (r.parent_rn_id == null ? '' : String(r.parent_rn_id))).filter((v) => v !== ''),
+    );
+    const opts = [
       { v: '', t: 'Ceo predmet' },
-      ...flat.map((r) => ({
-        v: String(r.rn_id),
-        t: `${r.ident_broj ?? r.rn_id} — ${String(r.naziv_dela ?? '').slice(0, 80)}`,
-      })),
-    ],
-    [flat],
-  );
+      ...flat
+        .filter((r) => assemblies.has(String(r.rn_id)))
+        .map((r) => ({
+          v: String(r.rn_id),
+          t: `${r.ident_broj ?? r.rn_id} — ${String(r.naziv_dela ?? '').slice(0, 80)}`,
+        })),
+    ];
+    // Defanziva: izabrani opseg mora da postoji u listi (inače <select> pokazuje tuđu stavku).
+    if (scope && !opts.some((o) => o.v === scope)) {
+      const cur = flat.find((r) => String(r.rn_id) === scope);
+      opts.push({ v: scope, t: cur ? `${cur.ident_broj ?? cur.rn_id} — ${String(cur.naziv_dela ?? '')}` : scope });
+    }
+    return opts;
+  }, [flat, scope]);
+
+  /**
+   * Redni broj POZICIJE unutar njenog sklopa (zahtev 053/26 §3). Broje se samo pozicije
+   * (sklop nema redni broj), po BE `sort_order` (rang po ident broju unutar sklopa) — pa je
+   * broj stabilan bez obzira na filter i sklapanje. Koreni (van sklopa) nemaju redni broj.
+   */
+  const posOrdinal = useMemo(() => {
+    const groups = new Map<string, IzvestajRow[]>();
+    rowsEff.forEach((r) => {
+      const pk = effParentKey(r);
+      if (pk === null || parentIds.has(String(r.node_id))) return; // van sklopa ili je sklop
+      const arr = groups.get(pk);
+      if (arr) arr.push(r);
+      else groups.set(pk, [r]);
+    });
+    const idx = new Map(rowsEff.map((r, i) => [String(r.node_id), i] as const));
+    const out = new Map<string, number>();
+    for (const arr of groups.values()) {
+      arr
+        .slice()
+        .sort((a, b) => {
+          const ao = Number(a.sort_order);
+          const bo = Number(b.sort_order);
+          const av = Number.isFinite(ao) ? ao : Number.MAX_SAFE_INTEGER;
+          const bv = Number.isFinite(bo) ? bo : Number.MAX_SAFE_INTEGER;
+          return av - bv || (idx.get(String(a.node_id)) ?? 0) - (idx.get(String(b.node_id)) ?? 0);
+        })
+        .forEach((r, i) => out.set(String(r.node_id), i + 1));
+    }
+    return out;
+  }, [rowsEff, parentIds]);
+
+  /**
+   * Okvir grupe sklopa (zahtev 053/26 §3). CSS kutija oko `<tr>` ne radi — 4 zamrznute
+   * ćelije nose sopstvenu pozadinu i prekrile bi je — pa se okvir crta ivicama: gornja na
+   * PRVOM redu grupe (sam sklop), donja na POSLEDNJEM vidljivom redu njegovog podstabla.
+   * Redovi su u pre-order-u, pa je podstablo neprekidan niz redova sa `level` većim od
+   * sklopovog. Sklopljen sklop nema vidljivih potomaka → gornja i donja ivica padaju na
+   * isti red (okvir se uredno zatvara oko jednog reda). Važi isto u matričnom prikazu.
+   */
+  const groupEdge = useMemo(() => {
+    const top = new Set<string>();
+    const bottom = new Set<string>();
+    rows.forEach((r, i) => {
+      const node = String(r.node_id ?? '');
+      if (!parentIds.has(node)) return; // okvir otvara samo sklop
+      top.add(node);
+      const lvl = Number(r.level ?? 0);
+      let j = i + 1;
+      while (j < rows.length && Number(rows[j].level ?? 0) > lvl) j++;
+      bottom.add(String(rows[j - 1].node_id ?? ''));
+    });
+    return { top, bottom };
+  }, [rows, parentIds]);
+
+  /** Drill u sklop klikom na naziv (zahtev 053/26 §4) — isti mehanizam kao „Opseg (sklop)". */
+  function drillToSklop(node: string) {
+    setScope(node);
+    setCollapsed(new Set());
+    setOpsFor(new Set());
+  }
 
   const pred = result.predmet ?? {};
   const titleBroj = String(pred.broj_predmeta ?? '');
@@ -499,12 +616,9 @@ export function PredmetView({
           Opseg (sklop)
           <select
             value={scope}
-            onChange={(e) => {
-              setScope(e.target.value);
-              setCollapsed(new Set());
-              setOpsFor(new Set());
-            }}
-            className="h-8 rounded-control border border-line bg-surface px-2 text-sm normal-case tracking-normal text-ink"
+            onChange={(e) => drillToSklop(e.target.value)}
+            title="Prikaži samo izabrani sklop (lista sadrži samo sklopove)"
+            className="h-8 max-w-[260px] rounded-control border border-line bg-surface px-2 text-sm normal-case tracking-normal text-ink"
           >
             {scopeOptions.map((o) => (
               <option key={o.v} value={o.v}>
@@ -576,6 +690,40 @@ export function PredmetView({
         </label>
 
         <label className="flex flex-col gap-1 text-2xs uppercase tracking-wider text-ink-secondary">
+          Crtež
+          <select
+            value={crtezFilter}
+            onChange={(e) => setCrtezFilter(e.target.value)}
+            title="Prikaži samo redove sa izabranim brojem crteža"
+            className="h-8 max-w-[180px] rounded-control border border-line bg-surface px-2 text-sm normal-case tracking-normal text-ink"
+          >
+            <option value={ALL}>Svi crteži</option>
+            {crtezOptions.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1 text-2xs uppercase tracking-wider text-ink-secondary">
+          Pozicija
+          <select
+            value={pozFilter}
+            onChange={(e) => setPozFilter(e.target.value)}
+            title="Prikaži samo redove sa izabranim nazivom pozicije"
+            className="h-8 max-w-[220px] rounded-control border border-line bg-surface px-2 text-sm normal-case tracking-normal text-ink"
+          >
+            <option value={ALL}>Sve pozicije</option>
+            {pozOptions.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1 text-2xs uppercase tracking-wider text-ink-secondary">
           Pretraga
           <div className="relative">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-secondary" />
@@ -609,6 +757,9 @@ export function PredmetView({
         <LegendSwatch tone="bg-status-info-bg" label="Podsklop" />
         <LegendSwatch tone="bg-status-warn-bg" label="Zav. sklop" />
         <LegendSwatch tone="bg-surface border border-line" label="Pojedinačna" />
+        <span className="text-ink-secondary">
+          Okvir = grupa sklopa · redni broj ispred naziva = pozicija u sklopu · klik na naziv sklopa = prikaži samo taj sklop
+        </span>
       </div>
 
       {q.isLoading ? (
@@ -690,16 +841,26 @@ export function PredmetView({
                 const masSt = machiningState(r);
                 const povSt = surfaceState(r);
                 const mqty = rowManualQty(r);
+                const rb = posOrdinal.get(node);
+                // Okvir grupe sklopa (zahtev 053/26 §3): ivice moraju na `<tr>` I na sve 4
+                // zamrznute ćelije — svaka od njih ponavlja pozadinu reda i inače bi progutala
+                // ivicu pri horizontalnom skrolu (isto u matričnom prikazu).
+                const frame = cn(
+                  groupEdge.top.has(node) && 'border-t-2 border-t-line',
+                  groupEdge.bottom.has(node) && 'border-b-2 border-b-line',
+                  Number(r.level ?? 0) > 0 && !problem && 'border-l-2 border-l-line',
+                );
                 return (
                   <FragRow key={node}>
-                    <tr className={cn('group border-b border-line-soft', bg, 'hover:bg-surface-2')}>
+                    <tr className={cn('group border-b border-line-soft', bg, 'hover:bg-surface-2', frame)}>
                       {/* Zamrznute leve kolone (docx §5) */}
                       <td
                         style={{ left: FCOL.poz.left, width: FCOL.poz.w, minWidth: FCOL.poz.w, maxWidth: FCOL.poz.w }}
                         className={cn(
                           'sticky z-30 overflow-hidden px-3 py-1.5 group-hover:bg-surface-2',
                           bg,
-                          problem && 'border-l-2 border-status-danger',
+                          frame,
+                          problem && 'border-l-2 border-l-status-danger',
                         )}
                       >
                         <div className="flex items-center gap-1" style={{ paddingLeft: indent }}>
@@ -714,12 +875,41 @@ export function PredmetView({
                           ) : (
                             <span className="inline-block w-[18px] shrink-0" aria-hidden />
                           )}
-                          <span className={cn('min-w-0 flex-1 truncate text-ink', boldNaziv && 'font-semibold')} title={String(r.naziv_pozicije ?? r.naziv_dela ?? '')}>
-                            {r.naziv_pozicije ?? r.naziv_dela ?? '—'}
-                          </span>
+                          {rb != null && (
+                            <span className="tnums shrink-0 text-2xs text-ink-secondary" title="Redni broj pozicije u sklopu">
+                              {rb}.
+                            </span>
+                          )}
+                          {hasChildren ? (
+                            // Klik na naziv sklopa = drill u taj sklop (isti mehanizam kao
+                            // „Opseg (sklop)"); dugme „Otvori RN" ostaje netaknuto.
+                            <button
+                              type="button"
+                              onClick={() => drillToSklop(node)}
+                              className={cn(
+                                'min-w-0 flex-1 truncate text-left text-accent hover:underline',
+                                boldNaziv && 'font-semibold',
+                              )}
+                              title={`Prikaži samo ovaj sklop — ${String(r.naziv_pozicije ?? r.naziv_dela ?? '')}`}
+                            >
+                              {r.naziv_pozicije ?? r.naziv_dela ?? '—'}
+                            </button>
+                          ) : (
+                            <span className={cn('min-w-0 flex-1 truncate text-ink', boldNaziv && 'font-semibold')} title={String(r.naziv_pozicije ?? r.naziv_dela ?? '')}>
+                              {r.naziv_pozicije ?? r.naziv_dela ?? '—'}
+                            </span>
+                          )}
                           <TypBadge typ={typ} />
                           {r.has_parent_override && (
                             <span className="shrink-0 rounded-full bg-status-info-bg px-1 py-0.5 text-2xs text-status-info" title="Ručno premešteno u sklop">
+                              ↪
+                            </span>
+                          )}
+                          {r.override_ignored && (
+                            <span
+                              className="shrink-0 rounded-full bg-status-neutral-bg px-1 py-0.5 text-2xs text-status-neutral"
+                              title="Ručni premeštaj nije primenjen — ciljni sklop je van prikazanog opsega. Važi automatska struktura."
+                            >
                               ↪
                             </span>
                           )}
@@ -736,19 +926,19 @@ export function PredmetView({
                       </td>
                       <td
                         style={{ left: FCOL.crt.left, width: FCOL.crt.w, minWidth: FCOL.crt.w, maxWidth: FCOL.crt.w }}
-                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg)}
+                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg, frame, 'border-l-0')}
                       >
                         <DrawingCell code={r.crtez_drawing_no} label={r.broj_crteza ?? r.crtez_drawing_no} hasFile={r.has_crtez_file} />
                       </td>
                       <td
                         style={{ left: FCOL.skl.left, width: FCOL.skl.w, minWidth: FCOL.skl.w, maxWidth: FCOL.skl.w }}
-                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg)}
+                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg, frame, 'border-l-0')}
                       >
                         <DrawingCell code={r.sklop_drawing_no} label={r.broj_sklopnog_crteza ?? r.sklop_drawing_no} hasFile={r.has_skop_crtez_file} dash />
                       </td>
                       <td
                         style={{ left: FCOL.rn.left, width: FCOL.rn.w, minWidth: FCOL.rn.w, maxWidth: FCOL.rn.w }}
-                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg)}
+                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg, frame, 'border-l-0')}
                       >
                         {r.rn_broj ? (
                           <button
@@ -1218,7 +1408,11 @@ function ReparentModal({
     [rowsAll, self, desc],
   );
 
-  const initial = row.has_parent_override
+  // Preselekcija prati ono što STVARNO piše u bazi: i odbijen override (`override_ignored`
+  // — cilj van prikazanog opsega) ima svoj sirov cilj, pa dijalog ne sme da ga prikaže kao
+  // „Automatski" i tiho ga obriše prvim snimanjem (zahtev 053/26 §2).
+  const hasOvr = row.has_parent_override === true || row.override_ignored === true;
+  const initial = hasOvr
     ? row.parent_override_rn_id != null
       ? String(row.parent_override_rn_id)
       : '__root__'
@@ -1253,6 +1447,10 @@ function ReparentModal({
       >
         <option value="__auto__">↩ Automatski (struktura sastavnice)</option>
         <option value="__root__">⬆ Vrh — bez sklopa</option>
+        {/* Cilj van učitanog opsega nije među kandidatima — prikaži ga da select ne „skoči". */}
+        {sel !== '__auto__' && sel !== '__root__' && !candidates.some((c) => c.id === sel) && (
+          <option value={sel}>RN {sel} (van prikazanog opsega)</option>
+        )}
         {candidates.map((c) => (
           <option key={c.id} value={c.id}>
             {c.label}

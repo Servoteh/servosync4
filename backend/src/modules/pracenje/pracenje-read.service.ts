@@ -55,6 +55,38 @@ const QUALITY_GOOD = 0;
 /** Anti-ciklus dubina za WITH RECURSIVE po sastavnici (BACKEND_RULES §11.4: PG visi na ciklusu). */
 const MAX_DEPTH = 20;
 
+/**
+ * Poređenje RN ident brojeva PRIRODNIM redom (zahtev 053/26 §2). Identi su oblika
+ * `predmet/redni_broj` (`9000/1`, `9000/2`, … `9000/100`), pa čisto tekstualno poređenje
+ * (SQL `ident_number ASC`) daje `9000/1, 9000/10, 9000/100, …, 9000/2` — čovek to čita kao
+ * razbacano. Zato se ident deli na blokove cifara i ne-cifara: blokovi cifara se porede
+ * NUMERIČKI (bez vodećih nula, po dužini pa leksikografski — bez `Number` i bez gubitka
+ * preciznosti na dugačkim nizovima), ostali po code-pointu.
+ *
+ * Namerno BEZ `localeCompare`: rezultat mora biti isti bez obzira na ICU/lokal servera
+ * (determinizam je uslov da se redosled ne menja između okruženja).
+ */
+export function compareIdent(a: string, b: string): number {
+  const ca = a.match(/\d+|\D+/g) ?? [];
+  const cb = b.match(/\d+|\D+/g) ?? [];
+  const n = Math.min(ca.length, cb.length);
+  for (let i = 0; i < n; i++) {
+    const xa = ca[i];
+    const xb = cb[i];
+    const da = xa.charCodeAt(0) >= 48 && xa.charCodeAt(0) <= 57;
+    const db = xb.charCodeAt(0) >= 48 && xb.charCodeAt(0) <= 57;
+    if (da && db) {
+      const sa = xa.replace(/^0+(?=\d)/, "");
+      const sb = xb.replace(/^0+(?=\d)/, "");
+      if (sa.length !== sb.length) return sa.length - sb.length;
+      if (sa !== sb) return sa < sb ? -1 : 1;
+    } else if (xa !== xb) {
+      return xa < xb ? -1 : 1;
+    }
+  }
+  return ca.length - cb.length;
+}
+
 /** Lot clamp — paritet 1.0 (1..100000, default 12). */
 function clampLot(raw?: string): number {
   const n = Number(raw);
@@ -171,8 +203,18 @@ export interface ProjectNodeRow {
   masinska_done_ovr: boolean | null;
   povrsinska_done_ovr: boolean | null;
   manual_qty: number | null;
+  /**
+   * Da li je ručni structure-override STVARNO PRIMENJEN (zahtev 053/26 §2). SQL ga puni
+   * kao „postoji red u `pracenje_structure_overrides`", ali `reparentNodes` ga PREPISUJE na
+   * efektivnu vrednost: odbijen override (cilj van učitanog skupa / self-ref / ciklus) izlazi
+   * kao `false` + `override_ignored=true`. Bez toga je FE (`pracenje-tree.effParentKey`) čitao
+   * neprimenjen `parent_override_rn_id` kao roditelja i odlepljivao red na nivo 0.
+   */
   has_parent_override: boolean;
+  /** SIROV cilj override-a iz baze (za dijalog „Premesti u sklop") — NIJE nužno primenjen. */
   parent_override_rn_id: number | null;
+  /** true = override postoji u bazi ali je odbijen (cilj van opsega / ciklus) → važi auto. */
+  override_ignored?: boolean;
   /** Dokument primopredaje (docx §4.10): `work_orders.drawing_handover_id` (0→null). */
   drawing_handover_id: number | null;
   /** `work_orders.handover_status_id` (default 3 = N/A) — čitki naziv u `handover_status_name`. */
@@ -243,7 +285,13 @@ interface OpRow {
  *  - override čiji ciljni roditelj nije u učitanom skupu čvorova → ignoriše se (ostaje auto);
  *  - override koji bi napravio ciklus (čvor postao svoj predak) → preskače se (ostaje auto);
  *    hod naviše ionako lomi na prvom ponovljenom čvoru + `MAX_DEPTH` kapa (nikad beskonačno).
+ *  - odbijen override IZLAZI kao `has_parent_override=false` + `override_ignored=true`
+ *    (zahtev 053/26 §2) — ranije se emitovao kao da je primenjen, pa je FE u opsegu po
+ *    sklopu vezivao red za cilj koji BE nije prihvatio i crtao ga na nivou 0.
  * Re-parent NE redefiniše `broj_komada` (override nosi hijerarhiju, ne količinu-po-sklopu).
+ *
+ * Izlazni redosled je pre-order po LANCU `sort_order`-a (rang po `ident_broj` na svakom nivou),
+ * a ne po sirovim id-jevima — vidi korak 6 (zahtev 053/26 §2).
  */
 export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
   if (nodes.length === 0) return nodes;
@@ -251,15 +299,20 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
   for (const n of nodes) byId.set(n.rn_id, n);
 
   // 1) Efektivni roditelj: override (ako je razrešiv) inače auto parent_rn_id.
+  //    `applied` prati da li je override STVARNO primenjen — emituje se kao `has_parent_override`
+  //    (zahtev 053/26 §2), da FE nikad ne vidi „premešteno" tamo gde stablo nije premešteno.
   const effParent = new Map<number, number | null>();
+  const applied = new Set<number>();
   for (const n of nodes) {
     let parent = n.parent_rn_id;
     if (n.has_parent_override) {
       const target = n.parent_override_rn_id;
       if (target == null) {
         parent = null; // odlepi na koren
+        applied.add(n.rn_id);
       } else if (target !== n.rn_id && byId.has(target)) {
         parent = target;
+        applied.add(n.rn_id);
       }
       // target van skupa ili self-ref → ignoriši override (ostaje auto)
     }
@@ -282,6 +335,7 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
   for (const n of nodes) {
     if (n.has_parent_override && wouldCycle(n.rn_id)) {
       effParent.set(n.rn_id, n.parent_rn_id); // revert override (defanzivno)
+      applied.delete(n.rn_id);
     }
   }
 
@@ -311,10 +365,17 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
     return res;
   };
 
-  // 4) sort_order = row_number unutar (efektivni roditelj) grupe po ident_broj ASC NULLS LAST.
+  // 4) sort_order = row_number unutar (efektivni roditelj) grupe po ident_broj ASC NULLS LAST,
+  //    uz `rn_id` kao tie-break (bez njega je redosled istoimenih identa zavisio od redosleda
+  //    unosa u bazu). Koreni (roditelj null ILI van učitanog skupa — isti uslov kojim `resolve`
+  //    proglašava koren) idu u jednu „root" grupu, pa i oni dobijaju determinističan rang.
+  const groupKey = (id: number): string => {
+    const p = effParent.get(id) ?? null;
+    return p != null && byId.has(p) ? String(p) : "root";
+  };
   const groups = new Map<string, ProjectNodeRow[]>();
   for (const n of nodes) {
-    const key = String(effParent.get(n.rn_id) ?? "root");
+    const key = groupKey(n.rn_id);
     const arr = groups.get(key);
     if (arr) arr.push(n);
     else groups.set(key, [n]);
@@ -326,15 +387,15 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
       const bi = b.ident_broj ?? "";
       if (ai === "" && bi !== "") return 1; // NULLS LAST
       if (bi === "" && ai !== "") return -1;
-      // Code-point poređenje (locale-nezavisno) — poklapa se sa SQL `ident_number ASC`
-      // za ASCII idente i deterministično je (za razliku od localeCompare po ICU zoni).
-      return ai < bi ? -1 : ai > bi ? 1 : 0;
+      const c = compareIdent(ai, bi); // prirodan red (9000/2 pre 9000/10), locale-nezavisan
+      if (c !== 0) return c;
+      return a.rn_id - b.rn_id; // determinističan tie-break
     });
     arr.forEach((n, i) => sortOrderById.set(n.rn_id, i + 1));
   }
 
   // 5) Emit re-parented čvorove; sklopni-crtež polja iz NOVOG roditelja (parent.has_crtez_file
-  //    je pravi EXISTS(drawing_pdfs), finding #6). Poređaj po (root, path) za stabilan pre-order.
+  //    je pravi EXISTS(drawing_pdfs), finding #6).
   const out = nodes.map((n) => {
     const c = resolve(n.rn_id);
     const newParent = effParent.get(n.rn_id) ?? null;
@@ -348,16 +409,35 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
       nivo: c.nivo,
       path_idrn: c.path,
       sort_order: sortOrderById.get(n.rn_id) ?? n.sort_order,
+      // Override izlazi kao primenjen SAMO ako jeste primenjen (zahtev 053/26 §2).
+      has_parent_override: applied.has(n.rn_id),
+      override_ignored: n.has_parent_override && !applied.has(n.rn_id),
     };
   });
+
+  // 6) Pre-order po LANCU sort_order-a duž putanje (zahtev 053/26 §2 — „deca se odvajaju od
+  //    sklopa"). Raniji sort je poredio SIROVE `root_rn_id`/`path_idrn` = autoincrement
+  //    `work_orders.id` = redosled unosa u bazu, pa je pozicija bez sastavnice (sopstveni koren)
+  //    sa malim id-jem upadala IZMEĐU sklopa i njegove dece. Sada se poredi rang po ident broju
+  //    na svakom nivou: `path_sort[i]` = sort_order pretka na dubini i. Prefiks putanje
+  //    jednoznačno određuje pretka → dete NIKAD ne može da se odvoji od roditelja.
+  const sortPath = new Map<number, number[]>();
+  for (const n of out) {
+    sortPath.set(
+      n.rn_id,
+      n.path_idrn.map((id) => sortOrderById.get(id) ?? 0),
+    );
+  }
   out.sort((a, b) => {
-    if (a.root_rn_id !== b.root_rn_id) return a.root_rn_id - b.root_rn_id;
-    const len = Math.min(a.path_idrn.length, b.path_idrn.length);
+    const pa = sortPath.get(a.rn_id) ?? [];
+    const pb = sortPath.get(b.rn_id) ?? [];
+    const len = Math.min(pa.length, pb.length);
     for (let i = 0; i < len; i++) {
-      if (a.path_idrn[i] !== b.path_idrn[i])
-        return a.path_idrn[i] - b.path_idrn[i];
+      if (pa[i] !== pb[i]) return pa[i] - pb[i];
     }
-    return a.path_idrn.length - b.path_idrn.length;
+    // Kraća putanja je predak duže → roditelj ide PRE deteta.
+    if (pa.length !== pb.length) return pa.length - pb.length;
+    return a.rn_id - b.rn_id; // teorijski nedostižno (putanja je jedinstvena) — determinizam
   });
   return out;
 }
@@ -793,7 +873,13 @@ export class PracenjeReadService {
                 oznaka: n.handover_oznaka,
               }
             : null,
+        // has_parent_override = override je PRIMENJEN (reparentNodes ga prepisuje);
+        // override_ignored = postoji u bazi ali je odbijen (cilj van opsega / ciklus);
+        // parent_override_rn_id = SIROV cilj (dijalog „Premesti u sklop" ga i dalje pokazuje).
+        // FE (`pracenje-tree.effParentKey`) roditelja čita iz `parent_node_id` — jedini izvor
+        // istine, pa FE i BE ne mogu da se raziđu oko roditelja (zahtev 053/26 §2).
         has_parent_override: n.has_parent_override,
+        override_ignored: n.override_ignored === true,
         parent_override_rn_id: n.parent_override_rn_id,
         statusi: {
           kasni: rok != null && rok < today && (zavrsena ?? 0) < (komada ?? 0),
