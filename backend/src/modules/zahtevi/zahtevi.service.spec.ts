@@ -232,11 +232,39 @@ function mailMock(): jest.Mocked<
   };
 }
 
+/** Zaglavlja formata koje prilog sme da nosi (ostali mime-ovi → sirovi bajtovi). */
+const MAGIC_BY_MIME: Record<string, number[]> = {
+  "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+  "image/jpeg": [0xff, 0xd8, 0xff],
+  "application/pdf": [...Buffer.from("%PDF-", "latin1")],
+};
+
+/** Buffer tačne dužine `size` sa magic bytes formata na početku. */
+function magicBuffer(mimetype: string, size: number): Buffer {
+  const magic = MAGIC_BY_MIME[mimetype.split(";")[0].toLowerCase()];
+  if (!magic) return Buffer.alloc(size, 1);
+  return Buffer.concat([
+    Buffer.from(magic),
+    Buffer.alloc(Math.max(0, size - magic.length), 1),
+  ]);
+}
+
+/** HEIC sa telefona: ISO-BMFF `ftyp` + brend `heic` (nikad se ne prima). */
+function heicBuffer(size = 1000): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x00, 0x00, 0x00, 0x18]),
+    Buffer.from("ftypheic", "latin1"),
+    Buffer.alloc(Math.max(0, size - 12), 1),
+  ]);
+}
+
 function fakeFile(
   over: Partial<Express.Multer.File> = {},
 ): Express.Multer.File {
   const size = over.size ?? 1000;
-  const buffer = over.buffer ?? Buffer.alloc(size, 1);
+  // Prilog se presuđuje po MAGIC BYTES (`common/attachments`), ne po `mimetype`-u —
+  // pa fixture mora da nosi stvarno zaglavlje formata koji glumi.
+  const buffer = over.buffer ?? magicBuffer(over.mimetype ?? "image/png", size);
   return {
     fieldname: "files",
     originalname: "slika.png",
@@ -1070,6 +1098,69 @@ describe("ZahteviService", () => {
       await expect(
         service.addAttachments(10, [fakeFile({ size: 50 })], USER),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("🔴 HEIC sa telefona → 422, poruka imenuje fajl i kaže šta da se uradi", async () => {
+      let msg = "";
+      try {
+        await service.addAttachments(
+          10,
+          [fakeFile({ originalname: "IMG_9001.HEIC", buffer: heicBuffer() })],
+          USER,
+        );
+      } catch (e) {
+        expect(e).toBeInstanceOf(UnprocessableEntityException);
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain("IMG_9001.HEIC");
+      expect(msg).toContain("HEIC");
+      expect(storage.upload).not.toHaveBeenCalled();
+    });
+
+    it("🔴 lažiran mimetype ne pomaže — HEIC etiketiran kao image/jpeg pada", async () => {
+      await expect(
+        service.addAttachments(
+          10,
+          [
+            fakeFile({
+              originalname: "foto.jpg",
+              mimetype: "image/jpeg",
+              buffer: heicBuffer(),
+            }),
+          ],
+          USER,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("🔴 jedan loš fajl u seriji → NIŠTA se ne otpremi ni upiše (validacija pre petlje)", async () => {
+      await expect(
+        service.addAttachments(
+          10,
+          [
+            fakeFile({ originalname: "dobra.png" }),
+            fakeFile({ originalname: "losa.heic", buffer: heicBuffer() }),
+          ],
+          USER,
+        ),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(storage.upload).not.toHaveBeenCalled();
+      expect(prisma.changeRequestAttachment.create).not.toHaveBeenCalled();
+    });
+
+    it("content_type u redu je KANONSKI (iz sadržaja), ne ono što je klijent poslao", async () => {
+      // Android/Files ume da preda PNG sa praznim/generičkim tipom — sadržaj presuđuje.
+      const res = await service.addAttachments(
+        10,
+        [
+          fakeFile({
+            mimetype: "application/octet-stream",
+            buffer: magicBuffer("image/png", 1000),
+          }),
+        ],
+        USER,
+      );
+      expect(rows(res)[0].contentType).toBe("image/png");
     });
 
     it("prekoračenje 10 priloga → 422", async () => {

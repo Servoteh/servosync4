@@ -1,5 +1,5 @@
-import { UnprocessableEntityException } from "@nestjs/common";
 import type { Prisma } from "@prisma/client";
+import { assertPdfAttachment } from "./attachments/attachment-format.util";
 
 /**
  * Zahtev 038/26 — otpremanje crteža (PDF) za RN koji je mašinska usluga bez PDM
@@ -41,18 +41,14 @@ export function drawingPdfMeta(row: DrawingPdfRow) {
 }
 
 /**
- * Magic-byte provera (`%PDF-`) — isti obrazac kao `pdm-import.service.ts`
- * `importPdf`. MIME zaglavlje iz browsera nije pouzdano (lako se falsifikuje).
+ * Magic-byte provera (`%PDF-`). MIME zaglavlje iz browsera nije pouzdano (lako se
+ * falsifikuje). Tanak omotač oko `assertPdfAttachment` iz `common/attachments` —
+ * jedno mesto istine za formate priloga; ovde ostaje samo radi postojećih poziva.
  */
 export function assertPdfMagicBytes(
   file?: Express.Multer.File,
 ): asserts file is Express.Multer.File {
-  if (!file?.buffer?.length)
-    throw new UnprocessableEntityException("Očekivan fajl (multipart `file`)");
-  if (file.buffer.subarray(0, 5).toString("latin1") !== "%PDF-")
-    throw new UnprocessableEntityException(
-      "Fajl nije PDF (ne počinje sa %PDF- zaglavljem)",
-    );
+  assertPdfAttachment(file);
 }
 
 /**

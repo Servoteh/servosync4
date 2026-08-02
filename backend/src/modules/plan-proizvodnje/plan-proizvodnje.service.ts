@@ -8,6 +8,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { assertAttachment } from "../../common/attachments/attachment-format.util";
 import { jsonSafe } from "../../common/json-safe";
 import { machineGroupSlug } from "./departments";
 import type {
@@ -23,15 +24,12 @@ import type {
 
 type Tx = Prisma.TransactionClient;
 
-/** Dozvoljeni MIME tipovi za skice (port 1.0 drawingManager ALLOWED_MIMES). */
-const ALLOWED_DRAWING_MIMES = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "application/pdf",
-];
+/**
+ * Skice se primaju po SADRŽAJU (`common/attachments`), ne po MIME listi iz 1.0
+ * `drawingManager`-a. Ta lista je primala `image/heic` i `image/webp`, a galerija
+ * skica ih prikazuje kroz `<img>` — HEIC bi se upisao i ostao trajno nevidljiv.
+ * Ostaju JPG/PNG/PDF (front `skice-modal` već nudi upravo njih).
+ */
 
 /**
  * Plan proizvodnje — WRITE (mutacioni) sloj nad 2.0 app-owned `plan_proizvodnje_*`
@@ -508,9 +506,10 @@ export class PlanProizvodnjeService {
   // ==========================================================================
 
   /**
-   * Upload skice (bytea u bazi, M1 — nema object storage). MIME whitelist (port 1.0
-   * drawingManager ALLOWED_MIMES) ili bilo koji image/*. Autorizacija = kontroler
-   * `plan_proizvodnje.edit`. Vraća meta bez binarnog sadržaja.
+   * Upload skice (bytea u bazi, M1 — nema object storage). Format presuđuje SADRŽAJ
+   * (`assertAttachment` iz `common/attachments`; JPG/PNG/PDF), pa se u `content_type`
+   * upisuje kanonska vrednost — ne ono što je klijent prijavio. Autorizacija =
+   * kontroler `plan_proizvodnje.edit`. Vraća meta bez binarnog sadržaja.
    */
   async uploadDrawing(
     email: string,
@@ -521,18 +520,13 @@ export class PlanProizvodnjeService {
     if (!file?.buffer?.length) {
       throw new UnprocessableEntityException("Očekivan fajl (multipart `file`)");
     }
-    const mime = String(file.mimetype ?? "").toLowerCase();
-    if (!ALLOWED_DRAWING_MIMES.includes(mime) && !mime.startsWith("image/")) {
-      throw new UnprocessableEntityException(
-        `Nepodržan tip fajla: ${file.mimetype || "(nepoznat)"}. Dozvoljeni: JPG, PNG, WEBP, HEIC, PDF.`,
-      );
-    }
+    const { contentType } = assertAttachment(file);
     const row = await this.prisma.planProizvodnjeDrawing.create({
       data: {
         workOrderId: Number(workOrder),
         lineId: Number(line),
         fileName: file.originalname,
-        contentType: file.mimetype || null,
+        contentType,
         pdfBinary: new Uint8Array(file.buffer),
         sizeBytes: file.size ? BigInt(file.size) : null,
         uploadedBy: email,

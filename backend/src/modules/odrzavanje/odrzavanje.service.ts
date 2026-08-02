@@ -9,6 +9,11 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import {
+  assertAttachment,
+  assertAttachments,
+  IMAGE_ATTACHMENT_FORMATS,
+} from "../../common/attachments/attachment-format.util";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
 import type {
@@ -2573,6 +2578,12 @@ export class OdrzavanjeService {
    * RPC (reported_by = auth.uid() putanja) — NE direktni PATCH attachment_urls koji tiho
    * pada za prijavioce bez WO/incident-UPDATE prava. Putanja = 1.0-kompatibilna
    * (`${machineCode}/${uuid}_${safeName}`, kao uploadMaintMachineFile).
+   *
+   * Format se presuđuje po SADRŽAJU pre ijednog upload-a (`common/attachments`).
+   * Ranije ovde nije bilo NIKAKVE provere: sirov HEIC sa telefona odlazio je u bucket
+   * i ostajao trajno nevidljiv (prikaz je `<img>`), a `content-type` u bucketu je bio
+   * onaj koji je klijent prijavio. Sada: cela serija se proverava pre prvog bajta —
+   * ili sve prolazi, ili se ništa ne otprema (bez orphan fajlova u bucketu).
    */
   async attachIncidentFiles(
     email: string,
@@ -2584,6 +2595,9 @@ export class OdrzavanjeService {
         "Očekivane fotografije (multipart `files`)",
       );
     }
+    const checked = assertAttachments(files, {
+      hint: "Kvar je prijavljen — prijavu ne unosite ponovo; ispravite fotografiju pa je priložite uz istu prijavu.",
+    });
     // machine_code incidenta (za 1.0-kompatibilnu putanju); RLS SELECT presuđuje vidljivost.
     const machineCode = await this.withUserMapped(email, async (tx) => {
       const inc = await tx.maintIncident.findUnique({
@@ -2594,23 +2608,17 @@ export class OdrzavanjeService {
       return inc?.machineCode ?? `incident/${id}`;
     });
     const paths: string[] = [];
-    for (const f of files) {
-      if (!f?.buffer?.length) continue;
+    for (const { file: f, contentType } of checked) {
       const uuid = randomUUID().replace(/-/g, "").slice(0, 12);
       const p = `${machineCode}/${uuid}_${this.safeFileName(f.originalname)}`;
       await this.storage.upload(
         MAINT_BUCKET,
         p,
         new Uint8Array(f.buffer),
-        f.mimetype || "application/octet-stream",
+        contentType,
         false,
       );
       paths.push(p);
-    }
-    if (!paths.length) {
-      throw new UnprocessableEntityException(
-        "Nijedna fotografija nije prihvaćena",
-      );
     }
     const ok = await this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ ok: boolean }[]>(
@@ -3146,9 +3154,12 @@ export class OdrzavanjeService {
         "Očekivana slika (multipart `file`)",
       );
     }
-    if (file.mimetype && !file.mimetype.startsWith("image/")) {
-      throw new UnprocessableEntityException("Fajl mora biti slika (image/*)");
-    }
+    // Samo JPG/PNG: karton vozila prikazuje foto kroz `<img>`, pa PDF i HEIC nemaju
+    // gde da se vide. Presuđuje sadržaj — `image/heic` etiketiran kao `image/jpeg`
+    // je ranije prolazio kroz `startsWith("image/")` i ostajao nevidljiv zauvek.
+    const { contentType } = assertAttachment(file, {
+      allow: IMAGE_ATTACHMENT_FORMATS,
+    });
     const uuid = randomUUID().replace(/-/g, "").slice(0, 16);
     const storagePath = `documents/asset/${assetId}/${uuid}_${this.safeFileName(file.originalname)}`;
     // Meta PRE bajtova: RLS INSERT enforce + provera da je asset VIDLJIVO vozilo
@@ -3170,7 +3181,7 @@ export class OdrzavanjeService {
           assetId,
           fileName: file.originalname,
           storagePath,
-          mimeType: file.mimetype ?? null,
+          mimeType: contentType,
           sizeBytes: BigInt(file.buffer.length),
           category: "vehicle_photo",
           description: "Glavna fotografija vozila",
@@ -3183,7 +3194,7 @@ export class OdrzavanjeService {
         MAINT_BUCKET,
         storagePath,
         new Uint8Array(file.buffer),
-        file.mimetype || "application/octet-stream",
+        contentType,
         false,
       );
     } catch (e) {
