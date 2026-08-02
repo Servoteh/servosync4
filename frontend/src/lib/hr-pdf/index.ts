@@ -35,6 +35,8 @@ export { generateSistematizacijaDoc } from './sistematizacija-doc';
 export type { SistematizacijaDocOptions } from './sistematizacija-doc';
 export { generateKarnetPdf } from './karnet';
 export type { KarnetInput, KarnetEmployee, KarnetDay, KarnetRow, KarnetTotals } from './karnet';
+export { generateSelfKarnetPdf } from './karnet-self';
+export type { SelfKarnetInput } from './karnet-self';
 export { generateBadgeSheetPdf, generateBadgeToken, downloadBlob, openBlob } from './badges';
 export type { BadgeItem } from './badges';
 export { exportAssessmentPdf } from './assessment';

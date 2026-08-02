@@ -10,6 +10,7 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { formatDate, formatDateTime } from '@/lib/format';
 import { toast } from '@/lib/toast';
+import { prepareImageForUpload } from '@/lib/image-resize';
 import {
   useArchiveVehicle,
   useAssets,
@@ -280,19 +281,29 @@ function VehiclePhoto({ id, hasPhoto, canManage }: { id: string; hasPhoto: boole
   const url = photo.data?.data.url ?? null;
   const shown = hasPhoto && !photo.isError && url;
 
-  function pick(e: React.ChangeEvent<HTMLInputElement>) {
+  async function pick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     if (!file.type.startsWith('image/')) return toast('Dozvoljena je samo slika.');
-    if (file.size > 25 * 1024 * 1024) return toast('Fotografija je prevelika (max 25 MB).');
-    upload.mutate({ id, file }, { onSuccess: () => toast('Fotografija sačuvana'), onError: (err) => toast((err as Error).message) });
+    // JPEG ≤1568px sa poštovanom EXIF rotacijom; HEIC koji se ne može pretvoriti se
+    // ODBIJA sa uputstvom umesto da završi u storage-u kao neprikaziv fajl.
+    let ready: File;
+    try {
+      ready = await prepareImageForUpload(file);
+    } catch (err) {
+      return toast((err as Error).message);
+    }
+    if (ready.size > 25 * 1024 * 1024) return toast('Fotografija je prevelika (max 25 MB).');
+    upload.mutate({ id, file: ready }, { onSuccess: () => toast('Fotografija sačuvana'), onError: (err) => toast((err as Error).message) });
   }
 
   if (!shown && !canManage) return null;
   return (
     <div className="flex flex-wrap items-center gap-4 rounded-panel border border-line bg-surface p-3">
-      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pick} />
+      {/* Bez `capture`: karton vozila je desktop tok (biranje fajla), a bez `image/heic`
+          iOS pri izboru iz Galerije sam pretvara fotografiju u JPEG. */}
+      <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(e) => void pick(e)} />
       {shown ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={url} alt="Fotografija vozila" className="max-h-40 max-w-full rounded-control border border-line object-cover" />

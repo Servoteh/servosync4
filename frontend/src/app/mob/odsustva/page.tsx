@@ -17,7 +17,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { CalendarPlus, ChevronLeft, FileText, Pencil, Trash2, X } from 'lucide-react';
+import { CalendarPlus, ChevronLeft, FileText, FolderArchive, Pencil, Trash2, X } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui-kit/button';
 import { FormField, Input } from '@/components/ui-kit/form-field';
@@ -27,7 +27,7 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { formatDate } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/api/client';
-import { generateVacationDecisionPdf, downloadBlob } from '@/lib/hr-pdf';
+import { deliverPdf, deliveryMessage } from '@/lib/deliver-file';
 import { nextWorkingDay } from '@/app/kadrovska/_components/odmori/helpers';
 import { statusLabel, statusTone } from '@/app/profil/_components/section';
 import {
@@ -102,6 +102,7 @@ export default function MobOdsustvaPage() {
   const [form, setForm] = useState<FormState>(null);
   const [changeFor, setChangeFor] = useState<{ req: VacationRequest; kind: 'cancel' | 'revise' } | null>(null);
   const [pdfBusy, setPdfBusy] = useState<string | null>(null);
+  const [recordBusy, setRecordBusy] = useState(false);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/mob/prijava');
@@ -142,6 +143,8 @@ export default function MobOdsustvaPage() {
       // Praznici se ovde ne učitavaju (lista je HR endpoint) — povratak = prvi radni dan
       // po kalendaru; ako pada na praznik, HR verzija rešenja je merodavna.
       const povratak = nextWorkingDay(to, null);
+      // Lenjo: jsPDF + generatori (~475 KB) ne smeju u početni paket ovog ekrana.
+      const { generateVacationDecisionPdf } = await import('@/lib/hr-pdf/hr-documents');
       const { blob, fileName } = await generateVacationDecisionPdf({
         brojResenja: `GO-${r.year}-${String(r.id).replace(/-/g, '').slice(0, 4).toUpperCase()}`,
         datumDonosenja: formatDate(new Date().toISOString().slice(0, 10)),
@@ -156,13 +159,45 @@ export default function MobOdsustvaPage() {
         saldo,
         potpisPoslodavac: 'Nenad Jaraković',
       });
-      // Samo preuzimanje — `openBlob` otvara novi tab, što APK WebView blokira.
-      downloadBlob(blob, fileName);
-      toast('Rešenje preuzeto.');
+      // `deliverPdf`: na telefonu sistemski list („Sačuvaj u Fajlove / Pošalji"),
+      // inače preuzimanje. `openBlob` je pod `/mob` zabranjen — instalirana PWA
+      // nema tab u koji bi otvorila PDF.
+      toast(deliveryMessage(await deliverPdf(blob, fileName), 'Rešenje o godišnjem odmoru'));
     } catch (e) {
       toast(e instanceof Error ? `Greška pri generisanju: ${e.message}` : 'Greška pri generisanju rešenja.');
     } finally {
       setPdfBusy(null);
+    }
+  }
+
+  /**
+   * „Evidencija godišnjeg odmora" (PDF) — paritet desktop „Moj profil" → Dokumenta
+   * (`app/profil/_components/documents-section.tsx › onEvidencijaGo`). Isti generator,
+   * isti ulaz (`go_ledger` blokovi + tekuća godina); ovde se samo isporučuje mobilno.
+   * Vidljivo pod istim uslovom kao desktop (postoji zaposlenički profil), a dugme stoji
+   * uz „Istoriju godišnjeg odmora" koja se crta iz istih podataka.
+   */
+  async function onVacationRecord() {
+    if (!ledger.length) {
+      toast('Nema podataka o godišnjem odmoru za evidenciju.');
+      return;
+    }
+    setRecordBusy(true);
+    try {
+      const year = new Date().getFullYear();
+      const { generateVacationRecordPdf } = await import('@/lib/hr-pdf/vacation-record');
+      const { blob, fileName } = await generateVacationRecordPdf({
+        employeeName: meQ.data?.data.employee?.full_name || user?.fullName || user?.email || '—',
+        year,
+        current: ledger.find((b) => b.godina === year) ?? null,
+        blocks: ledger,
+        generatedDate: formatDate(new Date().toISOString().slice(0, 10)),
+      });
+      toast(deliveryMessage(await deliverPdf(blob, fileName), 'Evidencija godišnjeg odmora'));
+    } catch (e) {
+      toast(e instanceof Error ? `PDF nije uspeo: ${e.message}` : 'PDF nije uspeo.');
+    } finally {
+      setRecordBusy(false);
     }
   }
 
@@ -387,6 +422,15 @@ export default function MobOdsustvaPage() {
                     <LedgerYear key={b.godina} b={b} />
                   ))}
                 </div>
+                {/* Paritet desktopa („Moj profil" → Dokumenta → Evidencija GO (PDF)). */}
+                <Button
+                  variant="secondary"
+                  className="h-12 w-full"
+                  loading={recordBusy}
+                  onClick={() => void onVacationRecord()}
+                >
+                  <FolderArchive className="h-4 w-4" aria-hidden /> Evidencija GO (PDF)
+                </Button>
                 <p className="text-2xs text-ink-disabled">
                   Iskorišćeni + planirani (odobreni) dani po datumu. Slobodno = preostalo.
                 </p>

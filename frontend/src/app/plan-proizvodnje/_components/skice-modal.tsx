@@ -5,6 +5,7 @@ import { Trash2, Upload, FileText } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { ApiError } from '@/api/client';
 import { toast } from '@/lib/toast';
+import { prepareImageForUpload } from '@/lib/image-resize';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate } from '@/lib/format';
@@ -30,6 +31,22 @@ const MAX_BYTES = 20 * 1024 * 1024; // sinhronizovano sa SQL bucket limitom (1.0
 
 function isAllowed(f: File): boolean {
   return ALLOWED_MIMES.includes(f.type) || f.type.startsWith('image/');
+}
+
+/**
+ * Skica slikana telefonom se pretvara u JPEG ≤1568px (EXIF rotacija poštovana) PRE
+ * otpremanja. BE `plan-proizvodnje.service` doduše prima `image/heic`, ali galerija
+ * skica ga renderuje kroz `<img>` — HEIC bi se upisao i ostao NEVIDLJIV svima osim
+ * Safariju. Kad pretvaranje ne uspe, fajl se odbija sa uputstvom (nikad tiho).
+ */
+async function prepared(f: File): Promise<File | null> {
+  if (!f.type.startsWith('image/')) return f; // PDF ide netaknut
+  try {
+    return await prepareImageForUpload(f);
+  } catch (e) {
+    toast(`⚠ ${(e as Error).message}`);
+    return null;
+  }
 }
 
 export function SkiceModal({
@@ -71,7 +88,8 @@ export function SkiceModal({
         toast(`⚠ „${f.name}" — prevelik (max ${Math.round(MAX_BYTES / (1024 * 1024))} MB).`);
         continue;
       }
-      valid.push(f);
+      const ready = await prepared(f);
+      if (ready) valid.push(ready);
     }
     if (valid.length === 0) return;
     for (let i = 0; i < valid.length; i++) {
