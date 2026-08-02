@@ -52,15 +52,30 @@ ALTER TABLE "sef_incoming_invoices"
 -- kolonu `supply_date`. Briše se SAMO ako je prazna — ako se ikad nađe baza u kojoj
 -- je neko u nju upisao datum, migracija je NE dira, nego pusti da se to reši ručno
 -- (bolje zaostala kolona nego tiho izgubljen poreski podatak).
+-- ⚠️ DVE UGNJEŽDENE PROVERE, NE JEDAN `AND` — inače migracija OBORI DEPLOY.
+-- PL/pgSQL ceo uslov `IF` sprema kao JEDAN upit, pre nego što ijedan njegov deo
+-- izvrši: nema kratkog spoja kao u aplikativnim jezicima. Zato bi `... AND NOT
+-- EXISTS (SELECT 1 FROM "invoices" WHERE "delivery_date" IS NOT NULL)` puklo sa
+-- `42703 column "delivery_date" does not exist` na SVAKOJ bazi koja tu kolonu nema
+-- — a produkcija je nema (kolonu je dodavala grana 20260801100000, koja je pri
+-- spajanju prestala to da radi). Izmereno 03.08.2026. nad produkcijskom šemom.
+--
+-- Cena greške je bila daleko veća od ove migracije: `deploy-backend.yml` vrti
+-- `prisma migrate deploy` pod `set -euo pipefail` PRE dizanja backenda, pa bi pao
+-- svaki backend deploy — i za module koji sa fakturama nemaju veze — dok se ovo
+-- ručno ne raspetlja (`resolve --rolled-back` NE pomaže; greška se ponavlja).
 DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_name = 'invoices' AND column_name = 'delivery_date'
-  ) AND NOT EXISTS (
-    SELECT 1 FROM "invoices" WHERE "delivery_date" IS NOT NULL
   ) THEN
-    ALTER TABLE "invoices" DROP COLUMN "delivery_date";
+    -- Tek sada sme da se pomene sama kolona: postojanje je već dokazano.
+    IF NOT EXISTS (SELECT 1 FROM "invoices" WHERE "delivery_date" IS NOT NULL) THEN
+      ALTER TABLE "invoices" DROP COLUMN "delivery_date";
+    ELSE
+      RAISE NOTICE 'invoices.delivery_date nije prazna — kolona OSTAJE, reši ručno (v. zaglavlje migracije).';
+    END IF;
   END IF;
 END
 $$;
