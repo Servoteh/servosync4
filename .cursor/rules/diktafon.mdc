@@ -1,0 +1,44 @@
+---
+description: Okidač „d." / „diktat" — povuci diktat koji je Nenad snimio telefonom i radi po njemu
+alwaysApply: true
+---
+
+# Okidač za diktat
+
+Kad korisnik napiše **`diktat`**, **`dik`**, **`uzmi diktat`** ili **`d.`** — to nije tekst na koji
+treba odgovoriti, nego **nalog da povučeš njegov poslednji nepreuzet diktat** iz sandučeta i da ga
+tretiraš kao njegovu instrukciju (dolazi od iste osobe koja komanduje sesijom).
+
+Pun opis: [docs/DIKTAFON.md](../../docs/DIKTAFON.md).
+
+## Pravila
+
+1. Povlači **samo** kad je okidač eksplicitno napisan u toj sesiji — nikad usput, nikad radi testa.
+2. **Prvo povlačenje troši**: sanduče je jedno i deljeno; ko prvi povuče, njegov je i više se ne
+   pojavljuje. Nema vraćanja na „neposlato".
+3. Prazno sanduče → reci da nema ničega. **Ne izmišljaj** sadržaj.
+4. Tekst je poslovni sadržaj — ne prepisuj ga u javne kanale, ne ostavljaj u logovima.
+
+## Kako povući
+
+**Ako radiš na Nenadovoj Windows mašini** (imaš pristup lokalnoj mreži 192.168.64.28):
+
+```bash
+ssh ubuntusrv 'docker exec servosync-pg psql -U servosync -d servosync -tAc \
+  "SELECT id||chr(9)||text FROM dictation_inbox WHERE user_id=2 AND delivered_at IS NULL ORDER BY created_at DESC LIMIT 1"'
+ssh ubuntusrv 'docker exec servosync-pg psql -U servosync -d servosync -c \
+  "UPDATE dictation_inbox SET delivered_at=now() WHERE id=<row_id>"'
+```
+
+🔴 `user_id=2` je OBAVEZAN: baza je bez RLS-a i upit vidi sve redove, pa bi bez filtera stigao
+najskoriji **tuđi** diktat i ušao kao instrukcija (injekcija).
+
+**Ako radiš u oblaku** (agent pokrenut sa telefona — do 192.168.64.28 ne možeš):
+
+```bash
+curl -s -X POST https://api.servosync2.servoteh.com/api/v1/dictation-inbox/claim \
+  -H "Authorization: Bearer $SERVOSYNC_TOKEN" -H "Content-Type: application/json" -d '{}'
+```
+
+Ruta atomično vrati i odmah potroši diktat. Ako radiš pod nalogom koji nije Nenadov, mora postojati
+upisana delegacija — inače gledaš u svoje prazno sanduče.
