@@ -17,17 +17,19 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileText } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui-kit/button';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { formatDecimal } from '@/lib/format';
 import { toast } from '@/lib/toast';
+import { deliverPdf, deliveryMessage } from '@/lib/deliver-file';
 import { ApiError } from '@/api/client';
 import {
   newClientEventId,
   useProfileHours,
+  useProfileMe,
   useSaveHoursRemark,
   useDeleteHoursRemark,
   type ProfileHoursDay,
@@ -86,9 +88,15 @@ export default function MobSatiPage() {
   const remark = data?.remark ?? null;
   const holidaySet = useMemo(() => new Set(data?.holidays ?? []), [data]);
 
+  // Ime u karnetu se čita iz zaposleničkog reda (isti izvor kao desktop „Moj profil":
+  // `emp?.full_name ?? user.fullName ?? user.email`), da PDF sa telefona i sa računara
+  // ne bi imao različito zaglavlje.
+  const meQ = useProfileMe();
+
   const saveM = useSaveHoursRemark();
   const deleteM = useDeleteHoursRemark();
   const busy = saveM.isPending || deleteM.isPending;
+  const [karnetBusy, setKarnetBusy] = useState(false);
 
   // Kontrolisano polje primedbe — sinhronizuj tekst kad se učita nov mesec/remark.
   const [note, setNote] = useState('');
@@ -158,6 +166,40 @@ export default function MobSatiPage() {
     }
   }
 
+  /**
+   * Karnet (mesečni radni list) u PDF — paritet desktopa („Moj profil" → Mesečni sati →
+   * „Karnet", `monthly-hours-section.tsx › downloadKarnet`). Sklapanje ulaza je DELJENO
+   * (`lib/hr-pdf/karnet-self.ts`), pa je PDF sa telefona identičan onom sa računara
+   * (ćirilica: Roboto iz `/public/fonts` kroz `newPdf`, isti put za oba).
+   *
+   * Uvoz je LENJ (`await import`) — jsPDF + generator su ~475 KB, a ovaj ekran se
+   * otvara na telefonu u pogonu, često na slaboj mreži. Isporuka ide kroz `deliverPdf`
+   * (Web Share → „Sačuvaj u Fajlove", inače preuzimanje); `openBlob` koji desktop
+   * koristi za štampu ovde nema smisla — instalirana PWA nema tab.
+   */
+  async function onKarnet() {
+    if (!data || !hasHours) {
+      toast('Nema unetih sati za ovaj mesec.');
+      return;
+    }
+    setKarnetBusy(true);
+    try {
+      const { generateSelfKarnetPdf } = await import('@/lib/hr-pdf/karnet-self');
+      const { blob, fileName } = await generateSelfKarnetPdf({
+        data,
+        year,
+        month,
+        employeeName: meQ.data?.data.employee?.full_name || user?.fullName || user?.email || '',
+      });
+      toast(deliveryMessage(await deliverPdf(blob, fileName), 'Karnet'));
+    } catch (e) {
+      console.error('[mob/sati] karnet', e);
+      toast(e instanceof Error ? `Karnet nije uspeo: ${e.message}` : 'Greška pri generisanju karneta.');
+    } finally {
+      setKarnetBusy(false);
+    }
+  }
+
   return (
     <div className="min-h-dvh bg-app pb-16">
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
@@ -223,6 +265,19 @@ export default function MobSatiPage() {
                 {chips.prekovremeniH > 0 && <Chip label="Prekovremeni" value={`${h(chips.prekovremeniH)} h`} />}
                 {chips.terenH > 0 && <Chip label="Teren" value={`${h(chips.terenH)} h`} />}
               </div>
+            )}
+
+            {/* Karnet (PDF) — paritet desktopa; bez unetih sati desktop drži dugme
+                onemogućeno, ovde ga nema (poruka „Nema unetih sati" stoji ispod). */}
+            {hasHours && (
+              <Button
+                variant="secondary"
+                className="h-12 w-full"
+                loading={karnetBusy}
+                onClick={() => void onKarnet()}
+              >
+                <FileText className="h-4 w-4" aria-hidden /> Karnet za {MONTH_NAMES[month - 1]} (PDF)
+              </Button>
             )}
 
             {/* Dani meseca — mobilna lista (praznici/vikendi prigušeni) */}

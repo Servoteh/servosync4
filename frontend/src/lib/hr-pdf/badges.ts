@@ -77,21 +77,8 @@ export async function generateBadgeSheetPdf(items: BadgeItem[]): Promise<{ blob:
   return { blob: doc.output('blob'), fileName: 'kiosk-qr-nalepnice.pdf' };
 }
 
-/** Preuzmi Blob kao fajl (bez servera). */
-export function downloadBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-/** Otvori Blob u novom tabu (štampa PDF-a). */
-export function openBlob(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank');
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
-}
+/* Isporuka fajla (preuzimanje/otvaranje/deljenje) više NE živi ovde: `@/lib/deliver-file`
+   je jedini put i nema zavisnost na jsPDF, pa ga `/mob` ekrani smeju uvesti bez
+   povlačenja ~410 KB generatora u početni paket. Re-export je zbog zatečenih poziva
+   `import { downloadBlob } from '@/lib/hr-pdf'` po Kadrovskoj i „Moj profil"-u. */
+export { downloadBlob, openBlob } from '@/lib/deliver-file';

@@ -39,7 +39,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Markdown } from '@/lib/markdown';
 import { formatDate } from '@/lib/format';
 import { toast } from '@/lib/toast';
-import { generateJobPositionPdf, downloadBlob } from '@/lib/hr-pdf';
+import { deliverPdf, deliveryMessage } from '@/lib/deliver-file';
 import {
   useColleaguesOnLeave,
   usePosition,
@@ -101,8 +101,10 @@ export default function MobProfilPage() {
   const goLeft = summary?.vacationDaysRemaining;
 
   /** Opis radnog mesta u PDF — isti generator kao desktop „Opis pozicije (PDF)".
-   *  SAMO preuzimanje (`downloadBlob`): `openBlob` otvara novi tab, a APK WebView
-   *  ga blokira (isti razlog kao rešenje o GO na /mob/odsustva). */
+   *  Isporuka ide kroz `deliverPdf` (Web Share na telefonu → „Sačuvaj u Fajlove",
+   *  inače preuzimanje) — `openBlob` je pod `/mob` zabranjen: instalirana PWA nema
+   *  gde da otvori tab. Generator se uvozi LENJO (jsPDF ~410 KB ne sme u početni
+   *  paket ekrana koji se otvara na telefonu u pogonu). */
   async function onPositionPdf() {
     if (!position) {
       toast('Tvoja pozicija nije povezana sa opisom posla — obrati se HR-u.');
@@ -110,12 +112,12 @@ export default function MobProfilPage() {
     }
     setPdfBusy(true);
     try {
+      const { generateJobPositionPdf } = await import('@/lib/hr-pdf/job-position');
       const { blob, fileName } = await generateJobPositionPdf(
         position,
         fullName ? { fullName } : null,
       );
-      downloadBlob(blob, fileName);
-      toast('Opis pozicije preuzet.');
+      toast(deliveryMessage(await deliverPdf(blob, fileName), 'Opis pozicije'));
     } catch (e) {
       toast(e instanceof Error ? `PDF nije uspeo: ${e.message}` : 'PDF nije uspeo.');
     } finally {
