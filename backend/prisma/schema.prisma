@@ -5719,8 +5719,14 @@ model DictationInbox {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   /// null = još nepreuzeto; NON-null = Claude povukao i markirao (idempotentni „latest").
   deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(6)
+  /// users.id naloga koji je red POVUKAO kroz `POST /v1/dictation-inbox/claim` (02.08.2026).
+  /// null = ili još nepreuzeto, ili preuzeto STARIM putem (ručni psql `UPDATE … delivered_at`).
+  /// Nosi oporavak: `GET /v1/dictation-inbox/last-claimed` vraća samo redove sa ovim
+  /// nalogom, pa izgubljen HTTP odgovor ne znači trajno izgubljen diktat.
+  claimedByUserId Int?  @map("claimed_by_user_id")
 
   @@index([userId, deliveredAt, createdAt], map: "idx_dictation_inbox_user_delivered_created")
+  @@index([claimedByUserId, deliveredAt], map: "idx_dictation_inbox_claimed_by_delivered")
   @@map("dictation_inbox")
 }
 

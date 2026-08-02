@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Query,
   Req,
   UseGuards,
 } from "@nestjs/common";
@@ -15,13 +16,20 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { DictationInboxService } from "./dictation-inbox.service";
 import { CreateDictationDto } from "./dto/create-dictation.dto";
-import { ClaimDictationDto } from "./dto/claim-dictation.dto";
+import {
+  ClaimDictationDto,
+  LastClaimedQueryDto,
+} from "./dto/claim-dictation.dto";
 
 /**
  * Diktafon „sanduče" (scenario B):
- *   POST /api/v1/dictation-inbox        — upiši sređen diktat za korisnika iz JWT-a
- *   GET  /api/v1/dictation-inbox/latest — poslednji NEISPORUČEN red tog korisnika (samo čita)
- *   POST /api/v1/dictation-inbox/claim  — ATOMIČNO uzmi poslednji nepreuzet i markiraj ga
+ *   POST /api/v1/dictation-inbox              — upiši sređen diktat za korisnika iz JWT-a
+ *   GET  /api/v1/dictation-inbox/latest       — POSLEDNJI nepreuzet red tog korisnika (samo čita)
+ *   POST /api/v1/dictation-inbox/claim        — ATOMIČNO uzmi NAJSTARIJI nepreuzet i markiraj ga
+ *   GET  /api/v1/dictation-inbox/last-claimed — ono što je OVAJ pozivalac preuzeo u zadnjih 15 min
+ *
+ * Redosled nije previd: `latest` je pregled („šta sam poslednje poslao"), `claim` je
+ * obrada REDOM (višedelni diktat mora agentu stići hronološki, ne obrnuto).
  *
  * Guard = `ai.chat` (kao STT/refine `MediaAiController`): diktafon JESTE AI alat
  * (telefon već koristi `/ai/stt` + `/ai/refine`), pa isti ključ zaključava i slanje;
@@ -60,6 +68,22 @@ export class DictationInboxController {
     return this.inbox.claim(
       { userId: req.user.userId, email: req.user.email },
       { ownerUserId: dto.ownerUserId, ownerEmail: dto.ownerEmail },
+    );
+  }
+
+  /**
+   * Oporavak: poslednji diktat koji je OVAJ pozivalac preuzeo u kratkom prozoru
+   * (15 min). `claim` je destruktivan i neidempotentan — bez ove rute izgubljen
+   * odgovor (prekid mreže) znači trajno izgubljenu instrukciju.
+   *
+   * GET, jer ništa ne menja: ne vraća diktat na „neposlato" i ne otvara tuđi plen
+   * (filtrira po `claimed_by_user_id = pozivalac`). Van rate-limita `claim`-a.
+   */
+  @Get("last-claimed")
+  lastClaimed(@Query() q: LastClaimedQueryDto, @Req() req: { user: AuthUser }) {
+    return this.inbox.lastClaimed(
+      { userId: req.user.userId, email: req.user.email },
+      { ownerUserId: q.ownerUserId, ownerEmail: q.ownerEmail },
     );
   }
 }

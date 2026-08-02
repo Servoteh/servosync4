@@ -44,3 +44,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS "uq_dictation_delegates_owner_delegate"
 -- „Čija sve sandučad smem da povučem" (izlistavanje za jednog delegata).
 CREATE INDEX IF NOT EXISTS "idx_dictation_delegates_delegate"
   ON "dictation_delegates" ("delegate_user_id");
+
+-- ---------------------------------------------------------------------------
+-- OPORAVAK: ko je POVUKAO koji red (`GET /v1/dictation-inbox/last-claimed`).
+--
+-- `claim` je destruktivan i neidempotentan: `UPDATE … SET delivered_at = now()`
+-- potroši red i drugog pokušaja nema. Ako mreža pukne POSLE tog UPDATE-a a PRE
+-- nego što odgovor stigne agentu, diktat je izgubljen — a sanduče je komandni
+-- kanal, pa je izgubljen diktat izgubljena instrukcija.
+--
+-- `delivered_at` sam po sebi ne može da posluži za oporavak: kaže SAMO da je red
+-- preuzet, ne i KO ga je preuzeo. Bez toga bi `last-claimed` u deljenom sandučetu
+-- (vlasnik + delegat) vraćao i tuđi plen — što ruši pravilo vlasnika. Zato zasebna
+-- kolona: ruta filtrira po `claimed_by_user_id = pozivalac` i svako vidi isključivo
+-- ono što je već njegovo, i to samo u kratkom prozoru (15 min).
+--
+-- NULL ostaje kod redova preuzetih STARIM putem (ručni psql `UPDATE … delivered_at`)
+-- i kod još nepreuzetih — oba tačna: njih preko HTTP-a niko nije ni uzeo.
+-- BEZ FK na `users` — paritet sa ostatkom tabele (`user_id` je takođe bez FK).
+
+ALTER TABLE "dictation_inbox"
+  ADD COLUMN IF NOT EXISTS "claimed_by_user_id" INTEGER;
+
+COMMENT ON COLUMN "dictation_inbox"."claimed_by_user_id" IS
+  'users.id naloga koji je red povukao kroz POST /v1/dictation-inbox/claim; NULL = nepreuzeto ili preuzeto ručnim SQL-om.';
+
+-- Jedini upit nad ovom kolonom je `last-claimed`: „moji preuzeti redovi, najskoriji
+-- prvi". `delivered_at` je u indeksu jer se po njemu i filtrira (prozor) i sortira.
+CREATE INDEX IF NOT EXISTS "idx_dictation_inbox_claimed_by_delivered"
+  ON "dictation_inbox" ("claimed_by_user_id", "delivered_at");

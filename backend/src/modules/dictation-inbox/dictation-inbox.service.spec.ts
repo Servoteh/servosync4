@@ -9,6 +9,19 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { DictationInboxService } from "./dictation-inbox.service";
 import { CLAIM_THROTTLE_POLICY, __resetClaimThrottle } from "./claim-throttle";
 
+/**
+ * Nalozi „u bazi" za mock. `findUnique` niže ih traži TAČNO (po `id` ili po celom
+ * e-mailu) — baš kao Postgres nad `uq_users_email`. To je suština testa džokera:
+ * mock ne zna za `ILIKE`, pa svaki upit koji bi se oslonio na obrazac vrati `null`.
+ */
+type MockUser = { id: number; email: string; active: boolean };
+const USERS: MockUser[] = [
+  { id: 42, email: "agent@servoteh.com", active: true },
+  { id: 2, email: "nenad.jarakovic@servoteh.com", active: true },
+  { id: 3, email: "bivsi@servoteh.com", active: false },
+  { id: 99, email: "ugasen.agent@servoteh.com", active: false },
+];
+
 /** Mock PrismaService — samo modeli koje ovaj modul dodiruje. */
 function prismaMock() {
   return {
@@ -31,7 +44,18 @@ function prismaMock() {
       findFirst: jest.fn().mockResolvedValue(null),
     },
     user: {
-      findUnique: jest.fn().mockResolvedValue(null),
+      // TAČNO poređenje (unique indeks), nikad „liči na" — vidi USERS gore.
+      findUnique: jest.fn(
+        ({ where }: { where: { id?: number; email?: string } }) => {
+          const row = USERS.find((u) =>
+            where.id !== undefined
+              ? u.id === where.id
+              : u.email === where.email,
+          );
+          return Promise.resolve(row ? { ...row } : null);
+        },
+      ),
+      // Postoji samo da bi test mogao da dokaže da se NE koristi (ILIKE put).
       findFirst: jest.fn().mockResolvedValue(null),
     },
     auditLog: { create: jest.fn().mockResolvedValue({ id: 1 }) },
@@ -54,12 +78,31 @@ function claimArg(
 function claimSql(prisma: ReturnType<typeof prismaMock>, call = 0): string {
   return claimArg(prisma, call).text.replace(/\s+/g, " ");
 }
-/** Parametri tog upita (prvi je uvek `user_id` vlasnika sandučeta). */
+/**
+ * Parametri tog upita, redom pojavljivanja u SQL-u:
+ * `[0]` = `claimed_by_user_id` (POZIVALAC, iz SET klauzule),
+ * `[1]` = `user_id` (VLASNIK sandučeta, iz WHERE klauzule).
+ * Testovi porede ceo niz — tako se vidi i ko povlači i čije se sanduče prazni.
+ */
 function claimParams(
   prisma: ReturnType<typeof prismaMock>,
   call = 0,
 ): unknown[] {
   return claimArg(prisma, call).values;
+}
+
+/** Prvi argument prvog `dictationInbox.findFirst` poziva — upit koji je servis poslao. */
+function inboxQuery<T>(prisma: ReturnType<typeof prismaMock>): T {
+  const calls = prisma.dictationInbox.findFirst.mock.calls as unknown as [T][];
+  return calls[0][0];
+}
+
+/** Poruka odbijanja (za poređenje dva 403 — ne smeju se razlikovati). */
+function poruka(p: Promise<unknown>): Promise<string> {
+  return p.then(
+    () => "NIJE PUKLO",
+    (e: unknown) => (e instanceof Error ? e.message : String(e)),
+  );
 }
 
 describe("DictationInboxService", () => {
@@ -214,7 +257,7 @@ describe("DictationInboxService", () => {
       text: "dodaj dugme",
       createdAt: new Date("2026-08-02T09:00:00Z"),
     });
-    expect(claimParams(prisma)[0]).toBe(42); // sanduče = pozivalac iz JWT-a
+    expect(claimParams(prisma)).toEqual([42, 42]); // povlači 42, iz svog sandučeta
   });
 
   it("ATOMIČNOST: jedan UPDATE … FOR UPDATE SKIP LOCKED … RETURNING, nema dvokoračnog puta", async () => {
@@ -228,7 +271,6 @@ describe("DictationInboxService", () => {
     expect(sql).toMatch(/SET delivered_at = now\(\)/i);
     expect(sql).toMatch(/FOR UPDATE SKIP LOCKED/i);
     expect(sql).toMatch(/RETURNING id, text, created_at/i);
-    expect(sql).toMatch(/ORDER BY created_at DESC/i);
     // Tačno JEDAN upit — ne „pročitaj pa upiši" (između bi druga sesija stigla).
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(prisma.dictationInbox.findFirst).not.toHaveBeenCalled();
@@ -236,11 +278,36 @@ describe("DictationInboxService", () => {
     expect(prisma.dictationInbox.updateMany).not.toHaveBeenCalled();
   });
 
+  it("FIFO: claim uzima NAJSTARIJI nepreuzet (ORDER BY created_at ASC, id ASC)", async () => {
+    // Višedelni diktat („prvo X", „pa Y") mora agentu stići hronološki — LIFO bi mu
+    // isporučio korake obrnutim redom. Redosled je deo UGOVORA rute, ne detalj.
+    prisma.$queryRaw.mockResolvedValue([
+      { id: 7, text: "prvo X", created_at: new Date() },
+    ]);
+    await service.claim(ACTOR);
+
+    const sql = claimSql(prisma);
+    expect(sql).toMatch(/ORDER BY created_at ASC, id ASC/i);
+    expect(sql).not.toMatch(/ORDER BY created_at DESC/i);
+  });
+
+  it("FIFO: claim beleži KO je uzeo (claimed_by_user_id = pozivalac iz JWT-a)", async () => {
+    // Bez ovoga `lastClaimed` ne bi umeo da razlikuje moj plen od tuđeg.
+    prisma.$queryRaw.mockResolvedValue([
+      { id: 7, text: "x", created_at: new Date() },
+    ]);
+    await service.claim(ACTOR);
+
+    expect(claimSql(prisma)).toMatch(/claimed_by_user_id = \$\d+/i);
+    expect(claimParams(prisma)).toContain(42);
+  });
+
   it("ATOMIČNOST: dva uzastopna claim-a NE vraćaju isti red (treći → null)", async () => {
     // Mock se ponaša kao baza sa SKIP LOCKED: svaki poziv „potroši" jedan red.
+    // Poredak reda odgovara FIFO-u — najstariji prvi.
     const queue = [
-      { id: 9, text: "drugi", created_at: new Date("2026-08-02T10:00:00Z") },
       { id: 8, text: "prvi", created_at: new Date("2026-08-02T09:00:00Z") },
+      { id: 9, text: "drugi", created_at: new Date("2026-08-02T10:00:00Z") },
     ];
     prisma.$queryRaw.mockImplementation(() => {
       const row = queue.shift();
@@ -251,8 +318,8 @@ describe("DictationInboxService", () => {
     const b = await service.claim(ACTOR);
     const c = await service.claim(ACTOR);
 
-    expect(a.data?.id).toBe(9); // najnoviji prvi (ORDER BY created_at DESC)
-    expect(b.data?.id).toBe(8);
+    expect(a.data?.id).toBe(8); // najstariji prvi (ORDER BY created_at ASC)
+    expect(b.data?.id).toBe(9);
     expect(a.data?.id).not.toBe(b.data?.id);
     expect(c.data).toBeNull(); // prazno sanduče
   });
@@ -266,7 +333,6 @@ describe("DictationInboxService", () => {
   // --------------------------------------------------------- claim: delegacija
 
   it("DELEGACIJA dozvoljena: postoji red (owner, pozivalac) → troši TUĐE sanduče", async () => {
-    prisma.user.findUnique.mockResolvedValue({ id: 2 }); // vlasnik postoji
     prisma.dictationDelegate.findFirst.mockResolvedValue({ id: 1 });
     prisma.$queryRaw.mockResolvedValue([
       { id: 11, text: "Nenadov diktat", created_at: new Date() },
@@ -280,12 +346,11 @@ describe("DictationInboxService", () => {
       where: { ownerUserId: 2, delegateUserId: 42 },
       select: { id: true },
     });
-    // UPDATE gađa VLASNIKOVO sanduče, ne pozivaočevo.
-    expect(claimParams(prisma)[0]).toBe(2);
+    // UPDATE gađa VLASNIKOVO sanduče (drugi parametar), a beleži POZIVAOCA (prvi).
+    expect(claimParams(prisma)).toEqual([42, 2]);
   });
 
   it("DELEGACIJA odbijena: nema reda → 403 i NIJEDAN red se ne dira", async () => {
-    prisma.user.findUnique.mockResolvedValue({ id: 2 });
     prisma.dictationDelegate.findFirst.mockResolvedValue(null);
 
     await expect(
@@ -295,34 +360,56 @@ describe("DictationInboxService", () => {
   });
 
   it("DELEGACIJA: nepoznat vlasnik daje ISTI 403 (ruta nije orakl za nabrajanje naloga)", async () => {
-    prisma.user.findFirst.mockResolvedValue(null); // nema takvog e-maila
-
     await expect(
       service.claim(ACTOR, { ownerEmail: "neko@nepostoji.rs" }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
-  it("DELEGACIJA: ownerEmail se razrešava u users.id (case-insensitive)", async () => {
-    prisma.user.findFirst.mockResolvedValue({ id: 2 });
+  it("DELEGACIJA: ownerEmail se normalizuje (trim + mala slova) i traži TAČNO", async () => {
     prisma.dictationDelegate.findFirst.mockResolvedValue({ id: 1 });
     prisma.$queryRaw.mockResolvedValue([
       { id: 12, text: "t", created_at: new Date() },
     ]);
 
-    await service.claim(ACTOR, { ownerEmail: "Nenad.Jarakovic@Servoteh.com" });
-
-    expect(prisma.user.findFirst).toHaveBeenCalledWith({
-      where: {
-        email: { equals: "Nenad.Jarakovic@Servoteh.com", mode: "insensitive" },
-      },
-      select: { id: true },
+    await service.claim(ACTOR, {
+      ownerEmail: "  Nenad.Jarakovic@Servoteh.com  ",
     });
-    expect(claimParams(prisma)[0]).toBe(2);
+
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { email: "nenad.jarakovic@servoteh.com" },
+      select: { id: true, active: true },
+    });
+    expect(claimParams(prisma)).toEqual([42, 2]);
+  });
+
+  it("🔴 DŽOKER: `%@servoteh.com` NE razrešava nikoga → 403, bez diranja sandučeta", async () => {
+    // Prva verzija je koristila `email: { equals, mode: "insensitive" }`, što Prisma
+    // prevodi u `ILIKE $1` — a `%` i `_` su tamo DŽOKERI, ne slova. `@IsEmail` ovaj
+    // niz propušta (validan oblik), pa bi napadač jednim pozivom pogodio proizvoljan
+    // nalog (mereno nad živom bazom: 59 od 68). Sanduče je komandni kanal, pa je to
+    // bio put do TUĐIH instrukcija. Sada: tačno poređenje po unique indeksu.
+    prisma.dictationDelegate.findFirst.mockResolvedValue({ id: 1 }); // čak i da dozvola postoji
+
+    for (const wildcard of [
+      "%@servoteh.com",
+      "_enad.jarakovic@servoteh.com",
+      "%%@%",
+    ]) {
+      await expect(
+        service.claim(ACTOR, { ownerEmail: wildcard }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    }
+
+    // Nijedan diktat nije ni pipnut, i nigde nije upotrebljen `mode: insensitive`.
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    expect(JSON.stringify(prisma.user.findUnique.mock.calls)).not.toContain(
+      "insensitive",
+    );
   });
 
   it("claim: eksplicitno SVOJE sanduče prolazi bez delegacije", async () => {
-    prisma.user.findUnique.mockResolvedValue({ id: 42 });
     prisma.$queryRaw.mockResolvedValue([
       { id: 13, text: "moj", created_at: new Date() },
     ]);
@@ -330,7 +417,7 @@ describe("DictationInboxService", () => {
     await service.claim(ACTOR, { ownerUserId: 42 });
 
     expect(prisma.dictationDelegate.findFirst).not.toHaveBeenCalled();
-    expect(claimParams(prisma)[0]).toBe(42);
+    expect(claimParams(prisma)).toEqual([42, 42]);
   });
 
   it("claim: ownerUserId I ownerEmail zajedno → 400", async () => {
@@ -340,10 +427,53 @@ describe("DictationInboxService", () => {
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
+  // ------------------------------------------------------- claim: aktivnost naloga
+
+  it("NEAKTIVAN POZIVALAC → 403 odmah, i za SVOJE sanduče", async () => {
+    // `JwtStrategy` veruje potpisu tokena i ne čita `users`, pa bi deaktiviran nalog
+    // inače radio do isteka tokena. Za komandni kanal je to predugo.
+    const ugasen = { userId: 99, email: "ugasen.agent@servoteh.com" };
+
+    await expect(service.claim(ugasen)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("NEAKTIVAN POZIVALAC → 403 i kad ima urednu delegaciju za tuđe sanduče", async () => {
+    prisma.dictationDelegate.findFirst.mockResolvedValue({ id: 1 });
+    const ugasen = { userId: 99, email: "ugasen.agent@servoteh.com" };
+
+    await expect(
+      service.claim(ugasen, { ownerUserId: 2 }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("NEAKTIVAN VLASNIK → 403 (njegovi diktati se više ne povlače)", async () => {
+    prisma.dictationDelegate.findFirst.mockResolvedValue({ id: 1 });
+
+    await expect(
+      service.claim(ACTOR, { ownerUserId: 3 }), // bivsi@servoteh.com, active: false
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("NEAKTIVAN VLASNIK BEZ delegacije daje isti 403 — stanje naloga se ne odaje", async () => {
+    prisma.dictationDelegate.findFirst.mockResolvedValue(null);
+
+    const bezDozvole = await poruka(service.claim(ACTOR, { ownerUserId: 3 }));
+    const nepostojeci = await poruka(
+      service.claim(ACTOR, { ownerEmail: "neko@nepostoji.rs" }),
+    );
+
+    expect(bezDozvole).toBe(nepostojeci);
+    expect(bezDozvole).toMatch(/Nemaš dozvolu/);
+  });
+
   // ---------------------------------------------------------- claim: audit/RL
 
   it("AUDIT: beleži KO je i ČIJI diktat povukao — ali NIKAD sam tekst", async () => {
-    prisma.user.findUnique.mockResolvedValue({ id: 2 });
     prisma.dictationDelegate.findFirst.mockResolvedValue({ id: 1 });
     prisma.$queryRaw.mockResolvedValue([
       { id: 21, text: "poslovna tajna u tekstu", created_at: new Date() },
@@ -399,5 +529,110 @@ describe("DictationInboxService", () => {
     }
     expect(status).toBe(429);
     expect(prisma.$queryRaw.mock.calls.length).toBe(before); // nije ni pokušao
+  });
+
+  it("RATE-LIMIT je NIŽI od punog sandučeta — inače se brana nikad ne okine", () => {
+    // Suština nalaza: sa 60/min jedan napadač isprazni punih MAX_UNDELIVERED = 50
+    // diktata u PRVOM minutu, bez ijednog 429. Granica mora biti manja od plena.
+    expect(CLAIM_THROTTLE_POLICY.MAX_CLAIMS).toBeLessThan(
+      DictationInboxService.MAX_UNDELIVERED,
+    );
+  });
+
+  // ------------------------------------------------------------- last-claimed
+
+  it("OPORAVAK: lastClaimed vraća SAMO svoj plen, u prozoru, najskoriji prvi", async () => {
+    const claimedAt = new Date("2026-08-02T09:05:00Z");
+    prisma.dictationInbox.findFirst.mockResolvedValue({
+      id: 31,
+      userId: 2,
+      text: "dodaj dugme",
+      createdAt: new Date("2026-08-02T09:00:00Z"),
+      deliveredAt: claimedAt,
+      claimedByUserId: 42,
+    });
+    prisma.dictationDelegate.findFirst.mockResolvedValue({ id: 1 });
+
+    const res = await service.lastClaimed(ACTOR, { ownerUserId: 2 });
+
+    const call = inboxQuery<{
+      where: {
+        userId: number;
+        claimedByUserId: number;
+        deliveredAt: { gte: Date };
+      };
+      orderBy: { deliveredAt: string };
+    }>(prisma);
+    expect(call.where.userId).toBe(2); // vlasnikovo sanduče
+    expect(call.where.claimedByUserId).toBe(42); // ali SAMO ono što je moj plen
+    expect(call.orderBy).toEqual({ deliveredAt: "desc" });
+    expect(res.data).toEqual({
+      id: 31,
+      text: "dodaj dugme",
+      createdAt: new Date("2026-08-02T09:00:00Z"),
+      claimedAt,
+    });
+    expect(res.meta.windowMinutes).toBe(
+      DictationInboxService.LAST_CLAIMED_WINDOW_MIN,
+    );
+  });
+
+  it("OPORAVAK: prozor je tačno LAST_CLAIMED_WINDOW_MIN minuta unazad", async () => {
+    const now = Date.now();
+    await service.lastClaimed(ACTOR);
+
+    const call = inboxQuery<{ where: { deliveredAt: { gte: Date } } }>(prisma);
+    const backMs = now - call.where.deliveredAt.gte.getTime();
+    const expected = DictationInboxService.LAST_CLAIMED_WINDOW_MIN * 60_000;
+    // Tolerancija na trajanje samog testa; suština je da NIJE „sve od pamtiveka".
+    expect(backMs).toBeGreaterThanOrEqual(expected - 1_000);
+    expect(backMs).toBeLessThanOrEqual(expected + 1_000);
+  });
+
+  it("OPORAVAK: van prozora / tuđ plen → data: null (baza filtrira, servis ne izmišlja)", async () => {
+    prisma.dictationInbox.findFirst.mockResolvedValue(null);
+    await expect(service.lastClaimed(ACTOR)).resolves.toEqual({
+      data: null,
+      meta: { windowMinutes: DictationInboxService.LAST_CLAIMED_WINDOW_MIN },
+    });
+  });
+
+  it("OPORAVAK: bez delegacije → 403, bez ijednog čitanja tuđeg sandučeta", async () => {
+    prisma.dictationDelegate.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.lastClaimed(ACTOR, { ownerUserId: 2 }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.dictationInbox.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("OPORAVAK: neaktivan pozivalac → 403", async () => {
+    const ugasen = { userId: 99, email: "ugasen.agent@servoteh.com" };
+    await expect(service.lastClaimed(ugasen)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(prisma.dictationInbox.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("OPORAVAK: džoker e-mail ni ovde ne prolazi → 403", async () => {
+    prisma.dictationDelegate.findFirst.mockResolvedValue({ id: 1 });
+    await expect(
+      service.lastClaimed(ACTOR, { ownerEmail: "%@servoteh.com" }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.dictationInbox.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("OPORAVAK: lastClaimed NE troši rate-limit — radi i pošto je claim već u 429", async () => {
+    prisma.$queryRaw.mockResolvedValue([]);
+    for (let i = 0; i < CLAIM_THROTTLE_POLICY.MAX_CLAIMS; i++) {
+      await service.claim(ACTOR);
+    }
+    await expect(service.claim(ACTOR)).rejects.toBeInstanceOf(HttpException);
+
+    // Agent kome je poll pao u 429 i dalje sme da pročita ono što je već povukao —
+    // inače bi ga brana koštala baš onog diktata zbog kog je zvao.
+    await expect(service.lastClaimed(ACTOR)).resolves.toMatchObject({
+      data: null,
+    });
   });
 });

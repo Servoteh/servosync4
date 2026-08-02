@@ -116,7 +116,15 @@ export class DictationDelegatesService {
     return { data: { id, removed: true } };
   }
 
-  /** `…UserId` ILI `…Email` → `users.id`; nedostaje/ne postoji → 400/404 sa jasnom porukom. */
+  /**
+   * `…UserId` ILI `…Email` → `users.id`; nedostaje/ne postoji → 400/404 sa jasnom
+   * porukom.
+   *
+   * DEAKTIVIRAN NALOG → 400. Dozvola za deaktiviran nalog je ili greška u kucanju ili
+   * pokušaj da se „oživi" ugašen pristup: `claim` bi je ionako odbio (servis proverava
+   * `active` na svakom pozivu), pa nema svrhe upisati red koji ne radi. Bolje odmah
+   * jasna poruka administratoru nego mrtva dozvola u tabeli.
+   */
   private async requireUser(
     ref: { userId?: number; email?: string },
     label: string,
@@ -133,6 +141,11 @@ export class DictationDelegatesService {
         `Nema korisnika za ${human} (${ref.userId ?? ref.email}).`,
       );
     }
-    return resolved;
+    if (!resolved.active) {
+      throw new BadRequestException(
+        `Nalog za ${human} (${ref.userId ?? ref.email}) je deaktiviran — delegacija bi bila mrtvo slovo.`,
+      );
+    }
+    return resolved.id;
   }
 }

@@ -3,6 +3,19 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { PrismaService } from "../../prisma/prisma.service";
 import { DictationDelegatesService } from "./dictation-delegates.service";
 
+/**
+ * Nalozi „u bazi". `findUnique` ih traži TAČNO (po `id` ili po celom e-mailu),
+ * kao Postgres nad `uq_users_email` — zato džoker („%@servoteh.com") ovde ne
+ * pogađa nikoga, isto kao na produkciji.
+ */
+type MockUser = { id: number; email: string; active: boolean };
+const USERS: MockUser[] = [
+  { id: 1, email: "admin@servoteh.com", active: true },
+  { id: 2, email: "nenad.jarakovic@servoteh.com", active: true },
+  { id: 9, email: "agent@servoteh.com", active: true },
+  { id: 3, email: "bivsi@servoteh.com", active: false },
+];
+
 function prismaMock() {
   return {
     dictationDelegate: {
@@ -13,7 +26,17 @@ function prismaMock() {
       delete: jest.fn().mockResolvedValue({ id: 1 }),
     },
     user: {
-      findUnique: jest.fn().mockResolvedValue(null),
+      findUnique: jest.fn(
+        ({ where }: { where: { id?: number; email?: string } }) => {
+          const row = USERS.find((u) =>
+            where.id !== undefined
+              ? u.id === where.id
+              : u.email === where.email,
+          );
+          return Promise.resolve(row ? { ...row } : null);
+        },
+      ),
+      // Postoji samo da bi test mogao da dokaže da se NE koristi (ILIKE put).
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
     },
@@ -73,13 +96,10 @@ describe("DictationDelegatesService", () => {
   // --------------------------------------------------------------------- add
 
   it("add: e-mailovi se razrešavaju u users.id; upisuje se ko je dodelio", async () => {
-    prisma.user.findFirst
-      .mockResolvedValueOnce({ id: 2 }) // owner
-      .mockResolvedValueOnce({ id: 9 }); // delegate
     prisma.dictationDelegate.create.mockResolvedValue({ id: 5 });
 
     const res = await service.add(ADMIN, {
-      ownerEmail: "nenad@servoteh.com",
+      ownerEmail: "nenad.jarakovic@servoteh.com",
       delegateEmail: "agent@servoteh.com",
       note: "  Cursor agent  ",
     });
@@ -95,10 +115,39 @@ describe("DictationDelegatesService", () => {
     expect(res.meta.created).toBe(true);
   });
 
+  it("add: e-mail se normalizuje (trim + mala slova) i traži TAČNO, bez ILIKE", async () => {
+    prisma.dictationDelegate.create.mockResolvedValue({ id: 6 });
+
+    await service.add(ADMIN, {
+      ownerEmail: "  Nenad.Jarakovic@Servoteh.com ",
+      delegateEmail: "AGENT@servoteh.com",
+    });
+
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { email: "nenad.jarakovic@servoteh.com" },
+      select: { id: true, active: true },
+    });
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    expect(JSON.stringify(prisma.user.findUnique.mock.calls)).not.toContain(
+      "insensitive",
+    );
+  });
+
+  it("🔴 DŽOKER: `%@servoteh.com` ne pogađa nikoga → 404, dozvola se NE upisuje", async () => {
+    // `mode: "insensitive"` bi ovde bio `ILIKE`, gde su `%` i `_` džokeri — pa bi
+    // admin ruta ćutke dodelila dozvolu PROIZVOLJNOM nalogu (mereno: 59 od 68).
+    for (const wildcard of ["%@servoteh.com", "_enad.jarakovic@servoteh.com"]) {
+      await expect(
+        service.add(ADMIN, {
+          ownerEmail: wildcard,
+          delegateEmail: "agent@servoteh.com",
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    }
+    expect(prisma.dictationDelegate.create).not.toHaveBeenCalled();
+  });
+
   it("add: IDEMPOTENTNO — postojeći par vraća isti red, bez duplikata", async () => {
-    prisma.user.findUnique
-      .mockResolvedValueOnce({ id: 2 })
-      .mockResolvedValueOnce({ id: 9 });
     prisma.dictationDelegate.findFirst.mockResolvedValue({
       id: 5,
       ownerUserId: 2,
@@ -116,10 +165,6 @@ describe("DictationDelegatesService", () => {
   });
 
   it("add: vlasnik == delegat → 400 (svoje sanduče ide i bez dozvole)", async () => {
-    prisma.user.findUnique
-      .mockResolvedValueOnce({ id: 2 })
-      .mockResolvedValueOnce({ id: 2 });
-
     await expect(
       service.add(ADMIN, { ownerUserId: 2, delegateUserId: 2 }),
     ).rejects.toBeInstanceOf(BadRequestException);
@@ -127,14 +172,34 @@ describe("DictationDelegatesService", () => {
   });
 
   it("add: nepoznat nalog → 404 (admin ruta SME da kaže da nema takvog korisnika)", async () => {
-    prisma.user.findFirst.mockResolvedValue(null);
-
     await expect(
       service.add(ADMIN, {
         ownerEmail: "nema@servoteh.com",
         delegateEmail: "agent@servoteh.com",
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("add: DEAKTIVIRAN vlasnik → 400, dozvola se ne upisuje (bila bi mrtvo slovo)", async () => {
+    // `claim` ionako proverava `active` na svakom pozivu, pa bi upisan red samo
+    // lažno tešio administratora da je pristup dat.
+    await expect(
+      service.add(ADMIN, {
+        ownerUserId: 3, // bivsi@servoteh.com, active: false
+        delegateUserId: 9,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.dictationDelegate.create).not.toHaveBeenCalled();
+  });
+
+  it("add: DEAKTIVIRAN delegat → 400, dozvola se ne upisuje", async () => {
+    await expect(
+      service.add(ADMIN, {
+        ownerUserId: 2,
+        delegateEmail: "bivsi@servoteh.com",
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.dictationDelegate.create).not.toHaveBeenCalled();
   });
 
   it("add: nedostaje vlasnik → 400", async () => {
@@ -147,7 +212,7 @@ describe("DictationDelegatesService", () => {
     await expect(
       service.add(ADMIN, {
         ownerUserId: 2,
-        ownerEmail: "nenad@servoteh.com",
+        ownerEmail: "nenad.jarakovic@servoteh.com",
         delegateUserId: 9,
       }),
     ).rejects.toBeInstanceOf(BadRequestException);

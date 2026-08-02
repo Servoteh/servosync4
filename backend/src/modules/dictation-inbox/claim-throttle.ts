@@ -13,12 +13,21 @@
  *
  * Politika: MAX_CLAIMS poziva u WINDOW_MS po nalogu → 429 sa `Retry-After` sekundama.
  * Broje se SVI pozivi (i oni koji vrate `null`), jer je i prazan poll potrošnja.
- * Granica je namerno široka: agent koji radi normalno (nekoliko diktata u minutu,
- * uz poneki prazan poll) je nikad ne dodirne.
+ *
+ * ZAŠTO 10, a ne 60: granica ima smisla samo ako je NIŽA od onoga što napadač treba
+ * da isprazni sanduče. Nagomilati se sme najviše `MAX_UNDELIVERED = 50` nepreuzetih
+ * diktata, pa bi 60 poziva/min ispraznilo PUNO sanduče u prvom minutu — bez ijednog
+ * 429; brana koja se nikad ne okine nije brana. Sa 10/min isto pražnjenje traje bar 5
+ * minuta i ostavlja trag (429 u logu, `Retry-After` u odgovoru).
+ *
+ * Poslu ne smeta: čovek diktira nekoliko poruka u minutu, a agent koji čeka posao
+ * poll-uje na ~10 s (6/min) — normalan rad granicu ne dodiruje. Ako mu poll padne u
+ * 429, `lastClaimed` (GET, van ovog brojača) i dalje vraća poslednji SVOJ preuzet
+ * diktat, pa se ništa ne gubi.
  */
 
 const WINDOW_MS = 60 * 1000; // prozor posmatranja: 1 minut
-const MAX_CLAIMS = 60; // poziva po nalogu u prozoru (prosek 1/s)
+const MAX_CLAIMS = 10; // poziva po nalogu u prozoru (poll na ~10 s prolazi)
 const MAX_KEYS = 10_000; // gornja granica mape (zaštita od punjenja memorije)
 
 interface Bucket {

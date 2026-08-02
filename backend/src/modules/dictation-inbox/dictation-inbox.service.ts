@@ -46,9 +46,22 @@ interface ClaimedRow {
  * `latest()` je za samu aplikaciju (prikaz „šta je poslednje poslato, još
  * nepreuzeto") — ČITA i ne troši.
  *
+ * REDOSLED (dva različita posla, dva različita redosleda — ne mešati):
+ *  - `latest()` = POSLEDNJI nepreuzet (`created_at DESC`) — pregled u aplikaciji.
+ *  - `claim()`  = NAJSTARIJI nepreuzet (`created_at ASC`) — obrada REDOM. Sanduče je
+ *    komandni kanal: kad se jedan zadatak izdiktira u više delova („prvo uradi X",
+ *    „pa onda Y"), LIFO bi agentu isporučio korake obrnutim redom. Hronološki red je
+ *    jedini ispravan za instrukcije.
+ *
  * PRAVILO VLASNIKA (presuda 29.07): sanduče je jedno, ko PRVI povuče — njegov je;
  * nema vraćanja diktata na „neposlato". Zato `claim` mora biti atomičan — dve
  * paralelne sesije ne smeju dobiti isti red (vidi `claim()` niže).
+ *
+ * OPORAVAK: pošto je `claim` destruktivan i neidempotentan, izgubljen HTTP odgovor
+ * (prekid mreže) bi inače trajno progutao diktat. Zato `lastClaimed()` istom
+ * pozivaocu vraća red KOJI JE ON preuzeo u poslednjih `LAST_CLAIMED_WINDOW_MIN`
+ * minuta — pravilo „prvo povlačenje troši" ostaje, samo se sme ponovo pročitati ono
+ * što je već tvoje.
  *
  * IDOR: `create`/`latest` su UVEK skopirani na `userId` iz JWT-a. `claim` je jedini
  * koji sme u TUĐE sanduče, i to isključivo uz eksplicitan red u `dictation_delegates`
@@ -66,6 +79,13 @@ export class DictationInboxService {
    * postaju mine za sledeći pull. Preko limita → 429 dok se postojeći ne preuzmu.
    */
   static readonly MAX_UNDELIVERED = 50;
+  /**
+   * Prozor za `lastClaimed()` — koliko dugo posle preuzimanja isti pozivalac sme
+   * ponovo da pročita SVOJ preuzeti diktat (oporavak od izgubljenog odgovora).
+   * 15 min: dovoljno za retry agenta i za čoveka koji primeti prekid, a prekratko
+   * da ukraden token može da „pročita istoriju sandučeta".
+   */
+  static readonly LAST_CLAIMED_WINDOW_MIN = 15;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -118,7 +138,7 @@ export class DictationInboxService {
   // ------------------------------------------------------------------- claim
 
   /**
-   * ATOMIČNO uzmi poslednji NEPREUZET diktat i istim upitom ga obeleži preuzetim.
+   * ATOMIČNO uzmi NAJSTARIJI nepreuzet diktat i istim upitom ga obeleži preuzetim.
    *
    * Zašto JEDAN upit, a ne `findFirst` pa `update`: između ta dva koraka druga
    * sesija stigne da pročita ISTI red — obe bi dobile isti diktat, a pravilo je
@@ -127,6 +147,10 @@ export class DictationInboxService {
    * zaključa izabrani red, `SKIP LOCKED` natera paralelnu sesiju da PRESKOČI
    * zaključan red i uzme sledeći (ili ništa), pa dva `claim`-a NIKAD ne vrate isti
    * red. Dodatni `delivered_at IS NULL` u spoljnom WHERE je pojas uz tregere.
+   *
+   * Zašto `ORDER BY created_at ASC` (FIFO), a ne DESC: višedelni diktat („prvo X",
+   * „pa Y") mora da stigne agentu HRONOLOŠKI. `id ASC` je tie-break kad dva reda
+   * dele isti `created_at` (ista milisekunda) — bez njega redosled nije determinisan.
    *
    * `ownerUserId`/`ownerEmail` (opciono) = TUĐE sanduče; dozvoljeno samo ako u
    * `dictation_delegates` postoji red (vlasnik, pozivalac) — inače 403.
@@ -149,16 +173,19 @@ export class DictationInboxService {
     const delegated = ownerUserId !== actor.userId;
 
     // 3) Uzmi + markiraj JEDNIM upitom (atomičnost, vidi doc-comment).
+    //    `claimed_by_user_id` pamti KO je uzeo — bez toga `lastClaimed` ne bi mogao
+    //    da razlikuje „moj preuzet diktat" od tuđeg u istom sandučetu.
     const rows = await this.prisma.$queryRaw<ClaimedRow[]>(
       Prisma.sql`
         UPDATE dictation_inbox
-           SET delivered_at = now()
+           SET delivered_at = now(),
+               claimed_by_user_id = ${actor.userId}
          WHERE id = (
                  SELECT id
                    FROM dictation_inbox
                   WHERE user_id = ${ownerUserId}
                     AND delivered_at IS NULL
-                  ORDER BY created_at DESC
+                  ORDER BY created_at ASC, id ASC
                     FOR UPDATE SKIP LOCKED
                   LIMIT 1
                )
@@ -182,17 +209,84 @@ export class DictationInboxService {
   }
 
   /**
+   * Vrati diktat koji je OVAJ pozivalac preuzeo u poslednjih
+   * `LAST_CLAIMED_WINDOW_MIN` minuta iz istog sandučeta — oporavak od izgubljenog
+   * odgovora.
+   *
+   * PROBLEM koji rešava: `claim` je destruktivan i neidempotentan. Ako mreža pukne
+   * POSLE `UPDATE`-a a PRE nego što odgovor stigne, diktat je potrošen i nema ga više
+   * — a sanduče je komandni kanal, pa je izgubljen zadatak izgubljena instrukcija.
+   *
+   * Zašto ovo NE ruši pravilo vlasnika: ne vraća red na „neposlato" i ne otvara tuđi
+   * plen — filtrira po `claimed_by_user_id = pozivalac`, pa svako vidi isključivo ono
+   * što je već njegovo, i to samo unutar kratkog prozora. Redovi preuzeti starim
+   * putem (psql `UPDATE … delivered_at`) nemaju `claimed_by_user_id` i ovde se ne
+   * pojavljuju — to je tačno, jer njih niko preko HTTP-a nije ni uzeo.
+   *
+   * Prava se proveravaju ISTO kao za `claim` (aktivnost naloga + delegacija za tuđe
+   * sanduče). Rate-limit se NE troši — ruta je samo za čitanje, ništa ne potroši.
+   */
+  async lastClaimed(actor: ClaimActor, target: ClaimTarget = {}) {
+    const ownerUserId = await this.resolveOwner(actor, target);
+    const since = new Date(
+      Date.now() - DictationInboxService.LAST_CLAIMED_WINDOW_MIN * 60_000,
+    );
+
+    const row = await this.prisma.dictationInbox.findFirst({
+      where: {
+        userId: ownerUserId,
+        claimedByUserId: actor.userId,
+        deliveredAt: { gte: since },
+      },
+      orderBy: { deliveredAt: "desc" },
+    });
+
+    // `meta` ide i uz prazan odgovor: agent tako vidi KOLIKI je prozor, pa zna da
+    // li je „nema ničega" ili „bilo je, ali je isteklo" — bez pogađanja.
+    const meta = {
+      windowMinutes: DictationInboxService.LAST_CLAIMED_WINDOW_MIN,
+    };
+    if (!row) return { data: null, meta };
+
+    return {
+      data: {
+        id: row.id,
+        text: row.text,
+        createdAt: row.createdAt,
+        claimedAt: row.deliveredAt,
+      },
+      meta,
+    };
+  }
+
+  /**
    * Razreši „čije sanduče" i presudi sme li pozivalac u njega.
    *
    * Bez `ownerUserId`/`ownerEmail` → svoje (dosadašnje ponašanje, ništa se ne menja).
    * Sa njima → mora postojati red u `dictation_delegates` (vlasnik, pozivalac).
    * Nepoznat vlasnik daje ISTI 403 kao „nemaš dozvolu" — ruta ne sme da bude orakl
    * za nabrajanje naloga/e-mailova.
+   *
+   * AKTIVNOST NALOGA: `JwtStrategy` veruje potpisu tokena i NE čita `users` — pa
+   * deaktiviran nalog nastavlja da radi do isteka tokena. Za sanduče (komandni kanal,
+   * tuđi tekst) to je predugo, zato se `active` proverava ovde, na svakom pozivu:
+   * i za pozivaoca i za vlasnika. Deaktivacija time deluje ODMAH, bez čekanja isteka.
    */
   private async resolveOwner(
     actor: ClaimActor,
     target: ClaimTarget,
   ): Promise<number> {
+    // Pozivalac mora biti aktivan — nezavisno od toga čije sanduče traži.
+    const caller = await this.prisma.user.findUnique({
+      where: { id: actor.userId },
+      select: { active: true },
+    });
+    if (!caller?.active) {
+      throw new ForbiddenException(
+        "Nalog je deaktiviran — pristup diktafon sandučetu je ukinut.",
+      );
+    }
+
     const resolved = await resolveUserRef(
       this.prisma,
       { userId: target.ownerUserId, email: target.ownerEmail },
@@ -200,14 +294,22 @@ export class DictationInboxService {
     );
     if (resolved === null) return actor.userId; // ništa prosleđeno = svoje sanduče
     if (resolved === USER_REF_NOT_FOUND) throw this.noDelegation();
-    if (resolved === actor.userId) return resolved; // svoje, samo eksplicitno
+    if (resolved.id === actor.userId) return resolved.id; // svoje, samo eksplicitno
 
+    // Delegacija se proverava PRE poruke o vlasniku: nepoznat/nedozvoljen vlasnik daje
+    // isti 403, pa ruta ne postaje orakl za nabrajanje (ni za stanje) tuđih naloga.
     const link = await this.prisma.dictationDelegate.findFirst({
-      where: { ownerUserId: resolved, delegateUserId: actor.userId },
+      where: { ownerUserId: resolved.id, delegateUserId: actor.userId },
       select: { id: true },
     });
     if (!link) throw this.noDelegation();
-    return resolved;
+
+    if (!resolved.active) {
+      throw new ForbiddenException(
+        "Vlasnik sandučeta je deaktiviran — njegovi diktati se više ne povlače.",
+      );
+    }
+    return resolved.id;
   }
 
   private noDelegation(): ForbiddenException {

@@ -7,6 +7,14 @@ import {
 describe("claim-throttle", () => {
   beforeEach(() => __resetClaimThrottle());
 
+  it("politika je 10 poziva u minutu — granica koja se STVARNO okine", () => {
+    // Prvo je bilo 60/min, što je iznad punog sandučeta (MAX_UNDELIVERED = 50):
+    // napadač bi ga ispraznio u prvom minutu bez ijednog 429. Broj je zato deo
+    // ugovora, ne slobodan parametar — tiho vraćanje na 60 mora da obori test.
+    expect(CLAIM_THROTTLE_POLICY.MAX_CLAIMS).toBe(10);
+    expect(CLAIM_THROTTLE_POLICY.WINDOW_MS).toBe(60_000);
+  });
+
   it("prvih MAX_CLAIMS poziva prolazi (0 = dozvoljeno)", () => {
     for (let i = 0; i < CLAIM_THROTTLE_POLICY.MAX_CLAIMS; i++) {
       expect(recordClaimAttempt(42, 1_000)).toBe(0);

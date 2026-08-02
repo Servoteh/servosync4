@@ -33,7 +33,12 @@ za prikaz „šta je poslednje poslato, još nepreuzeto".
 
 ## 3. `POST /api/v1/dictation-inbox/claim`
 
-Uzme **poslednji nepreuzet** diktat i **istim upitom** ga obeleži preuzetim.
+Uzme **NAJSTARIJI nepreuzet** diktat (FIFO) i **istim upitom** ga obeleži preuzetim.
+
+> **Zašto FIFO, a ne „poslednji".** Sanduče je komandni kanal. Kad se jedan zadatak
+> izdiktira u više delova („prvo uradi X", „pa onda Y"), LIFO bi agentu isporučio
+> korake **obrnutim redom**. `latest` (pregled u aplikaciji) ostaje `DESC` — to su
+> dva različita posla i namerno imaju različit redosled.
 
 - **Permisija:** `ai.chat` (ista kao ostale rute modula — diktafon je AI alat).
 - **Status:** `200` (ne 201 — ništa se ne kreira, postojeći red se troši).
@@ -45,9 +50,17 @@ Uzme **poslednji nepreuzet** diktat i **istim upitom** ga obeleži preuzetim.
 |---|---|
 | *(prazno / `{}`)* | **svoje** sanduče (pozivalac iz JWT-a) — dosadašnje ponašanje |
 | `ownerUserId` | tuđe sanduče po `users.id` |
-| `ownerEmail` | tuđe sanduče po e-mailu (case-insensitive) |
+| `ownerEmail` | tuđe sanduče po e-mailu — **tačno poređenje** (`trim().toLowerCase()` pa `findUnique`) |
 
 `ownerUserId` i `ownerEmail` zajedno → `400`. Tuđe sanduče bez delegacije → `403`.
+Deaktiviran pozivalac **ili** deaktiviran vlasnik → `403` (vidi §6).
+
+> 🔴 **E-mail se NIKAD ne traži kroz `mode: "insensitive"`.** Prisma to prevodi u
+> `ILIKE $1`, gde su `%` i `_` **džokeri** — a `@IsEmail` niz `%@servoteh.com`
+> propušta kao validan oblik. Mereno nad živom bazom: takav „e-mail" pogađa **59 od
+> 68** naloga, i `findFirst` bez `orderBy` ne garantuje ni koji. Za komandni kanal to
+> je bio put do tuđih instrukcija. Mala slova su invarijanta ove baze (i upis i
+> prijava rade nad `lower`), pa je `findUnique` po `uq_users_email` i tačan i dovoljan.
 
 ### Odgovor
 
@@ -61,11 +74,12 @@ Jedan jedini SQL, ne dva upita:
 
 ```sql
 UPDATE dictation_inbox
-   SET delivered_at = now()
+   SET delivered_at = now(),
+       claimed_by_user_id = $1          -- KO je uzeo (nosi oporavak, §3a)
  WHERE id = (
          SELECT id FROM dictation_inbox
-          WHERE user_id = $1 AND delivered_at IS NULL
-          ORDER BY created_at DESC
+          WHERE user_id = $2 AND delivered_at IS NULL
+          ORDER BY created_at ASC, id ASC   -- FIFO; id je tie-break u istoj ms
             FOR UPDATE SKIP LOCKED
           LIMIT 1
        )
@@ -79,6 +93,30 @@ povuče". `FOR UPDATE SKIP LOCKED` u jednoj izjavi tera paralelnu sesiju da
 zaključan red **preskoči** i uzme sledeći (ili ništa). Provereno i nad živim
 Postgresom (dva uzastopna `claim`-a → različiti redovi, treći → prazno) i testom
 `dictation-inbox.service.spec.ts`.
+
+## 3a. `GET /api/v1/dictation-inbox/last-claimed` — oporavak
+
+`claim` je **destruktivan i neidempotentan**: red je potrošen i drugog pokušaja nema.
+Ako mreža pukne **posle** `UPDATE`-a a **pre** nego što odgovor stigne agentu, diktat
+je izgubljen — a izgubljen diktat je izgubljena instrukcija.
+
+Zato `last-claimed` istom pozivaocu vraća red **koji je ON preuzeo** u poslednjih
+**15 minuta** (`LAST_CLAIMED_WINDOW_MIN`), iz istog sandučeta:
+
+```json
+{ "data": { "id": 41, "text": "…", "createdAt": "…", "claimedAt": "…" },
+  "meta": { "windowMinutes": 15 } }
+```
+
+- **Ne ruši pravilo vlasnika**: red se NE vraća na „neposlato" i tuđ plen se ne vidi —
+  filter je `claimed_by_user_id = pozivalac`. Zato i postoji nova kolona: `delivered_at`
+  kaže samo *da* je preuzeto, ne i *ko* je preuzeo.
+- **GET** (ništa ne menja) i **van rate-limita** `claim`-a — agent kome je poll pao u
+  429 i dalje sme da pročita ono što je već povukao.
+- Isti izbor sandučeta kao `claim`, samo kroz query: `?ownerUserId=` / `?ownerEmail=`
+  (ista prava: aktivnost naloga + delegacija).
+- Redovi preuzeti **starim putem** (ručni psql `UPDATE … delivered_at`) nemaju
+  `claimed_by_user_id` i ovde se ne pojavljuju — tačno, jer ih preko HTTP-a niko nije uzeo.
 
 ## 4. Delegacija — bez nje ruta ne rešava problem
 
@@ -119,7 +157,9 @@ curl -X POST $API/v1/dictation-delegates \
 - `DELETE /api/v1/dictation-delegates/:id` — ukloni
 
 Svaka strana se zadaje kao `…UserId` **ili** `…Email` (oba → 400). Vlasnik == delegat → 400
-(svoje sanduče ide i bez dozvole). Nepoznat nalog → 404. **Nova permisija se namerno NE uvodi.**
+(svoje sanduče ide i bez dozvole). Nepoznat nalog → 404. **Deaktiviran nalog (bilo koja
+strana) → 400** — `claim` bi takvu dozvolu ionako odbio, pa nema svrhe upisati mrtav red.
+E-mail se i ovde poredi **tačno** (vidi 🔴 u §3). **Nova permisija se namerno NE uvodi.**
 
 **B) Čist SQL** (ako se ne želi ni HTTP površina):
 
@@ -145,7 +185,7 @@ TOKEN=$(curl -s -X POST $API/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"agent@servoteh.com","password":"…"}' | jq -r .accessToken)
 
-# 2) Povuci Nenadov diktat (TROŠI ga — drugog pokušaja nema)
+# 2) Povuci Nenadov NAJSTARIJI nepreuzet diktat (TROŠI ga — drugog pokušaja nema)
 curl -s -X POST $API/v1/dictation-inbox/claim \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"ownerEmail":"nenad.jarakovic@servoteh.com"}'
@@ -154,6 +194,12 @@ curl -s -X POST $API/v1/dictation-inbox/claim \
 # Svoje sanduče — bez tela:
 curl -s -X POST $API/v1/dictation-inbox/claim \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}'
+
+# 3) OPORAVAK: ako odgovor iz koraka 2 nije stigao (prekid mreže) — pročitaj ga ponovo.
+#    Vraća SAMO ono što je OVAJ token povukao, i samo u poslednjih 15 min.
+curl -s "$API/v1/dictation-inbox/last-claimed?ownerEmail=nenad.jarakovic@servoteh.com" \
+  -H "Authorization: Bearer $TOKEN"
+# → {"data":{"id":41,"text":"…","createdAt":"…","claimedAt":"…"},"meta":{"windowMinutes":15}}
 ```
 
 ## 6. Zaštite
@@ -162,10 +208,12 @@ curl -s -X POST $API/v1/dictation-inbox/claim \
 |---|---|
 | Permisija `ai.chat` | ruta nije javna; `PermissionsGuard` + `JwtAuthGuard` |
 | **Delegacija** | tuđe sanduče je default-deny; bez reda u `dictation_delegates` → 403 |
-| **Rate-limit** (`claim-throttle.ts`) | 60 poziva/min **po nalogu** → 429. `claim` je destruktivan; bez ovoga bi jedan ukraden token u petlji tiho ispraznio sanduče. In-memory klizni prozor, isti obrazac kao `common/login-throttle.ts`, bez nove zavisnosti |
+| **Aktivnost naloga** | `claim`/`last-claimed` na SVAKOM pozivu čitaju `users.active` — i za pozivaoca i za vlasnika. `JwtStrategy` veruje potpisu tokena i ne dira `users`, pa bi deaktiviran nalog inače radio do isteka tokena; za komandni kanal je to predugo. Deaktivacija deluje **odmah** |
+| **Rate-limit** (`claim-throttle.ts`) | **10 poziva/min po nalogu** → 429 sa `Retry-After`. Broj mora biti **niži od punog sandučeta** (`MAX_UNDELIVERED = 50`): sa 60/min napadač isprazni sve u prvom minutu bez ijednog 429 — brana koja se nikad ne okine nije brana. Agent koji poll-uje na ~10 s (6/min) je ne dodiruje. In-memory klizni prozor, obrazac `common/login-throttle.ts`, bez nove zavisnosti |
 | **Backpressure na upisu** | `MAX_UNDELIVERED = 50` nepreuzetih po korisniku → 429 na `POST /dictation-inbox` |
 | **Audit** | vidi §7 |
-| Ne otkriva naloge | nepoznat `ownerEmail` → isti 403 kao „nemaš dozvolu" |
+| Ne otkriva naloge | nepoznat `ownerEmail`, nedozvoljen vlasnik i deaktiviran vlasnik bez dozvole daju **isti** 403 |
+| Tačno poređenje e-maila | bez `ILIKE` — `%@servoteh.com` ne razrešava nikoga (vidi 🔴 u §3) |
 
 ## 7. Audit — i šta se NE loguje
 
@@ -184,20 +232,50 @@ Dakle **ko je i čiji diktat povukao**. Upis je best-effort: pad audita ne obara
 > **TEKST DIKTATA SE NIKAD NE LOGUJE** — ni u `audit_log`, ni u app log. Može nositi
 > poslovne podatke. U auditu stoji samo `text_len`.
 
-Globalni `AuditInterceptor` uz to upisuje i svoj generički red za POST rutu, ali
-njemu je `entity_id` doslovno „claim" (izvodi ga iz URL-a) i ne zna koji je red uzet —
-zato servis piše svoj, smisleni. Iz istog razloga su admin rute delegacije na
-**top nivou** (`/v1/dictation-delegates`), a ne pod `/v1/admin/…`: interceptor bi
-inače upisao `entity_type=admin, entity_id=dictation-delegates`.
+🔴 **To je do 02.08.2026 bilo samo obećanje.** Globalni `AuditInterceptor` upisuje
+**celo telo zahteva** u `after_data`, pa je uz svaki `POST /api/v1/dictation-inbox`
+u audit odlazio **pun tekst diktata** (potvrđeno na produkciji). Sada interceptor
+skida sadržaj tih polja po resursu (`REDACTED_BODY_FIELDS`):
+
+| Ruta | Polje | U auditu ostaje |
+|---|---|---|
+| `POST /api/v1/dictation-inbox` | `text` | `"[redacted]"` + `text_len` |
+| `POST /api/v1/ai/refine` | `tekst` | `"[redacted]"` + `tekst_len` |
+
+`/ai/refine` je tu jer telefon **isti tekst** prvo provuče kroz doterivanje pa ga tek
+onda odloži u sanduče — bez toga bi curio kroz susednu rutu. **Ostale rute se ne
+diraju** (njihov audit je koristan baš zato što pokazuje šta je promenjeno);
+`password`/`token`/`secret` su i dalje redigovani svuda. Pokriveno testom
+`src/common/audit/audit.interceptor.spec.ts`.
+
+Interceptor uz to upisuje i svoj generički red za POST rutu, ali njemu je `entity_id`
+doslovno „claim" (izvodi ga iz URL-a) i ne zna koji je red uzet — zato servis piše
+svoj, smisleni. Iz istog razloga su admin rute delegacije na **top nivou**
+(`/v1/dictation-delegates`), a ne pod `/v1/admin/…`: interceptor bi inače upisao
+`entity_type=admin, entity_id=dictation-delegates`.
 
 ## 8. Migracija
 
 `prisma/migrations/20260802100000_dictation_delegates/` — aditivna i idempotentna
-(`CREATE TABLE/INDEX IF NOT EXISTS`), ne dira nijednu postojeću tabelu, bez FK-ova
-(paritet sa bratskom `dictation_inbox`).
+(`CREATE TABLE/INDEX IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`), bez FK-ova
+(paritet sa bratskom `dictation_inbox`). Radi dve stvari:
+
+1. `CREATE TABLE dictation_delegates` (+ unique par, + indeks po delegatu);
+2. `ALTER TABLE dictation_inbox ADD COLUMN claimed_by_user_id` (+ indeks
+   `idx_dictation_inbox_claimed_by_delivered`) — nosi `last-claimed` (§3a).
 
 **Mora se primeniti na `servosync-pg` pre nego što `claim` sa `ownerUserId` proradi.**
-Bez tabele `claim` bez parametra (svoje sanduče) i dalje radi, ali tuđe puca.
+Bez tabele `claim` bez parametra (svoje sanduče) i dalje radi, ali tuđe puca; bez
+kolone puca i `claim` i `last-claimed`.
+
+Usklađenost šeme i migracija provereno alatom (a ne na oko):
+
+```bash
+npx prisma migrate diff --from-migrations ./prisma/migrations \
+  --to-schema-datamodel ./prisma/schema.prisma \
+  --shadow-database-url "$SHADOW_URL"
+# → nijedan pomen `dictation_inbox`/`dictation_delegates`
+```
 
 ## 9. Otvorena pitanja
 

@@ -1,3 +1,4 @@
+import { Type } from "class-transformer";
 import { IsEmail, IsInt, IsOptional, IsPositive } from "class-validator";
 
 /**
@@ -13,6 +14,25 @@ import { IsEmail, IsInt, IsOptional, IsPositive } from "class-validator";
  */
 export class ClaimDictationDto {
   @IsOptional()
+  @IsInt()
+  @IsPositive()
+  ownerUserId?: number;
+
+  @IsOptional()
+  @IsEmail()
+  ownerEmail?: string;
+}
+
+/**
+ * `GET /v1/dictation-inbox/last-claimed` — isti izbor sandučeta, ali kroz query.
+ *
+ * Ista dva polja kao gore; razlika je `@Type(() => Number)`, jer query parametri
+ * stižu kao STRING (globalni `ValidationPipe` ima `transform: true`, ali ne i
+ * `enableImplicitConversion`) pa bi `@IsInt` inače oborio `?ownerUserId=2`.
+ */
+export class LastClaimedQueryDto {
+  @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @IsPositive()
   ownerUserId?: number;
