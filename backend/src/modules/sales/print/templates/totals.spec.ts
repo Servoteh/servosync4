@@ -5,8 +5,11 @@ import {
   assertExportWithoutVat,
   discountFromLines,
   lineDiscountAmount,
+  lineGross,
   payableAfterAdvance,
   printableAdvanceDeductions,
+  printableDeductions,
+  vatSummaryRows,
 } from "./totals";
 
 /**
@@ -234,11 +237,26 @@ describe("odbijeni avansi (N:M primene)", () => {
     expect(list.map((d) => d.documentNumber)).toEqual(["A-2/26"]);
     expect(advanceTotal(list).toFixed(2)).toBe("2000.00");
   });
+
+  /**
+   * NALAZ N8 (02.08.2026): isto pravilo mora da važi i za OPŠTI renderer (AVR/KO/KZ), koji
+   * `PrintCtx` nema nego golu listu. Dok ga nije bilo, red „− 0,00" je izlazio na knjižnom
+   * odobrenju, a na fakturi za isti avans ne.
+   */
+  it("pravilo važi i nad golom listom (opšti renderer: AVR/KO/KZ)", () => {
+    const list = printableDeductions([
+      { documentNumber: "A-1/26", amount: D("0") },
+      { documentNumber: "A-2/26", amount: D("-5.00") },
+      { documentNumber: "A-3/26", amount: D("2000.00") },
+    ]);
+    expect(list.map((d) => d.documentNumber)).toEqual(["A-3/26"]);
+  });
 });
 
 describe("brana: izvozni papir bez PDV-a", () => {
-  const doc = (vatTotal: string) => ({
+  const doc = (vatTotal: string, documentType = "IZVRO") => ({
     documentNumber: "228/25",
+    documentType,
     vatTotal: D(vatTotal),
   });
 
@@ -248,7 +266,265 @@ describe("brana: izvozni papir bez PDV-a", () => {
 
   it("puca na dokument sa obračunatim PDV-om i imenuje ga", () => {
     expect(() => assertExportWithoutVat(doc("19872.73"))).toThrow(
-      /Izvozna faktura 228\/25 nosi obračunat PDV 19,872\.73/,
+      /Dokument IZVRO 228\/25 .* nosi obračunat PDV 19,872\.73/,
     );
+  });
+
+  /**
+   * NALAZ N9 (02.08.2026): poruka je SVAKI dokument zvala „Izvozna faktura", a na ino
+   * obrazac kroz `resolveForm` fallback padaju i predračun i ponuda. Operater je nad
+   * predračunom `12/26` dobijao uputstvo da ispravi „izvoznu fakturu 12/26" — dokument
+   * koji pod tim imenom ne postoji.
+   */
+  it("ne zove predračun „izvoznom fakturom“", () => {
+    const message = (() => {
+      try {
+        assertExportWithoutVat(doc("2106.15", "PROF"));
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "";
+    })();
+    expect(message).toContain("Dokument PROF 228/25");
+    expect(message).not.toContain("Izvozna faktura");
+  });
+
+  /**
+   * NALAZ N9, glavni deo: REVERS je izuzet. Po reversu se ne uplaćuje ništa, pa PDV na
+   * njemu i ne može da bude „odštampan kao deo iznosa za uplatu" — a to je jedina šteta
+   * zbog koje brana postoji. Izmereno: revers nastao prepisom nosi PREPISAN `vatTotal` sa
+   * izvorne fakture i, ako je `isExport`, pada na ino obrazac — pa je ostajao bez papira.
+   * Isti spisak ga već izuzima od brane za bankarske instrukcije.
+   */
+  it("revers sa prepisanim PDV-om PROLAZI (po njemu se ne uplaćuje ništa)", () => {
+    expect(() => assertExportWithoutVat(doc("19872.73", "REV"))).not.toThrow();
+  });
+
+  /**
+   * `vat_total` je `Decimal(19,4)`, pa zatečeni dokument ume da nosi ostatak zaokruživanja
+   * ispod pare. `isZero()` je i na njega obarao štampu, iako se na papiru sa dve decimale
+   * ne vidi uopšte. Sve što se VIDI (0,01 pa naviše, u oba smera) i dalje obara.
+   */
+  it("ostatak ispod pare ne obara papir, a jedna para obara", () => {
+    expect(() => assertExportWithoutVat(doc("0.0001"))).not.toThrow();
+    expect(() => assertExportWithoutVat(doc("-0.0001"))).not.toThrow();
+    expect(() => assertExportWithoutVat(doc("0.01"))).toThrow();
+    expect(() => assertExportWithoutVat(doc("-0.01"))).toThrow();
+  });
+});
+
+/**
+ * NALAZ N1 (02.08.2026): kolona `C E N A`/`Price` je štampala cenu POSLE rabata, a
+ * međuzbir iznad reda „Rabat" računat je iz cene PRE rabata — pa se sa rabatom ≠ 0
+ * nijedan broj u zbirnom bloku nije mogao dobiti sabiranjem odštampane kolone.
+ *
+ * Presuda je sa papira: na `IFR.pdf` međuzbir stoji NEPOSREDNO ISPOD kolone VREDNOST i
+ * BEZ natpisa, pa se tek od njega oduzima `Rabat:` — dakle međuzbir JESTE zbir kolone.
+ */
+describe("bruto po stavci (kolona CENA / VREDNOST)", () => {
+  it("bez rabata kolona ostaje netaknuta — cena i iznos iz baze", () => {
+    // Doneti papiri svi imaju `R% 0`; oni ne smeju da se promene ni za pixel.
+    const g = lineGross(
+      line({ quantity: D("5"), unitPrice: D("16099.54"), lineTotal: D("80497.70") }),
+    );
+    expect(g.unitPrice.toFixed(2)).toBe("16099.54");
+    expect(g.total.toFixed(2)).toBe("80497.70");
+    expect(g.discount.toFixed(2)).toBe("0.00");
+  });
+
+  it("sa rabatom kolona nosi PUNU cenu i PUN iznos (10 × 1.000,00, rabat 10 %)", () => {
+    const g = lineGross(
+      line({
+        quantity: D("10"),
+        unitPrice: D("900.00"),
+        unitPriceBeforeDiscount: D("1000.00"),
+        discountPercent: D("10"),
+        lineTotal: D("9000.00"),
+      }),
+    );
+    expect(g.unitPrice.toFixed(2)).toBe("1000.00");
+    expect(g.total.toFixed(2)).toBe("10000.00");
+    // Ono zbog čega papir zatvara sam sa sobom: iznos − rabat = osnovica, do pare.
+    expect(g.total.sub(g.discount).toFixed(2)).toBe("9000.00");
+  });
+
+  it("bez upisane pune cene (stara stavka) kolona se izvodi iz istog bruta", () => {
+    const g = lineGross(
+      line({
+        quantity: D("10"),
+        unitPrice: D("900.00"),
+        discountPercent: D("10"),
+        lineTotal: D("9000.00"),
+      }),
+    );
+    // Cena se dobija iz izvedenog bruta (10.000,00 / 10), pa kolona i međuzbir dolaze iz
+    // ISTOG broja — isti papir kao za stavku koja punu cenu ima.
+    expect(g.unitPrice.toFixed(2)).toBe("1000.00");
+    expect(g.total.toFixed(2)).toBe("10000.00");
+  });
+
+  it("rabat 100 %: kolona pokazuje punu cenu, a iznos ceo bruto", () => {
+    const g = lineGross(
+      line({
+        quantity: D("10"),
+        unitPrice: D("0"),
+        unitPriceBeforeDiscount: D("1000.00"),
+        discountPercent: D("100"),
+        lineTotal: D("0"),
+      }),
+    );
+    expect(g.unitPrice.toFixed(2)).toBe("1000.00");
+    expect(g.total.toFixed(2)).toBe("10000.00");
+    expect(g.total.sub(g.discount).toFixed(2)).toBe("0.00");
+  });
+
+  it("količina 0 ne deli nulom — cena ostaje ona sa stavke", () => {
+    const g = lineGross(
+      line({
+        quantity: D("0"),
+        unitPrice: D("900.00"),
+        discountPercent: D("10"),
+        lineTotal: D("0"),
+      }),
+    );
+    expect(g.unitPrice.toFixed(2)).toBe("900.00");
+    expect(g.total.toFixed(2)).toBe("0.00");
+  });
+
+  /**
+   * ZBIR KOLONE = MEĐUZBIR: to je cela poenta nalaza. Zbir odštampanih iznosa mora da
+   * bude BAŠ `osnovica dokumenta + Σ rabata`, a ne broj blizu njega.
+   */
+  it("zbir kolone je tačno „osnovica + rabat“, i uz mešavinu stavki", () => {
+    const lines = [
+      line({
+        quantity: D("10"),
+        unitPrice: D("900.00"),
+        discountPercent: D("10"),
+        lineTotal: D("9000.00"),
+      }),
+      line({ quantity: D("1"), unitPrice: D("1000.00"), lineTotal: D("1000.00") }),
+    ];
+    const kolona = lines.reduce((s, l) => s.add(lineGross(l).total), D("0"));
+    const osnovica = D("10000.00"); // Σ lineTotal
+    expect(kolona.toFixed(2)).toBe(osnovica.add(discountFromLines(lines)).toFixed(2));
+    expect(kolona.toFixed(2)).toBe("11000.00");
+  });
+});
+
+/**
+ * NALAZ N3 (02.08.2026): STORNO red sa rabatom od 100 % davao je „Rabat 0,00" uz `R% 100`.
+ * Uslov u prvom izvoru je odbacivao svaki NEGATIVAN iznos kao „protivrečan podatak", a na
+ * storno redu je negativan rabat tačan — on poništava rabat sa originalne fakture.
+ */
+describe("storno red (negativna količina)", () => {
+  const storno = line({
+    quantity: D("-10"),
+    unitPrice: D("0"),
+    unitPriceBeforeDiscount: D("1000.00"),
+    discountPercent: D("100"),
+    lineTotal: D("0"),
+  });
+
+  it("rabat 100 % na storno redu daje −10.000,00, ne 0,00", () => {
+    expect(lineDiscountAmount(storno).toFixed(2)).toBe("-10000.00");
+  });
+
+  it("kolona nosi punu cenu, a iznos negativan bruto", () => {
+    const g = lineGross(storno);
+    expect(g.unitPrice.toFixed(2)).toBe("1000.00");
+    expect(g.total.toFixed(2)).toBe("-10000.00");
+    // Papir i na stornu zatvara sam sa sobom: bruto − rabat = osnovica (0,00).
+    expect(g.total.sub(g.discount).toFixed(2)).toBe("0.00");
+  });
+
+  it("storno sa rabatom 10 % ide istim putem (−9.000,00 → rabat −1.000,00)", () => {
+    const g = lineGross(
+      line({
+        quantity: D("-10"),
+        unitPrice: D("900.00"),
+        unitPriceBeforeDiscount: D("1000.00"),
+        discountPercent: D("10"),
+        lineTotal: D("-9000.00"),
+      }),
+    );
+    expect(g.discount.toFixed(2)).toBe("-1000.00");
+    expect(g.total.toFixed(2)).toBe("-10000.00");
+  });
+
+  it("bruto i osnovica različitog znaka su i dalje POKVAREN podatak → rezerva", () => {
+    // Puna cena −500 uz osnovicu +9.000 nije storno nego neispravan red; papir tada ide
+    // na obračun unazad umesto da odštampa besmislen bruto.
+    const g = lineGross(
+      line({
+        quantity: D("1"),
+        unitPrice: D("900.00"),
+        unitPriceBeforeDiscount: D("-500.00"),
+        discountPercent: D("10"),
+        lineTotal: D("9000.00"),
+      }),
+    );
+    expect(g.discount.toFixed(2)).toBe("1000.00");
+    expect(g.total.toFixed(2)).toBe("10000.00");
+  });
+});
+
+/**
+ * NALAZ N4 (02.08.2026): raspoređivanje razlike zaokruživanja kod više PDV stopa
+ * postojalo je SAMO na uslužnom obrascu, pa je isti račun na robnom papiru umeo da pokaže
+ * Σ PDV redova različit od `vatTotal` za 0,01. Račun je sada zajednički.
+ */
+describe("redovi PDV-a u zbiru", () => {
+  const ctxWith = (
+    invoice: { netTotal: string; vatTotal: string },
+    rates: { rate: number | null; base: string }[],
+  ): PrintCtx =>
+    ({
+      invoice: {
+        netTotal: D(invoice.netTotal),
+        vatTotal: D(invoice.vatTotal),
+      },
+      lines: rates.map((r) =>
+        line({ lineTotal: D(r.base), vatRatePercent: r.rate }),
+      ),
+    }) as unknown as PrintCtx;
+
+  it("jedna stopa: iznosi su SA DOKUMENTA, do pare", () => {
+    const rows = vatSummaryRows(
+      ctxWith({ netTotal: "16000.00", vatTotal: "3200.00" }, [
+        { rate: 20, base: "16000.00" },
+      ]),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].base.toFixed(2)).toBe("16000.00");
+    expect(rows[0].vat.toFixed(2)).toBe("3200.00");
+  });
+
+  it("dve stope: zbir odštampanih redova je TAČNO `vatTotal`", () => {
+    // Izmeren ulaz: 16.000,00 (20 %) + 4.000,00 (10 %) uz `vatTotal` 3.599,99 sa dokumenta.
+    // Bez raspoređivanja razlike papir bi pisao 3.200,00 + 400,00 = 3.600,00 — paru više
+    // nego što je proknjiženo.
+    const rows = vatSummaryRows(
+      ctxWith({ netTotal: "20000.00", vatTotal: "3599.99" }, [
+        { rate: 20, base: "16000.00" },
+        { rate: 10, base: "4000.00" },
+      ]),
+    );
+    const sum = rows.reduce((s, r) => s.add(r.vat), D("0"));
+    expect(sum.toFixed(2)).toBe("3599.99");
+    // Razlika pada na grupu sa NAJVEĆOM osnovicom, gde je relativno najmanja.
+    expect(rows.find((r) => r.rate === 20)?.vat.toFixed(2)).toBe("3199.99");
+    expect(rows.find((r) => r.rate === 10)?.vat.toFixed(2)).toBe("400.00");
+  });
+
+  it("stavke bez poznate stope dobijaju svoj red, sa nulom poreza", () => {
+    const rows = vatSummaryRows(
+      ctxWith({ netTotal: "2000.00", vatTotal: "200.00" }, [
+        { rate: 20, base: "1000.00" },
+        { rate: null, base: "1000.00" },
+      ]),
+    );
+    expect(rows.map((r) => r.rate)).toEqual([null, 20]);
+    expect(rows.find((r) => r.rate == null)?.vat.toFixed(2)).toBe("0.00");
   });
 });

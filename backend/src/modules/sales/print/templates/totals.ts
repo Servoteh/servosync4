@@ -17,6 +17,36 @@ const ZERO = new Prisma.Decimal(0);
 const HUNDRED = new Prisma.Decimal(100);
 
 /**
+ * Vrste dokumenata po kojima se NIŠTA NE UPLAĆUJE — jedine izuzete od novčanih brana
+ * štampe (bankarske instrukcije, PDV na izvoznom obrascu).
+ *
+ * Ovde je, a ne u `invoice-pdf.service.ts`, zato što je do 02.08.2026. postojala u jednom
+ * primerku pa je važila za JEDNU branu: revers je bio izuzet od brane za IBAN, ali NIJE od
+ * `assertExportWithoutVat` — pa je izvozni revers ostajao bez papira zbog PDV-a koji na
+ * njemu nikoga ne obavezuje (v. `assertExportWithoutVat`). Dva spiska za isto pravilo su
+ * upravo to i proizvela; sada je spisak jedan, a obe brane ga čitaju odavde.
+ *
+ * `REV` = revers, zapis o zaduženju/vraćanju opreme. Ponuda, predračun i avansni račun
+ * NISU ovde: po njima kupac plaća unapred.
+ */
+export const NON_PAYMENT_DOCUMENT_TYPES: ReadonlySet<string> = new Set(["REV"]);
+
+/** Vrsta dokumenta, normalizovana kao u `invoice-pdf.service.ts` (`resolveForm`). */
+function documentTypeOf(invoice: { documentType?: string | null }): string {
+  return (invoice.documentType ?? "").trim().toUpperCase();
+}
+
+/**
+ * Da li dva iznosa gledaju na istu stranu nule (nula je „ničija", pa se slaže sa oba).
+ * Služi da se STORNO red (sve negativno) razlikuje od POKVARENOG podatka (bruto i
+ * osnovica različitog znaka) — v. `lineGross`.
+ */
+function sameSideOfZero(a: Prisma.Decimal, b: Prisma.Decimal): boolean {
+  if (a.isZero() || b.isZero()) return true;
+  return a.isNegative() === b.isNegative();
+}
+
+/**
  * RABAT JEDNE STAVKE, u novcu.
  *
  * ⚠️ KLJUČNA ČINJENICA O NAŠIM PODACIMA (`pricing.service.ts` §„INVARIJANTA"):
@@ -63,28 +93,107 @@ const HUNDRED = new Prisma.Decimal(100);
  * kolona `R%`/`Rab%` na papiru tvrdi. Da je kasa napolju, red „Rabat" bi nosio i nju.
  */
 export function lineDiscountAmount(line: PrintLine): Prisma.Decimal {
+  return lineGross(line).discount;
+}
+
+/**
+ * ŠTA JEDNA STAVKA POKAZUJE NA PAPIRU — cena, iznos i rabat, iz JEDNOG računa.
+ *
+ * ⚠️ ZAŠTO ZAJEDNO (ispravka 02.08.2026, nalaz „kolona CENA i međuzbir se ne slažu"):
+ * kolona `C E N A`/`Price` je do tada štampala `unitPrice` — cenu POSLE rabata — dok je
+ * međuzbir iznad reda „Rabat" računat iz cene PRE rabata. Sa rabatom ≠ 0 nijedan broj u
+ * zbirnom bloku nije mogao da se dobije iz odštampanih kolona: 2 kom × 125,00 uz rabat
+ * 20 % dalo je kolone `125,00 / 250,00` (dva puta), a ispod njih `TOTAL 625,00`.
+ *
+ * PRESUDA JE SA PAPIRA, ne iz koda: na `IFR.pdf` (657/25) međuzbir `99.363,64` stoji
+ * NEPOSREDNO ISPOD kolone VREDNOST i BEZ natpisa, pa se tek od njega oduzima `Rabat:` i
+ * dobija „Vrednost bez PDV (osnovica)". Isto na `InoFaktura GP 228-25.pdf`
+ * (`TOTAL` − `DISCOUNT:` = `TOTAL AMOUNT`) i na `IFUSL.pdf` („Vrednost bez PDV" −
+ * „Odobren rabat" = „Ukupno vrednost bez PDV (osnovica)"). Međuzbir JESTE zbir kolone →
+ * kolona mora da nosi BRUTO. Ni na jednom donetom papiru rabat nije ≠ 0 (svuda `R% 0`),
+ * pa se stara i nova štampa na njima poklapaju do pare — struktura je ipak jednoznačna.
+ *
+ * Zbir se zatvara PO DEFINICIJI, ne igrom zaokruživanja: `total = osnovica + rabat`, a
+ * međuzbir u zbirnom bloku je `netTotal + Σ rabata`. Kad Σ osnovica stavki daje `netTotal`
+ * (a daje — v. `pricing.service.ts`, iznos stavke je zaokružen na 2 decimale), zbir
+ * odštampane kolone i međuzbir su ISTI BROJ, ne dva bliska.
+ */
+export interface PrintLineGross {
+  /** Cena PRE rabata — ono što ide u kolonu `C E N A` / `Price`. */
+  unitPrice: Prisma.Decimal;
+  /** Iznos PRE rabata — kolona `VREDNOST` / `I Z N O S` / `Total`; zbir mu je međuzbir. */
+  total: Prisma.Decimal;
+  /** Rabat te stavke u novcu; `total − discount = lineTotal` (osnovica). */
+  discount: Prisma.Decimal;
+}
+
+export function lineGross(line: PrintLine): PrintLineGross {
   const percent = line.discountPercent;
-  // Bez rabata red mora biti tačno 0,00 — zato pre svakog računa. Da se ovde ulazilo u
-  // oduzimanje, razlika u zaokruživanju cene i osnovice dala bi „rabat" od jedne pare.
-  if (percent.lessThanOrEqualTo(ZERO)) return ZERO;
+  // Bez rabata je bruto == neto, pa se ništa ne izvodi: cena i iznos ostaju tačno onakvi
+  // kakvi su u bazi. Da se i ovde ulazilo u računanje, razlika u zaokruživanju cene i
+  // osnovice dala bi „rabat" od jedne pare na papiru koji rabata nema.
+  if (percent.lessThanOrEqualTo(ZERO))
+    return {
+      unitPrice: line.unitPrice,
+      total: line.lineTotal,
+      discount: ZERO,
+    };
 
   // ── 1) Puna cena sa stavke ──
   const beforeDiscount = line.unitPriceBeforeDiscount;
-  if (beforeDiscount && beforeDiscount.greaterThan(ZERO)) {
+  if (beforeDiscount && !beforeDiscount.isZero()) {
     const gross = line.quantity.mul(beforeDiscount);
     const amount = gross.sub(line.lineTotal);
-    // Negativan ishod znači da je puna cena manja od cene posle rabata — protivrečan
-    // podatak (pokvaren uvoz, ručna izmena u bazi). Papir tada ide na rezervu umesto da
-    // odštampa „Rabat −…", što je greška vidljiva kupcu.
-    if (amount.greaterThanOrEqualTo(ZERO)) return amount.toDecimalPlaces(2);
+    // ⚠️ MERILO JE ZNAK BRUTA, NE NULA (ispravka 02.08.2026): do tada je uslov bio
+    // `amount >= 0`, pa je STORNO red padao na rezervu i tiho gubio rabat. Izmereno:
+    // količina −10, puna cena 1.000,00, rabat 100 % → bruto −10.000,00, rabat −10.000,00 —
+    // uslov ga odbaci kao „protivrečan", a rezerva za rabat ≥ 100 % vrati 0, pa je papir
+    // pisao `R% 100` uz `Rabat: 0,00`. Na storno redu je negativan rabat TAČAN: on
+    // poništava rabat sa originalne fakture.
+    //
+    // Protivrečan podatak (puna cena manja od cene posle rabata — pokvaren uvoz, ručna
+    // izmena u bazi) i dalje pada na rezervu: prepoznaje se po tome što rabat ima
+    // SUPROTAN znak od bruta, a ne po tome što je negativan.
+    const consistent =
+      sameSideOfZero(gross, line.lineTotal) &&
+      (gross.isNegative()
+        ? amount.lessThanOrEqualTo(ZERO)
+        : amount.greaterThanOrEqualTo(ZERO));
+    if (consistent) {
+      const discount = amount.toDecimalPlaces(2);
+      return {
+        unitPrice: beforeDiscount,
+        // Iz `osnovica + rabat`, a ne `količina × puna cena`: rabat je zaokružen na dve
+        // decimale (toliko ih papir i pokazuje), pa samo ovako `total − discount` daje
+        // BAŠ osnovicu koja je proknjižena, bez pare razlike.
+        total: line.lineTotal.add(discount),
+        discount,
+      };
+    }
   }
 
   // ── 2) Rezerva: unazad iz neto iznosa ──
-  if (percent.greaterThanOrEqualTo(HUNDRED)) return ZERO;
-  return line.lineTotal
+  if (percent.greaterThanOrEqualTo(HUNDRED))
+    return {
+      unitPrice: line.unitPrice,
+      total: line.lineTotal,
+      discount: ZERO,
+    };
+  const discount = line.lineTotal
     .mul(percent)
     .div(HUNDRED.sub(percent))
     .toDecimalPlaces(2);
+  const total = line.lineTotal.add(discount);
+  return {
+    // Pune cene u bazi nema, pa se dobija iz izvedenog bruta — tako kolona i međuzbir
+    // ostaju iz ISTOG broja. Kod količine 0 nema šta da se deli (i bruto je 0), pa cena
+    // ostaje ona sa stavke.
+    unitPrice: line.quantity.isZero()
+      ? line.unitPrice
+      : total.div(line.quantity),
+    total,
+    discount,
+  };
 }
 
 /**
@@ -98,6 +207,66 @@ export function lineDiscountAmount(line: PrintLine): Prisma.Decimal {
  */
 export function discountFromLines(lines: PrintLine[]): Prisma.Decimal {
   return lines.reduce((sum, l) => sum.add(lineDiscountAmount(l)), ZERO);
+}
+
+/**
+ * REDOVI PDV-a U ZBIRU — stopa, osnovica na koju se primenjuje i iznos poreza.
+ *
+ * Kad je na računu JEDNA stopa (tako je na oba domaća donesena papira, i tako je u
+ * praksi), uzimaju se zbirovi sa samog DOKUMENTA (`netTotal`/`vatTotal`) — papir mora da
+ * pokaže ono što je proknjiženo, do pare. Tek kad se na istom računu nađu dve stope,
+ * osnovice se razdvajaju po stavkama, jer zaglavlje nosi samo ukupan PDV.
+ *
+ * ⚠️ ZAŠTO JE OVO ZAJEDNIČKO (ispravka 02.08.2026, nalaz „dva obrasca, dva ishoda"):
+ * uslužni obrazac je razliku zaokruživanja pripisivao najvećoj grupi, robni NIJE — pa je
+ * ISTI račun sa dve stope na robnom papiru umeo da pokaže Σ PDV redova koji se od
+ * `vatTotal` razlikuje za 0,01, a na uslužnom ne. Izmereno: osnovice 16.000,00 (20 %) i
+ * 4.000,00 (10 %) uz `vatTotal` 3.599,99 sa dokumenta → robni papir je štampao
+ * 3.200,00 + 400,00 = 3.600,00, dakle jednu paru više nego što je proknjiženo.
+ * Razlika ide na grupu sa NAJVEĆOM osnovicom, gde je relativno najmanja.
+ *
+ * Redosled je po stopi RASTUĆE; obrazac koji ga hoće drugačije neka sortira sam
+ * (raspored je izgled, a ne iznos — v. uvodni komentar fajla).
+ */
+export interface VatSummaryRow {
+  /** Stopa u procentima; `null` = stavke bez poznate poreske šifre. */
+  rate: number | null;
+  base: Prisma.Decimal;
+  vat: Prisma.Decimal;
+}
+
+export function vatSummaryRows(ctx: PrintCtx): VatSummaryRow[] {
+  const { netTotal, vatTotal } = ctx.invoice;
+  const rates = [...new Set(ctx.lines.map((l) => l.vatRatePercent))];
+
+  // Bez ijedne stope (prazan račun, stara stavka bez `vatRateCode`) red i dalje mora da
+  // postoji — obrazac ga ima uvek — pa nosi zbirove sa dokumenta.
+  if (rates.length <= 1)
+    return [{ rate: rates[0] ?? null, base: netTotal, vat: vatTotal }];
+
+  const groups: VatSummaryRow[] = rates
+    .slice()
+    .sort((a, b) => (a ?? -1) - (b ?? -1))
+    .map((rate) => {
+      const base = ctx.lines
+        .filter((l) => l.vatRatePercent === rate)
+        .reduce((sum, l) => sum.add(l.lineTotal), ZERO);
+      return {
+        rate,
+        base,
+        vat:
+          rate == null ? ZERO : base.mul(rate).div(HUNDRED).toDecimalPlaces(2),
+      };
+    });
+
+  const drift = vatTotal.sub(groups.reduce((s, g) => s.add(g.vat), ZERO));
+  if (!drift.isZero()) {
+    const biggest = groups.reduce((a, b) =>
+      b.base.greaterThan(a.base) ? b : a,
+    );
+    biggest.vat = biggest.vat.add(drift);
+  }
+  return groups;
 }
 
 /**
@@ -126,7 +295,22 @@ export function payableAfterAdvance(
 export function printableAdvanceDeductions(
   ctx: PrintCtx,
 ): PrintAdvanceDeduction[] {
-  return ctx.advanceDeductions.filter((d) => d.amount.greaterThan(ZERO));
+  return printableDeductions(ctx.advanceDeductions);
+}
+
+/**
+ * Isto pravilo, ali nad golom listom — za OPŠTI renderer (AVR/KO/KZ), koji `PrintCtx`
+ * nema nego svoj `AdvanceDeduction[]` iz `loadAdvanceDeductions`.
+ *
+ * ⚠️ ZAŠTO POSTOJI (ispravka 02.08.2026): filtriranje je bilo samo na četiri donesena
+ * obrasca, pa je red `Umanjenje za primljeni avans (br. …): − 0,00` izlazio na KNJIŽNOM
+ * ODOBRENJU, a na fakturi za isti avans ne. Pravilo je jedno; ono što se razlikuje je
+ * samo oblik podataka koje mu pozivalac donese.
+ */
+export function printableDeductions<T extends { amount: Prisma.Decimal }>(
+  deductions: readonly T[],
+): T[] {
+  return deductions.filter((d) => d.amount.greaterThan(ZERO));
 }
 
 /**
@@ -175,12 +359,35 @@ export function advanceTotal(
  */
 export function assertExportWithoutVat(invoice: {
   documentNumber: string;
+  documentType?: string | null;
   vatTotal: Prisma.Decimal;
 }): void {
-  if (invoice.vatTotal.isZero()) return;
+  // ⚠️ REVERS JE IZUZET (ispravka 02.08.2026, nalaz „brana obara revers"): po reversu se
+  // ne uplaćuje ništa, pa PDV na njemu i ne može da bude „odštampan kao deo iznosa za
+  // uplatu" — što je jedina šteta zbog koje brana postoji. Izmereno: revers nastao
+  // prepisom (`carry-over`) nosi PREPISAN `vatTotal` sa izvorne fakture, a ako je uz to
+  // `isExport`, pada na ino obrazac kroz `resolveForm` fallback — i ostajao je bez papira.
+  // Isti spisak već izuzima revers od brane za bankarske instrukcije; ovde je taj propust
+  // bio u tome što je spisak postojao u DVA primerka (v. `NON_PAYMENT_DOCUMENT_TYPES`).
+  if (NON_PAYMENT_DOCUMENT_TYPES.has(documentTypeOf(invoice))) return;
+
+  // ⚠️ MERILO JE PARA, NE APSOLUTNA NULA: `vat_total` je `Decimal(19,4)`, pa zatečeni
+  // dokumenti umeju da nose ostatak zaokruživanja ispod pare (0,0001). `isZero()` je na
+  // takav ostatak obarao štampu, a on se na papiru — koji ima dve decimale — ne vidi
+  // uopšte. Sve što se VIDI (0,01 pa naviše, u oba smera) i dalje obara: papir koji tvrdi
+  // oslobođenje, a u iznosu za uplatu nosi PDV, netačan je i za jednu paru.
+  if (invoice.vatTotal.toDecimalPlaces(2).isZero()) return;
+
+  // Dokument se imenuje po VRSTI, ne kao „izvozna faktura": na ino obrazac padaju i
+  // predračun i ponuda (`resolveForm` fallback), pa je poruka umela da predračun nazove
+  // fakturom i pošalje operatera da traži nepostojeći račun.
+  const type = documentTypeOf(invoice);
+  const label = type
+    ? `Dokument ${type} ${invoice.documentNumber}`
+    : `Dokument ${invoice.documentNumber}`;
   throw new BadRequestException(
-    `Izvozna faktura ${invoice.documentNumber} nosi obračunat PDV ` +
-      `${formatAmount(invoice.vatTotal)} — izvozni obrazac ne sme da ga odštampa ` +
+    `${label} se štampa na izvoznom obrascu, a nosi obračunat PDV ` +
+      `${formatAmount(invoice.vatTotal)} — taj obrazac ne sme da ga odštampa ` +
       `kao deo iznosa za uplatu, jer isti papir tvrdi da je promet oslobođen PDV-a. ` +
       `Najčešći uzrok je prepis DOMAĆEG predračuna u izvozni račun: ispravi poresku ` +
       `šifru stavki (izvoz = šifra „0") i zbirove dokumenta, pa ponovi štampu.`,

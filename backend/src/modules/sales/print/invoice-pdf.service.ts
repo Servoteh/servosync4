@@ -40,7 +40,11 @@ import {
   inoUslugaPageHeader,
   inoUslugaTemplate,
 } from "./templates/ino-usluga";
-import { assertExportWithoutVat } from "./templates/totals";
+import {
+  assertExportWithoutVat,
+  NON_PAYMENT_DOCUMENT_TYPES as SHARED_NON_PAYMENT_DOCUMENT_TYPES,
+  printableDeductions,
+} from "./templates/totals";
 
 /**
  * Štampa izlaznog računa (Invoice + InvoiceItem) u PDF.
@@ -207,8 +211,12 @@ const FORMLESS_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Vrste koje NISU dokument po kome se plaća — jedine izuzete od brane za bankarske
- * instrukcije na ino obrascu.
+ * Vrste koje NISU dokument po kome se plaća — jedine izuzete od NOVČANIH BRANA na ino
+ * obrascu (bankarske instrukcije ovde, PDV na izvozu u `totals.ts`).
+ *
+ * ⚠️ SPISAK JE JEDAN, U `totals.ts` (ispravka 02.08.2026): dok je stajao samo ovde, važio
+ * je za jednu jedinu branu — revers je bio izuzet od brane za IBAN, ali NIJE od
+ * `assertExportWithoutVat`, pa je izvozni revers sa prepisanim PDV-om ostajao bez papira.
  *
  * ⚠️ IZMEREN KVAR (treći krug, 02.08.2026) koji je ovo preokrenuo: brana je gledala
  * SPISAK VRSTA (`IZVRO/IZVGP/IZVUS`), pa je predračun u stranoj valuti izlazio bez
@@ -228,7 +236,7 @@ const FORMLESS_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
  *   • `REV`        — revers je zapis o zaduženju/vraćanju opreme, po njemu se ne
  *                    uplaćuje ništa → izuzet (ostati bez papira bi bila čista šteta).
  */
-const NON_PAYMENT_DOCUMENT_TYPES: ReadonlySet<string> = new Set(["REV"]);
+const NON_PAYMENT_DOCUMENT_TYPES = SHARED_NON_PAYMENT_DOCUMENT_TYPES;
 
 /** Domaća valuta — dokument u njoj nema šta da traži od deviznog računa. */
 const DOMESTIC_CURRENCY = "RSD";
@@ -655,9 +663,10 @@ export class InvoicePdfService {
   /**
    * Devizni račun za valutu dokumenta.
    *
-   * Prvi izbor je račun kome je `currency` baš valuta fakture. Kad valuta na računu nije
-   * upisana (kolona je nova), a faktura NIJE u dinarima, uzima se prvi račun koji uopšte
-   * ima IBAN ili SWIFT — inače bi blok banke ostao prazan na svakoj ino fakturi.
+   * Prvi izbor je račun kome je `currency` baš valuta fakture I koji nosi IBAN ili SWIFT
+   * (samo poklapanje valute nije dovoljno — v. komentar u telu). Kad takvog nema, a
+   * faktura NIJE u dinarima, uzima se prvi račun koji uopšte ima IBAN ili SWIFT — inače
+   * bi blok banke ostao prazan na svakoj ino fakturi.
    * Domaći račun (RSD) se u tom drugom krugu ne traži: domaći obrasci blok banke nemaju,
    * a odštampan tuđ IBAN je gore od praznog mesta.
    *
@@ -716,13 +725,12 @@ export class InvoicePdfService {
       orderBy: [{ isDefault: "desc" }, { sortOrder: "asc" }, { id: "asc" }],
     });
     const wanted = currency.trim().toUpperCase();
-    const byCurrency = accounts.find(
-      (a) => (a.currency ?? "").trim().toUpperCase() === wanted,
-    );
     const hasBankData = (a: {
       iban: string | null;
       swift: string | null;
     }): boolean => Boolean(a.iban?.trim() || a.swift?.trim());
+    const inWantedCurrency = (a: { currency: string | null }): boolean =>
+      (a.currency ?? "").trim().toUpperCase() === wanted;
 
     let chosen: {
       iban: string | null;
@@ -732,9 +740,28 @@ export class InvoicePdfService {
       currency: string | null;
     } | null = null;
 
-    if (byCurrency) chosen = byCurrency;
+    /**
+     * ⚠️ POKLAPANJE VALUTE NIJE DOVOLJNO — RED MORA I DA NOSI PODATAK (ispravka
+     * 02.08.2026). Prvi krug je do tada uzimao PRVI red čija se valuta poklapa i tu stao,
+     * pa ako je baš taj bio prazan, drugi krug („bilo koji sa bankarskim podacima") se
+     * uopšte nije izvršio. IZMERENO: EUR faktura, red A `currency='EUR'` bez IBAN-a i
+     * SWIFT-a (nastaje sam od sebe — dovoljno je uneti valutu i naziv banke, pa snimiti),
+     * red B `currency=null` sa punim IBAN-om i SWIFT-om → 422 „za valutu EUR nije unet
+     * IBAN ni SWIFT/BIC", iako podatak u bazi POSTOJI i vidi se u Podešavanjima. Operater
+     * nema šta da ispravi — podatak je već tu.
+     *
+     * Redosled: račun u valuti fakture SA podacima → bilo koji sa podacima (samo za
+     * stranu valutu; dinarskom dokumentu se devizni IBAN ne sme podmetnuti) → prazan
+     * račun u valuti fakture, da naziv i adresa banke ne propadnu ako su jedini uneti.
+     */
+    const byCurrency = accounts.find(inWantedCurrency);
+    const byCurrencyWithData = accounts.find(
+      (a) => inWantedCurrency(a) && hasBankData(a),
+    );
+    if (byCurrencyWithData) chosen = byCurrencyWithData;
     else if (wanted !== "RSD")
-      chosen = accounts.find((a) => hasBankData(a)) ?? null;
+      chosen = accounts.find((a) => hasBankData(a)) ?? byCurrency ?? null;
+    else chosen = byCurrency ?? null;
 
     // Rezerva iz `companies` — jedina dva polja koja ta tabela ima. Traži se samo kad
     // izabrani račun nema ništa upotrebljivo, da uredno popunjen devizni račun nikad ne
@@ -1620,7 +1647,15 @@ export class InvoicePdfService {
     // plaćanje" (ukupno računa), pa umanjenje, pa „Za uplatu" kao završni iznos.
     // Zbir se izvodi iz PRIKAZANIH redova (N:M primene), da „Za uplatu" uvek bude
     // grossTotal minus tačno ono što je na štampi navedeno.
-    const advance = advanceDeductions.reduce(
+    //
+    // ⚠️ PRIMENA NA 0 NE IDE NA PAPIR (ispravka 02.08.2026, isto pravilo kao na četiri
+    // donesena obrasca — `printableDeductions` u `totals.ts`). Stornirana pa ponovo
+    // upisana primena ostaje u spisku sa iznosom 0,00 i davala je red
+    // „Umanjenje za primljeni avans (br. …): − 0,00" — na KNJIŽNOM ODOBRENJU i avansnom
+    // računu, dok ga faktura za isti avans nije imala. Kupac takav red čita kao avans koji
+    // postoji, a ništa ne umanjuje.
+    const deductions = printableDeductions(advanceDeductions);
+    const advance = deductions.reduce(
       (acc, d) => acc.add(d.amount),
       new Prisma.Decimal(0),
     );
@@ -1638,7 +1673,7 @@ export class InvoicePdfService {
         row(t.grossTotalLbl, fmtMoney(invoice.grossTotal, currency, english)),
       );
       // Jedan red po odbijenom avansu — broj AVR-a i iznos MORAJU biti iz iste primene.
-      for (const deduction of advanceDeductions) {
+      for (const deduction of deductions) {
         body.push(
           row(
             deduction.documentNumber

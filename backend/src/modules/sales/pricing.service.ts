@@ -40,6 +40,30 @@ const HUNDRED = new D(100);
 const MONEY_DP = 4;
 const PCT_DP = 4;
 
+/**
+ * IZNOS NOVCA NA STAVCI — DVE DECIMALE (`vatBase`, `vatAmount`, `lineTotal`).
+ *
+ * CENA po jedinici ostaje na četiri (`MONEY_DP`): 30,1020 din/kg je legitimna cena i tako
+ * je i u BigBitu. Ali ono što se od nje IZRAČUNA i naplaćuje je iznos u dinarima/evrima, a
+ * njega nema ispod pare.
+ *
+ * ⚠️ IZMEREN KVAR (02.08.2026): `vatBase = količina × cena` se upisivalo NEZAOKRUŽENO
+ * (kolona je `Decimal(19,4)`), a `recalcTotals` je sabirao takve, nezaokružene iznose.
+ * Štampa svaku stavku prikazuje na dve decimale, zbir ne — pa je papir sa dve stavke
+ * 1,5 kom × 21,3300 (= 31,9950 po stavci) pokazivao kolonu `32.00 + 32.00 = 64.00`, a
+ * osnovicu `63.99`. Kupac koji sabere kolonu dobije drugi broj nego što na računu piše.
+ *
+ * ZAŠTO NA IZVORU, A NE U ŠTAMPI: isti iznos ide u glavnu knjigu (`posting`), u PDV
+ * evidenciju, na SEF i u saldakonta — svi moraju da vide ISTI broj. Zakrpa u štampi
+ * napravila bi papir koji se ne slaže sa knjiženjem, što je gore od pare razlike.
+ *
+ * ZAŠTO JE OVO I RANIJE VAŽILO, samo ne svuda: doneti papir `INOUslugaFaktura 060-26.pdf`
+ * to i dokazuje — stavka 19,6 kg × 30,1020 = 589,9992 na njemu stoji kao `590.00`, a zbir
+ * svih šest stavki (`10,530.75`) je zbir BAŠ tih zaokruženih iznosa. BigBit je iznos
+ * stavke zaokruživao na paru i sabirao zaokružene; 4.0 je sabirao nezaokružene.
+ */
+const AMOUNT_DP = 2;
+
 /** Stope PDV po `vatRateCode` (isto kao posting VAT_RATE_BY_CODE, doc 43 §4). */
 const VAT_RATE_BY_CODE: Readonly<Record<string, Prisma.Decimal>> = {
   "3": new D("0.20"), // Osnovna / VISA (20%) — default stavke
@@ -85,10 +109,11 @@ export interface PricedItem {
   cashDiscountPercent: Prisma.Decimal;
   quantity: Prisma.Decimal;
   vatRateCode: string;
-  /** poreska osnovica = qty × unitPrice (posle rabata i kase). */
+  /** poreska osnovica = qty × unitPrice (posle rabata i kase), zaokruženo na PARU. */
   vatBase: Prisma.Decimal;
+  /** PDV = zaokružena osnovica × stopa, takođe na paru. */
   vatAmount: Prisma.Decimal;
-  /** za plaćanje = vatBase + vatAmount. */
+  /** za plaćanje = vatBase + vatAmount (oba već na paru, pa je i zbir tačan). */
   lineTotal: Prisma.Decimal;
   /** true ako je traženi rabat premašio Item.maxDiscountPercent i bio odsečen. */
   discountCapped: boolean;
@@ -311,8 +336,8 @@ export class PricingService {
       );
     }
 
-    // ── 4) Osnovica + PDV ──
-    const vatBase = quantity.mul(unitPrice);
+    // ── 4) Osnovica + PDV ── (oba na PARU — v. `AMOUNT_DP`)
+    const vatBase = this.round(quantity.mul(unitPrice), AMOUNT_DP);
     const rate = VAT_RATE_BY_CODE[vatRateCode];
     if (rate === undefined) {
       // Tiha nula na nepoznatoj šifri je bila neprimetna — sad se bar prijavi.
@@ -321,7 +346,9 @@ export class PricingService {
       );
     }
     const vatRate = rate ?? ZERO;
-    const vatAmount = vatBase.mul(vatRate);
+    // PDV se računa iz ZAOKRUŽENE osnovice (i sam zaokružuje): tako `osnovica × stopa`
+    // može da se ponovi nad odštampanim brojevima i dobije isti iznos poreza.
+    const vatAmount = this.round(vatBase.mul(vatRate), AMOUNT_DP);
     const lineTotal = vatBase.add(vatAmount);
 
     // ── 5) Nabavna neto + RUC (samo uz magacin; §4.3/§5) ──

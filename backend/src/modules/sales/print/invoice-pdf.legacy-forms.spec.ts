@@ -110,6 +110,23 @@ function prismaFor(invoice: Record<string, unknown>) {
   };
 }
 
+/** Sav `text` iz pdfmake stabla — tvrdnje se pišu nad ravnim spiskom. */
+function collectText(node: unknown, out: string[] = []): string[] {
+  if (node == null) return out;
+  if (Array.isArray(node)) {
+    for (const n of node) collectText(n, out);
+    return out;
+  }
+  if (typeof node === "object") {
+    const o = node as Record<string, unknown>;
+    if (typeof o.text === "string") out.push(o.text);
+    else if (o.text != null) collectText(o.text, out);
+    for (const key of ["stack", "columns", "table", "body"])
+      if (o[key] != null) collectText(o[key], out);
+  }
+  return out;
+}
+
 describe("InvoicePdfService — vrste bez donetog obrasca idu na opšti renderer", () => {
   it.each([
     // Avansni račun bez izričite varijante sam bira avansni obrazac (documentType=AVR).
@@ -127,4 +144,55 @@ describe("InvoicePdfService — vrste bez donetog obrasca idu na opšti renderer
     expect(out.fileName).toBe(expected);
     expect(out.buffer.length).toBeGreaterThan(1000);
   }, 30000);
+
+  /**
+   * 🔴 NALAZ N8 (02.08.2026): filtriranje primena sa iznosom 0 postojalo je SAMO na četiri
+   * donesena obrasca (`printableAdvanceDeductions`), a opšti renderer ga nije imao — pa je
+   * red „Umanjenje za primljeni avans (br. …): − 0,00" izlazio na KNJIŽNOM ODOBRENJU i
+   * avansnom računu, dok ga faktura za isti avans nije imala.
+   *
+   * ULAZ: dve AKTIVNE primene, jedna na 0,00 (stornirana pa ponovo upisana / ručna
+   * ispravka u bazi) i jedna na 2.000,00. Kupac red od 0,00 čita kao avans koji postoji, a
+   * ništa ne umanjuje.
+   */
+  it("primena sa iznosom 0 ne daje red „− 0,00“ ni na opštem obrascu", async () => {
+    const prisma = prismaFor(row({ documentType: "KO", documentNumber: "KO-3/26" }));
+    prisma.invoiceAdvanceApplication.findMany = jest.fn(() =>
+      Promise.resolve([
+        {
+          advanceInvoiceId: 9,
+          appliedAmount: D("0"),
+          advance: { documentNumber: "A-9/26" },
+        },
+        {
+          advanceInvoiceId: 2,
+          appliedAmount: D("2000"),
+          advance: { documentNumber: "A-2/26" },
+        },
+      ]),
+    ) as unknown as typeof prisma.invoiceAdvanceApplication.findMany;
+
+    const pdf = new PdfService();
+    let captured: { content?: unknown } | undefined;
+    jest.spyOn(pdf, "render").mockImplementation(async (dd) => {
+      captured = dd as { content?: unknown };
+      return Buffer.from("x");
+    });
+    const service = new InvoicePdfService(
+      prisma as unknown as PrismaService,
+      pdf,
+      new BarcodeService(),
+    );
+
+    await service.buildInvoicePdf(1, "creditNote");
+    const texts = collectText(captured?.content);
+    const joined = texts.join("\n");
+
+    expect(joined).toContain("A-2/26");
+    expect(joined).not.toContain("A-9/26");
+    expect(texts).not.toContain("− 0,00");
+    expect(texts).not.toContain("− 0.00");
+    // „Za uplatu" i dalje odbija tačno ono što je na papiru navedeno: 12.000 − 2.000.
+    expect(joined).toContain("10.000,00");
+  });
 });

@@ -304,6 +304,53 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
     it("kolona R% pokazuje 0 kad rabata nema (ne prazno)", () => {
       expect(textOf(ifrCtx())).toContain("0");
     });
+
+    /**
+     * NALAZ N1 (02.08.2026): kolone `C E N A` i `VREDNOST` su nosile cenu POSLE rabata, a
+     * međuzbir iznad reda „Rabat:" računat je iz cene PRE rabata — pa se sa rabatom ≠ 0
+     * nijedan broj u zbiru nije mogao dobiti sabiranjem odštampane kolone.
+     *
+     * Presuda je sa papira IFR 657/25: međuzbir 99.363,64 stoji NEPOSREDNO ISPOD kolone
+     * VREDNOST i BEZ natpisa, pa se tek od njega oduzima `Rabat:` i dobija osnovica —
+     * dakle međuzbir JESTE zbir kolone. Vektor: 10 kom × 1.000,00 uz rabat 10 %.
+     */
+    it("kolone `C E N A` i `VREDNOST` nose iznos PRE rabata", () => {
+      const ctx = makeCtx({
+        invoice: makeInvoice({
+          netTotal: d("9000.00"),
+          vatTotal: d("1800.00"),
+          grossTotal: d("10800.00"),
+        }),
+        lines: [
+          makeLine({
+            name: "Roba sa rabatom",
+            quantity: d(10),
+            // U bazi stoji cena POSLE rabata; puna cena je na stavci od 02.08.2026.
+            unitPrice: d("900.00"),
+            unitPriceBeforeDiscount: d("1000.00"),
+            discountPercent: d(10),
+            lineTotal: d("9000.00"),
+          }),
+        ],
+      });
+      const texts = textOf(ctx);
+      // Kolona nosi 1.000,00 i 10.000,00; cena posle rabata (900,00) i osnovica stavke
+      // (9.000,00) su ispod rabata, pa u tabeli stavki nemaju šta da traže.
+      expect(texts).toContain("1,000.00");
+      expect(texts).not.toContain("900.00");
+      // Međuzbir (red bez labele iznad „Rabat:") je BAŠ zbir kolone VREDNOST.
+      expect(texts[texts.indexOf("Rabat:") - 1]).toBe("10,000.00");
+      expect(texts.filter((t) => t === "10,000.00")).toHaveLength(2);
+    });
+
+    it("bez rabata kolone ostaju iste kao na donetom papiru", () => {
+      // Doneti papiri svi imaju `R% 0` — na njima se ispravka ne sme videti.
+      const texts = textOf(ifrCtx());
+      expect(texts).toContain("16,099.54");
+      expect(texts).toContain("80,497.70");
+      expect(texts).toContain("9,432.97");
+      expect(texts).toContain("18,865.94");
+    });
   });
 
   describe("zbirni blok", () => {
@@ -498,6 +545,48 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
       const joined = joinedOf(ctx);
       expect(joined).toContain("PDV po stopi 10% X 1,000.00 =");
       expect(joined).toContain("PDV po stopi 20% X 1,000.00 =");
+    });
+
+    /**
+     * NALAZ N4 (02.08.2026): raspoređivanje razlike zaokruživanja kod više stopa postojalo
+     * je SAMO na uslužnom obrascu (`domaca-usluga.ts`), a robni ga nije imao — isti račun,
+     * dva ishoda. Izmereno: osnovice 16.000,00 (20 %) i 4.000,00 (10 %) uz `vatTotal`
+     * 3.599,99 sa dokumenta → robni papir je štampao 3.200,00 + 400,00 = 3.600,00, dakle
+     * jednu paru više nego što je proknjiženo u glavnoj knjizi.
+     */
+    it("zbir odštampanih PDV redova je TAČNO `vatTotal` sa dokumenta", () => {
+      const ctx = makeCtx({
+        invoice: makeInvoice({
+          netTotal: d("20000.00"),
+          vatTotal: d("3599.99"),
+          grossTotal: d("23599.99"),
+        }),
+        lines: [
+          makeLine({
+            ordinal: 1,
+            name: "Roba 20%",
+            quantity: d(1),
+            unitPrice: d("16000.00"),
+            lineTotal: d("16000.00"),
+            vatRatePercent: 20,
+          }),
+          makeLine({
+            ordinal: 2,
+            name: "Roba 10%",
+            quantity: d(1),
+            unitPrice: d("4000.00"),
+            lineTotal: d("4000.00"),
+            vatRatePercent: 10,
+          }),
+        ],
+      });
+      const texts = textOf(ctx);
+      // Razlika pada na grupu sa najvećom osnovicom: 3.199,99 + 400,00 = 3.599,99.
+      expect(amountAfter(texts, "PDV po stopi 20% X 16,000.00 =")).toBe(
+        "3,199.99",
+      );
+      expect(amountAfter(texts, "PDV po stopi 10% X 4,000.00 =")).toBe("400.00");
+      expect(texts).not.toContain("3,200.00");
     });
 
     it("bez avansa nema reda o avansu, a „Za uplatu“ je pun bruto zbir", () => {

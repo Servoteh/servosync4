@@ -12,6 +12,7 @@ import {
   advanceTotal,
   assertExportWithoutVat,
   discountFromLines,
+  lineGross,
   payableAfterAdvance,
   printableAdvanceDeductions,
 } from "./totals";
@@ -209,6 +210,11 @@ function itemsTable(ctx: PrintCtx): Content {
   }));
 
   const bodyRows: TableCell[][] = ctx.lines.map((l) => {
+    // `Price` i `Total` su PRE rabata (v. `lineGross` u `totals.ts`): na papiru 228/25
+    // `TOTAL` stoji neposredno ispod kolone `Total ( EUR)` i od njega se tek oduzima
+    // `DISCOUNT:`, pa je `TOTAL` zbir te kolone. Dok je kolona nosila cenu POSLE rabata,
+    // sa rabatom ≠ 0 nijedan od tri reda zbira nije mogao da se dobije njenim sabiranjem.
+    const gross = lineGross(l);
     const cells: TableCell[] = [
       { text: String(l.ordinal), fontSize: FS_TABLE },
       { text: l.catalogNumber ?? "", fontSize: FS_TABLE },
@@ -220,12 +226,12 @@ function itemsTable(ctx: PrintCtx): Content {
     ];
     if (showPrices) {
       cells.push({
-        text: formatAmount(l.unitPrice),
+        text: formatAmount(gross.unitPrice),
         fontSize: FS_TABLE,
         alignment: "right",
       });
       cells.push({
-        text: formatAmount(l.lineTotal),
+        text: formatAmount(gross.total),
         fontSize: FS_TABLE,
         alignment: "right",
       });
@@ -314,7 +320,10 @@ function totalsBlock(ctx: PrintCtx): Content {
   ];
 
   const body: TableCell[][] = [
-    row("TOTAL", formatAmount(total)),
+    // ⚠️ `TOTAL` JE UOKVIREN, `DISCOUNT:` NIJE — tako je na papiru 228/25 (ispravka
+    // 02.08.2026: kod je uokvirivao samo `TOTAL AMOUNT`). Okvir na tom obrascu nosi
+    // iznose koji SU zbir, a rabat je iznos koji se od njega oduzima.
+    row("TOTAL", formatAmount(total), { boxed: true }),
     row("DISCOUNT:", formatAmount(discount)),
     // Bez avansa je `TOTAL AMOUNT` ujedno i iznos za uplatu, pa nosi okvir — tako je na
     // papiru 228/25. Sa avansom okvir seli na `Amount payable`: uokviren je uvek red koji
@@ -421,7 +430,7 @@ function legalBlock(ctx: PrintCtx): Content {
  * izlazile bez ijedne bankarske instrukcije (GAP §2.4). Polja su tek dodata u model, i
  * `ino-roba.spec.ts` drži regresioni test da IBAN i SWIFT zaista izađu na papir.
  *
- * Ceo blok se izostavlja kad nema BROJA RAČUNA (ni IBAN ni SWIFT) — prazne labele
+ * Ceo blok se izostavlja kad nema BROJA RAČUNA (IBAN-a) — prazne labele
  * „Beneficiary Customer:" bez broja računa kupcu ne znače ništa.
  *
  * ⚠️ IZMEREN KVAR (treći krug, 02.08.2026): uslov je gledao i naziv/adresu banke, pa je
@@ -433,8 +442,8 @@ function legalBlock(ctx: PrintCtx): Content {
  * uplati. Naziv banke bez broja računa NIJE upotrebljiv podatak, pa blok izostaje u
  * celini — dinarski dokument uplatu prima na domaći račun, koji ovde nema šta da traži.
  *
- * `Banca Intesa a.d. EUR` = naziv banke + valuta dokumenta (na papiru je valuta zalepljena
- * uz naziv). Ako je valuta već u nazivu iz baze, ne udvaja se.
+ * `Banca Intesa a.d. EUR` (naziv + valuta, kako stoji na papiru) stiže GOTOV iz
+ * `composeBankName` — obrazac ga štampa doslovno i ne dopisuje ništa (v. dole).
  * `bankAddress` je višered — „Republic of Serbia" na papiru je drugi red te adrese.
  */
 function bankBlock(ctx: PrintCtx): Content[] {
@@ -443,26 +452,33 @@ function bankBlock(ctx: PrintCtx): Content[] {
   const swift = i.swift?.trim();
   const bankName = i.bankName?.trim();
   const bankAddress = lines(i.bankAddress);
-  // Merilo je BROJ RAČUNA, ne postojanje bilo kakvog podatka o banci (v. komentar iznad).
-  if (!iban && !swift) return [];
+  // ⚠️ MERILO JE IBAN, I SAMO IBAN (ispravka 02.08.2026). Uslov je do tada glasio
+  // `!iban && !swift`, pa je SWIFT sam otvarao ceo blok — a SWIFT je oznaka BANKE, ne broj
+  // računa: „Bank of beneficiary: SWIFT: DBDBRSBG" bez IBAN-a je papir sa imenom banke i
+  // bez ijednog broja na koji se uplaćuje, tačno onaj artefakt zbog kog je brana pisana.
+  // Do takvog stanja se stiže svuda gde `requireBankDetails` ne važi i zato ne traži oba
+  // podatka: IZVRO/IZVUS u dinarima, otpremnica, revers (`invoice-pdf.service.ts`).
+  if (!iban) return [];
 
   const beneficiary: Content[] = [
     { text: "Beneficiary Customer:", fontSize: FS },
+    // Razmak pre dvotačke u „IBAN : " je iz originala; SWIFT ga nema.
+    { text: `IBAN : ${iban}`, fontSize: FS, bold: true },
   ];
-  // Razmak pre dvotačke u „IBAN : " je iz originala; SWIFT ga nema.
-  if (iban) beneficiary.push({ text: `IBAN : ${iban}`, fontSize: FS, bold: true });
   beneficiary.push({ text: i.companyName, fontSize: FS });
   const issuerAddress = join([i.address, i.city], ", ");
   if (issuerAddress) beneficiary.push({ text: issuerAddress, fontSize: FS });
 
   const bank: Content[] = [{ text: "Bank of beneficiary:", fontSize: FS }];
   if (swift) bank.push({ text: `SWIFT: ${swift}`, fontSize: FS });
-  if (bankName) {
-    const withCurrency = bankName.endsWith(ctx.currency)
-      ? bankName
-      : `${bankName} ${ctx.currency}`;
-    bank.push({ text: withCurrency, fontSize: FS });
-  }
+  // ⚠️ VALUTA SE OVDE NE LEPI (ispravka 02.08.2026). Naziv sa papira („Banca Intesa a.d.
+  // EUR") sklapa `composeBankName` u `invoice-pdf.service.ts` — i to NAMERNO samo kad je
+  // devizni račun baš u valuti fakture. Ovaj obrazac je posle toga lepio valutu ponovo i
+  // bez tog uslova, pa je USD faktura koja pada na EUR račun (drugi krug izbora u
+  // `loadForeignAccount`) dobijala red „Citibank EUR" uz USD IBAN — dve tvrdnje o istom
+  // računu. Ino USLUGA valutu nije lepila uopšte, pa su isti podaci davali dva različita
+  // reda na dva obrasca. Sada oba štampaju naziv doslovno, onakav kakav im stigne.
+  if (bankName) bank.push({ text: bankName, fontSize: FS });
   for (const line of bankAddress) bank.push({ text: line, fontSize: FS });
 
   return [

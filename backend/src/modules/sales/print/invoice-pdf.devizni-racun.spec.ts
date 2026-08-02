@@ -292,6 +292,61 @@ describe("Izvozna faktura — devizni račun stiže do papira", () => {
   });
 
   /**
+   * 🔴 NALAZ N6 (02.08.2026): prvi krug izbora je uzimao PRVI red čija se valuta poklapa i
+   * tu stao — pa ako je baš taj bio prazan, drugi krug („bilo koji sa bankarskim
+   * podacima") se uopšte nije izvršio.
+   *
+   * IZMEREN ULAZ: EUR faktura; red A `currency='EUR'` bez IBAN-a i SWIFT-a (nastane sam od
+   * sebe — dovoljno je uneti valutu i naziv banke pa snimiti), red B `currency=null` sa
+   * punim IBAN-om i SWIFT-om. Ishod je bio 422 „za valutu EUR nije unet IBAN ni SWIFT/BIC",
+   * nad bazom u kojoj podatak POSTOJI i vidi se u Podešavanjima — operater nema šta da
+   * ispravi.
+   */
+  it("prazan račun u valuti fakture ne sme da zakloni popunjen račun", async () => {
+    const prazanEur = {
+      iban: null,
+      swift: null,
+      bankName: "Banca Intesa a.d.",
+      bankAddress: null,
+      currency: "EUR",
+      isDefault: true,
+      sortOrder: 0,
+    };
+    const punBezValute = { ...EUR_RACUN, currency: null, isDefault: false, sortOrder: 1 };
+    const prisma = makePrisma(makeExportInvoice(), [prazanEur, punBezValute]);
+    const { service, captured } = makeService(prisma);
+
+    await service.buildInvoicePdf(1);
+    const body = collectText(captured()?.content).join("\n");
+
+    expect(body).toContain("IBAN : RS35160005010003501186");
+    expect(body).toContain("SWIFT: DBDBRSBG");
+  });
+
+  /**
+   * 🔴 NALAZ N7 (02.08.2026): `composeBankName` NAMERNO ne lepi valutu kad izabrani račun
+   * nije u valuti fakture, ali je ino ROBA valutu posle toga lepila ponovo i bez tog
+   * uslova. IZMEREN ISHOD: USD faktura koja padne na EUR račun (drugi krug izbora) dobijala
+   * je red „Banca Intesa a.d. EUR" uz taj IBAN, dakle valutu koja nije valuta fakture ni
+   * dokaz da je račun u njoj. Ino USLUGA valutu nije lepila uopšte — isti podaci, dva reda.
+   */
+  it("naziv banke ne dobija valutu kad račun nije u valuti fakture", async () => {
+    const prisma = makePrisma(
+      makeExportInvoice({ currency: "USD" }),
+      [EUR_RACUN],
+    );
+    const { service, captured } = makeService(prisma);
+
+    await service.buildInvoicePdf(1);
+    const body = collectText(captured()?.content).join("\n");
+
+    expect(body).toContain("IBAN : RS35160005010003501186");
+    expect(body).toContain("Banca Intesa a.d.");
+    expect(body).not.toContain("Banca Intesa a.d. EUR");
+    expect(body).not.toContain("Banca Intesa a.d. USD");
+  });
+
+  /**
    * Rezerva iz „Podešavanja → Firma → Podaci za plaćanje". Ta dva polja se unose od
    * 27.07.2026, ali ih ovaj obrazac nije čitao — administrator je mogao uredno da ih
    * upiše i da NIŠTA ne stigne na papir. Sada su poslednja odbrana pre greške.
@@ -481,6 +536,51 @@ describe("brana za IBAN ne sme da zaustavi papir kome banka ne treba", () => {
     const { service } = makeService(prisma);
 
     await expect(service.buildInvoicePdf(1)).resolves.toBeDefined();
+  });
+
+  /**
+   * 🔴 NALAZ N9 (02.08.2026): revers je bio izuzet od brane za IBAN, ali NIJE od
+   * `assertExportWithoutVat` — spisak izuzetih vrsta postojao je u dva primerka, pa je
+   * važio samo za jednu branu. Revers nastao prepisom (`carry-over`) nosi PREPISAN
+   * `vatTotal` sa izvorne fakture i, ako je uz to `isExport`, pada na ino obrazac kroz
+   * `resolveForm` fallback — pa je ostajao bez papira zbog PDV-a koji na njemu nikoga ne
+   * obavezuje: po reversu se ne uplaćuje ništa.
+   */
+  it("izvozni revers sa prepisanim PDV-om se ipak štampa", async () => {
+    const prisma = makePrisma(
+      makeExportInvoice({
+        documentType: "REV",
+        documentNumber: "8/26",
+        vatTotal: D("2106.15"),
+        grossTotal: D("12636.90"),
+      }),
+      [EUR_RACUN],
+    );
+    const { service } = makeService(prisma);
+
+    await expect(service.buildInvoicePdf(1)).resolves.toBeDefined();
+  });
+
+  /**
+   * 🔴 NALAZ N5 (02.08.2026): u šablonu je uslov za blok banke bio „IBAN ILI SWIFT", pa je
+   * SWIFT SAM otvarao ceo blok — a SWIFT je oznaka BANKE, ne broj računa. Dinarski red iz
+   * `payment_accounts` sa unetim SWIFT-om (banka ga ima, broj računa je domaći i na ino
+   * obrazac ne ide) davao je papir sa „Beneficiary Customer:", imenom banke i SWIFT-om, a
+   * nijednim brojem na koji kupac uplaćuje. Brana `requireBankDetails` ovde ne važi (RSD),
+   * pa je jedina odbrana sam obrazac.
+   */
+  it("SWIFT bez IBAN-a ne otvara blok banke (dinarski izvozni dokument)", async () => {
+    const prisma = makePrisma(makeExportInvoice({ currency: "RSD" }), [
+      { ...RSD_RACUN, swift: "DBDBRSBG" },
+    ]);
+    const { service, captured } = makeService(prisma);
+
+    await service.buildInvoicePdf(1);
+    const body = collectText(captured()?.content).join("\n");
+
+    expect(body).not.toContain("Beneficiary Customer:");
+    expect(body).not.toContain("Bank of beneficiary:");
+    expect(body).not.toContain("DBDBRSBG");
   });
 
   /**

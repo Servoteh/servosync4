@@ -603,6 +603,11 @@ export class SalesService {
       vatRateCode,
     });
 
+    // `PricingService` iznose stavke od 02.08.2026. već vraća zaokružene na PARU
+    // (v. `AMOUNT_DP` tamo — zbir odštampanih stavki mora da da osnovicu dokumenta, a ne
+    // da se od nje razlikuje za paru). `money` ovde ostaje kao skala KOLONE (19,4) i nad
+    // takvim iznosom ništa ne menja; ako neki budući put donese nezaokružen iznos,
+    // upis u bazu i dalje prolazi kroz ovu jednu tačku.
     const vatBase = money(derived.vatBase);
     const vatAmount = money(derived.vatAmount);
     return {

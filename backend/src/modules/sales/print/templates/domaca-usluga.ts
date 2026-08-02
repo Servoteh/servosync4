@@ -1,13 +1,15 @@
 import { Prisma } from "@prisma/client";
-import type { Content, TableLayout } from "pdfmake/interfaces";
+import type { Column, Content, TableLayout } from "pdfmake/interfaces";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import { formatAmount, formatDateDomestic, formatInvoiceNumber } from "../format";
 import type { InvoiceTemplate, PrintCtx } from "./ctx";
 import {
   advanceTotal,
   discountFromLines,
+  lineGross,
   payableAfterAdvance,
   printableAdvanceDeductions,
+  vatSummaryRows,
 } from "./totals";
 
 /**
@@ -139,58 +141,19 @@ function formatVatRate(rate: number | null): string {
   return rate == null ? "" : `${rate}%`;
 }
 
-function sum(values: Prisma.Decimal[]): Prisma.Decimal {
-  return values.reduce((a, b) => a.add(b), new Prisma.Decimal(0));
-}
-
-/** Jedan red „PDV po stopi X% ..." u zbiru. */
-interface VatGroup {
-  rate: number | null;
-  base: Prisma.Decimal;
-  vat: Prisma.Decimal;
-}
-
 /**
- * Redovi PDV-a u zbiru.
+ * Redovi PDV-a u zbiru — račun je u `totals.ts` (`vatSummaryRows`), jer isti mora da važi
+ * i na robnom obrascu; ovde je samo REDOSLED PRIKAZA.
  *
- * Papir ima tačno jedan (`PDV po stopi 20% X 16,000.00 = 3,200.00`) jer sve stavke
- * nose istu stopu — i to je normalan slučaj domaće usluge. Kad se stope na
- * dokumentu razlikuju, ne sme se odštampati bilo koja od njih (pogrešna stopa na
- * računu je poreska greška, ne kozmetika), pa se štampa po jedan red za svaku.
- *
- * Kod jedne stope iznosi se uzimaju IZ DOKUMENTA (`netTotal`/`vatTotal`), da se
- * papir do pare poklopi sa knjiženjem. Kod više stopa se osnovica sabira po grupi,
- * PDV računa iz stope, a razlika zaokruživanja pripiše najvećoj grupi — tako zbir
- * odštampanih redova uvek daje `vatTotal` sa dokumenta.
+ * Papir 653/25 ima tačno jedan red (`PDV po stopi 20% X 16,000.00 = 3,200.00`) jer sve
+ * stavke nose istu stopu — normalan slučaj domaće usluge. Kad se stope razlikuju, štampa
+ * se red po stopi (pogrešna stopa na računu je poreska greška, ne kozmetika), i to
+ * OPADAJUĆE (20 % pa 10 %) — kako je uslužni obrazac oduvek prikazivao.
  */
-function buildVatGroups(ctx: PrintCtx): VatGroup[] {
-  const { netTotal, vatTotal } = ctx.invoice;
-  const rates = [...new Set(ctx.lines.map((l) => l.vatRatePercent))];
-
-  if (rates.length <= 1)
-    return [{ rate: rates[0] ?? null, base: netTotal, vat: vatTotal }];
-
-  const groups: VatGroup[] = rates
-    .sort((a, b) => (b ?? -1) - (a ?? -1))
-    .map((rate) => {
-      const base = sum(
-        ctx.lines.filter((l) => l.vatRatePercent === rate).map((l) => l.lineTotal),
-      );
-      const vat =
-        rate == null
-          ? new Prisma.Decimal(0)
-          : base.mul(rate).div(100).toDecimalPlaces(2);
-      return { rate, base, vat };
-    });
-
-  // Razlika zaokruživanja ide na grupu sa najvećom osnovicom — zbir redova mora
-  // da bude jednak `vatTotal`, inače papir ne bi štimao sa glavnom knjigom.
-  const drift = vatTotal.sub(sum(groups.map((g) => g.vat)));
-  if (!drift.isZero()) {
-    const biggest = groups.reduce((a, b) => (b.base.greaterThan(a.base) ? b : a));
-    biggest.vat = biggest.vat.add(drift);
-  }
-  return groups;
+function buildVatGroups(ctx: PrintCtx): ReturnType<typeof vatSummaryRows> {
+  return vatSummaryRows(ctx)
+    .slice()
+    .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1));
 }
 
 /** Centriran, podebljan red `Tekući račun: 160-110610-83` iznad kupca. */
@@ -340,6 +303,12 @@ function itemsTable(ctx: PrintCtx): Content {
   ];
 
   for (const line of ctx.lines) {
+    // `C E N A` i `I Z N O S` su PRE rabata — v. `lineGross` u `totals.ts`. Zbir kolone
+    // `I Z N O S` je prvi red zbirnog bloka („Vrednost bez PDV:"), od kog se tek oduzima
+    // „Odobren rabat:" — tako je na donetom papiru IFUSL 653/25, gde ta tri reda stoje
+    // jedan ispod drugog. Do 02.08.2026. je kolona nosila cenu POSLE rabata, pa se prvi
+    // red zbira nije mogao dobiti sabiranjem kolone čim je rabat bio ≠ 0.
+    const gross = lineGross(line);
     const cells: Content[] = [
       { text: String(line.ordinal), alignment: "center", fontSize: 8.5 },
     ];
@@ -356,13 +325,13 @@ function itemsTable(ctx: PrintCtx): Content {
     );
     if (money)
       cells.push(
-        { text: formatAmount(line.unitPrice), alignment: "right", fontSize: 8.5 },
+        { text: formatAmount(gross.unitPrice), alignment: "right", fontSize: 8.5 },
         {
           text: formatPercentCell(line.discountPercent),
           alignment: "center",
           fontSize: 8.5,
         },
-        { text: formatAmount(line.lineTotal), alignment: "right", fontSize: 8.5 },
+        { text: formatAmount(gross.total), alignment: "right", fontSize: 8.5 },
       );
     body.push(cells);
   }
@@ -373,8 +342,44 @@ function itemsTable(ctx: PrintCtx): Content {
   };
 }
 
-/** Jedan red zbira: labela levo od okvira, iznos UNUTAR okvira. */
-function totalsRow(label: string, value: string, strong = false): Content {
+/**
+ * Jedan red zbira: labela levo, iznos desno u istoj koloni.
+ *
+ * `boxed` = da li iznos ide U OKVIR. NIJE ukras: na donetom papiru IFUSL 653/25 uokvirena
+ * su ČETIRI reda („Vrednost bez PDV", „Odobren rabat", „Ukupno vrednost bez PDV
+ * (osnovica)" i „Ukupno za uplatu"), a red PDV-a (`PDV po stopi 20% X 16,000.00 =
+ * 3,200.00`) NIJE. Do 02.08.2026. je kod uokvirivao svaki red, pa je papir imao jedan
+ * okvir viška — a on je na obrascu razlika između iznosa koji ULAZE u zbir i poreza koji
+ * se na osnovicu tek obračunava. Neuokviren iznos zadržava istu širinu i desnu ivicu
+ * (`TOTALS_BOX_WIDTH` + margina umesto okvira), da kolona brojeva ostane poravnata.
+ */
+function totalsRow(
+  label: string,
+  value: string,
+  opts: { strong?: boolean; boxed?: boolean } = {},
+): Content {
+  const strong = opts.strong === true;
+  const boxed = opts.boxed !== false;
+  const amount: Column = boxed
+    ? {
+        width: TOTALS_BOX_WIDTH,
+        table: {
+          widths: ["*"],
+          body: [[{ text: value, alignment: "right", bold: strong, fontSize: 9 }]],
+        },
+        layout: amountBoxLayout(strong ? 1.2 : 0.6),
+      }
+    : {
+        width: TOTALS_BOX_WIDTH,
+        text: value,
+        alignment: "right",
+        bold: strong,
+        fontSize: 9,
+        // Ista unutrašnja margina kao u okviru (paddingRight 4 + linija), da se iznos
+        // poklopi sa uokvirenim iznosima iznad i ispod.
+        margin: [0, 1.5, 4, 0] as Margin,
+      };
+
   return {
     columns: [
       {
@@ -385,23 +390,20 @@ function totalsRow(label: string, value: string, strong = false): Content {
         fontSize: 9,
         margin: [0, 2, 6, 0] as Margin,
       },
-      {
-        width: TOTALS_BOX_WIDTH,
-        table: {
-          widths: ["*"],
-          body: [[{ text: value, alignment: "right", bold: strong, fontSize: 9 }]],
-        },
-        layout: amountBoxLayout(strong ? 1.2 : 0.6),
-      },
+      amount,
     ],
     margin: [0, 1.5, 0, 0] as Margin,
   };
 }
 
 /**
- * Zbir: PET redova i SVAKI je uokviren (na robi okvir ima samo poslednji).
- * Usluga ima i zaseban red `Ukupno vrednost bez PDV (osnovica)`, pa poslednji
- * red glasi `Ukupno za uplatu (RSD):` — a ne `Za uplatu (RSD):` kao na robi.
+ * Zbir: PET redova, od kojih su uokvirena ČETIRI — sva osim reda PDV-a (na robi okvir
+ * ima samo poslednji). Usluga ima i zaseban red `Ukupno vrednost bez PDV (osnovica)`, pa
+ * poslednji red glasi `Ukupno za uplatu (RSD):` — a ne `Za uplatu (RSD):` kao na robi.
+ *
+ * ⚠️ RED PDV-a BEZ OKVIRA (ispravka 02.08.2026): doneti papir IFUSL 653/25 ga jedinog
+ * nema uokvirenog, a kod je uokvirivao svih pet. Zašto to nije kozmetika: okvir na tom
+ * obrascu izdvaja iznose koji ULAZE u zbir od poreza koji se na osnovicu tek obračunava.
  *
  * Odnos redova se drži sam od sebe: red 3 je `netTotal` sa dokumenta, red 2 je
  * zbir rabata sa stavki, a red 1 njihov zbir — tako odobren rabat uvek zatvara
@@ -436,12 +438,13 @@ function totalsBlock(ctx: PrintCtx): Content[] {
   ];
 
   // Red PDV-a nosi i stopu i OSNOVICU u samom tekstu: „PDV po stopi 20% X 16,000.00 =".
+  // BEZ OKVIRA — na papiru 653/25 je jedini takav red u zbiru (v. `totalsRow`).
   for (const g of buildVatGroups(ctx)) {
     const label =
       g.rate == null
         ? `PDV X ${formatAmount(g.base)} =`
         : `PDV po stopi ${g.rate}% X ${formatAmount(g.base)} =`;
-    rows.push(totalsRow(label, formatAmount(g.vat)));
+    rows.push(totalsRow(label, formatAmount(g.vat), { boxed: false }));
   }
 
   // Odbijen avans (Batch C §C1a) ne postoji na donetom papiru, ali se NE sme
@@ -465,11 +468,9 @@ function totalsBlock(ctx: PrintCtx): Content[] {
   }
 
   rows.push(
-    totalsRow(
-      `Ukupno za uplatu (${ctx.currency}):`,
-      formatAmount(payable),
-      true,
-    ),
+    totalsRow(`Ukupno za uplatu (${ctx.currency}):`, formatAmount(payable), {
+      strong: true,
+    }),
   );
 
   return [{ stack: rows, margin: [0, 3, 0, 0] as Margin }];

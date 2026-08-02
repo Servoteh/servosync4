@@ -85,7 +85,11 @@ const SERVOTEH: PrintIssuer = {
     '"Servoteh" d.o.o. je jednočlano privredno društvo upisano u Agenciji za privredne registre pod brojem BD. 222785/2006',
   iban: "RS35160005010003501186",
   swift: "DBDBRSBG",
-  bankName: "Banca Intesa a.d.",
+  // Naziv stiže GOTOV, sa valutom: sklapa ga `composeBankName` u `invoice-pdf.service.ts`,
+  // i to samo kad je devizni račun baš u valuti fakture. Obrazac ga štampa doslovno
+  // (v. nalaz N12/N7 — do 02.08.2026. je valutu lepio i sam, pa je USD faktura na EUR
+  // računu dobijala „…a.d. EUR" uz USD IBAN).
+  bankName: "Banca Intesa a.d. EUR",
   bankAddress: "Milentija Popovića 7b, 11070 New Belgrade\nRepublic of Serbia",
 };
 
@@ -306,6 +310,35 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
     });
 
     /**
+     * NALAZ N1 (02.08.2026): kolone `Price` i `Total ( EUR)` su nosile cenu POSLE rabata,
+     * a `TOTAL` iznad njih iznos PRE rabata — pa se sa rabatom ≠ 0 `TOTAL` NIJE mogao
+     * dobiti sabiranjem kolone. Na papiru 228/25 `TOTAL` stoji neposredno ispod te kolone
+     * i od njega se tek oduzima `DISCOUNT:`, dakle on JESTE njen zbir.
+     *
+     * Isti vektor kao gore: dve stavke po 250,00 neto uz rabat 20 % (puna cena 156,25).
+     */
+    it("`TOTAL` je ZBIR odštampane kolone `Total ( EUR)`", () => {
+      const ctx = makeCtx({
+        lines: LINES.map((l) => ({
+          ...l,
+          discountPercent: D("20"),
+          unitPriceBeforeDiscount: null,
+        })),
+      });
+      const texts = collectText(inoRobaTemplate(ctx));
+      // Kolona: 2 × 156,25 = 312,50 po stavci, dve stavke → 625,00 = `TOTAL`.
+      expect(texts.filter((t) => t === "156.25")).toHaveLength(2);
+      expect(texts.filter((t) => t === "312.50")).toHaveLength(2);
+      // Cena posle rabata (125,00) se u koloni više ne pojavljuje: 125,00 na papiru
+      // ostaje samo kao ukupan `DISCOUNT:`. Neto iznos stavke (250,00) nestaje sasvim —
+      // on je ispod rabata, a kolona je iznad njega.
+      expect(texts.filter((t) => t === "125.00")).toHaveLength(1);
+      expect(texts[texts.indexOf("DISCOUNT:") + 1]).toBe("125.00");
+      expect(texts).not.toContain("250.00");
+      expect(texts[texts.indexOf("TOTAL") + 1]).toBe("625.00");
+    });
+
+    /**
      * DVA IZVORA, JEDAN PAPIR: nova stavka nosi cenu PRE rabata (125,00 / 0,8 = 156,25),
      * stara je nema. Papir mora biti ISTI — inače bi isti posao izgledao različito zavisno
      * od toga kada je stavka uneta, a razlika bi se videla tek kod kupca.
@@ -343,22 +376,21 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
       expect(text).not.toContain("Osnovica");
     });
 
-    it("`TOTAL AMOUNT` je uokviren, a `TOTAL` i `DISCOUNT` nisu", () => {
+    /**
+     * NALAZ N12 (02.08.2026): na papiru 228/25 uokvireni su `TOTAL` I `TOTAL AMOUNT`, a
+     * `DISCOUNT` NIJE — kod je uokvirivao samo `TOTAL AMOUNT`. Okvir na tom obrascu nosi
+     * iznose koji SU zbir, dok je rabat iznos koji se od zbira oduzima.
+     */
+    it("uokvireni su `TOTAL` i `TOTAL AMOUNT`, a `DISCOUNT` nije", () => {
       const boxed: string[] = [];
       const plain: string[] = [];
       walk(inoRobaTemplate(makeCtx()), (o) => {
         if (typeof o.text !== "string" || !Array.isArray(o.border)) return;
         (o.border.some(Boolean) ? boxed : plain).push(o.text);
       });
-      // Jedina uokvirena ćelija na papiru je iznos uz `TOTAL AMOUNT ( EUR)`.
-      expect(boxed).toEqual(["500.00"]);
-      expect(plain).toEqual([
-        "TOTAL",
-        "500.00",
-        "DISCOUNT:",
-        "0.00",
-        "TOTAL AMOUNT ( EUR)",
-      ]);
+      // Oba iznosa su 500.00 — okvir ima onaj uz `TOTAL` i onaj uz `TOTAL AMOUNT ( EUR)`.
+      expect(boxed).toEqual(["500.00", "500.00"]);
+      expect(plain).toEqual(["TOTAL", "DISCOUNT:", "0.00", "TOTAL AMOUNT ( EUR)"]);
     });
   });
 
@@ -415,7 +447,9 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
         if (typeof o.text !== "string" || !Array.isArray(o.border)) return;
         if (o.border.some(Boolean)) boxed.push(o.text);
       });
-      expect(boxed).toEqual(["7,000.00"]);
+      // `TOTAL` (zbir kolone) zadržava svoj okvir sa papira; `TOTAL AMOUNT` ga ustupa
+      // redu `Amount payable`, jer okvir uvek nosi ono što kupac treba da plati.
+      expect(boxed).toEqual(["10,000.00", "7,000.00"]);
     });
 
     it("bez broja avansnog računa red i dalje postoji, samo bez broja", () => {
@@ -670,11 +704,26 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
       expect(text).toContain("Republic of Serbia");
     });
 
-    it("ne udvaja valutu kad je već u nazivu banke", () => {
+    /**
+     * NALAZ N7 (02.08.2026): obrazac je uz naziv banke SAM lepio valutu dokumenta, iako to
+     * `composeBankName` već radi — i to namerno SAMO kad je devizni račun baš u valuti
+     * fakture. Posledica: USD faktura koja padne na EUR račun (drugi krug izbora u
+     * `loadForeignAccount`) dobijala je red „Citibank EUR" uz USD IBAN, dakle dve tvrdnje
+     * o istom računu. Ino USLUGA valutu nije lepila uopšte — isti podaci, dva reda.
+     */
+    it("naziv banke se štampa DOSLOVNO — obrazac mu ne dopisuje valutu", () => {
       const ctx = makeCtx({
-        issuer: { ...SERVOTEH, bankName: "Banca Intesa a.d. EUR" },
+        issuer: { ...SERVOTEH, bankName: "Citibank" },
+        currency: "USD",
       });
-      expect(renderText(ctx)).not.toContain("Banca Intesa a.d. EUR EUR");
+      const text = renderText(ctx);
+      expect(text).toContain("Citibank");
+      expect(text).not.toContain("Citibank USD");
+      expect(text).not.toContain("Citibank EUR");
+    });
+
+    it("ne udvaja valutu kad je već u nazivu banke", () => {
+      expect(renderText(makeCtx())).not.toContain("Banca Intesa a.d. EUR EUR");
     });
 
     it("bez deviznih podataka se ceo blok izostavlja, bez praznih labela", () => {
@@ -713,6 +762,30 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
       expect(text).not.toContain("Bank of beneficiary:");
       expect(text).not.toContain("Banca Intesa");
       expect(text).not.toContain("Milentija Popovića");
+    });
+
+    /**
+     * NALAZ N5 (02.08.2026): uslov je bio `!iban && !swift`, pa je SWIFT SAM otvarao ceo
+     * blok — a SWIFT je oznaka BANKE, ne broj računa. Papir je tada imao „Beneficiary
+     * Customer:", ime banke i SWIFT, a nijedan broj na koji se uplaćuje. Do tog stanja se
+     * stiže svuda gde brana `requireBankDetails` ne važi i zato ne traži oba podatka:
+     * IZVRO/IZVUS u dinarima, otpremnica, revers.
+     */
+    it("SWIFT bez IBAN-a NE otvara blok — SWIFT nije broj računa", () => {
+      const ctx = makeCtx({
+        issuer: { ...SERVOTEH, iban: null },
+      });
+      const text = renderText(ctx);
+      expect(text).not.toContain("Beneficiary Customer:");
+      expect(text).not.toContain("Bank of beneficiary:");
+      expect(text).not.toContain("DBDBRSBG");
+    });
+
+    it("IBAN bez SWIFT-a blok OTVARA — broj računa je ono što kupcu treba", () => {
+      const ctx = makeCtx({ issuer: { ...SERVOTEH, swift: null } });
+      const text = renderText(ctx);
+      expect(text).toContain("IBAN : RS35160005010003501186");
+      expect(text).not.toContain("SWIFT:");
     });
 
     it("domaći tekući račun se NE štampa na ino fakturi", () => {

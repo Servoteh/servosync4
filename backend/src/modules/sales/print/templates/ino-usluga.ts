@@ -558,8 +558,8 @@ function shippingBlock(ctx: PrintCtx): Content | null {
  * `IBAN :` ima razmak pred dvotačkom — doslovno sa papira. Ništa se ne prepisuje u kod:
  * kad devizni račun nije unet, red se izostavi (bolje prazno nego pogrešan IBAN).
  *
- * ⚠️ BEZ BROJA RAČUNA BLOKA NEMA (treći krug, 02.08.2026) — ista ispravka kao na ino robi.
- * Blok se ranije crtao UVEK, pa je dokument bez IBAN-a i SWIFT-a dobijao celu poslednju
+ * ⚠️ BEZ BROJA RAČUNA (IBAN-a) BLOKA NEMA (treći krug, 02.08.2026) — ista ispravka kao na
+ * ino robi. Blok se ranije crtao UVEK, pa je dokument bez IBAN-a i SWIFT-a dobijao celu poslednju
  * stranu sa samo dve labele („Beneficiary Customer:", „Bank of beneficiary:") i nazivom
  * firme. Do toga se stiže kad brana za bankarske instrukcije ne važi: IZVUS u dinarima
  * (prepis domaćeg predračuna) ili revers. Naziv banke bez broja računa nije podatak po
@@ -567,17 +567,21 @@ function shippingBlock(ctx: PrintCtx): Content | null {
  */
 function bankBlock(ctx: PrintCtx): Content[] {
   const { issuer } = ctx;
-  if (!issuer.iban?.trim() && !issuer.swift?.trim()) return [];
+  const iban = issuer.iban?.trim();
+  // ⚠️ MERILO JE IBAN, I SAMO IBAN (ispravka 02.08.2026, ista kao na ino robi): uslov je
+  // do tada bio `!iban && !swift`, pa je SWIFT sam otvarao — ovde i CELU SVOJU STRANU —
+  // blok u kome piše ime banke, a nijedan broj računa. SWIFT je oznaka banke, ne broj
+  // računa; papir sa njim samim kupcu ne kaže gde da uplati.
+  if (!iban) return [];
 
   const left: Content[] = [
     { text: "Beneficiary Customer:", fontSize: 9, bold: true },
-  ];
-  if (issuer.iban?.trim())
-    left.push({
-      text: `IBAN : ${issuer.iban.trim()}`,
+    {
+      text: `IBAN : ${iban}`,
       fontSize: 9,
       margin: [0, 4, 0, 0],
-    });
+    },
+  ];
   left.push({ text: issuer.companyName, fontSize: 9, margin: [0, 4, 0, 0] });
   const issuerAddress = join([issuer.address, issuer.city], ", ");
   if (issuerAddress) left.push({ text: issuerAddress, fontSize: 9 });

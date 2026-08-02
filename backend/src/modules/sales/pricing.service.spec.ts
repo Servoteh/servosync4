@@ -468,4 +468,73 @@ describe("PricingService", () => {
     expect(p.lineTotal.toFixed(4)).toBe("324.0000");
     expect(p.priceOverridden).toBe(false);
   });
+
+  // ── IZNOS STAVKE JE NA PARU (nalaz N2, 02.08.2026) ─────────────────────────
+
+  /**
+   * 🔴 IZMEREN KVAR: `vatBase = količina × cena` se upisivalo NEZAOKRUŽENO (kolona je
+   * `Decimal(19,4)`), a zbirovi dokumenta (`recalcTotals`) sabirali takve iznose. Štampa
+   * svaku stavku prikazuje na dve decimale, zbir ne — pa je račun sa DVE stavke
+   * 1,5 × 21,3300 (= 31,9950 po stavci) na papiru imao kolonu `32.00 + 32.00 = 64.00`, a
+   * osnovicu `63.99`. Kupac koji sabere odštampanu kolonu dobije drugi broj nego što na
+   * računu piše.
+   *
+   * Ispravka je NA IZVORU, ne u štampi: isti iznos ide u glavnu knjigu, PDV evidenciju,
+   * na SEF i u saldakonta — svi moraju da vide ISTI broj. Doneti papir
+   * `INOUslugaFaktura 060-26.pdf` to i potvrđuje kao zatečeno pravilo: stavka
+   * 19,6 kg × 30,1020 = 589,9992 na njemu stoji kao `590.00`, a zbir svih šest stavki
+   * (10.530,75) je zbir BAŠ tako zaokruženih iznosa.
+   */
+  describe("iznos stavke se zaokružuje na paru (cena ostaje na 4 decimale)", () => {
+    it("1,5 × 21,3300 daje osnovicu 32,00 — ne 31,9950", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: new D("1.5"),
+        overrideUnitPrice: new D("21.33"),
+      });
+
+      // Cena po jedinici ostaje netaknuta — 21,3300 (i 30,1020 din/kg) je legitimna cena;
+      // zaokružuje se IZNOS, jer njega kupac plaća i njega papir prikazuje.
+      expect(p.unitPrice.toFixed(4)).toBe("21.3300");
+      expect(p.vatBase.toFixed(4)).toBe("32.0000");
+      expect(p.vatAmount.toFixed(4)).toBe("6.4000"); // 32,00 × 20 %
+      expect(p.lineTotal.toFixed(4)).toBe("38.4000");
+    });
+
+    it("zbir dve takve stavke je BAŠ zbir odštampanih iznosa (64,00)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      const one = async () =>
+        (
+          await service.priceItem({
+            itemId: 1,
+            quantity: new D("1.5"),
+            overrideUnitPrice: new D("21.33"),
+          })
+        ).vatBase;
+
+      const zbir = (await one()).add(await one());
+      // Papir štampa `32.00 + 32.00`; osnovica dokumenta mora biti TAJ ISTI zbir.
+      // Do ispravke: 2 × 31,9950 = 63,9900 → papir je pokazivao kolonu 64,00 uz
+      // osnovicu 63,99, dakle broj koji se sabiranjem kolone ne može dobiti.
+      expect(zbir.toFixed(2)).toBe("64.00");
+      expect(zbir.toFixed(4)).toBe("64.0000");
+    });
+
+    it("PDV se računa iz ZAOKRUŽENE osnovice, pa se može ponoviti nad papirom", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: new D("19.6"),
+        overrideUnitPrice: new D("30.1020"),
+      });
+
+      // 19,6 × 30,1020 = 589,9992 → 590,00 (tako je i na donetom papiru 060/26).
+      expect(p.vatBase.toFixed(2)).toBe("590.00");
+      expect(p.vatAmount.toFixed(2)).toBe("118.00");
+      expect(p.lineTotal.toFixed(2)).toBe("708.00");
+    });
+  });
 });

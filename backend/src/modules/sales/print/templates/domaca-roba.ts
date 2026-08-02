@@ -14,8 +14,10 @@ import type { InvoiceTemplate, PrintCtx } from "./ctx";
 import {
   advanceTotal,
   discountFromLines,
+  lineGross,
   payableAfterAdvance,
   printableAdvanceDeductions,
+  vatSummaryRows,
 } from "./totals";
 
 /**
@@ -105,53 +107,6 @@ function formatQuantity(value: Prisma.Decimal): string {
  */
 function formatDiscountPercent(value: Prisma.Decimal): string {
   return formatAmount(value, Math.min(Math.max(value.decimalPlaces(), 0), 2));
-}
-
-/** Jedan red PDV-a u zbiru: stopa, osnovica na koju se primenjuje i iznos poreza. */
-interface VatSummaryRow {
-  rate: number;
-  base: Prisma.Decimal;
-  vat: Prisma.Decimal;
-}
-
-/**
- * Redovi PDV-a za zbirni blok.
- *
- * Kad je na računu JEDNA stopa (tako je na oba donete papira, i tako je u praksi),
- * uzimaju se zbirovi sa samog dokumenta (`netTotal`/`vatTotal`) — jer papir mora da
- * pokaže ono što je i proknjiženo, do pare. Tek kad se na istom računu nađu dve stope,
- * osnovice se moraju razdvojiti po stavkama, pošto zaglavlje nosi samo ukupan PDV.
- */
-function vatSummaryRows(ctx: PrintCtx): VatSummaryRow[] {
-  const rates = [
-    ...new Set(
-      ctx.lines
-        .map((l) => l.vatRatePercent)
-        .filter((r): r is number => r != null),
-    ),
-  ];
-
-  if (rates.length <= 1) {
-    return [
-      {
-        // Bez ijedne poznate stope (stara stavka bez `vatRateCode`) red i dalje mora
-        // da postoji — obrazac ga ima uvek — pa se stopa prikaže kao 0.
-        rate: rates[0] ?? 0,
-        base: ctx.invoice.netTotal,
-        vat: ctx.invoice.vatTotal,
-      },
-    ];
-  }
-
-  return rates
-    .slice()
-    .sort((a, b) => a - b)
-    .map((rate) => {
-      const base = ctx.lines
-        .filter((l) => l.vatRatePercent === rate)
-        .reduce((sum, l) => sum.add(l.lineTotal), new Prisma.Decimal(0));
-      return { rate, base, vat: base.mul(rate).div(100).toDecimalPlaces(2) };
-    });
 }
 
 // ─────────────────────────────────────────────────────────────── delovi tela
@@ -304,6 +259,13 @@ function conditionsStrip(ctx: PrintCtx): Content {
  *
  * Na otpremnici (`ctx.withoutPrices`) tri novčane kolone otpadaju; PDV stopa ostaje,
  * jer ona nije iznos nego oznaka poreskog tretmana stavke.
+ *
+ * ⚠️ `C E N A` I `VREDNOST` SU PRE RABATA (ispravka 02.08.2026, v. `lineGross`): do tada
+ * je kolona nosila `unitPrice` — cenu POSLE rabata — dok je međuzbir iznad reda „Rabat:"
+ * računat iz cene PRE rabata, pa se sa rabatom ≠ 0 nijedan broj u zbiru nije mogao dobiti
+ * sabiranjem odštampane kolone. Na papiru IFR 657/25 međuzbir 99.363,64 stoji NEPOSREDNO
+ * ISPOD ove kolone i bez natpisa, pa je on njen zbir — a red „Rabat:" se od njega tek
+ * oduzima. Papiri sa rabatom 0 (svi doneseni) izgledaju identično kao pre.
  */
 function itemsTable(ctx: PrintCtx): Content {
   const money = !ctx.withoutPrices;
@@ -327,6 +289,7 @@ function itemsTable(ctx: PrintCtx): Content {
   }
 
   const rows: TableCell[][] = ctx.lines.map((l) => {
+    const gross = lineGross(l);
     const cells: TableCell[] = [
       { text: String(l.ordinal), fontSize: 7.5, alignment: "center" },
       {
@@ -342,7 +305,7 @@ function itemsTable(ctx: PrintCtx): Content {
     if (money) {
       cells.push(
         {
-          text: formatAmount(l.unitPrice, 2),
+          text: formatAmount(gross.unitPrice, 2),
           fontSize: 7.5,
           alignment: "right",
         },
@@ -352,7 +315,7 @@ function itemsTable(ctx: PrintCtx): Content {
           alignment: "right",
         },
         {
-          text: formatAmount(l.lineTotal, 2),
+          text: formatAmount(gross.total, 2),
           fontSize: 7.5,
           alignment: "right",
         },
@@ -427,9 +390,14 @@ function totalsBlock(ctx: PrintCtx): Content[] {
     [label("Vrednost bez PDV (osnovica):"), value(formatAmount(base))],
   ];
 
+  // Redovi PDV-a dolaze iz `totals.ts` — ISTI račun kao na uslužnom obrascu, uključujući
+  // raspoređivanje razlike zaokruživanja kod više stopa (v. `vatSummaryRows`). Dok je taj
+  // račun bio ovde, robni papir je sa dve stope umeo da pokaže Σ PDV redova veći od
+  // `vatTotal` za 0,01, a uslužni ne — isti račun, dva ishoda.
+  // Stopa `null` (stavka bez poznate poreske šifre) štampa se kao `0%`, kao i do sada.
   for (const row of vatSummaryRows(ctx)) {
     body.push([
-      label(`PDV po stopi ${row.rate}% X ${formatAmount(row.base)} =`),
+      label(`PDV po stopi ${row.rate ?? 0}% X ${formatAmount(row.base)} =`),
       value(formatAmount(row.vat)),
     ]);
   }

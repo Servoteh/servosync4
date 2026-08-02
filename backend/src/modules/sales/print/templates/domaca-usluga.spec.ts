@@ -157,6 +157,27 @@ function framedAmounts(content: Content[]): { text: string; bold: boolean }[] {
   return out;
 }
 
+/** Ravan spisak svih tekstova, redom kojim izlaze na papir. */
+function texts(content: Content[]): string[] {
+  const out: string[] = [];
+  walk(content, (n) => {
+    if (typeof n.text === "string") out.push(n.text);
+  });
+  return out;
+}
+
+/**
+ * Iznos koji stoji ODMAH IZA date labele. U zbirnom bloku svaki red je par
+ * „labela pa iznos", pa isti pomoćnik čita i uokvirene i neuokvirene redove — a tvrdnja
+ * o IZNOSU ne zavisi od toga da li red ima okvir.
+ */
+function amountAfter(content: Content[], label: string): string {
+  const all = texts(content);
+  const i = all.indexOf(label);
+  expect(i).toBeGreaterThanOrEqual(0);
+  return all[i + 1];
+}
+
 describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
   const content = domacaUslugaTemplate(makeCtx());
   const paper = text(content);
@@ -265,15 +286,35 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
   });
 
   describe("zbirni blok", () => {
-    it("ima PET redova i svaki je UOKVIREN", () => {
+    it("ima PET redova, svih pet sa iznosom sa papira", () => {
+      expect(amountAfter(content, "Vrednost bez PDV:")).toBe("16,000.00");
+      expect(amountAfter(content, "Odobren rabat:")).toBe("0.00");
+      expect(amountAfter(content, "Ukupno vrednost bez PDV (osnovica):")).toBe(
+        "16,000.00",
+      );
+      expect(amountAfter(content, "PDV po stopi 20% X 16,000.00 =")).toBe(
+        "3,200.00",
+      );
+      expect(amountAfter(content, "Ukupno za uplatu (RSD):")).toBe("19,200.00");
+    });
+
+    /**
+     * NALAZ N12 (02.08.2026): na donetom papiru IFUSL 653/25 uokvirena su ČETIRI reda, a
+     * red PDV-a (`PDV po stopi 20% X 16,000.00 = 3,200.00`) NIJE — kod je uokvirivao svih
+     * pet. Okvir na tom obrascu izdvaja iznose koji ULAZE u zbir od poreza koji se na
+     * osnovicu tek obračunava, pa je jedan okvir viška promena samog obrasca.
+     */
+    it("uokvirena su ČETIRI reda — red PDV-a nije", () => {
       const boxes = framedAmounts(content);
       expect(boxes.map((b) => b.text)).toEqual([
         "16,000.00",
         "0.00",
         "16,000.00",
-        "3,200.00",
         "19,200.00",
       ]);
+      // Iznos PDV-a je na papiru, samo bez okvira.
+      expect(boxes.map((b) => b.text)).not.toContain("3,200.00");
+      expect(paper).toContain("3,200.00");
     });
 
     it("nosi zaseban red `Ukupno vrednost bez PDV (osnovica)`", () => {
@@ -352,9 +393,36 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
         "20,000.00", // bruto = cena PRE rabata
         "4,000.00", // odobren rabat
         "16,000.00", // osnovica sa dokumenta
-        "3,200.00",
         "19,200.00",
       ]);
+      expect(amountAfter(withDiscount, "PDV po stopi 20% X 16,000.00 =")).toBe(
+        "3,200.00",
+      );
+    });
+
+    /**
+     * NALAZ N1 (02.08.2026): kolone `C E N A` i `I Z N O S` su nosile cenu POSLE rabata,
+     * a prvi red zbira (20.000,00) računat je iz cene PRE rabata — pa se sa rabatom ≠ 0
+     * prvi red NIJE mogao dobiti sabiranjem kolone. Na papiru 653/25 ta dva reda stoje
+     * jedan ispod drugog, pa je prvi red baš zbir kolone.
+     */
+    it("kolona `I Z N O S` daje sabiranjem prvi red zbira (bruto)", () => {
+      const withDiscount = domacaUslugaTemplate(
+        makeCtx({
+          lines: [
+            { ...ZAKUP, discountPercent: d(20), unitPriceBeforeDiscount: null },
+          ],
+        }),
+      );
+      const all = texts(withDiscount);
+      // Jedna stavka: kolona `C E N A` nosi 20.000,00 (cena PRE rabata), `I Z N O S` isto.
+      // Do ispravke je tu stajalo 16.000,00 — cena posle rabata.
+      const bruto = amountAfter(withDiscount, "Vrednost bez PDV:");
+      expect(bruto).toBe("20,000.00");
+      expect(all.filter((t) => t === "20,000.00").length).toBeGreaterThanOrEqual(3);
+      // Cena posle rabata se u tabeli stavki više ne pojavljuje kao samostalan iznos:
+      // 16.000,00 ostaje samo u zbirnom bloku, kao poreska osnovica.
+      expect(all.filter((t) => t === "16,000.00")).toHaveLength(1);
     });
 
     /**
@@ -389,9 +457,11 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
         "10,000.00",
         "1,000.00",
         "9,000.00",
-        "1,800.00",
         "10,800.00",
       ]);
+      expect(amountAfter(content, "PDV po stopi 20% X 9,000.00 =")).toBe(
+        "1,800.00",
+      );
     });
 
     it("kod više PDV stopa daje red po stopi (pogrešna stopa je poreska greška)", () => {
@@ -420,10 +490,14 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
         "20,000.00",
         "0.00",
         "20,000.00",
-        "3,200.00",
-        "400.00",
         "23,600.00",
       ]);
+      // Redovi PDV-a su bez okvira, ali sa svojim iznosima — i to opadajuće po stopi,
+      // kako je uslužni obrazac oduvek prikazivao.
+      expect(amountAfter(mixed, "PDV po stopi 20% X 16,000.00 =")).toBe(
+        "3,200.00",
+      );
+      expect(amountAfter(mixed, "PDV po stopi 10% X 4,000.00 =")).toBe("400.00");
     });
 
     it("zbir odštampanih PDV redova uvek daje PDV sa dokumenta", () => {
@@ -448,9 +522,11 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
           ],
         }),
       );
-      const boxes = framedAmounts(mixed).map((b) => b.text);
       // 3,199.99 + 400.00 = 3,599.99 = `vatTotal`
-      expect(boxes.slice(3, 5)).toEqual(["3,199.99", "400.00"]);
+      expect(amountAfter(mixed, "PDV po stopi 20% X 16,000.00 =")).toBe(
+        "3,199.99",
+      );
+      expect(amountAfter(mixed, "PDV po stopi 10% X 4,000.00 =")).toBe("400.00");
     });
 
     it("odbijen avans umanjuje uplatu, a poslednji red ostaje `Ukupno za uplatu`", () => {
