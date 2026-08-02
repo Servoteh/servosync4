@@ -350,27 +350,34 @@ describe("ItemLookupService — GET /v1/lookups/items", () => {
     expect(res.data[0].serviceVatRatePercent).toBe("20.00");
   });
 
+  // ⚠️ ISPRAVLJENO 02.08.2026 (commit `2eb53bcd`): ovaj test je tvrdio staru mapu
+  // („2" = 10 %, „4" = 8 %), koja je poticala iz kolone `Opis` u BigBit tabeli
+  // `R_Tarife`. Ta kolona za tarifu 4 doslovno kaže „Roba i usluge 8%", a njene
+  // brojčane kolone sabiraju 10 — opis je zaostatak iz vremena kad je snižena stopa
+  // BILA 8 % (do 31.12.2013). Merodavan je ZBIR kolona, kako i sam BigBit računa
+  // (`R_Tarife_ZbirnaStopa.sql`). Otud: „2" ne postoji, „4" = 10 % (NIZA),
+  // „5" = 8 % (POLJO, nadoknada poljoprivrednicima — nije izlazna stopa).
   it("bez reda u `tax_rates` pada na zajedničku mapu VAT_RATE_BY_CODE", async () => {
     const { service } = await makeService({
       items: [
         itemRow({
           id: 1,
-          goods_tax_rate_code: "2",
-          service_tax_rate_code: "4",
+          goods_tax_rate_code: "4",
+          service_tax_rate_code: "5",
         }),
         itemRow({
           id: 2,
-          goods_tax_rate_code: "XX",
-          service_tax_rate_code: "0",
+          goods_tax_rate_code: "2",
+          service_tax_rate_code: "XX",
         }),
       ],
       taxRates: [],
     });
     const res = await service.search({ q: "4711" });
-    expect(res.data[0].goodsVatRatePercent).toBe("10.00"); // kod „2" = NIZA 10%
-    expect(res.data[0].serviceVatRatePercent).toBe("8.00"); // kod „4" = POLJO 8%
-    expect(res.data[1].goodsVatRatePercent).toBe("0.00"); // nepoznat kod → 0
-    expect(res.data[1].serviceVatRatePercent).toBe("0.00");
+    expect(res.data[0].goodsVatRatePercent).toBe("10.00"); // kod „4" = NIZA 10 %
+    expect(res.data[0].serviceVatRatePercent).toBe("8.00"); // kod „5" = POLJO 8 %
+    expect(res.data[1].goodsVatRatePercent).toBe("0.00"); // „2" ne postoji → 0
+    expect(res.data[1].serviceVatRatePercent).toBe("0.00"); // nepoznat kod → 0
   });
 
   it("NULL šifra tarife pada na legacy podrazumevane (3 = roba, 1 = usluga)", async () => {
@@ -424,7 +431,13 @@ describe("ItemLookupService — GET /v1/lookups/items", () => {
       goodsTaxRateCode: "3",
       serviceTaxRateCode: "1",
       goodsVatRatePercent: "20.00",
-      serviceVatRatePercent: "20.00",
+      // Šifra „1" je BEZPDV/VANPDV = 0 % (ispravka `2eb53bcd` po `R_Tarife`).
+      // ⚠️ SVIH 92.575 artikala na produkciji nosi baš „1" u „Tarifi usluga"
+      // (izmereno 02.08.2026), pa bi stara vrednost 20 % značila da bi svaka
+      // usluga fakturisana po šifri sa artikla nosila PDV koji ne postoji —
+      // danas bezopasno jer se cena računa iz `goodsTaxRateCode`, ali je zamka
+      // za dan kad se „Tarifa usluga" poveže sa fakturisanjem (v. PREOSTALE_FAZE).
+      serviceVatRatePercent: "0.00",
       stock: null,
     });
     expect(res.meta).toMatchObject({
