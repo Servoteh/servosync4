@@ -84,6 +84,72 @@ nemamo papir koji pokazuje šta BigBit radi, a avansi imaju i zaseban zakonski n
 
 ---
 
+## O-F6 · Naši avansni računi dobijaju SVOJ niz brojeva
+
+Avansni račun koji mi izdajemo kupcu numeriše se **odvojeno od izlaznih faktura**, sopstvenim
+nizom (npr. `A-1/26`), a ne iz zajedničkog niza iz O-F5.
+
+**Zašto:** ulazni avansi dobavljača upisuju se u **istu tabelu** `invoices`, sa **istom vrstom**
+`AVR` i **ručno kucanim** brojem (`pdv/advance-vat.service.ts:531-588`). Pošto po odluci O-F1 naš
+broj sada izgleda `1/26` — tačno kao broj koji srpski dobavljači kucaju na svojim avansima —
+sudar je bio pitanje dana. Ishod bi bio ili odbijen legitiman dobavljačev dokument, ili pad
+izdavanja našeg avansa usred posla.
+
+Zaseban niz taj sudar čini nemogućim bez diranja tabele u koju se upisuju dobavljačevi avansi.
+
+⚠️ Menja se **pre prvih proba**, kao i O-F1 — posle njih se numeracija ne dira.
+
+---
+
+## 🔴 ČEKA ODLUKU PRE PUŠTANJA U RAD · Matični broj u bloku „Preuzeo za prevoz"
+
+**Nalaz (01.08.2026):** na fakturama za robu, u bloku sa NAŠIM podacima uz potpis, BigBit štampa:
+
+```
+SERVOTEH doo
+Dobanovci, Ugrinovačka 163
+PIB: 101017443   MB: 20748346
+```
+
+PIB `101017443` **jeste naš**. Matični broj `20748346` **NIJE** — naš je `17400169`, što piše u
+podnožju iste te fakture (`Matični broj: 17400169`, `Registarski broj: 01117400169`).
+
+Broj `20748346` na istom papiru stoji i u okviru KUPCA (`HAP FLUID D.O.O. · PIB: 107136558 -
+MB: 20748346`). Dakle BigBit u naš potpisni blok upisuje **matični broj kupca**.
+
+**Koliko dugo traje:** nepoznato, ali greška je u samom obrascu, ne u podacima — dakle važi za
+svaku fakturu za robu koja je ikad odštampana iz BigBita. Oba donesena primera (IFR 657/25 i
+IFGP 650/25) je nose.
+
+**Šta 4.0 danas radi:** štampa **naš** broj iz `companies.registration_number`. To je svesno
+odstupanje od originala, i zato traži potvrdu.
+
+**Za odluku pre puštanja u rad — tri mogućnosti:**
+
+| | šta se štampa | posledica |
+|---|---|---|
+| A | naš pravi broj `17400169` | papir je tačan; razlikuje se od svih dosadašnjih faktura |
+| B | kako BigBit štampa (`20748346`) | papir identičan dosadašnjem, ali nosi tuđ podatak |
+| C | matični broj se izostavi iz tog bloka | ostaju naziv, adresa i PIB; najmanje šansi za zabunu |
+
+⚠️ Provera zakonske obaveznosti matičnog broja na računu je deo
+[FAKTURE_ZAKONSKA_USKLADJENOST.md](FAKTURE_ZAKONSKA_USKLADJENOST.md) — odluka se donosi tek
+kad taj nalaz stigne.
+
+---
+
+## 🔴 ČEKA · Način plaćanja na ino fakturi → prvo provera zakona
+
+Umesto da se doda drugo polje (prvobitni predlog), vlasnik je tražio **proveru da li su naše
+fakture uopšte u skladu sa zakonom**, pa da se onda izmeni „na šta je logično".
+
+Njegovo zapažanje: „na ino fakturi ne mora da piše virmanom, to nije ni zakonska obaveza; uvek
+nam plaćaju virmanom jer smo veleprodaja."
+
+Nalaz i predlog idu u [FAKTURE_ZAKONSKA_USKLADJENOST.md](FAKTURE_ZAKONSKA_USKLADJENOST.md).
+
+---
+
 ## Još otvoreno (nije blokada za koračne izmene)
 
 **🔴 Avansni račun se sudara sa avansima dobavljača.** Ulazni avansi dobavljača upisuju se u
