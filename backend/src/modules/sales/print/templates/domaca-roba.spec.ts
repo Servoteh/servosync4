@@ -1,7 +1,9 @@
 import { Prisma } from "@prisma/client";
 import type { TDocumentDefinitions } from "pdfmake/interfaces";
 import { PdfService } from "../../../documents/pdf.service";
+import { exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import { domacaRobaTemplate } from "./domaca-roba";
+import { domacaUslugaTemplate } from "./domaca-usluga";
 import type {
   InvoiceWithItems,
   PrintCtx,
@@ -71,6 +73,9 @@ function makeInvoice(over: Record<string, unknown>): InvoiceWithItems {
     netTotal: d(0),
     vatTotal: d(0),
     grossTotal: d(0),
+    // Podrazumevano nema odbijenog avansa — testovi koji ga proveravaju ga postavljaju.
+    advanceAppliedAmount: d(0),
+    advanceInvoiceId: null,
     items: [],
     ...over,
   } as unknown as InvoiceWithItems;
@@ -186,6 +191,17 @@ function collectText(node: unknown, out: string[] = []): string[] {
 const textOf = (ctx: PrintCtx): string[] =>
   collectText(domacaRobaTemplate(ctx));
 const joinedOf = (ctx: PrintCtx): string => textOf(ctx).join("\n");
+
+/**
+ * Iznos koji stoji ODMAH IZA date labele u zbiru. U pdfmake stablu i robni i uslužni
+ * obrazac slažu par „labela pa iznos", pa isti pomoćnik čita oba — a poređenje dva
+ * obrasca ne zavisi od toga kako je koji uokviren.
+ */
+function amountAfter(texts: string[], label: string): string {
+  const i = texts.indexOf(label);
+  expect(i).toBeGreaterThanOrEqual(0);
+  return texts[i + 1];
+}
 
 describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
   describe("zaglavlje tela", () => {
@@ -373,12 +389,111 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
       expect(joined).toContain("PDV po stopi 10% X 1,000.00 =");
       expect(joined).toContain("PDV po stopi 20% X 1,000.00 =");
     });
+
+    it("bez avansa nema reda o avansu, a „Za uplatu“ je pun bruto zbir", () => {
+      const texts = textOf(ifrCtx());
+      expect(texts.join("\n")).not.toContain("Umanjenje za primljeni avans");
+      expect(amountAfter(texts, "Za uplatu (RSD):")).toBe("119,236.37");
+    });
+
+    it("odbijen avans ide PRE završnog reda i umanjuje iznos za uplatu", () => {
+      const texts = textOf(
+        ifrCtx({
+          invoice: makeInvoice({
+            documentNumber: "657/25",
+            netTotal: d("99363.64"),
+            vatTotal: d("19872.73"),
+            grossTotal: d("119236.37"),
+            advanceAppliedAmount: d("19236.37"),
+          }),
+          advanceInvoiceNumber: "12/25",
+        }),
+      );
+      const advanceAt = texts.indexOf(
+        "Umanjenje za primljeni avans (br. 12/25):",
+      );
+      const payableAt = texts.indexOf("Za uplatu (RSD):");
+      expect(advanceAt).toBeGreaterThanOrEqual(0);
+      // Red avansa je iznad završnog, a završni ostaje poslednji u zbiru.
+      expect(advanceAt).toBeLessThan(payableAt);
+      expect(texts[advanceAt + 1]).toBe("− 19,236.37");
+      expect(amountAfter(texts, "Za uplatu (RSD):")).toBe("100,000.00");
+      // Osnovica i PDV se NE diraju — avans umanjuje samo ono što se plaća.
+      expect(texts).toContain("99,363.64");
+      expect(texts).toContain("19,872.73");
+    });
+
+    it("bez broja avansnog računa red i dalje postoji, samo bez broja", () => {
+      const texts = textOf(
+        ifrCtx({
+          invoice: makeInvoice({
+            netTotal: d("1000.00"),
+            vatTotal: d("200.00"),
+            grossTotal: d("1200.00"),
+            advanceAppliedAmount: d("200.00"),
+          }),
+        }),
+      );
+      expect(texts).toContain("Umanjenje za primljeni avans:");
+      expect(amountAfter(texts, "Za uplatu (RSD):")).toBe("1,000.00");
+    });
+
+    it("avans veći od računa ne daje negativan iznos za uplatu", () => {
+      const texts = textOf(
+        ifrCtx({
+          invoice: makeInvoice({
+            netTotal: d("1000.00"),
+            vatTotal: d("200.00"),
+            grossTotal: d("1200.00"),
+            advanceAppliedAmount: d("1500.00"),
+          }),
+        }),
+      );
+      expect(amountAfter(texts, "Za uplatu (RSD):")).toBe("0.00");
+    });
+
+    /**
+     * NALAZ N4 (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §1.3): uslužni obrazac je avans
+     * odbijao, robni nije — pa je za ISTU poslovnu situaciju kupac dobijao dva različita
+     * iznosa „za uplatu", zavisno od toga da li mu je prodata roba ili usluga. Ovaj test
+     * je brana da se ta razlika ne vrati ni na jednom od dva obrasca.
+     */
+    it("robna i uslužna faktura daju ISTI iznos za uplatu uz isti avans", () => {
+      const invoice = makeInvoice({
+        netTotal: d("16000.00"),
+        vatTotal: d("3200.00"),
+        grossTotal: d("19200.00"),
+        advanceAppliedAmount: d("9200.00"),
+      });
+      const line = makeLine({
+        name: "Ista stavka, isti novac",
+        quantity: d(1),
+        unitPrice: d("16000.00"),
+        lineTotal: d("16000.00"),
+      });
+      const ctx = makeCtx({
+        invoice,
+        lines: [line],
+        advanceInvoiceNumber: "12/25",
+      });
+
+      const roba = amountAfter(
+        collectText(domacaRobaTemplate(ctx)),
+        "Za uplatu (RSD):",
+      );
+      const usluga = amountAfter(
+        collectText(domacaUslugaTemplate(ctx)),
+        "Ukupno za uplatu (RSD):",
+      );
+      expect(roba).toBe("10,000.00");
+      expect(roba).toBe(usluga);
+    });
   });
 
   describe("napomene", () => {
     it("štampa sve četiri, sa Privrednim sudom (usluga ima drugi sud)", () => {
       const texts = textOf(ifrCtx());
-      expect(texts).toContain("Napomena o poreskom oslobodjenju: NEMA");
+      expect(texts).toContain(NEMA_TEXT);
       expect(texts).toContain(
         "Reklamacije primamo u roku od 5 dana po prijemu robe.",
       );
@@ -387,6 +502,42 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
         "U slučaju prekoračenja roka za plaćanje obračunavamo zakonom propisanu zateznu kamatu.",
       );
       expect(joinedOf(ifrCtx())).not.toContain("Trgovinski sud");
+    });
+
+    /**
+     * REGRESIJA NA NALAZ N3 (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §1.3): napomena o
+     * oslobođenju je bila tvrdo ukucana, pa je i račun BEZ obračunatog PDV-a tvrdio da
+     * oslobođenja „NEMA". To je netačan obavezan element računa, ne kozmetika.
+     */
+    it("račun BEZ obračunatog PDV-a dobija pravu napomenu, ne „NEMA“", () => {
+      const bezPdv = ifrCtx({
+        invoice: makeInvoice({
+          documentNumber: "657/25",
+          netTotal: d("99363.64"),
+          vatTotal: d(0),
+          grossTotal: d("99363.64"),
+        }),
+      });
+      const joined = joinedOf(bezPdv);
+      expect(joined).not.toContain(NEMA_TEXT);
+      expect(joined).toContain(exemptionFor("domestic-exempt")?.paperText);
+    });
+
+    it("račun SA obračunatim PDV-om i dalje nosi „NEMA“", () => {
+      // IFR 657/25 nosi PDV 19.872,73 — tu oslobođenja zaista nema.
+      expect(joinedOf(ifrCtx())).toContain(NEMA_TEXT);
+      expect(joinedOf(ifgpCtx())).toContain(NEMA_TEXT);
+    });
+
+    it("tekst napomene dolazi iz `vat-exemption.ts`, ne iz šablona", () => {
+      // Ako bi neko vratio ukucan tekst u šablon, ova tvrdnja bi i dalje prošla samo
+      // ako je slovo u slovo ista — a onda bi se razišla sa SEF-om prvom izmenom tamo.
+      const bezPdv = ifrCtx({
+        invoice: makeInvoice({ vatTotal: d(0), grossTotal: d(0) }),
+      });
+      expect(textOf(bezPdv)).toContain(
+        exemptionFor("domestic-exempt")?.paperText,
+      );
     });
   });
 
@@ -415,11 +566,26 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
       expect(textOf(ifrCtx())).toContain("Dragana Korkut");
     });
 
-    it("linija za broj l.k. ostaje PRAZNA (odluka O-F3)", () => {
+    /**
+     * ODLUKA O-F3, dosledno sprovedena (02.08.2026): ne štampa se ni broj lične karte ni
+     * NATPIS uz praznu liniju. Prazno polje koje traži podatak o ličnosti bez pravnog
+     * osnova i dalje traži taj podatak (`FAKTURE_ZAKONSKA_USKLADJENOST.md` §2.2, P3).
+     */
+    it("nigde ne pominje broj lične karte — ni natpis (O-F3)", () => {
       const joined = joinedOf(ifrCtx());
-      expect(joined).toContain("Broj l.k.:");
-      // Nikakva cifra iza labele — broj lične karte se ne štampa ni ne čuva.
-      expect(joined).not.toMatch(/Broj l\.k\.:_*\d/);
+      expect(joined.toLowerCase()).not.toContain("l.k.");
+      expect(joined.toLowerCase()).not.toContain("lične karte");
+      expect(joined).not.toMatch(/_{3,}/); // ni prazna linija za ručni upis
+    });
+
+    it("sve četiri potpisne linije OSTAJU — one su dokaz o isporuci, ne potpis računa", () => {
+      const content = domacaRobaTemplate(ifrCtx());
+      const last = content[content.length - 1] as { columns?: unknown[] };
+      expect(last.columns).toHaveLength(4);
+      const joined = joinedOf(ifrCtx());
+      // Kolona „Robu izdao" ostaje i posle skidanja natpisa o l.k.
+      expect(joined).toContain("Robu izdao");
+      expect(joined).toContain("iz magacina Magacin robe");
     });
 
     it("kolona prevoznika se gradi iz podataka firme, ne iz konstante u kodu", () => {

@@ -357,8 +357,12 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
     it("„Odgovorno lice“ je komercijalista sa računa (O-F2), bez broja l.k. (O-F3)", async () => {
       const out = await build(makeInvoice());
       expect(out.body).toContain("Dragana Korkut");
-      expect(out.body).toContain("Broj l.k.:_____________________");
-      expect(out.body).not.toMatch(/Br\. l\.k\.:\s*\d/);
+      // O-F3 sprovedena do kraja (02.08.2026): ne štampa se ni broj lične karte ni NATPIS
+      // uz praznu liniju — v. `templates/domaca-roba.ts` i FAKTURE_ZAKONSKA_USKLADJENOST §2.2.
+      expect(out.body.toLowerCase()).not.toContain("l.k.");
+      // Potpisne linije ostaju sve četiri (dokaz o isporuci, ne potpis računa).
+      expect(out.body).toContain("Robu izdao");
+      expect(out.body).toContain("Robu primio");
     });
   });
 

@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import type { Content, TableLayout } from "pdfmake/interfaces";
+import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import { formatAmount, formatDateDomestic, formatInvoiceNumber } from "../format";
 import type { InvoiceTemplate, PrintCtx, PrintLine } from "./ctx";
 
@@ -35,19 +36,44 @@ type Margin = [number, number, number, number];
 const TOTALS_BOX_WIDTH = 82;
 
 /**
- * Napomene sa papira, doslovno. Dve su namerno drugačije nego na robi:
+ * Ugovorne napomene sa papira, doslovno. Dve su namerno drugačije nego na robi:
  *  - reklamacije BEZ „po prijemu robe" (usluga se ne prima kao roba),
  *  - `Trgovinski sud u Beogradu` umesto `Privredni sud`.
  * Naziv „Trgovinski sud" je u pravu zastareo, ali stoji na obrascu koji je izašao
  * kupcu; ispravka je otvoreno pitanje za vlasnika (GAP §5 t.10), a do odluke se
  * papir prati doslovno (STAMPA_IZLAZNIH_FAKTURA.md §6 t.2).
+ *
+ * ⚠️ Poreska napomena NIJE u ovom spisku: ona je PODATAK o računu, ne konstanta
+ * obrasca — v. `exemptionNote` niže.
  */
 const NOTES: string[] = [
-  "Napomena o poreskom oslobodjenju: NEMA",
   "Reklamacije primamo u roku od 5 dana.",
   "Za sve sporove nadležan je Trgovinski sud u Beogradu.",
   "U slučaju prekoračenja roka za plaćanje obračunavamo zakonom propisanu zateznu kamatu.",
 ];
+
+/**
+ * Poreska napomena — JEDAN izvor za papir i za SEF (`../../vat-exemption.ts`).
+ *
+ * Do 02.08.2026. je i ovde bilo tvrdo ukucano „…oslobodjenju: NEMA", pa je i usluga sa
+ * domaćim oslobođenjem (0 % PDV-a, SEF kategorija E) tvrdila da oslobođenja nema —
+ * netačan OBAVEZAN element računa (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §1.3 N3, M2).
+ *
+ * `isExport`/`isService` su svojstva SAMOG OBRASCA, ne dokumenta: obrazac bira vrsta
+ * dokumenta (`FORM_BY_DOCUMENT_TYPE` u `invoice-pdf.service.ts`), a četiri obrasca su
+ * matrica domaći/ino × roba/usluga. Sa dokumenta se čita samo ono što obrazac ne zna —
+ * da li je PDV uopšte obračunat.
+ */
+function exemptionNote(ctx: PrintCtx): string {
+  const basis = exemptionFor(
+    exemptionCaseFor({
+      isExport: false,
+      isService: true,
+      vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
+    }),
+  );
+  return basis?.paperText ?? NEMA_TEXT;
+}
 
 /** Pun okvir (linije i unutar tabele) — koristi tabela stavki. */
 const GRID_LAYOUT: TableLayout = {
@@ -491,7 +517,11 @@ export const domacaUslugaTemplate: InvoiceTemplate = (ctx: PrintCtx): Content[] 
   itemsTable(ctx),
   ...totalsBlock(ctx),
   {
-    stack: NOTES.map<Content>((text) => ({ text, fontSize: 8 })),
+    // Prvi red je poreska napomena (podatak), pa tri ugovorne (konstante obrasca).
+    stack: [exemptionNote(ctx), ...NOTES].map<Content>((text) => ({
+      text,
+      fontSize: 8,
+    })),
     margin: [0, 12, 0, 0] as Margin,
   },
   signatureBlock(ctx),

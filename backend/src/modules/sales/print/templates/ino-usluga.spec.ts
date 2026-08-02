@@ -3,6 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import { BarcodeService } from "../../../documents/barcode.service";
 import { PdfService } from "../../../documents/pdf.service";
+import { exemptionFor } from "../../vat-exemption";
 import {
   MEMORANDUM_MAP_QR_URL,
   MEMORANDUM_STYLES,
@@ -274,6 +275,16 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
       const joined = allText();
       expect(joined).not.toContain("stav 1");
       expect(joined).not.toContain("tačka 2");
+    });
+
+    /**
+     * Tekst se od 02.08.2026. uzima iz `vat-exemption.ts`, odakle ga uzima i SEF builder —
+     * pa papir i XML ne mogu da se raziđu (`FAKTURE_ZAKONSKA_USKLADJENOST.md` §3.3).
+     */
+    it("tekst je DOSLOVNO onaj iz `vat-exemption.ts`, ne kopija u šablonu", () => {
+      expect(collectText(inoUslugaTemplate(ctx))).toContain(
+        exemptionFor("export-service")?.paperText,
+      );
     });
 
     it("nosi rok reklamacije i „Trgovinski sud u Beogradu“ (usluga, ne Privredni)", () => {

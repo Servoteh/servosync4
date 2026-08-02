@@ -1,6 +1,11 @@
 import { Prisma } from "@prisma/client";
 import type { Column, Content, TableCell } from "pdfmake/interfaces";
 import {
+  exemptionCaseFor,
+  exemptionFor,
+  NEMA_TEXT,
+} from "../../vat-exemption";
+import {
   formatAmount,
   formatDateDomestic,
   formatInvoiceNumber,
@@ -23,11 +28,11 @@ import type { InvoiceTemplate, PrintCtx, PrintLine } from "./ctx";
  *  - pristup bazi — sve stiže kroz `PrintCtx` (v. `ctx.ts`), pa se šablon testira bez baze;
  *  - imenovani `styles` — svaki čvor nosi svoju veličinu slova, tako da šablon daje isti
  *    papir bez obzira na to kakvu `styles` mapu pozivalac postavi na dokument;
- *  - broj lične karte — **odluka O-F3**: ne štampa se i ne čuva; ostaje prazna linija,
- *    tačno kao što je i na donetim papirima;
- *  - red o odbijenom avansu (`ctx.advanceInvoiceNumber`) — doneti obrasci ga nemaju, a
- *    izmišljanje reda na poreskom dokumentu nije posao štampe. Kad vlasnik donese obrazac
- *    sa avansom, dodaje se ovde.
+ *  - broj lične karte — **odluka O-F3**: ne štampa se i ne čuva. Do 02.08.2026. je ostajao
+ *    natpis `Broj l.k.:______` kao prazna linija; i on je skinut, jer traženje podatka o
+ *    ličnosti bez pravnog osnova ne postaje bezopasno time što je polje prazno
+ *    (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §2.2, P3). Potpisne linije OSTAJU sve
+ *    četiri — one nisu potpis računa nego dokaz o isporuci (§5.2).
  */
 
 // ───────────────────────────────────────────────────────── natpisi sa papira
@@ -50,12 +55,14 @@ const CONDITION_HEADERS = [
 ];
 
 /**
- * Četiri napomene ispod zbira, doslovno sa papira.
+ * Tri ugovorne napomene ispod zbira, doslovno sa papira.
  * Sud je ovde **Privredni** — na usluzi (IFUSL) piše „Trgovinski sud u Beogradu“
  * (STAMPA_IZLAZNIH_FAKTURA.md §6 t.2). Ne ujednačavati bez odluke vlasnika.
+ *
+ * ⚠️ Poreska napomena NIJE ovde: ona je PODATAK o samom računu, ne konstanta obrasca —
+ * v. `exemptionNote` niže.
  */
 const NOTES = [
-  "Napomena o poreskom oslobodjenju: NEMA",
   "Reklamacije primamo u roku od 5 dana po prijemu robe.",
   "Za sve sporove nadležan je Privredni sud.",
   "U slučaju prekoračenja roka za plaćanje obračunavamo zakonom propisanu zateznu kamatu.",
@@ -66,9 +73,6 @@ const SIGN_RECEIVED = "Robu primio";
 const SIGN_CARRIER = "Preuzeo za prevoz";
 const SIGN_ISSUED = "Robu izdao";
 const SIGN_RESPONSIBLE = "Odgovorno lice";
-
-/** Prazna linija za ručni upis broja l.k. — v. odluku O-F3 iznad. */
-const ID_CARD_LINE = "Broj l.k.:_____________________";
 
 // ────────────────────────────────────────────────────────── sitni pomoćnici
 
@@ -385,7 +389,8 @@ function itemsTable(ctx: PrintCtx): Content {
  *   2. `Rabat:`
  *   3. `Vrednost bez PDV (osnovica):`
  *   4. `PDV po stopi 20% X <osnovica> =`   ← osnovica je U TEKSTU reda, ne samo iznos
- *   5. `Za uplatu (RSD):`                  ← uokvireno i podebljano
+ *   5. `Umanjenje za primljeni avans:`     ← samo kad avansa ima
+ *   6. `Za uplatu (RSD):`                  ← uokvireno i podebljano, UMANJENO za avans
  *
  * Red rabata OSTAJE i kad je nula (`Rabat: 0.00`) — STAMPA_IZLAZNIH_FAKTURA.md §6 t.4.
  * Nije to dekoracija: kupac po istom papiru proverava da li mu je odobren rabat, a
@@ -428,6 +433,36 @@ function totalsBlock(ctx: PrintCtx): Content[] {
     ]);
   }
 
+  /**
+   * ODBIJEN AVANS — isto kao na uslužnom obrascu (`domaca-usluga.ts`).
+   *
+   * Doneti robni papiri ovaj red nemaju, pa se do 02.08.2026. nije ni štampao. Posledica
+   * je bila da za ISTU poslovnu situaciju kupac dobije dva različita iznosa „za uplatu“,
+   * zavisno od toga da li mu je prodata roba ili usluga — a na robnom papiru je uz to
+   * nedostajao i obavezan podatak o visini avansnih plaćanja
+   * (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §1.3 N4, M4). Vernost donetom obrascu ne
+   * može da nadjača tačan iznos koji kupac treba da plati.
+   *
+   * Avans umanjuje SAMO iznos za uplatu — ne osnovicu ni PDV (oni su već obračunati na
+   * avansnom računu). Zato red ide POSLE PDV-a, a poslednji ostaje „Za uplatu“.
+   */
+  const advance = ctx.invoice.advanceAppliedAmount;
+  let payable = ctx.invoice.grossTotal;
+  if (advance.greaterThan(0)) {
+    body.push([
+      label(
+        ctx.advanceInvoiceNumber
+          ? `Umanjenje za primljeni avans (br. ${ctx.advanceInvoiceNumber}):`
+          : "Umanjenje za primljeni avans:",
+      ),
+      value(`− ${formatAmount(advance)}`),
+    ]);
+    const rest = payable.sub(advance);
+    // Avans veći od računa ne sme da da negativan „za uplatu“ — preplata se rešava
+    // odobrenjem, ne minusom na fakturi.
+    payable = rest.greaterThan(0) ? rest : new Prisma.Decimal(0);
+  }
+
   body.push([
     {
       text: `Za uplatu (${currency}):`,
@@ -437,7 +472,7 @@ function totalsBlock(ctx: PrintCtx): Content[] {
       margin: [0, 2, 0, 0],
     },
     {
-      text: formatAmount(ctx.invoice.grossTotal),
+      text: formatAmount(payable),
       bold: true,
       fontSize: 9.5,
       alignment: "right",
@@ -463,10 +498,38 @@ function totalsBlock(ctx: PrintCtx): Content[] {
   ];
 }
 
-/** Četiri napomene ispod zbira, sitno i levo. */
-function notesBlock(): Content {
+/**
+ * Poreska napomena — JEDAN izvor za papir i za SEF (`../../vat-exemption.ts`).
+ *
+ * Do 02.08.2026. je ovde stajalo tvrdo ukucano „…oslobodjenju: NEMA", pa je i račun sa
+ * domaćim oslobođenjem (0 % PDV-a, SEF kategorija E) tvrdio da oslobođenja nema. To nije
+ * kozmetika nego netačan OBAVEZAN element računa: napomena o odredbi po kojoj PDV nije
+ * obračunat (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §1.3 N3, M2).
+ *
+ * ZAŠTO SE `isExport`/`isService` ZADAJU OVDE, A NE ČITAJU SA DOKUMENTA: obrazac je već
+ * izabran po vrsti dokumenta (`FORM_BY_DOCUMENT_TYPE` u `invoice-pdf.service.ts`), i
+ * četiri obrasca SU matrica domaći/ino × roba/usluga. Ovo je domaći robni papir — druga
+ * vrednost bi značila da je izabran pogrešan obrazac, a ne da je napomena druga.
+ * Jedino što se čita sa dokumenta je ono što obrazac ne zna: da li je PDV obračunat.
+ */
+function exemptionNote(ctx: PrintCtx): string {
+  const basis = exemptionFor(
+    exemptionCaseFor({
+      isExport: false,
+      isService: false,
+      vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
+    }),
+  );
+  return basis?.paperText ?? NEMA_TEXT;
+}
+
+/** Četiri napomene ispod zbira, sitno i levo (prva je poreska, v. `exemptionNote`). */
+function notesBlock(ctx: PrintCtx): Content {
   return {
-    stack: NOTES.map((text) => ({ text, fontSize: 7.5 })),
+    stack: [exemptionNote(ctx), ...NOTES].map((text) => ({
+      text,
+      fontSize: 7.5,
+    })),
     margin: [0, 14, 0, 0],
   };
 }
@@ -492,6 +555,11 @@ function signatureColumn(title: string, under: Content[]): Column {
  * Četiri kolone potpisa. Kolona „Robu izdao“ nosi magacin (`iz magacina <naziv>`) —
  * to je i JEDINA razlika između IFR („Magacin robe“) i IFGP („Gotovi proizvodi“).
  *
+ * ⚠️ SVE ČETIRI KOLONE OSTAJU. One nisu potpis računa (račun je punovažan i bez potpisa)
+ * nego dokaz o izvršenoj isporuci: kod spora je potpis primaoca jedini dokaz, a kod
+ * izvoznog oslobođenja poreska traži dokaz da je roba stvarno otišla
+ * (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §5.2). Ne skraćivati ih.
+ *
  * Adresa magacina se uzima sa firme izdavaoca: `PrintCtx` nosi samo naziv magacina
  * (`warehouseName`), a na oba papira je to ista adresa kao sedište. Kad magacini dobiju
  * svoje adrese u štampi, prvo se proširuje `PrintCtx`, pa tek onda ovaj red.
@@ -516,8 +584,9 @@ function signaturesBlock(ctx: PrintCtx): Content {
   if (issuerAddress) carrier.push(small(issuerAddress));
   if (issuerIds) carrier.push(small(issuerIds));
 
-  // Broj l.k. ostaje prazna linija — odluka O-F3 (ne štampa se i ne čuva).
-  const issued: Content[] = [{ text: ID_CARD_LINE, fontSize: 7 }];
+  // NEMA natpisa „Broj l.k.“ — odluka O-F3 (ne štampa se i ne čuva). Prazna linija sa tim
+  // natpisom je i dalje tražila podatak o ličnosti bez pravnog osnova, pa je skinuta i ona.
+  const issued: Content[] = [];
   if (ctx.warehouseName?.trim())
     issued.push(small(`iz magacina ${ctx.warehouseName.trim()}`));
   const warehouseAddress = joinParts([issuer.address, issuer.city], ", ");
@@ -553,6 +622,6 @@ export const domacaRobaTemplate: InvoiceTemplate = (
   conditionsStrip(ctx),
   itemsTable(ctx),
   ...totalsBlock(ctx),
-  notesBlock(),
+  notesBlock(ctx),
   signaturesBlock(ctx),
 ];

@@ -1,4 +1,5 @@
 import type { Column, Content } from "pdfmake/interfaces";
+import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import {
   formatAmount,
   formatDateForeign,
@@ -28,8 +29,9 @@ import type { InvoiceTemplate, PrintCtx } from "./ctx";
  *      engleski (`10,530.75`) — v. `formatWeightKg` u `../format.ts`.
  *
  * ⚠️ POREZ: usluga se oslobađa po **članu 24. stav 2**, roba po **članu 24. stav 1 tačka 2**.
- * Pogrešan član na izvoznoj fakturi je poreski problem, ne kozmetika — zato je tekst
- * konstanta u ovom fajlu i ne deli se sa robnim šablonom.
+ * Pogrešan član na izvoznoj fakturi je poreski problem, ne kozmetika — zato tekst od
+ * 02.08.2026. NIJE konstanta u ovom fajlu nego dolazi iz `../../vat-exemption.ts`, odakle
+ * ga uzima i SEF builder: papir i XML fizički ne mogu da se raziđu.
  *
  * ────────────────────────────────────────────────────────────────────────────────
  * VEZIVANJE U SERVIS (obavezno pročitati — ovaj šablon SAM ZA SEBE nije dovoljan)
@@ -95,11 +97,30 @@ export const INO_USLUGA_PAGE_MARGINS: [number, number, number, number] = [
 ];
 
 /**
- * Poresko oslobođenje ZA USLUGU. Roba ima DRUGI član (`stav 1 tačka 2`) i živi u svom
- * šablonu — namerno se ne dele, da se izmena na jednom obrascu ne prelije na drugi.
+ * Poresko oslobođenje ZA USLUGU STRANOM LICU — tekst dolazi iz `../../vat-exemption.ts`,
+ * gde isti podatak uzima i SEF builder. Roba ima DRUGI član (`stav 1 tačka 2`) i drugi
+ * slučaj u tom modulu, pa se izmena na jednom obrascu i dalje ne preliva na drugi — samo
+ * više nema pet ukucanih primeraka istog podatka koji se međusobno ne slažu
+ * (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §3.3, M2). Brojevi članova nisu menjani.
+ *
+ * ⚠️ Otvoreno: provera je otvorila sumnju da usluga stranom licu možda uopšte NIJE
+ * „oslobođenje po članu 24" nego promet čije MESTO nije u Srbiji (§3.2). Odgovor je na
+ * knjigovođi; kad stigne, menja se JEDAN tekst u `vat-exemption.ts`, ne ovaj obrazac.
+ *
+ * `isExport`/`isService` su svojstva SAMOG OBRASCA: obrazac bira vrsta dokumenta
+ * (`FORM_BY_DOCUMENT_TYPE` u `invoice-pdf.service.ts`), a ovo je izvozni uslužni papir.
+ * `NEMA_TEXT` je nedostižan (izvoz uvek ima osnov) i stoji samo zbog tipa.
  */
-const VAT_EXEMPTION_NOTE =
-  "Napomena: Oslobodjeno PDV-a na osnovu člana 24. stav 2 Zakona o pdv.";
+function exemptionNote(ctx: PrintCtx): string {
+  const basis = exemptionFor(
+    exemptionCaseFor({
+      isExport: true,
+      isService: true,
+      vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
+    }),
+  );
+  return basis?.paperText ?? NEMA_TEXT;
+}
 
 /** Dva reda ispod napomene, doslovno sa papira (usluga → „Trgovinski sud", ne „Privredni"). */
 const COMPLAINT_NOTE = "Reklamacije primamo u roku od 5 dana.";
@@ -300,7 +321,7 @@ export const inoUslugaTemplate: InvoiceTemplate = (
   const summary: Content[] = [];
   // Otpremnica bez cena nema šta da sabere — zbir se izostavlja, ostatak strane ostaje isti.
   if (!ctx.withoutPrices) summary.push(totalsBlock(ctx));
-  summary.push(notesBlock());
+  summary.push(notesBlock(ctx));
   const shipping = shippingBlock(ctx);
   if (shipping) summary.push(shipping);
 
@@ -421,11 +442,11 @@ function totalsBlock(ctx: PrintCtx): Content {
 }
 
 /** Napomena o oslobođenju + reklamacije + nadležni sud (tri reda, kao na papiru). */
-function notesBlock(): Content {
+function notesBlock(ctx: PrintCtx): Content {
   return {
     margin: [0, 0, 0, 12],
     stack: [
-      { text: VAT_EXEMPTION_NOTE, fontSize: 9, margin: [0, 0, 0, 6] },
+      { text: exemptionNote(ctx), fontSize: 9, margin: [0, 0, 0, 6] },
       { text: COMPLAINT_NOTE, fontSize: 9 },
       { text: COURT_NOTE, fontSize: 9 },
     ],

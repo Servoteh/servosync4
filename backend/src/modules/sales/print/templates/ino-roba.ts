@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import type { Content, TableCell } from "pdfmake/interfaces";
+import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import { formatAmount, formatDateForeign, formatInvoiceNumber } from "../format";
 import type { InvoiceTemplate, PrintCtx, PrintLine } from "./ctx";
 
@@ -19,16 +20,32 @@ import type { InvoiceTemplate, PrintCtx, PrintLine } from "./ctx";
  *     ⚠️ Nikad oboje na istom papiru (STAMPA_IZLAZNIH_FAKTURA.md §6 t.3).
  *
  * ⚠️ POREZ: roba se oslobađa po članu 24. stav 1 TAČKA 2, a USLUGA (IZVUS) po članu 24.
- * STAV 2. Pogrešan član na izvoznoj fakturi je poreski problem, ne kozmetika — zato je
- * tekst konstanta u ovom fajlu i ne deli se sa uslužnim šablonom.
+ * STAV 2. Pogrešan član na izvoznoj fakturi je poreski problem, ne kozmetika — zato tekst
+ * NE stoji više u ovom fajlu nego u `../../vat-exemption.ts`, odakle isti podatak uzima i
+ * SEF builder. Do 02.08.2026. je bio ukucan na pet mesta i papir je za izvoz robe navodio
+ * TAČKU 2, a XML TAČKU 5 — za isti posao istom kupcu
+ * (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §3.1). Brojevi članova nisu menjani; menja se
+ * samo to što ih sada ima jedan primerak.
  */
 
 /**
- * Poresko oslobođenje ZA ROBU, doslovno sa papira 228/25.
- * ⚠️ NE koristiti na uslužnoj ino fakturi — ona ima svoj član (stav 2).
+ * Poresko oslobođenje ZA IZVOZ ROBE — tekst dolazi iz `vat-exemption.ts`, ne odavde.
+ *
+ * `isExport`/`isService` su svojstva SAMOG OBRASCA: obrazac bira vrsta dokumenta
+ * (`FORM_BY_DOCUMENT_TYPE` u `invoice-pdf.service.ts`), a ovo je izvozni robni papir.
+ * `NEMA_TEXT` je ovde nedostižan (izvoz uvek ima osnov) i stoji samo zato što tip
+ * `exemptionFor` dopušta `null` za domaći oporezovan promet.
  */
-const VAT_EXEMPTION_NOTE_GOODS =
-  "Napomena o poreskom oslobodjenju: Oslobodjeno PDV na osnovu člana 24. stav 1 tačka 2 Zakona o PDV.";
+function exemptionNote(ctx: PrintCtx): string {
+  const basis = exemptionFor(
+    exemptionCaseFor({
+      isExport: true,
+      isService: false,
+      vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
+    }),
+  );
+  return basis?.paperText ?? NEMA_TEXT;
+}
 
 /**
  * Reklamacije / nadležni sud / zatezna kamata — takođe doslovno sa papira.
@@ -132,6 +149,7 @@ function partiesBlock(ctx: PrintCtx): Content {
   // „Delivery term:" nosi FCO sa dokumenta („magacin kupca") — NE `deliveryTerm`, koji je
   // Incoterms paritet i pojavljuje se samo u otpremnom bloku ino USLUGE (drugi šifarnik).
   add("Delivery term:", ctx.invoice.fco ?? "");
+  // JEDINI red o plaćanju na obrascu (v. `freeTextBlock` — dupli srpski red je skinut).
   // Vrednosti ostaju srpske („virmanom") — v. uvodni komentar.
   add("Payment terms:", ctx.invoice.paymentMethod ?? "");
 
@@ -287,7 +305,7 @@ function totalsBlock(ctx: PrintCtx): Content {
 }
 
 /**
- * Slobodan tekst ispod zbira: poziv na ponudu, broj izvozne deklaracije i način plaćanja.
+ * Slobodan tekst ispod zbira: poziv na ponudu i broj izvozne deklaracije.
  *
  * ZAŠTO POZIV NA PONUDU IDE IZ `note`: rečenica „Fakturisanje je izvršeno na osnovu ponude
  * 0206-25" nema namensko polje ni u modelu ni u `PrintCtx` (GAP §3 t.14 ga tek predlaže kao
@@ -295,11 +313,18 @@ function totalsBlock(ctx: PrintCtx): Content {
  * jedino mesto na svih pet obrazaca gde slobodan tekst uopšte sme da izađe (GAP §2.1:
  * generičke „Napomene" na obrascu nema).
  *
- * ⚠️ `Način plaćanja:` i gornji `Payment terms:` čitaju ISTO polje. BigBit je imao dve
- * kolone (`payment_terms` i `payment_method`) i na 228/25 nose različite vrednosti
- * („virmanom" gore, „avansno" dole); 4.0 model je zadržao samo `Invoice.paymentMethod`.
- * Dok se druga ne uvede, ista vrednost stoji na oba mesta — red se ne izostavlja, jer je
- * deo obrasca. (Otvoreno pitanje za vlasnika.)
+ * ⚠️ ODAVDE JE 02.08.2026. SKINUT RED `Način plaćanja:`. On i gornji `Payment terms:`
+ * (v. `partiesBlock`) čitali su ISTO polje `Invoice.paymentMethod`, pa su na svakoj našoj
+ * fakturi ispisivali istu reč dva puta — jednom na srpskom usred engleskog dokumenta.
+ * BigBit je imao dve kolone (`payment_terms` + `payment_method`) i na 228/25 nose različite
+ * vrednosti („virmanom" gore, „avansno" dole); 4.0 model ima samo jedno polje, pa druga
+ * vrednost ni ne postoji da bi se odštampala.
+ *
+ * Vlasnikova odluka (`docs/STAMPA_FAKTURA_ODLUKE.md`, „ČEKA · Način plaćanja na ino
+ * fakturi", presuđeno po nalazu `FAKTURE_ZAKONSKA_USKLADJENOST.md` §2.1 / P1): način
+ * plaćanja NIJE obavezan element računa i suvišan je — veleprodaja se ionako uvek plaća
+ * virmanom. Ostaje JEDAN red, i to gornji `Payment terms:`, jer je on nosilac USLOVA
+ * plaćanja („avansno", „30 dana") i jedini je na jeziku obrasca.
  */
 function freeTextBlock(ctx: PrintCtx): Content[] {
   const out: Content[] = [];
@@ -311,21 +336,13 @@ function freeTextBlock(ctx: PrintCtx): Content[] {
   if (noteLines.length)
     out.push({ text: noteLines.join("\n"), fontSize: FS, margin: [0, 0, 0, 8] });
 
-  const paymentMethod = ctx.invoice.paymentMethod?.trim();
-  if (paymentMethod)
-    out.push({
-      text: `Način plaćanja: ${paymentMethod}`,
-      fontSize: FS,
-      margin: [0, 0, 0, 8],
-    });
-
   return out;
 }
 
 /** Poresko oslobođenje + reklamacije/sud/kamata — JEDNOM (v. `LEGAL_NOTES`). */
-function legalBlock(): Content {
+function legalBlock(ctx: PrintCtx): Content {
   return {
-    stack: [VAT_EXEMPTION_NOTE_GOODS, ...LEGAL_NOTES].map((text) => ({
+    stack: [exemptionNote(ctx), ...LEGAL_NOTES].map((text) => ({
       text,
       fontSize: FS,
     })),
@@ -403,6 +420,6 @@ export const inoRobaTemplate: InvoiceTemplate = (ctx: PrintCtx): Content[] => [
   itemsTable(ctx),
   ...(ctx.withoutPrices ? [] : [totalsBlock(ctx)]),
   ...freeTextBlock(ctx),
-  legalBlock(),
+  legalBlock(ctx),
   ...bankBlock(ctx),
 ];

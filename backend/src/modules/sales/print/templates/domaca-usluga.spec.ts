@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import { PdfService } from "../../../documents/pdf.service";
+import { exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import { MEMORANDUM_STYLES, memorandumHeader } from "../memorandum";
 import type { InvoiceWithItems, PrintCtx, PrintLine } from "./ctx";
 import { domacaUslugaTemplate } from "./domaca-usluga";
@@ -408,8 +409,34 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
     });
 
     it("nosi i napomenu o oslobođenju i zateznu kamatu", () => {
-      expect(paper).toContain("Napomena o poreskom oslobodjenju: NEMA");
+      // 653/25 nosi PDV 3.200,00 — tu oslobođenja zaista nema.
+      expect(paper).toContain(NEMA_TEXT);
       expect(paper).toContain("zakonom propisanu zateznu kamatu");
+    });
+
+    /**
+     * REGRESIJA NA NALAZ N3 (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §1.3): tekst je bio
+     * tvrdo ukucan, pa je i usluga bez obračunatog PDV-a tvrdila da oslobođenja „NEMA".
+     * Napomena o odredbi po kojoj PDV nije obračunat je obavezan element računa.
+     */
+    it("usluga BEZ obračunatog PDV-a dobija pravu napomenu, ne „NEMA“", () => {
+      const bezPdv = text(
+        domacaUslugaTemplate(
+          makeCtx({
+            invoice: makeInvoice({
+              netTotal: d(16000),
+              vatTotal: d(0),
+              grossTotal: d(16000),
+            }),
+          }),
+        ),
+      );
+      expect(bezPdv).not.toContain(NEMA_TEXT);
+      expect(bezPdv).toContain(exemptionFor("domestic-exempt")?.paperText);
+    });
+
+    it("tekst napomene dolazi iz `vat-exemption.ts` — isti izvor kao SEF", () => {
+      expect(paper).toContain(exemptionFor("domestic-taxed")?.paperText ?? NEMA_TEXT);
     });
   });
 

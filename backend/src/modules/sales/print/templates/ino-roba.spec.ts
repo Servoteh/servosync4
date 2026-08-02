@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import { PdfService } from "../../../documents/pdf.service";
+import { exemptionFor } from "../../vat-exemption";
 import { inoRobaTemplate } from "./ino-roba";
 import type {
   InvoiceWithItems,
@@ -313,15 +314,12 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
   });
 
   describe("slobodan tekst", () => {
-    it("nosi poziv na ponudu, broj izvozne deklaracije i način plaćanja", () => {
+    it("nosi poziv na ponudu i broj izvozne deklaracije", () => {
       const text = renderText(makeCtx());
       expect(text).toContain(
         "Fakturisanje je izvršeno na osnovu ponude 0206-25",
       );
       expect(text).toContain("25-0401-000005");
-      // Vrednost je „virmanom", a ne „avansno" kao na papiru, jer 4.0 model ima samo
-      // jedno polje za način plaćanja (BigBit je imao payment_terms + payment_method).
-      expect(text).toContain("Način plaćanja: virmanom");
     });
 
     it("bez podataka ne štampa prazne redove", () => {
@@ -333,8 +331,36 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
         }),
       });
       const text = renderText(ctx);
-      expect(text).not.toContain("Način plaćanja:");
       expect(text).toContain("Invoice No. 228/25"); // ostatak papira i dalje stoji
+    });
+  });
+
+  /**
+   * Do 02.08.2026. su se `Payment terms:` (gore, engleski) i `Način plaćanja:` (dole,
+   * srpski) punili iz ISTOG polja `Invoice.paymentMethod`, pa je svaka naša ino faktura
+   * istu reč nosila dva puta. Vlasnik je presudio da način plaćanja nije obavezan element
+   * i da je suvišan (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §2.1 / P1) — ostaje jedan red.
+   */
+  describe("plaćanje se pominje TAČNO JEDNOM", () => {
+    it("ima samo `Payment terms:`, nema srpski `Način plaćanja:`", () => {
+      const texts = collectText(inoRobaTemplate(makeCtx()));
+      const mentions = texts.filter(
+        (t) => t.includes("Payment terms") || t.includes("Način plaćanja"),
+      );
+      expect(mentions).toEqual(["Payment terms:"]);
+    });
+
+    it("vrednost („virmanom“) se ne ponavlja na dva mesta", () => {
+      const texts = collectText(inoRobaTemplate(makeCtx()));
+      expect(texts.filter((t) => t.includes("virmanom"))).toHaveLength(1);
+    });
+
+    it("bez unetog načina plaćanja nema nijednog reda o plaćanju", () => {
+      const text = renderText(
+        makeCtx({ invoice: makeInvoice({ paymentMethod: null }) }),
+      );
+      expect(text).not.toContain("Payment terms:");
+      expect(text).not.toContain("Način plaćanja");
     });
   });
 
@@ -343,6 +369,17 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
       const text = renderText(makeCtx());
       expect(text).toContain(
         "Napomena o poreskom oslobodjenju: Oslobodjeno PDV na osnovu člana 24. stav 1 tačka 2 Zakona o PDV.",
+      );
+    });
+
+    /**
+     * Tekst se od 02.08.2026. uzima iz `vat-exemption.ts` — istog mesta odakle ga uzima i
+     * SEF builder. Time papir i XML fizički ne mogu da navedu različit član za isti posao
+     * (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §3.1).
+     */
+    it("tekst je DOSLOVNO onaj iz `vat-exemption.ts`, ne kopija u šablonu", () => {
+      expect(collectText(inoRobaTemplate(makeCtx()))).toContain(
+        exemptionFor("export-goods")?.paperText,
       );
     });
 
