@@ -173,15 +173,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const permsQuery = useMyPermissions(ready && hasToken);
 
   // Sprovođenje must_change_password (B2): dok je flag postavljen, korisnik je zaključan na
-  // /promena-lozinke — deep-link na bilo koju drugu rutu se preusmerava (guard je ovde, u shell-u
-  // koji obavija SVE stranice, pa ne može da se zaobiđe). Flag se skida čim backend potvrdi promenu
-  // (useChangePassword upisuje mustChangePassword:false u ['me'] keš → efekat prestaje da okida).
+  // ekranu za promenu lozinke — deep-link na bilo koju drugu rutu se preusmerava (guard je ovde,
+  // u shell-u koji obavija SVE stranice, pa ne može da se zaobiđe). Flag se skida čim backend
+  // potvrdi promenu (useChangePassword upisuje mustChangePassword:false u ['me'] keš → efekat
+  // prestaje da okida).
+  //
+  // 🔴 META ZAVISI OD PROSTORA: pod `/mob` to je `/mob/prijava` (koja prikazuje istu formu),
+  // ne `/promena-lozinke`. Instalirana mobilna aplikacija ima `scope: "/mob"`
+  // (`public/mob.webmanifest`), a navigacija VAN scope-a se otvara spolja — na iOS-u u
+  // Safariju, koji od 16.4 ima ODVOJEN storage: korisnik bi tamo bio odjavljen, promenio
+  // lozinku u „drugoj aplikaciji", a u ljusci bi ostao zaključan. Zato prinudni tok ne sme
+  // da izađe iz `/mob`.
   const mustChangePassword =
     hasToken && meQuery.data?.mustChangePassword === true;
   useEffect(() => {
     if (!mustChangePassword) return;
-    if (pathname === '/promena-lozinke') return;
-    router.replace('/promena-lozinke');
+    const uMobilnoj = pathname?.startsWith('/mob') ?? false;
+    const meta = uMobilnoj ? '/mob/prijava' : '/promena-lozinke';
+    if (pathname === meta) return;
+    router.replace(meta);
   }, [mustChangePassword, pathname, router]);
 
   // `me` padne SAMO kroz auth 401 (istekao/nevažeći token, refresh već iscrpljen) →

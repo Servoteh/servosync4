@@ -64,7 +64,7 @@ export default function MobPrisustvoPage() {
   const live = useLiveAttendance(allowed);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Čekaj i dozvole (permissionsPending): can() je fail-closed dok permsQuery ne

@@ -30,7 +30,7 @@ export default function MobVisePage() {
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Isti gate kao hub: can() je fail-closed dok dozvole ne stignu → bez čekanja bi

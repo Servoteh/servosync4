@@ -40,7 +40,7 @@ export default function MobHubPage() {
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Čekaj i dozvole (permissionsPending): can() je fail-closed dok permsQuery ne

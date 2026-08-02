@@ -157,7 +157,7 @@ export default function MobOdobravanjaPage() {
   }, [reqQ.data, me, myEmail, canVacreq]);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user || permissionsPending) {

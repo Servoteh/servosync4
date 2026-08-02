@@ -20,6 +20,12 @@ import { RefreshCw } from 'lucide-react';
  * `invalidateQueries()` bez argumenata — jedan potez osvežava i podatke ekrana i
  * `/auth/me/permissions` (koji ima `retry: false`, pa bi inače ostao pao za celu
  * sesiju).
+ *
+ * ⚠ OVO JE MEKA AFORDANSA — samo PODACI. Tvrda („Resetuj aplikaciju", ikona
+ * `RotateCcw`, u skener ljusci) vraća zaglavljenu VERZIJU: odjavljuje 3.0 service
+ * worker (`public/mob-sw.js`), briše `ss3-` keševe i ponovo učitava stranu, uz
+ * potvrdu — v. `lib/app-hard-reset.ts`. Dve radnje, dva imena, dve ikone: dok su se
+ * obe zvale „Osveži…", radnik je birao nasumično.
  */
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */

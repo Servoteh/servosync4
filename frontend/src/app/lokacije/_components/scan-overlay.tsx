@@ -6,7 +6,7 @@ import {
   Zap,
   SwitchCamera,
   Image as ImageIcon,
-  RefreshCw,
+  RotateCcw,
   ZoomIn,
   Repeat,
   Check,
@@ -47,7 +47,7 @@ import { ScanHint } from '@/components/ui-kit/scan-hint';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
 import { useScanPanelInset } from '@/lib/use-scan-panel-inset';
 import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
-import { hardResetApp } from '@/lib/app-hard-reset';
+import { confirmHardResetApp, HARD_RESET_LABEL } from '@/lib/app-hard-reset';
 
 /*
  * Punoekranski skener barkoda za Lokacije — pun port bogatog 1.0 scanModal-a
@@ -236,7 +236,8 @@ function detectIOSCameraPitfalls(): { blocker?: string; warning?: string } {
   return {};
 }
 
-// Hard reset klijenta = `lib/app-hard-reset.ts` (zajednički sa reversi ljuskom).
+// Tvrdo osvežavanje („Resetuj aplikaciju", do 02.08.2026 „Osveži app") =
+// `lib/app-hard-reset.ts` (zajedničko sa reversi ljuskom).
 // Ovde je do 02.08.2026 stajala lokalna kopija koja je brisala SVE SW registracije i
 // SVE keševe origin-a — uključujući 1.0-ine (v. JSDoc u tom modulu).
 
@@ -1582,15 +1583,15 @@ export function ScanOverlay({
           <span className="ml-auto text-white/40">app v{APP_VERSION}</span>
           <button
             type="button"
-            onClick={() => {
-              setStatus('♻ Osvežavam aplikaciju…');
-              // Odjavljuje SAMO 3.0 SW/keševe — 1.0 (`/sw.js`, `/m/*`) se ne dira.
-              void hardResetApp().catch(() => window.location.reload());
-            }}
+            // TVRDO osvežavanje (verzija aplikacije), različito i po imenu i po ikoni od
+            // mekog „Osveži" (podaci) u zaglavlju `/mob` — v. `lib/app-hard-reset.ts`.
+            // Odjavljuje SAMO 3.0 SW/keševe; 1.0 (`/sw.js`, `/m/*`) se ne dira.
+            onClick={() => confirmHardResetApp(() => setStatus('♻ Resetujem aplikaciju…'))}
             className="pointer-events-auto flex items-center gap-1 rounded-control border border-white/20 px-2 py-1 hover:bg-white/10"
-            title="Hard refresh — očisti keš klijenta (npr. kad autofill radi po starom)"
+            aria-label={HARD_RESET_LABEL}
+            title={`${HARD_RESET_LABEL} — povuci najnoviju verziju (kad ekran radi „po starom")`}
           >
-            <RefreshCw className="h-4 w-4" /> Osveži app
+            <RotateCcw className="h-4 w-4" /> Resetuj app
           </button>
         </div>
 

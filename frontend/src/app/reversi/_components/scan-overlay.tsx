@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Flashlight, RefreshCw, Camera } from 'lucide-react';
+import { X, Flashlight, RotateCcw, Camera } from 'lucide-react';
 import { lookupBarcode, type BarcodeKind, type BarcodeResult } from '@/api/reversi';
 import { useEscapeLayer } from '@/components/ui-kit/escape-layer';
 import {
@@ -25,7 +25,7 @@ import { ScanHint } from '@/components/ui-kit/scan-hint';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
 import { useScanPanelInset } from '@/lib/use-scan-panel-inset';
 import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
-import { hardResetApp } from '@/lib/app-hard-reset';
+import { confirmHardResetApp, HARD_RESET_LABEL } from '@/lib/app-hard-reset';
 
 /**
  * Formati ŽIVE kamere — **bez `qr_code`** (ISPRAVKA 02.08.2026, regresija na iPhone-u).
@@ -101,7 +101,8 @@ const KIND_HINT: Record<BarcodeKind, string> = {
   UNKNOWN: 'Nepoznat format',
 };
 
-// „Ažuriraj app" (RB-60) = `lib/app-hard-reset.ts` (zajednički sa lokacijskom ljuskom).
+// „Resetuj aplikaciju" (RB-60, do 02.08.2026 „Ažuriraj app") = `lib/app-hard-reset.ts`
+// (zajedničko sa lokacijskom ljuskom; ime i ikona su različiti od mekog „Osveži").
 // Ovde je do 02.08.2026 stajala lokalna kopija koja je brisala SVE SW registracije i
 // SVE keševe origin-a — a origin nosi i proksiranu 1.0 (v. JSDoc u tom modulu).
 
@@ -682,13 +683,15 @@ export function ScanOverlay({
           )}
           <button
             type="button"
-            // Odjavljuje SAMO 3.0 SW/keševe — 1.0 (`/sw.js`, `/m/*`) se ne dira.
-            onClick={() => void hardResetApp()}
-            aria-label="Ažuriraj app"
-            title="Ažuriraj app (odjavi 3.0 SW + obriši 3.0 keš)"
+            // TVRDO osvežavanje (verzija aplikacije) — meko „Osveži" (podaci) je u
+            // zaglavlju `/mob`. Odjavljuje SAMO 3.0 SW/keševe; 1.0 (`/sw.js`, `/m/*`)
+            // se ne dira. V. `lib/app-hard-reset.ts`.
+            onClick={() => confirmHardResetApp()}
+            aria-label={HARD_RESET_LABEL}
+            title={`${HARD_RESET_LABEL} (odjavi 3.0 SW + obriši 3.0 keš)`}
             className="rounded-full p-1.5 text-white hover:bg-white/10"
           >
-            <RefreshCw className="h-5 w-5" aria-hidden />
+            <RotateCcw className="h-5 w-5" aria-hidden />
           </button>
           <button type="button" onClick={onClose} aria-label="Zatvori" className="rounded-full p-1.5 text-white hover:bg-white/10">
             <X className="h-5 w-5" aria-hidden />

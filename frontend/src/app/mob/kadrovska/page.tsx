@@ -76,7 +76,7 @@ export default function MobKadrovskaPage() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Deep-link `?id=<uuid>` (SSO prečica iz 1.0 / bookmark) — čita se JEDNOM iz

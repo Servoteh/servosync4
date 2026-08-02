@@ -118,7 +118,7 @@ export default function MobDiktafonPage() {
   const baseTextRef = useRef('');
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Čišćenje: zaustavi tajmer, mikrofon i otpusti wake lock na unmount-u.

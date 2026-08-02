@@ -90,7 +90,7 @@ export default function MobProjektovanjePage() {
   }, [rows]);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user || permissionsPending) {

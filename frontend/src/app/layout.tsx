@@ -29,19 +29,24 @@ export const metadata: Metadata = {
    * te dve putanje ne pada u proxy pravila: `startsWith('/m/')` traži „/m" pa kosu
    * crtu, a „/mob…" je nema.
    *
-   * ⚠ `scope` u manifestu je `/`, a ne `/mob` (kako 1.0 ima `/m`) — svesna razlika,
-   * jer .webmanifest ne trpi komentare pa obrazloženje stoji ovde. Instalirana
-   * aplikacija u standalone režimu otvara SPOLJA (Safari / Chrome Custom Tab) svaku
-   * navigaciju van scope-a, a `/mob` ima tri takva izlaza:
-   *   • `/login` — guard svih ~26 `/mob` strana (`if (!isLoading && !user)`),
-   *   • `/promena-lozinke` — prinudna izmena lozinke (`lib/auth-context.tsx`),
-   *   • `/` — dugme „desktop" u zaglavlju `/mob` početne (`app/mob/page.tsx`).
-   * Prvi je fatalan: od iOS 16.4 instalirana aplikacija ima SVOJ storage odvojen od
-   * Safarija, pa bi se korisnik prijavio u Safariju, token bi pao u pogrešnu teglu,
-   * a povratak u aplikaciju bi opet zatekao odjavljenu sesiju → beskonačna petlja
-   * prijave. Cena šireg scope-a je samo to što desktop ekrani (npr. `/fakturisanje`)
-   * ostaju U aplikaciji ako se do njih dođe; `start_url` je i dalje `/mob`, pa se
-   * uvek starta na mobilnoj početnoj.
+   * ⚠ `scope` u manifestu je `/mob` (od 02.08.2026; ranije `/`) i JEDNAK je scope-u
+   * service worker-a `public/mob-sw.js` — .webmanifest ne trpi komentare pa
+   * obrazloženje stoji ovde:
+   *   • Chrome za Android nudi „Instaliraj aplikaciju" tek kad `start_url` (`/mob`)
+   *     kontroliše SW sa stvarnim `fetch` rukovaocem. Scope `/mob` ga kontroliše;
+   *     `/mob/` (sa kosom crtom) NE BI — poređenje je prefiks nad stringom, pa sama
+   *     početna `/mob` ne bi bila u njemu.
+   *   • Scope `/` bi značio da 3.0 WebAPK polaže pravo na CEO origin — uključujući
+   *     `/m*`, gde `worker/index.ts` servira STARU 1.0 mobilnu. 1.0 je najtvrđe
+   *     pravilo ovog repoa, pa 3.0 ostaje u svom prostoru.
+   * Instalirana aplikacija svaku navigaciju VAN scope-a otvara spolja (iOS: Safari,
+   * koji od 16.4 ima ODVOJEN storage → prijava bi pala u pogrešnu teglu i vrtela
+   * beskonačnu petlju). Zato su oba vanredna auth toka preseljena U scope:
+   *   • guard svih ~26 `/mob` strana → `/mob/prijava` (ne `/login`),
+   *   • prinudna izmena lozinke → `/mob/prijava` (`lib/auth-context.tsx`).
+   * Ostaje jedan svestan izlaz: dugme „desktop" u zaglavlju `/mob` početne (`/`) —
+   * eksplicitan korisnikov zahtev da napusti mobilnu ljusku, i jedini gde je otvaranje
+   * u pregledaču ispravno ponašanje.
    */
   manifest: "/mob.webmanifest",
 

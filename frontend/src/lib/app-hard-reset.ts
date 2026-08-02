@@ -1,7 +1,24 @@
 'use client';
 
 /**
- * `hardResetApp` — „Osveži app" / „Ažuriraj app" iz punoekranskog skenera.
+ * `hardResetApp` — TVRDO osvežavanje: „Resetuj aplikaciju" iz punoekranskog skenera.
+ *
+ * ⚠ DVE RAZLIČITE AFORDANSE, NAMERNO RAZLIČITO IMENOVANE (02.08.2026):
+ *   • „Osveži" (zaglavlje `/mob`, `app/mob/_components/mob-refresh.tsx`) = MEKO:
+ *     `invalidateQueries()`, povlači sveže PODATKE, ne dira ni verziju ni keš.
+ *     Svakodnevno, bez posledica, ikona `RefreshCw`.
+ *   • „Resetuj aplikaciju" (ovaj modul) = TVRDO: odjavljuje 3.0 service worker,
+ *     briše 3.0 keševe i ponovo učitava stranu sa cache-bust-om — vraća zaglavljenu
+ *     VERZIJU aplikacije. Retko, uz potvrdu (`confirmHardResetApp`), ikona `RotateCcw`.
+ * Dok su se zvale „Osveži" i „Osveži app", izbor je bio nasumičan: radnik bi na
+ * zastarelu listu tapnuo tvrdo (i izgubio nezavršen unos), a na zaglavljenu verziju
+ * meko (i ništa ne bi promenio). Ime govori POSLEDICU, ne mehaniku.
+ *
+ * 🔴 OD 02.08.2026 3.0 IMA SVOJ SERVICE WORKER: `public/mob-sw.js`, scope `/mob`,
+ * keševi `ss3-mob-static-*` / `ss3-mob-pages-*`. Time ovaj modul postaje jedini put da
+ * se izađe iz zaglavljene verzije (SW namerno NEMA `skipWaiting()`), a allowlist ispod
+ * (`SS3_CACHE_PREFIXES`) prvi put zaista nešto briše. Prefiks `ss3-` je ugovor sa
+ * `mob-sw.js` — ko promeni jedno, mora i drugo.
  *
  * 🔴 ZATEČEN BAG (nađen 02.08.2026): ranije verzije ove funkcije (dupla, u
  * `lokacije/_components/scan-overlay.tsx` i `reversi/_components/scan-overlay.tsx`)
@@ -20,9 +37,9 @@
  *    `/sw.js` (to je `frontend/public/sw.js`, sunset+kapija shim koji 1.0 registruje) i
  *    sve sa script/scope putanjom u `/m` prostoru. Ostalo (buduć 3.0 SW pod SVOJIM
  *    imenom) se i dalje odjavljuje.
- *  • **Keševi** — brišu se SAMO keševi sa 3.0 prefiksom (`SS3_CACHE_PREFIXES`). 3.0
- *    danas nema service worker pa nema ni svoje keševe; sve što u Cache Storage-u
- *    postoji pripada 1.0 i ne sme da se dira. Denylist („obriši sve što ne liči na
+ *  • **Keševi** — brišu se SAMO keševi sa 3.0 prefiksom (`SS3_CACHE_PREFIXES`), dakle
+ *    `ss3-mob-*` koje pravi `public/mob-sw.js`; sve ostalo u Cache Storage-u pripada
+ *    1.0 i ne sme da se dira. Denylist („obriši sve što ne liči na
  *    workbox") bi promašio 1.0 runtime keševe sa proizvoljnim imenima — allowlist ne
  *    može da promaši.
  *
@@ -90,4 +107,24 @@ export async function hardResetApp(): Promise<void> {
   const url = new URL(window.location.href);
   url.searchParams.set('_r', String(Date.now()));
   window.location.replace(url.toString());
+}
+
+/** Jedno ime ove radnje na svim mestima (dugme, `aria-label`, `title`, pitanje). */
+export const HARD_RESET_LABEL = 'Resetuj aplikaciju';
+
+const HARD_RESET_PITANJE =
+  'Resetovati aplikaciju? Učitava se najnovija verzija — nezavršen unos na ovom ekranu se gubi.';
+
+/**
+ * „Resetuj aplikaciju" uz kratku potvrdu. Potvrda postoji jer je dugme u skener ljusci,
+ * na dohvat palca usred posla, a reset odbacuje nezavršen unos i ponovo učita stranu.
+ * `window.confirm` (a ne `Dialog`) namerno: ljuska skenera je punoekranski `fixed` sloj
+ * preko kadra kamere sa sopstvenim `escape-layer` redosledom — isti obrazac koji već
+ * koristi `app/mob/odsustva`. Nikad ne baca: pad tvrdog resetovanja pada na običan reload.
+ */
+export function confirmHardResetApp(prePotvrde?: () => void): void {
+  if (typeof window === 'undefined') return;
+  if (!window.confirm(HARD_RESET_PITANJE)) return;
+  prePotvrde?.();
+  void hardResetApp().catch(() => window.location.reload());
 }

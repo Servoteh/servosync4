@@ -29,15 +29,27 @@
  *     razlikuje za 3/255 = nevidljivo, a bela garantuje da iOS nema šta da pocrni).
  *
  * KOMPOZICIJA:
- *   • „any" ikone (192/512) i apple-touch (180): prsten gore + wordmark dole.
- *     Wordmark sam bi na 60pt ekranskoj veličini bio nečitljiv, prsten sam ne nosi
- *     ime — zajedno daju i prepoznatljivost i identitet.
- *   • maskable 512: SAMO prsten. Maskable safe zone je krug poluprečnika 2/5 širine
- *     (204.8 px na 512); wordmark širine 74% platna bi mu izašao iz kruga i Android
- *     bi ga odsekao. Prsten prečnika 56% ima poluprečnik 149 px < 204.8 px ✓
+ *   • „any" ikone (192/512) i apple-touch (180): prsten gore + wordmark dole, na
+ *     BELOM. Wordmark sam bi na 60pt ekranskoj veličini bio nečitljiv, prsten sam ne
+ *     nosi ime — zajedno daju i prepoznatljivost i identitet.
+ *   • maskable 512: SAMO prsten, BEO, na PUNOM NARANDŽASTOM polju (#F14E2B).
+ *     Maskable safe zone je krug poluprečnika 2/5 širine (204,8 px na 512); wordmark
+ *     širine 74% platna bi izašao iz kruga i Android bi ga odsekao.
  *
- * Sve ikone su FLATTEN-ovane na belo i pišu se bez alfa kanala — iOS providne
- * piksele apple-touch ikone crta kao CRNE.
+ *     ⚠ ISPRAVKA 02.08.2026 — zašto polje NIJE belo: maskable ikonu Android crta pod
+ *     maskom (krug / „squircle") i BEZ ivice, pa je belo polje na launcher-u ispadalo
+ *     kao beo disk sa sitnim znakom — na svetlim pozadinama praktično nevidljiva
+ *     ikona, a uz to nerazlučiva od bilo koje druge bele PWA ikone. Puno brend polje
+ *     rešava oboje. Prsten je zato u REVERSU (beo na narandžastom): narandžast na
+ *     narandžastom se ne vidi. Geometrija znaka je DOSLOVNO ista — alfa maska se
+ *     izvodi iz istog isečka `logo-servoteh.jpg`, ništa se ne precrtava. Tamno polje
+ *     (token `--bg` tamne teme) je odbačeno: 1.0 mobilna je tamna aplikacija, pa bi
+ *     tamna 3.0 ikona pored nje na istom ekranu zbunjivala.
+ *     Prsten je uz to podignut sa 56% na 68% platna (poluprečnik 181 px < 204,8 px ✓)
+ *     — u safe zoni ima mesta, a znak prestaje da bude „sitan".
+ *
+ * „any" i apple-touch ikone su FLATTEN-ovane na belo, maskable na narandžasto; sve se
+ * pišu BEZ alfa kanala — iOS providne piksele apple-touch ikone crta kao CRNE.
  */
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -54,18 +66,20 @@ const RING = { left: 492, top: 19, width: 108, height: 112 };
 
 /** Belo platno bez providnosti. */
 const BELA = { r: 255, g: 255, b: 255, alpha: 1 };
+/** Brend narandžasta — izmerena na prstenu u `logo-servoteh.jpg` (#F14E2B). */
+const NARANDZASTA = { r: 241, g: 78, b: 43, alpha: 1 };
 
 /** Udeli platna — vertikalni centar sadržaja je na 48% (optičko, ne geometrijsko). */
 const RING_W = 0.42; // širina prstena u „any" ikoni
 const RING_TOP = 0.175;
 const GAP = 0.08; // razmak prsten → wordmark
 const WM_W = 0.74; // širina wordmark-a
-const MASK_RING_W = 0.56; // prsten u maskable ikoni
+const MASK_RING_W = 0.68; // prsten u maskable ikoni (mora stati u safe zonu r = 2/5 S)
 
-async function upisi(platno, ime) {
+async function upisi(platno, ime, pozadina = BELA) {
   const cilj = path.join(OUT_DIR, ime);
   await platno
-    .flatten({ background: BELA }) // spusti sve na belo…
+    .flatten({ background: pozadina }) // spusti sve na podlogu…
     .removeAlpha() // …i stvarno izbaci alfa kanal (flatten sam ga zadrži kad platno
     // dolazi iz `create` sa channels: 4) — iOS providne piksele crta kao CRNE
     .png({ compressionLevel: 9, palette: false })
@@ -95,7 +109,14 @@ async function lockup(S, ime) {
   );
 }
 
-/** Samo prsten, centriran — maskable (mora stati u krug r = 2/5 S). */
+/**
+ * Beo prsten na punom narandžastom polju — maskable (mora stati u krug r = 2/5 S).
+ *
+ * Reverse se pravi ALFA MASKOM iz istog isečka, ne precrtavanjem: sivi tonovi isečka
+ * (prsten ~123, papir 255) se invertuju i rastegnu na pun opseg, pa služe kao alfa
+ * belog pravougaonika. Time ivice zadržavaju antialiasing izvora, a oblik je piksel u
+ * piksel Servoteh znak. (Prag/`threshold` bi ivice iseckao.)
+ */
 async function maskable(S, ime) {
   const ringW = Math.round(S * MASK_RING_W);
   const ringH = Math.round((ringW * RING.height) / RING.width);
@@ -104,12 +125,45 @@ async function maskable(S, ime) {
   if (r > safe) throw new Error(`prsten izlazi iz safe zone: r=${r} > ${safe}`);
   console.log(`  (maskable safe zone: poluprečnik sadržaja ${r} px < dozvoljenih ${safe} px)`);
 
-  const prsten = await sharp(SRC).extract(RING).resize(ringW, ringH).png().toBuffer();
+  // Maska se računa nad SIROVIM pikselima, ne kroz `linear()`/`joinChannel()`: te
+  // operacije rade u linearnom svetlu i prva verzija je dala prsten na ~25% alfe
+  // (bledo narandžast umesto belog). Ovako je vrednost po pikselu doslovna.
+  const { data, info } = await sharp(SRC)
+    .extract(RING)
+    .resize(ringW, ringH)
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  // Skala se vezuje za PRAG JEZGRA, ne za najtamniji piksel: JPEG prsten varira
+  // (jezgro ~104–130), pa bi skala po minimumu davala jezgru ~87% alfe → beo prsten
+  // bi se providno mešao sa narandžastim poljem i ispao roze. Ovako je sve tamnije od
+  // praga pun bela, a pojas 210…255 (samo rub) nosi antialiasing.
+  const PRAG_JEZGRA = 210;
+  const skala = 255 / (255 - PRAG_JEZGRA);
+  let min = 255;
+  for (let i = 0; i < data.length; i++) if (data[i] < min) min = data[i];
+  console.log(`  (maska: najtamniji piksel ${min}, prag jezgra ${PRAG_JEZGRA})`);
+
+  const rgba = Buffer.alloc(info.width * info.height * 4);
+  for (let i = 0; i < data.length; i++) {
+    rgba[i * 4] = 255;
+    rgba[i * 4 + 1] = 255;
+    rgba[i * 4 + 2] = 255;
+    rgba[i * 4 + 3] = Math.min(255, Math.round((255 - data[i]) * skala));
+  }
+  const prsten = await sharp(rgba, {
+    raw: { width: info.width, height: info.height, channels: 4 },
+  })
+    .png()
+    .toBuffer();
+
   await upisi(
-    sharp({ create: { width: S, height: S, channels: 4, background: BELA } }).composite([
+    sharp({ create: { width: S, height: S, channels: 4, background: NARANDZASTA } }).composite([
       { input: prsten, top: Math.round((S - ringH) / 2), left: Math.round((S - ringW) / 2) },
     ]),
     ime,
+    NARANDZASTA,
   );
 }
 

@@ -79,7 +79,7 @@ export default function MobProfilPage() {
   const [logoutAsk, setLogoutAsk] = useState(false);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user || permissionsPending) {
@@ -246,7 +246,8 @@ export default function MobProfilPage() {
             Namerno SAMO ovde: u zaglavlju ljuske ili donjoj traci bio bi na dohvat
             slučajnog dodira usred posla u magacinu (rukavice, jedna ruka).
             `logout()` sam ne preusmerava (isto kao desktop AppShell) → posle njega
-            eksplicitno idemo na /login, da se ne čeka reaktivni guard efekat. */}
+            eksplicitno idemo na /mob/prijava, da se ne čeka reaktivni guard efekat
+            (prijava je U SCOPE-U instalirane app — v. `app/mob/prijava/page.tsx`). */}
         <section className="mt-6 space-y-2 border-t border-line pt-4">
           <p className="text-xs text-ink-secondary">
             Prijavljen kao <span className="font-medium text-ink">{fullName}</span>
@@ -262,7 +263,7 @@ export default function MobProfilPage() {
                   className="h-11 flex-1"
                   onClick={() => {
                     logout();
-                    router.replace('/login');
+                    router.replace('/mob/prijava');
                   }}
                 >
                   Da, odjavi me

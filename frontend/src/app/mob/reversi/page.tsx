@@ -150,7 +150,7 @@ export default function MobReversiPage() {
   const consumedRows = consumed.data?.data ?? [];
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user || permissionsPending) {

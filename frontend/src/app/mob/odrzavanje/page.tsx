@@ -75,7 +75,7 @@ export default function MobileOdrzavanjePage() {
   const assets = useMemo(() => assetsQ.data?.data ?? [], [assetsQ.data]);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user) {
