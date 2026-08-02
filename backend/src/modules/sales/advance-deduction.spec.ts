@@ -314,6 +314,19 @@ function fakePrisma(db: Db) {
       ),
     },
     item: { findMany: jest.fn(() => Promise.resolve([])) },
+    // Registar vrsta dokumenata — `SefService.enqueue` od 03.08.2026. proverava sme li
+    // vrsta uopšte na SEF (`document_types.post_in_vat_ledger`). Ovde je scenario
+    // izlazna faktura (`IFR`), koja po seed-u registra nosi TRUE.
+    documentType: {
+      findUnique: jest.fn((args: { where: { code: string } }) =>
+        Promise.resolve({
+          code: args.where.code,
+          description: "Izlazna faktura — roba (izdatnica)",
+          isInbound: false,
+          postInVatLedger: true,
+        }),
+      ),
+    },
     sefOutbox: { create: jest.fn(() => Promise.resolve({ id: 5000 })) },
     sefStatusLog: { create: jest.fn(() => Promise.resolve({ id: 1 })) },
     // Brava PDV perioda: prazna lista = nijedan obračun nije proknjižen.

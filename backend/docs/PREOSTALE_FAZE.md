@@ -463,6 +463,120 @@ ta dva je regresija ovog nalaza. Isto važi i za `?? 20`: avansni servis je imao
 (`VAT_PERCENT_BY_CODE[code] ?? 20`), a **tiha dvadesetka je gora od tihe nule** — ne može se
 prepoznati kao izostanak, izgleda kao ispravan porez.
 
+### N5-SEF — „poslato POSLE storna" je suženo, ali nije zatvoreno (traži izmenu u `sef.service.ts`)
+
+**Nalaz (izmereno 02.08.2026, SEF klijent kasni 300 ms).** `SefService.send` proveri da
+faktura nije stornirana, pa ode na mrežu. Ako storno prođe DOK traje mrežni poziv, `send` se
+vrati i **bezuslovno** upiše `SENT` + `sefInvoiceId` + `sentAt`. Ishod: faktura `CANCELLED`,
+outbox red `SENT`, status-log „CANCELLED" → „SENT", a **SEF cancel nije poslat** — kupac na
+portalu ima važeću e-fakturu za dokument koji kod nas ne postoji.
+
+**Šta je urađeno (03.08.2026, `sales/fakturisanje.service.ts` → `cancelSefOutbox`).**
+1. PENDING redovi se gase LOKALNO PRVI (pre mrežnog `cancel`-a) — pad mreže više ne ostavlja
+   red „u redu za slanje";
+2. **drugi prolaz**: outbox se posle otkazivanja čita PONOVO i svaki red koji je u
+   međuvremenu postao `SENT`/`DELIVERED` se otkazuje na SEF-u, uz `ERROR` u logu.
+
+Prozor je time sužen sa „trajanje mrežnog poziva" (izmereno 300 ms) na „razmak između našeg
+poslednjeg čitanja i tuđeg upisa".
+
+**Šta OSTAJE — jedan uslovan upis.** Deterministički lek je da upis statusa `SENT` u
+`sales/sef/sef.service.ts` bude **CAS**, a ne bezuslovan `update`:
+
+```ts
+// umesto prisma.sefOutbox.update({ where: { id: outboxId }, data: { status: "SENT", … } })
+const claimed = await prisma.sefOutbox.updateMany({
+  where: { id: outboxId, status: "PENDING" },   // storno ga je prebacio u CANCELLED
+  data: { status: "SENT", sefInvoiceId, sentAt: new Date(), errorMessage: null },
+});
+if (claimed.count !== 1) { /* dokument JE otišao na SEF, a lokalno je otkazan →
+   ERROR u log + odmah `cancel` na portalu; status reda ostaje CANCELLED */ }
+```
+
+Bez toga red koji je storno prebacio u `CANCELLED` može da se vrati u `SENT`, pa se ne zna
+pouzdano da dokument treba otkazati na portalu.
+
+**Zašto nije odmah urađeno:** `sales/sef/**` u ovom paketu menja drugi agent (izmene bi se
+sudarile). Izmena je jedan blok u `send()` — uraditi je odmah po spajanju tog paketa.
+
+### N4-ROBNO — račun sa vezanom izdatnicom se od 03.08.2026. ODBIJA dok izdatnica nije proknjižena
+
+**Nalaz (izmereno 02.08.2026).** `postInvoice` je za auto-robnu granu (IFR/IFGP/IZVRO/IZVGP sa
+`stockDocumentId`) tražio nalog robnog izlaza (`journalEntry.sourceGoodsDocId`) i, kad ga ne
+nađe, **tiho** upisivao `journalEntryId = null`. Ishod: broj potrošen, dokument `POSTED` i
+`LOCKED`, a u glavnoj knjizi **nula redova** — račun se štampa i sme na SEF, ali ga nema ni u
+saldakontima, ni u KIF-u, ni u POPDV-u; ponovno knjiženje pada na 409 (`isLocked`), a storno
+nema šta da reverzira. Put: PROF → IFR → `POST /robno/documents/from-invoice` (izdatnica
+nastaje kao DRAFT) → `POST /sales/invoices/:id/post`.
+
+**Šta je urađeno.** Ta grana sada baca **422** sa uputstvom da se prvo proknjiži izdatnica.
+Fallback na ručni nalog NIJE uzet: ručni nalog knjiži prihod i PDV, a šema robnog izlaza
+(33/36) knjiži i razduženje zaliha — kasnije knjiženje izdatnice bi udvostručilo prihod i
+porez.
+
+**🔴 ŠTA TO ZNAČI ZA PRODUKCIJU — proveriti pre puštanja.** Nijedan
+`document_types.posting_template` na produkciji nije popunjen (v. nalaz S1 iznad,
+`accounting_schemes` 2/25), pa `PostingEngine.postFromStockDocument` za izdatnicu baca
+`NoPostingSchemeException`. Dok je tako, račun sa vezanom izdatnicom **ne može da se proknjiži
+uopšte** — ranije je prolazio, ali bez ijednog reda u GK. Dakle nije izgubljena nijedna
+ispravna radnja, ali JESTE zatvoren put koji je do sada vraćao `200`. Odblokira ga isto što
+odblokira i S1: knjigovođa potvrdi šeme kontiranja robnih vrsta, pa se `posting_template`
+popuni. Poruka greške imenuje oba uzroka (neproknjižena izdatnica / vrsta bez šeme).
+
+### N3-SEF — PRIHVAĆENA e-faktura se ne može poništiti iz aplikacije (`/sales-invoice/storno` ne postoji u kodu)
+
+**Nalaz (izmereno 02.–03.08.2026).** `SefService.cancel` je dozvoljavao otkazivanje i iz
+statusa `DELIVERED` (SEF `Approved`/`Seen` — kupac je fakturu prihvatio). Poziv je odlazio na
+`POST /sales-invoice/cancel`, SEF je vraćao **HTTP 400**, a `cancel()` **nije bacao**: status
+je ostajao `DELIVERED` uz `error_message` i `ERROR` u status-logu. Korisnik nije dobio nikakav
+znak da poništavanje nije prošlo. (Nad `REJECTED` isti poziv daje 409 — dakle brana za
+`DELIVERED` prosto nije postojala, a ne da je bila blaža.)
+
+**Šta se zna iz repoa.** `docs/migration/07-bigbit-sef-efaktura.md` §8.2 popisuje **DVE**
+izlazne rute sa **DVA** guard-a:
+
+| radnja | ruta | guard (BigBit) |
+|---|---|---|
+| otkazivanje | `POST /api/publicApi/sales-invoice/cancel` | `ER_FakturaMozeDaSeOtkaze(status, id)` |
+| **storniranje** | `POST /api/publicApi/sales-invoice/storno` | `ER_FakturaMozeDaSeStornira(status, id)` |
+
+Implementirana je samo prva (`sef-client.service.ts`); `grep "sales-invoice/storno" src/` = **0
+pogodaka**. Jedan skup dozvoljenih statusa (`CANCELLABLE_LOCAL_STATUSES`) je stajao za obe
+radnje, pa je storniranje odlazilo na rutu za otkazivanje.
+
+**Šta je urađeno (03.08.2026).** `DELIVERED` je uklonjen iz dozvoljenih statusa: `cancel()`
+sada baca **409** sa porukom koja imenuje pravi put i ne izmišlja rutu. Trag ostaje i u
+`sef_status_log` (`ERROR`), jer je stanje opasno — dokument je kod nas storniran, a kupac na
+portalu ima važeću e-fakturu.
+
+**Šta se NE zna (traži demo ključ, ne pogađanje):**
+1. tačan oblik JSON tela za `/storno` (BigBit izvor je zaključan; §8.2 daje samo rutu i guard);
+2. koji SEF statusi guard `ER_FakturaMozeDaSeStornira` propušta;
+3. da li storniranje prihvaćene fakture na SEF-u traži saglasnost kupca (portal to traži za
+   deo slučajeva) — od toga zavisi da li je uopšte sinhrona radnja ili zahtev sa čekanjem.
+
+**Pod kojim uslovima se javlja.** Storno računa čiji je outbox red `DELIVERED`. Lokalni storno
+se **izvrši i komituje** (radi se posle transakcije), pa dokument kod nas jeste storniran, ali
+zahtev vrati 409 — što je i namera: ispravka prema kupcu tada ide **knjižnim odobrenjem**, a ne
+poništavanjem e-fakture. Dok se rute ne implementiraju, jedini put da se prihvaćena e-faktura
+poništi jeste **ručno na portalu**.
+
+### N2-SEF — izveštaj o storniranju broji REDOVE, ne ishode (`sales/fakturisanje.service.ts`)
+
+**Kontekst.** Od 03.08.2026. `SefService.cancel` **baca** kad SEF ne potvrdi otkazivanje (red
+pada u status `CANCEL_PENDING`, v. obrazloženje u `sales/sef/sef.service.ts`). Razlog je
+izmeren: `cancelSefOutbox` id reda upisuje u `cancelledOutboxIds` **bez obzira na ishod**, pa je
+ekran na timeout javljao „Račun storniran. Otkazano SEF redova: 1." dok je kupac imao živu
+e-fakturu (outbox #901, `SENT`, `sefInvoiceId 555111`, timeout).
+
+**Šta ostaje.** Petlja u `cancelSefOutbox` se sada prekida na PRVOM neuspelom redu, pa se
+ostali redovi tog dokumenta ne obrade. Nije opasno (`cancelPendingLocally` se izvršava PRVI, a
+`send()` odbija slanje reda u `CANCEL_PENDING` i storniranog dokumenta), ali jeste nedovršeno.
+Lek je u tom fajlu, ne u SEF sloju: skupljati ishod **po redu** (`Promise.allSettled` ili
+`try/catch` u petlji) i vratiti tri liste — otkazani, lokalno otkazani i `sefCancelPendingIds`
+— pa da poruka na ekranu glasi „stornirano; N redova čeka potvrdu otkazivanja na SEF-u".
+Nije urađeno ovde jer `sales/fakturisanje.service.ts` u ovom paketu menja drugi agent.
+
 ---
 
 ## 🔶 OTVORENO — uparivanje uplata (peti krug, 02.08.2026)

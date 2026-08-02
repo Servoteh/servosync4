@@ -105,6 +105,17 @@ function makeService(opts: {
     },
     company: { findUnique: jest.fn().mockResolvedValue(COMPANY) },
     customer: { findUnique: jest.fn().mockResolvedValue(CUSTOMER) },
+    // Registar vrsta — kapija `enqueue`-a od 03.08.2026. pita njega sme li vrsta na SEF
+    // (`post_in_vat_ledger`, v. `assertDocumentTypeMayGoToSef`). `IFUSL` je izlazna
+    // faktura i po seed-u migracije nosi TRUE.
+    documentType: {
+      findUnique: jest.fn().mockResolvedValue({
+        code: "IFUSL",
+        description: "Izlazna faktura — usluge",
+        isInbound: false,
+        postInVatLedger: true,
+      }),
+    },
     item: { findMany: jest.fn().mockResolvedValue([]) },
     invoiceAdvanceApplication: {
       findMany: jest.fn().mockResolvedValue(opts.applications ?? []),

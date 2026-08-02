@@ -4501,8 +4501,11 @@ model SefOutbox {
 
   ublXml String? @map("ubl_xml") @db.Text // generisan UBL 2.1 XML (telo POST-a)
 
-  /// PENDING | SENT | DELIVERED | REJECTED | CANCELLED
+  /// PENDING | SENT | DELIVERED | REJECTED | CANCELLED | CANCEL_PENDING
   /// (SEF statusi: Draft/New/Sent/Seen/Approved/Rejected/Cancelled/Storno → mapirano)
+  /// CANCEL_PENDING = „storniran kod nas, SEF NIJE potvrdio otkazivanje" — jedino stanje u
+  /// kome se naša evidencija i SEF svesno razilaze; čeka ponovni pokušaj (v. `sef.service.ts`,
+  /// `SEF_OUTBOX_CANCEL_PENDING`). Nije SEF status i ne dolazi sa portala.
   status String @default("PENDING") @map("status") @db.VarChar(20)
 
   sefInvoiceId String? @map("sef_invoice_id") @db.VarChar(64) // SalesInvoiceId vraćen od SEF-a
