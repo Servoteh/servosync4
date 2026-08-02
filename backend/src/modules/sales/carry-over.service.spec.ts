@@ -208,6 +208,115 @@ describe("DocumentCarryOverService — koeficijent cene preživljava prepis", ()
     );
   });
 
+  /**
+   * REZERVA ZA BAZNU CENU vs. PRENOS KOEFICIJENTA (treći krug pregleda 02.08.2026).
+   * ───────────────────────────────────────────────────────────────────────────────
+   * `base_unit_price` je `NOT NULL DEFAULT 0`, pa stavka koju je napisao pisac stariji
+   * od kolone nosi 0 — zbog toga rezerva `base := unitPrice` uopšte postoji. Dok je
+   * cilj dobijao koeficijent 1, ta rezerva je bila tačna. Otkad prepis prenosi
+   * koeficijent, ista rezerva ruši invarijantu u DRUGU stranu: cilj sa bazom 450 i
+   * koeficijentom 0,5 bi na prvu izmenu stavke izveo 225 — cena PREPOLOVLJENA.
+   */
+  describe("rezerva za baznu cenu (bazna 0) se slaže sa prenetim koeficijentom", () => {
+    it("SCENARIO bazna 0 + koeficijent 0,5 → cilj dobija baznu 900, ne 450", async () => {
+      const db = makeDb({ items: [proformaItem({ baseUnitPrice: new D(0) })] });
+      const invoice = await service(db).createInvoiceFromProforma(1, "IFR");
+      const line = (invoice.items as Row[])[0];
+
+      // Cena PRE koeficijenta: 450 ÷ 0,5. Na starom kodu je ovde stajalo 450.
+      expect((line.baseUnitPrice as Prisma.Decimal).toFixed(2)).toBe("900.00");
+    });
+
+    it("invarijanta `unitPrice = baseUnitPrice × koeficijent` važi i za taj slučaj", async () => {
+      const db = makeDb({ items: [proformaItem({ baseUnitPrice: new D(0) })] });
+      const invoice = await service(db).createInvoiceFromProforma(1, "IFR");
+      const line = (invoice.items as Row[])[0];
+
+      // Ovo je tačno ono što radi grana `SalesService.updateItem` bez preračuna cene:
+      // na starom kodu je davala 225,00 i tiho spuštala cenu na pola.
+      const derived = (line.baseUnitPrice as Prisma.Decimal).mul(
+        invoice.priceCoefficient as Prisma.Decimal,
+      );
+      expect(derived.toFixed(2)).toBe("450.00");
+      expect(derived.toFixed(2)).toBe(
+        (line.unitPrice as Prisma.Decimal).toFixed(2),
+      );
+      // Sam prepis i dalje ne dira nijedan iznos — menja se samo razmera bazne cene.
+      expect((line.unitPrice as Prisma.Decimal).toFixed(2)).toBe("450.00");
+      expect((line.vatBase as Prisma.Decimal).toFixed(2)).toBe("450.00");
+    });
+
+    it("koeficijent 1 uz baznu 0 → i dalje čista zatečena cena (nema regresije)", async () => {
+      const db = makeDb({
+        invoice: {
+          priceCoefficient: new D(1),
+          priceCoefficientAppliedAt: null,
+          priceCoefficientAppliedBy: null,
+        },
+        items: [
+          proformaItem({
+            baseUnitPrice: new D(0),
+            unitPrice: new D(900),
+            vatBase: new D(900),
+            vatAmount: new D(180),
+            lineTotal: new D(1080),
+          }),
+        ],
+      });
+      const invoice = await service(db).createInvoiceFromProforma(1, "IFR");
+      const line = (invoice.items as Row[])[0];
+
+      expect((line.baseUnitPrice as Prisma.Decimal).toFixed(2)).toBe("900.00");
+    });
+
+    it("upisana bazna cena ima prednost — deljenje se ne dešava", async () => {
+      const db = makeDb(); // bazna 900, koeficijent 0,5
+      const invoice = await service(db).createInvoiceFromProforma(1, "IFR");
+      const line = (invoice.items as Row[])[0];
+
+      // 900 ostaje 900 (a ne 900 ÷ 0,5 = 1.800) — rezerva se pali samo za baznu 0.
+      expect((line.baseUnitPrice as Prisma.Decimal).toFixed(2)).toBe("900.00");
+    });
+
+    it("koeficijent 0 ne deli nulom (legacy red bez DB CHECK-a)", async () => {
+      // `chk_invoices_price_coefficient` traži > 0, ali uvezeni/legacy red tu garanciju
+      // nema. Infinity u novčanoj koloni bi oborio upis — razmera pada na 1:1.
+      for (const coefficient of [new D(0), new D(-2), null, undefined]) {
+        const db = makeDb({
+          invoice: { priceCoefficient: coefficient },
+          items: [proformaItem({ baseUnitPrice: new D(0) })],
+        });
+        const invoice = await service(db).createInvoiceFromProforma(1, "IFR");
+        const line = (invoice.items as Row[])[0];
+
+        const base = line.baseUnitPrice as Prisma.Decimal;
+        expect(base.isFinite()).toBe(true);
+        expect(base.toFixed(2)).toBe("450.00");
+      }
+    });
+
+    it("koeficijent koji se ne deli tačno se zaokružuje na skalu kolone (19,4)", async () => {
+      const db = makeDb({
+        invoice: { priceCoefficient: new D("0.3") },
+        items: [
+          proformaItem({
+            baseUnitPrice: new D(0),
+            unitPrice: new D(100),
+            vatBase: new D(100),
+          }),
+        ],
+      });
+      const invoice = await service(db).createInvoiceFromProforma(1, "IFR");
+      const line = (invoice.items as Row[])[0];
+      const base = line.baseUnitPrice as Prisma.Decimal;
+
+      expect(base.toFixed(4)).toBe("333.3333"); // `base_unit_price` je Decimal(19,4)
+      // Invarijanta preživljava zaokruženje na novčanoj skali (isto zaokruženje
+      // koje radi `sales.service.money`).
+      expect(base.mul(new D("0.3")).toFixed(2)).toBe("100.00");
+    });
+  });
+
   it("predračun bez koeficijenta (1) daje račun sa 1 — nema regresije", async () => {
     const db = makeDb({
       invoice: {

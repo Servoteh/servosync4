@@ -263,6 +263,77 @@ describe("reference-parser.util — parseReference", () => {
       expect(parseReference("7/26").candidates).toContain("7/26");
     });
 
+    /**
+     * MODEL ISPRED SERIJE — ista rupa, jedan zapis dalje (treći krug pregleda 02.08.2026).
+     * Brana je gledala samo POČETAK sirovog PNB-a, pa je bilo dovoljno da platilac ispred
+     * serije otkuca model ili kontrolni broj da bi `7/26` (broj KONAČNE fakture) opet
+     * iscurio. Izmereno na starom kodu: `97 A-7/26` → […,"7","726","26","7/26"].
+     */
+    it("SCENARIO 97 A-7/26 (model ispred serije) → nijedan kandidat bez `A-`", () => {
+      const { candidates } = parseReference("97 A-7/26");
+
+      expect(candidates[0]).toBe("97 A-7/26"); // egzaktan ostaje prvi
+      expect(candidates).toEqual([
+        "97 A-7/26",
+        "A-7/26",
+        "A-7",
+        "A-726",
+        "A-26",
+      ]);
+      expect(candidates).not.toContain("7/26");
+      expect(candidates).not.toContain("7");
+      expect(candidates).not.toContain("726");
+      expect(candidates).not.toContain("26");
+    });
+
+    it("model + kontrolni broj ispred serije, u sva tri zapisa", () => {
+      // Slepljeno („97124"), razdvojeno („97 12") i bez razmaka do serije — sve tri
+      // varijante stižu iz banke, i nijedna ne sme da probije branu.
+      for (const raw of [
+        "97124 A-7/26",
+        "97 12 A-7/26",
+        "97A-7/26",
+        "9712-A-7/26",
+      ]) {
+        const { candidates } = parseReference(raw);
+        expect(candidates[0]).toBe(raw);
+        expect(candidates).toContain("A-7/26");
+        expect(candidates).not.toContain("7/26");
+        expect(candidates).not.toContain("726");
+      }
+    });
+
+    it("datumska brana važi i kad model gura seriju (97 A-12-08-26)", () => {
+      const { candidates } = parseReference("97 A-12-08-26");
+      expect(candidates).toEqual(["97 A-12-08-26", "A-12-08-26"]);
+      expect(candidates).not.toContain("8/26");
+      expect(candidates).not.toContain("A-8/26");
+    });
+
+    it("slovo koje NIJE serija ostaje netaknuto i iza modela (97 B-7/26 → 7/26)", () => {
+      // Brana važi samo za serije iz numeracije; svako drugo slovo je i dalje običan
+      // separator-šum, pa se `7/26` legitimno rekonstruiše.
+      expect(parseReference("B-7/26").candidates).toContain("7/26");
+      expect(parseReference("97 B-7/26").candidates).toContain("7/26");
+    });
+
+    it("svesno odstupanje ostaje: `A 657/25` ne daje goli broj fakture", () => {
+      // Slovo „A" kao šum ispred broja fakture i dalje odvodi uparivanje na fallback
+      // po iznosu — pošten promašaj je jeftiniji od zatvaranja pogrešne stavke.
+      const { candidates } = parseReference("A 657/25");
+      expect(candidates[0]).toBe("A 657/25");
+      expect(candidates).toContain("A-657/25");
+      expect(candidates).not.toContain("657/25");
+    });
+
+    it("čisto numerički PNB sa modelom nije dotaknut (97 657 25 i dalje daje 657/25)", () => {
+      // Glava se odbacuje SAMO kad iza nje stoji oznaka serije; bez slova se ne menja ništa.
+      expect(parseReference("97 657 25").candidates).toContain("657/25");
+      expect(parseReference("9712 657-25").candidates).toContain("657/25");
+      expect(parseReference("123-2026").candidates).toContain("123/2026");
+      expect(parseReference("12-08-26").candidates).toEqual(["12-08-26"]);
+    });
+
     it("prefiks serije je isti kao u numeraciji (jedna istina za AVR)", () => {
       // Kad bi se razišli, parser bi opet propuštao goli broj — i to tiho.
       expect(SERIES_PREFIXES).toContain(seriesPrefixFor("AVR"));

@@ -28,7 +28,8 @@
  *   (6) PNB koji je DATUM .......................... samo sirov trim, bez ijednog
  *        izvedenog kandidata (v. `isDateTriplet` — `12-08-26` ne sme da dâ `8/26`)
  *   (7) PNB sa PREFIKSOM SERIJE (`A-7/26`) ......... svi izvedeni kandidati NOSE prefiks
- *        (v. `SERIES_PREFIXES` — `A-7/26` ne sme da dâ `7/26`)
+ *        (v. `SERIES_PREFIXES` — `A-7/26` ne sme da dâ `7/26`); serija se prepoznaje i
+ *        kad joj prethodi model/kontrolni broj (`97 A-7/26`)
  *
  * MODEL: `BankStatementLine` NEMA kolonu za model (provereno u schema.prisma), pa
  * se model NE persistuje — prosleđuje se opciono kroz `parseReference(raw, model)`
@@ -147,15 +148,44 @@ function isDateTriplet(a: string, b: string, c: string): boolean {
  * (`A 657/25`), uparivanje po broju neće uspeti i uplata pada na fallback po iznosu.
  * To je namerno isti izbor kao kod datumskog PNB-a — pošten fallback je jeftiniji od
  * samouverenog zatvaranja pogrešne stavke.
+ *
+ * DOPUNA (treći krug pregleda, 02.08.2026): brana je gledala samo POČETAK sirovog
+ * PNB-a, pa ju je jedan model ispred serije potpuno gasio — izmereno, `97 A-7/26` je
+ * i dalje davao `7/26`. Serija se zato traži i IZA vodećeg modela/kontrolnog broja
+ * (v. `LEADING_MODEL_RE`).
  */
 export const SERIES_PREFIXES: readonly string[] = ["A-"];
 
 /**
- * Prepoznaj prefiks serije na početku PNB-a: slova serije, pa OPCIONO jedan
- * razdelnik (crtica/razmak/kosa crta), pa obavezno CIFRA.
+ * VODEĆI MODEL / KONTROLNI BROJ — čisto numerička glava (cifre i razdelnici) koju
+ * platilac ukuca PRE oznake serije: `97 A-7/26`, `97124 A-7/26`, `97A-7/26`,
+ * `97 12 A-7/26`. Glava sme da bude i razdvojena (model pa kontrolni broj), jer bi se
+ * inače brana probijala samim ubacivanjem razmaka.
+ *
+ * Namerno NE sadrži slova: prvo slovo zaustavlja glavu, pa je ono što sledi ili oznaka
+ * serije (`A` + cifra) ili šum koji ostatak parsera obrađuje kao i pre.
+ */
+const LEADING_MODEL_RE = /^\d[\d()\\\/\s-]*/;
+
+/**
+ * Prepoznaj prefiks serije: slova serije, pa OPCIONO jedan razdelnik
+ * (crtica/razmak/kosa crta), pa obavezno CIFRA.
  *
  * Zahtev da odmah sledi cifra je brana od lažnog pogotka: `ABC123` nije serija „A"
  * sa ostatkom `BC123`, a goli `A-` bez broja nije poziv na broj.
+ *
+ * TRAŽI SE NA DVA MESTA: na samom početku PNB-a i odmah iza vodećeg modela/kontrolnog
+ * broja (`LEADING_MODEL_RE`). Bez druge tačke je cela brana bila probojna — dovoljno je
+ * bilo da model stoji ispred serije (`97 A-7/26`) pa da se izvede goli `7/26`, broj
+ * KONAČNE fakture (v. `SERIES_PREFIXES`, scenario avansa).
+ *
+ * Dublje se NE ide: slovo usred PNB-a nije oznaka serije nego šum, a svako proširenje
+ * dohvata ovde košta kandidate koje bi ostatak PNB-a inače legitimno dao.
+ *
+ * Model se pritom ODBACUJE — kandidati se grade samo od dela iza serije. Posledica je
+ * ista kao kod `A 657/25`: ako neko ispred serije stavi pravi broj dokumenta, taj broj
+ * neće biti kandidat i uparivanje pada na fallback po iznosu. To je jeftinije od rizika
+ * da uplata na avans sedne na fakturu.
  *
  * @returns `{ prefix, rest }` u kanonskom obliku (`prefix` uvek kao u numeraciji), ili
  *          `null` kad PNB ne nosi seriju.
@@ -163,12 +193,18 @@ export const SERIES_PREFIXES: readonly string[] = ["A-"];
 function matchSeriesPrefix(
   raw: string,
 ): { prefix: string; rest: string } | null {
-  for (const prefix of SERIES_PREFIXES) {
-    const letters = prefix.replace(/[^A-Za-z]/g, "");
-    if (letters.length === 0) continue;
-    const re = new RegExp(`^${letters}[-\\s/]?(?=\\d)`, "i");
-    const m = re.exec(raw);
-    if (m) return { prefix, rest: raw.slice(m[0].length) };
+  const head = LEADING_MODEL_RE.exec(raw);
+  const starts = head && head[0].length > 0 ? [0, head[0].length] : [0];
+
+  for (const start of starts) {
+    const tail = raw.slice(start);
+    for (const prefix of SERIES_PREFIXES) {
+      const letters = prefix.replace(/[^A-Za-z]/g, "");
+      if (letters.length === 0) continue;
+      const re = new RegExp(`^${letters}[-\\s/]?(?=\\d)`, "i");
+      const m = re.exec(tail);
+      if (m) return { prefix, rest: tail.slice(m[0].length) };
+    }
   }
   return null;
 }

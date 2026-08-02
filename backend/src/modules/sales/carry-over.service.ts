@@ -40,6 +40,49 @@ const TARGET_TYPES = new Set([
 
 const EXPORT_TYPES = new Set(["IZVRO", "IZVGP", "IZVUS"]);
 
+/** Skala kolone `base_unit_price` (`Decimal(19,4)`) — deljenje se zaokružuje na nju. */
+const BASE_PRICE_SCALE = 4;
+const ROUND_HALF_UP = Prisma.Decimal.ROUND_HALF_UP;
+
+/**
+ * BAZNA CENA PRI PREPISU — rezerva mora da poštuje KOEFICIJENT, inače ruši istu
+ * invarijantu koju čuva.
+ * ───────────────────────────────────────────────────────────────────────────────
+ * Stavka drži dve razmere: `baseUnitPrice` je PRE koeficijenta, `unitPrice` POSLE
+ * (`unitPrice = baseUnitPrice × priceCoefficient`, v. `sales.service.deriveFromBase`).
+ * Kolona `base_unit_price` je `NOT NULL DEFAULT 0`, pa stavka koju je napisao pisac
+ * stariji od kolone (ili uvoz) nosi 0 — zato rezerva uopšte postoji
+ * (v. `sales.service.resolveBaseUnitPrice`).
+ *
+ * NALAZ (treći krug pregleda, 02.08.2026): otkad prepis prenosi i `priceCoefficient`
+ * (v. niže), rezerva `base := unitPrice` više nije neutralna. Za izvor sa bazom 0 i
+ * koeficijentom 0,5 cilj je dobijao `baseUnitPrice = unitPrice = 450` UZ koeficijent
+ * 0,5 — pa bi prva izmena stavke izvela `450 × 0,5 = 225` i tiho PREPOLOVILA cenu.
+ * Ranije (koeficijent na cilju uvek 1) je ista rezerva bila tačna; kvar je nastao tek
+ * spajanjem dve ispravke.
+ *
+ * TAČNA REZERVA je zato `unitPrice ÷ koeficijent`: vraća `unitPrice` u razmeru PRE
+ * koeficijenta, pa `base × koeficijent` opet daje polaznu cenu.
+ *
+ * DELJENJE NULOM: DB CHECK `chk_invoices_price_coefficient` traži > 0, ali legacy i
+ * uvezeni redovi tu garanciju nemaju — 0, negativan ili neupisan koeficijent znači
+ * razmeru 1:1, ne `Infinity` u novčanoj koloni.
+ */
+export function carryBaseUnitPrice(
+  baseUnitPrice: Prisma.Decimal | null | undefined,
+  unitPrice: Prisma.Decimal,
+  coefficient: Prisma.Decimal | null | undefined,
+): Prisma.Decimal {
+  if (baseUnitPrice?.greaterThan(0)) return baseUnitPrice;
+  if (!unitPrice) return unitPrice;
+  if (!coefficient || !coefficient.greaterThan(0) || coefficient.equals(1)) {
+    return unitPrice;
+  }
+  return unitPrice
+    .div(coefficient)
+    .toDecimalPlaces(BASE_PRICE_SCALE, ROUND_HALF_UP);
+}
+
 @Injectable()
 export class DocumentCarryOverService {
   constructor(private readonly prisma: PrismaService) {}
@@ -157,12 +200,16 @@ export class DocumentCarryOverService {
               unit: it.unit,
               quantity: it.quantity,
               unitPrice: it.unitPrice,
-              // Osnovica za koeficijent (§8/O1) se PRENOSI sa izvorne stavke; ako
-              // je izvor stariji od kolone, pada na njegovu cenu. Bez ovoga bi
-              // prepisan dokument imao baznu cenu 0 i prvi dodir bi ga nulirao.
-              baseUnitPrice: it.baseUnitPrice?.greaterThan(0)
-                ? it.baseUnitPrice
-                : it.unitPrice,
+              // Osnovica za koeficijent (§8/O1) se PRENOSI sa izvorne stavke; ako je
+              // izvor stariji od kolone, pada na cenu VRAĆENU U RAZMERU PRE KOEFICIJENTA
+              // (v. `carryBaseUnitPrice`). Bez rezerve bi prepisan dokument imao baznu
+              // cenu 0 i prvi dodir bi ga nulirao; bez deljenja koeficijentom bi ga prvi
+              // dodir umanjio za taj isti koeficijent.
+              baseUnitPrice: carryBaseUnitPrice(
+                it.baseUnitPrice,
+                it.unitPrice,
+                proforma.priceCoefficient,
+              ),
               // Cena PRE rabata se PRENOSI kakva jeste — i kad je null. Račun nastao
               // prepisom nosi isti rabat kao predračun, pa mora da nosi i istu punu cenu;
               // bez prenosa bi red „Rabat" bio tačan na predračunu, a nedokaziv na računu.
@@ -188,7 +235,10 @@ export class DocumentCarryOverService {
       const linked = await tx.invoice.updateMany({
         where: {
           id: proforma.id,
-          OR: [{ linkedInvoiceDocId: null }, { linkedInvoiceDocId: { lte: 0 } }],
+          OR: [
+            { linkedInvoiceDocId: null },
+            { linkedInvoiceDocId: { lte: 0 } },
+          ],
         },
         data: { linkedInvoiceDocId: invoice.id },
       });
