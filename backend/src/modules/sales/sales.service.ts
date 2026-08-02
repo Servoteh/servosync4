@@ -7,6 +7,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PricingService } from "./pricing.service";
+import { documentVatTotals } from "./vat-totals";
 import { assertVatPeriodNotLocked } from "../pdv/vat-period-lock";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
@@ -670,6 +671,16 @@ export class SalesService {
    * B3 — zbirovi dokumenta iz STAVKI U BAZI (posle upisa, u istoj transakciji).
    * Nikad inkrementalno: jedan promašen put ostavio bi zaglavlje i stavke da se
    * ne slažu, a to je greška koja se vidi tek na štampi/knjiženju.
+   *
+   * ⚠️ PDV SE NE SABIRA SA STAVKI (ispravka 02.08.2026, v. `vat-totals.ts`): ovde se
+   * sabira SAMO osnovica (po stopi), a porez je `round2(osnovica_stope × stopa)`.
+   * Do ove izmene je `vatTotal` bio `Σ vatAmount` po stavkama, pa je dokument sa pet
+   * stavki od po 100,01 din (20 %) nosio osnovicu 500,05 uz PDV 100,00 — a
+   * `500,05 × 20 % = 100,01`. Papir tu jednačinu ŠTAMPA, SEF je proverava
+   * (EN 16931 BR-CO-17), a KIF iz PDV-a izvodi osnovicu.
+   *
+   * `grossTotal` je zato `netTotal + vatTotal`, a ne `Σ lineTotal`: `lineTotal` stavke
+   * u sebi nosi zaokružen PDV stavke, koji nije deo poreza dokumenta.
    */
   private async recalcTotals(
     tx: Prisma.TransactionClient,
@@ -677,17 +688,13 @@ export class SalesService {
   ): Promise<void> {
     const items = await tx.invoiceItem.findMany({
       where: { invoiceId },
-      select: { vatBase: true, vatAmount: true, lineTotal: true },
+      select: { vatRateCode: true, vatBase: true },
     });
 
-    let netTotal = ZERO;
-    let vatTotal = ZERO;
-    let grossTotal = ZERO;
-    for (const item of items) {
-      netTotal = netTotal.add(item.vatBase);
-      vatTotal = vatTotal.add(item.vatAmount);
-      grossTotal = grossTotal.add(item.lineTotal);
-    }
+    // `isExport` se ovde NE prosleđuje namerno: stavke izvoznog dokumenta već nose
+    // šifru "0" (`deriveFromBase` je forsira), pa je grupisanje po šifri dovoljno i
+    // zbir ne zavisi od toga da li je pozivalac zapamtio da doda zastavicu.
+    const { netTotal, vatTotal, grossTotal } = documentVatTotals(items);
 
     await tx.invoice.update({
       where: { id: invoiceId },

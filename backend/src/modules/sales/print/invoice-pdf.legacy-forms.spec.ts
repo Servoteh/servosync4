@@ -195,4 +195,64 @@ describe("InvoicePdfService — vrste bez donetog obrasca idu na opšti renderer
     // „Za uplatu" i dalje odbija tačno ono što je na papiru navedeno: 12.000 − 2.000.
     expect(joined).toContain("10.000,00");
   });
+
+  /**
+   * 🔴 VISOK NALAZ (peti krug, 02.08.2026): rekapitulacija poreza je PDV grupe dobijala
+   * SABIRANJEM zaokruženih PDV-a po stavci, pa je odštampani red poricao sam sebe —
+   * `20 %  500,05  100,00`, a `500,05 × 20 % = 100,01`. Doneti papir `IFR.pdf` (657/25)
+   * tu jednačinu drži tačnu (`99.363,64 × 20 % = 19.872,73`).
+   *
+   * ULAZ: pet stavki po 100,01 din. Zbir PDV-a po stavci je 5 × 20,00 = 100,00; porez
+   * dokumenta (i zaglavlje, i GK, i SEF) je `round2(500,05 × 20 %) = 100,01`.
+   */
+  it("rekapitulacija PDV-a množi osnovicu stopom, ne sabira PDV po stavkama", async () => {
+    const items = [1, 2, 3, 4, 5].map((n) => ({
+      id: n,
+      lineNo: n,
+      itemId: 100,
+      description: `Stavka ${n}`,
+      unit: "kom",
+      quantity: D("1"),
+      unitPrice: D("100.01"),
+      discountPercent: D("0"),
+      vatRateCode: "3",
+      vatBase: D("100.01"),
+      // Zaokružen PDV STAVKE (izvedena informacija) — zbir mu je 100,00.
+      vatAmount: D("20.00"),
+      lineTotal: D("120.01"),
+    }));
+    const prisma = prismaFor(
+      row({
+        documentType: "KO",
+        documentNumber: "KO-5/26",
+        netTotal: D("500.05"),
+        vatTotal: D("100.01"),
+        grossTotal: D("600.06"),
+        items,
+      }),
+    );
+
+    const pdf = new PdfService();
+    let captured: { content?: unknown } | undefined;
+    jest.spyOn(pdf, "render").mockImplementation(async (dd) => {
+      captured = dd as { content?: unknown };
+      return Buffer.from("x");
+    });
+    const service = new InvoicePdfService(
+      prisma as unknown as PrismaService,
+      pdf,
+      new BarcodeService(),
+    );
+
+    await service.buildInvoicePdf(1, "creditNote");
+    const texts = collectText(captured?.content);
+    const i = texts.indexOf("500,05");
+    expect(i).toBeGreaterThanOrEqual(0);
+    // Red rekapitulacije: osnovica → PDV → ukupno. Množenje odštampanih brojeva mora
+    // da da odštampan rezultat.
+    expect(texts[i + 1]).toBe("100,01");
+    expect(texts[i + 2]).toBe("600,06");
+    // Kontrolni red se poklapa sa bruto iznosom → nema crvenog upozorenja o razlici.
+    expect(texts.join("\n")).not.toContain("razlika");
+  });
 });

@@ -413,11 +413,17 @@ describe("bruto po stavci (kolona CENA / VREDNOST)", () => {
 });
 
 /**
- * NALAZ N3 (02.08.2026): STORNO red sa rabatom od 100 % davao je „Rabat 0,00" uz `R% 100`.
- * Uslov u prvom izvoru je odbacivao svaki NEGATIVAN iznos kao „protivrečan podatak", a na
- * storno redu je negativan rabat tačan — on poništava rabat sa originalne fakture.
+ * NALAZ N3 (02.08.2026): red sa NEGATIVNIM iznosom i rabatom od 100 % davao je
+ * „Rabat 0,00" uz `R% 100`. Uslov u prvom izvoru je odbacivao svaki negativan iznos kao
+ * „protivrečan podatak", a kad iznos poništava raniju fakturu je negativan rabat tačan.
+ *
+ * ⚠️ OGRANIČENJE OPISA (peti krug): ovakav red NE POSTOJI u tabeli `invoice_items` —
+ * migracija `20260725200000_faza2_constraint_mreza` na njoj ima
+ * `CHECK (quantity > 0 AND discount_percent BETWEEN 0 AND 100 …)`. Testovi ispod mere
+ * ponašanje ČISTE FUNKCIJE nad `PrintLine` (koji gradi i opšti renderer, i ovaj spec),
+ * ne zatečeni red u bazi — tvrdnja da je scenario viđen na podacima je povučena.
  */
-describe("storno red (negativna količina)", () => {
+describe("red sa negativnim iznosom (poništenje ranije fakture)", () => {
   const storno = line({
     quantity: D("-10"),
     unitPrice: D("0"),
@@ -426,7 +432,7 @@ describe("storno red (negativna količina)", () => {
     lineTotal: D("0"),
   });
 
-  it("rabat 100 % na storno redu daje −10.000,00, ne 0,00", () => {
+  it("rabat 100 % na negativnom redu daje −10.000,00, ne 0,00", () => {
     expect(lineDiscountAmount(storno).toFixed(2)).toBe("-10000.00");
   });
 
@@ -434,11 +440,11 @@ describe("storno red (negativna količina)", () => {
     const g = lineGross(storno);
     expect(g.unitPrice.toFixed(2)).toBe("1000.00");
     expect(g.total.toFixed(2)).toBe("-10000.00");
-    // Papir i na stornu zatvara sam sa sobom: bruto − rabat = osnovica (0,00).
+    // Papir i na negativnom redu zatvara sam sa sobom: bruto − rabat = osnovica (0,00).
     expect(g.total.sub(g.discount).toFixed(2)).toBe("0.00");
   });
 
-  it("storno sa rabatom 10 % ide istim putem (−9.000,00 → rabat −1.000,00)", () => {
+  it("negativan red sa rabatom 10 % ide istim putem (−9.000,00 → rabat −1.000,00)", () => {
     const g = lineGross(
       line({
         quantity: D("-10"),

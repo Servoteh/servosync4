@@ -14,6 +14,7 @@ import { SefService } from "./sef/sef.service";
 import { ReservationService } from "../robno/reservation.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { PricingService } from "./pricing.service";
+import { documentVatTotals } from "./vat-totals";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   type CreateProformaDto,
@@ -62,6 +63,27 @@ const ACC_REVENUE_SERVICE = "6140"; // prihod od usluga (IFUSL)
 const ACC_VAT_OUT_20 = "4702"; // obaveza za izlazni PDV 20% (VISA)
 const ACC_VAT_OUT_10 = "4710"; // obaveza za izlazni PDV 10% (NIZA)
 
+/**
+ * KONTO IZLAZNOG PDV-a PO STOPI — po PROCENTU, ne po šifri.
+ *
+ * ⚠️ IZMEREN KVAR (02.08.2026): ovde je stajalo `ako je šifra "2" → 4710, INAČE → 4702`.
+ * Šifra "4" je POSEBNA stopa (8 %, POLJO) i padala je u „inače", pa se PDV od 8 % knjižio
+ * na konto `4702 — PDV 20 % na prodate robe`. GK bi balansirala (iznos je isti sa obe
+ * strane), ali bi POPDV polje 3.2 iz tog konta izvodilo osnovicu deljenjem sa 0,2 —
+ * osnovica od 8 % prometa bi ušla u obrazac umanjena za 60 %.
+ *
+ * ⚠️ KONTA ZA IZLAZNI PDV 8 % U KONTNOM PLANU NEMA (proveren
+ * `20260723155000_seed_chart_of_accounts` i `prisma/seed/vat-account-map.sql`: postoji samo
+ * `4750 — PDV po osnovu SOPSTVENE POTROŠNJE 8 %`, što nije promet po izdatoj fakturi).
+ * Konto se NE IZMIŠLJA — stopa bez konta se odbija sa objašnjenjem (isti obrazac kao
+ * `AdvanceInvoiceService`, nalaz Batch C R5), a pitanje je zapisano u
+ * `docs/PREOSTALE_FAZE.md` § „OTVORENO NA DAN 01.08.2026" i čeka knjigovođu.
+ */
+const VAT_OUT_ACCOUNT_BY_PERCENT: Readonly<Record<string, string>> = {
+  "20": ACC_VAT_OUT_20,
+  "10": ACC_VAT_OUT_10,
+};
+
 /** Vrsta naloga za ručno knjiženje računa prodaje. */
 const ORDER_TYPE_SALES = "IF";
 
@@ -74,6 +96,86 @@ interface LedgerLineDraft {
   debit: Prisma.Decimal;
   credit: Prisma.Decimal;
   description: string | null;
+}
+
+/**
+ * REDOVI RUČNOG NALOGA GK ZA IZLAZNI RAČUN — čist račun, bez baze.
+ *
+ *   kupac (2040 / 2050 izvoz)         DUG = osnovica + Σ PDV po stopama
+ *   prihod (6040 roba / 6140 usluga)  POT = osnovica
+ *   PDV po stopi (4702 / 4710)        POT = `round2(osnovica_stope × stopa)`
+ *
+ * ⚠️ PDV PO STOPI, NE PO STAVCI (ispravka 02.08.2026): iznosi dolaze iz istog računara
+ * koji puni `netTotal`/`vatTotal` na zaglavlju (`vat-totals.ts`). Do tada je knjižen
+ * `Σ vatAmount` po stavkama, pa je GK umela da nosi PDV koji se od `invoice.vatTotal`
+ * razlikuje za paru (izmereno: 5 stavki × 100,01 din uz 20 % → GK 100,00, faktura 100,01;
+ * na 20 stavki do 0,05). Nalog bi i tada balansirao — ista pogrešna suma stoji i na
+ * dugovnoj strani — ali bi kupčev dug u saldakontima odstupao od bruto iznosa fakture,
+ * a POPDV osnovica (izvedena iz PDV konta deljenjem stopom) od osnovice na papiru.
+ *
+ * IZVUČENO IZ SERVISA da bi moglo da se meri bez transakcije, numeracije naloga i mock-a
+ * cele Prisme: ovde je jedina aritmetika, a `postManualLedger` ostaje upis.
+ */
+export function buildSalesLedgerLines(
+  invoice: {
+    documentType: string;
+    documentNumber: string;
+    customerId: number | null;
+    isExport: boolean;
+  },
+  items: ReadonlyArray<{ vatRateCode: string; vatBase: Prisma.Decimal }>,
+): LedgerLineDraft[] {
+  const totals = documentVatTotals(items, { isExport: invoice.isExport });
+
+  const lines: LedgerLineDraft[] = [
+    {
+      accountCode: invoice.isExport
+        ? ACC_CUSTOMER_EXPORT
+        : ACC_CUSTOMER_DOMESTIC,
+      analyticalCode: invoice.customerId,
+      // Kupac duguje BAŠ bruto iznos fakture (`netTotal + vatTotal`) — isti broj koji
+      // stoji u zaglavlju, na papiru i u saldakontima.
+      debit: totals.grossTotal,
+      credit: ZERO,
+      description: `Kupac ${invoice.documentNumber}`,
+    },
+    {
+      accountCode: SERVICE_TYPES.has(invoice.documentType)
+        ? ACC_REVENUE_SERVICE
+        : ACC_REVENUE_GOODS,
+      analyticalCode: null,
+      debit: ZERO,
+      credit: totals.netTotal,
+      description: `Prihod ${invoice.documentNumber}`,
+    },
+  ];
+
+  if (invoice.isExport) return lines; // kategorija Z / čl. 24 — bez PDV linije
+
+  for (const group of totals.groups) {
+    if (group.vat.isZero()) continue;
+    const percent = group.ratePercent.toFixed(0);
+    const account = VAT_OUT_ACCOUNT_BY_PERCENT[percent];
+    // Stopa bez konta izlaznog PDV-a se do 02.08.2026. TIHO knjižila na konto stope od
+    // 20 % (v. `VAT_OUT_ACCOUNT_BY_PERCENT`). Bolje odbiti sa objašnjenjem nego
+    // proknjižiti porez na tuđe konto i time pokvariti POPDV.
+    if (!account) {
+      throw new UnprocessableEntityException(
+        `Za PDV stopu ${percent}% ne postoji konto izlaznog PDV-a u kontnom planu — ` +
+          `račun ${invoice.documentNumber} se ne može proknjižiti. ` +
+          `Konto mora da odredi knjigovođa (v. docs/PREOSTALE_FAZE.md).`,
+      );
+    }
+    lines.push({
+      accountCode: account,
+      analyticalCode: null,
+      debit: ZERO,
+      credit: group.vat,
+      description: `PDV ${percent}% ${invoice.documentNumber}`,
+    });
+  }
+
+  return lines;
 }
 
 /** Dopiši storno-razlog u napomenu fakture (čuva postojeći tekst, audit trag). */
@@ -148,17 +250,13 @@ export class FakturisanjeService {
     }
 
     // Za izvoz PDV se ne obračunava (kategorija Z) — nula PDV bez obzira na šifru.
-    let netTotal = ZERO;
-    let vatTotal = ZERO;
-    let grossTotal = ZERO;
     const itemsData = priced.map((row, idx) => {
       const p = row.priced;
       const vatBase = p.vatBase;
+      // PDV STAVKE je izvedena informacija (kolona „PDV" na papiru); porez dokumenta se
+      // NE dobija njegovim sabiranjem — v. `vat-totals.ts` i `documentVatTotals` ispod.
       const vatAmount = isExport ? ZERO : p.vatAmount;
       const lineTotal = vatBase.add(vatAmount);
-      netTotal = netTotal.add(vatBase);
-      vatTotal = vatTotal.add(vatAmount);
-      grossTotal = grossTotal.add(lineTotal);
       return {
         lineNo: idx + 1,
         itemId: row.input.itemId ?? null,
@@ -182,6 +280,14 @@ export class FakturisanjeService {
         vatAmount,
         lineTotal,
       };
+    });
+
+    // ZBIROVI DOKUMENTA — osnovica je zbir stavki, PDV je `round2(osnovica_stope × stopa)`
+    // (ispravka 02.08.2026; do tada `Σ vatAmount` po stavkama, v. `vat-totals.ts`).
+    // Stavke već nose šifru "0" na izvozu, ali se `isExport` prosleđuje i eksplicitno:
+    // ovaj put pravi dokument iz spoljnog tela i ne sme da zavisi od tuđeg upisa.
+    const { netTotal, vatTotal, grossTotal } = documentVatTotals(itemsData, {
+      isExport,
     });
 
     // T3/A8: kreditni limit kupca — 422 i pri kreiranju predračuna/ponude ako bi
@@ -896,9 +1002,17 @@ export class FakturisanjeService {
 
   /**
    * Ručni nalog GK za račun (IFUSL/uslužni ili bez robnog izlaza). Balans-kontrola.
-   *   kupac (2040 / 2050 izvoz) DUG  = O + P + Q
-   *   prihod (6040 roba / 6140 usluga) POT = O
-   *   PDV 4702 (20%) / 4710 (10%) POT = P / Q   (izvoz: bez PDV)
+   *   kupac (2040 / 2050 izvoz) DUG  = osnovica + Σ PDV po stopama
+   *   prihod (6040 roba / 6140 usluga) POT = osnovica
+   *   PDV 4702 (20%) / 4710 (10%) POT = PDV te stope   (izvoz: bez PDV)
+   *
+   * ⚠️ PDV PO STOPI, NE PO STAVCI (ispravka 02.08.2026): iznosi dolaze iz
+   * `documentVatTotals` — `round2(osnovica_stope × stopa)` — istog računara koji puni
+   * `netTotal`/`vatTotal` na zaglavlju. Do tada je knjižen `Σ vatAmount` po stavkama, pa
+   * je GK umela da nosi PDV koji se od `invoice.vatTotal` razlikuje za paru (na 20 stavki
+   * i do 0,05 din). Nalog bi i tada balansirao — jer se ista pogrešna suma pojavljuje i
+   * na dugovnoj strani — ali bi kupčev dug odstupao od bruto iznosa fakture, a POPDV
+   * osnovica izvedena iz PDV konta od osnovice na papiru.
    */
   private async postManualLedger(
     tx: Prisma.TransactionClient,
@@ -919,71 +1033,16 @@ export class FakturisanjeService {
     items?: Array<{
       vatRateCode: string;
       vatBase: Prisma.Decimal;
-      vatAmount: Prisma.Decimal;
     }>,
   ): Promise<number> {
-    // Agregati O (osnovica), P (PDV 20%), Q (PDV 10%) po stavkama.
     const lines =
       items ??
       (await tx.invoiceItem.findMany({
         where: { invoiceId: invoice.id },
-        select: { vatRateCode: true, vatBase: true, vatAmount: true },
+        select: { vatRateCode: true, vatBase: true },
       }));
 
-    let baseO = ZERO; // Σ osnovica
-    let vatP = ZERO; // Σ PDV 20%
-    let vatQ = ZERO; // Σ PDV 10%
-    for (const l of lines) {
-      baseO = baseO.add(l.vatBase);
-      if (invoice.isExport) continue; // izvoz bez PDV
-      if (l.vatRateCode === "2") vatQ = vatQ.add(l.vatAmount);
-      else vatP = vatP.add(l.vatAmount); // 20% default (kod "3"/"1")
-    }
-
-    const customerAcc = invoice.isExport
-      ? ACC_CUSTOMER_EXPORT
-      : ACC_CUSTOMER_DOMESTIC;
-    const revenueAcc = SERVICE_TYPES.has(invoice.documentType)
-      ? ACC_REVENUE_SERVICE
-      : ACC_REVENUE_GOODS;
-
-    const customerDebit = baseO.add(vatP).add(vatQ);
-    const analyticalCode = invoice.customerId;
-
-    const draftLines: LedgerLineDraft[] = [
-      {
-        accountCode: customerAcc,
-        analyticalCode,
-        debit: customerDebit,
-        credit: ZERO,
-        description: `Kupac ${invoice.documentNumber}`,
-      },
-      {
-        accountCode: revenueAcc,
-        analyticalCode: null,
-        debit: ZERO,
-        credit: baseO,
-        description: `Prihod ${invoice.documentNumber}`,
-      },
-    ];
-    if (!invoice.isExport) {
-      if (!vatP.isZero())
-        draftLines.push({
-          accountCode: ACC_VAT_OUT_20,
-          analyticalCode: null,
-          debit: ZERO,
-          credit: vatP,
-          description: `PDV 20% ${invoice.documentNumber}`,
-        });
-      if (!vatQ.isZero())
-        draftLines.push({
-          accountCode: ACC_VAT_OUT_10,
-          analyticalCode: null,
-          debit: ZERO,
-          credit: vatQ,
-          description: `PDV 10% ${invoice.documentNumber}`,
-        });
-    }
+    const draftLines = buildSalesLedgerLines(invoice, lines);
 
     // Odbaci nula-redove.
     const grouped = draftLines.filter(

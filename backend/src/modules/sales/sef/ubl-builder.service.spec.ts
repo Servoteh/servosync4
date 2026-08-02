@@ -463,3 +463,129 @@ describe("UblBuilderService — datum prometa je brana, ne preporuka", () => {
     expect(xml).not.toContain("<cac:Delivery>");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EN 16931 BR-CO-17 — porez grupe se DOBIJA iz osnovice i stope
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 🔴 VISOK NALAZ (peti krug, 02.08.2026): `cac:TaxSubtotal` je nosio `TaxAmount` kao
+ * ZBIR ZAOKRUŽENIH PDV-a PO STAVCI, pa je dokument obarao EN 16931 pravilo **BR-CO-17**:
+ *
+ *     TaxAmount == round2(TaxableAmount × Percent / 100)
+ *
+ * IZMERENO: 5 stavki × 100,01 din uz 20 % → `TaxableAmount 500,05`, `TaxAmount 100,00`,
+ * `Percent 20`, a `500,05 × 20 % = 100,01`. Isti brojevi su išli i na papir i u KIF.
+ */
+describe("UblBuilderService — BR-CO-17 (porez iz osnovice i stope)", () => {
+  const ubl = new UblBuilderService();
+
+  /** `TaxableAmount` / `TaxAmount` / `Percent` svake grupe, redom kako su ispisane. */
+  function subtotals(xml: string) {
+    const taxTotal = findFirst(new XmlDocument(xml), "cac:TaxTotal");
+    if (!taxTotal) throw new Error("nema cac:TaxTotal");
+    return elementChildren(taxTotal)
+      .filter((c) => c.name === "cac:TaxSubtotal")
+      .map((s) => ({
+        taxable: findFirst(s, "cbc:TaxableAmount")?.val ?? "",
+        tax: findFirst(s, "cbc:TaxAmount")?.val ?? "",
+        percent: findFirst(s, "cbc:Percent")?.val ?? "",
+      }));
+  }
+
+  it("5 stavki × 100,01 uz 20 % → TaxAmount 100.01, ne 100.00", () => {
+    const items = [1, 2, 3, 4, 5].map((n) =>
+      line({
+        lineNo: n,
+        quantity: D(1),
+        unitPrice: D("100.01"),
+        vatBase: D("100.01"),
+        // Zbir PDV-a po stavci je 100,00 — namerno se prosleđuje, da se vidi da se
+        // VIŠE NE KORISTI (UBL stavka uopšte nema element za iznos poreza).
+        vatAmount: D("20.00"),
+        lineTotal: D("120.01"),
+      }),
+    );
+    const xml = ubl.build(
+      params({
+        invoice: {
+          ...params().invoice,
+          netTotal: D("500.05"),
+          vatTotal: D("100.01"),
+          grossTotal: D("600.06"),
+        },
+        items,
+      }),
+    );
+
+    expect(subtotals(xml)).toEqual([
+      { taxable: "500.05", tax: "100.01", percent: "20.00" },
+    ]);
+  });
+
+  it("dve stope: SVAKA grupa zadovoljava BR-CO-17, a zbir je `vatTotal` zaglavlja", () => {
+    const items = [
+      line({ lineNo: 1, vatRateCode: "3", vatBase: D("100.01"), vatAmount: D("20.00") }),
+      line({ lineNo: 2, vatRateCode: "3", vatBase: D("100.01"), vatAmount: D("20.00") }),
+      line({ lineNo: 3, vatRateCode: "2", vatBase: D("100.05"), vatAmount: D("10.01") }),
+      line({ lineNo: 4, vatRateCode: "2", vatBase: D("100.05"), vatAmount: D("10.01") }),
+    ];
+    const xml = ubl.build(
+      params({
+        // Zaglavlje nosi ono što `sales/vat-totals.ts` izračuna nad istim stavkama.
+        invoice: {
+          ...params().invoice,
+          netTotal: D("400.12"),
+          vatTotal: D("60.01"),
+          grossTotal: D("460.13"),
+        },
+        items,
+      }),
+    );
+
+    const groups = subtotals(xml);
+    // 20 %: 200,02 × 0,20 = 40,004 → 40,00.  10 %: 200,10 × 0,10 = 20,01.
+    expect(groups).toEqual([
+      { taxable: "200.02", tax: "40.00", percent: "20.00" },
+      { taxable: "200.10", tax: "20.01", percent: "10.00" },
+    ]);
+
+    // BR-CO-17 doslovno, nad odštampanim brojevima.
+    for (const g of groups) {
+      const expected = new Prisma.Decimal(g.taxable)
+        .mul(g.percent)
+        .div(100)
+        .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      expect(g.tax).toBe(expected.toFixed(2));
+    }
+    // Denormalizacija u zaglavlju se poklapa sa zbirom grupa.
+    const sum = groups.reduce(
+      (s, g) => s.add(new Prisma.Decimal(g.tax)),
+      new Prisma.Decimal(0),
+    );
+    expect(sum.toFixed(2)).toBe("60.01");
+    expect(findFirst(new XmlDocument(xml), "cac:TaxTotal")).not.toBeNull();
+  });
+
+  /**
+   * Nepoznata poreska šifra je do 02.08.2026. u UBL-u padala na 20 % (a u obračunu na
+   * 0 %). Dok je `TaxAmount` bio zbir stavki, razlika se nije videla; od ispravke bi
+   * napravila `TaxSubtotal` sa 20 % poreza na promet koji je proknjižen bez poreza.
+   */
+  it("nepoznata šifra daje 0 %, isto kao u obračunu (bez tihe stope od 20 %)", () => {
+    const xml = ubl.build(
+      params({
+        invoice: {
+          ...params().invoice,
+          netTotal: D("200"),
+          vatTotal: D("0"),
+          grossTotal: D("200"),
+        },
+        items: [line({ vatRateCode: "XX", vatBase: D("200"), vatAmount: D("0") })],
+      }),
+    );
+    expect(subtotals(xml)).toEqual([
+      { taxable: "200.00", tax: "0.00", percent: "0.00" },
+    ]);
+  });
+});

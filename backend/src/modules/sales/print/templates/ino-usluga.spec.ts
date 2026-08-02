@@ -350,8 +350,69 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
       expect(joined).toContain("TOTAL");
       expect(joined).toContain("TOTAL AMOUNT ( EUR)");
       expect(joined).toContain("10,530.75");
-      // Ino ROBA ima red DISCOUNT; 060/26 ga nema ni sa nulom.
+      // Papir 060/26 rabata NEMA, pa reda DISCOUNT nema ni sa nulom (za razliku od
+      // ino ROBE, koja ga štampa i kad je 0,00).
       expect(joined).not.toContain("DISCOUNT");
+    });
+
+    /**
+     * 🔴 NALAZ S3 (peti krug, 02.08.2026): ino USLUGA je bila jedini obrazac koji
+     * ODOBREN RABAT PREĆUTKUJE.
+     *
+     * Isti podaci (10 kom, puna cena 1.000,00, rabat 10 %):
+     *   • IZVRO (ino roba)     → `Price 1,000.00 · TOTAL 10,000.00 · DISCOUNT 1,000.00 ·
+     *                             TOTAL AMOUNT 9,000.00`
+     *   • IFUSL (domaća usluga)→ red „Odobren rabat"
+     *   • IZVUS (ovaj obrazac) → `Price 900.00 · TOTAL 9,000.00`, rabat NIGDE
+     *
+     * Kupac iz tog papira nije mogao da vidi ni da je popust dobio ni koliki je.
+     * Doneti papir 060/26 red `DISCOUNT` nema — ali nema ni rabat, pa ne dokazuje da se
+     * rabat krije. Pravilo je zato: bez rabata papir ostaje doslovno kao original
+     * (test iznad), sa rabatom se prikazuje kao na ino robi.
+     */
+    describe("rabat (nalaz S3)", () => {
+      const saRabatom = (): PrintCtx => ({
+        ...ctx,
+        invoice: {
+          ...invoice,
+          netTotal: D("9000.00"),
+          grossTotal: D("9000.00"),
+        } as unknown as InvoiceWithItems,
+        lines: [
+          {
+            ordinal: 1,
+            catalogNumber: null,
+            name: "Usluga obrade",
+            unit: "kom",
+            customsTariff: null,
+            quantity: D("10"),
+            unitPrice: D("900.00"),
+            unitPriceBeforeDiscount: D("1000.00"),
+            discountPercent: D("10"),
+            lineTotal: D("9000.00"),
+            vatRatePercent: null,
+          },
+        ],
+      });
+
+      it("kolone `Price`/`Total` nose iznos PRE rabata", () => {
+        const texts = collectText(inoUslugaTemplate(saRabatom()));
+        expect(texts).toContain("1,000.00");
+        expect(texts).toContain("10,000.00");
+      });
+
+      it("štampa red `DISCOUNT:` sa iznosom rabata", () => {
+        const texts = collectText(inoUslugaTemplate(saRabatom()));
+        const i = texts.indexOf("DISCOUNT:");
+        expect(i).toBeGreaterThanOrEqual(0);
+        expect(texts[i + 1]).toBe("1,000.00");
+      });
+
+      it("`TOTAL − DISCOUNT = TOTAL AMOUNT` (papir zatvara sam sa sobom)", () => {
+        const texts = collectText(inoUslugaTemplate(saRabatom()));
+        expect(texts[texts.indexOf("TOTAL") + 1]).toBe("10,000.00");
+        expect(texts[texts.indexOf("TOTAL AMOUNT ( EUR)") + 1]).toBe("9,000.00");
+      });
     });
 
     /**

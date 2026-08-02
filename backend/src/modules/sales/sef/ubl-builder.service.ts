@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { roundAmount, vatPercentOf as vatPercentOfCode } from "../vat-totals";
 
 /**
  * UBL 2.1 BUILDER — Invoice → SEF e-faktura XML (doc 07 §8, §6.2 field-mapping).
@@ -69,22 +70,20 @@ const INVOICE_TYPE_CODE_COMMERCIAL = "380";
 const INVOICE_TYPE_CODE_PREPAYMENT = "386";
 
 /**
- * PDV stopa (procenat) po `vatRateCode` — isto mapiranje kao PricingService
- * VAT_RATE_BY_CODE (doc 43 §4). "3"/"1" = 20%, "2" = 10%, "4" = 8%, "0" = 0%.
- * Nepoznata šifra → 20% (osnovna) kao default stavke.
+ * Procenat PDV stope za šifru — iz JEDNE mape sistema (`sales/vat-totals.ts` →
+ * `gl/posting/vat-rates.ts`). "3"/"1" = 20 %, "2" = 10 %, "4" = 8 %, "0" = 0 %.
+ *
+ * ⚠️ OVDE JE DO 02.08.2026. STAJAO PREPIS TE MAPE, sa jednom razlikom: nepoznata šifra
+ * je davala 20 % umesto 0 %. Dok je `TaxAmount` bio zbir poreza po stavkama, razlika se
+ * nije videla (stavka sa nepoznatom šifrom nosi PDV 0, pa je grupa ostajala nula bez
+ * obzira na deklarisanu stopu). Od ispravke se `TaxAmount` RAČUNA iz stope, pa bi ista
+ * razlika napravila `TaxSubtotal` sa 20 % poreza na promet koji je u zaglavlju računa
+ * (i u GK, i u KIF-u) proknjižen bez poreza — dokument koji SEF odbija, a knjigovodstvo
+ * ne može da objasni. Sada je mapa jedna: nepoznata šifra svuda znači 0 % (i `PricingService`
+ * uz nju upisuje upozorenje na stavku).
  */
-const VAT_PERCENT_BY_CODE: Readonly<Record<string, number>> = {
-  "3": 20,
-  "1": 20,
-  "2": 10,
-  "4": 8,
-  "0": 0,
-};
-
-/** Procenat PDV stope za šifru (fallback 20% — osnovna). */
 function vatPercentOf(code: string | null | undefined): number {
-  if (code == null) return 20;
-  return VAT_PERCENT_BY_CODE[code] ?? 20;
+  return vatPercentOfCode(code).toNumber();
 }
 
 /**
@@ -359,7 +358,14 @@ export interface UblInvoiceItemInput {
   discountPercent: Prisma.Decimal;
   /** Šifra PDV stope (InvoiceItem.vatRateCode) → stopa/kategorija po liniji. */
   vatRateCode: string;
+  /** Osnovica stavke → `cbc:LineExtensionAmount` i `TaxableAmount` svoje grupe. */
   vatBase: Prisma.Decimal;
+  /**
+   * PDV STAVKE — UBL ga NEMA (stavka nosi samo osnovicu, `cac:InvoiceLine` nema element
+   * za iznos poreza), pa se od 02.08.2026. u XML ne prenosi ni posredno: `TaxAmount`
+   * grupe se računa iz osnovice i stope (BR-CO-17). Polje ostaje u ulazu jer ga pozivalac
+   * čita sa stavke zajedno sa ostalim iznosima; ovde je namerno neupotrebljeno.
+   */
   vatAmount: Prisma.Decimal;
   lineTotal: Prisma.Decimal;
 }
@@ -839,6 +845,14 @@ export class UblBuilderService {
  * Izvoz: sve stavke u 0% grupu (Z). Domaći: 20/10/8/0 razdvojeno. Sortirano opadajuće
  * po stopi (20,10,8,0) radi determinističkog XML-a. Zbir taxableAmount = netTotal,
  * zbir taxAmount = vatTotal (denormalizacija u zaglavlju se poklapa).
+ *
+ * ⚠️ POREZ GRUPE = `round2(osnovica_grupe × stopa)`, NE zbir poreza po stavkama
+ * (ispravka 02.08.2026). EN 16931 pravilo **BR-CO-17** traži baš tu jednakost unutar
+ * jednog `cac:TaxSubtotal`: `TaxAmount = round2(TaxableAmount × Percent / 100)`.
+ * Sabiranje zaokruženih poreza po stavci je proizvodilo dokument koji to pravilo obara —
+ * izmereno: 5 stavki × 100,01 din uz 20 % → `TaxableAmount 500,05`, `TaxAmount 100,00`,
+ * `Percent 20`, a `500,05 × 20 % = 100,01`. Ovo je isti račun koji puni `invoice.vatTotal`
+ * (`sales/vat-totals.ts`), pa se zaglavlje i grupe fizički ne mogu raziću.
  */
 function groupTaxSubtotals(
   items: UblInvoiceItemInput[],
@@ -854,9 +868,15 @@ function groupTaxSubtotals(
       taxableAmount: new D(0),
       taxAmount: new D(0),
     };
-    group.taxableAmount = group.taxableAmount.add(it.vatBase);
-    group.taxAmount = group.taxAmount.add(isExport ? new D(0) : it.vatAmount);
+    // Osnovica se zaokružuje PRE sabiranja — ista odbrana kao u `vat-totals.ts`:
+    // nezaokružen red iz uvoza ne sme da obori `TaxableAmount` cele grupe.
+    group.taxableAmount = group.taxableAmount.add(roundAmount(it.vatBase));
     byPercent.set(percent, group);
+  }
+  for (const group of byPercent.values()) {
+    group.taxAmount = roundAmount(
+      group.taxableAmount.mul(group.percent).div(100),
+    );
   }
   return [...byPercent.values()].sort((a, b) => b.percent - a.percent);
 }

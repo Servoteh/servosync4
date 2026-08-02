@@ -12,6 +12,7 @@ import type {
 } from "pdfmake/interfaces";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { loadInvoiceAdvanceDeductions } from "../advance-deduction";
+import { roundAmount } from "../vat-totals";
 import { BarcodeService } from "../../documents/barcode.service";
 import { buildPageFooter } from "../../documents/doc-layout";
 import { PdfService } from "../../documents/pdf.service";
@@ -1524,6 +1525,13 @@ export class InvoicePdfService {
    * KO/KZ i avansnog računa). Stopa se izvodi iz SAMIH IZNOSA (`vatAmount/vatBase`),
    * ne iz šifarnika — tako odštampana stopa uvek odgovara stvarno obračunatom porezu.
    * Kontrolni red: Σ osnovica + Σ PDV = bruto dokumenta; razlika se ispisuje crveno.
+   *
+   * ⚠️ PDV GRUPE = `round2(osnovica_grupe × stopa)`, ne zbir poreza po stavkama
+   * (ispravka 02.08.2026, isto pravilo kao `sales/vat-totals.ts` i `templates/totals.ts`).
+   * Ovaj blok ŠTAMPA stopu, osnovicu i porez u istom redu — kupac (i inspektor) taj red
+   * množi. Sabiranje zaokruženih poreza po stavci je davalo red `20 % · 500,05 · 100,00`
+   * (5 stavki po 100,01 din), a `500,05 × 20 % = 100,01`; uz to bi kontrolni red ispod
+   * odstupao od `grossTotal`, jer se zaglavlje od te izmene računa po stopi.
    */
   private buildVatRecap(
     invoice: InvoiceWithItems,
@@ -1542,9 +1550,11 @@ export class InvoicePdfService {
         base: new Prisma.Decimal(0),
         vat: new Prisma.Decimal(0),
       };
-      acc.base = acc.base.add(item.vatBase);
-      acc.vat = acc.vat.add(item.vatAmount);
+      acc.base = acc.base.add(roundAmount(item.vatBase));
       byRate.set(key, acc);
+    }
+    for (const acc of byRate.values()) {
+      acc.vat = roundAmount(acc.base.mul(acc.percent).div(100));
     }
 
     const rates = [...byRate.values()].sort((a, b) =>

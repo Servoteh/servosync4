@@ -508,6 +508,20 @@ export class VatLedgerService {
    *     `popdv_account_map` (zato izvozni/0% konto i nije u ovom registru).
    * Oba su vidljiva: provera P5 (`vat-sanity.ts`) traži da Σ PDV odgovara
    * Σ osnovica × stopa unutar svake stope, pa nula uz PDV ≠ 0 obara period.
+   *
+   * ⚠️ ZAVISNOST OD PRAVILA NA IZVORU (02.08.2026): ova formula vraća BAŠ osnovicu
+   * fakture samo ako je PDV na nju i obračunat — `PDV = round2(osnovica × stopa)`.
+   * Dok je izlazni PDV bio ZBIR ZAOKRUŽENIH PDV-a PO STAVCI, to nije važilo: faktura sa
+   * pet stavki po 100,01 din (20 %) nosila je osnovicu 500,05 uz PDV 100,00, pa je KIF
+   * iz tog PDV-a izvodio 500,00 — dve pare manje nego što na računu piše. Od ispravke
+   * (`sales/vat-totals.ts`) i GK i zaglavlje računaju po stopi, pa se osnovica vraća
+   * tačno kad `osnovica × stopa` padne na celu paru.
+   *
+   * OSTATAK KOJI OVA FORMULA NE MOŽE DA POKRIJE: kad `osnovica × stopa` ima treću
+   * decimalu (100,03 × 20 % = 20,006 → 20,01 → nazad 100,05), izvedena osnovica se
+   * razlikuje do 0,02 (20 %) odn. 0,05 (10 %). To je granica SAMOG METODA „osnovica iz
+   * PDV konta", a ne greška u obračunu — pravo rešenje je da KIF čita osnovicu sa
+   * dokumenta umesto iz GK, što traži izmenu izvora KIF-a (nije u ovoj ispravci).
    */
   private deriveBase(
     vatAmount: Prisma.Decimal,

@@ -1,0 +1,370 @@
+import { Test, TestingModule } from "@nestjs/testing";
+import { UnprocessableEntityException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
+import { PrismaService } from "../../prisma/prisma.service";
+import { PostingEngineService } from "../gl/posting/posting.service";
+import { GlWriteService } from "../gl/gl-write.service";
+import { ReservationService } from "../robno/reservation.service";
+import { DocumentNumberSequenceService } from "./numbering.service";
+import { PricingService } from "./pricing.service";
+import { SefService } from "./sef/sef.service";
+import {
+  buildSalesLedgerLines,
+  FakturisanjeService,
+} from "./fakturisanje.service";
+import { documentVatTotals, roundAmount, vatPercentOf } from "./vat-totals";
+import type { AuthUser } from "../auth/jwt.strategy";
+
+/**
+ * PDV DOKUMENTA PO STOPI — pravilo, glavna knjiga i put kroz `createProforma`.
+ * =============================================================================
+ *
+ * 🔴 VISOK NALAZ (peti krug, 02.08.2026): `vatTotal` je bio ZBIR ZAOKRUŽENIH PDV-a PO
+ * STAVCI. Dok je PDV stavke bio nezaokružen, to je davalo isti broj po distributivnosti;
+ * čim je i on zaokružen na paru (istog dana, da bi `osnovica × stopa` moglo da se ponovi
+ * nad odštampanom stavkom), jednakost je pala:
+ *
+ *     5 stavki × 100,01 din uz 20 %  →  osnovica 500,05
+ *       Σ PDV po stavci = 5 × 20,00 = 100,00
+ *       500,05 × 20 %                = 100,01
+ *
+ * Papir tu jednačinu ŠTAMPA, SEF je proverava (EN 16931 BR-CO-17), a KIF iz PDV-a IZVODI
+ * osnovicu — pa razlika od pare nije kozmetika ni na jednom od ta tri mesta.
+ *
+ * Ovaj spec pokriva tri stvari koje ostali ne mogu:
+ *   1) samo pravilo (`documentVatTotals`) i njegove granične slučajeve,
+ *   2) GLAVNU KNJIGU (`buildSalesLedgerLines`) — da nalog balansira i da kupčev dug bude
+ *      BAŠ bruto iznos fakture, na sve tri putanje po kojima PDV ulazi u GK,
+ *   3) `createProforma` — drugi pisac zaglavlja (pored `SalesService.recalcTotals`).
+ */
+
+const D = (v: string | number) => new Prisma.Decimal(v);
+
+const actor: AuthUser = {
+  userId: 7,
+  email: "fakturista@servoteh",
+  role: "racunovodja",
+  workerId: null,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1) PRAVILO
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("documentVatTotals — porez se računa iz osnovice po stopi", () => {
+  it("5 × 100,01 uz 20 % → 500,05 + 100,01 = 600,06 (a ne 100,00)", () => {
+    const t = documentVatTotals(
+      [1, 2, 3, 4, 5].map(() => ({ vatRateCode: "3", vatBase: D("100.01") })),
+    );
+    expect(t.netTotal.toFixed(2)).toBe("500.05");
+    expect(t.vatTotal.toFixed(2)).toBe("100.01");
+    expect(t.grossTotal.toFixed(2)).toBe("600.06");
+  });
+
+  it("grupe idu opadajuće po stopi i svaka nosi `round2(osnovica × stopa)`", () => {
+    const t = documentVatTotals([
+      { vatRateCode: "2", vatBase: D("100.05") },
+      { vatRateCode: "3", vatBase: D("100.01") },
+      { vatRateCode: "2", vatBase: D("100.05") },
+      { vatRateCode: "3", vatBase: D("100.01") },
+    ]);
+    expect(t.groups.map((g) => g.ratePercent.toFixed(0))).toEqual(["20", "10"]);
+    expect(t.groups[0].base.toFixed(2)).toBe("200.02");
+    expect(t.groups[0].vat.toFixed(2)).toBe("40.00"); // 40,004 → 40,00
+    expect(t.groups[1].base.toFixed(2)).toBe("200.10");
+    expect(t.groups[1].vat.toFixed(2)).toBe("20.01");
+    expect(t.vatTotal.toFixed(2)).toBe("60.01");
+  });
+
+  it("izvoz obara SVE stavke na 0 % bez obzira na nasleđenu šifru (čl. 24)", () => {
+    const t = documentVatTotals(
+      [
+        { vatRateCode: "3", vatBase: D("1000") },
+        { vatRateCode: "2", vatBase: D("500") },
+      ],
+      { isExport: true },
+    );
+    expect(t.groups).toHaveLength(1);
+    expect(t.vatTotal.toFixed(2)).toBe("0.00");
+    expect(t.grossTotal.toFixed(2)).toBe("1500.00");
+  });
+
+  it("nepoznata šifra znači 0 % (isto kao u `PricingService`), ne tihih 20 %", () => {
+    expect(vatPercentOf("XX").toFixed(0)).toBe("0");
+    const t = documentVatTotals([{ vatRateCode: "XX", vatBase: D("100") }]);
+    expect(t.vatTotal.toFixed(2)).toBe("0.00");
+  });
+
+  /**
+   * NALAZ S2: kolona je `Decimal(19,4)`, pa uvoz / ručna ispravka u bazi / budući BigBit
+   * uvoz mogu da donesu NEZAOKRUŽENU osnovicu. Zbir se brani NA SABIRANJU.
+   */
+  it("nezaokružena osnovica se zaokruži PRE sabiranja (31,995 + 32,00 = 64,00)", () => {
+    const t = documentVatTotals([
+      { vatRateCode: "3", vatBase: D("31.995") },
+      { vatRateCode: "3", vatBase: D("32.00") },
+    ]);
+    expect(t.netTotal.toFixed(2)).toBe("64.00");
+    expect(t.vatTotal.toFixed(2)).toBe("12.80");
+  });
+
+  it("dokument bez stavki daje čiste nule (prazan nacrt se ne obara)", () => {
+    const t = documentVatTotals([]);
+    expect(t.netTotal.toFixed(2)).toBe("0.00");
+    expect(t.vatTotal.toFixed(2)).toBe("0.00");
+    expect(t.grossTotal.toFixed(2)).toBe("0.00");
+    expect(t.groups).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2) GLAVNA KNJIGA
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("buildSalesLedgerLines — GK po stopi, i dalje balansira", () => {
+  const invoice = (over: Record<string, unknown> = {}) => ({
+    documentType: "IFUSL",
+    documentNumber: "12/26",
+    customerId: 5,
+    isExport: false,
+    ...over,
+  });
+
+  const balance = (lines: ReturnType<typeof buildSalesLedgerLines>) => {
+    const zero = D(0);
+    const debit = lines.reduce((s, l) => s.add(l.debit), zero);
+    const credit = lines.reduce((s, l) => s.add(l.credit), zero);
+    return { debit, credit };
+  };
+
+  it("PDV linija nosi `round2(osnovica × stopa)`, a kupac BAŠ bruto fakture", () => {
+    const items = [1, 2, 3, 4, 5].map(() => ({
+      vatRateCode: "3",
+      vatBase: D("100.01"),
+    }));
+    const lines = buildSalesLedgerLines(invoice(), items);
+
+    const byAcc = new Map(lines.map((l) => [l.accountCode, l]));
+    expect(byAcc.get("2040")?.debit.toFixed(2)).toBe("600.06");
+    expect(byAcc.get("6140")?.credit.toFixed(2)).toBe("500.05");
+    expect(byAcc.get("4702")?.credit.toFixed(2)).toBe("100.01");
+
+    const { debit, credit } = balance(lines);
+    expect(debit.toFixed(4)).toBe(credit.toFixed(4));
+  });
+
+  it("dve stope → dva PDV konta (4702/4710), nalog i dalje balansira", () => {
+    const lines = buildSalesLedgerLines(invoice({ documentType: "IFR" }), [
+      { vatRateCode: "3", vatBase: D("100.01") },
+      { vatRateCode: "3", vatBase: D("100.01") },
+      { vatRateCode: "2", vatBase: D("100.05") },
+      { vatRateCode: "2", vatBase: D("100.05") },
+    ]);
+    const byAcc = new Map(lines.map((l) => [l.accountCode, l]));
+    expect(byAcc.get("2040")?.debit.toFixed(2)).toBe("460.13");
+    expect(byAcc.get("6040")?.credit.toFixed(2)).toBe("400.12");
+    expect(byAcc.get("4702")?.credit.toFixed(2)).toBe("40.00");
+    expect(byAcc.get("4710")?.credit.toFixed(2)).toBe("20.01");
+
+    const { debit, credit } = balance(lines);
+    expect(debit.toFixed(4)).toBe(credit.toFixed(4));
+  });
+
+  it("izvoz: kupac 2050, prihod = bruto, bez ijedne PDV linije", () => {
+    const lines = buildSalesLedgerLines(
+      invoice({ documentType: "IZVUS", isExport: true }),
+      [{ vatRateCode: "3", vatBase: D("1000") }],
+    );
+    expect(lines.map((l) => l.accountCode)).toEqual(["2050", "6140"]);
+    const { debit, credit } = balance(lines);
+    expect(debit.toFixed(2)).toBe("1000.00");
+    expect(credit.toFixed(2)).toBe("1000.00");
+  });
+
+  /**
+   * 🔶 ZATEČENO, prijavljeno u `docs/PREOSTALE_FAZE.md`: poreska šifra „4" je POSEBNA
+   * stopa (8 %, POLJO) i do 02.08.2026. je padala u granu „inače", pa se knjižila na
+   * `4702 — PDV 20 % na prodate robe`. Nalog bi balansirao, ali bi POPDV polje 3.2 iz
+   * tog konta izvodilo osnovicu deljenjem sa 0,2 — osnovica prometa po 8 % bi u obrazac
+   * ušla umanjena za 60 %.
+   *
+   * Konto izlaznog PDV-a od 8 % u kontnom planu NE POSTOJI (postoji samo
+   * `4750 — PDV po osnovu SOPSTVENE POTROŠNJE 8 %`, što nije promet po izdatoj fakturi),
+   * pa se ne izmišlja: knjiženje se odbija sa objašnjenjem.
+   */
+  it("stopa bez konta (8 %) se ne knjiži tiho na konto od 20 % — 422 sa objašnjenjem", () => {
+    expect(() =>
+      buildSalesLedgerLines(invoice(), [
+        { vatRateCode: "4", vatBase: D("1000") },
+      ]),
+    ).toThrow(UnprocessableEntityException);
+    expect(() =>
+      buildSalesLedgerLines(invoice(), [
+        { vatRateCode: "4", vatBase: D("1000") },
+      ]),
+    ).toThrow(/8%.*ne postoji konto izlaznog PDV-a/s);
+  });
+
+  it("stavka sa 0 % ne pravi praznu PDV liniju", () => {
+    const lines = buildSalesLedgerLines(invoice(), [
+      { vatRateCode: "0", vatBase: D("1000") },
+    ]);
+    expect(lines.map((l) => l.accountCode)).toEqual(["2040", "6140"]);
+  });
+
+  /** Invarijanta nad nasumičnim dokumentima: nalog uvek balansira i uvek je bruto. */
+  it("nasumični dokumenti (1–20 stavki): ΣDug == ΣPot == bruto fakture", () => {
+    const CODES = ["3", "1", "2", "0"] as const; // "4" nema konto — pokriveno gore
+    let seed = 20260802;
+    const rnd = () => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return Math.abs(seed) / 2147483648;
+    };
+
+    for (let doc = 0; doc < 200; doc += 1) {
+      const items = Array.from({ length: 1 + Math.floor(rnd() * 20) }, () => ({
+        vatRateCode: CODES[Math.floor(rnd() * CODES.length)],
+        vatBase: D((rnd() * 1000 + 0.01).toFixed(2)),
+      }));
+      const totals = documentVatTotals(items);
+      const lines = buildSalesLedgerLines(invoice(), items);
+      const { debit, credit } = balance(lines);
+
+      expect(debit.toFixed(4)).toBe(credit.toFixed(4));
+      expect(debit.toFixed(2)).toBe(totals.grossTotal.toFixed(2));
+      // Jednačina koju papir štampa, po svakoj stopi.
+      for (const g of totals.groups) {
+        expect(g.vat.toFixed(2)).toBe(
+          roundAmount(g.base.mul(g.ratePercent).div(100)).toFixed(2),
+        );
+      }
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3) createProforma — drugi pisac zaglavlja
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("createProforma — zaglavlje nosi PDV po stopi", () => {
+  interface WrittenHeader {
+    netTotal: Prisma.Decimal;
+    vatTotal: Prisma.Decimal;
+    grossTotal: Prisma.Decimal;
+  }
+
+  /** Zbirovi iz PRVOG `invoice.create` — ono što bi stvarno otišlo u bazu. */
+  function writtenHeader(create: jest.Mock): WrittenHeader {
+    const calls = create.mock.calls as unknown as [{ data: WrittenHeader }][];
+    return calls[0][0].data;
+  }
+
+  /** Cena stavke: `PricingService` je zamenjen, ali vraća BAŠ ono što bi i pravi. */
+  function pricedItem(vatBase: string, vatRateCode = "3") {
+    const rate = vatRateCode === "2" ? "0.10" : "0.20";
+    return {
+      quantity: D(1),
+      unitPrice: D(vatBase),
+      unitPriceBeforeDiscount: D(vatBase),
+      discountPercent: D(0),
+      cashDiscountPercent: D(0),
+      vatRateCode,
+      vatBase: D(vatBase),
+      vatAmount: D(vatBase)
+        .mul(rate)
+        .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+    };
+  }
+
+  async function makeService(priceItem: jest.Mock) {
+    const prisma = {
+      invoice: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockImplementation((args: { data: unknown }) => ({
+          id: 1,
+          items: [],
+          ...(args.data as object),
+        })),
+      },
+      customer: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 5,
+          salespersonId: null,
+          paymentMethod: null,
+        }),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([{ balance: D(0) }]),
+      $transaction: jest.fn(),
+    };
+    prisma.$transaction.mockImplementation((arg: unknown) =>
+      Array.isArray(arg)
+        ? Promise.all(arg)
+        : (arg as (tx: unknown) => unknown)(prisma),
+    );
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        FakturisanjeService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: PricingService, useValue: { priceItem } },
+        {
+          provide: DocumentNumberSequenceService,
+          useValue: { next: jest.fn().mockResolvedValue("12/26") },
+        },
+        {
+          provide: PostingEngineService,
+          useValue: { postManualEntry: jest.fn() },
+        },
+        { provide: GlWriteService, useValue: { reverse: jest.fn() } },
+        { provide: SefService, useValue: { enqueue: jest.fn() } },
+        { provide: ReservationService, useValue: { release: jest.fn() } },
+      ],
+    }).compile();
+
+    return { service: module.get(FakturisanjeService), prisma };
+  }
+
+  it("pet stavki po 100,01 din daje `vatTotal` 100,01, ne 100,00", async () => {
+    const priceItem = jest.fn().mockResolvedValue(pricedItem("100.01"));
+    const { service, prisma } = await makeService(priceItem);
+
+    await service.createProforma(
+      {
+        customerId: 5,
+        documentDate: "2026-07-01",
+        items: [1, 2, 3, 4, 5].map(() => ({
+          description: "Stavka",
+          quantity: 1,
+        })),
+      },
+      actor,
+    );
+
+    const written = writtenHeader(prisma.invoice.create);
+    expect(written.netTotal.toFixed(2)).toBe("500.05");
+    expect(written.vatTotal.toFixed(2)).toBe("100.01");
+    expect(written.grossTotal.toFixed(2)).toBe("600.06");
+  });
+
+  it("izvoz: PDV je 0 i bruto je jednak osnovici", async () => {
+    const priceItem = jest.fn().mockResolvedValue(pricedItem("100.01"));
+    const { service, prisma } = await makeService(priceItem);
+
+    await service.createProforma(
+      {
+        customerId: 5,
+        documentDate: "2026-07-01",
+        isExport: true,
+        items: [1, 2, 3].map(() => ({ description: "Stavka", quantity: 1 })),
+      },
+      actor,
+    );
+
+    const written = writtenHeader(prisma.invoice.create);
+    expect(written.netTotal.toFixed(2)).toBe("300.03");
+    expect(written.vatTotal.toFixed(2)).toBe("0.00");
+    expect(written.grossTotal.toFixed(2)).toBe("300.03");
+  });
+});

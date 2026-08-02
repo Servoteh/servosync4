@@ -113,3 +113,45 @@ Kad proizvodnja pređe potpuno na 2.0 kao izvor istine:
 *Poslednji update: 2026-07-13 — probe na produkciji + paketi dorada A/B isporučeni (ODLUKE
 #33–#36, uklj. novi mali modul `cnc-programs`), login parnost 1.0→2.0; BigBit sync linija
 nepromenjena (Faza 1 živa, Faza 2 gated do cutover-a); 2.0 „Tehnologija" praktično završen.*
+
+---
+
+## 🔶 OTVORENO NA DAN 01.08.2026
+
+Pitanja koja **blokiraju** deo funkcionalnosti, a odgovor NIJE tehnički — traži knjigovođu
+odn. vlasnika. Ne rešavati ih pretpostavkom; dok odgovor ne stigne, kod ih vidljivo odbija.
+
+### O-PDV-8 — nema konta izlaznog PDV-a po stopi od 8 %
+
+**Nalaz (02.08.2026, peti krug provere štampe faktura).** Ručno knjiženje izlaznog računa
+(`sales/fakturisanje.service.ts`, `buildSalesLedgerLines`) je poresku šifru **„4" = posebna
+stopa 8 % (POLJO)** knjižilo na konto **`4702` — „PDV 20 % na prodate robe na domaćem
+tržištu"**, jer je pravilo bilo „ako je šifra `2` → 4710, INAČE → 4702".
+
+**Zašto to nije bezopasno.** Nalog bi balansirao (isti iznos stoji i na dugovnoj strani), pa
+se greška ne vidi u GK. Ali POPDV polje **3.2** osnovicu IZVODI iz konta `4702` deljenjem sa
+0,2 (`popdv_account_map`, `column_def = 'P/0.2'`), a KIF isto tako (`pdv/vat-ledger.service.ts`,
+`deriveBase`) — pa bi osnovica prometa oporezovanog po 8 % ušla u poreski obrazac **umanjena
+za 60 %**.
+
+**Zašto nije popravljeno.** Konto izlaznog PDV-a od 8 % **u kontnom planu ne postoji**.
+Provereno u `prisma/migrations/20260723155000_seed_chart_of_accounts/migration.sql` i u
+`prisma/seed/vat-account-map.sql`: postoji jedino `4750 — PDV po osnovu SOPSTVENE POTROŠNJE
+8 %`, što je drugi promet (sopstvena potrošnja, ne izdata faktura). Konto se ne izmišlja.
+
+**Šta kod radi u međuvremenu.** Knjiženje računa sa stavkom po stopi od 8 % se **odbija sa
+422** i porukom koja imenuje stopu i upućuje na ovaj dokument — isti obrazac kao kod avansnog
+računa (`AdvanceInvoiceService.vatAccountFor`, nalaz Batch C R5). Tiho knjiženje na tuđe
+konto je zamenjeno vidljivim zaustavljanjem.
+
+**Šta treba odlučiti (knjigovođa).**
+1. Da li Servoteh uopšte ima izlazni promet po posebnoj stopi od 8 %? (U BigBit izvozima
+   šifra „4" postoji u šifarniku tarifa, ali nije potvrđeno da je ijedna faktura nosi.)
+2. Ako ima — koji konto: nova analitika pod `471` (kao `4710` za 10 %), ili poseban konto?
+   Uz konto ide i red u `popdv_account_map` (`column_def = 'P/0.08'`) i u `vat_account_map`
+   (`direction = 'output'`, `rate = 8`), inače POPDV i KIF taj promet ne vide.
+3. Ako nema — potvrditi, pa se šifra „4" izbacuje iz šifarnika izlaznih stavki i brana
+   postaje suvišna.
+
+**Gde se menja kad odgovor stigne:** `VAT_OUT_ACCOUNT_BY_PERCENT` u
+`backend/src/modules/sales/fakturisanje.service.ts` (jedan red) + seed konta + oba mapiranja.

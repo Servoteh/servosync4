@@ -1,6 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { formatAmount } from "../format";
+import { roundAmount } from "../../vat-totals";
 import type { PrintAdvanceDeduction, PrintCtx, PrintLine } from "./ctx";
 
 /**
@@ -145,11 +146,18 @@ export function lineGross(line: PrintLine): PrintLineGross {
     const gross = line.quantity.mul(beforeDiscount);
     const amount = gross.sub(line.lineTotal);
     // ⚠️ MERILO JE ZNAK BRUTA, NE NULA (ispravka 02.08.2026): do tada je uslov bio
-    // `amount >= 0`, pa je STORNO red padao na rezervu i tiho gubio rabat. Izmereno:
-    // količina −10, puna cena 1.000,00, rabat 100 % → bruto −10.000,00, rabat −10.000,00 —
-    // uslov ga odbaci kao „protivrečan", a rezerva za rabat ≥ 100 % vrati 0, pa je papir
-    // pisao `R% 100` uz `Rabat: 0,00`. Na storno redu je negativan rabat TAČAN: on
-    // poništava rabat sa originalne fakture.
+    // `amount >= 0`, pa bi red sa negativnim brutom pao na rezervu i tiho izgubio rabat —
+    // rezerva za rabat ≥ 100 % vraća 0, pa bi papir pisao `R% 100` uz `Rabat: 0,00`.
+    // Na redu sa negativnim iznosom je i negativan rabat TAČAN: on poništava rabat sa
+    // originalne fakture.
+    //
+    // ⚠️ ISPRAVKA OPISA (peti krug, 02.08.2026): ovde je pisalo da je scenario „izmeren"
+    // na redu sa količinom −10 i rabatom 100 %. TAKAV RED U BAZI NE MOŽE DA POSTOJI —
+    // migracija `20260725200000_faza2_constraint_mreza` ima
+    // `CHECK (quantity > 0 AND discount_percent BETWEEN 0 AND 100 …)` nad `invoice_items`.
+    // Uslov ostaje odbrambeni, ali za podatke koji do ove funkcije stižu MIMO te tabele:
+    // `PrintLine` gradi i opšti renderer i testovi, a kolone su `Decimal(19,4)` bez znaka
+    // ograničenja u tipu. Tvrdnja da je scenario viđen u bazi je povučena.
     //
     // Protivrečan podatak (puna cena manja od cene posle rabata — pokvaren uvoz, ručna
     // izmena u bazi) i dalje pada na rezervu: prepoznaje se po tome što rabat ima
@@ -225,6 +233,14 @@ export function discountFromLines(lines: PrintLine[]): Prisma.Decimal {
  * 3.200,00 + 400,00 = 3.600,00, dakle jednu paru više nego što je proknjiženo.
  * Razlika ide na grupu sa NAJVEĆOM osnovicom, gde je relativno najmanja.
  *
+ * ⚠️ DOPUNA 02.08.2026 (nalaz „množenje na papiru ne daje odštampan rezultat"): grupni
+ * PDV je `round2(osnovica_grupe × stopa)` — tako je i bilo u ovoj funkciji, ali je
+ * `vatTotal` sa DOKUMENTA do te izmene bio zbir zaokruženih poreza PO STAVCI, pa je red
+ * sa jednom stopom umeo da odštampa `20 % · 500,05 · 100,00` (pet stavki po 100,01 din),
+ * dok `500,05 × 20 %` daje 100,01. Sada oba puta računaju isto (`sales/vat-totals.ts`),
+ * pa je grana sa jednom stopom tačna po definiciji, a raspoređivanje razlike ispod
+ * ostaje kao brana za ZATEČENE dokumente kojima je zaglavlje upisano po starom pravilu.
+ *
  * Redosled je po stopi RASTUĆE; obrazac koji ga hoće drugačije neka sortira sam
  * (raspored je izgled, a ne iznos — v. uvodni komentar fajla).
  */
@@ -250,7 +266,9 @@ export function vatSummaryRows(ctx: PrintCtx): VatSummaryRow[] {
     .map((rate) => {
       const base = ctx.lines
         .filter((l) => l.vatRatePercent === rate)
-        .reduce((sum, l) => sum.add(l.lineTotal), ZERO);
+        // Zaokruženje PRE sabiranja — ista odbrana kao u `sales/vat-totals.ts`: jedan
+        // nezaokružen red (uvoz, ručna izmena u bazi) ne sme da obori osnovicu grupe.
+        .reduce((sum, l) => sum.add(roundAmount(l.lineTotal)), ZERO);
       return {
         rate,
         base,

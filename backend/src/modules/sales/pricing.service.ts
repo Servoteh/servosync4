@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { VAT_RATE_BY_CODE } from "./vat-totals";
 
 /**
  * PricingService — cena stavke izlaznog računa (deljeno predračun/račun/pregled cene).
@@ -64,14 +65,16 @@ const PCT_DP = 4;
  */
 const AMOUNT_DP = 2;
 
-/** Stope PDV po `vatRateCode` (isto kao posting VAT_RATE_BY_CODE, doc 43 §4). */
-const VAT_RATE_BY_CODE: Readonly<Record<string, Prisma.Decimal>> = {
-  "3": new D("0.20"), // Osnovna / VISA (20%) — default stavke
-  "1": new D("0.20"), // Osnovna (alt kod)
-  "2": new D("0.10"), // Zeleznica / NIZA (10%)
-  "4": new D("0.08"), // Posebna / POLJO (8%)
-  "0": ZERO, // bez PDV (izvoz / oslobođeno)
-};
+/**
+ * Stope PDV po `vatRateCode` — uzimaju se iz JEDNE mape (`gl/posting/vat-rates.ts`,
+ * preko `./vat-totals`), koju dele i GL kontiranje, robna kalkulacija i zbirovi
+ * dokumenta. Ovde je do 02.08.2026. stajao doslovan PREPIS te mape.
+ *
+ * ⚠️ ZAŠTO PREPIS VIŠE NE SME DA POSTOJI: od iste izmene zbir dokumenta se računa kao
+ * `round2(osnovica_stope × stopa)` (v. `vat-totals.ts`). Da stavka i zaglavlje čitaju
+ * DVE tabele stopa, dovoljno je da se jedna dopuni (nova stopa, izmena zakonske) pa da
+ * `vatTotal` prestane da odgovara osnovici — i to bez ijedne izmene u kodu koji računa.
+ */
 
 /** Odakle je došla bazna (fakturna) cena — ekran to prikazuje uz cenu (§4.3). */
 export type PriceSource =
@@ -109,11 +112,26 @@ export interface PricedItem {
   cashDiscountPercent: Prisma.Decimal;
   quantity: Prisma.Decimal;
   vatRateCode: string;
-  /** poreska osnovica = qty × unitPrice (posle rabata i kase), zaokruženo na PARU. */
+  /**
+   * Poreska osnovica = qty × unitPrice (posle rabata i kase), zaokruženo na PARU.
+   * OVO je iznos koji se sabira u `netTotal` dokumenta — jedini zbir stavki koji postoji
+   * (EN 16931 BR-CO-10; v. `vat-totals.ts`).
+   */
   vatBase: Prisma.Decimal;
-  /** PDV = zaokružena osnovica × stopa, takođe na paru. */
+  /**
+   * PDV STAVKE = `round2(vatBase × stopa)` — IZVEDENA INFORMACIJA (kolona „PDV" u tabeli
+   * stavki i osnov iz kog štampa računa efektivnu stopu reda).
+   *
+   * ⚠️ NE SABIRATI ZA POREZ DOKUMENTA (ispravka 02.08.2026): `vatTotal` se računa
+   * `round2(osnovica_stope × stopa)` na nivou dokumenta, jer zbir zaokruženih poreza po
+   * stavci ne mora da bude jednak porezu na zbir osnovica — 5 × 100,01 din uz 20 % daje
+   * `Σ = 100,00`, a `500,05 × 20 % = 100,01`. Ko sabira, sabira kroz `vat-totals.ts`.
+   */
   vatAmount: Prisma.Decimal;
-  /** za plaćanje = vatBase + vatAmount (oba već na paru, pa je i zbir tačan). */
+  /**
+   * Iznos stavke sa porezom = vatBase + vatAmount. Kao i `vatAmount`, IZVEDEN je i ne
+   * sabira se u `grossTotal` dokumenta (`grossTotal = netTotal + vatTotal`).
+   */
   lineTotal: Prisma.Decimal;
   /** true ako je traženi rabat premašio Item.maxDiscountPercent i bio odsečen. */
   discountCapped: boolean;
@@ -346,8 +364,11 @@ export class PricingService {
       );
     }
     const vatRate = rate ?? ZERO;
-    // PDV se računa iz ZAOKRUŽENE osnovice (i sam zaokružuje): tako `osnovica × stopa`
-    // može da se ponovi nad odštampanim brojevima i dobije isti iznos poreza.
+    // PDV STAVKE se računa iz ZAOKRUŽENE osnovice (i sam zaokružuje): tako `osnovica ×
+    // stopa` može da se ponovi nad odštampanim brojevima jednog reda i dobije isti iznos.
+    //
+    // ⚠️ ALI ZBIR OVIH IZNOSA NIJE POREZ DOKUMENTA (v. `vatAmount` u `PricedItem` i ceo
+    // `vat-totals.ts`): porez se računa po stopi nad osnovicom CELOG dokumenta.
     const vatAmount = this.round(vatBase.mul(vatRate), AMOUNT_DP);
     const lineTotal = vatBase.add(vatAmount);
 

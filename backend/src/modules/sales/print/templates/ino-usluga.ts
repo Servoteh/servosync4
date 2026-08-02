@@ -11,6 +11,8 @@ import type { InvoiceTemplate, PrintCtx } from "./ctx";
 import {
   advanceTotal,
   assertExportWithoutVat,
+  discountFromLines,
+  lineGross,
   payableAfterAdvance,
   printableAdvanceDeductions,
 } from "./totals";
@@ -358,19 +360,24 @@ function itemsTable(ctx: PrintCtx): Content {
       { text: line.unit ?? "", fontSize: 9 },
       { text: formatQuantity(line.quantity), fontSize: 9, alignment: "right" },
     ];
-    if (!ctx.withoutPrices)
+    if (!ctx.withoutPrices) {
+      // `Price` i `Total` su PRE rabata — v. `totalsBlock` i `lineGross` u `totals.ts`.
+      // Bez rabata `lineGross` vraća cenu i iznos NETAKNUTE, pa je papir bez rabata
+      // (kakav je i doneti 060/26) do pare identičan originalu.
+      const gross = lineGross(line);
       cells.push(
         {
-          text: formatAmount(line.unitPrice, 2),
+          text: formatAmount(gross.unitPrice, 2),
           fontSize: 9,
           alignment: "right",
         },
         {
-          text: formatAmount(line.lineTotal, 2),
+          text: formatAmount(gross.total, 2),
           fontSize: 9,
           alignment: "right",
         },
       );
+    }
     return cells;
   });
 
@@ -380,13 +387,27 @@ function itemsTable(ctx: PrintCtx): Content {
 /**
  * Zbir: `TOTAL` pa uokvireno `TOTAL AMOUNT ( EUR)` — oba desno.
  *
- * Za razliku od ino ROBE, ovaj obrazac NEMA red `DISCOUNT` (na 060/26 ga nema ni sa nulom),
- * pa se ne štampa. Nema ga ni kolona `Rab%` u tabeli stavki — rabat na ovom papiru ne
- * postoji nigde, pa se i ne izvodi. Valuta je u zagradi sa razmakom (`( EUR)`) — doslovno
- * sa papira.
+ * ── RABAT: PRIKAZUJE SE SAMO KAD POSTOJI (ispravka 02.08.2026, nalaz S3) ─────────────
+ * Doneti papir 060/26 nema ni kolonu `Rab%` ni red `DISCOUNT` — ali nema ni rabat
+ * (svuda `R% 0`), pa on ne dokazuje da se rabat KRIJE, samo da se ne štampa prazan red.
+ * Do ove izmene je ovaj obrazac za ISTE podatke (10 kom, puna cena 1.000, rabat 10 %)
+ * štampao `Price 900,00 · TOTAL 9.000,00` i rabat NE POMINJAO nigde, dok je ino ROBA
+ * (IZVRO) za isti račun štampala `Price 1.000,00 · TOTAL 10.000,00 · DISCOUNT 1.000,00 ·
+ * TOTAL AMOUNT 9.000,00`, a domaća usluga (IFUSL) red „Odobren rabat". Ino usluga je
+ * bila jedini obrazac koji odobren rabat prećutkuje — kupac iz tog papira ne može da
+ * vidi da je popust dobio, ni koliki je.
  *
- * Vrednosti se uzimaju sa dokumenta (`netTotal`/`grossTotal`), ne sabiranjem stavki:
- * papir mora da pokaže isti iznos koji je proknjižen.
+ * Pravilo je zato: **nema rabata → papir ostaje doslovno kao 060/26** (`lineGross` bez
+ * rabata vraća netaknutu cenu i iznos, red `DISCOUNT:` se ne štampa); **ima rabata →
+ * kolone `Price`/`Total` nose iznos PRE rabata i između `TOTAL` i `TOTAL AMOUNT` staje
+ * red `DISCOUNT:`**, tačno kao na ino robi. Kolona `Rab%` se NE dodaje: 060/26 je nema, a
+ * red `DISCOUNT` nosi ceo podatak u novcu (koji je i ono što kupca zanima).
+ *
+ * ARITMETIKA: `TOTAL AMOUNT` je `invoice.grossTotal` (iznos koji je proknjižen),
+ * `DISCOUNT` je zbir rabata sa stavki, a `TOTAL` = osnovica + rabat — dakle BAŠ zbir
+ * odštampane kolone `Total`. Papir se tako zatvara sam sa sobom u oba slučaja.
+ *
+ * Valuta je u zagradi sa razmakom (`( EUR)`) — doslovno sa papira.
  *
  * ⚠️ ODBIJEN AVANS (ispravka 02.08.2026): isti nalaz kao na ino robi — papir je tražio pun
  * iznos fakture i kad je kupac deo već platio avansno, a izvozna faktura NE ide na SEF
@@ -419,8 +440,16 @@ function totalsBlock(ctx: PrintCtx): Content {
   const advance = advanceTotal(deductions);
   const hasAdvance = advance.greaterThan(0);
 
+  // Rabat sa stavki; `TOTAL` je vrednost PRE rabata, pa se `TOTAL − DISCOUNT` vraća
+  // tačno na osnovicu sa dokumenta. Bez rabata je `discount` nula i red se izostavlja.
+  const discount = discountFromLines(ctx.lines);
+  const hasDiscount = !discount.isZero();
+
   // Neuokvireni redovi iznad: uvek `TOTAL`, a uz avans i pun iznos fakture pa umanjenja.
-  const plainRows: TableCell[][] = [[label("TOTAL"), money(ctx.invoice.netTotal)]];
+  const plainRows: TableCell[][] = [
+    [label("TOTAL"), money(ctx.invoice.netTotal.add(discount))],
+  ];
+  if (hasDiscount) plainRows.push([label("DISCOUNT:"), money(discount)]);
   if (hasAdvance) {
     plainRows.push([
       label(`TOTAL AMOUNT ( ${ctx.currency})`),
