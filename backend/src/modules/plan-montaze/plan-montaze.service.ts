@@ -6,6 +6,11 @@ import {
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { sanitizeDrawingNo } from "../../common/drawings";
+import {
+  assertAttachments,
+  assertPdfAttachment,
+  IMAGE_ATTACHMENT_FORMATS,
+} from "../../common/attachments/attachment-format.util";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
@@ -611,6 +616,11 @@ export class PlanMontazeService {
    * Putanja 1.0-kompatibilna: `{id}/foto-{rb}-{token}.jpg`. Ciljani retry = klijent
    * šalje SAMO neuspele (sa njihovim `redni`). Autorizacija se proverava PRE upload-a
    * (fotke INSERT scope: autor∨mgmt∨admin) da nema orphan fajlova.
+   *
+   * Format se presuđuje po SADRŽAJU pre ijednog upload-a (`common/attachments`, samo
+   * slike). Ranije se `image/jpeg` upisivalo NAPAMET za svaki fajl (i putanja `.jpg`),
+   * pa je HEIC sa telefona završavao u bucketu kao lažni JPEG koji izveštaj nikad
+   * ne prikaže. Sada: ili cela serija prolazi, ili nijedan bajt ne ode.
    */
   async uploadPhotos(
     email: string,
@@ -629,6 +639,10 @@ export class PlanMontazeService {
         `Najviše ${MONTAZA_MAX_SLIKE} fotki.`,
       );
     }
+    const checked = assertAttachments(files, {
+      allow: IMAGE_ATTACHMENT_FORMATS,
+      hint: 'Izveštaj je sačuvan — fotografije pošaljite ponovo dugmetom „Fotografije ponovo".',
+    });
     const rbList = (redni ?? "")
       .split(",")
       .map((s) => s.trim())
@@ -669,18 +683,20 @@ export class PlanMontazeService {
       mimeType: string;
       sizeBytes: bigint | null;
     }> = [];
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
+    for (let i = 0; i < checked.length; i++) {
+      const { file: f, contentType, format } = checked[i];
       const rb =
         Number.isFinite(rbList[i]) && rbList[i] > 0 ? rbList[i] : base + i + 1;
       const token = randomUUID().replace(/-/g, "").slice(0, 8);
-      const path = `${id}/foto-${rb}-${token}.jpg`;
+      // `.jpg` ostaje 1.0-kompatibilan default; PNG dobija svoju ekstenziju umesto
+      // da se (kao ranije) lažno predstavi kao JPEG.
+      const path = `${id}/foto-${rb}-${token}.${format === "png" ? "png" : "jpg"}`;
       try {
         await this.storage.upload(
           MONTAZA_BUCKET,
           path,
           new Uint8Array(f.buffer),
-          "image/jpeg",
+          contentType,
         );
         uploaded.push(rb);
         rows.push({
@@ -688,7 +704,7 @@ export class PlanMontazeService {
           redniBroj: rb,
           storagePath: path,
           opis: opisList[i] ?? null,
-          mimeType: "image/jpeg",
+          mimeType: contentType,
           sizeBytes: f.size ? BigInt(f.size) : null,
         });
       } catch {
@@ -721,11 +737,8 @@ export class PlanMontazeService {
    * PDF pre nego što dobije 403 (IDOR, bez rollback-a). Provera je isti EXISTS kao fotke.
    */
   async uploadPdf(email: string, id: string, file?: Express.Multer.File) {
-    if (!file?.buffer?.length || file.mimetype !== "application/pdf") {
-      throw new UnprocessableEntityException(
-        "Očekivan PDF fajl (multipart polje `file`)",
-      );
-    }
+    // Magic bytes, ne `mimetype` iz zahteva (klijent ga laže) — `common/attachments`.
+    assertPdfAttachment(file);
     const report = await this.mut(email, async (tx) => {
       const r = await tx.pmIzvestaj.findUnique({
         where: { id },

@@ -520,6 +520,115 @@ describe("MontazaNeusaglasenostiService", () => {
       expect(prisma.montageNonconformityPhoto.create).not.toHaveBeenCalled();
       expect(prisma.montageNonconformityEvent.create).not.toHaveBeenCalled();
     });
+
+    /**
+     * 🔴 Dokaz sa montaže se gubio tiho: HEIC sa telefona → 422 bez imena fajla, a
+     * prijava je već bila snimljena. Poruka sada imenuje fajl, kaže šta da se uradi,
+     * i kaže GDE je posao ostao (prijava sačuvana — fotke iz njene kartice).
+     */
+    const heic = (name = "IMG_4021.HEIC"): UploadedPhotoFile => ({
+      originalname: name,
+      mimetype: "image/jpeg", // telefon/birač zna da laže etiketu
+      size: 12,
+      buffer: Buffer.concat([
+        Buffer.from([0x00, 0x00, 0x00, 0x18]),
+        Buffer.from("ftypheic", "latin1"),
+      ]),
+    });
+
+    it("🔴 HEIC → 422; poruka imenuje fajl, kaže šta da se uradi i da je prijava sačuvana", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue({
+        id: 1,
+        reportedByUserId: 7,
+        status: "CEKA_ANALIZU",
+      });
+      const { service } = makeService(prisma);
+      let msg = "";
+      try {
+        await service.addPhotos(1, [heic()], REPORTER);
+      } catch (e) {
+        expect(e).toBeInstanceOf(UnprocessableEntityException);
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain("IMG_4021.HEIC");
+      expect(msg).toContain("HEIC");
+      expect(msg).toContain("Prijava je sačuvana");
+      expect(prisma.montageNonconformityPhoto.create).not.toHaveBeenCalled();
+    });
+
+    it("🔴 lažiran mimetype ne pomaže — presuđuje sadržaj, ne zaglavlje zahteva", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue({
+        id: 1,
+        reportedByUserId: 7,
+        status: "CEKA_ANALIZU",
+      });
+      const { service } = makeService(prisma);
+      // Ispravan PNG etiketiran kao `application/octet-stream` PROLAZI…
+      const png: UploadedPhotoFile = {
+        originalname: "skica.png",
+        mimetype: "application/octet-stream",
+        size: 9,
+        buffer: Buffer.from([
+          0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
+        ]),
+      };
+      const out = await service.addPhotos(1, [png], REPORTER);
+      expect(out.data).toHaveLength(1);
+      expect(
+        firstCallData(prisma.montageNonconformityPhoto.create).contentType,
+      ).toBe("image/png");
+    });
+
+    it("poruka imenuje SVE problematične fajlove (ispravka u jednom prolazu)", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue({
+        id: 1,
+        reportedByUserId: 7,
+        status: "CEKA_ANALIZU",
+      });
+      const { service } = makeService(prisma);
+      let msg = "";
+      try {
+        await service.addPhotos(
+          1,
+          [jpeg(), heic("a.heic"), heic("b.heic")],
+          REPORTER,
+        );
+      } catch (e) {
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain("a.heic");
+      expect(msg).toContain("b.heic");
+      expect(msg).toContain("2 od 3");
+      expect(msg).toContain("ništa nije sačuvano");
+    });
+
+    it("prazna fotografija (0 bajtova) → 400 sa imenom fajla", async () => {
+      prisma.montageNonconformity.findUnique.mockResolvedValue({
+        id: 1,
+        reportedByUserId: 7,
+        status: "CEKA_ANALIZU",
+      });
+      const { service } = makeService(prisma);
+      let msg = "";
+      try {
+        await service.addPhotos(
+          1,
+          [
+            {
+              originalname: "prazna.jpg",
+              mimetype: "image/jpeg",
+              size: 0,
+              buffer: Buffer.alloc(0),
+            },
+          ],
+          REPORTER,
+        );
+      } catch (e) {
+        expect(e).toBeInstanceOf(BadRequestException);
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain("prazna.jpg");
+    });
   });
 
   // ── NUMERACIJA ──────────────────────────────────────────────────────────

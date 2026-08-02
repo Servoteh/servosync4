@@ -5,12 +5,12 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  PayloadTooLargeException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import type { MontageNonconformity } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { assertAttachments } from "../../common/attachments/attachment-format.util";
 import {
   pageMeta,
   parsePagination,
@@ -97,29 +97,12 @@ function decodeOriginalName(name: string): string {
 }
 
 /**
- * `content_type` iz MAGIC BYTES (klijentskom mimetype-u se NE veruje): PDF (`%PDF-`),
- * PNG (`89 50 4E 47 0D 0A 1A 0A`), JPEG (`FF D8 FF`). Ostalo → null (pozivalac 422).
- * KOPIJA iz `kvalitet.service.detectDocContentType`.
+ * Poruka koja radniku kaže GDE je posao ostao: prijava i fotke su dva poziva
+ * (JSON create → multipart photos), pa odbijena fotografija ne sme da ostavi utisak
+ * da je i prijava propala. Prijava je već sačuvana i fotke se dodaju iz njene kartice.
  */
-function detectPhotoContentType(buf: Buffer): string | null {
-  if (buf.length >= 5 && buf.subarray(0, 5).toString("latin1") === "%PDF-")
-    return "application/pdf";
-  if (
-    buf.length >= 8 &&
-    buf[0] === 0x89 &&
-    buf[1] === 0x50 &&
-    buf[2] === 0x4e &&
-    buf[3] === 0x47 &&
-    buf[4] === 0x0d &&
-    buf[5] === 0x0a &&
-    buf[6] === 0x1a &&
-    buf[7] === 0x0a
-  )
-    return "image/png";
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)
-    return "image/jpeg";
-  return null;
-}
+const PHOTO_RETRY_HINT =
+  'Prijava je sačuvana — otvorite je i dodajte fotografije dugmetom „Otpremi fotografije".';
 
 /** Razrešeni radnik (SAFE — bez lozinki). */
 interface WorkerRef {
@@ -302,11 +285,17 @@ export class MontazaNeusaglasenostiService {
 
   /**
    * `POST /montaza/neusaglasenosti/:id/photos` — upload fotki (multipart `files`).
-   * Dozvoljeno PODNOSIOCU ili manage (istraga). Magic-byte validacija (PDF/PNG/JPG;
-   * ostalo 422); ≤6 fajlova/poziv, > 8 MB → 413; ukupno ≤24 po prijavi. ZAVRSENO →
-   * 422 (zatvorena prijava se ne dopunjuje). ATOMSKI: SVE se validira PRE upisa, pa
-   * SVE fotke + PHOTO_ADDED event idu u JEDNOJ transakciji (all-or-nothing → nema
-   * parcijalnog upisa ni duplikata na retry). Event PHOTO_ADDED.
+   * Dozvoljeno PODNOSIOCU ili manage (istraga). Format presuđuje SADRŽAJ preko
+   * zajedničkog `assertAttachments` (PDF/PNG/JPG; HEIC sa telefona → 422 sa uputstvom);
+   * ≤6 fajlova/poziv, > 8 MB → 413; ukupno ≤24 po prijavi. ZAVRSENO → 422 (zatvorena
+   * prijava se ne dopunjuje). ATOMSKI: SVE se validira PRE upisa, pa SVE fotke +
+   * PHOTO_ADDED event idu u JEDNOJ transakciji (all-or-nothing → nema parcijalnog
+   * upisa ni duplikata na retry).
+   *
+   * ⚠️ Prijava i fotke su DVA poziva (create je JSON, ovo je multipart), pa odbijena
+   * fotografija ostavlja prijavu bez dokaza. Zato greška nosi `PHOTO_RETRY_HINT` —
+   * radnik zna da je prijava sačuvana i da fotke dodaje iz njene kartice (naknadno
+   * dodavanje je dozvoljeno u svakom statusu osim ZAVRSENO).
    */
   async addPhotos(id: number, files: UploadedPhotoFile[], actor: AuthUser) {
     const nc = await this.prisma.montageNonconformity.findUnique({
@@ -351,26 +340,21 @@ export class MontazaNeusaglasenostiService {
       );
 
     // 1) Validiraj SVE fajlove (magic bytes + veličina) i pripremi payload-e — PRE upisa.
-    const payloads = files.map((file) => {
-      if (!file?.buffer?.length)
-        throw new BadRequestException("Prazna fotografija.");
-      if (file.buffer.length > MAX_PHOTO_BYTES)
-        throw new PayloadTooLargeException("Fotografija je veća od 8 MB.");
-      const contentType = detectPhotoContentType(file.buffer);
-      if (!contentType)
-        throw new UnprocessableEntityException(
-          "Dozvoljene su slike (JPG/PNG) i PDF.",
-        );
-      return {
-        nonconformityId: id,
-        fileName:
-          clip(decodeOriginalName(file.originalname), 200) ?? "fotografija",
-        contentType,
-        // Prisma 6 Bytes traži ArrayBuffer-backed Uint8Array (kao quality_documents).
-        content: new Uint8Array(file.buffer),
-        createdByUserId: actor.userId,
-      };
-    });
+    //    `assertAttachments` je zajedničko mesto istine (`common/attachments`): odbija
+    //    HEIC/AVIF/WEBP, ignoriše lažiran `mimetype`, imenuje SVAKI problematičan fajl.
+    const payloads = assertAttachments(files, {
+      maxBytes: MAX_PHOTO_BYTES,
+      hint: PHOTO_RETRY_HINT,
+    }).map((checked) => ({
+      nonconformityId: id,
+      fileName:
+        clip(decodeOriginalName(checked.file.originalname), 200) ??
+        "fotografija",
+      contentType: checked.contentType,
+      // Prisma 6 Bytes traži ArrayBuffer-backed Uint8Array (kao quality_documents).
+      content: new Uint8Array(checked.file.buffer),
+      createdByUserId: actor.userId,
+    }));
 
     // 2) SVE fotke + event u JEDNOJ transakciji (all-or-nothing).
     const created = await this.prisma.$transaction(async (tx) => {

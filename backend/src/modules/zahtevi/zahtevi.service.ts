@@ -11,6 +11,11 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import {
+  ATTACHMENT_CONTENT_TYPE,
+  attachmentRejectionMessage,
+  sniffAttachmentFormat,
+} from "../../common/attachments/attachment-format.util";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { roleHasPermission } from "../../common/authz/role-permissions";
@@ -101,7 +106,13 @@ const MAX_ATTACHMENTS = 10;
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB hard cap (obrazac media-ai)
 const MAX_AUDIO_BYTES = 15 * 1024 * 1024; // 15 MB (STT pravilo 1.0)
 const MIN_FILE_BYTES = 200; // prazan/beznačajan fajl → 400
-const IMAGE_MIMES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
+/**
+ * Slike i PDF NE presuđuje `mimetype` (klijent ga laže) nego sadržaj — zajednički
+ * `common/attachments`. Ovde ostaje samo AUDIO, koji taj helper ne pokriva: audio
+ * se ne prikazuje `<img>`-om nego pušta plejerom, pa nije deo istog ugovora.
+ * ⚠️ `image/heic` je namerno UKLONJEN sa liste dozvoljenih (bio je ovde i u
+ * `plan-proizvodnje`, a nijedan ekran ne ume da ga prikaže).
+ */
 const AUDIO_MIMES = [
   "audio/webm",
   "audio/mp4",
@@ -110,13 +121,10 @@ const AUDIO_MIMES = [
   "audio/wav",
   "audio/x-wav",
 ];
-const DOC_MIMES = ["application/pdf"];
 
 const EXT_BY_MIME: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
-  "image/webp": "webp",
-  "image/heic": "heic",
   "audio/webm": "webm",
   "audio/mp4": "m4a",
   "audio/mpeg": "mp3",
@@ -1010,12 +1018,18 @@ export class ZahteviService {
           : `Najviše ${MAX_ATTACHMENTS} priloga po komentaru (trenutno ${existing}).`,
       );
 
+    // Validacija CELE serije PRE ijednog upload-a. Ranije je petlja otpremala i
+    // upisivala fajl po fajl, pa je jedan neispravan prilog ostavljao pola serije
+    // upisano bez ijedne poruke koji je fajl kriv (ista klasa greške kao fotografije
+    // neusaglašenosti sa montaže) — sada ili prolazi cela serija, ili nijedan fajl.
+    const prepared = files.map((file) => {
+      const classified = this.classifyAttachment(file);
+      this.validateFile(file, classified.kind);
+      return { file, ...classified };
+    });
+
     const created: unknown[] = [];
-    for (const file of files) {
-      const kind = this.classifyMime(file.mimetype);
-      this.validateFile(file, kind);
-      const ext =
-        EXT_BY_MIME[file.mimetype.split(";")[0].toLowerCase()] ?? "bin";
+    for (const { file, kind, contentType, ext } of prepared) {
       const storagePath =
         commentId == null
           ? `req/${id}/${randomUUID()}.${ext}`
@@ -1025,7 +1039,7 @@ export class ZahteviService {
         ATTACHMENT_BUCKET,
         storagePath,
         new Uint8Array(file.buffer),
-        file.mimetype,
+        contentType,
       );
 
       // AUDIO → auto STT (best-effort; pad = transcript null). NIKAD ne obara upload.
@@ -1039,7 +1053,7 @@ export class ZahteviService {
           await this.limits.assertStt(actor.userId, actor.role);
           const res = await this.ai.transcribe({
             bytes: new Uint8Array(file.buffer),
-            mime: file.mimetype,
+            mime: contentType,
             ctx: { module: AI_MODULE.STT, userId: actor.userId },
           });
           transcript = res.text;
@@ -1059,7 +1073,7 @@ export class ZahteviService {
           bucket: ATTACHMENT_BUCKET,
           storagePath,
           originalName: file.originalname?.slice(0, 200) ?? "prilog",
-          contentType: file.mimetype,
+          contentType,
           sizeBytes: file.size,
           transcript,
           transcriptModel,
@@ -1202,13 +1216,35 @@ export class ZahteviService {
       );
   }
 
-  private classifyMime(mime: string): "IMAGE" | "AUDIO" | "FILE" {
-    const m = mime.split(";")[0].toLowerCase();
-    if (IMAGE_MIMES.includes(m)) return "IMAGE";
-    if (AUDIO_MIMES.includes(m)) return "AUDIO";
-    if (DOC_MIMES.includes(m)) return "FILE";
+  /**
+   * Vrsta priloga + kanonski `content_type`, presuđeno po SADRŽAJU za slike/PDF
+   * (`common/attachments` — jedno mesto istine) i po `mimetype`-u za audio (koji
+   * taj helper ne pokriva). Lažiran `mimetype` na slici više ne prolazi, a HEIC
+   * dobija poruku šta da se uradi umesto generičkog „nepodržan tip".
+   */
+  private classifyAttachment(file: Express.Multer.File): {
+    kind: "IMAGE" | "AUDIO" | "FILE";
+    contentType: string;
+    ext: string;
+  } {
+    const format = sniffAttachmentFormat(file.buffer);
+    if (format === "jpeg" || format === "png" || format === "pdf") {
+      const contentType = ATTACHMENT_CONTENT_TYPE[format];
+      return {
+        kind: format === "pdf" ? "FILE" : "IMAGE",
+        contentType,
+        ext: EXT_BY_MIME[contentType] ?? "bin",
+      };
+    }
+    const mime = (file.mimetype ?? "").split(";")[0].toLowerCase();
+    if (AUDIO_MIMES.includes(mime))
+      return {
+        kind: "AUDIO",
+        contentType: mime,
+        ext: EXT_BY_MIME[mime] ?? "bin",
+      };
     throw new UnprocessableEntityException(
-      `Nepodržan tip fajla "${mime}". Dozvoljeno: slike (jpeg/png/webp/heic), audio (webm/mp4/mpeg/ogg/wav), pdf.`,
+      `${attachmentRejectionMessage(file.originalname ?? "", format)} Dozvoljen je i audio prilog (webm/mp4/mpeg/ogg/wav).`,
     );
   }
 
