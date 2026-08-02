@@ -6,6 +6,7 @@ import type {
   TDocumentDefinitions,
 } from "pdfmake/interfaces";
 import { PrismaService } from "../../../prisma/prisma.service";
+import { VAT_RATE_BY_CODE } from "../../gl/posting/vat-rates";
 import { PdfService } from "../../documents/pdf.service";
 import { BarcodeService } from "../../documents/barcode.service";
 import {
@@ -447,12 +448,50 @@ export class StockDocumentPdfService {
     return t?.description ?? null;
   }
 
-  /** Šifra poreske stope → osnovna stopa (%), za kolonu „PDV %" na otpremnici/kalkulaciji. */
+  /**
+   * Šifra poreske stope → EFEKTIVNA stopa (%), za kolonu „PDV %" na otpremnici/kalkulaciji.
+   *
+   * ⚠️ DVA KVARA ISPRAVLJENA ODJEDNOM (nalaz S5, 02.08.2026):
+   *
+   *  1. NIJE BILO REZERVE NA MAPU. Funkcija je vraćala samo redove iz `tax_rates`, a ta
+   *     tabela je na produkciji PRAZNA (0 redova, v. N1-a) — pa je `Map` bio prazan i
+   *     `taxRates.get(...) ?? 0` je štampao **0 % na svakom redu** otpremnice i kalkulacije.
+   *     Ovo je bio jedini čitalac stope BEZ rezerve: `robno/calculation.service.ts` i
+   *     `lookups/item-lookup.service.ts` je odavno imaju. Zato se `Map` sada PUNI iz
+   *     `VAT_RATE_BY_CODE`, pa se preko toga upisuju redovi registra kad ih bude.
+   *  2. `base_rate` NIJE EFEKTIVNA STOPA. Efektivna je ZBIR PET kolona (`R_Tarife_ZbirnaStopa`,
+   *     v. `vat-rates.ts`) — tarifa „4" (NIZA 10 %) nosi stopu u koloni `railway_rate`, a
+   *     `base_rate` joj je 0. Da je registar popunjen, ovaj čitalac bi za nju odštampao
+   *     **0 %** dok bi svi ostali računali 10 %. Isti zbir kao u kalkulaciji i lookup-u.
+   */
   private async loadTaxRates(): Promise<Map<string, number>> {
+    const out = new Map<string, number>(
+      Object.entries(VAT_RATE_BY_CODE).map(([code, rate]) => [
+        code,
+        rate.mul(100).toNumber(),
+      ]),
+    );
     const rows = await this.prisma.taxRate.findMany({
-      select: { code: true, baseRate: true },
+      select: {
+        code: true,
+        baseRate: true,
+        railwayRate: true,
+        cityRate: true,
+        warRate: true,
+        specialRate: true,
+      },
     });
-    return new Map(rows.map((r) => [r.code, r.baseRate ?? 0]));
+    for (const r of rows) {
+      out.set(
+        r.code,
+        (r.baseRate ?? 0) +
+          (r.railwayRate ?? 0) +
+          (r.cityRate ?? 0) +
+          (r.warRate ?? 0) +
+          (r.specialRate ?? 0),
+      );
+    }
+    return out;
   }
 
   /** Code 128 broja dokumenta; nikad ne baca (dokument bez broja = bez barkoda). */

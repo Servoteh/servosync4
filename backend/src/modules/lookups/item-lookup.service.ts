@@ -1,7 +1,14 @@
-import { Injectable, UnprocessableEntityException } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
-import { VAT_RATE_BY_CODE } from "../gl/posting/vat-rates";
+import {
+  VAT_RATE_BY_CODE,
+  unknownVatCodeMessage,
+} from "../gl/posting/vat-rates";
 import { computeAvailability, stockKeyOf } from "../robno/reservation.service";
 import {
   ITEM_LOOKUP_DEFAULT_KEY,
@@ -77,6 +84,8 @@ interface ItemSearchRow {
  */
 @Injectable()
 export class ItemLookupService {
+  private readonly logger = new Logger(ItemLookupService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async search(query: ItemLookupQuery): Promise<ItemLookupResult> {
@@ -313,7 +322,20 @@ export class ItemLookupService {
     }
     for (const code of codes) {
       if (out.has(code)) continue;
-      out.set(code, (VAT_RATE_BY_CODE[code] ?? ZERO).mul(100));
+      const fraction = VAT_RATE_BY_CODE[code];
+      if (fraction === undefined) {
+        // ⚠️ JEDINO MESTO GDE TIHA NULA OSTAJE (odluka uz nalaz S3, 02.08.2026), ali
+        // više nije tiha — ide u log. Ovo je PRIKAZ: pretraga artikala vraća listu i
+        // jedan artikal sa pokvarenom tarifom ne sme da obori ceo picker (operater
+        // tada ne može ni da pronađe artikal da bi ga ispravio). Novac se ovde ne
+        // računa — čim isti artikal krene u dokument, `PricingService`,
+        // `CalculationService` i `PostingEngine` ga odbijaju sa 400/422.
+        this.logger.warn(
+          `${unknownVatCodeMessage(code)} Artikal iz pretrage nosi tu šifru — ` +
+            `u listi je prikazan kao 0 %, a u dokument ne može da uđe.`,
+        );
+      }
+      out.set(code, (fraction ?? ZERO).mul(100));
     }
     return out;
   }

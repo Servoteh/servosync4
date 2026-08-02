@@ -315,14 +315,29 @@ describe("PricingService", () => {
       expect(p.unitPrice.toFixed(4)).toBe("0.0000");
     });
 
-    it("nepoznata poreska šifra i dalje daje 0% PDV, ali se sada PRIJAVI", async () => {
+    /**
+     * ⚠️ PROMENJENO OČEKIVANJE (nalaz S3, 02.08.2026). Ovaj test je do sada tvrdio
+     * „nepoznata šifra i dalje daje 0 % PDV, ali se PRIJAVI" — a `warnings` niko ne
+     * blokira: stavka je ulazila u račun bez poreza, i to se posle nije videlo ni na
+     * jednoj brani (`assertTotalsMatchItems` poredi zaglavlje sa stavkama, obe nula).
+     * Cena je NOVAC, pa nepoznata šifra sada pada pre upisa.
+     */
+    it("nepoznata poreska šifra se ODBIJA (ne daje tihu nulu)", async () => {
       prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "9" }));
 
-      const p = await service.priceItem({ itemId: 1, quantity: 1 });
+      await expect(service.priceItem({ itemId: 1, quantity: 1 })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
 
-      expect(p.vatAmount.toFixed(4)).toBe("0.0000");
-      expect(p.vatRatePercent.toFixed(2)).toBe("0.00");
-      expect(p.warnings.join(" ")).toContain("Nepoznata poreska šifra");
+    it("poruka imenuje šifru, dozvoljene šifre i IZVOR šifre (artikal)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "18" }));
+
+      // Šifra „18" je istekla tarifa (do 30.09.2012) koja i dalje živi u BigBit
+      // podacima — operater je traži na dokumentu, a ona je u šifarniku artikala.
+      await expect(
+        service.priceItem({ itemId: 1, quantity: 1 }),
+      ).rejects.toThrow(/„18".*0, 1, 3, 4, 5, 6.*šifarnika artikala/s);
     });
 
     // Snižena stopa 10 % je u `R_Tarife` šifra „4" (grupa NIZA), a ne „2" — te šifre

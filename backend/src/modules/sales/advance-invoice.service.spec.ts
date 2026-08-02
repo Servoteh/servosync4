@@ -363,14 +363,21 @@ describe("AdvanceInvoiceService", () => {
       expect(sum("debit").equals(sum("credit"))).toBe(true);
     });
 
-    it("PDV 10% ide na konto 4730", async () => {
+    /**
+     * ⚠️ ŠIFRA POPRAVLJENA „2" → „4" (nalaz V1, 02.08.2026). Test je prolazio zato što
+     * je avansni servis držao SVOJ prepis mape stopa u kome je „2" značila 10 % —
+     * a „2" u `R_Tarife` uopšte ne postoji. Snižena stopa je šifra „4" (grupa NIZA).
+     * Da prepis nije uklonjen, ovaj bi test i dalje bio zelen dok predračun sa istom
+     * stavkom računa po drugoj stopi.
+     */
+    it("PDV 10% (šifra „4” = NIZA) ide na konto 4730", async () => {
       prisma.invoice.findUnique.mockResolvedValue(
         advanceRow({
           status: "POSTED",
           advancePaidAt: null,
           advancePaidAmount: new D(0),
           grossTotal: new D(11000),
-          items: [{ vatRateCode: "2", vatBase: new D(10000) }],
+          items: [{ vatRateCode: "4", vatBase: new D(10000) }],
         }),
       );
       prisma.invoice.update.mockResolvedValue(advanceRow());

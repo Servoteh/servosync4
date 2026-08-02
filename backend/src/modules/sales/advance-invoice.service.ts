@@ -8,6 +8,10 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
+import {
+  VAT_PERCENT_BY_CODE,
+  unknownVatCodeMessage,
+} from "../gl/posting/vat-rates";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { grossToNet } from "../pdv/vat-bridge.util";
 import { assertVatPeriodNotLocked } from "../pdv/vat-period-lock";
@@ -110,17 +114,15 @@ const ADVANCE_DIRECTION_OUT = "out";
 const PROFORMA_TYPES = new Set(["PON", "PROF"]);
 
 /**
- * Nominalna PDV stopa (u PROCENTIMA) po `vatRateCode`. Isti katalog kao privatni
- * `VAT_RATE_BY_CODE` u `pricing.service.ts` (tamo kao koeficijent, ovde u
- * procentima jer `grossToNet` prima procenat); pricing ga ne izvozi.
+ * PDV STOPE AVANSA — IZVEDENE IZ JEDNE MAPE (`gl/posting/vat-rates.ts`).
+ *
+ * ⚠️ Do 02.08.2026. je ovde stajao RUČNI PREPIS mape u procentima, opravdan time da
+ * „pricing ga ne izvozi". To više nije tačno (`vat-totals.ts:131` re-eksportuje mapu),
+ * a prepis je preživeo ispravku mape i naplaćivao drugi porez nego predračun po kome
+ * je avans izdat: predračun sa artiklom `id=12852` (šifra „4") = 10 %, avans po njemu
+ * = 8 %; stavka sa šifrom „1" (BEZPDV) = 0 % na predračunu, 20 % na avansu.
+ * Puna slika kvara je u zaglavlju `vat-rates.ts`.
  */
-const VAT_PERCENT_BY_CODE: Readonly<Record<string, number>> = {
-  "3": 20, // Osnovna / VISA
-  "1": 20, // Osnovna (alt kod)
-  "2": 10, // Zeleznica / NIZA
-  "4": 8, // Posebna / POLJO
-  "0": 0, // bez PDV (izvoz / oslobođeno)
-};
 
 /** Advisory-lock namespace za serijalizaciju „jedan AVR po predračunu". */
 const ADVISORY_NS_ADVANCE_PER_PROFORMA = 4002;
@@ -384,11 +386,10 @@ export class AdvanceInvoiceService {
 
     const isExport = input.isExport ?? false;
     const vatRateCode = isExport ? "0" : (input.vatRateCode ?? "3");
+    // Spisak dozvoljenih je IZVEDEN iz mape — do 02.08.2026. je ovde bio prepis koji
+    // je primao nepostojeću „2", a odbijao legitimne „5" (POLJO 8 %) i „6" (20 %).
     if (VAT_PERCENT_BY_CODE[vatRateCode] === undefined) {
-      throw new UnprocessableEntityException(
-        `Nepoznata šifra PDV stope „${vatRateCode}" — dozvoljene su ` +
-          `${Object.keys(VAT_PERCENT_BY_CODE).join(", ")}.`,
-      );
+      throw new UnprocessableEntityException(unknownVatCodeMessage(vatRateCode));
     }
 
     const companyId = input.companyId ?? 0;
@@ -1039,6 +1040,12 @@ export class AdvanceInvoiceService {
    * izvornog dokumenta (dominantna po osnovici); izvoz je uvek 0% (kategorija Z).
    * Račun ide isključivo kroz `grossToNet` (pdv/vat-bridge.util) — zbir uvek
    * zatvara (osnovica + PDV === bruto do na cent).
+   *
+   * ⚠️ NEPOZNATA ŠIFRA SE ODBIJA, NE PODRAZUMEVA. Do 02.08.2026. je ovde stajalo
+   * `?? 20`: šifra koju mapa ne zna (npr. istekla tarifa „18" nasleđena iz BigBita)
+   * tiho je davala 20 % preračunate stope — dakle NAPLATU poreza po stopi koju
+   * dokument nikad nije nosio, i to na bruto koji je kupac stvarno uplatio. Tiha
+   * DVADESETKA je gora od tihe nule: ne može se ni prepoznati kao izostanak.
    */
   private splitAdvance(
     gross: Prisma.Decimal,
@@ -1046,7 +1053,13 @@ export class AdvanceInvoiceService {
     isExport: boolean,
   ): AdvanceSplit {
     const vatRateCode = isExport ? "0" : this.resolveVatRateCode(items);
-    const vatPercent = VAT_PERCENT_BY_CODE[vatRateCode] ?? 20;
+    const vatPercent = VAT_PERCENT_BY_CODE[vatRateCode];
+    if (vatPercent === undefined) {
+      throw new UnprocessableEntityException(
+        `${unknownVatCodeMessage(vatRateCode)} Šifra je preuzeta sa stavke ` +
+          `izvornog dokumenta — ispravi je na predračunu, pa ponovi izdavanje avansa.`,
+      );
+    }
     const { net, vat } = grossToNet(gross, vatPercent);
     return { net, vat, gross: net.add(vat), vatRateCode, vatPercent };
   }
@@ -1080,11 +1093,21 @@ export class AdvanceInvoiceService {
     return best;
   }
 
-  /** Konto PDV-a po primljenom avansu (namenski par, ne konta konačnih faktura). */
+  /**
+   * Konto PDV-a po primljenom avansu (namenski par, ne konta konačnih faktura).
+   *
+   * Ključ je PROCENAT, ne šifra — pa ispravka mape šifara (02.08.2026) ovo nije
+   * pomerila, samo je promenila KOJA šifra ovde stiže:
+   *   „3"/„6" → 20 % → 4720 · „4" → 10 % → 4730 · „0"/„1" → 0 % → bez PDV linije
+   *   „5" (POLJO 8 %) → `null` → pozivaoci bacaju 422 (konto izlaznog PDV-a od 8 %
+   *   u kontnom planu ne postoji — v. `PREOSTALE_FAZE.md`, nalaz O-PDV-8).
+   * Do ispravke je „4" davala 8 % i završavala baš u tom 422 — avans po jedinom
+   * artiklu sa šifrom „4" nije mogao da se NAPLATI.
+   */
   private vatAccountFor(vatPercent: number): string | null {
     if (vatPercent === 20) return ACC_VAT_ADVANCE_20;
     if (vatPercent === 10) return ACC_VAT_ADVANCE_10;
-    return null; // 0% (izvoz/oslobođeno) — bez PDV linije
+    return null; // 0% (izvoz/oslobođeno) — bez PDV linije; 8% → 422 kod pozivaoca
   }
 }
 

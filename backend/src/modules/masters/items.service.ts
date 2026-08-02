@@ -6,6 +6,10 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import {
+  KNOWN_VAT_CODES,
+  unknownVatCodeMessage,
+} from "../gl/posting/vat-rates";
 import { parseBoolParam, type ListItemsQuery } from "./dto/list-items.dto";
 import {
   computeKilogramsPerPiece,
@@ -351,12 +355,25 @@ export class ItemsService {
         );
     }
 
+    // ⚠️ ULAZNA PROVERA TARIFE JE VEZANA ZA MAPU, NE ZA PRAZNU TABELU (nalaz S3).
+    // Do 02.08.2026. je ovde stajalo `if (total === 0) continue` — a `tax_rates` je na
+    // produkciji PRAZNA (0 redova, v. N1-a), pa je provera bila POTPUNO ISKLJUČENA:
+    // artikal je mogao da dobije šifru „18" ili „99" i da uđe u šifarnik. Odatle je
+    // šifra išla u svaki dokument koji taj artikal koristi.
+    //
+    // Zato je merodavan spisak `KNOWN_VAT_CODES` — IZVEDEN iz iste mape iz koje svaki
+    // potrošač uzima stopu. Registar `tax_rates`, kad se popuni (N1-a), ostaje DODATNA
+    // provera: šifra mora biti i poznata mapi i prisutna u registru.
     for (const [value, label] of [
       [dto.goodsTaxRateCode, "Tarifa robe"],
       [dto.serviceTaxRateCode, "Tarifa usluga"],
     ] as const) {
       const code = effectiveCode(value, undefined);
       if (value === undefined || code === null) continue;
+      if (!KNOWN_VAT_CODES.has(code)) {
+        errors.push(`${label}: ${unknownVatCodeMessage(code)}`);
+        continue;
+      }
       const total = await this.prisma.taxRate.count();
       if (total === 0) continue;
       const row = await this.prisma.taxRate.findFirst({

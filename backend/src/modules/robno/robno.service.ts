@@ -10,6 +10,10 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { parseDateParam } from "../../common/date-params";
+import {
+  KNOWN_VAT_CODES,
+  unknownVatCodeMessage,
+} from "../gl/posting/vat-rates";
 import { StockDocumentNumberingService } from "./stock-document-numbering.service";
 import { CostingService } from "./costing.service";
 import { toDec } from "./decimal.util";
@@ -1355,12 +1359,29 @@ export class RobnoService {
     return { documents: docs.length, entries };
   }
 
-  /** Mapiraj DTO stavku → Prisma create input (sirovi iznosi; landed popunjava kalkulacija). */
+  /**
+   * Mapiraj DTO stavku → Prisma create input (sirovi iznosi; landed popunjava kalkulacija).
+   *
+   * ⚠️ OVDE JE ULAZNA BRANA ZA PORESKU ŠIFRU (nalaz S3, 02.08.2026). `CreateStockDocumentItemDto`
+   * je INTERFEJS (bez `class-validator` dekoratora), pa ga globalni `ValidationPipe` uopšte ne
+   * gleda — `goodsTaxRateCode` je do sada ulazio nepregledan. Šifra koju mapa ne zna posle toga
+   * ćuti na dva mesta koja rade novac: `CalculationService.taxRateOf` (maloprodajna cena bez
+   * PDV-a) i `PostingEngine.aggregateDocAmounts` (nalog bez PDV linije). Zato pada ovde, na
+   * unosu, dok je dokument još prazan — a ne na knjiženju, kad je već sve upisano.
+   * (Put IZMENE ima svoju branu: `@IsIn` u `update-stock-document.dto.ts` — isti izveden spisak.)
+   */
   private buildItemData(
     it: CreateStockDocumentItemDto,
     headerWarehouseId: number,
     idx: number,
   ): Prisma.StockDocumentItemCreateWithoutDocumentInput {
+    const taxCode = it.goodsTaxRateCode ?? "3";
+    if (!KNOWN_VAT_CODES.has(taxCode)) {
+      throw new UnprocessableEntityException(
+        `Stavka ${it.lineNo ?? idx + 1} (artikal ${it.itemId}): ` +
+          unknownVatCodeMessage(taxCode),
+      );
+    }
     return {
       itemId: it.itemId,
       warehouseId: it.warehouseId ?? headerWarehouseId,
@@ -1380,7 +1401,7 @@ export class RobnoService {
       fixedTax: toDec(it.fixedTax),
       fxPurchasePrice: toDec(it.fxPurchasePrice),
       customsRate: toDec(it.customsRate),
-      goodsTaxRateCode: it.goodsTaxRateCode ?? "3",
+      goodsTaxRateCode: taxCode,
     };
   }
 }

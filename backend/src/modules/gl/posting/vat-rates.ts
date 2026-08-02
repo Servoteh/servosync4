@@ -99,3 +99,80 @@ export const VAT_RATE_BY_CODE: Readonly<Record<string, Prisma.Decimal>> = {
 export const RATE_VISA = new D("0.20");
 export const RATE_NIZA = new D("0.10");
 export const RATE_POLJO = new D("0.08");
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * IZVEDENICE MAPE — SVE ŠTO SISTEM ZNA O ŠIFRAMA STOPA IZLAZI ODAVDE
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *
+ * ⚠️ IZMEREN KVAR KOJI JE OVO IZAZVAO (02.08.2026, sedmi krug provere)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Ispravka mape iznad (commit 2eb53bcd) nije stigla do DVA PREPISA koji su živeli
+ * mimo nje, pa je sistem istog dana radio po TRI različite tablice stopa:
+ *
+ *   `sales/advance-invoice.service.ts` — `VAT_PERCENT_BY_CODE` (procenti):
+ *       „1"→20, „2"→10, „4"→8, bez „5"/„6"          ← STARA, neispravljena
+ *   `sales/dto/update-invoice.dto.ts`  — `KNOWN_VAT_CODES` (spisak dozvoljenih):
+ *       {0,1,2,3,4}                                  ← STARA, neispravljena
+ *
+ * ŠTA JE TO KONKRETNO RADILO NAD ULAZOM KOJI DANAS POSTOJI NA PRODUKCIJI:
+ *
+ *  1. Predračun čija je jedina stavka artikal `id=12852` (`DPTR10-04612`, jedini
+ *     artikal sa šifrom „4") obračunat je po ISPRAVLJENIH **10 %**, a avans po
+ *     tom predračunu po STAROJ **8 %** — dva različita poreza na isti promet.
+ *  2. Stavka sa šifrom „1" (BEZPDV, 0 %) je na predračunu davala 0 % PDV-a, a
+ *     `splitAdvance` bi na isti bruto naplatio **20 % na oslobođen promet**.
+ *  3. Spisak dozvoljenih šifara je PRIMAO „2" (koja u `R_Tarife` ne postoji): kroz
+ *     `addItem`/`updateItem` je prolazila, a `VAT_RATE_BY_CODE["2"]` je `undefined`
+ *     → domaća oporeziva stavka je tiho išla na **0 % PDV**. Rupa je bila NOVA:
+ *     pre ispravke mape je „2" značila 10 %. Uz to je ODBIJAO „5" i „6", koje su
+ *     legitimne — pa se poljoprivredna nadoknada i bezcarinska zona nisu mogle uneti.
+ *
+ * ZATO SE OD OVE IZMENE SPISAK I PROCENTI **IZVODE** IZ `VAT_RATE_BY_CODE`, a ne
+ * prepisuju. Prepis se raziđe tiho i bez ijedne izmene u kodu koji ga koristi;
+ * izvedenica se ne može raziću jer nema svoj podatak. Test koji to čuva:
+ * `sales/jedna-mapa-poreskih-stopa.spec.ts`.
+ */
+
+/**
+ * DOZVOLJENE ŠIFRE — IZVEDENE iz mape. Gejtuje unos (DTO prodaje, DTO robnog
+ * dokumenta, šifarnik artikala): šifra koju sistem ne ume da pretvori u stopu ne
+ * sme ni da uđe u bazu, jer bi je svaki potrošač posle toga video kao 0 %.
+ */
+export const KNOWN_VAT_CODES: ReadonlySet<string> = new Set(
+  Object.keys(VAT_RATE_BY_CODE),
+);
+
+/** Šifre kao sortiran spisak za poruke o grešci („0, 1, 3, 4, 5, 6"). */
+export const KNOWN_VAT_CODES_LABEL: string = [...KNOWN_VAT_CODES]
+  .sort()
+  .join(", ");
+
+/**
+ * Stopa kao PROCENAT (20, ne 0.20) po šifri — IZVEDENA iz iste mape.
+ *
+ * Postoji jer avansni račun porez DELI, ne množi: `grossToNet` (pdv/vat-bridge.util)
+ * prima procenat. Do 02.08.2026. je zbog toga u modulu prodaje stajao ručni prepis
+ * mape u procentima — v. kvar opisan iznad.
+ */
+export const VAT_PERCENT_BY_CODE: Readonly<Record<string, number>> =
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(VAT_RATE_BY_CODE).map(([code, rate]) => [
+        code,
+        rate.mul(100).toNumber(),
+      ]),
+    ),
+  );
+
+/**
+ * Jedna jedina poruka za nepoznatu šifru — spisak dozvoljenih je IZVEDEN, pa ne
+ * može da zastari kad se mapa dopuni. Tip izuzetka bira pozivalac (unos → 400,
+ * obračun/knjiženje → 422).
+ */
+export function unknownVatCodeMessage(code: string | null | undefined): string {
+  return (
+    `Nepoznata šifra PDV stope „${code ?? ""}" — dozvoljene su: ` +
+    `${KNOWN_VAT_CODES_LABEL}.`
+  );
+}

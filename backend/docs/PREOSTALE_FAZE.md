@@ -200,6 +200,51 @@ buduću promenu stope: menja se kod, ne podatak.
 otvara pitanje ko je vlasnik registra (BigBit sync vs ručni CRUD, plan D1). Ispravka mapiranja
 (N1) je bila hitna i samostalna; seed traži odluku.
 
+> ✅ **ZAMKA „SEED I MAPE MORAJU ZAJEDNO" JE ZATVORENA (02.08.2026, sedmi krug).**
+> Pre ove izmene bi seed odmah napravio kvar: birač stope na avansima
+> (`frontend/.../fakturisanje/avansi/advance-dialogs.tsx`) puni opcije IZ `tax_rates`, pa bi
+> ponudio šifre **„5" i „6"** — a `advance-invoice.service.ts` ih je odbijao sa 422, jer je
+> držao SVOJ prepis mape. Isto i gejt stavki (`update-invoice.dto.ts`). Od ove izmene su
+> **spisak dozvoljenih šifara i procenti IZVEDENI** iz `VAT_RATE_BY_CODE`
+> (`KNOWN_VAT_CODES`, `VAT_PERCENT_BY_CODE` u `gl/posting/vat-rates.ts`), pa seed i kod ne
+> mogu da se raziđu — svaka šifra koju registar ponudi, a mapa zna, prolazi svuda.
+> **Ostaje jedna namerna nesimetrija:** šifra „5" (POLJO 8 %) se PRIMA na unosu, ali se avans
+> po njoj ne može NAPLATITI — `vatAccountFor` nema konto za 8 % i baca 422. To je nalaz
+> **O-PDV-8** iznad (čeka knjigovođu), a ne propust ove izmene.
+>
+> ⚠️ Uz seed i dalje ide korak 2 iz spiska gore (ZBIR pet kolona): 02.08. je nađen i treći
+> čitalac koji je uzimao samo `base_rate` — štampa otpremnice/kalkulacije
+> (`robno/print/stock-document-pdf.service.ts:loadTaxRates`). Ispravljen je istim krugom
+> (nalaz S5), ali je to podsetnik da svaki NOV čitalac registra mora da sabere pet kolona.
+
+### N1-d — sa praznim `tax_rates` CENOVNIK NE MOŽE DA POSTOJI (tvrd FK), a sync to ćuti
+
+**Nalaz (02.08.2026, sedmi krug).** `price_list_entries.tax_rate_code` ima **tvrd FK** na
+`tax_rates(code)`:
+
+```
+-- prisma/migrations/20260104120000_baseline/migration.sql:1526
+ALTER TABLE "price_list_entries" ADD CONSTRAINT "fk_price_list_entries_tax_rates"
+  FOREIGN KEY ("tax_rate_code") REFERENCES "tax_rates"("code") ON DELETE NO ACTION ON UPDATE NO ACTION;
+```
+
+Pošto `tax_rates` ima **0 redova** (v. N1-a), **nijedan red cenovnika ne može da se upiše** —
+svaki `INSERT` obara FK. Sync to ne prijavljuje kao grešku nego kao preskočen red: FK
+pre-filter `SOURCE_FK_FILTERS.price_list_entries` (`sync/table-ownership.ts:348-356`) namerno
+odbacuje red čija tarifa nema par, da full refresh (koji ide pod
+`session_replication_role='replica'`, gde FK trigeri NE RADE) ne bi ostavio siročad. Sa
+praznim registrom taj filter odbacuje **sve redove, uvek**.
+
+**Posledica koja se vidi na ekranu:** `PricingService.resolveBasePrice` prvo traži cenu u
+`price_list_entries`, pa tek onda pada na `Item.wholesalePrice`. Dok je registar prazan, grana
+cenovnika je **mrtva po konstrukciji** — svaka cena dolazi iz `Item.wholesalePrice`, a
+`priceSource` nikad ne kaže „iz cenovnika". To nije kvar cenovnog motora nego posledica
+praznog registra tarifa.
+
+**Šta ovo znači za redosled poslova:** seed `tax_rates` (N1-a) nije samo „preduslov za PDV
+istoriju" — on je i **preduslov da cenovnik uopšte proradi**. Dok se ne uradi, nema smisla
+tražiti zašto sync cenovnika „ne prenosi ništa": prenosi tačno onoliko koliko FK dozvoljava.
+
 ### N1-b — jedan artikal ima pogrešnu poresku tarifu U BIGBITU (ispraviti u izvoru)
 
 **Izmereno 02.08.2026** (`items.goods_tax_rate_code`):
@@ -387,6 +432,36 @@ povratak na bazu pukne umesto da tiho odštampa nulu.
 **Ostaje otvoreno:** seed `tax_rates` — pitanje je opisano u **N1-a** (svih 8 redova
 `R_Tarife` sa `valid_from`/`valid_to`, efektivna stopa = zbir pet kolona). Dok se to ne uradi,
 datumsko važenje stopa ne radi nigde u sistemu, pa ni na papiru.
+
+### S3 — ODLUKA: gde tiha nula sme da ostane, a gde mora da bude glasna (rešeno)
+
+**Nalaz (02.08.2026, sedmi krug).** Nepoznata šifra poreske stope davala je **tihu nulu** na
+pet mesta, a branu je imalo samo jedno (`pdv/advance-vat.service.ts`). Ulaz je pritom bio
+otvoren: provera tarife artikla (`masters/items.service.ts`) bila je vezana za **praznu**
+tabelu `tax_rates` (`if (total === 0) continue`), pa je bila **potpuno isključena**, a robni
+DTO-i su imali goli `@IsString`. Šifra „18" ili „99" je prolazila i svuda dalje značila 0 %.
+
+**Pravilo koje je sprovedeno:** granica je **da li se od stope pravi novac, knjiga ili poreski
+dokument**, a ne koliko je mesto „duboko".
+
+| mesto | odluka | zašto |
+|---|---|---|
+| `sales/pricing.service.ts` | **400** | osnovica × stopa ide u GK, na SEF i u KIF |
+| `gl/posting/posting.service.ts` | **422** | nalog bi BALANSIRAO bez PDV linije — ni kontrola ΣDug=ΣPot ga ne hvata |
+| `robno/calculation.service.ts` | **422** | `KalkMP` bez stope = maloprodajna cena bez PDV-a |
+| `pdv/advance-vat.service.ts` | 422 (zatečeno) | poreski dokument |
+| `lookups/item-lookup.service.ts` | **0 % + `logger.warn`** | PRIKAZ: jedan pokvaren artikal ne sme da obori celu pretragu — operater tada ne može ni da ga pronađe da bi ga ispravio |
+
+**Ulaz je zatvoren na tri mesta, svi protiv ISTOG izvedenog spiska (`KNOWN_VAT_CODES`):**
+šifarnik artikala (`items.service.ts`, sada nezavisno od praznog registra), unos robnog
+dokumenta (`robno.service.ts:buildItemData` — DTO je interfejs, `ValidationPipe` ga ne vidi) i
+izmena robnog dokumenta (`update-stock-document.dto.ts`, `@IsIn`).
+
+**Šta ovo znači za budući kod:** novo mesto koje čita stopu po šifri ili je uzima iz
+`VAT_RATE_BY_CODE` i **pada glasno**, ili je izričito prikaz — pa loguje. `?? 0` bez jednog od
+ta dva je regresija ovog nalaza. Isto važi i za `?? 20`: avansni servis je imao baš to
+(`VAT_PERCENT_BY_CODE[code] ?? 20`), a **tiha dvadesetka je gora od tihe nule** — ne može se
+prepoznati kao izostanak, izgleda kao ispravan porez.
 
 ---
 

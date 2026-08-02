@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { VAT_RATE_BY_CODE } from "./vat-totals";
+import { unknownVatCodeMessage } from "../gl/posting/vat-rates";
 
 /**
  * PricingService — cena stavke izlaznog računa (deljeno predračun/račun/pregled cene).
@@ -356,14 +357,25 @@ export class PricingService {
 
     // ── 4) Osnovica + PDV ── (oba na PARU — v. `AMOUNT_DP`)
     const vatBase = this.round(quantity.mul(unitPrice), AMOUNT_DP);
-    const rate = VAT_RATE_BY_CODE[vatRateCode];
-    if (rate === undefined) {
-      // Tiha nula na nepoznatoj šifri je bila neprimetna — sad se bar prijavi.
-      warnings.push(
-        `Nepoznata poreska šifra „${vatRateCode}" — PDV je obračunat kao 0%.`,
+    const vatRate = VAT_RATE_BY_CODE[vatRateCode];
+    if (vatRate === undefined) {
+      // ⚠️ GLASNO, NE UPOZORENJE (nalaz S3, 02.08.2026). Do ove izmene je nepoznata
+      // šifra samo punila `warnings` i upisivala 0 % — a `warnings` niko ne blokira:
+      // stavka je ulazila u račun sa nula poreza. Neslaganje se posle NE VIDI ni na
+      // jednoj brani, jer `assertTotalsMatchItems` poredi zaglavlje sa stavkama, a
+      // obe strane su tada nula. Ovo je NOVAC (osnovica × stopa ide u GK, na SEF i u
+      // KIF), pa mora da padne pre nego što se upiše.
+      //
+      // Šifra ovde stiže sa stavke ILI iz šifarnika artikala (`goodsTaxRateCode`),
+      // pa poruka mora reći OBA izvora — inače operater traži grešku na dokumentu,
+      // a ona je u artiklu.
+      throw new BadRequestException(
+        `${unknownVatCodeMessage(vatRateCode)} Šifra je uzeta ` +
+          (args.vatRateCode != null
+            ? "sa stavke dokumenta."
+            : `iz šifarnika artikala (artikal ${args.itemId ?? "—"}, „Tarifa robe").`),
       );
     }
-    const vatRate = rate ?? ZERO;
     // PDV STAVKE se računa iz ZAOKRUŽENE osnovice (i sam zaokružuje): tako `osnovica ×
     // stopa` može da se ponovi nad odštampanim brojevima jednog reda i dobije isti iznos.
     //
