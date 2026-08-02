@@ -23,7 +23,14 @@ import {
 import {
   type ListInvoicesQuery,
 } from "./dto/list-invoices.dto";
-import { computePayableAmount } from "./advance-invoice.service";
+import {
+  // Advisory brave se UVOZE, ne prepisuju: storno mora da uzme BAŠ one koje drži
+  // `applyAdvance` (namespace 4003 = račun, 4004 = avans). Prepisana konstanta bi se
+  // razišla tiho — obe sesije bi „uzimale bravu", a nikad istu.
+  ADVISORY_NS_APPLY_OF_ADVANCE,
+  ADVISORY_NS_APPLY_ON_INVOICE,
+  computePayableAmount,
+} from "./advance-invoice.service";
 import {
   APPLICATION_ACTIVE,
   APPLICATION_REVERSED,
@@ -627,6 +634,26 @@ export class FakturisanjeService {
 
     const year = businessYear(invoice.documentDate);
 
+    // Grana knjiženja zavisi SAMO od snapshot-a, pa se odlučuje pre transakcije.
+    const isAutoStock =
+      AUTO_STOCK_TYPES.has(invoice.documentType) &&
+      invoice.stockDocumentId != null;
+
+    /**
+     * PRED-PROVERA RUČNOG NALOGA DOK DOKUMENT JOŠ NOSI NACRT-BROJ (03.08.2026).
+     *
+     * `buildSalesLedgerLines` baca tačno jednu grešku — „za stopu X% nema konta
+     * izlaznog PDV-a" — i u njoj IMENUJE dokument. Od ispravke N1 (ispod) ručni nalog
+     * se gradi nad snapshot-om sa IZDATIM brojem, pa bi ta poruka, da je prvi susret
+     * sa njom unutar transakcije, glasila „račun 657/26 se ne može proknjižiti" —
+     * broju koji posle rollback-a ne postoji nigde (numeracija se vraća zajedno sa
+     * transakcijom, v. `numbering.service.ts`), dok na ekranu stoji `DRAFT-300`.
+     * Ovde se ista provera izvrši nad brojem koji operater VIDI, i to pre nego što se
+     * uzme ijedna brava. Račun je čist (bez baze) i nad istim stavkama, pa drugi
+     * prolaz unutar transakcije ne može da da drugačiji ishod.
+     */
+    if (!isAutoStock) buildSalesLedgerLines(invoice, invoice.items);
+
     return this.prisma.$transaction(async (tx) => {
       // 0) ATOMSKI CLAIM (review 1D nalaz): invoice se čita findUnique VAN tx, pa su
       //    rani guardovi (isLocked/status DRAFT) nad snapshot-om — dva paralelna posta
@@ -650,11 +677,41 @@ export class FakturisanjeService {
         invoice.companyId,
       );
 
+      /**
+       * SNAPSHOT SA IZDATIM BROJEM — sve što nastaje POSLE ovog reda mora da vidi
+       * `documentNumber`, a ne nacrt-broj sa kojim je dokument ušao u knjiženje.
+       * =========================================================================
+       *
+       * ⚠️ IZMEREN KVAR (02.08.2026): `invoice` je pročitan na početku metode, broj se
+       * izdaje TEK OVDE, a u red fakture se upisuje na kraju (`tx.invoice.update`) —
+       * ali je `postManualLedger` do sada dobijao NEDIRNUT snapshot. Predračun #300 →
+       * IFUSL (carry-over upisuje privremeni `DRAFT-300`) → knjiženje izdaje `657/26`,
+       * a sve tri linije naloga
+       *
+       *     2040 DUG 120.000 / 6140 POT 100.000 / 4702 POT 20.000
+       *
+       * nose `document_number = 'DRAFT-300'`, uključujući i opise („Kupac DRAFT-300").
+       * Ništa nizvodno to ne prepravlja.
+       *
+       * ZAŠTO JE TO SKUPO: saldakonti grupišu otvorene stavke ISKLJUČIVO po
+       * `(account_code, analytical_code, document_number)` (`open-items.service.ts`), a
+       * uparivanje uplate ide po pozivu na broj. Kupčeva otvorena stavka bi glasila na
+       * broj koji ne postoji ni na jednom papiru, KIF red isto, a uplata sa pozivom na
+       * `657/26` ne bi našla ništa da zatvori.
+       *
+       * ŠIRE NEGO ŠTO IZGLEDA: `carry-over` nikad ne upisuje `stockDocumentId`, pa
+       * SVIH SEDAM ciljnih vrsta (ne samo IFUSL) ide ručnom granom — dakle ovaj put je
+       * pravilo, a ne izuzetak.
+       *
+       * `postManualLedger` je jedini potrošač snapshot-a posle izdavanja broja
+       * (provereno grep-om po `postManualLedger` i po korišćenjima `invoice` ispod):
+       * ostali čitaju `documentType`/`stockDocumentId`/`supplyDate`/`documentDate`,
+       * koje izdavanje broja ne dira.
+       */
+      const issued = { ...invoice, documentNumber };
+
       // 2) Auto-robno (IFR/IFGP/IZVRO/IZVGP) sa vezanim robnim izlazom → PostingEngine.
       let journalEntryId: number | null = null;
-      const isAutoStock =
-        AUTO_STOCK_TYPES.has(invoice.documentType) &&
-        invoice.stockDocumentId != null;
 
       if (isAutoStock && invoice.stockDocumentId != null) {
         // Auto-robno knjiženje (razduženje + prihod + PDV) po šemi 33/36/24/47.
@@ -669,30 +726,67 @@ export class FakturisanjeService {
           where: { sourceGoodsDocId: invoice.stockDocumentId },
           select: { id: true, status: true },
         });
-        if (existing) {
-          journalEntryId = existing.id;
-          // Robni auto-nalog nastaje kao `draft` (posting.service.ts:358), a kartica
-          // konta / saldakonti / bilans čitaju SAMO status IN ('POSTED','LOCKED') —
-          // draft nalog je nevidljiv. Zato preuzeti nalog promovišemo u `posted` u istoj
-          // tx (odluka O4 default, kao izvod u PR #8). markPosted idiom = status guard:
-          // CAS `where status='DRAFT'` menja SAMO draft; posted/locked ostaje netaknut
-          // (idempotentno — račun čiji je robni nalog već proknjižen/zaključan se ne dira).
-          if (existing.status === "DRAFT") {
-            await tx.journalEntry.updateMany({
-              where: { id: existing.id, status: "DRAFT" },
-              data: { status: "POSTED" },
-            });
-          }
-        } else {
-          journalEntryId = null;
+        /**
+         * ROBNI IZLAZ BEZ NALOGA → 422, NIKAD TIHI `null`.
+         * =====================================================================
+         *
+         * ⚠️ IZMEREN KVAR (02.08.2026): za IFR sa `stockDocumentId = 55` čija je
+         * izdatnica još DRAFT, `findFirst` vraća `null` i grana je TIHO upisivala
+         * `journalEntryId = null` — bez greške i bez WARN-a. Ishod: broj `657/26`
+         * potrošen, dokument POSTED i LOCKED, a u glavnoj knjizi NULA redova. Takav
+         * račun se štampa i sme na SEF, a nema ga ni u saldakontima, ni u KIF-u, ni u
+         * POPDV-u; ponovno knjiženje pada na 409 (`isLocked`), a storno nema šta da
+         * reverzira. Put je jedan klik: PROF → IFR →
+         * `POST /robno/documents/from-invoice` (izdatnica nastaje kao DRAFT) →
+         * `POST /sales/invoices/:id/post`.
+         *
+         * ZAŠTO 422, A NE PAD NA RUČNI NALOG: ručni nalog knjiži prihod i PDV, a šema
+         * robnog izlaza (33/36) knjiži i razduženje zaliha — pa bi kasnije knjiženje
+         * izdatnice udvostručilo prihod i porez. Račun bez naloga se ne izdaje; broj
+         * se ne troši (rollback vraća i numeraciju).
+         *
+         * ⚠️ ZA OPERATERA JE OVO NOVA PREPREKA NA PUTU KOJI JE DO SADA VRAĆAO 200:
+         * poruka zato imenuje OBA uzroka (neproknjižena izdatnica / vrsta dokumenta
+         * bez šeme kontiranja) i oba leka. Na produkciji danas nijedan
+         * `document_types.posting_template` nije popunjen, pa se ovom granom ne može
+         * proknjižiti NIJEDAN račun sa vezanom izdatnicom — do sada su svi prolazili
+         * bez ijednog reda u GK. Zapisano u `docs/PREOSTALE_FAZE.md`.
+         */
+        if (!existing) {
+          throw new UnprocessableEntityException(
+            `Račun ${invoice.documentNumber} je vezan za robni izlaz (izdatnicu) ` +
+              `#${invoice.stockDocumentId} koji još nije proknjižen u glavnu knjigu — ` +
+              `račun se ne može proknjižiti, jer bi ostao bez naloga GK (nevidljiv u ` +
+              `saldakontima, KIF-u i POPDV-u). Prvo proknjiži izdatnicu (Robno → ` +
+              `dokument → Knjiži), pa ponovi knjiženje računa. Ako izdatnica ne može da ` +
+              `se proknjiži jer njena vrsta dokumenta nema šemu kontiranja ` +
+              `(posting_template), šemu mora da postavi knjigovođa.`,
+          );
+        }
+        journalEntryId = existing.id;
+        // Robni auto-nalog nastaje kao `draft` (posting.service.ts:358), a kartica
+        // konta / saldakonti / bilans čitaju SAMO status IN ('POSTED','LOCKED') —
+        // draft nalog je nevidljiv. Zato preuzeti nalog promovišemo u `posted` u istoj
+        // tx (odluka O4 default, kao izvod u PR #8). markPosted idiom = status guard:
+        // CAS `where status='DRAFT'` menja SAMO draft; posted/locked ostaje netaknut
+        // (idempotentno — račun čiji je robni nalog već proknjižen/zaključan se ne dira).
+        if (existing.status === "DRAFT") {
+          await tx.journalEntry.updateMany({
+            where: { id: existing.id, status: "DRAFT" },
+            data: { status: "POSTED" },
+          });
         }
       } else {
         // 3) RUČNI nalog (IFUSL/uslužni ili račun bez robnog izlaza) — direktan GL.
+        //    Ide `issued` (snapshot sa IZDATIM brojem), ne `invoice` — v. N1 iznad.
+        //    Stavke se prosleđuju iz već učitanog dokumenta: isti ulaz kao u
+        //    pred-proveri, pa se dva prolaza ne mogu razići (ni po jednom upitu manje).
         journalEntryId = await this.postManualLedger(
           tx,
-          invoice,
+          issued,
           year,
           actor,
+          invoice.items,
         );
       }
 
@@ -748,16 +842,119 @@ export class FakturisanjeService {
    * Storno proknjižene fakture (BigBit ER paritet). Guard: dokument mora biti
    * zaključan (isLocked) i proknjižen (status ≠ DRAFT), i još ne storniran
    * (status ≠ CANCELLED). D8: storno je JEDINI put koji sme da dira zaključan
-   * dokument (postInvoice/mutacije ga odbijaju). Tok, u redosledu:
-   *   1) CAS claim: status → CANCELLED (ekskluzivnost — samo jedan storno prolazi),
-   *      razlog se dopisuje u napomenu (audit).
-   *   2) reverse GL naloga (gl-write.reverse) — obrnute strane, novi storno-nalog.
-   *   3) SEF: SENT/DELIVERED → SEF cancel API; PENDING → lokalno CANCELLED (bez slanja).
+   * dokument (postInvoice/mutacije ga odbijaju).
+   *
+   * ═════════════════════════════════════════════════════════════════════════════
+   * SVE ŠTO DIRA BAZU JE U JEDNOJ TRANSAKCIJI (ispravka 03.08.2026)
+   * ═════════════════════════════════════════════════════════════════════════════
+   *
+   * ⚠️ ZATEČENO STANJE (izmereno, pravi `GlWriteService`): CAS `status → CANCELLED` se
+   * COMMIT-ovao prvi, pa je niz koraka išao nad `this.prisma`, van transakcije i bez
+   * ijedne brave. Faktura 101, nalog 500 zaključan („zaključaj period" —
+   * `POST /gl/journal/lock-older`), primena avansa #55 ACTIVE, SEF red SENT: CAS prođe →
+   * `gl-write.reverse` baci 409 „Nalog 500 je zaključan" → i tu se sve zaustavi. Primena
+   * #55 ostaje ACTIVE, kolone (`advance_invoice_id = 9`, 30.000) neočišćene, `sef.cancel`
+   * i `reservation.release` nepozvani. Drugi pokušaj → 409 „već storniran".
+   *
+   * 🔴 ZAŠTO JE BAŠ PRIMENA AVANSA NEPOPRAVLJIVA: GK, SEF i rezervacije imaju ručne rute
+   * sanacije, a primena avansa NEMA — jedini pisač statusa `REVERSED` je baš ovaj storno.
+   * `applyAdvance` pri tom sabira ACTIVE primene BEZ obzira na status računa, pa naplaćen
+   * avans ostaje trajno potrošen: svaki sledeći pokušaj dobija 422 „već iskorišćen u
+   * celosti". Zato „sanira se ručno" ovde nije bio trade-off nego ćorsokak.
+   *
+   * TOK SADA:
+   *   0) fast-fail čitanja van transakcije (404 / već storniran / nije proknjižen);
+   *   1) TRANSAKCIJA:
+   *      a) advisory brave ISTE koje drži `applyAdvance` — račun (4003) pa avans (4004),
+   *         uvek tim redom (obrnut redosled u dve sesije = mrtva petlja);
+   *      b) svež snapshot pod bravom + AVR guard;
+   *      c) PROVERA REVERZIBILNOSTI SVIH naloga PRE CAS-a (izvorni + nalozi zatvaranja
+   *         avansa) — zaključan nalog obara storno dok ništa nije promenjeno;
+   *      d) CAS status → CANCELLED (ekskluzivnost) + razlog u napomenu;
+   *      e) reverzija naloga (`glWrite.reverseWithin`, ISTA tx), primene → REVERSED,
+   *         čišćenje kompatibilnih kolona.
+   *   2) posle commit-a, spoljni sistemi koji u transakciju ne mogu: rezervacije i SEF.
+   *
    * Vraća storniranu fakturu + id storno-naloga + spiskove otkazanih SEF redova
    * (sefCancelledOutboxIds = SEF cancel; sefCancelledPendingIds = lokalno otkazani PENDING).
    */
   async stornoInvoice(id: number, reason: string, actor: AuthUser) {
-    const invoice = await this.prisma.invoice.findUnique({
+    const snapshot = await this.prisma.invoice.findUnique({
+      where: { id },
+      select: { id: true, status: true, isLocked: true, documentNumber: true },
+    });
+    if (!snapshot) throw new NotFoundException(`Račun ${id} ne postoji.`);
+    if (snapshot.status === "CANCELLED") {
+      throw new ConflictException(`Račun ${id} je već storniran.`);
+    }
+    // D8: samo zaključan (proknjižen) dokument se stornira; draft se menja/briše normalno.
+    if (!snapshot.isLocked || snapshot.status === "DRAFT") {
+      throw new ConflictException(
+        `Račun ${id} nije proknjižen (zaključan) — storno nije moguć.`,
+      );
+    }
+
+    // Prošireni rokovi transakcije (isti obrazac kao `robno.service.ts` / `reservation`):
+    // storno sada ČEKA advisory brave koje drži `applyAdvance`, pa bi Prisma default
+    // (maxWait 2 s) pod kontencijom vratio P2028 „transaction not found" umesto da
+    // sačeka svoj red. 20 s je gornja granica rada koji je ionako samo nekoliko upisa.
+    const result = await this.prisma.$transaction(
+      async (tx) => this.stornoWithin(tx, id, reason, actor),
+      { maxWait: 10_000, timeout: 20_000 },
+    );
+
+    // ── POSLE COMMIT-a: spoljni sistemi ─────────────────────────────────────────
+    // Ovo su jedini koraci koji u transakciju NE MOGU (rezervacije imaju svoju, SEF je
+    // mrežni poziv). Zato su i jedini koji smeju da se dese posle nepovratnog storna —
+    // i zato oba imaju svoju rutu sanacije, za razliku od primene avansa.
+    await this.releaseReservations(id, result.documentNumber, reason, actor);
+    const sef = await this.cancelSefOutbox(id, reason, actor);
+
+    const stornoed = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: { items: { orderBy: { lineNo: "asc" } } },
+    });
+    if (!stornoed) throw new NotFoundException(`Račun ${id} ne postoji.`);
+    return {
+      ...stornoed,
+      stornoEntryId: result.stornoEntryId,
+      /** Prvi storno-nalog primene avansa (kompatibilnost sa 1:1 odgovorom). */
+      advanceStornoEntryId: result.advanceStornoEntryId,
+      /** Svi storno-nalozi primena avansa ovog računa (N:M). */
+      advanceStornoEntryIds: result.advanceStornoEntryIds,
+      sefCancelledOutboxIds: sef.cancelledOutboxIds,
+      sefCancelledPendingIds: sef.cancelledPendingIds,
+    };
+  }
+
+  /**
+   * Baza-deo storna — CEO u pozivaočevoj transakciji (v. obrazloženje uz `stornoInvoice`).
+   * Svaki `throw` odavde vraća dokument u proknjiženo stanje: nema polustorniranog računa.
+   */
+  private async stornoWithin(
+    tx: Prisma.TransactionClient,
+    id: number,
+    reason: string,
+    actor: AuthUser,
+  ) {
+    /**
+     * BRAVE PRE ČITANJA — ISTE KOJE DRŽI `applyAdvance`.
+     * =========================================================================
+     *
+     * ⚠️ IZMERENA TRKA (dev baza): dok sesija B drži otvorenu transakciju sa INSERT-om
+     * primene avansa, `UPDATE invoices SET status='CANCELLED'` sesije A prolazi za
+     * **93 ms** — `FOR NO KEY UPDATE` (Prisma update) se ne sudara sa `FOR KEY SHARE`
+     * (FK provera INSERT-a). A zato vidi 0 primena, B posle komituje, i ostaje
+     * stornirana faktura sa ACTIVE primenom od 3.000 i NEREVERZIRANIM nalogom
+     * zatvaranja — izlazni PDV umanjen 500 din bez osnova.
+     *
+     * Redosled je OBAVEZNO račun (4003) → avans (4004), isti kao u `applyAdvance`:
+     * obrnut redosled u dve sesije daje mrtvu petlju. Avansi se zaključavaju rastuće
+     * po id-u, da se ni dva paralelna storna ne ukrste.
+     */
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADVISORY_NS_APPLY_ON_INVOICE}::int, ${id}::int)`;
+
+    const invoice = await tx.invoice.findUnique({
       where: { id },
       select: {
         id: true,
@@ -774,9 +971,57 @@ export class FakturisanjeService {
       },
     });
     if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
-
     if (invoice.status === "CANCELLED") {
       throw new ConflictException(`Račun ${id} je već storniran.`);
+    }
+    // D8: samo zaključan (proknjižen) dokument se stornira; draft se menja/briše normalno.
+    if (!invoice.isLocked || invoice.status === "DRAFT") {
+      throw new ConflictException(
+        `Račun ${id} nije proknjižen (zaključan) — storno nije moguć.`,
+      );
+    }
+
+    // ── PRIMENE AVANSA (N:M od migracije 20260726120000) ───────────────────────
+    //     `applyAdvance` po SVAKOJ primeni knjiži zaseban nalog (4300 DUG / PDV DUG /
+    //     kupac POT) koji NIJE `invoice.journalEntryId`. Bez njihovog storna
+    //     poništenje računa ostavlja obavezu po primljenom avansu i PDV po avansu
+    //     zatvorene — iako je avans naplaćen i novac je u kasi.
+    //
+    //     Čita se ODMAH (pre svake 4004 brave) jer se iz njega izvodi SPISAK avansa koje
+    //     treba zaključati — a brave 4004 moraju sve da se uzmu odjednom, rastuće. Za
+    //     ovaj upit je dovoljna brava 4003 koju već držimo: `applyAdvance` je uzima prvu,
+    //     pa nova primena na OVOM računu ne može da nastane dok smo mi unutra.
+    const applications = await tx.invoiceAdvanceApplication.findMany({
+      where: { invoiceId: id, status: APPLICATION_ACTIVE },
+      orderBy: { id: "asc" },
+      select: { id: true, advanceInvoiceId: true, closingEntryId: true },
+    });
+
+    /**
+     * BRAVE STRANE AVANSA (4004) — SVE ODJEDNOM, RASTUĆE PO ID-u.
+     *
+     * Zaključava se svaki avans koji ovaj storno dodiruje:
+     *   • sam dokument, kad je on AVR (inače `applyAdvance` može da ubaci primenu baš
+     *     njega dok guard ispod broji primene, pa bi storno prošao „bez primena");
+     *   • avans svake aktivne primene (nalog zatvaranja se reverzira);
+     *   • avans ZATEČENE 1:1 veze (`advance_invoice_id`) — kolonu čistimo, a
+     *     `applyAdvance` za DRUGI račun tu istu kolonu čita kroz
+     *     `loadAdvanceLinkedInvoices` da bi izračunao preostatak avansa.
+     *
+     * Rastući redosled je obavezan da se dva paralelna storna ne ukrste, a 4003 pre
+     * 4004 da se ne ukrste storno i `applyAdvance`.
+     */
+    const advanceLockIds = [
+      ...new Set(
+        [
+          invoice.documentType === "AVR" ? id : null,
+          ...applications.map((a) => a.advanceInvoiceId),
+          invoice.advanceInvoiceId,
+        ].filter((advId): advId is number => advId != null),
+      ),
+    ].sort((a, b) => a - b);
+    for (const advanceId of advanceLockIds) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADVISORY_NS_APPLY_OF_ADVANCE}::int, ${advanceId}::int)`;
     }
 
     // AVANS koji je već odbijen na nestorniranom računu se NE stornira: njegov
@@ -785,7 +1030,7 @@ export class FakturisanjeService {
     // storniran avans (review Batch C, nalaz 2). Prvo se stornira konačni račun.
     if (invoice.documentType === "AVR") {
       // N:M: avans može biti primenjen na VIŠE računa — svaki od njih blokira storno.
-      const appliedOn = await this.prisma.invoiceAdvanceApplication.findMany({
+      const appliedOn = await tx.invoiceAdvanceApplication.findMany({
         where: { advanceInvoiceId: id, status: APPLICATION_ACTIVE },
         select: { invoice: { select: { documentNumber: true, status: true } } },
       });
@@ -813,7 +1058,7 @@ export class FakturisanjeService {
         advanceInvoiceId: id,
         // Primene su gore već obrađene; ovde se traže SAMO zatečene veze.
         applicationsOfAdvance: [],
-        linkedInvoices: await loadAdvanceLinkedInvoices(this.prisma, [id]),
+        linkedInvoices: await loadAdvanceLinkedInvoices(tx, [id]),
       });
       for (const line of legacyUsage.lines) {
         blocking.push(line.invoiceDocumentNumber ?? `#${line.invoiceId}`);
@@ -826,25 +1071,64 @@ export class FakturisanjeService {
         );
       }
     }
-    // D8: samo zaključan (proknjižen) dokument se stornira; draft se menja/briše normalno.
-    if (!invoice.isLocked || invoice.status === "DRAFT") {
+
+    // Rezerva za dokumente knjižene pre N:M migracije (veza samo u koloni).
+    const toReverse: Array<{
+      id: number | null;
+      closingEntryId: number | null;
+    }> =
+      applications.length === 0 && invoice.advanceClosingEntryId != null
+        ? [{ id: null, closingEntryId: invoice.advanceClosingEntryId }]
+        : applications;
+
+    /**
+     * REVERZIBILNOST SVIH NALOGA — PRE CAS-a, ODJEDNOM.
+     * =========================================================================
+     *
+     * Transakcija bi i bez ove provere sve vratila (svaki `throw` ispod ruši i CAS), pa
+     * ovo NIJE brana atomičnosti nego brana ISKORISTIVOSTI: zaključan nalog je jedini
+     * čest uzrok pada, a operater mora da vidi SVE naloge koje treba da otključa — ne
+     * prvi pa opet prvi. Bez ovoga se storno računa sa tri primene odbija tri puta
+     * zaredom, svaki put uz jedno ime.
+     *
+     * DRAFT i već storniran nalog se preskaču (isto pravilo kao dosad): nacrt se ne
+     * stornira nego briše, a već reverziran nalog nema šta da doda.
+     */
+    const candidateEntryIds = [
+      invoice.journalEntryId,
+      ...toReverse.map((a) => a.closingEntryId),
+    ].filter((entryId): entryId is number => entryId != null);
+    const entries =
+      candidateEntryIds.length === 0
+        ? []
+        : await tx.journalEntry.findMany({
+            where: { id: { in: candidateEntryIds } },
+            select: {
+              id: true,
+              number: true,
+              status: true,
+              reversedByEntryId: true,
+            },
+          });
+    const locked = entries.filter((e) => e.status === "LOCKED");
+    if (locked.length > 0) {
       throw new ConflictException(
-        `Račun ${id} nije proknjižen (zaključan) — storno nije moguć.`,
+        `Račun ${invoice.documentNumber} se ne može stornirati: ` +
+          `${locked.length === 1 ? "nalog" : "nalozi"} glavne knjige ` +
+          `${locked.map((e) => `${e.number} (#${e.id})`).join(", ")} ` +
+          `${locked.length === 1 ? "je zaključan" : "su zaključani"} — storno mimo ` +
+          `otključavanja bi zaobišao kontrolu zaključanog perioda. Otključaj ` +
+          `${locked.length === 1 ? "ga" : "ih"} u Glavnoj knjizi (nalog → Otključaj), ` +
+          `pa ponovi storno.`,
       );
     }
+    const reversible = new Map(entries.map((e) => [e.id, e]));
 
-    // ATOMIČNOST (review Batch A F4 — svesni trade-off): koraci 1–3 NISU u jednoj
-    // $transaction. CAS→CANCELLED (korak 1) je NAMERNO prvi, radi ekskluzivnosti (samo
-    // jedan storno prolazi). Redosled se NE menja: obrnuti redosled (reverse pre CAS) bi
-    // u trci dozvolio DVA reverse-naloga za istu fakturu. Posledica trade-off-a: pad
-    // IZMEĐU koraka 1 i 2 ostavlja fakturu CANCELLED BEZ GL storna — nekonzistentnost se
-    // sanira RUČNIM reverse-om izvornog naloga kroz Glavnu knjigu (GK). Učestalost
-    // zanemarljiva; korak 2 dodatno loguje ERROR sa uputstvom za sanaciju.
-    //
-    // 1) CAS claim — snapshot status + isLocked → CANCELLED (ekskluzivno). Dopiši razlog.
-    //    Isti obrazac kao postInvoice: updateMany je JEDINI izvor ekskluzivnosti; dva
-    //    paralelna storna → samo jedan dobije count 1, drugi 409.
-    const claimed = await this.prisma.invoice.updateMany({
+    // CAS claim — snapshot status + isLocked → CANCELLED (ekskluzivno). Dopiši razlog.
+    // Isti obrazac kao postInvoice: updateMany je JEDINI izvor ekskluzivnosti; dva
+    // paralelna storna → samo jedan dobije count 1, drugi 409. (Brava iznad ih ionako
+    // serijalizuje; CAS ostaje kao brana i za pisače koji bravu ne uzimaju.)
+    const claimed = await tx.invoice.updateMany({
       where: { id, status: invoice.status, isLocked: true },
       data: {
         status: "CANCELLED",
@@ -858,88 +1142,45 @@ export class FakturisanjeService {
       );
     }
 
-    // 2) reverse GL nalog (ako postoji i nije nacrt / već storniran). Pošto je CAS gore
-    //    obezbedio ekskluzivnost, ovde nema trke oko duplog storna naloga.
+    // Reverzija izvornog naloga (ako postoji i nije nacrt / već storniran).
     let stornoEntryId: number | null = null;
     if (invoice.journalEntryId != null) {
-      const entry = await this.prisma.journalEntry.findUnique({
-        where: { id: invoice.journalEntryId },
-        select: { id: true, status: true, reversedByEntryId: true },
-      });
+      const entry = reversible.get(invoice.journalEntryId);
       if (entry && entry.status !== "DRAFT" && entry.reversedByEntryId == null) {
-        try {
-          const rev = await this.glWrite.reverse(entry.id, actor.userId);
-          stornoEntryId = rev.stornoEntryId;
-        } catch (err) {
-          // Faktura je već (korak 1, commit-ovan CAS) označena CANCELLED, a reverse GL
-          // naloga je pao → stanje: stornirana faktura BEZ GL storna (trade-off gore).
-          // SANACIJA: ručno proknjižiti obrnuti nalog kroz Glavnu knjigu (GK) za nalog
-          // ${entry.id}. Grešku propagiramo (pozivalac vidi da GL storno nije prošao).
-          this.logger.error(
-            `STORNO SANACIJA: faktura ${id} je označena CANCELLED, ali reverse GL naloga ` +
-              `${entry.id} nije uspeo — ručno proknjižiti obrnuti nalog kroz Glavnu knjigu (GK). ` +
-              `Uzrok: ${err instanceof Error ? err.message : String(err)}`,
-            err instanceof Error ? err.stack : undefined,
-          );
-          throw err;
-        }
+        const rev = await this.glWrite.reverseWithin(
+          tx,
+          entry.id,
+          actor.userId,
+        );
+        stornoEntryId = rev.stornoEntryId;
       }
     }
 
-    // 2b) NALOZI ZATVARANJA AVANSA (Batch C; N:M od migracije 20260726120000).
-    //     `applyAdvance` po SVAKOJ primeni knjiži zaseban nalog (4300 DUG / PDV DUG /
-    //     kupac POT) koji NIJE `invoice.journalEntryId`. Bez njihovog storna
-    //     poništenje računa ostavlja obavezu po primljenom avansu i PDV po avansu
-    //     zatvorene — iako je avans naplaćen i novac je u kasi. Storno reverzira
-    //     naloge SVOJIH primena, označava ih REVERSED (time OSLOBAĐA te iznose —
-    //     avans se odmah može ponovo iskoristiti) i čisti kompatibilne kolone.
+    // Reverzija naloga zatvaranja avansa + primene → REVERSED (time se iznosi
+    // OSLOBAĐAJU: avans se odmah može ponovo iskoristiti).
     const advanceStornoEntryIds: number[] = [];
     let advanceStornoEntryId: number | null = null;
-    const applications = await this.prisma.invoiceAdvanceApplication.findMany({
-      where: { invoiceId: id, status: APPLICATION_ACTIVE },
-      orderBy: { id: "asc" },
-      select: { id: true, closingEntryId: true },
-    });
-    // Rezerva za dokumente knjižene pre N:M migracije (veza samo u koloni).
-    const toReverse: Array<{
-      id: number | null;
-      closingEntryId: number | null;
-    }> =
-      applications.length === 0 && invoice.advanceClosingEntryId != null
-        ? [{ id: null, closingEntryId: invoice.advanceClosingEntryId }]
-        : applications;
-
     for (const application of toReverse) {
       let reversalEntryId: number | null = null;
       if (application.closingEntryId != null) {
-        const advEntry = await this.prisma.journalEntry.findUnique({
-          where: { id: application.closingEntryId },
-          select: { id: true, status: true, reversedByEntryId: true },
-        });
+        const advEntry = reversible.get(application.closingEntryId);
         if (
           advEntry &&
           advEntry.status !== "DRAFT" &&
           advEntry.reversedByEntryId == null
         ) {
-          try {
-            const rev = await this.glWrite.reverse(advEntry.id, actor.userId);
-            reversalEntryId = rev.stornoEntryId;
-            advanceStornoEntryIds.push(rev.stornoEntryId);
-            advanceStornoEntryId ??= rev.stornoEntryId;
-          } catch (err) {
-            this.logger.error(
-              `STORNO SANACIJA: faktura ${id} je označena CANCELLED, ali reverse naloga ` +
-                `zatvaranja avansa ${advEntry.id} nije uspeo — ručno proknjižiti obrnuti ` +
-                `nalog kroz Glavnu knjigu (GK). Uzrok: ` +
-                `${err instanceof Error ? err.message : String(err)}`,
-              err instanceof Error ? err.stack : undefined,
-            );
-            throw err;
-          }
+          const rev = await this.glWrite.reverseWithin(
+            tx,
+            advEntry.id,
+            actor.userId,
+          );
+          reversalEntryId = rev.stornoEntryId;
+          advanceStornoEntryIds.push(rev.stornoEntryId);
+          advanceStornoEntryId ??= rev.stornoEntryId;
         }
       }
       if (application.id != null) {
-        await this.prisma.invoiceAdvanceApplication.update({
+        await tx.invoiceAdvanceApplication.update({
           where: { id: application.id },
           data: {
             status: APPLICATION_REVERSED,
@@ -957,7 +1198,7 @@ export class FakturisanjeService {
     // posle storna svog jedinog računa nije mogao odbiti nigde — ćorsokak bez izlaza
     // kroz aplikaciju. Storniran račun ništa ne duguje i ništa ne odbija.
     if (toReverse.length > 0 || invoice.advanceInvoiceId != null) {
-      await this.prisma.invoice.update({
+      await tx.invoice.update({
         where: { id },
         data: {
           advanceInvoiceId: null,
@@ -967,62 +1208,150 @@ export class FakturisanjeService {
       });
     }
 
-    // 2c) REZERVACIJE ZALIHA (Batch C). Storniran dokument više ništa ne obećava
-    //     kupcu — rezervacije registrovane na NJEGA se oslobađaju i roba se vraća u
-    //     raspoloživo. Bez ovoga bi rezervacija storniranog predračuna večno držala
-    //     zalihu (nema FK ka `invoices`, pa ni kaskade). Ne sme da obori već
-    //     izvršen storno: neuspeh se loguje, dokument ostaje CANCELLED.
+    return {
+      documentNumber: invoice.documentNumber,
+      stornoEntryId,
+      advanceStornoEntryId,
+      advanceStornoEntryIds,
+    };
+  }
+
+  /**
+   * REZERVACIJE ZALIHA (Batch C). Storniran dokument više ništa ne obećava kupcu —
+   * rezervacije registrovane na NJEGA se oslobađaju i roba se vraća u raspoloživo. Bez
+   * ovoga bi rezervacija storniranog predračuna večno držala zalihu (nema FK ka
+   * `invoices`, pa ni kaskade).
+   *
+   * Van transakcije storna je NAMERNO: `ReservationService.release` otvara svoju, a
+   * neuspeh ne sme da obori već izvršen (commit-ovan) storno — loguje se, dokument
+   * ostaje CANCELLED, sanacija ide kroz /robno/rezervacije.
+   */
+  private async releaseReservations(
+    id: number,
+    documentNumber: string,
+    reason: string,
+    actor: AuthUser,
+  ): Promise<void> {
     await this.reservation
       .release(
         {
           sourceType: "invoice",
           sourceId: id,
-          reason: `storno dokumenta ${invoice.documentNumber}`,
+          reason: `storno dokumenta ${documentNumber}`,
         },
         actor.userId,
       )
       .catch((err: unknown) => {
         this.logger.warn(
-          `Dokument ${invoice.documentNumber} je storniran, ali oslobađanje rezervacija ` +
+          `Dokument ${documentNumber} je storniran, ali oslobađanje rezervacija ` +
             `nije uspelo — proveri /robno/rezervacije. Uzrok: ${String(err)}`,
         );
       });
+  }
 
-    // 3) SEF outbox saniranje (review Batch A F3):
-    //    (a) SENT/DELIVERED → SEF cancel API (postojeći tok, guard MozeDaSeStornira +
-    //        DRY-RUN bezbedno, sa razlogom).
-    //    (b) PENDING (kreiran ali NIKAD poslat) → lokalno CANCELLED bez SEF poziva
-    //        (sef.cancelPendingLocally) — inače bi ostao „u redu za slanje" i mogao da
-    //        ode na SEF posle storna. send() ima i defense-in-depth guard nad tim.
-    const sefCancelledOutboxIds: number[] = [];
-    const outboxRows = await this.sef.listOutbox({ invoiceId: id, take: 200 });
-    for (const row of outboxRows) {
-      if (row.status === "SENT" || row.status === "DELIVERED") {
-        await this.sef.cancel(row.id, reason);
-        sefCancelledOutboxIds.push(row.id);
-      }
-    }
-    const sefCancelledPendingIds = await this.sef.cancelPendingLocally(
+  /**
+   * SEF OUTBOX POSLE STORNA — i sanacija reda koji je otišao U MEĐUVREMENU.
+   * =============================================================================
+   *
+   *   (a) PENDING (kreiran ali NIKAD poslat) → lokalno CANCELLED, bez SEF poziva.
+   *       PRVI je, jer je čist upis u bazu: posle njega red više nije „u redu za
+   *       slanje". (Do 03.08.2026. je bio poslednji, pa bi pad mrežnog `cancel`-a
+   *       ispod ostavio PENDING redove nedirnute.)
+   *   (b) SENT/DELIVERED → SEF cancel API (guard MozeDaSeStornira, DRY-RUN bezbedno).
+   *   (c) DRUGI PROLAZ — v. ispod.
+   *
+   * ⚠️ IZMEREN KVAR (02.08.2026, klijent kasni 300 ms): `send()` proveri da faktura nije
+   * stornirana, pa ode na mrežu; storno se u međuvremenu ceo izvrši; `send()` se vrati i
+   * upiše `SENT` + `sefInvoiceId` + `sentAt`. Ishod: faktura CANCELLED, outbox red #5
+   * SENT, log „CANCELLED"→„SENT", a **SEF cancel nije poslat** — jer je petlja (b) videla
+   * samo redove koji su SENT/DELIVERED U TRENUTKU storna. Kupac na portalu ima važeću
+   * e-fakturu za dokument koji kod nas ne postoji.
+   *
+   * ZATO DRUGI PROLAZ: outbox se čita PONOVO, i svaki red koji je u međuvremenu postao
+   * SENT/DELIVERED se otkazuje na SEF-u, uz ERROR u logu (to je stanje koje ne bi smelo
+   * da nastane, pa mora da se vidi).
+   *
+   * 🔴 ŠTA OVO NE REŠAVA — i gde je pravi lek: prozor se sužava sa „trajanje mrežnog
+   * poziva" na „razmak između našeg poslednjeg čitanja i tuđeg upisa", ali se ne zatvara.
+   * Deterministički lek je USLOVAN upis u `send()` (`updateMany where { id, status:
+   * 'PENDING' }` umesto bezuslovnog `update` — `sef.service.ts`, upis statusa SENT):
+   * red koji je storno već prebacio u CANCELLED tada se ne može vratiti u SENT, pa se
+   * pouzdano zna da dokument treba otkazati na portalu. Ta izmena je u `sales/sef/**`,
+   * koji u ovom paketu menja drugi agent — zapisana je u
+   * `backend/docs/PREOSTALE_FAZE.md`, odeljak „🔶 OTVORENO NA DAN 01.08.2026".
+   *
+   * ── SVAKI RED SE POKUŠA, PA SE GREŠKA PRIJAVI (nalaz N2-SEF, 03.08.2026) ──────
+   * Od istog dana `SefService.cancel` BACA kad SEF ne potvrdi otkazivanje (red pada u
+   * `CANCEL_PENDING`). Sa golim `await` u petlji to znači da prvi neuspeli red obara
+   * ceo metod i ostali redovi TOG dokumenta se ne obrade — a faktura je već stornirana,
+   * pa drugog prolaza kroz ovu putanju nema. Zato se svaki red pokušava zasebno, a
+   * neuspesi se skupljaju i prijavljuju ZAJEDNO, na kraju: pozivalac i dalje vidi grešku
+   * (semantika se ne menja), ali je poruka tačna — kaže da je račun storniran i imenuje
+   * redove koje treba otkazati na portalu.
+   */
+  private async cancelSefOutbox(
+    id: number,
+    reason: string,
+    actor: AuthUser,
+  ): Promise<{ cancelledOutboxIds: number[]; cancelledPendingIds: number[] }> {
+    const cancelledPendingIds = await this.sef.cancelPendingLocally(
       id,
       reason,
       actor.userId,
     );
 
-    const stornoed = await this.prisma.invoice.findUnique({
-      where: { id },
-      include: { items: { orderBy: { lineNo: "asc" } } },
-    });
-    if (!stornoed) throw new NotFoundException(`Račun ${id} ne postoji.`);
-    return {
-      ...stornoed,
-      stornoEntryId,
-      /** Prvi storno-nalog primene avansa (kompatibilnost sa 1:1 odgovorom). */
-      advanceStornoEntryId,
-      /** Svi storno-nalozi primena avansa ovog računa (N:M). */
-      advanceStornoEntryIds,
-      sefCancelledOutboxIds,
-      sefCancelledPendingIds,
+    const cancelledOutboxIds: number[] = [];
+    const failedOutboxIds: number[] = [];
+    const isSent = (status: string) =>
+      status === "SENT" || status === "DELIVERED";
+    /** Već obrađen (uspešno ili ne) — drugi prolaz ga ne dira ponovo. */
+    const handled = (rowId: number) =>
+      cancelledOutboxIds.includes(rowId) || failedOutboxIds.includes(rowId);
+
+    const cancelOne = async (rowId: number) => {
+      try {
+        await this.sef.cancel(rowId, reason);
+        cancelledOutboxIds.push(rowId);
+      } catch (err) {
+        failedOutboxIds.push(rowId);
+        this.logger.error(
+          `STORNO: faktura ${id} je stornirana, ali otkazivanje SEF reda ${rowId} nije ` +
+            `potvrđeno — e-faktura je kod kupca i dalje važeća dok se ne otkaže na ` +
+            `portalu. Uzrok: ${err instanceof Error ? err.message : String(err)}`,
+          err instanceof Error ? err.stack : undefined,
+        );
+      }
     };
+
+    const outboxRows = await this.sef.listOutbox({ invoiceId: id, take: 200 });
+    for (const row of outboxRows) {
+      if (isSent(row.status)) await cancelOne(row.id);
+    }
+
+    // (c) DRUGI PROLAZ — red koji je otišao na SEF DOK je storno trajao.
+    const afterRows = await this.sef.listOutbox({ invoiceId: id, take: 200 });
+    for (const row of afterRows) {
+      if (!isSent(row.status) || handled(row.id)) continue;
+      this.logger.error(
+        `SEF TRKA: outbox red ${row.id} fakture ${id} je postao ${row.status} DOK je ` +
+          `storno trajao (slanje je počelo pre storna i završilo se posle njega) — ` +
+          `otkazujem ga na SEF-u. Ako otkazivanje padne, dokument mora ručno da se ` +
+          `stornira na portalu.`,
+      );
+      await cancelOne(row.id);
+    }
+
+    if (failedOutboxIds.length > 0) {
+      throw new ConflictException(
+        `Račun je storniran u knjigama, ali otkazivanje na SEF-u nije potvrđeno za ` +
+          `${failedOutboxIds.length === 1 ? "red" : "redove"} ` +
+          `${failedOutboxIds.join(", ")} — e-faktura je kod kupca i dalje važeća. ` +
+          `Ponovi otkazivanje sa /sef ili je storniraj na portalu; sam račun se NE ` +
+          `stornira ponovo (već jeste).`,
+      );
+    }
+
+    return { cancelledOutboxIds, cancelledPendingIds };
   }
 
   /**

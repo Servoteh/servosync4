@@ -569,13 +569,16 @@ izmeren: `cancelSefOutbox` id reda upisuje u `cancelledOutboxIds` **bez obzira n
 ekran na timeout javljao „Račun storniran. Otkazano SEF redova: 1." dok je kupac imao živu
 e-fakturu (outbox #901, `SENT`, `sefInvoiceId 555111`, timeout).
 
-**Šta ostaje.** Petlja u `cancelSefOutbox` se sada prekida na PRVOM neuspelom redu, pa se
-ostali redovi tog dokumenta ne obrade. Nije opasno (`cancelPendingLocally` se izvršava PRVI, a
-`send()` odbija slanje reda u `CANCEL_PENDING` i storniranog dokumenta), ali jeste nedovršeno.
-Lek je u tom fajlu, ne u SEF sloju: skupljati ishod **po redu** (`Promise.allSettled` ili
-`try/catch` u petlji) i vratiti tri liste — otkazani, lokalno otkazani i `sefCancelPendingIds`
-— pa da poruka na ekranu glasi „stornirano; N redova čeka potvrdu otkazivanja na SEF-u".
-Nije urađeno ovde jer `sales/fakturisanje.service.ts` u ovom paketu menja drugi agent.
+**Urađeno (03.08.2026, isti paket, `cancelSefOutbox`).** Ishod se skuplja **po redu**
+(`try/catch` u petlji): svaki red se pokuša, uspešni idu u `sefCancelledOutboxIds`, a neuspeli
+se loguju kao `ERROR` i prijave ZAJEDNO na kraju — jednim 409 koji kaže da je račun **storniran
+u knjigama** i imenuje redove koje treba otkazati na portalu. Prvi neuspeh više ne preskače
+ostale redove istog dokumenta.
+
+**Šta ostaje.** Semantika prema pozivaocu je i dalje „greška" (izuzetak), pa FE nema strukturiran
+podatak — nedostaje treća lista u odgovoru (`sefCancelPendingIds`) i poruka „stornirano; N redova
+čeka potvrdu otkazivanja na SEF-u" umesto crvene greške. To je izmena ugovora odgovora i dodiruje
+`frontend/`, pa ide zajedno sa ekranom, ne uz ovu ispravku.
 
 ---
 
