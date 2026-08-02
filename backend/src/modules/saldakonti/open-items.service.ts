@@ -299,6 +299,27 @@ export class OpenItemsService {
    * analitiku (komitent) raspoređuje saldo dokumenta u bucket po dospelosti
    * (asOf − dueDate): 0-30 / 31-60 / 61-90 / 90+. Bez dueDate → bucket 0-30
    * (nedospelo / nepoznato dospeće se tretira kao tekuće).
+   *
+   * 🔴 PRESEK MORA BITI ISTI KAO U `listOpenItems` (nalaz N2, 03.08.2026).
+   * ─────────────────────────────────────────────────────────────────────────
+   * IZMERENO (hvatanje `Prisma.Sql`, `asOf = 2026-06-30`): `listOpenItems` je gradio
+   * `je.posting_date <= $1` **i** `(le.reconciled_at IS NULL OR le.reconciled_at > $2)`
+   * — dva parametra; `agingByPartner` je imao SAMO `le.reconciled_at IS NULL`, bez
+   * ijednog uslova nad `posting_date`, i `cutoff` je koristio jedino za `days_overdue`.
+   *
+   * Posledica je bila da ISTI kupac na ISTI dan ima DVA različita duga u dva izveštaja
+   * koji stoje jedan pored drugog (kartica/IOS/opomena čitaju `listOpenItems`, starosna
+   * struktura i tabla naplate čitaju ovaj upit), i to u oba smera:
+   *   • faktura proknjižena POSLE preseka ulazila je u aging, a u otvorene stavke nije
+   *     (aging veći od IOS-a — istorijski presek 31.12 pokazuje dug koji tada nije ni
+   *     postojao);
+   *   • faktura zatvorena POSLE preseka ispadala je iz aging-a, a u otvorenim stavkama
+   *     je pravilno ostajala otvorena na dan preseka (aging manji od IOS-a).
+   * Za godišnje usaglašavanje su oba izveštaja dokazni materijal, pa razlika nije
+   * kozmetička — potpisuje se saldo koji se ne slaže sa sopstvenom specifikacijom.
+   *
+   * Uslovi su namerno DOSLOVNO isti kao u `listOpenItems` (uključujući `LOCKED`) — ovo
+   * su dva pogleda na isti skup, ne dva izveštaja.
    */
   async agingByPartner(
     accountCode?: string,
@@ -331,7 +352,11 @@ export class OpenItemsService {
           -- obriše dospeli dug iz aging-a — zaključan nalog je i dalje proknjižen.
           -- Konzistentno sa partner-card / limit / priprema (IN ('POSTED','LOCKED')).
           WHERE je.status IN ('POSTED', 'LOCKED')
-            AND le.reconciled_at IS NULL
+            -- Presek NA DAN — isti par uslova kao u listOpenItems (nalaz N2): stavka je
+            -- „otvorena na dan" ako je proknjižena DO preseka i nije bila uparena DO
+            -- preseka. Uparivanje posle preseka je za istorijski presek nevidljivo.
+            AND je.posting_date <= ${cutoff}
+            AND (le.reconciled_at IS NULL OR le.reconciled_at > ${cutoff})
             AND sa.tracks_open_items = TRUE
             ${accountFilter}
           GROUP BY le.account_code, le.analytical_code, le.document_number

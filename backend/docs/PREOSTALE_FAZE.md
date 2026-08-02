@@ -562,3 +562,58 @@ pa je PNB išao normalnim putem i goli `N/GG` izlazio napolje. Izmereno: `PREDRA
 (i `PROF 50%`, `AVR 50%`, `A 50%`, `AVANS 40 %`, `REVERS 50%`). Sada se šum **preskače** i oznaka
 vezuje sledeći broj. Vlasništvo broja i dalje menja samo reč koja imenuje drugi dokument:
 `AVANS 50% PO FAKTURI 657/25` i `avans po fakturi 1/26` daju **goli** broj.
+
+### K-1 — kamata se obračunava i na DATE AVANSE (1520/1521/1530) — čeka knjigovođu
+
+**Izmereno 03.08.2026.** `KamataService.compute` osnovicu bira ovako
+(`backend/src/modules/kamata/kamata.service.ts`):
+
+```ts
+where: { side: "receivable", tracksOpenItems: true }
+```
+
+U registru `saldakonto_accounts` (seed
+`prisma/migrations/20260726100000_seed_saldakonto_i_seme_kontiranja/migration.sql:88-101`)
+tom uslovu odgovara **pet** konta, a ne dva:
+
+| konto | `side` | `partner_scope` | šta je |
+|-------|--------|-----------------|--------|
+| 1520 | receivable | **supplier** | Plaćeni avansi za robu u zemlji |
+| 1521 | receivable | **supplier** | Plaćeni avansi (ostalo) |
+| 1530 | receivable | **supplier** | Plaćeni avansi za robu u inostranstvu |
+| 2040 | receivable | customer | Kupci u zemlji |
+| 2050 | receivable | customer | Kupci u inostranstvu |
+
+Konta **152x/153x su avansi koje smo MI PLATILI dobavljaču**. Potraživanje jesu (otud
+`side = 'receivable'`), ali je to potraživanje **za isporuku robe**, ne dospelo novčano
+potraživanje — a zatezna kamata teče po novčanoj obavezi.
+
+**Šta to daje na obračunu** (proporcionalni metod, stopa 9,50 %, presek 02.08.2026):
+otvorena stavka `1520 / komitent 77 / AV-3/26 / 500.000,00 / dospeće 01.03.2026` ulazi u
+kamatni list kao glavnica **500.000,00**, **154 dana**, kamata **20.041,10**
+(`500.000 × 154 × 0,095 / 365`). Obračun se pravi kao `InterestCalculation` u statusu
+`DRAFT`, dakle ne knjiži se sam — ali je to list koji se dobavljaču šalje.
+
+**Brane nema ni sa jedne strane.** `ComputeInterestDto` je go TS interfejs (bez
+class-validator), a `compute` proverava samo `partnerId`; konto se ne bira niti se može
+suziti kroz API.
+
+**Zašto NIJE promenjeno u ovoj izmeni (03.08.2026).** Odgovor nije tehnički. Da li se po
+plaćenom avansu dobavljaču obračunava zatezna kamata zavisi od ugovora i od toga da li je
+obaveza isporuke prešla u novčanu (raskid/povraćaj) — to presuđuje knjigovođa, ne kod.
+Presedan u repou postoji i vuče na obe strane: `OpenItemsService.agingByPartner` bez
+izabranog konta **sam sužava na `sa.partner_scope = 'customer'`** uz obrazloženje „aging bez
+konta je izveštaj naplate", pa bi ista logika ovde značila filter po `partner_scope`; ali
+aging je izveštaj, a kamatni list je dokument koji ide partneru, pa se ćutke ne sužava.
+
+**Šta treba odlučiti (knjigovođa).**
+1. Da li se zatezna kamata po DATOM avansu (152x/153x) uopšte obračunava — nikad, ili samo
+   posle raskida/isteka roka isporuke?
+2. Ako se ne obračunava: filter postaje `partner_scope = 'customer'` (isti obrazac kao
+   `agingByPartner`) — jedan uslov u `saldakontoAccount.findMany`.
+3. Ako se obračunava u nekim slučajevima: treba nam ulaz kojim se konta biraju po obračunu
+   (npr. `accountCodes?` u `ComputeInterestDto`), jer ih danas nema kako suziti.
+
+**Gde se menja kad odgovor stigne:** `KamataService.compute` →
+`this.prisma.saldakontoAccount.findMany({ where: { side: "receivable", tracksOpenItems: true } })`
+(`backend/src/modules/kamata/kamata.service.ts`), + test u `kamata.service.spec.ts`.

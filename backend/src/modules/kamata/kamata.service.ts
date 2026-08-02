@@ -148,6 +148,16 @@ export class KamataService {
     // Samo receivable saldakonto konta iz registra (obrazac payment-preparation za
     // payable stranu) — bez ovoga u osnovicu ulaze i dobavljačke (payable) stavke
     // istog komitenta i stavke sa ne-saldakonto konta.
+    //
+    // ⏳ OTVORENO — `side: "receivable"` hvata PET konta, ne dva (izmereno 03.08.2026 nad
+    // seedom registra): pored kupaca 2040/2050 i **1520/1521/1530 = avansi koje smo MI
+    // PLATILI dobavljaču** (`partner_scope = 'supplier'`). Otvorena stavka
+    // `1520 / komitent 77 / AV-3/26 / 500.000,00 / dospeće 01.03.2026` tako uđe u kamatni
+    // list kao glavnica 500.000,00 / 154 dana / kamata 20.041,10 (stopa 9,50 %, presek
+    // 02.08.2026). Dati avans JESTE potraživanje, ali za ISPORUKU ROBE, ne dospelo novčano
+    // potraživanje — da li po njemu teče zatezna kamata je ugovorno/poresko pitanje, ne
+    // tehničko. Zato se ovde NIŠTA ne sužava dok knjigovođa ne presudi:
+    // `backend/docs/PREOSTALE_FAZE.md` → nalaz **K-1** (tamo je i tačan lek, jedan uslov).
     const receivableAccounts = await this.prisma.saldakontoAccount.findMany({
       where: { side: "receivable", tracksOpenItems: true },
       select: { account: true },
