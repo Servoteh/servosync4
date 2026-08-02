@@ -25,6 +25,8 @@
  *   (4) varijante bez vodećih nula ................ „00123" → „123"
  *   (5) broj/godina obrazac ....................... poslednji segment = godina 20xx →
  *        „broj/godina" (kosa crta) i goli „broj"
+ *   (6) PNB koji je DATUM .......................... samo sirov trim, bez ijednog
+ *        izvedenog kandidata (v. `isDateTriplet` — `12-08-26` ne sme da dâ `8/26`)
  *
  * MODEL: `BankStatementLine` NEMA kolonu za model (provereno u schema.prisma), pa
  * se model NE persistuje — prosleđuje se opciono kroz `parseReference(raw, model)`
@@ -63,6 +65,60 @@ const MAX_CANDIDATE_LEN = 40;
 const MAX_SEGMENTS = 8;
 
 /**
+ * PNB KOJI JE ZAPRAVO DATUM — ne sme da proizvede broj fakture.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * SCENARIO IZ KOG JE PRAVILO DOŠLO: platilac koji nema broj fakture pri ruci u
+ * poziv na broj kuca DATUM — `12-08-26`. Parser je od poslednja dva segmenta
+ * pravio „broj/godina" (`08/26`), pa je korak bez vodećih nula dodavao i `8/26`.
+ * Pošto od odluke O-F1 naši brojevi izgledaju baš tako, uplata je sletala na
+ * TUĐU fakturu `8/26` — pogrešno zatvorena stavka kod pogrešnog kupca.
+ *
+ * Ranije ovo nije bilo moguće: broj je nosio slovni prefiks (`IFR0008/2026`), pa
+ * nijedan komad datuma nije mogao da ga oponaša.
+ *
+ * ODLUKA: datumski PNB daje SAMO sirov trim (egzaktan kandidat) — nijedan izveden
+ * kandidat. Uparivanje tada padne na slabiji, ali pošten fallback po iznosu, umesto
+ * da samouvereno zatvori pogrešnu fakturu.
+ *
+ * ŠTA SE NAMERNO NE HVATA (da legitiman PNB ne strada):
+ *   • `657-25`, `657/25` — dva segmenta, datum traži tačno tri;
+ *   • `97 657 25` (model 97 + broj + godina) — „97" nije ispravan dan (>31);
+ *   • `11 5 26` — dan/mesec bez vodeće nule uz DVOCIFRENU godinu se NE računa kao
+ *     datum, jer takav zapis realno dolazi kao model+broj+godina, a ne kao datum
+ *     (ljudi datum kucaju `11-05-26`). Kratak datum mora biti potpuno dopunjen.
+ */
+const DAY_MONTH_PADDED_RE = /^\d{2}$/;
+const DAY_MONTH_RE = /^\d{1,2}$/;
+const YEAR2_ONLY_RE = /^\d{2}$/;
+const YEAR4_RE = /^(19|20)\d{2}$/;
+
+/** Da li tri segmenta čine dan/mesec/godinu (ili godina/mesec/dan)? */
+function isDateTriplet(a: string, b: string, c: string): boolean {
+  const num = (s: string) => Number.parseInt(s, 10);
+  const dayOk = (s: string) => num(s) >= 1 && num(s) <= 31;
+  const monthOk = (s: string) => num(s) >= 1 && num(s) <= 12;
+
+  // GGGG-MM-DD (ISO) — četvorocifrena godina je nedvosmislena, pa dan/mesec smeju
+  // biti i jednocifreni.
+  if (YEAR4_RE.test(a) && DAY_MONTH_RE.test(b) && DAY_MONTH_RE.test(c)) {
+    return monthOk(b) && dayOk(c);
+  }
+  // DD-MM-GGGG — isto, godina razrešava dvosmislenost.
+  if (DAY_MONTH_RE.test(a) && DAY_MONTH_RE.test(b) && YEAR4_RE.test(c)) {
+    return dayOk(a) && monthOk(b);
+  }
+  // DD-MM-GG — kratak datum se priznaje SAMO potpuno dopunjen (v. komentar gore).
+  if (
+    DAY_MONTH_PADDED_RE.test(a) &&
+    DAY_MONTH_PADDED_RE.test(b) &&
+    YEAR2_ONLY_RE.test(c)
+  ) {
+    return dayOk(a) && monthOk(b);
+  }
+  return false;
+}
+
+/**
  * Parsira sirov poziv na broj u uređenu listu kandidata broja dokumenta.
  *
  * @param raw   sirov PNB (FX PozivNaBroj(169,20), trimovan)
@@ -90,6 +146,19 @@ export function parseReference(
   // (1) EGZAKTAN — sirov trim je UVEK prvi kandidat (očuvanje postojećeg egzaktnog match-a).
   push(rawTrim);
 
+  const segmentsAll = rawTrim.split(SEPARATORS_RE).filter((s) => s.length > 0);
+
+  // (1b) DATUM UMESTO BROJA — stani na egzaktnom kandidatu (v. `isDateTriplet`).
+  //      Ceo PNB je datum (`12-08-26`, `12.08.2026`, `2026-08-12`): svaki izveden
+  //      kandidat odavde bio bi izmišljen broj fakture — uključujući `08/26` i `8/26`
+  //      koje je korak (4) pravio od poslednja dva segmenta.
+  if (
+    segmentsAll.length === 3 &&
+    isDateTriplet(segmentsAll[0], segmentsAll[1], segmentsAll[2])
+  ) {
+    return { candidates: out };
+  }
+
   const modelNorm = (model ?? "").trim();
 
   // (2) MODEL 97 — skini kontrolni broj.
@@ -99,7 +168,7 @@ export function parseReference(
   if (modelNorm === "97" && /^\d{2}/.test(rawTrim)) push(rawTrim.slice(2));
 
   // (3) SEGMENTACIJA po separatorima + kombinacije susednih (contiguous join).
-  const segments = rawTrim.split(SEPARATORS_RE).filter((s) => s.length > 0);
+  const segments = segmentsAll;
   if (segments.length > 1) {
     const n = Math.min(segments.length, MAX_SEGMENTS);
     for (let i = 0; i < n; i++) {
@@ -112,7 +181,18 @@ export function parseReference(
   // (4) BROJ/GODINA — poslednji segment kao godina → „broj/godina" i goli „broj".
   //     (Goli „broj" je najčešće već dodat u koraku 3 kao segment, pa je `push`
   //     ovde no-op zbog dedupa — ostaje radi slučajeva kada nije.)
-  if (segments.length >= 2) {
+  //
+  //     DATUM NA REPU: kad poslednja TRI segmenta čine datum (npr. `97 12-08-26` —
+  //     model ispred datuma), rekonstrukcija „broj/godina" bi opet izmislila `08/26`.
+  //     Korak (1b) hvata samo PNB koji je CEO datum, pa je ova provera njegov parnjak.
+  const dateAtTail =
+    segments.length >= 3 &&
+    isDateTriplet(
+      segments[segments.length - 3],
+      segments[segments.length - 2],
+      segments[segments.length - 1],
+    );
+  if (segments.length >= 2 && !dateAtTail) {
     const last = segments[segments.length - 1];
     const num = segments[segments.length - 2];
     if (YEAR_RE.test(last)) {

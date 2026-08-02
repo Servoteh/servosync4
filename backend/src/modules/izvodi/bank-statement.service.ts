@@ -282,6 +282,18 @@ export class BankStatementService {
 
     const { candidates } = parseReference(referenceNumber, model);
     if (candidates.length > 0) {
+      // ⚠️ POGODAK JE SAMO PO BROJU — vrste dokumenta u `ledger_entries` nema. Da
+      // uplata ne bi zatvorila POGREŠAN dokument istog kupca, brojevi moraju biti
+      // razdvojeni već u numeraciji: izlazne fakture dele jedan niz, avansni račun ima
+      // seriju `A-N/GG` (O-F5/O-F6). Bez toga bi PNB `7/26` mogao da padne na avans
+      // umesto na fakturu — koji od ta dva, zavisilo bi od redosleda redova u bazi.
+      //
+      // Drugi izvor lažnog pogotka je bio sam PNB: kad platilac umesto broja fakture
+      // upiše DATUM (`12-08-26`), `parseReference` je od njega pravio kandidat `8/26`
+      // i uplata je sletala na tuđu fakturu. To se sada odbija u parseru
+      // (`reference-parser.util.ts` → `isDateTriplet`), pa takva uplata pošteno padne
+      // na fallback po iznosu ispod.
+      //
       // Jedan upit po SVIM kandidatima; pogodak biramo po prioritetu (prvi kandidat prvi).
       const rows = await this.prisma.ledgerEntry.findMany({
         where: { ...baseWhere, documentNumber: { in: candidates } },

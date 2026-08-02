@@ -117,4 +117,86 @@ describe("reference-parser.util — parseReference", () => {
     expect(new Set(candidates).size).toBe(candidates.length);
     expect(candidates[0]).toBe("123-456");
   });
+
+  /**
+   * PNB KOJI JE DATUM — česta pojava kad platilac nema broj fakture pri ruci.
+   * Kvar: od `12-08-26` parser je pravio „broj/godina" `08/26`, pa i `8/26` bez
+   * vodeće nule — a to je od odluke O-F1 oblik NAŠIH brojeva, pa je uplata sletala
+   * na tuđu fakturu 8/26. Ranije nemoguće: broj je nosio slovni prefiks.
+   */
+  describe("poziv na broj koji je DATUM ne sme da dâ broj fakture", () => {
+    it("SCENARIO 12-08-26 → nema ni 08/26 ni 8/26 (samo sirov trim)", () => {
+      const { candidates } = parseReference("12-08-26");
+
+      expect(candidates).toEqual(["12-08-26"]); // egzaktan ostaje, izvedenih nema
+      expect(candidates).not.toContain("8/26");
+      expect(candidates).not.toContain("08/26");
+      // Ni goli komadi datuma ne smeju da postanu kandidati.
+      expect(candidates).not.toContain("08");
+      expect(candidates).not.toContain("8");
+      expect(candidates).not.toContain("26");
+    });
+
+    it("ostali zapisi datuma: tačke, kosa crta, puna godina, ISO", () => {
+      for (const raw of [
+        "12.08.26",
+        "12/08/26",
+        "12-08-2026",
+        "12.8.2026",
+        "2026-08-12",
+        "31.12.2025",
+      ]) {
+        expect(parseReference(raw).candidates).toEqual([raw]);
+      }
+    });
+
+    it("model ispred datuma (97 12-08-26) → i dalje bez izmišljenog 08/26", () => {
+      const { candidates } = parseReference("97 12-08-26");
+      expect(candidates[0]).toBe("97 12-08-26");
+      expect(candidates).not.toContain("08/26");
+      expect(candidates).not.toContain("8/26");
+    });
+
+    it("nemoguć datum NIJE datum (32-13-26 je i dalje običan PNB)", () => {
+      const { candidates } = parseReference("32-13-26");
+      expect(candidates).toContain("13/26"); // dan 32 / mesec 13 ne postoje
+    });
+  });
+
+  describe("legitimni pozivi na broj se NE kvare datumskim pravilom", () => {
+    it("657-25 i 657/25 i dalje daju 657/25", () => {
+      expect(parseReference("657-25").candidates).toContain("657/25");
+      expect(parseReference("657/25").candidates[0]).toBe("657/25");
+      expect(parseReference("657/25").candidates).toContain("657");
+    });
+
+    it("model 97 + broj + godina (97 657 25) → 657/25", () => {
+      const { candidates } = parseReference("97 657 25");
+      expect(candidates[0]).toBe("97 657 25");
+      expect(candidates).toContain("657/25");
+    });
+
+    it("model 97 razdvojen (Model=97, PNB 657-25) → 657/25", () => {
+      const { candidates } = parseReference("657-25", "97");
+      expect(candidates).toContain("657/25");
+    });
+
+    it("četvorocifreni PNB + godina (9712 657-25) nije datum", () => {
+      const { candidates } = parseReference("9712 657-25");
+      expect(candidates).toContain("657/25");
+    });
+
+    it("dan/mesec bez vodeće nule uz dvocifrenu godinu ostaje broj (11 5 26)", () => {
+      // Realno je to model 11 + broj 5 + godina 26, ne 11. maj 2026 — datum ljudi
+      // kucaju dopunjen (`11-05-26`). Pravilo je namerno usko.
+      const { candidates } = parseReference("11 5 26");
+      expect(candidates).toContain("5/26");
+    });
+
+    it("broj/puna godina (123-2026) i dalje daje 123/2026 i 123/26", () => {
+      const { candidates } = parseReference("123-2026");
+      expect(candidates).toContain("123/2026");
+      expect(candidates).toContain("123/26");
+    });
+  });
 });

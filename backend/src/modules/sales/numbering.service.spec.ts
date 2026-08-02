@@ -11,8 +11,9 @@ import {
  * Pokriveno: prvi broj u godini (`1/26`), deseti (`10/26`), bez vodećih nula,
  * prelaz godine (nov niz kreće od 1), dvocifrena godina za „okrugle" godine
  * (2005 → `/05`), NEMA prefiksa vrste dokumenta (papir = SEF = glavna knjiga),
- * zajednički niz preko vrsta faktura (AVR/PROF ostaju na svom), i zaštita od
- * trke (dva paralelna zahteva ne dobijaju isti broj).
+ * zajednički niz preko vrsta faktura, sopstvena serija avansnog računa `A-1/26`
+ * (O-F6) uz branu „serije su međusobno disjunktne", i zaštita od trke (dva
+ * paralelna zahteva ne dobijaju isti broj).
  */
 
 /** Red u `document_number_sequences`. */
@@ -226,12 +227,23 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
     it("AVR i PROF NISU u nizu faktura — zadržavaju svoj brojač po vrsti", async () => {
       // Za avans i predračun nemamo papir koji pokazuje šta BigBit radi, pa se ne
       // uvlače u zajednički niz (avansi imaju i zaseban zakonski niz).
+      //
+      // ⚠️ ISPRAVLJENO ZBOG O-F6: raniji oblik ovog testa tražio je da AVR dâ goli
+      // `1/26`. Ta tvrdnja je napisana PRE odluke O-F6 i bila je tačna samo dok se
+      // nije videlo šta goli broj radi nizvodno — zato je zamenjena, nije „popravljena
+      // da prođe". Avansni račun od O-F6 nosi SOPSTVENU SERIJU `A-1/26`:
+      //   • dobavljačevi avansi se ručno kucaju u ISTU tabelu `invoices` sa istom
+      //     vrstom `AVR` i istim oblikom broja → `1/26` je bio siguran 409;
+      //   • dugovna strana avansa ide na ISTI kupčev konto kao faktura, a otvorene
+      //     stavke/kamata grupišu po broju bez vrste → AVR `7/26` i IFR `7/26` bi se
+      //     spojili u jedan dug od 24.000 sa ranijim dospećem.
       const db = makeDb();
 
       await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
       await expect(once(db, "IFGP", 2026)).resolves.toBe("2/26");
-      // Avans i predračun kreću od svoje jedinice, nezavisno od faktura.
-      await expect(once(db, "AVR", 2026)).resolves.toBe("1/26");
+      // Avans i predračun kreću od svoje jedinice, nezavisno od faktura;
+      // avans uz to nosi i prefiks serije (O-F6), predračun ga ne dobija (ne knjiži se).
+      await expect(once(db, "AVR", 2026)).resolves.toBe("A-1/26");
       await expect(once(db, "PROF", 2026)).resolves.toBe("1/26");
 
       expect(db.rows.map((r) => r.documentType).sort()).toEqual([
@@ -239,6 +251,91 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
         "AVR",
         "PROF",
       ]);
+    });
+  });
+
+  describe("avansni račun ima svoju seriju (O-F6)", () => {
+    it("brojač JE razdvojen: avans ne troši broj fakture i obrnuto", async () => {
+      const db = makeDb();
+
+      await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
+      await expect(once(db, "AVR", 2026)).resolves.toBe("A-1/26");
+      await expect(once(db, "IFUSL", 2026)).resolves.toBe("2/26");
+      await expect(once(db, "AVR", 2026)).resolves.toBe("A-2/26");
+
+      // Dva reda sekvence: zajednički niz faktura i sopstveni niz avansa.
+      expect(db.find(INVOICE_SEQUENCE_KEY, 2026, 0)?.lastNumber).toBe(2);
+      expect(db.find("AVR", 2026, 0)?.lastNumber).toBe(2);
+    });
+
+    it("SCENARIO: isti redni broj u istoj godini daje RAZLIČITE stringove", async () => {
+      // Kvar iz kog je odluka došla: kupac ima nenaplaćen avans i fakturu sa istim
+      // rednim brojem 7. Sa golim brojem oba dokumenta su `7/26`, pa ih otvorene
+      // stavke i kamata (grupa = konto + komitent + BROJ) spajaju u jednu stavku od
+      // 24.000 sa dospećem avansa. Prefiks serije to čini nemogućim.
+      const db = makeDb([
+        {
+          id: 1,
+          documentType: INVOICE_SEQUENCE_KEY,
+          year: 2026,
+          companyId: 0,
+          lastNumber: 6,
+        },
+        { id: 2, documentType: "AVR", year: 2026, companyId: 0, lastNumber: 6 },
+      ]);
+
+      const faktura = await once(db, "IFR", 2026);
+      const avans = await once(db, "AVR", 2026);
+
+      expect(faktura).toBe("7/26");
+      expect(avans).toBe("A-7/26");
+      expect(faktura).not.toBe(avans);
+    });
+
+    it("prefiks ne kvari format ostatka broja (bez vodećih nula, dvocifrena godina)", async () => {
+      const db = makeDb([
+        { id: 1, documentType: "AVR", year: 2026, companyId: 0, lastNumber: 9 },
+      ]);
+      await expect(once(db, "AVR", 2026)).resolves.toBe("A-10/26");
+      await expect(once(db, "AVR", 2005)).resolves.toBe("A-1/05");
+    });
+
+    it("BRANA: serije su međusobno disjunktne za SVAKI redni broj", async () => {
+      // Jedina odbrana od spajanja avansa i fakture u jednu otvorenu stavku je to da
+      // se stringovi brojeva ne mogu preklopiti — glavna knjiga NEMA kolonu vrste
+      // dokumenta, pa je broj sve što grupni ključ ima. Ovaj test je brana: ako neko
+      // doda vrstu koja se knjiži, a ne stavi je ni u `INVOICE_TYPES` ni u
+      // `SERIES_PREFIX`, njeni brojevi će se poklopiti sa fakturom i test pada.
+      const knjiziSe = ["IFR", "IFGP", "IFUSL", "IZVRO", "IZVGP", "IZVUS", "AVR"];
+
+      for (const seq of [1, 7, 43, 657]) {
+        const viđeni = new Map<string, string>();
+        for (const tip of knjiziSe) {
+          const db = makeDb([
+            {
+              id: 1,
+              documentType:
+                tip === "AVR" ? "AVR" : (INVOICE_SEQUENCE_KEY as string),
+              year: 2026,
+              companyId: 0,
+              lastNumber: seq - 1,
+            },
+          ]);
+          const broj = await once(db, tip, 2026);
+          const prethodni = viđeni.get(broj);
+          // Isti string sme da se ponovi SAMO unutar zajedničkog niza faktura —
+          // tamo ga brojač po konstrukciji nikad ne izda dvaput (test iznad).
+          const istiNiz =
+            prethodni != null &&
+            knjiziSe.includes(prethodni) &&
+            prethodni !== "AVR" &&
+            tip !== "AVR";
+          expect(prethodni == null || istiNiz).toBe(true);
+          viđeni.set(broj, tip);
+        }
+        // Avans i faktura sa istim rednim brojem NIKAD ne daju isti string.
+        expect(viđeni.size).toBe(2); // {N/26 (fakture), A-N/26 (avans)}
+      }
     });
   });
 

@@ -15,11 +15,24 @@
  * ZAŠTO JE GRUPISANJE BEZ VRSTE DOKUMENTA BEZBEDNO: sve izlazne fakture
  * (IFR/IFGP/IFUSL + ino parnjaci) dele JEDAN niz brojeva po firmi i godini
  * (`sales/numbering.service.ts` — dokaz sa donetih BigBit papira: IFGP 650/25,
- * IFUSL 653/25, IFR 657/25, isprepleteno po datumu). Broj dokumenta je zato
+ * IFUSL 653/25, IFR 657/25, isprepleteno po datumu), a avansni račun ima
+ * SOPSTVENU seriju sa prefiksom (`A-657/25`, odluka O-F6). Broj dokumenta je zato
  * jedinstven i sam za sebe. Kad bi se numeracija vratila na brojač PO VRSTI,
  * IFR `657/25` i IFUSL `657/25` bi ovde tiho pali u istu grupu i međusobno se
  * netovali — dug jednog kupca bi sakrio dug drugog, bez ijedne greške u bazi
  * (unique nad `invoices` uključuje i vrstu, pa baza to ne bi prijavila).
+ *
+ * ISTO VAŽI ZA AVANS (kvar 01.08.2026): dugovna strana avansnog računa ide na ISTI
+ * kupčev konto (2040/2041) kao faktura. Dok je avans dobijao goli broj `7/26`, on
+ * i faktura `7/26` istog kupca padali su u JEDNU otvorenu stavku od 24.000 sa
+ * dospećem avansa — pa je i kamata išla na duplo veći iznos. Prefiks `A-` je jedina
+ * brana; ne uklanjati ga bez zamene na ovom nivou.
+ *
+ * ZAŠTO VRSTA NIJE U `GROUP BY`: `ledger_entries` nema kolonu vrste dokumenta, a
+ * dodavanje vrste u ključ bi raskinulo NETIRANJE — uplata sa izvoda, ručna
+ * korekcija i uvezeni BigBit red nose broj ALI NE i vrstu, pa bi faktura i njena
+ * uplata ostale u dve grupe i obe se prikazale kao otvorene. Razdvajanje serija je
+ * zato posao NUMERACIJE, ne ovog upita.
  *
  * Raw SQL (prisma.$queryRaw) jer Prisma groupBy ne podržava HAVING nad
  * izračunatim izrazom niti join na registar; Decimal se vraća egzaktno.

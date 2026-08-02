@@ -164,6 +164,14 @@ export class PaymentPreparationService {
     }
     const groups = new Map<string, Acc>();
     for (const r of rows) {
+      // GRUPA = (konto, komitent, BROJ DOKUMENTA) — isti ključ kao open-items, i bez
+      // vrste dokumenta. Vrste u `ledger_entries` nema, a i da je ima, ubacivanje u
+      // ključ bi razdvojilo fakturu od njenog avansa/uplate/korekcije (koje vrstu ne
+      // nose) i predložilo plaćanje već plaćene obaveze. Da dva RAZLIČITA dokumenta
+      // ne padnu u istu grupu stara se numeracija: izlazne fakture dele jedan niz, a
+      // avansni račun ima sopstvenu seriju `A-N/GG` (O-F5/O-F6,
+      // `sales/numbering.service.ts`). Dobavljačevi brojevi su njihovi i uvek stoje
+      // uz njihov konto + njihovu analitiku, pa se ne mogu pomešati sa našima.
       const key = `${r.accountCode}|${r.analyticalCode ?? ""}|${r.documentNumber ?? ""}`;
       const delta = r.credit.sub(r.debit); // payable saldo = Σ(credit − debit)
       const cur = groups.get(key);

@@ -36,7 +36,9 @@ function proformaRow(overrides: Record<string, unknown> = {}) {
     id: 10,
     documentType: "PROF",
     // Format `NNN/GG` (O-F1). Brojač je po VRSTI dokumenta, pa predračun i avansni
-    // račun imaju svoje nizove — otud „12/26" (PROF) uz „1/26" (AVR).
+    // račun imaju svoje nizove; avansni uz to nosi i prefiks serije (O-F6, da se ne
+    // sudari sa dobavljačevim avansom i sa fakturom u saldakontima) — otud „12/26"
+    // (PROF) uz „A-1/26" (AVR).
     documentNumber: "12/26",
     level: 250,
     status: "DRAFT",
@@ -63,7 +65,7 @@ function advanceRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 50,
     documentType: "AVR",
-    documentNumber: "1/26",
+    documentNumber: "A-1/26",
     level: 0,
     status: "PAID",
     companyId: 0,
@@ -207,7 +209,7 @@ describe("AdvanceInvoiceService", () => {
         lineCount: 3,
       }),
     };
-    numbering = { next: jest.fn().mockResolvedValue("1/26") };
+    numbering = { next: jest.fn().mockResolvedValue("A-1/26") };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -250,7 +252,7 @@ describe("AdvanceInvoiceService", () => {
       expect(data.documentType).toBe("AVR");
       expect(data.advanceDirection).toBe("out");
       expect(data.level).toBe(0);
-      expect(data.documentNumber).toBe("1/26");
+      expect(data.documentNumber).toBe("A-1/26");
       expect(data.copiedFromDocId).toBe(10);
       expect(data.netTotal.toFixed(2)).toBe("10000.00");
       expect(data.vatTotal.toFixed(2)).toBe("2000.00");
@@ -293,7 +295,7 @@ describe("AdvanceInvoiceService", () => {
       prisma.invoice.findUnique.mockResolvedValue(proformaRow());
       prisma.invoice.findFirst.mockResolvedValue({
         id: 50,
-        documentNumber: "1/26",
+        documentNumber: "A-1/26",
       });
 
       await expect(
@@ -501,9 +503,10 @@ describe("AdvanceInvoiceService", () => {
 
       expect(result.payableAmount.toFixed(2)).toBe("0.00");
       expect(result.grossTotal.toFixed(2)).toBe("12000.00");
-      // Broj je u novom obliku (O-F1: NNN/GG) — stara tvrdnja „AVR0001/2026" je
-      // pala sa numeracijom, ne sa ovim testom. Tvrdnja o iznosu dolazi sa main-a.
-      expect(result.advanceInvoiceNumber).toBe("1/26");
+      // Broj je u novom obliku (O-F1: NNN/GG) uz prefiks avansne serije (O-F6) —
+      // stara tvrdnja „AVR0001/2026" je pala sa numeracijom, ne sa ovim testom.
+      // Tvrdnja o iznosu dolazi sa main-a.
+      expect(result.advanceInvoiceNumber).toBe("A-1/26");
       expect(result.appliedAmount.toFixed(2)).toBe("12000.00");
 
       // Primena je upisana u spojnu tabelu sa razbijenim iznosima.

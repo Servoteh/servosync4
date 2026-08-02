@@ -152,12 +152,19 @@ Nalaz i predlog idu u [FAKTURE_ZAKONSKA_USKLADJENOST.md](FAKTURE_ZAKONSKA_USKLAD
 
 ## Još otvoreno (nije blokada za koračne izmene)
 
-**🔴 Avansni račun se sudara sa avansima dobavljača.** Ulazni avansi dobavljača upisuju se u
-**istu** tabelu `invoices`, sa istom vrstom `AVR` i **ručno kucanim** brojem
-(`pdv/advance-vat.service.ts:531-588`). Pošto naš izlazni AVR sada izgleda `1/26` — tačno kao
-broj koji srpski dobavljači kucaju — moguć je sudar: ili odbijemo legitiman dobavljačev
-dokument, ili nam padne izdavanje avansa. Rešenje traži izmenu šeme (zasebna vrsta dokumenta
-ili stvaran `companyId`) i **odluku vlasnika**.
+~~**🔴 Avansni račun se sudara sa avansima dobavljača.**~~ **ZATVORENO 02.08.2026** — to je
+upravo odluka O-F6 iznad i ona je **sprovedena u kodu**: `numbering.service.ts` daje avansnom
+računu sopstvenu seriju `A-1/26` (razdvojen brojač **i** prefiks u samom broju). Izmena šeme
+nije bila potrebna — prefiks razdvaja naš avans i od dobavljačevog avansa u istoj tabeli i od
+fakture u istoj otvorenoj stavci.
+
+**Zašto prefiks, a ne vrsta dokumenta u grupnom ključu saldakonta:** `ledger_entries` **nema**
+kolonu vrste dokumenta, a i da je dobije, vrsta u ključu bi raskinula **netiranje** — uplata sa
+izvoda, ručna korekcija knjigovođe i uvezeni BigBit red nose broj dokumenta ali ne i vrstu, pa
+bi faktura i njena uplata pale u dve grupe i kamata bi se opet računala na već plaćeni deo
+fakture (raniji nalaz VISOK). Razdvajanje serija je zato posao **numeracije**. Brane su testovi
+„serije su međusobno disjunktne" (`numbering.service.spec.ts`) i „uplata bez vrste i dalje
+umanjuje osnovicu" (`kamata.service.spec.ts`).
 
 
 

@@ -10,6 +10,43 @@ import type { AuthUser } from "../auth/jwt.strategy";
 const D = Prisma.Decimal;
 const ZERO = new D(0);
 
+/**
+ * GRUPA = JEDAN DOKUMENT (osnovica kamate). Ključ je BROJ DOKUMENTA, a ne (broj +
+ * vrsta) — i to je namerno, ne propust.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * KVAR KOJI JE OVDE POSTOJAO (i zašto je popravljen drugde): kupac sa nenaplaćenim
+ * avansnim računom `7/26` (12.000, dospeće 10.02) i fakturom `7/26` (12.000,
+ * dospeće 30.06) davao je JEDNU stavku od 24.000 sa RANIJIM dospećem — obračun
+ * kamate na duplo veći iznos, mesecima predugo. Dugovna strana avansa ide na isti
+ * kupčev konto kao faktura, pa ih ništa nije razdvajalo.
+ *
+ * Do prelaska na kratak broj (O-F1) to nije bilo moguće: broj je nosio slovni
+ * prefiks vrste (`AVR0007/2026` vs `IFR0007/2026`). Odluka O-F6 tu zaštitu vraća
+ * na jedinom mestu na kom sme — u NUMERACIJI: avansni račun ima sopstvenu seriju
+ * `A-7/26` (v. `sales/numbering.service.ts`), pa se dva dokumenta više ne mogu
+ * naći pod istim ključem.
+ *
+ * ZAŠTO VRSTA NE SME U KLJUČ: `ledger_entries` nema kolonu vrste dokumenta, a i da
+ * je dobije, uvođenje vrste u ključ bi RASKINULO netiranje. Uplata sa izvoda
+ * (`izvodi/bank-statement.service.ts` upisuje poziv na broj kao `document_number`),
+ * ručna korekcija knjigovođe (`gl-write`) i uvezeni BigBit red nose broj dokumenta
+ * ALI NE i vrstu — faktura bi ostala u svojoj grupi, a njena uplata u drugoj, i
+ * kamata bi se opet računala na već plaćeni deo fakture. Tačno nalaz VISOK zbog
+ * kog je netiranje i uvedeno. Ključ zato ostaje broj; razdvajanje vrsta je posao
+ * numeracije.
+ *
+ * @param documentNumber broj dokumenta iz GK stavke (null = stavka bez dokumenta)
+ * @param ledgerEntryId  fallback kad broja nema — svaka takva stavka je svoja grupa
+ *                       (bez ovoga bi se SVE stavke partnera bez broja netovale u
+ *                       jednu, pa bi npr. uplata bez poziva na broj pojela osnovicu)
+ */
+export function documentGroupKey(
+  documentNumber: string | null,
+  ledgerEntryId: number,
+): string {
+  return documentNumber ?? `__id:${ledgerEntryId}`;
+}
+
 export interface CreateRateDto {
   kind: string; // zatezna | ugovorna | eskontna
   ratePct: number; // godišnja stopa u %
@@ -121,6 +158,8 @@ export class KamataService {
     // da bismo NETIRALI osnovicu po dokumentu — inače se kamata računa na već plaćeni deo
     // fakture (review VISOK). Grupišemo po document_number kao open-items.service.
     // Samo proknjiženi/zaključani nalozi — nacrt ne sme u osnovicu kamate.
+    //
+    // ⚠️ NA ČEMU POČIVA GRUPISANJE PO BROJU (v. `documentGroupKey` ispod).
     const entries =
       accountCodes.length === 0
         ? []
@@ -146,7 +185,7 @@ export class KamataService {
       { principal: Prisma.Decimal; dueDate: Date | null; anyLedgerId: number; docNo: string | null }
     >();
     for (const e of entries) {
-      const key = e.documentNumber ?? `__id:${e.id}`;
+      const key = documentGroupKey(e.documentNumber, e.id);
       const g = groups.get(key) ?? {
         principal: ZERO,
         dueDate: null,
