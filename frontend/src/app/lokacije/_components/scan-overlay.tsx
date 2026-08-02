@@ -6,7 +6,7 @@ import {
   Zap,
   SwitchCamera,
   Image as ImageIcon,
-  RefreshCw,
+  RotateCcw,
   ZoomIn,
   Repeat,
   Check,
@@ -45,6 +45,9 @@ import {
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 import { ScanHint } from '@/components/ui-kit/scan-hint';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
+import { useScanPanelInset } from '@/lib/use-scan-panel-inset';
+import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
+import { confirmHardResetApp, HARD_RESET_LABEL } from '@/lib/app-hard-reset';
 
 /*
  * Punoekranski skener barkoda za Lokacije — pun port bogatog 1.0 scanModal-a
@@ -233,28 +236,10 @@ function detectIOSCameraPitfalls(): { blocker?: string; warning?: string } {
   return {};
 }
 
-/** Hard reset klijenta (2.0 nema SW, ali unregister/caches best-effort + cache-bust). */
-async function forceAppReload(): Promise<void> {
-  try {
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
-    }
-  } catch {
-    /* ignore */
-  }
-  try {
-    if (typeof caches !== 'undefined') {
-      const names = await caches.keys();
-      await Promise.all(names.map((n) => caches.delete(n).catch(() => false)));
-    }
-  } catch {
-    /* ignore */
-  }
-  const url = new URL(window.location.href);
-  url.searchParams.set('_r', String(Date.now()));
-  window.location.replace(url.toString());
-}
+// Tvrdo osvežavanje („Resetuj aplikaciju", do 02.08.2026 „Osveži app") =
+// `lib/app-hard-reset.ts` (zajedničko sa reversi ljuskom).
+// Ovde je do 02.08.2026 stajala lokalna kopija koja je brisala SVE SW registracije i
+// SVE keševe origin-a — uključujući 1.0-ine (v. JSDoc u tom modulu).
 
 /** Klijent → normalizovane [0,1] koordinate video kadra kod object-fit:cover. */
 function mapPointerToVideoNormalizedPlane(
@@ -425,9 +410,19 @@ export function ScanOverlay({
   const [lens, setLens] = useState<{ count: number; idx: number }>({ count: 0, idx: -1 });
   const [continuousOn, setContinuousOn] = useState(!!continuous);
   const [results, setResults] = useState<BatchRow[]>([]);
-  const [focusRing, setFocusRing] = useState<{ x: number; y: number; id: number } | null>(null);
+  // `ok:false` = tap je primljen ali uređaj NE podržava ručno izoštravanje (v. `tapFocus`).
+  const [focusRing, setFocusRing] = useState<{
+    x: number;
+    y: number;
+    id: number;
+    ok: boolean;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const acceptItem = accept.includes('ITEM');
+
+  // Plutajući donji panel: meri se i predaje nišanu kao donji odmak — inače panel
+  // (z-10, do 62% visine) prekrije nišan na malom ekranu (v. `use-scan-panel-inset`).
+  const [panelRef, panelInset] = useScanPanelInset<HTMLDivElement>();
 
   // Props se prosleđuju kao inline literali (nov identitet svaki render); držimo ih
   // u ref-u da kamera-efekat (mount-only) ne restartuje kameru na svaki render roditelja.
@@ -445,6 +440,13 @@ export function ScanOverlay({
   // u `@/lib/use-visual-viewport-fix` i primenjen i u reversi / mob-održavanje /
   // montaža ljusci, koje su ga do sada nisu imale.
   useVisualViewportFix(rootRef);
+
+  // HID/Bluetooth čitač dok je skener otvoren: polje ručnog unosa NIJE fokusirano na
+  // telefonu (`autoFocus` je pod `pointer: fine` gardom — soft tastatura bi pokrila
+  // kadar), a globalni hvatač radnog stola ćuti dok je otvoren `[aria-modal]` sloj.
+  // Bez ovog lokalnog bafera keyboard-wedge sken pada u prazno (v. `use-hid-scan-buffer`).
+  useHidScanBuffer(true, (code) => void ctrlRef.current?.resolve(code));
+
   const continuousRef = useRef(continuousOn);
   useEffect(() => {
     continuousRef.current = continuousOn;
@@ -482,6 +484,7 @@ export function ScanOverlay({
     // barkod terao BE lookup na svaki frejm (mrežni spam + treperenje poruke).
     const heldRef = { code: '', seenAt: 0 }; // poslednji PRIHVAĆEN kod
     const rejectedRef = { code: '', seenAt: 0 }; // poslednji ODBIJEN kod
+    let saidNoFocusSupport = false; // jednom po sesiji (v. `tapFocus`)
 
     const say = (msg: string, kind: StatusKind = 'info') => {
       setStatus(msg);
@@ -1213,6 +1216,16 @@ export function ScanOverlay({
      * (`barcode.js:1231-1265` vraća `false`; `scanModal.js:2669-2693` crta prsten
      * samo na `true`). Prsten je uz to prebojen iz `--status-success` (zeleno =
      * „uspelo") u neutralnu belu — semantika uspeha se ne troši na potez kamere.
+     *
+     * DOPUNA (ista sesija, regresija na Androidu): „ništa se ne crta" je na iOS-u
+     * tačno (tamo tap-fokus strukturno ne postoji, pa lažna potvrda šteti), ali je na
+     * ANDROIDU napravilo mrtvo dugme — telefon koji izlaže samo `continuous` (a to je
+     * čest Android Chrome slučaj, gde `applyAFBestEffort` već drži `continuous` pa
+     * ponovna primena nema smisla) na tap ne uradi i ne pokaže NIŠTA, i radnik ne zna
+     * da li je promašio metu ili aplikacija ne radi. Zato Android uvek dobija odziv:
+     * puna bela linija = fokus zatražen i prihvaćen, isprekidana prigušena = „tap
+     * primljen, ovaj telefon ne dozvoljava ručno izoštravanje" (uz jednu poruku po
+     * sesiji, da radnik zna da menja RASTOJANJE umesto da tapka).
      */
     const tapFocus = async (clientX: number, clientY: number): Promise<void> => {
       const track = getTrack();
@@ -1223,17 +1236,29 @@ export function ScanOverlay({
       const rect = v.getBoundingClientRect();
       const at = { x: clientX - rect.left, y: clientY - rect.top };
 
-      const showRing = () => {
+      const showRing = (ok: boolean) => {
         const id = Date.now();
-        setFocusRing({ ...at, id });
+        setFocusRing({ ...at, id, ok });
         window.setTimeout(() => setFocusRing((r) => (r?.id === id ? null : r)), 600);
+      };
+      /** Fokus nije primenjen: na Androidu daj vidljiv odziv, na iOS-u ćuti (S5). */
+      const reportNoFocus = () => {
+        if (!isAndroidWebPlatform()) return;
+        showRing(false);
+        if (!saidNoFocusSupport) {
+          saidNoFocusSupport = true;
+          say('Ovaj telefon ne dozvoljava ručno izoštravanje — menjaj rastojanje (10-15 cm).', 'warn');
+        }
       };
 
       if (!(modes.includes('single-shot') && 'pointsOfInterest' in caps)) {
         if (modes.includes('continuous') && !isAndroidChromeBrowser()) {
           const ok = await safeApplyFlat(track, { focusMode: 'continuous' }, isAndroidWebPlatform());
-          if (ok) showRing();
+          if (ok) showRing(true);
+          else reportNoFocus();
+          return;
         }
+        reportNoFocus();
         return;
       }
       const m = mapPointerToVideoNormalizedPlane(v, clientX, clientY);
@@ -1243,7 +1268,8 @@ export function ScanOverlay({
         { focusMode: 'single-shot', pointsOfInterest: [{ x: m.x, y: m.y }] },
         isAndroidWebPlatform(),
       );
-      if (ok) showRing();
+      if (ok) showRing(true);
+      else reportNoFocus();
       if (ok && modes.includes('continuous') && !isAndroidChromeBrowser()) {
         await new Promise((r) => setTimeout(r, 320));
         await safeApplyFlat(track, { focusMode: 'continuous' }, isAndroidWebPlatform());
@@ -1380,10 +1406,12 @@ export function ScanOverlay({
       aria-modal="true"
       aria-label={title}
     >
-      {/* Topbar */}
-      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-2 bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
+      {/* Topbar — `pointer-events-none` na traci, `auto` na dugmadima: traka je
+          providan gradijent preko kadra, pa tap kroz nju mora da stigne do `<video>`
+          (tap-to-focus). Bez toga gornja ~56 px kadra ne prima fokus. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-2 bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
         <span className="text-md truncate font-semibold">{title}</span>
-        <div className="flex items-center gap-1">
+        <div className="pointer-events-auto flex items-center gap-1">
           {showCycle && (
             <button
               type="button"
@@ -1428,13 +1456,17 @@ export function ScanOverlay({
         className="absolute inset-0 h-full w-full object-cover"
         onPointerDown={(e) => void ctrlRef.current?.tapFocus(e.clientX, e.clientY)}
       />
-      {cameraOn && !iosBlocker && <ScanReticle variant="barcode" />}
+      {cameraOn && !iosBlocker && <ScanReticle variant="barcode" bottomInset={panelInset} />}
       {focusRing && (
         <div
           // Neutralna bela, NE `--status-success`: zeleno je u ovom sistemu potvrda
           // ishoda (v. DESIGN_SYSTEM §7), a ovo je samo znak da je fokus zatražen
           // i prihvaćen. 1.0 iz istog razloga koristi žutu (`#ffd84a`).
-          className="pointer-events-none absolute z-10 h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/90"
+          // Isprekidan i prigušen prsten = tap primljen, ali uređaj ne podržava ručno
+          // izoštravanje (samo Android — v. `tapFocus`).
+          className={`pointer-events-none absolute z-10 h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 ${
+            focusRing.ok ? 'border-white/90' : 'border-dashed border-white/40'
+          }`}
           style={{ left: focusRing.x, top: focusRing.y, animation: 'ping 0.6s ease-out' }}
           aria-hidden
         />
@@ -1447,12 +1479,19 @@ export function ScanOverlay({
 
       {/* Donji panel: zoom, hint, status, alati, ručni unos, batch lista — sve
           LEBDI preko kadra (1.0 obrazac). `max-h`/scroll je brana da panel na
-          malom ekranu ne naraste preko nišana. */}
-      <div className="absolute inset-x-0 bottom-0 z-10 max-h-[62%] space-y-2 overflow-y-auto bg-gradient-to-t from-black/90 via-black/75 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white">
+          malom ekranu ne naraste previše; da nišan NE padne pod njega brine
+          izmerena visina (`panelRef` → `bottomInset` nišana).
+          `pointer-events-none` na omotaču + `auto` na svakoj kontroli: prazan
+          prostor panela (i njegov providan gornji gradijent) propušta tap na
+          `<video>` — inače donjih ~60% kadra ne prima tap-to-focus. */}
+      <div
+        ref={panelRef}
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 max-h-[62%] space-y-2 overflow-y-auto bg-gradient-to-t from-black/90 via-black/75 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white"
+      >
         {/* Zoom slider — samo kad uređaj izlaže track zoom capability */}
         {zoomCap && (
           <div className="flex items-center justify-center gap-2">
-            <div className="flex w-full max-w-md items-center gap-2 rounded-control bg-black/60 px-3 py-2 text-white">
+            <div className="pointer-events-auto flex w-full max-w-md items-center gap-2 rounded-control bg-black/60 px-3 py-2 text-white">
               <ZoomIn className="h-4 w-4 shrink-0" />
               <button
                 type="button"
@@ -1490,8 +1529,10 @@ export function ScanOverlay({
         )}
 
         {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`, scanModal.js:302-309) —
-            3.0 je do 02.08.2026 nije imao ni u jednoj ljusci. */}
-        {cameraOn && !iosBlocker && (
+            3.0 je do 02.08.2026 nije imao ni u jednoj ljusci. Čim u „neprekidnoj"
+            sesiji padne PRVI sken, hint se gasi: radnik koji je već skenirao zna kako
+            se drži telefon, a tri reda teksta tada samo dižu panel preko nišana. */}
+        {cameraOn && !iosBlocker && !(continuousOn && results.length > 0) && (
           <ScanHint
             extra={
               acceptItem
@@ -1507,12 +1548,14 @@ export function ScanOverlay({
           </p>
         )}
 
+        {/* Red alata: `pointer-events-auto` ide na SVAKO dugme pojedinačno, ne na
+            red — razmaci između dugmadi tako ostaju tap-to-focus površina. */}
         <div className="flex flex-wrap items-center gap-3 text-xs text-white/70">
           <span>Tap na kadar = fokus</span>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-1 rounded-control border border-white/20 px-2 py-1 hover:bg-white/10"
+            className="pointer-events-auto flex items-center gap-1 rounded-control border border-white/20 px-2 py-1 hover:bg-white/10"
           >
             <ImageIcon className="h-4 w-4" /> Iz slike
           </button>
@@ -1520,7 +1563,7 @@ export function ScanOverlay({
             <button
               type="button"
               onClick={() => void ctrlRef.current?.ocrScan()}
-              className="flex items-center gap-1 rounded-control border border-white/20 px-2 py-1 hover:bg-white/10"
+              className="pointer-events-auto flex items-center gap-1 rounded-control border border-white/20 px-2 py-1 hover:bg-white/10"
               title="Pročitaj broj predmeta / TP iz gornjeg desnog ugla nalepnice (OCR)"
             >
               <Type className="h-4 w-4" /> OCR tekst
@@ -1530,7 +1573,7 @@ export function ScanOverlay({
             type="button"
             onClick={() => setContinuousOn((v) => !v)}
             aria-pressed={continuousOn}
-            className={`flex items-center gap-1 rounded-control border px-2 py-1 hover:bg-white/10 ${
+            className={`pointer-events-auto flex items-center gap-1 rounded-control border px-2 py-1 hover:bg-white/10 ${
               continuousOn ? 'border-accent text-accent' : 'border-white/20'
             }`}
             title="Neprekidno skeniranje — skener ostaje otvoren posle svakog pogotka"
@@ -1540,14 +1583,15 @@ export function ScanOverlay({
           <span className="ml-auto text-white/40">app v{APP_VERSION}</span>
           <button
             type="button"
-            onClick={() => {
-              setStatus('♻ Osvežavam aplikaciju…');
-              void forceAppReload().catch(() => window.location.reload());
-            }}
-            className="flex items-center gap-1 rounded-control border border-white/20 px-2 py-1 hover:bg-white/10"
-            title="Hard refresh — očisti keš klijenta (npr. kad autofill radi po starom)"
+            // TVRDO osvežavanje (verzija aplikacije), različito i po imenu i po ikoni od
+            // mekog „Osveži" (podaci) u zaglavlju `/mob` — v. `lib/app-hard-reset.ts`.
+            // Odjavljuje SAMO 3.0 SW/keševe; 1.0 (`/sw.js`, `/m/*`) se ne dira.
+            onClick={() => confirmHardResetApp(() => setStatus('♻ Resetujem aplikaciju…'))}
+            className="pointer-events-auto flex items-center gap-1 rounded-control border border-white/20 px-2 py-1 hover:bg-white/10"
+            aria-label={HARD_RESET_LABEL}
+            title={`${HARD_RESET_LABEL} — povuci najnoviju verziju (kad ekran radi „po starom")`}
           >
-            <RefreshCw className="h-4 w-4" /> Osveži app
+            <RotateCcw className="h-4 w-4" /> Resetuj app
           </button>
         </div>
 
@@ -1564,7 +1608,7 @@ export function ScanOverlay({
         />
 
         <form
-          className="flex gap-2"
+          className="pointer-events-auto flex gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (manual.trim()) {
@@ -1596,7 +1640,7 @@ export function ScanOverlay({
         </form>
 
         {continuousOn && results.length > 0 && (
-          <div className="max-h-32 space-y-1 overflow-y-auto rounded-control border border-white/15 bg-white/5 p-2 text-xs">
+          <div className="pointer-events-auto max-h-32 space-y-1 overflow-y-auto rounded-control border border-white/15 bg-white/5 p-2 text-xs">
             <div className="flex items-center justify-between text-white/60">
               <span>Skenirano u sesiji: {results.length}</span>
               <button type="button" onClick={() => setResults([])} className="underline">

@@ -48,6 +48,7 @@ import {
   type VacationChangeRequest,
 } from '@/api/moj-profil';
 import type { GoLedgerBlock, GoLedgerPeriod } from '@/api/kadrovska';
+import { MobPermissionsError, MobRefreshButton } from '../_components/mob-refresh';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -103,7 +104,7 @@ export default function MobOdsustvaPage() {
   const [pdfBusy, setPdfBusy] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user || permissionsPending) {
@@ -114,11 +115,7 @@ export default function MobOdsustvaPage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
 
   /** Rešenje o GO za SEBE — isti generator kao Kadrovska (`generateVacationDecisionPdf`),
@@ -195,6 +192,9 @@ export default function MobOdsustvaPage() {
           <h1 className="truncate text-md font-semibold text-ink">Odsustva / GO</h1>
           <p className="truncate text-xs text-ink-secondary">{user.fullName ?? user.email}</p>
         </div>
+        {/* Osvežavanje bez reload-a: pull-to-refresh je pod `/mob` ugašen,
+            a instalirana PWA nema adresnu traku (v. `_components/mob-refresh.tsx`). */}
+        <MobRefreshButton />
         <Link
           href="/mob"
           className={`inline-flex h-11 shrink-0 items-center gap-1 rounded-control border border-line bg-surface-2 pl-2 pr-4 text-sm font-semibold text-ink active:bg-surface ${FOCUS}`}
@@ -676,12 +676,12 @@ function ChangeForm({
       });
       const status = ((res as { data?: { status?: string } } | null)?.data ?? {}).status;
       if (status === 'already_pending') return setErr('Za ovaj termin već postoji zahtev koji čeka odluku.');
-      if (status === 'not_approved') return setErr('Termin više nije potvrđen — osveži stranicu.');
+      if (status === 'not_approved') return setErr('Termin više nije potvrđen — dodirni „Osveži" gore desno.');
       if (status === 'overlap') return setErr('Predloženi termin se preklapa sa drugim odsustvom.');
       // Uspeh je SAMO 'pending' (molba je zavedena). 'not_found' ili nepoznat status
       // ne smeju da prikažu „poslato" — red u bazi tada ne postoji.
       if (status !== 'pending')
-        return setErr('Zahtev nije zaveden — osveži stranicu i pokušaj ponovo.');
+        return setErr('Zahtev nije zaveden — dodirni „Osveži" gore desno pa pokušaj ponovo.');
       toast('Zahtev poslat HR-u.');
       onClose();
     } catch (e) {

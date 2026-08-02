@@ -47,6 +47,7 @@ import {
   TemaStatusBadge,
 } from '@/app/sastanci/_components/common';
 import { MobShell } from '../_components/mob-shell';
+import { MobPermissionsError } from '../_components/mob-refresh';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -66,7 +67,7 @@ export default function MobZaMenePage() {
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user || permissionsPending) {
@@ -77,11 +78,7 @@ export default function MobZaMenePage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
   if (!can(PERMISSIONS.SASTANCI_READ)) {
     return (
@@ -176,7 +173,7 @@ function ZaMene({ myEmail }: { myEmail: string }) {
             <p className="py-6 text-center text-sm text-ink-secondary">Učitavanje…</p>
           ) : akcijeQ.isError ? (
             <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-6 text-center text-sm text-status-danger">
-              Akcije nisu učitane. Proveri vezu pa osveži stranicu.
+              Akcije nisu učitane. Proveri vezu pa dodirni „Osveži" gore desno.
             </p>
           ) : akcije.length === 0 ? (
             <EmptyState title="Nemaš otvorenih zaduženja 🎉" hint="Sve akcije sa tvojim imenom su zatvorene." />
@@ -242,7 +239,7 @@ function ZaMene({ myEmail }: { myEmail: string }) {
             <p className="py-6 text-center text-sm text-ink-secondary">Učitavanje…</p>
           ) : meetingsQ.isError ? (
             <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-6 text-center text-sm text-status-danger">
-              Sastanci nisu učitani. Proveri vezu pa osveži stranicu.
+              Sastanci nisu učitani. Proveri vezu pa dodirni „Osveži" gore desno.
             </p>
           ) : predstojeci.length === 0 ? (
             <p className="rounded-panel border border-line bg-surface px-4 py-6 text-center text-sm text-ink-secondary">
@@ -312,7 +309,7 @@ function ZaMene({ myEmail }: { myEmail: string }) {
             <p className="py-6 text-center text-sm text-ink-secondary">Učitavanje…</p>
           ) : temeQ.isError ? (
             <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-6 text-center text-sm text-status-danger">
-              Predlozi nisu učitani. Proveri vezu pa osveži stranicu.
+              Predlozi nisu učitani. Proveri vezu pa dodirni „Osveži" gore desno.
             </p>
           ) : predlozi.length === 0 ? (
             <p className="rounded-panel border border-line bg-surface px-4 py-6 text-center text-sm text-ink-secondary">

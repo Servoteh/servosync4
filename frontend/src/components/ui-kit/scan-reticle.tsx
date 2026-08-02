@@ -50,6 +50,14 @@ import { cn } from '@/lib/cn';
  *
  * Sam okvir ne dira kameru ni dekodiranje — čisto vizuelni sloj, `pointer-events-none`,
  * pa tap-to-focus na `<video>` ispod i dalje radi.
+ *
+ * **`bottomInset` (02.08.2026, Android regresija):** nišan se centrira u kadru UMANJENOM
+ * za plutajući donji panel ljuske, ne u celom ekranu. Bez toga panel (koji od prelaska na
+ * full-bleed kadar lebdi preko videa, `z-10`) prosto prekrije nišan: na 360×640 telefonu
+ * u „neprekidnom" režimu sa listom skeniranog panel počinje na y≈251, a nišan zauzima
+ * 278–382 — radnik cilja u okvir koji ne vidi i u laser koji je pokriven. Vrednost je
+ * IZMERENA (`lib/use-scan-panel-inset.ts`), ne procenat: panel raste i pada uživo (zoom
+ * klizač, 1–3 reda statusa, hint koji se gasi posle prvog skena, lista skeniranog).
  */
 
 export type ScanReticleVariant = 'barcode' | 'qr';
@@ -58,6 +66,7 @@ export function ScanReticle({
   variant,
   laser,
   className,
+  bottomInset = 0,
 }: {
   /** `barcode` = široki 3:1 prozor (1D nalepnice) · `qr` = kvadrat (QR karton). */
   variant: ScanReticleVariant;
@@ -65,32 +74,45 @@ export function ScanReticle({
   laser?: boolean;
   /** Dodatne klase omotača (retko — npr. drugačiji z-index u ljusci). */
   className?: string;
+  /**
+   * Visina plutajućeg donjeg panela ljuske u px (`lib/use-scan-panel-inset.ts`).
+   * Nišan i laser se centriraju u kadru umanjenom za toliko. `0` = staro ponašanje.
+   */
+  bottomInset?: number;
 }) {
   const showLaser = laser ?? variant === 'barcode';
 
   return (
     <div
       // `overflow-hidden` je obavezan: vinjeta je senka od 9999 px i bez klipovanja
-      // bi iscurela preko topbara i donje trake ljuske.
-      className={cn(
-        'pointer-events-none absolute inset-0 grid place-items-center overflow-hidden',
-        className,
-      )}
+      // bi iscurela preko topbara i donje trake ljuske. Omotač OSTAJE preko celog
+      // ekrana (`inset-0`) baš zbog vinjete — zatamnjenje mora da pokrije i pojas iza
+      // donjeg panela, čiji je gornji deo providan gradijent.
+      className={cn('pointer-events-none absolute inset-0 overflow-hidden', className)}
       aria-hidden
     >
+      {/* Centrirajuća kutija = kadar MINUS donji panel. Mora da bude pozicionirana:
+          laser je `position:absolute; top:50%` i računa se od NJE, pa okvir i laser
+          ostaju spojeni kad se panel promeni (na `padding` omotača laser ne reaguje —
+          apsolutni element se pozicionira po padding-boksu, tj. po celom ekranu). */}
       <div
-        className={cn(
-          'rounded-panel border-2 border-white/90',
-          variant === 'barcode'
-            ? // 1.0 prezentacioni režim, portret (legacy.css:4675-4680) — v. račun u JSDoc-u.
-              'aspect-[3.2/1] w-[min(92vw,420px)] shadow-[0_0_0_9999px_rgba(0,0,0,0.52)]'
-            : // QR kvadrat nema 1.0 pandan (3.0 koncept) — ostaje na osnovnoj vinjeti .45.
-              'aspect-square w-[min(70vw,280px)] shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]',
-        )}
-      />
-      {/* Laser je pozicioniran (z-auto) i dolazi POSLE okvira, pa se crta iznad vinjete.
-          Ide preko cele širine kadra — isto kao 1.0 `.loc-scan-laser`. */}
-      {showLaser && <div className="scan-laser" />}
+        className="absolute inset-x-0 top-0 grid place-items-center"
+        style={{ bottom: bottomInset }}
+      >
+        <div
+          className={cn(
+            'rounded-panel border-2 border-white/90',
+            variant === 'barcode'
+              ? // 1.0 prezentacioni režim, portret (legacy.css:4675-4680) — v. račun u JSDoc-u.
+                'aspect-[3.2/1] w-[min(92vw,420px)] shadow-[0_0_0_9999px_rgba(0,0,0,0.52)]'
+              : // QR kvadrat nema 1.0 pandan (3.0 koncept) — ostaje na osnovnoj vinjeti .45.
+                'aspect-square w-[min(70vw,280px)] shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]',
+          )}
+        />
+        {/* Laser je pozicioniran (z-auto) i dolazi POSLE okvira, pa se crta iznad vinjete.
+            Ide preko cele širine kadra — isto kao 1.0 `.loc-scan-laser`. */}
+        {showLaser && <div className="scan-laser" />}
+      </div>
     </div>
   );
 }

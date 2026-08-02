@@ -28,7 +28,7 @@ export default function MobileMontazaPage() {
   const canReport = can(PERMISSIONS.MONTAZA_NEUSAGLASENOSTI_WRITE);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user) {
