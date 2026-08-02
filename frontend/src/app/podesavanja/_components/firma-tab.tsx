@@ -368,15 +368,17 @@ function AccountCard({
   async function save() {
     // Samo IZMENJENA polja — prazno polje znači „obriši", pa slanje celog objekta ne bi
     // razlikovalo „nisam dirao" od „obriši".
-    const patch: SavePaymentAccountVars = { id: account.id };
+    // Polja se skupljaju odvojeno od `id`-a: `id` je broj, a sva ostala su tekst ili
+    // `null`, pa jedan zajednički indeksni tip nad celim objektom ne postoji (TS2352).
+    const izmenjena: Partial<Record<AccountKey, string | null>> = {};
     let any = false;
     (Object.keys(form) as AccountKey[]).forEach((k) => {
       if (form[k] !== initial[k]) {
-        (patch as Record<string, string | null>)[k] =
-          form[k].trim() === '' ? null : form[k];
+        izmenjena[k] = form[k].trim() === '' ? null : form[k];
         any = true;
       }
     });
+    const patch: SavePaymentAccountVars = { id: account.id, ...izmenjena };
     if (!any) {
       setDirty(false);
       toast('Nema izmena za snimanje.');
