@@ -5,11 +5,17 @@ import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Input } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
-import { formatDecimal } from '@/lib/format';
+import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { formatDate, formatDecimal } from '@/lib/format';
+import { toast } from '@/lib/toast';
 import {
   useCompensationProposal,
   useCreateCompensation,
+  useCompensationPdf,
+  useCompensations,
+  openPdf,
   type CompensationProposalLine,
+  type CompensationRow,
 } from '@/api/saldakonti';
 
 /**
@@ -23,6 +29,14 @@ export function CompensationPanel() {
   const [partnerId, setPartnerId] = useState<number | null>(null);
   const proposal = useCompensationProposal(partnerId);
   const create = useCreateCompensation();
+  const compensationPdf = useCompensationPdf();
+  // SPISAK kompenzacija — izjava se mora moći odštampati i sutradan, kad druga
+  // strana zatraži papir za potpis. Prolazna traka posle kreiranja je prečica,
+  // ne jedini put.
+  const list = useCompensations(partnerId);
+  // Poslednja kreirana kompenzacija — da se izjava o kompenzaciji može ODMAH
+  // odštampati (bez nje dokument nastane a papir za potpis druge strane ne postoji).
+  const [lastCreated, setLastCreated] = useState<{ id: number; number: string } | null>(null);
 
   // Korigovani iznosi po ledgerEntryId (default = suggestedOffset).
   const [amounts, setAmounts] = useState<Record<number, string>>({});
@@ -108,12 +122,28 @@ export function CompensationPanel() {
     if (inputLines.length === 0) return;
     create.mutate(
       { partnerId: data.partnerId, lines: inputLines, post: true },
-      { onSuccess: () => setPartnerId(null) },
+      {
+        onSuccess: (res) => {
+          const created = res?.data as unknown as
+            | { id: number; compensationNumber?: string; number?: string }
+            | undefined;
+          if (created?.id != null) {
+            setLastCreated({
+              id: created.id,
+              number: created.compensationNumber ?? created.number ?? String(created.id),
+            });
+          }
+          setPartnerId(null);
+        },
+      },
     );
   };
 
   const err =
-    (proposal.data?.meta?.error ?? null) ?? (create.error as Error | null)?.message ?? null;
+    (proposal.data?.meta?.error ?? null) ??
+    (create.error as Error | null)?.message ??
+    (compensationPdf.error as Error | null)?.message ??
+    null;
 
   return (
     <section className="space-y-3">
@@ -147,6 +177,25 @@ export function CompensationPanel() {
       {err && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-2 text-sm text-status-danger">
           {err}
+        </div>
+      )}
+
+      {lastCreated && (
+        <div className="flex flex-wrap items-center gap-3 rounded-panel border border-line bg-surface-2 px-4 py-2 text-sm">
+          <span className="text-ink">
+            Kompenzacija <span className="tnums font-semibold">{lastCreated.number}</span> je
+            kreirana i proknjižena.
+          </span>
+          <Button
+            variant="secondary"
+            loading={compensationPdf.isPending}
+            title="Štampa izjave o kompenzaciji (obrazac za potpis obe strane)"
+            onClick={() =>
+              compensationPdf.mutate(lastCreated.id, { onSuccess: (blob) => openPdf(blob) })
+            }
+          >
+            Štampaj izjavu (PDF)
+          </Button>
         </div>
       )}
 

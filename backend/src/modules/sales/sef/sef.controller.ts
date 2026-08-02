@@ -2,13 +2,16 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseIntPipe,
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { JwtAuthGuard } from "../../auth/jwt-auth.guard";
 import type { AuthUser } from "../../auth/jwt.strategy";
 import { PermissionsGuard } from "../../../common/authz/permissions.guard";
@@ -16,6 +19,7 @@ import { RequirePermission } from "../../../common/authz/require-permission.deco
 import { PERMISSIONS } from "../../../common/authz/permissions";
 import { SefService } from "./sef.service";
 import { SefIncomingService } from "./sef-incoming.service";
+import { SefPrintService } from "./sef-print.service";
 import {
   normalizeListSefIncomingQuery,
   validatePullSefIncoming,
@@ -48,7 +52,54 @@ export class SefController {
   constructor(
     private readonly sef: SefService,
     private readonly incoming: SefIncomingService,
+    private readonly print: SefPrintService,
   ) {}
+
+  /**
+   * ŠTAMPA IZLAZNE e-FAKTURE — ljudski čitljiv prikaz UBL-a koji je poslat na SEF.
+   * Do sada se poslati dokument mogao videti samo kao XML u bazi. Vraća
+   * `application/pdf` inline. Permisija SEF_READ (kao ostale read rute modula).
+   */
+  @Get("outbox/:id/pdf")
+  @RequirePermission(PERMISSIONS.SEF_READ)
+  @Header("Content-Type", "application/pdf")
+  async outboxPdf(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const doc = await this.print.buildOutboundPdf(id, {
+      printedBy: req.user?.email ?? null,
+    });
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(doc.fileName)}"`,
+    );
+    res.send(doc.buffer);
+  }
+
+  /**
+   * ŠTAMPA ULAZNE e-FAKTURE — čitljiv prikaz UBL-a primljenog sa SEF-a, sa
+   * istaknutim zakonskim rokom od 15 dana za prihvatanje/odbijanje.
+   * Permisija SEF_READ.
+   */
+  @Get("incoming/:id/pdf")
+  @RequirePermission(PERMISSIONS.SEF_READ)
+  @Header("Content-Type", "application/pdf")
+  async incomingPdf(
+    @Param("id", ParseIntPipe) id: number,
+    @Req() req: { user?: AuthUser },
+    @Res() res: Response,
+  ): Promise<void> {
+    const doc = await this.print.buildIncomingPdf(id, {
+      printedBy: req.user?.email ?? null,
+    });
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(doc.fileName)}"`,
+    );
+    res.send(doc.buffer);
+  }
 
   @Get("outbox")
   async listOutbox(

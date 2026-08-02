@@ -241,6 +241,46 @@ export function useCompensationProposal(partnerId: number | null) {
   });
 }
 
+/** Jedan red spiska kompenzacija (GET /saldakonti/compensation). */
+export interface CompensationRow {
+  id: number;
+  compensationNumber: string;
+  partnerId: number;
+  partnerName: string | null;
+  date: string;
+  status: string;
+  totalAmount: string;
+  journalEntryId: number | null;
+  lineCount: number;
+}
+
+/**
+ * Spisak kompenzacija — bez njega se izjava mogla odštampati samo iz prolazne
+ * trake odmah po kreiranju, pa je proknjižen dokument ostajao bez papira.
+ */
+export function useCompensations(partnerId: number | null) {
+  return useQuery({
+    queryKey: ['saldakonti', 'compensation', 'list', partnerId],
+    queryFn: () =>
+      apiFetch<{ data: CompensationRow[]; meta: { total: number } }>(
+        `${BASE}/compensation${partnerId != null && partnerId > 0 ? `?partnerId=${partnerId}` : ''}`,
+      ),
+  });
+}
+
+/**
+ * Štampa IZJAVE O KOMPENZACIJI — GET /saldakonti/compensation/:id/pdf. Obrazac
+ * prebijanja: dve tabele (naša potraživanja / naše obaveze), zbir svake strane,
+ * prebijeni iznos brojem i slovima i dva potpisa sa M.P. Vraća PDF Blob (otvori
+ * kroz `openPdf`). read = SALDAKONTI_READ.
+ */
+export function useCompensationPdf() {
+  return useMutation({
+    mutationFn: (compensationId: number) =>
+      apiBlob(`${BASE}/compensation/${compensationId}/pdf`),
+  });
+}
+
 /** Kreiraj (i knjiži) kompenzaciju — POST /saldakonti/compensation. */
 export function useCreateCompensation() {
   const qc = useQueryClient();
@@ -287,11 +327,7 @@ export function useIosPdf() {
 }
 
 /** Otvori PDF Blob u novom tabu (browser preview + download). */
-export function openPdf(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener');
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
+export { openPdf } from '@/lib/open-pdf';
 
 // ─────────────────────────────────── Slanje IOS obrasca mejlom (A6)
 
@@ -589,6 +625,32 @@ export function useDunningSend() {
         body: JSON.stringify(input),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['saldakonti', 'dunning'] }),
+  });
+}
+
+/** Ulaz štampe opomene — komitent + nivo (default 1) + opcioni datum preseka. */
+export interface DunningPdfInput {
+  partnerId: number;
+  /** Nivo 1|2|3; bez njega backend uzima 1. */
+  level?: number;
+  /** Datum preseka (ISO datum); bez njega backend uzima danas. */
+  asOf?: string;
+}
+
+/**
+ * ŠTAMPA OPOMENE — GET /saldakonti/dunning/pdf?partnerId=&level=&asOf=. Isti
+ * obrazac koji ide u prilogu mejla, samo za ruku (dosad se opomena mogla samo
+ * poslati mejlom — PDF servis je postojao bez GET rute). Vraća PDF Blob (otvori
+ * kroz `openPdf`). read = SALDAKONTI_READ.
+ */
+export function useDunningPdf() {
+  return useMutation({
+    mutationFn: (input: DunningPdfInput) => {
+      const qs = new URLSearchParams({ partnerId: String(input.partnerId) });
+      if (input.level != null) qs.set('level', String(input.level));
+      if (input.asOf) qs.set('asOf', input.asOf);
+      return apiBlob(`${BASE}/dunning/pdf?${qs.toString()}`);
+    },
   });
 }
 

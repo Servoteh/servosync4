@@ -15,15 +15,15 @@ import type { AuthUser } from "../auth/jwt.strategy";
 /**
  * DATUM PROMETA — ceo tok (mera M1 iz docs/FAKTURE_ZAKONSKA_USKLADJENOST.md).
  *
- * Nalaz N1 je bio: `Invoice.deliveryDate` postoji u šemi i tri obrasca ga čitaju, ali
- * ga NIJEDNA ruta ne upisuje → uvek `null` → obavezan element računa po Zakonu o PDV
+ * Nalaz N1 je bio: kolona za datum prometa postoji u šemi i tri obrasca je čitaju, ali
+ * je NIJEDNA ruta ne upisuje → uvek `null` → obavezan element računa po Zakonu o PDV
  * strukturno nedostaje na svakoj fakturi. Ovi testovi su brana da se to ne vrati:
  *
  *   1) unos      — DTO polje stiže do baze,
  *   2) predračun — ostaje `null` kad nije unet (predračun prethodi prometu),
  *   3) knjiženje — podrazumeva se datum izdavanja, ali VIDLJIVO (WARN u logu),
  *   4) prepis    — predračun → račun prenosi datum (kao salespersonId/paymentMethod),
- *   5) značenje  — ime `deliveryDate` u celoj šemi znači SAMO datum prometa.
+ *   5) značenje  — datum prometa ima TAČNO JEDNO ime u šemi: `Invoice.supplyDate`.
  */
 
 const D = Prisma.Decimal;
@@ -112,7 +112,7 @@ function draftInvoiceRow(overrides: Record<string, unknown> = {}) {
     customerId: 5,
     documentDate: new Date("2026-07-05T00:00:00Z"),
     dueDate: null,
-    deliveryDate: null,
+    supplyDate: null,
     currency: "RSD",
     isExport: false,
     workOrderId: null,
@@ -170,14 +170,14 @@ describe("Datum prometa — unos i knjiženje (FakturisanjeService)", () => {
       {
         customerId: 5,
         documentDate: "2026-07-01",
-        deliveryDate: "2026-06-28",
+        supplyDate: "2026-06-28",
         items: [{ description: "Usluga", quantity: 1 }],
       },
       actor,
     );
 
-    const data = writtenData<{ deliveryDate: Date | null }>(prisma.invoice.create);
-    expect(data.deliveryDate).toEqual(new Date("2026-06-28"));
+    const data = writtenData<{ supplyDate: Date | null }>(prisma.invoice.create);
+    expect(data.supplyDate).toEqual(new Date("2026-06-28"));
   });
 
   it("predračun BEZ unetog datuma prometa ostaje null — ne izmišlja se datum", async () => {
@@ -188,8 +188,8 @@ describe("Datum prometa — unos i knjiženje (FakturisanjeService)", () => {
       actor,
     );
 
-    const data = writtenData<{ deliveryDate: Date | null }>(prisma.invoice.create);
-    expect(data.deliveryDate).toBeNull();
+    const data = writtenData<{ supplyDate: Date | null }>(prisma.invoice.create);
+    expect(data.supplyDate).toBeNull();
   });
 
   it("neispravan datum prometa se odbija na validaciji", async () => {
@@ -198,7 +198,7 @@ describe("Datum prometa — unos i knjiženje (FakturisanjeService)", () => {
     const call = service.createProforma(
       {
         customerId: 5,
-        deliveryDate: "nije-datum",
+        supplyDate: "nije-datum",
         items: [{ description: "Usluga", quantity: 1 }],
       },
       actor,
@@ -212,17 +212,17 @@ describe("Datum prometa — unos i knjiženje (FakturisanjeService)", () => {
   });
 
   it("knjiženje BEZ unetog datuma prometa podrazumeva DATUM IZDAVANJA", async () => {
-    const row = draftInvoiceRow({ deliveryDate: null });
+    const row = draftInvoiceRow({ supplyDate: null });
     prisma.invoice.findUnique.mockResolvedValue(row);
 
     await service.postInvoice(100, actor);
 
-    const data = writtenData<{ deliveryDate: Date }>(prisma.invoice.update);
-    expect(data.deliveryDate).toEqual(row.documentDate);
+    const data = writtenData<{ supplyDate: Date }>(prisma.invoice.update);
+    expect(data.supplyDate).toEqual(row.documentDate);
   });
 
   it("podrazumevanje NIJE tiho — piše WARN sa brojem računa", async () => {
-    prisma.invoice.findUnique.mockResolvedValue(draftInvoiceRow({ deliveryDate: null }));
+    prisma.invoice.findUnique.mockResolvedValue(draftInvoiceRow({ supplyDate: null }));
     const warn = jest
       .spyOn(service["logger"], "warn")
       .mockImplementation(() => undefined);
@@ -236,13 +236,13 @@ describe("Datum prometa — unos i knjiženje (FakturisanjeService)", () => {
   it("uneti datum prometa knjiženje NE pregazi datumom izdavanja", async () => {
     const entered = new Date("2026-06-28T00:00:00Z");
     prisma.invoice.findUnique.mockResolvedValue(
-      draftInvoiceRow({ deliveryDate: entered }),
+      draftInvoiceRow({ supplyDate: entered }),
     );
 
     await service.postInvoice(100, actor);
 
-    const data = writtenData<{ deliveryDate: Date }>(prisma.invoice.update);
-    expect(data.deliveryDate).toEqual(entered);
+    const data = writtenData<{ supplyDate: Date }>(prisma.invoice.update);
+    expect(data.supplyDate).toEqual(entered);
   });
 });
 
@@ -262,7 +262,7 @@ describe("Datum prometa — prepis predračuna u račun (DocumentCarryOverServic
   });
 
   it("datum prometa se prenosi sa predračuna na račun (kao salespersonId/paymentMethod)", async () => {
-    const deliveryDate = new Date("2026-06-28T00:00:00Z");
+    const supplyDate = new Date("2026-06-28T00:00:00Z");
     prisma.invoice.findUnique.mockResolvedValue({
       id: 10,
       level: 250,
@@ -271,7 +271,7 @@ describe("Datum prometa — prepis predračuna u račun (DocumentCarryOverServic
       companyId: 0,
       customerId: 5,
       dueDate: null,
-      deliveryDate,
+      supplyDate,
       currency: "RSD",
       exchangeRate: new D(1),
       accountingExchangeRate: new D(1),
@@ -289,45 +289,56 @@ describe("Datum prometa — prepis predračuna u račun (DocumentCarryOverServic
 
     await service.createInvoiceFromProforma(10, "IFR");
 
-    const data = writtenData<{ deliveryDate: Date | null }>(prisma.invoice.create);
-    expect(data.deliveryDate).toEqual(deliveryDate);
+    const data = writtenData<{ supplyDate: Date | null }>(prisma.invoice.create);
+    expect(data.supplyDate).toEqual(supplyDate);
   });
 });
 
 /**
- * ZNAČENJE KOLONE — brana protiv ponovnog sudara (razrešeno 02.08.2026).
+ * JEDNO IME ZA JEDAN PODATAK — brana protiv ponovnog sudara (razrešeno 02.08.2026).
  *
- * Ranije je isto ime nosilo dva suprotna pojma: `Invoice.deliveryDate` = datum prometa
- * (tako ga čitaju obrasci i UBL ActualDeliveryDate), a `SefIncomingInvoice.deliveryDate`
- * = datum PRIJEMA ulazne fakture na SEF. Presuda: ime prati značenje — ulazni SEF je
- * preimenovan u `sefReceivedAt`. Test čita SAMU šemu (Prisma DMMF), pa pada čim neko
- * uvede novo polje tog imena za nešto treće.
+ * Ime `deliveryDate` / kolona `delivery_date` je u ovom repou u jednom trenutku značilo
+ * TRI stvari: datum prometa našeg računa, datum PRIJEMA ulazne fakture na SEF, i (u
+ * paralelnoj grani) drugu kolonu za isti datum prometa. Prvi sudar je već proizveo
+ * pogrešan zakonski rok od 15 dana na ulaznim fakturama.
+ *
+ * PRESUDA: ime prati značenje.
+ *   • datum prometa   → `Invoice.supplyDate` / `supply_date` (jedina kolona za taj podatak),
+ *   • prijem na SEF   → `SefIncomingInvoice.sefReceivedAt` / `sef_received_at`,
+ *   • ime `deliveryDate` / `delivery_date` se NE koristi ni za šta.
+ *
+ * Test čita SAMU šemu (Prisma DMMF), pa pada čim neko vrati staro ime ili doda drugu
+ * kolonu za isti podatak — bez obzira na to šta piše u komentarima.
  */
-describe("Datum prometa — značenje kolone `deliveryDate` je jednoznačno", () => {
+describe("Datum prometa — jedno ime za jedan podatak", () => {
   const models = Prisma.dmmf.datamodel.models;
   const fieldsNamed = (name: string) =>
     models
       .filter((m) => m.fields.some((f) => f.name === name))
       .map((m) => m.name);
 
-  it("`deliveryDate` postoji SAMO na Invoice i znači datum prometa", () => {
-    expect(fieldsNamed("deliveryDate")).toEqual(["Invoice"]);
+  it("`supplyDate` postoji SAMO na Invoice i znači datum prometa", () => {
+    expect(fieldsNamed("supplyDate")).toEqual(["Invoice"]);
   });
 
-  it("ulazna SEF faktura nosi `sefReceivedAt` (prijem na SEF), ne `deliveryDate`", () => {
+  it("ulazna SEF faktura nosi `sefReceivedAt` (prijem na SEF)", () => {
     const incoming = models.find((m) => m.name === "SefIncomingInvoice");
     expect(incoming).toBeDefined();
     const names = incoming?.fields.map((f) => f.name) ?? [];
     expect(names).toContain("sefReceivedAt");
-    expect(names).not.toContain("deliveryDate");
+    expect(names).not.toContain("supplyDate");
   });
 
-  it("kolona `delivery_date` u bazi postoji samo na tabeli računa", () => {
+  it("dvoznačno ime `deliveryDate` ne postoji nigde u šemi", () => {
+    expect(fieldsNamed("deliveryDate")).toEqual([]);
+  });
+
+  it("kolona `delivery_date` ne postoji ni na jednoj tabeli", () => {
     const withColumn = models
       .filter((m) =>
         m.fields.some((f) => (f.dbName ?? f.name) === "delivery_date"),
       )
       .map((m) => m.name);
-    expect(withColumn).toEqual(["Invoice"]);
+    expect(withColumn).toEqual([]);
   });
 });

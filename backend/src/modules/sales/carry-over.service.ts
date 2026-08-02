@@ -115,7 +115,7 @@ export class DocumentCarryOverService {
           // vrednost pri knjiženju (datum izdavanja), iako je stvaran datum bio poznat.
           // Ako ga predračun nema (nije ni morao — izdaje se pre prometa), ostaje null i
           // postInvoice ga podrazumeva.
-          deliveryDate: proforma.deliveryDate,
+          supplyDate: proforma.supplyDate,
           note: proforma.note,
           items: {
             create: proforma.items.map((it) => ({
@@ -125,6 +125,12 @@ export class DocumentCarryOverService {
               unit: it.unit,
               quantity: it.quantity,
               unitPrice: it.unitPrice,
+              // Osnovica za koeficijent (§8/O1) se PRENOSI sa izvorne stavke; ako
+              // je izvor stariji od kolone, pada na njegovu cenu. Bez ovoga bi
+              // prepisan dokument imao baznu cenu 0 i prvi dodir bi ga nulirao.
+              baseUnitPrice: it.baseUnitPrice?.greaterThan(0)
+                ? it.baseUnitPrice
+                : it.unitPrice,
               discountPercent: it.discountPercent,
               cashDiscountPercent: it.cashDiscountPercent,
               vatRateCode: it.vatRateCode,

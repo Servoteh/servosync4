@@ -117,9 +117,15 @@ export class PaymentPreparationService {
    * najranije dospeće `≤ cutoff`.
    */
   async selectDue(cutoff: Date = new Date()): Promise<DueLiability[]> {
-    // 1) payable konta iz registra (NE hardkod klase 4* — doc PLAN §A).
+    // 1) DOBAVLJAČKA payable konta iz registra (NE hardkod klase 4* — doc PLAN §A).
+    //    partnerScope = "supplier" je OBAVEZAN uz side = "payable": konta primljenih
+    //    avansa 4300/4302 su po saldu obaveza, ali obaveza prema KUPCU (njegov avans).
+    //    Bez tog filtera kupčev avans (nema dueDate → tretira se kao dospeo) ulazi u
+    //    predlog za plaćanje i može završiti u nalogu za prenos / e-bankingu — firma bi
+    //    kupcu isplatila novac koji je kupac njoj uplatio (revizija, VISOK).
+    //    NULL scope se namerno NE uzima (izlaz novca ide samo po potvrđenom podatku).
     const payableAccounts = await this.prisma.saldakontoAccount.findMany({
-      where: { side: "payable" },
+      where: { side: "payable", partnerScope: "supplier" },
       select: { account: true },
     });
     const accountCodes = payableAccounts.map((a) => a.account);

@@ -45,9 +45,16 @@ diranja 1.0 do 03.08).
 
 ## 🟡 Vredi znati (nije baza, nego pravilo/semantika)
 
-1. **026/26 zaobilaznica:** kroz 1.0 mobilnu radnik može direktno da otkaže/izmeni ODOBREN
-   godišnji, dok 3.0 traži molbu HR-u. Ista tabela, različito pravilo. Zatvara se ili u 1.0 FE
-   ili tvrdo u DB funkciji (`hr_cancel/hr_revise_vacation_request`).
+1. ~~**026/26 zaobilaznica**~~ — ✅ **ISPRAVKA NALAZA (provereno na živoj sy15, 01.08):
+   zaobilaznice NEMA.** DB brana `kadr_vacreq_direct_blocked()` postoji i radi u
+   `hr_cancel_vacation_request` i `hr_revise_vacation_request`: podnosilac (koji nije HR/upravljač)
+   nad `approved` NE menja ništa — funkcija vraća `needs_change_request`. (Audit agent se oslonio
+   na zastareo komentar u 3.0 kodu; nalaz oboren proverom same baze — pouka: pravila se proveravaju
+   u DB definiciji, ne u komentarima.) **Stvarni defekt je bio UX u 1.0**: dugmad „Izmeni/Otkaži"
+   su se prikazivala i za potvrđen termin, confirm je obećavao oslobađanje salda, a ishod je bio
+   „⚠ Otkazivanje nije uspelo" — izgledalo kao kvar. Popravljeno 01.08 (odluka Nenada „zatvori iz
+   1.0 otkazivanje odmora"): za `approved` 1.0 sada nudi „Molba za izmenu/otkaz" sa prelaskom na
+   3.0 `/mob/odsustva` gde 026/26 tok postoji.
 2. **Batch premeštanje se drugačije tumači:** 1.0 batch uvek radi „dodavanje na policu"
    (`INITIAL_PLACEMENT`, izvorna polica se ne prazni), a 3.0 batch radi **premeštaj** (skida sa
    izvora). Ista tabela, ali ista fizička radnja daje različitu sliku zaliha zavisno od toga iz

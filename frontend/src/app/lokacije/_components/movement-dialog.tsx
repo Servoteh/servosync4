@@ -279,6 +279,7 @@ export function MovementDialog({
                 value={fromLocationId}
                 onChange={setFromLocationId}
                 onScan={() => setScan('from')}
+                shelvesFirst
                 placeholder="Pretraži policu/kavez/mašinu…"
               />
             </FormField>
@@ -294,6 +295,7 @@ export function MovementDialog({
                     onChange={setToLocationId}
                     onScan={() => setScan('to')}
                     groupByHall
+                    shelvesFirst
                     placeholder="Pretraži policu/kavez/mašinu…"
                   />
                   <label className="mt-1.5 flex items-center gap-2 text-xs text-ink-secondary">

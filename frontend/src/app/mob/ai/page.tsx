@@ -15,11 +15,11 @@ export default function MobileAiPage() {
   }, [user, isLoading, router]);
 
   if (isLoading || !user) {
-    return <main className="grid min-h-screen place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
+    return <main className="grid min-h-dvh place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-dvh flex-col">
       <AiChat variant="mobile" />
     </div>
   );

@@ -13,6 +13,7 @@ import {
   Type,
 } from 'lucide-react';
 import { lookupLocBarcode, type LocBarcodeKind, type LocBarcodeResult } from '@/api/lokacije';
+import { useEscapeLayer } from '@/components/ui-kit/escape-layer';
 import {
   cropTopRightLabelRegion,
   isOcrEngineAvailable,
@@ -41,6 +42,9 @@ import {
   looksLikeOperationBarcode,
   OPERATION_BARCODE_HINT,
 } from '@/lib/loc-barcode-shape';
+import { ScanReticle } from '@/components/ui-kit/scan-reticle';
+import { ScanHint } from '@/components/ui-kit/scan-hint';
+import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
 
 /*
  * Punoekranski skener barkoda za Lokacije — pun port bogatog 1.0 scanModal-a
@@ -431,6 +435,16 @@ export function ScanOverlay({
   useEffect(() => {
     cbRef.current = { accept, onResult, onClose };
   });
+
+  // Skener je najgornji modalni sloj dok je otvoren — Esc zatvara NJEGA, i ne
+  // curi na dijalog ispod (v. `ui-kit/escape-layer.ts`).
+  useEscapeLayer(true, () => cbRef.current.onClose());
+
+  // Safari URL traka guta gornji deo kadra. Isti kod je do 02.08.2026 stajao inline
+  // u kamera-efektu ISPOD (`needsVV`/`bindVV`) i postojao je SAMO ovde — izvučen je
+  // u `@/lib/use-visual-viewport-fix` i primenjen i u reversi / mob-održavanje /
+  // montaža ljusci, koje su ga do sada nisu imale.
+  useVisualViewportFix(rootRef);
   const continuousRef = useRef(continuousOn);
   useEffect(() => {
     continuousRef.current = continuousOn;
@@ -451,7 +465,6 @@ export function ScanOverlay({
     let curDeviceId: string | null = null;
     let autoSwitchAttempts = 0;
     let forcedBackDone = false; // one-shot: force-back kamera se pokušava najviše jednom
-    let vvUnbind: (() => void) | null = null;
     const busyRef = { v: false };
     const cameraOnRef = { v: false };
     const lastRef = { code: '', at: 0 };
@@ -481,36 +494,8 @@ export function ScanOverlay({
       return ms.getVideoTracks()[0] || null;
     };
 
-    // `position:fixed` prati LAYOUT viewport (uklj. URL bar prostor); kamera prati
-    // VISUAL viewport pa retikla „pobegne" iznad vidljivog kadra na iOS/Samsung.
-    // Vezujemo overlay na visualViewport dimenzije i pratimo resize/scroll.
-    const needsVV = () =>
-      typeof window !== 'undefined' &&
-      typeof window.visualViewport !== 'undefined' &&
-      (isIOSWebPlatform() || isAndroidWebPlatform());
-    const bindVV = () => {
-      const vv = window.visualViewport;
-      const el = rootRef.current;
-      if (!vv || !el) return;
-      const apply = () => {
-        el.style.position = 'fixed';
-        el.style.top = `${vv.offsetTop}px`;
-        el.style.left = `${vv.offsetLeft}px`;
-        el.style.width = `${vv.width}px`;
-        el.style.height = `${vv.height}px`;
-        el.style.right = 'auto';
-        el.style.bottom = 'auto';
-      };
-      apply();
-      vv.addEventListener('resize', apply);
-      vv.addEventListener('scroll', apply);
-      vvUnbind = () => {
-        vv.removeEventListener('resize', apply);
-        vv.removeEventListener('scroll', apply);
-        for (const k of ['top', 'left', 'width', 'height', 'right', 'bottom'] as const)
-          el.style.removeProperty(k);
-      };
-    };
+    // (`position:fixed` prati LAYOUT viewport a kamera VISUAL — korekcija je od
+    // 02.08.2026 u zajedničkom hook-u `useVisualViewportFix`, pozvanom iznad.)
 
     const stopStream = () => {
       decoderSeq++;
@@ -1218,6 +1203,17 @@ export function ScanOverlay({
     };
 
     // ── Tap-to-focus ────────────────────────────────────────────────────────
+    /**
+     * ISPRAVKA 02.08.2026 (S5): prsten se crta SAMO kad je fokus zaista primenjen.
+     *
+     * WebKit ne izlaže ni `focusMode` ni `pointsOfInterest`, pa na iPhone-u nijedan
+     * od ovih `applyConstraints` poziva ne uradi ništa. Zatečeni kod je prsten
+     * postavljao ODMAH, pre svake provere — radnik je dobijao zelenu potvrdu da je
+     * izoštrio i onda čekao fokus koji ne dolazi. 1.0 to radi ispravno
+     * (`barcode.js:1231-1265` vraća `false`; `scanModal.js:2669-2693` crta prsten
+     * samo na `true`). Prsten je uz to prebojen iz `--status-success` (zeleno =
+     * „uspelo") u neutralnu belu — semantika uspeha se ne troši na potez kamere.
+     */
     const tapFocus = async (clientX: number, clientY: number): Promise<void> => {
       const track = getTrack();
       const v = videoRef.current;
@@ -1225,21 +1221,30 @@ export function ScanOverlay({
       const caps = (track.getCapabilities?.() as unknown as CamCapabilities) || {};
       const modes = Array.isArray(caps.focusMode) ? caps.focusMode.map(String) : [];
       const rect = v.getBoundingClientRect();
-      setFocusRing({ x: clientX - rect.left, y: clientY - rect.top, id: Date.now() });
-      window.setTimeout(() => setFocusRing((r) => (r && Date.now() - r.id >= 550 ? null : r)), 600);
+      const at = { x: clientX - rect.left, y: clientY - rect.top };
+
+      const showRing = () => {
+        const id = Date.now();
+        setFocusRing({ ...at, id });
+        window.setTimeout(() => setFocusRing((r) => (r?.id === id ? null : r)), 600);
+      };
+
       if (!(modes.includes('single-shot') && 'pointsOfInterest' in caps)) {
-        if (modes.includes('continuous') && !isAndroidChromeBrowser())
-          await safeApplyFlat(track, { focusMode: 'continuous' }, isAndroidWebPlatform());
+        if (modes.includes('continuous') && !isAndroidChromeBrowser()) {
+          const ok = await safeApplyFlat(track, { focusMode: 'continuous' }, isAndroidWebPlatform());
+          if (ok) showRing();
+        }
         return;
       }
       const m = mapPointerToVideoNormalizedPlane(v, clientX, clientY);
       if (!m) return;
-      await safeApplyFlat(
+      const ok = await safeApplyFlat(
         track,
         { focusMode: 'single-shot', pointsOfInterest: [{ x: m.x, y: m.y }] },
         isAndroidWebPlatform(),
       );
-      if (modes.includes('continuous') && !isAndroidChromeBrowser()) {
+      if (ok) showRing();
+      if (ok && modes.includes('continuous') && !isAndroidChromeBrowser()) {
         await new Promise((r) => setTimeout(r, 320));
         await safeApplyFlat(track, { focusMode: 'continuous' }, isAndroidWebPlatform());
       }
@@ -1265,12 +1270,14 @@ export function ScanOverlay({
     };
 
     // ── Globalni event-i ────────────────────────────────────────────────────
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        cbRef.current.onClose();
-      }
-    };
+    // Esc NIJE ovde — skener je modalni sloj i prijavljuje se `useEscapeLayer`-u
+    // (v. `ui-kit/escape-layer.ts`), da Esc zatvori samo njega a ne i dijalog
+    // ispod. Sopstveni capture-slušalac je zatvarao oba.
+    //
+    // (Spajanje 01.08.2026: `main` je na ovom mestu i dalje imao sopstveni
+    // `keydown` slušalac; on se NE vraća — zamenjen je gornjim slojem, koji je
+    // uveden baš zato što je Esc zatvarao i skener i dijalog ispod njega.)
+    //
     // Pozadina / zaključan ekran / prelazak u drugu aplikaciju mora da PUSTI
     // kameru — inače povratak daje zamrznut preview ili NotReadableError.
     const onPageHide = () => {
@@ -1308,7 +1315,6 @@ export function ScanOverlay({
       if (document.visibilityState === 'hidden') onPageHide();
       else onResume();
     };
-    window.addEventListener('keydown', onKey, true);
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onResume); // bfcache povratak (iOS Safari)
     document.addEventListener('visibilitychange', onVisibility);
@@ -1323,7 +1329,6 @@ export function ScanOverlay({
       setIosBlocker(pitfalls.blocker);
       say(pitfalls.blocker, 'error');
     } else {
-      if (needsVV()) bindVV();
       const saved = readCamChoice();
       // Most ka zajedničkom kešu pickera: ova ljuska ima STARIJI sopstveni keš
       // ručnog izbora (`loc_scan_cam_choice_v1`, od pre postojanja camera-pickera).
@@ -1338,8 +1343,6 @@ export function ScanOverlay({
     return () => {
       stopped = true;
       if (zoomTimer) clearTimeout(zoomTimer);
-      if (vvUnbind) vvUnbind();
-      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('pageshow', onResume);
       document.removeEventListener('visibilitychange', onVisibility);
@@ -1364,15 +1367,21 @@ export function ScanOverlay({
   const showCycle = lens.count >= 2 && !iosBlocker;
 
   return (
+    // FULL-BLEED KADAR (S3, 02.08.2026): 1.0 drži kameru preko CELOG ekrana
+    // (`.loc-scan-video` = `position:absolute; inset:0`, legacy.css:4634) a kontrole
+    // lebde preko nje sa gradijentom (`.loc-scan-topbar`, :4695; `.loc-scan-hint`,
+    // :4720; `.loc-scan-status`, mobile.css:807). Zatečeni `flex flex-col` sa
+    // neprozirnim trakama je na telefonu jeo ~trećinu visine kadra, pa je isti
+    // barkod izgledao manji nego u 1.0 i nišan nije stajao na sredini EKRANA.
     <div
       ref={rootRef}
-      className="fixed inset-0 z-50 flex flex-col bg-black"
+      className="fixed inset-0 z-50 bg-black"
       role="dialog"
       aria-modal="true"
       aria-label={title}
     >
       {/* Topbar */}
-      <div className="flex items-center justify-between gap-2 px-4 py-3 text-white">
+      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-2 bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
         <span className="text-md truncate font-semibold">{title}</span>
         <div className="flex items-center gap-1">
           {showCycle && (
@@ -1410,36 +1419,39 @@ export function ScanOverlay({
         </div>
       </div>
 
-      {/* Video + retikla + focus ring */}
-      <div className="relative flex-1 overflow-hidden bg-black">
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video
-          ref={videoRef}
-          playsInline
-          muted
-          className="h-full w-full object-cover"
-          onPointerDown={(e) => void ctrlRef.current?.tapFocus(e.clientX, e.clientY)}
+      {/* Video + retikla + focus ring — kadar je full-bleed ispod svih kontrola */}
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        className="absolute inset-0 h-full w-full object-cover"
+        onPointerDown={(e) => void ctrlRef.current?.tapFocus(e.clientX, e.clientY)}
+      />
+      {cameraOn && !iosBlocker && <ScanReticle variant="barcode" />}
+      {focusRing && (
+        <div
+          // Neutralna bela, NE `--status-success`: zeleno je u ovom sistemu potvrda
+          // ishoda (v. DESIGN_SYSTEM §7), a ovo je samo znak da je fokus zatražen
+          // i prihvaćen. 1.0 iz istog razloga koristi žutu (`#ffd84a`).
+          className="pointer-events-none absolute z-10 h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/90"
+          style={{ left: focusRing.x, top: focusRing.y, animation: 'ping 0.6s ease-out' }}
+          aria-hidden
         />
-        {cameraOn && !iosBlocker && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            <div className="h-40 w-72 rounded-panel border-2 border-white/70" />
-          </div>
-        )}
-        {focusRing && (
-          <div
-            className="pointer-events-none absolute h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-status-success"
-            style={{ left: focusRing.x, top: focusRing.y, animation: 'ping 0.6s ease-out' }}
-            aria-hidden
-          />
-        )}
-        {iosBlocker && (
-          <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-white/90">
-            <p className="max-w-sm whitespace-pre-line">{iosBlocker}</p>
-          </div>
-        )}
+      )}
+      {iosBlocker && (
+        <div className="absolute inset-0 z-10 grid place-items-center p-6 text-center text-sm text-white/90">
+          <p className="max-w-sm whitespace-pre-line">{iosBlocker}</p>
+        </div>
+      )}
+
+      {/* Donji panel: zoom, hint, status, alati, ručni unos, batch lista — sve
+          LEBDI preko kadra (1.0 obrazac). `max-h`/scroll je brana da panel na
+          malom ekranu ne naraste preko nišana. */}
+      <div className="absolute inset-x-0 bottom-0 z-10 max-h-[62%] space-y-2 overflow-y-auto bg-gradient-to-t from-black/90 via-black/75 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white">
         {/* Zoom slider — samo kad uređaj izlaže track zoom capability */}
         {zoomCap && (
-          <div className="absolute inset-x-0 bottom-2 flex items-center justify-center gap-2 px-6">
+          <div className="flex items-center justify-center gap-2">
             <div className="flex w-full max-w-md items-center gap-2 rounded-control bg-black/60 px-3 py-2 text-white">
               <ZoomIn className="h-4 w-4 shrink-0" />
               <button
@@ -1476,10 +1488,19 @@ export function ScanOverlay({
             </div>
           </div>
         )}
-      </div>
 
-      {/* Donji panel: status, alati, ručni unos, batch lista */}
-      <div className="space-y-3 bg-black/80 px-4 py-4 text-white">
+        {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`, scanModal.js:302-309) —
+            3.0 je do 02.08.2026 nije imao ni u jednoj ljusci. */}
+        {cameraOn && !iosBlocker && (
+          <ScanHint
+            extra={
+              acceptItem
+                ? 'Ne ide? Probaj „Iz slike" ili OCR na gornji desni ugao (predmet/TP)'
+                : 'Ne ide? Probaj „Iz slike" (približi da barkod zauzme kadar)'
+            }
+          />
+        )}
+
         {status && (
           <p className={`text-sm whitespace-pre-line ${statusClass}`} aria-live="polite">
             {status}
@@ -1487,7 +1508,7 @@ export function ScanOverlay({
         )}
 
         <div className="flex flex-wrap items-center gap-3 text-xs text-white/70">
-          <span>Tap na video = fokus</span>
+          <span>Tap na kadar = fokus</span>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}

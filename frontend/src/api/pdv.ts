@@ -33,6 +33,35 @@ export interface CountEnvelope<T> {
   meta: { count: number };
 }
 
+/**
+ * Nalaz provere ispravnosti PDV perioda (BE `vat-sanity.ts`). `problems` blokiraju
+ * obračun i štampu, `warnings` ne. Stiže i uz KIF/KUF listu (`meta.sanity`) —
+ * zaštita je vezana za PODATAK, ne za format izlaza, pa se vidi i na ekranu i u
+ * izvozu, ne samo na PDF-u.
+ */
+export interface VatSanity {
+  ok: boolean;
+  period: string;
+  problems: string[];
+  warnings: string[];
+  computedRefund: string;
+  gkRefund: string;
+  bigbitControl: string | null;
+  controlDiff: string | null;
+  manualCount: number;
+}
+
+/** KIF/KUF lista: uz brojač nosi i ZBIR i nalaz provere ispravnosti. */
+export interface LedgerEnvelope {
+  data: VatLedgerRow[];
+  meta: {
+    count: number;
+    totalBase: string;
+    totalVat: string;
+    sanity: VatSanity;
+  };
+}
+
 // ─────────────────────────────────────────────────────────────── period
 
 /** Poreski period — godina + mesec (mesečni obveznik; KIF/KUF su uvek mesečni). */
@@ -150,7 +179,7 @@ export function useKif(period: VatPeriod) {
   return useQuery({
     queryKey: KEYS.kif(period),
     queryFn: () =>
-      apiFetch<CountEnvelope<VatLedgerRow>>(
+      apiFetch<LedgerEnvelope>(
         `${BASE}/kif?year=${period.year}&month=${period.month}`,
       ),
   });
@@ -164,7 +193,7 @@ export function useKuf(period: VatPeriod) {
   return useQuery({
     queryKey: KEYS.kuf(period),
     queryFn: () =>
-      apiFetch<CountEnvelope<VatLedgerRow>>(
+      apiFetch<LedgerEnvelope>(
         `${BASE}/kuf?year=${period.year}&month=${period.month}`,
       ),
   });
@@ -211,10 +240,17 @@ function useInvalidatePdv() {
 export function useBuildKifKuf() {
   const invalidate = useInvalidatePdv();
   return useMutation({
-    mutationFn: (period: VatPeriod) =>
+    mutationFn: (period: VatPeriod & { force?: boolean }) =>
       apiFetch<Envelope<BuildKifKufResult>>(`${BASE}/kif-kuf/build`, {
         method: 'POST',
-        body: JSON.stringify({ year: period.year, month: period.month }),
+        // `force` upisuje i period koji je pao na proveri ispravnosti — takav
+        // period je ISKLJUČIVO za proveru i svaki njegov izlaz nosi oznaku
+        // „NEISPRAVAN OBRAČUN — NIJE ZA PREDAJU".
+        body: JSON.stringify({
+          year: period.year,
+          month: period.month,
+          ...(period.force ? { force: true } : {}),
+        }),
       }),
     onSuccess: invalidate,
   });
@@ -225,6 +261,8 @@ export interface ComputePopdvInput {
   year: number;
   month?: number;
   quarter?: number;
+  /** Sačuvaj i obračun koji je pao na proveri ispravnosti (NIJE za predaju). */
+  force?: boolean;
 }
 
 /**
@@ -327,16 +365,47 @@ export function useDeleteManualVatEntry() {
 /** Preuzmi PP-PDV obrazac (GET /pdv/print/pp-pdv?period=YYYY-MM|YYYY-Qn). read=PDV_READ. */
 export function usePpPdvPdf() {
   return useMutation({
-    mutationFn: (period: string) =>
-      apiBlob(`${BASE}/print/pp-pdv?period=${encodeURIComponent(period)}`),
+    mutationFn: (args: { period: string; force?: boolean }) =>
+      apiBlob(
+        `${BASE}/print/pp-pdv?period=${encodeURIComponent(args.period)}` +
+          (args.force ? '&force=true' : ''),
+      ),
+  });
+}
+
+/**
+ * Preuzmi KNJIGU EVIDENCIJE PROMETA (KEP) — GET /pdv/print/kepu?year=&month=&warehouseId=.
+ * `month` je opcion: izostavljen štampa celu godinu. Strana papira = strana
+ * knjige (45 redova) sa DONOS / ZA PRENOS prenosom zbirova. read=PDV_READ.
+ */
+export function useKepuPdf() {
+  return useMutation({
+    mutationFn: (args: {
+      year: number;
+      month?: number;
+      warehouseId?: number;
+    }) =>
+      apiBlob(
+        `${BASE}/print/kepu?year=${args.year}` +
+          (args.month != null ? `&month=${args.month}` : '') +
+          (args.warehouseId != null ? `&warehouseId=${args.warehouseId}` : ''),
+      ),
   });
 }
 
 /** Preuzmi KIF/KUF specifikaciju (GET /pdv/print/kif|kuf?year=&month=). read=PDV_READ. */
 export function useLedgerSpecPdf() {
   return useMutation({
-    mutationFn: (args: { book: 'kif' | 'kuf'; year: number; month: number }) =>
-      apiBlob(`${BASE}/print/${args.book}?year=${args.year}&month=${args.month}`),
+    mutationFn: (args: {
+      book: 'kif' | 'kuf';
+      year: number;
+      month: number;
+      force?: boolean;
+    }) =>
+      apiBlob(
+        `${BASE}/print/${args.book}?year=${args.year}&month=${args.month}` +
+          (args.force ? '&force=true' : ''),
+      ),
   });
 }
 
@@ -371,8 +440,4 @@ export function useSendPpPdvMail() {
 }
 
 /** Otvori PDF Blob u novom tabu (browser preview + download). */
-export function openPdf(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener');
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-}
+export { openPdf } from '@/lib/open-pdf';

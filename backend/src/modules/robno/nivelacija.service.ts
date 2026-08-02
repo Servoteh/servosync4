@@ -34,8 +34,16 @@ import type {
  *   • `stanjeKol > 0` i `|ulaznaVP − staraVP| < 0.01` → ispod praga → cena se ne menja, NEMA `NIV`.
  *
  * POZIVA SE UNUTAR `$transaction` iz kalkulacije ulaza (`CalculationService`) — svaki poziv prima `tx`.
- * GK knjiženje razlike (`valueAdjustment`) radi Faza-2 `PostingEngineService` nad kreiranim `NIV`
- * dokumentom (van ovog servisa — ovde se samo kreira dokument + par). Sve u `Prisma.Decimal`.
+ * Sve u `Prisma.Decimal`.
+ *
+ * ⚠️ NIVELACIJA SE NE KNJIŽI U GLAVNU KNJIGU (paritet sa BigBit-om, potvrđeno na produkcijskoj
+ * `BB_T_25.MDB`: vrsta dokumenta `NIV` ima `Sema za kontiranje = 0`, nijedna od 30 šema nema
+ * `Vrsta naloga = 'NIV'`, a zalihe se vode po prosečnim nabavnim cenama — `Magacini.ProsecneCene = 1`).
+ * `valueAdjustment` je preraspodela vrednosti unutar konta zaliha (poništava ga suprotno prilagođenje
+ * na novoprimljenoj količini), pa bi njegovo knjiženje razišlo GK sa stvarnom vrednošću magacina.
+ * `PostingEngineService.postNivLeveling` zato NIV dokument samo zatvara (`POSTED`, bez naloga);
+ * u finansijsko razlika ulazi posredno — kroz nabavnu vrednost prodate robe pri sledećoj prodaji.
+ * Detalji: `backend/docs/migration/BIGBIT_KONTA_I_SEME_KNJIZENJA.md` §6.9.
  *
  * Konvencije: BACKEND_RULES §2 (Decimal, nikad Float), §7 (poslovne greške tipizirane — ovde nema
  * poslovnih grešaka jer je poziv već validiran u kalkulaciji; guard-ovi bacaju samo na programsku grešku).

@@ -178,6 +178,7 @@ export function MovementsTab() {
           locations={locList}
           value={locationId}
           onChange={(v) => { setLocationId(v); setPage(1); }}
+          shelvesFirst
           placeholder="Filter po lokaciji (polazna ILI odredišna)…"
         />
       </div>

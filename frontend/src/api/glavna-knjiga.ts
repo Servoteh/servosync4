@@ -372,12 +372,74 @@ export function useJournalPdf() {
   });
 }
 
-/** Otvori PDF Blob u novom tabu (browser preview + download). */
-export function openPdf(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener');
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+/**
+ * Štampa DNEVNIKA KNJIŽENJA — GET /gl/journal-book/pdf. Knjiga svih proknjiženih
+ * stavki u periodu (A4 položeno, zaglavlje kolona se ponavlja). Filteri se
+ * poklapaju sa ekranom dnevnika + period po datumu knjiženja. Permisija GL_READ.
+ */
+export function useJournalBookPdf() {
+  return useMutation({
+    mutationFn: (input: {
+      orderType?: string;
+      year?: number | '';
+      from?: string;
+      to?: string;
+    }) => {
+      const query = buildQuery({
+        orderType: input.orderType || undefined,
+        year: input.year === '' ? undefined : input.year,
+        from: input.from || undefined,
+        to: input.to || undefined,
+      });
+      return apiBlob(`${BASE}/journal-book/pdf${query}`);
+    },
+  });
 }
+
+/**
+ * Štampa KARTICE KONTA — GET /gl/account-card/pdf; isti filteri kao
+ * `useAccountCard` (konto obavezan). Permisija GL_READ.
+ */
+export function useAccountCardPdf() {
+  return useMutation({
+    mutationFn: (input: {
+      accountCode: string;
+      analyticalCode?: number | '';
+      costCenter?: string;
+      from?: string;
+      to?: string;
+    }) => {
+      const query = buildQuery({
+        accountCode: input.accountCode.trim(),
+        analyticalCode: input.analyticalCode === '' ? undefined : input.analyticalCode,
+        costCenter: input.costCenter?.trim() || undefined,
+        from: input.from || undefined,
+        to: input.to || undefined,
+      });
+      return apiBlob(`${BASE}/account-card/pdf${query}`);
+    },
+  });
+}
+
+/**
+ * Štampa BRUTO BILANSA (zaključni list) za godinu — GET /gl/trial-balance/pdf.
+ * PS / promet / saldo po kontu, sa međuzbirovima po sintetici i klasi.
+ * Permisija GL_READ.
+ */
+export function useTrialBalancePdf() {
+  return useMutation({
+    mutationFn: (input: { year: number; accountClass?: string }) => {
+      const query = buildQuery({
+        year: input.year,
+        class: input.accountClass?.trim() || undefined,
+      });
+      return apiBlob(`${BASE}/trial-balance/pdf${query}`);
+    },
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + download). */
+export { openPdf } from '@/lib/open-pdf';
 
 // ─────────────────────────────────── početno stanje / carry-over godine (B2)
 

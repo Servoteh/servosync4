@@ -1,14 +1,17 @@
 'use client';
 
+import { toast } from '@/lib/toast';
+
 import { useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Printer } from 'lucide-react';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Input } from '@/components/ui-kit/form-field';
+import { Button } from '@/components/ui-kit/button';
 import { ExportCsvButton } from '@/components/export-csv-button';
 import { type CsvColumn } from '@/lib/table-csv';
 import { formatDecimal } from '@/lib/format';
-import { useLager, type LagerRow } from '@/api/robno';
+import { useLager, useLagerPdf, openPdf, type LagerRow } from '@/api/robno';
 
 /** CSV kolone lagera (money/količine → zarez za Excel sr). */
 const lagerCsvDec = (s: string | null | undefined) => (s == null ? '' : s.replace('.', ','));
@@ -127,6 +130,7 @@ export function LagerPanel() {
   const [onlyInStock, setOnlyInStock] = useState(true);
   const query = useLager({ q: q.trim() || undefined, onlyInStock });
   const rows = query.data?.data ?? [];
+  const pdf = useLagerPdf();
 
   return (
     <section className="space-y-3">
@@ -153,6 +157,24 @@ export function LagerPanel() {
             rows={rows}
             filename={`lager-${new Date().toISOString().slice(0, 10)}`}
           />
+          {/* Štampa povlači SVE redove sa servera (ne samo tekuću stranu ekrana). */}
+          <Button
+            variant="secondary"
+            loading={pdf.isPending}
+            title="Lager lista u PDF-u (A4 položeno), sa ispisanim filterima i zbirom"
+            onClick={() =>
+              pdf.mutate(
+                { q: q.trim() || undefined, onlyInStock },
+                {
+            onSuccess: (blob) => openPdf(blob),
+            onError: (e) => toast(`Štampa nije uspela: ${(e as Error).message}`),
+          },
+              )
+            }
+          >
+            <Printer className="h-4 w-4" aria-hidden />
+            Štampaj
+          </Button>
         </div>
       </div>
 

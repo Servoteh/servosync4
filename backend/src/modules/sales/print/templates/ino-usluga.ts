@@ -259,7 +259,7 @@ export function inoUslugaPageHeader(ctx: PrintCtx): Content {
   // Razmaci oko zareza (` ,  `) su sa papira.
   const deliveryPlace = issuer.invoiceIssuingPlace?.trim() ?? "";
   const deliveryValue = join(
-    [formatDeliveryDate(invoice.deliveryDate), deliveryPlace],
+    [formatDeliveryDate(invoice.supplyDate), deliveryPlace],
     " ,  ",
   );
 

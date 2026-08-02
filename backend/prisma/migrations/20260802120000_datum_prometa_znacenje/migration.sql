@@ -11,17 +11,19 @@
 -- (v. komentar o izboru osnova roka u sef-incoming.service.ts), a na izlaznim bi
 -- otvorilo mogućnost da neko „popuni datum prometa" pogrešnim podatkom.
 --
--- PRESUDA: ime prati ZNAČENJE koje je već upisano u šemu i u zakon.
---   • `delivery_date` OSTAJE datum prometa (invoices) — tako ga zove i UBL
---     (ActualDeliveryDate), tako ga zovu doneti obrasci („Datum prometa dobara"),
---     i tako je opisan u šemi od kad je uveden.
+-- PRESUDA (dopunjena 02.08.2026. pri spajanju sa `main`):
+--   • datum prometa se zove `invoices.supply_date` — kolona koju je uvela migracija
+--     20260727140000 i koja je već vezana end-to-end (SefService → UBL buildDelivery).
+--     Kolona `invoices.delivery_date`, koju je grana za štampu dodala paralelno za
+--     ISTI podatak, uklanja se: dve kolone za jedan obavezan element računa znače da
+--     polovina koda čita praznu.
 --   • ulazni SEF dobija SVOJE ime: sef_incoming_invoices.sef_received_at.
--- Alternativa (da ulazni zadrži ime, a promet dobije novo) je odbačena: ime
--- `delivery_date` ne opisuje „prijem na SEF" ni na jednom jeziku.
+-- Alternativa (da ulazni zadrži ime `delivery_date`) je odbačena: to ime ne opisuje
+-- „prijem na SEF" ni na jednom jeziku.
 --
--- ADITIVNO/BEZBEDNO: kolona se samo preimenuje, podaci ostaju (danas su svi NULL —
--- servis je upisivao NULL uz komentar da pravo SEF polje prijema još nemamo).
--- Ništa se ne briše i nijedan tip se ne menja.
+-- BEZBEDNOST: preimenovanje čuva podatke; brisanje `invoices.delivery_date` ide samo
+-- ako je kolona PRAZNA (DO-blok proverava). Produkcijska tabela `invoices` je prazna,
+-- a kolona je i tamo gde je stigla bila bez ijedne vrednosti.
 
 -- ── 1) sef_incoming_invoices: delivery_date → sef_received_at ────────────────
 -- PostgreSQL nema `RENAME COLUMN IF EXISTS`, pa ide DO-blok (migracija mora da može
@@ -45,10 +47,28 @@ $$;
 ALTER TABLE "sef_incoming_invoices"
   ADD COLUMN IF NOT EXISTS "sef_received_at" TIMESTAMPTZ(6);
 
--- ── 2) Zakucaj značenje u SAMU bazu (COMMENT ON COLUMN) ──────────────────────
+-- ── 2) invoices: ukloni dvojnika datuma prometa (`delivery_date`) ────────────
+-- Kolonu je 01.08.2026. dodala migracija 20260801100000 za podatak koji već ima svoju
+-- kolonu `supply_date`. Briše se SAMO ako je prazna — ako se ikad nađe baza u kojoj
+-- je neko u nju upisao datum, migracija je NE dira, nego pusti da se to reši ručno
+-- (bolje zaostala kolona nego tiho izgubljen poreski podatak).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'invoices' AND column_name = 'delivery_date'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM "invoices" WHERE "delivery_date" IS NOT NULL
+  ) THEN
+    ALTER TABLE "invoices" DROP COLUMN "delivery_date";
+  END IF;
+END
+$$;
+
+-- ── 3) Zakucaj značenje u SAMU bazu (COMMENT ON COLUMN) ──────────────────────
 -- Komentar u kodu vidi samo ko čita kod; ovaj vidi i onaj ko gleda bazu alatom.
 -- Cilj: sledeći put kad neko traži „gde je datum prometa", nađe jedno mesto.
-COMMENT ON COLUMN "invoices"."delivery_date" IS
+COMMENT ON COLUMN "invoices"."supply_date" IS
   'Datum prometa dobara i usluga (obavezan element računa, Zakon o PDV). Štampa se na obrascima, ide u UBL cac:Delivery/cbc:ActualDeliveryDate. NIJE datum otpreme, prijema ni dospeća.';
 
 COMMENT ON COLUMN "sef_incoming_invoices"."sef_received_at" IS

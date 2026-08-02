@@ -7,6 +7,7 @@ import { PopdvService } from "./popdv.service";
 import { KepuService } from "./kepu.service";
 import { PdvPrintController } from "./pdv-print.controller";
 import { PdvPrintService } from "./pdv-print.service";
+import { KepuPdfService } from "./print/kepu-pdf.service";
 import { TaxRatesController } from "./tax-rates.controller";
 import { TaxRatesService } from "./tax-rates.service";
 import { AdvanceVatService } from "./advance-vat.service";
@@ -29,6 +30,7 @@ import { AdvanceVatService } from "./advance-vat.service";
     PopdvService,
     KepuService,
     PdvPrintService,
+    KepuPdfService, // štampa knjige evidencije prometa (KEP) — 45 redova/strana, DONOS/ZA PRENOS
     TaxRatesService,
     AdvanceVatService, // Batch C: ulazni avansi (pretporez po plaćanju)
   ],

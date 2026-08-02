@@ -60,7 +60,9 @@ export function ComboBox<T>({
           setOpen(true);
         }}
         title={selected}
-        className="flex w-full items-center justify-between rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
+        // Telefon (< sm): 44px meta + 16px tekst (iOS zumira stranu ispod 16px
+        // i ne vraća zum); od `sm` naviše gust desktop ritam ostaje isti.
+        className="flex min-h-11 w-full items-center justify-between rounded-control border border-line bg-surface px-2.5 py-1.5 text-md text-ink sm:min-h-0 sm:text-sm"
       >
         <span className="truncate">{selected}</span>
         <ChevronDown className="h-4 w-4 shrink-0 text-ink-disabled" aria-hidden />
@@ -79,7 +81,7 @@ export function ComboBox<T>({
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         placeholder={placeholder}
-        className="w-full rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-ink-disabled focus:outline-none focus:ring-2 focus:ring-accent/40"
+        className="min-h-11 w-full rounded-control border border-line bg-surface px-2.5 py-1.5 text-md text-ink placeholder:text-ink-disabled focus:outline-none focus:ring-2 focus:ring-accent/40 sm:min-h-0 sm:text-sm"
       />
       {open && (
         <div className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-control border border-line bg-surface shadow-lg">
@@ -101,7 +103,8 @@ export function ComboBox<T>({
                   setOpen(false);
                   setQ('');
                 }}
-                className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-surface-2"
+                // Red rezultata je meta za prst — na telefonu ≥ 44px (DS §11).
+                className="flex min-h-11 w-full flex-col items-start justify-center px-3 py-1.5 text-left hover:bg-surface-2 sm:min-h-0"
               >
                 <span className="text-sm text-ink">{getLabel(it)}</span>
                 {getSublabel && (

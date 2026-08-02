@@ -12,6 +12,51 @@ import { SERVOTEH_LOGO_DATA_URL } from "../documents/servoteh-logo";
 
 export type RnPrintVariant = "std" | "bez-barkoda";
 
+/** mm → PDF tačke (1 pt = 25.4/72 mm). */
+export function mmToPt(mm: number): number {
+  return (mm * 72) / 25.4;
+}
+
+/**
+ * Odštampane dimenzije barkoda na RN-u — KONSTANTNE, nezavisne od dužine sadržaja
+ * (odluka vlasnika 01.08.2026, mera sa papira + legacy `rRN.txt` iz Access dump-a).
+ *
+ * Ranije su barkodi bili postavljani sa `fit: [š, v]`, a `fit` čuva odnos stranica.
+ * Pošto je širina uvek bila ograničavajući faktor, visina je ISPADALA iz broja modula
+ * — duži identNumber = niži barkod. Izmereno na starom kodu (širina fiksnih 67.0 mm):
+ * `RNZ:100:9400/12:0:A` → 8.65 mm, `RNZ:10354:9811-3/77:0:A` → 7.33 mm,
+ * `RNZ:999999:9999-99/9999:0:A-1` → 6.16 mm. Kratke crte su razlog zbog kojeg
+ * operateri promašuju sken. Sada se zadaju i `width` i `height`, a SVG se generiše sa
+ * `preserveAspectRatio="none"` (vidi `BarcodeService`), pa je veličina uvek tačno ova.
+ *
+ * Legacy QBigTehn mere (twips iz `rRN.txt`, potvrđene HIMETRIC zapisom u OLE objektu
+ * ActiveBarcode kontrole, `SizeMode = 1` = stretch na okvir):
+ *   - zaglavlje `Barcode0`: 3552 × 734 tw = 62.65 × 12.95 mm
+ *     (varijante `rRN_STD` / `rRN_BezBarKoda`: 3120 × 734 tw = 55.03 × 12.95 mm)
+ *   - red operacije `BarKod`: 2340 × 389 tw = 41.28 × 6.86 mm
+ *
+ * Zašto 62.65 a ne 55/57: merodavan je `rRN`, jedini legacy izveštaj koji ima I
+ * barkodove operacija (kao naš); `rRN_STD` (55.03 mm) ih uopšte nema. Širina je
+ * bitna jer određuje X-dimenziju (širinu najuže crte) = širina / broj modula, a
+ * broj modula raste sa dužinom sadržaja. Nad svih 40.942 naloga u živoj bazi
+ * (01.08.2026): na 57 mm 228 naloga (0.56%) padne ispod praga čitljivosti od
+ * 0.19 mm, na 62.65 mm samo 30 (0.07%); najčešća dužina (21 znak, 34% naloga)
+ * ide sa 0.214 na 0.236 mm.
+ */
+/** Nalog-barkod u zaglavlju: 62.65 × 13 mm (legacy `Barcode0`; visina 12.95 → 13). */
+export const RN_ORDER_BARCODE_MM = { width: 62.65, height: 13 } as const;
+/** Barkod u redu operacije: 41.3 × 6.9 mm (legacy 41.28 × 6.86, zaokruženo na 0.1 mm). */
+export const RN_OPERATION_BARCODE_MM = { width: 41.3, height: 6.9 } as const;
+
+const RN_ORDER_BARCODE_PT = {
+  width: mmToPt(RN_ORDER_BARCODE_MM.width),
+  height: mmToPt(RN_ORDER_BARCODE_MM.height),
+} as const;
+const RN_OPERATION_BARCODE_PT = {
+  width: mmToPt(RN_OPERATION_BARCODE_MM.width),
+  height: mmToPt(RN_OPERATION_BARCODE_MM.height),
+} as const;
+
 /**
  * Štampa radnog naloga (RN dokument) u PDF — legacy `rRN` (MODULE_SPEC_stampa §4).
  * Zaglavlje iz `work_orders` (+ komitent/tehnolog) sa `RNZ` barkodom; tabela operacija
@@ -86,7 +131,9 @@ export class WorkOrderPrintService {
             variant: wo.variant,
             revision: wo.revision,
           }),
-          { height: 11 },
+          // `height` je samo unutrašnja geometrija (viewBox) — odštampanu visinu
+          // određuje `RN_ORDER_BARCODE_PT` zajedno sa `stretch`.
+          { height: 11, stretch: true },
         );
       } catch {
         orderBarcodeSvg = null;
@@ -190,7 +237,14 @@ export class WorkOrderPrintService {
           ],
         },
         orderBarcodeSvg
-          ? { svg: orderBarcodeSvg, fit: [190, 46], alignment: "right" }
+          ? {
+              svg: orderBarcodeSvg,
+              // NE `fit` — `fit` čuva odnos stranica pa visina varira sa dužinom
+              // sadržaja. Eksplicitni width+height daju konstantnih 62.65 × 13 mm.
+              width: RN_ORDER_BARCODE_PT.width,
+              height: RN_ORDER_BARCODE_PT.height,
+              alignment: "right",
+            }
           : { text: "", width: "auto" },
       ],
       columnGap: 8,
@@ -277,14 +331,22 @@ export class WorkOrderPrintService {
                 workCenterCode: o.workCenterCode,
                 revision: wo.revision,
               }),
-              { height: 9 },
+              { height: 9, stretch: true },
             );
           } catch {
             opSvg = null;
           }
         }
         cells.push(
-          opSvg ? { svg: opSvg, fit: [136, 30] } : { text: "—", style: "td" },
+          opSvg
+            ? {
+                svg: opSvg,
+                // Isto kao u zaglavlju: konstantnih 41.3 × 6.9 mm (legacy mera),
+                // bez `fit`, da visina ne varira sa dužinom šifre radnog centra.
+                width: RN_OPERATION_BARCODE_PT.width,
+                height: RN_OPERATION_BARCODE_PT.height,
+              }
+            : { text: "—", style: "td" },
         );
       }
       // Prazan prostor — kontrolor overava (potpisuje) svaku operaciju.

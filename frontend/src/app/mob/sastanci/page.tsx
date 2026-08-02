@@ -43,7 +43,7 @@ export default function MobileSastanciPage() {
   }, []);
 
   if (isLoading || !user) {
-    return <main className="grid min-h-screen place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
+    return <main className="grid min-h-dvh place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
   return openId ? (
@@ -76,7 +76,7 @@ function MobileList({ onOpen }: { onOpen: (id: string) => void }) {
   }, [rows, today]);
 
   return (
-    <div className="min-h-screen bg-app">
+    <div className="min-h-dvh bg-app">
       <header className="sticky top-0 z-10 border-b border-line bg-surface px-4 py-3">
         <h1 className="text-base font-semibold text-ink">Sastanci</h1>
       </header>
@@ -142,7 +142,7 @@ function MobileDetail({
   const [pripremaDraft, setPripremaDraft] = useState<string | null>(null);
 
   return (
-    <div className="min-h-screen bg-app">
+    <div className="min-h-dvh bg-app">
       <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-line bg-surface px-3 py-3">
         <button onClick={onBack} className="rounded-control p-1.5 text-ink-secondary hover:bg-surface-2" aria-label="Nazad">
           <ArrowLeft className="h-4 w-4" aria-hidden />

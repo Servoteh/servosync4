@@ -134,9 +134,38 @@ export const PERMISSIONS = {
   PDV_COMPUTE: "pdv.compute",
   // Šifarnici / pregledi (komitenti, predmeti)
   DIRECTORY_READ: "directory.read",
-  // Predmeti write-path + RFQ kupca — 4.0 Traka B (2.0 postaje master za predmete).
-  // write = poslovni administrator kreira/menja predmet; rfq read/write = prodaja.
-  PROJECTS_WRITE: "projects.write",
+  /**
+   * UPIS matičnih podataka (šifarnici artikala i komitenata — `modules/masters`).
+   *
+   * ZAŠTO POSTOJI: čitanje i pisanje šifarnika ne smeju deliti ključ. Do 28.07.2026
+   * su POST/PATCH `/v1/komitenti` nasleđivali KLASNI `directory.read` — READ ključ
+   * na PISAČKOJ ruti, a `directory.read` je u `VIEWER_READ_BASELINE`, tj. ima ga
+   * skoro svaka rola. POST/PATCH `/v1/artikli` su visili na `sync.run`, što je
+   * semantički pogrešno („pokreni sinhronizaciju" nije „unesi artikal") i uz to je
+   * ADMIN-only ključ, pa bi na dan otvaranja unosa komercijala dobila 403. Dva
+   * različita gejta za istu vrstu radnje.
+   *
+   * ZAŠTO JEDAN KLJUČ, A NE `artikli.write` + `komitenti.write`: čitanje oba
+   * šifarnika već deli JEDAN ključ (`directory.read` pokriva i komitente i predmete,
+   * a `modules/masters` ga preuzima i za artikle). Razdvojen upis uz objedinjeno
+   * čitanje bio bi asimetričan. Presedan u katalogu je `strukture.write` — jedan
+   * ključ za ceo skup šifarnika (vrste poslova, RJ, operacije, radnici). Krug ljudi
+   * koji održava matične podatke je isti za obe tabele, pa podela ne bi opisala
+   * nijednu stvarnu razliku u ovlašćenju. Praktično: prateći šifarnici koji tek
+   * dolaze (rasteri, barkodovi, ino-artikli, rabati) kače se na OVAJ ključ umesto
+   * da svaki traži svoj. Ako se ikad ukaže prava razlika, `masters.write` ostaje
+   * kišobran, a uži ključ se dodaje pored njega — bez diranja read sloja.
+   *
+   * ⚠️ Ključ NE otvara unos: obe rute i dalje padaju na 409 branu
+   * (`CUSTOMERS_WRITE_OPEN=false`, `assertItemWritesAllowed()`). On samo obezbeđuje
+   * da se, kad se brana preklopi, ne otkrije i rupa u ovlašćenjima u istom trenutku.
+   */
+  MASTERS_WRITE: "masters.write",
+  // RFQ kupca (zahtev za ponudu) — 4.0-native, prodaja.
+  // NAPOMENA: `projects.write` je UKLONJEN 26.07.2026 — predmete i komitente vodi
+  // BigBit, ServoSync ih samo čita (odluka vlasnika, vidi modules/directory/bigbit-owned.ts).
+  // Ako se u DB-u zatekne `user_permission_overrides` red sa 'projects.write', on je mrtav:
+  // nijedna ruta ga više ne traži.
   RFQ_READ: "rfq.read",
   RFQ_WRITE: "rfq.write",
   // Sync administracija

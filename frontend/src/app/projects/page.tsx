@@ -173,7 +173,20 @@ export default function ProjectsPage() {
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
-        <p className="text-sm text-ink-disabled">Podaci iz BigBit-a — samo pregled</p>
+        {/*
+          Odluka vlasnika 26.07.2026: predmeti i brojevi predmeta otvaraju se ISKLJUČIVO u
+          BigBit-u (pregažen raniji „dvostruki unos": prvo 3.0 pa isti broj u BigBit).
+          Zato ovde nema dugmeta „Novi predmet" ni forme — samo objašnjenje toka.
+        */}
+        <div className="rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
+          <p className="font-semibold text-ink">Predmete vodi BigBit — ovde je samo pregled</p>
+          <p className="mt-1">
+            Nov predmet otvorite u BigBit-u; broj predmeta dodeljuje BigBit. Zatim javite
+            administratoru da pokrene uvoz (Sinhronizacije → Pokreni sync) — tek tada se predmet
+            vidi ovde i može da se veže za radne naloge i dokumente. Izmene podataka o predmetu
+            radite u BigBit-u.
+          </p>
+        </div>
 
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1 text-xs text-ink-secondary">

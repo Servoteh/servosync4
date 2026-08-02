@@ -63,8 +63,12 @@ export function proposeHoursFromPresence(
   return h > 0 ? h : null;
 }
 
-/** Razlog preskakanja dana (za sažetak/brojače). */
-export type ProposalSkipReason = "out_of_band" | "holiday_partial";
+/**
+ * Razlog preskakanja dana (za sažetak/brojače). Od 01.08.2026 postoji SAMO
+ * `out_of_band` — razlog `holiday_partial` je ukinut zajedno sa prazničnom kapijom
+ * (v. `proposeHoursForDay`).
+ */
+export type ProposalSkipReason = "out_of_band";
 
 /** Ishod odluke za JEDAN dan: predlog sati ili razlog preskakanja. */
 export interface DayProposal {
@@ -75,37 +79,50 @@ export interface DayProposal {
 }
 
 /**
- * Odluka za jedan dan = `proposeHoursFromPresence` (JEDINI izvor istine za SATE)
- * + DODATNA KAPIJA za NERADNE praznike. Koriste je OBA puta (noćni tik i ručno
- * dugme „Popuni iz kapije") → predlažu identično.
+ * Odluka za JEDAN dan — JEDINI izvor istine, koriste je OBA puta (noćni tik i ručno
+ * dugme „Popuni iz kapije") → predlažu IDENTIČNO. Danas je to čist omotač oko
+ * `proposeHoursFromPresence`: NIJEDAN kalendarski dan (radni, vikend, praznik) nema
+ * poseban tretman — predlog je uvek prisustvo sečeno NANIŽE na pola sata, uz ≥7.6h → 8.
  *
- * ── ZAŠTO kapija za praznik (ispravka 044/26) ───────────────────────────────
- * `payroll-calc` na praznik koji pada u pon–pet radi ovako: ako dan IMA sate →
- * `praznikRadSati += h`; ako NEMA sate (i nema odsustva) → automatski priznaje
- * `praznikPlaceniSati += 8` (garantovani plaćeni neradni praznik). Znači: upis
- * DELIMIČNIH sati na neradni praznik TIHO UNIŠTAVA garantovanih 8h — npr. 2.5h
- * kucanja na Dan primirja bi radniku dalo 2.5h umesto 8h, a red se više nikad ne
- * revidira (`ON CONFLICT DO NOTHING` + dan postaje `grid_covered`).
+ * ── UKINUTA KAPIJA ZA NERADNI PRAZNIK (01.08.2026) — PROČITAJ PRE „POPRAVKE" ────────
+ * Do 01.08.2026 je ovde stajala dodatna kapija: na NERADNOM prazniku
+ * (`kadr_holidays.is_workday = false`) predlagao se SAMO pun dan (8h), a delimično
+ * kucanje se preskakalo sa razlogom `holiday_partial`. Lanac — zašto je postojala i
+ * zašto je više NEMA:
  *
- * Zato: na NERADNOM prazniku (`kadr_holidays.is_workday = false`) auto predlaže
- * SAMO PUN DAN (8h) — pun praznični rad legitimno zamenjuje plaćeni praznik i
- * knjiži se kao `praznikRadSati` 8h (bez gubitka). DELIMIČNO kucanje se NE upisuje
- * nego ostaje kadrovskoj službi da ga unese svesno (vidi se u „Moje prisustvo").
+ *  1) STARO PONAŠANJE OBRAČUNA: `payroll-calc` je na praznik radnim danom radio
+ *     `if (h > 0) { praznikRadSati += h; continue; }` — upis sati u kolonu „sati" je
+ *     TIHO PREGAZIO garantovanih 8h plaćenog praznika. Delimično kucanje od 2.5h bi
+ *     zamenilo 8h sa 2.5h, a red se posle nikad ne revidira (`ON CONFLICT DO NOTHING`
+ *     + dan postaje `grid_covered`). Kapija je štitila baš od te tihe štete.
+ *  2) O-1 (vlasnik 30.07.2026; u kodu 01.08.2026 — `263a4db6`, dokumentovano u
+ *     `main b54bf26d`): rad na neradni praznik se plaća DUPLO, pa se sati sada DODAJU
+ *     na 8h (`praznikRadSati += h` I `praznikPlaceniSati += 8`), ne zamenjuju ih.
+ *     Zamka iz tačke 1 VIŠE NE POSTOJI — razlog za kapiju je otpao.
+ *  3) O-4 (vlasnik 30.07.2026): kucanje na kapiji vikendom/praznikom je DOKAZ da je
+ *     čovek dolazio i evidentira se SVIMA. Presuda vlasnika 01.08.2026 (zatvara Č-5):
+ *     „nemoj da preskače, jednostavno nam treba evidencija iz automatike ko je dodatno
+ *     radio za praznik. Nikola Mrkajić u svakom slučaju radi kontrolu sati i potvrdu
+ *     za svaki mesec."
  *
- * VIKENDI SU NETAKNUTI (D1, 044/26): vikend sa čistim kucanjem se i dalje predlaže
- * za bilo koje prisustvo u opsegu — payroll vikend h>0 vodi u `redovanRadSati`, pa
- * se nikakvo pravo ne gubi. Redovi sa `is_workday = true` (npr. naložena radna
- * subota) NISU praznik i uopšte ne ulaze u `holSet`.
+ * ⚠️ POSLEDICA KOJU TREBA RAZUMETI, A NE „POPRAVITI": automatika sada može SAMA da
+ * generiše DUPLU ISPLATU za praznik (8h plaćenog praznika + npr. 2.5h prazničnog rada)
+ * bez ijednog ljudskog klika u trenutku upisa. TO JE NAMERNO I ODLUČENO. Brana više
+ * nije tehnička nego LJUDSKA — Nikola Mrkajić mesečno kontroliše i potvrđuje grid, a
+ * upis je i dalje samo PREDLOG (marker `auto:kapija`, `ON CONFLICT DO NOTHING` → nikad
+ * ne gazi ručni unos ni dan sa odsustvom). Ako se kapija ikad bude vraćala, za to treba
+ * NOVA vlasnička odluka upisana u `docs/ODLUKE_O_ZARADAMA.md` (O-1, O-4, Č-5) — ne
+ * „popravka" u kodu.
+ *
+ * VIKENDI SU I DALJE NETAKNUTI (D1, 044/26); redovi `kadr_holidays` sa
+ * `is_workday = true` (naložena radna subota) nikad nisu ni bili praznik, a sada su
+ * bespredmetni jer autofill uopšte više ne gleda kalendar praznika.
  */
-export function proposeHoursForDay(
-  presence: number | null,
-  isNonWorkingHoliday: boolean,
-): DayProposal {
+export function proposeHoursForDay(presence: number | null): DayProposal {
   const hours = proposeHoursFromPresence(presence);
-  if (hours == null) return { hours: null, reason: "out_of_band" };
-  if (isNonWorkingHoliday && hours !== FULL_DAY_HOURS)
-    return { hours: null, reason: "holiday_partial" };
-  return { hours, reason: null };
+  return hours == null
+    ? { hours: null, reason: "out_of_band" }
+    : { hours, reason: null };
 }
 
 /**
@@ -165,11 +182,13 @@ export interface GridAutofillSummary {
   /** Stvarno UPISANIH redova (ON CONFLICT DO NOTHING → već popunjeni dani se ne diraju). */
   inserted: number;
   /**
-   * Dani preskočeni zbog pravila NERADNOG PRAZNIKA: praznik (`kadr_holidays.is_workday
-   * = false`) sa DELIMIČNIM kucanjem (predlog < 8h) se NE upisuje — inače bi pojeo
-   * garantovanih 8h plaćenog praznika (v. `proposeHoursForDay`). Kadrovska ih unosi
-   * ručno. VIKENDI SE NE BROJE OVDE — oni se i dalje normalno predlažu (D1, 044/26);
-   * ime polja je zadržano radi API-kompatibilnosti (`autofill-run` odgovor).
+   * ⚠️ ISTORIJSKO polje — od 01.08.2026 je TRAJNO 0 i nikad više ne raste.
+   * Do tada je brojalo dane preskočene zbog kapije za NERADNI PRAZNIK (delimično
+   * kucanje, predlog < 8h). Kapija je UKINUTA (v. `proposeHoursForDay`: O-1 je uklonio
+   * razlog za nju, O-4 traži evidenciju) — takvi dani se sada normalno predlažu i
+   * upisuju. Polje je ZADRŽANO namerno, da odgovor admin rute
+   * `POST /kadrovska/grid/autofill-run` ostane kompatibilan (bez tihog nestanka polja).
+   * VIKENDI se ovde nikad nisu ni brojali (D1, 044/26) — otud ime.
    */
   skippedWeekendHoliday: number;
   skippedOutOfBand: number;
@@ -288,7 +307,7 @@ export class KadrovskaGridAutofillService
       this.lastRunDay = yesterday; // uspeh → ne ponavljaj isti dan (do restarta)
       this.logger.log(
         `Grid autofill tik ${yesterday}: kandidata ${data.candidates}, upisano ${data.inserted}, ` +
-          `van opsega ${data.skippedOutOfBand}, praznik-delimično ${data.skippedWeekendHoliday}.`,
+          `van opsega ${data.skippedOutOfBand}.`,
       );
     } catch (e) {
       this.logger.error(
@@ -369,43 +388,23 @@ export class KadrovskaGridAutofillService
     `);
     summary.candidates = rows.length;
 
-    // 1b) NERADNI praznici u rasponu — potrebni samo kao KAPIJA za delimično kucanje
-    //     (v. `proposeHoursForDay`). `isWorkday: false` je obavezan: red sa
-    //     `is_workday = true` je radni-dan IZUZETAK (npr. naložena radna subota) i NIJE
-    //     praznik. Upit se preskače kad nema kandidata (noć bez kucanja = 0 upita).
-    const holSet = new Set<string>();
-    if (rows.length > 0) {
-      const holidays = await db.kadrHoliday.findMany({
-        where: {
-          isWorkday: false,
-          holidayDate: {
-            gte: new Date(`${from}T00:00:00Z`),
-            lte: new Date(`${to}T00:00:00Z`),
-          },
-        },
-        select: { holidayDate: true },
-      });
-      for (const h of holidays)
-        holSet.add(h.holidayDate.toISOString().slice(0, 10));
-    }
-
-    // 2) Izračunaj predlog iz STVARNOG prisustva. VIKEND se NE preskače (D1, zahtev
-    //    044/26): dan sa čistim kucanjem = REDOVNI sati, isto kao radni dan. Kucanje je
-    //    dokaz da je čovek došao; ranije se preskakalo pa je Nikola vikende ručno unosio.
-    //    NERADNI PRAZNIK ima dodatnu kapiju: predlaže se SAMO pun dan (8h), jer bi
-    //    delimičan upis pojeo garantovanih 8h plaćenog praznika u obračunu.
-    //    `ON CONFLICT DO NOTHING` i dalje štiti ručni unos/odsustvo. (Kandidatski SQL
-    //    filter je već izbacio dane bez čistog kucanja.)
+    // 2) Izračunaj predlog iz STVARNOG prisustva — BEZ ijednog kalendarskog izuzetka.
+    //    VIKEND se ne preskače (D1, zahtev 044/26): dan sa čistim kucanjem = REDOVNI
+    //    sati, isto kao radni dan. NERADNI PRAZNIK se od 01.08.2026 tretira ISTO —
+    //    ranija kapija „samo pun dan" je ukinuta (O-1 uklonio zamku, O-4 + presuda
+    //    vlasnika traže evidenciju; detaljno obrazloženje: `proposeHoursForDay`). Zato
+    //    ovde VIŠE NEMA upita nad `kadr_holidays` — kalendar praznika autofill-u nije
+    //    potreban ni za šta. `ON CONFLICT DO NOTHING` i dalje štiti ručni unos/odsustvo.
+    //    (Kandidatski SQL filter je već izbacio dane bez čistog kucanja.)
     const toInsert: { employeeId: string; workDate: string; hours: number }[] =
       [];
     for (const r of rows) {
       const ymd = r.day.toISOString().slice(0, 10);
       const presence =
         r.presence_hours == null ? null : Number(r.presence_hours);
-      const { hours, reason } = proposeHoursForDay(presence, holSet.has(ymd));
+      const { hours } = proposeHoursForDay(presence);
       if (hours == null) {
-        if (reason === "holiday_partial") summary.skippedWeekendHoliday++;
-        else summary.skippedOutOfBand++;
+        summary.skippedOutOfBand++;
         continue;
       }
       toInsert.push({ employeeId: r.employee_id, workDate: ymd, hours });
@@ -417,7 +416,7 @@ export class KadrovskaGridAutofillService
     // 3) UPIS: INSERT … ON CONFLICT DO NOTHING (idempotentno; NIKAD ne gazi postojeći red).
     summary.inserted = await this.insertProposals(db, toInsert);
     this.logger.log(
-      `Grid autofill ${from}..${to}: kandidata ${summary.candidates}, predloženo ${summary.proposed}, upisano ${summary.inserted}, praznik-delimično preskočeno ${summary.skippedWeekendHoliday} (marker ${GRID_AUTOFILL_MARKER}).`,
+      `Grid autofill ${from}..${to}: kandidata ${summary.candidates}, predloženo ${summary.proposed}, upisano ${summary.inserted}, van opsega ${summary.skippedOutOfBand} (marker ${GRID_AUTOFILL_MARKER}).`,
     );
     return { data: summary };
   }

@@ -244,7 +244,7 @@ function partiesAndTitle(ctx: PrintCtx): Content {
     ["Datum izdavanja računa:", formatDateDomestic(ctx.invoice.documentDate)],
     ["Mesto izdavanja računa:", ctx.issuer.invoiceIssuingPlace?.trim() ?? ""],
     ["Rok za plaćanje:", formatDateDomestic(ctx.invoice.dueDate)],
-    ["Datum prometa:", formatDateDomestic(ctx.invoice.deliveryDate)],
+    ["Datum prometa:", formatDateDomestic(ctx.invoice.supplyDate)],
   ];
 
   return {

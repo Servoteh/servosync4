@@ -77,15 +77,41 @@ export interface StatementLine {
   formula: string | null;
 }
 
+/** Ishod kontrolnog pravila — četiri stanja, ne dva. */
+export type ControlStatus = 'PROLAZI' | 'PADA' | 'UPOZORENJE' | 'NEPRIMENLJIVO';
+
 /** Rezultat jednog kontrolnog pravila — GET /statements/:id/controls. */
 export interface ControlResult {
+  /** Stabilna šifra pravila (ključ u listi; naziv se sme menjati). */
+  code?: string;
   name: string;
   /** Leva strana pravila (Decimal-string). */
   left: string;
   /** Desna strana pravila (Decimal-string). */
   right: string;
-  /** true = pravilo prolazi (leva ≈ desna). */
+  /** true = ZELENO, i to samo za status PROLAZI. */
   passed: boolean;
+  /** Ishod; stariji backend ga ne šalje — tada se izvodi iz `passed`. */
+  status?: ControlStatus;
+  /** true = pad ovog pravila odbija finalizaciju bez force. */
+  blocking?: boolean;
+  /** left/right su dinari ili brojači (konta, pozicije). */
+  valueKind?: 'IZNOS' | 'BROJ';
+  /** Puna srpska rečenica: šta je izmereno i šta korisnik treba da uradi. */
+  message?: string | null;
+  /** Konkretni redovi dokaza (nalozi, konta, pozicije). */
+  details?: string[];
+}
+
+/**
+ * Da li pravilo BLOKIRA finalizaciju (isti izraz kao `isBlockingFailure` na backendu).
+ * Bez ovoga je ekran svako UPOZORENJE čitao kao pad i slao `force=true` na SVAKOJ
+ * finalizaciji stvarne knjige.
+ */
+export function isBlockingControlFailure(c: ControlResult): boolean {
+  const status: ControlStatus = c.status ?? (c.passed ? 'PROLAZI' : 'PADA');
+  const blocking = c.blocking ?? true;
+  return blocking && (status === 'PADA' || status === 'NEPRIMENLJIVO');
 }
 
 /** Odgovor finalizacije — POST /statements/:id/finalize. */
@@ -220,10 +246,22 @@ export function useComputeIncomeStatement() {
 export function useFinalizeStatement() {
   const invalidate = useInvalidateZavrsni();
   return useMutation({
-    mutationFn: ({ id, force }: { id: number; force?: boolean }) =>
+    mutationFn: ({
+      id,
+      force,
+      reason,
+    }: {
+      id: number;
+      force?: boolean;
+      /** Obrazloženje forsiranja — upisuje se u trajan trag uz ko/kada. */
+      reason?: string;
+    }) =>
       apiFetch<FinalizeResult>(`${BASE}/statements/${id}/finalize`, {
         method: 'POST',
-        body: JSON.stringify({ force: force === true }),
+        body: JSON.stringify({
+          force: force === true,
+          ...(force === true && reason ? { reason } : {}),
+        }),
       }),
     onSuccess: invalidate,
   });
@@ -240,6 +278,39 @@ export function useAprXmlDownload() {
   return useMutation({
     mutationFn: (id: number) => apiBlob(`${BASE}/statements/${id}/apr-xml`),
   });
+}
+
+// ─────────────────────────────────── PDF obrasca (bilans stanja / uspeha)
+
+/** Jedinica u kojoj se štampaju iznosi na obrascu. */
+export const STATEMENT_PRINT_UNIT = {
+  /** Propisano za predaju APR-u — iznosi svedeni na hiljade dinara. */
+  THOUSANDS: 'hiljade',
+  /** Sirovi iznosi iz glavne knjige (dinari, dve decimale). */
+  DINARS: 'dinari',
+} as const;
+
+export type StatementPrintUnit =
+  (typeof STATEMENT_PRINT_UNIT)[keyof typeof STATEMENT_PRINT_UNIT];
+
+/**
+ * PDF propisanog obrasca za sačuvani obračun — GET /zavrsni/statements/:id/pdf.
+ * Isti izvor podataka kao APR XML (FinancialStatementLine), pa se štampa i predaja
+ * ne mogu raziću. Vraća Blob (Authorization header); otvara se `openStatementPdf`.
+ * Permisija ZR_READ.
+ */
+export function useStatementPdf() {
+  return useMutation({
+    mutationFn: ({ id, unit }: { id: number; unit?: StatementPrintUnit }) =>
+      apiBlob(`${BASE}/statements/${id}/pdf${unit ? `?jedinica=${unit}` : ''}`),
+  });
+}
+
+/** Otvori PDF Blob u novom tabu (browser preview + štampa). */
+export function openStatementPdf(blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 
 /** Pokreni download Blob-a kao .xml fajl (isti obrazac kao FX TXT izvoz). */

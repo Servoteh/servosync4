@@ -19,7 +19,9 @@ export function SearchBox({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-44 bg-transparent text-sm text-ink placeholder:text-ink-disabled focus:outline-none"
+        // 16px na telefonu (`text-md`) — ispod 16px iOS zumira celu stranu na
+        // fokus i ne vraća zum na blur; od `sm` gusta desktop veličina (12.5px).
+        className="w-44 bg-transparent text-md text-ink placeholder:text-ink-disabled focus:outline-none sm:text-sm"
       />
     </div>
   );

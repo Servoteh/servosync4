@@ -70,7 +70,7 @@ export default function MobPrisustvoPage() {
   // stigne, pa bi ovlašćen korisnik na svež login video lažni „Nemate pristup".
   if (isLoading || !user || permissionsPending) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
@@ -79,7 +79,7 @@ export default function MobPrisustvoPage() {
   // Pad učitavanja dozvola (retry:false — ostaje za sesiju) ≠ stvarna zabrana.
   if (permissionsError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
       </main>
     );
@@ -87,7 +87,7 @@ export default function MobPrisustvoPage() {
 
   if (!allowed) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Nemate pristup prisustvu — javite se administratoru (potrebno `kadrovska.attendance`).
       </main>
     );
@@ -136,7 +136,7 @@ export default function MobPrisustvoPage() {
         : 'učitavanje…';
 
   return (
-    <div className="min-h-screen bg-app pb-16">
+    <div className="min-h-dvh bg-app pb-16">
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
         <button
           onClick={goBack}

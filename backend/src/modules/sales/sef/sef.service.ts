@@ -114,7 +114,12 @@ export class SefService {
       registrationNumber: company.registrationNumber,
       address: company.address,
       city: company.city,
+      // Grupa D: podaci za plaćanje → cac:PaymentMeans. IBAN/SWIFT (kolone dodate
+      // migracijom 20260727110000) imaju prednost kod ino uplate; domaći tekući
+      // račun je fallback.
       bankAccount: company.bankAccount,
+      iban: company.iban,
+      swift: company.swift,
     };
     const buyer: UblCustomerParty = {
       name: customer.name,
@@ -125,10 +130,32 @@ export class SefService {
       publicSectorId: customer.publicSectorId,
     };
 
+    // — Grupa D: jedinica mere po stavci (items.unit → UN/ECE Rec 20 unitCode) —
+    // Do sada je svaka stavka išla sa tvrdim `unitCode="H87"` bez obzira na stvarnu JM
+    // (kilogram, metar, m²…), pa je kupac na SEF-u dobijao pogrešnu jedinicu. Jedan
+    // upit po fakturi (findMany po id-evima), ne po stavci.
+    const itemIds = [
+      ...new Set(
+        invoice.items
+          .map((it) => it.itemId)
+          .filter((id): id is number => id != null),
+      ),
+    ];
+    const unitByItemId = new Map<number, string | null>();
+    if (itemIds.length > 0) {
+      const catalog = await this.prisma.item.findMany({
+        where: { id: { in: itemIds } },
+        select: { id: true, unit: true },
+      });
+      for (const row of catalog) unitByItemId.set(row.id, row.unit);
+    }
+
     const items: UblInvoiceItemInput[] = invoice.items.map((it) => ({
       lineNo: it.lineNo,
       description: it.description,
       itemId: it.itemId,
+      // Slobodna (uslužna) stavka nema artikal → nema JM; builder tada šalje H87.
+      unit: it.itemId != null ? (unitByItemId.get(it.itemId) ?? null) : null,
       quantity: it.quantity,
       unitPrice: it.unitPrice,
       discountPercent: it.discountPercent,
@@ -167,17 +194,39 @@ export class SefService {
     // — Batch C §C1a: konačni račun na kome je odbijen avans nosi referencu AVR-a
     //   (cac:BillingReference) + PrepaidAmount, pa SEF PayableAmount pokazuje
     //   STVARNI ostatak za uplatu (grossTotal − avans), a ne uvek 0.
+    //   N:M (migracija 20260726120000): račun može zatvarati VIŠE avansa, pa ide
+    //   po jedan `cac:BillingReference` za svaku primenu. Zbir uz broj samo prvog
+    //   avansa bi bio netačna referenca na poreskom dokumentu (revizija, VISOK).
+    const applications = await this.prisma.invoiceAdvanceApplication.findMany({
+      where: { invoiceId: invoice.id, status: "ACTIVE" },
+      orderBy: { id: "asc" },
+      select: {
+        appliedAmount: true,
+        advance: { select: { documentNumber: true } },
+      },
+    });
     const advanceInvoice =
-      invoice.advanceInvoiceId != null
+      applications.length === 0 && invoice.advanceInvoiceId != null
         ? await this.prisma.invoice.findUnique({
             where: { id: invoice.advanceInvoiceId },
             select: { documentNumber: true },
           })
         : null;
+    const prepaymentReferences = applications
+      .map((a) => a.advance?.documentNumber)
+      .filter((n): n is string => !!n);
+    // Iznos i reference se izvode iz ISTOG izvora — zbir primena kad ih ima,
+    // inače legacy kolona (dokumenti vezani pre N:M migracije).
+    const appliedTotal = applications.reduce(
+      (acc, a) => acc.add(a.appliedAmount),
+      new Prisma.Decimal(0),
+    );
     const prepaidAmount =
-      advanceInvoice && invoice.advanceAppliedAmount.greaterThan(0)
-        ? invoice.advanceAppliedAmount
-        : null;
+      applications.length > 0
+        ? appliedTotal
+        : advanceInvoice && invoice.advanceAppliedAmount.greaterThan(0)
+          ? invoice.advanceAppliedAmount
+          : null;
 
     // — D6: upozorenje javni sektor bez broja narudžbenice (ne blokira) —
     let warning: string | null = null;
@@ -187,17 +236,20 @@ export class SefService {
         "Kupac je iz javnog sektora, a broj narudžbenice nije unet — SEF može odbiti fakturu.";
     }
 
+    // — Datum prometa (BT-72) i poziv na broj (BT-83) —
+    // Kolone `invoices.supply_date` i `invoices.payment_reference` postoje od
+    // migracije 20260727140000, pa se čitaju direktno (do tada su se čitale kroz
+    // defanzivan cast, jer ih grupa B nije isporučila).
+    // PRAZAN datum prometa se NE PODMEĆE datumom izdavanja: `cac:Delivery` tada
+    // izostaje. Datum izdavanja NIJE datum prometa i podmetanje bi bila laž na
+    // poreskom dokumentu. Poziv na broj bez unosa pada na BROJ DOKUMENTA (BigBit
+    // paritet — v. `buildPaymentMeans`).
     const ublXml = this.ubl.build({
       invoice: {
         documentType: invoice.documentType,
         documentNumber: invoice.documentNumber,
         documentDate: invoice.documentDate,
         dueDate: invoice.dueDate,
-        // Datum prometa → cac:Delivery/cbc:ActualDeliveryDate. Knjižen račun ga uvek
-        // ima (postInvoice ga podrazumeva na datum izdavanja ako nije unet), pa ovde
-        // ostaje null samo za račune proknjižene PRE uvođenja polja — za njih builder
-        // baca jasan 400 umesto da pošalje račun bez obaveznog elementa.
-        deliveryDate: invoice.deliveryDate,
         currency: invoice.currency,
         isExport: invoice.isExport,
         netTotal: invoice.netTotal,
@@ -207,7 +259,14 @@ export class SefService {
         poNumber: invoice.poNumber,
         isPrepayment: invoice.documentType === "AVR",
         prepaymentReference: advanceInvoice?.documentNumber ?? null,
+        prepaymentReferences,
         prepaidAmount,
+        // Datum prometa → cac:Delivery/cbc:ActualDeliveryDate. Knjižen račun ga uvek
+        // ima (`postInvoice` ga podrazumeva na datum izdavanja ako nije unet), pa ovde
+        // ostaje null samo za račune proknjižene PRE uvođenja polja — za njih builder
+        // baca jasan 400 umesto da pošalje račun bez obaveznog elementa.
+        supplyDate: invoice.supplyDate,
+        paymentReference: invoice.paymentReference,
       },
       items,
       supplier,

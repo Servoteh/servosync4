@@ -62,21 +62,21 @@ export default function MobLokacijeIstorijaPage() {
   // stigne, pa bi ovlašćen radnik na svež login video lažni „Nemate pristup".
   if (isLoading || !user || permissionsPending) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
   }
   if (permissionsError) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
       </main>
     );
   }
   if (!allowed) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
         Nemate pristup lokacijama — javite se administratoru (potrebno `lokacije.read`).
       </main>
     );
@@ -87,7 +87,7 @@ export default function MobLokacijeIstorijaPage() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <div className="min-h-screen bg-app pb-16">
+    <div className="min-h-dvh bg-app pb-16">
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-md font-semibold text-ink">Moja istorija</h1>

@@ -49,7 +49,7 @@ export default function MobOnboardingPage() {
 
   if (isLoading || !user) {
     return (
-      <main className="grid min-h-screen place-items-center bg-app text-sm text-ink-secondary">
+      <main className="grid min-h-dvh place-items-center bg-app text-sm text-ink-secondary">
         Učitavanje…
       </main>
     );
@@ -59,7 +59,7 @@ export default function MobOnboardingPage() {
   const allTasks = (q.data?.data?.tasks ?? []) as TaskLoose[];
 
   return (
-    <div className="min-h-screen bg-app pb-16">
+    <div className="min-h-dvh bg-app pb-16">
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-md font-semibold text-ink">Moje uvođenje</h1>

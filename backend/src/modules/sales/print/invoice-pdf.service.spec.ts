@@ -126,7 +126,7 @@ function makeInvoice(over: Record<string, unknown> = {}) {
     customerId: 10,
     documentDate: new Date(2025, 11, 25),
     dueDate: new Date(2025, 11, 25),
-    deliveryDate: new Date(2025, 11, 25),
+    supplyDate: new Date(2025, 11, 25),
     currency: "RSD",
     netTotal: D("80497.70"),
     vatTotal: D("16099.54"),

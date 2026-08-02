@@ -12,6 +12,7 @@ import { SecurityAuditService } from "./security-audit.service";
 import { RobnoModule } from "../robno/robno.module";
 import { ReservationService } from "../robno/reservation.service";
 import { SyncModule } from "../sync/sync.module";
+import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -79,10 +80,15 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly dailyBrief: DailyBriefService,
     private readonly securityAudit: SecurityAuditService,
     private readonly reservation: ReservationService,
+    private readonly bigbitMdbJobs: BigbitMdbJobs,
   ) {}
 
   onModuleInit(): void {
     for (const job of this.sy15Jobs.buildJobs()) this.scheduler.register(job);
+    // BigBit .mdb noćni uvoz + jutarnji nadzornik (26.07.2026). Bez ove dve
+    // linije je ceo kanal mrtav kod: `buildJobs()` postoji, ali nikad se ne zove.
+    for (const job of this.bigbitMdbJobs.buildJobs())
+      this.scheduler.register(job);
     for (const job of this.dispatchJobs.buildJobs())
       this.scheduler.register(job);
     for (const job of this.sastanciDispatchJobs.buildJobs())

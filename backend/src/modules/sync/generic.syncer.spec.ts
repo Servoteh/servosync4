@@ -2,6 +2,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { MssqlClient } from './mssql.client';
 import { GenericSyncer } from './generic.syncer';
 import { TableMapping } from './sync.types';
+import { NATIVE_ID_BASE } from './table-ownership';
 
 /**
  * Fokus: full-refresh brisanje.
@@ -177,6 +178,18 @@ describe('GenericSyncer — full-refresh brisanje', () => {
     expect(createMany).toHaveBeenCalled();
   });
 
+  // ── PRAZAN IZVOR NIKAD NE PRAZNI TABELU (O-2, 30.07.2026) ──────────────────
+  // Pun refresh je „obriši pa vrati". Ako izvor vrati nulu, prvi deo se izvrši a
+  // drugi nema šta da vrati — tabela ostane prazna, uz status „uspešno". Nula
+  // nikad nije poslovno stanje nego kvar izvora (prazna kopija baze, oborena veza).
+  it('items (pun refresh) sa PRAZNIM izvorom PADA i NE briše ništa', async () => {
+    const { syncer, deleteMany, createMany } = setup('items', []);
+    await expect(
+      syncer.sync({ strategy: 'full_refresh', cursor: null }),
+    ).rejects.toThrow(/0 redova[\s\S]*NETAKNUTI/);
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
+  });
   it('projects (additive) sa praznim izvorom: NE briše ništa', async () => {
     const { syncer, deleteMany } = setup('projects', []);
     await syncer.sync({ strategy: 'full_refresh', cursor: null });
@@ -479,5 +492,284 @@ describe('GenericSyncer — document_types (aditivno, 4.0 seed preživljava)', (
     expect(result.rowsSkipped).toBe(1);
     expect(result.errors[0]).toContain('FK pre-filter');
     expect(result.errors[0]).toContain('tax_rates');
+  });
+});
+
+/**
+ * REZERVISAN OPSEG KLJUČEVA — `items` i `customers` (adversarni pregled
+ * 28.07.2026, nalazi [1] i [2]).
+ *
+ * `items` je full refresh (`watermark: null`): `deleteMany({})` + `createMany`
+ * pod `session_replication_role='replica'`. Bez zaštite bi 4.0-native artikal
+ * bio OBRISAN — a `price_list_entries` i `work_order_item_components` ostali
+ * siročad, jer FK trigeri u `replica` režimu ćute. Isključenje iz noćnog posla
+ * (`NIGHTLY_SYNC_EXCLUDED`) to NE pokriva: ručni `POST /sync/run` radi isti
+ * `deleteMany`. Zaštita zato živi u syncer-u, ne u rasporedu poslova.
+ */
+describe('GenericSyncer — rezervisan opseg 4.0-native ključeva', () => {
+  const DELEGATE: Record<string, string> = {
+    items: 'item',
+    customers: 'customer',
+  };
+
+  function mappingFor(targetDb: string): TableMapping {
+    if (targetDb === 'customers') {
+      return {
+        source: 'Komitenti',
+        model: 'Customer',
+        targetDb,
+        pk: { kind: 'single', field: 'id' },
+        // Kao u `sync-map.generated.ts`: komitenti IMAJU watermark, pa je
+        // podrazumevana strategija inkrementalna (upsert po `id`).
+        watermark: 'updatedAt',
+        columns: [
+          { src: 'Sifra', field: 'id', type: 'Int', nullable: false, isId: true },
+          {
+            src: 'Naziv',
+            field: 'name',
+            type: 'String',
+            nullable: false,
+            isId: false,
+          },
+          {
+            src: 'PoslednjaIzmena',
+            field: 'updatedAt',
+            type: 'DateTime',
+            nullable: true,
+            isId: false,
+          },
+        ],
+      };
+    }
+    return {
+      source: 'R_Artikli',
+      model: 'Item',
+      targetDb,
+      pk: { kind: 'single', field: 'id' },
+      watermark: null,
+      columns: [
+        {
+          src: 'Sifra artikla',
+          field: 'id',
+          type: 'Int',
+          nullable: false,
+          isId: true,
+        },
+        {
+          src: 'Kataloski broj',
+          field: 'catalogNumber',
+          type: 'String',
+          nullable: false,
+          isId: false,
+        },
+      ],
+    };
+  }
+
+  function setup(
+    targetDb: string,
+    rows: Record<string, unknown>[],
+    /** Koliko 4.0-native redova već stoji u tabeli (`count` za `note`). */
+    nativeRowCount = 0,
+  ) {
+    const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+    const createMany = jest.fn().mockResolvedValue({ count: 0 });
+    const upsert = jest.fn().mockResolvedValue({});
+    const count = jest.fn().mockResolvedValue(nativeRowCount);
+    const executeRawUnsafe = jest.fn().mockResolvedValue(undefined);
+    const delegateName = DELEGATE[targetDb];
+
+    const tx: Record<string, unknown> = {
+      [delegateName]: { deleteMany, createMany },
+      $executeRawUnsafe: executeRawUnsafe,
+    };
+    const prisma = {
+      [delegateName]: {
+        count,
+        findMany: jest.fn().mockResolvedValue([]),
+        upsert,
+      },
+      $transaction: jest
+        .fn()
+        .mockImplementation((fn: (t: unknown) => Promise<void>) => fn(tx)),
+    } as unknown as PrismaService;
+    const mssql = {
+      query: jest.fn().mockResolvedValue(rows),
+    } as unknown as MssqlClient;
+
+    return {
+      syncer: new GenericSyncer(mappingFor(targetDb), mssql, prisma),
+      deleteMany,
+      createMany,
+      upsert,
+      count,
+    };
+  }
+
+  function insertedHere(createMany: jest.Mock): number[] {
+    const calls = createMany.mock.calls as unknown as [
+      { data: { id: number }[] },
+    ][];
+    return calls.flatMap((c) => c[0].data).map((r) => r.id);
+  }
+
+  it('items: brisanje NE dohvata native opseg (nikad deleteMany({}))', async () => {
+    const { syncer, deleteMany, createMany } = setup('items', [
+      { 'Sifra artikla': 1, 'Kataloski broj': 'AB-100' },
+      { 'Sifra artikla': 93_513, 'Kataloski broj': 'AB-200' },
+    ]);
+
+    await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    expect(deleteMany).toHaveBeenCalledTimes(1);
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: { id: { lt: NATIVE_ID_BASE } },
+    });
+    expect(deleteMany).not.toHaveBeenCalledWith({});
+    // BigBit prostor se i dalje osvežava u celosti.
+    expect(insertedHere(createMany)).toEqual([1, 93_513]);
+  });
+
+  it('items: `force: true` ne probija zaštitu (ručni /sync/run je jednako bezbedan)', async () => {
+    // `force` postoji za OWNED_PRODUCTION_TABLES i namerno NE otvara brisanje
+    // native prostora — inače bi „probaj sa force" bio put do tihog gubitka.
+    const { syncer, deleteMany } = setup('items', [
+      { 'Sifra artikla': 5, 'Kataloski broj': 'AB-100' },
+    ]);
+
+    await syncer.sync({ strategy: 'full_refresh', cursor: null, force: true });
+
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: { id: { lt: NATIVE_ID_BASE } },
+    });
+  });
+
+  it('items: izvorni red sa id-jem iz native opsega se PRESKAČE i prijavljuje', async () => {
+    // BigBit tu šifru ne sme da koristi; upis bi ili pregazio 4.0-native artikal
+    // ili pao na `chk_items_native_id_range` i oborio CEO `createMany` chunk.
+    const { syncer, createMany } = setup('items', [
+      { 'Sifra artikla': 1, 'Kataloski broj': 'AB-100' },
+      { 'Sifra artikla': NATIVE_ID_BASE + 3, 'Kataloski broj': 'AB-300' },
+    ]);
+
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    expect(insertedHere(createMany)).toEqual([1]);
+    expect(result.rowsSkipped).toBe(1);
+    expect(result.rowsUpserted).toBe(1);
+    expect(result.errors[0]).toContain('rezervisanom 4.0 opsegu');
+    expect(result.note).toContain('rezervisanog 4.0 opsega');
+  });
+
+  it('items: zaštićeni redovi se BROJE u `note` (dokaz da je zaštita radila)', async () => {
+    const { syncer, count } = setup(
+      'items',
+      [{ 'Sifra artikla': 1, 'Kataloski broj': 'AB-100' }],
+      4,
+    );
+
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    expect(count).toHaveBeenCalledWith({
+      where: { id: { gte: NATIVE_ID_BASE } },
+    });
+    expect(result.note).toContain('Zaštićeno 4');
+  });
+
+  it('items: bez native redova nema šuma u dnevniku (`note` izostaje)', async () => {
+    const { syncer } = setup('items', [
+      { 'Sifra artikla': 1, 'Kataloski broj': 'AB-100' },
+    ]);
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+    expect(result.note).toBeUndefined();
+  });
+
+  // `CustomerSyncer` je bespoke i nikad ne briše — ali `customers` IMA mapiranje
+  // u `sync-map.generated.ts`. Ukloni li ga iko kao „duplikat generičkog"
+  // (scenario opisan u `customers.service.ts`, uslov 2), generički syncer
+  // preuzima tabelu. Zaštita zato mora da važi i na tom putu.
+  it('customers (generički put): full refresh briše samo BigBit prostor', async () => {
+    const { syncer, deleteMany } = setup('customers', [
+      { Sifra: 1_006_067, Naziv: 'BigBit firma', PoslednjaIzmena: null },
+    ]);
+
+    await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: { id: { lt: NATIVE_ID_BASE } },
+    });
+    expect(deleteMany).not.toHaveBeenCalledWith({});
+  });
+
+  it('customers (generički put, inkrementalno): native id se ne upsert-uje', async () => {
+    const { syncer, upsert } = setup('customers', [
+      {
+        Sifra: 500,
+        Naziv: 'BigBit firma',
+        PoslednjaIzmena: new Date('2026-07-28T10:00:00Z'),
+      },
+      {
+        Sifra: NATIVE_ID_BASE + 1,
+        Naziv: 'Šifra iz 4.0 opsega',
+        PoslednjaIzmena: new Date('2026-07-28T11:00:00Z'),
+      },
+    ]);
+
+    const result = await syncer.sync({
+      strategy: 'incremental',
+      cursor: { lastModifiedAt: '2026-07-01T00:00:00.000Z' },
+    });
+
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect((upsert.mock.calls[0][0] as { where: { id: number } }).where.id).toBe(
+      500,
+    );
+    expect(result.rowsSkipped).toBe(1);
+    // Preskočeni red ne pomera kursor — anomalija se prijavljuje ponovo.
+    expect(result.newCursor?.lastModifiedAt).toBe('2026-07-28T10:00:00.000Z');
+  });
+
+  // Regresija za ostatak sinhronizacije: tabela bez rezervisanog opsega mora i
+  // dalje da radi klasičan pun refresh (izvor je jedina istina).
+  it('warehouses: obična tabela i dalje briše SVE', async () => {
+    const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+    const createMany = jest.fn().mockResolvedValue({ count: 0 });
+    const tx: Record<string, unknown> = {
+      warehouse: { deleteMany, createMany },
+      $executeRawUnsafe: jest.fn().mockResolvedValue(undefined),
+    };
+    const prisma = {
+      warehouse: { count: jest.fn().mockResolvedValue(0) },
+      $transaction: jest
+        .fn()
+        .mockImplementation((fn: (t: unknown) => Promise<void>) => fn(tx)),
+    } as unknown as PrismaService;
+    const mssql = {
+      query: jest.fn().mockResolvedValue([{ ID: 1, Naziv: 'Glavni' }]),
+    } as unknown as MssqlClient;
+    const mapping: TableMapping = {
+      source: 'Magacini',
+      model: 'Warehouse',
+      targetDb: 'warehouses',
+      pk: { kind: 'single', field: 'id' },
+      watermark: null,
+      columns: [
+        { src: 'ID', field: 'id', type: 'Int', nullable: false, isId: true },
+        {
+          src: 'Naziv',
+          field: 'name',
+          type: 'String',
+          nullable: false,
+          isId: false,
+        },
+      ],
+    };
+
+    await new GenericSyncer(mapping, mssql, prisma).sync({
+      strategy: 'full_refresh',
+      cursor: null,
+    });
+
+    expect(deleteMany).toHaveBeenCalledWith({});
   });
 });

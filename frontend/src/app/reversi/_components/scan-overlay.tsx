@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Flashlight, RefreshCw, Camera } from 'lucide-react';
 import { lookupBarcode, type BarcodeKind, type BarcodeResult } from '@/api/reversi';
+import { useEscapeLayer } from '@/components/ui-kit/escape-layer';
 import {
   applyAndroidPostStartTuning,
   attachVideoDecoder,
@@ -13,13 +14,36 @@ import {
   isIOSWebKit,
   isSamsungInternetBrowser,
   preloadVideoDecoder,
+  safeApplyFlatCompat,
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
 import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-picker';
+import { ScanReticle } from '@/components/ui-kit/scan-reticle';
+import { ScanHint } from '@/components/ui-kit/scan-hint';
+import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
 
-/** Formati skenera reversa (isti set za živu kameru, „Slikaj barkod" i preload). */
-const SCAN_FORMATS: DecodeFormat[] = ['code_128', 'code_39', 'ean_13', 'qr_code'];
+/**
+ * Formati ŽIVE kamere — **bez `qr_code`** (ISPRAVKA 02.08.2026, regresija na iPhone-u).
+ *
+ * Reversi nalepnice (ALAT-…, RZN-…, ZADU-M-…, ID kartica) su UVEK gust 1D Code128; u
+ * 1.0 `codeType:'qr'` postoji samo za police u Lokacijama, a reversi ljuska bezuslovno
+ * bira profil `item` (`plan-montaze/src/ui/reversi/scanOverlay.js:157`). Zatečeni
+ * `qr_code` u ovoj listi je na iPhone-u skretao ceo dekoder na POGREŠAN put — jsQR
+ * hibrid (`barcode-decoder.ts:431`): kadar se skraćuje na 1280 px, jsQR se vrti na
+ * ~78 ms, a 1D ZXing pokušaj ide tek svakih ~400 ms. Bez QR-a isti kod ide na čist
+ * ZXing `item` put (~28 ms po pokušaju) nad 2880×1620 kadrom — ~2,25× više piksela i
+ * ~14× više pokušaja u sekundi. Uz to `buildVideoConstraints` dobija profil `'item'`
+ * (a ne `'mixed'`), pa iOS uopšte i traži tu rezoluciju.
+ */
+const LIVE_FORMATS: DecodeFormat[] = ['code_128', 'code_39', 'ean_13'];
+
+/**
+ * „Slikaj barkod" (still-image) put sme da zadrži `qr_code`: tamo brzina nije kritična
+ * (jedan prolaz kroz `decodeImageFile`, nema rAF petlje), a slika iz galerije/Viber-a
+ * ume da bude QR sa nekog starijeg kartona.
+ */
+const IMAGE_FORMATS: DecodeFormat[] = [...LIVE_FORMATS, 'qr_code'];
 
 // Nativni BarcodeDetector (Chrome/Edge/Android WebView) — brzi put; tamo gde ga
 // nema (iPhone/Firefox/Safari) decode-engine (@/lib/barcode-decoder) daje ZXing/jsQR.
@@ -137,6 +161,7 @@ export function ScanOverlay({
   onClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const trackRef = useRef<MediaStreamTrack | null>(null);
   const detectorRef = useRef<BarcodeDetectorLike | null>(null);
@@ -154,6 +179,11 @@ export function ScanOverlay({
   const [torchSupported, setTorchSupported] = useState(false);
   const [zoom, setZoom] = useState<{ min: number; max: number; step: number; value: number } | null>(null);
   const [chips, setChips] = useState<{ barcode: string; label: string }[]>([]);
+  const [focusRing, setFocusRing] = useState<{ x: number; y: number; id: number } | null>(null);
+
+  // Safari URL traka guta gornji deo kadra (1.0 lekcija) — do 02.08. je ovo imala
+  // samo lokacijska ljuska; sada je zajednički hook (v. `use-visual-viewport-fix`).
+  useVisualViewportFix(rootRef);
 
   // Roditelj prosleđuje callback-e kao inline literale (nov identitet po renderu).
   // Držimo ih u ref-u da kamera-efekat i `resolve` ostanu stabilni (kamera se ne gasi
@@ -230,7 +260,7 @@ export function ScanOverlay({
     // Ovaj ekran na Androidu ide nativnim putem (`preferNative`), ALI mu ZXing i
     // dalje treba kao watchdog fallback (mrtav GmsCore barcode modul), pa se
     // preload namerno ne preskače.
-    preloadVideoDecoder(SCAN_FORMATS);
+    preloadVideoDecoder(LIVE_FORMATS);
 
     let stopped = false;
     let decoder: VideoDecoderHandle | null = null;
@@ -356,8 +386,11 @@ export function ScanOverlay({
         }
 
         // Rezolucija OBAVEZNA (1.0 lekcija): bez ideals-a iOS daje 640×480 pa
-        // ZXing/jsQR nemaju piksele za Code128. 'mixed' = 1080p (QR+1D profil).
-        const base = buildVideoConstraints('mixed');
+        // ZXing nema piksele za Code128. Profil je `'item'` (1.0 scanOverlay.js:157
+        // bezuslovno `decodeProfile:'item'`) → na iPhone-u 2880×1620; do 02.08. je
+        // ovde stajao `'mixed'` (1080p, QR+1D) pa je gust RNZ/ALAT- kod na iPhone-u
+        // imao premalo piksela po crtici.
+        const base = buildVideoConstraints('item');
         let stream: MediaStream;
         try {
           stream = await openStream({
@@ -423,7 +456,7 @@ export function ScanOverlay({
 
         const handle = await attachVideoDecoder({
           video: v,
-          formats: SCAN_FORMATS,
+          formats: LIVE_FORMATS,
           onRaw: (raw) => void resolve(raw),
           isStopped: () => aborted(),
           // 1.0 per-profil kanon (scanOverlay.js:431): reversi nalepnice su gust
@@ -484,18 +517,12 @@ export function ScanOverlay({
     };
   }, [resolve, say, hint]);
 
-  // Esc zatvara SAMO skener. Capture-faza + stopPropagation presreće događaj pre
-  // roditeljskog Dialog-a (koji takođe sluša window keydown).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        cbRef.current.onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, []);
+  // Esc zatvara SAMO skener. Skener se otvara POSLE roditeljskog dijaloga, pa je
+  // na vrhu steka slojeva i Esc je njegov (v. `ui-kit/escape-layer.ts`).
+  // Ranije je ovde stajao sopstveni capture-slušalac na `window`: `stopPropagation`
+  // ne zaustavlja slušaoce na ISTOM čvoru, pa su se okidali i skener i dijalog i
+  // ceo tok skeniranja se zatvarao.
+  useEscapeLayer(true, () => cbRef.current.onClose());
 
   async function toggleTorch() {
     const track = trackRef.current;
@@ -518,22 +545,50 @@ export function ScanOverlay({
     }
   }
 
+  /**
+   * Tap-to-focus (S5, ISPRAVKA 02.08.2026 — prsten je LAGAO na iOS-u).
+   *
+   * WebKit ne izlaže ni `focusMode` ni `pointsOfInterest`, pa na iPhone-u nijedan
+   * `applyConstraints` ne uradi ništa. Zatečeni kod je prsten crtao BEZUSLOVNO
+   * („vizuelna potvrda tapa"), pa je radnik dobijao potvrdu da je izoštrio i čekao
+   * fokus koji nikad ne dolazi. 1.0 to radi ispravno: `barcode.js:1231-1265` vraća
+   * `false` kad uređaj ništa od toga ne podržava, a `scanModal.js:2669-2693` /
+   * `scanOverlay.js:479-491` crtaju prsten SAMO na `true`.
+   *
+   * Uz to je ispravljen i sam constraint: bio je `focusMode:'manual'` (koji ni na
+   * Androidu nije podržan), sada je 1.0 sekvenca `single-shot` + `pointsOfInterest`
+   * uz povratak na `continuous`, i to samo kad ih uređaj zaista izlaže.
+   */
   async function tapFocus(e: React.PointerEvent<HTMLVideoElement>) {
     const track = trackRef.current;
     const v = videoRef.current;
     if (!track || !v) return;
     const rect = v.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    // Fokus-prsten uvek (vizuelna potvrda tapa), čak i kad focusMode nije podržan.
-    const ring = document.createElement('div');
-    ring.style.cssText = `position:absolute;left:${e.clientX - rect.left}px;top:${e.clientY - rect.top}px;width:56px;height:56px;margin:-28px 0 0 -28px;border:2px solid rgba(255,255,255,.9);border-radius:9999px;pointer-events:none;animation:none;`;
-    v.parentElement?.appendChild(ring);
-    setTimeout(() => ring.remove(), 600);
-    try {
-      await track.applyConstraints(advanced({ focusMode: 'manual', pointsOfInterest: [{ x, y }] }));
-    } catch {
-      /* tap-fokus nepodržan — prsten je i dalje vizuelna potvrda */
+    const caps = (track.getCapabilities?.() ?? {}) as CamCapabilities;
+    const modes = Array.isArray(caps.focusMode) ? caps.focusMode.map(String) : [];
+    const at = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    let applied = false;
+    if (modes.includes('single-shot') && 'pointsOfInterest' in caps) {
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      applied = await safeApplyFlatCompat(track, {
+        focusMode: 'single-shot',
+        pointsOfInterest: [{ x, y }],
+      });
+      if (applied && modes.includes('continuous')) {
+        await new Promise((r) => setTimeout(r, 320));
+        await safeApplyFlatCompat(track, { focusMode: 'continuous' });
+      }
+    } else if (modes.includes('continuous')) {
+      applied = await safeApplyFlatCompat(track, { focusMode: 'continuous' });
+    }
+    // Prsten je POTVRDA IZOŠTRAVANJA, ne potvrda tapa — bez primenjenog constraint-a
+    // se ne crta ništa (iOS), pa radnik odmah zna da mora da menja rastojanje.
+    if (applied) {
+      const id = Date.now();
+      setFocusRing({ ...at, id });
+      window.setTimeout(() => setFocusRing((r) => (r?.id === id ? null : r)), 600);
     }
   }
 
@@ -544,7 +599,7 @@ export function ScanOverlay({
       const Ctor = getDetectorCtor();
       if (Ctor) {
         try {
-          const detector = detectorRef.current ?? new Ctor({ formats: SCAN_FORMATS });
+          const detector = detectorRef.current ?? new Ctor({ formats: IMAGE_FORMATS });
           const bitmap = await createImageBitmap(file);
           const found = await detector.detect(bitmap);
           bitmap.close?.();
@@ -558,7 +613,7 @@ export function ScanOverlay({
         }
       }
       // 1.0 anti-glare pipeline (grayscale/kontrast/upscale + Code128-first).
-      const hit = await decodeImageFile(file, SCAN_FORMATS);
+      const hit = await decodeImageFile(file, IMAGE_FORMATS);
       if (hit) {
         say('');
         await resolve(hit);
@@ -571,8 +626,31 @@ export function ScanOverlay({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black" role="dialog" aria-modal="true" aria-label={title}>
-      <div className="flex items-center justify-between px-4 py-3 text-white">
+    // FULL-BLEED KADAR (S3, 02.08.2026): do sada je ovo bio `flex flex-col` — topbar
+    // i neprozirna donja traka su JELI visinu, pa je na iPhone 390×844 živa slika
+    // padala na ~60-70% ekrana i barkod je izgledao manji nego u 1.0 (radnik onda
+    // menja rastojanje umesto da skenira). 1.0 je full-bleed: `.loc-scan-video`
+    // (legacy.css:4634) je `position:absolute; inset:0`, a topbar/hint/status/zoom
+    // LEBDE preko kadra sa gradijentom (`.loc-scan-topbar`, legacy.css:4695).
+    <div ref={rootRef} className="fixed inset-0 z-50 bg-black" role="dialog" aria-modal="true" aria-label={title}>
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        onPointerDown={(e) => void tapFocus(e)}
+        className="absolute inset-0 h-full w-full object-cover"
+      />
+      {cameraOn && <ScanReticle variant="barcode" />}
+      {focusRing && (
+        <div
+          className="pointer-events-none absolute z-10 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white/90"
+          style={{ left: focusRing.x, top: focusRing.y }}
+          aria-hidden
+        />
+      )}
+
+      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
         <span className="text-md font-semibold">{title}</span>
         <div className="flex items-center gap-1">
           {torchSupported && (
@@ -601,22 +679,11 @@ export function ScanOverlay({
         </div>
       </div>
 
-      <div className="relative flex-1 overflow-hidden bg-black">
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video
-          ref={videoRef}
-          playsInline
-          muted
-          onPointerDown={(e) => void tapFocus(e)}
-          className="h-full w-full object-cover"
-        />
-        {cameraOn && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            <div className="h-40 w-72 rounded-panel border-2 border-white/70" />
-          </div>
-        )}
+      {/* Sve kontrole LEBDE preko kadra (1.0 obrazac) — gradijent umesto neprozirne
+          trake, pa se kamera vidi i ispod njih. */}
+      <div className="absolute inset-x-0 bottom-0 z-10 space-y-2 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white">
         {continuous && chips.length > 0 && (
-          <div className="absolute inset-x-0 bottom-0 flex flex-wrap gap-1.5 bg-gradient-to-t from-black/80 to-transparent p-3">
+          <div className="flex flex-wrap gap-1.5">
             {chips.map((c) => (
               <span key={c.barcode} className="tnums rounded-full bg-white/15 px-2 py-0.5 text-2xs text-white">
                 {c.barcode} · {c.label}
@@ -624,41 +691,42 @@ export function ScanOverlay({
             ))}
           </div>
         )}
-      </div>
 
-      {zoom && (
-        <div className="flex items-center gap-2 bg-black/80 px-4 py-2 text-white">
-          <button
-            type="button"
-            aria-label="Smanji zoom"
-            className="rounded-control bg-white/10 px-2.5 py-1 text-sm"
-            onClick={() => void applyZoom(Math.max(zoom.min, zoom.value - zoom.step))}
-          >
-            −
-          </button>
-          <input
-            type="range"
-            min={zoom.min}
-            max={zoom.max}
-            step={zoom.step}
-            value={zoom.value}
-            aria-label="Zoom"
-            className="flex-1 accent-accent"
-            onChange={(e) => void applyZoom(Number(e.target.value))}
-          />
-          <span className="tnums w-10 text-right text-xs">{zoom.value.toFixed(1)}×</span>
-          <button
-            type="button"
-            aria-label="Povećaj zoom"
-            className="rounded-control bg-white/10 px-2.5 py-1 text-sm"
-            onClick={() => void applyZoom(Math.min(zoom.max, zoom.value + zoom.step))}
-          >
-            +
-          </button>
-        </div>
-      )}
+        {zoom && (
+          <div className="flex items-center gap-2 rounded-control bg-black/55 px-2 py-1">
+            <button
+              type="button"
+              aria-label="Smanji zoom"
+              className="rounded-control bg-white/10 px-2.5 py-1 text-sm"
+              onClick={() => void applyZoom(Math.max(zoom.min, zoom.value - zoom.step))}
+            >
+              −
+            </button>
+            <input
+              type="range"
+              min={zoom.min}
+              max={zoom.max}
+              step={zoom.step}
+              value={zoom.value}
+              aria-label="Zoom"
+              className="flex-1 accent-accent"
+              onChange={(e) => void applyZoom(Number(e.target.value))}
+            />
+            <span className="tnums w-10 text-right text-xs">{zoom.value.toFixed(1)}×</span>
+            <button
+              type="button"
+              aria-label="Povećaj zoom"
+              className="rounded-control bg-white/10 px-2.5 py-1 text-sm"
+              onClick={() => void applyZoom(Math.min(zoom.max, zoom.value + zoom.step))}
+            >
+              +
+            </button>
+          </div>
+        )}
 
-      <div className="space-y-3 bg-black/80 px-4 py-4 text-white">
+        {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`) — 3.0 je do sada nije imao. */}
+        {cameraOn && <ScanHint extra={'Tap na kadar = fokus · „Slikaj barkod" kad ne ide iz ruke'} />}
+
         {status && (
           <p className={statusKind === 'error' ? 'text-sm text-status-danger' : 'text-sm text-white/80'} aria-live="polite">
             {status}
@@ -679,7 +747,14 @@ export function ScanOverlay({
             value={manual}
             onChange={(e) => setManual(e.target.value)}
             placeholder="Ručni unos / HID čitač → Enter"
-            autoFocus
+            // autoFocus SAMO na uređajima sa mišem/HID čitačem (kiosk PC) — isti
+            // gard kao u lokacijskoj ljusci. Na telefonu bi programatski fokus
+            // podigao soft tastaturu PREKO kadra pre svakog skena, a uz
+            // `useVisualViewportFix` bi to i skupilo ceo overlay na vidljivi deo.
+            autoFocus={
+              typeof window === 'undefined' ||
+              !window.matchMedia('(pointer: coarse)').matches
+            }
           />
           <button type="submit" className="rounded-control bg-accent px-4 py-2 text-sm font-medium text-white">
             Traži

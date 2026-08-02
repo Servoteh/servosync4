@@ -31,7 +31,7 @@ function makeInvoice(over: Partial<InvoiceWithItems> = {}): InvoiceWithItems {
     customerId: 10,
     documentDate: new Date(2025, 11, 24),
     dueDate: new Date(2025, 11, 24),
-    deliveryDate: new Date(2025, 11, 24),
+    supplyDate: new Date(2025, 11, 24),
     currency: "RSD",
     netTotal: d(16000),
     vatTotal: d(3200),
@@ -488,7 +488,7 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
         makeCtx({
           customer: null,
           signatory: null,
-          invoice: makeInvoice({ dueDate: null, deliveryDate: null }),
+          invoice: makeInvoice({ dueDate: null, supplyDate: null }),
           issuer: { ...makeCtx().issuer, invoiceIssuingPlace: null },
         }),
       );

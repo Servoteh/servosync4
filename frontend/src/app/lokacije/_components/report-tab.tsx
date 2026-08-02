@@ -331,6 +331,7 @@ export function ReportTab() {
             value={locationId}
             onChange={(v) => { setLocationId(v); setPage(1); }}
             kinds={['SHELF', 'RACK', 'BIN', 'CAGE']}
+            shelvesFirst
             placeholder="Polica / kavez (npr. KV 7)…"
           />
         </div>

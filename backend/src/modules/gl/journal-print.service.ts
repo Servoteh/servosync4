@@ -17,6 +17,11 @@ import type { Column, Content, TableCell, TDocumentDefinitions } from "pdfmake/i
 import { PrismaService } from "../../prisma/prisma.service";
 import { PdfService } from "../documents/pdf.service";
 import { SERVOTEH_LOGO_DATA_URL } from "../documents/servoteh-logo";
+import {
+  LOGO_WIDTH,
+  buildPageFooter,
+  sanitizeText,
+} from "../documents/doc-layout";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -30,11 +35,16 @@ interface IssuerInfo {
   registrationNumber: string | null;
 }
 
-/** Status naloga → čitljiva labela (kanonska mapa GK). */
+/**
+ * Status naloga → čitljiva labela (kanonska mapa GK). Ključevi su VELIKIM slovima
+ * jer je `journal_entries.status` prebačen na DRAFT/POSTED/LOCKED (migracija
+ * 20260725220000, DB-028) — sa malim ključevima je štampa ispisivala sirovo
+ * „POSTED" umesto „Proknjižen". `toUpperCase()` drži i stare zapise.
+ */
 const STATUS_LABEL: Record<string, string> = {
-  draft: "U pripremi",
-  posted: "Proknjižen",
-  locked: "Zaključan",
+  DRAFT: "U pripremi",
+  POSTED: "Proknjižen",
+  LOCKED: "Zaključan",
 };
 
 @Injectable()
@@ -213,13 +223,10 @@ export class JournalPrintService {
       ],
       styles: pdfStyles,
       defaultStyle: { font: "Roboto", fontSize: 9 },
-      footer: (currentPage: number, pageCount: number): Content => ({
-        text: `Nalog ${entry.orderTypeCode} ${entry.number}/${entry.year} · strana ${currentPage}/${pageCount}`,
-        alignment: "center",
-        fontSize: 7,
-        color: "#888",
-        margin: [0, 8, 0, 0],
-      }),
+      footer: buildPageFooter(
+        `Nalog za knjiženje ${entry.orderTypeCode} ${entry.number}/${entry.year}`,
+        null,
+      ),
     };
   }
 
@@ -239,7 +246,7 @@ export class JournalPrintService {
       : entry.orderTypeCode;
     return {
       columns: [
-        { image: SERVOTEH_LOGO_DATA_URL, width: 120 },
+        { image: SERVOTEH_LOGO_DATA_URL, width: LOGO_WIDTH },
         {
           width: "*",
           margin: [12, 4, 0, 0],
@@ -254,7 +261,10 @@ export class JournalPrintService {
                   width: "auto",
                   text: [
                     { text: "Status: ", style: "metaLbl" },
-                    { text: STATUS_LABEL[entry.status] ?? entry.status, style: "metaVal" },
+                    {
+                      text: STATUS_LABEL[entry.status.toUpperCase()] ?? entry.status,
+                      style: "metaVal",
+                    },
                   ],
                 },
               ],

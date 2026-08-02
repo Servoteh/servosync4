@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
 /**
@@ -29,6 +29,17 @@ import { Prisma } from "@prisma/client";
  *   • Rabat po stavci → cac:AllowanceCharge (ChargeIndicator=false).
  *   • PDF prilog (base64) → cac:AdditionalDocumentReference → cac:Attachment →
  *     cbc:EmbeddedDocumentBinaryObject.
+ *   • PLAĆANJE (grupa D): cac:PaymentMeans nosi način plaćanja (42 = uplata na račun,
+ *     BigBit paritet), poziv na broj (cbc:PaymentID = BT-83) i račun za uplatu
+ *     (cac:PayeeFinancialAccount → cbc:ID = IBAN ili tekući račun, cbc:Name = naziv
+ *     vlasnika, cac:FinancialInstitutionBranch → cbc:ID = SWIFT/BIC).
+ *   • ISPORUKA (grupa D): cac:Delivery → cbc:ActualDeliveryDate (BT-72 = datum prometa
+ *     dobara i usluga) + cac:DeliveryLocation/cac:Address (mesto isporuke). Blok se
+ *     ispisuje SAMO kad su podaci prosleđeni i NIKAD na avansnom računu (BigBit
+ *     `F_IF_ImaDelivery`); datum prometa se NE izvodi iz `documentDate` — to bi bila
+ *     izmišljena činjenica na poreskom dokumentu.
+ *   • JEDINICA MERE (grupa D): `cbc:InvoicedQuantity/@unitCode` se mapira iz `items.unit`
+ *     u UN/ECE Rec 20 kod (`unitCodeOf`), a ne šalje se više tvrdo „H87" za svaku stavku.
  *
  * ⚠️ Ovaj servis je ČIST (bez baze, bez mreže): prima već učitane entitete i
  * vraća string. Prisma.Decimal se serijalizuje preko `.toFixed(2)` (novac) —
@@ -85,6 +96,151 @@ function taxCategoryOf(percent: number, isExport: boolean): string {
   return isExport ? "Z" : "E";
 }
 
+/**
+ * UN/ECE Rec 20 kod za nepoznatu/neunetu jedinicu mere. H87 = „piece" (komad) — u
+ * srpskoj praksi (SEF) podrazumevana jedinica. Fallback, NE tiha pretpostavka: svaka
+ * ne-prazna jedinica koja se ne prepozna se loguje da bi se šifarnik očistio.
+ */
+const DEFAULT_UNIT_CODE = "H87";
+
+/**
+ * MAPA JEDINICA MERE → UN/ECE Rec 20 (`cbc:InvoicedQuantity/@unitCode`).
+ * ---------------------------------------------------------------------
+ * Ključevi su NORMALIZOVANI oblici (`normalizeUnit`): mala slova, bez tačke na kraju,
+ * bez razmaka, `²`/`³` prevedeni u `2`/`3`, srpski dijakritici svedeni (č/ć→c, š→s…).
+ *
+ * Spisak je sastavljen iz STVARNIH vrednosti `R_Artikli."Jedinica mere"` u BigBit dumpu
+ * (BB_T_26_11-07-26.mdb, ~90k artikala) — pokriva ~99,5% redova. Najčešće: Kom/Kom.
+ * (83k), kg (2,9k), m (1,2k), pc (0,6k), m2, set, m3, mm, l, pack, par, h.
+ *
+ * NAMERNO NEMAPIRANO (ostaje fallback + upozorenje, jer značenje nije utvrđeno):
+ *   „c" (~1050 redova), „cet" (~192), „reb"/„rebro", „šar", „čl"/„član", „st", „md",
+ *   „MO", „CNP", „KD", „ž", „đ", „Kog" i numeričko smeće („0", „8", „920", „693.5").
+ *   To su prljavi unosi legacy šifarnika — pogađati ih značilo bi izmišljati podatak
+ *   na poreskom dokumentu. Kad ih knjigovođa/magacin razreši, dodaju se ovde.
+ */
+const UNIT_CODE_BY_UNIT: Readonly<Record<string, string>> = {
+  // — komad (H87 = piece; EA/„each" se namerno svodi na H87 radi doslednosti sa SEF-om) —
+  kom: "H87",
+  komad: "H87",
+  komada: "H87",
+  kos: "H87",
+  kom1: "H87",
+  pc: "H87",
+  pcs: "H87",
+  psc: "H87",
+  piece: "H87",
+  pieces: "H87",
+  each: "H87",
+  ea: "H87",
+  qty: "H87",
+  un: "H87",
+  nr: "H87",
+  // — masa —
+  kg: "KGM",
+  g: "GRM",
+  gr: "GRM",
+  mg: "MGM",
+  t: "TNE",
+  tona: "TNE",
+  // — dužina —
+  m: "MTR",
+  m1: "MTR",
+  met: "MTR",
+  metar: "MTR",
+  mm: "MMT",
+  cm: "CMT",
+  km: "KMT",
+  // — površina / zapremina —
+  m2: "MTK",
+  mm2: "MMK",
+  cm2: "CMK",
+  m3: "MTQ",
+  // — zapremina (tečnost) —
+  l: "LTR",
+  lit: "LTR",
+  litar: "LTR",
+  ml: "MLT",
+  // — vreme —
+  h: "HUR",
+  sat: "HUR",
+  cas: "HUR",
+  min: "MIN",
+  d: "DAY",
+  dan: "DAY",
+  day: "DAY",
+  mes: "MON",
+  god: "ANN",
+  // — set / pakovanje / par —
+  set: "SET",
+  komp: "SET",
+  kompl: "SET",
+  komplet: "SET",
+  kpl: "SET",
+  kmp: "SET",
+  gar: "SET",
+  garnitura: "SET",
+  pak: "XPK",
+  pack: "XPK",
+  packs: "XPK",
+  pakovanje: "XPK",
+  pk: "XPK",
+  pkt: "XPK",
+  par: "PR",
+  pair: "PR",
+  // — usluga / procenat —
+  usl: "E48",
+  usluga: "E48",
+  "%": "P1",
+  procenat: "P1",
+};
+
+/**
+ * Normalizacija zapisa jedinice pre traženja u mapi: „Kom." · „KOM" · „kom" · „ m2"
+ * · „m²" → isti ključ. Dijakritici se svode (č/ć→c, š→s, ž→z, đ→dj) jer legacy
+ * šifarnik meša ćirilične/latinične i skraćene oblike.
+ */
+function normalizeUnit(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/²/g, "2")
+    .replace(/³/g, "3")
+    .replace(/[čć]/g, "c")
+    .replace(/š/g, "s")
+    .replace(/ž/g, "z")
+    .replace(/đ/g, "dj")
+    .replace(/[\s.]+$/g, "")
+    .replace(/\s+/g, "");
+}
+
+/**
+ * `items.unit` → UN/ECE Rec 20 kod za `cbc:InvoicedQuantity/@unitCode`.
+ * Vraća `{ code, recognized }`: `recognized=false` znači da je vraćen fallback H87 —
+ * pozivalac to loguje jednom po jedinici (da se ne zatrpa log po stavci).
+ * Prazna/neuneta jedinica NIJE greška (artikal bez JM) → H87 bez upozorenja.
+ */
+export function unitCodeOf(unit: string | null | undefined): {
+  code: string;
+  recognized: boolean;
+} {
+  if (unit == null) return { code: DEFAULT_UNIT_CODE, recognized: true };
+  const key = normalizeUnit(unit);
+  if (key.length === 0) return { code: DEFAULT_UNIT_CODE, recognized: true };
+  const code = UNIT_CODE_BY_UNIT[key];
+  if (code) return { code, recognized: true };
+  return { code: DEFAULT_UNIT_CODE, recognized: false };
+}
+
+/**
+ * UNCL 4461 šifra načina plaćanja = 42 („payment to bank account", uplata na račun).
+ * BIGBIT PARITET, ne pretpostavka: `Module__ER_Module.txt` → `UBL_SifraPlacanja()`
+ * vraća tvrdo "42" i sa tom šifrom BigBit godinama šalje na SEF. (EN16931 primeri
+ * češće koriste 30 = „credit transfer"; obe su važeće UNCL 4461 šifre, ali se ovde
+ * drži ono što je u produkciji dokazano prošlo.)
+ */
+const PAYMENT_MEANS_CODE = "42";
+
 /** Grupa PDV rekapitulacije (jedan cac:TaxSubtotal) — po jedinstvenoj stopi. */
 interface TaxGroup {
   percent: number;
@@ -106,7 +262,15 @@ export interface UblSupplierParty {
   registrationNumber?: string | null; // matični broj
   address?: string | null;
   city?: string | null;
+  /** Tekući račun za uplatu → cac:PayeeFinancialAccount/cbc:ID (BT-84). */
   bankAccount?: string | null;
+  /**
+   * IBAN (`companies.iban`) — ima PREDNOST nad `bankAccount` u
+   * cac:PayeeFinancialAccount/cbc:ID (BT-84), jer ino kupac plaća po IBAN-u.
+   */
+  iban?: string | null;
+  /** SWIFT/BIC (`companies.swift`) → cac:FinancialInstitutionBranch/cbc:ID (BT-86). */
+  swift?: string | null;
 }
 
 /** Podaci kupca za AccountingCustomerParty (iz Customer). */
@@ -126,14 +290,6 @@ export interface UblInvoiceInput {
   documentDate: Date;
   dueDate?: Date | null;
   currency: string;
-  /**
-   * DATUM PROMETA dobara i usluga → `cac:Delivery/cbc:ActualDeliveryDate` (BT-72).
-   * Obavezan element računa po Zakonu o PDV; do 02.08.2026. ga builder uopšte nije
-   * slao (docs/FAKTURE_ZAKONSKA_USKLADJENOST.md §4.3). Tip je opcion samo zato što
-   * ga avansni račun (386) nema — za sve ostale je `build()` obavezuje i baca ako
-   * nedostaje (v. guard u `build`).
-   */
-  deliveryDate?: Date | null;
   isExport: boolean;
   netTotal: Prisma.Decimal;
   vatTotal: Prisma.Decimal;
@@ -144,6 +300,13 @@ export interface UblInvoiceInput {
   /** Referenca avansne fakture (cac:BillingReference) — kada je za plaćanje 0. */
   prepaymentReference?: string | null;
   /**
+   * SVE avansne reference (N:M od migracije 20260726120000) — jedan
+   * `cac:BillingReference` po odbijenom avansu. Kad se prosledi, ima prednost nad
+   * `prepaymentReference`: bez toga bi e-faktura nosila ZBIR svih primena uz broj
+   * samo PRVOG avansa, tj. netačnu referencu na poreskom dokumentu (revizija).
+   */
+  prepaymentReferences?: string[] | null;
+  /**
    * Odbijen (već plaćen) avans → cbc:PrepaidAmount; PayableAmount = grossTotal −
    * prepaidAmount. Kad se ne prosledi, važi staro ponašanje: sama referenca
    * avansa znači da avans zatvara CEO iznos (PayableAmount = 0).
@@ -151,6 +314,34 @@ export interface UblInvoiceInput {
   prepaidAmount?: Prisma.Decimal | null;
   /** true = ova faktura je avansna (386). */
   isPrepayment?: boolean;
+
+  // — Grupa D: plaćanje i isporuka —
+  /**
+   * DATUM PROMETA DOBARA I USLUGA (BT-72) → cac:Delivery/cbc:ActualDeliveryDate.
+   * Propisan sadržaj računa (ZPDV čl. 42), kolona `invoices.supply_date`.
+   * NIKAD ne izvoditi iz `documentDate`: datum izdavanja i datum prometa se razlikuju
+   * i pretpostavka bi bila laž na poreskom dokumentu.
+   *
+   * ⚠️ JEDNO IME ZA JEDAN PODATAK (spajanje 02.08.2026): grana za štampu je isti
+   * podatak nakratko zvala `deliveryDate` (po koloni `invoices.delivery_date`). Ostalo
+   * je `supplyDate` — ime je preciznije („datum prometa", ne „datum isporuke") i već je
+   * vezano end-to-end. Ne uvoditi drugo polje za isti podatak.
+   *
+   * Tip je opcion samo zbog avansnog računa (386): kod avansa promet se još nije
+   * dogodio. Za sve ostalo `build()` ovo polje ZAHTEVA i baca ako nedostaje.
+   */
+  supplyDate?: Date | null;
+  /** Mesto isporuke (ulica i broj) → cac:Delivery/cac:DeliveryLocation/cac:Address. */
+  deliveryStreet?: string | null;
+  /** Mesto isporuke (grad) → isto, cbc:CityName. */
+  deliveryCity?: string | null;
+  /**
+   * POZIV NA BROJ (BT-83) → cac:PaymentMeans/cbc:PaymentID. Kad se ne prosledi, koristi
+   * se BROJ DOKUMENTA (BigBit paritet — `UBL_ModelPozivNaBroj`). ⚠️ Kolona
+   * `invoices.payment_reference` u 4.0 još NE POSTOJI (dodaje je grupa B); čim stigne,
+   * prosleđena vrednost preuzima prvenstvo nad brojem dokumenta.
+   */
+  paymentReference?: string | null;
 }
 
 /** Minimalni oblik stavke (podskup InvoiceItem). */
@@ -158,6 +349,11 @@ export interface UblInvoiceItemInput {
   lineNo: number;
   description?: string | null;
   itemId?: number | null;
+  /**
+   * Jedinica mere artikla (`items.unit`) — mapira se u UN/ECE Rec 20 kod
+   * (`unitCodeOf`) za `cbc:InvoicedQuantity/@unitCode`. Prazno/nepoznato → H87.
+   */
+  unit?: string | null;
   quantity: Prisma.Decimal;
   unitPrice: Prisma.Decimal;
   discountPercent: Prisma.Decimal;
@@ -180,6 +376,14 @@ export interface UblBuildParams {
 
 @Injectable()
 export class UblBuilderService {
+  private readonly logger = new Logger(UblBuilderService.name);
+  /**
+   * Jedinice mere koje su već prijavljene kao nepoznate — upozorenje ide JEDNOM po
+   * zapisu jedinice, a ne po stavci (faktura sa 200 redova iste „c" jedinice bi
+   * inače ispisala 200 identičnih redova u logu).
+   */
+  private readonly warnedUnits = new Set<string>();
+
   /**
    * Sagradi UBL 2.1 XML string za jednu izlaznu fakturu. Vraća KOMPLETAN
    * dokument (sa XML deklaracijom). Ne dira bazu/mrežu.
@@ -205,7 +409,7 @@ export class UblBuilderService {
     // IZUZETAK — avansni račun (386): kod avansa promet se JOŠ NIJE dogodio (poreska
     // obaveza nastaje od naplate), pa datum prometa nema šta da nosi. 🔴 Tačan sadržaj
     // avansnog računa je otvoreno pitanje za knjigovođu (§7 t.5).
-    if (!invoice.isPrepayment && !invoice.deliveryDate) {
+    if (!invoice.isPrepayment && !invoice.supplyDate) {
       throw new BadRequestException(
         `Račun ${invoice.documentNumber} nema datum prometa — bez njega ne sme na SEF ` +
           `(obavezan element računa po Zakonu o PDV). Unesi datum prometa pa ponovi slanje.`,
@@ -247,11 +451,17 @@ export class UblBuilderService {
       parts.push("</cac:OrderReference>");
     }
 
-    // — Avansna referenca (cac:BillingReference) —
-    if (invoice.prepaymentReference) {
+    // — Avansne reference (cac:BillingReference) — po JEDNA za svaki odbijen avans.
+    const prepaymentRefs =
+      invoice.prepaymentReferences && invoice.prepaymentReferences.length > 0
+        ? invoice.prepaymentReferences
+        : invoice.prepaymentReference
+          ? [invoice.prepaymentReference]
+          : [];
+    for (const reference of prepaymentRefs) {
       parts.push("<cac:BillingReference>");
       parts.push("<cac:InvoiceDocumentReference>");
-      parts.push(el("cbc:ID", invoice.prepaymentReference));
+      parts.push(el("cbc:ID", reference));
       parts.push("</cac:InvoiceDocumentReference>");
       parts.push("</cac:BillingReference>");
     }
@@ -280,16 +490,18 @@ export class UblBuilderService {
     parts.push(this.buildSupplier(supplier));
     parts.push(this.buildCustomer(customer));
 
-    // — DATUM PROMETA (cac:Delivery/cbc:ActualDeliveryDate = BT-72) —
-    // UBL 2.1 redosled elemenata korena <Invoice>: cac:Delivery dolazi POSLE
-    // cac:AccountingCustomerParty (i eventualnih Payee/Seller/TaxRepresentative strana),
-    // a PRE cac:PaymentMeans / cac:TaxTotal. Odstupanje od redosleda = odbijen dokument,
-    // pa se ovaj blok ne pomera „radi preglednosti".
-    if (invoice.deliveryDate) {
-      parts.push("<cac:Delivery>");
-      parts.push(el("cbc:ActualDeliveryDate", fmtDate(invoice.deliveryDate)));
-      parts.push("</cac:Delivery>");
-    }
+    // — Isporuka i plaćanje (grupa D) —
+    // UBL 2.1 redosled u <Invoice>: … AccountingCustomerParty → cac:Delivery →
+    // cac:PaymentMeans → cac:PaymentTerms → cac:AllowanceCharge → cac:TaxTotal …
+    // Odstupanje od redosleda = shema odbija dokument, pa oba bloka idu OVDE, a ne
+    // uz strane ni uz iznose.
+    //
+    // ⚠️ SPAJANJE 02.08.2026: ovde je nakratko stajao i naš inline `<cac:Delivery>`
+    // blok koji je emitovao samo datum prometa. Obrisan je, jer `buildDelivery` radi
+    // isto TO plus mesto isporuke (BG-15) i preskakanje bloka na avansnom računu
+    // (BigBit `F_IF_ImaDelivery`). Dva bloka bi inače dala dva `<cac:Delivery>`.
+    parts.push(this.buildDelivery(invoice));
+    parts.push(this.buildPaymentMeans(invoice, supplier));
 
     // — Rekapitulacija poreza (cac:TaxTotal → cac:TaxSubtotal PO STOPI) —
     // PDV granularnost (A5): grupiši stavke po stvarnoj stopi (20/10/8/0) → po jedan
@@ -402,6 +614,100 @@ export class UblBuilderService {
     return p.join("");
   }
 
+  /**
+   * cac:Delivery — datum prometa (BT-72) i mesto isporuke (BG-15).
+   *
+   * BIGBIT PARITET: `Module__ER_Module.txt` → `F_IF_ImaDelivery()` isključuje blok
+   * isporuke za AVANS i za knjižno odobrenje/zaduženje. Avansni račun po definiciji
+   * nema promet (PDV obaveza nastaje naplatom), pa se blok preskače na AVR-u.
+   *
+   * Vraća PRAZAN string i kada nema nijednog podatka: prazan <cac:Delivery/> ne nosi
+   * informaciju, a izmišljen datum (npr. datum izdavanja) bi bio netačan poreski podatak.
+   * Redosled unutar cac:Delivery po UBL 2.1: cbc:ActualDeliveryDate → cac:DeliveryLocation.
+   *
+   * ⚠️ Tiho izostavljanje datuma prometa VAŽI SAMO za avansni račun: za sve ostale je
+   * `build()` odbio dokument pre nego što se stiglo dovde (v. branu u `build`). Račun
+   * bez obaveznog elementa ne sme da ode na SEF „bez reda", nego da padne glasno.
+   */
+  private buildDelivery(inv: UblInvoiceInput): string {
+    if (inv.isPrepayment) return "";
+    const street = inv.deliveryStreet?.trim() || null;
+    const city = inv.deliveryCity?.trim() || null;
+    const hasLocation = !!street || !!city;
+    if (!inv.supplyDate && !hasLocation) return "";
+
+    const p: string[] = [];
+    p.push("<cac:Delivery>");
+    if (inv.supplyDate) {
+      p.push(el("cbc:ActualDeliveryDate", fmtDate(inv.supplyDate)));
+    }
+    if (hasLocation) {
+      p.push("<cac:DeliveryLocation>");
+      p.push("<cac:Address>");
+      if (street) p.push(el("cbc:StreetName", street));
+      if (city) p.push(el("cbc:CityName", city));
+      p.push("<cac:Country>");
+      p.push(el("cbc:IdentificationCode", "RS"));
+      p.push("</cac:Country>");
+      p.push("</cac:Address>");
+      p.push("</cac:DeliveryLocation>");
+    }
+    p.push("</cac:Delivery>");
+    return p.join("");
+  }
+
+  /**
+   * cac:PaymentMeans — kako i na koji račun kupac plaća.
+   * Redosled po UBL 2.1: cbc:PaymentMeansCode → cbc:PaymentID → cac:PayeeFinancialAccount
+   * (a unutar njega cbc:ID → cbc:Name → cac:FinancialInstitutionBranch).
+   *
+   * POZIV NA BROJ (BT-83): eksplicitan `paymentReference` kad postoji, inače BROJ
+   * DOKUMENTA — to nije pogađanje nego BIGBIT PARITET: `Module__ER_Module.txt` →
+   * `UBL_ModelPozivNaBroj(BrojDokumenta)` vraća baš broj dokumenta (varijanta sa
+   * prefiksom modela „00 " je u izvoru zakomentarisana). Kad grupa B doda kolonu
+   * `invoices.payment_reference`, ona preuzima prvenstvo bez izmene ovog koda.
+   *
+   * Firma bez računa za uplatu se loguje kao upozorenje (propust u podešavanju firme).
+   */
+  private buildPaymentMeans(
+    inv: UblInvoiceInput,
+    supplier: UblSupplierParty,
+  ): string {
+    // IBAN ima prednost (ino uplata); domaći tekući račun je fallback.
+    const account =
+      supplier.iban?.replace(/\s+/g, "").trim() ||
+      supplier.bankAccount?.trim() ||
+      null;
+    const reference =
+      inv.paymentReference?.trim() || inv.documentNumber.trim() || null;
+    if (!account) {
+      this.logger.warn(
+        `Faktura ${inv.documentNumber}: firma nema ni tekući račun ni IBAN — ` +
+          "UBL ide bez računa za uplatu (kupac nema na šta da uplati).",
+      );
+    }
+    if (!account && !reference) return "";
+
+    const p: string[] = [];
+    p.push("<cac:PaymentMeans>");
+    p.push(el("cbc:PaymentMeansCode", PAYMENT_MEANS_CODE));
+    if (reference) p.push(el("cbc:PaymentID", reference));
+    if (account) {
+      p.push("<cac:PayeeFinancialAccount>");
+      p.push(el("cbc:ID", account));
+      p.push(el("cbc:Name", supplier.name));
+      const swift = supplier.swift?.trim() || null;
+      if (swift) {
+        p.push("<cac:FinancialInstitutionBranch>");
+        p.push(el("cbc:ID", swift));
+        p.push("</cac:FinancialInstitutionBranch>");
+      }
+      p.push("</cac:PayeeFinancialAccount>");
+    }
+    p.push("</cac:PaymentMeans>");
+    return p.join("");
+  }
+
   private buildAddress(address?: string | null, city?: string | null): string {
     const p: string[] = [];
     p.push("<cac:PostalAddress>");
@@ -455,7 +761,9 @@ export class UblBuilderService {
     p.push("<cac:InvoiceLine>");
     p.push(el("cbc:ID", String(it.lineNo)));
     p.push(
-      `<cbc:InvoicedQuantity unitCode="H87">${fmtQty(it.quantity)}</cbc:InvoicedQuantity>`,
+      `<cbc:InvoicedQuantity unitCode="${this.unitCodeFor(it)}">${fmtQty(
+        it.quantity,
+      )}</cbc:InvoicedQuantity>`,
     );
     p.push(amountEl("cbc:LineExtensionAmount", it.vatBase, cur));
 
@@ -498,6 +806,27 @@ export class UblBuilderService {
 
     p.push("</cac:InvoiceLine>");
     return p.join("");
+  }
+
+  /**
+   * UN/ECE Rec 20 kod jedinice za stavku, uz JEDNOKRATNO upozorenje po nepoznatom
+   * zapisu jedinice. Fallback je H87 (komad) — SEF traži važeći kod, pa se stavka ne
+   * sme poslati bez njega; ali se u logu ostavlja trag da šifarnik treba očistiti.
+   */
+  private unitCodeFor(it: UblInvoiceItemInput): string {
+    const { code, recognized } = unitCodeOf(it.unit);
+    if (!recognized) {
+      const raw = (it.unit ?? "").trim();
+      if (!this.warnedUnits.has(raw)) {
+        this.warnedUnits.add(raw);
+        this.logger.warn(
+          `Jedinica mere "${raw}" nije u UN/ECE Rec 20 mapi — u UBL ide fallback ` +
+            `unitCode="${DEFAULT_UNIT_CODE}" (komad). Dopuniti UNIT_CODE_BY_UNIT ili ` +
+            "ispraviti šifarnik artikala.",
+        );
+      }
+    }
+    return code;
   }
 }
 

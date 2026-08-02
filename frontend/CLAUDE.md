@@ -24,6 +24,16 @@ važe za svaku sesiju i svaki ekran, bez izuzetka.
    Tabele su server-side paginirane od prvog dana.
 9. **Bez novih zavisnosti** za UI (ikone: lucide-react; komponente: shadcn/ui kroz kit) bez izričitog
    odobrenja korisnika.
+10. **NIKAD `[id]` ruta — aplikacija je `output: "export"`.** Detalj dokumenta je uvek statička ruta
+    `/<modul>/detalj?id=N` uz `useIdParam()` iz `src/lib/use-id-param.ts`. Dinamički segment bez
+    stvarnih `generateStaticParams` izveze samo placeholder fajl `_`, pa `/modul/12` u objavljenoj
+    aplikaciji vraća **404** — backend mapira samo `/put` → `/put.html` i nema SPA fallback.
+    Ovako je 5 finansijskih modula (~20 vrsta dokumenata) bilo neotvorivo do 27.07.2026, a i
+    typecheck i build i deploy su pri tom bili zeleni. Provera: `find frontend/src/app -type d -name '[*'`
+    mora biti prazno, a u `frontend/out` ne sme postojati nijedan fajl `_` / `_.html`.
+11. **Filteri, strana i tab radne liste žive u URL-u** (`useListQueryState`), a „Nazad" sa detalja ide
+    na `listHref('/modul')`. Bez toga povratak sa detalja remontira listu i briše filter i stranu —
+    nad knjigom od 625 faktura to je stotine izgubljenih klikova po jednom PDV periodu.
 
 ## Kontekst projekta
 

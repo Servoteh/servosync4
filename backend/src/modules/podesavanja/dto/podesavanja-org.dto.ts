@@ -39,7 +39,9 @@ export class CreateExpectationDto {
 
 /** Isti zadatak na više zaposlenih (array INSERT). Paritet 1.0 bulkSaveExpectation. */
 export class BulkExpectationDto {
-  @IsArray() @ArrayMinSize(1) @IsUUID("all", { each: true })
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsUUID("all", { each: true })
   employeeIds!: string[];
   @IsString() @MaxLength(300) title!: string;
   @IsOptional() @IsString() @MaxLength(8000) descriptionMd?: string;

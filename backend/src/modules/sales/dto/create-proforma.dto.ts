@@ -37,7 +37,7 @@ export interface CreateProformaDto {
    * da je stvaran) — nego tek pri KNJIŽENJU računa, gde je vidljiv i logovan
    * (fakturisanje.service.ts, postInvoice).
    */
-  deliveryDate?: string;
+  supplyDate?: string;
   currency?: string; // RSD (domaći) | EUR (izvoz)
   isExport?: boolean; // izvoz (ExportInvoicePolicy)
   /** Broj narudžbenice kupca → UBL cac:OrderReference (SEF javni sektor, D6). Max 50. */
@@ -73,8 +73,8 @@ export function validateCreateProforma(dto: CreateProformaDto): void {
     errors.push("Valuta (rok plaćanja) nije ispravna.");
   }
   if (
-    dto.deliveryDate !== undefined &&
-    Number.isNaN(Date.parse(dto.deliveryDate))
+    dto.supplyDate !== undefined &&
+    Number.isNaN(Date.parse(dto.supplyDate))
   ) {
     errors.push("Datum prometa nije ispravan.");
   }

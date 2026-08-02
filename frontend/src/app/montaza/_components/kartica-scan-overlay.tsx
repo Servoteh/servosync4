@@ -11,6 +11,9 @@ import {
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
+import { ScanReticle } from '@/components/ui-kit/scan-reticle';
+import { ScanHint } from '@/components/ui-kit/scan-hint';
+import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
 
 /**
  * Punoekranski skener KARTICE KOJA PRATI DEO do montaže (zahtev 034/26).
@@ -51,6 +54,7 @@ export function KarticaScanOverlay({
   onClose: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const busyRef = useRef(false);
   const lastRef = useRef<{ code: string; at: number }>({ code: '', at: 0 });
@@ -58,6 +62,10 @@ export function KarticaScanOverlay({
   const [statusKind, setStatusKind] = useState<'info' | 'error'>('info');
   const [manual, setManual] = useState('');
   const [cameraOn, setCameraOn] = useState(false);
+
+  // Safari URL traka guta gornji deo kadra (1.0 lekcija) — do 02.08. je ovo imala
+  // samo lokacijska ljuska; sada je zajednički hook (v. `use-visual-viewport-fix`).
+  useVisualViewportFix(rootRef);
 
   // Roditelj prosleđuje callback-ove kao inline literale (nov identitet svaki render);
   // držimo ih u ref-u da kamera-efekat ostane stabilan (bez gašenja/paljenja kamere).
@@ -196,13 +204,28 @@ export function KarticaScanOverlay({
   }
 
   return (
+    // FULL-BLEED KADAR (S3, 02.08.2026) — v. `reversi/_components/scan-overlay.tsx`:
+    // 1.0 drži kameru preko celog ekrana (`.loc-scan-video`, legacy.css:4634), a
+    // kontrole lebde preko nje; `flex flex-col` sa neprozirnom donjom trakom je na
+    // telefonu jeo trećinu kadra.
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-black"
+      ref={rootRef}
+      className="fixed inset-0 z-50 bg-black"
       role="dialog"
       aria-modal="true"
       aria-label={title}
     >
-      <div className="flex items-center justify-between px-4 py-3 text-white">
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        className="absolute inset-0 h-full w-full object-cover"
+      />
+      {/* Barkod RN kartice je 1D → široki nišan sa laserom (isto kao lokacije/reversi). */}
+      {cameraOn && <ScanReticle variant="barcode" />}
+
+      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
         <span className="text-md font-semibold">{title}</span>
         <button
           type="button"
@@ -214,18 +237,9 @@ export function KarticaScanOverlay({
         </button>
       </div>
 
-      <div className="relative flex-1 overflow-hidden bg-black">
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video ref={videoRef} playsInline muted className="h-full w-full object-cover" />
-        {cameraOn && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center">
-            {/* Široki pravougaonik — 1D barkod, ne QR kvadrat. */}
-            <div className="h-32 w-72 max-w-[85%] rounded-panel border-2 border-white/70" />
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-3 bg-black/80 px-4 py-4 text-white">
+      <div className="absolute inset-x-0 bottom-0 z-10 space-y-2 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white">
+        {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`) — 3.0 je do sada nije imao. */}
+        {cameraOn && <ScanHint extra={'Ne ide iz ruke? Probaj „Slikaj barkod" ispod'} />}
         {status && (
           <p
             className={
@@ -251,7 +265,12 @@ export function KarticaScanOverlay({
             value={manual}
             onChange={(e) => setManual(e.target.value)}
             placeholder="Ukucaj barkod (RNZ:…) → Enter"
-            autoFocus
+            // autoFocus samo uz miš/HID čitač — na telefonu bi soft tastatura
+            // pokrila kadar pre skena (isti gard kao u lokacijskoj ljusci).
+            autoFocus={
+              typeof window === 'undefined' ||
+              !window.matchMedia('(pointer: coarse)').matches
+            }
           />
           <button
             type="submit"

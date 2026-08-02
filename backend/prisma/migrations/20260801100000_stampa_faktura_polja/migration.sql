@@ -14,8 +14,12 @@ ALTER TABLE "invoices"
   ADD COLUMN IF NOT EXISTS "fco"                    VARCHAR(30),
   ADD COLUMN IF NOT EXISTS "shipment_method"        VARCHAR(30),
   ADD COLUMN IF NOT EXISTS "payment_method"         VARCHAR(50),
-  -- Datum prometa dobara / Datum prometa / Date of delivery; puni i UBL cbc:ActualDeliveryDate.
-  ADD COLUMN IF NOT EXISTS "delivery_date"          TIMESTAMPTZ(6),
+  -- ⚠️ Datum prometa NIJE ovde. Ova migracija je 01.08.2026. dodavala i
+  -- "delivery_date" za taj podatak, ali ga je migracija 20260727140000 već uvela kao
+  -- "invoices"."supply_date" (BT-72, UBL cbc:ActualDeliveryDate). Pri spajanju grana
+  -- 02.08.2026. je kolona uklonjena odavde: dve kolone za jedan obavezan element
+  -- računa znače da polovina koda čita praznu. Produkcijska tabela "invoices" je bila
+  -- prazna, pa nije bilo podataka za prenos.
   -- Broj izvozne deklaracije / JCI na ino robnoj fakturi (do sada se lepio u "note").
   ADD COLUMN IF NOT EXISTS "customs_declaration_no" VARCHAR(30),
   -- Otpremni blok ino usluge (Invoice 060/26): paritet, kolete, dimenzije, težine, istovar, špediter.

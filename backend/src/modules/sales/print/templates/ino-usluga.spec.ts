@@ -47,7 +47,7 @@ const invoice = {
   customerId: 10,
   documentDate: new Date(2026, 2, 6),
   dueDate: new Date(2026, 2, 6),
-  deliveryDate: new Date(2026, 2, 6),
+  supplyDate: new Date(2026, 2, 6),
   currency: "EUR",
   netTotal: D("10530.75"),
   vatTotal: D("0"),

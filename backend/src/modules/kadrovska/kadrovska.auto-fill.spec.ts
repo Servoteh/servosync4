@@ -9,8 +9,9 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
  *     prisustva u SQL-u (opseg + predlog sati računa JS = izvor istine);
  * (2) VIKEND SA čistim kucanjem se PREDLAŽE kao redovni (D1, 044/26 — više se ne
  *     izbacuje); skraćena smena se seče NANIŽE na pola sata (D2);
- * (3) NERADNI PRAZNIK samo kao PUN dan (8h) — delimično kucanje bi u obračunu pojelo
- *     garantovanih 8h plaćenog praznika; is_workday=true (radna subota) NIJE praznik;
+ * (3) NERADNI PRAZNIK od 01.08.2026 NEMA poseban tretman — i delimično kucanje je
+ *     predlog (O-1 je uklonio zamku „upis sati pojede 8h", O-4 + presuda vlasnika traže
+ *     evidenciju); ovaj put zato više ne čita kadr_holidays;
  * (4) KLAMP na JUČE — dan koji još traje se NIKAD ne predlaže (isto kao noćni tik);
  * (5) izlaz = hours (predlog) + kontekst (presenceHours/firstIn/lastOut) za pregled;
  * (6) sve kroz withUserRls (RLS), NIKAD this.sy15.db (BYPASSRLS) — auto ne sme da
@@ -20,10 +21,6 @@ type SqlLike = { strings: string[]; values: unknown[] };
 const firstSql = (m: jest.Mock): SqlLike =>
   (m.mock.calls as unknown[][])[0]?.[0] as SqlLike;
 const sqlText = (m: jest.Mock): string => firstSql(m).strings.join(" ? ");
-
-/** Prvi argument prvog poziva mock-a (bez `any` curenja). */
-const firstArg = (m: jest.Mock): unknown =>
-  (m.mock.calls as unknown[][])[0]?.[0];
 
 /** Praznik u fixture-u: string = pravi NERADNI praznik; objekat = eksplicitan is_workday. */
 type HolidayFixture = string | { date: string; isWorkday: boolean };
@@ -174,7 +171,7 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     expect(s[0]).toMatchObject({ workDate: "2026-07-25", hours: 6.5 });
   });
 
-  it("NERADNI praznik + PUN dan → PREDLAŽE se kao 8 (praznični rad zamenjuje plaćeni praznik)", async () => {
+  it("NERADNI praznik + PUN dan (8.0h) → PREDLAŽE se kao 8", async () => {
     const { svc, holidayFindMany } = makeSvc({
       vsGridRows: [vsRow("2026-07-07")], // default presence 8.0 → hours 8
       holidays: ["2026-07-07"],
@@ -182,23 +179,33 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     const s = await suggestionsOf(svc, { year: 2026, month: 7 });
     expect(s).toHaveLength(1);
     expect(s[0]).toMatchObject({ workDate: "2026-07-07", hours: 8 });
-    // praznik-upit MORA tražiti samo is_workday=false (radni-dan izuzeci nisu praznik)
-    expect(firstArg(holidayFindMany)).toMatchObject({
-      where: { isWorkday: false },
-    });
+    expect(holidayFindMany).not.toHaveBeenCalled(); // kalendar praznika nije potreban
   });
 
-  it("NERADNI praznik + DELIMIČNO kucanje (2.5h) → NIJE predlog (čuva garantovanih 8h plaćenog praznika)", async () => {
-    // Identično noćnom tiku: payroll-calc bi 2.5h upisao kao praznikRadSati i time
-    // ubio automatskih 8h praznikPlaceniSati; unosi ga kadrovska svesno.
-    const { svc } = makeSvc({
+  it("NERADNI praznik + DELIMIČNO kucanje (2.5h) → SADA JESTE predlog (2.5), poravnato sa tikom", async () => {
+    // Kapija ukinuta 01.08.2026: posle O-1 obračun sate DODAJE na 8h plaćenog praznika
+    // (ne zamenjuje ih), pa se evidencija „ko je dodatno radio za praznik" beleži
+    // automatski (O-4 + presuda vlasnika); kontrolu radi kadrovska mesečno.
+    const { svc, holidayFindMany } = makeSvc({
       vsGridRows: [vsRow("2026-07-07", { presence_hours: 2.5 })],
       holidays: ["2026-07-07"],
     });
-    expect(await suggestionsOf(svc, { year: 2026, month: 7 })).toHaveLength(0);
+    const s = await suggestionsOf(svc, { year: 2026, month: 7 });
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ workDate: "2026-07-07", hours: 2.5 });
+    expect(holidayFindMany).not.toHaveBeenCalled();
   });
 
-  it("kadr_holidays sa is_workday=TRUE (radna subota) NIJE praznik → predlog po običnom pravilu", async () => {
+  it("neradni praznik + 8.2h → i dalje 8 (kapa na pun dan, nepromenjeno)", async () => {
+    const { svc } = makeSvc({
+      vsGridRows: [vsRow("2026-07-07", { presence_hours: 8.2 })],
+      holidays: ["2026-07-07"],
+    });
+    const s = await suggestionsOf(svc, { year: 2026, month: 7 });
+    expect(s[0]).toMatchObject({ hours: 8 });
+  });
+
+  it("kadr_holidays sa is_workday=TRUE (radna subota) → običan dan (6.52h → 6.5)", async () => {
     const { svc } = makeSvc({
       vsGridRows: [vsRow("2026-07-25", { presence_hours: 6.52 })], // subota
       holidays: [{ date: "2026-07-25", isWorkday: true }],
@@ -206,6 +213,16 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     const s = await suggestionsOf(svc, { year: 2026, month: 7 });
     expect(s).toHaveLength(1);
     expect(s[0]).toMatchObject({ workDate: "2026-07-25", hours: 6.5 });
+  });
+
+  it("pokriven dan / dan sa odsustvom se NIKAD ne predlaže (SQL filter, i na praznik)", async () => {
+    // Predlozi su READ-ONLY, ali brana je ista kao kod tika: kandidatski SQL izbacuje
+    // grid_covered=true i absence_code IS NOT NULL, pa takav dan ne stigne do predloga.
+    const { svc, queryRaw } = makeSvc({ vsGridRows: [] });
+    await svc.gridAutoFillSuggestions("hr@x", { year: 2026, month: 7 });
+    const t = sqlText(queryRaw);
+    expect(t).toContain("grid_covered = false");
+    expect(t).toContain("absence_code IS NULL");
   });
 
   it("skraćena smena (6.75h) → predlog sečen NANIŽE na 6.5 (D2), NE 8h", async () => {

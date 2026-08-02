@@ -657,6 +657,23 @@ export class NabavkaService {
     return { data, meta: { total } };
   }
 
+  /**
+   * Jedan zahtev za nabavku SA STAVKAMA — za ekran detalja.
+   *
+   * Postoji jer je front detalj do sada izvodio klijentski iz liste
+   * (`requests?take=500`), pa se zahtev van prvih 500 VIDEO u listi ali se NIJE
+   * MOGAO otvoriti — i to uz poruku „možda je obrisan", koja nije bila tačna.
+   * Dok se detalj nije mogao ni otvoriti to je bilo nevidljivo; sada je otvaranje
+   * po deljenom linku redovan put.
+   */
+  async getRequestDetail(id: number) {
+    await this.getRequestOrThrow(id);
+    return this.prisma.purchaseRequest.findUniqueOrThrow({
+      where: { id },
+      include: { items: true },
+    });
+  }
+
   // ── helpers ────────────────────────────────────────────────────────────────
 
   private async getRequestOrThrow(id: number) {

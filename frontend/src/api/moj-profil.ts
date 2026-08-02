@@ -319,6 +319,16 @@ export interface Expectation {
 export interface JobPositionInfo {
   id: number;
   name: string;
+  /**
+   * Sistematizacija. BE (`moj-profil.service.ts` → `jobPosition.findUnique`) vraća
+   * CEO `job_positions` red, pa uz opis pozicije stižu i odeljenje/pod-odeljenje.
+   * Čita ih `useMagacinskiKrug` (`/mob` bira početni raspored po RADNOM MESTU, ne
+   * po roli). Opciono deklarisano — polja su dopuna kontrakta, a nijedan postojeći
+   * potrošač („Moj profil" opis pozicije) ih ne traži. Nullability prati kanonski
+   * `JobPosition` (api/kadrovska.ts) — `department_id` je NOT NULL, pod-odeljenje nije.
+   */
+  departmentId?: number;
+  subDepartmentId?: number | null;
   summaryMd: string | null;
   expectationsMd: string | null;
   responsibilitiesMd: string | null;

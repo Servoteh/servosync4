@@ -7,7 +7,10 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
       <input
         ref={ref}
         className={cn(
-          'h-9 w-full rounded-control border border-line bg-surface px-3 text-base text-ink',
+          // Telefon (< sm): 44px meta (iOS HIG) + 16px tekst — ispod 16px iOS
+          // zumira celu stranu na fokus i NE vraća zum na blur (DS §11).
+          // Od `sm` naviše gusti desktop ritam ostaje nepromenjen (36px / 14px).
+          'h-11 w-full rounded-control border border-line bg-surface px-3 text-md text-ink sm:h-9 sm:text-base',
           'placeholder:text-ink-disabled',
           'focus-visible:outline-none focus-visible:border-accent focus-visible:shadow-[var(--focus-ring)]',
           className,

@@ -12,6 +12,8 @@ import { PodesavanjaController } from "../src/modules/podesavanja/podesavanja.co
 import { PodesavanjaService } from "../src/modules/podesavanja/podesavanja.service";
 import { PodesavanjaUsersService } from "../src/modules/podesavanja/podesavanja-users.service";
 import { PredmetPlaneriService } from "../src/modules/podesavanja/predmet-planeri.service";
+import { SyncSwitchService } from "../src/modules/podesavanja/sync-switch.service";
+import { CompanyDetailsService } from "../src/modules/podesavanja/company-details.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PERMISSIONS } from "../src/common/authz/permissions";
@@ -51,6 +53,20 @@ describe("Podešavanja WRITE permisije (e2e, AUTHZ_ENFORCE=true)", () => {
         {
           provide: PredmetPlaneriService,
           useValue: { overview: jest.fn(), setForProject: jest.fn(), setGlobals: jest.fn() },
+        },
+        // Prekidač noćnog BigBit uvoza (26.07.2026) — DI za PodesavanjaController.
+        // Ovaj fajl testira users.* rute; prekidač je samo mokovan da kontroler
+        // može da se instancira.
+        {
+          provide: SyncSwitchService,
+          useValue: { bigbitStatus: jest.fn(), setEnabled: jest.fn() },
+        },
+        // Matični podaci firme (27.07.2026) — DI za PodesavanjaController. Ovaj fajl
+        // testira users.* rute; servis je samo mokovan da kontroler može da se
+        // instancira (rute `/admin/firma` pokriva `podesavanja.system.spec`).
+        {
+          provide: CompanyDetailsService,
+          useValue: { get: jest.fn(), update: jest.fn() },
         },
       ],
     })

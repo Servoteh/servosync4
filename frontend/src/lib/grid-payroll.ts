@@ -132,7 +132,15 @@ export function aggregateWorkHoursForMonth(
 
     if (isHol) {
       if (h > 0) {
+        /* O-1 (vlasnik 30.07.2026, potvrđeno 01.08.2026) — rad na NERADNI praznik
+           se plaća DUPLO: 8 h praznika (kao da se nije radilo) + stvarno odrađeni
+           sati. OGLEDALO backend-a `payroll-calc.ts` (isti uslovi: bez šifre
+           odsustva + `isAutoPaidHolidayEligible`); ako se raziđu, živi prikaz Σ
+           u gridu lagaće u odnosu na snimljen obračun. */
         out.praznikRadSati += h;
+        if (!abs && isAutoPaidHolidayEligible(ymd, opts)) {
+          out.praznikPlaceniSati += REGULAR_DAY_HOURS;
+        }
         continue;
       }
       if (abs === 'go') out.godisnjiSati += REGULAR_DAY_HOURS;
@@ -255,7 +263,9 @@ export function gridRedovniUnitsOneDay(
     return 0;
   }
   if (isHol) {
-    if (h > 0) return h;
+    /* O-1: odrađeni sati + 8 h plaćenog praznika — mora da prati agregat iznad,
+       inače se „Redovni” red (zbir po danima) razilazi sa mesečnim Σ. */
+    if (h > 0) return !abs && isAutoPaidHolidayEligible(ymd, opts) ? h + REGULAR_DAY_HOURS : h;
     if (abs === 'go' || abs === 'bo' || abs === 'sp' || (abs && PAID_FREE_DAY_CODES.has(abs))) return REGULAR_DAY_HOURS;
     if (abs === 'np' || abs === 'pr' || abs === 'nop') return 0;
     return isAutoPaidHolidayEligible(ymd, opts) ? REGULAR_DAY_HOURS : 0;

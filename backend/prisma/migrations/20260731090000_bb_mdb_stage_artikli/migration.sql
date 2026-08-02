@@ -1,0 +1,85 @@
+-- Staging za R_Artikli (31.07.2026) — poslednji veliki šifarnik bez živog kanala.
+-- MSSQL put (QBigTehn full refresh sa deleteMany) mrtav od 22.07; artikli na produ
+-- stoje od tada. Uvoz je upsert bez brisanja + zaštita native opsega + paritet
+-- kataloškog broja. Kolone su text; nema 'BBSifra artikla' (izmišljotina transfera).
+
+-- CreateTable
+CREATE TABLE "bb_mdb_stage_artikli" (
+    "id" SERIAL NOT NULL,
+    "drop_id" INTEGER NOT NULL,
+    "sifra_artikla" TEXT,
+    "kataloski_broj" TEXT,
+    "bar_kod" TEXT,
+    "plu" TEXT,
+    "ext_sifra" TEXT,
+    "naziv" TEXT,
+    "jedinica_mere" TEXT,
+    "pakovanje" TEXT,
+    "ino_jm" TEXT,
+    "kutija" TEXT,
+    "transportno_pakovanje" TEXT,
+    "poreklo" TEXT,
+    "grupa" TEXT,
+    "podgrupa" TEXT,
+    "tarifa_robe" TEXT,
+    "tarifa_usluga" TEXT,
+    "uvek_porez_na_robu" TEXT,
+    "uvek_porez_na_usluge" TEXT,
+    "vp_cena" TEXT,
+    "mp_cena" TEXT,
+    "nab_dev_cena" TEXT,
+    "prod_dev_cena" TEXT,
+    "minimalna_kolicina" TEXT,
+    "art_taksa" TEXT,
+    "odlozeno" TEXT,
+    "neoporezivi_deo" TEXT,
+    "max_rabat_proc" TEXT,
+    "memo" TEXT,
+    "kng_sifra" TEXT,
+    "art_akciza" TEXT,
+    "kng_sifra2" TEXT,
+    "zav_tros_proiz" TEXT,
+    "car_stopa" TEXT,
+    "id_raster" TEXT,
+    "car_tarifa" TEXT,
+    "zemlja_porekla" TEXT,
+    "polica" TEXT,
+    "ino_naziv" TEXT,
+    "sif_dob" TEXT,
+    "web_opis" TEXT,
+    "opis_artikla" TEXT,
+    "tezina" TEXT,
+    "pdf_link" TEXT,
+    "za_brisanje" TEXT,
+    "aktivan" TEXT,
+    "cena_za_upis_u_cen" TEXT,
+    "id_mesto_izdavanja" TEXT,
+    "proizvodjac" TEXT,
+    "hps" TEXT,
+    "potpis_art" TEXT,
+    "datum_i_vreme_art" TEXT,
+    "kol_u_pak" TEXT,
+    "kl_ruc_proc" TEXT,
+    "osn_jm" TEXT,
+    "slika_simbola_link" TEXT,
+    "mp_kalo_proc" TEXT,
+    "word_lokacija" TEXT,
+    "vp_kalo_proc" TEXT,
+    "ne_vodi_zalihe" TEXT,
+    "tezina_kg" TEXT,
+    "zapremina" TEXT,
+    "povrsina" TEXT,
+    "r_sort" TEXT,
+    "akcijski_rabat" TEXT,
+    "napomena2" TEXT,
+    "id_kvalitet_artikla" TEXT,
+    "debljina" TEXT,
+
+    CONSTRAINT "pk_bb_mdb_stage_artikli" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "idx_bb_mdb_stage_artikli_drop" ON "bb_mdb_stage_artikli"("drop_id");
+
+-- AddForeignKey
+ALTER TABLE "bb_mdb_stage_artikli" ADD CONSTRAINT "fk_bb_mdb_stage_artikli_drop" FOREIGN KEY ("drop_id") REFERENCES "bb_mdb_drops"("id") ON DELETE CASCADE ON UPDATE CASCADE;

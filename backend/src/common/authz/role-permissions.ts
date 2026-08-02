@@ -286,7 +286,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.NABAVKA_WRITE,
     P.NABAVKA_APPROVE,
     P.ROBNO_READ,
-    P.PROJECTS_WRITE,
+    // `projects.write` uklonjen 26.07.2026 — predmete otvara BigBit, ne mi.
     P.RFQ_READ,
     P.RFQ_WRITE,
     P.SALES_READ, // uvid u izlazne račune (prodaja deli tok sa nabavkom, Nenad)
@@ -358,7 +358,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.NABAVKA_READ,
     P.NABAVKA_WRITE,
     P.NABAVKA_APPROVE,
-    P.PROJECTS_WRITE,
+    // `projects.write` uklonjen 26.07.2026 — predmete otvara BigBit, ne mi.
     P.RFQ_READ,
     P.RFQ_WRITE,
     P.ROBNO_READ,
@@ -539,11 +539,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
   // Održavanje: viewer je fallback rola → read+report (chief-bez-globalne-role vidi mašine kroz RLS).
   // Sastanci: presuda 24.07.2026 — viewer GUBI read (1.0 canAccessSastanci ga je imao;
   // probni/čitajući nalozi ne treba da vide interne sastanke). /ai svima.
-  [ROLES.VIEWER]: [
-    ...VIEWER_READ_BASELINE,
-    ...ODRZAVANJE_MODULE,
-    P.AI_CHAT,
-  ],
+  [ROLES.VIEWER]: [...VIEWER_READ_BASELINE, ...ODRZAVANJE_MODULE, P.AI_CHAT],
 };
 
 /**
@@ -762,6 +758,51 @@ const RAZVOJ_FAZA_ROLES: readonly RoleKey[] = [
   ROLES.POSLOVNI_ADMIN,
 ];
 for (const role of RAZVOJ_FAZA_ROLES) addPerms(role, [P.RAZVOJ_READ]);
+
+/**
+ * UPIS matičnih podataka (`masters.write`) — artikli + komitenti (`modules/masters`).
+ *
+ * Ključ je UZAK NAMERNO: čitanje šifarnika ima skoro svaka rola (`directory.read` je
+ * u `VIEWER_READ_BASELINE`), a unos/izmenu matičnog podatka radi mali komercijalni krug.
+ * Dodela je PREPIS postojećeg kruga za `nabavka.write` — nijedna nova semantika:
+ *
+ *   admin        — kroz ALL (bez dodele ovde).
+ *   menadzment   — već nosi ceo 4.0 komercijalni write (nabavka/robno/sales/gl/…);
+ *                  izuzeti ga baš kod šifarnika bilo bi nedosledno.
+ *   nabavka_view — kurirana komercijalna rola. ⚠️ Labela „Nabavka (uvid)" u
+ *                  `roles.ts` je ZASTARELA: rola već ima `nabavka.write`/`approve`
+ *                  i `rfq.write` (odluka Nenad, 4.0 komercijala — „nabavka klikće,
+ *                  preuzima, odobrava"). Artikal i komitent nastaju upravo u tom
+ *                  toku (nov dobavljač / nova pozicija za nabavku), pa je ovo
+ *                  dodela poslu koji rola već radi, ne proširenje role.
+ *
+ * SVE OSTALO je namerno izostavljeno — uključujući `sef`/`tehnolog` (koji imaju
+ * `strukture.write`) i ceo biro/pogon krug. Pojedinac van ovog kruga kome zatreba
+ * upis dobija ga per-user grantom (`user_permission_overrides`, deny > grant > rola),
+ * kao `tehnologija.cam_prioritet` — imenovana dodela ne traži širenje role.
+ *
+ * ⚠️ Ovaj grant NE otvara unos: obe rute i dalje vraćaju 409 (`CUSTOMERS_WRITE_OPEN=false`,
+ * `assertItemWritesAllowed()`). Nosilac ključa danas prolazi guard i staje na brani —
+ * dobija poruku šta da uradi u BigBit-u, a ne „nemate pravo".
+ */
+// ⚠️ PREGAŽENO ODLUKOM VLASNIKA O-6 (30.07.2026): „svako može da menja šifarnik."
+// Uzak krug iznad (menadzment + nabavka_view) važio je jedan dan; komentar ostaje
+// kao istorijat ZAŠTO je prvobitno bio uzak — ta razmatranja i dalje stoje, samo
+// je vlasnik presudio suprotno, svesno (zapisano u docs/ODLUKE_SYNC_I_PRELAZ.md §4).
+//
+// „Svako" se sprovodi kao PRAVILO, ne kao spisak imena: ključ dobija svaka rola
+// koja sme da ČITA šifarnik (`directory.read`). Time su automatski isključene
+// samo role kojima je i čitanje namerno uskraćeno (proizvodni_radnik,
+// tehnicar_odrzavanja) — pravo upisa bez prava čitanja bilo bi besmisleno.
+// Spisak imena bi zastareo prvom novom rolom; pravilo ne stari.
+//
+// Brana i dalje stoji: rute vraćaju 409 dok je `CUSTOMERS_WRITE_OPEN=false` /
+// `assertItemWritesAllowed()` — ključ otvara guard, ne i unos.
+for (const role of Object.keys(ROLE_PERMISSIONS) as RoleKey[]) {
+  if ((ROLE_PERMISSIONS[role] ?? []).includes(P.DIRECTORY_READ)) {
+    addPerms(role, [P.MASTERS_WRITE]);
+  }
+}
 
 /**
  * Normalise a stored role value to the catalog key.

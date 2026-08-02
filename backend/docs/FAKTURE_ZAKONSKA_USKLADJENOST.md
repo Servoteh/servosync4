@@ -87,6 +87,13 @@ ima praznu ćeliju, uslužna faktura red **potpuno izostavlja**, a ino usluga od
 `Date of delivery:  Beograd` (mesto bez datuma, jer `join` preskače praznu vrednost).
 Ovo je najozbiljniji nalaz u dokumentu: **obavezan element računa strukturno nedostaje.**
 
+> ⚠️ **Dopuna 02.08.2026 (posle spajanja sa `main`):** polje se danas zove
+> **`Invoice.supplyDate` / kolona `supply_date`**, ne `deliveryDate`. Nalaz je u
+> međuvremenu i ispravljen — datum prometa se unosi (`CreateProformaDto.supplyDate`),
+> podrazumeva pri knjiženju uz WARN, prenosi sa predračuna na račun, štampa na sva četiri
+> obrasca i šalje u UBL. Ostatak teksta N1 je zatečeno stanje pre ispravke i ostaje kao
+> zapis nalaza.
+
 **N2 · Ino robna faktura nema ni datum prometa ni mesto izdavanja.** 🟢
 `ino-roba.ts:129-136` štampa samo `Date`, `Customer`, `Address`, `Delivery term`,
 `Payment terms`. Provereno i na originalu `InoFaktura GP 228-25.pdf` — ni tamo ih nema.

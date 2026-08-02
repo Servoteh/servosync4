@@ -4,6 +4,12 @@ import type { Content, TDocumentDefinitions, TableCell } from "pdfmake/interface
 import { PrismaService } from "../../prisma/prisma.service";
 import { PdfService } from "../documents/pdf.service";
 import { SERVOTEH_LOGO_DATA_URL } from "../documents/servoteh-logo";
+import {
+  LOGO_WIDTH,
+  buildPageFooter,
+  fmtMoney,
+  sanitizeText,
+} from "../documents/doc-layout";
 
 /**
  * KARTICA KOMITENTA — analitička kartica partnera (Talas 2 §A1).
@@ -332,13 +338,7 @@ export class PartnerCardService {
         note: { fontSize: 8, color: "#555", margin: [0, 4, 0, 0] },
       },
       defaultStyle: { font: "Roboto", fontSize: 9 },
-      footer: (currentPage: number, pageCount: number): Content => ({
-        text: `Kartica komitenta ${card.partnerId} · strana ${currentPage}/${pageCount}`,
-        alignment: "center",
-        fontSize: 7,
-        color: "#888",
-        margin: [0, 8, 0, 0],
-      }),
+      footer: buildPageFooter(`Kartica komitenta ${card.partnerId}`, null),
     };
   }
 
@@ -349,7 +349,7 @@ export class PartnerCardService {
         : "Period: sve stavke";
     return {
       columns: [
-        { image: SERVOTEH_LOGO_DATA_URL, width: 128 },
+        { image: SERVOTEH_LOGO_DATA_URL, width: LOGO_WIDTH },
         {
           width: "*",
           margin: [12, 4, 0, 0],

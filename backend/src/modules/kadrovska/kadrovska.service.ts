@@ -1091,9 +1091,11 @@ export class KadrovskaService {
    * VIKEND sa čistim kucanjem SE predlaže kao redovni sati (D1, zahtev 044/26):
    * kucanje je dokaz da je čovek radio, grid iz datuma vidi da je neradni dan (bez
    * posebnog flag-a). Ranije se preskakalo — Nikola je vikende ručno unosio.
-   * NERADNI PRAZNIK ima dodatnu kapiju (`proposeHoursForDay`): predlaže se SAMO pun
-   * dan (8h); delimično kucanje bi u obračunu pojelo garantovanih 8h plaćenog
-   * praznika, pa ga kadrovska unosi svesno.
+   * NERADNI PRAZNIK se od 01.08.2026 tretira ISTO kao svaki drugi dan — ranija kapija
+   * „samo pun dan (8h)" je UKINUTA (O-1 je uklonio zamku zbog koje je postojala, O-4 +
+   * presuda vlasnika traže evidenciju; puno obrazloženje i upozorenje o mogućoj
+   * automatski generisanoj dvostrukoj isplati stoje uz `proposeHoursForDay`). Zato ovaj
+   * put VIŠE NE ČITA `kadr_holidays` — kalendar praznika predlogu nije potreban.
    *
    * Zašto view a ne sirovi events: `v_attendance_vs_grid` je već SECURITY INVOKER
    * (RLS „svoje ∨ attendance"); ide kroz withUserMapped (SET LOCAL ROLE
@@ -1112,29 +1114,12 @@ export class KadrovskaService {
     const maxDay = belgradeYesterday();
 
     return this.withUserMapped(email, async (tx) => {
-      // NERADNI praznici u mesecu — kapija za delimično kucanje (v. proposeHoursForDay).
-      // `isWorkday: false` je obavezan: red sa `is_workday = true` je radni-dan IZUZETAK
-      // (npr. naložena radna subota) i NE sme se tretirati kao praznik.
-      const holidays = await tx.kadrHoliday.findMany({
-        where: {
-          isWorkday: false,
-          holidayDate: {
-            gte: new Date(`${start}T00:00:00Z`),
-            lt: new Date(`${endExcl}T00:00:00Z`),
-          },
-        },
-        select: { holidayDate: true },
-      });
-      const holSet = new Set(
-        holidays.map((h) => h.holidayDate.toISOString().slice(0, 10)),
-      );
-
       // Regularni prazni dani iz shadow view-a. „Prazan" + signali radnog dana
       // (ulaz+izlaz, bez zaboravljenog izlaza/terena/odsustva) + gornja granica „juče"
-      // filtrira SQL; predlog sati + opseg prisustva [FLOOR..CEIL] + praznična kapija
-      // računa `proposeHoursForDay` u JS-u (JEDINI izvor istine, deljen sa noćnim
-      // auto-tikom). VIKEND se NE izbacuje (D1, zahtev 044/26) — čisto kucanje na
-      // vikend = redovni sati.
+      // filtrira SQL; predlog sati + opseg prisustva [FLOOR..CEIL] računa
+      // `proposeHoursForDay` u JS-u (JEDINI izvor istine, deljen sa noćnim auto-tikom).
+      // Ni VIKEND (D1, zahtev 044/26) ni NERADNI PRAZNIK (01.08.2026) se ne izbacuju —
+      // čisto kucanje na neradan dan = predlog sati kao i svaki drugi dan.
       const rows = await tx.$queryRaw<
         {
           employee_id: string;
@@ -1174,8 +1159,8 @@ export class KadrovskaService {
         if (ymd > maxDay) return []; // pojas i tregeri uz SQL klamp (danas/budućnost)
         const presence =
           r.presence_hours == null ? null : Number(r.presence_hours);
-        // null = van opsega [FLOOR..CEIL] ILI delimično kucanje na neradni praznik
-        const { hours } = proposeHoursForDay(presence, holSet.has(ymd));
+        // null = prisustvo van opsega [FLOOR..CEIL] (jedini preostali razlog preskakanja)
+        const { hours } = proposeHoursForDay(presence);
         if (hours == null) return [];
         return [
           {
@@ -1198,7 +1183,7 @@ export class KadrovskaService {
             regularHours: FULL_DAY_HOURS,
             presenceMin: PRESENCE_FLOOR,
             presenceMax: PRESENCE_CEIL,
-            note: "Regularni prazni dani do juče (danas se ne predlaže — dan još traje); prisustvo [1h..14h] → sati sečeni NANIŽE na pola sata, ≥7.6h → 8; vikend sa čistim kucanjem se predlaže kao redovni; neradni praznik SAMO kad je pun dan (delimično kucanje na praznik unosi kadrovska, da se ne izgubi plaćenih 8h). Isto pravilo kao noćni auto-tik.",
+            note: "Regularni prazni dani do juče (danas se ne predlaže — dan još traje); prisustvo [1h..14h] → sati sečeni NANIŽE na pola sata, ≥7.6h → 8. Vikend i neradni praznik sa čistim kucanjem se predlažu isto kao radni dan (od 01.08.2026 i delimično kucanje na praznik — obračun sate DODAJE na 8h plaćenog praznika, kontrolu radi kadrovska mesečno). Isto pravilo kao noćni auto-tik.",
           },
           suggestions,
         },

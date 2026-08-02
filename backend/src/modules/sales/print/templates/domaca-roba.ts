@@ -271,7 +271,7 @@ function conditionsStrip(ctx: PrintCtx): Content {
     ctx.invoice.fco ?? "",
     ctx.invoice.paymentMethod ?? "",
     ctx.invoice.shipmentMethod ?? "",
-    formatDateDomestic(ctx.invoice.deliveryDate),
+    formatDateDomestic(ctx.invoice.supplyDate),
   ];
 
   const body: TableCell[][] = [

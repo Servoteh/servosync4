@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useListQueryState } from '@/lib/use-id-param';
 import { Coins, Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -142,11 +143,25 @@ export default function FakturisanjePage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
-  const [documentType, setDocumentType] = useState<SalesDocumentType | ''>('');
-  const [status, setStatus] = useState<SalesStatus | ''>('');
-  const [page, setPage] = useState(1);
+  // Filteri i strana žive U URL-u — povratak sa detalja (i browser „Nazad")
+  // vraća listu tačno kakva je bila. Vidi `useListQueryState`.
+  const { values, setValues } = useListQueryState({
+    tip: '',
+    status: '',
+    strana: '1',
+  });
+  const documentType = values.tip as SalesDocumentType | '';
+  const status = values.status as SalesStatus | '';
+  const page = Math.max(1, Number(values.strana) || 1);
+  const setDocumentType = (v: SalesDocumentType | '') =>
+    setValues({ tip: v, strana: '1' });
+  const setStatus = (v: SalesStatus | '') => setValues({ status: v, strana: '1' });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setValues({
+      strana: String(typeof updater === 'function' ? updater(page) : updater),
+    });
   const [newProformaOpen, setNewProformaOpen] = useState(false);
-  const resetPage = () => setPage(1);
+  const resetPage = () => setValues({ strana: '1' });
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -191,7 +206,7 @@ export default function FakturisanjePage() {
       <NewProformaDialog
         open={newProformaOpen}
         onClose={() => setNewProformaOpen(false)}
-        onCreated={(id) => router.push(`/fakturisanje/${id}`)}
+        onCreated={(id) => router.push(`/fakturisanje/detalj?id=${id}`)}
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
@@ -250,7 +265,7 @@ export default function FakturisanjePage() {
           columns={columns}
           rows={rows}
           rowKey={(inv) => inv.id}
-          onRowActivate={(inv) => router.push(`/fakturisanje/${inv.id}`)}
+          onRowActivate={(inv) => router.push(`/fakturisanje/detalj?id=${inv.id}`)}
           loading={list.isLoading}
           empty={
             <EmptyState

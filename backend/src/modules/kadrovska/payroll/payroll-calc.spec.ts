@@ -11,6 +11,7 @@ import {
   sanitizeHoursForWorkType,
   aggregateWorkHoursForMonth,
   gridRedovniUnitsOneDay,
+  gridRedovniSumUnitsForMonth,
   BOLOVANJE_OBICNO_FACTOR,
   paymentWindowsForModel,
   paymentWindowLabel,
@@ -328,7 +329,7 @@ describe("payrollCalc — teren, rubni slučajevi, nop", () => {
       expect(h.praznikRadSati).toBe(0);
     });
 
-    it("praznik u RADNOM danu, 6h → praznikRadSati (nepromenjeno)", () => {
+    it("praznik u RADNOM danu, 6h → praznikRadSati (+ 8h praznika po O-1)", () => {
       const h = aggregateWorkHoursForMonth(
         2026,
         5,
@@ -337,6 +338,8 @@ describe("payrollCalc — teren, rubni slučajevi, nop", () => {
       );
       expect(h.praznikRadSati).toBe(6);
       expect(h.redovanRadSati).toBe(0);
+      // O-1 (01.08.2026): uz odrađene sate ide i garantovanih 8h plaćenog praznika.
+      expect(h.praznikPlaceniSati).toBe(8);
     });
 
     it("praznik u subotu sa šifrom `go` → i dalje 8h godišnjeg", () => {
@@ -398,6 +401,187 @@ describe("payrollCalc — teren, rubni slučajevi, nop", () => {
       // fiksno/jednokratno: redovan rad NIJE u payable, praznični rad JESTE
       expect(computePayableHours(pre, "fiksno").payableHours).toBe(0);
       expect(computePayableHours(post, "fiksno").payableHours).toBe(6);
+    });
+  });
+
+  /* O-1 (docs/ODLUKE_O_ZARADAMA.md) — rad na NERADNI praznik se plaća DUPLO:
+     8 h praznika (kao da se nije radilo) + stvarno odrađeni sati.
+     Do 01.08.2026 je unos u kolonu „sati" TIHO pojeo tih 8 h, pa je kadrovska
+     koristila ručni obrazac `sp` + prekovremeno. Oba puta sada daju isti zbir. */
+  describe("O-1 · rad na neradni praznik = 8h + odrađeni sati", () => {
+    it("sanity: 2026-11-11 je sreda, 2026-11-14 subota", () => {
+      expect(new Date(2026, 10, 11).getDay()).toBe(3);
+      expect(new Date(2026, 10, 14).getDay()).toBe(6);
+    });
+
+    it("AUTOMATSKI put: radni dan, praznik, 6h bez odsustva → 6h rada + 8h praznika", () => {
+      const h = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map([["2026-11-11", { hours: 6 }]]),
+        new Set(["2026-11-11"]),
+        { workType: "ugovor" },
+      );
+      expect(h.praznikRadSati).toBe(6);
+      expect(h.praznikPlaceniSati).toBe(8);
+      expect(h.redovanRadSati).toBe(0);
+    });
+
+    it("NEeligibilan (penzioner/praksa/dualno) → SAMO odrađeni sati, bez 8h", () => {
+      for (const workType of ["penzioner", "praksa", "dualno"]) {
+        const h = aggregateWorkHoursForMonth(
+          2026,
+          11,
+          new Map([["2026-11-11", { hours: 6 }]]),
+          new Set(["2026-11-11"]),
+          { workType },
+        );
+        expect(h.praznikRadSati).toBe(6);
+        expect(h.praznikPlaceniSati).toBe(0);
+      }
+    });
+
+    it("praznik pre hireDate → SAMO odrađeni sati, bez 8h", () => {
+      const h = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map([["2026-11-11", { hours: 6 }]]),
+        new Set(["2026-11-11"]),
+        { workType: "ugovor", hireDate: "2026-12-01" },
+      );
+      expect(h.praznikRadSati).toBe(6);
+      expect(h.praznikPlaceniSati).toBe(0);
+    });
+
+    it("RUČNI put nepromenjen: `sp` + 9h prekovremeno (sati=0) → 8h praznika + 9h prekov.", () => {
+      const h = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map([["2026-11-11", { hours: 0, absenceCode: "sp", overtimeHours: 9 }]]),
+        new Set(["2026-11-11"]),
+        { workType: "ugovor" },
+      );
+      expect(h.praznikPlaceniSati).toBe(8);
+      expect(h.prekovremeniSati).toBe(9);
+      expect(h.praznikRadSati).toBe(0);
+    });
+
+    it("oba puta daju ISTI novac (9h): automatski ≡ ručni, i u satnici i u fiksnom", () => {
+      const auto = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map([["2026-11-11", { hours: 9 }]]),
+        new Set(["2026-11-11"]),
+        { workType: "ugovor" },
+      );
+      const rucno = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map([["2026-11-11", { hours: 0, absenceCode: "sp", overtimeHours: 9 }]]),
+        new Set(["2026-11-11"]),
+        { workType: "ugovor" },
+      );
+      // satnica (weighted_full): 9 + 8 === 8 + 9
+      expect(computePayableHours(auto, "satnica").payableHours).toBe(17);
+      expect(computePayableHours(rucno, "satnica").payableHours).toBe(17);
+      // fiksno (extra-only): praznični rad 9 === prekovremeno 9 (8h praznika se ne plaća)
+      expect(computePayableHours(auto, "fiksno").payableHours).toBe(9);
+      expect(computePayableHours(rucno, "fiksno").payableHours).toBe(9);
+    });
+
+    it("VIKEND-praznik, 6h rada → i dalje SAMO praznikRadSati (bez +8h)", () => {
+      const h = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map([["2026-11-14", { hours: 6 }]]),
+        new Set(["2026-11-14"]),
+        { workType: "ugovor" },
+      );
+      expect(h.praznikRadSati).toBe(6);
+      expect(h.praznikPlaceniSati).toBe(0);
+    });
+
+    it("odsustvo + sati na praznik → zatečeno ponašanje: sati pobeđuju, BEZ 8h", () => {
+      const h = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map([["2026-11-11", { hours: 6, absenceCode: "go" }]]),
+        new Set(["2026-11-11"]),
+        { workType: "ugovor" },
+      );
+      expect(h.praznikRadSati).toBe(6);
+      expect(h.praznikPlaceniSati).toBe(0);
+      expect(h.godisnjiSati).toBe(0);
+    });
+
+    it("praznik bez sati, eligibilan → nepromenjeno 8h", () => {
+      const h = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map(),
+        new Set(["2026-11-11"]),
+        { workType: "ugovor" },
+      );
+      expect(h.praznikPlaceniSati).toBe(8);
+      expect(h.praznikRadSati).toBe(0);
+    });
+
+    /* `kadr_holidays.is_workday = true` (naložena radna subota) NIJE praznik —
+       pozivaoci ga po AUDIT-K1 ne stavljaju u holSet, pa dan ide kao običan. */
+    it("radna subota (is_workday=true → van holSet-a), 6h → redovan rad, bez 8h", () => {
+      const h = aggregateWorkHoursForMonth(
+        2026,
+        11,
+        new Map([["2026-11-14", { hours: 6 }]]),
+        new Set(), // is_workday=true se NE ubacuje u skup praznika
+      );
+      expect(h.redovanRadSati).toBe(6);
+      expect(h.praznikRadSati).toBe(0);
+      expect(h.praznikPlaceniSati).toBe(0);
+    });
+
+    it("prikazni Σ po danu prati agregat: radni-dan praznik 6h → 14 jedinica", () => {
+      expect(
+        gridRedovniUnitsOneDay("2026-11-11", { hours: 6 }, new Set(["2026-11-11"]), {
+          workType: "ugovor",
+        }),
+      ).toBe(14);
+      // neeligibilan → samo odrađeno
+      expect(
+        gridRedovniUnitsOneDay("2026-11-11", { hours: 6 }, new Set(["2026-11-11"]), {
+          workType: "penzioner",
+        }),
+      ).toBe(6);
+      // vikend-praznik ostaje 6
+      expect(
+        gridRedovniUnitsOneDay("2026-11-14", { hours: 6 }, new Set(["2026-11-14"]), {
+          workType: "ugovor",
+        }),
+      ).toBe(6);
+    });
+
+    it("zbir po danima ≡ mesečni Σ (invarijanta grida)", () => {
+      const rows = new Map([["2026-11-11", { hours: 6 }]]);
+      const hol = new Set(["2026-11-11"]);
+      const opts = { workType: "ugovor" };
+      let perDay = 0;
+      for (let d = 1; d <= 30; d++) {
+        const ymd = `2026-11-${String(d).padStart(2, "0")}`;
+        perDay += gridRedovniUnitsOneDay(ymd, rows.get(ymd) ?? null, hol, opts);
+      }
+      expect(perDay).toBe(
+        gridRedovniSumUnitsForMonth(2026, 11, rows, hol, opts),
+      );
+      expect(perDay).toBe(14);
+    });
+
+    it("penzioner: čak i da 8h uđe u agregat, sanitize ih skida (dvostruka brana)", () => {
+      const { sanitized } = sanitizeHoursForWorkType(
+        emptyHours({ praznikRadSati: 6, praznikPlaceniSati: 8 }),
+        "penzioner",
+      );
+      expect(sanitized.praznikPlaceniSati).toBe(0);
+      expect(sanitized.praznikRadSati).toBe(6);
     });
   });
 

@@ -196,10 +196,27 @@ memorandumom u pdfmake `header:`/`footer:` funkcijama.
 | `print/memorandum.ts` | zaglavlje i podnožje strane, isto na sva četiri |
 | `print/format.ts` | brojevi, datumi, broj računa |
 
-Varijante su svedene na `withPrices | withoutPrices` — stara `export` je uklonjena, jer engleski
-obrazac sada dolazi od vrste dokumenta, a ne od prekidača. `PON`/`PROF`/`AVR`/`REV` nemaju doneti
-obrazac: štampaju se na najbližem uz **upozorenje u logu**, a nepoznata vrsta baca izuzetak
-umesto da tiho izabere pogrešan papir.
+Varijanta više ne bira obrazac nego samo da li se štampaju cene (`withPrices | withoutPrices`);
+`export` je zadržana zbog rute `?variant=export`, ali ništa ne prebacuje — engleski obrazac
+dolazi od vrste dokumenta. `PON`/`PROF`/`REV` nemaju doneti obrazac: štampaju se na najbližem uz
+**upozorenje u logu**, a nepoznata vrsta baca izuzetak umesto da tiho izabere pogrešan papir.
+
+**Dva puta u istom servisu (spajanje 02.08.2026).** Ispod četiri obrasca stoji i **zatečeni
+opšti renderer** (`buildLegacyPdf` + `build*` metode uz njega), koji crta dokumente za koje
+obrazac NIJE donet i za koje je „najbliži papir" premalo:
+
+| varijanta | dokument | šta nosi preko običnog papira |
+|---|---|---|
+| `advance` | avansni račun (AVR) | osnov avansa, stanje naplate, napomena da poreska obaveza nastaje NAPLATOM |
+| `creditNote` | knjižno odobrenje | vrednosne stavke (bez količine i cene), klauzula o potvrdi primaoca |
+| `debitNote` | knjižno zaduženje | vrednosne stavke, napomena o uvećanju osnovice |
+
+Skretnica je u `buildInvoicePdf` i jednoznačna je: te tri varijante → opšti renderer, sve ostalo
+→ obrazac po vrsti dokumenta. Dokument vrste `AVR` bez izričite varijante sam bira `advance`.
+Kad vlasnik donese papir za AVR/KO/KZ, ta vrsta prelazi u `FORM_BY_DOCUMENT_TYPE`, a grana se
+briše — nikad obrnuto. Trag štampe u nozi („Štampao …") nose SAMO dokumenti opšteg renderera:
+podnožje četiri obrasca je prepisano sa BigBit papira i dodatni red bi bio odstupanje od
+originala.
 
 Ostaje otvoreno (v. [STAMPA_FAKTURA_GAP.md](STAMPA_FAKTURA_GAP.md) §5): adresa magacina u bloku
 „Robu izdao" (štampa se adresa sedišta), `Način plaćanja` i `Payment terms` na ino robi čitaju

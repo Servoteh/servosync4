@@ -162,68 +162,174 @@ model Notification {
 
 /// Was: Komitenti
 model Customer {
-  id                         Int          @id(map: "pk_customers") @default(autoincrement()) @map("id")
-  name                       String       @map("name") @db.VarChar(50)
-  branch                     String?      @map("branch") @db.VarChar(50)
-  city                       String?      @map("city") @db.VarChar(30)
-  address                    String?      @map("address") @db.VarChar(50)
-  postalCode                 String?      @map("postal_code") @db.VarChar(20)
-  bankAccount1               String?      @map("bank_account_1") @db.VarChar(30)
-  bankAccount2               String?      @map("bank_account_2") @db.VarChar(30)
-  bankAccount3               String?      @map("bank_account_3") @db.VarChar(30)
-  phone                      String?      @map("phone") @db.VarChar(20)
-  fax                        String?      @map("fax") @db.VarChar(20)
-  contact                    String?      @map("contact") @db.VarChar(50)
-  note                       String?      @map("note")
-  country                    String?      @map("country") @db.VarChar(30)
-  region                     Int?         @default(0) @map("region")
-  codeTypeCode               String?      @default("KUPDOB") @map("code_type_code") @db.VarChar(10)
-  email                      String?      @map("email") @db.VarChar(50)
-  mobile                     String?      @map("mobile") @db.VarChar(20)
-  birthDate                  DateTime?    @map("birth_date") @db.Timestamp(6)
-  webAddress                 String?      @map("web_address") @db.VarChar(50)
-  salespersonId              Int?         @default(0) @map("salesperson_id")
-  customerDiscount           Float?       @default(0) @map("customer_discount")
-  buyerProtectionCode        String?      @map("buyer_protection_code") @db.VarChar(50)
-  taxId                      String       @map("tax_id") @db.VarChar(20)
-  vatStatus                  Int?         @default(0) @map("vat_status")
-  externalCode               String?      @map("external_code") @db.VarChar(10)
-  paymentTermDays            Int?         @default(0) @map("payment_term_days") @db.SmallInt
-  routeId                    Int?         @default(0) @map("route_id")
-  driverId                   Int?         @default(0) @map("driver_id")
-  paymentAccountId           Int?         @default(0) @map("payment_account_id")
-  invoicePerDeliveryAddress  Boolean?     @default(true) @map("invoice_per_delivery_address")
-  priceListCode              String?      @map("price_list_code") @db.VarChar(5)
-  createdAt                  DateTime?    @map("created_at") @db.Timestamp(6)
-  updatedAt                  DateTime?    @map("updated_at") @db.Timestamp(6)
-  createdBy                  String?      @map("created_by") @db.VarChar(20)
-  updatedBy                  String?      @map("updated_by") @db.VarChar(20)
-  commissionPercent          Float?       @default(0) @map("commission_percent")
-  fictitiousDiscount         Float?       @default(0) @map("fictitious_discount")
-  paymentMethod              String?      @map("payment_method") @db.VarChar(50)
-  signature                  String?      @map("signature") @db.VarChar(50)
-  shortName                  String?      @map("short_name") @db.VarChar(30)
-  recordCreatedAt            DateTime?    @default(now()) @map("record_created_at") @db.Timestamp(6)
-  checkDebt                  Boolean?     @default(false) @map("check_debt")
-  creditLimit                Decimal?     @default(0) @map("credit_limit") @db.Decimal(19, 4)
-  skipTaxIdValidation        Boolean?     @default(false) @map("skip_tax_id_validation")
-  pantheonId                 String?      @map("pantheon_id") @db.VarChar(30)
-  newsletter                 Boolean?     @default(false) @map("newsletter")
-  mailToDifferentAddress     Boolean?     @default(false) @map("mail_to_different_address")
-  gln                        String?      @map("gln") @db.VarChar(30)
-  manualMarkupPercent        Decimal?     @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
-  balanceNote                String?      @map("balance_note")
-  hideInOverview             Boolean?     @default(false) @map("hide_in_overview")
-  publicSectorId             String?      @map("public_sector_id") @db.VarChar(10)
-  registrationNumber         String?      @map("registration_number") @db.VarChar(20)
-  einvoiceXmlPerItemDiscount Boolean?     @default(false) @map("einvoice_xml_per_item_discount")
-  centralInvoiceRegistry     Boolean?     @default(false) @map("central_invoice_registry")
-  salesperson                Salesperson? @relation(fields: [salespersonId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_salespeople")
-  driver                     Customer?    @relation("CustomerDriver", fields: [driverId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_driver")
-  customersWithThisDriver    Customer[]   @relation("CustomerDriver")
-  codeType                   CodeType?    @relation(fields: [codeTypeCode], references: [code], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_code_types")
+  id                         Int       @id(map: "pk_customers") @default(autoincrement()) @map("id")
+  name                       String    @map("name") @db.VarChar(255)
+  branch                     String?   @map("branch") @db.VarChar(50)
+  city                       String?   @map("city") @db.VarChar(30)
+  address                    String?   @map("address") @db.VarChar(255)
+  postalCode                 String?   @map("postal_code") @db.VarChar(20)
+  bankAccount1               String?   @map("bank_account_1") @db.VarChar(30)
+  bankAccount2               String?   @map("bank_account_2") @db.VarChar(30)
+  bankAccount3               String?   @map("bank_account_3") @db.VarChar(30)
+  phone                      String?   @map("phone") @db.VarChar(50)
+  fax                        String?   @map("fax") @db.VarChar(20)
+  contact                    String?   @map("contact") @db.VarChar(50)
+  note                       String?   @map("note")
+  country                    String?   @map("country") @db.VarChar(30)
+  region                     Int?      @default(0) @map("region")
+  codeTypeCode               String?   @default("KUPDOB") @map("code_type_code") @db.VarChar(10)
+  email                      String?   @map("email") @db.VarChar(255)
+  mobile                     String?   @map("mobile") @db.VarChar(20)
+  birthDate                  DateTime? @map("birth_date") @db.Timestamp(6)
+  webAddress                 String?   @map("web_address") @db.VarChar(50)
+  salespersonId              Int?      @default(0) @map("salesperson_id")
+  customerDiscount           Float?    @default(0) @map("customer_discount")
+  buyerProtectionCode        String?   @map("buyer_protection_code") @db.VarChar(50)
+  taxId                      String    @map("tax_id") @db.VarChar(20)
+  vatStatus                  Int?      @default(0) @map("vat_status")
+  externalCode               String?   @map("external_code") @db.VarChar(10)
+  paymentTermDays            Int?      @default(0) @map("payment_term_days") @db.SmallInt
+  routeId                    Int?      @default(0) @map("route_id")
+  driverId                   Int?      @default(0) @map("driver_id")
+  paymentAccountId           Int?      @default(0) @map("payment_account_id")
+  invoicePerDeliveryAddress  Boolean?  @default(true) @map("invoice_per_delivery_address")
+  priceListCode              String?   @map("price_list_code") @db.VarChar(5)
+  createdAt                  DateTime? @map("created_at") @db.Timestamp(6)
+  updatedAt                  DateTime? @map("updated_at") @db.Timestamp(6)
+  createdBy                  String?   @map("created_by") @db.VarChar(20)
+  updatedBy                  String?   @map("updated_by") @db.VarChar(20)
+  commissionPercent          Float?    @default(0) @map("commission_percent")
+  fictitiousDiscount         Float?    @default(0) @map("fictitious_discount")
+  paymentMethod              String?   @map("payment_method") @db.VarChar(50)
+  signature                  String?   @map("signature") @db.VarChar(50)
+  shortName                  String?   @map("short_name") @db.VarChar(30)
+  recordCreatedAt            DateTime? @default(now()) @map("record_created_at") @db.Timestamp(6)
+  checkDebt                  Boolean?  @default(false) @map("check_debt")
+  creditLimit                Decimal?  @default(0) @map("credit_limit") @db.Decimal(19, 4)
+  skipTaxIdValidation        Boolean?  @default(false) @map("skip_tax_id_validation")
+  pantheonId                 String?   @map("pantheon_id") @db.VarChar(30)
+  newsletter                 Boolean?  @default(false) @map("newsletter")
+  mailToDifferentAddress     Boolean?  @default(false) @map("mail_to_different_address")
+  gln                        String?   @map("gln") @db.VarChar(30)
+  manualMarkupPercent        Decimal?  @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
+  balanceNote                String?   @map("balance_note")
+  hideInOverview             Boolean?  @default(false) @map("hide_in_overview")
+  publicSectorId             String?   @map("public_sector_id") @db.VarChar(10)
+  registrationNumber         String?   @map("registration_number") @db.VarChar(20)
+  einvoiceXmlPerItemDiscount Boolean?  @default(false) @map("einvoice_xml_per_item_discount")
+  centralInvoiceRegistry     Boolean?  @default(false) @map("central_invoice_registry")
+
+  /// BigBit `KoristiPNBZadModel` — 57. kolona originala, jedina koju šema do
+  /// 28.07.2026 nije nosila. ⚠️ `customer.syncer.ts` je još ne čita iz izvora.
+  usesPaymentReferenceModel Boolean @default(false) @map("uses_payment_reference_model")
+
+  /// OZNAKA POREKLA (20260728170000). `BIGBIT` = matični podatak kojim vlada
+  /// BigBit (READ-ONLY u 4.0) | `NATIVE` = red nastao u 4.0. Default je namerno
+  /// `BIGBIT`: pisac koji za kolonu ne zna (npr. `customer.syncer.ts`, koji
+  /// mapira 56 kolona) ne sme da proizvede izmenjiv red.
+  /// DB brana `chk_customers_native_id_range`: `NATIVE` ⇔ `id >= 900000000`.
+  source String @default("BIGBIT") @map("source") @db.VarChar(10)
+
+  /// BigBit `Komitenti.Sifra` ovog reda; NULL = nastalo u 4.0. Za BigBit redove
+  /// jednako `id` (PK se NE remapira — BIGBIT_KOMITENTI.md §5.1) i popunjava ga
+  /// trigger `trg_customers_bb_sifra` (ENABLE ALWAYS), pa syncer ostaje netaknut.
+  /// Kad 4.0 jednom bude čitao BigBit direktno, upsert ključa OVDE, ne na `id`.
+  bbSifra Int? @unique(map: "uq_customers_bb_sifra") @map("bb_sifra")
+
+  salesperson             Salesperson?               @relation(fields: [salespersonId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_salespeople")
+  driver                  Customer?                  @relation("CustomerDriver", fields: [driverId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_driver")
+  customersWithThisDriver Customer[]                 @relation("CustomerDriver")
+  codeType                CodeType?                  @relation(fields: [codeTypeCode], references: [code], onDelete: NoAction, onUpdate: NoAction, map: "fk_customers_code_types")
+  contacts                CustomerContact[]
+  deliveryLocations       CustomerDeliveryLocation[]
 
   @@map("customers")
+}
+
+/// Was: KomitentiKontaktOsobe (BigBit, 1:N uz komitenta)
+///
+/// 4.0-NATIVE TABELA. BigBit je ima u originalu, ali je NE šalje kroz QBigTehn
+/// kopiju kroz koju ide sync — NE dodavati je ni u `sync-map.generated.ts` ni u
+/// dedicated syncer. Zato nema kolonu `source`: svaki red je po definiciji 4.0.
+///
+/// `Customer.contact` je jedan string od 50 znakova; komitent sa više kontakata
+/// (nabavka, knjigovodstvo, direktor) je do sada gubio sve sem jednog.
+model CustomerContact {
+  id          Int       @id(map: "pk_customer_contacts") @default(autoincrement()) @map("id")
+  customerId  Int       @map("customer_id")
+  contactName String    @map("contact_name") @db.VarChar(50)
+  phone       String?   @map("phone") @db.VarChar(20)
+  fax         String?   @map("fax") @db.VarChar(20)
+  mobile      String?   @map("mobile") @db.VarChar(20)
+  email       String?   @map("email") @db.VarChar(50)
+  birthDate   DateTime? @map("birth_date") @db.Timestamp(6)
+  /// Podrazumevana kontakt osoba. SQL-only parcijalni uniq indeks
+  /// `uq_customer_contacts_default` (`ON (customer_id) WHERE is_default`) drži
+  /// najviše JEDNU po komitentu — Prisma parcijalne indekse ne ume da opiše.
+  isDefault   Boolean   @default(false) @map("is_default")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime? @map("updated_at") @db.Timestamp(6)
+  createdBy String?   @map("created_by") @db.VarChar(50)
+  updatedBy String?   @map("updated_by") @db.VarChar(50)
+
+  /// `Restrict` je svesno (ne `Cascade`): ovaj paket postoji zbog TIHOG gubitka
+  /// podataka — brisanje komitenta sa kontaktima treba da padne glasno.
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "fk_customer_contacts_customer")
+
+  @@index([customerId], map: "idx_customer_contacts_customer")
+  @@map("customer_contacts")
+}
+
+/// Was: MestaIsporuke (BigBit, 1:N uz komitenta)
+///
+/// 4.0-NATIVE TABELA — isto kao `CustomerContact`: BigBit je ne šalje kroz našu
+/// kopiju baze, NE dodavati je ni u kakav sync.
+///
+/// `Customer.invoicePerDeliveryAddress` je do sada bio SAMO flag („fakturiši po
+/// mestima isporuke") bez ijednog modelovanog mesta. Mesto nosi SOPSTVENI GLN
+/// (SEF e-faktura ide na GLN lokacije), sopstveni uplatni račun i sopstvenog
+/// prodavca/rutu/vozača — praktično je pod-komitent.
+model CustomerDeliveryLocation {
+  id         Int    @id(map: "pk_customer_delivery_locations") @default(autoincrement()) @map("id")
+  customerId Int    @map("customer_id")
+  name       String @map("name") @db.VarChar(50)
+  city       String @map("city") @db.VarChar(30)
+  address    String @map("address") @db.VarChar(50)
+
+  postalCode       String? @map("postal_code") @db.VarChar(20)
+  phone            String? @map("phone") @db.VarChar(20)
+  fax              String? @map("fax") @db.VarChar(20)
+  area             String? @map("area") @db.VarChar(30)
+  /// SEF e-faktura ide na GLN LOKACIJE, ne komitenta. SQL-only parcijalni uniq
+  /// `uq_customer_delivery_locations_gln` na `(customer_id, gln) WHERE gln IS NOT NULL`.
+  gln              String? @map("gln") @db.VarChar(30)
+  contractCategory String? @map("contract_category") @db.VarChar(30)
+  generalCategory  String? @map("general_category") @db.VarChar(30)
+  salesChannel     String? @map("sales_channel") @db.VarChar(30)
+  locationNumber   String? @map("location_number") @db.VarChar(20)
+
+  /// MEKE reference (bez FK, obrazac `Customer.paymentAccountId` + `common/relations.ts`):
+  /// legacy vrednosti su 0-teške, a tvrd FK bi vezao ovu 4.0-native tabelu za tuđi sync.
+  salespersonId    Int? @map("salesperson_id")
+  paymentAccountId Int? @map("payment_account_id")
+  /// Tabela ruta u 4.0 NE POSTOJI (rute se ne sinkuju) — čist broj.
+  routeId          Int? @map("route_id")
+  /// BigBit `IDVozacMestaIsporuke` — vozač je i sam komitent (meka ref na `customers.id`).
+  driverId         Int? @map("driver_id")
+  region           Int? @map("region")
+
+  active Boolean @default(true) @map("active")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime? @map("updated_at") @db.Timestamp(6)
+  createdBy String?   @map("created_by") @db.VarChar(50)
+  updatedBy String?   @map("updated_by") @db.VarChar(50)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "fk_customer_delivery_locations_customer")
+
+  @@index([customerId], map: "idx_customer_delivery_locations_customer")
+  @@map("customer_delivery_locations")
 }
 
 // ============================================================================
@@ -703,7 +809,7 @@ model WorkParameter {
 model Project {
   id                Int             @id(map: "pk_projects") @default(autoincrement()) @map("id")
   projectNumber     String          @map("project_number") @db.VarChar(20)
-  description       String?         @map("description") @db.VarChar(50)
+  description       String?         @map("description") @db.VarChar(255)
   openedAt          DateTime?       @default(dbgenerated("(CURRENT_DATE)::timestamp without time zone")) @map("opened_at") @db.Timestamp(6)
   salespersonId     Int             @default(0) @map("salesperson_id")
   customerId        Int             @map("customer_id")
@@ -791,74 +897,95 @@ model Salesperson {
 
 /// Was: R_Artikli
 model Item {
-  id                      Int                      @id(map: "pk_items") @default(autoincrement()) @map("id")
-  catalogNumber           String                   @default("-") @map("catalog_number") @db.VarChar(20)
-  barCode                 String?                  @map("bar_code") @db.VarChar(50)
-  plu                     Int?                     @default(0) @map("plu")
-  externalCode            String?                  @map("external_code") @db.VarChar(20)
-  name                    String                   @map("name") @db.VarChar(50)
-  unit                    String?                  @map("unit") @db.VarChar(5)
-  packaging               String?                  @map("packaging") @db.VarChar(10)
-  foreignUnit             String?                  @map("foreign_unit") @db.VarChar(5)
-  box                     Float?                   @default(0) @map("box")
-  transportPackaging      Float?                   @default(0) @map("transport_packaging")
-  originCode              String                   @default("0") @map("origin_code") @db.VarChar(5)
-  groupCode               String                   @map("group_code") @db.VarChar(10)
-  subgroupCode            String                   @default("0") @map("subgroup_code") @db.VarChar(10)
-  goodsTaxRateCode        String                   @default("3") @map("goods_tax_rate_code") @db.VarChar(5)
-  serviceTaxRateCode      String                   @default("1") @map("service_tax_rate_code") @db.VarChar(5)
-  alwaysTaxGoods          Boolean?                 @default(true) @map("always_tax_goods")
-  alwaysTaxServices       Boolean?                 @default(false) @map("always_tax_services")
-  wholesalePrice          Float?                   @default(0) @map("wholesale_price")
-  retailPrice             Float?                   @default(0) @map("retail_price")
-  fxPurchasePrice         Float?                   @default(0) @map("fx_purchase_price")
-  fxSalePrice             Float?                   @default(0) @map("fx_sale_price")
-  minQuantity             Float?                   @default(0) @map("min_quantity")
-  itemFee                 Float?                   @default(0) @map("item_fee")
-  paymentTermDays         Int?                     @default(0) @map("payment_term_days") @db.SmallInt
-  nonTaxablePart          Float?                   @default(0) @map("non_taxable_part")
-  maxDiscountPercent      Float?                   @default(100) @map("max_discount_percent")
-  memo                    String?                  @map("memo")
-  accountingCode          String?                  @default("0") @map("accounting_code") @db.VarChar(10)
-  itemExcise              Float?                   @default(0) @map("item_excise")
-  accountingCode2         String?                  @default("0") @map("accounting_code_2") @db.VarChar(10)
-  finalProcessingCost     Float?                   @default(0) @map("final_processing_cost")
-  customsRate             Float?                   @default(0) @map("customs_rate")
-  rasterId                Int?                     @default(0) @map("raster_id")
-  customsTariff           String?                  @map("customs_tariff") @db.VarChar(20)
-  originCountry           String?                  @map("origin_country") @db.VarChar(20)
-  shelf                   String?                  @map("shelf") @db.VarChar(10)
-  foreignName             String?                  @map("foreign_name") @db.VarChar(50)
-  supplierId              Int?                     @default(1) @map("supplier_id")
-  webDescription          String?                  @map("web_description") @db.VarChar(255)
-  itemDescription         String?                  @map("item_description") @db.VarChar(50)
-  weight                  Float?                   @default(0) @map("weight")
-  pdfLink                 String?                  @map("pdf_link") @db.VarChar(255)
-  toDelete                Boolean?                 @default(false) @map("to_delete")
-  active                  Boolean?                 @default(true) @map("active")
-  priceToWritePricelist   Float?                   @default(0) @map("price_to_write_pricelist")
-  issuePlaceId            Int?                     @default(0) @map("issue_place_id")
-  manufacturer            String?                  @map("manufacturer") @db.VarChar(50)
-  hps                     String?                  @default("O") @map("hps") @db.VarChar(50)
-  signature               String?                  @map("signature") @db.VarChar(50)
-  createdAt               DateTime?                @default(now()) @map("created_at") @db.Timestamp(6)
-  quantityInPackage       Float?                   @default(1) @map("quantity_in_package")
-  manualMarkupPercent     Decimal?                 @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
-  baseUnit                String?                  @map("base_unit") @db.VarChar(5)
-  symbolImageLink         String?                  @map("symbol_image_link") @db.VarChar(250)
-  retailLossPercent       Float?                   @default(0) @map("retail_loss_percent")
-  wordLocation            String?                  @map("word_location") @db.VarChar(250)
-  wholesaleLossPercent    Float?                   @default(0) @map("wholesale_loss_percent")
-  notStockTracked         Boolean?                 @default(false) @map("not_stock_tracked")
-  weightKg                Float?                   @default(0) @map("weight_kg")
-  volume                  Float?                   @default(0) @map("volume")
-  area                    Float?                   @default(0) @map("area")
-  sortOrder               Int?                     @default(0) @map("sort_order")
-  promotionDiscount       Float?                   @default(0) @map("promotion_discount")
-  note2                   String?                  @map("note_2") @db.VarChar(255)
-  qualityTypeId           Int?                     @default(0) @map("quality_type_id")
-  thickness               Float?                   @default(0) @map("thickness")
-  externalItemId          Int                      @default(0) @map("external_item_id")
+  id                    Int       @id(map: "pk_items") @default(autoincrement()) @map("id")
+  catalogNumber         String    @default("-") @map("catalog_number") @db.VarChar(20)
+  barCode               String?   @map("bar_code") @db.VarChar(50)
+  plu                   Int?      @default(0) @map("plu")
+  externalCode          String?   @map("external_code") @db.VarChar(20)
+  name                  String    @map("name") @db.VarChar(50)
+  unit                  String?   @map("unit") @db.VarChar(5)
+  packaging             String?   @map("packaging") @db.VarChar(10)
+  foreignUnit           String?   @map("foreign_unit") @db.VarChar(5)
+  box                   Float?    @default(0) @map("box")
+  transportPackaging    Float?    @default(0) @map("transport_packaging")
+  originCode            String    @default("0") @map("origin_code") @db.VarChar(5)
+  groupCode             String    @map("group_code") @db.VarChar(10)
+  subgroupCode          String    @default("0") @map("subgroup_code") @db.VarChar(10)
+  goodsTaxRateCode      String    @default("3") @map("goods_tax_rate_code") @db.VarChar(5)
+  serviceTaxRateCode    String    @default("1") @map("service_tax_rate_code") @db.VarChar(5)
+  alwaysTaxGoods        Boolean?  @default(true) @map("always_tax_goods")
+  alwaysTaxServices     Boolean?  @default(false) @map("always_tax_services")
+  // NOVAC = Decimal(19,4), nikad Float (BACKEND_RULES). Konvertovano migracijom
+  // 20260728170000; izmereno na svih 92.511 produkcionih redova: 0 vrednosti
+  // promenjeno, 0 overflow, 0 NaN — konverzija je bila tačna.
+  wholesalePrice        Decimal?  @default(0) @map("wholesale_price") @db.Decimal(19, 4)
+  retailPrice           Decimal?  @default(0) @map("retail_price") @db.Decimal(19, 4)
+  fxPurchasePrice       Decimal?  @default(0) @map("fx_purchase_price") @db.Decimal(19, 4)
+  fxSalePrice           Decimal?  @default(0) @map("fx_sale_price") @db.Decimal(19, 4)
+  minQuantity           Float?    @default(0) @map("min_quantity")
+  itemFee               Decimal?  @default(0) @map("item_fee") @db.Decimal(19, 4)
+  paymentTermDays       Int?      @default(0) @map("payment_term_days") @db.SmallInt
+  nonTaxablePart        Decimal?  @default(0) @map("non_taxable_part") @db.Decimal(19, 4)
+  maxDiscountPercent    Float?    @default(100) @map("max_discount_percent")
+  memo                  String?   @map("memo")
+  accountingCode        String?   @default("0") @map("accounting_code") @db.VarChar(10)
+  itemExcise            Decimal?  @default(0) @map("item_excise") @db.Decimal(19, 4)
+  accountingCode2       String?   @default("0") @map("accounting_code_2") @db.VarChar(10)
+  finalProcessingCost   Decimal?  @default(0) @map("final_processing_cost") @db.Decimal(19, 4)
+  customsRate           Float?    @default(0) @map("customs_rate")
+  rasterId              Int?      @default(0) @map("raster_id")
+  customsTariff         String?   @map("customs_tariff") @db.VarChar(20)
+  originCountry         String?   @map("origin_country") @db.VarChar(20)
+  /// BigBit `Polica` je Text(20); QBigTehn kopija ju je suzila na 10 i mi smo to
+  /// nasledili. Prošireno na 20 (20260728170000) — 82 artikla na produkciji imaju
+  /// tačno 10 znakova, tj. već odsečenu vrednost (dopunjuje ih sledeći pun uvoz).
+  shelf                 String?   @map("shelf") @db.VarChar(20)
+  foreignName           String?   @map("foreign_name") @db.VarChar(50)
+  supplierId            Int?      @default(1) @map("supplier_id")
+  webDescription        String?   @map("web_description") @db.VarChar(255)
+  itemDescription       String?   @map("item_description") @db.VarChar(50)
+  weight                Float?    @default(0) @map("weight")
+  pdfLink               String?   @map("pdf_link") @db.VarChar(255)
+  toDelete              Boolean?  @default(false) @map("to_delete")
+  active                Boolean?  @default(true) @map("active")
+  priceToWritePricelist Decimal?  @default(0) @map("price_to_write_pricelist") @db.Decimal(19, 4)
+  issuePlaceId          Int?      @default(0) @map("issue_place_id")
+  manufacturer          String?   @map("manufacturer") @db.VarChar(50)
+  hps                   String?   @default("O") @map("hps") @db.VarChar(50)
+  signature             String?   @map("signature") @db.VarChar(50)
+  createdAt             DateTime? @default(now()) @map("created_at") @db.Timestamp(6)
+  quantityInPackage     Float?    @default(1) @map("quantity_in_package")
+  manualMarkupPercent   Decimal?  @default(0) @map("manual_markup_percent") @db.Decimal(19, 4)
+  baseUnit              String?   @map("base_unit") @db.VarChar(5)
+  symbolImageLink       String?   @map("symbol_image_link") @db.VarChar(250)
+  retailLossPercent     Float?    @default(0) @map("retail_loss_percent")
+  wordLocation          String?   @map("word_location") @db.VarChar(250)
+  wholesaleLossPercent  Float?    @default(0) @map("wholesale_loss_percent")
+  notStockTracked       Boolean?  @default(false) @map("not_stock_tracked")
+  weightKg              Float?    @default(0) @map("weight_kg")
+  volume                Float?    @default(0) @map("volume")
+  area                  Float?    @default(0) @map("area")
+  sortOrder             Int?      @default(0) @map("sort_order")
+  promotionDiscount     Float?    @default(0) @map("promotion_discount")
+  note2                 String?   @map("note_2") @db.VarChar(255)
+  qualityTypeId         Int?      @default(0) @map("quality_type_id")
+  thickness             Float?    @default(0) @map("thickness")
+  externalItemId        Int       @default(0) @map("external_item_id")
+
+  /// Vreme poslednje izmene IZ 4.0 (do 28.07.2026 artikal je imao samo
+  /// `createdAt`, pa `PATCH` nije ostavljao trag u vremenu). NULL = nikad menjan
+  /// iz 4.0 — BigBit izmene stižu kroz sync i ovo polje ne diraju.
+  updatedAt DateTime? @map("updated_at") @db.Timestamp(6)
+  /// Ko je poslednji menjao artikal iz 4.0 (`auditName`). Razlikuje se od
+  /// `signature` (BigBit `PotpisArt`).
+  updatedBy String?   @map("updated_by") @db.VarChar(50)
+
+  /// OZNAKA POREKLA (20260728170000) — isti obrazac i isti default kao
+  /// `Customer.source`. `externalItemId` NIJE dovoljan: 1.417 od 92.511 BigBit
+  /// artikala na produkciji ima `external_item_id = 0`.
+  /// DB brana `chk_items_native_id_range`: `NATIVE` ⇔ `id >= 900000000`.
+  source String @default("BIGBIT") @map("source") @db.VarChar(10)
+
   priceListEntries        PriceListEntry[]
   workOrderItemComponents WorkOrderItemComponent[]
 
@@ -922,8 +1049,43 @@ model DocumentType {
   isFr                 Boolean? @default(false) @map("is_fr")
   affectsStock         Boolean? @default(true) @map("affects_stock")
 
+  // ── Registar kao KONFIGURACIJA EKRANA UNOSA (PLAN_UNOS_DOKUMENATA §5.1) ────
+  // BigBit nema 57 ekrana za 57 vrsta — ima jedan skelet koji ovaj red konfiguriše.
+  // Nova vrsta = nov red ovde, bez izmene frontenda.
+
+  /// Grupa numeracije — više vrsta deli JEDAN godišnji niz (§8/O4.2, izmereno):
+  /// INVOICE_OUT (IFR, IFGP, IFUSL, IZVRO, IZVGP, IZVUS) | OFFER (PON, PROF, OTP) |
+  /// ADVANCE (AVR) | CREDIT (KNO, KNZ) | PURCHASE …
+  /// NAPOMENA: ključ `document_number_sequences` je JOŠ UVEK po vrsti — prebacivanje
+  /// na grupu je korak 3 redosleda iz §8/O4.4 i sme tek POSLE uvoza istorije.
+  numberingGroup          String?  @map("numbering_group") @db.VarChar(20)
+  /// SEQ (brojač) | MAX (prvi slobodan broj iz grupe) | COUNT — oba BigBit mehanizma.
+  numberingMode           String?  @map("numbering_mode") @db.VarChar(10)
+  /// Profil ekrana: GOODS | SERVICE | ORDER. PREDLOG, ne tvrdo pravilo (§8/O4.5) —
+  /// dokument ga prekucava preko `Invoice.lineProfile`.
+  screenKind              String?  @map("screen_kind") @db.VarChar(10)
+  /// BLOCK | WARN | OFF. Blokira se SAMO ako i magacin vodi zalihe — provera je
+  /// konjunkcija dva uslova (§2.7); na ponudi/predračunu je namerno OFF.
+  stockCheck              String?  @map("stock_check") @db.VarChar(10)
+  /// PROF sa „Rezerviši" — vrsta rezerviše zalihe umesto da ih razduži.
+  reservesStock           Boolean  @default(false) @map("reserves_stock")
+  /// MP tok: dokument upisuje svoje cene nazad u cenovnik (§4.7).
+  writesPriceList         Boolean  @default(false) @map("writes_price_list")
+  /// Cenovnik koji vrsta otvara (meki ref na šifru cenovnika).
+  defaultPriceListCode    String?  @map("default_price_list_code") @db.VarChar(20)
+  /// Podrazumevano poresko oslobođenje (npr. IZVRO → čl. 24 st. 1 tač. 5).
+  defaultVatExemptionCode String?  @map("default_vat_exemption_code") @db.VarChar(20)
+  requiresProject         Boolean  @default(false) @map("requires_project")
+  requiresWorkOrder       Boolean  @default(false) @map("requires_work_order")
+  requiresPoNumber        Boolean  @default(false) @map("requires_po_number")
+  /// Šifre varijanti štampe koje vrsta nudi (Ctrl+P meni). Prazno = podrazumevana.
+  allowedPrintVariants    String[] @default([]) @map("allowed_print_variants")
+  /// Dozvoljeni ciljevi prepisa (PON → PROF → AVR → IFR). Prazno = bez prepisa.
+  carryOverTargets        String[] @default([]) @map("carry_over_targets")
+
   // Sve meke reference (price_list, stock_documents, kepu) idu po code — mora biti jedinstven (DB-013).
   @@unique([code], map: "uq_document_types_code")
+  @@index([numberingGroup], map: "idx_document_types_numbering_group")
   @@map("document_types")
 }
 
@@ -1005,6 +1167,13 @@ model Company {
   publicSectorId            String?  @map("public_sector_id") @db.VarChar(20)
   einvoiceApiKey            String?  @map("einvoice_api_key") @db.VarChar(50)
   unofficialCompanyName     String?  @map("unofficial_company_name") @db.VarChar(150)
+
+  /// INO PLAĆANJE. `invoice-pdf.service.ts` ova dva polja ČITA od ranije (IssuerInfo.iban/swift),
+  /// a kolona nije bilo — izvozna faktura je izlazila bez podataka za plaćanje. Dužine su tačne
+  /// granice standarda, ne „za svaki slučaj": IBAN 34 (ISO 13616, srpski je 22), BIC 8 ili 11
+  /// (ISO 9362). Čuvati BEZ razmaka; formatiranje je posao štampe.
+  iban  String? @map("iban") @db.VarChar(34)
+  swift String? @map("swift") @db.VarChar(11)
 
   @@map("companies")
 }
@@ -1240,6 +1409,11 @@ model OrderType {
   code        String  @id(map: "pk_order_types") @map("code") @db.VarChar(5)
   description String? @map("description") @db.VarChar(50)
 
+  /// OZNAKA POREKLA (noćni .mdb uvoz) — vidi Account.importedDropId.
+  importedDropId Int?       @map("imported_drop_id")
+  importedDrop   BbMdbDrop? @relation(fields: [importedDropId], references: [id], onDelete: Restrict, map: "fk_order_types_imported_drop")
+
+  @@index([importedDropId], map: "idx_order_types_imported_drop")
   @@map("order_types")
 }
 
@@ -2963,11 +3137,18 @@ model Account {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  /// OZNAKA POREKLA (noćni .mdb uvoz, 26.07.2026): iz kog `bb_mdb_drops` reda je konto
+  /// stigao. NULL = konto je otvoren u 4.0 (ili je iz jednokratnog seed-a pre uvoznog
+  /// kanala). Vidi backend/docs/migration/BIGBIT_NOCNI_SYNC.md.
+  importedDropId Int? @map("imported_drop_id")
+
   schemeLines   AccountingSchemeLine[]
   saldakonto    SaldakontoAccount?
   ledgerEntries LedgerEntry[]
+  importedDrop  BbMdbDrop?             @relation(fields: [importedDropId], references: [id], onDelete: Restrict, map: "fk_accounts_imported_drop")
 
   @@index([accountClass], map: "idx_accounts_class")
+  @@index([importedDropId], map: "idx_accounts_imported_drop")
   @@map("accounts")
 }
 
@@ -3011,16 +3192,27 @@ model AccountingSchemeLine {
 /// Nesa potvrđuje spisak pod-konta pre Faze 2.
 model SaldakontoAccount {
   account         String   @id(map: "pk_saldakonto_accounts") @map("account") @db.VarChar(10) // FK Account.code
-  side            String   @map("side") @db.VarChar(10) /// receivable | payable
-  controlAccount  String   @map("control_account") @db.VarChar(10) // sintetički kontrolni (2040->202, 4351->435)
+  side            String   @map("side") @db.VarChar(10) /// receivable | payable — STRANA SALDA (ne vrsta partnera!)
+  /// customer | supplier — VRSTA PARTNERA na kontu; NULL = nepoznato.
+  /// Uveden migracijom 20260726100000 jer `side` sam ne razlikuje kupca od dobavljača:
+  /// primljeni avansi (4300/4302) su payable ali su KUPČEVI, dati avansi (1520/1521/1530)
+  /// su receivable ali su DOBAVLJAČEVI. Po ovoj koloni biraju priprema plaćanja
+  /// (samo 'supplier'), kreditni limit i kamata (samo 'customer') i aging bez konta.
+  partnerScope    String?  @map("partner_scope") @db.VarChar(10)
+  controlAccount  String   @map("control_account") @db.VarChar(10) // sintetički kontrolni (2040->204, 4351->435)
   tracksOpenItems Boolean  @default(true) @map("tracks_open_items") // OTST
   holdsDinBalance Boolean  @default(true) @map("holds_din_balance") // DinSaldo
   holdsFxBalance  Boolean  @default(false) @map("holds_fx_balance") // DevSaldo (izvozne/devizne 2050/4360)
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  accountRef Account @relation(fields: [account], references: [code], onDelete: Cascade, map: "fk_saldakonto_account")
+  /// OZNAKA POREKLA (noćni .mdb uvoz) — vidi Account.importedDropId.
+  importedDropId Int? @map("imported_drop_id")
+
+  accountRef   Account    @relation(fields: [account], references: [code], onDelete: Cascade, map: "fk_saldakonto_account")
+  importedDrop BbMdbDrop? @relation(fields: [importedDropId], references: [id], onDelete: Restrict, map: "fk_saldakonto_imported_drop")
 
   @@index([controlAccount], map: "idx_saldakonto_control")
+  @@index([importedDropId], map: "idx_saldakonto_imported_drop")
   @@map("saldakonto_accounts")
 }
 
@@ -3209,10 +3401,20 @@ model JournalEntry {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  lines      LedgerEntry[]
-  reverses   JournalEntry?     @relation("JournalEntryStorno", fields: [reversesEntryId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_journal_entries_reverses")
-  reversedBy JournalEntry?     @relation("JournalEntryStorno")
-  scheme     AccountingScheme? @relation(fields: [postingSchemeId], references: [id], onDelete: NoAction, map: "fk_journal_entries_scheme")
+  // ── BigBit .mdb uvoz (26.07.2026) ────────────────────────────────────────
+  /// `T_Nalozi.IDNaloga` iz BigBita. UNIQUE = KLJUČ IDEMPOTENCIJE: ponovni uvoz
+  /// istog naloga radi UPDATE, nikad drugi red. NULL = 4.0-native nalog.
+  bbNalogId      Int?    @unique(map: "uq_journal_entries_bb_nalog") @map("bb_nalog_id")
+  /// `T_Nalozi.Opis naloga` (Memo) — gap iz studije: 4.0 model nije imao gde da ga upiše.
+  description    String? @map("description") @db.VarChar(255)
+  /// OZNAKA POREKLA + traceback do TAČNOG izvornog fajla. NULL = nastalo u 4.0.
+  importedDropId Int?    @map("imported_drop_id")
+
+  lines        LedgerEntry[]
+  reverses     JournalEntry?     @relation("JournalEntryStorno", fields: [reversesEntryId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_journal_entries_reverses")
+  reversedBy   JournalEntry?     @relation("JournalEntryStorno")
+  scheme       AccountingScheme? @relation(fields: [postingSchemeId], references: [id], onDelete: NoAction, map: "fk_journal_entries_scheme")
+  importedDrop BbMdbDrop?        @relation(fields: [importedDropId], references: [id], onDelete: Restrict, map: "fk_journal_entries_imported_drop")
 
   // Jedinstvenost naloga = (company, vrsta, godina, broj) — doc 30 §D numeracija.
   @@unique([companyId, orderTypeCode, year, number], map: "uq_journal_entries_number")
@@ -3221,6 +3423,7 @@ model JournalEntry {
   // servisu. Puni unique bi blokirao storno lanac istog dokumenta — zato index.)
   @@index([sourceGoodsDocId], map: "idx_journal_entries_source_goods_doc")
   @@index([status], map: "idx_journal_entries_status")
+  @@index([importedDropId], map: "idx_journal_entries_imported_drop")
   @@map("journal_entries")
 }
 
@@ -3264,8 +3467,21 @@ model LedgerEntry {
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  // ── BigBit .mdb uvoz (26.07.2026) ────────────────────────────────────────
+  /// `T_Glavna knjiga.StavkaID` iz BigBita. UNIQUE = KLJUČ IDEMPOTENCIJE i jedini
+  /// način da se stavka-po-stavku uporedi naš PDV obračun sa BigBitovim
+  /// (`bb_mdb_stage_pdv_gk.stavka_id` pokazuje na istu vrednost). NULL = 4.0-native.
+  bbStavkaId     Int?    @unique(map: "uq_ledger_entries_bb_stavka") @map("bb_stavka_id")
+  /// `T_Glavna knjiga.Pozicija`. NIJE mesto troška (zato NE ide u `costCenter`):
+  /// u snimku 11.07.2026 vrednosti su '0'/'drugi'/'fiskalni' = KLASIFIKACIJA POREKLA
+  /// ULAZNOG DOKUMENTA za PDV/KEPU. `costCenter` ostaje NULL na uvezenim redovima.
+  documentOrigin String? @map("document_origin") @db.VarChar(20)
+  /// OZNAKA POREKLA + traceback do TAČNOG izvornog fajla. NULL = nastalo u 4.0.
+  importedDropId Int?    @map("imported_drop_id")
+
   journalEntry JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade, map: "fk_ledger_entries_journal")
   account      Account      @relation(fields: [accountCode], references: [code], onDelete: NoAction, map: "fk_ledger_entries_account")
+  importedDrop BbMdbDrop?   @relation(fields: [importedDropId], references: [id], onDelete: Restrict, map: "fk_ledger_entries_imported_drop")
 
   @@index([journalEntryId], map: "idx_ledger_entries_journal")
   // Kartica analitike / saldakonto po (konto + komitent) — doc 30 §E izveštaji.
@@ -3275,6 +3491,7 @@ model LedgerEntry {
   // Otvorene stavke PO KOMITENTU bez konta (kamata i sl.) — open_items prefiks ne pokriva.
   @@index([analyticalCode, reconciledAt], map: "idx_ledger_entries_partner_open")
   @@index([reconciliationGroupId], map: "idx_ledger_entries_recon_group")
+  @@index([importedDropId], map: "idx_ledger_entries_imported_drop")
   @@map("ledger_entries")
 }
 
@@ -3375,8 +3592,36 @@ model StockDocument {
   purchaseOrderId    Int? @map("purchase_order_id") // Nabavka prijem → robni ulaz (Faza B)
   projectId          Int? @map("project_id")
   workOrderId        Int? @map("work_order_id")
-  linkedInboundDocId Int? @map("linked_inbound_doc_id") // NIV → izvorni UL; PRENOS parni dok.
+  linkedInboundDocId Int? @map("linked_inbound_doc_id") // NIV → izvorni UL (za PRENOS v. transferPairDocId)
   inventoryCountId   Int? @map("inventory_count_id") // VISAK/MANJAK → popis
+
+  /// PRENOS IZMEĐU MAGACINA (međuskladišnica) — par dokumenata, 27.07.2026.
+  /// Stanje se svuda računa kao Σ(±količina) po `stock_document_items.warehouse_id` sa znakom
+  /// iz `DocumentType.isInbound` — jedan dokument nosi JEDAN znak i JEDAN magacin. Zato prenos
+  /// MORA biti par: izlaz (PREIZ) iz izvornog + ulaz (PREUL) u odredišni magacin, oba u istoj
+  /// transakciji. `transferPairDocId` je obostrana veza tog para; `targetWarehouseId` ostaje
+  /// samo kao podatak za papir (odredište na prenosnici), NIJE izvor zaduženja.
+  transferPairDocId Int? @map("transfer_pair_doc_id") // meki ref stock_documents.id (obostrano)
+  /// Dokument koji OVAJ dokument stornira. Parcijalni UNIQUE `uq_stock_documents_reversal_of`
+  /// (SQL-only, migracija 20260727120000) — jedan dokument sme biti storniran najviše jednom,
+  /// inače bi dvostruki storno duplo zadužio magacin i opet napravio lažnu zalihu.
+  reversalOfDocId   Int? @map("reversal_of_doc_id") // meki ref stock_documents.id
+
+  /// USLOVI OTPREME (BigBit `OtpremnicaBezCena` traka od 4 polja iznad tabele + „Po porudžbini od").
+  /// SVE je nullable i BEZ default-a NAMERNO: otpremnica je prateća isprava uz robu i nijedno od
+  /// ovih polja se ne sme pretpostaviti. Do 27.07.2026. štampa je upisivala tvrde konstante
+  /// („FCO magacin isporučioca", „sopstveni prevoz", „mesto prometa: magacin", datum otpreme =
+  /// datum dokumenta) — papir je tvrdio činjenice koje niko nije uneo. Prazno polje = prazna
+  /// linija za ručni upis, nikad podrazumevana vrednost.
+  fco              String?   @map("fco") @db.VarChar(100) // paritet isporuke (FCO magacin / FCO kupac / Incoterms)
+  shippingMethod   String?   @map("shipping_method") @db.VarChar(50) // sopstveni prevoz / kurir / dobavljač / preuzimanje
+  shippingDate     DateTime? @map("shipping_date") @db.Timestamptz(6) // NIKAD ne default-ovati na documentDate
+  deliveryPlace    String?   @map("delivery_place") @db.VarChar(150) // mesto isporuke / mesto prometa
+  route            String?   @map("route") @db.VarChar(100) // relacija prevoza
+  customerOrderRef String?   @map("customer_order_ref") @db.VarChar(100) // BigBit „Po porudžbini od" (broj+datum kupčeve porudžbine)
+  /// Napomena na dokumentu (slobodan tekst). FE tip `StockDocument` ju je deklarisao od ranije,
+  /// a kolone nije bilo — polje se serijalizovalo kao undefined (mrtvo polje).
+  note             String?   @map("note")
 
   /// Životni ciklus (poravnato sa Faza 2): draft sme edit; posted/locked = immutable (Faza 0 lock).
   status         String  @default("DRAFT") @map("status") @db.VarChar(20) /// DRAFT | CALCULATED | POSTED | LOCKED
@@ -3394,6 +3639,9 @@ model StockDocument {
   @@unique([companyId, documentTypeCode, year, documentNumber], map: "uq_stock_documents_number")
   @@index([documentDate, warehouseId, documentTypeCode], map: "idx_stock_documents_date_wh")
   @@index([documentTypeCode], map: "idx_stock_documents_type")
+  // transferPairDocId / reversalOfDocId pokrivaju SQL-only parcijalni indeksi
+  // idx_stock_documents_transfer_pair i uq_stock_documents_reversal_of
+  // (20260727120000_prenos_izmedju_magacina) — parcijalne indekse Prisma ne ume da izrazi.
   // purchaseOrderId pokriva SQL-only parcijalni unique uq_stock_documents_po
   // (20260723140000_review_fixes_guards) — poseban plain indeks je bio duplikat.
   @@map("stock_documents")
@@ -3516,7 +3764,8 @@ model StockReservation {
 // zatečeno stanje: valueAdjustment = stanjeKol * (novaVP − staraVP) → GK knjiženje razlike.
 
 /// Was: Stavke_nivelacije (StavkeNivelacije). Par (stara→nova) valuacione cene po artiklu/magacinu.
-/// Header = StockDocument sa kind='NIV'. isPosted vozi GK knjiženje razlike (doc 39 §F).
+/// Header = StockDocument sa kind='NIV'. NAPOMENA: od migracije 20260726110000 nivelacija se
+/// NE knjiži u GK (BigBit paritet) — isPosted znači „nivelacija obrađena", ne „proknjižena".
 model StockLevelingItem {
   id               Int     @id(map: "pk_stock_leveling_items") @default(autoincrement()) @map("id")
   documentId       Int     @map("document_id") // NIV StockDocument
@@ -3537,7 +3786,7 @@ model StockLevelingItem {
   newRetailPrice       Decimal @default(0) @map("new_retail_price") @db.Decimal(19, 4)
 
   valueAdjustment Decimal @map("value_adjustment") @db.Decimal(19, 4) // = quantityRevalued * (newWholesalePrice − oldWholesalePrice)
-  isPosted        Boolean @default(false) @map("is_posted") // razlika proknjižena u GK
+  isPosted        Boolean @default(false) @map("is_posted") // nivelacija obrađena (NE znači knjiženje u GK)
 
   document StockDocument @relation(fields: [documentId], references: [id], onDelete: Cascade, map: "fk_stock_leveling_items_document")
 
@@ -3595,8 +3844,14 @@ model KepuBookEntry {
   warehouseId Int      @map("warehouse_id") // meki ref warehouses.id
   documentId  Int?     @map("document_id") // izvorni StockDocument (meki ref)
   entryDate   DateTime @map("entry_date") @db.Timestamptz(6)
-  charge      Decimal  @default(0) @map("charge") @db.Decimal(19, 4) // zaduženje (MagUlaz)
-  discharge   Decimal  @default(0) @map("discharge") @db.Decimal(19, 4) // razduženje (MagStvarniIzlaz)
+  charge      Decimal  @default(0) @map("charge") @db.Decimal(19, 4) // zaduženje (MagUlaz), MALOPRODAJNA vrednost
+  discharge   Decimal  @default(0) @map("discharge") @db.Decimal(19, 4) // razduženje (MagStvarniIzlaz), MALOPRODAJNA
+  /// Isti red vrednovan po VELEPRODAJNOJ ceni. Knjiga se po Pravilniku može voditi po
+  /// MP ili po VP ceni; oba iznosa se upisuju pri knjiženju da izbor principa u
+  /// Podešavanjima bude RETROAKTIVAN — ranije odštampana knjiga se može ponovo izdati
+  /// po drugom principu bez ponovnog knjiženja. Smer je isti, razlikuje se samo cena.
+  chargeVp    Decimal  @default(0) @map("charge_vp") @db.Decimal(19, 4)
+  dischargeVp Decimal  @default(0) @map("discharge_vp") @db.Decimal(19, 4)
   description String?  @map("description") @db.VarChar(255)
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -3884,10 +4139,16 @@ model Invoice {
   linkedInvoiceDocId Int? @map("linked_invoice_doc_id") // IDDokIF: PROF → IFR par; >0 blokira ponovni prepis (anti-duplo guard)
   copiedFromDocId    Int? @map("copied_from_doc_id") // izvorni dokument prepisa (Invoice.id — meki ref u istoj tabeli)
 
-  // — Avansi (Batch C) —
-  /// Na KONAČNOM računu: meki ref na AVR čiji se avans odbija (Invoice.id, documentType='AVR').
+  // — Avansi (Batch C; N:M od migracije 20260726120000) —
+  /// KOMPATIBILNOST (deprecated kao izvor istine): na KONAČNOM računu meki ref na AVR
+  /// PRVE aktivne primene. Autoritativna veza je `invoice_advance_applications`
+  /// (jedan avans ide na više računa i obrnuto — BigBit `T_AVR_Roba`/`T_AVR_Usluge`).
+  /// Održava ga `AdvanceInvoiceService`; čitaoci (SEF BillingReference, štampa) ga smeju
+  /// koristiti samo za prikaz „prvog" avansa.
   advanceInvoiceId      Int?      @map("advance_invoice_id")
-  /// Bruto iznos avansa odbijen na ovom konačnom računu (umanjuje iznos za plaćanje, ne osnovicu prihoda).
+  /// DENORMALIZOVAN zbir svih AKTIVNIH primena avansa na ovom računu (bruto).
+  /// = SUM(invoice_advance_applications.applied_amount WHERE status='ACTIVE').
+  /// Umanjuje iznos za plaćanje, ne osnovicu prihoda.
   advanceAppliedAmount  Decimal   @default(0) @map("advance_applied_amount") @db.Decimal(19, 4)
   /// Na AVR-u: datum naplate avansa — PDV obaveza po avansu nastaje NAPLATOM, ne izdavanjem.
   advancePaidAt         DateTime? @map("advance_paid_at") @db.Timestamptz(6)
@@ -3895,10 +4156,54 @@ model Invoice {
   advancePaidAmount     Decimal   @default(0) @map("advance_paid_amount") @db.Decimal(19, 4)
   /// Smer avansa: 'out' = mi izdajemo kupcu (KIF), 'in' = dobavljač nama (KUF, pretporez po plaćanju).
   advanceDirection      String?   @map("advance_direction") @db.VarChar(3)
-  /// Nalog kojim je avans ZATVOREN na ovom konačnom računu (journal_entries.id).
-  /// Storno konačnog računa mora da reverzira i njega — inače avans ostane naplaćen
-  /// a konto 4300 i PDV po avansu padnu na nulu.
+  /// KOMPATIBILNOST: nalog PRVE aktivne primene (journal_entries.id). Storno računa
+  /// reverzira naloge SVIH svojih primena iz `invoice_advance_applications`, ne samo ovaj.
   advanceClosingEntryId Int?      @map("advance_closing_entry_id")
+  /// Na AVR-u: OSNOV avansa kad ne postoji predračun (broj ugovora / slobodan opis).
+  /// Obavezan kad se AVR izdaje bez izvornog dokumenta (BigBit: 2 najveća avansa 2025.
+  /// izdata su po Ugovoru, ne po predračunu — doc BIGBIT_IZLAZNE_FAKTURE_I_AVANSI §4.1/G5).
+  advanceBasis          String?   @map("advance_basis") @db.VarChar(255)
+
+  /// DATUM PROMETA DOBARA I USLUGA (BT-72) — propisan sadržaj računa (ZPDV čl. 42)
+  /// i obavezan element e-fakture; ide u UBL `cac:Delivery/cbc:ActualDeliveryDate`.
+  /// NIKAD se ne izvodi iz `documentDate` (datum izdavanja je drugi podatak, često
+  /// drugi dan).
+  ///
+  /// Štampa: „Datum prometa dobara" (traka uslova IFR/IFGP), „Datum prometa" (IFUSL),
+  /// `Date of delivery:` (ino usluga) — v. docs/FAKTURE_ZAKONSKA_USKLADJENOST.md
+  /// nalaz N1 / mera M1.
+  ///
+  /// Popunjava se pri unosu (`CreateProformaDto.supplyDate`); ako korisnik ne unese,
+  /// `postInvoice` ga pri knjiženju postavlja na `documentDate` uz WARN u logu — nikad
+  /// tiho, jer proknjižen račun bez ovog podatka nije potpun. Slanje na SEF bez njega
+  /// PADA (`ubl-builder.service.ts`), osim na avansnom računu.
+  ///
+  /// ⚠️ JEDNO IME ZA JEDAN PODATAK (razrešeno 02.08.2026): grana za štampu je isti
+  /// podatak nakratko nosila kao `deliveryDate` / `delivery_date`. Ostalo je
+  /// `supplyDate` — „datum prometa", ne „datum isporuke". Ne uvoditi drugo polje za
+  /// isti podatak, ni pod imenom `deliveryDate`.
+  supplyDate       DateTime? @map("supply_date") @db.Timestamptz(6)
+  /// POZIV NA BROJ (BT-83) → UBL `cac:PaymentMeans/cbc:PaymentID`.
+  /// NULL = koristi se broj dokumenta (BigBit paritet), ne prazno polje.
+  paymentReference String?   @map("payment_reference") @db.VarChar(50)
+
+  /// PROFIL STAVKI OVOG DOKUMENTA: GOODS | SERVICE. NULL = uzmi predlog iz
+  /// registra vrsta (`DocumentType.screenKind`). Postoji zato što vrsta NE
+  /// određuje tabelu ni formu (§8/O4.5): u BigBitovoj uslužnoj tabeli žive i IFR,
+  /// IZVRO i IFGP — uključujući `IFGP 068/26` iz tekuće godine, unet bez ijedne
+  /// robne stavke. Tvrda validacija po vrsti bi odbila stvarne podatke pri uvozu.
+  lineProfile String? @map("line_profile") @db.VarChar(10)
+
+  // — Koeficijent cene (masovna akcija nad svim stavkama; §8/O1) —
+  /// MNOŽILAC SVIH STAVKI. Cena se NIKAD ne upisuje pomnožena:
+  /// `InvoiceItem.unitPrice = InvoiceItem.baseUnitPrice × priceCoefficient` je
+  /// IZVEDENO. Zato se dugme sme pritisnuti više puta (rezultat isti), koeficijent
+  /// se sme ispraviti i sme se vratiti na 1 — u BigBitu je „primeni pa upiši"
+  /// nepovratno i drugi klik pomnoži već pomnoženo. DB CHECK: mora biti > 0.
+  priceCoefficient          Decimal   @default(1) @map("price_coefficient") @db.Decimal(19, 6)
+  priceCoefficientAppliedAt DateTime? @map("price_coefficient_applied_at") @db.Timestamptz(6)
+  /// Ko je poslednji primenio koeficijent (meki ref users.id) — idempotencija + audit.
+  priceCoefficientAppliedBy Int?      @map("price_coefficient_applied_by")
 
   /// DRAFT | POSTED | SENT | PAID | CANCELLED
   status   String  @default("DRAFT") @map("status") @db.VarChar(20)
@@ -3941,21 +4246,12 @@ model Invoice {
   /// Prepisuje se sa Customer.paymentMethod pri kreiranju predračuna. = GoodsDocument.paymentMethod.
   paymentMethod String? @map("payment_method") @db.VarChar(50)
 
-  /// DATUM PROMETA dobara i usluga — obavezan element računa po Zakonu o PDV
-  /// (docs/FAKTURE_ZAKONSKA_USKLADJENOST.md §1.1 t.5, nalaz N1 / mera M1).
-  /// Štampa: „Datum prometa dobara" (traka uslova IFR/IFGP), „Datum prometa" (IFUSL),
-  /// `Date of delivery:` (ino usluga). SEF: `cac:Delivery/cbc:ActualDeliveryDate`.
-  ///
-  /// ⚠️ ZNAČENJE JE ZAKUCANO (razrešenje dvoznačnosti, 02.08.2026): u CELOM repou ime
-  /// `deliveryDate` / kolona `delivery_date` znači ISKLJUČIVO datum prometa. Ranije je
-  /// isto ime na `SefIncomingInvoice` značilo „datum prijema na SEF" — to polje je
-  /// preimenovano u `sefReceivedAt`, jer je ime pratilo pogrešno značenje. Ne uvoditi
-  /// nova polja tog imena za bilo šta drugo (datum otpreme, prijema, isporuke pošiljke).
-  ///
-  /// Popunjava se pri unosu (CreateProformaDto.deliveryDate); ako korisnik ne unese,
-  /// `postInvoice` ga pri knjiženju postavlja na `documentDate` uz WARN u logu — nikad
-  /// tiho, jer proknjižen račun bez ovog podatka nije potpun (fakturisanje.service.ts).
-  deliveryDate DateTime? @map("delivery_date") @db.Timestamptz(6)
+  // ⚠️ Datum prometa NE stoji ovde: nosi ga `supplyDate` / kolona `supply_date` gore
+  // (uvedena migracijom 20260727140000). Grana za štampu je 01.08.2026. dodala i
+  // `deliveryDate` / `delivery_date` za isti podatak; pri spajanju 02.08.2026. je
+  // uklonjena — dve kolone za jedan obavezan element računa znače da polovina koda
+  // čita praznu. Tabela `invoices` je na produkciji bila prazna, pa nije bilo šta da
+  // se migrira.
 
   /// Broj izvozne deklaracije / JCI (npr. „25-0401-000005") — slobodan red ispod zbira na ino
   /// robnoj fakturi. Do sada se lepio u `note`; sada ima svoje polje, pa `note` ostaje memo.
@@ -3998,6 +4294,11 @@ model Invoice {
 
   items InvoiceItem[]
 
+  /// Primene avansa NA OVOM (konačnom) računu.
+  advanceApplications InvoiceAdvanceApplication[] @relation("AdvanceApplicationsOnInvoice")
+  /// Primene OVOG avansnog računa (AVR) na konačnim računima.
+  advanceUsages       InvoiceAdvanceApplication[] @relation("AdvanceApplicationsOfAdvance")
+
   // Numeracija je po firmi (document_number_sequences po companyId) — unique je mora pratiti (DB-011).
   @@unique([companyId, documentType, documentNumber], map: "uq_invoices_company_type_number")
   @@index([customerId], map: "idx_invoices_customer")
@@ -4030,6 +4331,13 @@ model InvoiceItem {
   quantity  Decimal @map("quantity") @db.Decimal(19, 6) // količina
   unitPrice Decimal @default(0) @map("unit_price") @db.Decimal(19, 4) // actualWholesalePrice (transakciona VP iz PricingService)
 
+  /// OSNOVNA cena — ono što je došlo iz cenovnika ili je operater prekucao, PRE
+  /// koeficijenta dokumenta (§8/O1). Istina je: `unitPrice = baseUnitPrice ×
+  /// Invoice.priceCoefficient`. Koeficijent se NIKAD ne upisuje u `unitPrice`, da
+  /// drugi klik na „Primeni koeficijent" ne pomnoži već pomnoženo. Kod dokumenata
+  /// bez koeficijenta (=1) obe cene su jednake; migracija je tako i backfill-ovala.
+  baseUnitPrice Decimal @default(0) @map("base_unit_price") @db.Decimal(19, 4)
+
   discountPercent     Decimal @default(0) @map("discount_percent") @db.Decimal(19, 4) // Rabat %
   cashDiscountPercent Decimal @default(0) @map("cash_discount_percent") @db.Decimal(19, 4) // Kasa %
 
@@ -4046,6 +4354,56 @@ model InvoiceItem {
   @@index([itemId], map: "idx_invoice_items_item")
   @@index([copiedFromItemId], map: "idx_invoice_items_copied_from")
   @@map("invoice_items")
+}
+
+// -----------------------------------------------------------------------------
+// InvoiceAdvanceApplication — primena (odbitak) avansa na konačnom računu, N:M
+// -----------------------------------------------------------------------------
+/// Was: T_AVR_Roba / T_AVR_Usluge (BigBit child tabela po IDDok, kolona KoristiIznosSaPDV).
+/// Jedan avans se deli na VIŠE konačnih računa i jedan račun zatvara VIŠE avansa
+/// (dokazano produkcijskim podacima 2025: AVR-00013/2025 → IFR 353/25 + IFR 370/25;
+/// IFUSL 059/25 ← 6 avansa). Svaka primena nosi SVOJ GL nalog zatvaranja, pa storno
+/// konačnog računa reverzira tačno svoje naloge i oslobađa tačno svoje iznose.
+/// Kontrola „Σ primena ≤ naplaćeni avans" je u servisu (transakcija + advisory lock).
+model InvoiceAdvanceApplication {
+  id Int @id(map: "pk_invoice_advance_applications") @default(autoincrement()) @map("id")
+
+  /// Konačni (proknjižen) račun na kome se avans odbija.
+  invoiceId        Int @map("invoice_id")
+  /// Avansni račun (Invoice.documentType='AVR') čiji se naplaćen iznos odbija.
+  advanceInvoiceId Int @map("advance_invoice_id")
+
+  /// BRUTO iznos ove primene (KoristiIznosSaPDV). Uvek > 0.
+  appliedAmount Decimal @map("applied_amount") @db.Decimal(19, 4)
+  /// Osnovica ove primene (izvedena preračunatom stopom — grossToNet).
+  appliedNet    Decimal @default(0) @map("applied_net") @db.Decimal(19, 4)
+  /// PDV ove primene (KoristiPDVVisa/Niza).
+  appliedVat    Decimal @default(0) @map("applied_vat") @db.Decimal(19, 4)
+  /// Šifra PDV stope po kojoj je primena razbijena (meki ref tax_rates).
+  vatRateCode   String? @map("vat_rate_code") @db.VarChar(5)
+
+  /// GL nalog zatvaranja ove primene (4300 DUG / PDV DUG / kupac POT).
+  closingEntryId  Int? @map("closing_entry_id")
+  /// GL nalog kojim je zatvaranje reverzirano (storno konačnog računa).
+  reversalEntryId Int? @map("reversal_entry_id")
+
+  /// ACTIVE | REVERSED — samo ACTIVE ulazi u zbirove i u iznos za plaćanje.
+  status     String    @default("ACTIVE") @map("status") @db.VarChar(10)
+  reversedAt DateTime? @map("reversed_at") @db.Timestamptz(6)
+
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  invoice Invoice @relation("AdvanceApplicationsOnInvoice", fields: [invoiceId], references: [id], onDelete: Cascade, map: "fk_invoice_advance_app_invoice")
+  advance Invoice @relation("AdvanceApplicationsOfAdvance", fields: [advanceInvoiceId], references: [id], onDelete: Cascade, map: "fk_invoice_advance_app_advance")
+
+  // Parcijalni unique (isti avans najviše jednom AKTIVNO na istom računu) se ne može
+  // izraziti Prisma-om — živi samo u SQL-u (uq_invoice_advance_app_active).
+  @@index([invoiceId], map: "idx_invoice_advance_app_invoice")
+  @@index([advanceInvoiceId], map: "idx_invoice_advance_app_advance")
+  @@index([closingEntryId], map: "idx_invoice_advance_app_entry")
+  @@map("invoice_advance_applications")
 }
 
 // -----------------------------------------------------------------------------
@@ -4144,8 +4502,8 @@ model SefIncomingInvoice {
 
   issueDate DateTime? @map("issue_date") @db.Timestamptz(6) // datum izdavanja
   /// Datum PRIJEMA fakture na SEF — osnov zakonskog roka od 15 dana (acceptDeadline).
-  /// PREIMENOVANO 02.08.2026 iz `deliveryDate` / `delivery_date`: to ime u ostatku repoa
-  /// znači „datum prometa" (Invoice.deliveryDate → UBL cbc:ActualDeliveryDate), pa je isti
+  /// PREIMENOVANO 02.08.2026 iz `deliveryDate` / `delivery_date`: to ime je značilo
+  /// „datum prometa" (danas `Invoice.supplyDate` → UBL cbc:ActualDeliveryDate), pa je isti
   /// naziv ovde nosio SUPROTNO značenje — sudar koji je već jednom doveo do pogrešnog roka
   /// (v. komentar u sef-incoming.service.ts uz izbor osnova roka). Ime sada prati značenje.
   /// NAPOMENA: datum prometa ULAZNE fakture (njen cbc:ActualDeliveryDate) se i dalje NE
@@ -4212,6 +4570,9 @@ model VatAccountMap {
   direction String  @map("direction") @db.VarChar(10) /// input | output  — pretporez (ulazni) / obaveza (izlazni)
   rate      Int?    @map("rate") // nominalna stopa (20/10); null za transit/uplatni konto (2790/4790)
   role      String  @map("role") @db.VarChar(20) /// standard | avans | carinski | transit | ne-koristi-se
+  //  NAPOMENA: kolone `has_base` NEMA namerno — svako PDV konto u registru nosi
+  //  osnovicu izvedenu iz svoje stope (base = PDV/(rate/100)). Vidi
+  //  `deriveBase` u vat-ledger.service.ts i migraciju 20260727090000.
 
   @@index([direction], map: "idx_vat_account_map_direction")
   @@map("vat_account_map")
@@ -4338,12 +4699,40 @@ model FinancialStatement {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   finalizedAt     DateTime? @map("finalized_at") @db.Timestamptz(6) // popuni se pri FINALIZED (immutable posle predaje)
 
-  lines FinancialStatementLine[]
+  lines            FinancialStatementLine[]
+  controlOverrides StatementControlOverride[]
 
   // Najviše jedan obračun po (tip obrasca, godina).
   @@unique([statementType, periodYear], map: "uq_financial_statements_type_year")
   @@index([status], map: "idx_financial_statements_status")
   @@map("financial_statements")
+}
+
+// -----------------------------------------------------------------------------
+// StatementControlOverride — trag forsirane finalizacije završnog računa
+// -----------------------------------------------------------------------------
+// `finalize {force:true}` je do 28.07.2026. tiho gasio SVA kontrolna pravila i
+// nigde nije ostavljao trag. Svaki takav prelaz od sada upisuje jedan red ovde
+// (istorija, ne stanje), a `ControlRulesService.evaluateControls` ga vraća kao
+// pseudo-pravilo `FORSIRANA_FINALIZACIJA` u istom odgovoru kao i prava pravila.
+// App-owned tabela (nula legacy veza) — nema `/// Was:` para u BigBitu.
+model StatementControlOverride {
+  id              Int      @id(map: "pk_statement_control_overrides") @default(autoincrement()) @map("id")
+  statementId     Int      @map("statement_id")
+  forcedByUserId  Int?     @map("forced_by_user_id") // meki ref users.id
+  forcedByEmail   String?  @map("forced_by_email") @db.VarChar(255) // denormalizovano: trag mora ostati čitljiv i kad korisnik nestane
+  forcedAt        DateTime @default(now()) @map("forced_at") @db.Timestamptz(6)
+  /// Pravila koja su PALA i blokirala finalizaciju: [{code,name,left,right,diff,message}].
+  failedRules     Json     @map("failed_rules") @db.JsonB
+  /// Snimak SVIH pravila u trenutku forsiranja (prošla, upozorenja i pala) — dokaz
+  /// koji mora ostati nepromenjen i kad se katalog pravila kasnije izmeni.
+  controlSnapshot Json     @map("control_snapshot") @db.JsonB
+  reason          String?  @map("reason") @db.VarChar(500) // obrazloženje korisnika (API ga još ne traži)
+
+  statement FinancialStatement @relation(fields: [statementId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_statement_control_overrides_statement")
+
+  @@index([statementId, forcedAt(sort: Desc)], map: "idx_statement_control_overrides_statement")
+  @@map("statement_control_overrides")
 }
 
 // -----------------------------------------------------------------------------
@@ -4463,7 +4852,7 @@ model ChangeRequestAttachment {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6) /// soft-delete (fajl best-effort remove)
 
-  request ChangeRequest        @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
+  request ChangeRequest         @relation(fields: [requestId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_request")
   comment ChangeRequestComment? @relation(fields: [commentId], references: [id], onDelete: Cascade, map: "fk_cr_attachments_comment")
 
   @@index([requestId], map: "idx_cr_attachments_request")
@@ -4681,6 +5070,661 @@ model ScheduledJobRun {
   @@map("scheduled_job_runs")
 }
 
+/// App-owned prekidač za pozadinske poslove koje korisnik sme da ugasi iz Podešavanja
+/// (stavka B, 26.07.2026). Ključ je stabilan string (npr. `bigbit_mdb_sync`), stanje živi
+/// u bazi — menja se BEZ restarta i BEZ env promenljive. Tabela NIJE u SYNC_MAP i nijedan
+/// sync je ne dira (za razliku od `system_config` / `global_config`, koje full_refresh briše).
+/// Semantika: red koji NE postoji = uključeno (prekidač je OFF-prekidač; nedostatak reda ne
+/// sme tiho da ugasi noćni uvoz). Vidi `podesavanja/sync-switch.service.ts`.
+model AppSwitch {
+  key             String   @id(map: "pk_app_switches") @map("key") @db.VarChar(64)
+  enabled         Boolean  @default(true) @map("enabled")
+  /// Podešavanja koja nisu DA/NE nose vrednost ovde (npr. princip vrednovanja KEP
+  /// knjige: "MP" ili "VP"). Prekidači je ostavljaju praznu i koriste samo `enabled`.
+  value           String?  @map("value") @db.VarChar(64)
+  /// Zašto je ugašen/upaljen — slobodan tekst koji admin upiše uz preklop (vidi se na ekranu).
+  note            String?  @map("note")
+  updatedByUserId Int?     @map("updated_by_user_id")
+  /// Denormalizovan email onoga ko je poslednji menjao (kao `audit_log.actorUsername`).
+  updatedByEmail  String?  @map("updated_by_email") @db.VarChar(200)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("app_switches")
+}
+
+// ============================================================================
+// TRAG ŠTAMPE (27.07.2026) — `document_prints`
+// ----------------------------------------------------------------------------
+// ZAŠTO POSTOJI: do sada je trag štampe živeo SAMO kao tekst u nozi papira
+// („Štampao: X · datum · ServoSync 4.0", doc-layout/index.ts) i nigde se nije
+// pamtio. Nije se moglo odgovoriti ko je i koliko puta izvadio otpremnicu, niti
+// razlikovati original od kopije. BigBit ovo NEMA nigde — ovo je nadgradnja.
+//
+// KAKO SE DODELJUJE `copyNo`: `pg_advisory_xact_lock(hashtext(...))` UNUTAR
+// transakcije, pa MAX+1 u JS-u (isti obrazac kao `BlagajnaService.nextEntryNumber`
+// i `StockDocumentNumberingService`). Nikad goli SQL MAX bez lock-a — dva
+// istovremena klika na „Štampaj" bi dobila isti broj primerka.
+// ============================================================================
+
+/// Jedan red = jedno izvađenje jednog obrasca jednog dokumenta. `copyNo = 1` je original,
+/// `>= 2` nosi žig „KOPIJA" na papiru.
+///
+/// RAST I RETENCIJA (traženo uz zadatak): red je ~120 B, a realan obim Servoteha je reda
+/// nekoliko stotina štampi dnevno → ~10–20 MB godišnje. Zato SE NE BRIŠE ništa: tabela je
+/// dokazni trag i njena vrednost je upravo u tome što je potpuna. Ako obim ikada naraste,
+/// SME se arhivirati SAMO po starosti (`printed_at < now() - N godina`) i NIKAD po dokumentu:
+/// brisanje redova jednog dokumenta bi oborilo MAX(copyNo) i sledeća štampa bi se lažno
+/// predstavila kao original. Za brzo čitanje su tri indeksa:
+///   - `uq_document_prints_copy`  — ključ primerka; ujedno brana od duplog copyNo;
+///   - `idx_document_prints_document` — „koliko puta je štampan dokument N" (poziv sa svake štampe);
+///   - `idx_document_prints_at`  — pretraga/retencija po datumu („ko je juče štampao").
+model DocumentPrint {
+  id Int @id(map: "pk_document_prints") @default(autoincrement()) @map("id")
+
+  /// STOCK | INVENTORY_COUNT | INVOICE | PURCHASE_ORDER | GL_JOURNAL | CASH_JOURNAL …
+  /// (vidi `DOCUMENT_PRINT_KIND` u documents/document-print.service.ts — jedan izvor istine).
+  documentKind String @map("document_kind") @db.VarChar(30)
+  /// Meki ref — bez `@relation`, jer tabela pokriva više modula (BACKEND_RULES §5).
+  documentId   Int    @map("document_id")
+  /// Obrazac unutar dokumenta (`otpremnica`, `kalkulacija`, `popunjena`…). NOT NULL sa default ''
+  /// NAMERNO: u Postgresu se NULL-ovi u UNIQUE indeksu tretiraju kao različiti, pa bi nullable
+  /// kolona propustila duplikate `copyNo` i značka „KOPIJA" se ne bi nikad pojavila.
+  variant      String @default("") @map("variant") @db.VarChar(30)
+  /// 1 = original, >= 2 = kopija.
+  copyNo       Int    @map("copy_no")
+
+  printedByUserId Int?     @map("printed_by_user_id") // meki ref users.id; NULL = sistemska/batch štampa
+  /// Snimak imena u trenutku štampe — `users` je sync-keš, ime se sme promeniti, papir ne sme.
+  printedByName   String?  @map("printed_by_name") @db.VarChar(100)
+  printedAt       DateTime @default(now()) @map("printed_at") @db.Timestamptz(6)
+  companyId       Int      @default(0) @map("company_id")
+
+  @@unique([documentKind, documentId, variant, copyNo], map: "uq_document_prints_copy")
+  @@index([documentKind, documentId], map: "idx_document_prints_document")
+  @@index([printedAt], map: "idx_document_prints_at")
+  @@map("document_prints")
+}
+
+// ============================================================================
+// BIGBIT .mdb NOĆNI UVOZ (stavka A, 26.07.2026)
+// ----------------------------------------------------------------------------
+// ZAŠTO POSTOJI: finansijsko jezgro BigBita (glavna knjiga, nalozi, kontni plan,
+// PDV šeme) NE POSTOJI u MSSQL izvoru koji vozi `sync-map.generated.ts` — ono
+// živi isključivo u Access .mdb fajlu koji se noću spušta u /srv/bigbit-incoming/.
+// Bez tih podataka nema tri paralelna PDV obračuna (odluka vlasnika 26.07.2026).
+//
+// KANAL JE DVOSTEPEN, jer backend kontejner NE VIDI .mdb (proveren 26.07.2026:
+// `docker inspect servosync-backend` → Binds=[], nema /var/run/docker.sock, nema
+// mdbtools u imidžu). Zato:
+//   1) `backend/scripts/bigbit-mdb-export.sh` radi NA HOSTU (ubuntusrv): uzme
+//      najnoviji .mdb, izveze tabele kroz `mdbtools:local` i `\copy`-ra ih u
+//      `bb_mdb_stage_*` tabele OVE baze, pa upiše red u `bb_mdb_drops`.
+//   2) Scheduler posao `bigbit-mdb-import` (sync/bigbit-mdb-import.service.ts)
+//      čita staging iz baze i idempotentno ga preslikava u 4.0 modele.
+// Postgres je time JEDINI dodirni kanal između hosta i kontejnera — nije potrebna
+// nijedna izmena imidža, compose fajla ni mrežnih prava.
+//
+// NIJE dirano: MSSQL sync (`SyncService` + `SYNC_MAP`) radi nezavisno i dalje.
+// ============================================================================
+
+/// Jedan .mdb drop = jedan snimak BigBita. Nosi identitet fajla (ime+mtime+veličina),
+/// meru oba koraka (staging na hostu, uvoz iz scheduler-a) i služi kao OZNAKA POREKLA:
+/// svaki uvezeni red u 4.0 tabelama nosi `imported_drop_id` → tačno se zna iz kog fajla
+/// je došao. `imported_drop_id IS NULL` = red je nastao u 4.0 (nativni unos).
+model BbMdbDrop {
+  id Int @id(map: "pk_bb_mdb_drops") @default(autoincrement()) @map("id")
+
+  /// Identitet fajla — isto ime + isti mtime + ista veličina = ISTI drop (idempotencija
+  /// koraka 1). sha256 se čuva kao dokaz sadržaja, ali NIJE ključ: Access fajl nije
+  /// bajt-stabilan pa bi ponovni izvoz istih podataka dao drugi heš.
+  fileName   String   @map("file_name") @db.VarChar(255)
+  fileMtime  DateTime @map("file_mtime") @db.Timestamptz(6)
+  fileSize   BigInt   @map("file_size")
+  fileSha256 String?  @map("file_sha256") @db.VarChar(64)
+
+  /// PENDING | LOADED | FAILED — stanje koraka 1 (mdbtools izvoz + \copy u staging).
+  stageStatus     String    @default("PENDING") @map("stage_status") @db.VarChar(10)
+  stagedAt        DateTime? @map("staged_at") @db.Timestamptz(6)
+  stageDurationMs Int?      @map("stage_duration_ms")
+  /// { "T_Glavna knjiga": 20366, ... } — broj PARSIRANIH redova po tabeli.
+  /// Nikad iz `mdb-count` (greši za -9 na GK) ni iz `wc -l` (memo polja nose \r\n).
+  stageRowCounts  Json?     @map("stage_row_counts")
+  stageError      String?   @map("stage_error")
+
+  /// PENDING | DONE | FAILED — stanje koraka 2 (staging → 4.0 modeli).
+  importStatus     String    @default("PENDING") @map("import_status") @db.VarChar(10)
+  /// MUTEX uvoza. Claim je atomski CAS nad ovom kolonom, jer scheduler-ov guard
+  /// („svež RUNNING mlađi od 10 min") ne pokriva uvoz koji traje duže od 10 min.
+  /// Stariji od IMPORT_LOCK_STALE_HOURS = zaostao posle pada, sme da se preotme.
+  importStartedAt  DateTime? @map("import_started_at") @db.Timestamptz(6)
+  importedAt       DateTime? @map("imported_at") @db.Timestamptz(6)
+  importDurationMs Int?      @map("import_duration_ms")
+  /// { "ledger_entries": { "inserted": 20366, "updated": 0, "skipped": 0, "ms": 8123 }, ... }
+  importRowCounts  Json?     @map("import_row_counts")
+  importError      String?   @map("import_error")
+
+  note      String?  @map("note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  accounts           Account[]
+  orderTypes         OrderType[]
+  saldakontoAccounts SaldakontoAccount[]
+  journalEntries     JournalEntry[]
+  ledgerEntries      LedgerEntry[]
+
+  stageGk         BbMdbStageGk[]
+  stageNalozi     BbMdbStageNalog[]
+  stageAccounts   BbMdbStageAccount[]
+  stageOrderTypes BbMdbStageOrderType[]
+  stageSaldakonto BbMdbStageSaldakonto[]
+  stageScheme     BbMdbStageScheme[]
+  stageSchemeLine BbMdbStageSchemeLine[]
+  stagePdvGk      BbMdbStagePdvGk[]
+  stagePopdvGk    BbMdbStagePopdvGk[]
+  stageKomitenti  BbMdbStageKomitent[]
+  stagePredmeti   BbMdbStagePredmet[]
+  stageGrupe      BbMdbStageGrupa[]
+  stagePodgrupe   BbMdbStagePodgrupa[]
+  stagePoreklo    BbMdbStagePoreklo[]
+  stageMagacini   BbMdbStageMagacin[]
+  stageArtikli    BbMdbStageArtikal[]
+
+  @@unique([fileName, fileMtime, fileSize], map: "uq_bb_mdb_drops_file")
+  @@index([stageStatus, importStatus], map: "idx_bb_mdb_drops_status")
+  @@map("bb_mdb_drops")
+}
+
+// ── STAGING (`bb_mdb_stage_*`) ───────────────────────────────────────────────
+// Sve kolone su TEXT, NAMERNO. `mdb-export` daje tekst; tipizacija se radi u
+// koraku 2 gde neispravan red može da se PRESKOČI uz poruku u dnevniku, umesto
+// da obori ceo `\copy` i time i uvoz koji nema veze s njim. Staging je i jedini
+// primerak „zlatnog uzorka" (T_PDV_GK / T_POPDV_GK) — BigBitov izlaz PDV motora
+// koji se poredi sa našim izračunom, a NE uvozi se u produkcione modele.
+
+/// Was: T_Glavna knjiga — sirov staging (svih 30 izvornih kolona).
+model BbMdbStageGk {
+  id     Int @id(map: "pk_bb_mdb_stage_gk") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  stavkaId        String? @map("stavka_id") // StavkaID
+  konto           String? @map("konto") // Konto
+  inoKonto        String? @map("ino_konto") // InoKonto (mrtvo: 0 na 100% redova)
+  analitickaSifra String? @map("analiticka_sifra") // Analiticka sifra (= šifra komitenta)
+  brojDokumenta   String? @map("broj_dokumenta") // Broj dokumenta (SADRŽI ZAREZ — otud razdvajač pipe)
+  datumDokumenta  String? @map("datum_dokumenta") // Datum dokumenta
+  valutaDokumenta String? @map("valuta_dokumenta") // Valuta dokumenta (= dospeće, NIJE valuta novca!)
+  datumKnjizenja  String? @map("datum_knjizenja") // Datum knjizenja
+  idNaloga        String? @map("id_naloga") // IDNaloga (FK T_Nalozi)
+  opisDokumenta   String? @map("opis_dokumenta") // Opis dokumenta
+  duguje          String? @map("duguje") // Duguje (592 reda NEGATIVNO — vidi relaksiran CHECK)
+  potrazuje       String? @map("potrazuje") // Potrazuje
+  povezan         String? @map("povezan") // Povezan (0 na 100% — uparivanje se PRERAČUNAVA)
+  idDokIzRobnog   String? @map("id_dok_iz_robnog") // IDDokIzRobnog
+  temeljnica      String? @map("temeljnica") // Temeljnica
+  devDuguje       String? @map("dev_duguje") // DevDuguje (NIJE FX kad je DevValuta=RSD!)
+  devPotrazuje    String? @map("dev_potrazuje") // DevPotrazuje
+  devValuta       String? @map("dev_valuta") // DevValuta (9 varijanti — normalizuje se)
+  pozicija        String? @map("pozicija") // Pozicija (NIJE mesto troška — poreklo dokumenta)
+  idDokMp         String? @map("id_dok_mp") // IDDokMP
+  idProdavnicaMp  String? @map("id_prodavnica_mp") // IDProdavnicaMP
+  idPredmet       String? @map("id_predmet") // IDPredmet
+  idDokIzUsluga   String? @map("id_dok_iz_usluga") // IDDokIzUsluga (mrtvo)
+  pgIdDokIzRobnog String? @map("pg_id_dok_iz_robnog") // PG_IDDokIzRobnog
+  oj              String? @map("oj") // OJ (mrtvo)
+  potpis          String? @map("potpis") // Potpis
+  datumIVreme     String? @map("datum_i_vreme") // DatumIVreme (watermark, 100% popunjen)
+  od              String? @map("od") // OD (mrtvo)
+  idRadniNalog    String? @map("id_radni_nalog") // IDRadniNalog (mrtvo)
+  pnbOdobBrojGk   String? @map("pnb_odob_broj_gk") // PNBOdobBrojGK
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_gk_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_gk_drop")
+  @@map("bb_mdb_stage_gk")
+}
+
+/// Was: T_Nalozi — zaglavlje naloga (staging).
+model BbMdbStageNalog {
+  id     Int @id(map: "pk_bb_mdb_stage_nalozi") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  idFirma        String? @map("id_firma") // IDFirma (0 na 100%)
+  idNaloga       String? @map("id_naloga") // IDNaloga
+  brojNaloga     String? @map("broj_naloga") // Broj naloga
+  vrstaNaloga    String? @map("vrsta_naloga") // Vrsta naloga
+  datumNaloga    String? @map("datum_naloga") // Datum naloga
+  opisNaloga     String? @map("opis_naloga") // Opis naloga (Memo)
+  datumKnjizenja String? @map("datum_knjizenja") // Datum knjizenja
+  level          String? @map("level") // Level
+  zakljucano     String? @map("zakljucano") // Zakljucano
+  godina         String? @map("godina") // Godina (= FAJL; jedan .mdb = jedna godina)
+  potpis         String? @map("potpis") // Potpis
+  datumIVreme    String? @map("datum_i_vreme") // DatumIVreme
+  stariId        String? @map("stari_id") // STARIID
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_nalozi_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_nalozi_drop")
+  @@map("bb_mdb_stage_nalozi")
+}
+
+/// Was: Kontni plan — staging.
+model BbMdbStageAccount {
+  id     Int @id(map: "pk_bb_mdb_stage_kontni_plan") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  konto                  String? @map("konto") // Konto
+  opis                   String? @map("opis") // Opis
+  dugackiOpis            String? @map("dugacki_opis") // Dugacki opis (Memo — nosi CR/LF)
+  planDuguje             String? @map("plan_duguje") // Plan duguje (mrtvo)
+  planPotrazuje          String? @map("plan_potrazuje") // Plan potrazuje (mrtvo)
+  dozvoljenUnosAnalitike String? @map("dozvoljen_unos_analitike") // Dozvoljen unos analitike
+  fajlSifara             String? @map("fajl_sifara") // Fajl sifara
+  inoKonto               String? @map("ino_konto") // InoKonto
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_kontni_plan_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_kontni_plan_drop")
+  @@map("bb_mdb_stage_kontni_plan")
+}
+
+/// Was: Komitenti — staging (matični podaci, 30.07.2026).
+///
+/// ZAŠTO SU MATIČNI PODACI DOŠLI U .mdb KANAL: do 22.07.2026 su komitenti i
+/// predmeti stizali kroz MSSQL kopiju `QBigTehn`. Tog dana je prenos iz BigBita
+/// u tu kopiju prestao da se radi — mereno 30.07: BigBit na predmetu 10014,
+/// QBigTehn i 4.0 na 10005. Dakle 4.0 je bio savršeno usklađen sa svojim
+/// izvorom, a izvor je bio mrtav osam dana i to niko nije video. Otud isti
+/// kanal kao knjigovodstvo: direktno iz kopije BigBit baze.
+///
+/// SVE KOLONE SU `String?` (sirov tekst iz CSV-a) — kao i ostale staging tabele.
+/// Tipizacija i validacija su posao uvoza, da bajat ili čudan red padne TAMO gde
+/// se može imenovati, a ne na `COPY` sa porukom o broju kolone.
+model BbMdbStageKomitent {
+  id     Int @id(map: "pk_bb_mdb_stage_komitenti") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  sifra                        String? @map("sifra") // Sifra (IDENTITY → customers.id)
+  naziv                        String? @map("naziv") // Naziv
+  poslovnica                   String? @map("poslovnica") // Poslovnica
+  mesto                        String? @map("mesto") // Mesto
+  adresa                       String? @map("adresa") // Adresa
+  postanskiBroj                String? @map("postanski_broj") // Postanski broj
+  ziroRacun1                   String? @map("ziro_racun_1") // Ziro racun_1
+  ziroRacun2                   String? @map("ziro_racun_2") // Ziro racun_2
+  ziroRacun3                   String? @map("ziro_racun_3") // Ziro racun_3
+  telefon                      String? @map("telefon") // Telefon
+  fax                          String? @map("fax") // Fax
+  kontakt                      String? @map("kontakt") // Kontakt
+  napomena                     String? @map("napomena") // Napomena (Memo — nosi CR/LF)
+  drzava                       String? @map("drzava") // Drzava
+  region                       String? @map("region") // Region
+  vrstaSifre                   String? @map("vrsta_sifre") // Vrsta sifre
+  email                        String? @map("email") // Email
+  mobilni                      String? @map("mobilni") // Mobilni
+  datumRodjenja                String? @map("datum_rodjenja") // Datum rodjenja
+  webAdresa                    String? @map("web_adresa") // Web adresa
+  sifraProdavca                String? @map("sifra_prodavca") // Sifra prodavca
+  rabatKomitenta               String? @map("rabat_komitenta") // RabatKomitenta
+  zastKodKupca                 String? @map("zast_kod_kupca") // ZastKodKupca
+  pib                          String? @map("pib") // PIB (prazan je legitiman — ino kupci ga nemaju)
+  pdvStatus                    String? @map("pdv_status") // PDVStatus
+  msifra                       String? @map("msifra") // MSifra
+  odlozeno                     String? @map("odlozeno") // Odlozeno
+  idRuta                       String? @map("id_ruta") // IDRuta
+  idVozac                      String? @map("id_vozac") // IDVozac
+  idUplatniRacun               String? @map("id_uplatni_racun") // IDUplatniRacun
+  fakturisanjePoMestimaIsporuke String? @map("fakturisanje_po_mestima_isporuke") // FakturisanjePoMestimaIsporuke
+  cenovnik                     String? @map("cenovnik") // Cenovnik
+  prviUnos                     String? @map("prvi_unos") // PrviUnos
+  poslednjaIzmena              String? @map("poslednja_izmena") // PoslednjaIzmena (vodeni žig za razliku)
+  prviUnosUser                 String? @map("prvi_unos_user") // PrviUnosUser
+  poslednjaIzmenaUser          String? @map("poslednja_izmena_user") // PoslednjaIzmenaUser
+  procenatProvizije            String? @map("procenat_provizije") // ProcenatProvizije
+  fiktRabatKomitenta           String? @map("fikt_rabat_komitenta") // FiktRabatKomitenta
+  komitentiNacinPlacanja       String? @map("komitenti_nacin_placanja") // KomitentiNacinPlacanja
+  potpisKom                    String? @map("potpis_kom") // PotpisKom
+  // ── 17 kolona koje je otkrila brana zaglavlja (30.07.2026) ────────────────
+  // Deklaracija je pravljena po starijoj kopiji baze; PRAVA tabela ih nosi.
+  // Među njima su GLN, MaticniBroj, JBKJS i CRF — polja od kojih zavisi SEF.
+  // Uvoz je do sada mislio da ih .mdb NE donosi i namerno ih je ostavljao na
+  // miru; donosi ih, pa se sada mogu i preslikati.
+  skraceniNaziv                String? @map("skraceni_naziv") // SkraceniNaziv
+  datumIVremeKom               String? @map("datum_i_vreme_kom") // DatumIVremeKom
+  proveraDuga                  String? @map("provera_duga") // ProveraDuga
+  kreditLimit                  String? @map("kredit_limit") // KreditLimit
+  neProveravajPib              String? @map("ne_proveravaj_pib") // NeProveravajPIB
+  idPantheon                   String? @map("id_pantheon") // IDPantheon
+  newsLetter                   String? @map("news_letter") // NewsLetter
+  postaNaDruguAdresu           String? @map("posta_na_drugu_adresu") // PostaNaDruguAdresu
+  gln                          String? @map("gln") // GLN — e-faktura
+  klRucProc                    String? @map("kl_ruc_proc") // KLRucProc
+  napomenaZaSalda              String? @map("napomena_za_salda") // NapomenaZaSalda
+  nePrikazatiUPregledu         String? @map("ne_prikazati_u_pregledu") // NePrikazatiUPregledu
+  jbkjs                        String? @map("jbkjs") // JBKJS — javni sektor
+  maticniBroj                  String? @map("maticni_broj") // MaticniBroj
+  erXmlSaPopustomPoArtiklu     String? @map("er_xml_sa_popustom_po_artiklu") // ER_XMLSaPopustomPoArtiklu
+  crf                          String? @map("crf") // CRF — centralni registar faktura
+  koristiPnbZadModel           String? @map("koristi_pnb_zad_model") // KoristiPNBZadModel
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_komitenti_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_komitenti_drop")
+  @@map("bb_mdb_stage_komitenti")
+}
+
+/// Was: Predmeti — staging (matični podaci, 30.07.2026). Obrazloženje kanala:
+/// vidi `BbMdbStageKomitent`.
+model BbMdbStagePredmet {
+  id     Int @id(map: "pk_bb_mdb_stage_predmeti") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  idPredmet          String? @map("id_predmet") // IDPredmet → projects.id
+  brojPredmeta       String? @map("broj_predmeta") // BrojPredmeta (ljudski ključ; paritet-guard!)
+  opis               String? @map("opis") // Opis
+  datumOtvaranja     String? @map("datum_otvaranja") // DatumOtvaranja
+  idProdavac         String? @map("id_prodavac") // IDProdavac
+  idKomitent         String? @map("id_komitent") // IDKomitent → customers.id
+  nextAction         String? @map("next_action") // NextAction
+  datumZakljucenja   String? @map("datum_zakljucenja") // DatumZakljucenja
+  memo               String? @map("memo") // Memo (nosi CR/LF i zareze)
+  status             String? @map("status") // Status
+  nasaRef            String? @map("nasa_ref") // NasaRef
+  nasKontakt1        String? @map("nas_kontakt1") // NasKontakt1
+  nasKontakt2        String? @map("nas_kontakt2") // NasKontakt2
+  nasTel1            String? @map("nas_tel1") // NasTel1
+  nasTel2            String? @map("nas_tel2") // NasTel2
+  vasaRef            String? @map("vasa_ref") // VasaRef
+  vasKontakt1        String? @map("vas_kontakt1") // VasKontakt1
+  vasKontakt2        String? @map("vas_kontakt2") // VasKontakt2
+  vasTel1            String? @map("vas_tel1") // VasTel1
+  vasTel2            String? @map("vas_tel2") // VasTel2
+  nabavnaVrednost    String? @map("nabavna_vrednost") // NabavnaVrednost
+  carina             String? @map("carina") // Carina
+  spedicija          String? @map("spedicija") // Spedicija
+  prevoz             String? @map("prevoz") // Prevoz
+  ostalo             String? @map("ostalo") // Ostalo
+  inoDobavljac       String? @map("ino_dobavljac") // InoDobavljac
+  rj                 String? @map("rj") // RJ
+  devvaluta          String? @map("devvaluta") // devvaluta
+  kurs               String? @map("kurs") // kurs
+  idVrstaPosla       String? @map("id_vrsta_posla") // IDVrstaPosla
+  nazivPredmeta      String? @map("naziv_predmeta") // NazivPredmeta
+  rokZavrsetka       String? @map("rok_zavrsetka") // RokZavrsetka
+  potpis             String? @map("potpis") // Potpis
+  datumIVreme        String? @map("datum_i_vreme") // DatumIVreme (vodeni žig za razliku)
+  brojUgovora        String? @map("broj_ugovora") // BrojUgovora
+  datumUgovora       String? @map("datum_ugovora") // DatumUgovora
+  brojNarudzbenice   String? @map("broj_narudzbenice") // BrojNarudzbenice
+  datumNarudzbenice  String? @map("datum_narudzbenice") // DatumNarudzbenice
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_predmeti_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_predmeti_drop")
+  @@map("bb_mdb_stage_predmeti")
+}
+
+/// Was: R_Grupa / R_Podgrupa / R_Poreklo / Magacini — staging (30.07.2026).
+///
+/// Preuzeto iz starijeg `bigbit-bridge` mehanizma, koji je baš ove četiri tabele
+/// vukao iz .mdb-a — ali mu tajmer nikad nije instaliran, pa nije odradio nijedan
+/// prolaz. Hitne su zato što 4.0 za njih ima tri syncera (`syncers/item-group`,
+/// `item-subgroup`, `item-origin`) koji čitaju kroz `MssqlClient`, dakle iz
+/// QBigTehna — a on je ugašen. Ti synceri su MRTVI ROĐENI: registrovani su i
+/// izgledaju živi, a ne mogu doneti nijedan red.
+model BbMdbStageGrupa {
+  id     Int     @id(map: "pk_bb_mdb_stage_grupe") @default(autoincrement()) @map("id")
+  dropId Int     @map("drop_id")
+  grupa  String? @map("grupa") // Grupa
+  opis   String? @map("opis") // Opis
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_grupe_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_grupe_drop")
+  @@map("bb_mdb_stage_grupe")
+}
+
+model BbMdbStagePodgrupa {
+  id        Int     @id(map: "pk_bb_mdb_stage_podgrupe") @default(autoincrement()) @map("id")
+  dropId    Int     @map("drop_id")
+  podgrupa  String? @map("podgrupa") // Podgrupa
+  opis      String? @map("opis") // Opis
+  grupaVeza String? @map("grupa_veza") // GrupaVeza -> R_Grupa.Grupa
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_podgrupe_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_podgrupe_drop")
+  @@map("bb_mdb_stage_podgrupe")
+}
+
+model BbMdbStagePoreklo {
+  id            Int     @id(map: "pk_bb_mdb_stage_poreklo") @default(autoincrement()) @map("id")
+  dropId        Int     @map("drop_id")
+  poreklo       String? @map("poreklo") // Poreklo
+  opis          String? @map("opis") // Opis
+  podgrupaVeza  String? @map("podgrupa_veza") // PodgrupaVeza -> R_Podgrupa.Podgrupa
+  popustProc    String? @map("popust_proc") // PopustProc
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_poreklo_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_poreklo_drop")
+  @@map("bb_mdb_stage_poreklo")
+}
+
+model BbMdbStageMagacin {
+  id               Int     @id(map: "pk_bb_mdb_stage_magacini") @default(autoincrement()) @map("id")
+  dropId           Int     @map("drop_id")
+  idFirma          String? @map("id_firma") // IDFirma
+  idMagacin        String? @map("id_magacin") // IDMagacin -> warehouses.id
+  magacin          String? @map("magacin") // Magacin (naziv)
+  ulicaIBroj       String? @map("ulica_i_broj") // UlicaIBroj
+  mesto            String? @map("mesto") // Mesto
+  prosecneCene     String? @map("prosecne_cene") // ProsecneCene (Access Boolean → '0'/'1')
+  vrstaMag         String? @map("vrsta_mag") // VrstaMag
+  kontoMag         String? @map("konto_mag") // KontoMag
+  imeMagacionera   String? @map("ime_magacionera") // ImeMagacionera
+  brLkMagacionera  String? @map("br_lk_magacionera") // BrLkMagacionera
+  potpisSlika      String? @map("potpis_slika") // PotpisSlika (slika potpisa — staging je prima, uvoz je ne koristi)
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_magacini_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_magacini_drop")
+  @@map("bb_mdb_stage_magacini")
+}
+
+/// Was: R_Artikli — staging (31.07.2026). Poslednji veliki šifarnik bez živog
+/// kanala: MSSQL put (QBigTehn) mrtav od 22.07, pa artikli na produ stoje od tada.
+/// Sve kolone `String?` kao i ostale staging tabele — tipizacija je posao uvoza.
+/// NEMA `BBSifra artikla`: tu kolonu je izmislio MSSQL transfer (remap šifre);
+/// u direktnom kanalu `Sifra artikla` JESTE BigBit šifra (= items.id).
+model BbMdbStageArtikal {
+  id     Int @id(map: "pk_bb_mdb_stage_artikli") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  sifraArtikla           String? @map("sifra_artikla") // Sifra artikla
+  kataloskiBroj          String? @map("kataloski_broj") // Kataloski broj
+  barKod                 String? @map("bar_kod") // BarKod
+  plu                    String? @map("plu") // PLU
+  extSifra               String? @map("ext_sifra") // ExtSifra
+  naziv                  String? @map("naziv") // Naziv
+  jedinicaMere           String? @map("jedinica_mere") // Jedinica mere
+  pakovanje              String? @map("pakovanje") // Pakovanje
+  inoJm                  String? @map("ino_jm") // InoJm
+  kutija                 String? @map("kutija") // Kutija
+  transportnoPakovanje   String? @map("transportno_pakovanje") // Transportno pakovanje
+  poreklo                String? @map("poreklo") // Poreklo
+  grupa                  String? @map("grupa") // Grupa
+  podgrupa               String? @map("podgrupa") // Podgrupa
+  tarifaRobe             String? @map("tarifa_robe") // Tarifa robe
+  tarifaUsluga           String? @map("tarifa_usluga") // Tarifa usluga
+  uvekPorezNaRobu        String? @map("uvek_porez_na_robu") // Uvek porez na robu
+  uvekPorezNaUsluge      String? @map("uvek_porez_na_usluge") // Uvek porez na usluge
+  vpCena                 String? @map("vp_cena") // VP cena
+  mpCena                 String? @map("mp_cena") // MP cena
+  nabDevCena             String? @map("nab_dev_cena") // NabDevCena
+  prodDevCena            String? @map("prod_dev_cena") // ProdDevCena
+  minimalnaKolicina      String? @map("minimalna_kolicina") // Minimalna kolicina
+  artTaksa               String? @map("art_taksa") // ArtTaksa
+  odlozeno               String? @map("odlozeno") // Odlozeno
+  neoporeziviDeo         String? @map("neoporezivi_deo") // Neoporezivi deo
+  maxRabatProc           String? @map("max_rabat_proc") // MaxRabatProc
+  memo                   String? @map("memo") // Memo
+  kngSifra               String? @map("kng_sifra") // KngSifra
+  artAkciza              String? @map("art_akciza") // ArtAkciza
+  kngSifra2              String? @map("kng_sifra2") // KngSifra_2
+  zavTrosProiz           String? @map("zav_tros_proiz") // ZavTrosProiz
+  carStopa               String? @map("car_stopa") // CarStopa
+  idRaster               String? @map("id_raster") // IDRaster
+  carTarifa              String? @map("car_tarifa") // CarTarifa
+  zemljaPorekla          String? @map("zemlja_porekla") // ZemljaPorekla
+  polica                 String? @map("polica") // Polica
+  inoNaziv               String? @map("ino_naziv") // INONaziv
+  sifDob                 String? @map("sif_dob") // SifDob
+  webOpis                String? @map("web_opis") // WebOpis
+  opisArtikla            String? @map("opis_artikla") // OpisArtikla
+  tezina                 String? @map("tezina") // Tezina
+  pdfLink                String? @map("pdf_link") // PDFLink
+  zaBrisanje             String? @map("za_brisanje") // ZaBrisanje
+  aktivan                String? @map("aktivan") // Aktivan
+  cenaZaUpisUCen         String? @map("cena_za_upis_u_cen") // CenaZaUpisUCen
+  idMestoIzdavanja       String? @map("id_mesto_izdavanja") // IDMestoIzdavanja
+  proizvodjac            String? @map("proizvodjac") // Proizvodjac
+  hps                    String? @map("hps") // HPS
+  potpisArt              String? @map("potpis_art") // PotpisArt
+  datumIVremeArt         String? @map("datum_i_vreme_art") // DatumIVremeArt
+  kolUPak                String? @map("kol_u_pak") // KolUPak
+  klRucProc              String? @map("kl_ruc_proc") // KLRucProc
+  osnJm                  String? @map("osn_jm") // OsnJM
+  slikaSimbolaLink       String? @map("slika_simbola_link") // SlikaSimbolaLink
+  mpKaloProc             String? @map("mp_kalo_proc") // MPKaloProc
+  wordLokacija           String? @map("word_lokacija") // WordLokacija
+  vpKaloProc             String? @map("vp_kalo_proc") // VPKaloProc
+  neVodiZalihe           String? @map("ne_vodi_zalihe") // NeVodiZalihe
+  tezinaKg               String? @map("tezina_kg") // TezinaKg
+  zapremina              String? @map("zapremina") // Zapremina
+  povrsina               String? @map("povrsina") // Povrsina
+  rSort                  String? @map("r_sort") // RSort
+  akcijskiRabat          String? @map("akcijski_rabat") // AkcijskiRabat
+  napomena2              String? @map("napomena2") // Napomena2
+  idKvalitetArtikla      String? @map("id_kvalitet_artikla") // IDKvalitetArtikla
+  debljina               String? @map("debljina") // Debljina
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_artikli_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_artikli_drop")
+  @@map("bb_mdb_stage_artikli")
+}
+
+/// Was: Vrsta naloga — staging.
+model BbMdbStageOrderType {
+  id          Int     @id(map: "pk_bb_mdb_stage_vrsta_naloga") @default(autoincrement()) @map("id")
+  dropId      Int     @map("drop_id")
+  vrstaNaloga String? @map("vrsta_naloga") // Vrsta naloga
+  opis        String? @map("opis") // Opis
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_vrsta_naloga_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_vrsta_naloga_drop")
+  @@map("bb_mdb_stage_vrsta_naloga")
+}
+
+/// Was: PSF_AnalitickaKonta_T — registar saldakonto konta (staging).
+model BbMdbStageSaldakonto {
+  id       Int     @id(map: "pk_bb_mdb_stage_psf_konta") @default(autoincrement()) @map("id")
+  dropId   Int     @map("drop_id")
+  konto    String? @map("konto") // Konto
+  dinSaldo String? @map("din_saldo") // DinSaldo
+  devSaldo String? @map("dev_saldo") // DevSaldo
+  otst     String? @map("otst") // OTST (vodi otvorene stavke)
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_psf_konta_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_psf_konta_drop")
+  @@map("bb_mdb_stage_psf_konta")
+}
+
+/// Was: Sema za kontiranje — staging. NAMERNO SE NE UVOZI u `accounting_schemes`
+/// (v1): 4.0 seed je RUČNO ISPRAVLJEN (šema 31 gađa nepostojeća konta 470/471,
+/// 37/38 su jednostrane pa ne balansiraju — vidi BIGBIT_KONTA_I_SEME_KNJIZENJA.md),
+/// a slepi uvoz bi te ispravke pregazio. Šeme voze BUDUĆE automatsko knjiženje, ne
+/// paralelni PDV obračun (PDV se izvodi iz GK po kontu), pa nisu na kritičnom putu.
+model BbMdbStageScheme {
+  id          Int     @id(map: "pk_bb_mdb_stage_sema") @default(autoincrement()) @map("id")
+  dropId      Int     @map("drop_id")
+  idSeme      String? @map("id_seme") // IDSeme
+  vrstaNaloga String? @map("vrsta_naloga") // Vrsta naloga
+  opis        String? @map("opis") // Opis
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_sema_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_sema_drop")
+  @@map("bb_mdb_stage_sema")
+}
+
+/// Was: Stavke seme za kontiranje — staging (kontrolni, vidi BbMdbStageScheme).
+model BbMdbStageSchemeLine {
+  id           Int     @id(map: "pk_bb_mdb_stage_sema_stavke") @default(autoincrement()) @map("id")
+  dropId       Int     @map("drop_id")
+  idStavkeSeme String? @map("id_stavke_seme") // IDStavkeSeme
+  idSeme       String? @map("id_seme") // IDSeme
+  konto        String? @map("konto") // Konto ('MAG' = sentinel za konto magacina)
+  opis         String? @map("opis") // Opis
+  defDug       String? @map("def_dug") // DefDug (izraz nad slovima A-Z)
+  defPot       String? @map("def_pot") // DefPot
+  analitika    String? @map("analitika") // Analitika
+  poreklo      String? @map("poreklo") // Poreklo
+  kngSifra2    String? @map("kng_sifra_2") // KngSifra_2 (mrtvo)
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_sema_stavke_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_sema_stavke_drop")
+  @@map("bb_mdb_stage_sema_stavke")
+}
+
+/// Was: T_PDV_GK — ZLATNI UZORAK: BigBitov izlaz PDV motora po GK stavci.
+/// NIKAD se ne uvozi u produkcione modele — služi isključivo za poređenje sa
+/// našim izračunom (tri paralelna PDV obračuna do aprila 2027).
+model BbMdbStagePdvGk {
+  id                 Int     @id(map: "pk_bb_mdb_stage_pdv_gk") @default(autoincrement()) @map("id")
+  dropId             Int     @map("drop_id")
+  srcId              String? @map("src_id") // ID
+  stavkaId           String? @map("stavka_id") // StavkaID (FK T_Glavna knjiga)
+  datPorPerioda      String? @map("dat_por_perioda") // DatPorPerioda
+  pdvEvidencija      String? @map("pdv_evidencija") // PDVEvidencija
+  pdvStopa           String? @map("pdv_stopa") // PDVStopa
+  pdvOsnovica        String? @map("pdv_osnovica") // PDVOsnovica
+  obracunPdvOsnovica String? @map("obracun_pdv_osnovica") // ObracunPDVOsnovica
+  pdvIznos           String? @map("pdv_iznos") // PDVIznos
+  obracunPdvIznos    String? @map("obracun_pdv_iznos") // ObracunPDVIznos
+  pdvGrupa           String? @map("pdv_grupa") // PDVGrupa
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_pdv_gk_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_pdv_gk_drop")
+  @@map("bb_mdb_stage_pdv_gk")
+}
+
+/// Was: T_POPDV_GK — ZLATNI UZORAK POPDV obrasca (K1..K4). Kontrolni, ne uvozi se.
+/// `pdvOznaka` sadrži ĆIRILIČNA slova ('8а.2DA') — kopira se bajt-u-bajt.
+model BbMdbStagePopdvGk {
+  id            Int     @id(map: "pk_bb_mdb_stage_popdv_gk") @default(autoincrement()) @map("id")
+  dropId        Int     @map("drop_id")
+  stavkaId      String? @map("stavka_id") // StavkaID
+  pdvOznaka     String? @map("pdv_oznaka") // PDVOznaka (ĆIRILICA!)
+  datPorPerioda String? @map("dat_por_perioda") // DatPorPerioda
+  k1Iznos       String? @map("k1_iznos") // K1Iznos
+  k2Iznos       String? @map("k2_iznos") // K2Iznos
+  k3Iznos       String? @map("k3_iznos") // K3Iznos
+  k4Iznos       String? @map("k4_iznos") // K4Iznos
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_popdv_gk_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_popdv_gk_drop")
+  @@map("bb_mdb_stage_popdv_gk")
+}
+
 /// Talas AI-3 — idempotencija + trag dnevnog brifa (docs/PLAN_AI_OS_2026-07.md §5).
 /// Jedan red po (dan, primalac): scheduler posao `daily-brief` PRE slanja radi
 /// atomski claim `INSERT ... ON CONFLICT (for_date, recipient_email) DO NOTHING` —
@@ -4739,23 +5783,23 @@ model KadrGridDayLock {
 ///         | sastanci-summary | montaza-izvestaj (String, ne enum — BACKEND_RULES §2)
 /// outcome: ok | error | fallback
 model AiUsageLog {
-  id         Int      @id(map: "pk_ai_usage_log") @default(autoincrement()) @map("id")
-  userId     Int?     @map("user_id") // null = sistemski poziv (scheduler, fire-and-forget trijaža)
-  module     String   @map("module") @db.VarChar(40)
-  provider   String   @map("provider") @db.VarChar(20) /// openai | anthropic
-  model      String   @map("model") @db.VarChar(80)
+  id               Int      @id(map: "pk_ai_usage_log") @default(autoincrement()) @map("id")
+  userId           Int?     @map("user_id") // null = sistemski poziv (scheduler, fire-and-forget trijaža)
+  module           String   @map("module") @db.VarChar(40)
+  provider         String   @map("provider") @db.VarChar(20) /// openai | anthropic
+  model            String   @map("model") @db.VarChar(80)
   /// PUN ulaz (svež + keširan). Za STT nosi AUDIO tokene iz odgovora — iz njih se
   /// izvodi stvarno trajanje snimka; null kad provajder ne vrati `usage`.
-  tokensIn   Int?     @map("tokens_in")
-  tokensOut  Int?     @map("tokens_out")
+  tokensIn         Int?     @map("tokens_in")
+  tokensOut        Int?     @map("tokens_out")
   /// Deo `tokens_in` naplaćen po keš-čitaj ceni (~0,1× ulazne) — samo Anthropic.
-  tokensCacheRead  Int? @map("tokens_cache_read")
+  tokensCacheRead  Int?     @map("tokens_cache_read")
   /// Deo `tokens_in` naplaćen po keš-upis ceni (1,25× ulazne, 5-min TTL).
-  tokensCacheWrite Int? @map("tokens_cache_write")
-  durationMs Int      @map("duration_ms") // trajanje poziva, ne dužina audija
-  outcome    String   @map("outcome") @db.VarChar(10)
-  estCostUsd Decimal? @map("est_cost_usd") @db.Decimal(10, 6) // null kad cena modela nije poznata
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tokensCacheWrite Int?     @map("tokens_cache_write")
+  durationMs       Int      @map("duration_ms") // trajanje poziva, ne dužina audija
+  outcome          String   @map("outcome") @db.VarChar(10)
+  estCostUsd       Decimal? @map("est_cost_usd") @db.Decimal(10, 6) // null kad cena modela nije poznata
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([userId, module, createdAt], map: "idx_ai_usage_log_user_module_created")
   @@index([createdAt], map: "idx_ai_usage_log_created")
