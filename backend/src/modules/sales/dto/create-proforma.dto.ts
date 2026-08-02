@@ -26,6 +26,18 @@ export interface CreateProformaDto {
   customerId: number; // kupac (meki ref customers.id)
   documentDate?: string; // ISO datum; default danas
   dueDate?: string; // valuta / rok plaćanja (ISO)
+  /**
+   * DATUM PROMETA dobara i usluga (ISO) — obavezan element računa po Zakonu o PDV
+   * (docs/FAKTURE_ZAKONSKA_USKLADJENOST.md §1.1 t.5). Ide na štampu i u SEF
+   * (`cac:Delivery/cbc:ActualDeliveryDate`).
+   *
+   * OPCIONO NA PREDRAČUNU, I TO NAMERNO: predračun/ponuda se izdaje PRE prometa, pa
+   * u tom trenutku datum prometa često još ne postoji. Podrazumevanu vrednost zato NE
+   * postavljamo ovde (izmišljen datum na predračunu bi se prepisom preneo na račun kao
+   * da je stvaran) — nego tek pri KNJIŽENJU računa, gde je vidljiv i logovan
+   * (fakturisanje.service.ts, postInvoice).
+   */
+  deliveryDate?: string;
   currency?: string; // RSD (domaći) | EUR (izvoz)
   isExport?: boolean; // izvoz (ExportInvoicePolicy)
   /** Broj narudžbenice kupca → UBL cac:OrderReference (SEF javni sektor, D6). Max 50. */
@@ -59,6 +71,12 @@ export function validateCreateProforma(dto: CreateProformaDto): void {
   }
   if (dto.dueDate !== undefined && Number.isNaN(Date.parse(dto.dueDate))) {
     errors.push("Valuta (rok plaćanja) nije ispravna.");
+  }
+  if (
+    dto.deliveryDate !== undefined &&
+    Number.isNaN(Date.parse(dto.deliveryDate))
+  ) {
+    errors.push("Datum prometa nije ispravan.");
   }
 
   if (dto.poNumber !== undefined) {

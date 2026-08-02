@@ -283,7 +283,12 @@ export interface SefIncoming {
   supplierName: string;
   invoiceNumber: string;
   issueDate: string;
-  deliveryDate: string | null;
+  /**
+   * Datum PRIJEMA fakture na SEF (osnov roka od 15 dana). Do 02.08.2026. se zvao
+   * `deliveryDate` — preimenovan zajedno sa kolonom, jer to ime u ostatku sistema
+   * znači „datum prometa" (Invoice.deliveryDate), što je suprotan pojam.
+   */
+  sefReceivedAt: string | null;
   totalAmount: string;
   vatAmount: string;
   currency: string;

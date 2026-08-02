@@ -156,7 +156,7 @@ export class SefIncomingService {
         // ako ni IssueDate nema: now (uz WARN) — tada je rok predug (now ≥ prijem), ali
         // bez ijednog datuma nema boljeg osnova.
         // TODO: kad se na prod ključu potvrdi SEF polje datuma prijema, popuni njime
-        //       deliveryDate (šema = „datum prijema na SEF") i preračunaj acceptDeadline.
+        //       `sefReceivedAt` i preračunaj acceptDeadline.
         let deadlineBasis = parsed.issueDate;
         if (!deadlineBasis) {
           this.logger.warn(
@@ -176,10 +176,13 @@ export class SefIncomingService {
             supplierName: parsed.supplierName,
             invoiceNumber: parsed.invoiceNumber,
             issueDate: parsed.issueDate,
-            // deliveryDate = „datum prijema na SEF" (šema), NE datum prometa robe
-            // (cbc:ActualDeliveryDate). Pravo SEF polje prijema nemamo na dev ključu →
-            // ostavi null (ceo UBL je u rawXml); popuniti kad se potvrdi na prod ključu.
-            deliveryDate: null,
+            // `sefReceivedAt` = datum PRIJEMA na SEF, NE datum prometa robe
+            // (cbc:ActualDeliveryDate). Do 02.08.2026. se ovo polje zvalo `deliveryDate`
+            // i time nosilo ime suprotnog pojma — preimenovano baš zato što je taj sudar
+            // već proizveo pogrešan rok (v. izbor osnova roka gore). Pravo SEF polje
+            // prijema nemamo na dev ključu → ostavi null (ceo UBL je u rawXml); popuniti
+            // kad se potvrdi na prod ključu.
+            sefReceivedAt: null,
             dueDate: parsed.dueDate,
             totalAmount: parsed.totalAmount,
             vatAmount: parsed.vatAmount,
@@ -245,7 +248,7 @@ export class SefIncomingService {
         supplierName: true,
         invoiceNumber: true,
         issueDate: true,
-        deliveryDate: true,
+        sefReceivedAt: true,
         dueDate: true,
         totalAmount: true,
         vatAmount: true,

@@ -192,6 +192,13 @@ export class FakturisanjeService {
           customerId: dto.customerId,
           documentDate: dto.documentDate ? new Date(dto.documentDate) : new Date(),
           dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+          // DATUM PROMETA (obavezan element računa po Zakonu o PDV — nalaz N1/M1 iz
+          // docs/FAKTURE_ZAKONSKA_USKLADJENOST.md): do sada ga nijedna ruta nije upisivala,
+          // pa je kolona uvek bila NULL i obrasci su štampali praznu ćeliju.
+          // Na PREDRAČUNU ostaje `null` kad ga korisnik ne pošalje — predračun se izdaje pre
+          // prometa, pa ovde nemamo šta da podrazumevamo; podrazumevanu vrednost postavlja
+          // `postInvoice` u trenutku knjiženja (vidljivo, uz WARN u logu).
+          deliveryDate: dto.deliveryDate ? new Date(dto.deliveryDate) : null,
           currency,
           isExport,
           netTotal,
@@ -381,6 +388,30 @@ export class FakturisanjeService {
         );
       }
 
+      // 3b) DATUM PROMETA — podrazumevana vrednost, i to SAMO ovde (mera M1).
+      //     Zašto uopšte podrazumevati: datum prometa je obavezan element računa po
+      //     Zakonu o PDV, a knjiženje je trenutak u kome nacrt postaje izdat račun —
+      //     posle njega je dokument zaključan (D8) i podatak se više ne može dodati bez
+      //     storna. Proknjižen račun bez datuma prometa je zato neispravan papir.
+      //     Zašto BAŠ datum izdavanja: kod prodaje robe „preko pulta"/iz magacina promet
+      //     i izdavanje računa padaju na isti dan, i to je jedini datum koji sistem u tom
+      //     trenutku pouzdano zna. Ostale kandidate nemamo: robni izlaz (stockDocumentId)
+      //     ne mora postojati (IFUSL), a datum otpreme se nigde ne vodi.
+      //     Zašto NIJE tiho: upisuje se WARN sa brojem računa, pa se u logu vidi na kojim
+      //     je dokumentima datum izveden umesto unet.
+      //     🔴 ZA POTVRDU KNJIGOVOĐI (§7 t.3): sme li se datum prometa uopšte izjednačiti
+      //     sa datumom izdavanja i šta je datum prometa kod usluge koja traje mesecima
+      //     (zakup, montaža) — dok se ne odgovori, ovo je najmanje pogrešna pretpostavka,
+      //     a ne konačno pravilo.
+      const deliveryDate = invoice.deliveryDate ?? invoice.documentDate;
+      if (invoice.deliveryDate == null) {
+        this.logger.warn(
+          `Račun ${id} (${invoice.documentType}) nema unet datum prometa — ` +
+            `pri knjiženju je postavljen na datum izdavanja ` +
+            `(${invoice.documentDate.toISOString().slice(0, 10)}).`,
+        );
+      }
+
       // 4) Ažuriraj račun: definitivan broj, level 0, veza na nalog. `where {id}` je
       //    bezbedan jer je CLAIM (korak 0) već obezbedio ekskluzivnost i postavio
       //    status=POSTED & isLocked=true; ovde ih samo re-afirmišemo (D8: proknjižen
@@ -393,6 +424,7 @@ export class FakturisanjeService {
           status: "POSTED",
           journalEntryId,
           isLocked: true,
+          deliveryDate,
           updatedByUserId: actor.userId,
         },
         include: { items: { orderBy: { lineNo: "asc" } } },

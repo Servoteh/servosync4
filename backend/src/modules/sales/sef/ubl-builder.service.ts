@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
 /**
@@ -23,6 +23,9 @@ import { Prisma } from "@prisma/client";
  *   • Avans (`za plaćanje = 0`): kada je grossTotal knjižen kroz avansnu fakturu,
  *     cac:BillingReference → cac:InvoiceDocumentReference nosi referencu avansa i
  *     LegalMonetaryTotal/PayableAmount = 0 (avans zatvara obavezu).
+ *   • DATUM PROMETA → cac:Delivery/cbc:ActualDeliveryDate (BT-72). Obavezan element
+ *     računa po Zakonu o PDV; builder ODBIJA da sagradi dokument bez njega (osim
+ *     avansnog, 386 — kod avansa prometa još nema). v. guard u `build()`.
  *   • Rabat po stavci → cac:AllowanceCharge (ChargeIndicator=false).
  *   • PDF prilog (base64) → cac:AdditionalDocumentReference → cac:Attachment →
  *     cbc:EmbeddedDocumentBinaryObject.
@@ -123,6 +126,14 @@ export interface UblInvoiceInput {
   documentDate: Date;
   dueDate?: Date | null;
   currency: string;
+  /**
+   * DATUM PROMETA dobara i usluga → `cac:Delivery/cbc:ActualDeliveryDate` (BT-72).
+   * Obavezan element računa po Zakonu o PDV; do 02.08.2026. ga builder uopšte nije
+   * slao (docs/FAKTURE_ZAKONSKA_USKLADJENOST.md §4.3). Tip je opcion samo zato što
+   * ga avansni račun (386) nema — za sve ostale je `build()` obavezuje i baca ako
+   * nedostaje (v. guard u `build`).
+   */
+  deliveryDate?: Date | null;
   isExport: boolean;
   netTotal: Prisma.Decimal;
   vatTotal: Prisma.Decimal;
@@ -180,6 +191,26 @@ export class UblBuilderService {
     const typeCode = invoice.isPrepayment
       ? INVOICE_TYPE_CODE_PREPAYMENT
       : INVOICE_TYPE_CODE_COMMERCIAL;
+
+    // ── DATUM PROMETA: brana, ne tiho izostavljanje ───────────────────────────
+    // Da li je BT-72 (ActualDeliveryDate) obavezan po SAMOJ shemi: u ovom repou nema
+    // nijednog dokaza da jeste — EN16931 ga u jezgru vodi kao 0..1, a naš CIUS profil
+    // (SEF_CUSTOMIZATION_ID) nemamo lokalno u pisanom obliku. 🔴 Tačan status u SEF
+    // CIUS-u ostaje za proveru na demo okruženju (FAKTURE_ZAKONSKA_USKLADJENOST.md §7).
+    // Zašto ipak PUCA, a ne šalje bez njega: datum prometa je obavezan element RAČUNA po
+    // Zakonu o PDV, a kod domaćeg B2B prometa e-faktura na SEF-u JESTE račun (§4.2) —
+    // papir je samo kopija. Dokument bez tog podatka je zato manjkav bez obzira na to
+    // da li ga XSD propušta, a jednom poslat na SEF se ispravlja samo storniranjem.
+    // Glasan 400 pri slanju je jeftiniji od tihog slanja neispravnog računa.
+    // IZUZETAK — avansni račun (386): kod avansa promet se JOŠ NIJE dogodio (poreska
+    // obaveza nastaje od naplate), pa datum prometa nema šta da nosi. 🔴 Tačan sadržaj
+    // avansnog računa je otvoreno pitanje za knjigovođu (§7 t.5).
+    if (!invoice.isPrepayment && !invoice.deliveryDate) {
+      throw new BadRequestException(
+        `Račun ${invoice.documentNumber} nema datum prometa — bez njega ne sme na SEF ` +
+          `(obavezan element računa po Zakonu o PDV). Unesi datum prometa pa ponovi slanje.`,
+      );
+    }
 
     // Za plaćanje: odbijen avans umanjuje obavezu za svoj iznos (delimičan avans
     // → ostatak; pun avans → 0). Bez `prepaidAmount` iznos se NE umanjuje —
@@ -248,6 +279,17 @@ export class UblBuilderService {
     // — Strane —
     parts.push(this.buildSupplier(supplier));
     parts.push(this.buildCustomer(customer));
+
+    // — DATUM PROMETA (cac:Delivery/cbc:ActualDeliveryDate = BT-72) —
+    // UBL 2.1 redosled elemenata korena <Invoice>: cac:Delivery dolazi POSLE
+    // cac:AccountingCustomerParty (i eventualnih Payee/Seller/TaxRepresentative strana),
+    // a PRE cac:PaymentMeans / cac:TaxTotal. Odstupanje od redosleda = odbijen dokument,
+    // pa se ovaj blok ne pomera „radi preglednosti".
+    if (invoice.deliveryDate) {
+      parts.push("<cac:Delivery>");
+      parts.push(el("cbc:ActualDeliveryDate", fmtDate(invoice.deliveryDate)));
+      parts.push("</cac:Delivery>");
+    }
 
     // — Rekapitulacija poreza (cac:TaxTotal → cac:TaxSubtotal PO STOPI) —
     // PDV granularnost (A5): grupiši stavke po stvarnoj stopi (20/10/8/0) → po jedan

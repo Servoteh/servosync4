@@ -193,6 +193,11 @@ export class SefService {
         documentNumber: invoice.documentNumber,
         documentDate: invoice.documentDate,
         dueDate: invoice.dueDate,
+        // Datum prometa → cac:Delivery/cbc:ActualDeliveryDate. Knjižen račun ga uvek
+        // ima (postInvoice ga podrazumeva na datum izdavanja ako nije unet), pa ovde
+        // ostaje null samo za račune proknjižene PRE uvođenja polja — za njih builder
+        // baca jasan 400 umesto da pošalje račun bez obaveznog elementa.
+        deliveryDate: invoice.deliveryDate,
         currency: invoice.currency,
         isExport: invoice.isExport,
         netTotal: invoice.netTotal,

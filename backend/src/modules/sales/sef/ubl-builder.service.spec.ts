@@ -1,8 +1,9 @@
+import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { UblBuilderService } from "./ubl-builder.service";
 
 /**
- * UBL builder — broj dokumenta u SEF-u (odluka O-F1).
+ * UBL builder — broj dokumenta u SEF-u (odluka O-F1) i datum prometa (mera M1).
  *
  * Suština O-F1: broj koji stoji na papiru mora biti ISTI broj koji ide na SEF i u
  * glavnu knjigu. Ovaj test je brana za `cbc:ID` — da se broj ne „ulepšava",
@@ -11,13 +12,30 @@ import { UblBuilderService } from "./ubl-builder.service";
 
 const D = Prisma.Decimal;
 
-function params(overrides: { documentNumber?: string; pdfFileName?: string | null } = {}) {
+interface ParamOverrides {
+  documentNumber?: string;
+  pdfFileName?: string | null;
+  /** `null` = račun BEZ datuma prometa (provera brane). */
+  deliveryDate?: Date | null;
+  isPrepayment?: boolean;
+}
+
+function params(overrides: ParamOverrides = {}) {
   return {
     invoice: {
       documentType: "IFR",
       documentNumber: overrides.documentNumber ?? "657/25",
       documentDate: new Date("2025-12-31T00:00:00Z"),
       dueDate: new Date("2026-01-30T00:00:00Z"),
+      // Datum prometa je obavezan element računa — svaki fixture ga nosi, osim
+      // testova koji baš proveravaju branu.
+      deliveryDate:
+        overrides.deliveryDate === undefined
+          ? new Date("2025-12-25T00:00:00Z")
+          : overrides.deliveryDate,
+      ...(overrides.isPrepayment !== undefined
+        ? { isPrepayment: overrides.isPrepayment }
+        : {}),
       currency: "RSD",
       isExport: false,
       netTotal: new D(10000),
@@ -71,5 +89,54 @@ describe("UblBuilderService — broj dokumenta (O-F1)", () => {
       params({ documentNumber: "657/25", pdfFileName: "FAK-657-25.pdf" }),
     );
     expect(xml).toContain("FAK-657-25.pdf");
+  });
+});
+
+/**
+ * DATUM PROMETA u SEF-u (mera M1 iz docs/FAKTURE_ZAKONSKA_USKLADJENOST.md).
+ * Obavezan element računa po Zakonu o PDV koji builder do 02.08.2026. uopšte nije slao.
+ */
+describe("UblBuilderService — datum prometa (cac:Delivery/cbc:ActualDeliveryDate)", () => {
+  const ubl = new UblBuilderService();
+
+  it("datum prometa ide u cac:Delivery/cbc:ActualDeliveryDate kao YYYY-MM-DD", () => {
+    const xml = ubl.build(params({ deliveryDate: new Date("2025-12-25T00:00:00Z") }));
+    expect(xml).toContain(
+      "<cac:Delivery><cbc:ActualDeliveryDate>2025-12-25</cbc:ActualDeliveryDate></cac:Delivery>",
+    );
+  });
+
+  it("datum prometa je zaseban podatak — NE prepisuje se sa datuma izdavanja", () => {
+    // Izdavanje 31.12., promet 25.12. — XML mora nositi oba, različita.
+    const xml = ubl.build(params({ deliveryDate: new Date("2025-12-25T00:00:00Z") }));
+    expect(xml).toContain("<cbc:IssueDate>2025-12-31</cbc:IssueDate>");
+    expect(xml).toContain("<cbc:ActualDeliveryDate>2025-12-25</cbc:ActualDeliveryDate>");
+  });
+
+  it("cac:Delivery stoji POSLE kupca a PRE cac:TaxTotal (UBL 2.1 redosled)", () => {
+    // Pogrešan redosled elemenata = odbijen dokument na SEF-u, pa je pozicija test, ne stil.
+    const xml = ubl.build(params());
+    const customerEnd = xml.indexOf("</cac:AccountingCustomerParty>");
+    const delivery = xml.indexOf("<cac:Delivery>");
+    const taxTotal = xml.indexOf("<cac:TaxTotal>");
+    expect(customerEnd).toBeGreaterThan(-1);
+    expect(delivery).toBeGreaterThan(customerEnd);
+    expect(taxTotal).toBeGreaterThan(delivery);
+  });
+
+  it("račun BEZ datuma prometa ne odlazi tiho — build baca 400", () => {
+    expect(() => ubl.build(params({ deliveryDate: null }))).toThrow(
+      BadRequestException,
+    );
+    // Poruka mora da imenuje dokument i da kaže šta korisnik treba da uradi.
+    expect(() => ubl.build(params({ deliveryDate: null }))).toThrow(
+      /657\/25.*datum prometa/s,
+    );
+  });
+
+  it("avansni račun (386) sme bez datuma prometa — promet se još nije desio", () => {
+    const xml = ubl.build(params({ deliveryDate: null, isPrepayment: true }));
+    expect(xml).toContain("<cbc:InvoiceTypeCode>386</cbc:InvoiceTypeCode>");
+    expect(xml).not.toContain("<cac:Delivery>");
   });
 });

@@ -3941,9 +3941,20 @@ model Invoice {
   /// Prepisuje se sa Customer.paymentMethod pri kreiranju predračuna. = GoodsDocument.paymentMethod.
   paymentMethod String? @map("payment_method") @db.VarChar(50)
 
-  /// „Datum prometa dobara" (traka uslova IFR/IFGP), „Datum prometa" (IFUSL) i
-  /// `Date of delivery:` (ino usluga, štampa se uz mesto). Isti podatak puni i UBL
-  /// `cbc:ActualDeliveryDate`, koji SEF-u danas nedostaje.
+  /// DATUM PROMETA dobara i usluga — obavezan element računa po Zakonu o PDV
+  /// (docs/FAKTURE_ZAKONSKA_USKLADJENOST.md §1.1 t.5, nalaz N1 / mera M1).
+  /// Štampa: „Datum prometa dobara" (traka uslova IFR/IFGP), „Datum prometa" (IFUSL),
+  /// `Date of delivery:` (ino usluga). SEF: `cac:Delivery/cbc:ActualDeliveryDate`.
+  ///
+  /// ⚠️ ZNAČENJE JE ZAKUCANO (razrešenje dvoznačnosti, 02.08.2026): u CELOM repou ime
+  /// `deliveryDate` / kolona `delivery_date` znači ISKLJUČIVO datum prometa. Ranije je
+  /// isto ime na `SefIncomingInvoice` značilo „datum prijema na SEF" — to polje je
+  /// preimenovano u `sefReceivedAt`, jer je ime pratilo pogrešno značenje. Ne uvoditi
+  /// nova polja tog imena za bilo šta drugo (datum otpreme, prijema, isporuke pošiljke).
+  ///
+  /// Popunjava se pri unosu (CreateProformaDto.deliveryDate); ako korisnik ne unese,
+  /// `postInvoice` ga pri knjiženju postavlja na `documentDate` uz WARN u logu — nikad
+  /// tiho, jer proknjižen račun bez ovog podatka nije potpun (fakturisanje.service.ts).
   deliveryDate DateTime? @map("delivery_date") @db.Timestamptz(6)
 
   /// Broj izvozne deklaracije / JCI (npr. „25-0401-000005") — slobodan red ispod zbira na ino
@@ -4131,9 +4142,16 @@ model SefIncomingInvoice {
   supplierName  String? @map("supplier_name") @db.VarChar(255)
   invoiceNumber String  @map("invoice_number") @db.VarChar(64)
 
-  issueDate    DateTime? @map("issue_date") @db.Timestamptz(6) // datum izdavanja
-  deliveryDate DateTime? @map("delivery_date") @db.Timestamptz(6) // datum prijema na SEF (osnov roka)
-  dueDate      DateTime? @map("due_date") @db.Timestamptz(6)
+  issueDate DateTime? @map("issue_date") @db.Timestamptz(6) // datum izdavanja
+  /// Datum PRIJEMA fakture na SEF — osnov zakonskog roka od 15 dana (acceptDeadline).
+  /// PREIMENOVANO 02.08.2026 iz `deliveryDate` / `delivery_date`: to ime u ostatku repoa
+  /// znači „datum prometa" (Invoice.deliveryDate → UBL cbc:ActualDeliveryDate), pa je isti
+  /// naziv ovde nosio SUPROTNO značenje — sudar koji je već jednom doveo do pogrešnog roka
+  /// (v. komentar u sef-incoming.service.ts uz izbor osnova roka). Ime sada prati značenje.
+  /// NAPOMENA: datum prometa ULAZNE fakture (njen cbc:ActualDeliveryDate) se i dalje NE
+  /// izdvaja u kolonu — ceo UBL stoji u `rawXml`; kad zatreba, dobija SVOJE polje.
+  sefReceivedAt DateTime? @map("sef_received_at") @db.Timestamptz(6)
+  dueDate       DateTime? @map("due_date") @db.Timestamptz(6)
 
   totalAmount Decimal @default(0) @map("total_amount") @db.Decimal(19, 4)
   vatAmount   Decimal @default(0) @map("vat_amount") @db.Decimal(19, 4)
@@ -4141,7 +4159,7 @@ model SefIncomingInvoice {
 
   /// NEW | SEEN | ACCEPTED | REJECTED — lokalni status obrade (SEF status mirror)
   status         String    @default("NEW") @map("status") @db.VarChar(20)
-  acceptDeadline DateTime? @map("accept_deadline") @db.Timestamptz(6) // deliveryDate + 15 dana
+  acceptDeadline DateTime? @map("accept_deadline") @db.Timestamptz(6) // prijem na SEF + 15 dana
   rejectComment  String?   @map("reject_comment") @db.VarChar(500)
 
   alreadyExists     Boolean @default(false) @map("already_exists") // dedup: već u KUF evidenciji (PIB+broj)

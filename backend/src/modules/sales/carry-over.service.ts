@@ -109,6 +109,13 @@ export class DocumentCarryOverService {
           // prazni na svakom računu nastalom prepisom.
           salespersonId: proforma.salespersonId,
           paymentMethod: proforma.paymentMethod,
+          // DATUM PROMETA (obavezan element računa, Zakon o PDV): isti razlog kao gore —
+          // unosi se na predračunu, a štampa i SEF ga čitaju sa RAČUNA. Bez prepisa bi
+          // svaki račun nastao iz predračuna gubio već unet podatak i pao na podrazumevanu
+          // vrednost pri knjiženju (datum izdavanja), iako je stvaran datum bio poznat.
+          // Ako ga predračun nema (nije ni morao — izdaje se pre prometa), ostaje null i
+          // postInvoice ga podrazumeva.
+          deliveryDate: proforma.deliveryDate,
           note: proforma.note,
           items: {
             create: proforma.items.map((it) => ({
