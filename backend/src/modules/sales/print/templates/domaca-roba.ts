@@ -10,7 +10,8 @@ import {
   formatDateDomestic,
   formatInvoiceNumber,
 } from "../format";
-import type { InvoiceTemplate, PrintCtx, PrintLine } from "./ctx";
+import type { InvoiceTemplate, PrintCtx } from "./ctx";
+import { discountFromLines, payableAfterAdvance } from "./totals";
 
 /**
  * DOMAĆA FAKTURA ZA ROBU — obrasci **IFR** i **IFGP**.
@@ -146,18 +147,6 @@ function vatSummaryRows(ctx: PrintCtx): VatSummaryRow[] {
         .reduce((sum, l) => sum.add(l.lineTotal), new Prisma.Decimal(0));
       return { rate, base, vat: base.mul(rate).div(100).toDecimalPlaces(2) };
     });
-}
-
-/**
- * Bruto zbir stavki (prvi red zbirnog bloka) = Σ količina × cena, zaokruženo po stavci
- * isto kao što se i štampa u koloni VREDNOST. Rabat je onda razlika do osnovice, pa
- * kolona na papiru mora da se slaže: **bruto − rabat = osnovica**.
- */
-function grossLinesTotal(lines: PrintLine[]): Prisma.Decimal {
-  return lines.reduce(
-    (sum, l) => sum.add(l.quantity.mul(l.unitPrice).toDecimalPlaces(2)),
-    new Prisma.Decimal(0),
-  );
 }
 
 // ─────────────────────────────────────────────────────────────── delovi tela
@@ -395,13 +384,20 @@ function itemsTable(ctx: PrintCtx): Content {
  * Red rabata OSTAJE i kad je nula (`Rabat: 0.00`) — STAMPA_IZLAZNIH_FAKTURA.md §6 t.4.
  * Nije to dekoracija: kupac po istom papiru proverava da li mu je odobren rabat, a
  * izostavljen red se čita kao „nije ni bilo mesta za rabat“.
+ *
+ * ⚠️ BRUTO SE IZVODI IZ RABATA, NE OBRNUTO (ispravka 02.08.2026). Do tada je prvi red
+ * bio Σ(količina × `unitPrice`), a rabat razlika do osnovice — a `unitPrice` je u bazi
+ * cena POSLE rabata, pa je taj zbir UVEK bio jednak osnovici i red „Rabat" je bio
+ * strukturno `0.00`. Papir je u koloni pisao `R% 10`, a ispod `Rabat: 0.00`.
+ * Sada: `rabat = Σ rabata po stavkama` (v. `totals.ts`), `bruto = osnovica + rabat` —
+ * pa **bruto − rabat = osnovica** zatvara po definiciji, a ne igrom zaokruživanja.
  */
 function totalsBlock(ctx: PrintCtx): Content[] {
   if (ctx.withoutPrices) return [];
 
-  const gross = grossLinesTotal(ctx.lines);
   const base = ctx.invoice.netTotal;
-  const discount = gross.sub(base);
+  const discount = discountFromLines(ctx.lines);
+  const gross = base.add(discount);
   const currency = ctx.currency || "RSD";
 
   const label = (text: string): TableCell => ({
@@ -457,10 +453,9 @@ function totalsBlock(ctx: PrintCtx): Content[] {
       ),
       value(`− ${formatAmount(advance)}`),
     ]);
-    const rest = payable.sub(advance);
     // Avans veći od računa ne sme da da negativan „za uplatu“ — preplata se rešava
-    // odobrenjem, ne minusom na fakturi.
-    payable = rest.greaterThan(0) ? rest : new Prisma.Decimal(0);
+    // odobrenjem, ne minusom na fakturi (pravilo je u `totals.ts`, isto na sva četiri obrasca).
+    payable = payableAfterAdvance(payable, advance);
   }
 
   body.push([

@@ -127,11 +127,16 @@ function makeInvoice(over: Record<string, unknown> = {}): InvoiceWithItems {
     documentType: "IZVGP",
     documentNumber: "228/25",
     documentDate: new Date(2025, 3, 25),
+    // Datum prometa (`supplyDate`) — obavezan element računa; papir 228/25 ga nema,
+    // ali obrazac ga od 02.08.2026. štampa (v. „datum prometa" niže).
+    supplyDate: new Date(2025, 3, 25),
     currency: "EUR",
     isExport: true,
     netTotal: D("500.00"),
     vatTotal: D("0"),
     grossTotal: D("500.00"),
+    // Bez odbijenog avansa; testovi avansa ga postavljaju sami.
+    advanceAppliedAmount: D("0"),
     fco: "magacin kupca",
     paymentMethod: "virmanom",
     note: "Fakturisanje je izvršeno na osnovu ponude 0206-25",
@@ -274,17 +279,22 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
       expect(texts).toContain("0.00");
     });
 
-    it("TOTAL − DISCOUNT uvek daje TOTAL AMOUNT", () => {
+    /**
+     * REGRESIJA NA STRUKTURNU NULU (02.08.2026). `unitPrice` u bazi je cena POSLE rabata
+     * (`pricing.service.ts`), pa je stari `TOTAL` (Σ količina × cena) bio jednak iznosu
+     * za uplatu i `DISCOUNT` je uvek ispadao `0.00` — i kad je rabat stvarno odobren.
+     *
+     * Ovde: dve stavke po 250,00 neto uz rabat 20 % → rabat po stavci je
+     * 250 × 20 / 80 = 62,50, ukupno 125,00; `TOTAL` je onda 625,00 (cena PRE rabata).
+     */
+    it("TOTAL − DISCOUNT uvek daje TOTAL AMOUNT, i kad rabat postoji", () => {
       const ctx = makeCtx({
-        invoice: makeInvoice({
-          netTotal: D("450.00"),
-          grossTotal: D("450.00"),
-        }),
+        lines: LINES.map((l) => ({ ...l, discountPercent: D("20") })),
       });
       const texts = collectText(inoRobaTemplate(ctx));
-      expect(texts).toContain("500.00"); // TOTAL = Σ količina × cena
-      expect(texts).toContain("50.00"); // DISCOUNT
-      expect(texts).toContain("450.00"); // TOTAL AMOUNT
+      expect(texts).toContain("625.00"); // TOTAL = iznos PRE rabata
+      expect(texts).toContain("125.00"); // DISCOUNT = stvarno odobren rabat
+      expect(texts).toContain("500.00"); // TOTAL AMOUNT = grossTotal sa dokumenta
     });
 
     it("nema NIJEDAN PDV red — izvoz je oslobođen", () => {
@@ -310,6 +320,166 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
         "0.00",
         "TOTAL AMOUNT ( EUR)",
       ]);
+    });
+  });
+
+  /**
+   * NALAZ (02.08.2026): ino obrasci NISU odbijali primljeni avans, iako sistem zna
+   * koliko kupac stvarno duguje (`payableAmount` u `fakturisanje.service.ts`).
+   * Stranom kupcu naplaćen avans 3.000 EUR + izvozna faktura na 10.000 EUR = papir sa
+   * „TOTAL AMOUNT ( EUR) 10,000.00" i bez ijednog reda o avansu. Izvozna faktura NE ide
+   * na SEF, pa je taj papir jedini dokument — kupac bi platio 10.000 umesto 7.000.
+   */
+  describe("odbijen avans (scenario 10.000 EUR − 3.000 EUR avansa)", () => {
+    const saAvansom = (over: Record<string, unknown> = {}) =>
+      makeCtx({
+        invoice: makeInvoice({
+          netTotal: D("10000.00"),
+          grossTotal: D("10000.00"),
+          advanceAppliedAmount: D("3000.00"),
+        }),
+        lines: [
+          {
+            ...LINES[0],
+            quantity: D("1"),
+            unitPrice: D("10000.00"),
+            lineTotal: D("10000.00"),
+          },
+        ],
+        advanceInvoiceNumber: "A-1/26",
+        ...over,
+      });
+
+    it("štampa umanjenje i traži 7.000, ne 10.000", () => {
+      const texts = collectText(inoRobaTemplate(saAvansom()));
+      const i = texts.indexOf("Less prepayment received (no. A-1/26):");
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(texts[i + 1]).toBe("− 3,000.00");
+      expect(texts).toContain("Amount payable ( EUR)");
+      expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe("7,000.00");
+    });
+
+    it("`TOTAL AMOUNT` ostaje pun iznos fakture — avans dira samo ono što se plaća", () => {
+      const texts = collectText(inoRobaTemplate(saAvansom()));
+      const at = texts.indexOf("TOTAL AMOUNT ( EUR)");
+      expect(texts[at + 1]).toBe("10,000.00");
+      // Red avansa je ISPOD punog iznosa, a „Amount payable" je poslednji u zbiru.
+      expect(at).toBeLessThan(texts.indexOf("Less prepayment received (no. A-1/26):"));
+      expect(texts.indexOf("Amount payable ( EUR)")).toBeGreaterThan(at);
+    });
+
+    it("okvir seli na `Amount payable` — uokviren je uvek iznos koji se plaća", () => {
+      const boxed: string[] = [];
+      walk(inoRobaTemplate(saAvansom()), (o) => {
+        if (typeof o.text !== "string" || !Array.isArray(o.border)) return;
+        if (o.border.some(Boolean)) boxed.push(o.text);
+      });
+      expect(boxed).toEqual(["7,000.00"]);
+    });
+
+    it("bez broja avansnog računa red i dalje postoji, samo bez broja", () => {
+      const texts = collectText(
+        inoRobaTemplate(saAvansom({ advanceInvoiceNumber: null })),
+      );
+      expect(texts).toContain("Less prepayment received:");
+      expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe("7,000.00");
+    });
+
+    it("avans veći od fakture ne daje negativan iznos za uplatu", () => {
+      const texts = collectText(
+        inoRobaTemplate(
+          saAvansom({
+            invoice: makeInvoice({
+              netTotal: D("10000.00"),
+              grossTotal: D("10000.00"),
+              advanceAppliedAmount: D("12000.00"),
+            }),
+          }),
+        ),
+      );
+      expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe("0.00");
+    });
+
+    it("bez avansa papir ostaje kao na 228/25 — nema reda o avansu", () => {
+      const text = renderText(makeCtx());
+      expect(text).not.toContain("prepayment");
+      expect(text).not.toContain("Amount payable");
+    });
+  });
+
+  /**
+   * NALAZ: predračun napravljen kao DOMAĆI (PDV 20 %, bruto 119.236,37) pa prepisan u
+   * izvozni račun (`POST /sales/invoices/:id/from-proforma` sa ciljem `IZVRO`) davao je
+   * papir na kom „TOTAL AMOUNT" nosi PDV, a `DISCOUNT` ispada NEGATIVAN — na dokumentu
+   * koji dva reda niže tvrdi da je promet oslobođen PDV-a.
+   */
+  describe("brana: izvozni obrazac sa obračunatim PDV-om", () => {
+    const saPdv = () =>
+      makeCtx({
+        invoice: makeInvoice({
+          documentNumber: "229/25",
+          netTotal: D("99363.64"),
+          vatTotal: D("19872.73"),
+          grossTotal: D("119236.37"),
+        }),
+      });
+
+    it("puca umesto da izda pogrešan papir", () => {
+      expect(() => inoRobaTemplate(saPdv())).toThrow(/nosi obračunat PDV/);
+    });
+
+    it("poruka imenuje račun, iznos PDV-a i šta da se uradi", () => {
+      let message = "";
+      try {
+        inoRobaTemplate(saPdv());
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toContain("229/25");
+      expect(message).toContain("19,872.73");
+      expect(message).toContain("poresku šifru");
+    });
+
+    it("ni jedan iznos ne izađe na papir — pada pre štampe, ne posle", () => {
+      // Negativan DISCOUNT i PDV u „TOTAL AMOUNT" su bili vidljivi tek na gotovom PDF-u.
+      expect(() => collectText(inoRobaTemplate(saPdv()))).toThrow();
+    });
+
+    it("otpremnica bez cena se i dalje štampa — na njoj nema nijednog iznosa", () => {
+      // Brana čuva IZNOS ZA UPLATU; papir bez ijedne novčane kolone nema šta da slaže,
+      // a magacin zbog greške u poreskoj šifri ne sme da ostane bez otpremnice.
+      const text = renderText({ ...saPdv(), withoutPrices: true });
+      expect(text).toContain("Invoice No. 229/25");
+      expect(text).not.toContain("TOTAL AMOUNT");
+    });
+  });
+
+  /**
+   * Datum prometa je obavezan element računa (Zakon o PDV). Polje `supplyDate` se upisuje
+   * pri knjiženju i ino USLUGA ga štampa od početka — robni obrazac nije, pa su dva
+   * izvozna papira istom kupcu nosila različit skup obaveznih podataka.
+   */
+  describe("datum prometa", () => {
+    it("štampa `Date of delivery:` u obliku `DD-MM-YY`, kao ino usluga", () => {
+      const text = renderText(makeCtx());
+      expect(text).toContain("Date of delivery:");
+      expect(text).toContain("25-04-25");
+    });
+
+    it("razlikuje se od datuma izdavanja kad je promet bio drugog dana", () => {
+      const text = renderText(
+        makeCtx({ invoice: makeInvoice({ supplyDate: new Date(2025, 3, 20) }) }),
+      );
+      expect(text).toContain("20-04-25"); // datum prometa
+      expect(text).toContain("25.04.2025."); // datum izdavanja, drugi oblik
+    });
+
+    it("bez datuma prometa nema prazne labele", () => {
+      const text = renderText(
+        makeCtx({ invoice: makeInvoice({ supplyDate: null }) }),
+      );
+      expect(text).not.toContain("Date of delivery:");
+      expect(text).toContain("Invoice No. 228/25");
     });
   });
 

@@ -352,6 +352,87 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
       expect(joined).not.toContain("DISCOUNT");
     });
 
+    /**
+     * NALAZ (02.08.2026): ni ovaj ino obrazac nije odbijao primljeni avans — kupcu je
+     * na papiru tražen pun iznos fakture i kad je deo već platio avansno. Izvozna
+     * faktura NE ide na SEF (`sef.service.ts` je odbija), pa je papir jedini dokument.
+     */
+    describe("odbijen avans", () => {
+      const saAvansom = (over: Record<string, unknown> = {}): PrintCtx => ({
+        ...ctx,
+        invoice: {
+          ...invoice,
+          advanceAppliedAmount: D("3000.00"),
+        } as unknown as InvoiceWithItems,
+        advanceInvoiceNumber: "A-1/26",
+        ...over,
+      });
+
+      it("štampa umanjenje i traži razliku, ne pun iznos", () => {
+        const texts = collectText(inoUslugaTemplate(saAvansom()));
+        const i = texts.indexOf("Less prepayment received (no. A-1/26):");
+        expect(i).toBeGreaterThanOrEqual(0);
+        expect(texts[i + 1]).toBe("− 3,000.00");
+        // 10.530,75 − 3.000,00
+        const payableAt = texts.indexOf("Amount payable ( EUR)");
+        expect(payableAt).toBeGreaterThan(i);
+        expect(texts[payableAt + 1]).toBe("7,530.75");
+      });
+
+      it("`TOTAL AMOUNT` ostaje pun iznos fakture", () => {
+        const texts = collectText(inoUslugaTemplate(saAvansom()));
+        expect(texts[texts.indexOf("TOTAL AMOUNT ( EUR)") + 1]).toBe(
+          "10,530.75",
+        );
+      });
+
+      it("bez broja avansnog računa red i dalje postoji, samo bez broja", () => {
+        const texts = collectText(
+          inoUslugaTemplate(saAvansom({ advanceInvoiceNumber: null })),
+        );
+        expect(texts).toContain("Less prepayment received:");
+      });
+
+      it("avans veći od fakture ne daje negativan iznos za uplatu", () => {
+        const texts = collectText(
+          inoUslugaTemplate(
+            saAvansom({
+              invoice: {
+                ...invoice,
+                advanceAppliedAmount: D("12000.00"),
+              } as unknown as InvoiceWithItems,
+            }),
+          ),
+        );
+        expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe("0.00");
+      });
+
+      it("bez avansa papir ostaje kao na 060/26", () => {
+        const joined = allText();
+        expect(joined).not.toContain("prepayment");
+        expect(joined).not.toContain("Amount payable");
+      });
+    });
+
+    /**
+     * Izvoz je oslobođen PDV-a. Dokument koji ipak nosi obračunat PDV (npr. prepis
+     * domaćeg predračuna u izvozni račun) štampao bi PDV unutar „TOTAL AMOUNT" na
+     * papiru koji tvrdi suprotno — zato pada glasno, kao i na ino robi.
+     */
+    it("izvozni obrazac sa obračunatim PDV-om puca umesto da izda pogrešan papir", () => {
+      const saPdv: PrintCtx = {
+        ...ctx,
+        invoice: {
+          ...invoice,
+          netTotal: D("10530.75"),
+          vatTotal: D("2106.15"),
+          grossTotal: D("12636.90"),
+        } as unknown as InvoiceWithItems,
+      };
+      expect(() => inoUslugaTemplate(saPdv)).toThrow(/nosi obračunat PDV/);
+      expect(() => inoUslugaTemplate(saPdv)).toThrow(/060\/26/);
+    });
+
     it("blok banke ide na zasebnu poslednju stranu (`pageBreak`)", () => {
       const content = inoUslugaTemplate(ctx);
       const last = content[content.length - 1] as Content & {

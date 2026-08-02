@@ -296,25 +296,59 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
       expect(framedAmounts(content)[1]).toEqual({ text: "0.00", bold: false });
     });
 
+    /**
+     * ⚠️ `unitPrice` je u bazi cena POSLE rabata (`pricing.service.ts`), pa je uz
+     * količinu 1 jednak osnovici (16.000,00) — a NE ceni pre rabata. Do 02.08.2026.
+     * je obrazac bruto računao kao Σ(količina × `unitPrice`), dakle opet 16.000,00,
+     * pa je „Odobren rabat" bio strukturno `0.00` i kad je u koloni `Rab%` pisalo 20.
+     * Sada se rabat izvodi unazad: 16.000 × 20 / 80 = 4.000,00, bruto 20.000,00.
+     */
     it("rabat sa stavki zatvara račun: bruto − rabat = osnovica", () => {
       const withDiscount = domacaUslugaTemplate(
         makeCtx({
+          lines: [{ ...ZAKUP, discountPercent: d(20) }],
+        }),
+      );
+      expect(framedAmounts(withDiscount).map((b) => b.text)).toEqual([
+        "20,000.00", // bruto = cena PRE rabata
+        "4,000.00", // odobren rabat
+        "16,000.00", // osnovica sa dokumenta
+        "3,200.00",
+        "19,200.00",
+      ]);
+    });
+
+    /**
+     * Isti scenario koji je otkrio kvar na robnom obrascu (10 kom × 1.000,00, rabat
+     * 10 %), da se ponašanje dva domaća obrasca ne razmimoiđe: obrazac usluge nema
+     * kolonu `Kat. br.`, ali rabat mora da računa istom aritmetikom.
+     */
+    it("rabat 10 % na 10 × 1.000,00 daje bruto 10.000,00 i rabat 1.000,00", () => {
+      const content = domacaUslugaTemplate(
+        makeCtx({
+          invoice: makeInvoice({
+            netTotal: d(9000),
+            vatTotal: d(1800),
+            grossTotal: d(10800),
+          }),
           lines: [
             {
               ...ZAKUP,
-              unitPrice: d(20000),
-              discountPercent: d(20),
-              lineTotal: d(16000),
+              quantity: d(10),
+              // Cena POSLE rabata, kako je i zapisana u bazi (1.000,00 − 10 %).
+              unitPrice: d(900),
+              discountPercent: d(10),
+              lineTotal: d(9000),
             },
           ],
         }),
       );
-      expect(framedAmounts(withDiscount).map((b) => b.text)).toEqual([
-        "20,000.00",
-        "4,000.00",
-        "16,000.00",
-        "3,200.00",
-        "19,200.00",
+      expect(framedAmounts(content).map((b) => b.text)).toEqual([
+        "10,000.00",
+        "1,000.00",
+        "9,000.00",
+        "1,800.00",
+        "10,800.00",
       ]);
     });
 

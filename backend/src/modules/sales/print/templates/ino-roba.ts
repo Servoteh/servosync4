@@ -1,8 +1,18 @@
 import { Prisma } from "@prisma/client";
 import type { Content, TableCell } from "pdfmake/interfaces";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
-import { formatAmount, formatDateForeign, formatInvoiceNumber } from "../format";
-import type { InvoiceTemplate, PrintCtx, PrintLine } from "./ctx";
+import {
+  formatAmount,
+  formatDateForeign,
+  formatDeliveryDate,
+  formatInvoiceNumber,
+} from "../format";
+import type { InvoiceTemplate, PrintCtx } from "./ctx";
+import {
+  assertExportWithoutVat,
+  discountFromLines,
+  payableAfterAdvance,
+} from "./totals";
 
 /**
  * IZVOZNA FAKTURA ZA ROBU (IZVRO / IZVGP) — korak 6 iz STAMPA_FAKTURA_GAP.md §4.
@@ -96,18 +106,6 @@ function formatQuantity(value: Prisma.Decimal): string {
   return formatAmount(rounded, decimals);
 }
 
-/**
- * Zbir stavki PRE rabata (`Σ količina × cena`) — to je red `TOTAL` na papiru.
- * Računa se nad Decimal-om, nikad preko Number-a: zbir na fakturi mora da se poklopi
- * sa knjiženjem do pare.
- */
-function grossOfLines(items: PrintLine[]): Prisma.Decimal {
-  return items.reduce(
-    (sum, l) => sum.add(l.quantity.mul(l.unitPrice)),
-    new Prisma.Decimal(0),
-  );
-}
-
 // ------------------------------------------------------------------ blokovi
 
 /** Naslov desno, krupno: `Invoice No. 228/25`. */
@@ -123,10 +121,17 @@ function titleBlock(ctx: PrintCtx): Content {
 
 /**
  * Gornji levi blok: parovi labela/vrednost (`Date:` `Customer:` `Address:`
- * `Delivery term:` `Payment terms:`), labela desno poravnata uz vrednost.
+ * `Date of delivery:` `Delivery term:` `Payment terms:`), labela desno poravnata uz vrednost.
  *
  * Par se izostavlja kad vrednosti nema — prazna labela na računu izgleda kao propušten
  * podatak, a zatečeni računi ova polja uglavnom nemaju (uvedena su tek zbog štampe).
+ *
+ * ⚠️ `Date of delivery:` (DATUM PROMETA) je dodat 02.08.2026. Papir 228/25 ga nema, ali
+ * datum prometa je OBAVEZAN element računa po Zakonu o PDV
+ * (`docs/FAKTURE_ZAKONSKA_USKLADJENOST.md` §1.3 N1) — a od spajanja u `supplyDate` polje
+ * se i popunjava pri knjiženju, pa nema više razloga da ostane neodštampano. Ino USLUGA
+ * ga je štampala sve vreme; robna nije, pa su dva izvozna papira istom kupcu nosila
+ * različit skup obaveznih podataka.
  */
 function partiesBlock(ctx: PrintCtx): Content {
   const c = ctx.customer;
@@ -146,6 +151,12 @@ function partiesBlock(ctx: PrintCtx): Content {
   add("Date:", formatDateForeign(ctx.invoice.documentDate));
   add("Customer:", c?.name ?? "", true);
   add("Address:", address);
+  // DATUM PROMETA. Oblik je `DD-MM-YY` (`formatDeliveryDate`), isti kao `Date of delivery:`
+  // na ino USLUZI — ona je jedini doneti dokaz kako BigBit štampa taj datum na engleskom
+  // obrascu, i tamo je namerno drugačiji od `Date:` (`DD.MM.GGGG.`) na istoj strani.
+  // Mesto se NE lepi uz datum (to radi samo obrazac usluge): na robi mesto izdavanja nije
+  // deo datuma prometa, a papir 228/25 ga u tom bloku uopšte nema.
+  add("Date of delivery:", formatDeliveryDate(ctx.invoice.supplyDate));
   // „Delivery term:" nosi FCO sa dokumenta („magacin kupca") — NE `deliveryTerm`, koji je
   // Incoterms paritet i pojavljuje se samo u otpremnom bloku ino USLUGE (drugi šifarnik).
   add("Delivery term:", ctx.invoice.fco ?? "");
@@ -236,21 +247,40 @@ function itemsTable(ctx: PrintCtx): Content {
 }
 
 /**
- * Zbir desno: `TOTAL`, `DISCOUNT:`, pa UOKVIRENO `TOTAL AMOUNT ( EUR)`.
+ * Zbir desno: `TOTAL`, `DISCOUNT:`, `TOTAL AMOUNT ( EUR)`, pa — kad je odbijen avans —
+ * `Less prepayment received (no. …):` i UOKVIRENO `Amount payable ( EUR)`.
  *
  * `DISCOUNT` se štampa i kad je nula (`0.00`) — red se ne izostavlja
  * (STAMPA_IZLAZNIH_FAKTURA.md §6 t.4).
  *
- * Aritmetika: `TOTAL` je zbir stavki pre rabata, `TOTAL AMOUNT` je `invoice.grossTotal`
- * (isti iznos koji ide u glavnu knjigu i saldakonta), a `DISCOUNT` je razlika ta dva.
- * Time je red ispod uvek jednak redu iznad minus rabat — papir se ne sme „ne zaključati",
- * čak ni kad bi zbir stavki i denormalizovani zbir na dokumentu odstupili.
- * PDV se nigde ne pojavljuje: izvoz je oslobođen, pa je `grossTotal` ujedno i osnovica.
+ * ARITMETIKA (ispravka 02.08.2026, v. `totals.ts`): `TOTAL AMOUNT` je `invoice.grossTotal`
+ * (isti iznos koji ide u glavnu knjigu i saldakonta), `DISCOUNT` je zbir rabata sa stavki,
+ * a `TOTAL` njihov zbir — dakle vrednost PRE rabata. Ranije je bilo obrnuto
+ * (`TOTAL` = Σ količina × cena, `DISCOUNT` = razlika), pa je red `DISCOUNT` bio strukturno
+ * `0.00`: `unitPrice` je u bazi cena POSLE rabata, pa je taj zbir jednak osnovici.
+ *
+ * PDV se nigde ne pojavljuje: izvoz je oslobođen, pa je `grossTotal` ujedno i osnovica —
+ * a `assertExportWithoutVat` to više ne ostavlja na veru (v. tamo, i komentar u telu).
+ *
+ * ⚠️ ODBIJEN AVANS (ispravka 02.08.2026, nalaz „papir traži više nego što kupac duguje"):
+ * do tada ino obrasci avans NISU odbijali, iako `Invoice.advanceAppliedAmount` postoji i
+ * `fakturisanje.service.ts` iz njega računa `payableAmount`. Stranom kupcu naplaćen avans
+ * od 3.000 EUR i izdata izvozna faktura na 10.000 EUR dali su papir sa
+ * `TOTAL AMOUNT ( EUR) 10,000.00` i bez ijednog reda o avansu — a izvozna faktura NE ide
+ * na SEF (`sef.service.ts` je odbija), pa je taj papir JEDINI dokument koji kupac dobija.
+ * Natpisi su engleski, iz zatečenog rečnika izvozne štampe („Less prepayment received",
+ * „no.", „Amount payable"); `( EUR)` uz poslednji red prati oblik `TOTAL AMOUNT ( EUR)`.
+ * Avans umanjuje SAMO iznos za uplatu — `TOTAL AMOUNT` ostaje pun iznos fakture.
  */
 function totalsBlock(ctx: PrintCtx): Content {
-  const total = grossOfLines(ctx.lines);
+  // Brana pre svakog računa: izvozni papir sa PDV-om ne sme da izađe (v. `totals.ts`).
+  assertExportWithoutVat(ctx);
+
   const totalAmount = ctx.invoice.grossTotal;
-  const discount = total.sub(totalAmount);
+  const discount = discountFromLines(ctx.lines);
+  const total = totalAmount.add(discount);
+  const advance = ctx.invoice.advanceAppliedAmount;
+  const hasAdvance = advance.greaterThan(0);
 
   const row = (
     labelText: string,
@@ -275,6 +305,34 @@ function totalsBlock(ctx: PrintCtx): Content {
     },
   ];
 
+  const body: TableCell[][] = [
+    row("TOTAL", formatAmount(total)),
+    row("DISCOUNT:", formatAmount(discount)),
+    // Bez avansa je `TOTAL AMOUNT` ujedno i iznos za uplatu, pa nosi okvir — tako je na
+    // papiru 228/25. Sa avansom okvir seli na `Amount payable`: uokviren je uvek red koji
+    // kaže koliko kupac TREBA DA PLATI, kao „Za uplatu" na domaćim obrascima.
+    row(`TOTAL AMOUNT ( ${ctx.currency})`, formatAmount(totalAmount), {
+      boxed: !hasAdvance,
+      big: true,
+    }),
+  ];
+
+  if (hasAdvance) {
+    body.push(
+      row(
+        ctx.advanceInvoiceNumber
+          ? `Less prepayment received (no. ${ctx.advanceInvoiceNumber}):`
+          : "Less prepayment received:",
+        `− ${formatAmount(advance)}`,
+      ),
+      row(
+        `Amount payable ( ${ctx.currency})`,
+        formatAmount(payableAfterAdvance(totalAmount, advance)),
+        { boxed: true, big: true },
+      ),
+    );
+  }
+
   return {
     margin: [0, 4, 0, 12],
     columns: [
@@ -283,14 +341,7 @@ function totalsBlock(ctx: PrintCtx): Content {
         width: "auto",
         table: {
           widths: ["auto", 62],
-          body: [
-            row("TOTAL", formatAmount(total)),
-            row("DISCOUNT:", formatAmount(discount)),
-            row(`TOTAL AMOUNT ( ${ctx.currency})`, formatAmount(totalAmount), {
-              boxed: true,
-              big: true,
-            }),
-          ],
+          body,
         },
         layout: {
           defaultBorder: false,

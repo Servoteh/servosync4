@@ -1,4 +1,4 @@
-import type { Column, Content } from "pdfmake/interfaces";
+import type { Column, Content, TableCell } from "pdfmake/interfaces";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import {
   formatAmount,
@@ -8,6 +8,7 @@ import {
   formatWeightKg,
 } from "../format";
 import type { InvoiceTemplate, PrintCtx } from "./ctx";
+import { assertExportWithoutVat, payableAfterAdvance } from "./totals";
 
 /**
  * IZVUS — ino faktura za USLUGU, višestrana (korak 7 iz STAMPA_FAKTURA_GAP.md §4).
@@ -372,20 +373,61 @@ function itemsTable(ctx: PrintCtx): Content {
  * Zbir: `TOTAL` pa uokvireno `TOTAL AMOUNT ( EUR)` — oba desno.
  *
  * Za razliku od ino ROBE, ovaj obrazac NEMA red `DISCOUNT` (na 060/26 ga nema ni sa nulom),
- * pa se ne štampa. Valuta je u zagradi sa razmakom (`( EUR)`) — doslovno sa papira.
+ * pa se ne štampa. Nema ga ni kolona `Rab%` u tabeli stavki — rabat na ovom papiru ne
+ * postoji nigde, pa se i ne izvodi. Valuta je u zagradi sa razmakom (`( EUR)`) — doslovno
+ * sa papira.
  *
  * Vrednosti se uzimaju sa dokumenta (`netTotal`/`grossTotal`), ne sabiranjem stavki:
  * papir mora da pokaže isti iznos koji je proknjižen.
+ *
+ * ⚠️ ODBIJEN AVANS (ispravka 02.08.2026): isti nalaz kao na ino robi — papir je tražio pun
+ * iznos fakture i kad je kupac deo već platio avansno, a izvozna faktura NE ide na SEF
+ * (`sef.service.ts` je odbija), pa je jedini dokument koji kupac dobija. Kad avansa ima,
+ * `TOTAL AMOUNT` ostaje pun iznos (bez okvira), a uokvireni poslednji red postaje
+ * `Amount payable ( EUR)` — okvir uvek nosi ono što treba platiti.
  */
 function totalsBlock(ctx: PrintCtx): Content {
+  // Brana: izvozni papir sa obračunatim PDV-om ne sme da izađe (v. `totals.ts`).
+  assertExportWithoutVat(ctx);
+
   const labelWidth = 150;
   const valueWidth = 84;
+  const label = (text: string): TableCell => ({
+    text,
+    fontSize: 9,
+    bold: true,
+    alignment: "right",
+  });
   const money = (value: Parameters<typeof formatAmount>[0], bold = false) => ({
     text: formatAmount(value, 2),
     fontSize: 9,
     bold,
     alignment: "right" as const,
   });
+
+  const advance = ctx.invoice.advanceAppliedAmount;
+  const hasAdvance = advance.greaterThan(0);
+
+  // Neuokvireni redovi iznad: uvek `TOTAL`, a uz avans i pun iznos fakture pa umanjenje.
+  const plainRows: TableCell[][] = [[label("TOTAL"), money(ctx.invoice.netTotal)]];
+  if (hasAdvance) {
+    plainRows.push([
+      label(`TOTAL AMOUNT ( ${ctx.currency})`),
+      money(ctx.invoice.grossTotal),
+    ]);
+    plainRows.push([
+      label(
+        ctx.advanceInvoiceNumber
+          ? `Less prepayment received (no. ${ctx.advanceInvoiceNumber}):`
+          : "Less prepayment received:",
+      ),
+      {
+        text: `− ${formatAmount(advance, 2)}`,
+        fontSize: 9,
+        alignment: "right",
+      },
+    ]);
+  }
 
   return {
     margin: [0, 0, 0, 14],
@@ -395,20 +437,7 @@ function totalsBlock(ctx: PrintCtx): Content {
         width: "auto",
         stack: [
           {
-            table: {
-              widths: [labelWidth, valueWidth],
-              body: [
-                [
-                  {
-                    text: "TOTAL",
-                    fontSize: 9,
-                    bold: true,
-                    alignment: "right",
-                  },
-                  money(ctx.invoice.netTotal),
-                ],
-              ],
-            },
+            table: { widths: [labelWidth, valueWidth], body: plainRows },
             layout: "noBorders",
           },
           {
@@ -417,13 +446,17 @@ function totalsBlock(ctx: PrintCtx): Content {
               widths: [labelWidth, valueWidth],
               body: [
                 [
-                  {
-                    text: `TOTAL AMOUNT ( ${ctx.currency})`,
-                    fontSize: 9,
-                    bold: true,
-                    alignment: "right",
-                  },
-                  money(ctx.invoice.grossTotal, true),
+                  label(
+                    hasAdvance
+                      ? `Amount payable ( ${ctx.currency})`
+                      : `TOTAL AMOUNT ( ${ctx.currency})`,
+                  ),
+                  money(
+                    hasAdvance
+                      ? payableAfterAdvance(ctx.invoice.grossTotal, advance)
+                      : ctx.invoice.grossTotal,
+                    true,
+                  ),
                 ],
               ],
             },

@@ -329,29 +329,106 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
       expect(texts).toContain("0.00");
     });
 
-    it("kad rabat postoji, kolona se slaže: bruto − rabat = osnovica", () => {
+    /**
+     * SCENARIO SA STVARNIM PODACIMA: 10 kom × 1.000,00 uz rabat 10 %.
+     * `PricingService` upiše cenu POSLE rabata (`unitPrice = 900,00`) i osnovicu
+     * 9.000,00, a `discountPercent = 10` ostaje samo kao podatak koliko je odbijeno.
+     *
+     * Do 02.08.2026. je obrazac bruto računao kao Σ(količina × `unitPrice`) = 9.000,00,
+     * pa je rabat ispadao „9.000 − 9.000 = 0,00": papir je u koloni pokazivao `R% 10`,
+     * a u zbiru `Rabat: 0.00` — dve tvrdnje koje se poriču. Sada se rabat izvodi unazad
+     * (9.000 × 10 / 90 = 1.000,00), a bruto je osnovica uvećana za njega.
+     */
+    it("rabat 10 % na 10 × 1.000,00 daje bruto 10.000,00 i rabat 1.000,00", () => {
       const ctx = makeCtx({
         invoice: makeInvoice({
-          netTotal: d("900.00"),
-          vatTotal: d("180.00"),
-          grossTotal: d("1080.00"),
+          netTotal: d("9000.00"),
+          vatTotal: d("1800.00"),
+          grossTotal: d("10800.00"),
         }),
         lines: [
           makeLine({
             name: "Roba sa rabatom",
             quantity: d(10),
-            unitPrice: d("100.00"),
+            // Cena POSLE rabata — tako je zapisana u bazi (1.000,00 − 10 %).
+            unitPrice: d("900.00"),
             discountPercent: d(10),
-            lineTotal: d("900.00"),
+            lineTotal: d("9000.00"),
           }),
         ],
       });
       const texts = textOf(ctx);
-      expect(texts).toContain("1,000.00"); // bruto zbir stavki
-      expect(texts).toContain("100.00"); // rabat = bruto − osnovica
-      expect(texts).toContain("900.00"); // osnovica
-      expect(texts).toContain("1,080.00"); // za uplatu
+      // Bruto je red BEZ labele, tačno iznad reda „Rabat:".
+      expect(texts[texts.indexOf("Rabat:") - 1]).toBe("10,000.00");
+      expect(amountAfter(texts, "Rabat:")).toBe("1,000.00");
+      expect(amountAfter(texts, "Vrednost bez PDV (osnovica):")).toBe("9,000.00");
+      expect(amountAfter(texts, "Za uplatu (RSD):")).toBe("10,800.00");
       expect(texts).toContain("10"); // R% na stavci
+    });
+
+    /**
+     * Brana da se strukturna nula ne vrati: kad god kolona `R%` pokazuje rabat, red
+     * „Rabat:" mora da pokaže novac — inače papir sam sebi protivreči.
+     */
+    it("kolona R% i red „Rabat:“ ne mogu da protivreče jedno drugom", () => {
+      const ctx = makeCtx({
+        invoice: makeInvoice({
+          netTotal: d("9000.00"),
+          vatTotal: d("1800.00"),
+          grossTotal: d("10800.00"),
+        }),
+        lines: [
+          makeLine({
+            quantity: d(10),
+            unitPrice: d("900.00"),
+            discountPercent: d(10),
+            lineTotal: d("9000.00"),
+          }),
+        ],
+      });
+      const texts = textOf(ctx);
+      expect(texts).toContain("10"); // R% > 0 …
+      expect(amountAfter(texts, "Rabat:")).not.toBe("0.00"); // … pa rabat NIJE nula
+    });
+
+    /**
+     * Rabat mora da zatvori zbir i kad je odobren na SAMO NEKIM stavkama i kad se
+     * deljenjem ne dobija okrugao broj (zaokruživanje ide po stavci, kao i štampa).
+     */
+    it("zatvara zbir i uz mešavinu stavki sa rabatom i bez njega", () => {
+      const ctx = makeCtx({
+        invoice: makeInvoice({
+          // 9.000,00 (sa rabatom 10 %) + 1.000,00 (bez rabata)
+          netTotal: d("10000.00"),
+          vatTotal: d("2000.00"),
+          grossTotal: d("12000.00"),
+        }),
+        lines: [
+          makeLine({
+            ordinal: 1,
+            name: "Sa rabatom",
+            quantity: d(10),
+            unitPrice: d("900.00"),
+            discountPercent: d(10),
+            lineTotal: d("9000.00"),
+          }),
+          makeLine({
+            ordinal: 2,
+            name: "Bez rabata",
+            quantity: d(1),
+            unitPrice: d("1000.00"),
+            discountPercent: d(0),
+            lineTotal: d("1000.00"),
+          }),
+        ],
+      });
+      const texts = textOf(ctx);
+      // Rabat nosi SAMO prva stavka: 11.000,00 − 1.000,00 = 10.000,00 osnovice.
+      expect(texts[texts.indexOf("Rabat:") - 1]).toBe("11,000.00");
+      expect(amountAfter(texts, "Rabat:")).toBe("1,000.00");
+      expect(amountAfter(texts, "Vrednost bez PDV (osnovica):")).toBe(
+        "10,000.00",
+      );
     });
 
     it("red PDV-a nosi OSNOVICU u tekstu, ne samo iznos", () => {

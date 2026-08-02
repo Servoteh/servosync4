@@ -419,6 +419,14 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
   });
 
   describe("IZVRO / IZVGP → ino obrazac za robu", () => {
+    /**
+     * ⚠️ IZVOZ JE BEZ PDV-a. Do 02.08.2026. je ovaj vektor nasleđivao domaće zbirove
+     * (`vatTotal 16.099,54`, `grossTotal` sa PDV-om) uz `isExport: true` — dakle
+     * izvoznu fakturu koja nosi obračunat PDV. Takav dokument od sada obara štampu
+     * (`templates/totals.ts`, `assertExportWithoutVat`): ino obrazac je štampao PDV
+     * unutar „TOTAL AMOUNT" na papiru koji tvrdi da je promet oslobođen. Vektor se
+     * zato poravnava sa stvarnošću — osnovica = bruto, PDV = 0, i na stavci.
+     */
     const inoRoba = (over: Record<string, unknown> = {}) =>
       makeInvoice({
         documentType: "IZVRO",
@@ -427,6 +435,10 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
         currency: "EUR",
         customsDeclarationNo: "25-0401-000005",
         warehouseId: null,
+        items: [makeItem({ vatAmount: D("0"), lineTotal: D("80497.70") })],
+        netTotal: D("80497.70"),
+        vatTotal: D("0"),
+        grossTotal: D("80497.70"),
         ...over,
       });
 
@@ -537,11 +549,20 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
   });
 
   describe("memorandum", () => {
+    // Ino vektori idu bez PDV-a: izvoz je oslobođen, a izvozni obrazac od 02.08.2026.
+    // odbija da odštampa dokument sa obračunatim PDV-om (v. `assertExportWithoutVat`).
+    const bezPdv = { netTotal: D("80497.70"), vatTotal: D("0"), grossTotal: D("80497.70") };
     it.each([
       ["IFR", {}],
       ["IFUSL", { documentType: "IFUSL" }],
-      ["IZVRO", { documentType: "IZVRO", isExport: true, currency: "EUR" }],
-      ["IZVUS", { documentType: "IZVUS", isExport: true, currency: "EUR" }],
+      [
+        "IZVRO",
+        { documentType: "IZVRO", isExport: true, currency: "EUR", ...bezPdv },
+      ],
+      [
+        "IZVUS",
+        { documentType: "IZVUS", isExport: true, currency: "EUR", ...bezPdv },
+      ],
     ])("stoji u zaglavlju i podnožju strane za %s", async (_type, over) => {
       const out = await build(makeInvoice(over));
       expect(out.header).toContain("Servoteh d.o.o. Dobanovci");

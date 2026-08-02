@@ -2,7 +2,8 @@ import { Prisma } from "@prisma/client";
 import type { Content, TableLayout } from "pdfmake/interfaces";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import { formatAmount, formatDateDomestic, formatInvoiceNumber } from "../format";
-import type { InvoiceTemplate, PrintCtx, PrintLine } from "./ctx";
+import type { InvoiceTemplate, PrintCtx } from "./ctx";
+import { discountFromLines, payableAfterAdvance } from "./totals";
 
 /**
  * IFUSL — domaća faktura za USLUGU (korak 5 iz `docs/STAMPA_FAKTURA_GAP.md` §4).
@@ -131,11 +132,6 @@ function formatPercentCell(value: Prisma.Decimal): string {
 /** `20%` u koloni PDV; prazno kad stopa nije poznata (ne štampa se „null%"). */
 function formatVatRate(rate: number | null): string {
   return rate == null ? "" : `${rate}%`;
-}
-
-/** Zbir `količina × cena` pre rabata — brutovrednost stavke. */
-function lineGross(line: PrintLine): Prisma.Decimal {
-  return line.quantity.mul(line.unitPrice);
 }
 
 function sum(values: Prisma.Decimal[]): Prisma.Decimal {
@@ -402,16 +398,22 @@ function totalsRow(label: string, value: string, strong = false): Content {
  * Usluga ima i zaseban red `Ukupno vrednost bez PDV (osnovica)`, pa poslednji
  * red glasi `Ukupno za uplatu (RSD):` — a ne `Za uplatu (RSD):` kao na robi.
  *
- * Odnos redova se drži sam od sebe: red 1 je zbir `količina × cena` sa stavki,
- * red 3 je `netTotal` sa dokumenta, a red 2 je njihova razlika — tako odobren
- * rabat uvek zatvara račun, ma kako bio raspoređen po stavkama.
+ * Odnos redova se drži sam od sebe: red 3 je `netTotal` sa dokumenta, red 2 je
+ * zbir rabata sa stavki, a red 1 njihov zbir — tako odobren rabat uvek zatvara
+ * račun (**bruto − rabat = osnovica**), ma kako bio raspoređen po stavkama.
+ *
+ * ⚠️ ISPRAVKA 02.08.2026: red 1 je do tada bio Σ(količina × `unitPrice`), a rabat
+ * razlika do osnovice. Pošto je `unitPrice` u bazi cena POSLE rabata
+ * (`pricing.service.ts`), taj zbir je uvek bio JEDNAK osnovici, pa je „Odobren
+ * rabat" strukturno bio `0.00` i kad je u koloni `Rab%` pisalo 20. Sada se rabat
+ * izvodi po stavci (`totals.ts`), a bruto je osnovica uvećana za njega.
  */
 function totalsBlock(ctx: PrintCtx): Content[] {
   if (ctx.withoutPrices) return [];
 
-  const gross = sum(ctx.lines.map(lineGross));
   const net = ctx.invoice.netTotal;
-  const discount = gross.sub(net);
+  const discount = discountFromLines(ctx.lines);
+  const gross = net.add(discount);
   const rows: Content[] = [
     totalsRow("Vrednost bez PDV (osnovica):", formatAmount(gross)),
     totalsRow("Odobren rabat:", formatAmount(discount)),
@@ -437,8 +439,7 @@ function totalsBlock(ctx: PrintCtx): Content[] {
       ? `Umanjenje za primljeni avans (br. ${ctx.advanceInvoiceNumber}):`
       : "Umanjenje za primljeni avans:";
     rows.push(totalsRow(label, `− ${formatAmount(advance)}`));
-    const rest = payable.sub(advance);
-    payable = rest.greaterThan(0) ? rest : new Prisma.Decimal(0);
+    payable = payableAfterAdvance(payable, advance);
   }
 
   rows.push(
