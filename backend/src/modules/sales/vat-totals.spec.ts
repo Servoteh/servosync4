@@ -12,7 +12,14 @@ import {
   buildSalesLedgerLines,
   FakturisanjeService,
 } from "./fakturisanje.service";
-import { documentVatTotals, roundAmount, vatPercentOf } from "./vat-totals";
+import {
+  documentVatTotals,
+  roundAmount,
+  vatBreakdown,
+  VAT_RATE_BY_CODE,
+  vatPercentOf,
+} from "./vat-totals";
+import { grossToNet } from "../pdv/vat-bridge.util";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
@@ -62,10 +69,11 @@ describe("documentVatTotals — porez se računa iz osnovice po stopi", () => {
   });
 
   it("grupe idu opadajuće po stopi i svaka nosi `round2(osnovica × stopa)`", () => {
+    // Šifra „4" = snižena stopa 10 % (`R_Tarife`, NIZA) — v. `gl/posting/vat-rates.ts`.
     const t = documentVatTotals([
-      { vatRateCode: "2", vatBase: D("100.05") },
+      { vatRateCode: "4", vatBase: D("100.05") },
       { vatRateCode: "3", vatBase: D("100.01") },
-      { vatRateCode: "2", vatBase: D("100.05") },
+      { vatRateCode: "4", vatBase: D("100.05") },
       { vatRateCode: "3", vatBase: D("100.01") },
     ]);
     expect(t.groups.map((g) => g.ratePercent.toFixed(0))).toEqual(["20", "10"]);
@@ -96,6 +104,87 @@ describe("documentVatTotals — porez se računa iz osnovice po stopi", () => {
   });
 
   /**
+   * 🔴 NALAZ S4 (šesti krug): ključ je bila ŠIFRA sa `?? "0"`, pa je prazan string ostajao
+   * `""` i pravio SVOJU grupu. Izmereno: `""`, `"0"` i `"9"` su davali TRI grupe od po 0 %
+   * — a u e-fakturi tri `cac:TaxSubtotal`-a za isti oslobođen promet (BR-S-08/BR-E-08
+   * traže po jedan po paru kategorija+stopa) i tri identična reda „PDV po stopi 0%" na
+   * papiru. Od ispravke je ključ (kategorija, stopa), pa sve troje čine JEDNU grupu (E, 0).
+   */
+  it("prazna, nulta i nepoznata šifra su JEDNA grupa od 0 %, a ne tri", () => {
+    const t = documentVatTotals([
+      { vatRateCode: "", vatBase: D("10.00") },
+      { vatRateCode: "0", vatBase: D("20.00") },
+      { vatRateCode: "9", vatBase: D("30.00") },
+      { vatRateCode: null, vatBase: D("40.00") },
+    ]);
+    expect(t.groups).toHaveLength(1);
+    expect(t.groups[0].category).toBe("E");
+    expect(t.groups[0].base.toFixed(2)).toBe("100.00");
+    expect(t.vatTotal.toFixed(2)).toBe("0.00");
+  });
+
+  /**
+   * 🔴 NALAZ R3 (šesti krug): zaglavlje je grupisalo po ŠIFRI, e-faktura po STOPI, papir po
+   * efektivnoj stopi iz iznosa. Dve šifre sa ISTOM stopom su zato davale različit porez:
+   *
+   *   izmereno na šiframa „3" i „1" (obe su tada bile 20 %), dve stavke po 100,03 din:
+   *     po šifri  → round2(100,03 × 20 %) × 2 = 20,01 + 20,01 = 40,02   (zaglavlje)
+   *     po stopi  → round2(200,06 × 20 %)     =         40,01           (e-faktura, papir)
+   *   najmanji ulaz koji to pokazuje: osnovice 0,01 i 0,02.
+   *
+   * ⚠️ Mapa stopa je istog dana ispravljena po `R_Tarife` (šifra „1" je BEZPDV = 0 %), pa
+   * par sa istom stopom sada čine „3" i „6" (obe 20 %). BROJEVI SU ISTI, jer ključ i jeste
+   * STOPA a ne šifra — što ovaj test i dokazuje. Par se izvodi IZ MAPE, da bi test preživeo
+   * i sledeću njenu ispravku.
+   */
+  it("dve različite šifre sa ISTOM stopom daju JEDNU grupu (100,03 + 100,03 → 40,01)", () => {
+    const codes = Object.keys(VAT_RATE_BY_CODE).filter((c) =>
+      vatPercentOf(c).equals(20),
+    );
+    expect(codes.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = codes;
+
+    const t = documentVatTotals([
+      { vatRateCode: first, vatBase: D("100.03") },
+      { vatRateCode: second, vatBase: D("100.03") },
+    ]);
+    expect(t.groups).toHaveLength(1);
+    expect(t.groups[0].base.toFixed(2)).toBe("200.06");
+    expect(t.vatTotal.toFixed(2)).toBe("40.01"); // NE 40,02 (dva puta round2 po šifri)
+    expect(t.grossTotal.toFixed(2)).toBe("240.07");
+  });
+
+  it("najmanji ulaz koji obara podelu po šifri: osnovice 0,01 i 0,02", () => {
+    const codes = Object.keys(VAT_RATE_BY_CODE).filter((c) =>
+      vatPercentOf(c).equals(20),
+    );
+    const t = documentVatTotals([
+      { vatRateCode: codes[0], vatBase: D("0.01") },
+      { vatRateCode: codes[1], vatBase: D("0.02") },
+    ]);
+    // Po šifri: round2(0,002) + round2(0,004) = 0,00 + 0,00 = 0,00.
+    // Po stopi: round2(0,03 × 20 %) = round2(0,006) = 0,01.
+    expect(t.vatTotal.toFixed(2)).toBe("0.01");
+  });
+
+  /**
+   * Izvozna 0 % (Z) i domaća oslobođena 0 % (E) NE SMEJU u istu grupu: u UBL-u nose
+   * različit osnov oslobođenja (`TaxExemptionReasonCode` čl. 24 vs bez njega). Zato je
+   * ključ (kategorija, stopa), a ne sama stopa.
+   */
+  it("kategorija je deo ključa: izvoz daje Z, domaće oslobođenje E", () => {
+    expect(
+      documentVatTotals([{ vatRateCode: "0", vatBase: D("100") }], {
+        isExport: true,
+      }).groups[0].category,
+    ).toBe("Z");
+    expect(
+      documentVatTotals([{ vatRateCode: "0", vatBase: D("100") }]).groups[0]
+        .category,
+    ).toBe("E");
+  });
+
+  /**
    * NALAZ S2: kolona je `Decimal(19,4)`, pa uvoz / ručna ispravka u bazi / budući BigBit
    * uvoz mogu da donesu NEZAOKRUŽENU osnovicu. Zbir se brani NA SABIRANJU.
    */
@@ -114,6 +203,117 @@ describe("documentVatTotals — porez se računa iz osnovice po stopi", () => {
     expect(t.vatTotal.toFixed(2)).toBe("0.00");
     expect(t.grossTotal.toFixed(2)).toBe("0.00");
     expect(t.groups).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1b) OBJAVLJEN POREZ — dokument koji PDV izvodi IZ BRUTA (avans)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 🔴 NALAZI R1 i R2 (šesti krug). Avansni račun porez NE MNOŽI nego DELI: bruto koji je
+ * kupac uplatio je dat, pa `grossToNet` (pdv/vat-bridge.util) iz njega izvodi osnovicu, a
+ * porez dobija RAZLIKOM. Za takav dokument `round2(osnovica × stopa)` ne mora da vrati
+ * porez koji je proknjižen — i za 16,67 % bruto iznosa ne vraća.
+ *
+ * IZMERENO: AVR bruto 132,03 uz 20 % → osnovica 110,03, porez 22,00; a
+ * `110,03 × 20 % = 22,006 → 22,01`.
+ */
+describe("vatBreakdown — dokument objavljuje svoj porez (`documentVatTotal`)", () => {
+  /** Avansni račun ima TAČNO JEDNU stavku: osnovica i porez iz `grossToNet`. */
+  const advance = (gross: string, ratePct = 20) => {
+    const { net, vat } = grossToNet(gross, ratePct);
+    return { net, vat, gross: net.add(vat) };
+  };
+
+  it("izmereni AVR 132,03 din: `grossToNet` daje 110,03 + 22,00, a množenje 22,01", () => {
+    const a = advance("132.03");
+    expect(a.net.toFixed(2)).toBe("110.03");
+    expect(a.vat.toFixed(2)).toBe("22.00");
+    expect(a.gross.toFixed(2)).toBe("132.03");
+    expect(roundAmount(a.net.mul(20).div(100)).toFixed(2)).toBe("22.01");
+  });
+
+  it("grupa preuzima OBJAVLJEN porez → osnovica + porez == bruto (132,03, ne 132,02)", () => {
+    const a = advance("132.03");
+    const groups = vatBreakdown([{ vatRateCode: "3", vatBase: a.net }], {
+      documentVatTotal: a.vat,
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].ratePercent.toFixed(0)).toBe("20");
+    expect(groups[0].base.toFixed(2)).toBe("110.03");
+    expect(groups[0].vat.toFixed(2)).toBe("22.00");
+    expect(groups[0].base.add(groups[0].vat).toFixed(2)).toBe("132.03");
+  });
+
+  it("bez `documentVatTotal` (put na kom se zaglavlje TEK računa) porez se množi", () => {
+    const a = advance("132.03");
+    const groups = vatBreakdown([{ vatRateCode: "3", vatBase: a.net }]);
+    expect(groups[0].vat.toFixed(2)).toBe("22.01");
+  });
+
+  /**
+   * Ovo NIJE nasumično uzorkovanje nego iscrpna provera: svaki bruto iznos od 1,00 do
+   * 5.000,00 (499.901 iznos) po obe stope. Papir i e-faktura moraju da se zatvore na
+   * SVAKOM od njih, a ne na „skoro svakom".
+   */
+  it("svih 499.901 bruto iznosa 1,00–5.000,00 (20 % i 10 %): grupa se zatvara u bruto", () => {
+    let divergedFromMultiplication = 0;
+    let total = 0;
+    for (const ratePct of [20, 10]) {
+      for (let cents = 100; cents <= 500000; cents += 1) {
+        const gross = new Prisma.Decimal(cents).div(100);
+        const { net, vat } = grossToNet(gross, ratePct);
+        const groups = vatBreakdown(
+          [{ ratePercent: ratePct, vatBase: net }],
+          { documentVatTotal: vat },
+        );
+        total += 1;
+        // JEDINA tvrdnja koja mora da važi uvek: papir se zatvara u naplaćen bruto.
+        if (!groups[0].base.add(groups[0].vat).equals(gross)) {
+          throw new Error(
+            `bruto ${gross.toFixed(2)} @ ${ratePct}%: ` +
+              `${groups[0].base.toFixed(2)} + ${groups[0].vat.toFixed(2)}`,
+          );
+        }
+        if (!roundAmount(net.mul(ratePct).div(100)).equals(vat)) {
+          divergedFromMultiplication += 1;
+        }
+      }
+    }
+    expect(total).toBe(999802);
+    // Udeo iznosa za koje NE POSTOJI osnovica koja zadovoljava obe jednačine:
+    // 1/6 na 20 % (16,67 %) i 1/11 na 10 % (9,09 %) — v. uvod `vat-totals.ts`.
+    expect(divergedFromMultiplication / total).toBeGreaterThan(0.12);
+    expect(divergedFromMultiplication / total).toBeLessThan(0.14);
+  });
+
+  /**
+   * BRANA NAD PREUZIMANJEM: pokvareno zaglavlje se NE zaglađuje. Bez granice bi dokument
+   * sa `vat_total = 0` uz osnovicu od 500,00 dobio papir i XML koji ga POTVRĐUJU.
+   */
+  it("razlika veća od zaokruživanja se NE preuzima — ostaje vidljiva", () => {
+    const groups = vatBreakdown([{ vatRateCode: "3", vatBase: D("500.00") }], {
+      documentVatTotal: D("0"),
+    });
+    expect(groups[0].vat.toFixed(2)).toBe("100.00"); // ne 0,00
+  });
+
+  it("zatečeno zaglavlje po STAROM pravilu (Σ poreza po stavci) se preuzima", () => {
+    // 5 × 100,01 uz 20 %: staro pravilo je upisalo 100,00, novo računa 100,01.
+    const items = [1, 2, 3, 4, 5].map(() => ({
+      vatRateCode: "3",
+      vatBase: D("100.01"),
+    }));
+    const groups = vatBreakdown(items, { documentVatTotal: D("100.00") });
+    expect(groups[0].vat.toFixed(2)).toBe("100.00");
+  });
+
+  it("para poreza se NIKAD ne dodeljuje grupi od 0 % (oslobođen promet)", () => {
+    const groups = vatBreakdown([{ vatRateCode: "0", vatBase: D("100.00") }], {
+      documentVatTotal: D("0.01"),
+    });
+    expect(groups[0].vat.toFixed(2)).toBe("0.00");
   });
 });
 
@@ -157,8 +357,8 @@ describe("buildSalesLedgerLines — GK po stopi, i dalje balansira", () => {
     const lines = buildSalesLedgerLines(invoice({ documentType: "IFR" }), [
       { vatRateCode: "3", vatBase: D("100.01") },
       { vatRateCode: "3", vatBase: D("100.01") },
-      { vatRateCode: "2", vatBase: D("100.05") },
-      { vatRateCode: "2", vatBase: D("100.05") },
+      { vatRateCode: "4", vatBase: D("100.05") },
+      { vatRateCode: "4", vatBase: D("100.05") },
     ]);
     const byAcc = new Map(lines.map((l) => [l.accountCode, l]));
     expect(byAcc.get("2040")?.debit.toFixed(2)).toBe("460.13");
@@ -182,25 +382,26 @@ describe("buildSalesLedgerLines — GK po stopi, i dalje balansira", () => {
   });
 
   /**
-   * 🔶 ZATEČENO, prijavljeno u `docs/PREOSTALE_FAZE.md`: poreska šifra „4" je POSEBNA
-   * stopa (8 %, POLJO) i do 02.08.2026. je padala u granu „inače", pa se knjižila na
-   * `4702 — PDV 20 % na prodate robe`. Nalog bi balansirao, ali bi POPDV polje 3.2 iz
-   * tog konta izvodilo osnovicu deljenjem sa 0,2 — osnovica prometa po 8 % bi u obrazac
-   * ušla umanjena za 60 %.
+   * 🔶 ZATEČENO, prijavljeno u `docs/PREOSTALE_FAZE.md`: stopa od 8 % (POLJO — PDV
+   * nadoknada poljoprivrednicima, poreska šifra „5" po `R_Tarife`) je do 02.08.2026.
+   * padala u granu „inače", pa se knjižila na `4702 — PDV 20 % na prodate robe`. Nalog bi
+   * balansirao, ali bi POPDV polje 3.2 iz tog konta izvodilo osnovicu deljenjem sa 0,2 —
+   * osnovica prometa po 8 % bi u obrazac ušla umanjena za 60 %.
    *
    * Konto izlaznog PDV-a od 8 % u kontnom planu NE POSTOJI (postoji samo
    * `4750 — PDV po osnovu SOPSTVENE POTROŠNJE 8 %`, što nije promet po izdatoj fakturi),
    * pa se ne izmišlja: knjiženje se odbija sa objašnjenjem.
    */
   it("stopa bez konta (8 %) se ne knjiži tiho na konto od 20 % — 422 sa objašnjenjem", () => {
+    expect(vatPercentOf("5").toFixed(0)).toBe("8");
     expect(() =>
       buildSalesLedgerLines(invoice(), [
-        { vatRateCode: "4", vatBase: D("1000") },
+        { vatRateCode: "5", vatBase: D("1000") },
       ]),
     ).toThrow(UnprocessableEntityException);
     expect(() =>
       buildSalesLedgerLines(invoice(), [
-        { vatRateCode: "4", vatBase: D("1000") },
+        { vatRateCode: "5", vatBase: D("1000") },
       ]),
     ).toThrow(/8%.*ne postoji konto izlaznog PDV-a/s);
   });
@@ -214,7 +415,9 @@ describe("buildSalesLedgerLines — GK po stopi, i dalje balansira", () => {
 
   /** Invarijanta nad nasumičnim dokumentima: nalog uvek balansira i uvek je bruto. */
   it("nasumični dokumenti (1–20 stavki): ΣDug == ΣPot == bruto fakture", () => {
-    const CODES = ["3", "1", "2", "0"] as const; // "4" nema konto — pokriveno gore
+    // „3" i „6" su OBE 20 % — nasumični dokument tako uvek meša i par koji se spaja u
+    // jednu grupu. „5" (8 %) je izostavljen jer nema konto izlaznog PDV-a (pokriveno gore).
+    const CODES = ["3", "6", "4", "1", "0"] as const;
     let seed = 20260802;
     const rnd = () => {
       seed ^= seed << 13;

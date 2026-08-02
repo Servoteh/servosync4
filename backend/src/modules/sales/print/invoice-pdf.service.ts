@@ -12,7 +12,7 @@ import type {
 } from "pdfmake/interfaces";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { loadInvoiceAdvanceDeductions } from "../advance-deduction";
-import { roundAmount } from "../vat-totals";
+import { vatBreakdown, vatPercentOf } from "../vat-totals";
 import { BarcodeService } from "../../documents/barcode.service";
 import { buildPageFooter } from "../../documents/doc-layout";
 import { PdfService } from "../../documents/pdf.service";
@@ -483,7 +483,6 @@ export class InvoicePdfService {
       customer,
       issuer,
       items,
-      vatRates,
       signatory,
       warehouseName,
       advanceDeductions,
@@ -497,7 +496,6 @@ export class InvoicePdfService {
         invoice.items.map((i) => i.itemId),
         foreign,
       ),
-      this.loadVatRates(invoice.items.map((i) => i.vatRateCode)),
       this.loadSignatory(invoice.salespersonId),
       // Magacin nosi SAMO domaća robna faktura („Robu izdao → iz magacina …") — to je
       // i jedina razlika IFR od IFGP. Ostali obrasci ga nemaju, pa se ni ne traži.
@@ -540,9 +538,17 @@ export class InvoicePdfService {
         lineTotal: item.vatBase,
         // Ino promet nema PDV kolonu — stopa se ne prosleđuje da je neki budući ino
         // obrazac ne bi slučajno odštampao (ugovor `ctx.ts`: `null` = ino).
+        //
+        // ⚠️ IZVOR STOPE = `VAT_RATE_BY_CODE` (nalaz S2, ispravka 02.08.2026). Do tada se
+        // čitala kolona `tax_rates.base_rate` IZ BAZE, dok je IZNOS poreza računat iz mape
+        // u kodu — dva šifarnika za isti broj u istom redu papira. Tabela `tax_rates`
+        // NEMA SEED ni u jednoj migraciji, pa je na praznoj bazi (a produkcija je takva
+        // — 0 redova) `vatRates.get()` vraćao `undefined` i domaći obrazac je štampao
+        // **„PDV po stopi 0% X 500,05 = 100,01"**: stopa nula, a porez obračunat po 20 %.
+        // Pitanje seed-a je zapisano u `backend/docs/PREOSTALE_FAZE.md`.
         vatRatePercent: foreign
           ? null
-          : (vatRates.get(item.vatRateCode) ?? null),
+          : vatPercentOf(item.vatRateCode).toNumber(),
       };
     });
 
@@ -872,23 +878,6 @@ export class InvoicePdfService {
         customsTariff: r.customsTariff?.trim() || null,
       });
     }
-    return map;
-  }
-
-  /**
-   * Šifra poreske stope → procenat (`20`) za kolonu „PDV" i za red
-   * „PDV po stopi 20% X … =" u zbiru. Uzima se `baseRate` — dodatne stope
-   * (železnička, gradska…) na izlaznoj fakturi ne postoje.
-   */
-  private async loadVatRates(codes: string[]): Promise<Map<string, number>> {
-    const wanted = [...new Set(codes.map((c) => c?.trim()).filter(Boolean))];
-    const map = new Map<string, number>();
-    if (!wanted.length) return map;
-    const rows = await this.prisma.taxRate.findMany({
-      where: { code: { in: wanted } },
-      select: { code: true, baseRate: true },
-    });
-    for (const r of rows) map.set(r.code, r.baseRate ?? 0);
     return map;
   }
 
@@ -1475,9 +1464,16 @@ export class InvoicePdfService {
       if (valueOnly) {
         // KO/KZ je VREDNOSNI dokument — bez količine i cene (BigBit KnjiznoZadOd).
         // „Iznos" je OSNOVICA; PDV se prikazuje u rekapitulaciji ispod tabele.
+        // ⚠️ STOPA IZ POREsKE ŠIFRE, ne iz odnosa iznosa (ispravka 02.08.2026, nalaz R3):
+        // isti dokument je u ovoj koloni imao „efektivnu" stopu, a u rekapitulaciji ispod
+        // stopu iz šifarnika — na avansu 19,99 % ovde i 20 % dole. Sada oba mesta čitaju
+        // `VAT_RATE_BY_CODE`, istu mapu iz koje je porez i obračunat (`PricingService`).
         return [
           { text: String(idx + 1), style: "td" },
-          { text: fmtPercent(effectiveVatPercent(item), english), style: "tdNum" },
+          {
+            text: fmtPercent(itemVatPercent(invoice, item), english),
+            style: "tdNum",
+          },
           { text: desc, style: "td" },
           { text: formatDecimal(item.vatBase, 2, english), style: "tdNum" },
         ];
@@ -1522,44 +1518,38 @@ export class InvoicePdfService {
 
   /**
    * REKAPITULACIJA POREZA po stopama (BigBit obavezan blok ispod stavki računa,
-   * KO/KZ i avansnog računa). Stopa se izvodi iz SAMIH IZNOSA (`vatAmount/vatBase`),
-   * ne iz šifarnika — tako odštampana stopa uvek odgovara stvarno obračunatom porezu.
-   * Kontrolni red: Σ osnovica + Σ PDV = bruto dokumenta; razlika se ispisuje crveno.
+   * KO/KZ i avansnog računa). Kontrolni red: Σ osnovica + Σ PDV = bruto dokumenta;
+   * razlika se ispisuje crveno.
    *
-   * ⚠️ PDV GRUPE = `round2(osnovica_grupe × stopa)`, ne zbir poreza po stavkama
-   * (ispravka 02.08.2026, isto pravilo kao `sales/vat-totals.ts` i `templates/totals.ts`).
-   * Ovaj blok ŠTAMPA stopu, osnovicu i porez u istom redu — kupac (i inspektor) taj red
-   * množi. Sabiranje zaokruženih poreza po stavci je davalo red `20 % · 500,05 · 100,00`
-   * (5 stavki po 100,01 din), a `500,05 × 20 % = 100,01`; uz to bi kontrolni red ispod
-   * odstupao od `grossTotal`, jer se zaglavlje od te izmene računa po stopi.
+   * ⚠️ GRUPIŠE JEDINA FUNKCIJA GRUPISANJA (`sales/vat-totals.ts` → `vatBreakdown`),
+   * istim ključem (kategorija, stopa) kao zaglavlje i e-faktura (ispravka 02.08.2026,
+   * nalaz R3). Ovde je do tada bio TREĆI ključ — efektivna stopa izvedena iz iznosa
+   * (`vatAmount / vatBase`) — pa je isti račun umeo da se podeli drugačije nego u XML-u.
+   *
+   * ⚠️ STOPA DOLAZI IZ POREsKE ŠIFRE, ne iz iznosa (isti nalaz). „Efektivna stopa" je
+   * na avansnom računu davala broj koji nije poreska stopa: AVR na 132,03 din nosi
+   * osnovicu 110,03 i porez 22,00 (izvedene deljenjem — v. `grossToNet`), pa je
+   * `22,00 / 110,03` štampalo **19,99 %** i uz njega porez `round2(110,03 × 19,99 %) =
+   * 21,99`; red „Ukupno" je davao 132,02, a „Ukupno za uplatu" ispod 132,03.
+   *
+   * ⚠️ POREZ JE ONAJ KOJI JE DOKUMENT OBJAVIO (`invoice.vatTotal` → `documentVatTotal`),
+   * a ne ponovljeno množenje (nalaz R1). Kod avansa se to dvoje razlikuje za paru na
+   * 16,67 % bruto iznosa; papir mora da pokaže ono što je proknjiženo i ono što kupac
+   * plaća. Obrazloženje i granica preuzimanja su u uvodu `vat-totals.ts`.
    */
   private buildVatRecap(
     invoice: InvoiceWithItems,
     t: Labels,
     currency: string,
   ): Content {
-    const byRate = new Map<
-      string,
-      { percent: Prisma.Decimal; base: Prisma.Decimal; vat: Prisma.Decimal }
-    >();
-    for (const item of invoice.items) {
-      const percent = effectiveVatPercent(item);
-      const key = percent.toFixed(2);
-      const acc = byRate.get(key) ?? {
-        percent,
-        base: new Prisma.Decimal(0),
-        vat: new Prisma.Decimal(0),
-      };
-      acc.base = acc.base.add(roundAmount(item.vatBase));
-      byRate.set(key, acc);
-    }
-    for (const acc of byRate.values()) {
-      acc.vat = roundAmount(acc.base.mul(acc.percent).div(100));
-    }
-
-    const rates = [...byRate.values()].sort((a, b) =>
-      a.percent.comparedTo(b.percent),
-    );
+    // Rastuće po stopi — redosled je izgled ovog bloka (BigBit papir), a ne iznos;
+    // `vatBreakdown` vraća opadajuće, jer je to redosled koji XML traži.
+    const rates = vatBreakdown(invoice.items, {
+      isExport: invoice.isExport,
+      documentVatTotal: invoice.vatTotal,
+    })
+      .map((g) => ({ percent: g.ratePercent, base: g.base, vat: g.vat }))
+      .sort((a, b) => a.percent.comparedTo(b.percent));
     const body: Content[][] = [
       [
         { text: t.colVatRate, style: "th", alignment: "right" },
@@ -1592,8 +1582,19 @@ export class InvoicePdfService {
     ]);
 
     // Kontrola tihe greške: rekapitulacija MORA da se poklopi sa bruto iznosom.
-    const diff = sumBase.add(sumVat).sub(invoice.grossTotal);
-    const mismatch: Content[] = diff.abs().greaterThan(new Prisma.Decimal("0.01"))
+    //
+    // ⚠️ PRAG JE PARA, NE „VIŠE OD PARE" (ispravka 02.08.2026, nalaz R1): uslov je bio
+    // `diff > 0,01`, pa je razlika od TAČNO 0,01 — jedina koja se u praksi i javljala —
+    // prolazila nemo. Izmereno na avansu od 132,03 din: papir je štampao zbir 132,02 uz
+    // „Ukupno za uplatu 132,03", bez ijednog upozorenja. Sada se ispisuje sve što se na
+    // papiru sa dve decimale VIDI.
+    //
+    // Od iste ispravke `sumVat` po definiciji jednak `invoice.vatTotal` (grupe preuzimaju
+    // objavljen porez), pa ovaj red od sada znači: **Σ osnovica stavki ≠ `netTotal`** —
+    // dakle stavke i zaglavlje su se razišle (prekinut uvoz, ručna izmena u bazi), ili je
+    // odstupanje poreza preveliko da bi bilo zaokruživanje (v. granicu u `vat-totals.ts`).
+    const diff = sumBase.add(sumVat).sub(invoice.grossTotal).toDecimalPlaces(2);
+    const mismatch: Content[] = !diff.isZero()
       ? [
           {
             text:
@@ -2206,20 +2207,25 @@ function fmtPercent(value: Prisma.Decimal, english: boolean): string {
 }
 
 /**
- * Efektivna PDV stopa stavke, IZVEDENA IZ IZNOSA (`vatAmount / vatBase × 100`),
- * zaokružena na 2 decimale. Namerno se ne čita iz šifarnika `tax_rates`: odštampana
- * stopa mora da odgovara porezu koji je stvarno obračunat na toj stavci, i kad je
- * šifarnik u međuvremenu promenjen. Osnovica 0 → 0%.
+ * PDV STOPA STAVKE ZA ŠTAMPU — iz poreske šifre (`VAT_RATE_BY_CODE`), izvoz uvek 0 %.
+ *
+ * ⚠️ ZAMENILA JE „EFEKTIVNU STOPU" `vatAmount / vatBase × 100` (ispravka 02.08.2026).
+ * Namera efektivne stope je bila dobra — da odštampana stopa odgovara stvarno
+ * obračunatom porezu i kad se šifarnik promeni — ali je bila vezana za POGREŠAN
+ * šifarnik: porez obračunava `PricingService` iz mape `VAT_RATE_BY_CODE` (kod), a ne iz
+ * tabele `tax_rates` (baza). Ista mapa je i ovde, pa je namera ispunjena bez izvođenja.
+ *
+ * ŠTA JE IZVOĐENJE LOMILO: ono NIJE bilo stopa nego posledica zaokruživanja. Na avansnom
+ * računu (porez izveden deljenjem) `22,00 / 110,03` daje **19,99 %** — broj koji ne
+ * postoji ni u jednom poreskom propisu, a uz to je papir grupisao po njemu dok su
+ * zaglavlje i e-faktura grupisali po 20 %.
  */
-function effectiveVatPercent(item: {
-  vatBase: Prisma.Decimal;
-  vatAmount: Prisma.Decimal;
-}): Prisma.Decimal {
-  if (item.vatBase.isZero()) return new Prisma.Decimal(0);
-  return item.vatAmount
-    .div(item.vatBase)
-    .mul(100)
-    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+function itemVatPercent(
+  invoice: { isExport: boolean },
+  item: { vatRateCode: string | null },
+): Prisma.Decimal {
+  if (invoice.isExport) return new Prisma.Decimal(0);
+  return vatPercentOf(item.vatRateCode);
 }
 
 /** Iznos + oznaka valute (npr. „1.234,56 RSD" / „1234.56 EUR"). */

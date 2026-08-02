@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { roundAmount, vatPercentOf as vatPercentOfCode } from "../vat-totals";
+import {
+  vatBreakdown,
+  vatCategoryOf,
+  vatPercentOf as vatPercentOfCode,
+} from "../vat-totals";
 
 /**
  * UBL 2.1 BUILDER — Invoice → SEF e-faktura XML (doc 07 §8, §6.2 field-mapping).
@@ -71,7 +75,9 @@ const INVOICE_TYPE_CODE_PREPAYMENT = "386";
 
 /**
  * Procenat PDV stope za šifru — iz JEDNE mape sistema (`sales/vat-totals.ts` →
- * `gl/posting/vat-rates.ts`). "3"/"1" = 20 %, "2" = 10 %, "4" = 8 %, "0" = 0 %.
+ * `gl/posting/vat-rates.ts`). Vrednosti se NE prepisuju ovde: spisak stopa u komentaru je
+ * već jednom zastareo (pisalo je „„1" = 20 %, „2" = 10 %, „4" = 8 %", a po stvarnim
+ * redovima `R_Tarife` „1" je BEZPDV 0 %, „2" ne postoji, „4" je NIZA 10 %).
  *
  * ⚠️ OVDE JE DO 02.08.2026. STAJAO PREPIS TE MAPE, sa jednom razlikom: nepoznata šifra
  * je davala 20 % umesto 0 %. Dok je `TaxAmount` bio zbir poreza po stavkama, razlika se
@@ -89,10 +95,14 @@ function vatPercentOf(code: string | null | undefined): number {
 /**
  * PDV kategorija po stopi: >0% → S (standardna/snižena), 0% → Z (izvoz, uz osnov
  * oslobođenja) odn. E (domaće oslobođenje bez export osnova).
+ *
+ * ⚠️ SAMO PREVODI STOPU U `Decimal` I ZOVE ZAJEDNIČKU (`sales/vat-totals.ts`): kategorija
+ * je pola ključa po kom se grade `cac:TaxSubtotal` grupe, pa bi drugi primerak ovog
+ * pravila značio da se linija (`ClassifiedTaxCategory`) i grupa (`TaxCategory`) istog
+ * prometa razidu u kategoriji — dokument koji SEF odbija, bez ijedne izmene koda.
  */
 function taxCategoryOf(percent: number, isExport: boolean): string {
-  if (percent > 0) return "S";
-  return isExport ? "Z" : "E";
+  return vatCategoryOf(new D(percent), isExport);
 }
 
 /**
@@ -514,7 +524,7 @@ export class UblBuilderService {
     // TaxSubtotal. Zbir taxableAmount/taxAmount grupa = invoice.netTotal/vatTotal.
     parts.push("<cac:TaxTotal>");
     parts.push(amountEl("cbc:TaxAmount", invoice.vatTotal, cur));
-    const taxGroups = groupTaxSubtotals(items, invoice.isExport);
+    const taxGroups = groupTaxSubtotals(items, invoice);
     if (taxGroups.length === 0) {
       // Defanzivni fallback (faktura bez stavki) — jedan subtotal iz zaglavlja.
       parts.push("<cac:TaxSubtotal>");
@@ -841,44 +851,39 @@ export class UblBuilderService {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Grupiši stavke po stvarnoj PDV stopi → cac:TaxSubtotal grupe (A5 granularnost).
- * Izvoz: sve stavke u 0% grupu (Z). Domaći: 20/10/8/0 razdvojeno. Sortirano opadajuće
- * po stopi (20,10,8,0) radi determinističkog XML-a. Zbir taxableAmount = netTotal,
- * zbir taxAmount = vatTotal (denormalizacija u zaglavlju se poklapa).
+ * cac:TaxSubtotal grupe (A5 granularnost) — PREKO JEDINOG GRUPISANJA U SISTEMU
+ * (`sales/vat-totals.ts` → `vatBreakdown`). Ključ je (kategorija, stopa) = BT-118 +
+ * BT-119, tačno kako EN 16931 definiše grupu BG-23. Sortirano opadajuće po stopi
+ * (20, 10, 8, 0) radi determinističkog XML-a.
  *
- * ⚠️ POREZ GRUPE = `round2(osnovica_grupe × stopa)`, NE zbir poreza po stavkama
- * (ispravka 02.08.2026). EN 16931 pravilo **BR-CO-17** traži baš tu jednakost unutar
- * jednog `cac:TaxSubtotal`: `TaxAmount = round2(TaxableAmount × Percent / 100)`.
- * Sabiranje zaokruženih poreza po stavci je proizvodilo dokument koji to pravilo obara —
- * izmereno: 5 stavki × 100,01 din uz 20 % → `TaxableAmount 500,05`, `TaxAmount 100,00`,
- * `Percent 20`, a `500,05 × 20 % = 100,01`. Ovo je isti račun koji puni `invoice.vatTotal`
- * (`sales/vat-totals.ts`), pa se zaglavlje i grupe fizički ne mogu raziću.
+ * ⚠️ ZAŠTO VIŠE NEMA SVOG RAČUNA (ispravka 02.08.2026, nalazi R2 i R3): ovde je stajao
+ * drugi primerak istog pravila, sa ključem `byPercent`, dok je zaglavlje grupisalo po
+ * ŠIFRI. Izmereno na šiframa „1" i „3" (obe su tada bile 20 %): račun sa dve stavke po
+ * 100,03 din davao je zaglavlje `vatTotal 40,02` a jedan `TaxSubtotal` sa
+ * `TaxAmount 40,01` → **BR-CO-14** (`TaxTotal/TaxAmount = Σ TaxSubtotal/TaxAmount`) pada.
+ * (Mapa je istog dana ispravljena po `R_Tarife` — par sa istom stopom sada čine „3" i „6";
+ * brojevi su isti, jer ključ je stopa a ne šifra.)
+ *
+ * ⚠️ `documentVatTotal` = `invoice.vatTotal` (ispravka R1/R2): avansni račun porez IZVODI
+ * IZ BRUTA (`grossToNet`), pa `round2(osnovica × stopa)` za 16,67 % bruto iznosa vraća
+ * paru više nego što je proknjiženo — izmereno na AVR-u od 132,03 din (osnovica 110,03,
+ * porez 22,00, a `110,03 × 20 % = 22,01`). Grupe zato preuzimaju OBJAVLJEN porez
+ * dokumenta: BR-CO-14 i BR-CO-15 važe, a neizbežnih 0,01 na BR-CO-17 kod avansa je
+ * svojstvo preračunate stope — obrazloženo u uvodu `vat-totals.ts`.
  */
 function groupTaxSubtotals(
   items: UblInvoiceItemInput[],
-  isExport: boolean,
+  invoice: { isExport: boolean; vatTotal: Prisma.Decimal },
 ): TaxGroup[] {
-  const byPercent = new Map<number, TaxGroup>();
-  for (const it of items) {
-    const percent = isExport ? 0 : vatPercentOf(it.vatRateCode);
-    const existing = byPercent.get(percent);
-    const group: TaxGroup = existing ?? {
-      percent,
-      category: taxCategoryOf(percent, isExport),
-      taxableAmount: new D(0),
-      taxAmount: new D(0),
-    };
-    // Osnovica se zaokružuje PRE sabiranja — ista odbrana kao u `vat-totals.ts`:
-    // nezaokružen red iz uvoza ne sme da obori `TaxableAmount` cele grupe.
-    group.taxableAmount = group.taxableAmount.add(roundAmount(it.vatBase));
-    byPercent.set(percent, group);
-  }
-  for (const group of byPercent.values()) {
-    group.taxAmount = roundAmount(
-      group.taxableAmount.mul(group.percent).div(100),
-    );
-  }
-  return [...byPercent.values()].sort((a, b) => b.percent - a.percent);
+  return vatBreakdown(items, {
+    isExport: invoice.isExport,
+    documentVatTotal: invoice.vatTotal,
+  }).map((g) => ({
+    percent: g.ratePercent.toNumber(),
+    category: g.category,
+    taxableAmount: g.base,
+    taxAmount: g.vat,
+  }));
 }
 
 /** cac:TaxScheme sa ID=VAT (jedina PDV shema u SEF-u). */

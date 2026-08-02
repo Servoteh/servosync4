@@ -333,6 +333,61 @@ fakturom) mora da se zadrži kao **zaseban** invariant i test. `OTP` uz to još 
 **Brana koja nedostaje:** nema provere „broj koji izdajem već postoji u `ledger_entries`".
 Dok se seed ne uradi, jedina zaštita je ručna.
 
+### R2 — AVANSNI RAČUN SVESNO OBARA EN 16931 **BR-CO-17** ZA 0,01 (nije kvar)
+
+**Izmereno 02.08.2026 (šesti krug).** Porez avansnog računa se po zakonu dobija **PRERAČUNATOM
+STOPOM** iz naplaćenog bruta (20/120 = 16,6667 %), a ne množenjem osnovice. Kod to radi u
+`pdv/vat-bridge.util.ts` (`grossToNet`): osnovica se deli, a porez je **razlika**, da zbir uvek
+zatvori. Za deo bruto iznosa tada **ne postoji osnovica za koju važe obe jednačine**:
+
+```
+AVR bruto 132,03 uz 20 %
+  osnovica = round2(132,03 / 1,2) = 110,03      porez = 132,03 − 110,03 = 22,00
+  round2(110,03 × 20 %)           = 22,01       ← BR-CO-17 traži baš ovo
+  a 110,02 → 132,02   i   110,03 → 132,04       ← bruto 132,03 nije u slici funkcije
+```
+
+**Učestalost** (brute force, svi bruto iznosi 1,00–100.000,00): **16,67 %** avansa po stopi od
+20 %, **9,09 %** po stopi od 10 %.
+
+**Šta je izabrano.** Prednost ima **unutrašnja doslednost**: zaglavlje, papir i e-faktura nose
+**isti** porez (onaj koji je proknjižen), a bruto ostaje **tačan** — to je stvarno naplaćen
+novac. Zato `cac:TaxSubtotal` preuzima objavljen porez dokumenta (`sales/vat-totals.ts`,
+`documentVatTotal`), pa **BR-CO-14** (`TaxTotal = Σ TaxSubtotal`) i **BR-CO-15**
+(`TaxInclusive = TaxExclusive + TaxTotal`) važe, a **BR-CO-17** ostaje prekršen za 0,01 kod
+tih ~1/6 avansa. Alternativa (poštovati BR-CO-17) bi značila e-fakturu koja tvrdi bruto
+132,04 za uplatu od 132,03 i papir koji se ne sabira — dakle biramo **koji jedan prekršaj
+ostaje**, ne da li ga uopšte ima.
+
+**Šta treba proveriti (knjigovođa + SEF demo).** Da li SEF-ov Schematron BR-CO-17 na avansnom
+računu (`InvoiceTypeCode 386`) primenjuje kao **grešku** ili kao **upozorenje**. U repou nema
+XSD/Schematron datoteka, pa se to ne može izmeriti kod nas — proveriti na SEF demo okruženju
+pre puštanja e-faktura u rad. Ako je greška, jedini ispravan izlaz je da se **iznos avansa
+ograniči na bruto koji je u slici funkcije** (kupcu se traži 132,02 ili 132,04), što je
+poslovna odluka o naplati, a ne izmena u obračunu.
+
+**Testovi koji ovo drže zapisanim:** `sales/sef/ubl-builder.service.spec.ts` („avans 132,03:
+Σ TaxSubtotal == TaxTotal…", meri i sam prekršaj od 0,01), `sales/pdv-trojac.spec.ts`,
+`sales/print/invoice-pdf.legacy-forms.spec.ts`.
+
+### S2 — odštampana stopa i odštampani iznos moraju iz ISTOG šifarnika (rešeno; ostaje seed)
+
+**Izmereno 02.08.2026 (šesti krug).** Štampa je stopu za red
+`PDV po stopi {stopa}% X {osnovica} = {porez}` čitala iz tabele **`tax_rates.base_rate`**, a
+iznos poreza računala iz mape **`VAT_RATE_BY_CODE`** u kodu. Pošto `tax_rates` **nema seed ni
+u jednoj migraciji** (0 redova na produkciji — v. **N1-a**), stopa je ispadala `null → 0` i
+domaći obrazac je štampao **„PDV po stopi 0% X 500,05 = 100,01"** — jednačinu koja poriče samu
+sebe, na redu koji i postoji da bi se mogla proveriti.
+
+**Popravljeno** tako što štampa čita `VAT_RATE_BY_CODE` (`sales/vat-totals.ts` → `vatPercentOf`),
+istu mapu iz koje `PricingService` obračunava porez; čitanje `tax_rates` iz štampe je uklonjeno,
+a lažni Prisma klijent u `print/invoice-pdf.service.spec.ts` namerno više nema `taxRate`, pa
+povratak na bazu pukne umesto da tiho odštampa nulu.
+
+**Ostaje otvoreno:** seed `tax_rates` — pitanje je opisano u **N1-a** (svih 8 redova
+`R_Tarife` sa `valid_from`/`valid_to`, efektivna stopa = zbir pet kolona). Dok se to ne uradi,
+datumsko važenje stopa ne radi nigde u sistemu, pa ni na papiru.
+
 ---
 
 ## 🔶 OTVORENO — uparivanje uplata (peti krug, 02.08.2026)

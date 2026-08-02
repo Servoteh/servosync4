@@ -1,7 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { formatAmount } from "../format";
-import { roundAmount } from "../../vat-totals";
+import { vatBreakdown } from "../../vat-totals";
 import type { PrintAdvanceDeduction, PrintCtx, PrintLine } from "./ctx";
 
 /**
@@ -233,58 +233,63 @@ export function discountFromLines(lines: PrintLine[]): Prisma.Decimal {
  * 3.200,00 + 400,00 = 3.600,00, dakle jednu paru više nego što je proknjiženo.
  * Razlika ide na grupu sa NAJVEĆOM osnovicom, gde je relativno najmanja.
  *
- * ⚠️ DOPUNA 02.08.2026 (nalaz „množenje na papiru ne daje odštampan rezultat"): grupni
- * PDV je `round2(osnovica_grupe × stopa)` — tako je i bilo u ovoj funkciji, ali je
- * `vatTotal` sa DOKUMENTA do te izmene bio zbir zaokruženih poreza PO STAVCI, pa je red
- * sa jednom stopom umeo da odštampa `20 % · 500,05 · 100,00` (pet stavki po 100,01 din),
- * dok `500,05 × 20 %` daje 100,01. Sada oba puta računaju isto (`sales/vat-totals.ts`),
- * pa je grana sa jednom stopom tačna po definiciji, a raspoređivanje razlike ispod
- * ostaje kao brana za ZATEČENE dokumente kojima je zaglavlje upisano po starom pravilu.
+ * ⚠️ DOPUNA 02.08.2026 (nalaz R3, „tri računara, tri ključa"): grupisanje se VIŠE NE RADI
+ * ovde. Ova funkcija samo prevodi rezultat JEDINE funkcije grupisanja u sistemu
+ * (`sales/vat-totals.ts` → `vatBreakdown`) u redove papira. Do tada su postojala tri
+ * ključa — zaglavlje po ŠIFRI, e-faktura po STOPI, papir po efektivnoj stopi iz iznosa —
+ * pa je isti račun (šifre „1" i „3", obe 20 %) davao `40,02` u zaglavlju i `40,01` u XML-u.
+ *
+ * ⚠️ IZ TE IZMENE NESTALA JE I GRANA „jedna stopa → uzmi `netTotal`/`vatTotal` sa
+ * dokumenta". Ona je bila prečica koja daje TAČAN rezultat samo dok se stavke i zaglavlje
+ * slažu — a ako se ne slažu, ćutke je štampala zaglavlje uz stavke koje ga ne daju. Sada
+ * je osnovica UVEK Σ zaokruženih osnovica stavki (isto što vidi i e-faktura), a porez
+ * uvek onaj koji je dokument objavio (`documentVatTotal`), pa se papir i XML ne mogu
+ * raziću ni na jednom dokumentu — ni na zdravom, ni na pokvarenom.
+ *
+ * Raspoređivanje razlike zaokruživanja (izmereno: osnovice 16.000,00 uz 20 % i 4.000,00
+ * uz 10 %, `vatTotal` 3.599,99 → red od 20 % nosi 3.199,99) ostaje — ali sada u
+ * `vat-totals.ts`, zajedno sa granicom preko koje se razlika NE preuzima.
  *
  * Redosled je po stopi RASTUĆE; obrazac koji ga hoće drugačije neka sortira sam
  * (raspored je izgled, a ne iznos — v. uvodni komentar fajla).
  */
 export interface VatSummaryRow {
-  /** Stopa u procentima; `null` = stavke bez poznate poreske šifre. */
-  rate: number | null;
+  /**
+   * Stopa u procentima. Stavka bez poznate poreske šifre nosi 0 — i papir je oduvek
+   * tako i štampao (`row.rate ?? 0`); od 02.08.2026. je i grupisana zajedno sa ostalim
+   * prometom po 0 %, umesto da pravi drugi red sa istim natpisom „PDV po stopi 0%".
+   */
+  rate: number;
   base: Prisma.Decimal;
   vat: Prisma.Decimal;
 }
 
 export function vatSummaryRows(ctx: PrintCtx): VatSummaryRow[] {
-  const { netTotal, vatTotal } = ctx.invoice;
-  const rates = [...new Set(ctx.lines.map((l) => l.vatRatePercent))];
+  const groups = vatBreakdown(
+    // `PrintLine` ne nosi poresku šifru nego već razrešen procenat — iz ISTE mape
+    // (`VAT_RATE_BY_CODE`, v. `InvoicePdfService.loadPrintCtx`). `null` = ino promet.
+    ctx.lines.map((l) => ({
+      ratePercent: l.vatRatePercent ?? 0,
+      vatBase: l.lineTotal,
+    })),
+    {
+      isExport: ctx.invoice.isExport,
+      documentVatTotal: ctx.invoice.vatTotal,
+    },
+  );
 
-  // Bez ijedne stope (prazan račun, stara stavka bez `vatRateCode`) red i dalje mora da
-  // postoji — obrazac ga ima uvek — pa nosi zbirove sa dokumenta.
-  if (rates.length <= 1)
-    return [{ rate: rates[0] ?? null, base: netTotal, vat: vatTotal }];
+  // Račun bez ijedne stavke: red i dalje mora da postoji — obrazac ga ima uvek — pa
+  // nosi zbirove sa dokumenta.
+  if (!groups.length)
+    return [{ rate: 0, base: ctx.invoice.netTotal, vat: ctx.invoice.vatTotal }];
 
-  const groups: VatSummaryRow[] = rates
-    .slice()
-    .sort((a, b) => (a ?? -1) - (b ?? -1))
-    .map((rate) => {
-      const base = ctx.lines
-        .filter((l) => l.vatRatePercent === rate)
-        // Zaokruženje PRE sabiranja — ista odbrana kao u `sales/vat-totals.ts`: jedan
-        // nezaokružen red (uvoz, ručna izmena u bazi) ne sme da obori osnovicu grupe.
-        .reduce((sum, l) => sum.add(roundAmount(l.lineTotal)), ZERO);
-      return {
-        rate,
-        base,
-        vat:
-          rate == null ? ZERO : base.mul(rate).div(HUNDRED).toDecimalPlaces(2),
-      };
-    });
-
-  const drift = vatTotal.sub(groups.reduce((s, g) => s.add(g.vat), ZERO));
-  if (!drift.isZero()) {
-    const biggest = groups.reduce((a, b) =>
-      b.base.greaterThan(a.base) ? b : a,
-    );
-    biggest.vat = biggest.vat.add(drift);
-  }
-  return groups;
+  return groups
+    .map((g) => ({
+      rate: g.ratePercent.toNumber(),
+      base: g.base,
+      vat: g.vat,
+    }))
+    .sort((a, b) => a.rate - b.rate);
 }
 
 /**

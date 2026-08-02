@@ -255,4 +255,75 @@ describe("InvoicePdfService — vrste bez donetog obrasca idu na opšti renderer
     // Kontrolni red se poklapa sa bruto iznosom → nema crvenog upozorenja o razlici.
     expect(texts.join("\n")).not.toContain("razlika");
   });
+
+  /**
+   * 🔴 NALAZ R1 (šesti krug, 02.08.2026): AVANSNI RAČUN. Prethodna ispravka je uvela
+   * `PDV_grupe = round2(osnovica × stopa)` i u rekapitulaciju — ali AVR porez NE MNOŽI
+   * nego DELI (`advance-invoice.service.ts` → `grossToNet`).
+   *
+   * IZMERENO — AVR na bruto 132,03 din uz 20 %:
+   *     osnovica = round2(132,03 / 1,2) = 110,03      porez = 132,03 − 110,03 = 22,00
+   *   (to je ono što stoji u zaglavlju, u glavnoj knjizi i u redu „Ukupno za uplatu")
+   *
+   *   Papir je štampao `19,99 % | 110,03 | 21,99 | 132,02`:
+   *     • stopa 19,99 % = `22,00 / 110,03` (efektivna stopa iz iznosa) — nije poreska stopa;
+   *     • porez 21,99 = `round2(110,03 × 19,99 %)` — ponovljeno množenje po toj stopi;
+   *     • zbir 132,02 naspram „Ukupno za uplatu 132,03" — papir ne sabira u svoj bruto.
+   *   Crveno upozorenje NIJE izlazilo, jer je prag bio `razlika > 0,01`, a razlika je bila
+   *   TAČNO 0,01. Učestalost (brute force, svi bruto iznosi): 16,67 % avansa po 20 %.
+   */
+  it("avans 132,03: rekapitulacija štampa 20 % | 110,03 | 22,00 | 132,03", async () => {
+    const prisma = prismaFor(
+      row({
+        documentType: "AVR",
+        documentNumber: "A-7/26",
+        netTotal: D("110.03"),
+        vatTotal: D("22.00"),
+        grossTotal: D("132.03"),
+        items: [
+          {
+            id: 1,
+            lineNo: 1,
+            itemId: null,
+            description: "Avans po ugovoru 12/26",
+            unit: null,
+            quantity: D("1"),
+            unitPrice: D("110.03"),
+            discountPercent: D("0"),
+            vatRateCode: "3",
+            vatBase: D("110.03"),
+            vatAmount: D("22.00"),
+            lineTotal: D("132.03"),
+          },
+        ],
+      }),
+    );
+
+    const pdf = new PdfService();
+    let captured: { content?: unknown } | undefined;
+    jest.spyOn(pdf, "render").mockImplementation(async (dd) => {
+      captured = dd as { content?: unknown };
+      return Buffer.from("x");
+    });
+    const service = new InvoicePdfService(
+      prisma as unknown as PrismaService,
+      pdf,
+      new BarcodeService(),
+    );
+
+    await service.buildInvoicePdf(1);
+    const texts = collectText(captured?.content);
+    const joined = texts.join("\n");
+
+    // Stopa je poreska (20 %), a ne izvedena iz odnosa iznosa (19,99 %).
+    expect(joined).not.toContain("19,99%");
+    const i = texts.indexOf("20%");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(texts[i + 1]).toBe("110,03");
+    expect(texts[i + 2]).toBe("22,00"); // NE 21,99
+    expect(texts[i + 3]).toBe("132,03"); // NE 132,02 — zatvara se u naplaćen bruto
+
+    // I dalje bez crvenog upozorenja — ali sada zato što se zbir STVARNO poklapa.
+    expect(joined).not.toContain("razlika");
+  });
 });

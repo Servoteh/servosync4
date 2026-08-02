@@ -208,9 +208,11 @@ function makePrisma(
         ),
       ),
     },
-    taxRate: {
-      findMany: jest.fn(() => Promise.resolve([{ code: "3", baseRate: 20 }])),
-    },
+    // ⚠️ `taxRate` NAMERNO NEDOSTAJE (nalaz S2, ispravka 02.08.2026). Štampa je stopu
+    // čitala iz tabele `tax_rates` dok je IZNOS poreza računat iz mape u kodu
+    // (`VAT_RATE_BY_CODE`). Tabela nema seed ni u jednoj migraciji — na produkciji ima
+    // 0 redova — pa je papir štampao „PDV po stopi 0% X 500,05 = 100,01". Ako bilo ko
+    // vrati čitanje iz baze, ovaj lažni klijent pukne umesto da tiho odštampa nulu.
     salesperson: {
       findUnique: jest.fn(() =>
         Promise.resolve({ name: "Korkut", firstName: "Dragana" }),
@@ -658,10 +660,23 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
       expect(out.body).toContain("h");
     });
 
-    it("stopa PDV-a se razrešava iz šifarnika (`20%`)", async () => {
+    /**
+     * 🔴 NALAZ S2 (šesti krug, 02.08.2026): STOPA I IZNOS SU DOLAZILI IZ DVA ŠIFARNIKA.
+     *
+     * Red „PDV po stopi {stopa}% X {osnovica} = {porez}" je i nastao zato da se ta
+     * jednačina može proveriti na papiru — ali je `{stopa}` čitana iz tabele
+     * `tax_rates` (baza), a `{porez}` iz mape `VAT_RATE_BY_CODE` (kod). Tabela `tax_rates`
+     * NEMA SEED ni u jednoj migraciji i na produkciji ima **0 redova**, pa je stopa
+     * ispadala `null → 0` i papir je štampao „PDV po stopi **0%** X 500,05 = 100,01".
+     *
+     * Lažni Prisma klijent zato NEMA `taxRate` (v. `makePrisma`): kad bi štampa i dalje
+     * čitala bazu, ovaj test bi pukao na nepostojećoj metodi umesto da odštampa nulu.
+     */
+    it("stopa PDV-a dolazi iz ISTE mape kao i iznos — i bez ijednog reda u `tax_rates`", async () => {
       const out = await build(makeInvoice());
       expect(out.body).toContain("20%");
       expect(out.body).toContain("PDV po stopi 20% X 80,497.70 =");
+      expect(out.body).not.toContain("PDV po stopi 0% X");
     });
 
     /**

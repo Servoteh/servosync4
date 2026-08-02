@@ -523,14 +523,59 @@ describe("redovi PDV-a u zbiru", () => {
     expect(rows.find((r) => r.rate === 10)?.vat.toFixed(2)).toBe("400.00");
   });
 
-  it("stavke bez poznate stope dobijaju svoj red, sa nulom poreza", () => {
+  /**
+   * ⚠️ IZMENA 02.08.2026 (nalaz R3/S4): stavka bez poznate stope više NE pravi svoj red
+   * pored reda od 0 %. Papir je oba štampao istim natpisom („PDV po stopi 0% X …"), pa su
+   * to bila dva reda koja se razlikuju samo po iznosu osnovice — a u e-fakturi dva
+   * `cac:TaxSubtotal`-a za isti oslobođen promet. Ključ je sada (kategorija, stopa), pa se
+   * spajaju: 1.000,00 + 1.000,00 = 2.000,00 uz porez 0,00.
+   */
+  it("stavke bez poznate stope idu u ISTI red sa ostalim prometom po 0 %", () => {
     const rows = vatSummaryRows(
       ctxWith({ netTotal: "2000.00", vatTotal: "200.00" }, [
         { rate: 20, base: "1000.00" },
         { rate: null, base: "1000.00" },
       ]),
     );
-    expect(rows.map((r) => r.rate)).toEqual([null, 20]);
-    expect(rows.find((r) => r.rate == null)?.vat.toFixed(2)).toBe("0.00");
+    expect(rows.map((r) => r.rate)).toEqual([0, 20]);
+    expect(rows.find((r) => r.rate === 0)?.base.toFixed(2)).toBe("1000.00");
+    expect(rows.find((r) => r.rate === 0)?.vat.toFixed(2)).toBe("0.00");
+    // Porez zaglavlja (200,00) ostaje na jedinoj oporezovanoj grupi — para se nikad ne
+    // dodeljuje oslobođenom prometu.
+    expect(rows.find((r) => r.rate === 20)?.vat.toFixed(2)).toBe("200.00");
+  });
+
+  /**
+   * 🔴 NALAZ R3 (šesti krug): papir je grupisao po jednom ključu, e-faktura po drugom.
+   * Ovde se meri POSLEDICA na papiru: dve stavke po 100,03 din sa različitim šiframa iste
+   * stope davale su `200,06 + 40,01 = 240,07`, dok je zaglavlje (grupisano po šifri) reklo
+   * `vatTotal 40,02`, pa je „Ukupno" ispod glasilo 240,08.
+   */
+  it("dve stavke po 100,03 uz istu stopu: red se zatvara u `vatTotal` zaglavlja", () => {
+    const rows = vatSummaryRows(
+      ctxWith({ netTotal: "200.06", vatTotal: "40.01" }, [
+        { rate: 20, base: "100.03" },
+        { rate: 20, base: "100.03" },
+      ]),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].base.toFixed(2)).toBe("200.06");
+    expect(rows[0].vat.toFixed(2)).toBe("40.01");
+    expect(rows[0].base.add(rows[0].vat).toFixed(2)).toBe("240.07");
+  });
+
+  /**
+   * 🔴 NALAZ R1: avansni račun (porez izveden deljenjem). Red mora da pokaže OBJAVLJEN
+   * porez, da bi se zbir zatvorio u naplaćen bruto — v. `sales/vat-totals.ts`.
+   */
+  it("avans 132,03: red nosi 110,03 + 22,00 (ne 21,99 iz ponovljenog množenja)", () => {
+    const rows = vatSummaryRows(
+      ctxWith({ netTotal: "110.03", vatTotal: "22.00" }, [
+        { rate: 20, base: "110.03" },
+      ]),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].vat.toFixed(2)).toBe("22.00");
+    expect(rows[0].base.add(rows[0].vat).toFixed(2)).toBe("132.03");
   });
 });

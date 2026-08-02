@@ -7,6 +7,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PricingService } from "./pricing.service";
 import { SalesService } from "./sales.service";
+import { vatPercentOf } from "./vat-totals";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
@@ -657,7 +658,7 @@ describe("B3′ — PDV zaglavlja se računa iz osnovice po stopi", () => {
       unitPrice: new D(vatBase),
       vatRateCode,
       vatBase: new D(vatBase),
-      vatAmount: new D(vatBase).mul(vatRateCode === "2" ? "0.10" : "0.20")
+      vatAmount: new D(vatBase).mul(vatRateCode === "4" ? "0.10" : "0.20")
         .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
       lineTotal: new D(0),
     });
@@ -677,13 +678,17 @@ describe("B3′ — PDV zaglavlja se računa iz osnovice po stopi", () => {
     );
   });
 
+  // ŠIFRE STOPA (ispravka 02.08.2026): snižena stopa 10 % je „4" (NIZA), poljoprivredna
+  // 8 % je „5" (POLJO), a šifre „2" u `R_Tarife` NEMA. Ranije je ovde stajalo „2" za
+  // 10 % i „4" za 8 % — v. `gl/posting/vat-rates.ts`. Iznosi u testovima se NE menjaju,
+  // menja se samo šifra kojom se stopa imenuje.
   it("dve stope na istom računu: svaka grupa nosi svoj `round2(osnovica × stopa)`", async () => {
     const { db, invoice } = makeDb({
       items: [
         stavka(100, "100.01", "3"),
         stavka(101, "100.01", "3"),
-        stavka(102, "100.05", "2"),
-        stavka(103, "100.05", "2"),
+        stavka(102, "100.05", "4"),
+        stavka(103, "100.05", "4"),
       ],
     });
 
@@ -727,14 +732,10 @@ describe("B3′ — PDV zaglavlja se računa iz osnovice po stopi", () => {
    * Seme je fiksno (deterministički generator), da pad testa uvek bude ponovljiv.
    */
   it("nasumični dokumenti (1–20 stavki, sve stope) drže jednačinu papira", async () => {
-    const CODES = ["3", "1", "2", "4", "0"] as const;
-    const RATE: Record<string, string> = {
-      "3": "0.20",
-      "1": "0.20",
-      "2": "0.10",
-      "4": "0.08",
-      "0": "0",
-    };
+    // „3" i „6" su OBE 20 % — dokument tako uvek meša i par šifri koji se spaja u JEDNU
+    // PDV grupu (v. objašnjenje uz `byRate` ispod). Stope se ne prepisuju ovde: lokalni
+    // spisak stopa je i bio razlog što je ovaj test zastario.
+    const CODES = ["3", "6", "1", "4", "5", "0"] as const;
     // xorshift32 — bez zavisnosti, ponovljiv, dovoljno raspršen za paru.
     let seed = 20260802;
     const rnd = () => {
@@ -757,18 +758,29 @@ describe("B3′ — PDV zaglavlja se računa iz osnovice po stopi", () => {
 
       // Osnovica = zbir osnovica stavki (jedini zbir stavki koji postoji).
       const net = items.reduce((s, it) => s.add(it.vatBase), new D(0));
-      // PDV = Σ round2(osnovica_stope × stopa) — jednačina koju papir štampa.
-      const byCode = new Map<string, Prisma.Decimal>();
-      for (const it of items)
-        byCode.set(
-          it.vatRateCode,
-          (byCode.get(it.vatRateCode) ?? new D(0)).add(it.vatBase),
+      // PDV = Σ round2(osnovica_STOPE × stopa) — jednačina koju papir štampa.
+      //
+      // ⚠️ GRUPIŠE SE PO STOPI, NE PO ŠIFRI (ispravka 02.08.2026, nalaz R3): dve šifre
+      // umeju da nose istu stopu („3" i „6" su obe 20 %), a porez je obaveza po PROMETU I
+      // STOPI. Grupisanje po šifri je davalo dva puta `round2` nad polovinama iste
+      // osnovice — izmereno: 100,03 + 100,03 → 20,01 + 20,01 = 40,02 umesto 40,01. Stopa
+      // se čita iz `vatPercentOf` (mapa iz koje je porez i obračunat), pa ovaj test ne
+      // može da zastari kad se šifarnik ispravi — a upravo je zastareo lokalni spisak
+      // stopa i bio razlog što ovaj test pada.
+      const byRate = new Map<string, Prisma.Decimal>();
+      for (const it of items) {
+        const percent = vatPercentOf(it.vatRateCode).toFixed(2);
+        byRate.set(
+          percent,
+          (byRate.get(percent) ?? new D(0)).add(it.vatBase),
         );
+      }
       let vat = new D(0);
-      for (const [code, base] of byCode)
+      for (const [percent, base] of byRate)
         vat = vat.add(
           base
-            .mul(RATE[code])
+            .mul(percent)
+            .div(100)
             .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
         );
 

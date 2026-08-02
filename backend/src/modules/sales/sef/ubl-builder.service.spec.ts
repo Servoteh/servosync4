@@ -480,6 +480,13 @@ describe("UblBuilderService — datum prometa je brana, ne preporuka", () => {
 describe("UblBuilderService — BR-CO-17 (porez iz osnovice i stope)", () => {
   const ubl = new UblBuilderService();
 
+  /** `cac:TaxTotal/cbc:TaxAmount` (BT-110) — porez celog dokumenta. */
+  function headerTaxAmount(xml: string): string {
+    const taxTotal = findFirst(new XmlDocument(xml), "cac:TaxTotal");
+    if (!taxTotal) throw new Error("nema cac:TaxTotal");
+    return findFirst(taxTotal, "cbc:TaxAmount")?.val ?? "";
+  }
+
   /** `TaxableAmount` / `TaxAmount` / `Percent` svake grupe, redom kako su ispisane. */
   function subtotals(xml: string) {
     const taxTotal = findFirst(new XmlDocument(xml), "cac:TaxTotal");
@@ -527,8 +534,9 @@ describe("UblBuilderService — BR-CO-17 (porez iz osnovice i stope)", () => {
     const items = [
       line({ lineNo: 1, vatRateCode: "3", vatBase: D("100.01"), vatAmount: D("20.00") }),
       line({ lineNo: 2, vatRateCode: "3", vatBase: D("100.01"), vatAmount: D("20.00") }),
-      line({ lineNo: 3, vatRateCode: "2", vatBase: D("100.05"), vatAmount: D("10.01") }),
-      line({ lineNo: 4, vatRateCode: "2", vatBase: D("100.05"), vatAmount: D("10.01") }),
+      // Snižena stopa 10 % = šifra „4" (NIZA) po `R_Tarife`; „2" ne postoji.
+      line({ lineNo: 3, vatRateCode: "4", vatBase: D("100.05"), vatAmount: D("10.01") }),
+      line({ lineNo: 4, vatRateCode: "4", vatBase: D("100.05"), vatAmount: D("10.01") }),
     ];
     const xml = ubl.build(
       params({
@@ -587,5 +595,102 @@ describe("UblBuilderService — BR-CO-17 (porez iz osnovice i stope)", () => {
     expect(subtotals(xml)).toEqual([
       { taxable: "200.00", tax: "0.00", percent: "0.00" },
     ]);
+  });
+
+  /**
+   * 🔴 NALAZ R3 (šesti krug): zaglavlje je grupisalo po ŠIFRI, e-faktura po STOPI. Dve
+   * šifre sa istom stopom (tada „1" i „3", obe 20 %) su davale `vatTotal 40,02` u
+   * zaglavlju i jedan `TaxSubtotal` sa `TaxAmount 40,01` → **BR-CO-14** pada
+   * (`TaxTotal/TaxAmount` mora biti Σ `TaxSubtotal/TaxAmount`).
+   *
+   * Mapa stopa je istog dana ispravljena po `R_Tarife`, pa par sa istom stopom sada čine
+   * „3" i „6". Brojevi su isti — ključ je STOPA (uz kategoriju), ne šifra.
+   */
+  it("dve šifre sa ISTOM stopom → JEDAN TaxSubtotal, BR-CO-14 važi (100,03 + 100,03)", () => {
+    const xml = ubl.build(
+      params({
+        invoice: {
+          ...params().invoice,
+          netTotal: D("200.06"),
+          vatTotal: D("40.01"),
+          grossTotal: D("240.07"),
+        },
+        items: [
+          line({ lineNo: 1, vatRateCode: "3", vatBase: D("100.03") }),
+          line({ lineNo: 2, vatRateCode: "6", vatBase: D("100.03") }),
+        ],
+      }),
+    );
+    expect(subtotals(xml)).toEqual([
+      { taxable: "200.06", tax: "40.01", percent: "20.00" },
+    ]);
+    expect(headerTaxAmount(xml)).toBe("40.01");
+  });
+
+  /**
+   * 🔴 NALAZ R2 (šesti krug): AVANSNI RAČUN. Porez je izveden IZ BRUTA (`grossToNet`), pa
+   * ponovljeno množenje daje drugi broj nego što je proknjiženo:
+   *
+   *   AVR bruto 132,03 uz 20 % → osnovica 110,03, porez 22,00 (zaglavlje, GK, papir)
+   *   round2(110,03 × 20 %)                     = 22,01
+   *
+   * Dok je grupa računala porez množenjem, dokument je imao `BT-110 = 22,00` a
+   * `Σ BT-117 = 22,01` (**BR-CO-14** pada) i `TaxInclusiveAmount 132,03` naspram
+   * `110,03 + 22,01 = 132,04` (**BR-CO-15** pada). Grupa sada preuzima objavljen porez:
+   * oba pravila važe, a **BR-CO-17** ostaje prekršen za 0,01 — svojstvo preračunate stope,
+   * jer za bruto 132,03 NE POSTOJI osnovica koja zadovoljava obe jednačine
+   * (110,02 → 132,02, 110,03 → 132,04). Obrazloženo u `sales/vat-totals.ts`.
+   */
+  it("avans 132,03: Σ TaxSubtotal == TaxTotal == 22,00 (BR-CO-14 i BR-CO-15 važe)", () => {
+    const xml = ubl.build(
+      params({
+        invoice: {
+          ...params().invoice,
+          documentType: "AVR",
+          netTotal: D("110.03"),
+          vatTotal: D("22.00"),
+          grossTotal: D("132.03"),
+        },
+        items: [
+          line({
+            lineNo: 1,
+            vatRateCode: "3",
+            vatBase: D("110.03"),
+            vatAmount: D("22.00"),
+            lineTotal: D("132.03"),
+          }),
+        ],
+      }),
+    );
+
+    const groups = subtotals(xml);
+    expect(groups).toEqual([
+      { taxable: "110.03", tax: "22.00", percent: "20.00" },
+    ]);
+
+    // BR-CO-14: TaxTotal/TaxAmount == Σ TaxSubtotal/TaxAmount.
+    const sum = groups.reduce(
+      (s, g) => s.add(new Prisma.Decimal(g.tax)),
+      new Prisma.Decimal(0),
+    );
+    expect(sum.toFixed(2)).toBe(headerTaxAmount(xml));
+
+    // BR-CO-15: TaxInclusiveAmount == TaxExclusiveAmount + TaxTotal/TaxAmount.
+    const root = new XmlDocument(xml);
+    const exclusive = findFirst(root, "cbc:TaxExclusiveAmount")?.val ?? "";
+    const inclusive = findFirst(root, "cbc:TaxInclusiveAmount")?.val ?? "";
+    expect(
+      new Prisma.Decimal(exclusive).add(sum).toFixed(2),
+    ).toBe(inclusive);
+    expect(inclusive).toBe("132.03"); // naplaćen bruto ostaje netaknut
+
+    // Zabeležen, svesno prihvaćen prekršaj BR-CO-17 (0,01) — da promena bude vidljiva
+    // ako neko ikad „popravi" pravac ispravke.
+    const brco17 = new Prisma.Decimal(groups[0].taxable)
+      .mul(groups[0].percent)
+      .div(100)
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    expect(brco17.toFixed(2)).toBe("22.01");
+    expect(brco17.sub(groups[0].tax).toFixed(2)).toBe("0.01");
   });
 });
