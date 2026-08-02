@@ -135,10 +135,15 @@ export interface PrintCtx {
    *
    * Obrasci iz ove liste izvode i redove umanjenja i ukupan odbijeni iznos
    * (`totals.ts` → `advanceTotal`) — NE iz kolone `invoice.advanceAppliedAmount`.
-   * Time papir i ekran gledaju u ISTI izvor: `fakturisanje.service.ts` (`getInvoice`)
-   * računa `payableAmount` iz Σ AKTIVNIH primena, pa na kolonu pada tek kad primena
-   * nema. Dok je štampa čitala kolonu, dokument sa zatečenom 1:1 vezom (bez reda u
-   * spojnoj tabeli) i novom N:M primenom davao je ekranu i papiru RAZLIČIT dug.
+   * Listu puni `InvoicePdfService.loadAdvanceDeductions` po pravilu UNIJE (Σ aktivnih
+   * primena + zatečena 1:1 veza koja nema svoj red u spojnoj tabeli), istom onom po kom
+   * rade `advance-invoice.service.ts` i `pdv/advance-vat.service.ts`.
+   *
+   * ⚠️ OTVORENO, VAN ŠTAMPE: ekran detalja (`fakturisanje.service.ts`, `getInvoice`)
+   * i dalje radi po „ili-ili" (na kolonu pada tek kad primena nema), pa za račun sa
+   * zatečenom 1:1 vezom I novom N:M primenom pokazuje MANJE odbijeno nego papir. Papir
+   * je tačan — on prikazuje sve avanse koji su na računu odbijeni; ekran treba poravnati
+   * na isto pravilo, ali to je izmena van `print/**`.
    */
   advanceDeductions: PrintAdvanceDeduction[];
   /**

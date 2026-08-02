@@ -162,9 +162,22 @@ const ADVANCE_INVOICES: Record<number, { documentNumber: string }> = {
   55: { documentNumber: "A-1/26" },
 };
 
-/** Jedna aktivna primena avansa, u obliku u kom je vraća `invoice_advance_applications`. */
-function makeApplication(documentNumber: string, amount: string) {
-  return { appliedAmount: D(amount), advance: { documentNumber } };
+/**
+ * Jedna aktivna primena avansa, u obliku u kom je vraća `invoice_advance_applications`.
+ *
+ * `advanceInvoiceId` NIJE ukras: po njemu se prepoznaje da zatečena 1:1 veza iz kolone
+ * `invoice.advance_invoice_id` već ima svoj red u spojnoj tabeli (pa se ne štampa dvaput).
+ */
+function makeApplication(
+  documentNumber: string,
+  amount: string,
+  advanceInvoiceId = 0,
+) {
+  return {
+    advanceInvoiceId,
+    appliedAmount: D(amount),
+    advance: { documentNumber },
+  };
 }
 
 /** Lažni Prisma klijent — tačno one metode koje štampa zove, ništa više. */
@@ -746,7 +759,10 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
       const out = await build(
         saAvansom({ advanceInvoiceId: 55, advanceAppliedAmount: D("5000.00") }),
         undefined,
-        [makeApplication("A-1/26", "3000.00"), makeApplication("A-2/26", "2000.00")],
+        [
+          makeApplication("A-1/26", "3000.00", 55),
+          makeApplication("A-2/26", "2000.00", 56),
+        ],
       );
       const lines = out.body.split("\n");
       const prvi = lines.indexOf("Umanjenje za primljeni avans (br. A-1/26):");
@@ -757,25 +773,58 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
       expect(lines[drugi + 1]).toBe("− 2,000.00");
       // Ono što je papir tvrdio pre ispravke: jedan broj uz zbir svih primena.
       expect(out.body).not.toContain("− 5,000.00");
+      // `A-1/26` ima i vezu u koloni i svoj red u spojnoj tabeli — sme samo JEDNOM.
+      expect(
+        lines.filter((l) =>
+          l.startsWith("Umanjenje za primljeni avans (br. A-1/26)"),
+        ),
+      ).toHaveLength(1);
     });
 
     /**
-     * NOVO-E: papir mora da računa dug iz ISTOG izvora kao ekran. `getInvoice` sabira
-     * AKTIVNE primene i na kolonu pada tek kad ih nema; kolona ume da nosi UNIJU zatečene
-     * 1:1 veze (3.000) i nove N:M primene (2.000), pa je papir pokazivao 5.000 umanjenja,
-     * a ekran 2.000 — isti račun, dva različita duga.
+     * 🔴 IZMEREN KVAR (treći krug): pdv modul (`link-final`) veže avans upisom u kolone
+     * `advance_invoice_id` + `advance_applied_amount`, BEZ reda u spojnoj tabeli. Kad na
+     * isti račun stigne i N:M primena, kolona nosi UNIJU (5.000), a spojna tabela samo
+     * 2.000. Dok je učitavanje radilo „ima primena → kolona se ne gleda", papir je tražio
+     * 8.000 umesto 5.000, a `A-1/26` na njemu nije postojao — kupcu je poslat VEĆI dug
+     * nego što ga ima, i to sa poreskim dokumentom koji prećutkuje jedan avans.
+     *
+     * Pravilo je UNIJA — isto ono iz `advance-invoice.service.ts` i `advance-vat.service.ts`.
      */
-    it("kad primena ima, kolona `advanceAppliedAmount` se ne gleda", async () => {
+    it("stara veza iz kolone se štampa kao SVOJ red uz N:M primenu", async () => {
       const out = await build(
         saAvansom({ advanceInvoiceId: 55, advanceAppliedAmount: D("5000.00") }),
         undefined,
-        [makeApplication("A-2/26", "2000.00")],
+        [makeApplication("A-2/26", "2000.00", 56)],
       );
       const lines = out.body.split("\n");
-      expect(lines).toContain("Umanjenje za primljeni avans (br. A-2/26):");
-      expect(out.body).toContain("− 2,000.00");
-      expect(out.body).not.toContain("− 5,000.00");
-      // 10.000,00 − 2.000,00 — tačno onoliko koliko duguje i po ekranu.
+      // Stara veza je hronološki prva (`advance_invoice_id` se upisuje pri PRVOM vezivanju).
+      const prvi = lines.indexOf("Umanjenje za primljeni avans (br. A-1/26):");
+      const drugi = lines.indexOf("Umanjenje za primljeni avans (br. A-2/26):");
+      expect(prvi).toBeGreaterThanOrEqual(0);
+      expect(drugi).toBeGreaterThan(prvi);
+      // 5.000 − 2.000: iznos stare veze se IZVODI iz kolone, ne uzima cela kolona.
+      expect(lines[prvi + 1]).toBe("− 3,000.00");
+      expect(lines[drugi + 1]).toBe("− 2,000.00");
+      // 10.000,00 − 3.000,00 − 2.000,00 — tačno onoliko koliko kupac duguje.
+      expect(lines[lines.indexOf("Za uplatu (RSD):") + 1]).toBe("5,000.00");
+    });
+
+    /**
+     * Kolona ume da zaostane za spojnom tabelom (ručna ispravka u bazi, storno primene).
+     * Razlika `kolona − Σ primena` je tada nula ili negativna — papir NE SME da izmisli
+     * red umanjenja od 0,00 ni da oduzme minus (koji bi kupcu povećao dug).
+     */
+    it("zaostala kolona ne pravi lažni red umanjenja", async () => {
+      const out = await build(
+        saAvansom({ advanceInvoiceId: 55, advanceAppliedAmount: D("2000.00") }),
+        undefined,
+        [makeApplication("A-2/26", "2000.00", 56)],
+      );
+      const lines = out.body.split("\n");
+      expect(out.body).not.toContain(
+        "Umanjenje za primljeni avans (br. A-1/26):",
+      );
       expect(lines[lines.indexOf("Za uplatu (RSD):") + 1]).toBe("8,000.00");
     });
 

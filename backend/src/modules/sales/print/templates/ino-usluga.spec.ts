@@ -490,6 +490,27 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
       expect(lastText).not.toContain("Paritet:");
     });
 
+    /**
+     * 🔴 IZMEREN KVAR (treći krug 02.08.2026): blok banke se crtao BEZUSLOVNO, pa je
+     * dokument bez IBAN-a i SWIFT-a dobijao celu treću stranu sa samo dve labele i
+     * nazivom firme — „gde da platiš" bez ijednog broja računa. Do toga se stiže kad
+     * brana za bankarske instrukcije ne važi: IZVUS u dinarima ili revers.
+     */
+    it("bez IBAN-a i SWIFT-a nema ni bloka ni njegove strane", () => {
+      const bezBanke: PrintCtx = {
+        ...ctx,
+        issuer: { ...issuer, iban: null, swift: null },
+      };
+      const content = inoUslugaTemplate(bezBanke);
+      const text = collectText(content).join("\n");
+      expect(text).not.toContain("Beneficiary Customer:");
+      expect(text).not.toContain("Bank of beneficiary:");
+      // Poslednji blok je zbir + otprema, ne prazna strana banke.
+      expect(collectText(content[content.length - 1]).join("\n")).toContain(
+        "TOTAL AMOUNT",
+      );
+    });
+
     it("zbir i otpremni blok dele stranu, odvojenu od stavki", () => {
       const content = inoUslugaTemplate(ctx);
       const middle = content[content.length - 2] as Content & {

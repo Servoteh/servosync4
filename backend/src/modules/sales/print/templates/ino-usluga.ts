@@ -332,7 +332,10 @@ export const inoUslugaTemplate: InvoiceTemplate = (
   if (shipping) summary.push(shipping);
 
   content.push({ stack: summary, pageBreak: "before" });
-  content.push({ stack: bankBlock(ctx), pageBreak: "before" });
+  // Prazan blok banke NE dobija svoju stranu: `pageBreak` nad praznim `stack`-om dao bi
+  // treću, potpuno praznu stranu (v. `bankBlock` — dokument bez IBAN-a i SWIFT-a).
+  const bank = bankBlock(ctx);
+  if (bank.length) content.push({ stack: bank, pageBreak: "before" });
   return content;
 };
 
@@ -554,9 +557,17 @@ function shippingBlock(ctx: PrintCtx): Content | null {
  * Dve kolone: levo primalac (IBAN + naša firma), desno banka (SWIFT + naziv + adresa).
  * `IBAN :` ima razmak pred dvotačkom — doslovno sa papira. Ništa se ne prepisuje u kod:
  * kad devizni račun nije unet, red se izostavi (bolje prazno nego pogrešan IBAN).
+ *
+ * ⚠️ BEZ BROJA RAČUNA BLOKA NEMA (treći krug, 02.08.2026) — ista ispravka kao na ino robi.
+ * Blok se ranije crtao UVEK, pa je dokument bez IBAN-a i SWIFT-a dobijao celu poslednju
+ * stranu sa samo dve labele („Beneficiary Customer:", „Bank of beneficiary:") i nazivom
+ * firme. Do toga se stiže kad brana za bankarske instrukcije ne važi: IZVUS u dinarima
+ * (prepis domaćeg predračuna) ili revers. Naziv banke bez broja računa nije podatak po
+ * kome se može uplatiti, pa se blok — i njegova strana — izostavljaju u celini.
  */
 function bankBlock(ctx: PrintCtx): Content[] {
   const { issuer } = ctx;
+  if (!issuer.iban?.trim() && !issuer.swift?.trim()) return [];
 
   const left: Content[] = [
     { text: "Beneficiary Customer:", fontSize: 9, bold: true },

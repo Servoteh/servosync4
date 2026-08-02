@@ -421,8 +421,17 @@ function legalBlock(ctx: PrintCtx): Content {
  * izlazile bez ijedne bankarske instrukcije (GAP §2.4). Polja su tek dodata u model, i
  * `ino-roba.spec.ts` drži regresioni test da IBAN i SWIFT zaista izađu na papir.
  *
- * Ceo blok se izostavlja kad firma nema nijedan devizni podatak — prazne labele
+ * Ceo blok se izostavlja kad nema BROJA RAČUNA (ni IBAN ni SWIFT) — prazne labele
  * „Beneficiary Customer:" bez broja računa kupcu ne znače ništa.
+ *
+ * ⚠️ IZMEREN KVAR (treći krug, 02.08.2026): uslov je gledao i naziv/adresu banke, pa je
+ * `IZVRO 228/25` u RSD, sa običnim dinarskim redom u `payment_accounts` (iban/swift
+ * `null`, `bankName` popunjen), odštampao zaglavlja „Beneficiary Customer:" i „Bank of
+ * beneficiary:" i naziv banke — a NIJEDAN broj računa: IBAN i SWIFT su prazni, a domaći
+ * `bankAccount` ino obrazac nikad ne štampa (STAMPA_IZLAZNIH_FAKTURA.md §6 t.3). To je
+ * baš artefakt zbog kog je brana i pisana: papir izgleda ispravno, a kupac nema gde da
+ * uplati. Naziv banke bez broja računa NIJE upotrebljiv podatak, pa blok izostaje u
+ * celini — dinarski dokument uplatu prima na domaći račun, koji ovde nema šta da traži.
  *
  * `Banca Intesa a.d. EUR` = naziv banke + valuta dokumenta (na papiru je valuta zalepljena
  * uz naziv). Ako je valuta već u nazivu iz baze, ne udvaja se.
@@ -434,7 +443,8 @@ function bankBlock(ctx: PrintCtx): Content[] {
   const swift = i.swift?.trim();
   const bankName = i.bankName?.trim();
   const bankAddress = lines(i.bankAddress);
-  if (!iban && !swift && !bankName && !bankAddress.length) return [];
+  // Merilo je BROJ RAČUNA, ne postojanje bilo kakvog podatka o banci (v. komentar iznad).
+  if (!iban && !swift) return [];
 
   const beneficiary: Content[] = [
     { text: "Beneficiary Customer:", fontSize: FS },

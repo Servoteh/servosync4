@@ -1,5 +1,6 @@
 import { UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { PDFDocument } from "pdf-lib";
 import type { TDocumentDefinitions } from "pdfmake/interfaces";
 import { BarcodeService } from "../../documents/barcode.service";
 import { PdfService } from "../../documents/pdf.service";
@@ -398,6 +399,60 @@ describe("brana za IBAN ne sme da zaustavi papir kome banka ne treba", () => {
   });
 
   /**
+   * 🔴 IZMEREN KVAR (treći krug): `IZVRO 228/25` u RSD, sa OBIČNIM DINARSKIM redom u
+   * `payment_accounts` (iban/swift `null`, `bankName` popunjen) — dakle onim što BigBit
+   * sync donese sam od sebe — štampao je zaglavlja „Beneficiary Customer:" i „Bank of
+   * beneficiary:" i naziv banke, a NIJEDAN broj računa: IBAN i SWIFT su prazni, a domaći
+   * `bankAccount` ino obrazac nikad ne štampa. To je baš artefakt zbog kog je brana i
+   * pisana — papir izgleda ispravno, a kupac nema gde da uplati.
+   *
+   * ODLUKA: blok izostaje u celini. Naziv banke bez broja računa nije upotrebljiv podatak,
+   * a dinarski dokument uplatu prima na domaći tekući račun, koji na ino obrascu nema šta
+   * da traži (STAMPA_IZLAZNIH_FAKTURA.md §6 t.3, „nikad oboje na istom papiru").
+   */
+  it("dinarski račun bez IBAN-a ne sme da odštampa prazan blok banke", async () => {
+    const prisma = makePrisma(makeExportInvoice({ currency: "RSD" }), [
+      RSD_RACUN,
+    ]);
+    const { service, captured } = makeService(prisma);
+
+    await service.buildInvoicePdf(1);
+    const body = collectText(captured()?.content).join("\n");
+
+    expect(body).not.toContain("Beneficiary Customer:");
+    expect(body).not.toContain("Bank of beneficiary:");
+    // Naziv banke je jedini podatak koji je taj red imao — bez broja računa ne izlazi.
+    expect(body).not.toContain("Banca Intesa");
+    // Papir i dalje postoji i pošteno kaže u kojoj je valuti.
+    expect(body).toContain("TOTAL AMOUNT ( RSD)");
+  });
+
+  /**
+   * Ista provera na ino USLUZI, gde je posledica bila i vidljivija: blok banke tamo ima
+   * SVOJU stranu (`pageBreak: "before"`), pa je dokument bez IBAN-a dobijao celu treću
+   * stranu sa dve prazne labele.
+   */
+  it("ino usluga bez IBAN-a nema stranu banke (nema prazne treće strane)", async () => {
+    const prisma = makePrisma(
+      makeExportInvoice({
+        documentType: "IZVUS",
+        documentNumber: "060/26",
+        currency: "RSD",
+      }),
+      [RSD_RACUN],
+    );
+    const { service, captured } = makeService(prisma);
+
+    const { buffer } = await service.buildInvoicePdf(1);
+    const body = collectText(captured()?.content).join("\n");
+
+    expect(body).not.toContain("Beneficiary Customer:");
+    expect(body).not.toContain("Bank of beneficiary:");
+    const pdf = await PDFDocument.load(buffer);
+    expect(pdf.getPageCount()).toBe(2);
+  }, 30000);
+
+  /**
    * Izvozni dokument u domaćoj valuti je sumnjivo stanje i mora da bude IMENOVANO —
    * ali upozorenjem, jer bi izuzetak značio dokument bez papira.
    */
@@ -414,22 +469,75 @@ describe("brana za IBAN ne sme da zaustavi papir kome banka ne treba", () => {
   });
 
   /**
-   * Predračun, ponuda i revers sa `isExport` padaju na ino obrazac samo kroz fallback
-   * (`resolveForm`) — papir im nije ni donet, a nisu dokument po kom se plaća. Do
-   * ispravke je izvozni predračun tražio IBAN da bi se uopšte odštampao.
+   * Revers je zapis o zaduženju/vraćanju opreme — po njemu se ne uplaćuje ništa, pa mu
+   * bankarske instrukcije ne trebaju. Na ino obrazac pada samo kroz `resolveForm` fallback
+   * (papir mu nije ni donet), a ostati bez papira bi za njega bila čista šteta.
    */
-  it.each([
-    ["predračun", "PROF", "12/26"],
-    ["ponuda", "PON", "5/26"],
-    ["revers", "REV", "8/26"],
-  ])("izvozni %s se štampa bez deviznog računa", async (_n, type, number) => {
+  it("izvozni revers se štampa bez deviznog računa", async () => {
     const prisma = makePrisma(
-      makeExportInvoice({ documentType: type, documentNumber: number }),
+      makeExportInvoice({ documentType: "REV", documentNumber: "8/26" }),
       [],
     );
     const { service } = makeService(prisma);
 
     await expect(service.buildInvoicePdf(1)).resolves.toBeDefined();
+  });
+
+  /**
+   * 🔴 IZMEREN KVAR (treći krug): brana je gledala SPISAK VRSTA (IZVRO/IZVGP/IZVUS), pa su
+   * `PROF` i `PON` sa `isExport` prolazili kroz `resolveForm` fallback pravo na ino obrazac
+   * i zaobilazili je. Izmereno: `PROF-12/26`, EUR, bez ijednog reda u `payment_accounts` →
+   * PDF se napravi, a bloka `Beneficiary Customer:` / IBAN / SWIFT NEMA UOPŠTE.
+   *
+   * A PREDRAČUN U EUR JE TAČNO DOKUMENT PO KOME STRANI KUPAC PLAĆA — po njemu se novac
+   * šalje pre isporuke. Merilo brane je zato valuta i cene, ne vrsta dokumenta.
+   */
+  it.each([
+    ["predračun", "PROF", "12/26"],
+    ["ponuda", "PON", "5/26"],
+  ])(
+    "izvozni %s u EUR bez deviznog računa PUCA (po njemu se plaća)",
+    async (_n, type, number) => {
+      const prisma = makePrisma(
+        makeExportInvoice({ documentType: type, documentNumber: number }),
+        [],
+      );
+      const { service } = makeService(prisma);
+
+      await expect(service.buildInvoicePdf(1)).rejects.toThrow(
+        UnprocessableEntityException,
+      );
+      await expect(service.buildInvoicePdf(1)).rejects.toThrow(
+        /Podešavanja → Firma → Devizni računi/,
+      );
+    },
+  );
+
+  /** Ista ta vrsta sa urednim deviznim računom izlazi, i nosi instrukcije za uplatu. */
+  it("izvozni predračun sa deviznim računom izlazi SA instrukcijama", async () => {
+    const prisma = makePrisma(
+      makeExportInvoice({ documentType: "PROF", documentNumber: "12/26" }),
+      [EUR_RACUN],
+    );
+    const { service, captured } = makeService(prisma);
+
+    await service.buildInvoicePdf(1);
+    const body = collectText(captured()?.content).join("\n");
+    expect(body).toContain("IBAN : RS35160005010003501186");
+    expect(body).toContain("SWIFT: DBDBRSBG");
+  });
+
+  /** Predračun bez cena (otpremnica) i dalje ne traži ništa — nema iznos za uplatu. */
+  it("izvozni predračun bez cena se štampa i bez deviznog računa", async () => {
+    const prisma = makePrisma(
+      makeExportInvoice({ documentType: "PROF", documentNumber: "12/26" }),
+      [],
+    );
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.buildInvoicePdf(1, "withoutPrices"),
+    ).resolves.toBeDefined();
   });
 
   /**

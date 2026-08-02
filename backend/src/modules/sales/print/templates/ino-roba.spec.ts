@@ -692,6 +692,29 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
       expect(text).not.toContain("Bank of beneficiary:");
     });
 
+    /**
+     * 🔴 IZMEREN KVAR (treći krug 02.08.2026): dinarski red iz `payment_accounts` nosi
+     * SAMO naziv banke (iban/swift `null`) — i to je bilo dovoljno da blok izađe. Papir je
+     * imao obe labele i naziv banke, a nijedan broj računa: IBAN i SWIFT prazni, a domaći
+     * `bankAccount` se na ino obrascu nikad ne štampa. Merilo je zato BROJ RAČUNA.
+     */
+    it("naziv banke bez IBAN-a i SWIFT-a NE otvara blok", () => {
+      const ctx = makeCtx({
+        issuer: {
+          ...SERVOTEH,
+          iban: null,
+          swift: null,
+          bankName: "Banca Intesa a.d.",
+          bankAddress: "Milentija Popovića 7b, 11070 New Belgrade",
+        },
+      });
+      const text = renderText(ctx);
+      expect(text).not.toContain("Beneficiary Customer:");
+      expect(text).not.toContain("Bank of beneficiary:");
+      expect(text).not.toContain("Banca Intesa");
+      expect(text).not.toContain("Milentija Popovića");
+    });
+
     it("domaći tekući račun se NE štampa na ino fakturi", () => {
       // Nikad oboje na istom papiru (STAMPA_IZLAZNIH_FAKTURA.md §6 t.3).
       const text = renderText(makeCtx());

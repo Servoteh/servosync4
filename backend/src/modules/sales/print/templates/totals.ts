@@ -136,10 +136,12 @@ export function printableAdvanceDeductions(
  *
  *  1. Zbir mora da odgovara onome što na papiru PIŠE: „za uplatu" je `bruto − Σ redova
  *     umanjenja`, pa kupac koji sabere odštampane redove dobije baš završni iznos.
- *  2. Ekran (`fakturisanje.service.ts`, `getInvoice`) računa `payableAmount` iz
- *     Σ AKTIVNIH primena i na kolonu pada tek kad primena nema. Kolona zna da nosi UNIJU
- *     (zatečena 1:1 veza bez reda u spojnoj tabeli + nova N:M primena), pa je papir
- *     pokazivao manji dug od ekrana — isti račun, dva iznosa.
+ *  2. Kolona nosi samo UKUPNO odbijeno, bez podele po avansima — uz nju bi „za uplatu"
+ *     moglo da se raziđe sa zbirom odštampanih redova (npr. kad kolona zaostane za
+ *     spojnom tabelom posle ručne ispravke u bazi). Listu umanjenja sklapa
+ *     `InvoicePdfService.loadAdvanceDeductions` po pravilu UNIJE (Σ aktivnih primena +
+ *     zatečena 1:1 veza bez reda u spojnoj tabeli), pa u zdravom stanju daje isti zbir
+ *     kao kolona — samo raščlanjen po avansnim računima.
  */
 export function advanceTotal(
   deductions: readonly PrintAdvanceDeduction[],
