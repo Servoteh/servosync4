@@ -1,4 +1,5 @@
 import {
+  compareIdent,
   effectiveCompleted,
   reparentNodes,
   type ProjectNodeRow,
@@ -103,6 +104,47 @@ describe("effectiveCompleted (finding #1b/#2)", () => {
     const r = effectiveCompleted(null, 5, "kompletirano", null);
     expect(r.effective).toBe(5);
     expect(r.overridden).toBe(false);
+  });
+});
+
+describe("compareIdent — prirodan red RN identa (zahtev 053/26 §2)", () => {
+  const sorted = (a: string[]) => a.slice().sort(compareIdent);
+
+  it("numerički sufiks ide prirodno (9000/2 pre 9000/10), ne po code-pointu", () => {
+    // Živi predmet 9000 („Perun") ima 607 korena ovog oblika — čisto tekstualno poređenje
+    // bi dalo 9000/1, 9000/10, 9000/100, …, 9000/2 (gore nego danas na ekranu).
+    expect(sorted(["9000/10", "9000/100", "9000/2", "9000/1"])).toEqual([
+      "9000/1",
+      "9000/2",
+      "9000/10",
+      "9000/100",
+    ]);
+  });
+
+  it("više numeričkih blokova + tačkasta numeracija", () => {
+    expect(sorted(["9400/2.10", "9400/2.2", "9400/10.1", "9400/2.1"])).toEqual([
+      "9400/2.1",
+      "9400/2.2",
+      "9400/2.10",
+      "9400/10.1",
+    ]);
+  });
+
+  it("vodeće nule ne prave razliku u vrednosti, ali red je stabilan", () => {
+    expect(compareIdent("9000/007", "9000/7")).toBe(0);
+    expect(sorted(["9000/010", "9000/9"])).toEqual(["9000/9", "9000/010"]);
+  });
+
+  it("dugi nizovi cifara bez gubitka preciznosti (bez Number)", () => {
+    expect(
+      compareIdent("RN/99999999999999999998", "RN/99999999999999999999"),
+    ).toBeLessThan(0);
+  });
+
+  it("slovni delovi po code-pointu; prefiks pre dužeg identa", () => {
+    expect(sorted(["9400-2/1", "8400-2/1"])).toEqual(["8400-2/1", "9400-2/1"]);
+    expect(compareIdent("9400/1", "9400/1-A")).toBeLessThan(0);
+    expect(compareIdent("A", "A")).toBe(0);
   });
 });
 
@@ -225,6 +267,75 @@ describe("reparentNodes (finding #6/#7)", () => {
     expect(two.nivo).toBe(1);
   });
 
+  it("odbijen override se NE emituje kao primenjen (zahtev 053/26 §2)", () => {
+    // Opseg po sklopu: cilj override-a (999) nije učitan → BE ostaje na auto roditelju,
+    // ali je ranije i dalje emitovao has_parent_override=true + sirov cilj, pa je FE red
+    // vezivao za 999, nije ga našao među čvorovima i crtao ga kao koren (nivo 0).
+    const out = reparentNodes([
+      node({ rn_id: 1, parent_rn_id: null }),
+      node({
+        rn_id: 2,
+        parent_rn_id: 1,
+        has_parent_override: true,
+        parent_override_rn_id: 999,
+      }),
+    ]);
+    const two = out.find((n) => n.rn_id === 2)!;
+    expect(two.has_parent_override).toBe(false); // NIJE primenjen
+    expect(two.override_ignored).toBe(true);
+    expect(two.parent_override_rn_id).toBe(999); // sirov cilj ostaje (dijalog)
+    expect(two.parent_rn_id).toBe(1); // efektivni roditelj = auto
+
+    // Isto važi za odbijen override zbog ciklusa…
+    const cyc = reparentNodes([
+      node({
+        rn_id: 1,
+        parent_rn_id: null,
+        has_parent_override: true,
+        parent_override_rn_id: 2,
+      }),
+      node({ rn_id: 2, parent_rn_id: 1 }),
+    ]).find((n) => n.rn_id === 1)!;
+    expect(cyc.has_parent_override).toBe(false);
+    expect(cyc.override_ignored).toBe(true);
+
+    // …i za self-referencu.
+    const self = reparentNodes([
+      node({ rn_id: 1, parent_rn_id: null }),
+      node({
+        rn_id: 2,
+        parent_rn_id: 1,
+        has_parent_override: true,
+        parent_override_rn_id: 2,
+      }),
+    ]).find((n) => n.rn_id === 2)!;
+    expect(self.has_parent_override).toBe(false);
+    expect(self.override_ignored).toBe(true);
+    expect(self.parent_rn_id).toBe(1);
+  });
+
+  it("PRIMENJEN override izlazi kao has_parent_override=true, override_ignored=false", () => {
+    const out = reparentNodes([
+      node({ rn_id: 1, parent_rn_id: null }),
+      node({ rn_id: 2, parent_rn_id: 1 }),
+      node({
+        rn_id: 3,
+        parent_rn_id: 2,
+        has_parent_override: true,
+        parent_override_rn_id: 1,
+      }),
+    ]);
+    const three = out.find((n) => n.rn_id === 3)!;
+    expect(three.has_parent_override).toBe(true);
+    expect(three.override_ignored).toBe(false);
+    expect(three.parent_rn_id).toBe(1);
+
+    // Čvor bez override-a nikad ne dobija nijednu od te dve zastavice.
+    const one = out.find((n) => n.rn_id === 1)!;
+    expect(one.has_parent_override).toBe(false);
+    expect(one.override_ignored).toBe(false);
+  });
+
   it("override koji bi napravio ciklus → preskače se, bez beskonačne petlje", () => {
     // 1 ← 2 (auto). Override: 1 → dete od 2 (napravio bi ciklus 1↔2).
     const nodes = [
@@ -293,5 +404,122 @@ describe("reparentNodes (finding #6/#7)", () => {
 
   it("prazan ulaz → prazan izlaz", () => {
     expect(reparentNodes([])).toEqual([]);
+  });
+});
+
+/**
+ * Redosled redova (zahtev 053/26 §2 — „deca se odvajaju od sklopa"). Raniji sort je poredio
+ * SIROVE `root_rn_id`/`path_idrn` = `work_orders.id` = redosled unosa u bazu, pa je i poredak
+ * korena i poredak braće bio nasumičan u odnosu na ident numeraciju, a pozicija bez sastavnice
+ * (sopstveni koren) upadala IZMEĐU sklopova. Sada je pre-order po lancu `sort_order`-a.
+ */
+describe("reparentNodes — poredak redova (zahtev 053/26 §2)", () => {
+  /** Svako dete mora doći odmah unutar neprekidnog bloka svog roditelja (pre-order). */
+  function assertContiguous(out: ProjectNodeRow[]): void {
+    const pos = new Map(out.map((n, i) => [n.rn_id, i] as const));
+    for (const n of out) {
+      // Roditelj mora biti PRE deteta…
+      if (n.parent_rn_id != null && pos.has(n.parent_rn_id)) {
+        expect(pos.get(n.parent_rn_id)!).toBeLessThan(pos.get(n.rn_id)!);
+      }
+      // …a ceo blok potomaka je neprekidan: svi redovi između čvora i njegovog poslednjeg
+      // potomka moraju biti potomci tog čvora (niko tuđi se ne uvlači u sredinu).
+      const desc = out.filter((d) => d.path_idrn.includes(n.rn_id) && d.rn_id !== n.rn_id);
+      if (desc.length === 0) continue;
+      const idxs = desc.map((d) => pos.get(d.rn_id)!);
+      const lo = Math.min(...idxs);
+      const hi = Math.max(...idxs);
+      expect(lo).toBe(pos.get(n.rn_id)! + 1);
+      expect(hi - lo + 1).toBe(desc.length);
+    }
+  }
+
+  /**
+   * Slučaj sa slike (predmet 9400): dva sklopa + pozicija BEZ sastavnice (sopstveni koren),
+   * čiji `work_orders.id` pada IZMEĐU id-jeva ta dva sklopa. Po starom sortu (root id) red je
+   * bio sklop-A · POZICIJA · sklop-B — pozicija se ubacila između sklopova, a sklop sa manjim
+   * ident brojem („9400/1") bio je ISPOD sklopa „9400/2".
+   */
+  const scena = () => [
+    node({ rn_id: 100, parent_rn_id: null, ident_broj: "9400/2" }),
+    node({ rn_id: 101, parent_rn_id: 100, ident_broj: "9400/2.2" }),
+    node({ rn_id: 102, parent_rn_id: 100, ident_broj: "9400/2.1" }),
+    node({ rn_id: 150, parent_rn_id: null, ident_broj: "9400/3" }), // bez sastavnice
+    node({ rn_id: 200, parent_rn_id: null, ident_broj: "9400/1" }),
+    node({ rn_id: 201, parent_rn_id: 200, ident_broj: "9400/1.1" }),
+  ];
+
+  it("koreni idu po ident broju — pozicija bez sastavnice se više ne uvlači između sklopova", () => {
+    const out = reparentNodes(scena());
+    expect(out.map((n) => n.rn_id)).toEqual([200, 201, 100, 102, 101, 150]);
+    expect(out.map((n) => n.ident_broj)).toEqual([
+      "9400/1",
+      "9400/1.1",
+      "9400/2",
+      "9400/2.1",
+      "9400/2.2",
+      "9400/3",
+    ]);
+    assertContiguous(out);
+  });
+
+  it("deca su uvek neprekidna ispod svog sklopa (i posle re-parenta)", () => {
+    assertContiguous(reparentNodes(scena()));
+    // Premesti 150 pod sklop 200 → mora da uđe u blok tog sklopa, ne da ostane koren.
+    const nodes = scena();
+    nodes[3] = node({
+      rn_id: 150,
+      parent_rn_id: null,
+      ident_broj: "9400/3",
+      has_parent_override: true,
+      parent_override_rn_id: 200,
+    });
+    const out = reparentNodes(nodes);
+    expect(out.map((n) => n.rn_id)).toEqual([200, 201, 150, 100, 102, 101]);
+    assertContiguous(out);
+  });
+
+  it("braća idu PRIRODNIM ident redom (NULLS LAST), ne po id-ju iz baze", () => {
+    const out = reparentNodes([
+      node({ rn_id: 10, parent_rn_id: null, ident_broj: "A" }),
+      node({ rn_id: 11, parent_rn_id: 10, ident_broj: "9400/10" }),
+      node({ rn_id: 12, parent_rn_id: 10, ident_broj: null }), // bez identa → poslednji
+      node({ rn_id: 13, parent_rn_id: 10, ident_broj: "9400/2" }),
+    ]);
+    // „9400/2" pre „9400/10" (numerički blok), pa tek onda ident-less.
+    expect(out.map((n) => n.rn_id)).toEqual([10, 13, 11, 12]);
+    expect(out.map((n) => n.sort_order)).toEqual([1, 1, 2, 3]);
+  });
+
+  it("determinističan tie-break: isti ident → po rn_id (ne po redosledu unosa)", () => {
+    const a = reparentNodes([
+      node({ rn_id: 5, parent_rn_id: null, ident_broj: "X" }),
+      node({ rn_id: 3, parent_rn_id: null, ident_broj: "X" }),
+    ]).map((n) => n.rn_id);
+    const b = reparentNodes([
+      node({ rn_id: 3, parent_rn_id: null, ident_broj: "X" }),
+      node({ rn_id: 5, parent_rn_id: null, ident_broj: "X" }),
+    ]).map((n) => n.rn_id);
+    expect(a).toEqual([3, 5]);
+    expect(b).toEqual([3, 5]);
+  });
+
+  it("duboko stablo (3 nivoa) ostaje pre-order po ident lancu", () => {
+    const out = reparentNodes([
+      node({ rn_id: 1, parent_rn_id: null, ident_broj: "S" }),
+      node({ rn_id: 2, parent_rn_id: 1, ident_broj: "S/2" }),
+      node({ rn_id: 3, parent_rn_id: 1, ident_broj: "S/1" }),
+      node({ rn_id: 4, parent_rn_id: 3, ident_broj: "S/1/b" }),
+      node({ rn_id: 5, parent_rn_id: 3, ident_broj: "S/1/a" }),
+    ]);
+    expect(out.map((n) => n.ident_broj)).toEqual([
+      "S",
+      "S/1",
+      "S/1/a",
+      "S/1/b",
+      "S/2",
+    ]);
+    expect(out.map((n) => n.nivo)).toEqual([0, 1, 2, 2, 1]);
+    assertContiguous(out);
   });
 });
