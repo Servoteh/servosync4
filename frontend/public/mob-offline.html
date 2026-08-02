@@ -14,9 +14,14 @@
         --ink-secondary/--line/--accent, svetla i tamna varijanta) — statički HTML ne
         može da čita CSS promenljive aplikacije. Isti izuzetak kao `themeColor` u
         `app/layout.tsx` (DESIGN_SYSTEM §3): menjaju se ZAJEDNO sa tokenom.
-      • Putanja `/mob-offline.html` je pod scope-om `/mob` (prefiks!) — zato ostaje
-        UNUTAR instalirane aplikacije. `/offline.html` bi bio van scope-a i na iOS-u bi
-        ispao u Safari.
+      • Putanja `/mob-offline` je pod scope-om `/mob` (prefiks!) — zato ostaje UNUTAR
+        instalirane aplikacije. `/offline.html` bi bio van scope-a i na iOS-u bi ispao
+        u Safari.
+      • 🔴 SW mu prilazi BEZ `.html`: Cloudflare Pages („clean URLs") na
+        `/mob-offline.html` vraća 307 na `/mob-offline`, a keširan odgovor dobijen kroz
+        preusmerenje pregledač ODBIJA na navigaciji („Response served by service worker
+        has redirections") — offline ekran bi pao baš kad zatreba. Fajl zato ostaje ovde
+        pod svojim imenom, ali se u `mob-sw.js` piše kao `/mob-offline`.
     -->
     <style>
       :root {

@@ -20,7 +20,7 @@ import { useEffect } from 'react';
  *    (poređenje je prefiks nad stringom), pa ni `start_url` iz manifesta ne bi bio pod
  *    kontrolom SW-a — Chrome tada NE nudi instalaciju. Uz `output: "export"` i
  *    `trailingSlash: false`, `/mob/` se k tome preusmerava na `/mob`. Prefiks `/mob`
- *    hvata i `/mob`, i `/mob/…`, i `/mob-offline.html` — a `/m`, `/m/*` i ostatak 1.0
+ *    hvata i `/mob`, i `/mob/…`, i `/mob-offline` — a `/m`, `/m/*` i ostatak 1.0
  *    prostora NE hvata (ništa od toga ne počinje sa „/mob").
  *
  * TOLERANTNA JE NAMERNO: bez `serviceWorker`-a (stari WebView), van secure context-a

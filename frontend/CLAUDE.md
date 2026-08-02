@@ -38,6 +38,11 @@ važe za svaku sesiju i svaki ekran, bez izuzetka.
     vanredni tok (prinudna promena lozinke i sl.) dobija svoju `/mob/*` rutu. Root prostor
     (`/sw.js`, `/m`, `/m/*`, `/assets/*`, `/icons/*`, `/manifest.webmanifest`) pripada
     ServoSync **1.0** — ni SW, ni keš, ni manifest 3.0 ga ne smeju dodirnuti.
+    🔴 **U SW-u se nikad ne piše URL sa `.html`**: Cloudflare Pages („clean URLs") na
+    `/x.html` vraća **307 na `/x`**, `fetch` prati preusmerenje, a odgovor sa
+    `redirected === true` pregledač ODBIJA na navigaciji („Response served by service
+    worker has redirections") — offline rezerva padne baš kad zatreba. Isto i za kosu
+    crtu (`/mob/` → 307 → `/mob`, `trailingSlash: false`).
 12. **Filteri, strana i tab radne liste žive u URL-u** (`useListQueryState`), a „Nazad" sa detalja ide
     na `listHref('/modul')`. Bez toga povratak sa detalja remontira listu i briše filter i stranu —
     nad knjigom od 625 faktura to je stotine izgubljenih klikova po jednom PDV periodu.

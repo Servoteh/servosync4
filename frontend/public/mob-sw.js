@@ -39,9 +39,9 @@
  * ══════════════════════════════════════════════════════════════════════════════════
  * ŠTA RADI (i šta namerno NE radi)
  * ══════════════════════════════════════════════════════════════════════════════════
- *  • Navigacije (`/mob…`): MREŽA PRVA, keš kao rezerva, pa `mob-offline.html`. Mreža
- *    prva = radnik posle deploy-a uvek dobije svež HTML; keš se koristi tek kad veze
- *    nema (pogon, hala, lift).
+ *  • Navigacije (`/mob…`): MREŽA PRVA, keš kao rezerva, pa offline ekran (`/mob-offline`,
+ *    fajl `public/mob-offline.html`). Mreža prva = radnik posle deploy-a uvek dobije
+ *    svež HTML; keš se koristi tek kad veze nema (pogon, hala, lift).
  *  • Statika sa sadržajnim hešom (`/_next/static/*`) + `/fonts/*` + `/mob-icons/*`:
  *    KEŠ PRVI. Ime nosi heš, pa keširana kopija ne može da zastari.
  *  • API se NE kešira — ni na tunelu (drugi origin, ni ne presrećemo) ni na LAN-u
@@ -69,17 +69,44 @@
  * niko ne šalje — kuka za buduće dugme „primeni novu verziju").
  */
 
-/** Diže se RUČNO pri svakoj izmeni ovog fajla — menja imena keševa = čist start. */
-const VERZIJA = 'v1';
+/**
+ * Diže se RUČNO pri svakoj izmeni ovog fajla — menja imena keševa = čist start.
+ * v2 (02.08.2026): OBAVEZAN podizak — v1 je u `ss3-mob-static-v1` mogao da drži offline
+ * ekran dobavljen preko preusmerenja (v. `OFFLINE_URL` i `bezPreusmerenja()`); takav
+ * keširan odgovor ostaje pokvaren dok se keš ne preimenuje, pa ga `activate` sad briše.
+ */
+const VERZIJA = 'v2';
 
 /** 🔴 Prefiks `ss3-` je ugovor sa `src/lib/app-hard-reset.ts` (SS3_CACHE_PREFIXES). */
 const KES_STATIKA = `ss3-mob-static-${VERZIJA}`;
 const KES_STRANE = `ss3-mob-pages-${VERZIJA}`;
-const NASI_KESEVI = [KES_STATIKA, KES_STRANE];
+/**
+ * Offline ekran ima SVOJ keš, ne deli ga sa statikom. U `KES_STATIKA` bi bio prvi
+ * upisani ključ, a sečenje viška (`upisiUKes`) briše baš sa POČETKA — posle nekoliko
+ * deploy-eva (svaki donese nov skup `/_next/static/*`) ispao bi iz keša i offline
+ * rezerva bi nestala tiho, bez ijedne greške. Ovde je sam i nikad se ne seče.
+ */
+const KES_LJUSKA = `ss3-mob-shell-${VERZIJA}`;
+const NASI_KESEVI = [KES_STATIKA, KES_STRANE, KES_LJUSKA];
 /** Sve što počinje ovim je NAŠE i sme da se briše. Ništa drugo. */
 const NAS_PREFIKS = 'ss3-mob-';
 
-const OFFLINE_URL = '/mob-offline.html';
+/**
+ * 🔴 BEZ `.html`! Cloudflare Pages servira „clean URLs": `/mob-offline.html` vraća
+ * **307 na `/mob-offline`** (izmereno na produ 02.08.2026), a 200 daje tek putanja bez
+ * nastavka. Isto važi za svaku stranu iz `output: "export"` (`/mob.html` → `/mob`), i
+ * poklapa se sa `trailingSlash: false` iz `next.config.ts`.
+ *
+ * Zašto to nije kozmetika: `fetch` podrazumevano PRATI preusmerenje, pa bi odgovor koji
+ * upišemo u keš nosio `response.redirected === true`. Odgovor sa tim flagom servisni
+ * radnik NE SME da vrati na NAVIGACIONI zahtev — pregledač obara navigaciju greškom
+ * „Response served by service worker has redirections". Offline rezerva bi, dakle, bila
+ * pokvarena tačno u trenutku kad zatreba (radnik bez mreže), i to nevidljivo dok se ne
+ * desi. Fajl `public/mob-offline.html` ostaje kako jeste — menja se samo URL kojim mu
+ * prilazimo. Putanja i dalje počinje sa `/mob`, pa je unutar scope-a SW-a i instalirane
+ * aplikacije (v. `mob-sw-register.tsx`).
+ */
+const OFFLINE_URL = '/mob-offline';
 
 /** Doslovna kopija `jeStaraMobilna()` iz `worker/index.ts` + 1.0-in `/sw.js`. */
 function jeProstor1_0(p) {
@@ -115,9 +142,35 @@ const STATIKA_PREFIKSI = ['/_next/static/', '/fonts/', '/mob-icons/'];
  */
 const MAX_UNOSA = { [KES_STATIKA]: 300, [KES_STRANE]: 40 };
 
+/**
+ * 🔴 POJAS UZ TREGERE: skida `redirected` flag pre upisa u keš.
+ *
+ * Ako je odgovor stigao kroz preusmerenje, `response.redirected` je `true` i taj flag
+ * PREŽIVLJAVA Cache Storage (uz odgovor se čuva lista URL-ova kroz koje je prošao).
+ * Vraćen na navigacioni zahtev, obara navigaciju („Response served by service worker
+ * has redirections") — i to trajno, dok se keš ne preimenuje preko `VERZIJA`.
+ *
+ * Prepakivanje tela u nov `Response` zadržava sadržaj, status i zaglavlja, a flag gubi
+ * (nov odgovor nema listu URL-ova). Time smo zaštićeni i ako se pravila na Cloudflare
+ * strani sutra promene — ne oslanjamo se samo na to što `OFFLINE_URL` danas vraća 200.
+ */
+async function bezPreusmerenja(res) {
+  if (!res.redirected) return res;
+  // 204/205 nemaju telo — `new Response(telo, { status })` bi bacio, a takav odgovor
+  // ionako nema šta da posluži offline. Ne keširamo ga.
+  if (res.status === 204 || res.status === 205) return null;
+  return new Response(await res.blob(), {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  });
+}
+
 async function upisiUKes(imeKesa, req, res) {
+  const zaUpis = await bezPreusmerenja(res);
+  if (!zaUpis) return;
   const kes = await caches.open(imeKesa);
-  await kes.put(req, res);
+  await kes.put(req, zaUpis);
   const kljucevi = await kes.keys();
   const visak = kljucevi.length - (MAX_UNOSA[imeKesa] ?? 300);
   for (let i = 0; i < visak; i++) await kes.delete(kljucevi[i]);
@@ -125,13 +178,26 @@ async function upisiUKes(imeKesa, req, res) {
 
 self.addEventListener('install', (event) => {
   // Bez skipWaiting (v. zaglavlje). `cache: 'reload'` = uzmi offline ekran sa mreže,
-  // ne iz HTTP keša. Greška (npr. instalacija bez veze) ne sme da obori install —
-  // SW bez offline strane i dalje radi (navigacija tada pada na keš/mrežnu grešku).
+  // ne iz HTTP keša.
+  //
+  // 🔴 NAMERNO TOLERANTNO — spoljni `catch` mora da ostane. Odbijen `waitUntil` obara
+  // CELU instalaciju service worker-a, a bez registrovanog SW-a Chrome za Android ne
+  // nudi „Instaliraj aplikaciju" (v. zaglavlje) — tj. neuspelo keširanje jednog ekrana
+  // oduzelo bi aplikaciji instalabilnost. Razlozi za pad su svakodnevni: instalacija
+  // bez veze, popunjena kvota, privatni režim. SW bez offline ekrana i dalje radi:
+  // navigacija pada na keširanu stranu, pa na 503 poruku iz `navigacija()`.
+  //
+  // NE koristimo `cache.add()`: on interno fetch-uje sa `redirect: 'follow'` i upisao
+  // bi odgovor sa podignutim `redirected` flagom (v. `bezPreusmerenja()`).
   event.waitUntil(
-    caches
-      .open(KES_STATIKA)
-      .then((kes) => kes.add(new Request(OFFLINE_URL, { cache: 'reload' })))
-      .catch(() => undefined),
+    (async () => {
+      const res = await fetch(new Request(OFFLINE_URL, { cache: 'reload' }));
+      if (!res || !res.ok) return; // 404/500 → bez offline ekrana, ali SW ostaje živ
+      const zaUpis = await bezPreusmerenja(res);
+      if (!zaUpis) return;
+      const kes = await caches.open(KES_LJUSKA);
+      await kes.put(OFFLINE_URL, zaUpis);
+    })().catch(() => undefined),
   );
 });
 
@@ -180,10 +246,25 @@ async function navigacija(event, req) {
   } catch {
     // `ignoreSearch` — reload iz „Resetuj aplikaciju" nosi `?_r=<ts>`, a to je ista strana.
     const kes = await caches.open(KES_STRANE);
-    const keširano = await kes.match(req, { ignoreSearch: true });
+    let keširano = await kes.match(req, { ignoreSearch: true });
+    // `trailingSlash: false` (next.config.ts) + Cloudflare Pages: online je `/mob/` 307
+    // na `/mob`, pa u kešu postoji SAMO oblik bez kose crte. Radnik koji je stranu
+    // otvorio (ili prečicu sačuvao) sa kosom crtom bi bez ovog koraka offline dobio
+    // offline ekran umesto svoje keširane strane.
+    if (!keširano) {
+      try {
+        const u = new URL(req.url);
+        if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
+          u.pathname = u.pathname.replace(/\/+$/, '');
+          keširano = await kes.match(u.href, { ignoreSearch: true });
+        }
+      } catch {
+        /* neispravan URL — pravo na offline ekran */
+      }
+    }
     if (keširano) return keširano;
-    const kesStatike = await caches.open(KES_STATIKA);
-    const offline = await kesStatike.match(OFFLINE_URL);
+    const kesLjuske = await caches.open(KES_LJUSKA);
+    const offline = await kesLjuske.match(OFFLINE_URL);
     if (offline) return offline;
     return new Response('Nema veze sa mrežom.', {
       status: 503,
