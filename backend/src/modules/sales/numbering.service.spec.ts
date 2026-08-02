@@ -1,7 +1,9 @@
 import { Prisma } from "@prisma/client";
 import {
+  DOCUMENT_SERIES,
   DocumentNumberSequenceService,
   INVOICE_SEQUENCE_KEY,
+  sequenceKeyFor,
 } from "./numbering.service";
 
 /**
@@ -12,8 +14,9 @@ import {
  * prelaz godine (nov niz kreće od 1), dvocifrena godina za „okrugle" godine
  * (2005 → `/05`), NEMA prefiksa vrste dokumenta (papir = SEF = glavna knjiga),
  * zajednički niz preko vrsta faktura, sopstvena serija avansnog računa `A-1/26`
- * (O-F6) uz branu „serije su međusobno disjunktne", i zaštita od trke (dva
- * paralelna zahteva ne dobijaju isti broj).
+ * (O-F6) i ostalih vrsta van niza faktura — `PROF-`, `PON-`, `REV-` (O-F7) —
+ * uz branu „serije su međusobno disjunktne" koja vrste nabraja IZ REGISTRA, i
+ * zaštita od trke (dva paralelna zahteva ne dobijaju isti broj).
  */
 
 /** Red u `document_number_sequences`. */
@@ -224,7 +227,7 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
       expect(db.rows).toHaveLength(1);
     });
 
-    it("AVR i PROF NISU u nizu faktura — zadržavaju svoj brojač po vrsti", async () => {
+    it("AVR i PROF NISU u nizu faktura — zadržavaju svoj brojač po vrsti (O-F7)", async () => {
       // Za avans i predračun nemamo papir koji pokazuje šta BigBit radi, pa se ne
       // uvlače u zajednički niz (avansi imaju i zaseban zakonski niz).
       //
@@ -241,10 +244,14 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
 
       await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
       await expect(once(db, "IFGP", 2026)).resolves.toBe("2/26");
-      // Avans i predračun kreću od svoje jedinice, nezavisno od faktura;
-      // avans uz to nosi i prefiks serije (O-F6), predračun ga ne dobija (ne knjiži se).
+      // Avans i predračun kreću od svoje jedinice, nezavisno od faktura, i OBA nose
+      // prefiks serije. ⚠️ ISPRAVLJENO ZBOG O-F7: raniji oblik ovog testa tražio je da
+      // PROF dâ goli `1/26` — jer je „predračun se ne knjiži" bilo pročitano kao „ne
+      // može da se sudari". Može, i to na najgorem mestu: predračun `1/26` i faktura
+      // `1/26` postoje ISTOVREMENO kod istog kupca, kupac plaća PO PREDRAČUNU i u
+      // poziv na broj kuca `1/26`, a u glavnoj knjizi taj string nosi FAKTURA.
       await expect(once(db, "AVR", 2026)).resolves.toBe("A-1/26");
-      await expect(once(db, "PROF", 2026)).resolves.toBe("1/26");
+      await expect(once(db, "PROF", 2026)).resolves.toBe("PROF-1/26");
 
       expect(db.rows.map((r) => r.documentType).sort()).toEqual([
         INVOICE_SEQUENCE_KEY,
@@ -300,42 +307,147 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
       await expect(once(db, "AVR", 2005)).resolves.toBe("A-1/05");
     });
 
-    it("BRANA: serije su međusobno disjunktne za SVAKI redni broj", async () => {
-      // Jedina odbrana od spajanja avansa i fakture u jednu otvorenu stavku je to da
-      // se stringovi brojeva ne mogu preklopiti — glavna knjiga NEMA kolonu vrste
-      // dokumenta, pa je broj sve što grupni ključ ima. Ovaj test je brana: ako neko
-      // doda vrstu koja se knjiži, a ne stavi je ni u `INVOICE_TYPES` ni u
-      // `SERIES_PREFIX`, njeni brojevi će se poklopiti sa fakturom i test pada.
-      const knjiziSe = ["IFR", "IFGP", "IFUSL", "IZVRO", "IZVGP", "IZVUS", "AVR"];
+    /**
+     * BRANA: serije su međusobno disjunktne za SVAKI redni broj.
+     * ───────────────────────────────────────────────────────────────────────────
+     * Jedina odbrana od spajanja dva dokumenta u jednu otvorenu stavku je to da se
+     * stringovi brojeva ne mogu preklopiti — glavna knjiga NEMA kolonu vrste
+     * dokumenta, pa je broj sve što grupni ključ ima.
+     *
+     * ⚠️ PREKROJENO (nalaz N11, 02.08.2026): raniji oblik ovog testa nabrajao je TVRD
+     * SPISAK od sedam vrsta, iako mu je komentar obećavao da će „nova vrsta oboriti
+     * test". Nije mogao: PROF, PON i REV su tada već postojali, davali goli `N/GG`
+     * kao i faktura, i test ih nije ni video. Spisak se zato NABRAJA IZ REGISTRA
+     * (`DOCUMENT_SERIES`) — vrsta dodata tamo automatski ulazi u ovu branu, a vrsta
+     * dodata sa prefiksom koji već neko koristi je obara.
+     *
+     * „NEPOZNATA_VRSTA" pokriva i suprotan propust — vrstu koju niko nije upisao u
+     * registar. Ona po konstrukciji dobija prefiks iz sopstvene šifre, pa ni ona ne
+     * može da se poklopi sa fakturom.
+     */
+    it("BRANA: serije su međusobno disjunktne za SVAKI redni broj (spisak iz registra)", async () => {
+      const vrste = [...DOCUMENT_SERIES.keys(), "NEPOZNATA_VRSTA"];
+      const nizFaktura = (tip: string) =>
+        sequenceKeyFor(tip) === INVOICE_SEQUENCE_KEY;
 
       for (const seq of [1, 7, 43, 657]) {
-        const viđeni = new Map<string, string>();
-        for (const tip of knjiziSe) {
+        /** broj → vrste koje su ga izdale sa istim rednim brojem */
+        const viđeni = new Map<string, string[]>();
+
+        for (const tip of vrste) {
           const db = makeDb([
             {
               id: 1,
-              documentType:
-                tip === "AVR" ? "AVR" : (INVOICE_SEQUENCE_KEY as string),
+              documentType: sequenceKeyFor(tip),
               year: 2026,
               companyId: 0,
               lastNumber: seq - 1,
             },
           ]);
           const broj = await once(db, tip, 2026);
-          const prethodni = viđeni.get(broj);
-          // Isti string sme da se ponovi SAMO unutar zajedničkog niza faktura —
-          // tamo ga brojač po konstrukciji nikad ne izda dvaput (test iznad).
-          const istiNiz =
-            prethodni != null &&
-            knjiziSe.includes(prethodni) &&
-            prethodni !== "AVR" &&
-            tip !== "AVR";
-          expect(prethodni == null || istiNiz).toBe(true);
-          viđeni.set(broj, tip);
+          viđeni.set(broj, [...(viđeni.get(broj) ?? []), tip]);
         }
-        // Avans i faktura sa istim rednim brojem NIKAD ne daju isti string.
-        expect(viđeni.size).toBe(2); // {N/26 (fakture), A-N/26 (avans)}
+
+        for (const [broj, tipovi] of viđeni) {
+          // Isti string smeju da dele SAMO vrste iz zajedničkog niza faktura — tamo
+          // ga brojač po konstrukciji nikad ne izda dvaput (testovi iznad). Poruka
+          // nosi i broj i vrste, da se pri padu odmah vidi KO se sa kim sudario.
+          expect({
+            broj,
+            tipovi,
+            dozvoljeno: tipovi.length === 1 || tipovi.every(nizFaktura),
+          }).toMatchObject({ dozvoljeno: true });
+        }
+
+        // Onoliko različitih stringova koliko ima sopstvenih serija, plus jedan
+        // zajednički za ceo niz faktura.
+        const sopstvene = vrste.filter((t) => !nizFaktura(t));
+        expect(viđeni.size).toBe(1 + sopstvene.length);
       }
+    });
+
+    it("BRANA: dve vrste ne smeju da dele isti prefiks serije", () => {
+      // Sudar prefiksa je isti kvar kao sudar brojeva, samo unesen jednim redom u
+      // registru (npr. `["REV", "A-"]`). Test iznad bi ga uhvatio tek ako obe vrste
+      // stignu do istog rednog broja; ovaj ga hvata odmah i imenom.
+      const sopstveni = [...DOCUMENT_SERIES.values()].filter((p) => p !== "");
+      expect(new Set(sopstveni).size).toBe(sopstveni.length);
+    });
+  });
+
+  /**
+   * O-F7 — SVAKA VRSTA VAN NIZA FAKTURA NOSI SVOJ PREFIKS.
+   * ─────────────────────────────────────────────────────────────────────────────
+   * Nalaz N11 (02.08.2026): O-F6 je razdvojila samo avans, a PROF/PON/REV su ostali
+   * na golom `N/GG` — istom obliku kao faktura. Razdvojen brojač tu ne pomaže: dva
+   * nezavisna niza oba kreću od 1 i oba daju `1/26`.
+   *
+   * IZMERENO na starom kodu: `next(tx, "PROF", 2026, 0)` → `1/26`, isto što daje i
+   * `next(tx, "IFR", 2026, 0)`. Predračun i faktura postoje ISTOVREMENO kod istog
+   * kupca, a kupac po predračunu i plaća — poziv na broj `1/26` je onda gađao
+   * fakturu. `REV` je uz to level-0 vrsta koju `carry-over.service.ts` sme da
+   * napravi, a `postInvoice` nema filtar vrste, pa proknjižen revers upisuje svoj
+   * `N/GG` u `ledger_entries`, gde se stavke grupišu SAMO po broju.
+   */
+  describe("svaka serija van niza faktura ima svoj prefiks (O-F7)", () => {
+    it("PROF, PON i REV nose prefiks svoje serije", async () => {
+      const db = makeDb();
+      await expect(once(db, "PROF", 2026)).resolves.toBe("PROF-1/26");
+      await expect(once(db, "PON", 2026)).resolves.toBe("PON-1/26");
+      await expect(once(db, "REV", 2026)).resolves.toBe("REV-1/26");
+    });
+
+    it("prefiks ne dira ostatak formata (bez vodećih nula, dvocifrena godina)", async () => {
+      const db = makeDb([
+        {
+          id: 1,
+          documentType: "PROF",
+          year: 2026,
+          companyId: 0,
+          lastNumber: 9,
+        },
+      ]);
+      await expect(once(db, "PROF", 2026)).resolves.toBe("PROF-10/26");
+      await expect(once(db, "PON", 2005)).resolves.toBe("PON-1/05");
+    });
+
+    it("SCENARIO: predračun i faktura sa istim rednim brojem su različiti stringovi", async () => {
+      // Kupac drži predračun broj 12 i fakturu broj 12 iste godine. Dok su oba `12/26`,
+      // uplata po predračunu zatvara fakturu — a predračuna u glavnoj knjizi nema, pa
+      // nema ni čemu drugom da sleti.
+      const db = makeDb([
+        {
+          id: 1,
+          documentType: INVOICE_SEQUENCE_KEY,
+          year: 2026,
+          companyId: 0,
+          lastNumber: 11,
+        },
+        {
+          id: 2,
+          documentType: "PROF",
+          year: 2026,
+          companyId: 0,
+          lastNumber: 11,
+        },
+      ]);
+
+      const faktura = await once(db, "IFR", 2026);
+      const predracun = await once(db, "PROF", 2026);
+
+      expect(faktura).toBe("12/26");
+      expect(predracun).toBe("PROF-12/26");
+      expect(faktura).not.toBe(predracun);
+    });
+
+    it("NEUPISANA vrsta ne može da se sudari sa fakturom (prefiks iz šifre vrste)", async () => {
+      // Brana od zaborava: vrsta koju niko nije upisao u registar NE pada na goli
+      // `N/GG` (što bi je tiho spojilo sa fakturom u otvorenim stavkama), nego dobija
+      // prefiks iz sopstvene šifre i svoj brojač. Cena je kozmetička — broj na papiru
+      // izgleda `XYZ-1/26` dok se vrsta ne upiše kako treba.
+      const db = makeDb();
+      await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
+      await expect(once(db, "XYZ", 2026)).resolves.toBe("XYZ-1/26");
     });
   });
 

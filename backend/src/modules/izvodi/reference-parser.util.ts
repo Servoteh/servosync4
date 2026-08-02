@@ -27,9 +27,10 @@
  *        „broj/godina" (kosa crta) i goli „broj"
  *   (6) PNB koji je DATUM .......................... samo sirov trim, bez ijednog
  *        izvedenog kandidata (v. `isDateTriplet` — `12-08-26` ne sme da dâ `8/26`)
- *   (7) PNB sa PREFIKSOM SERIJE (`A-7/26`) ......... svi izvedeni kandidati NOSE prefiks
- *        (v. `SERIES_PREFIXES` — `A-7/26` ne sme da dâ `7/26`); serija se prepoznaje i
- *        kad joj prethodi model/kontrolni broj (`97 A-7/26`)
+ *   (7) PNB sa OZNAKOM SERIJE (`A-7/26`, `AVANS 7/26`) . svi izvedeni kandidati NOSE
+ *        prefiks (v. `SERIES` — `A-7/26` ne sme da dâ `7/26`); oznaka se traži BILO GDE
+ *        u PNB-u i prepoznaje po ZNAČENJU (slovo serije, šifra vrste ili reč kojom je
+ *        platilac imenuje), a vezuje broj koji joj neposredno sledi
  *
  * MODEL: `BankStatementLine` NEMA kolonu za model (provereno u schema.prisma), pa
  * se model NE persistuje — prosleđuje se opciono kroz `parseReference(raw, model)`
@@ -122,9 +123,14 @@ function isDateTriplet(a: string, b: string, c: string): boolean {
 }
 
 /**
- * PREFIKSI SERIJA BROJEVA — moraju se poklapati sa `sales/numbering.service.ts`
- * (`SERIES_PREFIX`, odluka O-F6). Sinhronost čuva test „prefiks serije je isti kao u
- * numeraciji" u `reference-parser.util.spec.ts` (uvoz `seriesPrefixFor`).
+ * SERIJE BROJEVA + REČI KOJIMA IH PLATILAC IMENUJE.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `prefix` mora da se poklapa sa registrom u `sales/numbering.service.ts`
+ * (`DOCUMENT_SERIES`, odluke O-F6/O-F7). Sinhronost čuva test „parser poznaje SVE
+ * prefikse iz registra numeracije" u `reference-parser.util.spec.ts` — kad se serija
+ * doda samo tamo, ovaj test pada. Registar se namerno NE uvozi: numeracija zna šta
+ * UPISUJE (`A-`), a ovde stoji i ono što ona ne zna — kako kupac tu istu seriju ZOVE
+ * (`AVANS`, `AVR`, `predračun`…). To su dva različita posla i dva različita spiska.
  *
  * ZAŠTO PARSER UOPŠTE ZNA ZA SERIJE (nalaz adversarnog pregleda 02.08.2026)
  * ─────────────────────────────────────────────────────────────────────────────
@@ -139,10 +145,17 @@ function isDateTriplet(a: string, b: string, c: string): boolean {
  * pozvana na avans sedne na fakturu `7/26` i zatvori tuđu obavezu. Razdvajanje
  * serija u numeraciji time biva poništeno na poslednjem koraku.
  *
- * PRAVILO: PNB koji nosi prefiks serije daje ISKLJUČIVO kandidate sa tim prefiksom.
+ * PRAVILO: PNB koji nosi oznaku serije daje ISKLJUČIVO kandidate sa tim prefiksom.
  * Kandidati se grade nad ostatkom PNB-a (ista pravila: model 97, segmentacija,
  * broj/godina, datumska brana) pa im se prefiks vraća u KANONSKOM obliku iz
- * numeracije (`A-`), tako da i `A7/26` i `a 7/26` pogode upisani broj `A-7/26`.
+ * numeracije (`A-`), tako da i `A7/26` i `a 7/26` i `AVANS 7/26` pogode upisani broj
+ * `A-7/26`.
+ *
+ * ZAŠTO SE REČ (`AVANS 1/26`) SME DA PREVEDE U `A-1/26`: kandidat sa prefiksom može
+ * da pogodi ISKLJUČIVO stavku avansne serije — nijedan drugi dokument u glavnoj knjizi
+ * ne počinje sa `A-`. Dodavanje takvog kandidata dakle ne može da zatvori pogrešnu
+ * stavku, može samo da zatvori pravu. Da smo umesto toga pustili goli `1/26`, promašaj
+ * bi bio tih i skup (zatvorena tuđa faktura). Rizik je asimetričan, pa je i pravilo.
  *
  * SVESNO ODSTUPANJE: ako neko slovo „A" upiše kao šum ispred broja fakture
  * (`A 657/25`), uparivanje po broju neće uspeti i uplata pada na fallback po iznosu.
@@ -151,62 +164,115 @@ function isDateTriplet(a: string, b: string, c: string): boolean {
  *
  * DOPUNA (treći krug pregleda, 02.08.2026): brana je gledala samo POČETAK sirovog
  * PNB-a, pa ju je jedan model ispred serije potpuno gasio — izmereno, `97 A-7/26` je
- * i dalje davao `7/26`. Serija se zato traži i IZA vodećeg modela/kontrolnog broja
- * (v. `LEADING_MODEL_RE`).
+ * i dalje davao `7/26`.
+ *
+ * DOPUNA (nalaz N11/N10, 02.08.2026): brana je i posle toga bila SINTAKSNA — tražila je
+ * oznaku samo na dva mesta u nizu znakova, pa je svaki drugi oblik šuma probijao.
+ * IZMERENO na tadašnjem kodu:
+ *     `AVANS 1/26`              → ["AVANS 1/26","AVANS","AVANS1","AVANS126","1","126","26","1/26"]
+ *     `AVR 1/26`                → ["AVR 1/26","AVR","AVR1","AVR126","1","126","26","1/26"]
+ *     `A. 1/26`                 → ["A. 1/26","A.","A.1","A.126","1","126","26","1/26"]
+ *     `A) 1/26`                 → ["A) 1/26","A","A1","A126","1","126","26","1/26"]
+ *     `uplata po avansu A-1/26` → [… ,"1","126","26","1/26"]
+ * Svaki od njih završava golim `1/26` — brojem KONAČNE FAKTURE istog kupca. Zato se
+ * oznaka od tada traži BILO GDE u PNB-u i prepoznaje po ZNAČENJU (v. `aliases`).
  */
-export const SERIES_PREFIXES: readonly string[] = ["A-"];
+interface SeriesMarker {
+  /** Kanonski prefiks — tačno onako kako ga numeracija upisuje u broj (`A-`). */
+  prefix: string;
+  /**
+   * Regex-alternative kojima platilac imenuje seriju (case-insensitive, bez zagrada).
+   * Redosled nije bitan za tačnost (unutar serije se bira duža alternativa jer stoji
+   * prva), ali JESTE za čitljivost: prvo reč, pa šifra, pa golo slovo.
+   */
+  aliases: readonly string[];
+}
+
+/** Slova (ASCII + naša) — koriste se i za „reč" i za granicu reči. */
+const LETTERS = "A-Za-zČĆŽŠĐčćžšđ";
 
 /**
- * VODEĆI MODEL / KONTROLNI BROJ — čisto numerička glava (cifre i razdelnici) koju
- * platilac ukuca PRE oznake serije: `97 A-7/26`, `97124 A-7/26`, `97A-7/26`,
- * `97 12 A-7/26`. Glava sme da bude i razdvojena (model pa kontrolni broj), jer bi se
- * inače brana probijala samim ubacivanjem razmaka.
- *
- * Namerno NE sadrži slova: prvo slovo zaustavlja glavu, pa je ono što sledi ili oznaka
- * serije (`A` + cifra) ili šum koji ostatak parsera obrađuje kao i pre.
+ * Razmak između oznake serije i broja: do tri NE-slovna, NE-cifrena znaka.
+ * Pokriva `A-1/26`, `A 1/26`, `A. 1/26`, `A) 1/26`, `A/ 1/26`. Više od tri znaka nije
+ * razdelnik nego drugi podatak, pa se oznaka tada ne vezuje za taj broj.
  */
-const LEADING_MODEL_RE = /^\d[\d()\\\/\s-]*/;
+const SERIES_GAP = `[^${LETTERS}0-9]{0,3}`;
+
+const SERIES: readonly SeriesMarker[] = [
+  // AVR — avansni račun (O-F6). Sve reči koje počinju sa „avans" znače isto
+  // (avansu, avansa, avansni…), pa ide džoker; `AVR` i golo `A` su tačni oblici.
+  { prefix: "A-", aliases: [`AVANS[${LETTERS}]*`, "AVR", "A"] },
+  // PROF — predračun (O-F7). Reči su NABROJANE, ne „PRO*"/„PROF*": „PROFIT 12/26" nije
+  // predračun, a lažna oznaka bi pojela broj fakture.
+  {
+    prefix: "PROF-",
+    aliases: [`PREDRA[CČ]UN[${LETTERS}]*`, `PROFAKTUR[${LETTERS}]*`, "PROF"],
+  },
+  // PON — ponuda (O-F7). Isti razlog za nabrajanje: „PONOVO 12/26" ne sme da bude oznaka.
+  { prefix: "PON-", aliases: [`PONUD[${LETTERS}]*`, "PON"] },
+  // REV — revers (O-F7). „REVIZIJA" nije revers, pa `REV[a-z]*` ne dolazi u obzir.
+  { prefix: "REV-", aliases: [`REVERS[${LETTERS}]*`, "REV"] },
+];
+
+/** Prefiksi serija, redosledom iz `SERIES` (izvor za branu sinhronosti sa numeracijom). */
+export const SERIES_PREFIXES: readonly string[] = SERIES.map((s) => s.prefix);
+
+/** Da li je znak slovo (granica reči — v. `matchSeriesPrefix`). */
+const LETTER_RE = new RegExp(`[${LETTERS}]`);
 
 /**
- * Prepoznaj prefiks serije: slova serije, pa OPCIONO jedan razdelnik
- * (crtica/razmak/kosa crta), pa obavezno CIFRA.
+ * Nađi oznaku serije BILO GDE u PNB-u i vrati kanonski prefiks + deo PNB-a iza nje.
  *
- * Zahtev da odmah sledi cifra je brana od lažnog pogotka: `ABC123` nije serija „A"
- * sa ostatkom `BC123`, a goli `A-` bez broja nije poziv na broj.
+ * DVA USLOVA — oba su brane od lažne oznake, i oba su izmerena, ne pretpostavljena:
  *
- * TRAŽI SE NA DVA MESTA: na samom početku PNB-a i odmah iza vodećeg modela/kontrolnog
- * broja (`LEADING_MODEL_RE`). Bez druge tačke je cela brana bila probojna — dovoljno je
- * bilo da model stoji ispred serije (`97 A-7/26`) pa da se izvede goli `7/26`, broj
- * KONAČNE fakture (v. `SERIES_PREFIXES`, scenario avansa).
+ *   1) OZNAKA JE SAMOSTALNA: znak ispred nje ne sme biti slovo. Bez toga bi „fakturA
+ *      657/25" bilo pročitano kao serija (poslednje „a" + razmak + cifra) i broj fakture
+ *      bi nestao iz kandidata — kvar gori od onog koji se popravlja. Cifra ili razdelnik
+ *      ispred oznake su u redu, jer tako izgleda model/kontrolni broj (`97A-7/26`).
  *
- * Dublje se NE ide: slovo usred PNB-a nije oznaka serije nego šum, a svako proširenje
- * dohvata ovde košta kandidate koje bi ostatak PNB-a inače legitimno dao.
+ *   2) OZNAKA VEZUJE BROJ KOJI JOJ NEPOSREDNO SLEDI (do tri razdelnika, pa CIFRA).
+ *      Zato `ABC123` nije serija „A" sa ostatkom `BC123`, a `AVANS PO FAKTURI 1/26`
+ *      ostaje faktura — tu broj pripada fakturi, ne avansu, pa goli `1/26` mora da
+ *      preživi. Pravilo „reč avans bilo gde u PNB-u" bi taj legitiman poziv na broj
+ *      pojelo (izmereno na primeru „avansno placanje po fakturi 657/25").
  *
- * Model se pritom ODBACUJE — kandidati se grade samo od dela iza serije. Posledica je
- * ista kao kod `A 657/25`: ako neko ispred serije stavi pravi broj dokumenta, taj broj
- * neće biti kandidat i uparivanje pada na fallback po iznosu. To je jeftinije od rizika
- * da uplata na avans sedne na fakturu.
+ * Uzima se NAJRANIJA samostalna pojava bilo koje serije; na istom mestu pobeđuje serija
+ * koja je prva u `SERIES` (do toga u praksi ne dolazi — alijasi se ne preklapaju).
+ *
+ * Ono što je ISPRED oznake se ODBACUJE (model, kontrolni broj, reči). Posledica je ista
+ * kao kod `A 657/25`: ako neko ispred oznake stavi pravi broj dokumenta, taj broj neće
+ * biti kandidat i uparivanje pada na fallback po iznosu. To je jeftinije od rizika da
+ * uplata na avans sedne na fakturu.
  *
  * @returns `{ prefix, rest }` u kanonskom obliku (`prefix` uvek kao u numeraciji), ili
- *          `null` kad PNB ne nosi seriju.
+ *          `null` kad PNB ne nosi oznaku serije.
  */
 function matchSeriesPrefix(
   raw: string,
 ): { prefix: string; rest: string } | null {
-  const head = LEADING_MODEL_RE.exec(raw);
-  const starts = head && head[0].length > 0 ? [0, head[0].length] : [0];
+  let best: { prefix: string; rest: string; at: number } | null = null;
 
-  for (const start of starts) {
-    const tail = raw.slice(start);
-    for (const prefix of SERIES_PREFIXES) {
-      const letters = prefix.replace(/[^A-Za-z]/g, "");
-      if (letters.length === 0) continue;
-      const re = new RegExp(`^${letters}[-\\s/]?(?=\\d)`, "i");
-      const m = re.exec(tail);
-      if (m) return { prefix, rest: tail.slice(m[0].length) };
+  for (const series of SERIES) {
+    const re = new RegExp(
+      `(?:${series.aliases.join("|")})${SERIES_GAP}(?=\\d)`,
+      "gi",
+    );
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(raw)) !== null) {
+      // (1) samostalna oznaka — slovo ispred znači da je to sredina reči, ne serija.
+      if (m.index > 0 && LETTER_RE.test(raw[m.index - 1])) continue;
+      if (best == null || m.index < best.at) {
+        best = {
+          prefix: series.prefix,
+          rest: raw.slice(m.index + m[0].length),
+          at: m.index,
+        };
+      }
+      break; // prva samostalna pojava ove serije je merodavna
     }
   }
-  return null;
+
+  return best ? { prefix: best.prefix, rest: best.rest } : null;
 }
 
 /**
@@ -237,9 +303,9 @@ export function parseReference(
   // (1) EGZAKTAN — sirov trim je UVEK prvi kandidat (očuvanje postojećeg egzaktnog match-a).
   push(rawTrim);
 
-  // (1a) PREFIKS SERIJE — kandidati se izvode iz OSTATKA, pa im se prefiks vraća
-  //      (v. `SERIES_PREFIXES`). Nijedan kandidat bez prefiksa ne izlazi odavde:
-  //      `A-7/26` (avans) ne sme da ponudi `7/26` (faktura istog kupca).
+  // (1a) OZNAKA SERIJE — kandidati se izvode iz OSTATKA, pa im se prefiks vraća
+  //      (v. `SERIES`). Nijedan kandidat bez prefiksa ne izlazi odavde:
+  //      `A-7/26` i `AVANS 7/26` (avans) ne smeju da ponude `7/26` (faktura istog kupca).
   const series = matchSeriesPrefix(rawTrim);
   if (series) {
     for (const inner of parseReference(series.rest, model).candidates) {

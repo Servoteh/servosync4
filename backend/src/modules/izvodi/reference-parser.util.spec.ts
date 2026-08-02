@@ -1,5 +1,5 @@
 import { parseReference, SERIES_PREFIXES } from "./reference-parser.util";
-import { seriesPrefixFor } from "../sales/numbering.service";
+import { DOCUMENT_SERIES, seriesPrefixFor } from "../sales/numbering.service";
 
 /**
  * FX_OdrediBrojDokumenta port — kandidati broja dokumenta iz poziva na broj.
@@ -338,6 +338,153 @@ describe("reference-parser.util — parseReference", () => {
       // Kad bi se razišli, parser bi opet propuštao goli broj — i to tiho.
       expect(SERIES_PREFIXES).toContain(seriesPrefixFor("AVR"));
       expect(seriesPrefixFor("IFR")).toBe(""); // faktura nema seriju
+    });
+  });
+
+  /**
+   * OZNAKA SERIJE SE PREPOZNAJE PO ZNAČENJU, NE PO OBLIKU ŠUMA (nalaz N10, 02.08.2026).
+   * ───────────────────────────────────────────────────────────────────────────────
+   * Prethodna brana je tražila oznaku serije SAMO na dva mesta: na početku PNB-a i
+   * odmah iza numeričke glave. Sve ostalo je propadalo u korak „broj/godina" i davalo
+   * goli `N/GG` — broj KONAČNE FAKTURE istog kupca.
+   *
+   * IZMERENO na starom kodu (`parseReference(...).candidates`):
+   *   `AVANS 1/26`              → […, "1/26", "1"]   ❌
+   *   `AVR 1/26`                → […, "1/26", "1"]   ❌
+   *   `A. 1/26`                 → […, "1/26", "1"]   ❌  (tačka nije separator, ali „A." nije ni serija)
+   *   `A) 1/26`                 → […, "1/26", "1"]   ❌
+   *   `uplata po avansu A-1/26` → […, "1/26", "1"]   ❌
+   *
+   * Posledica je ista kao u nalazu iz kog je O-F6 nastala: uplata pozvana na avansni
+   * račun `A-1/26` sleti na otvorenu stavku fakture `1/26` i zatvori tuđu obavezu
+   * (`bank-statement.service.matchOpenItem` bira PRVI kandidat koji ima pogodak).
+   */
+  describe("oznaka serije se prepoznaje po ZNAČENJU, ne po obliku šuma (N10)", () => {
+    /** [sirov PNB, goli broj koji NE SME da izađe, kanonski broj koji MORA da izađe] */
+    const REDOVI: Array<[string, string, string]> = [
+      ["A-1/26", "1/26", "A-1/26"],
+      ["97 A-7/26", "7/26", "A-7/26"],
+      ["AVANS 1/26", "1/26", "A-1/26"],
+      ["AVR 1/26", "1/26", "A-1/26"],
+      ["A. 1/26", "1/26", "A-1/26"],
+      ["A) 1/26", "1/26", "A-1/26"],
+      ["uplata po avansu A-1/26", "1/26", "A-1/26"],
+    ];
+
+    it.each(REDOVI)(
+      "PNB %s ne daje goli %s, nego kanonski %s",
+      (raw, goli, kanonski) => {
+        const { candidates } = parseReference(raw);
+
+        expect(candidates[0]).toBe(raw); // egzaktan pogodak ostaje prvi
+        expect(candidates).toContain(kanonski);
+        expect(candidates).not.toContain(goli);
+        // Nijedan kandidat ne sme da bude bez prefiksa serije — ni komad broja
+        // (`1`, `126`, `26`), jer i on može da bude broj tuđe fakture.
+        for (const c of candidates.slice(1))
+          expect(c.startsWith("A-")).toBe(true);
+      },
+    );
+
+    /**
+     * OBRNUTI SMER: `AVANS 1/26` (reč bez crtice) NAMERNO proizvodi `A-1/26`.
+     *
+     * ZAŠTO DA: naš avansni račun je u knjizi upisan tačno kao `A-1/26` (O-F6), a
+     * kupac prepisuje ono što vidi na papiru ili opiše svojim rečima. Kandidat sa
+     * prefiksom može da pogodi ISKLJUČIVO stavku iz avansne serije — nijedan drugi
+     * dokument u glavnoj knjizi ne počinje sa `A-`. Dakle dodavanje kandidata ne
+     * može da zatvori pogrešnu stavku; može samo da zatvori PRAVU.
+     *
+     * Rizik je asimetričan i zato je izbor lak: ako je kupac rečju „avans" mislio na
+     * nešto drugo, uparivanje po broju promaši i uplata padne na fallback po iznosu
+     * (pošten promašaj). Da smo umesto toga pustili goli `1/26`, promašaj bi bio
+     * TIH i skup — zatvorena tuđa faktura, pogrešan saldo, kamata i IOS.
+     */
+    it("reč `AVANS`/`AVR` bez crtice i dalje pogađa upisani broj `A-1/26`", () => {
+      for (const raw of [
+        "AVANS 1/26",
+        "avans 1/26",
+        "AVR 1/26",
+        "Avansu 1/26",
+      ]) {
+        expect(parseReference(raw).candidates).toContain("A-1/26");
+      }
+    });
+
+    /**
+     * OZNAKA VEZUJE BROJ KOJI JOJ NEPOSREDNO SLEDI — i to je cela brana od lažnog
+     * pogotka. „Avans PO FAKTURI 1/26" znači avansna uplata na fakturu broj 1/26:
+     * broj tu pripada FAKTURI, pa goli `1/26` mora da ostane kandidat. Da smo pravilo
+     * napisali kao „reč avans bilo gde u PNB-u", ovaj legitiman PNB bi izgubio jedini
+     * tačan kandidat i uplata bi pala na fallback po iznosu.
+     */
+    it("oznaka vezuje SLEDEĆI broj — `avans po fakturi 1/26` i dalje daje 1/26", () => {
+      expect(parseReference("AVANS PO FAKTURI 1/26").candidates).toContain(
+        "1/26",
+      );
+      expect(
+        parseReference("avansno placanje po fakturi 657/25").candidates,
+      ).toContain("657/25");
+    });
+
+    /**
+     * SLOVO USRED REČI NIJE OZNAKA SERIJE. Bez ovog uslova bi `faktura 657/25` bilo
+     * pročitano kao serija (poslednje „a" u „faktura" + razmak + cifra), pa bi broj
+     * fakture nestao iz kandidata — kvar gori od onog koji se popravlja.
+     */
+    it("slovo unutar reči nije serija (faktura/računa + broj ostaju netaknuti)", () => {
+      expect(parseReference("faktura 657/25").candidates).toContain("657/25");
+      expect(parseReference("po racuna 657/25").candidates).toContain("657/25");
+      expect(parseReference("PREMA 12/26").candidates).toContain("12/26");
+    });
+
+    /**
+     * OSTALE SERIJE (O-F7): predračun, ponuda i revers od 02.08.2026. takođe nose
+     * prefiks, pa i njihov PNB mora da prestane da proizvodi goli broj fakture.
+     * Predračun je najčešći slučaj u praksi — po njemu kupac plaća unapred, a u
+     * glavnoj knjizi predračuna NEMA, pa je goli `12/26` mogao da pogodi samo jedno:
+     * tuđu fakturu.
+     */
+    it.each([
+      ["PROF-12/26", "12/26", "PROF-12/26"],
+      ["PREDRACUN 12/26", "12/26", "PROF-12/26"],
+      ["po predracunu PROF-12/26", "12/26", "PROF-12/26"],
+      ["PON-5/26", "5/26", "PON-5/26"],
+      ["PONUDA 5/26", "5/26", "PON-5/26"],
+      ["REV-8/26", "8/26", "REV-8/26"],
+      ["REVERS 8/26", "8/26", "REV-8/26"],
+    ])("PNB %s ne daje goli %s, nego kanonski %s", (raw, goli, kanonski) => {
+      const { candidates } = parseReference(raw);
+      expect(candidates[0]).toBe(raw);
+      expect(candidates).toContain(kanonski);
+      expect(candidates).not.toContain(goli);
+    });
+
+    /**
+     * Reči koje samo POČINJU isto kao oznaka serije nisu oznaka — inače bi „ponovo",
+     * „revizija" i slično gutali broj fakture. Zato su alijasi vezani za značenje
+     * (`PONUDA*`, `REVERS*`), a ne za prva tri slova.
+     */
+    it("reč sličnog početka nije serija (ponovo/revizija/profit + broj)", () => {
+      expect(parseReference("PONOVO 12/26").candidates).toContain("12/26");
+      expect(parseReference("REVIZIJA 12/26").candidates).toContain("12/26");
+      expect(parseReference("PROFIT 12/26").candidates).toContain("12/26");
+    });
+
+    /**
+     * IZVOR ISTINE: svaki prefiks koji numeracija ume da UPIŠE, parser mora da UME DA
+     * PROČITA. Test nabraja prefikse iz registra u `numbering.service.ts`, pa nova
+     * serija dodata tamo obara ovaj test dok se ne doda i ovde — bez toga bi njen PNB
+     * tiho proizvodio goli broj fakture, tačno kao u nalazu N10.
+     */
+    it("parser poznaje SVE prefikse iz registra numeracije", () => {
+      const izNumeracije = [...DOCUMENT_SERIES.values()].filter(
+        (p) => p !== "",
+      );
+      expect(izNumeracije.length).toBeGreaterThan(0);
+      for (const prefix of izNumeracije) {
+        expect(SERIES_PREFIXES).toContain(prefix);
+      }
     });
   });
 });

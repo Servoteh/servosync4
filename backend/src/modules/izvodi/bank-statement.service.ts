@@ -284,13 +284,17 @@ export class BankStatementService {
     if (candidates.length > 0) {
       // ⚠️ POGODAK JE SAMO PO BROJU — vrste dokumenta u `ledger_entries` nema. Da
       // uplata ne bi zatvorila POGREŠAN dokument istog kupca, brojevi moraju biti
-      // razdvojeni već u numeraciji: izlazne fakture dele jedan niz, avansni račun ima
-      // seriju `A-N/GG` (O-F5/O-F6). Bez toga bi PNB `7/26` mogao da padne na avans
+      // razdvojeni već u numeraciji: izlazne fakture dele jedan niz, a svaka druga
+      // vrsta ima svoju seriju u samom broju — `A-N/GG` avans, `PROF-N/GG` predračun,
+      // `PON-`, `REV-` (O-F5/O-F6/O-F7). Bez toga bi PNB `7/26` mogao da padne na avans
       // umesto na fakturu — koji od ta dva, zavisilo bi od redosleda redova u bazi.
       // Razdvajanje u numeraciji drži samo dok ga parser poštuje: PNB `A-7/26` je do
       // 02.08.2026. proizvodio i kandidata `7/26`, pa je uplata na avans mogla da sedne
       // na fakturu čim se avansna stavka zatvori. Sada svaki izveden kandidat NOSI
-      // prefiks serije (`reference-parser.util.ts` → `SERIES_PREFIXES`).
+      // prefiks serije (`reference-parser.util.ts` → `SERIES`), a oznaka serije se
+      // traži po ZNAČENJU i bilo gde u PNB-u: i `AVANS 1/26`, `AVR 1/26`, `A) 1/26` i
+      // „uplata po avansu A-1/26" su do istog datuma davali goli `1/26` (izmereno), pa
+      // je uplata na avans zatvarala fakturu istog kupca.
       //
       // Drugi izvor lažnog pogotka je bio sam PNB: kad platilac umesto broja fakture
       // upiše DATUM (`12-08-26`), `parseReference` je od njega pravio kandidat `8/26`

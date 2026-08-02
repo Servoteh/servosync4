@@ -79,8 +79,10 @@ netovale u jednu stavku i dug jednog kupca sakrio dug drugog. Jedan zajednički 
 
 ⚠️ Ne vraćati na brojač po vrsti. Dokaz i posledica su prepisani i u `numbering.service.ts`.
 
-**Van zajedničkog niza ostaju** avansni račun (AVR), predračun (PROF) i ponuda (PON) — za njih
-nemamo papir koji pokazuje šta BigBit radi, a avansi imaju i zaseban zakonski niz.
+**Van zajedničkog niza ostaju** avansni račun (AVR), predračun (PROF), ponuda (PON) i revers
+(REV) — za njih nemamo papir koji pokazuje šta BigBit radi, a avansi imaju i zaseban zakonski
+niz. Svaka od njih uz svoj brojač nosi i **svoj prefiks** (O-F6 za avans, O-F7 za ostale):
+razdvojen brojač bez prefiksa ne razdvaja ništa, jer dva nezavisna niza oba kreću od 1.
 
 ---
 
@@ -98,6 +100,41 @@ izdavanja našeg avansa usred posla.
 Zaseban niz taj sudar čini nemogućim bez diranja tabele u koju se upisuju dobavljačevi avansi.
 
 ⚠️ Menja se **pre prvih proba**, kao i O-F1 — posle njih se numeracija ne dira.
+
+---
+
+## O-F7 · Svaka vrsta van niza faktura nosi SVOJ prefiks (predračun, ponuda, revers)
+
+Odluka O-F6 je razdvojila samo avansni račun. Sve ostalo što nije izlazna faktura —
+predračun (`PROF`), ponuda (`PON`), revers (`REV`) — je i dalje dobijalo goli `1/26`, dakle
+**isti tekst broja kao faktura**. Od 02.08.2026. i te vrste nose prefiks svoje serije:
+`PROF-12/26`, `PON-5/26`, `REV-8/26`.
+
+**Zašto to nije kozmetika (nalaz N11):** „ne knjiži se" ne znači „ne može da se sudari".
+
+| | šta se meri | posledica golog broja |
+|---|---|---|
+| predračun | `createProforma` odmah dodeljuje broj → `PROF 1/26` i `IFR 1/26` postoje **istovremeno kod istog kupca** | kupac plaća **po predračunu** i u poziv na broj kuca `1/26`; predračuna u glavnoj knjizi **nema**, pa taj string tamo nosi FAKTURA — uplata zatvara pogrešan dokument |
+| revers | `REV` je level-0 vrsta koju prepis (`carry-over`) sme da napravi, a knjiženje **nema filtar vrste** | proknjižen revers upisuje svoj `N/GG` u `ledger_entries`, gde se stavke grupišu **samo po broju** — netuje se sa fakturom istog broja |
+
+**Zašto šifra vrste (`PROF-`), a ne jedno slovo (`P-`, `R-`):** prefiks je ujedno i oznaka
+koju parser poziva na broj mora da prepozna u tuđem tekstu. Jedno slovo ispred cifara je u
+pozivu na broj običan šum („P 657/25"), pa bi svaka nova jednoslovna serija pojela po jedan
+oblik legitimnog poziva na fakturu. Kod `A-` je ta cena plaćena jednom i svesno (O-F6) — ne
+umnožava se. Višeslovna šifra kao šum se praktično ne pojavljuje.
+
+**Posledica:** vrste se od sada upisuju u JEDNU mapu `DOCUMENT_SERIES` u
+`numbering.service.ts` (vrsta → prefiks; prazan prefiks = niz faktura), iz koje se izvode i
+brojač i oblik broja — pa se to dvoje ne mogu razići. **Vrsta koju niko ne upiše u mapu ne
+pada na goli broj**, nego dobija prefiks iz sopstvene šifre (`XYZ-1/26`): disjunktnost je
+strukturna, a ne stvar pamćenja.
+
+**Izlazne fakture ostaju nedirnute** — jedan zajednički niz, bez prefiksa (O-F1/O-F5).
+
+⚠️ Menja se **pre prvih proba**, kao O-F1 i O-F6. Brane: „serije su međusobno disjunktne"
+(spisak vrsta se nabraja **iz mape**, ne prepisuje) i „parser poznaje sve prefikse iz
+registra numeracije" (`reference-parser.util.spec.ts`) — nova serija dodata samo u numeraciji
+obara drugi test, jer bi njen poziv na broj i dalje proizvodio goli broj fakture.
 
 ---
 
