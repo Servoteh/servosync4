@@ -27,6 +27,8 @@
  *        „broj/godina" (kosa crta) i goli „broj"
  *   (6) PNB koji je DATUM .......................... samo sirov trim, bez ijednog
  *        izvedenog kandidata (v. `isDateTriplet` — `12-08-26` ne sme da dâ `8/26`)
+ *   (7) PNB sa PREFIKSOM SERIJE (`A-7/26`) ......... svi izvedeni kandidati NOSE prefiks
+ *        (v. `SERIES_PREFIXES` — `A-7/26` ne sme da dâ `7/26`)
  *
  * MODEL: `BankStatementLine` NEMA kolonu za model (provereno u schema.prisma), pa
  * se model NE persistuje — prosleđuje se opciono kroz `parseReference(raw, model)`
@@ -119,6 +121,59 @@ function isDateTriplet(a: string, b: string, c: string): boolean {
 }
 
 /**
+ * PREFIKSI SERIJA BROJEVA — moraju se poklapati sa `sales/numbering.service.ts`
+ * (`SERIES_PREFIX`, odluka O-F6). Sinhronost čuva test „prefiks serije je isti kao u
+ * numeraciji" u `reference-parser.util.spec.ts` (uvoz `seriesPrefixFor`).
+ *
+ * ZAŠTO PARSER UOPŠTE ZNA ZA SERIJE (nalaz adversarnog pregleda 02.08.2026)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Prefiks `A-` je uveden baš zato što avansni račun i faktura završavaju na ISTOM
+ * kupčevom kontu, a `ledger_entries` nema kolonu vrste dokumenta — pa se otvorene
+ * stavke grupišu SAMO po broju. Parser je taj prefiks na kraju skidao: iz
+ * `A-7/26` je pravio i kandidata `7/26`, dakle broj KONAČNE FAKTURE.
+ *
+ * SCENARIO (izmereno): kupac plati avans i u PNB upiše `A-7/26`. Dok je avansna
+ * stavka otvorena, egzaktan kandidat je prvi i sve radi. Čim se avans zatvori
+ * (naplaćen, netiran), egzaktan kandidat nema pogodak, a `7/26` ima — uplata
+ * pozvana na avans sedne na fakturu `7/26` i zatvori tuđu obavezu. Razdvajanje
+ * serija u numeraciji time biva poništeno na poslednjem koraku.
+ *
+ * PRAVILO: PNB koji nosi prefiks serije daje ISKLJUČIVO kandidate sa tim prefiksom.
+ * Kandidati se grade nad ostatkom PNB-a (ista pravila: model 97, segmentacija,
+ * broj/godina, datumska brana) pa im se prefiks vraća u KANONSKOM obliku iz
+ * numeracije (`A-`), tako da i `A7/26` i `a 7/26` pogode upisani broj `A-7/26`.
+ *
+ * SVESNO ODSTUPANJE: ako neko slovo „A" upiše kao šum ispred broja fakture
+ * (`A 657/25`), uparivanje po broju neće uspeti i uplata pada na fallback po iznosu.
+ * To je namerno isti izbor kao kod datumskog PNB-a — pošten fallback je jeftiniji od
+ * samouverenog zatvaranja pogrešne stavke.
+ */
+export const SERIES_PREFIXES: readonly string[] = ["A-"];
+
+/**
+ * Prepoznaj prefiks serije na početku PNB-a: slova serije, pa OPCIONO jedan
+ * razdelnik (crtica/razmak/kosa crta), pa obavezno CIFRA.
+ *
+ * Zahtev da odmah sledi cifra je brana od lažnog pogotka: `ABC123` nije serija „A"
+ * sa ostatkom `BC123`, a goli `A-` bez broja nije poziv na broj.
+ *
+ * @returns `{ prefix, rest }` u kanonskom obliku (`prefix` uvek kao u numeraciji), ili
+ *          `null` kad PNB ne nosi seriju.
+ */
+function matchSeriesPrefix(
+  raw: string,
+): { prefix: string; rest: string } | null {
+  for (const prefix of SERIES_PREFIXES) {
+    const letters = prefix.replace(/[^A-Za-z]/g, "");
+    if (letters.length === 0) continue;
+    const re = new RegExp(`^${letters}[-\\s/]?(?=\\d)`, "i");
+    const m = re.exec(raw);
+    if (m) return { prefix, rest: raw.slice(m[0].length) };
+  }
+  return null;
+}
+
+/**
  * Parsira sirov poziv na broj u uređenu listu kandidata broja dokumenta.
  *
  * @param raw   sirov PNB (FX PozivNaBroj(169,20), trimovan)
@@ -145,6 +200,17 @@ export function parseReference(
 
   // (1) EGZAKTAN — sirov trim je UVEK prvi kandidat (očuvanje postojećeg egzaktnog match-a).
   push(rawTrim);
+
+  // (1a) PREFIKS SERIJE — kandidati se izvode iz OSTATKA, pa im se prefiks vraća
+  //      (v. `SERIES_PREFIXES`). Nijedan kandidat bez prefiksa ne izlazi odavde:
+  //      `A-7/26` (avans) ne sme da ponudi `7/26` (faktura istog kupca).
+  const series = matchSeriesPrefix(rawTrim);
+  if (series) {
+    for (const inner of parseReference(series.rest, model).candidates) {
+      push(`${series.prefix}${inner}`);
+    }
+    return { candidates: out };
+  }
 
   const segmentsAll = rawTrim.split(SEPARATORS_RE).filter((s) => s.length > 0);
 

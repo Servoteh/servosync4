@@ -12,7 +12,9 @@ import { PrismaService } from "../../prisma/prisma.service";
  *
  * PLAN_FAZA_5 §A + doc 27 (carry-over):
  *   • izvor = PROF (ili PON) na level 250; cilj = NOV level-0 dokument (IFR/…),
- *   • pricePolicy = keep (cene se prenose 1:1 iz predračuna — ne pre-računavaju),
+ *   • pricePolicy = keep (cene se prenose 1:1 iz predračuna — ne pre-računavaju);
+ *     uz cene ide i KOEFICIJENT dokumenta, jer su cene u stavci upisane u dve razmere
+ *     (pre i posle koeficijenta) — v. `priceCoefficient` niže,
  *   • qtyPolicy = full (cela količina),
  *   • dedup po copiedFromItemId — stavka koja je već prepisana se NE prepisuje ponovo,
  *   • upis linkedInvoiceDocId na izvor + copiedFromDocId na cilj (traceback),
@@ -101,6 +103,36 @@ export class DocumentCarryOverService {
           vatTotal: proforma.vatTotal,
           grossTotal: proforma.grossTotal,
           copiedFromDocId: proforma.id,
+          // ── KOEFICIJENT CENE SE PRENOSI (§8/O1) ──────────────────────────────────
+          // U jednoj stavci žive DVE RAZMERE: `baseUnitPrice` i `unitPriceBeforeDiscount`
+          // su na nivou PRE koeficijenta, a `unitPrice`/`vatBase` POSLE njega
+          // (`sales.service.deriveFromBase`). Prepis nosi obe kolone doslovno, pa cilj
+          // MORA da nasledi i množilac — bez njega padne na `@default(1)` i dve razmere
+          // se pomešaju u istom redu.
+          //
+          // SCENARIO (izmereno): predračun sa koeficijentom 0,5, cena 1.000, rabat 10 % →
+          // `unitPriceBeforeDiscount=1.000`, `baseUnitPrice=900`, `unitPrice=450`,
+          // `vatBase=450`. Sa koeficijentom 1 na cilju:
+          //   • ŠTAMPA: puna cena se množi koeficijentom CILJA (1) → bruto 1.000, pa red
+          //     „Rabat" kaže 550,00 uz kolonu „R% 10" — papir sam sebe poriče, a kupcu
+          //     pokazuje rabat koji nije odobren (stvarni je 50,00).
+          //   • PRVA IZMENA STAVKE: `unitPrice = baseUnitPrice × koeficijent` više ne važi
+          //     (900 × 1 ≠ 450), pa bi obična ispravka količine (`SalesService.updateItem`,
+          //     grana bez preračuna cene) tiho podigla cenu sa 450 na 900.
+          //
+          // ZAŠTO SE PRENOSI MNOŽILAC, A NE „UPEČE" U CENE: druga mogućnost je bila da
+          // cilj dobije koeficijent 1 uz `baseUnitPrice := unitPrice` i
+          // `unitPriceBeforeDiscount := unitPriceBeforeDiscount × koeficijent_izvora`.
+          // Račun bi se i tako zatvorio, ali NEPOVRATNO: vraćanje koeficijenta na 1 na
+          // računu više ne bi vratilo polaznu cenu (900), jer je množilac ugrađen u baznu
+          // cenu. To je tačno BigBitovo „primeni pa upiši" koje §8/O1 odbacuje. Ovako
+          // prepis ne dira nijedan iznos (novac je identičan izvoru), a koeficijent na
+          // računu ostaje ponovljiv i može da se ispravi ili poništi.
+          priceCoefficient: proforma.priceCoefficient,
+          // Audit primene ide uz vrednost — inače bi račun nosio koeficijent 0,5 bez ijednog
+          // traga ko ga je i kada primenio, a to je jedini zapis o odobrenoj korekciji cene.
+          priceCoefficientAppliedAt: proforma.priceCoefficientAppliedAt,
+          priceCoefficientAppliedBy: proforma.priceCoefficientAppliedBy,
           status: "DRAFT",
           isExport,
           poNumber: proforma.poNumber, // D6: broj narudžbenice se prenosi PROF → račun (UBL OrderReference)

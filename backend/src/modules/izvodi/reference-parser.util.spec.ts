@@ -1,4 +1,5 @@
-import { parseReference } from "./reference-parser.util";
+import { parseReference, SERIES_PREFIXES } from "./reference-parser.util";
+import { seriesPrefixFor } from "../sales/numbering.service";
 
 /**
  * FX_OdrediBrojDokumenta port — kandidati broja dokumenta iz poziva na broj.
@@ -197,6 +198,75 @@ describe("reference-parser.util — parseReference", () => {
       const { candidates } = parseReference("123-2026");
       expect(candidates).toContain("123/2026");
       expect(candidates).toContain("123/26");
+    });
+  });
+
+  /**
+   * PREFIKS SERIJE (`A-`, odluka O-F6) NE SME DA ISCURI.
+   * ─────────────────────────────────────────────────────────────────────────────
+   * Prefiks postoji zato što avansni račun i faktura završavaju na istom kupčevom
+   * kontu, a otvorene stavke se grupišu samo po BROJU (`ledger_entries` nema vrstu).
+   * Parser ga je na kraju skidao: `A-7/26` → i kandidat `7/26`, dakle broj KONAČNE
+   * FAKTURE. Dok je avansna stavka otvorena, egzaktan kandidat je prvi i sve radi;
+   * čim se avans zatvori, uplata pozvana na avans sedne na fakturu.
+   */
+  describe("poziv na broj sa prefiksom serije ne sme da dâ broj bez prefiksa", () => {
+    it("SCENARIO A-7/26 → svi kandidati nose `A-`, nijedan nije goli 7/26", () => {
+      const { candidates } = parseReference("A-7/26");
+
+      expect(candidates[0]).toBe("A-7/26"); // egzaktan ostaje prvi
+      expect(candidates).toEqual(["A-7/26", "A-7", "A-726", "A-26"]);
+      // Broj konačne fakture i njegovi komadi ne smeju da postoje kao kandidati.
+      expect(candidates).not.toContain("7/26");
+      expect(candidates).not.toContain("7");
+      expect(candidates).not.toContain("726");
+      expect(candidates).not.toContain("26");
+      // Ni goli prefiks (poklopio bi se sa bilo čim što tako počinje).
+      expect(candidates).not.toContain("A");
+    });
+
+    it("PNB bez crtice ili sa razmakom i dalje pogađa upisani broj `A-7/26`", () => {
+      // Numeracija upisuje `A-7/26`; kupac kuca kako mu dođe, pa se prefiks vraća u
+      // KANONSKOM obliku. Bez ovoga bi legitimna avansna uplata izgubila i egzaktan pogodak.
+      for (const raw of ["A7/26", "A 7/26", "a-7/26", "A/7/26"]) {
+        const { candidates } = parseReference(raw);
+        expect(candidates[0]).toBe(raw.trim());
+        expect(candidates).toContain("A-7/26");
+        expect(candidates).not.toContain("7/26");
+      }
+    });
+
+    it("prefiks + puna godina (A-7/2026) daje i skraćeni oblik, sve sa prefiksom", () => {
+      const { candidates } = parseReference("A-7/2026");
+      expect(candidates).toContain("A-7/2026");
+      expect(candidates).toContain("A-7/26");
+      expect(candidates).not.toContain("7/2026");
+      expect(candidates).not.toContain("7/26");
+    });
+
+    it("datumska brana važi i unutar serije (A-12-08-26 ne daje A-8/26 ni 8/26)", () => {
+      const { candidates } = parseReference("A-12-08-26");
+      expect(candidates).toEqual(["A-12-08-26"]);
+      expect(candidates).not.toContain("A-8/26");
+      expect(candidates).not.toContain("8/26");
+    });
+
+    it("slovo bez broja iza sebe NIJE serija (A, ABC123 se ne kljukaju prefiksom)", () => {
+      expect(parseReference("ABC123").candidates).toEqual(["ABC123"]);
+      expect(parseReference("A").candidates).toEqual(["A"]);
+    });
+
+    it("numerički PNB nije dotaknut pravilom (657-25, 97 657 25, 12-08-26)", () => {
+      expect(parseReference("657-25").candidates).toContain("657/25");
+      expect(parseReference("97 657 25").candidates).toContain("657/25");
+      expect(parseReference("12-08-26").candidates).toEqual(["12-08-26"]);
+      expect(parseReference("7/26").candidates).toContain("7/26");
+    });
+
+    it("prefiks serije je isti kao u numeraciji (jedna istina za AVR)", () => {
+      // Kad bi se razišli, parser bi opet propuštao goli broj — i to tiho.
+      expect(SERIES_PREFIXES).toContain(seriesPrefixFor("AVR"));
+      expect(seriesPrefixFor("IFR")).toBe(""); // faktura nema seriju
     });
   });
 });
