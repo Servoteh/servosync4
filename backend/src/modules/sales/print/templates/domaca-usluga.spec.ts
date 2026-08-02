@@ -54,6 +54,8 @@ const ZAKUP: PrintLine = {
   customsTariff: null,
   quantity: d(1),
   unitPrice: d(16000),
+  // Bez rabata je cena pre rabata ista kao cena stavke.
+  unitPriceBeforeDiscount: d(16000),
   discountPercent: d(0),
   lineTotal: d(16000),
   vatRatePercent: 20,
@@ -306,7 +308,11 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
     it("rabat sa stavki zatvara račun: bruto − rabat = osnovica", () => {
       const withDiscount = domacaUslugaTemplate(
         makeCtx({
-          lines: [{ ...ZAKUP, discountPercent: d(20) }],
+          // STARA stavka (pre kolone `unit_price_before_discount`): u bazi je samo cena
+          // POSLE rabata, pa rabat ide obračunom unazad — 16.000 × 20 / 80 = 4.000.
+          lines: [
+            { ...ZAKUP, discountPercent: d(20), unitPriceBeforeDiscount: null },
+          ],
         }),
       );
       expect(framedAmounts(withDiscount).map((b) => b.text)).toEqual([
@@ -337,6 +343,9 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
               quantity: d(10),
               // Cena POSLE rabata, kako je i zapisana u bazi (1.000,00 − 10 %).
               unitPrice: d(900),
+              // Puna cena se dobija i BEZ nove kolone, obračunom unazad — ovaj test čuva
+              // baš taj put, jer njime izlaze svi zatečeni računi.
+              unitPriceBeforeDiscount: null,
               discountPercent: d(10),
               lineTotal: d(9000),
             },

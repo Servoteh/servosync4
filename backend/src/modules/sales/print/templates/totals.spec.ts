@@ -26,6 +26,9 @@ function line(over: Partial<PrintLine> = {}): PrintLine {
     customsTariff: null,
     quantity: D("1"),
     unitPrice: D("100.00"),
+    // Podrazumevano STARA stavka (kolona `unit_price_before_discount` je novija od nje):
+    // tako svaki test koji je ne postavi proverava REZERVNI put, obračun unazad.
+    unitPriceBeforeDiscount: null,
     discountPercent: D("0"),
     lineTotal: D("100.00"),
     vatRatePercent: 20,
@@ -33,10 +36,80 @@ function line(over: Partial<PrintLine> = {}): PrintLine {
   };
 }
 
-describe("rabat izveden iz cene POSLE rabata", () => {
+describe("rabat iz cene PRE rabata (prvi izvor)", () => {
+  /**
+   * RUPA ZBOG KOJE JE KOLONA I UVEDENA: rabat od 100 %. Cena posle rabata je 0, pa
+   * obračun unazad (`neto × p / (100 − p)`) deli nulom i daje 0 — papir je pokazivao
+   * „R% 100" uz „Rabat: 0,00". Sa cenom pre rabata na stavci iznos je pun.
+   */
+  it("rabat 100 %: 10 kom × 1.000,00 daje rabat 10.000,00 (bruto 10.000,00)", () => {
+    const osnovica = D("0");
+    const rabat = lineDiscountAmount(
+      line({
+        quantity: D("10"),
+        unitPrice: D("0"),
+        unitPriceBeforeDiscount: D("1000.00"),
+        discountPercent: D("100"),
+        lineTotal: osnovica,
+      }),
+    );
+    expect(rabat.toFixed(2)).toBe("10000.00");
+    // Obrasci bruto računaju kao `osnovica + rabat`, pa invarijanta
+    // „bruto − rabat = osnovica" stoji sama od sebe; ovde se proverava da je bruto
+    // baš puna cena robe (10 × 1.000,00), a ne nula kao do sada.
+    expect(osnovica.add(rabat).toFixed(2)).toBe("10000.00");
+  });
+
+  it("rabat 10 %: isti vektor daje isti iznos kao obračun unazad", () => {
+    const withPrice = lineDiscountAmount(
+      line({
+        quantity: D("10"),
+        unitPrice: D("900.00"),
+        unitPriceBeforeDiscount: D("1000.00"),
+        discountPercent: D("10"),
+        lineTotal: D("9000.00"),
+      }),
+    );
+    expect(withPrice.toFixed(2)).toBe("1000.00");
+    expect(withPrice.add(D("9000.00")).toFixed(2)).toBe("10000.00");
+  });
+
+  it("bez rabata je tačno 0,00 i kad je puna cena upisana", () => {
+    // Kolona `R%` je prazna → red „Rabat" mora biti 0,00 bez zaokružne sitnine, pa se
+    // oduzimanje uopšte ne izvodi. Bez te brane bi 3 × 33,3333 − 99,99 dalo „rabat" od
+    // jedne pare na papiru koji rabat nema.
+    const rabat = lineDiscountAmount(
+      line({
+        quantity: D("3"),
+        unitPrice: D("33.3333"),
+        unitPriceBeforeDiscount: D("33.3333"),
+        discountPercent: D("0"),
+        lineTotal: D("99.99"),
+      }),
+    );
+    expect(rabat.toFixed(2)).toBe("0.00");
+  });
+
+  it("protivrečna stavka (puna cena manja od neto) pada na rezervu, ne štampa minus", () => {
+    // Negativan „Rabat" je greška vidljiva kupcu; bolje iznos iz obračuna unazad.
+    const rabat = lineDiscountAmount(
+      line({
+        quantity: D("10"),
+        unitPrice: D("900.00"),
+        unitPriceBeforeDiscount: D("500.00"), // pokvaren podatak
+        discountPercent: D("10"),
+        lineTotal: D("9000.00"),
+      }),
+    );
+    expect(rabat.toFixed(2)).toBe("1000.00");
+  });
+});
+
+describe("rabat izveden iz cene POSLE rabata (rezerva za stare stavke)", () => {
   /**
    * Scenario koji je otkrio kvar: 10 kom × 1.000,00 uz rabat 10 %. U bazi stoji
-   * `unitPrice = 900,00` i `lineTotal (vatBase) = 9.000,00`; rabat se vraća unazad.
+   * `unitPrice = 900,00` i `lineTotal (vatBase) = 9.000,00`; stavka je starija od kolone
+   * sa cenom pre rabata (`unitPriceBeforeDiscount = null`), pa se rabat vraća unazad.
    */
   it("9.000,00 uz 10 % daje rabat 1.000,00 (bruto 10.000,00)", () => {
     const rabat = lineDiscountAmount(
@@ -66,6 +139,20 @@ describe("rabat izveden iz cene POSLE rabata", () => {
     expect(total.toFixed(2)).toBe("1000.00");
   });
 
+  it("meša stare i nove stavke na istom papiru", () => {
+    // Jedan račun ume da nosi i prepisanu (staru) i novu stavku — zbir mora biti tačan.
+    const total = discountFromLines([
+      line({
+        quantity: D("10"),
+        unitPriceBeforeDiscount: D("1000.00"),
+        discountPercent: D("100"),
+        lineTotal: D("0"),
+      }), // 10.000,00 iz pune cene
+      line({ lineTotal: D("9000.00"), discountPercent: D("10") }), // 1.000,00 unazad
+    ]);
+    expect(total.toFixed(2)).toBe("11000.00");
+  });
+
   it("zaokružuje po stavci na dve decimale, kao i štampa", () => {
     // 100 × 3 / 97 = 3,0927835… → 3,09
     expect(
@@ -76,11 +163,11 @@ describe("rabat izveden iz cene POSLE rabata", () => {
   });
 
   /**
-   * Rabat od 100 % se NE MOŽE izvesti: cena posle rabata je 0, pa u podacima koji stižu
-   * do štampe (`PrintLine`) nema nijednog traga cene pre rabata. Bolje 0 nego deljenje
-   * nulom ili izmišljen iznos — v. komentar u `totals.ts`.
+   * Stara stavka sa rabatom od 100 %: cena posle rabata je 0, a pune cene u bazi nema
+   * ni u jednom obliku — iznos se ne može rekonstruisati. Bolje 0 nego deljenje nulom
+   * ili izmišljen iznos (v. komentar u `totals.ts`).
    */
-  it("rabat od 100 % ne obara štampu (vraća 0, ne beskonačno)", () => {
+  it("rabat od 100 % bez pune cene ne obara štampu (vraća 0, ne beskonačno)", () => {
     const rabat = lineDiscountAmount(
       line({ unitPrice: D("0"), discountPercent: D("100"), lineTotal: D("0") }),
     );

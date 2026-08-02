@@ -4338,6 +4338,28 @@ model InvoiceItem {
   /// bez koeficijenta (=1) obe cene su jednake; migracija je tako i backfill-ovala.
   baseUnitPrice Decimal @default(0) @map("base_unit_price") @db.Decimal(19, 4)
 
+  /// CENA PRE RABATA po jedinici — jedini trag „koliko bi koštalo bez rabata".
+  ///
+  /// ⚠️ NIJE `baseUnitPrice`. `baseUnitPrice` je cena PRE KOEFICIJENTA ali VEĆ POSLE
+  /// rabata i kase (pisci je pune iz `PricedItem.unitPrice`), pa iz nje rabat ne može
+  /// da se izvede. Ova kolona stoji na ISTOM nivou kao `baseUnitPrice` — pre
+  /// koeficijenta dokumenta — pa je istina:
+  ///   `unitPrice = unitPriceBeforeDiscount × (1 − rabat/100) × Invoice.priceCoefficient`
+  /// Kasa je već sadržana (upisuje se `basePrice × (1 − kasa/100)`), jer kolona `R%`
+  /// na papiru tvrdi samo rabat — kad bi kasa ostala napolju, red „Rabat" bi nosio i nju.
+  ///
+  /// ZAŠTO POSTOJI: `PricingService` je ovaj podatak oduvek RAČUNAO (`PricedItem.basePrice`)
+  /// i BACAO — nijedan pisac ga nije čuvao. Štampa je zato rabat vraćala unazad iz neto
+  /// iznosa (`neto × p / (100 − p)`), što kod RABATA OD 100 % znači deljenje nulom: cena
+  /// posle rabata je 0 i u podacima nije ostajao nijedan trag pune cene. Papir je pokazivao
+  /// „R% 100" uz „Rabat: 0,00" — istu protivrečnost zbog koje je red rabata i popravljan.
+  ///
+  /// NULL = nije poznato (stavke starije od kolone i uvoz iz BigBita). Namerno NULLABLE, a ne
+  /// `DEFAULT 0`: kod `baseUnitPrice` je `NOT NULL DEFAULT 0` značilo da se „nije upisano" i
+  /// „cena je nula" ne razlikuju, pa je čitanje moralo da pogađa. Ovde štampa na NULL pada na
+  /// obračun unazad, koji za sve rabate ispod 100 % daje isti iznos.
+  unitPriceBeforeDiscount Decimal? @map("unit_price_before_discount") @db.Decimal(19, 4)
+
   discountPercent     Decimal @default(0) @map("discount_percent") @db.Decimal(19, 4) // Rabat %
   cashDiscountPercent Decimal @default(0) @map("cash_discount_percent") @db.Decimal(19, 4) // Kasa %
 

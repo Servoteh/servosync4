@@ -67,6 +67,20 @@ export interface PricedItem {
   unitPrice: Prisma.Decimal;
   /** bazna (fakturna) VP cena pre rabata (za prikaz/print). */
   basePrice: Prisma.Decimal;
+  /**
+   * CENA PRE RABATA, spremna za upis u `InvoiceItem.unitPriceBeforeDiscount`:
+   * `basePrice × (1 − kasa/100)`, dakle na istoj razmeri kao `unitPrice` samo bez rabata.
+   *
+   * ZAŠTO NIJE PROSTO `basePrice`: kolona `R%` na papiru tvrdi SAMO rabat. Kad bi štampa
+   * bruto računala iz čiste fakturne cene, u red „Rabat" bi upala i kasa — iznos koji taj
+   * red ne opisuje. Ovako važi tačno `unitPrice = unitPriceBeforeDiscount × (1 − rabat/100)`,
+   * pa je razlika između bruta i osnovice čist rabat.
+   *
+   * ZAŠTO OVDE, A NE U POZIVAOCIMA: rabat i kasa se primenjuju na jednom mestu
+   * (`applyChain`); da svaki pisac sam množi `basePrice` sa kasom, prvi koji to zaboravi
+   * proizveo bi tih, nedokaziv rabat na papiru.
+   */
+  unitPriceBeforeDiscount: Prisma.Decimal;
   discountPercent: Prisma.Decimal;
   cashDiscountPercent: Prisma.Decimal;
   quantity: Prisma.Decimal;
@@ -318,9 +332,18 @@ export class PricingService {
       warnings,
     );
 
+    // Cena PRE rabata (posle kase) — jedini trag pune cene koji ostaje u bazi. Računa se
+    // iz ISTE `basePrice` i ISTE kase koje su ušle u `unitPrice`, pa i posle kanala „NETO"
+    // (gde je `basePrice` mogla da se podigne) ostaje tačno na istoj razmeri kao `unitPrice`.
+    const unitPriceBeforeDiscount = this.round(
+      basePrice.mul(HUNDRED.sub(cashDiscountPercent).div(HUNDRED)),
+      MONEY_DP,
+    );
+
     return {
       unitPrice,
       basePrice,
+      unitPriceBeforeDiscount,
       discountPercent,
       cashDiscountPercent,
       quantity,

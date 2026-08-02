@@ -155,6 +155,8 @@ function line(
     customsTariff: null,
     quantity: D(quantity),
     unitPrice: D(unitPrice),
+    // Papir nema rabat — cena pre rabata je ista kao cena stavke.
+    unitPriceBeforeDiscount: D(unitPrice),
     discountPercent: D("0"),
     lineTotal: D(lineTotal),
     // Ino promet — nema PDV stope po stavci.

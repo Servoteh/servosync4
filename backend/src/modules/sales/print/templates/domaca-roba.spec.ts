@@ -90,6 +90,9 @@ function makeLine(over: Partial<PrintLine>): PrintLine {
     customsTariff: null,
     quantity: d(1),
     unitPrice: d(0),
+    // Podrazumevano „stara stavka" (bez cene pre rabata) — testovi koji tu cenu
+    // proveravaju je postavljaju izričito.
+    unitPriceBeforeDiscount: null,
     discountPercent: d(0),
     lineTotal: d(0),
     vatRatePercent: 20,
@@ -389,6 +392,36 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
       const texts = textOf(ctx);
       expect(texts).toContain("10"); // R% > 0 …
       expect(amountAfter(texts, "Rabat:")).not.toBe("0.00"); // … pa rabat NIJE nula
+    });
+
+    /**
+     * RABAT OD 100 % — poslednji slučaj u kom je papir i dalje protivrečio sam sebi.
+     * Cena posle rabata je 0, pa obračun unazad nema iz čega da radi; iznos dolazi iz
+     * cene PRE rabata sa stavke (`unit_price_before_discount`, uvedena 02.08.2026).
+     * 10 kom × 1.000,00 uz 100 % → osnovica 0,00, rabat 10.000,00, bruto 10.000,00.
+     */
+    it("rabat 100 % daje bruto 10.000,00 i rabat 10.000,00 uz osnovicu 0,00", () => {
+      const ctx = makeCtx({
+        invoice: makeInvoice({
+          netTotal: d("0.00"),
+          vatTotal: d("0.00"),
+          grossTotal: d("0.00"),
+        }),
+        lines: [
+          makeLine({
+            name: "Roba bez naknade",
+            quantity: d(10),
+            unitPrice: d("0.00"),
+            unitPriceBeforeDiscount: d("1000.00"),
+            discountPercent: d(100),
+            lineTotal: d("0.00"),
+          }),
+        ],
+      });
+      const texts = textOf(ctx);
+      expect(texts[texts.indexOf("Rabat:") - 1]).toBe("10,000.00");
+      expect(amountAfter(texts, "Rabat:")).toBe("10,000.00");
+      expect(amountAfter(texts, "Vrednost bez PDV (osnovica):")).toBe("0.00");
     });
 
     /**

@@ -30,31 +30,57 @@ const HUNDRED = new Prisma.Decimal(100);
  * rabat ispadao „osnovica − osnovica = 0,00". Papir je istovremeno u koloni pokazivao
  * `R% 10` i ispod `Rabat: 0.00` — dve tvrdnje koje se međusobno poriču.
  *
- * SCENARIO (10 kom × 1.000,00 sa rabatom 10 %): `PricingService` upiše
- * `unitPrice = 900,00`, `lineTotal (vatBase) = 9.000,00`, `discountPercent = 10`.
- * Rabat se vraća unazad iz neto iznosa:
+ * ── DVA IZVORA BRUTA, PO STROGOM REDOSLEDU ─────────────────────────────────────
  *
- *   rabat = neto × p / (100 − p) = 9.000 × 10 / 90 = **1.000,00**
- *   bruto = neto + rabat = **10.000,00**   (= 10 × 1.000,00, cena PRE rabata)
+ * 1) `PrintLine.unitPriceBeforeDiscount` — CENA PRE RABATA sa same stavke
+ *    (`invoice_items.unit_price_before_discount`, uvedena 02.08.2026). Kad je ima:
  *
- * ZAŠTO IZ `lineTotal`, A NE IZ `količina × unitPrice`: `lineTotal` je iznos koji se
- * i ŠTAMPA u koloni VREDNOST / I Z N O S / Total, a njegov zbir je osnovica u zbirnom
- * bloku. Računanjem iz iste vrednosti koja se štampa nema zaokruživanja koje bi
+ *        bruto = količina × cena_pre_rabata      rabat = bruto − osnovica
+ *
+ *    Ovo je jedini izvor koji radi i za **RABAT OD 100 %**: tada je cena posle rabata 0,
+ *    pa unazad nema šta da se računa. 10 kom × 1.000,00 uz rabat 100 % → osnovica 0,00,
+ *    rabat **10.000,00**, bruto **10.000,00**. Do ove kolone je takav papir tvrdio
+ *    „R% 100" i „Rabat: 0,00" istovremeno.
+ *
+ * 2) REZERVA — obračun UNAZAD iz neto iznosa, za stavke starije od kolone i za uvoz
+ *    (`unitPriceBeforeDiscount = null`):
+ *
+ *        rabat = neto × p / (100 − p)            bruto = neto + rabat
+ *
+ *    SCENARIO (10 kom × 1.000,00 uz rabat 10 %): u bazi `unitPrice = 900,00`,
+ *    `lineTotal (vatBase) = 9.000,00`, `discountPercent = 10` →
+ *    rabat = 9.000 × 10 / 90 = **1.000,00**, bruto = **10.000,00**. Za svaki rabat ispod
+ *    100 % rezerva daje isti iznos kao prvi izvor, pa se papir za zatečene račune ne menja.
+ *    Kod rabata od 100 % rezerva vraća 0 — ne deli nulom i ne izmišlja iznos.
+ *
+ * ZAŠTO SE ODUZIMA OD `lineTotal`, A NE OD `količina × unitPrice`: `lineTotal` je iznos
+ * koji se i ŠTAMPA u koloni VREDNOST / I Z N O S / Total, a njegov zbir je osnovica u
+ * zbirnom bloku. Računanjem od iste vrednosti koja se štampa nema zaokruživanja koje bi
  * proizvelo rabat od jedne pare tamo gde rabata nema.
  *
- * ⚠️ KASA (`cashDiscountPercent`) OVDE NE UČESTVUJE: `PrintLine` je ne nosi (a ni jedan
- * obrazac je ne prikazuje), pa se izvedeni bruto računa samo do rabata. Kad je uz rabat
- * odobrena i kasa, „bruto" je cena pre rabata ali posle kase — i dalje tačno u odnosu
- * na kolonu `R%`/`Rab%` koja je jedino što papir tvrdi.
- *
- * ⚠️ RABAT OD 100 % se ne može izvesti: `unitPrice` je tada 0, pa u podacima ne postoji
- * nijedan trag cene pre rabata (`baseUnitPrice` sa stavke ne stiže do štampe). Takva
- * stavka doprinosi 0 — bolje nego deljenje nulom ili izmišljen iznos.
+ * ⚠️ KASA (`cashDiscountPercent`) NI U JEDNOM IZVORU NE UČESTVUJE: u kolonu se upisuje
+ * `basePrice × (1 − kasa/100)`, dakle cena pre rabata ali POSLE kase — tačno ono što
+ * kolona `R%`/`Rab%` na papiru tvrdi. Da je kasa napolju, red „Rabat" bi nosio i nju.
  */
 export function lineDiscountAmount(line: PrintLine): Prisma.Decimal {
   const percent = line.discountPercent;
-  if (percent.lessThanOrEqualTo(ZERO) || percent.greaterThanOrEqualTo(HUNDRED))
-    return ZERO;
+  // Bez rabata red mora biti tačno 0,00 — zato pre svakog računa. Da se ovde ulazilo u
+  // oduzimanje, razlika u zaokruživanju cene i osnovice dala bi „rabat" od jedne pare.
+  if (percent.lessThanOrEqualTo(ZERO)) return ZERO;
+
+  // ── 1) Puna cena sa stavke ──
+  const beforeDiscount = line.unitPriceBeforeDiscount;
+  if (beforeDiscount && beforeDiscount.greaterThan(ZERO)) {
+    const gross = line.quantity.mul(beforeDiscount);
+    const amount = gross.sub(line.lineTotal);
+    // Negativan ishod znači da je puna cena manja od cene posle rabata — protivrečan
+    // podatak (pokvaren uvoz, ručna izmena u bazi). Papir tada ide na rezervu umesto da
+    // odštampa „Rabat −…", što je greška vidljiva kupcu.
+    if (amount.greaterThanOrEqualTo(ZERO)) return amount.toDecimalPlaces(2);
+  }
+
+  // ── 2) Rezerva: unazad iz neto iznosa ──
+  if (percent.greaterThanOrEqualTo(HUNDRED)) return ZERO;
   return line.lineTotal
     .mul(percent)
     .div(HUNDRED.sub(percent))

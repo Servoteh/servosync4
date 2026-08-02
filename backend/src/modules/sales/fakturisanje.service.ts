@@ -168,6 +168,10 @@ export class FakturisanjeService {
         // pa je bazna cena jednaka cenovnoj. Bez ovog upisa kolona ostaje na
         // `DEFAULT 0`, a prvi dodir stavke bi cenu izveo iz nule.
         baseUnitPrice: p.unitPrice,
+        // Cena PRE rabata — jedini trag pune cene za red „Rabat" na štampi. `baseUnitPrice`
+        // to NIJE: ona je već posle rabata i kase (v. `schema.prisma`), pa se iz nje rabat
+        // od 100 % ne može izvesti — cena posle takvog rabata je nula.
+        unitPriceBeforeDiscount: p.unitPriceBeforeDiscount,
         discountPercent: p.discountPercent,
         cashDiscountPercent: p.cashDiscountPercent,
         vatRateCode: isExport ? "0" : p.vatRateCode,

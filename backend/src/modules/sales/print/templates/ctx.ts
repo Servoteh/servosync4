@@ -78,6 +78,17 @@ export interface PrintLine {
   customsTariff: string | null;
   quantity: Prisma.Decimal;
   unitPrice: Prisma.Decimal;
+  /**
+   * Cena PRE rabata po jedinici, na ISTOJ razmeri kao `unitPrice` (dakle već pomnožena
+   * koeficijentom dokumenta). Iz nje se dobija bruto: `količina × ova cena`.
+   *
+   * `null` = stavka je starija od kolone `invoice_items.unit_price_before_discount` ili
+   * dolazi iz uvoza; tada `totals.ts` rabat vraća unazad iz neto iznosa. Polje je NAMERNO
+   * obavezno (a ne opciono) iako sme da bude `null`: štampa je i nastala kao kvar zato što
+   * je jedan podatak tiho izostao iz učitavanja, pa svako novo mesto koje pravi `PrintLine`
+   * mora da se izjasni šta sa punom cenom.
+   */
+  unitPriceBeforeDiscount: Prisma.Decimal | null;
   discountPercent: Prisma.Decimal;
   lineTotal: Prisma.Decimal;
   /** Poreska stopa u procentima (20), za kolonu „PDV". `null` = ino. */

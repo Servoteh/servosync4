@@ -131,6 +131,11 @@ export class DocumentCarryOverService {
               baseUnitPrice: it.baseUnitPrice?.greaterThan(0)
                 ? it.baseUnitPrice
                 : it.unitPrice,
+              // Cena PRE rabata se PRENOSI kakva jeste — i kad je null. Račun nastao
+              // prepisom nosi isti rabat kao predračun, pa mora da nosi i istu punu cenu;
+              // bez prenosa bi red „Rabat" bio tačan na predračunu, a nedokaziv na računu.
+              // Za izvore starije od kolone ostaje null i štampa ide na obračun unazad.
+              unitPriceBeforeDiscount: it.unitPriceBeforeDiscount,
               discountPercent: it.discountPercent,
               cashDiscountPercent: it.cashDiscountPercent,
               vatRateCode: it.vatRateCode,

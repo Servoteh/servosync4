@@ -93,6 +93,12 @@ interface EditableInvoice {
 /** Sve što jedna stavka nosi kao rezultat računa (spremno za upis). */
 interface ComputedLine {
   baseUnitPrice: Prisma.Decimal;
+  /**
+   * Cena PRE rabata (v. `schema.prisma`) — nosi se kroz SVAKI upis stavke, i onaj koji
+   * cenu ne preračunava. Kad bi je izostavila samo jedna grana (npr. izmena količine),
+   * ta izmena bi je obrisala i papir bi opet ostao bez pune cene.
+   */
+  unitPriceBeforeDiscount: Prisma.Decimal | null;
   unitPrice: Prisma.Decimal;
   discountPercent: Prisma.Decimal;
   cashDiscountPercent: Prisma.Decimal;
@@ -328,6 +334,9 @@ export class SalesService {
       line = await this.deriveFromBase({
         baseUnitPrice: existing.baseUnitPrice,
         currentUnitPrice: existing.unitPrice,
+        // Cena se ne preračunava → puna cena se PRENOSI sa zatečene stavke. Bez ovoga
+        // bi ispravka količine obrisala jedini trag cene pre rabata.
+        unitPriceBeforeDiscount: existing.unitPriceBeforeDiscount,
         quantity,
         vatRateCode: existing.vatRateCode,
         discountPercent: existing.discountPercent,
@@ -492,6 +501,7 @@ export class SalesService {
         itemId: true,
         quantity: true,
         baseUnitPrice: true,
+        unitPriceBeforeDiscount: true,
         unitPrice: true,
         discountPercent: true,
         cashDiscountPercent: true,
@@ -536,6 +546,9 @@ export class SalesService {
     // kase) je BAZNA cena stavke — koeficijent se na nju množi tek u izvođenju.
     return this.deriveFromBase({
       baseUnitPrice: priced.unitPrice,
+      // Cena PRE rabata ide u bazu SAMO odavde — `deriveFromBase` je ne izvodi (iz cene
+      // posle rabata se ne može izvesti kad je rabat 100 %), nego je prosleđuje dalje.
+      unitPriceBeforeDiscount: priced.unitPriceBeforeDiscount,
       quantity: params.quantity,
       vatRateCode: priced.vatRateCode,
       discountPercent: priced.discountPercent,
@@ -561,6 +574,12 @@ export class SalesService {
      * tek pravi, jer tada zatečene cene ni nema.
      */
     currentUnitPrice?: Prisma.Decimal | null;
+    /**
+     * Cena PRE rabata — PROLAZI kroz izvođenje nedirnuta. Ona je, kao i `baseUnitPrice`,
+     * na nivou PRE koeficijenta, pa je koeficijent ne menja; štampa je množi koeficijentom
+     * dokumenta isto kao što se i `unitPrice` izvodi. `null` = stavka starija od kolone.
+     */
+    unitPriceBeforeDiscount?: Prisma.Decimal | null;
     quantity: Prisma.Decimal;
     vatRateCode: string;
     discountPercent: Prisma.Decimal;
@@ -588,6 +607,7 @@ export class SalesService {
     const vatAmount = money(derived.vatAmount);
     return {
       baseUnitPrice,
+      unitPriceBeforeDiscount: params.unitPriceBeforeDiscount ?? null,
       unitPrice,
       discountPercent: params.discountPercent,
       cashDiscountPercent: params.cashDiscountPercent,
@@ -615,6 +635,7 @@ export class SalesService {
         id: true,
         quantity: true,
         baseUnitPrice: true,
+        unitPriceBeforeDiscount: true,
         unitPrice: true,
         discountPercent: true,
         cashDiscountPercent: true,
@@ -626,6 +647,9 @@ export class SalesService {
       const line = await this.deriveFromBase({
         baseUnitPrice: item.baseUnitPrice,
         currentUnitPrice: item.unitPrice,
+        // Koeficijent ne dira punu cenu (obe su na nivou PRE koeficijenta) — zato se
+        // prenosi nedirnuta i primena koeficijenta ostaje ponovljiva (B4).
+        unitPriceBeforeDiscount: item.unitPriceBeforeDiscount,
         quantity: item.quantity,
         vatRateCode: item.vatRateCode,
         discountPercent: item.discountPercent,

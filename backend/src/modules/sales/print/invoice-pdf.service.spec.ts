@@ -626,6 +626,68 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
       expect(out.body).toContain("20%");
       expect(out.body).toContain("PDV po stopi 20% X 80,497.70 =");
     });
+
+    /**
+     * CENA PRE RABATA ZAISTA STIŽE DO PAPIRA (02.08.2026).
+     *
+     * Kolona `invoice_items.unit_price_before_discount` postoji, ali dok je učitavanje ne
+     * prosledi u `PrintCtx`, štampa je ne vidi — a rabat od 100 % se bez nje ne može
+     * izračunati. Ovaj test cilja baš tu sponu: 10 kom × 1.000,00 uz rabat 100 %, osnovica
+     * 0,00 → red „Rabat" mora da pokaže 10.000,00, a ne 0,00.
+     */
+    it("cena PRE rabata sa stavke stiže do reda „Rabat“ (rabat 100 %)", async () => {
+      const out = await build(
+        makeInvoice({
+          netTotal: D("0"),
+          vatTotal: D("0"),
+          grossTotal: D("0"),
+          items: [
+            makeItem({
+              quantity: D("10"),
+              unitPrice: D("0"),
+              unitPriceBeforeDiscount: D("1000.00"),
+              discountPercent: D("100"),
+              vatBase: D("0"),
+              vatAmount: D("0"),
+              lineTotal: D("0"),
+            }),
+          ],
+        }),
+      );
+      expect(out.body).toContain("10,000.00");
+    });
+
+    /**
+     * KOEFICIJENT DOKUMENTA (§8/O1) važi i za punu cenu. U bazi je ona, kao i
+     * `base_unit_price`, zapisana PRE koeficijenta; `unitPrice` je već pomnožen. Da
+     * učitavanje koeficijent zaboravi, bruto bi bio manji od osnovice i „Rabat" bi na
+     * papiru ispao negativan.
+     */
+    it("koeficijent dokumenta se primenjuje i na cenu PRE rabata", async () => {
+      const out = await build(
+        makeInvoice({
+          priceCoefficient: D("1.1"),
+          netTotal: D("9900.00"),
+          vatTotal: D("1980.00"),
+          grossTotal: D("11880.00"),
+          items: [
+            makeItem({
+              quantity: D("10"),
+              // 900,00 × 1,1 — cena posle rabata i posle koeficijenta.
+              unitPrice: D("990.00"),
+              // 1.000,00 PRE koeficijenta → bruto 10 × 1.100 = 11.000,00.
+              unitPriceBeforeDiscount: D("1000.00"),
+              discountPercent: D("10"),
+              vatBase: D("9900.00"),
+              vatAmount: D("1980.00"),
+              lineTotal: D("11880.00"),
+            }),
+          ],
+        }),
+      );
+      expect(out.body).toContain("11,000.00"); // bruto
+      expect(out.body).toContain("1,100.00"); // rabat = 11.000 − 9.900
+    });
   });
 
   describe("vrste bez donetog obrasca i nepoznate vrste", () => {

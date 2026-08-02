@@ -425,6 +425,14 @@ export class InvoicePdfService {
         customsTariff: master?.customsTariff ?? null,
         quantity: item.quantity,
         unitPrice: item.unitPrice,
+        // Cena PRE rabata. U bazi stoji na nivou PRE koeficijenta dokumenta (isto kao
+        // `baseUnitPrice`), a `unitPrice` je već pomnožen koeficijentom — zato se i ovde
+        // množi, da bi obe cene bile uporedive i da bi `bruto − rabat` dalo baš osnovicu.
+        // Bez koeficijenta (podrazumevano 1) množenje ništa ne menja.
+        unitPriceBeforeDiscount:
+          item.unitPriceBeforeDiscount != null
+            ? item.unitPriceBeforeDiscount.mul(invoice.priceCoefficient ?? 1)
+            : null,
         discountPercent: item.discountPercent,
         // ⚠️ NIJE `item.lineTotal`. U bazi je `lineTotal` = osnovica + PDV
         // (`pricing.service.ts:141`), a kolona „VREDNOST"/„I Z N O S"/`Total` na svih

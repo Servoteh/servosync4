@@ -99,6 +99,8 @@ const LINES: PrintLine[] = [
     customsTariff: null,
     quantity: D("2"),
     unitPrice: D("125.00"),
+    // Papir nema rabat — cena pre rabata je ista kao cena stavke.
+    unitPriceBeforeDiscount: D("125.00"),
     discountPercent: D("0"),
     lineTotal: D("250.00"),
     vatRatePercent: null,
@@ -111,6 +113,7 @@ const LINES: PrintLine[] = [
     customsTariff: null,
     quantity: D("2"),
     unitPrice: D("125.00"),
+    unitPriceBeforeDiscount: D("125.00"),
     discountPercent: D("0"),
     lineTotal: D("250.00"),
     vatRatePercent: null,
@@ -288,13 +291,49 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
      * 250 × 20 / 80 = 62,50, ukupno 125,00; `TOTAL` je onda 625,00 (cena PRE rabata).
      */
     it("TOTAL − DISCOUNT uvek daje TOTAL AMOUNT, i kad rabat postoji", () => {
+      // STARE stavke: cena pre rabata nije upisana, pa se rabat vraća unazad iz neto.
       const ctx = makeCtx({
-        lines: LINES.map((l) => ({ ...l, discountPercent: D("20") })),
+        lines: LINES.map((l) => ({
+          ...l,
+          discountPercent: D("20"),
+          unitPriceBeforeDiscount: null,
+        })),
       });
       const texts = collectText(inoRobaTemplate(ctx));
       expect(texts).toContain("625.00"); // TOTAL = iznos PRE rabata
       expect(texts).toContain("125.00"); // DISCOUNT = stvarno odobren rabat
       expect(texts).toContain("500.00"); // TOTAL AMOUNT = grossTotal sa dokumenta
+    });
+
+    /**
+     * DVA IZVORA, JEDAN PAPIR: nova stavka nosi cenu PRE rabata (125,00 / 0,8 = 156,25),
+     * stara je nema. Papir mora biti ISTI — inače bi isti posao izgledao različito zavisno
+     * od toga kada je stavka uneta, a razlika bi se videla tek kod kupca.
+     */
+    it("stavka sa upisanom cenom pre rabata daje isti papir kao obračun unazad", () => {
+      const stare = collectText(
+        inoRobaTemplate(
+          makeCtx({
+            lines: LINES.map((l) => ({
+              ...l,
+              discountPercent: D("20"),
+              unitPriceBeforeDiscount: null,
+            })),
+          }),
+        ),
+      );
+      const nove = collectText(
+        inoRobaTemplate(
+          makeCtx({
+            lines: LINES.map((l) => ({
+              ...l,
+              discountPercent: D("20"),
+              unitPriceBeforeDiscount: D("156.25"),
+            })),
+          }),
+        ),
+      );
+      expect(nove).toEqual(stare);
     });
 
     it("nema NIJEDAN PDV red — izvoz je oslobođen", () => {

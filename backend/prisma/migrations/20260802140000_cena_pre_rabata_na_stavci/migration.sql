@@ -1,0 +1,21 @@
+-- Cena PRE rabata na stavci izlaznog dokumenta (štampa: red „Rabat" / „DISCOUNT").
+--
+-- ZAŠTO: rabat se na papiru do sada vraćao UNAZAD iz cene posle rabata
+-- (`neto × p / (100 − p)`). Kod rabata od 100 % je cena posle rabata 0, pa formula deli
+-- nulom i daje 0 — papir je istovremeno pokazivao „R% 100" i „Rabat: 0,00". Puna cena je
+-- postojala samo u računu (`PricingService.basePrice`) i nigde se nije čuvala.
+--
+-- ⚠️ NIJE isto što i "base_unit_price": ta kolona nosi cenu PRE KOEFICIJENTA dokumenta,
+-- ali VEĆ POSLE rabata i kase (pisci je pune iz `PricedItem.unitPrice`). Nova kolona je na
+-- istom nivou (pre koeficijenta), ali PRE rabata:
+--   unit_price = unit_price_before_discount × (1 − rabat/100) × invoices.price_coefficient
+-- Kasa je unutra (upisuje se `basePrice × (1 − kasa/100)`), jer kolona „R%" na papiru tvrdi
+-- samo rabat.
+--
+-- ADITIVNO i NULLABLE — nijedna postojeća kolona se ne dira, zatečeni računi ostaju validni.
+-- NEMA BACKFILL-a i to je namerno: za rabate ispod 100 % obračun unazad daje TAČNO istu
+-- vrednost, pa bi backfill bio prepisivanje istog broja uz rizik od zaokruživanja; za
+-- zatečene stavke sa rabatom 100 % puna cena u bazi ne postoji ni u jednom obliku, pa se
+-- ne može ni rekonstruisati. NULL pošteno znači „nije poznato" i štampa tada ide na rezervu.
+ALTER TABLE "invoice_items"
+  ADD COLUMN IF NOT EXISTS "unit_price_before_discount" DECIMAL(19,4);

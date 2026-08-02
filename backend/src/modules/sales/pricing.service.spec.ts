@@ -335,6 +335,65 @@ describe("PricingService", () => {
     });
   });
 
+  // ── CENA PRE RABATA (za štampu) ────────────────────────────────────────────
+
+  /**
+   * `unitPriceBeforeDiscount` je jedini podatak iz kog papir može da iskaže rabat.
+   * Do 02.08.2026. se cena pre rabata računala (`basePrice`) i BACALA — nijedan pisac
+   * je nije čuvao, pa je štampa rabat vraćala unazad iz cene POSLE rabata. Kod rabata
+   * od 100 % ta cena je 0 i unazad se nema iz čega računati.
+   */
+  describe("cena PRE rabata (upisuje se na stavku, štampa je čita)", () => {
+    it("rabat 100 % nuluje cenu, ali puna cena OSTAJE zapisana", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 10,
+        requestedDiscountPercent: 100,
+      });
+
+      expect(p.unitPrice.toFixed(4)).toBe("0.0000");
+      expect(p.unitPriceBeforeDiscount.toFixed(4)).toBe("100.0000");
+    });
+
+    it("važi `unitPrice = unitPriceBeforeDiscount × (1 − rabat/100)`", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 1,
+        requestedDiscountPercent: 10,
+      });
+
+      expect(p.unitPriceBeforeDiscount.toFixed(4)).toBe("100.0000");
+      expect(p.unitPrice.toFixed(4)).toBe("90.0000");
+    });
+
+    it("KASA je već unutra — inače bi red „Rabat“ na papiru nosio i nju", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 1,
+        requestedDiscountPercent: 10,
+        cashDiscountPercent: 5,
+      });
+
+      // 100 × (1 − 5/100) = 95 → rabat na papiru je 95 − 85,50 = 9,50, tačno 10 % od 95.
+      expect(p.unitPriceBeforeDiscount.toFixed(4)).toBe("95.0000");
+      expect(p.unitPrice.toFixed(4)).toBe("85.5000");
+    });
+
+    it("bez rabata je jednaka ceni stavke (red „Rabat“ ostaje 0,00)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1 });
+
+      expect(p.unitPriceBeforeDiscount.toFixed(4)).toBe(p.unitPrice.toFixed(4));
+    });
+  });
+
   // ── NABAVNA / RUC ──────────────────────────────────────────────────────────
 
   describe("nabavna neto i RUC", () => {
