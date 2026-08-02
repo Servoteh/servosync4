@@ -13,6 +13,62 @@ export const metadata: Metadata = {
   // i tap otvara „Pozovi?". Paritet sa 1.0 (`index.html`
   // <meta name="format-detection" content="telephone=no">).
   formatDetection: { telephone: false },
+
+  /**
+   * PWA manifest — „Dodaj na početni ekran" za `/mob` (paritet sa 1.0, koja ima
+   * svoj manifest pod `/m`). Bez njega iPhone pravi screenshot-ikonicu i otvara
+   * Safari sa adresnom trakom, Android ne nudi instalaciju, a Web Push na iOS-u
+   * (koji radi ISKLJUČIVO iz instalirane aplikacije) nema preduslov.
+   *
+   * ⚠ PUTANJA `/mob.webmanifest`, NE podrazumevana `/manifest.webmanifest`:
+   * `worker/index.ts` (Cloudflare, `run_worker_first: true`) proksira na staru 1.0
+   * SVE što padne u `/m`, `/m/*`, `/assets/*`, `/icons/*` i `/manifest.webmanifest`,
+   * i to PRE ASSETS bindinga. Zato bi Next-ov `app/manifest.ts` (koji uvek emituje
+   * baš `/manifest.webmanifest`) bio nedostupan — manifest je statički fajl u
+   * `public/`, a ikone su u `public/mob-icons/`, ne u `public/icons/`. Ni jedna od
+   * te dve putanje ne pada u proxy pravila: `startsWith('/m/')` traži „/m" pa kosu
+   * crtu, a „/mob…" je nema.
+   *
+   * ⚠ `scope` u manifestu je `/`, a ne `/mob` (kako 1.0 ima `/m`) — svesna razlika,
+   * jer .webmanifest ne trpi komentare pa obrazloženje stoji ovde. Instalirana
+   * aplikacija u standalone režimu otvara SPOLJA (Safari / Chrome Custom Tab) svaku
+   * navigaciju van scope-a, a `/mob` ima tri takva izlaza:
+   *   • `/login` — guard svih ~26 `/mob` strana (`if (!isLoading && !user)`),
+   *   • `/promena-lozinke` — prinudna izmena lozinke (`lib/auth-context.tsx`),
+   *   • `/` — dugme „desktop" u zaglavlju `/mob` početne (`app/mob/page.tsx`).
+   * Prvi je fatalan: od iOS 16.4 instalirana aplikacija ima SVOJ storage odvojen od
+   * Safarija, pa bi se korisnik prijavio u Safariju, token bi pao u pogrešnu teglu,
+   * a povratak u aplikaciju bi opet zatekao odjavljenu sesiju → beskonačna petlja
+   * prijave. Cena šireg scope-a je samo to što desktop ekrani (npr. `/fakturisanje`)
+   * ostaju U aplikaciji ako se do njih dođe; `start_url` je i dalje `/mob`, pa se
+   * uvek starta na mobilnoj početnoj.
+   */
+  manifest: "/mob.webmanifest",
+
+  /**
+   * Bez `apple-mobile-web-app-capable` iOS uopšte ne ulazi u standalone režim —
+   * ikonica na ekranu bi i dalje otvarala Safari sa adresnom trakom. Vrednosti su
+   * paritet sa 1.0 (`index.html`), samo je naslov 3.0.
+   *
+   * `statusBarStyle: 'default'` je SVESNO odstupanje od 1.0, koja ima
+   * `black-translucent`: uz njega iOS crta sat/bateriju BELO, što je tačno za tamnu
+   * 1.0 (`#0a0e14`), ali 3.0 starta u svetloj temi (`#f7f9f9`) — belo na svetlom
+   * zaglavlju je nečitljivo, i to je prvo što korisnik vidi. `default` je čitljiv u
+   * obe teme; raspored ne trpi jer `MobShell` ionako računa `env(safe-area-inset-top)`.
+   * Ako 3.0 ikad postane podrazumevano tamna, `black-translucent` se vraća.
+   */
+  appleWebApp: {
+    capable: true,
+    title: "ServoSync 3.0",
+    statusBarStyle: "default",
+  },
+
+  // iOS ne razume `purpose: 'maskable'` niti bira iz manifesta pouzdano — uzima
+  // <link rel="apple-touch-icon">. Slika je 180×180 BEZ alfa kanala (providne
+  // piksele iOS crta kao crne) i bez zaobljenja (iOS sam maskira).
+  icons: {
+    apple: "/mob-icons/apple-touch-icon-180.png",
+  },
 };
 
 /**
@@ -64,6 +120,13 @@ export default function RootLayout({
         {/* UA zna da stranica podržava obe šeme (scrollbar/native kontrole/autofill pre
             nego što CSS `color-scheme` iz tokens.css preuzme) — SIDEBAR_THEME_SPEC §3/§4. */}
         <meta name="color-scheme" content="light dark" />
+        {/* `appleWebApp.capable` u metadata (gore) Next 16 emituje kao STANDARDNI
+            `mobile-web-app-capable` — a njega Safari razume tek od iOS 17.4. Na
+            starijim iPhone-ima jedini prekidač za standalone režim je i dalje
+            `apple-mobile-web-app-capable`; bez njega ikonica sa početnog ekrana
+            otvara Safari sa adresnom trakom. Zato ide ručno, kao u 1.0
+            (`index.html`). Nije duplikat — to je drugo ime tag-a. */}
+        <meta name="apple-mobile-web-app-capable" content="yes" />
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className="min-h-full flex flex-col bg-app text-ink">
