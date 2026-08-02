@@ -5719,9 +5719,45 @@ model DictationInbox {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   /// null = još nepreuzeto; NON-null = Claude povukao i markirao (idempotentni „latest").
   deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(6)
+  /// users.id naloga koji je red POVUKAO kroz `POST /v1/dictation-inbox/claim` (02.08.2026).
+  /// null = ili još nepreuzeto, ili preuzeto STARIM putem (ručni psql `UPDATE … delivered_at`).
+  /// Nosi oporavak: `GET /v1/dictation-inbox/last-claimed` vraća samo redove sa ovim
+  /// nalogom, pa izgubljen HTTP odgovor ne znači trajno izgubljen diktat.
+  claimedByUserId Int?  @map("claimed_by_user_id")
 
   @@index([userId, deliveredAt, createdAt], map: "idx_dictation_inbox_user_delivered_created")
+  @@index([claimedByUserId, deliveredAt], map: "idx_dictation_inbox_claimed_by_delivered")
   @@map("dictation_inbox")
+}
+
+/// Delegacija diktafon „sandučeta" (2026-08-02). Vlasnik (`owner_user_id`) dozvoljava
+/// DRUGOM nalogu (`delegate_user_id`) da POVUČE njegove diktate kroz
+/// `POST /v1/dictation-inbox/claim`.
+///
+/// ZAŠTO: sanduče puni telefon pod NENADOVIM nalogom, a agent koji radi VAN lokalne
+/// mreže (Cursor/Claude u oblaku, pokrenut sa telefona) nema SSH/psql do `servosync-pg`
+/// pa diktat mora da uzme preko HTTP-a — pod SVOJIM tokenom, gledajući u TUĐE sanduče.
+/// Bez reda u ovoj tabeli `claim` sa tuđim `ownerUserId` vraća 403 (default-deny).
+/// Ovo je STROŽE od dosadašnjeg puta: identitet vlasnika više ne visi o ručno
+/// otkucanom `user_id = 2` u psql komandi, nego o tokenu + eksplicitnoj dozvoli u bazi.
+///
+/// App-owned → Timestamptz(6). Piše je ISKLJUČIVO admin (`settings.users`) ili DBA SQL-om.
+/// Bez FK na `users` — namerno, paritet sa `dictation_inbox` (isti modul, ista migracija-doktrina).
+model DictationDelegate {
+  id              Int      @id(map: "pk_dictation_delegates") @default(autoincrement()) @map("id")
+  /// users.id vlasnika sandučeta (čiji se diktati povlače).
+  ownerUserId     Int      @map("owner_user_id")
+  /// users.id naloga kome je povlačenje dozvoljeno (agent u oblaku).
+  delegateUserId  Int      @map("delegate_user_id")
+  /// users.id admina koji je dodelio dozvolu; null za redove upisane ručno SQL-om.
+  createdByUserId Int?     @map("created_by_user_id")
+  /// Slobodna beleška („Cursor agent sa telefona") — čisto za reviziju.
+  note            String?  @map("note") @db.VarChar(255)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([ownerUserId, delegateUserId], map: "uq_dictation_delegates_owner_delegate")
+  @@index([delegateUserId], map: "idx_dictation_delegates_delegate")
+  @@map("dictation_delegates")
 }
 
 /// Minimalni registar „zadatak → model" (Talas AI-0, stavka 7). NIJE nova

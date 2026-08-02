@@ -26,6 +26,7 @@
 | [MODULE_SPEC_mrp.md](MODULE_SPEC_mrp.md) | 2.0 | MRP/nabavka (decision engine, BOM eksplozija) |
 | [MODULE_SPEC_lokacije.md](MODULE_SPEC_lokacije.md) | 2.0 | Lokacije delova (ledger; §8 = usklađivanje sa živim 1.0 loc modulom) |
 | [MODULE_SPEC_sef.md](MODULE_SPEC_sef.md) | 4.0 | **SEF eFaktura** (kod-verifikovan iz izvučenog BigBit VBA) |
+| [MODULE_SPEC_diktafon.md](MODULE_SPEC_diktafon.md) | 3.0 | Diktafon „sanduče" — `claim` (atomično preuzimanje) + delegacija **za agenta van lokalne mreže** |
 
 ## Kako se koriste
 - **Novi 2.0 domenski modul:** čitaj `MODULE_SPEC_<domen>` (implementacija) + `QBIGTEHN_UI_REFERENCE` (ekrani) +
