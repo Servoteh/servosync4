@@ -325,8 +325,10 @@ describe("PricingService", () => {
       expect(p.warnings.join(" ")).toContain("Nepoznata poreska šifra");
     });
 
-    it("PDV 10% po šifri 2 (stopa ne curi iz šifre 3)", async () => {
-      prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "2" }));
+    // Snižena stopa 10 % je u `R_Tarife` šifra „4" (grupa NIZA), a ne „2" — te šifre
+    // u tabeli NEMA (ispravka 02.08.2026, v. `gl/posting/vat-rates.ts`).
+    it("PDV 10% po šifri 4 (stopa ne curi iz šifre 3)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "4" }));
 
       const p = await service.priceItem({ itemId: 1, quantity: 1 });
 

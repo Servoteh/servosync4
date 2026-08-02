@@ -67,10 +67,19 @@ const ACC_VAT_OUT_10 = "4710"; // obaveza za izlazni PDV 10% (NIZA)
  * KONTO IZLAZNOG PDV-a PO STOPI — po PROCENTU, ne po šifri.
  *
  * ⚠️ IZMEREN KVAR (02.08.2026): ovde je stajalo `ako je šifra "2" → 4710, INAČE → 4702`.
- * Šifra "4" je POSEBNA stopa (8 %, POLJO) i padala je u „inače", pa se PDV od 8 % knjižio
- * na konto `4702 — PDV 20 % na prodate robe`. GK bi balansirala (iznos je isti sa obe
- * strane), ali bi POPDV polje 3.2 iz tog konta izvodilo osnovicu deljenjem sa 0,2 —
- * osnovica od 8 % prometa bi ušla u obrazac umanjena za 60 %.
+ * Stopa koja nije 20 % padala je u „inače", pa se knjižila na konto
+ * `4702 — PDV 20 % na prodate robe`. GK bi balansirala (iznos je isti sa obe strane), ali
+ * bi POPDV polje 3.2 iz tog konta izvodilo osnovicu deljenjem sa 0,2 — osnovica prometa po
+ * nižoj stopi bi ušla u obrazac umanjena.
+ *
+ * ⚠️ ISPRAVKA OPISA (02.08.2026, drugi krug): ovde je do sada pisalo da je „šifra 4
+ * POSEBNA stopa (8 %, POLJO)". TO JE NETAČNO — po stvarnim redovima `R_Tarife`
+ * (`_legacy/…/rule_tables/BB_T_26/R_Tarife.csv`, v. `gl/posting/vat-rates.ts`) šifra „4"
+ * je **NIZA, 10 %**, a POSEBNA/POLJO 8 % je šifra „5". Zabuna dolazi od kolone `Opis`
+ * tarife 4 koja je ostala na „Roba i usluge 8%" iako numeričke kolone daju 10.
+ * Posledica za ovu mapu: šifra „4" od sada pogađa `4710` (10 %) i NE pada u branu ispod;
+ * na branu za 8 % se sada stiže samo šifrom „5" (POLJO), koju na produkciji ne nosi
+ * nijedan artikal (izmereno: 0).
  *
  * ⚠️ KONTA ZA IZLAZNI PDV 8 % U KONTNOM PLANU NEMA (proveren
  * `20260723155000_seed_chart_of_accounts` i `prisma/seed/vat-account-map.sql`: postoji samo
@@ -78,6 +87,8 @@ const ACC_VAT_OUT_10 = "4710"; // obaveza za izlazni PDV 10% (NIZA)
  * Konto se NE IZMIŠLJA — stopa bez konta se odbija sa objašnjenjem (isti obrazac kao
  * `AdvanceInvoiceService`, nalaz Batch C R5), a pitanje je zapisano u
  * `docs/PREOSTALE_FAZE.md` § „OTVORENO NA DAN 01.08.2026" i čeka knjigovođu.
+ * Brana ostaje po PROCENTU (a ne po šifri) baš zato što je preživela ovu ispravku
+ * mapiranja bez izmene: menja se koja šifra daje koji procenat, ne pravilo.
  */
 const VAT_OUT_ACCOUNT_BY_PERCENT: Readonly<Record<string, string>> = {
   "20": ACC_VAT_OUT_20,
@@ -135,6 +146,12 @@ export function buildSalesLedgerLines(
       analyticalCode: invoice.customerId,
       // Kupac duguje BAŠ bruto iznos fakture (`netTotal + vatTotal`) — isti broj koji
       // stoji u zaglavlju, na papiru i u saldakontima.
+      //
+      // ⚠️ TO JE TVRDNJA KOJU NEKO MORA DA DRŽI: ovde se bruto RAČUNA IZ STAVKI, a
+      // zaglavlje nosi svoj upisan broj. Do 02.08.2026. su ta dva broja mogla da se
+      // raziđu (izvozni račun iz domaćeg predračuna — izmereno −19.872,73 na kupčevom
+      // kontu). Od tada `assertTotalsMatchItems` odbija knjiženje dok se ne slože, pa je
+      // rečenica iznad zaista tačna, a ne samo željena.
       debit: totals.grossTotal,
       credit: ZERO,
       description: `Kupac ${invoice.documentNumber}`,
@@ -176,6 +193,76 @@ export function buildSalesLedgerLines(
   }
 
   return lines;
+}
+
+/**
+ * BRANA PRI KNJIŽENJU: ZAGLAVLJE MORA DA SE SLAŽE SA STAVKAMA.
+ * =============================================================================
+ *
+ * Invarijanta: `documentVatTotals(stavke, {isExport})` mora da da BAŠ ono što piše u
+ * zaglavlju (`netTotal`/`vatTotal`/`grossTotal`). To je jedina provera koja istovremeno
+ * čuva sva tri čitaoca istog broja — papir čita zaglavlje, saldakonti i kreditni limit
+ * čitaju zaglavlje, a glavna knjiga se gradi iz STAVKI (`buildSalesLedgerLines`).
+ *
+ * ⚠️ ZAŠTO POSTOJI (izmereno 02.08.2026): izvozni račun nastao prepisom domaćeg
+ * predračuna nosio je `isExport=true`, ali stavke sa domaćom poreskom šifrom „3" i
+ * zaglavlje sa PDV-om:
+ *
+ *   zaglavlje / saldakonti / kreditni limit  → gross 119.236,37
+ *   GK (kupac 2050, isExport)                → dug    99.363,64
+ *   razlika na kupčevom kontu                        −19.872,73  (ceo PDV)
+ *
+ * Otvorena stavka je izveden pogled nad `ledger_entries`, pa bi kupac trajno dugovao
+ * manje nego što faktura glasi. ŠTAMPA takav dokument obara sa 400
+ * (`print/totals.ts:assertExportWithoutVat`), ali KNJIŽENJE ga je propuštalo — redosled
+ * brana je bio obrnut od korisnog: greška bi ušla u knjige i PDV prijavu, a otkrila se
+ * tek kad kupac zatraži papir (izvozni račun ne ide ni na SEF, pa druge kontrole nema).
+ *
+ * ZAŠTO OPŠTA PROVERA (zaglavlje ⟷ stavke), A NE „izvoz nema PDV": izvoz je bio samo
+ * jedan način da se to dvoje raziđu. Isto radi i svaka izmena stavki mimo
+ * `SalesService.recalcTotals` (uvoz, ručna ispravka u bazi, budući BigBit uvoz) — a
+ * posledica je uvek ista: kupčev dug u saldakontima ≠ iznos fakture. Provera hvata sve
+ * te slučajeve jednim pravilom, i zato komentar uz `buildSalesLedgerLines` („kupac
+ * duguje BAŠ bruto iznos fakture") od sada JESTE tačan: bez ovog slaganja se ne knjiži.
+ *
+ * ZAŠTO PRE `assertCreditLimit`: limit se meri `invoice.grossTotal`-om. Ako je zaglavlje
+ * pogrešno, pogrešna je i procena duga — nema smisla trošiti proveru limita na broj koji
+ * upravo obaramo.
+ *
+ * Poruka namerno nudi LEK („otvori pa sačuvaj"), jer `recalcTotals` pri svakoj izmeni
+ * prepisuje zaglavlje iz stavki i time sam popravlja dokument.
+ */
+export function assertTotalsMatchItems(invoice: {
+  documentNumber: string;
+  isExport: boolean;
+  netTotal: Prisma.Decimal;
+  vatTotal: Prisma.Decimal;
+  grossTotal: Prisma.Decimal;
+  items: ReadonlyArray<{ vatRateCode: string; vatBase: Prisma.Decimal }>;
+}): void {
+  const totals = documentVatTotals(invoice.items, {
+    isExport: invoice.isExport,
+  });
+  const drift =
+    !totals.netTotal.equals(invoice.netTotal) ||
+    !totals.vatTotal.equals(invoice.vatTotal) ||
+    !totals.grossTotal.equals(invoice.grossTotal);
+  if (!drift) return;
+
+  // Izvoz je najčešći uzrok i ima svoje objašnjenje — bez njega poruka kaže ŠTA ne
+  // valja, ali ne i ZAŠTO (operater na izvoznom računu poresku stopu i ne vidi).
+  const razlog = invoice.isExport
+    ? " Dokument je izvozni (bez PDV-a, čl. 24), a stavke nose domaću poresku šifru — " +
+      "verovatno je nastao prepisom domaćeg predračuna."
+    : "";
+  throw new UnprocessableEntityException(
+    `Zbirovi računa ${invoice.documentNumber} ne slažu se sa stavkama, pa se ne može ` +
+      `proknjižiti: zaglavlje ${invoice.netTotal.toFixed(2)} + ` +
+      `${invoice.vatTotal.toFixed(2)} = ${invoice.grossTotal.toFixed(2)}, ` +
+      `a stavke daju ${totals.netTotal.toFixed(2)} + ${totals.vatTotal.toFixed(2)} = ` +
+      `${totals.grossTotal.toFixed(2)}.${razlog} ` +
+      `Otvori dokument i sačuvaj ga (zbirovi se tada preračunaju iz stavki), pa ponovi knjiženje.`,
+  );
 }
 
 /** Dopiši storno-razlog u napomenu fakture (čuva postojeći tekst, audit trag). */
@@ -529,6 +616,9 @@ export class FakturisanjeService {
         `Račun ${id} nema stavke — ne može se proknjižiti.`,
       );
     }
+
+    // Zaglavlje mora da se slaže sa stavkama PRE svega ostalog — v. `assertTotalsMatchItems`.
+    assertTotalsMatchItems(invoice);
 
     // T3/A8: kreditni limit kupca (Customer.creditLimit sync polje) — 422 PRE claim-a
     // ako bi projektovani dug prešao limit, osim uz force (svesno knjiženje uprkos

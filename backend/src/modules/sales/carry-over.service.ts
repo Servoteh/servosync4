@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { documentVatTotals } from "./vat-totals";
 
 /**
  * DocumentCarryOverService — prepis predračuna u račun (par PROF → IFR/IFGP/IFUSL/…).
@@ -39,6 +40,8 @@ const TARGET_TYPES = new Set([
 ]);
 
 const EXPORT_TYPES = new Set(["IZVRO", "IZVGP", "IZVUS"]);
+
+const ZERO = new Prisma.Decimal(0);
 
 /** Skala kolone `base_unit_price` (`Decimal(19,4)`) — deljenje se zaokružuje na nju. */
 const BASE_PRICE_SCALE = 4;
@@ -129,6 +132,83 @@ export class DocumentCarryOverService {
       // Definitivan broj dodeljuje postInvoice (numeracija) — ovde placeholder.
       const draftNumber = `DRAFT-${proformaId}`;
 
+      /**
+       * ── STAVKE PREPISA — JEDAN NIZ IZ KOG SE IZVODE I STAVKE I ZBIROVI ─────────────
+       *
+       * ⚠️ IZMEREN KVAR (02.08.2026): DOMAĆI PDV NA IZVOZNOM RAČUNU.
+       * Do ove izmene je prepis nosio `vatRateCode` sa predračuna DOSLOVNO, a zbirove
+       * zaglavlja prepisivao 1:1 (`netTotal/vatTotal/grossTotal := proforma.*`) — dok je
+       * `isExport` na cilju postajao `true` čim je ciljna vrsta izvozna. Nastajao je
+       * dokument koji je izvozni po zastavici, a domaći po stavkama:
+       *
+       *   domaći predračun: osnovica 99.363,64 + PDV 20 % 19.872,73 = 119.236,37
+       *   → prepis u IZVRO: isExport=true, stavke i dalje šifra „3", zaglavlje 119.236,37
+       *
+       *   zaglavlje / saldakonti / kreditni limit   → 119.236,37
+       *   GK (`buildSalesLedgerLines`, isExport)    → kupac 2050 DUG =  99.363,64
+       *   razlika na kupčevom kontu                              = −19.872,73
+       *
+       * Otvorena stavka je izveden pogled nad `ledger_entries`, pa bi kupac u saldakontima
+       * dugovao za CEO PDV manje nego što faktura glasi. Štampa takav dokument već obara
+       * (`print/totals.ts:assertExportWithoutVat`), ali TEK NA IZLAZU — knjiženje ga je
+       * propuštalo, pa je redosled brana bio obrnut od korisnog: greška se otkrivala tek
+       * kad kupac zatraži papir, a u knjigama je već stajala.
+       *
+       * ZAŠTO SE ISPRAVLJA OVDE, A NE SAMO PRI KNJIŽENJU: ovo je JEDINO mesto na kome
+       * dokument nastaje sa stavkama koje nije napisao `deriveFromBase` (on `vatRateCode`
+       * na izvozu već forsira na „0" — `sales.service.ts`). Kad bi se čekalo knjiženje,
+       * korisnik bi dobio 422 nad dokumentom koji ne ume sam da popravi (stopa se na
+       * izvoznom računu i ne prikazuje). Ovako izvozni račun NIKAD ne nastane pogrešan.
+       * Brana pri knjiženju ipak ostaje (`fakturisanje.postInvoice`) — kao poslednja
+       * linija, za dokumente izmenjene mimo ovog puta.
+       *
+       * NOVAC SE NE MENJA: osnovica (`vatBase`) je ista, gubi se samo obračunat PDV —
+       * što je i tačno, izvozni promet je oslobođen (čl. 24 Zakona o PDV, kategorija Z).
+       */
+      const carriedItems = proforma.items.map((it) => ({
+        lineNo: it.lineNo,
+        itemId: it.itemId,
+        description: it.description,
+        unit: it.unit,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        // Osnovica za koeficijent (§8/O1) se PRENOSI sa izvorne stavke; ako je
+        // izvor stariji od kolone, pada na cenu VRAĆENU U RAZMERU PRE KOEFICIJENTA
+        // (v. `carryBaseUnitPrice`). Bez rezerve bi prepisan dokument imao baznu
+        // cenu 0 i prvi dodir bi ga nulirao; bez deljenja koeficijentom bi ga prvi
+        // dodir umanjio za taj isti koeficijent.
+        baseUnitPrice: carryBaseUnitPrice(
+          it.baseUnitPrice,
+          it.unitPrice,
+          proforma.priceCoefficient,
+        ),
+        // Cena PRE rabata se PRENOSI kakva jeste — i kad je null. Račun nastao
+        // prepisom nosi isti rabat kao predračun, pa mora da nosi i istu punu cenu;
+        // bez prenosa bi red „Rabat" bio tačan na predračunu, a nedokaziv na računu.
+        // Za izvore starije od kolone ostaje null i štampa ide na obračun unazad.
+        unitPriceBeforeDiscount: it.unitPriceBeforeDiscount,
+        discountPercent: it.discountPercent,
+        cashDiscountPercent: it.cashDiscountPercent,
+        // Izvoz obara poresku šifru na „0" — v. blok iznad.
+        vatRateCode: isExport ? "0" : it.vatRateCode,
+        vatBase: it.vatBase,
+        vatAmount: isExport ? ZERO : it.vatAmount,
+        // `lineTotal` = osnovica + PDV stavke; na izvozu je to gola osnovica.
+        lineTotal: isExport ? it.vatBase : it.lineTotal,
+        copiedFromItemId: it.id, // dedup ključ (par PROF-stavka → IFR-stavka)
+      }));
+
+      /**
+       * ZBIROVI ZAGLAVLJA IZ ISTOG NIZA — ne prepisuju se sa izvora.
+       *
+       * Prepisivanje `proforma.netTotal/vatTotal/grossTotal` je bilo tačno samo dok je
+       * prepis bio doslovan. Čim stavke smeju da se promene (izvoz gore), zaglavlje mora
+       * da se IZVEDE iz njih — istim računarom kojim ih izvodi i `recalcTotals` i
+       * `buildSalesLedgerLines`, da zaglavlje, papir i glavna knjiga ne bi mogli da se
+       * raziđu ni po konstrukciji.
+       */
+      const totals = documentVatTotals(carriedItems, { isExport });
+
       const invoice = await tx.invoice.create({
         data: {
           documentType: targetType,
@@ -142,9 +222,9 @@ export class DocumentCarryOverService {
           exchangeRate: proforma.exchangeRate,
           accountingExchangeRate: proforma.accountingExchangeRate,
           fxInvoiceValue: proforma.fxInvoiceValue,
-          netTotal: proforma.netTotal,
-          vatTotal: proforma.vatTotal,
-          grossTotal: proforma.grossTotal,
+          netTotal: totals.netTotal,
+          vatTotal: totals.vatTotal,
+          grossTotal: totals.grossTotal,
           copiedFromDocId: proforma.id,
           // ── KOEFICIJENT CENE SE PRENOSI (§8/O1) ──────────────────────────────────
           // U jednoj stavci žive DVE RAZMERE: `baseUnitPrice` i `unitPriceBeforeDiscount`
@@ -192,38 +272,7 @@ export class DocumentCarryOverService {
           // postInvoice ga podrazumeva.
           supplyDate: proforma.supplyDate,
           note: proforma.note,
-          items: {
-            create: proforma.items.map((it) => ({
-              lineNo: it.lineNo,
-              itemId: it.itemId,
-              description: it.description,
-              unit: it.unit,
-              quantity: it.quantity,
-              unitPrice: it.unitPrice,
-              // Osnovica za koeficijent (§8/O1) se PRENOSI sa izvorne stavke; ako je
-              // izvor stariji od kolone, pada na cenu VRAĆENU U RAZMERU PRE KOEFICIJENTA
-              // (v. `carryBaseUnitPrice`). Bez rezerve bi prepisan dokument imao baznu
-              // cenu 0 i prvi dodir bi ga nulirao; bez deljenja koeficijentom bi ga prvi
-              // dodir umanjio za taj isti koeficijent.
-              baseUnitPrice: carryBaseUnitPrice(
-                it.baseUnitPrice,
-                it.unitPrice,
-                proforma.priceCoefficient,
-              ),
-              // Cena PRE rabata se PRENOSI kakva jeste — i kad je null. Račun nastao
-              // prepisom nosi isti rabat kao predračun, pa mora da nosi i istu punu cenu;
-              // bez prenosa bi red „Rabat" bio tačan na predračunu, a nedokaziv na računu.
-              // Za izvore starije od kolone ostaje null i štampa ide na obračun unazad.
-              unitPriceBeforeDiscount: it.unitPriceBeforeDiscount,
-              discountPercent: it.discountPercent,
-              cashDiscountPercent: it.cashDiscountPercent,
-              vatRateCode: it.vatRateCode,
-              vatBase: it.vatBase,
-              vatAmount: it.vatAmount,
-              lineTotal: it.lineTotal,
-              copiedFromItemId: it.id, // dedup ključ (par PROF-stavka → IFR-stavka)
-            })),
-          },
+          items: { create: carriedItems },
         },
         include: { items: { orderBy: { lineNo: "asc" } } },
       });

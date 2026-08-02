@@ -686,15 +686,40 @@ export class SalesService {
     tx: Prisma.TransactionClient,
     invoiceId: number,
   ): Promise<void> {
-    const items = await tx.invoiceItem.findMany({
-      where: { invoiceId },
-      select: { vatRateCode: true, vatBase: true },
-    });
+    const [invoice, items] = await Promise.all([
+      tx.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { isExport: true },
+      }),
+      tx.invoiceItem.findMany({
+        where: { invoiceId },
+        select: { vatRateCode: true, vatBase: true },
+      }),
+    ]);
 
-    // `isExport` se ovde NE prosleđuje namerno: stavke izvoznog dokumenta već nose
-    // šifru "0" (`deriveFromBase` je forsira), pa je grupisanje po šifri dovoljno i
-    // zbir ne zavisi od toga da li je pozivalac zapamtio da doda zastavicu.
-    const { netTotal, vatTotal, grossTotal } = documentVatTotals(items);
+    /**
+     * ⚠️ `isExport` SE PROSLEĐUJE (ispravka 02.08.2026).
+     *
+     * Ovde je do sada stajalo da se zastavica NE prosleđuje namerno, uz obrazloženje
+     * „stavke izvoznog dokumenta već nose šifru '0' (`deriveFromBase` je forsira)".
+     * Ta pretpostavka NIJE VAŽILA: `deriveFromBase` forsira šifru samo na putu kroz
+     * ovaj servis, a `DocumentCarryOverService` je stavke prepisivao doslovno — pa je
+     * izvozni račun nastao iz DOMAĆEG predračuna nosio šifru „3" na svakoj stavci.
+     *
+     * IZMERENO na tom dokumentu (osnovica 99.363,64, PDV 20 %):
+     *   `documentVatTotals(items)`                 → gross 119.236,37  ← zaglavlje
+     *   `documentVatTotals(items, {isExport:true})` → gross  99.363,64  ← glavna knjiga
+     * Glavna knjiga (`buildSalesLedgerLines`) zastavicu JESTE prosleđivala, pa je kupac
+     * u saldakontima bio zadužen za ceo PDV manje nego što faktura glasi (−19.872,73).
+     *
+     * Koren je zatvoren u prepisu (stavke izvoznog cilja tamo dobijaju „0"), ali se
+     * zastavica ovde prosleđuje SVEJEDNO: preračun zaglavlja mora da daje isti broj kao
+     * knjiženje bez obzira na to ko je i kako napisao stavke. Jedna pretpostavka manje
+     * je jedini način da ova invarijanta ne zavisi od tuđeg koda.
+     */
+    const { netTotal, vatTotal, grossTotal } = documentVatTotals(items, {
+      isExport: invoice?.isExport ?? false,
+    });
 
     await tx.invoice.update({
       where: { id: invoiceId },

@@ -124,9 +124,16 @@ odn. vlasnika. Ne rešavati ih pretpostavkom; dok odgovor ne stigne, kod ih vidl
 ### O-PDV-8 — nema konta izlaznog PDV-a po stopi od 8 %
 
 **Nalaz (02.08.2026, peti krug provere štampe faktura).** Ručno knjiženje izlaznog računa
-(`sales/fakturisanje.service.ts`, `buildSalesLedgerLines`) je poresku šifru **„4" = posebna
-stopa 8 % (POLJO)** knjižilo na konto **`4702` — „PDV 20 % na prodate robe na domaćem
-tržištu"**, jer je pravilo bilo „ako je šifra `2` → 4710, INAČE → 4702".
+(`sales/fakturisanje.service.ts`, `buildSalesLedgerLines`) je svaku stopu koja nije 20 %
+knjižilo na konto **`4702` — „PDV 20 % na prodate robe na domaćem tržištu"**, jer je pravilo
+bilo „ako je šifra `2` → 4710, INAČE → 4702".
+
+> ⚠️ **ISPRAVKA OPISA (02.08.2026, šesti krug — v. N1 niže).** Prva verzija ovog nalaza je
+> tvrdila da je „šifra 4 = posebna stopa 8 % (POLJO)". To je **netačno**: po stvarnim
+> redovima `R_Tarife` šifra **„4" je NIZA 10 %**, a POLJO 8 % je šifra **„5"**. Sama brana
+> je i dalje ispravna i radi po PROCENTU (ne po šifri), pa je ispravka mapiranja nije
+> pomerila — ali se na nju sada stiže **samo šifrom „5"**, koju na produkciji ne nosi
+> nijedan artikal (izmereno: 0 od 92.575). Pitanja ispod su prepravljena na tačne šifre.
 
 **Zašto to nije bezopasno.** Nalog bi balansirao (isti iznos stoji i na dugovnoj strani), pa
 se greška ne vidi u GK. Ali POPDV polje **3.2** osnovicu IZVODI iz konta `4702` deljenjem sa
@@ -145,16 +152,148 @@ računa (`AdvanceInvoiceService.vatAccountFor`, nalaz Batch C R5). Tiho knjižen
 konto je zamenjeno vidljivim zaustavljanjem.
 
 **Šta treba odlučiti (knjigovođa).**
-1. Da li Servoteh uopšte ima izlazni promet po posebnoj stopi od 8 %? (U BigBit izvozima
-   šifra „4" postoji u šifarniku tarifa, ali nije potvrđeno da je ijedna faktura nosi.)
+1. Da li Servoteh uopšte ima izlazni promet po posebnoj stopi od 8 % (PDV nadoknada
+   poljoprivrednicima, `R_Tarife` šifra **„5"**, grupa POLJO)? U šifarniku tarifa postoji,
+   ali je **nijedan artikal na produkciji ne nosi** (0 od 92.575, izmereno 02.08.2026).
 2. Ako ima — koji konto: nova analitika pod `471` (kao `4710` za 10 %), ili poseban konto?
    Uz konto ide i red u `popdv_account_map` (`column_def = 'P/0.08'`) i u `vat_account_map`
    (`direction = 'output'`, `rate = 8`), inače POPDV i KIF taj promet ne vide.
-3. Ako nema — potvrditi, pa se šifra „4" izbacuje iz šifarnika izlaznih stavki i brana
+3. Ako nema — potvrditi, pa se šifra „5" izbacuje iz šifarnika izlaznih stavki i brana
    postaje suvišna.
 
 **Gde se menja kad odgovor stigne:** `VAT_OUT_ACCOUNT_BY_PERCENT` u
 `backend/src/modules/sales/fakturisanje.service.ts` (jedan red) + seed konta + oba mapiranja.
+
+### N1-a — `tax_rates` je PRAZNA na produkciji, pa je hardkodovana mapa jedini izvor stope
+
+**Izmereno 02.08.2026** (`servosync-pg`, baza `servosync`):
+
+```
+SELECT count(*) FROM tax_rates;   →  0
+SELECT count(*) FROM items;       →  92.575
+```
+
+Registar poreskih tarifa (`TaxRate` / `tax_rates`, 1:1 preslikan BigBit `R_Tarife` sa
+`valid_from`/`valid_to`) **nema nijedan red**. Zato oba datumski svesna resolvera —
+`robno/calculation.service.ts:taxRateOf` i `lookups/item-lookup.service.ts` — UVEK padaju na
+rezervnu mapu `gl/posting/vat-rates.ts`, a `PostingEngine.aggregateDocAmounts`,
+`sales/vat-totals.ts` i `pdv/advance-vat.service.ts` je čitaju direktno. Mapa nije „fallback",
+nego **jedina stopa koju sistem zna**.
+
+**Posledica.** Datumsko važenje stopa NE RADI: mapa je jedan red po šifri, bez datuma. Istekle
+tarife (`15` = 5 % i `18` = 18 %, obe važile do 30.09.2012) zato nisu ni unete — dokument sa
+takvom šifrom danas dobija „nepoznata šifra" umesto tihe pogrešne stope. Isto važi za svaku
+buduću promenu stope: menja se kod, ne podatak.
+
+**Šta treba uraditi (nije hitno dok se stope ne menjaju, ali je preduslov za PDV istoriju):**
+
+1. Seed `tax_rates` iz zlatnog izvora
+   `_legacy/BigbitRaznoNenad/_extracted/rule_tables/BB_T_26/R_Tarife.csv` — **svih 8 redova
+   sa `valid_from`/`valid_to`**, kolone 1:1 (`base_rate`, `railway_rate`, `city_rate`,
+   `war_rate`, `special_rate`, `vat_group`).
+2. Efektivna stopa se računa kao **ZBIR pet kolona**, ne kao `base_rate` — tako je definiše
+   sam BigBit (`_extracted/queries_full/OnLine_BigBit_APL/R_Tarife_ZbirnaStopa.sql`).
+   Resolver koji uzme samo `base_rate` daće za tarifu 4 nulu umesto 10 %.
+3. Tek kad registar ima redove, `vat-rates.ts` sme da postane ono što mu ime kaže — rezerva.
+
+**Zašto nije urađeno u ovoj izmeni:** seed je migracija koja dira produkcijske podatke i
+otvara pitanje ko je vlasnik registra (BigBit sync vs ručni CRUD, plan D1). Ispravka mapiranja
+(N1) je bila hitna i samostalna; seed traži odluku.
+
+### N1-b — jedan artikal ima pogrešnu poresku tarifu U BIGBITU (ispraviti u izvoru)
+
+**Izmereno 02.08.2026** (`items.goods_tax_rate_code`):
+
+| šifra | značenje (`R_Tarife`) | broj artikala |
+|---|---|---|
+| `3` | VISA 20 % | **92.574** |
+| `4` | NIZA 10 % | **1** |
+
+Taj jedan je:
+
+```
+id = 12852 · external_item_id = 35041 · katbroj DPTR10-04612
+naziv „Bel computers dptr10-04612" · aktivan
+```
+
+**Računarski deo** — kategorija koja po Zakonu o PDV ide po **opštoj stopi 20 %**, a ne po
+sniženoj. Skoro sigurno pogrešno unet u BigBitu, ne stvarni promet po sniženoj stopi.
+
+**Gde se ispravlja:** u **BigBitu**, polje `R_Artikli.[Tarifa robe]` → `3`. Kolona dolazi
+kroz `.mdb` kanal (`backend/scripts/bigbit-mdb-export.sh:141` → `items.goodsTaxRateCode`,
+v. `migration/BIGBIT_ARTIKLI.md:59`), pa se ispravka sama prelije u 4.0 sledećim uvozom —
+**ne dirati na našoj strani**, jer bi je sledeći sync vratio.
+
+> Isti kanal drži i ranije zapisano: **37 artikala trajno ne prima izmene** zbog duplih
+> katalonskih brojeva (`00001` drži 23 artikla) — takođe se čisti u BigBitu.
+
+**Zašto je bitno i pored jednog reda:** dok je mapa tvrdila da je „4" = 8 %, taj artikal je u
+`PostingEngine.aggregateDocAmounts` padao u POLJO kofu (`W`), a **nijedna šema kontiranja ne
+referiše `W`** (v. S1 niže) — njegov izlazni PDV bi **nestao iz glavne knjige**. Posle
+ispravke mape pada u `Q` (10 %), koje šema 33 knjiži.
+
+### N1-c — tarifa „6" (bezcarinska zona) sama sebi protivreči u `R_Tarife`
+
+**Pitanje za knjigovođu.** Red iz `R_Tarife.csv` (uveden 15.07.2021, još važi):
+
+```
+6, Osnovna 20, ostale kolone 0, Opis „Bezcarinska zona", PDVGrupa VANPDV
+```
+
+Zbir kolona daje **20 %**, a `PDVGrupa` kaže **VANPDV** (van sistema PDV-a, dakle 0 %). Dve
+tvrdnje u istom redu se isključuju. Mapa je preuzela **20 %**, jer je to ono što vraća sam
+BigBit (`PDVStopaZaTarifu` → `R_Tarife_ZbirnaStopa`, zbir pet kolona) — biti veran izvoru je
+bezbednije od pogađanja.
+
+**Koliko je hitno:** malo — **nijedan artikal na produkciji ne nosi šifru „6"** (0 od 92.575,
+izmereno 02.08.2026), pa se do odgovora ništa ne knjiži po njoj.
+
+**Šta treba potvrditi:** je li promet u bezcarinskoj zoni kod Servoteha oporeziv po 20 % (pa
+je `PDVGrupa` u BigBitu pogrešno upisana), ili je oslobođen (pa stopa treba da bude 0 i tarifa
+da se tretira kao izvozna, uz osnov oslobođenja na računu i u UBL-u). **Gde se menja:**
+`VAT_RATE_BY_CODE` u `backend/src/modules/gl/posting/vat-rates.ts`, jedan red.
+
+### S1 — robna putanja glavne knjige nije dodirnuta (šeme 33/36 nisu proverene sa knjigovođom)
+
+**Nalaz (02.08.2026).** Sve što je u ovom krugu popravljeno na izlaznom računu — PDV po stopi
+umesto po stavci, kupčev dug do pare, brana za stopu bez konta, brana „zaglavlje = stavke" —
+važi **samo za uslužnu/ručnu putanju** (`postManualLedger`). Robna putanja ide sasvim drugim
+kodom i **nije menjana**.
+
+`sales/fakturisanje.service.ts` (grana `isAutoStock`): za `IFR`/`IFGP`/`IZVRO`/`IZVGP` sa
+`stockDocumentId` **`postManualLedger` se uopšte ne poziva**. Umesto toga se preuzima nalog
+robnog dokumenta, a **ako naloga nema — `journalEntryId = null` i faktura se proknjiži bez
+ijednog reda u glavnoj knjizi**.
+
+Kad nalog postoji, iznosi dolaze iz `PostingEngine.aggregateDocAmounts`:
+
+- `Σ količina × cena × stopa` — **bez zaokruženja na paru** (za razliku od
+  `documentVatTotals`, koji zaokružuje po grupi stope),
+- iz **robnog dokumenta**, a ne iz stavki fakture — dva izvora za isti novac.
+
+Uz to, u samim šemama:
+
+| šema | dokument | kupac se zadužuje | šta ispada |
+|---|---|---|---|
+| 33 | IFR | `O + P + Q` | — |
+| 36 | IFGP | `O + P` | **`Q` (10 %) ispada iz duga** |
+| — | — | — | **`W` (8 %) ne referiše nijedna šema** |
+
+**Posledica.** Za IFGP sa stavkom po stopi od 10 % kupac u glavnoj knjizi duguje **manje nego
+što faktura glasi**, a promet po 8 % ne ulazi u GK ni po jednoj šemi. Isti razred greške koji
+je N2 zatvorio na ručnoj putanji — samo što ovde brana ne postoji.
+
+**Zašto nije popravljeno.** Šeme kontiranja su **podaci** (`Sema za kontiranje` /
+`Stavke seme za kontiranje`, formule `DefDug`/`DefPot`), prepisani iz BigBita. Izmena formule
+šeme menja knjiženje svakog robnog dokumenta unazad i **traži potvrdu knjigovođe** — ne
+pretpostavku programera. Konto za 8 % uz to ionako ne postoji (v. O-PDV-8).
+
+**Šta treba odlučiti (knjigovođa).**
+1. Sme li se faktura uopšte proknjižiti kad robni dokument nema nalog (danas: sme, i ostaje
+   bez ijednog GK reda), ili to mora da bude 422?
+2. Da li šema 36 (IFGP) namerno izostavlja `Q`, ili je to greška prepisa iz BigBita?
+3. Treba li robna putanja da zaokružuje PDV po grupi stope (kao izlazni račun), ili se
+   zadržava legacy `Σ količina × cena × stopa`?
 
 ### S9 — brojač 2026. mora da se SEED-uje pre puštanja u rad (BigBit je već potrošio blok)
 
@@ -238,15 +377,58 @@ BigBit oblici (`AVR-00001/2026`, `0012-26`, `PON-00285/2026`, `IFG-00025/2025`).
 kupac koji plaća naš `123/26` realno ume da otkuca punu godinu. Ako se ikad pojavi zatečen
 dokument oblika `NNN/GGGG` **bez** vodećih nula, taj PNB bi i dalje mogao da proizvede naš broj.
 
+⚠️ Ispravka tvrdnje (nalaz S-B, šesti krug 02.08.2026): u `numbering.service.ts` je pisalo da
+su potpis starog broja „vodeće nule **i** četvorocifrena godina". Kod to nikad nije radio —
+`reference-parser.util.ts` kuje `${num}/${last.slice(2)}` bez provere godine — i **ne treba**
+da radi, iz razloga iz prethodnog pasusa. Komentar je ispravljen, kod nije diran.
+
+### N-D — BigBit serija faktura JESTE `NNN/YY`, to parser ne može da razdvoji
+
+`migration/BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md:97-106`: izlazne fakture 2025. dele **jednu
+godišnju seriju** `011/25 … 486/25` (483 dokumenta). `486/25` je **isti string** kao naš budući
+broj `486/25` — nijedna brana u parseru to ne razlikuje, jer razlike nema. Tvrdnja iz
+`numbering.service.ts` („stari i novi broj se ne mogu sudariti") drži **samo dok BigBit istorija
+nije uvezena u `ledger_entries`**. Onog trenutka kad se uveze, dva različita dokumenta nose isti
+broj i grupisanje otvorenih stavki ih spaja. Rešava se zajedno sa **S9 (seed brojača)** — blok
+brojeva po firmi i godini — a ne u parseru.
+
 ### S5 (ostatak) — PNB sa dva dokumenta vraća samo onaj uz oznaku
 
 `A-1/26 i 657/25` sada daje `A-1/26` (ranije nijedan od dva), ali **ne** i goli `657/25`: sve
 iza oznake serije pripada toj seriji, jer je to jedina odbrana od curenja golog broja. Uplata
 tada zatvori avans, a faktura ostaje otvorena — pošten, vidljiv ishod, ne tiho pogrešan.
 
-### V4 (ostatak) — vrsta sa dvosmislenom šifrom se ODBIJA, ne preimenuje
+### V4 → V-B — SVAKA vrsta van registra se ODBIJA (nema više fallback prefiksa)
 
-`seriesPrefixFor` od sada odbija neupisanu vrstu čija bi šifra bila mešana sa postojećom
-serijom (`A`, `AVR2`, `PON2`) ili koju parser poziva na broj ne ume da pročita (nije 2–5 slova).
-To je 422 pri izdavanju broja. **Ako se u produkciji pojavi legitimna vrsta koja pada na ovu
-branu, rešenje je upisati je u `DOCUMENT_SERIES` sa svojim prefiksom** — ne opuštati branu.
+Nalaz V4 je odbijao samo neupisanu vrstu čija bi šifra bila mešana sa postojećom serijom
+(`A`, `AVR2`, `PON2`) ili koju parser ne ume da pročita (nije 2–5 slova); ostale su dobijale
+izmišljen prefiks (`XYZ-`, `OTP-`). **Šesti krug (nalaz V-B) je i taj ostatak uklonio.**
+
+Razlog je na DRUGOM kraju sistema: da bi parser poziva na broj umeo da pročita bilo koji
+izmišljen prefiks, morao je da drži pravilo „svaka 2–5 slova + `-` + cifra je serija" uz
+denylist reči koje to nisu. Izmereno je da to pravilo **jede 29 legitimnih oblika PNB-a** —
+`IFR-657/25` (naša sopstvena šifra vrste), `RAC-`, `RAČ-`, `FAK-`, `FA-`, `ФАК-`, `IF-`, `UF-`,
+`REF-`, `POZ-`, `RB-`, `DOK-`, `ID-`, `NO-`, `TR-`, `OP-`, `SEF-`, `PP-`, `ZR-`, `PDV-`, `POR-`,
+`JN-`, `NAL-`, `UG-`, `UGOV-`, `NAR-`, `OTP-`, `OTPR-`, `KOMP-` — kojima je tačan broj fakture
+nestajao iz kandidata. To nije pošten promašaj: uparivanje tada pada na uparivanje **po iznosu**
+(`bank-statement.service.ts` → `findFirst` po jednakom iznosu), koje stavku zatvara bez ijedne
+informacije o broju.
+
+Grana je uklonjena jer je bila **suvišna za oba svoja cilja** (izmereno): (1) BigBit auto-broj je
+uvek zero-padovan, pa ga već hvata brana vodećih nula — cela tabela V1 ostaje zatvorena i bez nje;
+(2) numeracija više ne izmišlja prefiks. Registar `DOCUMENT_SERIES` je time **jedini izvor
+prefiksa na obe strane**: numeracija ume da upiše samo ono što parser ume da pročita.
+
+**Ako se u produkciji pojavi legitimna vrsta koja pada na ovu branu (422 pri izdavanju broja),
+rešenje je upisati je u `DOCUMENT_SERIES` sa svojim prefiksom + reč u `SERIES_ALIASES`** — ne
+vraćati fallback. Vraćanje fallbacka bez vraćanja čitača u parseru daje `XYZ-1/26 → 1/26`, tj.
+goli broj fakture; to je jedan invariant sa dva kraja.
+
+### V-A (zatvoreno) — procenat/rata se PRESKAČU, ne gase oznaku serije
+
+Nalaz S5 je oznaci serije zabranio da veže procenat/ratu tako što je oznaku **gasio u celini**,
+pa je PNB išao normalnim putem i goli `N/GG` izlazio napolje. Izmereno: `PREDRACUN 50% 12/26` →
+`12/26`, `AVANS 50% 1/26` → `1/26`, `PONUDA 50% 5/26` → `5/26`, `AVANS 1.RATA 1/26` → `1/26`
+(i `PROF 50%`, `AVR 50%`, `A 50%`, `AVANS 40 %`, `REVERS 50%`). Sada se šum **preskače** i oznaka
+vezuje sledeći broj. Vlasništvo broja i dalje menja samo reč koja imenuje drugi dokument:
+`AVANS 50% PO FAKTURI 657/25` i `avans po fakturi 1/26` daju **goli** broj.

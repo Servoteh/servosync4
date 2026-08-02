@@ -322,14 +322,13 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
      * (`DOCUMENT_SERIES`) — vrsta dodata tamo automatski ulazi u ovu branu, a vrsta
      * dodata sa prefiksom koji već neko koristi je obara.
      *
-     * „XYZ" pokriva i suprotan propust — vrstu koju niko nije upisao u registar. Ona
-     * po konstrukciji dobija prefiks iz sopstvene šifre, pa ni ona ne može da se
-     * poklopi sa fakturom. (Ranije je ovde stajalo „NEPOZNATA_VRSTA"; od nalaza V4
-     * fallback prefiks mora biti u obliku koji parser poziva na broj ume da pročita —
-     * 2–5 slova — pa takva šifra više ni ne dobija broj, v. testove ispod.)
+     * ⚠️ SPISAK JE SAMO REGISTAR (nalaz V-B, šesti krug 02.08.2026). Ranije je uz njega
+     * išla i neupisana vrsta „XYZ", jer je fallback za nju izmišljao prefiks iz šifre.
+     * Fallbacka više nema — neupisana vrsta ne dobija broj nego 422 (v. testove ispod),
+     * pa je registar ceo skup brojeva koje sistem ume da izda.
      */
     it("BRANA: serije su međusobno disjunktne za SVAKI redni broj (spisak iz registra)", async () => {
-      const vrste = [...DOCUMENT_SERIES.keys(), "XYZ"];
+      const vrste = [...DOCUMENT_SERIES.keys()];
       const nizFaktura = (tip: string) =>
         sequenceKeyFor(tip) === INVOICE_SEQUENCE_KEY;
 
@@ -443,52 +442,80 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
       expect(faktura).not.toBe(predracun);
     });
 
-    it("NEUPISANA vrsta ne može da se sudari sa fakturom (prefiks iz šifre vrste)", async () => {
+    it("NEUPISANA vrsta ne dobija broj — 422, ne izmišljen prefiks (V-B)", async () => {
       // Brana od zaborava: vrsta koju niko nije upisao u registar NE pada na goli
-      // `N/GG` (što bi je tiho spojilo sa fakturom u otvorenim stavkama), nego dobija
-      // prefiks iz sopstvene šifre i svoj brojač. Cena je kozmetička — broj na papiru
-      // izgleda `XYZ-1/26` dok se vrsta ne upiše kako treba.
+      // `N/GG` (što bi je tiho spojilo sa fakturom u otvorenim stavkama), ali od nalaza
+      // V-B ne dobija ni izmišljen prefiks `XYZ-`. Razlog je na drugom kraju: da bi
+      // parser poziva na broj umeo da pročita bilo koji izmišljen prefiks, morao je da
+      // drži pravilo „svaka šifra uz crticu je serija", a ono je merenjem pojelo 29
+      // legitimnih oblika PNB-a (`IFR-657/25`, `RAC-657/25`, `PDV-`, `NAL-`…).
       const db = makeDb();
       await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
-      await expect(once(db, "XYZ", 2026)).resolves.toBe("XYZ-1/26");
+      await expect(once(db, "XYZ", 2026)).rejects.toThrow(/registru numeracije/);
+      // Odbijanje puca PRE upisa — nijedan red sekvence ne ostaje za odbijenu vrstu.
+      expect(db.rows.filter((r) => r.documentType === "XYZ")).toHaveLength(0);
     });
   });
 
   /**
-   * 🔴 FALLBACK PREFIKS SE PROVERAVA (nalaz V4, 02.08.2026).
+   * 🔴 NEUPISANA VRSTA SE ODBIJA — PREFIKS SE NE IZMIŠLJA (nalaz V-B, šesti krug 02.08.2026).
    * ─────────────────────────────────────────────────────────────────────────────
-   * Prefiks za neupisanu vrstu je bio gol `${documentType}-`, bez ijedne provere, pa
-   * je razdvajanje serija umeo i da PONIŠTI. IZMERENO na starom kodu:
+   * Put dosad: prefiks za neupisanu vrstu je prvo bio gol `${documentType}-` bez ijedne
+   * provere (pa je `seriesPrefixFor("A")` davao prefiks avansa uz DRUGI brojač — dva
+   * nezavisna niza koja oba upisuju `A-1/26`), zatim ga je nalaz V4 sveo na „nedvosmislenu
+   * šifru od 2–5 slova". Šesti krug je pokazao da i taj ostatak plaća previše, i to na
+   * DRUGOM kraju sistema: da bi parser poziva na broj umeo da pročita bilo koji izmišljen
+   * prefiks, morao je da drži pravilo „svaka 2–5 slova + `-` + cifra je serija". To je
+   * merenjem pojelo 29 legitimnih oblika PNB-a — `IFR-657/25` (naša sopstvena šifra vrste),
+   * `RAC-657/25`, `FAK-`, `PDV-`, `POZ-`, `NAL-`, `UG-`, `NAR-`, `OTP-`… — kojima je tačan
+   * broj fakture NESTAJAO iz kandidata, pa je uparivanje padalo na uparivanje po iznosu.
    *
-   *   `seriesPrefixFor("A")`    → `"A-"`     — identično avansu, ali `sequenceKeyFor`
-   *      daje „A" umesto „AVR": dva NEZAVISNA brojača oba kreću od 1 i oba upisuju
-   *      `A-1/26`. Tačno sudar zbog kog O-F6 postoji, samo unesen kroz sporedna vrata.
-   *   `seriesPrefixFor("AVR2")` → `"AVR2-"`  — broj `AVR2-1/26` parser poziva na broj
-   *      čita kao avansnu seriju i daje kandidat `A-1/26` (isto `PON2-5/26` →
-   *      `PON-5/26`): uplata sleti na TUĐI dokument iste serije.
+   * ODLUKA: registar (`DOCUMENT_SERIES`) je jedini izvor prefiksa na obe strane. Numeracija
+   * ume da izda samo ono što parser ume da pročita. Vrsta van registra puca GLASNO pri
+   * izdavanju broja, sa porukom koja kaže šta da se uradi.
    *
-   * Test iznad („serije su međusobno disjunktne") to nije hvatao — nabrajao je registar
-   * plus jednu izmišljenu vrstu, a ovakve šifre nije video.
+   * IZMERENO da to ne dira nijedan živi tok: `createProforma` prima samo `PON`/`PROF`,
+   * `carry-over.service.ts` samo `IFR`/`IFGP`/`IFUSL`/`IZVRO`/`IZVGP`/`IZVUS`/`REV`, a
+   * `advance-invoice.service.ts` isključivo `AVR` — sve su u registru.
    */
-  describe("fallback prefiks za neupisanu vrstu (V4)", () => {
-    it("nedvosmislena šifra i dalje dobija svoj prefiks", () => {
-      expect(seriesPrefixFor("XYZ")).toBe("XYZ-");
-      expect(seriesPrefixFor("OTP")).toBe("OTP-");
+  describe("neupisana vrsta se odbija, prefiks se ne izmišlja (V-B)", () => {
+    it("šifra van registra više NE dobija prefiks — ni nedvosmislena", () => {
+      // Ranije: `XYZ-`, `OTP-`. Sada 422 — jer parser te prefikse ne poznaje, pa bi
+      // uplata pozvana na takav broj ostala bez ijednog kandidata sa serijom.
+      expect(() => seriesPrefixFor("XYZ")).toThrow(/registru numeracije/);
+      expect(() => seriesPrefixFor("OTP")).toThrow(/registru numeracije/);
     });
 
     it("šifra koja se poklapa sa registrovanom serijom se ODBIJA", () => {
       // `A` bi dalo prefiks avansa uz drugi brojač → dva `A-1/26`.
-      expect(() => seriesPrefixFor("A")).toThrow(/serijom/);
+      expect(() => seriesPrefixFor("A")).toThrow();
       // `AVR2`/`PON2` parser čita kao `AVR`/`PON` + broj → pogodak u tuđi dokument.
       expect(() => seriesPrefixFor("AVR2")).toThrow();
       expect(() => seriesPrefixFor("PON2")).toThrow();
-      expect(() => seriesPrefixFor("PROFX")).toThrow(/serijom/);
+      expect(() => seriesPrefixFor("PROFX")).toThrow();
     });
 
-    it("šifra koju parser ne ume da pročita se ODBIJA (mora 2–5 slova)", () => {
-      expect(() => seriesPrefixFor("NEPOZNATA_VRSTA")).toThrow(/2–5 slova/);
-      expect(() => seriesPrefixFor("IZLAZNA1")).toThrow(/2–5 slova/);
-      expect(() => seriesPrefixFor("")).toThrow(/2–5 slova/);
+    it("neispravan oblik šifre se ODBIJA (isto kao pre — menja se samo poruka)", () => {
+      expect(() => seriesPrefixFor("NEPOZNATA_VRSTA")).toThrow();
+      expect(() => seriesPrefixFor("IZLAZNA1")).toThrow();
+      expect(() => seriesPrefixFor("")).toThrow();
+      // Nalaz N-A: cifra u šifri je i pre i posle izmene 422. `TREB1` postoji u seed-u
+      // `accounting_schemes.order_type`, pa je ovo stvaran, a ne izmišljen ulaz.
+      expect(() => seriesPrefixFor("TREB1")).toThrow();
+    });
+
+    /**
+     * NALAZ N-A: mala slova su bila TIHA RUPA. `seriesPrefixFor("avr")` je bacao 422
+     * (šifra se normalizovala pa sudarala sa `AVR`), ali `seriesPrefixFor("ifr")` je
+     * vraćao `"IFR-"` uz `sequenceKeyFor("ifr") = "ifr"` — DRUGI brojač koji izdaje
+     * `IFR-1/26` dok `IFR` izdaje goli `1/26`. Sada je `DOCUMENT_SERIES.get` jedini put,
+     * pa registar razlikuje velika i mala slova na jednom jedinom mestu.
+     */
+    it("mala slova nisu druga serija — nema tihog drugog brojača (N-A)", () => {
+      expect(() => seriesPrefixFor("ifr")).toThrow();
+      expect(() => seriesPrefixFor("avr")).toThrow();
+      expect(seriesPrefixFor("IFR")).toBe("");
+      expect(seriesPrefixFor("AVR")).toBe("A-");
     });
 
     it("odbijanje puca pri IZDAVANJU broja, ne tiho (rollback transakcije)", async () => {
@@ -498,13 +525,18 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
       expect(db.rows).toHaveLength(0);
     });
 
-    it("BRANA: nijedan izdat prefiks se ne može ponoviti kroz fallback", () => {
-      const registrovani = [...DOCUMENT_SERIES.values()].filter((p) => p !== "");
-      for (const prefix of registrovani) {
-        const sifra = prefix.replace(/-+$/, "");
-        // Šifra jednaka registrovanoj oznaci mora da bude odbijena kao fallback —
-        // inače bi ista serija imala dva brojača.
-        expect(() => seriesPrefixFor(`${sifra}X`)).toThrow();
+    /**
+     * BRANA KOJA ZATVARA KRUG: prefiks koji numeracija ume da UPIŠE mora biti prefiks
+     * koji parser ume da PROČITA. Pošto fallbacka nema, to znači: skup izdatih prefiksa
+     * je tačno registar. Test drži tu jednakost — vrsta van registra ne sme da dobije broj.
+     */
+    it("BRANA: skup prefiksa koje numeracija izdaje = registar, ništa više", () => {
+      for (const [tip, prefix] of DOCUMENT_SERIES) {
+        expect(seriesPrefixFor(tip)).toBe(prefix);
+      }
+      for (const izmisljena of ["XYZ", "OTP", "KOMP", "IFR2", "NOVA"]) {
+        expect(DOCUMENT_SERIES.has(izmisljena)).toBe(false);
+        expect(() => seriesPrefixFor(izmisljena)).toThrow();
       }
     });
   });

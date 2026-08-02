@@ -30,10 +30,12 @@ import { DOCUMENT_SERIES } from "../sales/numbering.service";
  *        oblika NAŠEG novog broja (v. „POTPIS STAROG BROJA" niže)
  *   (6) PNB koji je DATUM .......................... samo sirov trim, bez ijednog
  *        izvedenog kandidata (v. `isDateTriplet` — `12-08-26` ne sme da dâ `8/26`)
- *   (7) PNB sa OZNAKOM SERIJE (`A-7/26`, `AVANS BR 7/26`, `XYZ-7/26`) . svi izvedeni
+ *   (7) PNB sa OZNAKOM SERIJE (`A-7/26`, `AVANS BR 7/26`, `PROF-12/26`) . svi izvedeni
  *        kandidati NOSE prefiks (v. `SERIES` — `A-7/26` ne sme da dâ `7/26`); oznaka se
  *        traži BILO GDE u PNB-u i prepoznaje po ZNAČENJU (slovo serije, šifra vrste ili
- *        reč kojom je platilac imenuje), a vezuje broj koji joj neposredno sledi
+ *        reč kojom je platilac imenuje), a vezuje broj koji joj neposredno sledi —
+ *        preskačući procenat i redni broj rate (v. `SERIES_NOISE`). Serije su TAČNO one
+ *        iz registra numeracije, nijedna više (v. `MarkerHit`, nalaz V-B)
  *
  * MODEL: `BankStatementLine` NEMA kolonu za model (provereno u schema.prisma), pa
  * se model NE persistuje — prosleđuje se opciono kroz `parseReference(raw, model)`
@@ -156,6 +158,10 @@ function isDateTriplet(a: string, b: string, c: string): boolean {
  * nema svoj red u `SERIES_ALIASES` i dalje se prepoznaje — po sopstvenoj šifri iz
  * prefiksa (`REV-` → oznaka „REV").
  *
+ * Fallback prefiksa u numeraciji od nalaza V-B (šesti krug) VIŠE NEMA — neupisana vrsta
+ * se odbija pri izdavanju broja. Zato je registar potpun spisak i sa strane čitača: sve
+ * što nije u njemu je za parser običan tekst, ne serija.
+ *
  * ZAŠTO PARSER UOPŠTE ZNA ZA SERIJE (nalaz adversarnog pregleda 02.08.2026)
  * ─────────────────────────────────────────────────────────────────────────────
  * Prefiks `A-` je uveden baš zato što avansni račun i faktura završavaju na ISTOM
@@ -236,25 +242,56 @@ const SEP = `[^${LETTERS}0-9]{0,3}`;
 const FILLER = `(?:BROJ|BR|БРОЈ|БР)`;
 
 /**
- * Razmak između oznake serije i broja: razdelnik, opciono „br/broj", pa opet razdelnik.
- * Pokriva `A-1/26`, `A 1/26`, `A. 1/26`, `A) 1/26`, `A/ 1/26`, `AVANS BR 1/26`,
- * `PREDRACUN BR. 12/26`. Više od tri znaka razdelnika nije razdelnik nego drugi
- * podatak, pa se oznaka tada ne vezuje za taj broj.
+ * ŠUM IZMEĐU OZNAKE I BROJA — procenat i redni broj rate se PRESKAČU, ne ubijaju oznaku.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Nalaz S5 (02.08.2026) je tačno video da oznaka ne sme da veže procenat ni redni broj
+ * rate — `AVANS 50% 657/25` nije avans broj 50. Ali je lek bio pogrešan: umesto da šum
+ * PRESKOČI, gasio je oznaku u celini. Marker se tada uopšte nije ni pojavio, PNB je išao
+ * normalnim putem i GOLI `N/GG` je izlazio napolje — a to je broj tuđe fakture.
+ *
+ * IZMERENO (nalaz V-A, šesti krug — puštanjem parsera nad istim ulazima kroz obe verzije;
+ * levo ono što je davao kod sa `cbf44ed1`, desno kod pre njega):
+ *
+ *     `PREDRACUN 50% 12/26` → […,"12","1226","26","12/26"]  ❌   pre toga: nijedan goli
+ *     `AVANS 50% 1/26`      → […,"1","126","26","1/26"]     ❌   pre toga: nijedan goli
+ *     `PONUDA 50% 5/26`     → […,"5","526","26","5/26"]     ❌   pre toga: nijedan goli
+ *     `AVANS 1.RATA 1/26`   → […,"1","126","26","1/26"]     ❌   pre toga: nijedan goli
+ *     isto: `PROF 50% 12/26` · `AVR 50% 1/26` · `A 50% 1/26` · `AVANS 40 % 1/26`
+ *
+ * ZAŠTO JE TO SKUPO: `PREDRACUN 50% 12/26` je najprirodniji zapis 50% avansne uplate po
+ * predračunu. Predračuna u glavnoj knjizi NEMA (izdaje se, ne knjiži), pa goli `12/26`
+ * nije mogao da pogodi ništa osim FAKTURE `12/26` — tiho zatvorena tuđa obaveza.
+ *
+ * PRAVILO: šum se preskače, oznaka vezuje SLEDEĆI broj. Vlasništvo broja menja samo REČ
+ * koja imenuje drugi dokument (`PO FAKTURI`) — ona nije u `FILLER`, pa i dalje raskida
+ * vezu: `AVANS 50% PO FAKTURI 657/25` legitimno vraća goli `657/25`. Bez te reči broj
+ * pripada oznaci, pa `AVANS 50% 657/25` daje `A-657/25` (kandidat sa prefiksom može da
+ * pogodi SAMO avansnu stavku — v. „ZAŠTO SE REČ SME DA PREVEDE" gore).
+ *
+ * Pokriveni zapisi: `50%`, `50 %`, `12,5%`, `1.RATA`, `1. RATA`, `1 RATA`, `2. rate`.
+ * `AVANS 2/2 1/26` (rata 2 od 2) se NE preskače i ne mora — `2/2` nije godina, pa korak
+ * (4) preskoči par i `A-1/26` ionako izađe (izmereno).
  */
-const SERIES_GAP = `${SEP}(?:${FILLER}${SEP})?`;
+const SERIES_NOISE = `(?:\\d+(?:[.,]\\d+)?\\s*%|\\d+\\s*\\.?\\s*(?:RAT|РАТ)[${LETTERS}]*)`;
 
 /**
- * BROJ KOJI OZNAKA SME DA VEŽE — mora ličiti na broj dokumenta.
+ * Razmak između oznake serije i broja: razdelnik, opciono ŠUM (procenat/rata, može i
+ * više puta), opciono „br/broj", pa opet razdelnik. Pokriva `A-1/26`, `A 1/26`,
+ * `A. 1/26`, `A) 1/26`, `A/ 1/26`, `AVANS BR 1/26`, `PREDRACUN BR. 12/26`,
+ * `PREDRACUN 50% 12/26`, `AVANS 1.RATA 1/26`, `AVANS 50% BR 1/26`.
+ * Više od tri znaka razdelnika nije razdelnik nego drugi podatak, pa se oznaka tada ne
+ * vezuje za taj broj. Šum mora imati cifru (`SERIES_NOISE`), pa se petlja ne vrti u
+ * prazno.
+ */
+const SERIES_GAP = `${SEP}(?:${SERIES_NOISE}${SEP})*(?:${FILLER}${SEP})?`;
+
+/**
+ * BROJ KOJI OZNAKA SME DA VEŽE — POSLEDNJA brana, kad šuma više nema šta da se preskoči.
  * ─────────────────────────────────────────────────────────────────────────────
- * Nalaz S5 (02.08.2026): oznaka je vezivala PRVU cifru iza sebe, ma šta ona bila, pa
- * je procenat/rata pojeo ostatak PNB-a. IZMERENO na tadašnjem kodu — tačan broj
- * fakture je NESTAJAO iz kandidata:
- *     `AVANS 50% 657/25` · `AVANS 1. RATA 657/25` · `AVANS 30% PO FAKTURI 657/25`
- * U sva tri slučaja broj `657/25` pripada FAKTURI, a `50` / `1` su iznos i redni broj
- * rate. Kad oznaka ne veže ništa, PNB se parsira normalno i `657/25` preživi.
- *
- * Odbija se: cifra iza koje sledi `%` (procenat) i cifra iza koje sledi tačka pa reč
- * (redni broj — „1. rata"). Datum se ne odbija ovde nego u `isDateTriplet`.
+ * Pošto `SERIES_GAP` sada guta procenat/ratu, ovaj lookahead radi samo u slučaju kada iza
+ * šuma NEMA broja: `AVANS 50%` (bez broja) bi inače, kroz backtracking, vezao samu cifru
+ * procenta i dao `A-50%`. Odbija se cifra iza koje sledi `%` i cifra iza koje sledi tačka
+ * pa reč. Datum se ne odbija ovde nego u `isDateTriplet`.
  */
 const BIND_AHEAD = `(?=\\d)(?!\\d+\\s*%)(?!\\d+\\.\\s*[${LETTERS}])`;
 
@@ -323,61 +360,48 @@ export const SERIES_PREFIXES: readonly string[] = SERIES.map((s) => s.prefix);
 const LETTER_RE = new RegExp(`[${LETTERS}]`);
 
 /**
- * NEPOZNATA ŠIFRA VRSTE PRIKAČENA CRTICOM NA BROJ — `AR-00001/2025`, `XYZ-1/26`.
+ * 🔴 ZAŠTO NEMA „GENERIČKE ŠIFRE VRSTE" (`CODE-` + broj) — nalaz V-B, šesti krug.
  * ─────────────────────────────────────────────────────────────────────────────
- * Dva izvora, isti oblik:
- *   • BigBit auto-broj je `Left(VrstaDok,3) & "-" & zeroPad(N) & "/" & GGGG`
- *     (`BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md:123`) — `AR-00001/2025`, `PRO-00002/2025`,
- *     `IFG-00025/2025`. Ti dokumenti ŽIVE u produkcijskoj glavnoj knjizi i kupci ih
- *     plaćaju paralelno sa 4.0 do cutovera (april 2027).
- *   • Naša numeracija za vrstu koja nije upisana u registar daje isti oblik
- *     (`seriesPrefixFor` → `XYZ-`), i baš zato `seriesPrefixFor` dozvoljava samo
- *     šifru od 2–5 slova — tačno ono što ovaj obrazac ume da pročita (nalaz V3/V4).
+ * Ovde je do 02.08.2026. stajalo pravilo „svaka 2–5 slova + `-` + cifra je serija", uz
+ * DENYLIST od dvadesetak reči koje to nisu (`BR`, `RACUN`, `FAKT`, `PO`…). Pravilo je
+ * bilo suprotno doktrini iz `SERIES_ALIASES` („reči su NABROJANE… lažna oznaka bi pojela
+ * broj fakture") — sve je bilo serija dok se ne dokaže drugačije, a denylist se ne može
+ * dopuniti do kraja jer je skup reči koje ljudi kucaju ispred broja otvoren.
  *
- * IZMERENO pre ove izmene: `AR-00001/2025` → kandidat `1/25` (naša faktura),
- * `PRO-00002/2025` → `2/25`, `IFG-00025/2025` → `25/25`, `XYZ-1/26` → `1/26`.
- * Sa ovim pravilom svi kandidati nose šifru (`AR-1/2025`, `XYZ-1/26`) i mogu da
- * pogode SAMO dokument iste serije.
+ * IZMERENO (29 oblika koji su GUBILI tačan broj `657/25`, a stari kod ih je imao):
+ *     `IFR-657/25` (NAŠA sopstvena šifra vrste!) · `RAC-` · `RAČ-` · `FAK-` · `FA-` ·
+ *     `ФАК-` · `IF-` · `UF-` · `REF-` · `POZ-` · `RB-` · `DOK-` · `ID-` · `NO-` · `TR-` ·
+ *     `OP-` · `SEF-` · `PP-` · `ZR-` · `PDV-` · `POR-` · `JN-` · `NAL-` · `UG-` · `UGOV-` ·
+ *     `NAR-` · `OTP-` · `OTPR-` · `KOMP-`
+ * Posledica nije bila pogrešan pogodak nego IZGUBLJEN TAČAN — uparivanje pada na
+ * uparivanje po iznosu (`bank-statement.service.ts` → `findFirst` po jednakom iznosu), a
+ * ono ume da zatvori pogrešnu stavku bez ijedne informacije o broju. Izgubljen tačan
+ * pogodak zato NIJE pošten promašaj kao datumska ili `A 657/25` brana.
  *
- * CRTICA JE OBAVEZNA i šifra sme biti najviše 5 slova — bez toga bi `racun657/25`
- * ili `faktura657/25` bili pročitani kao serija i pojeli legitiman broj fakture.
- * Reči koje se u PNB-u realno javljaju uz crticu, a NISU šifra vrste, stoje u
- * `NOT_A_SERIES_CODE`.
+ * ZAŠTO SE SME UKLONITI — grana je bila SUVIŠNA za oba svoja cilja (izmereno):
+ *   1) BigBit auto-broj je `Left(VrstaDok,3) & "-" & zeroPad(N) & "/" & GGGG`
+ *      (`BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md:123`), dakle UVEK zero-padovan. Njega već
+ *      hvata brana vodećih nula iz koraka (5): bez ove grane `AR-00001/2025` daje
+ *      `1/2025`/`1` ali NE i `1/25`; `PRO-00002/2025` ne daje `2/25`; `IFG-00025/2025`
+ *      ne daje `25/25`; `IFU-00012/2026` ne daje `12/26`; `IZV-00060/2026` ne daje `60/26`.
+ *      Cela tabela nalaza V1 ostaje zatvorena i bez ijedne generičke šifre.
+ *   2) Naša numeracija više NE izmišlja prefiks za neupisanu vrstu — `seriesPrefixFor`
+ *      od sada odbija svaku vrstu van registra (v. `numbering.service.ts`, nalaz V-B).
+ *      Time je krug zatvoren sa druge strane: numeracija ume da UPIŠE samo prefikse iz
+ *      `DOCUMENT_SERIES`, a parser čita tačno njih — nijedan više, nijedan manje.
+ *
+ * ⚠️ AKO SE IKAD VRATI FALLBACK PREFIKS U NUMERACIJI, mora se vratiti i čitač ovde —
+ * inače `XYZ-1/26` opet daje goli `1/26` (broj fakture). To je jedan invariant, ne dva.
  */
-const GENERIC_CODE_MAX_LEN = 5;
-const NOT_A_SERIES_CODE = new Set([
-  "BR",
-  "BROJ",
-  "RN",
-  "RACUN",
-  "RAČUN",
-  "FAKT",
-  "PO",
-  "ZA",
-  "OD",
-  "NA",
-  "UZ",
-  "DUG",
-  "IZNOS",
-  "БР",
-  "БРОЈ",
-  "РАЧУН",
-  "ПО",
-  "ЗА",
-  "ОД",
-  "НА",
-]);
 
 /** Oznaka serije nađena u PNB-u. */
 interface MarkerHit {
-  /** Kanonski prefiks iz numeracije (`A-`, `PROF-`, `XYZ-`). */
+  /** Kanonski prefiks iz numeracije (`A-`, `PROF-`, `PON-`, `REV-`). */
   prefix: string;
   /** Pozicija same oznake u PNB-u. */
   at: number;
   /** Prvi znak IZA oznake i razdelnika — odatle počinje broj koji oznaka veže. */
   bodyStart: number;
-  /** Poznata serija iz registra (pobeđuje generičku šifru na istom mestu). */
-  known: boolean;
 }
 
 /**
@@ -415,8 +439,8 @@ function markerIsStandalone(raw: string, at: number, gapLen: number): boolean {
  * `PROF-1/26 PROF-2/26` davao besmislen `PROF-PROF-2/26` i nijedan od dva stvarna
  * broja. Sada svaka oznaka drži svoj ODSEČAK — od svog broja do sledeće oznake.
  *
- * Na istom mestu POZNATA serija pobeđuje generičku šifru (`AVR-00001/2026` je naš
- * avans `A-`, a ne nepoznata serija „AVR-").
+ * OZNAKE SU SAMO ONE IZ REGISTRA NUMERACIJE — nema „svaka šifra uz crticu je serija"
+ * (v. dugačko obrazloženje uz `MarkerHit`, nalaz V-B).
  *
  * Ono što je ISPRED prve oznake se ODBACUJE (model, kontrolni broj, reči). Posledica je
  * ista kao kod `A 657/25`: ako neko ispred oznake stavi pravi broj dokumenta, taj broj
@@ -439,34 +463,13 @@ function findSeriesMarkers(raw: string): MarkerHit[] {
         prefix: series.prefix,
         at: m.index,
         bodyStart: m.index + m[0].length,
-        known: true,
       });
     }
   }
 
-  // Generička šifra vrste (`AR-`, `PRO-`, `IFG-`, `XYZ-`) — v. `GENERIC_CODE_MAX_LEN`.
-  const genericRe = new RegExp(
-    `([${LETTERS}]{2,${GENERIC_CODE_MAX_LEN}})-${BIND_AHEAD}`,
-    "gi",
-  );
-  let g: RegExpExecArray | null;
-  while ((g = genericRe.exec(raw)) !== null) {
-    if (!markerIsStandalone(raw, g.index, 1)) continue;
-    const code = g[1].toUpperCase();
-    if (NOT_A_SERIES_CODE.has(code)) continue;
-    hits.push({
-      prefix: `${code}-`,
-      at: g.index,
-      bodyStart: g.index + g[0].length,
-      known: false,
-    });
-  }
-
-  // Po poziciji; na istom mestu prvo poznata serija. Preklapanja se odbacuju — oznaka
-  // koja počinje unutar tela prethodne nije nova oznaka nego deo njenog broja.
-  hits.sort((a, b) =>
-    a.at !== b.at ? a.at - b.at : Number(b.known) - Number(a.known),
-  );
+  // Po poziciji. Preklapanja se odbacuju — oznaka koja počinje unutar tela prethodne
+  // nije nova oznaka nego deo njenog broja.
+  hits.sort((a, b) => a.at - b.at);
 
   const out: MarkerHit[] = [];
   let coveredTo = -1;
