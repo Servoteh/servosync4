@@ -30,11 +30,23 @@ import { Prisma } from "@prisma/client";
  *
  *  (a) dokumenti knjiženi PRE migracije 20260726120000 — spojna tabela tada nije
  *      postojala, pa veza živi samo u koloni;
- *  (b) 🔴 ŽIV KANAL, ne samo istorija: pdv modul veže avans na konačni račun rutom
- *      `POST /pdv/advances/link-final` (`pdv.controller.ts`), a
- *      `AdvanceVatService.linkIncomingAdvanceToFinal` upisuje `advance_invoice_id` +
- *      `advance_applied_amount` PRAVO U KOLONE, bez reda u spojnoj tabeli. Takva veza
- *      nastaje i danas, na računima koje prodaja posle toga i dalje obrađuje.
+ *  (b) ruta `POST /pdv/advances/link-final` (`pdv.controller.ts` →
+ *      `AdvanceVatService.linkIncomingAdvanceToFinal`) upisuje `advance_invoice_id` +
+ *      `advance_applied_amount` PRAVO U KOLONE, bez reda u spojnoj tabeli.
+ *      ⚠️ ISPRAVKA 02.08.2026: ta ruta je danas MRTVA i ne može da napravi novu vezu —
+ *      `loadIncomingAdvanceOrThrow` (`advance-vat.service.ts`) prima SAMO ulazni avans
+ *      (`advanceDirection = 'in'`), a nekoliko redova niže isti taj ulazni avans se
+ *      odbija (Batch C, nalaz 4: ulazni avans na naš izlazni račun poslao bi na SEF
+ *      umanjen `PayableAmount` kupcu). Izlazni pada na prvom guardu, ulazni na drugom —
+ *      nijedan poziv ne stigne do transakcije. Ranija verzija ovog teksta ju je zvala
+ *      „živ kanal"; to nije bilo tačno;
+ *
+ *  (c) ručna ispravka u bazi i BUDUĆI UVOZ BigBit faktura — v. upozorenje u
+ *      `docs/migration/BIGBIT_IZLAZNE_FAKTURE_I_AVANSI.md` §4.5 (jedna BigBit faktura
+ *      zatvara i po šest avansa; kolone-bez-redova pripisale bi ceo zbir prvom AVR-u).
+ *
+ * Pravilo unije zato NIJE mrtvo slovo: (a) i (c) su živi izvori zatečene veze, a (b)
+ * ostaje opisan zato što se ruta može otvoriti — tada mora da piše red u spojnu tabelu.
  *
  * ── ZAŠTO UNIJA, A NE „ILI-ILI" ──────────────────────────────────────────────
  *
