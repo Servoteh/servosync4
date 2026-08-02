@@ -24,6 +24,7 @@ import {
 import type {
   InvoiceTemplate,
   InvoiceWithItems,
+  PrintAdvanceDeduction,
   PrintCtx,
   PrintCustomer,
   PrintIssuer,
@@ -38,6 +39,7 @@ import {
   inoUslugaPageHeader,
   inoUslugaTemplate,
 } from "./templates/ino-usluga";
+import { assertExportWithoutVat } from "./templates/totals";
 
 /**
  * Štampa izlaznog računa (Invoice + InvoiceItem) u PDF.
@@ -128,11 +130,12 @@ const FILE_PREFIX_BY_VARIANT: Readonly<Record<InvoicePrintVariant, string>> = {
   debitNote: "KZ",
 };
 
-/** Jedan odbijen avans na računu (N:M primena): broj AVR-a + BRUTO iznos te primene. */
-interface AdvanceDeduction {
-  documentNumber: string | null;
-  amount: Prisma.Decimal;
-}
+/**
+ * Jedan odbijen avans na računu (N:M primena): broj AVR-a + BRUTO iznos te primene.
+ * Isti oblik koristi i `PrintCtx` (`templates/ctx.ts`), pa oba puta štampe — i četiri
+ * obrasca i opšti renderer — crtaju umanjenja iz istog podatka i po istom pravilu.
+ */
+type AdvanceDeduction = PrintAdvanceDeduction;
 
 /**
  * Podaci firme izdavaoca za ZATEČENI opšti renderer (AVR/KO/KZ). Namerno je uži od
@@ -201,6 +204,23 @@ const FORMLESS_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
   "AVR",
   "REV",
 ]);
+
+/**
+ * IZDATA IZVOZNA FAKTURA — jedine vrste za koje bankarske instrukcije MORAJU postojati.
+ *
+ * Izvodi se iz `FORM_BY_DOCUMENT_TYPE` (sve vrste koje idu na ino obrazac), da se dva
+ * spiska ne raziđu kad se doda nova izvozna vrsta. Namerno NE obuhvata predračun, ponudu,
+ * revers ni avansni račun: oni na ino obrascu završe samo kroz `isExport` fallback
+ * (`resolveForm`), a to nisu papiri po kojima kupac plaća (v. `loadPrintCtx`).
+ */
+const ISSUED_EXPORT_DOCUMENT_TYPES: ReadonlySet<string> = new Set(
+  Object.entries(FORM_BY_DOCUMENT_TYPE)
+    .filter(([, form]) => form === "ino-roba" || form === "ino-usluga")
+    .map(([type]) => type),
+);
+
+/** Domaća valuta — dokument u njoj nema šta da traži od deviznog računa. */
+const DOMESTIC_CURRENCY = "RSD";
 
 /** Širina sadržaja A4 strane pri levoj/desnoj margini 32 pt (595 − 32 − 32). */
 const CONTENT_WIDTH = 531;
@@ -379,7 +399,60 @@ export class InvoicePdfService {
     withoutPrices: boolean,
   ): Promise<PrintCtx> {
     const foreign = form === "ino-roba" || form === "ino-usluga";
-    const currency = invoice.currency || "RSD";
+    const currency = invoice.currency || DOMESTIC_CURRENCY;
+    const currencyCode = currency.trim().toUpperCase();
+    const documentType = (invoice.documentType ?? "").trim().toUpperCase();
+
+    /**
+     * ═══ KO SME DA BUDE ZAUSTAVLJEN ZBOG PRAZNOG IBAN-a ═══════════════════════════
+     *
+     * Brana traži bankarske instrukcije samo tamo gde one ZAISTA trebaju: IZDATA
+     * IZVOZNA FAKTURA (IZVRO/IZVGP/IZVUS) SA CENAMA I U STRANOJ VALUTI — jedini papir
+     * po kome strani kupac uplaćuje novac.
+     *
+     * ⚠️ IZMEREN KVAR (02.08.2026) koji je ovo suzio: uslov je bio „ino obrazac + sa
+     * cenama", pa je IZVRO u dinarima bio NEODŠTAMPIV. `loadForeignAccount` za RSD
+     * namerno preskače i drugi krug i rezervu sa firme (dinarskom dokumentu se ne sme
+     * podmetnuti devizni IBAN), ali je `assertBankDetails` ipak pucao — sa porukom
+     * „unesi IBAN u Podešavanja → Firma → Devizni računi", koju operater NE MOŽE da
+     * posluša: i uredno upisan IBAN se za RSD ne čita. Do tog stanja se dolazi bez
+     * ijedne greške u radu — domaći predračun (RSD) → `from-proforma` → IZVRO, gde
+     * carry-over postavi `isExport`, a valutu ostavi dinarsku.
+     *
+     * Iz istog razloga otpadaju i predračun, ponuda i revers sa `isExport`: oni na ino
+     * obrazac padaju samo kroz `resolveForm` fallback (papir im nije ni donet), a nisu
+     * dokument po kom se plaća — ostati bez papira je za njih čista šteta.
+     */
+    const requireBankDetails =
+      foreign &&
+      !withoutPrices &&
+      ISSUED_EXPORT_DOCUMENT_TYPES.has(documentType) &&
+      currencyCode !== DOMESTIC_CURRENCY;
+
+    /**
+     * REDOSLED BRANA: PDV na izvozu je TAČNIJI uzrok od praznog IBAN-a.
+     *
+     * `loadPrintCtx` se izvršava pre šablona, pa bi izuzetak iz `loadIssuer` progutao
+     * poruku `assertExportWithoutVat` — operater bi dobio uputstvo za unos IBAN-a nad
+     * dokumentom čiji je pravi problem obračunat PDV na izvoznoj fakturi (prepis domaćeg
+     * predračuna). Zato ista brana ide i ovde, pre učitavanja: poruka imenuje uzrok koji
+     * se stvarno mora ispraviti. Šabloni je i dalje zovu — ovo im nije zamena nego red.
+     */
+    if (foreign && !withoutPrices) assertExportWithoutVat(invoice);
+
+    /**
+     * Izvozni dokument u domaćoj valuti je sam po sebi sumnjivo stanje: papir izlazi na
+     * engleskom obrascu sa dinarskim iznosima. UPOZORENJE, a ne izuzetak — dokument mora
+     * da se odštampa (v. gore), a jedina prava blokada na izvozu ostaje obračunat PDV.
+     */
+    if (foreign && currencyCode === DOMESTIC_CURRENCY)
+      this.logger.warn(
+        `Dokument ${invoice.documentNumber} (id=${invoice.id}, vrsta „${documentType}") je ` +
+          `IZVOZNI, a valuta mu je domaća (${currencyCode}) — štampa se ino obrazac sa ` +
+          `dinarskim iznosima i bez bankarskih instrukcija (za RSD se devizni račun ne ` +
+          `traži). Najčešći uzrok je prepis domaćeg predračuna u izvozni račun, koji vrstu ` +
+          `dokumenta promeni a valutu ostavi. Proveri valutu i kurs pre slanja kupcu.`,
+      );
 
     const [
       customer,
@@ -388,14 +461,13 @@ export class InvoicePdfService {
       vatRates,
       signatory,
       warehouseName,
-      advanceInvoiceNumber,
+      advanceDeductions,
     ] = await Promise.all([
       this.loadCustomer(invoice.customerId),
-      // Bankarske instrukcije se TRAŽE samo na ino računu sa cenama. Otpremnica
-      // (`withoutPrices`) na sebi nema nijedan iznos, pa ni podatke za uplatu ne
-      // očekuje — blokirati njeno štampanje zbog praznog IBAN-a bilo bi zaustavljanje
+      // Otpremnica (`withoutPrices`) na sebi nema nijedan iznos, pa ni podatke za uplatu
+      // ne očekuje — blokirati njeno štampanje zbog praznog IBAN-a bilo bi zaustavljanje
       // isporuke robe zbog polja u podešavanjima.
-      this.loadIssuer(invoice.companyId, currency, foreign && !withoutPrices),
+      this.loadIssuer(invoice.companyId, currency, requireBankDetails),
       this.loadItems(
         invoice.items.map((i) => i.itemId),
         foreign,
@@ -407,7 +479,9 @@ export class InvoicePdfService {
       form === "domaca-roba"
         ? this.loadWarehouseName(invoice)
         : Promise.resolve(null),
-      this.loadAdvanceInvoiceNumber(invoice),
+      // ISTI izvor koji koristi i opšti renderer (AVR/KO/KZ) i ekran detalja računa:
+      // jedan unos PO PRIMENI avansa, umesto broja prvog avansa uz zbir svih.
+      this.loadAdvanceDeductions(invoice),
     ]);
 
     const lines: PrintLine[] = invoice.items.map((item, index) => {
@@ -455,7 +529,7 @@ export class InvoicePdfService {
       signatory,
       warehouseName,
       currency,
-      advanceInvoiceNumber,
+      advanceDeductions,
       withoutPrices,
     };
   }
@@ -500,9 +574,9 @@ export class InvoicePdfService {
    * prepisuju u kod: memorandum ostane bez registarskog reda umesto da odštampa nešto
    * što možda više nije tačno. Ispravka je unos firme, ne konstanta ovde.
    *
-   * `requireBankDetails` = ovo je ino račun sa cenama, dakle papir po kom kupac PLAĆA;
-   * bez bankarskih instrukcija takav papir nije upotrebljiv i štampa ga odbija
-   * (obrazloženje uz `loadForeignAccount`).
+   * `requireBankDetails` = ovo je izdata izvozna faktura sa cenama u stranoj valuti, dakle
+   * papir po kom kupac PLAĆA; bez bankarskih instrukcija takav papir nije upotrebljiv i
+   * štampa ga odbija (uslov i obrazloženje: `loadPrintCtx` i `loadForeignAccount`).
    */
   private async loadIssuer(
     companyId: number,
@@ -581,8 +655,11 @@ export class InvoicePdfService {
    * uzima podrazumevani (`isDefault`), pa po `sortOrder`.
    *
    * ═══ ZAŠTO IZUZETAK, A NE UPOZORENJE ═════════════════════════════════════════════
-   * `requireBankDetails` je tačno kad se štampa IZVOZNI račun SA CENAMA — papir po kom
-   * strani kupac plaća. Bez IBAN-a i SWIFT-a šablon ceo blok banke izostavi (`ino-roba.ts`
+   * `requireBankDetails` je tačno kad se štampa IZDATA IZVOZNA FAKTURA SA CENAMA I U
+   * STRANOJ VALUTI (uslov se sklapa u `loadPrintCtx` — tamo i piše zašto baš tako, i
+   * zašto dinarski izvozni dokument ovde NE SME da bude zaustavljen: za RSD se devizni
+   * račun namerno i ne traži, pa se brana ne bi imala čime zadovoljiti). To je papir po
+   * kom strani kupac plaća. Bez IBAN-a i SWIFT-a šablon ceo blok banke izostavi (`ino-roba.ts`
    * → `bankBlock` vraća `[]`), pa PDF izgleda potpuno ispravno i tiho izađe kupcu koji
    * onda nema gde da uplati. Kvar se otkrije tek kad kupac pozove — a do tada je papir
    * već otišao i ne može se povući.
@@ -818,25 +895,6 @@ export class InvoicePdfService {
     return warehouse?.name?.trim() || null;
   }
 
-  /**
-   * Broj odbijenog avansnog računa (Batch C §C1a). Meki ref — bez JOIN-a.
-   * Doneti obrasci red o avansu nemaju; šablon sam odlučuje hoće li ga štampati.
-   */
-  private async loadAdvanceInvoiceNumber(
-    invoice: InvoiceWithItems,
-  ): Promise<string | null> {
-    if (
-      invoice.advanceInvoiceId == null ||
-      !invoice.advanceAppliedAmount.greaterThan(0)
-    )
-      return null;
-    const advance = await this.prisma.invoice.findUnique({
-      where: { id: invoice.advanceInvoiceId },
-      select: { documentNumber: true },
-    });
-    return advance?.documentNumber ?? null;
-  }
-
   // --------------------------------------------------------- dokument (pdfmake)
 
   /**
@@ -1070,16 +1128,25 @@ export class InvoicePdfService {
   }
 
   /**
-   * Odbijeni avansi ovog računa — po JEDAN red po primeni (N:M od migracije
+   * Odbijeni avansi ovog računa — po JEDAN unos po primeni (N:M od migracije
    * 20260726120000). Ranije se štampao ZBIR svih primena uz broj SAMO PRVOG AVR-a,
    * pa je kupac dobijao poreski dokument sa umanjenjem većim od referenciranog
    * avansnog računa (revizija, VISOK). Rezerva: dokumenti vezani pre N:M migracije
-   * (veza samo u koloni `advance_invoice_id`) → jedan red iz kolona.
+   * (veza samo u koloni `advance_invoice_id`) → jedan unos iz kolona.
+   *
+   * Od 02.08.2026. ovo hrani OBA puta štampe — i opšti renderer (AVR/KO/KZ) i četiri
+   * obrasca kroz `PrintCtx.advanceDeductions`.
+   *
+   * ⚠️ REDOSLED IZVORA JE ISTI KAO NA EKRANU (`fakturisanje.service.ts`, `getInvoice`):
+   * PRVO Σ aktivnih primena, pa TEK ONDA kolona `advance_applied_amount`. Ranije je prvi
+   * uslov bio „kolona > 0", pa se izvor birao drugačije nego na ekranu: račun sa zatečenom
+   * 1:1 vezom (bez reda u spojnoj tabeli) i novom N:M primenom nosi u koloni UNIJU oba
+   * iznosa, a ekran sabira samo primene — isti račun je na papiru imao manji dug nego na
+   * ekranu. Upit se zato izvršava uvek; košta jedan indeksirani `findMany` po štampi.
    */
   private async loadAdvanceDeductions(
     invoice: InvoiceWithItems,
   ): Promise<AdvanceDeduction[]> {
-    if (!invoice.advanceAppliedAmount.greaterThan(0)) return [];
     const applications = await this.prisma.invoiceAdvanceApplication.findMany({
       where: { invoiceId: invoice.id, status: "ACTIVE" },
       orderBy: { id: "asc" },
@@ -1094,6 +1161,7 @@ export class InvoicePdfService {
         amount: a.appliedAmount,
       }));
     }
+    if (!invoice.advanceAppliedAmount.greaterThan(0)) return [];
     const legacy =
       invoice.advanceInvoiceId != null
         ? await this.prisma.invoice.findUnique({

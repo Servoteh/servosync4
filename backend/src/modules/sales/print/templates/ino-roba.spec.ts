@@ -166,7 +166,7 @@ function makeCtx(over: Partial<PrintCtx> = {}): PrintCtx {
     signatory: { name: "Dragana Korkut" },
     warehouseName: "Gotovi proizvodi",
     currency: "EUR",
-    advanceInvoiceNumber: null,
+    advanceDeductions: [],
     withoutPrices: false,
     ...over,
   };
@@ -385,7 +385,9 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
             lineTotal: D("10000.00"),
           },
         ],
-        advanceInvoiceNumber: "A-1/26",
+        advanceDeductions: [
+          { documentNumber: "A-1/26", amount: D("3000.00") },
+        ],
         ...over,
       });
 
@@ -418,7 +420,13 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
 
     it("bez broja avansnog računa red i dalje postoji, samo bez broja", () => {
       const texts = collectText(
-        inoRobaTemplate(saAvansom({ advanceInvoiceNumber: null })),
+        inoRobaTemplate(
+          saAvansom({
+            advanceDeductions: [
+              { documentNumber: null, amount: D("3000.00") },
+            ],
+          }),
+        ),
       );
       expect(texts).toContain("Less prepayment received:");
       expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe("7,000.00");
@@ -433,10 +441,39 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
               grossTotal: D("10000.00"),
               advanceAppliedAmount: D("12000.00"),
             }),
+            advanceDeductions: [
+              { documentNumber: "A-1/26", amount: D("12000.00") },
+            ],
           }),
         ),
       );
       expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe("0.00");
+    });
+
+    /**
+     * NOVO-A na izvoznom obrascu: dva avansa = dva reda „Less prepayment received".
+     * Izmeren ulaz: 10.000 EUR fakture uz `A-1/26` (3.000) i `A-2/26` (2.000) — do
+     * ispravke jedan red sa brojem PRVOG avansa i zbirom oba (− 5,000.00).
+     */
+    it("dva odbijena avansa daju dva reda, svaki sa svojim brojem", () => {
+      const texts = collectText(
+        inoRobaTemplate(
+          saAvansom({
+            advanceDeductions: [
+              { documentNumber: "A-1/26", amount: D("3000.00") },
+              { documentNumber: "A-2/26", amount: D("2000.00") },
+            ],
+          }),
+        ),
+      );
+      const prvi = texts.indexOf("Less prepayment received (no. A-1/26):");
+      const drugi = texts.indexOf("Less prepayment received (no. A-2/26):");
+      expect(prvi).toBeGreaterThanOrEqual(0);
+      expect(drugi).toBeGreaterThan(prvi);
+      expect(texts[prvi + 1]).toBe("− 3,000.00");
+      expect(texts[drugi + 1]).toBe("− 2,000.00");
+      expect(texts).not.toContain("− 5,000.00");
+      expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe("5,000.00");
     });
 
     it("bez avansa papir ostaje kao na 228/25 — nema reda o avansu", () => {

@@ -3,7 +3,12 @@ import type { Content, TableLayout } from "pdfmake/interfaces";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import { formatAmount, formatDateDomestic, formatInvoiceNumber } from "../format";
 import type { InvoiceTemplate, PrintCtx } from "./ctx";
-import { discountFromLines, payableAfterAdvance } from "./totals";
+import {
+  advanceTotal,
+  discountFromLines,
+  payableAfterAdvance,
+  printableAdvanceDeductions,
+} from "./totals";
 
 /**
  * IFUSL — domaća faktura za USLUGU (korak 5 iz `docs/STAMPA_FAKTURA_GAP.md` §4).
@@ -407,6 +412,16 @@ function totalsRow(label: string, value: string, strong = false): Content {
  * (`pricing.service.ts`), taj zbir je uvek bio JEDNAK osnovici, pa je „Odobren
  * rabat" strukturno bio `0.00` i kad je u koloni `Rab%` pisalo 20. Sada se rabat
  * izvodi po stavci (`totals.ts`), a bruto je osnovica uvećana za njega.
+ *
+ * ⚠️ NATPIS REDA 1 (dopuna 02.08.2026): više NE nosi „(osnovica)“. Otkad se rabat
+ * zaista računa, red 1 je vrednost PRE rabata, pa je dokument u tri reda tvrdio
+ * `osnovica = 20.000,00`, `rabat = 4.000,00`, `osnovica = 16.000,00` — dva različita
+ * iznosa pod istim imenom, a prvi nije poreska osnovica. Doneti papir IFUSL 653/25
+ * ima rabat 0,00, pa su mu oba reda ista i razlika se na njemu ne vidi; sam BigBit taj
+ * red u formi za unos zove „Vrednost bez poreza“, ne „osnovica“
+ * (`backend/docs/migration/12-bigbit-uputstvo-master.md`, image17). Zagrada ostaje SAMO
+ * na redu posle rabata, koji jeste poreska osnovica. Robni obrazac je ovim nedirnut —
+ * tamo je red 1 bez natpisa (`domaca-roba.ts`, `label("")`), kao na papiru IFR.
  */
 function totalsBlock(ctx: PrintCtx): Content[] {
   if (ctx.withoutPrices) return [];
@@ -415,7 +430,7 @@ function totalsBlock(ctx: PrintCtx): Content[] {
   const discount = discountFromLines(ctx.lines);
   const gross = net.add(discount);
   const rows: Content[] = [
-    totalsRow("Vrednost bez PDV (osnovica):", formatAmount(gross)),
+    totalsRow("Vrednost bez PDV:", formatAmount(gross)),
     totalsRow("Odobren rabat:", formatAmount(discount)),
     totalsRow("Ukupno vrednost bez PDV (osnovica):", formatAmount(net)),
   ];
@@ -432,13 +447,20 @@ function totalsBlock(ctx: PrintCtx): Content[] {
   // Odbijen avans (Batch C §C1a) ne postoji na donetom papiru, ali se NE sme
   // prećutati: umanjuje iznos za uplatu, a ne osnovicu ni PDV. Zato ulazi kao
   // red neposredno pre završnog — koji i dalje ostaje `Ukupno za uplatu`.
-  const advance = ctx.invoice.advanceAppliedAmount;
+  //
+  // JEDAN RED PO PRIMENI (N:M, ispravka 02.08.2026): račun na 10.000,00 koji zatvara
+  // `A-1/26` (3.000,00) i `A-2/26` (2.000,00) daje DVA reda sa svojim iznosima. Ranije
+  // je izlazio jedan red — broj prvog avansa uz zbir svih (− 5.000,00).
+  const deductions = printableAdvanceDeductions(ctx);
+  const advance = advanceTotal(deductions);
   let payable = ctx.invoice.grossTotal;
   if (advance.greaterThan(0)) {
-    const label = ctx.advanceInvoiceNumber
-      ? `Umanjenje za primljeni avans (br. ${ctx.advanceInvoiceNumber}):`
-      : "Umanjenje za primljeni avans:";
-    rows.push(totalsRow(label, `− ${formatAmount(advance)}`));
+    for (const deduction of deductions) {
+      const label = deduction.documentNumber
+        ? `Umanjenje za primljeni avans (br. ${deduction.documentNumber}):`
+        : "Umanjenje za primljeni avans:";
+      rows.push(totalsRow(label, `− ${formatAmount(deduction.amount)}`));
+    }
     payable = payableAfterAdvance(payable, advance);
   }
 

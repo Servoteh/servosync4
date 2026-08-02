@@ -172,7 +172,7 @@ const ctx: PrintCtx = {
   signatory: null,
   warehouseName: null,
   currency: "EUR",
-  advanceInvoiceNumber: null,
+  advanceDeductions: [],
   withoutPrices: false,
 };
 
@@ -366,7 +366,7 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
           ...invoice,
           advanceAppliedAmount: D("3000.00"),
         } as unknown as InvoiceWithItems,
-        advanceInvoiceNumber: "A-1/26",
+        advanceDeductions: [{ documentNumber: "A-1/26", amount: D("3000.00") }],
         ...over,
       });
 
@@ -390,7 +390,13 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
 
       it("bez broja avansnog računa red i dalje postoji, samo bez broja", () => {
         const texts = collectText(
-          inoUslugaTemplate(saAvansom({ advanceInvoiceNumber: null })),
+          inoUslugaTemplate(
+            saAvansom({
+              advanceDeductions: [
+                { documentNumber: null, amount: D("3000.00") },
+              ],
+            }),
+          ),
         );
         expect(texts).toContain("Less prepayment received:");
       });
@@ -403,10 +409,41 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
                 ...invoice,
                 advanceAppliedAmount: D("12000.00"),
               } as unknown as InvoiceWithItems,
+              advanceDeductions: [
+                { documentNumber: "A-1/26", amount: D("12000.00") },
+              ],
             }),
           ),
         );
         expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe("0.00");
+      });
+
+      /**
+       * NOVO-A na višestranom ino obrascu: dva avansa = dva reda umanjenja, svaki uz
+       * SVOJ broj. Ranije je izlazio jedan red — broj prvog avansa uz zbir svih.
+       */
+      it("dva odbijena avansa daju dva reda, a `Amount payable` odbija oba", () => {
+        const texts = collectText(
+          inoUslugaTemplate(
+            saAvansom({
+              advanceDeductions: [
+                { documentNumber: "A-1/26", amount: D("3000.00") },
+                { documentNumber: "A-2/26", amount: D("2000.00") },
+              ],
+            }),
+          ),
+        );
+        const prvi = texts.indexOf("Less prepayment received (no. A-1/26):");
+        const drugi = texts.indexOf("Less prepayment received (no. A-2/26):");
+        expect(prvi).toBeGreaterThanOrEqual(0);
+        expect(drugi).toBeGreaterThan(prvi);
+        expect(texts[prvi + 1]).toBe("− 3,000.00");
+        expect(texts[drugi + 1]).toBe("− 2,000.00");
+        expect(texts).not.toContain("− 5,000.00");
+        // 10.530,75 − 3.000,00 − 2.000,00
+        expect(texts[texts.indexOf("Amount payable ( EUR)") + 1]).toBe(
+          "5,530.75",
+        );
       });
 
       it("bez avansa papir ostaje kao na 060/26", () => {

@@ -98,7 +98,7 @@ function makeCtx(over: Partial<PrintCtx> = {}): PrintCtx {
     // Namerno popunjeno: usluga NEMA magacin i šablon ovo mora da prećuti.
     warehouseName: "Magacin robe",
     currency: "RSD",
-    advanceInvoiceNumber: null,
+    advanceDeductions: [],
     withoutPrices: false,
     ...over,
   };
@@ -277,9 +277,42 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
     });
 
     it("nosi zaseban red `Ukupno vrednost bez PDV (osnovica)`", () => {
-      expect(paper).toContain("Vrednost bez PDV (osnovica):");
+      expect(paper).toContain("Vrednost bez PDV:");
       expect(paper).toContain("Odobren rabat:");
       expect(paper).toContain("Ukupno vrednost bez PDV (osnovica):");
+    });
+
+    /**
+     * NOVO-C (02.08.2026): „(osnovica)" sme da stoji SAMO uz red posle rabata.
+     *
+     * Otkad se rabat zaista računa, prvi red je vrednost PRE rabata, pa je dokument sa
+     * rabatom tvrdio dva različita iznosa pod istim imenom:
+     *   `Vrednost bez PDV (osnovica): 20.000,00` / `Odobren rabat: 4.000,00` /
+     *   `Ukupno vrednost bez PDV (osnovica): 16.000,00`.
+     * Poreska osnovica je 16.000,00 — prvi red to nije i ne sme tako da se zove. Robni
+     * obrazac je pošteđen jer mu je prvi red bez natpisa (papir IFR).
+     */
+    it("red PRE rabata se NE zove „osnovica“ (natpis ostaje samo posle rabata)", () => {
+      const saRabatom = domacaUslugaTemplate(
+        makeCtx({
+          lines: [
+            { ...ZAKUP, discountPercent: d(20), unitPriceBeforeDiscount: null },
+          ],
+        }),
+      );
+      const texts: string[] = [];
+      walk(saRabatom, (n) => {
+        if (typeof n.text === "string") texts.push(n.text);
+      });
+      // Bruto (20.000,00) stoji uz natpis BEZ zagrade…
+      const bruto = texts.indexOf("Vrednost bez PDV:");
+      expect(bruto).toBeGreaterThanOrEqual(0);
+      expect(framedAmounts(saRabatom)[0].text).toBe("20,000.00");
+      // …a „osnovica" postoji tačno jednom, uz iznos posle rabata (16.000,00).
+      expect(
+        texts.filter((t) => t.includes("(osnovica)")),
+      ).toEqual(["Ukupno vrednost bez PDV (osnovica):"]);
+      expect(framedAmounts(saRabatom)[2].text).toBe("16,000.00");
     });
 
     it("red PDV-a nosi i stopu i osnovicu u tekstu", () => {
@@ -424,7 +457,7 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
       const withAdvance = domacaUslugaTemplate(
         makeCtx({
           invoice: makeInvoice({ advanceAppliedAmount: d(9200) }),
-          advanceInvoiceNumber: "12/25",
+          advanceDeductions: [{ documentNumber: "12/25", amount: d(9200) }],
         }),
       );
       const t = text(withAdvance);
@@ -433,6 +466,35 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
       const boxes = framedAmounts(withAdvance);
       expect(boxes[boxes.length - 1]).toEqual({
         text: "10,000.00",
+        bold: true,
+      });
+    });
+
+    /**
+     * NOVO-A na uslužnom obrascu: izmereni ulaz je račun 19.200,00 koji zatvara dva
+     * avansa — `A-1/26` (3.000,00) i `A-2/26` (2.000,00). Papir mora da nosi DVA reda;
+     * ranije je izlazio jedan, sa brojem prvog avansa i zbirom oba (− 5.000,00).
+     */
+    it("dva odbijena avansa daju dva reda, a `Ukupno za uplatu` odbija oba", () => {
+      const withTwo = domacaUslugaTemplate(
+        makeCtx({
+          invoice: makeInvoice({ advanceAppliedAmount: d(5000) }),
+          advanceDeductions: [
+            { documentNumber: "A-1/26", amount: d(3000) },
+            { documentNumber: "A-2/26", amount: d(2000) },
+          ],
+        }),
+      );
+      const t = text(withTwo);
+      expect(t).toContain("Umanjenje za primljeni avans (br. A-1/26):");
+      expect(t).toContain("Umanjenje za primljeni avans (br. A-2/26):");
+      expect(t).toContain("− 3,000.00");
+      expect(t).toContain("− 2,000.00");
+      expect(t).not.toContain("− 5,000.00");
+      const boxes = framedAmounts(withTwo);
+      // 19.200,00 − 3.000,00 − 2.000,00
+      expect(boxes[boxes.length - 1]).toEqual({
+        text: "14,200.00",
         bold: true,
       });
     });

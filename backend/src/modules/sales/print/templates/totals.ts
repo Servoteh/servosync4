@@ -1,7 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { formatAmount } from "../format";
-import type { PrintCtx, PrintLine } from "./ctx";
+import type { PrintAdvanceDeduction, PrintCtx, PrintLine } from "./ctx";
 
 /**
  * ZBIR IZLAZNE FAKTURE — aritmetika i brane koje SVI obrasci moraju da dele.
@@ -116,6 +116,38 @@ export function payableAfterAdvance(
 }
 
 /**
+ * ODBIJENI AVANSI KOJI IDU NA PAPIR — jedan red po primeni, bez praznih redova.
+ *
+ * Primena sa iznosom 0 (stornirana pa ponovo upisana, ručna ispravka u bazi) ne sme da
+ * proizvede red `Umanjenje za primljeni avans (br. …): − 0,00` — kupac bi ga čitao kao
+ * avans koji postoji, a ne umanjuje ništa. Filtriranje je OVDE, a ne u učitavanju, da
+ * bi sva četiri obrasca imala isto pravilo i kad im `PrintCtx` stigne iz testa.
+ */
+export function printableAdvanceDeductions(
+  ctx: PrintCtx,
+): PrintAdvanceDeduction[] {
+  return ctx.advanceDeductions.filter((d) => d.amount.greaterThan(ZERO));
+}
+
+/**
+ * UKUPNO ODBIJENI AVANS = zbir PRIKAZANIH primena.
+ *
+ * ⚠️ NIJE `invoice.advanceAppliedAmount` (ispravka 02.08.2026). Dva razloga:
+ *
+ *  1. Zbir mora da odgovara onome što na papiru PIŠE: „za uplatu" je `bruto − Σ redova
+ *     umanjenja`, pa kupac koji sabere odštampane redove dobije baš završni iznos.
+ *  2. Ekran (`fakturisanje.service.ts`, `getInvoice`) računa `payableAmount` iz
+ *     Σ AKTIVNIH primena i na kolonu pada tek kad primena nema. Kolona zna da nosi UNIJU
+ *     (zatečena 1:1 veza bez reda u spojnoj tabeli + nova N:M primena), pa je papir
+ *     pokazivao manji dug od ekrana — isti račun, dva iznosa.
+ */
+export function advanceTotal(
+  deductions: readonly PrintAdvanceDeduction[],
+): Prisma.Decimal {
+  return deductions.reduce((sum, d) => sum.add(d.amount), ZERO);
+}
+
+/**
  * BRANA: izvozni obrazac ne sme da odštampa PDV kao deo iznosa za uplatu.
  *
  * SCENARIO KOJI JE OVO TRAŽIO: predračun se napravi kao DOMAĆI (PDV 20 %, bruto
@@ -133,12 +165,20 @@ export function payableAfterAdvance(
  * dobija; ako je on u redu, greška se ne otkriva sve do poreske kontrole.
  * Isti duh je i brana u UBL builderu (`ubl-builder.service.ts` — račun bez datuma
  * prometa ne sme na SEF): glasan 400 pri štampi je jeftiniji od tihog pogrešnog papira.
+ *
+ * ⚠️ PRIMA DOKUMENT, NE CEO `PrintCtx` (02.08.2026): brana se poziva i iz šablona i iz
+ * `InvoicePdfService.loadPrintCtx`, PRE učitavanja podataka firme. Bez toga bi izvozni
+ * dokument koji nosi i PDV i prazan IBAN dobio poruku o IBAN-u — a pravi uzrok je PDV
+ * na izvozu (v. `loadPrintCtx`, „redosled brana").
  */
-export function assertExportWithoutVat(ctx: PrintCtx): void {
-  if (ctx.invoice.vatTotal.isZero()) return;
+export function assertExportWithoutVat(invoice: {
+  documentNumber: string;
+  vatTotal: Prisma.Decimal;
+}): void {
+  if (invoice.vatTotal.isZero()) return;
   throw new BadRequestException(
-    `Izvozna faktura ${ctx.invoice.documentNumber} nosi obračunat PDV ` +
-      `${formatAmount(ctx.invoice.vatTotal)} — izvozni obrazac ne sme da ga odštampa ` +
+    `Izvozna faktura ${invoice.documentNumber} nosi obračunat PDV ` +
+      `${formatAmount(invoice.vatTotal)} — izvozni obrazac ne sme da ga odštampa ` +
       `kao deo iznosa za uplatu, jer isti papir tvrdi da je promet oslobođen PDV-a. ` +
       `Najčešći uzrok je prepis DOMAĆEG predračuna u izvozni račun: ispravi poresku ` +
       `šifru stavki (izvoz = šifra „0") i zbirove dokumenta, pa ponovi štampu.`,

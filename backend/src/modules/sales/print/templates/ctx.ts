@@ -95,6 +95,30 @@ export interface PrintLine {
   vatRatePercent: number | null;
 }
 
+/**
+ * JEDNA PRIMENA ODBIJENOG AVANSA — broj avansnog računa i BRUTO iznos BAŠ TE primene.
+ *
+ * ⚠️ ZAŠTO LISTA, A NE JEDAN BROJ (ispravka 02.08.2026): veza avans↔račun je N:M od
+ * migracije `20260726120000` (`invoice_advance_applications`) — jedan račun sme da
+ * zatvara više avansa. Do ove izmene je `PrintCtx` nosio SAMO `advanceInvoiceNumber`
+ * (broj iz kolone `invoice.advance_invoice_id`, koja se upisuje jedino pri PRVOJ
+ * primeni — `advance-invoice.service.ts`, `isFirstApplication`), a uz njega se štampao
+ * `invoice.advanceAppliedAmount` = ZBIR SVIH primena.
+ *
+ * IZMEREN SCENARIO: račun na 10.000,00 zatvara `A-1/26` (3.000,00) i `A-2/26` (2.000,00).
+ * Papir je izlazio kao `Umanjenje za primljeni avans (br. A-1/26): − 5,000.00` — jedan
+ * broj uz tuđ zbir, dakle poreski dokument koji tvrdi da je po avansnom računu A-1/26
+ * odbijeno 5.000,00, iako je taj račun glasio na 3.000,00. Opšti renderer (AVR/KO/KZ)
+ * je istu grešku već ispravio (`loadAdvanceDeductions`, „revizija, VISOK") — četiri
+ * obrasca su je zaobišla samo zato što `PrintCtx` listu nije prenosio.
+ */
+export interface PrintAdvanceDeduction {
+  /** Broj avansnog računa; `null` kad je AVR u međuvremenu obrisan (meki ref). */
+  documentNumber: string | null;
+  /** Iznos BAŠ TE primene (bruto) — nikad zbir svih. */
+  amount: Prisma.Decimal;
+}
+
 /** Sve što šablon sme da zna. Ništa se ne dohvata iz baze unutar šablona. */
 export interface PrintCtx {
   invoice: InvoiceWithItems;
@@ -106,8 +130,17 @@ export interface PrintCtx {
   warehouseName: string | null;
   /** Valuta dokumenta (`RSD`, `EUR`…). */
   currency: string;
-  /** Broj odbijenog avansnog računa, kad ga ima. */
-  advanceInvoiceNumber: string | null;
+  /**
+   * Odbijeni avansi — JEDAN unos PO PRIMENI, redom nastanka. Prazno = avansa nema.
+   *
+   * Obrasci iz ove liste izvode i redove umanjenja i ukupan odbijeni iznos
+   * (`totals.ts` → `advanceTotal`) — NE iz kolone `invoice.advanceAppliedAmount`.
+   * Time papir i ekran gledaju u ISTI izvor: `fakturisanje.service.ts` (`getInvoice`)
+   * računa `payableAmount` iz Σ AKTIVNIH primena, pa na kolonu pada tek kad primena
+   * nema. Dok je štampa čitala kolonu, dokument sa zatečenom 1:1 vezom (bez reda u
+   * spojnoj tabeli) i novom N:M primenom davao je ekranu i papiru RAZLIČIT dug.
+   */
+  advanceDeductions: PrintAdvanceDeduction[];
   /**
    * Otpremnica bez cena. Kolone sa novcem se izostavljaju, a zbir se ne štampa.
    * (Obrazac za ovo nije donet — v. GAP §5 t.11 — pa se zasad štampa isti

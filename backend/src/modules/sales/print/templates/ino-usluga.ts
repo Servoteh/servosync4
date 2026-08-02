@@ -8,7 +8,12 @@ import {
   formatWeightKg,
 } from "../format";
 import type { InvoiceTemplate, PrintCtx } from "./ctx";
-import { assertExportWithoutVat, payableAfterAdvance } from "./totals";
+import {
+  advanceTotal,
+  assertExportWithoutVat,
+  payableAfterAdvance,
+  printableAdvanceDeductions,
+} from "./totals";
 
 /**
  * IZVUS — ino faktura za USLUGU, višestrana (korak 7 iz STAMPA_FAKTURA_GAP.md §4).
@@ -388,7 +393,7 @@ function itemsTable(ctx: PrintCtx): Content {
  */
 function totalsBlock(ctx: PrintCtx): Content {
   // Brana: izvozni papir sa obračunatim PDV-om ne sme da izađe (v. `totals.ts`).
-  assertExportWithoutVat(ctx);
+  assertExportWithoutVat(ctx.invoice);
 
   const labelWidth = 150;
   const valueWidth = 84;
@@ -405,28 +410,32 @@ function totalsBlock(ctx: PrintCtx): Content {
     alignment: "right" as const,
   });
 
-  const advance = ctx.invoice.advanceAppliedAmount;
+  // JEDAN RED PO PRIMENI (N:M, ispravka 02.08.2026) — broj avansa i iznos moraju biti iz
+  // iste primene; ranije je izlazio broj PRVOG avansa uz zbir svih.
+  const deductions = printableAdvanceDeductions(ctx);
+  const advance = advanceTotal(deductions);
   const hasAdvance = advance.greaterThan(0);
 
-  // Neuokvireni redovi iznad: uvek `TOTAL`, a uz avans i pun iznos fakture pa umanjenje.
+  // Neuokvireni redovi iznad: uvek `TOTAL`, a uz avans i pun iznos fakture pa umanjenja.
   const plainRows: TableCell[][] = [[label("TOTAL"), money(ctx.invoice.netTotal)]];
   if (hasAdvance) {
     plainRows.push([
       label(`TOTAL AMOUNT ( ${ctx.currency})`),
       money(ctx.invoice.grossTotal),
     ]);
-    plainRows.push([
-      label(
-        ctx.advanceInvoiceNumber
-          ? `Less prepayment received (no. ${ctx.advanceInvoiceNumber}):`
-          : "Less prepayment received:",
-      ),
-      {
-        text: `− ${formatAmount(advance, 2)}`,
-        fontSize: 9,
-        alignment: "right",
-      },
-    ]);
+    for (const deduction of deductions)
+      plainRows.push([
+        label(
+          deduction.documentNumber
+            ? `Less prepayment received (no. ${deduction.documentNumber}):`
+            : "Less prepayment received:",
+        ),
+        {
+          text: `− ${formatAmount(deduction.amount, 2)}`,
+          fontSize: 9,
+          alignment: "right",
+        },
+      ]);
   }
 
   return {

@@ -154,13 +154,36 @@ function makeInvoice(over: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Avansni računi na koje `advance_invoice_id` ume da pokaže (zatečena 1:1 veza, pre N:M
+ * migracije). Bez njih bi rezervni put učitavanja umanjenja ostao bez broja dokumenta.
+ */
+const ADVANCE_INVOICES: Record<number, { documentNumber: string }> = {
+  55: { documentNumber: "A-1/26" },
+};
+
+/** Jedna aktivna primena avansa, u obliku u kom je vraća `invoice_advance_applications`. */
+function makeApplication(documentNumber: string, amount: string) {
+  return { appliedAmount: D(amount), advance: { documentNumber } };
+}
+
 /** Lažni Prisma klijent — tačno one metode koje štampa zove, ništa više. */
-function makePrisma(invoice: Record<string, unknown>) {
+function makePrisma(
+  invoice: Record<string, unknown>,
+  applications: unknown[] = [],
+) {
   return {
     invoice: {
       findUnique: jest.fn((args: { where: { id: number } }) =>
-        Promise.resolve(args.where.id === invoice.id ? invoice : null),
+        Promise.resolve(
+          args.where.id === invoice.id
+            ? invoice
+            : (ADVANCE_INVOICES[args.where.id] ?? null),
+        ),
       ),
+    },
+    invoiceAdvanceApplication: {
+      findMany: jest.fn(() => Promise.resolve(applications)),
     },
     customer: { findUnique: jest.fn(() => Promise.resolve(CUSTOMER)) },
     company: { findUnique: jest.fn(() => Promise.resolve(COMPANY)) },
@@ -258,8 +281,9 @@ const realPdf = new PdfService();
 async function build(
   invoice: Record<string, unknown>,
   variant?: "withPrices" | "withoutPrices",
+  applications: unknown[] = [],
 ): Promise<Built> {
-  const prisma = makePrisma(invoice);
+  const prisma = makePrisma(invoice, applications);
   const pdf = new PdfService();
   let captured: TDocumentDefinitions | undefined;
   jest.spyOn(pdf, "render").mockImplementation(async (dd) => {
@@ -687,6 +711,90 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
       );
       expect(out.body).toContain("11,000.00"); // bruto
       expect(out.body).toContain("1,100.00"); // rabat = 11.000 − 9.900
+    });
+  });
+
+  /**
+   * ODBIJENI AVANSI DO PAPIRA (02.08.2026) — spona koju šabloni ne mogu da dokažu sami:
+   * oni crtaju ono što im `PrintCtx` donese, a kvar je bio baš u tome ŠTA im se donosi.
+   *
+   * Do ove izmene je učitavanje slalo `advanceInvoiceNumber` (broj iz kolone
+   * `advance_invoice_id`, koja se upisuje SAMO pri prvoj primeni), a obrazac je uz njega
+   * štampao `advanceAppliedAmount` = zbir SVIH primena. Opšti renderer (AVR/KO/KZ) je tu
+   * grešku već imao ispravljenu — četiri obrasca su je zaobišla kroz `PrintCtx`.
+   */
+  describe("odbijeni avansi (N:M) na donetom obrascu", () => {
+    const saAvansom = (over: Record<string, unknown> = {}) =>
+      makeInvoice({
+        netTotal: D("10000.00"),
+        vatTotal: D("0"),
+        grossTotal: D("10000.00"),
+        items: [
+          makeItem({
+            quantity: D("1"),
+            unitPrice: D("10000.00"),
+            vatBase: D("10000.00"),
+            vatAmount: D("0"),
+            lineTotal: D("10000.00"),
+          }),
+        ],
+        ...over,
+      });
+
+    /** Izmereni ulaz: račun 10.000 zatvara `A-1/26` (3.000) i `A-2/26` (2.000). */
+    it("dva avansa → dva reda; nijedan ne nosi tuđi zbir", async () => {
+      const out = await build(
+        saAvansom({ advanceInvoiceId: 55, advanceAppliedAmount: D("5000.00") }),
+        undefined,
+        [makeApplication("A-1/26", "3000.00"), makeApplication("A-2/26", "2000.00")],
+      );
+      const lines = out.body.split("\n");
+      const prvi = lines.indexOf("Umanjenje za primljeni avans (br. A-1/26):");
+      const drugi = lines.indexOf("Umanjenje za primljeni avans (br. A-2/26):");
+      expect(prvi).toBeGreaterThanOrEqual(0);
+      expect(drugi).toBeGreaterThan(prvi);
+      expect(lines[prvi + 1]).toBe("− 3,000.00");
+      expect(lines[drugi + 1]).toBe("− 2,000.00");
+      // Ono što je papir tvrdio pre ispravke: jedan broj uz zbir svih primena.
+      expect(out.body).not.toContain("− 5,000.00");
+    });
+
+    /**
+     * NOVO-E: papir mora da računa dug iz ISTOG izvora kao ekran. `getInvoice` sabira
+     * AKTIVNE primene i na kolonu pada tek kad ih nema; kolona ume da nosi UNIJU zatečene
+     * 1:1 veze (3.000) i nove N:M primene (2.000), pa je papir pokazivao 5.000 umanjenja,
+     * a ekran 2.000 — isti račun, dva različita duga.
+     */
+    it("kad primena ima, kolona `advanceAppliedAmount` se ne gleda", async () => {
+      const out = await build(
+        saAvansom({ advanceInvoiceId: 55, advanceAppliedAmount: D("5000.00") }),
+        undefined,
+        [makeApplication("A-2/26", "2000.00")],
+      );
+      const lines = out.body.split("\n");
+      expect(lines).toContain("Umanjenje za primljeni avans (br. A-2/26):");
+      expect(out.body).toContain("− 2,000.00");
+      expect(out.body).not.toContain("− 5,000.00");
+      // 10.000,00 − 2.000,00 — tačno onoliko koliko duguje i po ekranu.
+      expect(lines[lines.indexOf("Za uplatu (RSD):") + 1]).toBe("8,000.00");
+    });
+
+    /**
+     * Rezerva za dokumente knjižene PRE N:M migracije: veza postoji samo u koloni
+     * `advance_invoice_id`, spojna tabela je prazna. Papir i dalje mora da nosi broj
+     * avansa i iznos iz kolone.
+     */
+    it("bez ijedne primene pada na zatečenu 1:1 vezu iz kolone", async () => {
+      const out = await build(
+        saAvansom({ advanceInvoiceId: 55, advanceAppliedAmount: D("3000.00") }),
+        undefined,
+        [],
+      );
+      const lines = out.body.split("\n");
+      const at = lines.indexOf("Umanjenje za primljeni avans (br. A-1/26):");
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(lines[at + 1]).toBe("− 3,000.00");
+      expect(lines[lines.indexOf("Za uplatu (RSD):") + 1]).toBe("7,000.00");
     });
   });
 

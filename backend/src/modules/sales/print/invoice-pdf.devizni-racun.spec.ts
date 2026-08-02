@@ -160,6 +160,9 @@ function makePrisma(
         Promise.resolve(args.where.id === invoice.id ? invoice : null),
       ),
     },
+    invoiceAdvanceApplication: {
+      findMany: jest.fn(() => Promise.resolve([])),
+    },
     customer: { findUnique: jest.fn(() => Promise.resolve(CUSTOMER)) },
     company: { findUnique: jest.fn(() => Promise.resolve(company)) },
     paymentAccount: { findMany: jest.fn(() => Promise.resolve(accounts)) },
@@ -199,6 +202,7 @@ const realPdf = new PdfService();
 function makeService(prisma: ReturnType<typeof makePrisma>): {
   service: InvoicePdfService;
   captured: () => TDocumentDefinitions | undefined;
+  warnings: string[];
 } {
   const pdf = new PdfService();
   let captured: TDocumentDefinitions | undefined;
@@ -211,7 +215,26 @@ function makeService(prisma: ReturnType<typeof makePrisma>): {
     pdf,
     new BarcodeService(),
   );
-  return { service, captured: () => captured };
+  const warnings: string[] = [];
+  jest
+    .spyOn(
+      (service as unknown as { logger: { warn: (m: string) => void } }).logger,
+      "warn",
+    )
+    .mockImplementation((m: string) => {
+      warnings.push(String(m));
+    });
+  return { service, captured: () => captured, warnings };
+}
+
+/** Poruka izuzetka, bez obzira na vrstu — za tvrdnje „koji je uzrok imenovan". */
+async function errorMessage(p: Promise<unknown>): Promise<string> {
+  try {
+    await p;
+  } catch (e) {
+    return (e as Error).message;
+  }
+  throw new Error("Očekivan je izuzetak, a poziv je prošao.");
 }
 
 describe("Izvozna faktura — devizni račun stiže do papira", () => {
@@ -334,5 +357,113 @@ describe("Izvozna faktura — devizni račun stiže do papira", () => {
     const { service } = makeService(prisma);
 
     await expect(service.buildInvoicePdf(1)).resolves.toBeDefined();
+  });
+});
+
+/**
+ * ⚠️ DRUGA STRANA BRANE (02.08.2026): brana za IBAN je bila SUVIŠE ŠIROKA i ostavljala
+ * bez papira dokumente kojima bankarske instrukcije uopšte ne trebaju.
+ *
+ * `loadForeignAccount` za valutu RSD namerno preskače i drugi krug i rezervu sa firme
+ * (dinarskom dokumentu se ne sme podmetnuti devizni IBAN), ali je `assertBankDetails`
+ * ipak pucao — pa je poruka slala operatera u „Podešavanja → Firma → Devizni računi",
+ * gde problem NE MOŽE da se reši: i uredno upisan IBAN se za RSD ne čita.
+ */
+describe("brana za IBAN ne sme da zaustavi papir kome banka ne treba", () => {
+  /**
+   * IZMEREN VEKTOR: domaći predračun (RSD) → `from-proforma` → IZVRO. Carry-over
+   * postavi `isExport`, a valutu ostavi dinarsku; `companies.iban/swift` su uredno uneti.
+   * Do ispravke: 422 „za valutu RSD nije unet IBAN…". Sada: papir izlazi.
+   */
+  it("IZVRO u dinarima se ODŠTAMPA (i kad su podaci firme uredno uneti)", async () => {
+    const prisma = makePrisma(
+      makeExportInvoice({ currency: "RSD" }),
+      [RSD_RACUN],
+      {
+        ...COMPANY_BEZ_DEVIZNIH,
+        iban: "RS35160005010003501186",
+        swift: "DBDBRSBG",
+      },
+    );
+    const { service } = makeService(prisma);
+
+    await expect(service.buildInvoicePdf(1)).resolves.toBeDefined();
+  });
+
+  it("IZVRO u dinarima izlazi i bez ijednog bankarskog podatka", async () => {
+    const prisma = makePrisma(makeExportInvoice({ currency: "RSD" }), []);
+    const { service } = makeService(prisma);
+
+    await expect(service.buildInvoicePdf(1)).resolves.toBeDefined();
+  });
+
+  /**
+   * Izvozni dokument u domaćoj valuti je sumnjivo stanje i mora da bude IMENOVANO —
+   * ali upozorenjem, jer bi izuzetak značio dokument bez papira.
+   */
+  it("dinarski izvozni dokument dobija jasno upozorenje o pravom stanju", async () => {
+    const prisma = makePrisma(makeExportInvoice({ currency: "RSD" }), []);
+    const { service, warnings } = makeService(prisma);
+
+    await service.buildInvoicePdf(1);
+    const joined = warnings.join("\n");
+    expect(joined).toContain("228/25");
+    expect(joined).toContain("IZVOZNI, a valuta mu je domaća (RSD)");
+    // Poruka NE sme da pominje unos IBAN-a — to ovde nije ni uzrok ni lek.
+    expect(joined).not.toContain("Devizni računi");
+  });
+
+  /**
+   * Predračun, ponuda i revers sa `isExport` padaju na ino obrazac samo kroz fallback
+   * (`resolveForm`) — papir im nije ni donet, a nisu dokument po kom se plaća. Do
+   * ispravke je izvozni predračun tražio IBAN da bi se uopšte odštampao.
+   */
+  it.each([
+    ["predračun", "PROF", "12/26"],
+    ["ponuda", "PON", "5/26"],
+    ["revers", "REV", "8/26"],
+  ])("izvozni %s se štampa bez deviznog računa", async (_n, type, number) => {
+    const prisma = makePrisma(
+      makeExportInvoice({ documentType: type, documentNumber: number }),
+      [],
+    );
+    const { service } = makeService(prisma);
+
+    await expect(service.buildInvoicePdf(1)).resolves.toBeDefined();
+  });
+
+  /**
+   * IZDATA izvozna faktura u stranoj valuti je JEDINI papir po kom strani kupac plaća —
+   * na njoj brana ostaje. Ovo je granica: menja se samo valuta iz testa iznad.
+   */
+  it("IZVRO u EUR bez bankarskih podataka i dalje PUCA", async () => {
+    const prisma = makePrisma(makeExportInvoice(), []);
+    const { service } = makeService(prisma);
+
+    await expect(service.buildInvoicePdf(1)).rejects.toThrow(
+      UnprocessableEntityException,
+    );
+  });
+
+  /**
+   * REDOSLED BRANA: `loadPrintCtx` se izvršava PRE šablona, pa je brana za IBAN gutala
+   * tačniju poruku `assertExportWithoutVat`. Operater je nad prepisanim domaćim
+   * predračunom dobijao uputstvo za unos IBAN-a, umesto da mu se kaže da izvozna faktura
+   * nosi obračunat PDV — a to je ono što se stvarno mora ispraviti.
+   */
+  it("izvozni dokument sa PDV-om imenuje PDV kao uzrok, ne prazan IBAN", async () => {
+    const prisma = makePrisma(
+      makeExportInvoice({
+        currency: "EUR",
+        vatTotal: D("2106.15"),
+        grossTotal: D("12636.90"),
+      }),
+      [],
+    );
+    const { service } = makeService(prisma);
+
+    const message = await errorMessage(service.buildInvoicePdf(1));
+    expect(message).toContain("nosi obračunat PDV");
+    expect(message).not.toContain("IBAN");
   });
 });

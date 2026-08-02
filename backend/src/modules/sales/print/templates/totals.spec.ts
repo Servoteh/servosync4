@@ -1,10 +1,12 @@
 import { Prisma } from "@prisma/client";
-import type { InvoiceWithItems, PrintCtx, PrintLine } from "./ctx";
+import type { PrintAdvanceDeduction, PrintCtx, PrintLine } from "./ctx";
 import {
+  advanceTotal,
   assertExportWithoutVat,
   discountFromLines,
   lineDiscountAmount,
   payableAfterAdvance,
+  printableAdvanceDeductions,
 } from "./totals";
 
 /**
@@ -196,21 +198,56 @@ describe("iznos za uplatu posle avansa", () => {
   });
 });
 
+describe("odbijeni avansi (N:M primene)", () => {
+  const ctx = (deductions: PrintAdvanceDeduction[]): PrintCtx =>
+    ({ advanceDeductions: deductions }) as PrintCtx;
+
+  it("zbir je zbir PRIKAZANIH primena, ne kolone sa dokumenta", () => {
+    // Izmereni ulaz: račun 10.000,00 zatvara `A-1/26` (3.000) i `A-2/26` (2.000).
+    const list = printableAdvanceDeductions(
+      ctx([
+        { documentNumber: "A-1/26", amount: D("3000.00") },
+        { documentNumber: "A-2/26", amount: D("2000.00") },
+      ]),
+    );
+    expect(list).toHaveLength(2);
+    expect(advanceTotal(list).toFixed(2)).toBe("5000.00");
+  });
+
+  it("bez primena je nula (ne pada na kolonu i ne štampa red)", () => {
+    expect(printableAdvanceDeductions(ctx([]))).toEqual([]);
+    expect(advanceTotal([]).toFixed(2)).toBe("0.00");
+  });
+
+  /**
+   * Primena na 0 (stornirana pa ponovo upisana, ručna ispravka) ne sme da proizvede red
+   * „Umanjenje za primljeni avans (br. …): − 0,00" — kupac bi ga čitao kao postojeći
+   * avans koji ništa ne umanjuje.
+   */
+  it("primena sa iznosom 0 ne ide na papir", () => {
+    const list = printableAdvanceDeductions(
+      ctx([
+        { documentNumber: "A-1/26", amount: D("0") },
+        { documentNumber: "A-2/26", amount: D("2000.00") },
+      ]),
+    );
+    expect(list.map((d) => d.documentNumber)).toEqual(["A-2/26"]);
+    expect(advanceTotal(list).toFixed(2)).toBe("2000.00");
+  });
+});
+
 describe("brana: izvozni papir bez PDV-a", () => {
-  const ctx = (vatTotal: string): PrintCtx =>
-    ({
-      invoice: {
-        documentNumber: "228/25",
-        vatTotal: D(vatTotal),
-      } as unknown as InvoiceWithItems,
-    }) as PrintCtx;
+  const doc = (vatTotal: string) => ({
+    documentNumber: "228/25",
+    vatTotal: D(vatTotal),
+  });
 
   it("propušta izvoz bez PDV-a", () => {
-    expect(() => assertExportWithoutVat(ctx("0"))).not.toThrow();
+    expect(() => assertExportWithoutVat(doc("0"))).not.toThrow();
   });
 
   it("puca na dokument sa obračunatim PDV-om i imenuje ga", () => {
-    expect(() => assertExportWithoutVat(ctx("19872.73"))).toThrow(
+    expect(() => assertExportWithoutVat(doc("19872.73"))).toThrow(
       /Izvozna faktura 228\/25 nosi obračunat PDV 19,872\.73/,
     );
   });

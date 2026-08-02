@@ -9,9 +9,11 @@ import {
 } from "../format";
 import type { InvoiceTemplate, PrintCtx } from "./ctx";
 import {
+  advanceTotal,
   assertExportWithoutVat,
   discountFromLines,
   payableAfterAdvance,
+  printableAdvanceDeductions,
 } from "./totals";
 
 /**
@@ -271,15 +273,21 @@ function itemsTable(ctx: PrintCtx): Content {
  * Natpisi su engleski, iz zatečenog rečnika izvozne štampe („Less prepayment received",
  * „no.", „Amount payable"); `( EUR)` uz poslednji red prati oblik `TOTAL AMOUNT ( EUR)`.
  * Avans umanjuje SAMO iznos za uplatu — `TOTAL AMOUNT` ostaje pun iznos fakture.
+ *
+ * ⚠️ JEDAN RED PO PRIMENI (dopuna 02.08.2026): veza avans↔račun je N:M, pa se štampa red
+ * po odbijenom avansu — broj i iznos su uvek iz ISTE primene. Ranije je izlazio jedan red
+ * sa brojem prvog avansa i zbirom svih (10.000,00 EUR uz `A-1/26` 3.000 i `A-2/26` 2.000
+ * dalo je „Less prepayment received (no. A-1/26): − 5,000.00").
  */
 function totalsBlock(ctx: PrintCtx): Content {
   // Brana pre svakog računa: izvozni papir sa PDV-om ne sme da izađe (v. `totals.ts`).
-  assertExportWithoutVat(ctx);
+  assertExportWithoutVat(ctx.invoice);
 
   const totalAmount = ctx.invoice.grossTotal;
   const discount = discountFromLines(ctx.lines);
   const total = totalAmount.add(discount);
-  const advance = ctx.invoice.advanceAppliedAmount;
+  const deductions = printableAdvanceDeductions(ctx);
+  const advance = advanceTotal(deductions);
   const hasAdvance = advance.greaterThan(0);
 
   const row = (
@@ -318,13 +326,16 @@ function totalsBlock(ctx: PrintCtx): Content {
   ];
 
   if (hasAdvance) {
+    for (const deduction of deductions)
+      body.push(
+        row(
+          deduction.documentNumber
+            ? `Less prepayment received (no. ${deduction.documentNumber}):`
+            : "Less prepayment received:",
+          `− ${formatAmount(deduction.amount)}`,
+        ),
+      );
     body.push(
-      row(
-        ctx.advanceInvoiceNumber
-          ? `Less prepayment received (no. ${ctx.advanceInvoiceNumber}):`
-          : "Less prepayment received:",
-        `− ${formatAmount(advance)}`,
-      ),
       row(
         `Amount payable ( ${ctx.currency})`,
         formatAmount(payableAfterAdvance(totalAmount, advance)),

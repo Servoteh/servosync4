@@ -11,7 +11,12 @@ import {
   formatInvoiceNumber,
 } from "../format";
 import type { InvoiceTemplate, PrintCtx } from "./ctx";
-import { discountFromLines, payableAfterAdvance } from "./totals";
+import {
+  advanceTotal,
+  discountFromLines,
+  payableAfterAdvance,
+  printableAdvanceDeductions,
+} from "./totals";
 
 /**
  * DOMAĆA FAKTURA ZA ROBU — obrasci **IFR** i **IFGP**.
@@ -378,7 +383,7 @@ function itemsTable(ctx: PrintCtx): Content {
  *   2. `Rabat:`
  *   3. `Vrednost bez PDV (osnovica):`
  *   4. `PDV po stopi 20% X <osnovica> =`   ← osnovica je U TEKSTU reda, ne samo iznos
- *   5. `Umanjenje za primljeni avans:`     ← samo kad avansa ima
+ *   5. `Umanjenje za primljeni avans:`     ← samo kad avansa ima, JEDAN RED PO AVANSU
  *   6. `Za uplatu (RSD):`                  ← uokvireno i podebljano, UMANJENO za avans
  *
  * Red rabata OSTAJE i kad je nula (`Rabat: 0.00`) — STAMPA_IZLAZNIH_FAKTURA.md §6 t.4.
@@ -441,18 +446,27 @@ function totalsBlock(ctx: PrintCtx): Content[] {
    *
    * Avans umanjuje SAMO iznos za uplatu — ne osnovicu ni PDV (oni su već obračunati na
    * avansnom računu). Zato red ide POSLE PDV-a, a poslednji ostaje „Za uplatu“.
+   *
+   * ⚠️ JEDAN RED PO PRIMENI (ispravka 02.08.2026). Veza avans↔račun je N:M, pa račun sme
+   * da zatvara više avansa. Do ove izmene se štampao JEDAN red: broj iz `advanceInvoiceId`
+   * (upisuje se samo pri PRVOJ primeni) uz ZBIR svih primena — račun na 10.000,00 koji
+   * zatvara `A-1/26` (3.000,00) i `A-2/26` (2.000,00) izlazio je kao
+   * „Umanjenje za primljeni avans (br. A-1/26): − 5,000.00“, dakle uz avansni račun koji
+   * glasi na 3.000,00. Broj i iznos sada uvek dolaze iz ISTE primene (`ctx.ts`).
    */
-  const advance = ctx.invoice.advanceAppliedAmount;
+  const deductions = printableAdvanceDeductions(ctx);
+  const advance = advanceTotal(deductions);
   let payable = ctx.invoice.grossTotal;
   if (advance.greaterThan(0)) {
-    body.push([
-      label(
-        ctx.advanceInvoiceNumber
-          ? `Umanjenje za primljeni avans (br. ${ctx.advanceInvoiceNumber}):`
-          : "Umanjenje za primljeni avans:",
-      ),
-      value(`− ${formatAmount(advance)}`),
-    ]);
+    for (const deduction of deductions)
+      body.push([
+        label(
+          deduction.documentNumber
+            ? `Umanjenje za primljeni avans (br. ${deduction.documentNumber}):`
+            : "Umanjenje za primljeni avans:",
+        ),
+        value(`− ${formatAmount(deduction.amount)}`),
+      ]);
     // Avans veći od računa ne sme da da negativan „za uplatu“ — preplata se rešava
     // odobrenjem, ne minusom na fakturi (pravilo je u `totals.ts`, isto na sva četiri obrasca).
     payable = payableAfterAdvance(payable, advance);

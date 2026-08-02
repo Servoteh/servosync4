@@ -109,7 +109,7 @@ function makeCtx(over: Partial<PrintCtx>): PrintCtx {
     signatory: { name: "Dragana Korkut" },
     warehouseName: "Magacin robe",
     currency: "RSD",
-    advanceInvoiceNumber: null,
+    advanceDeductions: [],
     withoutPrices: false,
     ...over,
   };
@@ -516,7 +516,9 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
             grossTotal: d("119236.37"),
             advanceAppliedAmount: d("19236.37"),
           }),
-          advanceInvoiceNumber: "12/25",
+          advanceDeductions: [
+            { documentNumber: "12/25", amount: d("19236.37") },
+          ],
         }),
       );
       const advanceAt = texts.indexOf(
@@ -542,6 +544,8 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
             grossTotal: d("1200.00"),
             advanceAppliedAmount: d("200.00"),
           }),
+          // AVR je obrisan (meki ref) — iznos se zna, broj ne.
+          advanceDeductions: [{ documentNumber: null, amount: d("200.00") }],
         }),
       );
       expect(texts).toContain("Umanjenje za primljeni avans:");
@@ -557,9 +561,72 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
             grossTotal: d("1200.00"),
             advanceAppliedAmount: d("1500.00"),
           }),
+          advanceDeductions: [
+            { documentNumber: "12/25", amount: d("1500.00") },
+          ],
         }),
       );
       expect(amountAfter(texts, "Za uplatu (RSD):")).toBe("0.00");
+    });
+
+    /**
+     * REGRESIJA NA NOVO-A (02.08.2026): dva odbijena avansa = DVA REDA, svaki sa SVOJIM
+     * brojem i SVOJIM iznosom.
+     *
+     * Izmereni ulaz: račun 10.000,00 zatvara `A-1/26` (3.000,00) i `A-2/26` (2.000,00).
+     * Do ispravke je izlazio JEDAN red — broj iz `advance_invoice_id` (upisuje se samo pri
+     * prvoj primeni) uz `advanceAppliedAmount` = zbir svih primena, dakle
+     * „Umanjenje za primljeni avans (br. A-1/26): − 5,000.00" nad avansnim računom koji
+     * glasi na 3.000,00.
+     */
+    it("dva odbijena avansa daju DVA reda, svaki sa svojim brojem i iznosom", () => {
+      const texts = textOf(
+        ifrCtx({
+          invoice: makeInvoice({
+            netTotal: d("10000.00"),
+            vatTotal: d("0.00"),
+            grossTotal: d("10000.00"),
+            // Kolona nosi zbir — papir je više ne čita.
+            advanceAppliedAmount: d("5000.00"),
+          }),
+          advanceDeductions: [
+            { documentNumber: "A-1/26", amount: d("3000.00") },
+            { documentNumber: "A-2/26", amount: d("2000.00") },
+          ],
+        }),
+      );
+      const prvi = texts.indexOf("Umanjenje za primljeni avans (br. A-1/26):");
+      const drugi = texts.indexOf("Umanjenje za primljeni avans (br. A-2/26):");
+      expect(prvi).toBeGreaterThanOrEqual(0);
+      expect(drugi).toBeGreaterThan(prvi);
+      expect(texts[prvi + 1]).toBe("− 3,000.00");
+      expect(texts[drugi + 1]).toBe("− 2,000.00");
+      // Zbir svih primena se NIGDE ne pojavljuje kao jedno umanjenje.
+      expect(texts).not.toContain("− 5,000.00");
+      // …ali „za uplatu" jeste umanjeno za oba: 10.000 − 3.000 − 2.000.
+      expect(amountAfter(texts, "Za uplatu (RSD):")).toBe("5,000.00");
+    });
+
+    /**
+     * REGRESIJA NA NOVO-E: papir i ekran moraju da gledaju u ISTI izvor. `getInvoice`
+     * računa dug iz Σ AKTIVNIH primena; kolona `advance_applied_amount` ume da nosi uniju
+     * zatečene 1:1 veze i nove N:M primene, pa je papir pokazivao manji dug od ekrana.
+     */
+    it("ignoriše kolonu `advanceAppliedAmount` kad primene postoje", () => {
+      const texts = textOf(
+        ifrCtx({
+          invoice: makeInvoice({
+            netTotal: d("10000.00"),
+            vatTotal: d("0.00"),
+            grossTotal: d("10000.00"),
+            // Kolona (unija legacy 3.000 + primena 2.000) tvrdi 5.000…
+            advanceAppliedAmount: d("5000.00"),
+          }),
+          // …a aktivna primena je samo jedna, na 2.000 — kao na ekranu.
+          advanceDeductions: [{ documentNumber: "A-2/26", amount: d("2000.00") }],
+        }),
+      );
+      expect(amountAfter(texts, "Za uplatu (RSD):")).toBe("8,000.00");
     });
 
     /**
@@ -584,7 +651,7 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
       const ctx = makeCtx({
         invoice,
         lines: [line],
-        advanceInvoiceNumber: "12/25",
+        advanceDeductions: [{ documentNumber: "12/25", amount: d("9200.00") }],
       });
 
       const roba = amountAfter(
