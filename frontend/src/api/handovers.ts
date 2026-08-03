@@ -1164,6 +1164,17 @@ export function useHandoverPrintBundle(id: number | null) {
 }
 
 /**
+ * Zahtev 055/26 (Strahinja): PDF „Primopredaja — lista pozicija" za ODOBREN
+ * nacrt — GET /v1/handover-drafts/:id/print. Zaglavlje (broj nacrta, datumi,
+ * projekat) + tabela pozicija (r. br., broj crteža, naziv, količina). Backend
+ * vraća 422 (srpska poruka) dok primopredaja nacrta nije odobrena. Endpoint
+ * traži JWT → `apiBlob`, isti obrazac kao `fetchPrintBundlePdf`.
+ */
+export async function fetchDraftPositionsPdf(draftId: number): Promise<Blob> {
+  return apiBlob(`/v1/handover-drafts/${draftId}/print`);
+}
+
+/**
  * Preuzmi JEDAN spojen PDF izabranih crteža kao `Blob` (za skriveni iframe +
  * `print()` ili otvaranje u novom tabu). `format` XOR `drawingIds` — backend
  * vraća 422 za oba zajedno; bez ijednog = svi ne-isključeni crteži sa PDF-om.

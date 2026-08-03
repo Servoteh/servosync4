@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { FileText, Upload } from 'lucide-react';
 import {
   HANDOVER_STATUS,
+  fetchDraftPositionsPdf,
   openHandoverDrawingPdf,
   usePendingHandoversByDraft,
   usePrepareHandoverWorkOrder,
@@ -15,6 +16,7 @@ import {
   type Handover,
 } from '@/api/handovers';
 import { openDrawingPdf } from '@/api/pdm';
+import { deliverPdf, deliveryMessage, openBlob } from '@/lib/deliver-file';
 import { ApiError } from '@/api/client';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { Dialog } from '@/components/ui-kit/dialog';
@@ -263,6 +265,8 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
   const [printOpen, setPrintOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  // 055/26: PDF lista pozicija ODOBRENOG nacrta (Strahinja).
+  const [positionsPdfBusy, setPositionsPdfBusy] = useState(false);
   // 038/26: otpremanje crteža (PDF) primopredaje bez RN.
   const [uploadDrawingPdfOpen, setUploadDrawingPdfOpen] = useState(false);
   const busy = reject.isPending || prepare.isPending;
@@ -323,6 +327,42 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
     }
   }
 
+  /**
+   * 055/26 (Strahinja): „Štampaj PDF" — lista SVIH pozicija nacrta ove
+   * odobrene primopredaje (backend generiše dokument; 422 dok primopredaja
+   * nije odobrena). Isporuka: na dodirnom uređaju (`pointer: coarse`) kroz
+   * `deliverPdf` (Web Share → „Sačuvaj u Fajlove"; `window.open`/`<a download>`
+   * u standalone PWA ne rade po starom), na računaru novi tab (`openBlob`) —
+   * ista navika kao ostale štampe modula.
+   */
+  async function onPrintPositionsPdf() {
+    const draft = handover.draftContext;
+    if (!draft || positionsPdfBusy) return;
+    setPositionsPdfBusy(true);
+    setPdfError(null);
+    try {
+      const blob = await fetchDraftPositionsPdf(draft.draftId);
+      const coarse =
+        typeof window !== 'undefined' &&
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(pointer: coarse)').matches;
+      if (coarse) {
+        const fileName = `primopredaja-${draft.draftNumber.replace(/[^\w.-]+/g, '_')}-pozicije.pdf`;
+        toast(deliveryMessage(await deliverPdf(blob, fileName), 'Lista pozicija'));
+      } else {
+        openBlob(blob);
+      }
+    } catch (e) {
+      setPdfError(
+        e instanceof Error && e.message
+          ? e.message
+          : 'PDF liste pozicija nije dostupan — pokušajte ponovo.',
+      );
+    } finally {
+      setPositionsPdfBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-4 text-sm">
       <div className="flex flex-wrap items-center gap-2">
@@ -348,6 +388,19 @@ export function HandoverDetailPanel({ handover }: { handover: Handover }) {
         >
           Štampaj sve crteže
         </button>
+        {/* 055/26 (Strahinja): lista pozicija nacrta u PDF — SAMO u prikazu
+            ODOBRENE primopredaje sa razrešenim nacrtom (backend 422 je krajnja
+            istina). Read-only, ista permisija kao prikaz (primopredaje.read). */}
+        {handover.statusId === HANDOVER_STATUS.APPROVED && handover.draftContext && (
+          <button
+            onClick={onPrintPositionsPdf}
+            disabled={positionsPdfBusy}
+            title={`Lista pozicija nacrta ${handover.draftContext.draftNumber} (PDF)`}
+            className={`${actionBtn} border border-line text-ink-secondary`}
+          >
+            {positionsPdfBusy ? 'Priprema PDF-a…' : 'Štampaj PDF'}
+          </button>
+        )}
         {/* 038/26: dopunski PDF crteža uz primopredaju (npr. dok RN još ne postoji). */}
         <Can permission={PERMISSIONS.PRIMOPREDAJE_WRITE}>
           <button
