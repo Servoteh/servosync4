@@ -157,6 +157,22 @@ export class LocationsController {
   }
 
   /**
+   * Broj crteža za par (nalog, TP ref) — RNZ barkod crtež NE NOSI, pa FE posle
+   * skena/ručnog unosa dočitava i predpopunjava polje „Broj crteža" (paritet 1.0
+   * `resolveDrawingNoForPredmetTp`). Izvor: glavna baza `work_orders` (3.0-štampani
+   * RN), pa sy15 `bigtehn_work_orders_cache` (legacy). Guard = klasni `lokacije.read`
+   * (isti podaci kao `predmet/:itemId/work-orders`).
+   */
+  @Get("lookups/drawing")
+  lookupDrawing(
+    @Query("orderNo") orderNo?: string,
+    @Query("tpRef") tpRef?: string,
+    @Query("varijanta") varijanta?: string,
+  ) {
+    return this.locations.lookupDrawing(orderNo, tpRef, varijanta);
+  }
+
+  /**
    * Skener resolver (RNZ/short/compact stavke + shelf) — paritet 1.0 (spec §3).
    * Vraća i `kind:'OPERATION'` za skeniran barkod operacije (`S:…`) — nije greška
    * skenera nego pogrešan red na papiru, pa poruka mora biti konkretna.

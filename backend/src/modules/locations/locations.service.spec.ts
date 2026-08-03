@@ -10,6 +10,7 @@ import { Prisma } from "@prisma-sy15/client";
 import { LocationsService } from "./locations.service";
 import type { Sy15Service, Sy15Tx } from "../../common/sy15/sy15.service";
 import type { LabelPrintService } from "../../common/printing/label-print.service";
+import type { PrismaService } from "../../prisma/prisma.service";
 import type {
   CageMoveDto,
   CreateLocationDto,
@@ -48,6 +49,7 @@ describe("LocationsService — R2 mutacije", () => {
     };
   };
   let labelPrint: { printRawTspl: jest.Mock };
+  let prisma: { workOrder: { findMany: jest.Mock } };
   let service: LocationsService;
 
   beforeEach(() => {
@@ -75,9 +77,11 @@ describe("LocationsService — R2 mutacije", () => {
       },
     };
     labelPrint = { printRawTspl: jest.fn() };
+    prisma = { workOrder: { findMany: jest.fn().mockResolvedValue([]) } };
     service = new LocationsService(
       sy15 as unknown as Sy15Service,
       labelPrint as unknown as LabelPrintService,
+      prisma as unknown as PrismaService,
     );
   });
 

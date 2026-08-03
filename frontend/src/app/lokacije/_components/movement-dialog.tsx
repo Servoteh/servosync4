@@ -1,13 +1,16 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ScanLine } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField } from '@/components/ui-kit/form-field';
 import {
+  HALL_TYPES,
   MOVEMENT_TYPES,
   MOVEMENT_TYPE_LABEL,
+  SHELF_TYPES,
+  lookupLocDrawing,
   newClientEventUuid,
   useAllLocations,
   useCreateMovement,
@@ -41,6 +44,10 @@ export interface MovementPreset {
   toLocationId?: string;
   fromLocationId?: string;
   movementType?: LocMovementType;
+  /** Sirov skeniran barkod (za banner „Skenirano: …" — paritet 1.0 parsed hint). */
+  raw?: string;
+  /** RNZ/compact `varijanta` — sužava lookup crteža (isti ident_broj, više varijanti). */
+  varijanta?: string;
 }
 
 /** From-lokacija je nepotrebna za INITIAL_PLACEMENT / INVENTORY_ADJUSTMENT (paritet 1.0). */
@@ -48,10 +55,40 @@ function needsFrom(t: LocMovementType): boolean {
   return t !== 'INITIAL_PLACEMENT' && t !== 'INVENTORY_ADJUSTMENT';
 }
 
+/** Najbliži predak tipa HALA (šetnja parentId lancem) — paritet 1.0 `nearestHallAncestorId`. */
+function nearestHallIdOf(l: LocLocation, byId: Map<string, LocLocation>): string | null {
+  let cur: LocLocation | undefined = l;
+  const seen = new Set<string>();
+  for (let i = 0; i < 64 && cur; i++) {
+    if (seen.has(cur.id)) return null;
+    seen.add(cur.id);
+    if (!cur.parentId) return null;
+    const p = byId.get(cur.parentId);
+    if (!p) return null;
+    if ((HALL_TYPES as string[]).includes(p.locationType)) return p.id;
+    cur = p;
+  }
+  return null;
+}
+
 /**
- * Brzo premeštanje — POST /locations/movements → loc_create_movement. 11 tipova
- * pokreta (select), stavka + od/do lokacije (skener ILI pretraga), količina,
- * razlog/napomena. Idempotency ključ (client_event_uuid) po formi (jednom).
+ * Brzo premeštanje — POST /locations/movements → loc_create_movement.
+ *
+ * Raspored i tekstovi = 1.0 „Premesti stavku" ekran (scanModal.js; mob paritet
+ * 03.08.2026): Broj naloga → Broj TP → Broj crteža (hint „nije u barkodu" +
+ * AUTO-DOČITAVANJE iz baze — RNZ barkod crtež NE NOSI, pa je polje do sada
+ * ostajalo prazno posle skena) → trenutno stanje → tip pokreta (3.0 nadskup:
+ * 11 tipova) → Sa lokacije → Količina → Na lokaciju (—HALA— filter za police +
+ * skener) → Napomena; footer „Skeniraj ponovo" + „Izvrši premeštanje".
+ *
+ * Dočitavanje crteža (`lookupLocDrawing`, debounce 400ms) važi za SVA TRI ulaza
+ * — kamera sken, stoni (wedge) čitač i ručno kucanje — jer se okida na promenu
+ * PARA (nalog, TP), ne na izvor unosa. ERP vrednost gazi auto-popunjene
+ * vrednosti (crtež sa „short" nalepnice / raniji lookup), ali NIKAD ručno
+ * ukucan crtež (namerno odstupanje od 1.0, koji pri izmeni naloga/TP-a pregazi
+ * i ručni unos — ovde je izbor bezbedniji: ništa se tiho ne briše).
+ *
+ * Idempotency ključ (client_event_uuid) po formi (jednom).
  */
 export function MovementDialog({
   preset,
@@ -79,9 +116,78 @@ export function MovementDialog({
   const [note, setNote] = useState('');
   const [returnToUnplaced, setReturnToUnplaced] = useState(false);
   const [showMachines, setShowMachines] = useState(false);
+  const [hallFilterId, setHallFilterId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [queued, setQueued] = useState<string | null>(null);
   const [scan, setScan] = useState<null | 'item' | 'from' | 'to'>(null);
+
+  // Poslednji SKEN (iz preseta ili ponovnog skena u formi) — banner „Skenirano: …"
+  // (paritet 1.0 parsed hint) + `varijanta` za suženje lookup-a crteža.
+  const [scanInfo, setScanInfo] = useState<{
+    raw: string;
+    varijanta?: string;
+    orderNo: string;
+    itemRefId: string;
+  } | null>(
+    preset?.raw
+      ? {
+          raw: preset.raw,
+          varijanta: preset.varijanta,
+          orderNo: preset.orderNo ?? '',
+          itemRefId: preset.itemRefId ?? '',
+        }
+      : null,
+  );
+
+  // ── Auto-dočitavanje broja crteža (KOREN prijave 03.08: RNZ ga NE NOSI) ────
+  // ERP vrednost + revizija iz poslednjeg lookup-a; `autoDrawingRef` pamti šta
+  // je AUTO upisano (crtež sa short nalepnice pri mount-u / raniji lookup) —
+  // samo to sme da se pregazi. `lookupDone` odvaja „još tražim" od „nema u planu".
+  const [erpDrawing, setErpDrawing] = useState('');
+  const [erpRevision, setErpRevision] = useState('');
+  const [lookupDone, setLookupDone] = useState(false);
+  const autoDrawingRef = useRef(preset?.drawingNo ?? '');
+
+  useEffect(() => {
+    const o = orderNo.trim();
+    const t = itemRefId.trim();
+    setErpDrawing('');
+    setErpRevision('');
+    setLookupDone(false);
+    if (!o || !t) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      // `varijanta` važi samo dok su polja identična skeniranom paru — čim
+      // korisnik izmeni nalog/TP, filter varijante više ne sme da sužava.
+      const fromScanPair =
+        scanInfo && o === scanInfo.orderNo.trim() && t === scanInfo.itemRefId.trim();
+      lookupLocDrawing(o, t, fromScanPair ? scanInfo.varijanta : undefined)
+        .then(({ data }) => {
+          if (cancelled) return;
+          setLookupDone(true);
+          if (data.found && data.drawingNo) {
+            setErpDrawing(data.drawingNo);
+            setErpRevision(data.revision);
+            setDrawingNo((prev) => {
+              const p = prev.trim();
+              if (p === '' || p === autoDrawingRef.current || p === data.drawingNo) {
+                autoDrawingRef.current = data.drawingNo;
+                return data.drawingNo;
+              }
+              return prev; // ručno ukucan crtež se ne gazi
+            });
+          }
+        })
+        .catch(() => {
+          // Best-effort (paritet 1.0 „ERP cache: greška") — polje ostaje editabilno.
+          if (!cancelled) setLookupDone(true);
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [orderNo, itemRefId, scanInfo]);
 
   const itemRefTable = preset?.itemRefTable ?? 'bigtehn_rn';
 
@@ -97,19 +203,40 @@ export function MovementDialog({
   );
   const placedTotal = currentPlacements.reduce((a, p) => a + Number(p.quantity || 0), 0);
 
-  // „Prikaži i mašine kao destinaciju" (paritet 1.0) — mašine skrivene dok se ne čekira.
-  const destLocations = useMemo(
-    () => (showMachines ? locList : locList.filter((l) => l.locationType !== 'MACHINE')),
-    [locList, showMachines],
+  // ── „Na lokaciju" — hale za —HALA— filter (police su scoped po hali; 1.0) ──
+  const halls = useMemo(
+    () =>
+      locList
+        .filter((l) => (HALL_TYPES as string[]).includes(l.locationType))
+        .sort((a, b) =>
+          a.locationCode.localeCompare(b.locationCode, 'sr', { numeric: true, sensitivity: 'base' }),
+        ),
+    [locList],
   );
+  // „Prikaži i mašine kao destinaciju" (paritet 1.0) — mašine skrivene dok se ne
+  // čekira; —HALA— filter sužava SAMO police (kavezi su globalni, hale/ostalo
+  // ostaju u listi — paritet 1.0 populateToSelect).
+  const destLocations = useMemo(() => {
+    const base = showMachines ? locList : locList.filter((l) => l.locationType !== 'MACHINE');
+    if (!hallFilterId) return base;
+    return base.filter((l) => {
+      if (!(SHELF_TYPES as string[]).includes(l.locationType)) return true;
+      return nearestHallIdOf(l, locById) === hallFilterId;
+    });
+  }, [locList, showMachines, hallFilterId, locById]);
   // „Neraspoređeno" (paritet 1.0) uvek traži polaznu lokaciju (vraća komad sa police
   // u nesmešteni pool); inače from je nepotreban za INITIAL_PLACEMENT/INVENTORY.
   const needFrom = returnToUnplaced || needsFrom(movementType);
   const needTo = !returnToUnplaced && movementType !== 'SCRAP';
 
+  // Banner (paritet 1.0 parsed hint): sken ili ručni par + odakle je crtež.
+  const fromScan =
+    scanInfo && orderNo.trim() === scanInfo.orderNo.trim() && itemRefId.trim() === scanInfo.itemRefId.trim();
+  const showBanner = !!fromScan || (orderNo.trim() !== '' && itemRefId.trim() !== '');
+
   async function submit() {
     setError(null);
-    if (!itemRefId.trim()) return setError('Unesi/skeniraj stavku (broj crteža ili TP ref).');
+    if (!itemRefId.trim()) return setError('Broj TP (sa barkoda) je obavezan.');
     if (needTo && !toLocationId) return setError('Izaberi odredišnu lokaciju ili „Neraspoređeno".');
     if (returnToUnplaced && !fromLocationId)
       return setError('Za „Neraspoređeno" izaberi polaznu policu u polju „Sa lokacije".');
@@ -184,26 +311,56 @@ export function MovementDialog({
       <Dialog
         open
         onClose={onClose}
-        title="Brzo premeštanje"
+        title="Premesti stavku"
         footer={
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={onClose}>{queued ? 'Zatvori' : 'Otkaži'}</Button>
-            {!queued && (
-              <Button loading={create.isPending} onClick={() => void submit()}>Sačuvaj pokret</Button>
+            {queued ? (
+              <Button variant="secondary" onClick={onClose}>Zatvori</Button>
+            ) : (
+              <>
+                {/* Paritet 1.0 footer: [Skeniraj ponovo] [Izvrši premeštanje]
+                    (zatvaranje = ✕ u zaglavlju dijaloga). */}
+                <Button variant="secondary" onClick={() => setScan('item')}>Skeniraj ponovo</Button>
+                <Button loading={create.isPending} onClick={() => void submit()}>Izvrši premeštanje</Button>
+              </>
             )}
           </div>
         }
       >
         <div className="space-y-3">
+          {/* „Skenirano / Ručno" banner — paritet 1.0 parsed hint (pokazuje ODAKLE
+              je crtež: iz plana/BigTehn, sa nalepnice, ili da ga treba prepisati). */}
+          {showBanner && (
+            <div className="rounded-control border border-line-soft bg-surface-2 px-3 py-2 text-xs text-ink-secondary">
+              {fromScan && scanInfo ? (
+                <>Skenirano: <strong className="text-ink">{scanInfo.raw}</strong></>
+              ) : (
+                <>Ručno: <strong className="text-ink">{orderNo.trim()}</strong> / <strong className="text-ink">{itemRefId.trim()}</strong></>
+              )}
+              {' '}→ nalog <strong className="text-ink">{orderNo.trim() || '—'}</strong>, TP{' '}
+              <strong className="text-ink">{itemRefId.trim() || '—'}</strong>
+              {drawingNo.trim() ? (
+                <>
+                  , crtež <strong className="text-ink">{drawingNo.trim()}</strong>
+                  {erpDrawing && drawingNo.trim() === erpDrawing && (
+                    <em>{erpRevision ? ` (rev. ${erpRevision})` : ''} (iz plana / BigTehn)</em>
+                  )}
+                </>
+              ) : lookupDone ? (
+                <em> (upiši broj crteža sa teksta nalepnice)</em>
+              ) : null}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <FormField label="Broj naloga">
               <input className={INPUT} value={orderNo} onChange={(e) => setOrderNo(e.target.value)} placeholder="npr. 7351" />
             </FormField>
-            <FormField label="Stavka (TP ref / crtež)" required>
+            <FormField label="Broj TP" required>
               <div className="flex gap-1.5">
                 {/* min-w-0: bez ovoga input (flex item, intrinzični min-width) gura
                     skener dugme van ivice dijaloga na telefonu (grid kolona ~140px). */}
-                <input className={`${INPUT} min-w-0`} value={itemRefId} onChange={(e) => setItemRefId(e.target.value)} placeholder="npr. 2/415" />
+                <input className={`${INPUT} min-w-0`} value={itemRefId} onChange={(e) => setItemRefId(e.target.value)} placeholder="npr. 1088" />
                 <button
                   type="button"
                   onClick={() => setScan('item')}
@@ -217,8 +374,14 @@ export function MovementDialog({
             </FormField>
           </div>
 
-          <FormField label="Broj crteža">
-            <input className={INPUT} value={drawingNo} onChange={(e) => setDrawingNo(e.target.value)} placeholder="opciono" />
+          <FormField
+            label="Broj crteža"
+            hint="Prepiši sa teksta nalepnice — nije u barkodu. Popunjava se automatski kad par (nalog, TP) postoji u planu."
+          >
+            <input className={INPUT} value={drawingNo} onChange={(e) => setDrawingNo(e.target.value)} placeholder="npr. 1128816" />
+            {erpRevision && erpDrawing && drawingNo.trim() === erpDrawing ? (
+              <p className="mt-1 text-xs text-ink-secondary">Revizija crteža (BigTehn): {erpRevision}</p>
+            ) : null}
           </FormField>
 
           {/* Trenutno stanje pre premeštanja — stvarni placement-i stavke (paritet 1.0). */}
@@ -227,11 +390,13 @@ export function MovementDialog({
               {placementsQ.isLoading ? (
                 <p className="text-xs text-ink-secondary">Učitavam trenutno stanje…</p>
               ) : currentPlacements.length === 0 ? (
-                <p className="text-xs text-ink-secondary">Nema zabeleženog smeštaja za ovu stavku — koristi „Prvo zaduženje".</p>
+                <p className="text-xs text-ink-secondary">Crtež + nalog još nisu smešteni (novi unos = INITIAL_PLACEMENT).</p>
               ) : (
                 <>
                   <div className="mb-1.5 text-xs font-medium text-ink">
-                    Trenutno smešteno {orderNo.trim() ? `za nalog ${orderNo.trim()} ` : ''}(ukupno {placedTotal} kom.) — klik = polazna:
+                    {orderNo.trim()
+                      ? `Nalog ${orderNo.trim()} — trenutno (ukupno ${placedTotal} kom.) — klik = polazna:`
+                      : `Trenutno smešteno (ukupno ${placedTotal} kom.) — klik = polazna:`}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {currentPlacements.map((p) => {
@@ -270,7 +435,7 @@ export function MovementDialog({
 
           {needFrom && (
             <FormField
-              label="Sa lokacije (polazna)"
+              label="Sa lokacije"
               required={returnToUnplaced}
               hint={returnToUnplaced ? 'Obavezno za „Neraspoređeno" — polica sa koje se vraća' : 'Ostavi prazno za auto-razrešavanje trenutne lokacije'}
             >
@@ -285,10 +450,30 @@ export function MovementDialog({
             </FormField>
           )}
 
+          {/* Količina PRE odredišta — redosled 1.0 forme (Sa lokacije → Količina → Na lokaciju). */}
+          <FormField label="Količina" required>
+            <input className={INPUT} type="number" min={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+          </FormField>
+
           {movementType !== 'SCRAP' && (
             <>
               {needTo && (
-                <FormField label="Na lokaciju (odredišna)" required>
+                <FormField label="Na lokaciju" required>
+                  {/* —HALA— filter (paritet 1.0): šifra police je scoped po hali,
+                      pa izbor hale sužava listu polica; kavezi/hale/ostalo ostaju. */}
+                  <select
+                    className={`${INPUT} mb-1.5`}
+                    value={hallFilterId ?? ''}
+                    onChange={(e) => setHallFilterId(e.target.value || null)}
+                    aria-label="Hala (filter za police)"
+                  >
+                    <option value="">—HALA—</option>
+                    {halls.map((h) => (
+                      <option key={h.id} value={h.id}>
+                        {h.locationCode}{h.name ? ` — ${h.name}` : ''}
+                      </option>
+                    ))}
+                  </select>
                   <LocationSelect
                     locations={destLocations}
                     value={toLocationId}
@@ -316,17 +501,13 @@ export function MovementDialog({
           )}
 
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="Količina" required>
-              <input className={INPUT} type="number" min={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} />
-            </FormField>
             <FormField label="Razlog">
               <input className={INPUT} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="opciono" />
             </FormField>
+            <FormField label="Napomena">
+              <input className={INPUT} value={note} onChange={(e) => setNote(e.target.value)} placeholder="opciono" />
+            </FormField>
           </div>
-
-          <FormField label="Napomena">
-            <input className={INPUT} value={note} onChange={(e) => setNote(e.target.value)} placeholder="opciono" />
-          </FormField>
 
           {queued && (
             <div className="rounded-control border border-status-info/40 bg-status-info-bg px-3 py-2 text-sm text-status-info">
@@ -345,7 +526,18 @@ export function MovementDialog({
             if (r.kind === 'ITEM') {
               setOrderNo(r.parsed.orderNo);
               setItemRefId(r.parsed.itemRefId);
-              if (r.parsed.drawingNo) setDrawingNo(r.parsed.drawingNo);
+              setScanInfo({
+                raw: r.parsed.raw,
+                varijanta: r.parsed.varijanta,
+                orderNo: r.parsed.orderNo,
+                itemRefId: r.parsed.itemRefId,
+              });
+              if (r.parsed.drawingNo) {
+                // „Short" nalepnica JEDINA nosi crtež u barkodu — upiši ga kao
+                // AUTO vrednost (ERP lookup sme da je precizira; 1.0 prioritet).
+                autoDrawingRef.current = r.parsed.drawingNo;
+                setDrawingNo(r.parsed.drawingNo);
+              }
             }
           }}
           onClose={() => setScan(null)}
@@ -358,7 +550,12 @@ export function MovementDialog({
           onResult={(r) => {
             if (r.kind === 'SHELF' && r.record) {
               if (scan === 'from') setFromLocationId(r.record.id);
-              else setToLocationId(r.record.id);
+              else {
+                setToLocationId(r.record.id);
+                // Kompozitni barkod nosi i halu — postavi —HALA— filter da izabrana
+                // polica ostane u listi (paritet 1.0 applyScanDestinationSuccess).
+                setHallFilterId(r.presetHallFilterId ?? null);
+              }
             }
           }}
           onClose={() => setScan(null)}

@@ -126,6 +126,10 @@ export default function MobLokacijePage() {
         orderNo: r.parsed.orderNo,
         itemRefId: r.parsed.itemRefId,
         drawingNo: r.parsed.drawingNo || undefined,
+        // Sirov barkod + varijanta → banner „Skenirano: …" i lookup crteža u
+        // dijalogu (RNZ crtež NE NOSI — dočitava se iz baze po (nalog, TP)).
+        raw: r.parsed.raw,
+        varijanta: r.parsed.varijanta,
         fromLocationId,
         // Deo bez ijednog stvarnog smeštaja → prvo zaduženje; inače premeštanje.
         movementType: r.records.length > 0 ? 'TRANSFER' : 'INITIAL_PLACEMENT',
