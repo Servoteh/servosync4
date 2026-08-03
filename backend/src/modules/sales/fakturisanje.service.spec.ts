@@ -498,6 +498,10 @@ function makePostHarness(opts: {
   const client = {
     invoice: {
       findUnique: jest.fn().mockResolvedValue(invoice),
+      // Knjiženje od 03.08.2026. PONOVO čita dokument UNUTAR transakcije, posle CAS-a:
+      // snapshot pročitan pre transakcije je zastareo, jer drugi operater sme da izmeni
+      // isti nacrt sve dok CAS ne prelomi DRAFT → POSTED. Ovde vraća isti red.
+      findUniqueOrThrow: jest.fn().mockResolvedValue(invoice),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       update: jest
         .fn()
@@ -870,5 +874,59 @@ describe("stornoInvoice — SEF red koji je otišao DOK je storno trajao (N5)", 
 
     expect(order).toEqual(["pending", "cancel"]);
     expect(res.sefCancelledPendingIds).toEqual([7]);
+  });
+});
+
+describe("postInvoice — nalog GK se gradi iz SVEŽEG reda, ne iz zastarelog snapshot-a", () => {
+  /**
+   * REGRESIJA IZ `4f40453a`, nađena u 8. krugu i zatvorena 03.08.2026.
+   *
+   * Ispravka broja naloga je uz `issued` prosledila i `invoice.items` iz snapshot-a, uz
+   * obrazloženje „isti ulaz kao u pred-proveri, pa se dva prolaza ne mogu razići".
+   * Obrazloženje je bilo pogrešno: pred-provera radi nad ISTIM zastarelim podatkom.
+   *
+   * `invoice` se čita PRE transakcije, a CAS claim je tek unutar nje; u tom prozoru
+   * (dve provere + agregat nad `ledger_entries` + otvaranje transakcije) drugi operater
+   * sme da izmeni isti nacrt — njegov CAS nad `DRAFT & !isLocked` tada još prolazi.
+   *
+   * IZMERENO: stavke u bazi 2 × 100.000, snapshot 1 × 100.000 → faktura `gross 240.000`,
+   * a nalog `2040 DUG 120.000`. Nalog BALANSIRA (ista pogrešna suma s obe strane), pa
+   * balans-kontrola ćuti, a kupčev dug u saldakontima je pola fakture.
+   */
+  it("tuđa izmena nacrta u prozoru pre transakcije NE sme da proizvede nalog na stari iznos", async () => {
+    const stari = draftInvoice(); // 1 stavka, gross 120.000
+    const h = makePostHarness({ invoice: stari });
+
+    // Sveže čitanje UNUTAR transakcije vidi dokument posle tuđe izmene: dve stavke.
+    const svez = {
+      ...stari,
+      netTotal: new Prisma.Decimal("200000"),
+      vatTotal: new Prisma.Decimal("40000"),
+      grossTotal: new Prisma.Decimal("240000"),
+      items: [ITEM_20, ITEM_20],
+    };
+    h.prisma.invoice.findUniqueOrThrow.mockResolvedValue(svez);
+
+    await h.service.postInvoice(1, ACTOR);
+
+    // Nalog mora da nosi SVEŽ iznos — inače kupac u saldakontima duguje pola fakture.
+    const linije = (h.createdEntries[0]?.lines as { create: Record<string, unknown>[] })
+      ?.create;
+    const kupac = linije?.find((l) => String(l.accountCode).startsWith("204"));
+    expect(String(kupac?.debit)).toBe("240000");
+  });
+
+  it("sveže čitanje se proverava istom branom: zaglavlje ≠ stavke → knjiženje pada, ne upisuje pogrešan iznos", async () => {
+    const stari = draftInvoice();
+    const h = makePostHarness({ invoice: stari });
+
+    // Nedosledan svež red: zaglavlje kaže 240.000, stavke nose 120.000.
+    h.prisma.invoice.findUniqueOrThrow.mockResolvedValue({
+      ...stari,
+      grossTotal: new Prisma.Decimal("240000"),
+      items: [ITEM_20],
+    });
+
+    await expect(h.service.postInvoice(1, ACTOR)).rejects.toThrow();
   });
 });

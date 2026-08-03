@@ -38,6 +38,7 @@ const actor: AuthUser = {
 interface PrismaMock {
   invoice: {
     findUnique: jest.Mock;
+    findUniqueOrThrow: jest.Mock;
     findFirst: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
@@ -55,6 +56,10 @@ function prismaMock(): PrismaMock {
   const mock: PrismaMock = {
     invoice: {
       findUnique: jest.fn(),
+      // Knjizenje od 03.08.2026. PONOVO cita dokument UNUTAR transakcije, posle CAS-a
+      // (snapshot pre transakcije je zastareo — tudja izmena nacrta bi dala pogresan
+      // iznos u GK). Lazni klijent zato vraca isti red kroz oba citanja.
+      findUniqueOrThrow: jest.fn(),
       findFirst: jest.fn().mockResolvedValue(null),
       // `create`/`update` vraćaju ono što su primili — testovi gledaju ARGUMENT
       // (šta bi se upisalo), a ne izmišljeni povratni red.
@@ -86,6 +91,11 @@ function prismaMock(): PrismaMock {
     $queryRaw: jest.fn().mockResolvedValue([{ balance: new D(0) }]),
     $transaction: jest.fn(),
   };
+  // Sveze citanje u transakciji vraca ISTI red kao i citanje pre nje — testovi koji
+  // ne gadjaju trku ne moraju nista da znaju o njemu.
+  mock.invoice.findUniqueOrThrow.mockImplementation((...args: unknown[]) =>
+    mock.invoice.findUnique(...args),
+  );
   mock.$transaction.mockImplementation((arg: unknown) =>
     Array.isArray(arg)
       ? Promise.all(arg)

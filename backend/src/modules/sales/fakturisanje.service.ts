@@ -707,8 +707,38 @@ export class FakturisanjeService {
        * (provereno grep-om po `postManualLedger` i po korišćenjima `invoice` ispod):
        * ostali čitaju `documentType`/`stockDocumentId`/`supplyDate`/`documentDate`,
        * koje izdavanje broja ne dira.
+       *
+       * ⚠️ SNAPSHOT SE PONOVO ČITA UNUTAR TRANSAKCIJE — ispravka regresije, 03.08.2026.
+       *
+       * Prva verzija ove ispravke je uz broj prosleđivala i `invoice.items` iz snapshot-a,
+       * uz obrazloženje „isti ulaz kao u pred-proveri, pa se dva prolaza ne mogu razići".
+       * Obrazloženje je bilo pogrešno: pred-provera je radila nad ISTIM zastarelim
+       * podatkom. `invoice` se čita PRE transakcije, a CAS claim je tek ovde; u tom
+       * prozoru (dve provere + agregat nad `ledger_entries` + otvaranje transakcije)
+       * drugi operater sme da izmeni isti nacrt — `SalesService.updateItems` radi svoj
+       * CAS nad `DRAFT & !isLocked`, koji tada još prolazi, i preračuna zaglavlje.
+       *
+       * IZMERENO: stavke u bazi 2 × 100.000, snapshot nosi 1 × 100.000 →
+       * faktura `gross = 240.000`, a nalog `2040 DUG 120.000 / 6140 POT 100.000 /
+       * 4702 POT 20.000`. Nalog BALANSIRA (ista pogrešna suma s obe strane), pa
+       * balans-kontrola ćuti; kupčev dug u saldakontima je pola fakture, a POPDV
+       * osnovica i KIF (izvedeni iz `ledger_entries`) su na pogrešan iznos.
+       *
+       * `assertTotalsMatchItems` to ne hvata: poredi snapshot-zaglavlje sa
+       * snapshot-stavkama — par koji je međusobno dosledan, samo zastareo.
+       *
+       * Lek: posle CAS-a je dokument ZAKLJUČAN (`POSTED & isLocked`), pa ga niko više ne
+       * može izmeniti — sveže čitanje ODAVDE je jedino koje je i tačno i stabilno.
        */
-      const issued = { ...invoice, documentNumber };
+      const fresh = await tx.invoice.findUniqueOrThrow({
+        where: { id },
+        include: { items: { orderBy: { lineNo: "asc" } } },
+      });
+      // Zbirovi i stavke moraju da se slažu i na SVEŽEM redu — ista brana kao pre
+      // transakcije, samo nad podatkom koji je stvarno proknjižen. Ako je tuđa izmena
+      // stigla u međuvremenu, ovde se vidi i knjiženje pada umesto da upiše pogrešan iznos.
+      assertTotalsMatchItems(fresh);
+      const issued = { ...fresh, documentNumber };
 
       // 2) Auto-robno (IFR/IFGP/IZVRO/IZVGP) sa vezanim robnim izlazom → PostingEngine.
       let journalEntryId: number | null = null;
@@ -779,14 +809,14 @@ export class FakturisanjeService {
       } else {
         // 3) RUČNI nalog (IFUSL/uslužni ili račun bez robnog izlaza) — direktan GL.
         //    Ide `issued` (snapshot sa IZDATIM brojem), ne `invoice` — v. N1 iznad.
-        //    Stavke se prosleđuju iz već učitanog dokumenta: isti ulaz kao u
-        //    pred-proveri, pa se dva prolaza ne mogu razići (ni po jednom upitu manje).
+        //    Stavke dolaze iz SVEŽEG čitanja unutar transakcije (`fresh`), ne iz
+        //    snapshot-a pročitanog pre nje — v. obrazloženje uz `fresh` iznad.
         journalEntryId = await this.postManualLedger(
           tx,
           issued,
           year,
           actor,
-          invoice.items,
+          fresh.items,
         );
       }
 
