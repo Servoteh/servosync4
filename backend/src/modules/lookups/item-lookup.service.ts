@@ -42,8 +42,12 @@ const KEY_LABEL: Readonly<Record<ItemLookupKey, string>> = {
   PLU: "PLU",
 };
 
+// Od 04.08.2026. kretanja se čitaju kroz pogled `v_stock_movements` (jedan izvor istine —
+// v. migraciju 20260804100000). Tekst je API izlaz (`meta.stockSource`) i mora da imenuje
+// ono što se STVARNO čita: dok je pisao `stock_document_items`, tvrdio je izvor koji
+// `computeOnHand` više ne dodiruje direktno.
 const STOCK_SOURCE =
-  "agregat kretanja (stock_document_items) − otvorene rezervacije";
+  "agregat kretanja (v_stock_movements) − otvorene rezervacije";
 
 /** Jedan red sirovog upita nad `items`. */
 interface ItemSearchRow {

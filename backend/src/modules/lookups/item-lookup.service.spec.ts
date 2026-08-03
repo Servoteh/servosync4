@@ -55,7 +55,7 @@ function prismaMock(opts: MockOpts = {}) {
       const text = String(q.sql);
       sqlSeen.push(text);
       return Promise.resolve(
-        text.includes("stock_document_items")
+        text.includes("v_stock_movements")
           ? (opts.onHand ?? [])
           : (opts.items ?? []),
       );
@@ -237,7 +237,7 @@ describe("ItemLookupService — GET /v1/lookups/items", () => {
     expect(res.data[0].stock).toBeNull();
     expect(res.meta.stockSource).toBeNull();
     expect(res.meta.stockNote).toContain("Zalihe nisu tražene");
-    expect(prisma.sqlSeen.some((s) => s.includes("stock_document_items"))).toBe(
+    expect(prisma.sqlSeen.some((s) => s.includes("v_stock_movements"))).toBe(
       false,
     );
     expect(prisma.stockReservation.groupBy).not.toHaveBeenCalled();
@@ -263,7 +263,7 @@ describe("ItemLookupService — GET /v1/lookups/items", () => {
       reserved: "6.000",
       available: "54.000",
     });
-    expect(res.meta.stockSource).toContain("stock_document_items");
+    expect(res.meta.stockSource).toContain("v_stock_movements");
     // Mrtav snapshot `stock_levels` se NE dira ni u jednom upitu…
     expect(prisma.sqlSeen.some((s) => s.includes("stock_levels"))).toBe(false);
     // …i dvojnik ga uopšte nema, pa bi poziv pao ovde, ne na produkciji.
