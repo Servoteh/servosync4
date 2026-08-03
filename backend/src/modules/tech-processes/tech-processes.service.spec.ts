@@ -259,7 +259,76 @@ describe("TechProcessesService — card (agregat po operaciji)", () => {
     expect(op.isFinished).toBe(true);
     expect(op.firstEnteredAt).toEqual(new Date("2026-07-01T08:00:00Z"));
     expect(op.lastFinishedAt).toEqual(new Date("2026-07-01T09:15:00Z"));
-    expect(op.elapsedMinutes).toBe(45); // 30 + 15
+    expect(op.elapsedMinutes).toBe(45); // 30 + 15; obe prijave prolaze prag (1 min–24 h)
+    expect(op.excludedRowCount).toBe(0);
+  });
+
+  it("036/26: zaboravljena prijava (11 dana) se NE sabira i diže excludedRowCount", async () => {
+    // Stvarni obrazac sa crteža 1138882 (tech_processes.id 117936): OP 40 otvorena
+    // 20.07, zatvorena 31.07 = 270,9 h. Sirovi zbir je pisao „275 h 42 min" na delu
+    // na kom se radilo ~4 h 50 min — 82% prikazanog vremena bio je zaborav.
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({
+        pieceCount: 2,
+        enteredAt: new Date("2026-07-01T11:20:55Z"),
+        finishedAt: new Date("2026-07-01T14:01:37Z"), // 160,7 min — realan rad
+      }),
+      tpRow({
+        pieceCount: 0,
+        enteredAt: new Date("2026-07-20T06:10:18Z"),
+        finishedAt: new Date("2026-07-31T13:02:51Z"), // 270,9 h — zaboravljena
+      }),
+      tpRow({
+        pieceCount: 1,
+        enteredAt: new Date("2026-07-30T13:19:04Z"),
+        finishedAt: new Date("2026-07-30T13:19:14Z"), // 10 s — knjiženje, ne rad
+      }),
+    ]);
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.summary.totalElapsedMinutes).toBe(161); // samo realna prijava
+    expect(data.summary.excludedRowCount).toBe(2); // > 24 h i < 1 min
+    // Sirovi zbir ostaje vidljiv (dijagnostika „gde je nestalo vreme").
+    expect(data.summary.totalElapsedMinutesRaw).toBe(16413);
+    expect(data.operations[0].elapsedMinutes).toBe(161);
+    expect(data.operations[0].excludedRowCount).toBe(2);
+    // Prijave se i dalje BROJE — izuzeto je samo njihovo trajanje.
+    expect(data.summary.entryCount).toBe(3);
+    expect(data.operations[0].entryCount).toBe(3);
+  });
+
+  it("036/26: prijava tačno na granici (1 min i 24 h) JOŠ UVEK ulazi u zbir", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({
+        enteredAt: new Date("2026-07-01T08:00:00Z"),
+        finishedAt: new Date("2026-07-01T08:01:00Z"), // tačno 1 min
+      }),
+      tpRow({
+        enteredAt: new Date("2026-07-02T08:00:00Z"),
+        finishedAt: new Date("2026-07-03T08:00:00Z"), // tačno 24 h
+      }),
+    ]);
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.summary.totalElapsedMinutes).toBe(1441); // 1 + 1440
+    expect(data.summary.excludedRowCount).toBe(0);
+  });
+
+  it("036/26: kad SVE prijave padnu na pragu, vreme je null (ne lažna nula)", async () => {
+    prisma.techProcess.findMany.mockResolvedValue([
+      tpRow({
+        enteredAt: new Date("2026-07-01T08:00:00Z"),
+        finishedAt: new Date("2026-07-01T08:00:05Z"), // 5 s
+      }),
+    ]);
+
+    const { data } = await service.card(CARD_QUERY);
+
+    expect(data.summary.totalElapsedMinutes).toBeNull();
+    expect(data.summary.excludedRowCount).toBe(1);
+    expect(data.operations[0].elapsedMinutes).toBeNull();
   });
 
   it("elapsedMinutes je null dok nijedan red grupe nema oba vremena", async () => {

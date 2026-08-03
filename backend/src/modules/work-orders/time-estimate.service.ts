@@ -62,6 +62,37 @@ export const TP_VALIDNA = Prisma.sql`tp.finished_at IS NOT NULL
        AND COALESCE(tp.is_process_finished, false)`;
 
 /**
+ * ── PRIJAVA KOJA ULAZI U PRIKAZ UTROŠENOG VREMENA (zahtev 036/26) ────────────
+ * Druga definicija „validne prijave", NAMERNO odvojena od `TP_VALIDNA` iznad, i
+ * namerno stoji uz nju da se dve granice ne bi razišle u dva fajla.
+ *
+ * Razlike prema procenjivačkoj definiciji i ZAŠTO:
+ *  • GORNJA granica je 24 h, ne 720 h. Procena traži da uzorak ostane REPREZENTATIVAN
+ *    (radije zadrži dugu ali moguću operaciju nego da iseče realan rep), pa seče tek
+ *    apsurd. PRIKAZ na kartici RN-a traži da broj bude ISTINIT ZA TAJ NALOG: čovek
+ *    gleda „UKUPNO VREME" i čita ga kao „koliko je na ovom delu radeno". Jedna
+ *    zaboravljena prijava (crtež 1138882, tech_processes.id 117936: OP 40 otvorena
+ *    20.07, zatvorena 31.07 = 270,9 h) pravi 275 h od stvarnih ~4 h 50 min — dakle
+ *    82% prikazanog vremena je bio zaborav. Nijedna smena ne traje duže od 24 h, pa
+ *    je sve preko toga zaboravljena prijava, ne rad.
+ *  • NEMA `is_process_finished` uslova: prikaz sabira SVAKO zatvoreno kucanje
+ *    (i ono koje nije markirano kao gotova operacija) — kartica prikazuje evidenciju,
+ *    ne uzorak za statistiku.
+ *  • DONJA granica je ista (< 1 min = knjiženje, ne rad — 47% redova na produ).
+ *
+ * Izuzeti redovi se NE gutaju: pozivalac uz zbir vraća i broj izuzetih prijava, koji
+ * UI prikazuje ispod pločice.
+ *
+ * Alias `tp` je OBAVEZAN u upitu koji ovo koristi (kao i kod `TP_VALIDNA`).
+ */
+export const TP_PRIKAZ_MIN_SEC = 60;
+/** Gornja granica prikaza = 24 h. Vidi `TP_PRIKAZ_VALIDNA` zašto nije 720 h. */
+export const TP_PRIKAZ_MAX_SEC = 24 * 60 * 60;
+export const TP_PRIKAZ_VALIDNA = Prisma.sql`tp.finished_at IS NOT NULL
+       AND tp.finished_at >= tp.entered_at + interval '1 minute'
+       AND tp.finished_at <= tp.entered_at + interval '24 hours'`;
+
+/**
  * Poklapanje BROJA CRTEŽA — samo `lower()` (bez unaccent-a): brojevi crteža su
  * ASCII šifre, a postojeći `idx_work_orders_drawing_number_lower` pokriva baš taj
  * izraz (potvrđen Bitmap Index Scan na produ). Isti izraz koriste `core-tools.ts`

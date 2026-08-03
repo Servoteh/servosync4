@@ -72,11 +72,16 @@ function qualityLabel(id: number, name?: string | null): string {
   return name || QUALITY_LABEL[id] || `#${id}`;
 }
 
-/** Minuti → „12 h 30 min" / „45 min"; 0/prazno → „—". */
-export function formatMinutes(min: number | null): string {
-  if (!min) return '—';
-  const h = Math.floor(min / 60);
-  const m = min % 60;
+/**
+ * Minuti → „12 h 30 min" / „45 min"; 0/prazno/besmisleno → „—".
+ * Defanzivno (036/26): ulaz se zaokružuje i klampuje na ≥ 0 pre deljenja, da
+ * decimalni ili negativan minut nikad ne ispadne kao „2 h -13 min" na ekranu.
+ */
+export function formatMinutes(min: number | null | undefined): string {
+  if (min == null || !Number.isFinite(min) || min <= 0) return '—';
+  const total = Math.max(0, Math.round(min));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
   return h === 0 ? `${m} min` : `${h} h ${m} min`;
 }
 
@@ -699,6 +704,21 @@ export function TechProcessCardDetail({
         <SumTile label="Ukupno vreme" value={formatMinutes(s.totalElapsedMinutes)} />
         <SumTile label="Varijanta" value={String(card.variant)} />
       </dl>
+
+      {/* 036/26: prijave koje ne liče na rad se ne sabiraju, ali se ni ne gutaju —
+          bez ovog reda čovek ne bi znao zašto zbir nije jednak zbiru kolone „Trajanje". */}
+      {!!s.excludedRowCount && (
+        <p className="text-xs text-ink-secondary">
+          {formatNumber(s.excludedRowCount)} prijava izuzeto (kraće od minut / duže od 24h —
+          zaboravljene)
+          {s.totalElapsedMinutesRaw != null && (
+            <span className="text-ink-disabled">
+              {' '}
+              · sirovo {formatMinutes(s.totalElapsedMinutesRaw)}
+            </span>
+          )}
+        </p>
+      )}
 
       {/* Kucanja grupisana po operaciji — DataTable nema grouping, pa raw tabela u DataTable
           stilu sa injektovanim grupnim header redovima (obrazac kao operacije RN u work-orders). */}

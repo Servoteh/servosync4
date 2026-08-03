@@ -39,6 +39,11 @@ import {
   type StornoTechProcessDto,
   validateStorno,
 } from "./dto/storno-tech-process.dto";
+import {
+  TP_PRIKAZ_MAX_SEC,
+  TP_PRIKAZ_MIN_SEC,
+  TP_PRIKAZ_VALIDNA,
+} from "../work-orders/time-estimate.service";
 import { type StartWorkDto, validateStartWork } from "./dto/start-work.dto";
 import { type StopWorkDto, validateStopWork } from "./dto/stop-work.dto";
 import type { PrintLabelDto } from "./dto/print-label.dto";
@@ -144,9 +149,14 @@ interface CardOperationAcc {
   isFinished: boolean;
   firstEnteredAt: Date;
   lastFinishedAt: Date | null;
-  /** Σ elapsed (finishedAt−enteredAt) po redovima koji imaju oba vremena. */
+  /**
+   * Σ elapsed (finishedAt−enteredAt) po redovima koji imaju oba vremena I prolaze
+   * higijenski prag prikaza (`TP_PRIKAZ_VALIDNA`: 1 min ≤ Δ ≤ 24 h).
+   */
   elapsedSeconds: number;
   hasElapsed: boolean;
+  /** Zatvoreni redovi koji NISU ušli u zbir (< 1 min ili > 24 h — zaboravljene). */
+  excludedRowCount: number;
 }
 
 /**
@@ -250,7 +260,10 @@ interface WorkerPerfRaw {
   good_pieces: number;
   rework_pieces: number;
   scrap_pieces: number;
+  /** Σ elapsed po higijenskom pragu prikaza (1 min ≤ Δ ≤ 24 h) — v. TP_PRIKAZ_VALIDNA. */
   total_elapsed_seconds: number;
+  /** Zatvorene prijave izuzete iz zbira (< 1 min ili > 24 h — zaboravljene). */
+  excluded_row_count: number;
 }
 
 interface RnProgressRaw {
@@ -291,6 +304,8 @@ interface SessionDailyRaw {
   worker_count: number;
   pieces: number;
   elapsed_seconds: number;
+  /** Zatvorene sesije van praga prikaza (> 24 h ili negativno trajanje). */
+  excluded_count: number;
   open_count: number;
 }
 
@@ -1087,7 +1102,10 @@ export class TechProcessesService {
     const piecesByQuality = { good: 0, rework: 0, scrap: 0 };
     let totalPieces = 0;
     let totalElapsedSeconds = 0;
+    let totalElapsedSecondsRaw = 0;
     let hasElapsed = false;
+    let hasElapsedRaw = false;
+    let excludedRowCount = 0;
     const opGroups = new Map<string, CardOperationAcc>();
     for (const r of rows) {
       const pieces = r.pieceCount;
@@ -1097,12 +1115,29 @@ export class TechProcessesService {
         piecesByQuality.rework += pieces;
       else if (r.qualityTypeId === PART_QUALITY.SCRAP)
         piecesByQuality.scrap += pieces;
-      const elapsedSeconds = r.finishedAt
+      // HIGIJENA PRIKAZANOG VREMENA (036/26): u zbir ulazi samo prijava koja liči na
+      // rad — 1 min ≤ Δ ≤ 24 h (`TP_PRIKAZ_VALIDNA` uz `TP_VALIDNA`, gde piše i zašto
+      // se gornja granica prikaza (24 h) razlikuje od granice procene (720 h)).
+      // Sirovi zbir se i dalje računa i vraća, a izuzeti redovi se BROJE — UI ispod
+      // pločice piše koliko ih je i zašto, da se ništa ne izgubi bez traga.
+      const rawSeconds = r.finishedAt
         ? Math.max(0, (r.finishedAt.getTime() - r.enteredAt.getTime()) / 1000)
         : null;
+      if (rawSeconds !== null) {
+        totalElapsedSecondsRaw += rawSeconds;
+        hasElapsedRaw = true;
+      }
+      const elapsedSeconds =
+        rawSeconds !== null &&
+        rawSeconds >= TP_PRIKAZ_MIN_SEC &&
+        rawSeconds <= TP_PRIKAZ_MAX_SEC
+          ? rawSeconds
+          : null;
       if (elapsedSeconds !== null) {
         totalElapsedSeconds += elapsedSeconds;
         hasElapsed = true;
+      } else if (rawSeconds !== null) {
+        excludedRowCount += 1;
       }
 
       const key = `${r.operationNumber}|${r.workCenterCode}`;
@@ -1118,6 +1153,7 @@ export class TechProcessesService {
           lastFinishedAt: null,
           elapsedSeconds: 0,
           hasElapsed: false,
+          excludedRowCount: 0,
         };
         opGroups.set(key, g);
       }
@@ -1137,6 +1173,8 @@ export class TechProcessesService {
       if (elapsedSeconds !== null) {
         g.elapsedSeconds += elapsedSeconds;
         g.hasElapsed = true;
+      } else if (rawSeconds !== null) {
+        g.excludedRowCount += 1;
       }
     }
 
@@ -1149,8 +1187,11 @@ export class TechProcessesService {
       isFinished: g.isFinished,
       firstEnteredAt: g.firstEnteredAt,
       lastFinishedAt: g.lastFinishedAt,
-      // Izvedeno (kao summary): null dok nijedan red grupe nije zatvoren.
+      // Izvedeno (kao summary): null dok nijedan red grupe nije zatvoren U OKVIRU
+      // higijenskog praga (< 1 min / > 24 h ne ulazi — v. `excludedRowCount`).
       elapsedMinutes: g.hasElapsed ? Math.round(g.elapsedSeconds / 60) : null,
+      /** Zatvoreni redovi grupe izuzeti iz vremena (< 1 min ili > 24 h). */
+      excludedRowCount: g.excludedRowCount,
     }));
 
     // HITNO (Miljan t.10) + routing kartice: RN je jedinstven po trojci (uq
@@ -1221,9 +1262,17 @@ export class TechProcessesService {
         // Ukupan broj redova (kucanja) preko svih operacija.
         entryCount: rows.length,
         // Izvedeno: tech_processes nema kolonu radnog vremena — elapsed entered→finished.
+        // Sabiraju se SAMO prijave koje liče na rad (1 min ≤ Δ ≤ 24 h); ostale se
+        // broje u `excludedRowCount` i UI ih izričito pominje ispod pločice.
         totalElapsedMinutes: hasElapsed
           ? Math.round(totalElapsedSeconds / 60)
           : null,
+        /** Nefiltrirani zbir — za dijagnostiku „gde je nestalo 275 h" (036/26). */
+        totalElapsedMinutesRaw: hasElapsedRaw
+          ? Math.round(totalElapsedSecondsRaw / 60)
+          : null,
+        /** Broj zatvorenih prijava izuzetih iz zbira (< 1 min ili > 24 h). */
+        excludedRowCount,
       },
       operations,
       // Routing RN-a — SVE operacije postupka (i neotkucane); UI merge-uje sa `operations`.
@@ -1400,31 +1449,42 @@ export class TechProcessesService {
    * po `worker_id` iz `tech_processes`. Period se filtrira po `entered_at` (kada je
    * rad evidentiran). „Vreme" je izvedeno (elapsed entered→finished za završene) jer
    * tech_processes nema kolonu radnog vremena. Sume računa DB (spec §3 pravilo 6).
+   *
+   * VREME prolazi isti higijenski prag kao kartica RN-a (`TP_PRIKAZ_VALIDNA`,
+   * 036/26): u zbir ulaze samo prijave od 1 min do 24 h; izuzete se BROJE
+   * (`excludedRowCount`), ne gutaju. Komadi i brojevi prijava se NE filtriraju —
+   * zaboravljena prijava je i dalje evidentiran rad, samo joj trajanje nije merodavno.
    */
   async workerPerformance(query: WorkerPerformanceQuery) {
     const from = parseDateParam(query.from, "from");
     const to = parseDateParam(query.to, "to");
 
     const conds: Prisma.Sql[] = [];
-    if (from) conds.push(Prisma.sql`entered_at >= ${from}`);
-    if (to) conds.push(Prisma.sql`entered_at < ${to}`);
+    if (from) conds.push(Prisma.sql`tp.entered_at >= ${from}`);
+    if (to) conds.push(Prisma.sql`tp.entered_at < ${to}`);
     const whereSql = conds.length
       ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
       : Prisma.empty;
 
+    // Vreme se sabira po ISTOM higijenskom pragu kao kartica RN-a (036/26): inače
+    // tab „Učinak" protivreči pločici „UKUPNO VREME" na kartici — jedna zaboravljena
+    // prijava (270 h) tamo napravi radnika sa nemogućim učinkom.
     const rows = await this.prisma.$queryRaw<WorkerPerfRaw[]>(Prisma.sql`
-      SELECT worker_id,
+      SELECT tp.worker_id,
              (COUNT(*))::int AS process_count,
-             (COUNT(*) FILTER (WHERE COALESCE(is_process_finished, false)))::int AS finished_count,
-             COALESCE(SUM(piece_count), 0)::int AS total_pieces,
-             COALESCE(SUM(piece_count) FILTER (WHERE quality_type_id = ${PART_QUALITY.GOOD}), 0)::int AS good_pieces,
-             COALESCE(SUM(piece_count) FILTER (WHERE quality_type_id = ${PART_QUALITY.REWORK}), 0)::int AS rework_pieces,
-             COALESCE(SUM(piece_count) FILTER (WHERE quality_type_id = ${PART_QUALITY.SCRAP}), 0)::int AS scrap_pieces,
-             COALESCE(SUM(EXTRACT(EPOCH FROM (finished_at - entered_at))) FILTER (WHERE finished_at IS NOT NULL), 0)::float8 AS total_elapsed_seconds
-      FROM tech_processes
+             (COUNT(*) FILTER (WHERE COALESCE(tp.is_process_finished, false)))::int AS finished_count,
+             COALESCE(SUM(tp.piece_count), 0)::int AS total_pieces,
+             COALESCE(SUM(tp.piece_count) FILTER (WHERE tp.quality_type_id = ${PART_QUALITY.GOOD}), 0)::int AS good_pieces,
+             COALESCE(SUM(tp.piece_count) FILTER (WHERE tp.quality_type_id = ${PART_QUALITY.REWORK}), 0)::int AS rework_pieces,
+             COALESCE(SUM(tp.piece_count) FILTER (WHERE tp.quality_type_id = ${PART_QUALITY.SCRAP}), 0)::int AS scrap_pieces,
+             COALESCE(SUM(EXTRACT(EPOCH FROM (tp.finished_at - tp.entered_at)))
+                      FILTER (WHERE ${TP_PRIKAZ_VALIDNA}), 0)::float8 AS total_elapsed_seconds,
+             (COUNT(*) FILTER (WHERE tp.finished_at IS NOT NULL
+                                 AND NOT (${TP_PRIKAZ_VALIDNA})))::int AS excluded_row_count
+      FROM tech_processes tp
       ${whereSql}
-      GROUP BY worker_id
-      ORDER BY total_pieces DESC, worker_id ASC
+      GROUP BY tp.worker_id
+      ORDER BY total_pieces DESC, tp.worker_id ASC
     `);
 
     const workers = await this.resolveWorkers(rows.map((r) => r.worker_id));
@@ -1441,6 +1501,8 @@ export class TechProcessesService {
       },
       totalElapsedSeconds: Math.round(r.total_elapsed_seconds),
       totalElapsedMinutes: Math.round(r.total_elapsed_seconds / 60),
+      /** Koliko prijava radnika nije ušlo u vreme (< 1 min ili > 24 h). */
+      excludedRowCount: r.excluded_row_count,
     }));
 
     return {
@@ -2249,6 +2311,13 @@ export class TechProcessesService {
    * DNEVNIK PROIZVODNJE — po danu (lokalna TZ): broj sesija/operacija, radnika, komada,
    * utrošeno vreme (gde je sesija zatvorena), otvoreno. Nad `v_work_sessions` (uključuje
    * i legacy redove — dnevnik prikazuje SVU evidentiranu aktivnost).
+   *
+   * VREME nosi isti gornji prag (24 h) kao kartica RN-a i učinak radnika (036/26).
+   * Ovde je uticaj mali — zbir ionako pokriva samo `source = 'entry'`
+   * (`work_time_entries`, koje imaju auto-close), pa je na produ 15 od 1.330
+   * zatvorenih sesija preko 24 h — ali jedna takva sesija dodaje dane „rada" u jedan
+   * dan dnevnika. Izuzete sesije se broje (`excludedCount`) i UI ih pominje uz zbir;
+   * broj sesija i komadi se NE filtriraju (aktivnost je bila evidentirana).
    */
   async sessionsDaily(query: SessionQuery) {
     const { from, to } = this.sessionRange(query);
@@ -2259,7 +2328,11 @@ export class TechProcessesService {
              (COUNT(DISTINCT worker_id))::int AS worker_count,
              COALESCE(SUM(piece_count), 0)::int AS pieces,
              COALESCE(SUM(EXTRACT(EPOCH FROM (stopped_at - started_at)))
-                      FILTER (WHERE source = 'entry' AND stopped_at IS NOT NULL AND stopped_at >= started_at), 0)::float8 AS elapsed_seconds,
+                      FILTER (WHERE source = 'entry' AND stopped_at IS NOT NULL AND stopped_at >= started_at
+                                AND stopped_at <= started_at + interval '24 hours'), 0)::float8 AS elapsed_seconds,
+             (COUNT(*) FILTER (WHERE source = 'entry' AND stopped_at IS NOT NULL
+                                 AND (stopped_at < started_at
+                                      OR stopped_at > started_at + interval '24 hours')))::int AS excluded_count,
              (COUNT(*) FILTER (WHERE stopped_at IS NULL))::int AS open_count
       FROM v_work_sessions
       ${whereSql}
@@ -2273,6 +2346,8 @@ export class TechProcessesService {
       pieces: r.pieces,
       elapsedSeconds: Math.round(r.elapsed_seconds),
       elapsedMinutes: Math.round(r.elapsed_seconds / 60),
+      /** Zatvorene sesije izuzete iz vremena (duže od 24 h / negativno trajanje). */
+      excludedCount: r.excluded_count,
       openCount: r.open_count,
     }));
     return {

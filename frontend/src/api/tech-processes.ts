@@ -156,8 +156,13 @@ export interface CardOperation {
   firstEnteredAt: string;
   /** Max finishedAt grupe (ISO); null ako nijedan red nije završen. */
   lastFinishedAt: string | null;
-  /** Σ (finishedAt−enteredAt) u minutima; null dok nijedan red grupe nema oba vremena. */
+  /**
+   * Σ (finishedAt−enteredAt) u minutima, SAMO za prijave koje liče na rad
+   * (1 min ≤ Δ ≤ 24 h — 036/26); null dok nijedan red grupe ne prođe prag.
+   */
   elapsedMinutes: number | null;
+  /** Zatvoreni redovi grupe izuzeti iz vremena. Stariji backend polje ne vraća. */
+  excludedRowCount?: number;
 }
 
 /**
@@ -196,8 +201,17 @@ export interface TechProcessCard {
     piecesByQuality: { good: number; rework: number; scrap: number };
     /** Ukupan broj redova (kucanja) — stara semantika operationCount-a. */
     entryCount: number;
-    /** Izvedeno (entered→finished); null ako nijedna operacija nije završena. */
+    /**
+     * Izvedeno (entered→finished) uz higijenski prag 036/26: sabiraju se samo
+     * prijave od 1 min do 24 h — jedna zaboravljena prijava (270 h) je inače
+     * pravila „275 h" na delu na kom se radilo ~4 h 50 min.
+     * null ako nijedna prijava ne prođe prag.
+     */
     totalElapsedMinutes: number | null;
+    /** Nefiltrirani zbir — dijagnostika „gde je nestalo vreme". Opciono. */
+    totalElapsedMinutesRaw?: number | null;
+    /** Broj zatvorenih prijava izuzetih iz zbira (< 1 min ili > 24 h). Opciono. */
+    excludedRowCount?: number;
   };
   /** Agregati po operaciji, redosled pojavljivanja (OP asc, id asc). */
   operations: CardOperation[];
@@ -342,8 +356,11 @@ export interface WorkerPerformance {
   finishedCount: number;
   totalPieces: number;
   piecesByQuality: { good: number; rework: number; scrap: number };
+  /** Isti higijenski prag kao kartica RN-a (1 min ≤ Δ ≤ 24 h, 036/26). */
   totalElapsedSeconds: number;
   totalElapsedMinutes: number;
+  /** Prijave radnika izuzete iz vremena (< 1 min ili > 24 h). Opciono. */
+  excludedRowCount?: number;
 }
 
 export interface WorkerPerformanceResponse {
