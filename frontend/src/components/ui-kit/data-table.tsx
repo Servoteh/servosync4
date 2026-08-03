@@ -65,6 +65,18 @@ export function DataTable<T>({
   const dnd = !!rowDraggable && !!onRowDrop;
 
   function onKeyDown(e: KeyboardEvent<HTMLTableSectionElement>) {
+    // Prečice tabele (↑/↓/Enter) pripadaju TELU TABELE — i to samo dok ono samo
+    // drži fokus. Čim je fokus u ugnežđenoj kontroli (polje, dugme, dijalog),
+    // tasteri pripadaju NJOJ i ovde se ne diraju.
+    //
+    // Bug 009/26 („pisanje u radnom nalogu", prijavljen dvaput — 27.07. i 03.08.):
+    // `renderExpanded` crta detalj RN-a UNUTAR ovog `<tbody>`, a `Dialog` nije
+    // portal — pa mu tasteri iz polja bubble-uju čak dovde. Enter u polju „Opis
+    // rada" je zato padao na granu ispod: `preventDefault()` bi pojeo novi red,
+    // a `onRowActivate` sklopio prošireni red → dijalog se demontira i OTKUCANI
+    // TEKST NESTANE. Isto je važilo za ↑/↓ (pomeranje kursora u textarea,
+    // koračanje u brojčanim poljima).
+    if (e.target !== e.currentTarget) return;
     if (!rows.length) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
