@@ -45,6 +45,12 @@ function makePrisma() {
       deleteMany: jest.fn(),
     },
     workOrderComponent: { findMany: jest.fn().mockResolvedValue([]) },
+    // Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2.
+    pracenjeVirtuelniSklop: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      create: jest.fn(),
+      update: jest.fn().mockResolvedValue({ id: 7 }),
+    },
     $transaction: jest.fn(),
   };
   prisma.$transaction.mockImplementation(
@@ -303,6 +309,194 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
       expect(res).toEqual({ data: { id: null, cleared: true } });
       expect(prisma.pracenjeStructureOverride.findUnique).not.toHaveBeenCalled();
       expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  // ==========================================================================
+  // Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2
+  // ==========================================================================
+
+  describe("virtuelni sklop — CRUD", () => {
+    it("create piše u `pracenje_virtuelni_sklopovi` i vraća nodeId = -id (NE dira work_orders)", async () => {
+      prisma.pracenjeVirtuelniSklop.create.mockResolvedValue({
+        id: 7,
+        naziv: "Ručni sklop",
+        tip: "glavni",
+      });
+      const res = await service.createVirtuelniSklop(actor, 7602, {
+        naziv: "  Ručni sklop  ",
+        tip: "glavni",
+      } as never);
+      expect(res).toEqual({
+        data: { id: 7, nodeId: -7, naziv: "Ručni sklop", tip: "glavni" },
+      });
+      const created = dataArg(prisma.pracenjeVirtuelniSklop.create);
+      expect(created.projectId).toBe(7602);
+      expect(created.naziv).toBe("Ručni sklop"); // trim
+      expect(created.createdBy).toBe("a@servoteh.com");
+    });
+
+    it("create bez tipa → default 'pod'", async () => {
+      prisma.pracenjeVirtuelniSklop.create.mockResolvedValue({
+        id: 8,
+        naziv: "X",
+        tip: "pod",
+      });
+      await service.createVirtuelniSklop(actor, 7602, { naziv: "X" } as never);
+      expect(dataArg(prisma.pracenjeVirtuelniSklop.create).tip).toBe("pod");
+    });
+
+    it("update nepostojećeg / obrisanog → 404, bez update-a", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue(null);
+      await expect(
+        service.updateVirtuelniSklop(actor, 7602, 7, { naziv: "N" } as never),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.pracenjeVirtuelniSklop.update).not.toHaveBeenCalled();
+    });
+
+    it("update menja SAMO poslata polja (preimenovanje ne dira tip)", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue({ id: 7 });
+      prisma.pracenjeVirtuelniSklop.update.mockResolvedValue({
+        id: 7,
+        naziv: "Novo ime",
+        tip: "pod",
+      });
+      const res = await service.updateVirtuelniSklop(actor, 7602, 7, {
+        naziv: "Novo ime",
+      } as never);
+      expect(res.data).toEqual({
+        id: 7,
+        nodeId: -7,
+        naziv: "Novo ime",
+        tip: "pod",
+      });
+      const arg = (
+        prisma.pracenjeVirtuelniSklop.update.mock.calls as unknown as {
+          data: Rec;
+        }[][]
+      )[0][0].data;
+      expect(arg).toEqual({ naziv: "Novo ime" }); // tip izostavljen = netaknut
+    });
+
+    it("delete: soft-delete + brisanje override-a DECE i SEBE u istoj transakciji", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue({ id: 7 });
+      prisma.pracenjeStructureOverride.deleteMany.mockResolvedValue({ count: 3 });
+      const res = await service.deleteVirtuelniSklop(actor, 7602, 7);
+      expect(res).toEqual({ data: { id: 7, deleted: true, clearedChildren: 3 } });
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      // soft-delete (deletedAt), NE hard delete
+      const upd = (
+        prisma.pracenjeVirtuelniSklop.update.mock.calls as unknown as {
+          data: Rec;
+        }[][]
+      )[0][0].data;
+      expect(upd.deletedAt).toBeInstanceOf(Date);
+      // deca (parent = -7) + sopstveni red (child = -7)
+      const wheres = (
+        prisma.pracenjeStructureOverride.deleteMany.mock.calls as unknown as {
+          where: Rec;
+        }[][]
+      ).map((c) => c[0].where);
+      expect(wheres).toEqual([
+        { parentWorkOrderId: -7 },
+        { workOrderId: -7 },
+      ]);
+    });
+
+    it("delete je IDEMPOTENTAN: već obrisan/nepostojeći → no-op (bez brisanja override-a)", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue(null);
+      const res = await service.deleteVirtuelniSklop(actor, 7602, 7);
+      expect(res).toEqual({ data: { id: 7, deleted: false, clearedChildren: 0 } });
+      expect(prisma.pracenjeVirtuelniSklop.update).not.toHaveBeenCalled();
+      expect(prisma.pracenjeStructureOverride.deleteMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("virtuelni sklop — premeštanje (parent-override sa negativnim id-jem)", () => {
+    it("pozicija POD ručni sklop: proverava se postojanje sklopa, pa upsert sa -7", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue({ id: 7 });
+      prisma.pracenjeStructureOverride.findUnique.mockResolvedValue(null);
+      prisma.pracenjeStructureOverride.upsert.mockResolvedValue({ id: 55 });
+      const res = await service.upsertParentOverride(actor, {
+        bigtehnRnId: "100",
+        parentRnId: "-7",
+      } as never);
+      expect(res).toEqual({ data: { id: 55 } });
+      const where = (
+        prisma.pracenjeVirtuelniSklop.findFirst.mock.calls as unknown as {
+          where: Rec;
+        }[][]
+      )[0][0].where;
+      expect(where).toEqual({ id: 7, deletedAt: null });
+      const create = (
+        prisma.pracenjeStructureOverride.upsert.mock.calls as unknown as {
+          create: { workOrderId: number; parentWorkOrderId: number | null };
+        }[][]
+      )[0][0].create;
+      expect(create).toMatchObject({ workOrderId: 100, parentWorkOrderId: -7 });
+    });
+
+    it("nepostojeći / obrisan ručni sklop kao roditelj → 422, bez upsert-a", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue(null);
+      await expect(
+        service.upsertParentOverride(actor, {
+          bigtehnRnId: "100",
+          parentRnId: "-7",
+        } as never),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
+    });
+
+    it("ciklus virtuelni→virtuelni (-1 pod -2, a -2 je već pod -1) → 422", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue({ id: 2 });
+      // -2 ima override → roditelj mu je -1 (dete koje sada pokušavamo da premestimo).
+      prisma.pracenjeStructureOverride.findUnique.mockImplementation(
+        (args: { where: { workOrderId: number } }) =>
+          args.where.workOrderId === -2 ? { parentWorkOrderId: -1 } : null,
+      );
+      await expect(
+        service.upsertParentOverride(actor, {
+          bigtehnRnId: "-1",
+          parentRnId: "-2",
+        } as never),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
+      // Virtuelni čvor NEMA sastavnicu — BOM se za njega ni ne pita.
+      expect(prisma.workOrderComponent.findMany).not.toHaveBeenCalled();
+    });
+
+    it("virtuelni sklop sam sebi roditelj → 422", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue({ id: 7 });
+      await expect(
+        service.upsertParentOverride(actor, {
+          bigtehnRnId: "-7",
+          parentRnId: "-7",
+        } as never),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("virtuelni sklop — brane na RN-mutacijama", () => {
+    it("ručni status/količina na ručnom sklopu → 422 (vodi se na poziciji)", async () => {
+      await expect(
+        service.upsertManualOverride(actor, {
+          bigtehnRnId: "-7",
+          status: "kompletirano",
+        } as never),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("operativna aktivnost sa virtuelnim RN-om → 422, bez upisa", async () => {
+      await expect(
+        service.upsertAktivnost(actor, {
+          odeljenjeId: 1,
+          nazivAktivnosti: "A",
+          radniNalogId: -7,
+        } as never),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.operativnaAktivnost.create).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
   });
 });

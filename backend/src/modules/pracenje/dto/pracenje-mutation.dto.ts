@@ -38,6 +38,15 @@ import {
  */
 const DIGITS = /^\d+$/;
 
+/**
+ * Id čvora stabla praćenja (zahtev 053/26 paket 2): cifre = `work_orders.id`, cifre sa
+ * VODEĆIM MINUSOM = virtuelni (ručno napravljen) sklop iz `pracenje_virtuelni_sklopovi`
+ * (`node_id = -id`, vidi `../virtual-node.ts`). Ostatak validacije je isto strog kao
+ * `DIGITS`: bez decimala, bez razmaka, bez „-0" (koje bi `Number()` dalo kao 0 = ni RN
+ * ni virtuelni sklop, jer oba SERIAL-a kreću od 1).
+ */
+const NODE_ID = /^-?[1-9]\d*$|^\d+$/;
+
 /* ── Operativni plan — aktivnost (→ operativne_aktivnosti) ── */
 
 export class UpsertAktivnostDto {
@@ -110,14 +119,22 @@ export class PromoteAkcionaTackaDto {
 /* ── Praćenje overrides / napomena (projectId from the route :itemId) ── */
 
 export class PracenjeNapomenaDto {
-  /** RN id (== work_orders.id == legacy bigtehn_rn_id). */
-  @Matches(DIGITS) bigtehnRnId!: string;
+  /**
+   * Id čvora: RN (== work_orders.id == legacy bigtehn_rn_id) ILI virtuelni sklop (negativan,
+   * zahtev 053/26 paket 2). Napomena je DOZVOLJENA i na ručno napravljenom sklopu —
+   * `pracenje_notes.work_order_id` je goli Int bez FK-a, a čitanje je spojeno po istom ključu.
+   */
+  @Matches(NODE_ID) bigtehnRnId!: string;
   @IsString() note!: string;
 }
 
 export class PracenjeManualOverrideDto {
-  /** RN id (== work_orders.id). */
-  @Matches(DIGITS) bigtehnRnId!: string;
+  /**
+   * Id čvora. Negativan (virtuelni sklop) prolazi pipe, ali ga servis odbija sa 422 i
+   * čitkom porukom — ručni status/količina se vode na POZICIJI (RN), ne na grupišućem
+   * sklopu (zahtev 053/26 paket 2). Bez ovoga bi mobilni OverrideSheet dobio golo 400.
+   */
+  @Matches(NODE_ID) bigtehnRnId!: string;
   /** ''/omitted → auto (null). 'kompletirano' auto-forces machining+surface DA (docx §4.7). */
   @IsOptional() @IsIn(["u_radu", "kompletirano", "nije_zapoceto"]) status?: string;
   @IsOptional() @IsBoolean() masinska?: boolean;
@@ -128,12 +145,34 @@ export class PracenjeManualOverrideDto {
 }
 
 export class PracenjeParentOverrideDto {
-  /** RN id (== work_orders.id). */
-  @Matches(DIGITS) bigtehnRnId!: string;
-  /** New parent RN id; null/omitted = detach to root. */
-  @IsOptional() @Matches(DIGITS) parentRnId?: string | null;
+  /** Id čvora koji se premešta: RN ili VIRTUELNI sklop (negativan — sklop u sklopu). */
+  @Matches(NODE_ID) bigtehnRnId!: string;
+  /**
+   * Novi roditelj: RN id ILI negativan id virtuelnog sklopa (zahtev 053/26 paket 2 —
+   * „ubaci poziciju u ručno napravljen sklop"); null/izostavljeno = odlepi na koren.
+   */
+  @IsOptional() @Matches(NODE_ID) parentRnId?: string | null;
   /** true = revert to the auto (BOM) structure (delete the override). */
   @IsOptional() @IsBoolean() clear?: boolean;
+}
+
+/* ── Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2 ── */
+
+/**
+ * Kreiranje ručnog sklopa u stablu praćenja (`pracenje_virtuelni_sklopovi`). Predmet
+ * dolazi iz rute (`:itemId`). NIJE idempotentno po nazivu — dva sklopa istog imena su
+ * dozvoljena (odluka: korisnikova odgovornost, kao i dva RN-a istog naziva).
+ * `@Matches(/\S/)` odbija naziv od samih razmaka u pipe-u (400, ne prazan red u stablu).
+ */
+export class VirtuelniSklopCreateDto {
+  @IsString() @Matches(/\S/) @MaxLength(200) naziv!: string;
+  @IsOptional() @IsIn(["glavni", "pod", "zav"]) tip?: string;
+}
+
+/** Izmena ručnog sklopa — oba polja opciona (preimenovanje ILI promena tipa). */
+export class VirtuelniSklopUpdateDto {
+  @IsOptional() @IsString() @Matches(/\S/) @MaxLength(200) naziv?: string;
+  @IsOptional() @IsIn(["glavni", "pod", "zav"]) tip?: string;
 }
 
 export class PrioritetShiftDto {

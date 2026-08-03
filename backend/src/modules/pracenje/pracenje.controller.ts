@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Put,
   Query,
@@ -43,6 +45,8 @@ import {
   PromoteAkcionaTackaDto,
   SetPlanPrioritetDto,
   UpsertAktivnostDto,
+  VirtuelniSklopCreateDto,
+  VirtuelniSklopUpdateDto,
   ZatvoriAktivnostDto,
 } from "./dto/pracenje-mutation.dto";
 import { BigtehnDrawingSignQueryDto } from "../plan-proizvodnje/dto/plan-proizvodnje-mutation.dto";
@@ -133,6 +137,45 @@ export class PracenjeController {
     @Body() dto: PracenjeParentOverrideDto,
   ) {
     return this.pracenje.upsertParentOverride(req.user, dto);
+  }
+
+  // ---------- Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2 ----------
+  // Sklop koji NEMA radni nalog ni tehnologiju. Overlay nad stablom praćenja
+  // (`pracenje_virtuelni_sklopovi`) — NIJE red u `work_orders`: RN registar, numeracija i
+  // MRP ostaju netaknuti. U stablu se pojavljuje sa NEGATIVNIM `node_id` (= -id), a deca
+  // mu se kače postojećim „Premesti u sklop" (`parent-override` sa negativnim `parentRnId`).
+  // Gate: `pracenje.manage` — isto pravo kojim se već premešta struktura.
+
+  @Post("predmeti/:itemId/virtuelni-sklopovi")
+  @RequirePermission(PERMISSIONS.PRACENJE_MANAGE)
+  createVirtuelniSklop(
+    @Req() req: AuthedRequest,
+    @Param("itemId", ParseIntPipe) itemId: number,
+    @Body() dto: VirtuelniSklopCreateDto,
+  ) {
+    return this.pracenje.createVirtuelniSklop(req.user, itemId, dto);
+  }
+
+  @Patch("predmeti/:itemId/virtuelni-sklopovi/:id")
+  @RequirePermission(PERMISSIONS.PRACENJE_MANAGE)
+  updateVirtuelniSklop(
+    @Req() req: AuthedRequest,
+    @Param("itemId", ParseIntPipe) itemId: number,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: VirtuelniSklopUpdateDto,
+  ) {
+    return this.pracenje.updateVirtuelniSklop(req.user, itemId, id, dto);
+  }
+
+  /** Soft-delete + brisanje structure-override-a dece u ISTOJ transakciji (idempotentno). */
+  @Delete("predmeti/:itemId/virtuelni-sklopovi/:id")
+  @RequirePermission(PERMISSIONS.PRACENJE_MANAGE)
+  deleteVirtuelniSklop(
+    @Req() req: AuthedRequest,
+    @Param("itemId", ParseIntPipe) itemId: number,
+    @Param("id", ParseIntPipe) id: number,
+  ) {
+    return this.pracenje.deleteVirtuelniSklop(req.user, itemId, id);
   }
 
   @Put("predmeti/:itemId/prioritet")

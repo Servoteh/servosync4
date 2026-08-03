@@ -17,8 +17,11 @@ import type {
   PromoteAkcionaTackaDto,
   SetPlanPrioritetDto,
   UpsertAktivnostDto,
+  VirtuelniSklopCreateDto,
+  VirtuelniSklopUpdateDto,
   ZatvoriAktivnostDto,
 } from "./dto/pracenje-mutation.dto";
+import { isVirtualNode, virtualDbId, virtualNodeId } from "./virtual-node";
 
 /** Actor identity carried from the JWT (controller `req.user`). */
 type Actor = { userId: number; email: string };
@@ -41,6 +44,7 @@ const AKTIVNOST_ENTITY_TYPE = "operativna_aktivnost";
  *   napomena        → `pracenje_notes`            (upsert by project+RN)
  *   override        → `pracenje_overrides`        (upsert by RN; auto-rule docx §4.7)
  *   parent-override → `pracenje_structure_overrides` (upsert / clear)
+ *   virtuelni sklop → `pracenje_virtuelni_sklopovi`  (ručno napravljen sklop; 053/26 §2)
  *   prioritet ↑↓    → `predmet_aktivacije.sort_priority`
  *   aktivnosti      → `operativne_aktivnosti` (+ `operativne_aktivnosti_blokade`)
  *   export-log      → 2.0 `audit_log` (structured export event)
@@ -90,6 +94,14 @@ export class PracenjeService {
    */
   async upsertManualOverride(actor: Actor, dto: PracenjeManualOverrideDto) {
     const workOrderId = Number(dto.bigtehnRnId);
+    // Virtuelni sklop je ČVOR GRUPISANJA — nema kucanja, nema lansiranu količinu, % gotovosti
+    // mu je rollup dece (zahtev 053/26 paket 2). Ručni status/količina na njemu ne bi imali
+    // gde da se prikažu, a upisali bi red u `pracenje_overrides` ključem koji nijedan RN nema.
+    if (isVirtualNode(workOrderId)) {
+      throw new UnprocessableEntityException(
+        "Ručni status i količina se vode na poziciji (RN), ne na ručno napravljenom sklopu.",
+      );
+    }
     const status = dto.status ?? null;
     const completed = status === "kompletirano";
     // Auto-rule: kompletirano ⇒ machining + surface DA (override anything the client sent).
@@ -145,6 +157,10 @@ export class PracenjeService {
    * Manual re-parent of a position/sub-assembly → `pracenje_structure_overrides`.
    * `clear` = revert to the auto (BOM/components) structure → delete the override row.
    * Otherwise upsert with `parentWorkOrderId` (null = detach to root).
+   *
+   * Zahtev 053/26 paket 2: i DETE i RODITELJ smeju biti VIRTUELNI sklop (negativan id) —
+   * „ubaci poziciju u ručno napravljen sklop" i „sklop u sklopu". Virtuelni sklop nema
+   * automatskog (BOM) roditelja, pa je override jedini izvor njegove pozicije u stablu.
    */
   async upsertParentOverride(actor: Actor, dto: PracenjeParentOverrideDto) {
     const workOrderId = Number(dto.bigtehnRnId);
@@ -161,10 +177,23 @@ export class PracenjeService {
         ? Number(dto.parentRnId)
         : null;
     if (parentWorkOrderId != null) {
-      if (parentWorkOrderId <= 0) {
+      if (parentWorkOrderId === 0) {
         throw new UnprocessableEntityException(
-          "Roditelj mora biti postojeći RN (id > 0).",
+          "Roditelj mora biti postojeći RN (id > 0) ili ručno napravljen sklop.",
         );
+      }
+      // Virtuelni roditelj mora POSTOJATI i ne sme biti obrisan — inače bi se override
+      // upisao ka čvoru koji se nikad ne pojavljuje u stablu (tiho „nestalo dete").
+      if (isVirtualNode(parentWorkOrderId)) {
+        const target = await this.prisma.pracenjeVirtuelniSklop.findFirst({
+          where: { id: virtualDbId(parentWorkOrderId), deletedAt: null },
+          select: { id: true },
+        });
+        if (!target) {
+          throw new UnprocessableEntityException(
+            `Ručno napravljen sklop ${virtualDbId(parentWorkOrderId)} ne postoji (ili je obrisan).`,
+          );
+        }
       }
       if (parentWorkOrderId === workOrderId) {
         throw new UnprocessableEntityException(
@@ -191,6 +220,111 @@ export class PracenjeService {
       select: { id: true },
     });
     return { data: { id: row.id } };
+  }
+
+  // ==========================================================================
+  // Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2
+  // ==========================================================================
+
+  /**
+   * Napravi ručni sklop u stablu predmeta → `pracenje_virtuelni_sklopovi`. NE dira
+   * `work_orders` (RN registar/numeracija/MRP netaknuti). Vraća i `nodeId` (= -id) da FE
+   * odmah može da ga ponudi kao cilj u „Premesti u sklop" bez preračunavanja predznaka.
+   * NIJE idempotentno po nazivu — dupli nazivi su dozvoljeni (odluka vlasnika).
+   */
+  async createVirtuelniSklop(
+    actor: Actor,
+    projectId: number,
+    dto: VirtuelniSklopCreateDto,
+  ) {
+    const row = await this.prisma.pracenjeVirtuelniSklop.create({
+      data: {
+        projectId,
+        naziv: dto.naziv.trim(),
+        tip: dto.tip ?? "pod",
+        createdBy: actor.email ?? null,
+      },
+      select: { id: true, naziv: true, tip: true },
+    });
+    return {
+      data: {
+        id: row.id,
+        nodeId: virtualNodeId(row.id),
+        naziv: row.naziv,
+        tip: row.tip,
+      },
+    };
+  }
+
+  /**
+   * Preimenuj / promeni tip ručnog sklopa. Nepostojeći (ili već obrisan) → 404 — izmena
+   * nečega što ne postoji nema smislen no-op (za razliku od brisanja, vidi dole).
+   */
+  async updateVirtuelniSklop(
+    _actor: Actor,
+    projectId: number,
+    id: number,
+    dto: VirtuelniSklopUpdateDto,
+  ) {
+    const existing = await this.prisma.pracenjeVirtuelniSklop.findFirst({
+      where: { id, projectId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(
+        `Ručno napravljen sklop ${id} ne postoji u predmetu ${projectId}.`,
+      );
+    }
+    const row = await this.prisma.pracenjeVirtuelniSklop.update({
+      where: { id },
+      data: {
+        ...(dto.naziv !== undefined ? { naziv: dto.naziv.trim() } : {}),
+        ...(dto.tip !== undefined ? { tip: dto.tip } : {}),
+      },
+      select: { id: true, naziv: true, tip: true },
+    });
+    return {
+      data: {
+        id: row.id,
+        nodeId: virtualNodeId(row.id),
+        naziv: row.naziv,
+        tip: row.tip,
+      },
+    };
+  }
+
+  /**
+   * Obriši ručni sklop (soft-delete) I u ISTOJ TRANSAKCIJI očisti sve structure-override-e
+   * koji su na njega kačili decu — inače bi deca ostala vezana za čvor koji stablo više ne
+   * emituje, pa bi im override tiho „pao" u `override_ignored` (paket 1) i korisnik bi ih
+   * tražio kao izgubljene. Posle brisanja deca padaju na AUTOMATSKU strukturu (sastavnicu).
+   * Briše se i override samog sklopa (njegovo mesto u stablu).
+   *
+   * IDEMPOTENTNO: brisanje već obrisanog/nepostojećeg je no-op (`deleted: false`), isti
+   * obrazac kao `upsertParentOverride({clear:true})` koji radi `deleteMany` bez 404.
+   */
+  async deleteVirtuelniSklop(_actor: Actor, projectId: number, id: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.pracenjeVirtuelniSklop.findFirst({
+        where: { id, projectId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!existing) {
+        return { data: { id, deleted: false, clearedChildren: 0 } };
+      }
+      await tx.pracenjeVirtuelniSklop.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+      const nodeId = virtualNodeId(id);
+      const cleared = await tx.pracenjeStructureOverride.deleteMany({
+        where: { parentWorkOrderId: nodeId },
+      });
+      await tx.pracenjeStructureOverride.deleteMany({
+        where: { workOrderId: nodeId },
+      });
+      return { data: { id, deleted: true, clearedChildren: cleared.count } };
+    });
   }
 
   /**
@@ -310,6 +444,14 @@ export class PracenjeService {
    * instead of a raw FK 500. Returns the (Int) activity id.
    */
   async upsertAktivnost(actor: Actor, dto: UpsertAktivnostDto) {
+    // Aktivnost visi o RN-u (`operativne_aktivnosti.work_order_id`); virtuelni (ručno
+    // napravljen) sklop nema RN, pa bi negativan id upisao vezu ka nepostojećem nalogu
+    // koju operativni plan nikad ne bi prikazao (zahtev 053/26 paket 2).
+    if (isVirtualNode(dto.radniNalogId)) {
+      throw new UnprocessableEntityException(
+        "Operativna aktivnost se vezuje za radni nalog — ručno napravljen sklop ga nema.",
+      );
+    }
     const data = {
       workOrderId: dto.radniNalogId ?? null,
       projectId: dto.projekatId ?? null,
@@ -558,6 +700,11 @@ export class PracenjeService {
    * following each node's EFFECTIVE parent: a structure override (single parent; null =
    * root → stop) wins over the auto BOM parents (`work_order_components`, which can
    * branch, so BFS). `visited` prevents spinning on already-cyclic data; `depth` caps work.
+   *
+   * Zahtev 053/26 paket 2: lanac sme da prođe i kroz VIRTUELNE sklopove (negativan id).
+   * Virtuelni čvor NEMA automatskog (BOM) roditelja — `work_order_components` se za njega
+   * ni ne pita (negativan id tamo ne postoji): override je jedini put naviše, pa se ciklus
+   * virtuelni→virtuelni (A pod B, pa B pod A) hvata istim hodom kao i RN ciklus.
    */
   private async wouldCreateParentCycle(
     child: number,
@@ -582,6 +729,7 @@ export class PracenjeService {
           }
           continue;
         }
+        if (isVirtualNode(node)) continue; // virtuelni sklop bez override-a = koren
         const parents = await this.prisma.workOrderComponent.findMany({
           where: { componentWorkOrderId: node },
           select: { workOrderId: true },

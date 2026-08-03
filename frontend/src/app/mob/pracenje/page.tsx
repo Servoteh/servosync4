@@ -9,6 +9,7 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { formatDate } from '@/lib/format';
 import { toast } from '@/lib/toast';
+import { rowIsVirtual } from '@/lib/pracenje-virtual';
 import {
   usePredmeti,
   usePredmetIzvestaj,
@@ -122,6 +123,9 @@ function PredmetiMobile({ onOpen }: { onOpen: (id: number, label: string) => voi
 const OVR_LABEL: Record<string, string> = { u_radu: 'U radu', kompletirano: 'Kompletirano', nije_zapoceto: 'Nije započeto' };
 const OVR_TONE: Record<string, 'info' | 'success' | 'neutral'> = { u_radu: 'info', kompletirano: 'success', nije_zapoceto: 'neutral' };
 
+/** Bedž tipa ručno napravljenog sklopa (053/26 paket 2) — isti katalog kao desktop. */
+const VIRT_TIP_LABEL: Record<string, string> = { glavni: 'Glavni sklop', pod: 'Podsklop', zav: 'Zav. sklop' };
+
 /** Auto-hint statusa iz statusa bitova (paritet 1.0 autoHint). */
 function autoHint(r: IzvestajRow): string {
   const s = r.statusi ?? {};
@@ -159,13 +163,18 @@ function PozicijeMobile({ itemId, label, onBack }: { itemId: number; label: stri
             const node = String(r.node_id ?? '');
             const ovr = String(r.status_override ?? '');
             const indent = Math.min(Number(r.level ?? 0), 4) * 12;
-            const rnLabel = (r.rn_broj as string | undefined) ?? r.rn_id ?? '';
+            // Ručno napravljen sklop (053/26 paket 2): nema RN, tehnologiju ni kucanja —
+            // „✎ Izmeni" (ručni status/količina) se gasi, jer BE takav upis odbija sa 422.
+            const isV = rowIsVirtual(r);
+            const rnLabel = isV ? '' : ((r.rn_broj as string | undefined) ?? r.rn_id ?? '');
             const hasNote = !!String(r.korisnicka_napomena ?? '').trim();
             return (
               <div key={node} className="rounded-panel border border-line bg-surface p-3" style={{ marginLeft: indent }}>
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-medium text-ink">{r.naziv_pozicije ?? r.naziv_dela ?? rnLabel ?? '—'}</span>
-                  {ovr ? (
+                  {isV ? (
+                    <StatusBadge tone="neutral" label={VIRT_TIP_LABEL[String(r.tip_sklopa ?? '')] ?? 'Sklop'} />
+                  ) : ovr ? (
                     <StatusBadge tone={OVR_TONE[ovr] ?? 'neutral'} label={`${OVR_LABEL[ovr] ?? ovr} · ručno`} />
                   ) : (
                     <StatusBadge tone="neutral" label={autoHint(r)} />
@@ -173,9 +182,9 @@ function PozicijeMobile({ itemId, label, onBack }: { itemId: number; label: stri
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-ink-secondary">
                   {rnLabel ? <span>RN {String(rnLabel)}</span> : null}
-                  <span>{r.ident_broj ?? ''} · {r.broj_crteza ?? r.crtez_drawing_no ?? ''}</span>
+                  <span>{isV ? 'Ručno napravljen sklop' : `${r.ident_broj ?? ''} · ${r.broj_crteza ?? r.crtez_drawing_no ?? ''}`}</span>
                   {hasNote && <span title="Ima napomenu">📝</span>}
-                  {canManage && (
+                  {canManage && !isV && (
                     <button onClick={() => setSheet(r)} className="ml-auto rounded-control border border-line px-2 py-1 text-ink-secondary">
                       ✎ Izmeni ▾
                     </button>

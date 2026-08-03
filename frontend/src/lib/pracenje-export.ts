@@ -8,7 +8,25 @@ import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import { ensureRoboto } from './plan-montaze/pdf-font';
 import type { NodeRollup } from './pracenje-tree';
+import { rowIsVirtual } from './pracenje-virtual';
 import { fetchCrtezSignUrl, type IzvestajResult, type IzvestajRow, type PracenjeStatusi, type PracenjeOperacija } from '@/api/pracenje';
+
+/** Čitka oznaka tipa ručnog sklopa u izvozima (isti katalog kao bedževi ekrana). */
+const VIRT_TIP_LABEL: Record<string, string> = {
+  glavni: 'Glavni sklop',
+  pod: 'Podsklop',
+  zav: 'Zav. sklop',
+};
+
+/**
+ * Status ćelija izvoza za RUČNO NAPRAVLJEN sklop (zahtev 053/26 paket 2): red nema RN,
+ * tehnologiju ni količine, pa bi `statusBitsText` ispisao lažno „OK", a `daNeText` lažno
+ * „NE". Umesto toga se izvozi ŠTA red jeste — ručni sklop i njegov tip.
+ */
+function virtualStatusText(r: IzvestajRow): string {
+  const tip = VIRT_TIP_LABEL[String(r.tip_sklopa ?? '')] ?? 'Sklop';
+  return `Ručno napravljen sklop — ${tip}`;
+}
 
 /** Izvozni tekst DA/NE (1.0 daNeText — pracenjeIzvestajExport.js:30): „DA — {pun status}". */
 export function daNeText(statusStr: string | null | undefined): string {
@@ -168,6 +186,8 @@ export async function exportIzvestajXlsx({ result, rows, rollups, filter, lot }:
   for (const r of rows) {
     const note = [r.sistemska_napomena, r.korisnicka_napomena].filter(Boolean).join(' | ');
     const lvl = Number(r.level ?? 0);
+    // Ručno napravljen sklop (053/26 paket 2): naziv + tip, sva RN polja prazna.
+    const isV = rowIsVirtual(r);
     const row: (string | number)[] = [
       lvl,
       // Indentacija naziva prati hijerarhiju (docx §10) — uz „Nivo" kolonu.
@@ -179,15 +199,15 @@ export async function exportIzvestajXlsx({ result, rows, rollups, filter, lot }:
       r.zavrsena_kolicina ?? '',
       pctText(rollups, r.node_id, 'pct'),
       pctText(rollups, r.node_id, 'masPct'),
-      r.required_for_lot ?? 'N/A',
+      isV ? '' : (r.required_for_lot ?? 'N/A'),
       r.datum_lansiranja_tp || '',
       r.datum_izrade || '',
-      daNeExport(r.masinska_obrada_status, r.masinska_done_override),
-      daNeExport(r.povrsinska_zastita_status, r.povrsinska_done_override),
+      isV ? '' : daNeExport(r.masinska_obrada_status, r.masinska_done_override),
+      isV ? '' : daNeExport(r.povrsinska_zastita_status, r.povrsinska_done_override),
       r.materijal || '',
       r.dimenzije || '',
       note,
-      statusBitsText(r.statusi),
+      isV ? virtualStatusText(r) : statusBitsText(r.statusi),
       finalQtyText(r.operations),
     ];
     const ops = r.operations ?? [];
@@ -276,17 +296,23 @@ export async function exportIzvestajPdf({ result, rows, rollups, lot }: Izvestaj
     const roll = rollups?.get(String(r.node_id ?? ''));
     const pctSuffix =
       roll && roll.pct != null ? ` ${roll.pct}%${roll.masPct != null ? `·m${roll.masPct}%` : ''}` : '';
+    const isV = rowIsVirtual(r);
     const poz = `${'  '.repeat(Number(r.level || 0))}${(r.naziv_pozicije || '').slice(0, 30)}${pctSuffix}`;
     doc.text(poz, m, y);
-    doc.text(String(r.broj_crteza || '—').slice(0, 14), m + colW, y);
-    doc.text(String(r.rn_broj || '').slice(0, 12), m + 2 * colW, y);
-    doc.text(String(r.lansirana_kolicina ?? '—'), m + 3 * colW, y);
-    doc.text(String(r.zavrsena_kolicina ?? '—'), m + 4 * colW, y);
-    doc.text(String(r.required_for_lot ?? 'N/A'), m + 5 * colW, y);
-    doc.text(`${r.datum_lansiranja_tp || '—'} / ${r.datum_izrade || '—'}`, m + 6 * colW, y);
+    doc.text(isV ? '—' : String(r.broj_crteza || '—').slice(0, 14), m + colW, y);
+    doc.text(isV ? '—' : String(r.rn_broj || '').slice(0, 12), m + 2 * colW, y);
+    doc.text(isV ? '—' : String(r.lansirana_kolicina ?? '—'), m + 3 * colW, y);
+    doc.text(isV ? '—' : String(r.zavrsena_kolicina ?? '—'), m + 4 * colW, y);
+    doc.text(isV ? '—' : String(r.required_for_lot ?? 'N/A'), m + 5 * colW, y);
+    doc.text(isV ? '—' : `${r.datum_lansiranja_tp || '—'} / ${r.datum_izrade || '—'}`, m + 6 * colW, y);
     doc.text(`${(r.materijal || '').slice(0, 10)} ${(r.dimenzije || '').slice(0, 10)}`, m + 7 * colW, y);
     doc.text((r.korisnicka_napomena || r.sistemska_napomena || '').slice(0, 28), m + 8 * colW, y);
-    doc.text(opsSummaryForPdf(r.operations).slice(0, 72), m + 9 * colW, y);
+    // Kolona „Operacije" za ručni sklop nosi ŠTA red jeste (nema tehnologiju).
+    doc.text(
+      (isV ? virtualStatusText(r) : opsSummaryForPdf(r.operations)).slice(0, 72),
+      m + 9 * colW,
+      y,
+    );
     if (drawL) doc.link(m + colW, y - 4, colW, line, { url: drawL });
     y += line;
   }

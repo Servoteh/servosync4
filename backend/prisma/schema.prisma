@@ -2628,10 +2628,14 @@ model PracenjeOverride {
 /// App-owned (2.0, plan §3.2-2). Ručni re-parent pozicije/podsklopa u stablu praćenja
 /// (RN → parent RN). `parentWorkOrderId` null = koren (odlepljeno od auto-sastavnice).
 /// Zamena za sy15 `pracenje_parent_override`. Meki ref-ovi → work_orders (bez DB FK).
+/// ⚠️ Zahtev 053/26 paket 2: OBE kolone smeju da nose i NEGATIVAN id = virtuelni sklop
+/// (`PracenjeVirtuelniSklop.id` sa minusom) — dete može biti virtuelni sklop (sklop u
+/// sklopu), a roditelj virtuelni sklop (pozicija ubačena u ručno napravljen sklop).
 model PracenjeStructureOverride {
   id                Int      @id(map: "pk_pracenje_structure_overrides") @default(autoincrement()) @map("id")
+  /// work_orders.id, ILI -PracenjeVirtuelniSklop.id kad se premešta virtuelni sklop.
   workOrderId       Int      @map("work_order_id")
-  /// Ručno postavljen roditelj (work_orders.id); null = koren / odlepi od auto-hijerarhije.
+  /// Ručno postavljen roditelj (work_orders.id ili -virtuelni sklop); null = koren.
   parentWorkOrderId Int?     @map("parent_work_order_id")
   createdByUserId   Int?     @map("created_by_user_id")
   updatedByUserId   Int?     @map("updated_by_user_id")
@@ -2641,6 +2645,31 @@ model PracenjeStructureOverride {
   @@unique([workOrderId], map: "uq_pracenje_structure_overrides_work_order")
   @@index([parentWorkOrderId], map: "idx_pracenje_structure_overrides_parent")
   @@map("pracenje_structure_overrides")
+}
+
+/// App-owned (zahtev 053/26 paket 2). RUČNO napravljen sklop u tabeli praćenja — uključujući
+/// sklop koji NEMA radni nalog ni tehnologiju. NIJE red u `work_orders` (RN registar,
+/// numeracija i MRP ostaju netaknuti); to je overlay čvor stabla praćenja koji u API-ju
+/// nosi NEGATIVAN `node_id` (`id = 7` → `node_id = -7`, vidi `modules/pracenje/virtual-node.ts`).
+/// Deca se kače postojećim „Premesti u sklop" mehanizmom
+/// (`pracenje_structure_overrides.parent_work_order_id = -7`), pa se brisanjem sklopa ti
+/// override-i čiste u istoj transakciji i deca se vraćaju na automatsku strukturu.
+/// `projectId` je meki ref → projects.id (bez DB FK — isti obrazac kao ostatak modula).
+model PracenjeVirtuelniSklop {
+  id        Int       @id(map: "pk_pracenje_virtuelni_sklopovi") @default(autoincrement()) @map("id")
+  projectId Int       @map("project_id")
+  naziv     String    @map("naziv") @db.VarChar(200)
+  /// Tip sklopa (bedž na ekranu). Dozvoljeno: 'glavni' | 'pod' | 'zav'.
+  tip       String    @default("pod") @map("tip") @db.VarChar(10)
+  /// E-mail iz JWT-a (presedan `WorkOrderDrawingPdf.uploadedBy`).
+  createdBy String?   @map("created_by")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Soft-delete: obrisan sklop nestaje iz stabla, deca padaju na automatsku strukturu.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([projectId], map: "idx_pracenje_virtuelni_sklopovi_project")
+  @@map("pracenje_virtuelni_sklopovi")
 }
 
 /// App-owned (2.0, plan §3.2-3). Korisnička napomena po predmetu (projectId) i opciono po

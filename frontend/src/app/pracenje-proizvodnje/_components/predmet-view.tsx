@@ -12,6 +12,9 @@ import {
   StickyNote,
   Search,
   ListTree,
+  Pencil,
+  Trash2,
+  Plus,
 } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Input } from '@/components/ui-kit/form-field';
@@ -32,12 +35,16 @@ import {
 } from '@/lib/pracenje-tree';
 import { exportIzvestajXlsx, exportIzvestajPdf } from '@/lib/pracenje-export';
 import { openPracenjeDrawingPdf } from '@/lib/pracenje-pdf';
+import { rowIsVirtual, virtualDbId, VIRTUELNI_SKLOP_TIPOVI } from '@/lib/pracenje-virtual';
 import { useOverrideUpsert, buildOverridePayload, rowManualQty } from './predmet-override';
 import {
   usePredmetIzvestaj,
   usePodsklopovi,
   useUpsertNapomena,
   useUpsertParentOverride,
+  useCreateVirtuelniSklop,
+  useUpdateVirtuelniSklop,
+  useDeleteVirtuelniSklop,
   fetchCrtezSignUrl,
   normalizeIzvestajResult,
   normalizePodsklopovi,
@@ -171,6 +178,9 @@ function distinctSorted(rows: IzvestajRow[], pick: (r: IzvestajRow) => string): 
 
 /** Tip čvora u stablu za bojenje/grupisanje (1.0 rowSklopType). */
 function rowSklopType(r: IzvestajRow, parentIds: Set<string>): string {
+  // Ručno napravljen sklop nosi tip koji je korisnik IZABRAO (053/26 paket 2) — ne
+  // pogađa se iz naziva/dece, jer prazan sklop nema decu a i dalje je sklop.
+  if (rowIsVirtual(r)) return String(r.tip_sklopa ?? 'pod');
   const naziv = String(r.naziv_pozicije ?? '');
   const hasChildren = parentIds.has(String(r.node_id));
   if (/zavar|zavaren|zav\.?\s*sklop/i.test(naziv)) return 'zav';
@@ -369,12 +379,18 @@ export function PredmetView({
   const [noteFor, setNoteFor] = useState<IzvestajRow | null>(null);
   const [reparentFor, setReparentFor] = useState<IzvestajRow | null>(null);
   const [qtyFor, setQtyFor] = useState<IzvestajRow | null>(null);
+  const [sklopFor, setSklopFor] = useState<IzvestajRow | null>(null); // ✎ ručni sklop
+  const [deleteSklopFor, setDeleteSklopFor] = useState<IzvestajRow | null>(null);
+  const [newSklopOpen, setNewSklopOpen] = useState<boolean>(false); // ➕ novi ručni sklop
 
   const q = usePredmetIzvestaj(itemId, scope || undefined, lot);
   const podsklopovi = usePodsklopovi(itemId);
   const napomena = useUpsertNapomena();
   const override = useOverrideUpsert();
   const parentOverride = useUpsertParentOverride();
+  const createSklop = useCreateVirtuelniSklop();
+  const updateSklop = useUpdateVirtuelniSklop();
+  const deleteSklop = useDeleteVirtuelniSklop();
 
   const result = useMemo(() => normalizeIzvestajResult(q.data?.data), [q.data]);
   const rowsAll = result.rows ?? [];
@@ -458,22 +474,29 @@ export function PredmetView({
   // „Opseg (sklop)" lista SAMO sklopove (zahtev 053/26 §4): čvor je sklop ako se u payload-u
   // podsklopova pojavljuje kao nečiji `parent_rn_id`. Podatak već stiže sa BE — nema izmene rute.
   const scopeOptions = useMemo(() => {
+    // Ručno napravljen sklop (053/26 paket 2) nema ident broj — natpis mu je naziv + oznaka,
+    // da stavka ne izgleda kao „ — Naziv" (prazan ident).
+    const label = (r: { rn_id?: unknown; ident_broj?: unknown; naziv_dela?: unknown; is_virtual?: unknown }): string => {
+      const naziv = String(r.naziv_dela ?? '').slice(0, 80);
+      if (r.is_virtual === true) return `${naziv} (ručni sklop)`;
+      const ident = String(r.ident_broj ?? '').trim() || String(r.rn_id ?? '');
+      return `${ident} — ${naziv}`;
+    };
     const assemblies = new Set(
       flat.map((r) => (r.parent_rn_id == null ? '' : String(r.parent_rn_id))).filter((v) => v !== ''),
     );
     const opts = [
       { v: '', t: 'Ceo predmet' },
+      // Ručni sklop je sklop i kad je PRAZAN (tek napravljen) — inače korisnik ne bi imao
+      // način da uđe u njega dok ga ne napuni.
       ...flat
-        .filter((r) => assemblies.has(String(r.rn_id)))
-        .map((r) => ({
-          v: String(r.rn_id),
-          t: `${r.ident_broj ?? r.rn_id} — ${String(r.naziv_dela ?? '').slice(0, 80)}`,
-        })),
+        .filter((r) => assemblies.has(String(r.rn_id)) || r.is_virtual === true)
+        .map((r) => ({ v: String(r.rn_id), t: label(r) })),
     ];
     // Defanziva: izabrani opseg mora da postoji u listi (inače <select> pokazuje tuđu stavku).
     if (scope && !opts.some((o) => o.v === scope)) {
       const cur = flat.find((r) => String(r.rn_id) === scope);
-      opts.push({ v: scope, t: cur ? `${cur.ident_broj ?? cur.rn_id} — ${String(cur.naziv_dela ?? '')}` : scope });
+      opts.push({ v: scope, t: cur ? label(cur) : scope });
     }
     return opts;
   }, [flat, scope]);
@@ -487,7 +510,9 @@ export function PredmetView({
     const groups = new Map<string, IzvestajRow[]>();
     rowsEff.forEach((r) => {
       const pk = effParentKey(r);
-      if (pk === null || parentIds.has(String(r.node_id))) return; // van sklopa ili je sklop
+      // Van sklopa, ili JE sklop (čvor sa decom / ručno napravljen sklop — 053/26 paket 2:
+      // prazan ručni sklop nema decu, ali nije pozicija pa nema ni redni broj).
+      if (pk === null || parentIds.has(String(r.node_id)) || rowIsVirtual(r)) return;
       const arr = groups.get(pk);
       if (arr) arr.push(r);
       else groups.set(pk, [r]);
@@ -522,7 +547,9 @@ export function PredmetView({
     const bottom = new Set<string>();
     rows.forEach((r, i) => {
       const node = String(r.node_id ?? '');
-      if (!parentIds.has(node)) return; // okvir otvara samo sklop
+      // Okvir otvara sklop = čvor sa decom ILI ručno napravljen sklop (053/26 paket 2 —
+      // prazan ručni sklop nema dece, a i dalje mora da se vidi kao grupa u koju se puni).
+      if (!parentIds.has(node) && !rowIsVirtual(r)) return;
       top.add(node);
       const lvl = Number(r.level ?? 0);
       let j = i + 1;
@@ -739,6 +766,13 @@ export function PredmetView({
         <Button variant="secondary" onClick={() => q.refetch()} disabled={q.isFetching}>
           <RefreshCw className={cn('h-4 w-4', q.isFetching && 'animate-spin')} /> Osveži
         </Button>
+        {/* Ručno napravljen sklop (053/26 §2): sklop koji NEMA radni nalog ni tehnologiju.
+            Pravi se prazan, pa se pozicije prebace u njega kroz „Premesti u sklop". */}
+        {canManage && (
+          <Button variant="secondary" onClick={() => setNewSklopOpen(true)} title="Napravi sklop koji nema radni nalog ni tehnologiju">
+            <Plus className="h-4 w-4" /> Novi sklop
+          </Button>
+        )}
         <Button variant="secondary" onClick={doExportXlsx} disabled={exportRows.length === 0}>
           <FileSpreadsheet className="h-4 w-4" /> Izvezi Excel
         </Button>
@@ -759,6 +793,7 @@ export function PredmetView({
         <LegendSwatch tone="bg-surface border border-line" label="Pojedinačna" />
         <span className="text-ink-secondary">
           Okvir = grupa sklopa · redni broj ispred naziva = pozicija u sklopu · klik na naziv sklopa = prikaži samo taj sklop
+          {canManage ? ' · ✎/🗑 uz naziv = ručno napravljen sklop (nema RN ni tehnologiju)' : ''}
         </span>
       </div>
 
@@ -829,6 +864,9 @@ export function PredmetView({
                 const st = r.statusi;
                 const typ = rowSklopType(r, parentIds);
                 const bg = rowBgClass(typ);
+                // Ručno napravljen sklop (053/26 paket 2): čvor grupisanja BEZ RN-a,
+                // crteža, operacija i sopstvenih količina — sve RN akcije se gase.
+                const isV = rowIsVirtual(r);
                 const hasChildren = parentIds.has(node);
                 const isCollapsed = collapsed.has(node);
                 const opsOpen = opsFor.has(node);
@@ -880,9 +918,10 @@ export function PredmetView({
                               {rb}.
                             </span>
                           )}
-                          {hasChildren ? (
+                          {hasChildren || isV ? (
                             // Klik na naziv sklopa = drill u taj sklop (isti mehanizam kao
-                            // „Opseg (sklop)"); dugme „Otvori RN" ostaje netaknuto.
+                            // „Opseg (sklop)"); dugme „Otvori RN" ostaje netaknuto. Ručni
+                            // sklop se drill-uje isto (BE prima negativan `rootRn`).
                             <button
                               type="button"
                               onClick={() => drillToSklop(node)}
@@ -922,13 +961,36 @@ export function PredmetView({
                               <ArrowLeftRight className="h-3.5 w-3.5" />
                             </button>
                           )}
+                          {/* Ručni sklop: preimenovanje / promena tipa / brisanje (053/26 §2). */}
+                          {canManage && isV && (
+                            <>
+                              <button
+                                onClick={() => setSklopFor(r)}
+                                className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
+                                title="Preimenuj ručno napravljen sklop"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => setDeleteSklopFor(r)}
+                                className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface hover:text-status-danger"
+                                title="Obriši ručno napravljen sklop"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                       <td
                         style={{ left: FCOL.crt.left, width: FCOL.crt.w, minWidth: FCOL.crt.w, maxWidth: FCOL.crt.w }}
                         className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg, frame, 'border-l-0')}
                       >
-                        <DrawingCell code={r.crtez_drawing_no} label={r.broj_crteza ?? r.crtez_drawing_no} hasFile={r.has_crtez_file} />
+                        {isV ? (
+                          <span className="text-ink-secondary">—</span>
+                        ) : (
+                          <DrawingCell code={r.crtez_drawing_no} label={r.broj_crteza ?? r.crtez_drawing_no} hasFile={r.has_crtez_file} />
+                        )}
                       </td>
                       <td
                         style={{ left: FCOL.skl.left, width: FCOL.skl.w, minWidth: FCOL.skl.w, maxWidth: FCOL.skl.w }}
@@ -940,7 +1002,8 @@ export function PredmetView({
                         style={{ left: FCOL.rn.left, width: FCOL.rn.w, minWidth: FCOL.rn.w, maxWidth: FCOL.rn.w }}
                         className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg, frame, 'border-l-0')}
                       >
-                        {r.rn_broj ? (
+                        {/* Ručno napravljen sklop nema RN — nikad ne nudi „Otvori RN". */}
+                        {!isV && r.rn_broj ? (
                           <button
                             onClick={() => openRn(r, node)}
                             className="inline-flex items-center gap-1 text-accent hover:underline"
@@ -972,21 +1035,30 @@ export function PredmetView({
                       <td className="px-3 py-1.5 text-xs">{r.datum_lansiranja_tp ?? '—'}</td>
                       <td className="px-3 py-1.5 text-xs">{r.datum_izrade ?? '—'}</td>
                       <td className="px-3 py-1.5 text-center text-xs">
-                        <DaNeCell
-                          st={masSt}
-                          canManage={canManage}
-                          onCycle={(next) => override.mutate(buildOverridePayload(itemId, r, { masinska: next }))}
-                        />
+                        {/* Maš./Površ. su atributi POZICIJE — ručni sklop ih nema (rollup ide kroz % maš.). */}
+                        {isV ? (
+                          <span className="text-ink-secondary">—</span>
+                        ) : (
+                          <DaNeCell
+                            st={masSt}
+                            canManage={canManage}
+                            onCycle={(next) => override.mutate(buildOverridePayload(itemId, r, { masinska: next }))}
+                          />
+                        )}
                       </td>
                       <td className="px-3 py-1.5">
                         <PctCell pct={roll?.masPct ?? null} muted />
                       </td>
                       <td className="px-3 py-1.5 text-center text-xs">
-                        <DaNeCell
-                          st={povSt}
-                          canManage={canManage}
-                          onCycle={(next) => override.mutate(buildOverridePayload(itemId, r, { povrsinska: next }))}
-                        />
+                        {isV ? (
+                          <span className="text-ink-secondary">—</span>
+                        ) : (
+                          <DaNeCell
+                            st={povSt}
+                            canManage={canManage}
+                            onCycle={(next) => override.mutate(buildOverridePayload(itemId, r, { povrsinska: next }))}
+                          />
+                        )}
                       </td>
                       <td className="px-3 py-1.5 text-xs">{r.materijal ?? '—'}</td>
                       <td className="px-3 py-1.5 text-xs">{r.dimenzije ?? '—'}</td>
@@ -1002,7 +1074,11 @@ export function PredmetView({
                         </button>
                       </td>
                       <td className="px-3 py-1.5">
-                        {canManage ? (
+                        {/* Ručni status/količina se vode na POZICIJI — sklop je čvor grupisanja
+                            (BE odbija override po negativnom id-ju sa 422). */}
+                        {isV ? (
+                          <span className="text-xs text-ink-secondary">Ručno napravljen sklop</span>
+                        ) : canManage ? (
                           <div className="flex flex-col gap-0.5">
                             <select
                               value={r.status_override ?? ''}
@@ -1071,16 +1147,21 @@ export function PredmetView({
                         })
                       ) : (
                         <td className="px-3 py-1.5 text-xs">
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => toggleOps(node)}
-                              className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
-                              title="Prikaži operacije"
-                            >
-                              <ListTree className={cn('h-3.5 w-3.5', opsOpen && 'text-accent')} />
-                            </button>
-                            <span>{opsSummary(r)}</span>
-                          </div>
+                          {/* Ručni sklop nema tehnologiju → nema ni podtabele operacija. */}
+                          {isV ? (
+                            <span className="text-ink-secondary">—</span>
+                          ) : (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() => toggleOps(node)}
+                                className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
+                                title="Prikaži operacije"
+                              >
+                                <ListTree className={cn('h-3.5 w-3.5', opsOpen && 'text-accent')} />
+                              </button>
+                              <span>{opsSummary(r)}</span>
+                            </div>
+                          )}
                         </td>
                       )}
                     </tr>
@@ -1141,6 +1222,12 @@ export function PredmetView({
         <ReparentModal
           row={reparentFor}
           rowsAll={rowsAll}
+          canManage={canManage}
+          onCreateSklop={async (naziv, tip) => {
+            const res = await createSklop.mutateAsync({ itemId, naziv, tip });
+            showToast(`Sklop „${res.data.naziv}" napravljen`);
+            return String(res.data.nodeId);
+          }}
           onClose={() => setReparentFor(null)}
           onSave={(payload) => {
             const node = String(reparentFor.node_id ?? '');
@@ -1151,6 +1238,78 @@ export function PredmetView({
             setReparentFor(null);
           }}
         />
+      )}
+
+      {/* ✎ Preimenovanje / promena tipa postojećeg ručnog sklopa. */}
+      {sklopFor && (
+        <VirtuelniSklopModal
+          row={sklopFor}
+          onClose={() => setSklopFor(null)}
+          onSave={(naziv, tip) => {
+            const dbId = virtualDbId(String(sklopFor.node_id));
+            updateSklop.mutate(
+              { itemId, id: dbId, naziv, tip },
+              {
+                onSuccess: () => showToast('Sklop ažuriran'),
+                onError: (e) => showToast(e instanceof Error ? e.message : 'Greška.'),
+              },
+            );
+            setSklopFor(null);
+          }}
+        />
+      )}
+
+      {/* ➕ Novi (prazan) ručni sklop iz alatne trake — puni se posle „Premesti u sklop". */}
+      {newSklopOpen && (
+        <VirtuelniSklopModal
+          row={null}
+          onClose={() => setNewSklopOpen(false)}
+          onSave={(naziv, tip) => {
+            createSklop.mutate(
+              { itemId, naziv, tip },
+              {
+                onSuccess: (res) => showToast(`Sklop „${res.data.naziv}" napravljen — premesti pozicije u njega`),
+                onError: (e) => showToast(e instanceof Error ? e.message : 'Greška.'),
+              },
+            );
+            setNewSklopOpen(false);
+          }}
+        />
+      )}
+
+      {deleteSklopFor && (
+        <Dialog
+          open
+          onClose={() => setDeleteSklopFor(null)}
+          title={`Obriši sklop — ${deleteSklopFor.naziv_pozicije ?? ''}`}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setDeleteSklopFor(null)}>
+                Odustani
+              </Button>
+              <Button
+                onClick={() => {
+                  const dbId = virtualDbId(String(deleteSklopFor.node_id));
+                  deleteSklop.mutate(
+                    { itemId, id: dbId },
+                    {
+                      onSuccess: () => showToast('Sklop obrisan — deca su vraćena na automatsku strukturu'),
+                      onError: (e) => showToast(e instanceof Error ? e.message : 'Greška.'),
+                    },
+                  );
+                  setDeleteSklopFor(null);
+                }}
+              >
+                Obriši
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm text-ink">
+            Sklop se briše iz tabele praćenja. Pozicije koje su u njemu NE nestaju — vraćaju se na{' '}
+            <strong>automatsku strukturu</strong> (sastavnicu), kao da nikad nisu premeštene. Radni nalozi se ne diraju.
+          </p>
+        </Dialog>
       )}
     </div>
   );
@@ -1382,31 +1541,128 @@ function ManualQtyModal({
   );
 }
 
-/** Modal „Premesti u sklop": ↩ Automatski / ⬆ Vrh / kandidati bez sebe i potomaka. */
+/**
+ * Modal ručnog sklopa (053/26 paket 2) — kreiranje (`row = null`) i preimenovanje/promena
+ * tipa (`row` = red sklopa). Sklop NEMA radni nalog ni tehnologiju: unosi se samo naziv i
+ * tip (bedž), ništa se ne lansira ni ne planira.
+ */
+function VirtuelniSklopModal({
+  row,
+  onClose,
+  onSave,
+}: {
+  row: IzvestajRow | null;
+  onClose: () => void;
+  onSave: (naziv: string, tip: string) => void;
+}) {
+  const [naziv, setNaziv] = useState(String(row?.naziv_pozicije ?? ''));
+  const [tip, setTip] = useState(String(row?.tip_sklopa ?? 'pod'));
+
+  function submit() {
+    const n = naziv.trim();
+    if (!n) {
+      showToast('Unesi naziv sklopa.');
+      return;
+    }
+    onSave(n, tip);
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={row ? `Preimenuj sklop — ${row.naziv_pozicije ?? ''}` : 'Novi sklop (bez radnog naloga)'}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Odustani
+          </Button>
+          <Button onClick={submit}>{row ? 'Sačuvaj' : 'Napravi'}</Button>
+        </>
+      }
+    >
+      <p className="mb-3 text-xs text-ink-secondary">
+        Ručno napravljen sklop postoji SAMO u tabeli praćenja — nema radni nalog, tehnologiju ni količine.
+        Služi za grupisanje pozicija; % gotovosti mu se računa iz onoga što se u njega premesti.
+      </p>
+      <label className="mb-3 block">
+        <span className="mb-1 block text-2xs uppercase tracking-wider text-ink-secondary">Naziv sklopa</span>
+        <Input
+          value={naziv}
+          autoFocus
+          maxLength={200}
+          onChange={(e) => setNaziv(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          placeholder="npr. Postolje — montažni sklop"
+        />
+      </label>
+      <label className="block">
+        <span className="mb-1 block text-2xs uppercase tracking-wider text-ink-secondary">Tip</span>
+        <select
+          value={tip}
+          onChange={(e) => setTip(e.target.value)}
+          className="w-full rounded-control border border-line bg-surface px-3 py-2 text-sm text-ink"
+        >
+          {VIRTUELNI_SKLOP_TIPOVI.map((t) => (
+            <option key={t.v} value={t.v}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    </Dialog>
+  );
+}
+
+/**
+ * Modal „Premesti u sklop": ↩ Automatski / ⬆ Vrh / kandidati bez sebe i potomaka.
+ * Zahtev 053/26 paket 2: „➕ Novi sklop…" pravi RUČNI sklop (bez RN-a) i ODMAH ga bira kao
+ * cilj — korisnik ne mora da izlazi iz dijaloga, pravi sklop pa se vraća.
+ */
 function ReparentModal({
   row,
   rowsAll,
+  canManage,
+  onCreateSklop,
   onClose,
   onSave,
 }: {
   row: IzvestajRow;
   rowsAll: IzvestajRow[];
+  canManage: boolean;
+  onCreateSklop: (naziv: string, tip: string) => Promise<string>;
   onClose: () => void;
   onSave: (payload: { parentRnId?: string | null; clear?: boolean }) => void;
 }) {
   const self = String(row.node_id ?? '');
   const desc = useMemo(() => descendantsOf(rowsAll, self), [rowsAll, self]);
-  const candidates = useMemo(
-    () =>
-      rowsAll
-        .filter((r) => String(r.node_id) !== self && !desc.has(String(r.node_id)))
-        .map((r) => ({
-          id: String(r.node_id),
-          label: `${r.naziv_pozicije ?? r.rn_broj ?? r.node_id}${r.rn_broj ? ` (${r.rn_broj})` : ''}`,
-        }))
-        .sort((a, b) => a.label.localeCompare(b.label, 'sr')),
-    [rowsAll, self, desc],
-  );
+  const [novi, setNovi] = useState<{ id: string; label: string } | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [noviNaziv, setNoviNaziv] = useState('');
+  const [noviTip, setNoviTip] = useState('pod');
+  const candidates = useMemo(() => {
+    const byId = new Map<string, { id: string; label: string }>();
+    for (const r of rowsAll) {
+      const id = String(r.node_id);
+      if (id === self || desc.has(id)) continue;
+      byId.set(id, {
+        id,
+        label: rowIsVirtual(r)
+          ? `${r.naziv_pozicije ?? r.node_id} (ručni sklop)`
+          : `${r.naziv_pozicije ?? r.rn_broj ?? r.node_id}${r.rn_broj ? ` (${r.rn_broj})` : ''}`,
+      });
+    }
+    // Tek napravljen sklop još nije u `rowsAll` (izveštaj se osvežava asinhrono); kad
+    // stigne, mapa po id-ju sprečava dupli <option> (isti ključ = jedan unos).
+    if (novi && !byId.has(novi.id)) byId.set(novi.id, novi);
+    return [...byId.values()].sort((a, b) => a.label.localeCompare(b.label, 'sr'));
+  }, [rowsAll, self, desc, novi]);
 
   // Preselekcija prati ono što STVARNO piše u bazi: i odbijen override (`override_ignored`
   // — cilj van prikazanog opsega) ima svoj sirov cilj, pa dijalog ne sme da ga prikaže kao
@@ -1423,6 +1679,27 @@ function ReparentModal({
     if (sel === '__auto__') onSave({ clear: true });
     else if (sel === '__root__') onSave({ parentRnId: null, clear: false });
     else onSave({ parentRnId: sel, clear: false });
+  }
+
+  /** Napravi ručni sklop i ODMAH ga izaberi kao cilj premeštanja (bez izlaska iz dijaloga). */
+  async function createAndSelect() {
+    const n = noviNaziv.trim();
+    if (!n) {
+      showToast('Unesi naziv sklopa.');
+      return;
+    }
+    setCreating(true);
+    try {
+      const nodeId = await onCreateSklop(n, noviTip);
+      setNovi({ id: nodeId, label: `${n} (ručni sklop)` });
+      setSel(nodeId);
+      setFormOpen(false);
+      setNoviNaziv('');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Sklop nije napravljen.');
+    } finally {
+      setCreating(false);
+    }
   }
 
   return (
@@ -1457,6 +1734,66 @@ function ReparentModal({
           </option>
         ))}
       </select>
+
+      {/* ➕ Sklop koji NE POSTOJI u sistemu (nema RN ni tehnologiju) — 053/26 paket 2. */}
+      {canManage && (
+        <div className="mt-3 border-t border-line-soft pt-3">
+          {!formOpen ? (
+            <button
+              type="button"
+              onClick={() => setFormOpen(true)}
+              className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
+            >
+              <Plus className="h-3.5 w-3.5" /> Novi sklop… (nema radni nalog u sistemu)
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-2xs text-ink-secondary">
+                Sklop postoji samo u tabeli praćenja — ne pravi se radni nalog, ne dira se numeracija.
+              </p>
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="min-w-[200px] flex-1">
+                  <span className="mb-1 block text-2xs uppercase tracking-wider text-ink-secondary">Naziv</span>
+                  <Input
+                    value={noviNaziv}
+                    autoFocus
+                    maxLength={200}
+                    onChange={(e) => setNoviNaziv(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void createAndSelect();
+                      }
+                    }}
+                    placeholder="npr. Postolje — montažni sklop"
+                    className="h-8"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-2xs uppercase tracking-wider text-ink-secondary">Tip</span>
+                  <select
+                    value={noviTip}
+                    onChange={(e) => setNoviTip(e.target.value)}
+                    className="h-8 rounded-control border border-line bg-surface px-2 text-sm text-ink"
+                  >
+                    {VIRTUELNI_SKLOP_TIPOVI.map((t) => (
+                      <option key={t.v} value={t.v}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button variant="secondary" onClick={() => void createAndSelect()} disabled={creating}>
+                  {creating ? 'Pravim…' : 'Napravi i izaberi'}
+                </Button>
+                <Button variant="ghost" onClick={() => setFormOpen(false)} disabled={creating}>
+                  Otkaži
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </Dialog>
   );
 }
