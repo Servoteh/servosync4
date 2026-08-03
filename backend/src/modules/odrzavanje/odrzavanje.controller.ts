@@ -759,6 +759,21 @@ export class OdrzavanjeController {
     return this.odr.createWoEvent(req.user.email, id, dto);
   }
 
+  /**
+   * AI čitanje računa servisa → PREDLOG (ne upisuje ništa). Čovek potvrđuje
+   * običnim PATCH-om nad nalogom, pa je pravo isto kao za izmenu naloga (WRITE).
+   */
+  @Post("work-orders/:id/read-invoice")
+  @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
+  @UseInterceptors(FilesInterceptor("files", 8, UPLOAD_LIMITS))
+  readServiceInvoice(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @UploadedFiles() files?: Express.Multer.File[],
+  ) {
+    return this.odr.readServiceInvoice(req.user.email, id, files ?? []);
+  }
+
   @Post("work-orders/:id/parts")
   @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
   createWoPart(

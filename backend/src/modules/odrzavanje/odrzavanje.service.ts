@@ -3,6 +3,8 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
@@ -15,7 +17,29 @@ import {
   IMAGE_ATTACHMENT_FORMATS,
 } from "../../common/attachments/attachment-format.util";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import { PrismaService } from "../../prisma/prisma.service";
+import { AiProviderService } from "../../common/ai/ai-provider.service";
+import {
+  AI_TASK,
+  AiModelPolicyService,
+} from "../../common/ai/ai-model-policy.service";
+import { AI_MODULE } from "../../common/ai/ai-limits.service";
+import {
+  fenceUserInput,
+  ODRZAVANJE_INJECTION_FENCE,
+} from "../../common/ai/injection-fence";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
+import {
+  normalizeRacunOut,
+  RACUN_AI_ALLOWED_MODELS,
+  RACUN_AI_DEFAULT_MODEL,
+  RACUN_AI_SYSTEM_PROMPT,
+  RACUN_AI_TOOL,
+  RACUN_MAX_FAJL_B64,
+  RACUN_MAX_FAJLOVA,
+  RACUN_PDF_MIME,
+  RACUN_VISION_MIME,
+} from "./odrzavanje-racun-ai";
 import type {
   CreateAssetServicePlanDto,
   CreateBookingDto,
@@ -215,6 +239,11 @@ export class OdrzavanjeService {
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
     private readonly otpisNotify: MasinaOtpisNotifyService,
+    // AI je opcion: modul mora da se digne i bez AI ključeva (boot-safe, kao storage).
+    // Postojeći unit testovi prave servis sa 3 argumenta — zato @Optional.
+    @Optional() private readonly ai?: AiProviderService,
+    @Optional() private readonly policy?: AiModelPolicyService,
+    @Optional() private readonly prisma?: PrismaService,
   ) {}
 
   // ==========================================================================
@@ -3551,6 +3580,130 @@ export class OdrzavanjeService {
       this.assertAffected(exists, count, `Plan servisa ${planId}`);
       return { data: { ok: true } };
     });
+  }
+
+  // ---------- AI: čitanje računa iz servisa (predlog, ne upis) ----------
+
+  /**
+   * Sa fotografije/PDF-a računa servisne radionice izvuče iznos, servisera, datum,
+   * kilometražu i stavke. **Ništa ne upisuje** — vraća predlog koji čovek potvrđuje
+   * običnim PATCH-om nad nalogom. Razlog: AI ne sme sam da menja novčani podatak, a
+   * ovako i greška u čitanju ostaje bezopasna.
+   *
+   * `woId` služi samo kao provera prava (RLS SELECT nad nalogom) i za kontekst.
+   */
+  async readServiceInvoice(
+    email: string,
+    woId: string,
+    files: Express.Multer.File[],
+  ) {
+    if (!this.ai) {
+      throw new ServiceUnavailableException(
+        "AI čitanje računa nije konfigurisano na serveru.",
+      );
+    }
+    if (!files.length) {
+      throw new UnprocessableEntityException(
+        "Priloži bar jednu fotografiju ili PDF računa (multipart `files`).",
+      );
+    }
+    if (files.length > RACUN_MAX_FAJLOVA) {
+      throw new UnprocessableEntityException(
+        `Najviše ${RACUN_MAX_FAJLOVA} fajlova po računu.`,
+      );
+    }
+    // Pravo: ako korisnik ne sme da vidi nalog, ne sme ni da troši AI budžet na njega.
+    const wo = await this.withUserMapped(email, async (tx) => {
+      const row = await tx.maintWorkOrder.findUnique({
+        where: { woId },
+        select: { woId: true, title: true, assetId: true },
+      });
+      if (!row) throw new NotFoundException(`Radni nalog ${woId} ne postoji`);
+      return row;
+    });
+
+    const content: unknown[] = [
+      {
+        type: "text",
+        text:
+          `Račun se odnosi na radni nalog: ${fenceUserInput(wo.title)}.\n` +
+          `Priloženo fajlova: ${files.length}. Pročitaj ih kao jedan račun ` +
+          `(više strana istog dokumenta).`,
+      },
+    ];
+    for (const f of files) {
+      const b64 = f.buffer.toString("base64");
+      if (b64.length > RACUN_MAX_FAJL_B64) {
+        throw new UnprocessableEntityException(
+          `„${f.originalname}" je prevelik (max ~4 MB po fajlu).`,
+        );
+      }
+      const mime = f.mimetype ?? "";
+      if (mime === RACUN_PDF_MIME) {
+        content.push({
+          type: "document",
+          source: { type: "base64", media_type: RACUN_PDF_MIME, data: b64 },
+        });
+      } else if (RACUN_VISION_MIME.includes(mime)) {
+        content.push({
+          type: "image",
+          source: { type: "base64", media_type: mime, data: b64 },
+        });
+      } else {
+        throw new UnprocessableEntityException(
+          `„${f.originalname}": dozvoljeni su PDF i slike (JPG, PNG, WEBP, GIF).`,
+        );
+      }
+    }
+
+    const envModel = process.env.ODRZAVANJE_RACUN_AI_MODEL ?? "";
+    const fallback = (RACUN_AI_ALLOWED_MODELS as readonly string[]).includes(
+      envModel,
+    )
+      ? envModel
+      : RACUN_AI_DEFAULT_MODEL;
+    // Registar (Podešavanja → AI modeli) ima prednost; bez njega ide env/podrazumevani.
+    const resolved = this.policy
+      ? await this.policy.resolve(AI_TASK.ODRZAVANJE_RACUN, fallback)
+      : { model: fallback };
+    const model = (RACUN_AI_ALLOWED_MODELS as readonly string[]).includes(
+      resolved.model,
+    )
+      ? resolved.model
+      : fallback;
+
+    const res = await this.ai.extractWithTool({
+      model,
+      system: `${RACUN_AI_SYSTEM_PROMPT}\n\n${ODRZAVANJE_INJECTION_FENCE}`,
+      tool: RACUN_AI_TOOL,
+      content,
+      maxTokens: 4000,
+      // `ai_usage_log.user_id` je numerički ID iz GLAVNE baze; sy15 `auth.uid()` je
+      // UUID i ne uklapa se — otud mapiranje po e-mailu (null = poziv se i dalje meri,
+      // samo bez korisnika).
+      ctx: {
+        module: AI_MODULE.ODRZAVANJE_RACUN,
+        userId: await this.appUserId(email),
+      },
+    });
+    return {
+      data: normalizeRacunOut(res.toolInput),
+      meta: { model: res.model, usage: res.usage },
+    };
+  }
+
+  /** e-mail → numerički `users.id` glavne baze (za merenje AI potrošnje). */
+  private async appUserId(email: string): Promise<number | null> {
+    if (!this.prisma) return null;
+    try {
+      const u = await this.prisma.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+      return u?.id ?? null;
+    } catch {
+      return null; // merenje ne sme da obori čitanje računa
+    }
   }
 
   /**

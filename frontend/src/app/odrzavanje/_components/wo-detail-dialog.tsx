@@ -1,15 +1,16 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink, Sparkles } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { formatDate, formatDateTime } from '@/lib/format';
 import {
+  readServiceInvoice,
   useAssignableUsers,
   useCreateWoEvent,
   useCreateWoLabor,
@@ -19,6 +20,7 @@ import {
   useWorkOrder,
   type MaintMe,
   type Part,
+  type RacunPredlog,
   type WoPart,
   type WoStatus,
 } from '@/api/odrzavanje';
@@ -218,6 +220,7 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
 
           {/* Trošak popravke */}
           <TrosakSection
+            woId={d.woId}
             parts={d.parts}
             costTotal={d.costTotal}
             estimatedCost={d.estimatedCost}
@@ -225,6 +228,7 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
             canEdit={canEdit}
             busy={busy}
             onSave={(patch) => update.mutate({ id: d.woId, patch })}
+            onAddPart={(p) => addPart.mutate({ id: d.woId, ...p })}
           />
 
           {/* Delovi */}
@@ -352,8 +356,9 @@ export function woEffectiveCost(parts: WoPart[], costTotal: string | number | nu
 }
 
 function TrosakSection({
-  parts, costTotal, estimatedCost, externalServicerName, canEdit, busy, onSave,
+  woId, parts, costTotal, estimatedCost, externalServicerName, canEdit, busy, onSave, onAddPart,
 }: {
+  woId: string;
   parts: WoPart[];
   costTotal: string | number | null;
   estimatedCost: string | number | null;
@@ -361,9 +366,11 @@ function TrosakSection({
   canEdit: boolean;
   busy: boolean;
   onSave: (patch: Record<string, unknown>) => void;
+  onAddPart: (p: { partName: string; quantity?: number; unit?: string; unitCost?: number }) => void;
 }) {
   const partsSum = woPartsSum(parts);
   const effective = woEffectiveCost(parts, costTotal);
+  const [racun, setRacun] = useState<RacunPredlog | null>(null);
   /** Prazno polje = obriši vrednost (null); tekst koji nije broj se ignoriše. */
   function saveNum(field: string, raw: string, previous: string | number | null) {
     const trimmed = raw.trim().replace(',', '.');
@@ -389,6 +396,19 @@ function TrosakSection({
         {estimatedCost != null && <span>Procena: <span className="tnums">{money(estimatedCost)}</span></span>}
         {externalServicerName && <span>Servis: {externalServicerName}</span>}
       </div>
+
+      {canEdit && <RacunCitac woId={woId} onRead={setRacun} />}
+      {canEdit && racun && (
+        <RacunPredlogPanel
+          predlog={racun}
+          onClose={() => setRacun(null)}
+          onApply={(patch, stavke) => {
+            onSave(patch);
+            for (const s of stavke) onAddPart(s);
+            setRacun(null);
+          }}
+        />
+      )}
 
       {canEdit && (
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -422,6 +442,144 @@ function TrosakSection({
           </FormField>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Dozvoljeni ulazi za čitanje računa (BE isto proverava — ovo je samo picker filter). */
+const RACUN_ACCEPT = 'application/pdf,image/jpeg,image/png,image/webp,image/gif';
+const RACUN_MAX_FAJLOVA = 8;
+
+/** Dugme „Pročitaj račun" — slika/PDF → AI predlog. Ne upisuje ništa samo od sebe. */
+function RacunCitac({ woId, onRead }: { woId: string; onRead: (p: RacunPredlog) => void }) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function pick(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (!files.length) return;
+    if (files.length > RACUN_MAX_FAJLOVA) return setErr(`Najviše ${RACUN_MAX_FAJLOVA} fajlova.`);
+    setErr(null);
+    setBusy(true);
+    try {
+      const res = await readServiceInvoice(woId, files);
+      onRead(res.data);
+    } catch (e2) {
+      setErr((e2 as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3">
+      <input ref={fileRef} type="file" hidden multiple accept={RACUN_ACCEPT} onChange={pick} />
+      <Button variant="secondary" loading={busy} onClick={() => fileRef.current?.click()}>
+        <Sparkles className="h-4 w-4" aria-hidden /> Pročitaj račun (slika ili PDF)
+      </Button>
+      {busy && <p className="mt-1 text-2xs text-ink-secondary">Čitam račun…</p>}
+      {err && <p className="mt-1 text-sm text-status-danger">{err}</p>}
+    </div>
+  );
+}
+
+/**
+ * Pregled pročitanog računa PRE upisa. Sve je čekirano/izmenjivo — model ume da
+ * pogreši u čitanju, a ovde je reč o novcu, pa čovek presuđuje svaki podatak.
+ */
+function RacunPredlogPanel({
+  predlog,
+  onApply,
+  onClose,
+}: {
+  predlog: RacunPredlog;
+  onApply: (
+    patch: Record<string, unknown>,
+    stavke: Array<{ partName: string; quantity?: number; unit?: string; unitCost?: number }>,
+  ) => void;
+  onClose: () => void;
+}) {
+  const [iznos, setIznos] = useState(predlog.ukupanIznos == null ? '' : String(predlog.ukupanIznos));
+  const [serviser, setServiser] = useState(predlog.serviser);
+  const [km, setKm] = useState(predlog.kilometraza == null ? '' : String(predlog.kilometraza));
+  const [uzmiStavke, setUzmiStavke] = useState(false);
+
+  function apply() {
+    const patch: Record<string, unknown> = {};
+    const n = Number(iznos.trim().replace(',', '.'));
+    if (iznos.trim() !== '' && Number.isFinite(n) && n >= 0) patch.costTotal = n;
+    if (serviser.trim()) patch.externalServicerName = serviser.trim();
+    const kmN = Number(km.trim());
+    if (km.trim() !== '' && Number.isFinite(kmN) && kmN >= 0) patch.odometerKmAtService = Math.round(kmN);
+    const stavke = uzmiStavke
+      ? predlog.stavke.map((s) => ({
+          partName: s.naziv,
+          quantity: s.kolicina ?? undefined,
+          unit: s.jedinica || undefined,
+          // Kad servis da samo ukupan iznos stavke, izvedi jediničnu iz količine.
+          unitCost: s.jedinicnaCena ?? (s.iznos != null && s.kolicina ? s.iznos / s.kolicina : (s.iznos ?? undefined)),
+        }))
+      : [];
+    onApply(patch, stavke);
+  }
+
+  return (
+    <div className="mt-3 space-y-3 rounded-panel border border-accent/40 bg-accent-subtle/30 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <h5 className="text-sm font-semibold text-ink">Pročitano sa računa — proveri pre upisa</h5>
+        <button onClick={onClose} className="text-2xs text-ink-secondary hover:text-ink">Odbaci</button>
+      </div>
+
+      {predlog.necitljivo.length > 0 && (
+        <p className="rounded-control bg-status-warn-bg px-2 py-1 text-2xs text-ink">
+          Nije pročitano sa računa: {predlog.necitljivo.join(', ')} — dopuni ručno.
+        </p>
+      )}
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <FormField label="Ukupan iznos (RSD)"><Input value={iznos} onChange={(e) => setIznos(e.target.value)} inputMode="decimal" /></FormField>
+        <FormField label="Servis / radionica"><Input value={serviser} onChange={(e) => setServiser(e.target.value)} /></FormField>
+        <FormField label="Kilometraža"><Input value={km} onChange={(e) => setKm(e.target.value)} inputMode="numeric" /></FormField>
+      </div>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-2xs text-ink-secondary">
+        {predlog.datum && <span>Datum računa: {predlog.datum}</span>}
+        {predlog.brojRacuna && <span>Broj: {predlog.brojRacuna}</span>}
+        {predlog.registracija && <span>Tablice: {predlog.registracija}</span>}
+        {predlog.iznosBezPdv != null && <span>Bez PDV-a: <span className="tnums">{money(predlog.iznosBezPdv)}</span></span>}
+      </div>
+      {predlog.opisRadova && <p className="text-sm text-ink-secondary">{predlog.opisRadova}</p>}
+
+      {predlog.stavke.length > 0 && (
+        <div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={uzmiStavke} onChange={(e) => setUzmiStavke(e.target.checked)} />
+            Upiši i {predlog.stavke.length} {predlog.stavke.length === 1 ? 'stavku' : 'stavki'} u „Delovi"
+          </label>
+          <div className="mt-1 max-h-40 overflow-auto rounded-control border border-line bg-surface">
+            {predlog.stavke.map((s, i) => (
+              <div key={i} className="flex items-center justify-between gap-2 border-b border-line-soft px-2 py-1 text-2xs last:border-0">
+                <span className="min-w-0 truncate text-ink">{s.naziv}</span>
+                <span className="tnums shrink-0 text-ink-secondary">
+                  {s.kolicina ?? '—'} {s.jedinica} {s.iznos != null ? `· ${money(s.iznos)}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+          {uzmiStavke && (
+            <p className="mt-1 text-2xs text-ink-secondary">
+              Trošak naloga ostaje veći od (stavke, ukupan iznos) — neće se brojati dvaput.
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose}>Otkaži</Button>
+        <Button onClick={apply}>Upiši u nalog</Button>
+      </div>
     </div>
   );
 }

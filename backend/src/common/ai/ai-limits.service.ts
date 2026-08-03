@@ -36,6 +36,7 @@ export const AI_MODULE = {
   ZAHTEVI_ANALYSIS: "zahtevi-analysis",
   SASTANCI_SUMMARY: "sastanci-summary",
   MONTAZA_REPORT: "montaza-izvestaj",
+  ODRZAVANJE_RACUN: "odrzavanje-racun",
 } as const;
 
 function envInt(name: string, fallback: number): number {
