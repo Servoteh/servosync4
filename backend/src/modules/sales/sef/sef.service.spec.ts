@@ -297,3 +297,48 @@ describe("SefService.send — uslovan upis statusa SENT", () => {
     expect(rows.sefInvoiceId).toBe("555111");
   });
 });
+
+describe("SefService.send — ponovno slanje NE SME da otkaže kupčevu e-fakturu", () => {
+  /**
+   * REGRESIJA IZ `2893e051`, nađena u 8. krugu i zatvorena 03.08.2026.
+   *
+   * Uslovni upis (`where status:'PENDING'`) je uveden zbog trke sa stornom. Ali `count = 0`
+   * ne razlikuje „storno me je pretekao" od „red uopšte nije bio za slanje": za red koji je
+   * već `SENT`, `send()` je odlazio na SEF DRUGI PUT, dobijao `count = 0`, ulazio u granu
+   * otkazivanja i POVLAČIO kupčevu e-fakturu — za fakturu koja je kod nas živa i POSTED —
+   * uz poruku da je dokument storniran. Frontend to dozvoljava jednim klikom (`canSend`
+   * propušta sve osim `CANCELLED`).
+   *
+   * Do uslovnog upisa je isti klik bio bezopasan (SENT → SENT).
+   */
+  it.each(["SENT", "DELIVERED", "REJECTED"])(
+    "red u stanju %s se odbija PRE mreže — SEF se ne poziva nijednom",
+    async (status) => {
+      const { service, prisma, client, rows } = makeSendService({ claimed: 0 });
+      rows.status = status;
+      rows.sefInvoiceId = "555111";
+
+      await expect(service.send(900, 1)).rejects.toThrow(/samo iz stanja PENDING/i);
+
+      // Ni slanje ni otkazivanje ne smeju da se dese.
+      expect(client.sendInvoice).not.toHaveBeenCalled();
+      expect(client.cancelInvoice).not.toHaveBeenCalled();
+      // Status ostaje netaknut — dokument je i dalje kod kupca.
+      expect(rows.status).toBe(status);
+      expect(prisma.sefOutbox.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("SEF potvrdi slanje BEZ identifikatora: poruka kaže da otkazivanje NIJE izvedeno", async () => {
+    const { service, client, rows } = makeSendService({ claimed: 0 });
+    // `extractInvoiceId` sme da vrati `undefined` uz `ok: true` — tada `cancel` ne ide na
+    // mrežu, pa je tvrdnja „otkazan je i na SEF-u" tačno obrnuta od istine (nalaz S4).
+    client.sendInvoice.mockResolvedValue({ ok: true, dryRun: false });
+
+    await expect(service.send(900, 1)).rejects.toThrow(
+      /OTKAZIVANJE NA PORTALU NIJE IZVEDENO/,
+    );
+    expect(client.cancelInvoice).not.toHaveBeenCalled();
+    expect(rows.sefInvoiceId).toBeNull();
+  });
+});

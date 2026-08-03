@@ -388,6 +388,25 @@ export class SefService {
           "ne može se slati. Prvo ponovi otkazivanje.",
       );
     }
+    // ⚠️ SAMO `PENDING` SME NA MREŽU — ispravka regresije, 03.08.2026.
+    //
+    // Do uslovnog upisa (`2893e051`) je ponovno slanje već poslatog reda bilo bezopasno:
+    // bezuslovan `update` je SENT prepisivao u SENT. Sa uslovom `status: 'PENDING'` isti
+    // klik daje `count = 0`, što je grana „storno me je pretekao" — pa bi sistem OTKAZAO
+    // kupčevu e-fakturu za fakturu koja je kod nas živa i POSTED, uz poruku da je
+    // stornirana. Frontend to dozvoljava jednim klikom (`api/sef.ts`, `canSend` propušta
+    // sve osim `CANCELLED`, a dugme se crta i za SENT/DELIVERED/REJECTED).
+    //
+    // Koren je što `count = 0` ne razlikuje „storno je bio brži" od „red uopšte nije bio
+    // za slanje". Ovde se drugi slučaj odseca UNAPRED, pa `count = 0` niže u metodi
+    // zaista znači samo trku sa stornom. Šalje se isključivo iz `PENDING`; ponovni pokušaj
+    // posle mrežne greške je i dalje moguć jer neuspeh ostavlja red u `PENDING`.
+    if (outbox.status !== "PENDING") {
+      throw new ConflictException(
+        `Outbox red je u stanju ${outbox.status} — na SEF se šalje samo iz stanja PENDING. ` +
+          `Dokument je već poslat; za ponovno slanje ga prvo otkaži, pa napravi nov red.`,
+      );
+    }
 
     // Defense in depth (review Batch A F3): faktura je u međuvremenu mogla biti stornirana
     // dok outbox red još stoji PENDING (npr. red kreiran, pa storno pre lokalnog otkazivanja).
@@ -484,9 +503,19 @@ export class SefService {
         );
         // Otkazivanje je prošlo, ali slanje se ne sme prijaviti kao uspeh — pozivalac je
         // tražio „pošalji", a ishod je „poslato pa povučeno".
+        //
+        // ⚠️ Poruka razlikuje DVA ishoda (nalaz S4): `cancel` ide na mrežu SAMO ako
+        // postoji `sefInvoiceId`. SEF sme da vrati `ok` BEZ id-a (`sef-client.service.ts`,
+        // `extractInvoiceId` može da vrati `undefined`) — tada je red lokalno `CANCELLED`,
+        // a na portalu e-faktura OSTAJE ŽIVA. Tvrditi „otkazan je i na SEF-u" u tom
+        // slučaju je tačno obrnuto od istine, a to je greška koju ceo ovaj commit gađa.
         throw new ConflictException(
-          `Dokument je poslat na SEF, ali je u međuvremenu storniran kod nas — ` +
-            `otkazan je i na SEF-u. Proveri stanje reda pre ponovnog slanja.`,
+          sefInvoiceId
+            ? `Dokument je poslat na SEF, ali je u međuvremenu storniran kod nas — ` +
+              `otkazan je i na SEF-u. Proveri stanje reda pre ponovnog slanja.`
+            : `Dokument je poslat na SEF, ali je u međuvremenu storniran kod nas, a SEF ` +
+              `nije vratio identifikator e-fakture — OTKAZIVANJE NA PORTALU NIJE IZVEDENO. ` +
+              `Kupac i dalje vidi važeću e-fakturu; proveri je na SEF portalu ručno.`,
         );
       }
 
