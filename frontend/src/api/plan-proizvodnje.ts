@@ -222,6 +222,10 @@ export interface GanttRow {
   predecessor_line: string | null;
   is_ready_for_machine: boolean | null;
   is_ready_manual: boolean | null;
+  // ── Pečat ručnog override-a spremnosti (046/26 Paket B — dijalog prikazuje ko/kada).
+  //    Opciona (`?:`) da FE preživi i stariji BE odgovor bez ovih kolona.
+  ready_override_at?: string | null;
+  ready_override_by?: string | null;
   previous_operation_status: string | null;
   previous_operation_operacija: number | string | null;
   previous_operation_machine_code: string | null;
@@ -646,6 +650,15 @@ export const useGanttOverlay = (msgs?: {
             // ovog koraka klik izgleda mrtvo dok ne prođe mrežni krug.
             if (v.plannedDone !== undefined) {
               next.is_completed_effective = v.plannedDone ?? r.is_done_in_bigtehn ?? false;
+            }
+            // `is_ready_for_machine` je takođe BE izvedeno (override OR prethodne
+            // operacije završene) — bedž spremnosti i boja bara moraju da reaguju odmah.
+            // Izračunata grana = FE ogledalo `is_ready_rb`: 'none' | 'completed'.
+            if (v.readyOverride !== undefined) {
+              next.is_ready_for_machine =
+                v.readyOverride ||
+                r.previous_operation_status === 'none' ||
+                r.previous_operation_status === 'completed';
             }
             return next;
           }),

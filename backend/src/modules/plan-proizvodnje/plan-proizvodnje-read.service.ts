@@ -97,6 +97,8 @@ const ALL_COLS = Prisma.sql`line_id, work_order_id, effective_machine_code, broj
  * kooperacija / arhivirana / RN kroz završnu kontrolu), umesto da je sakrije —
  * `scope=sve` skida i EFF_FILTER, pa bez poslednje kolone RN kroz završnu kontrolu
  * (M6) sa neotkucanom operacijom izgleda kao živ „Dodaj" (izmereno: 537 operacija).
+ * `ready_override_at/by` = pečat ručnog override-a spremnosti (046/26 Paket B —
+ * dijalog stavke prikazuje ko/kada je označio).
  */
 const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   effective_machine_code, original_machine_code, original_machine_name, hall,
@@ -105,7 +107,8 @@ const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   planned_start_at, planned_end_at, planned_duration_minutes,
   planned_done, planned_done_at, planned_done_by, is_completed_effective,
   predecessor_work_order_id, predecessor_line,
-  is_ready_for_machine, is_ready_manual, previous_operation_status,
+  is_ready_for_machine, is_ready_manual, ready_override_at, ready_override_by,
+  previous_operation_status,
   previous_operation_operacija, previous_operation_machine_code,
   local_status, shift_sort_order, shift_note, is_urgent, urgency_reason,
   is_non_machining, customer_short, customer_name, is_done_in_bigtehn,

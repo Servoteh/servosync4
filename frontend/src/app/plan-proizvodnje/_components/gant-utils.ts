@@ -72,6 +72,35 @@ export function keepIfSameDay(stored: string | null | undefined, day: string): s
   return isoDay(d) === day ? d.toISOString() : null;
 }
 
+// ── Minutna granularnost (046/26 Paket B) — termini se kucaju kao datum+vreme ──
+
+/** Date → 'yyyy-MM-ddTHH:mm' po LOKALNOM vremenu (ugovor `input[type=datetime-local]`). */
+export function isoLocalMinute(d: Date): string {
+  return `${isoDay(d)}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * Sačuvan timestamp AKO pada u ISTI lokalni minut koji stoji u polju (inače null) —
+ * minutni analog `keepIfSameDay`. Polje `datetime-local` ne nosi sekunde, pa bi
+ * snimanje bez ijedne izmene inače seklo zatečene sekunde/ms (nasleđeni dan-kanon
+ * krajevi su 23:59:59.999) i „Sačuvaj termin" ne bi bio idempotentan.
+ */
+export function keepIfSameMinute(stored: string | null | undefined, local: string): string | null {
+  if (!stored || !local) return null;
+  const d = new Date(stored);
+  if (Number.isNaN(d.getTime())) return null;
+  return isoLocalMinute(d) === local ? d.toISOString() : null;
+}
+
+/**
+ * 'yyyy-MM-ddTHH:mm' + minuti → 'yyyy-MM-ddTHH:mm' (lokalno). Aritmetika za pravilo
+ * sinhronizacije u dijalogu stavke: kraj = početak + trajanje (Strahinjina primedba 2:
+ * 16 h rada od 08:00 automatski pomera planirani kraj, i preko ponoći).
+ */
+export function addMinutesLocal(local: string, minutes: number): string {
+  return isoLocalMinute(new Date(new Date(local).getTime() + minutes * 60_000));
+}
+
 /**
  * Kraj bara: `planned_end_at` ako je zadat, inače početak + efektivno trajanje
  * (override ili TPZ + TK × kom iz tehnologije). Bez ijednog podatka → +1 dan, da bar
