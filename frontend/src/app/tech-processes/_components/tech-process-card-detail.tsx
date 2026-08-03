@@ -711,7 +711,10 @@ export function TechProcessCardDetail({
         <p className="text-xs text-ink-secondary">
           {formatNumber(s.excludedRowCount)} prijava izuzeto (kraće od minut / duže od 24h —
           zaboravljene)
-          {s.totalElapsedMinutesRaw != null && (
+          {/* Sirovi zbir se pominje samo kad ima šta da se pokaže: kad su sve izuzete
+              prijave kraće od pola minuta, raw se zaokruži na 0 → formatMinutes vrati
+              „—", pa bi ovde pisalo besmisleno „· sirovo —". */}
+          {!!s.totalElapsedMinutesRaw && (
             <span className="text-ink-disabled">
               {' '}
               · sirovo {formatMinutes(s.totalElapsedMinutesRaw)}

@@ -1525,9 +1525,11 @@ export class TechProcessesService {
    *
    * DVE RAZLIČITE MERE, NAMERNO (obe ispravke 036/26):
    *
-   * A) `completionPercent` = NAPREDAK KROZ RUTING — koliko je posla urađeno:
-   *    `AVG(LEAST(done / plan, 1))` preko operacija rutinga (bez `without_process`).
-   *    NULL ratio (nema plana / nema rutinga) → pada na kanon iz (B).
+   * A) `completionPercent` = KOLIKO JE POSLA URAĐENO = MAX od dve evidencije:
+   *    ruting `AVG(LEAST(done / plan, 1))` preko operacija bez `without_process`
+   *    (PUT) i overa `madeGood / plan` sa završne kontrole (ISHOD). Overa je jača:
+   *    overen nalog je 100% i kad međufaze nikad nisu kucane (legacy). NULL ratio
+   *    (nema plana / nema rutinga) → ostaje sama overa iz (B).
    * B) `madeGoodPieces` / `isCompleted` / `completedAt` = OVERA GOTOVOSTI:
    *      1. ruting ima ZAVRŠNU KONTROLU (`significant_for_finishing`) → napravljeno =
    *         zbir DOBRIH I ZAVRŠENIH komada otkucanih na njoj. Isti kanon kao
@@ -1544,7 +1546,10 @@ export class TechProcessesService {
    *   • POSLE 28.07: gotovost je bila SAMO završna kontrola → isti taj nalog pisao je
    *     0% uz kolonu „Operacije 8/14". Ista populacija (10.879 naloga na produ) samo
    *     je prešla iz jednog binarnog ekstrema u drugi.
-   * Zato procenat sada MERI PUT (61% za 1138882), a status i dalje traži overu.
+   *   • ZAMKA TREĆEG KRUGA (uhvaćena u reviziji, nije stigla na produ): sam ruting bi
+   *     11.493 od 13.707 OVERENIH naloga spustio ispod 100% uz zeleni bedž „Gotovo".
+   *     Zato MAX(ruting, overa), a ne ruting sam.
+   * Procenat sada MERI URAĐENO (61% za 1138882), a status i dalje traži overu.
    * `completedAt` (zahtev 023/26) = datum realizacije RN-a; vidi SQL komentar dole.
    */
   async rnProgress(query: RnProgressQuery) {
@@ -1719,21 +1724,44 @@ export class TechProcessesService {
             : "nema-rutinga";
       const planned = r.planned;
       const cappedMade = Math.min(madeGood, planned);
-      // GOTOVOST = NAPREDAK KROZ RUTING (druga prijava 036/26). „Napravljeno"
-      // (madeGood/isCompleted/completedAt) ostaje na kanonu ZAVRŠNE KONTROLE —
-      // procenat i status mere različite stvari i to je namerno: procenat kaže
-      // koliko je posla urađeno, status kaže da li je nalog overen kao gotov.
+      // GOTOVOST = MAX(napredak kroz ruting, overa završnom kontrolom).
+      //
+      // Dve evidencije, a ne jedna: kucanja po operacijama pokazuju PUT, završna
+      // kontrola pokazuje ISHOD. Overa je JAČA evidencija — ako je kontrolor
+      // otkucao pun lot na završnoj kontroli, posao JESTE urađen, bez obzira na to
+      // šta međufaze pokazuju. Zato se uzima veći od dva broja:
+      //   • Pavlov slučaj (ruting 61% > overa 0%)            → 61% (prijava 036/26),
+      //   • legacy nalog (overa 100% > ruting 57%)           → 100%,
+      //   • delimična overa (overa 50% > ruting 30%)         → 50%.
+      //
+      // Bez MAX-a bi 11.493 od 13.707 OVERENIH naloga dobilo traku ispod 100%
+      // (prosek 57%, njih 3.139 ispod 50%) tik uz zeleni bedž „Gotovo" — i to na
+      // prvim stranama taba, jer sort ide po roku uzlazno pa su najstariji (dakle
+      // gotovi, legacy) prvi. Uzrok su legacy nalozi na kojima su kucane samo
+      // završne kontrole, a međufaze nikad; ratio ih meri kao „nezapočete".
+      //
+      // Kanon „napravljeno" se NE menja: madeGood/isCompleted/completedAt i dalje
+      // isključivo iz završne kontrole (usko grlo kad je ruting nema), pa
+      // markWorkOrderIfComplete i work_orders.status rade isto kao pre.
       // Ratio je NULL kad nema plana (piece_count = 0) ili nema rutinga — tada
-      // se pada na stari kanon (bez rutinga ratio i usko grlo ionako daju isto).
+      // ostaje sama overa (bez rutinga ratio i usko grlo ionako daju isto).
       const ratio = r.routing_progress_ratio;
-      const completionSource: "ruting" | "zavrsna-kontrola" =
-        ratio === null ? "zavrsna-kontrola" : "ruting";
+      const rutingPercent =
+        ratio === null ? null : Math.round(Math.min(Math.max(ratio, 0), 1) * 100);
+      const overaPercent =
+        planned > 0 ? Math.round((cappedMade / planned) * 100) : null;
       const completionPercent =
-        ratio !== null
-          ? Math.round(Math.min(Math.max(ratio, 0), 1) * 100)
-          : planned > 0
-            ? Math.round((cappedMade / planned) * 100)
-            : null;
+        rutingPercent === null
+          ? overaPercent
+          : overaPercent === null
+            ? rutingPercent
+            : Math.max(rutingPercent, overaPercent);
+      // Koja strana je dala broj (na izjednačenju je svejedno — nose istu tvrdnju).
+      const completionSource: "ruting" | "zavrsna-kontrola" =
+        rutingPercent !== null &&
+        (overaPercent === null || rutingPercent >= overaPercent)
+          ? "ruting"
+          : "zavrsna-kontrola";
       return {
         workOrderId: r.id,
         projectId: r.project_id,

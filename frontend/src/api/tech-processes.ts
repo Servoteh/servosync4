@@ -413,14 +413,15 @@ export interface RnProgress {
   /** Koliko tih operacija je otkucano u punoj planiranoj količini. */
   routingOperationsCompleted: number;
   /**
-   * NAPREDAK KROZ RUTING (036/26, druga prijava): prosečan udeo urađenog po
-   * operacijama rutinga — deo sa 8 od 14 otkucanih operacija je 61%, ne 0% ni 100%.
-   * null kada planirano = 0 (nedefinisan procenat).
+   * KOLIKO JE POSLA URAĐENO (036/26) = veći od dva broja: napredak kroz ruting
+   * (prosek urađenog po operacijama — deo sa 8 od 14 otkucanih je 61%, ne 0% ni
+   * 100%) i overa sa završne kontrole (overen nalog je 100% i kad međufaze nikad
+   * nisu kucane — legacy). null kada planirano = 0 (nedefinisan procenat).
    */
   completionPercent: number | null;
   /**
-   * Čime je procenat izmeren: `ruting` (pravilo) ili `zavrsna-kontrola` (nalog bez
-   * plana/rutinga — nema se šta prosečiti, pa važi stari kanon).
+   * Koja je strana dala procenat: `ruting` (put kroz operacije) ili
+   * `zavrsna-kontrola` (overa je veća — tipično legacy nalog bez kucanih međufaza).
    * Opciono/defanzivno: stariji backend polje ne vraća.
    */
   completionSource?: 'ruting' | 'zavrsna-kontrola';

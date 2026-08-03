@@ -3627,6 +3627,66 @@ describe("TechProcessesService — rnProgress „Gotovost RN” (036/26)", () =>
     expect(data[0].madeGoodPieces).toBe(0);
   });
 
+  it("B1 REGRESIJA: OVEREN legacy nalog (pun lot na završnoj) je 100% i kad je ruting 57%", async () => {
+    // Najbrojniji legacy obrazac na produ: kucane SAMO završne kontrole, međufaze
+    // nikad → ruting ih meri kao „nezapočete". Bez MAX(ruting, overa) bi 11.493 od
+    // 13.707 overenih naloga dobilo traku ispod 100% (prosek 57%) tik uz zeleni
+    // bedž „Gotovo", i to na PRVIM stranama (sort po roku uzlazno = najstariji prvi).
+    // Overa je jača evidencija od kucanja: kontrolor je otkucao pun lot.
+    mockRows([
+      rnProgressRow({
+        planned: 2,
+        final_op_count: 1,
+        made_good_final: 2,
+        routing_op_count: 14,
+        routing_ops_completed: 1,
+        routing_progress_ratio: 0.57,
+      }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].completionPercent).toBe(100);
+    expect(data[0].completionSource).toBe("zavrsna-kontrola");
+    expect(data[0].isCompleted).toBe(true);
+  });
+
+  it("B1: delimična overa (50%) nadjačava slabiji ruting (30%) — uzima se veći", async () => {
+    mockRows([
+      rnProgressRow({
+        planned: 2,
+        final_op_count: 1,
+        made_good_final: 1, // overa = 1/2 = 50%
+        routing_op_count: 14,
+        routing_ops_completed: 3,
+        routing_progress_ratio: 0.3, // ruting = 30%
+      }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].completionPercent).toBe(50);
+    expect(data[0].completionSource).toBe("zavrsna-kontrola");
+    expect(data[0].isCompleted).toBe(false);
+  });
+
+  it("B1: jači RUTING nadjačava slabiju overu — Pavlov slučaj ostaje 61%, ne 0%", async () => {
+    // Brana da lek za B1 ne poništi originalnu prijavu 036/26: kad je overa 0
+    // (završna kontrola neotkucana), MAX i dalje vraća ruting.
+    mockRows([
+      rnProgressRow({
+        made_good_final: 0,
+        routing_progress_ratio: 0.607143,
+      }),
+    ]);
+
+    const { data } = await service.rnProgress({});
+
+    expect(data[0].completionPercent).toBe(61);
+    expect(data[0].completionSource).toBe("ruting");
+    expect(data[0].isCompleted).toBe(false);
+  });
+
   it("nalog bez rutinga → 0%, gotovost se ne izmišlja (ratio je NULL → stari kanon)", async () => {
     mockRows([
       rnProgressRow({
