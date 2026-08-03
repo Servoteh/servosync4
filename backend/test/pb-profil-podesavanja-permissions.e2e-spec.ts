@@ -18,6 +18,7 @@ import { PodesavanjaUsersService } from "../src/modules/podesavanja/podesavanja-
 import { PredmetPlaneriService } from "../src/modules/podesavanja/predmet-planeri.service";
 import { SyncSwitchService } from "../src/modules/podesavanja/sync-switch.service";
 import { CompanyDetailsService } from "../src/modules/podesavanja/company-details.service";
+import { PaymentAccountsService } from "../src/modules/podesavanja/payment-accounts.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -162,6 +163,10 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         // Prekidač noćnog BigBit uvoza (26.07.2026) — DI za PodesavanjaController.
         { provide: SyncSwitchService, useValue: { bigbitStatus: jest.fn(), setEnabled: jest.fn() } },
         { provide: CompanyDetailsService, useValue: { get: jest.fn(), update: jest.fn() } },
+        // Devizni računi firme (02.08.2026) — DI za PodesavanjaController; `list`/`update`
+        // su jedine metode koje kontroler zove. Spisak je ručan, pa ga svako novo zavisno
+        // polje kontrolera obori — a to se vidi SAMO kroz `test/jest-e2e.json`.
+        { provide: PaymentAccountsService, useValue: { list: jest.fn(), update: jest.fn() } },
       ],
     })
       .overrideGuard(JwtAuthGuard)
