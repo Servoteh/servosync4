@@ -112,7 +112,7 @@ Vikend/praznik sa čistim kucanjem ulazi u grid kao **redovni sati**; ručni uno
 
 **Dopuna (Nenad, 01.08.2026) — neradni praznik se više NE izuzima:** upisuje se **svako** kucanje u
 opsegu, i **delimično** (npr. 2,5 h), po istim pravilima kao bilo koji drugi dan (O-5: naniže na pola
-sata, ≥ 7,6 h → 8 h).
+sata; od 03.08.2026 **doslovno, bez kape na 8 h** — v. revidirani O-5).
 > ✏️ Ispravka 01.08.2026: prethodni tekst je glasio „na neradni praznik upisuje se **samo pun dan** —
 > delimično kucanje se ostavlja kadrovskoj da unese ručno, upravo zbog O-1." **Taj razlog je bio
 > tačan do 01.08.2026 i danas više ne važi:** dok je obračun na praznik sa upisanim satima *gutao*
@@ -129,10 +129,47 @@ potvrdu za svaki mesec."*
 potvrđuje grid, a upis ostaje samo **predlog** (`auto:kapija`, nikad ne gazi ručni unos ni odsustvo).
 Ko ovo bude čitao kasnije: **nije bug, ne „popravljati" nazad** bez nove vlasničke odluke ovde.
 
-### O-5 · Sati iz kapije se zaokružuju NANIŽE na pola sata
-**Odluka (Nenad, 30.07.2026):** 6,52 h → **6,5 h** (naniže, ne na najbliže). Prisustvo od **7,6 h i
-više** = **8 h** (kapa na pun dan). Prisustvo < 1 h ili > 14 h se ne upisuje automatski.
-**Status:** ✅ **ŽIVO U KODU** (`main e36554d0`).
+### O-5 · Sati iz kapije = STVARNI sati, sečeni NANIŽE na pola sata — BEZ kape na 8 h
+**Odluka (Nenad, 30.07.2026; revidirana 03.08.2026):** automatski predlog sati je **doslovno
+prisustvo sa kapije**, sečeno **naniže** na pola sata:
+
+> `sati = floor(prisustvo × 2) / 2`, za prisustvo u opsegu **[1 h … 14 h]**;
+> ispod 1 h ili preko 14 h se **ne upisuje** automatski (nepromenjeno).
+
+**Nema kape ni u jednom smeru:** 9,08 h → **9,0** · 7,8 h → **7,5** · 6,52 h → **6,5** ·
+12,3 h → **12,0**. Razdvajanje na redovne/prekovremene sate ostaje posao urednika grida.
+
+**Povod (zahtev 012/26, Duško Kostić):** 21. i 22.07.2026 je po kapiji radio **9 h**, a grid je oba
+dana dobio **8 h** — stara kapa („7,6 h i više = 8 h") je tiho pojela sat rada, a dan se posle upisa
+više ne revidira.
+
+**Merenje nad živim podacima (jun–jul 2026), pokazano vlasniku PRE odluke:**
+
+| Smer | Dana | Ukupno sati | Ko su ti dani |
+|------|------|-------------|----------------|
+| **naviše** | **918** | **+1.046 h** | svi sa prisustvom preko 8 h |
+| **naniže** | **1.087** | **−544 h** | **tačno** opseg prisustva **7,6–7,99 h** (stara kapa ih je dizala na 8 h) |
+
+**Vlasnička presuda (Nenad, 03.08.2026), doneta uz svest o gubitku:** *„grid = ogledalo kapije;
+Nikola Mrkajić normalizuje u mesečnoj kontroli."* Dakle **7,8 h → 7,5 h je NAMERAN ishod**, ne greška
+zaokruživanja: filozofija je **dokaz umesto procene** — automatika prepisuje ono što kapija kaže, a
+ispravku radi čovek koji ionako mesečno kontroliše i potvrđuje grid. Ko ovo bude čitao kasnije:
+**ne vraćati kapu na 8 h** (ni „samo naviše", ni samo za opseg 7,6–8,0) bez **nove vlasničke odluke
+upisane ovde**.
+
+⚠️ **NIJE RETROAKTIVNO:** postojeći redovi grida se **ne diraju** (`ON CONFLICT DO NOTHING` ostaje) —
+pravilo važi za upise **od isporuke naviše**. Brojevi iz tabele su **procena efekta**, ne izmena
+prošlih meseci.
+
+**Odnos prema prazniku (Č-5 + O-1):** na **neradni praznik** važi **isto doslovno pravilo** za upis
+odrađenih sati (praznična kapija je ukinuta 01.08.2026, v. O-4/Č-5) — npr. 9,5 h prisustva na praznik
+upisuje **9,5 h**. Onih **8 h plaćenog praznika** po **O-1** dodaje **obračun** (`payroll-calc`), a ne
+autofill; sati se na njih **dodaju**, ne zamenjuju ih. Ljudska brana za oba pravila je ista: Nikolina
+mesečna kontrola.
+
+**Status:** ✅ **ŽIVO U KODU** — pravilo u `backend/src/modules/kadrovska/grid-autofill.service.ts`
+(`proposeHoursFromPresence`, jedini izvor istine); dele ga **noćni auto-tik i ručno dugme „Popuni iz
+kapije"**, pa se menjaju zajedno. Grana `feat/autofill-stvarni-sati` (03.08.2026).
 
 ### O-6 · Zarade vidi samo izričita lista ljudi
 **Odluka (Nenad, 30.07.2026):** pristup zaradama **ne sme** da zavisi od toga da li je neko
@@ -160,8 +197,9 @@ sa provere „je li admin" na listu). Dodavanje/skidanje = jedan upis u tu tabel
 ## 3. Zašto je ovo bitno za proveru koda
 
 Pravila iz §1 su **merodavna**. Ako se kod i ovaj dokument raziđu, **dokument je u pravu** i kod se
-ispravlja (ili se odluka svesno menja kroz §4). Od 01.08.2026 **nema poznatih razlika** — poslednja
-(O-1: kod je na praznik sa upisanim satima pojeo 8 h plaćenog praznika) zatvorena je izmenom koda.
+ispravlja (ili se odluka svesno menja kroz §4). Od 03.08.2026 **nema poznatih razlika** — poslednje
+dve (O-1: kod je na praznik sa upisanim satima pojeo 8 h plaćenog praznika; O-5: autofill je kapirao
+prisustvo ≥ 7,6 h na 8 h) zatvorene su izmenom koda.
 
 ## 4. Istorijat izmena
 
@@ -171,6 +209,7 @@ ispravlja (ili se odluka svesno menja kroz §4). Od 01.08.2026 **nema poznatih r
 | 30.07.2026 | Dodat §0 — grid je merodavan tek **od juna 2026**; raniji period imao drugi izvor istine za plate. Povod: odbačena prijava o 01.05. | Nenad, zapisao Claude |
 | 01.08.2026 | **O-1 prešao iz „RUČNO" u „ŽIVO U KODU"**; zatvoreno pitanje **Č-1**; otvoreno **Č-5** (autofill). | Nenad (odluka), izveo Claude |
 | 01.08.2026 | **O-4 dopunjen: autofill iz kapije više NE preskače delimično kucanje na neradni praznik**; zatvoreno **Č-5**; ispravljeno zastarelo obrazloženje u O-4 (staro „pojelo bi 8 h" prepisano iznad) i posledica u O-1. | Nenad (odluka), izveo Claude |
+| 03.08.2026 | **O-5 REVIDIRAN: ukinuta kapa „7,6 h i više = 8 h"** — predlog je sada doslovno prisustvo sečeno naniže na pola sata. Povod 012/26 (Duško: 9 h po kapiji → 8 h u gridu). Odluka doneta uz merenje jun–jul 2026 (**+1.046 h na 918 dana / −544 h na 1.087 dana**), **nije retroaktivna**. Stari tekst prepisan u §4.4. | Nenad (odluka), izveo Claude |
 
 ### 4.1 O-1 — prethodni tekst (važio 30.07.–01.08.2026)
 
@@ -225,3 +264,21 @@ te mesece i snimi predloge. **Ne raditi to** za period pre juna 2026.
 
 **Prvi dan kad ovo može stvarno da opali: 11.11.2026 (sreda)** — jedini preostali neradni praznik u
 2026. (`kadr_holidays`, `is_workday = false`).
+
+### 4.4 O-5 — prethodni tekst (važio 30.07.–03.08.2026)
+
+> ### O-5 · Sati iz kapije se zaokružuju NANIŽE na pola sata
+> **Odluka (Nenad, 30.07.2026):** 6,52 h → **6,5 h** (naniže, ne na najbliže). Prisustvo od **7,6 h i
+> više** = **8 h** (kapa na pun dan). Prisustvo < 1 h ili > 14 h se ne upisuje automatski.
+> **Status:** ✅ **ŽIVO U KODU** (`main e36554d0`).
+
+**Zašto je kapa postojala i zašto je pala:** postavljena je uz pretpostavku „ko je bio ceo dan,
+odradio je pun dan" — pa je i 7,6 h i 9,5 h prisustva davalo istih 8 h redovnih, a prekovremeni je
+dodavao urednik. Prijava 012/26 je pokazala drugu stranu te pretpostavke: dan sa **9 h** po kapiji
+ulazio je u grid kao **8 h**, i taj sat se posle nije vraćao jer dan postaje `grid_covered` i
+automatika ga više ne dira. Vlasnik je 03.08.2026 izabrao doslovno pravilo (v. revidirani O-5),
+**znajući** da isti potez skida sate u opsegu 7,6–7,99 h.
+
+**Zaostalo u kodu:** konstanta `REGULAR_FULL_MIN` (7,6) je **obrisana**; `FULL_DAY_HOURS` (8) je
+**zadržana samo kao informativno polje** `rule.regularHours` u odgovoru dugmeta „Popuni iz kapije"
+(API-kompatibilnost sa frontendom) — **nije više kapa** ni na jednom mestu.

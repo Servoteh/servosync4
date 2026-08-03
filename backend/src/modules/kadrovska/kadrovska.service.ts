@@ -1085,7 +1085,9 @@ export class KadrovskaService {
    *     open_intervals=0);
    *   - bez terena (grid_field_hours=0 — teren badge ≠ sati);
    *   - prisustvo u opsegu [FLOOR..CEIL] → predlog = STVARNI sati sečeni NANIŽE na
-   *     pola sata (≥7.6h → 8), NE paušalnih 8h (D2, zahtev 044/26);
+   *     pola sata (D2, zahtev 044/26), NE paušalnih 8h. Od 03.08.2026 (revizija O-5)
+   *     BEZ kape na 8h: 9.08h → 9.0, ali i 7.8h → 7.5 (namerno, potvrdio vlasnik —
+   *     obrazloženje i merenje stoje uz `proposeHoursFromPresence`);
    *   - dan <= JUČE (pogonska zona): DANAS se nikad ne predlaže jer dan još traje
    *     (isti klamp kao noćni tik — `belgradeYesterday`).
    * VIKEND sa čistim kucanjem SE predlaže kao redovni sati (D1, zahtev 044/26):
@@ -1180,10 +1182,13 @@ export class KadrovskaService {
           year,
           month,
           rule: {
+            // ⚠️ `regularHours` je INFORMATIVNO polje (standardan pun dan u firmi) i od
+            // 03.08.2026 NIJE kapa na predlog — polje se zadržava samo radi
+            // API-kompatibilnosti (v. FULL_DAY_HOURS u grid-autofill.service.ts).
             regularHours: FULL_DAY_HOURS,
             presenceMin: PRESENCE_FLOOR,
             presenceMax: PRESENCE_CEIL,
-            note: "Regularni prazni dani do juče (danas se ne predlaže — dan još traje); prisustvo [1h..14h] → sati sečeni NANIŽE na pola sata, ≥7.6h → 8. Vikend i neradni praznik sa čistim kucanjem se predlažu isto kao radni dan (od 01.08.2026 i delimično kucanje na praznik — obračun sate DODAJE na 8h plaćenog praznika, kontrolu radi kadrovska mesečno). Isto pravilo kao noćni auto-tik.",
+            note: "Regularni prazni dani do juče (danas se ne predlaže — dan još traje); prisustvo [1h..14h] → STVARNI sati sečeni NANIŽE na pola sata, BEZ kape na 8h (od 03.08.2026, revizija O-5): 9,08h → 9,0 · 7,8h → 7,5 · 6,52h → 6,5 · 12,3h → 12,0. Vikend i neradni praznik sa čistim kucanjem se predlažu isto kao radni dan (od 01.08.2026 i delimično kucanje na praznik — obračun sate DODAJE na 8h plaćenog praznika). Predlog je ogledalo kapije; kontrolu i normalizaciju radi kadrovska mesečno. Isto pravilo kao noćni auto-tik.",
           },
           suggestions,
         },

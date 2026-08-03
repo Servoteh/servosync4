@@ -8,7 +8,9 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
  *     open_intervals=0, ulaz+izlaz) iz v_attendance_vs_grid — BEZ uskog opsega
  *     prisustva u SQL-u (opseg + predlog sati računa JS = izvor istine);
  * (2) VIKEND SA čistim kucanjem se PREDLAŽE kao redovni (D1, 044/26 — više se ne
- *     izbacuje); skraćena smena se seče NANIŽE na pola sata (D2);
+ *     izbacuje); skraćena smena se seče NANIŽE na pola sata (D2). Od 03.08.2026
+ *     (revizija O-5) predlog je DOSLOVAN, bez kape na 8h — dugme i noćni tik dele
+ *     `proposeHoursForDay`, pa se menjaju zajedno;
  * (3) NERADNI PRAZNIK od 01.08.2026 NEMA poseban tretman — i delimično kucanje je
  *     predlog (O-1 je uklonio zamku „upis sati pojede 8h", O-4 + presuda vlasnika traže
  *     evidenciju); ovaj put zato više ne čita kadr_holidays;
@@ -196,13 +198,44 @@ describe("KadrovskaService.gridAutoFillSuggestions (kapija → grid predlozi)", 
     expect(holidayFindMany).not.toHaveBeenCalled();
   });
 
-  it("neradni praznik + 8.2h → i dalje 8 (kapa na pun dan, nepromenjeno)", async () => {
+  it("neradni praznik + 8.2h → 8 (sečeno naniže na pola sata, ne zbog kape)", async () => {
     const { svc } = makeSvc({
       vsGridRows: [vsRow("2026-07-07", { presence_hours: 8.2 })],
       holidays: ["2026-07-07"],
     });
     const s = await suggestionsOf(svc, { year: 2026, month: 7 });
     expect(s[0]).toMatchObject({ hours: 8 });
+  });
+
+  it("neradni praznik + 9.5h → predlog 9.5 (revizija O-5: nema kape na 8, ni praznične kapije)", async () => {
+    // 8h plaćenog praznika po O-1 dodaje OBRAČUN; ovaj predlog beleži samo STVARNO
+    // odrađene sate. Kontrolu radi kadrovska mesečno (Nikola Mrkajić).
+    const { svc, holidayFindMany } = makeSvc({
+      vsGridRows: [vsRow("2026-07-07", { presence_hours: 9.5 })],
+      holidays: ["2026-07-07"],
+    });
+    const s = await suggestionsOf(svc, { year: 2026, month: 7 });
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ workDate: "2026-07-07", hours: 9.5 });
+    expect(holidayFindMany).not.toHaveBeenCalled();
+  });
+
+  it("revizija O-5 (03.08.2026): duži dan 9.08h → 9.0, a 7.8h → 7.5 (namerno naniže)", async () => {
+    // Povod je 012/26 (Duško Kostić: 9h po kapiji → 8h u gridu). Vlasnik je pravilo
+    // izabrao POSLE merenja jun–jul 2026 (+1.046 h na 918 dana / −544 h na 1.087
+    // dana): „grid = ogledalo kapije; Nikola Mrkajić normalizuje u mesečnoj
+    // kontroli." Pad 7.8 → 7.5 je POTVRĐEN, nije bug — ne vraćati kapu na 8h bez
+    // nove odluke u docs/ODLUKE_O_ZARADAMA.md (O-5).
+    const { svc } = makeSvc({
+      vsGridRows: [
+        vsRow("2026-07-21", { presence_hours: 9.08 }),
+        vsRow("2026-07-22", { presence_hours: 7.8 }),
+      ],
+    });
+    const s = await suggestionsOf(svc, { year: 2026, month: 7 });
+    expect(s).toHaveLength(2);
+    expect(s[0]).toMatchObject({ workDate: "2026-07-21", hours: 9 });
+    expect(s[1]).toMatchObject({ workDate: "2026-07-22", hours: 7.5 });
   });
 
   it("kadr_holidays sa is_workday=TRUE (radna subota) → običan dan (6.52h → 6.5)", async () => {
