@@ -34,7 +34,6 @@ import {
   visibleRows,
 } from '@/lib/pracenje-tree';
 import { exportIzvestajXlsx, exportIzvestajPdf } from '@/lib/pracenje-export';
-import { openPracenjeDrawingPdf } from '@/lib/pracenje-pdf';
 import { rowIsVirtual, virtualDbId, VIRTUELNI_SKLOP_TIPOVI } from '@/lib/pracenje-virtual';
 import { useOverrideUpsert, buildOverridePayload, rowManualQty } from './predmet-override';
 import {
@@ -45,7 +44,6 @@ import {
   useCreateVirtuelniSklop,
   useUpdateVirtuelniSklop,
   useDeleteVirtuelniSklop,
-  fetchCrtezSignUrl,
   normalizeIzvestajResult,
   normalizePodsklopovi,
   logExport,
@@ -95,22 +93,33 @@ const STATUS_OVR_LABEL: Record<string, string> = {
 };
 
 /**
- * Sticky (freeze) leve kolone (docx §5): pozicija/crtež/sklop/RN ostaju pri
- * horizontalnom skrolu — i u običnom i u matričnom prikazu. Fiksne širine → kumulativni
- * `left` offset-i (bez preklapanja — bug sa slike 5). Svaka zamrznuta ćelija nosi
- * NEPROVIDNU pozadinu reda (bojenje po tipu, docx §3) da skrolovan sadržaj ne probija.
+ * Sticky (freeze) leve kolone (docx §5): pozicija i RN ostaju pri horizontalnom skrolu —
+ * i u običnom i u matričnom prikazu. Fiksne širine → kumulativni `left` offset-i (bez
+ * preklapanja — bug sa slike 5). Svaka zamrznuta ćelija nosi NEPROVIDNU pozadinu reda
+ * (bojenje po tipu, docx §3) da skrolovan sadržaj ne probija. Kolone crteža („Crtež" i
+ * sklopni crtež) su IZBAČENE iz prikaza (Strahinjina dopuna 053/26, 03.08 — „izbaciti
+ * crtež i broj crteža"); filter po crtežu je namerno OSTAO (kolona ≠ filter).
  */
 const FCOL = {
-  poz: { left: 0, w: 248 },
-  crt: { left: 248, w: 92 },
-  skl: { left: 340, w: 92 },
-  rn: { left: 432, w: 84 },
+  poz: { left: 0, w: 300 },
+  rn: { left: 300, w: 84 },
 } as const;
+/** Ukupna širina zamrznute zone — sticky `left` trake agregata u zaglavlju sklopa. */
+const FROZEN_W = FCOL.rn.left + FCOL.rn.w;
 
 function formatNum(v: unknown): string {
   if (v == null || v === '') return '—';
   const n = Number(v);
   return Number.isFinite(n) ? String(n) : '—';
+}
+
+/** Srpska množina za „pozicija": 1 pozicija, 2–4 pozicije, 5+ pozicija (11–14 → pozicija). */
+function pluralPozicija(n: number): string {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return 'pozicija';
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return 'pozicije';
+  return 'pozicija';
 }
 
 /** ISO/datum → `dd.MM.yyyy.` (DESIGN_SYSTEM §5). Prazno → ''. */
@@ -228,30 +237,6 @@ function maxOpSlots(rows: IzvestajRow[]): number {
   let m = 0;
   for (const r of rows) if (Array.isArray(r.operations)) m = Math.max(m, r.operations.length);
   return m;
-}
-
-/**
- * Klik na broj crteža → PDF (docx §12, odluka O7). BE ne daje numerički drawing id uz
- * red praćenja (samo broj crteža) — razrešava se kroz `crtez/sign` (vraća content rutu
- * sa id-jem), pa se PDF povlači kroz `openPracenjeDrawingPdf` (Authorization bearer +
- * blob; `window.open` na golu rutu bi vratio 401). Greške → postojeći toast obrazac.
- */
-async function openDrawing(code: string | null | undefined): Promise<void> {
-  if (!code) return;
-  try {
-    const res = await fetchCrtezSignUrl(String(code));
-    const url = res.data?.url ?? '';
-    const m = url.match(/\/crtez\/(\d+)\/pdf/);
-    if (m) {
-      await openPracenjeDrawingPdf(Number(m[1]));
-    } else if (url) {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } else {
-      showToast('Crtež nije dostupan.');
-    }
-  } catch (e) {
-    showToast(e instanceof Error ? e.message : 'Crtež nije dostupan.');
-  }
 }
 
 /** Razrešeno DA/NE stanje mašinske/površinske (docx §4.7/§4.9): eksplicitni override ⚑
@@ -502,24 +487,43 @@ export function PredmetView({
   }, [flat, scope]);
 
   /**
-   * Redni broj POZICIJE unutar njenog sklopa (zahtev 053/26 §3). Broje se samo pozicije
-   * (sklop nema redni broj), po BE `sort_order` (rang po ident broju unutar sklopa) — pa je
-   * broj stabilan bez obzira na filter i sklapanje. Koreni (van sklopa) nemaju redni broj.
+   * Redni brojevi (Strahinjina dopuna 053/26, 03.08). SKLOP nosi prost redni broj
+   * („1.", „2.", „3." … po redosledu prikaza punog stabla, bez obzira na dubinu);
+   * pozicija ČLANICA sklopa nosi hijerarhijski broj `S.P` („3.1" = 1. pozicija sklopa 3,
+   * rang po BE `sort_order` = ident broju unutar sklopa); pozicija VAN sklopova nastavlja
+   * isti prost niz kao sklopovi. Računa se nad punim efektivnim stablom (rowsEff), pa je
+   * broj stabilan bez obzira na filter i sklapanje; u drill-u („Opseg (sklop)") niz
+   * prirodno kreće od 1 za prikazani isečak. `pozicija` = broj pozicija-listova u
+   * podstablu sklopa (za „N pozicija" u zaglavlju grupe).
    */
-  const posOrdinal = useMemo(() => {
+  const ordinals = useMemo(() => {
+    const idSet = new Set(rowsEff.map((r) => String(r.node_id)));
+    // Sklop = čvor sa decom ILI ručno napravljen sklop (053/26 paket 2 — prazan ručni
+    // sklop nema decu, a i dalje je grupa u koju se puni).
+    const isSklop = (r: IzvestajRow) => parentIds.has(String(r.node_id)) || rowIsVirtual(r);
+    const isRootKey = (pk: string | null) => pk === null || !idSet.has(pk);
+
+    // 1) Prost niz: sklopovi + korene pozicije, po redosledu prikaza.
+    const simple = new Map<string, number>();
+    let n = 0;
+    for (const r of rowsEff) {
+      if (isSklop(r) || isRootKey(effParentKey(r))) simple.set(String(r.node_id), ++n);
+    }
+
+    // 2) Članice sklopa: rang po `sort_order` (stabilan tie-break = ulazni indeks).
     const groups = new Map<string, IzvestajRow[]>();
-    rowsEff.forEach((r) => {
+    for (const r of rowsEff) {
       const pk = effParentKey(r);
-      // Van sklopa, ili JE sklop (čvor sa decom / ručno napravljen sklop — 053/26 paket 2:
-      // prazan ručni sklop nema decu, ali nije pozicija pa nema ni redni broj).
-      if (pk === null || parentIds.has(String(r.node_id)) || rowIsVirtual(r)) return;
-      const arr = groups.get(pk);
+      if (isSklop(r) || isRootKey(pk)) continue;
+      const arr = groups.get(pk!);
       if (arr) arr.push(r);
-      else groups.set(pk, [r]);
-    });
+      else groups.set(pk!, [r]);
+    }
     const idx = new Map(rowsEff.map((r, i) => [String(r.node_id), i] as const));
-    const out = new Map<string, number>();
-    for (const arr of groups.values()) {
+    const label = new Map<string, string>();
+    for (const [nid, no] of simple) label.set(nid, `${no}.`);
+    for (const [pk, arr] of groups) {
+      const s = simple.get(pk);
       arr
         .slice()
         .sort((a, b) => {
@@ -529,35 +533,28 @@ export function PredmetView({
           const bv = Number.isFinite(bo) ? bo : Number.MAX_SAFE_INTEGER;
           return av - bv || (idx.get(String(a.node_id)) ?? 0) - (idx.get(String(b.node_id)) ?? 0);
         })
-        .forEach((r, i) => out.set(String(r.node_id), i + 1));
+        // Roditelj bez prostog broja ne postoji (roditelj sa decom JE sklop) — fallback
+        // na goli rang je defanziva za nekonzistentan keširan payload.
+        .forEach((r, i) => label.set(String(r.node_id), s != null ? `${s}.${i + 1}` : `${i + 1}.`));
     }
-    return out;
-  }, [rowsEff, parentIds]);
 
-  /**
-   * Okvir grupe sklopa (zahtev 053/26 §3). CSS kutija oko `<tr>` ne radi — 4 zamrznute
-   * ćelije nose sopstvenu pozadinu i prekrile bi je — pa se okvir crta ivicama: gornja na
-   * PRVOM redu grupe (sam sklop), donja na POSLEDNJEM vidljivom redu njegovog podstabla.
-   * Redovi su u pre-order-u, pa je podstablo neprekidan niz redova sa `level` većim od
-   * sklopovog. Sklopljen sklop nema vidljivih potomaka → gornja i donja ivica padaju na
-   * isti red (okvir se uredno zatvara oko jednog reda). Važi isto u matričnom prikazu.
-   */
-  const groupEdge = useMemo(() => {
-    const top = new Set<string>();
-    const bottom = new Set<string>();
-    rows.forEach((r, i) => {
-      const node = String(r.node_id ?? '');
-      // Okvir otvara sklop = čvor sa decom ILI ručno napravljen sklop (053/26 paket 2 —
-      // prazan ručni sklop nema dece, a i dalje mora da se vidi kao grupa u koju se puni).
-      if (!parentIds.has(node) && !rowIsVirtual(r)) return;
-      top.add(node);
+    // 3) Broj pozicija (listova) u PODSTABLU sklopa — pre-order + `level` (ista
+    //    pretpostavka kao raniji okvir grupe: podstablo je neprekidan niz redova).
+    const pozicija = new Map<string, number>();
+    const stack: { node: string; level: number }[] = [];
+    for (const r of rowsEff) {
       const lvl = Number(r.level ?? 0);
-      let j = i + 1;
-      while (j < rows.length && Number(rows[j].level ?? 0) > lvl) j++;
-      bottom.add(String(rows[j - 1].node_id ?? ''));
-    });
-    return { top, bottom };
-  }, [rows, parentIds]);
+      while (stack.length && stack[stack.length - 1].level >= lvl) stack.pop();
+      const node = String(r.node_id);
+      if (isSklop(r)) {
+        if (!pozicija.has(node)) pozicija.set(node, 0);
+        stack.push({ node, level: lvl });
+      } else {
+        for (const s of stack) pozicija.set(s.node, (pozicija.get(s.node) ?? 0) + 1);
+      }
+    }
+    return { label, pozicija };
+  }, [rowsEff, parentIds]);
 
   /** Drill u sklop klikom na naziv (zahtev 053/26 §4) — isti mehanizam kao „Opseg (sklop)". */
   function drillToSklop(node: string) {
@@ -621,8 +618,9 @@ export function PredmetView({
     }
   }
 
-  // 18 fiksnih kolona (uklj. % gotov. + % maš.) + operacije/matrični slotovi.
-  const colCount = 18 + (matrix ? nSlots * 2 : 1);
+  // 16 fiksnih kolona (uklj. % gotov. + % maš.; bez kolona crteža — dopuna 053/26
+  // 03.08) + operacije/matrični slotovi.
+  const colCount = 16 + (matrix ? nSlots * 2 : 1);
 
   return (
     <div className="space-y-4">
@@ -792,7 +790,8 @@ export function PredmetView({
         <LegendSwatch tone="bg-status-warn-bg" label="Zav. sklop" />
         <LegendSwatch tone="bg-surface border border-line" label="Pojedinačna" />
         <span className="text-ink-secondary">
-          Okvir = grupa sklopa · redni broj ispred naziva = pozicija u sklopu · klik na naziv sklopa = prikaži samo taj sklop
+          Obojeni pun red = zaglavlje sklopa (redni broj 1., 2., 3. …) · pozicije ispod su uvučene, broj „3.1" = 1. pozicija sklopa 3 ·
+          klik na naziv sklopa = prikaži samo taj sklop
           {canManage ? ' · ✎/🗑 uz naziv = ručno napravljen sklop (nema RN ni tehnologiju)' : ''}
         </span>
       </div>
@@ -803,7 +802,7 @@ export function PredmetView({
         <EmptyState title="Nema podataka praćenja za predmet" />
       ) : (
         <div className="max-h-[min(72vh,800px)] overflow-auto rounded-panel border border-line bg-surface">
-          <table className="w-full min-w-[1320px] text-sm">
+          <table className="w-full min-w-[1180px] text-sm">
             <thead>
               <tr className="border-b border-line text-left text-2xs uppercase tracking-wider text-ink-secondary">
                 <th
@@ -811,20 +810,6 @@ export function PredmetView({
                   className="sticky top-0 z-40 bg-surface-2 px-3 py-1.5"
                 >
                   Pozicija
-                </th>
-                <th
-                  style={{ left: FCOL.crt.left, width: FCOL.crt.w, minWidth: FCOL.crt.w }}
-                  className="sticky top-0 z-40 bg-surface-2 px-3 py-1.5"
-                  title="Link crteža (klik → PDF)"
-                >
-                  Crtež
-                </th>
-                <th
-                  style={{ left: FCOL.skl.left, width: FCOL.skl.w, minWidth: FCOL.skl.w }}
-                  className="sticky top-0 z-40 bg-surface-2 px-3 py-1.5"
-                  title="Link sklopnog crteža"
-                >
-                  Sklop
                 </th>
                 <th
                   style={{ left: FCOL.rn.left, width: FCOL.rn.w, minWidth: FCOL.rn.w }}
@@ -873,71 +858,250 @@ export function PredmetView({
                 const indent = Number(r.level ?? 0) * 16;
                 const hasNote = String(r.korisnicka_napomena || '').trim().length > 0;
                 const hasSys = String(r.sistemska_napomena || '').trim().length > 0;
-                const boldNaziv = typ === 'glavni' || typ === 'pod' || typ === 'zav';
                 const problem = rowIsProblem(st);
                 const roll = rollups.get(node);
+                const mqty = rowManualQty(r);
+                const rb = ordinals.label.get(node);
+
+                const noteBtn = (
+                  <button
+                    onClick={() => setNoteFor(r)}
+                    className={cn('relative shrink-0 rounded-control p-1 hover:bg-surface', hasNote ? 'text-accent' : 'text-ink-secondary')}
+                    title={hasNote ? String(r.korisnicka_napomena) : canManage ? 'Dodaj napomenu' : 'Nema napomene'}
+                    aria-label="Napomena"
+                  >
+                    <StickyNote className="h-3.5 w-3.5" />
+                    {(hasNote || hasSys) && <span className="absolute -right-0 -top-0 h-1.5 w-1.5 rounded-full bg-status-warn" />}
+                  </button>
+                );
+
+                /**
+                 * ZAGLAVLJE GRUPE SKLOPA (Strahinjina dopuna 053/26, 03.08): sklop se ne
+                 * crta kao običan red sa tankim okvirom (box na `<tr>` ne radi preko sticky
+                 * pozadina — pouka prve verzije) nego kao PUN RED preko svih kolona: obojena
+                 * traka sa rednim brojem sklopa, nazivom, brojem pozicija i agregatima koje
+                 * red sklopa već ima (lansirano/urađeno/% gotovosti/% maš.). Zamrznute ćelije
+                 * (naziv + RN) zadržavaju sticky; ostatak je jedna colSpan ćelija čiji se
+                 * sadržaj (w-max) sticky-ja na kraj zamrznute zone da agregati ostanu
+                 * vidljivi pri horizontalnom skrolu. Važi isto u matričnom prikazu.
+                 */
+                if (hasChildren || isV) {
+                  const nPoz = ordinals.pozicija.get(node) ?? 0;
+                  return (
+                    <FragRow key={node}>
+                      {/* Gornja/donja ivica trake se PONAVLJA na sticky ćelijama — ivica sa
+                          `<tr>` bi nestala ispod njihove neprovidne pozadine pri horiz.
+                          skrolu (pouka prve verzije okvira). */}
+                      <tr className={cn('border-y-2 border-line', bg)}>
+                        <td
+                          style={{ left: FCOL.poz.left, width: FCOL.poz.w, minWidth: FCOL.poz.w, maxWidth: FCOL.poz.w }}
+                          className={cn(
+                            'sticky z-30 overflow-hidden border-y-2 border-line px-3 py-2',
+                            bg,
+                            problem && 'border-l-2 border-l-status-danger',
+                          )}
+                        >
+                          <div className="flex items-center gap-1" style={{ paddingLeft: indent }}>
+                            {hasChildren ? (
+                              <button
+                                onClick={() => toggleCollapse(node)}
+                                className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
+                                title={isCollapsed ? 'Rasklopi sklop' : 'Sklopi sklop'}
+                              >
+                                <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', !isCollapsed && 'rotate-90')} />
+                              </button>
+                            ) : (
+                              <span className="inline-block w-[18px] shrink-0" aria-hidden />
+                            )}
+                            {rb != null && (
+                              <span className="tnums shrink-0 text-xs font-semibold text-ink" title="Redni broj sklopa">
+                                {rb}
+                              </span>
+                            )}
+                            {/* Klik na naziv sklopa = drill u taj sklop (isti mehanizam kao
+                                „Opseg (sklop)"); dugme „Otvori RN" ostaje netaknuto. Ručni
+                                sklop se drill-uje isto (BE prima negativan `rootRn`). */}
+                            <button
+                              type="button"
+                              onClick={() => drillToSklop(node)}
+                              className="min-w-0 flex-1 truncate text-left font-semibold text-accent hover:underline"
+                              title={`Prikaži samo ovaj sklop — ${String(r.naziv_pozicije ?? r.naziv_dela ?? '')}`}
+                            >
+                              {r.naziv_pozicije ?? r.naziv_dela ?? '—'}
+                            </button>
+                            <TypBadge typ={typ} />
+                            {r.has_parent_override && (
+                              <span className="shrink-0 rounded-full bg-status-info-bg px-1 py-0.5 text-2xs text-status-info" title="Ručno premešteno u sklop">
+                                ↪
+                              </span>
+                            )}
+                            {r.override_ignored && (
+                              <span
+                                className="shrink-0 rounded-full bg-status-neutral-bg px-1 py-0.5 text-2xs text-status-neutral"
+                                title="Ručni premeštaj nije primenjen — ciljni sklop je van prikazanog opsega. Važi automatska struktura."
+                              >
+                                ↪
+                              </span>
+                            )}
+                            {canManage && (
+                              <button
+                                onClick={() => setReparentFor(r)}
+                                className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
+                                title="Premesti u sklop"
+                              >
+                                <ArrowLeftRight className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            {/* Ručni sklop: preimenovanje / promena tipa / brisanje (053/26 §2). */}
+                            {canManage && isV && (
+                              <>
+                                <button
+                                  onClick={() => setSklopFor(r)}
+                                  className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
+                                  title="Preimenuj ručno napravljen sklop"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setDeleteSklopFor(r)}
+                                  className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface hover:text-status-danger"
+                                  title="Obriši ručno napravljen sklop"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                        <td
+                          style={{ left: FCOL.rn.left, width: FCOL.rn.w, minWidth: FCOL.rn.w, maxWidth: FCOL.rn.w }}
+                          className={cn('sticky z-30 overflow-hidden border-y-2 border-line px-3 py-2 text-xs', bg)}
+                        >
+                          {/* Ručno napravljen sklop nema RN — nikad ne nudi „Otvori RN". */}
+                          {!isV && r.rn_broj ? (
+                            <button
+                              onClick={() => openRn(r, node)}
+                              className="inline-flex items-center gap-1 text-accent hover:underline"
+                              title="Otvori RN"
+                            >
+                              {r.rn_broj} <ExternalLink className="h-3 w-3" />
+                            </button>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td colSpan={colCount - 2} className="px-3 py-2 text-xs">
+                          <div className="sticky flex w-max items-center gap-4" style={{ left: FROZEN_W }}>
+                            <span className="tnums shrink-0 text-ink-secondary">
+                              {nPoz} {pluralPozicija(nPoz)}
+                            </span>
+                            {!isV && (
+                              <span className="tnums shrink-0 text-ink">
+                                Lansirano: {formatNum(r.lansirana_kolicina)} · Urađeno: {formatNum(r.zavrsena_kolicina)}
+                                {mqty != null && (
+                                  <span className="ml-1 text-status-warn" title={`Ručno uneto: ${mqty} kom`}>
+                                    ⚑
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                            <span className="flex shrink-0 items-center gap-1.5">
+                              <span className="text-ink-secondary">Gotovost</span>
+                              <PctCell pct={roll?.pct ?? null} />
+                            </span>
+                            <span className="flex shrink-0 items-center gap-1.5">
+                              <span className="text-ink-secondary">Maš.</span>
+                              <PctCell pct={roll?.masPct ?? null} muted />
+                            </span>
+                            {!isV && (
+                              <span className="flex shrink-0 items-center gap-1.5">
+                                <button
+                                  onClick={() => toggleOps(node)}
+                                  className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
+                                  title="Prikaži operacije"
+                                >
+                                  <ListTree className={cn('h-3.5 w-3.5', opsOpen && 'text-accent')} />
+                                </button>
+                                <span>{opsSummary(r)}</span>
+                              </span>
+                            )}
+                            {noteBtn}
+                            {/* Ručni status/količina VAŽE i za pravi sklop-RN (docx §6) — ostaju
+                                dostupni u traci da zaglavlje grupe ne ukine postojeću mogućnost. */}
+                            {!isV && canManage && (
+                              <>
+                                <select
+                                  value={r.status_override ?? ''}
+                                  onChange={(e) => override.mutate(buildOverridePayload(itemId, r, { status: e.target.value }))}
+                                  className={cn(
+                                    'h-6 rounded-control border bg-surface px-1 text-2xs text-ink',
+                                    r.status_override ? 'border-accent' : 'border-line',
+                                  )}
+                                  title="Ručni status sklopa"
+                                >
+                                  {STATUS_OVR.map((o) => (
+                                    <option key={o.v} value={o.v}>
+                                      {o.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  onClick={() => setQtyFor(r)}
+                                  className={cn('shrink-0 text-2xs hover:underline', mqty != null ? 'text-status-warn' : 'text-accent')}
+                                  title="Ručna količina — fizički urađeno a nije otkucano (docx §6)"
+                                >
+                                  {mqty != null ? `Ručno: ${mqty} kom ✎` : 'Ručna kol.'}
+                                </button>
+                              </>
+                            )}
+                            {!isV && !canManage && r.status_override && (
+                              <span className="shrink-0 text-ink" title="Ručno postavljeno">
+                                {STATUS_OVR_LABEL[r.status_override] ?? r.status_override}{' '}
+                                <span className="text-ink-secondary">ručno</span>
+                              </span>
+                            )}
+                            {problem && <span className="shrink-0 text-2xs text-ink-secondary">{statusBitsText(st)}</span>}
+                            {isV && <span className="shrink-0 text-ink-secondary">Ručno napravljen sklop</span>}
+                          </div>
+                        </td>
+                      </tr>
+                      {opsOpen && Array.isArray(r.operations) && r.operations.length > 0 && (
+                        <tr className="border-b border-line-soft bg-surface-2/50">
+                          <td colSpan={colCount} className="px-4 py-3">
+                            <OperacijeSubtable ops={r.operations} />
+                          </td>
+                        </tr>
+                      )}
+                    </FragRow>
+                  );
+                }
+
+                // ── POZICIJA (list) — običan red podataka, uvučen, sa brojem `S.P`. ──
                 const masSt = machiningState(r);
                 const povSt = surfaceState(r);
-                const mqty = rowManualQty(r);
-                const rb = posOrdinal.get(node);
-                // Okvir grupe sklopa (zahtev 053/26 §3): ivice moraju na `<tr>` I na sve 4
-                // zamrznute ćelije — svaka od njih ponavlja pozadinu reda i inače bi progutala
-                // ivicu pri horizontalnom skrolu (isto u matričnom prikazu).
-                const frame = cn(
-                  groupEdge.top.has(node) && 'border-t-2 border-t-line',
-                  groupEdge.bottom.has(node) && 'border-b-2 border-b-line',
-                  Number(r.level ?? 0) > 0 && !problem && 'border-l-2 border-l-line',
-                );
+                const boldNaziv = typ === 'zav'; // list može biti „zav" po nazivu i bez dece
                 return (
                   <FragRow key={node}>
-                    <tr className={cn('group border-b border-line-soft', bg, 'hover:bg-surface-2', frame)}>
+                    <tr className={cn('group border-b border-line-soft', bg, 'hover:bg-surface-2')}>
                       {/* Zamrznute leve kolone (docx §5) */}
                       <td
                         style={{ left: FCOL.poz.left, width: FCOL.poz.w, minWidth: FCOL.poz.w, maxWidth: FCOL.poz.w }}
                         className={cn(
                           'sticky z-30 overflow-hidden px-3 py-1.5 group-hover:bg-surface-2',
                           bg,
-                          frame,
                           problem && 'border-l-2 border-l-status-danger',
                         )}
                       >
                         <div className="flex items-center gap-1" style={{ paddingLeft: indent }}>
-                          {hasChildren ? (
-                            <button
-                              onClick={() => toggleCollapse(node)}
-                              className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
-                              title={isCollapsed ? 'Rasklopi sklop' : 'Sklopi sklop'}
-                            >
-                              <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', !isCollapsed && 'rotate-90')} />
-                            </button>
-                          ) : (
-                            <span className="inline-block w-[18px] shrink-0" aria-hidden />
-                          )}
+                          <span className="inline-block w-[18px] shrink-0" aria-hidden />
                           {rb != null && (
-                            <span className="tnums shrink-0 text-2xs text-ink-secondary" title="Redni broj pozicije u sklopu">
-                              {rb}.
+                            <span className="tnums shrink-0 text-2xs text-ink-secondary" title="Redni broj pozicije (sklop.pozicija)">
+                              {rb}
                             </span>
                           )}
-                          {hasChildren || isV ? (
-                            // Klik na naziv sklopa = drill u taj sklop (isti mehanizam kao
-                            // „Opseg (sklop)"); dugme „Otvori RN" ostaje netaknuto. Ručni
-                            // sklop se drill-uje isto (BE prima negativan `rootRn`).
-                            <button
-                              type="button"
-                              onClick={() => drillToSklop(node)}
-                              className={cn(
-                                'min-w-0 flex-1 truncate text-left text-accent hover:underline',
-                                boldNaziv && 'font-semibold',
-                              )}
-                              title={`Prikaži samo ovaj sklop — ${String(r.naziv_pozicije ?? r.naziv_dela ?? '')}`}
-                            >
-                              {r.naziv_pozicije ?? r.naziv_dela ?? '—'}
-                            </button>
-                          ) : (
-                            <span className={cn('min-w-0 flex-1 truncate text-ink', boldNaziv && 'font-semibold')} title={String(r.naziv_pozicije ?? r.naziv_dela ?? '')}>
-                              {r.naziv_pozicije ?? r.naziv_dela ?? '—'}
-                            </span>
-                          )}
+                          <span className={cn('min-w-0 flex-1 truncate text-ink', boldNaziv && 'font-semibold')} title={String(r.naziv_pozicije ?? r.naziv_dela ?? '')}>
+                            {r.naziv_pozicije ?? r.naziv_dela ?? '—'}
+                          </span>
                           <TypBadge typ={typ} />
                           {r.has_parent_override && (
                             <span className="shrink-0 rounded-full bg-status-info-bg px-1 py-0.5 text-2xs text-status-info" title="Ručno premešteno u sklop">
@@ -961,49 +1125,13 @@ export function PredmetView({
                               <ArrowLeftRight className="h-3.5 w-3.5" />
                             </button>
                           )}
-                          {/* Ručni sklop: preimenovanje / promena tipa / brisanje (053/26 §2). */}
-                          {canManage && isV && (
-                            <>
-                              <button
-                                onClick={() => setSklopFor(r)}
-                                className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
-                                title="Preimenuj ručno napravljen sklop"
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                onClick={() => setDeleteSklopFor(r)}
-                                className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface hover:text-status-danger"
-                                title="Obriši ručno napravljen sklop"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </>
-                          )}
                         </div>
                       </td>
                       <td
-                        style={{ left: FCOL.crt.left, width: FCOL.crt.w, minWidth: FCOL.crt.w, maxWidth: FCOL.crt.w }}
-                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg, frame, 'border-l-0')}
-                      >
-                        {isV ? (
-                          <span className="text-ink-secondary">—</span>
-                        ) : (
-                          <DrawingCell code={r.crtez_drawing_no} label={r.broj_crteza ?? r.crtez_drawing_no} hasFile={r.has_crtez_file} />
-                        )}
-                      </td>
-                      <td
-                        style={{ left: FCOL.skl.left, width: FCOL.skl.w, minWidth: FCOL.skl.w, maxWidth: FCOL.skl.w }}
-                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg, frame, 'border-l-0')}
-                      >
-                        <DrawingCell code={r.sklop_drawing_no} label={r.broj_sklopnog_crteza ?? r.sklop_drawing_no} hasFile={r.has_skop_crtez_file} dash />
-                      </td>
-                      <td
                         style={{ left: FCOL.rn.left, width: FCOL.rn.w, minWidth: FCOL.rn.w, maxWidth: FCOL.rn.w }}
-                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg, frame, 'border-l-0')}
+                        className={cn('sticky z-30 overflow-hidden px-3 py-1.5 text-xs group-hover:bg-surface-2', bg)}
                       >
-                        {/* Ručno napravljen sklop nema RN — nikad ne nudi „Otvori RN". */}
-                        {!isV && r.rn_broj ? (
+                        {r.rn_broj ? (
                           <button
                             onClick={() => openRn(r, node)}
                             className="inline-flex items-center gap-1 text-accent hover:underline"
@@ -1035,50 +1163,27 @@ export function PredmetView({
                       <td className="px-3 py-1.5 text-xs">{r.datum_lansiranja_tp ?? '—'}</td>
                       <td className="px-3 py-1.5 text-xs">{r.datum_izrade ?? '—'}</td>
                       <td className="px-3 py-1.5 text-center text-xs">
-                        {/* Maš./Površ. su atributi POZICIJE — ručni sklop ih nema (rollup ide kroz % maš.). */}
-                        {isV ? (
-                          <span className="text-ink-secondary">—</span>
-                        ) : (
-                          <DaNeCell
-                            st={masSt}
-                            canManage={canManage}
-                            onCycle={(next) => override.mutate(buildOverridePayload(itemId, r, { masinska: next }))}
-                          />
-                        )}
+                        <DaNeCell
+                          st={masSt}
+                          canManage={canManage}
+                          onCycle={(next) => override.mutate(buildOverridePayload(itemId, r, { masinska: next }))}
+                        />
                       </td>
                       <td className="px-3 py-1.5">
                         <PctCell pct={roll?.masPct ?? null} muted />
                       </td>
                       <td className="px-3 py-1.5 text-center text-xs">
-                        {isV ? (
-                          <span className="text-ink-secondary">—</span>
-                        ) : (
-                          <DaNeCell
-                            st={povSt}
-                            canManage={canManage}
-                            onCycle={(next) => override.mutate(buildOverridePayload(itemId, r, { povrsinska: next }))}
-                          />
-                        )}
+                        <DaNeCell
+                          st={povSt}
+                          canManage={canManage}
+                          onCycle={(next) => override.mutate(buildOverridePayload(itemId, r, { povrsinska: next }))}
+                        />
                       </td>
                       <td className="px-3 py-1.5 text-xs">{r.materijal ?? '—'}</td>
                       <td className="px-3 py-1.5 text-xs">{r.dimenzije ?? '—'}</td>
-                      <td className="px-3 py-1.5 text-center">
-                        <button
-                          onClick={() => setNoteFor(r)}
-                          className={cn('relative rounded-control p-1 hover:bg-surface', hasNote ? 'text-accent' : 'text-ink-secondary')}
-                          title={hasNote ? String(r.korisnicka_napomena) : canManage ? 'Dodaj napomenu' : 'Nema napomene'}
-                          aria-label="Napomena"
-                        >
-                          <StickyNote className="h-3.5 w-3.5" />
-                          {(hasNote || hasSys) && <span className="absolute -right-0 -top-0 h-1.5 w-1.5 rounded-full bg-status-warn" />}
-                        </button>
-                      </td>
+                      <td className="px-3 py-1.5 text-center">{noteBtn}</td>
                       <td className="px-3 py-1.5">
-                        {/* Ručni status/količina se vode na POZICIJI — sklop je čvor grupisanja
-                            (BE odbija override po negativnom id-ju sa 422). */}
-                        {isV ? (
-                          <span className="text-xs text-ink-secondary">Ručno napravljen sklop</span>
-                        ) : canManage ? (
+                        {canManage ? (
                           <div className="flex flex-col gap-0.5">
                             <select
                               value={r.status_override ?? ''}
@@ -1147,21 +1252,16 @@ export function PredmetView({
                         })
                       ) : (
                         <td className="px-3 py-1.5 text-xs">
-                          {/* Ručni sklop nema tehnologiju → nema ni podtabele operacija. */}
-                          {isV ? (
-                            <span className="text-ink-secondary">—</span>
-                          ) : (
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                onClick={() => toggleOps(node)}
-                                className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
-                                title="Prikaži operacije"
-                              >
-                                <ListTree className={cn('h-3.5 w-3.5', opsOpen && 'text-accent')} />
-                              </button>
-                              <span>{opsSummary(r)}</span>
-                            </div>
-                          )}
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => toggleOps(node)}
+                              className="shrink-0 rounded-control p-0.5 text-ink-secondary hover:bg-surface"
+                              title="Prikaži operacije"
+                            >
+                              <ListTree className={cn('h-3.5 w-3.5', opsOpen && 'text-accent')} />
+                            </button>
+                            <span>{opsSummary(r)}</span>
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -1341,30 +1441,6 @@ function TypBadge({ typ }: { typ: string }) {
           ? 'bg-status-warn-bg text-status-warn'
           : 'bg-status-neutral-bg text-status-neutral';
   return <span className={cn('shrink-0 rounded-full px-1.5 py-0.5 text-2xs', tone)}>{SKLOP_TYPE_LABEL[typ]}</span>;
-}
-
-function DrawingCell({
-  code,
-  label,
-  hasFile,
-  dash,
-}: {
-  code: string | null | undefined;
-  label: string | null | undefined;
-  hasFile: boolean | null | undefined;
-  dash?: boolean;
-}) {
-  if (!code) return <span className="text-ink-secondary">{dash ? '—' : 'Nema'}</span>;
-  return (
-    <button
-      onClick={() => hasFile && openDrawing(code)}
-      disabled={!hasFile}
-      className="truncate rounded-control px-1.5 py-0.5 text-accent hover:bg-surface disabled:text-ink-disabled disabled:hover:bg-transparent"
-      title={hasFile ? 'Otvori crtež (PDF)' : 'Nema PDF-a crteža'}
-    >
-      {label ?? code}
-    </button>
-  );
 }
 
 /** Podtabela SVIH operacija reda (uklj. datum završetka operacije, docx §9). */
