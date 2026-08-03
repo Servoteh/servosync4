@@ -80,6 +80,20 @@ Tri prave, izmerene zamke u ovom repou gde je brana postojala a nije radila:
 Zato: nova brana ne postoji dok je test ne obori. Napiši test koji šalje **loš** ulaz i
 zahteva 422 — ne test koji šalje dobar ulaz i očekuje 200.
 
+Za ovu konkretnu zamku brana je sada **mašinska**:
+[`test/body-validation-coverage.e2e-spec.ts`](../backend/test/body-validation-coverage.e2e-spec.ts)
+prolazi kroz sve kontrolere i čita `design:paramtypes` svakog `@Body()` parametra.
+
+- `Function` → **tvrda greška, bez baseline-a i bez izuzetka.** To je uvek `import type` na
+  DTO klasi i uvek znači da ruta ne radi ono što piše. Nađeno na dva mesta: u `robno`
+  (labava validacija) i na `PUT /admin/firma`, gde je oborilo funkciju u celosti — podaci
+  firme se nisu mogli sačuvati **nikako**.
+- `Object` (interfejs ili inline tip) → zatečeni dug, meri se prema baseline-u (164 rute) i
+  sme samo da opada.
+
+Sama kapija je proverena mutacijom: sa vraćenim `import type` test pada, bez njega prolazi.
+Test koji nije viđen kako pada nije brana.
+
 Isto važi za guardove: `assertCreditLimit` je 🔴 nalaz upravo zato što je izgledao kao brana,
 a čitao je iz prazne tabele preko INNER JOIN-a.
 

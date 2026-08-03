@@ -1,0 +1,146 @@
+# Dubinski review: KADROVSKA + ZARADE + MOJ PROFIL
+
+**Baza koda:** `C:\Users\nenad.jarakovic\wt\robno-quality\backend\src`
+**Merodavan dokument za zarade:** `docs/ODLUKE_O_ZARADAMA.md` (pročitan; O-1…O-6, §0, §4)
+**Dodatni izvor istine za DB sloj:** `backend/docs/design/authz-snapshots/talasG-fn-defs-2026-07-12.sql`
+i `…/talasG-policies-2026-07-12.sql` (snimak živih sy15 funkcija i RLS politika).
+⚠️ Snapshot je od **12.07.2026** — nalazi koji se oslanjaju SAMO na njega označeni su `[snapshot]`
+i traže potvrdu nad živom bazom pre popravke.
+
+Datum: 04.08.2026
+
+---
+
+## 0. Odnos koda i `ODLUKE_O_ZARADAMA.md`
+
+Provereno red po red protiv §1 dokumenta:
+
+| Odluka | Stanje u kodu | Presuda |
+|---|---|---|
+| O-1 (praznik = 8 h + odrađeni sati) | `payroll-calc.ts:623-626` (`praznikRadSati += h` **i** `praznikPlaceniSati += 8`), ogledalo po danu `payroll-calc.ts:753-757` | ✅ slaže se |
+| O-3 (praznik na vikendu = praznični rad) | `payroll-calc.ts:564-570` — grana praznika ide PRE grane vikenda | ✅ slaže se |
+| O-4 (vikend/praznik iz kapije = evidencija svima) | `grid-autofill.service.ts:405-424` bez ijednog kalendarskog izuzetka, `ON CONFLICT DO NOTHING` | ✅ slaže se |
+| O-5 (doslovni sati, `floor(x*2)/2`, [1 h…14 h], BEZ kape) | `grid-autofill.service.ts:50-99` | ✅ slaže se |
+| O-6 (zarade samo imenovanoj listi) | `effective-permission.ts:17-41, 85, 98-100` — tvrda brava na `kadrovska.salary`… **ali** `kadrovska.controller.ts:405-423` i `kadrovska-mutations.controller.ts:535-538` čitaju **i pišu** `salary_terms` (neto/bruto) pod `kadrovska.pii` | 🔴 **RAZILAŽENJE — nalaz 2.1** |
+| §0 (grid merodavan tek od 06/2026) | nigde u kodu nema donje granice | 🟠 **nalaz 3.5** |
+
+Sve ostalo (O-2, Č-2…Č-4) je u dokumentu označeno kao „odluka, nije u kodu" — kod se ponaša
+saglasno. **Jedino stvarno razilaženje kod↔dokument je O-6.**
+
+---
+
+## 1. Tiho pogrešan obračun zarade / sati / odmora
+
+| fajl:linija | ozb. | scenario | zašto se ne primeti |
+|---|---|---|---|
+| `kadrovska-mutations.service.ts:3143` vs `:3640` | 🔴 | **Ista kolona `hours_worked` dobija dva različita broja zavisno od dugmeta.** „Obračunaj iz grida" upisuje `agg.redovanRadSati` (npr. 160 h), a ručni „Sačuvaj" istog reda kroz `augmentRowWithK33` upisuje `earned.payableHours` (npr. 184 h — uključuje prekovremeno, praznični rad, GO, bolovanje ×0,65). Za satničara je `hours_worked` **novčani ulaz**: živi trigger `salary_payroll_compute_totals` (snapshot red 6050) radi `total_rsd := hours_worked * hourly_rate` kad `ukupna_zarada` nije > 0. Ako `X` prvo pusti recompute pa onda popravi avans i snimi — isti mesec izađe sa 24 h više. | Oba puta vraćaju „Sačuvano"; broj se vidi tek na payslip-u, a razlika (prekovremeni + GO) izgleda kao legitiman iznos. Nijedan test ne poredi dva puta međusobno. |
+| `kadrovska-mutations.service.ts:3146-3153` | 🔴 | **Recompute upisuje `ukupna_zarada = 0` bez ijednog upozorenja kad uslovi zarade postoje ali su prazni.** Brana je samo `hasTerms = termRows.length > 0` (`:3095`). Term sa `compensation_model='satnica'`, `salary_type='ugovor'` i `hourly_rate=0` (iznos je u `amount`) prolazi kroz `mapTerm:4015-4016` kao `hourlyRate = 0` → `computeEarnings:392` daje `baseEarnings = 0` → red se prepiše na 0 RSD i pregazi prethodno tačan ručni unos. `computeEarnings` upozorava samo na *nedostajući model* (`:313`) i *negativan ostatak* (`:414`), nikad na nultu stopu. | `augmentRowWithK33:3653` ima branu `if (earned.ukupnaZarada > 0)`, recompute je **nema** — pa se čini da je „isti motor". Nula u koloni izgleda kao „još nije obračunato". |
+| `payroll-calc.ts:586-593` | 🔴 | **GO/bolovanje/`sp` upisani na SUBOTU ili NEDELJU plaćaju se 8 h.** Vikend grana bez praznika: `if (abs === "go") out.godisnjiSati += 8`. RPC `kadr_grid_set_go` (snapshot 2971) doduše preskače vikend, ali ručni unos kroz `POST /kadrovska/grid/batch` ne — a `WorkHoursRowDto:156` ne ograničava ni dan ni šifru. Kadrovska prevuče „go" preko cele nedelje (pon–ned) → 7 × 8 h = 56 h umesto 40 h; za satničara je to +2 dnevnice. | Grid vizuelno pokazuje 7 „GO" ćelija — tačno ono što je uneto. Razlika se vidi samo u Σ redu, koji niko ne poredi sa brojem radnih dana. Isto pravilo vredi i za `bo` (65 %). |
+| `kadrovska-mutations.service.ts:88-123` (+ DTO `:54`) | 🔴 | **`daysCount` GO zahteva se uzima od klijenta bez ijedne provere, a brana salda proverava baš taj broj.** `POST /kadrovska/requests/vacation` je pod `PROFILE_SELF` (svaki prijavljen radnik). Pošalje se `dateFrom=2026-08-03, dateTo=2026-08-28, daysCount=1`. `hr_vacreq_approve` (snapshot 2158) poredi `days_count` sa `days_remaining` → prolazi, pa zove `kadr_grid_set_go(from,to)` koji upiše **svih 20 radnih dana** u grid. Saldo (izveden IZ grida) padne u minus, a obračun plati 20 × 8 h godišnjeg. Blizanac ove rute u `moj-profil.service.ts:781-802` broj **računa na serveru** i odbija neslaganje — dakle ojačan put se zaobilazi pozivanjem druge rute. | Odobravač vidi „1 dan" u inboxu i klikne Odobri; grid se puni tek posle odobrenja. Isti obrazac i na `vacationReschedule:194-211` i `moj-profil.service.ts:856-874` (revise) — `p_days_count` ide sirov u RPC. |
+| `dto/kadrovska-mutation.dto.ts:148-165` | 🔴 | **Nema ni donje ni gornje granice na sate.** `@IsNumber()` bez `@Min/@Max` na `hours`, `overtimeHours`, `fieldHours`, `twoMachineHours`; `work_hours.hours` u šemi je goli `Decimal` bez CHECK-a (`prisma/sy15.prisma:2493`). `hours: -8` prolazi kroz ceo lanac do `payableHours` i umanjuje zaradu; `hours: 800` je isto tako legalno. `computeEarnings` ćuti — jedino upozorenje je ako **ukupan** ostatak ispadne negativan (`:414`). | Obračun ne odbija unos, samo vrati manji broj; „nemoguć unos" nikad ne stigne do korisnika kao greška, nego kao pogrešna plata. |
+| `dto/kadrovska-mutation.dto.ts:156` + `payroll-calc.ts:646-658` | 🟠 | **Šifra odsustva nije whitelist — nepoznata šifra tiho znači „neplaćeno".** `absenceCode` je `@IsString()`. Unese se `"GO "` sa razmakom (normalizuje se, OK) ili `"god"` / ćirilično „го" → nijedna grana ne pogađa, pada u `else { redovanRadSati += h }` sa `h = 0`. Dan je u UI-ju označen kao odsustvo, a u obračunu vredi **0 h**. `sanitizeHoursForWorkType` ne prijavljuje nepoznatu šifru. | Ćelija ima badge, mesečni Σ je manji za 8 h po danu — razlika izgleda kao „taj dan nije radio". |
+| `kadrovska-mutations.service.ts:3084-3096` | 🟠 | **Uslovi zarade se biraju sa `ORDER BY effective_from DESC LIMIT 1` za CEO mesec.** Povišica od 16.08. → ceo avgust (uključujući prvih 15 dana) se obračuna po novoj satnici / novoj fiksnoj plati. Isto i u `augmentRowWithK33:3558-3563`. | Iznos je *veći*, pa niko ne prijavljuje; u obrnutom smeru (smanjenje) je tiha manjkavina. Nema proporcije po danima. |
+| `kadrovska-mutations.service.ts:3047` + `payroll-calc.ts:334-354` | 🟠 | **Novozaposleni i radnik koji odlazi na fiksnoj plati dobijaju PUN mesečni iznos.** `fond` je uvek pun mesec, a jedina proporcionalna redukcija u `computeEarnings` je po `neplacenoDays` (šifre `np/pr/nop`). `hireDate` se prosleđuje samo `isAutoPaidHolidayEligible` (`payroll-calc.ts:142-147`) — nigde se ne koristi za srazmeru plate. Zaposlen 20.08. → puna avgustovska plata. | Za satničare je tačno (nema sati = nema para), pa se problem vidi samo kod `fiksno`/`jednokratno` i samo u mesecu ulaska/izlaska. |
+| `talasG-fn-defs…sql:2971-3006` (`kadr_grid_set_go`), poziva se iz `kadrovska-mutations.service.ts:1020-1032` | 🟠 | **„Postavi GO" preko širokog opsega tiho nulira već evidentirane sate.** `ON CONFLICT … DO UPDATE SET hours = 0, absence_code='go' WHERE work_hours.absence_code IS NULL OR = 'go'` — dan sa 8,5 odrađenih sati i praznom šifrom **biva prepisan na 0 h**. `GridGoDto:174-178` nema ni proveru `from ≤ to` ni gornju granicu raspona: `2026-01-01 → 2030-12-31` upiše ~1300 GO dana i obriše sve sate u tom periodu, u jednom pozivu. | Odgovor je samo broj izmenjenih dana; audit postoji, ali „↩ Vrati" nema RPC (`:1118-1119`), pa povratak znači ručni re-upsert svakog dana. |
+| `talasG-fn-defs…sql:2916-2969` (`kadr_grant_bonus_go`), poziv `kadrovska-mutations.service.ts:387-397` | 🟡 `[snapshot]` | **Zamena dana kad zaposleni nema red fonda kreira osnovicu od tvrdih 20 dana.** `INSERT INTO vacation_entitlements … days_total = 20 + p_days`. Radniku sa stvarnim pravom od 22/25 dana se time saldo tiho SMANJUJE u trenutku kad mu se dodaje bonus dan. Takođe: godina se uzima iz **datuma rada** (`v_year`), pa rad 27.12.2026 odobren u januaru upisuje dan u fond 2026, posle rollover-a. | Dan JESTE dodat (poruka „+1 dan"), pa se ne gleda odakle je došla osnovica; minus se pojavi tek u godišnjem preseku. |
+| `kadrovska.service.ts:1012-1019, 1038-1039` | 🟠 | **Σ isplata / karnet preskaču zaposlenog koji je deaktiviran.** `gridPayable` čita `employee.findMany({ where: { isActive: true } })` i onda filtrira. Radnik koji je otišao 15.08. i kome je `is_active=false` — njegovi sati postoje u gridu, ali u „Σ isplata" redu ga nema. | Grid ga i dalje prikazuje (`grid()` ne filtrira po aktivnosti), pa red postoji a zbir za njega ne — izgleda kao 0 sati, ne kao „nedostaje". |
+| `talasG-fn-defs…sql:3698+` (`kadr_queue_payroll_notifications`), okidač `kadrovska-mutations.service.ts:3364-3371` | 🟠 `[snapshot]` | **Mejl „Obračun sati" koji ide zaposlenom broji sate po TREĆOJ definiciji.** Funkcija sabira sirovi `SUM(wh.hours)` + `SUM(overtime_hours)` i ignoriše sve šifre odsustva i O-1. Radnik koji je 6 h radio na praznik dobije mejl „Redovni sati: 6 h", dok mu karnet (`moj-profil.service.ts:481-487`) pokazuje 14 h, a payroll `redovan_rad_sati` treće. | Mejl deluje kao potvrda evidencije; niko ga ne poredi sa karnetom u aplikaciji. Tri definicije „sati" u tri kanala. |
+| `moj-profil.service.ts:2060-2063` i `:2240-2245` | 🟡 | **Datumske granice se računaju u UTC, ne u Europe/Belgrade.** `new Date().toISOString().slice(0,10)`. Između 00:00 i 02:00 po Beogradu „danas" je juče → član tima se prikaže kao odsutan dan duže; a granica korekcije prisustva („poslednja 3 dana") se pomeri za dan unazad, pa BE pusti zahtev koji RPC posle odbije. | Prozor je 2 h noću; u ostatku dana se ponaša ispravno. Ostatak koda dosledno koristi `Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Belgrade' })` — ova dva mesta su ispala. |
+| `kadrovska-mutations.service.ts:1058-1085` | 🟡 | **Bolovanje se upisuje u opseg bez provere vikenda** (za razliku od GO, gde RPC filtrira `isodow < 6`). Ako `kadr_grid_set_sick` (nije u snapshotu — noviji, zahtev 041/26) ne preskače vikend, subota/nedelja sa `bo` daje 8 h × 0,65 po danu kroz `payroll-calc.ts:588-590`. | Bolovanje se po pravilu i unosi „od–do" kalendarski, pa je ovo najverovatniji put do vikend-šifri u gridu. **Treba proveriti definiciju te funkcije nad živom bazom.** |
+
+---
+
+## 2. Curenje osetljivih podataka (plate, lekarski, ugovori)
+
+| fajl:linija | ozb. | scenario | zašto se ne primeti |
+|---|---|---|---|
+| `kadrovska.controller.ts:405-412` i `:416-423`; `kadrovska-mutations.controller.ts:535-538` | 🔴 | **Ugovorna zarada (neto/bruto) se čita I MENJA pod `kadrovska.pii`, mimo allowliste iz O-6.** `kadr_get_contract_salary` (snapshot 2886) vraća `neto_rsd, bruto_rsd, amount, amount_type` iz `salary_terms` za bilo kog zaposlenog, gate mu je samo `current_user_can_manage_employee_pii()` = `admin ∨ poslovni_admin` (snapshot 681). `kadr_set_contract_salary` (snapshot 5495) pod istim gate-om **piše nov red u `salary_terms`** koji obračunski motor posle koristi. `poslovni_admin` (`role-permissions.ts:511`) time čita i menja plate iako `applyOverrides:85` i `resolvePermissionDecision:98` tvrde da `kadrovska.salary` nadjačava sve. Dokument O-6 nema izuzetak za „ugovornu zaradu". | Ista tabela, druga ruta. Komentar u kodu (`kadrovska-mutations.service.ts:1690`) i dalje piše „*endpoint guard salary*" — kontroler je u međuvremenu spušten na `pii` (`AUDIT-K4, 26.07`) i komentar nije ispravljen, pa čitalac koda misli da je brava tu. `/kadrovska/salary/terms` (ista tabela) je pod `KADROVSKA_SALARY` — asimetrija se vidi samo poređenjem dve rute. |
+| `kadrovska.controller.ts:134-150` → `kadrovska.service.ts:254-278` | 🟠 | **Izveštaj bolovanja cele firme, sa podtipovima, iza obične `kadrovska.read`.** `GET /kadrovska/reports/sick` prolazi kroz generičku `reports/:kind` rutu koja nosi samo klasnu permisiju. Vraća epizode `absence_subtype` = `povreda_na_radu` / **`odrzavanje_trudnoce`**. Red-opseg presuđuje `work_hours_select` RLS = `current_user_manages_employee(…)`, a ta funkcija (snapshot 920-951) vraća **TRUE za SVE zaposlene** za role `pm`, `leadpm`, `projektant_vodja`. `projektant_vodja` ima `KADROVSKA_READ` (`role-permissions.ts:465`) → izvuče ko je u firmi trudan i ko je imao povredu na radu. Za poređenje: agregatni `reports/risk` (manje detalja) je namerno stavljen pod `KADROVSKA_PII` (`kadrovska.controller.ts:125-129`). | Ruta nema svoj `@RequirePermission`, pa u kodu deluje kao „samo još jedan izveštaj". Zaštita je delegirana RLS-u, a RLS za te role nije scope. |
+| `kadrovska.service.ts:790-799` (komentar) + `talasG-fn-defs…sql:938-944` | 🟠 | **Komentar tvrdi obrnuto od onoga što DB radi za `menadzment` sa praznom listom pododeljenja.** U kodu piše „*FALSE kad je lista prazna*"; funkcija radi `WHEN current_user_managed_sub_department_ids() IS NULL THEN EXISTS(role='menadzment')` → **TRUE za celu firmu**. Menadžer kome lista nije popunjena vidi GO inbox, roster „Moj tim", karnete i prisustvo svih ~300 ljudi. Isti izraz nosi opseg u `requests()`, `vacationPeriods()`, `moj-profil.team()`, `teamMemberHours()`. | Izgleda kao fail-closed default; zapravo je fail-open. Vidi se tek ako se uporedi komentar sa definicijom funkcije. |
+| `moj-profil.service.ts:2007-2031, 2129-2146, 2155-2187` | 🟡 | **„Moj tim" za `pm`/`leadpm`/`projektant_vodja` = cela firma.** Roster, mesečni karnet (`teamMemberHours`) i sirovi prolazi sa kapije (`teamMemberAttendanceEvents`) za bilo kog zaposlenog — sve pod `PROFILE_TEAM`, sa `managesEmployee` kao jedinom branom, a ona za te role uvek vraća true. | Dokumentovano kao „role-agnostičan scope, DB presuđuje" (`:2002-2003`) — što je tačno opisano, ali posledica (300 karneta) nije. |
+| `kadrovska.service.ts:1996-2005` (`reportChildren`), `:284-289` (`reportDemo`) | 🟡 | `reports/demo` je pod klasnom `kadrovska.read` i vraća `birth_date`, `gender`, `education_level` za sve zaposlene (te kolone `v_employees_safe` NE maskira — potvrđeno komentarom `:1697-1700`). `reports/children` je ispravno iza `KADROVSKA_PII`. | Demografija zvuči kao statistika; vraćaju se sirovi redovi po osobi, agregira FE. |
+| `kadrovska.pii-guard.spec.ts:66-112` | 🟡 | **Sentinel test ne pokriva 11 novijih read metoda** — `vacationPeriods`, `vacationLedger`, `vacationChangeRequests`, `reportRisk`, `reportChildren`, `contractBruto`, `contractSalary`, `gridPayable`, `gridAutoFillSuggestions`, `assessmentOne`, `offboardingOutstandingReversi`. Test tvrdi „SVAKI read" i tvrdo fiksira broj 42 (`:122`). Danas svi ti metodi ipak koriste `withUserMapped`, ali sledeći metod dodat bez upisa u listu neće biti proveren. | Test prolazi zeleno i naziv mu je „PII LEAK GUARD"; broj 42 se pri dodavanju metoda samo poveća, ne dodaje se poziv. |
+
+**Provereno i ČISTO:** `salaryEmailAllowed` se dosledno primenjuje u obe tačke odluke
+(`effective-permission.ts:85, 98`), `/kadrovska/salary/*` rute su sve pod `KADROVSKA_SALARY`
+(`kadrovska.controller.ts:608-624`, `kadrovska-mutations.controller.ts:805-850`),
+`me().canSalary` ne dolazi iz DB role nego iz allowliste (`kadrovska.service.ts:135`),
+`kadr_queue_payroll_notifications` **ne šalje iznose** (samo sate) — nije kanal curenja plata,
+a `assessmentRaters` ispravno izostavlja `token` (`kadrovska.service.ts:59-68`).
+Niz `current_user_can_view_salary()` / `kadr_salary_viewer_allowlist` iz O-6 **nema nijednog
+pozivaoca u 3.0 kodu** — sy15 brana za plate se ne koristi iz aplikacije, oslonac je isključivo
+env-allowlist u guard-u.
+
+---
+
+## 3. Poslovna rupa — šta kadrovska mora, a sistem ne podržava
+
+| fajl:linija | ozb. | scenario | zašto se ne primeti |
+|---|---|---|---|
+| `talasG-fn-defs…sql:3168-3226` (`kadr_payroll_init_month`) + `kadrovska-mutations.service.ts:1296-1313` | 🔴 | **Poslednja plata radnika koji odlazi ne može da se obračuna ako je prvo deaktiviran.** `kadr_payroll_init_month` pravi redove samo `WHERE e.is_active = true`. `deactivateEmployee` nema nijednu provere „ima li nezaključan obračun". Radnik ode 15.08., HR ga deaktivira, pa 01.09. pokrene „Pripremi mesec" → nema reda → `payrollRecompute` odbije sa „Mesec nije pripremljen" (`:3004-3008`). Komentar `:2991-2997` tvrdi da je baš ovaj problem rešen — rešen je samo slučaj „red postoji, radnik neaktivan". | Poruka govori o pripremi meseca, a ne o tome da radnik nedostaje; HR pomisli da nije kliknuo init. |
+| `kadrovska-mutations.service.ts:1020-1047`, `:1058-1085`, `:1008-1012` | 🟠 | **Brava zaključanog dana grida (AUDIT-K7c) važi samo za dva od pet puteva pisanja.** `gridBatch` (`:845`) i `grantBonusGo` (`:390`) proveravaju `lockedGridDays`; `gridSetGo`, `gridUnsetGo`, `gridSetSick`, `gridUnsetSick` i `deleteWorkHour` je **ne proveravaju**, a svi pišu u iste ćelije. Nikola zaključa potvrđene dane, pa odobravanje GO preko tog opsega ipak prepiše sate na 0. | Poruka „Dan je zaključan" postoji i radi — samo za drugu dugmad; korisnik zaključi da je brava aktivna. |
+| `moj-profil.service.ts:856-874` + `kadrovska-mutations.service.ts:194-243` | 🟠 | **Izmena/premeštanje odobrenog GO nema serversku proveru broja dana.** `hr_reschedule_vacation_request` (snapshot 1414-1421) proverava saldo protiv `p_days_count` koji dolazi iz tela zahteva, pa `kadr_grid_set_go` upiše ceo novi opseg. Isti obrazac kao nalaz 1.4, ali ovde ni `moj-profil` nema branu (submit je ojačan, revise nije). | Zahtev je već bio odobren, pa se izmena doživljava kao kozmetika. |
+| `payroll-calc.ts` + `salary-tax.ts` (ceo fajl) | 🟠 | **Poreski motor je mrtav kod — bruto u ugovoru je ono što klijent pošalje.** `netToGross`/`grossToNet` sa zvaničnim parametrima 2025/2026 nemaju **nijednog pozivaoca** u backendu (provereno grep-om; jedini `grossToNet` u upotrebi je PDV, drugi modul). `ContractSalaryDto:384-388` prima `neto` i `bruto` kao gole brojeve bez `@Min`, a jedina provera u `kadr_set_contract_salary` je `bruto >= neto`. Taj bruto ide u `kadr_get_contract_bruto` → auto-popuna **Ugovora o radu** koji se potpisuje. | Broj dolazi iz forme, forma verovatno računa isto — ali ako FE koristi parametre 2025 (`nonTaxable 28.423` vs `34.221`), bruto je pogrešan i niko na serveru to ne hvata. |
+| `grid-autofill.service.ts:359-374` | 🟠 | **Nema donje granice na backfill, iako §0 dokumenta izričito zabranjuje period pre 06/2026.** `run({from, to})` klampuje samo gornju granicu na „juče". Admin ruta `POST /kadrovska/grid/autofill-run` sa `from=2026-02-01` upisuje 44 reda u nemerodavni period (dokument, §4.3, to i izbroji i kaže „**Ne raditi to**"). Brana je isključivo tekst u markdownu. | Ruta vraća uredan sažetak `{candidates, inserted}`; upisi su `ON CONFLICT DO NOTHING`, pa deluju bezopasno — ali menjaju izvor iz kog `v_vacation_balance` i izveštaji računaju. |
+| `kadrovska-mutations.service.ts:521-555` (`makeupStorno`) | 🟡 | **Storno zamene dana vraća −1 dan GO ali ne vraća obrisane sate** — kod to i priznaje (`:532-534`) i postavlja `hours_need_manual_restore`, ali povraćaj je ručan i nigde nije zabeleženo koliko je sati bilo. Original je samo u `kadr_work_hours_audit`. | Flag postoji, ali samo ako best-effort provera kroz `this.sy15.db` uspe (`:537-553`, `catch {}`); ako padne, radnik ostane i bez dana i bez sati bez ijednog traga u UI-ju. |
+| `kadrovska-mutations.service.ts:1315-1320` | 🟡 | `purgeEmployee` je tvrdo `DELETE FROM employees` bez provere zaostalih `work_hours`/`salary_payroll`/reversa. sy15 šema nema FK relacije (v. `kadrovska.service.ts:74`), pa brisanje ostavlja siročiće u obračunu i gridu. | Radi bez greške; posledica je „UUID umesto imena" u istorijskim izveštajima. |
+
+---
+
+## 4. 500 umesto jasne poruke
+
+| fajl:linija | ozb. | scenario | zašto se ne primeti |
+|---|---|---|---|
+| `kadrovska-mutations.service.ts:2961-3196` + `sy15.service.ts:101-113, 205` | 🔴 | **Recompute celog meseca puca u 500 posle ~5 s.** Petlja radi 3–4 upita po zaposlenom u JEDNOJ interaktivnoj transakciji; `mutate()` ne prosleđuje `timeoutMs`, a `runIdempotentRls` ga uopšte ne prima → važi Prisma default **5000 ms**. Za 300 ljudi (~1200 round-tripova) transakcija istekne, Prisma baci `P2028 Transaction already closed`, `rethrowSy15:4041-4074` taj kod ne mapira → **HTTP 500**, ceo mesec rollback. | Za jednog zaposlenog (`?employeeId`) radi savršeno, pa u testu prolazi. Na produkciji sa punim mesecom HR dobije „Internal server error" posle 5 s čekanja i nema pojma da je problem veličina, ne podaci. |
+| `kadrovska.service.ts:2111-2115` (`toDbDate`) + DTO `@IsISO8601()` | 🟡 | **Skraćen ISO datum prolazi validaciju i pravi `Invalid Date`.** `class-validator` `@IsISO8601()` bez `strict` prihvata `2026` i `2026-08`. `toDbDate('2026-08')` → `new Date('2026-08T00:00:00Z')` = `Invalid Date` → Prisma `gte: Invalid Date` baca `PrismaClientValidationError` koji `rethrowSy15` ne mapira → 500. Pogađa `holidays()`, `absences()`, `workHours()`, `attendanceCorrections()`. | DTO komentar (`kadrovska-query.dto.ts:16-17`) izričito tvrdi „nevalidan datum → 400, ne 500" — deluje pokriveno. |
+| `kadrovska-mutations.service.ts:4041-4074` | 🟡 | `rethrowSy15` mapira 8 SQLSTATE-ova, ali **ne mapira Prisma kodove `P2028` (tx timeout) ni `P2024` (pool timeout)** — oba su realna na velikim batch-evima (`gridBatch` za ceo mesec × tim). | Mapa izgleda iscrpno; propušteni kodovi nisu SQLSTATE nego Prisma-specifični. |
+| `kadrovska-mutations.service.ts:465-471` | 🟡 | Fail-loud guard za zastarelu `kadr_grant_bonus_go` vraća **503 ServiceUnavailable** sa porukom koja traži da se primeni SQL fajl. Za odobravača nadoknade je to nerazumljivo („servis nedostupan"), a akcija je poslovna. Ispravnije bi bio 409/422 sa porukom „konfiguracija baze zaostaje — javi administratoru". | Tehnički je namerno i dobro obrazloženo; problem je isključivo u tome šta korisnik pročita. |
+| `kadrovska.service.ts:602-605`, `moj-profil.service.ts:213-216` | 🟢 (dobro) | `isMissingDbObject` sužen catch — ranije je prazan `catch {}` gutao sve. Ovo je primer kako treba; navedeno radi kontrasta. | — |
+
+---
+
+## 5. Performansa
+
+| fajl:linija | ozb. | scenario | zašto se ne primeti |
+|---|---|---|---|
+| `kadrovska-mutations.service.ts:3015-3192` | 🔴 | **~1200 sekvencijalnih upita u jednoj RLS transakciji.** Po zaposlenom: `workHours.findMany` (`:3016`), `SELECT … salary_payroll` (`:3052`), `SELECT * FROM salary_terms` (`:3084`), `hr_upsert_salary_payroll` (`:3180`). Ništa nije batch-ovano iako su svi ulazi poznati unapred (mogu 3 upita ukupno: `workHours WHERE employeeId IN (…)`, `salary_payroll WHERE …`, `salary_terms DISTINCT ON (employee_id)`). Uz to je sve u interaktivnoj tx sa default timeout-om → v. nalaz 4.1. | Preview za jednog čoveka je trenutan. Efekat se pojavi samo pri mesečnom obračunu — jednom mesečno, kad je najveći pritisak. |
+| `kadrovska-mutations.service.ts:3739-3745` + `:3193` | 🟠 | **Rezultat recompute-a se JSON-ifikuje u `rev_api_idempotency.result`.** `runIdempotentRls` upisuje ceo `result` u jsonb kolonu; za 300 zaposlenih to je niz od 300 punih preview objekata (~25 polja svaki) po pozivu. Registar idempotencije postaje skladište izveštaja. | Tabela nije u vidokrugu; raste tiho i ubrzava se svaki put kad HR ponovi obračun. |
+| `kadrovska.service.ts:991-1072` (`gridPayable`) | 🟡 | Za ceo mesec bez `employeeId` povlači sve `work_hours` reda meseca (~6000 redova za 300 ljudi) i sve aktivne zaposlene, pa u JS-u gradi `Map<Map>` i pokreće `aggregateWorkHoursForMonth` (petlja po svim danima) po zaposlenom. Jedan poziv = pun mesečni skan, a FE ga zove na svako otvaranje grida. | Radi za sekundu-dve na trenutnoj veličini; degradiraće linearno i nema keša ni paginacije. |
+| `kadrovska.service.ts:692-766` (`vacationPeriods`) | 🟡 | `SELECT e.id FROM employees WHERE current_user_manages_employee(e.id) …` — SECURITY DEFINER funkcija se poziva **po redu** (~300 puta, svaki put sa lookupom `user_roles` po email-u). Isti obrazac i u `requests():800-806` i `moj-profil.team():2024-2031`. Funkcija je `STABLE`, pa planer ume da je keširа u okviru upita, ali argument je različit po redu → nema keša. | Radi ispod sekunde; postaje vidljivo tek pri rastu broja zaposlenih ili kad se `user_roles` ne indeksira po `lower(email)`. |
+| `kadrovska-mutations.service.ts:893-933` | 🟢 (dobro) | Preserve-pre-read u `gridBatch` je jedan set-based upit, i predmet-UPDATE je `unnest` umesto petlje (`:974-1000`) — obrazac koji `payrollRecompute` treba da preslika. | — |
+
+---
+
+## TOP 10 (redosled = šteta × verovatnoća)
+
+| # | Nalaz | Ozb. | Trud |
+|---|---|---|---|
+| 1 | **Ugovorna zarada (neto/bruto) se čita i piše pod `kadrovska.pii`, mimo O-6 allowliste** — `kadrovska.controller.ts:405-423`, `kadrovska-mutations.controller.ts:535-538`. Ili se rute dižu na `KADROVSKA_SALARY`, ili se u `ODLUKE_O_ZARADAMA.md` upisuje izričit izuzetak sa obrazloženjem („poslovni admin sme ugovornu zaradu radi generisanja ugovora"). Odluka je vlasnička, ne tehnička. | 🔴 | **S** (jedan dekorator) / **M** ako treba odluka |
+| 2 | **Recompute meseca = 500 posle 5 s + ~1200 upita** — `kadrovska-mutations.service.ts:3015`. Batch-ovati tri upita (IN-liste + `DISTINCT ON`), izbaciti upsert iz petlje ili ga chunk-ovati, i proslediti `timeoutMs` kroz `mutate`. Usput mapirati `P2028`/`P2024` u 503/422 sa razumljivom porukom. | 🔴 | **M** |
+| 3 | **`hours_worked` dobija dve različite vrednosti (`redovanRadSati` vs `payableHours`)** — `:3143` vs `:3640`; za satničara je to novčani ulaz kroz `salary_payroll_compute_totals`. Odlučiti koja je definicija tačna (1.0 paritet kaže `redovanRadSati`) i poravnati oba puta + test koji ih poredi. | 🔴 | **S** |
+| 4 | **`daysCount` GO zahteva dolazi od klijenta i na njemu se lomi brana salda** — `kadrovska-mutations.service.ts:88-123`, `:194-243`, `moj-profil.service.ts:856-874`. Preneti `workDaysDetail` proveru iz `moj-profil.service.ts:781-802` u sve tri rute (ili je preseliti u `hr_vacreq_approve`/`hr_reschedule_*` da bude jedna). | 🔴 | **M** |
+| 5 | **Recompute upisuje 0 RSD bez upozorenja kad term postoji ali su iznosi prazni** — `:3146-3153`. Preslikati branu `if (ukupnaZarada > 0)` iz `augmentRowWithK33:3653` i dodati warning `zero_rate` u `computeEarnings` kad je izabrani model bez svoje stope. | 🔴 | **S** |
+| 6 | **Sati bez granica + šifra odsustva bez whitelist-a** — `dto/kadrovska-mutation.dto.ts:148-165`. `@Min(0) @Max(24)` na četiri numerička polja, `@IsIn([...])` na `absenceCode`/`absenceSubtype`, i `unknown_absence_code` warning u `sanitizeHoursForWorkType`. Uz to CHECK constraint na `work_hours.hours`. | 🔴 | **S** (DTO) / **M** (sa migracijom) |
+| 7 | **GO/bolovanje na vikendu plaćaju se 8 h** — `payroll-calc.ts:586-593`. Odluka je vlasnička (da li vikend-GO uopšte postoji); tehnički: ili `gridBatch` odbija `go/bo/sp` na subotu/nedelju, ili agregator te dane ne broji. **Ne dirati bez upisa u `ODLUKE_O_ZARADAMA.md`** — isti tip pravila kao O-3. | 🔴 | **S** (kod) / **M** (odluka + backfill provera) |
+| 8 | **Brava zaključanog dana važi samo za 2 od 5 puteva pisanja** — `kadrovska-mutations.service.ts:1008-1085`. Izdvojiti `assertGridDaysUnlocked(range)` i pozvati je u `gridSetGo`, `gridUnsetGo`, `gridSetSick`, `gridUnsetSick`, `deleteWorkHour`. | 🟠 | **S** |
+| 9 | **Poslednja plata radnika koji odlazi ne može da se obračuna** — `kadr_payroll_init_month` uzima samo `is_active = true`; `deactivateEmployee:1296` ne upozorava. Ili init obuhvata i one koji su bili aktivni bilo kog dana u mesecu, ili deaktivacija odbija/upozorava dok mesec nije zaključan. | 🔴 | **M** (SQL + guard) |
+| 10 | **Izveštaj bolovanja cele firme (sa `odrzavanje_trudnoce`) iza obične `kadrovska.read`** — `kadrovska.controller.ts:134-150`. Namenska ruta `reports/sick` pod `KADROVSKA_PII` (kao `risk`) + dodavanje `sick` u `NON_INVOKER_REPORTS`-stil odbijanje na generičkoj ruti. | 🟠 | **S** |
+
+**Neposredno ispod praga (vredni ako se otvara isti fajl):** srazmera plate za ulazak/izlazak u
+mesecu (`payroll-calc.ts:334-354`), term po mesecu umesto po danu (`:3084`), `kadr_grid_set_go`
+bez kape na raspon (`GridGoDto:174`), mrtav poreski motor (`salary-tax.ts`), backfill autofill-a
+pre 06/2026 (`grid-autofill.service.ts:359`), UTC datumi u `moj-profil.service.ts:2060, 2240`.
+
+---
+
+## Šta NIJE proverено (granice ovog review-a)
+
+- Frontend ogledalo `frontend/src/lib/grid-payroll.ts` — dokument ga pominje kao obavezan par
+  `payroll-calc.ts`; nije u obuhvatu, ali svaka izmena agregatora mora i njega.
+- Definicije `kadr_grid_set_sick` / `kadr_grid_unset_sick` (zahtev 041/26) i nova
+  `kadr_grant_bonus_go` iz `zamena-dana-2026-07-31.sql` — nisu u glavnom snapshot-u; nalazi 1.13
+  i 1.10 traže potvrdu nad živom bazom.
+- Da li je sy15 RLS za `salary_payroll`/`salary_terms` posle 30.07. stvarno prešao sa
+  `current_user_is_admin()` na `current_user_can_view_salary()` — snapshot je stariji, a 3.0 kod
+  tu funkciju nigde ne zove.
+- PDF/XLSX render karneta i payslip-a (FE), i `v_salary_payroll_month` definicija.

@@ -51,9 +51,12 @@ import {
   SyncSwitchService,
 } from "./sync-switch.service";
 import { CompanyDetailsService } from "./company-details.service";
-import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
+// VREDNOSNI import, NE `import type`: uz `emitDecoratorMetadata` type-only import se briše,
+// `design:paramtypes` postane `Function`, i `ValidationPipe({whitelist:true})` obriše SVA polja
+// tela (izmereno 04.08.2026 — memorandum/PIB/IBAN nisu mogli da se sačuvaju nikako).
+import { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
 import { PaymentAccountsService } from "./payment-accounts.service";
-import type { UpdatePaymentAccountDto } from "./dto/podesavanja-payment-account.dto";
+import { UpdatePaymentAccountDto } from "./dto/podesavanja-payment-account.dto";
 import {
   BulkJobPositionProfileDto,
   CreateDepartmentDto,
