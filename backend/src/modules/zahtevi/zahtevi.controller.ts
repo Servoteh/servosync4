@@ -29,6 +29,7 @@ import type { UpdateChangeRequestDto } from "./dto/update-change-request.dto";
 import type { DecisionDto } from "./dto/decision.dto";
 import type { StatusDto } from "./dto/status.dto";
 import type { ReturnForInfoDto } from "./dto/return-for-info.dto";
+import type { UserConfirmDto, UserReopenDto } from "./dto/user-check.dto";
 import type { ScoreDto, ExcludeDto } from "./dto/score.dto";
 import type { TariffPutDto } from "./dto/tariff.dto";
 import type {
@@ -119,10 +120,7 @@ export class ZahteviController {
   /** GET /zahtevi/nagrade/obracun?month=YYYY-MM (admin) — mesečni obračun po korisniku. */
   @Get("nagrade/obracun")
   @RequirePermission(PERMISSIONS.ZAHTEVI_ADMIN)
-  payoutReport(
-    @Query("month") month: string,
-    @Req() req: { user: AuthUser },
-  ) {
+  payoutReport(@Query("month") month: string, @Req() req: { user: AuthUser }) {
     return this.rewards.payoutReport(month, req.user);
   }
 
@@ -248,6 +246,38 @@ export class ZahteviController {
     @Req() req: { user: AuthUser },
   ) {
     return this.zahtevi.withdraw(id, req.user);
+  }
+
+  // ── PROVERA ISPORUKE (podnosilac) ────────────────────────────────────────────
+
+  /**
+   * Podnosilac potvrđuje da isporuka radi: READY_FOR_TEST → DONE (03.08.2026).
+   * Permisija je `zahtevi.write` (ista kao komentar) — VLASNIŠTVO presuđuje SERVIS
+   * (podnosilac ili admin), jer `zahtevi.admin` ovde ne sme biti uslov: upravo su
+   * korisnici bez admin prava ti koji testiraju isporuku. Telo `{ comment? }` opciono.
+   */
+  @Post(":id/confirm")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_WRITE)
+  confirmDelivery(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UserConfirmDto | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.zahtevi.confirmDelivery(id, dto, req.user);
+  }
+
+  /**
+   * Podnosilac javlja da isporuka NE radi: READY_FOR_TEST → SUBMITTED (03.08.2026).
+   * Telo `{ comment }` je OBAVEZNO (422 bez njega) — mora se znati ŠTA ne radi.
+   */
+  @Post(":id/reopen")
+  @RequirePermission(PERMISSIONS.ZAHTEVI_WRITE)
+  reopenDelivery(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UserReopenDto | undefined,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.zahtevi.reopenDelivery(id, dto, req.user);
   }
 
   // ── PRILOZI (§5) ────────────────────────────────────────────────────────────

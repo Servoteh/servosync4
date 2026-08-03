@@ -40,6 +40,12 @@ import {
   type ReturnForInfoDto,
   validateReturnForInfo,
 } from "./dto/return-for-info.dto";
+import {
+  type UserConfirmDto,
+  type UserReopenDto,
+  validateUserConfirm,
+  validateUserReopen,
+} from "./dto/user-check.dto";
 
 /**
  * Status mašina (MODULE_SPEC_zahtevi §1.3) — dozvoljeni ciljni statusi po trenutnom.
@@ -69,7 +75,11 @@ export const STATUS_TRANSITIONS: Record<string, readonly string[]> = {
   APPROVED: ["PLANNED", "IN_PROGRESS"],
   PLANNED: ["IN_PROGRESS", "DEFERRED"],
   IN_PROGRESS: ["READY_FOR_TEST"],
-  READY_FOR_TEST: ["TESTING", "DONE"],
+  // SUBMITTED (03.08.2026): podnosilac je probao isporuku i javio „ne radi" (POST :id/reopen)
+  // → zahtev se vraća u redovan red za rad, gde ga admin inbox brojač (inboxMeta) opet vidi.
+  // Nijedna druga grana ne cilja SUBMITTED odavde: `setStatus`/`decision` nemaju takvu akciju,
+  // a `submit` traži DRAFT|NEEDS_INFO — pa ovaj prelaz otvara ISKLJUČIVO korisnička provera.
+  READY_FOR_TEST: ["TESTING", "DONE", "SUBMITTED"],
   TESTING: ["DONE", "IN_PROGRESS"],
   DEFERRED: ["SUBMITTED", "ARCHIVED"],
   REJECTED: ["SUBMITTED", "ARCHIVED"], // SUBMITTED = restore (samo AI-odbačen ocenom 0, admin)
@@ -90,6 +100,29 @@ const OWNER_WITHDRAW_STATUSES: readonly string[] = [
   "SUBMITTED",
   "NEEDS_INFO",
 ];
+
+/**
+ * Srpske labele statusa za PORUKE GREŠKE koje čita običan korisnik (03.08.2026).
+ * Namerno samo ovde i samo za tekst greške — izvor istine za prikaz je i dalje FE
+ * (`_lib/status.ts`); sirov „READY_FOR_TEST" u poruci radniku ništa ne znači.
+ */
+const STATUS_LABEL_SR: Record<string, string> = {
+  DRAFT: "Nacrt",
+  SUBMITTED: "Podnet",
+  NEEDS_INFO: "Vraćen na dopunu",
+  ANALYSIS_APPROVED: "Odobrena AI analiza",
+  ANALYZED: "AI obrađen — čeka odluku",
+  APPROVED: "Odobren za realizaciju",
+  PLANNED: "Planiran",
+  IN_PROGRESS: "U realizaciji",
+  READY_FOR_TEST: "Spreman za proveru",
+  TESTING: "Na testiranju",
+  DONE: "Završen",
+  REJECTED: "Odbijen",
+  MERGED: "Spojen",
+  DEFERRED: "Backlog / buduća verzija",
+  ARCHIVED: "Arhiviran",
+};
 
 /**
  * Tihi režim nagrada (PRESUDA 24.07): timeline event-tipovi sa novčanim/ocenskim sadržajem
@@ -503,7 +536,9 @@ export class ZahteviService {
       where: { id: { in: ids } },
       select: { id: true, fullName: true, email: true },
     });
-    return new Map(users.map((u) => [u.id, u.fullName || u.email || `#${u.id}`]));
+    return new Map(
+      users.map((u) => [u.id, u.fullName || u.email || `#${u.id}`]),
+    );
   }
 
   // ── CREATE / UPDATE / DELETE ────────────────────────────────────────────────
@@ -711,6 +746,191 @@ export class ZahteviService {
     return { data: this.stripRewards(updated, actor) };
   }
 
+  // ── PROVERA ISPORUKE (podnosilac) ────────────────────────────────────────────
+
+  /**
+   * Sme li `actor` da presudi o isporuci zahteva: SAMO podnosilac ili admin.
+   * `getScopedOrThrow` je već odbio tuđi zahtev sa 404 (row-scope ga i ne prikazuje),
+   * pa je ovo druga brana — ostaje smislena ako se row-scope ikad olabavi.
+   */
+  private assertSubmitterOrAdmin(
+    req: { createdByUserId: number },
+    actor: AuthUser,
+    action: string,
+  ): void {
+    if (this.isAdmin(actor)) return;
+    if (req.createdByUserId !== actor.userId)
+      throw new ForbiddenException(`Isporuku ${action} podnosilac zahteva.`);
+  }
+
+  /** Greška kad provera isporuke stigne iz statusa u kom nema šta da se proverava. */
+  private notReadyForCheck(status: string, action: string): never {
+    const label = STATUS_LABEL_SR[status] ?? status;
+    throw new UnprocessableEntityException(
+      `${action} je moguća samo kad je zahtev spreman za proveru — trenutno je „${label}".`,
+    );
+  }
+
+  /**
+   * POST /zahtevi/:id/confirm — PODNOSILAC potvrđuje da isporuka radi: READY_FOR_TEST → DONE.
+   *
+   * Do 03.08.2026 je jedini prelaz statusa bio admin-only `POST :id/status`, pa je korisnik
+   * mogao samo da napiše komentar „RADI" i da se nada da će ga neko pročitati — zahtevi su
+   * se gomilali u READY_FOR_TEST (40 komada na dan uvođenja). Sada je potvrda sama radnja.
+   *
+   * Ruta traži `zahtevi.write` (guard), a VLASNIŠTVO presuđuje servis (podnosilac ili admin).
+   * `rewardStatus` se NE dira — nagrada ostaje admin odluka u tabu Nagrade (§12, tihi režim):
+   * korisnik ne sme sam sebi da otvori novac potvrdom sopstvenog zahteva.
+   *
+   * Već zatvoren zahtev (DONE/ARCHIVED) NIJE greška nego 200-no-op sa porukom — dupli klik i
+   * stari otvoren tab su realnost, a crveni „nedozvoljen prelaz" bi izgledao kao kvar.
+   */
+  async confirmDelivery(
+    id: number,
+    dto: UserConfirmDto | undefined,
+    actor: AuthUser,
+  ) {
+    const comment = validateUserConfirm(dto);
+    const req = await this.getScopedOrThrow(id, actor);
+    this.assertSubmitterOrAdmin(req, actor, "potvrđuje");
+
+    // Idempotentno: već zatvoren → nema izmene, ali ni greške (poruka objašnjava zašto).
+    if (req.status === "DONE" || req.status === "ARCHIVED")
+      return {
+        data: this.stripRewards(req, actor),
+        noop: true,
+        message: "Zahtev je već zatvoren.",
+      };
+    if (req.status !== "READY_FOR_TEST")
+      this.notReadyForCheck(req.status, "Potvrda");
+
+    const decidedAt = new Date();
+    const name = await this.displayName(actor.userId);
+    const decisionNote = name
+      ? `Potvrdio podnosilac. (${name})`
+      : "Potvrdio podnosilac.";
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // F1 (TOCTOU): compare-and-set — dupli klik ili admin koji je u međuvremenu
+      // sam zatvorio zahtev ne prave dupli event/komentar (409 + rollback).
+      await this.updateStatusGuarded(tx, id, "READY_FOR_TEST", {
+        status: "DONE",
+        decidedAt,
+        decidedByUserId: actor.userId,
+        decisionNote,
+      });
+      await this.writeEvent(tx, id, "USER_CONFIRMED", actor.userId, {
+        from: "READY_FOR_TEST",
+        to: "DONE",
+        ...(comment ? { comment } : {}),
+      });
+      if (comment)
+        await tx.changeRequestComment.create({
+          data: {
+            requestId: id,
+            authorUserId: actor.userId,
+            body: comment,
+            isQuestion: false,
+          },
+        });
+      return {
+        ...req,
+        status: "DONE",
+        decidedAt,
+        decidedByUserId: actor.userId,
+        decisionNote,
+      };
+    });
+    // Mejl se NE šalje: „done" obaveštenje bi otišlo podnosiocu koji je upravo sam
+    // kliknuo potvrdu, a admin promenu vidi kroz status (nema šta da uradi povodom nje).
+    return { data: this.stripRewards(updated, actor) };
+  }
+
+  /**
+   * POST /zahtevi/:id/reopen — PODNOSILAC javlja da isporuka NE radi: READY_FOR_TEST → SUBMITTED.
+   *
+   * Komentar je OBAVEZAN (422 bez njega): bez opisa šta ne radi vraćanje u rad je isto što i
+   * ćutanje — programer ne zna šta da popravi. Zahtev se vraća u redovan red (SUBMITTED), gde
+   * ga admin inbox brojač (`inboxMeta`, prati SUBMITTED) automatski ponovo pokupi.
+   *
+   * NE dira se ništa drugo: aiScore/ocene/nagrada/link polja i `submittedAt` ostaju kakvi jesu,
+   * a AI trijaža se NE pokreće ponovo (zahtev je već klasifikovan — novi prolaz bi bio trošak
+   * bez informacije). Mejl o problemu ide kroz isti kanal kao korisnički komentar (§9).
+   */
+  async reopenDelivery(
+    id: number,
+    dto: UserReopenDto | undefined,
+    actor: AuthUser,
+  ) {
+    const comment = validateUserReopen(dto);
+    const req = await this.getScopedOrThrow(id, actor);
+    this.assertSubmitterOrAdmin(req, actor, "vraća u rad");
+    if (!comment)
+      throw new UnprocessableEntityException(
+        "Napišite šta ne radi — bez opisa problema zahtev se ne vraća u rad.",
+      );
+    if (req.status !== "READY_FOR_TEST")
+      this.notReadyForCheck(req.status, "Prijava problema");
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // F1 (TOCTOU): compare-and-set — ako je admin u međuvremenu zatvorio zahtev,
+      // 409 i CELA tx (uključujući komentar) se poništi; nema poluupisanog stanja.
+      await this.updateStatusGuarded(tx, id, "READY_FOR_TEST", {
+        status: "SUBMITTED",
+      });
+      await this.writeEvent(tx, id, "USER_REOPENED", actor.userId, {
+        from: "READY_FOR_TEST",
+        to: "SUBMITTED",
+        comment,
+      });
+      await tx.changeRequestComment.create({
+        data: {
+          requestId: id,
+          authorUserId: actor.userId,
+          body: comment,
+          isQuestion: false,
+        },
+      });
+      return { ...req, status: "SUBMITTED" };
+    });
+
+    // Obaveštenje (§9) — POSLE commita, fire-and-forget: pad slanja NIKAD ne obara
+    // radnju (§10.4). Isti kanal kao običan korisnički komentar, samo drugi naslov;
+    // komentar je ovde upisan direktno (ne kroz addComment) pa mejla NEMA dvaput.
+    if (!this.isAdmin(actor))
+      this.fireAndForgetMail(
+        this.mail.notifyUserComment({
+          requestId: id,
+          authorUserId: actor.userId,
+          body: comment,
+          reason: "reopen",
+        }),
+        `reopen zahteva ${id}`,
+      );
+    return { data: this.stripRewards(updated, actor) };
+  }
+
+  /** Prikazno ime jednog korisnika (fullName || email) ili null ako ga nema. */
+  private async displayName(userId: number): Promise<string | null> {
+    const map = await this.namesByUserId([userId]);
+    return map.get(userId) ?? null;
+  }
+
+  /**
+   * Fire-and-forget mejl (§10.4) sa ZAKAČENIM catch-om. Goli `void promise` NIJE dovoljan:
+   * odbijeno obećanje bez handler-a je u Node 24 neuhvaćena greška koja RUŠI proces —
+   * mejl bi tako oborio ne samo svoju radnju nego celu aplikaciju. Postojeći pozivi
+   * (`notifySubmitter`, `notifyAdminsNewRequest`) preživljavaju samo zato što ti metodi
+   * interno gutaju sve; ovde se ne oslanjamo na tuđu disciplinu.
+   */
+  private fireAndForgetMail(promise: Promise<unknown>, ctx: string): void {
+    void promise.catch((err: unknown) =>
+      this.logger.warn(
+        `Obaveštenje (${ctx}) nije poslato: ${(err as Error)?.message ?? String(err)}`,
+      ),
+    );
+  }
+
   // ── KOMENTARI ────────────────────────────────────────────────────────────
 
   /**
@@ -744,6 +964,23 @@ export class ZahteviService {
       });
       return comment;
     });
+
+    // Obaveštenje o KORISNIČKOM komentaru (03.08.2026). Nalaz vlasnika: „ako neko tu
+    // pošalje dodatna pitanja nakon našeg mejla, to uopšte nismo ni registrovali" —
+    // živ dokaz je 009/26 („Da li možete da pročitate komentar?"). Komentar je do sada
+    // pisao SAMO red u bazu; niko nije bio obavešten da postoji.
+    // Admin-autor ne dobija mejl o sopstvenoj poruci. POSLE commita, fire-and-forget:
+    // pad slanja NIKAD ne obara upis komentara (§10.4).
+    if (!admin)
+      this.fireAndForgetMail(
+        this.mail.notifyUserComment({
+          requestId: id,
+          authorUserId: actor.userId,
+          body: text,
+          reason: "comment",
+        }),
+        `komentar na zahtevu ${id}`,
+      );
     return { data: result };
   }
 
@@ -787,7 +1024,12 @@ export class ZahteviService {
       const questionCommentIds: number[] = [];
       for (const body of questions) {
         const c = await tx.changeRequestComment.create({
-          data: { requestId: id, authorUserId: actor.userId, body, isQuestion: true },
+          data: {
+            requestId: id,
+            authorUserId: actor.userId,
+            body,
+            isQuestion: true,
+          },
         });
         questionCommentIds.push(c.id);
       }

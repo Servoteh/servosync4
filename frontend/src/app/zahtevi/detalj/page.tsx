@@ -27,6 +27,7 @@ import { HelpTour } from '@/components/ui-kit/help-tour';
 import { statusMeta, lastEventTime } from '../_lib/status';
 import { HELP, ADMIN_TOUR } from '../_lib/help';
 import { OwnerActions, AdminActions } from './_components/action-bars';
+import { DeliveryCheckBanner } from './_components/delivery-check';
 import { RequestTab } from './_components/request-tab';
 import { QuestionsTab } from './_components/questions-tab';
 import { HistoryTab } from './_components/history-tab';
@@ -203,6 +204,14 @@ export default function ZahtevDetailPage() {
         ) : (
           <>
             <ZahtevHeader detail={detail} isAdmin={isAdmin} />
+
+            {/* Provera isporuke (03.08.2026): podnosilac (ili admin) u READY_FOR_TEST sam
+                presuđuje „radi / ne radi". Bez ovoga je jedini prelaz statusa bio admin-only,
+                pa je korisnikova potvrda bila komentar „RADI" u koji se moralo verovati da će
+                ga neko pročitati — zahtevi su se gomilali u READY_FOR_TEST. */}
+            {detail.status === 'READY_FOR_TEST' && (isOwner || isAdmin) && (
+              <DeliveryCheckBanner detail={detail} />
+            )}
 
             {/* Dopuna (owner, NEEDS_INFO): istaknut poziv da odgovori — pitanja + „Odgovori". */}
             {isOwner && detail.status === 'NEEDS_INFO' && (
