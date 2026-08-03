@@ -834,4 +834,67 @@ describe("LocationsService — R2 mutacije", () => {
     const res = await service.syncHealth(EMAIL);
     expect(res.data.workerHealthy).toBe(false);
   });
+
+  // ---------- lookupDrawing: pieceCount (057/26 qty-autofill) ----------
+  // Duško 057/26: sken `9811-3/54` ostavljao Količinu 1, a nalog nosi 9 kom
+  // (prod: work_orders.piece_count=9). FE auto-popunu hrani ISTI lookup kao
+  // crtež — ovi testovi štite da oba izvora (work_orders / bigtehn keš)
+  // prosleđuju broj komada i da odgovor bez pogotka nosi `pieceCount: null`.
+
+  it("lookupDrawing: work_orders pogodak nosi pieceCount (piece_count naloga)", async () => {
+    prisma.workOrder.findMany.mockResolvedValue([
+      {
+        identNumber: "9811-3/54",
+        drawingNumber: "1135784",
+        revision: "A",
+        partName: "Rebro dna kade",
+        pieceCount: 9,
+      },
+    ]);
+
+    const res = await service.lookupDrawing("9811-3", "54", undefined);
+    expect(res.data.found).toBe(true);
+    expect(res.data.source).toBe("work_orders");
+    expect(res.data.drawingNo).toBe("1135784");
+    expect(res.data.pieceCount).toBe(9);
+  });
+
+  it("lookupDrawing: bigtehn keš fallback mapira `komada` u pieceCount", async () => {
+    prisma.workOrder.findMany.mockResolvedValue([]);
+    sy15.db.$queryRaw.mockResolvedValue([
+      {
+        ident_broj: "9811-3/54",
+        broj_crteza: "1135784",
+        revizija: "A",
+        naziv_dela: "Rebro dna kade",
+        komada: 9,
+      },
+    ]);
+
+    const res = await service.lookupDrawing("9811-3", "54", undefined);
+    expect(res.data.found).toBe(true);
+    expect(res.data.source).toBe("bigtehn_cache");
+    expect(res.data.pieceCount).toBe(9);
+  });
+
+  it("lookupDrawing: bez pogotka / bez komada → pieceCount:null (ne 0, ne undefined)", async () => {
+    prisma.workOrder.findMany.mockResolvedValue([]);
+    sy15.db.$queryRaw.mockResolvedValue([]);
+    const miss = await service.lookupDrawing("9811-3", "54", undefined);
+    expect(miss.data.found).toBe(false);
+    expect(miss.data.pieceCount).toBeNull();
+
+    prisma.workOrder.findMany.mockResolvedValue([
+      {
+        identNumber: "9811-3/54",
+        drawingNumber: "1135784",
+        revision: "A",
+        partName: "Rebro dna kade",
+        pieceCount: null,
+      },
+    ]);
+    const noPieces = await service.lookupDrawing("9811-3", "54", undefined);
+    expect(noPieces.data.found).toBe(true);
+    expect(noPieces.data.pieceCount).toBeNull();
+  });
 });

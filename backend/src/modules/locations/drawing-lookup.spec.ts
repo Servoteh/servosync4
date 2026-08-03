@@ -143,6 +143,8 @@ describe("LocationsService.lookupDrawing — work_orders pa sy15 keš", () => {
       revision: "B",
       nazivDela: "Nosač",
       source: "work_orders",
+      // 057/26: mock red nema piece_count → null (autofill se preskače).
+      pieceCount: null,
     });
     // varijanta iz RNZ barkoda sužava pogodak (variant filter u where).
     expect(prisma.workOrder.findMany).toHaveBeenCalledWith(
@@ -173,6 +175,8 @@ describe("LocationsService.lookupDrawing — work_orders pa sy15 keš", () => {
       revision: "39757",
       nazivDela: null,
       source: "bigtehn_cache",
+      // 057/26: mock red bez `komada` → null (autofill se preskače).
+      pieceCount: null,
     });
     // M2 (verify 03.08): dupli ident_broj u kešu (npr. 9400/3/193) — izbor mora
     // biti DETERMINISTIČKI i preferirati MES-aktivan red (1.0 je aktivni view

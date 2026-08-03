@@ -122,7 +122,30 @@ export function filterLocationOptions(
       )
     : base;
   const ordered = [...hits].sort((a, b) => compareLocOptions(a, b, !!opts.shelvesFirst));
-  return { items: ordered.slice(0, limit), total: hits.length };
+  if (!opts.shelvesFirst) return { items: ordered.slice(0, limit), total: hits.length };
+
+  // ── Sečenje PO RAZREDU, ne globalno (Duško 056/26: „ubačen samo Kavez 1") ──
+  // Globalni `slice(0, limit)` je sekao ODMAH POSLE polica: police su razred 0,
+  // pa kad kandidata-polica ima više od `limit` (bez filtera hale 1.111; sama
+  // Hala 3-magacin ima 301), KAVEZI (razred 1) i HALE (razred 2) NIKAD ne uđu u
+  // listu na prazan upit — magacioner vidi „nema kaveza", iako su svi (KV 1–100,
+  // svi aktivni) uredno stigli sa servera. NIJE regresija sortiranja od 03.08:
+  // i raniji serverski redosled (pathCached asc — „Kavez N" posle svih „Hala…")
+  // ih je sekao isto, samo bez garancije. U 1.0 kavezi su GLOBALNA, uvek
+  // prisutna grupa selecta (`populateToSelect` → optgroup „🧺 KAVEZI (KV)"),
+  // nezavisna od izabrane hale — pa limit ovde važi UNUTAR svakog razreda:
+  // police se i dalje seku (zato postoji poruka o ostatku), a mali razredi
+  // (kavezi ~100, hale ~15, ostalo) uvek stanu celi.
+  const items: LocLocation[] = [];
+  const perClass = new Map<number, number>();
+  for (const l of ordered) {
+    const r = locClassRank(l);
+    const c = perClass.get(r) ?? 0;
+    if (c >= limit) continue;
+    perClass.set(r, c + 1);
+    items.push(l);
+  }
+  return { items, total: hits.length };
 }
 
 /**
@@ -202,7 +225,13 @@ export function LocationSelect({
     };
     const map = new Map<string, LocLocation[]>();
     for (const l of filtered) {
-      const key = hallLabelOf(l);
+      // KAVEZI su SVOJA grupa (056/26; paritet 1.0 optgroup „🧺 KAVEZI (KV)"):
+      // po hali bi se raspali — 4 kaveza imaju parent halu (upali bi među njene
+      // police), a 96 ima parent NULL („Ostalo") — pa numerisani niz KV 1…KV 100
+      // ne bi postojao nigde u komadu. Hala kaveza je nebitna za izbor (globalni
+      // su za ulaganje; premeštanje celog kaveza je poseban tok).
+      const key =
+        l.locationType === 'CAGE' ? 'KAVEZI (KV) — globalni, hala nije bitna' : hallLabelOf(l);
       const arr = map.get(key);
       if (arr) arr.push(l);
       else map.set(key, [l]);

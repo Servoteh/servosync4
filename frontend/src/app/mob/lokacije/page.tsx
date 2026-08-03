@@ -299,6 +299,10 @@ export default function MobLokacijePage() {
         <MovementDialog
           key={dialogKey}
           preset={dialog.preset}
+          // 058/26 (Duško): mobilni dijalog NE pita za tip pokreta — dijalog ga
+          // izvodi živo (Neraspoređeno→CORRECTION; polazna/ima smeštaja→TRANSFER;
+          // nesmešteno→INITIAL). Desktop /lokacije i dalje nudi pun izbor.
+          autoMovementType
           onClose={() => {
             setDialog(null);
             // Posle premeštanja osveži prikaz stanja (ako je panel otvoren).

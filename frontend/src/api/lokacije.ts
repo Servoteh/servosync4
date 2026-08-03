@@ -300,6 +300,12 @@ export interface LocDrawingLookup {
   nazivDela: string | null;
   /** 'work_orders' (glavna baza) | 'bigtehn_cache' (sy15 legacy keš) | null. */
   source: string | null;
+  /**
+   * Komada na nalogu (057/26) — `work_orders.piece_count` / keš `komada`; hrani
+   * auto-popunu „Količine" u MovementDialog-u. OPCIONO (stariji BE ga ne šalje —
+   * FE tada samo preskoči autofill, ništa se ne lomi).
+   */
+  pieceCount?: number | null;
 }
 
 /**
