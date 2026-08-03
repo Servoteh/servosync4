@@ -549,11 +549,14 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
   },
   {
     name: "prijavi_kvar",
-    description: `Prijavi kvar na mašini u modul Održavanje. PRE poziva prikupi kroz razgovor: mašinu, kratak naslov, opis, ozbiljnost i da li postoji bezbednosni rizik; POKAŽI korisniku rezime i sačekaj izričitu potvrdu, pa pozovi alat. Ako korisnik nema prava, alat vrati nema_prava.`,
+    description: `Prijavi kvar na BILO KOM sredstvu u modulu Održavanje — mašini, vozilu, IT opremi ili objektu. Sredstvo prihvata šifru (npr. 3.12), deo naziva (npr. „Caddy Beli") ili REGISTARSKU OZNAKU vozila (npr. BG2884XA, „BG 2884 XA"). PRE poziva prikupi kroz razgovor: sredstvo, kratak naslov, opis, ozbiljnost i da li postoji bezbednosni rizik; POKAŽI korisniku rezime i sačekaj izričitu potvrdu, pa pozovi alat. Ako sredstvo nije nađeno vraća nema_sredstva, a ako korisnik nema prava — nema_prava.`,
     schema: {
       type: "object",
       properties: {
-        masina: { type: "string", description: `šifra ili naziv mašine` },
+        masina: {
+          type: "string",
+          description: `sredstvo: šifra mašine (3.12), naziv, ili registarska oznaka vozila (BG2884XA)`,
+        },
         naslov: { type: "string", description: `kratak opis kvara` },
         opis: {
           type: "string",

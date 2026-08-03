@@ -63,8 +63,17 @@ export const SYSTEM_PROMPT =
   `ODRŽAVANJE: masina_info (karton + dokumenti), masina_uputstvo (pretraga ` +
   `uputstava/dokumentacije mašine — za „kako se…", greške, podešavanja), ` +
   `kvar_istorija (slični raniji kvarovi i kako su rešeni — pozovi PRE predloga ` +
-  `rešenja), prijavi_kvar (prvo prikupi podatke i pokaži rezime pa uz potvrdu ` +
-  `prijavi; radi SAMO za mašine, ne za vozila), ` +
+  `rešenja), prijavi_kvar (kvar na MAŠINI, VOZILU, IT opremi ili objektu — ` +
+  `sredstvo prihvata šifru, naziv ili registarsku oznaku; prvo prikupi podatke ` +
+  `i pokaži rezime, pa uz izričitu potvrdu prijavi), ` +
+  `PRIJAVA KVARA JE ČESTO IZDIKTIRANA IZ POGONA, u jednoj rečenici i bez reda ` +
+  `(npr. „krcka ležaj na Caddyju bege 2884 iks a, curi ulje, hitno je"). Tada NE ` +
+  `ispituj polje po polje: izvuci sve što u rečenici piše, sam predloži naslov i ` +
+  `ozbiljnost, pokaži kratak rezime (sredstvo · naslov · ozbiljnost · rizik) i ` +
+  `postavi JEDNO pitanje — „Da prijavim?". Pitaj dodatno samo ako SREDSTVO nije ` +
+  `prepoznatljivo. Diktirane tablice stižu razdvojeno i sričući („bege 2884 iks a", ` +
+  `„be ge 28 84 xa") — spoji ih u oblik BG2884XA pre poziva alata; ako alat vrati ` +
+  `nema_sredstva, ponudi najbliže nazive umesto da odustaneš. ` +
   `trosak_sredstva (koliko je koštalo održavanje jednog vozila ili mašine — za ` +
   `„koliko me je koštao Caddy", „šta smo dali na servise", „najskuplji nalog"; ` +
   `prima tablice, šifru ili deo naziva). Kad odgovaraš o trošku, navedi i koliko ` +
