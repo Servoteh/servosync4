@@ -466,6 +466,41 @@ export function useWithdrawZahtev() {
   });
 }
 
+/**
+ * Potvrda isporuke od PODNOSIOCA (03.08.2026): READY_FOR_TEST → DONE. Permisija je
+ * `zahtevi.write` (ista kao komentar) — vlasništvo (podnosilac ili admin) presuđuje
+ * SERVIS. Komentar je opcion. Već zatvoren zahtev vraća 200 sa `noop:true` (nije
+ * greška — dupli klik i stari tab su realnost), pa pozivalac gleda `noop` za poruku.
+ */
+export function useConfirmDelivery() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, comment }: { id: number; comment?: string }) =>
+      apiFetch<One<ChangeRequest> & { noop?: boolean; message?: string }>(
+        `${BASE}/${id}/confirm`,
+        { method: 'POST', body: JSON.stringify(comment ? { comment } : {}) },
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * Prijava da isporuka NE radi (03.08.2026): READY_FOR_TEST → SUBMITTED, zahtev se
+ * vraća u redovan red za rad. Komentar je OBAVEZAN (BE vraća 422 bez njega) — mora
+ * se znati ŠTA ne radi. Šalje i mejl administraciji (isti kanal kao komentar).
+ */
+export function useReopenDelivery() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ id, comment }: { id: number; comment: string }) =>
+      apiFetch<One<ChangeRequest>>(`${BASE}/${id}/reopen`, {
+        method: 'POST',
+        body: JSON.stringify({ comment }),
+      }),
+    onSuccess: invalidate,
+  });
+}
+
 /** Komentar (owner + admin; admin sme `isQuestion:true` → NEEDS_INFO). */
 export function useAddComment() {
   const invalidate = useInvalidate();

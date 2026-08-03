@@ -222,13 +222,17 @@ function decisionsMock(): jest.Mocked<
   return { createFromRequest: jest.fn().mockResolvedValue(undefined) };
 }
 
-/** Mail servis — decision/DONE + novi-submit fire-and-forget; nikad ne baca (boolean). */
+/** Mail servis — decision/DONE + novi-submit + korisnički komentar; nikad ne baca (boolean). */
 function mailMock(): jest.Mocked<
-  Pick<ZahteviMailService, "notifySubmitter" | "notifyAdminsNewRequest">
+  Pick<
+    ZahteviMailService,
+    "notifySubmitter" | "notifyAdminsNewRequest" | "notifyUserComment"
+  >
 > {
   return {
     notifySubmitter: jest.fn().mockResolvedValue(true),
     notifyAdminsNewRequest: jest.fn().mockResolvedValue(true),
+    notifyUserComment: jest.fn().mockResolvedValue(true),
   };
 }
 
@@ -447,7 +451,10 @@ describe("ZahteviService", () => {
 
     it("getDetail: ne-admin + REJECTED → aiScoreReason (obrazloženje odbijanja) OSTAJE, iznosi i dalje skriveni", async () => {
       prisma.changeRequest.findUnique.mockResolvedValue(
-        rewarded({ status: "REJECTED", aiScoreReason: "duplikat zahteva 003/26" }),
+        rewarded({
+          status: "REJECTED",
+          aiScoreReason: "duplikat zahteva 003/26",
+        }),
       );
       const d = row(await service.getDetail(10, USER));
       expect(d.aiScoreReason).toBe("duplikat zahteva 003/26");
@@ -460,16 +467,55 @@ describe("ZahteviService", () => {
       prisma.changeRequest.findUnique.mockResolvedValue(
         rewarded({
           events: [
-            { id: 1, type: "SUBMITTED", actorUserId: USER.userId, data: null, createdAt: now },
-            { id: 2, type: "SCORE_CONFIRMED", actorUserId: ADMIN.userId, data: { amount: "1500" }, createdAt: now },
-            { id: 3, type: "REWARD_PAID", actorUserId: ADMIN.userId, data: { amount: "1500" }, createdAt: now },
-            { id: 4, type: "REWARD_EXCLUDED", actorUserId: ADMIN.userId, data: null, createdAt: now },
-            { id: 5, type: "TRIAGED", actorUserId: null, data: { score: 4, duplicates: [] }, createdAt: now },
-            { id: 6, type: "AI_REJECTED", actorUserId: null, data: { score: 0, reason: "duplikat", duplicates: [] }, createdAt: now },
+            {
+              id: 1,
+              type: "SUBMITTED",
+              actorUserId: USER.userId,
+              data: null,
+              createdAt: now,
+            },
+            {
+              id: 2,
+              type: "SCORE_CONFIRMED",
+              actorUserId: ADMIN.userId,
+              data: { amount: "1500" },
+              createdAt: now,
+            },
+            {
+              id: 3,
+              type: "REWARD_PAID",
+              actorUserId: ADMIN.userId,
+              data: { amount: "1500" },
+              createdAt: now,
+            },
+            {
+              id: 4,
+              type: "REWARD_EXCLUDED",
+              actorUserId: ADMIN.userId,
+              data: null,
+              createdAt: now,
+            },
+            {
+              id: 5,
+              type: "TRIAGED",
+              actorUserId: null,
+              data: { score: 4, duplicates: [] },
+              createdAt: now,
+            },
+            {
+              id: 6,
+              type: "AI_REJECTED",
+              actorUserId: null,
+              data: { score: 0, reason: "duplikat", duplicates: [] },
+              createdAt: now,
+            },
           ],
         }),
       );
-      const evs = row(await service.getDetail(10, USER)).events as { type: string; data: Record<string, unknown> | null }[];
+      const evs = row(await service.getDetail(10, USER)).events as {
+        type: string;
+        data: Record<string, unknown> | null;
+      }[];
       const types = evs.map((e) => e.type);
       expect(types).toContain("SUBMITTED");
       expect(types).toContain("TRIAGED");
@@ -493,7 +539,12 @@ describe("ZahteviService", () => {
               id: 1,
               kind: "TRIAGE",
               status: "DONE",
-              result: { summary: "sažetak", score: 4, scoreReason: "dobra", duplicates: [{ requestId: 3 }] },
+              result: {
+                summary: "sažetak",
+                score: 4,
+                scoreReason: "dobra",
+                duplicates: [{ requestId: 3 }],
+              },
               createdAt: new Date(),
             },
           ],
@@ -513,12 +564,30 @@ describe("ZahteviService", () => {
       prisma.changeRequest.findUnique.mockResolvedValue(
         rewarded({
           createdByUserId: OTHER.userId,
-          analyses: [{ id: 1, kind: "TRIAGE", status: "DONE", result: { score: 4, summary: "x" }, createdAt: now }],
-          events: [{ id: 1, type: "TRIAGED", actorUserId: null, data: { score: 4 }, createdAt: now }],
+          analyses: [
+            {
+              id: 1,
+              kind: "TRIAGE",
+              status: "DONE",
+              result: { score: 4, summary: "x" },
+              createdAt: now,
+            },
+          ],
+          events: [
+            {
+              id: 1,
+              type: "TRIAGED",
+              actorUserId: null,
+              data: { score: 4 },
+              createdAt: now,
+            },
+          ],
         }),
       );
       const d = row(await service.getDetail(10, ADMIN));
-      expect((d.analyses as { result: { score: number } }[])[0].result.score).toBe(4);
+      expect(
+        (d.analyses as { result: { score: number } }[])[0].result.score,
+      ).toBe(4);
       expect((d.events as { data: { score: number } }[])[0].data.score).toBe(4);
     });
 
@@ -528,14 +597,22 @@ describe("ZahteviService", () => {
         rewarded({
           createdByUserId: OTHER.userId,
           events: [
-            { id: 1, type: "SCORE_CONFIRMED", actorUserId: ADMIN.userId, data: null, createdAt: now },
+            {
+              id: 1,
+              type: "SCORE_CONFIRMED",
+              actorUserId: ADMIN.userId,
+              data: null,
+              createdAt: now,
+            },
           ],
         }),
       );
       const d = row(await service.getDetail(10, ADMIN));
       expect(d.finalScore).toBe(3);
       expect(d.rewardStatus).toBe("CONFIRMED");
-      expect((d.events as { type: string }[]).map((e) => e.type)).toContain("SCORE_CONFIRMED");
+      expect((d.events as { type: string }[]).map((e) => e.type)).toContain(
+        "SCORE_CONFIRMED",
+      );
     });
 
     it("list: ne-admin → svaki red očišćen; admin → netaknut", async () => {
@@ -553,23 +630,33 @@ describe("ZahteviService", () => {
     // Mutacioni odgovori (create/submit/withdraw/update) takođe moraju biti očišćeni.
     describe("mutacioni odgovori se čiste za ne-admina", () => {
       it("submit → bez ocena/iznosa", async () => {
-        prisma.changeRequest.findUnique.mockResolvedValue(rewarded({ status: "DRAFT" }));
-        prisma.changeRequest.update.mockResolvedValue(rewarded({ status: "SUBMITTED" }));
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          rewarded({ status: "DRAFT" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          rewarded({ status: "SUBMITTED" }),
+        );
         const d = row(await service.submit(10, USER));
         expect(d.finalScore).toBeNull();
         expect(d.rewardStatus).toBe("NONE");
       });
 
       it("withdraw → bez ocena/iznosa", async () => {
-        prisma.changeRequest.findUnique.mockResolvedValue(rewarded({ status: "SUBMITTED" }));
-        prisma.changeRequest.update.mockResolvedValue(rewarded({ status: "ARCHIVED" }));
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          rewarded({ status: "SUBMITTED" }),
+        );
+        prisma.changeRequest.update.mockResolvedValue(
+          rewarded({ status: "ARCHIVED" }),
+        );
         const d = row(await service.withdraw(10, USER));
         expect(d.finalScore).toBeNull();
         expect(d.rewardStatus).toBe("NONE");
       });
 
       it("update (DRAFT) → bez ocena/iznosa", async () => {
-        prisma.changeRequest.findUnique.mockResolvedValue(rewarded({ status: "DRAFT" }));
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          rewarded({ status: "DRAFT" }),
+        );
         prisma.changeRequest.update.mockResolvedValue(
           rewarded({ status: "DRAFT", description: "novo" }),
         );
@@ -579,8 +666,12 @@ describe("ZahteviService", () => {
       });
 
       it("create (DRAFT) → bez ocena/iznosa", async () => {
-        prisma.changeRequest.create.mockResolvedValue(rewarded({ status: "DRAFT" }));
-        const d = row(await service.create({ title: "T", description: "D" }, USER));
+        prisma.changeRequest.create.mockResolvedValue(
+          rewarded({ status: "DRAFT" }),
+        );
+        const d = row(
+          await service.create({ title: "T", description: "D" }, USER),
+        );
         expect(d.rewardStatus).toBe("NONE");
       });
 
@@ -589,7 +680,11 @@ describe("ZahteviService", () => {
           rewarded({ status: "DRAFT", createdByUserId: OTHER.userId }),
         );
         prisma.changeRequest.update.mockResolvedValue(
-          rewarded({ status: "DRAFT", description: "novo", createdByUserId: OTHER.userId }),
+          rewarded({
+            status: "DRAFT",
+            description: "novo",
+            createdByUserId: OTHER.userId,
+          }),
         );
         const d = row(await service.update(10, { description: "novo" }, ADMIN));
         expect(d.finalScore).toBe(3);
@@ -597,7 +692,9 @@ describe("ZahteviService", () => {
       });
 
       it("prazan PATCH {} (nijedno polje) → 400", async () => {
-        prisma.changeRequest.findUnique.mockResolvedValue(rewarded({ status: "DRAFT" }));
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          rewarded({ status: "DRAFT" }),
+        );
         await expect(service.update(10, {}, USER)).rejects.toBeInstanceOf(
           BadRequestException,
         );
@@ -1373,8 +1470,9 @@ describe("ZahteviService", () => {
         { questions: ["Q1", "Q2"] },
         ADMIN,
       );
-      expect((res.data as { questionCommentIds: number[] }).questionCommentIds)
-        .toEqual([101, 102]);
+      expect(
+        (res.data as { questionCommentIds: number[] }).questionCommentIds,
+      ).toEqual([101, 102]);
     });
   });
 
@@ -1415,6 +1513,286 @@ describe("ZahteviService", () => {
         prisma.changeRequestComment.create,
       );
       expect(arg.data.isQuestion).toBe(false);
+    });
+
+    // ── Mejl na korisnički komentar (03.08.2026) ────────────────────────────
+    // Nalaz vlasnika: komentari korisnika „uopšte nismo ni registrovali" (009/26:
+    // „Da li možete da pročitate komentar?"). Komentar je pisao SAMO red u bazu.
+    it("komentar NE-admina → notifyUserComment sa reason 'comment'", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "READY_FOR_TEST" }),
+      );
+      prisma.changeRequestComment.create.mockResolvedValue({ id: 1 });
+      await service.addComment(10, { body: "Ne mogu da otvorim." }, USER);
+      expect(mail.notifyUserComment).toHaveBeenCalledTimes(1);
+      expect(mail.notifyUserComment).toHaveBeenCalledWith({
+        requestId: 10,
+        authorUserId: USER.userId,
+        body: "Ne mogu da otvorim.",
+        reason: "comment",
+      });
+    });
+
+    it("komentar ADMINA → mejl se NE šalje (ne obaveštava sebe)", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "READY_FOR_TEST" }),
+      );
+      prisma.changeRequestComment.create.mockResolvedValue({ id: 1 });
+      await service.addComment(10, { body: "odgovor" }, ADMIN);
+      expect(mail.notifyUserComment).not.toHaveBeenCalled();
+    });
+
+    it("pad mejla NE obara upis komentara (§10.4 fire-and-forget)", async () => {
+      prisma.changeRequest.findUnique.mockResolvedValue(
+        baseReq({ status: "READY_FOR_TEST" }),
+      );
+      prisma.changeRequestComment.create.mockResolvedValue({ id: 7 });
+      mail.notifyUserComment.mockRejectedValue(new Error("resend 500"));
+      const res = await service.addComment(10, { body: "tekst" }, USER);
+      expect(row(res).id).toBe(7);
+      expect(prisma.changeRequestComment.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── PROVERA ISPORUKE OD PODNOSIOCA (03.08.2026) ─────────────────────────────
+  // Do sada je jedini prelaz statusa bio admin-only POST :id/status, pa je korisnikova
+  // potvrda bila komentar „RADI" u koji se moralo verovati da će ga neko pročitati.
+  describe("confirm/reopen — podnosilac presuđuje o isporuci", () => {
+    describe("confirm (READY_FOR_TEST → DONE)", () => {
+      it("podnosilac potvrđuje: DONE + decidedAt/By + decisionNote + event USER_CONFIRMED", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST" }),
+        );
+        prisma.user.findMany.mockResolvedValue([
+          { id: USER.userId, fullName: "Milan Stojadinović", email: null },
+        ]);
+        const res = await service.confirmDelivery(10, undefined, USER);
+
+        expect(row(res).status).toBe("DONE");
+        // CAS na pročitani status (dupli klik ne prolazi dvaput).
+        const upd = firstArg<{
+          where: { id: number; status: string };
+          data: Record<string, unknown>;
+        }>(prisma.changeRequest.updateMany);
+        expect(upd.where).toEqual({ id: 10, status: "READY_FOR_TEST" });
+        expect(upd.data.status).toBe("DONE");
+        expect(upd.data.decidedByUserId).toBe(USER.userId);
+        expect(upd.data.decidedAt).toBeInstanceOf(Date);
+        expect(upd.data.decisionNote).toBe(
+          "Potvrdio podnosilac. (Milan Stojadinović)",
+        );
+        expect(eventTypes(prisma)).toEqual(["USER_CONFIRMED"]);
+      });
+
+      it("rewardStatus se NE dira — nagrada ostaje admin odluka (§12)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST", rewardStatus: "PROPOSED" }),
+        );
+        await service.confirmDelivery(10, undefined, USER);
+        const upd = firstArg<{ data: Record<string, unknown> }>(
+          prisma.changeRequest.updateMany,
+        );
+        expect(upd.data).not.toHaveProperty("rewardStatus");
+        expect(upd.data).not.toHaveProperty("rewardAmount");
+        expect(upd.data).not.toHaveProperty("finalScore");
+      });
+
+      it("uz opcioni komentar → i komentar se upiše u ISTOJ transakciji", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST" }),
+        );
+        await service.confirmDelivery(
+          10,
+          { comment: "  Radi, hvala.  " },
+          USER,
+        );
+        const arg = firstArg<{
+          data: { body: string; isQuestion: boolean; authorUserId: number };
+        }>(prisma.changeRequestComment.create);
+        expect(arg.data.body).toBe("Radi, hvala."); // trim
+        expect(arg.data.isQuestion).toBe(false);
+        expect(arg.data.authorUserId).toBe(USER.userId);
+      });
+
+      it("BEZ komentara → nijedan komentar se ne upisuje", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST" }),
+        );
+        await service.confirmDelivery(10, {}, USER);
+        expect(prisma.changeRequestComment.create).not.toHaveBeenCalled();
+      });
+
+      it("confirm NE šalje mejl (podnosilac bi obavestio sam sebe)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST" }),
+        );
+        await service.confirmDelivery(10, { comment: "radi" }, USER);
+        expect(mail.notifyUserComment).not.toHaveBeenCalled();
+        expect(mail.notifySubmitter).not.toHaveBeenCalled();
+      });
+
+      it("ADMIN koji NIJE podnosilac sme da potvrdi", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST", createdByUserId: USER.userId }),
+        );
+        const res = await service.confirmDelivery(10, undefined, ADMIN);
+        expect(row(res).status).toBe("DONE");
+      });
+
+      it("DRUGI korisnik (write, nije podnosilac) NE može — row-scope ga i ne vidi (404)", async () => {
+        // Doktrina modula (getScopedOrThrow): ne-admin nad tuđim zahtevom dobija 404,
+        // NE 403 — postojanje tuđeg zahteva se ne otkriva. Bitno je da ne prođe.
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST", createdByUserId: USER.userId }),
+        );
+        await expect(
+          service.confirmDelivery(10, undefined, OTHER),
+        ).rejects.toBeInstanceOf(NotFoundException);
+        expect(prisma.changeRequest.updateMany).not.toHaveBeenCalled();
+      });
+
+      it.each(["IN_PROGRESS", "SUBMITTED", "APPROVED", "TESTING"])(
+        "iz statusa %s → 422 sa srpskom porukom (nema šta da se potvrdi)",
+        async (status) => {
+          prisma.changeRequest.findUnique.mockResolvedValue(
+            baseReq({ status }),
+          );
+          await expect(
+            service.confirmDelivery(10, undefined, USER),
+          ).rejects.toBeInstanceOf(UnprocessableEntityException);
+          expect(prisma.changeRequest.updateMany).not.toHaveBeenCalled();
+        },
+      );
+
+      it("već DONE → 200 no-op sa porukom (dupli klik nije greška)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "DONE" }),
+        );
+        const res = (await service.confirmDelivery(10, undefined, USER)) as {
+          data: unknown;
+          noop?: boolean;
+          message?: string;
+        };
+        expect(res.noop).toBe(true);
+        expect(res.message).toBe("Zahtev je već zatvoren.");
+        expect(prisma.changeRequest.updateMany).not.toHaveBeenCalled();
+        expect(prisma.changeRequestEvent.create).not.toHaveBeenCalled();
+      });
+
+      it("CAS pao (admin zatvorio u međuvremenu) → 409, bez event-a", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST" }),
+        );
+        prisma.changeRequest.updateMany.mockResolvedValue({ count: 0 });
+        await expect(
+          service.confirmDelivery(10, undefined, USER),
+        ).rejects.toBeInstanceOf(ConflictException);
+      });
+    });
+
+    describe("reopen (READY_FOR_TEST → SUBMITTED)", () => {
+      it("sa komentarom: SUBMITTED + komentar + event USER_REOPENED + mejl", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST" }),
+        );
+        const res = await service.reopenDelivery(
+          10,
+          { comment: "Dugme ne reaguje na telefonu." },
+          USER,
+        );
+        expect(row(res).status).toBe("SUBMITTED");
+
+        const upd = firstArg<{
+          where: { id: number; status: string };
+          data: Record<string, unknown>;
+        }>(prisma.changeRequest.updateMany);
+        expect(upd.where).toEqual({ id: 10, status: "READY_FOR_TEST" });
+        expect(upd.data).toEqual({ status: "SUBMITTED" }); // ništa drugo se ne dira
+
+        const c = firstArg<{ data: { body: string; isQuestion: boolean } }>(
+          prisma.changeRequestComment.create,
+        );
+        expect(c.data.body).toBe("Dugme ne reaguje na telefonu.");
+        expect(c.data.isQuestion).toBe(false);
+        expect(eventTypes(prisma)).toEqual(["USER_REOPENED"]);
+
+        expect(mail.notifyUserComment).toHaveBeenCalledWith({
+          requestId: 10,
+          authorUserId: USER.userId,
+          body: "Dugme ne reaguje na telefonu.",
+          reason: "reopen",
+        });
+      });
+
+      it("SUBMITTED je status koji admin inbox brojač prati (inboxMeta)", async () => {
+        // Vezuje reopen za brojač: da izmena `inboxMeta` ne odseče vraćene zahteve.
+        prisma.changeRequest.groupBy.mockResolvedValue([
+          { status: "SUBMITTED", _count: { _all: 3 } },
+        ]);
+        const meta = await service.inboxMeta();
+        expect(meta.data.byStatus.SUBMITTED).toBe(3);
+        expect(meta.data.total).toBe(3);
+      });
+
+      it.each([undefined, {}, { comment: "   " }])(
+        "bez komentara (%p) → 422, ništa se ne upisuje",
+        async (dto) => {
+          prisma.changeRequest.findUnique.mockResolvedValue(
+            baseReq({ status: "READY_FOR_TEST" }),
+          );
+          await expect(
+            service.reopenDelivery(10, dto, USER),
+          ).rejects.toBeInstanceOf(UnprocessableEntityException);
+          expect(prisma.changeRequest.updateMany).not.toHaveBeenCalled();
+          expect(prisma.changeRequestComment.create).not.toHaveBeenCalled();
+        },
+      );
+
+      it("iz pogrešnog statusa (DONE) → 422", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "DONE" }),
+        );
+        await expect(
+          service.reopenDelivery(10, { comment: "ne radi" }, USER),
+        ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      });
+
+      it("DRUGI korisnik → 404 (row-scope), ništa se ne menja", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST", createdByUserId: USER.userId }),
+        );
+        await expect(
+          service.reopenDelivery(10, { comment: "ne radi" }, OTHER),
+        ).rejects.toBeInstanceOf(NotFoundException);
+        expect(prisma.changeRequest.updateMany).not.toHaveBeenCalled();
+      });
+
+      it("reopen od ADMINA prolazi, ali NE šalje mejl (ne obaveštava sebe)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST" }),
+        );
+        const res = await service.reopenDelivery(
+          10,
+          { comment: "ne radi" },
+          ADMIN,
+        );
+        expect(row(res).status).toBe("SUBMITTED");
+        expect(mail.notifyUserComment).not.toHaveBeenCalled();
+      });
+
+      it("AI trijaža se NE pokreće ponovo (zahtev je već klasifikovan)", async () => {
+        prisma.changeRequest.findUnique.mockResolvedValue(
+          baseReq({ status: "READY_FOR_TEST" }),
+        );
+        await service.reopenDelivery(10, { comment: "ne radi" }, USER);
+        expect(zahteviAi.scheduleTriage).not.toHaveBeenCalled();
+      });
+    });
+
+    it("status mašina dozvoljava READY_FOR_TEST → SUBMITTED (i dalje DONE/TESTING)", () => {
+      expect(STATUS_TRANSITIONS.READY_FOR_TEST).toEqual(
+        expect.arrayContaining(["TESTING", "DONE", "SUBMITTED"]),
+      );
     });
   });
 
