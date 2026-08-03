@@ -178,16 +178,18 @@ export class PracenjeService {
   ) {
     const workOrderId = Number(dto.bigtehnRnId);
 
+    // Dete: ako je u pitanju ručni sklop, mora biti iz OVOG predmeta — i to PRE
+    // `clear` grane (re-verify, sitnica): inače bi `clear:true` nad tuđim sklopom
+    // vraćao 200 i odlepio ga na koren u NJEGOVOM predmetu.
+    if (isVirtualNode(workOrderId)) {
+      await this.requireVirtuelniSklop(projectId, workOrderId);
+    }
+
     if (dto.clear) {
       await this.prisma.pracenjeStructureOverride.deleteMany({
         where: { workOrderId },
       });
       return { data: { id: null, cleared: true } };
-    }
-
-    // Dete: ako se premešta sam ručni sklop, i on mora biti iz ovog predmeta.
-    if (isVirtualNode(workOrderId)) {
-      await this.requireVirtuelniSklop(projectId, workOrderId);
     }
 
     const parentWorkOrderId =
