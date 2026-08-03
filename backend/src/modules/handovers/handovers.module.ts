@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { DocumentsModule } from "../documents/documents.module";
 import { WorkOrdersModule } from "../work-orders/work-orders.module";
 import { LaunchNotifyModule } from "./launch-notify.module";
 import { HandoversController } from "./handovers.controller";
@@ -9,6 +10,7 @@ import { HandoverDraftsController } from "./handover-drafts.controller";
 import { HandoverDraftsService } from "./handover-drafts.service";
 import { DraftNumberingService } from "./draft-numbering.service";
 import { PrintBundleService } from "./print-bundle.service";
+import { HandoverDraftPrintService } from "./handover-draft-print.service";
 
 /**
  * Nacrti + Primopredaje (MODULE_SPEC_nacrti_primopredaje) — jedan modul,
@@ -17,6 +19,8 @@ import { PrintBundleService } from "./print-bundle.service";
  *   - `handovers` (Primopredaje): pregled + approve/reject/launch nad `drawing_handovers`.
  *   - `PrintBundleService` (P3): štampa svih crteža nacrta/primopredaje — spojen PDF (pdf-lib),
  *     grupisanje po formatu strane; zajednički helper za oba nivoa.
+ *   - `HandoverDraftPrintService` (055/26): PDF lista pozicija ODOBRENOG nacrta (pdfmake preko
+ *     deljenog `PdfService` iz `DocumentsModule` — isti renderer kao RN dokument).
  *
  * D8: `handover-drafts.submit()` emituje in-app notifikaciju grupi TEHNOLOG
  * („Kreirana nova primopredaja…") preko `NotificationsService` (NotificationsModule).
@@ -34,13 +38,20 @@ import { PrintBundleService } from "./print-bundle.service";
  * Registracija u `app.module.ts` je posao integratora (dodati `HandoversModule` u `imports`).
  */
 @Module({
-  imports: [PrismaModule, NotificationsModule, LaunchNotifyModule, WorkOrdersModule],
+  imports: [
+    PrismaModule,
+    NotificationsModule,
+    DocumentsModule,
+    LaunchNotifyModule,
+    WorkOrdersModule,
+  ],
   controllers: [HandoversController, HandoverDraftsController],
   providers: [
     HandoversService,
     HandoverDraftsService,
     DraftNumberingService,
     PrintBundleService,
+    HandoverDraftPrintService,
   ],
 })
 export class HandoversModule {}

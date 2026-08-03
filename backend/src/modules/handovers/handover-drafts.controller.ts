@@ -23,6 +23,7 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import type { ListHandoverDraftsQuery } from "./handover-drafts.service";
 import { PrintBundleService } from "./print-bundle.service";
 import type { PrintBundleQuery } from "./print-bundle.service";
+import { HandoverDraftPrintService } from "./handover-draft-print.service";
 import type { CreateHandoverDraftDto } from "./dto/create-handover-draft.dto";
 import type { UpdateHandoverDraftDto } from "./dto/update-handover-draft.dto";
 import type { DecideDraftItemDto } from "./dto/decide-draft-item.dto";
@@ -52,6 +53,8 @@ import type { UpdateDraftItemDto } from "./dto/update-draft-item.dto";
  *                                               (P4_SPEC §0 t.4 + §6.5.4; 1=Isključi, 2=Predaj ponovo, 3=Dopuni)
  *   GET    /api/v1/handover-drafts/:id/print-bundle     — P3: crteži za štampu (hasPdf/sizeKb/pageFormat + grupe po formatu)
  *   GET    /api/v1/handover-drafts/:id/print-bundle/pdf — P3: JEDAN spojen PDF (?format=A4 ILI ?drawingIds=1,2,3; bez oba = svi)
+ *   GET    /api/v1/handover-drafts/:id/print            — 055/26: PDF lista pozicija ODOBRENOG nacrta (zaglavlje +
+ *                                               tabela pozicija; 422 dok primopredaja nije odobrena — vidi servis)
  *
  * BEZ BOM auto-populate wizarda. Item-level mutacije (sve nad RADNIM nacrtom,
  * sve traže PRIMOPREDAJE_WRITE): `POST :id/items` (append „Dodaj u nacrt iz
@@ -66,6 +69,7 @@ export class HandoverDraftsController {
   constructor(
     private readonly drafts: HandoverDraftsService,
     private readonly printing: PrintBundleService,
+    private readonly draftPrint: HandoverDraftPrintService,
   ) {}
 
   @Get()
@@ -102,6 +106,26 @@ export class HandoverDraftsController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
     const { buffer, fileName } = await this.printing.draftBundlePdf(id, query);
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${fileName}"`,
+    });
+    return new StreamableFile(buffer);
+  }
+
+  /**
+   * Zahtev 055/26 (Strahinja): PDF lista pozicija nacrta za modul ODOBRENE
+   * primopredaje — zaglavlje (broj nacrta, datumi, projekat) + tabela pozicija
+   * (r. br., broj crteža, naziv, količina). Read-only kao i print-bundle
+   * (klasni PRIMOPREDAJE_READ); 422 dok primopredaja nije odobrena.
+   */
+  @Get(":id/print")
+  async printPositions(
+    @Param("id", ParseIntPipe) id: number,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { buffer, fileName } =
+      await this.draftPrint.buildDraftPositionsPdf(id);
     res.set({
       "Content-Type": "application/pdf",
       "Content-Disposition": `inline; filename="${fileName}"`,
