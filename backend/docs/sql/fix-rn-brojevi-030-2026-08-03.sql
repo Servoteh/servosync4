@@ -6,11 +6,14 @@
 --
 -- ZAŠTO: legacy typo red '770171831' (wo.id 40199, 21.01.2026 — ukucana „7"
 -- umesto „/") je preko split('/').pop() hranio MAX+1 brojač sa 770 miliona.
--- Kod-fix (PR #49, 27.07.) je to zatvorio NA MAIN-U, ali prod je do 03.08. u
--- 14:41 vrteo stariji build → Jovica je 03.08. 08:31–10:50 dobio još DESET
--- kaskadnih RN (7701/770171835…844). Kod od 03.08. otrovne redove više NE
--- broji (prefiks-provera + sanity prag 100.000), ali brojevi na tih 10
--- naloga i dalje stoje besmisleni — ovaj skript ih vraća u normalan niz.
+-- Kod-fix (PR #49, 27.07.) je popravio WorkOrderNumberingService, ali je
+-- handovers.service.ts imao DUPLIKAT te logike (nextWorkOrderIdent, „ne
+-- importovati" po tadašnjem uputstvu) BEZ popravke — a Jovica RN-ove otvara
+-- kroz primopredaju, pa je 03.08. 08:31–10:50 dobio još DESET kaskadnih RN
+-- (7701/770171835…844). Na grani fix/rn-numbering-030 duplikat je UKINUT
+-- (primopredaja koristi deljeni servis: prefiks-provera + sanity prag
+-- 100.000), ali brojevi na tih 10 naloga i dalje stoje besmisleni — ovaj
+-- skript ih vraća u normalan niz.
 --
 -- IZMERENO NA PRODU 03.08.2026 (podloga za prag i obuhvat):
 --   • najveći legitiman ordinal IGDE = 2.273 (upravo 7701); opseg

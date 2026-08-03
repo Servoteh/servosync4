@@ -33,6 +33,7 @@ import {
   TECHNOLOGIST_CHECK_SELECT,
 } from "../../common/workers/technologist-criteria";
 import { PRIMOPREDAJA_APPROVERS } from "../../common/authz/primopredaja-approvers";
+import { WorkOrderNumberingService } from "../work-orders/work-order-numbering.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { LaunchHandoverDto } from "./dto/launch-handover.dto";
 import { ApproveHandoverDto } from "./dto/approve-handover.dto";
@@ -215,6 +216,8 @@ export class HandoversService {
     private readonly mail: MailService,
     // Obaveštenje planerima o lansiranju (016/26) — deljeno sa work-orders.launch.
     private readonly launchNotify: LaunchNotifyService,
+    // JEDAN izvor numeracije RN (incident 030/26) — deljen sa WorkOrdersModule.
+    private readonly numbering: WorkOrderNumberingService,
   ) {}
 
   // ---------------------------------------------------------------- READ
@@ -1506,7 +1509,12 @@ export class HandoversService {
     // Sync/import mogu da postave eksplicitne id-jeve (isti obrazac kao
     // work-orders.service.ts alignSeq) — poravnaj sekvencu pre insert-a.
     await alignIdSequence(tx, "work_orders");
-    const { identNumber, variant } = await this.nextWorkOrderIdent(
+    // Numeracija MORA ići kroz deljeni WorkOrderNumberingService — incident
+    // 030/26: ovde je stajala lokalna KOPIJA te logike („ne importovati" po
+    // tadašnjem uputstvu), pa je fix od 27.07. (c8f2bb50: prefiks-provera +
+    // sanity prag) pokrio samo original; kopija je nastavila da truje —
+    // Jovičinih 10 naloga 7701/770171835…844 od 03.08. nastalo je OVIM putem.
+    const { identNumber, variant } = await this.numbering.next(
       tx,
       ctx.project.id,
     );
@@ -1586,35 +1594,6 @@ export class HandoversService {
     id: number,
   ) {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`drawing_handover_wo:${id}`}))`;
-  }
-
-  /** Duplirano iz `work-orders/work-order-numbering.service.ts` (uputstvo zadatka — ne importovati). */
-  private async nextWorkOrderIdent(
-    tx: Prisma.TransactionClient,
-    projectId: number,
-  ): Promise<{ identNumber: string; variant: number }> {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${projectId})`;
-
-    const project = await tx.project.findUnique({
-      where: { id: projectId },
-      select: { projectNumber: true },
-    });
-    if (!project)
-      throw new NotFoundException(`Predmet ${projectId} ne postoji`);
-
-    const rows = await tx.workOrder.findMany({
-      where: { projectId },
-      select: { identNumber: true },
-    });
-    let maxOrd = 0;
-    for (const r of rows) {
-      const ord = Number.parseInt(r.identNumber.split("/").pop() ?? "", 10);
-      if (!Number.isNaN(ord) && ord > maxOrd) maxOrd = ord;
-    }
-    return {
-      identNumber: `${project.projectNumber}/${maxOrd + 1}`,
-      variant: 0,
-    };
   }
 
   /**

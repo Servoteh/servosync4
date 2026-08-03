@@ -32,6 +32,9 @@ import { TechnologySuggestService } from "./technology-suggest.service";
   ],
   // Exportovan za TechProcessesModule: control() kreira child RN (-S/-D) preko
   // WorkOrdersService.createQualityChildOrder (batch5, Nenad 16.07).
-  exports: [WorkOrdersService],
+  // WorkOrderNumberingService exportovan za HandoversModule (incident 030/26):
+  // primopredaja je imala KOPIJU numbering logike koju fix od 27.07. nije
+  // pokrio — svaki upisivač ident_number MORA ići kroz ovaj jedan servis.
+  exports: [WorkOrdersService, WorkOrderNumberingService],
 })
 export class WorkOrdersModule {}

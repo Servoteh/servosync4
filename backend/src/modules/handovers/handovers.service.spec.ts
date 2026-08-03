@@ -9,6 +9,7 @@ import { MailService } from "../../common/mail/mail.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { HandoversService } from "./handovers.service";
 import { LaunchNotifyService } from "./launch-notify.service";
+import { WorkOrderNumberingService } from "../work-orders/work-order-numbering.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /** Radnik iz JWT-a koji izvodi akcije u testovima (users.worker_id = 77). */
@@ -131,6 +132,10 @@ describe("HandoversService", () => {
         // PRAVI LaunchNotifyService (nije mock): launch hook 016/26 se i dalje
         // proverava kroz mail.send / notifyWorkers, samo je logika izdvojena.
         LaunchNotifyService,
+        // PRAVI WorkOrderNumberingService (030/26): primopredaja je imala
+        // KOPIJU numbering logike koju fix brojača nije pokrio — testovi
+        // moraju vežbati DELJENI servis, ne mock.
+        WorkOrderNumberingService,
         { provide: PrismaService, useValue: prisma },
         { provide: NotificationsService, useValue: notifications },
         { provide: MailService, useValue: mail },
@@ -1044,6 +1049,39 @@ describe("HandoversService", () => {
       );
       expect(prisma.workOrderLaunch.create).not.toHaveBeenCalled();
       expect(prisma.drawingHandover.update).not.toHaveBeenCalled();
+    });
+
+    it("numeracija ignoriše otrovne redove — bez kose crte i ogroman ordinal (koren 030/26: primopredaja je imala kopiju brojača bez fix-a)", async () => {
+      prisma.drawingHandover.findUnique.mockResolvedValue(approvedHandover);
+      prisma.workOrder.findFirst.mockResolvedValue(null);
+      mockWorkOrderContext();
+      // Stanje predmeta 7701 od 03.08: legit max /7, typo bez crte i kaskada.
+      prisma.workOrder.findMany.mockResolvedValue([
+        { identNumber: "P100/7" },
+        { identNumber: "P1007123456" }, // typo bez `P100/` prefiksa
+        { identNumber: "P100/770171832" }, // kaskadni apsurdni ordinal
+      ]);
+      prisma.workOrder.create.mockResolvedValue({
+        id: 102,
+        identNumber: "P100/8",
+        variant: 0,
+        projectId: 3,
+        drawingNumber: "D-10",
+        revision: "B",
+        pieceCount: 4,
+        handoverStatusId: 1,
+      });
+
+      const result = await service.prepareWorkOrder(5, actor);
+
+      expect(prisma.workOrder.create).toHaveBeenCalledWith(
+        containing({
+          data: containing({ identNumber: "P100/8", variant: 0 }),
+        }),
+      );
+      expect(result).toEqual({
+        data: { workOrderId: 102, identNumber: "P100/8", existing: false },
+      });
     });
 
     it("propagira rok primopredaje (production_deadline iz approve-a) u RN (§6.5.1)", async () => {

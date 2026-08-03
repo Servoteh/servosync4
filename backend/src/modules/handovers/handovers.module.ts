@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { WorkOrdersModule } from "../work-orders/work-orders.module";
 import { LaunchNotifyModule } from "./launch-notify.module";
 import { HandoversController } from "./handovers.controller";
 import { HandoversService } from "./handovers.service";
@@ -23,10 +24,17 @@ import { PrintBundleService } from "./print-bundle.service";
  * 016/26: obaveštenje planerima o lansiranju živi u `LaunchNotifyModule` (deljeno sa
  * `WorkOrdersModule` — lansiranje sa ekrana „Radni nalozi" je isti događaj).
  *
+ * 030/26: `WorkOrdersModule` se uvozi zbog deljenog `WorkOrderNumberingService` —
+ * numeracija RN iz primopredaje je bila lokalna KOPIJA te logike, pa je fix
+ * brojača od 27.07. pokrio samo work-orders put dok je primopredaja nastavila
+ * da deli otrovne brojeve (7701/770171835…844, 03.08). Zavisnost je
+ * jednosmerna (WorkOrdersModule NE uvozi HandoversModule — samo mini
+ * LaunchNotifyModule), pa nema ciklusa.
+ *
  * Registracija u `app.module.ts` je posao integratora (dodati `HandoversModule` u `imports`).
  */
 @Module({
-  imports: [PrismaModule, NotificationsModule, LaunchNotifyModule],
+  imports: [PrismaModule, NotificationsModule, LaunchNotifyModule, WorkOrdersModule],
   controllers: [HandoversController, HandoverDraftsController],
   providers: [
     HandoversService,
