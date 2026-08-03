@@ -428,15 +428,69 @@ export class SefService {
     }
 
     if (res.ok) {
-      const row = await this.prisma.sefOutbox.update({
-        where: { id: outboxId },
+      const sefInvoiceId = res.sefInvoiceId ?? outbox.sefInvoiceId;
+
+      // ⚠️ USLOVAN UPIS (CAS), NE BEZUSLOVAN `update` — nalaz N5, zatvoreno 03.08.2026.
+      //
+      // Provera „faktura je stornirana" iznad je pročitana PRE mrežnog poziva, a poziv
+      // traje (izmereno 300 ms sa lažnim klijentom). Ako storno prođe TAČNO u tom
+      // razmaku, bezuslovan upis je red koji je storno već prebacio u `CANCELLED`
+      // vraćao u `SENT`: faktura CANCELLED, outbox SENT, status-log „CANCELLED" → „SENT",
+      // a SEF cancel nikad poslat — kupac na portalu ima važeću e-fakturu za dokument
+      // koji kod nas ne postoji. `cancelSefOutbox` je taj razmak SUZIO (gasi PENDING pre
+      // mreže + drugi prolaz), ali ga ne može zatvoriti: bez uslova na statusu upis uvek
+      // pobeđuje. Uslov ga zatvara — baza presuđuje ko je stigao prvi.
+      const claimed = await this.prisma.sefOutbox.updateMany({
+        where: { id: outboxId, status: "PENDING" },
         data: {
           status: "SENT",
-          sefInvoiceId: res.sefInvoiceId ?? outbox.sefInvoiceId,
+          sefInvoiceId,
           errorMessage: null,
           sentAt: new Date(),
         },
       });
+
+      if (claimed.count !== 1) {
+        // Dokument JE otišao na SEF, a kod nas više nije za slanje (storno je stigao pre
+        // nas). Red se prebacuje u `CANCEL_PENDING` — to stanje tačno opisuje šta jeste:
+        // „storniran kod nas, SEF nije potvrdio otkazivanje". `sefInvoiceId` se OBAVEZNO
+        // upisuje, jer je to jedini ključ kojim otkazivanje na portalu uopšte može da se
+        // izvede; bez njega bi e-faktura kod kupca ostala živa bez načina da je povučemo.
+        await this.prisma.sefOutbox.update({
+          where: { id: outboxId },
+          data: {
+            status: SEF_OUTBOX_CANCEL_PENDING,
+            sefInvoiceId,
+            errorMessage:
+              "Poslato na SEF dok je storno bio u toku — čeka otkazivanje na SEF-u.",
+          },
+        });
+        await this.logStatus({
+          outboxId,
+          status: "ERROR",
+          note:
+            `Dokument je poslat na SEF (SEF ID ${sefInvoiceId ?? "—"}), ali je u ` +
+            `međuvremenu storniran kod nas — sledi otkazivanje na SEF-u.`,
+          userId,
+        });
+        // Odmah se pokušava i otkazivanje. `cancel` od 03.08.2026. BACA kad SEF ne
+        // potvrdi (i ostavlja `CANCEL_PENDING` za ponovni pokušaj) — to je i ovde tačan
+        // ishod: operater mora da zna da kupac trenutno vidi e-fakturu za dokument koji
+        // kod nas ne postoji. Zato se izuzetak NE guta.
+        await this.cancel(
+          outboxId,
+          "Dokument je storniran kod nas dok je slanje bilo u toku.",
+          userId,
+        );
+        // Otkazivanje je prošlo, ali slanje se ne sme prijaviti kao uspeh — pozivalac je
+        // tražio „pošalji", a ishod je „poslato pa povučeno".
+        throw new ConflictException(
+          `Dokument je poslat na SEF, ali je u međuvremenu storniran kod nas — ` +
+            `otkazan je i na SEF-u. Proveri stanje reda pre ponovnog slanja.`,
+        );
+      }
+
+      const row = await this.getOutbox(outboxId);
       await this.logStatus({
         outboxId,
         status: "SENT",

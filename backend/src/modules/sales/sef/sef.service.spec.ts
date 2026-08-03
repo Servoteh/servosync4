@@ -199,3 +199,101 @@ describe("SefService.enqueue — PrepaidAmount i BillingReference idu zajedno", 
     expect(arg.invoice.prepaidAmount).toBeNull();
   });
 });
+
+/**
+ * SEF SLANJE — TRKA „poslato POSLE storna" (nalaz N5, zatvoreno 03.08.2026).
+ * =============================================================================
+ * `send()` proveri da faktura nije stornirana, PA ode na mrežu. Mrežni poziv traje
+ * (izmereno 300 ms sa lažnim klijentom). Ako storno prođe tačno u tom razmaku, stari
+ * kod je BEZUSLOVNIM `update`-om vraćao u `SENT` red koji je storno već prebacio u
+ * `CANCELLED`. Ishod: faktura CANCELLED, outbox SENT, status-log „CANCELLED" → „SENT",
+ * a SEF cancel nikad poslat — kupac na portalu ima važeću e-fakturu za dokument koji
+ * kod nas ne postoji.
+ *
+ * `cancelSefOutbox` je taj razmak SUZIO (gasi PENDING pre mreže + drugi prolaz), ali ga
+ * ne može zatvoriti: bez uslova na statusu upis uvek pobeđuje. Zato je upis USLOVAN
+ * (`updateMany where {id, status:'PENDING'}`) — baza presuđuje ko je stigao prvi.
+ */
+function makeSendService(opts: {
+  /** Koliko redova zahvati uslovni upis: 1 = mi smo prvi, 0 = storno je bio brži. */
+  claimed: number;
+  /** Da li SEF potvrdi otkazivanje u koraku sanacije. */
+  cancelOk?: boolean;
+}) {
+  const rows: Record<string, unknown> = {
+    id: 900,
+    invoiceId: 7,
+    status: "PENDING",
+    sefInvoiceId: null,
+  };
+  const prisma = {
+    sefOutbox: {
+      findUnique: jest.fn().mockImplementation(() => Promise.resolve(rows)),
+      updateMany: jest.fn().mockResolvedValue({ count: opts.claimed }),
+      update: jest.fn().mockImplementation((args: { data: object }) => {
+        Object.assign(rows, args.data);
+        return Promise.resolve(rows);
+      }),
+    },
+    invoice: {
+      findUnique: jest.fn().mockResolvedValue({ status: "POSTED" }),
+    },
+    sefStatusLog: { create: jest.fn().mockResolvedValue({ id: 1 }) },
+  };
+  const client = {
+    sendInvoice: jest
+      .fn()
+      .mockResolvedValue({ ok: true, sefInvoiceId: "555111", dryRun: false }),
+    cancelInvoice: jest.fn().mockResolvedValue(
+      opts.cancelOk === false
+        ? { ok: false, httpStatus: -1, errorMessage: "timeout" }
+        : { ok: true },
+    ),
+  };
+  const service = new SefService(
+    prisma as never,
+    client as never,
+    { build: jest.fn() } as never,
+    {} as never,
+  );
+  return { service, prisma, client, rows };
+}
+
+describe("SefService.send — uslovan upis statusa SENT", () => {
+  it("normalan tok: red je još PENDING → uslovni upis zahvati tačno 1 red i status je SENT", async () => {
+    const { service, prisma } = makeSendService({ claimed: 1 });
+
+    await service.send(900, 1);
+
+    const where = (prisma.sefOutbox.updateMany.mock.calls as unknown[][])[0][0] as {
+      where: { id: number; status: string };
+    };
+    // Uslov MORA da nosi status — bez njega je trka otvorena.
+    expect(where.where).toEqual({ id: 900, status: "PENDING" });
+    expect(prisma.sefOutbox.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("storno je stigao prvi: SENT se NE upisuje, red ide u CANCEL_PENDING sa SEF ID-om, otkazivanje se šalje, poziv baca", async () => {
+    const { service, prisma, client, rows } = makeSendService({ claimed: 0 });
+
+    await expect(service.send(900, 1)).rejects.toThrow(/storniran kod nas/i);
+
+    // Status NIJE vraćen u SENT.
+    expect(rows.status).not.toBe("SENT");
+    // `sefInvoiceId` MORA biti upisan — bez njega e-faktura kod kupca ostaje živa
+    // bez ijednog ključa kojim bismo je povukli.
+    expect(rows.sefInvoiceId).toBe("555111");
+    // Otkazivanje na portalu je stvarno pokušano, ne samo zabeleženo.
+    expect(client.cancelInvoice).toHaveBeenCalled();
+    expect(prisma.sefStatusLog.create).toHaveBeenCalled();
+  });
+
+  it("storno je stigao prvi a SEF ne potvrdi otkazivanje: red ostaje CANCEL_PENDING za ponovni pokušaj", async () => {
+    const { service, rows } = makeSendService({ claimed: 0, cancelOk: false });
+
+    await expect(service.send(900, 1)).rejects.toThrow();
+
+    expect(rows.status).toBe("CANCEL_PENDING");
+    expect(rows.sefInvoiceId).toBe("555111");
+  });
+});
