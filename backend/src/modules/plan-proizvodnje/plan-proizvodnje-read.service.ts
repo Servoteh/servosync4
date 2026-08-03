@@ -89,7 +89,12 @@ const ALL_COLS = Prisma.sql`line_id, work_order_id, effective_machine_code, broj
   drawings_count, has_bigtehn_drawing, is_rework, is_scrap, rework_pieces, scrap_pieces,
   previous_operation_operacija, previous_operation_status, previous_operation_machine_code`;
 
-/** Kolone za gant feed (046/26) — auto-podaci stavke + termini + spremnost/završenost. */
+/**
+ * Kolone za gant feed (046/26) — auto-podaci stavke + termini + spremnost/završenost.
+ * Poslednji red (rn_zavrsen/is_cooperation_effective/overlay_archived_at) je za picker
+ * „Dodaj na plan" (A4): kod `scope=sve` pretrage FE mora da RAZLIKUJE zašto stavka nije
+ * za dodavanje (završena / RN zatvoren / kooperacija / arhivirana), umesto da je sakrije.
+ */
 const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   effective_machine_code, original_machine_code, original_machine_name, hall,
   rn_ident_broj, broj_crteza, naziv_dela, materijal, komada_total, komada_done,
@@ -100,7 +105,8 @@ const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   is_ready_for_machine, is_ready_manual, previous_operation_status,
   previous_operation_operacija, previous_operation_machine_code,
   local_status, shift_sort_order, shift_note, is_urgent, urgency_reason,
-  is_non_machining, customer_short, customer_name, is_done_in_bigtehn`;
+  is_non_machining, customer_short, customer_name, is_done_in_bigtehn,
+  rn_zavrsen, is_cooperation_effective, overlay_archived_at`;
 
 const GANTT_LIMIT = 5000;
 
@@ -235,16 +241,35 @@ export class PlanProizvodnjeReadService {
    *
    * Grupisanje Hala → mašina radi FE nad `hall` (ručni šifrarnik) + `effective_machine_code`;
    * `hall IS NULL` → grupa „Bez hale". Stavke bez `planned_start_at` FE NE crta kao bar.
+   *
+   * 046/26-A4 `scope=sve`: pretraga za picker „Dodaj na plan". Feed je LIMIT 5000
+   * (izmereno na produ 03.08.2026: 16.394 kandidata → trunciran na manje od trećine), pa je
+   * klijentska pretraga nad učitanim redovima tiho promašivala otvorene operacije (Strahinjin
+   * primer: crtež 1083492, škart-klon vidljiv a serija ne). `scope=sve` traži SERVER-side po
+   * celoj bazi i vraća SVE operacije pogođene `q`-om — i završene/zatvorene/kooperaciju —
+   * da picker prikaže i ZAŠTO stavka nije za dodavanje, umesto da je sakrije. Obavezan `q`
+   * (min SEARCH_MIN_LEN); sort po RN + operaciji (serija i njeni -S# klonovi zajedno).
    */
-  async gantt(_email: string, q?: { hall?: string; machine?: string; q?: string }) {
+  async gantt(
+    _email: string,
+    q?: { hall?: string; machine?: string; q?: string; scope?: string },
+  ) {
     const machine = (q?.machine ?? "").trim();
     const hall = (q?.hall ?? "").trim();
     const term = (q?.q ?? "").trim();
+    const sve = q?.scope === "sve";
+    if (sve && term.length < SEARCH_MIN_LEN)
+      throw new BadRequestException(
+        `scope=sve traži q od bar ${SEARCH_MIN_LEN} znaka.`,
+      );
     const conds: Prisma.Sql[] = [
-      // (a) OR (b) — v. doc iznad. `planned_start_at` grana namerno zaobilazi OPEN_OPS.
-      Prisma.sql`((${EFF_FILTER} AND ${OPEN_OPS}) OR planned_start_at IS NOT NULL)`,
       Prisma.sql`effective_machine_code IS NOT NULL`,
     ];
+    if (!sve)
+      // (a) OR (b) — v. doc iznad. `planned_start_at` grana namerno zaobilazi OPEN_OPS.
+      conds.push(
+        Prisma.sql`((${EFF_FILTER} AND ${OPEN_OPS}) OR planned_start_at IS NOT NULL)`,
+      );
     if (machine)
       conds.push(Prisma.sql`effective_machine_code = ${machine}`);
     if (hall)
@@ -257,12 +282,15 @@ export class PlanProizvodnjeReadService {
       conds.push(
         Prisma.sql`(broj_crteza ILIKE ${"%" + term + "%"} OR rn_ident_broj ILIKE ${"%" + term + "%"} OR naziv_dela ILIKE ${"%" + term + "%"})`,
       );
+    const sort = sve
+      ? Prisma.sql`ORDER BY rn_ident_broj ASC, operacija ASC`
+      : Prisma.sql`ORDER BY hall ASC NULLS LAST, effective_machine_code ASC,
+               planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST,
+               rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC`;
     const rows = await this.prisma.$queryRaw(Prisma.sql`
       SELECT ${GANTT_COLS} FROM (${this.effectiveOpsInner(Prisma.empty)}) eff
       WHERE ${Prisma.join(conds, " AND ")}
-      ORDER BY hall ASC NULLS LAST, effective_machine_code ASC,
-               planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST,
-               rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC
+      ${sort}
       LIMIT ${GANTT_LIMIT}`);
     return {
       data: jsonSafe(rows),

@@ -234,6 +234,11 @@ export interface GanttRow {
   customer_short: string | null;
   customer_name: string | null;
   is_done_in_bigtehn: boolean | null;
+  // ── Picker status polja (046/26-A4, `scope=sve` pretraga) — opciona (`?:`) da FE
+  //    preživi i stariji BE odgovor bez ovih kolona (CF frontend deploy je nezavisan).
+  rn_zavrsen?: boolean | null;
+  is_cooperation_effective?: boolean | null;
+  overlay_archived_at?: string | null;
   [k: string]: unknown;
 }
 
@@ -388,6 +393,25 @@ export function useGantt(filters: { hall?: string; machine?: string; q?: string 
     queryFn: () =>
       apiFetch<{ data: GanttRow[]; meta: { limit: number; truncated: boolean } }>(
         `${BASE}/gantt${qs({ hall: filters.hall, machine: filters.machine, q: term || undefined })}`,
+      ),
+  });
+}
+
+/**
+ * Server-side pretraga za picker „Dodaj na plan" (046/26-A4). Gant feed je trunciran na
+ * 5000 redova (prod: 16.394 kandidata) i sužen aktivnim filterima taba, pa je klijentska
+ * pretraga tiho promašivala otvorene operacije. `scope=sve` traži po CELOJ bazi i vraća
+ * i završene/zatvorene/kooperaciju — picker ih prikazuje sa razlogom umesto da ih krije.
+ * Ključ počinje sa KEYS.gantt da optimistički patch `useGanttOverlay` pogodi i ovaj keš.
+ */
+export function useGanttSearchAll(q: string) {
+  const term = q.trim();
+  return useQuery({
+    queryKey: [...KEYS.gantt, 'sve', term],
+    enabled: term.length >= 2,
+    queryFn: () =>
+      apiFetch<{ data: GanttRow[]; meta: { limit: number; truncated: boolean } }>(
+        `${BASE}/gantt${qs({ q: term, scope: 'sve' })}`,
       ),
   });
 }
