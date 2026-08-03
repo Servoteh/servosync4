@@ -75,9 +75,10 @@ function makeCtx(over: Partial<PrintCtx> = {}): PrintCtx {
       country: "Srbija",
     },
     issuer: {
-      companyName: "Servoteh d.o.o. Dobanovci",
+      companyName: "Servoteh d.o.o.",
       address: "Ugrinovačka 163",
-      city: "11272 Dobanovci",
+      city: "Dobanovci",
+      postalCode: "11272",
       taxId: "101017443",
       registrationNumber: "17400169",
       bankAccount: "160-110610-83",

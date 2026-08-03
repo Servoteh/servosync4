@@ -170,6 +170,9 @@ export class SefService {
       registrationNumber: company.registrationNumber,
       address: company.address,
       city: company.city,
+      // Poštanski broj ima svoju kolonu od odluke O-F10; ranije je bio deo `city`, pa je
+      // na SEF odlazio kao deo NAZIVA MESTA umesto kao cbc:PostalZone.
+      postalCode: company.postalCode,
       // Grupa D: podaci za plaćanje → cac:PaymentMeans. IBAN/SWIFT (kolone dodate
       // migracijom 20260727110000) imaju prednost kod ino uplate; domaći tekući
       // račun je fallback.

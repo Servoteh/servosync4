@@ -28,9 +28,10 @@ const D = (v: string | number): Prisma.Decimal => new Prisma.Decimal(v);
 // ───────────────────────────────────────────────────────────── lažni redovi baze
 
 const COMPANY = {
-  companyName: "Servoteh d.o.o. Dobanovci",
+  companyName: "Servoteh d.o.o.",
   address: "Ugrinovačka 163",
-  city: "11272 Dobanovci",
+  city: "Dobanovci",
+  postalCode: "11272",
   taxId: "101017443",
   registrationNumber: "17400169",
   bankAccount: "160-110610-83",
@@ -184,6 +185,8 @@ function makeApplication(
 function makePrisma(
   invoice: Record<string, unknown>,
   applications: unknown[] = [],
+  /** `null` = firma nema red u `companies` (legacy `companyId` bez zapisa). */
+  company: Record<string, unknown> | null = COMPANY,
 ) {
   return {
     invoice: {
@@ -199,7 +202,7 @@ function makePrisma(
       findMany: jest.fn(() => Promise.resolve(applications)),
     },
     customer: { findUnique: jest.fn(() => Promise.resolve(CUSTOMER)) },
-    company: { findUnique: jest.fn(() => Promise.resolve(COMPANY)) },
+    company: { findUnique: jest.fn(() => Promise.resolve(company)) },
     paymentAccount: { findMany: jest.fn(() => Promise.resolve([EUR_ACCOUNT])) },
     item: {
       findMany: jest.fn((args: { where: { id: { in: number[] } } }) =>
@@ -297,8 +300,9 @@ async function build(
   invoice: Record<string, unknown>,
   variant?: "withPrices" | "withoutPrices",
   applications: unknown[] = [],
+  company: Record<string, unknown> | null = COMPANY,
 ): Promise<Built> {
-  const prisma = makePrisma(invoice, applications);
+  const prisma = makePrisma(invoice, applications, company);
   const pdf = new PdfService();
   let captured: TDocumentDefinitions | undefined;
   jest.spyOn(pdf, "render").mockImplementation(async (dd) => {
@@ -604,12 +608,36 @@ describe("InvoicePdfService — izbor obrasca po vrsti dokumenta", () => {
       ],
     ])("stoji u zaglavlju i podnožju strane za %s", async (_type, over) => {
       const out = await build(makeInvoice(over));
+      // Ime u bazi je „Servoteh d.o.o." (O-F9), grad memorandum dopisuje iz `city`.
       expect(out.header).toContain("Servoteh d.o.o. Dobanovci");
       expect(out.header).toContain("web:: www.servoteh.rs");
       expect(out.footer).toContain("Matični broj: 17400169");
       expect(out.footer).toContain("PIB: 101017443");
       expect(out.footer).toContain("google mapa");
       expect(out.footer).toContain("Agenciji za privredne registre");
+    });
+
+    /**
+     * ODLUKA O-F10: poštanski broj ima svoju kolonu (`companies.postal_code`). Test dokazuje
+     * da je ta kolona ZAISTA provučena kroz `loadIssuer` do memoranduma — dok je bila deo
+     * `city`, ovaj red je izgledao isto, pa se razlika ne bi videla bez razdvojenog vektora.
+     */
+    it("adresa u zaglavlju spaja poštanski broj i mesto iz DVE kolone (O-F10)", async () => {
+      const out = await build(makeInvoice());
+      expect(out.header).toContain("Ugrinovačka 163, 11272 Dobanovci");
+    });
+
+    /**
+     * ODLUKA O-F9: naziv firme ima JEDAN izvor — `companies.company_name`. Rezervno ime u
+     * kodu (`?? "Servoteh d.o.o."`) je značilo da papir može da nosi ime koje u bazi ne
+     * postoji, i koje se pri preimenovanju firme ne bi promenilo.
+     */
+    it("firma bez reda u `companies` NE dobija ime iz koda (O-F9)", async () => {
+      const out = await build(makeInvoice(), undefined, [], null);
+      expect(out.header).not.toContain("Servoteh");
+      expect(out.body).not.toContain("Servoteh");
+      // Papir se i dalje renderuje — nedostatak podatka se vidi kao izostao red.
+      expect(out.body).toContain("Račun br. 657/25");
     });
 
     /**

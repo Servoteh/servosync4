@@ -1,4 +1,5 @@
 import type { Column, Content } from "pdfmake/interfaces";
+import { companyAddressLine } from "../../../common/company-address";
 import { SERVOTEH_LOGO_DATA_URL } from "../../documents/servoteh-logo";
 import {
   PARTNER_STRIP_ASPECT,
@@ -33,9 +34,16 @@ import {
  * prati bazu, inače bi promena adrese tražila deploy.
  */
 export interface MemorandumIssuer {
+  /**
+   * Naziv firme DOSLOVNO iz `companies.company_name` (odluka O-F9) — „Servoteh d.o.o.".
+   * Mesto uz ime („… Dobanovci", kako stoji u gornjoj traci papira) memorandum dopisuje
+   * sam iz `city`; u bazi ime nosi samo naziv.
+   */
   companyName: string;
   address?: string | null;
   city?: string | null;
+  /** Poštanski broj sedišta (O-F10) — u memorandumu se štampa uz mesto. */
+  postalCode?: string | null;
   phone?: string | null;
   fax?: string | null;
   email?: string | null;
@@ -92,6 +100,32 @@ function trimSemicolon(value: string | null | undefined): string {
 }
 
 /**
+ * Naziv firme sa mestom, kako gornja traka svih pet donetih papira i glasi:
+ * `Servoteh d.o.o. Dobanovci`.
+ *
+ * ZAŠTO SE SPAJA OVDE (odluka O-F9): naziv u bazi je jedan jedini — `Servoteh d.o.o.`.
+ * Ranije je taj drugi oblik postojao samo tako što je neko u `company_name` dokucao i
+ * grad, pa je isti papir nosio dva imena iste firme (memorandum „Servoteh d.o.o.
+ * Dobanovci", potpisni blok „SERVOTEH doo"). Sada memorandum sam dopisuje mesto iz
+ * `city`, a svi ostali blokovi štampaju čist naziv.
+ *
+ * ⚠️ Ako je grad VEĆ na kraju naziva (zatečeni podatak „Servoteh d.o.o. Dobanovci" u
+ * `company_name`), ne dopisuje se drugi put — inače bi baza iz koje se prelazi na novi
+ * oblik u međuvremenu štampala „… Dobanovci Dobanovci".
+ */
+function nameWithPlace(
+  companyName: string | null | undefined,
+  city: string | null | undefined,
+): string {
+  const name = (companyName ?? "").trim();
+  const place = (city ?? "").trim();
+  if (!name || !place) return name || place;
+  return name.toLocaleLowerCase("sr").endsWith(place.toLocaleLowerCase("sr"))
+    ? name
+    : `${name} ${place}`;
+}
+
+/**
  * Zaglavlje strane: logo SERVOTEH levo, TÜV Rheinland / ISO 9001:2008 znak desno,
  * puna linija, pa dva centrirana reda sa podacima firme.
  *
@@ -110,13 +144,15 @@ export function memorandumHeader(
   const tuvHeight = 30;
   const tuvWidth = Math.round(tuvHeight * TUV_ISO_LOGO_ASPECT);
 
-  // Red 1: naziv · adresa, mesto · tel · fax — separator su dva razmaka, kao na papiru.
+  // Red 1: naziv i mesto · adresa sa poštanskim brojem · tel · fax — separator su dva
+  // razmaka, kao na papiru: „Servoteh d.o.o. Dobanovci  Ugrinovačka 163, 11272 Dobanovci".
+  // Mesto se namerno ponavlja (uz ime i u adresi) — tako stoji na svih pet obrazaca.
   const phone = trimSemicolon(issuer.phone);
   const fax = trimSemicolon(issuer.fax);
   const line1 = join(
     [
-      issuer.companyName,
-      join([issuer.address, issuer.city], ", "),
+      nameWithPlace(issuer.companyName, issuer.city),
+      companyAddressLine(issuer.address, issuer.postalCode, issuer.city),
       phone ? `tel: ${phone};` : "",
       fax ? `fax: ${fax};` : "",
     ],

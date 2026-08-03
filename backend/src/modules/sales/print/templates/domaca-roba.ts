@@ -548,7 +548,15 @@ function signaturesBlock(ctx: PrintCtx): Content {
     fontSize: 7,
     alignment: "center",
   });
+  // Mesto pa ulica, BEZ poštanskog broja — „Dobanovci, Ugrinovačka 163" (papir IFR 657/25).
+  // Otud `issuer.city` a ne `companyAddressLine`: poštanski broj je od odluke O-F10 zaseban
+  // podatak baš zato da ga ovaj blok ne bi morao da nosi (v. `common/company-address.ts`).
   const issuerAddress = joinParts([issuer.city, issuer.address], ", ");
+  // ⚠️ MATIČNI BROJ JE NAŠ, NIKAD KUPČEV (odluka O-F8). BigBit je u ovaj blok — u kom su
+  // NAŠI podaci uz potpis — upisivao matični broj KUPCA: papir IFR 657/25 nosi „MB: 20748346",
+  // a to je broj iz okvira kupca (HAP FLUID D.O.O.), dok naš pravi „17400169" stoji u podnožju
+  // istog papira. Ovde se čita `ctx.issuer`, i sme da se čita SAMO on: `ctx.customer` u ovom
+  // bloku nema šta da traži. Brana: `domaca-roba.spec.ts`, „potpisni blok nosi NAŠ matični broj".
   const issuerIds = joinParts(
     [
       issuer.taxId ? `PIB: ${issuer.taxId}` : null,
@@ -557,7 +565,11 @@ function signaturesBlock(ctx: PrintCtx): Content {
     " ",
   );
 
-  const carrier: Content[] = [small(issuer.companyName)];
+  // Naziv firme je jedan jedini oblik iz `companies.company_name` (O-F9) — bez velikih
+  // slova i bez grada zalepljenog uz ime; prazan naziv (firma bez reda) se preskače,
+  // da prazan red ne pomeri ostatak bloka.
+  const carrier: Content[] = [];
+  if (issuer.companyName.trim()) carrier.push(small(issuer.companyName.trim()));
   if (issuerAddress) carrier.push(small(issuerAddress));
   if (issuerIds) carrier.push(small(issuerIds));
 
@@ -566,6 +578,7 @@ function signaturesBlock(ctx: PrintCtx): Content {
   const issued: Content[] = [];
   if (ctx.warehouseName?.trim())
     issued.push(small(`iz magacina ${ctx.warehouseName.trim()}`));
+  // Ulica pa mesto, opet BEZ poštanskog broja — „Ugrinovačka 163, Dobanovci" (O-F10).
   const warehouseAddress = joinParts([issuer.address, issuer.city], ", ");
   if (warehouseAddress) issued.push(small(warehouseAddress));
 

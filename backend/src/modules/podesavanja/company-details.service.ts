@@ -37,6 +37,7 @@ const EDITABLE_SELECT = {
   companyName: true,
   address: true,
   city: true,
+  postalCode: true,
   municipality: true,
   phone: true,
   fax: true,
@@ -59,6 +60,7 @@ const MAX_LEN: Record<string, number> = {
   companyName: 150,
   address: 50,
   city: 50,
+  postalCode: 10,
   municipality: 50,
   phone: 50,
   fax: 50,
@@ -86,6 +88,7 @@ const FIELD_LABEL: Record<string, string> = {
   companyName: "Naziv firme",
   address: "Adresa",
   city: "Mesto",
+  postalCode: "Poštanski broj",
   municipality: "Opština",
   phone: "Telefon",
   fax: "Faks",
@@ -162,6 +165,7 @@ export class CompanyDetailsService {
     put("companyName", dto.companyName);
     put("address", dto.address);
     put("city", dto.city);
+    put("postalCode", dto.postalCode);
     put("municipality", dto.municipality);
     put("phone", dto.phone);
     put("fax", dto.fax);

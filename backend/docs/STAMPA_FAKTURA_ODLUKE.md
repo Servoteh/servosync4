@@ -177,9 +177,13 @@ a `AVR2-1/26` je parser čitao kao avansnu seriju.
 
 ---
 
-## 🔴 ČEKA ODLUKU PRE PUŠTANJA U RAD · Matični broj u bloku „Preuzeo za prevoz"
+## O-F8 · Matični broj u bloku „Preuzeo za prevoz" je UVEK NAŠ, nikad kupčev
 
-**Nalaz (01.08.2026):** na fakturama za robu, u bloku sa NAŠIM podacima uz potpis, BigBit štampa:
+**Odluka vlasnika (03.08.2026):** *„onaj MB je pogrešno pisan, treba naš MB 17400169, ovaj ne
+od kupca"* — dakle mogućnost **A** iz ranije tabele: štampa se `17400169`.
+
+**Nalaz koji je do odluke doveo (01.08.2026):** na fakturama za robu, u bloku sa NAŠIM podacima
+uz potpis, BigBit štampa:
 
 ```
 SERVOTEH doo
@@ -190,27 +194,91 @@ PIB: 101017443   MB: 20748346
 PIB `101017443` **jeste naš**. Matični broj `20748346` **NIJE** — naš je `17400169`, što piše u
 podnožju iste te fakture (`Matični broj: 17400169`, `Registarski broj: 01117400169`).
 
-Broj `20748346` na istom papiru stoji i u okviru KUPCA (`HAP FLUID D.O.O. · PIB: 107136558 -
-MB: 20748346`). Dakle BigBit u naš potpisni blok upisuje **matični broj kupca**.
+**Dokaz da je broj kupčev, a ne naš:** `20748346` na tom istom papiru stoji i u okviru KUPCA
+(`HAP FLUID D.O.O. · PIB: 107136558 - MB: 20748346`). BigBit u naš potpisni blok upisuje
+**matični broj kupca**.
 
-**Koliko dugo traje:** nepoznato, ali greška je u samom obrascu, ne u podacima — dakle važi za
-svaku fakturu za robu koja je ikad odštampana iz BigBita. Oba donesena primera (IFR 657/25 i
-IFGP 650/25) je nose.
+**Koliko dugo traje:** greška je u samom obrascu, ne u podacima — dakle važi za svaku fakturu
+za robu koja je ikad odštampana iz BigBita. Oba donesena primera (IFR 657/25 i IFGP 650/25)
+je nose.
 
-**Šta 4.0 danas radi:** štampa **naš** broj iz `companies.registration_number`. To je svesno
-odstupanje od originala, i zato traži potvrdu.
+**Posledica u kodu:** nikakva — `domaca-roba.ts` je i pre odluke čitao
+`companies.registration_number`. Ono što je odluka donela je **brana**: taj blok sme da čita
+`ctx.issuer` i ništa drugo.
 
-**Za odluku pre puštanja u rad — tri mogućnosti:**
+⚠️ **Ne „ispravljati nazad" na original.** Papir će se razlikovati od svih dosadašnjih faktura
+— to je i cilj. Brane (`templates/domaca-roba.spec.ts`, „matični broj uz potpis je NAŠ"):
 
-| | šta se štampa | posledica |
+| brana | šta hvata |
+|---|---|
+| „kupčev se u tom bloku ne pojavljuje" | direktan povratak na `ctx.customer.registrationNumber` |
+| „bez našeg MB red ostaje bez njega" | „rezervni" fallback na kupca kad firma nema MB |
+| „izmena kupčevih identifikatora ne menja blok ni za jedan znak" | svako buduće vezivanje kupca u taj blok, ma kojim putem |
+
+Isti nalaz stoji i u [FAKTURE_ZAKONSKA_USKLADJENOST.md](FAKTURE_ZAKONSKA_USKLADJENOST.md) (N6).
+
+---
+
+## O-F9 · Jedno ime firme svuda: `Servoteh d.o.o.`
+
+**Odluka vlasnika (03.08.2026):** *„ime može Servoteh d.o.o."*
+
+Na istom papiru su do sada stajala **dva oblika istog imena**: memorandum
+`Servoteh d.o.o. Dobanovci`, potpisni blok `SERVOTEH doo`. Od sada je oblik jedan, iz
+**jednog izvora** — `companies.company_name` — i nijedan šablon ga ne prepisuje, ne skraćuje
+i ne diže na velika slova.
+
+**Šta se konkretno promenilo:**
+
+1. **U bazi ime nosi samo naziv** (`Servoteh d.o.o.`), bez grada. Mesto uz ime u gornjoj traci
+   papira **dopisuje memorandum sam**, iz `companies.city`:
+   `Servoteh d.o.o. Dobanovci  Ugrinovačka 163, 11272 Dobanovci  tel: …`
+   Taj red ostaje doslovno kakav je bio — menja se samo odakle mu delovi dolaze.
+   (Zaštita: ako zatečeni podatak već nosi grad u nazivu, memorandum ga ne dopisuje dvaput.)
+2. **Uklonjeno rezervno ime iz koda.** `loadIssuer` i `loadLegacyIssuer` su vraćali
+   `?? "Servoteh d.o.o."` kad firma nema red u `companies` — dakle papir je mogao da nosi ime
+   koje u bazi ne postoji i koje se pri preimenovanju firme ne bi promenilo. Sada naziv u tom
+   slučaju ostaje prazan, a blokovi ga **preskaču** (bez praznog reda koji pomera raspored),
+   isto kao svaki drugi nepopunjen podatak.
+
+**Zašto ovo nije kozmetika:** dva imena iste firme na jednom papiru su za kupca dve firme, a
+za nas dva izvora istine — čim se firma preimenuje ili preseli, jedan od njih zaostane.
+
+---
+
+## O-F10 · Poštanski broj dobija svoju kolonu (`companies.postal_code`)
+
+**Odluka vlasnika (03.08.2026):** grad i poštanski broj su **dva podatka**, i svako mesto
+štampe bira šta mu treba.
+
+`companies.city` je držao `11272 Dobanovci` kao jedan string, pa se poštanski broj provlačio i
+tamo gde mu na papiru nije mesto. Izmereno nad donetim obrascima:
+
+| blok | original (BigBit) | šta smo štampali dok je broj bio u `city` |
 |---|---|---|
-| A | naš pravi broj `17400169` | papir je tačan; razlikuje se od svih dosadašnjih faktura |
-| B | kako BigBit štampa (`20748346`) | papir identičan dosadašnjem, ali nosi tuđ podatak |
-| C | matični broj se izostavi iz tog bloka | ostaju naziv, adresa i PIB; najmanje šansi za zabunu |
+| memorandum strane | `Ugrinovačka 163, 11272 Dobanovci` | isto ✔ |
+| potpisni blok „Preuzeo za prevoz" | `Dobanovci, Ugrinovačka 163` | `11272 Dobanovci, Ugrinovačka 163` ✘ |
+| adresa magacina („Robu izdao") | `Ugrinovačka 163, Dobanovci` | `Ugrinovačka 163, 11272 Dobanovci` ✘ |
 
-⚠️ Provera zakonske obaveznosti matičnog broja na računu je deo
-[FAKTURE_ZAKONSKA_USKLADJENOST.md](FAKTURE_ZAKONSKA_USKLADJENOST.md) — odluka se donosi tek
-kad taj nalaz stigne.
+**Sprovedeno:**
+
+- migracija `20260803090000_companies_postal_code` — kolona + **plašljiv** prenos podataka:
+  hvata se isključivo oblik „5 cifara + razmak + ostatak", sve ostalo ostaje netaknuto
+  (pogrešno rastavljeno mesto bi se štampalo na svakom papiru, a niko ga ne bi primetio);
+- polje **Poštanski broj** na ekranu Podešavanja → Firma (kolona bez ekrana = podatak koji
+  niko ne može da unese);
+- jedan zajednički formatirač `common/company-address.ts` za sva mesta koja adresu spajaju
+  (`Ugrinovačka 163, 11272 Dobanovci`) — deset štampi se inače raziđe u različite oblike;
+- blokovi kojima broj **ne treba** (potpisni blok, adresa magacina) spajaju `address` i `city`
+  direktno; zato u formatirač i nije dodata funkcija „adresa bez poštanskog broja" — izbor bi
+  se sveo na to koje ime neko otkuca, umesto na ono što papir traži;
+- e-faktura: poštanski broj sada ide u `cbc:PostalZone` (BT-38). Dok je bio deo mesta, odlazio
+  je na SEF kao deo `cbc:CityName` — dakle u pogrešnom elementu.
+
+⚠️ **Migracija je bez PL/pgSQL bloka i bez ijednog `IF EXISTS … AND …` nad samom kolonom.**
+Dan ranije je takav uslov (`20260802120000_datum_prometa_znacenje`) oborio SVE backend deploy-e
+sa `42703`: PL/pgSQL ceo `IF` sprema kao jedan upit, pa nema kratkog spoja. `ADD COLUMN IF NOT
+EXISTS` je idempotentan sam po sebi, a `UPDATE` ide posle njega — kada kolona sigurno postoji.
 
 ---
 

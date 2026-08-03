@@ -10,6 +10,7 @@ import type {
   Content,
   TDocumentDefinitions,
 } from "pdfmake/interfaces";
+import { companyAddressLine } from "../../../common/company-address";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { loadInvoiceAdvanceDeductions } from "../advance-deduction";
 import {
@@ -158,6 +159,8 @@ interface IssuerInfo {
   companyName: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj sedišta (O-F10) — spaja se sa mestom u adresnom redu. */
+  postalCode: string | null;
   taxId: string | null;
   registrationNumber: string | null;
   bankAccount: string | null;
@@ -628,6 +631,7 @@ export class InvoicePdfService {
           companyName: true,
           address: true,
           city: true,
+          postalCode: true,
           taxId: true,
           registrationNumber: true,
           bankAccount: true,
@@ -645,9 +649,15 @@ export class InvoicePdfService {
     ]);
 
     return {
-      companyName: company?.companyName ?? "Servoteh d.o.o.",
+      // ⚠️ BEZ REZERVNOG IMENA U KODU (odluka O-F9): naziv firme ima JEDAN izvor —
+      // `companies.company_name`. Dok je ovde stajalo `?? "Servoteh d.o.o."`, papir je
+      // umeo da nosi ime koje u bazi ne postoji (i koje se, kad se firma preimenuje,
+      // ne bi promenilo). Kad firme nema, blokovi naziv preskaču — isto kao svaki
+      // drugi nepopunjen podatak, bez praznog reda koji pomera raspored.
+      companyName: company?.companyName ?? "",
       address: company?.address ?? null,
       city: company?.city ?? null,
+      postalCode: company?.postalCode ?? null,
       taxId: company?.taxId ?? null,
       registrationNumber: company?.registrationNumber ?? null,
       bankAccount: company?.bankAccount ?? null,
@@ -1131,7 +1141,8 @@ export class InvoicePdfService {
 
   /**
    * Firma izdavalac iz `companies` (multi-firma numeracija). Ako firma ne postoji
-   * (legacy companyId=0 bez reda) → Servoteh fallback header.
+   * (legacy companyId=0 bez reda), naziv ostaje PRAZAN i blokovi ga preskaču — ime se
+   * ne prepisuje u kod (odluka O-F9: jedan oblik imena, iz jednog izvora).
    *
    * IBAN/SWIFT: štampa ih je ČITALA i pre nego što su kolone postojale (`IssuerInfo`
    * ih deklariše, ino faktura ih ispisuje) — polja su uvek bila `undefined`, pa je
@@ -1151,6 +1162,7 @@ export class InvoicePdfService {
         companyName: true,
         address: true,
         city: true,
+        postalCode: true,
         taxId: true,
         registrationNumber: true,
         bankAccount: true,
@@ -1162,9 +1174,10 @@ export class InvoicePdfService {
     });
     if (!company) {
       return {
-        companyName: "Servoteh d.o.o.",
+        companyName: "",
         address: null,
         city: null,
+        postalCode: null,
         taxId: null,
         registrationNumber: null,
         bankAccount: null,
@@ -1178,6 +1191,7 @@ export class InvoicePdfService {
       companyName: company.companyName,
       address: company.address,
       city: company.city,
+      postalCode: company.postalCode,
       taxId: company.taxId,
       registrationNumber: company.registrationNumber,
       bankAccount: company.bankAccount,
@@ -1412,7 +1426,7 @@ export class InvoicePdfService {
   ): Content {
     const issuerLines = [
       issuer.companyName,
-      [issuer.address, issuer.city].filter(Boolean).join(", "),
+      companyAddressLine(issuer.address, issuer.postalCode, issuer.city),
       issuer.taxId ? `${t.taxIdLbl}: ${issuer.taxId}` : "",
       issuer.registrationNumber
         ? `${t.regNoLbl}: ${issuer.registrationNumber}`
@@ -1842,7 +1856,11 @@ export class InvoicePdfService {
                 ? `${t.signAgreedLbl} ${customer.name}`
                 : t.signAgreedLbl,
               t.signCheckedLbl,
-              `${t.signForLbl} ${issuer.companyName}`,
+              // Naziv može biti prazan (firma bez reda u `companies`, O-F9) — tada
+              // ostaje goli natpis umesto „Za " sa visećim razmakom.
+              issuer.companyName.trim()
+                ? `${t.signForLbl} ${issuer.companyName.trim()}`
+                : t.signForLbl,
             ];
     lines.push(buildSignatureRow(signatureLabels, t, !english));
     return { stack: lines };

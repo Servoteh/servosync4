@@ -32,6 +32,7 @@ import type {
   TDocumentDefinitions,
 } from "pdfmake/interfaces";
 import { SERVOTEH_LOGO_DATA_URL } from "../servoteh-logo";
+import { companyAddressLine } from "../../../common/company-address";
 import type { PrismaService } from "../../../prisma/prisma.service";
 
 // ─────────────────────────────────────────────────────────────────── tema
@@ -614,6 +615,8 @@ export interface IssuerInfo {
   companyName: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj (O-F10) — od 03.08.2026. zasebna kolona, ne više deo mesta. */
+  postalCode?: string | null;
   taxId: string | null;
   registrationNumber: string | null;
   bankAccount: string | null;
@@ -643,6 +646,7 @@ export async function loadIssuer(
     companyName: true,
     address: true,
     city: true,
+    postalCode: true,
     taxId: true,
     registrationNumber: true,
     bankAccount: true,
@@ -785,7 +789,9 @@ export function buildFormHeader(args: FormHeaderArgs): Content {
     if (t && t.trim())
       issuerLines.push({ text: t.trim(), style: "issuerLine" });
   };
-  line([issuer.address, issuer.city].filter(Boolean).join(", "));
+  // Adresa sedišta sa poštanskim brojem — mesto i broj su dva podatka (O-F10), a spaja
+  // ih jedan zajednički formatirač za sve štampe u aplikaciji.
+  line(companyAddressLine(issuer.address, issuer.postalCode, issuer.city));
   line(issuer.businessActivity);
   line(
     [

@@ -26,9 +26,10 @@ const d = (v: string | number): Prisma.Decimal => new Prisma.Decimal(v);
 
 /** Firma izdavalac — podaci iz memoranduma donetih papira. */
 const ISSUER: PrintIssuer = {
-  companyName: "Servoteh d.o.o. Dobanovci",
+  companyName: "Servoteh d.o.o.",
   address: "Ugrinovačka 163",
-  city: "11272 Dobanovci",
+  city: "Dobanovci",
+  postalCode: "11272",
   taxId: "101017443",
   registrationNumber: "17400169",
   bankAccount: "160-110610-83",
@@ -866,6 +867,85 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
         }),
       );
       expect(texts).toContain("Druga Firma d.o.o.");
+    });
+
+    /**
+     * ODLUKA O-F8 (03.08.2026) — BRANA NAD GREŠKOM KOJU JE BIGBIT NOSIO GODINAMA.
+     *
+     * Na papiru IFR 657/25 blok „Preuzeo za prevoz" nosi NAŠE podatke uz potpis, ali je
+     * matični broj u njemu `20748346` — a to je matični broj KUPCA (isti broj stoji i u
+     * okviru „HAP FLUID D.O.O. · PIB: 107136558 - MB: 20748346"). Naš pravi matični broj
+     * `17400169` stoji u podnožju TE ISTE fakture. Greška je u samom BigBit obrascu, pa je
+     * nosila svaka faktura za robu ikad odštampana iz njega; vlasnik je 03.08.2026. presudio
+     * mogućnost A — štampa se NAŠ broj.
+     *
+     * Tvrdnje ispod moraju da padnu čim bi neko u ovaj blok uveo `ctx.customer`.
+     */
+    describe("matični broj uz potpis je NAŠ, nikad kupčev (O-F8)", () => {
+      /** Tekstovi SAMO iz potpisnog bloka (poslednji element tela šablona). */
+      const signatureTexts = (ctx: PrintCtx): string[] => {
+        const content = domacaRobaTemplate(ctx);
+        return collectText(content[content.length - 1]);
+      };
+
+      it("štampa matični broj firme; kupčev se u tom bloku ne pojavljuje", () => {
+        const texts = signatureTexts(ifrCtx());
+        expect(texts).toContain("PIB: 101017443 MB: 17400169");
+        // 20748346 = MB kupca sa papira; u našem bloku nema šta da traži.
+        expect(texts.join("\n")).not.toContain("20748346");
+      });
+
+      it("kad firma nema matični broj, red ostaje bez njega — ne posuđuje se kupčev", () => {
+        const joined = signatureTexts(
+          ifrCtx({ issuer: { ...ISSUER, registrationNumber: null } }),
+        ).join("\n");
+        expect(joined).toContain("PIB: 101017443");
+        expect(joined).not.toContain("MB:");
+        expect(joined).not.toContain("20748346");
+      });
+
+      it("izmena kupčevih identifikatora ne menja potpisni blok ni za jedan znak", () => {
+        const nas = signatureTexts(ifrCtx());
+        const tudji = signatureTexts(
+          ifrCtx({
+            customer: {
+              ...CUSTOMER,
+              taxId: "999999999",
+              registrationNumber: "99999999",
+            },
+          }),
+        );
+        expect(tudji).toEqual(nas);
+      });
+
+      it("naziv firme je JEDAN oblik iz baze — bez velikih slova i bez grada (O-F9)", () => {
+        const texts = signatureTexts(ifrCtx());
+        expect(texts).toContain("Servoteh d.o.o.");
+        // Papir je do sada nosio DVA oblika istog imena: memorandum „Servoteh d.o.o.
+        // Dobanovci", potpisni blok „SERVOTEH doo".
+        expect(texts.join("\n")).not.toContain("SERVOTEH doo");
+        expect(texts.join("\n")).not.toContain("Servoteh d.o.o. Dobanovci");
+      });
+
+      it("prazan naziv firme ne ostavlja prazan red koji pomera raspored (O-F9)", () => {
+        const texts = signatureTexts(
+          ifrCtx({ issuer: { ...ISSUER, companyName: "" } }),
+        );
+        expect(texts).not.toContain("");
+        expect(texts.join("\n")).toContain("Dobanovci, Ugrinovačka 163");
+      });
+
+      /**
+       * ODLUKA O-F10: papir u ovom bloku poštanski broj NEMA — ni uz prevoznika
+       * („Dobanovci, Ugrinovačka 163") ni uz magacin („Ugrinovačka 163, Dobanovci").
+       * Dok je broj bio deo `companies.city`, ta dva reda nisu imala kako da ga izbace.
+       */
+      it("poštanski broj se u potpisnom bloku NE štampa (O-F10)", () => {
+        const joined = signatureTexts(ifrCtx()).join("\n");
+        expect(joined).toContain("Dobanovci, Ugrinovačka 163");
+        expect(joined).toContain("Ugrinovačka 163, Dobanovci");
+        expect(joined).not.toContain("11272");
+      });
     });
   });
 

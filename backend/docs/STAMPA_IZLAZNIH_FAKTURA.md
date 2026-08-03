@@ -85,6 +85,13 @@ IFR i IFGP se razlikuju **samo po imenu magacina** u bloku potpisa (`Magacin rob
    |---|---|---|---|
    | (prazno) | `SERVOTEH doo` / `Dobanovci, Ugrinovačka 163` / `PIB: 101017443 MB: 20748346` | `Broj l.k.:______` / `iz magacina <MAGACIN>` / `Ugrinovačka 163, Dobanovci` | ime, npr. `Dragana Korkut` |
 
+   ⚠️ Gornji red je **prepis papira**, ne opis onoga što mi štampamo. Na tri mesta svesno
+   odstupamo, po odlukama iz [STAMPA_FAKTURA_ODLUKE.md](STAMPA_FAKTURA_ODLUKE.md):
+   `MB: 20748346` je matični broj KUPCA i mi štampamo naš `17400169` (**O-F8**); ime je jedan
+   jedini oblik iz baze — `Servoteh d.o.o.`, ne `SERVOTEH doo` (**O-F9**); natpis `Broj l.k.`
+   se ne štampa uopšte (**O-F3**). Adresni redovi ovog bloka ostaju **bez poštanskog broja**,
+   tačno kao na papiru — zato je broj i izdvojen u svoju kolonu (**O-F10**).
+
 ---
 
 ## 3. Domaća faktura za uslugu (IFUSL) — poseban obrazac, ne varijanta

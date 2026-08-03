@@ -14,9 +14,10 @@ import {
  * kao TEST-VEKTOR, ne kao konfiguracija: u pogonu memorandum čita `companies`.
  */
 const SERVOTEH: MemorandumIssuer = {
-  companyName: "Servoteh d.o.o. Dobanovci",
+  companyName: "Servoteh d.o.o.",
   address: "Ugrinovačka 163",
-  city: "11272 Dobanovci",
+  city: "Dobanovci",
+  postalCode: "11272",
   phone: "+381 11 31 41 564; 373 29 59",
   fax: "+381 11 2399 265",
   email: "office@servoteh.rs",
@@ -76,6 +77,39 @@ describe("memorandum izlazne fakture", () => {
       // Original ima DVE dvotačke — dok vlasnik ne presudi drugačije, prepisuje se.
       expect(joined).toContain("web:: www.servoteh.rs");
       expect(joined).not.toContain("web: www.servoteh.rs");
+    });
+
+    /**
+     * ODLUKE O-F9 i O-F10 (03.08.2026). U bazi stoje TRI zasebna podatka —
+     * `company_name` = „Servoteh d.o.o.", `city` = „Dobanovci", `postal_code` = „11272" —
+     * a gornja traka papira ih slaže u „Servoteh d.o.o. Dobanovci  Ugrinovačka 163,
+     * 11272 Dobanovci". Ranije je isti red postojao samo tako što je neko u naziv firme
+     * dokucao grad, a u mesto poštanski broj; tada su ostali blokovi (potpisni blok,
+     * adresa magacina) bili osuđeni da nose i jedno i drugo.
+     */
+    it("slaže ime + mesto, pa adresu sa poštanskim brojem — iz tri kolone (O-F9, O-F10)", () => {
+      const joined = collectText(memorandumHeader(SERVOTEH)).join("\n");
+      expect(joined).toContain(
+        "Servoteh d.o.o. Dobanovci  Ugrinovačka 163, 11272 Dobanovci",
+      );
+    });
+
+    it("ne udvaja mesto kad zatečeni naziv već nosi grad (O-F9)", () => {
+      const joined = collectText(
+        memorandumHeader({
+          ...SERVOTEH,
+          companyName: "Servoteh d.o.o. Dobanovci",
+        }),
+      ).join("\n");
+      expect(joined).not.toContain("Dobanovci Dobanovci");
+      expect(joined).toContain("Servoteh d.o.o. Dobanovci  Ugrinovačka 163");
+    });
+
+    it("bez mesta ostaje goli naziv, bez visećeg razmaka (O-F9)", () => {
+      const joined = collectText(
+        memorandumHeader({ companyName: "Firma d.o.o.", address: "Ulica 1" }),
+      ).join("\n");
+      expect(joined).toContain("Firma d.o.o.  Ulica 1");
     });
 
     it("ne udvaja tačku-zarez kad je već u bazi", () => {

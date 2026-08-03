@@ -1,4 +1,5 @@
 import type { Column, Content, TableCell } from "pdfmake/interfaces";
+import { companyAddressLine } from "../../../../common/company-address";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import {
   formatAmount,
@@ -611,8 +612,19 @@ function bankBlock(ctx: PrintCtx): Content[] {
       margin: [0, 4, 0, 0],
     },
   ];
-  left.push({ text: issuer.companyName, fontSize: 9, margin: [0, 4, 0, 0] });
-  const issuerAddress = join([issuer.address, issuer.city], ", ");
+  if (issuer.companyName.trim())
+    left.push({
+      text: issuer.companyName.trim(),
+      fontSize: 9,
+      margin: [0, 4, 0, 0],
+    });
+  // SA poštanskim brojem (O-F10) — adresa primaoca u međunarodnoj uplati; isto kao na
+  // ino robi, i namerno drugačije od potpisnog bloka domaće robne fakture.
+  const issuerAddress = companyAddressLine(
+    issuer.address,
+    issuer.postalCode,
+    issuer.city,
+  );
   if (issuerAddress) left.push({ text: issuerAddress, fontSize: 9 });
 
   const right: Content[] = [

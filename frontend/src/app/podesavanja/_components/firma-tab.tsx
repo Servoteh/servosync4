@@ -44,9 +44,23 @@ interface FieldDef {
 }
 
 const IDENTITY: FieldDef[] = [
-  { key: 'companyName', label: 'Naziv firme', maxLength: 150, required: true },
+  {
+    key: 'companyName',
+    label: 'Naziv firme',
+    maxLength: 150,
+    required: true,
+    placeholder: 'Servoteh d.o.o.',
+    hint: 'Samo naziv, bez mesta i bez velikih slova — mesto memorandum dopisuje sam iz polja „Mesto". Isti oblik ide na sve dokumente.',
+  },
   { key: 'address', label: 'Adresa', maxLength: 50 },
-  { key: 'city', label: 'Mesto', maxLength: 50 },
+  {
+    key: 'postalCode',
+    label: 'Poštanski broj',
+    maxLength: 10,
+    placeholder: '11272',
+    hint: 'Zasebno od mesta: memorandum ga štampa uz mesto, potpisni blok fakture i adresa magacina ne.',
+  },
+  { key: 'city', label: 'Mesto', maxLength: 50, placeholder: 'Dobanovci' },
   { key: 'municipality', label: 'Opština', maxLength: 50 },
   { key: 'taxId', label: 'PIB', maxLength: 20 },
   { key: 'registrationNumber', label: 'Matični broj', maxLength: 50 },

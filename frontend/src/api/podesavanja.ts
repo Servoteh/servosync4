@@ -804,6 +804,8 @@ export interface CompanyDetails {
   companyName: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj — zasebno od mesta (odluka O-F10): memorandum ga štampa, potpisni blok ne. */
+  postalCode: string | null;
   municipality: string | null;
   phone: string | null;
   fax: string | null;

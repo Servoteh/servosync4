@@ -68,9 +68,10 @@ const D = (v: string) => new Prisma.Decimal(v);
  * bila mrtva polja koja `loadIssuer` nikad nije popunjavao (GAP §2.4).
  */
 const SERVOTEH: PrintIssuer = {
-  companyName: "Servoteh d.o.o. Dobanovci",
+  companyName: "Servoteh d.o.o.",
   address: "Ugrinovačka 163",
-  city: "11272 Dobanovci",
+  city: "Dobanovci",
+  postalCode: "11272",
   taxId: "101017443",
   registrationNumber: "17400169",
   bankAccount: "160-110610-83",
@@ -697,7 +698,12 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
       const text = renderText(makeCtx());
       expect(text).toContain("Beneficiary Customer:");
       expect(text).toContain("Bank of beneficiary:");
-      expect(text).toContain("Servoteh d.o.o. Dobanovci");
+      // Naziv DOSLOVNO iz `companies.company_name` (O-F9) — bez grada zalepljenog uz ime;
+      // grad uz ime nosi samo memorandum strane, i to spajanjem iz `city`.
+      expect(text).toContain("Servoteh d.o.o.");
+      expect(text).not.toContain("Servoteh d.o.o. Dobanovci");
+      // Adresa primaoca u međunarodnoj uplati ide SA poštanskim brojem (O-F10) —
+      // za razliku od potpisnog bloka domaće robne fakture.
       expect(text).toContain("Ugrinovačka 163, 11272 Dobanovci");
       expect(text).toContain("Banca Intesa a.d. EUR");
       expect(text).toContain("Milentija Popovića 7b, 11070 New Belgrade");

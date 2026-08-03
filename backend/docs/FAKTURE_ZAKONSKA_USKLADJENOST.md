@@ -128,9 +128,13 @@ Na `IFR.pdf`, u koloni „Preuzeo za prevoz", piše `PIB: 101017443 MB: 20748346
 Servotehov, ali `20748346` je **matični broj kupca HAP FLUID D.O.O.** (isti broj stoji gore u
 okviru kupca), dok podnožje istog papira nosi Servotehov `Matični broj: 17400169`. Dakle
 **BigBit je tu štampao pogrešan MB**. Naš kod uzima oba podatka sa izdavaoca
-(`domaca-roba.ts:507-513`), pa ispravno štampa 17400169. ⚠️ **Ovo se ne sme „ispraviti nazad"
-na original.** Vredi upisati u `STAMPA_IZLAZNIH_FAKTURA.md` da razlika prema papiru na tom
-mestu nije naša greška.
+(`domaca-roba.ts`, `signaturesBlock`), pa ispravno štampa 17400169. ⚠️ **Ovo se ne sme
+„ispraviti nazad" na original.**
+
+**ZATVORENO 03.08.2026 — odluka O-F8** (`STAMPA_FAKTURA_ODLUKE.md`). Vlasnik: „onaj MB je
+pogrešno pisan, treba naš MB 17400169, ovaj ne od kupca". Kod se nije menjao; dodata je brana
+(`templates/domaca-roba.spec.ts`) koja pada čim bi taj blok povukao ijedan kupčev identifikator
+— uključujući i test „izmena kupčevih identifikatora ne menja potpisni blok ni za jedan znak".
 
 ---
 

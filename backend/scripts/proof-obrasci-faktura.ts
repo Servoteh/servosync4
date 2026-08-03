@@ -30,10 +30,12 @@
  * obrnuto. Firma i memorandum su NAŠI STVARNI podaci sa istog papira, ne izmišljeni:
  * pogrešan PIB ili adresa u dokazu bi značili da se poređenje ne može verovati.
  *
- * ── ŠTA SE NAMERNO RAZLIKUJE OD PAPIRA (odluke O-F1…O-F7 + zakonski nalazi) ──
+ * ── ŠTA SE NAMERNO RAZLIKUJE OD PAPIRA (odluke O-F1…O-F10 + zakonski nalazi) ──
  *  • `Br. l.k.` sa IFUSL-a se NE štampa (O-F3) — ni broj ni prazna linija sa natpisom;
  *  • matični broj u bloku „Preuzeo za prevoz" je NAŠ `17400169`; BigBit tu štampa
- *    KUPČEV `20748346` (v. STAMPA_FAKTURA_ODLUKE.md, „ČEKA ODLUKU");
+ *    KUPČEV `20748346` (odluka O-F8, 03.08.2026 — presuđeno, više nije otvoreno);
+ *  • ime firme je JEDAN oblik iz baze, `Servoteh d.o.o.`; papir u potpisnom bloku piše
+ *    „SERVOTEH doo", a u memorandumu „Servoteh d.o.o. Dobanovci" (O-F9);
  *  • kolona `C E N A` / `Price` nosi cenu PRE rabata (na donetim papirima je rabat 0,
  *    pa se razlika ne vidi — struktura je ipak drugačija);
  *  • ino roba dobija red `Date of delivery:` kog na 228/25 nema (datum prometa je
@@ -70,15 +72,19 @@ const D = (v: string | number): Prisma.Decimal => new Prisma.Decimal(v);
 /**
  * Naši stvarni podaci, prepisani sa memoranduma donetih faktura.
  *
- * ⚠️ `companyName` je „Servoteh d.o.o. Dobanovci" — tako stoji u gornjoj traci svih
- * pet papira. U potpisnom bloku „Preuzeo za prevoz" isti papir piše „SERVOTEH doo",
- * dakle DRUGI oblik istog imena; `companies` ima jedno polje, pa se drugi oblik ne
- * može proizvesti (nalaz, v. spisak razlika na kraju).
+ * ⚠️ TRI ZASEBNA PODATKA, NE JEDAN STRING (odluke O-F9 i O-F10, 03.08.2026):
+ * `companyName` je goli naziv „Servoteh d.o.o.", `city` je „Dobanovci", `postalCode` je
+ * „11272". Gornju traku papira („Servoteh d.o.o. Dobanovci  Ugrinovačka 163, 11272
+ * Dobanovci") memorandum slaže sam, a potpisni blok i adresa magacina uzimaju samo ono
+ * što im na papiru i stoji — bez poštanskog broja. Dok je sve bilo u dva polja, papir je
+ * nosio DVA oblika istog imena („Servoteh d.o.o. Dobanovci" i „SERVOTEH doo") i poštanski
+ * broj na mestima na kojima ga original nema.
  */
 const COMPANY = {
-  companyName: "Servoteh d.o.o. Dobanovci",
+  companyName: "Servoteh d.o.o.",
   address: "Ugrinovačka 163",
-  city: "11272 Dobanovci",
+  city: "Dobanovci",
+  postalCode: "11272",
   taxId: "101017443",
   registrationNumber: "17400169",
   bankAccount: "160-110610-83",

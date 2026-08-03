@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import type { Content, TableCell, TDocumentDefinitions } from "pdfmake/interfaces";
+import { companyAddressLine } from "../../common/company-address";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PdfService } from "../documents/pdf.service";
 
@@ -29,6 +30,8 @@ interface PayerInfo {
   name: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj (O-F10) — od 03.08.2026. zasebna kolona, ne više deo mesta. */
+  postalCode?: string | null;
   bankAccount: string | null;
   taxId: string | null;
 }
@@ -87,6 +90,7 @@ export class PaymentOrderPdfService {
         companyName: true,
         address: true,
         city: true,
+        postalCode: true,
         bankAccount: true,
         taxId: true,
       },
@@ -104,6 +108,7 @@ export class PaymentOrderPdfService {
       name: company.companyName,
       address: company.address,
       city: company.city,
+      postalCode: company.postalCode,
       bankAccount: company.bankAccount,
       taxId: company.taxId,
     };
@@ -151,7 +156,7 @@ export class PaymentOrderPdfService {
   ): TDocumentDefinitions {
     const payerBlock = [
       payer.name,
-      [payer.address, payer.city].filter(Boolean).join(", "),
+      companyAddressLine(payer.address, payer.postalCode, payer.city),
       payer.taxId ? `PIB: ${payer.taxId}` : "",
     ]
       .filter(Boolean)

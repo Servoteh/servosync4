@@ -271,6 +271,12 @@ export interface UblSupplierParty {
   registrationNumber?: string | null; // matični broj
   address?: string | null;
   city?: string | null;
+  /**
+   * Poštanski broj → cbc:PostalZone (BT-38). Od odluke O-F10 stoji u sopstvenoj koloni
+   * `companies.postal_code`; dok je bio deo `city`, odlazio je na SEF unutar naziva mesta
+   * („11272 Dobanovci" kao CityName) — dakle u pogrešnom elementu.
+   */
+  postalCode?: string | null;
   /** Tekući račun za uplatu → cac:PayeeFinancialAccount/cbc:ID (BT-84). */
   bankAccount?: string | null;
   /**
@@ -582,7 +588,7 @@ export class UblBuilderService {
     p.push("<cac:PartyName>");
     p.push(el("cbc:Name", s.name));
     p.push("</cac:PartyName>");
-    p.push(this.buildAddress(s.address, s.city));
+    p.push(this.buildAddress(s.address, s.city, s.postalCode));
     // Poreski podaci (PIB → PartyTaxScheme, matični broj → PartyLegalEntity).
     p.push("<cac:PartyTaxScheme>");
     p.push(el("cbc:CompanyID", `RS${s.taxId}`));
@@ -724,11 +730,20 @@ export class UblBuilderService {
     return p.join("");
   }
 
-  private buildAddress(address?: string | null, city?: string | null): string {
+  /**
+   * cac:PostalAddress. Redosled elemenata je propisan UBL 2.1 šemom i NIJE stvar ukusa:
+   * StreetName → CityName → PostalZone → cac:Country. Zamena mesta obara validaciju na SEF-u.
+   */
+  private buildAddress(
+    address?: string | null,
+    city?: string | null,
+    postalCode?: string | null,
+  ): string {
     const p: string[] = [];
     p.push("<cac:PostalAddress>");
     if (address) p.push(el("cbc:StreetName", address));
     if (city) p.push(el("cbc:CityName", city));
+    if (postalCode?.trim()) p.push(el("cbc:PostalZone", postalCode.trim()));
     p.push("<cac:Country>");
     p.push(el("cbc:IdentificationCode", "RS"));
     p.push("</cac:Country>");

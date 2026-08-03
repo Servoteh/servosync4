@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import type { Content, TableCell } from "pdfmake/interfaces";
+import { companyAddressLine } from "../../../../common/company-address";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
 import {
   formatAmount,
@@ -465,8 +466,12 @@ function bankBlock(ctx: PrintCtx): Content[] {
     // Razmak pre dvotačke u „IBAN : " je iz originala; SWIFT ga nema.
     { text: `IBAN : ${iban}`, fontSize: FS, bold: true },
   ];
-  beneficiary.push({ text: i.companyName, fontSize: FS });
-  const issuerAddress = join([i.address, i.city], ", ");
+  if (i.companyName.trim())
+    beneficiary.push({ text: i.companyName.trim(), fontSize: FS });
+  // SA poštanskim brojem (O-F10): ovo je adresa primaoca u međunarodnoj uplati — banka
+  // je nosi u nalogu, pa je tu poštanski broj deo podatka, za razliku od potpisnog bloka
+  // domaće robne fakture.
+  const issuerAddress = companyAddressLine(i.address, i.postalCode, i.city);
   if (issuerAddress) beneficiary.push({ text: issuerAddress, fontSize: FS });
 
   const bank: Content[] = [{ text: "Bank of beneficiary:", fontSize: FS }];

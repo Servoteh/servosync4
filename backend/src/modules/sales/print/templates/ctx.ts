@@ -37,9 +37,16 @@ export interface PrintCustomer {
 
 /** Firma izdavalac — isti oblik koji memorandum očekuje. */
 export interface PrintIssuer {
+  /**
+   * Naziv iz `companies.company_name` i NIŠTA VIŠE (odluka O-F9): ni grad zalepljen uz
+   * ime, ni verzija velikim slovima. Kome uz ime treba i mesto — memorandumu — spaja ga
+   * sam iz `city`; obrasci naziv štampaju doslovno.
+   */
   companyName: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj sedišta (odluka O-F10) — memorandum ga štampa, potpisni blok ne. */
+  postalCode: string | null;
   taxId: string | null;
   registrationNumber: string | null;
   bankAccount: string | null;

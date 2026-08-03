@@ -184,6 +184,48 @@ describe("UblBuilderService — struktura (grupa D)", () => {
     );
   });
 
+  /**
+   * ODLUKA O-F10 (03.08.2026): poštanski broj je izašao iz `companies.city` u svoju kolonu.
+   * Bez ovog provoda bi e-faktura ostala BEZ poštanskog broja (ranije je odlazio unutar
+   * naziva mesta, „11272 Dobanovci" kao cbc:CityName — dakle u pogrešnom elementu).
+   */
+  describe("adresa izdavaoca (cac:PostalAddress)", () => {
+    it("poštanski broj ide u cbc:PostalZone, iza naziva mesta (redosled UBL 2.1)", () => {
+      const xml = service.build(
+        params({
+          supplier: { ...params().supplier, postalCode: "11272" },
+        }),
+      );
+      const party = findFirst(
+        new XmlDocument(xml),
+        "cac:AccountingSupplierParty",
+      )!;
+      const addr = findFirst(party, "cac:PostalAddress")!;
+      expect(childNames(addr)).toEqual([
+        "cbc:StreetName",
+        "cbc:CityName",
+        "cbc:PostalZone",
+        "cac:Country",
+      ]);
+      expect(addr.valueWithPath("cbc:CityName")).toBe("Beograd");
+      expect(addr.valueWithPath("cbc:PostalZone")).toBe("11272");
+    });
+
+    it("bez poštanskog broja element izostaje — prazan cbc:PostalZone se ne šalje", () => {
+      const xml = service.build(params());
+      const party = findFirst(
+        new XmlDocument(xml),
+        "cac:AccountingSupplierParty",
+      )!;
+      const addr = findFirst(party, "cac:PostalAddress")!;
+      expect(childNames(addr)).toEqual([
+        "cbc:StreetName",
+        "cbc:CityName",
+        "cac:Country",
+      ]);
+    });
+  });
+
   describe("cac:PaymentMeans", () => {
     it("nosi šifru 42 (BigBit paritet), poziv na broj i račun za uplatu", () => {
       const xml = service.build(

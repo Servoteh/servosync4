@@ -34,6 +34,15 @@ export class UpdateCompanyDetailsDto {
   @IsString()
   city?: string | null;
 
+  /**
+   * Poštanski broj — ZASEBNO polje od mesta (odluka O-F10, 03.08.2026). Do tada je
+   * `city` držao „11272 Dobanovci" kao jedan string, pa je poštanski broj izlazio i na
+   * blokovima na kojima ga original nema (potpisni blok, adresa magacina).
+   */
+  @IsOptional()
+  @IsString()
+  postalCode?: string | null;
+
   @IsOptional()
   @IsString()
   municipality?: string | null;

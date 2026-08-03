@@ -1100,6 +1100,10 @@ model Company {
   databaseName              String?  @map("database_name") @db.VarChar(255)
   logo                      Bytes?   @map("logo")
   city                      String?  @map("city") @db.VarChar(50)
+  /// Poštanski broj sedišta — ZASEBAN podatak od mesta (odluka O-F10). Memorandum ga
+  /// štampa uz mesto, potpisni blok i adresa magacina ga NE štampaju (v. migraciju
+  /// 20260803090000_companies_postal_code).
+  postalCode                String?  @map("postal_code") @db.VarChar(10)
   address                   String?  @map("address") @db.VarChar(50)
   phone                     String?  @map("phone") @db.VarChar(50)
   fax                       String?  @map("fax") @db.VarChar(50)
