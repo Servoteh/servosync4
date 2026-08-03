@@ -71,6 +71,9 @@ export function DodajNaPlanDialog({
    * šifri mašine, koju server ILIKE ne gleda). Guard `t === serverQ` sprečava mešanje
    * sveže ukucanog terma sa zaostalim server rezultatom prethodnog terma.
    */
+  /** Server rezultat odgovara BAŠ ovom termu (ne zaostatku prethodnog iz debounce-a). */
+  const serverAktivan = serverQ.length >= 2 && q.trim().toLowerCase() === serverQ.toLowerCase();
+
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return rows.slice(0, 300);
@@ -78,11 +81,11 @@ export function DodajNaPlanDialog({
       [r.rn_ident_broj, r.broj_crteza, r.naziv_dela, r.effective_machine_code]
         .some((v) => String(v ?? '').toLowerCase().includes(t)),
     );
-    const server = t === serverQ.toLowerCase() ? search.data?.data : undefined;
+    const server = serverAktivan ? search.data?.data : undefined;
     if (!server) return local.slice(0, 300);
     const seen = new Set(server.map(rowKey));
     return [...server, ...local.filter((r) => !seen.has(rowKey(r)))].slice(0, 300);
-  }, [rows, q, serverQ, search.data]);
+  }, [rows, q, serverAktivan, search.data]);
 
   function add(r: GanttRow) {
     const startIso = toIsoAtWorkStart(day);
@@ -230,7 +233,9 @@ export function DodajNaPlanDialog({
                     {q.trim().length >= 2
                       ? search.isFetching
                         ? 'Tražim po celoj bazi…'
-                        : 'Ništa nije pronađeno — proveri broj crteža / RN.'
+                        : search.isError
+                          ? 'Pretraga po celoj bazi nije uspela — pokušaj ponovo.'
+                          : 'Ništa nije pronađeno — proveri broj crteža / RN.'
                       : 'Nema učitanih stavki van plana — ukucaj crtež ili RN za pretragu po celoj bazi.'}
                   </td>
                 </tr>
@@ -238,6 +243,28 @@ export function DodajNaPlanDialog({
             </tbody>
           </table>
         </div>
+        {/* Pad server pretrage NE sme da izgleda kao „nema pogodaka" — pošten razlog + retry
+            (lokalni pogoci iz učitanog feed-a ostaju u tabeli, pa obaveštenje ide i uz redove). */}
+        {q.trim().length >= 2 && search.isError ? (
+          <p className="text-2xs text-status-danger">
+            ⚠ Pretraga po celoj bazi nije uspela — prikazani su samo učitani redovi.{' '}
+            <button
+              type="button"
+              className="underline hover:text-accent"
+              onClick={() => void search.refetch()}
+            >
+              Pokušaj ponovo
+            </button>
+          </p>
+        ) : null}
+        {/* BE seče na meta.limit (izmereno: q='00' → 22.861 pogodaka) — bez ovog upozorenja
+            planer misli da vidi sve. `serverAktivan` čuva od banera zaostalog terma. */}
+        {serverAktivan && search.data?.meta?.truncated ? (
+          <p className="text-2xs text-status-warn">
+            Pretraga pogađa više od {search.data.meta.limit} stavki — prikazan je samo deo;
+            suzi pretragu.
+          </p>
+        ) : null}
         <p className="text-2xs text-ink-disabled">
           Prikazano najviše 300 stavki. Pretraga (crtež / RN / naziv) ide po celoj bazi i
           prikazuje i završene / zatvorene operacije sa razlogom zašto nisu za dodavanje;
@@ -254,13 +281,20 @@ type Stanje = { addable: true; label?: never; ok?: never } | { addable: false; l
 /**
  * Zašto stavka (ni)je za dodavanje. Redosled presuđivanja: već na planu → završeno
  * (operater otkucao kraj procesa — i na delimičnoj količini, zato se prikazuje X/Y kom)
- * → RN zatvoren → kooperacija → arhivirana. Sve ostalo je otvorena operacija sa „Dodaj".
+ * → RN zatvoren → RN kroz završnu kontrolu → kooperacija → arhivirana. Sve ostalo je
+ * otvorena operacija sa „Dodaj".
+ *
+ * `plan_rn_final_control_done` (M6): scope=sve pretraga skida i EFF_FILTER, pa RN koji
+ * je prošao završnu kontrolu stiže ovde i sa NEOTKUCANIM operacijama — bez ove grane
+ * takva operacija bi dobila živ „Dodaj" i planer bi isplanirao gotov RN (izmereno na
+ * produ 03.08.2026: 537 operacija u tom stanju).
  */
 function stanjeStavke(r: GanttRow, added: boolean): Stanje {
   if (added || r.planned_start_at) return { addable: false, label: '✓ na planu', ok: true };
   if (r.is_completed_effective || r.is_done_in_bigtehn || r.local_status === 'completed')
     return { addable: false, label: `završeno (${r.komada_done ?? 0}/${r.komada_total ?? 0} kom)` };
   if (r.rn_zavrsen) return { addable: false, label: 'RN završen' };
+  if (r.plan_rn_final_control_done) return { addable: false, label: 'RN kroz završnu kontrolu' };
   if (r.is_cooperation_effective) return { addable: false, label: 'u kooperaciji' };
   if (r.overlay_archived_at) return { addable: false, label: 'arhivirano' };
   return { addable: true };

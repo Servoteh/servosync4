@@ -239,6 +239,8 @@ export interface GanttRow {
   rn_zavrsen?: boolean | null;
   is_cooperation_effective?: boolean | null;
   overlay_archived_at?: string | null;
+  /** RN prošao završnu kontrolu (M6) — scope=sve skida EFF_FILTER pa FE mora razlog. */
+  plan_rn_final_control_done?: boolean | null;
   [k: string]: unknown;
 }
 

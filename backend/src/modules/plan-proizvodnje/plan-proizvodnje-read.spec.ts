@@ -252,13 +252,18 @@ describe("gant feed (046/26)", () => {
     expect(sql).toContain("ORDER BY hall ASC NULLS LAST");
   });
 
-  it("gant kolone nose picker status polja (rn_zavrsen/kooperacija/arhiva) — A4", async () => {
+  it("gant kolone nose picker status polja (rn_zavrsen/kooperacija/arhiva/završna kontrola) — A4", async () => {
     const { svc, calls } = makeGanttSvc();
     await svc.gantt("pm@servoteh.com", { q: "1083492", scope: "sve" });
     const sql = calls[0].sql.replace(/\s+/g, " ");
     expect(sql).toContain("rn_zavrsen");
     expect(sql).toContain("is_cooperation_effective");
     expect(sql).toContain("overlay_archived_at");
+    // scope=sve skida i EFF_FILTER — bez ove kolone FE ne ume da objasni ZAŠTO
+    // RN kroz završnu kontrolu (M6) nije za dodavanje i nudio bi živ „Dodaj"
+    // (izmereno na produ 03.08.2026: 537 takvih operacija).
+    const selectCols = sql.slice(0, sql.indexOf(" FROM "));
+    expect(selectCols).toContain("plan_rn_final_control_done");
   });
 
   it("machineHalls() vraća SVE mašine (LEFT JOIN šifrarnika), ne samo dodeljene", async () => {
