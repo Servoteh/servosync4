@@ -524,6 +524,10 @@ const rnColumns: Column<RnProgress>[] = [
       ),
   },
   {
+    // 036/26 (druga prijava): traka meri NAPREDAK KROZ RUTING (prosek urađenog po
+    // operacijama), pa prati kolonu „Operacije" — 8/14 otkucanih je 61%, ne 0%.
+    // Status pored nje i dalje traži OVERU (završna kontrola) i namerno se ne
+    // izvodi iz procenta: 99% + „U izradi" je tačno stanje, ne protivrečnost.
     key: 'progress',
     header: 'Gotovost',
     render: (r) => <ProgressBar percent={r.completionPercent} />,

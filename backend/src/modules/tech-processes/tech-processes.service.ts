@@ -274,6 +274,12 @@ interface RnProgressRaw {
   routing_op_count: number;
   /** Koliko operacija rutinga je otkucano u PUNOJ planiranoj količini. */
   routing_ops_completed: number;
+  /**
+   * NAPREDAK KROZ RUTING (0..1): AVG(LEAST(done/plan, 1)) po operacijama rutinga.
+   * NULL kad nalog nema plan (`piece_count = 0`) ili nema rutinga — tada se meri
+   * po starom kanonu (`made_good_*`).
+   */
+  routing_progress_ratio: number | null;
   operation_count: number;
   finished_operation_count: number;
   last_completed_at: Date | null;
@@ -1455,21 +1461,28 @@ export class TechProcessesService {
    * (spec §3, migration/15 §5). Endpoint živi u tech-processes kontroleru (ne dira
    * se work-orders folder).
    *
-   * MERA GOTOVOSTI (ispravka 036/26) — po RUTINGU (`work_order_operations`), ne po
-   * skupu kucanja:
-   *   1. ruting ima ZAVRŠNU KONTROLU (`significant_for_finishing`) → napravljeno =
-   *      zbir DOBRIH I ZAVRŠENIH komada otkucanih na njoj. Isti kanon kao
-   *      `markWorkOrderIfComplete` (koji diže `work_orders.status`) i kao „gotovost"
-   *      u pracenje-read.service.ts, pa se tri prikaza ne mogu razići.
-   *   2. ruting nema završnu kontrolu → USKO GRLO: najmanje urađena operacija.
-   *   3. nema rutinga → 0 (nema se šta meriti; ne izmišlja se gotovost).
+   * DVE RAZLIČITE MERE, NAMERNO (obe ispravke 036/26):
    *
-   * BILO JE POGREŠNO: `MAX(piece_count)` preko BILO KOJE operacije kao fallback kad
-   * završna kontrola nije otkucana. Jedna jedina operacija otkucana u punom lotu
-   * dizala je ceo nalog na 100% iako ostatak rutinga nije ni počet — prijava 036/26
-   * (crtež 1138882, RN 9400/2/380: 15 operacija u rutingu, 7 kucanja, završna
-   * kontrola NIJE otkucana, a Gotovost je pisala 100%). Na produ je taj fallback
-   * lažno „završavao" ~10.200 od 23.700 naloga prikazanih kao 100%.
+   * A) `completionPercent` = NAPREDAK KROZ RUTING — koliko je posla urađeno:
+   *    `AVG(LEAST(done / plan, 1))` preko operacija rutinga (bez `without_process`).
+   *    NULL ratio (nema plana / nema rutinga) → pada na kanon iz (B).
+   * B) `madeGoodPieces` / `isCompleted` / `completedAt` = OVERA GOTOVOSTI:
+   *      1. ruting ima ZAVRŠNU KONTROLU (`significant_for_finishing`) → napravljeno =
+   *         zbir DOBRIH I ZAVRŠENIH komada otkucanih na njoj. Isti kanon kao
+   *         `markWorkOrderIfComplete` (koji diže `work_orders.status`) i kao „gotovost"
+   *         u pracenje-read.service.ts, pa se tri prikaza ne mogu razići.
+   *      2. ruting nema završnu kontrolu → USKO GRLO: najmanje urađena operacija.
+   *      3. nema rutinga → 0 (nema se šta meriti; ne izmišlja se gotovost).
+   *
+   * ISTORIJA GREŠAKA (obe iz iste prijave 036/26, crtež 1138882, RN 9400/2/380 —
+   * 14 operacija rutinga, 8 otkucanih, ZAVRŠNA KONTROLA neotkucana):
+   *   • PRE 28.07: gotovost je padala na `MAX(piece_count)` preko BILO KOJE operacije
+   *     kad završna kontrola nije otkucana → jedna operacija u punom lotu dizala je
+   *     nalog na 100% (lažnih ~10.200 od 23.700 naloga „100%").
+   *   • POSLE 28.07: gotovost je bila SAMO završna kontrola → isti taj nalog pisao je
+   *     0% uz kolonu „Operacije 8/14". Ista populacija (10.879 naloga na produ) samo
+   *     je prešla iz jednog binarnog ekstrema u drugi.
+   * Zato procenat sada MERI PUT (61% za 1138882), a status i dalje traži overu.
    * `completedAt` (zahtev 023/26) = datum realizacije RN-a; vidi SQL komentar dole.
    */
   async rnProgress(query: RnProgressQuery) {
@@ -1567,6 +1580,29 @@ export class TechProcessesService {
                           WHERE op.work_order_id = wo.id
                             AND COALESCE(o.without_process, false) = false
                        ) x WHERE x.done >= wo.piece_count), 0)::int AS routing_ops_completed,
+             -- (5) NAPREDAK KROZ RUTING = prosečan udeo urađenog po operacijama
+             -- rutinga: AVG(LEAST(done / plan, 1)). Ovo je MERA GOTOVOSTI (druga
+             -- prijava 036/26): nalog sa 8 od 14 otkucanih operacija nije ni 0% ni
+             -- 100% — on je „na 61%". Isti oblik kao op_pct u
+             -- pracenje-read.service.ts (LATERAL opr), samo MIN→AVG.
+             -- wo.piece_count (outer referenca) je u WHERE-u istog nivoa na kom stoji
+             -- agregat, NIKAD u FILTER-u/argumentu bez inner promenljive: agregat čiji
+             -- argumenti nose samo outer promenljive pripada SPOLJNOM nivou upita i
+             -- diže PG 42803 (prod incident 19.07.2026). WHERE ujedno garantuje da
+             -- deljenje nikad ne deli nulom; prazan skup → NULL (nema rutinga).
+             -- without_process operacije se izuzimaju — isto kao usko grlo (3).
+             (SELECT AVG(LEAST(x.done::numeric / wo.piece_count, 1)) FROM (
+                         SELECT COALESCE((SELECT SUM(t.piece_count)
+                                            FROM tech_processes t
+                                           WHERE t.work_order_id = op.work_order_id
+                                             AND t.operation_number = op.operation_number
+                                             AND t.work_center_code IS NOT DISTINCT FROM op.work_center_code
+                                             AND t.quality_type_id = ${PART_QUALITY.GOOD}), 0) AS done
+                           FROM work_order_operations op
+                           LEFT JOIN operations o ON o.work_center_code = op.work_center_code
+                          WHERE op.work_order_id = wo.id
+                            AND COALESCE(o.without_process, false) = false
+                       ) x WHERE wo.piece_count > 0)::float8 AS routing_progress_ratio,
              COALESCE((SELECT COUNT(*) FROM tech_processes tp
                        WHERE tp.project_id = wo.project_id
                          AND tp.ident_number = wo.ident_number
@@ -1621,8 +1657,21 @@ export class TechProcessesService {
             : "nema-rutinga";
       const planned = r.planned;
       const cappedMade = Math.min(madeGood, planned);
+      // GOTOVOST = NAPREDAK KROZ RUTING (druga prijava 036/26). „Napravljeno"
+      // (madeGood/isCompleted/completedAt) ostaje na kanonu ZAVRŠNE KONTROLE —
+      // procenat i status mere različite stvari i to je namerno: procenat kaže
+      // koliko je posla urađeno, status kaže da li je nalog overen kao gotov.
+      // Ratio je NULL kad nema plana (piece_count = 0) ili nema rutinga — tada
+      // se pada na stari kanon (bez rutinga ratio i usko grlo ionako daju isto).
+      const ratio = r.routing_progress_ratio;
+      const completionSource: "ruting" | "zavrsna-kontrola" =
+        ratio === null ? "zavrsna-kontrola" : "ruting";
       const completionPercent =
-        planned > 0 ? Math.round((cappedMade / planned) * 100) : null;
+        ratio !== null
+          ? Math.round(Math.min(Math.max(ratio, 0), 1) * 100)
+          : planned > 0
+            ? Math.round((cappedMade / planned) * 100)
+            : null;
       return {
         workOrderId: r.id,
         projectId: r.project_id,
@@ -1645,6 +1694,7 @@ export class TechProcessesService {
         routingOperationCount: r.routing_op_count,
         routingOperationsCompleted: r.routing_ops_completed,
         completionPercent,
+        completionSource,
         isCompleted: planned > 0 && madeGood >= planned,
         completedAt: r.last_completed_at,
       };

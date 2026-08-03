@@ -381,11 +381,12 @@ export interface RnProgress {
   workerId: number;
   worker: WorkerRef | null;
   plannedPieces: number;
-  madeGoodPieces: number;
   /**
-   * Čime je gotovost izmerena (036/26): završnom kontrolom naloga, a ako je ruting
-   * nema — uskim grlom (najslabijom operacijom). Nikad „bilo kojom operacijom".
+   * OVERENO napravljeno (036/26): završnom kontrolom naloga, a ako je ruting nema —
+   * uskim grlom (najslabijom operacijom). Nikad „bilo kojom operacijom". Ovo NIJE
+   * isto što i `completionPercent` — v. `completionSource`.
    */
+  madeGoodPieces: number;
   madeGoodSource: 'zavrsna-kontrola' | 'usko-grlo' | 'nema-rutinga';
   /** Broj redova kucanja (ne operacija) — istorijska semantika, ostavljena netaknuta. */
   operationCount: number;
@@ -394,8 +395,19 @@ export interface RnProgress {
   routingOperationCount: number;
   /** Koliko tih operacija je otkucano u punoj planiranoj količini. */
   routingOperationsCompleted: number;
-  /** null kada planirano = 0 (nedefinisan procenat). */
+  /**
+   * NAPREDAK KROZ RUTING (036/26, druga prijava): prosečan udeo urađenog po
+   * operacijama rutinga — deo sa 8 od 14 otkucanih operacija je 61%, ne 0% ni 100%.
+   * null kada planirano = 0 (nedefinisan procenat).
+   */
   completionPercent: number | null;
+  /**
+   * Čime je procenat izmeren: `ruting` (pravilo) ili `zavrsna-kontrola` (nalog bez
+   * plana/rutinga — nema se šta prosečiti, pa važi stari kanon).
+   * Opciono/defanzivno: stariji backend polje ne vraća.
+   */
+  completionSource?: 'ruting' | 'zavrsna-kontrola';
+  /** OVERA gotovosti (završna kontrola) — NIJE izvedeno iz `completionPercent`. */
   isCompleted: boolean;
   /**
    * Datum realizacije RN-a (zahtev 023/26): poslednji DOBAR završetak =
