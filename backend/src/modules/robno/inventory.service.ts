@@ -10,6 +10,7 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { parseDateParam } from "../../common/date-params";
 import { CostingService } from "./costing.service";
+import { V_STOCK_MOVEMENTS } from "./stock-movements";
 import { RobnoService } from "./robno.service";
 import { toDec } from "./decimal.util";
 import type {
@@ -469,8 +470,9 @@ export class InventoryService {
   // --------------------------------------------------------------- interno
 
   /**
-   * Artikli sa prometom u magacinu do `asOf` (doc 39 §D predpunjenje) — distinct `item_id` iz
-   * `stock_document_items` (KODJ izuzet, `affects_stock`, isti filtri kao costing §C). Sortirano po id.
+   * Artikli sa prometom u magacinu do `asOf` (doc 39 §D predpunjenje) — distinct `item_id`
+   * iz pogleda `v_stock_movements` (jedan izvor istine o kretanju: KODJ izuzet,
+   * `affects_stock`, meko obrisane stavke izuzete). Sortirano po id.
    */
   private async candidateItemIds(
     warehouseId: number,
@@ -478,16 +480,11 @@ export class InventoryService {
   ): Promise<number[]> {
     const rows = await this.prisma.$queryRaw<{ item_id: number }[]>(
       Prisma.sql`
-        SELECT DISTINCT sdi.item_id
-        FROM stock_document_items sdi
-        JOIN stock_documents sd ON sd.id = sdi.document_id
-        JOIN document_types dt ON dt.code = sd.document_type_code
-        WHERE sdi.warehouse_id = ${warehouseId}
-          AND sdi.deleted_at IS NULL -- meko obrisana stavka nije promet (review Batch B)
-          AND sd.document_date <= ${asOf}
-          AND sd.document_type_code <> 'KODJ'
-          AND COALESCE(dt.affects_stock, TRUE) = TRUE
-        ORDER BY sdi.item_id
+        SELECT DISTINCT m.item_id
+        FROM ${V_STOCK_MOVEMENTS} m
+        WHERE m.warehouse_id = ${warehouseId}
+          AND m.document_date <= ${asOf}
+        ORDER BY m.item_id
       `,
     );
     return rows.map((r) => r.item_id);

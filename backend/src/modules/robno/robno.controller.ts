@@ -20,7 +20,14 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import type { AuthUser } from "../auth/jwt.strategy";
-import { RobnoService, type StockDocumentKind } from "./robno.service";
+import { RobnoService } from "./robno.service";
+import { LagerQueryService } from "./lager-query.service";
+import { KepuService } from "./kepu.service";
+import {
+  parseBoolParam,
+  parseIntParam,
+  requireIntParam,
+} from "../../common/number-params";
 import { CalculationService } from "./calculation.service";
 import { InventoryService } from "./inventory.service";
 import {
@@ -53,8 +60,13 @@ import type {
   ReleaseReservationDto,
 } from "./dto/reservation.dto";
 import type { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
-import type {
-  CreateStockDocumentDto,
+// VREDNOSNI import, NE `import type` — `emitDecoratorMetadata` upisuje klasu u
+// `design:paramtypes` samo ako binding postoji u runtime-u. Sa `import type` TS je izbriše,
+// metapodatak postane `Object`, i globalni `ValidationPipe` TIHO preskoči telo. Zbog toga
+// `UpdateStockDocumentShippingDto` nije validirao ništa iako je 27.07.2026. baš radi
+// validacije pretvoren iz interfejsa u klasu.
+import {
+  CreateStockDocumentBodyDto,
   UpdateStockDocumentShippingDto,
 } from "./dto/create-stock-document.dto";
 import { DocumentEditService } from "./document-edit.service";
@@ -112,6 +124,8 @@ import type {
 export class RobnoController {
   constructor(
     private readonly robno: RobnoService,
+    private readonly lagerQuery: LagerQueryService,
+    private readonly kepu: KepuService,
     private readonly calculation: CalculationService,
     private readonly posting: PostingEngineService,
     private readonly inventory: InventoryService,
@@ -228,8 +242,8 @@ export class RobnoController {
   ): Promise<void> {
     const { buffer, fileName } = await this.reportPdf.buildLagerPdf(
       {
-        warehouseId: warehouseId ? Number(warehouseId) : undefined,
-        onlyInStock: onlyInStock === "true",
+        warehouseId: parseIntParam(warehouseId, "warehouseId", { min: 1 }),
+        onlyInStock: parseBoolParam(onlyInStock),
         q,
       },
       req.user?.userId ?? null,
@@ -250,8 +264,8 @@ export class RobnoController {
   ): Promise<void> {
     const { buffer, fileName } = await this.reportPdf.buildItemCardPdf(
       {
-        itemId: Number(itemId),
-        warehouseId: Number(warehouseId),
+        itemId: requireIntParam(itemId, "itemId", { min: 1 }),
+        warehouseId: requireIntParam(warehouseId, "warehouseId", { min: 1 }),
         from,
         to,
       },
@@ -265,7 +279,13 @@ export class RobnoController {
     return this.robno.listStockDocuments(query);
   }
 
-  /** Lager lista — stanje zaliha po magacinu + prosečne cene (BigBit paritet). */
+  /**
+   * Lager lista — stanje zaliha po magacinu + prosečne cene (BigBit paritet).
+   *
+   * Brojevi idu kroz `parseIntParam` (400 na nevalidan unos): `Number("abc")` je `NaN`,
+   * a `NaN` prolazi provere `!= null` i odlazi pravo u SQL parametar → goli 500 iz
+   * drajvera na banalnu grešku u URL-u.
+   */
   @Get("lager")
   lager(
     @Query("warehouseId") warehouseId?: string,
@@ -274,12 +294,12 @@ export class RobnoController {
     @Query("skip") skip?: string,
     @Query("take") take?: string,
   ) {
-    return this.robno.listLager({
-      warehouseId: warehouseId ? Number(warehouseId) : undefined,
-      onlyInStock: onlyInStock === "true",
+    return this.lagerQuery.listLager({
+      warehouseId: parseIntParam(warehouseId, "warehouseId", { min: 1 }),
+      onlyInStock: parseBoolParam(onlyInStock),
       q,
-      skip: skip ? Number(skip) : undefined,
-      take: take ? Number(take) : undefined,
+      skip: parseIntParam(skip, "skip", { min: 0 }),
+      take: parseIntParam(take, "take", { min: 1 }),
     });
   }
 
@@ -294,9 +314,9 @@ export class RobnoController {
     @Query("from") from?: string,
     @Query("to") to?: string,
   ) {
-    return this.robno.getItemCard({
-      itemId: Number(itemId),
-      warehouseId: Number(warehouseId),
+    return this.lagerQuery.getItemCard({
+      itemId: requireIntParam(itemId, "itemId", { min: 1 }),
+      warehouseId: requireIntParam(warehouseId, "warehouseId", { min: 1 }),
       from,
       to,
     });
@@ -320,9 +340,14 @@ export class RobnoController {
       .then((data) => ({ data }));
   }
 
+  /**
+   * Kreiranje robnog dokumenta. Telo je KLASA (`CreateStockDocumentBodyDto`), ne presek
+   * tipova — globalni `ValidationPipe` validira samo klase, a presek
+   * `{ kind } & CreateStockDocumentDto` je tiho preskakao CELO telo (i stavke).
+   */
   @Post("documents")
   @RequirePermission(PERMISSIONS.ROBNO_WRITE)
-  create(@Body() body: { kind: StockDocumentKind } & CreateStockDocumentDto) {
+  create(@Body() body: CreateStockDocumentBodyDto) {
     const { kind, ...dto } = body;
     return this.robno.createStockDocument(kind, dto);
   }
@@ -425,7 +450,7 @@ export class RobnoController {
     const lines = await this.posting.postFromStockDocument(id);
     // KEPU (maloprodajna knjiga) — razduženje/zaduženje po proknjiženom dokumentu (IZ/NIV/…),
     // idempotentno po documentId. Van posting transakcije: posting baca na grešku pa se KEPU ne izvrši.
-    const kepuEntries = await this.robno.writeKepuForDocument(id);
+    const kepuEntries = await this.kepu.writeKepuForDocument(id);
     // Ne vraćamo interni LedgerLineDraft[] tip direktno (nije eksportovan) — sažetak.
     return {
       data: { docId: id, ledgerLines: lines.length, kepuEntries, posted: true },
@@ -512,8 +537,8 @@ export class RobnoController {
   @Post("kepu/rebuild")
   @RequirePermission(PERMISSIONS.ROBNO_WRITE)
   async rebuildKepu(@Query("year") year?: string) {
-    const y = year != null && year.trim() !== "" ? Number(year) : undefined;
-    const result = await this.robno.rebuildKepu({ year: y });
+    const y = parseIntParam(year, "year", { min: 1990, max: 2100 });
+    const result = await this.kepu.rebuildKepu({ year: y });
     return { data: result };
   }
 
@@ -562,7 +587,7 @@ export class RobnoController {
   /** Lista popisa (najnoviji prvo), opcioni filter po godini. */
   @Get("inventory-counts")
   listCounts(@Query("year") year?: string) {
-    const y = year != null && year.trim() !== "" ? Number(year) : undefined;
+    const y = parseIntParam(year, "year", { min: 1990, max: 2100 });
     return this.inventory.list(y);
   }
 

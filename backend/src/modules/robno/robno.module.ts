@@ -8,6 +8,8 @@ import { StockReportPdfService } from "./print/stock-report-pdf.service";
 import { GoodsReceiptReportPdfService } from "./print/goods-receipt-report-pdf.service";
 import { RobnoController } from "./robno.controller";
 import { RobnoService } from "./robno.service";
+import { LagerQueryService } from "./lager-query.service";
+import { KepuService } from "./kepu.service";
 import { CalculationService } from "./calculation.service";
 import { StockDocumentNumberingService } from "./stock-document-numbering.service";
 import { CostingService } from "./costing.service";
@@ -39,7 +41,12 @@ import { TransferService } from "./transfer.service";
   imports: [PrismaModule, PostingModule, DocumentsModule],
   controllers: [RobnoController],
   providers: [
+    // Podela odgovornosti (04.08.2026): `RobnoService` je od tada UPIS (kreiranje dokumenta
+    // pod advisory lock-om, guard stanja, lock, soft-delete stavki). Čitanje izveštaja i
+    // KEPU knjiga su izdvojeni, jer se menjaju iz sasvim drugih razloga.
     RobnoService,
+    LagerQueryService, // read-only: lager lista + kartica artikla
+    KepuService, // KEPU knjiga (maloprodajna evidencija) iz robnog toka
     StockDocumentPdfService, // štampa robnih dokumenata (primka/izdatnica/otpremnica/…)
     InventoryCountPdfService, // popisna lista (zakonski obrazac, 2 varijante)
     StockReportPdfService, // lager lista + kartica artikla
@@ -56,6 +63,13 @@ import { TransferService } from "./transfer.service";
     { provide: COSTING_SERVICE, useExisting: CostingService },
     { provide: NIVELACIJA_HOOK, useExisting: NivelacijaService },
   ],
-  exports: [RobnoService, CalculationService, CostingService, ReservationService],
+  exports: [
+    RobnoService,
+    LagerQueryService,
+    KepuService,
+    CalculationService,
+    CostingService,
+    ReservationService,
+  ],
 })
 export class RobnoModule {}

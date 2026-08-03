@@ -45,11 +45,12 @@ export const EXPIRY_RELEASE_REASON = "istekla rezervacija";
 
 // ─────────────────────────────────────────────────────────── ulazni DTO-ovi
 
-/** (artikal, magacin) ključ — jedinica po kojoj se računa raspoloživo. */
-export interface StockKey {
-  itemId: number;
-  warehouseId: number;
-}
+/**
+ * (artikal, magacin) ključ — jedinica po kojoj se računa raspoloživo.
+ * Definicija je u `stock-movements.ts` (grain pogleda `v_stock_movements`);
+ * ovde stoji re-eksport da postojeći `import { StockKey } from "./dto/reservation.dto"` radi.
+ */
+export type { StockKey } from "../stock-movements";
 
 /** Referenca na izvorni dokument rezervacije (jedinstveni ključ reda uz `sourceLine`). */
 export interface ReservationSourceRef {

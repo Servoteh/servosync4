@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 import { TransferService } from "./transfer.service";
 import { RobnoService } from "./robno.service";
 import type { CreateStockDocumentDto } from "./dto/create-stock-document.dto";
+import { makeCostingDouble } from "../../../test/fixtures/costing-double";
 
 /* Lažni Prisma klijent mora da vraća Promise (servis ga `await`-uje), ali unutra nema
    nijedan pravi `await` — pravilo `require-await` ovde ne meri ništa korisno. */
@@ -302,15 +303,12 @@ function makeHarness() {
   };
 
   // Pravi RobnoService (guard nije mockovan) — costing čita simuliranu knjigu.
-  const robno = new RobnoService(
-    {} as never,
-    {} as never,
-    {
-      stateAsOf: jest.fn(async (itemId: number, warehouseId: number) =>
-        stateOf(itemId, warehouseId),
-      ),
-    } as never,
+  // Obe metode (`stateAsOf` i grupni `stateAsOfMany`, koji guard koristi) izlaze iz
+  // ISTOG `stateOf`, pa ne mogu da se raziđu.
+  const costing = makeCostingDouble((itemId, warehouseId) =>
+    stateOf(itemId, warehouseId),
   );
+  const robno = new RobnoService({} as never, {} as never, costing as never);
 
   let seq = 0;
   const numbering = {

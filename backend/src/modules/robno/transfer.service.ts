@@ -15,6 +15,7 @@ import { RobnoService } from "./robno.service";
 import { toDec } from "./decimal.util";
 import { computeKepuEntries, writeKepuEntries } from "./kepu-book.util";
 import { lockStockKeys, sumOpenReservations } from "./reservation.service";
+import { V_STOCK_MOVEMENTS } from "./stock-movements";
 import type {
   CreateTransferDto,
   CreateTransferItemDto,
@@ -561,9 +562,9 @@ export class TransferService {
   }
 
   /**
-   * Ponderisana prosečna nabavna (A+B+C) i VP cena po artiklu u datom magacinu na dan.
-   * Filtri su VERBATIM iz `CostingService.stateAsOf` / lagera (KODJ izuzet, `affects_stock`,
-   * soft-delete) — jedan upit za sve artikle, bez N+1.
+   * Ponderisana prosečna nabavna (A+B+C), VP i MP cena po artiklu u datom magacinu na dan.
+   * Čita pogled `v_stock_movements` — isti izvor kao costing i lager, pa filtri kretanja
+   * više nisu prepisani ovde. Jedan upit za sve artikle, bez N+1.
    */
   private async averageCosts(
     tx: Prisma.TransactionClient,
@@ -581,29 +582,19 @@ export class TransferService {
         weighted_mp: Prisma.Decimal | null;
       }>
     >(Prisma.sql`
-      SELECT sdi.item_id,
-             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) AS weight,
-             SUM(CASE WHEN dt.is_inbound THEN 1 ELSE -1 END * sdi.quantity *
-                 (sdi.purchase_price_net + sdi.dependent_cost_own + sdi.dependent_cost_supplier)
-             ) AS weighted_nab,
-             SUM(CASE WHEN dt.is_inbound THEN 1 ELSE -1 END * sdi.quantity *
-                 sdi.calculated_wholesale_price) AS weighted_vp,
+      SELECT m.item_id,
+             SUM(m.signed_quantity)                        AS weight,
+             SUM(m.signed_quantity * m.unit_purchase_net)  AS weighted_nab,
+             SUM(m.signed_quantity * m.unit_wholesale)     AS weighted_vp,
              -- MP (maloprodajna) vrednost: KEPU knjiga se vodi po MP vrednosti robe
              -- (v. kepu-book.util.unitMpValue). Bez ovoga bi prenos u knjigu usao po
              -- VP fallback-u, a obrazac u nozi tvrdi da su svi redovi MP.
-             SUM(CASE WHEN dt.is_inbound THEN 1 ELSE -1 END * sdi.quantity *
-                 COALESCE(NULLIF(sdi.calculated_retail_price, 0),
-                          sdi.actual_retail_price)) AS weighted_mp
-      FROM stock_document_items sdi
-      JOIN stock_documents sd ON sd.id = sdi.document_id
-      JOIN document_types dt ON dt.code = sd.document_type_code
-      WHERE sdi.item_id IN (${Prisma.join(itemIds)})
-        AND sdi.warehouse_id = ${warehouseId}
-        AND sd.document_date <= ${asOf}
-        AND sd.document_type_code <> 'KODJ'
-        AND COALESCE(dt.affects_stock, TRUE) = TRUE
-        AND sdi.deleted_at IS NULL
-      GROUP BY sdi.item_id
+             SUM(m.signed_quantity * m.unit_retail)        AS weighted_mp
+      FROM ${V_STOCK_MOVEMENTS} m
+      WHERE m.item_id IN (${Prisma.join(itemIds)})
+        AND m.warehouse_id = ${warehouseId}
+        AND m.document_date <= ${asOf}
+      GROUP BY m.item_id
     `);
 
     const out = new Map<number, AvgPrices>();
