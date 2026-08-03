@@ -139,9 +139,10 @@ export function IzvestajiTab() {
     toast('CSV incidenata izvezen');
   }
   function exportCostsCsv() {
-    // 1.0 izvozi po STAVCI dela; 2.0 nema all-parts endpoint pa je granularnost RADNI NALOG
-    // (cost_total/labor_minutes iz WO reda + sredstvo). Vidi ZAVRŠNU PORUKU.
-    const headers = ['wo_number', 'title', 'asset_code', 'asset_name', 'asset_type', 'type', 'priority', 'status', 'cost_total', 'labor_minutes'];
+    // 1.0 izvozi po STAVCI dela; 2.0 nema all-parts endpoint pa je granularnost RADNI NALOG.
+    // `trosak` = kanonski iznos (BE `effectiveCost` = max(delovi, faktura)); `cena_delova` i
+    // `faktura_servisa` idu uz njega da se u Excelu vidi ODAKLE iznos dolazi.
+    const headers = ['wo_number', 'title', 'asset_code', 'asset_name', 'asset_type', 'type', 'priority', 'status', 'trosak', 'cena_delova', 'faktura_servisa', 'servis', 'labor_minutes'];
     const rows = woRows.map((w) => [
       w.woNumber ?? '',
       w.title,
@@ -151,7 +152,10 @@ export function IzvestajiTab() {
       WO_TYPE_LABEL[w.type] ?? w.type,
       WO_PRIORITY_LABEL[w.priority] ?? w.priority,
       WO_STATUS_LABEL[w.status] ?? w.status,
+      num(w.effectiveCost),
+      num(w.partsCost),
       num(w.costTotal),
+      w.externalServicerName ?? '',
       num(w.laborMinutes),
     ]);
     downloadCsv(headers, rows, `odrzavanje_troskovi_${period}_${new Date().toISOString().slice(0, 10)}.csv`);
@@ -186,7 +190,7 @@ export function IzvestajiTab() {
         <h2 className="mb-2 text-md font-semibold text-ink">Troškovi radnih naloga</h2>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <StatCard label="Radnih naloga" value={wo?.totalWorkOrders ?? '—'} />
-          <StatCard label="Delovi (RSD)" value={wo ? formatNumber(Math.round(wo.partsCost)) : '—'} tone="info" />
+          <StatCard label="Trošak (RSD)" value={wo ? formatNumber(Math.round(wo.partsCost)) : '—'} tone="info" />
           <StatCard label="Radni sati" value={wo ? formatNumber(Math.round(wo.laborMinutes / 60)) : '—'} tone="info" />
           <StatCard label="Vrste naloga" value={wo ? Object.keys(wo.byType).length : '—'} />
         </div>

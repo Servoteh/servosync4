@@ -758,15 +758,27 @@ export class OdrzavanjeService {
       ]);
       // WO ↔ sredstvo (H4): kanban/lista mora znati za koje je sredstvo nalog
       // (šifra · naziv; maintWorkOrdersPanel.js:206-220). Batch-resolve iz maint_assets.
-      const assetMap = await this.resolveAssets(
-        tx,
-        rows.map((w) => w.assetId),
-      );
-      const data = rows.map((w) => ({
-        ...w,
-        group: WO_GROUP[w.status] ?? null,
-        asset: assetMap.get(w.assetId) ?? null,
-      }));
+      const [assetMap, partsByWo] = await Promise.all([
+        this.resolveAssets(
+          tx,
+          rows.map((w) => w.assetId),
+        ),
+        // Trošak na redu liste: bez ovoga se cena vidi tek kad se otvori nalog.
+        this.partsCostByWo(
+          tx,
+          rows.map((w) => w.woId),
+        ),
+      ]);
+      const data = rows.map((w) => {
+        const partsCost = partsByWo.get(w.woId) ?? 0;
+        return {
+          ...w,
+          group: WO_GROUP[w.status] ?? null,
+          asset: assetMap.get(w.assetId) ?? null,
+          partsCost,
+          effectiveCost: this.effectiveWoCost(partsCost, w.costTotal),
+        };
+      });
       return { data, meta: pageMeta(page, pageSize, total) };
     });
   }
@@ -1369,10 +1381,68 @@ export class OdrzavanjeService {
   }
 
   /**
-   * WO troškovi — agregacija LINE-ITEM-a (paritet 1.0 maintReportsPanel):
-   * partsCost = Σ(quantity × (wo_parts.unit_cost ?? maint_parts.unit_cost)) nad wo_parts;
-   * laborMinutes = Σ(minutes) nad wo_labor. WO header kolone (cost_total/labor_minutes)
-   * NISU pouzdan rollup (nijedan trigger ih ne agregira iz stavki) — NE sabiraju se.
+   * Zbir stavki „Delovi" po nalogu: Σ(quantity × (wo_parts.unit_cost ?? maint_parts.unit_cost)).
+   * Jedan izvor istine — koriste ga i lista naloga i izveštaj, da isti nalog ne bi
+   * pokazivao dva različita iznosa na dva ekrana.
+   */
+  private async partsCostByWo(
+    tx: Sy15Tx,
+    woIds: string[],
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (!woIds.length) return out;
+    const parts = await tx.maintWoPart.findMany({
+      where: { woId: { in: woIds } },
+      select: { woId: true, partId: true, quantity: true, unitCost: true },
+    });
+    // Fallback jedinične cene iz maint_parts kad wo_parts.unit_cost fali (paritet 1.0).
+    const missing = [
+      ...new Set(
+        parts
+          .filter((p) => p.unitCost == null && p.partId)
+          .map((p) => p.partId as string),
+      ),
+    ];
+    const catalogCost = new Map<string, number>();
+    if (missing.length) {
+      const cat = await tx.maintPart.findMany({
+        where: { partId: { in: missing } },
+        select: { partId: true, unitCost: true },
+      });
+      for (const c of cat) catalogCost.set(c.partId, Number(c.unitCost ?? 0));
+    }
+    for (const p of parts) {
+      const unit =
+        p.unitCost != null
+          ? Number(p.unitCost)
+          : p.partId
+            ? (catalogCost.get(p.partId) ?? 0)
+            : 0;
+      out.set(
+        p.woId,
+        (out.get(p.woId) ?? 0) + Number(p.quantity ?? 0) * unit,
+      );
+    }
+    return out;
+  }
+
+  /**
+   * Trošak naloga = VEĆI od (zbir stavki „Delovi", `cost_total` sa fakture servisa).
+   * Nikad zbir oba: kad spoljni servis fakturiše i delove koje smo popisali kao stavke,
+   * sabiranje bi ih brojalo dvaput. `cost_total` NIJE trigger-rollup — unosi ga čovek
+   * iz WO detalja kao ceo iznos sa računa.
+   */
+  private effectiveWoCost(
+    partsCost: number,
+    costTotal: Prisma.Decimal | null,
+  ): number {
+    return Math.max(partsCost, Number(costTotal ?? 0));
+  }
+
+  /**
+   * WO troškovi (paritet 1.0 maintReportsPanel + faktura spoljnog servisa):
+   * partsCost = Σ po nalozima od `effectiveWoCost` (delovi ili faktura, šta je veće);
+   * laborMinutes = Σ(minutes) nad wo_labor (rad se ne monetizuje — nema tarife).
    */
   async reportWorkOrderCosts(email: string, period?: string) {
     const days = this.periodDays(period);
@@ -1382,7 +1452,7 @@ export class OdrzavanjeService {
         : {};
       const wos = await tx.maintWorkOrder.findMany({
         where,
-        select: { woId: true, type: true, assetType: true },
+        select: { woId: true, type: true, assetType: true, costTotal: true },
       });
       const emptyPeriod = days ? `${days}d` : "all";
       if (!wos.length) {
@@ -1398,53 +1468,28 @@ export class OdrzavanjeService {
         };
       }
       const woIds = wos.map((w) => w.woId);
-      const assetTypeByWo = new Map(
-        wos.map((w) => [w.woId, String(w.assetType)]),
-      );
-      const [parts, labor] = await Promise.all([
-        tx.maintWoPart.findMany({
-          where: { woId: { in: woIds } },
-          select: { woId: true, partId: true, quantity: true, unitCost: true },
-        }),
+      const [partsByWo, labor] = await Promise.all([
+        this.partsCostByWo(tx, woIds),
         tx.maintWoLabor.findMany({
           where: { woId: { in: woIds } },
           select: { minutes: true },
         }),
       ]);
-      // Fallback jedinične cene iz maint_parts kad wo_parts.unit_cost fali (paritet 1.0).
-      const missing = [
-        ...new Set(
-          parts
-            .filter((p) => p.unitCost == null && p.partId)
-            .map((p) => p.partId as string),
-        ),
-      ];
-      const catalogCost = new Map<string, number>();
-      if (missing.length) {
-        const cat = await tx.maintPart.findMany({
-          where: { partId: { in: missing } },
-          select: { partId: true, unitCost: true },
-        });
-        for (const c of cat) catalogCost.set(c.partId, Number(c.unitCost ?? 0));
-      }
-      const partCost = (p: {
-        partId: string | null;
-        quantity: Prisma.Decimal | null;
-        unitCost: Prisma.Decimal | null;
-      }) =>
-        Number(p.quantity ?? 0) *
-        (p.unitCost != null
-          ? Number(p.unitCost)
-          : p.partId
-            ? (catalogCost.get(p.partId) ?? 0)
-            : 0);
-      const partsCost = parts.reduce((a, p) => a + partCost(p), 0);
-      const laborMinutes = labor.reduce((a, l) => a + (l.minutes ?? 0), 0);
+      // Agregacija je PO NALOGU (ne po stavci) — tek na nivou naloga se zna da li je
+      // faktura servisa veća od popisanih delova.
+      let partsCost = 0;
       const costByAssetType: Record<string, number> = {};
-      for (const p of parts) {
-        const at = assetTypeByWo.get(p.woId) ?? "—";
-        costByAssetType[at] = (costByAssetType[at] ?? 0) + partCost(p);
+      for (const w of wos) {
+        const cost = this.effectiveWoCost(
+          partsByWo.get(w.woId) ?? 0,
+          w.costTotal,
+        );
+        if (cost === 0) continue;
+        partsCost += cost;
+        const at = String(w.assetType);
+        costByAssetType[at] = (costByAssetType[at] ?? 0) + cost;
       }
+      const laborMinutes = labor.reduce((a, l) => a + (l.minutes ?? 0), 0);
       return {
         data: {
           totalWorkOrders: wos.length,
@@ -3442,6 +3487,7 @@ export class OdrzavanjeService {
             priority: (dto.priority ?? "p4_planirano") as never,
             notes: dto.notes ?? null,
             active: dto.active ?? true,
+            plannedCost: dto.plannedCost ?? null,
             createdBy: uid,
             updatedBy: uid,
           },
@@ -3483,6 +3529,9 @@ export class OdrzavanjeService {
             : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
+          ...(dto.plannedCost !== undefined
+            ? { plannedCost: dto.plannedCost }
+            : {}),
           updatedBy: uid,
           updatedAt: new Date(),
         },
@@ -3504,14 +3553,49 @@ export class OdrzavanjeService {
     });
   }
 
-  /** Generiši WO iz overdue/due_soon plana vozila (RPC; anti-duplikat has_open_wo). */
+  /**
+   * Generiši WO iz overdue/due_soon plana vozila (RPC; anti-duplikat has_open_wo).
+   * DB fn ne zna za `planned_cost` — posle nje prepisujemo očekivanu cenu iz plana u
+   * `estimated_cost` novih naloga, da planirana cena ne ostane mrtav podatak. Radi se u
+   * app sloju namerno: `ensure_vehicle_service_wos` je živa PROD funkcija koju ne diramo.
+   */
   ensureVehicleServiceWos(email: string, assetId?: string) {
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ n: number }[]>(
         Prisma.sql`SELECT public.ensure_vehicle_service_wos(${assetId ?? null}::uuid) AS n`,
       );
-      return { data: { created: Number(rows[0]?.n ?? 0) } };
+      const created = Number(rows[0]?.n ?? 0);
+      if (created > 0) await this.seedEstimatedCostFromPlan(tx, "vehicle");
+      return { data: { created } };
     });
+  }
+
+  /**
+   * Prepiše `planned_cost` plan stavke u `estimated_cost` naloga koji su iz nje nastali,
+   * ali još nemaju procenu. Idempotentno (uslov `estimated_cost IS NULL`) i usko:
+   * dira samo otvorene naloge sa vezom na plan.
+   */
+  private async seedEstimatedCostFromPlan(
+    tx: Sy15Tx,
+    kind: "vehicle" | "asset",
+  ): Promise<void> {
+    const link =
+      kind === "vehicle"
+        ? Prisma.sql`wo.service_plan_id = p.plan_id`
+        : Prisma.sql`wo.asset_service_plan_id = p.plan_id`;
+    const table =
+      kind === "vehicle"
+        ? Prisma.sql`public.maint_vehicle_service_plan`
+        : Prisma.sql`public.maint_asset_service_plan`;
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE public.maint_work_orders wo
+         SET estimated_cost = p.planned_cost
+        FROM ${table} p
+       WHERE ${link}
+         AND p.planned_cost IS NOT NULL
+         AND wo.estimated_cost IS NULL
+         AND wo.status NOT IN ('zavrsen', 'otkazan')
+    `);
   }
 
   // ---------- Delovi po vozilu (link/unlink/patch) ----------
@@ -3851,6 +3935,7 @@ export class OdrzavanjeService {
             priority: (dto.priority ?? "p4_planirano") as never,
             notes: dto.notes ?? null,
             active: dto.active ?? true,
+            plannedCost: dto.plannedCost ?? null,
             createdBy: uid,
             updatedBy: uid,
           },
@@ -3883,6 +3968,9 @@ export class OdrzavanjeService {
             : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
+          ...(dto.plannedCost !== undefined
+            ? { plannedCost: dto.plannedCost }
+            : {}),
           updatedBy: uid,
           updatedAt: new Date(),
         },
@@ -3909,7 +3997,9 @@ export class OdrzavanjeService {
       const rows = await tx.$queryRaw<{ n: number }[]>(
         Prisma.sql`SELECT public.ensure_asset_service_wos(${assetId ?? null}::uuid) AS n`,
       );
-      return { data: { created: Number(rows[0]?.n ?? 0) } };
+      const created = Number(rows[0]?.n ?? 0);
+      if (created > 0) await this.seedEstimatedCostFromPlan(tx, "asset");
+      return { data: { created } };
     });
   }
 

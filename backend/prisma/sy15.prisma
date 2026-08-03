@@ -1330,6 +1330,8 @@ model MaintAssetServicePlan {
   intervalMonths Int @map("interval_months")
   lastDoneAt DateTime? @db.Date @map("last_done_at")
   notes String?
+  /// Očekivana cena servisa (RSD) — prepisuje se u WO estimated_cost pri „Generiši WO".
+  plannedCost Decimal? @db.Decimal(10, 2) @map("planned_cost")
   priority MaintWoPriority @default(p4_planirano)
   active Boolean @default(true)
   createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
@@ -1822,6 +1824,8 @@ model MaintVehicleServicePlan {
   lastDoneAt DateTime? @db.Date @map("last_done_at")
   lastDoneKm Int? @map("last_done_km")
   notes String?
+  /// Očekivana cena servisa (RSD) — prepisuje se u WO estimated_cost pri „Generiši WO".
+  plannedCost Decimal? @db.Decimal(10, 2) @map("planned_cost")
   priority MaintWoPriority @default(p4_planirano)
   active Boolean @default(true)
   createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")

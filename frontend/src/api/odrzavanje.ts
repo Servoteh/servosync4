@@ -449,7 +449,14 @@ export interface WoAsset {
   name: string;
   assetType: AssetType | string;
 }
-export type WorkOrderRow = WorkOrder & { group: WoGroup | null; asset: WoAsset | null };
+export type WorkOrderRow = WorkOrder & {
+  group: WoGroup | null;
+  asset: WoAsset | null;
+  /** Σ(kol × cena) stavki „Delovi" — BE agregira, da se cena vidi i bez otvaranja naloga. */
+  partsCost: number;
+  /** Trošak naloga = max(partsCost, costTotal sa fakture) — kanonski iznos za prikaz. */
+  effectiveCost: number;
+};
 export interface WoEvent {
   id: string;
   woId: string;

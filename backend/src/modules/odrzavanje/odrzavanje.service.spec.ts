@@ -313,6 +313,40 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
     expect(res.data.costByAssetType.machine).toBe(35);
   });
 
+  it("reportWorkOrderCosts: faktura servisa (cost_total) se NE sabira sa delovima — uzima se veći (03.08.2026)", async () => {
+    const tx = makeTx({
+      maintWorkOrder: {
+        findMany: jest.fn().mockResolvedValue([
+          // w1: faktura 5000 > delovi 200 → 5000 (servis fakturisao i te delove)
+          { woId: "w1", type: "servis", assetType: "vehicle", costTotal: 5000 },
+          // w2: delovi 900 > faktura 100 → 900 (sopstveni rad, faktura sitna)
+          { woId: "w2", type: "servis", assetType: "vehicle", costTotal: 100 },
+          // w3: samo faktura, bez ijedne stavke → 1500
+          { woId: "w3", type: "servis", assetType: "machine", costTotal: 1500 },
+          // w4: bez ičega → ne ulazi u zbir
+          { woId: "w4", type: "servis", assetType: "machine", costTotal: null },
+        ]),
+      },
+      maintWoPart: {
+        findMany: jest.fn().mockResolvedValue([
+          { woId: "w1", partId: null, quantity: 2, unitCost: 100 }, // 200
+          { woId: "w2", partId: null, quantity: 3, unitCost: 300 }, // 900
+        ]),
+      },
+      maintWoLabor: { findMany: jest.fn().mockResolvedValue([]) },
+      maintPart: { findMany: jest.fn().mockResolvedValue([]) },
+    });
+    const { sy15 } = makeSy15(tx);
+    const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+    const res = (await svc.reportWorkOrderCosts("x@servoteh.com", "90")) as {
+      data: { partsCost: number; costByAssetType: Record<string, number> };
+    };
+    // 5000 + 900 + 1500 = 7400 (a NE 5000+200+900+100+1500 = 7700)
+    expect(res.data.partsCost).toBe(7400);
+    expect(res.data.costByAssetType.vehicle).toBe(5900);
+    expect(res.data.costByAssetType.machine).toBe(1500);
+  });
+
   // ------- R2 mutacije — adversarni fix-evi (2026-07-17) -------
 
   it("updateWorkOrder: ponovljeni 'zavrsen' NE pregazi postojeći completed_at (#1 skriveno pravilo 9)", async () => {

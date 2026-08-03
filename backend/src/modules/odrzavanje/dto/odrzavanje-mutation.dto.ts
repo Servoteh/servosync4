@@ -414,6 +414,7 @@ export class CreateVehicleServicePlanDto extends IdempotentDto {
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() active?: boolean;
+  @IsOptional() @IsNumber() plannedCost?: number;
 }
 
 export class UpdateVehicleServicePlanDto {
@@ -426,6 +427,7 @@ export class UpdateVehicleServicePlanDto {
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() active?: boolean;
+  @IsOptional() @IsNumber() plannedCost?: number;
 }
 
 export class LinkPartDto extends IdempotentDto {
@@ -526,6 +528,7 @@ export class CreateAssetServicePlanDto extends IdempotentDto {
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() active?: boolean;
+  @IsOptional() @IsNumber() plannedCost?: number;
 }
 
 export class UpdateAssetServicePlanDto {
@@ -535,6 +538,7 @@ export class UpdateAssetServicePlanDto {
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() active?: boolean;
+  @IsOptional() @IsNumber() plannedCost?: number;
 }
 
 /* ════════════════════════ Zalihe / dobavljači / lokacije ════════════════════════ */

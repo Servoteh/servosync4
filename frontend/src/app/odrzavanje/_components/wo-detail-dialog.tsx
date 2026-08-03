@@ -19,9 +19,10 @@ import {
   useWorkOrder,
   type MaintMe,
   type Part,
+  type WoPart,
   type WoStatus,
 } from '@/api/odrzavanje';
-import { Field, WO_STATUS_LABEL, WO_TYPE_LABEL, WoPriorityBadge, WoStatusBadge } from './common';
+import { Field, money, WO_STATUS_LABEL, WO_TYPE_LABEL, WoPriorityBadge, WoStatusBadge } from './common';
 
 // „Otvori incident" otvara incident-detalj; dinamički import prekida statički ciklus
 // (incident-detail-dialog statički uvozi ovaj modul).
@@ -215,6 +216,17 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
             </div>
           )}
 
+          {/* Trošak popravke */}
+          <TrosakSection
+            parts={d.parts}
+            costTotal={d.costTotal}
+            estimatedCost={d.estimatedCost}
+            externalServicerName={d.externalServicerName}
+            canEdit={canEdit}
+            busy={busy}
+            onSave={(patch) => update.mutate({ id: d.woId, patch })}
+          />
+
           {/* Delovi */}
           <Section title={`Delovi (${d.parts.length})`}>
             {d.parts.map((p) => (
@@ -317,6 +329,100 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
         </div>
       )}
     </Dialog>
+  );
+}
+
+/**
+ * Trošak popravke. Dva izvora: stavke „Delovi" (zbir kol×cena, sopstveni rad) i
+ * `cost_total` = jedan iznos sa fakture spoljnog servisa. Trošak naloga = VEĆI od ta
+ * dva — kad servis fakturiše i delove koje smo popisali, ne broji se dvaput
+ * (isto pravilo kao `reportWorkOrderCosts` u BE-u).
+ */
+export function woPartsSum(parts: WoPart[]): number {
+  return parts.reduce((sum, p) => {
+    const qty = Number(p.quantity ?? 0);
+    const cost = Number(p.unitCost ?? 0);
+    return sum + (Number.isFinite(qty) ? qty : 0) * (Number.isFinite(cost) ? cost : 0);
+  }, 0);
+}
+/** Trošak naloga po kanonskom pravilu: max(zbir delova, cost_total). */
+export function woEffectiveCost(parts: WoPart[], costTotal: string | number | null): number {
+  const ct = Number(costTotal ?? 0);
+  return Math.max(woPartsSum(parts), Number.isFinite(ct) ? ct : 0);
+}
+
+function TrosakSection({
+  parts, costTotal, estimatedCost, externalServicerName, canEdit, busy, onSave,
+}: {
+  parts: WoPart[];
+  costTotal: string | number | null;
+  estimatedCost: string | number | null;
+  externalServicerName: string | null;
+  canEdit: boolean;
+  busy: boolean;
+  onSave: (patch: Record<string, unknown>) => void;
+}) {
+  const partsSum = woPartsSum(parts);
+  const effective = woEffectiveCost(parts, costTotal);
+  /** Prazno polje = obriši vrednost (null); tekst koji nije broj se ignoriše. */
+  function saveNum(field: string, raw: string, previous: string | number | null) {
+    const trimmed = raw.trim().replace(',', '.');
+    if (trimmed === '') {
+      if (previous != null) onSave({ [field]: null });
+      return;
+    }
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n < 0) return;
+    if (n === Number(previous ?? NaN)) return;
+    onSave({ [field]: n });
+  }
+
+  return (
+    <div className="rounded-panel border border-line bg-surface-2/40 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h4 className="text-sm font-semibold text-ink">Trošak popravke</h4>
+        <span className="tnums text-md font-semibold text-ink">{money(effective)} RSD</span>
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-2xs text-ink-secondary">
+        <span>Delovi (stavke): <span className="tnums">{money(partsSum)}</span></span>
+        <span>Faktura servisa: <span className="tnums">{costTotal == null ? '—' : money(costTotal)}</span></span>
+        {estimatedCost != null && <span>Procena: <span className="tnums">{money(estimatedCost)}</span></span>}
+        {externalServicerName && <span>Servis: {externalServicerName}</span>}
+      </div>
+
+      {canEdit && (
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <FormField label="Procenjena cena (RSD)">
+            <Input
+              defaultValue={estimatedCost == null ? '' : String(estimatedCost)}
+              inputMode="decimal"
+              disabled={busy}
+              onBlur={(e) => saveNum('estimatedCost', e.target.value, estimatedCost)}
+            />
+          </FormField>
+          <FormField label="Ukupna cena — faktura (RSD)" hint="ceo iznos sa računa servisa">
+            <Input
+              defaultValue={costTotal == null ? '' : String(costTotal)}
+              inputMode="decimal"
+              disabled={busy}
+              onBlur={(e) => saveNum('costTotal', e.target.value, costTotal)}
+            />
+          </FormField>
+          <FormField label="Servis / radionica">
+            <Input
+              defaultValue={externalServicerName ?? ''}
+              disabled={busy}
+              placeholder="npr. Auto Čačak"
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                if (v === (externalServicerName ?? '')) return;
+                onSave({ externalServicerName: v });
+              }}
+            />
+          </FormField>
+        </div>
+      )}
+    </div>
   );
 }
 

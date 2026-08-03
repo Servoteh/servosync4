@@ -57,6 +57,13 @@ export function fnum(row: Record<string, unknown>, ...keys: string[]): number | 
   return null;
 }
 
+/** Novac (RSD) — srpski format, max 2 decimale. Decimal iz backenda stiže kao string. */
+const MONEY_FMT = new Intl.NumberFormat('sr-Latn-RS', { maximumFractionDigits: 2 });
+export function money(v: string | number | null | undefined): string {
+  const n = Number(v ?? 0);
+  return MONEY_FMT.format(Number.isFinite(n) ? n : 0);
+}
+
 // ── Statusi mašine / operativni ────────────────────────────────────
 // Labele = 1.0 kanon (maintFormatters.js STATUS_LABELS): Radi/Smetnje/Zastoj/Održavanje.
 const OP: Record<OpStatus, { tone: Tone; label: string }> = {
