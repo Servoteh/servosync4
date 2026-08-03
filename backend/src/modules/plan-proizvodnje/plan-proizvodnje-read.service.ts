@@ -91,9 +91,12 @@ const ALL_COLS = Prisma.sql`line_id, work_order_id, effective_machine_code, broj
 
 /**
  * Kolone za gant feed (046/26) — auto-podaci stavke + termini + spremnost/završenost.
- * Poslednji red (rn_zavrsen/is_cooperation_effective/overlay_archived_at) je za picker
- * „Dodaj na plan" (A4): kod `scope=sve` pretrage FE mora da RAZLIKUJE zašto stavka nije
- * za dodavanje (završena / RN zatvoren / kooperacija / arhivirana), umesto da je sakrije.
+ * Poslednji red (rn_zavrsen/is_cooperation_effective/overlay_archived_at/
+ * plan_rn_final_control_done) je za picker „Dodaj na plan" (A4): kod `scope=sve` pretrage
+ * FE mora da RAZLIKUJE zašto stavka nije za dodavanje (završena / RN zatvoren /
+ * kooperacija / arhivirana / RN kroz završnu kontrolu), umesto da je sakrije —
+ * `scope=sve` skida i EFF_FILTER, pa bez poslednje kolone RN kroz završnu kontrolu
+ * (M6) sa neotkucanom operacijom izgleda kao živ „Dodaj" (izmereno: 537 operacija).
  */
 const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   effective_machine_code, original_machine_code, original_machine_name, hall,
@@ -106,7 +109,7 @@ const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   previous_operation_operacija, previous_operation_machine_code,
   local_status, shift_sort_order, shift_note, is_urgent, urgency_reason,
   is_non_machining, customer_short, customer_name, is_done_in_bigtehn,
-  rn_zavrsen, is_cooperation_effective, overlay_archived_at`;
+  rn_zavrsen, is_cooperation_effective, overlay_archived_at, plan_rn_final_control_done`;
 
 const GANTT_LIMIT = 5000;
 
