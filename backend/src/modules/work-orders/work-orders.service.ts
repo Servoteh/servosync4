@@ -1137,13 +1137,6 @@ export class WorkOrdersService {
         isLocked: true,
         handoverStatusId: true,
         drawingHandoverId: true,
-        // Podaci za obaveštenje planerima (016/26) — čitaju se ovde da bi posle
-        // komita bili pri ruci bez dodatnog upita.
-        identNumber: true,
-        variant: true,
-        projectId: true,
-        drawingNumber: true,
-        pieceCount: true,
       },
     });
     if (!wo) throw new NotFoundException(`Radni nalog ${id} ne postoji`);
@@ -1253,23 +1246,15 @@ export class WorkOrdersService {
       return { launchId: launch?.id ?? null, notifyPlanners };
     });
 
-    // POSLE komita, best-effort (D8 obrazac): mejl + zvonce planerima predmeta
-    // (016/26 dopuna — rupa u pokrivenosti: ovaj ekran do sada nije slao ništa).
-    // `notifyLaunch` nikad ne baca, ali `.catch()` je pojas: pad obaveštenja
-    // NE sme da obori već komitovano lansiranje.
-    // Fire-and-forget: N sequential Resend calls (8 s timeout each) must not hold
-    // the launch response open — the launch itself is already committed.
+    // POSLE komita, best-effort (D8 obrazac): zabeleži lansiranje za ZBIRNO
+    // obaveštenje planerima (016/26 treći krug — jedan mejl po talasu, ne po
+    // poziciji; slanje radi sweeper u LaunchNotifyService). `notifyLaunch`
+    // nikad ne baca, ali `.catch()` je pojas: pad obaveštenja NE sme da obori
+    // već komitovano lansiranje. Fire-and-forget: odgovor ne čeka upis.
     if (launched.notifyPlanners)
       void this.launchNotify
         .notifyLaunch({
-          workOrder: {
-            id: wo.id,
-            identNumber: wo.identNumber,
-            variant: wo.variant,
-            projectId: wo.projectId,
-            drawingNumber: wo.drawingNumber,
-            pieceCount: wo.pieceCount,
-          },
+          workOrderId: wo.id,
           handoverId: wo.drawingHandoverId,
           launchId: launched.launchId,
           actorWorkerId,

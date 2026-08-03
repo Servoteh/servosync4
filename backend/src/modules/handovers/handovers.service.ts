@@ -1384,17 +1384,16 @@ export class HandoversService {
       return { workOrder, launchId: launch?.id ?? null };
     });
 
-    // AFTER commit, best-effort (D8): mejl + zvonce planerima predmeta (+ globalnima)
-    // da je primopredaja lansirana u proizvodnju (zahtev 016/26 + dopuna). Nikad ne
-    // baca — lansiranje je već komitovano; svaki neuspeh se loguje. ISTI servis zove i
-    // `work-orders.launch` (lansiranje sa ekrana „Radni nalozi" je isti događaj).
-    // Fire-and-forget: mail delivery (N recipients × Resend timeout) must not
-    // hold the launch response open.
+    // AFTER commit, best-effort (D8): zabeleži lansiranje za ZBIRNO obaveštenje
+    // planerima (016/26 treći krug — Strahinja: jedan mejl po talasu, ne po
+    // poziciji). notifyLaunch samo upiše claim red; mejl + zvonce šalje sweeper
+    // u LaunchNotifyService kad talas utihne. Nikad ne baca — lansiranje je već
+    // komitovano. ISTI servis zove i `work-orders.launch` (lansiranje sa ekrana
+    // „Radni nalozi" je isti događaj). Fire-and-forget: odgovor ne čeka upis.
     void this.launchNotify
       .notifyLaunch({
-        workOrder: result.workOrder,
+        workOrderId: result.workOrder.id,
         handoverId: id,
-        drawingId: handover.drawingId,
         launchId: result.launchId,
         actorWorkerId,
         source: "handover",
