@@ -73,7 +73,11 @@ WHERE sd.document_type_code <> 'KODJ'
   AND COALESCE(dt.affects_stock, TRUE) = TRUE
   AND sdi.deleted_at IS NULL;
 
+-- NAPOMENA: u tekstu komentara NEMA tačke-zapete namerno. Naivni delioci SQL-a
+-- (uključujući skriptu kojom je ova migracija proveravana) seku fajl na `;` i time bi
+-- presekli string na pola. Prisma primenjuje ceo fajl odjednom pa njoj ne smeta, ali
+-- nema razloga ostaviti minu za sledeći alat.
 COMMENT ON VIEW v_stock_movements IS
-  'Jedan izvor istine o kretanju zaliha (doc 39 §C). KODJ izuzet, affects_stock, '
-  'soft-delete izuzet; signed_quantity nosi znak iz document_types.is_inbound. '
+  'Jedan izvor istine o kretanju zaliha (doc 39 §C). KODJ izuzet, affects_stock i '
+  'soft-delete primenjeni, signed_quantity nosi znak iz document_types.is_inbound. '
   'Svaki upit o stanju/proseku/kartici MORA čitati odavde — ne prepisivati predikat.';

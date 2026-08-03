@@ -123,6 +123,27 @@ je prijavio 154 kandidata za `body-type`, pažljiv ljudski/agentski pregled potv
 To je namerno podešeno tako: propušten nalaz košta nedelju dana, lažni nalaz košta jedan
 pogled u kod.
 
+### Provera SQL-only migracija
+
+Pogledi, funkcije, parcijalni indeksi i GRANT-ovi idu kroz ručno pisan `migration.sql`, koji
+**Prisma ne validira** — samo ga prosledi bazi pri `migrate deploy`. Do tada niko ne zna ni da
+li se parsira, a kamoli da li kolone koje pominje postoje. Prva greška se vidi na deploy-u.
+
+```bash
+DATABASE_URL=$(grep ^DATABASE_URL .env.dev | cut -d= -f2- | tr -d '"') \
+node scripts/verify-sql-migration.mjs prisma/migrations/<folder> \
+  --query "SELECT COUNT(*) FROM <novi_objekat>"
+```
+
+Primeni migraciju u transakciji, pusti kontrolni upit, pa uradi `ROLLBACK` — puna provera
+(sintaksa, imena kolona, tipovi, da agregati rade) bez ijedne trajne izmene. Gađaj **dev** bazu:
+iako se sve poništava, `CREATE`/`DROP` na trenutak uzimaju bravu na objektima.
+
+Pogled `v_stock_movements` je ovako proveren pre merge-a — 16 kolona, agregat radi, dev baza
+netaknuta. Usput je alat našao i grešku u sopstvenoj prvoj verziji: naivni `split(";")` seče
+string literal koji sadrži tačku-zapetu (`COMMENT ON … IS '…;…'`) i prijavljuje lažnu
+„unterminated quoted string". Delilac zato poštuje `'…'`, `''` escape i `$$…$$` blokove.
+
 ### Baseline umesto nule
 
 Repo ima zatečene nalaze i to je normalno. Kapija zato ne traži nulu nego **da broj ne raste**:

@@ -37,7 +37,8 @@
     "docker:db:fresh": "docker compose down -v && docker compose up -d db",
     "audit": "node scripts/audit-code.mjs",
     "audit:check": "node scripts/audit-code.mjs --check",
-    "audit:baseline": "node scripts/audit-code.mjs --update-baseline"
+    "audit:baseline": "node scripts/audit-code.mjs --update-baseline",
+    "verify:sql": "node scripts/verify-sql-migration.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
