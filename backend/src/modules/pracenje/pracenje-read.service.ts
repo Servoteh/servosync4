@@ -1103,10 +1103,15 @@ export class PracenjeReadService {
   }
 
   /**
-   * Guard za rute koje primaju RN id (`rn/:rnId`, `operativni-plan`, `can-edit`).
+   * Guard za READ metode koje čvor id tumače kao `work_orders.id`. Zove se iz TAČNO dve:
+   * `rn()` i `operativniPlan()` (rute `GET rn/:rnId` i `GET rn/:rnId/operativni-plan`).
    * Virtuelni (ručno napravljen) sklop ima NEGATIVAN node_id i NEMA red u `work_orders` —
    * bez ove brane bi upit vratio prazno pa bi korisnik dobio nejasno „Radni nalog -7 ne
-   * postoji", a ne informaciju da taj čvor po prirodi nema RN (zahtev 053/26 paket 2).
+   * postoji", umesto informacije da taj čvor po prirodi nema RN (zahtev 053/26 paket 2).
+   *
+   * `canEdit()` (`GET rn/:rnId/can-edit`) NAMERNO nije obuhvaćen: on `rnId` uopšte ne
+   * koristi (parametar mu je `_rnId`) — vraća čistu odluku o pravu `pracenje.edit` i ne
+   * dodiruje bazu RN-ova, pa nema šta da odbije. Brana bi tu bila mrtvo slovo.
    */
   private assertRealRn(rnId: number): void {
     if (isVirtualNode(rnId)) {
@@ -1658,30 +1663,18 @@ export class PracenjeReadService {
   /**
    * Struktura predmeta (WITH RECURSIVE nad `work_order_components`) sa anti-ciklus
    * guardom (path array + depth cap). Anchor = koreni predmeta (RN-ovi koji nisu
-   * komponenta drugog RN-a istog predmeta) ILI zadati skup RN-ova (`roots`) za pod-stablo.
+   * komponenta drugog RN-a istog predmeta).
    *
-   * `roots` je LISTA (a ne jedan id) zbog opsega po VIRTUELNOM sklopu (zahtev 053/26 paket 2):
-   * ručno napravljen sklop nema RN, pa njegovo pod-stablo počinje od N RN-ova koje je korisnik
-   * u njega premestio. Za običan (RN) opseg lista ima tačno jedan element — isti upit kao ranije.
-   * Prazna lista → anchor bez ijednog reda (prazan sklop se i dalje prikazuje, bez dece).
+   * ⚠️ Uvek se učitava CEO predmet — opseg („Opseg (sklop)" / `rootRn`) se NE pravi
+   * suženim anchor-om, nego SEČENJEM već razrešenog stabla u `scopeNodes` (zahtev 053/26
+   * paket 2, popravni krug). Anchor po jednom RN-u je davao drugačije podatke od punog
+   * prikaza: (a) deca koja u sklop stižu ručnim override-om, a ne sastavnicom, uopšte se
+   * nisu učitavala, (b) `1 AS broj_komada` na anker-redu je gazio stvarnu
+   * `work_order_components.quantity`, pa je „Za lot" u drill-u bio manji nego u punom
+   * prikazu. Sada je opseg po konstrukciji PODSKUP punog prikaza.
    */
-  private projectNodes(
-    projectId: number,
-    roots: number[] | null,
-  ): Promise<ProjectNodeRow[]> {
-    const anchor =
-      roots != null
-        ? Prisma.sql`
-            SELECT wo.id AS rn_id, NULL::int AS parent_rn_id, wo.id AS root_rn_id,
-                   0 AS nivo, 1 AS broj_komada, ARRAY[wo.id] AS path_idrn
-              FROM work_orders wo
-             WHERE wo.project_id = ${projectId}
-               AND ${
-                 roots.length > 0
-                   ? Prisma.sql`wo.id IN (${Prisma.join(roots)})`
-                   : Prisma.sql`FALSE`
-               }`
-        : Prisma.sql`
+  private projectNodes(projectId: number): Promise<ProjectNodeRow[]> {
+    const anchor = Prisma.sql`
             SELECT wo.id AS rn_id, NULL::int AS parent_rn_id, wo.id AS root_rn_id,
                    0 AS nivo, 1 AS broj_komada, ARRAY[wo.id] AS path_idrn
               FROM work_orders wo
@@ -1824,110 +1817,79 @@ export class PracenjeReadService {
   }
 
   /**
-   * Pod-stablo virtuelnih sklopova ispod datog virtuelnog korena (uklj. sam koren) —
-   * fixpoint naniže po override lancu. Koristi se kad je „Opseg (sklop)" ručno napravljen
-   * sklop: tada RN korene pod-stabla daje `overrideChildWorkOrders` nad OVIM skupom.
-   */
-  private virtualSubtree(
-    all: VirtualSklopRow[],
-    rootNodeId: number,
-  ): VirtualSklopRow[] {
-    const included = new Set<number>([rootNodeId]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const v of all) {
-        const node = virtualNodeId(v.id);
-        if (included.has(node)) continue;
-        if (
-          v.has_parent_override &&
-          v.parent_override_rn_id != null &&
-          included.has(v.parent_override_rn_id)
-        ) {
-          included.add(node);
-          changed = true;
-        }
-      }
-    }
-    return all.filter((v) => included.has(virtualNodeId(v.id)));
-  }
-
-  /**
-   * Virtuelni sklopovi koji (tranzitivno) vise ispod UČITANOG skupa RN čvorova — za opseg
-   * po RN sklopu. Bez ovoga bi u suženom prikazu iskočili SVI ručni sklopovi predmeta kao
-   * lažni koreni (cilj im nije u skupu → `reparentNodes` ih proglasi korenom).
-   */
-  private virtualUnderIds(
-    all: VirtualSklopRow[],
-    realIds: Set<number>,
-  ): VirtualSklopRow[] {
-    const included = new Set<number>();
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const v of all) {
-        const node = virtualNodeId(v.id);
-        if (included.has(node)) continue;
-        const p = v.parent_override_rn_id;
-        if (!v.has_parent_override || p == null) continue;
-        if (realIds.has(p) || included.has(p)) {
-          included.add(node);
-          changed = true;
-        }
-      }
-    }
-    return all.filter((v) => included.has(virtualNodeId(v.id)));
-  }
-
-  /** RN-ovi predmeta koji su ručno premešteni pod neki od datih (virtuelnih) čvorova. */
-  private async overrideChildWorkOrders(
-    projectId: number,
-    parentNodeIds: number[],
-  ): Promise<number[]> {
-    if (parentNodeIds.length === 0) return [];
-    const rows = await this.prisma.$queryRaw<{ id: number }[]>(Prisma.sql`
-      SELECT po.work_order_id::int AS id
-        FROM pracenje_structure_overrides po
-        JOIN work_orders w ON w.id = po.work_order_id
-       WHERE po.parent_work_order_id IN (${Prisma.join(parentNodeIds)})
-         AND po.work_order_id > 0
-         AND w.project_id = ${projectId}`);
-    return rows.map((r) => r.id);
-  }
-
-  /**
-   * Čvorovi jednog opsega: RN stablo + sintetički virtuelni sklopovi, već re-parentovani.
-   * Tri slučaja opsega (`rootRn`):
-   *   • null           → ceo predmet: sve RN korene + SVE ručne sklopove;
-   *   • pozitivan (RN) → pod-stablo tog RN-a + ručni sklopovi koji vise ispod njega;
-   *   • negativan      → pod-stablo RUČNOG sklopa: sam sklop, ugnežđeni ručni sklopovi i
-   *                      RN-ovi koje je korisnik u njih premestio (sa njihovim sastavnicama).
+   * Čvorovi jednog opsega: CEO predmet (RN stablo + sintetički ručni sklopovi) razrešen
+   * JEDNOM kroz `reparentNodes`, pa — ako je zadat opseg — POSEČEN na pod-stablo `rootRn`.
+   *
+   * Zašto sečenje umesto suženog SQL anchor-a (popravni krug 053/26 paket 2): pod-stablo
+   * mora biti PODSKUP punog prikaza, inače se ista pozicija u dva prikaza vidi različito.
+   * Sužen anchor je to lomio na tri načina:
+   *   1. deca koja u sklop stižu RUČNIM override-om (a ne sastavnicom) nisu se ni učitavala,
+   *      pa je ručni sklop u drill-u izgledao prazan, a „lansirano" manje nego u punom;
+   *   2. ugnežđen lanac (ručni sklop → RN → ručni sklop → RN) se prekidao na prvom RN-u;
+   *   3. `1 AS broj_komada` na anker-redu je gazio `work_order_components.quantity`, pa je
+   *      „Za lot" u drill-u bio manji (npr. 12 umesto 48).
+   * Sečenjem po EFEKTIVNOM `path_idrn` sva tri nestaju po konstrukciji: čvorovi, količine i
+   * poredak su bukvalno isti redovi koje bi korisnik video u punom prikazu.
+   *
+   * `rootRn == null` (ceo predmet) NE prolazi kroz sečenje — put je nepromenjen.
    */
   private async scopeNodes(
     projectId: number,
     rootRn: number | null,
   ): Promise<ProjectNodeRow[]> {
-    const allVirtual = await this.virtuelniSklopovi(projectId);
+    const [realNodes, allVirtual] = await Promise.all([
+      this.projectNodes(projectId),
+      this.virtuelniSklopovi(projectId),
+    ]);
+    const full = reparentNodes([
+      ...realNodes,
+      ...allVirtual.map((v) => this.virtualToNode(v)),
+    ]);
+    if (rootRn == null) return full;
+    return this.sliceSubtree(full, rootRn);
+  }
 
-    if (rootRn != null && isVirtualNode(rootRn)) {
-      const subtree = this.virtualSubtree(allVirtual, rootRn);
-      const realRoots = await this.overrideChildWorkOrders(
-        projectId,
-        subtree.map((v) => virtualNodeId(v.id)),
-      );
-      const realNodes = await this.projectNodes(projectId, realRoots);
-      return reparentNodes([...realNodes, ...subtree.map((v) => this.virtualToNode(v))]);
-    }
-
-    const realNodes = await this.projectNodes(
-      projectId,
-      rootRn != null ? [rootRn] : null,
-    );
-    const scoped =
-      rootRn == null
-        ? allVirtual
-        : this.virtualUnderIds(allVirtual, new Set(realNodes.map((n) => n.rn_id)));
-    return reparentNodes([...realNodes, ...scoped.map((v) => this.virtualToNode(v))]);
+  /**
+   * Poseci razrešeno stablo na pod-stablo čvora `rootRn` i re-bazuj ga kao samostalno
+   * stablo (koren = nivo 0). Pripadnost pod-stablu se čita iz `path_idrn` koji je
+   * `reparentNodes` već izračunao nad EFEKTIVNIM roditeljima — dakle uključuje i decu
+   * dovučenu ručnim override-om, i ugnežđene ručne sklopove, na proizvoljnoj dubini.
+   *
+   * Re-bazira se SAMO ono što zavisi od korena (`nivo`, `path_idrn`, `root_rn_id`) i veza
+   * korena naviše (roditelj mu je van isečka, pa se prikazuje kao koren — isto kao raniji
+   * anchor). `broj_komada`/`komada`/`sort_order` se NE diraju: to su podaci pozicije, ne
+   * opsega, i moraju biti identični punom prikazu. Ulazni niz je pre-order, a podstablo je
+   * u njemu neprekidno, pa filtriranje čuva poredak.
+   */
+  private sliceSubtree(
+    nodes: ProjectNodeRow[],
+    rootRn: number,
+  ): ProjectNodeRow[] {
+    const root = nodes.find((n) => n.rn_id === rootRn);
+    // Nedostižno u praksi (koren se validira pre poziva), ali bolje prazno nego bacanje.
+    if (!root) return [];
+    const baseDepth = root.path_idrn.length - 1;
+    return nodes
+      .filter((n) => n.path_idrn.includes(rootRn))
+      .map((n) => {
+        const path = n.path_idrn.slice(baseDepth);
+        const isRoot = n.rn_id === rootRn;
+        return {
+          ...n,
+          nivo: path.length - 1,
+          path_idrn: path,
+          root_rn_id: rootRn,
+          // Koren isečka nema roditelja U PRIKAZU (njegov pravi roditelj je van opsega);
+          // sklopni crtež mu zato pada na prazno, tačno kao kod ranijeg SQL anchor-a.
+          ...(isRoot
+            ? {
+                parent_rn_id: null,
+                parent_broj_crteza: null,
+                has_parent_crtez_file: false,
+              }
+            : {}),
+        };
+      });
   }
 
   /** Per-node metrika za portfolio rollup (komada, završeno KK, has_final/crtez, op ratio). */

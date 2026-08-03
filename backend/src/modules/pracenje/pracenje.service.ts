@@ -67,7 +67,11 @@ export class PracenjeService {
   // ==========================================================================
 
   /** User note per predmet (projectId) + RN (workOrderId) → `pracenje_notes` upsert. */
-  async upsertNapomena(actor: Actor, projectId: number, dto: PracenjeNapomenaDto) {
+  async upsertNapomena(
+    actor: Actor,
+    projectId: number,
+    dto: PracenjeNapomenaDto,
+  ) {
     const workOrderId = Number(dto.bigtehnRnId);
     const note = String(dto.note ?? "");
     const row = await this.prisma.pracenjeNote.upsert({
@@ -161,8 +165,17 @@ export class PracenjeService {
    * Zahtev 053/26 paket 2: i DETE i RODITELJ smeju biti VIRTUELNI sklop (negativan id) —
    * „ubaci poziciju u ručno napravljen sklop" i „sklop u sklopu". Virtuelni sklop nema
    * automatskog (BOM) roditelja, pa je override jedini izvor njegove pozicije u stablu.
+   *
+   * `projectId` (iz rute `:itemId`) se STVARNO koristi: svaki virtuelni čvor u zahtevu mora
+   * da pripada baš tom predmetu. Ranije se predmet ignorisao, pa je premeštanje pod sklop
+   * IZ DRUGOG PREDMETA vraćalo 200, a stablo bi taj override tiho odbacilo
+   * (`override_ignored`) jer cilj nikad nije u učitanom skupu — greška bez poruke.
    */
-  async upsertParentOverride(actor: Actor, dto: PracenjeParentOverrideDto) {
+  async upsertParentOverride(
+    actor: Actor,
+    projectId: number,
+    dto: PracenjeParentOverrideDto,
+  ) {
     const workOrderId = Number(dto.bigtehnRnId);
 
     if (dto.clear) {
@@ -170,6 +183,11 @@ export class PracenjeService {
         where: { workOrderId },
       });
       return { data: { id: null, cleared: true } };
+    }
+
+    // Dete: ako se premešta sam ručni sklop, i on mora biti iz ovog predmeta.
+    if (isVirtualNode(workOrderId)) {
+      await this.requireVirtuelniSklop(projectId, workOrderId);
     }
 
     const parentWorkOrderId =
@@ -182,18 +200,10 @@ export class PracenjeService {
           "Roditelj mora biti postojeći RN (id > 0) ili ručno napravljen sklop.",
         );
       }
-      // Virtuelni roditelj mora POSTOJATI i ne sme biti obrisan — inače bi se override
-      // upisao ka čvoru koji se nikad ne pojavljuje u stablu (tiho „nestalo dete").
+      // Virtuelni roditelj mora POSTOJATI, biti neobrisan I iz OVOG predmeta — inače bi se
+      // override upisao ka čvoru koji se u ovom stablu nikad ne pojavljuje („nestalo dete").
       if (isVirtualNode(parentWorkOrderId)) {
-        const target = await this.prisma.pracenjeVirtuelniSklop.findFirst({
-          where: { id: virtualDbId(parentWorkOrderId), deletedAt: null },
-          select: { id: true },
-        });
-        if (!target) {
-          throw new UnprocessableEntityException(
-            `Ručno napravljen sklop ${virtualDbId(parentWorkOrderId)} ne postoji (ili je obrisan).`,
-          );
-        }
+        await this.requireVirtuelniSklop(projectId, parentWorkOrderId);
       }
       if (parentWorkOrderId === workOrderId) {
         throw new UnprocessableEntityException(
@@ -227,16 +237,49 @@ export class PracenjeService {
   // ==========================================================================
 
   /**
+   * Guard: virtuelni čvor (negativan id) mora da postoji, da nije obrisan I da pripada
+   * BAŠ ovom predmetu. Vraća id sklopa u bazi. Deli ga premeštanje strukture (roditelj i
+   * dete), da provera predmeta bude na jednom mestu.
+   */
+  private async requireVirtuelniSklop(
+    projectId: number,
+    nodeId: number,
+  ): Promise<number> {
+    const id = virtualDbId(nodeId);
+    const row = await this.prisma.pracenjeVirtuelniSklop.findFirst({
+      where: { id, projectId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!row) {
+      throw new UnprocessableEntityException(
+        `Ručno napravljen sklop ${id} ne postoji u predmetu ${projectId} (obrisan je ili pripada drugom predmetu).`,
+      );
+    }
+    return row.id;
+  }
+
+  /**
    * Napravi ručni sklop u stablu predmeta → `pracenje_virtuelni_sklopovi`. NE dira
    * `work_orders` (RN registar/numeracija/MRP netaknuti). Vraća i `nodeId` (= -id) da FE
    * odmah može da ga ponudi kao cilj u „Premesti u sklop" bez preračunavanja predznaka.
    * NIJE idempotentno po nazivu — dupli nazivi su dozvoljeni (odluka vlasnika).
+   *
+   * `projectId` je meki ref (bez DB FK-a, kao ostatak modula), pa se postojanje predmeta
+   * proverava ovde — inače bi POST na nepostojeći `:itemId` napravio red-siroče koji se
+   * ni u jednom stablu ne vidi, a zauzima id.
    */
   async createVirtuelniSklop(
     actor: Actor,
     projectId: number,
     dto: VirtuelniSklopCreateDto,
   ) {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true },
+    });
+    if (!project) {
+      throw new NotFoundException(`Predmet ${projectId} ne postoji.`);
+    }
     const row = await this.prisma.pracenjeVirtuelniSklop.create({
       data: {
         projectId,
@@ -492,7 +535,8 @@ export class PracenjeService {
       const before = await this.prisma.operativnaAktivnost.findUnique({
         where: { id: dto.id },
       });
-      if (!before) throw new NotFoundException(`Aktivnost ${dto.id} ne postoji.`);
+      if (!before)
+        throw new NotFoundException(`Aktivnost ${dto.id} ne postoji.`);
       const row = await this.prisma.$transaction(async (tx) => {
         const updated = await tx.operativnaAktivnost.update({
           where: { id: dto.id },
@@ -712,16 +756,22 @@ export class PracenjeService {
   ): Promise<boolean> {
     const visited = new Set<number>();
     let frontier: number[] = [newParent];
-    for (let depth = 0; depth < CYCLE_MAX_DEPTH && frontier.length > 0; depth++) {
+    for (
+      let depth = 0;
+      depth < CYCLE_MAX_DEPTH && frontier.length > 0;
+      depth++
+    ) {
       const next: number[] = [];
       for (const node of frontier) {
         if (node === child) return true;
         if (visited.has(node)) continue;
         visited.add(node);
-        const override = await this.prisma.pracenjeStructureOverride.findUnique({
-          where: { workOrderId: node },
-          select: { parentWorkOrderId: true },
-        });
+        const override = await this.prisma.pracenjeStructureOverride.findUnique(
+          {
+            where: { workOrderId: node },
+            select: { parentWorkOrderId: true },
+          },
+        );
         if (override) {
           // Override is authoritative for this node — no BOM fallback.
           if (override.parentWorkOrderId != null) {

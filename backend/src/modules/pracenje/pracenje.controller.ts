@@ -129,14 +129,16 @@ export class PracenjeController {
     return this.pracenje.upsertManualOverride(req.user, dto);
   }
 
+  // `:itemId` NIJE dekorativan: virtuelni (ručno napravljen) sklop u payload-u mora da
+  // pripada baš ovom predmetu — servis to proverava (zahtev 053/26 paket 2).
   @Put("predmeti/:itemId/parent-override")
   @RequirePermission(PERMISSIONS.PRACENJE_MANAGE)
   parentOverride(
     @Req() req: AuthedRequest,
-    @Param("itemId", ParseIntPipe) _itemId: number,
+    @Param("itemId", ParseIntPipe) itemId: number,
     @Body() dto: PracenjeParentOverrideDto,
   ) {
-    return this.pracenje.upsertParentOverride(req.user, dto);
+    return this.pracenje.upsertParentOverride(req.user, itemId, dto);
   }
 
   // ---------- Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2 ----------

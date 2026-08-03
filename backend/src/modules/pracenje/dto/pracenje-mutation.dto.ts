@@ -136,7 +136,9 @@ export class PracenjeManualOverrideDto {
    */
   @Matches(NODE_ID) bigtehnRnId!: string;
   /** ''/omitted → auto (null). 'kompletirano' auto-forces machining+surface DA (docx §4.7). */
-  @IsOptional() @IsIn(["u_radu", "kompletirano", "nije_zapoceto"]) status?: string;
+  @IsOptional()
+  @IsIn(["u_radu", "kompletirano", "nije_zapoceto"])
+  status?: string;
   @IsOptional() @IsBoolean() masinska?: boolean;
   @IsOptional() @IsBoolean() povrsinska?: boolean;
   /** "Physically done but not clocked" manual quantity (pieces) — docx §4.6. */

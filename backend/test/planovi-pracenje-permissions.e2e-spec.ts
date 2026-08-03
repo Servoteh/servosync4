@@ -739,9 +739,14 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         "/pracenje/predmeti/7602/virtuelni-sklopovi/7",
         "admin",
       ).expect(200);
-      await send("patch", "/pracenje/predmeti/7602/virtuelni-sklopovi/7", "pm", {
-        naziv: "X",
-      }).expect(403);
+      await send(
+        "patch",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi/7",
+        "pm",
+        {
+          naziv: "X",
+        },
+      ).expect(403);
       await send(
         "delete",
         "/pracenje/predmeti/7602/virtuelni-sklopovi/7",
@@ -749,13 +754,23 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       ).expect(403);
     });
     it("validacija: prazan naziv → 400; nepoznat tip → 400; ne-int :id → 400", async () => {
-      await send("post", "/pracenje/predmeti/7602/virtuelni-sklopovi", "admin", {
-        naziv: "   ",
-      }).expect(400);
-      await send("post", "/pracenje/predmeti/7602/virtuelni-sklopovi", "admin", {
-        naziv: "A",
-        tip: "izmisljeni",
-      }).expect(400);
+      await send(
+        "post",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi",
+        "admin",
+        {
+          naziv: "   ",
+        },
+      ).expect(400);
+      await send(
+        "post",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi",
+        "admin",
+        {
+          naziv: "A",
+          tip: "izmisljeni",
+        },
+      ).expect(400);
       await send(
         "delete",
         "/pracenje/predmeti/7602/virtuelni-sklopovi/abc",
@@ -783,7 +798,9 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       }).expect(400);
     });
     it("opseg po ručnom sklopu: izvestaj?rootRn=-7 → 200; rootRn=-1.5 → 400", async () => {
-      await get("/pracenje/predmeti/7602/izvestaj?rootRn=-7", "admin").expect(200);
+      await get("/pracenje/predmeti/7602/izvestaj?rootRn=-7", "admin").expect(
+        200,
+      );
       await get("/pracenje/predmeti/7602/izvestaj?rootRn=-1.5", "admin").expect(
         400,
       );

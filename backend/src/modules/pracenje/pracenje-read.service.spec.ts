@@ -1,4 +1,7 @@
-import { NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import {
+  NotFoundException,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import {
   PracenjeReadService,
   compareIdent,
@@ -454,7 +457,9 @@ describe("reparentNodes — poredak redova (zahtev 053/26 §2)", () => {
       }
       // …a ceo blok potomaka je neprekidan: svi redovi između čvora i njegovog poslednjeg
       // potomka moraju biti potomci tog čvora (niko tuđi se ne uvlači u sredinu).
-      const desc = out.filter((d) => d.path_idrn.includes(n.rn_id) && d.rn_id !== n.rn_id);
+      const desc = out.filter(
+        (d) => d.path_idrn.includes(n.rn_id) && d.rn_id !== n.rn_id,
+      );
       if (desc.length === 0) continue;
       const idxs = desc.map((d) => pos.get(d.rn_id)!);
       const lo = Math.min(...idxs);
@@ -687,7 +692,6 @@ interface DbFixture {
   project?: Record<string, unknown>[];
   struktura?: Record<string, unknown>[];
   virtuelni?: Record<string, unknown>[];
-  overrideChildren?: Record<string, unknown>[];
   operations?: Record<string, unknown>[];
 }
 
@@ -698,17 +702,35 @@ interface DbFixture {
  */
 function makeReadPrisma(fx: DbFixture) {
   const virtuelni = fx.virtuelni ?? [];
+  const struktura = fx.struktura ?? [];
   return {
-    $queryRaw: jest.fn(async (q: { strings?: string[] }) => {
-      const sql = (q.strings ?? []).join(" ");
-      if (sql.includes("pracenje_virtuelni_sklopovi")) return virtuelni;
-      if (sql.includes("FROM projects p")) return fx.project ?? [];
-      if (sql.includes("WITH RECURSIVE struktura")) return fx.struktura ?? [];
-      if (sql.includes("FROM pracenje_structure_overrides po"))
-        return fx.overrideChildren ?? [];
-      if (sql.includes("FROM work_order_operations op")) return fx.operations ?? [];
-      return [];
-    }),
+    $queryRaw: jest.fn(
+      async (q: { strings?: string[]; values?: unknown[] }) => {
+        const sql = (q.strings ?? []).join(" ");
+        if (sql.includes("pracenje_virtuelni_sklopovi")) return virtuelni;
+        if (sql.includes("FROM projects p")) return fx.project ?? [];
+        if (sql.includes("WITH RECURSIVE struktura")) return struktura;
+        if (sql.includes("FROM work_order_operations op"))
+          return fx.operations ?? [];
+        // Zaglavlje opsega po REALNOM RN-u (`SELECT w.id::int AS node_id … WHERE w.id = $1`):
+        // postoji ako je taj RN u strukturi predmeta.
+        if (sql.includes("AS node_id")) {
+          const rootRn = Number((q.values ?? [])[0]);
+          const hit = struktura.find((n) => n.rn_id === rootRn);
+          return hit
+            ? [
+                {
+                  node_id: rootRn,
+                  naziv: hit.naziv_dela,
+                  broj_crteza: "",
+                  nivo: 0,
+                },
+              ]
+            : [];
+        }
+        return [];
+      },
+    ),
     pracenjeVirtuelniSklop: {
       findFirst: jest.fn(async (args: { where: { id: number } }) => {
         const row = virtuelni.find((v) => v.id === args.where.id);
@@ -817,7 +839,11 @@ describe("PracenjeReadService — virtuelni sklop u izveštaju (053/26 paket 2)"
       project: PROJECT_FX,
       struktura: [
         dbNode({ rn_id: 1 }),
-        dbNode({ rn_id: 2, has_parent_override: true, parent_override_rn_id: -7 }),
+        dbNode({
+          rn_id: 2,
+          has_parent_override: true,
+          parent_override_rn_id: -7,
+        }),
       ],
       virtuelni: [VS_FX({ korisnicka_napomena: "beleška" })],
     }).izvestaj("a@b.c", 7602, {});
@@ -826,17 +852,22 @@ describe("PracenjeReadService — virtuelni sklop u izveštaju (053/26 paket 2)"
     expect(poz.parent_node_id).toBe(-7);
     expect(poz.level).toBe(1);
     // Napomena se vodi i na ručnom sklopu (isti meki ključ u `pracenje_notes`).
-    expect(rows.find((r) => r.node_id === -7)!.korisnicka_napomena).toBe("beleška");
+    expect(rows.find((r) => r.node_id === -7)!.korisnicka_napomena).toBe(
+      "beleška",
+    );
   });
 
   it("izvestaj sa opsegom po RUČNOM sklopu (rootRn = -7): koren + samo njegova deca", async () => {
     const res = await svc({
       project: PROJECT_FX,
       struktura: [
-        dbNode({ rn_id: 2, has_parent_override: true, parent_override_rn_id: -7 }),
+        dbNode({
+          rn_id: 2,
+          has_parent_override: true,
+          parent_override_rn_id: -7,
+        }),
       ],
       virtuelni: [VS_FX({ tip: "zav" })],
-      overrideChildren: [{ id: 2 }],
     }).izvestaj("a@b.c", 7602, { rootRn: "-7" });
     expect(res.data.root).toMatchObject({
       node_id: -7,
@@ -878,5 +909,207 @@ describe("PracenjeReadService — virtuelni sklop u izveštaju (053/26 paket 2)"
     await expect(s.operativniPlan("a@b.c", -7, {})).rejects.toBeInstanceOf(
       UnprocessableEntityException,
     );
+  });
+});
+
+/**
+ * POPRAVNI KRUG (adversarni nalaz #1/#2/#3): OPSEG MORA BITI PODSKUP PUNOG PRIKAZA.
+ *
+ * Raniji drill je stablo gradio suženim SQL anchor-om (`WHERE wo.id IN (...)`), pa je
+ * pod-stablo bilo DRUGO stablo, ne isečak istog:
+ *   #1 deca koja u sklop stižu ručnim OVERRIDE-om (a ne sastavnicom) nisu se ni učitavala
+ *      → ručni sklop u drill-u prazan, „lansirano" manje nego u punom prikazu;
+ *   #2 ugnežđen lanac (ručni sklop → RN → ručni sklop → RN) se prekidao na prvom RN-u;
+ *   #3 `1 AS broj_komada` na anker-redu je gazio `work_order_components.quantity`, pa je
+ *      „Za lot" u drill-u bio manji (izmereno: 12 umesto 48).
+ * Sada se učitava ceo predmet, `reparentNodes` se pusti JEDNOM, pa se seče po efektivnom
+ * `path_idrn`. Testovi porede DRILL sa PUNIM prikazom nad ISTIM podacima.
+ */
+describe("Opseg (drill) = isečak punog stabla — popravni krug 053/26", () => {
+  const svc = (fx: DbFixture) =>
+    new PracenjeReadService(makeReadPrisma(fx) as unknown as PrismaService);
+
+  type Row = {
+    node_id: number;
+    level: number;
+    lansirana_kolicina: number | null;
+  };
+  const shape = (rows: readonly Row[]) =>
+    rows.map((r) => `${r.node_id}@${r.level}`);
+
+  /**
+   * Nalaz #1: sklop A = RN 1 (BOM dete RN 2); virtuelni V(-7) premešten pod A; pozicija
+   * P = RN 100 (sopstveni koren predmeta) premeštena u V.
+   */
+  const scenaVirtUnderReal: DbFixture = {
+    project: PROJECT_FX,
+    struktura: [
+      dbNode({ rn_id: 1, ident_broj: "9400/1", komada: 10 }),
+      dbNode({
+        rn_id: 2,
+        parent_rn_id: 1,
+        root_rn_id: 1,
+        nivo: 1,
+        path_idrn: [1, 2],
+        ident_broj: "9400/1.1",
+        komada: 10,
+      }),
+      dbNode({
+        rn_id: 100,
+        ident_broj: "9400/9",
+        komada: 10,
+        has_parent_override: true,
+        parent_override_rn_id: -7,
+      }),
+    ],
+    virtuelni: [
+      VS_FX({ id: 7, has_parent_override: true, parent_override_rn_id: 1 }),
+    ],
+  };
+
+  it("#1 drill na REALNI sklop vuče i ručni sklop I njegove override-pozicije", async () => {
+    const pun = await svc(scenaVirtUnderReal).izvestaj("a@b.c", 7602, {});
+    expect(shape(pun.data.rows as Row[])).toEqual([
+      "1@0",
+      "2@1",
+      "-7@1",
+      "100@2",
+    ]);
+    expect(pun.data.summary.total_lansirano).toBe(30);
+
+    const drill = await svc(scenaVirtUnderReal).izvestaj("a@b.c", 7602, {
+      rootRn: "1",
+    });
+    // RN 100 je ranije NESTAJAO (stigao je override-om, ne sastavnicom).
+    expect(shape(drill.data.rows as Row[])).toEqual([
+      "1@0",
+      "2@1",
+      "-7@1",
+      "100@2",
+    ]);
+    // Isti čvorovi ⇒ ista suma; ranije je padala na 20.
+    expect(drill.data.summary.total_lansirano).toBe(
+      pun.data.summary.total_lansirano,
+    );
+    // Koren isečka nema roditelja u prikazu; ostali zadržavaju svog.
+    const byId = new Map(
+      (
+        drill.data.rows as { node_id: number; parent_node_id: number | null }[]
+      ).map((r) => [r.node_id, r.parent_node_id]),
+    );
+    expect(byId.get(1)).toBeNull();
+    expect(byId.get(-7)).toBe(1);
+    expect(byId.get(100)).toBe(-7);
+  });
+
+  /** Nalaz #2: ugnežđen lanac V(-7) → RN 500 → W(-8) → RN 600. */
+  const scenaUgnezdjeno: DbFixture = {
+    project: PROJECT_FX,
+    struktura: [
+      dbNode({
+        rn_id: 500,
+        ident_broj: "9400/5",
+        komada: 10,
+        has_parent_override: true,
+        parent_override_rn_id: -7,
+      }),
+      dbNode({
+        rn_id: 600,
+        ident_broj: "9400/6",
+        komada: 10,
+        has_parent_override: true,
+        parent_override_rn_id: -8,
+      }),
+    ],
+    virtuelni: [
+      VS_FX({ id: 7, naziv: "Ručni A" }),
+      VS_FX({
+        id: 8,
+        naziv: "Ručni B",
+        has_parent_override: true,
+        parent_override_rn_id: 500,
+      }),
+    ],
+  };
+
+  it("#2 drill na ručni sklop ide kroz CEO lanac V→RN→W→RN (sva 4 čvora)", async () => {
+    const drill = await svc(scenaUgnezdjeno).izvestaj("a@b.c", 7602, {
+      rootRn: "-7",
+    });
+    // Ranije je vraćalo samo [-7, 500] — lanac se prekidao na prvom RN-u.
+    expect(shape(drill.data.rows as Row[])).toEqual([
+      "-7@0",
+      "500@1",
+      "-8@2",
+      "600@3",
+    ]);
+    const pun = await svc(scenaUgnezdjeno).izvestaj("a@b.c", 7602, {});
+    expect(drill.data.summary.total_lansirano).toBe(
+      pun.data.summary.total_lansirano,
+    );
+  });
+
+  /** Nalaz #3: „Za lot" mora doći iz sastavnice (quantity), ne iz anker-a. */
+  const scenaKolicina: DbFixture = {
+    project: PROJECT_FX,
+    struktura: [
+      dbNode({
+        rn_id: 500,
+        ident_broj: "9400/5",
+        komada: 10,
+        broj_komada: 4, // work_order_components.quantity
+        has_parent_override: true,
+        parent_override_rn_id: -7,
+      }),
+    ],
+    virtuelni: [VS_FX({ id: 7 })],
+  };
+
+  it("#3 `required_for_lot` premeštene pozicije je ISTI u punom i suženom prikazu", async () => {
+    const reqOf = (res: { data: { rows: unknown[] } }) =>
+      (
+        res.data.rows as { node_id: number; required_for_lot: number | null }[]
+      ).find((r) => r.node_id === 500)!.required_for_lot;
+
+    const pun = await svc(scenaKolicina).izvestaj("a@b.c", 7602, {
+      lotQty: "12",
+    });
+    const drill = await svc(scenaKolicina).izvestaj("a@b.c", 7602, {
+      rootRn: "-7",
+      lotQty: "12",
+    });
+    expect(reqOf(pun)).toBe(48); // 4 kom/sklop × lot 12
+    expect(reqOf(drill)).toBe(48); // ranije 12 (anker je gazio quantity na 1)
+  });
+
+  it("drill NE menja podatke pozicije — samo nivo/koren (isečak je podskup punog)", async () => {
+    const pun = await svc(scenaVirtUnderReal).izvestaj("a@b.c", 7602, {});
+    const drill = await svc(scenaVirtUnderReal).izvestaj("a@b.c", 7602, {
+      rootRn: "1",
+    });
+    // Jedina polja koja opseg SME da promeni: nivo (rebazira se na koren isečka) i veza
+    // korena naviše (roditelj mu je van isečka → i sklopni crtež otpada). Sve ostalo —
+    // količine, datumi, statusi, operacije, `sort_order` — mora biti IDENTIČNO punom prikazu.
+    const SCOPE_FIELDS = [
+      "level",
+      "parent_node_id",
+      "broj_sklopnog_crteza",
+      "sklop_drawing_no",
+      "has_skop_crtez_file",
+    ];
+    const strip = (r: Record<string, unknown>) => {
+      const out = { ...r };
+      for (const k of SCOPE_FIELDS) delete out[k];
+      return out;
+    };
+    const byIdPun = new Map(
+      (pun.data.rows as Record<string, unknown>[]).map((r) => [
+        r.node_id,
+        strip(r),
+      ]),
+    );
+    for (const r of drill.data.rows as Record<string, unknown>[]) {
+      expect(strip(r)).toEqual(byIdPun.get(r.node_id));
+    }
   });
 });

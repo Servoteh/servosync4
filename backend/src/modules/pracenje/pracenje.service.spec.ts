@@ -51,6 +51,7 @@ function makePrisma() {
       create: jest.fn(),
       update: jest.fn().mockResolvedValue({ id: 7 }),
     },
+    project: { findUnique: jest.fn().mockResolvedValue({ id: PROJECT_ID }) },
     $transaction: jest.fn(),
   };
   prisma.$transaction.mockImplementation(
@@ -79,6 +80,9 @@ const fullAktivnost = (over: Partial<Rec> = {}): Rec => ({
   ...over,
 });
 
+/** Predmet iz rute (`:itemId`) — `upsertParentOverride` ga koristi za proveru pripadnosti. */
+const PROJECT_ID = 7602;
+
 describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
   const actor = { userId: 7, email: "a@servoteh.com" };
   let prisma: ReturnType<typeof makePrisma>;
@@ -95,12 +99,15 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
     it("create → audit entityType='operativna_aktivnost', entityId=String(id), afterData set", async () => {
       prisma.odeljenje.findUnique.mockResolvedValue({ id: 1 });
       prisma.operativnaAktivnost.create.mockResolvedValue(
-        fullAktivnost({ id: 42, planiraniPocetak: new Date("2026-07-01T00:00:00Z") }),
+        fullAktivnost({
+          id: 42,
+          planiraniPocetak: new Date("2026-07-01T00:00:00Z"),
+        }),
       );
       const res = await service.upsertAktivnost(actor, {
         odeljenjeId: 1,
         nazivAktivnosti: "A",
-      } as never);
+      });
       expect(res).toEqual({ data: { id: 42 } });
       expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
       const audit = dataArg(prisma.auditLog.create);
@@ -129,7 +136,7 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
         id: 9,
         odeljenjeId: 1,
         nazivAktivnosti: "novi",
-      } as never);
+      });
       const audit = dataArg(prisma.auditLog.create);
       expect(audit.entityId).toBe("9");
       expect(audit.action).toBe("UPDATE aktivnost");
@@ -145,7 +152,7 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
           id: 9,
           odeljenjeId: 1,
           nazivAktivnosti: "x",
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
@@ -157,7 +164,7 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
         odeljenjeId: 1,
         nazivAktivnosti: "A",
         // radniNalogId / projekatId / odgovoranRadnikId izostavljeni (undefined)
-      } as never);
+      });
       const created = dataArg(prisma.operativnaAktivnost.create);
       expect(created.workOrderId).toBeNull();
       expect(created.projectId).toBeNull();
@@ -171,7 +178,7 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
         service.upsertAktivnost(actor, {
           odeljenjeId: 999,
           nazivAktivnosti: "A",
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
@@ -179,30 +186,37 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
 
   describe("zatvori / blokiraj / odblokiraj — strukturisan audit", () => {
     it("zatvori → CLOSE aktivnost audit sa before/after status", async () => {
-      prisma.operativnaAktivnost.findUnique.mockResolvedValue({ status: "u_toku" });
+      prisma.operativnaAktivnost.findUnique.mockResolvedValue({
+        status: "u_toku",
+      });
       prisma.operativnaAktivnost.update.mockResolvedValue({ id: 5 });
-      await service.zatvoriAktivnost(actor, 5, { napomena: "gotovo" } as never);
+      await service.zatvoriAktivnost(actor, 5, { napomena: "gotovo" });
       const audit = dataArg(prisma.auditLog.create);
       expect(audit.entityType).toBe("operativna_aktivnost");
       expect(audit.entityId).toBe("5");
       expect(audit.action).toBe("CLOSE aktivnost");
       expect(audit.beforeData).toEqual({ status: "u_toku" });
-      expect(audit.afterData).toEqual({ status: "zavrseno", napomena: "gotovo" });
+      expect(audit.afterData).toEqual({
+        status: "zavrseno",
+        napomena: "gotovo",
+      });
     });
 
     it("zatvori nepostojeće → NotFound, bez update/audit", async () => {
       prisma.operativnaAktivnost.findUnique.mockResolvedValue(null);
       await expect(
-        service.zatvoriAktivnost(actor, 5, {} as never),
+        service.zatvoriAktivnost(actor, 5, {}),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.operativnaAktivnost.update).not.toHaveBeenCalled();
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it("blokiraj → BLOCK aktivnost audit + blokada red (u transakciji)", async () => {
-      prisma.operativnaAktivnost.findUnique.mockResolvedValue({ status: "nije_krenulo" });
+      prisma.operativnaAktivnost.findUnique.mockResolvedValue({
+        status: "nije_krenulo",
+      });
       prisma.operativnaAktivnost.update.mockResolvedValue({ id: 3 });
-      await service.blokirajAktivnost(actor, 3, { razlog: "kvar" } as never);
+      await service.blokirajAktivnost(actor, 3, { razlog: "kvar" });
       expect(prisma.operativnaAktivnostBlokada.create).toHaveBeenCalledTimes(1);
       const audit = dataArg(prisma.auditLog.create);
       expect(audit.action).toBe("BLOCK aktivnost");
@@ -212,21 +226,26 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
 
     it("blokiraj prazan razlog → BadRequest pre svih upita", async () => {
       await expect(
-        service.blokirajAktivnost(actor, 3, { razlog: "   " } as never),
+        service.blokirajAktivnost(actor, 3, { razlog: "   " }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(prisma.operativnaAktivnost.findUnique).not.toHaveBeenCalled();
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it("odblokiraj → UNBLOCK aktivnost audit", async () => {
-      prisma.operativnaAktivnost.findUnique.mockResolvedValue({ status: "blokirano" });
+      prisma.operativnaAktivnost.findUnique.mockResolvedValue({
+        status: "blokirano",
+      });
       prisma.operativnaAktivnostBlokada.findFirst.mockResolvedValue({ id: 8 });
       prisma.operativnaAktivnost.update.mockResolvedValue({ id: 3 });
-      await service.odblokirajAktivnost(actor, 3, { napomena: "ok" } as never);
+      await service.odblokirajAktivnost(actor, 3, { napomena: "ok" });
       const audit = dataArg(prisma.auditLog.create);
       expect(audit.action).toBe("UNBLOCK aktivnost");
       expect(audit.entityId).toBe("3");
-      expect(audit.afterData).toEqual({ status: "nije_krenulo", napomena: "ok" });
+      expect(audit.afterData).toEqual({
+        status: "nije_krenulo",
+        napomena: "ok",
+      });
     });
   });
 
@@ -235,10 +254,10 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
   describe("upsertParentOverride — cycle guard", () => {
     it("self-parent (parentRnId == RN) → 422, bez upsert", async () => {
       await expect(
-        service.upsertParentOverride(actor, {
+        service.upsertParentOverride(actor, PROJECT_ID, {
           bigtehnRnId: "5",
           parentRnId: "5",
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
     });
@@ -250,10 +269,10 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
           args.where.workOrderId === 2 ? { parentWorkOrderId: 1 } : null,
       );
       await expect(
-        service.upsertParentOverride(actor, {
+        service.upsertParentOverride(actor, PROJECT_ID, {
           bigtehnRnId: "1",
           parentRnId: "2",
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
     });
@@ -266,10 +285,10 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
           args.where.componentWorkOrderId === 2 ? [{ workOrderId: 1 }] : [],
       );
       await expect(
-        service.upsertParentOverride(actor, {
+        service.upsertParentOverride(actor, PROJECT_ID, {
           bigtehnRnId: "1",
           parentRnId: "2",
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
     });
 
@@ -277,21 +296,23 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
       prisma.pracenjeStructureOverride.findUnique.mockResolvedValue(null);
       prisma.workOrderComponent.findMany.mockResolvedValue([]); // B nema roditelja
       prisma.pracenjeStructureOverride.upsert.mockResolvedValue({ id: 11 });
-      const res = await service.upsertParentOverride(actor, {
+      const res = await service.upsertParentOverride(actor, PROJECT_ID, {
         bigtehnRnId: "1",
         parentRnId: "2",
-      } as never);
+      });
       expect(res).toEqual({ data: { id: 11 } });
       expect(prisma.pracenjeStructureOverride.upsert).toHaveBeenCalledTimes(1);
     });
 
     it("detach na koren (parentRnId izostavljen) → upsert sa null, bez cycle-provere", async () => {
       prisma.pracenjeStructureOverride.upsert.mockResolvedValue({ id: 12 });
-      const res = await service.upsertParentOverride(actor, {
+      const res = await service.upsertParentOverride(actor, PROJECT_ID, {
         bigtehnRnId: "1",
-      } as never);
+      });
       expect(res).toEqual({ data: { id: 12 } });
-      expect(prisma.pracenjeStructureOverride.findUnique).not.toHaveBeenCalled();
+      expect(
+        prisma.pracenjeStructureOverride.findUnique,
+      ).not.toHaveBeenCalled();
       const upsertArg = (
         prisma.pracenjeStructureOverride.upsert.mock.calls as unknown as {
           create: { parentWorkOrderId: number | null };
@@ -301,13 +322,17 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
     });
 
     it("clear → deleteMany, bez cycle-provere", async () => {
-      prisma.pracenjeStructureOverride.deleteMany.mockResolvedValue({ count: 1 });
-      const res = await service.upsertParentOverride(actor, {
+      prisma.pracenjeStructureOverride.deleteMany.mockResolvedValue({
+        count: 1,
+      });
+      const res = await service.upsertParentOverride(actor, PROJECT_ID, {
         bigtehnRnId: "1",
         clear: true,
-      } as never);
+      });
       expect(res).toEqual({ data: { id: null, cleared: true } });
-      expect(prisma.pracenjeStructureOverride.findUnique).not.toHaveBeenCalled();
+      expect(
+        prisma.pracenjeStructureOverride.findUnique,
+      ).not.toHaveBeenCalled();
       expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
     });
   });
@@ -326,7 +351,7 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
       const res = await service.createVirtuelniSklop(actor, 7602, {
         naziv: "  Ručni sklop  ",
         tip: "glavni",
-      } as never);
+      });
       expect(res).toEqual({
         data: { id: 7, nodeId: -7, naziv: "Ručni sklop", tip: "glavni" },
       });
@@ -336,20 +361,30 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
       expect(created.createdBy).toBe("a@servoteh.com");
     });
 
+    // Popravni krug, nalaz #4: `project_id` je MEKI ref (bez DB FK-a), pa bi POST na
+    // nepostojeći `:itemId` napravio red-siroče koji se ni u jednom stablu ne vidi.
+    it("create za NEPOSTOJEĆI predmet → 404, bez upisa", async () => {
+      prisma.project.findUnique.mockResolvedValue(null);
+      await expect(
+        service.createVirtuelniSklop(actor, 999999, { naziv: "X" }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.pracenjeVirtuelniSklop.create).not.toHaveBeenCalled();
+    });
+
     it("create bez tipa → default 'pod'", async () => {
       prisma.pracenjeVirtuelniSklop.create.mockResolvedValue({
         id: 8,
         naziv: "X",
         tip: "pod",
       });
-      await service.createVirtuelniSklop(actor, 7602, { naziv: "X" } as never);
+      await service.createVirtuelniSklop(actor, 7602, { naziv: "X" });
       expect(dataArg(prisma.pracenjeVirtuelniSklop.create).tip).toBe("pod");
     });
 
     it("update nepostojećeg / obrisanog → 404, bez update-a", async () => {
       prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue(null);
       await expect(
-        service.updateVirtuelniSklop(actor, 7602, 7, { naziv: "N" } as never),
+        service.updateVirtuelniSklop(actor, 7602, 7, { naziv: "N" }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.pracenjeVirtuelniSklop.update).not.toHaveBeenCalled();
     });
@@ -363,7 +398,7 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
       });
       const res = await service.updateVirtuelniSklop(actor, 7602, 7, {
         naziv: "Novo ime",
-      } as never);
+      });
       expect(res.data).toEqual({
         id: 7,
         nodeId: -7,
@@ -380,9 +415,13 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
 
     it("delete: soft-delete + brisanje override-a DECE i SEBE u istoj transakciji", async () => {
       prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue({ id: 7 });
-      prisma.pracenjeStructureOverride.deleteMany.mockResolvedValue({ count: 3 });
+      prisma.pracenjeStructureOverride.deleteMany.mockResolvedValue({
+        count: 3,
+      });
       const res = await service.deleteVirtuelniSklop(actor, 7602, 7);
-      expect(res).toEqual({ data: { id: 7, deleted: true, clearedChildren: 3 } });
+      expect(res).toEqual({
+        data: { id: 7, deleted: true, clearedChildren: 3 },
+      });
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
       // soft-delete (deletedAt), NE hard delete
       const upd = (
@@ -397,18 +436,19 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
           where: Rec;
         }[][]
       ).map((c) => c[0].where);
-      expect(wheres).toEqual([
-        { parentWorkOrderId: -7 },
-        { workOrderId: -7 },
-      ]);
+      expect(wheres).toEqual([{ parentWorkOrderId: -7 }, { workOrderId: -7 }]);
     });
 
     it("delete je IDEMPOTENTAN: već obrisan/nepostojeći → no-op (bez brisanja override-a)", async () => {
       prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue(null);
       const res = await service.deleteVirtuelniSklop(actor, 7602, 7);
-      expect(res).toEqual({ data: { id: 7, deleted: false, clearedChildren: 0 } });
+      expect(res).toEqual({
+        data: { id: 7, deleted: false, clearedChildren: 0 },
+      });
       expect(prisma.pracenjeVirtuelniSklop.update).not.toHaveBeenCalled();
-      expect(prisma.pracenjeStructureOverride.deleteMany).not.toHaveBeenCalled();
+      expect(
+        prisma.pracenjeStructureOverride.deleteMany,
+      ).not.toHaveBeenCalled();
     });
   });
 
@@ -417,17 +457,18 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
       prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue({ id: 7 });
       prisma.pracenjeStructureOverride.findUnique.mockResolvedValue(null);
       prisma.pracenjeStructureOverride.upsert.mockResolvedValue({ id: 55 });
-      const res = await service.upsertParentOverride(actor, {
+      const res = await service.upsertParentOverride(actor, PROJECT_ID, {
         bigtehnRnId: "100",
         parentRnId: "-7",
-      } as never);
+      });
       expect(res).toEqual({ data: { id: 55 } });
       const where = (
         prisma.pracenjeVirtuelniSklop.findFirst.mock.calls as unknown as {
           where: Rec;
         }[][]
       )[0][0].where;
-      expect(where).toEqual({ id: 7, deletedAt: null });
+      // Predmet iz rute ULAZI u lookup — sklop iz drugog predmeta se ne sme prihvatiti.
+      expect(where).toEqual({ id: 7, projectId: PROJECT_ID, deletedAt: null });
       const create = (
         prisma.pracenjeStructureOverride.upsert.mock.calls as unknown as {
           create: { workOrderId: number; parentWorkOrderId: number | null };
@@ -439,10 +480,48 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
     it("nepostojeći / obrisan ručni sklop kao roditelj → 422, bez upsert-a", async () => {
       prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue(null);
       await expect(
-        service.upsertParentOverride(actor, {
+        service.upsertParentOverride(actor, PROJECT_ID, {
           bigtehnRnId: "100",
           parentRnId: "-7",
-        } as never),
+        }),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
+    });
+
+    // Popravni krug, nalaz #4: ranije je predmet iz rute bio ignorisan (`_itemId`), pa je
+    // premeštanje pod sklop IZ DRUGOG PREDMETA vraćalo 200, a stablo bi taj override tiho
+    // odbacilo (`override_ignored`) — greška bez ijedne poruke korisniku.
+    it("roditelj je ručni sklop IZ DRUGOG PREDMETA → 422 (ne tihi 200)", async () => {
+      // Sklop 7 postoji, ali u predmetu 9 — lookup po (id, projectId) ga ne nalazi.
+      prisma.pracenjeVirtuelniSklop.findFirst.mockImplementation(
+        (args: { where: { id: number; projectId: number } }) =>
+          args.where.projectId === 9 ? { id: 7 } : null,
+      );
+      await expect(
+        service.upsertParentOverride(actor, 5, {
+          bigtehnRnId: "100",
+          parentRnId: "-7",
+        }),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
+      // …a u SVOM predmetu isti sklop prolazi.
+      prisma.pracenjeStructureOverride.findUnique.mockResolvedValue(null);
+      prisma.pracenjeStructureOverride.upsert.mockResolvedValue({ id: 1 });
+      await expect(
+        service.upsertParentOverride(actor, 9, {
+          bigtehnRnId: "100",
+          parentRnId: "-7",
+        }),
+      ).resolves.toEqual({ data: { id: 1 } });
+    });
+
+    it("premešta se ručni sklop IZ DRUGOG PREDMETA (dete) → 422", async () => {
+      prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue(null);
+      await expect(
+        service.upsertParentOverride(actor, PROJECT_ID, {
+          bigtehnRnId: "-7",
+          parentRnId: "100",
+        }),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
     });
@@ -455,10 +534,10 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
           args.where.workOrderId === -2 ? { parentWorkOrderId: -1 } : null,
       );
       await expect(
-        service.upsertParentOverride(actor, {
+        service.upsertParentOverride(actor, PROJECT_ID, {
           bigtehnRnId: "-1",
           parentRnId: "-2",
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
       // Virtuelni čvor NEMA sastavnicu — BOM se za njega ni ne pita.
@@ -468,10 +547,10 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
     it("virtuelni sklop sam sebi roditelj → 422", async () => {
       prisma.pracenjeVirtuelniSklop.findFirst.mockResolvedValue({ id: 7 });
       await expect(
-        service.upsertParentOverride(actor, {
+        service.upsertParentOverride(actor, PROJECT_ID, {
           bigtehnRnId: "-7",
           parentRnId: "-7",
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.pracenjeStructureOverride.upsert).not.toHaveBeenCalled();
     });
@@ -483,7 +562,7 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
         service.upsertManualOverride(actor, {
           bigtehnRnId: "-7",
           status: "kompletirano",
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
     });
 
@@ -493,7 +572,7 @@ describe("PracenjeService (F1 popravni krug) — audit + cycle guard", () => {
           odeljenjeId: 1,
           nazivAktivnosti: "A",
           radniNalogId: -7,
-        } as never),
+        }),
       ).rejects.toBeInstanceOf(UnprocessableEntityException);
       expect(prisma.operativnaAktivnost.create).not.toHaveBeenCalled();
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
