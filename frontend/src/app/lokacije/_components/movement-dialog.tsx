@@ -19,6 +19,7 @@ import {
   type LocMovementType,
 } from '@/api/lokacije';
 import { LocationSelect } from './location-select';
+import { computeInitialRemainder } from './initial-remainder';
 import { normalizeLocMovementKeys } from './label-build';
 import { ScanOverlay } from './scan-overlay';
 import { enqueueMovement } from '@/lib/offlineQueue';
@@ -136,6 +137,11 @@ export function MovementDialog({
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
   const [returnToUnplaced, setReturnToUnplaced] = useState(false);
+  // 059/26 B2: korisnik je EKSPLICITNO izabrao „Uloži preostalo sa naloga" —
+  // 058 derivacija tipa to mora da poštuje (bez ovoga bi je refetch placements-a
+  // mogao vratiti na TRANSFER i dugme bi tiho prestalo da važi). Čisti se
+  // izborom konkretne polazne police ili promenom para (nalog, TP).
+  const [remainderChosen, setRemainderChosen] = useState(false);
   const [showMachines, setShowMachines] = useState(false);
   const [hallFilterId, setHallFilterId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -168,8 +174,13 @@ export function MovementDialog({
   // `lookupDone` odvaja „još tražim" od „nema u planu".
   const [erpDrawing, setErpDrawing] = useState('');
   const [erpRevision, setErpRevision] = useState('');
-  /** Komada na nalogu iz poslednjeg lookup-a (057/26) — hrani auto-popunu Količine. */
-  const [erpPieces, setErpPieces] = useState<number | null>(null);
+  /**
+   * Ukupno komada na nalogu iz poslednjeg lookup-a — SIROVO (1.0 `komada_total`;
+   * i 0 je validna vrednost). JEDNO stanje za oba potrošača: auto-popunu
+   * Količine (057/26 — koristi samo > 0) i računicu „Uloži preostalo sa naloga
+   * (K kom)" + poruku „kompletno uložen" (059/26).
+   */
+  const [erpPieceCount, setErpPieceCount] = useState<number | null>(null);
   const [lookupDone, setLookupDone] = useState(false);
   // Separator para je NUL kao ESCAPE sekvenca (ne literalni bajt — literalni
   // U+0000 je ceo fajl činio „binarnim" za git diff/review; runtime identično).
@@ -184,7 +195,10 @@ export function MovementDialog({
     const t = itemRefId.trim();
     setErpDrawing('');
     setErpRevision('');
-    setErpPieces(null);
+    setErpPieceCount(null);
+    // Promena para (nalog, TP) poništava i izbor „uloži preostalo" (059/26 B2)
+    // — preostalo novog para tek treba da se izračuna.
+    setRemainderChosen(false);
     setLookupDone(false);
     if (!o || !t) return;
     let cancelled = false;
@@ -197,13 +211,15 @@ export function MovementDialog({
         .then(({ data }) => {
           if (cancelled) return;
           setLookupDone(true);
-          // Komada sa naloga (057/26) — samo pozitivan konačan broj; stariji BE
-          // polje ne šalje (undefined) → autofill se tiho preskače.
-          setErpPieces(
+          // Komada sa naloga — SIROVO (057/26 + 059/26): BE šalje sanitizovan
+          // broj ili null; stariji BE polje ne šalje (undefined) → null (autofill
+          // i računica preostalog se tiho preskaču). Pravilo „samo > 0" važi
+          // JEDINO za autofill Količine i primenjuje se tamo, ne ovde — 0 je za
+          // računicu preostatka validna vrednost.
+          setErpPieceCount(
             data.found &&
               typeof data.pieceCount === 'number' &&
-              Number.isFinite(data.pieceCount) &&
-              data.pieceCount > 0
+              Number.isFinite(data.pieceCount)
               ? data.pieceCount
               : null,
           );
@@ -284,9 +300,11 @@ export function MovementDialog({
       const p = prev.trim();
       const auto = autoQtyRef.current;
       if (p !== '' && p !== auto.value) return prev; // ručno uneta količina se ne gazi
-      if (erpPieces != null && currentPlacements.length === 0) {
-        autoQtyRef.current = { value: String(erpPieces), pair: curPair };
-        return String(erpPieces);
+      // Autofill SAMO za pozitivan broj komada (057/26 pravilo) — sirovo stanje
+      // sme da nosi i 0 (za 059/26 poruku „kompletno uložen"), ali 0 se ne upisuje.
+      if (erpPieceCount != null && erpPieceCount > 0 && currentPlacements.length === 0) {
+        autoQtyRef.current = { value: String(erpPieceCount), pair: curPair };
+        return String(erpPieceCount);
       }
       if (auto.pair !== curPair) {
         // Novi par bez osnova za autofill → očisti SAMO tuđu auto vrednost.
@@ -295,7 +313,24 @@ export function MovementDialog({
       }
       return prev;
     });
-  }, [lookupDone, placementsReady, erpPieces, currentPlacements, orderNo, itemRefId]);
+  }, [lookupDone, placementsReady, erpPieceCount, currentPlacements, orderNo, itemRefId]);
+
+  // ── 059/26: „Uloži preostalo sa naloga (K kom)" — paritet 1.0 populateFromSelect ──
+  // K = max(0, komada_total − Σ smeštenog) (1.0 `computeLocInitialRemainder`,
+  // lokacijeFilters.js:123). Računa se SAMO uz konkretan nalog (1.0: „'Sa
+  // lokacije' ima smisla samo kada smo scope-ovali na jedan nalog") i tek kad su
+  // I lookup I placements gotovi (B1: u debounce prozoru / za nenađen RN K ne
+  // sme na tren postati 0 i lažno javiti „kompletno uložen"). Server ovu granicu
+  // NE sprovodi (živa `loc_create_movement` nema exceeds_order_quantity —
+  // izmereno 03.08) — brana je klijentska, kao u 1.0.
+  const orderScoped = orderNo.trim() !== '';
+  const initialRemainder =
+    orderScoped && lookupDone && placementsReady
+      ? computeInitialRemainder(erpPieceCount, currentPlacements)
+      : null;
+  // Data glitch: uloženo VIŠE od naloga → preostalo 0 + upozorenje (ne negativno).
+  const overPlaced =
+    initialRemainder != null && erpPieceCount != null && placedTotal > erpPieceCount;
 
   // ── 058/26: tip pokreta se IZVODI umesto da se pita (pravila u prop docu) ──
   // Dok se smeštaji za ukucan par još učitavaju, zadrži zatečeni tip (preset sa
@@ -308,11 +343,29 @@ export function MovementDialog({
       setMovementType('TRANSFER');
       return;
     }
+    // 059/26 B2: eksplicitno izabrano ulaganje preostatka — refetch placements-a
+    // ne sme da ga pregazi (ako K u međuvremenu padne na 0, submit brana i dalje
+    // zaustavlja sa jasnom porukom umesto tihe promene tipa).
+    if (remainderChosen) {
+      setMovementType('INITIAL_PLACEMENT');
+      return;
+    }
     // `isLoading` (ne `!placementsReady`): pad query-ja (offline) znači „smeštaji
     // nepoznati" → prazno → INITIAL, isto kao 1.0 offline (from-select bez opcija).
     if (trimmedItem.length > 0 && placementsQ.isLoading) return;
-    setMovementType(currentPlacements.length > 0 ? 'TRANSFER' : 'INITIAL_PLACEMENT');
-  }, [autoMovementType, fromLocationId, trimmedItem, placementsQ.isLoading, currentPlacements]);
+    if (currentPlacements.length === 0) {
+      setMovementType('INITIAL_PLACEMENT');
+      return;
+    }
+    // Ima smeštaja, polazna NIJE izabrana (059/26 t.4 — zatvara M1 iz verify-ja
+    // 058): podrazumevano je ULAGANJE preostatka sa naloga (1.0 default
+    // `LOC_FROM_UNPLACED_VALUE`, scanModal.js:1558) — TRANSFER tek uz
+    // EKSPLICITNU polaznu (chip / „Sa lokacije" / preset). Time nestaje slučaj
+    // „hoće da uloži još sa naloga, a sistem tiho premesti sa police A na B".
+    // Izuzetak K=0 (sve uloženo): nema šta da se uloži → ne guraj INITIAL;
+    // ostaje TRANSFER put, a panel stanja traži izbor polazne police.
+    setMovementType(initialRemainder === 0 ? 'TRANSFER' : 'INITIAL_PLACEMENT');
+  }, [autoMovementType, fromLocationId, remainderChosen, trimmedItem, placementsQ.isLoading, currentPlacements, initialRemainder]);
 
   // ── „Na lokaciju" — hale za —HALA— filter (police su scoped po hali; 1.0) ──
   const halls = useMemo(
@@ -345,6 +398,28 @@ export function MovementDialog({
     scanInfo && orderNo.trim() === scanInfo.orderNo.trim() && itemRefId.trim() === scanInfo.itemRefId.trim();
   const showBanner = !!fromScan || (orderNo.trim() !== '' && itemRefId.trim() !== '');
 
+  /**
+   * 059/26: klik na „Uloži preostalo sa naloga (K kom)" — izvor = neuloženi pool
+   * sa naloga (INITIAL_PLACEMENT: DB fn ignoriše from), količina = K (korisnik
+   * sme da je smanji; upis ovde se za autofill računa kao „ručni" pa ga 057
+   * efekat ne gazi). Paritet 1.0: prva opcija u „Sa lokacije" selektu.
+   */
+  function applyRemainderOption() {
+    if (initialRemainder == null || initialRemainder <= 0) return;
+    setRemainderChosen(true);
+    setMovementType('INITIAL_PLACEMENT');
+    setFromLocationId(null);
+    setReturnToUnplaced(false);
+    setQuantity(String(initialRemainder));
+    setError(null);
+  }
+
+  /** Eksplicitan izbor polazne (chip / „Sa lokacije") poništava „uloži preostalo" (B2). */
+  function pickFromLocation(id: string | null) {
+    setFromLocationId(id);
+    if (id) setRemainderChosen(false);
+  }
+
   async function submit() {
     setError(null);
     if (!itemRefId.trim()) return setError('Broj TP (sa barkoda) je obavezan.');
@@ -362,6 +437,18 @@ export function MovementDialog({
       return setError('Za „Neraspoređeno" izaberi polaznu policu u polju „Sa lokacije".');
     const qty = Number(quantity);
     if (!Number.isFinite(qty) || qty <= 0) return setError('Količina mora biti veća od 0.');
+
+    // 059/26 brana (paritet 1.0 scanModal.js:2332): INITIAL ne sme preko
+    // preostalog na nalogu — server (`loc_create_movement`) ovo NE proverava,
+    // brana je klijentska. Važi za oba režima (ručni tip i 058 izveden tip).
+    const isInitial = !returnToUnplaced && movementType === 'INITIAL_PLACEMENT';
+    if (isInitial && initialRemainder != null && qty > initialRemainder) {
+      return setError(
+        initialRemainder === 0
+          ? `Nalog je već kompletno uložen (${placedTotal} od ${erpPieceCount} kom.) — nema preostalog za ulaganje sa naloga.`
+          : `Količina (${qty}) premašuje preostalo na nalogu (${initialRemainder} kom).`,
+      );
+    }
 
     // Paritet 1.0 modals.js:1838 — kanonizuj nalog+TP pre slanja (dash/slash/9400).
     const norm = normalizeLocMovementKeys(orderNo, itemRefId);
@@ -510,7 +597,13 @@ export function MovementDialog({
               {placementsQ.isLoading ? (
                 <p className="text-xs text-ink-secondary">Učitavam trenutno stanje…</p>
               ) : currentPlacements.length === 0 ? (
-                <p className="text-xs text-ink-secondary">Crtež + nalog još nisu smešteni (novi unos = INITIAL_PLACEMENT).</p>
+                <>
+                  <p className="text-xs text-ink-secondary">Crtež + nalog još nisu smešteni (novi unos = INITIAL_PLACEMENT).</p>
+                  {/* 059/26: čim RN znamo, reci koliko nalog ukupno nosi. */}
+                  {orderScoped && erpPieceCount != null && erpPieceCount >= 0 && (
+                    <p className="mt-1 text-xs text-ink-secondary">Na nalogu: {erpPieceCount} kom.</p>
+                  )}
+                </>
               ) : (
                 <>
                   <div className="mb-1.5 text-xs font-medium text-ink">
@@ -527,7 +620,7 @@ export function MovementDialog({
                         <button
                           key={p.id}
                           type="button"
-                          onClick={() => setFromLocationId(p.locationId)}
+                          onClick={() => pickFromLocation(p.locationId)}
                           className={`rounded-full border px-2 py-0.5 text-xs ${active ? 'border-accent bg-accent-subtle text-accent' : 'border-line text-ink-secondary hover:bg-surface'}`}
                           title="Postavi kao polaznu lokaciju"
                         >
@@ -536,6 +629,40 @@ export function MovementDialog({
                       );
                     })}
                   </div>
+                  {/* ── 059/26 izvor = neuloženi pool sa naloga ──────────────────
+                      Paritet 1.0 populateFromSelect: prva (i podrazumevana)
+                      opcija „— Uloži preostalo sa naloga (K kom; bez prenosa sa
+                      police) —". Odstupanje po zahtevu: kad je K=0 opcija se NE
+                      nudi (1.0 je prikazivao „(0 kom)" i blokirao tek na
+                      submit-u) — umesto nje jasan tekst da je nalog kompletno
+                      uložen + poziv da se za prenos izabere polazna. */}
+                  {initialRemainder != null && initialRemainder > 0 && (
+                    <button
+                      type="button"
+                      onClick={applyRemainderOption}
+                      className={`mt-1.5 block w-full rounded-control border px-2.5 py-1.5 text-left text-xs ${
+                        !returnToUnplaced && movementType === 'INITIAL_PLACEMENT'
+                          ? 'border-accent bg-accent-subtle text-accent'
+                          : 'border-line text-ink-secondary hover:bg-surface'
+                      }`}
+                      title="Izvor = neuloženi deo naloga (INITIAL_PLACEMENT); postavlja i količinu — možeš je smanjiti"
+                    >
+                      — Uloži preostalo sa naloga ({initialRemainder} kom; bez prenosa sa police) —
+                    </button>
+                  )}
+                  {initialRemainder === 0 && !overPlaced && (
+                    <p className="mt-1.5 text-xs text-ink-secondary">
+                      ✓ Nalog je kompletno uložen ({placedTotal} od {erpPieceCount} kom.) — nema
+                      preostalog za ulaganje sa naloga. Za prenos klikni polaznu policu iznad.
+                    </p>
+                  )}
+                  {overPlaced && (
+                    <p className="mt-1.5 text-xs text-status-warn">
+                      ⚠ Uloženo ({placedTotal} kom.) je više od količine naloga ({erpPieceCount} kom.)
+                      — preostalo za ulaganje: 0. Proveri podatke (mogući dupli unos). Za prenos
+                      klikni polaznu policu iznad.
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -566,7 +693,7 @@ export function MovementDialog({
               <LocationSelect
                 locations={locList}
                 value={fromLocationId}
-                onChange={setFromLocationId}
+                onChange={pickFromLocation}
                 onScan={() => setScan('from')}
                 shelvesFirst
                 placeholder="Pretraži policu/kavez/mašinu…"
@@ -677,7 +804,7 @@ export function MovementDialog({
           accept={['SHELF']}
           onResult={(r) => {
             if (r.kind === 'SHELF' && r.record) {
-              if (scan === 'from') setFromLocationId(r.record.id);
+              if (scan === 'from') pickFromLocation(r.record.id);
               else {
                 setToLocationId(r.record.id);
                 // Kompozitni barkod nosi i halu — postavi —HALA— filter da izabrana

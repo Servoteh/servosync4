@@ -301,9 +301,11 @@ export interface LocDrawingLookup {
   /** 'work_orders' (glavna baza) | 'bigtehn_cache' (sy15 legacy keš) | null. */
   source: string | null;
   /**
-   * Komada na nalogu (057/26) — `work_orders.piece_count` / keš `komada`; hrani
-   * auto-popunu „Količine" u MovementDialog-u. OPCIONO (stariji BE ga ne šalje —
-   * FE tada samo preskoči autofill, ništa se ne lomi).
+   * Ukupno komada na nalogu (glavna baza `work_orders.piece_count` / sy15 keš
+   * `komada`) — 1.0 `komada_total`. Hrani auto-popunu „Količine" (057/26) i
+   * računicu „Uloži preostalo sa naloga (K kom)" (059/26): K = pieceCount −
+   * Σ trenutnih placements-a. OPCIONO (stariji BE ga ne šalje — FE tada samo
+   * preskoči autofill/preostalo, ništa se ne lomi); `null` = nepouzdano.
    */
   pieceCount?: number | null;
 }

@@ -33,6 +33,7 @@ import {
   buildDrawingIdentCandidates,
   pickBestDrawingRow,
   sanitizeDrawingNo,
+  sanitizePieceCount,
 } from "./drawing-lookup";
 import type {
   CageMoveDto,
@@ -848,7 +849,7 @@ export class LocationsService {
       drawingNo: string | null;
       revision: string | null;
       nazivDela: string | null;
-      /** Komada na nalogu (057/26 qty-autofill) — `piece_count` / keš `komada`. */
+      /** Ukupno komada na RN (`piece_count` / keš `komada`) — 1.0 `komada_total` (057/26 autofill + 059/26 preostalo). */
       pieceCount: number | null;
     }
 
@@ -874,7 +875,7 @@ export class LocationsService {
         drawingNo: r.drawingNumber,
         revision: r.revision,
         nazivDela: r.partName,
-        pieceCount: r.pieceCount,
+        pieceCount: sanitizePieceCount(r.pieceCount),
       }));
       let source = "work_orders";
 
@@ -891,7 +892,7 @@ export class LocationsService {
             broj_crteza: string | null;
             revizija: string | null;
             naziv_dela: string | null;
-            komada: number | null;
+            komada: number | bigint | null;
           }[]
         >(
           varijanta != null
@@ -911,20 +912,21 @@ export class LocationsService {
           drawingNo: r.broj_crteza,
           revision: r.revizija,
           nazivDela: r.naziv_dela,
-          pieceCount: r.komada == null ? null : Number(r.komada),
+          pieceCount: sanitizePieceCount(r.komada),
         }));
         source = "bigtehn_cache";
       }
 
       if (rows.length) {
         const best = pickBestDrawingRow(rows, norm.orderNo, opForIdent);
-        // `pieceCount` (057/26): FE iz njega auto-popunjava „Količinu" pri
-        // skenu/promeni para (nalog, TP) — Duško: sken `9811-3/54` ostavljao
-        // količinu 1, a nalog nosi 9 kom. Ide kroz POSTOJEĆI lookup (isti
-        // debounce put kao crtež) umesto novog endpointa: izvor je isti red
-        // (work_orders.piece_count / keš `komada`), pa poseban poziv ne bi
-        // doneo ništa sem još jednog round-trip-a po skenu.
-        const pc = best?.pieceCount;
+        // `pieceCount` (057/26 + 059/26): FE iz njega auto-popunjava „Količinu"
+        // pri skenu/promeni para (nalog, TP) — Duško: sken `9811-3/54` ostavljao
+        // količinu 1, a nalog nosi 9 kom — i računa „Uloži preostalo sa naloga"
+        // (K = pieceCount − Σ placements; 1.0 `komada_total`). Ide kroz POSTOJEĆI
+        // lookup (isti debounce put kao crtež) umesto novog endpointa: izvor je
+        // isti red (work_orders.piece_count / keš `komada`), pa poseban poziv ne
+        // bi doneo ništa sem još jednog round-trip-a po skenu. Redovi su već
+        // prošli `sanitizePieceCount` (mapiranje izvora iznad).
         return {
           data: {
             found: true,
@@ -932,8 +934,7 @@ export class LocationsService {
             revision: String(best?.revision ?? "").trim(),
             nazivDela: best?.nazivDela ?? null,
             source,
-            pieceCount:
-              typeof pc === "number" && Number.isFinite(pc) ? pc : null,
+            pieceCount: best?.pieceCount ?? null,
           },
         };
       }
