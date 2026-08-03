@@ -245,6 +245,14 @@ export interface GanttRow {
   overlay_archived_at?: string | null;
   /** RN prošao završnu kontrolu (M6) — scope=sve skida EFF_FILTER pa FE mora razlog. */
   plan_rn_final_control_done?: boolean | null;
+  // ── Kolona „Sklop" (046/26-C2) — efektivni DIREKTNI roditelj po 053 strukturi
+  //    praćenja (override → auto sastavnica). Opciona (`?:`) da FE preživi stariji BE.
+  /** work_orders.id roditelja ili NEGATIVAN id virtuelnog sklopa; null = bez sklopa. */
+  sklop_node_id?: number | string | null;
+  /** Naziv sklopa: part_name roditeljskog RN-a / naziv virtuelnog sklopa. */
+  sklop_naziv?: string | null;
+  /** Ident broj roditeljskog RN-a (null za virtuelni sklop). */
+  sklop_rn_ident?: string | null;
   [k: string]: unknown;
 }
 

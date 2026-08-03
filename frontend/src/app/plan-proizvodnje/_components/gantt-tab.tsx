@@ -11,20 +11,29 @@ import {
 import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
 import { formatDate, formatDecimal } from '@/lib/format';
+import { toast } from '@/lib/toast';
 import { HaleDialog } from './hale-dialog';
 import { GantStavkaDialog } from './gant-stavka-dialog';
 import { DodajNaPlanDialog } from './gant-dodaj-dialog';
 import {
+  BAR_TOP,
   DAY_MS,
+  DAY_W,
+  GROUP_H,
   NO_HALL,
+  ROW_H,
   addDays,
   barEnd,
+  barGeometry,
   dayDiff,
   groupRows,
   isoDay,
+  layoutRows,
+  linkPath,
   machineRangeMinutes,
   rowKey,
   startOfDay,
+  type HallGroup,
 } from './gant-utils';
 
 /**
@@ -41,14 +50,25 @@ import {
  * override; početak/kraj se pomeraju prevlačenjem bara (dan-granularnost) ili tastaturom
  * (←/→ pomeri, Shift+←/→ produži/skrati), a precizno se kucaju u dijalogu stavke.
  *
+ * Paket C (Strahinjine primedbe na Paket A):
+ *  - C1 veze: „uslov" (prethodna stavka) se postavlja PREVLAČENJEM — kružna hvataljka na
+ *    kraju bara → pusti na drugi bar → taj bar (sledbenik) dobija prevučeni kao uslov.
+ *    Isti mehanizam podataka kao dijalog (overlay `predecessor_work_order_id/line` kroz
+ *    POST /overlays). Veze se crtaju kao SVG „elbow" linije sa strelicom (v. `LinkLayer`);
+ *    klik na liniju briše vezu uz potvrdu. ESC / puštanje van bara otkazuje gest.
+ *  - C2 kolona „Sklop": kom sklopu pozicija pripada po 053 strukturi praćenja
+ *    (BE `sklop_naziv` — override → auto sastavnica; virtuelni sklop = negativan id).
+ *
  * Static export bezbedno: bez `[id]` ruta i bez `useSearchParams` (tab živi u `?tab=` kroz
  * `useQueryTab` u `page.tsx`).
  */
 
-/** Širina jednog dana u px (dan-granularnost ose). */
-const DAY_W = 44;
 /** Širina leve kolone (naziv stavke) u px — deljena sa zaglavljem. */
 const LABEL_W = 300;
+/** Širina kolone „Sklop" (C2) u px — kompaktna, pun naziv u tooltip-u. */
+const SKLOP_W = 112;
+/** X početak vremenske ose (posle kolona naziva i sklopa) — sidro za SVG linije veza. */
+const AXIS_X = LABEL_W + SKLOP_W;
 /** Ponuđene dužine prozora (dana). */
 const RANGES = [14, 30, 60] as const;
 /**
@@ -74,6 +94,19 @@ interface DragState {
   deltaDays: number;
 }
 
+/**
+ * Gest povezivanja (C1): pointerdown na kružnoj hvataljci kraja bara → prevlačenje do
+ * bara-mete → meta (sledbenik) dobija izvor kao „uslov". Koordinate su relativne na
+ * TELO ose (`bodyRef`) da gumena linija živi u istom prostoru kao SVG sloj veza.
+ */
+interface LinkDragState {
+  sourceKey: string;
+  x: number;
+  y: number;
+  /** Bar pod kursorom (≠ izvor) — kandidat za sledbenika; null = puštanje otkazuje. */
+  targetKey: string | null;
+}
+
 export function GanttTab() {
   const [hall, setHall] = useState('');
   const [rawQ, setRawQ] = useState('');
@@ -85,10 +118,12 @@ export function GanttTab() {
   const [openAdd, setOpenAdd] = useState(false);
   const [detail, setDetail] = useState<GanttRow | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+  const [linkDrag, setLinkDrag] = useState<LinkDragState | null>(null);
 
   const gantt = useGantt({ hall: hall || undefined, q: q || undefined });
   const halls = useMachineHalls();
   const save = useGanttOverlay({ ok: 'Termin sačuvan' });
+  const link = useGanttOverlay({ ok: 'Veza sačuvana', err: 'Veza nije sačuvana.' });
 
   const rows = useMemo(() => gantt.data?.data ?? [], [gantt.data]);
   const planned = useMemo(() => rows.filter((r) => !!r.planned_start_at), [rows]);
@@ -174,6 +209,111 @@ export function GanttTab() {
       window.removeEventListener('pointercancel', onCancel);
     };
   }, [drag, rows, save]);
+
+  // ── Povezivanje prevlačenjem (C1) ──────────────────────────────────────────
+  // Odvojen gest od pomeranja/resize-a bara: počinje ISKLJUČIVO na kružnoj hvataljci
+  // (stopPropagation), pa postojeći drag ostaje netaknut. Praćenje mete ide preko
+  // `elementFromPoint` + `data-barkey` (SVG sloj je pointer-events:none tokom gesta,
+  // pa ne zaklanja barove). ESC ili puštanje van bara otkazuje bez upisa.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const linkDragRef = useRef<LinkDragState | null>(null);
+  linkDragRef.current = linkDrag;
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const linkMutRef = useRef(link);
+  linkMutRef.current = link;
+
+  const linkActive = !!linkDrag;
+  useEffect(() => {
+    if (!linkActive) return;
+    const onMove = (e: PointerEvent) => {
+      const rect = bodyRef.current?.getBoundingClientRect();
+      const d = linkDragRef.current;
+      if (!rect || !d) return;
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const keyAttr =
+        (el instanceof Element ? el.closest('[data-barkey]') : null)?.getAttribute('data-barkey') ?? null;
+      setLinkDrag({
+        ...d,
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+        targetKey: keyAttr && keyAttr !== d.sourceKey ? keyAttr : null,
+      });
+    };
+    const finish = (commit: boolean) => {
+      const d = linkDragRef.current;
+      setLinkDrag(null);
+      if (!commit || !d?.targetKey) return;
+      const all = rowsRef.current;
+      const source = all.find((r) => rowKey(r) === d.sourceKey);
+      const target = all.find((r) => rowKey(r) === d.targetKey);
+      if (!source || !target) return;
+      if (
+        target.predecessor_work_order_id === source.work_order_id &&
+        target.predecessor_line === source.line_id
+      ) {
+        toast('Veza već postoji.');
+        return;
+      }
+      // Meta = SLEDBENIK: dobija prevučeni bar kao uslov (isti PATCH kao dijalog stavke).
+      linkMutRef.current.mutate({
+        workOrderId: target.work_order_id,
+        lineId: target.line_id,
+        predecessorWorkOrderId: source.work_order_id,
+        predecessorLine: source.line_id,
+      });
+    };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') finish(false);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [linkActive]);
+
+  function startLink(sourceKey: string, clientX: number, clientY: number) {
+    const rect = bodyRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setLinkDrag({ sourceKey, x: clientX - rect.left, y: clientY - rect.top, targetKey: null });
+  }
+
+  /** Klik na liniju veze → brisanje uslova SLEDBENIKA (uz potvrdu). */
+  function deleteLink(succ: GanttRow, pred: GanttRow) {
+    const lbl = (r: GanttRow) => `${r.rn_ident_broj ?? r.work_order_id} op. ${String(r.operacija ?? '—')}`;
+    if (!window.confirm(`Obrisati vezu ${lbl(pred)} → ${lbl(succ)}?`)) return;
+    link.mutate({
+      workOrderId: succ.work_order_id,
+      lineId: succ.line_id,
+      predecessorWorkOrderId: null,
+      predecessorLine: null,
+    });
+  }
+
+  /**
+   * Redni brojevi stavki na mašini otvorene stavke (Paket A numeracija `redniBroj + 1`)
+   * — dijalog kroz njih dozvoljava „poveži rednim brojem" (Strahinjina alternativa).
+   */
+  const detailOrdinals = useMemo(() => {
+    if (!detail) return undefined;
+    const dKey = rowKey(detail);
+    for (const g of groups) {
+      for (const m of g.machines) {
+        if (m.rows.some((r) => rowKey(r) === dKey)) {
+          return m.rows.map((row, i) => ({ broj: i + 1, row }));
+        }
+      }
+    }
+    return undefined;
+  }, [groups, detail]);
 
   /** Tastatura nad fokusiranim barom: ←/→ pomeri dan, Shift+←/→ produži/skrati. */
   function onBarKey(e: React.KeyboardEvent, row: GanttRow) {
@@ -290,6 +430,7 @@ export function GanttTab() {
       <p className="text-2xs text-ink-disabled">
         {planned.length} stavki na planu · redosled smene ostaje u tabu „Po mašini" (gant je paralelan pogled).
         Prevuci bar da pomeriš termin, prevuci desnu ivicu da promeniš trajanje, klikni za detalje.
+        Veza (uslov): prevuci kružić sa kraja bara na drugi bar — klik na liniju briše vezu, ESC otkazuje.
       </p>
 
       {/* ── Osa ── */}
@@ -305,7 +446,7 @@ export function GanttTab() {
         </div>
       ) : (
         <div className="overflow-x-auto rounded-panel border border-line bg-surface">
-          <div style={{ minWidth: LABEL_W + timelineW }}>
+          <div style={{ minWidth: AXIS_X + timelineW }}>
             {/* zaglavlje dana */}
             <div className="sticky top-0 z-20 flex border-b border-line bg-surface-2">
               <div
@@ -313,6 +454,13 @@ export function GanttTab() {
                 style={{ width: LABEL_W }}
               >
                 Hala / mašina / stavka
+              </div>
+              {/* C2: kompaktna kolona — kom sklopu pozicija pripada (pun naziv u tooltip-u). */}
+              <div
+                className="shrink-0 border-r border-line px-2 py-1.5 text-2xs uppercase tracking-wider text-ink-secondary"
+                style={{ width: SKLOP_W }}
+              >
+                Sklop
               </div>
               <div className="relative flex" style={{ width: timelineW }}>
                 {dayList.map((d, i) => (
@@ -333,98 +481,144 @@ export function GanttTab() {
               </div>
             </div>
 
-            {/* grupe */}
-            {groups.map((g) => (
-              <div key={g.hall}>
-                <div className="flex border-b border-line bg-surface-2/70">
+            {/* grupe — u `relative` telu, da SVG sloj veza (C1) živi u istom sadržaju
+                (skroluje se zajedno sa barovima) i da gest povezivanja ima koordinatni
+                prostor (v. `bodyRef`). Visine redova su FIKSNE (ROW_H/GROUP_H) — sloj
+                veza računa y-pozicije bez merenja DOM-a. */}
+            <div
+              ref={bodyRef}
+              className={cn('relative', linkActive && 'cursor-crosshair select-none')}
+            >
+              {groups.map((g) => (
+                <div key={g.hall}>
                   <div
-                    className="shrink-0 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-ink"
-                    style={{ width: LABEL_W }}
+                    className="flex items-center border-b border-line bg-surface-2/70"
+                    style={{ height: GROUP_H }}
                   >
-                    {g.hall === NO_HALL ? 'Bez hale' : g.hall}
-                  </div>
-                  <div style={{ width: timelineW }} />
-                </div>
-                {g.machines.map((m) => {
-                  // A1 (046/26): zbir planiranih sati stavki mašine u prikazanom prozoru.
-                  const minuti = machineRangeMinutes(m.rows, rangeStart, days);
-                  return (
-                  <div key={`${g.hall}:${m.machine}`}>
-                    {/* A3 (046/26): red mašine kao vidljiv razdelnik grupa — nijansa
-                        pozadine (surface-2) + puna `line` ivica gore/dole, umesto
-                        stapanja sa redovima stavki (bez novih boja — postojeći tokeni). */}
-                    <div className="flex border-y border-line bg-surface-2/40">
-                      <div
-                        className="shrink-0 px-3 py-1 pl-5 text-xs font-medium text-ink-secondary"
-                        style={{ width: LABEL_W }}
-                      >
-                        {m.machine}
-                        {m.machineName ? <span className="ml-1 text-ink-disabled">· {m.machineName}</span> : null}
-                        <span className="ml-1 text-ink-disabled">({m.rows.length})</span>
-                        {minuti > 0 ? (
-                          <span
-                            className="ml-1 tnums text-ink-disabled"
-                            title="Zbir planiranih sati stavki ove mašine u prikazanom opsegu (override ili TPZ + TK × kom)"
-                          >
-                            · {formatDecimal(minuti / 60, 1)} h
-                          </span>
-                        ) : null}
-                      </div>
-                      <div style={{ width: timelineW }} />
+                    <div
+                      className="shrink-0 truncate px-3 text-xs font-semibold uppercase tracking-wide text-ink"
+                      style={{ width: AXIS_X }}
+                    >
+                      {g.hall === NO_HALL ? 'Bez hale' : g.hall}
                     </div>
-                    {m.rows.map((r, redniBroj) => {
-                      const key = rowKey(r);
-                      const d = drag?.key === key ? drag : null;
-                      return (
-                        <div key={key} className="flex border-b border-line-soft hover:bg-surface-2">
-                          <div className="shrink-0 truncate px-3 py-1 pl-7 text-xs" style={{ width: LABEL_W }}>
-                            <button
-                              type="button"
-                              onClick={() => setDetail(r)}
-                              className="block w-full truncate text-left text-ink hover:underline"
-                              title={`${r.broj_crteza ?? ''} · ${r.naziv_dela ?? ''}`}
+                    <div style={{ width: timelineW }} />
+                  </div>
+                  {g.machines.map((m) => {
+                    // A1 (046/26): zbir planiranih sati stavki mašine u prikazanom prozoru.
+                    const minuti = machineRangeMinutes(m.rows, rangeStart, days);
+                    return (
+                    <div key={`${g.hall}:${m.machine}`}>
+                      {/* A3 (046/26): red mašine kao vidljiv razdelnik grupa — nijansa
+                          pozadine (surface-2) + puna `line` ivica gore/dole, umesto
+                          stapanja sa redovima stavki (bez novih boja — postojeći tokeni). */}
+                      <div
+                        className="flex items-center border-y border-line bg-surface-2/40"
+                        style={{ height: GROUP_H }}
+                      >
+                        <div
+                          className="shrink-0 truncate px-3 pl-5 text-xs font-medium text-ink-secondary"
+                          style={{ width: AXIS_X }}
+                        >
+                          {m.machine}
+                          {m.machineName ? <span className="ml-1 text-ink-disabled">· {m.machineName}</span> : null}
+                          <span className="ml-1 text-ink-disabled">({m.rows.length})</span>
+                          {minuti > 0 ? (
+                            <span
+                              className="ml-1 tnums text-ink-disabled"
+                              title="Zbir planiranih sati stavki ove mašine u prikazanom opsegu (override ili TPZ + TK × kom)"
                             >
-                              {/* A2 (046/26): redni broj stavke unutar mašine po prikazanom
-                                  redosledu — osnova za buduće „poveži rednim brojem" (Paket C). */}
-                              <span className="tnums text-ink-disabled">{redniBroj + 1}.</span>{' '}
-                              <span className="tnums text-ink-secondary">{r.rn_ident_broj ?? '—'}</span>{' '}
-                              {r.naziv_dela ?? r.broj_crteza ?? '(bez naziva)'}
-                            </button>
-                            <span className="text-2xs text-ink-disabled">
-                              op. {String(r.operacija ?? '—')} · {r.opis_rada ?? '—'} · {r.komada_total ?? 0} kom
+                              · {formatDecimal(minuti / 60, 1)} h
                             </span>
-                          </div>
-                          <div className="relative" style={{ width: timelineW }}>
-                            <DayGrid cells={gridCells} width={timelineW} />
-                            {r.planned_start_at ? (
-                              <Bar
-                                row={r}
-                                rangeStart={rangeStart}
-                                days={days}
-                                dragDelta={d?.deltaDays ?? 0}
-                                dragMode={d?.mode ?? null}
-                                onOpen={() => setDetail(r)}
-                                onKeyDown={(e) => onBarKey(e, r)}
-                                onDragStart={(mode, x) => setDrag({ key, mode, startX: x, deltaDays: 0 })}
-                              />
-                            ) : (
+                          ) : null}
+                        </div>
+                        <div style={{ width: timelineW }} />
+                      </div>
+                      {m.rows.map((r, redniBroj) => {
+                        const key = rowKey(r);
+                        const d = drag?.key === key ? drag : null;
+                        return (
+                          <div
+                            key={key}
+                            className="group/row flex border-b border-line-soft hover:bg-surface-2"
+                            style={{ height: ROW_H }}
+                          >
+                            <div
+                              className="flex h-full shrink-0 flex-col justify-center overflow-hidden px-3 pl-7 text-xs leading-tight"
+                              style={{ width: LABEL_W }}
+                            >
                               <button
                                 type="button"
                                 onClick={() => setDetail(r)}
-                                className="relative z-10 ml-1 mt-1 rounded-control border border-dashed border-line px-2 py-0.5 text-2xs text-ink-disabled hover:border-accent hover:text-accent"
+                                className="block w-full truncate text-left text-ink hover:underline"
+                                title={`${r.broj_crteza ?? ''} · ${r.naziv_dela ?? ''}`}
                               >
-                                Nije na planu — postavi termin
+                                {/* A2 (046/26): redni broj stavke unutar mašine po prikazanom
+                                    redosledu — dijalog stavke ga prima kao „poveži rednim brojem" (C1). */}
+                                <span className="tnums text-ink-disabled">{redniBroj + 1}.</span>{' '}
+                                <span className="tnums text-ink-secondary">{r.rn_ident_broj ?? '—'}</span>{' '}
+                                {r.naziv_dela ?? r.broj_crteza ?? '(bez naziva)'}
                               </button>
-                            )}
+                              <span className="truncate text-2xs text-ink-disabled">
+                                op. {String(r.operacija ?? '—')} · {r.opis_rada ?? '—'} · {r.komada_total ?? 0} kom
+                              </span>
+                            </div>
+                            {/* C2: sklop kome pozicija pripada (053 struktura praćenja). Bez sklopa → prazno. */}
+                            <div
+                              className="flex h-full shrink-0 items-center overflow-hidden border-r border-line-soft px-2 text-2xs text-ink-secondary"
+                              style={{ width: SKLOP_W }}
+                              title={
+                                r.sklop_naziv
+                                  ? `${r.sklop_naziv}${r.sklop_rn_ident ? ` · RN ${r.sklop_rn_ident}` : ' · virtuelni sklop'}`
+                                  : undefined
+                              }
+                            >
+                              <span className="truncate">{r.sklop_naziv ?? ''}</span>
+                            </div>
+                            <div className="relative" style={{ width: timelineW }}>
+                              <DayGrid cells={gridCells} width={timelineW} />
+                              {r.planned_start_at ? (
+                                <Bar
+                                  row={r}
+                                  barKey={key}
+                                  rangeStart={rangeStart}
+                                  days={days}
+                                  dragDelta={d?.deltaDays ?? 0}
+                                  dragMode={d?.mode ?? null}
+                                  linkTarget={linkDrag?.targetKey === key}
+                                  linkSource={linkDrag?.sourceKey === key}
+                                  onOpen={() => setDetail(r)}
+                                  onKeyDown={(e) => onBarKey(e, r)}
+                                  onDragStart={(mode, x) => setDrag({ key, mode, startX: x, deltaDays: 0 })}
+                                  onLinkStart={(x, y) => startLink(key, x, y)}
+                                />
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setDetail(r)}
+                                  className="relative z-10 ml-1 mt-2 rounded-control border border-dashed border-line px-2 py-0.5 text-2xs text-ink-disabled hover:border-accent hover:text-accent"
+                                >
+                                  Nije na planu — postavi termin
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  );
-                })}
-              </div>
-            ))}
+                        );
+                      })}
+                    </div>
+                    );
+                  })}
+                </div>
+              ))}
+              <LinkLayer
+                groups={groups}
+                rangeStart={rangeStart}
+                days={days}
+                width={AXIS_X + timelineW}
+                drag={drag}
+                linkDrag={linkDrag}
+                onDelete={deleteLink}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -454,6 +648,7 @@ export function GanttTab() {
         <GantStavkaDialog
           open
           row={rows.find((r) => rowKey(r) === rowKey(detail)) ?? detail}
+          ordinals={detailOrdinals}
           onClose={() => setDetail(null)}
         />
       )}
@@ -492,22 +687,33 @@ const DayGrid = memo(function DayGrid({ cells, width }: { cells: GridCell[]; wid
 /** Bar jedne stavke: pozicija/širina iz termina, boja iz spremnosti/završenosti. */
 function Bar({
   row,
+  barKey,
   rangeStart,
   days,
   dragDelta,
   dragMode,
+  linkTarget,
+  linkSource,
   onOpen,
   onKeyDown,
   onDragStart,
+  onLinkStart,
 }: {
   row: GanttRow;
+  /** rowKey — na DOM-u kao `data-barkey`, meta hit-test gesta povezivanja (C1). */
+  barKey: string;
   rangeStart: Date;
   days: number;
   dragDelta: number;
   dragMode: DragMode | null;
+  /** Bar je trenutni kandidat-sledbenik gesta povezivanja → prsten. */
+  linkTarget: boolean;
+  /** Bar je izvor aktivnog gesta povezivanja → hvataljka ostaje vidljiva. */
+  linkSource: boolean;
   onOpen: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   onDragStart: (mode: DragMode, clientX: number) => void;
+  onLinkStart: (clientX: number, clientY: number) => void;
 }) {
   // Prevlačenje završava pointerup-om nad ISTIM dugmetom → pregledač ispali i `click`.
   // Bez praga (`DRAG_SLOP`) bi se posle svakog pomeranja bara otvarao i modal stavke.
@@ -518,23 +724,11 @@ function Bar({
   const end = barEnd(row);
   const shiftMs = (dragMode === 'move' ? dragDelta : 0) * DAY_MS;
   const growMs = (dragMode === 'resize' ? dragDelta : 0) * DAY_MS;
-  const s = start.getTime() + shiftMs;
-  const e = Math.max(end.getTime() + shiftMs + growMs, s + 30 * 60_000);
-
-  const rawLeft = ((s - rangeStart.getTime()) / DAY_MS) * DAY_W;
-  const rawWidth = Math.max(((e - s) / DAY_MS) * DAY_W, 10);
-  const rawRight = rawLeft + rawWidth;
-  const total = days * DAY_W;
+  // Geometrija deljena sa slojem veza (`barGeometry`) — linija pogađa tačno ivicu bara.
+  const geom = barGeometry(row, rangeStart, days, shiftMs, growMs);
   // Van prozora → ne crtaj (i ne pravi vodoravni skrol duplo šireg bara).
-  if (rawRight < 0 || rawLeft > total) return null;
-
-  // Odsečen bar mora da izgubi i ŠIRINU odsečenog dela, ne samo početak — inače bi se
-  // stavka koja je počela pre prozora crtala u punoj dužini od ivice i pokazivala kraj
-  // danima kasnije nego što jeste (planer po tome pomera druge stavke).
-  const clipLeft = rawLeft < 0;
-  const clipRight = rawRight > total;
-  const left = clipLeft ? 0 : rawLeft;
-  const width = Math.max((clipRight ? total : rawRight) - left, 10);
+  if (!geom?.visible) return null;
+  const { left, width, clipLeft, clipRight } = geom;
 
   const done = row.is_completed_effective === true;
   const ready = row.is_ready_for_machine === true;
@@ -545,7 +739,11 @@ function Bar({
       : 'bg-status-danger-bg border-status-danger/50 text-status-danger';
 
   return (
-    <div className="absolute top-1 z-10 h-6" style={{ left, width }}>
+    <div
+      data-barkey={barKey}
+      className={cn('absolute z-10 h-6', linkTarget && 'rounded-control ring-2 ring-accent')}
+      style={{ left, width, top: BAR_TOP }}
+    >
       <button
         type="button"
         onClick={(ev) => {
@@ -591,7 +789,156 @@ function Bar({
           className="absolute right-0 top-0 h-6 w-1.5 cursor-ew-resize rounded-r-control bg-ink/20 hover:bg-ink/40"
         />
       )}
+      {/* C1: kružna hvataljka za POVEZIVANJE — namerno VAN bara (desno od kraja), da se
+          jasno razdvoji od resize hvatišta na ivici; kursor crosshair vs ew-resize.
+          Vidljiva na hover reda (group/row) i dok je gest aktivan iz ovog bara. */}
+      {clipRight ? null : (
+        <span
+          role="button"
+          data-linkhandle
+          aria-label="Poveži: prevuci na drugi bar — ta stavka dobija ovu kao uslov"
+          title="Poveži: prevuci na drugi bar — ta stavka dobija ovu kao uslov (ESC otkazuje)"
+          onPointerDown={(ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            if (ev.button !== 0) return;
+            onLinkStart(ev.clientX, ev.clientY);
+          }}
+          className={cn(
+            'absolute -right-2.5 top-1/2 z-20 h-3 w-3 -translate-y-1/2 cursor-crosshair rounded-full',
+            'border-2 border-accent bg-surface opacity-0 transition-opacity',
+            'group-hover/row:opacity-100 focus-visible:opacity-100',
+            linkSource && 'opacity-100',
+          )}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * SVG sloj veza (C1) — MS Project stil: elbow linija sa KRAJA bara prethodnika u
+ * POČETAK bara sledbenika, sa strelicom. Živi u telu ose (skroluje se sa sadržajem),
+ * pointer-events:none osim nevidljive „hit" linije za klik-brisanje.
+ *
+ * Performanse: crta SAMO veze čiji su OBA kraja među iscrtanim redovima (`groups` je
+ * već isečen na MAX_ROWS) i čije su obe stavke na planu — max ~300 redova → zanemarljiv
+ * broj putanja. y-pozicije iz `layoutRows` (fiksne visine), x iz `barGeometry` (ista
+ * matematika kao Bar, uklj. živi drag pomak — linija prati bar dok se vuče).
+ */
+function LinkLayer({
+  groups,
+  rangeStart,
+  days,
+  width,
+  drag,
+  linkDrag,
+  onDelete,
+}: {
+  groups: HallGroup[];
+  rangeStart: Date;
+  days: number;
+  width: number;
+  drag: DragState | null;
+  linkDrag: LinkDragState | null;
+  onDelete: (succ: GanttRow, pred: GanttRow) => void;
+}) {
+  const { map, totalH } = useMemo(() => layoutRows(groups), [groups]);
+
+  const geomOf = (row: GanttRow, key: string) => {
+    const d = drag && drag.key === key ? drag : null;
+    const shiftMs = (d?.mode === 'move' ? d.deltaDays : 0) * DAY_MS;
+    const growMs = (d?.mode === 'resize' ? d.deltaDays : 0) * DAY_MS;
+    return barGeometry(row, rangeStart, days, shiftMs, growMs);
+  };
+
+  const links: { key: string; d: string; pred: GanttRow; succ: GanttRow }[] = [];
+  for (const [key, rl] of map) {
+    const r = rl.row;
+    if (!r.predecessor_work_order_id || !r.predecessor_line || !r.planned_start_at) continue;
+    const pred = map.get(`${r.predecessor_work_order_id}:${r.predecessor_line}`);
+    if (!pred?.row.planned_start_at) continue;
+    const gp = geomOf(pred.row, rowKey(pred.row));
+    const gs = geomOf(r, key);
+    if (!gp || !gs) continue;
+    // Sidra: kraj prethodnika → početak sledbenika; bar ceo van prozora se sidri na
+    // ivici (geometrija je klipovana), pa se vidi da veza postoji i „nastavlja se".
+    const x1 = AXIS_X + gp.left + gp.width;
+    const y1 = pred.top + ROW_H / 2;
+    const x2 = AXIS_X + gs.left;
+    const y2 = rl.top + ROW_H / 2;
+    links.push({ key, d: linkPath(x1, y1, x2, y2, rl.top), pred: pred.row, succ: r });
+  }
+
+  // Gumena linija aktivnog gesta: kraj izvornog bara → kursor.
+  let rubber: { x1: number; y1: number } | null = null;
+  if (linkDrag) {
+    const src = map.get(linkDrag.sourceKey);
+    const g = src ? geomOf(src.row, linkDrag.sourceKey) : null;
+    if (src && g) rubber = { x1: AXIS_X + g.left + g.width, y1: src.top + ROW_H / 2 };
+  }
+
+  if (links.length === 0 && !rubber) return null;
+  const lbl = (r: GanttRow) => `${r.rn_ident_broj ?? r.work_order_id} op. ${String(r.operacija ?? '—')}`;
+
+  return (
+    <svg
+      className="absolute left-0 top-0 z-20 text-accent"
+      style={{ pointerEvents: 'none' }}
+      width={width}
+      height={totalH}
+      aria-hidden
+    >
+      <defs>
+        <marker
+          id="pp-gant-strelica"
+          viewBox="0 0 8 8"
+          refX="7"
+          refY="4"
+          markerWidth="7"
+          markerHeight="7"
+          orient="auto-start-reverse"
+        >
+          <path d="M 0 0 L 8 4 L 0 8 z" fill="currentColor" />
+        </marker>
+      </defs>
+      {links.map((l) => (
+        <g key={l.key}>
+          <path
+            d={l.d}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            opacity={0.8}
+            markerEnd="url(#pp-gant-strelica)"
+          />
+          {/* Nevidljiva široka linija = klik-meta za brisanje (tanka se ne pogađa mišem).
+              Tokom gesta povezivanja se gasi da ne zaklanja hit-test barova. */}
+          <path
+            d={l.d}
+            fill="none"
+            stroke="transparent"
+            strokeWidth={9}
+            style={{ pointerEvents: linkDrag ? 'none' : 'stroke', cursor: 'pointer' }}
+            onClick={() => onDelete(l.succ, l.pred)}
+          >
+            <title>{`Uslov: ${lbl(l.pred)} → ${lbl(l.succ)} — klik briše vezu`}</title>
+          </path>
+        </g>
+      ))}
+      {rubber && linkDrag ? (
+        <g>
+          <path
+            d={`M ${rubber.x1} ${rubber.y1} L ${linkDrag.x} ${linkDrag.y}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            strokeDasharray="4 3"
+          />
+          <circle cx={linkDrag.x} cy={linkDrag.y} r={3} fill="currentColor" />
+        </g>
+      ) : null}
+    </svg>
   );
 }
 

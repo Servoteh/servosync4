@@ -50,10 +50,17 @@ export function GantStavkaDialog({
   open,
   row,
   onClose,
+  ordinals,
 }: {
   open: boolean;
   row: GanttRow;
   onClose: () => void;
+  /**
+   * C1 (046/26): stavke ISTE mašine sa rednim brojem iz gant prikaza (Paket A
+   * numeracija) — polje „Uslov" kroz njih prihvata i GOLI redni broj („poveži
+   * rednim brojem"): ukucan broj se mapira u stavku i nudi kao prvi rezultat.
+   */
+  ordinals?: { broj: number; row: GanttRow }[];
 }) {
   const save = useGanttOverlay({ ok: 'Sačuvano', err: overlayErrorMessage });
   const reassign = useGanttReassign();
@@ -84,14 +91,32 @@ export function GantStavkaDialog({
   /**
    * Pretraga prethodne operacije BEZ same stavke — samo-uslov je ciklus dužine 1 koji
    * backend ionako odbija (422 `predecessor_self_reference`); planeru se ne nudi.
+   *
+   * C1: čist BROJ (1–3 cifre) se tumači i kao REDNI BROJ stavke na ovoj mašini (Paket A
+   * numeracija u gantu) — pogodak ide kao PRVI rezultat, i kad je serverska pretraga
+   * ispod praga od 2 znaka (jednocifren broj). Tekstualna pretraga RN/crtež ostaje ispod.
    */
   const useOpsSearchBezSebe = (q: string) => {
     const res = useOperationsSearch(q);
     const data = useMemo(() => {
-      const list = res.data?.data;
-      if (!list) return res.data;
-      return { ...res.data, data: list.filter((o) => `${o.work_order_id}:${o.line_id}` !== rowKey) };
-    }, [res.data, rowKey]);
+      const term = q.trim();
+      const extra: OpRow[] = [];
+      if (ordinals && /^\d{1,3}$/.test(term)) {
+        const hit = ordinals.find((o) => o.broj === Number(term));
+        if (hit && `${hit.row.work_order_id}:${hit.row.line_id}` !== rowKey) {
+          // GanttRow nosi sva polja koja ComboBox/setPredecessor čitaju (id-jevi, RN,
+          // operacija, crtež, naziv) — ostatak OpRow ugovora pokriva index-potpis.
+          extra.push({ ...(hit.row as unknown as OpRow), __redni_broj: hit.broj });
+        }
+      }
+      const list = (res.data?.data ?? []).filter(
+        (o) =>
+          `${o.work_order_id}:${o.line_id}` !== rowKey &&
+          !extra.some((x) => x.work_order_id === o.work_order_id && x.line_id === o.line_id),
+      );
+      if (!res.data && extra.length === 0) return res.data;
+      return { ...(res.data ?? {}), data: [...extra, ...list] };
+    }, [res.data, rowKey, q, ordinals]);
     return { ...res, data };
   };
 
@@ -405,12 +430,18 @@ export function GantStavkaDialog({
                 useSearch={useOpsSearchBezSebe}
                 getKey={(o) => `${o.work_order_id}:${o.line_id}`}
                 getLabel={(o) => `${o.rn_ident_broj ?? o.work_order_id} · op. ${String(o.operacija ?? '—')}`}
-                getSublabel={(o) => `${o.broj_crteza ?? ''} ${o.naziv_dela ?? ''}`.trim()}
-                placeholder="Traži RN / crtež…"
+                getSublabel={(o) => {
+                  // C1: pogodak po rednom broju nosi marker — planer vidi ZAŠTO je prvi.
+                  const rb = typeof o.__redni_broj === 'number' ? `#${o.__redni_broj} na ovoj mašini · ` : '';
+                  return `${rb}${o.broj_crteza ?? ''} ${o.naziv_dela ?? ''}`.trim();
+                }}
+                placeholder={ordinals ? 'Traži RN / crtež — ili redni broj…' : 'Traži RN / crtež…'}
               />
             )}
             <p className="mt-1 text-2xs text-ink-disabled">
               Ručna FS veza (počinje posle završetka). Ne pomera termine automatski — to je F2.
+              {ordinals ? ' Možeš ukucati i redni broj stavke sa ove mašine (npr. 3).' : null}
+              {' '}Vezu praviš i prevlačenjem kružića sa kraja bara na drugi bar u gantu.
             </p>
           </Field>
 
@@ -484,8 +515,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-/** Predmet (sklop) = prvi segment RN ident broja (kanon „broj predmeta/TP/varijanta"). */
+/**
+ * Sklop kome pozicija pripada — C2 (046/26): BE `sklop_naziv` po 053 strukturi praćenja
+ * (override → auto sastavnica; virtuelni sklop = naziv iz šifrarnika). Fallback za red
+ * bez sklopa/stariji BE = prvi segment RN ident broja (kanon „broj predmeta/TP/varijanta").
+ */
 function sklop(row: GanttRow): string | null {
+  if (row.sklop_naziv) {
+    return `${row.sklop_naziv}${row.sklop_rn_ident ? ` (${row.sklop_rn_ident})` : ''}`;
+  }
   const rn = row.rn_ident_broj;
   if (!rn) return null;
   const first = String(rn).split(/[-/]/)[0]?.trim();

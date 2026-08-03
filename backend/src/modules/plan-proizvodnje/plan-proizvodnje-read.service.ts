@@ -116,6 +116,42 @@ const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
 
 const GANTT_LIMIT = 5000;
 
+/**
+ * Kolona „Sklop" (046/26-C2, Strahinjina primedba: „kom sklopu ta pozicija pripada").
+ * Efektivni DIREKTNI roditelj pozicije po 053 strukturi praćenja:
+ *   1. ručni override `pracenje_structure_overrides.parent_work_order_id` ako red postoji
+ *      (uklj. NULL = ručno „koren" → bez sklopa; NEGATIVAN id = virtuelni sklop iz
+ *      `pracenje_virtuelni_sklopovi`, v. `modules/pracenje/virtual-node.ts`),
+ *   2. inače auto-roditelj iz sastavnice `work_order_components` (child = ovaj RN).
+ * Dete sa VIŠE auto-roditelja (izmereno na produ 03.08.2026: 72 takva) dobija
+ * DETERMINISTIČKI najmanji `work_order_id` — kolona je informativna, ne gradi stablo.
+ * Naziv: virtuelni sklop → `naziv`; RN → `part_name` (fallback `ident_number`).
+ *
+ * NAMERNO se NE gradi pun tree per predmet (to radi pracenje modul za JEDAN predmet) —
+ * redovi ganta pokrivaju različite predmete, pa je ovo ravan LEFT JOIN lanac koji se
+ * primenjuje POSLE `LIMIT` (max 5000 evaluacija; izmereno na produ: 12 ms za 5000
+ * redova, 3 index probe po redu). `g.work_order_id` je ::text (M3) pa se vraća u int.
+ */
+const SKLOP_COLS = Prisma.sql`pid.parent_id AS sklop_node_id,
+  COALESCE(NULLIF(BTRIM(vs.naziv), ''), NULLIF(BTRIM(pw.part_name), ''), NULLIF(BTRIM(pw.ident_number), '')) AS sklop_naziv,
+  NULLIF(BTRIM(pw.ident_number), '') AS sklop_rn_ident`;
+
+const SKLOP_JOIN = Prisma.sql`
+  LEFT JOIN LATERAL (
+    SELECT CASE
+      WHEN EXISTS (SELECT 1 FROM pracenje_structure_overrides po
+                    WHERE po.work_order_id = g.work_order_id::int)
+        THEN (SELECT po.parent_work_order_id FROM pracenje_structure_overrides po
+               WHERE po.work_order_id = g.work_order_id::int)
+      ELSE (SELECT c.work_order_id FROM work_order_components c
+             WHERE c.component_work_order_id = g.work_order_id::int
+             ORDER BY c.work_order_id ASC LIMIT 1)
+    END AS parent_id
+  ) pid ON true
+  LEFT JOIN work_orders pw ON pid.parent_id > 0 AND pw.id = pid.parent_id
+  LEFT JOIN pracenje_virtuelni_sklopovi vs
+         ON pid.parent_id < 0 AND vs.id = -pid.parent_id AND vs.deleted_at IS NULL`;
+
 @Injectable()
 export class PlanProizvodnjeReadService {
   constructor(
@@ -255,6 +291,9 @@ export class PlanProizvodnjeReadService {
    * celoj bazi i vraća SVE operacije pogođene `q`-om — i završene/zatvorene/kooperaciju —
    * da picker prikaže i ZAŠTO stavka nije za dodavanje, umesto da je sakrije. Obavezan `q`
    * (min SEARCH_MIN_LEN); sort po RN + operaciji (serija i njeni -S# klonovi zajedno).
+   *
+   * 046/26-C2: svaki red nosi i `sklop_node_id`/`sklop_naziv`/`sklop_rn_ident` —
+   * efektivni roditelj po 053 strukturi praćenja (v. `SKLOP_COLS`/`SKLOP_JOIN`).
    */
   async gantt(
     _email: string,
@@ -293,11 +332,18 @@ export class PlanProizvodnjeReadService {
       : Prisma.sql`ORDER BY hall ASC NULLS LAST, effective_machine_code ASC,
                planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST,
                rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC`;
+    // C2: sklop lateral se kači na VEĆ isečen skup (posle LIMIT) — v. SKLOP_JOIN doc.
+    // Spoljni ${sort} je ponovljen jer SQL ne garantuje redosled podupita kroz JOIN.
     const rows = await this.prisma.$queryRaw(Prisma.sql`
-      SELECT ${GANTT_COLS} FROM (${this.effectiveOpsInner(Prisma.empty)}) eff
-      WHERE ${Prisma.join(conds, " AND ")}
-      ${sort}
-      LIMIT ${GANTT_LIMIT}`);
+      SELECT g.*, ${SKLOP_COLS}
+      FROM (
+        SELECT ${GANTT_COLS} FROM (${this.effectiveOpsInner(Prisma.empty)}) eff
+        WHERE ${Prisma.join(conds, " AND ")}
+        ${sort}
+        LIMIT ${GANTT_LIMIT}
+      ) g
+      ${SKLOP_JOIN}
+      ${sort}`);
     return {
       data: jsonSafe(rows),
       meta: { limit: GANTT_LIMIT, truncated: (rows as unknown[]).length >= GANTT_LIMIT },

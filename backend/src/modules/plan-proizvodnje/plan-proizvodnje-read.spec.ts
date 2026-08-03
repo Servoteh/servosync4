@@ -261,9 +261,41 @@ describe("gant feed (046/26)", () => {
     expect(sql).toContain("overlay_archived_at");
     // scope=sve skida i EFF_FILTER — bez ove kolone FE ne ume da objasni ZAŠTO
     // RN kroz završnu kontrolu (M6) nije za dodavanje i nudio bi živ „Dodaj"
-    // (izmereno na produ 03.08.2026: 537 takvih operacija).
-    const selectCols = sql.slice(0, sql.indexOf(" FROM "));
-    expect(selectCols).toContain("plan_rn_final_control_done");
+    // (izmereno na produ 03.08.2026: 537 takvih operacija). Kolona mora biti u
+    // GANTT_COLS SELECT listi (odmah iza overlay_archived_at), ne samo negde u
+    // podupitu — od C2 spoljni SELECT je `g.*, sklop_*`, pa se ne seče do prvog FROM.
+    expect(sql).toContain("overlay_archived_at, plan_rn_final_control_done FROM (");
+  });
+
+  // 046/26-C2: kolona „Sklop" — efektivni roditelj po 053 strukturi praćenja.
+  it("gant feed nosi kolonu Sklop (override → auto sastavnica; virtuelni = negativan id) — C2", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com");
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain("AS sklop_node_id");
+    expect(sql).toContain("AS sklop_naziv");
+    expect(sql).toContain("AS sklop_rn_ident");
+    // Override grana mora biti CASE po POSTOJANJU reda (parent NULL = ručni koren →
+    // bez sklopa), a NE COALESCE — COALESCE bi ručni koren tiho vratio na auto-roditelja.
+    expect(sql).toContain(
+      "WHEN EXISTS (SELECT 1 FROM pracenje_structure_overrides",
+    );
+    expect(sql).toContain("FROM work_order_components c");
+    // Negativan id = virtuelni sklop (053 paket 2) — naziv iz žive (nesoft-obrisane) tabele.
+    expect(sql).toContain("vs.id = -pid.parent_id AND vs.deleted_at IS NULL");
+    // Dete sa više auto-roditelja (prod: 72) → deterministički najmanji work_order_id.
+    expect(sql).toContain("ORDER BY c.work_order_id ASC LIMIT 1");
+  });
+
+  it("sklop lateral se primenjuje POSLE LIMIT-a (max 5000 evaluacija, ne nad celim feed-om) — C2", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com");
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    // Wrapper `) g` (kraj isečenog podupita) mora doći PRE sklop join lanca.
+    expect(sql.indexOf(") g")).toBeGreaterThan(-1);
+    expect(sql.indexOf("pracenje_structure_overrides")).toBeGreaterThan(
+      sql.indexOf(") g"),
+    );
   });
 
   // Paket B: dijalog stavke prikazuje KO/KADA je ručno označio spremnost — pečat
