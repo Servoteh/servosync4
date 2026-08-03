@@ -6,6 +6,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { AttachmentInput } from '@/components/ui-kit/attachment-input';
+import { DictateButton } from '@/components/voice-controls';
 import { toast } from '@/lib/toast';
 import { apiFetch } from '@/api/client';
 import {
@@ -191,7 +192,10 @@ export function PrijavaKvaraDialog({
         )}
 
         <FormField label="Naslov" required>
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Kratak opis kvara" />
+          <div className="flex items-center gap-2">
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Kratak opis kvara" className="flex-1" />
+            <DictateButton onText={(t) => setTitle((v) => (v ? `${v} ${t}` : t))} title="Izdiktiraj naslov" />
+          </div>
         </FormField>
         <FormField label="Ozbiljnost">
           <div className="flex gap-2">
@@ -207,8 +211,16 @@ export function PrijavaKvaraDialog({
             ))}
           </div>
         </FormField>
-        <FormField label="Opis">
-          <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="Detalji, okolnosti…" />
+        {/*
+          Diktiranje (STT) uz opis: kvar se prijavljuje IZ POGONA, često masnim rukama
+          i sa telefona — kucanje je tu najveća prepreka. `DictateButton` je presečna
+          infra (zapisnik/montaža/kadrovska), pa ovde nema novog koda ni zavisnosti.
+        */}
+        <FormField label="Opis" hint="Možeš i da izdiktiraš — mikrofon desno.">
+          <div className="flex items-start gap-2">
+            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="Detalji, okolnosti…" className="flex-1" />
+            <DictateButton onText={(t) => setDescription((v) => (v ? `${v}\n${t}` : t))} title="Izdiktiraj opis kvara" />
+          </div>
         </FormField>
 
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">

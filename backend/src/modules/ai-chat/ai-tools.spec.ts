@@ -84,10 +84,15 @@ describe("ai-tools — verbatim 1.0 prompt/opisi (anti-truncation)", () => {
     expect(names.indexOf("projekat_info")).toBe(
       names.indexOf("go_istorija") + 1,
     );
-    // Talas AI-1: registar više nije samo sy15 — ali sy15 blok ostaje TAČNO 20
-    // alata i drži prvih 20 mesta u nizu (redosled je load-bearing za model).
-    expect(SY15_TOOLS).toHaveLength(20);
-    expect(TOOL_DEFS.slice(0, 20).map((t) => t.name)).toEqual(
+    // Talas AI-1: registar više nije samo sy15 — ali sy15 blok drži PRVIH 21 mesta
+    // u nizu (redosled je load-bearing za model).
+    // 03.08.2026: 21. alat je `trosak_sredstva` (trošak održavanja vozila/mašine) —
+    // dodat NA KRAJ, da 20 portovanih 1.0 alata zadrži svoje pozicije 1:1.
+    expect(SY15_TOOLS).toHaveLength(21);
+    expect(SY15_TOOLS.slice(0, 20).map((t) => t.name)).not.toContain(
+      "trosak_sredstva",
+    );
+    expect(TOOL_DEFS.slice(0, SY15_TOOLS.length).map((t) => t.name)).toEqual(
       SY15_TOOLS.map((t) => t.name),
     );
   });
