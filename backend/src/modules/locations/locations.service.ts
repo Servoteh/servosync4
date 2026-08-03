@@ -15,6 +15,7 @@ import {
 } from "@prisma-sy15/client";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 import type { Sy15Tx } from "../../common/sy15/sy15.service";
+import { PrismaService } from "../../prisma/prisma.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
 import type { PrintLabelDto } from "../../common/printing/print-label.dto";
 import { pageMeta, parsePagination } from "../../common/pagination";
@@ -28,6 +29,11 @@ import {
   resolveCompositeShelfScan,
   type ShelfLoc,
 } from "./barcode";
+import {
+  buildDrawingIdentCandidates,
+  pickBestDrawingRow,
+  sanitizeDrawingNo,
+} from "./drawing-lookup";
 import type {
   CageMoveDto,
   CreateLocationDto,
@@ -203,6 +209,8 @@ export class LocationsService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly labelPrint: LabelPrintService,
+    /** Glavna (2.0) baza — SAMO `lookupDrawing` (work_orders su izvor feed-a ka sy15 kešu). */
+    private readonly prisma: PrismaService,
   ) {}
 
   // ==========================================================================
@@ -784,6 +792,137 @@ export class LocationsService {
         SELECT loc_order_no_in_active_proj_mont(${q}::text) AS result`,
     );
     return { data: rows[0]?.result ?? null };
+  }
+
+  /**
+   * Broj crteža za par (nalog, TP ref) — RNZ barkod crtež NE NOSI, pa se posle
+   * skena (i ručne izmene naloga/TP-a) dočitava iz baze i predpopunjava polje
+   * „Broj crteža" (paritet 1.0 `resolveDrawingNoForPredmetTp`).
+   *
+   * Izvori, PO KANDIDATU `ident_broj` vrednosti (redosled kandidata = 1.0:
+   * kanonska kosa crta pre legacy 9400 dash forme):
+   *   1. glavna baza `work_orders` (`ident_number`) — autoritativna za RN koje
+   *      3.0 štampa (`RNZ:…:…:0:B`); feed ka sy15 kešu kasni minutima, pa tek
+   *      odštampan nalog u kešu još ne postoji;
+   *   2. sy15 `bigtehn_work_orders_cache` — legacy BigTehn istorija (frozen
+   *      MSSQL redovi koje 2.0 `work_orders` nema). 1.0 je čitao aktivni view pa
+   *      pun keš; view je podskup keša sa ISTIM redovima, pa se ovde čita keš
+   *      direktno. WO cache NIJE row-scoped (RLS „read for authenticated") →
+   *      `sy15.db`, isti obrazac i obrazloženje kao `predmetWorkOrders`.
+   *
+   * `varijanta` iz RNZ barkoda sužava pogodak kad isti `ident_broj` ima više
+   * varijanti (paritet 1.0 `fetchBigtehnOpSnapshotByRnAndTp` var-filter).
+   */
+  async lookupDrawing(
+    orderNoRaw: string | undefined,
+    tpRefRaw: string | undefined,
+    varijantaRaw: string | undefined,
+  ) {
+    const norm = normalizeLocMovementKeys(
+      (orderNoRaw ?? "").trim(),
+      (tpRefRaw ?? "").trim(),
+    );
+    const empty = {
+      found: false as boolean,
+      drawingNo: "",
+      revision: "",
+      nazivDela: null as string | null,
+      source: null as string | null,
+    };
+    if (!norm.orderNo) return { data: empty };
+
+    const { candidates, opForIdent } = buildDrawingIdentCandidates(
+      norm.orderNo,
+      norm.itemRefId,
+    );
+    let varijanta: number | null = null;
+    const vs = (varijantaRaw ?? "").trim();
+    if (vs !== "") {
+      const v = Number.parseInt(vs, 10);
+      if (Number.isFinite(v)) varijanta = v;
+    }
+
+    interface SourceRow {
+      identBroj: string | null;
+      drawingNo: string | null;
+      revision: string | null;
+      nazivDela: string | null;
+    }
+
+    for (const cand of candidates) {
+      // 1) Glavna baza work_orders (izvor feed-a — nula kašnjenja za 3.0 RN).
+      const wo = await this.prisma.workOrder.findMany({
+        where: {
+          identNumber: cand,
+          ...(varijanta != null ? { variant: varijanta } : {}),
+        },
+        select: {
+          identNumber: true,
+          drawingNumber: true,
+          revision: true,
+          partName: true,
+        },
+        orderBy: { id: "asc" },
+        take: 8,
+      });
+      let rows: SourceRow[] = wo.map((r) => ({
+        identBroj: r.identNumber,
+        drawingNo: r.drawingNumber,
+        revision: r.revision,
+        nazivDela: r.partName,
+      }));
+      let source = "work_orders";
+
+      // 2) sy15 BigTehn keš — legacy redovi kojih u glavnoj bazi nema. Čita se
+      // kroz `v_bigtehn_work_orders_with_mes_active` (keš + `is_mes_active` iz
+      // `production_active_work_orders`) sa DETERMINISTIČKIM redosledom:
+      // MES-aktivan red PRVI (paritet 1.0, koji je aktivni view čitao pre punog
+      // keša — dupli ident_broj tipa `9400/3/193` inače vrati proizvoljan red,
+      // promenljiv i posle VACUUM-a), pa `id` kao tie-break.
+      if (!rows.length) {
+        const cached = await this.sy15.db.$queryRaw<
+          {
+            ident_broj: string | null;
+            broj_crteza: string | null;
+            revizija: string | null;
+            naziv_dela: string | null;
+          }[]
+        >(
+          varijanta != null
+            ? Prisma.sql`SELECT ident_broj, broj_crteza, revizija, naziv_dela
+                         FROM public.v_bigtehn_work_orders_with_mes_active
+                         WHERE ident_broj = ${cand} AND varijanta = ${varijanta}
+                         ORDER BY (is_mes_active IS TRUE) DESC, id ASC
+                         LIMIT 8`
+            : Prisma.sql`SELECT ident_broj, broj_crteza, revizija, naziv_dela
+                         FROM public.v_bigtehn_work_orders_with_mes_active
+                         WHERE ident_broj = ${cand}
+                         ORDER BY (is_mes_active IS TRUE) DESC, id ASC
+                         LIMIT 8`,
+        );
+        rows = cached.map((r) => ({
+          identBroj: r.ident_broj,
+          drawingNo: r.broj_crteza,
+          revision: r.revizija,
+          nazivDela: r.naziv_dela,
+        }));
+        source = "bigtehn_cache";
+      }
+
+      if (rows.length) {
+        const best = pickBestDrawingRow(rows, norm.orderNo, opForIdent);
+        return {
+          data: {
+            found: true,
+            drawingNo: sanitizeDrawingNo(best?.drawingNo),
+            revision: String(best?.revision ?? "").trim(),
+            nazivDela: best?.nazivDela ?? null,
+            source,
+          },
+        };
+      }
+    }
+    return { data: empty };
   }
 
   /**

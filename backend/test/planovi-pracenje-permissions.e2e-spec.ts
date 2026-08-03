@@ -145,6 +145,10 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     "upsertParentOverride",
     "shiftPrioritet",
     "logExport",
+    // Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2.
+    "createVirtuelniSklop",
+    "updateVirtuelniSklop",
+    "deleteVirtuelniSklop",
   ]);
 
   beforeAll(async () => {
@@ -693,6 +697,118 @@ describe("Talas C permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         odeljenjeId: 1,
         nazivAktivnosti: "A",
       }).expect(201);
+    });
+  });
+
+  // ---------- Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2 ----------
+  // Sklop BEZ radnog naloga i tehnologije: overlay tabela `pracenje_virtuelni_sklopovi`,
+  // NIJE red u `work_orders`. Isti gate kao ostale strukturne izmene (`pracenje.manage`).
+  describe("Praćenje virtuelni sklop — pracenje.manage (CRUD)", () => {
+    const novi = { naziv: "Ručni sklop", tip: "pod" };
+    it.each(PR_MANAGE)(
+      "POST /pracenje/predmeti/:id/virtuelni-sklopovi → 201 za %s",
+      async (role) => {
+        await send(
+          "post",
+          "/pracenje/predmeti/7602/virtuelni-sklopovi",
+          role,
+          novi,
+        ).expect(201);
+      },
+    );
+    it.each(PR_NO_MANAGE)(
+      "POST /pracenje/predmeti/:id/virtuelni-sklopovi → 403 za %s",
+      async (role) => {
+        await send(
+          "post",
+          "/pracenje/predmeti/7602/virtuelni-sklopovi",
+          role,
+          novi,
+        ).expect(403);
+      },
+    );
+    it("PATCH/DELETE takođe manage: admin 200, pm (samo edit) 403", async () => {
+      await send(
+        "patch",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi/7",
+        "admin",
+        { naziv: "Novo ime" },
+      ).expect(200);
+      await send(
+        "delete",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi/7",
+        "admin",
+      ).expect(200);
+      await send(
+        "patch",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi/7",
+        "pm",
+        {
+          naziv: "X",
+        },
+      ).expect(403);
+      await send(
+        "delete",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi/7",
+        "pm",
+      ).expect(403);
+    });
+    it("validacija: prazan naziv → 400; nepoznat tip → 400; ne-int :id → 400", async () => {
+      await send(
+        "post",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi",
+        "admin",
+        {
+          naziv: "   ",
+        },
+      ).expect(400);
+      await send(
+        "post",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi",
+        "admin",
+        {
+          naziv: "A",
+          tip: "izmisljeni",
+        },
+      ).expect(400);
+      await send(
+        "delete",
+        "/pracenje/predmeti/7602/virtuelni-sklopovi/abc",
+        "admin",
+      ).expect(400);
+    });
+    it("premeštanje POD ručni sklop: parent-override prima NEGATIVAN parentRnId (200)", async () => {
+      await send("put", "/pracenje/predmeti/7602/parent-override", "admin", {
+        bigtehnRnId: "9400",
+        parentRnId: "-7",
+      }).expect(200);
+      // …i sam ručni sklop sme da se premešta (sklop u sklopu).
+      await send("put", "/pracenje/predmeti/7602/parent-override", "admin", {
+        bigtehnRnId: "-7",
+        parentRnId: "-8",
+      }).expect(200);
+      // „-0" nije validan čvor (oba SERIAL-a kreću od 1) → 400 u pipe-u.
+      await send("put", "/pracenje/predmeti/7602/parent-override", "admin", {
+        bigtehnRnId: "9400",
+        parentRnId: "-0",
+      }).expect(400);
+      await send("put", "/pracenje/predmeti/7602/parent-override", "admin", {
+        bigtehnRnId: "9400",
+        parentRnId: "-1.5",
+      }).expect(400);
+    });
+    it("opseg po ručnom sklopu: izvestaj?rootRn=-7 → 200; rootRn=-1.5 → 400", async () => {
+      await get("/pracenje/predmeti/7602/izvestaj?rootRn=-7", "admin").expect(
+        200,
+      );
+      await get("/pracenje/predmeti/7602/izvestaj?rootRn=-1.5", "admin").expect(
+        400,
+      );
+    });
+    it("RN rute ne primaju virtuelni id: ensure-from-bigtehn '-7' → 400", async () => {
+      await send("post", "/pracenje/rn/ensure-from-bigtehn", "admin", {
+        workOrderId: "-7",
+      }).expect(400);
     });
   });
 

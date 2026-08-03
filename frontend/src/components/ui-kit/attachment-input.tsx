@@ -3,22 +3,33 @@
 import { useRef, useState } from 'react';
 import { Camera, FileAudio, FileText, Image as ImageIcon, Paperclip, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { resizeImageFile } from '@/lib/image-resize';
+import { MIME_BY_FORMAT, prepareImageForUpload, sniffFormat } from '@/lib/image-resize';
 
 /**
  * `attachment-input` (DESIGN_SYSTEM §10 kit; MODULE_SPEC_zahtevi §5) — dashed
  * dropzone + native kamera (`accept="image/*" capture="environment"`) + audio/pdf,
  * lista pending fajlova sa uklanjanjem, klijentska validacija tipa/veličine.
  * Generalizacija ponovljenog obrasca (odrzavanje/kvalitet/kadrovska): slike se
- * resize-uju kroz `resizeImageFile` PRE dodavanja (štedi prenos), audio ≤15 MB,
- * pdf ≤25 MB, ukupno ≤ `max` (default 10).
+ * pripremaju kroz `prepareImageForUpload` PRE dodavanja (JPEG ≤1568px, EXIF
+ * rotacija poštovana — štedi prenos), audio ≤15 MB, pdf ≤25 MB, ukupno ≤ `max`
+ * (default 10).
+ *
+ * 🔴 Slika koja ne može da se pretvori u JPEG se ODBIJA sa uputstvom, nikad se ne
+ * šalje original „za svaki slučaj": backend prilog presuđuje po magic bytes i prima
+ * samo JPG/PNG/PDF, a upis je all-or-nothing — jedan HEIC sa iPhone-a bi oborio celu
+ * otpremu i fotografija neusaglašenosti sa montaže bi nestala bez poruke.
+ * Zato i `accept` liste NE nude `image/heic` (iOS pri izboru iz Galerije sam pretvara
+ * u JPEG; „Slikaj / kamera" putanja na telefonu takođe daje JPEG).
  *
  * Kontrolisan: `value` = trenutni pending fajlovi, `onChange(next)` emituje novu
  * listu. Odbačene fajlove prijavljuje kroz `onReject(poruka)` (poziva toast/error
  * u roditelju) — komponenta sama ne prikazuje toast (kit je bez zavisnosti na njega).
+ * Poruka odbijanja UVEK kaže šta korisnik dalje da uradi.
  */
 
-const IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'];
+// `image/heic` ostaje PREPOZNAT (da bi HEIC dobio poruku „šta da uradiš" umesto
+// generičkog „nepodržan tip"), ali se NE nudi u `accept` atributu birača fajlova.
+const IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/avif'];
 const AUDIO_MIMES = ['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/x-wav'];
 const DOC_MIMES = ['application/pdf'];
 
@@ -29,9 +40,14 @@ export type AttachmentKind = 'IMAGE' | 'AUDIO' | 'FILE';
 
 const ALL_KINDS: AttachmentKind[] = ['IMAGE', 'AUDIO', 'FILE'];
 
-/** `accept` atribut file-input-a po dozvoljenim vrstama (kamera koristi zaseban input). */
+/**
+ * `accept` atribut file-input-a po dozvoljenim vrstama (kamera koristi zaseban input).
+ * Bez `image/heic` NAMERNO: iOS birač („Photo Library") tada pri izboru sam pretvori
+ * fotografiju u JPEG, a u „Browse"/Files listi HEIC fajlovi ostaju neizbirljivi — čime
+ * se problem sprečava pre nego što nastane, umesto da se rešava porukom o grešci.
+ */
 const ACCEPT_ATTR: Record<AttachmentKind, string> = {
-  IMAGE: 'image/jpeg,image/png,image/webp,image/heic',
+  IMAGE: 'image/jpeg,image/png,image/webp',
   AUDIO: 'audio/*',
   FILE: 'application/pdf',
 };
@@ -89,6 +105,17 @@ export function AttachmentInput({
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
+  /**
+   * MIME na koji se oslanjamo. Android/Files ume da preda fajl sa PRAZNIM `file.type`
+   * (a `.heic` zna da stigne etiketiran kao `image/jpeg`), pa tada odlučuju magic bytes —
+   * inače bi savršeno ispravna fotografija završila kao „nepodržan tip".
+   */
+  async function effectiveMime(f: File): Promise<string> {
+    const declared = (f.type || '').split(';')[0].toLowerCase();
+    if (declared) return declared;
+    return MIME_BY_FORMAT[await sniffFormat(f)] ?? '';
+  }
+
   async function ingest(list: FileList | File[] | null) {
     if (!list) return;
     const incoming = Array.from(list);
@@ -102,27 +129,39 @@ export function AttachmentInput({
         break;
       }
       const allowedLabel = accept.map((k) => KIND_LABEL[k]).join(', ');
-      const kind = classify(f.type);
+      const kind = classify(await effectiveMime(f));
       if (!kind || !accept.includes(kind)) {
-        onReject?.(`„${f.name}": nepodržan tip. Dozvoljeno: ${allowedLabel}.`);
+        onReject?.(
+          `„${f.name}": nepodržan tip. Dozvoljeno: ${allowedLabel}. Pretvorite fajl u dozvoljen format (slike u JPG/PNG, dokumenta u PDF) pa pokušajte ponovo.`,
+        );
         continue;
       }
       const perFileCap = kind === 'AUDIO' ? Math.min(maxBytes, MAX_AUDIO_BYTES) : maxBytes;
       if (f.size > perFileCap) {
-        onReject?.(`„${f.name}": prelazi ${humanSize(perFileCap)}.`);
+        onReject?.(
+          kind === 'IMAGE'
+            ? `„${f.name}": prelazi ${humanSize(perFileCap)}. Slikajte dugmetom „Slikaj / kamera" — takva slika se automatski smanji.`
+            : `„${f.name}": prelazi ${humanSize(perFileCap)}.`,
+        );
         continue;
       }
-      // Slike resize-ujemo pre dodavanja (paritet 1.0 prepareImageForUpload).
+      // Slike: JPEG ≤1568px sa poštovanom EXIF rotacijom (paritet 1.0 prepareImageForUpload).
+      // Pad pretvaranja NE prosleđuje original tiho — korisnik dobija uputstvo (v. image-resize.ts).
       if (kind === 'IMAGE') {
+        let ready: File;
         try {
-          const blob = await resizeImageFile(f);
-          const resized = new File([blob], f.name.replace(/\.(heic|png|webp)$/i, '.jpg'), {
-            type: blob.type || 'image/jpeg',
-          });
-          accepted.push(resized);
-        } catch {
-          accepted.push(f); // resize pao → pošalji original (BE i dalje validira)
+          ready = await prepareImageForUpload(f);
+        } catch (e) {
+          onReject?.((e as Error).message);
+          continue;
         }
+        // Original koji je prošao pretvaranje bez smanjenja (JPG/PNG kad canvas ne radi)
+        // može i dalje biti preko granice — bolje odbiti ovde nego dobiti 413 sa servera.
+        if (ready.size > perFileCap) {
+          onReject?.(`„${f.name}": i posle smanjenja prelazi ${humanSize(perFileCap)}. Slikajte je ponovo dugmetom „Slikaj / kamera".`);
+          continue;
+        }
+        accepted.push(ready);
       } else {
         accepted.push(f);
       }
@@ -167,7 +206,7 @@ export function AttachmentInput({
               type="button"
               disabled={disabled || full || busy}
               onClick={() => cameraRef.current?.click()}
-              className="inline-flex h-9 items-center gap-2 rounded-control border border-line bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-2 disabled:opacity-50"
+              className="inline-flex h-9 items-center gap-2 rounded-control border border-line bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-2 active:bg-surface-2 disabled:opacity-50"
             >
               <Camera className="h-4 w-4" aria-hidden />
               Slikaj / kamera
@@ -177,17 +216,24 @@ export function AttachmentInput({
             type="button"
             disabled={disabled || full || busy}
             onClick={() => fileRef.current?.click()}
-            className="inline-flex h-9 items-center gap-2 rounded-control border border-line bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-2 disabled:opacity-50"
+            className="inline-flex h-9 items-center gap-2 rounded-control border border-line bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-2 active:bg-surface-2 disabled:opacity-50"
           >
             <Paperclip className="h-4 w-4" aria-hidden />
             Dodaj prilog
           </button>
         </div>
-        <p className="mt-2 text-2xs text-ink-secondary">
-          {accept.map((k) => KIND_LABEL[k]).join(', ')} (≤ {humanSize(maxBytes)}). Do {max} priloga · {value.length}/{max}.
+        <p className="mt-2 text-2xs text-ink-secondary" aria-live="polite">
+          {busy
+            ? 'Pripremam slike…'
+            : `${accept.map((k) => KIND_LABEL[k]).join(', ')} (≤ ${humanSize(maxBytes)}). Do ${max} priloga · ${value.length}/${max}.`}
         </p>
 
-        {/* Native kamera na telefonu (kanonski obrazac prijava-kvara-dialog). */}
+        {/*
+          Native kamera na telefonu (kanonski obrazac prijava-kvara-dialog).
+          `accept="image/*"` ostaje NAMERNO širok: sužavanje ume da spreči otvaranje
+          kamere na delu Android uređaja, a snimak sa kamere i tako stiže kao JPEG
+          (iOS) ili prolazi kroz `prepareImageForUpload` gejt (Android „high efficiency").
+        */}
         <input
           ref={cameraRef}
           type="file"

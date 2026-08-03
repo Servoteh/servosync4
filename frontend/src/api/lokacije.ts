@@ -233,7 +233,15 @@ export type LocBarcodeKind = 'ITEM' | 'SHELF' | 'OPERATION' | 'UNKNOWN';
 
 export interface LocBarcodeItemResult {
   kind: 'ITEM';
-  parsed: { orderNo: string; itemRefId: string; drawingNo: string; format: string; raw: string };
+  parsed: {
+    orderNo: string;
+    itemRefId: string;
+    drawingNo: string;
+    format: string;
+    raw: string;
+    /** RNZ/compact: segment posle TP (ERP `varijanta`) — sužava lookup crteža. */
+    varijanta?: string;
+  };
   records: LocPlacement[];
 }
 
@@ -280,6 +288,35 @@ export function lookupLocBarcode(code: string): Promise<{ data: LocBarcodeResult
 export function validateOrderNo(orderNo: string): Promise<{ data: boolean | null }> {
   return apiFetch<{ data: boolean | null }>(
     `/v1/locations/lookups/validate-order?orderNo=${encodeURIComponent(orderNo)}`,
+  );
+}
+
+/** Rezultat `GET /v1/locations/lookups/drawing` — crtež za par (nalog, TP). */
+export interface LocDrawingLookup {
+  found: boolean;
+  /** Sanitizovan broj crteža (BigTehn placeholder tačke već skinute); "" kad ga RN nema. */
+  drawingNo: string;
+  revision: string;
+  nazivDela: string | null;
+  /** 'work_orders' (glavna baza) | 'bigtehn_cache' (sy15 legacy keš) | null. */
+  source: string | null;
+}
+
+/**
+ * Broj crteža za par (nalog, TP ref) — RNZ barkod crtež NE NOSI (nosi ga jedino
+ * legacy „short" nalepnica), pa se posle skena/ručnog unosa dočitava iz baze i
+ * predpopunjava editabilno polje „Broj crteža" (paritet 1.0
+ * `resolveDrawingNoForPredmetTp`). `varijanta` iz RNZ barkoda sužava pogodak.
+ */
+export function lookupLocDrawing(
+  orderNo: string,
+  tpRef: string,
+  varijanta?: string,
+): Promise<{ data: LocDrawingLookup }> {
+  const params = new URLSearchParams({ orderNo, tpRef });
+  if (varijanta != null && varijanta !== '') params.set('varijanta', varijanta);
+  return apiFetch<{ data: LocDrawingLookup }>(
+    `/v1/locations/lookups/drawing?${params.toString()}`,
   );
 }
 

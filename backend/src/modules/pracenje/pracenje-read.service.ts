@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -16,6 +17,7 @@ import type {
   PortfolioQueryDto,
   PrijaveQueryDto,
 } from "./dto/pracenje-query.dto";
+import { isVirtualNode, virtualDbId, virtualNodeId } from "./virtual-node";
 
 /**
  * Praćenje proizvodnje — READ sloj nad ORIGINALNIM 2.0 tabelama (F1, plan
@@ -54,6 +56,38 @@ const QUALITY_GOOD = 0;
 
 /** Anti-ciklus dubina za WITH RECURSIVE po sastavnici (BACKEND_RULES §11.4: PG visi na ciklusu). */
 const MAX_DEPTH = 20;
+
+/**
+ * Poređenje RN ident brojeva PRIRODNIM redom (zahtev 053/26 §2). Identi su oblika
+ * `predmet/redni_broj` (`9000/1`, `9000/2`, … `9000/100`), pa čisto tekstualno poređenje
+ * (SQL `ident_number ASC`) daje `9000/1, 9000/10, 9000/100, …, 9000/2` — čovek to čita kao
+ * razbacano. Zato se ident deli na blokove cifara i ne-cifara: blokovi cifara se porede
+ * NUMERIČKI (bez vodećih nula, po dužini pa leksikografski — bez `Number` i bez gubitka
+ * preciznosti na dugačkim nizovima), ostali po code-pointu.
+ *
+ * Namerno BEZ `localeCompare`: rezultat mora biti isti bez obzira na ICU/lokal servera
+ * (determinizam je uslov da se redosled ne menja između okruženja).
+ */
+export function compareIdent(a: string, b: string): number {
+  const ca = a.match(/\d+|\D+/g) ?? [];
+  const cb = b.match(/\d+|\D+/g) ?? [];
+  const n = Math.min(ca.length, cb.length);
+  for (let i = 0; i < n; i++) {
+    const xa = ca[i];
+    const xb = cb[i];
+    const da = xa.charCodeAt(0) >= 48 && xa.charCodeAt(0) <= 57;
+    const db = xb.charCodeAt(0) >= 48 && xb.charCodeAt(0) <= 57;
+    if (da && db) {
+      const sa = xa.replace(/^0+(?=\d)/, "");
+      const sb = xb.replace(/^0+(?=\d)/, "");
+      if (sa.length !== sb.length) return sa.length - sb.length;
+      if (sa !== sb) return sa < sb ? -1 : 1;
+    } else if (xa !== xb) {
+      return xa < xb ? -1 : 1;
+    }
+  }
+  return ca.length - cb.length;
+}
 
 /** Lot clamp — paritet 1.0 (1..100000, default 12). */
 function clampLot(raw?: string): number {
@@ -171,8 +205,26 @@ export interface ProjectNodeRow {
   masinska_done_ovr: boolean | null;
   povrsinska_done_ovr: boolean | null;
   manual_qty: number | null;
+  /**
+   * Da li je ručni structure-override STVARNO PRIMENJEN (zahtev 053/26 §2). SQL ga puni
+   * kao „postoji red u `pracenje_structure_overrides`", ali `reparentNodes` ga PREPISUJE na
+   * efektivnu vrednost: odbijen override (cilj van učitanog skupa / self-ref / ciklus) izlazi
+   * kao `false` + `override_ignored=true`. Bez toga je FE (`pracenje-tree.effParentKey`) čitao
+   * neprimenjen `parent_override_rn_id` kao roditelja i odlepljivao red na nivo 0.
+   */
   has_parent_override: boolean;
+  /** SIROV cilj override-a iz baze (za dijalog „Premesti u sklop") — NIJE nužno primenjen. */
   parent_override_rn_id: number | null;
+  /** true = override postoji u bazi ali je odbijen (cilj van opsega / ciklus) → važi auto. */
+  override_ignored?: boolean;
+  /**
+   * true = čvor je VIRTUELNI (ručno napravljen) sklop iz `pracenje_virtuelni_sklopovi`, a ne
+   * `work_orders` red (zahtev 053/26 paket 2). `rn_id` mu je NEGATIVAN (= -id sklopa), nema
+   * RN broj / crtež / operacije / količine — čist je čvor grupisanja (% je rollup dece).
+   */
+  is_virtual?: boolean;
+  /** Tip ručnog sklopa ('glavni' | 'pod' | 'zav') — bedž na ekranu; null za RN čvorove. */
+  tip_sklopa?: string | null;
   /** Dokument primopredaje (docx §4.10): `work_orders.drawing_handover_id` (0→null). */
   drawing_handover_id: number | null;
   /** `work_orders.handover_status_id` (default 3 = N/A) — čitki naziv u `handover_status_name`. */
@@ -182,6 +234,19 @@ export interface ProjectNodeRow {
   /** Oznaka dokumenta primopredaje = `drawing_handovers.signature` (nema posebne „broj" kolone). */
   handover_oznaka: string | null;
   sort_order: number;
+}
+
+/**
+ * Red iz `pracenje_virtuelni_sklopovi` + mesto u stablu (structure-override po ključu
+ * `-id`) i napomena. Mapira se u `ProjectNodeRow` kroz `virtualToNode` (zahtev 053/26 §2).
+ */
+interface VirtualSklopRow {
+  id: number;
+  naziv: string;
+  tip: string;
+  has_parent_override: boolean;
+  parent_override_rn_id: number | null;
+  korisnicka_napomena: string | null;
 }
 
 interface RnNodeRow {
@@ -243,23 +308,45 @@ interface OpRow {
  *  - override čiji ciljni roditelj nije u učitanom skupu čvorova → ignoriše se (ostaje auto);
  *  - override koji bi napravio ciklus (čvor postao svoj predak) → preskače se (ostaje auto);
  *    hod naviše ionako lomi na prvom ponovljenom čvoru + `MAX_DEPTH` kapa (nikad beskonačno).
+ *  - odbijen override IZLAZI kao `has_parent_override=false` + `override_ignored=true`
+ *    (zahtev 053/26 §2) — ranije se emitovao kao da je primenjen, pa je FE u opsegu po
+ *    sklopu vezivao red za cilj koji BE nije prihvatio i crtao ga na nivou 0.
  * Re-parent NE redefiniše `broj_komada` (override nosi hijerarhiju, ne količinu-po-sklopu).
+ *
+ * Izlazni redosled je pre-order po LANCU `sort_order`-a (rang po `ident_broj` na svakom nivou),
+ * a ne po sirovim id-jevima — vidi korak 6 (zahtev 053/26 §2).
  */
+/**
+ * Ključ po kojem se braća porede unutar sklopa. RN čvor: `ident_broj` (RN broj). VIRTUELNI
+ * sklop nema ident (zahtev 053/26 paket 2) — poredi se po NAZIVU, jer bi ga prazan ključ
+ * uvek bacao na dno grupe (NULLS LAST), pa bi ručno napravljeni sklopovi visili ispod svih
+ * pozicija umesto da se uklope po abecedi. `compareIdent` je isti (prirodan, locale-nezavisan).
+ */
+function siblingSortKey(n: ProjectNodeRow): string {
+  if (n.is_virtual === true) return (n.naziv_dela ?? "").trim();
+  return n.ident_broj ?? "";
+}
+
 export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
   if (nodes.length === 0) return nodes;
   const byId = new Map<number, ProjectNodeRow>();
   for (const n of nodes) byId.set(n.rn_id, n);
 
   // 1) Efektivni roditelj: override (ako je razrešiv) inače auto parent_rn_id.
+  //    `applied` prati da li je override STVARNO primenjen — emituje se kao `has_parent_override`
+  //    (zahtev 053/26 §2), da FE nikad ne vidi „premešteno" tamo gde stablo nije premešteno.
   const effParent = new Map<number, number | null>();
+  const applied = new Set<number>();
   for (const n of nodes) {
     let parent = n.parent_rn_id;
     if (n.has_parent_override) {
       const target = n.parent_override_rn_id;
       if (target == null) {
         parent = null; // odlepi na koren
+        applied.add(n.rn_id);
       } else if (target !== n.rn_id && byId.has(target)) {
         parent = target;
+        applied.add(n.rn_id);
       }
       // target van skupa ili self-ref → ignoriši override (ostaje auto)
     }
@@ -282,6 +369,7 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
   for (const n of nodes) {
     if (n.has_parent_override && wouldCycle(n.rn_id)) {
       effParent.set(n.rn_id, n.parent_rn_id); // revert override (defanzivno)
+      applied.delete(n.rn_id);
     }
   }
 
@@ -311,10 +399,17 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
     return res;
   };
 
-  // 4) sort_order = row_number unutar (efektivni roditelj) grupe po ident_broj ASC NULLS LAST.
+  // 4) sort_order = row_number unutar (efektivni roditelj) grupe po ident_broj ASC NULLS LAST,
+  //    uz `rn_id` kao tie-break (bez njega je redosled istoimenih identa zavisio od redosleda
+  //    unosa u bazu). Koreni (roditelj null ILI van učitanog skupa — isti uslov kojim `resolve`
+  //    proglašava koren) idu u jednu „root" grupu, pa i oni dobijaju determinističan rang.
+  const groupKey = (id: number): string => {
+    const p = effParent.get(id) ?? null;
+    return p != null && byId.has(p) ? String(p) : "root";
+  };
   const groups = new Map<string, ProjectNodeRow[]>();
   for (const n of nodes) {
-    const key = String(effParent.get(n.rn_id) ?? "root");
+    const key = groupKey(n.rn_id);
     const arr = groups.get(key);
     if (arr) arr.push(n);
     else groups.set(key, [n]);
@@ -322,19 +417,19 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
   const sortOrderById = new Map<number, number>();
   for (const arr of groups.values()) {
     arr.sort((a, b) => {
-      const ai = a.ident_broj ?? "";
-      const bi = b.ident_broj ?? "";
+      const ai = siblingSortKey(a);
+      const bi = siblingSortKey(b);
       if (ai === "" && bi !== "") return 1; // NULLS LAST
       if (bi === "" && ai !== "") return -1;
-      // Code-point poređenje (locale-nezavisno) — poklapa se sa SQL `ident_number ASC`
-      // za ASCII idente i deterministično je (za razliku od localeCompare po ICU zoni).
-      return ai < bi ? -1 : ai > bi ? 1 : 0;
+      const c = compareIdent(ai, bi); // prirodan red (9000/2 pre 9000/10), locale-nezavisan
+      if (c !== 0) return c;
+      return a.rn_id - b.rn_id; // determinističan tie-break
     });
     arr.forEach((n, i) => sortOrderById.set(n.rn_id, i + 1));
   }
 
   // 5) Emit re-parented čvorove; sklopni-crtež polja iz NOVOG roditelja (parent.has_crtez_file
-  //    je pravi EXISTS(drawing_pdfs), finding #6). Poređaj po (root, path) za stabilan pre-order.
+  //    je pravi EXISTS(drawing_pdfs), finding #6).
   const out = nodes.map((n) => {
     const c = resolve(n.rn_id);
     const newParent = effParent.get(n.rn_id) ?? null;
@@ -348,16 +443,35 @@ export function reparentNodes(nodes: ProjectNodeRow[]): ProjectNodeRow[] {
       nivo: c.nivo,
       path_idrn: c.path,
       sort_order: sortOrderById.get(n.rn_id) ?? n.sort_order,
+      // Override izlazi kao primenjen SAMO ako jeste primenjen (zahtev 053/26 §2).
+      has_parent_override: applied.has(n.rn_id),
+      override_ignored: n.has_parent_override && !applied.has(n.rn_id),
     };
   });
+
+  // 6) Pre-order po LANCU sort_order-a duž putanje (zahtev 053/26 §2 — „deca se odvajaju od
+  //    sklopa"). Raniji sort je poredio SIROVE `root_rn_id`/`path_idrn` = autoincrement
+  //    `work_orders.id` = redosled unosa u bazu, pa je pozicija bez sastavnice (sopstveni koren)
+  //    sa malim id-jem upadala IZMEĐU sklopa i njegove dece. Sada se poredi rang po ident broju
+  //    na svakom nivou: `path_sort[i]` = sort_order pretka na dubini i. Prefiks putanje
+  //    jednoznačno određuje pretka → dete NIKAD ne može da se odvoji od roditelja.
+  const sortPath = new Map<number, number[]>();
+  for (const n of out) {
+    sortPath.set(
+      n.rn_id,
+      n.path_idrn.map((id) => sortOrderById.get(id) ?? 0),
+    );
+  }
   out.sort((a, b) => {
-    if (a.root_rn_id !== b.root_rn_id) return a.root_rn_id - b.root_rn_id;
-    const len = Math.min(a.path_idrn.length, b.path_idrn.length);
+    const pa = sortPath.get(a.rn_id) ?? [];
+    const pb = sortPath.get(b.rn_id) ?? [];
+    const len = Math.min(pa.length, pb.length);
     for (let i = 0; i < len; i++) {
-      if (a.path_idrn[i] !== b.path_idrn[i])
-        return a.path_idrn[i] - b.path_idrn[i];
+      if (pa[i] !== pb[i]) return pa[i] - pb[i];
     }
-    return a.path_idrn.length - b.path_idrn.length;
+    // Kraća putanja je predak duže → roditelj ide PRE deteta.
+    if (pa.length !== pb.length) return pa.length - pb.length;
+    return a.rn_id - b.rn_id; // teorijski nedostižno (putanja je jedinstvena) — determinizam
   });
   return out;
 }
@@ -567,10 +681,14 @@ export class PracenjeReadService {
     return { data };
   }
 
-  /** Stablo podsklopova predmeta (paritet get_podsklopovi_predmeta) — ravna lista. */
+  /**
+   * Stablo podsklopova predmeta (paritet get_podsklopovi_predmeta) — ravna lista.
+   * Sadrži i VIRTUELNE (ručno napravljene) sklopove sa negativnim `rn_id` (053/26 paket 2),
+   * pa dropdown „Opseg (sklop)" i drill-down rade i za sklop bez RN-a.
+   */
   async podsklopovi(_email: string, projectId: number) {
-    // reparentNodes: primeni ručne structure-override-e u stablu (finding #7).
-    const nodes = reparentNodes(await this.projectNodes(projectId, null));
+    // scopeNodes: RN stablo + ručni sklopovi, sa primenjenim structure-override-ima (#7).
+    const nodes = await this.scopeNodes(projectId, null);
     const data = nodes.map((n) => ({
       rn_id: n.rn_id,
       legacy_idrn: n.rn_id,
@@ -585,6 +703,9 @@ export class PracenjeReadService {
       // u odnosu na 1.0 v_active_bigtehn_work_orders koji je zavisio od plana proizvodnje).
       is_mes_aktivan: n.status_rn !== true,
       path_idrn: n.path_idrn,
+      // Ručno napravljen sklop (nema RN/tehnologiju) — FE ga prikazuje bez RN akcija.
+      is_virtual: n.is_virtual === true,
+      tip_sklopa: n.tip_sklopa ?? null,
     }));
     return { data };
   }
@@ -618,7 +739,26 @@ export class PracenjeReadService {
     const p = project[0];
 
     let root: Record<string, unknown> | null = null;
-    if (rootRn != null) {
+    if (rootRn != null && isVirtualNode(rootRn)) {
+      // Opseg = RUČNO napravljen sklop (053/26 paket 2): nema RN-a ni crteža.
+      const vs = await this.prisma.pracenjeVirtuelniSklop.findFirst({
+        where: { id: virtualDbId(rootRn), projectId, deletedAt: null },
+        select: { naziv: true, tip: true },
+      });
+      if (!vs) {
+        throw new NotFoundException(
+          `Ručno napravljen sklop ${virtualDbId(rootRn)} nije u predmetu ${projectId}.`,
+        );
+      }
+      root = {
+        node_id: rootRn,
+        naziv: vs.naziv,
+        broj_crteza: "",
+        tip: "sklop",
+        is_virtual: true,
+        tip_sklopa: vs.tip,
+      };
+    } else if (rootRn != null) {
       const r = await this.prisma.$queryRaw<
         {
           node_id: number;
@@ -646,12 +786,82 @@ export class PracenjeReadService {
       };
     }
 
-    // reparentNodes: primeni ručne structure-override-e u stablu (finding #7).
-    const nodes = reparentNodes(await this.projectNodes(projectId, rootRn));
-    const opsByWo = await this.fetchOperations(nodes.map((n) => n.rn_id));
+    // scopeNodes: RN stablo + ručni sklopovi, sa primenjenim structure-override-ima (#7).
+    const nodes = await this.scopeNodes(projectId, rootRn);
+    // Operacije se traže SAMO za prave RN-ove — virtuelni sklop nema tehnologiju.
+    const opsByWo = await this.fetchOperations(
+      nodes.filter((n) => n.is_virtual !== true).map((n) => n.rn_id),
+    );
     const today = todayStr();
 
     const rows = nodes.map((n) => {
+      // ── VIRTUELNI (ručno napravljen) sklop — zahtev 053/26 paket 2 ──────────────
+      // Čvor grupisanja BEZ RN-a i tehnologije: sva RN polja su prazna, `statusi` su
+      // svi false (inače bi „nema TP / nema crtež / nema ZK" lažno crvenili red i
+      // pumpali brojače u `summary`), a % gotovosti FE računa kao rollup dece.
+      if (n.is_virtual === true) {
+        return {
+          row_id: `${projectId}:${n.rn_id}`,
+          node_id: n.rn_id,
+          parent_node_id: n.parent_rn_id,
+          level: n.nivo,
+          sort_order: n.sort_order,
+          tip_reda: "virtuelni_sklop",
+          is_virtual: true,
+          tip_sklopa: n.tip_sklopa ?? "pod",
+          naziv_pozicije: n.naziv_dela ?? "",
+          broj_crteza: "",
+          broj_sklopnog_crteza: n.parent_broj_crteza ?? "",
+          crtez_url: null,
+          sklop_url: null,
+          crtez_drawing_no: null,
+          sklop_drawing_no: n.parent_broj_crteza
+            ? n.parent_broj_crteza.split("_")[0].trim() || null
+            : null,
+          has_crtez_file: false,
+          has_skop_crtez_file: n.has_parent_crtez_file,
+          rn_id: null,
+          rn_broj: "",
+          qty_per_assembly: null,
+          lansirana_kolicina: null,
+          required_for_lot: null,
+          zavrsena_kolicina: null,
+          zavrsena_kolicina_auto: null,
+          is_override_applied: false,
+          raspolozivo_za_montazu: null,
+          kompletirano_za_lot: null,
+          datum_lansiranja_tp: null,
+          datum_izrade: null,
+          masinska_obrada_status: null,
+          povrsinska_zastita_status: null,
+          materijal: "",
+          dimenzije: "",
+          sistemska_napomena: "",
+          korisnicka_napomena: n.korisnicka_napomena ?? "",
+          status_override: null,
+          masinska_done_override: null,
+          povrsinska_done_override: null,
+          masinska_done_efektivno: null,
+          povrsinska_done_efektivno: null,
+          manual_qty: null,
+          masinska_done: 0,
+          masinska_total: null,
+          primopredaja: null,
+          has_parent_override: n.has_parent_override,
+          override_ignored: n.override_ignored === true,
+          parent_override_rn_id: n.parent_override_rn_id,
+          statusi: {
+            kasni: false,
+            nema_tp: false,
+            nema_crtez: false,
+            nema_zavrsnu_kontrolu: false,
+            nije_kompletirano: false,
+            nema_rn: false,
+          },
+          operations: [],
+        };
+      }
+
       const ops = opsByWo.get(n.rn_id) ?? [];
       const finalOps = ops.filter((o) => o.is_final_control);
       const hasFinalLine = finalOps.length > 0;
@@ -737,6 +947,10 @@ export class PracenjeReadService {
         level: n.nivo,
         sort_order: n.sort_order,
         tip_reda: "rn",
+        // Ogledalo virtuelne grane (053/26 paket 2) — svaki red nosi zastavicu, pa FE
+        // nikad ne mora da pogađa po predznaku id-ja.
+        is_virtual: false,
+        tip_sklopa: null,
         naziv_pozicije: n.naziv_dela ?? n.ident_broj ?? "",
         broj_crteza: n.broj_crteza ?? "",
         broj_sklopnog_crteza: n.parent_broj_crteza ?? "",
@@ -793,7 +1007,13 @@ export class PracenjeReadService {
                 oznaka: n.handover_oznaka,
               }
             : null,
+        // has_parent_override = override je PRIMENJEN (reparentNodes ga prepisuje);
+        // override_ignored = postoji u bazi ali je odbijen (cilj van opsega / ciklus);
+        // parent_override_rn_id = SIROV cilj (dijalog „Premesti u sklop" ga i dalje pokazuje).
+        // FE (`pracenje-tree.effParentKey`) roditelja čita iz `parent_node_id` — jedini izvor
+        // istine, pa FE i BE ne mogu da se raziđu oko roditelja (zahtev 053/26 §2).
         has_parent_override: n.has_parent_override,
+        override_ignored: n.override_ignored === true,
         parent_override_rn_id: n.parent_override_rn_id,
         statusi: {
           kasni: rok != null && rok < today && (zavrsena ?? 0) < (komada ?? 0),
@@ -882,8 +1102,28 @@ export class PracenjeReadService {
     );
   }
 
+  /**
+   * Guard za READ metode koje čvor id tumače kao `work_orders.id`. Zove se iz TAČNO dve:
+   * `rn()` i `operativniPlan()` (rute `GET rn/:rnId` i `GET rn/:rnId/operativni-plan`).
+   * Virtuelni (ručno napravljen) sklop ima NEGATIVAN node_id i NEMA red u `work_orders` —
+   * bez ove brane bi upit vratio prazno pa bi korisnik dobio nejasno „Radni nalog -7 ne
+   * postoji", umesto informacije da taj čvor po prirodi nema RN (zahtev 053/26 paket 2).
+   *
+   * `canEdit()` (`GET rn/:rnId/can-edit`) NAMERNO nije obuhvaćen: on `rnId` uopšte ne
+   * koristi (parametar mu je `_rnId`) — vraća čistu odluku o pravu `pracenje.edit` i ne
+   * dodiruje bazu RN-ova, pa nema šta da odbije. Brana bi tu bila mrtvo slovo.
+   */
+  private assertRealRn(rnId: number): void {
+    if (isVirtualNode(rnId)) {
+      throw new UnprocessableEntityException(
+        `Ručno napravljen sklop (${virtualDbId(rnId)}) nema radni nalog — RN pregled postoji samo za pozicije iz proizvodnje.`,
+      );
+    }
+  }
+
   /** RN pregled (pozicije = RN + komponentni RN-ovi; paritet get_pracenje_rn). */
   async rn(_email: string, rnId: number) {
+    this.assertRealRn(rnId);
     const head = await this.prisma.$queryRaw<
       {
         radni_nalog_id: number;
@@ -1047,6 +1287,7 @@ export class PracenjeReadService {
     rnId: number,
     _q: OperativniPlanQueryDto,
   ) {
+    this.assertRealRn(rnId);
     const wo = await this.prisma.workOrder.findUnique({
       where: { id: rnId },
       select: {
@@ -1422,20 +1663,18 @@ export class PracenjeReadService {
   /**
    * Struktura predmeta (WITH RECURSIVE nad `work_order_components`) sa anti-ciklus
    * guardom (path array + depth cap). Anchor = koreni predmeta (RN-ovi koji nisu
-   * komponenta drugog RN-a istog predmeta) ILI jedan RN (rootRn) za pod-stablo.
+   * komponenta drugog RN-a istog predmeta).
+   *
+   * ⚠️ Uvek se učitava CEO predmet — opseg („Opseg (sklop)" / `rootRn`) se NE pravi
+   * suženim anchor-om, nego SEČENJEM već razrešenog stabla u `scopeNodes` (zahtev 053/26
+   * paket 2, popravni krug). Anchor po jednom RN-u je davao drugačije podatke od punog
+   * prikaza: (a) deca koja u sklop stižu ručnim override-om, a ne sastavnicom, uopšte se
+   * nisu učitavala, (b) `1 AS broj_komada` na anker-redu je gazio stvarnu
+   * `work_order_components.quantity`, pa je „Za lot" u drill-u bio manji nego u punom
+   * prikazu. Sada je opseg po konstrukciji PODSKUP punog prikaza.
    */
-  private projectNodes(
-    projectId: number,
-    rootRn: number | null,
-  ): Promise<ProjectNodeRow[]> {
-    const anchor =
-      rootRn != null
-        ? Prisma.sql`
-            SELECT wo.id AS rn_id, NULL::int AS parent_rn_id, wo.id AS root_rn_id,
-                   0 AS nivo, 1 AS broj_komada, ARRAY[wo.id] AS path_idrn
-              FROM work_orders wo
-             WHERE wo.id = ${rootRn} AND wo.project_id = ${projectId}`
-        : Prisma.sql`
+  private projectNodes(projectId: number): Promise<ProjectNodeRow[]> {
+    const anchor = Prisma.sql`
             SELECT wo.id AS rn_id, NULL::int AS parent_rn_id, wo.id AS root_rn_id,
                    0 AS nivo, 1 AS broj_komada, ARRAY[wo.id] AS path_idrn
               FROM work_orders wo
@@ -1503,6 +1742,154 @@ export class PracenjeReadService {
         LEFT JOIN handover_statuses hs ON hs.id = w.handover_status_id
         LEFT JOIN drawing_handovers dh ON dh.id = NULLIF(w.drawing_handover_id, 0)
        ORDER BY d.root_rn_id, d.path_idrn`);
+  }
+
+  // ==========================================================================
+  // Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2
+  // ==========================================================================
+
+  /**
+   * Ne-obrisani ručni sklopovi predmeta + njihovo mesto u stablu. Sklop NEMA automatskog
+   * (BOM) roditelja — jedini izvor pozicije mu je `pracenje_structure_overrides` upisan po
+   * NEGATIVNOM ključu (`work_order_id = -vs.id`), pa se ista tabela koristi i za „sklop u
+   * sklopu". Napomena se čita istim ključem (`pracenje_notes` je meki Int bez FK-a), pa
+   * korisnik može da zabeleži šta je taj ručni sklop.
+   */
+  private virtuelniSklopovi(projectId: number): Promise<VirtualSklopRow[]> {
+    return this.prisma.$queryRaw<VirtualSklopRow[]>(Prisma.sql`
+      SELECT vs.id::int AS id,
+             COALESCE(NULLIF(BTRIM(vs.naziv), ''), '') AS naziv,
+             COALESCE(NULLIF(BTRIM(vs.tip), ''), 'pod') AS tip,
+             (po.work_order_id IS NOT NULL) AS has_parent_override,
+             po.parent_work_order_id::int AS parent_override_rn_id,
+             nap.note AS korisnicka_napomena
+        FROM pracenje_virtuelni_sklopovi vs
+        LEFT JOIN pracenje_structure_overrides po ON po.work_order_id = -vs.id
+        LEFT JOIN pracenje_notes nap
+               ON nap.project_id = ${projectId} AND nap.work_order_id = -vs.id
+       WHERE vs.project_id = ${projectId} AND vs.deleted_at IS NULL
+       ORDER BY vs.id`);
+  }
+
+  /**
+   * Virtuelni sklop → sintetički čvor stabla (`rn_id = -id`). Sve „RN" kolone su prazne:
+   * nema ident/crteža/materijala/količina/roka/primopredaje — sklop je čvor GRUPISANJA, a
+   * njegov % gotovosti je rollup dece (FE `pracenje-tree.computeRollups` već tako radi za
+   * svaki čvor sa decom). `parent_rn_id` je uvek null (nema sastavnice) — efektivnog
+   * roditelja postavlja `reparentNodes` iz override-a, isto kao za RN čvorove.
+   */
+  private virtualToNode(v: VirtualSklopRow): ProjectNodeRow {
+    return {
+      rn_id: virtualNodeId(v.id),
+      parent_rn_id: null,
+      root_rn_id: virtualNodeId(v.id),
+      nivo: 0,
+      broj_komada: 1,
+      path_idrn: [virtualNodeId(v.id)],
+      ident_broj: null,
+      broj_crteza: null,
+      naziv_dela: v.naziv,
+      materijal: null,
+      dimenzija: null,
+      komada: null,
+      rok_izrade: null,
+      status_rn: null,
+      datum_unosa: null,
+      wo_napomena: null,
+      parent_broj_crteza: null,
+      has_crtez_file: false,
+      has_parent_crtez_file: false,
+      korisnicka_napomena: v.korisnicka_napomena,
+      status_override: null,
+      masinska_done_ovr: null,
+      povrsinska_done_ovr: null,
+      manual_qty: null,
+      has_parent_override: v.has_parent_override,
+      parent_override_rn_id: v.parent_override_rn_id,
+      is_virtual: true,
+      tip_sklopa: v.tip,
+      drawing_handover_id: null,
+      handover_status_id: null,
+      handover_status_name: null,
+      handover_oznaka: null,
+      sort_order: 1,
+    };
+  }
+
+  /**
+   * Čvorovi jednog opsega: CEO predmet (RN stablo + sintetički ručni sklopovi) razrešen
+   * JEDNOM kroz `reparentNodes`, pa — ako je zadat opseg — POSEČEN na pod-stablo `rootRn`.
+   *
+   * Zašto sečenje umesto suženog SQL anchor-a (popravni krug 053/26 paket 2): pod-stablo
+   * mora biti PODSKUP punog prikaza, inače se ista pozicija u dva prikaza vidi različito.
+   * Sužen anchor je to lomio na tri načina:
+   *   1. deca koja u sklop stižu RUČNIM override-om (a ne sastavnicom) nisu se ni učitavala,
+   *      pa je ručni sklop u drill-u izgledao prazan, a „lansirano" manje nego u punom;
+   *   2. ugnežđen lanac (ručni sklop → RN → ručni sklop → RN) se prekidao na prvom RN-u;
+   *   3. `1 AS broj_komada` na anker-redu je gazio `work_order_components.quantity`, pa je
+   *      „Za lot" u drill-u bio manji (npr. 12 umesto 48).
+   * Sečenjem po EFEKTIVNOM `path_idrn` sva tri nestaju po konstrukciji: čvorovi, količine i
+   * poredak su bukvalno isti redovi koje bi korisnik video u punom prikazu.
+   *
+   * `rootRn == null` (ceo predmet) NE prolazi kroz sečenje — put je nepromenjen.
+   */
+  private async scopeNodes(
+    projectId: number,
+    rootRn: number | null,
+  ): Promise<ProjectNodeRow[]> {
+    const [realNodes, allVirtual] = await Promise.all([
+      this.projectNodes(projectId),
+      this.virtuelniSklopovi(projectId),
+    ]);
+    const full = reparentNodes([
+      ...realNodes,
+      ...allVirtual.map((v) => this.virtualToNode(v)),
+    ]);
+    if (rootRn == null) return full;
+    return this.sliceSubtree(full, rootRn);
+  }
+
+  /**
+   * Poseci razrešeno stablo na pod-stablo čvora `rootRn` i re-bazuj ga kao samostalno
+   * stablo (koren = nivo 0). Pripadnost pod-stablu se čita iz `path_idrn` koji je
+   * `reparentNodes` već izračunao nad EFEKTIVNIM roditeljima — dakle uključuje i decu
+   * dovučenu ručnim override-om, i ugnežđene ručne sklopove, na proizvoljnoj dubini.
+   *
+   * Re-bazira se SAMO ono što zavisi od korena (`nivo`, `path_idrn`, `root_rn_id`) i veza
+   * korena naviše (roditelj mu je van isečka, pa se prikazuje kao koren — isto kao raniji
+   * anchor). `broj_komada`/`komada`/`sort_order` se NE diraju: to su podaci pozicije, ne
+   * opsega, i moraju biti identični punom prikazu. Ulazni niz je pre-order, a podstablo je
+   * u njemu neprekidno, pa filtriranje čuva poredak.
+   */
+  private sliceSubtree(
+    nodes: ProjectNodeRow[],
+    rootRn: number,
+  ): ProjectNodeRow[] {
+    const root = nodes.find((n) => n.rn_id === rootRn);
+    // Nedostižno u praksi (koren se validira pre poziva), ali bolje prazno nego bacanje.
+    if (!root) return [];
+    const baseDepth = root.path_idrn.length - 1;
+    return nodes
+      .filter((n) => n.path_idrn.includes(rootRn))
+      .map((n) => {
+        const path = n.path_idrn.slice(baseDepth);
+        const isRoot = n.rn_id === rootRn;
+        return {
+          ...n,
+          nivo: path.length - 1,
+          path_idrn: path,
+          root_rn_id: rootRn,
+          // Koren isečka nema roditelja U PRIKAZU (njegov pravi roditelj je van opsega);
+          // sklopni crtež mu zato pada na prazno, tačno kao kod ranijeg SQL anchor-a.
+          ...(isRoot
+            ? {
+                parent_rn_id: null,
+                parent_broj_crteza: null,
+                has_parent_crtez_file: false,
+              }
+            : {}),
+        };
+      });
   }
 
   /** Per-node metrika za portfolio rollup (komada, završeno KK, has_final/crtez, op ratio). */

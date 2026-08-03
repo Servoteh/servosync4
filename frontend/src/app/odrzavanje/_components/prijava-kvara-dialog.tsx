@@ -1,11 +1,11 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Camera } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
+import { AttachmentInput } from '@/components/ui-kit/attachment-input';
 import { toast } from '@/lib/toast';
 import { apiFetch } from '@/api/client';
 import {
@@ -24,6 +24,7 @@ import { WoDetailDialog } from './wo-detail-dialog';
 
 const SEVERITIES: IncidentSeverity[] = ['minor', 'major', 'critical'];
 const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
+const MAX_PHOTOS = 10;
 
 /**
  * Prijava kvara (REPORT — opšte pravo, F6). H23: picker SVIH sredstava (mašina/vozilo/
@@ -80,16 +81,6 @@ export function PrijavaKvaraDialog({
     ? undefined
     : assets.find((a) => a.assetCode === assetCode);
   const isMachine = fixed ? fixed.assetType === 'machine' : selected?.assetType === 'machine';
-
-  function addFiles(list: FileList | null) {
-    const next: File[] = [];
-    for (const f of Array.from(list ?? [])) {
-      if (!f.type?.startsWith('image/')) continue;
-      if (f.size > MAX_PHOTO_BYTES) { toast(`„${f.name}" veće od 25 MB — preskočeno`); continue; }
-      next.push(f);
-    }
-    setFiles((prev) => [...prev, ...next].slice(0, 10));
-  }
 
   async function submit() {
     setErr(null);
@@ -230,12 +221,22 @@ export function PrijavaKvaraDialog({
         </label>
         {!isMachine && assetCode && <p className="text-2xs text-ink-secondary">Zastoj se automatski postavlja samo za mašine.</p>}
 
-        <FormField label="Fotografije">
-          <label className="flex cursor-pointer items-center gap-2 rounded-control border border-dashed border-line px-3 py-2 text-sm text-ink-secondary hover:bg-surface-2">
-            <Camera className="h-4 w-4" aria-hidden />
-            {files.length ? `${files.length} slika izabrano` : 'Dodaj slike'}
-            <input type="file" accept="image/*" capture="environment" multiple className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
-          </label>
+        {/*
+          Kit `AttachmentInput` umesto sirovog inputa: na /mob/odrzavanje je kamera
+          primarni tok, a slike se sada i smanjuju (JPEG ≤1568px, EXIF rotacija) pre
+          slanja — ranije je sirov HEIC/12 MP original odlazio u storage kakav jeste,
+          pa se posle nije mogao prikazati (BE ovde ne validira format).
+        */}
+        <FormField label="Fotografije" hint={`Slikaj kvar telefonom ili priloži sliku (do ${MAX_PHOTOS}).`}>
+          <AttachmentInput
+            value={files}
+            onChange={setFiles}
+            onReject={(m) => toast(m)}
+            max={MAX_PHOTOS}
+            accept={['IMAGE']}
+            maxBytes={MAX_PHOTO_BYTES}
+            disabled={busy}
+          />
         </FormField>
       </div>
     </Dialog>

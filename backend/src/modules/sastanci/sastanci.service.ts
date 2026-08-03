@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import { assertPdfAttachment } from "../../common/attachments/attachment-format.util";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
 import { AI_MODULE } from "../../common/ai/ai-limits.service";
 import {
@@ -2524,11 +2525,8 @@ export class SastanciService {
     file?: Express.Multer.File,
     requireArhiva?: boolean,
   ) {
-    if (!file?.buffer?.length || file.mimetype !== "application/pdf") {
-      throw new UnprocessableEntityException(
-        "Očekivan PDF fajl (multipart polje `file`)",
-      );
-    }
+    // Magic bytes, ne `mimetype` iz zahteva (klijent ga laže) — `common/attachments`.
+    assertPdfAttachment(file);
     // Postojanje + read-vidljivost sastanka (SELECT je `true` za sve prijavljene).
     // Uz to (review D5) proveravamo STATUS: LOCK tok (bez `requireArhiva`) gađa
     // sastanak koji tek treba da se zaključa. Ako je već zaključan — drugi klik,

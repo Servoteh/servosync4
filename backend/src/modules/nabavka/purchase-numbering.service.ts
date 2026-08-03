@@ -37,7 +37,7 @@ export class PurchaseNumberingService {
 
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
-    // Numerički MAX preko svih redova godine (kao nextWorkOrderIdent), ne string sort.
+    // Numerički MAX preko svih redova godine (kao WorkOrderNumberingService), ne string sort.
     const rows = await (tx[model] as any).findMany({
       where: { [field]: { endsWith: suffix } },
       select: { [field]: true },

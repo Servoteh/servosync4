@@ -35,6 +35,12 @@ export class GanttQueryDto {
   @IsOptional() @IsString() hall?: string;
   @IsOptional() @IsString() machine?: string;
   @IsOptional() @IsString() q?: string;
+  /**
+   * 046/26-A4: `scope=sve` = picker pretraga „Dodaj na plan" — vraća SVE operacije
+   * koje pogađaju `q` (i završene/zatvorene/kooperaciju), bez open-ops filtera.
+   * Obavezan `q` (min 2 znaka). Bez scope → postojeći feed (otvorene + planirane).
+   */
+  @IsOptional() @IsString() scope?: string;
 }
 
 export class DrawingsQueryDto {

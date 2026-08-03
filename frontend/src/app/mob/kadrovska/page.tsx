@@ -41,6 +41,7 @@ import {
 } from '@/api/kadrovska';
 import { absTypeFullLabel } from '@/app/kadrovska/_components/odsustva/shared';
 import { CON_TYPE_LABELS } from '@/app/kadrovska/_components/ugovori/shared';
+import { MobPermissionsError, MobRefreshButton } from '../_components/mob-refresh';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -75,7 +76,7 @@ export default function MobKadrovskaPage() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Deep-link `?id=<uuid>` (SSO prečica iz 1.0 / bookmark) — čita se JEDNOM iz
@@ -105,11 +106,7 @@ export default function MobKadrovskaPage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
   if (!can(PERMISSIONS.KADROVSKA_READ)) {
     return (
@@ -208,6 +205,9 @@ function EmployeeList({
           <h1 className="truncate text-md font-semibold text-ink">Kadrovska</h1>
           <p className="truncate text-xs text-ink-secondary">{userLabel}</p>
         </div>
+        {/* Osvežavanje bez reload-a: pull-to-refresh je pod `/mob` ugašen,
+            a instalirana PWA nema adresnu traku (v. `_components/mob-refresh.tsx`). */}
+        <MobRefreshButton />
         <Link
           href="/mob"
           className={`inline-flex h-11 shrink-0 items-center gap-1 rounded-control border border-line bg-surface-2 pl-2 pr-4 text-sm font-semibold text-ink active:bg-surface ${FOCUS}`}
@@ -268,7 +268,7 @@ function EmployeeList({
           <p className="py-8 text-center text-sm text-ink-secondary">Učitavanje…</p>
         ) : listQ.isError ? (
           <p className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-6 text-center text-sm text-status-danger">
-            Lista nije učitana. Proveri vezu pa osveži stranicu.
+            Lista nije učitana. Proveri vezu pa dodirni „Osveži" gore desno.
           </p>
         ) : chip === 'ugovor' && contractsQ.isLoading ? (
           <p className="py-8 text-center text-sm text-ink-secondary">Učitavanje ugovora…</p>

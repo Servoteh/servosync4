@@ -26,13 +26,82 @@ const SHELF_SET = new Set(['SHELF', 'RACK', 'BIN']);
  */
 export const LOC_OPTION_LIMIT = 200;
 
+// ── Sortiranje 1.0 (src/lib/lokacijeSort.js) ─────────────────────────────────
+// Prirodno `sr` poređenje (brojevi kao brojevi — A10 POSLE A2, ne posle A1) +
+// kavezi `KV 1…KV 12` po broju. 3.0 je do 03.08.2026 zadržavao serverski
+// redosled (pathCached asc, leksikografski) pa je redosled polica odstupao od
+// 1.0 navika magacionera — dropdown-ovi sada sortiraju ISTIM redosledom kao 1.0.
+
+/** Prirodno `sr` poređenje šifri (paritet 1.0 `compareLocationCodeNatural`). */
+function naturalSr(a: string, b: string): number {
+  return a.localeCompare(b, 'sr', { numeric: true, sensitivity: 'base' });
+}
+
+/** Broj iz globalne šifre kaveza `KV N` (paritet 1.0 `cageCodeNumber`). */
+function cageCodeNumber(code: string): number {
+  const m = code.trim().match(/^KV (\d+)$/i);
+  return m ? Number(m[1]) : Number.NaN;
+}
+
 /**
- * Klijentski filter opcija lokacije + „police prvo" + sečenje na `limit`.
+ * Razred za redosled grupa u listi — paritet 1.0 „Na lokaciju" selecta:
+ * 📍 POLICE → 🧺 KAVEZI → 🏭 HALE → ostalo (mašine/škart/…).
+ * Bez `shelvesFirst` (npr. izbor hale u formama) razredi se ne primenjuju.
+ */
+function locClassRank(l: LocLocation): number {
+  if (SHELF_SET.has(l.locationType)) return 0;
+  if (l.locationType === 'CAGE') return 1;
+  if (HALL_SET.has(l.locationType)) return 2;
+  return 3;
+}
+
+/**
+ * Ključ GRUPNOG sortiranja: `pathCached` nosi „hala > …" pa prirodno poređenje
+ * po njemu grupiše po hali (paritet `sortShelvesByHallThenCode` — prvo hala A–Z).
+ *
+ * ⚠️ `path_cached` se gradi iz NAZIVA (ne šifri) i NE razlikuje police iste
+ * hale: izmereno na produ 03.08.2026, 1098/1111 aktivnih polica deli identičan
+ * path sa nekom drugom policom (sve police Hale 2a = „Hala 2a-proizvodnja ›
+ * Proizvodnja"). Zato je poređenje DVOSTEPENO (v. `compareLocOptions`): path
+ * odredi grupu/halu, a `locationCode` redosled UNUTAR nje — bez drugog stepena
+ * komparator vrati 0 i redosled polica u hali ostane proizvoljan serverski
+ * (baš ono na šta se prijava žalila).
+ */
+function locSortKey(l: LocLocation): string {
+  return l.pathCached || l.locationCode;
+}
+
+/**
+ * Puno 1.0 poređenje dve lokacije: razred → KV broj → prirodno po path grupi →
+ * prirodno po ŠIFRI (1.0 `compareLocationCodeNatural`) kao presuda unutar grupe.
+ */
+function compareLocOptions(a: LocLocation, b: LocLocation, byClass: boolean): number {
+  if (byClass) {
+    const dr = locClassRank(a) - locClassRank(b);
+    if (dr !== 0) return dr;
+    if (a.locationType === 'CAGE' && b.locationType === 'CAGE') {
+      const na = cageCodeNumber(a.locationCode);
+      const nb = cageCodeNumber(b.locationCode);
+      if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+    }
+  }
+  return (
+    naturalSr(locSortKey(a), locSortKey(b)) ||
+    naturalSr(a.locationCode, b.locationCode)
+  );
+}
+
+/**
+ * Klijentski filter opcija lokacije + 1.0 redosled + sečenje na `limit`.
  *
  * Izdvojeno iz komponente jer mobilni batch ekran (`/mob/lokacije/batch`) ima
  * SVOJ punoekranski izbor police — semantika (šta se pretražuje, koliko se
  * prikazuje, šta ide prvo) mora biti identična na oba mesta, inače se ista
  * prijava vraća sa drugog ekrana.
+ *
+ * Redosled = 1.0 (v. komparatore iznad) i primenjuje se I NA POGOTKE pretrage —
+ * 1.0 select je uvek sortiran katalog, pa „isti redosled kao stara aplikacija"
+ * važi u oba stanja (do 03.08.2026 su pogoci zadržavali serverski redosled).
  *
  * `total` je broj kandidata PRE sečenja — pozivalac iz njega gradi poruku o
  * ostatku (v. `locOptionsTruncatedHint`).
@@ -52,16 +121,7 @@ export function filterLocationOptions(
           (l.pathCached ?? '').toLowerCase().includes(s),
       )
     : base;
-  // Prazan upit: police pre ostalih tipova (magacioner najčešće bira policu).
-  // `sort` je stabilan → unutar obe grupe ostaje serverski redosled (pathCached asc).
-  // Uz upit se redosled NE dira — tada korisnik gleda pogotke, ne katalog.
-  const ordered =
-    !s && opts.shelvesFirst
-      ? [...hits].sort(
-          (a, b) =>
-            Number(SHELF_SET.has(b.locationType)) - Number(SHELF_SET.has(a.locationType)),
-        )
-      : hits;
+  const ordered = [...hits].sort((a, b) => compareLocOptions(a, b, !!opts.shelvesFirst));
   return { items: ordered.slice(0, limit), total: hits.length };
 }
 

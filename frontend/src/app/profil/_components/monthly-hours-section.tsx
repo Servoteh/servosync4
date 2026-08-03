@@ -5,7 +5,7 @@
 // BE (`GET /v1/profile/hours`) radi ceo agregat (dnevni redovi + karnet totali +
 // prikazni chips + moja primedba); FE renderuje i gradi karnet PDF iz gotovih totala.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { CalendarDays, FileText, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { Textarea } from '@/components/ui-kit/textarea';
@@ -19,14 +19,7 @@ import {
   useDeleteHoursRemark,
   type ProfileHoursDay,
 } from '@/api/moj-profil';
-import {
-  generateKarnetPdf,
-  downloadBlob,
-  openBlob,
-  type KarnetEmployee,
-  type KarnetRow,
-  type KarnetTotals,
-} from '@/lib/hr-pdf';
+import { generateSelfKarnetPdf, downloadBlob, openBlob } from '@/lib/hr-pdf';
 import { Section } from './section';
 
 /** Redovni-red šifra odsustva → labela (paritet 1.0 GRID_CODE_LABEL). */
@@ -47,13 +40,8 @@ const MONTH_NAMES = [
   'Januar', 'Februar', 'Mart', 'April', 'Maj', 'Jun',
   'Jul', 'Avgust', 'Septembar', 'Oktobar', 'Novembar', 'Decembar',
 ];
-/** Ćirilični nazivi meseca (za karnet naslov). */
-const MONTH_NAMES_CYR = [
-  'јануар', 'фебруар', 'март', 'април', 'мај', 'јун',
-  'јул', 'август', 'септембар', 'октобар', 'новембар', 'децембар',
-];
-/** Ćir. slova dana Sun..Sat (getDay index) — fallback ako BE ne pošalje `letter`. */
-const DAY_LETTERS_CYR = ['Н', 'П', 'У', 'С', 'Ч', 'П', 'С'];
+/* Ćirilični nazivi meseca i slova dana žive uz sklapanje karneta
+   (`lib/hr-pdf/karnet-self.ts`) — deli ih sa `/mob/sati`. */
 
 function fmtNum(n: number | null | undefined): string {
   const v = Math.round(Number(n || 0) * 100) / 100;
@@ -89,7 +77,6 @@ export function MonthlyHoursSection({ employeeName, employeePosition }: { employ
   const chips = data?.chips ?? null;
   const totals = data?.totals ?? null;
   const remark = data?.remark ?? null;
-  const holidaySet = useMemo(() => new Set(data?.holidays ?? []), [data]);
   // Paritet 1.0 (index.js:912 — tabela kad ima ijedan grid-red): prikaži mesec i kad
   // postoje SAMO prekovremeni/terenski/2-mašine sati (bez redovnih i bez odsustva).
   const hasHours = days.some(
@@ -145,39 +132,20 @@ export function MonthlyHoursSection({ employeeName, employeePosition }: { employ
   }
 
   async function downloadKarnet() {
-    if (!hasHours || !totals) {
+    if (!hasHours || !data || !totals) {
       toast('Nema unetih sati za ovaj mesec.');
       return;
     }
     try {
-      const monthLabel = `${MONTH_NAMES_CYR[month - 1]} ${year}.`;
-      const rows = new Map<string, KarnetRow>();
-      let fieldHours = 0;
-      const pdfDays = days.map((d) => {
-        rows.set(d.ymd, {
-          hours: d.hours,
-          overtimeHours: d.overtimeHours,
-          fieldHours: d.fieldHours,
-          twoMachineHours: d.twoMachineHours,
-          absenceCode: d.absenceCode,
-          absenceSubtype: d.absenceSubtype,
-        });
-        fieldHours += Number(d.fieldHours || 0);
-        return { ymd: d.ymd, day: d.day, letter: d.letter || DAY_LETTERS_CYR[dowOf(d.ymd)] };
-      });
-      const employee: KarnetEmployee = {
-        name: employeeName,
-        position: employeePosition,
-        rows,
-        totals: totals as KarnetTotals,
-        fieldHours,
-      };
-      const { blob, fileName } = await generateKarnetPdf({
-        title: `КАРНЕТ — ${monthLabel}`,
-        monthLabel,
-        days: pdfDays,
-        holidayYmdSet: holidaySet,
-        employees: [employee],
+      // Sklapanje je deljeno sa `/mob/sati` (lib/hr-pdf/karnet-self.ts) — isti PDF
+      // sa računara i sa telefona. Isporuka na desktopu ostaje kakva je bila:
+      // otvori u tabu (štampa) + preuzmi.
+      const { blob, fileName } = await generateSelfKarnetPdf({
+        data,
+        year,
+        month,
+        employeeName,
+        employeePosition,
       });
       openBlob(blob);
       downloadBlob(blob, fileName);

@@ -84,7 +84,24 @@ export default function SessionAnalyticsPage() {
     { key: 'sessionCount', header: 'Operacija', align: 'right', numeric: true, render: (r) => <span className="tnums">{formatNumber(r.sessionCount)}</span> },
     { key: 'workerCount', header: 'Radnika', align: 'right', numeric: true, render: (r) => <span className="tnums">{formatNumber(r.workerCount)}</span> },
     { key: 'pieces', header: 'Komada', align: 'right', numeric: true, render: (r) => <span className="tnums">{formatNumber(r.pieces)}</span> },
-    { key: 'elapsed', header: 'Utrošeno (mereno)', align: 'right', render: (r) => <span className="tnums text-ink-secondary">{fmtMin(r.elapsedMinutes)}</span> },
+    {
+      // 036/26: sesije duže od 24h (zaboravljene) ne ulaze u zbir; koliko ih je
+      // izuzeto piše odmah uz broj — inače bi zbir tiho odudarao od evidencije.
+      key: 'elapsed',
+      header: 'Utrošeno (mereno)',
+      align: 'right',
+      render: (r) => (
+        <span className="tnums text-ink-secondary">
+          {fmtMin(r.elapsedMinutes)}
+          {!!r.excludedCount && (
+            <span className="text-ink-disabled" title="Sesije duže od 24h (zaboravljene) nisu sabrane">
+              {' '}
+              ({r.excludedCount} izuzeto)
+            </span>
+          )}
+        </span>
+      ),
+    },
     { key: 'open', header: 'Otvoreno', align: 'right', numeric: true, render: (r) => (r.openCount > 0 ? <StatusBadge tone="info" label={String(r.openCount)} /> : <span className="text-ink-disabled">0</span>) },
   ];
 

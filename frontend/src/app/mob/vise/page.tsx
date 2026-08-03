@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth-context';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { MobShell } from '../_components/mob-shell';
 import { visibleMobModules, type MobLink } from '../_components/mob-modules';
+import { MobPermissionsError } from '../_components/mob-refresh';
 
 /**
  * Mobilno „Više" (/mob/vise) — PLAN_MOB_IZGLED_1.0_PARITET, F1 (paritet 1.0 taba
@@ -29,7 +30,7 @@ export default function MobVisePage() {
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Isti gate kao hub: can() je fail-closed dok dozvole ne stignu → bez čekanja bi
@@ -42,11 +43,7 @@ export default function MobVisePage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
 
   const visible = visibleMobModules(can);

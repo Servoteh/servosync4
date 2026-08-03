@@ -4,11 +4,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { MailService } from "../../common/mail/mail.service";
 
 /** Ishodi koji generišu mejl podnosiocu (MODULE_SPEC §9). */
-export type ZahteviMailOutcome =
-  | "approve"
-  | "reject"
-  | "needs-info"
-  | "done";
+export type ZahteviMailOutcome = "approve" | "reject" | "needs-info" | "done";
 
 /** RSD iznos (Decimal) → celobrojni string sa tačkom kao separatorom hiljada („4.500"). */
 function formatRsd(dec: Prisma.Decimal): string {
@@ -49,9 +45,7 @@ export class ZahteviMailService {
 
   /** Da li je obaveštavanje uključeno (default TRUE; isključi samo eksplicitnim "false"/"0"). */
   private get enabled(): boolean {
-    const v = (process.env.ZAHTEVI_MAIL_NOTIFY ?? "true")
-      .trim()
-      .toLowerCase();
+    const v = (process.env.ZAHTEVI_MAIL_NOTIFY ?? "true").trim().toLowerCase();
     return v !== "false" && v !== "0" && v !== "off" && v !== "no";
   }
 
@@ -177,6 +171,83 @@ export class ZahteviMailService {
   }
 
   /**
+   * Obaveštenje o KORISNIČKOM komentaru (03.08.2026, nalaz vlasnika: „ako neko tu pošalje
+   * dodatna pitanja nakon našeg mejla, to uopšte nismo ni registrovali!"). Komentar je do
+   * sada bio samo red u bazi — niko nije saznao da postoji dok neko ne otvori zahtev.
+   *
+   * `reason` menja SAMO naslov: „💬 komentar" (obična poruka kroz POST :id/comments) vs
+   * „⚠ Ne radi (vraćeno u rad)" (POST :id/reopen — podnosilac javlja da isporuka ne radi).
+   * Jedan mejl po komentaru: `reopen` upisuje komentar sam, ne kroz `addComment`.
+   *
+   * Primalac: `ZAHTEVI_COMMENT_MAILS` (CSV) ako je postavljen, inače
+   * `nenad.jarakovic@servoteh.com` — namerno UŽE od `adminRecipients()` (ovo je operativni
+   * signal „neko čeka odgovor", ne obaveštenje celoj administraciji). Poštuje
+   * `ZAHTEVI_MAIL_NOTIFY`; best-effort — nikad ne baca (§10.4).
+   */
+  async notifyUserComment(params: {
+    requestId: number;
+    authorUserId: number;
+    body: string;
+    reason: "comment" | "reopen";
+  }): Promise<boolean> {
+    if (!this.enabled) return false;
+    try {
+      const req = await this.prisma.changeRequest.findUnique({
+        where: { id: params.requestId },
+        select: { reqNo: true, title: true, status: true },
+      });
+      if (!req) return false;
+
+      const to = this.commentRecipients();
+      if (to.length === 0) {
+        this.logger.warn(
+          `Zahtev ${req.reqNo}: nema primaoca za obaveštenje o komentaru — preskočeno.`,
+        );
+        return false;
+      }
+
+      const author = await this.prisma.user.findUnique({
+        where: { id: params.authorUserId },
+        select: { fullName: true, email: true },
+      });
+      const authorName =
+        author?.fullName || author?.email || `korisnik #${params.authorUserId}`;
+
+      const subject =
+        params.reason === "reopen"
+          ? `ServoSync zahtev ${req.reqNo} — ⚠ Ne radi (vraćeno u rad), ${authorName}`
+          : `ServoSync zahtev ${req.reqNo} — 💬 komentar od ${authorName}`;
+      const html = this.buildCommentHtml({
+        reqNo: req.reqNo,
+        title: req.title,
+        authorName,
+        body: params.body,
+        reason: params.reason,
+        link: this.detailLink(params.requestId),
+      });
+      return await this.mail.send({ to, subject, html });
+    } catch (err) {
+      this.logger.warn(
+        `Obaveštenje o komentaru na zahtevu ${params.requestId} nije poslato: ${
+          (err as Error).message
+        }`,
+      );
+      return false;
+    }
+  }
+
+  /** Primaoci obaveštenja o korisničkom komentaru — env CSV ili podrazumevani vlasnik modula. */
+  private commentRecipients(): string[] {
+    const csv = (process.env.ZAHTEVI_COMMENT_MAILS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.includes("@"));
+    return csv.length > 0
+      ? Array.from(new Set(csv))
+      : ["nenad.jarakovic@servoteh.com"];
+  }
+
+  /**
    * Primaoci admin obaveštenja (§9, presuda 24.07). `ZAHTEVI_ADMIN_MAILS` (CSV), kad je
    * postavljen, je AUTORITATIVNA „to" lista (override, NE fallback) — bira ko prima ove
    * mejlove jer neki admini (Luka, Nevena) ne žele; `ZAHTEVI_ADMIN_CC` (CSV, opciono) → CC.
@@ -280,10 +351,15 @@ export class ZahteviMailService {
     }
   }
 
-  /** Prod link ka detalju zahteva (statička ruta `?id=` — §8). Baza iz SY15_APP_URL. */
+  /**
+   * Prod link ka detalju zahteva (statička ruta `?id=` — §8). Baza iz SY15_APP_URL.
+   * Fallback je `servosync2.servoteh.com` (03.08.2026): produkcioni front JESTE
+   * `servosync2` (docs/infra/INFRASTRUKTURA.md), a raniji fallback `servosync.servoteh.com`
+   * je vodio na 1.0 — mejl sa mrtvim linkom je isto što i mejl bez linka.
+   */
   private detailLink(requestId: number): string {
     const base = (
-      process.env.SY15_APP_URL || "https://servosync.servoteh.com"
+      process.env.SY15_APP_URL || "https://servosync2.servoteh.com"
     ).replace(/\/+$/, "");
     return `${base}/zahtevi/detalj?id=${requestId}`;
   }
@@ -297,10 +373,7 @@ export class ZahteviMailService {
     isResubmit: boolean;
   }): string {
     const esc = (s: string) =>
-      s
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const desc = p.description.slice(0, 600);
     const truncated = p.description.length > 600 ? "…" : "";
     const lead = p.isResubmit
@@ -321,6 +394,41 @@ export class ZahteviMailService {
       <p style="color:#666;font-size:13px;margin-top:16px">Ovo je automatska poruka sistema ServoSync (modul Zahtevi).</p>`;
   }
 
+  /**
+   * Telo obaveštenja o korisničkom komentaru — PUN tekst komentara (bez skraćivanja:
+   * poenta mejla je da se poruka pročita, a ne da se otvara aplikacija zbog ostatka).
+   */
+  private buildCommentHtml(p: {
+    reqNo: string;
+    title: string;
+    authorName: string;
+    body: string;
+    reason: "comment" | "reopen";
+    link: string;
+  }): string {
+    const esc = (s: string) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const lead =
+      p.reason === "reopen"
+        ? "Podnosilac je probao isporuku i javio da NE RADI — zahtev je vraćen u rad (status Podnet):"
+        : "Korisnik je napisao komentar na zahtev:";
+    return `
+      <p>${esc(lead)}</p>
+      <p style="margin:12px 0"><strong>${esc(p.reqNo)}</strong> — ${esc(
+        p.title,
+      )}</p>
+      <p style="margin:8px 0;color:#444"><strong>Autor:</strong> ${esc(
+        p.authorName,
+      )}</p>
+      <blockquote style="margin:12px 0;padding:8px 12px;border-left:3px solid #ccc;white-space:pre-wrap">${esc(
+        p.body,
+      )}</blockquote>
+      <p style="margin:16px 0"><a href="${esc(
+        p.link,
+      )}">Otvori zahtev u aplikaciji</a></p>
+      <p style="color:#666;font-size:13px;margin-top:16px">Ovo je automatska poruka sistema ServoSync (modul Zahtevi).</p>`;
+  }
+
   private buildHtml(p: {
     greeting: string;
     reqNo: string;
@@ -329,10 +437,7 @@ export class ZahteviMailService {
     note: string | null;
   }): string {
     const esc = (s: string) =>
-      s
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const noteBlock = p.note
       ? `<p style="margin:12px 0"><strong>Napomena:</strong><br/>${esc(
           p.note,
@@ -356,14 +461,10 @@ export class ZahteviMailService {
     total: string;
   }): string {
     const esc = (s: string) =>
-      s
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const list = p.items
       .map(
-        (it) =>
-          `<li><strong>${esc(it.reqNo)}</strong> — ${esc(it.title)}</li>`,
+        (it) => `<li><strong>${esc(it.reqNo)}</strong> — ${esc(it.title)}</li>`,
       )
       .join("");
     return `

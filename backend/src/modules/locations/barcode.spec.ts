@@ -124,6 +124,23 @@ describe("parseBigTehnBarcode — RNZ polje 5 alfanumeričko (revizija, ne PrnTi
     });
   });
 
+  // Prijava sa pogona 03.08.2026 (screenshot sa telefona): nalepnica
+  // `RNZ:10305:9811-5/121:0:B` — nalog i TP se popune, a „Broj crteža" ostane
+  // prazan. KOREN: RNZ format crtež UOPŠTE NE NOSI (`drawingNo` je uvek "") —
+  // crtež se dočitava iz baze (`lookupDrawing`), ne iz barkoda. Ovaj test
+  // fiksira i parsiranje i tu činjenicu o formatu.
+  it("prijava 03.08: RNZ:10305:9811-5/121:0:B → nalog 9811-5, TP 121, BEZ crteža", () => {
+    expect(parseBigTehnBarcode("RNZ:10305:9811-5/121:0:B")).toMatchObject({
+      orderNo: "9811-5",
+      itemRefId: "121",
+      drawingNo: "",
+      format: "rnz",
+      idrn: "10305",
+      varijanta: "0",
+      field4: "B",
+    });
+  });
+
   // `work_orders.revision` je slobodan tekst (VarChar(3), bez validacije skupa
   // znakova) — enkoder sme da otisne i „A-1"/„1.2". Da se kvar ne vrati tiho.
   it.each(["A-1", "1.2", "A_1", "v2"])(

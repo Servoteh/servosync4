@@ -450,11 +450,12 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       s as unknown as Sy15StorageService;
 
     const VEH = "3b241101-e2bb-4255-8caf-4136c566a970";
+    // Format presuđuje SADRŽAJ (`common/attachments`) — fixture nosi pravo JPEG zaglavlje.
     const imgFile = (over: Partial<Express.Multer.File> = {}) =>
       ({
         originalname: "vozilo.jpg",
         mimetype: "image/jpeg",
-        buffer: Buffer.from([1, 2, 3]),
+        buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]),
         ...over,
       }) as Express.Multer.File;
 
@@ -518,7 +519,7 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       expect(storage.upload).not.toHaveBeenCalled();
     });
 
-    it("upload: ne-slika mimetype → 422 pre ijednog upisa/storage poziva", async () => {
+    it("upload: PDF (magic bytes) → 422 pre ijednog upisa/storage poziva", async () => {
       const tx = makeTx({
         maintAsset: { findFirst: jest.fn() },
         maintDocument: { create: jest.fn() },
@@ -530,9 +531,45 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
         svc.uploadVehiclePhoto(
           "x@servoteh.com",
           VEH,
-          imgFile({ mimetype: "application/pdf" }),
+          // Karton vozila prikazuje foto kroz `<img>` — PDF nema gde da se vidi.
+          imgFile({
+            originalname: "saobracajna.pdf",
+            mimetype: "image/jpeg",
+            buffer: Buffer.from("%PDF-1.7\n", "latin1"),
+          }),
         ),
       ).rejects.toThrow(UnprocessableEntityException);
+      expect(storage.upload).not.toHaveBeenCalled();
+    });
+
+    it("🔴 upload: HEIC etiketiran kao image/jpeg → 422 (ranije je prolazio i ostajao nevidljiv)", async () => {
+      const tx = makeTx({
+        maintAsset: { findFirst: jest.fn() },
+        maintDocument: { create: jest.fn() },
+      });
+      const { sy15 } = makeSy15(tx);
+      const storage = makeStorage();
+      const svc = new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
+      let msg = "";
+      try {
+        await svc.uploadVehiclePhoto(
+          "x@servoteh.com",
+          VEH,
+          imgFile({
+            originalname: "IMG_0007.HEIC",
+            mimetype: "image/jpeg",
+            buffer: Buffer.concat([
+              Buffer.from([0x00, 0x00, 0x00, 0x18]),
+              Buffer.from("ftypheic", "latin1"),
+            ]),
+          }),
+        );
+      } catch (e) {
+        expect(e).toBeInstanceOf(UnprocessableEntityException);
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain("IMG_0007.HEIC");
+      expect(msg).toContain("HEIC");
       expect(storage.upload).not.toHaveBeenCalled();
     });
 
@@ -620,6 +657,83 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       expect(res.data.ok).toBe(true);
       expect(updateMany).not.toHaveBeenCalled();
       expect(storage.remove).not.toHaveBeenCalled();
+    });
+  });
+
+  // ------- Foto incidenta: format se presuđuje PRE ijednog bajta u bucketu -------
+  // Ranije ovde nije bilo NIKAKVE provere formata: sirov HEIC sa telefona odlazio je
+  // u bucket i ostajao trajno nevidljiv (prikaz je `<img>`). Sada validacija cele
+  // serije prethodi prvom upload-u → nema ni orphan fajlova ni nevidljivog dokaza.
+  describe("Foto incidenta (attachIncidentFiles) — validacija pre upload-a", () => {
+    const INC = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+    const makeStorage = () => ({
+      upload: jest.fn().mockResolvedValue(undefined),
+      signUrl: jest.fn(),
+      remove: jest.fn().mockResolvedValue(undefined),
+    });
+    const asStorage = (s: ReturnType<typeof makeStorage>) =>
+      s as unknown as Sy15StorageService;
+    const jpeg = (name = "kvar.jpg") =>
+      ({
+        originalname: name,
+        mimetype: "image/jpeg",
+        buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]),
+      }) as Express.Multer.File;
+    const heic = (name = "IMG_3311.HEIC") =>
+      ({
+        originalname: name,
+        mimetype: "image/jpeg", // klijent laže — presuđuje sadržaj
+        buffer: Buffer.concat([
+          Buffer.from([0x00, 0x00, 0x00, 0x18]),
+          Buffer.from("ftypheic", "latin1"),
+        ]),
+      }) as Express.Multer.File;
+
+    const svcWith = (storage: ReturnType<typeof makeStorage>) => {
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ ok: true }]),
+        maintIncident: {
+          findUnique: jest.fn().mockResolvedValue({ machineCode: "M-01" }),
+        },
+      });
+      const { sy15 } = makeSy15(tx);
+      return new OdrzavanjeService(sy15, asStorage(storage), notifyStub());
+    };
+
+    it("🔴 HEIC → 422 i NIJEDAN bajt ne ode u bucket", async () => {
+      const storage = makeStorage();
+      let msg = "";
+      try {
+        await svcWith(storage).attachIncidentFiles("x@servoteh.com", INC, [
+          heic(),
+        ]);
+      } catch (e) {
+        expect(e).toBeInstanceOf(UnprocessableEntityException);
+        msg = (e as Error).message;
+      }
+      expect(msg).toContain("IMG_3311.HEIC");
+      expect(storage.upload).not.toHaveBeenCalled();
+    });
+
+    it("🔴 jedan loš u seriji obara CELU seriju pre prvog upload-a", async () => {
+      const storage = makeStorage();
+      await expect(
+        svcWith(storage).attachIncidentFiles("x@servoteh.com", INC, [
+          jpeg("dobra.jpg"),
+          heic("losa.heic"),
+        ]),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(storage.upload).not.toHaveBeenCalled();
+    });
+
+    it("validne fotke → upload sa KANONSKIM content-type-om (ne klijentovim)", async () => {
+      const storage = makeStorage();
+      await svcWith(storage).attachIncidentFiles("x@servoteh.com", INC, [
+        jpeg(),
+      ]);
+      expect(storage.upload).toHaveBeenCalledTimes(1);
+      const call = storage.upload.mock.calls[0] as unknown[];
+      expect(call[3]).toBe("image/jpeg");
     });
   });
 

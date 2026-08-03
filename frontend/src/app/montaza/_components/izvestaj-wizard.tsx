@@ -6,7 +6,7 @@
 // → gotovo (retry fotki/PDF, otvori PDF). Deljena logika sa mobilnim (/mob/izvestaj) stiže u inc.5.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, Plus, X, Check, AlertTriangle, FileDown, RefreshCw, Search } from 'lucide-react';
+import { ArrowLeft, Camera, Plus, X, Check, AlertTriangle, FileDown, RefreshCw, Search } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui-kit/button';
 import { DictateButton, RefineButton } from '@/components/voice-controls';
@@ -14,6 +14,7 @@ import { cn } from '@/lib/cn';
 import { formatDmy, parseDmyToIso } from '@/lib/plan-montaze/date';
 import { IZVESTAJ_STATUS, IZVESTAJ_MAX_FOTKE } from '@/lib/plan-montaze/constants';
 import { downscaleImageToJpeg, type DownscaledPhoto } from '@/lib/plan-montaze/image';
+import { imageRejectionMessage } from '@/lib/image-resize';
 import { generateIzvestajPdf } from '@/lib/plan-montaze/izvestaj-pdf';
 import {
   newClientEventId,
@@ -155,6 +156,7 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
   const [progress, setProgress] = useState('');
   const izvId = useRef<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
 
   // Nacrt: postojeći se prvo PONUDI („Nastavi započeti izveštaj?"); dok korisnik ne
   // odluči, autosave nacrta je blokiran (draftGate) da ga ne pregazi prazan state.
@@ -225,7 +227,9 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
     if (!files.length) return;
     setAddingPhotos(true);
     setErr('');
-    let failed = 0;
+    // Pad je skoro uvek HEIC sa telefona van Safarija — poruka mora reći ŠTA da se uradi,
+    // ne samo da nije uspelo (v. lib/image-resize.ts).
+    const failures: string[] = [];
     const added: Photo[] = [];
     for (const f of files) {
       if (photos.length + added.length >= IZVESTAJ_MAX_FOTKE) break;
@@ -233,12 +237,18 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
         const ds = await downscaleImageToJpeg(f);
         added.push({ ...ds, opis: '' });
       } catch {
-        failed++;
+        failures.push(await imageRejectionMessage(f));
       }
     }
     setPhotos((p) => [...p, ...added]);
     setAddingPhotos(false);
-    if (failed) setErr(`${failed === 1 ? 'Jedna slika nije' : failed + ' slika nije'} učitana.`);
+    if (failures.length) {
+      setErr(
+        failures.length === 1
+          ? failures[0]
+          : `${failures.length} slika nije učitano. ${failures[0]}`,
+      );
+    }
   }
 
   async function generate() {
@@ -495,17 +505,43 @@ export function IzvestajWizard({ onClose }: { onClose: () => void }) {
                 </div>
               ))}
               {photos.length < IZVESTAJ_MAX_FOTKE && (
-                <button
-                  type="button"
-                  disabled={addingPhotos}
-                  onClick={() => fileRef.current?.click()}
-                  className="grid h-20 w-20 place-items-center rounded-control border border-dashed border-line text-ink-secondary hover:bg-surface-2 disabled:opacity-50"
-                >
-                  {addingPhotos ? '…' : <Plus className="h-5 w-5" aria-hidden />}
-                </button>
+                <>
+                  {/* Kamera je na montaži primarni tok (/mob/izvestaj) — ranije je postojao
+                      samo izbor iz galerije, pa je monter morao prvo da izađe iz aplikacije. */}
+                  <button
+                    type="button"
+                    disabled={addingPhotos}
+                    onClick={() => cameraRef.current?.click()}
+                    className="grid h-20 w-20 place-items-center gap-1 rounded-control border border-dashed border-line text-ink-secondary hover:bg-surface-2 active:bg-surface-2 disabled:opacity-50"
+                    aria-label="Slikaj fotografiju"
+                  >
+                    {addingPhotos ? '…' : (
+                      <>
+                        <Camera className="h-5 w-5" aria-hidden />
+                        <span className="text-2xs">Slikaj</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={addingPhotos}
+                    onClick={() => fileRef.current?.click()}
+                    className="grid h-20 w-20 place-items-center gap-1 rounded-control border border-dashed border-line text-ink-secondary hover:bg-surface-2 active:bg-surface-2 disabled:opacity-50"
+                    aria-label="Dodaj sliku iz galerije"
+                  >
+                    {addingPhotos ? '…' : (
+                      <>
+                        <Plus className="h-5 w-5" aria-hidden />
+                        <span className="text-2xs">Iz galerije</span>
+                      </>
+                    )}
+                  </button>
+                </>
               )}
             </div>
-            <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
+            <input ref={cameraRef} type="file" accept="image/*" capture="environment" multiple hidden onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
+            {/* Bez `image/heic`: iOS pri izboru iz Galerije tada sam pretvara u JPEG. */}
+            <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
           </div>
           <Button onClick={generate} disabled={(!tekst.trim() && !photos.length) || addingPhotos}>
             Generiši izveštaj

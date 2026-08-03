@@ -48,7 +48,7 @@ export default function MobileEnergetikaPage() {
   const control = can(PERMISSIONS.ENERGETIKA_CONTROL) && COMMANDS_ENABLED;
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   useEffect(() => {

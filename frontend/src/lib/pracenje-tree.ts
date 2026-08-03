@@ -4,10 +4,22 @@
 
 import type { IzvestajRow } from '@/api/pracenje';
 
-/** Ključ efektivnog roditelja: ručni override ako postoji, inače BigTehn parent. */
+/**
+ * Ključ efektivnog roditelja = `parent_node_id` — JEDINI izvor istine (zahtev 053/26 §2).
+ * BE (`reparentNodes`) već razrešava ručni override u stablu i u `parent_node_id` vraća
+ * EFEKTIVNOG roditelja; `parent_override_rn_id` je samo sirov cilj iz baze i ume da bude
+ * odbijen (cilj van opsega „Opseg (sklop)" ili ciklus). Ranije je ova funkcija pretpostavljala
+ * override kad god je `has_parent_override`, pa je u opsegu po sklopu odlepljivala red na
+ * `__root__` (nivo 0) iako ga BE drži pod sklopom — FE i BE su se razilazili oko roditelja.
+ * Fallback na override postoji samo za payload bez `parent_node_id` (stari keširan odgovor).
+ */
 export function effParentKey(r: IzvestajRow): string | null {
-  const has = r.has_parent_override === true;
-  const p = has ? r.parent_override_rn_id : (r as { parent_node_id?: unknown }).parent_node_id;
+  const p =
+    r.parent_node_id !== undefined
+      ? r.parent_node_id
+      : r.has_parent_override === true
+        ? r.parent_override_rn_id
+        : null;
   return p !== null && p !== undefined ? String(p) : null;
 }
 
@@ -18,7 +30,8 @@ export interface ParentOverrideResult {
 
 /**
  * Primeni ručne override-e roditelja: re-sortiraj stablo i preračunaj nivo.
- * Bez ijednog override-a vraća originalni redosled (nula promene).
+ * Bez ijednog PRIMENJENOG override-a vraća originalni redosled (nula promene) — BE već
+ * isporučuje pre-order po lancu `sort_order`-a (zahtev 053/26 §2).
  */
 export function applyParentOverrides(rowsAll: IzvestajRow[] | null | undefined): ParentOverrideResult {
   const list = Array.isArray(rowsAll) ? rowsAll : [];
@@ -33,6 +46,17 @@ export function applyParentOverrides(rowsAll: IzvestajRow[] | null | undefined):
   const parentIds = new Set([...childrenOf.keys()].filter((k) => k !== '__root__'));
   const hadOverride = list.some((r) => r.has_parent_override === true);
   if (!hadOverride) return { rows: list, parentIds };
+
+  // Rekonstrukcija stabla ne sme da izgubi BE poredak braće: sortiraj po `sort_order`
+  // (rang po ident broju unutar sklopa), sa ulaznim indeksom kao stabilnim tie-break-om.
+  const idx = new Map(list.map((r, i) => [String(r.node_id), i] as const));
+  const ord = (r: IzvestajRow): number => {
+    const n = Number(r.sort_order);
+    return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+  };
+  for (const arr of childrenOf.values()) {
+    arr.sort((a, b) => ord(a) - ord(b) || (idx.get(String(a.node_id)) ?? 0) - (idx.get(String(b.node_id)) ?? 0));
+  }
 
   const out: IzvestajRow[] = [];
   const visited = new Set<string>();

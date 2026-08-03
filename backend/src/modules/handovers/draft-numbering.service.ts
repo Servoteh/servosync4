@@ -23,7 +23,7 @@ export class DraftNumberingService {
 
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${prefix}))`;
 
-    // Numerički MAX preko svih redova dana (obrazac iz `nextWorkOrderIdent`),
+    // Numerički MAX preko svih redova dana (obrazac iz WorkOrderNumberingService),
     // NE `orderBy draftNumber desc` string sort: leksikografski je '999' >
     // '1000' pa bi se od 1000. nacrta u danu isti seq dodeljivao iznova
     // (draft_number nema unique constraint → tihi duplikati).

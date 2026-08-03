@@ -19,6 +19,7 @@ import {
   installAutoFlush,
   subscribeQueue,
 } from '@/lib/offlineQueue';
+import { MobPermissionsError } from '../_components/mob-refresh';
 
 /**
  * MOBILNO premeštanje delova (paritet 1.0 „SERVOTEH MAGACIN") — skeniraj deo →
@@ -71,7 +72,7 @@ export default function MobLokacijePage() {
   }, []);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Čekaj i dozvole (permissionsPending): can() je fail-closed dok permsQuery ne
@@ -86,11 +87,7 @@ export default function MobLokacijePage() {
 
   // Pad učitavanja dozvola (retry:false — ostaje za sesiju) ≠ stvarna zabrana.
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
 
   if (!can(PERMISSIONS.LOKACIJE_READ)) {
@@ -129,6 +126,10 @@ export default function MobLokacijePage() {
         orderNo: r.parsed.orderNo,
         itemRefId: r.parsed.itemRefId,
         drawingNo: r.parsed.drawingNo || undefined,
+        // Sirov barkod + varijanta → banner „Skenirano: …" i lookup crteža u
+        // dijalogu (RNZ crtež NE NOSI — dočitava se iz baze po (nalog, TP)).
+        raw: r.parsed.raw,
+        varijanta: r.parsed.varijanta,
         fromLocationId,
         // Deo bez ijednog stvarnog smeštaja → prvo zaduženje; inače premeštanje.
         movementType: r.records.length > 0 ? 'TRANSFER' : 'INITIAL_PLACEMENT',

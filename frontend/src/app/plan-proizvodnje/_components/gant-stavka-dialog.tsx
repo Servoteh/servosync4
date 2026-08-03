@@ -14,16 +14,15 @@ import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { ComboBox } from '@/components/ui-kit/combo-box';
 import { cn } from '@/lib/cn';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatDateTime } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
+  addMinutesLocal,
   effectiveMinutes,
-  isoDay,
-  keepIfSameDay,
+  isoLocalMinute,
+  keepIfSameMinute,
   readyReason,
   technologyMinutes,
-  toIsoAtDayEnd,
-  toIsoAtWorkStart,
 } from './gant-utils';
 
 /**
@@ -34,7 +33,18 @@ import {
  * Gore su AUTO podaci iz tehnologije/RN-a (samo za čitanje): naziv pozicije, količina,
  * crtež, RN, predmet (sklop), faza obrade. Dole su POLJA koja planer menja: mašina,
  * početak, kraj, trajanje (override), „uslov" (predecessor) i ručni override završenosti.
- * Spremnost je prikaz (DA zeleno / NE crveno + razlog) — kanon presuđuje backend.
+ * Spremnost je prikaz (DA zeleno / NE crveno + razlog) — kanon presuđuje backend —
+ * plus RUČNI override „fizički znamo da je spremna" (Paket B; postojeći `ready_override`
+ * mehanizam, isti kao „SPREMNO (override)" u tabu „Po mašini").
+ *
+ * Termini su na MINUT (datum + sati:minuti, `datetime-local`) i sinhronizovani
+ * (Strahinjine primedbe 1 i 2). Pravilo:
+ *   • izmena POČETKA ili TRAJANJA odmah preračuna KRAJ (kraj = početak + trajanje;
+ *     trajanje = kucani override, inače tehnologija TPZ + TK × kom);
+ *   • ručno kucan KRAJ važi doslovno — trajanje se NE preračunava iz raspona (bar sme
+ *     preko vikenda/zastoja: raspon ≠ radni minuti) — dok sledeća izmena početka ili
+ *     trajanja ponovo ne izračuna kraj;
+ *   • prazan KRAJ se pri snimanju izvede iz početka + trajanja (isto pravilo).
  */
 export function GantStavkaDialog({
   open,
@@ -64,8 +74,8 @@ export function GantStavkaDialog({
 
   useEffect(() => {
     const r = rowRef.current;
-    setStart(r.planned_start_at ? isoDay(new Date(r.planned_start_at)) : '');
-    setEnd(r.planned_end_at ? isoDay(new Date(r.planned_end_at)) : '');
+    setStart(r.planned_start_at ? isoLocalMinute(new Date(r.planned_start_at)) : '');
+    setEnd(r.planned_end_at ? isoLocalMinute(new Date(r.planned_end_at)) : '');
     setDur(r.planned_duration_minutes != null ? String(r.planned_duration_minutes) : '');
     setMachine(r.effective_machine_code ?? '');
     setPred(null);
@@ -90,17 +100,46 @@ export function GantStavkaDialog({
   const ready = row.is_ready_for_machine === true;
   const done = row.is_completed_effective === true;
   const overrideDone = row.planned_done !== null && row.planned_done !== undefined;
+  const manualReady = row.is_ready_manual === true;
+  // Izračunata spremnost BEZ override-a (FE ogledalo BE `is_ready_rb` laterala): nema
+  // prethodne blokirajuće operacije = 'none' (prva) ili 'completed' (sve otkucane).
+  const computedReady =
+    row.previous_operation_status === 'none' || row.previous_operation_status === 'completed';
 
   /**
-   * Snimanje termina. Kraj je TAČNO ono što je planer uneo (dan koji je ukucao), a
-   * trajanje se dodaje na početak SAMO kad je polje kraja prazno. Trajanje se nikad ne
-   * sabira sa kucanim krajem — to je pravilo koje čini snimanje IDEMPOTENTNIM: otvaranje
-   * dijaloga i „Sačuvaj termin" bez ijedne izmene daje identičan interval (ranije je
-   * svako snimanje guralo kraj za po jedan dan, pa je plan tiho odlazio unapred).
+   * Minuti za pravilo „kraj = početak + trajanje": kucani override → tehnologija →
+   * 24 h (stavka bez tehnologije mora imati vidljiv bar; isti fallback kao `barEnd`).
+   * Namerno NE gleda zatečeni override iz baze kad je polje ispražnjeno — prazno
+   * polje znači „vrati na tehnologiju", pa i auto-kraj mora da prati tehnologiju.
+   */
+  function liveMinutes(durStr: string): number {
+    const n = Number(durStr.trim());
+    if (durStr.trim() !== '' && Number.isFinite(n) && n >= 1) return Math.round(n);
+    return tech > 0 ? tech : 24 * 60;
+  }
+
+  /** Izmena početka AUTOMATSKI preračuna kraj (Strahinjina primedba 2). */
+  function changeStart(v: string) {
+    setStart(v);
+    if (v) setEnd(addMinutesLocal(v, liveMinutes(dur)));
+  }
+
+  /** Izmena trajanja AUTOMATSKI preračuna kraj (kraj = početak + trajanje). */
+  function changeDur(v: string) {
+    setDur(v);
+    if (start) setEnd(addMinutesLocal(start, liveMinutes(v)));
+  }
+
+  /**
+   * Snimanje termina (minutna granularnost). Kraj je TAČNO ono što stoji u polju —
+   * auto-izračunat ili ručno kucan; trajanje se dodaje na početak SAMO kad je polje
+   * kraja prazno. Nepromenjen minut zadržava zatečene sekunde (`keepIfSameMinute`),
+   * pa je snimanje IDEMPOTENTNO: otvaranje dijaloga i „Sačuvaj termin" bez ijedne
+   * izmene daje identičan interval (nasleđeni dan-kanon krajevi 23:59:59.999 prežive).
    */
   function saveTermini() {
     if (!start) {
-      toast('⚠ Zadaj planirani početak.');
+      toast('⚠ Zadaj planirani početak (datum i vreme).');
       return;
     }
     const durNum = dur.trim() === '' ? null : Number(dur.trim());
@@ -108,26 +147,18 @@ export function GantStavkaDialog({
       toast('⚠ Trajanje mora biti broj minuta veći od 0.');
       return;
     }
-    // Dan-nivo provera (polja su `input[type=date]`, pa 'yyyy-MM-dd' poredi leksikografski).
-    if (end && end < start) {
-      toast('⚠ Kraj ne može biti pre početka — ispravi datum kraja (ili ga isprazni).');
-      return;
-    }
-    // Nepromenjen dan zadržava zatečeni sat (drag/resize satnica preživljava snimanje);
-    // promenjen dan dobija kanonski sat: početak = 07:00, kraj = kraj tog dana.
-    const startIso = keepIfSameDay(row.planned_start_at, start) ?? toIsoAtWorkStart(start);
+    const startIso = keepIfSameMinute(row.planned_start_at, start) ?? new Date(start).toISOString();
     const startMs = new Date(startIso).getTime();
     let endIso: string;
     if (end) {
-      const kept = keepIfSameDay(row.planned_end_at, end);
-      // Zatečen sat se odbacuje ako bi dao naopak interval (nasleđen loš podatak).
-      endIso = kept && new Date(kept).getTime() >= startMs ? kept : toIsoAtDayEnd(end);
+      const kept = keepIfSameMinute(row.planned_end_at, end);
+      // Zatečene sekunde se odbacuju ako bi dale naopak interval (nasleđen loš podatak).
+      endIso = kept && new Date(kept).getTime() >= startMs ? kept : new Date(end).toISOString();
     } else {
-      const min = durNum ?? (eff > 0 ? eff : 24 * 60);
-      endIso = new Date(startMs + min * 60_000).toISOString();
+      endIso = new Date(startMs + liveMinutes(dur) * 60_000).toISOString();
     }
     if (new Date(endIso).getTime() < startMs) {
-      toast('⚠ Kraj ne može biti pre početka — ispravi datume.');
+      toast('⚠ Kraj ne može biti pre početka — ispravi datum/vreme kraja (ili ga isprazni).');
       return;
     }
     save.mutate(
@@ -196,6 +227,17 @@ export function GantStavkaDialog({
     save.mutate({ workOrderId: row.work_order_id, lineId: row.line_id, plannedDone: checked });
   }
 
+  /**
+   * Ručni override spremnosti (Strahinjin komentar uz 046/26): „DA" i kad prethodne
+   * operacije nisu otkucane — fizički znamo da je pozicija spremna. POSTOJEĆI
+   * `ready_override` mehanizam (isti kao „SPREMNO (override)" u tabu „Po mašini");
+   * BE pečatira ko/kada, a `is_ready_for_machine = override OR izračunato`, pa boja
+   * bara na gantu reaguje bez ijedne izmene canvas-a. Skidanje vraća izračunato.
+   */
+  function toggleReadyOverride(checked: boolean) {
+    save.mutate({ workOrderId: row.work_order_id, lineId: row.line_id, readyOverride: checked });
+  }
+
   return (
     <Dialog
       open={open}
@@ -241,18 +283,42 @@ export function GantStavkaDialog({
           <Fact label="Ručni redosled smene" value={row.shift_sort_order != null ? `#${row.shift_sort_order}` : 'auto'} />
         </div>
 
-        {/* ── Spremnost (prikaz; kanon je BE) ── */}
+        {/* ── Spremnost (prikaz; kanon je BE) + ručni override (Paket B) ── */}
         <div
           className={cn(
-            'flex items-center gap-2 rounded-panel border px-3 py-2 text-sm',
+            'rounded-panel border px-3 py-2 text-sm',
             ready
-              ? 'border-status-success/40 bg-status-success-bg text-status-success'
-              : 'border-status-danger/40 bg-status-danger-bg text-status-danger',
+              ? 'border-status-success/40 bg-status-success-bg'
+              : 'border-status-danger/40 bg-status-danger-bg',
           )}
         >
-          <span className="font-semibold">Spremnost: {ready ? 'DA' : 'NE'}</span>
-          <span className="text-ink-secondary">· {readyReason(row)}</span>
-          {row.is_urgent ? <span className="ml-auto font-semibold">HITNO</span> : null}
+          <div className={cn('flex items-center gap-2', ready ? 'text-status-success' : 'text-status-danger')}>
+            <span className="font-semibold">Spremnost: {ready ? 'DA' : 'NE'}</span>
+            <span className="text-ink-secondary">· {readyReason(row)}</span>
+            {row.is_urgent ? <span className="ml-auto font-semibold">HITNO</span> : null}
+          </div>
+          <label className="mt-1.5 flex items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={manualReady}
+              onChange={(e) => toggleReadyOverride(e.target.checked)}
+            />
+            Označi kao spremno (ručno)
+          </label>
+          <p className="mt-0.5 text-2xs text-ink-secondary">
+            {manualReady ? (
+              <>
+                Ručni override
+                {row.ready_override_by ? ` · ${row.ready_override_by}` : ''}
+                {row.ready_override_at ? ` · ${formatDateTime(row.ready_override_at)}` : ''} — izračunato
+                (bez override-a): {computedReady ? 'DA' : 'NE'} ·{' '}
+                {readyReason({ ...row, is_ready_for_machine: computedReady, is_ready_manual: false })}. Skidanje
+                override-a vraća izračunato.
+              </>
+            ) : (
+              <>Izračunato iz prethodnih operacija. Štikliraj kad je pozicija fizički spremna, a sistem to još ne vidi.</>
+            )}
+          </p>
         </div>
 
         {/* ── Polja ── */}
@@ -281,33 +347,38 @@ export function GantStavkaDialog({
               type="number"
               min={1}
               value={dur}
-              onChange={(e) => setDur(e.target.value)}
+              onChange={(e) => changeDur(e.target.value)}
               placeholder={String(tech || '')}
               className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink tnums"
             />
             <p className="mt-1 text-2xs text-ink-disabled">
-              Prazno = iz tehnologije ({tech} min). Trenutno u primeni: {eff} min.
+              Prazno = iz tehnologije ({tech} min). Trenutno u primeni: {eff} min. Izmena odmah preračunava
+              planirani kraj.
             </p>
           </Field>
 
           <Field label="Planirani početak">
             <input
-              type="date"
+              type="datetime-local"
               value={start}
-              onChange={(e) => setStart(e.target.value)}
+              onChange={(e) => changeStart(e.target.value)}
               className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
             />
+            <p className="mt-1 text-2xs text-ink-disabled">
+              Datum i vreme (sati:minuti). Izmena pomera kraj: kraj = početak + trajanje.
+            </p>
           </Field>
 
           <Field label="Planirani kraj">
             <input
-              type="date"
+              type="datetime-local"
               value={end}
               onChange={(e) => setEnd(e.target.value)}
               className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
             />
             <p className="mt-1 text-2xs text-ink-disabled">
-              Zaključno sa tim danom. Prazno = izvedeno iz početka + trajanja.
+              Automatski: početak + trajanje (i preko ponoći). Ručno kucan kraj važi doslovno — dok ponovo ne
+              promeniš početak ili trajanje. Prazno = izračunato pri snimanju.
             </p>
           </Field>
 

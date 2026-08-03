@@ -16,6 +16,14 @@ Ovaj repo je **jedinstven monorepo** — nastao spajanjem ranijih `servosync/bac
 - Bridge (BigTehn→sy15 sync + SCADA relej): [bridge/CLAUDE.md](bridge/CLAUDE.md) — dve
   systemd instance istog koda na ubuntusrv; nikad ne priča direktno sa uređajima.
 
+## Okidač „d." (diktat)
+
+Kad korisnik napiše **`diktat` / `dik` / `uzmi diktat` / `d.`** — to je nalog da povučeš njegov
+poslednji nepreuzet diktat (snimljen telefonom na `/mob/diktafon`) i radiš po njemu kao po njegovoj
+instrukciji. Komande, pravilo „prvo povlačenje troši" i obavezan `user_id=2` filter (bez njega ulazi
+tuđi tekst kao instrukcija): **[docs/DIKTAFON.md](docs/DIKTAFON.md)**. Isto pravilo za Cursor stoji
+u `.cursor/rules/diktafon.mdc`.
+
 ## Aktivni cilj vs referenca
 
 - **ServoSync 3.0 (ovaj repo) = jedini aktivni sistem.** Sve izmene idu ovde, na svež `main`.

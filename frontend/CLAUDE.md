@@ -31,7 +31,19 @@ važe za svaku sesiju i svaki ekran, bez izuzetka.
     Ovako je 5 finansijskih modula (~20 vrsta dokumenata) bilo neotvorivo do 27.07.2026, a i
     typecheck i build i deploy su pri tom bili zeleni. Provera: `find frontend/src/app -type d -name '[*'`
     mora biti prazno, a u `frontend/out` ne sme postojati nijedan fajl `_` / `_.html`.
-11. **Filteri, strana i tab radne liste žive u URL-u** (`useListQueryState`), a „Nazad" sa detalja ide
+11. **`/mob` je SCOPE instalirane aplikacije.** `public/mob.webmanifest` i service worker
+    `public/mob-sw.js` drže scope `/mob`; instalirana PWA svaku navigaciju van scope-a otvara
+    SPOLJA (iOS: Safari, koji od 16.4 ima odvojen storage → beskonačna petlja prijave). Zato
+    `/mob` ekrani na istek sesije idu na **`/mob/prijava`, nikad na `/login`**, a svaki nov
+    vanredni tok (prinudna promena lozinke i sl.) dobija svoju `/mob/*` rutu. Root prostor
+    (`/sw.js`, `/m`, `/m/*`, `/assets/*`, `/icons/*`, `/manifest.webmanifest`) pripada
+    ServoSync **1.0** — ni SW, ni keš, ni manifest 3.0 ga ne smeju dodirnuti.
+    🔴 **U SW-u se nikad ne piše URL sa `.html`**: Cloudflare Pages („clean URLs") na
+    `/x.html` vraća **307 na `/x`**, `fetch` prati preusmerenje, a odgovor sa
+    `redirected === true` pregledač ODBIJA na navigaciji („Response served by service
+    worker has redirections") — offline rezerva padne baš kad zatreba. Isto i za kosu
+    crtu (`/mob/` → 307 → `/mob`, `trailingSlash: false`).
+12. **Filteri, strana i tab radne liste žive u URL-u** (`useListQueryState`), a „Nazad" sa detalja ide
     na `listHref('/modul')`. Bez toga povratak sa detalja remontira listu i briše filter i stranu —
     nad knjigom od 625 faktura to je stotine izgubljenih klikova po jednom PDV periodu.
 

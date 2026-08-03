@@ -156,8 +156,13 @@ export interface CardOperation {
   firstEnteredAt: string;
   /** Max finishedAt grupe (ISO); null ako nijedan red nije završen. */
   lastFinishedAt: string | null;
-  /** Σ (finishedAt−enteredAt) u minutima; null dok nijedan red grupe nema oba vremena. */
+  /**
+   * Σ (finishedAt−enteredAt) u minutima, SAMO za prijave koje liče na rad
+   * (1 min ≤ Δ ≤ 24 h — 036/26); null dok nijedan red grupe ne prođe prag.
+   */
   elapsedMinutes: number | null;
+  /** Zatvoreni redovi grupe izuzeti iz vremena. Stariji backend polje ne vraća. */
+  excludedRowCount?: number;
 }
 
 /**
@@ -196,8 +201,17 @@ export interface TechProcessCard {
     piecesByQuality: { good: number; rework: number; scrap: number };
     /** Ukupan broj redova (kucanja) — stara semantika operationCount-a. */
     entryCount: number;
-    /** Izvedeno (entered→finished); null ako nijedna operacija nije završena. */
+    /**
+     * Izvedeno (entered→finished) uz higijenski prag 036/26: sabiraju se samo
+     * prijave od 1 min do 24 h — jedna zaboravljena prijava (270 h) je inače
+     * pravila „275 h" na delu na kom se radilo ~4 h 50 min.
+     * null ako nijedna prijava ne prođe prag.
+     */
     totalElapsedMinutes: number | null;
+    /** Nefiltrirani zbir — dijagnostika „gde je nestalo vreme". Opciono. */
+    totalElapsedMinutesRaw?: number | null;
+    /** Broj zatvorenih prijava izuzetih iz zbira (< 1 min ili > 24 h). Opciono. */
+    excludedRowCount?: number;
   };
   /** Agregati po operaciji, redosled pojavljivanja (OP asc, id asc). */
   operations: CardOperation[];
@@ -342,8 +356,11 @@ export interface WorkerPerformance {
   finishedCount: number;
   totalPieces: number;
   piecesByQuality: { good: number; rework: number; scrap: number };
+  /** Isti higijenski prag kao kartica RN-a (1 min ≤ Δ ≤ 24 h, 036/26). */
   totalElapsedSeconds: number;
   totalElapsedMinutes: number;
+  /** Prijave radnika izuzete iz vremena (< 1 min ili > 24 h). Opciono. */
+  excludedRowCount?: number;
 }
 
 export interface WorkerPerformanceResponse {
@@ -381,11 +398,12 @@ export interface RnProgress {
   workerId: number;
   worker: WorkerRef | null;
   plannedPieces: number;
-  madeGoodPieces: number;
   /**
-   * Čime je gotovost izmerena (036/26): završnom kontrolom naloga, a ako je ruting
-   * nema — uskim grlom (najslabijom operacijom). Nikad „bilo kojom operacijom".
+   * OVERENO napravljeno (036/26): završnom kontrolom naloga, a ako je ruting nema —
+   * uskim grlom (najslabijom operacijom). Nikad „bilo kojom operacijom". Ovo NIJE
+   * isto što i `completionPercent` — v. `completionSource`.
    */
+  madeGoodPieces: number;
   madeGoodSource: 'zavrsna-kontrola' | 'usko-grlo' | 'nema-rutinga';
   /** Broj redova kucanja (ne operacija) — istorijska semantika, ostavljena netaknuta. */
   operationCount: number;
@@ -394,8 +412,20 @@ export interface RnProgress {
   routingOperationCount: number;
   /** Koliko tih operacija je otkucano u punoj planiranoj količini. */
   routingOperationsCompleted: number;
-  /** null kada planirano = 0 (nedefinisan procenat). */
+  /**
+   * KOLIKO JE POSLA URAĐENO (036/26) = veći od dva broja: napredak kroz ruting
+   * (prosek urađenog po operacijama — deo sa 8 od 14 otkucanih je 61%, ne 0% ni
+   * 100%) i overa sa završne kontrole (overen nalog je 100% i kad međufaze nikad
+   * nisu kucane — legacy). null kada planirano = 0 (nedefinisan procenat).
+   */
   completionPercent: number | null;
+  /**
+   * Koja je strana dala procenat: `ruting` (put kroz operacije) ili
+   * `zavrsna-kontrola` (overa je veća — tipično legacy nalog bez kucanih međufaza).
+   * Opciono/defanzivno: stariji backend polje ne vraća.
+   */
+  completionSource?: 'ruting' | 'zavrsna-kontrola';
+  /** OVERA gotovosti (završna kontrola) — NIJE izvedeno iz `completionPercent`. */
   isCompleted: boolean;
   /**
    * Datum realizacije RN-a (zahtev 023/26): poslednji DOBAR završetak =

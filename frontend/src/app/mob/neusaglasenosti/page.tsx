@@ -12,6 +12,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { PrijavaNeusaglasenostiDialog } from '../../montaza/_components/prijava-neusaglasenosti-dialog';
+import { MobPermissionsError } from '../_components/mob-refresh';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -21,7 +22,7 @@ export default function MobileNeusaglasenostiPage() {
   const router = useRouter();
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Čekaj i dozvole: can() je fail-closed dok permsQuery ne stigne, pa bi ovlašćen
@@ -36,11 +37,7 @@ export default function MobileNeusaglasenostiPage() {
 
   // Pad učitavanja dozvola (retry:false — ostaje za sesiju) ≠ stvarna zabrana.
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
 
   if (!can(PERMISSIONS.MONTAZA_NEUSAGLASENOSTI_WRITE)) {

@@ -222,6 +222,10 @@ export interface GanttRow {
   predecessor_line: string | null;
   is_ready_for_machine: boolean | null;
   is_ready_manual: boolean | null;
+  // ── Pečat ručnog override-a spremnosti (046/26 Paket B — dijalog prikazuje ko/kada).
+  //    Opciona (`?:`) da FE preživi i stariji BE odgovor bez ovih kolona.
+  ready_override_at?: string | null;
+  ready_override_by?: string | null;
   previous_operation_status: string | null;
   previous_operation_operacija: number | string | null;
   previous_operation_machine_code: string | null;
@@ -234,6 +238,13 @@ export interface GanttRow {
   customer_short: string | null;
   customer_name: string | null;
   is_done_in_bigtehn: boolean | null;
+  // ── Picker status polja (046/26-A4, `scope=sve` pretraga) — opciona (`?:`) da FE
+  //    preživi i stariji BE odgovor bez ovih kolona (CF frontend deploy je nezavisan).
+  rn_zavrsen?: boolean | null;
+  is_cooperation_effective?: boolean | null;
+  overlay_archived_at?: string | null;
+  /** RN prošao završnu kontrolu (M6) — scope=sve skida EFF_FILTER pa FE mora razlog. */
+  plan_rn_final_control_done?: boolean | null;
   [k: string]: unknown;
 }
 
@@ -388,6 +399,25 @@ export function useGantt(filters: { hall?: string; machine?: string; q?: string 
     queryFn: () =>
       apiFetch<{ data: GanttRow[]; meta: { limit: number; truncated: boolean } }>(
         `${BASE}/gantt${qs({ hall: filters.hall, machine: filters.machine, q: term || undefined })}`,
+      ),
+  });
+}
+
+/**
+ * Server-side pretraga za picker „Dodaj na plan" (046/26-A4). Gant feed je trunciran na
+ * 5000 redova (prod: 16.394 kandidata) i sužen aktivnim filterima taba, pa je klijentska
+ * pretraga tiho promašivala otvorene operacije. `scope=sve` traži po CELOJ bazi i vraća
+ * i završene/zatvorene/kooperaciju — picker ih prikazuje sa razlogom umesto da ih krije.
+ * Ključ počinje sa KEYS.gantt da optimistički patch `useGanttOverlay` pogodi i ovaj keš.
+ */
+export function useGanttSearchAll(q: string) {
+  const term = q.trim();
+  return useQuery({
+    queryKey: [...KEYS.gantt, 'sve', term],
+    enabled: term.length >= 2,
+    queryFn: () =>
+      apiFetch<{ data: GanttRow[]; meta: { limit: number; truncated: boolean } }>(
+        `${BASE}/gantt${qs({ q: term, scope: 'sve' })}`,
       ),
   });
 }
@@ -620,6 +650,15 @@ export const useGanttOverlay = (msgs?: {
             // ovog koraka klik izgleda mrtvo dok ne prođe mrežni krug.
             if (v.plannedDone !== undefined) {
               next.is_completed_effective = v.plannedDone ?? r.is_done_in_bigtehn ?? false;
+            }
+            // `is_ready_for_machine` je takođe BE izvedeno (override OR prethodne
+            // operacije završene) — bedž spremnosti i boja bara moraju da reaguju odmah.
+            // Izračunata grana = FE ogledalo `is_ready_rb`: 'none' | 'completed'.
+            if (v.readyOverride !== undefined) {
+              next.is_ready_for_machine =
+                v.readyOverride ||
+                r.previous_operation_status === 'none' ||
+                r.previous_operation_status === 'completed';
             }
             return next;
           }),

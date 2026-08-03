@@ -15,6 +15,7 @@ import {
   useLiveAttendance,
   type StatusFilter,
 } from '@/app/kadrovska/_components/prisustvo/live-rows';
+import { MobPermissionsError } from '../_components/mob-refresh';
 
 /**
  * MOBILNO „Prisustvo uživo" (zahtev 019/26, Miljan Nikodijević) — ko je trenutno
@@ -63,7 +64,7 @@ export default function MobPrisustvoPage() {
   const live = useLiveAttendance(allowed);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Čekaj i dozvole (permissionsPending): can() je fail-closed dok permsQuery ne
@@ -78,11 +79,7 @@ export default function MobPrisustvoPage() {
 
   // Pad učitavanja dozvola (retry:false — ostaje za sesiju) ≠ stvarna zabrana.
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
 
   if (!allowed) {

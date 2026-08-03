@@ -297,16 +297,11 @@ describe("WorkOrdersService (workflow)", () => {
 
       expect(launchNotify.notifyLaunch).toHaveBeenCalledTimes(1);
       expect(launchNotify.notifyLaunch).toHaveBeenCalledWith({
-        workOrder: {
-          id: 7,
-          identNumber: "P100/7",
-          variant: 0,
-          projectId: 3,
-          drawingNumber: "D-10",
-          pieceCount: 4,
-        },
+        // 016/26 treći krug: prosleđuje se samo id — podatke za zbirni mejl
+        // LaunchNotifyService dočitava iz baze pri flush-u (agregacija talasa).
+        workOrderId: 7,
         handoverId: 5,
-        // Ključ idempotencije = id upravo kreiranog work_order_launches reda.
+        // Launch red id je audit u claim redu (idempotencija je po primopredaji).
         launchId: 900,
         actorWorkerId: 77,
         source: "work_order",

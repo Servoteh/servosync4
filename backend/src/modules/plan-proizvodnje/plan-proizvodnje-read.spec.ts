@@ -224,6 +224,60 @@ describe("gant feed (046/26)", () => {
     expect(calls[0].sql).not.toContain("Hala 1");
   });
 
+  // 046/26-A4: picker pretraga mimo LIMIT 5000 truncation-a (prod: 16.394 kandidata).
+  it("gantt(scope='sve') skida open-ops filter i sortira po RN + operaciji", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com", { q: "1083492", scope: "sve" });
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).not.toContain("OR planned_start_at IS NOT NULL");
+    expect(sql).toContain("ORDER BY rn_ident_broj ASC, operacija ASC");
+    expect(calls[0].values).toEqual(expect.arrayContaining(["%1083492%"]));
+  });
+
+  it("gantt(scope='sve') bez q od bar 2 znaka → 400 (zaštita od full-dump pretrage)", async () => {
+    const { svc } = makeGanttSvc();
+    await expect(
+      svc.gantt("pm@servoteh.com", { scope: "sve", q: "1" }),
+    ).rejects.toThrow("scope=sve");
+    await expect(svc.gantt("pm@servoteh.com", { scope: "sve" })).rejects.toThrow(
+      "scope=sve",
+    );
+  });
+
+  it("gantt bez scope zadržava open-ops granu (postojeći feed netaknut)", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com", { q: "1083492" });
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain("OR planned_start_at IS NOT NULL");
+    expect(sql).toContain("ORDER BY hall ASC NULLS LAST");
+  });
+
+  it("gant kolone nose picker status polja (rn_zavrsen/kooperacija/arhiva/završna kontrola) — A4", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com", { q: "1083492", scope: "sve" });
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain("rn_zavrsen");
+    expect(sql).toContain("is_cooperation_effective");
+    expect(sql).toContain("overlay_archived_at");
+    // scope=sve skida i EFF_FILTER — bez ove kolone FE ne ume da objasni ZAŠTO
+    // RN kroz završnu kontrolu (M6) nije za dodavanje i nudio bi živ „Dodaj"
+    // (izmereno na produ 03.08.2026: 537 takvih operacija).
+    const selectCols = sql.slice(0, sql.indexOf(" FROM "));
+    expect(selectCols).toContain("plan_rn_final_control_done");
+  });
+
+  // Paket B: dijalog stavke prikazuje KO/KADA je ručno označio spremnost — pečat
+  // mora da izađe kroz gant feed (uz postojeći is_ready_manual flag).
+  it("gant kolone nose pečat ručnog override-a spremnosti (ko/kada) — Paket B", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com");
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    const selectCols = sql.slice(0, sql.indexOf(" FROM "));
+    expect(selectCols).toContain("is_ready_manual");
+    expect(selectCols).toContain("ready_override_at");
+    expect(selectCols).toContain("ready_override_by");
+  });
+
   it("machineHalls() vraća SVE mašine (LEFT JOIN šifrarnika), ne samo dodeljene", async () => {
     const { svc, calls } = makeGanttSvc();
     await svc.machineHalls("pm@servoteh.com");

@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
+import { assertPdfAttachment } from "../../common/attachments/attachment-format.util";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import type {
   JsonPayloadTxDto,
@@ -3096,11 +3097,8 @@ export class ReversiService {
   // greška progutana), ovde je upload deo odgovora: 4xx/5xx → klijent zna i ponovi.
 
   async uploadSignaturePdf(id: string, file?: Express.Multer.File) {
-    if (!file?.buffer?.length || file.mimetype !== "application/pdf") {
-      throw new UnprocessableEntityException(
-        "Očekivan PDF fajl (multipart polje `file`)",
-      );
-    }
+    // Magic bytes, ne `mimetype` iz zahteva (klijent ga laže) — `common/attachments`.
+    assertPdfAttachment(file);
     const doc = await this.sy15.db.revDocument.findUnique({ where: { id } });
     if (!doc) throw new NotFoundException(`Reversi dokument ${id} ne postoji`);
     const { base, key } = this.storageCfg();

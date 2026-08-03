@@ -39,8 +39,11 @@ export interface DailyRow {
   sessionCount: number;
   workerCount: number;
   pieces: number;
+  /** Zbir zatvorenih sesija uz prag prikaza (≤ 24 h — 036/26). */
   elapsedSeconds: number;
   elapsedMinutes: number;
+  /** Zatvorene sesije izuzete iz zbira (> 24 h / negativno trajanje). Opciono. */
+  excludedCount?: number;
   openCount: number;
 }
 export interface RangeMeta {

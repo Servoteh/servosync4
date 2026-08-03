@@ -2649,10 +2649,14 @@ model PracenjeOverride {
 /// App-owned (2.0, plan §3.2-2). Ručni re-parent pozicije/podsklopa u stablu praćenja
 /// (RN → parent RN). `parentWorkOrderId` null = koren (odlepljeno od auto-sastavnice).
 /// Zamena za sy15 `pracenje_parent_override`. Meki ref-ovi → work_orders (bez DB FK).
+/// ⚠️ Zahtev 053/26 paket 2: OBE kolone smeju da nose i NEGATIVAN id = virtuelni sklop
+/// (`PracenjeVirtuelniSklop.id` sa minusom) — dete može biti virtuelni sklop (sklop u
+/// sklopu), a roditelj virtuelni sklop (pozicija ubačena u ručno napravljen sklop).
 model PracenjeStructureOverride {
   id                Int      @id(map: "pk_pracenje_structure_overrides") @default(autoincrement()) @map("id")
+  /// work_orders.id, ILI -PracenjeVirtuelniSklop.id kad se premešta virtuelni sklop.
   workOrderId       Int      @map("work_order_id")
-  /// Ručno postavljen roditelj (work_orders.id); null = koren / odlepi od auto-hijerarhije.
+  /// Ručno postavljen roditelj (work_orders.id ili -virtuelni sklop); null = koren.
   parentWorkOrderId Int?     @map("parent_work_order_id")
   createdByUserId   Int?     @map("created_by_user_id")
   updatedByUserId   Int?     @map("updated_by_user_id")
@@ -2662,6 +2666,31 @@ model PracenjeStructureOverride {
   @@unique([workOrderId], map: "uq_pracenje_structure_overrides_work_order")
   @@index([parentWorkOrderId], map: "idx_pracenje_structure_overrides_parent")
   @@map("pracenje_structure_overrides")
+}
+
+/// App-owned (zahtev 053/26 paket 2). RUČNO napravljen sklop u tabeli praćenja — uključujući
+/// sklop koji NEMA radni nalog ni tehnologiju. NIJE red u `work_orders` (RN registar,
+/// numeracija i MRP ostaju netaknuti); to je overlay čvor stabla praćenja koji u API-ju
+/// nosi NEGATIVAN `node_id` (`id = 7` → `node_id = -7`, vidi `modules/pracenje/virtual-node.ts`).
+/// Deca se kače postojećim „Premesti u sklop" mehanizmom
+/// (`pracenje_structure_overrides.parent_work_order_id = -7`), pa se brisanjem sklopa ti
+/// override-i čiste u istoj transakciji i deca se vraćaju na automatsku strukturu.
+/// `projectId` je meki ref → projects.id (bez DB FK — isti obrazac kao ostatak modula).
+model PracenjeVirtuelniSklop {
+  id        Int       @id(map: "pk_pracenje_virtuelni_sklopovi") @default(autoincrement()) @map("id")
+  projectId Int       @map("project_id")
+  naziv     String    @map("naziv") @db.VarChar(200)
+  /// Tip sklopa (bedž na ekranu). Dozvoljeno: 'glavni' | 'pod' | 'zav'.
+  tip       String    @default("pod") @map("tip") @db.VarChar(10)
+  /// E-mail iz JWT-a (presedan `WorkOrderDrawingPdf.uploadedBy`).
+  createdBy String?   @map("created_by")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Soft-delete: obrisan sklop nestaje iz stabla, deca padaju na automatsku strukturu.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([projectId], map: "idx_pracenje_virtuelni_sklopovi_project")
+  @@map("pracenje_virtuelni_sklopovi")
 }
 
 /// App-owned (2.0, plan §3.2-3). Korisnička napomena po predmetu (projectId) i opciono po
@@ -2751,8 +2780,16 @@ model WorkOrderLaunchNotification {
   source            String    @map("source") @db.VarChar(20)
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   /// Stamped after the mail/bell actually went out — a row with NULL means the
-  /// claim was taken but delivery failed (visible hole, not a silent one).
+  /// claim was taken but delivery is still PENDING (aggregation window, 016/26
+  /// treći krug) or failed (visible hole, not a silent one).
   notifiedAt        DateTime? @map("notified_at") @db.Timestamptz(6)
+  /// 016/26 treći krug (Strahinja: „samo za nacrt, ne po pozicijama"): worker koji
+  /// je lansirao — KLJUČ AGREGACIJE talasa. Redovi istog aktera sa notified_at NULL
+  /// se šalju kao JEDAN zbirni mejl/zvonce kad talas utihne (sweeper u
+  /// LaunchNotifyService). Soft ref → workers.id; NULL = nalog bez vezanog radnika
+  /// ili red upisan pre uvođenja kolone. Partial indeks za pending redove je SQL-only
+  /// (Prisma ne ume WHERE indekse) — vidi migraciju 20260803153000.
+  actorWorkerId     Int?      @map("actor_worker_id")
 
   @@unique([drawingHandoverId], map: "uq_work_order_launch_notifications_handover")
   @@index([workOrderId], map: "idx_work_order_launch_notifications_work_order")
@@ -4946,7 +4983,7 @@ model ChangeRequestComment {
 model ChangeRequestEvent {
   id          Int      @id(map: "pk_change_request_events") @default(autoincrement()) @map("id")
   requestId   Int      @map("request_id")
-  type        String   @map("type") @db.VarChar(30) /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|AI_REJECTED|AI_DUPLICATE_SUSPECTED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED|SCORE_CONFIRMED|REWARD_EXCLUDED|REWARD_PAID
+  type        String   @map("type") @db.VarChar(30) /// CREATED|SUBMITTED|TRIAGED|TRIAGE_FAILED|ANALYSIS_APPROVED|ANALYZED|ANALYSIS_FAILED|AI_REJECTED|AI_DUPLICATE_SUSPECTED|COMMENT|NEEDS_INFO|RESUBMITTED|APPROVED|REJECTED|MERGED|DEFERRED|WITHDRAWN|STATUS_CHANGED|LINK_ADDED|META_CHANGED|SCORE_CONFIRMED|REWARD_EXCLUDED|REWARD_PAID|USER_CONFIRMED|USER_REOPENED
   actorUserId Int?     @map("actor_user_id") /// null = sistem/AI
   data        Json?    @map("data") /// npr. {from,to} za STATUS_CHANGED, {field,old,new} za META_CHANGED
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -5871,9 +5908,45 @@ model DictationInbox {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   /// null = još nepreuzeto; NON-null = Claude povukao i markirao (idempotentni „latest").
   deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(6)
+  /// users.id naloga koji je red POVUKAO kroz `POST /v1/dictation-inbox/claim` (02.08.2026).
+  /// null = ili još nepreuzeto, ili preuzeto STARIM putem (ručni psql `UPDATE … delivered_at`).
+  /// Nosi oporavak: `GET /v1/dictation-inbox/last-claimed` vraća samo redove sa ovim
+  /// nalogom, pa izgubljen HTTP odgovor ne znači trajno izgubljen diktat.
+  claimedByUserId Int?  @map("claimed_by_user_id")
 
   @@index([userId, deliveredAt, createdAt], map: "idx_dictation_inbox_user_delivered_created")
+  @@index([claimedByUserId, deliveredAt], map: "idx_dictation_inbox_claimed_by_delivered")
   @@map("dictation_inbox")
+}
+
+/// Delegacija diktafon „sandučeta" (2026-08-02). Vlasnik (`owner_user_id`) dozvoljava
+/// DRUGOM nalogu (`delegate_user_id`) da POVUČE njegove diktate kroz
+/// `POST /v1/dictation-inbox/claim`.
+///
+/// ZAŠTO: sanduče puni telefon pod NENADOVIM nalogom, a agent koji radi VAN lokalne
+/// mreže (Cursor/Claude u oblaku, pokrenut sa telefona) nema SSH/psql do `servosync-pg`
+/// pa diktat mora da uzme preko HTTP-a — pod SVOJIM tokenom, gledajući u TUĐE sanduče.
+/// Bez reda u ovoj tabeli `claim` sa tuđim `ownerUserId` vraća 403 (default-deny).
+/// Ovo je STROŽE od dosadašnjeg puta: identitet vlasnika više ne visi o ručno
+/// otkucanom `user_id = 2` u psql komandi, nego o tokenu + eksplicitnoj dozvoli u bazi.
+///
+/// App-owned → Timestamptz(6). Piše je ISKLJUČIVO admin (`settings.users`) ili DBA SQL-om.
+/// Bez FK na `users` — namerno, paritet sa `dictation_inbox` (isti modul, ista migracija-doktrina).
+model DictationDelegate {
+  id              Int      @id(map: "pk_dictation_delegates") @default(autoincrement()) @map("id")
+  /// users.id vlasnika sandučeta (čiji se diktati povlače).
+  ownerUserId     Int      @map("owner_user_id")
+  /// users.id naloga kome je povlačenje dozvoljeno (agent u oblaku).
+  delegateUserId  Int      @map("delegate_user_id")
+  /// users.id admina koji je dodelio dozvolu; null za redove upisane ručno SQL-om.
+  createdByUserId Int?     @map("created_by_user_id")
+  /// Slobodna beleška („Cursor agent sa telefona") — čisto za reviziju.
+  note            String?  @map("note") @db.VarChar(255)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([ownerUserId, delegateUserId], map: "uq_dictation_delegates_owner_delegate")
+  @@index([delegateUserId], map: "idx_dictation_delegates_delegate")
+  @@map("dictation_delegates")
 }
 
 /// Minimalni registar „zadatak → model" (Talas AI-0, stavka 7). NIJE nova

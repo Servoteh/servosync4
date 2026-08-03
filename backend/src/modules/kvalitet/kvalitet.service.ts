@@ -5,12 +5,12 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  PayloadTooLargeException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import type { NonconformityReport } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { assertAttachment } from "../../common/attachments/attachment-format.util";
 import {
   pageMeta,
   parsePagination,
@@ -107,31 +107,6 @@ function decodeOriginalName(name: string): string {
   for (const ch of name) if (ch.codePointAt(0)! > 0xff) return name; // već UTF-8
   const decoded = Buffer.from(name, "latin1").toString("utf8");
   return decoded.includes("\uFFFD") ? name : decoded;
-}
-
-/**
- * `content_type` iz MAGIC BYTES (ne veruje se klijentskom mimetype-u): dozvoljeni
- * su PDF (`%PDF`), PNG (`89 50 4E 47 0D 0A 1A 0A`) i JPEG (`FF D8 FF`). Ostalo →
- * `null` (pozivalac baca 422).
- */
-function detectDocContentType(buf: Buffer): string | null {
-  if (buf.length >= 5 && buf.subarray(0, 5).toString("latin1") === "%PDF-")
-    return "application/pdf";
-  if (
-    buf.length >= 8 &&
-    buf[0] === 0x89 &&
-    buf[1] === 0x50 &&
-    buf[2] === 0x4e &&
-    buf[3] === 0x47 &&
-    buf[4] === 0x0d &&
-    buf[5] === 0x0a &&
-    buf[6] === 0x1a &&
-    buf[7] === 0x0a
-  )
-    return "image/png";
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)
-    return "image/jpeg";
-  return null;
 }
 
 /** Razrešeni radnik (SAFE podskup — bez lozinki). */
@@ -973,8 +948,9 @@ export class QualityService {
   /**
    * `POST /kvalitet/docs` — upload QC dokumenta (skenirani nalog / kontrolna
    * dokumentacija / foto). Validacija: fajl obavezan (400); > 25 MB (413);
-   * `content_type` iz MAGIC BYTES — PDF/PNG/JPG, ostalo 422 (klijentskom mimetype-u
-   * se NE veruje). Vezivna polja (reportId/techProcessId/workOrderId/identNumber) su
+   * `content_type` iz MAGIC BYTES kroz zajednički `assertAttachment`
+   * (`common/attachments`) — PDF/PNG/JPG, ostalo 422 sa uputstvom (klijentskom
+   * mimetype-u se NE veruje; HEIC sa telefona se odbija). Vezivna polja (reportId/techProcessId/workOrderId/identNumber) su
    * SVA opciona — dokument sme biti i NEVEZAN (arhivski). `reportId`/`techProcessId`
    * ako su zadati moraju postojati (404). MODULE_SPEC_kontrola_kvaliteta §K4-UPLOAD.
    */
@@ -990,15 +966,11 @@ export class QualityService {
   ) {
     if (!file?.buffer?.length)
       throw new BadRequestException('Nedostaje fajl (multipart polje "file").');
-    // 25 MB i na servisu (interceptor limit hvata isto na HTTP sloju; ovo pokriva
-    // direktan poziv/unit test i služi kao defanziva).
-    if (file.buffer.length > MAX_DOC_BYTES)
-      throw new PayloadTooLargeException("Dokument je veći od 25 MB.");
-    const contentType = detectDocContentType(file.buffer);
-    if (!contentType)
-      throw new UnprocessableEntityException(
-        "Dozvoljeni su PDF i slike (JPG/PNG).",
-      );
+    // Format + veličina kroz zajedničko mesto istine (`common/attachments`): sadržaj
+    // presuđuje (klijentov `mimetype` se ignoriše), HEIC sa telefona dobija poruku
+    // šta da se uradi. 25 MB i na servisu (interceptor limit hvata isto na HTTP
+    // sloju; ovo pokriva direktan poziv/unit test i služi kao defanziva).
+    const { contentType } = assertAttachment(file, { maxBytes: MAX_DOC_BYTES });
 
     const reportId = this.parseOptId(fields.reportId, "reportId");
     const techProcessId = this.parseOptId(fields.techProcessId, "techProcessId");

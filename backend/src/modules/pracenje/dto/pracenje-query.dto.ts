@@ -16,14 +16,22 @@ import {
  */
 const DIGITS = /^\d+$/;
 
+/**
+ * Id čvora stabla praćenja (zahtev 053/26 paket 2) — cifre = `work_orders.id`, cifre sa
+ * VODEĆIM MINUSOM = virtuelni (ručno napravljen) sklop (`node_id = -id`). Deep-link
+ * `?root=-7` i „Opseg (sklop)" moraju da rade i za sklop bez RN-a. Ostatak je isto strog
+ * kao `DIGITS` (bez decimala/razmaka; „-0" nije validno — oba SERIAL-a kreću od 1).
+ */
+const NODE_ID = /^-?[1-9]\d*$|^\d+$/;
+
 export class PortfolioQueryDto {
   /** Veličina lota za rollup (get_pracenje_portfolio p_lot_qty; default 12). */
   @IsOptional() @IsNumberString() lotQty?: string;
 }
 
 export class IzvestajQueryDto {
-  /** Koren RN (bigint MES id) — get_predmet_pracenje_izvestaj p_root_rn_id (→ BigInt). */
-  @IsOptional() @Matches(DIGITS) rootRn?: string;
+  /** Koren opsega: RN id ILI negativan id ručno napravljenog sklopa (053/26 paket 2). */
+  @IsOptional() @Matches(NODE_ID) rootRn?: string;
   @IsOptional() @IsNumberString() lotQty?: string;
 }
 

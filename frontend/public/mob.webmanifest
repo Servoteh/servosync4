@@ -6,7 +6,7 @@
   "lang": "sr",
   "dir": "ltr",
   "start_url": "/mob",
-  "scope": "/",
+  "scope": "/mob",
   "display": "standalone",
   "orientation": "portrait",
   "theme_color": "#f7f9f9",

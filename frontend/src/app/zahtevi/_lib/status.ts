@@ -82,6 +82,9 @@ export function eventLabel(type: string): string {
     ANALYSIS_FAILED: 'AI analiza nije uspela',
     COMMENT: 'Komentar',
     NEEDS_INFO: 'Vraćen na dopunu',
+    // 03.08.2026 — podnosilac sam presuđuje o isporuci (POST :id/confirm | :id/reopen).
+    USER_CONFIRMED: 'Podnosilac potvrdio da radi',
+    USER_REOPENED: 'Podnosilac javio da ne radi — vraćeno u rad',
     APPROVED: 'Odobren za realizaciju',
     REJECTED: 'Odbijen',
     MERGED: 'Spojen sa drugim zahtevom',

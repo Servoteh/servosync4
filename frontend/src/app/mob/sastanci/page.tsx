@@ -34,7 +34,7 @@ export default function MobileSastanciPage() {
   const [openId, setOpenId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   useEffect(() => {

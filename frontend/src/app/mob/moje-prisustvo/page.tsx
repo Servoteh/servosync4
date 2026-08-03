@@ -53,7 +53,7 @@ export default function MobMojePrisustvoPage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user) {

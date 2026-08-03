@@ -524,6 +524,12 @@ const rnColumns: Column<RnProgress>[] = [
       ),
   },
   {
+    // 036/26: traka meri URAĐENO = MAX(napredak kroz ruting, overa sa završne
+    // kontrole), pa prati kolonu „Operacije" tamo gde su međufaze kucane (8/14 =
+    // 61%, ne 0%), a overen legacy nalog bez kucanih međufaza ostaje 100% —
+    // zeleni bedž „Gotovo" nikad ne stoji uz polupraznu traku.
+    // Status se i dalje NE izvodi iz procenta: 99% + „U izradi" (posao urađen,
+    // overa još nije otkucana) je tačno stanje, ne protivrečnost.
     key: 'progress',
     header: 'Gotovost',
     render: (r) => <ProgressBar percent={r.completionPercent} />,

@@ -14,6 +14,7 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { PERMISSIONS } from '@/lib/permissions';
 import { toast } from '@/lib/toast';
+import { MobRefreshButton } from './mob-refresh';
 
 /**
  * Zajednička ljuska mobilne aplikacije `/mob` — PLAN_MOB_IZGLED_1.0_PARITET, F1.
@@ -127,6 +128,10 @@ export function MobShell({
           </h1>
           <p className="truncate text-xs text-ink-secondary">{subtitle ?? DEFAULT_SUBTITLE}</p>
         </div>
+        {/* Osvežavanje podataka — jedini put u ljusci: pull-to-refresh je pod
+            `/mob` namerno ugašen (skener), `refetchOnWindowFocus` je isključen,
+            a instalirana PWA nema adresnu traku ni reload. Vidi `mob-refresh.tsx`. */}
+        <MobRefreshButton />
         {headerRight}
       </header>
 

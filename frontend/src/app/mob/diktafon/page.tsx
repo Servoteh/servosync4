@@ -19,6 +19,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { toast } from '@/lib/toast';
 import { refineText, sendDictation, transcribeAudio } from '@/api/ai';
+import { MobPermissionsError } from '../_components/mob-refresh';
 
 /**
  * „Diktiraj za Claude" (scenario B) — telefon-first alat: monter/inženjer u pogonu
@@ -117,7 +118,7 @@ export default function MobDiktafonPage() {
   const baseTextRef = useRef('');
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   // Čišćenje: zaustavi tajmer, mikrofon i otpusti wake lock na unmount-u.
@@ -169,11 +170,7 @@ export default function MobDiktafonPage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
   if (!can(PERMISSIONS.AI_CHAT)) {
     return (

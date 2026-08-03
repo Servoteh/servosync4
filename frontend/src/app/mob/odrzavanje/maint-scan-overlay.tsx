@@ -19,6 +19,8 @@ import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-pic
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 import { ScanHint } from '@/components/ui-kit/scan-hint';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
+import { useScanPanelInset } from '@/lib/use-scan-panel-inset';
+import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
 
 /**
  * Punoekranski QR/barkod skener sredstava za mobilno Održavanje (H21). Za razliku od
@@ -70,6 +72,10 @@ export function MaintScanOverlay({
   // Safari URL traka guta gornji deo kadra (1.0 lekcija) — do 02.08. je ovo imala
   // samo lokacijska ljuska; sada je zajednički hook (v. `use-visual-viewport-fix`).
   useVisualViewportFix(rootRef);
+
+  // Plutajući donji panel se MERI i predaje nišanu kao donji odmak — inače panel
+  // (z-10, lebdi preko kadra) prekrije nišan na malom ekranu.
+  const [panelRef, panelInset] = useScanPanelInset<HTMLDivElement>();
 
   // Roditelj prosleđuje callback-ove kao inline literale (nov identitet svaki render);
   // držimo ih u ref-u da kamera-efekat ostane stabilan (bez gašenja/paljenja kamere).
@@ -324,6 +330,11 @@ export function MaintScanOverlay({
   // (v. `ui-kit/escape-layer.ts`).
   useEscapeLayer(true, () => cbRef.current.onClose());
 
+  // HID/Bluetooth čitač dok je skener otvoren: polje ručnog unosa NIJE fokusirano na
+  // telefonu (`autoFocus` je pod `pointer: fine` gardom), a globalni hvatač radnog
+  // stola ćuti dok je otvoren `[aria-modal]` sloj — a ovaj overlay je baš to.
+  useHidScanBuffer(true, (code) => resolve(code));
+
   return (
     // FULL-BLEED KADAR (S3, 02.08.2026) — v. `reversi/_components/scan-overlay.tsx`:
     // 1.0 drži kameru preko celog ekrana (`.loc-scan-video`, legacy.css:4634), a
@@ -333,16 +344,23 @@ export function MaintScanOverlay({
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" />
       {/* QR karton sredstva → kvadratni nišan; laser je 1D pomagalo, pa je ovde ugašen. */}
-      {cameraOn && <ScanReticle variant="qr" laser={false} />}
+      {cameraOn && <ScanReticle variant="qr" laser={false} bottomInset={panelInset} />}
 
-      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
+      {/* `pointer-events-none` na traci, `auto` na dugmetu: traka je providan gradijent
+          preko kadra, pa tap kroz nju mora da stigne do `<video>`. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
         <span className="text-md font-semibold">{title}</span>
-        <button type="button" onClick={onClose} aria-label="Zatvori" className="rounded-full p-1 hover:bg-white/10">
+        <button type="button" onClick={onClose} aria-label="Zatvori" className="pointer-events-auto rounded-full p-1 hover:bg-white/10">
           <X className="h-5 w-5" />
         </button>
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 z-10 space-y-2 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white">
+      {/* `pointer-events-none` na omotaču + `auto` na kontrolama (prazan prostor panela
+          propušta tap na kadar); izmerena visina drži nišan iznad panela. */}
+      <div
+        ref={panelRef}
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 space-y-2 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-4 pt-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] text-white"
+      >
         {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`) — 3.0 je do sada nije imao. */}
         {cameraOn && <ScanHint extra="QR karton drži ceo u prozoru nišana" />}
         {status && (
@@ -351,7 +369,7 @@ export function MaintScanOverlay({
           </p>
         )}
         <form
-          className="flex gap-2"
+          className="pointer-events-auto flex gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (manual.trim()) {

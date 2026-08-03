@@ -26,16 +26,21 @@ export const GRID_AUTOFILL_MARKER = "auto:kapija";
 // ── Pravila predloga sati (STVARNO prisustvo, NE paušalno 8h — presuda 24.07) ───────
 // JEDINI izvor istine za predlog sati: koriste ga i noćni auto-tik i ručno dugme
 // „Popuni iz kapije" (kadrovska.service.ts) → oba puta predlažu identično.
-/** Standardni pun dan. */
-export const FULL_DAY_HOURS = 8;
-/** Prisustvo >= ovo → pun dan (8). Isto pravilo za auto-tik i ručno „Popuni iz kapije";
- *  otvoreno nagore: i duži dan (npr. 9.5h uz prekovremeni) predlaže 8 REDOVNIH, a prekovremeni
- *  dodaje urednik (grid razdvaja redovne/prekovremene → auto ne pogađa prekovremeni). */
-export const REGULAR_FULL_MIN = 7.6;
 /** Prisustvo < ovo → preskoči (slučajno/kratko kucanje). Prag = shadow view `presence_hours > 1`. */
 export const PRESENCE_FLOOR = 1.0;
 /** Prisustvo > ovo → preskoči (anomalija / neuobičajeno duga smena → urednik ručno). */
 export const PRESENCE_CEIL = 14.0;
+
+/**
+ * Standardni pun radni dan (8h) — ⚠️ **NIJE deo pravila predloga** od 03.08.2026
+ * (revizija O-5, v. `proposeHoursFromPresence`): predlog se više NE kapira na 8h ni
+ * nagore ni naniže. Konstanta živi SAMO kao informativno polje `rule.regularHours` u
+ * odgovoru ručnog dugmeta („Popuni iz kapije", `kadrovska.service.ts`) — polje se
+ * zadržava radi API-kompatibilnosti (`GridAutoFillResponse` na frontendu ga tipizira);
+ * značenje mu je „koliko traje standardan pun dan u firmi", ne „koliko automatika
+ * predlaže". Ako se ikad koristi kao kapa, to je greška.
+ */
+export const FULL_DAY_HOURS = 8;
 
 /**
  * Zaokruživanje NANIŽE na pola sata (D2, zahtev 044/26): `Math.floor(x*2)/2` — POD,
@@ -48,17 +53,47 @@ function roundToHalf(x: number): number {
 
 /**
  * Predlog sati iz STVARNOG prisustva (kucanje) — čista funkcija (testabilna).
- *  - < FLOOR ili > CEIL → null (preskoči);
- *  - >= REGULAR_FULL_MIN → pun dan (8) — kapiranje redovnih na 8;
- *  - između → sečeno NANIŽE na pola sata (D2: 6.52h → 6.5, 6.75h → 6.5; skraćeno
- *    vreme Antić/Pavlović ~5h → 5.0, NE paušalnih 8h).
+ *  - < FLOOR (1h) ili > CEIL (14h) → null (preskoči);
+ *  - inače → prisustvo sečeno NANIŽE na pola sata, DOSLOVNO, BEZ IJEDNE KAPE:
+ *    6.52h → 6.5 · 7.8h → 7.5 · 9.08h → 9.0 · 12.3h → 12.0.
+ *
+ * ── ⚠️ UKINUTA KAPA NA 8h (03.08.2026, revizija O-5) — PROČITAJ PRE „POPRAVKE" ──────
+ * Do 03.08.2026 je ovde stajala grana `if (presence >= 7.6) return 8;` — svako
+ * prisustvo od 7.6h naviše je predlagalo tačno 8h redovnih (prekovremeni je dodavao
+ * urednik). Šta se promenilo i zašto:
+ *
+ *  1) POVOD: zahtev 012/26 (Duško Kostić) — 21. i 22.07.2026 je po kapiji bio 9h, a
+ *     grid je oba dana dobio 8h. Sat rada je nestao iz evidencije, a niko to posle
+ *     nije ručno ispravio (dan je tad već `grid_covered`).
+ *  2) VLASNIČKA ODLUKA (Nenad, 03.08.2026, donesena POSLE prikaza merenja niže):
+ *     „grid = ogledalo kapije; Nikola Mrkajić normalizuje u mesečnoj kontroli."
+ *     Filozofija je DOKAZ, ne procena: automatika prepisuje ono što kapija kaže, a
+ *     ispravku radi čovek koji ionako mesečno potvrđuje grid.
+ *  3) MERENO NAD ŽIVIM PODACIMA (jun–jul 2026) i pokazano vlasniku PRE odluke:
+ *       • 918 dana bi dobilo VIŠE sati (ukupno +1.046 h) — svi sa prisustvom > 8h;
+ *       • 1.087 dana bi dobilo MANJE sati (ukupno −544 h) — to je TAČNO opseg
+ *         prisustva 7.6–7.99h, koji je stara kapa dizala na 8h, a novo pravilo seče
+ *         na 7.5h.
+ *     Vlasnik je pravilo izabrao ZNAJUĆI za taj gubitak — 7.8h → 7.5h je NAMERAN
+ *     ishod, potvrđen, i NIJE greška zaokruživanja.
+ *  4) NIJE RETROAKTIVNO: postojeći redovi grida se NE diraju (`ON CONFLICT DO NOTHING`
+ *     ostaje). Pravilo važi za upise od trenutka isporuke naviše.
+ *
+ * ⚠️ BUDUĆEM ČITAOCU: ako ti 7.8h → 7.5h deluje kao bug — NIJE. Ne vraćati kapu na 8h
+ * (ni „samo naviše", ni „samo za 7.6–8.0") bez NOVE vlasničke odluke upisane u
+ * `docs/ODLUKE_O_ZARADAMA.md` (O-5). Isto važi i za suprotan smer: pravilo NEMA gornju
+ * kapu, pa 12.3h prisustva daje 12h REDOVNIH sati — razdvajanje na redovne/prekovremene
+ * je posao urednika grida, ne automatike.
+ *
+ * Praznik: ovo pravilo se od 01.08.2026 primenjuje DOSLOVNO i na neradni praznik
+ * (Č-5 je ukinuo prazničnu kapiju — v. `proposeHoursForDay`); 8h plaćenog praznika po
+ * O-1 dodaje OBRAČUN, ne autofill.
  */
 export function proposeHoursFromPresence(
   presence: number | null,
 ): number | null {
   if (presence == null || !Number.isFinite(presence)) return null;
   if (presence < PRESENCE_FLOOR || presence > PRESENCE_CEIL) return null;
-  if (presence >= REGULAR_FULL_MIN) return FULL_DAY_HOURS;
   const h = roundToHalf(presence);
   return h > 0 ? h : null;
 }
@@ -82,7 +117,8 @@ export interface DayProposal {
  * Odluka za JEDAN dan — JEDINI izvor istine, koriste je OBA puta (noćni tik i ručno
  * dugme „Popuni iz kapije") → predlažu IDENTIČNO. Danas je to čist omotač oko
  * `proposeHoursFromPresence`: NIJEDAN kalendarski dan (radni, vikend, praznik) nema
- * poseban tretman — predlog je uvek prisustvo sečeno NANIŽE na pola sata, uz ≥7.6h → 8.
+ * poseban tretman — predlog je uvek prisustvo sečeno NANIŽE na pola sata, DOSLOVNO
+ * (od 03.08.2026 bez kape na 8h — v. `proposeHoursFromPresence`).
  *
  * ── UKINUTA KAPIJA ZA NERADNI PRAZNIK (01.08.2026) — PROČITAJ PRE „POPRAVKE" ────────
  * Do 01.08.2026 je ovde stajala dodatna kapija: na NERADNOM prazniku

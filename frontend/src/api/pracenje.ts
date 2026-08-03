@@ -126,9 +126,23 @@ export interface IzvestajRow {
   /** docx §4.10: dokument primopredaje (null = nema). */
   primopredaja?: Primopredaja | null;
   status_override?: string | null;
+  /** Rang reda unutar sklopa (efektivnog roditelja) po ident broju — BE `sort_order`;
+   *  koristi se za redni broj pozicije u grupi i za poredak braće (zahtev 053/26 §2/§3). */
+  sort_order?: number | null;
+  /** true = ručni premeštaj u sklop je PRIMENJEN (BE `reparentNodes`). */
   has_parent_override?: boolean;
+  /** true = override postoji u bazi ali je odbijen (cilj van opsega / ciklus) → važi auto. */
+  override_ignored?: boolean;
+  /** SIROV cilj override-a (dijalog „Premesti u sklop") — nije nužno primenjen. */
   parent_override_rn_id?: number | string | null;
+  /** EFEKTIVNI roditelj (BE razrešio override) — jedini izvor istine za stablo. */
   parent_node_id?: number | string | null;
+  /** 'rn' = pozicija iz proizvodnje; 'virtuelni_sklop' = ručno napravljen sklop (053/26 §2). */
+  tip_reda?: string | null;
+  /** true = ručno napravljen sklop BEZ radnog naloga i tehnologije (`node_id` je negativan). */
+  is_virtual?: boolean;
+  /** Tip ručnog sklopa ('glavni' | 'pod' | 'zav') — bedž; null za RN redove. */
+  tip_sklopa?: string | null;
   korisnicka_napomena?: string | null;
   sistemska_napomena?: string | null;
   datum_lansiranja_tp?: string | null;
@@ -212,6 +226,12 @@ export interface PodsklopNode {
   rn_id?: number | string | null;
   ident_broj?: string | null;
   naziv_dela?: string | null;
+  /** Efektivni roditelj u stablu — čvor koji se ovde pojavi JESTE sklop (ima decu). */
+  parent_rn_id?: number | string | null;
+  nivo?: number | null;
+  /** true = ručno napravljen sklop (negativan `rn_id`, bez RN-a) — zahtev 053/26 §2. */
+  is_virtual?: boolean;
+  tip_sklopa?: string | null;
   [k: string]: unknown;
 }
 export function normalizePodsklopovi(data: unknown): PodsklopNode[] {
@@ -486,6 +506,12 @@ function post<T = unknown>(path: string, body?: object): Promise<TxResponse<T>> 
 function put<T = unknown>(path: string, body: object): Promise<TxResponse<T>> {
   return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'PUT', body: JSON.stringify(body) });
 }
+function patch<T = unknown>(path: string, body: object): Promise<TxResponse<T>> {
+  return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'PATCH', body: JSON.stringify(body) });
+}
+function del<T = unknown>(path: string): Promise<TxResponse<T>> {
+  return apiFetch<TxResponse<T>>(`${BASE}${path}`, { method: 'DELETE' });
+}
 
 /* ── Aktivni predmeti — prioritet (admin) ── */
 export const useShiftPrioritet = () =>
@@ -526,6 +552,31 @@ export const useUpsertParentOverride = () =>
     const { itemId, ...body } = v;
     return put(`/predmeti/${itemId}/parent-override`, body);
   });
+
+/* ── Virtuelni (ručno napravljen) sklop — zahtev 053/26 paket 2 (pracenje.manage) ──
+ * Sklop BEZ radnog naloga i tehnologije. BE ga drži u zasebnoj tabeli i vraća `nodeId`
+ * (= -id) — to je id čvora u stablu, kojim se dalje zove „Premesti u sklop" kao roditelj. */
+export interface VirtuelniSklopResult {
+  id: number;
+  nodeId: number;
+  naziv: string;
+  tip: string;
+}
+
+export const useCreateVirtuelniSklop = () =>
+  usePracenjeMutation<{ itemId: number; naziv: string; tip?: string }, TxResponse<VirtuelniSklopResult>>((v) =>
+    post<VirtuelniSklopResult>(`/predmeti/${v.itemId}/virtuelni-sklopovi`, { naziv: v.naziv, tip: v.tip }),
+  );
+
+export const useUpdateVirtuelniSklop = () =>
+  usePracenjeMutation<{ itemId: number; id: number; naziv?: string; tip?: string }, TxResponse<VirtuelniSklopResult>>(
+    (v) => patch<VirtuelniSklopResult>(`/predmeti/${v.itemId}/virtuelni-sklopovi/${v.id}`, { naziv: v.naziv, tip: v.tip }),
+  );
+
+export const useDeleteVirtuelniSklop = () =>
+  usePracenjeMutation<{ itemId: number; id: number }, TxResponse<{ id: number; deleted: boolean; clearedChildren: number }>>(
+    (v) => del(`/predmeti/${v.itemId}/virtuelni-sklopovi/${v.id}`),
+  );
 
 /* ── Operativni plan — aktivnosti (edit) ── */
 export interface AktivnostInput {

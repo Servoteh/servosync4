@@ -39,6 +39,11 @@ import {
   type StornoTechProcessDto,
   validateStorno,
 } from "./dto/storno-tech-process.dto";
+import {
+  TP_PRIKAZ_MAX_SEC,
+  TP_PRIKAZ_MIN_SEC,
+  TP_PRIKAZ_VALIDNA,
+} from "../work-orders/time-estimate.service";
 import { type StartWorkDto, validateStartWork } from "./dto/start-work.dto";
 import { type StopWorkDto, validateStopWork } from "./dto/stop-work.dto";
 import type { PrintLabelDto } from "./dto/print-label.dto";
@@ -144,9 +149,14 @@ interface CardOperationAcc {
   isFinished: boolean;
   firstEnteredAt: Date;
   lastFinishedAt: Date | null;
-  /** Σ elapsed (finishedAt−enteredAt) po redovima koji imaju oba vremena. */
+  /**
+   * Σ elapsed (finishedAt−enteredAt) po redovima koji imaju oba vremena I prolaze
+   * higijenski prag prikaza (`TP_PRIKAZ_VALIDNA`: 1 min ≤ Δ ≤ 24 h).
+   */
   elapsedSeconds: number;
   hasElapsed: boolean;
+  /** Zatvoreni redovi koji NISU ušli u zbir (< 1 min ili > 24 h — zaboravljene). */
+  excludedRowCount: number;
 }
 
 /**
@@ -250,7 +260,10 @@ interface WorkerPerfRaw {
   good_pieces: number;
   rework_pieces: number;
   scrap_pieces: number;
+  /** Σ elapsed po higijenskom pragu prikaza (1 min ≤ Δ ≤ 24 h) — v. TP_PRIKAZ_VALIDNA. */
   total_elapsed_seconds: number;
+  /** Zatvorene prijave izuzete iz zbira (< 1 min ili > 24 h — zaboravljene). */
+  excluded_row_count: number;
 }
 
 interface RnProgressRaw {
@@ -274,6 +287,12 @@ interface RnProgressRaw {
   routing_op_count: number;
   /** Koliko operacija rutinga je otkucano u PUNOJ planiranoj količini. */
   routing_ops_completed: number;
+  /**
+   * NAPREDAK KROZ RUTING (0..1): AVG(LEAST(done/plan, 1)) po operacijama rutinga.
+   * NULL kad nalog nema plan (`piece_count = 0`) ili nema rutinga — tada se meri
+   * po starom kanonu (`made_good_*`).
+   */
+  routing_progress_ratio: number | null;
   operation_count: number;
   finished_operation_count: number;
   last_completed_at: Date | null;
@@ -285,6 +304,8 @@ interface SessionDailyRaw {
   worker_count: number;
   pieces: number;
   elapsed_seconds: number;
+  /** Zatvorene sesije van praga prikaza (> 24 h ili negativno trajanje). */
+  excluded_count: number;
   open_count: number;
 }
 
@@ -1081,7 +1102,10 @@ export class TechProcessesService {
     const piecesByQuality = { good: 0, rework: 0, scrap: 0 };
     let totalPieces = 0;
     let totalElapsedSeconds = 0;
+    let totalElapsedSecondsRaw = 0;
     let hasElapsed = false;
+    let hasElapsedRaw = false;
+    let excludedRowCount = 0;
     const opGroups = new Map<string, CardOperationAcc>();
     for (const r of rows) {
       const pieces = r.pieceCount;
@@ -1091,12 +1115,29 @@ export class TechProcessesService {
         piecesByQuality.rework += pieces;
       else if (r.qualityTypeId === PART_QUALITY.SCRAP)
         piecesByQuality.scrap += pieces;
-      const elapsedSeconds = r.finishedAt
+      // HIGIJENA PRIKAZANOG VREMENA (036/26): u zbir ulazi samo prijava koja liči na
+      // rad — 1 min ≤ Δ ≤ 24 h (`TP_PRIKAZ_VALIDNA` uz `TP_VALIDNA`, gde piše i zašto
+      // se gornja granica prikaza (24 h) razlikuje od granice procene (720 h)).
+      // Sirovi zbir se i dalje računa i vraća, a izuzeti redovi se BROJE — UI ispod
+      // pločice piše koliko ih je i zašto, da se ništa ne izgubi bez traga.
+      const rawSeconds = r.finishedAt
         ? Math.max(0, (r.finishedAt.getTime() - r.enteredAt.getTime()) / 1000)
         : null;
+      if (rawSeconds !== null) {
+        totalElapsedSecondsRaw += rawSeconds;
+        hasElapsedRaw = true;
+      }
+      const elapsedSeconds =
+        rawSeconds !== null &&
+        rawSeconds >= TP_PRIKAZ_MIN_SEC &&
+        rawSeconds <= TP_PRIKAZ_MAX_SEC
+          ? rawSeconds
+          : null;
       if (elapsedSeconds !== null) {
         totalElapsedSeconds += elapsedSeconds;
         hasElapsed = true;
+      } else if (rawSeconds !== null) {
+        excludedRowCount += 1;
       }
 
       const key = `${r.operationNumber}|${r.workCenterCode}`;
@@ -1112,6 +1153,7 @@ export class TechProcessesService {
           lastFinishedAt: null,
           elapsedSeconds: 0,
           hasElapsed: false,
+          excludedRowCount: 0,
         };
         opGroups.set(key, g);
       }
@@ -1131,6 +1173,8 @@ export class TechProcessesService {
       if (elapsedSeconds !== null) {
         g.elapsedSeconds += elapsedSeconds;
         g.hasElapsed = true;
+      } else if (rawSeconds !== null) {
+        g.excludedRowCount += 1;
       }
     }
 
@@ -1143,8 +1187,11 @@ export class TechProcessesService {
       isFinished: g.isFinished,
       firstEnteredAt: g.firstEnteredAt,
       lastFinishedAt: g.lastFinishedAt,
-      // Izvedeno (kao summary): null dok nijedan red grupe nije zatvoren.
+      // Izvedeno (kao summary): null dok nijedan red grupe nije zatvoren U OKVIRU
+      // higijenskog praga (< 1 min / > 24 h ne ulazi — v. `excludedRowCount`).
       elapsedMinutes: g.hasElapsed ? Math.round(g.elapsedSeconds / 60) : null,
+      /** Zatvoreni redovi grupe izuzeti iz vremena (< 1 min ili > 24 h). */
+      excludedRowCount: g.excludedRowCount,
     }));
 
     // HITNO (Miljan t.10) + routing kartice: RN je jedinstven po trojci (uq
@@ -1215,9 +1262,17 @@ export class TechProcessesService {
         // Ukupan broj redova (kucanja) preko svih operacija.
         entryCount: rows.length,
         // Izvedeno: tech_processes nema kolonu radnog vremena — elapsed entered→finished.
+        // Sabiraju se SAMO prijave koje liče na rad (1 min ≤ Δ ≤ 24 h); ostale se
+        // broje u `excludedRowCount` i UI ih izričito pominje ispod pločice.
         totalElapsedMinutes: hasElapsed
           ? Math.round(totalElapsedSeconds / 60)
           : null,
+        /** Nefiltrirani zbir — za dijagnostiku „gde je nestalo 275 h" (036/26). */
+        totalElapsedMinutesRaw: hasElapsedRaw
+          ? Math.round(totalElapsedSecondsRaw / 60)
+          : null,
+        /** Broj zatvorenih prijava izuzetih iz zbira (< 1 min ili > 24 h). */
+        excludedRowCount,
       },
       operations,
       // Routing RN-a — SVE operacije postupka (i neotkucane); UI merge-uje sa `operations`.
@@ -1394,31 +1449,42 @@ export class TechProcessesService {
    * po `worker_id` iz `tech_processes`. Period se filtrira po `entered_at` (kada je
    * rad evidentiran). „Vreme" je izvedeno (elapsed entered→finished za završene) jer
    * tech_processes nema kolonu radnog vremena. Sume računa DB (spec §3 pravilo 6).
+   *
+   * VREME prolazi isti higijenski prag kao kartica RN-a (`TP_PRIKAZ_VALIDNA`,
+   * 036/26): u zbir ulaze samo prijave od 1 min do 24 h; izuzete se BROJE
+   * (`excludedRowCount`), ne gutaju. Komadi i brojevi prijava se NE filtriraju —
+   * zaboravljena prijava je i dalje evidentiran rad, samo joj trajanje nije merodavno.
    */
   async workerPerformance(query: WorkerPerformanceQuery) {
     const from = parseDateParam(query.from, "from");
     const to = parseDateParam(query.to, "to");
 
     const conds: Prisma.Sql[] = [];
-    if (from) conds.push(Prisma.sql`entered_at >= ${from}`);
-    if (to) conds.push(Prisma.sql`entered_at < ${to}`);
+    if (from) conds.push(Prisma.sql`tp.entered_at >= ${from}`);
+    if (to) conds.push(Prisma.sql`tp.entered_at < ${to}`);
     const whereSql = conds.length
       ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
       : Prisma.empty;
 
+    // Vreme se sabira po ISTOM higijenskom pragu kao kartica RN-a (036/26): inače
+    // tab „Učinak" protivreči pločici „UKUPNO VREME" na kartici — jedna zaboravljena
+    // prijava (270 h) tamo napravi radnika sa nemogućim učinkom.
     const rows = await this.prisma.$queryRaw<WorkerPerfRaw[]>(Prisma.sql`
-      SELECT worker_id,
+      SELECT tp.worker_id,
              (COUNT(*))::int AS process_count,
-             (COUNT(*) FILTER (WHERE COALESCE(is_process_finished, false)))::int AS finished_count,
-             COALESCE(SUM(piece_count), 0)::int AS total_pieces,
-             COALESCE(SUM(piece_count) FILTER (WHERE quality_type_id = ${PART_QUALITY.GOOD}), 0)::int AS good_pieces,
-             COALESCE(SUM(piece_count) FILTER (WHERE quality_type_id = ${PART_QUALITY.REWORK}), 0)::int AS rework_pieces,
-             COALESCE(SUM(piece_count) FILTER (WHERE quality_type_id = ${PART_QUALITY.SCRAP}), 0)::int AS scrap_pieces,
-             COALESCE(SUM(EXTRACT(EPOCH FROM (finished_at - entered_at))) FILTER (WHERE finished_at IS NOT NULL), 0)::float8 AS total_elapsed_seconds
-      FROM tech_processes
+             (COUNT(*) FILTER (WHERE COALESCE(tp.is_process_finished, false)))::int AS finished_count,
+             COALESCE(SUM(tp.piece_count), 0)::int AS total_pieces,
+             COALESCE(SUM(tp.piece_count) FILTER (WHERE tp.quality_type_id = ${PART_QUALITY.GOOD}), 0)::int AS good_pieces,
+             COALESCE(SUM(tp.piece_count) FILTER (WHERE tp.quality_type_id = ${PART_QUALITY.REWORK}), 0)::int AS rework_pieces,
+             COALESCE(SUM(tp.piece_count) FILTER (WHERE tp.quality_type_id = ${PART_QUALITY.SCRAP}), 0)::int AS scrap_pieces,
+             COALESCE(SUM(EXTRACT(EPOCH FROM (tp.finished_at - tp.entered_at)))
+                      FILTER (WHERE ${TP_PRIKAZ_VALIDNA}), 0)::float8 AS total_elapsed_seconds,
+             (COUNT(*) FILTER (WHERE tp.finished_at IS NOT NULL
+                                 AND NOT (${TP_PRIKAZ_VALIDNA})))::int AS excluded_row_count
+      FROM tech_processes tp
       ${whereSql}
-      GROUP BY worker_id
-      ORDER BY total_pieces DESC, worker_id ASC
+      GROUP BY tp.worker_id
+      ORDER BY total_pieces DESC, tp.worker_id ASC
     `);
 
     const workers = await this.resolveWorkers(rows.map((r) => r.worker_id));
@@ -1435,6 +1501,8 @@ export class TechProcessesService {
       },
       totalElapsedSeconds: Math.round(r.total_elapsed_seconds),
       totalElapsedMinutes: Math.round(r.total_elapsed_seconds / 60),
+      /** Koliko prijava radnika nije ušlo u vreme (< 1 min ili > 24 h). */
+      excludedRowCount: r.excluded_row_count,
     }));
 
     return {
@@ -1455,21 +1523,33 @@ export class TechProcessesService {
    * (spec §3, migration/15 §5). Endpoint živi u tech-processes kontroleru (ne dira
    * se work-orders folder).
    *
-   * MERA GOTOVOSTI (ispravka 036/26) — po RUTINGU (`work_order_operations`), ne po
-   * skupu kucanja:
-   *   1. ruting ima ZAVRŠNU KONTROLU (`significant_for_finishing`) → napravljeno =
-   *      zbir DOBRIH I ZAVRŠENIH komada otkucanih na njoj. Isti kanon kao
-   *      `markWorkOrderIfComplete` (koji diže `work_orders.status`) i kao „gotovost"
-   *      u pracenje-read.service.ts, pa se tri prikaza ne mogu razići.
-   *   2. ruting nema završnu kontrolu → USKO GRLO: najmanje urađena operacija.
-   *   3. nema rutinga → 0 (nema se šta meriti; ne izmišlja se gotovost).
+   * DVE RAZLIČITE MERE, NAMERNO (obe ispravke 036/26):
    *
-   * BILO JE POGREŠNO: `MAX(piece_count)` preko BILO KOJE operacije kao fallback kad
-   * završna kontrola nije otkucana. Jedna jedina operacija otkucana u punom lotu
-   * dizala je ceo nalog na 100% iako ostatak rutinga nije ni počet — prijava 036/26
-   * (crtež 1138882, RN 9400/2/380: 15 operacija u rutingu, 7 kucanja, završna
-   * kontrola NIJE otkucana, a Gotovost je pisala 100%). Na produ je taj fallback
-   * lažno „završavao" ~10.200 od 23.700 naloga prikazanih kao 100%.
+   * A) `completionPercent` = KOLIKO JE POSLA URAĐENO = MAX od dve evidencije:
+   *    ruting `AVG(LEAST(done / plan, 1))` preko operacija bez `without_process`
+   *    (PUT) i overa `madeGood / plan` sa završne kontrole (ISHOD). Overa je jača:
+   *    overen nalog je 100% i kad međufaze nikad nisu kucane (legacy). NULL ratio
+   *    (nema plana / nema rutinga) → ostaje sama overa iz (B).
+   * B) `madeGoodPieces` / `isCompleted` / `completedAt` = OVERA GOTOVOSTI:
+   *      1. ruting ima ZAVRŠNU KONTROLU (`significant_for_finishing`) → napravljeno =
+   *         zbir DOBRIH I ZAVRŠENIH komada otkucanih na njoj. Isti kanon kao
+   *         `markWorkOrderIfComplete` (koji diže `work_orders.status`) i kao „gotovost"
+   *         u pracenje-read.service.ts, pa se tri prikaza ne mogu razići.
+   *      2. ruting nema završnu kontrolu → USKO GRLO: najmanje urađena operacija.
+   *      3. nema rutinga → 0 (nema se šta meriti; ne izmišlja se gotovost).
+   *
+   * ISTORIJA GREŠAKA (obe iz iste prijave 036/26, crtež 1138882, RN 9400/2/380 —
+   * 14 operacija rutinga, 8 otkucanih, ZAVRŠNA KONTROLA neotkucana):
+   *   • PRE 28.07: gotovost je padala na `MAX(piece_count)` preko BILO KOJE operacije
+   *     kad završna kontrola nije otkucana → jedna operacija u punom lotu dizala je
+   *     nalog na 100% (lažnih ~10.200 od 23.700 naloga „100%").
+   *   • POSLE 28.07: gotovost je bila SAMO završna kontrola → isti taj nalog pisao je
+   *     0% uz kolonu „Operacije 8/14". Ista populacija (10.879 naloga na produ) samo
+   *     je prešla iz jednog binarnog ekstrema u drugi.
+   *   • ZAMKA TREĆEG KRUGA (uhvaćena u reviziji, nije stigla na produ): sam ruting bi
+   *     11.493 od 13.707 OVERENIH naloga spustio ispod 100% uz zeleni bedž „Gotovo".
+   *     Zato MAX(ruting, overa), a ne ruting sam.
+   * Procenat sada MERI URAĐENO (61% za 1138882), a status i dalje traži overu.
    * `completedAt` (zahtev 023/26) = datum realizacije RN-a; vidi SQL komentar dole.
    */
   async rnProgress(query: RnProgressQuery) {
@@ -1567,6 +1647,29 @@ export class TechProcessesService {
                           WHERE op.work_order_id = wo.id
                             AND COALESCE(o.without_process, false) = false
                        ) x WHERE x.done >= wo.piece_count), 0)::int AS routing_ops_completed,
+             -- (5) NAPREDAK KROZ RUTING = prosečan udeo urađenog po operacijama
+             -- rutinga: AVG(LEAST(done / plan, 1)). Ovo je MERA GOTOVOSTI (druga
+             -- prijava 036/26): nalog sa 8 od 14 otkucanih operacija nije ni 0% ni
+             -- 100% — on je „na 61%". Isti oblik kao op_pct u
+             -- pracenje-read.service.ts (LATERAL opr), samo MIN→AVG.
+             -- wo.piece_count (outer referenca) je u WHERE-u istog nivoa na kom stoji
+             -- agregat, NIKAD u FILTER-u/argumentu bez inner promenljive: agregat čiji
+             -- argumenti nose samo outer promenljive pripada SPOLJNOM nivou upita i
+             -- diže PG 42803 (prod incident 19.07.2026). WHERE ujedno garantuje da
+             -- deljenje nikad ne deli nulom; prazan skup → NULL (nema rutinga).
+             -- without_process operacije se izuzimaju — isto kao usko grlo (3).
+             (SELECT AVG(LEAST(x.done::numeric / wo.piece_count, 1)) FROM (
+                         SELECT COALESCE((SELECT SUM(t.piece_count)
+                                            FROM tech_processes t
+                                           WHERE t.work_order_id = op.work_order_id
+                                             AND t.operation_number = op.operation_number
+                                             AND t.work_center_code IS NOT DISTINCT FROM op.work_center_code
+                                             AND t.quality_type_id = ${PART_QUALITY.GOOD}), 0) AS done
+                           FROM work_order_operations op
+                           LEFT JOIN operations o ON o.work_center_code = op.work_center_code
+                          WHERE op.work_order_id = wo.id
+                            AND COALESCE(o.without_process, false) = false
+                       ) x WHERE wo.piece_count > 0)::float8 AS routing_progress_ratio,
              COALESCE((SELECT COUNT(*) FROM tech_processes tp
                        WHERE tp.project_id = wo.project_id
                          AND tp.ident_number = wo.ident_number
@@ -1621,8 +1724,44 @@ export class TechProcessesService {
             : "nema-rutinga";
       const planned = r.planned;
       const cappedMade = Math.min(madeGood, planned);
-      const completionPercent =
+      // GOTOVOST = MAX(napredak kroz ruting, overa završnom kontrolom).
+      //
+      // Dve evidencije, a ne jedna: kucanja po operacijama pokazuju PUT, završna
+      // kontrola pokazuje ISHOD. Overa je JAČA evidencija — ako je kontrolor
+      // otkucao pun lot na završnoj kontroli, posao JESTE urađen, bez obzira na to
+      // šta međufaze pokazuju. Zato se uzima veći od dva broja:
+      //   • Pavlov slučaj (ruting 61% > overa 0%)            → 61% (prijava 036/26),
+      //   • legacy nalog (overa 100% > ruting 57%)           → 100%,
+      //   • delimična overa (overa 50% > ruting 30%)         → 50%.
+      //
+      // Bez MAX-a bi 11.493 od 13.707 OVERENIH naloga dobilo traku ispod 100%
+      // (prosek 57%, njih 3.139 ispod 50%) tik uz zeleni bedž „Gotovo" — i to na
+      // prvim stranama taba, jer sort ide po roku uzlazno pa su najstariji (dakle
+      // gotovi, legacy) prvi. Uzrok su legacy nalozi na kojima su kucane samo
+      // završne kontrole, a međufaze nikad; ratio ih meri kao „nezapočete".
+      //
+      // Kanon „napravljeno" se NE menja: madeGood/isCompleted/completedAt i dalje
+      // isključivo iz završne kontrole (usko grlo kad je ruting nema), pa
+      // markWorkOrderIfComplete i work_orders.status rade isto kao pre.
+      // Ratio je NULL kad nema plana (piece_count = 0) ili nema rutinga — tada
+      // ostaje sama overa (bez rutinga ratio i usko grlo ionako daju isto).
+      const ratio = r.routing_progress_ratio;
+      const rutingPercent =
+        ratio === null ? null : Math.round(Math.min(Math.max(ratio, 0), 1) * 100);
+      const overaPercent =
         planned > 0 ? Math.round((cappedMade / planned) * 100) : null;
+      const completionPercent =
+        rutingPercent === null
+          ? overaPercent
+          : overaPercent === null
+            ? rutingPercent
+            : Math.max(rutingPercent, overaPercent);
+      // Koja strana je dala broj (na izjednačenju je svejedno — nose istu tvrdnju).
+      const completionSource: "ruting" | "zavrsna-kontrola" =
+        rutingPercent !== null &&
+        (overaPercent === null || rutingPercent >= overaPercent)
+          ? "ruting"
+          : "zavrsna-kontrola";
       return {
         workOrderId: r.id,
         projectId: r.project_id,
@@ -1645,6 +1784,7 @@ export class TechProcessesService {
         routingOperationCount: r.routing_op_count,
         routingOperationsCompleted: r.routing_ops_completed,
         completionPercent,
+        completionSource,
         isCompleted: planned > 0 && madeGood >= planned,
         completedAt: r.last_completed_at,
       };
@@ -2199,6 +2339,13 @@ export class TechProcessesService {
    * DNEVNIK PROIZVODNJE — po danu (lokalna TZ): broj sesija/operacija, radnika, komada,
    * utrošeno vreme (gde je sesija zatvorena), otvoreno. Nad `v_work_sessions` (uključuje
    * i legacy redove — dnevnik prikazuje SVU evidentiranu aktivnost).
+   *
+   * VREME nosi isti gornji prag (24 h) kao kartica RN-a i učinak radnika (036/26).
+   * Ovde je uticaj mali — zbir ionako pokriva samo `source = 'entry'`
+   * (`work_time_entries`, koje imaju auto-close), pa je na produ 15 od 1.330
+   * zatvorenih sesija preko 24 h — ali jedna takva sesija dodaje dane „rada" u jedan
+   * dan dnevnika. Izuzete sesije se broje (`excludedCount`) i UI ih pominje uz zbir;
+   * broj sesija i komadi se NE filtriraju (aktivnost je bila evidentirana).
    */
   async sessionsDaily(query: SessionQuery) {
     const { from, to } = this.sessionRange(query);
@@ -2209,7 +2356,11 @@ export class TechProcessesService {
              (COUNT(DISTINCT worker_id))::int AS worker_count,
              COALESCE(SUM(piece_count), 0)::int AS pieces,
              COALESCE(SUM(EXTRACT(EPOCH FROM (stopped_at - started_at)))
-                      FILTER (WHERE source = 'entry' AND stopped_at IS NOT NULL AND stopped_at >= started_at), 0)::float8 AS elapsed_seconds,
+                      FILTER (WHERE source = 'entry' AND stopped_at IS NOT NULL AND stopped_at >= started_at
+                                AND stopped_at <= started_at + interval '24 hours'), 0)::float8 AS elapsed_seconds,
+             (COUNT(*) FILTER (WHERE source = 'entry' AND stopped_at IS NOT NULL
+                                 AND (stopped_at < started_at
+                                      OR stopped_at > started_at + interval '24 hours')))::int AS excluded_count,
              (COUNT(*) FILTER (WHERE stopped_at IS NULL))::int AS open_count
       FROM v_work_sessions
       ${whereSql}
@@ -2223,6 +2374,8 @@ export class TechProcessesService {
       pieces: r.pieces,
       elapsedSeconds: Math.round(r.elapsed_seconds),
       elapsedMinutes: Math.round(r.elapsed_seconds / 60),
+      /** Zatvorene sesije izuzete iz vremena (duže od 24 h / negativno trajanje). */
+      excludedCount: r.excluded_count,
       openCount: r.open_count,
     }));
     return {

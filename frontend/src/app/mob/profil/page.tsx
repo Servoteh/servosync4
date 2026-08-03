@@ -39,7 +39,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Markdown } from '@/lib/markdown';
 import { formatDate } from '@/lib/format';
 import { toast } from '@/lib/toast';
-import { generateJobPositionPdf, downloadBlob } from '@/lib/hr-pdf';
+import { deliverPdf, deliveryMessage } from '@/lib/deliver-file';
 import {
   useColleaguesOnLeave,
   usePosition,
@@ -48,6 +48,7 @@ import {
   useTeam,
 } from '@/api/moj-profil';
 import { MobShell } from '../_components/mob-shell';
+import { MobPermissionsError } from '../_components/mob-refresh';
 
 /** Vidljiv fokus na svakoj kontroli (DS §11) — nikad `outline:none` bez zamene. */
 const FOCUS = 'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]';
@@ -78,7 +79,7 @@ export default function MobProfilPage() {
   const [logoutAsk, setLogoutAsk] = useState(false);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace('/login');
+    if (!isLoading && !user) router.replace('/mob/prijava');
   }, [user, isLoading, router]);
 
   if (isLoading || !user || permissionsPending) {
@@ -89,11 +90,7 @@ export default function MobProfilPage() {
     );
   }
   if (permissionsError) {
-    return (
-      <main className="grid min-h-dvh place-items-center bg-app p-6 text-center text-sm text-ink-secondary">
-        Ne mogu da učitam tvoja prava (mreža?). Proveri vezu pa osveži stranicu.
-      </main>
-    );
+    return <MobPermissionsError />;
   }
 
   const employee = meQ.data?.data.employee ?? null;
@@ -104,8 +101,10 @@ export default function MobProfilPage() {
   const goLeft = summary?.vacationDaysRemaining;
 
   /** Opis radnog mesta u PDF — isti generator kao desktop „Opis pozicije (PDF)".
-   *  SAMO preuzimanje (`downloadBlob`): `openBlob` otvara novi tab, a APK WebView
-   *  ga blokira (isti razlog kao rešenje o GO na /mob/odsustva). */
+   *  Isporuka ide kroz `deliverPdf` (Web Share na telefonu → „Sačuvaj u Fajlove",
+   *  inače preuzimanje) — `openBlob` je pod `/mob` zabranjen: instalirana PWA nema
+   *  gde da otvori tab. Generator se uvozi LENJO (jsPDF ~410 KB ne sme u početni
+   *  paket ekrana koji se otvara na telefonu u pogonu). */
   async function onPositionPdf() {
     if (!position) {
       toast('Tvoja pozicija nije povezana sa opisom posla — obrati se HR-u.');
@@ -113,12 +112,12 @@ export default function MobProfilPage() {
     }
     setPdfBusy(true);
     try {
+      const { generateJobPositionPdf } = await import('@/lib/hr-pdf/job-position');
       const { blob, fileName } = await generateJobPositionPdf(
         position,
         fullName ? { fullName } : null,
       );
-      downloadBlob(blob, fileName);
-      toast('Opis pozicije preuzet.');
+      toast(deliveryMessage(await deliverPdf(blob, fileName), 'Opis pozicije'));
     } catch (e) {
       toast(e instanceof Error ? `PDF nije uspeo: ${e.message}` : 'PDF nije uspeo.');
     } finally {
@@ -249,7 +248,8 @@ export default function MobProfilPage() {
             Namerno SAMO ovde: u zaglavlju ljuske ili donjoj traci bio bi na dohvat
             slučajnog dodira usred posla u magacinu (rukavice, jedna ruka).
             `logout()` sam ne preusmerava (isto kao desktop AppShell) → posle njega
-            eksplicitno idemo na /login, da se ne čeka reaktivni guard efekat. */}
+            eksplicitno idemo na /mob/prijava, da se ne čeka reaktivni guard efekat
+            (prijava je U SCOPE-U instalirane app — v. `app/mob/prijava/page.tsx`). */}
         <section className="mt-6 space-y-2 border-t border-line pt-4">
           <p className="text-xs text-ink-secondary">
             Prijavljen kao <span className="font-medium text-ink">{fullName}</span>
@@ -265,7 +265,7 @@ export default function MobProfilPage() {
                   className="h-11 flex-1"
                   onClick={() => {
                     logout();
-                    router.replace('/login');
+                    router.replace('/mob/prijava');
                   }}
                 >
                   Da, odjavi me
