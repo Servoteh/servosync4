@@ -174,6 +174,15 @@ describe("LocationsService.lookupDrawing — work_orders pa sy15 keš", () => {
       nazivDela: null,
       source: "bigtehn_cache",
     });
+    // M2 (verify 03.08): dupli ident_broj u kešu (npr. 9400/3/193) — izbor mora
+    // biti DETERMINISTIČKI i preferirati MES-aktivan red (1.0 je aktivni view
+    // čitao pre punog keša): čita se view sa is_mes_active + čvrst ORDER BY.
+    const call = sy15.db.$queryRaw.mock.calls[0] as unknown as [
+      { strings?: readonly string[] },
+    ];
+    const sqlText = (call[0].strings ?? []).join(" ");
+    expect(sqlText).toContain("v_bigtehn_work_orders_with_mes_active");
+    expect(sqlText).toContain("ORDER BY (is_mes_active IS TRUE) DESC, id ASC");
   });
 
   it("placeholder crtež (samo tačka) → found ali PRAZAN drawingNo (ne autofill-uje 'tačku')", async () => {

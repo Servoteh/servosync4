@@ -56,15 +56,25 @@ function locClassRank(l: LocLocation): number {
 }
 
 /**
- * Ključ prirodnog sortiranja: `pathCached` nosi „hala > polica" pa prirodno
- * poređenje po njemu daje 1.0 redosled „prvo hala (A–Z), pa polica (A–Z)"
- * (paritet `sortShelvesByHallThenCode`) bez šetnje po parentId lancu.
+ * Ključ GRUPNOG sortiranja: `pathCached` nosi „hala > …" pa prirodno poređenje
+ * po njemu grupiše po hali (paritet `sortShelvesByHallThenCode` — prvo hala A–Z).
+ *
+ * ⚠️ `path_cached` se gradi iz NAZIVA (ne šifri) i NE razlikuje police iste
+ * hale: izmereno na produ 03.08.2026, 1098/1111 aktivnih polica deli identičan
+ * path sa nekom drugom policom (sve police Hale 2a = „Hala 2a-proizvodnja ›
+ * Proizvodnja"). Zato je poređenje DVOSTEPENO (v. `compareLocOptions`): path
+ * odredi grupu/halu, a `locationCode` redosled UNUTAR nje — bez drugog stepena
+ * komparator vrati 0 i redosled polica u hali ostane proizvoljan serverski
+ * (baš ono na šta se prijava žalila).
  */
 function locSortKey(l: LocLocation): string {
   return l.pathCached || l.locationCode;
 }
 
-/** Puno 1.0 poređenje dve lokacije (razred → KV broj → prirodno po ključu). */
+/**
+ * Puno 1.0 poređenje dve lokacije: razred → KV broj → prirodno po path grupi →
+ * prirodno po ŠIFRI (1.0 `compareLocationCodeNatural`) kao presuda unutar grupe.
+ */
 function compareLocOptions(a: LocLocation, b: LocLocation, byClass: boolean): number {
   if (byClass) {
     const dr = locClassRank(a) - locClassRank(b);
@@ -75,7 +85,10 @@ function compareLocOptions(a: LocLocation, b: LocLocation, byClass: boolean): nu
       if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
     }
   }
-  return naturalSr(locSortKey(a), locSortKey(b));
+  return (
+    naturalSr(locSortKey(a), locSortKey(b)) ||
+    naturalSr(a.locationCode, b.locationCode)
+  );
 }
 
 /**

@@ -873,7 +873,12 @@ export class LocationsService {
       }));
       let source = "work_orders";
 
-      // 2) sy15 BigTehn keš — legacy redovi kojih u glavnoj bazi nema.
+      // 2) sy15 BigTehn keš — legacy redovi kojih u glavnoj bazi nema. Čita se
+      // kroz `v_bigtehn_work_orders_with_mes_active` (keš + `is_mes_active` iz
+      // `production_active_work_orders`) sa DETERMINISTIČKIM redosledom:
+      // MES-aktivan red PRVI (paritet 1.0, koji je aktivni view čitao pre punog
+      // keša — dupli ident_broj tipa `9400/3/193` inače vrati proizvoljan red,
+      // promenljiv i posle VACUUM-a), pa `id` kao tie-break.
       if (!rows.length) {
         const cached = await this.sy15.db.$queryRaw<
           {
@@ -885,12 +890,14 @@ export class LocationsService {
         >(
           varijanta != null
             ? Prisma.sql`SELECT ident_broj, broj_crteza, revizija, naziv_dela
-                         FROM public.bigtehn_work_orders_cache
+                         FROM public.v_bigtehn_work_orders_with_mes_active
                          WHERE ident_broj = ${cand} AND varijanta = ${varijanta}
+                         ORDER BY (is_mes_active IS TRUE) DESC, id ASC
                          LIMIT 8`
             : Prisma.sql`SELECT ident_broj, broj_crteza, revizija, naziv_dela
-                         FROM public.bigtehn_work_orders_cache
+                         FROM public.v_bigtehn_work_orders_with_mes_active
                          WHERE ident_broj = ${cand}
+                         ORDER BY (is_mes_active IS TRUE) DESC, id ASC
                          LIMIT 8`,
         );
         rows = cached.map((r) => ({
