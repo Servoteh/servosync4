@@ -10,7 +10,7 @@ import {
 } from '@/api/plan-proizvodnje';
 import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatDecimal } from '@/lib/format';
 import { HaleDialog } from './hale-dialog';
 import { GantStavkaDialog } from './gant-stavka-dialog';
 import { DodajNaPlanDialog } from './gant-dodaj-dialog';
@@ -22,6 +22,7 @@ import {
   dayDiff,
   groupRows,
   isoDay,
+  machineRangeMinutes,
   rowKey,
   startOfDay,
 } from './gant-utils';
@@ -344,9 +345,15 @@ export function GanttTab() {
                   </div>
                   <div style={{ width: timelineW }} />
                 </div>
-                {g.machines.map((m) => (
+                {g.machines.map((m) => {
+                  // A1 (046/26): zbir planiranih sati stavki mašine u prikazanom prozoru.
+                  const minuti = machineRangeMinutes(m.rows, rangeStart, days);
+                  return (
                   <div key={`${g.hall}:${m.machine}`}>
-                    <div className="flex border-b border-line-soft bg-surface">
+                    {/* A3 (046/26): red mašine kao vidljiv razdelnik grupa — nijansa
+                        pozadine (surface-2) + puna `line` ivica gore/dole, umesto
+                        stapanja sa redovima stavki (bez novih boja — postojeći tokeni). */}
+                    <div className="flex border-y border-line bg-surface-2/40">
                       <div
                         className="shrink-0 px-3 py-1 pl-5 text-xs font-medium text-ink-secondary"
                         style={{ width: LABEL_W }}
@@ -354,10 +361,18 @@ export function GanttTab() {
                         {m.machine}
                         {m.machineName ? <span className="ml-1 text-ink-disabled">· {m.machineName}</span> : null}
                         <span className="ml-1 text-ink-disabled">({m.rows.length})</span>
+                        {minuti > 0 ? (
+                          <span
+                            className="ml-1 tnums text-ink-disabled"
+                            title="Zbir planiranih sati stavki ove mašine u prikazanom opsegu (override ili TPZ + TK × kom)"
+                          >
+                            · {formatDecimal(minuti / 60, 1)} h
+                          </span>
+                        ) : null}
                       </div>
                       <div style={{ width: timelineW }} />
                     </div>
-                    {m.rows.map((r) => {
+                    {m.rows.map((r, redniBroj) => {
                       const key = rowKey(r);
                       const d = drag?.key === key ? drag : null;
                       return (
@@ -369,6 +384,9 @@ export function GanttTab() {
                               className="block w-full truncate text-left text-ink hover:underline"
                               title={`${r.broj_crteza ?? ''} · ${r.naziv_dela ?? ''}`}
                             >
+                              {/* A2 (046/26): redni broj stavke unutar mašine po prikazanom
+                                  redosledu — osnova za buduće „poveži rednim brojem" (Paket C). */}
+                              <span className="tnums text-ink-disabled">{redniBroj + 1}.</span>{' '}
                               <span className="tnums text-ink-secondary">{r.rn_ident_broj ?? '—'}</span>{' '}
                               {r.naziv_dela ?? r.broj_crteza ?? '(bez naziva)'}
                             </button>
@@ -403,7 +421,8 @@ export function GanttTab() {
                       );
                     })}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ))}
           </div>

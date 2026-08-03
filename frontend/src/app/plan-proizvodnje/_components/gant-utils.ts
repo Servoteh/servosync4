@@ -103,6 +103,33 @@ export function rowKey(r: { work_order_id: string; line_id: string }): string {
   return `${r.work_order_id}:${r.line_id}`;
 }
 
+/**
+ * Zbir planiranih MINUTA stavki mašine čiji bar seče prikazani prozor
+ * [rangeStart, rangeStart + days) — za „· 38,5 h" u redu grupe mašine (046/26-A1).
+ *
+ * Sat = efektivno trajanje rada (override ili TPZ + TK × kom), NE raspon bara: planer
+ * ume da razvuče bar preko vikenda/zastoja, pa bi sabiranje raspona duplo naduvalo
+ * opterećenje mašine. „U opsegu" = bar SEČE prozor (stavka se broji cela — rad nije
+ * ravnomerno razmazan po danima, pa proporcionalno seckanje ne bi bilo istinitije).
+ * Računa se na FE nad UČITANIM redovima (isti skup koji se i crta).
+ */
+export function machineRangeMinutes(
+  rows: GanttRow[],
+  rangeStart: Date,
+  days: number,
+): number {
+  const from = startOfDay(rangeStart).getTime();
+  const to = from + days * DAY_MS;
+  let sum = 0;
+  for (const r of rows) {
+    if (!r.planned_start_at) continue;
+    const s = new Date(r.planned_start_at).getTime();
+    const e = barEnd(r).getTime();
+    if (s < to && e > from) sum += Math.max(effectiveMinutes(r), 0);
+  }
+  return sum;
+}
+
 export interface MachineGroup {
   machine: string;
   machineName: string | null;
