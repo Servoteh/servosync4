@@ -176,7 +176,10 @@ export function OperationsTable({
                 <td className="px-3 py-1.5 text-ink">
                   {op.operation?.workCenterName ?? op.workCenterCode}
                 </td>
-                <td className="px-3 py-1.5 text-ink">{op.workDescription}</td>
+                {/* Opis rada je višelinijski (009/26) — prelomi reda koje je
+                    korisnik otkucao moraju da se vide i u tabeli, ne da se
+                    skupe u jedan red (podrazumevano `white-space: normal`). */}
+                <td className="whitespace-pre-line px-3 py-1.5 text-ink">{op.workDescription}</td>
                 <td className="tnums px-3 py-1.5 text-right text-ink-secondary">
                   {op.setupTime != null ? fmtNum(op.setupTime) : '—'}
                 </td>
