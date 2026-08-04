@@ -1,10 +1,11 @@
 /**
  * Lokacije/magacin — PREPOZNAVANJE OBLIKA barkoda na klijentu.
  *
- * ⚠️ Ovo NIJE parser i NE zamenjuje backend: razrešavanje ostaje na
+ * ⚠️ Backend ostaje autoritet razrešavanja: kamera-put ide na
  * `GET /v1/locations/lookups/barcode` (`backend/src/modules/locations/barcode.ts`,
- * veran port 1.0 `barcodeParse.js`). Ovde su samo GRUBI predikati oblika, potrebni
- * u dva trenutka kada nema vremena/mreže za backend:
+ * veran port 1.0 `barcodeParse.js`). Ovde su GRUBI predikati oblika + od
+ * 04.08.2026 i `parseLocItemBarcode` (izvlačenje grupa NAD ISTIM regexima),
+ * potrebni u trenucima kada nema vremena/mreže za backend:
  *
  *   1. IZBOR KODA IZ KADRA — kad nativni `BarcodeDetector` u jednom frejmu nađe
  *      više barkoda (na štampanom radnom nalogu barkodovi operacija stoje jedan
@@ -14,6 +15,17 @@
  *   2. FALLBACK PORUKA — ako backend nije odgovorio, skener ipak može da kaže da
  *      je skeniran barkod OPERACIJE (tekst je identičan `OPERATION_BARCODE_MESSAGE`
  *      sa backend-a, koji je i dalje jedini autoritet).
+ *   3. FORM-WEDGE + PASTE (prijava 04.08, `movement-dialog`): stoni HID čitač
+ *      kuca kod pravo u fokusirano polje forme (dijalog je otvoren, kamera
+ *      overlay NIJE — nijedan dosadašnji hvatač tu ne radi), a korisnik ume i da
+ *      NALEPI sirov `RNZ:…` string u „Broj naloga"/„Broj TP". Oba puta moraju
+ *      SINHRONO (i offline) da rasporede kod po poljima — zato parse živi i na
+ *      klijentu. ⚠️ `parseLocItemBarcode` MORA ostati poravnat sa backend
+ *      `parseCleanBigTehnBarcode` (isti regexi, iste grupe); NE radi keyboard-
+ *      wedge POPRAVKU (SR raspored — v. napomenu uz `RNZ_SHAPE`) ni loose-compact
+ *      fallback (`]C` prefiks, GS separatori — to su kamera artefakti, BE put) i
+ *      NE primenjuje 9400 fold — pozivalac ga radi kroz `normalizeLocMovementKeys`
+ *      (isti redosled kao 1.0 `refreshErpFromOrderTpFields`).
  *
  * Oblici (vidi `backend/src/modules/tech-processes/barcode.ts`):
  *   • `RNZ:{idPredmeta}:{nalog}/{tp}:{varijanta}:{revizija}` — barkod NALOGA
@@ -53,14 +65,17 @@ function clean(raw: unknown): string {
  * popravilo, a moglo bi da pokvari šifre polica sa „Č"/„Ž".
  */
 const RNZ_SHAPE =
-  /^RNZ\s*[:|;]\s*\d{1,10}\s*[:|;]\s*[0-9][0-9-]{0,12}\s*[/\\]\s*[A-Za-z0-9._/-]{1,64}\s*[:|;]\s*\d+\s*[:|;]\s*[A-Za-z0-9._-]{1,10}\s*$/i;
+  /^RNZ\s*[:|;]\s*(\d{1,10})\s*[:|;]\s*([0-9][0-9-]{0,12})\s*[/\\]\s*([A-Za-z0-9._/-]{1,64})\s*[:|;]\s*(\d+)\s*[:|;]\s*([A-Za-z0-9._-]{1,10})\s*$/i;
 
 /** `{nalog}/{crtez}` — stara short nalepnica. */
-const SHORT_SHAPE = /^\d{1,8}\s*[/\\\-_ ]\s*\d{1,10}$/;
+const SHORT_SHAPE = /^(\d{1,8})\s*[/\\\-_ ]\s*(\d{1,10})$/;
 
-/** `{interniId}:{nalog}/{tp}:{varijanta}` — kompaktna nalepnica (čitač šalje i `|`/`;`). */
+/**
+ * `{interniId}:{nalog}/{tp}:{varijanta}` — kompaktna nalepnica (čitač šalje i
+ * `|`/`;`; BE isto pokriva kroz `normalizeNonRnzSeparators` pre `compactRe`).
+ */
 const COMPACT_SHAPE =
-  /^\d{1,10}\s*[:;|]\s*\d{1,8}\s*[/\\]\s*[A-Za-z0-9._-]+\s*[:;|]\s*\d+\s*$/i;
+  /^(\d{1,10})\s*[:;|]\s*(\d{1,8})\s*[/\\]\s*([A-Za-z0-9._-]+)\s*[:;|]\s*(\d+)\s*$/i;
 
 /** `S:{op}:{rc}:0:{rev}` — barkod OPERACIJE (strogo 5 polja, marker `S`). */
 const OPERATION_SHAPE =
@@ -68,9 +83,46 @@ const OPERATION_SHAPE =
 
 /** Da li kod IZGLEDA kao stavka za magacin (RNZ / short / compact). */
 export function looksLikeLocItemBarcode(raw: unknown): boolean {
+  return parseLocItemBarcode(raw) != null;
+}
+
+/** Rezultat klijentskog parsiranja ITEM nalepnice — podskup BE `ParsedBarcode`. */
+export interface LocItemLabelParse {
+  /** SIROVE grupe iz regexa — pozivalac primenjuje `normalizeLocMovementKeys` (9400 fold). */
+  orderNo: string;
+  itemRefId: string;
+  /** Samo `short` nalepnica nosi crtež (RNZ/compact ga NEMAJU — dočitava se iz baze). */
+  drawingNo: string;
+  /** RNZ/compact: segment posle TP (ERP `varijanta`) — sužava lookup crteža. */
+  varijanta?: string;
+  format: 'rnz' | 'short' | 'compact';
+  /** Očišćen tekst koji je stvarno parsiran (za banner „Skenirano: …"). */
+  raw: string;
+}
+
+/**
+ * Klijentsko parsiranje ITEM nalepnice (form-wedge hvatač + paste u polja
+ * `movement-dialog`-a) — grupe NAD ISTIM regexima kao `looksLikeLocItemBarcode`,
+ * poravnato sa BE `parseCleanBigTehnBarcode` (v. zaglavlje fajla za šta se ovde
+ * NAMERNO ne radi: SR-wedge popravka, loose-compact, 9400 fold).
+ */
+export function parseLocItemBarcode(raw: unknown): LocItemLabelParse | null {
   const t = clean(raw);
-  if (!t) return false;
-  return RNZ_SHAPE.test(t) || SHORT_SHAPE.test(t) || COMPACT_SHAPE.test(t);
+  if (!t) return null;
+  const rnz = RNZ_SHAPE.exec(t);
+  if (rnz) {
+    return { orderNo: rnz[2], itemRefId: rnz[3], drawingNo: '', varijanta: rnz[4], format: 'rnz', raw: t };
+  }
+  const short = SHORT_SHAPE.exec(t);
+  if (short) {
+    // Kao BE: `itemRefId = drawingNo` (short nalepnica identifikuje deo crtežom).
+    return { orderNo: short[1], itemRefId: short[2], drawingNo: short[2], format: 'short', raw: t };
+  }
+  const compact = COMPACT_SHAPE.exec(t);
+  if (compact) {
+    return { orderNo: compact[2], itemRefId: compact[3], drawingNo: '', varijanta: compact[4], format: 'compact', raw: t };
+  }
+  return null;
 }
 
 /** Da li je kod barkod OPERACIJE (`S:…`) — za magacin neupotrebljiv. */

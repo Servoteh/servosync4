@@ -3,7 +3,8 @@
 import { useEffect, useRef } from 'react';
 
 /**
- * `useHidScanBuffer` — LOKALNI HID („keyboard wedge") bafer unutar punoekranskog skenera.
+ * `useHidScanBuffer` — LOKALNI HID („keyboard wedge") bafer unutar punoekranskog skenera
+ * i (od 04.08.2026) FORM-WEDGE hvatač unutar otvorene forme/dijaloga.
  *
  * ZAŠTO (regresija 02.08.2026, Android/kiosk): dok je skener otvoren, sken sa
  * Bluetooth/USB čitača nije imao gde da padne.
@@ -22,21 +23,70 @@ import { useEffect, useRef } from 'react';
  * kuca nikad ne napravi 4+ znaka sa razmakom < 80 ms), na `Enter` predaj kod od bar 4
  * znaka i utišaj isti kod 1,5 s (dupli okidač čitača).
  *
- * Ćuti dok je fokus U POLJU (input/select/textarea/contentEditable) — tada kucanje i
- * `Enter` pripadaju formi ljuske (ručni unos), pa bi bafer poslao kod DVA puta.
+ * PODRAZUMEVANO ćuti dok je fokus U POLJU (input/select/textarea/contentEditable) —
+ * tada kucanje i `Enter` pripadaju formi ljuske (ručni unos), pa bi bafer poslao kod
+ * DVA puta. To je režim svih skener-overlay ljuski i on se OVIM NE MENJA.
  *
- * @param enabled  Isključi kad skener ne prima kod (npr. iOS blokada kamere je bez veze
- *                 sa ovim — HID tada i dalje treba; koristi `false` samo za pravu pauzu).
- * @param onCode   Prima očišćen kod; ljuska ga vodi kroz svoj `resolve` (isti put kao
- *                 kamera i ručni unos, uključujući normalizaciju i anti-dupli gard).
+ * ─── FORM-WEDGE režim (`captureMarkedFields`, prijava 04.08.2026) ───────────────
+ * U OTVORENOJ FORMI (npr. „Premesti stavku") stoni čitač kuca pravo u fokusirano
+ * polje: ceo `RNZ:…` string sleti sirov u „Broj TP", parser se nikad ne pozove.
+ * `captureMarkedFields: true` zato bafer puni I DOK JE FOKUS U POLJU — ali SAMO u
+ * polju koje vlasnik OZNAČI sa `data-hid-wedge-field="…"` (svoja polja forme).
+ * NEoznačeno tekstualno polje (npr. pretraga police u `LocationSelect`) ostaje pun
+ * vlasnik svog unosa — bafer se tu resetuje kao i do sada, pa se dva hvatača
+ * (form-wedge i eventualni hvatač samog polja) NIKAD ne sudaraju. Ne-tekstualni
+ * elementi (checkbox/radio/dugme) ne primaju karaktere pa se tretiraju kao „van
+ * polja". Karakteri bursta se NE presreću (do `Enter`-a ne znamo da li je sken) —
+ * zato hook uz kod predaje i SNAPSHOT polja sa početka bursta
+ * (`HidScanFieldContext`), kojim vlasnik vraća upisani višak iz svog state-a.
+ * `accept` (npr. provera oblika barkoda) + `minLength` čuvaju NORMALNO kucanje:
+ * `Enter` se guta samo kad je burst brz (RESET_MS gejt), dovoljno dug i prihvaćen —
+ * inače prolazi netaknut.
+ *
+ * @param enabled  Isključi kad hvatač ne sme da prima kod (npr. dok je preko forme
+ *                 otvoren kamera overlay sa SVOJIM hvatačem).
+ * @param onCode   Prima očišćen kod (+ kontekst polja u form-wedge režimu); ljuska
+ *                 ga vodi kroz svoj `resolve`/parse put (isti kao kamera).
  */
-export function useHidScanBuffer(enabled: boolean, onCode: (code: string) => void): void {
-  // Callback je inline literal (nov identitet po renderu) — u ref-u, da se slušalac ne
-  // skida i ne vezuje na svaki render ljuske (a time i ne gubi bafer usred skena).
+export interface HidScanFieldContext {
+  /** Označeno polje (`data-hid-wedge-field`) u kome je burst završio; `null` = fokus van polja. */
+  field: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+  /** Vrednost polja PRE prvog znaka bursta — vlasnik njome vraća upisani višak. */
+  valueBefore: string;
+}
+
+export interface HidScanBufferOptions {
+  /**
+   * Form-wedge režim: hvataj i dok je fokus u polju označenom
+   * `data-hid-wedge-field`; NEoznačena tekstualna polja i dalje resetuju bafer.
+   */
+  captureMarkedFields?: boolean;
+  /**
+   * Presudi da li je kod „naš" (npr. oblik ITEM nalepnice). Kad vrati `false`,
+   * `Enter` se NE guta — pripada formi (obavezno u form-wedge režimu, da ručni
+   * unos + Enter ne bude ometan).
+   */
+  accept?: (code: string) => boolean;
+  /** Minimalna dužina koda (default 4; form-wedge tipično traži više). */
+  minLength?: number;
+}
+
+export function useHidScanBuffer(
+  enabled: boolean,
+  onCode: (code: string, ctx: HidScanFieldContext | null) => void,
+  opts?: HidScanBufferOptions,
+): void {
+  // Callback/opcije su inline literali (nov identitet po renderu) — u ref-u, da se
+  // slušalac ne skida i ne vezuje na svaki render ljuske (a time i ne gubi bafer
+  // usred skena). Efekat zavisi samo od `enabled` + režima.
   const cbRef = useRef(onCode);
+  const optsRef = useRef(opts);
   useEffect(() => {
     cbRef.current = onCode;
+    optsRef.current = opts;
   });
+
+  const captureMarked = !!opts?.captureMarkedFields;
 
   useEffect(() => {
     if (!enabled) return;
@@ -50,42 +100,77 @@ export function useHidScanBuffer(enabled: boolean, onCode: (code: string) => voi
     let lastKeyAt = 0;
     let lastCode = '';
     let lastAt = 0;
+    /** Snapshot označenog polja sa POČETKA bursta (form-wedge). */
+    let burstField: HidScanFieldContext | null = null;
 
-    const focusInField = (): boolean => {
-      const ae = document.activeElement;
-      if (!ae) return false;
+    type FocusKind = 'none' | 'marked' | 'foreign';
+    const classifyFocus = (): { kind: FocusKind; el?: HidScanFieldContext['field'] } => {
+      const ae = document.activeElement as HTMLElement | null;
+      if (!ae) return { kind: 'none' };
       const tag = ae.tagName;
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return true;
-      return (ae as HTMLElement).isContentEditable === true;
+      const isField =
+        tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || ae.isContentEditable === true;
+      if (!isField) return { kind: 'none' };
+      if (!captureMarked) return { kind: 'foreign' }; // postojeće ponašanje ljuski
+      if (
+        (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') &&
+        ae.dataset.hidWedgeField != null
+      ) {
+        return { kind: 'marked', el: ae as HidScanFieldContext['field'] };
+      }
+      // Checkbox/radio/dugme ne primaju karaktere — burst preko njih je „van polja".
+      if (tag === 'INPUT') {
+        const t = (ae as HTMLInputElement).type;
+        if (t === 'checkbox' || t === 'radio' || t === 'button' || t === 'submit' || t === 'file' || t === 'range') {
+          return { kind: 'none' };
+        }
+      }
+      return { kind: 'foreign' };
     };
 
     const onKeydown = (ev: KeyboardEvent) => {
-      if (focusInField()) {
+      const focus = classifyFocus();
+      if (focus.kind === 'foreign') {
         buffer = '';
+        burstField = null;
         return;
       }
       const now = Date.now();
-      if (now - lastKeyAt > RESET_MS) buffer = '';
+      if (now - lastKeyAt > RESET_MS) {
+        buffer = '';
+        burstField = null;
+      }
       lastKeyAt = now;
 
       if (ev.key === 'Enter') {
         const code = buffer.trim();
+        const ctx = burstField;
         buffer = '';
-        if (code.length < MIN_LENGTH) return;
+        burstField = null;
+        if (code.length < (optsRef.current?.minLength ?? MIN_LENGTH)) return;
         if (code === lastCode && now - lastAt < THROTTLE_MS) return;
+        // Odbijen kod = NIJE sken → Enter pripada formi (ne diramo ga).
+        if (optsRef.current?.accept && !optsRef.current.accept(code)) return;
         lastCode = code;
         lastAt = now;
         // Enter sa čitača ne sme da „klikne" fokusirano dugme ljuske ni da procuri
         // na sloj ispod (escape-layer/dijalog) — sken je naš od ovog trenutka.
         ev.preventDefault();
         ev.stopPropagation();
-        cbRef.current(code);
+        cbRef.current(code, ctx);
         return;
       }
-      if (ev.key && ev.key.length === 1) buffer += ev.key;
+      if (ev.key && ev.key.length === 1) {
+        // Početak bursta u OZNAČENOM polju → zapamti stanje polja PRE prvog znaka
+        // (keydown stiže pre nego što znak uđe u polje), za kasnije vraćanje.
+        if (buffer === '' && focus.kind === 'marked' && focus.el) {
+          burstField = { field: focus.el, valueBefore: focus.el.value ?? '' };
+        }
+        buffer += ev.key;
+      }
     };
 
     document.addEventListener('keydown', onKeydown, true);
     return () => document.removeEventListener('keydown', onKeydown, true);
-  }, [enabled]);
+  }, [enabled, captureMarked]);
 }

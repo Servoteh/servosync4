@@ -23,6 +23,8 @@ import { computeInitialRemainder } from './initial-remainder';
 import { normalizeLocMovementKeys } from './label-build';
 import { ScanOverlay } from './scan-overlay';
 import { enqueueMovement } from '@/lib/offlineQueue';
+import { parseLocItemBarcode, type LocItemLabelParse } from '@/lib/loc-barcode-shape';
+import { useHidScanBuffer, type HidScanFieldContext } from '@/lib/use-hid-scan-buffer';
 import type { MovementVars } from '@/api/lokacije';
 
 /** Mrežni pad (fetch nije stigao do servera) → gurni u offline queue umesto tvrdog pada. */
@@ -36,6 +38,28 @@ function isNetworkError(e: unknown): boolean {
 
 const INPUT =
   'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
+
+/**
+ * Form-wedge hvatač (prijava Nenada 04.08.2026, fotografija sa mob „Premesti
+ * stavku"): sken `RNZ:10305:9811-5/121:0:B` STONIM (keyboard-wedge) čitačem je
+ * završio SIROV u polju „Broj TP" — čitač kuca kao tastatura pravo u fokusirano
+ * polje. KOREN: dok je dijalog otvoren a kamera overlay zatvoren, NIJEDAN hvatač
+ * ne radi — `useHidScanBuffer` živi samo u ScanOverlay-u (i podrazumevano ćuti
+ * čim je fokus u polju), a globalni desktop hvatač (`reversi-global-scanner`)
+ * namerno ćuti dok postoji `[role="dialog"][aria-modal]` (a `Dialog` to jeste).
+ * Opcije ispod uključuju form-wedge režim helpera:
+ *   • `minLength: 8` — kucanje NORMALNIH vrednosti (nalog „9811-5", 9400 TP
+ *     „2/415") ne sme biti ometano ni teorijski: i da čovek ukuca 5–7 znakova
+ *     brže od 80 ms/znak i pritisne Enter, kod kraći od 8 se ne dira. Realne
+ *     nalepnice su duže (short ≥ ~10, RNZ ≥ ~14).
+ *   • `accept` — samo kod OBLIKA ITEM nalepnice (RNZ/short/compact) sme da se
+ *     presretne; sve ostalo (uklj. shelf kodove) prolazi netaknuto.
+ */
+const WEDGE_OPTS = {
+  captureMarkedFields: true,
+  minLength: 8,
+  accept: (code: string) => parseLocItemBarcode(code) != null,
+} as const;
 
 export interface MovementPreset {
   itemRefTable?: string;
@@ -88,6 +112,23 @@ function nearestHallIdOf(l: LocLocation, byId: Map<string, LocLocation>): string
  * vrednosti (crtež sa „short" nalepnice / raniji lookup), ali NIKAD ručno
  * ukucan crtež (namerno odstupanje od 1.0, koji pri izmeni naloga/TP-a pregazi
  * i ručni unos — ovde je izbor bezbedniji: ništa se tiho ne briše).
+ *
+ * ── HVATAČI SKENA — KO JE AKTIVAN KADA (popravka 04.08.2026, v. `WEDGE_OPTS`) ──
+ *   1. ScanOverlay OTVOREN (`scan !== null`) → NJEGOV `useHidScanBuffer` +
+ *      kamera; form-wedge hvatač je tada ISKLJUČEN (`enabled: scan === null`).
+ *   2. Dijalog otvoren, overlay zatvoren → FORM-WEDGE hvatač (sloj 1): brz HID
+ *      niz + Enter koji parsira kao ITEM nalepnica se presreće i puni polja
+ *      (`applyItemScan` — isti put kao kamera, uklj. auto-crtež/količinu kroz
+ *      postojeći lookup); polje u koje je burst upao se vraća na stanje pre
+ *      bursta. NE presreće: sporo kucanje, kratke kodove (<8), tuđe oblike.
+ *   3. Polja za POLICU (`LocationSelect` pretraga) NISU označena
+ *      (`data-hid-wedge-field`) → form-wedge tamo ćuti; unos (i eventualni
+ *      sopstveni hvatač tog polja) pripada isključivo toj komponenti.
+ *   4. Paste/ručni sirov string u „Broj naloga"/„Broj TP" → sloj 2
+ *      (`maybeExplodeRawLabel`): RNZ/compact se raspakuje na change (paste-like
+ *      skok) / blur / Enter; `short` namerno ne (v. JSDoc te fn).
+ *   Globalni desktop hvatač (`reversi-global-scanner`) i dalje ćuti dok postoji
+ *   `[aria-modal]` dijalog — on nije učesnik ovih pravila.
  *
  * ISTI lookup nosi i broj KOMADA sa naloga (`pieceCount`, 057/26) — kad stavka
  * još nije nigde smeštena, „Količina" se auto-popuni (v. efekat kod
@@ -189,6 +230,99 @@ export function MovementDialog({
     value: preset?.drawingNo ?? '',
     pair: pairKey(preset?.orderNo ?? '', preset?.itemRefId ?? ''),
   });
+
+  /**
+   * Primeni parsiran ITEM barkod na formu — JEDNO mesto za SVA TRI ulaza:
+   * kameru (BE `r.parsed`), stoni wedge hvatač i defanzivno raspakivanje
+   * paste-a (`maybeExplodeRawLabel`). Radi tačno ono što je do 04.08.2026 radio
+   * kamera `onResult`: par (nalog, TP) + scanInfo (banner/varijanta), a crtež
+   * SAMO kad ga barkod nosi (short) — ostalo dočitava postojeći lookup efekat
+   * (crtež + revizija + auto-količina), isti za sve izvore unosa.
+   * `normalizeLocMovementKeys` = 9400 fold (1.0 `refreshErpFromOrderTpFields`);
+   * BE-parsed ulaz je već normalizovan, fn je idempotentna pa ne smeta.
+   */
+  function applyItemScan(p: Pick<LocItemLabelParse, 'orderNo' | 'itemRefId' | 'raw'> & {
+    drawingNo?: string;
+    varijanta?: string;
+  }) {
+    const norm = normalizeLocMovementKeys(p.orderNo, p.itemRefId);
+    setOrderNo(norm.orderNo);
+    setItemRefId(norm.itemRefId);
+    setScanInfo({
+      raw: p.raw,
+      varijanta: p.varijanta,
+      orderNo: norm.orderNo,
+      itemRefId: norm.itemRefId,
+    });
+    if (p.drawingNo) {
+      // „Short" nalepnica JEDINA nosi crtež u barkodu — upiši ga kao AUTO
+      // vrednost SVOG para (ERP lookup sme da je precizira; 1.0 prioritet;
+      // lookup bez pogotka je NE briše — sken je izvor).
+      autoDrawingRef.current = {
+        value: p.drawingNo,
+        pair: pairKey(norm.orderNo, norm.itemRefId),
+      };
+      setDrawingNo(p.drawingNo);
+    }
+  }
+
+  /**
+   * Vrati polje u koje je wedge burst upao na stanje PRE bursta (karakteri se ne
+   * presreću, pa su već ušli u kontrolisani state — v. `use-hid-scan-buffer`).
+   * Vraća se KROZ STATE (ne DOM), po markeru `data-hid-wedge-field`; polja koja
+   * `applyItemScan` ionako prepisuje (nalog/TP) svejedno prvo vratimo — poslednji
+   * `set` pobeđuje, a redosled restore→apply drži logiku jednostavnom.
+   */
+  function restoreWedgeField(ctx: HidScanFieldContext) {
+    const v = ctx.valueBefore;
+    switch (ctx.field.dataset.hidWedgeField) {
+      case 'order': setOrderNo(v); break;
+      case 'item': setItemRefId(v); break;
+      case 'drawing': setDrawingNo(v); break;
+      case 'qty': setQuantity(v); break;
+      case 'reason': setReason(v); break;
+      case 'note': setNote(v); break;
+      case 'movementType':
+        // Burst slova ume da „prošeta" select (letter-navigacija) — vrati izbor.
+        if ((MOVEMENT_TYPES as readonly string[]).includes(v)) setMovementType(v as LocMovementType);
+        break;
+    }
+  }
+
+  /**
+   * DEFANZIVNA NORMALIZACIJA polja „Broj naloga"/„Broj TP" (sloj 2 popravke
+   * 04.08): sirov `RNZ:…`/compact string koji u polje stigne PASTE-om ili ručno
+   * se parsira i rasporedi po poljima umesto da ostane sirov. `short` format
+   * ({nalog}/{crtež}) se NAMERNO NE dira: nerazlučiv je od legitimnog ručnog
+   * unosa (nalog „9811-5" mu odgovara, kao i 9400 TP „2/415") — njega hvata samo
+   * brzinski wedge hvatač (sloj 1), gde brzina+dužina isključuju čoveka.
+   */
+  function maybeExplodeRawLabel(value: string): boolean {
+    const p = parseLocItemBarcode(value);
+    if (!p || p.format === 'short') return false;
+    applyItemScan(p);
+    setError(null);
+    return true;
+  }
+
+  // ── SLOJ 1: form-wedge hvatač (stoni čitač dok je dijalog otvoren) ─────────
+  // Aktivan SAMO dok kamera overlay NIJE otvoren — otvoren ScanOverlay ima SVOJ
+  // `useHidScanBuffer` (i svoj resolve put), dva hvatača nikad ne rade zajedno.
+  // Podela sa poljima za POLICU (LocationSelect „Pretraži policu…"): ta polja
+  // NISU označena sa `data-hid-wedge-field`, pa helper u njima ĆUTI — vlasnik
+  // unosa (i eventualni sopstveni hvatač tog polja) je sama komponenta. Naša
+  // označena polja + fokus van polja pripadaju ovom hvataču.
+  useHidScanBuffer(
+    scan === null,
+    (code, ctx) => {
+      const p = parseLocItemBarcode(code);
+      if (!p) return; // `accept` već filtrira — čista brana
+      if (ctx) restoreWedgeField(ctx);
+      applyItemScan(p);
+      setError(null);
+    },
+    WEDGE_OPTS,
+  );
 
   useEffect(() => {
     const o = orderNo.trim();
@@ -567,14 +701,42 @@ export function MovementDialog({
           )}
 
           <div className="grid grid-cols-2 gap-3">
+            {/* `data-hid-wedge-field` = polje pripada form-wedge hvataču (v. gore).
+                onChange raspakuje SAMO paste-like skok (>2 znaka odjednom) — kucanje
+                znak-po-znak ne dira (wedge burst rešava sloj 1 na Enter, a spor ručni
+                unos sirovog stringa raspakuje blur/Enter). */}
             <FormField label="Broj naloga">
-              <input className={INPUT} value={orderNo} onChange={(e) => setOrderNo(e.target.value)} placeholder="npr. 7351" />
+              <input
+                className={INPUT}
+                data-hid-wedge-field="order"
+                value={orderNo}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v.length - orderNo.length > 2 && maybeExplodeRawLabel(v)) return;
+                  setOrderNo(v);
+                }}
+                onBlur={() => { maybeExplodeRawLabel(orderNo); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') maybeExplodeRawLabel(orderNo); }}
+                placeholder="npr. 7351"
+              />
             </FormField>
             <FormField label="Broj TP" required>
               <div className="flex gap-1.5">
                 {/* min-w-0: bez ovoga input (flex item, intrinzični min-width) gura
                     skener dugme van ivice dijaloga na telefonu (grid kolona ~140px). */}
-                <input className={`${INPUT} min-w-0`} value={itemRefId} onChange={(e) => setItemRefId(e.target.value)} placeholder="npr. 1088" />
+                <input
+                  className={`${INPUT} min-w-0`}
+                  data-hid-wedge-field="item"
+                  value={itemRefId}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v.length - itemRefId.length > 2 && maybeExplodeRawLabel(v)) return;
+                    setItemRefId(v);
+                  }}
+                  onBlur={() => { maybeExplodeRawLabel(itemRefId); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') maybeExplodeRawLabel(itemRefId); }}
+                  placeholder="npr. 1088"
+                />
                 <button
                   type="button"
                   onClick={() => setScan('item')}
@@ -592,7 +754,7 @@ export function MovementDialog({
             label="Broj crteža"
             hint="Prepiši sa teksta nalepnice — nije u barkodu. Popunjava se automatski kad par (nalog, TP) postoji u planu."
           >
-            <input className={INPUT} value={drawingNo} onChange={(e) => setDrawingNo(e.target.value)} placeholder="npr. 1128816" />
+            <input className={INPUT} data-hid-wedge-field="drawing" value={drawingNo} onChange={(e) => setDrawingNo(e.target.value)} placeholder="npr. 1128816" />
             {erpRevision && erpDrawing && drawingNo.trim() === erpDrawing ? (
               <p className="mt-1 text-xs text-ink-secondary">Revizija crteža (BigTehn): {erpRevision}</p>
             ) : null}
@@ -681,6 +843,7 @@ export function MovementDialog({
             <FormField label="Tip pokreta" required>
               <select
                 className={INPUT}
+                data-hid-wedge-field="movementType"
                 value={movementType}
                 onChange={(e) => setMovementType(e.target.value as LocMovementType)}
               >
@@ -710,7 +873,7 @@ export function MovementDialog({
 
           {/* Količina PRE odredišta — redosled 1.0 forme (Sa lokacije → Količina → Na lokaciju). */}
           <FormField label="Količina" required>
-            <input className={INPUT} type="number" min={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+            <input className={INPUT} data-hid-wedge-field="qty" type="number" min={1} value={quantity} onChange={(e) => setQuantity(e.target.value)} />
           </FormField>
 
           {movementType !== 'SCRAP' && (
@@ -760,10 +923,10 @@ export function MovementDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <FormField label="Razlog">
-              <input className={INPUT} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="opciono" />
+              <input className={INPUT} data-hid-wedge-field="reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="opciono" />
             </FormField>
             <FormField label="Napomena">
-              <input className={INPUT} value={note} onChange={(e) => setNote(e.target.value)} placeholder="opciono" />
+              <input className={INPUT} data-hid-wedge-field="note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="opciono" />
             </FormField>
           </div>
 
@@ -781,26 +944,8 @@ export function MovementDialog({
           title="Skeniraj stavku"
           accept={['ITEM']}
           onResult={(r) => {
-            if (r.kind === 'ITEM') {
-              setOrderNo(r.parsed.orderNo);
-              setItemRefId(r.parsed.itemRefId);
-              setScanInfo({
-                raw: r.parsed.raw,
-                varijanta: r.parsed.varijanta,
-                orderNo: r.parsed.orderNo,
-                itemRefId: r.parsed.itemRefId,
-              });
-              if (r.parsed.drawingNo) {
-                // „Short" nalepnica JEDINA nosi crtež u barkodu — upiši ga kao
-                // AUTO vrednost SVOG para (ERP lookup sme da je precizira; 1.0
-                // prioritet; lookup bez pogotka je NE briše — sken je izvor).
-                autoDrawingRef.current = {
-                  value: r.parsed.drawingNo,
-                  pair: pairKey(r.parsed.orderNo, r.parsed.itemRefId),
-                };
-                setDrawingNo(r.parsed.drawingNo);
-              }
-            }
+            // Ista primena kao wedge/paste put — `applyItemScan` (jedan izvor istine).
+            if (r.kind === 'ITEM') applyItemScan(r.parsed);
           }}
           onClose={() => setScan(null)}
         />
