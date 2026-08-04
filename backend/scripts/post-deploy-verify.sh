@@ -40,25 +40,21 @@ esac
 # 2) Nest boot uspešan (hvata dist/main.js / rootDir drift)
 # Ceo log (ne --tail): boot poruka je na vrhu, a kontejner koji dugo radi ima
 # hiljade runtime linija ispod. Ali crash-loop se vidi po ponovljenom modulu.
-# ⚠️ Grep DIREKTNO nad tokom, bez $(...) hvatanja u promenljivu: capture celog
-# živog log toka je 04.08. tri puta ISPUSTIO boot marker (lažni 🔴 dok su svi
-# endpointi bili zeleni) — multiplex frame trka pri konkurentnom pisanju; pipe
-# je svaki put prošao. Do-tri-puta retry pokriva i tu trku.
+# ⚠️ NIKAD `grep -q` nad ovim logom: skripta radi pod `set -o pipefail`, a
+# `grep -q` izlazi na PRVI pogodak → `docker logs` dobije SIGPIPE i vrati
+# ne-nulu → pipefail celu cev proglasi palom BAŠ ZATO što je marker nađen.
+# Lažni 🔴 je 04.08. tri puta prijavio zdrav deploy (svi endpointi zeleni).
+# `grep -c` čita tok do kraja (nema SIGPIPE) i vraća 0 tek kad pogotka nema.
 say "2) Nest boot"
-if docker logs "$CONTAINER" 2>&1 | grep -q "Cannot find module '/app/dist/main'"; then
+CRASHCNT=$(docker logs "$CONTAINER" 2>&1 | grep -c "Cannot find module '/app/dist/main'" || true)
+BOOTCNT=$(docker logs "$CONTAINER" 2>&1 | grep -c "Nest application successfully started" || true)
+if [ "${CRASHCNT:-0}" -gt 0 ]; then
   bad "CRASH-LOOP: Cannot find module '/app/dist/main' (prisma/*.ts rootDir drift — vidi tsconfig.build.json exclude)"
+elif [ "${BOOTCNT:-0}" -gt 0 ]; then
+  ok "Nest application successfully started"
 else
-  BOOTOK=0
-  for _try in 1 2 3; do
-    if docker logs "$CONTAINER" 2>&1 | grep -q "Nest application successfully started"; then BOOTOK=1; break; fi
-    sleep 2
-  done
-  if [ "$BOOTOK" = "1" ]; then
-    ok "Nest application successfully started"
-  else
-    bad "NEMA 'Nest successfully started' u logu (3 pokušaja) — proveri boot (docker logs $CONTAINER)"
-    docker logs "$CONTAINER" 2>&1 | tail -8 | sed 's/^/      /'
-  fi
+  bad "NEMA 'Nest successfully started' u logu — proveri boot (docker logs $CONTAINER)"
+  docker logs "$CONTAINER" 2>&1 | tail -8 | sed 's/^/      /'
 fi
 
 # 3) WEB — javni gateway (login endpoint mora odgovoriti, 200/401/400 = živ, 000/5xx = mrtav)
