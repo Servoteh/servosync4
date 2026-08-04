@@ -109,7 +109,8 @@ export function setDecodeModeOverride(mode: DecodeMode): void {
 
 /**
  * Da li se pogoci dekodera OGRANIČAVAJU na prozor nišana (v. `acceptRegion` u
- * `attachVideoDecoder`) — SAMO Samsung A-serija (UA `SM-A…`) na Android web-u.
+ * `attachVideoDecoder`) — SAMO potvrđeno problematični modeli (Samsung A16/A17,
+ * UA `SM-A16x`/`SM-A17x`) na Android web-u.
  *
  * IZMERENI KOREN (04.08.2026, prijava „Samsung promaši sken za ~2 cm u odnosu
  * na prikazani prozor", A16/A17, mob premeštanje): dekoder na SVIM putevima
@@ -145,9 +146,11 @@ export function shouldLimitScanToReticle(): boolean {
     /* storage blokiran — odluči po profilu */
   }
   if (!isAndroidWeb()) return false; // iPhone/desktop: NIKAD (tvrd uslov)
-  // Samsung A-serija: SM-A + 3 cifre (SM-A165F/A166B/A265F…). S-serija (SM-S…),
-  // Note (SM-N…), tableti (SM-T…) i ostali Androidi NAMERNO ne prolaze.
-  return /\bSM-A\d{3}/i.test(typeof navigator !== 'undefined' ? navigator.userAgent || '' : '');
+  // SAMO potvrđeno problematični modeli: A16 (SM-A16x) i A17 (SM-A17x).
+  // Lista se širi SAMO po potvrđenoj prijavi po modelu; A26 potvrđeno radi bez
+  // gejta (Nenad, 04.08) — NE širiti na celu A-seriju. S-serija (SM-S…),
+  // Note (SM-N…), tableti (SM-T…) i ostali Androidi ne prolaze.
+  return /\bSM-A1[67]\d/i.test(typeof navigator !== 'undefined' ? navigator.userAgent || '' : '');
 }
 
 /** Pravougaonik u VIDEO pikselima (intrinsic `videoWidth`×`videoHeight` prostor). */
