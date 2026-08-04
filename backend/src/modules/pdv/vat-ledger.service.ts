@@ -37,6 +37,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -541,14 +542,30 @@ export class VatLedgerService {
   }
 }
 
-/** Nevalidan poreski period (godina/mesec van opsega). */
-export class InvalidVatPeriodException extends Error {
+/**
+ * Nevalidan poreski period (godina/mesec van opsega).
+ *
+ * 422 kao `HttpException`, ne goli `Error` (ispravka 04.08.2026): dok je nasleđivala
+ * `Error`, `AllExceptionsFilter` je ovu poruku pretvarao u generičku 500, pa se na
+ * pogrešno unetu godinu nije moglo videti ŠTA je pogrešno.
+ *
+ * Zašto 422 a ne 400: godina i mesec SU brojevi (tip prolazi) — van opsega je
+ * POSLOVNI horizont (2000–2100 za godinu, 1..12 za mesec). Isti `assertPeriod` brani
+ * i tri interna toka KIF/KUF (`buildKifKuf`, ručne stavke, štampa), gde period ne
+ * dolazi iz tela zahteva pa „Bad Request" ne bi bio istina. `details` nosi period, pa
+ * front obeleži TAČNO polje u formi.
+ */
+export class InvalidVatPeriodException extends UnprocessableEntityException {
   readonly code = "PDV_INVALID_PERIOD";
   constructor(
     public readonly year: number,
     public readonly month: number,
   ) {
-    super(`Nevalidan PDV period: godina=${year}, mesec=${month}.`);
+    super({
+      message: `Nevalidan PDV period: godina=${year}, mesec=${month}.`,
+      code: "PDV_INVALID_PERIOD",
+      details: { year, month },
+    });
     this.name = "InvalidVatPeriodException";
   }
 }

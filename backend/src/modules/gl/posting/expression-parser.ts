@@ -33,18 +33,39 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { UnprocessableEntityException } from "@nestjs/common";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Greška
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Sve greške parsera/evaluacije nose ovaj tip (jasna poruka + pozicija). */
-export class ExpressionError extends Error {
+/**
+ * Sve greške parsera/evaluacije nose ovaj tip (jasna poruka + pozicija).
+ *
+ * 422, i to kao `HttpException` a ne goli `Error` (ispravka 04.08.2026): izraz koji
+ * puca je PODATAK IZ BAZE (`AccountingSchemeLine.defDebit/defCredit`,
+ * `popdv_definitions.formula`) — dakle neispravna KONFIGURACIJA kontiranja, ne
+ * programska greška. Dok je klasa nasleđivala `Error`, `AllExceptionsFilter` ju je
+ * gutao u generičku 500, pa je knjigovođa umesto „Nepoznat znak "@" na poziciji 1"
+ * dobijao „Neočekivana greška na serveru" i šifru za administratora.
+ * Nije 400 (korisnik nije poslao izraz) ni 500 (uzrok je poznat i imenovan).
+ * `details.position` je 0-bazna pozicija u izrazu pa front obeleži TAČAN znak.
+ *
+ * DECIMAL-AGNOSTIČNOST OSTAJE: ovo je jedini import okvira u fajlu; nijedna Decimal
+ * biblioteka se i dalje ne uvozi (v. zaglavlje), `@nestjs/common` je već zavisnost.
+ */
+export class ExpressionError extends UnprocessableEntityException {
+  readonly code = "GL_EXPRESSION_INVALID";
   constructor(
     message: string,
     /** 0-bazna pozicija u izvornom izrazu (ili -1 ako nije primenljivo). */
     public readonly position: number = -1,
   ) {
-    super(message);
+    super({
+      message,
+      code: "GL_EXPRESSION_INVALID",
+      details: { position },
+    });
     this.name = "ExpressionError";
   }
 }

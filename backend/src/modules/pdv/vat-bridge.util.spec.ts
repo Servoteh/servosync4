@@ -1,3 +1,4 @@
+import { HttpException, HttpStatus } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import {
   grossToNet,
@@ -99,5 +100,54 @@ describe("vat-bridge validacija", () => {
   it("nevalidan iznos baca VatBridgeError", () => {
     expect(() => grossToNet("abc", 20)).toThrow(VatBridgeError);
     expect(() => netToGross("x", 20)).toThrow(VatBridgeError);
+  });
+});
+
+/**
+ * VatBridgeError MORA doći do korisnika (defekt 04.08.2026). `AllExceptionsFilter`
+ * propušta samo `HttpException`; dok je klasa nasleđivala goli `Error`, negativna PDV
+ * stopa je izlazila kao 500 „Neočekivana greška na serveru" — komentar nad klasom je
+ * tvrdio „poslovna greška, ne 500", a bilo je tačno 500.
+ *
+ * 422, ne 400: most zovu i putevi u kojima stopa dolazi iz registra tarifa a iznos sa
+ * već upisanog dokumenta (`advance-vat`, `sales/vat-totals`), gde „loš zahtev" nije
+ * istina. Bez ispravke ovaj blok pada na `toBeInstanceOf(HttpException)`.
+ */
+describe("VatBridgeError je HttpException 422", () => {
+  const caught = (fn: () => unknown): unknown => {
+    try {
+      fn();
+    } catch (e) {
+      return e;
+    }
+    throw new Error("Očekivana greška nije bačena.");
+  };
+
+  it("negativna stopa kroz grossToNet → 422 sa originalnom porukom i `code`", () => {
+    const e = caught(() => grossToNet(1200, -5));
+    expect(e).toBeInstanceOf(VatBridgeError);
+    expect(e).toBeInstanceOf(HttpException);
+    expect((e as HttpException).getStatus()).toBe(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    expect((e as Error).message).toBe("PDV stopa ne može biti negativna.");
+    expect((e as HttpException).getResponse()).toEqual({
+      message: "PDV stopa ne može biti negativna.",
+      code: "PDV_BRIDGE_INPUT",
+    });
+  });
+
+  it("nevalidan iznos kroz netToGross → 422, poruka imenuje polje", () => {
+    const e = caught(() => netToGross("x", 20));
+    expect((e as HttpException).getStatus()).toBe(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    expect((e as Error).message).toBe("Neto iznos nije ispravan broj.");
+  });
+
+  it("ostaje `Error` (postojeći `toThrow(VatBridgeError)` i logovi rade)", () => {
+    const e = caught(() => grossToNet("abc", 20));
+    expect(e).toBeInstanceOf(Error);
+    expect(typeof (e as Error).stack).toBe("string");
   });
 });

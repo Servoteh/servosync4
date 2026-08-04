@@ -26,7 +26,11 @@
  */
 
 import { businessYear } from "../../../common/business-date";
-import { Injectable, UnprocessableEntityException } from "@nestjs/common";
+import {
+  ConflictException,
+  Injectable,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { evaluateExpression } from "./expression-parser";
@@ -45,42 +49,93 @@ const ZERO = new D(0);
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipizirane domenske greške (BACKEND_RULES §7 — nikad 500 za poslovnu grešku)
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// ZAŠTO NASLEĐUJU `HttpException`, a ne goli `Error` (ispravka 04.08.2026):
+//   `AllExceptionsFilter` (common/http-exception.filter.ts) propušta ISKLJUČIVO
+//   `HttpException`; sve ostalo namerno postaje 500 sa generičkom porukom
+//   („Neočekivana greška na serveru. Prijavi administratoru šifru greške.") da se ne
+//   cure detalji šeme iz Prisma/SQL grešaka. Dok su ove tri klase nasleđivale `Error`,
+//   njihove TAČNE srpske poruke nikad nisu stizale do knjigovođe — on je za
+//   nebalansiran nalog dobijao „Internal server error" i šifru za administratora,
+//   umesto „Nalog ne balansira: ΣDug=… ≠ ΣPot=…".
+//
+// OBLIK TELA: `{ message, code, details }` — isti kao kod sveže pisanih domenskih
+//   grešaka u repou (`saldakonti/compensation-entry-guard.ts`, `pdv/vat-sanity.ts`).
+//   `details` je mašinski čitljiv pa front može da obeleži TAČAN dokument/nalog, a ne
+//   samo da ispiše tekst. Novčani iznosi u `details` idu kao string (`toFixed(4)`) —
+//   nikad Float (BACKEND_RULES §2).
+//
+// `instanceof` OSTAJE ISPRAVAN: `year-open.service.ts` hvata
+//   `LedgerNotBalancedException` i prevodi je u sopstvenu 422 sa kontekstom prenosa
+//   godine (bogatija poruka za taj tok) — ta grana radi nepromenjeno.
 
-/** ΣDug ≠ ΣPot — nalog ne balansira. Cela transakcija se odbija. */
-export class LedgerNotBalancedException extends Error {
+/**
+ * ΣDug ≠ ΣPot — nalog ne balansira. Cela transakcija se odbija.
+ *
+ * 422 (ne 400): zahtev je sintaksno besprekoran — svaka linija ima ispravan konto i
+ * iznos; nevalidna je POSLOVNA celina koju čine, jer dvojno knjigovodstvo zahteva
+ * ΣDug = ΣPot. Ni 409 nije tačan: ništa se nije promenilo pod nama i ponavljanje
+ * istog zahteva ne pomaže — iznosi se moraju ispraviti.
+ */
+export class LedgerNotBalancedException extends UnprocessableEntityException {
   readonly code = "GL_NOT_BALANCED";
   constructor(
     public readonly totalDebit: Prisma.Decimal,
     public readonly totalCredit: Prisma.Decimal,
   ) {
-    super(
-      `Nalog ne balansira: ΣDug=${totalDebit.toFixed(4)} ≠ ΣPot=${totalCredit.toFixed(4)}`,
-    );
+    super({
+      message: `Nalog ne balansira: ΣDug=${totalDebit.toFixed(4)} ≠ ΣPot=${totalCredit.toFixed(4)}`,
+      code: "GL_NOT_BALANCED",
+      details: {
+        totalDebit: totalDebit.toFixed(4),
+        totalCredit: totalCredit.toFixed(4),
+        difference: totalDebit.minus(totalCredit).toFixed(4),
+      },
+    });
     this.name = "LedgerNotBalancedException";
   }
 }
 
-/** Dokument nema posting šablon (postingTemplate 0/null) — nije za auto-knjiženje. */
-export class NoPostingSchemeException extends Error {
+/**
+ * Dokument nema posting šablon (postingTemplate 0/null) — nije za auto-knjiženje.
+ *
+ * 422: fali KONFIGURACIJA (šema kontiranja za tu vrstu dokumenta u
+ * `DocumentType.postingTemplate`), pa se ispravan zahtev nad postojećim dokumentom ne
+ * može obraditi dok administrator ne veže šemu. Namerno NIJE 404 — dokument JESTE tu,
+ * 404 bi korisnika poslao da traži dokument koji postoji.
+ */
+export class NoPostingSchemeException extends UnprocessableEntityException {
   readonly code = "GL_NO_SCHEME";
   constructor(public readonly docId: number) {
-    super(
-      `Robni dokument ${docId}: DocumentType nema posting šablon (postingTemplate 0/null).`,
-    );
+    super({
+      message: `Robni dokument ${docId}: DocumentType nema posting šablon (postingTemplate 0/null).`,
+      code: "GL_NO_SCHEME",
+      details: { docId },
+    });
     this.name = "NoPostingSchemeException";
   }
 }
 
-/** Dokument je već proknjižen i nalog je posted/locked — re-post nije dozvoljen. */
-export class AlreadyPostedException extends Error {
+/**
+ * Dokument je već proknjižen i nalog je posted/locked — re-post nije dozvoljen.
+ *
+ * 409 (ne 422): ulaz je besprekoran — ne poklapa se STANJE SISTEMA sa onim što
+ * pozivalac pretpostavlja (posao je već obavljen, moguće iz druge sesije; guard stoji
+ * pod advisory lock-om upravo zbog paralelnih zahteva). Korisnik treba da OSVEŽI i
+ * otvori postojeći nalog, ne da menja podatke — a to je tačno ono što 409 kaže.
+ * `details.journalEntryId` daje frontu nalog na koji vodi link.
+ */
+export class AlreadyPostedException extends ConflictException {
   readonly code = "GL_ALREADY_POSTED";
   constructor(
     public readonly docId: number,
     public readonly journalEntryId: number,
   ) {
-    super(
-      `Robni dokument ${docId} je već proknjižen (nalog ${journalEntryId}, posted/locked).`,
-    );
+    super({
+      message: `Robni dokument ${docId} je već proknjižen (nalog ${journalEntryId}, posted/locked).`,
+      code: "GL_ALREADY_POSTED",
+      details: { docId, journalEntryId },
+    });
     this.name = "AlreadyPostedException";
   }
 }

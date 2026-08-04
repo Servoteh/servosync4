@@ -1,5 +1,9 @@
+import { HttpException, HttpStatus } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { VatLedgerService } from "./vat-ledger.service";
+import {
+  InvalidVatPeriodException,
+  VatLedgerService,
+} from "./vat-ledger.service";
 import { VatSanityException } from "./vat-sanity";
 
 /**
@@ -315,5 +319,57 @@ describe("VatLedgerService.buildKifKuf — zaštita od tihe greške", () => {
     const res = await svc.buildKifKuf(2026, 7);
     expect(res.sanity.ok).toBe(true);
     expect(res.sanity.warnings.some((w) => /nalog zatvaranja/.test(w))).toBe(true);
+  });
+});
+
+/**
+ * NEVALIDAN PERIOD MORA BITI OBJAŠNJEN KORISNIKU (defekt 04.08.2026).
+ * `AllExceptionsFilter` propušta samo `HttpException`, pa je `InvalidVatPeriodException`
+ * — dok je nasleđivala goli `Error` — izlazila kao 500 „Neočekivana greška na serveru":
+ * na pogrešno unetu godinu se nije moglo videti ŠTA je pogrešno. 422, ne 400: godina i
+ * mesec SU brojevi, van opsega je poslovni horizont (2000–2100 / 1..12), a isti guard
+ * brani i interne tokove u kojima period ne dolazi iz tela zahteva.
+ *
+ * Bez ispravke ovaj blok pada na `toBeInstanceOf(HttpException)`.
+ */
+describe("VatLedgerService — nevalidan period je 422, ne 500", () => {
+  const caught = async (fn: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await fn();
+    } catch (e) {
+      return e;
+    }
+    throw new Error("Očekivana greška nije bačena.");
+  };
+
+  it("buildKifKuf(1999, 3) → 422 sa periodom u poruci i u `details`", async () => {
+    // Prisma nije potrebna: `assertPeriod` je prva naredba metode.
+    const svc = new VatLedgerService({} as never);
+    const e = await caught(() => svc.buildKifKuf(1999, 3));
+
+    expect(e).toBeInstanceOf(InvalidVatPeriodException);
+    expect(e).toBeInstanceOf(HttpException);
+    expect((e as HttpException).getStatus()).toBe(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    expect((e as Error).message).toBe(
+      "Nevalidan PDV period: godina=1999, mesec=3.",
+    );
+    expect((e as HttpException).getResponse()).toEqual({
+      message: "Nevalidan PDV period: godina=1999, mesec=3.",
+      code: "PDV_INVALID_PERIOD",
+      details: { year: 1999, month: 3 },
+    });
+  });
+
+  it("buildKifKuf(2026, 13) → 422 (mesec van 1..12)", async () => {
+    const svc = new VatLedgerService({} as never);
+    const e = await caught(() => svc.buildKifKuf(2026, 13));
+    expect((e as HttpException).getStatus()).toBe(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    expect((e as Error).message).toBe(
+      "Nevalidan PDV period: godina=2026, mesec=13.",
+    );
   });
 });
