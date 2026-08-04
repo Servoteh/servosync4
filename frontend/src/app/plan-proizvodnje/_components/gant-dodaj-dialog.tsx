@@ -26,9 +26,10 @@ import { effectiveMinutes, isoDay, rowKey, toIsoAtWorkStart } from './gant-utils
  * trećine učitano) i sužen aktivnim filterima taba, pa je klijentska pretraga tiho
  * promašivala otvorene operacije (crtež 1083492: škart-klon vidljiv, serija ne). Server
  * pretraga vraća i završene/zatvorene/kooperaciju — prikazane SA RAZLOGOM zašto nisu za
- * dodavanje (npr. „završeno (21/200 kom)" kad je operater otkucao kraj procesa na
- * delimičnoj količini), umesto da tiho nestanu (A5). Škart/dorada klonovi se poznaju po
- * sufiksu -S# u RN-u i nikad ne zaklanjaju seriju — sortirano po RN + operaciji.
+ * dodavanje, umesto da tiho nestanu (A5). Izuzetak 064/26: „završena" operacija sa
+ * NEPOTPUNOM količinom na otvorenom RN-u se IPAK može dodati, uz upozorenje — v.
+ * `stanjeStavke`. Škart/dorada klonovi se poznaju po sufiksu -S# u RN-u i nikad ne
+ * zaklanjaju seriju — sortirano po RN + operaciji.
  *
  * A6: mašina se menja PO STAVCI pre dodavanja (olovka u koloni Mašina) — isti mehanizam
  * i permisije kao detalj-dijalog (`/reassign`: guard grupe mašina + audit; druga grupa i
@@ -215,9 +216,14 @@ export function DodajNaPlanDialog({
                     <td className="px-3 py-1.5">{r.rok_izrade ? formatDate(r.rok_izrade) : '—'}</td>
                     <td className="px-3 py-1.5 text-right">
                       {st.addable ? (
-                        <Button variant="secondary" className="h-7 px-2 text-xs" onClick={() => add(r)}>
-                          <Plus className="h-3.5 w-3.5" aria-hidden /> Dodaj
-                        </Button>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <Button variant="secondary" className="h-7 px-2 text-xs" onClick={() => add(r)}>
+                            <Plus className="h-3.5 w-3.5" aria-hidden /> Dodaj
+                          </Button>
+                          {st.warn ? (
+                            <span className="whitespace-nowrap text-2xs text-status-warn">{st.warn}</span>
+                          ) : null}
+                        </div>
                       ) : (
                         <span className={cn('whitespace-nowrap text-2xs', st.ok ? 'text-status-success' : 'text-ink-disabled')}>
                           {st.label}
@@ -268,6 +274,7 @@ export function DodajNaPlanDialog({
         <p className="text-2xs text-ink-disabled">
           Prikazano najviše 300 stavki. Pretraga (crtež / RN / naziv) ide po celoj bazi i
           prikazuje i završene / zatvorene operacije sa razlogom zašto nisu za dodavanje;
+          operacija završena na delu količine (otvoren RN) može se dodati uz upozorenje;
           škart/dorada klonovi nose sufiks -S# u RN-u.
           {search.isFetching ? ' Tražim…' : ''}
         </p>
@@ -276,13 +283,26 @@ export function DodajNaPlanDialog({
   );
 }
 
-type Stanje = { addable: true; label?: never; ok?: never } | { addable: false; label: string; ok?: boolean };
+type Stanje =
+  | { addable: true; warn?: string; label?: never; ok?: never }
+  | { addable: false; warn?: never; label: string; ok?: boolean };
 
 /**
  * Zašto stavka (ni)je za dodavanje. Redosled presuđivanja: već na planu → završeno
- * (operater otkucao kraj procesa — i na delimičnoj količini, zato se prikazuje X/Y kom)
  * → RN zatvoren → RN kroz završnu kontrolu → kooperacija → arhivirana. Sve ostalo je
  * otvorena operacija sa „Dodaj".
+ *
+ * 064/26 (Nenad presudio 04.08.2026, opcija A): „završena" operacija sa NEPOTPUNOM
+ * količinom na OTVORENOM RN-u dobija ŽIVO „Dodaj" + upozorenje „završeno na X/Y kom —
+ * dodaje se svejedno". Pogon kuca „Kraj rada" na kiosku kao kraj SMENE, ne kraj
+ * operacije (izmereno na produ 04.08.2026: 1.039 op / 420 RN blokirano delimičnim
+ * krajem procesa; 597/1.084 op ima rad NASTAVLJEN posle zatvaranja — slučaj 1119578:
+ * „završeno (0/1 kom)" a radnik i dalje radi na njoj). Izuzetak je NAMERNO uzak:
+ * otvara ga SAMO kucanje operatera (`is_done_in_bigtehn`) — planerski pečati
+ * (`planned_done`, `local_status='completed'`), puna količina, RN završen / kroz
+ * završnu kontrolu, kooperacija i arhiva blokiraju kao i do sada. Kanon „završene
+ * operacije" (bool_or nad tech_processes) se NE menja — ostali ekrani netaknuti;
+ * sistemska presuda kanona je otvoreno pitanje 046 #109 (Strahinja/Negovan).
  *
  * `plan_rn_final_control_done` (M6): scope=sve pretraga skida i EFF_FILTER, pa RN koji
  * je prošao završnu kontrolu stiže ovde i sa NEOTKUCANIM operacijama — bez ove grane
@@ -291,8 +311,18 @@ type Stanje = { addable: true; label?: never; ok?: never } | { addable: false; l
  */
 function stanjeStavke(r: GanttRow, added: boolean): Stanje {
   if (added || r.planned_start_at) return { addable: false, label: '✓ na planu', ok: true };
-  if (r.is_completed_effective || r.is_done_in_bigtehn || r.local_status === 'completed')
-    return { addable: false, label: `završeno (${r.komada_done ?? 0}/${r.komada_total ?? 0} kom)` };
+  const plannerDone = r.planned_done === true || r.local_status === 'completed';
+  if (r.is_completed_effective || r.is_done_in_bigtehn || plannerDone) {
+    const total = r.komada_total ?? 0;
+    const done = r.komada_done ?? 0;
+    const delimicnoNaOtvorenom =
+      r.is_done_in_bigtehn === true && !plannerDone && total > 0 && done < total &&
+      !r.rn_zavrsen && !r.plan_rn_final_control_done &&
+      !r.is_cooperation_effective && !r.overlay_archived_at;
+    if (delimicnoNaOtvorenom)
+      return { addable: true, warn: `završeno na ${done}/${total} kom — dodaje se svejedno` };
+    return { addable: false, label: `završeno (${done}/${total} kom)` };
+  }
   if (r.rn_zavrsen) return { addable: false, label: 'RN završen' };
   if (r.plan_rn_final_control_done) return { addable: false, label: 'RN kroz završnu kontrolu' };
   if (r.is_cooperation_effective) return { addable: false, label: 'u kooperaciji' };
