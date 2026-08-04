@@ -221,6 +221,24 @@ svesno ostaviti (izvoz = drugi konzument).
 - **tsc higijena:** pun `tsc --noEmit` (van build configa) pada na 6 grešaka u 3 spec fajla:
   `handover-draft-print.service.spec.ts` (4×TS2322), `kadrovska.zahtev-026.spec.ts:50`,
   `moj-profil.zahtev-026.spec.ts:126`. CI ih ne vidi (build config isključuje spec fajlove).
+- **e2e `netzero/zahtevi.probe` pada 3 kruga zaredom** (draft→submit→arhiviraj, vozi se protiv
+  ŽIVE produkcije). Stvarni korisnici uredno podnose zahteve (068 podnet 04.08. u 20:34), pa je
+  sumnja na e2e nalog — isti nalog dobija **403 na `/completed-orders`, `/nacrti`,
+  `/cnc-programs`**. Ako je tako, probe ne testira ništa i treba mu popraviti prava ili ga ugasiti.
+- **Nijedan FE test se ne pokreće.** `frontend/src/app/artikli/_forma/pravila.spec.ts` je jedini
+  FE spec u repou; frontend nema `test` skriptu, backend jest ima `rootDir: "src"`, nijedan
+  workflow ga ne hvata → nula zaštite na FE strani.
+
+### C10. Da li MSSQL sync kanal uopšte ostaje? 🔴 STRATEŠKO
+Posle 061 popravke (04.08.) ručno dugme „Pokreni sync" vozi još **~21 tok iz izvora zamrznutog
+22.07.2026** — BigBit→QBigTehn prenos je ugašen, MSSQL kopija se ne osvežava
+(`tRN` MAX izmene = 14.07., 6 tabela prazno). Živi kanal za predmete/komitente/artikle je
+**noćni `.mdb` uvoz ~03:45** (izvoz iz BigBita jednom dnevno oko kraja smene, mereno 16:04–19:28).
+**Pitanje za vlasnika:** gasimo MSSQL kanal u celosti (dugme + kod + env) ili ga držimo dok se ne
+odluči sudbina QBigTehn-a? Držanje košta: svaki klik javlja grešku na 6 tokova, a admin
+eksplicitnim pozivom i dalje može da pregazi noćni uvoz (sada bar uz warn u logu).
+**Preporuka:** ugasiti kad se potvrdi da ništa iz MSSQL-a više nije potrebno — prethodno izmeriti
+da li ijedan tok iz preostalog 21 nosi podatke kojih nema u `.mdb` kanalu.
 
 ---
 
@@ -230,6 +248,16 @@ svesno ostaviti (izvoz = drugi konzument).
   proba stonog (wedge) čitača u „Premesti stavku" — 04.08. je isporučeno rastavljanje skena
   u obe aplikacije; proba štampe barkoda 62.65 × 13 mm.
 - **Strahinja + Negovan:** odgovor na pitanje o „kraju procesa na delu količine" (B2).
+- **Strahinja (016/26):** 4 pitanja postavljena 04.08. uveče — koji su tačno predmeti
+  „Servotransfer prese" (7 kandidata, numeracija se preklapa); da li Dijana prati i nadređeni
+  predmet **9400** (789 RN i 55 nacrta ove godine — najživlji, a nije na spisku) i 9400/8; ostaje
+  li Strahinja globalni planer ili se sužava na spisak; potvrda 9881 → 9811.
+  ⚠️ Dok ne odgovori, SQL `backend/docs/sql/predmet-planeri-016-2026-08-04.sql` se NE pušta.
+  Nalaz usput: **Dijana i Branislav nemaju nijedan red u `predmet_planeri`** — nikad nisu mogli
+  da dobiju obaveštenje (cela tabela ima 4 reda).
+- **Kadrovska (Nevena/Nenad/Zoran):** finalizacija zahteva za zamenski dan `20f99be3`
+  (Nedeljko Stamenić, subota 01.08.) — čim popravka „zahtevi za odobravanje" bude živa, pojaviće
+  se u listi. Detalji u forenzici 068: ništa nije obrisano, fali tačno taj jedan dan.
 - **Podnosioci:** potvrde na zahtevima u statusu „Spreman za test" (dugme „✔ Potvrđujem — radi").
 
 ---
