@@ -214,3 +214,83 @@ describe("Održavanje — FIX_VOZILA_CREATE_STATUS_CAST.sql (pin 42804 kasta)", 
     expect(body).not.toMatch(/COALESCE\(NULLIF\(p_status, ''\), 'running'\)\s*,/);
   });
 });
+
+/**
+ * PIN zahteva 065/066/067 (IT oprema — polja po tipu uređaja, 04.08.2026):
+ * servis (upsertItDetails allowlist + Prisma model MaintItAssetDetails) od ove
+ * grane čita/piše 7 novih kolona `maint_it_asset_details` koje na živu sy15
+ * donosi ISKLJUČIVO ručni SQL fajl (obrazac FIX_VOZILA — nema Prisma migracije
+ * za sy15). Pinuje se da fajl: (a) dodaje SVIH 7 kolona koje servis mapira;
+ * (b) create_maint_it_asset ih prima kroz p_details (potpis nepromenjen — isti
+ * koji createAssetViaRpc zove) i ZADRŽAVA enum kast statusa (pouka 42804);
+ * (c) v_maint_it_overview ih izlaže i EKSPLICITNO ostaje security_invoker
+ * (RLS mora da važi za čitaoca, ne za vlasnika view-a).
+ */
+describe("Održavanje — ZAHTEV_065_066_067_IT_OPREMA_POLJA.sql (pin novih kolona)", () => {
+  const raw = readFileSync(
+    join(
+      __dirname,
+      "../../../docs/migration/ZAHTEV_065_066_067_IT_OPREMA_POLJA.sql",
+    ),
+    "utf8",
+  );
+  // Skini `--` komentare — header fajla sme da POMINJE DDL iskaze (sadržaj/uputstvo),
+  // pinovi važe za stvarni SQL.
+  const sql = raw.replace(/^\s*--[^\n]*/gm, "");
+  const NEW_COLS = [
+    "cpu",
+    "motherboard",
+    "ram",
+    "gpu",
+    "office_location",
+    "toner_cartridges",
+    "unifi_ports",
+  ];
+  const alter = sql.slice(
+    sql.indexOf("ALTER TABLE public.maint_it_asset_details"),
+    sql.indexOf("CREATE OR REPLACE FUNCTION"),
+  );
+  const fnBody = sql.slice(
+    sql.indexOf("CREATE OR REPLACE FUNCTION"),
+    sql.indexOf("CREATE OR REPLACE VIEW"),
+  );
+  const viewBody = sql.slice(sql.indexOf("CREATE OR REPLACE VIEW"));
+
+  it("sečenje fajla je validno (ALTER → FUNCTION → VIEW redosled u stvarnom SQL-u)", () => {
+    expect(alter.length).toBeGreaterThan(0);
+    expect(fnBody.length).toBeGreaterThan(0);
+    expect(viewBody.length).toBeGreaterThan(0);
+  });
+
+  it("ALTER dodaje svih 7 kolona koje servis mapira (IF NOT EXISTS, text)", () => {
+    for (const c of NEW_COLS) {
+      expect(alter).toMatch(
+        new RegExp(`ADD COLUMN IF NOT EXISTS ${c}\\s+text`),
+      );
+    }
+  });
+
+  it("create_maint_it_asset zadržava potpis (8×text + jsonb) i status enum kast", () => {
+    expect(fnBody).toMatch(
+      /CREATE OR REPLACE FUNCTION public\.create_maint_it_asset\(p_asset_code text, p_name text, p_status text[^)]*p_details jsonb/,
+    );
+    expect(fnBody).toMatch(
+      /COALESCE\(NULLIF\(p_status, ''\), 'running'\)::public\.maint_operational_status/,
+    );
+  });
+
+  it("create_maint_it_asset INSERT-uje svih 7 novih details ključeva (NULLIF '' obrazac)", () => {
+    for (const c of NEW_COLS) {
+      expect(fnBody).toMatch(
+        new RegExp(`NULLIF\\(p_details->>'${c}', ''\\)`),
+      );
+    }
+  });
+
+  it("v_maint_it_overview izlaže svih 7 kolona i EKSPLICITNO ostaje security_invoker", () => {
+    expect(viewBody).toMatch(/WITH \(security_invoker = true\)/);
+    for (const c of NEW_COLS) {
+      expect(viewBody).toMatch(new RegExp(`d\\.${c}`));
+    }
+  });
+});

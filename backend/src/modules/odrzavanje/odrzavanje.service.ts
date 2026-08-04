@@ -3303,6 +3303,15 @@ export class OdrzavanjeService {
         backupRequired: Boolean(d.backup_required),
         lastBackupAt: this.toDbTs(s("last_backup_at")) ?? null,
         notes: s("notes"),
+        // Polja po tipu uređaja (065 računar / 066 štampač / 067 switch) —
+        // kolone dodate kroz ZAHTEV_065_066_067_IT_OPREMA_POLJA.sql.
+        cpu: s("cpu"),
+        motherboard: s("motherboard"),
+        ram: s("ram"),
+        gpu: s("gpu"),
+        officeLocation: s("office_location"),
+        tonerCartridges: s("toner_cartridges"),
+        unifiPorts: s("unifi_ports"),
         updatedBy: uid,
       };
       const row = await tx.maintItAssetDetails.upsert({

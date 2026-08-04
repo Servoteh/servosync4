@@ -115,7 +115,7 @@ export function SredstvaTab({ kind, me }: { kind: Kind; me: MaintMe | undefined 
     if (q.trim()) {
       const t = q.trim().toLowerCase();
       const keys = kind === 'it'
-        ? ['asset_code', 'name', 'hostname', 'device_type', 'ip_address']
+        ? ['asset_code', 'name', 'hostname', 'device_type', 'ip_address', 'assigned_to', 'office_location']
         : ['asset_code', 'name', 'facility_type', 'floor_or_zone', 'cadastral_parcels'];
       out = out.filter((r) => keys.map((k) => f(r, k)).filter(Boolean).some((x) => String(x).toLowerCase().includes(t)));
     }
@@ -138,7 +138,7 @@ export function SredstvaTab({ kind, me }: { kind: Kind; me: MaintMe | undefined 
 
   const itCols: Column<ViewRow>[] = [
     { key: 'sredstvo', header: 'Sredstvo', render: nameCell },
-    { key: 'tip', header: 'Tip / host', render: (r) => <div><div className="text-ink">{f(r, 'device_type') ?? '—'}</div><div className="text-2xs text-ink-secondary">{[f(r, 'hostname'), f(r, 'ip_address')].filter(Boolean).join(' · ')}</div></div> },
+    { key: 'tip', header: 'Tip / host', render: (r) => <div><div className="text-ink">{f(r, 'device_type') ?? '—'}</div><div className="text-2xs text-ink-secondary">{[f(r, 'hostname'), f(r, 'ip_address'), f(r, 'office_location')].filter(Boolean).join(' · ')}</div></div> },
     { key: 'zaduzen', header: 'Zadužen / OS', render: (r) => <div><div className="text-ink-secondary">{f(r, 'assigned_to') ?? '—'}</div><div className="text-2xs text-ink-secondary">{f(r, 'operating_system') ?? ''}</div></div> },
     { key: 'status', header: 'Status', render: (r) => <OpStatusBadge status={f(r, 'status')} /> },
     { key: 'licenca', header: 'Licenca', render: (r) => dueCell(f(r, 'license_expires_at')) },
@@ -178,7 +178,7 @@ export function SredstvaTab({ kind, me }: { kind: Kind; me: MaintMe | undefined 
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-panel border border-line bg-surface p-3">
-        <SearchBox value={q} onChange={setQ} placeholder={kind === 'it' ? 'Šifra, naziv, hostname, IP…' : 'Šifra, naziv, tip, zona, parcele…'} />
+        <SearchBox value={q} onChange={setQ} placeholder={kind === 'it' ? 'Šifra, naziv, hostname, IP, korisnik, kancelarija…' : 'Šifra, naziv, tip, zona, parcele…'} />
         <label className="flex cursor-pointer items-center gap-1.5 text-sm text-ink-secondary"><input type="checkbox" checked={attentionOnly} onChange={(e) => setAttentionOnly(e.target.checked)} /> Samo pažnja</label>
         <label className="flex cursor-pointer items-center gap-1.5 text-sm text-ink-secondary"><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Arhivirana</label>
         <Button variant="ghost" onClick={() => exportCsv(kind, rows)}><Download className="h-4 w-4" aria-hidden /> CSV</Button>
