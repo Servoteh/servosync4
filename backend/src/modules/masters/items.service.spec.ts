@@ -9,6 +9,7 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ItemsService } from "./items.service";
 import { ItemsController } from "./items.controller";
+import { ITEM_SORT_COLUMNS } from "./dto/list-items.dto";
 import { DirectoryController } from "../directory/directory.controller";
 import { PERMISSION_KEY_METADATA } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
@@ -53,6 +54,29 @@ function rawSql(call: unknown[]): string {
   return (call[0] as Prisma.Sql).sql;
 }
 
+/**
+ * Sortabilne kolone podeljene po tome SME LI IM VREDNOST BITI PRAZNA — pročitano iz
+ * same šeme (`Prisma.dmmf`), ne prepisano ovde.
+ *
+ * Prepisan spisak bi zastario ćutke: kolona koja u `schema.prisma` postane nullable
+ * ostala bi bez `nulls: "last"`, test bi i dalje bio zelen, a korisnik bi na drugi
+ * klik zaglavlja dobio ekran pun praznih redova.
+ */
+function itemFieldIsRequired(name: string): boolean {
+  const model = Prisma.dmmf.datamodel.models.find((m) => m.name === "Item");
+  const field = model?.fields.find((f) => f.name === name);
+  if (!field) throw new Error(`Kolona '${name}' ne postoji u modelu Item.`);
+  return field.isRequired;
+}
+
+function nullableSortColumns(): string[] {
+  return ITEM_SORT_COLUMNS.filter((c) => !itemFieldIsRequired(c));
+}
+
+function notNullSortColumns(): string[] {
+  return ITEM_SORT_COLUMNS.filter((c) => itemFieldIsRequired(c));
+}
+
 describe("ItemsService (matični podaci — Artikli)", () => {
   let service: ItemsService;
   let prisma: ReturnType<typeof prismaMock>;
@@ -83,6 +107,21 @@ describe("ItemsService (matični podaci — Artikli)", () => {
     expect(prisma.item.count).toHaveBeenCalledWith({ where: args.where });
   });
 
+  it("list(): ekran skroluje nadovezivanjem strana — `pageSize=200` prolazi, veće se seče", async () => {
+    await service.list({ pageSize: "200", page: "3" });
+    const [first] = prisma.item.findMany.mock.calls[0] as [
+      { take: number; skip: number },
+    ];
+    expect(first.take).toBe(200);
+    expect(first.skip).toBe(400);
+
+    prisma.item.findMany.mockClear();
+    await service.list({ pageSize: "1000" });
+    const [second] = prisma.item.findMany.mock.calls[0] as [{ take: number }];
+    // 92.592 reda — tvrda kapa ostaje 200 i kad frontend zatraži više.
+    expect(second.take).toBe(200);
+  });
+
   it("list(): sort je BigBit sort pregleda — grupa, kataloški broj, naziv (uz `id` kao tie-break)", async () => {
     await service.list({});
 
@@ -96,6 +135,123 @@ describe("ItemsService (matični podaci — Artikli)", () => {
       { name: "asc" },
       { id: "asc" },
     ]);
+  });
+
+  it("list(): `?sort=&dir=` sortira po traženoj koloni, a `id` ostaje kao tie-break", async () => {
+    await service.list({ sort: "wholesalePrice", dir: "desc" });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [{ orderBy: unknown }];
+    // Traženi ključ je PRVI i jedini — BigBit grupisanje se ne zadržava kao
+    // sekundarni kriterijum, inače bi „najskuplji artikli" bili razbijeni po grupama.
+    // VP cena je nullable → prazno ide na kraj (v. blok „prazne vrednosti" niže).
+    expect(args.orderBy).toEqual([
+      { wholesalePrice: { sort: "desc", nulls: "last" } },
+      { id: "asc" },
+    ]);
+  });
+
+  it("list(): `dir` se sme izostaviti — podrazumevano je rastuće", async () => {
+    await service.list({ sort: "shelf" });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [{ orderBy: unknown }];
+    expect(args.orderBy).toEqual([
+      { shelf: { sort: "asc", nulls: "last" } },
+      { id: "asc" },
+    ]);
+  });
+
+  it("list(): SVAKI sort nosi `id` na kraju — bez toga skrol duplira i preskače redove", async () => {
+    // Nijedna sortabilna kolona nije jedinstvena (kat. broj: 1.980 grupa duplikata;
+    // polica: 2.839 nepraznih na 92.592 reda), a Postgres sme da promeni redosled
+    // jednakih redova između dva LIMIT/OFFSET upita. Zato se tie-break pinuje za sve.
+    // Provera je nad SVIM dozvoljenim kolonama i namerno ne gleda OBLIK vrednosti
+    // (golo `desc` vs `{ sort, nulls }`) — to je posao testova o praznim vrednostima.
+    for (const column of ITEM_SORT_COLUMNS) {
+      prisma.item.findMany.mockClear();
+      await service.list({ sort: column, dir: "desc" });
+      const [args] = prisma.item.findMany.mock.calls[0] as [
+        { orderBy: Record<string, unknown>[] },
+      ];
+      expect(args.orderBy).toHaveLength(2);
+      expect(Object.keys(args.orderBy[0])).toEqual([column]);
+      expect(args.orderBy[1]).toEqual({ id: "asc" });
+    }
+  });
+
+  it("list(): sort po NULLABLE koloni gura prazne redove NA KRAJ — i uzlazno i silazno", async () => {
+    // 🔴 Bez `nulls: "last"` Postgres na DESC podrazumeva NULLS FIRST: drugi klik na
+    // „Polica" je vraćao prvo 89.753 artikla bez police (92.592 ukupno, policu ima
+    // 2.839 — mereno na produkciji 04.08.2026), a kapa učitavanja je 5.000 redova.
+    // Korisnik dakle nikad ne bi video nijednu policu, uz listu koja izgleda ispravna.
+    // Isto važi za „Bar kod" (10 nepraznih), „INO naziv", „Ext. šifru"…
+    for (const column of nullableSortColumns()) {
+      for (const dir of ["asc", "desc"] as const) {
+        prisma.item.findMany.mockClear();
+        await service.list({ sort: column, dir });
+        const [args] = prisma.item.findMany.mock.calls[0] as [
+          { orderBy: unknown[] },
+        ];
+        expect(args.orderBy[0]).toEqual({
+          [column]: { sort: dir, nulls: "last" },
+        });
+        // Tie-break se ne gubi ni u ovom obliku.
+        expect(args.orderBy[1]).toEqual({ id: "asc" });
+      }
+    }
+  });
+
+  it("list(): sort po NOT NULL koloni ostaje golo `asc`/`desc` (Prisma tamo ne prima `nulls`)", async () => {
+    // `{ sort, nulls }` na NOT NULL polju Prisma odbija tek u radu (validaciona
+    // greška upita) — klik na zaglavlje „Naziv" bi postao 500. Nema šta ni da gura
+    // na kraj: te kolone praznu vrednost nemaju.
+    for (const column of notNullSortColumns()) {
+      for (const dir of ["asc", "desc"] as const) {
+        prisma.item.findMany.mockClear();
+        await service.list({ sort: column, dir });
+        const [args] = prisma.item.findMany.mock.calls[0] as [
+          { orderBy: unknown[] },
+        ];
+        expect(args.orderBy[0]).toEqual({ [column]: dir });
+        expect(args.orderBy[1]).toEqual({ id: "asc" });
+      }
+    }
+  });
+
+  it("list(): kolona van allowlist-a je 400 sa spiskom dozvoljenih (ne tiho vraćanje na BigBit sort)", async () => {
+    // Tiho ignorisanje bi korisniku dalo listu sortiranu po grupi, a on bi prvih 50
+    // redova pročitao kao „vrh po ceni" — pogrešan odgovor koji izgleda tačno.
+    let thrown: unknown;
+    try {
+      await service.list({ sort: "cena" });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BadRequestException);
+    const message = (thrown as BadRequestException).message;
+    expect(message).toContain("cena");
+    expect(message).toContain("wholesalePrice");
+    expect(prisma.item.findMany).not.toHaveBeenCalled();
+  });
+
+  it("list(): sort po tehničkim/nevidljivim kolonama nije dozvoljen (`id`, `active`, `password`…)", async () => {
+    for (const column of ["id", "active", "alwaysTaxGoods", "signature"]) {
+      await expect(service.list({ sort: column })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    }
+  });
+
+  it("list(): `dir` van asc|desc je 400", async () => {
+    await expect(
+      service.list({ sort: "name", dir: "nagore" }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("list(): loš `sort` pada PRE podupita o duplikatima", async () => {
+    await expect(
+      service.list({ sort: "nepostojeca", duplicateCatalogNumbers: "true" }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
   it("list(): filteri groupCode + active se prevode u tačno poklapanje", async () => {
@@ -131,6 +287,123 @@ describe("ItemsService (matični podaci — Artikli)", () => {
       mode: "insensitive",
     });
     expect(args.where.name).toEqual({ contains: "lim", mode: "insensitive" });
+  });
+
+  it("list(): jedinica mere je TAČNO poklapanje bez obzira na velika/mala slova", async () => {
+    await service.list({ unit: " kom " });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    // `startsWith` bi na „m" povukao i „m2" i „mm" — korisnik koji iz padajuće liste
+    // bira metar nikako ne bi mogao da izdvoji samo metar. Zato `equals`.
+    expect(args.where.unit).toEqual({ equals: "kom", mode: "insensitive" });
+  });
+
+  it("list(): prazna/izostavljena jedinica mere ne filtrira ništa", async () => {
+    await service.list({ unit: "   " });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    // Prazno polje u traci filtera mora značiti „sve jedinice", a ne „jedinica je ''".
+    expect(args.where.unit).toBeUndefined();
+  });
+
+  it("list(): jedinica mere se slaže sa ostalim filterima i ne dira `OR` pretrage", async () => {
+    await service.list({ q: "lim", unit: "kg", groupCode: "SIR" });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    expect(args.where.OR).toHaveLength(4);
+    expect(args.where.unit).toEqual({ equals: "kg", mode: "insensitive" });
+    expect(args.where.groupCode).toBe("SIR");
+  });
+
+  it("list(): polica je PREFIKS — uneto „A” daje ceo red A, ne sve što sadrži „A”", async () => {
+    await service.list({ shelf: " A " });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    expect(args.where.shelf).toEqual({ startsWith: "A", mode: "insensitive" });
+    // Sam prefiks ne dodaje uslov prisustva — nema šta da stoji u AND.
+    expect(args.where.AND).toBeUndefined();
+  });
+
+  it("list(): `shelfPresence=with` pokriva OBA oblika praznog (NULL i prazan string)", async () => {
+    await service.list({ shelfPresence: "with" });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    // Uvoz iz BigBit-a piše i NULL i "" za „nema police"; sam `not: null` bi prazne
+    // stringove proglasio policom. `not: ""` u Prismi 4+ propušta NULL, pa idu oba.
+    expect(args.where.AND).toEqual([
+      { shelf: { not: null } },
+      { shelf: { not: "" } },
+    ]);
+    expect(args.where.shelf).toBeUndefined();
+  });
+
+  it("list(): `shelfPresence=without` hvata i NULL i prazan string", async () => {
+    await service.list({ shelfPresence: "without" });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    expect(args.where.AND).toEqual([{ OR: [{ shelf: null }, { shelf: "" }] }]);
+  });
+
+  it("list(): prisustvo police NE PREGAZI `OR` objedinjene pretrage ni prefiks police", async () => {
+    await service.list({ q: "lim", shelf: "A", shelfPresence: "with" });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    // `q` drži `where.OR`; da je „bez police" upisano tamo, pretraga bi nestala.
+    expect(args.where.OR).toHaveLength(4);
+    expect(args.where.shelf).toEqual({ startsWith: "A", mode: "insensitive" });
+    expect(args.where.AND).toEqual([
+      { shelf: { not: null } },
+      { shelf: { not: "" } },
+    ]);
+  });
+
+  it("list(): prisustvo police i filter duplih kat. brojeva se SLAŽU u istom AND-u", async () => {
+    prisma.$queryRaw.mockResolvedValue([{ catalog_number: "00001" }]);
+
+    await service.list({
+      shelfPresence: "without",
+      duplicateCatalogNumbers: "true",
+    });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    // `AND` se PUNI, ne dodeljuje — inače bi poslednji filter obrisao prethodni.
+    expect(args.where.AND).toEqual([
+      { OR: [{ shelf: null }, { shelf: "" }] },
+      { catalogNumber: { in: ["00001"] } },
+    ]);
+  });
+
+  it("list(): `shelfPresence` van with|without je 400, ne tiho prikazivanje svih artikala", async () => {
+    await expect(service.list({ shelfPresence: "sve" })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.item.findMany).not.toHaveBeenCalled();
+  });
+
+  it("list(): izostavljen `shelfPresence` ne filtrira ništa (svi artikli)", async () => {
+    await service.list({ shelfPresence: "" });
+
+    const [args] = prisma.item.findMany.mock.calls[0] as [
+      { where: Prisma.ItemWhereInput },
+    ];
+    expect(args.where.AND).toBeUndefined();
+    expect(args.where.shelf).toBeUndefined();
   });
 
   it("list(): dimenzija i kvalitet se filtriraju po celom broju; tekst je 400", async () => {
@@ -491,6 +764,65 @@ describe("ItemsService (matični podaci — Artikli)", () => {
     // Tarife nema u registru (`tax_rates` je na produkciji prazna) → null, NE 0:
     // nula bi značila „stopa je 0%", što je poslovno pogrešna tvrdnja.
     expect(data.serviceTaxTotalRate).toBeNull();
+  });
+});
+
+// ============================================ Allowlist kolona za sortiranje
+
+describe("ITEM_SORT_COLUMNS — zatvoren spisak kolona za sortiranje", () => {
+  it("svaka dozvoljena kolona je STVARNO skalarno polje modela `Item`", () => {
+    // Tipfeler u allowlist-u ne bi pao na kompilaciji (spisak je niz stringova) nego
+    // tek na produkciji — Prisma bi na nepoznat ključ u `orderBy` bacila grešku, pa
+    // bi korisnik klikom na zaglavlje kolone dobio 500. Zato se spisak proverava
+    // prema samom modelu, a ne prema našem sećanju kako se kolona zove.
+    const item = Prisma.dmmf.datamodel.models.find((m) => m.name === "Item");
+    const scalars = new Set(
+      item?.fields.filter((f) => f.kind === "scalar").map((f) => f.name) ?? [],
+    );
+    expect(scalars.size).toBeGreaterThan(0);
+    for (const column of ITEM_SORT_COLUMNS)
+      expect(scalars.has(column)).toBe(true);
+  });
+
+  it("podela na prazno-može / prazno-ne-može je tačno ova (promena šeme mora da se vidi ovde)", () => {
+    // Spisak je popisan da bi promena u `schema.prisma` pala OVDE, uz ime kolone, a ne
+    // kroz ekran pun praznih redova. `SORT_COLUMN_IS_NULLABLE` u servisu drži isti
+    // podatak i TS ga proverava prema Prisma tipovima — ovo je runtime kontrola istog.
+    expect(nullableSortColumns().sort()).toEqual(
+      [
+        "accountingCode",
+        "accountingCode2",
+        "barCode",
+        "box",
+        "externalCode",
+        "foreignName",
+        "fxSalePrice",
+        "plu",
+        "retailPrice",
+        "shelf",
+        "thickness",
+        "unit",
+        "weight",
+        "wholesalePrice",
+      ].sort(),
+    );
+    expect(notNullSortColumns().sort()).toEqual(
+      [
+        "catalogNumber",
+        "externalItemId",
+        "goodsTaxRateCode",
+        "groupCode",
+        "name",
+        "originCode",
+        "subgroupCode",
+      ].sort(),
+    );
+  });
+
+  it("spisak ne sadrži `id` — on je tie-break, ne korisnički izbor", () => {
+    expect(ITEM_SORT_COLUMNS).not.toContain("id");
+    // 21 vidljiva kolona pregleda (22 BigBit kolone bez PPD checkbox-a).
+    expect(new Set(ITEM_SORT_COLUMNS).size).toBe(ITEM_SORT_COLUMNS.length);
   });
 });
 

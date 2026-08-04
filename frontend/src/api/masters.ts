@@ -1,6 +1,7 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { apiFetch } from './client';
 import type { Paginated } from './tech-processes';
 
@@ -251,14 +252,83 @@ export interface ItemDetail {
 }
 
 /**
+ * KOLONE PO KOJIMA SERVER UME DA SORTIRA — ogledalo backend allowlist-a
+ * `ITEM_SORT_COLUMNS` (`backend/src/modules/masters/dto/list-items.dto.ts`).
+ *
+ * Sort je SERVER-SIDE nad celim skupom (92.592 artikla): sortiranje učitanih strana
+ * u pregledaču bi na pitanje „koji je najskuplji artikal" odgovorilo „najskuplji među
+ * prvih 200" — pogrešan odgovor koji izgleda tačno.
+ *
+ * Spisak je ovde da zaglavlje ne bi moglo da pošalje kolonu koju backend odbija sa
+ * 400 (`id`, `active`, `alwaysTaxGoods`, `signature` NISU dozvoljeni). Kad se backend
+ * spisak menja, menja se i ovaj — drugog vezivanja između njih nema.
+ */
+export const ITEM_SORT_COLUMNS = [
+  'catalogNumber',
+  'name',
+  'unit',
+  'shelf',
+  'weight',
+  'groupCode',
+  'subgroupCode',
+  'originCode',
+  'wholesalePrice',
+  'retailPrice',
+  'goodsTaxRateCode',
+  'thickness',
+  'box',
+  'fxSalePrice',
+  'accountingCode',
+  'accountingCode2',
+  'plu',
+  'externalItemId',
+  'barCode',
+  'externalCode',
+  'foreignName',
+] as const;
+
+export type ItemSortColumn = (typeof ITEM_SORT_COLUMNS)[number];
+export type ItemSortDir = 'asc' | 'desc';
+
+/** Je li ključ kolone dozvoljen za sort (URL/`localStorage` umeju da nose smeće). */
+export function isItemSortColumn(key: string | null | undefined): key is ItemSortColumn {
+  return !!key && (ITEM_SORT_COLUMNS as readonly string[]).includes(key);
+}
+
+/** „Ima policu" / „nema policu" — filter prisustva, nezavisan od prefiksa police. */
+export type ItemShelfPresence = 'with' | 'without';
+
+/**
  * Filteri pregleda artikala — isti skup koji nosi BigBit forma „Pregled artikala"
  * (`ZaKatBroj`, `FilterZaGrupu`, `ZaPodgrupu`, `FilterZaPoreklo`, `ZaDimenziju`,
  * `ZaKvalitet`, `ZaDupleKatBrojeve`) + jedno objedinjeno polje pretrage umesto tri
  * BigBit combo-a (po kat. broju / nazivu / bar kodu).
+ *
+ * `sort`/`dir` i `shelf`/`shelfPresence` blizanca na BigBit formi NEMAJU — dolaze iz
+ * 4.0 pregleda (klik na zaglavlje kolone + traka filtera), ali su isto server-side.
  */
 export interface ItemListParams {
   page?: number;
   pageSize?: number;
+  /**
+   * Kolona sorta nad CELIM skupom. Izostavljeno = BigBit redosled pregleda
+   * (grupa → kat. broj → naziv). Backend uvek dodaje `id` kao tie-break, jer
+   * kataloški broj NIJE jedinstven (1.980 grupa duplikata) — bez toga bi
+   * paginacija/skrol duplirali i preskakali redove.
+   */
+  sort?: ItemSortColumn;
+  /** Smer sorta; izostavljeno = `asc`. Ignoriše se bez `sort`. */
+  dir?: ItemSortDir;
+  /**
+   * Polica — PREFIKS, bez razlike u veličini slova. Police su hijerarhijske oznake
+   * („A-1-3"), pa uneto „A" vraća ceo red A.
+   */
+  shelf?: string;
+  /**
+   * `with` = samo artikli sa policom (2.839 od 92.592), `without` = bez nje;
+   * izostavljeno = svi. Sme i uz `shelf` prefiks.
+   */
+  shelfPresence?: ItemShelfPresence;
   /** Objedinjena pretraga: kat. broj / naziv / barkod / ext. šifra. */
   q?: string;
   /** Šifra grupe — tačno poklapanje. */
@@ -271,6 +341,12 @@ export interface ItemListParams {
   catalogNumber?: string;
   /** Deo naziva (`contains`, insensitive). */
   name?: string;
+  /**
+   * Jedinica mere — TAČNO poklapanje, ne prefiks: „KOM" i „KOM." su u podacima dve
+   * različite jedinice, a prefiks bi ih spojio i tiho promašio broj artikala.
+   * Vrednosti su `lookups.units` (DISTINCT iz `items`, jer JM nema svoj šifarnik).
+   */
+  unit?: string;
   /** Dimenzija (raster) — `RasterDefZag.IDRaster`. */
   rasterId?: number;
   /** Kvalitet artikla — `R_KvalitetArtikla.IDKvalitetArtikla`. */
@@ -289,12 +365,20 @@ function buildItemQuery(params: ItemListParams): string {
   const qs = new URLSearchParams();
   if (params.page && params.page > 1) qs.set('page', String(params.page));
   if (params.pageSize) qs.set('pageSize', String(params.pageSize));
+  // `dir` bez `sort` backend ignoriše — ne šalje se, da adresa zahteva ostane čitljiva.
+  if (params.sort) {
+    qs.set('sort', params.sort);
+    if (params.dir) qs.set('dir', params.dir);
+  }
+  if (params.shelf) qs.set('shelf', params.shelf);
+  if (params.shelfPresence) qs.set('shelfPresence', params.shelfPresence);
   if (params.q) qs.set('q', params.q);
   if (params.groupCode) qs.set('groupCode', params.groupCode);
   if (params.subgroupCode) qs.set('subgroupCode', params.subgroupCode);
   if (params.originCode) qs.set('originCode', params.originCode);
   if (params.catalogNumber) qs.set('catalogNumber', params.catalogNumber);
   if (params.name) qs.set('name', params.name);
+  if (params.unit) qs.set('unit', params.unit);
   if (params.rasterId !== undefined) qs.set('rasterId', String(params.rasterId));
   if (params.qualityTypeId !== undefined)
     qs.set('qualityTypeId', String(params.qualityTypeId));
@@ -304,16 +388,86 @@ function buildItemQuery(params: ItemListParams): string {
   return query ? `?${query}` : '';
 }
 
-/**
- * Paginirana lista artikala (~91k redova → uvek server-side, default 50/strana).
- * Sort je BigBit-ov: grupa → kataloški broj → naziv (radi ga backend).
+/*
+ * Hook za JEDNU stranu liste (`useArtikli`) ovde je stajao do 04.08.2026 i nije ga
+ * uvozio nijedan ekran — pregled `/artikli` ide na skrol (`useArtikliSkrol`), a
+ * birači artikla u dijalozima svoje upite već imaju. Uklonjen je umesto da stoji
+ * kao „ulaz za buduće pozivaoce": kad zatreba, pravi se od `buildItemQuery` u dve
+ * linije, a dotle bi bio mrtav izvoz koji se ne testira i tiho zastareva.
  */
-export function useArtikli(params: ItemListParams) {
-  const query = buildItemQuery(params);
-  return useQuery({
-    queryKey: ['masters', 'artikli', params],
-    queryFn: () => apiFetch<Paginated<ItemRow>>(`/v1/artikli${query}`),
+
+/**
+ * Veličina jedne strane skrola. Backend tvrdo seče `pageSize` na 200
+ * (`parsePagination`), pa je ovo maksimum koji jedan zahtev sme da traži —
+ * 25 dovlačenja do kape umesto 100 sa starih 50 po strani.
+ */
+export const ARTIKLI_STRANA_SKROLA = 200;
+
+/**
+ * KAPA UČITANIH REDOVA. Skrol nadovezuje strane u JEDNU tabelu, a tabela crta
+ * svaki red: bez kape bi „Učitaj još" do kraja spiska značio 92.592 reda × 22
+ * kolone u DOM-u (preko dva miliona ćelija) — kartica pregledača stane.
+ *
+ * Isti broj je i granica izvoza (`IZVOZ_ARTIKALA_LIMIT`), namerno: kad se kapa
+ * dostigne, ponuda korisniku je „suzi pretragu ili izvezi u Excel", pa izvoz mora
+ * da pokrije bar onoliko koliko je ekran odbio da prikaže.
+ */
+export const ARTIKLI_SKROL_KAPA = 5000;
+
+/**
+ * Lista artikala ZA SKROL — strane se nadovezuju umesto da se smenjuju.
+ *
+ * Zašto `useInfiniteQuery`, a ne ručno skupljanje u `useState`: povratak sa
+ * detalja/kartice remontira ekran, a keš upita vraća sve već dovučene strane
+ * odjednom (isti `queryKey`), pa korisnik ne gubi mesto u spisku. Ručno skupljanje
+ * bi krenulo od prve strane.
+ *
+ * Dovlačenje je UVEK na zahtev (dugme „Učitaj još"), nikad na dolazak dna: na
+ * dodirnom ekranu odskok na dnu (`overscroll`) okine posmatrača više puta zaredom
+ * i pošalje plotun zahteva nad tabelom od 92.592 reda.
+ *
+ * `getNextPageParam` staje na DVA uslova — kraj spiska i kapa. Kad stane zbog kape,
+ * `hasNextPage` je `false`, pa ekran mora sam da javi zašto (v. `naKapi`).
+ */
+export function useArtikliSkrol(
+  params: ItemListParams,
+  pageSize: number = ARTIKLI_STRANA_SKROLA,
+  kapa: number = ARTIKLI_SKROL_KAPA,
+) {
+  const upit = useInfiniteQuery({
+    queryKey: ['masters', 'artikli', 'skrol', { ...params, pageSize }],
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) =>
+      apiFetch<Paginated<ItemRow>>(
+        `/v1/artikli${buildItemQuery({ ...params, page: pageParam, pageSize })}`,
+      ),
+    getNextPageParam: (poslednja, sve) => {
+      const p = poslednja.meta.pagination;
+      if (p.page >= p.totalPages) return undefined;
+      // Prazna strana bez toga vrti dugme „Učitaj još" u prazno zauvek.
+      if (poslednja.data.length === 0) return undefined;
+      const ucitano = sve.reduce((n, s) => n + s.data.length, 0);
+      if (ucitano >= kapa) return undefined;
+      return p.page + 1;
+    },
   });
+
+  const strane = upit.data?.pages;
+  const redovi = useMemo(() => (strane ?? []).flatMap((s) => s.data), [strane]);
+  const ukupno = strane?.[0]?.meta.pagination.total ?? 0;
+
+  return {
+    /** Ceo rezultat `useInfiniteQuery` (`isLoading`, `hasNextPage`, `fetchNextPage`…). */
+    upit,
+    /** Sve dovučene strane spojene u jedan niz — to je ono što tabela crta. */
+    redovi,
+    /** Koliko redova filter ima na serveru (ne koliko ih je učitano). */
+    ukupno,
+    /** Koliko je učitano do sad. */
+    ucitano: redovi.length,
+    /** `true` = stalo se zbog KAPE, a ne zbog kraja spiska — ekran to mora reći. */
+    naKapi: redovi.length >= kapa && ukupno > redovi.length,
+  };
 }
 
 /** Gornja granica jednog izvoza — bez nje bi „Export" povukao svih ~91k redova. */
@@ -324,7 +478,8 @@ const IZVOZ_MAX_ZAHTEVA = 60;
 
 /**
  * Jednokratno povlačenje CELE filtrirane liste za izvoz (BigBit dugme „Export"):
- * izvozi se filter, ne tekuća strana. Nije hook — poziva se na klik.
+ * izvozi se filter, ne tekuća strana. Nije hook — poziva se na klik. `sort`/`dir`
+ * putuju sa filterom, pa je redosled u Excelu isti kao na ekranu.
  *
  * Lista se skuplja u koracima jer backend tvrdo ograničava `pageSize`
  * (`parsePagination`, max 200): tražimo `pageSize = limit`, server ga skrati, a mi

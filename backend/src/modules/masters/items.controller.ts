@@ -31,13 +31,18 @@ import type { AuthUser } from "../auth/jwt.strategy";
  *   PATCH /api/v1/artikli/:id      — izmena artikla (samo 4.0-native red)
  *
  * Filteri liste (svi kombinuju logičkim I): `q`, `groupCode`, `subgroupCode`,
- * `originCode`, `catalogNumber` (prefiks), `name`, `rasterId`, `qualityTypeId`,
- * `duplicateCatalogNumbers`, `active` — svaki ima blizanca na BigBit formi, v.
- * `dto/list-items.dto.ts`.
+ * `originCode`, `catalogNumber` (prefiks), `name`, `shelf` (prefiks),
+ * `shelfPresence` (`with`/`without`), `unit`, `rasterId`, `qualityTypeId`,
+ * `duplicateCatalogNumbers`, `active` — v. `dto/list-items.dto.ts`.
  *
- * `items` ima ~91k redova → paginacija je OBAVEZNA (`parsePagination`: default
- * pageSize 50, tvrdi max 200). Sort je BigBit sort pregleda: grupa → kataloški
- * broj → naziv.
+ * `items` ima ~92k redova → paginacija je OBAVEZNA (`parsePagination`: default
+ * pageSize 50, tvrdi max 200; ekran skroluje tako što nadovezuje strane).
+ *
+ * Sort: `?sort=<kolona>&dir=asc|desc` nad CELIM skupom, kolona iz zatvorenog spiska
+ * `ITEM_SORT_COLUMNS` (van njega → 400 sa spiskom dozvoljenih). Bez `sort`-a važi
+ * BigBit redosled pregleda: grupa → kataloški broj → naziv. Iza svakog sorta stoji
+ * `id` kao tie-break — bez njega skrol duplira i preskače redove (kataloški broj
+ * nije jedinstven).
  *
  * ⚠️ OBE MUTACIJE SU DANAS ZATVORENE BRANOM `assertItemWritesAllowed()` i vraćaju
  * 409 `BIGBIT_OWNED_READ_ONLY` sa uputstvom šta uraditi u BigBit-u. Razlog nije
