@@ -27,6 +27,7 @@ import {
   FACILITY_TYPES_HIDE_TECH,
   f,
   isoToDateInput,
+  itDeviceCategory,
 } from './common';
 
 type Kind = 'it' | 'facility';
@@ -48,6 +49,10 @@ function isoToDtLocal(v: unknown): string {
  * last_inspection_at se preserv-uju (PUT je pun replace). „Odgovoran" (responsible_user_id)
  * je editabilan preko useAssignableUsers → core patch (PatchAssetCoreDto.responsibleUserId);
  * „Zadužen" (assigned_to, samo IT) ostaje uz tooltip koji objašnjava razliku.
+ * Zahtevi 065/066/067: „Tip uređaja" bira tip-specifičnu sekciju (računar = CPU/
+ * ploča/RAM/grafika · štampač = kancelarija/toneri · switch = lokacija/UniFi
+ * portovi) preko itDeviceCategory(); sakrivena polja drugih kategorija se šalju
+ * iz stanja (PUT je pun replace) pa se čuvaju, ne brišu.
  */
 export function SredstvoEditModal({
   kind,
@@ -132,6 +137,16 @@ function Form({
   const [warrantyExpiresAt, setWarranty] = useState(isoToDateInput(det.warrantyExpiresAt));
   const [backupRequired, setBackupReq] = useState(det.backupRequired === true);
   const [lastBackupAt, setLastBackup] = useState(isoToDtLocal(det.lastBackupAt));
+  // Polja po tipu uređaja (065/066/067). Stanje se puni iz det i UVEK šalje u
+  // details (PUT je pun replace) — sakrivena polja drugih kategorija se time
+  // ČUVAJU, ne brišu (isti obrazac kao facility last_inspection_at preserve).
+  const [cpu, setCpu] = useState(sval(det.cpu));
+  const [motherboard, setMotherboard] = useState(sval(det.motherboard));
+  const [ram, setRam] = useState(sval(det.ram));
+  const [gpu, setGpu] = useState(sval(det.gpu));
+  const [officeLocation, setOfficeLocation] = useState(sval(det.officeLocation));
+  const [tonerCartridges, setToner] = useState(sval(det.tonerCartridges));
+  const [unifiPorts, setUnifiPorts] = useState(sval(det.unifiPorts));
 
   // ── Facility-specific ──
   const [facilityType, setFacilityType] = useState(sval(det.facilityType));
@@ -149,6 +164,9 @@ function Form({
 
   const hideTech = FACILITY_TYPES_HIDE_TECH.has(facilityType);
   const hasTech = !!(manufacturer || model || serialNumber || supplier);
+  // Tip uređaja bira skup polja (065 računar / 066 štampač / 067 switch) —
+  // reaktivno dok korisnik kuca u „Tip uređaja".
+  const itCategory = itDeviceCategory(deviceType);
 
   // Fallback lista tipova objekata (lookup je prazan na živoj bazi — F5 migracija).
   const facilityTypeOptions = useMemo(() => {
@@ -178,6 +196,14 @@ function Form({
         warranty_expires_at: warrantyExpiresAt || null,
         backup_required: backupRequired,
         last_backup_at: lastBackupAt ? `${lastBackupAt}:00` : null,
+        // Tip-specifična polja (065/066/067) — uvek u payload-u (preserve pravilo gore).
+        cpu: cpu.trim() || null,
+        motherboard: motherboard.trim() || null,
+        ram: ram.trim() || null,
+        gpu: gpu.trim() || null,
+        office_location: officeLocation.trim() || null,
+        toner_cartridges: tonerCartridges.trim() || null,
+        unifi_ports: unifiPorts.trim() || null,
         notes: unified,
       };
     }
@@ -340,11 +366,34 @@ function Form({
         {isIt ? (
           <>
             <Section title="Mreža (opciono)">
-              <FormField label="Hostname"><Input value={hostname} onChange={(e) => setHostname(e.target.value)} /></FormField>
+              <FormField label={itCategory === 'computer' ? 'Computer name (hostname)' : 'Hostname'}><Input value={hostname} onChange={(e) => setHostname(e.target.value)} /></FormField>
               <FormField label="IP adresa"><Input value={ipAddress} onChange={(e) => setIp(e.target.value)} placeholder="192.168.1.42" /></FormField>
               <FormField label="MAC adresa"><Input value={macAddress} onChange={(e) => setMac(e.target.value)} /></FormField>
               <FormField label="Operativni sistem"><Input value={operatingSystem} onChange={(e) => setOs(e.target.value)} placeholder="Windows 11, Ubuntu 22.04…" /></FormField>
             </Section>
+
+            {/* Tip-specifična polja (065/066/067): tip uređaja bira skup polja.
+                Vrednosti ostalih kategorija se ne brišu — samo su sakrivene. */}
+            {itCategory === 'computer' && (
+              <Section title="Hardver računara">
+                <FormField label="Procesor"><Input value={cpu} onChange={(e) => setCpu(e.target.value)} placeholder="npr. Intel i7-13700H" /></FormField>
+                <FormField label="Matična ploča"><Input value={motherboard} onChange={(e) => setMotherboard(e.target.value)} placeholder="npr. ASUS PRIME B760M" /></FormField>
+                <FormField label="RAM"><Input value={ram} onChange={(e) => setRam(e.target.value)} placeholder="npr. 32 GB DDR5" /></FormField>
+                <FormField label="Grafika"><Input value={gpu} onChange={(e) => setGpu(e.target.value)} placeholder="npr. RTX 4060 / integrisana" /></FormField>
+              </Section>
+            )}
+            {itCategory === 'printer' && (
+              <Section title="Štampač">
+                <FormField label="Kancelarija"><Input value={officeLocation} onChange={(e) => setOfficeLocation(e.target.value)} placeholder="npr. kancelarija 12 / uprava" /></FormField>
+                <FormField label="Toneri / ketridži"><Input value={tonerCartridges} onChange={(e) => setToner(e.target.value)} placeholder="npr. HP 415A (crna + 3 boje)" /></FormField>
+              </Section>
+            )}
+            {itCategory === 'network' && (
+              <Section title="Mrežna oprema">
+                <FormField label="Lokacija"><Input value={officeLocation} onChange={(e) => setOfficeLocation(e.target.value)} placeholder="npr. server sala / hala 2" /></FormField>
+                <FormField label="UniFi portovi"><Input value={unifiPorts} onChange={(e) => setUnifiPorts(e.target.value)} placeholder="npr. 24 (PoE 16)" /></FormField>
+              </Section>
+            )}
 
             <Section title="Licenca i garancija">
               <FormField label="Licenca / ključ"><Input value={licenseKey} onChange={(e) => setLicenseKey(e.target.value)} /></FormField>

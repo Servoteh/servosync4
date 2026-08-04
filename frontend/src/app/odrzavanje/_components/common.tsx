@@ -279,6 +279,22 @@ export const DEVICE_TYPE_SUGGESTIONS = [
   'laptop', 'desktop', 'server', 'printer', 'switch', 'router', 'access point',
   'UPS', 'monitor', 'telefon', 'tablet', 'NAS', 'firewall',
 ];
+
+/**
+ * Kategorija IT uređaja → koja tip-specifična polja forma/karton prikazuju
+ * (zahtevi 065/066/067). `device_type` je slobodan tekst (datalist), pa se
+ * kategorija izvodi tolerantno po podstringu (mala slova, sr/en varijante);
+ * nepoznat tip = 'other' (bez tip-specifičnih polja, vrednosti se čuvaju).
+ */
+export type ItDeviceCategory = 'computer' | 'printer' | 'network' | 'other';
+export function itDeviceCategory(deviceType: unknown): ItDeviceCategory {
+  const t = String(deviceType ?? '').toLowerCase();
+  if (!t) return 'other';
+  if (['laptop', 'desktop', 'server', 'pc', 'računar', 'racunar', 'workstation', 'all-in-one'].some((k) => t.includes(k))) return 'computer';
+  if (['printer', 'štampač', 'stampac', 'plotter', 'mfp', 'kopir'].some((k) => t.includes(k))) return 'printer';
+  if (['switch', 'router', 'access point', 'firewall', 'gateway'].some((k) => t.includes(k)) || t === 'ap') return 'network';
+  return 'other';
+}
 /** Fallback lista tipova objekata kad lookup padne (1.0 FACILITY_TYPE_SUGGESTIONS). */
 export const FACILITY_TYPE_SUGGESTIONS = [
   'hala', 'zgrada', 'instalacija', 'HVAC', 'elektro orman', 'kompresorska',

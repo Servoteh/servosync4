@@ -23,6 +23,7 @@ import {
   deadlineTone,
   Field,
   FACILITY_TYPES_HIDE_TECH,
+  itDeviceCategory,
   OpStatusBadge,
 } from './common';
 import { AssetWorkOrders } from './asset-work-orders';
@@ -243,14 +244,27 @@ function Pregled({ kind, d, qrUrl }: { kind: Kind; d: AssetCardDetail; qrUrl: st
 }
 
 function ItFacts({ det }: { det: Record<string, unknown> }) {
+  // Tip-specifična polja (065/066/067) — prikazuju se samo popunjena, sa labelom
+  // po kategoriji uređaja (računar/štampač/mrežna oprema).
+  const cat = itDeviceCategory(det.deviceType);
+  const extra: [string, string | null][] = [
+    ['Procesor', str(det.cpu)],
+    ['Matična ploča', str(det.motherboard)],
+    ['RAM', str(det.ram)],
+    ['Grafika', str(det.gpu)],
+    [cat === 'network' ? 'Lokacija' : 'Kancelarija', str(det.officeLocation)],
+    ['Toneri / ketridži', str(det.tonerCartridges)],
+    ['UniFi portovi', str(det.unifiPorts)],
+  ];
   return (
     <div className="grid grid-cols-2 gap-3 rounded-panel border border-line bg-surface-2/40 p-3 sm:grid-cols-3">
       <Field label="Tip uređaja">{str(det.deviceType) ?? '—'}</Field>
       <Field label="Zadužen">{str(det.assignedTo) ?? '—'}</Field>
-      <Field label="Hostname">{str(det.hostname) ?? '—'}</Field>
+      <Field label={cat === 'computer' ? 'Computer name' : 'Hostname'}>{str(det.hostname) ?? '—'}</Field>
       <Field label="IP adresa">{str(det.ipAddress) ?? '—'}</Field>
       <Field label="MAC">{str(det.macAddress) ?? '—'}</Field>
       <Field label="OS">{str(det.operatingSystem) ?? '—'}</Field>
+      {extra.filter(([, v]) => v).map(([k, v]) => <Field key={k} label={k}>{v}</Field>)}
     </div>
   );
 }
