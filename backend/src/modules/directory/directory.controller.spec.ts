@@ -61,12 +61,11 @@ describe("DirectoryController — BigBit je vlasnik komitenata i predmeta", () =
       expect(String(body.message)).toMatch(
         /unesite u BigBit|Otvorite predmet u BigBit-u/,
       );
-      // Poruka mora imenovati KO pokreće uvoz — šifarnički sync NIJE zakazan,
-      // pa „stiže sledećim uvozom" ostavlja korisnika da čeka proces koji ne postoji.
-      // Od 04.08.2026 (061/26) krug je širi od administratora: tehnolozi + planeri.
-      expect(String(body.message)).toMatch(
-        /pokrenite uvoz|tehnologa\/planera\/administratora/,
-      );
+      // Poruka mora reći KADA podatak stiže — reopen 061/26 (04.08.2026): ručni
+      // sync čita QBigTehn kopiju zamrznutu od 22.07, pa je upućivanje na dugme
+      // „Pokreni sync" slalo korisnika u proces koji podatak NE MOŽE doneti.
+      // Jedini živi kanal je noćni .mdb uvoz (~03:45) — poruka to i kaže.
+      expect(String(body.message)).toMatch(/noćnim uvozom/);
     },
   );
 

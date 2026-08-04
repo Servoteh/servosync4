@@ -24,31 +24,34 @@ import { ConflictException } from "@nestjs/common";
  */
 
 /*
- * NAPOMENA O TEKSTU (ispravka 26.07.2026 posle recenzije): poruke su ranije
- * govorile „stiže sledećim uvozom iz BigBit-a", što je korisnika ostavljalo da
- * čeka proces koji ne postoji. Šifarnički (MSSQL) sync komitenata i predmeta
- * NIJE zakazan — pokreće se isključivo rutom `POST /api/v1/sync/run` sa ekrana
- * `/syncs`. Permisiju `sync.run` od 04.08.2026 (zahtev 061/26, odluka Nenad)
- * imaju tehnolozi + planeri + admin (role: tehnolog/menadzment/admin), pa tekst
- * više ne upućuje isključivo na administratora. Noćni .mdb kanal je druga stvar
- * i NE uvozi komitente ni predmete.
+ * NAPOMENA O TEKSTU (druga ispravka, reopen 061/26 04.08.2026): tekst od
+ * 04.08. ujutru je upućivao na dugme „Pokreni sync" (/syncs) — i to je bilo
+ * POGREŠNO. Taj sync čita QBigTehn MSSQL kopiju koja je ZAMRZNUTA od
+ * 22.07.2026 (BigBit→QBigTehn prenos ugašen; izmereno: MSSQL staje na predmetu
+ * 10005, BigBit je tada bio na 10014), pa dugme NE MOŽE doneti nov komitent ni
+ * predmet — Igor Voštić je 04.08. tačno tako i naleteo (pritisnuo sync, dobio
+ * grešku, podatak nije stigao). Jedini kanal koji prati BigBit je NOĆNI .mdb
+ * uvoz (`BigbitMdbImportService`, uvoz oko 03:45 — od 30.07. uvozi i komitente
+ * i predmete; izvoz iz BigBita je prethodni dan u 17:30). Zato poruke sada kažu
+ * istinu: podatak stiže automatski PREKO NOĆI, vidljiv je sutra ujutru.
  *
- * Kad se šifarnički sync zakaže (posao u scheduler-u), OVDE se menja jedna
- * rečenica i nigde više — ovo je jedini izvor teksta i za backend i za ekrane.
+ * Ako se kanal ikad ubrza (npr. češći izvoz), OVDE se menja jedna rečenica i
+ * nigde više — ovo je jedini izvor teksta i za backend i za ekrane
+ * (`frontend/src/app/artikli/_forma/pravila.ts` drži presliku — menja se istim
+ * PR-om).
  */
 
 /** Šta korisnik radi kad mu treba NOV komitent. */
 export const BIGBIT_CUSTOMERS_READ_ONLY_MESSAGE =
   "Komitente vodi BigBit — u ServoSync-u se ne unose ni ne menjaju (odluka 26.07.2026). " +
-  "Novog komitenta unesite u BigBit, pa pokrenite uvoz (Sinhronizacije → Pokreni sync) " +
-  "ili to zatražite od tehnologa/planera/administratora; tek tada se komitent vidi ovde.";
+  "Novog komitenta unesite u BigBit — ovde stiže automatski noćnim uvozom i vidljiv je " +
+  "sutra ujutru; ako ne može da čeka, obratite se administratoru.";
 
 /** Šta korisnik radi kad mu treba NOV predmet (broj predmeta). */
 export const BIGBIT_PROJECTS_READ_ONLY_MESSAGE =
   "Predmete i brojeve predmeta vodi BigBit — u ServoSync-u se ne otvaraju ni ne menjaju " +
-  "(odluka 26.07.2026). Otvorite predmet u BigBit-u, pa pokrenite uvoz (Sinhronizacije → " +
-  "Pokreni sync) ili to zatražite od tehnologa/planera/administratora; tek tada se broj " +
-  "predmeta vidi ovde.";
+  "(odluka 26.07.2026). Otvorite predmet u BigBit-u — ovde stiže automatski noćnim uvozom " +
+  "i vidljiv je sutra ujutru; ako ne može da čeka, obratite se administratoru.";
 
 /**
  * Poslovna greška: pokušaj upisa u tabelu čiji je vlasnik BigBit.

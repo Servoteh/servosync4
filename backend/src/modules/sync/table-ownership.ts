@@ -113,6 +113,59 @@ export function isOwnedProductionTable(entity: string): boolean {
 export const NIGHTLY_SYNC_EXCLUDED = new Set<string>(["items"]);
 
 /**
+ * TOKOVI ČIJI JE MSSQL IZVOR ZAMRZNUT — van default prolaza (REOPEN 061/26,
+ * izmereno 04.08.2026 direktno na izvoru `BIGBIT_DB_*` = Vasa-SQL:5765).
+ *
+ * BigBit→QBigTehn prenos je ugašen 22.07.2026 (modul penzionisan), pa je MSSQL
+ * kopija od tada ZAMRZNUTA: `Predmeti` staju na IDPredmet 10477 / broj 10005
+ * (BigBit je tada već bio na 10014), a šest izvornih tabela je skroz PRAZNO.
+ * Posledice po grupama:
+ *
+ *  • `customers` + `projects` — od 30.07.2026 ih vozi noćni .mdb kanal
+ *    (`BigbitMdbImportService`, jedini izvor koji još prati BigBit). MSSQL
+ *    prolaz nad njima nije samo jalov nego ŠTETAN: `projects` je aditivni
+ *    full-refresh (obriši izvorne id-jeve + reinsert), pa svako pokretanje
+ *    VRAĆA svih 7.617 predmeta na stanje od 22.07 i time gazi svežije .mdb
+ *    izmene do sledeće noći. IZMERENO 04.08: jutarnji uvoz u 03:45 doneo
+ *    „projects ~1, customers ~2" izmene, a ručni sync u 11:44 (Igor Voštić,
+ *    zahtev 061/26) ih je pregazio zamrznutom kopijom. (`customers` je danas
+ *    no-op zbog watermark-a, ali ostaje ovde: isti vlasnik, isti razlog.)
+ *
+ *  • `access_rights`, `goods_documents_mirror`, `journal`, `notifications`,
+ *    `price_list_entries`, `warehouses` — izvorne tabele (BBPravaPristupa,
+ *    RobnaDokumentaMirror, _Dnevnik, Info, Cenovnik, Magacini) imaju 0 redova,
+ *    pa empty-source guard u `GenericSyncer` s pravom ZAUSTAVI svaki prolaz.
+ *    Guard je ispravan (čuva 3.0 kopiju od pražnjenja), ali garantovana greška
+ *    u SVAKOM runu je šum koji maskira prave padove — Igorova prijava 04.08
+ *    („izbacuje grešku pri sinhronizaciji") je bila tačno ovih šest tokova.
+ *
+ * Eksplicitno pokretanje (body.entities) ostaje moguće SAMO adminu — isti gejt
+ * kao `items` — jer za `projects`/`customers` znači svesno vraćanje na 22.07.
+ * Skup se briše (ili tanji) kad se presudi sudbina celog MSSQL sync-a.
+ */
+export const FROZEN_MSSQL_EXCLUDED = new Set<string>([
+  "customers",
+  "projects",
+  "access_rights",
+  "goods_documents_mirror",
+  "journal",
+  "notifications",
+  "price_list_entries",
+  "warehouses",
+]);
+
+/**
+ * JEDAN skup za default ručnog `POST /sync/run` I noćni MSSQL posao: unija
+ * privremenih isključenja (items) i zamrznutih tokova. Kontroler i
+ * `BigbitSyncJobs.nightlyEntities` filtriraju ISKLJUČIVO kroz ovo — da se dve
+ * liste nikad ne raziđu.
+ */
+export const DEFAULT_SYNC_EXCLUDED = new Set<string>([
+  ...NIGHTLY_SYNC_EXCLUDED,
+  ...FROZEN_MSSQL_EXCLUDED,
+]);
+
+/**
  * QBigTehn chain — the TEMPORARY part of the sync (P4 spec §7.2, ODLUKE
  * "QBigTehn sync privremen / BigBit trajan").
  *

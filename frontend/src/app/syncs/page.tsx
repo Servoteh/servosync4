@@ -103,20 +103,33 @@ export default function SyncsPage() {
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
         {/*
-          061/26 (04.08.2026): dugme šalje prazan body → backend PODRAZUMEVANO
-          preskače artikle (items, NIGHTLY_SYNC_EXCLUDED — čišćenje kataloga u
-          toku). Napomena stoji stalno, ne samo dok sync radi, da korisnik zna
-          ŠTA će dugme obraditi pre nego što ga pritisne.
+          061/26 + reopen (04.08.2026): dugme šalje prazan body → backend
+          PODRAZUMEVANO preskače DEFAULT_SYNC_EXCLUDED (items — čišćenje
+          kataloga; predmeti/komitenti — vozi ih noćni .mdb uvoz; šest tokova
+          sa praznim QBigTehn izvorom). Napomena stoji stalno i kaže i ŠTA dugme
+          NE donosi — Igorova prijava 04.08. je bila tačno pogrešno očekivanje
+          („sync će doneti novi RN/predmet iz BigBita").
         */}
-        <div className="rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
-          Sync povlači šifarnike iz BigBit-a (predmeti, komitenti, cenovnik…).{' '}
-          <span className="font-medium text-ink">Artikli su privremeno preskočeni</span> dok
-          traje čišćenje kataloga — njih posebno (i nadgledano) pokreće administrator.
+        <div className="space-y-1 rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
+          <p>
+            <span className="font-medium text-ink">Šta dugme radi:</span> osvežava QBigTehn
+            šifarnike (konfiguracija, registri, MRP…).{' '}
+            <span className="font-medium text-ink">Artikli su privremeno preskočeni</span> dok
+            traje čišćenje kataloga — njih posebno (i nadgledano) pokreće administrator.
+          </p>
+          <p>
+            <span className="font-medium text-ink">Šta NE stiže ovim dugmetom:</span> novi
+            predmeti, komitenti i artikli iz BigBit-a stižu automatski{' '}
+            <span className="font-medium text-ink">noćnim uvozom</span> (oko 03:45) — ono što se
+            danas unese u BigBit vidljivo je sutra ujutru. Radni nalozi (RN) se ne sinhronizuju
+            uopšte: otvaraju se direktno u aplikaciji i odmah su vidljivi u Praćenju i Planu
+            proizvodnje.
+          </p>
         </div>
         {runSync.isPending && (
           <div className="rounded-panel border border-status-info/30 bg-status-info-bg px-4 py-3 text-sm text-status-info">
-            Sinhronizacija je pokrenuta — puni ~500.000 redova iz QBigTehn (bez artikala). Može
-            potrajati nekoliko minuta.
+            Sinhronizacija je pokrenuta — osvežava QBigTehn šifarnike (bez artikala, predmeta i
+            komitenata). Obično traje manje od minuta.
           </div>
         )}
         {(runSync.error || logs.error) && (

@@ -641,7 +641,9 @@ describe("ItemsService — unos/izmena su DANAS zatvoreni branom", () => {
 
   it("poruka je srpska (latinica) i kaže ŠTA DA SE URADI, ne samo „nije dozvoljeno”", () => {
     expect(ITEM_WRITE_BLOCKED_MESSAGE).toContain("BigBit");
-    expect(ITEM_WRITE_BLOCKED_MESSAGE).toContain("Pokreni sync");
+    // Reopen 061/26 (04.08.2026): put je noćni .mdb uvoz, ne dugme „Pokreni sync"
+    // (QBigTehn kopija je zamrznuta od 22.07 i dugme artikal ne može doneti).
+    expect(ITEM_WRITE_BLOCKED_MESSAGE).toContain("noćnim");
     // Latinica — nijedan ćirilični znak (BACKEND_RULES: poruke na srpskom, latinica).
     expect(ITEM_WRITE_BLOCKED_MESSAGE).not.toMatch(/[Ѐ-ӿ]/);
   });

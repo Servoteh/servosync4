@@ -158,9 +158,9 @@ export class CustomerRfqService {
     });
     if (!customer)
       throw new NotFoundException(
-        `Komitent ${customerId} ne postoji u ServoSync-u. Unesite ga u BigBit, pa pokrenite ` +
-          `uvoz (Sinhronizacije → Pokreni sync) ili to zatražite od tehnologa/planera/` +
-          `administratora — tek onda može na zahtev.`,
+        `Komitent ${customerId} ne postoji u ServoSync-u. Unesite ga u BigBit — ovde ` +
+          `stiže automatski noćnim uvozom i vidljiv je sutra ujutru; tek onda može ` +
+          `na zahtev.`,
       );
   }
 }

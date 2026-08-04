@@ -2,6 +2,8 @@ import "reflect-metadata";
 
 import {
   ADDITIVE_REFRESH_TABLES,
+  DEFAULT_SYNC_EXCLUDED,
+  FROZEN_MSSQL_EXCLUDED,
   hasNativeColumns,
   hasNativeIdRange,
   isNativeRow,
@@ -11,8 +13,10 @@ import {
   NATIVE_ID_MAX,
   NATIVE_ID_RANGE_TABLES,
   nativeRowsSurviveSync,
+  NIGHTLY_SYNC_EXCLUDED,
   OWNED_PRODUCTION_TABLES,
 } from "./table-ownership";
+import { SYNC_MAP } from "./sync-map.generated";
 import {
   assertItemWritesAllowed,
   itemsSurviveSync,
@@ -140,5 +144,46 @@ describe("table-ownership — zaštita ne otvara unos", () => {
     expect(isOwnedProductionTable("customers")).toBe(false);
     expect(hasNativeColumns("customers")).toBe(false);
     expect(isOwnedProductionTable("items")).toBe(false);
+  });
+});
+
+/**
+ * ZAMRZNUTI MSSQL TOKOVI — reopen 061/26 (04.08.2026). Pinuje se sadržaj skupa
+ * (odluka, ne implementacioni detalj) i higijena: svaki isključeni tok mora
+ * POSTOJATI u mapi — isključenje nepostojećeg imena je mrtvo slovo koje tiho
+ * preživi preimenovanje entiteta.
+ */
+describe("table-ownership — zamrznuti MSSQL tokovi (reopen 061/26)", () => {
+  it("skup je tačno: masters koje vozi .mdb kanal + šest praznih izvora", () => {
+    expect([...FROZEN_MSSQL_EXCLUDED].sort()).toEqual([
+      "access_rights",
+      "customers",
+      "goods_documents_mirror",
+      "journal",
+      "notifications",
+      "price_list_entries",
+      "projects",
+      "warehouses",
+    ]);
+  });
+
+  it("default prolaz = unija (items + zamrznuti) — jedan izvor za ručni i noćni put", () => {
+    expect([...DEFAULT_SYNC_EXCLUDED].sort()).toEqual(
+      [...NIGHTLY_SYNC_EXCLUDED, ...FROZEN_MSSQL_EXCLUDED].sort(),
+    );
+    expect(DEFAULT_SYNC_EXCLUDED.has("items")).toBe(true);
+    expect(DEFAULT_SYNC_EXCLUDED.has("projects")).toBe(true);
+    // `document_types` i dalje ide u default prolaz (nije ni zamrznut ni items).
+    expect(DEFAULT_SYNC_EXCLUDED.has("document_types")).toBe(false);
+  });
+
+  it("svaki isključeni tok postoji u sync mapi (nema isključenja duha)", () => {
+    const mapped = new Set(SYNC_MAP.map((m) => m.targetDb));
+    for (const entity of FROZEN_MSSQL_EXCLUDED) {
+      expect({ entity, mapped: mapped.has(entity) }).toEqual({
+        entity,
+        mapped: true,
+      });
+    }
   });
 });

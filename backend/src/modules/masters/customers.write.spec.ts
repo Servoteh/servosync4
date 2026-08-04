@@ -356,7 +356,9 @@ describe("Izmena komitenta koji je došao iz BigBit-a", () => {
       expect(res.message).toContain("Servoteh d.o.o."); // KO
       expect(res.message).toContain("4821"); // pod kojom šifrom
       expect(res.message).toContain("BigBit"); // GDE se ispravlja
-      expect(res.message).toContain("Pokreni sync"); // ŠTA posle
+      // Reopen 061/26 (04.08.2026): izmena stiže noćnim .mdb uvozom — dugme
+      // „Pokreni sync" je ne može doneti (QBigTehn kopija zamrznuta od 22.07).
+      expect(res.message).toContain("noćnim uvozom"); // KADA stiže
     }
     // Ništa nije upisano — greška stiže pre `update` upita.
     expect(prisma.customer.update).not.toHaveBeenCalled();

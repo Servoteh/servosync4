@@ -44,13 +44,15 @@ test('brana je zatvorena za oba entiteta — ekran ne sme ništa da pošalje', (
 });
 
 test('poruka komitenta je doslovna kopija backend konstante BIGBIT_CUSTOMERS_READ_ONLY_MESSAGE', () => {
-  // Izvor: backend/src/modules/directory/bigbit-owned.ts:40-43. Ako se tamo promeni
-  // tekst, ovaj test pada i tera da se promeni i ovde (nema deljenog paketa poruka).
+  // Izvor: backend/src/modules/directory/bigbit-owned.ts (BIGBIT_CUSTOMERS_READ_ONLY_MESSAGE).
+  // Ako se tamo promeni tekst, ovaj test pada i tera da se promeni i ovde (nema
+  // deljenog paketa poruka). Tekst od reopena 061/26 (04.08.2026): komitent stiže
+  // noćnim .mdb uvozom — dugme „Pokreni sync" ga ne može doneti (frozen QBigTehn).
   assert.equal(
     BRANA_KOMITENT.poruka,
     'Komitente vodi BigBit — u ServoSync-u se ne unose ni ne menjaju (odluka 26.07.2026). ' +
-      'Novog komitenta unesite u BigBit, pa pokrenite uvoz (Sinhronizacije → Pokreni sync) ' +
-      'ili to zatražite od tehnologa/planera/administratora; tek tada se komitent vidi ovde.',
+      'Novog komitenta unesite u BigBit — ovde stiže automatski noćnim uvozom i vidljiv je ' +
+      'sutra ujutru; ako ne može da čeka, obratite se administratoru.',
   );
 });
 

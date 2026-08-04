@@ -181,10 +181,11 @@ export default function ProjectsPage() {
         <div className="rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
           <p className="font-semibold text-ink">Predmete vodi BigBit — ovde je samo pregled</p>
           <p className="mt-1">
-            Nov predmet otvorite u BigBit-u; broj predmeta dodeljuje BigBit. Zatim pokrenite uvoz
-            (Sinhronizacije → Pokreni sync) ili to zatražite od tehnologa/planera/administratora —
-            tek tada se predmet vidi ovde i može da se veže za radne naloge i dokumente. Izmene
-            podataka o predmetu radite u BigBit-u.
+            Nov predmet otvorite u BigBit-u; broj predmeta dodeljuje BigBit. Ovde stiže
+            automatski noćnim uvozom (oko 03:45) — predmet otvoren danas vidljiv je sutra
+            ujutru, tek tada može da se veže za radne naloge i dokumente. Dugme „Pokreni sync“
+            na Sinhronizacijama NE donosi nove predmete. Izmene podataka o predmetu radite u
+            BigBit-u.
           </p>
         </div>
 
