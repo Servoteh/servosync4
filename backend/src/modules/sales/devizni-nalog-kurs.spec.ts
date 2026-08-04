@@ -458,10 +458,17 @@ describe("assertCreditLimit — konverzija je U BRANI, ne na pozivaocu", () => {
    * Test kroz `createProforma` bi merio i ceo put cena/numeracije, pa bi pao iz deset
    * razloga koji sa ovim nalazom nemaju veze.
    */
+  /** Dokument iz koga brana izvodi valutu — imenovan tip, ne `typeof doc`. */
+  interface LimitDoc {
+    currency?: string | null;
+    documentDate?: Date | null;
+    documentNumber?: string | null;
+  }
+
   function callLimit(
     service: FakturisanjeService,
     grossTotal: Prisma.Decimal,
-    doc: { currency?: string | null; documentDate?: Date | null; documentNumber?: string | null },
+    doc: LimitDoc,
   ): Promise<void> {
     return (
       service as unknown as {
@@ -469,7 +476,7 @@ describe("assertCreditLimit — konverzija je U BRANI, ne na pozivaocu", () => {
           customerId: number,
           grossTotal: Prisma.Decimal,
           force: boolean,
-          doc: typeof doc,
+          doc: LimitDoc,
         ) => Promise<void>;
       }
     ).assertCreditLimit(5, grossTotal, false, doc);

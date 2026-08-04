@@ -19,7 +19,10 @@ import { buildYearOpenDiff, loadCumulativeBalances } from "./year-open-diff";
  * (balans-kontrola ΣDug=ΣPot; ne balansira → 422 sa razlikom):
  *
  *   a) SALDO po kontu na 31.12. fromYear — isti filter kao kartica konta
- *      (`je.status IN (posted, locked)`), kumulativno (document_date < 01.01. sledeće god.).
+ *      (`je.status IN (posted, locked)`), u PROZORU `je.year = fromYear` (PS te godine +
+ *      promet te godine). Do 04.08.2026. je ovde stajao kumulativ `document_date <
+ *      01.01.(fromYear+1)`, koji je na svakom prenosu POSLE prvog brojao klase 0–4 dvaput —
+ *      v. obrazloženje nad `accountBalances`.
  *   b) ZATVARANJE klase 5 (rashodi) i 6 (prihodi) kontra-stavkama; razlika (rezultat)
  *      ide na „konto rezultata" (klasa 3, nađen po prefiksu — DOKUMENTOVANO u `notes`).
  *      Zaključni nalog (orderType ZAK) datiran 31.12. fromYear.
@@ -397,6 +400,12 @@ export class YearOpenService {
       companyId: opts.companyId,
       description: `Zatvaranje klasa 5 i 6 za ${opts.fromYear}`,
       createdByUserId: opts.actorUserId,
+      // Brava predatog PDV perioda se OVDE svesno preskače (v. `postBalanced`):
+      // zaključni nalog je po zakonu datiran 31.12., a decembarska prijava je do
+      // trenutka prenosa gotovo uvek predata. Zatvaraju se ISKLJUČIVO klase 5 i 6
+      // (rashodi/prihodi) — nijedno PDV konto (27x/47x), pa PDV obračun tog meseca
+      // ostaje netaknut. Alternativa (datirati u tekući period) bila bi pogrešna.
+      forceReason: `Zaključni nalog ${CLOSING_ORDER_TYPE} 31.12.${opts.fromYear} — zatvaranje klasa 5/6 pri prenosu godine (bez PDV konta)`,
       lines: closingLines,
     });
 
@@ -456,6 +465,11 @@ export class YearOpenService {
       companyId,
       description: `Početno stanje ${opts.toYear} (prenos sa ${opts.fromYear})`,
       createdByUserId: opts.actorUserId,
+      // Brava se preskače i za PS: prenos se u praksi radi tek u toku naredne godine,
+      // pa je januar `toYear` (datum PS naloga) tada već predat. PS je jedno jedino
+      // knjiženje po godini i ne sme da se pomeri u „tekući period" — inače saldi
+      // klasa 0–4 nedostaju svim čitaocima od 01.01. do datuma prenosa.
+      forceReason: `Nalog početnog stanja ${OPENING_ORDER_TYPE} za ${opts.toYear} — prenos salda klasa 0–4 sa ${opts.fromYear}`,
       lines: psLines,
     });
     return {
@@ -524,6 +538,14 @@ export class YearOpenService {
   // ───────────────────────────────────────────────────────────────────────────
   // Knjiži balansiran nalog kroz PostingEngine; ne balansira → 422 sa razlikom.
   // ───────────────────────────────────────────────────────────────────────────
+  /**
+   * `forceReason` — PRENOS GODINE MORA da knjiži u predat PDV period po dizajnu.
+   * Od 04.08.2026 motor (`postManualEntry`) odbija knjiženje u mesec za koji je PDV
+   * prijava predata; oba naloga prenosa su datirana fiksno (ZAK 31.12. `fromYear`,
+   * PS 01.01. `toYear`) i ne mogu se pomeriti u tekući period, pa im se brava
+   * eksplicitno preskače uz obrazloženje. Brava se NE gasi tiho: obrazloženje ide u
+   * opis naloga i u `audit_log`, pa se u dnevniku vidi ko je i zašto forsirao.
+   */
   private async postBalanced(
     tx: Prisma.TransactionClient,
     params: {
@@ -532,6 +554,7 @@ export class YearOpenService {
       companyId: number;
       description: string;
       createdByUserId?: number;
+      forceReason: string;
       lines: ManualLine[];
     },
   ): Promise<{ journalEntryId: number; number: string; lineCount: number }> {
@@ -542,6 +565,10 @@ export class YearOpenService {
         companyId: params.companyId,
         description: params.description,
         createdByUserId: params.createdByUserId,
+        force: {
+          reason: params.forceReason,
+          actorUserId: params.createdByUserId,
+        },
         lines: params.lines.map((l) => ({
           accountCode: l.accountCode,
           debit: l.debit.toFixed(4),
