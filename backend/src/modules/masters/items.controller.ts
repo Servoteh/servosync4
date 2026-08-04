@@ -21,13 +21,23 @@ import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
  * Matični podaci — Artikli (BigBit cache tabela `items`).
- *   GET   /api/v1/artikli      — lista (q po nazivu/kat. broju/barkodu; groupCode, active)
- *   GET   /api/v1/artikli/:id  — pun slog + razrešeni nazivi grupe/podgrupe/porekla
- *   POST  /api/v1/artikli      — nov artikal (pun skup polja BigBit forme „Unos artikala")
- *   PATCH /api/v1/artikli/:id  — izmena artikla (samo 4.0-native red)
+ *   GET   /api/v1/artikli          — lista, kolone i filteri BigBit pregleda
+ *   GET   /api/v1/artikli/lookups  — šifarnici za padajuće liste (grupe, podgrupe,
+ *                                    PodPodgrupe, kvaliteti, dimenzije, tarife, JM,
+ *                                    proizvođači, zemlje porekla)
+ *   GET   /api/v1/artikli/:id      — pun slog + nazivi grupe/podgrupe/porekla,
+ *                                    dimenzije, kvaliteta i zbirne PDV stope
+ *   POST  /api/v1/artikli          — nov artikal (pun skup polja forme „Unos artikala")
+ *   PATCH /api/v1/artikli/:id      — izmena artikla (samo 4.0-native red)
+ *
+ * Filteri liste (svi kombinuju logičkim I): `q`, `groupCode`, `subgroupCode`,
+ * `originCode`, `catalogNumber` (prefiks), `name`, `rasterId`, `qualityTypeId`,
+ * `duplicateCatalogNumbers`, `active` — svaki ima blizanca na BigBit formi, v.
+ * `dto/list-items.dto.ts`.
  *
  * `items` ima ~91k redova → paginacija je OBAVEZNA (`parsePagination`: default
- * pageSize 50, tvrdi max 200). Sort po kataloškom broju (ljudski ključ artikla).
+ * pageSize 50, tvrdi max 200). Sort je BigBit sort pregleda: grupa → kataloški
+ * broj → naziv.
  *
  * ⚠️ OBE MUTACIJE SU DANAS ZATVORENE BRANOM `assertItemWritesAllowed()` i vraćaju
  * 409 `BIGBIT_OWNED_READ_ONLY` sa uputstvom šta uraditi u BigBit-u. Razlog nije
@@ -53,6 +63,18 @@ export class ItemsController {
   @Get()
   list(@Query() query: ListItemsQuery) {
     return this.items.list(query);
+  }
+
+  /**
+   * ⚠️ MORA STAJATI PRE `@Get(":id")` — Nest bira prvu rutu koja se poklopi, redom
+   * kojim su metode DEKLARISANE u klasi. Ispod `:id` bi `/artikli/lookups` upao u
+   * `findOne`, a `ParseIntPipe` bi na „lookups" vratio 400 („Validation failed
+   * (numeric string is expected)") — ekran bi ostao bez ijedne padajuće liste, uz
+   * poruku koja ne kaže ništa o uzroku.
+   */
+  @Get("lookups")
+  lookups() {
+    return this.items.lookups();
   }
 
   @Get(":id")

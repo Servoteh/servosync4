@@ -9,7 +9,16 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
-import { AlertTriangle, ArrowLeft, Check, Info, Lock, Save, Unlock } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  Info,
+  Lock,
+  Save,
+  Unlock,
+} from 'lucide-react';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Button } from '@/components/ui-kit/button';
@@ -25,6 +34,7 @@ import {
   sledecePolje,
   sporneStavke,
   type Brana,
+  type OpcijaPolja,
   type PoljeDef,
   type Provera,
   type SekcijaDef,
@@ -45,6 +55,12 @@ import {
  * ⚠️ Komitenti uvoze ovaj fajl preko `@/app/artikli/_forma/polja` — granica ovog posla
  * su samo `app/artikli/**`, `app/komitenti/**` i `api/masters.ts`, pa deljeni blok ne
  * sme u `components/ui-kit`. Kad brana padne, ceo `_forma` folder ide u ui-kit.
+ *
+ * Zbog te deljene upotrebe su obe novije mogućnosti — GUSTA 12-kolonska mreža
+ * (`SekcijaDef.mreza`) i SKLOPIVA sekcija (`SekcijaDef.sklopivo`) — uvedene ADITIVNO i
+ * OPCIONO: sekcija koja ih ne zada crta se i ponaša tačno kao pre (komitenti se ne
+ * pomeraju ni za piksel). Gusta mreža postoji zato što BigBit forma „Unos artikala“ ima
+ * do 7 polja u redu, a upravo redosled i susedstvo polja korisnici pamte.
  */
 
 /* ─────────────────────────────────────────────────────────── stil po tonu */
@@ -182,14 +198,44 @@ export function NepokrivenaPolja({ stavke }: { stavke: NepokrivenoPolje[] }) {
 
 /* ──────────────────────────────────────────────────────────── jedno polje */
 
+/**
+ * ZATEČENA mreža (sekcija BEZ `mreza`): 1 → 2 → 3 → 4 kolone. Ključevi 1/2/4 moraju
+ * ostati SLOVO U SLOVO isti — komitenti se crtaju ovom mrežom i ne smeju da se pomere.
+ * Ključevi 3/6/8/12 postoje samo da polje pisano za gustu mrežu ne ostane bez klase ako
+ * ikad završi u zatečenoj sekciji; tamo se ponaša kao „ceo red“, što je bezbedan ishod.
+ */
 const RASPON: Record<number, string> = {
   1: '',
   2: 'sm:col-span-2',
   4: 'col-span-full',
+  3: 'sm:col-span-2',
+  6: 'col-span-full',
+  8: 'col-span-full',
+  12: 'col-span-full',
 };
+
+/**
+ * GUSTA mreža (`mreza: 12`) — 1 → 2 → 6 → 12 kolona. Raspon je izražen u dvanaestinama
+ * širine BigBit forme, pa jedan red BigBit forme = jedan red mreže na širokom ekranu.
+ * Na telefonu (ispod `sm`) sve pada u JEDNU kolonu, kako traži DESIGN_SYSTEM §11.
+ */
+const RASPON_12: Record<number, string> = {
+  1: 'md:col-span-1 xl:col-span-1',
+  2: 'md:col-span-1 xl:col-span-2',
+  3: 'md:col-span-2 xl:col-span-3',
+  4: 'md:col-span-2 xl:col-span-4',
+  6: 'md:col-span-3 xl:col-span-6',
+  8: 'sm:col-span-2 md:col-span-4 xl:col-span-8',
+  12: 'col-span-full',
+};
+
+const MREZA_ZATECENA = 'gap-x-6 gap-y-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4';
+const MREZA_GUSTA = 'gap-x-4 gap-y-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-6 xl:grid-cols-12';
 
 function Polje({
   def,
+  mreza,
+  opcije,
   vrednost,
   provera,
   zakljucano,
@@ -201,6 +247,13 @@ function Polje({
   registruj,
 }: {
   def: PoljeDef;
+  /** Mreža sekcije u kojoj polje stoji; `undefined` = zatečena 4-kolonska. */
+  mreza?: 12;
+  /**
+   * Opcije dovučene sa servera za OVO polje (šifarnici koji se pune u toku rada).
+   * Imaju prednost nad statičkim `def.opcije`; `undefined` = polje ih ne dobija spolja.
+   */
+  opcije?: OpcijaPolja[];
   vrednost: string;
   provera: Provera;
   zakljucano: boolean;
@@ -235,8 +288,21 @@ function Polje({
   };
   const tekstualno = { ...zajednicko, readOnly, maxLength: def.maxDuzina };
 
+  const tabelaRaspona = mreza === 12 ? RASPON_12 : RASPON;
+
+  /**
+   * Opcije za `izbor`: serverske (`opcije`) imaju prednost nad statičkim `def.opcije`.
+   *
+   * Kad ih NEMA nijednih, polje se crta kao TEKSTUALNO, ne kao prazan `<select>`. Bez tog
+   * pravila polje sa šifarnikom koji još nije stigao (prvi render, pad mreže) izgleda kao da
+   * artikal nema grupu — `<select>` čija lista ne sadrži tekuću vrednost prikazuje prazno,
+   * pa se podatak TIHO GUBI iz vida. Ovako se šifra uvek vidi i može se otkucati.
+   */
+  const opcijeIzbora = opcije ?? def.opcije ?? [];
+  const izborBezListe = def.tip === 'izbor' && opcijeIzbora.length === 0;
+
   return (
-    <div className={cn('min-w-0 space-y-1.5', RASPON[def.raspon ?? 1])}>
+    <div className={cn('min-w-0 space-y-1.5', tabelaRaspona[def.raspon ?? 1] ?? '')}>
       {/* Dugme „otključaj“ stoji PORED labele, ne u njoj — interaktivni element unutar
           <label> bi klikom istovremeno aktivirao i polje. */}
       <div className="flex flex-wrap items-center gap-1.5">
@@ -275,7 +341,7 @@ function Polje({
           rows={3}
           onChange={(e) => onPromena(e.target.value)}
         />
-      ) : def.tip === 'izbor' || def.tip === 'da-ne' ? (
+      ) : (def.tip === 'izbor' && !izborBezListe) || def.tip === 'da-ne' ? (
         <Select
           {...zajednicko}
           ref={registruj as (el: HTMLSelectElement | null) => void}
@@ -287,7 +353,7 @@ function Polje({
                   { value: 'da', label: 'Da' },
                   { value: 'ne', label: 'Ne' },
                 ]
-              : (def.opcije ?? [])
+              : opcijeIzbora
           }
           onChange={(e) => onPromena(e.target.value)}
         />
@@ -334,7 +400,21 @@ export interface MaticniEkranProps {
   onPromena: (sledece: Record<string, string>) => void;
   /** Kuda vodi „Nazad“ i Esc. */
   onIzlaz: () => void;
-  rezim: 'unos' | 'izmena';
+  /**
+   * `pregled` = KARTICA sloga: isti raspored i iste labele kao unos, ali sve read-only i bez
+   * ijedne radnje koja piše (nema „Snimi“, nema „Probe unosa“, nema provera koje traže ispravku).
+   * Uveden da kartica ne bi imala SVOJ spisak polja — raspored mora imati jedan izvor, inače
+   * se dva ekrana razilaze pri prvoj izmeni (BigBit paritet, zahtev vlasnika 04.08.2026).
+   */
+  rezim: 'unos' | 'izmena' | 'pregled';
+  /**
+   * Opcije padajućih listi po `PoljeDef.id`, dovučene sa servera (šifarnici koji se pune u
+   * toku rada — npr. grupa/podgrupa/PodPodgrupa uz BigBit kaskadu). Imaju prednost nad
+   * statičkim `PoljeDef.opcije`; polje bez ijedne opcije se crta kao tekstualno (v. `Polje`).
+   */
+  opcijePolja?: Record<string, OpcijaPolja[]>;
+  /** Dodatna dugmad u komandnoj traci, levo od „Nazad“ (npr. „Izmeni“ na kartici). */
+  akcije?: ReactNode;
   /** Traka iznad forme (npr. „artikal se učitava“, greška servera). */
   zaglavljeDodatak?: ReactNode;
 }
@@ -350,23 +430,46 @@ export function MaticniEkran({
   onPromena,
   onIzlaz,
   rezim,
+  opcijePolja,
+  akcije,
   zaglavljeDodatak,
 }: MaticniEkranProps) {
+  const samoPregled = rezim === 'pregled';
   const [proba, setProba] = useState(false);
   const [otkljucana, setOtkljucana] = useState<Record<string, boolean>>({});
   const polja = useRef<Record<string, HTMLElement | null>>({});
   const snimiRef = useRef<HTMLButtonElement | null>(null);
 
-  const zakljucano = !brana.otvorena && !proba;
+  /**
+   * Sklopljene sekcije, po naslovu. Stanje živi OVDE, a ne u samoj sekciji, jer od njega
+   * zavisi i redosled fokusa: polje zatvorene sekcije nije u DOM-u, pa Enter na njemu ne
+   * bi imao gde da stane (fokus bi tiho zastao usred forme).
+   */
+  const [sklopljene, setSklopljene] = useState<Record<string, boolean>>(() => {
+    const pocetno: Record<string, boolean> = {};
+    for (const s of sekcije) if (s.sklopivo && s.podrazumevanoZatvoreno) pocetno[s.naslov] = true;
+    return pocetno;
+  });
 
-  /** Fokus preskače polja koja su TRAJNO zaključana — prst ne staje na mrtvom polju. */
+  // `pregled` je kartica — zaključana je uvek, bez obzira na branu i „Probu unosa“.
+  const zakljucano = samoPregled || (!brana.otvorena && !proba);
+
+  const otvoreneSekcije = useMemo(
+    () => sekcije.filter((s) => !(s.sklopivo && sklopljene[s.naslov])),
+    [sekcije, sklopljene],
+  );
+
+  /**
+   * Fokus preskače polja koja su TRAJNO zaključana — prst ne staje na mrtvom polju —
+   * i polja iz sklopljenih sekcija, koja uopšte nisu iscrtana.
+   */
   const redosled = useMemo(
     () =>
-      redosledFokusa(sekcije).filter((id) => {
-        for (const s of sekcije) for (const p of s.polja) if (p.id === id) return !p.zakljucano;
+      redosledFokusa(otvoreneSekcije).filter((id) => {
+        for (const s of otvoreneSekcije) for (const p of s.polja) if (p.id === id) return !p.zakljucano;
         return true;
       }),
-    [sekcije],
+    [otvoreneSekcije],
   );
 
   const prvoPolje = redosled[0];
@@ -454,9 +557,18 @@ export function MaticniEkran({
         actions={
           <div className="flex items-center gap-2">
             <StatusBadge
-              tone={brana.otvorena ? 'info' : 'warn'}
-              label={brana.otvorena ? (rezim === 'unos' ? 'Unos' : 'Izmena') : 'Zaključano'}
+              tone={samoPregled ? 'neutral' : brana.otvorena ? 'info' : 'warn'}
+              label={
+                samoPregled
+                  ? 'Pregled'
+                  : brana.otvorena
+                    ? rezim === 'unos'
+                      ? 'Unos'
+                      : 'Izmena'
+                    : 'Zaključano'
+              }
             />
+            {akcije}
             <Button variant="secondary" onClick={onIzlaz}>
               <ArrowLeft className="h-4 w-4" aria-hidden />
               Nazad
@@ -468,7 +580,9 @@ export function MaticniEkran({
       <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4 sm:p-6">
         {zaglavljeDodatak}
 
-        <BranaPanel brana={brana} proba={proba} onProba={setProba} />
+        {/* Kartica ne piše ništa, pa nema ni brane ni „Probe unosa“ — objašnjenje zašto je
+            unos zatvoren stoji na ekranu izmene, gde je i relevantno. */}
+        {!samoPregled && <BranaPanel brana={brana} proba={proba} onProba={setProba} />}
 
         {proba && (
           <p className="rounded-panel border border-status-info/40 bg-status-info-bg px-4 py-2 text-sm text-status-info">
@@ -479,53 +593,92 @@ export function MaticniEkran({
         )}
 
         <div onKeyDown={naTaster} className="space-y-4">
-          {sekcije.map((s) => (
-            <section key={s.naslov} className="rounded-panel border border-line bg-surface p-4">
-              <h2 className="text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary">
-                {s.naslov}
-              </h2>
-              {s.opis && <p className="mt-1 text-xs text-ink-disabled">{s.opis}</p>}
-              <div className="mt-3 grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {s.polja.map((p) => {
-                  const v = vrednosti[p.id] ?? '';
-                  // Dok je forma zaključana provera se NE prikazuje: crveno „PIB je
-                  // obavezan“ na polju u koje se ne može kucati je šum, ne pomoć.
-                  const provera: Provera =
-                    zakljucano || !p.proveri
-                      ? { ton: 'neutralno', poruka: null }
-                      : p.proveri(v, vrednosti);
-                  return (
-                    <Polje
-                      key={p.id}
-                      def={p}
-                      vrednost={v}
-                      provera={provera}
-                      zakljucano={zakljucano}
-                      razlogZakljucanja={p.zakljucano ?? p.napomena ?? null}
-                      otkljucano={Boolean(otkljucana[p.id])}
-                      onOtkljucaj={() => setOtkljucana((o) => ({ ...o, [p.id]: true }))}
-                      onPromena={(nv) => postavi(p.id, nv)}
-                      onBlur={() => {
-                        if (!p.normalizuj) return;
-                        const sredjeno = p.normalizuj(v);
-                        if (sredjeno !== v) postavi(p.id, sredjeno);
-                      }}
-                      registruj={(el) => {
-                        polja.current[p.id] = el;
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            </section>
-          ))}
+          {sekcije.map((s) => {
+            const zatvorena = Boolean(s.sklopivo && sklopljene[s.naslov]);
+            const klasaNaslova =
+              'text-2xs font-semibold uppercase tracking-[0.08em] text-ink-secondary';
+            return (
+              <section key={s.naslov} className="rounded-panel border border-line bg-surface p-4">
+                {s.sklopivo ? (
+                  <h2>
+                    <button
+                      type="button"
+                      aria-expanded={!zatvorena}
+                      onClick={() =>
+                        setSklopljene((o) => ({ ...o, [s.naslov]: !zatvorena }))
+                      }
+                      className={cn(
+                        // Cilj za prst na dodiru (DESIGN_SYSTEM §11) — na mišu ostaje tanka traka.
+                        'flex min-h-11 w-full items-center gap-2 text-left sm:min-h-0',
+                        klasaNaslova,
+                      )}
+                    >
+                      <ChevronRight
+                        className={cn('h-4 w-4 shrink-0 transition-transform', !zatvorena && 'rotate-90')}
+                        aria-hidden
+                      />
+                      <span className="min-w-0">
+                        {s.naslov} ({s.polja.length}) — {zatvorena ? 'prikaži' : 'sakrij'}
+                      </span>
+                    </button>
+                  </h2>
+                ) : (
+                  <h2 className={klasaNaslova}>{s.naslov}</h2>
+                )}
+
+                {s.opis && !zatvorena && <p className="mt-1 text-xs text-ink-disabled">{s.opis}</p>}
+
+                {!zatvorena && (
+                  <div
+                    className={cn('mt-3 grid', s.mreza === 12 ? MREZA_GUSTA : MREZA_ZATECENA)}
+                  >
+                    {s.polja.map((p) => {
+                      const v = vrednosti[p.id] ?? '';
+                      // Dok je forma zaključana provera se NE prikazuje: crveno „PIB je
+                      // obavezan“ na polju u koje se ne može kucati je šum, ne pomoć.
+                      const provera: Provera =
+                        zakljucano || !p.proveri
+                          ? { ton: 'neutralno', poruka: null }
+                          : p.proveri(v, vrednosti);
+                      return (
+                        <Polje
+                          key={p.id}
+                          def={p}
+                          mreza={s.mreza}
+                          opcije={opcijePolja?.[p.id]}
+                          vrednost={v}
+                          provera={provera}
+                          zakljucano={zakljucano}
+                          razlogZakljucanja={p.zakljucano ?? p.napomena ?? null}
+                          otkljucano={Boolean(otkljucana[p.id])}
+                          onOtkljucaj={() => setOtkljucana((o) => ({ ...o, [p.id]: true }))}
+                          onPromena={(nv) => postavi(p.id, nv)}
+                          onBlur={() => {
+                            if (!p.normalizuj) return;
+                            const sredjeno = p.normalizuj(v);
+                            if (sredjeno !== v) postavi(p.id, sredjeno);
+                          }}
+                          registruj={(el) => {
+                            polja.current[p.id] = el;
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
 
         <NepokrivenaPolja stavke={nepokriveno} />
       </div>
 
       {/* Zakucana traka akcija — na svakoj širini (360 px uključivo) mora da se vidi
-          stanje zapisa i „Snimi“; skroluje samo forma iznad, ne cela strana. */}
+          stanje zapisa i „Snimi“; skroluje samo forma iznad, ne cela strana.
+          U režimu `pregled` je nema: kartica ništa ne snima, pa bi traka nudila radnju
+          koje nema (a „Odustani“ na ekranu koji ne menja ništa samo zbunjuje). */}
+      {!samoPregled && (
       <div className="z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 sm:px-6">
         <p className="min-w-0 flex-1 text-xs text-ink-secondary">
           {sporne.length > 0 ? (
@@ -558,6 +711,7 @@ export function MaticniEkran({
           </Button>
         </div>
       </div>
+      )}
     </AppShell>
   );
 }
