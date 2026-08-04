@@ -8,6 +8,7 @@ import { ReservationService } from "../robno/reservation.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { PricingService } from "./pricing.service";
 import { SefService } from "./sef/sef.service";
+import { ExchangeRateService } from "../izvodi/exchange-rate.service";
 import { FakturisanjeService } from "./fakturisanje.service";
 import { DocumentCarryOverService } from "./carry-over.service";
 import type { AuthUser } from "../auth/jwt.strategy";
@@ -169,6 +170,16 @@ describe("Datum prometa — unos i knjiženje (FakturisanjeService)", () => {
         { provide: GlWriteService, useValue: { reverse: jest.fn() } },
         { provide: SefService, useValue: { enqueue: jest.fn() } },
         { provide: ReservationService, useValue: { release: jest.fn() } },
+        // Nacrti u ovom fajlu su u RSD → resolver kursa se ne zove (v.
+        // `devizni-nalog-kurs.spec.ts`); `resolve` koji baca čuva tu tvrdnju.
+        {
+          provide: ExchangeRateService,
+          useValue: {
+            resolve: jest
+              .fn()
+              .mockRejectedValue(new Error("kurs ne treba za RSD")),
+          },
+        },
       ],
     }).compile();
 

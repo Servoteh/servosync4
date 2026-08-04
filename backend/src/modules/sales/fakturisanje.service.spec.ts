@@ -143,6 +143,11 @@ function makeService(prisma: ReturnType<typeof makePrisma>) {
     reverse: jest.fn(),
     reverseWithin: jest.fn().mockResolvedValue({ stornoEntryId: 900 }),
   };
+  // Kurs se u ovim scenarijima ne traži (svi računi su u RSD) — `resolve` koji baca je
+  // namerna brana: pozvao bi se samo da je neko obrisao uslov „valuta ≠ RSD".
+  const exchangeRates = {
+    resolve: jest.fn().mockRejectedValue(new Error("kurs ne treba za RSD")),
+  };
   const service = new FakturisanjeService(
     prisma as never,
     {} as never, // pricing
@@ -151,8 +156,9 @@ function makeService(prisma: ReturnType<typeof makePrisma>) {
     glWrite as never,
     sef as never,
     reservation as never,
+    exchangeRates as never,
   );
-  return { service, sef, reservation, glWrite };
+  return { service, sef, reservation, glWrite, exchangeRates };
 }
 
 /** Vezane vrednosti `$executeRaw` poziva (bez niza literala) — advisory brave. */
@@ -532,6 +538,11 @@ function makePostHarness(opts: {
   };
 
   const numbering = { next: jest.fn().mockResolvedValue("657/26") };
+  // Svi nacrti u ovom fajlu su u RSD, pa se resolver kursa NE zove — `resolve` koji baca
+  // to i dokazuje (devizni put ima svoj fajl: `devizni-nalog-kurs.spec.ts`).
+  const exchangeRates = {
+    resolve: jest.fn().mockRejectedValue(new Error("kurs ne treba za RSD")),
+  };
   const service = new FakturisanjeService(
     prisma as never,
     {} as never, // pricing
@@ -540,8 +551,9 @@ function makePostHarness(opts: {
     { reverse: jest.fn(), reverseWithin: jest.fn() } as never,
     {} as never, // sef
     {} as never, // reservation
+    exchangeRates as never,
   );
-  return { service, prisma, numbering, createdEntries };
+  return { service, prisma, numbering, createdEntries, exchangeRates };
 }
 
 describe("postInvoice — nalog GK nosi IZDAT broj fakture (N1)", () => {

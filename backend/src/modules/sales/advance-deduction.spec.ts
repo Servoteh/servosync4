@@ -400,6 +400,7 @@ describe("odbijeni avans — svi potrošači daju ISTI iznos", () => {
       null as never,
       null as never,
       null as never,
+      null as never, // exchangeRates — `getInvoice` ne knjiži, pa kurs ne traži
     );
 
     const res = await service.getInvoice(INVOICE_ID);

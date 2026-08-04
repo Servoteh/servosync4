@@ -12,6 +12,11 @@ import { PostingEngineService } from "../gl/posting/posting.service";
 import { GlWriteService } from "../gl/gl-write.service";
 import { SefService } from "./sef/sef.service";
 import { ReservationService } from "../robno/reservation.service";
+import {
+  ExchangeRateService,
+  type ResolvedRate,
+} from "../izvodi/exchange-rate.service";
+import { round } from "../robno/decimal.util";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { PricingService } from "./pricing.service";
 import { documentVatTotals } from "./vat-totals";
@@ -114,6 +119,120 @@ interface LedgerLineDraft {
   debit: Prisma.Decimal;
   credit: Prisma.Decimal;
   description: string | null;
+}
+
+/**
+ * Red naloga spreman za UPIS: dinarski iznos + (samo za devizni račun) devizni par.
+ * `fxCurrency === null` znači „nije devizno" i tada fx kolone ne idu u upis uopšte.
+ */
+interface LedgerLineWrite extends LedgerLineDraft {
+  fxDebit: Prisma.Decimal | null;
+  fxCredit: Prisma.Decimal | null;
+  fxCurrency: string | null;
+}
+
+/** Domaća valuta — račun u RSD nema devizni par, ne traži kurs i ne konvertuje se. */
+const HOME_CURRENCY = "RSD";
+
+/**
+ * TIP KURSA ZA KNJIŽENJE IZLAZNOG RAČUNA — **SREDNJI** (odluka vlasnika, 04.08.2026).
+ *
+ * Isti tip koji koristi FX revalorizacija (`saldakonti/fx-revaluation.service.ts`,
+ * `FX_RATE_TYPE = "middle"`), i to nije slučajno: revalorizacija meri RAZLIKU između
+ * knjigovodstvene protivvrednosti ovog istog duga i kursa na dan preseka. Da se račun
+ * knjižio po prodajnom (izvodi/nalozi, doc 09 §banking), a revalorizovao po srednjem,
+ * svaka devizna faktura bi već na dan izdavanja imala „kursnu razliku" koja je samo
+ * razlika dve kolone iste kursne liste.
+ */
+const FX_RATE_TYPE = "middle";
+
+/** Skala novčanih kolona GK — `ledger_entries.debit/credit/fx_debit/fx_credit` = Decimal(19,4). */
+const LEDGER_MONEY_DP = 4;
+
+/** Dan u ISO obliku (YYYY-MM-DD) — za poruke i poređenje dana kursne liste. */
+function fmtDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** Valuta dokumenta, normalizovana; prazno → domaća (RSD). */
+function normalizeDocumentCurrency(
+  currency: string | null | undefined,
+): string {
+  const cur = (currency ?? "").trim().toUpperCase();
+  return cur === "" ? HOME_CURRENCY : cur;
+}
+
+/**
+ * KONVERZIJA REDOVA NALOGA U DINARE PO SREDNJEM KURSU — čist račun, bez baze.
+ * =============================================================================
+ *
+ * ⚠️ IZMEREN KVAR (04.08.2026): `postManualLedger` je u `debit`/`credit` upisivao iznos u
+ * VALUTI DOKUMENTA — broj koji `documentVatTotals` daje iz stavki, isti koji UBL šalje sa
+ * `currencyID="EUR"` — `fx_debit`/`fx_credit`/`fx_currency` nije punio nikad, a
+ * `invoice.exchange_rate` nije čitao nigde. Izvozni račun od 10.000 EUR zaduživao je kupca
+ * sa 10.000 RSD, i nalog je pri tom BALANSIRAO, jer je balans-kontrola sabirala baš te
+ * iste brojeve s obe strane. Red je nosio `currency='EUR'`, ali po pravilu kuće
+ * (`gl-write.service.ts` → `normalizeLineFx`) stavka bez ijednog DEVIZNOG IZNOSA nije
+ * devizna: FX revalorizacija je filtrira po `fxCurrency` i nije je viđala, a otvorena
+ * stavka joj nije prikazivala devizni saldo (`open-items.service.ts`).
+ *
+ * PRAVILO:
+ *   `debit`/`credit`     = `round4(iznos × srednji kurs)`   ← dinarska protivvrednost
+ *   `fxDebit`/`fxCredit` = iznos u valuti dokumenta         ← original, nezaokružen
+ *   `fxCurrency`         = valuta dokumenta
+ *
+ * Devizni iznos stoji na ISTOJ strani kao dinarski (dug↔dug, pot↔pot), a druga strana
+ * ostaje `null` — isti oblik koji traži `gl-write.service.ts` (obrnuta strana bi
+ * revalorizaciji dala suprotan predznak, pa dvostruku razliku umesto ispravke).
+ *
+ * ── ZAŠTO POSTOJI RAZLIKA ZAOKRUŽIVANJA I ZAŠTO JE NOSI PRIHOD ────────────────
+ * Iznos nosi 2 decimale, kurs 6, pa proizvod ima do 8 — a kolona nosi 4. Zaokruženo PO
+ * REDU, `round4(bruto × k)` NE MORA da bude `round4(neto × k) + Σ round4(pdv × k)`:
+ * razlika je do `0,0001 × broj redova` (izmereno: kurs sa petom decimalom 5 je dovoljan).
+ * Nalog mora da balansira u DINARIMA, jer se dinari i upisuju, pa razliku nosi potražna
+ * linija sa najvećim iznosom — prihod. Kupčev dug i PDV ostaju TAČNO
+ * `round4(iznos × kurs)`: prvi ulazi u saldakonta i uparivanje uplate, a iz drugog POPDV
+ * izvodi osnovicu deljenjem stopom. Prihod je i po definiciji ostatak (`bruto − PDV`).
+ *
+ * Meta se bira po APSOLUTNOJ vrednosti (pouka iz `vat-totals.ts`, nalaz „meta po
+ * |osnovica|"): na knjižnom odobrenju su svi iznosi negativni, pa bi `greaterThan` uzeo
+ * najmanju liniju po veličini — tačno suprotno od namere.
+ */
+export function convertSalesLedgerLinesToRsd(
+  lines: ReadonlyArray<LedgerLineDraft>,
+  rate: Prisma.Decimal,
+  currency: string,
+): LedgerLineWrite[] {
+  const converted: LedgerLineWrite[] = lines.map((l) => ({
+    ...l,
+    // Zaokruživanje TEK ovde (pri upisu) i na skalu koju kolona nosi.
+    debit: round(l.debit.mul(rate), LEDGER_MONEY_DP),
+    credit: round(l.credit.mul(rate), LEDGER_MONEY_DP),
+    fxDebit: l.debit.isZero() ? null : l.debit,
+    fxCredit: l.credit.isZero() ? null : l.credit,
+    fxCurrency: currency,
+  }));
+
+  let totalDebit = ZERO;
+  let totalCredit = ZERO;
+  for (const l of converted) {
+    totalDebit = totalDebit.add(l.debit);
+    totalCredit = totalCredit.add(l.credit);
+  }
+  const residual = totalDebit.sub(totalCredit);
+  if (!residual.isZero()) {
+    let target: LedgerLineWrite | null = null;
+    for (const l of converted) {
+      if (l.credit.isZero()) continue;
+      if (target === null || l.credit.abs().greaterThan(target.credit.abs()))
+        target = l;
+    }
+    // Nema potražne linije da primi razliku → ne izmišlja se konto; balans-kontrola u
+    // `postManualLedger` odbija nalog sa oba zbira u poruci.
+    if (target !== null) target.credit = target.credit.add(residual);
+  }
+
+  return converted;
 }
 
 /**
@@ -292,6 +411,11 @@ export class FakturisanjeService {
     private readonly glWrite: GlWriteService,
     private readonly sef: SefService,
     private readonly reservation: ReservationService,
+    // Kurs za devizni račun — POSTOJEĆI resolver iz IzvodiModule-a (jedan izvor istine za
+    // kursnu listu; `izvodi.module.ts` ga izvozi baš za cross-modul upotrebu). Nova
+    // instanca ili sopstveni upit nad `exchange_rates` bi značili drugo pravilo izbora
+    // kursa od onog po kome se radi revalorizacija — v. `resolveDocumentRate`.
+    private readonly exchangeRates: ExchangeRateService,
   ) {}
 
   // ── PREDRAČUN / PONUDA ──────────────────────────────────────────────────────
@@ -387,7 +511,11 @@ export class FakturisanjeService {
     // T3/A8: kreditni limit kupca — 422 i pri kreiranju predračuna/ponude ako bi
     // projektovani dug prešao limit, osim uz force (telo { force: true }).
     const force = (dto as CreateProformaDto & { force?: boolean }).force === true;
-    await this.assertCreditLimit(dto.customerId, grossTotal, force);
+    await this.assertCreditLimit(dto.customerId, grossTotal, force, {
+      currency,
+      documentDate: dto.documentDate ? new Date(dto.documentDate) : null,
+      documentNumber: null,
+    });
 
     const year = (dto.documentDate ? new Date(dto.documentDate) : new Date()).getFullYear();
     // Draft broj (predračun) — dodeljuje se odmah po godišnjem nizu predračuna.
@@ -627,17 +755,44 @@ export class FakturisanjeService {
     // Zaglavlje mora da se slaže sa stavkama PRE svega ostalog — v. `assertTotalsMatchItems`.
     assertTotalsMatchItems(invoice);
 
-    // T3/A8: kreditni limit kupca (Customer.creditLimit sync polje) — 422 PRE claim-a
-    // ako bi projektovani dug prešao limit, osim uz force (svesno knjiženje uprkos
-    // limitu; FAKTURISANJE post permisija je dovoljno ovlašćenje).
-    await this.assertCreditLimit(invoice.customerId, invoice.grossTotal, force);
-
     const year = businessYear(invoice.documentDate);
 
     // Grana knjiženja zavisi SAMO od snapshot-a, pa se odlučuje pre transakcije.
     const isAutoStock =
       AUTO_STOCK_TYPES.has(invoice.documentType) &&
       invoice.stockDocumentId != null;
+
+    /**
+     * KURS ZA DEVIZNI RAČUN — razrešava se PRE kreditnog limita (04.08.2026).
+     *
+     * ⚠️ IZMERENO: `assertCreditLimit` poredi `invoice.grossTotal` (iznos u VALUTI
+     * DOKUMENTA) sa `creditLimit` kupca i sa saldom koji sabira `ledger_entries.debit/credit`
+     * — a to su DINARSKE kolone. Faktura od 10.000 EUR je limit trošila kao 10.000 RSD,
+     * dakle ~117× manje od duga koji stvarno nastaje; kupac sa limitom od 500.000 RSD je
+     * mogao da nakupi 4.270.000 RSD izloženosti i da nijedna faktura ne padne na brani.
+     * Zato se limit meri DINARSKOM protivvrednošću (poruka brane i dalje govori u
+     * dinarima — i limit i saldo su dinarski, pa je to jedina uporediva jedinica).
+     *
+     * `null` = račun je u RSD (99 % dokumenata): kurs se ne traži i ništa se ne menja.
+     * AUTO-ROBNA grana je izostavljena namerno — njen nalog GK ne pravi ovaj servis
+     * (preuzima se nalog izdatnice, `gl/posting`), pa bi traženje kursa ovde uslovilo
+     * knjiženje kursom koji taj nalog ne koristi; v. izveštaj o auto-robnoj grani.
+     */
+    const documentRate = isAutoStock
+      ? null
+      : await this.resolveDocumentRate(invoice);
+
+    // T3/A8: kreditni limit kupca (Customer.creditLimit sync polje) — 422 PRE claim-a
+    // ako bi projektovani dug prešao limit, osim uz force (svesno knjiženje uprkos
+    // limitu; FAKTURISANJE post permisija je dovoljno ovlašćenje).
+    // Konverzija u dinare je U SAMOJ BRANI (v. `assertCreditLimit`) — ovde ide SIROV bruto
+    // uz valutu dokumenta. Dok je konverzija stajala na pozivaocu, drugi pozivalac
+    // (kreiranje predračuna) ju je izostavio i EUR predračun je trošio dinarski limit.
+    await this.assertCreditLimit(invoice.customerId, invoice.grossTotal, force, {
+      currency: invoice.currency,
+      documentDate: invoice.documentDate,
+      documentNumber: invoice.documentNumber,
+    });
 
     /**
      * PRED-PROVERA RUČNOG NALOGA DOK DOKUMENT JOŠ NOSI NACRT-BROJ (03.08.2026).
@@ -1397,6 +1552,18 @@ export class FakturisanjeService {
     customerId: number,
     grossTotal: Prisma.Decimal,
     force: boolean,
+    /**
+     * Dokument iz koga se izvodi valuta iznosa. OBAVEZAN od 04.08.2026: `creditLimit` i
+     * saldo iz `ledger_entries` su DINARSKI, pa devizni bruto mora u dinare pre poređenja.
+     *
+     * ŠTA SE DEŠAVALO PRE: knjiženje je konverziju radilo NA POZIVAOCU, a kreiranje
+     * predračuna nije radilo nikako — a predračun sme biti u EUR (`createProforma`
+     * podrazumeva EUR na `isExport`). Faktura/predračun od 10.000 EUR trošila je limit kao
+     * 10.000 RSD, dakle ~117× manje od stvarnog izlaganja, i prolazila je limit koji bi
+     * je morao odbiti. Konverzija je zato PREMEŠTENA OVDE: brana sama zna svoju valutu, pa
+     * je četvrti pozivalac ne može zaboraviti.
+     */
+    doc: { currency?: string | null; documentDate?: Date | null; documentNumber?: string | null },
   ): Promise<void> {
     if (force) return;
 
@@ -1407,6 +1574,20 @@ export class FakturisanjeService {
     const limit = customer?.creditLimit ?? null;
     // Limit 0 / null = bez kontrole (kupac bez postavljenog kreditnog limita).
     if (limit == null || new D(limit).lessThanOrEqualTo(ZERO)) return;
+
+    // Kurs se razrešava TEK POSLE gornjeg izlaza — kupac bez limita ne sme da bude blokiran
+    // zbog neunete kursne liste, jer se njegov iznos ni sa čim ne poredi. Kad limit POSTOJI,
+    // devizni iznos bez kursa se NE propušta: bez konverzije brana meri pogrešnu veličinu.
+    const currency = normalizeDocumentCurrency(doc.currency ?? HOME_CURRENCY);
+    if (currency !== HOME_CURRENCY) {
+      const resolved = await this.resolveDocumentRate({
+        documentNumber: doc.documentNumber ?? "(nacrt)",
+        currency,
+        documentDate: doc.documentDate ?? new Date(),
+      });
+      if (resolved !== null)
+        grossTotal = round(grossTotal.mul(resolved.rate), LEDGER_MONEY_DP);
+    }
 
     const rows = await this.prisma.$queryRaw<{ balance: Prisma.Decimal | null }[]>(
       Prisma.sql`
@@ -1450,10 +1631,92 @@ export class FakturisanjeService {
   }
 
   /**
+   * SREDNJI KURS ZA VALUTU DOKUMENTA — jedini izvor kursa pri knjiženju računa.
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * `null` = račun je u RSD (domaći promet, 99 % dokumenata): resolver se NE zove i ništa
+   * se ne konvertuje. Bez tog izlaza bi jedan dan bez unete kursne liste zaustavio celo
+   * fakturisanje, a domaći račun kurs uopšte ne koristi.
+   *
+   * KOJI RESOLVER: `ExchangeRateService.resolve` iz `izvodi/` — POSTOJEĆI i jedini u kući.
+   * On već radi sve što ovde treba: uzima najnoviji `rateDate ≤ on` (vikend/praznik →
+   * poslednji raniji radni dan), PRESKAČE red čija je tražena kolona 0 (guard nulte stope —
+   * inače bi 10.000 EUR × 0 = 0 RSD prošlo balans-kontrolu kao 0 = 0) i baca 404 sa srpskom
+   * porukom kad kursa nema. Sopstveni upit nad `exchange_rates` bio bi drugo pravilo izbora
+   * kursa za isti dug od onog po kome radi revalorizacija.
+   *
+   * KOJI DATUM: `documentDate` — datum koji nalog GK i NOSI (`journalEntry.documentDate`).
+   * Namerno NIJE `postingDate` (= `new Date()`): isti račun proknjižen sutra bi tada dao
+   * drugu dinarsku protivvrednost, pa kupčev dug ne bi bio ponovljiv iz papira. Datum
+   * dokumenta je i datum po kome se kurs za promet uzima na papiru.
+   *
+   * 404 iz resolvera se prevodi u 422: „nema kursa" ovde nije nenađen resurs nego
+   * NEMOGUĆNOST KNJIŽENJA, a poruka resolvera (valuta + datum + lek) ide u telo nepromenjena
+   * — da poruka ostane jedna, na jednom mestu.
+   */
+  private async resolveDocumentRate(
+    invoice: {
+      documentNumber: string;
+      currency: string;
+      documentDate: Date;
+    },
+    /**
+     * Zatečen kurs sa ranijeg dana loguje SAMO poziv koji taj kurs i upisuje
+     * (`postManualLedger`). Poziv pre transakcije razrešava isti kurs zbog kreditnog
+     * limita, pa bi bez ovoga svaki devizni račun sa vikend-datumom dao DVA istovetna
+     * WARN-a i izgledao kao da je knjižen dvaput.
+     */
+    opts: { warnOnStaleRate?: boolean } = {},
+  ): Promise<{ currency: string; rate: Prisma.Decimal } | null> {
+    const currency = normalizeDocumentCurrency(invoice.currency);
+    if (currency === HOME_CURRENCY) return null;
+
+    let resolved: ResolvedRate;
+    try {
+      resolved = await this.exchangeRates.resolve(
+        currency,
+        invoice.documentDate,
+        FX_RATE_TYPE,
+      );
+    } catch (e) {
+      if (e instanceof NotFoundException)
+        throw new UnprocessableEntityException(
+          `Račun ${invoice.documentNumber} je u valuti ${currency} i ne može se ` +
+            `proknjižiti bez kursa. ${e.message} Kurs se NE pretpostavlja na 1 — ` +
+            `nalog bi kupca zadužio deviznim iznosom kao da su dinari.`,
+        );
+      throw e;
+    }
+
+    // Zatečen kurs sa ranijeg dana je PRAVILO (NBS ne objavljuje kurs za vikend/praznik),
+    // ali ne sme da bude nevidljiv: iz loga se vidi na kom je računu protivvrednost
+    // izvedena po kursu od drugog dana.
+    if (
+      opts.warnOnStaleRate === true &&
+      fmtDay(resolved.rateDate) !== fmtDay(invoice.documentDate)
+    ) {
+      this.logger.warn(
+        `Račun ${invoice.documentNumber} (${currency}): za ${fmtDay(invoice.documentDate)} ` +
+          `nema kursne liste — dinarska protivvrednost je po srednjem kursu ` +
+          `${resolved.rate.toFixed(6)} od ${fmtDay(resolved.rateDate)}.`,
+      );
+    }
+
+    return { currency, rate: resolved.rate };
+  }
+
+  /**
    * Ručni nalog GK za račun (IFUSL/uslužni ili bez robnog izlaza). Balans-kontrola.
    *   kupac (2040 / 2050 izvoz) DUG  = osnovica + Σ PDV po stopama
    *   prihod (6040 roba / 6140 usluga) POT = osnovica
    *   PDV 4702 (20%) / 4710 (10%) POT = PDV te stope   (izvoz: bez PDV)
+   *
+   * ⚠️ DEVIZNI RAČUN SE KNJIŽI U DINARIMA (ispravka 04.08.2026): iznosi iznad su u valuti
+   * dokumenta, a `debit`/`credit` su DINARSKE kolone — pa se svaki red konvertuje po
+   * SREDNJEM kursu na datum dokumenta, dok original ide u `fx_debit`/`fx_credit`/
+   * `fx_currency`. Do ove ispravke je izvozni račun od 10.000 EUR zaduživao kupca sa
+   * 10.000 RSD, i nalog je BALANSIRAO jer je kontrola sabirala baš te iste brojeve s obe
+   * strane. V. `convertSalesLedgerLinesToRsd` i `resolveDocumentRate`.
    *
    * ⚠️ PDV PO STOPI, NE PO STAVCI (ispravka 02.08.2026): iznosi dolaze iz
    * `documentVatTotals` — `round2(osnovica_stope × stopa)` — istog računara koji puni
@@ -1511,6 +1774,47 @@ export class FakturisanjeService {
       );
     }
 
+    /**
+     * DINARSKA PROTIVVREDNOST (04.08.2026) — v. `convertSalesLedgerLinesToRsd`.
+     *
+     * Kontrola iznad je merila iznose u VALUTI DOKUMENTA, i pre ove ispravke je to bilo
+     * jedino merenje: „nalog balansira" je bila tvrdnja o evrima, a u `debit`/`credit`
+     * je odlazio isti taj broj — kao dinari. Zato ispod sledi druga, ista kontrola nad
+     * onim što se STVARNO upisuje.
+     *
+     * Kurs se razrešava nad SVEŽIM redom (`invoice` je ovde `issued`, izveden iz `fresh`
+     * pročitanog unutar transakcije), pa je valuta ona koja je i proknjižena.
+     */
+    const fx = await this.resolveDocumentRate(invoice, {
+      warnOnStaleRate: true,
+    });
+    const writeLines: LedgerLineWrite[] =
+      fx === null
+        ? // RSD: iznos, upis i balans-kontrola ostaju nepromenjeni (bez fx kolona).
+          grouped.map((l) => ({
+            ...l,
+            fxDebit: null,
+            fxCredit: null,
+            fxCurrency: null,
+          }))
+        : convertSalesLedgerLinesToRsd(grouped, fx.rate, fx.currency);
+
+    if (fx !== null) {
+      let rsdDebit = ZERO;
+      let rsdCredit = ZERO;
+      for (const l of writeLines) {
+        rsdDebit = rsdDebit.add(l.debit);
+        rsdCredit = rsdCredit.add(l.credit);
+      }
+      if (!rsdDebit.equals(rsdCredit)) {
+        throw new UnprocessableEntityException(
+          `Nalog ne balansira u dinarima posle konverzije po kursu ` +
+            `${fx.rate.toFixed(6)} (${fx.currency}): ΣDug=${rsdDebit.toFixed(4)} ≠ ` +
+            `ΣPot=${rsdCredit.toFixed(4)}.`,
+        );
+      }
+    }
+
     const number = await this.nextJournalNumber(
       tx,
       invoice.companyId,
@@ -1534,9 +1838,11 @@ export class FakturisanjeService {
         status: "POSTED",
         createdByUserId: actor.userId,
         lines: {
-          create: grouped.map((l) => ({
+          create: writeLines.map((l) => ({
             accountCode: l.accountCode,
             analyticalCode: l.analyticalCode,
+            // Dinari (devizni račun: `iznos × srednji kurs`), jer su `debit`/`credit`
+            // DINARSKE kolone glavne knjige — v. `convertSalesLedgerLinesToRsd`.
             debit: l.debit,
             credit: l.credit,
             description: l.description,
@@ -1544,6 +1850,16 @@ export class FakturisanjeService {
             dueDate: invoice.dueDate,
             currency: invoice.currency,
             sourceWorkOrderId: invoice.workOrderId ?? null,
+            // Devizni par SAMO na deviznom računu. RSD red ostaje BEZ fx kolona, tačno
+            // kao pre ove ispravke: po pravilu iz `gl-write.service.ts` stavka bez
+            // deviznog iznosa nije devizna, a domaći promet to i nije.
+            ...(l.fxCurrency === null
+              ? {}
+              : {
+                  fxDebit: l.fxDebit,
+                  fxCredit: l.fxCredit,
+                  fxCurrency: l.fxCurrency,
+                }),
           })),
         },
       },

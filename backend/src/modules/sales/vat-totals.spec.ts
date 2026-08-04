@@ -8,6 +8,7 @@ import { ReservationService } from "../robno/reservation.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { PricingService } from "./pricing.service";
 import { SefService } from "./sef/sef.service";
+import { ExchangeRateService } from "../izvodi/exchange-rate.service";
 import {
   buildSalesLedgerLines,
   FakturisanjeService,
@@ -734,6 +735,16 @@ describe("createProforma — zaglavlje nosi PDV po stopi", () => {
         { provide: GlWriteService, useValue: { reverse: jest.fn() } },
         { provide: SefService, useValue: { enqueue: jest.fn() } },
         { provide: ReservationService, useValue: { release: jest.fn() } },
+        // Ovaj fajl ide kroz `createProforma` (RSD), koji kurs ne traži — devizno
+        // knjiženje ima svoj fajl (`devizni-nalog-kurs.spec.ts`).
+        {
+          provide: ExchangeRateService,
+          useValue: {
+            resolve: jest
+              .fn()
+              .mockRejectedValue(new Error("kurs ne treba za RSD")),
+          },
+        },
       ],
     }).compile();
 

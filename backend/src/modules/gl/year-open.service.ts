@@ -10,6 +10,7 @@ import {
   LedgerNotBalancedException,
   PostingEngineService,
 } from "./posting/posting.service";
+import { buildYearOpenDiff, loadCumulativeBalances } from "./year-open-diff";
 
 /**
  * POČETNO STANJE / carry-over godine (BigBit „Prenos u novu godinu", Batch B / B2).
@@ -61,17 +62,10 @@ export interface YearOpenDto {
   dryRun?: boolean;
 }
 
-/** Jedan red izveštaja razlike (dryRun) — koliko je stara osnova pogrešno brojala. */
-export interface YearOpenDiffRow {
-  accountCode: string;
-  accountClass: number;
-  /** Stara osnova: kumulativ od početka knjiga do 31.12. `fromYear` (dvaput brojala PS). */
-  cumulative: string;
-  /** Nova osnova: samo `je.year = fromYear` (PS te godine + promet te godine). */
-  windowed: string;
-  /** `cumulative − windowed` — koliko bi početno stanje bilo naduvano po starom. */
-  difference: string;
-}
+// `YearOpenDiffRow` živi u `year-open-diff.ts`, uz sam izveštaj koji ga proizvodi.
+// Re-eksport stoji da postojeći `import { YearOpenDiffRow } from "./year-open.service"`
+// nastavi da radi — tip je javni oblik odgovora rute.
+export type { YearOpenDiffRow } from "./year-open-diff";
 
 interface AccountBalance {
   accountCode: string;
@@ -178,7 +172,10 @@ export class YearOpenService {
             fromYear,
             toYear,
             companyId,
-            rows: await this.buildYearOpenDiff(tx, companyId, fromYear, cutoff),
+            rows: buildYearOpenDiff(
+              await this.accountBalances(tx, companyId, fromYear),
+              await loadCumulativeBalances(tx, companyId, cutoff),
+            ),
           },
         };
       }
@@ -243,96 +240,6 @@ export class YearOpenService {
     });
   }
 
-  /**
-   * IZVEŠTAJ RAZLIKE (`dryRun`) — po kontu STARA (kumulativna) i NOVA (prozor po godini)
-   * osnova, i razlika između njih. Ništa se ne upisuje.
-   *
-   * Zašto postoji: ispravka prozora menja početno stanje na svakom prenosu posle prvog, a
-   * odluka vlasnika (04.08.2026) je „popravi kod + izveštaj, BEZ automatskog backfill-a".
-   * Ovo je taj izveštaj: knjigovođa vidi TAČNO koji konto je bio naduvan i za koliko, pa
-   * odlučuje šta se ispravlja. Vraćaju se samo konta gde se dve osnove RAZLIKUJU — na
-   * prvom prenosu (nema starijih godina) lista je prazna, i to je dokaz da je prvi prenos
-   * bio ispravan i po starom kodu.
-   */
-  private async buildYearOpenDiff(
-    tx: Prisma.TransactionClient,
-    companyId: number,
-    fromYear: number,
-    cutoff: Date,
-  ): Promise<YearOpenDiffRow[]> {
-    const [windowed, cumulative] = await Promise.all([
-      this.accountBalances(tx, companyId, fromYear),
-      this.accountBalancesCumulative(tx, companyId, cutoff),
-    ]);
-    const byCode = new Map(windowed.map((b) => [b.accountCode, b]));
-    const rows: YearOpenDiffRow[] = [];
-    for (const c of cumulative) {
-      const w = byCode.get(c.accountCode);
-      const wNet = w?.net ?? ZERO;
-      const diff = c.net.minus(wNet);
-      if (diff.isZero()) continue;
-      rows.push({
-        accountCode: c.accountCode,
-        accountClass: c.accountClass,
-        cumulative: c.net.toFixed(4),
-        windowed: wNet.toFixed(4),
-        difference: diff.toFixed(4),
-      });
-    }
-    // Konto koji postoji SAMO u prozoru (promet te godine, a kumulativ mu je nula) —
-    // ne može da nastane u praksi, ali se ne preskače tiho: izveštaj mora da bude potpun.
-    for (const w of windowed) {
-      if (cumulative.some((c) => c.accountCode === w.accountCode)) continue;
-      rows.push({
-        accountCode: w.accountCode,
-        accountClass: w.accountClass,
-        cumulative: ZERO.toFixed(4),
-        windowed: w.net.toFixed(4),
-        difference: ZERO.minus(w.net).toFixed(4),
-      });
-    }
-    rows.sort((a, b) => a.accountCode.localeCompare(b.accountCode));
-    return rows;
-  }
-
-  /**
-   * STARA osnova — kumulativ od početka knjiga do `cutoff`. Postoji ISKLJUČIVO za izveštaj
-   * razlike; prenos je NE koristi (v. `accountBalances` za obrazloženje). Ne brisati je bez
-   * brisanja izveštaja — inače se gubi jedini način da se vidi šta je zatečeno naduvano.
-   */
-  private async accountBalancesCumulative(
-    tx: Prisma.TransactionClient,
-    companyId: number,
-    cutoff: Date,
-  ): Promise<AccountBalance[]> {
-    const rows = await tx.$queryRaw<
-      Array<{
-        accountCode: string;
-        accountClass: number;
-        debit: Prisma.Decimal;
-        credit: Prisma.Decimal;
-      }>
-    >(Prisma.sql`
-      SELECT le.account_code AS "accountCode",
-             a.account_class AS "accountClass",
-             COALESCE(SUM(le.debit), 0) AS debit,
-             COALESCE(SUM(le.credit), 0) AS credit
-      FROM ledger_entries le
-      JOIN journal_entries je ON je.id = le.journal_entry_id
-      JOIN accounts a ON a.code = le.account_code
-      WHERE je.status IN ('POSTED', 'LOCKED')
-        AND je.company_id = ${companyId}
-        AND je.document_date < ${cutoff}
-      GROUP BY le.account_code, a.account_class
-      HAVING COALESCE(SUM(le.debit), 0) <> COALESCE(SUM(le.credit), 0)
-      ORDER BY le.account_code ASC
-    `);
-    return rows.map((r) => ({
-      accountCode: r.accountCode,
-      accountClass: Number(r.accountClass),
-      net: new D(r.debit).minus(new D(r.credit)),
-    }));
-  }
 
   // ───────────────────────────────────────────────────────────────────────────
   // (a) Saldo po kontu za GODINU `fromYear` — filter kao kartica: posted+locked.
