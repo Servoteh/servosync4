@@ -22,6 +22,8 @@ export interface ImportStatementDto {
   // unose ručno preko addLine). Ako je zadat, mora dati bar jednu parsabilnu stavku.
   txtContent?: string;
   fileName?: string; // originalni naziv fajla (audit)
+  // OBAVEZNI kad je zadat `txtContent` (v. validateImportStatement, defekt D2) — kontrola
+  // salda je jedina brana koja hvata nestalu stavku, a bez ovih polja poredi 0 sa 0.
   openingBalance?: number;
   closingBalance?: number;
   currency?: string; // RSD (default) | EUR | USD | CHF — vidi STATEMENT_CURRENCIES
@@ -52,6 +54,34 @@ export function validateImportStatement(dto: ImportStatementDto): void {
   };
   optNum(dto.openingBalance, "Početno stanje");
   optNum(dto.closingBalance, "Krajnje stanje");
+
+  /**
+   * 🔴 POČETNO/KRAJNJE STANJE SU OBAVEZNI ZA UVOZ IZ TXT-a (defekt D2, 04.08.2026).
+   * ─────────────────────────────────────────────────────────────────────────
+   * ŠTA SE DEŠAVALO PRE POPRAVKE: kad ih DTO ne pošalje, servis ih je upisivao kao 0, a
+   * kontrola salda (`computeControl`) upravo njih poredi — pa je jedina brana koja bi
+   * uhvatila nestalu stavku bila UVEK zadovoljena (0 = 0) i traka je bila zelena.
+   *
+   * FX Import Specification (doc 21 §A) je ravan spisak zapisa od 14 kolona — NEMA slog
+   * zaglavlja sa stanjima, pa ih parser NE MOŽE pročitati iz fajla. Zato se traže u DTO-u
+   * (korisnik ih prepiše sa zaglavlja izvoda koje mu banka daje).
+   *
+   * RUČNI UNOS (bez `txtContent`) NAMERNO ostaje bez ovog uslova: prazan izvod se otvara
+   * pa se stavke kucaju (E6 devizni izvod), stanja se u tom trenutku i ne znaju; za takav
+   * izvod kontrola ostaje „nedostupna" dok su oba nule (v. `computeControl.available`).
+   */
+  const hasTxt =
+    typeof dto.txtContent === "string" && dto.txtContent.trim().length > 0;
+  if (hasTxt) {
+    const reqNum = (v: unknown, name: string) => {
+      if (typeof v !== "number" || Number.isNaN(v))
+        errors.push(
+          `${name} je obavezno za uvoz izvoda iz TXT-a (prepišite ga sa zaglavlja izvoda) — bez njega kontrola salda ne radi.`,
+        );
+    };
+    reqNum(dto.openingBalance, "Početno stanje");
+    reqNum(dto.closingBalance, "Krajnje stanje");
+  }
 
   if (
     dto.currency !== undefined &&

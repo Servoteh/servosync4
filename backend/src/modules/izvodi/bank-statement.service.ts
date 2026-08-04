@@ -6,13 +6,22 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   BankStatementParserService,
   type ParsedStatementLine,
+  type SkippedStatementLine,
 } from "./bank-statement-parser.service";
+// PREDIKAT „proknjižen nalog" NE PREPISUJEMO inline — jedan izvor je saldakonti
+// (`POSTED_ENTRY_STATUSES`, pravilo #1 repoa: prepis je proizvodio razilaženja čitalaca).
+import { POSTED_ENTRY_STATUSES } from "../saldakonti/open-items.service";
+// Zatvaranje otvorene stavke posle knjiženja (defekt D3) ide kroz POSTOJEĆI servis; klasa se
+// uvozi samo kao DI token — instanca se vadi kroz ModuleRef jer bi uvoz SaldakontiModule-a
+// napravio ciklus (SaldakontiModule već uvozi IzvodiModule zbog kursne liste).
+import { ReconciliationService } from "../saldakonti/reconciliation.service";
 // FX kursni servis PRAVI drugi agent (E6a) po dogovorenom kontraktu:
 //   class ExchangeRateService, resolve(currency, on, "sell"|"middle"|"buy")
 //   → { rate: Prisma.Decimal, rateDate: Date } | throws NotFoundException.
@@ -39,6 +48,18 @@ const ZERO = new D(0);
 // Kontrola prometa/salda (B3): dozvoljeno odstupanje pola pare (Decimal je egzaktan,
 // tolerancija samo apsorbuje zaokruživanje deviznog preračuna na 2 decimale).
 const CONTROL_TOLERANCE = new D("0.005");
+/** Koliko nepročitanih redova ide u poruku greške uvoza (ostatak se sabere; D1). */
+const IMPORT_SKIPPED_REPORT_LIMIT = 20;
+
+/**
+ * Poreklo jedne upisane GK stavke izvoda: koja stavka izvoda ju je napravila i koju
+ * OTVORENU stavku (fakturu) treba da zatvori. Bez ovoga se posle upisa ne zna šta je šta,
+ * pa se ne može ni pozvati uparivanje (defekt D3).
+ */
+interface PostedLineOrigin {
+  statementLineNo: number;
+  openItemLedgerEntryId: number | null;
+}
 
 /**
  * BANK STATEMENT SERVICE — uvoz + uparivanje + auto-knjiženje izvoda (Faza 4 §B).
@@ -61,6 +82,7 @@ export class BankStatementService {
     private readonly prisma: PrismaService,
     private readonly parser: BankStatementParserService,
     private readonly exchangeRates: ExchangeRateService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   // ── UVOZ ────────────────────────────────────────────────────────────────
@@ -68,6 +90,18 @@ export class BankStatementService {
   /**
    * Uvezi izvod iz TXT sadržaja: parsiraj → kreiraj BankStatement(IMPORTED) + linije.
    * Idempotencija: (bankAccount, statementNumber) je unique — ponovni uvoz istog izvoda → 409.
+   *
+   * 🔴 TRI KAPIJE PRE UPISA (defekti D1/D2, 04.08.2026) — sve tri su ranije ćutale:
+   *   (1) NEPROČITAN RED → 422. Pre popravke se prekratak red, red bez `DatumDok` i red sa
+   *       neparsabilnim iznosom preskakao uz `logger.debug`, a nepoznat smer se tumačio kao
+   *       priliv — uplata koja je stigla na račun mogla je da ne postoji u sistemu.
+   *   (2) NIJEDNA STAVKA → 422 (nepromenjeno).
+   *   (3) KONTROLA SALDA NE ŠTIMA → 422. Pre popravke uvoz nije punio početno/krajnje stanje,
+   *       pa je kontrola (`computeControl`) poredila 0 sa 0 i traka je bila zelena i kad
+   *       stavka fali. Stanja su sada obavezna (v. `validateImportStatement`) i moraju se
+   *       poklopiti sa prometom SAMOG fajla — izvod je celovit dokument banke, pa se
+   *       neusklađen fajl ne uvozi ni „crveno" (posle uvoza kontrola je samo upozorenje,
+   *       jer je stavke dozvoljeno ručno dodavati/menjati).
    */
   async importStatement(dto: ImportStatementDto, actor?: AuthUser) {
     validateImportStatement(dto);
@@ -77,12 +111,24 @@ export class BankStatementService {
     // bar jednu parsabilnu stavku (nepromenjeno ponašanje uvoza).
     const hasTxt =
       typeof dto.txtContent === "string" && dto.txtContent.trim().length > 0;
-    const parsed = hasTxt ? this.parser.parse(dto.txtContent as string) : [];
-    if (hasTxt && parsed.length === 0) {
+    const parsed = hasTxt
+      ? this.parser.parse(dto.txtContent as string)
+      : { lines: [] as ParsedStatementLine[], skipped: [] as SkippedStatementLine[] };
+
+    if (parsed.skipped.length > 0) {
+      throw new UnprocessableEntityException(
+        `Uvoz odbijen: ${parsed.skipped.length} red(ova) TXT-a nije pročitan kao stavka izvoda. ` +
+          "Nepročitan red može biti uplata koja je stigla na račun, pa se izvod ne sme uvesti " +
+          "delimično — ispravite fajl (ili zatražite nov izvoz iz banke) i ponovite uvoz. " +
+          this.formatSkipped(parsed.skipped),
+      );
+    }
+    if (hasTxt && parsed.lines.length === 0) {
       throw new UnprocessableEntityException(
         "Izvod ne sadrži nijednu parsabilnu stavku (proverite format/kolone).",
       );
     }
+    if (hasTxt) this.assertImportedBalancesMatch(dto, parsed.lines);
 
     const existing = await this.prisma.bankStatement.findUnique({
       where: {
@@ -106,6 +152,8 @@ export class BankStatementService {
         statementDate: new Date(dto.statementDate),
         importedFileName: dto.fileName ?? null,
         status: "IMPORTED",
+        // Za TXT uvoz su oba OBAVEZNA (D2) — `?? ZERO` ostaje samo za ručni izvod, koji se
+        // otvara prazan i čija stanja korisnik u tom trenutku ne zna.
         openingBalance:
           dto.openingBalance !== undefined ? new D(dto.openingBalance) : ZERO,
         closingBalance:
@@ -113,9 +161,9 @@ export class BankStatementService {
         currency: dto.currency ?? "RSD",
         createdByUserId: actor?.userId ?? null,
         lines:
-          parsed.length > 0
+          parsed.lines.length > 0
             ? {
-                create: parsed.map((l: ParsedStatementLine) => ({
+                create: parsed.lines.map((l: ParsedStatementLine) => ({
                   lineNo: l.lineNo,
                   partnerAccount: l.partnerAccount,
                   partnerName: l.partnerName,
@@ -135,12 +183,23 @@ export class BankStatementService {
   /**
    * Preview: parsiraj TXT bez upisa (dry-run) — za ekran pregleda pre uvoza.
    * Vraća stavke sa iznosom kao string (Decimal u JSON-u = string, BACKEND_RULES §6).
+   *
+   * Pregled NE obara zahtev na nepročitanim redovima (za to je uvoz) nego ih PRIKAŽE:
+   * `skipped` + `ok` govore korisniku šta da ispravi pre nego što uopšte pošalje uvoz.
+   * Pre popravke (D1) su ti redovi postojali samo kao `logger.debug` na serveru.
    */
   previewParse(txtContent: string) {
     const parsed = this.parser.parse(txtContent);
+    const inflow = this.sumByDirection(parsed.lines, "CREDIT");
+    const outflow = this.sumByDirection(parsed.lines, "DEBIT");
     return {
-      count: parsed.length,
-      lines: parsed.map((l) => ({
+      count: parsed.lines.length,
+      // Zbir prometa iz fajla — korisnik po njemu proverava stanja koja mora da unese (D2).
+      totalInflow: inflow.toFixed(2),
+      totalOutflow: outflow.toFixed(2),
+      ok: parsed.skipped.length === 0,
+      skipped: parsed.skipped,
+      lines: parsed.lines.map((l) => ({
         lineNo: l.lineNo,
         partnerAccount: l.partnerAccount,
         partnerName: l.partnerName,
@@ -151,6 +210,56 @@ export class BankStatementService {
         documentDate: l.documentDate,
       })),
     };
+  }
+
+  /** Σ iznosa po smeru (priliv/odliv) nad draft stavkama. */
+  private sumByDirection(
+    lines: { amount: Prisma.Decimal; direction: string }[],
+    direction: "CREDIT" | "DEBIT",
+  ): Prisma.Decimal {
+    let sum = ZERO;
+    for (const l of lines) if (l.direction === direction) sum = sum.add(l.amount);
+    return sum;
+  }
+
+  /** Nepročitani redovi u jednu poruku za korisnika (broj reda + razlog + početak reda). */
+  private formatSkipped(skipped: SkippedStatementLine[]): string {
+    const shown = skipped.slice(0, IMPORT_SKIPPED_REPORT_LIMIT);
+    const detail = shown
+      .map((s) => `red ${s.fileLineNo}: ${s.reason} [${s.excerpt}]`)
+      .join(" | ");
+    const rest =
+      skipped.length > shown.length
+        ? ` | …i još ${skipped.length - shown.length} red(ova)`
+        : "";
+    return `${detail}${rest}`;
+  }
+
+  /**
+   * Kontrola salda NAD SAMIM FAJLOM (D2): početno + Σ priliva − Σ odliva == krajnje.
+   * Stanja su za TXT uvoz obavezna, pa ovde uvek postoje; tolerancija je pola pare.
+   * Ako ne štima, u fajlu fali/prekobrojna je stavka ili je stanje pogrešno prepisano —
+   * u oba slučaja izvod ne odgovara onome što je banka poslala i ne uvozi se.
+   */
+  private assertImportedBalancesMatch(
+    dto: ImportStatementDto,
+    lines: ParsedStatementLine[],
+  ): void {
+    const opening = new D(dto.openingBalance ?? 0);
+    const closing = new D(dto.closingBalance ?? 0);
+    const inflow = this.sumByDirection(lines, "CREDIT");
+    const outflow = this.sumByDirection(lines, "DEBIT");
+    const expected = opening.add(inflow).sub(outflow);
+    const difference = expected.sub(closing);
+    if (difference.abs().lessThanOrEqualTo(CONTROL_TOLERANCE)) return;
+
+    throw new UnprocessableEntityException(
+      `Kontrola salda ne prolazi: početno ${opening.toFixed(2)} + priliv ${inflow.toFixed(2)} − ` +
+        `odliv ${outflow.toFixed(2)} = ${expected.toFixed(2)}, a uneto krajnje stanje je ` +
+        `${closing.toFixed(2)} (razlika ${difference.toFixed(2)}). ` +
+        "Proverite da li su početno/krajnje stanje prepisani sa zaglavlja izvoda i da li fajl " +
+        "sadrži sve stavke — izvod se ne uvozi dok se promet i stanja ne poklope.",
+    );
   }
 
   // ── UPARIVANJE ────────────────────────────────────────────────────────────
@@ -172,7 +281,18 @@ export class BankStatementService {
       );
     }
 
+    // Konta koja VODE otvorene stavke — iz registra `saldakonto_accounts` (jedan izvor),
+    // jednom za ceo izvod. Prazan registar = pojam „otvorena stavka" nije definisan; to se
+    // PRIJAVLJUJE po stavci (v. `needsManualMatch`), ne prećutkuje.
+    const saldakontoAccounts = await this.saldakontoOpenItemAccounts();
+
     let matched = 0;
+    const needsManualMatch: {
+      lineNo: number;
+      amount: string;
+      reason: string;
+    }[] = [];
+
     for (const line of statement.lines) {
       if (line.status === "POSTED") continue;
 
@@ -180,10 +300,24 @@ export class BankStatementService {
         line.partnerAccount,
         line.partnerName,
       );
-      const ledgerEntryId =
+      const openItem =
         customerId != null
-          ? await this.matchOpenItem(customerId, line.referenceNumber, line.amount)
-          : null;
+          ? await this.matchOpenItem(
+              customerId,
+              line.referenceNumber,
+              line.amount,
+              line.direction,
+              saldakontoAccounts,
+            )
+          : { ledgerEntryId: null, reason: "komitent nije uparen" };
+
+      if (openItem.ledgerEntryId == null) {
+        needsManualMatch.push({
+          lineNo: line.lineNo,
+          amount: line.amount.toFixed(2),
+          reason: openItem.reason,
+        });
+      }
 
       const newStatus = customerId != null ? "MATCHED" : "UNMATCHED";
       if (customerId != null) matched += 1;
@@ -192,7 +326,7 @@ export class BankStatementService {
         where: { id: line.id },
         data: {
           matchedCustomerId: customerId,
-          matchedLedgerEntryId: ledgerEntryId,
+          matchedLedgerEntryId: openItem.ledgerEntryId,
           status: newStatus,
         },
       });
@@ -201,7 +335,23 @@ export class BankStatementService {
     return this.getStatement(statementId).then((s) => ({
       ...s,
       matchedCount: matched,
+      // Stavke bez uparene OTVORENE STAVKE — za ručno „Poveži po BrDok". Pre popravke (D3)
+      // se dvosmislen pogodak po iznosu tiho rešavao „prvim koji baza vrati".
+      needsManualMatch,
     }));
+  }
+
+  /**
+   * Konta iz saldakonto registra koja vode otvorene stavke (`tracks_open_items`).
+   * Registar je izvor istine (nikad spisak konta u kodu) — isti obrazac kao aging /
+   * priprema plaćanja / kreditni limit.
+   */
+  private async saldakontoOpenItemAccounts(): Promise<string[]> {
+    const rows = await this.prisma.saldakontoAccount.findMany({
+      where: { tracksOpenItems: true },
+      select: { account: true },
+    });
+    return rows.map((r) => r.account);
   }
 
   /**
@@ -275,13 +425,58 @@ export class BankStatementService {
     customerId: number,
     referenceNumber: string | null,
     amount: Prisma.Decimal,
+    direction: string,
+    saldakontoAccounts: string[],
     model?: string | null,
-  ): Promise<number | null> {
+  ): Promise<{ ledgerEntryId: number | null; reason: string }> {
+    // Prazan registar: „otvorena stavka" nije definisana, pa se ne uparuje ni jedna —
+    // ali se to PRIJAVLJUJE pozivaocu (i korisniku), ne prećutkuje.
+    if (saldakontoAccounts.length === 0) {
+      this.logger.warn(
+        "Saldakonto registar (saldakonto_accounts) nema ni jedan konto sa otvorenim stavkama — uparivanje otvorenih stavki je nemoguće.",
+      );
+      return {
+        ledgerEntryId: null,
+        reason:
+          "saldakonto registar je prazan (saldakonto_accounts) — popunite registar konta ili upari ručno",
+      };
+    }
+
+    /**
+     * 🔴 KOJE STAVKE SMEJU BITI KANDIDAT (defekt D3, 04.08.2026).
+     * ─────────────────────────────────────────────────────────────────────
+     * ŠTA SE DEŠAVALO PRE POPRAVKE: `baseWhere` je bio samo (komitent, `reconciledAt IS NULL`,
+     * nalog proknjižen) — bez saldakonto konta, bez smera i bez `orderBy`. Uz to
+     * `postStatement` nikad nije postavljao `reconciled_at`, pa je januarska faktura ostajala
+     * „otvorena" i posle plaćanja: druga uplata istog iznosa sedala je na NJU (fallback po
+     * iznosu, „prvi red koji baza vrati"), nova faktura ostajala 100% otvorena za kamatu i
+     * opomenu, a stara nosila lažnu preplatu.
+     *
+     * Tri uslova su tri odvojene brane:
+     *   • KONTO iz registra (`tracks_open_items`) — bez toga je kandidat bio i red na kontu
+     *     koji uopšte ne vodi otvorene stavke (npr. trošak sa analitikom komitenta).
+     *   • SMER — priliv zatvara DUGOVNU stranu (naše potraživanje), odliv POTRAŽNU (obavezu).
+     *     Filtriramo po strani SALDA reda (`debit > 0` / `credit > 0`), ne po `side` iz
+     *     registra: `side` je normalna strana konta, pa bi po njemu ispale legitimne pojave —
+     *     povraćaj preplate kupcu (odliv nad potražnim saldom na 2040) i povraćaj datog
+     *     avansa od dobavljača (priliv nad dugovnim saldom na 1520).
+     *   • `orderBy` — deterministički (najranije dospeće, pa najmanji id): bez njega je isti
+     *     upit mogao da vrati različit red u dva izvršavanja.
+     * Predikat „nalog je proknjižen" se UVOZI (`POSTED_ENTRY_STATUSES`), ne prepisuje.
+     */
+    const isInflow = direction === "CREDIT";
     const baseWhere: Prisma.LedgerEntryWhereInput = {
       analyticalCode: customerId,
       reconciledAt: null,
-      journalEntry: { is: { status: { in: ["POSTED", "LOCKED"] } } },
+      journalEntry: { is: { status: { in: [...POSTED_ENTRY_STATUSES] } } },
+      accountCode: { in: saldakontoAccounts },
+      ...(isInflow ? { debit: { gt: 0 } } : { credit: { gt: 0 } }),
     };
+    // Najstarije dospeće prvo (BigBit navika: naplata ide po dospelosti), pa id kao tie-break.
+    const deterministicOrder: Prisma.LedgerEntryOrderByWithRelationInput[] = [
+      { dueDate: "asc" },
+      { id: "asc" },
+    ];
 
     const { candidates } = parseReference(referenceNumber, model);
     if (candidates.length > 0) {
@@ -313,27 +508,46 @@ export class BankStatementService {
       // na fallback po iznosu ispod.
       //
       // Jedan upit po SVIM kandidatima; pogodak biramo po prioritetu (prvi kandidat prvi).
+      // Više redova pod ISTIM brojem = ista stavka razložena (delimična knjiženja); tu je
+      // determinizam dovoljan (najranije dospeće), jer sve pripada istom dokumentu.
       const rows = await this.prisma.ledgerEntry.findMany({
         where: { ...baseWhere, documentNumber: { in: candidates } },
         select: { id: true, documentNumber: true },
+        orderBy: deterministicOrder,
       });
       if (rows.length > 0) {
         for (const candidate of candidates) {
           const hit = rows.find((r) => r.documentNumber === candidate);
-          if (hit) return hit.id;
+          if (hit)
+            return { ledgerEntryId: hit.id, reason: "upareno po broju dokumenta" };
         }
       }
     }
 
-    // Fallback: otvorena stavka sa tačno jednakim iznosom (dug ili pot).
-    const byAmount = await this.prisma.ledgerEntry.findFirst({
+    // Fallback po IZNOSU — dozvoljen SAMO kad je pogodak jedinstven. Dva otvorena
+    // dokumenta istog iznosa su neraspoznatljiva po iznosu, pa se ne uparuje ni jedan
+    // (pre popravke je „prvi red koji baza vrati" zatvarao pogrešnu, često već plaćenu
+    // fakturu). `take: 2` je dovoljan da se dokaže (ne)jedinstvenost.
+    const byAmount = await this.prisma.ledgerEntry.findMany({
       where: {
         ...baseWhere,
-        OR: [{ debit: amount }, { credit: amount }],
+        ...(isInflow ? { debit: amount } : { credit: amount }),
       },
       select: { id: true },
+      orderBy: deterministicOrder,
+      take: 2,
     });
-    return byAmount?.id ?? null;
+    if (byAmount.length === 1)
+      return { ledgerEntryId: byAmount[0].id, reason: "upareno po jedinstvenom iznosu" };
+    if (byAmount.length > 1)
+      return {
+        ledgerEntryId: null,
+        reason: `više otvorenih stavki istog iznosa (${amount.toFixed(2)}) — poveži ručno po broju dokumenta`,
+      };
+    return {
+      ledgerEntryId: null,
+      reason: "nema otvorene stavke po pozivu na broj ni po iznosu",
+    };
   }
 
   // ── RUČNI UNOS / KOREKCIJA STAVKE (BigBit paritet) ────────────────────────
@@ -604,8 +818,8 @@ export class BankStatementService {
    * `document_number` komitentske stavke se IZVODI iz nađene otvorene stavke, a ne iz sirovog
    * poziva na broj — v. `resolvePostingDocumentNumbers` (nalaz N1, 03.08.2026).
    *
-   * Posle knjiženja → hook za uparivanje uplate sa fakturom (ReconciliationService cross-modul,
-   * PLAN §A) — ostavljen kao TODO jer taj servis nije dostupan iz ovog modula.
+   * Posle knjiženja se uparena stavka ZATVARA (`reconciled_at`) kroz postojeći
+   * `ReconciliationService` — v. `reconcilePostedLines` (defekt D3, 04.08.2026).
    */
   async postStatement(
     statementId: number,
@@ -631,6 +845,20 @@ export class BankStatementService {
       );
     }
 
+    // KONTROLA SALDA JE BRANA, NE UKRAS (defekt D2): kad su stanja poznata, a promet stavki
+    // ne daje krajnje stanje, nešto fali ili je prekobrojno — takav izvod se ne knjiži.
+    // Uvoz iz TXT-a ovo već proverava nad fajlom; ovde se hvata razlika koja je nastala
+    // posle uvoza (ručno dodata/izmenjena/obrisana stavka). Ručni izvod bez unetih stanja
+    // (oba nule) i dalje prolazi — v. `computeControl.available`.
+    const control = this.computeControl(statement);
+    if (control.available && !control.ok) {
+      throw new UnprocessableEntityException(
+        `Kontrola salda ne prolazi: očekivano krajnje stanje ${control.expectedClosing}, ` +
+          `uneto ${control.actualClosing} (razlika ${control.difference}). ` +
+          "Izvod se ne knjiži dok se promet i stanja ne poklope — proverite da li fali stavka.",
+      );
+    }
+
     const bankAccountCode = await this.resolveBankAccount(
       statement.bankAccount,
       dto.bankAccountCode,
@@ -642,7 +870,7 @@ export class BankStatementService {
     const RECEIVABLE_ACCOUNT = "2040"; // kupci u zemlji
     const PAYABLE_ACCOUNT = "4350"; // dobavljači u zemlji
 
-    return this.prisma.$transaction(async (tx) => {
+    const posted = await this.prisma.$transaction(async (tx) => {
       // Compare-and-swap: zaključaj izvod na POSTED PRE kreiranja naloga. Ako je druga
       // transakcija stigla prva (count===0), prekini — sprečava dupli GL nalog (review VISOK).
       const claimed = await tx.bankStatement.updateMany({
@@ -659,7 +887,7 @@ export class BankStatementService {
 
       // Broj dokumenta po stavci — iz NAĐENE otvorene stavke, ne iz sirovog PNB-a
       // (nalaz N1, v. `resolvePostingDocumentNumbers`).
-      const documentNumbers = await this.resolvePostingDocumentNumbers(tx, lines);
+      const resolved = await this.resolvePostingDocumentNumbers(tx, lines);
 
       let bankDebitTotal = ZERO; // Σ priliva (banka duguje)
       let bankCreditTotal = ZERO; // Σ odliva (banka potražuje)
@@ -675,16 +903,25 @@ export class BankStatementService {
         documentNumber: string | null;
       }
       const ledgerLines: LedgerLineDraft[] = [];
+      // Poreklo SVAKE upisane GK stavke (poravnato sa `ledgerLines` po indeksu) — bez toga
+      // se posle upisa ne zna koja GK stavka je koja uplata, pa se ne bi moglo ni zatvoriti
+      // uparivanje (D3). `null` = protivstavka banke (nema šta da zatvara).
+      const origins: (PostedLineOrigin | null)[] = [];
 
       for (const line of lines) {
         const isInflow = line.direction === "CREDIT"; // priliv
         const partnerAccount = isInflow ? RECEIVABLE_ACCOUNT : PAYABLE_ACCOUNT;
-        const documentNumber = documentNumbers.get(line.id) ?? null;
+        const hit = resolved.get(line.id);
+        const documentNumber = hit?.documentNumber ?? null;
         const description = this.buildLedgerDescription(
           statement.statementNumber,
           line,
           documentNumber,
         );
+        origins.push({
+          statementLineNo: line.lineNo,
+          openItemLedgerEntryId: hit?.openItemLedgerEntryId ?? null,
+        });
 
         if (isInflow) {
           bankDebitTotal = bankDebitTotal.add(line.amount);
@@ -720,6 +957,7 @@ export class BankStatementService {
         description: `Izvod ${statement.statementNumber} — promet banke`,
         documentNumber: statement.statementNumber,
       });
+      origins.push(null);
 
       // Balans-kontrola (Decimal egzaktan → tolerancija 0).
       let totalDebit = ZERO;
@@ -761,9 +999,36 @@ export class BankStatementService {
         data: { status: "POSTED" },
       });
 
-      // TODO(reconcile): posle knjiženja pozvati ReconciliationService da upari uplatu sa
-      // fakturom (LedgerEntry.reconciledAt/reconciliationGroupId). Servis je u modulu
-      // saldakonti (cross-modul) — integrator ga uvezuje; ovde ostavljamo hook.
+      // Upisane GK stavke u REDU UPISA (nested create upisuje sekvencijalno, pa je rastući
+      // id = redosled `ledgerLines`) — po tome se svaka uplata veže na svoje poreklo.
+      // GUARD: pre vezivanja se proveri da upisani red STVARNO odgovara draftu na tom mestu
+      // (analitika + dug/pot). Kad bi se redosled ikad promenio, uparivanje bi zatvorilo
+      // TUĐU stavku — tačno kvar koji ovaj paket uklanja — pa se radije ne zatvara ništa.
+      // Kad su dva reda identična po tim poljima, zamena mesta je bezopasna i guard prolazi.
+      const createdRows = [...entry.lines].sort((a, b) => a.id - b.id);
+      const pairs: { origin: PostedLineOrigin; paymentLedgerEntryId: number }[] = [];
+      const misaligned: number[] = [];
+      for (let i = 0; i < origins.length; i++) {
+        const origin = origins[i];
+        const draft = ledgerLines[i];
+        const row = createdRows[i];
+        if (origin == null) continue;
+        if (
+          row == null ||
+          row.analyticalCode !== draft.analyticalCode ||
+          !new D(row.debit).equals(draft.debit) ||
+          !new D(row.credit).equals(draft.credit)
+        ) {
+          misaligned.push(origin.statementLineNo);
+          continue;
+        }
+        pairs.push({ origin, paymentLedgerEntryId: row.id });
+      }
+      if (misaligned.length > 0) {
+        this.logger.error(
+          `Izvod ${statementId}: upisane GK stavke se ne poklapaju sa draftom (stavke ${misaligned.join(", ")}) — uparivanje za njih NIJE zatvoreno.`,
+        );
+      }
 
       return {
         journalEntryId: entry.id,
@@ -771,8 +1036,121 @@ export class BankStatementService {
         lineCount: entry.lines.length,
         totalDebit: totalDebit.toFixed(2),
         totalCredit: totalCredit.toFixed(2),
+        pairs,
+        misaligned,
       };
     });
+
+    // ZATVARANJE UPARENIH STAVKI — POSLE commit-a (v. `reconcilePostedLines`).
+    const reconciliation = await this.reconcilePostedLines(
+      statement.statementNumber,
+      posted.pairs,
+      actor?.userId,
+    );
+    // Stavke koje guard nije mogao da poveže idu korisniku istim kanalom (ne samo u log).
+    for (const statementLineNo of posted.misaligned)
+      reconciliation.skipped.push({
+        statementLineNo,
+        reason:
+          "upisana GK stavka se ne poklapa sa pripremljenom — zatvorite uparivanje ručno",
+      });
+
+    const { pairs: _pairs, misaligned: _misaligned, ...result } = posted;
+    return { ...result, reconciliation };
+  }
+
+  /**
+   * 🔴 POSLE KNJIŽENJA SE UPARENA STAVKA ZATVARA (`reconciled_at`) — defekt D3, 04.08.2026.
+   * ═══════════════════════════════════════════════════════════════════════════════
+   * ŠTA SE DEŠAVALO PRE POPRAVKE: `postStatement` nikad nije postavljao `reconciled_at`
+   * (na tom mestu je bio TODO), pa je plaćena faktura zauvek ostajala „otvorena stavka".
+   * Druga uplata istog iznosa je zato preko fallback-a po iznosu sedala NA NJU: nova faktura
+   * ostajala 100 % otvorena za kamatu i opomenu, a stara nosila lažnu preplatu.
+   *
+   * KORISTI SE POSTOJEĆI SERVIS (`ReconciliationService.autoReconcile`), ne nov upis: on već
+   * nosi sve provere (isti kontrolni konto i komitent, stavka je u saldakonto registru, nalog
+   * je proknjižen, stavka nije već zatvorena) i pravi `ReconciliationGroup` koji „Razveži"
+   * ume da vrati. Nov `update` nad `reconciled_at` bi te provere obišao i napravio grupu
+   * koju ništa ne može da razveže.
+   *
+   * ZAŠTO POSLE TRANSAKCIJE: `autoReconcile` otvara SVOJU transakciju i čita stavke iz baze;
+   * pozvan iznutra ne bi video još-neupisan nalog (druga konekcija) i knjiženje bi puklo.
+   *
+   * ZAŠTO NEUSPEŠNO ZATVARANJE NE OBARA KNJIŽENJE: nalog je u tom trenutku već proknjižen i
+   * commit-ovan; bacanje greške ne bi ga poništilo, samo bi sakrilo šta je urađeno. Umesto
+   * toga se svaki neuspeh VRAĆA pozivaocu (`skipped`, sa razlogom) — najčešći legitiman
+   * razlog je DELIMIČNA uplata (Σdug ≠ Σpot preko tolerancije), gde stavka i treba da ostane
+   * otvorena za ostatak duga. Tiho hvatanje greške bez izveštaja bi bio isti kvar kao D1.
+   */
+  private async reconcilePostedLines(
+    statementNumber: string,
+    pairs: { origin: PostedLineOrigin; paymentLedgerEntryId: number }[],
+    userId?: number,
+  ): Promise<{
+    closedGroups: number;
+    groupIds: number[];
+    skipped: { statementLineNo: number; reason: string }[];
+  }> {
+    const groupIds: number[] = [];
+    const skipped: { statementLineNo: number; reason: string }[] = [];
+
+    const toClose = pairs.filter((p) => p.origin.openItemLedgerEntryId != null);
+    for (const p of pairs) {
+      if (p.origin.openItemLedgerEntryId == null)
+        skipped.push({
+          statementLineNo: p.origin.statementLineNo,
+          reason:
+            "nema uparene otvorene stavke — uplata ostaje neraspoređena (poveži ručno)",
+        });
+    }
+    if (toClose.length === 0) return { closedGroups: 0, groupIds, skipped };
+
+    const reconciliation = this.resolveReconciliationService();
+    if (reconciliation == null) {
+      // Servis nije u grafu (modul saldakonti nije registrovan) — prijavi, ne prećuti.
+      this.logger.error(
+        "ReconciliationService nije dostupan — uparene stavke izvoda NISU zatvorene (reconciled_at ostaje NULL).",
+      );
+      for (const p of toClose)
+        skipped.push({
+          statementLineNo: p.origin.statementLineNo,
+          reason:
+            "servis uparivanja (saldakonti) nije dostupan — zatvorite stavku ručno",
+        });
+      return { closedGroups: 0, groupIds, skipped };
+    }
+
+    for (const p of toClose) {
+      const note = `Izvod ${statementNumber}, stavka ${p.origin.statementLineNo}`;
+      try {
+        const group = await reconciliation.autoReconcile(
+          [p.origin.openItemLedgerEntryId as number, p.paymentLedgerEntryId],
+          userId,
+          note,
+        );
+        groupIds.push(group.groupId);
+      } catch (err) {
+        skipped.push({
+          statementLineNo: p.origin.statementLineNo,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return { closedGroups: groupIds.length, groupIds, skipped };
+  }
+
+  /**
+   * Instanca `ReconciliationService` iz grafa cele aplikacije (`strict: false`).
+   * Modul se NE uvozi: `SaldakontiModule` već uvozi `IzvodiModule` (kursna lista za
+   * revalorizaciju), pa bi obrnut uvoz bio ciklus modula.
+   */
+  private resolveReconciliationService(): ReconciliationService | null {
+    try {
+      return this.moduleRef.get(ReconciliationService, { strict: false });
+    } catch {
+      return null;
+    }
   }
 
   // ── BROJ DOKUMENTA ZA GLAVNU KNJIGU (nalaz N1) ────────────────────────────
@@ -833,7 +1211,10 @@ export class BankStatementService {
    * koji ume da zatvori pogrešnu stavku; on sme da radi u „Upari" koraku (rezultat se
    * prikaže i može se prepraviti), ne tiho u trenutku knjiženja.
    *
-   * Vraća mapu `line.id → documentNumber | null`. Dva upita za ceo izvod (ne po stavci).
+   * Vraća mapu `line.id → { documentNumber, openItemLedgerEntryId }`. Dva upita za ceo izvod
+   * (ne po stavci). `openItemLedgerEntryId` je PRIHVAĆENA otvorena stavka (koraci 1 i 2) —
+   * po njoj `reconcilePostedLines` zatvara uparivanje (defekt D3); `null` znači „ne znamo šta
+   * ova uplata zatvara", pa se ništa ne zatvara.
    */
   private async resolvePostingDocumentNumbers(
     tx: Prisma.TransactionClient,
@@ -843,8 +1224,13 @@ export class BankStatementService {
       matchedCustomerId: number | null;
       matchedLedgerEntryId: number | null;
     }[],
-  ): Promise<Map<number, string | null>> {
-    const out = new Map<number, string | null>();
+  ): Promise<
+    Map<number, { documentNumber: string | null; openItemLedgerEntryId: number | null }>
+  > {
+    const out = new Map<
+      number,
+      { documentNumber: string | null; openItemLedgerEntryId: number | null }
+    >();
 
     // (1) POTVRĐENA STAVKA — jedan upit za sve veze izvoda.
     const linkIds = [
@@ -874,7 +1260,10 @@ export class BankStatementService {
         hit?.documentNumber &&
         hit.analyticalCode === line.matchedCustomerId
       ) {
-        out.set(line.id, hit.documentNumber);
+        out.set(line.id, {
+          documentNumber: hit.documentNumber,
+          openItemLedgerEntryId: hit.id,
+        });
         continue;
       }
       pending.push(line);
@@ -895,32 +1284,46 @@ export class BankStatementService {
           .filter((v): v is number => v != null),
       ),
     ];
-    const proven = new Map<number, Set<string>>();
+    // `proven`: komitent → broj dokumenta → id-jevi otvorenih stavki pod tim brojem.
+    // Id-jevi su potrebni za zatvaranje uparivanja (D3); ranije je čuvan samo skup brojeva.
+    const proven = new Map<number, Map<string, number[]>>();
     if (refs.length > 0 && partners.length > 0) {
       const rows = await tx.ledgerEntry.findMany({
         where: {
           analyticalCode: { in: partners },
           documentNumber: { in: refs },
           reconciledAt: null,
-          journalEntry: { is: { status: { in: ["POSTED", "LOCKED"] } } },
+          // Predikat „proknjižen nalog" se UVOZI iz saldakonta, ne prepisuje (pravilo #1).
+          journalEntry: { is: { status: { in: [...POSTED_ENTRY_STATUSES] } } },
         },
-        select: { analyticalCode: true, documentNumber: true },
+        select: { id: true, analyticalCode: true, documentNumber: true },
+        orderBy: { id: "asc" },
       });
       for (const r of rows) {
         if (r.analyticalCode == null || r.documentNumber == null) continue;
-        const forPartner = proven.get(r.analyticalCode) ?? new Set<string>();
-        forPartner.add(r.documentNumber);
+        const forPartner =
+          proven.get(r.analyticalCode) ?? new Map<string, number[]>();
+        forPartner.set(r.documentNumber, [
+          ...(forPartner.get(r.documentNumber) ?? []),
+          r.id,
+        ]);
         proven.set(r.analyticalCode, forPartner);
       }
     }
 
     for (const line of pending) {
       const ref = (line.referenceNumber ?? "").trim();
-      const isProven =
-        ref.length > 0 &&
-        line.matchedCustomerId != null &&
-        (proven.get(line.matchedCustomerId)?.has(ref) ?? false);
-      out.set(line.id, isProven ? ref : null); // (3) inače neraspoređeno
+      const ids =
+        ref.length > 0 && line.matchedCustomerId != null
+          ? (proven.get(line.matchedCustomerId)?.get(ref) ?? [])
+          : [];
+      // (3) inače neraspoređeno. Broj se upisuje kad je DOKAZAN; automatski se zatvara samo
+      // kad je stavka pod tim brojem JEDNA — više redova istog broja ne razlikujemo, a
+      // zatvaranje pogrešnog reda je isti kvar kao fallback po iznosu (D3).
+      out.set(line.id, {
+        documentNumber: ids.length > 0 ? ref : null,
+        openItemLedgerEntryId: ids.length === 1 ? ids[0] : null,
+      });
     }
 
     return out;
@@ -1024,10 +1427,11 @@ export class BankStatementService {
    * stanje = openingBalance + Σ priliva (CREDIT) − Σ odliva (DEBIT); poredi se sa
    * unetim closingBalance. Vraća expected/actual/difference + `ok`.
    *
-   * Ovo je SAMO upozorenje na formi (FE traka zeleno/crveno) — NE blokira knjiženje:
-   * dinarski izvod se knjiži po stavkama bez obzira na saldo, a razlika najčešće znači
-   * da nedostaje/prekobrojna stavka ili je pogrešno uneto stanje (korisnik ispravlja).
-   * Decimal → string (BACKEND_RULES §6). Tolerancija = pola pare (deviznii preračun se
+   * Ovo je traka na formi (zeleno/crveno) I BRANA: od popravke D2 (04.08.2026) izvod sa
+   * dostupnom a neusklađenom kontrolom NE MOŽE da se proknjiži (`postStatement`), a TXT uvoz
+   * se odbija još na ulazu. Pre popravke je bila samo dekoracija — uvoz nije punio stanja, pa
+   * je poređenje bilo 0 = 0 i traka je bila zelena i kad stavka fali.
+   * Decimal → string (BACKEND_RULES §6). Tolerancija = pola pare (devizni preračun se
    * zaokružuje na 2 decimale, pa se sitno zaokruživanje ne prijavljuje kao neslaganje).
    */
   private computeControl(statement: {
@@ -1054,9 +1458,11 @@ export class BankStatementService {
     const actual = statement.closingBalance;
     const difference = expected.sub(actual);
     // Kontrola ima smisla SAMO ako su stanja uneta (review Batch B): oba su Decimal sa
-    // default 0, a uvoz ih trenutno ne popunjava — bez ovog gejta traka bi za SVAKI
-    // izvod sa stavkama vikala „saldo se ne slaže" (0 + promet ≠ 0) i korisnik bi je
-    // naučio da ignoriše. Kad su oba nula → kontrola nedostupna, ne „neslaganje".
+    // default 0. Za TXT uvoz su OD POPRAVKE D2 obavezna, pa je ovaj gejt tu još samo zbog
+    // RUČNOG izvoda, koji se otvara prazan (E6 devizni) i čija stanja korisnik u tom
+    // trenutku ne zna — bez gejta bi mu traka vikala „saldo se ne slaže" (0 + promet ≠ 0)
+    // za svaku ukucanu stavku i naučio bi da je ignoriše. Kad su oba nula → kontrola
+    // nedostupna, ne „neslaganje".
     const available = !(
       statement.openingBalance.isZero() && statement.closingBalance.isZero()
     );
