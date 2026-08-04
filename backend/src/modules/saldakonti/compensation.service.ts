@@ -27,8 +27,13 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
-import { OpenItemsService, type OpenItem } from "./open-items.service";
+import {
+  OpenItemsService,
+  POSTED_ENTRY_STATUSES,
+  type OpenItem,
+} from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
+import { loadPostableCompensationLines } from "./compensation-entry-guard";
 import {
   type CreateCompensationDto,
   type CompensationLineInput,
@@ -211,7 +216,7 @@ export class CompensationService {
       });
 
       if (dto.post) {
-        await this.postCompensation(tx, order.id, dto.partnerId);
+        await this.postCompensation(tx, order.id);
         // Re-fetch: postCompensation je ažurirao status=POSTED + journalEntryId.
         return tx.compensationOrder.findUniqueOrThrow({
           where: { id: order.id },
@@ -266,16 +271,27 @@ export class CompensationService {
    *     umanjuje saldo, a stavka ostaje otvorena sa ostatkom.
    * (Staro ponašanje je bezuslovno zatvaralo celu reprezentativnu stavku i pri
    * delimičnom prebijanju → ostatak salda bi nestao; review VISOK/SREDNJI.)
+   *
+   * AUTORIZACIJA PODATAKA (defekt D1, 04.08.2026): reprezentativne stavke se učitavaju
+   * i proveravaju PRE ijednog upisa — v. {@link loadPostableCompensationLines}
+   * (`compensation-entry-guard.ts`, tamo je i obrazloženje pravila o partneru).
    */
   private async postCompensation(
     tx: Prisma.TransactionClient,
     compensationId: number,
-    partnerId: number,
   ): Promise<void> {
     const order = await tx.compensationOrder.findUniqueOrThrow({
       where: { id: compensationId },
       include: { lines: true },
     });
+
+    // KOMITENT SE ČITA IZ UPISANOG NALOGA, ne iz tela zahteva. Pozivalac je do 04.08.2026.
+    // prosleđivao `dto.partnerId`; danas su te dve vrednosti jednake jer se nalog pravi u
+    // istoj transakciji, ali kapija (`compensation-entry-guard.ts`) meri vlasništvo stavke
+    // upravo prema komitentu NALOGA — pa merodavan sme biti samo perzistiran red. Inače bi
+    // svaka buduća ruta „proknjiži postojeći nalog" mogla da pošalje tuđeg komitenta i time
+    // zaobiđe branu koja postoji baš da to spreči.
+    const partnerId = order.partnerId;
 
     // Kompenzacioni nalog (vrsta KMP): prebijamo potraživanje protiv obaveze.
     // receivable strana (npr. 2040 kupac) se ZATVARA → potražuje (credit);
@@ -297,17 +313,20 @@ export class CompensationService {
       credit: number;
       description: string;
     }> = [];
-    for (const line of order.lines) {
-      if (line.ledgerEntryId == null) continue; // grupisane stavke bez per-red ID-a se preskaču
-      const le = await tx.ledgerEntry.findUnique({
-        where: { id: line.ledgerEntryId },
-        select: {
-          accountCode: true,
-          analyticalCode: true,
-          documentNumber: true,
-        },
-      });
-      if (!le) continue;
+    // Defekt D1: knjiženje je pre ovoga čitalo stavku po stavku (`findUnique` u petlji)
+    // i tiho preskakalo (`continue`) sve što ne odgovara, bez ijedne provere čija je
+    // stavka i u kakvom je stanju — pa je poslat tuđi `ledgerEntryId` proizvodio
+    // PROKNJIŽEN I POTPISAN nalog koji zatvara fakturu drugog komitenta. Sada sve linije
+    // idu kroz jedan upit + jednu kapiju (`compensation-entry-guard.ts`), koja odbija
+    // ceo zahtev i imenuje svaku spornu stavku.
+    const postable = await loadPostableCompensationLines(
+      tx,
+      order.lines,
+      partnerId,
+    );
+
+    for (const line of postable) {
+      const le = line.entry;
       const amount = Number(line.amount);
       postLines.push({
         accountCode: le.accountCode,
@@ -350,6 +369,12 @@ export class CompensationService {
           documentNumber: pl.documentNumber,
           reconciledAt: null,
           journalEntryId: { not: posted.journalEntryId },
+          // Defekt D2: ovo je bilo jedino mesto u domenu BEZ predikata „proknjižen
+          // nalog", pa su NACRTI (DRAFT) ulazili u `openBalanceAbs` — saldo nad kojim
+          // se odlučuje pun/delimičan offset nije bio onaj koji saldakonto prikazuje,
+          // pa je pun offset umeo da se klasifikuje kao delimičan (grupa ostaje
+          // otvorena) i obrnuto. Statusi dolaze iz JEDNOG izvora, ne iz inline prepisa.
+          journalEntry: { status: { in: [...POSTED_ENTRY_STATUSES] } },
         },
         select: { id: true, debit: true, credit: true },
       });

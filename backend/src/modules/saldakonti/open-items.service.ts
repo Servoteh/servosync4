@@ -42,6 +42,24 @@ import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 
+/**
+ * JEDAN IZVOR statusa naloga koji saldakonti smatraju PROKNJIŽENIM.
+ * ─────────────────────────────────────────────────────────────────────────
+ * `LOCKED` je obavezno uz `POSTED` (review Batch A VISOK): lock perioda
+ * (POST /gl/journal/lock-older) ne sme da OBRIŠE otvoreni dug — zaključan nalog je
+ * i dalje proknjižen.
+ *
+ * ZAŠTO KONSTANTA A NE PREPIS PO ČITAOCU: predikat je bio prepisivan inline na
+ * svakom mestu, pa je jedan čitalac (kompenzacija, `openBalanceAbs`) ostao BEZ njega
+ * i tiho uračunavao NACRTE u otvoreni saldo grupe. Svaki novi Prisma-client čitalac
+ * uvozi ovu konstantu (`status: { in: [...POSTED_ENTRY_STATUSES] }`), ne prepisuje listu.
+ *
+ * Raw-SQL čitaoci (ovaj fajl, `partner-card.service.ts`) zadržavaju doslovni
+ * `IN ('POSTED', 'LOCKED')` u tekstu upita — specovi ga proveravaju kao string, a kroz
+ * `Prisma.join` bi postao `IN ($1, $2)`. Vrednosti su iste i moraju to i ostati.
+ */
+export const POSTED_ENTRY_STATUSES: readonly string[] = ["POSTED", "LOCKED"];
+
 export interface OpenItem {
   accountCode: string;
   analyticalCode: number | null; // komitent (null = sintetika bez analitike)

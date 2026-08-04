@@ -47,6 +47,13 @@ const D = Prisma.Decimal;
 const ZERO = new D(0);
 
 /**
+ * Valuta u kojoj su izražene DINARSKE kolone glavne knjige (`ledger_entries.debit` /
+ * `.credit`). Devizni par stoji ZASEBNO (`fx_debit`/`fx_credit`/`fx_currency`), pa je
+ * svaki saldo izveden iz `debit`/`credit` po definiciji u RSD — v. D1 u `selectDue`.
+ */
+const DOMESTIC_CURRENCY = "RSD";
+
+/**
  * Koliko različitih komitenata sme da se pretraži po komitentu (stavke bez broja
  * dokumenta) pri obogaćivanju 3-way match upozorenjima. Gornja granica čuva
  * odziv ekrana — upozorenja su informativna, pa je odsecanje bezopasno.
@@ -84,6 +91,20 @@ export interface DueLiability {
   hasMatchWarnings: boolean;
 }
 
+/**
+ * Dospela obaveza koja je IZOSTAVLJENA iz predloga jer nije u dinarima (D1).
+ * Nije „tiho preskočena" — putuje do korisnika u `meta.skipped` sa gotovim tekstom.
+ */
+export interface SkippedForeignLiability {
+  accountCode: string;
+  supplierId: number | null;
+  documentNumber: string | null;
+  /** Valuta stavke; kod grupe koja meša valute — sve zatečene, spojene sa „/". */
+  currency: string;
+  /** Srpska poruka za ekran (nosi broj dokumenta i valutu). */
+  reason: string;
+}
+
 /** Zbirni pregled dospelih obaveza sa 3-way match upozorenjima. */
 export interface DueLiabilitiesWithWarnings {
   data: DueLiability[];
@@ -94,6 +115,11 @@ export interface DueLiabilitiesWithWarnings {
     hasMatchWarnings: boolean;
     /** Ukupan broj upozorenja (WARNING) preko svih stavki. */
     warningCount: number;
+    /**
+     * Devizne dospele obaveze koje NISU u predlogu (D1). Prazan niz = sve dospelo je
+     * dinarsko. Ekran ovo MORA prikazati: to su neplaćene obaveze bez naloga.
+     */
+    skipped: SkippedForeignLiability[];
   };
 }
 
@@ -115,8 +141,23 @@ export class PaymentPreparationService {
    * Grupiše otvorene potražne stavke sa payable konta po (konto, komitent,
    * dokument), sabira Σ(credit − debit), zadržava grupe sa saldom > 0 čije je
    * najranije dospeće `≤ cutoff`.
+   *
+   * ⚠️ Vraća SAMO dinarske obaveze (D1) — devizne izostaje i prijavljuje kroz
+   * `selectDueWithWarnings().meta.skipped`, a ako drugih nema, baca 400.
    */
   async selectDue(cutoff: Date = new Date()): Promise<DueLiability[]> {
+    return (await this.collectDue(cutoff)).data;
+  }
+
+  /**
+   * Zajedničko jezgro selekcije: dinarske dospele obaveze + spisak izostavljenih
+   * deviznih (D1). Oba javna ulaza (`selectDue`, `selectDueWithWarnings`) idu kroz
+   * ovo, da bi pravilo o valuti bilo na JEDNOM mestu.
+   */
+  private async collectDue(cutoff: Date): Promise<{
+    data: DueLiability[];
+    skipped: SkippedForeignLiability[];
+  }> {
     // 1) DOBAVLJAČKA payable konta iz registra (NE hardkod klase 4* — doc PLAN §A).
     //    partnerScope = "supplier" je OBAVEZAN uz side = "payable": konta primljenih
     //    avansa 4300/4302 su po saldu obaveza, ali obaveza prema KUPCU (njegov avans).
@@ -129,7 +170,7 @@ export class PaymentPreparationService {
       select: { account: true },
     });
     const accountCodes = payableAccounts.map((a) => a.account);
-    if (accountCodes.length === 0) return [];
+    if (accountCodes.length === 0) return { data: [], skipped: [] };
 
     // 2) otvorene stavke na tim kontima (reconciledAt IS NULL), proknjižen nalog.
     //    Grupišemo u memoriji po (konto, komitent, dokument) — groupBy ne daje
@@ -159,6 +200,12 @@ export class PaymentPreparationService {
       documentNumber: string | null;
       balance: Prisma.Decimal;
       currency: string;
+      /**
+       * SVE valute zatečene u grupi (D1). Grupni ključ (konto, komitent, dokument) ne
+       * sadrži valutu, pa se u istoj grupi mogu naći stavke različitih valuta; takva
+       * grupa nema jedan smislen iznos i mora u izostavljene, a ne u predlog.
+       */
+      currencies: Set<string>;
       dueDate: Date | null;
       firstId: number;
     }
@@ -174,9 +221,11 @@ export class PaymentPreparationService {
       // uz njihov konto + njihovu analitiku, pa se ne mogu pomešati sa našima.
       const key = `${r.accountCode}|${r.analyticalCode ?? ""}|${r.documentNumber ?? ""}`;
       const delta = r.credit.sub(r.debit); // payable saldo = Σ(credit − debit)
+      const rowCurrency = normalizeCurrency(r.currency);
       const cur = groups.get(key);
       if (cur) {
         cur.balance = cur.balance.add(delta);
+        cur.currencies.add(rowCurrency);
         if (r.dueDate && (!cur.dueDate || r.dueDate < cur.dueDate)) {
           cur.dueDate = r.dueDate;
         }
@@ -186,7 +235,8 @@ export class PaymentPreparationService {
           supplierId: r.analyticalCode ?? null,
           documentNumber: r.documentNumber ?? null,
           balance: delta,
-          currency: r.currency ?? "RSD",
+          currency: rowCurrency,
+          currencies: new Set([rowCurrency]),
           dueDate: r.dueDate ?? null,
           firstId: r.id,
         });
@@ -196,11 +246,39 @@ export class PaymentPreparationService {
     // 3) zadrži samo grupe sa pozitivnim saldom obaveze i dospećem ≤ cutoff.
     const cutMs = cutoff.getTime();
     const result: DueLiability[] = [];
+    const skipped: SkippedForeignLiability[] = [];
     for (const g of groups.values()) {
       if (g.balance.lessThanOrEqualTo(ZERO)) continue; // nema obaveze
       // Bez dueDate → tretiramo kao dospelo (BigBit: prazna valuta = odmah).
       const dueMs = g.dueDate ? g.dueDate.getTime() : 0;
       if (dueMs > cutMs) continue; // nije dospelo
+
+      // ── D1: DEVIZNA OBAVEZA NE ULAZI U PREDLOG (nalaz 04.08.2026) ──────────────
+      // ŠTA SE DEŠAVALO PRE POPRAVKE: saldo se sabira iz `debit`/`credit`, a to su
+      // DINARSKE kolone glavne knjige (devizni par stoji zasebno u `fx_debit`/`fx_credit`/
+      // `fx_currency`), dok je grupa nosila `currency` iz stavke — obaveza od 117.000,00 RSD
+      // izlazila je označena kao „117.000,00 EUR" i u tom obliku ulazila u nalog za plaćanje,
+      // pa bi banci otišao iznos višestruko veći od dugovanog.
+      // PRERAČUN PO KURSU SE OVDE NE UVODI: koji kurs (srednji/prodajni), na koji dan i ko
+      // knjiži kursnu razliku je poslovna odluka (BACKEND_RULES §11), ne tehnička.
+      // ZAŠTO TIHO PRESKAKANJE NIJE PRIHVATLJIVO: izostavljena obaveza bez poruke je
+      // neplaćena faktura o kojoj niko ne zna — korisnik na ekranu vidi „nema dospelih
+      // obaveza", rok prođe, a defekt se otkrije tek preko opomene dobavljača. Zato svaka
+      // izostavljena grupa ide u `meta.skipped` sa brojem dokumenta i valutom, a kad
+      // dinarskih obaveza uopšte nema, poziv PUCA (ispod) — prazan spisak bi bio odgovor
+      // „ništa ne duguješ", što nije istina.
+      const groupCurrency = [...g.currencies].sort().join("/");
+      if (groupCurrency !== DOMESTIC_CURRENCY) {
+        skipped.push({
+          accountCode: g.accountCode,
+          supplierId: g.supplierId,
+          documentNumber: g.documentNumber,
+          currency: groupCurrency,
+          reason: foreignLiabilityText(g.documentNumber, groupCurrency),
+        });
+        continue;
+      }
+
       const daysOverdue = g.dueDate
         ? Math.floor((cutMs - dueMs) / 86_400_000)
         : 0;
@@ -220,10 +298,23 @@ export class PaymentPreparationService {
     // najduže kašnjenje prvo (naplata/plaćanje prioritet).
     result.sort((a, b) => b.daysOverdue - a.daysOverdue);
 
+    // D1, drugi deo: ako je predlog ostao prazan ISKLJUČIVO zato što je sve dospelo
+    // devizno, prazan spisak bi na ekranu značio „nema šta da se plati". Zato tipizirana
+    // greška (400) sa brojem dokumenta i valutom — korisnik dobija zadatak, ne tišinu.
+    // Kad ima i dinarskih obaveza, one PROLAZE (ne blokiramo ceo dan plaćanja zbog jedne
+    // devizne fakture), a devizne stižu kroz `meta.skipped`.
+    if (result.length === 0 && skipped.length > 0) {
+      throw new BadRequestException(
+        "Devizne obaveze nisu podržane u pripremi plaćanja — obradite ih ručno: " +
+          skipped.map((s) => s.reason).join(" ") +
+          " Druge (dinarske) dospele obaveze na taj dan ne postoje.",
+      );
+    }
+
     // 4) 3-way match upozorenja (informativno). Nikad ne menja izbor stavki i
     //    nikad ne obara selekciju — greška u obogaćivanju se loguje i ignoriše.
     await this.attachMatchWarnings(result);
-    return result;
+    return { data: result, skipped };
   }
 
   /**
@@ -320,11 +411,15 @@ export class PaymentPreparationService {
    *
    * ⚠️ Upozorenja su informativna: `hasMatchWarnings: true` ne sme da onemogući
    * nijedno dugme ni da odbije kreiranje/potpis/izvoz naloga.
+   *
+   * ⚠️ `meta.skipped` je DRUGA vrsta poruke — to su devizne dospele obaveze koje NISU
+   * u predlogu (D1). Njih ekran mora prikazati kao zadatak („obradi ručno"), jer se
+   * inače tiho gubi neplaćena obaveza.
    */
   async selectDueWithWarnings(
     cutoff: Date = new Date(),
   ): Promise<DueLiabilitiesWithWarnings> {
-    const data = await this.selectDue(cutoff);
+    const { data, skipped } = await this.collectDue(cutoff);
     let warningCount = 0;
     for (const row of data)
       warningCount += row.matchWarnings.filter(
@@ -337,6 +432,7 @@ export class PaymentPreparationService {
         count: data.length,
         hasMatchWarnings: data.some((r) => r.hasMatchWarnings),
         warningCount,
+        skipped,
       },
     };
   }
@@ -837,4 +933,34 @@ export class PaymentPreparationService {
       );
     }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D1 helperi — valuta otvorene stavke.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `ledger_entries.currency` → normalizovan ISO kod. NULL/prazno = RSD: kolone
+ * `debit`/`credit` su dinarske, a stavke iz .mdb uvoza i 4.0-native domaćih knjiženja
+ * valutu često ne upisuju uopšte. To NIJE pretpostavka o kursu — samo čitanje kolone
+ * u kojoj iznos zaista stoji.
+ */
+function normalizeCurrency(currency: string | null | undefined): string {
+  const c = (currency ?? "").trim().toUpperCase();
+  return c === "" ? DOMESTIC_CURRENCY : c;
+}
+
+/** Tekst za izostavljenu deviznu obavezu — MORA nositi broj dokumenta i valutu. */
+function foreignLiabilityText(
+  documentNumber: string | null,
+  currency: string,
+): string {
+  const doc =
+    documentNumber && documentNumber !== ""
+      ? documentNumber
+      : "(bez broja dokumenta)";
+  return (
+    `Obaveza po dokumentu ${doc} je u valuti ${currency} — devizne obaveze nisu podržane ` +
+    `u pripremi plaćanja (iznos u glavnoj knjizi je dinarski) i obrađuju se ručno.`
+  );
 }
