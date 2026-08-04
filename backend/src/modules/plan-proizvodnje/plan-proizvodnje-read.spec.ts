@@ -304,10 +304,11 @@ describe("gant feed (046/26)", () => {
     const { svc, calls } = makeGanttSvc();
     await svc.gantt("pm@servoteh.com");
     const sql = calls[0].sql.replace(/\s+/g, " ");
-    const selectCols = sql.slice(0, sql.indexOf(" FROM "));
-    expect(selectCols).toContain("is_ready_manual");
-    expect(selectCols).toContain("ready_override_at");
-    expect(selectCols).toContain("ready_override_by");
+    // Od C2 je spoljni SELECT `g.*, sklop_*` (wrapper), pa PRVI ` FROM ` dolazi odmah
+    // iza njega — slice do prvog FROM više ne hvata GANTT_COLS. Kolone se zato traže
+    // kao susedni niz iz GANTT_COLS liste (bez `base.` prefiksa — podupit ih nosi
+    // prefiksovane, pa goli niz jedinstveno pogađa SELECT listu; isti obrazac kao A4).
+    expect(sql).toContain("is_ready_manual, ready_override_at, ready_override_by,");
   });
 
   it("machineHalls() vraća SVE mašine (LEFT JOIN šifrarnika), ne samo dodeljene", async () => {
