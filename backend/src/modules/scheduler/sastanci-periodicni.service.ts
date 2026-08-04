@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 import {
+  bazaLancaUpit,
   periodicniNaslov,
   sledeciPeriodicniTermin,
 } from "../sastanci/periodicni-rollover";
@@ -26,9 +27,15 @@ import type { ScheduledJob } from "./scheduler.types";
  * seriju). Otkazan termin NE prekida seriju — on je rep i iz njega niče sledeći.
  *
  * IDEMPOTENTNOST: `prethodni_sastanak_id` je ključ — INSERT ide kroz
- * `WHERE NOT EXISTS (naslednik)` u ISTOJ naredbi, pa ni paralelni run ne može
- * da napravi dupli termin (unique nije potreban: dva INSERT-a nad istim repom
- * se sudare na NOT EXISTS unutar snapshot-a + dnevna kadenca).
+ * `WHERE NOT EXISTS (naslednik)` u ISTOJ naredbi, a parcijalni UNIQUE indeks
+ * na koloni (skripta 10_, review Minor-1) je TVRDA brana: paralelni run koji
+ * NOT EXISTS proklizne pada na 23505 → uhvaćen per-kandidat catch-om.
+ *
+ * RITAM (review MAJOR-2): sledeći termin se NE računa od upisanog datuma repa
+ * (taj je mogao biti pomeren za praznik — ritam bi trajno „otplivao"), nego od
+ * BAZNOG ritma lanca (`bazaLancaUpit`: koren + k·interval); pomeranje za
+ * praznik se primenjuje tek na izračunati termin, a `posle` čuva da naslednik
+ * ne padne pre pomerenog repa.
  *
  * VEZA SMEROM DETE→RODITELJ NAMERNO: prethodnik je tipično ZAKLJUČAN, a guard
  * triger `sast_check_not_locked` obara UPDATE zaključanog reda — zato se
@@ -124,14 +131,22 @@ export class SastanciPeriodicniService {
     const praznici = prazniciRows.map((p) => p.d);
     const danas = danasRow[0]?.danas ?? new Date().toISOString().slice(0, 10);
 
+    // BAZNI ritam po repu (MAJOR-2); rep bez dohvatljivog korena pada na
+    // sopstveni upisani datum (bolje i to nego ugušena serija).
+    const bazaRows = await db.$queryRaw<
+      { id: string; baza: string; interval_days: number | null }[]
+    >(bazaLancaUpit(kandidati.map((k) => k.id)));
+    const bazaMapa = new Map(bazaRows.map((b) => [b.id, b.baza]));
+
     let kreirano = 0;
     const opisi: string[] = [];
     for (const k of kandidati) {
       const termin = sledeciPeriodicniTermin({
-        datum: k.datum,
+        datum: bazaMapa.get(k.id) ?? k.datum,
         intervalDays: k.interval_days,
         danas,
         praznici,
+        posle: k.datum,
       });
       const naslov = periodicniNaslov(k.naslov, termin);
       try {

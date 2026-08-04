@@ -59,11 +59,14 @@ ALTER TABLE public.sastanci ADD COLUMN IF NOT EXISTS interval_days integer
   CHECK (interval_days IS NULL OR interval_days BETWEEN 1 AND 365);
 
 -- 4) veza na prethodni termin serije (dete→roditelj; brisanje prethodnika ne
---    ruši naslednika).
+--    ruši naslednika). Parcijalni UNIQUE (review 024/26 Minor-1): jedan sastanak
+--    sme imati NAJVIŠE JEDNOG naslednika — tvrda brana od duple automatike
+--    (soft NOT EXISTS guard u automatici + ovaj indeks; 23505 automatika hvata
+--    per-kandidat i samo preskoči). Ujedno služi i kao indeks za lookup.
 ALTER TABLE public.sastanci ADD COLUMN IF NOT EXISTS prethodni_sastanak_id uuid
   REFERENCES public.sastanci(id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS sastanci_prethodni_sastanak_idx
+CREATE UNIQUE INDEX IF NOT EXISTS sastanci_prethodni_sastanak_uq
   ON public.sastanci (prethodni_sastanak_id)
   WHERE prethodni_sastanak_id IS NOT NULL;
 

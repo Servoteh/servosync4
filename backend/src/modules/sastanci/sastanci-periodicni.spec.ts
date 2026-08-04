@@ -214,6 +214,65 @@ describe("SastanciService.list — kolona Sledeći (024/26, komentar 29.07 t.1)"
     expect(res.data[0].sledeci).toMatchObject({ sastanakId: null, najava: true });
   });
 
+  it("MAJOR-1: dve periodične serije — svaka vidi SVOG naslednika (po lancu, ne po tipu+datumu)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findMany.mockResolvedValueOnce([
+      { id: "a1", tip: "periodicni", datum: d("2026-07-20"), vreme: null, status: "zakljucan" },
+      { id: "b1", tip: "periodicni", datum: d("2026-07-01"), vreme: null, status: "zakljucan" },
+    ]);
+    tx.$queryRaw
+      .mockResolvedValueOnce(KOLONE_DA) // information_schema
+      .mockResolvedValueOnce([
+        // Ukršteni datumi: po tipu+datumu bi OBA reda videla 04.08 (termin
+        // serije B) — po lancu svaka serija vidi svoj.
+        { pret: "a1", id: "a2", datum: "2026-08-20", vreme: "09:00", status: "planiran" },
+        { pret: "b1", id: "b2", datum: "2026-08-04", vreme: "10:00", status: "planiran" },
+      ]); // direktni naslednici po prethodni_sastanak_id
+    const res = (await svc.list("u@servoteh.com", {})) as {
+      data: { id: string; sledeci?: { datum: string; sastanakId: string | null; najava: boolean } | null }[];
+    };
+    const poId = new Map(res.data.map((r) => [r.id, r.sledeci]));
+    expect(poId.get("a1")).toEqual({
+      datum: "2026-08-20",
+      vreme: "09:00",
+      sastanakId: "a2",
+      najava: false,
+    });
+    expect(poId.get("b1")).toEqual({
+      datum: "2026-08-04",
+      vreme: "10:00",
+      sastanakId: "b2",
+      najava: false,
+    });
+    // Nijedan tip-based findMany za naslednike (nema ne-periodičnih zatvorenih).
+    expect(tx.sastanak.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("MAJOR-1: OTKAZAN naslednik → najava od otkazanog repa, iz BAZNOG ritma lanca (MAJOR-2)", async () => {
+    const { svc, tx } = makeSvc();
+    tx.sastanak.findMany.mockResolvedValueOnce([
+      { id: "a1", tip: "periodicni", datum: d("2036-07-20"), vreme: null, status: "zakljucan" },
+    ]);
+    tx.$queryRaw
+      .mockResolvedValueOnce(KOLONE_DA) // information_schema
+      .mockResolvedValueOnce([
+        { pret: "a1", id: "a2", datum: "2036-08-19", vreme: "09:00", status: "otkazan" },
+      ]) // direktan naslednik — otkazan = rep serije
+      .mockResolvedValueOnce([
+        { id: "a2", baza: "2036-08-19", interval_days: 30 },
+      ]); // bazaLancaUpit za rep
+    const res = (await svc.list("u@servoteh.com", {})) as {
+      data: { sledeci?: { datum: string; sastanakId: string | null; najava: boolean } | null }[];
+    };
+    // baza repa 19.08 + 30 = 18.09 (najava; otkazan termin NIJE „sledeći").
+    expect(res.data[0].sledeci).toEqual({
+      datum: "2036-09-18",
+      vreme: "09:00",
+      sastanakId: null,
+      najava: true,
+    });
+  });
+
   it("OTVOREN (planiran) red ne dobija 'sledeci' — njegov termin JE sledeći", async () => {
     const { svc, tx } = makeSvc();
     tx.sastanak.findMany.mockResolvedValueOnce([
@@ -255,7 +314,7 @@ describe("SastanciPeriodicniService — dnevna automatika (024/26 d1)", () => {
     expect(db.$queryRaw).toHaveBeenCalledTimes(1);
   });
 
-  it("rep serije → INSERT novog termina (catch-up datum + naslov sa novim datumom) + prenos akcija", async () => {
+  it("rep serije → INSERT novog termina (catch-up od BAZE + naslov sa novim datumom) + prenos akcija", async () => {
     const { svc, db, txRaw } = makeJob();
     db.$queryRaw
       .mockResolvedValueOnce(KOLONE_DA)
@@ -269,7 +328,10 @@ describe("SastanciPeriodicniService — dnevna automatika (024/26 d1)", () => {
         },
       ]) // kandidati
       .mockResolvedValueOnce([]) // praznici
-      .mockResolvedValueOnce([{ danas: "2026-08-04" }]); // danas (Beograd)
+      .mockResolvedValueOnce([{ danas: "2026-08-04" }]) // danas (Beograd)
+      .mockResolvedValueOnce([
+        { id: ID, baza: "2026-07-01", interval_days: 7 },
+      ]); // bazaLancaUpit (MAJOR-2 — ritam od baze, ne od upisanog datuma)
     const summary = await svc.kreirajDospele();
     expect(summary).toContain("kreirano 1/1");
     // INSERT parametri: naslov sa NOVIM datumom + catch-up termin 05.08.
@@ -298,7 +360,8 @@ describe("SastanciPeriodicniService — dnevna automatika (024/26 d1)", () => {
         },
       ])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ danas: "2026-08-04" }]);
+      .mockResolvedValueOnce([{ danas: "2026-08-04" }])
+      .mockResolvedValueOnce([{ id: ID, baza: "2026-07-01", interval_days: 7 }]);
     const summary = await svc.kreirajDospele();
     expect(summary).toContain("kreirano 0/1");
     expect(txRaw.$executeRaw).not.toHaveBeenCalled();

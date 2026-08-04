@@ -81,7 +81,10 @@ import {
   sledeciSedmicniTermin,
   type SledeciSedmicni,
 } from "./weekly-rollover";
-import { sledeciPeriodicniTermin } from "./periodicni-rollover";
+import {
+  bazaLancaUpit,
+  sledeciPeriodicniTermin,
+} from "./periodicni-rollover";
 
 /**
  * Sastanci — 3.0 TALAS B, R1 read sloj (MODULE_SPEC_sastanci_ai_30.md §3).
@@ -214,14 +217,17 @@ export class SastanciService {
    * sledećeg sastanka iste serije (024/26, Zoranov komentar 29.07 t.1: „kada se
    * sastanak završi i zatvori, u tabeli treba da se pojavi datum sledećeg").
    *
-   * Serija ne postoji kao entitet, pa se „sledeći" rekonstruiše slojevito:
-   *   1. prvi NEOTKAZAN sastanak ISTOG TIPA sa kasnijim datumom (pokriva dnevni/
-   *      projektni/tematski i već-kreirane sedmične/periodične termine);
-   *   2. sedmični bez takvog reda → NAJAVA iz `sledeciSedmicniTermin` (isto
-   *      pravilo kao traka najave — automatika petkom 08h);
-   *   3. periodični bez takvog reda → NAJAVA `datum + interval_days` (isto
-   *      pravilo kao automatika `sast-periodicni-auto`); interval se čita raw
-   *      jer kolona namerno nije mapirana (vidi `periodicniKolone`).
+   * Dve rekonstrukcije „sledećeg", po tipu:
+   *  - NE-periodični (serija ne postoji kao entitet): prvi NEOTKAZAN sastanak
+   *    ISTOG TIPA sa kasnijim datumom; sedmični bez takvog reda → NAJAVA iz
+   *    `sledeciSedmicniTermin` (isto pravilo kao traka najave, petak 08h).
+   *  - PERIODIČNI (review MAJOR-1): naslednik ISKLJUČIVO po lancu
+   *    `prethodni_sastanak_id` — po tipu bi dve paralelne serije jedna drugoj
+   *    „pozajmljivale" termine. Bez naslednika (ili sa OTKAZANIM naslednikom,
+   *    koji je tada rep serije za automatiku) → NAJAVA iz BAZNOG ritma lanca
+   *    (`bazaLancaUpit` + `sledeciPeriodicniTermin` — isto pravilo kao
+   *    automatika `sast-periodicni-auto`). Raw upiti — kolone su van Prisma
+   *    mape (vidi `periodicniKolone`); pre skripte periodičnih redova nema.
    * Otvoren (planiran/u toku) red nema `sledeci` — njegov termin JE sledeći.
    */
   private async dodajSledeci<
@@ -237,39 +243,93 @@ export class SastanciService {
       (ZAVRSNI_STATUSI as readonly string[]).includes(r.status),
     );
     if (!zatvoreni.length) return rows;
+    const { danas, sat } = this.belgradeDanasSat();
 
-    const tipovi = [...new Set(zatvoreni.map((r) => r.tip))];
-    const minDatum = zatvoreni.reduce(
-      (m, r) => (this.ymd(r.datum) < m ? this.ymd(r.datum) : m),
-      this.ymd(zatvoreni[0].datum),
-    );
-    const nasledniciRedovi = await tx.sastanak.findMany({
-      where: {
-        tip: { in: tipovi },
-        status: { not: "otkazan" },
-        datum: { gt: this.toDbDate(minDatum)! },
-      },
-      select: { id: true, tip: true, datum: true, vreme: true },
-      orderBy: [{ datum: "asc" }, { vreme: "asc" }],
-      take: 500,
-    });
-
-    // Najave se računaju samo ako neki zatvoren red nema naslednika u tabeli.
+    // ── NE-periodični: naslednik po tipu ──
+    const obicni = zatvoreni.filter((r) => r.tip !== "periodicni");
+    const tipovi = [...new Set(obicni.map((r) => r.tip))];
+    let nasledniciRedovi: {
+      id: string;
+      tip: string;
+      datum: Date;
+      vreme: Date | null;
+    }[] = [];
+    if (tipovi.length) {
+      const minDatum = obicni.reduce(
+        (m, r) => (this.ymd(r.datum) < m ? this.ymd(r.datum) : m),
+        this.ymd(obicni[0].datum),
+      );
+      nasledniciRedovi = await tx.sastanak.findMany({
+        where: {
+          tip: { in: tipovi },
+          status: { not: "otkazan" },
+          datum: { gt: this.toDbDate(minDatum)! },
+        },
+        select: { id: true, tip: true, datum: true, vreme: true },
+        orderBy: [{ datum: "asc" }, { vreme: "asc" }],
+        take: 500,
+      });
+    }
     const bezNaslednika = (r: T) =>
       !nasledniciRedovi.some(
         (n) => n.tip === r.tip && this.ymd(n.datum) > this.ymd(r.datum),
       );
-    const trebaSedmicnaNajava = zatvoreni.some(
+    const trebaSedmicnaNajava = obicni.some(
       (r) => r.tip === "sedmicni" && bezNaslednika(r),
     );
-    const periodicniBezNaslednika = zatvoreni.filter(
-      (r) => r.tip === "periodicni" && bezNaslednika(r),
-    );
 
-    const { danas, sat } = this.belgradeDanasSat();
+    // ── Periodični: naslednik po lancu (MAJOR-1) ──
+    const periodicni = zatvoreni.filter((r) => r.tip === "periodicni");
+    // pret → direktan naslednik (raw: datum/vreme već kao text).
+    const lanacNaslednik = new Map<
+      string,
+      { id: string; datum: string; vreme: string | null; status: string }
+    >();
+    // rep za najavu → { baza, interval } (rep = red bez naslednika ILI njegov
+    // otkazan naslednik — od otkazanog repa automatika nastavlja seriju).
+    let bazaMapa = new Map<string, { baza: string; interval: number }>();
+    if (periodicni.length && (await this.periodicniKolone(tx))) {
+      const direktni = await tx.$queryRaw<
+        {
+          pret: string;
+          id: string;
+          datum: string;
+          vreme: string | null;
+          status: string;
+        }[]
+      >(
+        Prisma.sql`SELECT prethodni_sastanak_id::text AS pret, id::text AS id,
+            datum::text AS datum, left(vreme::text, 5) AS vreme, status
+          FROM sastanci
+          WHERE prethodni_sastanak_id = ANY(${periodicni.map((r) => r.id)}::uuid[])`,
+      );
+      for (const n of direktni) lanacNaslednik.set(n.pret, n);
+      const repIds = periodicni
+        .map((r) => {
+          const n = lanacNaslednik.get(r.id);
+          if (!n) return r.id;
+          return n.status === "otkazan" ? n.id : null;
+        })
+        .filter((id): id is string => id !== null);
+      if (repIds.length) {
+        const bazaRows = await tx.$queryRaw<
+          { id: string; baza: string; interval_days: number | null }[]
+        >(bazaLancaUpit([...new Set(repIds)]));
+        bazaMapa = new Map(
+          bazaRows
+            .filter((b) => b.interval_days != null)
+            .map((b) => [
+              b.id,
+              { baza: b.baza, interval: Number(b.interval_days) },
+            ]),
+        );
+      }
+    }
+
+    // Praznici/najava — samo ako ih neko stvarno traži.
     let sedmicnaNajava: SledeciSedmicni | null = null;
     let praznici: string[] = [];
-    if (trebaSedmicnaNajava || periodicniBezNaslednika.length) {
+    if (trebaSedmicnaNajava || bazaMapa.size) {
       praznici = await this.neradniPraznici(tx, danas);
     }
     if (trebaSedmicnaNajava) {
@@ -280,16 +340,48 @@ export class SastanciService {
         praznici,
       );
     }
-    const intervali = periodicniBezNaslednika.length
-      ? await this.intervalDaysMapa(
-          tx,
-          periodicniBezNaslednika.map((r) => r.id),
-        )
-      : new Map<string, number>();
 
     return rows.map((r) => {
       if (!(ZAVRSNI_STATUSI as readonly string[]).includes(r.status)) return r;
       const rDatum = this.ymd(r.datum);
+
+      if (r.tip === "periodicni") {
+        const n = lanacNaslednik.get(r.id);
+        if (n && n.status !== "otkazan") {
+          return {
+            ...r,
+            sledeci: {
+              datum: n.datum,
+              vreme: n.vreme,
+              sastanakId: n.id,
+              najava: false,
+            },
+          };
+        }
+        // Rep serije: sam red, ili njegov otkazan naslednik (automatika iz
+        // njega niče) — najava iz BAZNOG ritma (MAJOR-2: pomeren datum nije ulaz).
+        const rep = n
+          ? { id: n.id, datum: n.datum, vreme: n.vreme }
+          : { id: r.id, datum: rDatum, vreme: this.hhmm(r.vreme) };
+        const info = bazaMapa.get(rep.id);
+        if (!info) return { ...r, sledeci: null };
+        return {
+          ...r,
+          sledeci: {
+            datum: sledeciPeriodicniTermin({
+              datum: info.baza,
+              intervalDays: info.interval,
+              danas,
+              praznici,
+              posle: rep.datum,
+            }),
+            vreme: rep.vreme,
+            sastanakId: null,
+            najava: true,
+          },
+        };
+      }
+
       const naslednik = nasledniciRedovi.find(
         (n) => n.tip === r.tip && this.ymd(n.datum) > rDatum,
       );
@@ -312,23 +404,6 @@ export class SastanciService {
             vreme: sedmicnaNajava.vreme,
             sastanakId: sedmicnaNajava.sastanakId,
             najava: sedmicnaNajava.sastanakId === null,
-          },
-        };
-      }
-      const interval = intervali.get(r.id);
-      if (r.tip === "periodicni" && interval) {
-        return {
-          ...r,
-          sledeci: {
-            datum: sledeciPeriodicniTermin({
-              datum: rDatum,
-              intervalDays: interval,
-              danas,
-              praznici,
-            }),
-            vreme: this.hhmm(r.vreme),
-            sastanakId: null,
-            najava: true,
           },
         };
       }

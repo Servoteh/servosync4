@@ -75,6 +75,43 @@ describe("sledeciPeriodicniTermin (024/26 d1)", () => {
       }),
     ).toBe("2026-08-17");
   });
+
+  it("MAJOR-2: pomeranje za praznik NE ulazi u ritam — serija petkom se posle praznika VRAĆA na petak", () => {
+    const praznici = ["2026-08-14"]; // petak-praznik usred serije
+    // Korak 1: baza 07.08 (petak) + 7 = 14.08 → praznik → termin 15.08 (subota).
+    expect(
+      sledeciPeriodicniTermin({
+        datum: "2026-08-07",
+        intervalDays: 7,
+        danas: "2026-08-08",
+        praznici,
+      }),
+    ).toBe("2026-08-15");
+    // Korak 2: ulaz je BAZA pomerenog repa (14.08, izvedena lancem — v.
+    // bazaLancaUpit), NIKAD upisani 15.08 → 21.08, opet petak. `posle` (upisani
+    // 15.08) garantuje da naslednik ne padne pre samog repa.
+    expect(
+      sledeciPeriodicniTermin({
+        datum: "2026-08-14",
+        intervalDays: 7,
+        danas: "2026-08-16",
+        praznici,
+        posle: "2026-08-15",
+      }),
+    ).toBe("2026-08-21");
+  });
+
+  it("posle: rep pomeren DALEKO unapred ne dobija naslednika pre sebe (korak ostaje na rešetki)", () => {
+    expect(
+      sledeciPeriodicniTermin({
+        datum: "2026-08-07",
+        intervalDays: 7,
+        danas: "2026-08-01",
+        praznici: [],
+        posle: "2026-08-20",
+      }),
+    ).toBe("2026-08-21"); // 14.08 ≤ posle → 21.08 (i dalje petak-rešetka)
+  });
 });
 
 describe("periodicniNaslov (024/26 d1 — naslov novog termina serije)", () => {
