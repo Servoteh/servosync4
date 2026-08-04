@@ -110,15 +110,21 @@ WITH jednoznacni AS (
   GROUP BY i."drawing_id"
   HAVING count(DISTINCT i."draft_id") = 1
 )
+-- ⚠️ PostgreSQL: ciljna tabela UPDATE-a (`n`) se NE SME referencirati u JOIN
+-- uslovu unutar FROM klauzule — daje 42P01 „invalid reference to FROM-clause
+-- entry". Zato veza sa `work_orders` ide kroz EXISTS, a ne kroz JOIN.
+-- (Prva verzija je baš tako pala pri deploy-u 04.08. i blokirala migracije.)
 UPDATE "work_order_launch_notifications" n
 SET "handover_draft_id" = j.draft_id
 FROM jednoznacni j
 JOIN "drawing_handovers" h ON h."drawing_id" = j."drawing_id"
 JOIN "handover_drafts" hd ON hd."id" = j.draft_id
-JOIN "work_orders" w ON w."id" = n."work_order_id"
 WHERE n."drawing_handover_id" = h."id"
-  AND hd."project_id" = w."project_id"   -- predmet nacrta = predmet RN-a
-  AND n."handover_draft_id" IS NULL;
+  AND n."handover_draft_id" IS NULL
+  AND EXISTS (                            -- predmet nacrta = predmet RN-a
+    SELECT 1 FROM "work_orders" w
+    WHERE w."id" = n."work_order_id" AND w."project_id" = hd."project_id"
+  );
 
 -- Postojeći redovi SU isporučeni (poslati su po starom, pojedinačnom toku) —
 -- bez ovoga bi dedup mislio da nijedan nacrt nije javljen i posle deploy-a bi
