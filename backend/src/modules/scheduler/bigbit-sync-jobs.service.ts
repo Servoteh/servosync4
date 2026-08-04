@@ -1,6 +1,13 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { SyncService } from "../sync/sync.service";
+import { NIGHTLY_SYNC_EXCLUDED } from "../sync/table-ownership";
 import type { ScheduledJob } from "./scheduler.types";
+
+// Re-export radi kompatibilnosti postojećih uvoza (spec + docs referišu ovaj
+// fajl). DEFINICIJA je preseljena u ../sync/table-ownership.ts (04.08.2026,
+// dopuna 061/26): isti skup sada štiti i default ručnog `POST /sync/run`, pa
+// mora živeti u sync modulu — jedan izvor, bez kopije logike.
+export { NIGHTLY_SYNC_EXCLUDED };
 
 /*
  * PRUGA P (docs/PLAN_AI_OS_2026-07.md §5; presuda Nenada 26.07.2026: „BigBit
@@ -37,27 +44,9 @@ import type { ScheduledJob } from "./scheduler.types";
 /** Ključ posla u `scheduled_job_runs.job_key` — ne menjati posle uvođenja. */
 export const BIGBIT_NIGHTLY_SYNC_JOB_KEY = "bigbit-nightly-sync";
 
-/**
- * Tokovi koje noćni posao NE DIRA (ručno `/sync/run` i dalje može, uz svesnu
- * odluku čoveka i nadzor nad ishodom).
- *
- * `items` (review 26.07.2026, nalaz [1]) — PRIVREMENO. Guard za duplikate
- * kataloškog broja (DB-081, uveden 25.07) NIJE još nijednom prošao preko
- * produkcijskih podataka: prvi prolaz briše ~2.300 duplikat-grupa, a sve meke
- * reference (`price_list_entries.item_id`, `work_order_item_components`) koje
- * gađaju „gubitnički" `id` postaju siročad — pod `session_replication_role=
- * 'replica'` FK to ne zaustavlja, a takav backup se ne restore-uje čisto.
- * ČIŠĆENJE JE U TOKU (Nenad prenosi jedinstvene kataloške brojeve u BigBit); kad
- * `items` ostane bez duplikata, ovaj red se briše i tok ulazi u noćni prolaz.
- * Do tada: ručni sync artikala se pokreće NADGLEDANO, uz pre-check upit iz
- * .env.example (aktivaciona beleška uz `BIGBIT_NIGHTLY_SYNC`).
- *
- * NAPOMENA: `tax_rates` VIŠE NIJE OVDE — presudom Nenada 26.07.2026 registar PDV
- * tarifa je 4.0-owned, pa je `R_Tarife` IZBAČEN iz `sync-map.generated.ts` (i
- * ručni „sync all" ga više ne poznaje). Isključenje na nivou noćnog posla bi bilo
- * polumera: brisao bi ga svaki ručni prolaz.
- */
-export const NIGHTLY_SYNC_EXCLUDED = new Set<string>(["items"]);
+// (Skup isključenih tokova — `NIGHTLY_SYNC_EXCLUDED` — definisan je u
+// ../sync/table-ownership.ts; puno obrazloženje ZAŠTO je `items` isključen
+// stoji tamo, uz sam skup.)
 
 /**
  * Gornja granica čekanja na jedan noćni prolaz. Tik scheduler-a je SEKVENCIJALAN

@@ -87,6 +87,32 @@ export function isOwnedProductionTable(entity: string): boolean {
 }
 
 /**
+ * Tokovi PRIVREMENO isključeni iz nenadgledanog pokretanja — JEDAN IZVOR i za
+ * noćni posao (`BigbitSyncJobs.nightlyEntities`) i za default ručnog
+ * `POST /sync/run` (od 04.08.2026, dopuna zahteva 061/26: dugme „Pokreni sync"
+ * više nije admin-only, pa ručni default MORA biti jednako bezbedan kao noćni).
+ * Eksplicitan zahtev za isključeni entitet (`body.entities`) sme SAMO admin —
+ * vidi `SyncController.run`.
+ *
+ * `items` (review 26.07.2026, nalaz [1]) — PRIVREMENO. Guard za duplikate
+ * kataloškog broja (DB-081, uveden 25.07) NIJE još nijednom prošao preko
+ * produkcijskih podataka: prvi prolaz briše ~2.300 duplikat-grupa, a sve meke
+ * reference (`price_list_entries.item_id`, `work_order_item_components`) koje
+ * gađaju „gubitnički" `id` postaju siročad — pod `session_replication_role=
+ * 'replica'` FK to ne zaustavlja, a takav backup se ne restore-uje čisto.
+ * ČIŠĆENJE JE U TOKU (Nenad prenosi jedinstvene kataloške brojeve u BigBit); kad
+ * `items` ostane bez duplikata, ovaj red se briše i tok ulazi i u noćni i u
+ * ručni default. Do tada: sync artikala pokreće ISKLJUČIVO admin, eksplicitno
+ * (`entities: ["items"]`), NADGLEDANO, uz pre-check upit iz .env.example
+ * (aktivaciona beleška uz `BIGBIT_NIGHTLY_SYNC`).
+ *
+ * NAPOMENA: `tax_rates` NIJE ovde — presudom Nenada 26.07.2026 registar PDV
+ * tarifa je 4.0-owned, pa je `R_Tarife` IZBAČEN iz `sync-map.generated.ts`
+ * (nijedan prolaz ga više ne poznaje). Isključenje ovde bi bilo polumera.
+ */
+export const NIGHTLY_SYNC_EXCLUDED = new Set<string>(["items"]);
+
+/**
  * QBigTehn chain — the TEMPORARY part of the sync (P4 spec §7.2, ODLUKE
  * "QBigTehn sync privremen / BigBit trajan").
  *
