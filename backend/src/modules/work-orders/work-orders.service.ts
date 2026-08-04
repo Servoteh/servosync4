@@ -1036,7 +1036,9 @@ export class WorkOrdersService {
       : 0;
     const hasRealWork =
       timeEntries > 0 ||
-      techProcesses.some((t) => t.pieceCount > 0 || t.isProcessFinished === true);
+      techProcesses.some(
+        (t) => t.pieceCount > 0 || t.isProcessFinished === true,
+      );
     if (hasRealWork)
       throw new UnprocessableEntityException(
         "Po ovom nalogu postoji evidentiran rad (prijave/kucanja) — ne može se obrisati. Prinudno brisanje je dostupno administratoru/šefu.",
@@ -1246,9 +1248,9 @@ export class WorkOrdersService {
       return { launchId: launch?.id ?? null, notifyPlanners };
     });
 
-    // POSLE komita, best-effort (D8 obrazac): zabeleži lansiranje za ZBIRNO
-    // obaveštenje planerima (016/26 treći krug — jedan mejl po talasu, ne po
-    // poziciji; slanje radi sweeper u LaunchNotifyService). `notifyLaunch`
+    // POSLE komita, best-effort (D8 obrazac): zabeleži lansiranje pozicije za
+    // obaveštenje planerima (016/26 četvrti krug — tačno jedno obaveštenje po
+    // NACRTU primopredaje; slanje radi sweeper u LaunchNotifyService). `notifyLaunch`
     // nikad ne baca, ali `.catch()` je pojas: pad obaveštenja NE sme da obori
     // već komitovano lansiranje. Fire-and-forget: odgovor ne čeka upis.
     if (launched.notifyPlanners)
@@ -1963,7 +1965,10 @@ export class WorkOrdersService {
   }
 
   /** Strim PDF sadržaja (inline) — isti obrazac kao `plan-proizvodnje-read.service.ts` streamDrawing. */
-  async streamDrawingPdf(pdfId: number, res: Response): Promise<StreamableFile> {
+  async streamDrawingPdf(
+    pdfId: number,
+    res: Response,
+  ): Promise<StreamableFile> {
     const row = await this.prisma.workOrderDrawingPdf.findFirst({
       where: { id: pdfId, deletedAt: null },
       select: { fileName: true, contentType: true, pdfBinary: true },

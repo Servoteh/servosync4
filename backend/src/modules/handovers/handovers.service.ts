@@ -1384,12 +1384,12 @@ export class HandoversService {
       return { workOrder, launchId: launch?.id ?? null };
     });
 
-    // AFTER commit, best-effort (D8): zabeleži lansiranje za ZBIRNO obaveštenje
-    // planerima (016/26 treći krug — Strahinja: jedan mejl po talasu, ne po
-    // poziciji). notifyLaunch samo upiše claim red; mejl + zvonce šalje sweeper
-    // u LaunchNotifyService kad talas utihne. Nikad ne baca — lansiranje je već
-    // komitovano. ISTI servis zove i `work-orders.launch` (lansiranje sa ekrana
-    // „Radni nalozi" je isti događaj). Fire-and-forget: odgovor ne čeka upis.
+    // AFTER commit, best-effort (D8): zabeleži lansiranje pozicije za obaveštenje
+    // planerima (016/26 četvrti krug — Strahinja: obaveštenje ide TAČNO JEDNOM
+    // PO NACRTU primopredaje, ne po poziciji). notifyLaunch samo upiše claim red;
+    // mejl + zvonce šalje sweeper u LaunchNotifyService. Nikad ne baca —
+    // lansiranje je već komitovano. ISTI servis zove i `work-orders.launch`
+    // (ekran je samo ulazna tačka istog događaja). Fire-and-forget.
     void this.launchNotify
       .notifyLaunch({
         workOrderId: result.workOrder.id,
@@ -1824,7 +1824,8 @@ export class HandoversService {
       where: { id: handoverId },
       select: { id: true },
     });
-    if (!h) throw new NotFoundException(`Primopredaja ${handoverId} ne postoji`);
+    if (!h)
+      throw new NotFoundException(`Primopredaja ${handoverId} ne postoji`);
   }
 
   /**
@@ -1878,7 +1879,10 @@ export class HandoversService {
   }
 
   /** Strim PDF sadržaja (inline) — ista tabela/logika kao `work-orders.service.ts`. */
-  async streamDrawingPdf(pdfId: number, res: Response): Promise<StreamableFile> {
+  async streamDrawingPdf(
+    pdfId: number,
+    res: Response,
+  ): Promise<StreamableFile> {
     const row = await this.prisma.workOrderDrawingPdf.findFirst({
       where: { id: pdfId, deletedAt: null },
       select: { fileName: true, contentType: true, pdfBinary: true },

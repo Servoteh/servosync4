@@ -56,12 +56,14 @@ function prismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
-    // Claim red obaveštenja (016/26 treći krug): count 1 = red upisan (na
-    // čekanju); slanje radi sweep u LaunchNotifyService, ne launch tok.
+    // Claim red obaveštenja (016/26): count 1 = red upisan (na čekanju); slanje
+    // radi sweep u LaunchNotifyService, ne launch tok. `count` = dedup po nacrtu
+    // (četvrti krug); default 0 = za taj nacrt još nije poslato.
     workOrderLaunchNotification: {
       createMany: jest.fn().mockResolvedValue({ count: 1 }),
       groupBy: jest.fn().mockResolvedValue([]),
       findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     worker: {
@@ -93,8 +95,15 @@ function prismaMock() {
     },
     // Planeri predmeta (016/26 launch hook): default = nema dodeljenih → hook no-op.
     predmetPlaner: { findMany: jest.fn().mockResolvedValue([]) },
-    handoverDraft: { findMany: jest.fn().mockResolvedValue([]) },
-    handoverDraftItem: { findMany: jest.fn().mockResolvedValue([]) },
+    handoverDraft: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
+    handoverDraftItem: {
+      findMany: jest.fn().mockResolvedValue([]),
+      // 016/26 četvrti krug: crtež → nacrt (ključ agregacije); default = nema veze.
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     handoverStatus: { findMany: jest.fn().mockResolvedValue([]) },
     $transaction: jest.fn(),
     $executeRaw: jest.fn().mockResolvedValue(0),
@@ -1232,9 +1241,11 @@ describe("HandoversService", () => {
       expect(result.data.workOrder.id).toBe(42);
     });
 
-    it("lansiranje UPISUJE claim red za zbirno obaveštenje — mejl NE ide odmah (016/26 treći krug)", async () => {
+    it("lansiranje UPISUJE claim red sa NACRTOM — mejl NE ide odmah (016/26 četvrti krug)", async () => {
       prisma.drawingHandover.findUnique.mockResolvedValue(approvedHandover);
       prisma.workOrder.findFirst.mockResolvedValue(null);
+      // Crtež 10 pripada nacrtu 11 — ključ agregacije i dedupa obaveštenja.
+      prisma.handoverDraftItem.findFirst.mockResolvedValue({ draftId: 11 });
       mockWorkOrderContext();
       prisma.workOrder.create.mockResolvedValue({
         id: 100,
@@ -1251,7 +1262,7 @@ describe("HandoversService", () => {
       // Upis claim reda je fire-and-forget (odgovor ga ne čeka) — pusti mikrotaskove.
       await new Promise((r) => setImmediate(r));
 
-      // Claim po primopredaji, sa akterom (ključ agregacije talasa).
+      // Claim po primopredaji, sa akterom i razrešenim NACRTOM.
       expect(
         prisma.workOrderLaunchNotification.createMany,
       ).toHaveBeenCalledWith({
@@ -1262,44 +1273,51 @@ describe("HandoversService", () => {
             workOrderId: 100,
             source: "handover",
             actorWorkerId: 77,
+            handoverDraftId: 11,
           },
         ],
         skipDuplicates: true,
       });
-      // Strahinja (treći krug): NIŠTA ne izlazi po pozivu — šalje sweep kad
-      // talas utihne (planeri se ni ne čitaju u launch toku).
+      // Strahinja (četvrti krug): NIŠTA ne izlazi po pozivu — šalje sweep, i to
+      // jednom po nacrtu (planeri se ni ne čitaju u launch toku).
       expect(mail.send).not.toHaveBeenCalled();
       expect(notifications.notifyWorkers).not.toHaveBeenCalled();
       expect(prisma.predmetPlaner.findMany).not.toHaveBeenCalled();
     });
 
-    it("sweep posle tišine šalje zbirni mejl + zvonce planerima (kroz PRAVI LaunchNotifyService)", async () => {
+    it("sweep posle tišine šalje mejl + zvonce planerima o NACRTU (kroz PRAVI LaunchNotifyService)", async () => {
       // Pending claim red iz ranijeg lansiranja, star 5 min (> 180 s tišine).
       const old = new Date(Date.now() - 300_000);
       prisma.workOrderLaunchNotification.groupBy.mockResolvedValue([
         {
-          actorWorkerId: 77,
+          handoverDraftId: 11,
           _min: { createdAt: old },
           _max: { createdAt: old },
         },
       ]);
       prisma.workOrderLaunchNotification.findMany.mockResolvedValue([
-        { id: 1, drawingHandoverId: 5, workOrderId: 100 },
-      ]);
-      prisma.workOrder.findMany.mockResolvedValue([
         {
-          id: 100,
-          identNumber: "P100/1",
-          variant: 0,
-          projectId: 3,
-          drawingNumber: "D-10",
-          pieceCount: 4,
+          id: 1,
+          drawingHandoverId: 5,
+          workOrderId: 100,
+          actorWorkerId: 77,
+          createdAt: old,
         },
       ]);
+      // Nacrt 11 → predmet 3; obaveštenje nosi nacrt/predmet/komitent, ne RN.
+      prisma.handoverDraft.findUnique.mockResolvedValue({
+        draftNumber: "G-260724-010",
+        projectId: 3,
+      });
+      prisma.project.findUnique.mockResolvedValue({
+        projectNumber: "9000",
+        customerId: 7,
+      });
+      prisma.customer.findUnique.mockResolvedValue({ name: "Komitent X" });
       // Predmetni planer (55, vezan radnik) + globalni (56, bez radnika).
       prisma.predmetPlaner.findMany.mockResolvedValue([
-        { plannerUserId: 55, projectId: 3 },
-        { plannerUserId: 56, projectId: null },
+        { plannerUserId: 55 },
+        { plannerUserId: 56 },
       ]);
       prisma.user.findMany.mockResolvedValue([
         {
@@ -1315,19 +1333,13 @@ describe("HandoversService", () => {
           workerId: null,
         },
       ]);
-      prisma.drawingHandover.findMany.mockResolvedValue([
-        { id: 5, drawingId: 10 },
-      ]);
-      prisma.project.findMany.mockResolvedValue([
-        { id: 3, projectNumber: "9000", description: "Perun", customerId: 7 },
-      ]);
 
       await launchNotify.sweep();
 
-      // OR filter: planeri predmeta 3 ∪ globalni (project_id IS NULL).
+      // OR filter: planeri predmeta NACRTA ∪ globalni (project_id IS NULL).
       expect(prisma.predmetPlaner.findMany).toHaveBeenCalledWith(
         containing({
-          where: { OR: [{ projectId: { in: [3] } }, { projectId: null }] },
+          where: { OR: [{ projectId: 3 }, { projectId: null }] },
         }),
       );
       expect(mail.send).toHaveBeenCalledTimes(2);
@@ -1338,7 +1350,10 @@ describe("HandoversService", () => {
       expect(recipients).toEqual(
         expect.arrayContaining(["planer@servoteh.com", "global@servoteh.com"]),
       );
-      expect(mailCalls[0][0].subject).toMatch(/P100\/1/);
+      // Subject nosi NACRT i predmet — ne RN broj (016/26 četvrti krug).
+      expect(mailCalls[0][0].subject).toBe(
+        "Lansirana primopredaja — nacrt G-260724-010, predmet 9000",
+      );
       // Zvonce SAMO planeru sa vezanim radnikom.
       expect(notifications.notifyWorkers).toHaveBeenCalledWith(
         [501],

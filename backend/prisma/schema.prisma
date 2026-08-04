@@ -2825,13 +2825,22 @@ model WorkOrderLaunchNotification {
   /// claim was taken but delivery is still PENDING (aggregation window, 016/26
   /// treći krug) or failed (visible hole, not a silent one).
   notifiedAt        DateTime? @map("notified_at") @db.Timestamptz(6)
-  /// 016/26 treći krug (Strahinja: „samo za nacrt, ne po pozicijama"): worker koji
-  /// je lansirao — KLJUČ AGREGACIJE talasa. Redovi istog aktera sa notified_at NULL
-  /// se šalju kao JEDAN zbirni mejl/zvonce kad talas utihne (sweeper u
-  /// LaunchNotifyService). Soft ref → workers.id; NULL = nalog bez vezanog radnika
-  /// ili red upisan pre uvođenja kolone. Partial indeks za pending redove je SQL-only
-  /// (Prisma ne ume WHERE indekse) — vidi migraciju 20260803153000.
+  /// 016/26: worker koji je lansirao — puni „Lansirao: X" u obaveštenju. Od
+  /// ČETVRTOG kruga (04.08) više NIJE ključ agregacije (to je `handoverDraftId`);
+  /// ostaje kao podatak i audit. Soft ref → workers.id; NULL = nalog bez vezanog
+  /// radnika ili red upisan pre uvođenja kolone. Partial indeks po ovoj koloni je
+  /// SQL-only (Prisma ne ume WHERE indekse) — vidi migraciju 20260803153000.
   actorWorkerId     Int?      @map("actor_worker_id")
+  /// 016/26 ČETVRTI krug (Strahinja: „samo obaveštenje kad se lansira primopredaja
+  /// za projekat i to je to"): nacrt (`handover_drafts.id`) iz kog je pozicija
+  /// potekla — KLJUČ AGREGACIJE I DEDUPA. Šalje se TAČNO JEDNO obaveštenje po
+  /// nacrtu (na prvo lansiranje bilo koje njegove pozicije), pa svi sledeći redovi
+  /// istog nacrta samo dobiju `notified_at` bez slanja. Soft ref BEZ FK — veza
+  /// nacrt↔primopredaja je i inače heuristika preko `handover_draft_items.drawing_id`
+  /// (`drawing_handovers` nema FK ka nacrtu). NULL = veza nerazrešena → red se
+  /// šalje pojedinačno (degradacija na staro ponašanje, da se ne izgubi tiho).
+  /// Dva partial indeksa (pending / poslato) su SQL-only — migracija 20260805120000.
+  handoverDraftId   Int?      @map("handover_draft_id")
 
   @@unique([drawingHandoverId], map: "uq_work_order_launch_notifications_handover")
   @@index([workOrderId], map: "idx_work_order_launch_notifications_work_order")
