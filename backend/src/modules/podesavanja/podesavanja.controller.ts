@@ -623,10 +623,14 @@ export class PodesavanjaController {
 
   // ----- Prekidač noćnog BigBit uvoza (stavka B, 26.07.2026) -----
   // ČITANJE stanja = settings.system (ista kapija kao tab Integracije u kom se prikazuje).
-  // GAŠENJE/PALJENJE = sync.run — administrativna vlast nad sinhronizacijom, NAMERNO odvojena
-  // od običnog čitanja (danas je i jedno i drugo admin-only, ali podela ostaje ispravna kad
-  // se settings.system nekom doda). Bez guarda za `run-now` ovde — to je scheduler ruta;
-  // ugovor je `SyncSwitchService.assertEnabled` koji sinteza zove sa svakog ulaza.
+  // GAŠENJE/PALJENJE = settings.system (admin-only). Do 04.08.2026 je ovde stajao
+  // `sync.run`, ali je zahtevom 061/26 taj ključ proširen na tehnologe + planere
+  // („Pokreni sync" na /syncs) — a prekidač noćnog uvoza je ADMINISTRATIVNA vlast
+  // (gasi/pali kanal za celu firmu) i NE SME da se proširi zajedno sa dugmetom.
+  // `settings.system` je danas admin-only i čuva prvobitnu nameru; ako se ikad
+  // nekome doda, preklop prekidača ide uz istu kapiju kao i tab koji ga prikazuje.
+  // Bez guarda za `run-now` ovde — to je scheduler ruta; ugovor je
+  // `SyncSwitchService.assertEnabled` koji sinteza zove sa svakog ulaza.
 
   @Get("sync/bigbit")
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
@@ -635,7 +639,7 @@ export class PodesavanjaController {
   }
 
   @Put("sync/bigbit")
-  @RequirePermission(PERMISSIONS.SYNC_RUN)
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
   async setBigbitSyncSwitch(
     @Req() req: AuthedRequest,
     @Body() dto: SetSyncSwitchDto,

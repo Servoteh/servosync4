@@ -180,11 +180,15 @@ describe("masters.write — ključ za upis matičnih podataka", () => {
       expect(roleHasPermission("nepostojeca", P.MASTERS_WRITE)).toBe(false);
     });
 
-    it("uvođenje ključa nije diralo `sync.run` (i dalje samo admin)", () => {
+    // Do 04.08.2026: `sync.run` samo admin. Zahtev 061/26 (Igor Voštić, odluka
+    // Nenad): „Pokreni sync" i za tehnologe + planere → tehnolog + menadzment
+    // (planeri i Igor nose menadzment — izmereno u prod bazi). Pin ostaje TAČAN
+    // skup: svako novo širenje mora svesno da obori ovaj test.
+    it("`sync.run` = admin + menadzment + tehnolog (061/26), niko više", () => {
       const holders = ALL_ROLE_KEYS.filter((r) =>
         roleHasPermission(r, P.SYNC_RUN),
       );
-      expect(holders).toEqual([ROLES.ADMIN]);
+      expect(holders).toEqual([ROLES.ADMIN, ROLES.MENADZMENT, ROLES.TEHNOLOG]);
     });
   });
 

@@ -28,9 +28,10 @@ import { ConflictException } from "@nestjs/common";
  * govorile „stiže sledećim uvozom iz BigBit-a", što je korisnika ostavljalo da
  * čeka proces koji ne postoji. Šifarnički (MSSQL) sync komitenata i predmeta
  * NIJE zakazan — pokreće se isključivo rutom `POST /api/v1/sync/run` sa ekrana
- * `/syncs`, a permisiju `sync.run` ima samo administrator. Noćni .mdb kanal je
- * druga stvar i NE uvozi komitente ni predmete. Zato tekst sada kaže tačno ono
- * što važi: unesi u BigBit pa traži od administratora da pokrene uvoz.
+ * `/syncs`. Permisiju `sync.run` od 04.08.2026 (zahtev 061/26, odluka Nenad)
+ * imaju tehnolozi + planeri + admin (role: tehnolog/menadzment/admin), pa tekst
+ * više ne upućuje isključivo na administratora. Noćni .mdb kanal je druga stvar
+ * i NE uvozi komitente ni predmete.
  *
  * Kad se šifarnički sync zakaže (posao u scheduler-u), OVDE se menja jedna
  * rečenica i nigde više — ovo je jedini izvor teksta i za backend i za ekrane.
@@ -39,14 +40,15 @@ import { ConflictException } from "@nestjs/common";
 /** Šta korisnik radi kad mu treba NOV komitent. */
 export const BIGBIT_CUSTOMERS_READ_ONLY_MESSAGE =
   "Komitente vodi BigBit — u ServoSync-u se ne unose ni ne menjaju (odluka 26.07.2026). " +
-  "Novog komitenta unesite u BigBit, pa javite administratoru da pokrene uvoz " +
-  "(Sinhronizacije → Pokreni sync); tek tada se komitent vidi ovde.";
+  "Novog komitenta unesite u BigBit, pa pokrenite uvoz (Sinhronizacije → Pokreni sync) " +
+  "ili to zatražite od tehnologa/planera/administratora; tek tada se komitent vidi ovde.";
 
 /** Šta korisnik radi kad mu treba NOV predmet (broj predmeta). */
 export const BIGBIT_PROJECTS_READ_ONLY_MESSAGE =
   "Predmete i brojeve predmeta vodi BigBit — u ServoSync-u se ne otvaraju ni ne menjaju " +
-  "(odluka 26.07.2026). Otvorite predmet u BigBit-u, pa javite administratoru da pokrene " +
-  "uvoz (Sinhronizacije → Pokreni sync); tek tada se broj predmeta vidi ovde.";
+  "(odluka 26.07.2026). Otvorite predmet u BigBit-u, pa pokrenite uvoz (Sinhronizacije → " +
+  "Pokreni sync) ili to zatražite od tehnologa/planera/administratora; tek tada se broj " +
+  "predmeta vidi ovde.";
 
 /**
  * Poslovna greška: pokušaj upisa u tabelu čiji je vlasnik BigBit.

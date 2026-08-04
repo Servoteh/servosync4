@@ -181,8 +181,8 @@ export function customerBigBitOriginMessage(customer: CustomerOrigin): string {
     "sledećeg uvoza: BigBit ponovo upisuje sva polja tog komitenta, pa bi tiho " +
     "nestala (ispravljen žiro račun bi se vratio na stari, a plaćanje otišlo na " +
     `pogrešan račun). Ispravite komitenta u BigBit-u — „Unos komitenata", šifra ` +
-    `${sifra} — pa javite administratoru da pokrene uvoz (Sinhronizacije → ` +
-    "Pokreni sync); izmena se tada vidi i ovde."
+    `${sifra} — pa pokrenite uvoz (Sinhronizacije → Pokreni sync) ili to zatražite ` +
+    "od tehnologa/planera/administratora; izmena se tada vidi i ovde."
   );
 }
 
@@ -220,8 +220,8 @@ export function bigBitTwinException(
       `PIB ${taxId} već vodi komitent iz BigBit-a: ${shown}. Otvorite postojećeg ` +
       "komitenta umesto unosa novog — dupla šifra bi razdvojila promet i plaćanja " +
       "na dva mesta, a BigBit ih ne bi spojio. Ako je ovo stvarno drugo pravno lice " +
-      "sa istim PIB-om, unesite ga u BigBit-u pa javite administratoru da pokrene " +
-      "uvoz (Sinhronizacije → Pokreni sync).",
+      "sa istim PIB-om, unesite ga u BigBit-u pa pokrenite uvoz (Sinhronizacije → " +
+      "Pokreni sync) ili to zatražite od tehnologa/planera/administratora.",
     taxId,
   });
 }

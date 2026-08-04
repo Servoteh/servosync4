@@ -168,7 +168,14 @@ export const PERMISSIONS = {
   // nijedna ruta ga više ne traži.
   RFQ_READ: "rfq.read",
   RFQ_WRITE: "rfq.write",
-  // Sync administracija
+  // Sync BigBit master podataka (/syncs ekran + POST /sync/run).
+  //   run  = „Pokreni sync" — do 04.08.2026 admin-only; zahtevom 061/26 (Igor
+  //          Voštić) i odlukom Nenada prošireno na tehnologe + planere + admin
+  //          (u role-mapi: tehnolog + menadzment; admin kroz ALL). NIJE „svi".
+  //   read = uvid u dnevnik/stanje sinhronizacija (i vidljivost /syncs u nav-u).
+  // ⚠️ `run` više NIJE ključ za administrativni prekidač noćnog uvoza — PUT
+  // /podesavanja/sync/bigbit je premešten na `settings.system` (admin-only)
+  // upravo zato što se `run` širi na ne-admin krug (061/26).
   SYNC_RUN: "sync.run",
   SYNC_READ: "sync.read",
   // Scheduler (Talas A) — pregled i ručno okidanje zakazanih poslova; admin

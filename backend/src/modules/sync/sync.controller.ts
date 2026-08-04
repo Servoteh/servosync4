@@ -28,7 +28,9 @@ interface RunSyncBody {
 /**
  * On-demand ("na dugme") sync of master data from QBigTehn (MSSQL) into Postgres.
  *
- * `POST /run` = `sync.run` (admin-only per role→permission map); reads = `sync.read`.
+ * `POST /run` = `sync.run` — do 04.08.2026 admin-only; zahtevom 061/26 (Igor
+ * Voštić) i odlukom Nenada prošireno na tehnologe + planere + admin (role-mapa:
+ * tehnolog + menadzment + admin). Reads = `sync.read` (sef/tehnolog/menadzment/admin).
  * Guard je shadow-mode (V1): loguje would-be 403, ne blokira dok `AUTHZ_ENFORCE=true`.
  */
 @UseGuards(JwtAuthGuard, PermissionsGuard)

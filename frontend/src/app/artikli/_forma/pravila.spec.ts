@@ -46,8 +46,8 @@ test('poruka komitenta je doslovna kopija backend konstante BIGBIT_CUSTOMERS_REA
   assert.equal(
     BRANA_KOMITENT.poruka,
     'Komitente vodi BigBit — u ServoSync-u se ne unose ni ne menjaju (odluka 26.07.2026). ' +
-      'Novog komitenta unesite u BigBit, pa javite administratoru da pokrene uvoz ' +
-      '(Sinhronizacije → Pokreni sync); tek tada se komitent vidi ovde.',
+      'Novog komitenta unesite u BigBit, pa pokrenite uvoz (Sinhronizacije → Pokreni sync) ' +
+      'ili to zatražite od tehnologa/planera/administratora; tek tada se komitent vidi ovde.',
   );
 });
 

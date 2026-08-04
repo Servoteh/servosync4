@@ -86,8 +86,8 @@ export const ITEMS_WRITE_OPEN: boolean = false;
  */
 export const ITEM_WRITE_BLOCKED_MESSAGE =
   "Artikli se za sada unose i menjaju isključivo u BigBit-u — unos iz ovog ekrana " +
-  "još nije pušten u rad. Unesite artikal u BigBit-u, pa javite administratoru da " +
-  "pokrene uvoz (Sinhronizacije → Pokreni sync).";
+  "još nije pušten u rad. Unesite artikal u BigBit-u, pa pokrenite uvoz " +
+  "(Sinhronizacije → Pokreni sync) ili to zatražite od tehnologa/planera/administratora.";
 
 /**
  * Poruka za slučaj da sync zaštita NESTANE (`items` izbačen iz rezervisanog
@@ -97,13 +97,14 @@ export const ITEM_WRITE_BLOCKED_MESSAGE =
 export const ITEM_WRITE_UNSAFE_MESSAGE =
   "Artikli se trenutno ne mogu unositi iz ovog ekrana: sinhronizacija artikala briše " +
   "i ponovo unosi celu tabelu, pa bi artikal unet ovde nestao pri prvom uvozu — zajedno " +
-  "sa vezama na cenovnik i radne naloge. Unesite artikal u BigBit-u, pa javite " +
-  "administratoru da pokrene uvoz (Sinhronizacije → Pokreni sync).";
+  "sa vezama na cenovnik i radne naloge. Unesite artikal u BigBit-u, pa pokrenite uvoz " +
+  "(Sinhronizacije → Pokreni sync) ili to zatražite od tehnologa/planera/administratora.";
 
 export const ITEM_BIGBIT_ORIGIN_MESSAGE =
   "Ovaj artikal je došao iz BigBit-a i ovde se ne menja — svaka izmena bi nestala pri " +
   "sledećem uvozu, jer BigBit ponovo upisuje sva njegova polja. Ispravite artikal u " +
-  "BigBit-u, pa javite administratoru da pokrene uvoz (Sinhronizacije → Pokreni sync).";
+  "BigBit-u, pa pokrenite uvoz (Sinhronizacije → Pokreni sync) ili to zatražite od " +
+  "tehnologa/planera/administratora.";
 
 /**
  * Poslovna greška upisa u tabelu čiji je vlasnik BigBit. 409 (ne 403) — nije stvar

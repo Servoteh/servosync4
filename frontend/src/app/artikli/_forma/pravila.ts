@@ -49,8 +49,8 @@ export const BRANA_KOMITENT: Brana = {
   naslov: "Unos i izmena komitenta su zatvoreni — komitente vodi BigBit",
   poruka:
     "Komitente vodi BigBit — u ServoSync-u se ne unose ni ne menjaju (odluka 26.07.2026). " +
-    "Novog komitenta unesite u BigBit, pa javite administratoru da pokrene uvoz " +
-    "(Sinhronizacije → Pokreni sync); tek tada se komitent vidi ovde.",
+    "Novog komitenta unesite u BigBit, pa pokrenite uvoz (Sinhronizacije → Pokreni sync) " +
+    "ili to zatražite od tehnologa/planera/administratora; tek tada se komitent vidi ovde.",
   uslovi: [
     {
       tekst:
@@ -98,8 +98,8 @@ export const BRANA_ARTIKAL: Brana = {
   naslov: "Unos i izmena artikla su zatvoreni — artikle vodi BigBit",
   poruka:
     "Artikle vodi BigBit — u ServoSync-u se ne unose ni ne menjaju. Nov artikal unesite u " +
-    "BigBit, pa javite administratoru da pokrene uvoz (Sinhronizacije → Pokreni sync); " +
-    "tek tada se artikal vidi ovde.",
+    "BigBit, pa pokrenite uvoz (Sinhronizacije → Pokreni sync) ili to zatražite od " +
+    "tehnologa/planera/administratora; tek tada se artikal vidi ovde.",
   uslovi: [
     {
       tekst:

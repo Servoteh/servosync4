@@ -63,7 +63,10 @@ describe("DirectoryController — BigBit je vlasnik komitenata i predmeta", () =
       );
       // Poruka mora imenovati KO pokreće uvoz — šifarnički sync NIJE zakazan,
       // pa „stiže sledećim uvozom" ostavlja korisnika da čeka proces koji ne postoji.
-      expect(String(body.message)).toMatch(/administratoru da pokrene uvoz/);
+      // Od 04.08.2026 (061/26) krug je širi od administratora: tehnolozi + planeri.
+      expect(String(body.message)).toMatch(
+        /pokrenite uvoz|tehnologa\/planera\/administratora/,
+      );
     },
   );
 
