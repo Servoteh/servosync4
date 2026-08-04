@@ -1,3 +1,4 @@
+import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { KamataService, documentGroupKey } from "./kamata.service";
 import type { PrismaService } from "../../prisma/prisma.service";
@@ -174,5 +175,168 @@ describe("KamataService.compute — grupa je JEDAN dokument", () => {
     expect(documentGroupKey("7/26", 11)).toBe(documentGroupKey("7/26", 12));
     // Fallback ključ ne sme da se sudari sa stvarnim brojem dokumenta.
     expect(documentGroupKey(null, 11)).not.toBe("11");
+  });
+});
+
+/**
+ * OSNOVICA KAMATE = SAMO KUPČEVA KONTA (D1 / nalaz K-1, 04.08.2026).
+ * ============================================================================
+ * ŠTA SE DEŠAVALO PRE POPRAVKE: konta su se birala po `side: "receivable"`, a to je
+ * STRANA SALDA — u registru tom uslovu odgovara PET konta, jer su i avansi koje smo MI
+ * PLATILI dobavljaču (1520/1521/1530) aktiva sa dugovnim saldom. Dobavljač je zato
+ * dobijao kamatni list: stavka `1520 / AV-3/26 / 500.000,00 / dospeće 01.03.2026` je na
+ * presek 02.08.2026 ulazila kao glavnica 500.000,00 / 154 dana.
+ *
+ * Uslov je sada `side + partner_scope = 'customer'` NAD REGISTROM (nikad spisak konta u
+ * kodu). `partner_scope = NULL` ne ulazi — Prisma jednakost NULL ne hvata, i to je
+ * namerno: kamatni list ide partneru, pa se kupac ne pretpostavlja.
+ */
+describe("KamataService.compute — kamata samo po kupčevim kontima", () => {
+  const CALC_DATE = "2026-08-02T00:00:00.000Z";
+
+  const reg = (account: string, side: string, partnerScope: string | null) => ({
+    account,
+    side,
+    partnerScope,
+    tracksOpenItems: true,
+  });
+
+  /** Registar kakav je seedovan na produkciji (migracija 20260726100000). */
+  const REGISTRY = [
+    reg("1520", "receivable", "supplier"), // avans PLAĆEN dobavljaču (aktiva!)
+    reg("1530", "receivable", "supplier"), // isto, inostranstvo
+    reg("2040", "receivable", "customer"), // kupci u zemlji
+    reg("4350", "payable", "supplier"), // dobavljači u zemlji
+    reg("2049", "receivable", null), // ručno dodat konto bez scope-a
+  ];
+
+  /** GK stavka SA kontom (mock filtrira po `accountCode.in`, kao baza). */
+  function ledger(over: {
+    id: number;
+    accountCode: string;
+    documentNumber: string | null;
+    debit?: string;
+    credit?: string;
+    dueDate?: Date | null;
+  }) {
+    return {
+      id: over.id,
+      accountCode: over.accountCode,
+      documentNumber: over.documentNumber,
+      debit: new D(over.debit ?? "0"),
+      credit: new D(over.credit ?? "0"),
+      dueDate: over.dueDate ?? null,
+    };
+  }
+
+  const AVANS_DOBAVLJACU = ledger({
+    id: 9,
+    accountCode: "1520",
+    documentNumber: "AV-3/26",
+    debit: "500000",
+    dueDate: new Date("2026-03-01T00:00:00.000Z"),
+  });
+  const KUPCEVA_FAKTURA = ledger({
+    id: 1,
+    accountCode: "2040",
+    documentNumber: "7/26",
+    debit: "12000",
+    dueDate: new Date("2026-06-01T00:00:00.000Z"),
+  });
+  const BEZ_SCOPE = ledger({
+    id: 3,
+    accountCode: "2049",
+    documentNumber: "9/26",
+    debit: "7000",
+    dueDate: new Date("2026-06-01T00:00:00.000Z"),
+  });
+
+  /** Prisma mock koji STVARNO primenjuje `where` nad registrom i nad GK stavkama. */
+  function makePrismaWithRegistry(entries: ReturnType<typeof ledger>[]) {
+    const findManyAccounts = jest.fn(
+      ({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(
+          REGISTRY.filter((a) =>
+            Object.entries(where).every(
+              ([k, v]) => (a as Record<string, unknown>)[k] === v,
+            ),
+          ).map((a) => ({ account: a.account })),
+        ),
+    );
+    return {
+      findManyAccounts,
+      prisma: {
+        interestRate: {
+          findFirst: jest.fn().mockResolvedValue({ ratePct: new D("9.5") }),
+        },
+        saldakontoAccount: { findMany: findManyAccounts },
+        ledgerEntry: {
+          findMany: jest.fn(
+            ({ where }: { where: { accountCode: { in: string[] } } }) =>
+              Promise.resolve(
+                entries.filter((e) =>
+                  where.accountCode.in.includes(e.accountCode),
+                ),
+              ),
+          ),
+        },
+        interestCalculation: {
+          create: jest.fn((args: { data: Record<string, unknown> }) => {
+            const lines = (
+              args.data.lines as { create: Record<string, unknown>[] }
+            ).create;
+            return Promise.resolve({
+              ...args.data,
+              id: 1,
+              journalEntryId: null,
+              lines: lines.map((l, i) => ({ id: i + 1, ...l })),
+            });
+          }),
+        },
+      } as unknown as PrismaService,
+    };
+  }
+
+  it("dati avans dobavljaču (1520) NIJE u osnovici — kupčeva faktura jeste", async () => {
+    const { prisma, findManyAccounts } = makePrismaWithRegistry([
+      AVANS_DOBAVLJACU,
+      KUPCEVA_FAKTURA,
+    ]);
+
+    const res = await new KamataService(prisma).compute({
+      partnerId: 77,
+      calcDate: CALC_DATE,
+    });
+
+    // Registar je sužen na kupčeva konta (ne po spisku konta u kodu).
+    expect(findManyAccounts.mock.calls[0][0].where).toMatchObject({
+      side: "receivable",
+      partnerScope: "customer",
+      tracksOpenItems: true,
+    });
+    expect(res.lines.map((l) => l.documentNumber)).toEqual(["7/26"]);
+    expect(res.totalPrincipal).toBe("12000.00");
+    // Pre popravke: glavnica 500.000,00 na 154 dana → kamata 20.041,10.
+    expect(res.lines.some((l) => l.documentNumber === "AV-3/26")).toBe(false);
+    expect(res.totalPrincipal).not.toBe("512000.00");
+  });
+
+  it("partner sa SAMO datim avansom nema šta da se obračuna (400, ne kamatni list)", async () => {
+    const { prisma } = makePrismaWithRegistry([AVANS_DOBAVLJACU]);
+
+    await expect(
+      new KamataService(prisma).compute({ partnerId: 77, calcDate: CALC_DATE }),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("konto bez partner_scope (NULL) ne ulazi u osnovicu", async () => {
+    const { prisma } = makePrismaWithRegistry([BEZ_SCOPE, KUPCEVA_FAKTURA]);
+
+    const res = await new KamataService(prisma).compute({
+      partnerId: 77,
+      calcDate: CALC_DATE,
+    });
+
+    expect(res.lines.map((l) => l.documentNumber)).toEqual(["7/26"]);
   });
 });

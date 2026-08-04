@@ -7,7 +7,11 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { MailService } from "../../common/mail/mail.service";
-import { OpenItemsService, type OpenItem } from "./open-items.service";
+import {
+  OpenItemsService,
+  isCustomerReceivable,
+  type OpenItem,
+} from "./open-items.service";
 import { DunningPdfService } from "./dunning-pdf.service";
 
 /**
@@ -17,8 +21,15 @@ import { DunningPdfService } from "./dunning-pdf.service";
  * `OpenItemsService` kao `agingByPartner`/dashboard) po NAJSTARIJEM kašnjenju
  * dospele stavke komitenta:
  *   nivo 1 = 15–30 dana docnje, nivo 2 = 31–60, nivo 3 = 61+.
- * Dunning je nad POTRAŽIVANJIMA (side=receivable, dugovni saldo) — kupci koji
- * nama duguju; stavke bez dospeća ili sa potražnim saldom se ne opominju.
+ * Dunning je nad KUPČEVIM POTRAŽIVANJIMA (side=receivable I partner_scope=customer,
+ * dugovni saldo) — kupci koji nama duguju; stavke bez dospeća ili sa potražnim
+ * saldom se ne opominju.
+ *
+ * 🔴 ZAŠTO `side` SAM NIJE DOVOLJAN (kvar 04.08.2026): pre popravke se filtriralo
+ * samo po `side !== "receivable"`, pa je DATI AVANS DOBAVLJAČU (konto 1520 — aktiva
+ * sa dugovnim saldom, dakle `side = "receivable"`) ulazio u osnovicu i dobavljaču je
+ * išla „OPOMENA PRED UTUŽENJE" za novac koji smo mu MI platili. Sužavanje je u
+ * {@link isCustomerReceivable} — jedan izvor za opomenu, PDF i kamatni list.
  *
  * SLANJE upisuje `DunningNotice` red (evidencija) i šalje PDF pregled dospelih
  * stavki kroz `MailService` (DRY-RUN kad Resend ključ fali → sentOk=false, red
@@ -98,10 +109,12 @@ export class DunningService {
     const cutoff = asOf ?? new Date();
     const items = await this.openItems.listOpenItems(undefined, undefined, cutoff);
 
-    // Grupiši receivable stavke po komitentu (analitička = customers.id).
+    // Grupiši KUPČEVE receivable stavke po komitentu (analitička = customers.id).
+    // Dati avans dobavljaču je takođe `side = "receivable"` — bez scope filtera bi
+    // dobavljač postao kandidat za opomenu (v. isCustomerReceivable).
     const groups = new Map<number, OpenItem[]>();
     for (const it of items) {
-      if (it.side !== "receivable") continue;
+      if (!isCustomerReceivable(it)) continue;
       if (it.analyticalCode == null) continue;
       const arr = groups.get(it.analyticalCode);
       if (arr) arr.push(it);
@@ -389,7 +402,11 @@ export class DunningService {
 
 // ---------------------------------------------------------------- pomoćne
 
-/** Dospelo (Σ dugovnih salda dospelih receivable stavki) + najstarije kašnjenje. */
+/**
+ * Dospelo (Σ dugovnih salda dospelih KUPČEVIH receivable stavki) + najstarije kašnjenje.
+ * Isti uslov kao u `candidates` — ovaj zbir ide u telo mejla i u `DunningNotice`, pa bi
+ * razlika u filteru dala opomenu na iznos koji se ne slaže sa priloženim PDF-om.
+ */
 function aggregateOverdue(items: OpenItem[]): {
   overdueAmount: Prisma.Decimal;
   maxDays: number;
@@ -397,7 +414,7 @@ function aggregateOverdue(items: OpenItem[]): {
   let overdueAmount = new D(0);
   let maxDays = 0;
   for (const it of items) {
-    if (it.side !== "receivable") continue;
+    if (!isCustomerReceivable(it)) continue;
     if (!it.balance.greaterThan(0)) continue; // potražni saldo / preplata se ne opominje
     const days = it.daysOverdue;
     if (days == null || days < 1) continue; // nedospelo / bez dospeća

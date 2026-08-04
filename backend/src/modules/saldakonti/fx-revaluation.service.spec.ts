@@ -36,6 +36,9 @@ function openItem(over: Partial<OpenItem> = {}): OpenItem {
     daysOverdue: null,
     currency: "EUR",
     side: "receivable",
+    // Revalorizacija ne bira po vrsti partnera (i kupčeve i dobavljačke devizne
+    // stavke se preračunavaju) — polje je tu jer ga tip nosi od 04.08.2026.
+    partnerScope: "customer",
     ledgerEntryIds: [1],
     fxAmount: new D(1000),
     fxCurrency: "EUR",

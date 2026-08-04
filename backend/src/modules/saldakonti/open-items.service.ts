@@ -71,6 +71,17 @@ export interface OpenItem {
   daysOverdue: number | null; // asOf − dueDate (u danima; null ako nema dueDate)
   currency: string | null;
   side: string; // receivable | payable (iz registra)
+  /**
+   * VRSTA PARTNERA na kontu iz registra: 'customer' | 'supplier' | null (nepoznato).
+   *
+   * ZAŠTO JE OVO IZNETO (kvar 04.08.2026): `side` je STRANA SALDA, ne vrsta partnera —
+   * dati avans dobavljaču (1520/1521/1530) je aktiva sa dugovnim saldom, dakle
+   * `side = 'receivable'`. Čitaoci koji su filtrirali samo po `side` (opomena, kamata)
+   * su zato dobavljaču slali „OPOMENA PRED UTUŽENJE" i obračun zatezne kamate. Polje
+   * nije bilo u ovom tipu, pa se nije moglo ni filtrirati; sada jeste — v.
+   * {@link isCustomerReceivable}.
+   */
+  partnerScope: string | null;
   // Devizni saldo grupe (C2): Σ(fx_debit) − Σ(fx_credit) u `fxCurrency`. NULL kad
   // stavka nije devizna. `balance` iznad je i dalje DINARSKA protivvrednost —
   // postojeća polja se ne menjaju, ovo je aditivno.
@@ -80,6 +91,28 @@ export interface OpenItem {
   // uparivanje (reconcile) i kompenzaciju, koje rade nad pojedinačnim
   // stavkama. Izveden pogled grupiše po dokumentu; ovde izlažemo članove grupe.
   ledgerEntryIds: number[];
+}
+
+/**
+ * KUPČEVO POTRAŽIVANJE — jedini skup nad kojim se opominje i obračunava zatezna kamata.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ŠTA SE DEŠAVALO PRE POPRAVKE (D1, 04.08.2026): opomena i kamatni list su osnovicu
+ * birali samo po `side === 'receivable'`, pa je DATI AVANS DOBAVLJAČU (1520/1521/1530 —
+ * aktiva, dugovni saldo, `partner_scope = 'supplier'`) ulazio u obračun i dobavljač je
+ * dobijao „OPOMENA PRED UTUŽENJE" i zateznu kamatu na avans koji smo MI njemu platili.
+ *
+ * Uslov su DVA polja i oba su potrebna: `side` isključuje potražni promet (naša obaveza
+ * na kupčevom kontu 4300), `partnerScope` isključuje dobavljača. Filtrira se po REGISTRU
+ * (`saldakonto_accounts`), nikad po spisku konta u kodu — registar je izvor istine
+ * (pouka revizije; ista logika kao `agingByPartner` i `fakturisanje.assertCreditLimit`).
+ *
+ * `partnerScope = NULL` (nepoznata vrsta partnera) NE ULAZI: opomena i kamatni list su
+ * dokumenti koji idu partneru, a za NULL se ne može DOKAZATI da je kupac — isti strog
+ * obrazac kao `payment-preparation.selectDue` („izlaz novca samo po potvrđenom podatku").
+ * Konto bez scope-a se popravlja u registru, ne pretpostavkom u kodu.
+ */
+export function isCustomerReceivable(it: OpenItem): boolean {
+  return it.side === "receivable" && it.partnerScope === "customer";
 }
 
 /** Aging red po komitentu — saldo raspoređen u bucket-e po dospelosti. */
@@ -102,6 +135,7 @@ interface OpenItemRawRow {
   due_date: Date | null;
   currency: string | null;
   side: string;
+  partner_scope: string | null;
   ledger_entry_ids: number[] | null; // array_agg(le.id) — članovi grupe (Int[] → number[])
   fx_balance: Prisma.Decimal | null;
   fx_currency: string | null;
@@ -224,7 +258,13 @@ export class OpenItemsService {
           -- fx_credit NULL, SUM(a) - SUM(b) bi dalo NULL pa bi ceo devizni saldo pao na 0.
           ${fxBalanceExpr} AS fx_balance,
           ${fxCurrencyExpr} AS fx_currency,
-          sa.side AS side
+          sa.side AS side,
+          -- Vrsta partnera na kontu (customer | supplier | NULL). Registar je već
+          -- JOIN-ovan zbog tracks_open_items, pa je kolona na dohvat ruke — bez nje
+          -- čitaoci ne mogu da razlikuju kupčevo potraživanje od datog avansa
+          -- dobavljaču (oba su side = 'receivable'). Bez back-tick-ova: ovo je
+          -- template literal (Prisma.sql), pa bi ga back-tick prekinuo.
+          sa.partner_scope AS partner_scope
         FROM ledger_entries le
         JOIN journal_entries je ON je.id = le.journal_entry_id
         JOIN saldakonto_accounts sa ON sa.account = le.account_code
@@ -242,7 +282,8 @@ export class OpenItemsService {
           ${accountFilter}
           ${partnerFilter}
           ${companyFilter}
-        GROUP BY le.account_code, le.analytical_code, le.document_number, sa.side
+        GROUP BY le.account_code, le.analytical_code, le.document_number, sa.side,
+                 sa.partner_scope
         HAVING COALESCE(SUM(le.debit) - SUM(le.credit), 0) <> 0
           ${fxHaving}
         ORDER BY le.account_code, le.analytical_code, le.document_number
@@ -422,6 +463,7 @@ export class OpenItemsService {
       daysOverdue,
       currency: r.currency,
       side: r.side,
+      partnerScope: r.partner_scope ?? null,
       ledgerEntryIds: r.ledger_entry_ids ?? [],
       // Devizni saldo ima smisla samo kad grupa NOSI valutu — bez fx_currency je
       // stavka čisto dinarska (fxAmount ostaje null, ne 0).

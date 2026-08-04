@@ -20,7 +20,10 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
-import { OpenItemsService } from "./open-items.service";
+import {
+  OpenItemsService,
+  isCustomerReceivable,
+} from "./open-items.service";
 
 const D = Prisma.Decimal;
 
@@ -93,7 +96,21 @@ export class CollectionDashboardService {
         totalPayable = totalPayable.add(it.balance.abs());
         continue;
       }
-      // receivable
+      // POTRAŽIVANJE = KUPČEVO potraživanje, ne samo „dugovna strana" (nalaz 04.08.2026).
+      // `side === 'receivable'` je strana SALDA, ne vrsta partnera: dati avans dobavljaču
+      // (konto 1520) je aktiva sa dugovnim saldom, pa je i on `receivable` — i do ove
+      // ispravke je ulazio u `totalReceivable`, u DSO ponder i u „dospelo".
+      //
+      // Time je tabla PROTIVREČILA SAMOJ SEBI: `aging` na istoj tabli dolazi iz
+      // `agingByPartner`, koje bez izabranog konta filtrira `sa.partner_scope = 'customer'`
+      // (v. open-items.service.ts:395) — dakle dva broja na jednom ekranu merila su dva
+      // različita skupa. Sada oba mere kupce.
+      //
+      // Stavka koja nije ni kupčevo potraživanje ni obaveza (npr. `partner_scope = NULL`)
+      // se NE broji nigde: za nju se ne može dokazati čija je, a tabla naplate ne sme da
+      // pretpostavlja. Konto bez scope-a se popravlja u registru, ne pretpostavkom u kodu.
+      if (!isCustomerReceivable(it)) continue;
+
       totalReceivable = totalReceivable.add(it.balance);
       receivableOpenCount += 1;
       if (it.balance.greaterThan(0)) {
