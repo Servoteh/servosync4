@@ -993,9 +993,14 @@ export class WorkOrdersService {
     await tx.workOrderComponent.deleteMany({ where: { workOrderId: id } });
     await tx.workOrderItemComponent.deleteMany({ where: { workOrderId: id } });
     await tx.workOrderApproval.deleteMany({ where: { workOrderId: id } });
-    // Claim rows for the launch notification must go with the launch rows, or a
-    // later launch of the same handover would find a stale claim and stay silent
-    // (016/26 dopuna, review 25.07).
+    // Claim rows for the launch notification go with the launch rows: without
+    // this, a later launch of the same handover would hit the stale per-handover
+    // claim (UNIQUE drawing_handover_id) and stay silent (016/26, review 25.07).
+    // NOTE (016/26 četvrti krug): deleting these rows no longer guarantees a new
+    // notification — the per-NACRT dedup keys on `sent_at` of ANY row of the same
+    // draft, so a sibling position that already notified still suppresses it.
+    // That is intended (one notification per nacrt); this delete only keeps the
+    // per-position claim from blocking a re-launch of this very handover.
     await tx.workOrderLaunchNotification.deleteMany({
       where: { workOrderId: id },
     });

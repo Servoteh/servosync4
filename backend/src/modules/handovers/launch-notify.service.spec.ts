@@ -10,12 +10,15 @@ import {
 /**
  * Obaveštenje o lansiranju NACRTA primopredaje (016/26 ČETVRTI krug — Strahinja
  * 04.08: „samo obaveštenje kad se lansira primopredaja za projekat i to je to").
- * `notifyLaunch` samo upisuje claim red sa razrešenim nacrtom; sweep šalje TAČNO
- * JEDNO obaveštenje po nacrtu — i to jednom zauvek, ne jednom po talasu.
+ *
+ * Testovi pinuju i tri REVIEW-BLOKERA (veza crtež→nacrt nema FK i dvosmislena je
+ * za 9,8% crteža, pa dedup sme SAMO na sigurnom):
+ *   • dvosmislen crtež → NEMA dedupa po nacrtu (ide po poziciji);
+ *   • nacrt drugog predmeta → ne ruta tuđim planerima;
+ *   • neuspela isporuka → red ostaje na čekanju, sledeći tik pokušava ponovo.
  *
  * `work_order_launch_notifications` je mockovan kao DELJENI in-memory store — to
- * je ono što preživljava „restart" u testu (novi service nad ISTIM store-om =
- * novi proces nad istom bazom). Šta unit test NE pokriva: stvarnu DB
+ * je ono što preživljava „restart" u testu. Šta unit test NE pokriva: stvarnu DB
  * perzistenciju (migracija + prod), tajmer na 30 s (sweep se zove direktno) i
  * višeinstančni konkurentni sweep (prod je jedna instanca).
  */
@@ -30,6 +33,7 @@ interface StoreRow {
   handoverDraftId: number | null;
   createdAt: Date;
   notifiedAt: Date | null;
+  sentAt: Date | null;
 }
 
 function makeStore() {
@@ -40,36 +44,119 @@ type Store = ReturnType<typeof makeStore>;
 // ------------------------------------------------------------------ fixtures
 
 /** primopredaja → crtež */
-const HANDOVERS: Record<number, number> = { 5: 10, 6: 11, 7: 12, 8: 13, 9: 14 };
-/** crtež → nacrt (drawing 13 NEMA stavku nacrta = nerazrešiva veza) */
-const DRAW2DRAFT: Record<number, number> = { 10: 1, 11: 1, 12: 2, 14: 1 };
+const HANDOVERS: Record<number, number> = {
+  5: 10,
+  6: 11,
+  7: 12,
+  8: 13, // crtež bez ijedne stavke nacrta
+  9: 14,
+  20: 30, // DVOSMISLEN crtež (u dva nacrta)
+  21: 31, // nacrt DRUGOG predmeta
+};
+/** crtež → SVI ne-isključeni nacrti koji ga sadrže (veza nema FK!) */
+const DRAW2DRAFTS: Record<number, number[]> = {
+  10: [1],
+  11: [1],
+  12: [2],
+  14: [1],
+  30: [1, 2], // dvosmisleno
+  31: [3], // jednoznačno, ali nacrt je na predmetu 5, a RN na 3
+};
 const DRAFTS: Record<number, { draftNumber: string; projectId: number }> = {
   1: { draftNumber: "G-260724-010", projectId: 3 },
   2: { draftNumber: "G-260729-012", projectId: 4 },
+  3: { draftNumber: "G-0001/20", projectId: 5 },
 };
-const WOS: Record<number, { projectId: number }> = {
-  42: { projectId: 3 },
-  43: { projectId: 3 },
-  44: { projectId: 4 },
-  45: { projectId: 3 },
+const WO_REFS: Record<
+  number,
+  {
+    id: number;
+    identNumber: string;
+    variant: number;
+    projectId: number;
+    drawingNumber: string | null;
+    pieceCount: number | null;
+  }
+> = {
+  42: {
+    id: 42,
+    identNumber: "P100/7",
+    variant: 0,
+    projectId: 3,
+    drawingNumber: "D-10",
+    pieceCount: 4,
+  },
+  43: {
+    id: 43,
+    identNumber: "P100/8",
+    variant: 0,
+    projectId: 3,
+    drawingNumber: "D-11",
+    pieceCount: 2,
+  },
+  44: {
+    id: 44,
+    identNumber: "P200/1",
+    variant: 0,
+    projectId: 4,
+    drawingNumber: "D-12",
+    pieceCount: 1,
+  },
+  45: {
+    id: 45,
+    identNumber: "P100/9",
+    variant: 0,
+    projectId: 3,
+    drawingNumber: "D-14",
+    pieceCount: 3,
+  },
+  60: {
+    id: 60,
+    identNumber: "P100/30",
+    variant: 0,
+    projectId: 3,
+    drawingNumber: "D-30",
+    pieceCount: 5,
+  },
+  61: {
+    id: 61,
+    identNumber: "P100/31",
+    variant: 0,
+    projectId: 3,
+    drawingNumber: "D-31",
+    pieceCount: 6,
+  },
 };
 const PROJECTS: Record<
   number,
-  { projectNumber: string; customerId: number | null }
+  {
+    projectNumber: string;
+    description: string | null;
+    customerId: number | null;
+  }
 > = {
-  3: { projectNumber: "9400/7", customerId: 7 },
-  4: { projectNumber: "9010", customerId: null },
+  3: {
+    projectNumber: "9400/7",
+    description: "Konvejer",
+    customerId: 7,
+  },
+  4: { projectNumber: "9010", description: null, customerId: null },
+  5: { projectNumber: "9970", description: "Tuđi predmet", customerId: null },
 };
 const CUSTOMERS: Record<number, { name: string }> = {
   7: { name: "14. OKTOBAR d.o.o. Kruševac" },
 };
+const DRAWINGS: Record<
+  number,
+  { name: string | null; drawingNumber: string | null }
+> = {
+  10: { name: "Ploča", drawingNumber: "D-10" },
+  13: { name: "Nosač", drawingNumber: "D-13" },
+  30: { name: "Poklopac", drawingNumber: "D-30" },
+  31: { name: "Osovina", drawingNumber: "D-31" },
+};
 
 function prismaMock(store: Store) {
-  const pending = (draftId: number | null) =>
-    store.rows
-      .filter((r) => r.notifiedAt === null && r.handoverDraftId === draftId)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-
   return {
     workOrderLaunchNotification: {
       createMany: jest.fn(
@@ -102,6 +189,7 @@ function prismaMock(store: Store) {
               handoverDraftId: d.handoverDraftId ?? null,
               createdAt: new Date(),
               notifiedAt: null,
+              sentAt: null,
             });
             count++;
           }
@@ -133,34 +221,43 @@ function prismaMock(store: Store) {
       }),
       findMany: jest.fn((args: { where: { handoverDraftId: number | null } }) =>
         Promise.resolve(
-          pending(args.where.handoverDraftId).map((r) => ({
-            id: r.id,
-            drawingHandoverId: r.drawingHandoverId,
-            workOrderId: r.workOrderId,
-            actorWorkerId: r.actorWorkerId,
-            createdAt: r.createdAt,
-          })),
+          store.rows
+            .filter(
+              (r) =>
+                r.notifiedAt === null &&
+                r.handoverDraftId === args.where.handoverDraftId,
+            )
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .map((r) => ({
+              id: r.id,
+              drawingHandoverId: r.drawingHandoverId,
+              workOrderId: r.workOrderId,
+              actorWorkerId: r.actorWorkerId,
+              createdAt: r.createdAt,
+            })),
         ),
       ),
+      // Dedup broji SAMO isporučene redove (sent_at), nikad „obrađene".
       count: jest.fn((args: { where: { handoverDraftId: number } }) =>
         Promise.resolve(
           store.rows.filter(
             (r) =>
               r.handoverDraftId === args.where.handoverDraftId &&
-              r.notifiedAt !== null,
+              r.sentAt !== null,
           ).length,
         ),
       ),
       updateMany: jest.fn(
         (args: {
           where: { id?: { in?: number[] } };
-          data: { notifiedAt: Date };
+          data: { notifiedAt: Date; sentAt?: Date };
         }) => {
           let count = 0;
           for (const r of store.rows) {
             if (args.where.id?.in && !args.where.id.in.includes(r.id)) continue;
             if (r.notifiedAt !== null) continue;
             r.notifiedAt = args.data.notifiedAt;
+            if (args.data.sentAt) r.sentAt = args.data.sentAt;
             count++;
           }
           return Promise.resolve({ count });
@@ -177,11 +274,11 @@ function prismaMock(store: Store) {
       ),
     },
     handoverDraftItem: {
-      findFirst: jest.fn((args: { where: { drawingId: number } }) =>
+      findMany: jest.fn((args: { where: { drawingId: number } }) =>
         Promise.resolve(
-          DRAW2DRAFT[args.where.drawingId] != null
-            ? { draftId: DRAW2DRAFT[args.where.drawingId] }
-            : null,
+          (DRAW2DRAFTS[args.where.drawingId] ?? []).map((draftId) => ({
+            draftId,
+          })),
         ),
       ),
     },
@@ -192,7 +289,16 @@ function prismaMock(store: Store) {
     },
     workOrder: {
       findUnique: jest.fn((args: { where: { id: number } }) =>
-        Promise.resolve(WOS[args.where.id] ?? null),
+        Promise.resolve(
+          WO_REFS[args.where.id]
+            ? { projectId: WO_REFS[args.where.id].projectId }
+            : null,
+        ),
+      ),
+      findMany: jest.fn((args: { where: { id: { in: number[] } } }) =>
+        Promise.resolve(
+          args.where.id.in.map((id) => WO_REFS[id]).filter(Boolean),
+        ),
       ),
     },
     project: {
@@ -203,6 +309,11 @@ function prismaMock(store: Store) {
     customer: {
       findUnique: jest.fn((args: { where: { id: number } }) =>
         Promise.resolve(CUSTOMERS[args.where.id] ?? null),
+      ),
+    },
+    drawing: {
+      findUnique: jest.fn((args: { where: { id: number } }) =>
+        Promise.resolve(DRAWINGS[args.where.id] ?? null),
       ),
     },
     predmetPlaner: { findMany: jest.fn().mockResolvedValue([]) },
@@ -265,7 +376,7 @@ describe("LaunchNotifyService", () => {
     mockTwoPlanners();
   });
 
-  /** Dva planera: predmetni sa vezanim radnikom (55) + globalni bez (56). */
+  /** Dva planera predmeta 3: sa vezanim radnikom (55) + globalni bez (56). */
   function mockTwoPlanners() {
     prisma.predmetPlaner.findMany.mockResolvedValue([
       { plannerUserId: 55 },
@@ -303,6 +414,8 @@ describe("LaunchNotifyService", () => {
     return hit![0];
   }
 
+  // ────────────────────────────────────────────── osnovno ponašanje (nacrt)
+
   it("claim nosi razrešen NACRT i ništa se ne šalje odmah", async () => {
     await service.notifyLaunch(INPUT);
 
@@ -333,7 +446,6 @@ describe("LaunchNotifyService", () => {
     expect(m.subject).toBe(
       "Lansirana primopredaja — nacrt G-260724-010, predmet 9400/7",
     );
-    expect(m.html).toContain("Primopredaja je lansirana u proizvodnju:");
     expect(m.html).toContain(
       "<strong>Nacrt primopredaje:</strong> G-260724-010",
     );
@@ -349,8 +461,8 @@ describe("LaunchNotifyService", () => {
   });
 
   it("N pozicija istog nacrta → TAČNO jedan mejl po planeru", async () => {
-    await service.notifyLaunch(INPUT); // nacrt 1
-    await service.notifyLaunch({ ...INPUT, workOrderId: 43, handoverId: 6 }); // nacrt 1
+    await service.notifyLaunch(INPUT);
+    await service.notifyLaunch({ ...INPUT, workOrderId: 43, handoverId: 6 });
 
     await service.sweep(); // prozor još traje
     expect(mail.send).not.toHaveBeenCalled();
@@ -359,17 +471,16 @@ describe("LaunchNotifyService", () => {
     await service.sweep();
 
     expect(mail.send).toHaveBeenCalledTimes(2); // 2 planera × 1 nacrt
-    expect(notifications.notifyWorkers).toHaveBeenCalledTimes(1); // samo 55 ima radnika
+    expect(notifications.notifyWorkers).toHaveBeenCalledTimes(1);
     const [workerIds, payload] = notifications.notifyWorkers.mock.calls[0] as [
       number[],
       { type: string; message: string; refTable: string; refId: number },
     ];
     expect(workerIds).toEqual([501]);
     expect(payload.type).toBe("primopredaja.lansirana");
-    expect(payload.refTable).toBe("work_orders");
     expect(payload.refId).toBe(42);
     expect(payload.message).toContain("nacrt G-260724-010");
-    expect(store.rows.every((r) => r.notifiedAt !== null)).toBe(true);
+    expect(store.rows.every((r) => r.sentAt !== null)).toBe(true);
   });
 
   it("JEZGRO 4. KRUGA: pozicije istog nacrta lansirane KASNIJE ne šalju drugi mejl", async () => {
@@ -379,7 +490,7 @@ describe("LaunchNotifyService", () => {
     expect(mail.send).toHaveBeenCalledTimes(2);
 
     // Dan kasnije, još pozicija ISTOG nacrta (izmereno: 32% nacrta se lansira
-    // duže od dana — zato dedup mora da važi i van prozora tišine).
+    // duže od dana — dedup mora da važi i van prozora tišine).
     await service.notifyLaunch({ ...INPUT, workOrderId: 43, handoverId: 6 });
     await service.notifyLaunch({ ...INPUT, workOrderId: 45, handoverId: 9 });
     age(200_000);
@@ -391,22 +502,26 @@ describe("LaunchNotifyService", () => {
   });
 
   it("različiti nacrti → svaki svoje obaveštenje (i kad je isti akter)", async () => {
-    await service.notifyLaunch(INPUT); // nacrt 1, predmet 9400/7
-    await service.notifyLaunch({ ...INPUT, workOrderId: 44, handoverId: 7 }); // nacrt 2, predmet 9010
+    prisma.predmetPlaner.findMany.mockResolvedValue([{ plannerUserId: 55 }]);
+    prisma.user.findMany.mockResolvedValue([
+      { id: 55, email: "planer@servoteh.com", fullName: "P", workerId: null },
+    ]);
+    await service.notifyLaunch(INPUT); // nacrt 1
+    await service.notifyLaunch({ ...INPUT, workOrderId: 44, handoverId: 7 }); // nacrt 2
     age(200_000);
 
     await service.sweep();
 
-    expect(mail.send).toHaveBeenCalledTimes(4); // 2 nacrta × 2 planera
+    expect(mail.send).toHaveBeenCalledTimes(2);
     const subjects = (
       mail.send.mock.calls as unknown as [{ subject: string }][]
     ).map((c) => c[0].subject);
-    expect(subjects.filter((s) => s.includes("G-260724-010")).length).toBe(2);
-    expect(subjects.filter((s) => s.includes("G-260729-012")).length).toBe(2);
+    expect(subjects.some((s) => s.includes("G-260724-010"))).toBe(true);
+    expect(subjects.some((s) => s.includes("G-260729-012"))).toBe(true);
   });
 
   it("isti akter NIJE ključ: dva aktera na istom nacrtu = jedan mejl", async () => {
-    await service.notifyLaunch(INPUT); // akter 77
+    await service.notifyLaunch(INPUT);
     await service.notifyLaunch({
       ...INPUT,
       workOrderId: 43,
@@ -417,17 +532,117 @@ describe("LaunchNotifyService", () => {
 
     await service.sweep();
 
-    expect(mail.send).toHaveBeenCalledTimes(2); // jedan nacrt → jedno obaveštenje
+    expect(mail.send).toHaveBeenCalledTimes(2);
   });
 
-  it("rutira se po predmetu NACRTA (∪ globalni planeri)", async () => {
+  // ───────────────────────────────── REVIEW-BLOKERI: dedup samo na sigurnom
+
+  it("BLOKER 1: DVOSMISLEN crtež (u dva nacrta) → NEMA dedupa po nacrtu", async () => {
+    // Crtež 30 je u nacrtima 1 i 2 — pogrešan pogodak bi TRAJNO ućutkao tuđi
+    // nacrt, pa se claim upisuje BEZ nacrta i obaveštenje ide po poziciji.
+    await service.notifyLaunch({ ...INPUT, workOrderId: 60, handoverId: 20 });
+
+    expect(store.rows[0].handoverDraftId).toBeNull();
+    age(200_000);
+    await service.sweep();
+
+    const m = mailFor("planer@servoteh.com");
+    expect(m.subject).toBe("Lansiran RN P100/30 — predmet 9400/7");
+    // Kad nacrt NIJE siguran, o nacrtu se ni ne govori (nikad „Nacrt: —").
+    expect(m.html).not.toContain("Nacrt primopredaje");
+    expect(m.html).toContain("<strong>Radni nalog:</strong> P100/30");
+    expect(m.html).toContain("<strong>Pozicija:</strong> Poklopac, D-30");
+  });
+
+  it("BLOKER 1b: dvosmislen crtež NE zapečaćuje nacrt u koji bi pogrešno pao", async () => {
+    await service.notifyLaunch({ ...INPUT, workOrderId: 60, handoverId: 20 });
+    age(200_000);
+    await service.sweep();
+    expect(mail.send).toHaveBeenCalledTimes(2);
+
+    // Nacrt 1 i dalje ima pravo na SVOJE obaveštenje.
+    await service.notifyLaunch(INPUT);
+    age(200_000);
+    await service.sweep();
+
+    expect(mail.send).toHaveBeenCalledTimes(4);
+    const subjects = (
+      mail.send.mock.calls as unknown as [{ subject: string }][]
+    ).map((c) => c[0].subject);
+    expect(subjects.some((s) => s.includes("G-260724-010"))).toBe(true);
+  });
+
+  it("BLOKER 2: nacrt DRUGOG predmeta → ne ruta tuđim planerima, predmet iz RN-a", async () => {
+    // Crtež 31 jednoznačno vodi u nacrt 3, ali taj nacrt je na predmetu 5 (9970),
+    // a RN je na predmetu 3 (9400/7) — veza se ne poklapa → bez dedupa.
+    await service.notifyLaunch({ ...INPUT, workOrderId: 61, handoverId: 21 });
+
+    expect(store.rows[0].handoverDraftId).toBeNull();
+    age(200_000);
+    await service.sweep();
+
+    // Rutiranje po RN-u: predmet 3, NIKAD 5.
+    expect(prisma.predmetPlaner.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { OR: [{ projectId: { in: [3] } }, { projectId: null }] },
+      }),
+    );
+    const m = mailFor("planer@servoteh.com");
+    expect(m.html).toContain("9400/7");
+    expect(m.html).not.toContain("9970");
+    expect(m.html).not.toContain("Tuđi predmet");
+  });
+
+  it("BLOKER 3: neuspela isporuka NE markira redove — sledeći tik pokušava ponovo", async () => {
+    mail.send.mockRejectedValue(new Error("smtp down"));
+    notifications.notifyWorkers.mockRejectedValue(new Error("db down"));
+    await service.notifyLaunch(INPUT);
+    age(200_000);
+
+    await expect(service.sweep()).resolves.toBeUndefined();
+
+    // Primaoci postoje, ali ništa nije prošlo → red OSTAJE na čekanju.
+    expect(store.rows[0].notifiedAt).toBeNull();
+    expect(store.rows[0].sentAt).toBeNull();
+
+    // SMTP se oporavio — sledeći tik isporučuje.
+    mail.send.mockResolvedValue(true);
+    await service.sweep();
+
+    expect(mail.send).toHaveBeenCalledTimes(4); // 2 pala + 2 uspela
+    expect(store.rows[0].sentAt).not.toBeNull();
+  });
+
+  it("BLOKER 3b: obrađeno-bez-isporuke NE pečati nacrt (nema planera, pa ih dobije)", async () => {
+    prisma.predmetPlaner.findMany.mockResolvedValue([]);
+    await service.notifyLaunch(INPUT);
+    age(200_000);
+    await service.sweep();
+
+    expect(mail.send).not.toHaveBeenCalled();
+    expect(store.rows[0].notifiedAt).not.toBeNull(); // obrađeno…
+    expect(store.rows[0].sentAt).toBeNull(); // …ali NIJE isporučeno
+
+    // Planeri su u međuvremenu dodeljeni; sledeća pozicija istog nacrta JAVLJA.
+    mockTwoPlanners();
+    await service.notifyLaunch({ ...INPUT, workOrderId: 43, handoverId: 6 });
+    age(200_000);
+    await service.sweep();
+
+    expect(mail.send).toHaveBeenCalledTimes(2);
+    expect(mailFor("planer@servoteh.com").subject).toContain("G-260724-010");
+  });
+
+  // ───────────────────────────────────────────────────────────── ostalo
+
+  it("rutira se po predmetu RN-a (∪ globalni planeri)", async () => {
     await service.notifyLaunch(INPUT);
     age(200_000);
     await service.sweep();
 
     expect(prisma.predmetPlaner.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { OR: [{ projectId: 3 }, { projectId: null }] },
+        where: { OR: [{ projectId: { in: [3] } }, { projectId: null }] },
       }),
     );
   });
@@ -476,18 +691,16 @@ describe("LaunchNotifyService", () => {
     expect(mail.send).toHaveBeenCalledTimes(2);
   });
 
-  it("nerazrešiv nacrt → obaveštenje po POZICIJI (degradacija), ne spojeno", async () => {
-    // primopredaja 8 → crtež 13 → nema stavke nacrta; predmet iz RN-a.
+  it("crtež bez ijednog nacrta → obaveštenje po poziciji, bez pominjanja nacrta", async () => {
     await service.notifyLaunch({ ...INPUT, workOrderId: 45, handoverId: 8 });
     expect(store.rows[0].handoverDraftId).toBeNull();
     age(200_000);
 
     await service.sweep();
 
-    expect(mail.send).toHaveBeenCalledTimes(2);
     const m = mailFor("planer@servoteh.com");
-    expect(m.html).toContain("<strong>Nacrt primopredaje:</strong> —");
-    expect(m.html).toContain("<strong>Predmet:</strong> 9400/7"); // iz work_orders
+    expect(m.subject).toBe("Lansiran RN P100/9 — predmet 9400/7");
+    expect(m.html).not.toContain("Nacrt primopredaje");
   });
 
   it("pad claim upisa NE guta obaveštenje — šalje se odmah (fail-open)", async () => {
@@ -503,30 +716,18 @@ describe("LaunchNotifyService", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("pad mejla i zvonca ne baca; redovi se markiraju", async () => {
+  it("delimičan uspeh (mejl pao, zvonce prošlo) se broji kao isporuka", async () => {
     mail.send.mockRejectedValue(new Error("smtp down"));
-    notifications.notifyWorkers.mockRejectedValue(new Error("db down"));
-    await service.notifyLaunch(INPUT);
-    age(200_000);
-
-    await expect(service.sweep()).resolves.toBeUndefined();
-
-    expect(mail.send).toHaveBeenCalledTimes(2); // pad prvog ne preskače drugog
-    expect(store.rows[0].notifiedAt).not.toBeNull();
-  });
-
-  it("bez dodeljenih planera redovi se markiraju bez slanja", async () => {
-    prisma.predmetPlaner.findMany.mockResolvedValue([]);
     await service.notifyLaunch(INPUT);
     age(200_000);
 
     await service.sweep();
 
-    expect(mail.send).not.toHaveBeenCalled();
-    expect(store.rows[0].notifiedAt).not.toBeNull();
+    expect(notifications.notifyWorkers).toHaveBeenCalledTimes(1);
+    expect(store.rows[0].sentAt).not.toBeNull();
   });
 
-  it("nerazrešiv nacrt I obrisan RN → red se markira, sweep ne puca", async () => {
+  it("obrisan RN → red se markira, sweep ne puca", async () => {
     await service.notifyLaunch({ ...INPUT, workOrderId: 999, handoverId: 8 });
     age(200_000);
 
@@ -534,5 +735,6 @@ describe("LaunchNotifyService", () => {
 
     expect(mail.send).not.toHaveBeenCalled();
     expect(store.rows[0].notifiedAt).not.toBeNull();
+    expect(store.rows[0].sentAt).toBeNull();
   });
 });

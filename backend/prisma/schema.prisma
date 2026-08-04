@@ -2835,12 +2835,19 @@ model WorkOrderLaunchNotification {
   /// za projekat i to je to"): nacrt (`handover_drafts.id`) iz kog je pozicija
   /// potekla — KLJUČ AGREGACIJE I DEDUPA. Šalje se TAČNO JEDNO obaveštenje po
   /// nacrtu (na prvo lansiranje bilo koje njegove pozicije), pa svi sledeći redovi
-  /// istog nacrta samo dobiju `notified_at` bez slanja. Soft ref BEZ FK — veza
-  /// nacrt↔primopredaja je i inače heuristika preko `handover_draft_items.drawing_id`
-  /// (`drawing_handovers` nema FK ka nacrtu). NULL = veza nerazrešena → red se
-  /// šalje pojedinačno (degradacija na staro ponašanje, da se ne izgubi tiho).
-  /// Dva partial indeksa (pending / poslato) su SQL-only — migracija 20260805120000.
+  /// istog nacrta samo dobiju `notified_at` bez slanja.
+  /// POPUNJENO SAMO KAD JE VEZA SIGURNA: veza crtež→nacrt nema FK i izmereno je
+  /// dvosmislena za 9,8% crteža (358/3.658 je u više nacrta), pa bi pogrešan
+  /// pogodak TRAJNO ućutkao tuđi nacrt. Uslovi: crtež u TAČNO JEDNOM
+  /// ne-isključenom nacrtu I predmet nacrta = predmet RN-a. NULL = dvosmisleno
+  /// ili nerazrešeno → obaveštenje ide pojedinačno po poziciji (staro ponašanje).
+  /// Dva partial indeksa (pending / isporučeno) su SQL-only — migracija 20260805120000.
   handoverDraftId   Int?      @map("handover_draft_id")
+  /// Trenutak STVARNE isporuke (bar jedan mejl ili zvonce uspeo) — JEDINI osnov za
+  /// dedup po nacrtu. Razdvojeno od `notifiedAt` (= red obrađen) jer bi inače SMTP
+  /// ispad u trenutku prvog lansiranja nacrta taj nacrt zapečatio zauvek: red bi
+  /// bio „obrađen", a obaveštenje nikad ne bi otišlo.
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
 
   @@unique([drawingHandoverId], map: "uq_work_order_launch_notifications_handover")
   @@index([workOrderId], map: "idx_work_order_launch_notifications_work_order")

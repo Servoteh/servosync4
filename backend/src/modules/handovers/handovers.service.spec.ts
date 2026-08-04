@@ -1244,9 +1244,11 @@ describe("HandoversService", () => {
     it("lansiranje UPISUJE claim red sa NACRTOM — mejl NE ide odmah (016/26 četvrti krug)", async () => {
       prisma.drawingHandover.findUnique.mockResolvedValue(approvedHandover);
       prisma.workOrder.findFirst.mockResolvedValue(null);
-      // Crtež 10 pripada nacrtu 11 — ključ agregacije i dedupa obaveštenja.
-      prisma.handoverDraftItem.findFirst.mockResolvedValue({ draftId: 11 });
-      mockWorkOrderContext();
+      mockWorkOrderContext(); // crtež 10 → JEDAN nacrt (2), predmet 3
+      // Veza sme da bude ključ dedupa samo ako je nacrt jednoznačan I na istom
+      // predmetu kao RN — oba uslova ovde prolaze.
+      prisma.handoverDraft.findUnique.mockResolvedValue({ projectId: 3 });
+      prisma.workOrder.findUnique.mockResolvedValue({ projectId: 3 });
       prisma.workOrder.create.mockResolvedValue({
         id: 100,
         identNumber: "P100/1",
@@ -1273,7 +1275,7 @@ describe("HandoversService", () => {
             workOrderId: 100,
             source: "handover",
             actorWorkerId: 77,
-            handoverDraftId: 11,
+            handoverDraftId: 2,
           },
         ],
         skipDuplicates: true,
@@ -1304,7 +1306,18 @@ describe("HandoversService", () => {
           createdAt: old,
         },
       ]);
-      // Nacrt 11 → predmet 3; obaveštenje nosi nacrt/predmet/komitent, ne RN.
+      // RN iz kog se čita predmet za RUTIRANJE (nikad predmet nacrta).
+      prisma.workOrder.findMany.mockResolvedValue([
+        {
+          id: 100,
+          identNumber: "P100/1",
+          variant: 0,
+          projectId: 3,
+          drawingNumber: "D-10",
+          pieceCount: 4,
+        },
+      ]);
+      // Nacrt 11 → obaveštenje nosi nacrt/predmet/komitent, ne RN.
       prisma.handoverDraft.findUnique.mockResolvedValue({
         draftNumber: "G-260724-010",
         projectId: 3,
@@ -1336,10 +1349,10 @@ describe("HandoversService", () => {
 
       await launchNotify.sweep();
 
-      // OR filter: planeri predmeta NACRTA ∪ globalni (project_id IS NULL).
+      // OR filter: planeri predmeta RN-a ∪ globalni (project_id IS NULL).
       expect(prisma.predmetPlaner.findMany).toHaveBeenCalledWith(
         containing({
-          where: { OR: [{ projectId: 3 }, { projectId: null }] },
+          where: { OR: [{ projectId: { in: [3] } }, { projectId: null }] },
         }),
       );
       expect(mail.send).toHaveBeenCalledTimes(2);

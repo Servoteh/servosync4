@@ -5,8 +5,9 @@
 -- Grana: fix/lansiranje-samo-primopredaja-016
 -- ============================================================================
 --
--- ⚠️ NE IZVRŠAVATI BEZ ODLUKE PO PITANJIMA NA DNU (Servotransfer prese, 9400/4-5-8,
---    Strahinjin globalni red). KORAK 1 je čist SELECT i može odmah.
+-- ✅ OVAJ FAJL JE ČIST SELECT — bezbedno ga pusti u celini (`psql -f`). Ništa ne menja.
+--    Izvršni deo je u ZASEBNOM fajlu: predmet-planeri-016-2026-08-04-IZVRSNI.sql —
+--    NE puštati ga dok se ne odgovori na PITANJA na dnu ovog fajla.
 --
 -- ZAHTEV (doslovno): „I proveriti opet ovo:
 --     Ljubisa - 9811, 7701, Servotransfer prese
@@ -62,7 +63,8 @@
 --   • `created_by_user_id` = 2 (sistemski/admin nalog koji pušta skript) — kolona
 --     je nullable, promeni ili ostavi NULL ako želiš.
 --
--- UPUTSTVO: pusti KORAK 1, uporedi sa listom. Pa KORAK 2, pa KORAK 3.
+-- UPUTSTVO: pusti ovaj fajl, uporedi izlaz sa listom, odgovori na PITANJA (dno),
+-- pa tek onda …-IZVRSNI.sql (KORAK 2 + 3).
 -- ============================================================================
 
 
@@ -138,72 +140,6 @@ WHERE p.project_number = '9881' AND lower(u.email) = 'ljubisa.simovic@servoteh.c
 
 
 -- ════════════════════════════════════════════════════════════════════════════
--- KORAK 2 — IZMENA (transakcija)
--- ════════════════════════════════════════════════════════════════════════════
-BEGIN;
-
--- 2a) Planeri predmeta (Ljubiša, Dijana, Branislav)
-INSERT INTO predmet_planeri (project_id, planner_user_id, created_by_user_id)
-SELECT z.project_id, z.planner_user_id, 2
-FROM zeljeno z
-ON CONFLICT (project_id, planner_user_id) DO NOTHING;
-
--- 2b) „Strahinja sve iznad navedeno" — unija svih predmeta iz liste.
-INSERT INTO predmet_planeri (project_id, planner_user_id, created_by_user_id)
-SELECT DISTINCT z.project_id,
-       (SELECT id FROM users WHERE lower(email)='strahinja.petrovic@servoteh.com'),
-       2
-FROM zeljeno z
-ON CONFLICT (project_id, planner_user_id) DO NOTHING;
-
--- 2c) ⚠️ ODLUKA (vidi PITANJE 3): Strahinjin GLOBALNI red (project_id IS NULL)
---     danas mu daje obaveštenja za SVE predmete u firmi. „Sve iznad navedeno"
---     doslovno znači SAMO nabrojane — što je SUŽAVANJE. Red se briše SAMO ako
---     je to potvrđeno; do tada je ovaj DELETE ZAKOMENTARISAN i Strahinja
---     zadržava globalno pokrivanje (2b mu ionako ništa ne oduzima).
--- DELETE FROM predmet_planeri
--- WHERE project_id IS NULL
---   AND planner_user_id = (SELECT id FROM users WHERE lower(email)='strahinja.petrovic@servoteh.com');
-
--- 2d) Ljubišin 9881 — predmet zatvoren (GOTOVO, 24.02.2026), 0 RN; u novoj listi
---     ga je zamenio „9811". Brisanje je bezbedno: red samo rutira obaveštenja.
-DELETE FROM predmet_planeri pp
-USING projects p, users u
-WHERE pp.project_id = p.id
-  AND pp.planner_user_id = u.id
-  AND p.project_number = '9881'
-  AND lower(u.email) = 'ljubisa.simovic@servoteh.com';
-
-COMMIT;
-
-
--- ════════════════════════════════════════════════════════════════════════════
--- KORAK 3 — VERIFIKACIJA
--- ════════════════════════════════════════════════════════════════════════════
-
-\echo '--- 3a. Konačno stanje po planeru ---'
-SELECT u.full_name AS planer,
-       count(*) FILTER (WHERE pp.project_id IS NOT NULL) AS predmeta,
-       bool_or(pp.project_id IS NULL) AS globalni,
-       string_agg(p.project_number, ', ' ORDER BY p.project_number) AS spisak
-FROM predmet_planeri pp
-JOIN users u ON u.id = pp.planner_user_id
-LEFT JOIN projects p ON p.id = pp.project_id
-GROUP BY u.full_name ORDER BY u.full_name;
-
-\echo '--- 3b. Očekivano (mora biti 0 redova = sve traženo postoji) ---'
-SELECT z.full_name, z.broj FROM zeljeno z
-WHERE NOT EXISTS (
-  SELECT 1 FROM predmet_planeri pp
-  WHERE pp.project_id = z.project_id AND pp.planner_user_id = z.planner_user_id);
-
-\echo '--- 3c. Strahinja pokriva sve iz liste (mora biti 0 redova) ---'
-SELECT DISTINCT p.project_number FROM zeljeno z JOIN projects p ON p.id = z.project_id
-WHERE NOT EXISTS (
-  SELECT 1 FROM predmet_planeri pp
-  WHERE pp.planner_user_id = (SELECT id FROM users WHERE lower(email)='strahinja.petrovic@servoteh.com')
-    AND (pp.project_id = z.project_id OR pp.project_id IS NULL));
-
 
 -- ============================================================================
 -- OTVORENA PITANJA ZA STRAHINJU (zato ovaj skript NIJE izvršen)

@@ -49,18 +49,32 @@
 -- WHERE …IS NULL). Postojeći redovi se ne brišu.
 -- =============================================================================
 
--- Ključ agregacije i deduplikacije: nacrt (`handover_drafts.id`) iz kog je
--- pozicija potekla. Soft ref BEZ FK — isti razlog kao ostale kolone ove tabele
--- (batch-resolve obrazac; veza nacrt↔primopredaja je i inače heuristika preko
--- `handover_draft_items.drawing_id`, jer `drawing_handovers` NEMA FK ka nacrtu).
--- NULL = veza se nije razrešila (legacy red bez nacrta) → servis takav red
--- degradira na dosadašnje ponašanje „jedno obaveštenje po poziciji", da se
--- obaveštenje nikad ne izgubi tiho.
+-- ⚠️ REVIEW-BLOKER (isti dan): veza crtež→nacrt NEMA FK i NIJE jednoznačna —
+-- izmereno 358 od 3.658 crteža (9,8%) pripada VIŠE nacrta. Dok je ta veza bila
+-- kozmetička etiketa (kolona „Nacrt" u listi), pogrešan pogodak je bio ružan ali
+-- bezopasan; kao KLJUČ garancije „tačno jednom zauvek" pogrešan pogodak trajno
+-- UĆUTKUJE tuđi nacrt. Zato važi princip: DEDUP SAMO NA SIGURNOM —
+-- `handover_draft_id` se popunjava ISKLJUČIVO kad crtež pripada TAČNO JEDNOM
+-- ne-isključenom nacrtu I kad je predmet tog nacrta ISTI kao predmet RN-a
+-- (izmereno: 280 pozicija u 33 nacrta razrešava u nacrt DRUGOG predmeta).
+-- NULL = dvosmisleno/nerazrešeno → red ide starim putem (jedno obaveštenje po
+-- poziciji, kao pre ovog paketa). Bolje 9,8% dvosmislenih crteža i dalje
+-- pojedinačno nego ijedan nacrt koji trajno zanemi.
 ALTER TABLE "work_order_launch_notifications"
   ADD COLUMN IF NOT EXISTS "handover_draft_id" INTEGER;
 
 COMMENT ON COLUMN "work_order_launch_notifications"."handover_draft_id" IS
-  'handover_drafts.id nacrta iz kog je pozicija potekla — ključ agregacije i dedupa obaveštenja (016/26 četvrti krug: tačno jedno obaveštenje po nacrtu). NULL = veza nerazrešena, red se šalje pojedinačno.';
+  'handover_drafts.id nacrta iz kog je pozicija potekla — ključ agregacije i dedupa (016/26 četvrti krug: tačno jedno obaveštenje po nacrtu). Popunjeno SAMO kad je veza SIGURNA (crtež u tačno jednom ne-isključenom nacrtu + isti predmet kao RN). NULL = dvosmisleno/nerazrešeno → obaveštenje ide pojedinačno po poziciji.';
+
+-- Razdvajanje „obrađeno" od „ISPORUČENO". `notified_at` znači samo da je red
+-- obrađen u nekom prolazu (pa i kad nije bilo kome da se šalje); dedup po nacrtu
+-- sme da se osloni ISKLJUČIVO na stvarnu isporuku. Bez ove kolone bi SMTP ispad
+-- u trenutku prvog lansiranja nacrta taj nacrt zapečatio zauvek.
+ALTER TABLE "work_order_launch_notifications"
+  ADD COLUMN IF NOT EXISTS "sent_at" TIMESTAMPTZ(6);
+
+COMMENT ON COLUMN "work_order_launch_notifications"."sent_at" IS
+  'Trenutak STVARNE isporuke (bar jedan mejl ili zvonce uspeo) — jedini osnov za dedup „jedno obaveštenje po nacrtu". NULL uz popunjen notified_at = red obrađen, ali ništa nije isporučeno (nema planera / pad slanja) → nacrt NIJE zapečaćen.';
 
 -- Sweeper grupiše SAMO pending redove (notified_at IS NULL) po nacrtu.
 -- Prisma šema ne ume WHERE indekse → SQL-only (dokumentovano u schema.prisma).
@@ -68,11 +82,12 @@ CREATE INDEX IF NOT EXISTS "idx_work_order_launch_notifications_pending_draft"
   ON "work_order_launch_notifications" ("handover_draft_id", "created_at")
   WHERE "notified_at" IS NULL;
 
--- Provera „da li je za ovaj nacrt obaveštenje VEĆ poslato" (dedup „tačno jednom
--- po nacrtu") gleda isključivo obrađene redove — parcijalni indeks je tačno taj skup.
+-- Provera „da li je za ovaj nacrt obaveštenje VEĆ ISPORUČENO" (dedup „tačno
+-- jednom po nacrtu") gleda isključivo isporučene redove — parcijalni indeks je
+-- tačno taj skup.
 CREATE INDEX IF NOT EXISTS "idx_work_order_launch_notifications_sent_draft"
   ON "work_order_launch_notifications" ("handover_draft_id")
-  WHERE "notified_at" IS NOT NULL;
+  WHERE "sent_at" IS NOT NULL;
 
 -- Stari pending indeks po akteru (migracija 20260803153000) se NAMERNO NE BRIŠE:
 -- tabela je mala, a indeks je jedina stvar koja bi falila ako se deploy vrati na
@@ -81,18 +96,33 @@ CREATE INDEX IF NOT EXISTS "idx_work_order_launch_notifications_sent_draft"
 -- ── BACKFILL ────────────────────────────────────────────────────────────────
 -- Bez ovoga bi prvi posle-deploy lansiranje SVAKOG već obrađenog nacrta poslalo
 -- „nacrt lansiran" mejl iako je planer za taj nacrt već dobio 34 mejla (npr.
--- G-260724-010). Popunjava se istom heuristikom koju kod koristi
--- (`resolveDraftContext`): crtež primopredaje → najskorija NE-isključena stavka
--- nacrta (najveći draft_id, pa najveći id).
-UPDATE "work_order_launch_notifications" n
-SET "handover_draft_id" = d.draft_id
-FROM (
-  SELECT DISTINCT ON (i."drawing_id")
-         i."drawing_id", i."draft_id"
+-- G-260724-010). Popunjava se ISTIM STROGIM uslovom kao kod (`resolveDraft`):
+-- crtež mora pripadati TAČNO JEDNOM ne-isključenom nacrtu, a predmet tog nacrta
+-- mora biti ISTI kao predmet RN-a. Verzija sa `DISTINCT ON` (uzmi najskoriji
+-- nacrt) je IZMERENO opasna: 4 nacrta bi odmah po deploy-u postala trajno nema
+-- jer im crteži razrešavaju u već javljene nacrte (npr. G-260724-004 →
+-- G-260724-009; G-260724-008 → G-260724-010, ISTI predmet 9400/7 pa ni provera
+-- predmeta to ne bi uhvatila — jedini lek je uslov jednoznačnosti).
+WITH jednoznacni AS (
+  SELECT i."drawing_id", min(i."draft_id") AS draft_id
   FROM "handover_draft_items" i
   WHERE i."exclude_from_handover" = false
-  ORDER BY i."drawing_id", i."draft_id" DESC, i."id" DESC
-) d
-JOIN "drawing_handovers" h ON h."drawing_id" = d."drawing_id"
+  GROUP BY i."drawing_id"
+  HAVING count(DISTINCT i."draft_id") = 1
+)
+UPDATE "work_order_launch_notifications" n
+SET "handover_draft_id" = j.draft_id
+FROM jednoznacni j
+JOIN "drawing_handovers" h ON h."drawing_id" = j."drawing_id"
+JOIN "handover_drafts" hd ON hd."id" = j.draft_id
+JOIN "work_orders" w ON w."id" = n."work_order_id"
 WHERE n."drawing_handover_id" = h."id"
+  AND hd."project_id" = w."project_id"   -- predmet nacrta = predmet RN-a
   AND n."handover_draft_id" IS NULL;
+
+-- Postojeći redovi SU isporučeni (poslati su po starom, pojedinačnom toku) —
+-- bez ovoga bi dedup mislio da nijedan nacrt nije javljen i posle deploy-a bi
+-- na prvo sledeće lansiranje poslao „nacrt lansiran" za već ispričane nacrte.
+UPDATE "work_order_launch_notifications"
+SET "sent_at" = "notified_at"
+WHERE "notified_at" IS NOT NULL AND "sent_at" IS NULL;
