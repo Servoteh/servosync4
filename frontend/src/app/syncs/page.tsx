@@ -102,10 +102,21 @@ export default function SyncsPage() {
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
+        {/*
+          061/26 (04.08.2026): dugme šalje prazan body → backend PODRAZUMEVANO
+          preskače artikle (items, NIGHTLY_SYNC_EXCLUDED — čišćenje kataloga u
+          toku). Napomena stoji stalno, ne samo dok sync radi, da korisnik zna
+          ŠTA će dugme obraditi pre nego što ga pritisne.
+        */}
+        <div className="rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
+          Sync povlači šifarnike iz BigBit-a (predmeti, komitenti, cenovnik…).{' '}
+          <span className="font-medium text-ink">Artikli su privremeno preskočeni</span> dok
+          traje čišćenje kataloga — njih posebno (i nadgledano) pokreće administrator.
+        </div>
         {runSync.isPending && (
           <div className="rounded-panel border border-status-info/30 bg-status-info-bg px-4 py-3 text-sm text-status-info">
-            Sinhronizacija je pokrenuta — puni ~500.000 redova iz QBigTehn. Može potrajati
-            nekoliko minuta.
+            Sinhronizacija je pokrenuta — puni ~500.000 redova iz QBigTehn (bez artikala). Može
+            potrajati nekoliko minuta.
           </div>
         )}
         {(runSync.error || logs.error) && (

@@ -123,8 +123,8 @@ export const BRANA_ARTIKAL: Brana = {
     },
     {
       tekst:
-        "Isključenje items iz noćnog posla NIJE zaštita: ručni POST /api/v1/sync/run i dalje radi pun deleteMany nad items.",
-      izvor: "backend/src/modules/scheduler/bigbit-sync-jobs.service.ts:44-60",
+        "Od 04.08.2026 (061/26) i ručni POST /api/v1/sync/run podrazumevano preskače items (isti skup kao noćni posao); eksplicitni items sme samo admin — ali kad ga admin pokrene, i dalje je pun deleteMany.",
+      izvor: "backend/src/modules/sync/sync.controller.ts (run) + table-ownership.ts (NIGHTLY_SYNC_EXCLUDED)",
     },
   ],
 };
