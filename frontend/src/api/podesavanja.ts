@@ -344,7 +344,7 @@ export function useBigbitSync() {
   });
 }
 
-/** Uključi/isključi noćni BigBit uvoz (sync.run). Odgovor je PUNO novo stanje. */
+/** Uključi/isključi noćni BigBit uvoz (settings.system, 061/26). Odgovor je PUNO novo stanje. */
 export function useSetBigbitSync() {
   const qc = useQueryClient();
   return useMutation({
