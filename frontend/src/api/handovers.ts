@@ -489,6 +489,14 @@ export interface AppendDraftItemInput {
   drawingId: number;
   /** Broj komada za izradu; izostavljeno = 1 (backend default). */
   quantity?: number;
+  /**
+   * 027/26 dopuna (Igor 30.07): kad se ubacuje SKLOP + sve pozicije, pozicija
+   * nosi id sklopa (kolona „Vodeći sklop" u detalju nacrta + tačniji §6.5.4
+   * pre-check količine). Backend validira postojanje; izostavljeno = null.
+   */
+  mainDrawingId?: number;
+  /** Potreba po sastavnici za 1 komad vodećeg sklopa; izostavljeno = 0. */
+  quantityDefinedInDrawing?: number;
 }
 
 /**

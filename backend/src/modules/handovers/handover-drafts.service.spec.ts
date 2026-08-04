@@ -1068,6 +1068,127 @@ describe("HandoverDraftsService — appendItems (Dodaj u nacrt iz PDM-a)", () =>
     expect(err).toBeInstanceOf(BadRequestException);
     expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
   });
+
+  // 027/26 dopuna (Igor 30.07): „Da — ubaci i sve pozicije sklopa" — pozicije
+  // stižu ISTIM append putem sa BOM provenance poljima (sklop + potreba).
+
+  it("027/26: pozicija nosi mainDrawingId + quantityDefinedInDrawing na upisu", async () => {
+    const sklop = drawingRow({ id: 30, drawingNumber: "1059521" });
+    const { service, prisma } = await appendSetup([APPROVED, sklop]);
+
+    const res = await service.appendItems(8, {
+      items: [
+        // Sklop lično (bez provenance) + pozicija iz njegove sastavnice.
+        { drawingId: 30, quantity: 3 },
+        {
+          drawingId: 10,
+          quantity: 6,
+          mainDrawingId: 30,
+          quantityDefinedInDrawing: 2,
+        },
+      ],
+    });
+
+    expect(res.meta.added).toBe(2);
+    const arg = (
+      prisma.handoverDraftItem.createMany.mock.calls as [CreateManyArg][]
+    )[0][0];
+    expect(arg.data[0]).toEqual(
+      containing({
+        drawingId: 30,
+        quantityToProduce: 3,
+        mainDrawingId: null,
+        quantityDefinedInDrawing: 0,
+      }),
+    );
+    expect(arg.data[1]).toEqual(
+      containing({
+        drawingId: 10,
+        quantityToProduce: 6,
+        mainDrawingId: 30,
+        quantityDefinedInDrawing: 2,
+      }),
+    );
+  });
+
+  it("027/26: nepostojeći mainDrawingId → 422 sa id-jem, bez upisa (kao create)", async () => {
+    const { service, prisma } = await appendSetup([APPROVED]);
+
+    const err = await errorOf(
+      service.appendItems(8, {
+        items: [{ drawingId: 10, mainDrawingId: 77 }],
+      }),
+    );
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toContain("77");
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("027/26: mainDrawingId 0 / negativna količina po sastavnici → 400 (DTO)", async () => {
+    const { service, prisma } = await appendSetup([APPROVED]);
+
+    const badMain = await errorOf(
+      service.appendItems(8, { items: [{ drawingId: 10, mainDrawingId: 0 }] }),
+    );
+    const badQty = await errorOf(
+      service.appendItems(8, {
+        items: [{ drawingId: 10, quantityDefinedInDrawing: -1 }],
+      }),
+    );
+
+    expect(badMain).toBeInstanceOf(BadRequestException);
+    expect(badQty).toBeInstanceOf(BadRequestException);
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+  });
+
+  it("027/26: cap batch-a je 500 (izmereno: najveća sastavnica 223 pozicije) — 501 → 400", async () => {
+    const { service, prisma } = await appendSetup([APPROVED]);
+
+    const many = Array.from({ length: 501 }, () => ({ drawingId: 10 }));
+    const err = await errorOf(service.appendItems(8, { items: many }));
+
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(
+      JSON.stringify((err as { getResponse?: () => unknown }).getResponse?.()),
+    ).toContain("500");
+    expect(prisma.handoverDraftItem.createMany).not.toHaveBeenCalled();
+
+    // Tačno 500 prolazi validaciju — DTO ne sme da odbije legitiman
+    // „sklop + sve pozicije" batch.
+    const exactly = Array.from({ length: 500 }, () => ({ drawingId: 10 }));
+    await expect(
+      service.appendItems(8, { items: exactly }),
+    ).resolves.toBeDefined();
+  });
+
+  it("027/26: pre-check količine gleda sastavnicu POZICIJE (mainDrawingId), ne zaglavlje", async () => {
+    const sklop = drawingRow({ id: 30, drawingNumber: "1059521" });
+    const { service, prisma } = await appendSetup([APPROVED, sklop]);
+    // Postoji raniji RN → stavka je sporna, pa se u razlog dodaje i poređenje
+    // količine sa sastavnicom (potreba 2 × pieceCount 3 = 6 ≠ traženo 5).
+    prisma.workOrder.findMany.mockResolvedValue([
+      { id: 900, drawingId: 10, drawingNumber: "1126982" },
+    ]);
+    prisma.drawingComponent.findMany.mockResolvedValue([
+      { parentDrawingId: 30, childDrawingId: 10, requiredQuantity: 2 },
+    ]);
+
+    const res = await service.appendItems(8, {
+      items: [
+        {
+          drawingId: 10,
+          quantity: 5,
+          mainDrawingId: 30,
+          quantityDefinedInDrawing: 2,
+        },
+      ],
+    });
+
+    const dup = res.meta.warnings.find((w) => w.type === "duplicate");
+    expect(dup?.message).toContain("5 ≠");
+    expect(dup?.message).toContain("6");
+  });
 });
 
 // ---------------------------------------------------------------------------
