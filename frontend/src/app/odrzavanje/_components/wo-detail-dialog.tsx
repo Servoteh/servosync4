@@ -9,6 +9,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { formatDate, formatDateTime } from '@/lib/format';
+import { toast } from '@/lib/toast';
 import {
   useAssignableUsers,
   useCreateWoEvent,
@@ -17,9 +18,11 @@ import {
   useParts,
   useUpdateWorkOrder,
   useWorkOrder,
+  type AssignableUser,
   type MaintMe,
   type Part,
   type WoStatus,
+  type WorkOrderDetail,
 } from '@/api/odrzavanje';
 import { Field, WO_STATUS_LABEL, WO_TYPE_LABEL, WoPriorityBadge, WoStatusBadge } from './common';
 
@@ -57,7 +60,6 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
   const partsCatalog = useParts(canEdit && !!woId ? { pageSize: 500 } : {});
 
   const [comment, setComment] = useState('');
-  const [closure, setClosure] = useState('');
   const [partName, setPartName] = useState('');
   const [partQty, setPartQty] = useState('');
   const [partUnit, setPartUnit] = useState('');
@@ -154,65 +156,7 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
           </div>
 
           {canEdit && (
-            <div className="space-y-3 rounded-panel border border-line p-3">
-              <div className="grid grid-cols-2 gap-3">
-                <FormField label="Status">
-                  <select
-                    value={d.status}
-                    onChange={(e) => update.mutate({ id: d.woId, patch: { status: e.target.value } })}
-                    className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
-                  >
-                    {STATUSES.map((s) => (
-                      <option key={s} value={s}>{WO_STATUS_LABEL[s]}</option>
-                    ))}
-                  </select>
-                </FormField>
-                <FormField label="Prioritet">
-                  <select
-                    value={d.priority}
-                    onChange={(e) => update.mutate({ id: d.woId, patch: { priority: e.target.value } })}
-                    className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
-                  >
-                    {(['p1_zastoj', 'p2_smetnja', 'p3_manje', 'p4_planirano'] as const).map((p) => (
-                      <option key={p} value={p}>{p}</option>
-                    ))}
-                  </select>
-                </FormField>
-                <FormField label="Dodeljen">
-                  <select
-                    value={d.assignedTo ?? ''}
-                    onChange={(e) => update.mutate({ id: d.woId, patch: { assignedTo: e.target.value || null } })}
-                    className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink"
-                  >
-                    <option value="">— nedodeljen —</option>
-                    {(assignable.data?.data ?? []).map((u) => (
-                      <option key={u.user_id} value={u.user_id}>{u.full_name} ({u.maint_role})</option>
-                    ))}
-                  </select>
-                </FormField>
-                <FormField label="Rok">
-                  <Input
-                    type="date"
-                    defaultValue={d.dueAt ? d.dueAt.slice(0, 10) : ''}
-                    onBlur={(e) => update.mutate({ id: d.woId, patch: { dueAt: e.target.value ? new Date(e.target.value).toISOString() : null } })}
-                  />
-                </FormField>
-              </div>
-              {(d.status === 'zavrsen' || d.status === 'kontrola') && (
-                <FormField label="Napomena zatvaranja">
-                  <div className="flex gap-2">
-                    <Input value={closure} onChange={(e) => setClosure(e.target.value)} placeholder="Šta je urađeno…" />
-                    <Button
-                      variant="secondary"
-                      disabled={!closure.trim() || busy}
-                      onClick={() => { update.mutate({ id: d.woId, patch: { closureComment: closure } }); setClosure(''); }}
-                    >
-                      Sačuvaj
-                    </Button>
-                  </div>
-                </FormField>
-              )}
-            </div>
+            <WoEditPanel key={d.woId} d={d} assignableUsers={assignable.data?.data ?? []} update={update} />
           )}
 
           {/* Delovi */}
@@ -317,6 +261,109 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
         </div>
       )}
     </Dialog>
+  );
+}
+
+/**
+ * Edit panel naloga sa EKSPLICITNIM „Sačuvaj izmene" (zahtev 060/26 — Duško: „nema opciju
+ * sačuvaj"). Raniji obrazac je čuvao svako polje NEMO na onChange/onBlur, bez potvrde i bez
+ * prikaza greške — korisniku je izgledalo kao da se izmene ne čuvaju. Sada se izmene odlažu
+ * (staged patch), jedno dugme šalje objedinjeni PATCH, uspeh = toast „Sačuvano", pad = vidljiva
+ * poruka. `key={d.woId}` u pozivaocu resetuje nacrt pri promeni naloga.
+ */
+function WoEditPanel({
+  d,
+  assignableUsers,
+  update,
+}: {
+  d: WorkOrderDetail;
+  assignableUsers: AssignableUser[];
+  update: ReturnType<typeof useUpdateWorkOrder>;
+}) {
+  const [patch, setPatch] = useState<Record<string, unknown>>({});
+  const [err, setErr] = useState<string | null>(null);
+  /** Odložena (još nesačuvana) vrednost polja, ili trenutna sa servera. */
+  const staged = <T,>(key: string, fallback: T): T => (key in patch ? (patch[key] as T) : fallback);
+  const stage = (key: string, value: unknown) => { setErr(null); setPatch((p) => ({ ...p, [key]: value })); };
+  const dirty = Object.keys(patch).length > 0;
+  const effStatus = staged<WoStatus>('status', d.status);
+  const selCls = 'h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink';
+
+  function save() {
+    setErr(null);
+    const body: Record<string, unknown> = { ...patch };
+    // Rok se odlaže kao `yyyy-mm-dd` (vrednost inputa); u ISO se prevodi tek pri slanju.
+    if ('dueAt' in body) {
+      const v = String(body.dueAt ?? '');
+      body.dueAt = v ? new Date(v).toISOString() : null;
+    }
+    update.mutate(
+      { id: d.woId, patch: body },
+      {
+        onSuccess: () => { setPatch({}); toast('Sačuvano'); },
+        onError: (e) => setErr((e as Error).message || 'Čuvanje nije uspelo.'),
+      },
+    );
+  }
+
+  return (
+    <div className="space-y-3 rounded-panel border border-line p-3">
+      {err && <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">{err}</p>}
+      <div className="grid grid-cols-2 gap-3">
+        <FormField label="Status">
+          <select value={effStatus} onChange={(e) => stage('status', e.target.value)} className={selCls}>
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>{WO_STATUS_LABEL[s]}</option>
+            ))}
+          </select>
+        </FormField>
+        <FormField label="Prioritet">
+          <select
+            value={staged('priority', d.priority)}
+            onChange={(e) => stage('priority', e.target.value)}
+            className={selCls}
+          >
+            {(['p1_zastoj', 'p2_smetnja', 'p3_manje', 'p4_planirano'] as const).map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
+        </FormField>
+        <FormField label="Dodeljen">
+          <select
+            value={staged<string | null>('assignedTo', d.assignedTo ?? null) ?? ''}
+            onChange={(e) => stage('assignedTo', e.target.value || null)}
+            className={selCls}
+          >
+            <option value="">— nedodeljen —</option>
+            {assignableUsers.map((u) => (
+              <option key={u.user_id} value={u.user_id}>{u.full_name} ({u.maint_role})</option>
+            ))}
+          </select>
+        </FormField>
+        <FormField label="Rok">
+          <Input
+            type="date"
+            value={staged('dueAt', d.dueAt ? d.dueAt.slice(0, 10) : '')}
+            onChange={(e) => stage('dueAt', e.target.value)}
+          />
+        </FormField>
+      </div>
+      {(effStatus === 'zavrsen' || effStatus === 'kontrola') && (
+        <FormField label="Napomena zatvaranja">
+          <Input
+            value={staged('closureComment', d.closureComment ?? '')}
+            onChange={(e) => stage('closureComment', e.target.value)}
+            placeholder="Šta je urađeno…"
+          />
+        </FormField>
+      )}
+      <div className="flex items-center justify-end gap-3">
+        {dirty && !update.isPending && <span className="text-2xs text-ink-secondary">Nesačuvane izmene</span>}
+        <Button disabled={!dirty} loading={update.isPending} onClick={save}>
+          Sačuvaj izmene
+        </Button>
+      </div>
+    </div>
   );
 }
 
