@@ -181,3 +181,36 @@ describe("Održavanje — schema pin ($queryRaw imena protiv žive šeme)", () =
     expect(src).toMatch(/INSERT INTO maint_incidents[\s\S]*?auth\.uid\(\)/);
   });
 });
+
+/**
+ * PIN živog defekta 04.08.2026 (POST /maintenance/vehicles → SQLSTATE 42804,
+ * korisniku 500): živa `create_maint_vehicle` je upisivala TEXT izraz
+ * `COALESCE(NULLIF(p_status,''),'running')` u enum kolonu `maint_assets.status`
+ * BEZ kasta — svaki create vozila je padao („rođena pokvarena"; sestrinske
+ * `create_maint_it_asset`/`create_maint_facility` kast IMAJU). Fix je DB-side
+ * (CREATE OR REPLACE, primenjuje se ručno na sy15 — obrazac ZAHTEV_047), pa se
+ * ovde pinuje FIX FAJL: (a) potpis fn = ono što `createAssetViaRpc` zove;
+ * (b) kast postoji i ne može tiho da ispadne kroz kasniju izmenu fajla.
+ */
+describe("Održavanje — FIX_VOZILA_CREATE_STATUS_CAST.sql (pin 42804 kasta)", () => {
+  const sql = readFileSync(
+    join(__dirname, "../../../docs/migration/FIX_VOZILA_CREATE_STATUS_CAST.sql"),
+    "utf8",
+  );
+  // Telo fn (od CREATE OR REPLACE) — header fajla sme da CITIRA pokvaren izraz.
+  const body = sql.slice(sql.indexOf("CREATE OR REPLACE FUNCTION"));
+
+  it("definiše create_maint_vehicle sa potpisom koji createAssetViaRpc zove (8×text + jsonb)", () => {
+    expect(body).toMatch(
+      /CREATE OR REPLACE FUNCTION public\.create_maint_vehicle\(p_asset_code text, p_name text, p_status text[^)]*p_details jsonb/,
+    );
+  });
+
+  it("status u INSERT-u u maint_assets nosi ::public.maint_operational_status kast", () => {
+    expect(body).toMatch(
+      /COALESCE\(NULLIF\(p_status, ''\), 'running'\)::public\.maint_operational_status/,
+    );
+    // Regresija = isti izraz BEZ kasta (odmah zarez) — ne sme postojati u telu fn.
+    expect(body).not.toMatch(/COALESCE\(NULLIF\(p_status, ''\), 'running'\)\s*,/);
+  });
+});

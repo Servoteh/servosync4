@@ -2947,6 +2947,10 @@ export class OdrzavanjeService {
       dto.clientEventId,
       `odrzavanje.${action}`,
       async (tx) => {
+        // Argumenti su TEXT (fn potpisi su text) — kast u enum radi SAMA fn.
+        // Živa create_maint_vehicle je taj kast propuštala → 42804 na svakom
+        // kreiranju vozila (04.08.2026); fix + pin:
+        // docs/migration/FIX_VOZILA_CREATE_STATUS_CAST.sql (schema.spec pinuje kast).
         const rows = await tx.$queryRaw<{ id: string | null }[]>(
           Prisma.sql`SELECT public.${Prisma.raw(fn)}(
           ${dto.assetCode.trim()}, ${dto.name.trim()}, ${dto.status ?? "running"},
