@@ -992,6 +992,14 @@ model Item {
   // SQL-only trigram GIN indeksi (20260726160000): idx_items_name_trgm i
   // idx_items_catalog_number_trgm nad `immutable_unaccent(lower(...))` —
   // 92k redova, pretraga bez kvačica (alat `nadji_artikal`, kasnije i UI).
+  //
+  // BigBit „Pregled artikala" sortira ORDER BY Grupa, Kataloski broj, Naziv, a
+  // filter po grupi je najčešći ulaz u listu (20260805100000). Kolone prate
+  // `orderBy` iz `masters/items.service.ts` DOSLOVNO — bez `name` u indeksu
+  // planer i dalje dosortira (incremental sort). `id` je tie-breaker za stabilnu
+  // paginaciju. Pomaže nefiltriranom pregledu i filteru po grupi; pretraga po
+  // nazivu / kat. broju ide na trigram GIN i ne koristi ovaj indeks.
+  @@index([groupCode, catalogNumber, name, id], map: "idx_items_group_catalog")
   @@map("items")
 }
 
@@ -1020,6 +1028,40 @@ model ItemOrigin {
   discountPercent Decimal? @default(0) @map("discount_percent") @db.Decimal(19, 4)
 
   @@map("item_origins")
+}
+
+/// Was: R_KvalitetArtikla
+/// Šifarnik iza `Item.qualityTypeId` — BigBit forma unosa ga nudi kao padajući
+/// spisak „Kvalitet artikla". Do migracije 20260805100000 tabela nije postojala,
+/// pa je `qualityTypeId` visio u prazno (`ITEM_FIELDS_REQUIRING_MIGRATION`).
+/// `id` je BigBit `IDKvalitetArtikla` i prenosi se doslovno (0 je važeća
+/// vrednost, ne „prazno") — zato bez `autoincrement()`.
+model ItemQualityType {
+  id          Int    @id(map: "pk_item_quality_types") @map("id")
+  code        String @map("code") @db.VarChar(20)
+  /// Doslovna BigBit vrednost — red `id = 0` u izvoru glasi „NE TREBA KVAKITET"
+  /// (tipfeler je u BigBitu, ne kod nas; prenosi se verno radi pariteta prikaza).
+  description String @map("description") @db.VarChar(50)
+
+  @@map("item_quality_types")
+}
+
+/// Was: RasterDefZag
+/// Kod Servoteha raster NIJE maloprodajni koncept (veličine/boje) nego nosilac
+/// DIMENZIJA table/lima (BIGBIT_ARTIKLI.md §4.10). BigBit forma ga nudi kao
+/// padajući spisak „Dimenzija (mm)".
+model ItemRaster {
+  id          Int     @id(map: "pk_item_rasters") @map("id")
+  name        String  @map("name") @db.VarChar(50)
+  description String? @map("description") @db.VarChar(50)
+  /// `VrstaRastera` / `KolonaRastera` u mm — ulaz za obračun kilograma po komadu
+  /// lima: `Kutija = Debljina * VrstaRastera * KolonaRastera * 7850 / 1e9`
+  /// (7850 = gustina čelika kg/m³). Dimenzija, ne novac → `Float`, kao i
+  /// `Item.thickness` / `Item.weightKg`.
+  widthMm     Float?  @map("width_mm")
+  lengthMm    Float?  @map("length_mm")
+
+  @@map("item_rasters")
 }
 
 /// Was: R_Vrste_dokumenata

@@ -452,8 +452,15 @@ export interface PoljeDef {
   labela: string;
   tip: TipPolja;
   obavezno?: boolean;
-  /** Koliko kolona mreže zauzima na širokom ekranu (1 podrazumevano). */
-  raspon?: 1 | 2 | 4;
+  /**
+   * Koliko kolona mreže zauzima na širokom ekranu (1 podrazumevano).
+   *
+   * Vrednosti 1/2/4 su nad ZATEČENOM 4-kolonskom mrežom (komitenti i sve sekcije bez
+   * `SekcijaDef.mreza`) i ponašaju se tačno kao pre. Vrednosti 3/6/8/12 imaju smisla
+   * samo u gustoj 12-kolonskoj mreži (`SekcijaDef.mreza = 12`), gde jedan BigBit red
+   * forme staje u jedan red mreže; u 4-kolonskoj mreži se ponašaju kao „ceo red“.
+   */
+  raspon?: 1 | 2 | 3 | 4 | 6 | 8 | 12;
   opcije?: OpcijaPolja[];
   /** Pomoćni tekst ispod polja — objašnjenje, ne poruka o grešci. */
   napomena?: string;
@@ -475,6 +482,25 @@ export interface SekcijaDef {
   /** Kratko objašnjenje sekcije (npr. odakle vrednosti dolaze). */
   opis?: string;
   polja: PoljeDef[];
+  /**
+   * Gustina mreže sekcije. IZOSTAVLJENO = zatečeno ponašanje (1 → 2 → 3 → 4 kolone po
+   * širini), pa se sekcije komitenta i sve starije sekcije crtaju identično kao pre.
+   *
+   * `12` uključuje gustu mrežu: BigBit forma „Unos artikala“ ima do 7 polja u jednom
+   * redu (npr. Kataloški broj · Bar kod · Naziv · Pakovanje · Jed. mere · Kilograma u
+   * komadu · Transp. pakovanje), što se u 4 kolone ne može preslikati bez lomljenja
+   * reda — a upravo redosled i susedstvo polja su ono što korisnici pamte. Zbog toga
+   * je svojstvo OPCIONO i uvedeno aditivno: nijedna postojeća sekcija ga nema.
+   */
+  mreza?: 12;
+  /** Sekcija se može sklopiti/otvoriti klikom na naslov. Izostavljeno = uvek otvorena. */
+  sklopivo?: boolean;
+  /**
+   * Sklopiva sekcija je pri otvaranju ekrana ZATVORENA. Koristi se za „Dodatna polja
+   * (van BigBit forme)“ — ništa se ne briše, ali ne sme da razbija naviku korisnika
+   * koji poznaje BigBit raspored. Bez `sklopivo` nema dejstvo.
+   */
+  podrazumevanoZatvoreno?: boolean;
 }
 
 /** Ravan redosled fokusa kroz sve sekcije — Enter ide TAČNO ovim redom. */

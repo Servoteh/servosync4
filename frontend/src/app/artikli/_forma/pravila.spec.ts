@@ -25,6 +25,9 @@ import {
   sporneStavke,
   type SekcijaDef,
 } from './pravila';
+import type { ItemDetail } from '@/api/masters';
+import { SEKCIJE_KOMITENT } from '@/app/komitenti/_forma/komitent-polja';
+import { SEKCIJE_ARTIKAL, praznArtikal, vrednostiIzArtikla } from './artikal-polja';
 
 /**
  * Pokretanje (frontend nema jest ni vitest — v. `package.json`), iz `frontend/`:
@@ -327,4 +330,151 @@ test('stvarna izmena broja se broji', () => {
 test('nedostajući ključ u polaznom slogu se tretira kao prazno', () => {
   assert.deepEqual(izmenjenaPolja(SEKCIJE, {}, { a: '', b: '', c: '' }), []);
   assert.deepEqual(izmenjenaPolja(SEKCIJE, {}, { a: 'novo', b: '', c: '' }), ['a']);
+});
+
+/* ─────────────────────── BigBit paritet forme „Unos artikala“ (04.08.2026) */
+
+/**
+ * Zahtev vlasnika: „otvaranje artikala da ima ista polja i isti raspored, što više da
+ * bude isto da se ne menja navika korisnika.“ Testovi ispod čuvaju upravo to — redosled
+ * polja, celovitost mreže i to da se ništa nije izgubilo pri premeštanju.
+ */
+
+const ARTIKAL_SLOG = {
+  id: 12345,
+  externalItemId: 58143,
+  catalogNumber: '00042',
+  name: 'Lim 2 mm',
+  group: { code: 'G1', description: 'Limovi' },
+  subgroup: { code: 'S1', description: 'Hladno valjani' },
+  origin: { code: 'P1', description: 'Domaći' },
+  createdAt: '2026-08-04T10:30:00.000Z',
+} as unknown as ItemDetail;
+
+test('svako polje forme ima vrednost — nijedno se ne crta prazno bez razloga', () => {
+  const izSloga = vrednostiIzArtikla(ARTIKAL_SLOG);
+  const prazan = praznArtikal();
+  for (const s of SEKCIJE_ARTIKAL) {
+    for (const p of s.polja) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(izSloga, p.id),
+        `vrednostiIzArtikla ne mapira „${p.id}“ (${s.naslov} → ${p.labela})`,
+      );
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(prazan, p.id),
+        `praznArtikal ne mapira „${p.id}“ (${s.naslov} → ${p.labela})`,
+      );
+    }
+  }
+});
+
+test('nijedno polje se ne pojavljuje dvaput (id je i ključ vrednosti i redosled fokusa)', () => {
+  const svi = SEKCIJE_ARTIKAL.flatMap((s) => s.polja.map((p) => p.id));
+  assert.equal(new Set(svi).size, svi.length, `duplikat među: ${svi.join(', ')}`);
+});
+
+test('prvi ekran prati redosled BigBit forme, red po red, sleva nadesno', () => {
+  // Izvučeno iz same Access baze (kontrole forme „Unos artikala“ sa x/y koordinatama).
+  assert.deepEqual(
+    SEKCIJE_ARTIKAL[0].polja.map((p) => p.id),
+    [
+      'externalItemId',
+      'catalogNumber', 'barCode', 'name',
+      'packaging', 'unit', 'box', 'transportPackaging',
+      'externalCode', 'maxDiscountPercent', 'groupCode', 'groupDescription',
+      'minQuantity', 'paymentTermDays', 'subgroupCode', 'subgroupDescription',
+      'wholesalePrice', 'retailPrice', 'originCode', 'originDescription',
+      'fxSalePrice', 'plu', 'accountingCode2',
+      'customsRate', 'customsTariff', 'foreignName',
+      'originCountry', 'itemExcise', 'itemFee',
+      'shelf', 'weight', 'promotionDiscount',
+    ],
+  );
+});
+
+test('doslovne BigBit labele se ne „ulepšavaju“', () => {
+  const labele = new Map(
+    SEKCIJE_ARTIKAL.flatMap((s) => s.polja).map((p) => [p.id, p.labela] as const),
+  );
+  assert.equal(labele.get('box'), 'Kilograma u komadu');
+  assert.equal(labele.get('transportPackaging'), 'Transp. pakovanje');
+  assert.equal(labele.get('wholesalePrice'), 'VP cena iz posl. KL');
+  assert.equal(labele.get('retailPrice'), 'MP cena iz posl. KL');
+  assert.equal(labele.get('fxSalePrice'), 'MP devizna cena');
+  assert.equal(labele.get('paymentTermDays'), 'Odloženo plaćanje (dana)');
+  assert.equal(labele.get('accountingCode2'), 'Grupa za šemu');
+  assert.equal(labele.get('accountingCode'), 'Kng. šifra');
+  assert.equal(labele.get('foreignName'), 'INO Naziv');
+  assert.equal(labele.get('rasterId'), 'Dimenzija (mm)');
+  assert.equal(labele.get('qualityTypeId'), 'Kvalitet artikla');
+  assert.equal(labele.get('thickness'), 'Debljina lima(mm)');
+  assert.equal(labele.get('note2'), 'Napomena 2 ( viskoznost )');
+  assert.equal(labele.get('symbolImageLink'), 'Slika simbola (jpg lokacija)');
+  assert.equal(labele.get('wordLocation'), 'Tabela za sliku simbola (Word lokacija)');
+  // Poreklo se u BigBit formi i pregledu zove „PodPodgrupa“ — tako ga korisnici zovu.
+  assert.equal(labele.get('originCode'), 'PodPodgrupa');
+});
+
+test('u gustoj mreži nijedan red ne straduje — rasponi popunjavaju tačno 12 kolona', () => {
+  for (const s of SEKCIJE_ARTIKAL) {
+    if (s.mreza !== 12) continue;
+    let u = 0;
+    for (const p of s.polja) {
+      u += p.raspon ?? 1;
+      assert.ok(u <= 12, `„${s.naslov}“: polje ${p.id} prelazi ivicu reda (${u}/12)`);
+      if (u === 12) u = 0;
+    }
+    assert.equal(u, 0, `„${s.naslov}“: poslednji red nije popunjen (ostalo ${12 - u}/12)`);
+  }
+});
+
+test('opis grupe/podgrupe/podpodgrupe se čita iz šifarnika i ne kuca se', () => {
+  const v = vrednostiIzArtikla(ARTIKAL_SLOG);
+  assert.equal(v.groupDescription, 'Limovi');
+  assert.equal(v.subgroupDescription, 'Hladno valjani');
+  assert.equal(v.originDescription, 'Domaći');
+  for (const id of ['groupDescription', 'subgroupDescription', 'originDescription']) {
+    const p = SEKCIJE_ARTIKAL.flatMap((s) => s.polja).find((x) => x.id === id);
+    assert.ok(p?.zakljucano, `„${id}“ mora biti zaključan — to je eho šifarnika`);
+  }
+});
+
+test('šifre se ispisuju sirove, bez tačke za hiljade (BigBit ih tako prikazuje)', () => {
+  const v = vrednostiIzArtikla(ARTIKAL_SLOG);
+  assert.equal(v.externalItemId, '58143');
+  assert.equal(v.id, '12345');
+});
+
+test('D2 — „Dodatna polja“ su POSLEDNJA sekcija, sklopiva i zatvorena', () => {
+  const poslednja = SEKCIJE_ARTIKAL[SEKCIJE_ARTIKAL.length - 1];
+  assert.equal(poslednja.naslov, 'Dodatna polja (van BigBit forme)');
+  assert.equal(poslednja.sklopivo, true);
+  assert.equal(poslednja.podrazumevanoZatvoreno, true);
+  // Ništa se ne briše: polja koja BigBit forma ne prikazuje i dalje postoje.
+  for (const id of ['fxPurchasePrice', 'weightKg', 'volume', 'area', 'hps', 'active', 'toDelete']) {
+    assert.ok(
+      poslednja.polja.some((p) => p.id === id),
+      `„${id}“ je nestalo iz forme umesto da se sklopi`,
+    );
+  }
+});
+
+test('D1 — paritet izgleda nije otvorio upis', () => {
+  assert.equal(BRANA_ARTIKAL.otvorena, false);
+});
+
+test('ADITIVNOST — komitenti ostaju na zatečenoj mreži i bez sklapanja', () => {
+  // `mreza` i `sklopivo` su uvedeni za BigBit paritet artikla; da su obavezni ili da su
+  // podrazumevano uključeni, ekran komitenta bi se pomerio bez ijedne izmene u njegovom
+  // fajlu. Ovaj test je brana za to.
+  for (const s of SEKCIJE_KOMITENT) {
+    assert.equal(s.mreza, undefined, `„${s.naslov}“: komitent ne sme dobiti gustu mrežu`);
+    assert.equal(s.sklopivo, undefined, `„${s.naslov}“: komitent ne sme dobiti sklapanje`);
+    for (const p of s.polja) {
+      assert.ok(
+        p.raspon === undefined || p.raspon === 1 || p.raspon === 2 || p.raspon === 4,
+        `„${s.naslov}“ → ${p.id}: raspon ${p.raspon} nije iz zatečenog skupa 1/2/4`,
+      );
+    }
+  }
 });
