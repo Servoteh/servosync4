@@ -64,6 +64,19 @@ export function money(v: string | number | null | undefined): string {
   return MONEY_FMT.format(Number.isFinite(n) ? n : 0);
 }
 
+/**
+ * Cena iz korisničkog unosa → broj. Ljudi kucaju „10din", „42.800,50 RSD", „1 250" —
+ * goli `Number()` na svemu tome vraća NaN, koji BE (`@IsNumber`) odbija, pa upis tiho
+ * propada. Vraća `null` za prazno i `NaN` za stvarno neispravan unos (pozivalac javlja
+ * grešku). Srpski zapis: tačka = hiljade, zarez = decimale.
+ */
+export function parsePrice(raw: string): number | null {
+  const t = raw.replace(/[^\d,.-]/g, '').trim();
+  if (!t) return null;
+  const n = Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
+  return Number.isFinite(n) && n >= 0 ? n : NaN;
+}
+
 // ── Statusi mašine / operativni ────────────────────────────────────
 // Labele = 1.0 kanon (maintFormatters.js STATUS_LABELS): Radi/Smetnje/Zastoj/Održavanje.
 const OP: Record<OpStatus, { tone: Tone; label: string }> = {

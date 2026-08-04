@@ -24,7 +24,7 @@ import {
   type WoPart,
   type WoStatus,
 } from '@/api/odrzavanje';
-import { Field, money, WO_STATUS_LABEL, WO_TYPE_LABEL, WoPriorityBadge, WoStatusBadge } from './common';
+import { Field, money, parsePrice, WO_STATUS_LABEL, WO_TYPE_LABEL, WoPriorityBadge, WoStatusBadge } from './common';
 
 // „Otvori incident" otvara incident-detalj; dinamički import prekida statički ciklus
 // (incident-detail-dialog statički uvozi ovaj modul).
@@ -65,6 +65,7 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
   const [partQty, setPartQty] = useState('');
   const [partUnit, setPartUnit] = useState('');
   const [partCost, setPartCost] = useState('');
+  const [partErr, setPartErr] = useState<string | null>(null);
   const [minutes, setMinutes] = useState('');
   const [laborNotes, setLaborNotes] = useState('');
   const [incidentOpen, setIncidentOpen] = useState(false);
@@ -99,19 +100,23 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
   }
 
   function submitPart() {
-    if (!d || !partName.trim()) return;
+    setPartErr(null);
+    if (!d) return;
+    if (!partName.trim()) return setPartErr('Naziv dela je obavezan — za samu cenu servisa koristi „Trošak popravke" iznad.');
     const qty = partQty ? Number(partQty) : undefined;
     if (selectedPart) {
       // Kataloški deo: BE autoritativno uzima naziv/cenu + skida zalihu (out kretanje).
       addPart.mutate({ id: d.woId, partId: selectedPart.partId, partName: selectedPart.name, quantity: qty, unit: partUnit.trim() || undefined });
     } else {
       // Slobodan unos (bez partId) — zadržava ručna polja.
+      const cena = parsePrice(partCost);
+      if (Number.isNaN(cena)) return setPartErr('Cena mora biti broj (npr. 10 ili 1.250,50).');
       addPart.mutate({
         id: d.woId,
         partName: partName.trim(),
         quantity: qty,
         unit: partUnit.trim() || undefined,
-        unitCost: partCost ? Number(partCost) : undefined,
+        unitCost: cena ?? undefined,
       });
     }
     setPartName(''); setPartQty(''); setPartUnit(''); setPartCost('');
@@ -270,10 +275,11 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
                     disabled={!!selectedPart}
                     title={selectedPart ? 'Cena iz kataloga (BE autoritativno)' : undefined}
                   />
-                  <Button variant="secondary" disabled={!partName.trim() || busy} onClick={submitPart}>
+                  <Button variant="secondary" disabled={busy} onClick={submitPart}>
                     Dodaj
                   </Button>
                 </div>
+                {partErr && <p className="text-sm text-status-danger">{partErr}</p>}
                 {selectedPart && (
                   <p className="text-2xs text-ink-secondary">
                     Kataloški deo — zaliha se skida, cena/naziv iz kataloga.
@@ -371,15 +377,18 @@ function TrosakSection({
   const partsSum = woPartsSum(parts);
   const effective = woEffectiveCost(parts, costTotal);
   const [racun, setRacun] = useState<RacunPredlog | null>(null);
-  /** Prazno polje = obriši vrednost (null); tekst koji nije broj se ignoriše. */
+  const [cenaErr, setCenaErr] = useState<string | null>(null);
+  /** Prazno polje = obriši vrednost (null); neispravan unos javlja grešku umesto da tiho propadne. */
   function saveNum(field: string, raw: string, previous: string | number | null) {
-    const trimmed = raw.trim().replace(',', '.');
-    if (trimmed === '') {
+    setCenaErr(null);
+    if (raw.trim() === '') {
       if (previous != null) onSave({ [field]: null });
       return;
     }
-    const n = Number(trimmed);
-    if (!Number.isFinite(n) || n < 0) return;
+    const n = parsePrice(raw);
+    if (n == null || Number.isNaN(n)) {
+      return setCenaErr('Cena mora biti broj (npr. 42800 ili 42.800,50).');
+    }
     if (n === Number(previous ?? NaN)) return;
     onSave({ [field]: n });
   }
@@ -441,6 +450,12 @@ function TrosakSection({
             />
           </FormField>
         </div>
+      )}
+      {cenaErr && <p className="mt-1 text-sm text-status-danger">{cenaErr}</p>}
+      {canEdit && (
+        <p className="mt-1 text-2xs text-ink-secondary">
+          Snima se čim izađeš iz polja (klik bilo gde van njega).
+        </p>
       )}
     </div>
   );

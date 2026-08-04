@@ -2748,6 +2748,13 @@ export class OdrzavanjeService {
             reportedBy: uid!,
             dueAt: this.toDbTs(dto.dueAt) ?? null,
             sourceIncidentId: dto.sourceIncidentId ?? null,
+            // Trošak već pri KREIRANJU: servis se najčešće unosi unazad, sa računom
+            // u ruci — terati čoveka da prvo napravi nalog pa ga ponovo otvara da
+            // upiše cenu je bio glavni razlog što cena nije ni unošena.
+            costTotal: dto.costTotal ?? null,
+            estimatedCost: dto.estimatedCost ?? null,
+            externalServicerName: dto.externalServicerName?.trim() || null,
+            odometerKmAtService: dto.odometerKmAtService ?? null,
           },
         });
       },

@@ -1388,5 +1388,66 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       } as never);
       expect(create).toHaveBeenCalledTimes(1);
     });
+
+    it("createWorkOrder upisuje trošak ODMAH pri kreiranju (03.08.2026)", async () => {
+      // Servis se evidentira unazad, sa računom u ruci. Bez ovoga je jedini put bio
+      // „kreiraj → nađi u listi → otvori → upiši cenu" i cena se nije ni unosila.
+      const create = jest.fn().mockResolvedValue({ woId: "w1" });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintAsset: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({ archivedAt: null, name: "Caddy Beli novi" }),
+          updateMany: jest.fn(),
+        },
+        maintWorkOrder: { create, count: jest.fn().mockResolvedValue(0) },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.createWorkOrder("sef@servoteh.com", {
+        clientEventId: "3b241101-e2bb-4255-8caf-4136c566a964",
+        assetId: ASSET,
+        assetType: "vehicle",
+        type: "servis",
+        title: "Mali servis",
+        priority: "p4_planirano",
+        costTotal: 42800,
+        externalServicerName: "  Auto Čačak  ",
+        odometerKmAtService: 148320,
+      } as never);
+      const data = create.mock.calls[0][0].data;
+      expect(Number(data.costTotal)).toBe(42800);
+      expect(data.externalServicerName).toBe("Auto Čačak"); // trim
+      expect(data.odometerKmAtService).toBe(148320);
+    });
+
+    it("createWorkOrder bez troška ne upisuje nule (ostaje null, da izveštaj ne broji prazno)", async () => {
+      const create = jest.fn().mockResolvedValue({ woId: "w1" });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintAsset: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({ archivedAt: null, name: "Presa 100t" }),
+          updateMany: jest.fn(),
+        },
+        maintWorkOrder: { create, count: jest.fn().mockResolvedValue(0) },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.createWorkOrder("sef@servoteh.com", {
+        clientEventId: "3b241101-e2bb-4255-8caf-4136c566a965",
+        assetId: ASSET,
+        assetType: "machine",
+        type: "kvar",
+        title: "Test",
+        priority: "p3_manje",
+      } as never);
+      const data = create.mock.calls[0][0].data;
+      expect(data.costTotal).toBeNull();
+      expect(data.externalServicerName).toBeNull();
+      expect(data.odometerKmAtService).toBeNull();
+    });
   });
 });

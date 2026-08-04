@@ -260,6 +260,11 @@ export class CreateWorkOrderDto extends IdempotentDto {
   @IsOptional() @IsISO8601() dueAt?: string;
   @IsOptional() @IsBoolean() safetyMarker?: boolean;
   @IsOptional() @IsUUID() sourceIncidentId?: string;
+  // Trošak se sme uneti odmah pri kreiranju (servis se unosi unazad, sa računom).
+  @IsOptional() @IsNumber() costTotal?: number;
+  @IsOptional() @IsNumber() estimatedCost?: number;
+  @IsOptional() @IsString() @MaxLength(200) externalServicerName?: string;
+  @IsOptional() @IsInt() odometerKmAtService?: number;
 }
 
 export class UpdateWorkOrderDto {
