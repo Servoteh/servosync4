@@ -119,6 +119,41 @@ describe("YearOpenService — osnova je PROZOR po godini, ne kumulativ", () => {
     expect(prisma.sqlSeen.some((s) => s.includes("je.document_date <"))).toBe(true);
   });
 
+  /**
+   * Telo ove rute NIJE validirano (`YearOpenDto` je interfejs → `ValidationPipe` ga
+   * preskače). Da je provera bila `dryRun === true`, klijent koji pošalje STRING `"true"`
+   * dobio bi PRAVI prenos umesto izveštaja — upis u knjige na osnovu neprepoznate
+   * vrednosti. Pravilo je zato obrnuto: knjiži se samo kad je `dryRun` odsutan ili
+   * izričito neistina.
+   */
+  it.each(["true", "1", "da", true])(
+    "dryRun = %p (i kao string) NE knjiži ništa",
+    async (value) => {
+      const prisma = makePrisma({ earliestYear: 2026, psForFromYear: true });
+      const { svc, posting } = make(prisma);
+
+      await svc.createYearOpen(
+        { fromYear: 2026, toYear: 2027, dryRun: value as never },
+        1,
+      );
+      expect(posting.postManualEntry).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["false", "", undefined])(
+    "dryRun = %p znači PRAVI prenos (izveštaj se ne traži)",
+    async (value) => {
+      const prisma = makePrisma({ earliestYear: 2026, psForFromYear: true });
+      const { svc, posting } = make(prisma);
+
+      await svc.createYearOpen(
+        { fromYear: 2026, toYear: 2027, dryRun: value as never },
+        1,
+      );
+      expect(posting.postManualEntry).toHaveBeenCalled();
+    },
+  );
+
   it("knjige imaju ranije godine a fromYear nema PS → 409, ništa se ne knjiži", async () => {
     // Ovo je brana koju PROZOR uvodi: bez PS naloga za fromYear prozor izostavlja zatečeni
     // saldo i početno stanje bi izašlo PREMALO — tiho manje PS je kvar gori od dvostrukog

@@ -160,7 +160,18 @@ export class YearOpenService {
       // (kumulativnu) i novu (prozor po godini) osnovu, pa se pre prenosa vidi da li je
       // zatečeno početno stanje bilo naduvano i za koliko. Odluka vlasnika 04.08.2026:
       // popravka koda + izveštaj, BEZ automatskog backfill-a zatečenih godina.
-      if (dto.dryRun === true) {
+      // FAIL-SAFE ČITANJE `dryRun`: telo ove rute NIJE validirano (`YearOpenDto` je
+      // interfejs, pa ga globalni `ValidationPipe` preskače — jedna od 164 takve rute,
+      // v. `test/body-validation-coverage.e2e-spec.ts`). Da je provera bila `=== true`,
+      // klijent koji pošalje `"true"` kao STRING dobio bi PRAVI prenos umesto izveštaja —
+      // dakle upis u knjige na osnovu neprepoznate vrednosti. Zato je pravilo obrnuto:
+      // prenos se izvršava samo kad je `dryRun` ODSUTAN ili izričito neistina.
+      const wantsDryRun =
+        dto.dryRun !== undefined &&
+        dto.dryRun !== null &&
+        String(dto.dryRun).trim().toLowerCase() !== "false" &&
+        String(dto.dryRun).trim() !== "";
+      if (wantsDryRun) {
         return {
           data: {
             dryRun: true as const,
