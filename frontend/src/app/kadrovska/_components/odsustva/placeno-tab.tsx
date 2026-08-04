@@ -22,7 +22,13 @@ import {
   type TxResponse,
 } from '@/api/kadrovska';
 import { SummaryChips } from '../common';
-import { PAID_LEAVE_LABEL, normEmp, type EmpRow } from './shared';
+import {
+  PAID_LEAVE_LABEL,
+  matchesStatusFilter,
+  normEmp,
+  STATUS_FILTER_OPEN,
+  type EmpRow,
+} from './shared';
 import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 
 // ============================================================================
@@ -35,8 +41,9 @@ import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 // ============================================================================
 
 const STATUS_META: Record<string, { tone: Tone; label: string }> = {
-  pending: { tone: 'warn', label: 'Na čekanju' },
-  sef_approved: { tone: 'info', label: 'Odobrio šef (čeka HR)' },
+  pending: { tone: 'warn', label: 'Na čekanju (1. nivo — šef)' },
+  // 068/26: drugi stepen se čita bez tumačenja (šef dao svoje, čeka kadrovsku).
+  sef_approved: { tone: 'info', label: '2. nivo — čeka kadrovsku' },
   approved: { tone: 'success', label: 'Odobreno' },
   rejected: { tone: 'danger', label: 'Odbijeno' },
 };
@@ -63,7 +70,9 @@ export function PlacenoTab() {
   const isHr = !!me?.isHr || isAdmin;
   const isManagement = !!me?.isManagement;
 
-  const [statusF, setStatusF] = useState('pending');
+  // 068/26 (isti koren kao nadoknada-tab): podrazumevano OBA stepena koja čekaju
+  // odluku — `sef_approved` ne sme da ispadne iz liste za odobravanje.
+  const [statusF, setStatusF] = useState<string>(STATUS_FILTER_OPEN);
   const [q, setQ] = useState('');
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [rejectFor, setRejectFor] = useState<PaidLeaveRequest | null>(null);
@@ -89,7 +98,7 @@ export function PlacenoTab() {
   const filtered = useMemo(() => {
     const lq = q.trim().toLowerCase();
     return items.filter((r) => {
-      if (statusF && r.status !== statusF) return false;
+      if (!matchesStatusFilter(r.status, statusF)) return false;
       if (lq) {
         const hay = `${empName(r.employeeId)} ${r.submittedBy || ''}`.toLowerCase();
         if (!hay.includes(lq)) return false;
@@ -279,18 +288,50 @@ export function PlacenoTab() {
       <NoticeBar notice={notice} />
       <SummaryChips
         items={[
-          { label: 'Na čekanju', value: counts.pending, tone: counts.pending ? 'warn' : 'default' },
-          { label: 'Čeka HR', value: counts.sef, tone: counts.sef ? 'warn' : 'default' },
-          { label: 'Odobreno', value: counts.approved },
-          { label: 'Odbijeno', value: counts.rejected },
-          { label: 'Ukupno', value: items.length },
+          {
+            label: 'Čeka odluku',
+            value: counts.pending + counts.sef,
+            tone: counts.pending + counts.sef ? 'warn' : 'default',
+            onClick: () => setStatusF(STATUS_FILTER_OPEN),
+            active: statusF === STATUS_FILTER_OPEN,
+            title: 'Oba stepena: 1. nivo (šef) + 2. nivo (kadrovska)',
+          },
+          {
+            label: 'Na čekanju (šef)',
+            value: counts.pending,
+            tone: counts.pending ? 'warn' : 'default',
+            onClick: () => setStatusF('pending'),
+            active: statusF === 'pending',
+          },
+          {
+            label: 'Čeka kadrovsku',
+            value: counts.sef,
+            tone: counts.sef ? 'warn' : 'default',
+            onClick: () => setStatusF('sef_approved'),
+            active: statusF === 'sef_approved',
+            title: 'Šef je odobrio (1. nivo) — finalizuje HR ili uprava',
+          },
+          {
+            label: 'Odobreno',
+            value: counts.approved,
+            onClick: () => setStatusF('approved'),
+            active: statusF === 'approved',
+          },
+          {
+            label: 'Odbijeno',
+            value: counts.rejected,
+            onClick: () => setStatusF('rejected'),
+            active: statusF === 'rejected',
+          },
+          { label: 'Ukupno', value: items.length, onClick: () => setStatusF(''), active: statusF === '' },
         ]}
       />
       <div className="flex flex-wrap items-center gap-2">
         <select className={selectCls} value={statusF} onChange={(e) => setStatusF(e.target.value)}>
+          <option value={STATUS_FILTER_OPEN}>Čeka odluku (šef + kadrovska)</option>
           <option value="">Svi statusi</option>
-          <option value="pending">Na čekanju</option>
-          <option value="sef_approved">Odobrio šef (čeka HR)</option>
+          <option value="pending">Na čekanju (1. nivo — šef)</option>
+          <option value="sef_approved">2. nivo — čeka kadrovsku</option>
           <option value="approved">Odobreni</option>
           <option value="rejected">Odbijeni</option>
         </select>

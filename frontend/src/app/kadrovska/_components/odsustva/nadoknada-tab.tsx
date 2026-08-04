@@ -30,7 +30,13 @@ function rpcData(res: unknown): Record<string, unknown> {
   return ((res as TxResponse<Record<string, unknown>> | undefined)?.data ?? {}) as Record<string, unknown>;
 }
 import { SummaryChips } from '../common';
-import { compareByName, normEmp, type EmpRow } from './shared';
+import {
+  compareByName,
+  matchesStatusFilter,
+  normEmp,
+  STATUS_FILTER_OPEN,
+  type EmpRow,
+} from './shared';
 import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 
 // ============================================================================
@@ -48,8 +54,10 @@ import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 // ============================================================================
 
 const STATUS_META: Record<string, { tone: Tone; label: string }> = {
-  pending: { tone: 'warn', label: 'Na čekanju' },
-  sef_approved: { tone: 'info', label: 'Odobrio šef (čeka HR)' },
+  pending: { tone: 'warn', label: 'Na čekanju (1. nivo — šef)' },
+  // 068/26: drugi stepen mora da se čita bez tumačenja — šef je SVOJE dao,
+  // stavka sada čeka kadrovsku (HR/upravu) i tek njen klik upisuje dan/odluku.
+  sef_approved: { tone: 'info', label: '2. nivo — čeka kadrovsku' },
   approved: { tone: 'success', label: 'Odobreno (čeka nadoknadu)' },
   completed: { tone: 'success', label: 'Nadoknađeno' },
   rejected: { tone: 'danger', label: 'Odbijeno' },
@@ -75,7 +83,10 @@ export function NadoknadaTab() {
   // uključuje menadzment, a RPC finalizaciju gate-uje na v_is_hr OR v_is_admin.
   const isHr = !!me?.isHr || isAdmin;
 
-  const [statusF, setStatusF] = useState('pending');
+  // 068/26: podrazumevano OBA stepena koja čekaju odluku. Ranije `pending` →
+  // zahtev koji je šef prosledio (`sef_approved`) nije bio u tabeli, pa je stajao
+  // dok neko ne bi ručno promenio filter (Stamenić 01.08.2026 → 4 dana).
+  const [statusF, setStatusF] = useState<string>(STATUS_FILTER_OPEN);
   const [q, setQ] = useState('');
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [rejectFor, setRejectFor] = useState<MakeupRequest | null>(null);
@@ -108,7 +119,7 @@ export function NadoknadaTab() {
   const filtered = useMemo(() => {
     const lq = q.trim().toLowerCase();
     return items.filter((r) => {
-      if (statusF && r.status !== statusF) return false;
+      if (!matchesStatusFilter(r.status, statusF)) return false;
       if (lq) {
         const hay = `${empName(r.employeeId)} ${r.submittedBy || ''}`.toLowerCase();
         if (!hay.includes(lq)) return false;
@@ -337,6 +348,21 @@ export function NadoknadaTab() {
           if (r.bonusGranted === true) return <StatusBadge tone={meta.tone} label="Odobreno (+1 dan GO)" />;
           if (r.bonusGranted === false) return <StatusBadge tone="warn" label="Odobreno — dan GO NIJE upisan" />;
         }
+        // 068/26: kod drugog stepena piše KO je dao prvi nivo i kad — da se ne
+        // pomeša sa zahtevom koji tek čeka šefa i da se vidi dual control.
+        if (r.status === 'sef_approved') {
+          const who = s(r, 'level1By');
+          const when = s(r, 'level1At');
+          return (
+            <div className="space-y-0.5">
+              <StatusBadge tone={meta.tone} label={meta.label} />
+              <div className="text-2xs text-ink-secondary">
+                1. nivo: {who || '—'}
+                {when ? ` · ${formatDate(when)}` : ''}
+              </div>
+            </div>
+          );
+        }
         return <StatusBadge tone={meta.tone} label={meta.label} />;
       },
     },
@@ -447,20 +473,54 @@ export function NadoknadaTab() {
   return (
     <div className="space-y-3">
       <NoticeBar notice={notice} />
+      {/* 068/26: čipovi su i filteri — brojka koja se vidi mora da se otvori. */}
       <SummaryChips
         items={[
-          { label: 'Na čekanju', value: counts.pending, tone: counts.pending ? 'warn' : 'default' },
-          { label: 'Čeka HR', value: counts.sef, tone: counts.sef ? 'warn' : 'default' },
-          { label: 'Za nadoknadu', value: counts.approved, tone: counts.approved ? 'accent' : 'default' },
-          { label: 'Nadoknađeno', value: counts.completed },
-          { label: 'Ukupno', value: items.length },
+          {
+            label: 'Čeka odluku',
+            value: counts.pending + counts.sef,
+            tone: counts.pending + counts.sef ? 'warn' : 'default',
+            onClick: () => setStatusF(STATUS_FILTER_OPEN),
+            active: statusF === STATUS_FILTER_OPEN,
+            title: 'Oba stepena: 1. nivo (šef) + 2. nivo (kadrovska)',
+          },
+          {
+            label: 'Na čekanju (šef)',
+            value: counts.pending,
+            tone: counts.pending ? 'warn' : 'default',
+            onClick: () => setStatusF('pending'),
+            active: statusF === 'pending',
+          },
+          {
+            label: 'Čeka kadrovsku',
+            value: counts.sef,
+            tone: counts.sef ? 'warn' : 'default',
+            onClick: () => setStatusF('sef_approved'),
+            active: statusF === 'sef_approved',
+            title: 'Šef je odobrio (1. nivo) — finalizuje HR ili uprava',
+          },
+          {
+            label: 'Za nadoknadu',
+            value: counts.approved,
+            tone: counts.approved ? 'accent' : 'default',
+            onClick: () => setStatusF('approved'),
+            active: statusF === 'approved',
+          },
+          {
+            label: 'Nadoknađeno',
+            value: counts.completed,
+            onClick: () => setStatusF('completed'),
+            active: statusF === 'completed',
+          },
+          { label: 'Ukupno', value: items.length, onClick: () => setStatusF(''), active: statusF === '' },
         ]}
       />
       <div className="flex flex-wrap items-center gap-2">
         <select className={selectCls} value={statusF} onChange={(e) => setStatusF(e.target.value)}>
+          <option value={STATUS_FILTER_OPEN}>Čeka odluku (šef + kadrovska)</option>
           <option value="">Svi statusi</option>
-          <option value="pending">Na čekanju</option>
-          <option value="sef_approved">Odobrio šef (čeka HR)</option>
+          <option value="pending">Na čekanju (1. nivo — šef)</option>
+          <option value="sef_approved">2. nivo — čeka kadrovsku</option>
           <option value="approved">Odobreno (čeka nadoknadu)</option>
           <option value="completed">Nadoknađeno</option>
           <option value="rejected">Odbijeno</option>
