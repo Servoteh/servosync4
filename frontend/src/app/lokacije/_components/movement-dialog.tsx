@@ -286,6 +286,11 @@ export function MovementDialog({
         // Burst slova ume da „prošeta" select (letter-navigacija) — vrati izbor.
         if ((MOVEMENT_TYPES as readonly string[]).includes(v)) setMovementType(v as LocMovementType);
         break;
+      case 'hallFilter':
+        // Isti obrazac kao Tip pokreta: vrati izbor kroz POSTOJEĆU listu hala
+        // ('' = „—HALA—" tj. bez filtera; nestala hala → bez filtera, ne sirov id).
+        setHallFilterId(v !== '' && halls.some((h) => h.id === v) ? v : null);
+        break;
     }
   }
 
@@ -884,6 +889,7 @@ export function MovementDialog({
                       pa izbor hale sužava listu polica; kavezi/hale/ostalo ostaju. */}
                   <select
                     className={`${INPUT} mb-1.5`}
+                    data-hid-wedge-field="hallFilter"
                     value={hallFilterId ?? ''}
                     onChange={(e) => setHallFilterId(e.target.value || null)}
                     aria-label="Hala (filter za police)"

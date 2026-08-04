@@ -148,11 +148,22 @@ export function useHidScanBuffer(
         buffer = '';
         burstField = null;
         if (code.length < (optsRef.current?.minLength ?? MIN_LENGTH)) return;
-        if (code === lastCode && now - lastAt < THROTTLE_MS) return;
-        // Odbijen kod = NIJE sken → Enter pripada formi (ne diramo ga).
-        if (optsRef.current?.accept && !optsRef.current.accept(code)) return;
-        lastCode = code;
-        lastAt = now;
+        const repeat = code === lastCode && now - lastAt < THROTTLE_MS;
+        // Dupli okidač čitača (isti kod <1,5 s): ljuske (default režim) ga i
+        // dalje tiho ignorišu. U form-wedge režimu burst je VEĆ upao u označeno
+        // polje, pa bi tihi izlaz ostavio „121RNZ:…" u njemu i pustio Enter
+        // formi (verify MAJOR-1) — zato i ponovljen kod ide vlasniku ISTIM
+        // putem kao prihvaćen (restore + idempotentna ponovna primena), samo
+        // bez pomeranja throttle prozora.
+        if (repeat && !captureMarked) return;
+        if (!repeat) {
+          // Odbijen kod = NIJE sken → Enter pripada formi (ne diramo ga).
+          // `repeat` je po konstrukciji već prošao `accept` (lastCode se puni
+          // samo ovde), pa se provera ne ponavlja.
+          if (optsRef.current?.accept && !optsRef.current.accept(code)) return;
+          lastCode = code;
+          lastAt = now;
+        }
         // Enter sa čitača ne sme da „klikne" fokusirano dugme ljuske ni da procuri
         // na sloj ispod (escape-layer/dijalog) — sken je naš od ovog trenutka.
         ev.preventDefault();
