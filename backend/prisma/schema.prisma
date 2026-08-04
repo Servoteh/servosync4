@@ -2822,6 +2822,34 @@ model MasinaOtpisPrimalac {
   @@map("masina_otpis_primaoci")
 }
 
+/// App-owned (zahtev 034/26 — komentar Zorana 29.07). IMENOVANI primaoci obaveštenja o
+/// NEUSAGLAŠENOSTI NA MONTAŽI — zamena za razrešenje po roli `users.role = 'menadzment'`
+/// (004/26 COO krug), koje je na produ slalo na 19 naloga uklj. spoljne/test adrese
+/// (hapfluid.rs, test@, gmail), a PRESKAKALO admin naloge (Zoran, Nenad) i leadpm
+/// (Milan Stojadinović). Zoranova lista je 7 imenovanih ljudi.
+///
+/// Lista je PODEŠAVANJE, ne kod (obrazac `masina_otpis_primaoci`): uređuje se u
+/// Podešavanja → Notifikacije (admin, `settings.system`), a može i INSERT/UPDATE-om
+/// (`active = FALSE` gasi primaoca) — važi od SLEDEĆE prijave, servis čita pri svakom
+/// slanju. Ključ je mejl (čitljiv, primalac ne mora imati nalog); `users` se gleda samo
+/// za `worker_id` most (in-app zvonce).
+model MontazaNmPrimalac {
+  id              Int      @id(map: "pk_montaza_nm_primaoci") @default(autoincrement()) @map("id")
+  /// Malim slovima, bez razmaka (DB CHECK) — inače bi „ista" osoba mogla ući dvaput.
+  email           String   @unique(map: "uq_montaza_nm_primaoci_email") @map("email") @db.VarChar(200)
+  /// Oznaka za čoveka koji čita tabelu; ime u poruci se preuzima iz `users` kad nalog postoji.
+  fullName        String?  @map("full_name") @db.VarChar(150)
+  /// FALSE = primalac ugašen (istorija ostaje). Servis šalje samo aktivnima.
+  active          Boolean  @default(true) @map("active")
+  note            String?  @map("note")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Meki ref → users.id (ko je dodao red; NULL za seed iz migracije).
+  createdByUserId Int?     @map("created_by_user_id")
+
+  @@map("montaza_nm_primaoci")
+}
+
 /// App-owned (2.0, plan §3.2-6, odluka O3). Šifarnik odeljenja (7 redova iz sy15
 /// `core.odeljenje`); nose boju i vođu — semantika drugačija od `work_units` / `workers`.
 /// `leadUserId` / `leadWorkerId` meki ref-ovi (users / workers, bez DB FK). Referencira ga

@@ -47,3 +47,23 @@ export class AddGridEditorDto {
   @MaxLength(300)
   note?: string;
 }
+
+/**
+ * Dodaj primaoca obaveštenja o neusaglašenosti na montaži (034/26 — tabela
+ * `montaza_nm_primaoci`). Aktivan duplikat → 409; ugašen red se reaktivira.
+ */
+export class AddNmPrimalacDto {
+  @IsEmail()
+  @MaxLength(200)
+  email!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  fullName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  note?: string;
+}

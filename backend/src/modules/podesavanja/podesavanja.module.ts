@@ -6,6 +6,7 @@ import { PredmetPlaneriService } from "./predmet-planeri.service";
 import { SyncSwitchService } from "./sync-switch.service";
 import { CompanyDetailsService } from "./company-details.service";
 import { PaymentAccountsService } from "./payment-accounts.service";
+import { MontazaNmPrimaociService } from "./montaza-nm-primaoci.service";
 
 /** Podešavanja (RBAC admin + matični + sistem) — 3.0 TALAS D (podaci u sy15 — Sy15Module).
  *  D1 (R2) dvostrano upravljanje nalozima = `PodesavanjaUsersService` (GoTrue+sy15+2.0).
@@ -27,6 +28,9 @@ import { PaymentAccountsService } from "./payment-accounts.service";
     // izvoznoj fakturi. Kolone su dodate 01.08.2026, štampa ih čita, a pisca nisu imale:
     // izvozni račun je izlazio bez ijedne bankarske instrukcije.
     PaymentAccountsService,
+    // 034/26: urediva lista primalaca obaveštenja o neusaglašenosti na montaži
+    // (montaza_nm_primaoci) — mail/zvonce je čitaju direktno, ovo je samo admin CRUD.
+    MontazaNmPrimaociService,
   ],
   exports: [SyncSwitchService],
 })

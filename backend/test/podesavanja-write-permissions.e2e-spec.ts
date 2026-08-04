@@ -15,6 +15,7 @@ import { PredmetPlaneriService } from "../src/modules/podesavanja/predmet-planer
 import { SyncSwitchService } from "../src/modules/podesavanja/sync-switch.service";
 import { CompanyDetailsService } from "../src/modules/podesavanja/company-details.service";
 import { PaymentAccountsService } from "../src/modules/podesavanja/payment-accounts.service";
+import { MontazaNmPrimaociService } from "../src/modules/podesavanja/montaza-nm-primaoci.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PERMISSIONS } from "../src/common/authz/permissions";
@@ -80,6 +81,12 @@ describe("Podešavanja WRITE permisije (e2e, AUTHZ_ENFORCE=true)", () => {
         {
           provide: PaymentAccountsService,
           useValue: { list: jest.fn(), update: jest.fn() },
+        },
+        // 034/26: primaoci obaveštenja o neusaglašenosti — DI za PodesavanjaController.
+        // Rute su settings.system; permisije im pokriva pb-profil-podesavanja spec.
+        {
+          provide: MontazaNmPrimaociService,
+          useValue: { list: jest.fn(), add: jest.fn(), remove: jest.fn() },
         },
       ],
     })

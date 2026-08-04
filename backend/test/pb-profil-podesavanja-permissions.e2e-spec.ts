@@ -19,6 +19,7 @@ import { PredmetPlaneriService } from "../src/modules/podesavanja/predmet-planer
 import { SyncSwitchService } from "../src/modules/podesavanja/sync-switch.service";
 import { CompanyDetailsService } from "../src/modules/podesavanja/company-details.service";
 import { PaymentAccountsService } from "../src/modules/podesavanja/payment-accounts.service";
+import { MontazaNmPrimaociService } from "../src/modules/podesavanja/montaza-nm-primaoci.service";
 import { ALL_ROLE_KEYS } from "../src/common/authz/roles";
 import { roleHasPermission } from "../src/common/authz/role-permissions";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -167,6 +168,11 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         // su jedine metode koje kontroler zove. Spisak je ručan, pa ga svako novo zavisno
         // polje kontrolera obori — a to se vidi SAMO kroz `test/jest-e2e.json`.
         { provide: PaymentAccountsService, useValue: { list: jest.fn(), update: jest.fn() } },
+        // 034/26: primaoci obaveštenja o neusaglašenosti — DI za PodesavanjaController.
+        {
+          provide: MontazaNmPrimaociService,
+          useValue: { list: jest.fn(), add: jest.fn(), remove: jest.fn() },
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -435,6 +441,38 @@ describe("Talas D permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     );
     it("GET /admin/system/ai-models → 403 za menadzment", async () => {
       await get("/admin/system/ai-models", "menadzment").expect(403);
+    });
+    // 034/26: primaoci neusaglašenosti — settings.system (samo admin), kao tab
+    // Notifikacije u kom se lista uređuje. Menadžment NE sme (lista je Zoranova
+    // presuda, koriguje je Nenad).
+    it.each(SYSTEM_ROLES)(
+      "GET /admin/montaza-nm-primaoci → 200 za %s",
+      async (role) => {
+        await get("/admin/montaza-nm-primaoci", role).expect(200);
+      },
+    );
+    it("GET /admin/montaza-nm-primaoci → 403 za menadzment", async () => {
+      await get("/admin/montaza-nm-primaoci", "menadzment").expect(403);
+    });
+    it("POST /admin/montaza-nm-primaoci → 403 za menadzment, 2xx admin", async () => {
+      await send("post", "/admin/montaza-nm-primaoci", "menadzment", {
+        email: "x@servoteh.com",
+      }).expect(403);
+      await send("post", "/admin/montaza-nm-primaoci", "admin", {
+        email: "x@servoteh.com",
+      }).expect(201);
+    });
+    it("DELETE /admin/montaza-nm-primaoci/:email → 403 za menadzment, 2xx admin", async () => {
+      await send(
+        "delete",
+        "/admin/montaza-nm-primaoci/x%40servoteh.com",
+        "menadzment",
+      ).expect(403);
+      await send(
+        "delete",
+        "/admin/montaza-nm-primaoci/x%40servoteh.com",
+        "admin",
+      ).expect(200);
     });
   });
 

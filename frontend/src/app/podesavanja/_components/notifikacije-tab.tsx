@@ -2,14 +2,19 @@
 
 import Link from 'next/link';
 import { Bell, Pencil, Calendar, Wrench, Users, ArrowRight, Link2 } from 'lucide-react';
+import { NmPrimaociSection } from './nm-primaoci-section';
 
 // ============================================================================
 // Podešavanja → Notifikacije — centralni hub (paritet 1.0 `notifikacijeTab.js`).
-// Tanki FE: čiste link-kartice ka konfiguraciji notifikacija po modulu. Bez backend
-// poziva. Notifikacije se i dalje podešavaju UNUTAR svakog modula — ovde su svi
-// ulazi na jednom mestu. Rute su 2.0 (PB=/pb, Sastanci=/sastanci, Održavanje=
-// /odrzavanje, Kadrovska=/kadrovska); svaka vodi na modul čiji admin/notif tab
-// nosi stvarnu konfiguraciju. Link ka Integracije tabu je interni (onNavigate).
+// Link-kartice ka konfiguraciji notifikacija po modulu (rute 2.0: PB=/pb,
+// Sastanci=/sastanci, Održavanje=/odrzavanje, Kadrovska=/kadrovska); svaka vodi
+// na modul čiji admin/notif tab nosi stvarnu konfiguraciju. Link ka Integracije
+// tabu je interni (onNavigate).
+//
+// IZUZETAK od „konfiguracija živi u modulu": primaoci neusaglašenosti na montaži
+// (034/26, `NmPrimaociSection`) se uređuju BAŠ OVDE — modul Montaža nema admin
+// tab, a tab Notifikacije je već pod SETTINGS_SYSTEM (= samo admin, isto kao
+// backend rute liste).
 // ============================================================================
 
 interface NotifLink {
@@ -86,6 +91,9 @@ export function NotifikacijeTab({ onNavigate }: { onNavigate?: (tab: string) => 
         )}
         .
       </p>
+
+      {/* 034/26: uredivi primaoci obaveštenja o neusaglašenosti na montaži. */}
+      <NmPrimaociSection />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {MODULE_NOTIF_LINKS.map((l) => {

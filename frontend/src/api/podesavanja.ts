@@ -67,6 +67,13 @@ export interface GridEditor {
   note: string;
   createdAt: string;
 }
+/** 034/26: imenovani primalac obaveštenja o neusaglašenosti na montaži. */
+export interface NmPrimalac {
+  email: string;
+  fullName: string | null;
+  note: string | null;
+  createdAt: string;
+}
 export interface Department {
   id: number;
   name: string;
@@ -248,6 +255,7 @@ const KEYS = {
   rolesCatalog: ['admin', 'roles-catalog'] as const,
   permMatrix: ['admin', 'permissions-matrix'] as const,
   gridEditors: ['admin', 'grid-editors'] as const,
+  nmPrimaoci: ['admin', 'montaza-nm-primaoci'] as const,
   orgStructure: ['admin', 'org-structure'] as const,
   holidays: ['admin', 'holidays'] as const,
   companyProfile: ['admin', 'company-profile'] as const,
@@ -284,6 +292,10 @@ export function usePermissionsMatrix() {
 }
 export function useGridEditors() {
   return useQuery({ queryKey: KEYS.gridEditors, queryFn: () => apiFetch<{ data: GridEditor[] }>(`${BASE}/grid-editors`) });
+}
+/** 034/26: aktivni primaoci obaveštenja o neusaglašenosti na montaži. */
+export function useNmPrimaoci() {
+  return useQuery({ queryKey: KEYS.nmPrimaoci, queryFn: () => apiFetch<{ data: NmPrimalac[] }>(`${BASE}/montaza-nm-primaoci`) });
 }
 export function useOrgStructure() {
   return useQuery({ queryKey: KEYS.orgStructure, queryFn: () => apiFetch<{ data: OrgStructure }>(`${BASE}/org/structure`) });
@@ -438,6 +450,22 @@ export const useRemoveGridEditor = () =>
   useAdminMutation<{ email: string }, unknown>(
     (v) => apiFetch<unknown>(`${BASE}/grid-editors/${encodeURIComponent(v.email)}`, { method: 'DELETE' }),
     KEYS.gridEditors,
+  );
+
+// ---------------------------------------------- Primaoci neusaglašenosti (034/26 CRUD)
+
+/** Dodaj primaoca obaveštenja o neusaglašenosti (POST). 409 = već na listi. */
+export const useAddNmPrimalac = () =>
+  useAdminMutation<{ email: string; fullName?: string; note?: string }, { data: NmPrimalac }>(
+    (v) => apiFetch<{ data: NmPrimalac }>(`${BASE}/montaza-nm-primaoci`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.nmPrimaoci,
+  );
+
+/** Ukloni primaoca po email-u (DELETE — soft, istorija ostaje na backendu). */
+export const useRemoveNmPrimalac = () =>
+  useAdminMutation<{ email: string }, unknown>(
+    (v) => apiFetch<unknown>(`${BASE}/montaza-nm-primaoci/${encodeURIComponent(v.email)}`, { method: 'DELETE' }),
+    KEYS.nmPrimaoci,
   );
 
 // ------------------------------------------------------------------ Podešavanje predmeta (WRITE — P11)

@@ -31,7 +31,12 @@ import {
   SetMustChangePasswordDto,
   UpdateUserDto,
 } from "./dto/podesavanja-write.dto";
-import { AddGridEditorDto, SetAiModelDto } from "./dto/podesavanja-system.dto";
+import {
+  AddGridEditorDto,
+  AddNmPrimalacDto,
+  SetAiModelDto,
+} from "./dto/podesavanja-system.dto";
+import { MontazaNmPrimaociService } from "./montaza-nm-primaoci.service";
 import {
   BulkExpectationDto,
   CreateExpectationDto,
@@ -95,6 +100,7 @@ export class PodesavanjaController {
     private readonly syncSwitch: SyncSwitchService,
     private readonly companyDetails: CompanyDetailsService,
     private readonly paymentAccounts: PaymentAccountsService,
+    private readonly nmPrimaoci: MontazaNmPrimaociService,
   ) {}
 
   // ----- Korisnici i pristup (settings.users) -----
@@ -213,6 +219,36 @@ export class PodesavanjaController {
   @Delete("grid-editors/:email")
   removeGridEditor(@Req() req: AuthedRequest, @Param("email") email: string) {
     return this.settings.removeGridEditor(req.user.email, email);
+  }
+
+  // ----- 034/26: primaoci obaveštenja o neusaglašenosti na montaži (settings.system) -----
+  // Ista kapija kao tab Notifikacije u kom se lista uređuje (= samo admin — „Nenad
+  // Jaraković može da koriguje"). CRUD obrazac grid-editors; „ukloni" je SOFT
+  // (active=FALSE, istorija ostaje) — doktrina tabele `montaza_nm_primaoci`.
+
+  @Get("montaza-nm-primaoci")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  listNmPrimaoci() {
+    return this.nmPrimaoci.list();
+  }
+
+  /** Dodaj primaoca (email + ime? + note?). Aktivan duplikat → 409; ugašen se reaktivira. */
+  @Post("montaza-nm-primaoci")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  addNmPrimalac(@Req() req: AuthedRequest, @Body() dto: AddNmPrimalacDto) {
+    return this.nmPrimaoci.add(
+      req.user.userId,
+      dto.email,
+      dto.fullName,
+      dto.note,
+    );
+  }
+
+  /** Ugasi primaoca po email-u (soft). Nepostojeći/već ugašen → 404. */
+  @Delete("montaza-nm-primaoci/:email")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  removeNmPrimalac(@Req() req: AuthedRequest, @Param("email") email: string) {
+    return this.nmPrimaoci.remove(req.user.userId, email);
   }
 
   // ----- Organizacija: struktura (settings.users) -----
