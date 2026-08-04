@@ -429,6 +429,40 @@ describe("LocationsService — R2 mutacije", () => {
     });
   });
 
+  it("lookupBarcode: goli kavez kod „KV 6“ → kind SHELF + record (prijava 04.08.2026)", async () => {
+    // Kavez nalepnica nosi PUN location_code u CODE128 (1.0 labelsPrint) —
+    // do ove popravke je vraćala UNKNOWN („Nepoznat format: KV 6").
+    const cage = {
+      id: "88888888-8888-4888-8888-888888888888",
+      locationCode: "KV 6",
+      locationType: "CAGE",
+      parentId: null,
+      isActive: true,
+    };
+    sy15.db.locLocation.findMany.mockResolvedValue([cage]);
+    const out = await service.lookupBarcode(EMAIL, "KV 6");
+    expect(out.data).toMatchObject({
+      kind: "SHELF",
+      record: { id: cage.id, locationType: "CAGE" },
+      presetHallFilterId: null,
+    });
+  });
+
+  it("lookupBarcode: ZADU-R-* se NE razrešava — kind SHELF sa porukom zašto, bez record-a", async () => {
+    sy15.db.locLocation.findMany.mockResolvedValue([
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        locationCode: "ZADU-R-VLADAN",
+        locationType: "FIELD",
+        parentId: null,
+        isActive: true,
+      },
+    ]);
+    const out = await service.lookupBarcode(EMAIL, "ZADU-R-VLADAN");
+    expect(out.data).toMatchObject({ kind: "SHELF", record: null });
+    expect((out.data as { message?: string }).message).toMatch(/zaduženje/);
+  });
+
   it("lookupBarcode: barkod OPERACIJE (S:…) → kind OPERATION + konkretna poruka, bez upita", async () => {
     const out = await service.lookupBarcode(EMAIL, "S:20:8.4:0:A");
     expect(out.data).toMatchObject({

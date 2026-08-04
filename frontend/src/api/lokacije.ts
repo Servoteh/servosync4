@@ -276,7 +276,9 @@ export type LocBarcodeResult =
 /**
  * Imperativno razrešavanje skeniranog/otkucanog barkoda (poziva se iz skenera i
  * HID polja, ne kao useQuery — on-demand po skenu). BE parsira RNZ/short/compact
- * (stavka) i LP:/„HALA - POLICA"/šifra police (destinacija).
+ * (stavka) i LP:/„HALA - POLICA"/šifra police/goli kod skladišne lokacije —
+ * pre svega kavez `KV 6` (kavez nalepnica nosi PUN location_code u CODE128) —
+ * kao destinaciju/polaznu (kind:'SHELF').
  */
 export function lookupLocBarcode(code: string): Promise<{ data: LocBarcodeResult }> {
   return apiFetch<{ data: LocBarcodeResult }>(

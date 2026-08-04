@@ -946,7 +946,8 @@ export class LocationsService {
    * Razrešavanje skeniranog/otkucanog barkoda → tip + zapis (server-side paritet
    * 1.0 `barcodeParse.js` + `shelfBarcode.js`). Prvo ITEM (RNZ/short/compact) jer
    * ti formati imaju cifru/separator; ako ne prođe → SHELF (LP:/HALA-POLICA/šifra
-   * police). `kind:'OPERATION'` = barkod operacije (`S:…`) koji za magacin nije
+   * police/goli kod skladišne lokacije — kavez `KV 6`, v. `resolveStorageLocationByCode`).
+   * `kind:'OPERATION'` = barkod operacije (`S:…`) koji za magacin nije
    * upotrebljiv, ali se prepoznaje da bi poruka bila konkretna;
    * `kind:'UNKNOWN'` = format nije prepoznat. Row-vidljivost placements-a
    * (RLS rev_tools) ostaje u bazi.
@@ -984,7 +985,11 @@ export class LocationsService {
       };
     }
 
-    // 2) SHELF (polica) — potreban indeks aktivnih lokacija (kao 1.0 scan modal).
+    // 2) SHELF (polica/skladišna lokacija) — indeks aktivnih lokacija (kao 1.0
+    // scan modal). Pored kompozita (LP:/„HALA - POLICA"/jedinstvena šifra
+    // police) prihvata i GOLI kod aktivne SKLADIŠNE lokacije — pre svega kavez
+    // nalepnice (CODE128 payload `KV 6`; prijava 04.08.2026) — kroz
+    // `resolveStorageLocationByCode` (1.0 plain-lookup stepenik, bez ZADU/FIELD).
     // NAMERNO ide SIROVO `clean`, bez keyboard-wedge popravke: `parseBigTehnBarcode`
     // i `isOperationBarcode` popravku rade INTERNO (i samo kao drugi pokušaj), dok
     // šifre lokacija smeju da sadrže naša slova — „Č"/„Ž" u šifri police bi kroz

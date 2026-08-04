@@ -609,7 +609,7 @@ export function ScanOverlay({
         }
         // SHELF nejednoznačan / nerazrešen → poruka pariteta, ne prosleđuj.
         if (data.kind === 'SHELF' && !data.record) {
-          say(data.message ?? `Polica ${code} nije jednoznačno razrešena`, 'error');
+          say(data.message ?? `Lokacija ${code} nije jednoznačno razrešena`, 'error');
           return;
         }
         if (data.kind === 'ITEM' && (!data.records || data.records.length === 0))

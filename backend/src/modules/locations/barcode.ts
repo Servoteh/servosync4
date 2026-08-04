@@ -400,6 +400,8 @@ const HALL_TYPES = new Set([
   "TEMP",
 ]);
 const SHELF_TYPES = new Set(["SHELF", "RACK", "BIN"]);
+/** Kavez (prenosivi) — globalna skladišna lokacija, šifra `KV 1`…`KV 100`. */
+const CAGE_TYPES = new Set(["CAGE"]);
 
 function normalizeLocType(type: string | null | undefined): string {
   return String(type ?? "")
@@ -411,6 +413,9 @@ export function isHallType(type: string | null | undefined): boolean {
 }
 export function isShelfType(type: string | null | undefined): boolean {
   return SHELF_TYPES.has(normalizeLocType(type));
+}
+export function isCageType(type: string | null | undefined): boolean {
+  return CAGE_TYPES.has(normalizeLocType(type));
 }
 
 /** Lokacija kako je vidi resolver (Prisma camelCase; logika ista kao 1.0). */
@@ -622,10 +627,150 @@ function resolveLpUuidComposite(
   return { ok: true, loc: shelf, presetHallFilterId: String(hall.id) };
 }
 
+// ============================================================================
+// 3) GOLI kod skladišne lokacije (kavez `KV 6`…) — port 1.0 plain-lookup grane
+// ============================================================================
+
+/**
+ * Skladišne HALE za goli sken — NAMERNO BEZ `FIELD`-a: na produ (izmereno
+ * 04.08.2026) FIELD = 100% reversi `ZADU-R-*`/`ZADU-O-*` lične lokacije
+ * zaduženja, ne skladišne destinacije (ista čistka kao FE
+ * `location-select.NON_STORAGE_TYPES` — ZADU rupa se NE otvara nazad).
+ */
+const STORAGE_HALL_TYPES = new Set([
+  "WAREHOUSE",
+  "PRODUCTION",
+  "ASSEMBLY",
+  "TEMP",
+]);
+
+/**
+ * Reversi barkod konvencija (`ZADU-R-*` radnici, `ZADU-O-*` odeljenja,
+ * `ZADU-M-*` mašine — v. `reversi.service.lookupBarcode`). `ZADU-M-*` su tipa
+ * PRODUCTION, pa uz tipove važi i prefiks — identično FE `isStorageLocation`.
+ */
+const ZADU_CODE_RE = /^ZADU-/i;
+
+/**
+ * Aktivna STVARNO skladišna lokacija — sme da se razreši golim kodom sa
+ * nalepnice: kavez / polica-regal-KES / skladišna hala / mašina (pseudo-lokacija
+ * mašine je legitimna destinacija — FE je nudi iza prekidača „Prikaži i mašine").
+ * NE-skladišni razredi (FIELD/SERVICE/PROJECT/TRANSIT/OFFICE/SCRAPPED/OTHER i
+ * svaki `ZADU-*` kod) se NIKAD ne rešavaju ovim putem.
+ */
+function isStorageScanLocation(l: ShelfLoc): boolean {
+  if (!l || l.isActive === false) return false;
+  if (ZADU_CODE_RE.test(String(l.locationCode ?? "").trim())) return false;
+  const t = normalizeLocType(l.locationType);
+  return (
+    CAGE_TYPES.has(t) ||
+    SHELF_TYPES.has(t) ||
+    STORAGE_HALL_TYPES.has(t) ||
+    t === "MACHINE"
+  );
+}
+
+/** Šifra bez ijednog razmaka, lowercase — tolerancija skena `KV6`/`kv 6`. */
+function squishLocationCode(code: string | null | undefined): string {
+  return String(code ?? "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+/**
+ * GOLI kod aktivne SKLADIŠNE lokacije — dopuna pariteta sa 1.0 (04.08.2026).
+ *
+ * KOREN prijave: kamera je na mob premeštanju uredno dekodirala kavez nalepnicu
+ * (CODE128 payload `KV 6` — 1.0 `labelsPrint` na kavez štampa PUN
+ * `location_code`, veliki broj „6" je samo ljudski natpis), ali je 3.0 vraćao
+ * „Nepoznat format: KV 6": `resolveShelfUniqueByShelfCodeGlobally` prima SAMO
+ * SHELF/RACK/BIN, a 1.0-in DRUGI stepenik — plain lookup po `location_code` u
+ * `scanModal.resolveDestinationByToken` (posle composite resolvera, prihvata
+ * SVAKI tip pa i kavez) — nikad nije portovan.
+ *
+ * Ovo je taj stepenik, SUŽEN na skladišne tipove (v. `isStorageScanLocation`):
+ * 1.0 bi golim kodom razrešio i `ZADU-R-*` (FIELD) — čistka od 04.08.2026 to
+ * više ne dozvoljava, i ovaj port je NE vraća. Pravila:
+ *   • egzaktan (case-insensitive) pogodak ima prednost; bez pogotka se probava
+ *     poređenje BEZ razmaka (`KV6`/`kv 6` → `KV 6`);
+ *   • tačno 1 skladišni pogodak → lokacija (+ najbliža hala kao preset filter;
+ *     kavezi su globalni — parent uglavnom NULL → preset nema, i to je u redu);
+ *   • više pogodaka → jasna poruka (nikad nasumičan izbor) — za duple šifre
+ *     polica ostaje kompozit „ŠIFRA HALE - ŠIFRA POLICE" jedini put;
+ *   • pogodak SAMO na ne-skladišnoj lokaciji → poruka ZAŠTO (ne „Nepoznat
+ *     format"); nula pogodaka → `null` (dalje važi „Nepoznat format").
+ */
+export function resolveStorageLocationByCode(
+  code: string,
+  locs: ShelfLoc[],
+  locById: Map<string, ShelfLoc>,
+): ShelfResolve | null {
+  const trimmed = String(code || "").trim();
+  if (
+    !trimmed ||
+    /^LP:/i.test(trimmed) ||
+    UUID_HEX.test(trimmed) ||
+    trimmed.includes(" - ")
+  ) {
+    return null;
+  }
+
+  const isActive = (l: ShelfLoc) => !!l && l.isActive !== false;
+  let hits = locs.filter(
+    (l) => isActive(l) && codesInsensitiveEq(l.locationCode, trimmed),
+  );
+  if (!hits.length) {
+    const sq = squishLocationCode(trimmed);
+    if (sq) {
+      hits = locs.filter(
+        (l) => isActive(l) && squishLocationCode(l.locationCode) === sq,
+      );
+    }
+  }
+  if (!hits.length) return null;
+
+  const storage = hits.filter(isStorageScanLocation);
+  if (!storage.length) {
+    const display = String(hits[0].locationCode ?? "").trim() || trimmed;
+    if (
+      hits.some((l) => ZADU_CODE_RE.test(String(l.locationCode ?? "").trim()))
+    ) {
+      return {
+        ok: false,
+        msg: `Lokacija „${display}" je reversi zaduženje (lična/mašinska), ne skladišna — ne može biti polazna ni odredišna lokacija.`,
+      };
+    }
+    const t = normalizeLocType(hits[0].locationType) || "?";
+    return {
+      ok: false,
+      msg: `Lokacija „${display}" nije skladišna (tip ${t}) — ne može biti polazna ni odredišna lokacija.`,
+    };
+  }
+  if (storage.length > 1) {
+    return {
+      ok: false,
+      msg: `Šifra „${trimmed}" nije jednoznačna — nosi je ${storage.length} aktivnih lokacija. Za policu skeniraj kompozitnu nalepnicu („ŠIFRA HALE - ŠIFRA POLICE") ili izaberi lokaciju ručno.`,
+    };
+  }
+
+  const loc = storage[0];
+  const hid = nearestHallAncestorId(loc, locById);
+  const hall = hid ? mapGetUuid(locById, hid) : undefined;
+  return {
+    ok: true,
+    loc,
+    presetHallFilterId: hall?.id ? String(hall.id) : null,
+  };
+}
+
 /**
  * Jednoznačno odredi policu + halu: `LP:…`, kratko `ŠIF_HALE - ŠIF_POLICE`, ili
  * sama šifra police ako je jedinstvena. `null` kad format nije naš kompozit.
- * Paritet 1.0 `resolveCompositeShelfScan`.
+ * Paritet 1.0 `resolveCompositeShelfScan` + (04.08.2026) goli kod skladišne
+ * lokacije (`resolveStorageLocationByCode` — 1.0 plain-lookup stepenik iz
+ * `scanModal.resolveDestinationByToken`, sužen na skladišne tipove). Redosled je
+ * 1.0-ov: composite (LP → par → jedinstvena polica) pre golog koda, pa
+ * jedinstvena šifra police i dalje ide istom granom kao do sada.
  */
 export function resolveCompositeShelfScan(
   trimmedNormalized: string,
@@ -640,5 +785,7 @@ export function resolveCompositeShelfScan(
   if (pair) return resolveShortShelfBarcodePair(pair, locs, locById);
 
   const uniq = resolveShelfUniqueByShelfCodeGlobally(t, locs, locById);
-  return uniq ?? null;
+  if (uniq) return uniq;
+
+  return resolveStorageLocationByCode(t, locs, locById);
 }

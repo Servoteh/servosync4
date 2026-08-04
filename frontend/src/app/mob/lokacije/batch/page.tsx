@@ -537,7 +537,7 @@ export default function MobLokacijeBatchPage() {
 
       {scan === 'shelf' && (
         <ScanOverlay
-          title="Skeniraj odredišnu policu"
+          title="Skeniraj odredišnu policu/kavez"
           accept={['SHELF']}
           onResult={(r) => {
             if (r.kind !== 'SHELF') return;
@@ -545,7 +545,7 @@ export default function MobLokacijeBatchPage() {
               setDest(r.record);
               setScan(null);
             } else {
-              toast(r.message || 'Polica nije prepoznata — probaj ručni izbor.');
+              toast(r.message || 'Lokacija nije prepoznata — probaj ručni izbor.');
             }
           }}
           onClose={() => setScan(null)}
