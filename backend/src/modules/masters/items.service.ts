@@ -13,6 +13,10 @@ import {
 import {
   parseBoolParam,
   parseIntParam,
+  parseShelfPresence,
+  parseSortParam,
+  type ItemSort,
+  type ItemSortColumn,
   type ListItemsQuery,
 } from "./dto/list-items.dto";
 import {
@@ -136,9 +140,11 @@ export interface CodeRef {
  * Matični podatak „Artikli" (BigBit cache `items`) — pregled + unos/izmena.
  *
  * PREGLED JE PARITET BigBit EKRANA „Pregled artikala" (odluka vlasnika 04.08.2026):
- * iste kolone i isti njihov redosled (`ITEM_LIST_SELECT`), isti sort (grupa →
- * kataloški broj → naziv) i isti filteri, uključujući kaskadu Grupa → Podgrupa →
- * PodPodgrupa koju frontend računa iz `lookups()`. Nijedno od toga nije stvar ukusa:
+ * iste kolone i isti njihov redosled (`ITEM_LIST_SELECT`), isti PODRAZUMEVANI sort
+ * (grupa → kataloški broj → naziv) i isti filteri, uključujući kaskadu Grupa →
+ * Podgrupa → PodPodgrupa koju frontend računa iz `lookups()`. Klik na zaglavlje
+ * kolone (`?sort=&dir=`) sortira ceo skup i time je jedini dozvoljen otklon od
+ * BigBit redosleda — biran je, ne zatečen. Nijedno od toga nije stvar ukusa:
  * korisnici rade po navici, pa je razlika u rasporedu greška kao i pogrešan podatak.
  *
  * ⚠️ UNOS I IZMENA SU DANAS ZATVORENI BRANOM, NE IZOSTAVLJENI. `create()`/`update()`
@@ -164,23 +170,16 @@ export class ItemsService {
       query.page,
       query.pageSize,
     );
+    // Sort se parsira PRE `where`-a: `?sort=cena` (kolone nema) mora pasti kao 400
+    // pre nego što se plati podupit o duplim kataloškim brojevima — isto pravilo po
+    // kojem `buildListWhere` prvo validira parametre, pa tek onda otvara podupit.
+    const orderBy = buildItemOrderBy(parseSortParam(query.sort, query.dir));
     const where = await this.buildListWhere(query);
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.item.findMany({
         where,
-        // BigBit sort pregleda: `ORDER BY Grupa, [Kataloski broj], Naziv`. Korisnik
-        // je navikao da mu artikli iste grupe stoje zajedno — sortiranje po samom
-        // kataloškom broju (kako je stajalo do 04.08.2026) razbacuje grupe.
-        // `id` je SAMO tie-break, ne menja vidljiv redosled: kataloški broj NIJE
-        // jedinstven (1.980 grupa duplikata), a bez determinističkog kriterijuma
-        // paginacija ume da isti red pokaže dvaput ili da ga preskoči.
-        orderBy: [
-          { groupCode: "asc" },
-          { catalogNumber: "asc" },
-          { name: "asc" },
-          { id: "asc" },
-        ],
+        orderBy,
         skip,
         take,
         select: ITEM_LIST_SELECT,
@@ -226,6 +225,10 @@ export class ItemsService {
     query: ListItemsQuery,
   ): Promise<Prisma.ItemWhereInput> {
     const where: Prisma.ItemWhereInput = {};
+    // Uslovi koji ne smeju u `where` po ključu kolone — ili zato što se ista kolona
+    // filtrira dvaput (polica: prefiks + prisustvo), ili zato što bi pregazili `OR`
+    // objedinjene pretrage (`q`). `AND` se PUNI, ne dodeljuje, pa se filteri slažu.
+    const and: Prisma.ItemWhereInput[] = [];
 
     const q = query.q?.trim();
     if (q) {
@@ -253,6 +256,31 @@ export class ItemsService {
     const name = query.name?.trim();
     if (name) where.name = { contains: name, mode: "insensitive" };
 
+    // JEDINICA MERE — tačno poklapanje, case-insensitive. Vrednosti nisu šifarnik nego
+    // slobodan tekst iz uvoza (`lookups().units` je `SELECT DISTINCT unit`), pa se u
+    // podacima sreću i „kom" i „KOM"; `equals` bez `mode` bi na izbor iz padajuće liste
+    // vratio samo jedan od ta dva zapisa i delovao kao da tih artikala prosto nema.
+    const unit = query.unit?.trim();
+    if (unit) where.unit = { equals: unit, mode: "insensitive" };
+
+    // POLICA — prefiks, iz istog razloga kao kataloški broj: oznake su hijerarhijske
+    // („A-1-3"), pa uneto „A" znači „ceo red A". `contains` bi na „1" povukao i „B-11".
+    const shelf = query.shelf?.trim();
+    if (shelf) where.shelf = { startsWith: shelf, mode: "insensitive" };
+
+    // PRISUSTVO POLICE. Uvoz iz BigBit-a piše i NULL i prazan string za „nema police"
+    // (2.839 od 92.592 artikla ima policu, mereno 04.08.2026), pa se moraju pokriti
+    // OBA oblika — sam `shelf: { not: null }` bi prazne stringove proglasio policom.
+    // ⚠️ `not` u Prismi 4+ VRAĆA I NULL redove, zato `not: ""` ide UZ `not: null`, a
+    // ne umesto njega. Obe grane idu u `AND`, da se smeju kombinovati sa prefiksom
+    // iznad (dva uslova nad istom kolonom u jednom objektu bi se pregazila) i da ne
+    // pregaze `where.OR` objedinjene pretrage.
+    const presence = parseShelfPresence(query.shelfPresence);
+    if (presence === "with")
+      and.push({ shelf: { not: null } }, { shelf: { not: "" } });
+    else if (presence === "without")
+      and.push({ OR: [{ shelf: null }, { shelf: "" }] });
+
     const rasterId = parseIntParam(query.rasterId, "rasterId");
     if (rasterId !== undefined) where.rasterId = rasterId;
     const qualityTypeId = parseIntParam(query.qualityTypeId, "qualityTypeId");
@@ -269,10 +297,12 @@ export class ItemsService {
       // Ide u `AND`, a ne u `where.catalogNumber`, jer se sme kombinovati sa
       // prefiks filterom („duple, a počinju sa 004") — dva uslova nad istom
       // kolonom u jednom filter objektu bi se pregazila.
-      where.AND = [
-        { catalogNumber: { in: await this.duplicateCatalogNumbers() } },
-      ];
+      and.push({ catalogNumber: { in: await this.duplicateCatalogNumbers() } });
     }
+
+    // Prazan `AND: []` se NE dodeljuje — Prisma bi ga progutala, ali bi `where` bez
+    // ijednog filtera prestao da bude prazan objekat i test/log bi lagali o tome.
+    if (and.length) where.AND = and;
 
     return where;
   }
@@ -797,6 +827,119 @@ export class ItemsService {
       }),
     );
   }
+}
+
+/**
+ * TIE-BREAK KOJI STOJI IZA SVAKOG SORTA — BEZ NJEGA PAGINACIJA LAŽE.
+ *
+ * `id` NE menja vidljiv redosled, ali je jedina jedinstvena kolona u `items`.
+ * Kataloški broj NIJE jedinstven (1.980 grupa duplikata / 4.298 artikala, mereno
+ * 25.07.2026), a ni jedna druga sortabilna kolona nije ni blizu: `shelf` ima 2.839
+ * nepraznih vrednosti na 92.592 reda, pa bi „sortiraj po polici" ostavio 89 hiljada
+ * redova u redosledu koji Postgres bira slobodno — a on ga sme promeniti između dva
+ * `LIMIT/OFFSET` upita. Ishod: skrol koji isti artikal pokaže dvaput, a drugi preskoči.
+ */
+const ITEM_ORDER_TIE_BREAK = { id: "asc" } as const;
+
+/**
+ * Sortabilne kolone koje SMEJU biti NULL — izvedeno iz Prisma tipova, ne iz sećanja.
+ *
+ * Prisma za nullable polje prima `SortOrderInput` (`{ sort, nulls }`), a za NOT NULL
+ * polje samo golo `SortOrder`. Ta razlika je jedini pouzdan izvor istine o tome koja
+ * kolona uopšte ima praznu vrednost, pa se čita direktno iz generisanog tipa: promena
+ * u `schema.prisma` (kolona postane obavezna ili obrnuto) obara `SORT_COLUMN_IS_NULLABLE`
+ * ispod NA KOMPILACIJI, umesto da tiho vrati staro ponašanje.
+ */
+type NullableItemSortColumn = {
+  [K in ItemSortColumn]: Prisma.SortOrderInput extends NonNullable<
+    Prisma.ItemOrderByWithRelationInput[K]
+  >
+    ? K
+    : never;
+}[ItemSortColumn];
+
+/**
+ * PRAZNO IDE NA KRAJ — MAPA KOLONA KOJE TO UOPŠTE MOGU.
+ *
+ * Tip je mapiran preko celog `ITEM_SORT_COLUMNS`, pa se ne može ni izostaviti kolona
+ * (nedostaje ključ → greška) ni pogrešno označiti (`true` na NOT NULL koloni → greška).
+ * Ručno se održava samo `true`/`false`, a istinu potvrđuje `NullableItemSortColumn`.
+ */
+const SORT_COLUMN_IS_NULLABLE: {
+  [K in ItemSortColumn]: K extends NullableItemSortColumn ? true : false;
+} = {
+  catalogNumber: false, // @default("-"), NOT NULL
+  name: false, // NOT NULL
+  unit: true,
+  shelf: true,
+  weight: true,
+  groupCode: false, // NOT NULL
+  subgroupCode: false, // @default("0"), NOT NULL
+  originCode: false, // @default("0"), NOT NULL
+  wholesalePrice: true,
+  retailPrice: true,
+  goodsTaxRateCode: false, // @default("3"), NOT NULL
+  thickness: true,
+  box: true,
+  fxSalePrice: true,
+  accountingCode: true,
+  accountingCode2: true,
+  plu: true,
+  externalItemId: false, // @default(0), NOT NULL
+  barCode: true,
+  externalCode: true,
+  foreignName: true,
+};
+
+/**
+ * `orderBy` za listu — korisnički sort (ako ga ima) + tie-break.
+ *
+ * Bez `sort` parametra ostaje BigBit redosled pregleda: `ORDER BY Grupa,
+ * [Kataloski broj], Naziv`. Korisnik je navikao da mu artikli iste grupe stoje
+ * zajedno — sortiranje po samom kataloškom broju (kako je stajalo do 04.08.2026)
+ * razbacuje grupe.
+ *
+ * Sa `sort`-om se BigBit redosled NE zadržava kao sekundarni kriterijum: kad se
+ * traži „najskuplji artikli", grupisanje po grupi bi taj odgovor razbilo na 90
+ * grupnih listi. Traženi ključ je prvi i jedini, `id` je poslednji.
+ *
+ * ⚠️ NULL IDE NA KRAJ U OBA SMERA (`nulls: "last"`), i to nije kozmetika.
+ * Postgres podrazumevano radi ASC = NULLS LAST, ali DESC = NULLS FIRST, pa je do
+ * 04.08.2026. drugi klik na zaglavlje „Polica" vraćao prvo 89.753 artikla BEZ police
+ * (mereno na produkciji: 92.592 artikla, policu ima 2.839). Ekran skroluje sa kapom
+ * učitavanja od 5.000 redova — korisnik dakle NIJE video nijednu policu, a lista je
+ * izgledala potpuno ispravno. Isto važi za „Bar kod" (10 nepraznih), „INO naziv",
+ * „Ext. šifru" i sve ostale nullable kolone: korisnik koji sortira traži PODATKE,
+ * praznine ga zanimaju samo kroz filter (`shelfPresence`).
+ *
+ * GRANICA: `nulls` pomera isključivo SQL NULL, ne i prazan string. Uvoz iz BigBit-a
+ * upisuje oba oblika, ali je odnos izmeren 04.08.2026 na produkciji i prazan string je
+ * zanemarljiv — `shelf`: 89.714 NULL prema 39 praznih (isto reda veličine za `bar_code`
+ * 92.542/40, `foreign_name` 57.450/39, `external_code` 90.881/38). Rastući sort dakle
+ * prikaže tih ~39 praznih pre prve police, što je upotrebljivo; ispravka do kraja tražila
+ * bi `ORDER BY NULLIF(btrim(col),'')`, što Prisma `orderBy` ne ume — dakle raw SQL zbog
+ * 39 redova. Ako se odnos ikad promeni (npr. drugi uvoz počne da piše ''), ovo je mesto.
+ */
+function buildItemOrderBy(
+  sort: ItemSort | undefined,
+): Prisma.ItemOrderByWithRelationInput[] {
+  if (!sort)
+    return [
+      { groupCode: "asc" },
+      { catalogNumber: "asc" },
+      { name: "asc" },
+      ITEM_ORDER_TIE_BREAK,
+    ];
+  // Ime kolone je već prošlo allowlist (`parseSortParam`), pa računati ključ ne može
+  // biti ništa van `ITEM_SORT_COLUMNS`. Oblik vrednosti čuva `SORT_COLUMN_IS_NULLABLE`:
+  // `{ sort, nulls }` na NOT NULL koloni Prisma odbija tek u radu (P2009), a računati
+  // ključ TS ne može da proveri po koloni — zato je provera pomerena u tu mapu.
+  const key: Prisma.SortOrderInput | Prisma.SortOrder = SORT_COLUMN_IS_NULLABLE[
+    sort.column
+  ]
+    ? { sort: sort.direction, nulls: "last" }
+    : sort.direction;
+  return [{ [sort.column]: key }, ITEM_ORDER_TIE_BREAK];
 }
 
 /**

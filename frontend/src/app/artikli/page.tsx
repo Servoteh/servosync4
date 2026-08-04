@@ -1,33 +1,37 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { Download, Plus, RotateCcw } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
-import { DataTable, type Column } from '@/components/ui-kit/data-table';
+import { DataTable, type Column, type RowAction, type SortState } from '@/components/ui-kit/data-table';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Select } from '@/components/ui-kit/select';
-import { FormField, Input } from '@/components/ui-kit/form-field';
+import { Input } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
-import { Pager } from '@/components/ui-kit/pager';
+import { cn } from '@/lib/cn';
 import { useListQueryState } from '@/lib/use-id-param';
 import { exportTableToCsv, type CsvColumn } from '@/lib/table-csv';
 import { formatDecimal, formatNumber } from '@/lib/format';
 import {
-  useArtikli,
+  useArtikliSkrol,
   useItemLookups,
   fetchArtikliZaIzvoz,
-  rasterLabel,
+  isItemSortColumn,
+  ARTIKLI_SKROL_KAPA,
   type CodeRef,
   type ItemListParams,
   type ItemRow,
+  type ItemSortColumn,
+  type ItemSortDir,
 } from '@/api/masters';
 
 /**
- * Matični podaci — Artikli (obrazac „Lista", DESIGN_SYSTEM §4.1): filter bar +
- * gusta tabela sa server-side paginacijom.
+ * Matični podaci — Artikli (obrazac „Lista", DESIGN_SYSTEM §4.1): filter traka +
+ * gusta tabela sa server-side filterom, sortom i SKROLOM (strane se nadovezuju).
  *
  * PARITET SA BIGBITOM (zahtev vlasnika 04.08.2026 — „sve treba da bude kao u
  * BigBitu… svi korisnici su navikli"):
@@ -37,43 +41,84 @@ import {
  *    Podgrupa · PodPodgrupa · VP cena · MP cena · Tarifa robe · PPD · Debljina
  *    ploče · Kg u kom. · Devizna cena · Kng. šifra 1 · Kng. šifra 2 · PLU · ID ·
  *    Bar kod · Ext. šifra · INO naziv. Redosled i labele se NE „poboljšavaju".
- *  • FILTERI su isti kao na formi (kaskada grupa → podgrupa → PodPodgrupa, kat.
- *    broj, deo naziva, dimenzija, kvalitet, dupli kataloški brojevi) + jedno
- *    objedinjeno polje pretrage umesto tri BigBit combo-a (kat. broj / naziv /
- *    bar kod).
+ *  • DUGMAD ispod filtera su BigBit red radnji nad izabranim artiklom (Detaljno
+ *    artikal · Kartica artikla · Recepti · KNG artikli · Promena tarifa poreza) —
+ *    isti spisak je i na desni klik na red.
  *  • „PodPodgrupa" je BigBit labela kolone `Poreklo` — u UI-ju se zove tako kako
  *    je korisnici zovu, iako polje u bazi nosi staro ime.
  *  • Kolona „ID" je BigBit „Šifra artikla" = `items.external_item_id`, NIKAD
  *    `items.id` (BIGBIT_ARTIKLI.md §5.1). Red otvoren u 4.0 nema BigBit šifru
  *    (vrednost 0) pa dobija oznaku „4.0", da se nula ne pročita kao šifra.
  *
- * Podatak je BigBit cache (`items`, ~91k redova). Unos i izmena imaju pun ekran
+ * ŠTO SE VIDI, A ŠTO NE (mereno na produkciji 04.08.2026, 92.592 artikla):
+ * filteri „Dimenzija" (5 artikala je ima), „Kvalitet" (2) i „Samo aktivni" (svi su
+ * aktivni — filter je no-op) skinuti su sa ekrana; `ItemListParams` ih i dalje nosi,
+ * pa se vraćaju u jednoj liniji kad podaci to zasluže. Retko korišćeni filteri
+ * (kat. broj, deo naziva, dupli kat. brojevi) stoje pod „Više filtera", da vidljiva
+ * traka ostane jedan red.
+ *
+ * Podatak je BigBit cache (`items`). Unos i izmena imaju pun ekran
  * (`/artikli/nov`, `/artikli/detalj?id=N&rezim=izmena`), ali su ZAKLJUČANI dok
  * `items` ne uđe u zaštićeni skup sync-a — ekran to objašnjava i kaže šta da se
- * uradi (v. `_forma/pravila.ts`, `BRANA_ARTIKAL`). Ovaj paket menja SAMO pregled i
- * izgled, brana ostaje. Detalj je STATIČKA ruta `?id=N` (nikad `[id]` segment —
- * static export ga ne izvozi, v. `artikli/detalj/page.tsx`).
+ * uradi (v. `_forma/pravila.ts`, `BRANA_ARTIKAL`). Detalj i kartica su STATIČKE
+ * rute `?id=N` (nikad `[id]` segment — static export ga ne izvozi).
  */
 
-const PAGE_SIZE = 50;
-
-/** Odlaganje upita dok se kuca — bez njega je svako slovo jedan upit nad 91k redova. */
+/** Odlaganje upita dok se kuca — bez njega je svako slovo jedan upit nad 92k redova. */
 const KUCANJE_MS = 300;
+
+/**
+ * Visina skrol-okvira tabele: ekran minus zaglavlje strane, filter traka, red
+ * dugmadi i podnožje sa brojačem. `dvh`, nikad `vh` (DESIGN_SYSTEM §11.4) — `100vh`
+ * je na iOS-u veliki viewport, pa bi dno tabele završilo pod trakom Safarija.
+ */
+const VISINA_TABELE = 'calc(100dvh - 21rem)';
 
 /** Prazan filter — „Poništi filter" vraća tačno ovo stanje (BigBit `Ponisti filter`). */
 const PRAZAN_FILTER = {
   trazi: '',
   katbroj: '',
   naziv: '',
+  jm: '',
   grupa: '',
   podgrupa: '',
   podpodgrupa: '',
-  dimenzija: '',
-  kvalitet: '',
+  polica: '',
+  policaPrisustvo: '',
   dupli: '',
-  aktivni: '',
-  strana: '1',
+  sort: '',
+  smer: '',
 };
+
+/** Ključevi filtera koji stoje pod „Više filtera" — traka ih ne prikazuje. */
+const NAPREDNI_FILTERI = ['katbroj', 'naziv', 'jm', 'dupli'] as const;
+
+/** Sort i smer nisu filter — „Poništi filter" ih ne dira, i ne pale oznaku „ima filtera". */
+const NIJE_FILTER = new Set(['sort', 'smer']);
+
+/**
+ * Kolone kod kojih PRVI klik na zaglavlje sortira OPADAJUĆE. Kod veličina se traži
+ * „najveće" (najskuplji artikal, najteži komad), pa bi rastući prvi klik značio dva
+ * klika za svaki takav upit.
+ *
+ * Kolona „ID" (BigBit šifra artikla) i PLU nisu ista stvar iako su brojevi — PLU je
+ * ovde jer ga BigBit koristi kao redni broj vage; „ID" ostaje rastući, kao svaka šifra.
+ */
+const PRVI_KLIK_OPADAJUCE = new Set<ItemSortColumn>([
+  'weight',
+  'wholesalePrice',
+  'retailPrice',
+  'thickness',
+  'box',
+  'fxSalePrice',
+  'plu',
+]);
+
+/** Opcije filtera prisustva police (BigBit forma ovo nema — dolazi iz 4.0 pregleda). */
+const POLICA_OPCIJE = [
+  { value: 'with', label: 'samo sa policom' },
+  { value: 'without', label: 'bez police' },
+];
 
 /**
  * Broj u srpskom formatu (nula se prikazuje, prazno → „—"). Prima i broj i string:
@@ -101,10 +146,15 @@ function sifraSaOpisom(kod: string | null, ref: CodeRef | null) {
   );
 }
 
+/**
+ * Sve kolone su `sortable` osim „PPD" — ona jedina nije u backend allowlist-u
+ * (`ITEM_SORT_COLUMNS`), pa bi klik na njeno zaglavlje vratio 400.
+ */
 const columns: Column<ItemRow>[] = [
   {
     key: 'catalogNumber',
     header: 'Kataloški broj',
+    sortable: true,
     render: (a) => (
       <span className="tnums whitespace-nowrap font-semibold text-ink">{a.catalogNumber}</span>
     ),
@@ -112,6 +162,7 @@ const columns: Column<ItemRow>[] = [
   {
     key: 'name',
     header: 'Naziv',
+    sortable: true,
     render: (a) => (
       <span className="block max-w-[22rem] truncate text-ink" title={a.name}>
         {a.name}
@@ -121,11 +172,13 @@ const columns: Column<ItemRow>[] = [
   {
     key: 'unit',
     header: 'J.m.',
+    sortable: true,
     render: (a) => <span className="whitespace-nowrap text-ink-secondary">{txt(a.unit)}</span>,
   },
   {
     key: 'shelf',
     header: 'Polica',
+    sortable: true,
     render: (a) => <span className="whitespace-nowrap text-ink-secondary">{txt(a.shelf)}</span>,
   },
   {
@@ -133,21 +186,25 @@ const columns: Column<ItemRow>[] = [
     header: 'Težina',
     align: 'right',
     numeric: true,
+    sortable: true,
     render: (a) => <span className="tnums text-ink-secondary">{num(a.weight, 3)}</span>,
   },
   {
     key: 'groupCode',
     header: 'Grupa',
+    sortable: true,
     render: (a) => sifraSaOpisom(a.groupCode, a.group),
   },
   {
     key: 'subgroupCode',
     header: 'Podgrupa',
+    sortable: true,
     render: (a) => sifraSaOpisom(a.subgroupCode, a.subgroup),
   },
   {
     key: 'originCode',
     header: 'PodPodgrupa',
+    sortable: true,
     render: (a) => sifraSaOpisom(a.originCode, a.origin),
   },
   {
@@ -155,6 +212,7 @@ const columns: Column<ItemRow>[] = [
     header: 'VP cena',
     align: 'right',
     numeric: true,
+    sortable: true,
     render: (a) => <span className="tnums text-ink">{num(a.wholesalePrice)}</span>,
   },
   {
@@ -162,11 +220,13 @@ const columns: Column<ItemRow>[] = [
     header: 'MP cena',
     align: 'right',
     numeric: true,
+    sortable: true,
     render: (a) => <span className="tnums text-ink-secondary">{num(a.retailPrice)}</span>,
   },
   {
     key: 'goodsTaxRateCode',
     header: 'Tarifa robe',
+    sortable: true,
     render: (a) => (
       <span className="tnums whitespace-nowrap text-ink-secondary">{txt(a.goodsTaxRateCode)}</span>
     ),
@@ -174,6 +234,7 @@ const columns: Column<ItemRow>[] = [
   {
     // BigBit ovde ima checkbox „Uvek porez na robu" — prikaz je „DA" ili crtica,
     // ne pilula: PPD nije status dokumenta nego osobina artikla (§7 se ne tiče).
+    // Jedina kolona bez sorta: nije u backend allowlist-u (klik = 400).
     key: 'alwaysTaxGoods',
     header: 'PPD',
     render: (a) => (
@@ -187,6 +248,7 @@ const columns: Column<ItemRow>[] = [
     header: 'Debljina ploče',
     align: 'right',
     numeric: true,
+    sortable: true,
     render: (a) => <span className="tnums text-ink-secondary">{num(a.thickness, 3)}</span>,
   },
   {
@@ -194,6 +256,7 @@ const columns: Column<ItemRow>[] = [
     header: 'Kg u kom.',
     align: 'right',
     numeric: true,
+    sortable: true,
     render: (a) => <span className="tnums text-ink-secondary">{num(a.box, 3)}</span>,
   },
   {
@@ -201,11 +264,13 @@ const columns: Column<ItemRow>[] = [
     header: 'Devizna cena',
     align: 'right',
     numeric: true,
+    sortable: true,
     render: (a) => <span className="tnums text-ink-secondary">{num(a.fxSalePrice)}</span>,
   },
   {
     key: 'accountingCode',
     header: 'Kng. šifra 1',
+    sortable: true,
     render: (a) => (
       <span className="tnums whitespace-nowrap text-ink-secondary">{txt(a.accountingCode)}</span>
     ),
@@ -213,6 +278,7 @@ const columns: Column<ItemRow>[] = [
   {
     key: 'accountingCode2',
     header: 'Kng. šifra 2',
+    sortable: true,
     render: (a) => (
       <span className="tnums whitespace-nowrap text-ink-secondary">{txt(a.accountingCode2)}</span>
     ),
@@ -226,6 +292,7 @@ const columns: Column<ItemRow>[] = [
     header: 'PLU',
     align: 'right',
     numeric: true,
+    sortable: true,
     render: (a) => <span className="tnums text-ink-secondary">{a.plu ?? '—'}</span>,
   },
   {
@@ -235,6 +302,7 @@ const columns: Column<ItemRow>[] = [
     header: 'ID',
     align: 'right',
     numeric: true,
+    sortable: true,
     render: (a) =>
       a.externalItemId ? (
         <span className="tnums text-ink-secondary">{a.externalItemId}</span>
@@ -254,6 +322,7 @@ const columns: Column<ItemRow>[] = [
   {
     key: 'barCode',
     header: 'Bar kod',
+    sortable: true,
     render: (a) => (
       <span className="tnums whitespace-nowrap text-ink-secondary">{txt(a.barCode)}</span>
     ),
@@ -261,6 +330,7 @@ const columns: Column<ItemRow>[] = [
   {
     key: 'externalCode',
     header: 'Ext. šifra',
+    sortable: true,
     render: (a) => (
       <span className="whitespace-nowrap text-ink-secondary">{txt(a.externalCode)}</span>
     ),
@@ -268,6 +338,7 @@ const columns: Column<ItemRow>[] = [
   {
     key: 'foreignName',
     header: 'INO naziv',
+    sortable: true,
     render: (a) => (
       <span
         className="block max-w-[16rem] truncate text-ink-secondary"
@@ -313,33 +384,63 @@ const csvColumns: CsvColumn<ItemRow>[] = [
   { header: 'INO naziv', value: (a) => a.foreignName ?? '' },
 ];
 
+/** Kompaktna ćelija filter trake — labela 12px iznad kontrole (idiom `/robno`, `/izvodi`). */
+function Polje({
+  labela,
+  sirina,
+  children,
+}: {
+  labela: string;
+  sirina: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-ink-secondary">
+      {labela}
+      <div className={sirina}>{children}</div>
+    </label>
+  );
+}
+
 export default function ArtikliPage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, can } = useAuth();
   const router = useRouter();
 
-  // Filteri i strana žive U URL-u (frontend/CLAUDE.md §12) — povratak sa kartice
-  // artikla vraća listu tačno kakva je bila, sa filterom i stranom.
+  // Filteri i sort žive U URL-u (frontend/CLAUDE.md §12) — povratak sa detalja
+  // artikla vraća listu tačno kakva je bila. Strane nema: lista se skroluje.
   const { values, setValues } = useListQueryState(PRAZAN_FILTER);
-  const page = Math.max(1, Number(values.strana) || 1);
 
   // Tekstualna polja se kucaju lokalno, pa se posle KUCANJE_MS upisuju u URL.
+  // `jm` je ovde zbog TEKSTUALNOG rezervnog polja (šifarnik jedinica nije stigao);
+  // kad se J.m. bira iz padajuće liste, `values.jm` se upisuje odmah, a ovaj snimak
+  // se poravna kroz sinhronizaciju ispod — druge grane nema.
   const [tekst, setTekst] = useState({
     trazi: values.trazi,
     katbroj: values.katbroj,
     naziv: values.naziv,
+    jm: values.jm,
+    polica: values.polica,
   });
   useEffect(() => {
-    setTekst({ trazi: values.trazi, katbroj: values.katbroj, naziv: values.naziv });
-  }, [values.trazi, values.katbroj, values.naziv]);
+    setTekst({
+      trazi: values.trazi,
+      katbroj: values.katbroj,
+      naziv: values.naziv,
+      jm: values.jm,
+      polica: values.polica,
+    });
+  }, [values.trazi, values.katbroj, values.naziv, values.jm, values.polica]);
   useEffect(() => {
     if (
       tekst.trazi === values.trazi &&
       tekst.katbroj === values.katbroj &&
-      tekst.naziv === values.naziv
+      tekst.naziv === values.naziv &&
+      tekst.jm === values.jm &&
+      tekst.polica === values.polica
     ) {
       return;
     }
-    const t = setTimeout(() => setValues({ ...tekst, strana: '1' }), KUCANJE_MS);
+    const t = setTimeout(() => setValues(tekst), KUCANJE_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tekst]);
@@ -365,24 +466,36 @@ export default function ArtikliPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [router]);
 
+  /** Sort iz URL-a — nepoznata kolona se ćutke odbacuje (backend bi je vratio kao 400). */
+  const sort: SortState | null = useMemo(() => {
+    if (!isItemSortColumn(values.sort)) return null;
+    return { key: values.sort, dir: values.smer === 'desc' ? 'desc' : 'asc' };
+  }, [values.sort, values.smer]);
+
   /** Filter za server — jedan izvor i za listu i za izvoz. */
   const filters: ItemListParams = useMemo(
     () => ({
       q: values.trazi || undefined,
       catalogNumber: values.katbroj || undefined,
       name: values.naziv || undefined,
+      unit: values.jm || undefined,
       groupCode: values.grupa || undefined,
       subgroupCode: values.podgrupa || undefined,
       originCode: values.podpodgrupa || undefined,
-      rasterId: values.dimenzija ? Number(values.dimenzija) : undefined,
-      qualityTypeId: values.kvalitet ? Number(values.kvalitet) : undefined,
+      shelf: values.polica || undefined,
+      shelfPresence:
+        values.policaPrisustvo === 'with' || values.policaPrisustvo === 'without'
+          ? values.policaPrisustvo
+          : undefined,
       duplicateCatalogNumbers: values.dupli === '1' ? true : undefined,
-      active: values.aktivni === '1' ? true : undefined,
+      // `sort.key` je već prošao `isItemSortColumn` pri čitanju iz URL-a.
+      sort: sort ? (sort.key as ItemSortColumn) : undefined,
+      dir: sort?.dir,
     }),
-    [values],
+    [values, sort],
   );
 
-  const list = useArtikli({ ...filters, page, pageSize: PAGE_SIZE });
+  const { upit, redovi, ukupno, ucitano, naKapi } = useArtikliSkrol(filters);
   const lookups = useItemLookups();
   const sifarnici = lookups.data?.data;
 
@@ -405,6 +518,24 @@ export default function ArtikliPage() {
     }));
   }, [sifarnici, values.grupa]);
 
+  /**
+   * Jedinice mere — `lookups.units` je DISTINCT iz `items` (nema svoj šifarnik), pa je
+   * spisak tačno ono što u podacima postoji. Filter traži TAČNO poklapanje: „KOM" i
+   * „KOM." su dve različite jedinice i prefiks bi ih pomešao.
+   */
+  const jmOptions = useMemo(() => {
+    const jedinice = sifarnici?.units ?? [];
+    // Vrednost koja nije u spisku (stara adresa, otkucano u rezervnom polju) mora
+    // ostati VIDLJIVA u kontroli — inače lista pokazuje „sve", a filter i dalje radi
+    // po njoj, pa ekran laže o tome šta je filtrirano.
+    const sve =
+      values.jm && !jedinice.includes(values.jm) ? [values.jm, ...jedinice] : jedinice;
+    return sve.map((u) => ({ value: u, label: u }));
+  }, [sifarnici, values.jm]);
+
+  /** Ima li šifarnik jedinica uopšte — bez njega J.m. filter pada na tekstualno polje. */
+  const imaJedinica = (sifarnici?.units?.length ?? 0) > 0;
+
   /** Druga stepenica kaskade: izabrana podgrupa sužava PodPodgrupe. */
   const originOptions = useMemo(() => {
     const sve = sifarnici?.origins ?? [];
@@ -417,39 +548,170 @@ export default function ArtikliPage() {
     }));
   }, [sifarnici, values.podgrupa]);
 
-  const rasterOptions = useMemo(
-    () =>
-      (sifarnici?.rasters ?? []).map((r) => ({ value: String(r.id), label: rasterLabel(r) })),
-    [sifarnici],
-  );
-
-  const qualityOptions = useMemo(
-    () =>
-      (sifarnici?.qualityTypes ?? []).map((k) => ({
-        value: String(k.id),
-        label: k.description ? `${k.code} — ${k.description}` : k.code,
-      })),
-    [sifarnici],
-  );
-
   /** Promena gornjeg nivoa poništava niže — inače filter ostane na nemogućem paru. */
   function promeniGrupu(v: string) {
-    setValues({ grupa: v, podgrupa: '', podpodgrupa: '', strana: '1' });
+    setValues({ grupa: v, podgrupa: '', podpodgrupa: '' });
   }
   function promeniPodgrupu(v: string) {
-    setValues({ podgrupa: v, podpodgrupa: '', strana: '1' });
-  }
-
-  function ponistiFilter() {
-    setTekst({ trazi: '', katbroj: '', naziv: '' });
-    setValues(PRAZAN_FILTER);
-    setIzvozPoruka(null);
+    setValues({ podgrupa: v, podpodgrupa: '' });
   }
 
   /**
-   * „Export" izvozi CELU filtriranu listu, ne tekuću stranu (BigBit tako radi).
+   * Klik na zaglavlje: nova kolona → prvi smer (numeričke opadajuće), isti smer →
+   * obrnut, drugi klik u istom smeru → nazad na BigBit redosled. Sort ide u URL, pa
+   * ga povratak sa detalja zadrži.
+   */
+  const prebaciSort = useCallback(
+    (key: string) => {
+      if (!isItemSortColumn(key)) return;
+      const prvi: ItemSortDir = PRVI_KLIK_OPADAJUCE.has(key) ? 'desc' : 'asc';
+      if (values.sort !== key) {
+        setValues({ sort: key, smer: prvi });
+        return;
+      }
+      const trenutni = values.smer === 'desc' ? 'desc' : 'asc';
+      if (trenutni === prvi) setValues({ sort: key, smer: prvi === 'asc' ? 'desc' : 'asc' });
+      else setValues({ sort: '', smer: '' });
+    },
+    [values.sort, values.smer, setValues],
+  );
+
+  const imaFilter = Object.entries(values).some(
+    ([k, v]) => !NIJE_FILTER.has(k) && v !== '',
+  );
+  const imaNaprednih = NAPREDNI_FILTERI.some((k) => values[k] !== '');
+
+  /** „Više filtera" se samo otvara kad filter iz njega već radi — da ne bude nevidljiv. */
+  const [viseOtvoreno, setViseOtvoreno] = useState(false);
+  useEffect(() => {
+    if (imaNaprednih) setViseOtvoreno(true);
+  }, [imaNaprednih]);
+
+  function ponistiFilter() {
+    setTekst({ trazi: '', katbroj: '', naziv: '', jm: '', polica: '' });
+    setValues({ ...PRAZAN_FILTER, sort: values.sort, smer: values.smer });
+    setIzvozPoruka(null);
+  }
+
+  // ─── Izbor reda ────────────────────────────────────────────────────────────
+  // Klik BIRA red, dupli klik / Enter OTVARA detalj (BigBit navika: red radnji
+  // iznad liste radi nad izabranim artiklom).
+  //
+  // IZBOR JE KONTROLISAN ODAVDE (`selectedKey` + `onSelectionChange`): ovo stanje je
+  // jedini izvor i za akcentnu traku u tabeli i za dugmad iznad nje. Bez toga tabela
+  // vodi svoj izbor kao INDEKS koji starta na 0 — pa prvi red izgleda izabrano, a
+  // dugmad stoje siva sa „prvo izaberi artikal"; isto se ponavljalo i posle svake
+  // promene filtera.
+  //
+  // Izabrani red se drži i u ref-u: Enter iz tela tabele bubble-uje do rukovaoca
+  // ispod, a `useState` vrednost u zatvaranju bi bila stara ako bi izbor i Enter
+  // ikad pali u isti događaj.
+  const [izabran, setIzabran] = useState<ItemRow | null>(null);
+  const izabranRef = useRef<ItemRow | null>(null);
+  const izaberi = useCallback((red: ItemRow | null) => {
+    izabranRef.current = red;
+    setIzabran(red);
+  }, []);
+
+  // Promena filtera ili sorta poništava izbor: red iz prethodnog spiska ne mora
+  // uopšte biti u novom, a dugmad iznad liste bi radila nad njim.
+  useEffect(() => {
+    izaberi(null);
+  }, [filters, izaberi]);
+
+  // `data-row-index` postavlja `DataTable` (samo kad ima `rowActions`) — preko njega
+  // se iz DOM-a vraća red na koji se događaj odnosi (dupli klik).
+  const redIzTr = useCallback(
+    (tr: Element | null): ItemRow | null => {
+      if (!tr) return null;
+      // Atribut MORA postojati: `Number(null)` je 0 i `Number('')` je 0, pa bi <tr>
+      // bez indeksa (prošireni red, red „nema podataka") tiho vratio PRVI artikal.
+      const atr = tr.getAttribute('data-row-index');
+      if (atr === null || atr.trim() === '') return null;
+      const i = Number(atr);
+      return Number.isInteger(i) && i >= 0 ? redovi[i] ?? null : null;
+    },
+    [redovi],
+  );
+
+  /** Red pod pokazivačem. */
+  const redIzDogadjaja = useCallback(
+    (cilj: EventTarget | null): ItemRow | null => {
+      const el = cilj instanceof Element ? cilj : null;
+      return redIzTr(el?.closest('tr[data-row-index]') ?? null);
+    },
+    [redIzTr],
+  );
+
+  const otvoriDetalj = useCallback(
+    (red: ItemRow | null) => {
+      if (red) router.push(`/artikli/detalj?id=${red.id}`);
+    },
+    [router],
+  );
+
+  const mozeKarticu = can(PERMISSIONS.ROBNO_READ);
+
+  /**
+   * RED RADNJI NAD ARTIKLOM — jedan izvor za dugmad ispod filtera I za meni na
+   * desni klik, da se ne raziđu. Redosled i labele su BigBit-ovi.
+   *
+   * „Kartica artikla" čita robna kretanja (`/robno/item-card`, pravo `robno.read`),
+   * koje `/artikli` (pravo `directory.read`) ne podrazumeva — kome ga nema, stavka
+   * se ne nudi uopšte umesto da vodi u 403.
+   */
+  const akcijeZaRed = useCallback(
+    (red: ItemRow | null): RowAction[] => {
+      const nemaReda = red ? undefined : 'Prvo izaberi artikal u listi (klik na red).';
+      const stavke: RowAction[] = [
+        {
+          kljuc: 'detalj',
+          labela: 'Detaljno artikal',
+          onemoguceno: nemaReda,
+          onSelect: () => otvoriDetalj(red),
+        },
+      ];
+      if (mozeKarticu) {
+        stavke.push({
+          kljuc: 'kartica',
+          labela: 'Kartica artikla',
+          onemoguceno: nemaReda,
+          onSelect: () => {
+            if (red) router.push(`/artikli/kartica?id=${red.id}`);
+          },
+        });
+      }
+      stavke.push(
+        {
+          kljuc: 'recepti',
+          labela: 'Recepti',
+          onemoguceno: 'BigBit T_Recepti je prazan (0 zapisa)',
+          onSelect: () => {},
+        },
+        {
+          kljuc: 'kng',
+          labela: 'KNG artikli',
+          onemoguceno: 'KNG šifarnik ima 2 zapisa — ekran stiže kasnije',
+          onSelect: () => {},
+        },
+        {
+          kljuc: 'tarife',
+          labela: 'Promena tarifa poreza',
+          onemoguceno: 'Masovna izmena cena/tarifa — poseban paket',
+          onSelect: () => {},
+        },
+      );
+      return stavke;
+    },
+    [mozeKarticu, otvoriDetalj, router],
+  );
+
+  const akcijeIznad = akcijeZaRed(izabran);
+
+  /**
+   * „Export" izvozi CELU filtriranu listu, ne učitane redove (BigBit tako radi).
    * Platformsko dugme `ExportCsvButton` ovde ne može — ono prima gotove redove, a
-   * ovde se do njih dolazi tek posle klika (server-side filter nad ~91k redova);
+   * ovde se do njih dolazi tek posle klika (server-side filter nad ~92k redova);
    * koristi se isti motor izvoza, `lib/table-csv.ts`.
    */
   async function izveziFiltriranuListu() {
@@ -482,17 +744,11 @@ export default function ArtikliPage() {
     );
   }
 
-  const rows = list.data?.data ?? [];
-  const meta = list.data?.meta.pagination;
-  const imaFilter = Object.keys(PRAZAN_FILTER).some(
-    (k) => k !== 'strana' && values[k as keyof typeof PRAZAN_FILTER] !== '',
-  );
-
   return (
     <AppShell>
       <PageHeader
         title="Artikli"
-        count={meta ? `${formatNumber(meta.total)} artikala` : undefined}
+        count={upit.data ? `${formatNumber(ukupno)} artikala` : undefined}
         actions={
           <div className="flex items-center gap-2">
             <Button
@@ -521,140 +777,219 @@ export default function ArtikliPage() {
         }
       />
 
-      <div className="flex-1 space-y-4 overflow-auto p-6">
-        {/* Filter bar — isti skup i iste labele kao BigBit forma. */}
-        <section className="rounded-panel border border-line bg-surface p-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <FormField label="Pronađi artikal">
-              <Input
-                value={tekst.trazi}
-                onChange={(e) => setTekst((t) => ({ ...t, trazi: e.target.value }))}
-                placeholder="kat. broj, naziv, bar kod, ext. šifra"
-              />
-            </FormField>
+      <div className="flex-1 space-y-3 overflow-auto p-6">
+        {/* Filter traka — lagana, jedan red gde stane (idiom `/robno`, `/izvodi`). */}
+        <div className="flex flex-wrap items-end gap-3">
+          <Polje labela="Pronađi artikal" sirina="w-64">
+            <Input
+              value={tekst.trazi}
+              onChange={(e) => setTekst((t) => ({ ...t, trazi: e.target.value }))}
+              placeholder="kat. broj, naziv, bar kod, ext. šifra"
+            />
+          </Polje>
 
-            <FormField label="…kat. broj">
+          <Polje labela="Grupa" sirina="w-44">
+            <Select
+              placeholder="sve"
+              value={values.grupa}
+              onChange={(e) => promeniGrupu(e.target.value)}
+              options={groupOptions}
+            />
+          </Polje>
+
+          <Polje labela="Podgrupa" sirina="w-44">
+            <Select
+              placeholder="sve"
+              value={values.podgrupa}
+              onChange={(e) => promeniPodgrupu(e.target.value)}
+              options={subgroupOptions}
+            />
+          </Polje>
+
+          <Polje labela="PodPodgrupa" sirina="w-44">
+            <Select
+              placeholder="sve"
+              value={values.podpodgrupa}
+              onChange={(e) => setValues({ podpodgrupa: e.target.value })}
+              options={originOptions}
+            />
+          </Polje>
+
+          <Polje labela="Polica" sirina="w-32">
+            <Input
+              value={tekst.polica}
+              onChange={(e) => setTekst((t) => ({ ...t, polica: e.target.value }))}
+              placeholder="npr. A"
+              title={'Prefiks oznake police: „A“ vraća ceo red A (A-1, A-1-3…)'}
+            />
+          </Polje>
+
+          <Polje labela="Prisustvo police" sirina="w-40">
+            <Select
+              placeholder="sve"
+              value={values.policaPrisustvo}
+              onChange={(e) => setValues({ policaPrisustvo: e.target.value })}
+              options={POLICA_OPCIJE}
+            />
+          </Polje>
+
+          {imaFilter && (
+            <Button type="button" variant="secondary" onClick={ponistiFilter}>
+              <RotateCcw className="h-4 w-4" aria-hidden />
+              Poništi filter
+            </Button>
+          )}
+        </div>
+
+        {/* Retki filteri — sklopljeni, da vidljiva traka ostane jedan red. */}
+        <details
+          open={viseOtvoreno}
+          onToggle={(e) => setViseOtvoreno((e.currentTarget as HTMLDetailsElement).open)}
+        >
+          <summary className="inline-flex cursor-pointer select-none items-center rounded-control px-1 text-xs text-ink-secondary hover:text-ink focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]">
+            Više filtera
+          </summary>
+          <div className="mt-2 flex flex-wrap items-end gap-3">
+            <Polje labela="…kat. broj" sirina="w-40">
               <Input
                 value={tekst.katbroj}
                 onChange={(e) => setTekst((t) => ({ ...t, katbroj: e.target.value }))}
                 placeholder="početak broja"
               />
-            </FormField>
+            </Polje>
 
-            <FormField label="…deo naziva">
+            <Polje labela="…deo naziva" sirina="w-56">
               <Input
                 value={tekst.naziv}
                 onChange={(e) => setTekst((t) => ({ ...t, naziv: e.target.value }))}
                 placeholder="deo naziva"
               />
-            </FormField>
+            </Polje>
 
-            <FormField label="…grupu">
-              <Select
-                placeholder="sve grupe"
-                value={values.grupa}
-                onChange={(e) => promeniGrupu(e.target.value)}
-                options={groupOptions}
-              />
-            </FormField>
+            {/* J.m. — padajuća lista dok šifarnik stoji, inače obično tekstualno polje:
+                filter mora da radi i kad `lookups` padne (traka iznad to i kaže). */}
+            <Polje labela="J.m." sirina="w-32">
+              {imaJedinica ? (
+                <Select
+                  placeholder="sve"
+                  value={values.jm}
+                  onChange={(e) => setValues({ jm: e.target.value })}
+                  options={jmOptions}
+                  title="Jedinica mere — tačno poklapanje"
+                />
+              ) : (
+                <Input
+                  value={tekst.jm}
+                  onChange={(e) => setTekst((t) => ({ ...t, jm: e.target.value }))}
+                  placeholder="npr. KOM"
+                  title="Jedinica mere — tačno poklapanje (spisak jedinica nije učitan)"
+                />
+              )}
+            </Polje>
 
-            <FormField label="…podgrupu">
-              <Select
-                placeholder="sve podgrupe"
-                value={values.podgrupa}
-                onChange={(e) => promeniPodgrupu(e.target.value)}
-                options={subgroupOptions}
-              />
-            </FormField>
-
-            <FormField label="…PodPodgrupu">
-              <Select
-                placeholder="sve PodPodgrupe"
-                value={values.podpodgrupa}
-                onChange={(e) => setValues({ podpodgrupa: e.target.value, strana: '1' })}
-                options={originOptions}
-              />
-            </FormField>
-
-            <FormField label="…dimenziju">
-              <Select
-                placeholder="sve dimenzije"
-                value={values.dimenzija}
-                onChange={(e) => setValues({ dimenzija: e.target.value, strana: '1' })}
-                options={rasterOptions}
-              />
-            </FormField>
-
-            <FormField label="…kvalitet">
-              <Select
-                placeholder="svi kvaliteti"
-                value={values.kvalitet}
-                onChange={(e) => setValues({ kvalitet: e.target.value, strana: '1' })}
-                options={qualityOptions}
-              />
-            </FormField>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center gap-4">
-            <label className="flex items-center gap-2 text-sm text-ink">
+            <label className="flex items-center gap-2 pb-2 text-sm text-ink">
               <input
                 type="checkbox"
                 className="h-4 w-4 accent-accent"
                 checked={values.dupli === '1'}
-                onChange={(e) => setValues({ dupli: e.target.checked ? '1' : '', strana: '1' })}
+                onChange={(e) => setValues({ dupli: e.target.checked ? '1' : '' })}
               />
               Prikaži artikle sa duplim kataloškim brojem
             </label>
-
-            <label className="flex items-center gap-2 text-sm text-ink">
-              <input
-                type="checkbox"
-                className="h-4 w-4 accent-accent"
-                checked={values.aktivni === '1'}
-                onChange={(e) =>
-                  setValues({ aktivni: e.target.checked ? '1' : '', strana: '1' })
-                }
-              />
-              Samo aktivni
-            </label>
-
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={ponistiFilter}
-              disabled={!imaFilter}
-            >
-              <RotateCcw className="h-4 w-4" aria-hidden />
-              Poništi filter
-            </Button>
-
-            {izvozPoruka && <span className="text-sm text-ink-secondary">{izvozPoruka}</span>}
           </div>
+        </details>
 
-          {lookups.error && (
-            <p className="mt-3 text-sm text-ink-secondary">
-              Šifarnici filtera nisu učitani — padajuće liste su prazne, pretraga i ostali
-              filteri rade normalno.
-            </p>
+        {/* Red radnji nad IZABRANIM artiklom (BigBit redosled i labele). Isti spisak
+            je i na desni klik na red — jedan izvor, `akcijeZaRed`. */}
+        <div className="flex flex-wrap items-center gap-2">
+          {akcijeIznad.map((a) =>
+            a.onemoguceno ? (
+              // `aria-disabled`, ne `disabled`: pravi `disabled` element u Firefox-u
+              // ne prima pokazivač, pa se `title` (razlog) nikad ne prikaže i korisnik
+              // ne sazna ZAŠTO dugme ne radi (isto pravilo kao `ContextMenu`).
+              <Button
+                key={a.kljuc}
+                type="button"
+                variant="secondary"
+                aria-disabled
+                title={a.onemoguceno}
+                onClick={(e) => e.preventDefault()}
+                className="cursor-not-allowed opacity-50"
+              >
+                {a.labela}
+              </Button>
+            ) : (
+              <Button key={a.kljuc} type="button" variant="secondary" onClick={a.onSelect}>
+                {a.labela}
+              </Button>
+            ),
           )}
-        </section>
 
-        {list.error && (
+          <span className={cn('text-sm', izabran ? 'text-ink-secondary' : 'text-ink-disabled')}>
+            {izabran ? (
+              <>
+                Izabran: <span className="tnums">{izabran.catalogNumber}</span> — {izabran.name}
+              </>
+            ) : (
+              'Klikni red da izabereš artikal · dupli klik ili Enter otvara detalj'
+            )}
+          </span>
+        </div>
+
+        {upit.error && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
-            {(list.error as Error).message}
+            {(upit.error as Error).message}
           </div>
         )}
 
-        {/* 22 kolone ne staju na ekran: skrol je UNUTAR tabele (DataTable nosi
-            `overflow-x-auto`), a `min-w-0` sprečava da širina tabele razvuče
-            stranu — strana se nikad ne pomera vodoravno (DESIGN_SYSTEM §11). */}
-        <div className="min-w-0">
+        {lookups.error && (
+          <p className="text-sm text-ink-secondary">
+            Šifarnici filtera nisu učitani — padajuće liste su prazne, pretraga i ostali
+            filteri rade normalno.
+          </p>
+        )}
+
+        {/* 22 kolone ne staju na ekran: skrol je UNUTAR tabele (zamrznuto zaglavlje +
+            prve dve kolone), a `min-w-0` sprečava da širina tabele razvuče stranu —
+            strana se nikad ne pomera vodoravno (DESIGN_SYSTEM §11).
+            Dupli klik i Enter se hvataju OVDE jer `DataTable` nema svoj „otvori":
+            oba događaja bubble-uju iz reda (`onRowActivate` je već upisao izbor). */}
+        <div
+          className="min-w-0"
+          onDoubleClick={(e) => {
+            // Samo dupli klik NA RED otvara detalj: dupli klik po zaglavlju (sort) ili
+            // po dugmetu „…" ne sme da odvede sa ekrana.
+            if (!(e.target instanceof Element)) return;
+            if (e.target.closest('button, a, input, label')) return;
+            otvoriDetalj(redIzDogadjaja(e.target));
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return;
+            // Samo Enter iz TELA TABELE otvara detalj. Bez ove granice bi ga otvorio
+            // i Enter na dugmetu „…" i na stavci menija akcija (oba su unutar ovog
+            // okvira i oba bubble-uju dovde) — ista granica koju `DataTable` vuče
+            // svojim `e.target !== e.currentTarget` zbog buga 009/26.
+            if (!(e.target instanceof HTMLElement) || e.target.tagName !== 'TBODY') return;
+            otvoriDetalj(izabranRef.current);
+          }}
+        >
+          {/* Izbor je KONTROLISAN odavde: `selectedKey` je ono što se ističe, a
+              `onSelectionChange` javlja svaki pomeraj (klik, desni klik, dugme „…",
+              ↑/↓). Zato ekranu više ne trebaju sinhronizacije iz DOM-a — istaknut
+              red i red nad kojim dugmad rade su ista stvar po konstrukciji. */}
           <DataTable
             columns={columns}
-            rows={rows}
+            rows={redovi}
             rowKey={(a) => a.id}
-            loading={list.isLoading}
-            onRowActivate={(a) => router.push(`/artikli/detalj?id=${a.id}`)}
+            loading={upit.isLoading}
+            sort={sort}
+            onSortToggle={prebaciSort}
+            stickyHeader
+            frozenColumns={2}
+            maxHeight={VISINA_TABELE}
+            rowActions={akcijeZaRed}
+            selectedKey={izabran?.id ?? null}
+            onSelectionChange={izaberi}
             empty={
               <EmptyState
                 title="Nema artikala"
@@ -664,14 +999,34 @@ export default function ArtikliPage() {
           />
         </div>
 
-        {meta && meta.totalPages > 1 && (
-          <Pager
-            page={meta.page}
-            totalPages={meta.totalPages}
-            onPrev={() => setValues({ strana: String(Math.max(1, page - 1)) })}
-            onNext={() => setValues({ strana: String(Math.min(meta.totalPages, page + 1)) })}
-          />
-        )}
+        {/* Brojač + dovlačenje NA ZAHTEV. Automatsko dovlačenje na dolazak dna se ne
+            koristi: na dodirnom ekranu odskok na dnu okine posmatrača više puta i
+            pošalje plotun zahteva. */}
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm text-ink-secondary">
+            Prikazano {formatNumber(ucitano)} od {formatNumber(ukupno)}
+          </span>
+
+          {upit.hasNextPage && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => void upit.fetchNextPage()}
+              loading={upit.isFetchingNextPage}
+            >
+              Učitaj još
+            </Button>
+          )}
+
+          {naKapi && (
+            <span className="text-sm text-status-warn">
+              Prikazano {formatNumber(ARTIKLI_SKROL_KAPA)} od {formatNumber(ukupno)} — suzi
+              pretragu ili izvezi u Excel
+            </span>
+          )}
+
+          {izvozPoruka && <span className="text-sm text-ink-secondary">{izvozPoruka}</span>}
+        </div>
 
         <p className="text-sm text-ink-disabled">
           Podaci iz BigBit-a — unos i izmena su zaključani (ekran unosa objašnjava zašto)
