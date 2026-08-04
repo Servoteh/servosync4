@@ -594,8 +594,12 @@ describe("LaunchNotifyService", () => {
   });
 
   it("BLOKER 3: neuspela isporuka NE markira redove — sledeći tik pokušava ponovo", async () => {
-    mail.send.mockRejectedValue(new Error("smtp down"));
-    notifications.notifyWorkers.mockRejectedValue(new Error("db down"));
+    // ⚠️ `MailService.send` NIKAD NE BACA — vraća `false` (DRY-RUN bez API
+    // ključa, Resend non-2xx, mrežni pad/timeout). Mock MORA da bude
+    // `mockResolvedValue(false)`: sa `mockRejectedValue` test bi prošao i kad
+    // kod ignoriše povratnu vrednost, pa ne bi hvatao pravi produkcijski bug.
+    mail.send.mockResolvedValue(false);
+    notifications.notifyWorkers.mockResolvedValue(0);
     await service.notifyLaunch(INPUT);
     age(200_000);
 
@@ -605,12 +609,48 @@ describe("LaunchNotifyService", () => {
     expect(store.rows[0].notifiedAt).toBeNull();
     expect(store.rows[0].sentAt).toBeNull();
 
-    // SMTP se oporavio — sledeći tik isporučuje.
+    // Resend se oporavio — sledeći tik isporučuje.
     mail.send.mockResolvedValue(true);
     await service.sweep();
 
     expect(mail.send).toHaveBeenCalledTimes(4); // 2 pala + 2 uspela
     expect(store.rows[0].sentAt).not.toBeNull();
+  });
+
+  it("BLOKER 3c: mejl koji vrati FALSE ne sme da zapečati nacrt (send ne baca!)", async () => {
+    // Tačan produkcijski scenario: RESEND_API_KEY nije podešen → DRY-RUN →
+    // `send` resolve-uje `false`. Bez provere povratne vrednosti kod bi upisao
+    // sent_at i nacrt bi zauvek ostao nem, a nijedan mejl nije otišao.
+    mail.send.mockResolvedValue(false);
+    notifications.notifyWorkers.mockResolvedValue(0);
+    await service.notifyLaunch(INPUT);
+    age(200_000);
+    await service.sweep();
+
+    expect(store.rows[0].sentAt).toBeNull();
+
+    // Ključni dokaz: nacrt NIJE zapečaćen — kad kanal proradi, obaveštenje ide.
+    mail.send.mockResolvedValue(true);
+    notifications.notifyWorkers.mockResolvedValue(1);
+    await service.notifyLaunch({ ...INPUT, workOrderId: 43, handoverId: 6 });
+    age(200_000);
+    await service.sweep();
+
+    expect(mailFor("planer@servoteh.com").subject).toContain("G-260724-010");
+    expect(store.rows.some((r) => r.sentAt !== null)).toBe(true);
+  });
+
+  it("zvonce sa 0 upisanih redova se NE broji kao isporuka", async () => {
+    // `notifyWorkers` vraća BROJ upisanih redova; 0 = niko nije obavešten.
+    mail.send.mockResolvedValue(false);
+    notifications.notifyWorkers.mockResolvedValue(0);
+    await service.notifyLaunch(INPUT);
+    age(200_000);
+
+    await service.sweep();
+
+    expect(store.rows[0].sentAt).toBeNull();
+    expect(store.rows[0].notifiedAt).toBeNull(); // ostaje za sledeći pokušaj
   });
 
   it("BLOKER 3b: obrađeno-bez-isporuke NE pečati nacrt (nema planera, pa ih dobije)", async () => {
@@ -716,8 +756,10 @@ describe("LaunchNotifyService", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("delimičan uspeh (mejl pao, zvonce prošlo) se broji kao isporuka", async () => {
-    mail.send.mockRejectedValue(new Error("smtp down"));
+  it("delimičan uspeh (mejl vratio false, zvonce prošlo) se broji kao isporuka", async () => {
+    // `send` vraća false, ne baca — zvonce je jedini uspeli kanal.
+    mail.send.mockResolvedValue(false);
+    notifications.notifyWorkers.mockResolvedValue(1);
     await service.notifyLaunch(INPUT);
     age(200_000);
 

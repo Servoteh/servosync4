@@ -216,6 +216,15 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
     // query engine-u — `take: 2` bi moglo da povuče DVA reda ISTOG nacrta (isti
     // crtež ume da bude više stavki jednog nacrta), distinct bi ih sveo na jedan
     // i dvosmislen crtež bi PROŠAO kao jednoznačan. Skup po crtežu je mali.
+    //
+    // POZNAT REZIDUAL (svesno prihvaćen): filter `excludeFromHandover: false`
+    // znači da crtež koji je ISKLJUČEN u nacrtu A a ne-isključen tačno u nacrtu
+    // B prolazi kao „jednoznačan" i pripiše se B-u. IZMERENO 04.08: 77 crteža /
+    // 84 primopredaje u tom skupu — od toga 0 sa RAZLIČITIM predmetom i 0
+    // nelansiranih, dakle NULA žive izloženosti. Strože bi bilo brojati i
+    // isključene stavke, ali bi tada svaka ispravka nacrta („izbaci poziciju iz
+    // A, prebaci u B") trajno oborila pokrivenost dedupa — a to je čest,
+    // legitiman potez. Ako se skup ikad promeni, warn iznad to i pokazuje.
     const items = await this.prisma.handoverDraftItem.findMany({
       where: { drawingId: handover.drawingId, excludeFromHandover: false },
       select: { draftId: true },
@@ -392,14 +401,25 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
       for (const planner of planners) {
         if (planner.email?.includes("@")) {
           try {
-            await this.mail.send({
+            // ⚠️ `MailService.send` NIKAD NE BACA — vraća `false` u tri slučaja:
+            // DRY-RUN bez RESEND_API_KEY, Resend non-2xx (neispravna adresa,
+            // neverifikovan domen, rate limit) i mrežni pad / 8 s timeout.
+            // Zato se ISPORUKA meri POVRATNOM VREDNOŠĆU, ne izostankom izuzetka:
+            // `await` bez provere bi tiho upisao `sent_at` i zapečatio nacrt
+            // zauvek iako mejl nikad nije otišao — baš scenario zbog kog
+            // `sent_at` i postoji.
+            const ok = await this.mail.send({
               to: planner.email,
               subject: content.subject,
               html:
                 `<p>${planner.fullName ? `Poštovani ${esc(planner.fullName)},` : "Poštovani,"}</p>` +
                 content.html,
             });
-            delivered = true;
+            if (ok) delivered = true;
+            else
+              this.logger.error(
+                `Mejl primopredaja.lansirana planeru ${planner.id} NIJE poslat (MailService vratio false) — nacrt ostaje nezapečaćen.`,
+              );
           } catch (e) {
             this.logger.error(
               `Mejl primopredaja.lansirana planeru ${planner.id} FAIL: ${msg(e)}`,
@@ -408,14 +428,19 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
         }
         if (planner.workerId) {
           try {
-            await this.notifications.notifyWorkers([planner.workerId], {
-              type: "primopredaja.lansirana",
-              message: content.bell,
-              // POSTOJEĆI FE obrazac skoka na modul (app-shell NOTIFICATION_ROUTE).
-              refTable: "work_orders",
-              refId: live[0].workOrderId,
-            });
-            delivered = true;
+            // Isto pravilo kao za mejl: `notifyWorkers` vraća BROJ upisanih
+            // redova (0 kad nema primalaca) — isporuka je > 0, ne „nije baclo".
+            const created = await this.notifications.notifyWorkers(
+              [planner.workerId],
+              {
+                type: "primopredaja.lansirana",
+                message: content.bell,
+                // POSTOJEĆI FE obrazac skoka na modul (app-shell NOTIFICATION_ROUTE).
+                refTable: "work_orders",
+                refId: live[0].workOrderId,
+              },
+            );
+            if (created > 0) delivered = true;
           } catch (e) {
             this.logger.error(
               `Zvonce primopredaja.lansirana FAIL (planer ${planner.id}): ${msg(e)}`,
