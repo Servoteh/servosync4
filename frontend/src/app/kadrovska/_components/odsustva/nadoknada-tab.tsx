@@ -30,13 +30,8 @@ function rpcData(res: unknown): Record<string, unknown> {
   return ((res as TxResponse<Record<string, unknown>> | undefined)?.data ?? {}) as Record<string, unknown>;
 }
 import { SummaryChips } from '../common';
-import {
-  compareByName,
-  matchesStatusFilter,
-  normEmp,
-  STATUS_FILTER_OPEN,
-  type EmpRow,
-} from './shared';
+import { matchesStatusFilter, STATUS_FILTER_OPEN } from '../status-filter';
+import { compareByName, normEmp, type EmpRow } from './shared';
 import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 
 // ============================================================================

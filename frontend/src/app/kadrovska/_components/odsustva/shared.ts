@@ -445,21 +445,3 @@ export function ssSet(key: string, value: string): void {
     /* ignore */
   }
 }
-
-// ── Dvostepeni tok odluke (nadoknada / plaćeno odsustvo) ─────────────────────
-// ZAHTEV 068/26 (Nenad, 04.08.2026): „mogu da odobrim ja ili Nevena ili Zoran
-// kao admini, samo je potrebno da imamo u zahtevima za odobravanje!"
-// KOREN: liste su se otvarale sa filterom `pending`, pa je zahtev koji je šef
-// PROSLEDIO (`sef_approved`) ispadao iz tabele — čip „Čeka kadrovsku" je pokazivao
-// brojku, a tabela je pisala „Nema zahteva". Zahtev Stamenić 01.08.2026 je tako
-// stajao 4 dana. Podrazumevani filter je zato „čeka odluku" = OBA stepena.
-/** Statusi koji čekaju odluku: 1. nivo (šef) i 2. nivo (kadrovska/HR). */
-export const OPEN_DECISION_STATUSES: readonly string[] = ['pending', 'sef_approved'];
-/** Vrednost pseudo-filtera „čeka odluku" (nije status u bazi). */
-export const STATUS_FILTER_OPEN = 'open';
-/** Prazan filter = svi; `open` = oba stepena koja čekaju; inače tačan status. */
-export function matchesStatusFilter(status: string, filter: string): boolean {
-  if (!filter) return true;
-  if (filter === STATUS_FILTER_OPEN) return OPEN_DECISION_STATUSES.includes(status);
-  return status === filter;
-}

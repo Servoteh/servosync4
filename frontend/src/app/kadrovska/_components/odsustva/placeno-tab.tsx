@@ -22,13 +22,8 @@ import {
   type TxResponse,
 } from '@/api/kadrovska';
 import { SummaryChips } from '../common';
-import {
-  PAID_LEAVE_LABEL,
-  matchesStatusFilter,
-  normEmp,
-  STATUS_FILTER_OPEN,
-  type EmpRow,
-} from './shared';
+import { matchesStatusFilter, STATUS_FILTER_OPEN } from '../status-filter';
+import { PAID_LEAVE_LABEL, normEmp, type EmpRow } from './shared';
 import { NoticeBar, ReasonDialog, useNotice } from './requests-common';
 
 // ============================================================================

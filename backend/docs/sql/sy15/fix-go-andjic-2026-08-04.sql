@@ -37,8 +37,8 @@
 --
 -- ZAKLJUČAK: Anđićev saldo se poklapa sa HR dokumentom dan za dan. NEMA ŠTA DA
 -- SE VRATI — dodavanje 2 dana bi mu dalo 2 dana viška, tj. napravilo grešku koju
--- ovaj nalog treba da ispravi. Zato ovaj fajl NIJE „vrati dva dana", nego
--- KONTROLA koja to dokazuje, plus sanacija koja se pali SAMO od podataka.
+-- ovaj nalog treba da ispravi. Zato je ovaj fajl ČISTA KONTROLA (samo SELECT),
+-- bez ijedne mutacije — nema šta da se popravi.
 --
 -- PLATA: nije dirnuta ni u jednom scenariju. (a) Registar odluka §0 (Nenad,
 -- 30.07.2026): grid je izvor istine za zaradu tek OD JUNA 2026, maj i ranije nisu
@@ -46,15 +46,21 @@
 -- (ni maj, ni jun), pa nema obračuna koji bi se pomerio. GO dan u gridu utiče na
 -- saldo odmora, ne na isplaćeno.
 --
--- ŠTA KORAK 2 RADI: upisuje `go` red u grid SAMO za dan koji dokument zna kao
--- GO, a koji NIJE ni u gridu ni pokriven `opening_used`-om. Skup se računa iz
--- podataka; danas je PRAZAN (KORAK 1.4 mora vratiti 0 redova) pa je izvršavanje
--- no-op. Ostavljen je jer je idempotentan i jer bi uhvatio pravi gubitak ako se
--- pojavi. Ako KORAK 1.4 vrati bilo šta — STANI i javi, to je nov nalaz.
+-- ZAŠTO NEMA KORAKA „POPRAVKA": prva verzija ovog fajla je nosila uslovni INSERT
+-- koji se pali „samo ako dokument ima dan van grida i van `opening_used`-a".
+-- Review 05.08.2026 ga je oborio i s pravom: kapija je bila AGREGATNA
+-- (`count(doc) > opening_used`), a `INSERT … SELECT` je vukao SVE redove iz `doc`
+-- — da se uslov ikad okrene, upisao bi i 17.04.2026, koji u gridu POSTOJI sa
+-- 8,00 h, pa bi ga `ON CONFLICT DO UPDATE` nulirao i pojeo radni dan. Uslov po
+-- redu (`NOT EXISTS`) bi to zatvorio, ali kad je nalaz povučen, popravka je mrtav
+-- kod nad živom bazom — a mrtav kod koji piše u `work_hours` je rizik bez koristi.
+-- Zato je obrisan; ako se ikad pojavi pravi manjak (KORAK 1.4 vrati red), piše se
+-- namenski skript za taj konkretan dan.
 --
--- ŠTA NE RADI: ne dira `vacation_entitlements` (ni days_total ni opening_used),
--- ne dira dane koje dokument ne zna (20.05, 10.04, 13.04), ne dira nikog drugog,
--- ne dira platu ni jedan obračun.
+-- ŠTA OVAJ FAJL NE RADI: ništa ne menja. Ne dira `work_hours`,
+-- `vacation_entitlements` (ni days_total ni opening_used), ne dira dane koje
+-- dokument ne zna (20.05, 10.04, 13.04), ne dira nikog drugog ni jedan obračun.
+-- Bezbedno je pustiti ga ceo, više puta.
 -- ============================================================================
 
 -- ── KORAK 1 — KONTROLA (čist SELECT, bez izmena) ────────────────────────────
@@ -116,64 +122,37 @@ SELECT d.used_date AS dan_koji_bi_se_vratio,
  WHERE (SELECT count(*) FROM doc) > (SELECT opening_used FROM ent)
  ORDER BY d.used_date;
 
--- ── KORAK 2 — SANACIJA (pokrenuti SAMO ako je KORAK 1.4 vratio redove) ──────
--- Danas je no-op po konstrukciji: isti WHERE kao 1.4. Idempotentno (ON CONFLICT
--- DO NOTHING + uslov „dokument_van_grida > opening_used"). NE dira entitlement:
--- dodavanje GO reda u grid samo prebacuje dan iz „nije evidentiran" u
--- „iskorišćen", što je i smisao vraćanja izgubljenog dana.
-BEGIN;
+-- 1.5 Kontrolni pogled na dva dana iz oborenog nalaza — da se vidi da su
+--     REŠENA, a ne „popravljena ovim fajlom". Očekivano: 06.05 = `go` (Nikola
+--     vratio 20.05), 20.05 = 8,00 h bez koda i NIJE u dokumentu (ispravka).
+SELECT d.dan,
+       COALESCE(w.absence_code, '(bez koda)') AS u_gridu,
+       COALESCE(w.hours, 0)                   AS sati,
+       (SELECT count(*) FROM vacation_go_days g
+         WHERE g.employee_id = '969970e9-c8a5-46ff-8d65-c7fcdb13e7ee'
+           AND g.used_date = d.dan)           AS u_dokumentu
+  FROM (VALUES ('2026-05-06'::date), ('2026-05-20'::date)) AS d(dan)
+  LEFT JOIN work_hours w
+         ON w.employee_id = '969970e9-c8a5-46ff-8d65-c7fcdb13e7ee'
+        AND w.work_date = d.dan
+ ORDER BY d.dan;
 
-WITH doc AS (
-  SELECT g.employee_id, g.used_date
-    FROM vacation_go_days g
-   WHERE g.employee_id = '969970e9-c8a5-46ff-8d65-c7fcdb13e7ee'
-     AND g.source_year = 2026
-     AND NOT EXISTS (SELECT 1 FROM work_hours w
-                      WHERE w.employee_id = g.employee_id
-                        AND w.work_date = g.used_date
-                        AND w.absence_code = 'go')
-), ent AS (
-  SELECT opening_used FROM vacation_entitlements
-   WHERE employee_id = '969970e9-c8a5-46ff-8d65-c7fcdb13e7ee' AND year = 2026
-)
-INSERT INTO work_hours
-      (employee_id, work_date, hours, overtime_hours, field_hours, two_machine_hours,
-       absence_code, note, project_ref, last_edited_by, created_at, updated_at)
-SELECT d.employee_id, d.used_date, 0, 0, 0, 0,
-       'go',
-       'vraćen GO dan po HR dokumentu (sanacija 068/26, 04.08.2026)',
-       '', 'fix:068-go-restore', now(), now()
-  FROM doc d
- WHERE (SELECT count(*) FROM doc) > (SELECT opening_used FROM ent)
-ON CONFLICT (employee_id, work_date) DO UPDATE
-   SET absence_code = 'go',
-       hours = 0, overtime_hours = 0, field_hours = 0, two_machine_hours = 0,
-       note = CASE WHEN COALESCE(work_hours.note, '') = ''
-                   THEN 'vraćen GO dan po HR dokumentu (sanacija 068/26, 04.08.2026)'
-                   ELSE work_hours.note || ' | vraćen GO dan po HR dokumentu (sanacija 068/26)' END,
-       last_edited_by = 'fix:068-go-restore',
-       updated_at = now()
- WHERE work_hours.absence_code IS DISTINCT FROM 'go';
+-- ── KORAK 2 — VERIFIKACIJA (fajl NE MENJA NIŠTA; ovo je zatvaranje zapisnika) ─
 
-COMMIT;
-
--- ── KORAK 3 — VERIFIKACIJA ──────────────────────────────────────────────────
-
--- 3.1 Saldo posle (ako je KORAK 2 bio no-op, brojke su iste kao u 1.3:
---     iskorišćeno 6, preostalo 14, razlika 0).
+-- 2.1 Saldo: iskorišćeno 6, preostalo 14 — isto pre i posle, jer se ne dira ništa.
 SELECT b.days_total, b.days_carried_over, b.opening_used, b.dated_used,
        b.days_used, b.days_remaining
   FROM v_vacation_balance b
  WHERE b.employee_id = '969970e9-c8a5-46ff-8d65-c7fcdb13e7ee' AND b.year = 2026;
 
--- 3.2 Grid GO dani posle (očekivano i dalje 4: 06.05, 07.05, 15.06, 23.06).
+-- 2.2 Grid GO dani (očekivano 4: 06.05, 07.05, 15.06, 23.06).
 SELECT work_date, hours, absence_code, last_edited_by
   FROM work_hours
  WHERE employee_id = '969970e9-c8a5-46ff-8d65-c7fcdb13e7ee' AND absence_code = 'go'
  ORDER BY work_date;
 
--- 3.3 Kontrola da nije nastao višak: dokument ≥ saldo iskorišćenog.
---     Očekivano: razlika = 0 (ne sme postati negativna).
+-- 2.3 Zaključna kontrola: dokument − saldo iskorišćenog. Očekivano: 0.
+--     Pozitivno = dan izgubljen; negativno = dan preračunat. Oba su nov nalaz.
 SELECT (SELECT count(*) FROM vacation_go_days
          WHERE employee_id = '969970e9-c8a5-46ff-8d65-c7fcdb13e7ee' AND source_year = 2026)
        - (SELECT days_used FROM v_vacation_balance
