@@ -9,26 +9,31 @@ import {
   newClientEventId,
   useCreateSastanak,
   usePrenos,
+  useSastanci,
   type Sastanak,
 } from '@/api/sastanci';
 import { DirectoryPicker } from './directory-picker';
 import { DirectoryMultiPicker, type PickedUser } from './directory-multi-picker';
-import { INPUT_CLS, SASTANAK_TIP_LABEL } from './common';
+import { formatDatum, INPUT_CLS, PERIODICNI_PRESETI, SASTANAK_TIP_LABEL } from './common';
 
 /**
- * „Novi sastanak" modal (paritet 1.0 createSastanakModal). Za tip sedmični nudi
- * „+ prenos": kopira učesnike i premesta otvorene akcije sa POSLEDNJEG sastanka
- * istog tipa STROGO PRE datuma novog (1.0 prenesiUNoviSastanak). Izvor bira BE
- * (poziv BEZ fromSastanakId — server-side, svež; klijentski snapshot je umeo da
- * tiho promaši kad lista nije učitana). `source: null` u odgovoru = server-verified
- * „nema prethodnog". Default isključen; „Sedmični + prenos" dugme ga pre-setuje
- * (1.0 carryover opcija).
+ * „Novi sastanak" modal (paritet 1.0 createSastanakModal). „+ prenos" kopira
+ * učesnike i premesta otvorene akcije sa izvornog sastanka — od 024/26 (predlog
+ * d3, potvrđen 28.07) za SVAKI tip i sa IZBOROM izvora („Preuzmi otvorene stavke
+ * iz…"); bez izbora izvor bira BE (poslednji ISTOG tipa STROGO PRE datuma novog,
+ * server-side i svež — klijentski snapshot je umeo da tiho promaši kad lista
+ * nije učitana). `source: null` u odgovoru = server-verified „nema prethodnog".
+ * Default isključen; „Sedmični + prenos" dugme ga pre-setuje (1.0 carryover).
+ *
+ * 024/26 d1: tip „Periodični" nosi i interval (7/14/30 ili proizvoljan broj
+ * dana) — automatika (`sast-periodicni-auto`, dnevno 08h) posle zatvaranja/
+ * isteka termina kreira sledeći na `datum + interval`, sa pomeranjem za praznik.
  *
  * Zahtev 005/26 (Zoran Jaraković, 23.07): „Pozovi učesnike" u prvoj formi.
  * Izabrani učesnici idu uz create — BE ih umeće u istoj transakciji, a sy15 trigger
- * automatski šalje pozivnicu (tema/termin/mesto) mejlom. Kad je „prenos" uključen
- * (sedmični), učesnici se prenose sa prethodnog sastanka pa se ručni izbor sakriva
- * da se dva izvora ne sudare (prenos radi bulk-replace učesnika).
+ * automatski šalje pozivnicu (tema/termin/mesto) mejlom. Kad je „prenos" uključen,
+ * učesnici se prenose sa izvornog sastanka pa se ručni izbor sakriva da se dva
+ * izvora ne sudare (prenos radi bulk-replace učesnika).
  */
 export function CreateSastanakModal({
   onClose,
@@ -52,13 +57,26 @@ export function CreateSastanakModal({
   const [zapisnicar, setZapisnicar] = useState<{ email: string; label?: string } | null>(null);
   const [napomena, setNapomena] = useState('');
   const [prenos, setPrenos] = useState(defaultPrenos);
+  // '' = automatski izbor izvora na BE (poslednji istog tipa pre datuma).
+  const [prenosIzvorId, setPrenosIzvorId] = useState('');
   const [ucesnici, setUcesnici] = useState<PickedUser[]>([]);
   const [prenosReplacedNote, setPrenosReplacedNote] = useState(false);
+  // 024/26 d1 — interval periodičnog: preset (7/14/30) ili proizvoljan broj dana.
+  const [intervalIzbor, setIntervalIzbor] = useState('7');
+  const [intervalCustom, setIntervalCustom] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  // „Prenos" (sedmični) sam kopira učesnike sa prethodnog sastanka → ručni izbor
-  // se tada sakriva da bulk-replace prenosa ne pregazi ručno izabrane (i obrnuto).
-  const prenosActive = tip === 'sedmicni' && prenos;
+  // Izvori za „Preuzmi otvorene stavke iz…" (024/26 d3) — ista strana liste kao
+  // tabela (server klampuje na 200; sortirano datum desc = najskoriji prvi).
+  const izvoriQ = useSastanci({ pageSize: 200 });
+  const izvori = izvoriQ.data?.data ?? [];
+
+  const intervalDays =
+    intervalIzbor === 'custom' ? Number(intervalCustom) : Number(intervalIzbor);
+
+  // „Prenos" sam kopira učesnike sa izvornog sastanka → ručni izbor se tada
+  // sakriva da bulk-replace prenosa ne pregazi ručno izabrane (i obrnuto).
+  const prenosActive = prenos;
 
   // Uključivanje prenosa NAKON ručnog izbora: ne odbacuj tiho — vidljivo očisti
   // čipove i objasni da prenos preuzima učesnike sa prethodnog sastanka.
@@ -76,6 +94,9 @@ export function CreateSastanakModal({
     setError(null);
     if (!naslov.trim()) return setError('Naslov je obavezan.');
     if (!datum) return setError('Datum je obavezan.');
+    if (tip === 'periodicni' && (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 365)) {
+      return setError('Za periodični sastanak zadaj interval: ceo broj dana od 1 do 365.');
+    }
     // Poziv iz „prve forme" (005/26): šalje se samo kad prenos NIJE aktivan.
     // BE uvek upiše pozvan=true/prisutan=false — tip nosi samo email+label.
     const pozvani =
@@ -86,6 +107,7 @@ export function CreateSastanakModal({
       const res = await create.mutateAsync({
         clientEventId: newClientEventId(),
         tip,
+        intervalDays: tip === 'periodicni' ? intervalDays : undefined,
         naslov: naslov.trim(),
         datum,
         vreme: vreme || undefined,
@@ -98,11 +120,13 @@ export function CreateSastanakModal({
         ucesnici: pozvani,
       });
       const created = res.data;
-      if (tip === 'sedmicni' && prenos) {
+      if (prenos) {
         try {
-          // BEZ fromSastanakId — BE bira izvor (poslednji istog tipa strogo pre datuma).
+          // Izvor: izabran u formi (024/26 d3) ili BEZ fromSastanakId — tada BE
+          // bira poslednji ISTOG tipa strogo pre datuma.
           const r = await prenosM.mutateAsync({
             id: created.id,
+            fromSastanakId: prenosIzvorId || undefined,
             clientEventId: newClientEventId(),
           });
           if (r.data.source) {
@@ -150,6 +174,40 @@ export function CreateSastanakModal({
             <input className={INPUT_CLS} value={mesto} onChange={(e) => setMesto(e.target.value)} />
           </FormField>
         </div>
+        {/* 024/26 d1 — interval periodične serije (7/14/30 ili proizvoljno). */}
+        {tip === 'periodicni' && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FormField
+              label="Interval ponavljanja"
+              required
+              hint="Posle završetka termina automatika kreira sledeći na datum + interval (praznik ga pomera)."
+            >
+              <select
+                className={INPUT_CLS}
+                value={intervalIzbor}
+                onChange={(e) => setIntervalIzbor(e.target.value)}
+              >
+                {PERIODICNI_PRESETI.map((p) => (
+                  <option key={p.dana} value={String(p.dana)}>{p.label}</option>
+                ))}
+                <option value="custom">Proizvoljan broj dana…</option>
+              </select>
+            </FormField>
+            {intervalIzbor === 'custom' && (
+              <FormField label="Broj dana (1–365)" required>
+                <input
+                  className={INPUT_CLS}
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={intervalCustom}
+                  onChange={(e) => setIntervalCustom(e.target.value)}
+                  placeholder="npr. 21"
+                />
+              </FormField>
+            )}
+          </div>
+        )}
         <FormField label="Naslov" required>
           <input className={INPUT_CLS} value={naslov} onChange={(e) => setNaslov(e.target.value)} autoFocus />
         </FormField>
@@ -173,10 +231,10 @@ export function CreateSastanakModal({
           <textarea className={INPUT_CLS} rows={2} value={napomena} onChange={(e) => setNapomena(e.target.value)} />
         </FormField>
         {/* Zahtev 005/26 — poziv učesnika iz prve forme. Sakriveno kad je prenos
-            aktivan (učesnici se tada prenose sa prethodnog sedmičnog sastanka). */}
+            aktivan (učesnici se tada prenose sa izvornog sastanka). */}
         {prenosActive ? (
           <p className="text-xs text-ink-secondary">
-            Učesnici se prenose sa poslednjeg sedmičnog sastanka.
+            Učesnici se prenose sa izvornog sastanka.
             {prenosReplacedNote && ' Prethodno izabrani učesnici su uklonjeni jer ih prenos zamenjuje.'}
           </p>
         ) : (
@@ -189,11 +247,33 @@ export function CreateSastanakModal({
             )}
           </FormField>
         )}
-        {tip === 'sedmicni' && (
-          <label className="flex items-center gap-2 text-sm text-ink">
-            <input type="checkbox" checked={prenos} onChange={(e) => togglePrenos(e.target.checked)} />
-            Prenesi otvorene akcije i učesnike sa poslednjeg sastanka
-          </label>
+        {/* 024/26 d3 — prenos za SVAKI tip, sa izborom izvora („Preuzmi otvorene
+            stavke iz…"). Prenose se samo NEZAVRŠENE akcije (otvoren/u toku) —
+            završene ostaju u istoriji izvornog sastanka. */}
+        <label className="flex items-center gap-2 text-sm text-ink">
+          <input type="checkbox" checked={prenos} onChange={(e) => togglePrenos(e.target.checked)} />
+          Prenesi otvorene akcije i učesnike iz postojećeg sastanka
+        </label>
+        {prenos && (
+          <FormField
+            label="Preuzmi otvorene stavke iz…"
+            hint="Prenose se samo nezavršene akcije; završene ostaju u istoriji izvornog sastanka."
+          >
+            <select
+              className={INPUT_CLS}
+              value={prenosIzvorId}
+              onChange={(e) => setPrenosIzvorId(e.target.value)}
+            >
+              <option value="">
+                Automatski — poslednji sastanak istog tipa pre datuma
+              </option>
+              {izvori.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.naslov} — {formatDatum(s.datum)}
+                </option>
+              ))}
+            </select>
+          </FormField>
         )}
         {error && <p className="text-sm text-status-danger">{error}</p>}
       </div>

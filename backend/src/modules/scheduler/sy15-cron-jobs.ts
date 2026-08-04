@@ -148,8 +148,15 @@ export class Sy15CronJobs {
       ),
       j(
         "sast-meeting-reminders",
-        "Sastanci: podsetnik učesnicima za sastanke koji počinju za 15–45 min",
-        { kind: "everyMinutes", minutes: 30 },
+        // 024/26 („podsetnik pola sata pred sastanak"): kadenca 5 min uz fn
+        // prozor 25–35 min → mejl stiže ~30–35 min pre početka. ⚠️ KADENCA I
+        // PROZOR SU SPREGNUTI (prozor mora biti širi od kadence, inače tik
+        // preskoči sastanak) — prozor menja sy15 skripta
+        // backend/docs/sql/sy15/sastanci-024-periodicni-2026-08-04/20_….
+        // Dok skripta nije primenjena (prozor još 15–45), ista kadenca samo
+        // šalje ~40–45 min ranije; dedup u fn (1 h) i dalje garantuje 1 mejl.
+        "Sastanci: podsetnik učesnicima ~30 min pre početka (fn prozor 25–35)",
+        { kind: "everyMinutes", minutes: 5 },
         "SELECT public.sastanci_enqueue_meeting_reminders();",
       ),
       j(

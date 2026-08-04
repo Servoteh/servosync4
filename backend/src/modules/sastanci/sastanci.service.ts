@@ -77,7 +77,11 @@ import type {
   WeeklyVratiDto,
 } from "./dto/sastanci-mutation.dto";
 import { nextOccurrence } from "./templates-cadence";
-import { sledeciSedmicniTermin } from "./weekly-rollover";
+import {
+  sledeciSedmicniTermin,
+  type SledeciSedmicni,
+} from "./weekly-rollover";
+import { sledeciPeriodicniTermin } from "./periodicni-rollover";
 
 /**
  * Sastanci — 3.0 TALAS B, R1 read sloj (MODULE_SPEC_sastanci_ai_30.md §3).
@@ -130,6 +134,26 @@ const AKCIJE_SELECT = Prisma.sql`SELECT a.*,
   FROM v_akcioni_plan a
   LEFT JOIN projects p ON p.id = a.projekat_id`;
 
+/** Sastanak koji je „prošao" — kandidat za kolonu „Sledeći" u listi (024/26 d.29.07-1). */
+const ZAVRSNI_STATUSI = ["zavrsen", "zakljucan", "otkazan"] as const;
+
+/** Poruka kad tip 'periodicni' stigne PRE nego što je sy15 skripta primenjena. */
+const PERIODICNI_SQL_PORUKA =
+  "Periodični sastanci još nisu aktivirani na bazi — primeniti " +
+  "backend/docs/sql/sy15/sastanci-024-periodicni-2026-08-04/10_periodicni_kolone_i_statusi.sql " +
+  "pa restartovati backend.";
+
+/** Termin SLEDEĆEG sastanka serije uz red liste (024/26, komentar 29.07 t.1):
+ *  `sastanakId` postoji kad je termin već kreiran; `najava=true` = izračunat
+ *  termin koji će automatika tek napraviti (sedmični petak 08h / periodični
+ *  dnevni posao 08h). */
+export interface SledeciTermin {
+  datum: string;
+  vreme: string | null;
+  sastanakId: string | null;
+  najava: boolean;
+}
+
 @Injectable()
 export class SastanciService {
   constructor(
@@ -178,7 +202,137 @@ export class SastanciService {
         }),
         tx.sastanak.count({ where }),
       ]);
-      return { data, meta: pageMeta(page, pageSize, total) };
+      // 024/26 (komentar 29.07 t.1): zatvoren red nosi i termin SLEDEĆEG
+      // sastanka serije — kolona „Sledeći" u tabeli.
+      const enriched = await this.dodajSledeci(tx, data);
+      return { data: enriched, meta: pageMeta(page, pageSize, total) };
+    });
+  }
+
+  /**
+   * Uz svaki ZATVOREN red (zavrsen/zakljucan/otkazan) priloži `sledeci` — termin
+   * sledećeg sastanka iste serije (024/26, Zoranov komentar 29.07 t.1: „kada se
+   * sastanak završi i zatvori, u tabeli treba da se pojavi datum sledećeg").
+   *
+   * Serija ne postoji kao entitet, pa se „sledeći" rekonstruiše slojevito:
+   *   1. prvi NEOTKAZAN sastanak ISTOG TIPA sa kasnijim datumom (pokriva dnevni/
+   *      projektni/tematski i već-kreirane sedmične/periodične termine);
+   *   2. sedmični bez takvog reda → NAJAVA iz `sledeciSedmicniTermin` (isto
+   *      pravilo kao traka najave — automatika petkom 08h);
+   *   3. periodični bez takvog reda → NAJAVA `datum + interval_days` (isto
+   *      pravilo kao automatika `sast-periodicni-auto`); interval se čita raw
+   *      jer kolona namerno nije mapirana (vidi `periodicniKolone`).
+   * Otvoren (planiran/u toku) red nema `sledeci` — njegov termin JE sledeći.
+   */
+  private async dodajSledeci<
+    T extends {
+      id: string;
+      tip: string;
+      datum: Date;
+      vreme: Date | null;
+      status: string;
+    },
+  >(tx: Sy15Tx, rows: T[]): Promise<(T & { sledeci?: SledeciTermin | null })[]> {
+    const zatvoreni = rows.filter((r) =>
+      (ZAVRSNI_STATUSI as readonly string[]).includes(r.status),
+    );
+    if (!zatvoreni.length) return rows;
+
+    const tipovi = [...new Set(zatvoreni.map((r) => r.tip))];
+    const minDatum = zatvoreni.reduce(
+      (m, r) => (this.ymd(r.datum) < m ? this.ymd(r.datum) : m),
+      this.ymd(zatvoreni[0].datum),
+    );
+    const nasledniciRedovi = await tx.sastanak.findMany({
+      where: {
+        tip: { in: tipovi },
+        status: { not: "otkazan" },
+        datum: { gt: this.toDbDate(minDatum)! },
+      },
+      select: { id: true, tip: true, datum: true, vreme: true },
+      orderBy: [{ datum: "asc" }, { vreme: "asc" }],
+      take: 500,
+    });
+
+    // Najave se računaju samo ako neki zatvoren red nema naslednika u tabeli.
+    const bezNaslednika = (r: T) =>
+      !nasledniciRedovi.some(
+        (n) => n.tip === r.tip && this.ymd(n.datum) > this.ymd(r.datum),
+      );
+    const trebaSedmicnaNajava = zatvoreni.some(
+      (r) => r.tip === "sedmicni" && bezNaslednika(r),
+    );
+    const periodicniBezNaslednika = zatvoreni.filter(
+      (r) => r.tip === "periodicni" && bezNaslednika(r),
+    );
+
+    const { danas, sat } = this.belgradeDanasSat();
+    let sedmicnaNajava: SledeciSedmicni | null = null;
+    let praznici: string[] = [];
+    if (trebaSedmicnaNajava || periodicniBezNaslednika.length) {
+      praznici = await this.neradniPraznici(tx, danas);
+    }
+    if (trebaSedmicnaNajava) {
+      sedmicnaNajava = await this.izracunajSledeciSedmicni(
+        tx,
+        danas,
+        sat,
+        praznici,
+      );
+    }
+    const intervali = periodicniBezNaslednika.length
+      ? await this.intervalDaysMapa(
+          tx,
+          periodicniBezNaslednika.map((r) => r.id),
+        )
+      : new Map<string, number>();
+
+    return rows.map((r) => {
+      if (!(ZAVRSNI_STATUSI as readonly string[]).includes(r.status)) return r;
+      const rDatum = this.ymd(r.datum);
+      const naslednik = nasledniciRedovi.find(
+        (n) => n.tip === r.tip && this.ymd(n.datum) > rDatum,
+      );
+      if (naslednik) {
+        return {
+          ...r,
+          sledeci: {
+            datum: this.ymd(naslednik.datum),
+            vreme: this.hhmm(naslednik.vreme),
+            sastanakId: naslednik.id,
+            najava: false,
+          },
+        };
+      }
+      if (r.tip === "sedmicni" && sedmicnaNajava) {
+        return {
+          ...r,
+          sledeci: {
+            datum: sedmicnaNajava.datum,
+            vreme: sedmicnaNajava.vreme,
+            sastanakId: sedmicnaNajava.sastanakId,
+            najava: sedmicnaNajava.sastanakId === null,
+          },
+        };
+      }
+      const interval = intervali.get(r.id);
+      if (r.tip === "periodicni" && interval) {
+        return {
+          ...r,
+          sledeci: {
+            datum: sledeciPeriodicniTermin({
+              datum: rDatum,
+              intervalDays: interval,
+              danas,
+              praznici,
+            }),
+            vreme: this.hhmm(r.vreme),
+            sastanakId: null,
+            najava: true,
+          },
+        };
+      }
+      return { ...r, sledeci: null };
     });
   }
 
@@ -213,13 +367,35 @@ export class SastanciService {
    * termina, pa deluje kao da je datum „zaglavljen".
    */
   async nextWeekly(email: string) {
+    const { danas, sat } = this.belgradeDanasSat();
+    const odDanas = new Date(danas);
+    return this.withUserMapped(email, async (tx) => {
+      const [data, praznici] = await Promise.all([
+        tx.sastanak.findFirst({
+          where: { status: "planiran", datum: { gte: odDanas } },
+          orderBy: [{ datum: "asc" }],
+        }),
+        this.neradniPraznici(tx, danas),
+      ]);
+      const sedmicni = await this.izracunajSledeciSedmicni(
+        tx,
+        danas,
+        sat,
+        praznici,
+      );
+      return { data, sedmicni };
+    });
+  }
+
+  /** Danas + tekući sat u Europe/Belgrade (izvučeno iz nextWeekly — deli i lista). */
+  private belgradeDanasSat(): { danas: string; sat: number } {
     // en-CA locale daje YYYY-MM-DD; sidro je Beograd, ne UTC (posle 22h leti UTC ide u sutra).
     const now = new Date();
-    const todayBelgrade = new Intl.DateTimeFormat("en-CA", {
+    const danas = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Europe/Belgrade",
     }).format(now);
     // h23 (ne hour12:false) — u pojedinim ICU verzijama „2-digit + hour12:false" daje 24 u ponoć.
-    const satBelgrade =
+    const sat =
       Number(
         new Intl.DateTimeFormat("en-GB", {
           timeZone: "Europe/Belgrade",
@@ -227,43 +403,48 @@ export class SastanciService {
           hourCycle: "h23",
         }).format(now),
       ) % 24;
-    const odDanas = new Date(todayBelgrade);
-    return this.withUserMapped(email, async (tx) => {
-      const [data, sedmicniRedovi, praznici] = await Promise.all([
-        tx.sastanak.findFirst({
-          where: { status: "planiran", datum: { gte: odDanas } },
-          orderBy: [{ datum: "asc" }],
-        }),
-        tx.sastanak.findMany({
-          where: { tip: "sedmicni", datum: { gte: odDanas } },
-          select: { id: true, datum: true, vreme: true, status: true },
-          orderBy: [{ datum: "asc" }],
-          take: 60,
-        }),
-        // Prozor pokriva 8 nedelja unapred koliko simulacija gleda (+ rezerva).
-        tx.kadrHoliday.findMany({
-          where: {
-            holidayDate: {
-              gte: odDanas,
-              lte: new Date(odDanas.getTime() + 90 * 86_400_000),
-            },
-            isWorkday: false,
-          },
-          select: { holidayDate: true },
-        }),
-      ]);
-      const sedmicni = sledeciSedmicniTermin({
-        danas: todayBelgrade,
-        sat: satBelgrade,
-        sedmicni: sedmicniRedovi.map((s) => ({
-          id: s.id,
-          datum: this.ymd(s.datum),
-          vreme: this.hhmm(s.vreme),
-          status: s.status,
-        })),
-        praznici: praznici.map((p) => this.ymd(p.holidayDate)),
-      });
-      return { data, sedmicni };
+    return { danas, sat };
+  }
+
+  /** Neradni praznici u prozoru 90 dana (8 nedelja simulacije + rezerva). */
+  private async neradniPraznici(tx: Sy15Tx, danas: string): Promise<string[]> {
+    const odDanas = new Date(danas);
+    const rows = await tx.kadrHoliday.findMany({
+      where: {
+        holidayDate: {
+          gte: odDanas,
+          lte: new Date(odDanas.getTime() + 90 * 86_400_000),
+        },
+        isWorkday: false,
+      },
+      select: { holidayDate: true },
+    });
+    return rows.map((p) => this.ymd(p.holidayDate));
+  }
+
+  /** Sledeći SEDMIČNI termin (postojeći red ili najava) — vidi weekly-rollover.ts. */
+  private async izracunajSledeciSedmicni(
+    tx: Sy15Tx,
+    danas: string,
+    sat: number,
+    praznici: string[],
+  ): Promise<SledeciSedmicni | null> {
+    const sedmicniRedovi = await tx.sastanak.findMany({
+      where: { tip: "sedmicni", datum: { gte: new Date(danas) } },
+      select: { id: true, datum: true, vreme: true, status: true },
+      orderBy: [{ datum: "asc" }],
+      take: 60,
+    });
+    return sledeciSedmicniTermin({
+      danas,
+      sat,
+      sedmicni: sedmicniRedovi.map((s) => ({
+        id: s.id,
+        datum: this.ymd(s.datum),
+        vreme: this.hhmm(s.vreme),
+        status: s.status,
+      })),
+      praznici,
     });
   }
 
@@ -339,9 +520,15 @@ export class SastanciService {
           tx.sastanakArhiva.findUnique({ where: { sastanakId: id } }),
         ]);
       const akcijeArr = akcije as { effective_status?: string }[];
+      // 024/26 d1: interval serije za formu „Uredi" (kolona van Prisma mape).
+      const intervalDays =
+        sastanak.tip === "periodicni"
+          ? ((await this.intervalDaysMapa(tx, [id])).get(id) ?? null)
+          : undefined;
       return {
         data: {
           ...sastanak,
+          ...(intervalDays !== undefined ? { intervalDays } : {}),
           ucesnici,
           aktivnosti,
           slike: slike.map((s) => this.slikaOut(s)),
@@ -1001,6 +1188,57 @@ export class SastanciService {
     return out;
   }
 
+  // ---------- Periodični (024/26 d1) — kolone van Prisma mape ----------
+  // `interval_days`/`prethodni_sastanak_id` NISU u `prisma/sy15.prisma` NAMERNO:
+  // mapirana kolona koje još nema u živoj bazi bi oborila SVAKO čitanje sastanaka
+  // (Prisma select uzima sve mapirane kolone), a sy15 skriptu primenjuje vlasnik
+  // ručno, nezavisno od deploy-a. Dok skripta nije primenjena, periodični tip se
+  // uredno odbija porukom; posle primene je potreban restart (keš je procesni).
+
+  private periodicniKoloneCache?: boolean;
+
+  /** Da li žive kolone periodične serije postoje (keš po procesu). */
+  private async periodicniKolone(tx: Sy15Tx): Promise<boolean> {
+    if (this.periodicniKoloneCache !== undefined)
+      return this.periodicniKoloneCache;
+    const rows = await tx.$queryRaw<{ n: number }[]>(
+      Prisma.sql`SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sastanci'
+          AND column_name IN ('interval_days', 'prethodni_sastanak_id')`,
+    );
+    this.periodicniKoloneCache = Number(rows[0]?.n ?? 0) === 2;
+    return this.periodicniKoloneCache;
+  }
+
+  /** `interval_days` za skup sastanaka (prazna mapa dok kolone ne postoje). */
+  private async intervalDaysMapa(
+    tx: Sy15Tx,
+    ids: string[],
+  ): Promise<Map<string, number>> {
+    const mapa = new Map<string, number>();
+    if (!ids.length || !(await this.periodicniKolone(tx))) return mapa;
+    const rows = await tx.$queryRaw<{ id: string; interval_days: number | null }[]>(
+      Prisma.sql`SELECT id::text AS id, interval_days FROM sastanci
+        WHERE id = ANY(${ids}::uuid[])`,
+    );
+    for (const r of rows) {
+      if (r.interval_days != null) mapa.set(r.id, Number(r.interval_days));
+    }
+    return mapa;
+  }
+
+  /** Upis `interval_days` (raw — kolona van Prisma mape); zove se IZ transakcije
+   *  create/update POSLE upisa reda, pod istim RLS-om (trio/mgmt scope važi). */
+  private async upisiIntervalDays(
+    tx: Sy15Tx,
+    id: string,
+    intervalDays: number,
+  ): Promise<void> {
+    await tx.$executeRaw(
+      Prisma.sql`UPDATE sastanci SET interval_days = ${intervalDays} WHERE id = ${id}::uuid`,
+    );
+  }
+
   /** Kreiraj sastanak (paritet saveSastanak; RLS INSERT = has_edit_role).
    *  Zahtev 005/26: opcioni `dto.ucesnici` se umeću u istoj transakciji — umetanje
    *  reda u `sastanak_ucesnici` za planiran sastanak auto-okida sy15 trigger
@@ -1013,6 +1251,18 @@ export class SastanciService {
    *  (pozivnice)" — inače bi ručni klik napravio DRUGI (dupli) talas mejlova. */
   async createSastanak(email: string, dto: CreateSastanakDto) {
     this.assertNotLockViaStatus(dto.status);
+    // 024/26 d1 — tip↔interval par: periodični MORA imati interval, ostali NE SMEJU
+    // (zaboravljen interval bi napravio seriju koju automatika nikad ne nastavi).
+    if (dto.tip === "periodicni" && dto.intervalDays === undefined) {
+      throw new BadRequestException(
+        "Za periodični sastanak zadaj interval (broj dana između dva termina).",
+      );
+    }
+    if (dto.tip !== "periodicni" && dto.intervalDays !== undefined) {
+      throw new BadRequestException(
+        "Interval važi samo uz tip 'periodicni'.",
+      );
+    }
     const ucesnici = this.dedupeUcesnici(dto.ucesnici);
     const status = dto.status ?? "planiran";
     // Triger šalje pozivnice samo za planiran sastanak — samo tada stampuj.
@@ -1022,6 +1272,9 @@ export class SastanciService {
       dto.clientEventId,
       "sastanci.create-sastanak",
       async (tx) => {
+        if (dto.tip === "periodicni" && !(await this.periodicniKolone(tx))) {
+          throw new ConflictException(PERIODICNI_SQL_PORUKA);
+        }
         const row = await tx.sastanak.create({
           data: {
             tip: dto.tip ?? "sedmicni",
@@ -1040,6 +1293,9 @@ export class SastanciService {
             pozivnicePoslateAt: invitesSent ? new Date() : null,
           },
         });
+        if (dto.tip === "periodicni" && dto.intervalDays !== undefined) {
+          await this.upisiIntervalDays(tx, row.id, dto.intervalDays);
+        }
         if (ucesnici.length) {
           // Uvek pozvan=true (kandidat za pozivnicu i otkazni mejl), prisutan=false
           // (prisustvo tek na „▶ Počni"). Umetanje reda okida invite triger.
@@ -1053,16 +1309,45 @@ export class SastanciService {
             })),
           });
         }
-        return row;
+        // `intervalDays` u odgovoru — red iz Prisma mape ga nema (kolona van mape).
+        return dto.tip === "periodicni"
+          ? { ...row, intervalDays: dto.intervalDays }
+          : row;
       },
     );
   }
 
-  /** Izmena sastanka (paritet saveSastanak/updateStatus; RLS UPDATE = mgmt∨trio). */
+  /** Izmena sastanka (paritet saveSastanak/updateStatus; RLS UPDATE = mgmt∨trio).
+   *  024/26 d2 — `tip` (uklj. 'periodicni') se menja OVDE: „od trenutka promene
+   *  važi novi režim, istorija netaknuta" — stari redovi serije se ne diraju,
+   *  automatika nastavlja po novom tipu/intervalu. Tip koji ode SA 'periodicni'
+   *  zadržava zatečeni `interval_days` (bezopasno: automatika filtrira po tipu),
+   *  pa povratak na periodični ne traži ponovni unos intervala. */
   async updateSastanak(email: string, id: string, dto: UpdateSastanakDto) {
     this.assertNotLockViaStatus(dto.status);
     return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.sastanak.count({ where: { id } })) > 0;
+      const postojeci = await tx.sastanak.findUnique({
+        where: { id },
+        select: { tip: true },
+      });
+      const exists = postojeci !== null;
+      const finalniTip = dto.tip ?? postojeci?.tip;
+      if (dto.intervalDays !== undefined && finalniTip !== "periodicni") {
+        throw new BadRequestException("Interval važi samo uz tip 'periodicni'.");
+      }
+      if (finalniTip === "periodicni" && exists) {
+        if (!(await this.periodicniKolone(tx))) {
+          throw new ConflictException(PERIODICNI_SQL_PORUKA);
+        }
+        if (dto.intervalDays === undefined) {
+          const zatecen = (await this.intervalDaysMapa(tx, [id])).get(id);
+          if (!zatecen) {
+            throw new BadRequestException(
+              "Za periodični sastanak zadaj interval (broj dana između dva termina).",
+            );
+          }
+        }
+      }
       const data: Prisma.SastanakUpdateInput = {
         ...(dto.tip !== undefined ? { tip: dto.tip } : {}),
         ...(dto.naslov !== undefined ? { naslov: dto.naslov } : {}),
@@ -1086,7 +1371,22 @@ export class SastanciService {
       };
       const { count } = await tx.sastanak.updateMany({ where: { id }, data });
       this.assertAffected(exists, count, `Sastanak ${id}`);
-      return { data: await tx.sastanak.findUnique({ where: { id } }) };
+      if (dto.intervalDays !== undefined) {
+        // Tek POSLE updateMany: RLS je upravo pustio izmenu reda, pa sme i raw
+        // upis intervala (ista transakcija, isti scope).
+        await this.upisiIntervalDays(tx, id, dto.intervalDays);
+      }
+      const svez = await tx.sastanak.findUnique({ where: { id } });
+      const interval =
+        svez?.tip === "periodicni"
+          ? ((await this.intervalDaysMapa(tx, [id])).get(id) ?? null)
+          : undefined;
+      return {
+        data:
+          svez && interval !== undefined
+            ? { ...svez, intervalDays: interval }
+            : svez,
+      };
     });
   }
 

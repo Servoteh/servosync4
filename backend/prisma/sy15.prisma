@@ -284,6 +284,12 @@ model Sastanak {
   createdByEmail String? @map("created_by_email")
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
   pozivnicePoslateAt DateTime? @map("pozivnice_poslate_at") @db.Timestamptz(6)
+  /// ⚠️ NAMERNO NEMAPIRANE kolone `interval_days` i `prethodni_sastanak_id`
+  /// (periodična serija, 024/26 — dodaje ih backend/docs/sql/sy15/
+  /// sastanci-024-periodicni-2026-08-04/10_…): mapirana kolona koje još nema u
+  /// živoj bazi obara SVAKO Prisma čitanje sastanaka, a skriptu vlasnik
+  /// primenjuje ručno, nezavisno od deploy-a. Pristup ide raw SQL-om iza
+  /// provere information_schema (SastanciService.periodicniKolone).
   @@map("sastanci")
 }
 

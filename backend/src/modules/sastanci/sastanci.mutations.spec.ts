@@ -261,7 +261,8 @@ describe("SastanciService R2 mutacije", () => {
 
   it("updateSastanak: 0 pogodaka a red postoji → 403", async () => {
     const { svc, tx } = makeSvc();
-    tx.sastanak.count.mockResolvedValueOnce(1);
+    // postojanje se od 024/26 čita kroz findUnique (nosi i tip za interval-guard)
+    tx.sastanak.findUnique.mockResolvedValueOnce({ id: ID, tip: "projektni" });
     tx.sastanak.updateMany.mockResolvedValueOnce({ count: 0 });
     await expect(
       svc.updateSastanak("u@servoteh.com", ID, { naslov: "x" }),
@@ -270,7 +271,8 @@ describe("SastanciService R2 mutacije", () => {
 
   it("updateSastanak: 0 pogodaka i red NE postoji → 404", async () => {
     const { svc, tx } = makeSvc();
-    tx.sastanak.count.mockResolvedValueOnce(0);
+    // findUnique → null = red ne postoji (024/26 mehanika; ranije count=0)
+    tx.sastanak.findUnique.mockResolvedValueOnce(null);
     tx.sastanak.updateMany.mockResolvedValueOnce({ count: 0 });
     await expect(
       svc.updateSastanak("u@servoteh.com", ID, { naslov: "x" }),

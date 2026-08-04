@@ -76,8 +76,8 @@ function izUtc(ms: number): string {
   ).padStart(2, "0")}`;
 }
 
-/** `ymd + n` dana (čist UTC račun — bez TZ drift-a). */
-function plusDana(ymd: string, n: number): string {
+/** `ymd + n` dana (čist UTC račun — bez TZ drift-a). Deli i periodicni-rollover. */
+export function plusDana(ymd: string, n: number): string {
   return izUtc(uUtc(ymd) + n * DAN_MS);
 }
 

@@ -41,7 +41,17 @@ export const SASTANAK_TIP_LABEL: Record<string, string> = {
   projektni: 'Projektni',
   tematski: 'Tematski',
   dnevni: 'Dnevni',
+  // 024/26 d1: serija sa proizvoljnim intervalom (interval_days); 'sedmicni'
+  // (kolegijum) ostaje zaseban — njegova automatika radi nepromenjeno.
+  periodicni: 'Periodični',
 };
+
+/** Ponuđeni intervali periodičnog sastanka (024/26: „7 / 14 / 30 ili proizvoljan"). */
+export const PERIODICNI_PRESETI = [
+  { dana: 7, label: '7 dana (sedmično)' },
+  { dana: 14, label: '14 dana (dvonedeljno)' },
+  { dana: 30, label: '30 dana (mesečno)' },
+] as const;
 
 /**
  * Zahtev 024/26 (a) — sledeći sedmični sastanak NE nastaje kad se prethodni zatvori,

@@ -103,9 +103,15 @@ export function Dialog({
       {/* Panel je flex kolona sa `max-h-[90dvh]`: zaglavlje i footer ostaju
           vidljivi, a skroluje se samo telo. `dvh` (ne `vh`) jer je `100vh` na
           iOS-u veliki viewport — sa izvučenom adresnom trakom bi footer sa
-          „Sačuvaj" ostao ispod donje ivice ekrana. */}
+          „Sačuvaj" ostao ispod donje ivice ekrana.
+          `min-w-0` (024/26 t.3, Android): panel je flex ITEM scrima, a default
+          `min-width:auto` pušta da ga NAJŠIRE dete (npr. select sa dugačkom
+          opcijom) raširi PREKO ivice ekrana — X i „Sačuvaj" tada odu van
+          viewporta i dijalog se ne može zatvoriti (fixed sloj se ne skroluje;
+          Zoranov screenshot uz komentar 29.07). Sa `min-w-0` panel ostaje u
+          okviru `w-full`, a preširok sadržaj skroluje unutar tela. */}
       <div
-        className={`flex max-h-[90dvh] w-full flex-col ${SIZE_CLASS[size]} border border-line bg-surface shadow-xl ${v.panel}`}
+        className={`flex max-h-[90dvh] w-full min-w-0 flex-col ${SIZE_CLASS[size]} border border-line bg-surface shadow-xl ${v.panel}`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

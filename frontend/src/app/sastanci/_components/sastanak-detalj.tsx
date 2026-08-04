@@ -35,7 +35,7 @@ import {
 import { DirectoryMultiPicker, type PickedUser } from './directory-multi-picker';
 import { generateSastanakPdf } from '@/lib/sastanci-pdf';
 import { Tabs, type TabItem } from './tabs';
-import { formatDatum, formatVreme, INPUT_CLS, SASTANAK_TIP_LABEL, SastanakStatusBadge } from './common';
+import { formatDatum, formatVreme, INPUT_CLS, PERIODICNI_PRESETI, SASTANAK_TIP_LABEL, SastanakStatusBadge } from './common';
 import { stampajZapisnik } from './print-zapisnik';
 import { DetaljZapisnik } from './detalj-zapisnik';
 import { DetaljAkcije } from './detalj-akcije';
@@ -769,6 +769,13 @@ function UrediSastanakModal({
   const [datum, setDatum] = useState(datum0);
   const [vreme, setVreme] = useState(vreme0);
   const [mesto, setMesto] = useState(sast.mesto ?? '');
+  // 024/26 d2 — promena tipa kroz „Uredi": od trenutka promene važi novi režim,
+  // istorija netaknuta. Periodični nosi i interval (d1); zatečena vrednost stiže
+  // u detalju (`intervalDays`), preset lista + proizvoljan unos kao u create formi.
+  const [tip, setTip] = useState(sast.tip);
+  const interval0 = sast.intervalDays ?? null;
+  const [intervalStr, setIntervalStr] = useState(interval0 ? String(interval0) : '');
+  const intervalDays = Number(intervalStr);
   const [toAdd, setToAdd] = useState<PickedUser[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -776,6 +783,9 @@ function UrediSastanakModal({
     setError(null);
     if (!naslov.trim()) return setError('Naslov je obavezan.');
     if (!datum) return setError('Datum je obavezan.');
+    if (tip === 'periodicni' && (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 365)) {
+      return setError('Za periodični sastanak zadaj interval: ceo broj dana od 1 do 365.');
+    }
     try {
       await update.mutateAsync({
         id: sast.id,
@@ -786,6 +796,8 @@ function UrediSastanakModal({
           // jer bi tada „obriši vreme" bilo nemoguće.
           vreme,
           mesto: mesto.trim(),
+          tip,
+          intervalDays: tip === 'periodicni' ? intervalDays : undefined,
         },
       });
       onSaved(datum !== datum0 || vreme !== vreme0);
@@ -853,6 +865,39 @@ function UrediSastanakModal({
         <FormField label="Naslov" required>
           <input className={INPUT_CLS} value={naslov} onChange={(e) => setNaslov(e.target.value)} autoFocus />
         </FormField>
+        {/* 024/26 d2 — promena tipa (npr. projektni → periodični); d1 — interval. */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Tip" hint="Promena tipa važi od ovog trenutka; istorija sastanka ostaje netaknuta.">
+            <select className={INPUT_CLS} value={tip} onChange={(e) => setTip(e.target.value)}>
+              {Object.entries(SASTANAK_TIP_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </select>
+          </FormField>
+          {tip === 'periodicni' && (
+            <FormField
+              label="Interval (dana)"
+              required
+              hint="Automatika posle završetka termina kreira sledeći na datum + interval."
+            >
+              <input
+                className={INPUT_CLS}
+                type="number"
+                min={1}
+                max={365}
+                list="periodicni-preseti"
+                value={intervalStr}
+                onChange={(e) => setIntervalStr(e.target.value)}
+                placeholder="npr. 7, 14, 30…"
+              />
+              <datalist id="periodicni-preseti">
+                {PERIODICNI_PRESETI.map((p) => (
+                  <option key={p.dana} value={p.dana} label={p.label} />
+                ))}
+              </datalist>
+            </FormField>
+          )}
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <FormField label="Datum" required>
             <input className={INPUT_CLS} type="date" value={datum} onChange={(e) => setDatum(e.target.value)} />

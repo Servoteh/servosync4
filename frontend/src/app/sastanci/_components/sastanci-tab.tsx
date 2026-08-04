@@ -92,6 +92,22 @@ export function SastanciTab() {
       header: <span title="Planirano vreme">Vreme</span>,
       render: (r) => <span className="tnums text-ink-secondary">{formatVreme(r.vreme)}</span>,
     },
+    {
+      key: 'sledeci',
+      // 024/26 (komentar 29.07 t.1): zatvoren (završen/zaključan/otkazan) red
+      // pokazuje termin SLEDEĆEG sastanka serije. „najava" = termin koji
+      // automatika tek treba da kreira (sedmični petak 08h / periodični 08h).
+      header: <span title="Termin sledećeg sastanka u seriji — uz završene/zaključane/otkazane">Sledeći</span>,
+      render: (r) =>
+        r.sledeci ? (
+          <span className="tnums text-ink-secondary">
+            {formatDatum(r.sledeci.datum)}
+            {r.sledeci.najava && <span className="text-ink-disabled"> (najava)</span>}
+          </span>
+        ) : (
+          <span className="text-ink-disabled">—</span>
+        ),
+    },
     { key: 'mesto', header: 'Mesto', render: (r) => <span className="text-ink-secondary">{r.mesto || '—'}</span> },
     { key: 'status', header: 'Status', render: (r) => <SastanakStatusBadge status={r.status} /> },
   ];
