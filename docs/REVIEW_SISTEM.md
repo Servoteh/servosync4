@@ -28,16 +28,16 @@ Sve ostalo (dužina fajla, imenovanje, stil) je sporedno i namerno je nisko na l
 
 ### Zašto baš to, a ne „pokrivenost testovima" ili „složenost"
 
-Zato što je izmereno. U reviziji 04.08. pronađeno je **~150 potvrđenih nalaza** kroz sve
-module. Skoro svi teški imaju isti oblik:
+Zato što je izmereno. Revizija 04.08. dala je **464 nalaza na backendu**, od kojih je **241
+provučen kroz protivproveru i 217 preživelo**. Skoro svi teški imaju isti oblik:
 
-| oblik | konkretan primer iz ovog repoa |
+| oblik | konkretan primer iz ovog repoa (svi potvrđeni protivproverom) |
 |---|---|
 | isti predikat na više mesta | „šta je kretanje zalihe" — 10 kopija u 5 fajlova; „šta je proknjižen nalog" — 20 kopija u 14 fajlova |
-| dva izvora iste istine | lager iz `stock_levels` vs iz kretanja; IOS vs kreditni limit |
-| brana koja izgleda kao brana a nije | DTO klasa sa validatorima uvezena kao `import type` → validacija nikad ne radi |
-| prazna tabela koja se čita kao „nema duga" | `saldakonto_accounts` prazan + INNER JOIN → dužnik od 12 mil. prolazi kreditni limit |
-| status koji se ne poklopi | robni dokument `POSTED`, njegov GL nalog ostaje `DRAFT` → KUF prazan, KIF pun |
+| dve mere za istu stvar | `Tpz/Tk` se čita kao **minuti** u gantu i kao **sati** u štampi — jedna strana greši 60× |
+| brana koja izgleda kao brana a nije | DTO klasa sa validatorima uvezena kao `import type` → validacija nikad ne radi, a na `PUT /admin/firma` je brisala celo telo |
+| iznos u jednoj valuti, oznaka u drugoj | nalog za plaćanje uzima `openAmount` iz RSD kolona a `currency` iz stavke → papir glasi „117.000 **EUR**" |
+| broj koji balansira a nije tačan | devizna faktura se knjiži nominalno: 10.000 EUR zaduži kupca sa 10.000 RSD, kontrola totala prolazi |
 
 Nijedan od njih ne bi bio uhvaćen brojem pokrivenosti testovima. Svaki bi bio uhvaćen
 pitanjem: *„gde još u sistemu postoji ova ista tvrdnja i može li da se raziđe?"*
@@ -94,17 +94,24 @@ prolazi kroz sve kontrolere i čita `design:paramtypes` svakog `@Body()` paramet
 Sama kapija je proverena mutacijom: sa vraćenim `import type` test pada, bez njega prolazi.
 Test koji nije viđen kako pada nije brana.
 
-Isto važi za guardove: `assertCreditLimit` je 🔴 nalaz upravo zato što je izgledao kao brana,
-a čitao je iz prazne tabele preko INNER JOIN-a.
-
 ### Pravilo 3 — Prazan skup nije isto što i „nema ničega"
 
-Najskuplji nalaz u ovoj reviziji: `saldakonto_accounts` je na produkciji prazna tabela, a
-svi čitaoci je vezuju INNER JOIN-om. Posledica nije greška nego **uredan prazan izveštaj**:
-aging prazan, opomene prazne, kreditni limit vidi saldo 0 i propušta svaku fakturu.
+Ovo pravilo je preživelo protivproveru, ali mu je **primer bio prejak i vredi znati zašto** —
+to je najčešća greška revizora u ovom repou.
 
-Za svaki registar/šifarnik od koga zavisi obračun, sistem mora da razlikuje:
-„nema dugova" od „ne znam, registar nije popunjen" — i drugo mora da bude **glasno**.
+Prvi izveštaj je tvrdio: „`saldakonto_accounts` je prazan, svi čitaoci ga vezuju INNER JOIN-om,
+pa kreditni limit propušta svakoga." Protivprovera je to oborila: seed migracija
+`20260726100000` **jeste** komitovana (`eeef21dd`) i puni 9 konta, među njima 2040/2050 sa
+`tracks_open_items=true`; a `reconciliation.service.ts:277` koristi LEFT JOIN i baca 422.
+
+Ono što **ostaje tačno** je uže i dalje vredi popraviti: `open-items`, `aging`, `partner-card` i
+`assertCreditLimit` vezuju registar INNER JOIN-om **bez fail-fast provere**. Konto koji je
+saldakonto-relevantan ali nije u tih 9 redova (ili mu je `partner_scope` NULL) tiho ispada iz
+otvorenih stavki — bez ijedne poruke. To je **otpornost**, ne aktivan kvar.
+
+Pravilo zato ostaje: za svaki registar od koga zavisi obračun, sistem mora da razlikuje
+„nema dugova" od „ne znam, registar nije podešen" — i drugo mora da bude **glasno**. Ali primer
+u nalazu mora da imenuje koji konkretan konto ispada, a ne da pretpostavi da je tabela prazna.
 
 ---
 
@@ -270,7 +277,64 @@ osporio moj nalaz o `three-way-match` i bio u pravu.)
 **(d) Reci mu da ne dira kod.** Read-only, jedan izveštaj na kraju. Agent koji „usput
 popravlja" pravi konflikte i gubi nalaze.
 
-### 5.3 Šta obavezno proveriti u rezultatu
+### 5.3 Protivprovera je obavezan korak, ne opcioni
+
+Nalaz nije nalaz dok ga nije pokušao da obori neko ko nije njegov autor.
+
+Recept: za svaki nalaz (ili grupu nalaza iz istog poglavlja) jedan agent sa **zadatkom da ga
+obori**, i sa pravilom odluke: *„ako posle čitanja koda nisi siguran → nalaz je oboren."*
+Lažno potvrđen nalaz je skuplji od propuštenog, jer vodi izmenu nad pravim knjigovodstvom.
+
+Izmereno na ovoj reviziji: **241 nalaza provučeno kroz protivproveru, 217 preživelo, 24 oborena
+ili bitno oslabljena** (prvi krug 12 → 8/4, drugi krug 229 → 209/20). Oborenih je oko 10 % — ali
+među njima su bila **dva koja su stajala na vrhu liste prioriteta**. Cena provere je bila mnogo
+niža od cene jedne nepotrebne izmene knjiženja.
+
+#### Pet obrazaca po kojima se nalazi sistematski precenjuju
+
+Od 24 oborena, 18 pada u ove kalupe. Karakteristično: precenjuje se **posledica**, skoro nikad
+činjenica. „Netačno u jezgru" je bilo retko; „tačno jezgro, prejaka posledica" je bilo pravilo.
+
+**1. Apsolutna negacija izmerena jednim grepom.** „Nema nijednog pozivaoca", „nigde se ne
+proverava", „jedini u aplikaciji", „nije komitovano". Oboreno u praksi: seed migracija „untracked"
+(bila komitovana — merena `git status` umesto `git ls-files`), „nema unique u šemi" (postoji, dve
+linije dalje), „`tableEmpty` na 2 mesta" (4 definicije, 38 poziva), „jedini `alert()`" (45 u 14
+fajlova), „IOS mejl ne upisuje trag" (globalni `AuditInterceptor` upisuje aktera i primaoca).
+→ **Pravilo:** apsolutna tvrdnja traži DVA nezavisna merenja — ime stvari *i* mehanizam koji bi to
+mogao raditi globalno (interceptor, guard, `@@unique`, migracija, DB ograničenje). Stanje repoa se
+dokazuje `git ls-files` / `git log -S`, **nikad** `git status`. Pazi i na fajlove koje git tretira
+kao binarne (`handover-drafts.service.ts`) — bez `grep -a` tiho gube pogotke.
+
+**2. Čitanje jednog sloja, pa ekstrapolacija na korisnika.** Oboreno: „`VatBridgeError` → 500" (DTO
+validator odbija srpski format sa 400 *pre* mosta), „finalizuje se neproveren bilans" (backend
+nezavisno ponovo evaluira kontrole i vraća 409), „traka je zelena" (FE ima poseban neutralan
+prikaz), „storno u zaključenu godinu" (nizvodna `LOCKED` brana vraća 409).
+→ **Pravilo:** posledica je svojstvo **cele putanje**, ne linije. Pre pisanja scenarija prođi:
+DTO/validator → guard → servis → DB ograničenje → FE `disabled`. Ako bilo koji sloj hvata slučaj,
+nalaz je „duplikat brane" ili „loša poruka", a ne „tiho pogrešan podatak".
+
+**3. „Dupli tap" scenario koji ne postoji.** Naveden 4× u jednom izveštaju i nijednom nije bio
+moguć: kit dugme je `disabled={disabled || loading}`.
+→ **Pravilo:** za svaki nalaz o idempotenciji imenuj **konkretnu putanju** koja proizvodi drugi
+zahtev. Jedina realna je korisnički retry **posle** greške ili timeouta — tako se i formuliše.
+
+**4. Nedostižno stanje i zastarela meta.** Oboreno: `Math.max(1, …)` (stanje koje ga budi ne pravi
+nijedna ruta), 3-way match sa `CANCELLED` (status ne postoji u enumu), „kooperacija ne postoji kao
+pojam" (postoji u overlay tabeli). Dva nalaza bila su **već ispravljena** (jedan istim commit-om
+koji je uneo izveštaj), a dva su bila **dokumentovana namera** (Ctrl+S nad zatvorenom branom).
+→ **Pravilo:** nalaz se ne piše dok se ne imenuje ruta ili UI radnja koja proizvodi ulazno stanje;
+ako je nema, ishod je „neprovereno", ne „nalaz". Pre pisanja: `git log -1 -S<izraz>` i pročitaj
+komentar / `pravila.ts` / spec uz kod — **postojanje objašnjenja u kodu prebacuje teret dokaza na
+revizora.**
+
+**5. Brojevi se izmišljaju.** „~3.700 agregacija" (bilo ≤2.492), „PG limit 32k" (65535),
+„`loadLedgerFacts` 3× po evaluaciji" (1×), „Postgres nema skip-scan" (baza je pg18).
+→ **Pravilo:** brojka bez merenja se ne piše. Ni kao procena.
+
+Ovih pet ide u prompt svakog budućeg pregleda, kao lista protiv koje agent proverava sopstveni
+nalaz **pre** nego što ga zapiše.
+
+### 5.4 Šta obavezno proveriti u rezultatu
 
 Agenti greše samouvereno. Tri stvari uvek proveriti:
 
@@ -283,7 +347,7 @@ Agenti greše samouvereno. Tri stvari uvek proveriti:
   14× u 9 fajlova; agent je nezavisno našao 20× u 14 fajlova (šire, jer hvata i Prisma oblik).
   Kad se dva metoda slože oko iste stvari, nalaz je siguran.
 
-### 5.4 Higijena rada
+### 5.5 Higijena rada
 
 - Rad ide u **zaseban worktree** sa svežeg `main`-a (`git worktree add … origin/main`) —
   primarni direktorijum nosi tuđi WIP.
