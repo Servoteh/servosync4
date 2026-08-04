@@ -81,7 +81,7 @@ export const GridTable = memo(function GridTable(props: GridTableProps) {
   const { days, pageEmployees, dayTotals, grandTotals } = props;
 
   return (
-    <div className="max-h-[calc(100vh-320px)] overflow-auto rounded-panel border border-line bg-surface">
+    <div className="max-h-[calc(100vh-320px)] overflow-auto rounded-panel border border-line bg-surface [scroll-padding-left:360px] [scroll-padding-top:40px]">
       <table className="border-separate border-spacing-0 text-xs" style={{ minWidth: 'max-content' }}>
         <thead className="sticky top-0 z-10">
           <tr className="bg-surface-2">
@@ -89,7 +89,9 @@ export const GridTable = memo(function GridTable(props: GridTableProps) {
             <th className="sticky left-8 z-20 h-10 w-[200px] min-w-[200px] border-b border-r border-line bg-surface-2 px-2 text-left text-2xs text-ink-secondary">
               Ime i prezime
             </th>
-            <th className="h-10 w-16 border-b border-r-2 border-line bg-surface-2 px-1 text-left text-2xs text-ink-secondary">Vrsta</th>
+            <th className="sticky left-[232px] z-20 h-10 w-[72px] min-w-[72px] max-w-[72px] border-b border-r border-line bg-surface-2 px-1 text-left text-2xs text-ink-secondary">Vrsta</th>
+            {/* Zahtev 063/26: Σ kolona pomerena sa kraja (iza 31 dana — van ekrana) na početak, sticky uz ime. */}
+            <th className="sticky left-[304px] z-20 h-10 w-[56px] min-w-[56px] border-b border-r-2 border-line bg-surface-2 px-1 text-2xs font-semibold text-accent">Σ</th>
             {days.map((d) => (
               <th
                 key={d.ymd}
@@ -105,7 +107,6 @@ export const GridTable = memo(function GridTable(props: GridTableProps) {
                 <div className="font-normal uppercase opacity-70">{d.letter}</div>
               </th>
             ))}
-            <th className="h-10 w-[56px] min-w-[56px] border-b border-l border-line bg-surface-2 px-1 text-2xs font-semibold text-accent">Σ</th>
           </tr>
         </thead>
         <tbody>
@@ -137,6 +138,9 @@ export const GridTable = memo(function GridTable(props: GridTableProps) {
               >
                 {kind === 'reg' ? 'UKUPNO Redovni' : kind === 'ot' ? 'UKUPNO Prekov.' : kind === 'field' ? 'UKUPNO Teren' : 'UKUPNO 2 maš.'}
               </td>
+              <td className={cn('sticky left-[304px] z-20 border-r-2 border-line bg-surface-2 text-center text-2xs font-bold tabular-nums text-accent', ki === 0 && 'border-t-2 border-t-accent')}>
+                {gridFormatSum(grandTotals[kind])}
+              </td>
               {days.map((d, di) => (
                 <td
                   key={d.ymd}
@@ -149,9 +153,6 @@ export const GridTable = memo(function GridTable(props: GridTableProps) {
                   {dayTotals[di] && dayTotals[di][kind] ? gridFormatSum(dayTotals[di][kind]) : ''}
                 </td>
               ))}
-              <td className={cn('border-l border-line bg-surface-2 text-center text-2xs font-bold tabular-nums text-accent', ki === 0 && 'border-t-2 border-t-accent')}>
-                {gridFormatSum(grandTotals[kind])}
-              </td>
             </tr>
           ))}
         </tfoot>
@@ -250,6 +251,7 @@ const EmployeeBlock = memo(
             )}
           </td>
           <RowLabel first>Redovni</RowLabel>
+          <RowSum first>{gridFormatSum(sReg)}</RowSum>
           {days.map((d) => {
             const eff = effRows.get(d.ymd)!;
             const dirty = editor.isDirty(emp.id, d.ymd);
@@ -290,12 +292,12 @@ const EmployeeBlock = memo(
               </td>
             );
           })}
-          <RowSum first>{gridFormatSum(sReg)}</RowSum>
         </tr>
 
         {/* Prekov. */}
         <tr>
           <RowLabel>Prekov.</RowLabel>
+          <RowSum>{gridFormatSum(sOt)}</RowSum>
           {days.map((d) => (
             <CellInput
               key={d.ymd}
@@ -312,12 +314,12 @@ const EmployeeBlock = memo(
               title={lastTitle(d.ymd)}
             />
           ))}
-          <RowSum>{gridFormatSum(sOt)}</RowSum>
         </tr>
 
         {/* Teren */}
         <tr>
           <RowLabel>Teren</RowLabel>
+          <RowSum title={`DOM ${gridFormatSum(fdom)}h / INO ${gridFormatSum(ffor)}h`}>{gridFormatSum(sField)}</RowSum>
           {days.map((d) => {
             const eff = effRows.get(d.ymd)!;
             const fh = eff.field_hours;
@@ -377,12 +379,12 @@ const EmployeeBlock = memo(
               </td>
             );
           })}
-          <RowSum title={`DOM ${gridFormatSum(fdom)}h / INO ${gridFormatSum(ffor)}h`}>{gridFormatSum(sField)}</RowSum>
         </tr>
 
         {/* 2 maš. */}
         <tr>
           <RowLabel>2 maš.</RowLabel>
+          <RowSum>{gridFormatSum(sTm)}</RowSum>
           {days.map((d) => (
             <CellInput
               key={d.ymd}
@@ -399,16 +401,15 @@ const EmployeeBlock = memo(
               title={lastTitle(d.ymd)}
             />
           ))}
-          <RowSum>{gridFormatSum(sTm)}</RowSum>
         </tr>
 
         {/* Σ isplata */}
         <tr>
-          <td className="border-b border-r-2 border-b-line border-r-line px-1 text-right text-[10px] font-medium italic uppercase text-ink-secondary">Σ isplata</td>
+          <td className="sticky left-[232px] z-10 w-[72px] min-w-[72px] max-w-[72px] border-b border-r border-b-line border-r-line bg-surface px-1 text-right text-[10px] font-medium italic uppercase text-ink-secondary">Σ isplata</td>
+          <td className="sticky left-[304px] z-10 border-b border-r-2 border-b-line border-r-line bg-accent-subtle text-center text-2xs font-bold tabular-nums text-accent">{gridFormatSum(payable)}</td>
           {days.map((d) => (
             <td key={d.ymd} className={cn('h-4 border-b border-r border-b-line border-r-line-soft bg-surface-2/60', DAY_W, dayCls(d, props.holidaySet, props.todayYmd))} />
           ))}
-          <td className="border-b border-l border-b-line border-l-line bg-accent-subtle text-center text-2xs font-bold tabular-nums text-accent">{gridFormatSum(payable)}</td>
         </tr>
       </>
     );
@@ -427,15 +428,16 @@ const EmployeeBlock = memo(
 
 function RowLabel({ children, first }: { children: React.ReactNode; first?: boolean }) {
   return (
-    <td className={cn('w-16 border-r-2 border-line px-1 text-[10px] font-medium uppercase text-ink-secondary', first && 'border-t-2 border-t-line')}>
+    <td className={cn('sticky left-[232px] z-10 w-[72px] min-w-[72px] max-w-[72px] border-r border-line bg-surface px-1 text-[10px] font-medium uppercase text-ink-secondary', first && 'border-t-2 border-t-line')}>
       {children}
     </td>
   );
 }
+/** Mesečni zbir reda — zahtev 063/26: sticky odmah iza imena/vrste (bio na kraju, iza 31 dana). */
 function RowSum({ children, title, first }: { children: React.ReactNode; title?: string; first?: boolean }) {
   return (
     <td
-      className={cn('border-l border-line bg-surface-2 text-center text-2xs font-semibold tabular-nums text-accent', first && 'border-t-2 border-t-line')}
+      className={cn('sticky left-[304px] z-10 w-[56px] min-w-[56px] border-r-2 border-line bg-surface-2 text-center text-2xs font-semibold tabular-nums text-accent', first && 'border-t-2 border-t-line')}
       title={title}
     >
       {children}
