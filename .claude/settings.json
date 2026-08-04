@@ -3,5 +3,19 @@
     "additionalDirectories": [
       "C:\\Users\\nenad.jarakovic\\wt\\kapija-autofill\\frontend\\src\\app\\kadrovska\\_components"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "s=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/provera-grane.sh\"; [ -f \"$s\" ] && bash \"$s\" 2>/dev/null; exit 0",
+            "timeout": 40,
+            "statusMessage": "Provera zaostatka grane za main…"
+          }
+        ]
+      }
+    ]
   }
 }
