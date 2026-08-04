@@ -139,6 +139,73 @@ TABLES=(
   # NAPOMENA: nema "BBSifra artikla" — tu kolonu je IZMISLIO MSSQL transfer
   # (remap šifre); u direktnom kanalu Sifra artikla JESTE BigBit šifra.
   "R_Artikli|bb_mdb_stage_artikli|artikli|Sifra artikla|Kataloski broj|BarKod|PLU|ExtSifra|Naziv|Jedinica mere|Pakovanje|InoJm|Kutija|Transportno pakovanje|Poreklo|Grupa|Podgrupa|Tarifa robe|Tarifa usluga|Uvek porez na robu|Uvek porez na usluge|VP cena|MP cena|NabDevCena|ProdDevCena|Minimalna kolicina|ArtTaksa|Odlozeno|Neoporezivi deo|MaxRabatProc|Memo|KngSifra|ArtAkciza|KngSifra_2|ZavTrosProiz|CarStopa|IDRaster|CarTarifa|ZemljaPorekla|Polica|INONaziv|SifDob|WebOpis|OpisArtikla|Tezina|PDFLink|ZaBrisanje|Aktivan|CenaZaUpisUCen|IDMestoIzdavanja|Proizvodjac|HPS|PotpisArt|DatumIVremeArt|KolUPak|KLRucProc|OsnJM|SlikaSimbolaLink|MPKaloProc|WordLokacija|VPKaloProc|NeVodiZalihe|TezinaKg|Zapremina|Povrsina|RSort|AkcijskiRabat|Napomena2|IDKvalitetArtikla|Debljina"
+
+  # ── ROBNO (05.08.2026) — LAGER LISTA I KARTICE ARTIKLA ─────────────────────
+  # ZAŠTO SADA: 4.0 robne tabele su na produkciji PRAZNE (mereno: stock_documents
+  # 0, stock_levels 0, stock_reservations 0, purchase_orders 0). Robno se vodi
+  # ISKLJUČIVO u BigBitu. Mirror tabele `goods_documents_mirror` /
+  # `goods_document_items_mirror` postoje od baseline-a i projektovane su baš za
+  # ovo, ali ih je punio MSSQL kanal (`sync-map.generated.ts` →
+  # `RobnaDokumentaMirror`) koji je MRTAV od 22.07.2026 — isti uzrok kao kod
+  # komitenata i artikala. Ovaj (.mdb) kanal je jedini živ, pa robno ide njime.
+  #
+  # RADNI SKUP (mereno nad BB_T_26_11-07-26.mdb):
+  #   T_Robna dokumenta  27.338 dok   (Level 0 = 1.528 tekuća godina, Level 250
+  #                                    = 25.810 ponude/rezervacije/otpremnice)
+  #   T_Robne stavke     ~182.500     (Level 0 = 18.865, Level 250 = 163.674)
+  #   T_Trebovanja       22.931 · T_Trebovanja stavke 86.503
+  # Artikala sa stanjem != 0: 7.143 — lager je upotrebljiv, nije 92k praznih redova.
+  #
+  # PROJEKCIJA: ove četiri tabele NE idu u staging cele (61+37+27+20 = 145 kolona
+  # od kojih nam treba 44). Vidi `PICK` ispod — zaglavlje se i dalje poredi CELO,
+  # menja se samo koliko se od njega prepisuje. Osnov formule lagera:
+  #   stanje      = SUM(Kolicina po Ulaz=True) - SUM(Kolicina po Ulaz=False), Level 0
+  #   rezervisano = SUM(Kolicina) nad dokumentima sa Rezervisi=True
+  #   slobodno    = stanje - rezervisano
+  # ⚠️ MAGACIN SE UZIMA SA STAVKE (`IDMagacin`), ne sa dokumenta (`IDMagacinDOK`):
+  # jedan dokument ume da nosi stavke iz više magacina, pa bi grupisanje po
+  # zaglavlju tiho pripisalo količine pogrešnom magacinu.
+  "T_Robna dokumenta|bb_mdb_stage_robna_dokumenta|robna_dokumenta|IDDok|IDFirma|Ulaz|Broj naloga|Vrsta naloga|Broj dokumenta|Vrsta dokumenta|Sifra komitenta|Datum dokumenta|Datum knjizenja|Datum valute|Opis|Nacin otpreme|Fco|Broj izjave|Datum izjave|Sifra prodavca|Nacin placanja|IDTrebZaProizvodnju|IDMagacinDOK|Memo|Kurs|IDRadniNalog|ObrKurs|Carina|Spedicija|OstaliZavTros|DevVredFak|Level|IDPredmet|Zakljucano|IDDokUF|IDDokIF|Rezervisi|CarKurs|IDDokUSL|PovCarOsn|DevValuta|IDMestoIsporuke|IDRuta|IDVozac|OJ|Potpisano|OD|Potpis|DatumIVreme|Godina|DatIVreme|IDKontaktOsobe|PrimljenNovac|UsloviPlacanja|PrimljeniCekovi|PrimljenaKartica|IDKasa|StampanFiskalno|PrimljeniVirmani|IDDokExtBaza|DokBarKod|DokBrojKutija|STARIID|PNBOdobBrojDok"
+  "T_Robne stavke|bb_mdb_stage_robne_stavke|robne_stavke|IDStavke|IDDok|Sifra artikla|Kolicina|KG_Kolicina|Nabavna cena - neto|Zavisni trosak - sopstveni|Zavisni trosak - dobavljac|Kalkulativna VP cena|Kalkulativna MP cena|Stvarna VP cena|Stvarna MP cena|Taksa|Obracunat porez na ulazu - roba|Tarifa - roba - ulaz|Obracunat porez na usluge|Tarifa - usluge - izlaz|Obracunat  porez na robu|Tarifa - roba - Izlaz|RabatProc|KasaProc|Odlozeno|Neoporezivi deo|Akciza|FiksniPorez|DevNabCena|IDMagacin|KNGCena|CarStopa|IDPredmetStavka|OpisStavke|ID_PO|PakPoOsnJM|IDPrepisaneStavke|ProknjizenoIzProfUIF|IDStavkeTrebovanja|IDPlanStavka"
+  "T_Trebovanja|bb_mdb_stage_trebovanja|trebovanja|IDFirma|IDTreb|Broj trebovanja|Datum trebovanja|Sifra komitenta|Kurs|IDPredmet|Napomena|Level|IDPredmetDok|IDTrebVeza|DevValuta|OJ|Poruceno|OD|Potpisano|Godina|Potpis|DatumIVreme|Zakljucano|Sifra prodavca|DatIVreme|OpisDok|VrstaTreb|AvansnoPlacanje|IDUpita|STARIID"
+  "T_Trebovanja stavke|bb_mdb_stage_trebovanja_stavke|trebovanja_stavke|IDStavke|IDTreb|Sifra artikla|ZaliheKol|TrebKol|IsporucenaKolicina|Cena|ZaliheKG_Kol|UlazKol|IzlazKol|Opis|Napomena|OcekivaniDatumIsporuke|DatumIsporuke|DatIVreme|IDPredmet|Isporuceno|RabatProc|IDStavkeUpita|IDZahtevaZaNabavku"
+)
+
+# -----------------------------------------------------------------------------
+# PROJEKCIJA KOLONA (`PICK`) — koje se od izvezenih kolona ZAISTA prepisuju
+# -----------------------------------------------------------------------------
+# Ključ je SLUG iz manifesta, vrednost su IZVORNA imena kolona razdvojena `|`,
+# u redosledu u kom su deklarisane u `schema.prisma` (INSERT je POZICIONI, isto
+# kao kod tabela bez projekcije). Tabela bez unosa ovde ide CELA — dosadašnje
+# ponašanje se ne menja ni za jednu postojeću tabelu.
+#
+# ZAŠTO PROJEKCIJA, A NE „uzmi sve kao dosad": robne tabele nisu šifarnici. Uz
+# ~182.500 robnih stavki po noći, 37 kolona umesto 11 znači ~3× više pisanja u
+# staging svake noći, doživotno, za podatke koje niko ne čita (kalkulativne cene,
+# carinske stope, tarife po stavci). Šifarnici se uzimaju celi jer su mali i jer
+# se iz njih vremenom pojavi potreba za kolonom koje se nismo setili; robni
+# promet se uzima ciljano.
+#
+# 🔴 ZAGLAVLJE SE I DALJE PROVERAVA CELO. Brana ispod poredi PUN CSV header sa
+# manifestom, pa dodata/uklonjena/premeštena kolona u BigBitu i dalje ZAUSTAVLJA
+# izvoz — projekcija menja samo koliko se od proverenog zaglavlja prepisuje.
+# Dodatno: svaka PICK kolona mora postojati u zaglavlju, inače skripta stane
+# ovde (bash), a ne kasnije u psql-u sa porukom o nepostojećoj koloni.
+declare -A PICK=(
+  # T_Robna dokumenta: 13 od 61 — identitet, smer (Ulaz), vrsta/broj/datumi,
+  # Level (0 = knjiženo stanje, 250 = ponude/rezervacije), Rezervisi, magacin
+  # zaglavlja (kontrolni; lager grupiše po magacinu STAVKE), komitent, predmet.
+  [robna_dokumenta]='IDDok|Ulaz|Broj dokumenta|Vrsta dokumenta|Sifra komitenta|Datum dokumenta|Datum knjizenja|IDMagacinDOK|Level|IDPredmet|Zakljucano|Rezervisi|Godina'
+  # T_Robne stavke: 11 od 37 — količina (+ KG varijanta), magacin STAVKE, tri
+  # cene koje kartica artikla prikazuje, rabat i opis stavke.
+  [robne_stavke]='IDStavke|IDDok|Sifra artikla|Kolicina|KG_Kolicina|Nabavna cena - neto|Stvarna VP cena|Stvarna MP cena|RabatProc|IDMagacin|OpisStavke'
+  # T_Trebovanja: 9 od 27 — narudžbenice na kartici artikla.
+  [trebovanja]='IDTreb|Broj trebovanja|Datum trebovanja|Sifra komitenta|IDPredmet|Napomena|Level|Poruceno|Godina'
+  # T_Trebovanja stavke: 11 od 20 — naručeno vs isporučeno + rokovi. ZaliheKol /
+  # UlazKol / IzlazKol se NE uzimaju: to su BigBitovi pomoćni snimci zaliha u
+  # trenutku unosa trebovanja, a ne izvor istine — stanje se računa iz robnih
+  # dokumenata. Preuzimanje bi ponudilo drugi, bajat odgovor na isto pitanje.
+  [trebovanja_stavke]='IDStavke|IDTreb|Sifra artikla|TrebKol|IsporucenaKolicina|Cena|Opis|OcekivaniDatumIsporuke|DatumIsporuke|Isporuceno|RabatProc'
 )
 
 # psql u kontejneru, na host mreži, sa UTF-8 klijentom.
@@ -341,10 +408,14 @@ for spec in "${TABLES[@]}"; do
   log "  $src -> $stage : $rows redova (prethodni drop: $prev)"
   COUNTS_JSON="$COUNTS_JSON$(printf '%s"%s":%d' "${COUNTS_JSON:+,}" "$src" "$rows")"
 
-  # `LIKE ... EXCLUDING ALL` + DROP id/drop_id daje temp tabelu čije kolone su
-  # TAČNO izvorne kolone u izvornom redosledu — pa `\copy` ne treba listu kolona,
-  # a INSERT ubacuje id iz sekvence i konstantan drop_id ispred `t.*`.
-  cat >> "$LOAD_SQL" <<SQL
+  pick="${PICK[$slug]:-}"
+
+  if [ -z "$pick" ]; then
+    # BEZ PROJEKCIJE (šifarnici i knjigovodstvo): `LIKE ... EXCLUDING ALL` + DROP
+    # id/drop_id daje temp tabelu čije kolone su TAČNO izvorne kolone u izvornom
+    # redosledu — pa `\copy` ne treba listu kolona, a INSERT ubacuje id iz
+    # sekvence i konstantan drop_id ispred `t.*`.
+    cat >> "$LOAD_SQL" <<SQL
 CREATE TEMP TABLE t_$slug (LIKE $stage EXCLUDING ALL);
 ALTER TABLE t_$slug DROP COLUMN id, DROP COLUMN drop_id;
 \\copy t_$slug FROM '/w/$slug.csv' WITH (FORMAT csv, HEADER true, DELIMITER '|')
@@ -353,13 +424,46 @@ INSERT INTO $stage
   SELECT nextval(pg_get_serial_sequence('$stage','id')), $DROP_ID, t.* FROM t_$slug t;
 DROP TABLE t_$slug;
 SQL
+  else
+    # SA PROJEKCIJOM (robno): temp tabela se pravi po PUNOM zaglavlju izvora, sve
+    # kolone `text` — CSV zato ulazi ceo, bez liste kolona, kao i dosad. U staging
+    # se prepisuju samo PICK kolone, i to POZICIONO (staging model ih deklariše
+    # istim redosledom). Sve staging kolone su ionako `text` po pravilu ove
+    # datoteke, pa nema nijednog kastovanja — tipizacija ostaje posao uvoza.
+    raw_cols=""
+    IFS='|' read -r -a _hdr <<< "$expected"
+    for c in "${_hdr[@]}"; do raw_cols="$raw_cols${raw_cols:+, }\"$c\" text"; done
+
+    sel_cols=""
+    IFS='|' read -r -a _pick <<< "$pick"
+    for c in "${_pick[@]}"; do
+      # Kolona iz PICK-a MORA biti u zaglavlju. Bez ove provere greška u kucanju
+      # („Kolicina " sa razmakom) prošla bi do psql-a i oborila CELU transakciju
+      # tek posle 18 s izvoza, sa porukom o koloni umesto o manifestu.
+      case "|$expected|" in
+        *"|$c|"*) : ;;
+        *) die "PICK kolona '$c' NE POSTOJI u zaglavlju tabele '$src'.
+     Uskladi \`PICK[$slug]\` sa manifestom (i sa redosledom polja u schema.prisma)." ;;
+      esac
+      sel_cols="$sel_cols, t.\"$c\""
+    done
+
+    cat >> "$LOAD_SQL" <<SQL
+CREATE TEMP TABLE t_$slug ($raw_cols);
+\\copy t_$slug FROM '/w/$slug.csv' WITH (FORMAT csv, HEADER true, DELIMITER '|')
+DELETE FROM $stage WHERE drop_id = $DROP_ID;
+INSERT INTO $stage
+  SELECT nextval(pg_get_serial_sequence('$stage','id')), $DROP_ID$sel_cols FROM t_$slug t;
+DROP TABLE t_$slug;
+SQL
+  fi
 done
 
 chmod 644 "$WORK"/*.csv "$LOAD_SQL"
 
 # ── 4) Učitavanje u staging — JEDNA transakcija po drop-u ────────────────────
-# Ceo staging se menja atomično: ili je drop LOADED sa svih 9 tabela, ili je
-# ostalo staro stanje. Korak 2 (uvoz u 4.0 modele) NAMERNO ide u serijama, to je
+# Ceo staging se menja atomično: ili je drop LOADED sa SVIM tabelama iz manifesta,
+# ili je ostalo staro stanje. Korak 2 (uvoz u 4.0 modele) NAMERNO ide u serijama, to je
 # odvojena priča — vidi bigbit-mdb-import.service.ts.
 cat >> "$LOAD_SQL" <<SQL
 UPDATE bb_mdb_drops SET

@@ -515,6 +515,14 @@ export const NAV_DOMAINS: NavDomain[] = [
         icon: Layers,
         modules: [
           { label: 'Artikli', href: '/artikli', icon: Package, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['artikli', 'roba', 'sifarnik artikala', 'kataloski broj', 'barkod', 'maticni podaci'] },
+          // „Drugi pregled artikala" (05.08.2026) — RAVNOPRAVNA stavka, ne podstavka
+          // „Artikala": vlasnik je izričit da oba prikaza imaju svoju namenu (jedan
+          // odgovara „kakav je artikal", drugi „koliko ga ima i koliko sme da se obeća"),
+          // pa se lager traži i nalazi sam za sebe — i u sidebaru i u Ctrl+K paleti.
+          // Isto pravo (`directory.read`): rute lagera i kartica stoje pod tim ključem.
+          // ⚠️ Podaci su OGLEDALO BigBita (4.0 tabele zaliha su prazne do cutover-a),
+          // zato ključne reči nose i „bigbit" — tako ga nađe i ko ga traži po poreklu.
+          { label: 'Lager lista', href: '/artikli/lager', icon: Warehouse, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['lager', 'zalihe', 'stanje', 'rezervisano', 'slobodno', 'magacin', 'lager lista', 'bigbit', 'maticni podaci'] },
           { label: 'Komitenti', href: '/komitenti', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['komitenti', 'kupci', 'dobavljaci', 'pib', 'sifarnik komitenata', 'maticni podaci'] },
         ],
       },

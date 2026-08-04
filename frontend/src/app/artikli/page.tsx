@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { Download, Plus, RotateCcw } from 'lucide-react';
+import { Download, Plus, RotateCcw, Warehouse } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { PERMISSIONS } from '@/lib/permissions';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column, type RowAction, type SortState } from '@/components/ui-kit/data-table';
@@ -13,7 +12,7 @@ import { Select } from '@/components/ui-kit/select';
 import { Input } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
-import { useListQueryState } from '@/lib/use-id-param';
+import { listHref, useListQueryState } from '@/lib/use-id-param';
 import { exportTableToCsv, type CsvColumn } from '@/lib/table-csv';
 import { formatDecimal, formatNumber } from '@/lib/format';
 import {
@@ -403,7 +402,7 @@ function Polje({
 }
 
 export default function ArtikliPage() {
-  const { user, isLoading, can } = useAuth();
+  const { user, isLoading } = useAuth();
   const router = useRouter();
 
   // Filteri i sort žive U URL-u (frontend/CLAUDE.md §12) — povratak sa detalja
@@ -650,15 +649,15 @@ export default function ArtikliPage() {
     [router],
   );
 
-  const mozeKarticu = can(PERMISSIONS.ROBNO_READ);
-
   /**
    * RED RADNJI NAD ARTIKLOM — jedan izvor za dugmad ispod filtera I za meni na
    * desni klik, da se ne raziđu. Redosled i labele su BigBit-ovi.
    *
-   * „Kartica artikla" čita robna kretanja (`/robno/item-card`, pravo `robno.read`),
-   * koje `/artikli` (pravo `directory.read`) ne podrazumeva — kome ga nema, stavka
-   * se ne nudi uopšte umesto da vodi u 403.
+   * „Kartica artikla" je do 05.08.2026 tražila `robno.read` jer je čitala 4.0 robno
+   * (`/robno/item-card`) — a te tabele su prazne. Kartica sada čita OGLEDALO BigBita
+   * (`/v1/artikli/:id/kartica-*`), koje stoji na `directory.read`, tj. na istom pravu
+   * kao i sama ova lista. Uslov je zato uklonjen: ostavljen bi krio stavku od svih
+   * kojima ona od sada radi.
    */
   const akcijeZaRed = useCallback(
     (red: ItemRow | null): RowAction[] => {
@@ -670,17 +669,15 @@ export default function ArtikliPage() {
           onemoguceno: nemaReda,
           onSelect: () => otvoriDetalj(red),
         },
-      ];
-      if (mozeKarticu) {
-        stavke.push({
+        {
           kljuc: 'kartica',
           labela: 'Kartica artikla',
           onemoguceno: nemaReda,
           onSelect: () => {
             if (red) router.push(`/artikli/kartica?id=${red.id}`);
           },
-        });
-      }
+        },
+      ];
       stavke.push(
         {
           kljuc: 'recepti',
@@ -703,7 +700,7 @@ export default function ArtikliPage() {
       );
       return stavke;
     },
-    [mozeKarticu, otvoriDetalj, router],
+    [otvoriDetalj, router],
   );
 
   const akcijeIznad = akcijeZaRed(izabran);
@@ -762,6 +759,21 @@ export default function ArtikliPage() {
             >
               {!izvozUToku && <Download className="h-4 w-4" aria-hidden />}
               <span className="max-sm:hidden">Export</span>
+            </Button>
+            {/* DVA RAVNOPRAVNA PREGLEDA (zahtev vlasnika 05.08.2026: „oba prikaza imaju
+                namenu"): ovde se gleda KAKAV je artikal, na lager listi KOLIKO ga ima.
+                Prelaz mora biti jedan klik u oba smera — lager lista ima isto ovakvo
+                dugme nazad. */}
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => router.push(listHref('/artikli/lager'))}
+              title="Lager lista — stanje, rezervisano i slobodno po magacinu"
+              aria-label="Lager lista"
+              className="max-sm:w-9 max-sm:px-0"
+            >
+              <Warehouse className="h-4 w-4" aria-hidden />
+              <span className="max-sm:hidden">Lager lista</span>
             </Button>
             {/* Na 360 px ostaje samo ikona — naslov i akcije imaju prednost (§11). */}
             <Button
