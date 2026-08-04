@@ -4,6 +4,37 @@ ERP/MES za Servoteh: prerada QBigTehn legacy sistema (proizvodni core) na modera
 Ovaj repo je **jedinstven monorepo** — nastao spajanjem ranijih `servosync/backend` i
 `servosync/frontend` (istorija oba očuvana). Plan verzija 1.0→4.0: [backend/docs/ROADMAP.md](backend/docs/ROADMAP.md).
 
+## 🔴 Izmene se UVEK odnose na ono što je na `main`-u
+
+**Pravilo (Nenad, 04.08.2026):** *„kad pišem o izmenama, uvek su izmene nečega što je već na
+mainu"*. Svaki zahtev tipa „popravi X", „X treba ovako da izgleda", „dodaj Y u X" odnosi se na
+verziju koja je na `origin/main` — to je ono što ljudi koriste — a **ne** na stanje grane u kojoj
+se zatekneš.
+
+**Pre prve linije koda:**
+
+```bash
+git fetch origin main
+git rev-list --count HEAD..origin/main            # koliko sam iza
+git ls-tree -r --name-only origin/main -- <domen> # kako to izgleda na main-u
+git show origin/main:<putanja>                    # sadržaj sa main-a
+```
+
+Pretraga radne kopije (`ls`, glob, grep) **NIJE dokaz da nešto ne postoji.** Ako je grana
+zaostala, otvori svežu granu od `origin/main` u zasebnom worktree-u umesto da rebase-uješ
+stotine commitova. Za bilo šta što dira bazu — **izmeri produkciju pre pisanja migracije**
+(postoje li tabele, koje su sekvence i CHECK constraint-i); dokumentacija na staroj grani ume
+da opisuje stanje koje više ne postoji.
+
+**Šta je koštalo:** 04.08.2026. je na grani 285 commitova / 39 migracija iza main-a napravljen
+paralelan modul „Artikli" (main već ima `backend/src/modules/masters/items.*` i
+`frontend/src/app/artikli/*`), a uz njega i migracija koja bi na produkciji oborila unos
+artikala — pomerala je `items_id_seq` ispod granice iz `chk_items_native_id_range`.
+
+**Brane:** `.claude/hooks/provera-grane.sh` (Claude Code, javlja na startu sesije) i
+`.github/workflows/ci-brana-grane.yml` (važi za svakoga — obara PR kojem fale migracije sa
+main-a ili koji je predaleko iza).
+
 **Pravila po oblastima — pročitaj pre rada u toj oblasti:**
 
 - Backend (NestJS + Prisma + PostgreSQL): [backend/CLAUDE.md](backend/CLAUDE.md) →
