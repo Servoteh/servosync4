@@ -24,6 +24,12 @@
 -- prođu proveru pre nego što ijedan upiše red. Bravu koja to zaustavlja može da drži
 -- samo baza. Kod hvata `P2002` i vraća istu 409 poruku.
 --
+-- 🔴 PRED-POLETNA PROVERA JE OBAVEZNA, PRE DEPLOY-A
+-- Isti rizik kao svaka unique migracija: nad tabelom sa zatečenim duplikatima `CREATE UNIQUE
+-- INDEX` pada i obara CEO deploy. Produkcija u trenutku pisanja NIJE bila dohvatljiva
+-- (ssh reset), pa broj duplikata NIJE izmeren. Pre deploy-a pokrenuti:
+--   ssh ubuntusrv 'bash -s' < backend/scripts/preflight-unique-migrations.sh
+--
 -- ⚠️ AKO OVA MIGRACIJA PADNE
 -- Znači da na toj bazi VEĆ postoje duplikati i to nije stvar za tiho čišćenje — koji je
 -- red merodavan zna samo čovek koji vidi stanje na SEF portalu. Blok ispod zato prijavi
