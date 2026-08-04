@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { ExternalLink } from 'lucide-react';
@@ -67,9 +67,20 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
   const [minutes, setMinutes] = useState('');
   const [laborNotes, setLaborNotes] = useState('');
   const [incidentOpen, setIncidentOpen] = useState(false);
+  // Nesačuvane izmene edit panela (prijavljuje WoEditPanel) — guard za SVIH 5 puteva
+  // zatvaranja: X / Esc / klik-van (Dialog.onClose) + „Otvori mašinu" + „Otvori incident".
+  const [editDirty, setEditDirty] = useState(false);
 
   const d = wo.data?.data;
   const busy = update.isPending || addEvent.isPending || addPart.isPending || addLabor.isPending;
+
+  /** true = bezbedno napustiti (nema izmena, ili je korisnik svesno odbacio). */
+  function confirmDiscard(): boolean {
+    return !editDirty || window.confirm('Imate nesačuvane izmene u nalogu. Zatvoriti bez čuvanja?');
+  }
+  function guardedClose() {
+    if (confirmDiscard()) onClose();
+  }
 
   const catalog = useMemo(() => {
     if (!canEdit) return [] as Part[];
@@ -93,6 +104,7 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
 
   function openMachine() {
     if (!d?.asset || d.asset.assetType !== 'machine') return;
+    if (!confirmDiscard()) return;
     onClose();
     router.push(`/odrzavanje/masine?code=${encodeURIComponent(d.asset.assetCode)}&tab=pregled`);
   }
@@ -117,7 +129,7 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
   }
 
   return (
-    <Dialog open={!!woId} onClose={onClose} title={d?.woNumber ? `Nalog ${d.woNumber}` : 'Radni nalog'}>
+    <Dialog open={!!woId} onClose={guardedClose} title={d?.woNumber ? `Nalog ${d.woNumber}` : 'Radni nalog'}>
       {wo.isLoading || !d ? (
         <p className="py-6 text-center text-sm text-ink-secondary">Učitavanje…</p>
       ) : (
@@ -141,7 +153,11 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
                 </button>
               )}
               {d.incidentId && (
-                <button className="inline-flex items-center gap-1 text-accent" onClick={() => setIncidentOpen(true)}>
+                <button
+                  className="inline-flex items-center gap-1 text-accent"
+                  // Render-switch na incident unmount-uje edit panel → guard i ovde.
+                  onClick={() => { if (confirmDiscard()) setIncidentOpen(true); }}
+                >
                   Otvori incident <ExternalLink className="h-3 w-3" aria-hidden />
                 </button>
               )}
@@ -156,7 +172,13 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
           </div>
 
           {canEdit && (
-            <WoEditPanel key={d.woId} d={d} assignableUsers={assignable.data?.data ?? []} update={update} />
+            <WoEditPanel
+              key={d.woId}
+              d={d}
+              assignableUsers={assignable.data?.data ?? []}
+              update={update}
+              onDirtyChange={setEditDirty}
+            />
           )}
 
           {/* Delovi */}
@@ -275,19 +297,50 @@ function WoEditPanel({
   d,
   assignableUsers,
   update,
+  onDirtyChange,
 }: {
   d: WorkOrderDetail;
   assignableUsers: AssignableUser[];
   update: ReturnType<typeof useUpdateWorkOrder>;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const [patch, setPatch] = useState<Record<string, unknown>>({});
   const [err, setErr] = useState<string | null>(null);
+  /** Originalne (serverske) vrednosti — polje dirnuto pa vraćeno na ovo IZLAZI iz patch-a. */
+  const original: Record<string, unknown> = {
+    status: d.status,
+    priority: d.priority,
+    assignedTo: d.assignedTo ?? null,
+    dueAt: d.dueAt ? d.dueAt.slice(0, 10) : '',
+    closureComment: d.closureComment ?? '',
+  };
   /** Odložena (još nesačuvana) vrednost polja, ili trenutna sa servera. */
   const staged = <T,>(key: string, fallback: T): T => (key in patch ? (patch[key] as T) : fallback);
-  const stage = (key: string, value: unknown) => { setErr(null); setPatch((p) => ({ ...p, [key]: value })); };
+  const stage = (key: string, value: unknown) => {
+    setErr(null);
+    setPatch((p) => {
+      // Vraćeno na original → ključ napolje: dugme se gasi kad je sve vraćeno i ne
+      // šalju se no-op vrednosti koje bi pregazile tuđu svežiju izmenu.
+      if (value === original[key]) {
+        if (!(key in p)) return p;
+        const next = { ...p };
+        delete next[key];
+        return next;
+      }
+      return { ...p, [key]: value };
+    });
+  };
   const dirty = Object.keys(patch).length > 0;
   const effStatus = staged<WoStatus>('status', d.status);
   const selCls = 'h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink';
+
+  // Roditelj (WoDetailDialog) guard-uje zatvaranje po ovome. Cleanup je OBAVEZAN:
+  // dijalog ostaje montiran posle zatvaranja (rana `return null` grana), pa bi
+  // `editDirty` inače preživeo zatvaranje i lažno pitao pri sledećem otvaranju.
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
 
   function save() {
     setErr(null);
@@ -296,6 +349,11 @@ function WoEditPanel({
     if ('dueAt' in body) {
       const v = String(body.dueAt ?? '');
       body.dueAt = v ? new Date(v).toISOString() : null;
+    }
+    // Napomena zatvaranja važi samo uz zatvarajući status — ako je status u međuvremenu
+    // odložen na ne-zatvarajući, ne šalji je (polje je i sakriveno iz forme).
+    if ('closureComment' in body && effStatus !== 'zavrsen' && effStatus !== 'kontrola') {
+      delete body.closureComment;
     }
     update.mutate(
       { id: d.woId, patch: body },
