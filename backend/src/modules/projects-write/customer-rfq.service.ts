@@ -159,8 +159,8 @@ export class CustomerRfqService {
     if (!customer)
       throw new NotFoundException(
         `Komitent ${customerId} ne postoji u ServoSync-u. Unesite ga u BigBit — ovde ` +
-          `stiže automatski noćnim uvozom i vidljiv je sutra ujutru; tek onda može ` +
-          `na zahtev.`,
+          `stiže noćnim uvozom: uneto do 17:30 vidi se sutra ujutru, kasnije ` +
+          `prekosutra. Tek onda može na zahtev.`,
       );
   }
 }

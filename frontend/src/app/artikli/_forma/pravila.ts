@@ -49,8 +49,9 @@ export const BRANA_KOMITENT: Brana = {
   naslov: "Unos i izmena komitenta su zatvoreni — komitente vodi BigBit",
   poruka:
     "Komitente vodi BigBit — u ServoSync-u se ne unose ni ne menjaju (odluka 26.07.2026). " +
-    "Novog komitenta unesite u BigBit — ovde stiže automatski noćnim uvozom i vidljiv je " +
-    "sutra ujutru; ako ne može da čeka, obratite se administratoru.",
+    "Novog komitenta unesite u BigBit — ovde stiže automatski noćnim uvozom: uneto do " +
+    "17:30 vidi se sutra ujutru, kasnije prekosutra. Bržeg puta nema (izvoz iz BigBita ide " +
+    "jednom dnevno) — ako je hitno, javite u BigBit-u da izvezu ranije.",
   uslovi: [
     {
       tekst:
@@ -98,8 +99,8 @@ export const BRANA_ARTIKAL: Brana = {
   naslov: "Unos i izmena artikla su zatvoreni — artikle vodi BigBit",
   poruka:
     "Artikle vodi BigBit — u ServoSync-u se ne unose ni ne menjaju. Nov artikal unesite u " +
-    "BigBit — ovde stiže automatski noćnim uvozom i vidljiv je sutra ujutru; ako ne može " +
-    "da čeka, obratite se administratoru.",
+    "BigBit — ovde stiže automatski noćnim uvozom: uneto do 17:30 vidi se sutra ujutru, " +
+    "kasnije prekosutra. Bržeg puta nema (izvoz iz BigBita ide jednom dnevno).",
   uslovi: [
     {
       tekst:

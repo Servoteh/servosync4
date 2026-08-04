@@ -4,6 +4,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Logger,
   Param,
   ParseIntPipe,
   Post,
@@ -13,11 +14,7 @@ import {
 } from '@nestjs/common';
 import { SyncService } from './sync.service';
 import { SyncStrategy } from './sync.types';
-import {
-  DEFAULT_SYNC_EXCLUDED,
-  FROZEN_MSSQL_EXCLUDED,
-  NIGHTLY_SYNC_EXCLUDED,
-} from './table-ownership';
+import { DEFAULT_SYNC_EXCLUDED } from './table-ownership';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser } from '../auth/jwt.strategy';
 import { PermissionsGuard } from '../../common/authz/permissions.guard';
@@ -33,30 +30,22 @@ interface RunSyncBody {
 }
 
 /**
- * Tehnička zaštita uz širenje `sync.run` (dopuna 061/26, odluka 04.08.2026):
- * isključeni entitet eksplicitno sme da traži samo admin. Poruka se SASTAVLJA
- * po razlogu isključenja, da ne slaže ni kad se traži mešavina:
- *  • `items` (NIGHTLY_SYNC_EXCLUDED) — privremeno, dok traje čišćenje kataloga;
- *  • zamrznuti tokovi (FROZEN_MSSQL_EXCLUDED, reopen 061/26 04.08.2026) —
- *    QBigTehn kopija stoji na 22.07, a predmete/komitente od 30.07 vozi noćni
- *    .mdb uvoz; ručno pokretanje bi ih vratilo na staro (obrazloženje uz skup).
+ * Tehnička zaštita uz širenje `sync.run` (dopuna 061/26, odluka 04.08.2026;
+ * reopen isti dan): isključeni entitet eksplicitno sme da traži samo admin.
+ * Svi današnji razlozi isključenja su isti — QBigTehn kopija je zamrznuta od
+ * 22.07, a artikle/predmete/komitente od 30.07 vozi noćni .mdb uvoz
+ * (obrazloženje uz `FROZEN_MSSQL_EXCLUDED`).
+ *
+ * Poruka počinje MALIM slovom u delu koji e2e matrica poredi („može ih pokrenuti
+ * samo administrator") — poređenje je case-sensitive, pa se rečenica namerno ne
+ * lomi na velikom slovu.
  */
 export function excludedEntitiesAdminOnlyMessage(blocked: string[]): string {
-  const parts: string[] = [];
-  if (blocked.some((e) => NIGHTLY_SYNC_EXCLUDED.has(e))) {
-    parts.push(
-      'Artikli su privremeno isključeni iz sinhronizacije dok traje čišćenje kataloga.',
-    );
-  }
-  const frozen = blocked.filter((e) => FROZEN_MSSQL_EXCLUDED.has(e));
-  if (frozen.length) {
-    parts.push(
-      `Tokovi ${frozen.join(', ')} se ne pokreću odavde: QBigTehn kopija je ` +
-        'zamrznuta od 22.07.2026 — predmeti i komitenti sada stižu noćnim ' +
-        'BigBit uvozom, a ostali izvori su prazni.',
-    );
-  }
-  return `${parts.join(' ')} Može ih pokrenuti samo administrator.`;
+  return (
+    `Tokovi ${blocked.join(', ')} se ne pokreću odavde: QBigTehn izvor je ` +
+    'zamrznut od 22.07.2026 — artikli, predmeti i komitenti stižu noćnim BigBit ' +
+    'uvozom, a ostali izvori su prazni; može ih pokrenuti samo administrator.'
+  );
 }
 
 export const FORCE_ADMIN_ONLY_MESSAGE =
@@ -69,8 +58,8 @@ export const FORCE_ADMIN_ONLY_MESSAGE =
  * `POST /run` = `sync.run` — do 04.08.2026 admin-only; zahtevom 061/26 (Igor
  * Voštić) i odlukom Nenada prošireno na tehnologe + planere + admin (role-mapa:
  * tehnolog + menadzment + admin). Uz širenje ide tehnička zaštita: default run
- * isključuje `DEFAULT_SYNC_EXCLUDED` (items + zamrznuti MSSQL tokovi, reopen
- * 04.08), eksplicitni isključeni entitet i `force` su
+ * isključuje `DEFAULT_SYNC_EXCLUDED` (zamrznuti MSSQL tokovi, reopen 04.08),
+ * eksplicitni isključeni entitet i `force` su
  * samo admin — vidi komentar u `run()`. Reads = `sync.read`
  * (sef/tehnolog/menadzment/admin).
  * Guard je shadow-mode (V1): loguje would-be 403, ne blokira dok `AUTHZ_ENFORCE=true`.
@@ -78,6 +67,8 @@ export const FORCE_ADMIN_ONLY_MESSAGE =
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('sync')
 export class SyncController {
+  private readonly logger = new Logger(SyncController.name);
+
   constructor(private readonly syncService: SyncService) {}
 
   @Post('run')
@@ -95,12 +86,13 @@ export class SyncController {
     // Dopuna 061/26 (odluka 04.08.2026, tehnička zaštita uz širenje `sync.run`)
     // + reopen 04.08 (Igorova prijava — vidi `FROZEN_MSSQL_EXCLUDED`):
     //  • DEFAULT (bez `entities`) isključuje `DEFAULT_SYNC_EXCLUDED` — isti skup
-    //    kao noćni posao, za SVE role uključujući admina: items (čišćenje
-    //    kataloga) + zamrznuti tokovi (6 praznih izvora = garantovana greška u
-    //    svakom runu; projects/customers = frozen kopija bi pregazila svežiji
-    //    noćni .mdb uvoz).
+    //    kao noćni posao, za SVE role uključujući admina: zamrznuti MSSQL tokovi
+    //    (6 praznih izvora = garantovana greška u svakom runu; items/projects/
+    //    customers = frozen kopija bi pregazila svežiji noćni .mdb uvoz).
     //  • EKSPLICITAN zahtev za isključeni entitet sme SAMO admin (nadgledano
-    //    pokretanje) — ostali dobijaju 403 sa porukom šta i zašto.
+    //    pokretanje) — ostali dobijaju 403 sa porukom šta i zašto, a admin
+    //    UPOZORENJE u logu (403 ga ne dotiče, pa bi inače pokrenuo prolaz nad
+    //    mrtvim izvorom bez ijednog traga zašto je to loše).
     //  • `force` (probija zaštitu ServoSync-owned tabela) — takođe samo admin;
     //    do 061/26 je bio admin-only implicitno, jer je ceo `sync.run` bio.
     const isAdmin = req.user.role?.trim().toLowerCase() === ROLES.ADMIN;
@@ -115,6 +107,14 @@ export class SyncController {
     const blocked = requested.filter((e) => DEFAULT_SYNC_EXCLUDED.has(e));
     if (blocked.length && !isAdmin) {
       throw new ForbiddenException(excludedEntitiesAdminOnlyMessage(blocked));
+    }
+    if (blocked.length) {
+      this.logger.warn(
+        `ADMIN (userId=${req.user.userId}) eksplicitno pokreće ISKLJUČENE tokove: ` +
+          `${blocked.join(', ')}. QBigTehn izvor je zamrznut od 22.07.2026 — ` +
+          'prolaz vraća podatke na to stanje i može pregaziti svežiji noćni ' +
+          '.mdb uvoz (artikli/predmeti/komitenti). Pokreni samo nadgledano.',
+      );
     }
 
     return this.syncService.run({

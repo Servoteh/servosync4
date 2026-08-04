@@ -87,48 +87,25 @@ export function isOwnedProductionTable(entity: string): boolean {
 }
 
 /**
- * Tokovi PRIVREMENO isključeni iz nenadgledanog pokretanja — JEDAN IZVOR i za
- * noćni posao (`BigbitSyncJobs.nightlyEntities`) i za default ručnog
- * `POST /sync/run` (od 04.08.2026, dopuna zahteva 061/26: dugme „Pokreni sync"
- * više nije admin-only, pa ručni default MORA biti jednako bezbedan kao noćni).
- * Eksplicitan zahtev za isključeni entitet (`body.entities`) sme SAMO admin —
- * vidi `SyncController.run`.
- *
- * `items` (review 26.07.2026, nalaz [1]) — PRIVREMENO. Guard za duplikate
- * kataloškog broja (DB-081, uveden 25.07) NIJE još nijednom prošao preko
- * produkcijskih podataka: prvi prolaz briše ~2.300 duplikat-grupa, a sve meke
- * reference (`price_list_entries.item_id`, `work_order_item_components`) koje
- * gađaju „gubitnički" `id` postaju siročad — pod `session_replication_role=
- * 'replica'` FK to ne zaustavlja, a takav backup se ne restore-uje čisto.
- * ČIŠĆENJE JE U TOKU (Nenad prenosi jedinstvene kataloške brojeve u BigBit); kad
- * `items` ostane bez duplikata, ovaj red se briše i tok ulazi i u noćni i u
- * ručni default. Do tada: sync artikala pokreće ISKLJUČIVO admin, eksplicitno
- * (`entities: ["items"]`), NADGLEDANO, uz pre-check upit iz .env.example
- * (aktivaciona beleška uz `BIGBIT_NIGHTLY_SYNC`).
- *
- * NAPOMENA: `tax_rates` NIJE ovde — presudom Nenada 26.07.2026 registar PDV
- * tarifa je 4.0-owned, pa je `R_Tarife` IZBAČEN iz `sync-map.generated.ts`
- * (nijedan prolaz ga više ne poznaje). Isključenje ovde bi bilo polumera.
- */
-export const NIGHTLY_SYNC_EXCLUDED = new Set<string>(["items"]);
-
-/**
- * TOKOVI ČIJI JE MSSQL IZVOR ZAMRZNUT — van default prolaza (REOPEN 061/26,
- * izmereno 04.08.2026 direktno na izvoru `BIGBIT_DB_*` = Vasa-SQL:5765).
+ * TOKOVI ČIJI JE MSSQL IZVOR ZAMRZNUT — van svakog nenadgledanog pokretanja
+ * (REOPEN 061/26, izmereno 04.08.2026 direktno na izvoru `BIGBIT_DB_*` =
+ * Vasa-SQL:5765).
  *
  * BigBit→QBigTehn prenos je ugašen 22.07.2026 (modul penzionisan), pa je MSSQL
  * kopija od tada ZAMRZNUTA: `Predmeti` staju na IDPredmet 10477 / broj 10005
- * (BigBit je tada već bio na 10014), a šest izvornih tabela je skroz PRAZNO.
- * Posledice po grupama:
+ * (BigBit je tada već bio na 10014), `tRN` na poslednjoj izmeni 14.07, a šest
+ * izvornih tabela je skroz PRAZNO. Posledice po grupama:
  *
- *  • `customers` + `projects` — od 30.07.2026 ih vozi noćni .mdb kanal
- *    (`BigbitMdbImportService`, jedini izvor koji još prati BigBit). MSSQL
+ *  • `customers` + `projects` + `items` — od 30.07.2026 ih vozi noćni .mdb
+ *    kanal (`BigbitMdbImportService`, jedini izvor koji još prati BigBit; noćni
+ *    uvoz 03.08. doneo „items +17/~7, customers +1/~2, projects ~1"). MSSQL
  *    prolaz nad njima nije samo jalov nego ŠTETAN: `projects` je aditivni
  *    full-refresh (obriši izvorne id-jeve + reinsert), pa svako pokretanje
  *    VRAĆA svih 7.617 predmeta na stanje od 22.07 i time gazi svežije .mdb
  *    izmene do sledeće noći. IZMERENO 04.08: jutarnji uvoz u 03:45 doneo
- *    „projects ~1, customers ~2" izmene, a ručni sync u 11:44 (Igor Voštić,
- *    zahtev 061/26) ih je pregazio zamrznutom kopijom. (`customers` je danas
+ *    izmene, a ručni sync u 11:44 (Igor Voštić, zahtev 061/26) ih je pregazio
+ *    zamrznutom kopijom. Kod `items` je isti kvar 12× veći: pun `deleteMany` +
+ *    reinsert nad 92.592 artikla iz zamrznutog izvora. (`customers` je danas
  *    no-op zbog watermark-a, ali ostaje ovde: isti vlasnik, isti razlog.)
  *
  *  • `access_rights`, `goods_documents_mirror`, `journal`, `notifications`,
@@ -139,13 +116,28 @@ export const NIGHTLY_SYNC_EXCLUDED = new Set<string>(["items"]);
  *    u SVAKOM runu je šum koji maskira prave padove — Igorova prijava 04.08
  *    („izbacuje grešku pri sinhronizaciji") je bila tačno ovih šest tokova.
  *
- * Eksplicitno pokretanje (body.entities) ostaje moguće SAMO adminu — isti gejt
- * kao `items` — jer za `projects`/`customers` znači svesno vraćanje na 22.07.
- * Skup se briše (ili tanji) kad se presudi sudbina celog MSSQL sync-a.
+ * ⚠️ USLOV ZA POVRATAK JE OŽIVLJAVANJE IZVORA, NE ČIŠĆENJE KATALOGA.
+ * Do 04.08. je ovde (za `items`) stajalo uputstvo: „kad `items` ostane bez
+ * duplikata kataloškog broja, ovaj red se briše i tok ulazi u noćni i ručni
+ * default". TO UPUTSTVO JE POVUČENO — čišćenje duplikata (DB-081, u toku) rešava
+ * DRUGI problem (siročad pri full-refresh-u) i nema veze sa time što je izvor
+ * mrtav. Ko bi ga posle čišćenja poslušao, ponovo bi naoružao tačno ovaj kvar,
+ * samo nad 92.592 reda. Bilo koji tok odavde sme nazad TEK ako/kad se BigBit→
+ * QBigTehn prenos vrati u pogon i izmeri se da izvor prati BigBit (uporediti
+ * MAX izmene u MSSQL-u sa poslednjim .mdb drop-om). Duplikati ostaju zaseban,
+ * nezavisan uslov za `items`.
+ *
+ * Eksplicitno pokretanje (`body.entities`) ostaje moguće SAMO adminu — svesno,
+ * nadgledano vraćanje na stanje od 22.07 — i piše upozorenje u log.
+ *
+ * NAPOMENA: `tax_rates` NIJE ovde — presudom Nenada 26.07.2026 registar PDV
+ * tarifa je 4.0-owned, pa je `R_Tarife` IZBAČEN iz `sync-map.generated.ts`
+ * (nijedan prolaz ga više ne poznaje). Isključenje ovde bi bilo polumera.
  */
 export const FROZEN_MSSQL_EXCLUDED = new Set<string>([
   "customers",
   "projects",
+  "items",
   "access_rights",
   "goods_documents_mirror",
   "journal",
@@ -155,13 +147,17 @@ export const FROZEN_MSSQL_EXCLUDED = new Set<string>([
 ]);
 
 /**
- * JEDAN skup za default ručnog `POST /sync/run` I noćni MSSQL posao: unija
- * privremenih isključenja (items) i zamrznutih tokova. Kontroler i
- * `BigbitSyncJobs.nightlyEntities` filtriraju ISKLJUČIVO kroz ovo — da se dve
- * liste nikad ne raziđu.
+ * JEDAN skup za default ručnog `POST /sync/run` I za noćni MSSQL posao
+ * (`BigbitSyncJobs.nightlyEntities`) — oba filtriraju ISKLJUČIVO kroz ovo, da se
+ * dve liste nikad ne raziđu (od 04.08.2026, 061/26: dugme „Pokreni sync" više
+ * nije admin-only, pa ručni default MORA biti jednako bezbedan kao noćni).
+ *
+ * Danas je jednak `FROZEN_MSSQL_EXCLUDED` — svi razlozi isključenja su ista
+ * stvar (mrtav MSSQL izvor). Zaseban naziv postoji da isključenje IZ DRUGOG
+ * razloga (npr. tok koji izvor uredno puni, ali ga 4.0 preuzima) ima gde da
+ * sedne bez diranja poziva.
  */
 export const DEFAULT_SYNC_EXCLUDED = new Set<string>([
-  ...NIGHTLY_SYNC_EXCLUDED,
   ...FROZEN_MSSQL_EXCLUDED,
 ]);
 

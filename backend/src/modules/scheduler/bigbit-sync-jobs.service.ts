@@ -1,16 +1,18 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { SyncService } from "../sync/sync.service";
-import {
-  DEFAULT_SYNC_EXCLUDED,
-  NIGHTLY_SYNC_EXCLUDED,
-} from "../sync/table-ownership";
+import { DEFAULT_SYNC_EXCLUDED } from "../sync/table-ownership";
 import type { ScheduledJob } from "./scheduler.types";
 
 // Re-export radi kompatibilnosti postojećih uvoza (spec + docs referišu ovaj
-// fajl). DEFINICIJA je preseljena u ../sync/table-ownership.ts (04.08.2026,
-// dopuna 061/26): isti skup sada štiti i default ručnog `POST /sync/run`, pa
-// mora živeti u sync modulu — jedan izvor, bez kopije logike.
-export { NIGHTLY_SYNC_EXCLUDED };
+// fajl). DEFINICIJA je u ../sync/table-ownership.ts (04.08.2026, dopuna 061/26):
+// isti skup štiti i default ručnog `POST /sync/run`, pa mora živeti u sync
+// modulu — jedan izvor, bez kopije logike.
+//
+// Raniji naziv `NIGHTLY_SYNC_EXCLUDED` (sadržaj: samo `items`) je UKINUT pri
+// reopenu 061/26: pošto je i `items` prešao u zamrznute tokove, taj skup bi
+// ostao PRAZAN — a prazan skup se čita kao „ništa nije isključeno" i tiho
+// obesmišljava svaku proveru koja ga još koristi.
+export { DEFAULT_SYNC_EXCLUDED };
 
 /*
  * PRUGA P (docs/PLAN_AI_OS_2026-07.md §5; presuda Nenada 26.07.2026: „BigBit
@@ -36,10 +38,10 @@ export { NIGHTLY_SYNC_EXCLUDED };
  * postoji `DEFAULT_SYNC_EXCLUDED` (u `table-ownership.ts`) i zato posao NIKAD
  * ne šalje `force` (koji bi probio zaštitu ServoSync-owned tabela).
  *
- * REOPEN 061/26 (04.08.2026): `projects` i `customers` su IZBAČENI iz ovog
- * posla — od 30.07 ih vozi noćni .mdb uvoz (03:45), a MSSQL kopija je zamrznuta
- * na 22.07, pa bi ovaj prolaz (03:30) svako jutro vraćao predmete na staro
- * 15 minuta pre svežeg uvoza. Paritet-guard predmeta (`ADDITIVE_REFRESH_TABLES`
+ * REOPEN 061/26 (04.08.2026): `items`, `projects` i `customers` su IZBAČENI iz
+ * ovog posla — od 30.07 ih vozi noćni .mdb uvoz (03:45), a MSSQL kopija je
+ * zamrznuta na 22.07, pa bi ovaj prolaz (03:30) svako jutro vraćao podatke na
+ * staro 15 minuta pre svežeg uvoza. Paritet-guard predmeta (`ADDITIVE_REFRESH_TABLES`
  * + `ADDITIVE_DEDUP_FIELDS.projects`) i dalje važi za admin-eksplicitni MSSQL
  * prolaz i pinovan je testom u `bigbit-sync-jobs.service.spec.ts`.
  */
@@ -47,9 +49,9 @@ export { NIGHTLY_SYNC_EXCLUDED };
 /** Ključ posla u `scheduled_job_runs.job_key` — ne menjati posle uvođenja. */
 export const BIGBIT_NIGHTLY_SYNC_JOB_KEY = "bigbit-nightly-sync";
 
-// (Skup isključenih tokova — `NIGHTLY_SYNC_EXCLUDED` — definisan je u
-// ../sync/table-ownership.ts; puno obrazloženje ZAŠTO je `items` isključen
-// stoji tamo, uz sam skup.)
+// (Skup isključenih tokova — `DEFAULT_SYNC_EXCLUDED` — definisan je u
+// ../sync/table-ownership.ts; puno obrazloženje ZAŠTO je svaki tok isključen,
+// i pod kojim uslovom sme nazad, stoji tamo uz sam skup.)
 
 /**
  * Gornja granica čekanja na jedan noćni prolaz. Tik scheduler-a je SEKVENCIJALAN
@@ -90,12 +92,11 @@ export class BigbitSyncJobs {
 
   /**
    * Svi registrovani entiteti MINUS isključeni tokovi. Od reopena 061/26
-   * (04.08.2026) filter je `DEFAULT_SYNC_EXCLUDED` — pored `items` ispadaju i
-   * zamrznuti MSSQL tokovi: `projects`/`customers` od 30.07 vozi noćni .mdb
-   * uvoz (03:45), pa bi ovaj posao (03:30, frozen kopija od 22.07) svako jutro
-   * pregazio svežije podatke 15 minuta pre nego što stignu; šest praznih
-   * izvora bi svake noći bacalo garantovanu grešku (obrazloženje uz skup u
-   * table-ownership.ts).
+   * (04.08.2026) filter je `DEFAULT_SYNC_EXCLUDED`: `items`/`projects`/
+   * `customers` od 30.07 vozi noćni .mdb uvoz (03:45), pa bi ovaj posao (03:30,
+   * frozen kopija od 22.07) svako jutro pregazio svežije podatke 15 minuta pre
+   * nego što stignu; šest praznih izvora bi svake noći bacalo garantovanu
+   * grešku (obrazloženje uz skup u table-ownership.ts).
    */
   nightlyEntities(): string[] {
     return this.sync.availableEntities.filter(

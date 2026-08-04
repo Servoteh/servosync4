@@ -43,8 +43,18 @@ describe("Sync permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     getLogs: jest.fn().mockResolvedValue([]),
     getLog: jest.fn().mockResolvedValue({ id: 1 }),
     health: jest.fn().mockResolvedValue({ source: "up" }),
-    // Kontroler čita listu da bi default isključio NIGHTLY_SYNC_EXCLUDED (items).
-    availableEntities: ["customers", "projects", "items"],
+    // Kontroler čita listu da bi default isključio DEFAULT_SYNC_EXCLUDED.
+    // Reopen 061/26 (04.08.2026): isključeni su svi tokovi sa zamrznutim MSSQL
+    // izvorom (items/customers/projects + 6 praznih), pa fixture mora nositi i
+    // bar jedan tok koji OSTAJE u prolazu — inače default ispadne prazan i test
+    // ne bi razlikovao „ispravno filtrirano" od „ništa nije registrovano".
+    availableEntities: [
+      "customers",
+      "projects",
+      "items",
+      "document_types",
+      "salespeople",
+    ],
   };
 
   beforeAll(async () => {
@@ -195,7 +205,7 @@ describe("Sync permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     });
   });
 
-  describe("Zaštita artikala + force (061/26 dopuna — tehnička zaštita uz širenje)", () => {
+  describe("Zaštita zamrznutih tokova + force (061/26 dopuna + reopen 04.08)", () => {
     beforeEach(() => svcMock.run.mockClear());
 
     const postRunBody = (role: string, body: object) =>
@@ -204,19 +214,20 @@ describe("Sync permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         .set("x-test-role", role)
         .send(body);
 
-    it("DEFAULT run (prazan body) NE dira items — ni za tehnologa", async () => {
+    it("DEFAULT run (prazan body) NE dira isključene tokove — ni za tehnologa", async () => {
       const res = await postRun("tehnolog");
       expect([200, 201]).toContain(res.status);
       expect(svcMock.run).toHaveBeenCalledTimes(1);
       const opts = svcMock.run.mock.calls[0][0];
-      expect(opts.entities).toEqual(["customers", "projects"]);
+      // items/customers/projects imaju zamrznut MSSQL izvor (reopen 061/26).
+      expect(opts.entities).toEqual(["document_types", "salespeople"]);
     });
 
-    it("DEFAULT run NE dira items ni za ADMINA (nenadgledan items prolaz ne postoji)", async () => {
+    it("DEFAULT run NE dira isključene ni za ADMINA (nenadgledan prolaz ne postoji)", async () => {
       const res = await postRun("admin");
       expect([200, 201]).toContain(res.status);
       const opts = svcMock.run.mock.calls[0][0];
-      expect(opts.entities).toEqual(["customers", "projects"]);
+      expect(opts.entities).toEqual(["document_types", "salespeople"]);
     });
 
     it("eksplicitni items → 2xx SAMO za admina (nadgledano pokretanje)", async () => {
@@ -230,18 +241,23 @@ describe("Sync permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       "eksplicitni items → 403 za %s (nosi sync.run, ali items je admin-only)",
       async (role) => {
         const res = await postRunBody(role, { entities: ["items"] }).expect(403);
+        // Poruka mora reći i ZAŠTO (mrtav izvor), ne samo „nemaš pravo".
         expect(String(res.body.message)).toContain(
           "može ih pokrenuti samo administrator",
         );
+        expect(String(res.body.message)).toContain("zamrznut");
         expect(svcMock.run).not.toHaveBeenCalled();
       },
     );
 
     it("eksplicitni skup BEZ isključenih entiteta prolazi i ne-adminu", async () => {
-      const res = await postRunBody("tehnolog", { entities: ["customers"] });
+      // `salespeople` (R_Komercijalisti) je van DEFAULT_SYNC_EXCLUDED — izvor mu
+      // nije zamrznut. (Do reopena 061/26 je ovde stajao `customers`, koji je
+      // u međuvremenu i sam postao isključen.)
+      const res = await postRunBody("tehnolog", { entities: ["salespeople"] });
       expect([200, 201]).toContain(res.status);
       const opts = svcMock.run.mock.calls[0][0];
-      expect(opts.entities).toEqual(["customers"]);
+      expect(opts.entities).toEqual(["salespeople"]);
     });
 
     it("force → 403 za ne-admina (probija zaštitu owned tabela)", async () => {

@@ -13,7 +13,6 @@ import {
   NATIVE_ID_MAX,
   NATIVE_ID_RANGE_TABLES,
   nativeRowsSurviveSync,
-  NIGHTLY_SYNC_EXCLUDED,
   OWNED_PRODUCTION_TABLES,
 } from "./table-ownership";
 import { SYNC_MAP } from "./sync-map.generated";
@@ -154,11 +153,12 @@ describe("table-ownership — zaštita ne otvara unos", () => {
  * preživi preimenovanje entiteta.
  */
 describe("table-ownership — zamrznuti MSSQL tokovi (reopen 061/26)", () => {
-  it("skup je tačno: masters koje vozi .mdb kanal + šest praznih izvora", () => {
+  it("skup je tačno: tri mastera koje vozi .mdb kanal + šest praznih izvora", () => {
     expect([...FROZEN_MSSQL_EXCLUDED].sort()).toEqual([
       "access_rights",
       "customers",
       "goods_documents_mirror",
+      "items",
       "journal",
       "notifications",
       "price_list_entries",
@@ -167,13 +167,27 @@ describe("table-ownership — zamrznuti MSSQL tokovi (reopen 061/26)", () => {
     ]);
   });
 
-  it("default prolaz = unija (items + zamrznuti) — jedan izvor za ručni i noćni put", () => {
-    expect([...DEFAULT_SYNC_EXCLUDED].sort()).toEqual(
-      [...NIGHTLY_SYNC_EXCLUDED, ...FROZEN_MSSQL_EXCLUDED].sort(),
-    );
+  /*
+   * `items` je ovde, a NE u nekom „privremeno, do čišćenja kataloga" skupu.
+   * Razlog je merenje 04.08.2026: `items` vozi noćni .mdb kanal (uvoz 03.08:
+   * +17 novih / ~7 izmenjenih), a MSSQL izvor mu je zamrznut kao i ostalima —
+   * uz to je FULL REFRESH nad 92.592 artikla. Staro uputstvo („kad nestanu
+   * duplikati, vrati tok u default") bi posle čišćenja ponovo naoružalo isti
+   * kvar, 12× većeg obima. Uslov za povratak je OŽIVLJEN IZVOR, ne čist katalog.
+   */
+  it("`items` je isključen zbog MRTVOG IZVORA (ne zbog duplikata katbroja)", () => {
+    expect(FROZEN_MSSQL_EXCLUDED.has("items")).toBe(true);
     expect(DEFAULT_SYNC_EXCLUDED.has("items")).toBe(true);
+  });
+
+  it("default prolaz = zamrznuti tokovi — jedan izvor za ručni i noćni put", () => {
+    expect([...DEFAULT_SYNC_EXCLUDED].sort()).toEqual(
+      [...FROZEN_MSSQL_EXCLUDED].sort(),
+    );
     expect(DEFAULT_SYNC_EXCLUDED.has("projects")).toBe(true);
-    // `document_types` i dalje ide u default prolaz (nije ni zamrznut ni items).
+    // Prazan skup = „ništa nije isključeno" → ceo kvar se tiho vraća.
+    expect(DEFAULT_SYNC_EXCLUDED.size).toBeGreaterThan(0);
+    // `document_types` i dalje ide u default prolaz (izvor mu nije zamrznut).
     expect(DEFAULT_SYNC_EXCLUDED.has("document_types")).toBe(false);
   });
 

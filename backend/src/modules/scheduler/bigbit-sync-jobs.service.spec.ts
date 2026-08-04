@@ -4,7 +4,7 @@ import { Sy15CronJobs } from "./sy15-cron-jobs";
 import {
   BigbitSyncJobs,
   BIGBIT_NIGHTLY_SYNC_JOB_KEY,
-  NIGHTLY_SYNC_EXCLUDED,
+  DEFAULT_SYNC_EXCLUDED,
 } from "./bigbit-sync-jobs.service";
 import type { SyncService } from "../sync/sync.service";
 import { GenericSyncer } from "../sync/generic.syncer";
@@ -115,23 +115,26 @@ describe("BigbitSyncJobs — prekidač i registracija", () => {
     expect(keys).not.toContain(BIGBIT_NIGHTLY_SYNC_JOB_KEY);
   });
 
-  it("isključeni tokovi ne ulaze u noćni prolaz (items + zamrznuti MSSQL tokovi)", () => {
+  it("isključeni tokovi ne ulaze u noćni prolaz (zamrznuti MSSQL izvor)", () => {
     const { svc } = syncMock();
     const entities = new BigbitSyncJobs(svc).nightlyEntities();
-    // Reopen 061/26 (04.08.2026): `customers`/`projects` od 30.07 vozi noćni
-    // .mdb uvoz (03:45); MSSQL kopija je zamrznuta na 22.07, pa bi ih ovaj
+    // Reopen 061/26 (04.08.2026): `items`/`customers`/`projects` od 30.07 vozi
+    // noćni .mdb uvoz (03:45); MSSQL kopija je zamrznuta na 22.07, pa bi ih ovaj
     // posao (03:30) svako jutro vraćao na staro. Zato NE ulaze u prolaz.
     expect(entities).not.toContain("customers");
     expect(entities).not.toContain("projects");
-    expect(entities).toContain("document_types");
     expect(entities).not.toContain("items");
-    expect([...NIGHTLY_SYNC_EXCLUDED]).toEqual(["items"]);
+    expect(entities).toContain("document_types");
+    // Skup NIJE prazan — prazan bi značio „ništa nije isključeno" i tiho vratio
+    // ceo kvar (zato je stari `NIGHTLY_SYNC_EXCLUDED`, koji bi ostao prazan,
+    // ukinut umesto ispražnjen).
+    expect(DEFAULT_SYNC_EXCLUDED.size).toBeGreaterThan(0);
   });
 
   // Tarife se NE rešavaju isključenjem iz noćnog posla (to bi ostavilo ručni
   // „sync all" da ih briše) — mapiranje je uklonjeno, pa ih SyncService i ne zna.
   it("tax_rates nisu ni isključenje ni tok — mapiranja više nema", () => {
-    expect(NIGHTLY_SYNC_EXCLUDED.has("tax_rates")).toBe(false);
+    expect(DEFAULT_SYNC_EXCLUDED.has("tax_rates")).toBe(false);
     expect(SYNC_MAP.some((m) => m.targetDb === "tax_rates")).toBe(false);
   });
 });

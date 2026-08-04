@@ -32,8 +32,19 @@ import { ConflictException } from "@nestjs/common";
  * predmet — Igor Voštić je 04.08. tačno tako i naleteo (pritisnuo sync, dobio
  * grešku, podatak nije stigao). Jedini kanal koji prati BigBit je NOĆNI .mdb
  * uvoz (`BigbitMdbImportService`, uvoz oko 03:45 — od 30.07. uvozi i komitente
- * i predmete; izvoz iz BigBita je prethodni dan u 17:30). Zato poruke sada kažu
+ * i predmete; izvoz iz BigBita je prethodnog dana). Zato poruke sada kažu
  * istinu: podatak stiže automatski PREKO NOĆI, vidljiv je sutra ujutru.
+ *
+ * DVA ODSEČKA KOJA MORAJU DA STOJE (druga runda pregleda, isti dan):
+ *  1. ROK JE IZVOZ, NE PONOĆ. Uvoz u 03:45 obrađuje fajl koji je BigBit izvezao
+ *     PRETHODNOG dana — mereni mtime drop-ova: 04.08. 16:04, 03.08. 16:09,
+ *     01.08. 19:28. Unos posle izvoza čeka SLEDEĆI izvoz, dakle vidi se
+ *     prekosutra. Poruka koja obeća „sutra ujutru" bez tog odsečka pravi isto
+ *     pogrešno očekivanje zbog kog je 061/26 i reopen-ovan.
+ *  2. ADMIN NEMA BRŽI PUT. Ranija verzija je nudila „obratite se
+ *     administratoru" — a admin ništa ne može: MSSQL prolaz je zamrznut od
+ *     22.07, a `run-now` nad .mdb poslom samo ponovo uvozi SINOĆNJI drop.
+ *     Obećanje pomoći koje ne postoji je gore od „sačekaj do sutra".
  *
  * Ako se kanal ikad ubrza (npr. češći izvoz), OVDE se menja jedna rečenica i
  * nigde više — ovo je jedini izvor teksta i za backend i za ekrane
@@ -44,14 +55,16 @@ import { ConflictException } from "@nestjs/common";
 /** Šta korisnik radi kad mu treba NOV komitent. */
 export const BIGBIT_CUSTOMERS_READ_ONLY_MESSAGE =
   "Komitente vodi BigBit — u ServoSync-u se ne unose ni ne menjaju (odluka 26.07.2026). " +
-  "Novog komitenta unesite u BigBit — ovde stiže automatski noćnim uvozom i vidljiv je " +
-  "sutra ujutru; ako ne može da čeka, obratite se administratoru.";
+  "Novog komitenta unesite u BigBit — ovde stiže automatski noćnim uvozom: uneto do " +
+  "17:30 vidi se sutra ujutru, kasnije prekosutra. Bržeg puta nema (izvoz iz BigBita ide " +
+  "jednom dnevno) — ako je hitno, javite u BigBit-u da izvezu ranije.";
 
 /** Šta korisnik radi kad mu treba NOV predmet (broj predmeta). */
 export const BIGBIT_PROJECTS_READ_ONLY_MESSAGE =
   "Predmete i brojeve predmeta vodi BigBit — u ServoSync-u se ne otvaraju ni ne menjaju " +
-  "(odluka 26.07.2026). Otvorite predmet u BigBit-u — ovde stiže automatski noćnim uvozom " +
-  "i vidljiv je sutra ujutru; ako ne može da čeka, obratite se administratoru.";
+  "(odluka 26.07.2026). Otvorite predmet u BigBit-u — ovde stiže automatski noćnim " +
+  "uvozom: otvoreno do 17:30 vidi se sutra ujutru, kasnije prekosutra. Bržeg puta nema " +
+  "(izvoz iz BigBita ide jednom dnevno).";
 
 /**
  * Poslovna greška: pokušaj upisa u tabelu čiji je vlasnik BigBit.

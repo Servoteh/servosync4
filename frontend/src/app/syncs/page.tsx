@@ -104,24 +104,29 @@ export default function SyncsPage() {
       <div className="flex-1 space-y-4 overflow-auto p-6">
         {/*
           061/26 + reopen (04.08.2026): dugme šalje prazan body → backend
-          PODRAZUMEVANO preskače DEFAULT_SYNC_EXCLUDED (items — čišćenje
-          kataloga; predmeti/komitenti — vozi ih noćni .mdb uvoz; šest tokova
-          sa praznim QBigTehn izvorom). Napomena stoji stalno i kaže i ŠTA dugme
-          NE donosi — Igorova prijava 04.08. je bila tačno pogrešno očekivanje
-          („sync će doneti novi RN/predmet iz BigBita").
+          PODRAZUMEVANO preskače DEFAULT_SYNC_EXCLUDED (artikli/predmeti/
+          komitenti — vozi ih noćni .mdb uvoz; šest tokova sa praznim QBigTehn
+          izvorom). Napomena stoji stalno i kaže i ŠTA dugme NE donosi —
+          Igorova prijava 04.08. je bila tačno pogrešno očekivanje („sync će
+          doneti novi RN/predmet iz BigBita"). Rok „do 17:30" nije ukras: uvoz u
+          03:45 obrađuje SINOĆNJI izvoz, pa se kasniji unos vidi tek prekosutra.
         */}
         <div className="space-y-1 rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
           <p>
             <span className="font-medium text-ink">Šta dugme radi:</span> osvežava QBigTehn
             šifarnike (konfiguracija, registri, MRP…).{' '}
-            <span className="font-medium text-ink">Artikli su privremeno preskočeni</span> dok
-            traje čišćenje kataloga — njih posebno (i nadgledano) pokreće administrator.
+            <span className="font-medium text-ink">
+              Artikli, predmeti i komitenti su preskočeni
+            </span>{' '}
+            — njihov QBigTehn izvor je zamrznut od 22.07.2026, pa ih vozi noćni uvoz (vidi
+            ispod).
           </p>
           <p>
             <span className="font-medium text-ink">Šta NE stiže ovim dugmetom:</span> novi
             predmeti, komitenti i artikli iz BigBit-a stižu automatski{' '}
-            <span className="font-medium text-ink">noćnim uvozom</span> (oko 03:45) — ono što se
-            danas unese u BigBit vidljivo je sutra ujutru. Radni nalozi (RN) se ne sinhronizuju
+            <span className="font-medium text-ink">noćnim uvozom</span> (oko 03:45) — uneto u
+            BigBit do 17:30 vidljivo je sutra ujutru, kasnije prekosutra (izvoz iz BigBita ide
+            jednom dnevno i ne može se ubrzati odavde). Radni nalozi (RN) se ne sinhronizuju
             uopšte: otvaraju se direktno u aplikaciji i odmah su vidljivi u Praćenju i Planu
             proizvodnje.
           </p>

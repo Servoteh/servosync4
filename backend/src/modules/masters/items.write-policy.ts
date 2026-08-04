@@ -45,9 +45,12 @@ import { nativeRowsSurviveSync } from "../sync/table-ownership";
  *   1. ODLUKA VLASNIKA — artikli se do daljeg vode u BigBit-u (isti režim koji
  *      za komitente drži odluka od 26.07.2026).
  *   2. DUPLIKATI KATALOŠKIH BROJEVA u BigBit-u (1.980 grupa / 4.298 artikala,
- *      mereno 25.07). Zbog njih je `items` i u `NIGHTLY_SYNC_EXCLUDED`
- *      (`scheduler/bigbit-sync-jobs.service.ts`) — to isključenje NIJE zaštita
- *      od brisanja (ručni sync i dalje radi), nego zaštita od pada uvoza.
+ *      mereno 25.07) — zaštita od pada uvoza, nezavisan uslov.
+ *      ⚠️ NE MEŠATI sa isključenjem iz sync prolaza: od reopena 061/26
+ *      (04.08.2026) `items` je u `DEFAULT_SYNC_EXCLUDED`
+ *      (`sync/table-ownership.ts`) zato što mu je MSSQL IZVOR ZAMRZNUT od
+ *      22.07, a ne zbog duplikata — i to isključenje sada pokriva i ručni i
+ *      noćni prolaz. Čišćenje duplikata NE otključava povratak u sync.
  *   3. Prateće tabele forme „Unos artikala" koje šema još nema — v.
  *      `ITEM_FIELDS_REQUIRING_MIGRATION` na dnu fajla.
  */
@@ -87,7 +90,8 @@ export const ITEMS_WRITE_OPEN: boolean = false;
 export const ITEM_WRITE_BLOCKED_MESSAGE =
   "Artikli se za sada unose i menjaju isključivo u BigBit-u — unos iz ovog ekrana " +
   "još nije pušten u rad. Unesite artikal u BigBit-u — ovde stiže automatski noćnim " +
-  "uvozom i vidljiv je sutra ujutru; ako ne može da čeka, obratite se administratoru.";
+  "uvozom: uneto do 17:30 vidi se sutra ujutru, kasnije prekosutra. Bržeg puta nema " +
+  "(izvoz iz BigBita ide jednom dnevno).";
 
 /**
  * Poruka za slučaj da sync zaštita NESTANE (`items` izbačen iz rezervisanog
@@ -97,13 +101,14 @@ export const ITEM_WRITE_BLOCKED_MESSAGE =
 export const ITEM_WRITE_UNSAFE_MESSAGE =
   "Artikli se trenutno ne mogu unositi iz ovog ekrana: sinhronizacija artikala briše " +
   "i ponovo unosi celu tabelu, pa bi artikal unet ovde nestao pri prvom uvozu — zajedno " +
-  "sa vezama na cenovnik i radne naloge. Unesite artikal u BigBit-u — ovde stiže " +
-  "automatski noćnim uvozom i vidljiv je sutra ujutru.";
+  "sa vezama na cenovnik i radne naloge. Unesite artikal u BigBit-u — ovde stiže noćnim " +
+  "uvozom: uneto do 17:30 vidi se sutra ujutru, kasnije prekosutra.";
 
 export const ITEM_BIGBIT_ORIGIN_MESSAGE =
   "Ovaj artikal je došao iz BigBit-a i ovde se ne menja — svaka izmena bi nestala pri " +
   "sledećem uvozu, jer BigBit ponovo upisuje sva njegova polja. Ispravite artikal u " +
-  "BigBit-u — izmena ovde stiže automatski noćnim uvozom i vidljiva je sutra ujutru.";
+  "BigBit-u — izmena ovde stiže noćnim uvozom: uneto do 17:30 vidi se sutra ujutru, " +
+  "kasnije prekosutra.";
 
 /**
  * Poslovna greška upisa u tabelu čiji je vlasnik BigBit. 409 (ne 403) — nije stvar
