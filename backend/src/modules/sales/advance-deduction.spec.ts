@@ -327,7 +327,13 @@ function fakePrisma(db: Db) {
         }),
       ),
     },
-    sefOutbox: { create: jest.fn(() => Promise.resolve({ id: 5000 })) },
+    sefOutbox: {
+      // `enqueue` od 04.08.2026. prvo pita ima li ŽIV outbox red za tu fakturu
+      // (parnjak parcijalnog unique-a `uq_sef_outbox_live` — jedan živ red po fakturi).
+      // `null` = nema živog reda; ovaj spec meri iznos avansa, ne branu duplog reda.
+      findFirst: jest.fn(() => Promise.resolve(null)),
+      create: jest.fn(() => Promise.resolve({ id: 5000 })),
+    },
     sefStatusLog: { create: jest.fn(() => Promise.resolve({ id: 1 })) },
     // Brava PDV perioda: prazna lista = nijedan obračun nije proknjižen.
     vatReturn: { findMany: jest.fn(() => Promise.resolve([])) },

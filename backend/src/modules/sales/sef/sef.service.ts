@@ -95,6 +95,33 @@ const CANCELLABLE_LOCAL_STATUSES = new Set([
   SEF_OUTBOX_CANCEL_PENDING,
 ]);
 
+/**
+ * Statusi outbox reda koji ZAUZIMAJU fakturu — dok bilo koji od njih stoji, nov red za istu
+ * fakturu se ne sme napraviti (nalaz revizije 04.08.2026).
+ *
+ * ZAŠTO POSTOJI: `enqueue` je pravio nov red bez ijedne provere postojećeg. Deklarisana
+ * „idempotencija po `requestId`" po konstrukciji ne može da radi — `requestId` je
+ * `randomUUID()` PO REDU, ne po dokumentu, pa dva klika daju dva različita UUID-a i dva
+ * PENDING reda, oba prohodna kroz `send()`. Ista faktura tako ode Poreskoj upravi DVAPUT, a
+ * ispravka duplikata na SEF-u je vanjska procedura sa kupcem i PU — jedina posledica iz te
+ * revizije koja se NE MOŽE poništiti unutar sistema.
+ *
+ * `CANCELLED` i `REJECTED` NISU tu namerno: posle njih je ponovno slanje normalan tok
+ * (odbijen dokument se ispravi i pošalje). `CANCEL_PENDING` JESTE — to je „storniran kod nas,
+ * SEF nije potvrdio otkazivanje", pa bi nov red kupcu poslao drugu e-fakturu za dokument koji
+ * je kod nas storniran.
+ *
+ * Isti spisak nosi i parcijalni unique `uq_sef_outbox_live` (migracija 20260804140000) — kod
+ * odbija rano i sa čitljivom porukom, a baza zaustavlja dva paralelna klika koji oba prođu
+ * proveru pre nego što ijedan upiše red.
+ */
+const OCCUPYING_OUTBOX_STATUSES = [
+  "PENDING",
+  "SENT",
+  "DELIVERED",
+  SEF_OUTBOX_CANCEL_PENDING,
+];
+
 /** SEF limit priloga (25 MB) — veći PDF se preskače (prilog nije obavezan). */
 const MAX_PDF_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -140,9 +167,42 @@ export class SefService {
       );
     }
 
+    // STORNIRANA FAKTURA NE ULAZI U RED (nalaz revizije 04.08.2026). `send()` je ovu proveru
+    // imao („defense in depth", v. dole), ali `enqueue` nije — pa se za storniran dokument
+    // mogao napraviti red koji onda čeka u PENDING-u i pravi zabunu na ekranu. Kapija je
+    // jeftinija na ulazu u red nego na izlazu iz njega.
+    if (invoice.status === "CANCELLED") {
+      throw new ConflictException(
+        `Faktura ${invoice.documentNumber ?? invoiceId} je stornirana — ne stavlja se u SEF red.`,
+      );
+    }
+
+
     // VRSTA DOKUMENTA — kapija (nalaz N1). Do 03.08.2026. je ovde nije bilo, pa je
     // kapija propuštala SVE što je level 0 i POSTED. v. `assertDocumentTypeMayGoToSef`.
     await this.assertDocumentTypeMayGoToSef(invoice);
+
+    // JEDAN ŽIV RED PO FAKTURI — v. `OCCUPYING_OUTBOX_STATUSES` za obrazloženje spiska.
+    // Namerno POSLE policy-kapija (izvoz, level/draft, storno, vrsta dokumenta): one su
+    // čiste provere nad već pročitanom fakturom, a ovo je dodatni upit. Dokument koji ionako
+    // ne sme na SEF ne treba da plati taj upit — a i poruka koju korisnik dobije treba da
+    // imenuje pravi razlog odbijanja („REVERS ne ide na SEF"), ne posledični.
+    const occupying = await this.prisma.sefOutbox.findFirst({
+      where: {
+        invoiceId: invoice.id,
+        status: { in: OCCUPYING_OUTBOX_STATUSES },
+      },
+      select: { id: true, status: true },
+      orderBy: { id: "desc" },
+    });
+    if (occupying) {
+      throw new ConflictException(
+        `Faktura ${invoice.documentNumber ?? invoiceId} je već u SEF redu ` +
+          `(red ${occupying.id}, status ${occupying.status}). Ponovni red bi poslao DRUGU ` +
+          `e-fakturu za isti dokument. Ako je prethodni pokušaj odbijen ili otkazan, ` +
+          `red se prvo mora prevesti u REJECTED/CANCELLED.`,
+      );
+    }
 
     // Firma-izdavalac + kupac za UBL strane.
     const company = await this.prisma.company.findUnique({
@@ -353,15 +413,33 @@ export class SefService {
       pdfFileName,
     });
 
-    const outbox = await this.prisma.sefOutbox.create({
-      data: {
-        invoiceId: invoice.id,
-        requestId: randomUUID(),
-        ublXml,
-        pdfAttachmentBase64: pdfBase64,
-        status: "PENDING",
-      },
-    });
+    // Trka dva klika: provera `occupying` gore je mogla proći u OBA poziva pre nego što ijedan
+    // upiše red. Bravu tada drži samo baza — parcijalni unique `uq_sef_outbox_live`
+    // (migracija 20260804140000). P2002 se ovde prevodi u ISTU 409 poruku, da korisnik ne
+    // razlikuje „stigao si drugi" od „već je u redu" — za njega je ishod isti.
+    let outbox: SefOutbox;
+    try {
+      outbox = await this.prisma.sefOutbox.create({
+        data: {
+          invoiceId: invoice.id,
+          requestId: randomUUID(),
+          ublXml,
+          pdfAttachmentBase64: pdfBase64,
+          status: "PENDING",
+        },
+      });
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2002"
+      ) {
+        throw new ConflictException(
+          `Faktura ${invoice.documentNumber ?? invoiceId} je u istom trenutku stavljena u SEF ` +
+            `red drugim zahtevom — nije napravljen drugi red.`,
+        );
+      }
+      throw e;
+    }
 
     // T3/A8: SEF status-istorija — PENDING (u red).
     await this.logStatus({

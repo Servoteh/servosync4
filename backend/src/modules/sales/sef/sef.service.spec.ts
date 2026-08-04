@@ -1,4 +1,4 @@
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, ConflictException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { SefService } from "./sef.service";
 
@@ -121,6 +121,10 @@ function makeService(opts: {
       findMany: jest.fn().mockResolvedValue(opts.applications ?? []),
     },
     sefOutbox: {
+      // `enqueue` od 04.08.2026. prvo pita ima li ŽIV outbox red za tu fakturu
+      // (parnjak parcijalnog unique-a `uq_sef_outbox_live`). `null` = nema živog reda,
+      // tj. zatečeno stanje svih ovih testova; test koji meri BAŠ tu branu ga postavlja sam.
+      findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 900, status: "PENDING" }),
     },
     sefStatusLog: { create: jest.fn().mockResolvedValue({ id: 1 }) },
@@ -201,6 +205,101 @@ describe("SefService.enqueue — PrepaidAmount i BillingReference idu zajedno", 
 });
 
 /**
+ * SEF RED — JEDAN ŽIV RED PO FAKTURI (nalaz revizije 04.08.2026).
+ * =============================================================================
+ * `enqueue` je pravio nov `sef_outbox` red bez ijedne provere postojećeg. Deklarisana
+ * „idempotencija po `requestId`" po konstrukciji ne može da radi — `requestId` je
+ * `randomUUID()` PO REDU, ne po dokumentu, pa dva klika daju dva PENDING reda, oba
+ * prohodna kroz `send()`. Ista faktura ode Poreskoj upravi DVAPUT, a ispravka duplikata
+ * na SEF-u je vanjska procedura sa kupcem i PU — posledica se NE MOŽE poništiti unutar
+ * sistema.
+ *
+ * Brana je dvoslojna: `enqueue` odbija rano i sa čitljivom porukom, a parcijalni unique
+ * `uq_sef_outbox_live` (migracija 20260804140000) zaustavlja dva paralelna klika koji oba
+ * prođu proveru pre nego što ijedan upiše red. Testovi mere OBA sloja.
+ */
+describe("SefService.enqueue — jedan živ red po fakturi", () => {
+  /** Živi statusi blokiraju; CANCELLED i REJECTED su namerno izuzeti (ponovno slanje je normalan tok). */
+  it.each(["PENDING", "SENT", "DELIVERED", "CANCEL_PENDING"])(
+    "postojeći red u statusu %s blokira nov red (409, UBL se ne gradi)",
+    async (status) => {
+      const { service, prisma, ubl } = makeService({});
+      prisma.sefOutbox.findFirst.mockResolvedValue({ id: 41, status });
+
+      await expect(service.enqueue(7, 1)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      await expect(service.enqueue(7, 1)).rejects.toThrow(/već u SEF redu/);
+
+      expect(prisma.sefOutbox.create).not.toHaveBeenCalled();
+      expect(ubl.build).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["CANCELLED", "REJECTED"])(
+    "posle %s je nov red DOZVOLJEN (ispravka i ponovno slanje su normalan tok)",
+    async (status) => {
+      const { service, prisma } = makeService({});
+      // Upit gleda samo ŽIVE statuse, pa za CANCELLED/REJECTED ne vraća ništa —
+      // dubler to verno predstavlja `null`-om, a test tvrdi da red NASTAJE.
+      prisma.sefOutbox.findFirst.mockResolvedValue(null);
+      void status;
+
+      await service.enqueue(7, 1);
+      expect(prisma.sefOutbox.create).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("upit za živi red gleda TAČNO propisane statuse (ne 'sve osim CANCELLED')", async () => {
+    const { service, prisma } = makeService({});
+    await service.enqueue(7, 1);
+
+    const where = (
+      prisma.sefOutbox.findFirst.mock.calls as unknown[][]
+    )[0][0] as { where: { invoiceId: number; status: { in: string[] } } };
+    expect(where.where.invoiceId).toBe(7);
+    // Ako se spisak ikad promeni, ovo pada — a promena spiska MORA ići uz migraciju
+    // `uq_sef_outbox_live`, inače kod i baza počnu da tvrde različito.
+    expect([...where.where.status.in].sort()).toEqual([
+      "CANCEL_PENDING",
+      "DELIVERED",
+      "PENDING",
+      "SENT",
+    ]);
+  });
+
+  it("trka dva klika: P2002 iz baze postaje 409, ne 500", async () => {
+    const { service, prisma } = makeService({});
+    prisma.sefOutbox.findFirst.mockResolvedValue(null); // oba poziva prošla proveru
+    prisma.sefOutbox.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("unique", {
+        code: "P2002",
+        clientVersion: "6.19.3",
+      }),
+    );
+
+    await expect(service.enqueue(7, 1)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    await expect(service.enqueue(7, 1)).rejects.toThrow(/u istom trenutku/);
+  });
+
+  it("stornirana faktura ne ulazi u red", async () => {
+    const { service, prisma, ubl } = makeService({
+      invoice: makeInvoice({ status: "CANCELLED" }),
+    });
+
+    await expect(service.enqueue(7, 1)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    await expect(service.enqueue(7, 1)).rejects.toThrow(/stornirana/);
+
+    expect(prisma.sefOutbox.create).not.toHaveBeenCalled();
+    expect(ubl.build).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * SEF SLANJE — TRKA „poslato POSLE storna" (nalaz N5, zatvoreno 03.08.2026).
  * =============================================================================
  * `send()` proveri da faktura nije stornirana, PA ode na mrežu. Mrežni poziv traje
@@ -228,6 +327,10 @@ function makeSendService(opts: {
   };
   const prisma = {
     sefOutbox: {
+      // `enqueue` od 04.08.2026. prvo pita ima li ŽIV outbox red za tu fakturu
+      // (parnjak parcijalnog unique-a `uq_sef_outbox_live`). `null` = nema živog reda,
+      // tj. zatečeno stanje svih ovih testova; test koji meri BAŠ tu branu ga postavlja sam.
+      findFirst: jest.fn().mockResolvedValue(null),
       findUnique: jest.fn().mockImplementation(() => Promise.resolve(rows)),
       updateMany: jest.fn().mockResolvedValue({ count: opts.claimed }),
       update: jest.fn().mockImplementation((args: { data: object }) => {

@@ -132,6 +132,10 @@ function makeEnqueueService(opts: {
     item: { findMany: jest.fn().mockResolvedValue([]) },
     invoiceAdvanceApplication: { findMany: jest.fn().mockResolvedValue([]) },
     sefOutbox: {
+      // `enqueue` od 04.08.2026. prvo pita ima li ŽIV outbox red za tu fakturu
+      // (parnjak parcijalnog unique-a `uq_sef_outbox_live`). `null` = nema živog reda,
+      // tj. zatečeno stanje svih ovih testova; test koji meri BAŠ tu branu ga postavlja sam.
+      findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 900, status: "PENDING" }),
     },
     sefStatusLog: { create: jest.fn().mockResolvedValue({ id: 1 }) },
@@ -170,6 +174,10 @@ function makeCancelService(opts: {
   };
   const prisma = {
     sefOutbox: {
+      // `enqueue` od 04.08.2026. prvo pita ima li ŽIV outbox red za tu fakturu
+      // (parnjak parcijalnog unique-a `uq_sef_outbox_live`). `null` = nema živog reda,
+      // tj. zatečeno stanje svih ovih testova; test koji meri BAŠ tu branu ga postavlja sam.
+      findFirst: jest.fn().mockResolvedValue(null),
       findUnique: jest.fn().mockImplementation(() => Promise.resolve(row)),
       update: jest
         .fn()
