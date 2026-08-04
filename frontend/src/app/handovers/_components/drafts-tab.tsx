@@ -24,7 +24,14 @@ import {
   type HandoverDraftDetail,
   type HandoverDraftItem,
 } from '@/api/handovers';
-import { useBom, useDrawing, openDrawingPdf, type DrawingSummary } from '@/api/pdm';
+import {
+  useBom,
+  useDrawing,
+  openDrawingPdf,
+  isApprovedPdmStatus,
+  type DrawingSummary,
+} from '@/api/pdm';
+import { AssemblyPositionsPrompt } from '@/components/assembly-positions-prompt';
 import { useProjectsLookup, type ProjectLookup } from '@/api/lookups';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
@@ -146,16 +153,10 @@ interface DraftItemDraft {
   quantityDefinedInDrawing?: number;
 }
 
-/**
- * Odobren PDM status — 1:1 sa backend `APPROVED_PDM_STATES`
- * (pdm/pdm-xml-parser.ts): trim + case-insensitive ∈ {odobreno, izmena bez
- * revizije}. Komponente van skupa se pri auto-popuni stavki PRESKAČU jer bi
- * backend ceo create odbio sa 422 („Crtež(i) nisu ODOBRENI u PDM-u").
- */
-const APPROVED_PDM_STATES = new Set(['odobreno', 'izmena bez revizije']);
-function isApprovedPdmStatus(pdmStatus: string): boolean {
-  return APPROVED_PDM_STATES.has(pdmStatus.trim().toLowerCase());
-}
+// Odobren PDM status: deljeni `isApprovedPdmStatus` iz `@/api/pdm` (jedan
+// izvor — ista provera i u PDM „Dodaj u nacrt" dijalogu, dopuna 027/26).
+// Komponente van skupa se pri auto-popuni stavki PRESKAČU jer bi backend ceo
+// create odbio sa 422 („Crtež(i) nisu ODOBRENI u PDM-u").
 
 /**
  * `DrawingSummary` (BOM čvor) → `Drawing` oblik za stavku (isti obrazac kao `toFormState`).
@@ -361,6 +362,7 @@ function DraftFormDialog({
   draft,
   prefillMainDrawing,
   prefillPieceCount,
+  prefillIncludePositions,
   onClose,
 }: {
   open: boolean;
@@ -378,6 +380,14 @@ function DraftFormDialog({
    * sastavnice (količina pozicije = potreba × broj komada). null = default 1.
    */
   prefillPieceCount?: number | null;
+  /**
+   * Dopuna 027/26 (/nacrti?…&pozicije=da|ne): odgovor na pitanje „ubaciti i sve
+   * pozicije?" VEĆ dat u PDM dijalogu — forma ga poštuje umesto da pita ponovo
+   * (true = sklop + pozicije, false = samo crtež sklopa). null = odluke nema,
+   * pa se pitanje (AssemblyPositionsPrompt) postavlja ovde kad sastavnica
+   * stigne — isto važi i za RUČNI izbor „Glavni crtež sklopa" u formi.
+   */
+  prefillIncludePositions?: boolean | null;
   onClose: () => void;
 }) {
   const isEdit = draft != null;
@@ -389,6 +399,15 @@ function DraftFormDialog({
   const [warnings, setWarnings] = useState<DraftItemWarning[] | null>(null);
   // Auto-BOM: id sklopa čija se sastavnica čeka za popunu stavki (null = ništa).
   const [autoFillId, setAutoFillId] = useState<number | null>(null);
+  // Dopuna 027/26: odluka „ubaciti i sve pozicije?" za TEKUĆU auto-popunu
+  // (true = sklop + pozicije, false = samo sklop, null = još nije doneta).
+  // Postavlja je prefill (?pozicije= iz PDM dijaloga) ili pitanje ispod.
+  const [bomDecision, setBomDecision] = useState<boolean | null>(null);
+  // Otvoreno pitanje za pozicije (broj pozicija + preskočeni neodobreni).
+  const [bomAsk, setBomAsk] = useState<{
+    count: number;
+    skippedUnapproved: string[];
+  } | null>(null);
   // Neodobreni delovi preskočeni pri poslednjoj auto-popuni (brojevi crteža).
   const [skippedDrawings, setSkippedDrawings] = useState<string[]>([]);
   // Vizuelna pretraga stavki (broj/naziv crteža) — NE dira niz `items`.
@@ -429,10 +448,14 @@ function DraftFormDialog({
       setItems([]);
       setWarnings(null);
       setAutoFillId(prefill ? prefill.id : null);
+      // Dopuna 027/26: odluka o pozicijama iz PDM dijaloga važi SAMO za prefill
+      // popunu; ručni izbor sklopa u formi dobija svoje pitanje (null).
+      setBomDecision(prefill ? (prefillIncludePositions ?? null) : null);
+      setBomAsk(null);
       setSkippedDrawings([]);
       setItemFilter('');
     }
-  }, [open, draft, isEdit, prefillMainDrawing, prefillPieceCount]);
+  }, [open, draft, isEdit, prefillMainDrawing, prefillPieceCount, prefillIncludePositions]);
 
   // AUTO-BOM („U nacrtu biram samo sklop i on izlista sve pozicije u sklopu"):
   // kad stigne sastavnica izabranog sklopa, stavke = sklop kao prva (isMain) +
@@ -440,15 +463,37 @@ function DraftFormDialog({
   // delovi (isProcurement) se preskaču TIHO — legacy paritet, ne proizvode se;
   // neodobreni u PDM-u se preskaču UZ upozorenje (backend bi ceo create odbio
   // sa 422). Lista je početna — projektant posle ručno menja/briše/dodaje.
+  //
+  // Dopuna 027/26 (Igor 30.07): pozicije više NE ulaze automatski — sklop sa
+  // bar jednom (odobrenom) pozicijom prvo dobija pitanje „Ubaciti i sve
+  // pozicije?" (`bomAsk` → AssemblyPositionsPrompt ispod), osim kad je odluka
+  // već doneta u PDM dijalogu (`prefillIncludePositions` → `bomDecision`).
+  // „Ne" (i X/Esc na pitanju) = samo crtež sklopa kao stavka.
   useEffect(() => {
     if (autoFillId == null) return;
     const data = bom.data?.data;
     if (!data || data.drawing.id !== autoFillId) return; // stale keš pri promeni sklopa
     const pieces = Number(form.pieceCount) || 1;
     const producible = data.flat.filter((r) => r.drawing && !r.drawing.isProcurement);
-    const skipped = producible
+    const approved = producible.filter((r) => isApprovedPdmStatus(r.drawing!.pdmStatus));
+    const unapproved = producible
       .filter((r) => !isApprovedPdmStatus(r.drawing!.pdmStatus))
       .map((r) => r.drawing!.drawingNumber);
+
+    // Sklop bez odobrenih pozicija ne pita ništa (nema šta da se ubaci);
+    // inače odluka mora postojati — bez nje se otvara pitanje i popuna čeka.
+    const include = approved.length === 0 ? false : bomDecision;
+    if (include == null) {
+      setBomAsk({ count: approved.length, skippedUnapproved: unapproved });
+      return;
+    }
+
+    // Upozorenje o neodobrenima ima smisla samo kad su pozicije uopšte tražene:
+    // eksplicitno „Ne" → bez upozorenja; sklop čije su SVE pozicije neodobrene
+    // → upozorenje ostaje (staro ponašanje — projektant mora da zna zašto su
+    // stavke „prazne").
+    const positionsConsidered = include || approved.length === 0;
+
     // Sklop (prva stavka): kad je izabran kroz ComboBox/prefill nosi i `hasPdf`,
     // pa se koristi taj objekat. Fallback iz sastavnice ga nema (backend šalje
     // `hasPdf` samo za komponentne redove, ne i za koren) → ostaje `undefined`.
@@ -464,21 +509,24 @@ function DraftFormDialog({
         isMain: true,
         quantityDefinedInDrawing: 1,
       },
-      ...producible
-        .filter((r) => isApprovedPdmStatus(r.drawing!.pdmStatus))
-        .map((r) => ({
-          ...newItemRow(),
-          drawing: summaryToDrawing(r.drawing!, r.hasPdf),
-          quantityToProduce: String(r.totalQuantity * pieces),
-          mainDrawingId: data.drawing.id,
-          quantityDefinedInDrawing: r.totalQuantity,
-        })),
+      ...(include
+        ? approved.map((r) => ({
+            ...newItemRow(),
+            drawing: summaryToDrawing(r.drawing!, r.hasPdf),
+            quantityToProduce: String(r.totalQuantity * pieces),
+            mainDrawingId: data.drawing.id,
+            quantityDefinedInDrawing: r.totalQuantity,
+          }))
+        : []),
     ]);
-    setSkippedDrawings(skipped);
+    setSkippedDrawings(positionsConsidered ? unapproved : []);
     setAutoFillId(null);
-    // form.* se čita u trenutku popune (snapshot) — ne sme da retrigeruje popunu.
+    setBomAsk(null);
+    setBomDecision(null);
+    // form.* se čita u trenutku popune (snapshot) — ne sme da retrigeruje popunu;
+    // `bomDecision` JESTE u deps (odgovor na pitanje ponovo pokreće popunu).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoFillId, bom.data]);
+  }, [autoFillId, bom.data, bomDecision]);
 
   async function submit() {
     try {
@@ -563,7 +611,15 @@ function DraftFormDialog({
     );
   }
 
+  // Dopuna 027/26: odgovor na pitanje „ubaciti i sve pozicije?" — efekat
+  // auto-popune iznad se ponovo pokreće sa donetom odlukom.
+  const answerPositions = (include: boolean) => {
+    setBomAsk(null);
+    setBomDecision(include);
+  };
+
   return (
+    <>
     <Dialog
       open={open}
       onClose={onClose}
@@ -703,7 +759,7 @@ function DraftFormDialog({
           hint={
             isEdit
               ? 'Opciono — ako je nacrt za ceo sklop.'
-              : 'Opciono — izbor sklopa automatski izlistava sve pozicije iz sastavnice u stavke.'
+              : 'Opciono — izbor sklopa pita da li u stavke ulaze i sve pozicije iz sastavnice.'
           }
         >
           <div className="flex items-center gap-2">
@@ -715,8 +771,11 @@ function DraftFormDialog({
                   if (isEdit) return;
                   // Auto-BOM okidač: izbor sklopa pokreće učitavanje sastavnice;
                   // postojeće stavke se zamenjuju uz potvrdu (legacy: projektant
-                  // posle može ručno isključiti/menjati pojedine).
+                  // posle može ručno isključiti/menjati pojedine). Odluka o
+                  // pozicijama (027/26) važi po sklopu — novi izbor je resetuje.
                   setSkippedDrawings([]);
+                  setBomDecision(null);
+                  setBomAsk(null);
                   if (!d) {
                     setAutoFillId(null);
                     return;
@@ -878,6 +937,21 @@ function DraftFormDialog({
         <ErrorText error={mut.error} />
       </div>
     </Dialog>
+
+    {/* Dopuna 027/26: pitanje „ubaciti i sve pozicije?" pri izboru sklopa —
+        sibling dijalog preko forme (escape-layer daje Esc gornjem sloju).
+        U formi X/Esc znači isto što i „Ne": sklop je već izabran kao glavni
+        crtež, pa se ubacuje samo on kao stavka (otkaza „u prazno" nema). */}
+    <AssemblyPositionsPrompt
+      open={bomAsk != null}
+      drawingNumber={form.mainDrawing?.drawingNumber ?? ''}
+      count={bomAsk?.count ?? 0}
+      skippedUnapproved={bomAsk?.skippedUnapproved}
+      onYes={() => answerPositions(true)}
+      onNo={() => answerPositions(false)}
+      onDismiss={() => answerPositions(false)}
+    />
+    </>
   );
 }
 
@@ -1319,6 +1393,9 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
   const [prefillDrawingId, setPrefillDrawingId] = useState<number | null>(null);
   // 027/26: broj komada unet u PDM dijalogu (`?kom=`) — ide u zaglavlje novog nacrta.
   const [prefillPieceCount, setPrefillPieceCount] = useState<number | null>(null);
+  // Dopuna 027/26 (`?pozicije=da|ne`): odgovor na „ubaciti i sve pozicije?" iz
+  // PDM dijaloga — forma ga poštuje; bez parametra (null) pita sama.
+  const [prefillIncludePositions, setPrefillIncludePositions] = useState<boolean | null>(null);
   const prefillDrawingQuery = useDrawing(prefillDrawingId);
   const prefillMainDrawing = prefillDrawingId ? (prefillDrawingQuery.data?.data ?? null) : null;
 
@@ -1329,8 +1406,10 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
     if (!Number.isInteger(id) || id <= 0) return;
     const rawKom = params.get('kom');
     const kom = rawKom && /^\d+$/.test(rawKom) ? Number(rawKom) : NaN;
+    const rawPoz = params.get('pozicije');
     setPrefillDrawingId(id);
     setPrefillPieceCount(Number.isInteger(kom) && kom >= 1 ? kom : null);
+    setPrefillIncludePositions(rawPoz === 'da' ? true : rawPoz === 'ne' ? false : null);
     setCreating(true);
     // Očisti query param iz URL-a (zadrži rutu) — jednokratno.
     router.replace('/nacrti');
@@ -1522,11 +1601,13 @@ export function DraftsTab({ onSubmitted }: { onSubmitted?: () => void }) {
         draft={null}
         prefillMainDrawing={prefillMainDrawing}
         prefillPieceCount={prefillPieceCount}
+        prefillIncludePositions={prefillIncludePositions}
         onClose={() => {
           setCreating(false);
           // Otpusti D2 prefill da naredno „Novi nacrt" krene prazno.
           setPrefillDrawingId(null);
           setPrefillPieceCount(null);
+          setPrefillIncludePositions(null);
         }}
       />
       <DraftFormDialog

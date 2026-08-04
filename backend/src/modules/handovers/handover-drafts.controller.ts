@@ -36,8 +36,10 @@ import type { UpdateDraftItemDto } from "./dto/update-draft-item.dto";
  *   GET    /api/v1/handover-drafts/:id        — detalj (zaglavlje + stavke)
  *   GET    /api/v1/handover-drafts/:id/items  — samo stavke
  *   POST   /api/v1/handover-drafts            — kreiranje (zaglavlje + stavke), broj generiše server
- *   POST   /api/v1/handover-drafts/:id/items  — „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..50)
- *                                               u POSTOJEĆI nezaključan nacrt; dedup preskače postojeće → meta.skipped
+ *   POST   /api/v1/handover-drafts/:id/items  — „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..500)
+ *                                               u POSTOJEĆI nezaključan nacrt; dedup preskače postojeće → meta.skipped;
+ *                                               027/26 dopuna (Igor 30.07): FE pri izboru SKLOPA pita „ubaciti i sve
+ *                                               pozicije?" — „Da" šalje sklop + pozicije (mainDrawingId + quantityDefinedInDrawing)
  *   PATCH  /api/v1/handover-drafts/:id        — izmena zaglavlja (samo dok nije zaključan); `statusId` ide kroz
  *                                               ALLOWLIST prelaza (Nenad 27.07) — „Predat"/„Odbijen"/„Lansiran"
  *                                               se ovim putem NE postavljaju (422), oni su izvod svojih tokova
@@ -141,9 +143,11 @@ export class HandoverDraftsController {
   }
 
   /**
-   * „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..50 stavki) u
+   * „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..500 stavki) u
    * POSTOJEĆI nezaključan nacrt. Isti pdm_status guard kao `create()`; crtež
-   * već u nacrtu se preskače (meta.skipped, ne 409 za ceo batch).
+   * već u nacrtu se preskače (meta.skipped, ne 409 za ceo batch). 027/26
+   * dopuna: „Da — ubaci i pozicije" šalje sklop + pozicije sastavnice u
+   * jednom batch-u (pozicije nose mainDrawingId/quantityDefinedInDrawing).
    */
   @Post(":id/items")
   @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
