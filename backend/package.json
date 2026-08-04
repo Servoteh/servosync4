@@ -38,7 +38,8 @@
     "audit": "node scripts/audit-code.mjs",
     "audit:check": "node scripts/audit-code.mjs --check",
     "audit:baseline": "node scripts/audit-code.mjs --update-baseline",
-    "verify:sql": "node scripts/verify-sql-migration.mjs"
+    "verify:sql": "node scripts/verify-sql-migration.mjs",
+    "verify:view": "node scripts/verify-view-fidelity.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

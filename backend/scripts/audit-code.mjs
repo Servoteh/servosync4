@@ -204,6 +204,18 @@ function scanDead() {
 /**
  * Mutirajuća ruta čije telo `ValidationPipe` preskače.
  *
+ * ⚠️ ŠTA OVAJ OBRAZAC MERI, A ŠTA NE (ispravka 04.08.2026, posle protivprovere):
+ * meri se ISKLJUČIVO **pipe sloj** — da li globalni `ValidationPipe` ima klasu na koju bi
+ * primenio dekoratore. NE znači „telo se nigde ne proverava": mnoge od tih ruta imaju ručni
+ * `validate*()` guard u servisu (npr. `compensation.service.ts:169`
+ * `validateCreateCompensationDto`, ili `gl.controller.ts` koji `beforeDate` proverava četiri
+ * linije ispod `@Body()`). Prva verzija revizije je tu brojku pročitala kao „bez ijedne
+ * provere" i time proizvela 13 pogrešnih nalaza od 14 u jednoj tabeli.
+ *
+ * Nalaz je dakle „validacija nije deklarativna i ne važi za neproglašena polja"
+ * (`whitelist` ne radi, nepoznata polja prolaze do servisa), a ne „ulaz je nevalidiran".
+ * Pre nego što se upiše kao 🔴 — pročitaj servis.
+ *
  * Dva odvojena kvara, oba tiha:
  *   (a) `@Body() x: NekiInterfejs` — pipe validira samo KLASE;
  *   (b) `@Body() x: NekaKlasa` gde je klasa uvezena sa `import type` — TS obriše binding,

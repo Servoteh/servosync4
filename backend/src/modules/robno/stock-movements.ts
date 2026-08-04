@@ -25,6 +25,16 @@ import { Prisma } from "@prisma/client";
  *
  * Simbol `V_STOCK_MOVEMENTS` postoji baš zato da `grep` nad njim izlista SVE
  * potrošače kretanja zaliha — pre izmene pravila prođi kroz taj spisak.
+ *
+ * ⚠️ ŠTA POGLED **NE** NOSI (ispravka 04.08.2026, nalaz domenskog pregleda):
+ * vremensku granicu (`document_date <= asOf`) i `is_inbound` filter. Njih svaki pozivalac i
+ * dalje piše sam, pa tvrdnja „lager, kartica artikla i guard izlaza se ne MOGU razići" nije
+ * tačna u punom obimu — tačno je da se ne mogu razići po tome **šta se broji kao kretanje** i
+ * **koji znak nosi**. Ako neki potrošač napiše `<` umesto `<=`, ili izostavi granicu, razilaženje
+ * je opet moguće. Granica nije u pogledu namerno: kartica i costing je koriste kao promenljivu
+ * (`asOf`), a `computeOnHand` je NE koristi (raspoloživo je „sada", uključujući buduće datirane
+ * dokumente — v. `reservation.service`). Pravilo za pozivaoce: granicu piši uvek kao
+ * `AND m.document_date <= ${asOf}`, nikad drugačije.
  */
 export const V_STOCK_MOVEMENTS = Prisma.raw("v_stock_movements");
 

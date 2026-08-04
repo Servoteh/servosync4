@@ -10,9 +10,9 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { parseDateParam } from "../../common/date-params";
 import { CostingService } from "./costing.service";
-import { V_STOCK_MOVEMENTS } from "./stock-movements";
+import { V_STOCK_MOVEMENTS, stockKeyOf } from "./stock-movements";
 import { RobnoService } from "./robno.service";
-import { toDec } from "./decimal.util";
+import { toDec, ZERO } from "./decimal.util";
 import type {
   CreateInventoryCountDto,
   FinalizeInventoryCountDto,
@@ -201,28 +201,29 @@ export class InventoryService {
     // stanja 0, doc 39 §D). Artikal sa prometom ostaje i ako mu je stanje 0 (operater potvrđuje 0).
     const itemIds = await this.candidateItemIds(dto.warehouseId, countDate);
 
-    const prefilled: Array<{
-      itemId: number;
-      bookQuantity: Prisma.Decimal;
-      price: Prisma.Decimal;
-    }> = [];
-    for (const itemId of itemIds) {
-      const bookQuantity = await this.costing.stateAsOf(
+    // Stanje i prosečna cena za SVE kandidate u nekoliko upita, ne 3–4 PO ARTIKLU.
+    // Ranije je ovde bila petlja `stateAsOf` + `averageAsOf` po artiklu (a `averageAsOf` je
+    // usput radio i lookup magacina): predpunjenje popisa magacina sa 5.000 artikala u prometu
+    // bilo je preko 15.000 serijskih upita na sinhronoj ruti. Guard dovoljnog stanja je istu
+    // petlju izgubio 04.08.2026; ovo je isto pravilo primenjeno do kraja (nalaz domenskog
+    // pregleda: „petlja uklonjena iz guarda, ostavljena u najvećoj petlji modula").
+    const keys = itemIds.map((itemId) => ({
+      itemId,
+      warehouseId: dto.warehouseId,
+    }));
+    const [stateByKey, avgByKey] = await Promise.all([
+      this.costing.stateAsOfMany(keys, countDate),
+      this.costing.averageAsOfMany(keys, countDate),
+    ]);
+    const prefilled = itemIds.map((itemId) => {
+      const key = stockKeyOf(itemId, dto.warehouseId);
+      return {
         itemId,
-        dto.warehouseId,
-        countDate,
-      );
-      const { avgPurchaseNet } = await this.costing.averageAsOf(
-        itemId,
-        dto.warehouseId,
-        countDate,
-      );
-      prefilled.push({
-        itemId,
-        bookQuantity,
-        price: avgPurchaseNet.toDecimalPlaces(4),
-      });
-    }
+        // Par bez kretanja se u mapi ne pojavljuje → 0, isto kao stara pojedinačna verzija.
+        bookQuantity: stateByKey.get(key) ?? ZERO,
+        price: (avgByKey.get(key)?.avgPurchaseNet ?? ZERO).toDecimalPlaces(4),
+      };
+    });
 
     const created = await this.prisma.$transaction(async (tx) => {
       const countNumber = await this.nextCountNumber(tx, year);

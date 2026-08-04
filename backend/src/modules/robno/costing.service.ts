@@ -136,70 +136,143 @@ export class CostingService {
     warehouseId: number,
     asOf: Date,
   ): Promise<{ avgPurchaseNet: Prisma.Decimal; avgWholesale: Prisma.Decimal }> {
-    const warehouse = await this.prisma.warehouse.findUnique({
-      where: { id: warehouseId },
-      select: { averagePrices: true },
-    });
-    if (warehouse?.averagePrices !== true) {
-      // Magacin ne uprosečava → poslednja cena (poslednji ulaz).
-      return this.lastPrice(itemId, warehouseId, asOf);
-    }
-
-    const rows = await this.prisma.$queryRaw<
-      Array<{
-        weight: Prisma.Decimal | null;
-        weighted_nab: Prisma.Decimal | null;
-        weighted_vp: Prisma.Decimal | null;
-      }>
-    >(Prisma.sql`
-      SELECT
-        COALESCE(SUM(m.signed_quantity), 0)                          AS weight,
-        COALESCE(SUM(m.signed_quantity * m.unit_purchase_net), 0)    AS weighted_nab,
-        COALESCE(SUM(m.signed_quantity * m.unit_wholesale), 0)       AS weighted_vp
-      FROM ${V_STOCK_MOVEMENTS} m
-      WHERE m.item_id = ${itemId}
-        AND m.warehouse_id = ${warehouseId}
-        AND m.document_date <= ${asOf}
-    `);
-
-    const weight = new Prisma.Decimal(rows[0]?.weight ?? 0);
-    // Stanje 0 → prosek nije definisan → fallback poslednja cena (doc 39 §C).
-    if (weight.isZero()) return this.lastPrice(itemId, warehouseId, asOf);
-
-    return {
-      avgPurchaseNet: new Prisma.Decimal(rows[0]?.weighted_nab ?? 0).div(weight),
-      avgWholesale: new Prisma.Decimal(rows[0]?.weighted_vp ?? 0).div(weight),
-    };
+    const byKey = await this.averageAsOfMany([{ itemId, warehouseId }], asOf);
+    return (
+      byKey.get(stockKeyOf(itemId, warehouseId)) ?? {
+        avgPurchaseNet: ZERO,
+        avgWholesale: ZERO,
+      }
+    );
   }
 
   /**
-   * Poslednja cena — fallback (doc 39 §C: "Stanje 0 → fallback poslednja cena") i put kada
-   * `Warehouse.averagePrices = false`. Bira poslednji ULAZ (`is_inbound`) po
-   * (document_date, document_id, item_line_id) opadajuće.
+   * Prosečne cene za VIŠE (artikal, magacin) parova — TRI upita bez obzira na broj parova
+   * (prekidači magacina + ponderisani agregat + fallback poslednja cena).
    *
-   * Ako nema nijednog ulaza → 0/0 (nema podataka o ceni).
+   * ZAŠTO POSTOJI (nalaz domenskog pregleda 04.08): `InventoryService.createCount` je zvao
+   * `stateAsOf` + `averageAsOf` U PETLJI po artiklu, a `averageAsOf` je usput radio i lookup
+   * magacina — dakle 3–4 upita po artiklu. Predpunjenje popisa magacina sa 5.000 artikala u
+   * prometu bilo je preko 15.000 serijskih upita na jednoj sinhronoj ruti. Guard dovoljnog
+   * stanja je istu petlju izgubio ranije istog dana; ovo je isto pravilo primenjeno do kraja.
+   *
+   * Prekidač `Warehouse.averagePrices` se poštuje PO MAGACINU (kao i u pojedinačnoj verziji):
+   * magacin koji ne uprosečava ide na poslednju cenu, kao i par čiji je ponder 0.
    */
-  private async lastPrice(
-    itemId: number,
-    warehouseId: number,
+  async averageAsOfMany(
+    keys: readonly StockKey[],
     asOf: Date,
-  ): Promise<{ avgPurchaseNet: Prisma.Decimal; avgWholesale: Prisma.Decimal }> {
-    const rows = await this.prisma.$queryRaw<
-      Array<{ last_nab: Prisma.Decimal | null; last_vp: Prisma.Decimal | null }>
-    >(Prisma.sql`
-      SELECT m.unit_purchase_net AS last_nab,
-             m.unit_wholesale    AS last_vp
-      FROM ${V_STOCK_MOVEMENTS} m
-      WHERE m.item_id = ${itemId}
-        AND m.warehouse_id = ${warehouseId}
-        AND m.document_date <= ${asOf}
-        AND m.is_inbound = TRUE
-      ORDER BY m.document_date DESC, m.document_id DESC, m.item_line_id DESC
-      LIMIT 1
-    `);
-    return {
-      avgPurchaseNet: new Prisma.Decimal(rows[0]?.last_nab ?? 0),
-      avgWholesale: new Prisma.Decimal(rows[0]?.last_vp ?? 0),
-    };
+  ): Promise<
+    Map<string, { avgPurchaseNet: Prisma.Decimal; avgWholesale: Prisma.Decimal }>
+  > {
+    const out = new Map<
+      string,
+      { avgPurchaseNet: Prisma.Decimal; avgWholesale: Prisma.Decimal }
+    >();
+    if (keys.length === 0) return out;
+
+    const uniquePairs = [
+      ...new Map(
+        keys.map((k) => [stockKeyOf(k.itemId, k.warehouseId), k]),
+      ).values(),
+    ];
+
+    // 1) Prekidač po magacinu — jedan upit za sve magacine u skupu.
+    const warehouseIds = [...new Set(uniquePairs.map((k) => k.warehouseId))];
+    const warehouses = await this.prisma.warehouse.findMany({
+      where: { id: { in: warehouseIds } },
+      select: { id: true, averagePrices: true },
+    });
+    const usesAverage = new Set(
+      warehouses.filter((w) => w.averagePrices === true).map((w) => w.id),
+    );
+
+    const avgPairs = uniquePairs.filter((k) => usesAverage.has(k.warehouseId));
+    // Magacin koji ne uprosečava (ili ga nema u tabeli) ide direktno na poslednju cenu.
+    const lastPairs = uniquePairs.filter((k) => !usesAverage.has(k.warehouseId));
+
+    // 2) Ponderisani agregat za magacine koji uprosečavaju.
+    if (avgPairs.length) {
+      const pairs = Prisma.join(
+        avgPairs.map((k) => Prisma.sql`(${k.itemId}, ${k.warehouseId})`),
+      );
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          item_id: number;
+          warehouse_id: number;
+          weight: Prisma.Decimal;
+          weighted_nab: Prisma.Decimal;
+          weighted_vp: Prisma.Decimal;
+        }>
+      >(Prisma.sql`
+        SELECT m.item_id, m.warehouse_id,
+               COALESCE(SUM(m.signed_quantity), 0)                       AS weight,
+               COALESCE(SUM(m.signed_quantity * m.unit_purchase_net), 0) AS weighted_nab,
+               COALESCE(SUM(m.signed_quantity * m.unit_wholesale), 0)    AS weighted_vp
+        FROM ${V_STOCK_MOVEMENTS} m
+        WHERE (m.item_id, m.warehouse_id) IN (${pairs})
+          AND m.document_date <= ${asOf}
+        GROUP BY m.item_id, m.warehouse_id
+      `);
+      const seen = new Set<string>();
+      for (const r of rows) {
+        const k = stockKeyOf(r.item_id, r.warehouse_id);
+        seen.add(k);
+        const weight = new Prisma.Decimal(r.weight ?? 0);
+        // Ponder 0 → prosek nije definisan → fallback poslednja cena (doc 39 §C).
+        if (weight.isZero()) continue;
+        out.set(k, {
+          avgPurchaseNet: new Prisma.Decimal(r.weighted_nab ?? 0).div(weight),
+          avgWholesale: new Prisma.Decimal(r.weighted_vp ?? 0).div(weight),
+        });
+      }
+      // Par bez ijednog kretanja ILI sa ponderom 0 pada na poslednju cenu.
+      for (const k of avgPairs)
+        if (!out.has(stockKeyOf(k.itemId, k.warehouseId))) lastPairs.push(k);
+    }
+
+    // 3) Poslednja cena (poslednji ULAZ) za ostatak — jedan `DISTINCT ON` upit.
+    if (lastPairs.length) {
+      const pairs = Prisma.join(
+        lastPairs.map((k) => Prisma.sql`(${k.itemId}, ${k.warehouseId})`),
+      );
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          item_id: number;
+          warehouse_id: number;
+          last_nab: Prisma.Decimal | null;
+          last_vp: Prisma.Decimal | null;
+        }>
+      >(Prisma.sql`
+        SELECT DISTINCT ON (m.item_id, m.warehouse_id)
+               m.item_id, m.warehouse_id,
+               m.unit_purchase_net AS last_nab,
+               m.unit_wholesale    AS last_vp
+        FROM ${V_STOCK_MOVEMENTS} m
+        WHERE (m.item_id, m.warehouse_id) IN (${pairs})
+          AND m.document_date <= ${asOf}
+          AND m.is_inbound = TRUE
+        ORDER BY m.item_id, m.warehouse_id,
+                 m.document_date DESC, m.document_id DESC, m.item_line_id DESC
+      `);
+      for (const r of rows)
+        out.set(stockKeyOf(r.item_id, r.warehouse_id), {
+          avgPurchaseNet: new Prisma.Decimal(r.last_nab ?? 0),
+          avgWholesale: new Prisma.Decimal(r.last_vp ?? 0),
+        });
+      // Par bez ijednog ulaza → 0/0 (nema podataka o ceni), kao i u pojedinačnoj verziji.
+      for (const k of lastPairs) {
+        const key = stockKeyOf(k.itemId, k.warehouseId);
+        if (!out.has(key))
+          out.set(key, { avgPurchaseNet: ZERO, avgWholesale: ZERO });
+      }
+    }
+
+    return out;
   }
+
+  // NAPOMENA: privatni `lastPrice` (jedan par, `LIMIT 1`) je obrisan 04.08.2026. kad je
+  // `averageAsOfMany` preuzeo i fallback granu grupnim `DISTINCT ON` upitom. Ostavljen bi bio
+  // MRTVA KOPIJA žive logike — obrazac zbog kojeg je istog dana obrisan `listLagerAsOf`
+  // (110 linija, divergentna kopija koju bi neko „popravio" bez efekta). Doc 39 §C fallback
+  // („stanje 0 → poslednja cena") živi u `averageAsOfMany`, koraci 2 i 3.
 }

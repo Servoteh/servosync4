@@ -134,15 +134,27 @@ npm run audit:baseline              # spusti prag posle popravke
 | 1 | `dup-sql` | isti SQL predikat u ≥2 fajla | tiho razilaženje izveštaja |
 | 2 | `n1` | upit u petlji | transakcija pod lock-om raste linearno sa brojem stavki |
 | 3 | `dead` | privatni metod bez pozivaoca | mrtva kopija žive logike koju neko „popravi" |
-| 4 | `body-type` | telo mutirajuće rute koje pipe preskače | nevalidiran novac ulazi u bazu |
+| 4 | `body-type` | telo mutirajuće rute koje **pipe** preskače | `whitelist` ne radi → neproglašena polja prolaze do servisa. **Ne znači „nema provere"** — v. napomenu ispod |
 | 5 | `unsafe-num` | `Number(query)` bez NaN provere | 500 iz drajvera umesto 422 |
 | 6 | `page-filter` | `.filter()` posle `LIMIT`-a | pretraga tiho ne nalazi ono što postoji |
 | 7 | `size` | fajl > 600 linija | signal, ne nalaz — proveri broj razloga za izmenu |
 
-**Skener je nalazač kandidata, ne dokaz.** Preciznost mu je oko 50 % — na istom kodu gde
-je prijavio 154 kandidata za `body-type`, pažljiv ljudski/agentski pregled potvrdio je 73.
-To je namerno podešeno tako: propušten nalaz košta nedelju dana, lažni nalaz košta jedan
-pogled u kod.
+**Skener je nalazač kandidata, ne dokaz.** Namerno je podešen da radije prijavi višak:
+propušten nalaz košta nedelju dana, lažni jedan pogled u kod.
+
+> ⚠️ **Najskuplja greška ove revizije bila je pogrešno PROČITAN skener, ne pogrešan skener.**
+> `body-type` meri **pipe sloj** — da li `ValidationPipe` ima klasu na koju bi primenio
+> dekoratore. Prva verzija izveštaja je tu brojku pročitala kao „telo se nigde ne proverava" i
+> od 14 nalaza u toj 🔴 tabeli **13 je bilo pogrešno**: te rute imaju ručni `validate*()` guard
+> u servisu (`compensation.service.ts:169`), ili proveru četiri linije ispod `@Body()`
+> (`gl.controller.ts:121`). Isti izveštaj je na drugom mestu sam napisao da je odbacio 74 takve
+> rute — pa ih onda upisao u 🔴 tabelu.
+>
+> Pravi nalaz je uži i dalje vredi: **`whitelist` ne radi**, pa neproglašena polja prolaze do
+> servisa, a validacija nije deklarativna. To nije „nevalidiran novac ulazi u bazu".
+>
+> Pouka koja važi za svaki obrazac: **pre nego što kandidat postane nalaz, pročitaj servis.**
+> Brojka iz skenera imenuje mesto, ne posledicu.
 
 ### Provera SQL-only migracija
 
