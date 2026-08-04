@@ -18,7 +18,7 @@ import {
   type LocLocation,
   type LocMovementType,
 } from '@/api/lokacije';
-import { LocationSelect } from './location-select';
+import { isStorageLocation, LocationSelect } from './location-select';
 import { computeInitialRemainder } from './initial-remainder';
 import { normalizeLocMovementKeys } from './label-build';
 import { ScanOverlay } from './scan-overlay';
@@ -367,27 +367,34 @@ export function MovementDialog({
     setMovementType(initialRemainder === 0 ? 'TRANSFER' : 'INITIAL_PLACEMENT');
   }, [autoMovementType, fromLocationId, remainderChosen, trimmedItem, placementsQ.isLoading, currentPlacements, initialRemainder]);
 
+  // Skladišni podskup za OBA pickera premeštanja („Sa lokacije" i „Na lokaciju")
+  // — reversi zaduženja (ZADU-*), M.* folderi mašina i sl. VAN (prijava 04.08:
+  // „Zaduzeno: …" redovi u izboru police). Puni `locList` i dalje hrani labele
+  // trenutnog stanja/istorije (locById) — filter je samo na OPCIJAMA izbora.
+  const storageList = useMemo(() => locList.filter(isStorageLocation), [locList]);
   // ── „Na lokaciju" — hale za —HALA— filter (police su scoped po hali; 1.0) ──
   const halls = useMemo(
     () =>
-      locList
+      storageList
         .filter((l) => (HALL_TYPES as string[]).includes(l.locationType))
         .sort((a, b) =>
           a.locationCode.localeCompare(b.locationCode, 'sr', { numeric: true, sensitivity: 'base' }),
         ),
-    [locList],
+    [storageList],
   );
   // „Prikaži i mašine kao destinaciju" (paritet 1.0) — mašine skrivene dok se ne
   // čekira; —HALA— filter sužava SAMO police (kavezi su globalni, hale/ostalo
   // ostaju u listi — paritet 1.0 populateToSelect).
   const destLocations = useMemo(() => {
-    const base = showMachines ? locList : locList.filter((l) => l.locationType !== 'MACHINE');
+    const base = showMachines
+      ? storageList
+      : storageList.filter((l) => l.locationType !== 'MACHINE');
     if (!hallFilterId) return base;
     return base.filter((l) => {
       if (!(SHELF_TYPES as string[]).includes(l.locationType)) return true;
       return nearestHallIdOf(l, locById) === hallFilterId;
     });
-  }, [locList, showMachines, hallFilterId, locById]);
+  }, [storageList, showMachines, hallFilterId, locById]);
   // „Neraspoređeno" (paritet 1.0) uvek traži polaznu lokaciju (vraća komad sa police
   // u nesmešteni pool); inače from je nepotreban za INITIAL_PLACEMENT/INVENTORY.
   const needFrom = returnToUnplaced || needsFrom(movementType);
@@ -691,7 +698,7 @@ export function MovementDialog({
               hint={returnToUnplaced ? 'Obavezno za „Neraspoređeno" — polica sa koje se vraća' : 'Ostavi prazno za auto-razrešavanje trenutne lokacije'}
             >
               <LocationSelect
-                locations={locList}
+                locations={storageList}
                 value={fromLocationId}
                 onChange={pickFromLocation}
                 onScan={() => setScan('from')}

@@ -16,6 +16,34 @@ const HALL_SET = new Set(['WAREHOUSE', 'PRODUCTION', 'ASSEMBLY', 'FIELD', 'TEMP'
 const SHELF_SET = new Set(['SHELF', 'RACK', 'BIN']);
 
 /**
+ * Ne-skladišni razredi — NIKAD opcija u pickerima premeštanja (from/to, batch
+ * odredište, ciljna hala). IZMERENO na produ 04.08.2026 (`loc_locations` po tipu):
+ *   FIELD (27 aktivnih) = 100% reversi ZADUŽENJA: `ZADU-R-*` (radnici, 21) i
+ *                         `ZADU-O-*` (odeljenja, 6) — lične lokacije revers
+ *                         modula, ne skladišne destinacije (prijava 04.08:
+ *                         „Zaduzeno: Radivojević Vladan" u izboru police);
+ *   OTHER (10)          = `M.*` kategorije mašina (organizacioni folderi);
+ *   SCRAPPED (1)        = virtuelni koš otpisa (SCRAP tok ga upisuje sam, bez to);
+ *   SERVICE / PROJECT / TRANSIT / OFFICE = danas 0 redova — ista klasa čim nastanu.
+ * `ZADU-M-*` (mašinska zaduženja) su tipa PRODUCTION — zato uz tipove važi i
+ * `ZADU-` prefiks (reversi barkod konvencija, v. BE `reversi.service.lookupBarcode`).
+ *
+ * Filter je NAMERNO na FE, u pickerima — NE u API-ju/`useAllLocations`: isti
+ * učitani skup razrešava from/to labele ISTORIJE pokreta (REVERSAL_ISSUE/RETURN
+ * pokazuju baš na ZADU lokacije), a filteri istorije (movements/report tab)
+ * legitimno biraju i ZADU. Reversi tok ove lokacije koristi kroz SVOJE RPC-ove,
+ * nikad kroz ove pickere — pa im tu ništa ne fali.
+ */
+const NON_STORAGE_TYPES = new Set([
+  'FIELD', 'SERVICE', 'PROJECT', 'TRANSIT', 'OFFICE', 'SCRAPPED', 'OTHER',
+]);
+
+/** Stvarna skladišna lokacija za premeštanje (police/kavezi/hale/mašine). */
+export function isStorageLocation(l: LocLocation): boolean {
+  return !NON_STORAGE_TYPES.has(l.locationType) && !/^ZADU-/i.test(l.locationCode);
+}
+
+/**
  * Koliko opcija ulazi u DOM (i na prazan upit i na rezultat pretrage).
  *
  * Prijava iz pogona 01.08: „aplikacija ne prikazuje sve police, a stara ih

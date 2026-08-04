@@ -51,6 +51,7 @@ import { Button } from '@/components/ui-kit/button';
 import { ScanOverlay } from '@/app/lokacije/_components/scan-overlay';
 import {
   filterLocationOptions,
+  isStorageLocation,
   locOptionsTruncatedHint,
 } from '@/app/lokacije/_components/location-select';
 import { normalizeLocMovementKeys } from '@/app/lokacije/_components/label-build';
@@ -160,15 +161,17 @@ export default function MobLokacijeBatchPage() {
   const locList = useMemo<LocLocation[]>(() => locs.data ?? [], [locs.data]);
   const locById = useMemo(() => new Map(locList.map((l) => [l.id, l])), [locList]);
 
-  // Kandidati za odredište: sve sem mašina (paritet MovementDialog `destLocations`
-  // bez čekiranog „Prikaži i mašine kao destinaciju"). Filter/limit/redosled idu
+  // Kandidati za odredište: SKLADIŠNE lokacije sem mašina (paritet MovementDialog
+  // `destLocations` bez čekiranog „Prikaži i mašine kao destinaciju"; prijava
+  // 04.08: reversi zaduženja „ZADU-* — Zaduzeno: …" iskakala u izboru police —
+  // `isStorageLocation` ih seče na OBA ekrana). Filter/limit/redosled idu
   // kroz ZAJEDNIČKI `filterLocationOptions` sa `LocationSelect`-om — ovaj ekran
   // je sekao na 30 od 1.357 lokacija bez ijedne poruke, ista prijava iz pogona
   // kao za desktop picker (01.08). `shelvesFirst`: korak je „izaberi policu".
   const { items: destOptions, total: destTotal } = useMemo(
     () =>
       filterLocationOptions(
-        locList.filter((l) => l.locationType !== 'MACHINE'),
+        locList.filter((l) => isStorageLocation(l) && l.locationType !== 'MACHINE'),
         destQuery,
         { shelvesFirst: true },
       ),
@@ -418,8 +421,14 @@ export default function MobLokacijeBatchPage() {
                       >
                         <span className="min-w-0 flex-1">
                           <span className="block text-sm font-semibold text-ink">{l.locationCode}</span>
-                          {l.name && (
-                            <span className="block truncate text-xs text-ink-secondary">{l.name}</span>
+                          {/* Put (hala) umesto golog imena: šifra police se PONAVLJA po halama
+                              (A1 postoji u 6 hala, ime je generično „Magacin") — bez pute su
+                              dva reda „A1 — Magacin" nerazlučiva (prijava 04.08 „neke se
+                              ponavljaju"). Desktop `LocationSelect` već prikazuje pathCached. */}
+                          {(l.pathCached || l.name) && (
+                            <span className="block truncate text-xs text-ink-secondary">
+                              {l.pathCached || l.name}
+                            </span>
                           )}
                         </span>
                       </button>
