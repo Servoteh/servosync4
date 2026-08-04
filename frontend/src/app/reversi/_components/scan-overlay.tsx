@@ -145,6 +145,9 @@ export function ScanOverlay({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Okvir nišana → `acceptRegion` dekodera (nišan-gejt, SAMO Samsung A-serija —
+  // v. `shouldLimitScanToReticle`); na svim ostalim uređajima inertno.
+  const reticleBoxRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const trackRef = useRef<MediaStreamTrack | null>(null);
   const detectorRef = useRef<BarcodeDetectorLike | null>(null);
@@ -451,6 +454,10 @@ export function ScanOverlay({
           formats: LIVE_FORMATS,
           onRaw: (raw) => void resolve(raw),
           isStopped: () => aborted(),
+          // Nišan-gejt (04.08): na SM-A profilu se prihvata samo pogodak čiji je
+          // centar u prozoru nišana (dekoder inače čita CEO frejm, uklj. deo van
+          // ekrana kod object-fit:cover). Van profila potpuno inertno.
+          acceptRegion: () => reticleBoxRef.current?.getBoundingClientRect() ?? null,
           // BEZ `preferNative` (02.08.2026): ovaj ekran je jedini tražio nativni
           // BarcodeDetector i na Androidu (i u APK WebView-u), izvan ZXing kanona koji
           // 1.0 koristi i koji je na terenu dokazan. Nepokriven režim je bio „detect()
@@ -652,7 +659,9 @@ export function ScanOverlay({
         onPointerDown={(e) => void tapFocus(e)}
         className="absolute inset-0 h-full w-full object-cover"
       />
-      {cameraOn && <ScanReticle variant="barcode" bottomInset={panelInset} />}
+      {cameraOn && (
+        <ScanReticle variant="barcode" bottomInset={panelInset} frameRef={reticleBoxRef} />
+      )}
       {focusRing && (
         <div
           // Isprekidan i prigušen prsten = tap primljen, ali uređaj ne podržava ručno

@@ -94,6 +94,9 @@ export function KarticaScanOverlay({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Okvir nišana → `acceptRegion` dekodera (nišan-gejt, SAMO Samsung A-serija —
+  // v. `shouldLimitScanToReticle`); na svim ostalim uređajima inertno.
+  const reticleBoxRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const trackRef = useRef<MediaStreamTrack | null>(null);
   const busyRef = useRef(false);
@@ -343,6 +346,10 @@ export function KarticaScanOverlay({
           formats: FORMATS,
           onRaw: (raw) => resolve(raw),
           isStopped: () => aborted(),
+          // Nišan-gejt (04.08): na SM-A profilu se prihvata samo pogodak čiji je
+          // centar u prozoru nišana (dekoder inače čita CEO frejm, uklj. deo van
+          // ekrana kod object-fit:cover). Van profila potpuno inertno.
+          acceptRegion: () => reticleBoxRef.current?.getBoundingClientRect() ?? null,
         });
         if (aborted()) handle.stop();
         else decoder = handle;
@@ -484,7 +491,9 @@ export function KarticaScanOverlay({
         className="absolute inset-0 h-full w-full object-cover"
       />
       {/* Barkod RN kartice je 1D → široki nišan sa laserom (isto kao lokacije/reversi). */}
-      {cameraOn && <ScanReticle variant="barcode" bottomInset={panelInset} />}
+      {cameraOn && (
+        <ScanReticle variant="barcode" bottomInset={panelInset} frameRef={reticleBoxRef} />
+      )}
       {focusRing && (
         <div
           // Isprekidan i prigušen prsten = tap primljen, ali uređaj ne podržava ručno

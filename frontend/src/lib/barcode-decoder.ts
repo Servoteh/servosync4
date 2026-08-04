@@ -105,6 +105,179 @@ export function setDecodeModeOverride(mode: DecodeMode): void {
   }
 }
 
+// ── Nišan-gejt: „skenira se samo ono što je u prozoru nišana" ───────────────
+
+/**
+ * Da li se pogoci dekodera OGRANIČAVAJU na prozor nišana (v. `acceptRegion` u
+ * `attachVideoDecoder`) — SAMO Samsung A-serija (UA `SM-A…`) na Android web-u.
+ *
+ * IZMERENI KOREN (04.08.2026, prijava „Samsung promaši sken za ~2 cm u odnosu
+ * na prikazani prozor", A16/A17, mob premeštanje): dekoder na SVIM putevima
+ * (BarcodeDetector / ZXing `decodeFromVideoElement` / jsQR hibrid) čita CEO
+ * video frejm, a nišan je ČISTO VIZUELAN — u 3.0 i identično u 1.0
+ * (`barcode.js:808` crta pun kadar; „presentation" režim menja samo CSS).
+ * Povrh toga je prikaz `object-fit: cover` ISEČAK frejma: na A16 (frejm
+ * 1280×720, ekran 412×800 portret) vidljivo je samo 371/1280 kolona (29%) —
+ * dekoder čita i ~455 px NEVIDLJIVOG kadra sa svake strane (≈5–7 cm scene na
+ * 10–15 cm daljine). Na štampanom RN-u / regalu gde barkodovi stoje na ~2 cm
+ * jedan od drugog, dekoder tako uhvati SUSEDNI kod van prozora (često i van
+ * ekrana) — korisnik vidi „promašaj od par cm".
+ *
+ * ZAŠTO GEJT, A NE UNIVERZALNA POPRAVKA: pun-frejm dekod nije mapping-greška
+ * nego zatečeno ponašanje SVIH uređaja — na S26/iPhone je baš to „radi
+ * perfektno" (tvrd uslov 04.08: tamo se ništa ne menja). Svako pravo poravnanje
+ * zone i nišana MENJA ponašanje (kod van prozora prestaje da se čita), pa
+ * univerzalni no-op dokaz strukturno ne postoji. Zato: gejt po profilu
+ * (camera-picker obrazac — A-serija je i tamo problematični teren), svuda
+ * drugde je ubačeni kod USPAVAN (gejt vrati `null` → identičan tok kao pre).
+ *
+ * Debug prekidač (terenska proba, isti obrazac kao `ss3_scan_decode_mode`):
+ * sessionStorage `ss3_scan_roi_gate` = `'on'` (forsiraj i van A-serije) /
+ * `'off'` (ugasi i na A-seriji). Čita se pri KAČENJU dekodera — promena važi
+ * od sledećeg otvaranja skenera.
+ */
+export function shouldLimitScanToReticle(): boolean {
+  try {
+    const v = sessionStorage.getItem('ss3_scan_roi_gate');
+    if (v === 'on') return true;
+    if (v === 'off') return false;
+  } catch {
+    /* storage blokiran — odluči po profilu */
+  }
+  if (!isAndroidWeb()) return false; // iPhone/desktop: NIKAD (tvrd uslov)
+  // Samsung A-serija: SM-A + 3 cifre (SM-A165F/A166B/A265F…). S-serija (SM-S…),
+  // Note (SM-N…), tableti (SM-T…) i ostali Androidi NAMERNO ne prolaze.
+  return /\bSM-A\d{3}/i.test(typeof navigator !== 'undefined' ? navigator.userAgent || '' : '');
+}
+
+/** Pravougaonik u VIDEO pikselima (intrinsic `videoWidth`×`videoHeight` prostor). */
+export interface VideoPxRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Klijent-rect (CSS px, `getBoundingClientRect`) → pravougaonik u VIDEO
+ * pikselima, za `<video>` sa `object-fit: cover` i podrazumevanim
+ * `object-position` (centar) — što su SVE skener ljuske (`absolute inset-0
+ * h-full w-full object-cover`).
+ *
+ * Letterbox/cover matematika:
+ *   scale = max(dispW/vidW, dispH/vidH)
+ *   offX  = (dispW − vidW·scale) / 2   (≤ 0 kad cover seče horizontalno)
+ *   offY  = (dispH − vidH·scale) / 2
+ *   videoX = (cssX − offX) / scale · videoY = (cssY − offY) / scale
+ * (ista klasa računa kao `mapPointerToVideoNormalizedPlane` u lokacije ljusci
+ * za tap-to-focus — ovde za pravougaonik nišana.)
+ *
+ * PRIMER (A16, frejm 1280×720, ekran 412×800 portret): scale = max(412/1280,
+ * 800/720) = 1,111 · offX = (412 − 1422,2)/2 = −505,1 · offY = 0. Nišan
+ * `min(92vw,420px)` = 379,0×118,5 CSS px centriran → u video px: 341,1×106,7
+ * na x∈[469,5; 810,6], y∈[306,7; 413,3] — od 1280×720 frejma koji dekoder čita.
+ *
+ * Oba recta dolaze iz istog layout-a (video i nišan su u istom overlay korenu),
+ * pa se `useVisualViewportFix` translacija korena PONIŠTAVA u razlici.
+ * Vraća `null` (fail-open — pozivalac tada NE gejtuje) kad video još nema
+ * metrike ili je presek prazan/degenerisan.
+ */
+export function mapClientRectToVideoRect(
+  video: HTMLVideoElement,
+  rect: DOMRectReadOnly,
+): VideoPxRect | null {
+  const vw = video.videoWidth || 0;
+  const vh = video.videoHeight || 0;
+  if (!vw || !vh) return null;
+  const vr = video.getBoundingClientRect();
+  if (!vr.width || !vr.height) return null;
+  const scale = Math.max(vr.width / vw, vr.height / vh);
+  const offX = (vr.width - vw * scale) / 2;
+  const offY = (vr.height - vh * scale) / 2;
+  const x1 = Math.max(0, Math.min(vw, (rect.left - vr.left - offX) / scale));
+  const y1 = Math.max(0, Math.min(vh, (rect.top - vr.top - offY) / scale));
+  const x2 = Math.max(0, Math.min(vw, (rect.right - vr.left - offX) / scale));
+  const y2 = Math.max(0, Math.min(vh, (rect.bottom - vr.top - offY) / scale));
+  const w = x2 - x1;
+  const h = y2 - y1;
+  if (w < 8 || h < 8) return null; // degenerisan presek — fail-open
+  return { x: x1, y: y1, w, h };
+}
+
+/**
+ * Margina prihvata oko nišana (od njegove širine/visine, sa SVAKE strane):
+ * gejt je po CENTRU koda, pa margina pokriva drhtaj ruke / kod malo preko ivice.
+ * Na A16 (nišan 341×107 video px): X ±51 px (≈0,8 cm scene), Y ±27 px (≈0,4 cm)
+ * → susedni kod na ~2 cm od nišana (≈120 px) ostaje ODBIJEN.
+ */
+const RETICLE_MARGIN_X_FRAC = 0.15;
+const RETICLE_MARGIN_Y_FRAC = 0.25;
+/** Keš mapiranog nišana — layout se ne meri na svaki frejm (30–60 fps). */
+const RETICLE_ROI_CACHE_MS = 200;
+
+type RoiCenterGate = (cx: number, cy: number) => boolean;
+
+/**
+ * Fabrika gejta „centar pogotka u prozoru nišana" za jedan attach.
+ * Vraća getter koji na svaki poziv da AKTUELAN gejt (nišan se pomera uživo —
+ * donji panel raste/pada) ili `null` = ne gejtuj (profil van gejta, nema
+ * regiona, video bez metrika…). SVE je fail-open: nijedan pad merenja ne sme
+ * da ućutka skener.
+ */
+function createReticleGate(
+  video: HTMLVideoElement,
+  acceptRegion?: () => DOMRectReadOnly | null,
+): () => RoiCenterGate | null {
+  if (!acceptRegion || !shouldLimitScanToReticle()) return () => null;
+  let cache: { at: number; gate: RoiCenterGate | null } | null = null;
+  return () => {
+    const now = Date.now();
+    if (cache && now - cache.at < RETICLE_ROI_CACHE_MS) return cache.gate;
+    let gate: RoiCenterGate | null = null;
+    try {
+      const rect = acceptRegion();
+      const roi = rect ? mapClientRectToVideoRect(video, rect) : null;
+      if (roi) {
+        const mx = roi.w * RETICLE_MARGIN_X_FRAC;
+        const my = roi.h * RETICLE_MARGIN_Y_FRAC;
+        const x1 = roi.x - mx;
+        const x2 = roi.x + roi.w + mx;
+        const y1 = roi.y - my;
+        const y2 = roi.y + roi.h + my;
+        gate = (cx, cy) => cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+      }
+    } catch {
+      gate = null;
+    }
+    cache = { at: now, gate };
+    return gate;
+  };
+}
+
+/** Centar ZXing result-points niza (video px — capture canvas je 1:1 sa videom). */
+function centerOfResultPoints(
+  pts: unknown,
+): { x: number; y: number } | null {
+  if (!Array.isArray(pts) || pts.length === 0) return null;
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (const p of pts as Array<{ getX?: () => number; getY?: () => number }>) {
+    try {
+      const x = typeof p?.getX === 'function' ? Number(p.getX()) : NaN;
+      const y = typeof p?.getY === 'function' ? Number(p.getY()) : NaN;
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        sx += x;
+        sy += y;
+        n += 1;
+      }
+    } catch {
+      /* tačka bez koordinata — preskoči */
+    }
+  }
+  return n ? { x: sx / n, y: sy / n } : null;
+}
+
 /**
  * Da li uopšte probati nativni BarcodeDetector — 1.0 KANON (barcode.js:415-428 +
  * commit 3cffea5): na Android web-u default je ZXING, ne BarcodeDetector. Razlozi
@@ -218,7 +391,9 @@ export interface VideoDecoderHandle {
 }
 
 interface NativeDetectorLike {
-  detect: (source: CanvasImageSource) => Promise<{ rawValue: string }[]>;
+  detect: (
+    source: CanvasImageSource,
+  ) => Promise<{ rawValue: string; boundingBox?: DOMRectReadOnly }[]>;
 }
 
 /** Koliko se čeka `BarcodeDetector.getSupportedFormats()` pre nego što je servis proglašen mrtvim. */
@@ -285,9 +460,21 @@ export async function attachVideoDecoder(opts: {
    * v. `shouldUseNativeDetector`). Bez ovoga Android ostaje na ZXing-u.
    */
   preferNative?: boolean;
+  /**
+   * Klijent-rect VIZUELNOG nišana (okvir `ScanReticle`) — getter, jer se nišan
+   * pomera uživo (donji panel raste/pada). Kad je gejt aktivan
+   * (`shouldLimitScanToReticle()` — SAMO Samsung A-serija / debug prekidač),
+   * pogodak čiji CENTAR padne van tog prozora (+margina) se IGNORIŠE kao da
+   * koda nema — dekoderska zona i nišan tako postaju isti pravougaonik u video
+   * prostoru. Svuda van gejta (S26, iPhone, desktop…) je ovo polje INERTNO:
+   * getter se nikad ne zove i tok je identičan kao bez njega.
+   */
+  acceptRegion?: () => DOMRectReadOnly | null;
 }): Promise<VideoDecoderHandle> {
-  const { video, formats, onRaw, preferMatching } = opts;
+  const { video, formats, onRaw, preferMatching, acceptRegion } = opts;
   const isStopped = opts.isStopped ?? (() => false);
+  // Gejt „centar pogotka u nišanu" — `() => null` svuda van SM-A profila.
+  const roiGate = createReticleGate(video, acceptRegion);
 
   // 1) Nativni BarcodeDetector — desktop Chromium / debug override / ekran koji
   //    ga eksplicitno traži (`preferNative`). Na Androidu NIJE default (1.0 kanon
@@ -359,7 +546,7 @@ export async function attachVideoDecoder(opts: {
         console.warn('[decoder] BarcodeDetector servis ne radi — prelazim na ZXing');
         if (dead()) return;
         try {
-          const inner = await attachZXingToVideo(video, formats, onRaw, dead, preferMatching);
+          const inner = await attachZXingToVideo(video, formats, onRaw, dead, preferMatching, roiGate);
           // Ljuska je u međuvremenu (lazy ZXing chunk ume da traje) zatvorila skener
           // → ugasi tek pokrenutu petlju i NE diraj handle.
           if (dead()) {
@@ -387,10 +574,21 @@ export async function attachVideoDecoder(opts: {
             // „ispali" još jedan rezultat u roditelja posle zatvaranja.
             if (dead()) return;
             consecErrors = 0; // uspešan poziv servisa (i prazan kadar je uspeh)
+            // Nišan-gejt (SM-A profil): kod čiji je centar van prozora nišana se
+            // odbacuje PRE izbora — `boundingBox` je u istom (intrinsic video)
+            // prostoru kao mapirani nišan. Bez geometrije = fail-open.
+            const gate = roiGate();
+            const hits = gate
+              ? found.filter((f) => {
+                  const b = f?.boundingBox;
+                  if (!b) return true;
+                  return gate(b.x + b.width / 2, b.y + b.height / 2);
+                })
+              : found;
             // Više kodova u kadru (npr. susedni red operacije na štampanom RN-u) →
             // pozivalac kroz `preferMatching` bira svoj format; bez predikata = prvi.
             const raw = pickPreferredRaw(
-              found.map((f) => (f?.rawValue ? String(f.rawValue) : '')),
+              hits.map((f) => (f?.rawValue ? String(f.rawValue) : '')),
               preferMatching,
             );
             if (raw) onRaw(raw);
@@ -473,14 +671,41 @@ export async function attachVideoDecoder(opts: {
           try {
             const img = ctx.getImageData(0, 0, cw, ch);
             const qr = jsQR(img.data, cw, ch, { inversionAttempts: 'attemptBoth' });
-            if (qr?.data) onRaw(String(qr.data));
+            // Nišan-gejt: na iOS-u NIJE u profilu (`shouldLimitScanToReticle` je
+            // `false` bez debug prekidača) → `gate == null` i tok je identičan
+            // starom. Kad ga terenska proba upali: koordinate su u DOWNSCALE
+            // canvas prostoru, pa se centar vraća u video px po osi (vw/cw, vh/ch);
+            // gejtovan QR pada na 1D granu kao da QR-a nema.
+            const gate = roiGate();
+            let qrText = qr?.data ? String(qr.data) : '';
+            if (qrText && gate && qr) {
+              const l = qr.location;
+              const cx =
+                ((l.topLeftCorner.x + l.topRightCorner.x + l.bottomLeftCorner.x + l.bottomRightCorner.x) / 4) *
+                (vw / cw);
+              const cy =
+                ((l.topLeftCorner.y + l.topRightCorner.y + l.bottomLeftCorner.y + l.bottomRightCorner.y) / 4) *
+                (vh / ch);
+              if (Number.isFinite(cx) && Number.isFinite(cy) && !gate(cx, cy)) qrText = '';
+            }
+            if (qrText) onRaw(qrText);
             else if (oneDReader && now - lastOneDAt >= IOS_ONED_ZX_MS) {
               lastOneDAt = now;
               try {
                 const res = (
-                  oneDReader as unknown as { decodeFromCanvas: (c: HTMLCanvasElement) => { getText: () => string } }
+                  oneDReader as unknown as {
+                    decodeFromCanvas: (c: HTMLCanvasElement) => {
+                      getText: () => string;
+                      getResultPoints?: () => unknown;
+                    };
+                  }
                 ).decodeFromCanvas(canvas);
-                if (res?.getText()) onRaw(res.getText());
+                let text = res?.getText() || '';
+                if (text && gate) {
+                  const c = centerOfResultPoints(res.getResultPoints?.());
+                  if (c && !gate(c.x * (vw / cw), c.y * (vh / ch))) text = '';
+                }
+                if (text) onRaw(text);
               } catch (e) {
                 if (!isDecodeMissError(zx, e)) console.warn('[decoder] zxing 1D:', e);
               }
@@ -503,7 +728,7 @@ export async function attachVideoDecoder(opts: {
   }
 
   // 3) ZXing nad <video> (ANDROID default — 1.0 kanon / iPhone item / Firefox…).
-  return attachZXingToVideo(video, formats, onRaw, isStopped, preferMatching);
+  return attachZXingToVideo(video, formats, onRaw, isStopped, preferMatching, roiGate);
 }
 
 /** Koliko se „pogrešan" kod drži pre nego što se ipak pusti (v. `preferMatching`). */
@@ -534,7 +759,10 @@ async function attachZXingToVideo(
   onRaw: (raw: string) => void,
   isStopped: () => boolean,
   preferMatching?: (raw: string) => boolean,
+  roiGate?: () => RoiCenterGate | null,
 ): Promise<VideoDecoderHandle> {
+  // Nišan-gejt getter — `null` gejt (profil van SM-A / bez regiona) = stari tok.
+  const gateOf = roiGate ?? (() => null);
   const hasQr = formats.includes('qr_code');
   const oneD = formats.filter((f) => f !== 'qr_code');
   const zx = await loadZXing();
@@ -562,7 +790,20 @@ async function attachZXingToVideo(
     controls = await reader.decodeFromVideoElement(video, (result, err) => {
       if (isStopped()) return;
       const now = Date.now();
-      const text = result?.getText() || '';
+      let text = result?.getText() || '';
+      // Nišan-gejt (SM-A profil): capture canvas ZXing-a je 1:1 sa video px
+      // (`createCaptureCanvas` = videoWidth×videoHeight; OneDReader na TRY_HARDER
+      // reverse dekodu vraća ogledalo tačaka — koordinate su uvek u pravom
+      // prostoru). Pogodak čiji je CENTAR van prozora nišana postaje PROMAŠAJ:
+      // ne javlja se i NE ulazi u held slot — kao da koda u kadru nema. Bez
+      // result-points geometrije = fail-open (pogodak prolazi kao do sada).
+      if (text) {
+        const gate = gateOf();
+        if (gate) {
+          const c = centerOfResultPoints(result?.getResultPoints?.());
+          if (c && !gate(c.x, c.y)) text = '';
+        }
+      }
       if (text) {
         let matches = true;
         if (preferMatching) {
