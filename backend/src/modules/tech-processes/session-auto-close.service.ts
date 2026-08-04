@@ -17,6 +17,30 @@ const SHOP_TZ = "Europe/Belgrade";
 /** Koliko nivoa sistematizacije da se penje tražeći nadređenog sa e-mailom. */
 const MAX_BOSS_LEVELS = 4;
 
+/**
+ * Prozor u kome se traži izlaz na kapiji, mereno od početka sesije (nalaz 04.08.2026).
+ *
+ * ŠTA SE DEŠAVALO PRE: upit je tražio izlaz uz uslov
+ * `event_ts_local::date = (started_at AT TIME ZONE tz)::date` — dakle SAMO u KALENDARSKOM DANU
+ * u kome je sesija počela. Noćna smena (npr. 22:00 → 06:00) izlaz ima SUTRA, pa se nije
+ * nalazio nikad: sesija se zatvarala kao „neispravno kucanje" sa 0 minuta, i uz to je šefu
+ * išao e-mail da radnik nije evidentirao izlaz. Radnik koji je odradio celu noćnu smenu
+ * dobijao je nula sati i prijavu nadređenom.
+ *
+ * ZAŠTO 18 SATI: mora da pokrije najdužu smenu sa prekovremenim (noćna 22:00 → 08:00 = 10 h),
+ * a da ne dohvati SLEDEĆE prisustvo istog radnika (na svakoj smenskoj rotaciji naredni ulazak
+ * je ≥20 h posle prethodnog početka).
+ *
+ * ⚠️ ŠTO OVAJ BROJ NE REŠAVA (i traži potvrdu vlasnika procesa, nije tehnička odluka):
+ * `max(event_ts_local)` znači „poslednji izlaz u prozoru" — to je namerno, jer kapija beleži i
+ * izlaz na pauzu, pa „poslednji izlaz radnog dana = otišao kući". Ali ako radnik u istom
+ * prozoru odradi i DRUGO prisustvo (npr. počne 22:00, ode 06:00, vrati se 14:00 i izađe 22:00),
+ * `max` uzme kasniji izlaz i sesiji pripiše više vremena. Precizno rešenje traži definiciju
+ * granice smene, ne konstantu — do tada je ovaj prozor strogo bolji od kalendarskog dana, jer
+ * kalendarski dan noćnu smenu promašuje UVEK, a ovo je promaši samo u dvostrukoj smeni.
+ */
+const GATE_EXIT_WINDOW_HOURS = 18;
+
 /** Viseća sesija (podskup `work_time_entries`) koju obrađujemo. */
 interface HangingSession {
   id: number;
@@ -260,16 +284,20 @@ export class SessionAutoCloseService {
     employeeId: string,
     startedAt: Date,
   ): Promise<Date | null> {
+    // Gornja granica je PROZOR OD POČETKA SESIJE, ne kalendarski dan — v.
+    // `GATE_EXIT_WINDOW_HOURS` za obrazloženje i za ono što ostaje otvoreno.
     const rows: { stopped_at: Date | null }[] = await sy15Db.$queryRawUnsafe(
       `SELECT (max(event_ts_local) AT TIME ZONE $2) AS stopped_at
          FROM attendance_events
         WHERE employee_id = $1::uuid
           AND direction = 'out'
           AND event_ts_local >= (($3::timestamptz) AT TIME ZONE $2)
-          AND event_ts_local::date = (($3::timestamptz) AT TIME ZONE $2)::date`,
+          AND event_ts_local <  (($3::timestamptz) AT TIME ZONE $2)
+                                + make_interval(hours => $4::int)`,
       employeeId,
       SHOP_TZ,
       startedAt,
+      GATE_EXIT_WINDOW_HOURS,
     );
     const v = rows?.[0]?.stopped_at ?? null;
     return v ? new Date(v) : null;
