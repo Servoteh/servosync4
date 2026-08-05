@@ -176,3 +176,35 @@ describe("KamataService.compute — grupa je JEDAN dokument", () => {
     expect(documentGroupKey(null, 11)).not.toBe("11");
   });
 });
+
+describe("Osnovica kamate ne uzima avanse koje smo MI platili dobavljaču (K-1)", () => {
+  /**
+   * IZMERENO (05.08.2026) nad registrom na produkciji: `side = 'receivable'` hvata PET
+   * konta, ne dva — pored kupaca 2040/2050 i **1520/1521/1530**, koji su avansi DATI
+   * dobavljačima (`partner_scope = 'supplier'`).
+   *
+   * Nad celim skupom: 522 nezatvorene stavke → posle netiranja 46.689.255,50 RSD na 64
+   * dokumenta → kamata po 9,5 % bila bi 2.492.005 RSD poslata SOPSTVENIM DOBAVLJAČIMA.
+   * Kvar je bio latentan samo zato što je tabela stopa prazna; budi ga prvi unos stope.
+   *
+   * Knjigovođa (odgovor 15): „Nemamo za sada" — dati avans jeste potraživanje, ali za
+   * isporuku robe, ne dospelo novčano potraživanje.
+   */
+  it("upit za konta traži i partnerScope = customer, ne samo receivable", async () => {
+    const { prisma } = makePrisma([]);
+
+    await new KamataService(prisma as never)
+      .compute({ partnerId: 5, calcDate: "2026-07-01T00:00:00.000Z" })
+      .catch(() => undefined); // ishod nije bitan — gleda se ARGUMENT upita
+
+    const arg = (prisma.saldakontoAccount.findMany.mock.calls as unknown[][])[0]?.[0] as
+      | { where?: Record<string, unknown> }
+      | undefined;
+
+    expect(arg?.where).toMatchObject({
+      side: "receivable",
+      partnerScope: "customer",
+      tracksOpenItems: true,
+    });
+  });
+});

@@ -149,17 +149,32 @@ export class KamataService {
     // payable stranu) — bez ovoga u osnovicu ulaze i dobavljačke (payable) stavke
     // istog komitenta i stavke sa ne-saldakonto konta.
     //
-    // ⏳ OTVORENO — `side: "receivable"` hvata PET konta, ne dva (izmereno 03.08.2026 nad
-    // seedom registra): pored kupaca 2040/2050 i **1520/1521/1530 = avansi koje smo MI
-    // PLATILI dobavljaču** (`partner_scope = 'supplier'`). Otvorena stavka
-    // `1520 / komitent 77 / AV-3/26 / 500.000,00 / dospeće 01.03.2026` tako uđe u kamatni
-    // list kao glavnica 500.000,00 / 154 dana / kamata 20.041,10 (stopa 9,50 %, presek
-    // 02.08.2026). Dati avans JESTE potraživanje, ali za ISPORUKU ROBE, ne dospelo novčano
-    // potraživanje — da li po njemu teče zatezna kamata je ugovorno/poresko pitanje, ne
-    // tehničko. Zato se ovde NIŠTA ne sužava dok knjigovođa ne presudi:
-    // `backend/docs/PREOSTALE_FAZE.md` → nalaz **K-1** (tamo je i tačan lek, jedan uslov).
+    // ✅ ZATVOREN NALAZ K-1 (05.08.2026) — uz `side` ide i `partnerScope: "customer"`.
+    //
+    // Sam `side: "receivable"` hvata PET konta, ne dva (izmereno nad registrom na
+    // produkciji): pored kupaca 2040/2050 i **1520/1521/1530 = avansi koje smo MI PLATILI
+    // DOBAVLJAČU** (`partner_scope = 'supplier'`). Otvorena stavka
+    // `1520 / komitent 77 / AV-3/26 / 500.000,00 / dospeće 01.03.2026` ulazila je u kamatni
+    // list kao glavnica 500.000,00 / 154 dana / kamata 20.041,10 (stopa 9,50 %).
+    //
+    // IZMERENO NAD CELIM SKUPOM (05.08.2026): 522 nezatvorene stavke; posle netiranja po
+    // dokumentu u obračun bi ušlo **46.689.255,50 RSD** na 64 dokumenta → kamata po 9,5 %
+    // iznosila bi **2.492.005 RSD koje bismo poslali sopstvenim dobavljačima**.
+    //
+    // Zašto se sad sme suziti: knjigovođa je na pitanje 15 („zatezna kamata i na avanse
+    // koje smo MI platili dobavljaču") odgovorio **„Nemamo za sada"**. Dati avans jeste
+    // potraživanje, ali za ISPORUKU ROBE — ne dospelo novčano potraživanje po kome teče
+    // zatezna kamata.
+    //
+    // ⚠️ Kvar je bio LATENTAN samo zato što je tabela stopa prazna — budi ga prvi unos
+    // stope. Zato ovo ulazi PRE seed-a registra stopa, ne posle.
+    // Brana: `kamata.service.spec.ts` → „osnovica ne uzima avanse dobavljačima".
     const receivableAccounts = await this.prisma.saldakontoAccount.findMany({
-      where: { side: "receivable", tracksOpenItems: true },
+      where: {
+        side: "receivable",
+        partnerScope: "customer",
+        tracksOpenItems: true,
+      },
       select: { account: true },
     });
     const accountCodes = receivableAccounts.map((a) => a.account);
