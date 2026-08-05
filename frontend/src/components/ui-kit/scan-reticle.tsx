@@ -1,5 +1,7 @@
 'use client';
 
+import type { Ref } from 'react';
+
 import { cn } from '@/lib/cn';
 
 /**
@@ -67,6 +69,7 @@ export function ScanReticle({
   laser,
   className,
   bottomInset = 0,
+  frameRef,
 }: {
   /** `barcode` = široki 3:1 prozor (1D nalepnice) · `qr` = kvadrat (QR karton). */
   variant: ScanReticleVariant;
@@ -79,6 +82,13 @@ export function ScanReticle({
    * Nišan i laser se centriraju u kadru umanjenom za toliko. `0` = staro ponašanje.
    */
   bottomInset?: number;
+  /**
+   * Ref na SAM OKVIR nišana (unutrašnja kutija sa ivicom) — ljuska ga prosleđuje
+   * dekoderu kao `acceptRegion` (nišan-gejt za Samsung A-seriju, 04.08.2026:
+   * `shouldLimitScanToReticle` u `lib/barcode-decoder`). Nišan i dalje NE dira
+   * ni kameru ni dekodiranje — ref je samo izvor geometrije prozora.
+   */
+  frameRef?: Ref<HTMLDivElement>;
 }) {
   const showLaser = laser ?? variant === 'barcode';
 
@@ -100,6 +110,7 @@ export function ScanReticle({
         style={{ bottom: bottomInset }}
       >
         <div
+          ref={frameRef}
           className={cn(
             'rounded-panel border-2 border-white/90',
             variant === 'barcode'

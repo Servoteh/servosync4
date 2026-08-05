@@ -5,7 +5,7 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { FormField } from '@/components/ui-kit/form-field';
 import { HALL_TYPES, useAllLocations, useMoveCage, type LocLocation } from '@/api/lokacije';
-import { LocationSelect } from './location-select';
+import { isStorageLocation, LocationSelect } from './location-select';
 
 const INPUT = 'w-full rounded-control border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent';
 
@@ -13,8 +13,14 @@ const INPUT = 'w-full rounded-control border border-line bg-surface-2 px-2.5 py-
 export function CageMoveDialog({ cage, onClose }: { cage: LocLocation; onClose: () => void }) {
   const moveCage = useMoveCage();
   const locs = useAllLocations('true');
+  // `isStorageLocation`: HALL_TYPES obuhvata i FIELD, a svih 27 aktivnih FIELD
+  // lokacija su reversi zaduženja (ZADU-*) — „Zaduzeno: <radnik>" NIJE ciljna
+  // hala za kavez (prijava 04.08, ista klasa kao izbor police).
   const halls = useMemo<LocLocation[]>(
-    () => (locs.data ?? []).filter((l) => HALL_TYPES.includes(l.locationType)),
+    () =>
+      (locs.data ?? []).filter(
+        (l) => HALL_TYPES.includes(l.locationType) && isStorageLocation(l),
+      ),
     [locs.data],
   );
 

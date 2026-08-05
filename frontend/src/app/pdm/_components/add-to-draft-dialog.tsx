@@ -11,6 +11,15 @@
 // upisujemo broj komada pre ubacivanja u nacrt primopredaje" — polje „Broj komada"
 // (default 1) šalje se kao `quantity` uz stavku. Kod puta „novi nacrt" količina ide
 // kroz URL (`?kom=`), pa je forma novog nacrta preuzme za glavni crtež.
+//
+// Dopuna 027/26 (Igor 30.07): kad je izabrani crtež SKLOP (ima pozicije u
+// sastavnici — rekurzivni flat iz GET /pdm/drawings/:id/bom), pre ubacivanja se
+// pita „Ubaciti i sve pozicije?" (AssemblyPositionsPrompt): „Da" → sklop + sve
+// proizvodne ODOBRENE pozicije kao stavke (količina = potreba × broj komada,
+// pozicija nosi mainDrawingId sklopa); „Ne" → samo crtež sklopa (staro
+// ponašanje). Kod puta „novi nacrt" odluka putuje kroz URL (`?pozicije=da|ne`)
+// pa je forma novog nacrta poštuje umesto da pita ponovo. X/Esc na pitanju =
+// otkaži (vrati se u ovaj dijalog, ništa se ne ubacuje).
 
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { useRouter } from 'next/navigation';
@@ -22,7 +31,16 @@ import { Can } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import { toast } from '@/lib/toast';
 import { formatNumber } from '@/lib/format';
-import { useAppendDraftItems, useOpenDraftsLookup } from '@/api/handovers';
+import {
+  useAppendDraftItems,
+  useOpenDraftsLookup,
+  type AppendDraftItemInput,
+} from '@/api/handovers';
+import { useBom, isApprovedPdmStatus } from '@/api/pdm';
+import {
+  AssemblyPositionsPrompt,
+  positionsCountLabel,
+} from '@/components/assembly-positions-prompt';
 
 /** Broj + naziv crteža koji se dodaje — prikaz u zaglavlju dijaloga. */
 export interface AddToDraftTarget {
@@ -32,6 +50,16 @@ export interface AddToDraftTarget {
 }
 
 type Mode = 'existing' | 'new';
+
+/** Srpska množina uz broj upisanih stavki: 1 stavka · 2–4 stavke · ostalo stavki. */
+function stavkeLabel(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${formatNumber(n)} stavka`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14))
+    return `${formatNumber(n)} stavke`;
+  return `${formatNumber(n)} stavki`;
+}
 
 const selectInput =
   'w-full rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink ' +
@@ -56,6 +84,8 @@ export function AddToDraftDialog({
   const [draftId, setDraftId] = useState<number | ''>('');
   // Broj komada za izradu (027/26) — unosi se PRE ubacivanja; default 1.
   const [quantity, setQuantity] = useState('1');
+  // Dopuna 027/26: pitanje „ubaciti i sve pozicije?" je otvoreno (sklop sa decom).
+  const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Reset pri svakom otvaranju; ako nema otvorenih nacrta forsiraj „novi".
@@ -64,47 +94,103 @@ export function AddToDraftDialog({
     setMode('existing');
     setDraftId('');
     setQuantity('1');
+    setAsking(false);
     setError(null);
   }, [open, target.drawingId]);
 
   const noOpenDrafts = !lookup.isLoading && drafts.length === 0;
   const effectiveMode: Mode = noOpenDrafts ? 'new' : mode;
 
+  // Dopuna 027/26: sastavnica ciljnog crteža — da li je SKLOP i koje pozicije
+  // nosi. Isti skup kao auto-popuna novog nacrta (drafts-tab): rekurzivni flat
+  // agregat, proizvodni (ne-nabavni) delovi; ODOBRENI ulaze, neodobreni se
+  // preskaču uz napomenu (backend bi ceo batch odbio sa 422). Pad upita (retke
+  // mreže/500) NE blokira dodavanje — ponaša se kao deo bez pozicija.
+  const bom = useBom(target.drawingId, open);
+  const flat =
+    bom.data?.data.drawing.id === target.drawingId ? bom.data.data.flat : [];
+  const producible = flat.filter((r) => r.drawing && !r.drawing.isProcurement);
+  const positions = producible.filter((r) => isApprovedPdmStatus(r.drawing!.pdmStatus));
+  const skippedUnapproved = producible
+    .filter((r) => !isApprovedPdmStatus(r.drawing!.pdmStatus))
+    .map((r) => r.drawing!.drawingNumber);
+
   // Ista validacija kao backend DTO: ceo broj ≥ 1 (inače 400).
   const qty = Number(quantity);
   const qtyValid = Number.isInteger(qty) && qty >= 1;
 
+  // Dok se sastavnica ne razreši ne znamo da li treba pitati za pozicije —
+  // „Dodaj" čeka (greška upita NE čeka: fallback = bez pozicija, vidi gore).
   const canSubmit =
-    qtyValid && (effectiveMode === 'new' ? true : draftId !== '' && !append.isPending);
+    qtyValid &&
+    !bom.isLoading &&
+    (effectiveMode === 'new' ? true : draftId !== '' && !append.isPending);
 
   function submit() {
-    if (!canSubmit) return;
+    if (!canSubmit || asking) return;
     setError(null);
+    // Sklop sa pozicijama → prvo pitanje Da/Ne (dopuna 027/26); bez pozicija
+    // (deo, prazna/nabavna sastavnica) → odmah ubaci samo crtež, bez pitanja.
+    if (positions.length > 0) {
+      setAsking(true);
+      return;
+    }
+    proceed(false);
+  }
+
+  /** Izvrši ubacivanje — `includePositions` = odgovor na pitanje (ili false bez pitanja). */
+  function proceed(includePositions: boolean) {
+    setAsking(false);
 
     if (effectiveMode === 'new') {
       onClose();
       // `kom` = broj komada sklopa u novom nacrtu (forma ga preuzme u zaglavlje,
-      // a auto-popuna sastavnice množi količine pozicija njime).
-      router.push(`/nacrti?noviCrtez=${target.drawingId}&kom=${qty}`);
+      // a auto-popuna sastavnice množi količine pozicija njime). `pozicije` =
+      // odgovor na pitanje — forma ga poštuje umesto da pita ponovo; bez
+      // pozicija se ne šalje (forma ionako nema šta da popuni).
+      const poz = positions.length > 0 ? `&pozicije=${includePositions ? 'da' : 'ne'}` : '';
+      router.push(`/nacrti?noviCrtez=${target.drawingId}&kom=${qty}${poz}`);
       return;
     }
 
-    // Postojeći nacrt — dodaj jednu stavku (crtež + količina) preko Agent D ugovora.
+    // Postojeći nacrt — sklop (crtež + količina), uz „Da" i sve pozicije:
+    // količina pozicije = potreba po 1 komadu sklopa × uneti broj komada,
+    // provenance = mainDrawingId sklopa + potreba (kolona „Vodeći sklop").
+    const items: AppendDraftItemInput[] = [
+      { drawingId: target.drawingId, quantity: qty },
+      ...(includePositions
+        ? positions.map((p) => ({
+            drawingId: p.drawing!.id,
+            quantity: p.totalQuantity * qty,
+            mainDrawingId: target.drawingId,
+            quantityDefinedInDrawing: p.totalQuantity,
+          }))
+        : []),
+    ];
     append.mutate(
-      { id: draftId as number, items: [{ drawingId: target.drawingId, quantity: qty }] },
+      { id: draftId as number, items },
       {
         onSuccess: (res) => {
           const { added, skipped } = res.meta;
           const draft = drafts.find((d) => d.id === draftId);
           const label = draft ? draft.draftNumber : String(draftId);
-          // `skipped` su BROJEVI crteža (string niz) — crtež koji je već u nacrtu.
-          const msg =
-            added > 0
-              ? `Dodato u nacrt ${label} — ${formatNumber(qty)} kom.`
-              : `Crtež je već u nacrtu ${label} (preskočeno).`;
-          const extra =
-            added > 0 && skipped.length > 0 ? ` Preskočeno: ${skipped.join(', ')}.` : '';
-          toast(msg + extra);
+          // `skipped` su BROJEVI crteža (string niz) — crteži koji su već u
+          // nacrtu (backend dedup — pozicija se NE duplira, samo preskače).
+          const parts: string[] = [];
+          if (added > 0) {
+            parts.push(
+              includePositions
+                ? `Dodato u nacrt ${label} — sklop + pozicije (${stavkeLabel(added)}).`
+                : `Dodato u nacrt ${label} — ${formatNumber(qty)} kom.`,
+            );
+          } else {
+            parts.push(`Ništa nije dodato — sve je već u nacrtu ${label}.`);
+          }
+          if (skipped.length > 0)
+            parts.push(`Preskočeno (već u nacrtu): ${skipped.join(', ')}.`);
+          if (includePositions && skippedUnapproved.length > 0)
+            parts.push(`Neodobreni u PDM-u (nisu ubačeni): ${skippedUnapproved.join(', ')}.`);
+          toast(parts.join(' '));
           onClose();
         },
         onError: (e) =>
@@ -130,6 +216,7 @@ export function AddToDraftDialog({
   }, [open]);
 
   return (
+    <>
     <Dialog
       open={open}
       onClose={onClose}
@@ -154,6 +241,19 @@ export function AddToDraftDialog({
           <span className="tnums font-semibold text-ink">{target.drawingNumber}</span>
           {target.name ? ` · ${target.name}` : ''}
         </p>
+
+        {/* Dopuna 027/26: „Dodaj" čeka sastavnicu (da zna da li da pita za
+            pozicije) — vidljiv razlog zašto je dugme sivo; sklop dobija i
+            najavu koliko pozicija nosi. */}
+        {bom.isLoading && (
+          <p className="text-xs text-ink-disabled">Proveravam sastavnicu crteža…</p>
+        )}
+        {!bom.isLoading && positions.length > 0 && (
+          <p className="text-xs text-ink-secondary">
+            Sklop ima {positionsCountLabel(positions.length)} u sastavnici — pre ubacivanja
+            bira se da li ulaze i pozicije.
+          </p>
+        )}
 
         {/* 027/26: broj komada se upisuje PRE ubacivanja u nacrt. U postojeći
             nacrt ide kao količina za izradu te stavke; u novi nacrt kao broj
@@ -246,6 +346,20 @@ export function AddToDraftDialog({
         )}
       </div>
     </Dialog>
+
+    {/* Dopuna 027/26: pitanje za pozicije sklopa — sibling dijalog preko ovog
+        (escape-layer daje Esc gornjem sloju). X/Esc = otkaži: vraća u ovaj
+        dijalog bez ubacivanja („Ne" je eksplicitno dugme, ne dismiss). */}
+    <AssemblyPositionsPrompt
+      open={asking}
+      drawingNumber={target.drawingNumber}
+      count={positions.length}
+      skippedUnapproved={skippedUnapproved}
+      onYes={() => proceed(true)}
+      onNo={() => proceed(false)}
+      onDismiss={() => setAsking(false)}
+    />
+    </>
   );
 }
 

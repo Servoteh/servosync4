@@ -49,8 +49,9 @@ export const BRANA_KOMITENT: Brana = {
   naslov: "Unos i izmena komitenta su zatvoreni — komitente vodi BigBit",
   poruka:
     "Komitente vodi BigBit — u ServoSync-u se ne unose ni ne menjaju (odluka 26.07.2026). " +
-    "Novog komitenta unesite u BigBit, pa javite administratoru da pokrene uvoz " +
-    "(Sinhronizacije → Pokreni sync); tek tada se komitent vidi ovde.",
+    "Novog komitenta unesite u BigBit — ovde stiže automatski noćnim uvozom: uneto do " +
+    "17:30 vidi se sutra ujutru, kasnije prekosutra. Bržeg puta nema (izvoz iz BigBita ide " +
+    "jednom dnevno) — ako je hitno, javite u BigBit-u da izvezu ranije.",
   uslovi: [
     {
       tekst:
@@ -98,8 +99,8 @@ export const BRANA_ARTIKAL: Brana = {
   naslov: "Unos i izmena artikla su zatvoreni — artikle vodi BigBit",
   poruka:
     "Artikle vodi BigBit — u ServoSync-u se ne unose ni ne menjaju. Nov artikal unesite u " +
-    "BigBit, pa javite administratoru da pokrene uvoz (Sinhronizacije → Pokreni sync); " +
-    "tek tada se artikal vidi ovde.",
+    "BigBit — ovde stiže automatski noćnim uvozom: uneto do 17:30 vidi se sutra ujutru, " +
+    "kasnije prekosutra. Bržeg puta nema (izvoz iz BigBita ide jednom dnevno).",
   uslovi: [
     {
       tekst:
@@ -123,8 +124,8 @@ export const BRANA_ARTIKAL: Brana = {
     },
     {
       tekst:
-        "Isključenje items iz noćnog posla NIJE zaštita: ručni POST /api/v1/sync/run i dalje radi pun deleteMany nad items.",
-      izvor: "backend/src/modules/scheduler/bigbit-sync-jobs.service.ts:44-60",
+        "Od 04.08.2026 (061/26) i ručni POST /api/v1/sync/run podrazumevano preskače items (isti skup kao noćni posao); eksplicitni items sme samo admin — ali kad ga admin pokrene, i dalje je pun deleteMany.",
+      izvor: "backend/src/modules/sync/sync.controller.ts (run) + table-ownership.ts (NIGHTLY_SYNC_EXCLUDED)",
     },
   ],
 };
@@ -452,8 +453,15 @@ export interface PoljeDef {
   labela: string;
   tip: TipPolja;
   obavezno?: boolean;
-  /** Koliko kolona mreže zauzima na širokom ekranu (1 podrazumevano). */
-  raspon?: 1 | 2 | 4;
+  /**
+   * Koliko kolona mreže zauzima na širokom ekranu (1 podrazumevano).
+   *
+   * Vrednosti 1/2/4 su nad ZATEČENOM 4-kolonskom mrežom (komitenti i sve sekcije bez
+   * `SekcijaDef.mreza`) i ponašaju se tačno kao pre. Vrednosti 3/6/8/12 imaju smisla
+   * samo u gustoj 12-kolonskoj mreži (`SekcijaDef.mreza = 12`), gde jedan BigBit red
+   * forme staje u jedan red mreže; u 4-kolonskoj mreži se ponašaju kao „ceo red“.
+   */
+  raspon?: 1 | 2 | 3 | 4 | 6 | 8 | 12;
   opcije?: OpcijaPolja[];
   /** Pomoćni tekst ispod polja — objašnjenje, ne poruka o grešci. */
   napomena?: string;
@@ -475,6 +483,25 @@ export interface SekcijaDef {
   /** Kratko objašnjenje sekcije (npr. odakle vrednosti dolaze). */
   opis?: string;
   polja: PoljeDef[];
+  /**
+   * Gustina mreže sekcije. IZOSTAVLJENO = zatečeno ponašanje (1 → 2 → 3 → 4 kolone po
+   * širini), pa se sekcije komitenta i sve starije sekcije crtaju identično kao pre.
+   *
+   * `12` uključuje gustu mrežu: BigBit forma „Unos artikala“ ima do 7 polja u jednom
+   * redu (npr. Kataloški broj · Bar kod · Naziv · Pakovanje · Jed. mere · Kilograma u
+   * komadu · Transp. pakovanje), što se u 4 kolone ne može preslikati bez lomljenja
+   * reda — a upravo redosled i susedstvo polja su ono što korisnici pamte. Zbog toga
+   * je svojstvo OPCIONO i uvedeno aditivno: nijedna postojeća sekcija ga nema.
+   */
+  mreza?: 12;
+  /** Sekcija se može sklopiti/otvoriti klikom na naslov. Izostavljeno = uvek otvorena. */
+  sklopivo?: boolean;
+  /**
+   * Sklopiva sekcija je pri otvaranju ekrana ZATVORENA. Koristi se za „Dodatna polja
+   * (van BigBit forme)“ — ništa se ne briše, ali ne sme da razbija naviku korisnika
+   * koji poznaje BigBit raspored. Bez `sklopivo` nema dejstvo.
+   */
+  podrazumevanoZatvoreno?: boolean;
 }
 
 /** Ravan redosled fokusa kroz sve sekcije — Enter ide TAČNO ovim redom. */

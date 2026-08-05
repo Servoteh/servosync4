@@ -142,10 +142,11 @@ export default function CustomersPage() {
         <div className="rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
           <p className="font-semibold text-ink">Komitente vodi BigBit — ovde je samo pregled</p>
           <p className="mt-1">
-            Novog komitenta unesite u BigBit, pa javite administratoru da pokrene uvoz
-            (Sinhronizacije → Pokreni sync) — tek tada se komitent vidi ovde i može da se bira na
-            dokumentima. Izmena podataka (adresa, PIB, kontakt) radi se isto u BigBit-u — ovde se
-            ne menja ništa.
+            Novog komitenta unesite u BigBit. Ovde stiže automatski noćnim uvozom (oko 03:45):
+            uneto do 17:30 vidljivo je sutra ujutru, kasnije prekosutra — tek tada može da se
+            bira na dokumentima. Dugme „Pokreni sync“ na Sinhronizacijama NE donosi nove
+            komitente i niko ga ne može ubrzati (izvoz iz BigBita ide jednom dnevno). Izmena
+            podataka (adresa, PIB, kontakt) radi se isto u BigBit-u — ovde se ne menja ništa.
           </p>
         </div>
 

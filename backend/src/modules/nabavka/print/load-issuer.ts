@@ -18,6 +18,7 @@ export async function loadPrimaryIssuer(
       companyName: true,
       address: true,
       city: true,
+      postalCode: true,
       taxId: true,
       registrationNumber: true,
       bankAccount: true,

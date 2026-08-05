@@ -31,7 +31,12 @@ import {
   SetMustChangePasswordDto,
   UpdateUserDto,
 } from "./dto/podesavanja-write.dto";
-import { AddGridEditorDto, SetAiModelDto } from "./dto/podesavanja-system.dto";
+import {
+  AddGridEditorDto,
+  AddNmPrimalacDto,
+  SetAiModelDto,
+} from "./dto/podesavanja-system.dto";
+import { MontazaNmPrimaociService } from "./montaza-nm-primaoci.service";
 import {
   BulkExpectationDto,
   CreateExpectationDto,
@@ -52,6 +57,8 @@ import {
 } from "./sync-switch.service";
 import { CompanyDetailsService } from "./company-details.service";
 import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
+import { PaymentAccountsService } from "./payment-accounts.service";
+import type { UpdatePaymentAccountDto } from "./dto/podesavanja-payment-account.dto";
 import {
   BulkJobPositionProfileDto,
   CreateDepartmentDto,
@@ -92,6 +99,8 @@ export class PodesavanjaController {
     private readonly planeri: PredmetPlaneriService,
     private readonly syncSwitch: SyncSwitchService,
     private readonly companyDetails: CompanyDetailsService,
+    private readonly paymentAccounts: PaymentAccountsService,
+    private readonly nmPrimaoci: MontazaNmPrimaociService,
   ) {}
 
   // ----- Korisnici i pristup (settings.users) -----
@@ -210,6 +219,36 @@ export class PodesavanjaController {
   @Delete("grid-editors/:email")
   removeGridEditor(@Req() req: AuthedRequest, @Param("email") email: string) {
     return this.settings.removeGridEditor(req.user.email, email);
+  }
+
+  // ----- 034/26: primaoci obaveštenja o neusaglašenosti na montaži (settings.system) -----
+  // Ista kapija kao tab Notifikacije u kom se lista uređuje (= samo admin — „Nenad
+  // Jaraković može da koriguje"). CRUD obrazac grid-editors; „ukloni" je SOFT
+  // (active=FALSE, istorija ostaje) — doktrina tabele `montaza_nm_primaoci`.
+
+  @Get("montaza-nm-primaoci")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  listNmPrimaoci() {
+    return this.nmPrimaoci.list();
+  }
+
+  /** Dodaj primaoca (email + ime? + note?). Aktivan duplikat → 409; ugašen se reaktivira. */
+  @Post("montaza-nm-primaoci")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  addNmPrimalac(@Req() req: AuthedRequest, @Body() dto: AddNmPrimalacDto) {
+    return this.nmPrimaoci.add(
+      req.user.userId,
+      dto.email,
+      dto.fullName,
+      dto.note,
+    );
+  }
+
+  /** Ugasi primaoca po email-u (soft). Nepostojeći/već ugašen → 404. */
+  @Delete("montaza-nm-primaoci/:email")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  removeNmPrimalac(@Req() req: AuthedRequest, @Param("email") email: string) {
+    return this.nmPrimaoci.remove(req.user.userId, email);
   }
 
   // ----- Organizacija: struktura (settings.users) -----
@@ -584,10 +623,14 @@ export class PodesavanjaController {
 
   // ----- Prekidač noćnog BigBit uvoza (stavka B, 26.07.2026) -----
   // ČITANJE stanja = settings.system (ista kapija kao tab Integracije u kom se prikazuje).
-  // GAŠENJE/PALJENJE = sync.run — administrativna vlast nad sinhronizacijom, NAMERNO odvojena
-  // od običnog čitanja (danas je i jedno i drugo admin-only, ali podela ostaje ispravna kad
-  // se settings.system nekom doda). Bez guarda za `run-now` ovde — to je scheduler ruta;
-  // ugovor je `SyncSwitchService.assertEnabled` koji sinteza zove sa svakog ulaza.
+  // GAŠENJE/PALJENJE = settings.system (admin-only). Do 04.08.2026 je ovde stajao
+  // `sync.run`, ali je zahtevom 061/26 taj ključ proširen na tehnologe + planere
+  // („Pokreni sync" na /syncs) — a prekidač noćnog uvoza je ADMINISTRATIVNA vlast
+  // (gasi/pali kanal za celu firmu) i NE SME da se proširi zajedno sa dugmetom.
+  // `settings.system` je danas admin-only i čuva prvobitnu nameru; ako se ikad
+  // nekome doda, preklop prekidača ide uz istu kapiju kao i tab koji ga prikazuje.
+  // Bez guarda za `run-now` ovde — to je scheduler ruta; ugovor je
+  // `SyncSwitchService.assertEnabled` koji sinteza zove sa svakog ulaza.
 
   @Get("sync/bigbit")
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
@@ -596,7 +639,7 @@ export class PodesavanjaController {
   }
 
   @Put("sync/bigbit")
-  @RequirePermission(PERMISSIONS.SYNC_RUN)
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
   async setBigbitSyncSwitch(
     @Req() req: AuthedRequest,
     @Body() dto: SetSyncSwitchDto,
@@ -626,6 +669,27 @@ export class PodesavanjaController {
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
   updateCompanyDetails(@Body() dto: UpdateCompanyDetailsDto) {
     return this.companyDetails.update(dto.id ?? null, dto);
+  }
+
+  // ----- Devizni računi (blok banke na izvoznoj fakturi) -----
+  // IBAN, SWIFT, naziv i adresa banke i valuta. Bez njih izvozna faktura NEMA podatke za
+  // uplatu i štampa je odbija (`invoice-pdf.service.ts` → `loadForeignAccount`), pa je ovo
+  // ekran koji odblokira izvoz. Samo IZMENA zatečenih računa — skup redova i njihove
+  // ključeve drži BigBit (`payment-accounts.service.ts` objašnjava zašto).
+
+  @Get("firma/racuni")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  listPaymentAccounts(@Query("companyId") companyId?: string) {
+    return this.paymentAccounts.list(companyId ? Number(companyId) : null);
+  }
+
+  @Put("firma/racuni/:id")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  updatePaymentAccount(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdatePaymentAccountDto,
+  ) {
+    return this.paymentAccounts.update(id, dto);
   }
 
   // ----- :id rute POSLEDNJE -----

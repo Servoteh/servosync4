@@ -1,0 +1,33 @@
+---
+description: Zahtev za izmenu se UVEK odnosi na ono što je na origin/main, ne na zatečenu granu
+alwaysApply: true
+---
+
+# Izmene se odnose na `main`
+
+Pravilo (Nenad, 04.08.2026): **„kad pišem o izmenama, uvek su izmene nečega što je već na
+mainu"**. Zahtev tipa „popravi X", „X treba ovako da izgleda", „dodaj Y u X" odnosi se na
+verziju koja je na `origin/main` — to je ono što ljudi koriste — a ne na stanje grane u kojoj
+se zatekneš.
+
+**Pre prve linije koda:**
+
+```bash
+git fetch origin main
+git rev-list --count HEAD..origin/main            # koliko je grana iza
+git ls-tree -r --name-only origin/main -- <domen> # postoji li to već na main-u
+git show origin/main:<putanja>                    # kako izgleda na main-u
+```
+
+Pretraga radne kopije **nije dokaz da nešto ne postoji** — može postojati na `main`-u, a grana
+biti stara. Ako je grana zaostala, radi na svežoj grani od `origin/main` (zaseban worktree),
+ne rebase-uj stotine commitova.
+
+**Baza:** izmeri produkciju pre pisanja migracije (postoje li tabele, koje su sekvence i CHECK
+constraint-i). Dokumentacija na staroj grani ume da opisuje stanje koje više ne postoji.
+
+**Šta je koštalo:** 04.08.2026. je na grani 285 commitova iza main-a napravljen paralelan modul
+„Artikli" (main ga već ima), uz migraciju koja bi na produkciji oborila unos artikala.
+
+Puno objašnjenje: [CLAUDE.md](../../CLAUDE.md) · brane: `.claude/hooks/provera-grane.sh`,
+`.github/workflows/ci-brana-grane.yml`.

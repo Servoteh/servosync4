@@ -8,6 +8,8 @@ import { BadRequestException } from "@nestjs/common";
 export interface CreateProformaItemInput {
   itemId?: number; // artikal iz šifarnika (null za slobodnu uslužnu stavku)
   description?: string; // opis stavke (obavezan ako nema itemId)
+  /** j.m. za štampu (kolona `j.m.` / `Unit`); za slobodnu uslužnu stavku jedini izvor. Max 5. */
+  unit?: string;
   quantity: number;
   /** eksplicitna VP cena (za slobodnu uslužnu stavku); inače iz PricingService. */
   unitPrice?: number;
@@ -24,6 +26,18 @@ export interface CreateProformaDto {
   customerId: number; // kupac (meki ref customers.id)
   documentDate?: string; // ISO datum; default danas
   dueDate?: string; // valuta / rok plaćanja (ISO)
+  /**
+   * DATUM PROMETA dobara i usluga (ISO) — obavezan element računa po Zakonu o PDV
+   * (docs/FAKTURE_ZAKONSKA_USKLADJENOST.md §1.1 t.5). Ide na štampu i u SEF
+   * (`cac:Delivery/cbc:ActualDeliveryDate`).
+   *
+   * OPCIONO NA PREDRAČUNU, I TO NAMERNO: predračun/ponuda se izdaje PRE prometa, pa
+   * u tom trenutku datum prometa često još ne postoji. Podrazumevanu vrednost zato NE
+   * postavljamo ovde (izmišljen datum na predračunu bi se prepisom preneo na račun kao
+   * da je stvaran) — nego tek pri KNJIŽENJU računa, gde je vidljiv i logovan
+   * (fakturisanje.service.ts, postInvoice).
+   */
+  supplyDate?: string;
   currency?: string; // RSD (domaći) | EUR (izvoz)
   isExport?: boolean; // izvoz (ExportInvoicePolicy)
   /** Broj narudžbenice kupca → UBL cac:OrderReference (SEF javni sektor, D6). Max 50. */
@@ -58,6 +72,12 @@ export function validateCreateProforma(dto: CreateProformaDto): void {
   if (dto.dueDate !== undefined && Number.isNaN(Date.parse(dto.dueDate))) {
     errors.push("Valuta (rok plaćanja) nije ispravna.");
   }
+  if (
+    dto.supplyDate !== undefined &&
+    Number.isNaN(Date.parse(dto.supplyDate))
+  ) {
+    errors.push("Datum prometa nije ispravan.");
+  }
 
   if (dto.poNumber !== undefined) {
     if (typeof dto.poNumber !== "string") {
@@ -79,6 +99,14 @@ export function validateCreateProforma(dto: CreateProformaDto): void {
         errors.push(`Stavka ${i + 1}: artikal ili opis je obavezan.`);
       if (typeof it.quantity !== "number" || !(it.quantity > 0))
         errors.push(`Stavka ${i + 1}: količina mora biti veća od 0.`);
+      if (it.unit !== undefined) {
+        if (typeof it.unit !== "string")
+          errors.push(`Stavka ${i + 1}: jedinica mere mora biti tekst.`);
+        else if (it.unit.trim().length > 5)
+          errors.push(
+            `Stavka ${i + 1}: jedinica mere sme imati najviše 5 karaktera.`,
+          );
+      }
       if (
         it.discountPercent !== undefined &&
         (typeof it.discountPercent !== "number" ||

@@ -15,6 +15,7 @@ import type {
   ContentTable,
   TableCell,
 } from "pdfmake/interfaces";
+import { companyAddressLine } from "../../../common/company-address";
 import { SERVOTEH_LOGO_DATA_URL } from "../../documents/servoteh-logo";
 import {
   BADGE_PALETTE,
@@ -70,6 +71,8 @@ export interface IssuerInfo {
   companyName: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj (O-F10) — od 03.08.2026. zasebna kolona, ne više deo mesta. */
+  postalCode?: string | null;
   taxId: string | null;
   registrationNumber: string | null;
   bankAccount: string | null;
@@ -85,6 +88,7 @@ interface CompanyReader {
       companyName: string;
       address: string | null;
       city: string | null;
+      postalCode?: string | null;
       taxId: string | null;
       registrationNumber: string | null;
       bankAccount: string | null;
@@ -106,6 +110,7 @@ export async function loadIssuer(prisma: CompanyReader): Promise<IssuerInfo> {
       companyName: true,
       address: true,
       city: true,
+      postalCode: true,
       taxId: true,
       registrationNumber: true,
       bankAccount: true,
@@ -133,7 +138,9 @@ export async function loadIssuer(prisma: CompanyReader): Promise<IssuerInfo> {
 export function issuerLines(issuer: IssuerInfo): string[] {
   return [
     issuer.companyName,
-    [issuer.address, issuer.city].filter(Boolean).join(", "),
+    // Poštanski broj i mesto su dva podatka (O-F10) — spaja ih jedan zajednički
+    // formatirač, da se deset štampi ne raziđe u različite oblike iste adrese.
+    companyAddressLine(issuer.address, issuer.postalCode, issuer.city),
     issuer.taxId ? `PIB: ${issuer.taxId}` : "",
     issuer.registrationNumber ? `MB: ${issuer.registrationNumber}` : "",
     issuer.bankAccount ? `Tekući račun: ${issuer.bankAccount}` : "",

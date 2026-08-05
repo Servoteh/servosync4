@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { UnprocessableEntityException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { assertIban, assertSwift, normalizeBankCode } from "./bank-codes";
 import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
 
 /**
@@ -12,6 +13,13 @@ import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.
  * backendu (`grep prisma.company.` → 16 pogodaka, svi `findFirst`/`findUnique` iz štampi).
  * Podaci su dolazili isključivo iz BigBit sinhronizacije, pa se IBAN i SWIFT — koje
  * `invoice-pdf.service.ts` čita za ino fakturu — nisu mogli uneti nigde.
+ *
+ * ⚠️ IBAN/SWIFT OVDE SU REZERVA, NE GLAVNI IZVOR (ispravka 02.08.2026). Blok banke na
+ * ino fakturi traži četiri podatka — IBAN, SWIFT, naziv banke i adresu banke — a
+ * `companies` ima samo prva dva. Zato taj blok čita DEVIZNI RAČUN iz `payment_accounts`
+ * (ekran „Podešavanja → Firma → Devizni računi", `payment-accounts.service.ts`); ova dva
+ * polja ostaju kao poslednja rezerva kad devizni račun nije popunjen, i kao jedini izvor
+ * za avansni račun / knjižno odobrenje / zaduženje (`loadLegacyIssuer`).
  *
  * NAMERNO USKO: menja se SAMO ono što se štampa i što nema drugi ekran. Ne dira se
  * nijedna od ~60 BigBit zastavica ponašanja (`kepu*`, `pos*`, `galeb*`, `autoLock*`…) —
@@ -29,6 +37,7 @@ const EDITABLE_SELECT = {
   companyName: true,
   address: true,
   city: true,
+  postalCode: true,
   municipality: true,
   phone: true,
   fax: true,
@@ -51,6 +60,7 @@ const MAX_LEN: Record<string, number> = {
   companyName: 150,
   address: 50,
   city: 50,
+  postalCode: 10,
   municipality: 50,
   phone: 50,
   fax: 50,
@@ -78,6 +88,7 @@ const FIELD_LABEL: Record<string, string> = {
   companyName: "Naziv firme",
   address: "Adresa",
   city: "Mesto",
+  postalCode: "Poštanski broj",
   municipality: "Opština",
   phone: "Telefon",
   fax: "Faks",
@@ -154,6 +165,7 @@ export class CompanyDetailsService {
     put("companyName", dto.companyName);
     put("address", dto.address);
     put("city", dto.city);
+    put("postalCode", dto.postalCode);
     put("municipality", dto.municipality);
     put("phone", dto.phone);
     put("fax", dto.fax);
@@ -167,8 +179,8 @@ export class CompanyDetailsService {
     put("owner", dto.owner);
     put("invoiceIssuingPlace", dto.invoiceIssuingPlace);
     put("footerText", dto.footerText);
-    put("iban", normalizeCode(dto.iban));
-    put("swift", normalizeCode(dto.swift));
+    put("iban", normalizeBankCode(dto.iban));
+    put("swift", normalizeBankCode(dto.swift));
 
     if (dto.companyName !== undefined && data.companyName == null)
       throw new UnprocessableEntityException(
@@ -195,44 +207,6 @@ export class CompanyDetailsService {
   }
 }
 
-/** IBAN/SWIFT bez razmaka i velikim slovima (kanonski oblik za poređenje i za UBL). */
-function normalizeCode(
-  v: string | null | undefined,
-): string | null | undefined {
-  if (v === undefined) return undefined;
-  if (v == null) return null;
-  return v.replace(/\s+/g, "").toUpperCase();
-}
-
-/**
- * IBAN — struktura po ISO 13616 (2 slova zemlje + 2 kontrolne cifre + do 30 alfanumerika)
- * i MOD-97 kontrola po ISO 7064. Ovo NIJE kozmetika: pogrešan IBAN na ino fakturi znači
- * da uplata ne stigne, a greška se otkrije tek kad kupac pozove.
- */
-function assertIban(iban: string): void {
-  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{1,30}$/.test(iban))
-    throw new UnprocessableEntityException(
-      "IBAN nije ispravnog oblika (dva slova zemlje, dve kontrolne cifre, pa broj računa).",
-    );
-  // MOD-97: prva 4 znaka na kraj, slova → brojevi (A=10 … Z=35), ostatak deljenja mora biti 1.
-  const rearranged = iban.slice(4) + iban.slice(0, 4);
-  let remainder = 0;
-  for (const ch of rearranged) {
-    const part = /\d/.test(ch)
-      ? ch
-      : String(ch.charCodeAt(0) - "A".charCodeAt(0) + 10);
-    for (const d of part) remainder = (remainder * 10 + Number(d)) % 97;
-  }
-  if (remainder !== 1)
-    throw new UnprocessableEntityException(
-      "IBAN ne prolazi kontrolu ispravnosti (MOD-97) — proverite da nije pogrešno prepisan.",
-    );
-}
-
-/** SWIFT/BIC po ISO 9362: 4 slova banka + 2 slova zemlja + 2 alfanum. lokacija + opciono 3 filijala. */
-function assertSwift(swift: string): void {
-  if (!/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(swift))
-    throw new UnprocessableEntityException(
-      "SWIFT/BIC mora imati 8 ili 11 znakova (npr. DBDBRSBG ili DBDBRSBGXXX).",
-    );
-}
+// Provera IBAN-a (MOD-97) i SWIFT-a (ISO 9362) je preseljena u `bank-codes.ts` —
+// isti podatak se unosi i na deviznom računu (`payment-accounts.service.ts`), pa
+// provera ne sme da postoji u dve kopije koje mogu da se raziđu.

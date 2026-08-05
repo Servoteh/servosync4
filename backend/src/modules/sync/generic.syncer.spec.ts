@@ -502,9 +502,11 @@ describe('GenericSyncer — document_types (aditivno, 4.0 seed preživljava)', (
  * `items` je full refresh (`watermark: null`): `deleteMany({})` + `createMany`
  * pod `session_replication_role='replica'`. Bez zaštite bi 4.0-native artikal
  * bio OBRISAN — a `price_list_entries` i `work_order_item_components` ostali
- * siročad, jer FK trigeri u `replica` režimu ćute. Isključenje iz noćnog posla
- * (`NIGHTLY_SYNC_EXCLUDED`) to NE pokriva: ručni `POST /sync/run` radi isti
- * `deleteMany`. Zaštita zato živi u syncer-u, ne u rasporedu poslova.
+ * siročad, jer FK trigeri u `replica` režimu ćute. Isključenje iz prolaza
+ * (`DEFAULT_SYNC_EXCLUDED`) to NE pokriva u potpunosti ni posle 061/26 i
+ * njegovog reopena: i noćni posao i ručni `POST /sync/run` ga od 04.08.2026
+ * podrazumevano preskaču, ali admin i dalje može eksplicitno da pokrene items —
+ * isti `deleteMany`. Zaštita zato živi u syncer-u, ne u rasporedu poslova.
  */
 describe('GenericSyncer — rezervisan opseg 4.0-native ključeva', () => {
   const DELEGATE: Record<string, string> = {

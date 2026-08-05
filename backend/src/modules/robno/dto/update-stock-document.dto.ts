@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsIn,
   IsInt,
   IsOptional,
   IsPositive,
@@ -9,6 +10,10 @@ import {
   type ValidationArguments,
   type ValidationOptions,
 } from "class-validator";
+import {
+  KNOWN_VAT_CODES,
+  unknownVatCodeMessage,
+} from "../../gl/posting/vat-rates";
 
 /**
  * IZMENA POSTOJEĆEG ROBNOG DOKUMENTA (zaglavlje + stavke).
@@ -170,9 +175,18 @@ class StockDocumentItemFieldsDto {
   @IsOptional() @IsDecimalLike() fxPurchasePrice?: string | number; // DevNabCena
   @IsOptional() @IsDecimalLike() customsRate?: string | number; // CarStopa %
 
-  /** Šifra poreske tarife (`tax_rates.code`) — ulazi u KalkMP. */
+  /**
+   * Šifra poreske tarife — ulazi u KalkMP (maloprodajnu cenu) i u PDV kofe glavne knjige.
+   *
+   * ⚠️ Do 02.08.2026. je bila goli `@IsString`: prošlo bi „18", „99", bilo šta. Odatle je
+   * nepoznata šifra išla u `CalculationService.taxRateOf` i `PostingEngine`, gde je oba
+   * puta davala tihu nulu — maloprodajna cena bez PDV-a i nalog bez PDV linije. Spisak
+   * dozvoljenih je IZVEDEN iz `VAT_RATE_BY_CODE` (nalaz S3).
+   */
   @IsOptional()
-  @IsString({ message: "Polje 'goodsTaxRateCode' mora biti tekst." })
+  @IsIn([...KNOWN_VAT_CODES], {
+    message: `Polje 'goodsTaxRateCode': ${unknownVatCodeMessage("$value")}`,
+  })
   goodsTaxRateCode?: string;
 
   /**

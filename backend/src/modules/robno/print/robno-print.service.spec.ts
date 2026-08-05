@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { Prisma } from "@prisma/client";
-import type { TDocumentDefinitions } from "pdfmake/interfaces";
+import type { TableCell, TDocumentDefinitions } from "pdfmake/interfaces";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { PdfService } from "../../documents/pdf.service";
 import type {
@@ -243,7 +243,12 @@ function setupStock(doc: ReturnType<typeof makeDoc>) {
       return Promise.resolve(Buffer.from("%PDF-1.4"));
     }),
   };
-  const barcode = { code128Svg: jest.fn().mockReturnValue("<svg/>") };
+  // `qrcodeSvg` je dodat `BarcodeService`-u zbog QR koda u memorandumu izlazne fakture;
+  // ovaj servis ga ne zove, ali lažni objekat mora da zadovolji ceo tip.
+  const barcode = {
+    code128Svg: jest.fn().mockReturnValue("<svg/>"),
+    qrcodeSvg: jest.fn().mockReturnValue("<svg/>"),
+  };
   // Trag štampe (`document_prints`): u testu se ne piše u bazu — dupli `register`
   // vraća drugi primerak, čime se pokriva i put „KOPIJA" bez Prisma mock-a.
   const prints = makePrintsStub();
@@ -360,6 +365,104 @@ describe("StockDocumentPdfService", () => {
     for (const sig of ["Robu izdao", "Preuzeo za prevoz", "Robu primio"]) {
       expect(t).toContain(sig);
     }
+  });
+
+  /**
+   * S5 — KOLONA „PDV %” JE BILA PRAZNA NA PRODUKCIJI (sedmi krug, 02.08.2026).
+   *
+   * `loadTaxRates()` je čitala SAMO `tax_rates`, a ta tabela ima 0 redova (v. N1-a),
+   * pa je `Map` bio prazan i `taxRates.get(...) ?? 0` je dao 0 na svakom redu — kolona
+   * je izlazila prazna (`rate ? … : ""`). Ovaj obrazac je bio jedini čitalac stope BEZ
+   * rezerve na `VAT_RATE_BY_CODE`; kalkulacija i lookup je odavno imaju.
+   *
+   * Testovi iznad to NISU hvatali jer njihov lažni Prisma vraća red `{code:"3"}` —
+   * ovde se registar namerno prazni, kako stvarno jeste na produkciji.
+   */
+  /**
+   * Vrednosti kolone `header` po redovima tabele u kojoj se ta kolona nalazi.
+   * Gleda BAŠ ĆELIJU, ne ceo tekst dokumenta: „20" se u otpremnici pojavljuje i u
+   * količinama i u datumu, pa bi `textOf(...).toContain("20")` bio zelen i kad je
+   * kolona prazna — što je i bio ceo nalaz S5.
+   */
+  function columnValues(docDef: TDocumentDefinitions, header: string): string[] {
+    const out: string[] = [];
+    const walk = (node: unknown): void => {
+      if (node == null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const n of node) walk(n);
+        return;
+      }
+      const obj = node as Record<string, unknown>;
+      const table = obj.table as { body?: TableCell[][] } | undefined;
+      const body = table?.body;
+      if (body?.length) {
+        const headRow = body.find((r) =>
+          r.some((c) => (c as { text?: unknown })?.text === header),
+        );
+        if (headRow) {
+          const idx = headRow.findIndex(
+            (c) => (c as { text?: unknown })?.text === header,
+          );
+          // Redovi POSLE zaglavlja, bez reda zbira (`colSpan` na prvoj ćeliji).
+          for (const row of body.slice(body.indexOf(headRow) + 1)) {
+            if ((row[0] as { colSpan?: number })?.colSpan) continue;
+            out.push(String((row[idx] as { text?: unknown })?.text ?? ""));
+          }
+        }
+      }
+      for (const v of Object.values(obj)) walk(v);
+    };
+    walk(docDef.content);
+    return out;
+  }
+
+  it("otpremnica: kolona PDV % radi i sa PRAZNIM registrom `tax_rates`", async () => {
+    const s = setupStock(
+      makeDoc({
+        kind: "IZ",
+        customerId: 7,
+        supplierId: null,
+        // Stavka 1 = šifra 3 (20 %), stavka 2 = šifra 4 (NIZA 10 %) — baš onaj jedini
+        // artikal sa produkcije (id=12852, DPTR10-04612).
+        items: [makeItem(1), makeItem(2, { goodsTaxRateCode: "4" })],
+      }),
+    );
+    s.prisma.taxRate.findMany.mockResolvedValue([]);
+
+    await s.service.buildPdf(1, "otpremnica", null);
+
+    // Staro: `["", ""]` — obe ćelije prazne, jer je registar prazan a rezerve nije bilo.
+    expect(columnValues(s.docDef, "PDV %")).toEqual(["20", "10"]);
+  });
+
+  /**
+   * Drugi deo istog nalaza: efektivna stopa je ZBIR PET kolona (`R_Tarife_ZbirnaStopa`),
+   * a čitalo se samo `base_rate`. Tarifa 4 nosi stopu u koloni `railway_rate`, pa bi se —
+   * čim registar dobije redove — štampalo 0 % dok svi ostali računaju 10 %.
+   */
+  it("otpremnica: stopa iz registra je ZBIR pet kolona, ne samo `base_rate`", async () => {
+    const s = setupStock(
+      makeDoc({
+        kind: "IZ",
+        customerId: 7,
+        supplierId: null,
+        items: [makeItem(1, { goodsTaxRateCode: "4" })],
+      }),
+    );
+    s.prisma.taxRate.findMany.mockResolvedValue([
+      {
+        code: "4",
+        baseRate: 0,
+        railwayRate: 10,
+        cityRate: 0,
+        warRate: 0,
+        specialRate: 0,
+      },
+    ]);
+
+    await s.service.buildPdf(1, "otpremnica", null);
+    // Staro (`select: { code, baseRate }`): „" — `base_rate` tarife 4 je 0.
+    expect(columnValues(s.docDef, "PDV %")).toEqual(["10"]);
   });
 
   it("prenosnica nosi OBA magacina (BigBit štampa samo odredište)", async () => {

@@ -27,10 +27,14 @@ function makePrisma(invoice: {
   copiedFromDocId: number | null;
   stockDocumentId?: number | null;
 }) {
+  // ⚠️ Brojevi su u obliku koji numeracija STVARNO izdaje (O-F1/O-F7): predračun
+  // `PROF-1/26`, račun `1/26`. Ranije je ovde stajao treći, nepostojeći oblik
+  // (`PROF-0001/2026` / `0001/2026`) — ni stari BigBit ni novi naš, pa je fixture
+  // prikrivao razliku između zatečenih i novih brojeva (nalaz N1, 02.08.2026).
   const invoices: Record<number, Record<string, unknown>> = {
     100: {
       id: 100,
-      documentNumber: "PROF-0001/2026",
+      documentNumber: "PROF-1/26",
       copiedFromDocId: null,
       stockDocumentId: null,
       customerId: 7,
@@ -40,7 +44,7 @@ function makePrisma(invoice: {
     },
     200: {
       id: 200,
-      documentNumber: "0001/2026",
+      documentNumber: "1/26",
       copiedFromDocId: 100,
       stockDocumentId: null,
       customerId: 7,

@@ -1,4 +1,5 @@
 import {
+  isCageType,
   isHallType,
   isOperationBarcode,
   isShelfType,
@@ -9,6 +10,7 @@ import {
   parseShortShelfBarcodePair,
   placementRowMatchesPredmetTp,
   resolveCompositeShelfScan,
+  resolveStorageLocationByCode,
   type ShelfLoc,
 } from "./barcode";
 
@@ -587,5 +589,223 @@ describe("shelf barkod: LP:uuid:uuid + HALA-POLICA + šifra police", () => {
 
   it("nepoznata šifra police → null (nije naš kompozit)", () => {
     expect(resolveCompositeShelfScan("ZZZ", locs, locById)).toBeNull();
+  });
+});
+
+/**
+ * GOLI kod skladišne lokacije (prijava 04.08.2026, screenshot sa A16): kamera
+ * je kavez nalepnicu (CODE128 payload `KV 6` — 1.0 štampa PUN `location_code`)
+ * uredno dekodirala, ali je 3.0 vraćao „Nepoznat format" jer plain-lookup
+ * stepenik iz 1.0 `scanModal.resolveDestinationByToken` nikad nije portovan.
+ * Ovi testovi su ugovor nove grane `resolveStorageLocationByCode`:
+ * kavez prolazi, ZADU/FIELD NIKAD (čistka 04.08 se ne vraća), dvosmisleno i
+ * ne-skladišno dobijaju PORUKU (nikad nasumičan izbor), nula pogodaka → null.
+ */
+describe("goli kod skladišne lokacije (kavez KV n) — resolveStorageLocationByCode", () => {
+  const HALL_ID = "77777777-7777-4777-8777-777777777777";
+  const CAGE_ID = "88888888-8888-4888-8888-888888888888";
+  const CAGE_IN_HALL_ID = "99999999-9999-4999-8999-999999999999";
+  const hall: ShelfLoc = {
+    id: HALL_ID,
+    locationCode: "H3",
+    locationType: "WAREHOUSE",
+    parentId: null,
+    isActive: true,
+  };
+  /** Tipičan kavez: GLOBALAN (parent NULL) — kao 96/100 na produ. */
+  const cage: ShelfLoc = {
+    id: CAGE_ID,
+    locationCode: "KV 6",
+    locationType: "CAGE",
+    parentId: null,
+    isActive: true,
+  };
+  /** Kavez sa parent halom (4/100 na produ) — preset hala mora da se izvede. */
+  const cageInHall: ShelfLoc = {
+    id: CAGE_IN_HALL_ID,
+    locationCode: "KV 7",
+    locationType: "CAGE",
+    parentId: HALL_ID,
+    isActive: true,
+  };
+  /** Reversi lično zaduženje — FIELD tip + ZADU kod (100% FIELD-a na produ). */
+  const zaduRadnik: ShelfLoc = {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    locationCode: "ZADU-R-VLADAN",
+    locationType: "FIELD",
+    parentId: null,
+    isActive: true,
+  };
+  /** Mašinsko zaduženje: tip PRODUCTION (skladišni!) ali ZADU kod — brana je prefiks. */
+  const zaduMasina: ShelfLoc = {
+    id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    locationCode: "ZADU-M-8_3",
+    locationType: "PRODUCTION",
+    parentId: null,
+    isActive: true,
+  };
+  /** FIELD bez ZADU prefiksa — i dalje ne-skladišna (tip je brana). */
+  const teren: ShelfLoc = {
+    id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    locationCode: "TEREN-1",
+    locationType: "FIELD",
+    parentId: null,
+    isActive: true,
+  };
+  const neaktivanKavez: ShelfLoc = {
+    id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    locationCode: "KV 99",
+    locationType: "CAGE",
+    parentId: null,
+    isActive: false,
+  };
+  /** Dva aktivna nosioca iste šifre — dvosmisleno mora da bude PORUKA. */
+  const dupli1: ShelfLoc = {
+    id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    locationCode: "KV 9",
+    locationType: "CAGE",
+    parentId: null,
+    isActive: true,
+  };
+  const dupli2: ShelfLoc = {
+    id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    locationCode: "KV 9",
+    locationType: "CAGE",
+    parentId: HALL_ID,
+    isActive: true,
+  };
+  const locs = [
+    hall,
+    cage,
+    cageInHall,
+    zaduRadnik,
+    zaduMasina,
+    teren,
+    neaktivanKavez,
+    dupli1,
+    dupli2,
+  ];
+  const locById = new Map(locs.map((l) => [l.id, l]));
+
+  it("isCageType predikat", () => {
+    expect(isCageType("CAGE")).toBe(true);
+    expect(isCageType(" cage ")).toBe(true);
+    expect(isCageType("SHELF")).toBe(false);
+  });
+
+  it("„KV 6“ → CAGE pogodak kroz resolveCompositeShelfScan (kraj prijave)", () => {
+    const res = resolveCompositeShelfScan("KV 6", locs, locById);
+    expect(res).toEqual({ ok: true, loc: cage, presetHallFilterId: null });
+  });
+
+  it("normalizacija: „kv 6“, „KV6“, „kv6“, „KV  6“ → isti kavez", () => {
+    for (const raw of ["kv 6", "KV6", "kv6", "KV  6", " KV 6 "]) {
+      const res = resolveCompositeShelfScan(raw, locs, locById);
+      expect(res).toMatchObject({ ok: true });
+      expect(res && res.ok && res.loc.id).toBe(CAGE_ID);
+    }
+  });
+
+  it("kavez sa parent halom → presetHallFilterId = ta hala", () => {
+    const res = resolveCompositeShelfScan("KV 7", locs, locById);
+    expect(res).toEqual({
+      ok: true,
+      loc: cageInHall,
+      presetHallFilterId: HALL_ID,
+    });
+  });
+
+  it("dvosmislen kod (dva aktivna „KV 9“) → poruka, ne nasumičan izbor", () => {
+    const res = resolveCompositeShelfScan("KV 9", locs, locById);
+    expect(res).toMatchObject({ ok: false });
+    expect(res && !res.ok && res.msg).toMatch(/nije jednoznačna/);
+  });
+
+  it("ZADU-R-* (FIELD zaduženje) se NIKAD ne razrešava — poruka zašto", () => {
+    const res = resolveCompositeShelfScan("ZADU-R-VLADAN", locs, locById);
+    expect(res).toMatchObject({ ok: false });
+    expect(res && !res.ok && res.msg).toMatch(/zaduženje/);
+  });
+
+  it("ZADU-M-* je tipa PRODUCTION ali ZADU prefiks preseca (rupa se ne vraća)", () => {
+    const res = resolveCompositeShelfScan("ZADU-M-8_3", locs, locById);
+    expect(res).toMatchObject({ ok: false });
+    expect(res && !res.ok && res.msg).toMatch(/zaduženje/);
+  });
+
+  it("FIELD bez ZADU prefiksa → „nije skladišna“ (tip je brana)", () => {
+    const res = resolveCompositeShelfScan("TEREN-1", locs, locById);
+    expect(res).toMatchObject({ ok: false });
+    expect(res && !res.ok && res.msg).toMatch(/nije skladišna/);
+  });
+
+  it("neaktivna lokacija se NE razrešava (KV 99 → null → „Nepoznat format“)", () => {
+    expect(resolveCompositeShelfScan("KV 99", locs, locById)).toBeNull();
+    expect(resolveCompositeShelfScan("kv99", locs, locById)).toBeNull();
+  });
+
+  it("skladišna HALA golim kodom prolazi (1.0 plain lookup — npr. virtuelna MAG)", () => {
+    const res = resolveCompositeShelfScan("H3", locs, locById);
+    expect(res).toEqual({ ok: true, loc: hall, presetHallFilterId: null });
+  });
+
+  it("guard-ovi: LP:/UUID/„ - “ kompoziti ne ulaze u ovu granu", () => {
+    expect(
+      resolveStorageLocationByCode(`LP:${HALL_ID}:${CAGE_ID}`, locs, locById),
+    ).toBeNull();
+    expect(resolveStorageLocationByCode(HALL_ID, locs, locById)).toBeNull();
+    expect(resolveStorageLocationByCode("H3 - KV 6", locs, locById)).toBeNull();
+    expect(resolveStorageLocationByCode("", locs, locById)).toBeNull();
+  });
+
+  it("egzaktan pogodak ima prednost nad squish poklapanjem", () => {
+    // „KV6" postoji doslovno KAO ŠIFRA druge lokacije → egzaktan pogodak, ne KV 6.
+    const kv6Doslovno: ShelfLoc = {
+      id: "12121212-1212-4121-8121-121212121212",
+      locationCode: "KV6",
+      locationType: "CAGE",
+      parentId: null,
+      isActive: true,
+    };
+    const locs2 = [...locs, kv6Doslovno];
+    const byId2 = new Map(locs2.map((l) => [l.id, l]));
+    const res = resolveCompositeShelfScan("KV6", locs2, byId2);
+    expect(res).toMatchObject({ ok: true });
+    expect(res && res.ok && res.loc.id).toBe(kv6Doslovno.id);
+    // …a „KV 6" i dalje egzaktno pogađa pravi kavez.
+    const res2 = resolveCompositeShelfScan("KV 6", locs2, byId2);
+    expect(res2 && res2.ok && res2.loc.id).toBe(CAGE_ID);
+  });
+
+  it("dupla šifra police (A1 u dve hale) → jasna poruka umesto dosadašnjeg null", () => {
+    const hallB: ShelfLoc = {
+      id: "13131313-1313-4131-8131-131313131313",
+      locationCode: "H4",
+      locationType: "WAREHOUSE",
+      parentId: null,
+      isActive: true,
+    };
+    const a1a: ShelfLoc = {
+      id: "14141414-1414-4141-8141-141414141414",
+      locationCode: "A1",
+      locationType: "SHELF",
+      parentId: HALL_ID,
+      isActive: true,
+    };
+    const a1b: ShelfLoc = {
+      id: "15151515-1515-4151-8151-151515151515",
+      locationCode: "A1",
+      locationType: "SHELF",
+      parentId: hallB.id,
+      isActive: true,
+    };
+    const locs2 = [...locs, hallB, a1a, a1b];
+    const byId2 = new Map(locs2.map((l) => [l.id, l]));
+    const res = resolveCompositeShelfScan("A1", locs2, byId2);
+    expect(res).toMatchObject({ ok: false });
+    expect(res && !res.ok && res.msg).toMatch(/nije jednoznačna/);
+    // Kompozit sa halom ostaje JEDINI put za duplu policu.
+    const viaPair = resolveCompositeShelfScan("H3 - A1", locs2, byId2);
+    expect(viaPair && viaPair.ok && viaPair.loc.id).toBe(a1a.id);
   });
 });

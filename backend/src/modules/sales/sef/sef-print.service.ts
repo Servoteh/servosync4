@@ -79,6 +79,14 @@ interface ParsedUbl {
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;
+  /**
+   * Datum prometa PROČITAN IZ TUĐEG UBL-a (`cac:Delivery/cbc:ActualDeliveryDate`).
+   *
+   * ⚠️ TREĆE ZNAČENJE, ne meša se ni sa jednim našim poljem: nije `Invoice.supplyDate`
+   * (datum prometa NAŠEG računa) niti `SefIncomingInvoice.sefReceivedAt` (datum prijema
+   * na SEF). Ovo je sirov string iz XML-a dobavljača i namerno se ne izdvaja u kolonu —
+   * kad zatreba kao podatak, dobija svoje polje (v. komentar uz `sefReceivedAt` u šemi).
+   */
   deliveryDate: string;
   currency: string;
   invoiceTypeCode: string;
@@ -244,7 +252,11 @@ export class SefPrintService {
           { label: "Broj fakture", value: row.invoiceNumber },
           { label: "PIB dobavljača", value: row.supplierPib },
           { label: "Datum izdavanja", value: fmtDate(row.issueDate) },
-          { label: "Datum prijema (SEF)", value: fmtDate(row.deliveryDate) },
+          // `sefReceivedAt` = datum PRIJEMA na SEF (osnov roka od 15 dana). Kolona se do
+          // 02.08.2026. zvala `delivery_date`, što je isto ime kao datum PROMETA — dva
+          // suprotna pojma pod jednim imenom. Preimenovana je; ovde je samo prevedeno
+          // čitanje, natpis i značenje ostaju isti.
+          { label: "Datum prijema (SEF)", value: fmtDate(row.sefReceivedAt) },
           { label: "Rok plaćanja", value: fmtDate(row.dueDate) },
         ],
       }),

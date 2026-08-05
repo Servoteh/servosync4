@@ -1450,4 +1450,67 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       expect(data.odometerKmAtService).toBeNull();
     });
   });
+
+  // ------- IT oprema — polja po tipu uređaja (zahtevi 065/066/067, 04.08) -------
+
+  describe("upsertItDetails (065/066/067 nova polja)", () => {
+    const IT_ASSET = "b2222222-2222-4222-8222-222222222222";
+
+    it("mapira snake_case details u Prisma kolone (uklj. novih 7) i NE propušta nepoznate ključeve", async () => {
+      const upsert = jest.fn().mockResolvedValue({ assetId: IT_ASSET });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintItAssetDetails: { upsert },
+      });
+      const { sy15, withUserRls } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.upsertItDetails("veljko@servoteh.com", IT_ASSET, {
+        details: {
+          device_type: "laptop",
+          hostname: "SRV-LPT-042",
+          // 065 računar
+          cpu: "Intel i7-13700H",
+          motherboard: "Lenovo LNVNB161216",
+          ram: "32 GB DDR5",
+          gpu: "RTX 4060 8GB",
+          // 066 štampač / 067 switch
+          office_location: "Kancelarija 12",
+          toner_cartridges: "HP 415A (crna + 3 boje)",
+          unifi_ports: "24 (PoE 16)",
+          // nepoznat ključ — allowlist ga NE sme propustiti u upsert
+          zlonamerni_kljuc: "x",
+        },
+      } as never);
+      expect(withUserRls).toHaveBeenCalledTimes(1); // RLS put, ne db.*
+      const arg = upsert.mock.calls[0][0];
+      expect(arg.where).toEqual({ assetId: IT_ASSET });
+      expect(arg.update.cpu).toBe("Intel i7-13700H");
+      expect(arg.update.motherboard).toBe("Lenovo LNVNB161216");
+      expect(arg.update.ram).toBe("32 GB DDR5");
+      expect(arg.update.gpu).toBe("RTX 4060 8GB");
+      expect(arg.update.officeLocation).toBe("Kancelarija 12");
+      expect(arg.update.tonerCartridges).toBe("HP 415A (crna + 3 boje)");
+      expect(arg.update.unifiPorts).toBe("24 (PoE 16)");
+      expect(arg.create.cpu).toBe("Intel i7-13700H"); // create grana = isti allowlist
+      expect("zlonamerni_kljuc" in arg.update).toBe(false);
+      expect("zlonamerni_kljuc" in arg.create).toBe(false);
+    });
+
+    it("prazan string → NULL (brisanje vrednosti), izostavljen ključ → NULL (PUT je pun replace)", async () => {
+      const upsert = jest.fn().mockResolvedValue({ assetId: IT_ASSET });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintItAssetDetails: { upsert },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.upsertItDetails("veljko@servoteh.com", IT_ASSET, {
+        details: { device_type: "printer", toner_cartridges: "" },
+      } as never);
+      const arg = upsert.mock.calls[0][0];
+      expect(arg.update.tonerCartridges).toBeNull();
+      expect(arg.update.unifiPorts).toBeNull();
+      expect(arg.update.cpu).toBeNull();
+    });
+  });
 });

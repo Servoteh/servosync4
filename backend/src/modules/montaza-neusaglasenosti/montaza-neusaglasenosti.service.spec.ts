@@ -68,6 +68,8 @@ interface PrismaMock {
   montageNonconformityEvent: { findMany: jest.Mock; create: jest.Mock };
   worker: { findMany: jest.Mock };
   user: { findMany: jest.Mock; findUnique: jest.Mock };
+  // 034/26 — imenovana lista primalaca (zvonce/mejl idu preko nje, ne preko role).
+  montazaNmPrimalac: { findMany: jest.Mock };
   // 034/26 — kartica lookup (work_orders/projects) + razrešavanje crteža.
   workOrder: { findMany: jest.Mock };
   project: { findUnique: jest.Mock };
@@ -99,15 +101,31 @@ function prismaMock(): PrismaMock {
     },
     worker: { findMany: jest.fn().mockResolvedValue([]) },
     user: {
-      // resolveManagementWorkerIds selektuje {workerId}; resolveUsers selektuje {id,fullName}.
+      // resolveNamedPrimaoci (034/26) selektuje {email,fullName,workerId,active};
+      // resolveUsers selektuje {id,fullName}.
       findMany: jest
         .fn()
         .mockImplementation((args: { select?: { workerId?: boolean } }) =>
           args?.select?.workerId
-            ? Promise.resolve([{ workerId: 9 }])
+            ? Promise.resolve([
+                {
+                  email: "primalac@servoteh.com",
+                  fullName: "Primalac",
+                  workerId: 9,
+                  active: true,
+                },
+              ])
             : Promise.resolve([]),
         ),
       findUnique: jest.fn().mockResolvedValue(null),
+    },
+    montazaNmPrimalac: {
+      // Imenovana lista (034/26): jedan aktivan red → zvonce radniku 9 (most users).
+      findMany: jest
+        .fn()
+        .mockResolvedValue([
+          { email: "primalac@servoteh.com", fullName: "Primalac" },
+        ]),
     },
     workOrder: { findMany: jest.fn().mockResolvedValue([]) },
     project: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -137,7 +155,7 @@ const OTHER: AuthUser = {
 function makeService(prisma: PrismaMock) {
   const notifications = { notifyWorkers: jest.fn().mockResolvedValue(1) };
   const mail = {
-    notifyManagementNewReport: jest.fn().mockResolvedValue(true),
+    notifyPrimaociNewReport: jest.fn().mockResolvedValue(true),
     notifyReporterClosed: jest.fn().mockResolvedValue(true),
   };
   const kartica = new MontazaNmKarticaService(
@@ -172,7 +190,7 @@ describe("MontazaNeusaglasenostiService", () => {
   // ── CREATE ──────────────────────────────────────────────────────────────
 
   describe("create (prijava)", () => {
-    it("dodeljuje broj NM-NNN/YY, upisuje CREATED event i obaveštava menadžment", async () => {
+    it("dodeljuje broj NM-NNN/YY, upisuje CREATED event i obaveštava imenovane primaoce (034/26)", async () => {
       prisma.montageNonconformity.create.mockResolvedValue(baseNc());
       const { service, notifications, mail } = makeService(prisma);
 
@@ -199,7 +217,7 @@ describe("MontazaNeusaglasenostiService", () => {
       );
       expect(createEvent.type).toBe("CREATED");
       expect(createEvent.actorUserId).toBe(7);
-      // In-app zvonce menadžmentu (worker 9) + mail.
+      // In-app zvonce imenovanom primaocu (worker 9 preko users mosta) + mail.
       expect(notifications.notifyWorkers).toHaveBeenCalledWith(
         [9],
         expect.objectContaining({
@@ -208,7 +226,7 @@ describe("MontazaNeusaglasenostiService", () => {
           refId: 1,
         }),
       );
-      expect(mail.notifyManagementNewReport).toHaveBeenCalledWith(1);
+      expect(mail.notifyPrimaociNewReport).toHaveBeenCalledWith(1);
       expect(out.data.reportNumber).toBe(`NM-001/${YY}`);
     });
 
@@ -261,7 +279,7 @@ describe("MontazaNeusaglasenostiService", () => {
     it("prijava NE pada kad MAIL grana baci (fire-and-forget best-effort)", async () => {
       prisma.montageNonconformity.create.mockResolvedValue(baseNc());
       const { service, mail } = makeService(prisma);
-      mail.notifyManagementNewReport.mockRejectedValue(
+      mail.notifyPrimaociNewReport.mockRejectedValue(
         new Error("resend down"),
       );
       const out = await service.create(

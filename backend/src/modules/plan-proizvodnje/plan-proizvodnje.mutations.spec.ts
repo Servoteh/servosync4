@@ -330,6 +330,41 @@ describe("gant: termini, uslov i završenost (046/26)", () => {
       svc.upsertOverlay(email, { workOrderId: "1", lineId: "1", plannedStartAt: "juce" }),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
+
+  // Paket B: termini su na MINUT (datetime-local u dijalogu) — BE ne sme da ih
+  // zaokružuje/kanonizuje na dan; timestamptz prima tačno poslato vreme.
+  it("termini čuvaju minutnu preciznost (nema dan-kanonizacije na BE)", async () => {
+    const { svc, captured } = makeService();
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: "2026-08-03T06:30:00.000Z",
+      plannedEndAt: "2026-08-04T06:30:00.000Z",
+    });
+    const c = captured.overlay!.create;
+    expect((c.plannedStartAt as Date).toISOString()).toBe("2026-08-03T06:30:00.000Z");
+    expect((c.plannedEndAt as Date).toISOString()).toBe("2026-08-04T06:30:00.000Z");
+  });
+
+  /**
+   * Paket B (Strahinjin komentar): ručni override spremnosti iz gant dijaloga ide kroz
+   * POSTOJEĆI `ready_override` mehanizam („SPREMNO (override)" sa taba „Po mašini") —
+   * server pečatira ko/kada; skidanje briše pečat i vraća izračunatu spremnost
+   * (`is_ready_for_machine = override OR is_ready_rb` u read sloju).
+   */
+  it("readyOverride: true pečatira at/by; false ih briše (vraća izračunato)", async () => {
+    const on = makeService();
+    await on.svc.upsertOverlay(email, { workOrderId: "9400", lineId: "12", readyOverride: true });
+    expect(on.captured.overlay!.create.readyOverride).toBe(true);
+    expect(on.captured.overlay!.create.readyOverrideBy).toBe(email);
+    expect(on.captured.overlay!.create.readyOverrideAt).toBeInstanceOf(Date);
+
+    const off = makeService();
+    await off.svc.upsertOverlay(email, { workOrderId: "9400", lineId: "12", readyOverride: false });
+    expect(off.captured.overlay!.update.readyOverride).toBe(false);
+    expect(off.captured.overlay!.update.readyOverrideAt).toBeNull();
+    expect(off.captured.overlay!.update.readyOverrideBy).toBeNull();
+  });
 });
 
 /**

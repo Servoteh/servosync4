@@ -158,26 +158,38 @@ const itemColumns: Column<InvoiceItem>[] = [
     numeric: true,
     render: (it) => <span className="tnums text-ink-secondary">{formatDecimal(it.discountPercent)}</span>,
   },
+  /**
+   * OSNOVICA JE JEDINI NOVAC PO STAVCI KOJI SE SABIRA U ZAGLAVLJE.
+   *
+   * ⚠️ ZAŠTO SU KOLONE „PDV" I „UKUPNO" SKINUTE (02.08.2026, šesti krug provere):
+   * PDV je obaveza po PROMETU I STOPI, ne po redu u tabeli — porez dokumenta se računa
+   * kao `round2(osnovica_stope × stopa)` nad ZBIROM osnovica te stope
+   * (`backend/src/modules/sales/vat-totals.ts`). `InvoiceItem.vatAmount` je zato IZVEDEN
+   * podatak i njegov zbir NE MORA da bude PDV računa:
+   *
+   *     5 stavki × 100,01 din uz 20 %
+   *       kolona „PDV" (zbir po stavci)   5 × 20,00 = 100,00
+   *       PDV računa (zaglavlje, papir, e-faktura)  = 100,01     ← razlika 0,01
+   *
+   * Ekran je time tvrdio dva različita PDV-a za isti račun — jedan u koloni, drugi u
+   * zbirnom bloku odmah ispod. Isto važi i za „Ukupno" (`vatBase + vatAmount`), pa je i
+   * ono skinuto: zbir te kolone bi davao 600,05 uz „Za plaćanje 600,06".
+   *
+   * Ni jedan od ČETIRI donesena BigBit obrasca po stavci ne štampa iznos poreza — kolona
+   * „PDV" je tamo STOPA (`domaca-roba.ts`, `domaca-usluga.ts`), a UBL na stavci uopšte
+   * nema element za iznos poreza (EN 16931: stavka nosi samo `LineExtensionAmount`).
+   * Ovde se stopa ne prikazuje jer bi tražila ČETVRTI primerak mape stopa na frontendu;
+   * dok `GET /sales/invoices/:id` ne vrati razrešen procenat po stavci, kolona bi bila
+   * pogađanje. Porez računa je u zbirnom bloku (`InvoiceTotals`) — jedno mesto, jedan broj.
+   */
   {
     key: 'vatBase',
     header: 'Osnovica',
     align: 'right',
     numeric: true,
-    render: (it) => <span className="tnums text-ink">{formatDecimal(it.vatBase)}</span>,
-  },
-  {
-    key: 'vatAmount',
-    header: 'PDV',
-    align: 'right',
-    numeric: true,
-    render: (it) => <span className="tnums text-ink">{formatDecimal(it.vatAmount)}</span>,
-  },
-  {
-    key: 'lineTotal',
-    header: 'Ukupno',
-    align: 'right',
-    numeric: true,
-    render: (it) => <span className="tnums font-semibold text-ink">{formatDecimal(it.lineTotal)}</span>,
+    render: (it) => (
+      <span className="tnums font-semibold text-ink">{formatDecimal(it.vatBase)}</span>
+    ),
   },
 ];
 
@@ -587,6 +599,10 @@ export default function FakturisanjeDetailPage() {
 
             <section className="space-y-2">
               <h2 className="text-md font-semibold text-ink">Stavke</h2>
+              {/* Zašto tabela nema kolone „PDV" i „Ukupno" — v. `itemColumns`. */}
+              <p className="text-sm text-ink-secondary">
+                Iznosi su bez PDV-a. PDV se obračunava na nivou računa, po stopi — vidi zbir ispod.
+              </p>
               <DataTable
                 columns={itemColumns}
                 rows={doc.items}

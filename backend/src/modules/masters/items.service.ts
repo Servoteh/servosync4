@@ -6,7 +6,19 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
-import { parseBoolParam, type ListItemsQuery } from "./dto/list-items.dto";
+import {
+  KNOWN_VAT_CODES,
+  unknownVatCodeMessage,
+} from "../gl/posting/vat-rates";
+import {
+  parseBoolParam,
+  parseIntParam,
+  parseShelfPresence,
+  parseSortParam,
+  type ItemSort,
+  type ItemSortColumn,
+  type ListItemsQuery,
+} from "./dto/list-items.dto";
 import {
   computeKilogramsPerPiece,
   toItemColumns,
@@ -22,6 +34,7 @@ import {
   assertItemWritesAllowed,
   catalogDuplicateException,
   isCatalogDuplicateError,
+  isNativeItemId,
   NATIVE_ITEM_ID_BASE,
   NATIVE_ITEM_ID_MAX,
   NATIVE_ITEM_SOURCE,
@@ -29,19 +42,92 @@ import {
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
- * Kolone artikla za listu (BigBit cache `items`, ~91k redova — nikad bez LIMIT-a).
- * Detalj vraća SVE kolone (`findUnique` bez `select`), pa ovde stoje samo one koje
- * tabela stvarno prikazuje: kataloški broj, naziv, JM, grupa, VP cena, aktivan.
+ * KOLONE PREGLEDA ARTIKALA — REDOSLED JE BigBit REDOSLED, I TO JE UGOVOR.
+ *
+ * Zahtev vlasnika (04.08.2026): „SVE TREBA DA BUDE KAO U BIGBITU… KOLONE U PREGLEDU
+ * DA BUDU ISTIM REDOSLEDOM, SVI KORISNICI SU NAVIKLI." Redosled ispod je doslovno
+ * prepisan iz same Access baze — kontrole sekcije forme „Pregled artikala" sortirane
+ * po x koordinati (levo → desno), ne po nekom našem osećaju šta je važnije.
+ * Zato se ključevi OVDE NE PREUREĐUJU: redosled ključeva `select`-a je i redosled
+ * ključeva u JSON-u, pa tabela na ekranu ostaje ista i kad je frontend samo prepiše.
+ *
+ * 1 Kataloški broj · 2 Naziv · 3 J.m. · 4 Polica · 5 Težina · 6 Grupa · 7 Podgrupa ·
+ * 8 PodPodgrupa · 9 VP cena · 10 MP cena · 11 Tarifa robe · 12 PPD · 13 Debljina ploče ·
+ * 14 Kg u kom. · 15 Devizna cena · 16 Kng. šifra 1 · 17 Kng. šifra 2 · 18 PLU · 19 ID ·
+ * 20 Bar kod · 21 Ext. šifra · 22 INO naziv
+ *
+ * Dve kolone nisu iz BigBit liste i namerno stoje na krajevima, da ne pomere nijednu
+ * od 22: `id` (tehnički ključ — bez njega red nema na šta da vodi) i `active`
+ * (postojeći filter `?active=`; BigBit neaktivan artikal prikazuje prigušeno).
+ *
+ * `items` ima ~91k redova — lista nikad ne ide bez LIMIT-a (`parsePagination`).
  */
 const ITEM_LIST_SELECT = {
   id: true,
-  catalogNumber: true,
-  barCode: true,
-  name: true,
-  unit: true,
-  groupCode: true,
-  wholesalePrice: true,
+  catalogNumber: true, //  1 Kataloški broj
+  name: true, //  2 Naziv
+  unit: true, //  3 J.m.
+  shelf: true, //  4 Polica
+  weight: true, //  5 Težina
+  groupCode: true, //  6 Grupa        (opis iz šifarnika ide u `group`)
+  subgroupCode: true, //  7 Podgrupa     (`subgroup`)
+  originCode: true, //  8 PodPodgrupa  (`origin` — BigBit kolona `Poreklo`)
+  wholesalePrice: true, //  9 VP cena
+  retailPrice: true, // 10 MP cena
+  goodsTaxRateCode: true, // 11 Tarifa robe
+  alwaysTaxGoods: true, // 12 PPD (BigBit checkbox „Uvek porez na robu")
+  thickness: true, // 13 Debljina ploče
+  box: true, // 14 Kg u kom. (BigBit `Kutija` — v. obračun §4.10)
+  fxSalePrice: true, // 15 Devizna cena (`ProdDevCena`)
+  accountingCode: true, // 16 Kng. šifra 1
+  accountingCode2: true, // 17 Kng. šifra 2
+  plu: true, // 18 PLU
+  externalItemId: true, // 19 ID = BigBit „Šifra artikla" (NIKAD `items.id`)
+  barCode: true, // 20 Bar kod
+  externalCode: true, // 21 Ext. šifra
+  foreignName: true, // 22 INO naziv
   active: true,
+} as const;
+
+/**
+ * Gornja granica spiska duplih kataloških brojeva (podupit za `?duplicateCatalogNumbers=true`).
+ *
+ * Mereno 25.07.2026 na produkciji: 1.980 grupa duplikata / 4.298 artikala
+ * (`items.write-policy.ts`, tačka 2) — 5.000 pokriva današnje stanje sa rezervom.
+ * Granica postoji zato što je ovo RADNA LISTA ZA ČIŠĆENJE, a ne izveštaj: ako bi se
+ * duplikati ikad namnožili preko ovog broja, korisniku ne treba `IN` sa desetinama
+ * hiljada vrednosti (upit bi postao skup, a lista neupotrebljiva) nego izveštaj o
+ * kvalitetu podataka. Odsečen spisak zato ostaje ISPRAVAN ODGOVOR na pitanje „daj mi
+ * duplikate za čišćenje" — samo nije potpun, i to je namerno.
+ */
+const DUPLICATE_CATALOG_LIMIT = 5000;
+
+/** Pet komponenti stope iz `R_Tarife` koje BigBit sabira u „zbirnu stopu". */
+const TAX_RATE_SELECT = {
+  code: true,
+  description: true,
+  baseRate: true,
+  railwayRate: true,
+  cityRate: true,
+  warRate: true,
+  specialRate: true,
+} as const;
+
+/**
+ * Upiti za combo-boxove BEZ ŠIFARNIKA (jedinica mere, proizvođač, zemlja porekla).
+ *
+ * Tri gotova, doslovno napisana upita — imena kolona su deo koda, ne podatak. Zbog
+ * toga ovde nema `$queryRawUnsafe` ni interpolacije: nijedan ulaz iz zahteva ne može
+ * da dođe do teksta upita. `LIMIT 500` je zaštita od combo-a sa hiljadama stavki
+ * (proizvođači su slobodan tekst na 92k artikala, pa umeju da se namnože).
+ */
+const DISTINCT_VALUE_SQL = {
+  unit: Prisma.sql`SELECT DISTINCT unit AS value FROM items
+     WHERE unit IS NOT NULL AND btrim(unit) <> '' ORDER BY 1 LIMIT 500`,
+  manufacturer: Prisma.sql`SELECT DISTINCT manufacturer AS value FROM items
+     WHERE manufacturer IS NOT NULL AND btrim(manufacturer) <> '' ORDER BY 1 LIMIT 500`,
+  origin_country: Prisma.sql`SELECT DISTINCT origin_country AS value FROM items
+     WHERE origin_country IS NOT NULL AND btrim(origin_country) <> '' ORDER BY 1 LIMIT 500`,
 } as const;
 
 /** Razrešen šifarnički kod: `{ code, description }`; `description` = null kad šifarnik nije sinkovan. */
@@ -52,6 +138,14 @@ export interface CodeRef {
 
 /**
  * Matični podatak „Artikli" (BigBit cache `items`) — pregled + unos/izmena.
+ *
+ * PREGLED JE PARITET BigBit EKRANA „Pregled artikala" (odluka vlasnika 04.08.2026):
+ * iste kolone i isti njihov redosled (`ITEM_LIST_SELECT`), isti PODRAZUMEVANI sort
+ * (grupa → kataloški broj → naziv) i isti filteri, uključujući kaskadu Grupa →
+ * Podgrupa → PodPodgrupa koju frontend računa iz `lookups()`. Klik na zaglavlje
+ * kolone (`?sort=&dir=`) sortira ceo skup i time je jedini dozvoljen otklon od
+ * BigBit redosleda — biran je, ne zatečen. Nijedno od toga nije stvar ukusa:
+ * korisnici rade po navici, pa je razlika u rasporedu greška kao i pogrešan podatak.
  *
  * ⚠️ UNOS I IZMENA SU DANAS ZATVORENI BRANOM, NE IZOSTAVLJENI. `create()`/`update()`
  * postoje sa punim skupom polja BigBit forme „Unos artikala", ali prvo pitaju
@@ -76,27 +170,16 @@ export class ItemsService {
       query.page,
       query.pageSize,
     );
-
-    const where: Prisma.ItemWhereInput = {};
-    const q = query.q?.trim();
-    if (q) {
-      where.OR = [
-        { name: { contains: q, mode: "insensitive" } },
-        { catalogNumber: { contains: q, mode: "insensitive" } },
-        { barCode: { contains: q, mode: "insensitive" } },
-      ];
-    }
-    const groupCode = query.groupCode?.trim();
-    if (groupCode) where.groupCode = groupCode;
-    const active = parseBoolParam(query.active, "active");
-    if (active !== undefined) where.active = active;
+    // Sort se parsira PRE `where`-a: `?sort=cena` (kolone nema) mora pasti kao 400
+    // pre nego što se plati podupit o duplim kataloškim brojevima — isto pravilo po
+    // kojem `buildListWhere` prvo validira parametre, pa tek onda otvara podupit.
+    const orderBy = buildItemOrderBy(parseSortParam(query.sort, query.dir));
+    const where = await this.buildListWhere(query);
 
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.item.findMany({
         where,
-        // Kataloški broj je „ljudski ključ" artikla (BIGBIT_ARTIKLI.md §1) —
-        // sortiranje po njemu; `id` je tie-break da paginacija bude stabilna.
-        orderBy: [{ catalogNumber: "asc" }, { id: "asc" }],
+        orderBy,
         skip,
         take,
         select: ITEM_LIST_SELECT,
@@ -104,24 +187,291 @@ export class ItemsService {
       this.prisma.item.count({ where }),
     ]);
 
-    const groups = await this.resolveGroups(rows.map((r) => r.groupCode));
+    // Sva tri šifarnika batch-om (jedan upit po šifarniku, ne po redu). Do 04.08.2026
+    // se razrešavala samo grupa, pa su kolone Podgrupa/PodPodgrupa mogle prikazati
+    // isključivo golu šifru — u BigBit-u operater vidi opis u combo-boxu.
+    const [groups, subgroups, origins] = await Promise.all([
+      this.resolveGroups(rows.map((r) => r.groupCode)),
+      this.resolveSubgroups(rows.map((r) => r.subgroupCode)),
+      this.resolveOrigins(rows.map((r) => r.originCode)),
+    ]);
+
     const data = rows.map((r) => ({
       ...r,
+      // Decimal → string (BACKEND_RULES §6); ostale cenovne kolone artikla su
+      // legacy `Float` i ostaju brojevi (zatečena šema, ne dira se odavde).
+      wholesalePrice: decimalToString(r.wholesalePrice),
+      retailPrice: decimalToString(r.retailPrice),
+      fxSalePrice: decimalToString(r.fxSalePrice),
       group: codeRef(r.groupCode, groups),
+      subgroup: codeRef(r.subgroupCode, subgroups),
+      origin: codeRef(r.originCode, origins),
+      // Kolona „ID" prikazuje BigBit šifru artikla (`externalItemId`), koja je za
+      // artikal nastao u 4.0 uvek 0. Bez ove oznake UI ne može da razlikuje „nema
+      // BigBit porekla" od „BigBit šifra je baš 0" i prikazao bi golu nulu.
+      native: isNativeItemId(r.id),
     }));
 
     return { data, meta: pageMeta(page, pageSize, total) };
   }
 
-  /** Sva polja artikla + razrešeni nazivi grupe/podgrupe/porekla. */
+  /**
+   * `where` iz filtera BigBit pregleda. Async je zbog jednog jedinog filtera
+   * (`duplicateCatalogNumbers`), koji traži podupit — sve ostalo je čisto parsiranje.
+   * Redosled je nameran: svi 400-ovi (loš `active`, `rasterId` koji nije broj…) padaju
+   * PRE nego što se otvori podupit, da neispravan zahtev ne plati skupu agregaciju.
+   */
+  private async buildListWhere(
+    query: ListItemsQuery,
+  ): Promise<Prisma.ItemWhereInput> {
+    const where: Prisma.ItemWhereInput = {};
+    // Uslovi koji ne smeju u `where` po ključu kolone — ili zato što se ista kolona
+    // filtrira dvaput (polica: prefiks + prisustvo), ili zato što bi pregazili `OR`
+    // objedinjene pretrage (`q`). `AND` se PUNI, ne dodeljuje, pa se filteri slažu.
+    const and: Prisma.ItemWhereInput[] = [];
+
+    const q = query.q?.trim();
+    if (q) {
+      where.OR = [
+        { catalogNumber: { contains: q, mode: "insensitive" } },
+        { name: { contains: q, mode: "insensitive" } },
+        { barCode: { contains: q, mode: "insensitive" } },
+        { externalCode: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const groupCode = query.groupCode?.trim();
+    if (groupCode) where.groupCode = groupCode;
+    const subgroupCode = query.subgroupCode?.trim();
+    if (subgroupCode) where.subgroupCode = subgroupCode;
+    const originCode = query.originCode?.trim();
+    if (originCode) where.originCode = originCode;
+
+    // BigBit `Like "<uneto>*"` = PREFIKS, ne „sadrži". Kataloški brojevi su
+    // petocifreni sa vodećim nulama (`00001`…), pa se traži „sve od 004…".
+    const catalogNumber = query.catalogNumber?.trim();
+    if (catalogNumber)
+      where.catalogNumber = { startsWith: catalogNumber, mode: "insensitive" };
+
+    const name = query.name?.trim();
+    if (name) where.name = { contains: name, mode: "insensitive" };
+
+    // JEDINICA MERE — tačno poklapanje, case-insensitive. Vrednosti nisu šifarnik nego
+    // slobodan tekst iz uvoza (`lookups().units` je `SELECT DISTINCT unit`), pa se u
+    // podacima sreću i „kom" i „KOM"; `equals` bez `mode` bi na izbor iz padajuće liste
+    // vratio samo jedan od ta dva zapisa i delovao kao da tih artikala prosto nema.
+    const unit = query.unit?.trim();
+    if (unit) where.unit = { equals: unit, mode: "insensitive" };
+
+    // POLICA — prefiks, iz istog razloga kao kataloški broj: oznake su hijerarhijske
+    // („A-1-3"), pa uneto „A" znači „ceo red A". `contains` bi na „1" povukao i „B-11".
+    const shelf = query.shelf?.trim();
+    if (shelf) where.shelf = { startsWith: shelf, mode: "insensitive" };
+
+    // PRISUSTVO POLICE. Uvoz iz BigBit-a piše i NULL i prazan string za „nema police"
+    // (2.839 od 92.592 artikla ima policu, mereno 04.08.2026), pa se moraju pokriti
+    // OBA oblika — sam `shelf: { not: null }` bi prazne stringove proglasio policom.
+    // ⚠️ `not` u Prismi 4+ VRAĆA I NULL redove, zato `not: ""` ide UZ `not: null`, a
+    // ne umesto njega. Obe grane idu u `AND`, da se smeju kombinovati sa prefiksom
+    // iznad (dva uslova nad istom kolonom u jednom objektu bi se pregazila) i da ne
+    // pregaze `where.OR` objedinjene pretrage.
+    const presence = parseShelfPresence(query.shelfPresence);
+    if (presence === "with")
+      and.push({ shelf: { not: null } }, { shelf: { not: "" } });
+    else if (presence === "without")
+      and.push({ OR: [{ shelf: null }, { shelf: "" }] });
+
+    const rasterId = parseIntParam(query.rasterId, "rasterId");
+    if (rasterId !== undefined) where.rasterId = rasterId;
+    const qualityTypeId = parseIntParam(query.qualityTypeId, "qualityTypeId");
+    if (qualityTypeId !== undefined) where.qualityTypeId = qualityTypeId;
+
+    const active = parseBoolParam(query.active, "active");
+    if (active !== undefined) where.active = active;
+
+    const duplicates = parseBoolParam(
+      query.duplicateCatalogNumbers,
+      "duplicateCatalogNumbers",
+    );
+    if (duplicates) {
+      // Ide u `AND`, a ne u `where.catalogNumber`, jer se sme kombinovati sa
+      // prefiks filterom („duple, a počinju sa 004") — dva uslova nad istom
+      // kolonom u jednom filter objektu bi se pregazila.
+      and.push({ catalogNumber: { in: await this.duplicateCatalogNumbers() } });
+    }
+
+    // Prazan `AND: []` se NE dodeljuje — Prisma bi ga progutala, ali bi `where` bez
+    // ijednog filtera prestao da bude prazan objekat i test/log bi lagali o tome.
+    if (and.length) where.AND = and;
+
+    return where;
+  }
+
+  /**
+   * Kataloški brojevi koji se u `items` pojavljuju više puta (BigBit toggle
+   * „Prikaži artikle sa duplim kataloškim brojem" / `DugmeMTDupliKatBrojevi`, koji
+   * u Access-u pravi privremenu tabelu).
+   *
+   * Prazan rezultat namerno prolazi dalje kao `in: []` → 0 redova: to JESTE tačan
+   * odgovor („nema duplih"), dok bi izostavljanje filtera prikazalo sve artikle i
+   * ostavilo utisak da su svi duplirani.
+   */
+  private async duplicateCatalogNumbers(): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<{ catalog_number: string }[]>(
+      Prisma.sql`
+        SELECT catalog_number
+          FROM items
+         GROUP BY catalog_number
+        HAVING COUNT(*) > 1
+         ORDER BY catalog_number
+         LIMIT ${Prisma.raw(String(DUPLICATE_CATALOG_LIMIT))}`,
+    );
+    return rows.map((r) => r.catalog_number);
+  }
+
+  /**
+   * Šifarnici za padajuće liste pregleda i forme — jedan poziv umesto pet, jer se
+   * na otvaranju ekrana pune svi combo-boxovi odjednom (BigBit ih drži kao
+   * RowSource upite na samoj formi).
+   *
+   * `subgroups` nose `parentGroup`, a `origins` `subgroupCode` — bez njih frontend ne
+   * može da napravi KASKADU koju BigBit ima (`FilterZaGrupu_AfterUpdate`: izbor grupe
+   * suzi podgrupe, izbor podgrupe suzi PodPodgrupe). Kaskada se računa na klijentu iz
+   * ovog jednog odgovora, da promena grupe ne bi vukla nov HTTP poziv po kucanju.
+   *
+   * ⚠️ `item_groups`/`item_subgroups`/`item_origins` su DANAS PRAZNI (nema syncera za
+   * `R_Grupa`/`R_Podgrupa`/`R_Poreklo` — BIGBIT_ARTIKLI.md §2.1). Prazna lista je zato
+   * OČEKIVAN odgovor, ne greška: UI tada nudi slobodan unos šifre, kao i do sada.
+   */
+  async lookups() {
+    const [
+      groups,
+      subgroups,
+      origins,
+      qualityTypes,
+      rasters,
+      taxRates,
+      units,
+      manufacturers,
+      countries,
+    ] = await Promise.all([
+      this.prisma.itemGroup.findMany({
+        select: { code: true, description: true },
+        orderBy: { code: "asc" },
+      }),
+      this.prisma.itemSubgroup.findMany({
+        select: { code: true, description: true, parentGroup: true },
+        orderBy: { code: "asc" },
+      }),
+      this.prisma.itemOrigin.findMany({
+        select: { code: true, description: true, subgroupCode: true },
+        orderBy: { code: "asc" },
+      }),
+      this.prisma.itemQualityType.findMany({
+        select: { id: true, code: true, description: true },
+        orderBy: { code: "asc" },
+      }),
+      this.prisma.itemRaster.findMany({
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          widthMm: true,
+          lengthMm: true,
+        },
+        orderBy: { name: "asc" },
+      }),
+      this.prisma.taxRate.findMany({
+        select: TAX_RATE_SELECT,
+        orderBy: { code: "asc" },
+      }),
+      this.distinctItemValues("unit"),
+      this.distinctItemValues("manufacturer"),
+      this.distinctItemValues("origin_country"),
+    ]);
+
+    return {
+      data: {
+        groups,
+        subgroups,
+        origins,
+        qualityTypes,
+        rasters,
+        // BigBit combo tarife prikazuje ZBIRNU stopu, ne pet komponenti
+        // (RowSource: `Tarifa, [Osnovna stopa]+[Zeleznica]+…`).
+        taxRates: taxRates.map((r) => ({
+          code: r.code,
+          description: r.description,
+          totalRate: sumTaxRate(r),
+        })),
+        units,
+        manufacturers,
+        countries,
+      },
+    };
+  }
+
+  /**
+   * Različite vrednosti jedne kolone artikla — jedinica mere, proizvođač i zemlja
+   * porekla NEMAJU šifarnik ni u BigBit-u; tamošnji combo se puni sa
+   * `SELECT … FROM R_Artikli GROUP BY …`, pa se isto radi i ovde.
+   *
+   * ⚠️ Ime kolone dolazi ISKLJUČIVO iz ovog zatvorenog spiska (tri gotova `Prisma.sql`
+   * literala), NIKAD iz zahteva. Ovo je jedino mesto u modulu gde bi sirov SQL mogao
+   * da primi ime kolone spolja — a ne prima ga: parametar je unija tri literala, pa
+   * ni greškom nema šta da se ušije u upit.
+   */
+  private async distinctItemValues(
+    column: keyof typeof DISTINCT_VALUE_SQL,
+  ): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<{ value: string }[]>(
+      DISTINCT_VALUE_SQL[column],
+    );
+    return rows.map((r) => r.value);
+  }
+
+  /**
+   * Sva polja artikla + sve što forma „Unos artikala" PRIKAZUJE pored šifre:
+   * nazivi grupe/podgrupe/porekla, naziv dimenzije (`rasterName`) i kvaliteta
+   * (`qualityName`), i zbirne PDV stope za robu i usluge.
+   */
   async findOne(id: number) {
     const item = await this.prisma.item.findUnique({ where: { id } });
     if (!item) throw new NotFoundException(`Artikal ${id} ne postoji`);
 
-    const [groups, subgroups, origins] = await Promise.all([
+    const [
+      groups,
+      subgroups,
+      origins,
+      raster,
+      quality,
+      goodsTaxTotalRate,
+      serviceTaxTotalRate,
+    ] = await Promise.all([
       this.resolveGroups([item.groupCode]),
       this.resolveSubgroups([item.subgroupCode]),
       this.resolveOrigins([item.originCode]),
+      // ⚠️ `0` SE NE PRESKAČE. Za brojčane šifre 0 NIJE sentinel „nije zadato":
+      // `item_quality_types` ima red `id = 0` sa doslovnim BigBit opisom
+      // („NE TREBA KVAKITET" — tipfeler je u izvoru), i BigBit ga prikazuje u
+      // combo-u. Pravilo je zato „pitaj šifarnik", a ne „pogodi sentinel": kad reda
+      // nema, `findUnique` vrati null i polje ostane prazno — isti ishod, bez
+      // pretpostavke. (Za TEKSTUALNE kodove sentinel `"0"` postoji i poštuje se —
+      // v. `isRealCode`.)
+      item.rasterId !== null && item.rasterId !== undefined
+        ? this.prisma.itemRaster.findUnique({
+            where: { id: item.rasterId },
+            select: { name: true },
+          })
+        : null,
+      item.qualityTypeId !== null && item.qualityTypeId !== undefined
+        ? this.prisma.itemQualityType.findUnique({
+            where: { id: item.qualityTypeId },
+            select: { code: true },
+          })
+        : null,
+      this.totalTaxRate(item.goodsTaxRateCode),
+      this.totalTaxRate(item.serviceTaxRateCode),
     ]);
 
     // Decimal → string u JSON-u (BACKEND_RULES §6). Ostale novčane kolone su u
@@ -134,8 +484,38 @@ export class ItemsService {
       group: codeRef(item.groupCode, groups),
       subgroup: codeRef(item.subgroupCode, subgroups),
       origin: codeRef(item.originCode, origins),
+      /** BigBit combo „Dimenzija (mm)" — `RasterDefZag.RasterNaziv`. */
+      rasterName: raster?.name ?? null,
+      /** BigBit combo „Kvalitet artikla" — `R_KvalitetArtikla.KvalitetArtikal`. */
+      qualityName: quality?.code ?? null,
+      /** BigBit polje `RobaZbirnaStopa` (%) uz tarifu robe. */
+      goodsTaxTotalRate,
+      /** BigBit polje `UslugeZbirnaStopa` (%) uz tarifu usluga. */
+      serviceTaxTotalRate,
+      native: isNativeItemId(item.id),
     };
     return { data };
+  }
+
+  /**
+   * ZBIRNA PDV STOPA ZA ŠIFRU TARIFE — BigBit `RobaZbirnaStopa`/`UslugeZbirnaStopa`.
+   *
+   * Forma ne prikazuje pet komponenti nego njihov zbir (RowSource combo-a:
+   * `[Osnovna stopa]+[Zeleznica]+[Gradska]+[Ratna]+[Posebna]`). Komponente su
+   * istorijske (železnička/gradska/ratna taksa) i danas su po pravilu nule, ali se
+   * sabiraju sve — ne pretpostavlja se da je zbir jednak osnovnoj stopi.
+   *
+   * `null` (a ne 0) kad tarife nema u registru: `tax_rates` je na produkciji prazna
+   * (v. `assertCodebookRefs`), a nula bi na ekranu značila „stopa je 0%" — što je
+   * poslovno pogrešna tvrdnja, ne prazno polje.
+   */
+  private async totalTaxRate(code: string | null | undefined) {
+    if (!isRealCode(code)) return null;
+    const rate = await this.prisma.taxRate.findUnique({
+      where: { code: code.trim() },
+      select: TAX_RATE_SELECT,
+    });
+    return rate ? sumTaxRate(rate) : null;
   }
 
   // ─────────────────────────────────────────────────────────── unos / izmena ──
@@ -351,12 +731,25 @@ export class ItemsService {
         );
     }
 
+    // ⚠️ ULAZNA PROVERA TARIFE JE VEZANA ZA MAPU, NE ZA PRAZNU TABELU (nalaz S3).
+    // Do 02.08.2026. je ovde stajalo `if (total === 0) continue` — a `tax_rates` je na
+    // produkciji PRAZNA (0 redova, v. N1-a), pa je provera bila POTPUNO ISKLJUČENA:
+    // artikal je mogao da dobije šifru „18" ili „99" i da uđe u šifarnik. Odatle je
+    // šifra išla u svaki dokument koji taj artikal koristi.
+    //
+    // Zato je merodavan spisak `KNOWN_VAT_CODES` — IZVEDEN iz iste mape iz koje svaki
+    // potrošač uzima stopu. Registar `tax_rates`, kad se popuni (N1-a), ostaje DODATNA
+    // provera: šifra mora biti i poznata mapi i prisutna u registru.
     for (const [value, label] of [
       [dto.goodsTaxRateCode, "Tarifa robe"],
       [dto.serviceTaxRateCode, "Tarifa usluga"],
     ] as const) {
       const code = effectiveCode(value, undefined);
       if (value === undefined || code === null) continue;
+      if (!KNOWN_VAT_CODES.has(code)) {
+        errors.push(`${label}: ${unknownVatCodeMessage(code)}`);
+        continue;
+      }
       const total = await this.prisma.taxRate.count();
       if (total === 0) continue;
       const row = await this.prisma.taxRate.findFirst({
@@ -434,6 +827,147 @@ export class ItemsService {
       }),
     );
   }
+}
+
+/**
+ * TIE-BREAK KOJI STOJI IZA SVAKOG SORTA — BEZ NJEGA PAGINACIJA LAŽE.
+ *
+ * `id` NE menja vidljiv redosled, ali je jedina jedinstvena kolona u `items`.
+ * Kataloški broj NIJE jedinstven (1.980 grupa duplikata / 4.298 artikala, mereno
+ * 25.07.2026), a ni jedna druga sortabilna kolona nije ni blizu: `shelf` ima 2.839
+ * nepraznih vrednosti na 92.592 reda, pa bi „sortiraj po polici" ostavio 89 hiljada
+ * redova u redosledu koji Postgres bira slobodno — a on ga sme promeniti između dva
+ * `LIMIT/OFFSET` upita. Ishod: skrol koji isti artikal pokaže dvaput, a drugi preskoči.
+ */
+const ITEM_ORDER_TIE_BREAK = { id: "asc" } as const;
+
+/**
+ * Sortabilne kolone koje SMEJU biti NULL — izvedeno iz Prisma tipova, ne iz sećanja.
+ *
+ * Prisma za nullable polje prima `SortOrderInput` (`{ sort, nulls }`), a za NOT NULL
+ * polje samo golo `SortOrder`. Ta razlika je jedini pouzdan izvor istine o tome koja
+ * kolona uopšte ima praznu vrednost, pa se čita direktno iz generisanog tipa: promena
+ * u `schema.prisma` (kolona postane obavezna ili obrnuto) obara `SORT_COLUMN_IS_NULLABLE`
+ * ispod NA KOMPILACIJI, umesto da tiho vrati staro ponašanje.
+ */
+type NullableItemSortColumn = {
+  [K in ItemSortColumn]: Prisma.SortOrderInput extends NonNullable<
+    Prisma.ItemOrderByWithRelationInput[K]
+  >
+    ? K
+    : never;
+}[ItemSortColumn];
+
+/**
+ * PRAZNO IDE NA KRAJ — MAPA KOLONA KOJE TO UOPŠTE MOGU.
+ *
+ * Tip je mapiran preko celog `ITEM_SORT_COLUMNS`, pa se ne može ni izostaviti kolona
+ * (nedostaje ključ → greška) ni pogrešno označiti (`true` na NOT NULL koloni → greška).
+ * Ručno se održava samo `true`/`false`, a istinu potvrđuje `NullableItemSortColumn`.
+ */
+const SORT_COLUMN_IS_NULLABLE: {
+  [K in ItemSortColumn]: K extends NullableItemSortColumn ? true : false;
+} = {
+  catalogNumber: false, // @default("-"), NOT NULL
+  name: false, // NOT NULL
+  unit: true,
+  shelf: true,
+  weight: true,
+  groupCode: false, // NOT NULL
+  subgroupCode: false, // @default("0"), NOT NULL
+  originCode: false, // @default("0"), NOT NULL
+  wholesalePrice: true,
+  retailPrice: true,
+  goodsTaxRateCode: false, // @default("3"), NOT NULL
+  thickness: true,
+  box: true,
+  fxSalePrice: true,
+  accountingCode: true,
+  accountingCode2: true,
+  plu: true,
+  externalItemId: false, // @default(0), NOT NULL
+  barCode: true,
+  externalCode: true,
+  foreignName: true,
+};
+
+/**
+ * `orderBy` za listu — korisnički sort (ako ga ima) + tie-break.
+ *
+ * Bez `sort` parametra ostaje BigBit redosled pregleda: `ORDER BY Grupa,
+ * [Kataloski broj], Naziv`. Korisnik je navikao da mu artikli iste grupe stoje
+ * zajedno — sortiranje po samom kataloškom broju (kako je stajalo do 04.08.2026)
+ * razbacuje grupe.
+ *
+ * Sa `sort`-om se BigBit redosled NE zadržava kao sekundarni kriterijum: kad se
+ * traži „najskuplji artikli", grupisanje po grupi bi taj odgovor razbilo na 90
+ * grupnih listi. Traženi ključ je prvi i jedini, `id` je poslednji.
+ *
+ * ⚠️ NULL IDE NA KRAJ U OBA SMERA (`nulls: "last"`), i to nije kozmetika.
+ * Postgres podrazumevano radi ASC = NULLS LAST, ali DESC = NULLS FIRST, pa je do
+ * 04.08.2026. drugi klik na zaglavlje „Polica" vraćao prvo 89.753 artikla BEZ police
+ * (mereno na produkciji: 92.592 artikla, policu ima 2.839). Ekran skroluje sa kapom
+ * učitavanja od 5.000 redova — korisnik dakle NIJE video nijednu policu, a lista je
+ * izgledala potpuno ispravno. Isto važi za „Bar kod" (10 nepraznih), „INO naziv",
+ * „Ext. šifru" i sve ostale nullable kolone: korisnik koji sortira traži PODATKE,
+ * praznine ga zanimaju samo kroz filter (`shelfPresence`).
+ *
+ * GRANICA: `nulls` pomera isključivo SQL NULL, ne i prazan string. Uvoz iz BigBit-a
+ * upisuje oba oblika, ali je odnos izmeren 04.08.2026 na produkciji i prazan string je
+ * zanemarljiv — `shelf`: 89.714 NULL prema 39 praznih (isto reda veličine za `bar_code`
+ * 92.542/40, `foreign_name` 57.450/39, `external_code` 90.881/38). Rastući sort dakle
+ * prikaže tih ~39 praznih pre prve police, što je upotrebljivo; ispravka do kraja tražila
+ * bi `ORDER BY NULLIF(btrim(col),'')`, što Prisma `orderBy` ne ume — dakle raw SQL zbog
+ * 39 redova. Ako se odnos ikad promeni (npr. drugi uvoz počne da piše ''), ovo je mesto.
+ */
+function buildItemOrderBy(
+  sort: ItemSort | undefined,
+): Prisma.ItemOrderByWithRelationInput[] {
+  if (!sort)
+    return [
+      { groupCode: "asc" },
+      { catalogNumber: "asc" },
+      { name: "asc" },
+      ITEM_ORDER_TIE_BREAK,
+    ];
+  // Ime kolone je već prošlo allowlist (`parseSortParam`), pa računati ključ ne može
+  // biti ništa van `ITEM_SORT_COLUMNS`. Oblik vrednosti čuva `SORT_COLUMN_IS_NULLABLE`:
+  // `{ sort, nulls }` na NOT NULL koloni Prisma odbija tek u radu (P2009), a računati
+  // ključ TS ne može da proveri po koloni — zato je provera pomerena u tu mapu.
+  const key: Prisma.SortOrderInput | Prisma.SortOrder = SORT_COLUMN_IS_NULLABLE[
+    sort.column
+  ]
+    ? { sort: sort.direction, nulls: "last" }
+    : sort.direction;
+  return [{ [sort.column]: key }, ITEM_ORDER_TIE_BREAK];
+}
+
+/**
+ * Zbir pet komponenti poreske stope (BigBit „zbirna stopa"). Kolone su legacy
+ * `Float`, pa se zbir zaokružuje na 6 decimala — `8.5 + 0.5` u binarnom zapisu ume
+ * da ispadne `9.000000000000002`, a to bi korisnik video baš tako na ekranu.
+ */
+function sumTaxRate(rate: {
+  baseRate: number | null;
+  railwayRate: number | null;
+  cityRate: number | null;
+  warRate: number | null;
+  specialRate: number | null;
+}): number {
+  const sum =
+    (rate.baseRate ?? 0) +
+    (rate.railwayRate ?? 0) +
+    (rate.cityRate ?? 0) +
+    (rate.warRate ?? 0) +
+    (rate.specialRate ?? 0);
+  return Math.round(sum * 1e6) / 1e6;
+}
+
+/** Decimal → string (BACKEND_RULES §6); prazno ostaje prazno, ne postaje "0". */
+function decimalToString(
+  value: Prisma.Decimal | null | undefined,
+): string | null {
+  return value === null || value === undefined ? null : value.toString();
 }
 
 /** BigBit sentinel „nije zadato" je `"0"` (a ne NULL) — v. `@default("0")` u šemi. */

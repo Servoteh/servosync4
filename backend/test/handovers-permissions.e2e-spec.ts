@@ -13,6 +13,7 @@ import { HandoversService } from "../src/modules/handovers/handovers.service";
 import { HandoverDraftsController } from "../src/modules/handovers/handover-drafts.controller";
 import { HandoverDraftsService } from "../src/modules/handovers/handover-drafts.service";
 import { PrintBundleService } from "../src/modules/handovers/print-bundle.service";
+import { HandoverDraftPrintService } from "../src/modules/handovers/handover-draft-print.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
@@ -88,6 +89,14 @@ describe("Primopredaje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       .mockResolvedValue({ buffer: Buffer.from("%PDF-1.4"), fileName: "dp.pdf" }),
   };
 
+  // 055/26: PDF lista pozicija odobrenog nacrta — read ruta, isti PDF oblik.
+  const draftPrintServiceMock: Record<string, jest.Mock> = {
+    buildDraftPositionsPdf: jest.fn().mockResolvedValue({
+      buffer: Buffer.from("%PDF-1.4"),
+      fileName: "lp.pdf",
+    }),
+  };
+
   beforeAll(async () => {
     process.env.JWT_SECRET = "test-not-real-secret"; // SEC-01 guard pri importu
     process.env.AUTHZ_ENFORCE = "true"; // pre instanciranja PermissionsGuard-a
@@ -104,6 +113,7 @@ describe("Primopredaje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         { provide: HandoversService, useValue: handoversServiceMock },
         { provide: HandoverDraftsService, useValue: draftsServiceMock },
         { provide: PrintBundleService, useValue: printBundleServiceMock },
+        { provide: HandoverDraftPrintService, useValue: draftPrintServiceMock },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -411,6 +421,7 @@ describe("Primopredaje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
       "/1/items",
       "/1/print-bundle",
       "/1/print-bundle/pdf",
+      "/1/print", // 055/26: PDF lista pozicija odobrenog nacrta (read kao i print-bundle)
     ];
     it.each(READ_PATHS)("GET %s → 200 za read-holder (viewer)", async (p) => {
       await get("handover-drafts", p, "viewer").expect(200);

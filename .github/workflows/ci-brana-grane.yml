@@ -1,0 +1,118 @@
+name: ci-brana-grane
+
+# BRANA PROTIV RADA NA ZASTARELOJ GRANI.
+#
+# ZAŠTO: pravilo (Nenad, 04.08.2026) — „kad pišem o izmenama, uvek su izmene nečega što je
+# već na main-u". Ako je grana daleko iza, zaključak „ovoga nema u repou" je LAŽAN, pa se
+# pravi drugi put ono što već postoji, na osnovu stanja koje više ne važi.
+#
+# Šta je koštalo: 04.08.2026. je na grani 285 commitova / 39 migracija iza main-a napravljen
+# paralelan modul „Artikli" (main već ima `masters/items.*` + `frontend/src/app/artikli/*`),
+# a uz njega i migracija koja bi na produkciji oborila unos artikala — pomerala je
+# `items_id_seq` ispod granice koju traži `chk_items_native_id_range`.
+#
+# ZAŠTO CI, A NE SAMO HOOK: `.claude/hooks/provera-grane.sh` javlja isto, ali radi SAMO u
+# Claude Code sesiji. Ova kapija važi za SVAKOGA — Cursor, ručni rad, drugi agenti, spoljni
+# saradnik — jer se izvršava nad samim PR-om.
+#
+# GRANICE (svesno):
+#   * FALEĆE MIGRACIJE = tvrd pad. Grana koja ne zna za migracije sa main-a piše šemu na
+#     osnovu stanja koje na produkciji više ne postoji. Lek je jedan `git rebase origin/main`.
+#   * ZAOSTATAK U COMMITOVIMA = pad tek preko `PRAG_PAD`; između `PRAG_UPOZORENJA` i njega
+#     ide samo napomena, da svakodnevni rad ne bude blokiran.
+#   * Kapija NE gleda sadržaj izmena — to rade ci-backend / ci-scada.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-brana-grane-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  brana:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (pun istorijat)
+        uses: actions/checkout@v4
+        with:
+          # `rev-list HEAD..origin/main` traži pravu istoriju; plitki checkout je beskoristan.
+          fetch-depth: 0
+
+      - name: Koliko je grana iza main-a
+        id: zaostatak
+        run: |
+          set -euo pipefail
+          git fetch origin main --quiet
+
+          PRAG_UPOZORENJA=20
+          PRAG_PAD=100
+
+          IZA="$(git rev-list --count HEAD..origin/main)"
+          echo "iza=$IZA" >> "$GITHUB_OUTPUT"
+          echo "Grana je $IZA commitova iza origin/main."
+
+          if [ "$IZA" -ge "$PRAG_PAD" ]; then
+            echo "::error title=Zastarela grana::Grana je $IZA commitova iza main-a (prag $PRAG_PAD). Uradi 'git rebase origin/main' i proveri da ono što dodaješ već ne postoji na main-u."
+            exit 1
+          fi
+          if [ "$IZA" -ge "$PRAG_UPOZORENJA" ]; then
+            echo "::warning title=Grana zaostaje::Grana je $IZA commitova iza main-a. Preporuka: rebase pre merge-a."
+          fi
+
+      - name: Migracije koje main ima a grana nema
+        run: |
+          set -euo pipefail
+          MIG_DIR="backend/prisma/migrations"
+          [ -d "$MIG_DIR" ] || { echo "Nema $MIG_DIR — preskačem."; exit 0; }
+
+          # `migration_lock.toml` se filtrira sa OBE strane, inače se lažno prijavljuje kao faleći.
+          FALI="$(
+            comm -13 \
+              <(ls "$MIG_DIR" | grep -v migration_lock | sort) \
+              <(git ls-tree --name-only origin/main "$MIG_DIR/" \
+                  | xargs -n1 basename | grep -v migration_lock | sort) \
+              | sed '/^$/d'
+          )"
+
+          if [ -n "$FALI" ]; then
+            BROJ="$(printf '%s\n' "$FALI" | wc -l | tr -d ' ')"
+            echo "Fale migracije koje main ima ($BROJ):"
+            printf '  - %s\n' $FALI
+            echo "::error title=Grana ne zna za $BROJ migracija sa main-a::Šema na main-u je otišla dalje nego što ova grana zna, pa je svaka nova migracija pisana na osnovu stanja koje više ne postoji. Uradi 'git rebase origin/main' pa proveri svoju migraciju ponovo."
+            exit 1
+          fi
+          echo "Nema falećih migracija."
+
+      - name: Nova migracija mora biti poslednja po vremenu
+        run: |
+          set -euo pipefail
+          MIG_DIR="backend/prisma/migrations"
+          [ -d "$MIG_DIR" ] || exit 0
+
+          NOVE="$(
+            comm -23 \
+              <(ls "$MIG_DIR" | grep -v migration_lock | sort) \
+              <(git ls-tree --name-only origin/main "$MIG_DIR/" \
+                  | xargs -n1 basename | grep -v migration_lock | sort) \
+              | sed '/^$/d'
+          )"
+          [ -n "$NOVE" ] || { echo "PR ne dodaje migracije."; exit 0; }
+
+          POSLEDNJA_NA_MAINU="$(
+            git ls-tree --name-only origin/main "$MIG_DIR/" \
+              | xargs -n1 basename | grep -v migration_lock | sort | tail -1
+          )"
+          echo "Poslednja na main-u: $POSLEDNJA_NA_MAINU"
+
+          STATUS=0
+          for m in $NOVE; do
+            echo "Nova: $m"
+            if [ "$m" \< "$POSLEDNJA_NA_MAINU" ]; then
+              echo "::error title=Migracija van redosleda::'$m' sortira PRE poslednje migracije na main-u ('$POSLEDNJA_NA_MAINU'). Prisma primenjuje po imenu, pa bi istorija bila lažna — preimenuj folder u noviji timestamp."
+              STATUS=1
+            fi
+          done
+          exit $STATUS

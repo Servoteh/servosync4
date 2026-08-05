@@ -1,4 +1,5 @@
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
+import { companyAddressLine } from "../../../common/company-address";
 import { SERVOTEH_LOGO_DATA_URL } from "../../documents/servoteh-logo";
 import {
   BADGE_PALETTE,
@@ -66,6 +67,8 @@ export interface IssuerInfo {
   companyName: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj (O-F10) — od 03.08.2026. zasebna kolona, ne više deo mesta. */
+  postalCode?: string | null;
   taxId: string | null;
   registrationNumber: string | null;
   bankAccount: string | null;
@@ -105,7 +108,7 @@ const TONE_MAP: Record<StatusBadgeSpec["tone"], keyof typeof BADGE_PALETTE> = {
 
 function issuerLines(issuer: IssuerInfo): string[] {
   return [
-    [issuer.address, issuer.city].filter(Boolean).join(", "),
+    companyAddressLine(issuer.address, issuer.postalCode, issuer.city),
     issuer.taxId ? `PIB: ${issuer.taxId}` : "",
     issuer.registrationNumber ? `MB: ${issuer.registrationNumber}` : "",
     issuer.bankAccount ? `Tekući račun: ${issuer.bankAccount}` : "",

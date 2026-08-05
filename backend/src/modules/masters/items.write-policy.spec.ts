@@ -78,7 +78,9 @@ describe("items.write-policy — brana upisa", () => {
     expect(body.statusCode).toBe(409);
     expect(body.code).toBe("BIGBIT_OWNED_READ_ONLY");
     expect(String(body.message)).toContain("BigBit");
-    expect(String(body.message)).toContain("Sinhronizacije");
+    // Reopen 061/26 (04.08.2026): poruka više NE upućuje na dugme „Pokreni sync"
+    // (frozen QBigTehn kopija) — artikal stiže noćnim .mdb uvozom.
+    expect(String(body.message)).toContain("noćnim");
   });
 
   it("`items` je FULL REFRESH (watermark: null) — zato brana i postoji", () => {

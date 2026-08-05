@@ -52,11 +52,13 @@ Konvencije:
 | `Prodavci` | `salespeople` | `Salesperson` |
 | `R_Artikli` | `items` | `Item` |
 | `R_Grupa` | `item_groups` | `ItemGroup` |
+| `R_KvalitetArtikla` | `item_quality_types` | `ItemQualityType` |
 | `R_Podgrupa` | `item_subgroups` | `ItemSubgroup` |
 | `R_Poreklo` | `item_origins` | `ItemOrigin` |
 | `R_Tarife` | `tax_rates` | `TaxRate` | ⚠️ van sync-a od 26.07.2026 (4.0-owned) |
 | `R_Vrste dokumenata` | `document_types` | `DocumentType` |
 | `Radni fajlovi` | `companies` | `Company` |
+| `RasterDefZag` | `item_rasters` | `ItemRaster` |
 | `RobnaDokumentaMirror` | `goods_documents_mirror` | `GoodsDocumentMirror` |
 | `RobneStavkeMirror` | `goods_document_items_mirror` | `GoodsDocumentItemMirror` |
 | `SklopoviPDMCrteza` | `drawing_assemblies` | `DrawingAssembly` |

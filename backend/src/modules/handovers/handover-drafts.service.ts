@@ -638,10 +638,13 @@ export class HandoverDraftsService {
   // -------------------------------------------------------------- APPEND
 
   /**
-   * „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch dodavanje stavki (1..50) u
-   * POSTOJEĆI nacrt. Ide kroz ISTE helpere kao `create()` (§6.5.3
-   * `checkItemPreconditions` + §6.5.4 `preCheckItems`) — pravilo iz zaglavlja
-   * fajla „svaki add-item put MORA proći iste helpere".
+   * „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch dodavanje stavki (1..500) u
+   * POSTOJEĆI nacrt. Od dopune 027/26 (Igor 30.07) ovim putem stiže i „sklop +
+   * sve pozicije iz sastavnice" — pozicije nose `mainDrawingId` (sklop) i
+   * `quantityDefinedInDrawing` (potreba po 1 komadu sklopa). Ide kroz ISTE
+   * helpere kao `create()` (§6.5.3 `checkItemPreconditions` + §6.5.4
+   * `preCheckItems`) — pravilo iz zaglavlja fajla „svaki add-item put MORA
+   * proći iste helpere".
    *
    * Kapija: nacrt postoji (404); NIJE zaključan i status NIJE „Predat"
    * (`DRAFT_STATUS_SUBMITTED`) — inače 422 (isti razlog kao `decideItem`/
@@ -701,8 +704,12 @@ export class HandoverDraftsService {
     }
 
     // `handover_draft_items.drawing_id` NEMA DB FK (legacy obrazac) — postojanje
-    // crteža validiraj ovde (orphan → 422 sa spiskom, kao `create()`).
-    const addDrawingIds = uniqueIds(toAdd.map((i) => i.drawingId));
+    // crteža validiraj ovde (orphan → 422 sa spiskom, kao `create()`). Od dopune
+    // 027/26 u skup ulaze i `mainDrawingId`-jevi pozicija (isto kao `create()`).
+    const addDrawingIds = uniqueIds([
+      ...toAdd.map((i) => i.drawingId),
+      ...toAdd.map((i) => i.mainDrawingId),
+    ]);
     const found = await this.prisma.drawing.findMany({
       where: { id: { in: addDrawingIds } },
       select: { id: true },
@@ -730,11 +737,14 @@ export class HandoverDraftsService {
         mainDrawingId: draft.mainDrawingId ?? null,
         excludeDraftId: id,
       },
-      // preCheckItems radi nad `CreateHandoverDraftItemInput` — append stavka
-      // nosi samo drawingId + quantity, pa se mapira u taj oblik (parent = nacrt).
+      // preCheckItems radi nad `CreateHandoverDraftItemInput` — append stavka se
+      // mapira u taj oblik. `mainDrawingId` (027/26 dopuna: pozicija sklopa) ide
+      // dalje da poređenje količine gleda sastavnicu BAŠ tog sklopa; bez njega
+      // parent pada na zaglavlje nacrta (staro ponašanje).
       toAdd.map((i) => ({
         drawingId: i.drawingId,
         quantityToProduce: i.quantity,
+        mainDrawingId: i.mainDrawingId,
       })),
     );
     warnings.push(...preCheck.warnings);
@@ -742,18 +752,20 @@ export class HandoverDraftsService {
     await this.prisma.$transaction(async (tx) => {
       await alignIdSequence(tx, "handover_draft_items");
       await tx.handoverDraftItem.createMany({
-        // Upis istim oblikom kao `create()` (default količina = 1); polja koja
-        // append klijent ne šalje (mainDrawingId/isMain/note/…) idu default-i.
+        // Upis istim oblikom kao `create()` (default količina = 1). BOM
+        // provenance pozicije (027/26 dopuna: mainDrawingId + potreba po
+        // sastavnici) upisuje se kad je klijent pošalje; polja koja append
+        // klijent ne šalje (isMain/note/…) idu default-i.
         data: toAdd.map((i, idx) => {
           const flag = preCheck.flags.get(idx);
           return {
             draftId: id,
             drawingId: i.drawingId,
             quantityToProduce: i.quantity ?? 1,
-            mainDrawingId: null,
+            mainDrawingId: i.mainDrawingId ?? null,
             isMain: false,
             note: null,
-            quantityDefinedInDrawing: 0,
+            quantityDefinedInDrawing: i.quantityDefinedInDrawing ?? 0,
             // §6.5.4: sporna stavka nosi pre_check_* provenance; odluka kreće od 0.
             preCheckDuplicate: flag !== undefined,
             preCheckDraftId: flag?.preCheckDraftId ?? null,

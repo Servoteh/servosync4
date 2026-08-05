@@ -516,6 +516,31 @@ i **`IFUSL 059/25`** (03.02.2025, komitent 1003925 — **ŠEST** avansnih račun
 `029/24` 312.500,00, `AVR-00001/2024` 500.000,00 → **ukupno 2.812.500,00**, što se poklapa
 sa GK nalogom 5458 (`AVANS`, 03.02.2025).
 
+> **⚠️ UPOZORENJE ZA BUDUĆI UVOZNIK (dopisano 02.08.2026)** — `IFUSL 059/25` je slučaj na
+> kome naivan uvoz tiho slaže dokument.
+>
+> U 4.0 je veza avans↔račun **spojna tabela `invoice_advance_applications`** (jedan red =
+> jedan avans sa SVOJIM iznosom). Kolone `invoices.advance_invoice_id` +
+> `advance_applied_amount` su samo denormalizacija: pokazivač na PRVI avans i UKUPNO
+> odbijeno. Pravilo koje ceo sistem čita
+> (`backend/src/modules/sales/advance-deduction.ts`) vezu-u-koloni-BEZ-reda tretira kao
+> **punopravan odbitak**, a njen iznos izvodi kao `kolona − Σ primena tog računa`.
+>
+> Ako uvoznik za ovaj račun upiše samo kolone — `advance_invoice_id` = prvi AVR (`03/24`,
+> 500.000) i `advance_applied_amount` = 2.812.500 — pravilo će **celih 2.812.500 pripisati
+> avansu `03/24`**: na štampi („Umanjenje za primljeni avans br. 03/24"), na e-fakturi
+> (`PrepaidAmount` uz jedan jedini `cac:BillingReference`) i u iskorišćenosti avansa. Pet
+> avansa nestane sa dokumenta, šesti se prekorači 5,6 puta, i to niko ne prijavi:
+> `applyAdvance` kontroliše samo primene koje sam upisuje.
+>
+> **Pravilo uvoza:** svaki red `T_AVR_Roba` / `T_AVR_Usluge` → jedan red
+> `invoice_advance_applications` (`applied_amount = KoristiIznosSaPDV`, `advance_invoice_id`
+> = uvezeni AVR po `BrojDokAVR`). Kolone se popunjavaju **iz** tih redova
+> (`advance_invoice_id` = prvi po datumu, `advance_applied_amount` = zbir svih). Kolone bez
+> redova ostaviti samo tamo gde avansni račun kao dokument u 4.0 NE postoji — uz svest da
+> tada ceo iznos visi o jednom pokazivaču, i uz proveru da `Σ odbitaka ≤ bruto računa`
+> (BigBit tu proveru nema — v. defekt 1 niže).
+
 **(c) Delimično korišćenje** (`KoristiIznosSaPDV < UkIznosSaPDVAVR`):
 ```
 T_AVR_Usluge ID=7:  AVR 43/23  Uk=36.457.095,55  Koristi=19.772.331,75  → IDDok 7338

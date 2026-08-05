@@ -19,6 +19,24 @@
  */
 
 /**
+ * Ukupan broj komada na nalogu (`komada` / `piece_count`) → number | null.
+ *
+ * Paritet 1.0 `fetchBigtehnOpSnapshotByRnAndTp`: `komada_total =
+ * Number.isFinite(Number(wo.komada)) ? total : null` — nevalidno/odsutno je
+ * `null` (FE tada NE nudi „Uloži preostalo sa naloga (K kom)" jer ukupno nije
+ * pouzdano; 1.0 tada prikazuje generičku INITIAL opciju bez broja). Negativne
+ * vrednosti se ovde propuštaju kao u 1.0 — odbija ih tek FE računica preostatka
+ * (`computeLocInitialRemainder` vraća null za total < 0).
+ */
+export function sanitizePieceCount(
+  raw: string | number | bigint | null | undefined,
+): number | null {
+  if (raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Očisti BigTehn `broj_crteza`: skini vodeće/prateće tačke i razmake
  * (`..1133219.` → `1133219`), a placeholder vrednosti (`.`, `..`, `   `) svedi
  * na PRAZNO — 1500+ RN-ova u kešu ima samo-tačku umesto crteža, pa bi autofill

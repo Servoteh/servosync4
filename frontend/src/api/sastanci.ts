@@ -56,10 +56,23 @@ export interface PageMeta {
 
 // ------------------------------------------------------------------ tipovi
 
+/**
+ * Termin SLEDEĆEG sastanka serije uz zatvoren red liste (024/26, komentar 29.07
+ * t.1). `sastanakId` postoji kad je termin već kreiran; `najava=true` = izračunat
+ * termin koji automatika tek treba da napravi (sedmični petak 08h / periodični
+ * dnevni posao 08h).
+ */
+export interface SledeciTermin {
+  datum: string;
+  vreme: string | null;
+  sastanakId: string | null;
+  najava: boolean;
+}
+
 /** `sastanci` red (Prisma model Sastanak — camelCase). */
 export interface Sastanak {
   id: string;
-  tip: 'sedmicni' | 'projektni' | 'tematski' | 'dnevni' | string;
+  tip: 'sedmicni' | 'projektni' | 'tematski' | 'dnevni' | 'periodicni' | string;
   naslov: string;
   datum: string;
   vreme: string | null;
@@ -80,6 +93,11 @@ export interface Sastanak {
   createdByEmail: string | null;
   updatedAt: string;
   pozivnicePoslateAt: string | null;
+  /** Interval periodične serije u danima (024/26 d1) — BE ga prilaže samo za
+   *  tip 'periodicni' (create/update/detalj); u listi ga nema. */
+  intervalDays?: number | null;
+  /** Sledeći termin serije — BE prilaže SAMO zatvorenim redovima u listi. */
+  sledeci?: SledeciTermin | null;
 }
 
 /** Učesnik (bez `rsvpToken` — tajna magic-linka; backend ga izostavlja). */
@@ -725,6 +743,8 @@ function del<T = unknown>(path: string): Promise<TxResponse<T>> {
 export interface CreateSastanakVars {
   clientEventId: string;
   tip?: string;
+  /** Broj dana između dva termina — obavezan uz tip 'periodicni' (024/26 d1). */
+  intervalDays?: number;
   naslov: string;
   datum: string;
   vreme?: string;

@@ -416,6 +416,7 @@ function issuerAsParty(issuer: IssuerInfo): PartyInfo {
   return {
     name: issuer.companyName,
     address: issuer.address,
+    postalCode: issuer.postalCode,
     city: issuer.city,
     taxId: issuer.taxId,
     registrationNumber: issuer.registrationNumber,

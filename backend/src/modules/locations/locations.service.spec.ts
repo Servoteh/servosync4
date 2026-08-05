@@ -429,6 +429,40 @@ describe("LocationsService — R2 mutacije", () => {
     });
   });
 
+  it("lookupBarcode: goli kavez kod „KV 6“ → kind SHELF + record (prijava 04.08.2026)", async () => {
+    // Kavez nalepnica nosi PUN location_code u CODE128 (1.0 labelsPrint) —
+    // do ove popravke je vraćala UNKNOWN („Nepoznat format: KV 6").
+    const cage = {
+      id: "88888888-8888-4888-8888-888888888888",
+      locationCode: "KV 6",
+      locationType: "CAGE",
+      parentId: null,
+      isActive: true,
+    };
+    sy15.db.locLocation.findMany.mockResolvedValue([cage]);
+    const out = await service.lookupBarcode(EMAIL, "KV 6");
+    expect(out.data).toMatchObject({
+      kind: "SHELF",
+      record: { id: cage.id, locationType: "CAGE" },
+      presetHallFilterId: null,
+    });
+  });
+
+  it("lookupBarcode: ZADU-R-* se NE razrešava — kind SHELF sa porukom zašto, bez record-a", async () => {
+    sy15.db.locLocation.findMany.mockResolvedValue([
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        locationCode: "ZADU-R-VLADAN",
+        locationType: "FIELD",
+        parentId: null,
+        isActive: true,
+      },
+    ]);
+    const out = await service.lookupBarcode(EMAIL, "ZADU-R-VLADAN");
+    expect(out.data).toMatchObject({ kind: "SHELF", record: null });
+    expect((out.data as { message?: string }).message).toMatch(/zaduženje/);
+  });
+
   it("lookupBarcode: barkod OPERACIJE (S:…) → kind OPERATION + konkretna poruka, bez upita", async () => {
     const out = await service.lookupBarcode(EMAIL, "S:20:8.4:0:A");
     expect(out.data).toMatchObject({
@@ -833,5 +867,68 @@ describe("LocationsService — R2 mutacije", () => {
 
     const res = await service.syncHealth(EMAIL);
     expect(res.data.workerHealthy).toBe(false);
+  });
+
+  // ---------- lookupDrawing: pieceCount (057/26 qty-autofill) ----------
+  // Duško 057/26: sken `9811-3/54` ostavljao Količinu 1, a nalog nosi 9 kom
+  // (prod: work_orders.piece_count=9). FE auto-popunu hrani ISTI lookup kao
+  // crtež — ovi testovi štite da oba izvora (work_orders / bigtehn keš)
+  // prosleđuju broj komada i da odgovor bez pogotka nosi `pieceCount: null`.
+
+  it("lookupDrawing: work_orders pogodak nosi pieceCount (piece_count naloga)", async () => {
+    prisma.workOrder.findMany.mockResolvedValue([
+      {
+        identNumber: "9811-3/54",
+        drawingNumber: "1135784",
+        revision: "A",
+        partName: "Rebro dna kade",
+        pieceCount: 9,
+      },
+    ]);
+
+    const res = await service.lookupDrawing("9811-3", "54", undefined);
+    expect(res.data.found).toBe(true);
+    expect(res.data.source).toBe("work_orders");
+    expect(res.data.drawingNo).toBe("1135784");
+    expect(res.data.pieceCount).toBe(9);
+  });
+
+  it("lookupDrawing: bigtehn keš fallback mapira `komada` u pieceCount", async () => {
+    prisma.workOrder.findMany.mockResolvedValue([]);
+    sy15.db.$queryRaw.mockResolvedValue([
+      {
+        ident_broj: "9811-3/54",
+        broj_crteza: "1135784",
+        revizija: "A",
+        naziv_dela: "Rebro dna kade",
+        komada: 9,
+      },
+    ]);
+
+    const res = await service.lookupDrawing("9811-3", "54", undefined);
+    expect(res.data.found).toBe(true);
+    expect(res.data.source).toBe("bigtehn_cache");
+    expect(res.data.pieceCount).toBe(9);
+  });
+
+  it("lookupDrawing: bez pogotka / bez komada → pieceCount:null (ne 0, ne undefined)", async () => {
+    prisma.workOrder.findMany.mockResolvedValue([]);
+    sy15.db.$queryRaw.mockResolvedValue([]);
+    const miss = await service.lookupDrawing("9811-3", "54", undefined);
+    expect(miss.data.found).toBe(false);
+    expect(miss.data.pieceCount).toBeNull();
+
+    prisma.workOrder.findMany.mockResolvedValue([
+      {
+        identNumber: "9811-3/54",
+        drawingNumber: "1135784",
+        revision: "A",
+        partName: "Rebro dna kade",
+        pieceCount: null,
+      },
+    ]);
+    const noPieces = await service.lookupDrawing("9811-3", "54", undefined);
+    expect(noPieces.data.found).toBe(true);
+    expect(noPieces.data.pieceCount).toBeNull();
   });
 });

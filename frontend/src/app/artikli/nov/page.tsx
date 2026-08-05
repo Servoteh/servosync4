@@ -1,11 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { listHref } from '@/lib/use-id-param';
+import { useItemLookups } from '@/api/masters';
 import { MaticniEkran } from '../_forma/polja';
 import { BRANA_ARTIKAL } from '../_forma/pravila';
-import { NEPOKRIVENO_ARTIKAL, SEKCIJE_ARTIKAL, praznArtikal } from '../_forma/artikal-polja';
+import {
+  NEPOKRIVENO_ARTIKAL,
+  SEKCIJE_ARTIKAL,
+  opcijeSifarnikaArtikla,
+  praznArtikal,
+} from '../_forma/artikal-polja';
 
 /**
  * NOV ARTIKAL — pun ekran (odluka vlasnika: dijalog nije mesto unosa).
@@ -25,6 +32,13 @@ export default function NovArtikalPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
   const [vrednosti, setVrednosti] = useState<Record<string, string>>(() => praznArtikal());
+  const sifarnici = useItemLookups();
+
+  /** Combo-i klasifikacije sa BigBit kaskadom Grupa → Podgrupa → PodPodgrupa. */
+  const opcije = useMemo(
+    () => opcijeSifarnikaArtikla(sifarnici.data?.data, vrednosti),
+    [sifarnici.data, vrednosti],
+  );
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -47,7 +61,12 @@ export default function NovArtikalPage() {
       nepokriveno={NEPOKRIVENO_ARTIKAL}
       vrednosti={vrednosti}
       onPromena={setVrednosti}
-      onIzlaz={() => router.push('/artikli')}
+      opcijePolja={opcije}
+      // „Odustani" vraća listu TAČNO kakva je bila — `listHref` čita zapamćene
+      // filtere i stranu (isti obrazac kao fakturisanje / nabavka / izvodi).
+      // Golo `/artikli` je artikle vraćalo na stranu 1 bez ijednog filtera, a
+      // pregled ima 92k redova i filter je jedini način da se do reda dođe.
+      onIzlaz={() => router.push(listHref('/artikli'))}
     />
   );
 }

@@ -1,6 +1,18 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { SyncService } from "../sync/sync.service";
+import { DEFAULT_SYNC_EXCLUDED } from "../sync/table-ownership";
 import type { ScheduledJob } from "./scheduler.types";
+
+// Re-export radi kompatibilnosti postojećih uvoza (spec + docs referišu ovaj
+// fajl). DEFINICIJA je u ../sync/table-ownership.ts (04.08.2026, dopuna 061/26):
+// isti skup štiti i default ručnog `POST /sync/run`, pa mora živeti u sync
+// modulu — jedan izvor, bez kopije logike.
+//
+// Raniji naziv `NIGHTLY_SYNC_EXCLUDED` (sadržaj: samo `items`) je UKINUT pri
+// reopenu 061/26: pošto je i `items` prešao u zamrznute tokove, taj skup bi
+// ostao PRAZAN — a prazan skup se čita kao „ništa nije isključeno" i tiho
+// obesmišljava svaku proveru koja ga još koristi.
+export { DEFAULT_SYNC_EXCLUDED };
 
 /*
  * PRUGA P (docs/PLAN_AI_OS_2026-07.md §5; presuda Nenada 26.07.2026: „BigBit
@@ -23,41 +35,23 @@ import type { ScheduledJob } from "./scheduler.types";
  *  • `full_refresh` synceri rade `deleteMany` + `createMany` u jednoj transakciji
  *    → tabela je determinističko ogledalo izvora, takođe ponovljivo.
  * Oba oblika su bezbedna SAMO za tabele čiji je jedini pisac BigBit sync. Zato
- * postoji `NIGHTLY_SYNC_EXCLUDED` (ispod) i zato posao NIKAD ne šalje `force`
- * (koji bi probio zaštitu ServoSync-owned tabela iz `table-ownership.ts`).
+ * postoji `DEFAULT_SYNC_EXCLUDED` (u `table-ownership.ts`) i zato posao NIKAD
+ * ne šalje `force` (koji bi probio zaštitu ServoSync-owned tabela).
  *
- * PARITET-GUARD PREDMETA OSTAJE NETAKNUT: `projects` je u
- * `ADDITIVE_REFRESH_TABLES` (briše se samo id koji izvor vrati, pa 3.0-native
- * predmet preživi) + `ADDITIVE_DEDUP_FIELDS.projects = "projectNumber"` (BigBit
- * kopija predmeta sa brojem koji već stoji na 3.0-native redu se PRESKAČE).
- * Noćni posao ide kroz isti `GenericSyncer`, pa nasleđuje obe zaštite — pinovano
- * testom u `bigbit-sync-jobs.service.spec.ts`.
+ * REOPEN 061/26 (04.08.2026): `items`, `projects` i `customers` su IZBAČENI iz
+ * ovog posla — od 30.07 ih vozi noćni .mdb uvoz (03:45), a MSSQL kopija je
+ * zamrznuta na 22.07, pa bi ovaj prolaz (03:30) svako jutro vraćao podatke na
+ * staro 15 minuta pre svežeg uvoza. Paritet-guard predmeta (`ADDITIVE_REFRESH_TABLES`
+ * + `ADDITIVE_DEDUP_FIELDS.projects`) i dalje važi za admin-eksplicitni MSSQL
+ * prolaz i pinovan je testom u `bigbit-sync-jobs.service.spec.ts`.
  */
 
 /** Ključ posla u `scheduled_job_runs.job_key` — ne menjati posle uvođenja. */
 export const BIGBIT_NIGHTLY_SYNC_JOB_KEY = "bigbit-nightly-sync";
 
-/**
- * Tokovi koje noćni posao NE DIRA (ručno `/sync/run` i dalje može, uz svesnu
- * odluku čoveka i nadzor nad ishodom).
- *
- * `items` (review 26.07.2026, nalaz [1]) — PRIVREMENO. Guard za duplikate
- * kataloškog broja (DB-081, uveden 25.07) NIJE još nijednom prošao preko
- * produkcijskih podataka: prvi prolaz briše ~2.300 duplikat-grupa, a sve meke
- * reference (`price_list_entries.item_id`, `work_order_item_components`) koje
- * gađaju „gubitnički" `id` postaju siročad — pod `session_replication_role=
- * 'replica'` FK to ne zaustavlja, a takav backup se ne restore-uje čisto.
- * ČIŠĆENJE JE U TOKU (Nenad prenosi jedinstvene kataloške brojeve u BigBit); kad
- * `items` ostane bez duplikata, ovaj red se briše i tok ulazi u noćni prolaz.
- * Do tada: ručni sync artikala se pokreće NADGLEDANO, uz pre-check upit iz
- * .env.example (aktivaciona beleška uz `BIGBIT_NIGHTLY_SYNC`).
- *
- * NAPOMENA: `tax_rates` VIŠE NIJE OVDE — presudom Nenada 26.07.2026 registar PDV
- * tarifa je 4.0-owned, pa je `R_Tarife` IZBAČEN iz `sync-map.generated.ts` (i
- * ručni „sync all" ga više ne poznaje). Isključenje na nivou noćnog posla bi bilo
- * polumera: brisao bi ga svaki ručni prolaz.
- */
-export const NIGHTLY_SYNC_EXCLUDED = new Set<string>(["items"]);
+// (Skup isključenih tokova — `DEFAULT_SYNC_EXCLUDED` — definisan je u
+// ../sync/table-ownership.ts; puno obrazloženje ZAŠTO je svaki tok isključen,
+// i pod kojim uslovom sme nazad, stoji tamo uz sam skup.)
 
 /**
  * Gornja granica čekanja na jedan noćni prolaz. Tik scheduler-a je SEKVENCIJALAN
@@ -96,10 +90,17 @@ export class BigbitSyncJobs {
     return process.env.BIGBIT_NIGHTLY_SYNC === "true";
   }
 
-  /** Svi registrovani entiteti MINUS isključeni tokovi. */
+  /**
+   * Svi registrovani entiteti MINUS isključeni tokovi. Od reopena 061/26
+   * (04.08.2026) filter je `DEFAULT_SYNC_EXCLUDED`: `items`/`projects`/
+   * `customers` od 30.07 vozi noćni .mdb uvoz (03:45), pa bi ovaj posao (03:30,
+   * frozen kopija od 22.07) svako jutro pregazio svežije podatke 15 minuta pre
+   * nego što stignu; šest praznih izvora bi svake noći bacalo garantovanu
+   * grešku (obrazloženje uz skup u table-ownership.ts).
+   */
   nightlyEntities(): string[] {
     return this.sync.availableEntities.filter(
-      (e) => !NIGHTLY_SYNC_EXCLUDED.has(e),
+      (e) => !DEFAULT_SYNC_EXCLUDED.has(e),
     );
   }
 
@@ -115,7 +116,7 @@ export class BigbitSyncJobs {
         key: BIGBIT_NIGHTLY_SYNC_JOB_KEY,
         description:
           "BigBit noćni sync: master podaci (MSSQL → Postgres) svih tokova osim " +
-          `isključenih (${[...NIGHTLY_SYNC_EXCLUDED].join(", ") || "—"})`,
+          `isključenih (${[...DEFAULT_SYNC_EXCLUDED].join(", ") || "—"})`,
         // 03:30 — noćni backup starta u 02:30 (backend/scripts/backup-nightly.sh,
         // cron admnenad; monitor diže alarm ako pređe 15 min), pa je u 03:30
         // sinoćnja kopija sigurno gotova: ako sync donese pokvarene podatke,
@@ -176,7 +177,7 @@ export class BigbitSyncJobs {
     const head =
       `sync #${log.id} ${log.status}: povučeno=${log.rowsFetched} ` +
       `upisano=${log.rowsUpserted} preskočeno=${log.rowsSkipped} ` +
-      `(${entities.length} tokova, isključeno ${NIGHTLY_SYNC_EXCLUDED.size})`;
+      `(${entities.length} tokova, isključeno ${DEFAULT_SYNC_EXCLUDED.size})`;
 
     // Pad = ili ceo run (npr. BigBit nedostupan → svaki entitet baci) ili bar
     // jedan entitet sa greškom. `partial` SAM PO SEBI nije pad: `SyncService`

@@ -10,7 +10,10 @@ import {
 import type { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Dec, ZERO, dec, round, safeDiv } from "./decimal.util";
-import { VAT_RATE_BY_CODE } from "../gl/posting/vat-rates";
+import {
+  VAT_RATE_BY_CODE,
+  unknownVatCodeMessage,
+} from "../gl/posting/vat-rates";
 import { NIVELACIJA_HOOK } from "./nivelacija.hook";
 import type {
   NivelacijaHook,
@@ -282,8 +285,21 @@ export class CalculationService {
         .add(row.warRate ?? 0)
         .add(row.specialRate ?? 0);
     }
-    // Fallback: deljena mapa (razlomak) → procenat. Nepoznat kod → 0 (bez PDV u KalkMP).
-    const fraction = VAT_RATE_BY_CODE[goodsTaxRateCode] ?? ZERO;
+    // Fallback: deljena mapa (razlomak) → procenat.
+    //
+    // ⚠️ GLASNO NA NEPOZNATOJ ŠIFRI (nalaz S3, 02.08.2026). Do ove izmene je stajalo
+    // `?? ZERO` — nemo. Pošto je `tax_rates` na produkciji PRAZNA (v. N1-a), gornji
+    // upit uvek promaši, pa je ova grana JEDINI izvor stope: nepoznata šifra je davala
+    // `ΣStopa = 0`, a `KalkMP = Taksa + FiksniPorez + KalkVP × (1 + 0/100)` — dakle
+    // MALOPRODAJNA CENA BEZ PDV-a, upisana kao cena na polici. Cena je novac i mora
+    // da padne glasno, a ne da se izračuna po pogrešnoj formuli.
+    const fraction = VAT_RATE_BY_CODE[goodsTaxRateCode];
+    if (fraction === undefined) {
+      throw new UnprocessableEntityException(
+        `${unknownVatCodeMessage(goodsTaxRateCode)} Kalkulacija ne može da izvede ` +
+          `maloprodajnu cenu bez stope — ispravi tarifu artikla, pa ponovi.`,
+      );
+    }
     return dec(fraction).mul(100);
   }
 }

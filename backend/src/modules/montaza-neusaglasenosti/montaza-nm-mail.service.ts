@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { MailService } from "../../common/mail/mail.service";
-import { resolveManagementRecipients } from "../../common/workers/management-criteria";
+import { resolveMontazaNmPrimaoci } from "../../common/workers/montaza-nm-primaoci";
 
 const SEVERITY_LABEL: Record<string, string> = {
   MALA: "Mala",
@@ -18,7 +18,8 @@ const LOCATION_LABEL: Record<string, string> = {
  * `zahtevi-mail.service.ts`. Env `MONTAZA_NM_MAIL_NOTIFY` default TRUE; bez RESEND
  * ključa MailService je DRY-RUN (loguje, ne šalje). DOKTRINA §6: slanje NIKAD ne
  * obara prijavu — cela metoda je best-effort (try/catch, ne baca; vraća boolean).
- *   • nova prijava → mail SVIM aktivnim `menadzment` korisnicima sa email-om (COO krug).
+ *   • nova prijava → mail IMENOVANIM primaocima iz `montaza_nm_primaoci` (034/26,
+ *     Zoranova lista 29.07 — do tada rola `menadzment`, v. `montaza-nm-primaoci.ts`).
  *   • ZAVRSENO   → mail podnosiocu prijave.
  */
 @Injectable()
@@ -51,9 +52,10 @@ export class MontazaNmMailService {
   }
 
   /**
-   * Obaveštenje MENADŽMENTU na SVAKU novu prijavu. Vraća boolean uspeha (nikad ne baca).
+   * Obaveštenje IMENOVANIM PRIMAOCIMA (034/26) na SVAKU novu prijavu. Vraća boolean
+   * uspeha (nikad ne baca).
    */
-  async notifyManagementNewReport(nonconformityId: number): Promise<boolean> {
+  async notifyPrimaociNewReport(nonconformityId: number): Promise<boolean> {
     if (!this.enabled) return false;
     try {
       const nc = await this.prisma.montageNonconformity.findUnique({
@@ -70,10 +72,12 @@ export class MontazaNmMailService {
       });
       if (!nc) return false;
 
-      const recipients = await resolveManagementRecipients(this.prisma);
+      const recipients = await resolveMontazaNmPrimaoci(this.prisma);
       if (recipients.length === 0) {
+        // Namerno BEZ tihog fallback-a na rolu: prazna tabela je greška u podešavanju
+        // koja mora da se vidi (Podešavanja → Notifikacije), ne da se maskira.
         this.logger.warn(
-          `Neusaglašenost ${nc.reportNumber}: nema menadžment email-ova — obaveštenje preskočeno.`,
+          `Neusaglašenost ${nc.reportNumber}: tabela montaza_nm_primaoci nema aktivnih primalaca — obaveštenje preskočeno.`,
         );
         return false;
       }
@@ -105,7 +109,7 @@ export class MontazaNmMailService {
       });
     } catch (err) {
       this.logger.warn(
-        `Obaveštenje menadžmentu za neusaglašenost ${nonconformityId} nije poslato: ${
+        `Obaveštenje primaocima za neusaglašenost ${nonconformityId} nije poslato: ${
           (err as Error).message
         }`,
       );

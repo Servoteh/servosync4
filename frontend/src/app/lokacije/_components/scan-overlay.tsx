@@ -397,6 +397,10 @@ export function ScanOverlay({
   const rootRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const ctrlRef = useRef<ScanCtrl | null>(null);
+  // Okvir nišana → `acceptRegion` dekodera (nišan-gejt, SAMO Samsung A-serija:
+  // v. `shouldLimitScanToReticle` u `lib/barcode-decoder`). Na svim ostalim
+  // uređajima getter se nikad ne poziva i ponašanje je identično dosadašnjem.
+  const reticleBoxRef = useRef<HTMLDivElement>(null);
 
   const [status, setStatus] = useState('Tražim kameru…');
   const [statusKind, setStatusKind] = useState<StatusKind>('info');
@@ -605,7 +609,7 @@ export function ScanOverlay({
         }
         // SHELF nejednoznačan / nerazrešen → poruka pariteta, ne prosleđuj.
         if (data.kind === 'SHELF' && !data.record) {
-          say(data.message ?? `Polica ${code} nije jednoznačno razrešena`, 'error');
+          say(data.message ?? `Lokacija ${code} nije jednoznačno razrešena`, 'error');
           return;
         }
         if (data.kind === 'ITEM' && (!data.records || data.records.length === 0))
@@ -1085,6 +1089,11 @@ export function ScanOverlay({
           isStopped: () => stopped || mySeq !== decoderSeq,
           // Više kodova u kadru → biraj format koji ovaj korak očekuje (N3).
           preferMatching,
+          // Nišan-gejt (04.08, „Samsung promaši sken za ~2 cm"): na SM-A profilu
+          // pogodak čiji je centar van prozora nišana se ignoriše — dekoder je
+          // dotad čitao CEO frejm (uklj. ~35% nevidljivog kadra sa svake strane
+          // kod object-fit:cover), pa je hvatao susedni kod van prozora.
+          acceptRegion: () => reticleBoxRef.current?.getBoundingClientRect() ?? null,
         });
         if (stopped || mySeq !== decoderSeq) {
           handle.stop(); // restart/close u toku lazy učitavanja ZXing-a
@@ -1456,7 +1465,9 @@ export function ScanOverlay({
         className="absolute inset-0 h-full w-full object-cover"
         onPointerDown={(e) => void ctrlRef.current?.tapFocus(e.clientX, e.clientY)}
       />
-      {cameraOn && !iosBlocker && <ScanReticle variant="barcode" bottomInset={panelInset} />}
+      {cameraOn && !iosBlocker && (
+        <ScanReticle variant="barcode" bottomInset={panelInset} frameRef={reticleBoxRef} />
+      )}
       {focusRing && (
         <div
           // Neutralna bela, NE `--status-success`: zeleno je u ovom sistemu potvrda

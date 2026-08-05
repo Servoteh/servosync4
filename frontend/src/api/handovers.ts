@@ -489,6 +489,14 @@ export interface AppendDraftItemInput {
   drawingId: number;
   /** Broj komada za izradu; izostavljeno = 1 (backend default). */
   quantity?: number;
+  /**
+   * 027/26 dopuna (Igor 30.07): kad se ubacuje SKLOP + sve pozicije, pozicija
+   * nosi id sklopa (kolona „Vodeći sklop" u detalju nacrta + tačniji §6.5.4
+   * pre-check količine). Backend validira postojanje; izostavljeno = null.
+   */
+  mainDrawingId?: number;
+  /** Potreba po sastavnici za 1 komad vodećeg sklopa; izostavljeno = 0. */
+  quantityDefinedInDrawing?: number;
 }
 
 /**
@@ -1161,6 +1169,17 @@ export function useHandoverPrintBundle(id: number | null) {
     queryFn: () => apiFetch<{ data: PrintBundle }>(`/v1/handovers/${id}/print-bundle`),
     enabled: id != null,
   });
+}
+
+/**
+ * Zahtev 055/26 (Strahinja): PDF „Primopredaja — lista pozicija" za ODOBREN
+ * nacrt — GET /v1/handover-drafts/:id/print. Zaglavlje (broj nacrta, datumi,
+ * projekat) + tabela pozicija (r. br., broj crteža, naziv, količina). Backend
+ * vraća 422 (srpska poruka) dok primopredaja nacrta nije odobrena. Endpoint
+ * traži JWT → `apiBlob`, isti obrazac kao `fetchPrintBundlePdf`.
+ */
+export async function fetchDraftPositionsPdf(draftId: number): Promise<Blob> {
+  return apiBlob(`/v1/handover-drafts/${draftId}/print`);
 }
 
 /**

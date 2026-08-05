@@ -265,6 +265,19 @@ export interface ImportLogParams {
 
 // ─────────────────────────────────────────────────────────────── hook-ovi
 
+/**
+ * Odobren PDM status — 1:1 sa backend `APPROVED_PDM_STATES`
+ * (pdm/pdm-xml-parser.ts): trim + case-insensitive ∈ {odobreno, izmena bez
+ * revizije}. JEDAN izvor za sve potrošače (auto-popuna stavki nacrta u
+ * drafts-tab + brojanje pozicija sklopa u „Dodaj u nacrt" — 027/26 dopuna):
+ * komponente van skupa se preskaču jer bi backend ceo upis odbio sa 422
+ * („Crtež(i) nisu ODOBRENI u PDM-u").
+ */
+const APPROVED_PDM_STATES = new Set(['odobreno', 'izmena bez revizije']);
+export function isApprovedPdmStatus(pdmStatus: string): boolean {
+  return APPROVED_PDM_STATES.has(pdmStatus.trim().toLowerCase());
+}
+
 /** Paginirana lista crteža (+ pretraga i filteri revizija/materijal/projektant). */
 export function useDrawings(params: DrawingListParams) {
   const qs = new URLSearchParams();

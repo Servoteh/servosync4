@@ -4,7 +4,7 @@ import { Sy15CronJobs } from "./sy15-cron-jobs";
 import {
   BigbitSyncJobs,
   BIGBIT_NIGHTLY_SYNC_JOB_KEY,
-  NIGHTLY_SYNC_EXCLUDED,
+  DEFAULT_SYNC_EXCLUDED,
 } from "./bigbit-sync-jobs.service";
 import type { SyncService } from "../sync/sync.service";
 import { GenericSyncer } from "../sync/generic.syncer";
@@ -26,10 +26,21 @@ import type { ScheduledJob } from "./scheduler.types";
 
 const FLAG = "BIGBIT_NIGHTLY_SYNC";
 
-/** `SyncService` mock: registar entiteta + `run` koji vraća `bb_sync_log` red. */
+/**
+ * `SyncService` mock: registar entiteta + `run` koji vraća `bb_sync_log` red.
+ * Registar namerno meša isključene tokove (customers/projects/items —
+ * DEFAULT_SYNC_EXCLUDED, reopen 061/26) i tokove koji ostaju u prolazu.
+ */
 function syncMock(
   log: Record<string, unknown> = {},
-  entities = ["customers", "projects", "document_types", "items"],
+  entities = [
+    "customers",
+    "projects",
+    "document_types",
+    "items",
+    "global_config",
+    "salespeople",
+  ],
 ) {
   const run = jest.fn().mockResolvedValue({
     id: 1,
@@ -104,20 +115,26 @@ describe("BigbitSyncJobs — prekidač i registracija", () => {
     expect(keys).not.toContain(BIGBIT_NIGHTLY_SYNC_JOB_KEY);
   });
 
-  it("isključeni tokovi ne ulaze u noćni prolaz (items: čeka katbroj čišćenje)", () => {
+  it("isključeni tokovi ne ulaze u noćni prolaz (zamrznuti MSSQL izvor)", () => {
     const { svc } = syncMock();
     const entities = new BigbitSyncJobs(svc).nightlyEntities();
-    expect(entities).toContain("customers");
-    expect(entities).toContain("projects");
-    expect(entities).toContain("document_types");
+    // Reopen 061/26 (04.08.2026): `items`/`customers`/`projects` od 30.07 vozi
+    // noćni .mdb uvoz (03:45); MSSQL kopija je zamrznuta na 22.07, pa bi ih ovaj
+    // posao (03:30) svako jutro vraćao na staro. Zato NE ulaze u prolaz.
+    expect(entities).not.toContain("customers");
+    expect(entities).not.toContain("projects");
     expect(entities).not.toContain("items");
-    expect([...NIGHTLY_SYNC_EXCLUDED]).toEqual(["items"]);
+    expect(entities).toContain("document_types");
+    // Skup NIJE prazan — prazan bi značio „ništa nije isključeno" i tiho vratio
+    // ceo kvar (zato je stari `NIGHTLY_SYNC_EXCLUDED`, koji bi ostao prazan,
+    // ukinut umesto ispražnjen).
+    expect(DEFAULT_SYNC_EXCLUDED.size).toBeGreaterThan(0);
   });
 
   // Tarife se NE rešavaju isključenjem iz noćnog posla (to bi ostavilo ručni
   // „sync all" da ih briše) — mapiranje je uklonjeno, pa ih SyncService i ne zna.
   it("tax_rates nisu ni isključenje ni tok — mapiranja više nema", () => {
-    expect(NIGHTLY_SYNC_EXCLUDED.has("tax_rates")).toBe(false);
+    expect(DEFAULT_SYNC_EXCLUDED.has("tax_rates")).toBe(false);
     expect(SYNC_MAP.some((m) => m.targetDb === "tax_rates")).toBe(false);
   });
 });
@@ -132,7 +149,8 @@ describe("BigbitSyncJobs — izvršenje i ishod u dnevniku", () => {
     const calls = run.mock.calls as unknown as [Record<string, unknown>][];
     const arg = calls[0][0];
     expect(arg.trigger).toBe("cron");
-    expect(arg.entities).toEqual(["customers", "projects", "document_types"]);
+    // customers/projects/items su van prolaza (DEFAULT_SYNC_EXCLUDED, reopen 061/26).
+    expect(arg.entities).toEqual(["document_types", "global_config", "salespeople"]);
     expect(arg.force).toBeUndefined();
     expect(arg.strategy).toBeUndefined();
   });
@@ -145,9 +163,9 @@ describe("BigbitSyncJobs — izvršenje i ishod u dnevniku", () => {
       rowsUpserted: 118,
       rowsSkipped: 2,
       metadata: {
-        customers: { rowsFetched: 20, rowsUpserted: 20, rowsSkipped: 0 },
-        projects: { rowsFetched: 60, rowsUpserted: 58, rowsSkipped: 2 },
-        items: { rowsFetched: 40, rowsUpserted: 40, rowsSkipped: 0 },
+        global_config: { rowsFetched: 20, rowsUpserted: 20, rowsSkipped: 0 },
+        document_types: { rowsFetched: 60, rowsUpserted: 58, rowsSkipped: 2 },
+        salespeople: { rowsFetched: 40, rowsUpserted: 40, rowsSkipped: 0 },
       },
     });
     const job = nightlyJob(new BigbitSyncJobs(svc));
@@ -157,8 +175,8 @@ describe("BigbitSyncJobs — izvršenje i ishod u dnevniku", () => {
     expect(summary).toContain("povučeno=120");
     expect(summary).toContain("upisano=118");
     expect(summary).toContain("preskočeno=2");
-    expect(summary).toContain("customers=20/20");
-    expect(summary).toContain("projects=60/58,presk=2");
+    expect(summary).toContain("global_config=20/20");
+    expect(summary).toContain("document_types=60/58,presk=2");
     expect(summary.length).toBeLessThanOrEqual(2000);
   });
 
@@ -167,9 +185,9 @@ describe("BigbitSyncJobs — izvršenje i ishod u dnevniku", () => {
       status: "partial",
       rowsSkipped: 3,
       metadata: {
-        customers: { rowsFetched: 1, rowsUpserted: 1, rowsSkipped: 0 },
-        projects: { rowsFetched: 5, rowsUpserted: 2, rowsSkipped: 3 },
-        items: { rowsFetched: 1, rowsUpserted: 1, rowsSkipped: 0 },
+        global_config: { rowsFetched: 1, rowsUpserted: 1, rowsSkipped: 0 },
+        document_types: { rowsFetched: 5, rowsUpserted: 2, rowsSkipped: 3 },
+        salespeople: { rowsFetched: 1, rowsUpserted: 1, rowsSkipped: 0 },
       },
     });
     const job = nightlyJob(new BigbitSyncJobs(svc));
@@ -182,14 +200,14 @@ describe("BigbitSyncJobs — izvršenje i ishod u dnevniku", () => {
     const { svc } = syncMock({
       status: "partial",
       metadata: {
-        customers: { rowsFetched: 1, rowsUpserted: 1, rowsSkipped: 0 },
-        projects: { error: "relation does not exist" },
-        items: { rowsFetched: 1, rowsUpserted: 1, rowsSkipped: 0 },
+        global_config: { rowsFetched: 1, rowsUpserted: 1, rowsSkipped: 0 },
+        document_types: { error: "relation does not exist" },
+        salespeople: { rowsFetched: 1, rowsUpserted: 1, rowsSkipped: 0 },
       },
     });
     const job = nightlyJob(new BigbitSyncJobs(svc));
     await expect(job.run({ scheduledFor: new Date() })).rejects.toThrow(
-      /projects: relation does not exist/,
+      /document_types: relation does not exist/,
     );
   });
 
@@ -305,9 +323,11 @@ describe("BigbitSyncJobs — paritet-guard predmeta ostaje", () => {
   it("konfiguracija zaštite je na mestu (aditivni refresh + dedup po broju)", () => {
     expect(isAdditiveRefreshTable("projects")).toBe(true);
     expect(additiveDedupFieldFor("projects")).toBe("projectNumber");
-    // Zaštita bi bila beskorisna da noćni posao izbacuje `projects` iz prolaza.
+    // Reopen 061/26 (04.08.2026): `projects` je namerno VAN noćnog MSSQL prolaza
+    // (frozen kopija bi gazila noćni .mdb uvoz) — zaštita ostaje za
+    // admin-eksplicitni prolaz (`entities: ["projects"]`), pa se i dalje pinuje.
     const { svc } = syncMock();
-    expect(new BigbitSyncJobs(svc).nightlyEntities()).toContain("projects");
+    expect(new BigbitSyncJobs(svc).nightlyEntities()).not.toContain("projects");
   });
 
   it("noćni prolaz NE briše 3.0-native predmet i preskače BigBit kopiju istog broja", async () => {

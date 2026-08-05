@@ -3028,6 +3028,10 @@ export class OdrzavanjeService {
       dto.clientEventId,
       `odrzavanje.${action}`,
       async (tx) => {
+        // Argumenti su TEXT (fn potpisi su text) — kast u enum radi SAMA fn.
+        // Živa create_maint_vehicle je taj kast propuštala → 42804 na svakom
+        // kreiranju vozila (04.08.2026); fix + pin:
+        // docs/migration/FIX_VOZILA_CREATE_STATUS_CAST.sql (schema.spec pinuje kast).
         const rows = await tx.$queryRaw<{ id: string | null }[]>(
           Prisma.sql`SELECT public.${Prisma.raw(fn)}(
           ${dto.assetCode.trim()}, ${dto.name.trim()}, ${dto.status ?? "running"},
@@ -3380,6 +3384,15 @@ export class OdrzavanjeService {
         backupRequired: Boolean(d.backup_required),
         lastBackupAt: this.toDbTs(s("last_backup_at")) ?? null,
         notes: s("notes"),
+        // Polja po tipu uređaja (065 računar / 066 štampač / 067 switch) —
+        // kolone dodate kroz ZAHTEV_065_066_067_IT_OPREMA_POLJA.sql.
+        cpu: s("cpu"),
+        motherboard: s("motherboard"),
+        ram: s("ram"),
+        gpu: s("gpu"),
+        officeLocation: s("office_location"),
+        tonerCartridges: s("toner_cartridges"),
+        unifiPorts: s("unifi_ports"),
         updatedBy: uid,
       };
       const row = await tx.maintItAssetDetails.upsert({

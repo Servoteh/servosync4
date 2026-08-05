@@ -993,9 +993,14 @@ export class WorkOrdersService {
     await tx.workOrderComponent.deleteMany({ where: { workOrderId: id } });
     await tx.workOrderItemComponent.deleteMany({ where: { workOrderId: id } });
     await tx.workOrderApproval.deleteMany({ where: { workOrderId: id } });
-    // Claim rows for the launch notification must go with the launch rows, or a
-    // later launch of the same handover would find a stale claim and stay silent
-    // (016/26 dopuna, review 25.07).
+    // Claim rows for the launch notification go with the launch rows: without
+    // this, a later launch of the same handover would hit the stale per-handover
+    // claim (UNIQUE drawing_handover_id) and stay silent (016/26, review 25.07).
+    // NOTE (016/26 četvrti krug): deleting these rows no longer guarantees a new
+    // notification — the per-NACRT dedup keys on `sent_at` of ANY row of the same
+    // draft, so a sibling position that already notified still suppresses it.
+    // That is intended (one notification per nacrt); this delete only keeps the
+    // per-position claim from blocking a re-launch of this very handover.
     await tx.workOrderLaunchNotification.deleteMany({
       where: { workOrderId: id },
     });
@@ -1036,7 +1041,9 @@ export class WorkOrdersService {
       : 0;
     const hasRealWork =
       timeEntries > 0 ||
-      techProcesses.some((t) => t.pieceCount > 0 || t.isProcessFinished === true);
+      techProcesses.some(
+        (t) => t.pieceCount > 0 || t.isProcessFinished === true,
+      );
     if (hasRealWork)
       throw new UnprocessableEntityException(
         "Po ovom nalogu postoji evidentiran rad (prijave/kucanja) — ne može se obrisati. Prinudno brisanje je dostupno administratoru/šefu.",
@@ -1246,9 +1253,9 @@ export class WorkOrdersService {
       return { launchId: launch?.id ?? null, notifyPlanners };
     });
 
-    // POSLE komita, best-effort (D8 obrazac): zabeleži lansiranje za ZBIRNO
-    // obaveštenje planerima (016/26 treći krug — jedan mejl po talasu, ne po
-    // poziciji; slanje radi sweeper u LaunchNotifyService). `notifyLaunch`
+    // POSLE komita, best-effort (D8 obrazac): zabeleži lansiranje pozicije za
+    // obaveštenje planerima (016/26 četvrti krug — tačno jedno obaveštenje po
+    // NACRTU primopredaje; slanje radi sweeper u LaunchNotifyService). `notifyLaunch`
     // nikad ne baca, ali `.catch()` je pojas: pad obaveštenja NE sme da obori
     // već komitovano lansiranje. Fire-and-forget: odgovor ne čeka upis.
     if (launched.notifyPlanners)
@@ -1963,7 +1970,10 @@ export class WorkOrdersService {
   }
 
   /** Strim PDF sadržaja (inline) — isti obrazac kao `plan-proizvodnje-read.service.ts` streamDrawing. */
-  async streamDrawingPdf(pdfId: number, res: Response): Promise<StreamableFile> {
+  async streamDrawingPdf(
+    pdfId: number,
+    res: Response,
+  ): Promise<StreamableFile> {
     const row = await this.prisma.workOrderDrawingPdf.findFirst({
       where: { id: pdfId, deletedAt: null },
       select: { fileName: true, contentType: true, pdfBinary: true },

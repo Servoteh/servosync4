@@ -13,7 +13,9 @@ import {
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
   ValidateNested,
 } from "class-validator";
 import { IsCalendarDate } from "../../moj-profil/dto/is-calendar-date";
@@ -51,9 +53,16 @@ export class InviteUcesnikDto {
 }
 
 export class CreateSastanakDto extends IdempotentDto {
+  /** 'periodicni' od 024/26 (predlog d1): serija sa proizvoljnim intervalom;
+   *  'sedmicni' (kolegijum) ostaje ZASEBAN tip — njegova automatika i „Sedmični"
+   *  modal rade nepromenjeno (uslov iz predloga: bez promene za kolegijum). */
   @IsOptional()
-  @IsIn(["sedmicni", "projektni", "tematski", "dnevni"])
+  @IsIn(["sedmicni", "projektni", "tematski", "dnevni", "periodicni"])
   tip?: string;
+
+  /** Broj dana između dva termina — OBAVEZAN uz tip 'periodicni', zabranjen uz
+   *  ostale (servisna validacija; kolona `sastanci.interval_days`, 024/26 d1). */
+  @IsOptional() @IsInt() @Min(1) @Max(365) intervalDays?: number;
 
   @IsString() @MaxLength(300) naslov!: string;
 
@@ -93,9 +102,13 @@ export class CreateSastanakDto extends IdempotentDto {
 }
 
 export class UpdateSastanakDto {
+  /** Promena tipa postojećeg sastanka (024/26 predlog d2 — „od trenutka promene
+   *  važi novi režim, istorija netaknuta"). */
   @IsOptional()
-  @IsIn(["sedmicni", "projektni", "tematski", "dnevni"])
+  @IsIn(["sedmicni", "projektni", "tematski", "dnevni", "periodicni"])
   tip?: string;
+  /** Vidi CreateSastanakDto.intervalDays. */
+  @IsOptional() @IsInt() @Min(1) @Max(365) intervalDays?: number;
   @IsOptional() @IsString() @MaxLength(300) naslov?: string;
   @IsOptional() @IsISO8601() datum?: string;
   @IsOptional() @Matches(TIME_OR_CLEAR_RE) vreme?: string;

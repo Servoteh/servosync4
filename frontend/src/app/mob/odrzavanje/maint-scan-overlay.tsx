@@ -61,6 +61,9 @@ export function MaintScanOverlay({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Okvir nišana → `acceptRegion` dekodera (nišan-gejt, SAMO Samsung A-serija —
+  // v. `shouldLimitScanToReticle`); na svim ostalim uređajima inertno.
+  const reticleBoxRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const busyRef = useRef(false);
   const lastRef = useRef<{ code: string; at: number }>({ code: '', at: 0 });
@@ -279,6 +282,10 @@ export function MaintScanOverlay({
           formats: SCAN_FORMATS,
           onRaw: (raw) => resolve(raw),
           isStopped: () => aborted(),
+          // Nišan-gejt (04.08): na SM-A profilu se prihvata samo pogodak čiji je
+          // centar u prozoru nišana (dekoder inače čita CEO frejm, uklj. deo van
+          // ekrana kod object-fit:cover). Van profila potpuno inertno.
+          acceptRegion: () => reticleBoxRef.current?.getBoundingClientRect() ?? null,
         });
         if (aborted()) handle.stop();
         else decoder = handle;
@@ -344,7 +351,9 @@ export function MaintScanOverlay({
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" />
       {/* QR karton sredstva → kvadratni nišan; laser je 1D pomagalo, pa je ovde ugašen. */}
-      {cameraOn && <ScanReticle variant="qr" laser={false} bottomInset={panelInset} />}
+      {cameraOn && (
+        <ScanReticle variant="qr" laser={false} bottomInset={panelInset} frameRef={reticleBoxRef} />
+      )}
 
       {/* `pointer-events-none` na traci, `auto` na dugmetu: traka je providan gradijent
           preko kadra, pa tap kroz nju mora da stigne do `<video>`. */}

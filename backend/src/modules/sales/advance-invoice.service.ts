@@ -8,9 +8,19 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
+import {
+  VAT_PERCENT_BY_CODE,
+  unknownVatCodeMessage,
+} from "../gl/posting/vat-rates";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { grossToNet } from "../pdv/vat-bridge.util";
 import { assertVatPeriodNotLocked } from "../pdv/vat-period-lock";
+import {
+  APPLICATION_ACTIVE,
+  computeAdvanceDeductions,
+  computeAdvanceUsage,
+  loadAdvanceLinkedInvoices,
+} from "./advance-deduction";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   type ApplyAdvanceDto,
@@ -104,33 +114,32 @@ const ADVANCE_DIRECTION_OUT = "out";
 const PROFORMA_TYPES = new Set(["PON", "PROF"]);
 
 /**
- * Nominalna PDV stopa (u PROCENTIMA) po `vatRateCode`. Isti katalog kao privatni
- * `VAT_RATE_BY_CODE` u `pricing.service.ts` (tamo kao koeficijent, ovde u
- * procentima jer `grossToNet` prima procenat); pricing ga ne izvozi.
+ * PDV STOPE AVANSA — IZVEDENE IZ JEDNE MAPE (`gl/posting/vat-rates.ts`).
+ *
+ * ⚠️ Do 02.08.2026. je ovde stajao RUČNI PREPIS mape u procentima, opravdan time da
+ * „pricing ga ne izvozi". To više nije tačno (`vat-totals.ts:131` re-eksportuje mapu),
+ * a prepis je preživeo ispravku mape i naplaćivao drugi porez nego predračun po kome
+ * je avans izdat: predračun sa artiklom `id=12852` (šifra „4") = 10 %, avans po njemu
+ * = 8 %; stavka sa šifrom „1" (BEZPDV) = 0 % na predračunu, 20 % na avansu.
+ * Puna slika kvara je u zaglavlju `vat-rates.ts`.
  */
-const VAT_PERCENT_BY_CODE: Readonly<Record<string, number>> = {
-  "3": 20, // Osnovna / VISA
-  "1": 20, // Osnovna (alt kod)
-  "2": 10, // Zeleznica / NIZA
-  "4": 8, // Posebna / POLJO
-  "0": 0, // bez PDV (izvoz / oslobođeno)
-};
 
 /** Advisory-lock namespace za serijalizaciju „jedan AVR po predračunu". */
 const ADVISORY_NS_ADVANCE_PER_PROFORMA = 4002;
 /**
  * Advisory-lock namespace-i za primenu avansa. Uzimaju se UVEK istim redom
  * (prvo račun, pa avans) — obrnut redosled u drugoj sesiji bi dao deadlock.
+ *
+ * IZVEZENI su jer brava mora biti ZAJEDNIČKA sa svakim drugim putem koji dira odbitak
+ * avansa na računu: `pdv/advance-vat.service.ts` (`link-final`) piše kolone
+ * `advance_invoice_id` / `advance_applied_amount`, a `applyAdvance` ih čita pa upisuje
+ * (read-then-write). Svoja brava u svakom modulu = nikakva brava.
  */
-const ADVISORY_NS_APPLY_ON_INVOICE = 4003;
-const ADVISORY_NS_APPLY_OF_ADVANCE = 4004;
+export const ADVISORY_NS_APPLY_ON_INVOICE = 4003;
+export const ADVISORY_NS_APPLY_OF_ADVANCE = 4004;
 
-/**
- * Status primene avansa (`invoice_advance_applications.status`). Izvezeno —
- * storno fakture (fakturisanje.service) radi nad istim vrednostima.
- */
-export const APPLICATION_ACTIVE = "ACTIVE";
-export const APPLICATION_REVERSED = "REVERSED";
+// Status primene avansa (`invoice_advance_applications.status`) živi uz PRAVILO o
+// odbijenom avansu — `./advance-deduction`. Ovde se samo uvozi i koristi.
 
 /** Minimalni oblik stavke iz koga se čita PDV stopa dokumenta. */
 interface VatRateSource {
@@ -159,14 +168,6 @@ interface AppliedRow {
   invoiceId: number;
   advanceInvoiceId: number;
   appliedAmount: Prisma.Decimal;
-}
-
-/** Zbir bruto iznosa primena. */
-function sumApplied(rows: AppliedRow[]): Prisma.Decimal {
-  return rows.reduce(
-    (acc, r) => acc.add(r.appliedAmount),
-    new Prisma.Decimal(0),
-  );
 }
 
 /** Osnovica + PDV izvedeni iz bruto avansa. */
@@ -385,11 +386,10 @@ export class AdvanceInvoiceService {
 
     const isExport = input.isExport ?? false;
     const vatRateCode = isExport ? "0" : (input.vatRateCode ?? "3");
+    // Spisak dozvoljenih je IZVEDEN iz mape — do 02.08.2026. je ovde bio prepis koji
+    // je primao nepostojeću „2", a odbijao legitimne „5" (POLJO 8 %) i „6" (20 %).
     if (VAT_PERCENT_BY_CODE[vatRateCode] === undefined) {
-      throw new UnprocessableEntityException(
-        `Nepoznata šifra PDV stope „${vatRateCode}" — dozvoljene su ` +
-          `${Object.keys(VAT_PERCENT_BY_CODE).join(", ")}.`,
-      );
+      throw new UnprocessableEntityException(unknownVatCodeMessage(vatRateCode));
     }
 
     const companyId = input.companyId ?? 0;
@@ -751,49 +751,42 @@ export class AdvanceInvoiceService {
       }
 
       // ── N:M kontrola iznosa ────────────────────────────────────────────────
-      // Preostatak avansa = NAPLAĆENO − Σ aktivnih primena (BigBit ovu proveru
-      // NEMA — ni constraint ni VBA — pa se avans tamo može prekoračiti; doc §4.5).
+      // Preostatak avansa = NAPLAĆENO − iskorišćeno (BigBit ovu proveru NEMA — ni
+      // constraint ni VBA — pa se avans tamo može prekoračiti; doc §4.5).
+      //
+      // OBE strane (avans i račun) računa `./advance-deduction` — JEDINO mesto na kome
+      // pravilo „Σ aktivnih primena + zatečena 1:1 veza bez svog reda" postoji. Ranije
+      // je isti račun stajao ovde prepisan, pa se razišao sa ekranom, štampom i SEF-om
+      // (v. zaglavlje `advance-deduction.ts`).
       const advanceApps = await this.activeApplications(tx, {
         advanceInvoiceId: advance.id,
       });
       const invoiceApps = await this.activeApplications(tx, {
         invoiceId: invoice.id,
       });
-      let advanceUsed = sumApplied(advanceApps);
-      let invoiceUsed = sumApplied(invoiceApps);
-      let duplicatePair = invoiceApps.some(
-        (a) => a.advanceInvoiceId === advance.id,
-      );
 
-      // LEGACY / CROSS-MODUL: veze nastale pre N:M migracije ili kroz pdv modul
-      // (`advance-vat.linkIncomingAdvanceToFinal` piše `invoices.advance_*` bez reda
-      // u spojnoj tabeli) nemaju primenu — čitaju se iz kolona.
-      //
-      // UNIJA, NE „ILI-ILI" (ispravka posle drugog kruga pregleda 28.07.): ranije se
-      // legacy iznos čitao SAMO kad primena nema nijedne, pa je posle prve N:M primene
-      // legacy deo bio zaboravljen i avans se mogao prekoračiti (mereno: naplaćeno
-      // 5.000 → primenjeno 2.000 + 3.000 + 2.000 = 7.000). Sada se sabiraju primene
-      // PLUS one legacy veze koje nemaju svoj red u spojnoj tabeli.
-      const legacyLinks = await tx.invoice.findMany({
-        where: { advanceInvoiceId: advance.id, status: { not: "CANCELLED" } },
-        select: { id: true, advanceAppliedAmount: true },
-      });
-      const appliedInvoiceIds = new Set(advanceApps.map((a) => a.invoiceId));
-      advanceUsed = legacyLinks
-        .filter((l) => !appliedInvoiceIds.has(l.id))
-        .reduce((acc, l) => acc.add(l.advanceAppliedAmount), advanceUsed);
-      duplicatePair ||= legacyLinks.some((l) => l.id === invoice.id);
+      // Strana AVANSA: primene ovog avansa + zatečene veze računa koji na njega
+      // pokazuju kolonom. Iznos zatečenog dela je `kolona − Σ primena TOG računa`, pa
+      // se moraju učitati i tuđe primene tih računa (zato poseban upit, ne kolona).
+      const linkedInvoices = await loadAdvanceLinkedInvoices(tx, [advance.id]);
+      const advanceUsed = computeAdvanceUsage({
+        advanceInvoiceId: advance.id,
+        applicationsOfAdvance: advanceApps,
+        linkedInvoices,
+      }).total;
 
-      // Ista unija na strani RAČUNA: legacy 1:1 veza računa se dodaje samo ako taj
-      // avans nema svoj red u spojnoj tabeli.
-      if (
-        invoice.advanceInvoiceId != null &&
-        !invoiceApps.some(
-          (a) => a.advanceInvoiceId === invoice.advanceInvoiceId,
-        )
-      ) {
-        invoiceUsed = invoiceUsed.add(invoice.advanceAppliedAmount);
-      }
+      // Strana RAČUNA: isto pravilo nad ovim računom.
+      const invoiceUsed = computeAdvanceDeductions({
+        invoice,
+        applications: invoiceApps,
+      }).total;
+
+      // Isti avans dvaput na ISTOM računu — gleda se VEZA, ne iznos: zatečena veza
+      // čiji je iznos već pokriven primenama ne daje red u `lines`, ali i dalje znači
+      // da je taj avans na ovom računu jednom odbijen.
+      const duplicatePair =
+        invoiceApps.some((a) => a.advanceInvoiceId === advance.id) ||
+        invoice.advanceInvoiceId === advance.id;
 
       const advanceRemaining = advance.advancePaidAmount.sub(advanceUsed);
       const invoiceRemaining = invoice.grossTotal.sub(invoiceUsed);
@@ -957,9 +950,15 @@ export class AdvanceInvoiceService {
         data: { closingEntryId: entry.journalEntryId },
       });
 
-      // KOMPATIBILNOST: `advance_applied_amount` = zbir aktivnih primena, a
+      // KOMPATIBILNOST: `advance_applied_amount` = UKUPNO odbijeno na ovom računu, a
       // `advance_invoice_id` / `advance_closing_entry_id` pokazuju na PRVU primenu
       // (SEF BillingReference, štampa, pdv modul čitaju te kolone).
+      //
+      // ⚠️ `invoiceUsed` je UNIJA (primene + zatečena veza), pa se kolona i posle
+      // vezivanja preko pdv modula upisuje TAČNO. Dok se ovde sabirala cela kolona,
+      // svaka sledeća primena je N:M deo brojala dvaput i kolona je rasla u prazno —
+      // baš onu invariantu („kolona = ukupno odbijeno") na kojoj štampa i ekran izvode
+      // iznos zatečenog reda kao `kolona − Σ primena`.
       const totalApplied = invoiceUsed.add(applied);
       const isFirstApplication = !invoiceUsed.greaterThan(ZERO);
       await tx.invoice.update({
@@ -1041,6 +1040,12 @@ export class AdvanceInvoiceService {
    * izvornog dokumenta (dominantna po osnovici); izvoz je uvek 0% (kategorija Z).
    * Račun ide isključivo kroz `grossToNet` (pdv/vat-bridge.util) — zbir uvek
    * zatvara (osnovica + PDV === bruto do na cent).
+   *
+   * ⚠️ NEPOZNATA ŠIFRA SE ODBIJA, NE PODRAZUMEVA. Do 02.08.2026. je ovde stajalo
+   * `?? 20`: šifra koju mapa ne zna (npr. istekla tarifa „18" nasleđena iz BigBita)
+   * tiho je davala 20 % preračunate stope — dakle NAPLATU poreza po stopi koju
+   * dokument nikad nije nosio, i to na bruto koji je kupac stvarno uplatio. Tiha
+   * DVADESETKA je gora od tihe nule: ne može se ni prepoznati kao izostanak.
    */
   private splitAdvance(
     gross: Prisma.Decimal,
@@ -1048,7 +1053,13 @@ export class AdvanceInvoiceService {
     isExport: boolean,
   ): AdvanceSplit {
     const vatRateCode = isExport ? "0" : this.resolveVatRateCode(items);
-    const vatPercent = VAT_PERCENT_BY_CODE[vatRateCode] ?? 20;
+    const vatPercent = VAT_PERCENT_BY_CODE[vatRateCode];
+    if (vatPercent === undefined) {
+      throw new UnprocessableEntityException(
+        `${unknownVatCodeMessage(vatRateCode)} Šifra je preuzeta sa stavke ` +
+          `izvornog dokumenta — ispravi je na predračunu, pa ponovi izdavanje avansa.`,
+      );
+    }
     const { net, vat } = grossToNet(gross, vatPercent);
     return { net, vat, gross: net.add(vat), vatRateCode, vatPercent };
   }
@@ -1082,11 +1093,21 @@ export class AdvanceInvoiceService {
     return best;
   }
 
-  /** Konto PDV-a po primljenom avansu (namenski par, ne konta konačnih faktura). */
+  /**
+   * Konto PDV-a po primljenom avansu (namenski par, ne konta konačnih faktura).
+   *
+   * Ključ je PROCENAT, ne šifra — pa ispravka mape šifara (02.08.2026) ovo nije
+   * pomerila, samo je promenila KOJA šifra ovde stiže:
+   *   „3"/„6" → 20 % → 4720 · „4" → 10 % → 4730 · „0"/„1" → 0 % → bez PDV linije
+   *   „5" (POLJO 8 %) → `null` → pozivaoci bacaju 422 (konto izlaznog PDV-a od 8 %
+   *   u kontnom planu ne postoji — v. `PREOSTALE_FAZE.md`, nalaz O-PDV-8).
+   * Do ispravke je „4" davala 8 % i završavala baš u tom 422 — avans po jedinom
+   * artiklu sa šifrom „4" nije mogao da se NAPLATI.
+   */
   private vatAccountFor(vatPercent: number): string | null {
     if (vatPercent === 20) return ACC_VAT_ADVANCE_20;
     if (vatPercent === 10) return ACC_VAT_ADVANCE_10;
-    return null; // 0% (izvoz/oslobođeno) — bez PDV linije
+    return null; // 0% (izvoz/oslobođeno) — bez PDV linije; 8% → 422 kod pozivaoca
   }
 }
 

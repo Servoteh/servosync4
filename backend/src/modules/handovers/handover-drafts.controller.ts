@@ -23,6 +23,7 @@ import type { AuthUser } from "../auth/jwt.strategy";
 import type { ListHandoverDraftsQuery } from "./handover-drafts.service";
 import { PrintBundleService } from "./print-bundle.service";
 import type { PrintBundleQuery } from "./print-bundle.service";
+import { HandoverDraftPrintService } from "./handover-draft-print.service";
 import type { CreateHandoverDraftDto } from "./dto/create-handover-draft.dto";
 import type { UpdateHandoverDraftDto } from "./dto/update-handover-draft.dto";
 import type { DecideDraftItemDto } from "./dto/decide-draft-item.dto";
@@ -35,8 +36,10 @@ import type { UpdateDraftItemDto } from "./dto/update-draft-item.dto";
  *   GET    /api/v1/handover-drafts/:id        — detalj (zaglavlje + stavke)
  *   GET    /api/v1/handover-drafts/:id/items  — samo stavke
  *   POST   /api/v1/handover-drafts            — kreiranje (zaglavlje + stavke), broj generiše server
- *   POST   /api/v1/handover-drafts/:id/items  — „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..50)
- *                                               u POSTOJEĆI nezaključan nacrt; dedup preskače postojeće → meta.skipped
+ *   POST   /api/v1/handover-drafts/:id/items  — „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..500)
+ *                                               u POSTOJEĆI nezaključan nacrt; dedup preskače postojeće → meta.skipped;
+ *                                               027/26 dopuna (Igor 30.07): FE pri izboru SKLOPA pita „ubaciti i sve
+ *                                               pozicije?" — „Da" šalje sklop + pozicije (mainDrawingId + quantityDefinedInDrawing)
  *   PATCH  /api/v1/handover-drafts/:id        — izmena zaglavlja (samo dok nije zaključan); `statusId` ide kroz
  *                                               ALLOWLIST prelaza (Nenad 27.07) — „Predat"/„Odbijen"/„Lansiran"
  *                                               se ovim putem NE postavljaju (422), oni su izvod svojih tokova
@@ -52,6 +55,8 @@ import type { UpdateDraftItemDto } from "./dto/update-draft-item.dto";
  *                                               (P4_SPEC §0 t.4 + §6.5.4; 1=Isključi, 2=Predaj ponovo, 3=Dopuni)
  *   GET    /api/v1/handover-drafts/:id/print-bundle     — P3: crteži za štampu (hasPdf/sizeKb/pageFormat + grupe po formatu)
  *   GET    /api/v1/handover-drafts/:id/print-bundle/pdf — P3: JEDAN spojen PDF (?format=A4 ILI ?drawingIds=1,2,3; bez oba = svi)
+ *   GET    /api/v1/handover-drafts/:id/print            — 055/26: PDF lista pozicija ODOBRENOG nacrta (zaglavlje +
+ *                                               tabela pozicija; 422 dok primopredaja nije odobrena — vidi servis)
  *
  * BEZ BOM auto-populate wizarda. Item-level mutacije (sve nad RADNIM nacrtom,
  * sve traže PRIMOPREDAJE_WRITE): `POST :id/items` (append „Dodaj u nacrt iz
@@ -66,6 +71,7 @@ export class HandoverDraftsController {
   constructor(
     private readonly drafts: HandoverDraftsService,
     private readonly printing: PrintBundleService,
+    private readonly draftPrint: HandoverDraftPrintService,
   ) {}
 
   @Get()
@@ -109,6 +115,26 @@ export class HandoverDraftsController {
     return new StreamableFile(buffer);
   }
 
+  /**
+   * Zahtev 055/26 (Strahinja): PDF lista pozicija nacrta za modul ODOBRENE
+   * primopredaje — zaglavlje (broj nacrta, datumi, projekat) + tabela pozicija
+   * (r. br., broj crteža, naziv, količina). Read-only kao i print-bundle
+   * (klasni PRIMOPREDAJE_READ); 422 dok primopredaja nije odobrena.
+   */
+  @Get(":id/print")
+  async printPositions(
+    @Param("id", ParseIntPipe) id: number,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { buffer, fileName } =
+      await this.draftPrint.buildDraftPositionsPdf(id);
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${fileName}"`,
+    });
+    return new StreamableFile(buffer);
+  }
+
   @Post()
   @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)
   create(@Body() dto: CreateHandoverDraftDto, @Req() req: { user: AuthUser }) {
@@ -117,9 +143,11 @@ export class HandoverDraftsController {
   }
 
   /**
-   * „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..50 stavki) u
+   * „Dodaj u nacrt iz PDM-a" (Nenad 16.07): batch append (1..500 stavki) u
    * POSTOJEĆI nezaključan nacrt. Isti pdm_status guard kao `create()`; crtež
-   * već u nacrtu se preskače (meta.skipped, ne 409 za ceo batch).
+   * već u nacrtu se preskače (meta.skipped, ne 409 za ceo batch). 027/26
+   * dopuna: „Da — ubaci i pozicije" šalje sklop + pozicije sastavnice u
+   * jednom batch-u (pozicije nose mainDrawingId/quantityDefinedInDrawing).
    */
   @Post(":id/items")
   @RequirePermission(PERMISSIONS.PRIMOPREDAJE_WRITE)

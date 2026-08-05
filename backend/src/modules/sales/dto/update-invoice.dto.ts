@@ -1,5 +1,9 @@
 import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import {
+  KNOWN_VAT_CODES,
+  unknownVatCodeMessage,
+} from "../../gl/posting/vat-rates";
 
 /**
  * DTO za IZMENU prodajnog dokumenta (zaglavlje + stavke).
@@ -21,8 +25,18 @@ import { Prisma } from "@prisma/client";
  *    kroz double. Zato koeficijent „1.0345" ostaje 1.0345, a ne 1.0344999999.
  */
 
-/** Poznate šifre poreskih stopa (ogledalo `VAT_RATE_BY_CODE` iz PricingService). */
-const KNOWN_VAT_CODES = new Set(["0", "1", "2", "3", "4"]);
+/**
+ * Poznate šifre poreskih stopa: `KNOWN_VAT_CODES` je IZVEDEN iz `VAT_RATE_BY_CODE`
+ * (`gl/posting/vat-rates.ts`), pa se ovde uvozi — ne prepisuje.
+ *
+ * ⚠️ ZAŠTO PREPIS VIŠE NE SME DA POSTOJI: do 02.08.2026. je ovde stajalo
+ * `new Set(["0","1","2","3","4"])` — ogledalo mape od pre njene ispravke. Posle
+ * ispravke je gejt PRIMAO „2" (u `R_Tarife` je nema), a `VAT_RATE_BY_CODE["2"]` je
+ * `undefined` → `pricing.service.ts` je stavku upisivao sa **0 % PDV-a** i samo
+ * upozorio. Domaća oporeziva stavka je tako tiho išla bez poreza, a `assertTotalsMatchItems`
+ * to ne hvata: i zaglavlje i stavke se slože — na nuli. Istovremeno je ODBIJAO „5"
+ * i „6", koje su legitimne šifre.
+ */
 
 /** Profil stavki dokumenta — DB CHECK `chk_invoices_line_profile`. */
 const LINE_PROFILES = new Set(["GOODS", "SERVICE"]);
@@ -348,9 +362,7 @@ export function validateCreateInvoiceItem(
   if ("vatRateCode" in body && body.vatRateCode !== null) {
     const v = body.vatRateCode;
     if (typeof v !== "string" || !KNOWN_VAT_CODES.has(v.trim())) {
-      errors.push(
-        "Šifra poreske stope nije poznata (dozvoljeno: 0, 1, 2, 3, 4).",
-      );
+      errors.push(unknownVatCodeMessage(typeof v === "string" ? v.trim() : ""));
     } else {
       result.vatRateCode = v.trim();
     }
@@ -433,9 +445,7 @@ export function validateUpdateInvoiceItem(
   if ("vatRateCode" in body) {
     const v = body.vatRateCode;
     if (typeof v !== "string" || !KNOWN_VAT_CODES.has(v.trim())) {
-      errors.push(
-        "Šifra poreske stope nije poznata (dozvoljeno: 0, 1, 2, 3, 4).",
-      );
+      errors.push(unknownVatCodeMessage(typeof v === "string" ? v.trim() : ""));
     } else {
       patch.vatRateCode = v.trim();
     }

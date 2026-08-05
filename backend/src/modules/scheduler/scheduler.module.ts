@@ -6,6 +6,7 @@ import { Sy15CronJobs } from "./sy15-cron-jobs";
 import { NotifyDispatchService } from "./dispatch/notify-dispatch.service";
 import { SastanciDispatchService } from "./dispatch/sastanci-dispatch.service";
 import { RetentionJobsService } from "./retention-jobs.service";
+import { SastanciPeriodicniService } from "./sastanci-periodicni.service";
 import { BigbitSyncJobs } from "./bigbit-sync-jobs.service";
 import { DailyBriefService } from "./daily-brief.service";
 import { SecurityAuditService } from "./security-audit.service";
@@ -58,6 +59,7 @@ import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
     Sy15CronJobs,
     NotifyDispatchService,
     SastanciDispatchService,
+    SastanciPeriodicniService,
     RetentionJobsService,
     BigbitSyncJobs,
     DailyBriefService,
@@ -75,6 +77,7 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly sy15Jobs: Sy15CronJobs,
     private readonly dispatchJobs: NotifyDispatchService,
     private readonly sastanciDispatchJobs: SastanciDispatchService,
+    private readonly sastanciPeriodicni: SastanciPeriodicniService,
     private readonly retentionJobs: RetentionJobsService,
     private readonly bigbitSyncJobs: BigbitSyncJobs,
     private readonly dailyBrief: DailyBriefService,
@@ -92,6 +95,10 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     for (const job of this.dispatchJobs.buildJobs())
       this.scheduler.register(job);
     for (const job of this.sastanciDispatchJobs.buildJobs())
+      this.scheduler.register(job);
+    // Periodični sastanci (024/26): dnevni nastavak serija — no-op dok sy15
+    // skripta (sastanci-024-periodicni-2026-08-04) nije primenjena.
+    for (const job of this.sastanciPeriodicni.buildJobs())
       this.scheduler.register(job);
     for (const job of this.retentionJobs.buildJobs())
       this.scheduler.register(job);

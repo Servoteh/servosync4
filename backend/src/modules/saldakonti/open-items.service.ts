@@ -12,6 +12,28 @@
  * (najranije dospeće dokumenta). Aging bucket po (danas − dueDate):
  *   0-30 / 31-60 / 61-90 / 90+.
  *
+ * ZAŠTO JE GRUPISANJE BEZ VRSTE DOKUMENTA BEZBEDNO: sve izlazne fakture
+ * (IFR/IFGP/IFUSL + ino parnjaci) dele JEDAN niz brojeva po firmi i godini
+ * (`sales/numbering.service.ts` — dokaz sa donetih BigBit papira: IFGP 650/25,
+ * IFUSL 653/25, IFR 657/25, isprepleteno po datumu), a avansni račun ima
+ * SOPSTVENU seriju sa prefiksom (`A-657/25`, odluka O-F6). Broj dokumenta je zato
+ * jedinstven i sam za sebe. Kad bi se numeracija vratila na brojač PO VRSTI,
+ * IFR `657/25` i IFUSL `657/25` bi ovde tiho pali u istu grupu i međusobno se
+ * netovali — dug jednog kupca bi sakrio dug drugog, bez ijedne greške u bazi
+ * (unique nad `invoices` uključuje i vrstu, pa baza to ne bi prijavila).
+ *
+ * ISTO VAŽI ZA AVANS (kvar 01.08.2026): dugovna strana avansnog računa ide na ISTI
+ * kupčev konto (2040/2041) kao faktura. Dok je avans dobijao goli broj `7/26`, on
+ * i faktura `7/26` istog kupca padali su u JEDNU otvorenu stavku od 24.000 sa
+ * dospećem avansa — pa je i kamata išla na duplo veći iznos. Prefiks `A-` je jedina
+ * brana; ne uklanjati ga bez zamene na ovom nivou.
+ *
+ * ZAŠTO VRSTA NIJE U `GROUP BY`: `ledger_entries` nema kolonu vrste dokumenta, a
+ * dodavanje vrste u ključ bi raskinulo NETIRANJE — uplata sa izvoda, ručna
+ * korekcija i uvezeni BigBit red nose broj ALI NE i vrstu, pa bi faktura i njena
+ * uplata ostale u dve grupe i obe se prikazale kao otvorene. Razdvajanje serija je
+ * zato posao NUMERACIJE, ne ovog upita.
+ *
  * Raw SQL (prisma.$queryRaw) jer Prisma groupBy ne podržava HAVING nad
  * izračunatim izrazom niti join na registar; Decimal se vraća egzaktno.
  */
@@ -277,6 +299,27 @@ export class OpenItemsService {
    * analitiku (komitent) raspoređuje saldo dokumenta u bucket po dospelosti
    * (asOf − dueDate): 0-30 / 31-60 / 61-90 / 90+. Bez dueDate → bucket 0-30
    * (nedospelo / nepoznato dospeće se tretira kao tekuće).
+   *
+   * 🔴 PRESEK MORA BITI ISTI KAO U `listOpenItems` (nalaz N2, 03.08.2026).
+   * ─────────────────────────────────────────────────────────────────────────
+   * IZMERENO (hvatanje `Prisma.Sql`, `asOf = 2026-06-30`): `listOpenItems` je gradio
+   * `je.posting_date <= $1` **i** `(le.reconciled_at IS NULL OR le.reconciled_at > $2)`
+   * — dva parametra; `agingByPartner` je imao SAMO `le.reconciled_at IS NULL`, bez
+   * ijednog uslova nad `posting_date`, i `cutoff` je koristio jedino za `days_overdue`.
+   *
+   * Posledica je bila da ISTI kupac na ISTI dan ima DVA različita duga u dva izveštaja
+   * koji stoje jedan pored drugog (kartica/IOS/opomena čitaju `listOpenItems`, starosna
+   * struktura i tabla naplate čitaju ovaj upit), i to u oba smera:
+   *   • faktura proknjižena POSLE preseka ulazila je u aging, a u otvorene stavke nije
+   *     (aging veći od IOS-a — istorijski presek 31.12 pokazuje dug koji tada nije ni
+   *     postojao);
+   *   • faktura zatvorena POSLE preseka ispadala je iz aging-a, a u otvorenim stavkama
+   *     je pravilno ostajala otvorena na dan preseka (aging manji od IOS-a).
+   * Za godišnje usaglašavanje su oba izveštaja dokazni materijal, pa razlika nije
+   * kozmetička — potpisuje se saldo koji se ne slaže sa sopstvenom specifikacijom.
+   *
+   * Uslovi su namerno DOSLOVNO isti kao u `listOpenItems` (uključujući `LOCKED`) — ovo
+   * su dva pogleda na isti skup, ne dva izveštaja.
    */
   async agingByPartner(
     accountCode?: string,
@@ -309,7 +352,11 @@ export class OpenItemsService {
           -- obriše dospeli dug iz aging-a — zaključan nalog je i dalje proknjižen.
           -- Konzistentno sa partner-card / limit / priprema (IN ('POSTED','LOCKED')).
           WHERE je.status IN ('POSTED', 'LOCKED')
-            AND le.reconciled_at IS NULL
+            -- Presek NA DAN — isti par uslova kao u listOpenItems (nalaz N2): stavka je
+            -- „otvorena na dan" ako je proknjižena DO preseka i nije bila uparena DO
+            -- preseka. Uparivanje posle preseka je za istorijski presek nevidljivo.
+            AND je.posting_date <= ${cutoff}
+            AND (le.reconciled_at IS NULL OR le.reconciled_at > ${cutoff})
             AND sa.tracks_open_items = TRUE
             ${accountFilter}
           GROUP BY le.account_code, le.analytical_code, le.document_number

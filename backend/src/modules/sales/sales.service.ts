@@ -7,6 +7,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PricingService } from "./pricing.service";
+import { documentVatTotals } from "./vat-totals";
 import { assertVatPeriodNotLocked } from "../pdv/vat-period-lock";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
@@ -93,6 +94,12 @@ interface EditableInvoice {
 /** Sve što jedna stavka nosi kao rezultat računa (spremno za upis). */
 interface ComputedLine {
   baseUnitPrice: Prisma.Decimal;
+  /**
+   * Cena PRE rabata (v. `schema.prisma`) — nosi se kroz SVAKI upis stavke, i onaj koji
+   * cenu ne preračunava. Kad bi je izostavila samo jedna grana (npr. izmena količine),
+   * ta izmena bi je obrisala i papir bi opet ostao bez pune cene.
+   */
+  unitPriceBeforeDiscount: Prisma.Decimal | null;
   unitPrice: Prisma.Decimal;
   discountPercent: Prisma.Decimal;
   cashDiscountPercent: Prisma.Decimal;
@@ -328,6 +335,9 @@ export class SalesService {
       line = await this.deriveFromBase({
         baseUnitPrice: existing.baseUnitPrice,
         currentUnitPrice: existing.unitPrice,
+        // Cena se ne preračunava → puna cena se PRENOSI sa zatečene stavke. Bez ovoga
+        // bi ispravka količine obrisala jedini trag cene pre rabata.
+        unitPriceBeforeDiscount: existing.unitPriceBeforeDiscount,
         quantity,
         vatRateCode: existing.vatRateCode,
         discountPercent: existing.discountPercent,
@@ -492,6 +502,7 @@ export class SalesService {
         itemId: true,
         quantity: true,
         baseUnitPrice: true,
+        unitPriceBeforeDiscount: true,
         unitPrice: true,
         discountPercent: true,
         cashDiscountPercent: true,
@@ -536,6 +547,9 @@ export class SalesService {
     // kase) je BAZNA cena stavke — koeficijent se na nju množi tek u izvođenju.
     return this.deriveFromBase({
       baseUnitPrice: priced.unitPrice,
+      // Cena PRE rabata ide u bazu SAMO odavde — `deriveFromBase` je ne izvodi (iz cene
+      // posle rabata se ne može izvesti kad je rabat 100 %), nego je prosleđuje dalje.
+      unitPriceBeforeDiscount: priced.unitPriceBeforeDiscount,
       quantity: params.quantity,
       vatRateCode: priced.vatRateCode,
       discountPercent: priced.discountPercent,
@@ -561,6 +575,12 @@ export class SalesService {
      * tek pravi, jer tada zatečene cene ni nema.
      */
     currentUnitPrice?: Prisma.Decimal | null;
+    /**
+     * Cena PRE rabata — PROLAZI kroz izvođenje nedirnuta. Ona je, kao i `baseUnitPrice`,
+     * na nivou PRE koeficijenta, pa je koeficijent ne menja; štampa je množi koeficijentom
+     * dokumenta isto kao što se i `unitPrice` izvodi. `null` = stavka starija od kolone.
+     */
+    unitPriceBeforeDiscount?: Prisma.Decimal | null;
     quantity: Prisma.Decimal;
     vatRateCode: string;
     discountPercent: Prisma.Decimal;
@@ -584,10 +604,16 @@ export class SalesService {
       vatRateCode,
     });
 
+    // `PricingService` iznose stavke od 02.08.2026. već vraća zaokružene na PARU
+    // (v. `AMOUNT_DP` tamo — zbir odštampanih stavki mora da da osnovicu dokumenta, a ne
+    // da se od nje razlikuje za paru). `money` ovde ostaje kao skala KOLONE (19,4) i nad
+    // takvim iznosom ništa ne menja; ako neki budući put donese nezaokružen iznos,
+    // upis u bazu i dalje prolazi kroz ovu jednu tačku.
     const vatBase = money(derived.vatBase);
     const vatAmount = money(derived.vatAmount);
     return {
       baseUnitPrice,
+      unitPriceBeforeDiscount: params.unitPriceBeforeDiscount ?? null,
       unitPrice,
       discountPercent: params.discountPercent,
       cashDiscountPercent: params.cashDiscountPercent,
@@ -615,6 +641,7 @@ export class SalesService {
         id: true,
         quantity: true,
         baseUnitPrice: true,
+        unitPriceBeforeDiscount: true,
         unitPrice: true,
         discountPercent: true,
         cashDiscountPercent: true,
@@ -626,6 +653,9 @@ export class SalesService {
       const line = await this.deriveFromBase({
         baseUnitPrice: item.baseUnitPrice,
         currentUnitPrice: item.unitPrice,
+        // Koeficijent ne dira punu cenu (obe su na nivou PRE koeficijenta) — zato se
+        // prenosi nedirnuta i primena koeficijenta ostaje ponovljiva (B4).
+        unitPriceBeforeDiscount: item.unitPriceBeforeDiscount,
         quantity: item.quantity,
         vatRateCode: item.vatRateCode,
         discountPercent: item.discountPercent,
@@ -641,24 +671,55 @@ export class SalesService {
    * B3 — zbirovi dokumenta iz STAVKI U BAZI (posle upisa, u istoj transakciji).
    * Nikad inkrementalno: jedan promašen put ostavio bi zaglavlje i stavke da se
    * ne slažu, a to je greška koja se vidi tek na štampi/knjiženju.
+   *
+   * ⚠️ PDV SE NE SABIRA SA STAVKI (ispravka 02.08.2026, v. `vat-totals.ts`): ovde se
+   * sabira SAMO osnovica (po stopi), a porez je `round2(osnovica_stope × stopa)`.
+   * Do ove izmene je `vatTotal` bio `Σ vatAmount` po stavkama, pa je dokument sa pet
+   * stavki od po 100,01 din (20 %) nosio osnovicu 500,05 uz PDV 100,00 — a
+   * `500,05 × 20 % = 100,01`. Papir tu jednačinu ŠTAMPA, SEF je proverava
+   * (EN 16931 BR-CO-17), a KIF iz PDV-a izvodi osnovicu.
+   *
+   * `grossTotal` je zato `netTotal + vatTotal`, a ne `Σ lineTotal`: `lineTotal` stavke
+   * u sebi nosi zaokružen PDV stavke, koji nije deo poreza dokumenta.
    */
   private async recalcTotals(
     tx: Prisma.TransactionClient,
     invoiceId: number,
   ): Promise<void> {
-    const items = await tx.invoiceItem.findMany({
-      where: { invoiceId },
-      select: { vatBase: true, vatAmount: true, lineTotal: true },
-    });
+    const [invoice, items] = await Promise.all([
+      tx.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { isExport: true },
+      }),
+      tx.invoiceItem.findMany({
+        where: { invoiceId },
+        select: { vatRateCode: true, vatBase: true },
+      }),
+    ]);
 
-    let netTotal = ZERO;
-    let vatTotal = ZERO;
-    let grossTotal = ZERO;
-    for (const item of items) {
-      netTotal = netTotal.add(item.vatBase);
-      vatTotal = vatTotal.add(item.vatAmount);
-      grossTotal = grossTotal.add(item.lineTotal);
-    }
+    /**
+     * ⚠️ `isExport` SE PROSLEĐUJE (ispravka 02.08.2026).
+     *
+     * Ovde je do sada stajalo da se zastavica NE prosleđuje namerno, uz obrazloženje
+     * „stavke izvoznog dokumenta već nose šifru '0' (`deriveFromBase` je forsira)".
+     * Ta pretpostavka NIJE VAŽILA: `deriveFromBase` forsira šifru samo na putu kroz
+     * ovaj servis, a `DocumentCarryOverService` je stavke prepisivao doslovno — pa je
+     * izvozni račun nastao iz DOMAĆEG predračuna nosio šifru „3" na svakoj stavci.
+     *
+     * IZMERENO na tom dokumentu (osnovica 99.363,64, PDV 20 %):
+     *   `documentVatTotals(items)`                 → gross 119.236,37  ← zaglavlje
+     *   `documentVatTotals(items, {isExport:true})` → gross  99.363,64  ← glavna knjiga
+     * Glavna knjiga (`buildSalesLedgerLines`) zastavicu JESTE prosleđivala, pa je kupac
+     * u saldakontima bio zadužen za ceo PDV manje nego što faktura glasi (−19.872,73).
+     *
+     * Koren je zatvoren u prepisu (stavke izvoznog cilja tamo dobijaju „0"), ali se
+     * zastavica ovde prosleđuje SVEJEDNO: preračun zaglavlja mora da daje isti broj kao
+     * knjiženje bez obzira na to ko je i kako napisao stavke. Jedna pretpostavka manje
+     * je jedini način da ova invarijanta ne zavisi od tuđeg koda.
+     */
+    const { netTotal, vatTotal, grossTotal } = documentVatTotals(items, {
+      isExport: invoice?.isExport ?? false,
+    });
 
     await tx.invoice.update({
       where: { id: invoiceId },

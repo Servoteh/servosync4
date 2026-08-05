@@ -1,5 +1,10 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import {
+  documentVatBreakdown,
+  vatCategoryOf,
+  vatPercentOf as vatPercentOfCode,
+} from "../vat-totals";
 
 /**
  * UBL 2.1 BUILDER — Invoice → SEF e-faktura XML (doc 07 §8, §6.2 field-mapping).
@@ -23,6 +28,9 @@ import { Prisma } from "@prisma/client";
  *   • Avans (`za plaćanje = 0`): kada je grossTotal knjižen kroz avansnu fakturu,
  *     cac:BillingReference → cac:InvoiceDocumentReference nosi referencu avansa i
  *     LegalMonetaryTotal/PayableAmount = 0 (avans zatvara obavezu).
+ *   • DATUM PROMETA → cac:Delivery/cbc:ActualDeliveryDate (BT-72). Obavezan element
+ *     računa po Zakonu o PDV; builder ODBIJA da sagradi dokument bez njega (osim
+ *     avansnog, 386 — kod avansa prometa još nema). v. guard u `build()`.
  *   • Rabat po stavci → cac:AllowanceCharge (ChargeIndicator=false).
  *   • PDF prilog (base64) → cac:AdditionalDocumentReference → cac:Attachment →
  *     cbc:EmbeddedDocumentBinaryObject.
@@ -66,31 +74,35 @@ const INVOICE_TYPE_CODE_COMMERCIAL = "380";
 const INVOICE_TYPE_CODE_PREPAYMENT = "386";
 
 /**
- * PDV stopa (procenat) po `vatRateCode` — isto mapiranje kao PricingService
- * VAT_RATE_BY_CODE (doc 43 §4). "3"/"1" = 20%, "2" = 10%, "4" = 8%, "0" = 0%.
- * Nepoznata šifra → 20% (osnovna) kao default stavke.
+ * Procenat PDV stope za šifru — iz JEDNE mape sistema (`sales/vat-totals.ts` →
+ * `gl/posting/vat-rates.ts`). Vrednosti se NE prepisuju ovde: spisak stopa u komentaru je
+ * već jednom zastareo (pisalo je „„1" = 20 %, „2" = 10 %, „4" = 8 %", a po stvarnim
+ * redovima `R_Tarife` „1" je BEZPDV 0 %, „2" ne postoji, „4" je NIZA 10 %).
+ *
+ * ⚠️ OVDE JE DO 02.08.2026. STAJAO PREPIS TE MAPE, sa jednom razlikom: nepoznata šifra
+ * je davala 20 % umesto 0 %. Dok je `TaxAmount` bio zbir poreza po stavkama, razlika se
+ * nije videla (stavka sa nepoznatom šifrom nosi PDV 0, pa je grupa ostajala nula bez
+ * obzira na deklarisanu stopu). Od ispravke se `TaxAmount` RAČUNA iz stope, pa bi ista
+ * razlika napravila `TaxSubtotal` sa 20 % poreza na promet koji je u zaglavlju računa
+ * (i u GK, i u KIF-u) proknjižen bez poreza — dokument koji SEF odbija, a knjigovodstvo
+ * ne može da objasni. Sada je mapa jedna: nepoznata šifra svuda znači 0 % (i `PricingService`
+ * uz nju upisuje upozorenje na stavku).
  */
-const VAT_PERCENT_BY_CODE: Readonly<Record<string, number>> = {
-  "3": 20,
-  "1": 20,
-  "2": 10,
-  "4": 8,
-  "0": 0,
-};
-
-/** Procenat PDV stope za šifru (fallback 20% — osnovna). */
 function vatPercentOf(code: string | null | undefined): number {
-  if (code == null) return 20;
-  return VAT_PERCENT_BY_CODE[code] ?? 20;
+  return vatPercentOfCode(code).toNumber();
 }
 
 /**
  * PDV kategorija po stopi: >0% → S (standardna/snižena), 0% → Z (izvoz, uz osnov
  * oslobođenja) odn. E (domaće oslobođenje bez export osnova).
+ *
+ * ⚠️ SAMO PREVODI STOPU U `Decimal` I ZOVE ZAJEDNIČKU (`sales/vat-totals.ts`): kategorija
+ * je pola ključa po kom se grade `cac:TaxSubtotal` grupe, pa bi drugi primerak ovog
+ * pravila značio da se linija (`ClassifiedTaxCategory`) i grupa (`TaxCategory`) istog
+ * prometa razidu u kategoriji — dokument koji SEF odbija, bez ijedne izmene koda.
  */
 function taxCategoryOf(percent: number, isExport: boolean): string {
-  if (percent > 0) return "S";
-  return isExport ? "Z" : "E";
+  return vatCategoryOf(new D(percent), isExport);
 }
 
 /**
@@ -259,6 +271,12 @@ export interface UblSupplierParty {
   registrationNumber?: string | null; // matični broj
   address?: string | null;
   city?: string | null;
+  /**
+   * Poštanski broj → cbc:PostalZone (BT-38). Od odluke O-F10 stoji u sopstvenoj koloni
+   * `companies.postal_code`; dok je bio deo `city`, odlazio je na SEF unutar naziva mesta
+   * („11272 Dobanovci" kao CityName) — dakle u pogrešnom elementu.
+   */
+  postalCode?: string | null;
   /** Tekući račun za uplatu → cac:PayeeFinancialAccount/cbc:ID (BT-84). */
   bankAccount?: string | null;
   /**
@@ -315,10 +333,17 @@ export interface UblInvoiceInput {
   // — Grupa D: plaćanje i isporuka —
   /**
    * DATUM PROMETA DOBARA I USLUGA (BT-72) → cac:Delivery/cbc:ActualDeliveryDate.
-   * Propisan sadržaj računa (ZPDV čl. 42). ⚠️ Kolona `invoices.supply_date` u 4.0 još
-   * NE POSTOJI — dodaje je grupa B; do tada `SefService` prosleđuje `null` i blok
-   * cac:Delivery se ne ispisuje. NIKAD ne izvoditi iz `documentDate`: datum izdavanja
-   * i datum prometa se razlikuju i pretpostavka bi bila laž na poreskom dokumentu.
+   * Propisan sadržaj računa (ZPDV čl. 42), kolona `invoices.supply_date`.
+   * NIKAD ne izvoditi iz `documentDate`: datum izdavanja i datum prometa se razlikuju
+   * i pretpostavka bi bila laž na poreskom dokumentu.
+   *
+   * ⚠️ JEDNO IME ZA JEDAN PODATAK (spajanje 02.08.2026): grana za štampu je isti
+   * podatak nakratko zvala `deliveryDate` (po koloni `invoices.delivery_date`). Ostalo
+   * je `supplyDate` — ime je preciznije („datum prometa", ne „datum isporuke") i već je
+   * vezano end-to-end. Ne uvoditi drugo polje za isti podatak.
+   *
+   * Tip je opcion samo zbog avansnog računa (386): kod avansa promet se još nije
+   * dogodio. Za sve ostalo `build()` ovo polje ZAHTEVA i baca ako nedostaje.
    */
   supplyDate?: Date | null;
   /** Mesto isporuke (ulica i broj) → cac:Delivery/cac:DeliveryLocation/cac:Address. */
@@ -349,7 +374,14 @@ export interface UblInvoiceItemInput {
   discountPercent: Prisma.Decimal;
   /** Šifra PDV stope (InvoiceItem.vatRateCode) → stopa/kategorija po liniji. */
   vatRateCode: string;
+  /** Osnovica stavke → `cbc:LineExtensionAmount` i `TaxableAmount` svoje grupe. */
   vatBase: Prisma.Decimal;
+  /**
+   * PDV STAVKE — UBL ga NEMA (stavka nosi samo osnovicu, `cac:InvoiceLine` nema element
+   * za iznos poreza), pa se od 02.08.2026. u XML ne prenosi ni posredno: `TaxAmount`
+   * grupe se računa iz osnovice i stope (BR-CO-17). Polje ostaje u ulazu jer ga pozivalac
+   * čita sa stavke zajedno sa ostalim iznosima; ovde je namerno neupotrebljeno.
+   */
   vatAmount: Prisma.Decimal;
   lineTotal: Prisma.Decimal;
 }
@@ -385,6 +417,26 @@ export class UblBuilderService {
     const typeCode = invoice.isPrepayment
       ? INVOICE_TYPE_CODE_PREPAYMENT
       : INVOICE_TYPE_CODE_COMMERCIAL;
+
+    // ── DATUM PROMETA: brana, ne tiho izostavljanje ───────────────────────────
+    // Da li je BT-72 (ActualDeliveryDate) obavezan po SAMOJ shemi: u ovom repou nema
+    // nijednog dokaza da jeste — EN16931 ga u jezgru vodi kao 0..1, a naš CIUS profil
+    // (SEF_CUSTOMIZATION_ID) nemamo lokalno u pisanom obliku. 🔴 Tačan status u SEF
+    // CIUS-u ostaje za proveru na demo okruženju (FAKTURE_ZAKONSKA_USKLADJENOST.md §7).
+    // Zašto ipak PUCA, a ne šalje bez njega: datum prometa je obavezan element RAČUNA po
+    // Zakonu o PDV, a kod domaćeg B2B prometa e-faktura na SEF-u JESTE račun (§4.2) —
+    // papir je samo kopija. Dokument bez tog podatka je zato manjkav bez obzira na to
+    // da li ga XSD propušta, a jednom poslat na SEF se ispravlja samo storniranjem.
+    // Glasan 400 pri slanju je jeftiniji od tihog slanja neispravnog računa.
+    // IZUZETAK — avansni račun (386): kod avansa promet se JOŠ NIJE dogodio (poreska
+    // obaveza nastaje od naplate), pa datum prometa nema šta da nosi. 🔴 Tačan sadržaj
+    // avansnog računa je otvoreno pitanje za knjigovođu (§7 t.5).
+    if (!invoice.isPrepayment && !invoice.supplyDate) {
+      throw new BadRequestException(
+        `Račun ${invoice.documentNumber} nema datum prometa — bez njega ne sme na SEF ` +
+          `(obavezan element računa po Zakonu o PDV). Unesi datum prometa pa ponovi slanje.`,
+      );
+    }
 
     // Za plaćanje: odbijen avans umanjuje obavezu za svoj iznos (delimičan avans
     // → ostatak; pun avans → 0). Bez `prepaidAmount` iznos se NE umanjuje —
@@ -438,14 +490,18 @@ export class UblBuilderService {
 
     // — PDF prilog (cac:AdditionalDocumentReference) —
     if (params.pdfBase64) {
+      // Rezervno ime fajla se izvodi iz broja dokumenta, a broj po odluci O-F1 nosi
+      // kosu crtu (`657/25`) — sirovo bi dalo „657/25.pdf", što je putanja, a ne ime
+      // fajla (SEF validatori i klijenti to odbijaju/seku). Zato ista sanitizacija
+      // kao u InvoicePdfService: separatori → crtica.
+      const pdfFileName =
+        params.pdfFileName ?? `${safeFileName(invoice.documentNumber)}.pdf`;
       parts.push("<cac:AdditionalDocumentReference>");
-      parts.push(
-        el("cbc:ID", params.pdfFileName ?? `${invoice.documentNumber}.pdf`),
-      );
+      parts.push(el("cbc:ID", pdfFileName));
       parts.push("<cac:Attachment>");
       parts.push(
         `<cbc:EmbeddedDocumentBinaryObject mimeCode="application/pdf" filename="${escapeXml(
-          params.pdfFileName ?? `${invoice.documentNumber}.pdf`,
+          pdfFileName,
         )}">${params.pdfBase64}</cbc:EmbeddedDocumentBinaryObject>`,
       );
       parts.push("</cac:Attachment>");
@@ -461,6 +517,11 @@ export class UblBuilderService {
     // cac:PaymentMeans → cac:PaymentTerms → cac:AllowanceCharge → cac:TaxTotal …
     // Odstupanje od redosleda = shema odbija dokument, pa oba bloka idu OVDE, a ne
     // uz strane ni uz iznose.
+    //
+    // ⚠️ SPAJANJE 02.08.2026: ovde je nakratko stajao i naš inline `<cac:Delivery>`
+    // blok koji je emitovao samo datum prometa. Obrisan je, jer `buildDelivery` radi
+    // isto TO plus mesto isporuke (BG-15) i preskakanje bloka na avansnom računu
+    // (BigBit `F_IF_ImaDelivery`). Dva bloka bi inače dala dva `<cac:Delivery>`.
     parts.push(this.buildDelivery(invoice));
     parts.push(this.buildPaymentMeans(invoice, supplier));
 
@@ -469,7 +530,7 @@ export class UblBuilderService {
     // TaxSubtotal. Zbir taxableAmount/taxAmount grupa = invoice.netTotal/vatTotal.
     parts.push("<cac:TaxTotal>");
     parts.push(amountEl("cbc:TaxAmount", invoice.vatTotal, cur));
-    const taxGroups = groupTaxSubtotals(items, invoice.isExport);
+    const taxGroups = groupTaxSubtotals(items, invoice);
     if (taxGroups.length === 0) {
       // Defanzivni fallback (faktura bez stavki) — jedan subtotal iz zaglavlja.
       parts.push("<cac:TaxSubtotal>");
@@ -527,7 +588,7 @@ export class UblBuilderService {
     p.push("<cac:PartyName>");
     p.push(el("cbc:Name", s.name));
     p.push("</cac:PartyName>");
-    p.push(this.buildAddress(s.address, s.city));
+    p.push(this.buildAddress(s.address, s.city, s.postalCode));
     // Poreski podaci (PIB → PartyTaxScheme, matični broj → PartyLegalEntity).
     p.push("<cac:PartyTaxScheme>");
     p.push(el("cbc:CompanyID", `RS${s.taxId}`));
@@ -585,6 +646,10 @@ export class UblBuilderService {
    * Vraća PRAZAN string i kada nema nijednog podatka: prazan <cac:Delivery/> ne nosi
    * informaciju, a izmišljen datum (npr. datum izdavanja) bi bio netačan poreski podatak.
    * Redosled unutar cac:Delivery po UBL 2.1: cbc:ActualDeliveryDate → cac:DeliveryLocation.
+   *
+   * ⚠️ Tiho izostavljanje datuma prometa VAŽI SAMO za avansni račun: za sve ostale je
+   * `build()` odbio dokument pre nego što se stiglo dovde (v. branu u `build`). Račun
+   * bez obaveznog elementa ne sme da ode na SEF „bez reda", nego da padne glasno.
    */
   private buildDelivery(inv: UblInvoiceInput): string {
     if (inv.isPrepayment) return "";
@@ -665,11 +730,20 @@ export class UblBuilderService {
     return p.join("");
   }
 
-  private buildAddress(address?: string | null, city?: string | null): string {
+  /**
+   * cac:PostalAddress. Redosled elemenata je propisan UBL 2.1 šemom i NIJE stvar ukusa:
+   * StreetName → CityName → PostalZone → cac:Country. Zamena mesta obara validaciju na SEF-u.
+   */
+  private buildAddress(
+    address?: string | null,
+    city?: string | null,
+    postalCode?: string | null,
+  ): string {
     const p: string[] = [];
     p.push("<cac:PostalAddress>");
     if (address) p.push(el("cbc:StreetName", address));
     if (city) p.push(el("cbc:CityName", city));
+    if (postalCode?.trim()) p.push(el("cbc:PostalZone", postalCode.trim()));
     p.push("<cac:Country>");
     p.push(el("cbc:IdentificationCode", "RS"));
     p.push("</cac:Country>");
@@ -792,30 +866,48 @@ export class UblBuilderService {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Grupiši stavke po stvarnoj PDV stopi → cac:TaxSubtotal grupe (A5 granularnost).
- * Izvoz: sve stavke u 0% grupu (Z). Domaći: 20/10/8/0 razdvojeno. Sortirano opadajuće
- * po stopi (20,10,8,0) radi determinističkog XML-a. Zbir taxableAmount = netTotal,
- * zbir taxAmount = vatTotal (denormalizacija u zaglavlju se poklapa).
+ * cac:TaxSubtotal grupe (A5 granularnost) — PREKO JEDINOG GRUPISANJA U SISTEMU
+ * (`sales/vat-totals.ts` → `vatBreakdown`). Ključ je (kategorija, stopa) = BT-118 +
+ * BT-119, tačno kako EN 16931 definiše grupu BG-23. Sortirano opadajuće po stopi
+ * (20, 10, 8, 0) radi determinističkog XML-a.
+ *
+ * ⚠️ ZAŠTO VIŠE NEMA SVOG RAČUNA (ispravka 02.08.2026, nalazi R2 i R3): ovde je stajao
+ * drugi primerak istog pravila, sa ključem `byPercent`, dok je zaglavlje grupisalo po
+ * ŠIFRI. Izmereno na šiframa „1" i „3" (obe su tada bile 20 %): račun sa dve stavke po
+ * 100,03 din davao je zaglavlje `vatTotal 40,02` a jedan `TaxSubtotal` sa
+ * `TaxAmount 40,01` → **BR-CO-14** (`TaxTotal/TaxAmount = Σ TaxSubtotal/TaxAmount`) pada.
+ * (Mapa je istog dana ispravljena po `R_Tarife` — par sa istom stopom sada čine „3" i „6";
+ * brojevi su isti, jer ključ je stopa a ne šifra.)
+ *
+ * ⚠️ IDE KROZ `documentVatBreakdown` (ispravka R1/R2, pooštreno u sedmom krugu):
+ * avansni račun porez IZVODI IZ BRUTA (`grossToNet`), pa `round2(osnovica × stopa)` za
+ * 16,67 % bruto iznosa vraća paru više nego što je proknjiženo — izmereno na AVR-u od
+ * 132,03 din (osnovica 110,03, porez 22,00, a `110,03 × 20 % = 22,01`). Grupe zato
+ * preuzimaju OBJAVLJEN porez dokumenta — ali SAMO za vrste koje porez zaista dele
+ * (`GROSS_DERIVED_VAT_DOCUMENT_TYPES`), pa se prosleđuje CELO zaglavlje a ne samo
+ * `vatTotal`. Za avans: BR-CO-14 i BR-CO-15 važe, a neizbežnih 0,01 na BR-CO-17 je
+ * svojstvo preračunate stope — obrazloženo u uvodu `vat-totals.ts`.
+ *
+ * ⚠️ REDOVAN RAČUN SA POGREŠNIM `vat_total` OD SEDMOG KRUGA VIŠE NE PROLAZI TIHO: grupe
+ * nose `round2(osnovica × stopa)`, pa `cac:TaxTotal/cbc:TaxAmount` (= `invoice.vatTotal`)
+ * i Σ `TaxSubtotal` više nisu jednaki i **BR-CO-14 pada na SEF-u**. To je namerno — dok
+ * su grupe ćutke preuzimale zaglavlje, dokument sa `vat_total = 19.999,00` umesto
+ * 20.000,00 (izmereno: 100 × 1.000,00 @ 20 %) prolazio je kao ispravan.
  */
 function groupTaxSubtotals(
   items: UblInvoiceItemInput[],
-  isExport: boolean,
+  invoice: {
+    documentType: string;
+    isExport: boolean;
+    vatTotal: Prisma.Decimal;
+  },
 ): TaxGroup[] {
-  const byPercent = new Map<number, TaxGroup>();
-  for (const it of items) {
-    const percent = isExport ? 0 : vatPercentOf(it.vatRateCode);
-    const existing = byPercent.get(percent);
-    const group: TaxGroup = existing ?? {
-      percent,
-      category: taxCategoryOf(percent, isExport),
-      taxableAmount: new D(0),
-      taxAmount: new D(0),
-    };
-    group.taxableAmount = group.taxableAmount.add(it.vatBase);
-    group.taxAmount = group.taxAmount.add(isExport ? new D(0) : it.vatAmount);
-    byPercent.set(percent, group);
-  }
-  return [...byPercent.values()].sort((a, b) => b.percent - a.percent);
+  return documentVatBreakdown(invoice, items).map((g) => ({
+    percent: g.ratePercent.toNumber(),
+    category: g.category,
+    taxableAmount: g.base,
+    taxAmount: g.vat,
+  }));
 }
 
 /** cac:TaxScheme sa ID=VAT (jedina PDV shema u SEF-u). */
@@ -846,6 +938,14 @@ function fmtDate(d: Date): string {
 /** Količina — do 6 decimala bez trailing nula (UBL dozvoljava). */
 function fmtQty(v: Prisma.Decimal): string {
   return v.toDecimalPlaces(6).toString();
+}
+
+/**
+ * Broj dokumenta → bezbedno ime fajla. Broj po odluci O-F1 sadrži kosu crtu
+ * (`657/25`), a ime priloga ne sme da izgleda kao putanja.
+ */
+function safeFileName(documentNumber: string): string {
+  return documentNumber.replace(/[\\/:*?"<>|]+/g, "-");
 }
 
 /** XML escape za tekstualne čvorove i atribute. */

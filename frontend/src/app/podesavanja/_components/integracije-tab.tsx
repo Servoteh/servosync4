@@ -25,7 +25,9 @@ import { useDupliPib } from '@/api/masters';
 // ovde, stanje je u bazi (`app_switches`), važi odmah bez restarta. Uz prekidač ide
 // i STANJE (poslednji uspešan uvoz, broj redova, starost izvornog fajla) — jedina
 // zaštita od „sync je ugašen mesec dana, a niko ne zna". Čitanje = settings.system
-// (kapija ovog taba), preklop = sync.run (administrativna radnja, ne obično čitanje).
+// (kapija ovog taba); preklop = settings.system od 04.08.2026 (061/26: raniji ključ
+// `sync.run` je proširen na tehnologe+planere za dugme „Pokreni sync" na /syncs,
+// a administrativni prekidač NE ide sa njim — ostaje admin-only).
 // ============================================================================
 
 interface IntegRow {
@@ -179,7 +181,10 @@ function BigbitSyncCard() {
   const q = useBigbitSync();
   const setM = useSetBigbitSync();
   const can = useCan();
-  const mayToggle = can(PERMISSIONS.SYNC_RUN);
+  // settings.system = ista kapija kao BE `PUT /podesavanja/sync/bigbit` (061/26:
+  // `sync.run` je proširen na tehnologe+planere za „Pokreni sync", pa prekidač
+  // noćnog uvoza — administrativna vlast — prelazi na admin-only ključ taba).
+  const mayToggle = can(PERMISSIONS.SETTINGS_SYSTEM);
 
   const s = q.data?.data ?? null;
   // NEPOZNATO ≠ UKLJUČENO. Ranije je `?? true` uz `tone: success` značilo da pad

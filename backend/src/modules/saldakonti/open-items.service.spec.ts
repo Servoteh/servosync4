@@ -125,3 +125,55 @@ describe("OpenItemsService — devizni filter", () => {
     expect(sql).toContain("bucket_0_30");
   });
 });
+
+/**
+ * PRESEK NA DAN — ISTI SKUP U OBA IZVEŠTAJA (nalaz N2, 03.08.2026).
+ * ============================================================================
+ * `listOpenItems` je gradio `je.posting_date <= $1` I `(le.reconciled_at IS NULL OR
+ * le.reconciled_at > $2)`, a `agingByPartner` samo `le.reconciled_at IS NULL`, bez
+ * ijednog uslova nad `posting_date` — pa je isti kupac na isti dan imao dva različita
+ * duga u dva izveštaja (kartica/IOS/opomena vs. starosna struktura/tabla naplate).
+ * Ovi testovi zaključavaju da su uslovi preseka DOSLOVNO isti u oba upita.
+ */
+describe("OpenItemsService — presek na dan (aging = otvorene stavke)", () => {
+  const AS_OF = new Date("2026-06-30T00:00:00.000Z");
+
+  it("agingByPartner gleda posting_date i uparivanje NA DAN preseka", async () => {
+    const h = makeService();
+    await h.service.agingByPartner(undefined, AS_OF);
+
+    const sql = squash(h.sql());
+    expect(sql).toContain("je.posting_date <=");
+    expect(sql).toContain("(le.reconciled_at IS NULL OR le.reconciled_at >");
+    // Stari (asimetričan) oblik ne sme da se vrati.
+    expect(sql).not.toContain("AND le.reconciled_at IS NULL AND");
+  });
+
+  it("presek ulazi kao PARAMETAR na sva tri mesta (days_overdue + dva uslova)", async () => {
+    const h = makeService();
+    await h.service.agingByPartner(undefined, AS_OF);
+
+    // Ranije je `cutoff` bio parametar samo u `days_overdue` — jedna vrednost.
+    expect(h.params().filter((p) => p === AS_OF)).toHaveLength(3);
+  });
+
+  it("oba upita nose ISTI par uslova preseka", async () => {
+    const open = makeService();
+    await open.service.listOpenItems(undefined, undefined, AS_OF);
+    const openSql = squash(open.sql());
+
+    const aging = makeService();
+    await aging.service.agingByPartner(undefined, AS_OF);
+    const agingSql = squash(aging.sql());
+
+    for (const clause of [
+      "je.status IN ('POSTED', 'LOCKED')",
+      "je.posting_date <=",
+      "(le.reconciled_at IS NULL OR le.reconciled_at >",
+      "sa.tracks_open_items = TRUE",
+    ]) {
+      expect(openSql).toContain(clause);
+      expect(agingSql).toContain(clause);
+    }
+  });
+});

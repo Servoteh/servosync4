@@ -16,6 +16,34 @@ const HALL_SET = new Set(['WAREHOUSE', 'PRODUCTION', 'ASSEMBLY', 'FIELD', 'TEMP'
 const SHELF_SET = new Set(['SHELF', 'RACK', 'BIN']);
 
 /**
+ * Ne-skladišni razredi — NIKAD opcija u pickerima premeštanja (from/to, batch
+ * odredište, ciljna hala). IZMERENO na produ 04.08.2026 (`loc_locations` po tipu):
+ *   FIELD (27 aktivnih) = 100% reversi ZADUŽENJA: `ZADU-R-*` (radnici, 21) i
+ *                         `ZADU-O-*` (odeljenja, 6) — lične lokacije revers
+ *                         modula, ne skladišne destinacije (prijava 04.08:
+ *                         „Zaduzeno: Radivojević Vladan" u izboru police);
+ *   OTHER (10)          = `M.*` kategorije mašina (organizacioni folderi);
+ *   SCRAPPED (1)        = virtuelni koš otpisa (SCRAP tok ga upisuje sam, bez to);
+ *   SERVICE / PROJECT / TRANSIT / OFFICE = danas 0 redova — ista klasa čim nastanu.
+ * `ZADU-M-*` (mašinska zaduženja) su tipa PRODUCTION — zato uz tipove važi i
+ * `ZADU-` prefiks (reversi barkod konvencija, v. BE `reversi.service.lookupBarcode`).
+ *
+ * Filter je NAMERNO na FE, u pickerima — NE u API-ju/`useAllLocations`: isti
+ * učitani skup razrešava from/to labele ISTORIJE pokreta (REVERSAL_ISSUE/RETURN
+ * pokazuju baš na ZADU lokacije), a filteri istorije (movements/report tab)
+ * legitimno biraju i ZADU. Reversi tok ove lokacije koristi kroz SVOJE RPC-ove,
+ * nikad kroz ove pickere — pa im tu ništa ne fali.
+ */
+const NON_STORAGE_TYPES = new Set([
+  'FIELD', 'SERVICE', 'PROJECT', 'TRANSIT', 'OFFICE', 'SCRAPPED', 'OTHER',
+]);
+
+/** Stvarna skladišna lokacija za premeštanje (police/kavezi/hale/mašine). */
+export function isStorageLocation(l: LocLocation): boolean {
+  return !NON_STORAGE_TYPES.has(l.locationType) && !/^ZADU-/i.test(l.locationCode);
+}
+
+/**
  * Koliko opcija ulazi u DOM (i na prazan upit i na rezultat pretrage).
  *
  * Prijava iz pogona 01.08: „aplikacija ne prikazuje sve police, a stara ih
@@ -122,7 +150,30 @@ export function filterLocationOptions(
       )
     : base;
   const ordered = [...hits].sort((a, b) => compareLocOptions(a, b, !!opts.shelvesFirst));
-  return { items: ordered.slice(0, limit), total: hits.length };
+  if (!opts.shelvesFirst) return { items: ordered.slice(0, limit), total: hits.length };
+
+  // ── Sečenje PO RAZREDU, ne globalno (Duško 056/26: „ubačen samo Kavez 1") ──
+  // Globalni `slice(0, limit)` je sekao ODMAH POSLE polica: police su razred 0,
+  // pa kad kandidata-polica ima više od `limit` (bez filtera hale 1.111; sama
+  // Hala 3-magacin ima 301), KAVEZI (razred 1) i HALE (razred 2) NIKAD ne uđu u
+  // listu na prazan upit — magacioner vidi „nema kaveza", iako su svi (KV 1–100,
+  // svi aktivni) uredno stigli sa servera. NIJE regresija sortiranja od 03.08:
+  // i raniji serverski redosled (pathCached asc — „Kavez N" posle svih „Hala…")
+  // ih je sekao isto, samo bez garancije. U 1.0 kavezi su GLOBALNA, uvek
+  // prisutna grupa selecta (`populateToSelect` → optgroup „🧺 KAVEZI (KV)"),
+  // nezavisna od izabrane hale — pa limit ovde važi UNUTAR svakog razreda:
+  // police se i dalje seku (zato postoji poruka o ostatku), a mali razredi
+  // (kavezi ~100, hale ~15, ostalo) uvek stanu celi.
+  const items: LocLocation[] = [];
+  const perClass = new Map<number, number>();
+  for (const l of ordered) {
+    const r = locClassRank(l);
+    const c = perClass.get(r) ?? 0;
+    if (c >= limit) continue;
+    perClass.set(r, c + 1);
+    items.push(l);
+  }
+  return { items, total: hits.length };
 }
 
 /**
@@ -202,7 +253,13 @@ export function LocationSelect({
     };
     const map = new Map<string, LocLocation[]>();
     for (const l of filtered) {
-      const key = hallLabelOf(l);
+      // KAVEZI su SVOJA grupa (056/26; paritet 1.0 optgroup „🧺 KAVEZI (KV)"):
+      // po hali bi se raspali — 4 kaveza imaju parent halu (upali bi među njene
+      // police), a 96 ima parent NULL („Ostalo") — pa numerisani niz KV 1…KV 100
+      // ne bi postojao nigde u komadu. Hala kaveza je nebitna za izbor (globalni
+      // su za ulaganje; premeštanje celog kaveza je poseban tok).
+      const key =
+        l.locationType === 'CAGE' ? 'KAVEZI (KV) — globalni, hala nije bitna' : hallLabelOf(l);
       const arr = map.get(key);
       if (arr) arr.push(l);
       else map.set(key, [l]);

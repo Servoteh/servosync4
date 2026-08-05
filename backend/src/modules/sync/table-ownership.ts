@@ -87,6 +87,81 @@ export function isOwnedProductionTable(entity: string): boolean {
 }
 
 /**
+ * TOKOVI ČIJI JE MSSQL IZVOR ZAMRZNUT — van svakog nenadgledanog pokretanja
+ * (REOPEN 061/26, izmereno 04.08.2026 direktno na izvoru `BIGBIT_DB_*` =
+ * Vasa-SQL:5765).
+ *
+ * BigBit→QBigTehn prenos je ugašen 22.07.2026 (modul penzionisan), pa je MSSQL
+ * kopija od tada ZAMRZNUTA: `Predmeti` staju na IDPredmet 10477 / broj 10005
+ * (BigBit je tada već bio na 10014), `tRN` na poslednjoj izmeni 14.07, a šest
+ * izvornih tabela je skroz PRAZNO. Posledice po grupama:
+ *
+ *  • `customers` + `projects` + `items` — od 30.07.2026 ih vozi noćni .mdb
+ *    kanal (`BigbitMdbImportService`, jedini izvor koji još prati BigBit; noćni
+ *    uvoz 03.08. doneo „items +17/~7, customers +1/~2, projects ~1"). MSSQL
+ *    prolaz nad njima nije samo jalov nego ŠTETAN: `projects` je aditivni
+ *    full-refresh (obriši izvorne id-jeve + reinsert), pa svako pokretanje
+ *    VRAĆA svih 7.617 predmeta na stanje od 22.07 i time gazi svežije .mdb
+ *    izmene do sledeće noći. IZMERENO 04.08: jutarnji uvoz u 03:45 doneo
+ *    izmene, a ručni sync u 11:44 (Igor Voštić, zahtev 061/26) ih je pregazio
+ *    zamrznutom kopijom. Kod `items` je isti kvar 12× veći: pun `deleteMany` +
+ *    reinsert nad 92.592 artikla iz zamrznutog izvora. (`customers` je danas
+ *    no-op zbog watermark-a, ali ostaje ovde: isti vlasnik, isti razlog.)
+ *
+ *  • `access_rights`, `goods_documents_mirror`, `journal`, `notifications`,
+ *    `price_list_entries`, `warehouses` — izvorne tabele (BBPravaPristupa,
+ *    RobnaDokumentaMirror, _Dnevnik, Info, Cenovnik, Magacini) imaju 0 redova,
+ *    pa empty-source guard u `GenericSyncer` s pravom ZAUSTAVI svaki prolaz.
+ *    Guard je ispravan (čuva 3.0 kopiju od pražnjenja), ali garantovana greška
+ *    u SVAKOM runu je šum koji maskira prave padove — Igorova prijava 04.08
+ *    („izbacuje grešku pri sinhronizaciji") je bila tačno ovih šest tokova.
+ *
+ * ⚠️ USLOV ZA POVRATAK JE OŽIVLJAVANJE IZVORA, NE ČIŠĆENJE KATALOGA.
+ * Do 04.08. je ovde (za `items`) stajalo uputstvo: „kad `items` ostane bez
+ * duplikata kataloškog broja, ovaj red se briše i tok ulazi u noćni i ručni
+ * default". TO UPUTSTVO JE POVUČENO — čišćenje duplikata (DB-081, u toku) rešava
+ * DRUGI problem (siročad pri full-refresh-u) i nema veze sa time što je izvor
+ * mrtav. Ko bi ga posle čišćenja poslušao, ponovo bi naoružao tačno ovaj kvar,
+ * samo nad 92.592 reda. Bilo koji tok odavde sme nazad TEK ako/kad se BigBit→
+ * QBigTehn prenos vrati u pogon i izmeri se da izvor prati BigBit (uporediti
+ * MAX izmene u MSSQL-u sa poslednjim .mdb drop-om). Duplikati ostaju zaseban,
+ * nezavisan uslov za `items`.
+ *
+ * Eksplicitno pokretanje (`body.entities`) ostaje moguće SAMO adminu — svesno,
+ * nadgledano vraćanje na stanje od 22.07 — i piše upozorenje u log.
+ *
+ * NAPOMENA: `tax_rates` NIJE ovde — presudom Nenada 26.07.2026 registar PDV
+ * tarifa je 4.0-owned, pa je `R_Tarife` IZBAČEN iz `sync-map.generated.ts`
+ * (nijedan prolaz ga više ne poznaje). Isključenje ovde bi bilo polumera.
+ */
+export const FROZEN_MSSQL_EXCLUDED = new Set<string>([
+  "customers",
+  "projects",
+  "items",
+  "access_rights",
+  "goods_documents_mirror",
+  "journal",
+  "notifications",
+  "price_list_entries",
+  "warehouses",
+]);
+
+/**
+ * JEDAN skup za default ručnog `POST /sync/run` I za noćni MSSQL posao
+ * (`BigbitSyncJobs.nightlyEntities`) — oba filtriraju ISKLJUČIVO kroz ovo, da se
+ * dve liste nikad ne raziđu (od 04.08.2026, 061/26: dugme „Pokreni sync" više
+ * nije admin-only, pa ručni default MORA biti jednako bezbedan kao noćni).
+ *
+ * Danas je jednak `FROZEN_MSSQL_EXCLUDED` — svi razlozi isključenja su ista
+ * stvar (mrtav MSSQL izvor). Zaseban naziv postoji da isključenje IZ DRUGOG
+ * razloga (npr. tok koji izvor uredno puni, ali ga 4.0 preuzima) ima gde da
+ * sedne bez diranja poziva.
+ */
+export const DEFAULT_SYNC_EXCLUDED = new Set<string>([
+  ...FROZEN_MSSQL_EXCLUDED,
+]);
+
+/**
  * QBigTehn chain — the TEMPORARY part of the sync (P4 spec §7.2, ODLUKE
  * "QBigTehn sync privremen / BigBit trajan").
  *
@@ -242,8 +317,18 @@ export function isAdditiveRefreshTable(entity: string): boolean {
  * Razlika prema `OWNED_PRODUCTION_TABLES`: tamo 3.0 vlasnik CELE tabele pa se
  * sync preskače; ovde izvor i dalje vlada SVOJIM kolonama i sme da ih osvežava —
  * štiti se samo ono što u izvoru ne postoji.
+ *
+ * `payment_accounts` (dopuna 02.08.2026): migracija `20260801100000_stampa_faktura_polja`
+ * je dodala `iban`, `swift`, `bank_address` i `currency` — blok „Beneficiary Customer /
+ * Bank of beneficiary" na izvoznoj fakturi. Sync mapa (`UplatniRacuni`) pokriva samo osam
+ * BigBit kolona i tabela nema `watermark`, dakle vozi FULL REFRESH: bez ovog upisa prvi
+ * noćni sync posle unosa obrisao bi IBAN bez traga u logu, a izvozna faktura bi opet
+ * izašla bez podataka za uplatu — isti kvar, samo sa nedelju dana zakašnjenja.
  */
-export const NATIVE_COLUMN_TABLES = new Set<string>(["companies"]);
+export const NATIVE_COLUMN_TABLES = new Set<string>([
+  "companies",
+  "payment_accounts",
+]);
 
 export function hasNativeColumns(entity: string): boolean {
   return NATIVE_COLUMN_TABLES.has(entity);

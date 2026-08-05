@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { VAT_RATE_BY_CODE } from "./vat-totals";
+import { unknownVatCodeMessage } from "../gl/posting/vat-rates";
 
 /**
  * PricingService — cena stavke izlaznog računa (deljeno predračun/račun/pregled cene).
@@ -40,14 +42,40 @@ const HUNDRED = new D(100);
 const MONEY_DP = 4;
 const PCT_DP = 4;
 
-/** Stope PDV po `vatRateCode` (isto kao posting VAT_RATE_BY_CODE, doc 43 §4). */
-const VAT_RATE_BY_CODE: Readonly<Record<string, Prisma.Decimal>> = {
-  "3": new D("0.20"), // Osnovna / VISA (20%) — default stavke
-  "1": new D("0.20"), // Osnovna (alt kod)
-  "2": new D("0.10"), // Zeleznica / NIZA (10%)
-  "4": new D("0.08"), // Posebna / POLJO (8%)
-  "0": ZERO, // bez PDV (izvoz / oslobođeno)
-};
+/**
+ * IZNOS NOVCA NA STAVCI — DVE DECIMALE (`vatBase`, `vatAmount`, `lineTotal`).
+ *
+ * CENA po jedinici ostaje na četiri (`MONEY_DP`): 30,1020 din/kg je legitimna cena i tako
+ * je i u BigBitu. Ali ono što se od nje IZRAČUNA i naplaćuje je iznos u dinarima/evrima, a
+ * njega nema ispod pare.
+ *
+ * ⚠️ IZMEREN KVAR (02.08.2026): `vatBase = količina × cena` se upisivalo NEZAOKRUŽENO
+ * (kolona je `Decimal(19,4)`), a `recalcTotals` je sabirao takve, nezaokružene iznose.
+ * Štampa svaku stavku prikazuje na dve decimale, zbir ne — pa je papir sa dve stavke
+ * 1,5 kom × 21,3300 (= 31,9950 po stavci) pokazivao kolonu `32.00 + 32.00 = 64.00`, a
+ * osnovicu `63.99`. Kupac koji sabere kolonu dobije drugi broj nego što na računu piše.
+ *
+ * ZAŠTO NA IZVORU, A NE U ŠTAMPI: isti iznos ide u glavnu knjigu (`posting`), u PDV
+ * evidenciju, na SEF i u saldakonta — svi moraju da vide ISTI broj. Zakrpa u štampi
+ * napravila bi papir koji se ne slaže sa knjiženjem, što je gore od pare razlike.
+ *
+ * ZAŠTO JE OVO I RANIJE VAŽILO, samo ne svuda: doneti papir `INOUslugaFaktura 060-26.pdf`
+ * to i dokazuje — stavka 19,6 kg × 30,1020 = 589,9992 na njemu stoji kao `590.00`, a zbir
+ * svih šest stavki (`10,530.75`) je zbir BAŠ tih zaokruženih iznosa. BigBit je iznos
+ * stavke zaokruživao na paru i sabirao zaokružene; 4.0 je sabirao nezaokružene.
+ */
+const AMOUNT_DP = 2;
+
+/**
+ * Stope PDV po `vatRateCode` — uzimaju se iz JEDNE mape (`gl/posting/vat-rates.ts`,
+ * preko `./vat-totals`), koju dele i GL kontiranje, robna kalkulacija i zbirovi
+ * dokumenta. Ovde je do 02.08.2026. stajao doslovan PREPIS te mape.
+ *
+ * ⚠️ ZAŠTO PREPIS VIŠE NE SME DA POSTOJI: od iste izmene zbir dokumenta se računa kao
+ * `round2(osnovica_stope × stopa)` (v. `vat-totals.ts`). Da stavka i zaglavlje čitaju
+ * DVE tabele stopa, dovoljno je da se jedna dopuni (nova stopa, izmena zakonske) pa da
+ * `vatTotal` prestane da odgovara osnovici — i to bez ijedne izmene u kodu koji računa.
+ */
 
 /** Odakle je došla bazna (fakturna) cena — ekran to prikazuje uz cenu (§4.3). */
 export type PriceSource =
@@ -67,14 +95,44 @@ export interface PricedItem {
   unitPrice: Prisma.Decimal;
   /** bazna (fakturna) VP cena pre rabata (za prikaz/print). */
   basePrice: Prisma.Decimal;
+  /**
+   * CENA PRE RABATA, spremna za upis u `InvoiceItem.unitPriceBeforeDiscount`:
+   * `basePrice × (1 − kasa/100)`, dakle na istoj razmeri kao `unitPrice` samo bez rabata.
+   *
+   * ZAŠTO NIJE PROSTO `basePrice`: kolona `R%` na papiru tvrdi SAMO rabat. Kad bi štampa
+   * bruto računala iz čiste fakturne cene, u red „Rabat" bi upala i kasa — iznos koji taj
+   * red ne opisuje. Ovako važi tačno `unitPrice = unitPriceBeforeDiscount × (1 − rabat/100)`,
+   * pa je razlika između bruta i osnovice čist rabat.
+   *
+   * ZAŠTO OVDE, A NE U POZIVAOCIMA: rabat i kasa se primenjuju na jednom mestu
+   * (`applyChain`); da svaki pisac sam množi `basePrice` sa kasom, prvi koji to zaboravi
+   * proizveo bi tih, nedokaziv rabat na papiru.
+   */
+  unitPriceBeforeDiscount: Prisma.Decimal;
   discountPercent: Prisma.Decimal;
   cashDiscountPercent: Prisma.Decimal;
   quantity: Prisma.Decimal;
   vatRateCode: string;
-  /** poreska osnovica = qty × unitPrice (posle rabata i kase). */
+  /**
+   * Poreska osnovica = qty × unitPrice (posle rabata i kase), zaokruženo na PARU.
+   * OVO je iznos koji se sabira u `netTotal` dokumenta — jedini zbir stavki koji postoji
+   * (EN 16931 BR-CO-10; v. `vat-totals.ts`).
+   */
   vatBase: Prisma.Decimal;
+  /**
+   * PDV STAVKE = `round2(vatBase × stopa)` — IZVEDENA INFORMACIJA (kolona „PDV" u tabeli
+   * stavki i osnov iz kog štampa računa efektivnu stopu reda).
+   *
+   * ⚠️ NE SABIRATI ZA POREZ DOKUMENTA (ispravka 02.08.2026): `vatTotal` se računa
+   * `round2(osnovica_stope × stopa)` na nivou dokumenta, jer zbir zaokruženih poreza po
+   * stavci ne mora da bude jednak porezu na zbir osnovica — 5 × 100,01 din uz 20 % daje
+   * `Σ = 100,00`, a `500,05 × 20 % = 100,01`. Ko sabira, sabira kroz `vat-totals.ts`.
+   */
   vatAmount: Prisma.Decimal;
-  /** za plaćanje = vatBase + vatAmount. */
+  /**
+   * Iznos stavke sa porezom = vatBase + vatAmount. Kao i `vatAmount`, IZVEDEN je i ne
+   * sabira se u `grossTotal` dokumenta (`grossTotal = netTotal + vatTotal`).
+   */
   lineTotal: Prisma.Decimal;
   /** true ako je traženi rabat premašio Item.maxDiscountPercent i bio odsečen. */
   discountCapped: boolean;
@@ -297,17 +355,33 @@ export class PricingService {
       );
     }
 
-    // ── 4) Osnovica + PDV ──
-    const vatBase = quantity.mul(unitPrice);
-    const rate = VAT_RATE_BY_CODE[vatRateCode];
-    if (rate === undefined) {
-      // Tiha nula na nepoznatoj šifri je bila neprimetna — sad se bar prijavi.
-      warnings.push(
-        `Nepoznata poreska šifra „${vatRateCode}" — PDV je obračunat kao 0%.`,
+    // ── 4) Osnovica + PDV ── (oba na PARU — v. `AMOUNT_DP`)
+    const vatBase = this.round(quantity.mul(unitPrice), AMOUNT_DP);
+    const vatRate = VAT_RATE_BY_CODE[vatRateCode];
+    if (vatRate === undefined) {
+      // ⚠️ GLASNO, NE UPOZORENJE (nalaz S3, 02.08.2026). Do ove izmene je nepoznata
+      // šifra samo punila `warnings` i upisivala 0 % — a `warnings` niko ne blokira:
+      // stavka je ulazila u račun sa nula poreza. Neslaganje se posle NE VIDI ni na
+      // jednoj brani, jer `assertTotalsMatchItems` poredi zaglavlje sa stavkama, a
+      // obe strane su tada nula. Ovo je NOVAC (osnovica × stopa ide u GK, na SEF i u
+      // KIF), pa mora da padne pre nego što se upiše.
+      //
+      // Šifra ovde stiže sa stavke ILI iz šifarnika artikala (`goodsTaxRateCode`),
+      // pa poruka mora reći OBA izvora — inače operater traži grešku na dokumentu,
+      // a ona je u artiklu.
+      throw new BadRequestException(
+        `${unknownVatCodeMessage(vatRateCode)} Šifra je uzeta ` +
+          (args.vatRateCode != null
+            ? "sa stavke dokumenta."
+            : `iz šifarnika artikala (artikal ${args.itemId ?? "—"}, „Tarifa robe").`),
       );
     }
-    const vatRate = rate ?? ZERO;
-    const vatAmount = vatBase.mul(vatRate);
+    // PDV STAVKE se računa iz ZAOKRUŽENE osnovice (i sam zaokružuje): tako `osnovica ×
+    // stopa` može da se ponovi nad odštampanim brojevima jednog reda i dobije isti iznos.
+    //
+    // ⚠️ ALI ZBIR OVIH IZNOSA NIJE POREZ DOKUMENTA (v. `vatAmount` u `PricedItem` i ceo
+    // `vat-totals.ts`): porez se računa po stopi nad osnovicom CELOG dokumenta.
+    const vatAmount = this.round(vatBase.mul(vatRate), AMOUNT_DP);
     const lineTotal = vatBase.add(vatAmount);
 
     // ── 5) Nabavna neto + RUC (samo uz magacin; §4.3/§5) ──
@@ -318,9 +392,18 @@ export class PricingService {
       warnings,
     );
 
+    // Cena PRE rabata (posle kase) — jedini trag pune cene koji ostaje u bazi. Računa se
+    // iz ISTE `basePrice` i ISTE kase koje su ušle u `unitPrice`, pa i posle kanala „NETO"
+    // (gde je `basePrice` mogla da se podigne) ostaje tačno na istoj razmeri kao `unitPrice`.
+    const unitPriceBeforeDiscount = this.round(
+      basePrice.mul(HUNDRED.sub(cashDiscountPercent).div(HUNDRED)),
+      MONEY_DP,
+    );
+
     return {
       unitPrice,
       basePrice,
+      unitPriceBeforeDiscount,
       discountPercent,
       cashDiscountPercent,
       quantity,

@@ -284,6 +284,12 @@ model Sastanak {
   createdByEmail String? @map("created_by_email")
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
   pozivnicePoslateAt DateTime? @map("pozivnice_poslate_at") @db.Timestamptz(6)
+  /// ⚠️ NAMERNO NEMAPIRANE kolone `interval_days` i `prethodni_sastanak_id`
+  /// (periodična serija, 024/26 — dodaje ih backend/docs/sql/sy15/
+  /// sastanci-024-periodicni-2026-08-04/10_…): mapirana kolona koje još nema u
+  /// živoj bazi obara SVAKO Prisma čitanje sastanaka, a skriptu vlasnik
+  /// primenjuje ručno, nezavisno od deploy-a. Pristup ide raw SQL-om iza
+  /// provere information_schema (SastanciService.periodicniKolone).
   @@map("sastanci")
 }
 
@@ -1499,6 +1505,14 @@ model MaintItAssetDetails {
   backupRequired Boolean @default(false) @map("backup_required")
   lastBackupAt DateTime? @db.Timestamptz(6) @map("last_backup_at")
   notes String?
+  // Polja po tipu uređaja (zahtevi 065/066/067, 04.08.2026 — ZAHTEV_065_066_067_IT_OPREMA_POLJA.sql)
+  cpu String?
+  motherboard String?
+  ram String?
+  gpu String?
+  officeLocation String? @map("office_location")
+  tonerCartridges String? @map("toner_cartridges")
+  unifiPorts String? @map("unifi_ports")
   createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
   updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")
   updatedBy String? @db.Uuid @map("updated_by")

@@ -67,6 +67,13 @@ export interface GridEditor {
   note: string;
   createdAt: string;
 }
+/** 034/26: imenovani primalac obaveštenja o neusaglašenosti na montaži. */
+export interface NmPrimalac {
+  email: string;
+  fullName: string | null;
+  note: string | null;
+  createdAt: string;
+}
 export interface Department {
   id: number;
   name: string;
@@ -248,6 +255,7 @@ const KEYS = {
   rolesCatalog: ['admin', 'roles-catalog'] as const,
   permMatrix: ['admin', 'permissions-matrix'] as const,
   gridEditors: ['admin', 'grid-editors'] as const,
+  nmPrimaoci: ['admin', 'montaza-nm-primaoci'] as const,
   orgStructure: ['admin', 'org-structure'] as const,
   holidays: ['admin', 'holidays'] as const,
   companyProfile: ['admin', 'company-profile'] as const,
@@ -260,6 +268,7 @@ const KEYS = {
   aiModels: ['admin', 'ai-models'] as const,
   bigbitSync: ['admin', 'sync', 'bigbit'] as const,
   companyDetails: ['admin', 'firma'] as const,
+  paymentAccounts: ['admin', 'firma', 'racuni'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -283,6 +292,10 @@ export function usePermissionsMatrix() {
 }
 export function useGridEditors() {
   return useQuery({ queryKey: KEYS.gridEditors, queryFn: () => apiFetch<{ data: GridEditor[] }>(`${BASE}/grid-editors`) });
+}
+/** 034/26: aktivni primaoci obaveštenja o neusaglašenosti na montaži. */
+export function useNmPrimaoci() {
+  return useQuery({ queryKey: KEYS.nmPrimaoci, queryFn: () => apiFetch<{ data: NmPrimalac[] }>(`${BASE}/montaza-nm-primaoci`) });
 }
 export function useOrgStructure() {
   return useQuery({ queryKey: KEYS.orgStructure, queryFn: () => apiFetch<{ data: OrgStructure }>(`${BASE}/org/structure`) });
@@ -331,7 +344,7 @@ export function useBigbitSync() {
   });
 }
 
-/** Uključi/isključi noćni BigBit uvoz (sync.run). Odgovor je PUNO novo stanje. */
+/** Uključi/isključi noćni BigBit uvoz (settings.system, 061/26). Odgovor je PUNO novo stanje. */
 export function useSetBigbitSync() {
   const qc = useQueryClient();
   return useMutation({
@@ -437,6 +450,22 @@ export const useRemoveGridEditor = () =>
   useAdminMutation<{ email: string }, unknown>(
     (v) => apiFetch<unknown>(`${BASE}/grid-editors/${encodeURIComponent(v.email)}`, { method: 'DELETE' }),
     KEYS.gridEditors,
+  );
+
+// ---------------------------------------------- Primaoci neusaglašenosti (034/26 CRUD)
+
+/** Dodaj primaoca obaveštenja o neusaglašenosti (POST). 409 = već na listi. */
+export const useAddNmPrimalac = () =>
+  useAdminMutation<{ email: string; fullName?: string; note?: string }, { data: NmPrimalac }>(
+    (v) => apiFetch<{ data: NmPrimalac }>(`${BASE}/montaza-nm-primaoci`, { method: 'POST', body: JSON.stringify(v) }),
+    KEYS.nmPrimaoci,
+  );
+
+/** Ukloni primaoca po email-u (DELETE — soft, istorija ostaje na backendu). */
+export const useRemoveNmPrimalac = () =>
+  useAdminMutation<{ email: string }, unknown>(
+    (v) => apiFetch<unknown>(`${BASE}/montaza-nm-primaoci/${encodeURIComponent(v.email)}`, { method: 'DELETE' }),
+    KEYS.nmPrimaoci,
   );
 
 // ------------------------------------------------------------------ Podešavanje predmeta (WRITE — P11)
@@ -803,6 +832,8 @@ export interface CompanyDetails {
   companyName: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj — zasebno od mesta (odluka O-F10): memorandum ga štampa, potpisni blok ne. */
+  postalCode: string | null;
   municipality: string | null;
   phone: string | null;
   fax: string | null;
@@ -839,4 +870,53 @@ export const useSaveCompanyDetails = () =>
   useAdminMutation<SaveCompanyDetailsVars, { data: CompanyDetails }>(
     (v) => apiFetch<{ data: CompanyDetails }>(`${BASE}/firma`, { method: 'PUT', body: JSON.stringify(v) }),
     KEYS.companyDetails,
+  );
+
+// ------------------------------------------- Devizni računi (blok banke na izvoznoj fakturi)
+// Kolone `payment_accounts.iban/swift/bank_address/currency` su dodate 01.08.2026 i štampa ih
+// ČITA, ali ih nijedan ekran nije punio — izvozna faktura je izlazila bez ijedne bankarske
+// instrukcije, pa strani kupac nije imao gde da plati.
+//
+// SAMO IZMENA, BEZ DODAVANJA I BRISANJA: skup računa i njihove ključeve drži BigBit
+// (`UplatniRacuni`), a tabela nema rezervisan 4.0 opseg ključeva — red napravljen ovde bi se
+// sudario sa BigBit-ovim `id`-jem. Menjaju se samo četiri kolone koje sync ne poznaje.
+
+export interface PaymentAccount {
+  id: number;
+  companyId: number;
+  /** Broj računa — BigBit-ov, prikazuje se ali se ne menja odavde. */
+  accountNumber: string;
+  bankName: string | null;
+  isDefault: boolean;
+  sortOrder: number;
+  /** IBAN — čuva se bez razmaka; backend proverava MOD-97. */
+  iban: string | null;
+  /** SWIFT/BIC (8 ili 11 znakova, ISO 9362). */
+  swift: string | null;
+  /** Adresa banke; višered — prelomi su deo podatka. */
+  bankAddress: string | null;
+  /** Valuta računa (ISO 4217) — po njoj štampa bira račun za valutu fakture. */
+  currency: string | null;
+}
+
+/** Polje izostavljeno = ne dira se; `null`/prazno = briše (papir tada taj red ne ispisuje). */
+export type SavePaymentAccountVars = {
+  id: number;
+} & Partial<Pick<PaymentAccount, 'iban' | 'swift' | 'bankName' | 'bankAddress' | 'currency'>>;
+
+export function usePaymentAccounts() {
+  return useQuery({
+    queryKey: KEYS.paymentAccounts,
+    queryFn: () => apiFetch<{ data: PaymentAccount[] }>(`${BASE}/firma/racuni`),
+  });
+}
+
+export const useSavePaymentAccount = () =>
+  useAdminMutation<SavePaymentAccountVars, { data: PaymentAccount }>(
+    ({ id, ...body }) =>
+      apiFetch<{ data: PaymentAccount }>(`${BASE}/firma/racuni/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    KEYS.paymentAccounts,
   );

@@ -179,6 +179,17 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.LOKACIJE_MOVE, // Talas A: read + move (row-odluka u DB fn)
     P.MRP_READ,
     P.DIRECTORY_READ,
+    // Sync BigBit master podataka (zahtev 061/26, Igor Voštić; odluka Nenad
+    // 04.08.2026): „Pokreni sync" na /syncs otvara se za TEHNOLOGE + PLANERE +
+    // ADMIN — ne bukvalno za sve. Tehnolog otvara RN nad predmetom koji stiže iz
+    // BigBit-a, pa mu sveži predmeti trebaju bez čekanja admina. `sync.read` ide
+    // uz `run` da tehnolog uopšte vidi /syncs stranicu i dnevnik (nav + logovi).
+    // Planeri su pokriveni kroz `menadzment` (izmereno 04.08.2026 u prod bazi:
+    // svi planeri iz `predmet_planeri` — Strahinja Petrović, Ljubiša Simović,
+    // Dijana Kastratović, Branislav Stanojević — i podnosilac Igor Voštić nose
+    // rolu `menadzment`; tehnolozi po zanimanju nose `tehnolog` ili `menadzment`).
+    P.SYNC_READ,
+    P.SYNC_RUN,
     ...ODRZAVANJE_MODULE, // F8: CMMS uvid + prijava kvara (opšte pravo)
     P.SASTANCI_READ, // presuda 24.07.2026: Sastanci vidljivi biro/tehnika rolama
     P.AI_CHAT, // 1.0 /ai za sve
@@ -326,6 +337,10 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.MRP_READ,
     P.DIRECTORY_READ,
     P.SYNC_READ,
+    // `sync.run` (zahtev 061/26, odluka Nenad 04.08.2026): planeri pokreću BigBit
+    // sync sa /syncs — a SVI živi planeri (`predmet_planeri`) i podnosilac zahteva
+    // Igor Voštić nose upravo `menadzment` (izmereno u prod bazi 04.08.2026).
+    P.SYNC_RUN,
     // Reversi paritet 1.0: menadzment JESTE u rev_can_manage().
     P.REVERSI_READ,
     P.REVERSI_MANAGE,

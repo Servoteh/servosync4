@@ -315,23 +315,99 @@ describe("PricingService", () => {
       expect(p.unitPrice.toFixed(4)).toBe("0.0000");
     });
 
-    it("nepoznata poreska šifra i dalje daje 0% PDV, ali se sada PRIJAVI", async () => {
+    /**
+     * ⚠️ PROMENJENO OČEKIVANJE (nalaz S3, 02.08.2026). Ovaj test je do sada tvrdio
+     * „nepoznata šifra i dalje daje 0 % PDV, ali se PRIJAVI" — a `warnings` niko ne
+     * blokira: stavka je ulazila u račun bez poreza, i to se posle nije videlo ni na
+     * jednoj brani (`assertTotalsMatchItems` poredi zaglavlje sa stavkama, obe nula).
+     * Cena je NOVAC, pa nepoznata šifra sada pada pre upisa.
+     */
+    it("nepoznata poreska šifra se ODBIJA (ne daje tihu nulu)", async () => {
       prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "9" }));
 
-      const p = await service.priceItem({ itemId: 1, quantity: 1 });
-
-      expect(p.vatAmount.toFixed(4)).toBe("0.0000");
-      expect(p.vatRatePercent.toFixed(2)).toBe("0.00");
-      expect(p.warnings.join(" ")).toContain("Nepoznata poreska šifra");
+      await expect(service.priceItem({ itemId: 1, quantity: 1 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
-    it("PDV 10% po šifri 2 (stopa ne curi iz šifre 3)", async () => {
-      prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "2" }));
+    it("poruka imenuje šifru, dozvoljene šifre i IZVOR šifre (artikal)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "18" }));
+
+      // Šifra „18" je istekla tarifa (do 30.09.2012) koja i dalje živi u BigBit
+      // podacima — operater je traži na dokumentu, a ona je u šifarniku artikala.
+      await expect(
+        service.priceItem({ itemId: 1, quantity: 1 }),
+      ).rejects.toThrow(/„18".*0, 1, 3, 4, 5, 6.*šifarnika artikala/s);
+    });
+
+    // Snižena stopa 10 % je u `R_Tarife` šifra „4" (grupa NIZA), a ne „2" — te šifre
+    // u tabeli NEMA (ispravka 02.08.2026, v. `gl/posting/vat-rates.ts`).
+    it("PDV 10% po šifri 4 (stopa ne curi iz šifre 3)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item({ goodsTaxRateCode: "4" }));
 
       const p = await service.priceItem({ itemId: 1, quantity: 1 });
 
       expect(p.vatRatePercent.toFixed(2)).toBe("10.00");
       expect(p.vatAmount.toFixed(4)).toBe("10.0000");
+    });
+  });
+
+  // ── CENA PRE RABATA (za štampu) ────────────────────────────────────────────
+
+  /**
+   * `unitPriceBeforeDiscount` je jedini podatak iz kog papir može da iskaže rabat.
+   * Do 02.08.2026. se cena pre rabata računala (`basePrice`) i BACALA — nijedan pisac
+   * je nije čuvao, pa je štampa rabat vraćala unazad iz cene POSLE rabata. Kod rabata
+   * od 100 % ta cena je 0 i unazad se nema iz čega računati.
+   */
+  describe("cena PRE rabata (upisuje se na stavku, štampa je čita)", () => {
+    it("rabat 100 % nuluje cenu, ali puna cena OSTAJE zapisana", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 10,
+        requestedDiscountPercent: 100,
+      });
+
+      expect(p.unitPrice.toFixed(4)).toBe("0.0000");
+      expect(p.unitPriceBeforeDiscount.toFixed(4)).toBe("100.0000");
+    });
+
+    it("važi `unitPrice = unitPriceBeforeDiscount × (1 − rabat/100)`", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 1,
+        requestedDiscountPercent: 10,
+      });
+
+      expect(p.unitPriceBeforeDiscount.toFixed(4)).toBe("100.0000");
+      expect(p.unitPrice.toFixed(4)).toBe("90.0000");
+    });
+
+    it("KASA je već unutra — inače bi red „Rabat“ na papiru nosio i nju", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: 1,
+        requestedDiscountPercent: 10,
+        cashDiscountPercent: 5,
+      });
+
+      // 100 × (1 − 5/100) = 95 → rabat na papiru je 95 − 85,50 = 9,50, tačno 10 % od 95.
+      expect(p.unitPriceBeforeDiscount.toFixed(4)).toBe("95.0000");
+      expect(p.unitPrice.toFixed(4)).toBe("85.5000");
+    });
+
+    it("bez rabata je jednaka ceni stavke (red „Rabat“ ostaje 0,00)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({ itemId: 1, quantity: 1 });
+
+      expect(p.unitPriceBeforeDiscount.toFixed(4)).toBe(p.unitPrice.toFixed(4));
     });
   });
 
@@ -408,5 +484,74 @@ describe("PricingService", () => {
     expect(p.vatAmount.toFixed(4)).toBe("54.0000");
     expect(p.lineTotal.toFixed(4)).toBe("324.0000");
     expect(p.priceOverridden).toBe(false);
+  });
+
+  // ── IZNOS STAVKE JE NA PARU (nalaz N2, 02.08.2026) ─────────────────────────
+
+  /**
+   * 🔴 IZMEREN KVAR: `vatBase = količina × cena` se upisivalo NEZAOKRUŽENO (kolona je
+   * `Decimal(19,4)`), a zbirovi dokumenta (`recalcTotals`) sabirali takve iznose. Štampa
+   * svaku stavku prikazuje na dve decimale, zbir ne — pa je račun sa DVE stavke
+   * 1,5 × 21,3300 (= 31,9950 po stavci) na papiru imao kolonu `32.00 + 32.00 = 64.00`, a
+   * osnovicu `63.99`. Kupac koji sabere odštampanu kolonu dobije drugi broj nego što na
+   * računu piše.
+   *
+   * Ispravka je NA IZVORU, ne u štampi: isti iznos ide u glavnu knjigu, PDV evidenciju,
+   * na SEF i u saldakonta — svi moraju da vide ISTI broj. Doneti papir
+   * `INOUslugaFaktura 060-26.pdf` to i potvrđuje kao zatečeno pravilo: stavka
+   * 19,6 kg × 30,1020 = 589,9992 na njemu stoji kao `590.00`, a zbir svih šest stavki
+   * (10.530,75) je zbir BAŠ tako zaokruženih iznosa.
+   */
+  describe("iznos stavke se zaokružuje na paru (cena ostaje na 4 decimale)", () => {
+    it("1,5 × 21,3300 daje osnovicu 32,00 — ne 31,9950", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: new D("1.5"),
+        overrideUnitPrice: new D("21.33"),
+      });
+
+      // Cena po jedinici ostaje netaknuta — 21,3300 (i 30,1020 din/kg) je legitimna cena;
+      // zaokružuje se IZNOS, jer njega kupac plaća i njega papir prikazuje.
+      expect(p.unitPrice.toFixed(4)).toBe("21.3300");
+      expect(p.vatBase.toFixed(4)).toBe("32.0000");
+      expect(p.vatAmount.toFixed(4)).toBe("6.4000"); // 32,00 × 20 %
+      expect(p.lineTotal.toFixed(4)).toBe("38.4000");
+    });
+
+    it("zbir dve takve stavke je BAŠ zbir odštampanih iznosa (64,00)", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+      const one = async () =>
+        (
+          await service.priceItem({
+            itemId: 1,
+            quantity: new D("1.5"),
+            overrideUnitPrice: new D("21.33"),
+          })
+        ).vatBase;
+
+      const zbir = (await one()).add(await one());
+      // Papir štampa `32.00 + 32.00`; osnovica dokumenta mora biti TAJ ISTI zbir.
+      // Do ispravke: 2 × 31,9950 = 63,9900 → papir je pokazivao kolonu 64,00 uz
+      // osnovicu 63,99, dakle broj koji se sabiranjem kolone ne može dobiti.
+      expect(zbir.toFixed(2)).toBe("64.00");
+      expect(zbir.toFixed(4)).toBe("64.0000");
+    });
+
+    it("PDV se računa iz ZAOKRUŽENE osnovice, pa se može ponoviti nad papirom", async () => {
+      prisma.item.findUnique.mockResolvedValue(item());
+
+      const p = await service.priceItem({
+        itemId: 1,
+        quantity: new D("19.6"),
+        overrideUnitPrice: new D("30.1020"),
+      });
+
+      // 19,6 × 30,1020 = 589,9992 → 590,00 (tako je i na donetom papiru 060/26).
+      expect(p.vatBase.toFixed(2)).toBe("590.00");
+      expect(p.vatAmount.toFixed(2)).toBe("118.00");
+      expect(p.lineTotal.toFixed(2)).toBe("708.00");
+    });
   });
 });

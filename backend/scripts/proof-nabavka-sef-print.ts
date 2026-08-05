@@ -414,7 +414,10 @@ async function main() {
         supplierName: supplier.name,
         invoiceNumber: "DOB-2026-0455",
         issueDate: new Date(Date.now() - 3 * 86_400_000),
-        deliveryDate: new Date(Date.now() - 3 * 86_400_000),
+        // Datum PRIJEMA na SEF (osnov roka od 15 dana). Kolona se do 02.08.2026. zvala
+        // `deliveryDate`, što je isto ime kao datum PROMETA — preimenovana je da ime
+        // prati značenje (v. `SefIncomingInvoice` u schema.prisma).
+        sefReceivedAt: new Date(Date.now() - 3 * 86_400_000),
         dueDate: new Date(Date.now() + 27 * 86_400_000),
         totalAmount: D("254880.00"),
         vatAmount: D("42480.00"),

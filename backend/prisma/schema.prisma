@@ -992,6 +992,14 @@ model Item {
   // SQL-only trigram GIN indeksi (20260726160000): idx_items_name_trgm i
   // idx_items_catalog_number_trgm nad `immutable_unaccent(lower(...))` —
   // 92k redova, pretraga bez kvačica (alat `nadji_artikal`, kasnije i UI).
+  //
+  // BigBit „Pregled artikala" sortira ORDER BY Grupa, Kataloski broj, Naziv, a
+  // filter po grupi je najčešći ulaz u listu (20260805100000). Kolone prate
+  // `orderBy` iz `masters/items.service.ts` DOSLOVNO — bez `name` u indeksu
+  // planer i dalje dosortira (incremental sort). `id` je tie-breaker za stabilnu
+  // paginaciju. Pomaže nefiltriranom pregledu i filteru po grupi; pretraga po
+  // nazivu / kat. broju ide na trigram GIN i ne koristi ovaj indeks.
+  @@index([groupCode, catalogNumber, name, id], map: "idx_items_group_catalog")
   @@map("items")
 }
 
@@ -1020,6 +1028,40 @@ model ItemOrigin {
   discountPercent Decimal? @default(0) @map("discount_percent") @db.Decimal(19, 4)
 
   @@map("item_origins")
+}
+
+/// Was: R_KvalitetArtikla
+/// Šifarnik iza `Item.qualityTypeId` — BigBit forma unosa ga nudi kao padajući
+/// spisak „Kvalitet artikla". Do migracije 20260805100000 tabela nije postojala,
+/// pa je `qualityTypeId` visio u prazno (`ITEM_FIELDS_REQUIRING_MIGRATION`).
+/// `id` je BigBit `IDKvalitetArtikla` i prenosi se doslovno (0 je važeća
+/// vrednost, ne „prazno") — zato bez `autoincrement()`.
+model ItemQualityType {
+  id          Int    @id(map: "pk_item_quality_types") @map("id")
+  code        String @map("code") @db.VarChar(20)
+  /// Doslovna BigBit vrednost — red `id = 0` u izvoru glasi „NE TREBA KVAKITET"
+  /// (tipfeler je u BigBitu, ne kod nas; prenosi se verno radi pariteta prikaza).
+  description String @map("description") @db.VarChar(50)
+
+  @@map("item_quality_types")
+}
+
+/// Was: RasterDefZag
+/// Kod Servoteha raster NIJE maloprodajni koncept (veličine/boje) nego nosilac
+/// DIMENZIJA table/lima (BIGBIT_ARTIKLI.md §4.10). BigBit forma ga nudi kao
+/// padajući spisak „Dimenzija (mm)".
+model ItemRaster {
+  id          Int     @id(map: "pk_item_rasters") @map("id")
+  name        String  @map("name") @db.VarChar(50)
+  description String? @map("description") @db.VarChar(50)
+  /// `VrstaRastera` / `KolonaRastera` u mm — ulaz za obračun kilograma po komadu
+  /// lima: `Kutija = Debljina * VrstaRastera * KolonaRastera * 7850 / 1e9`
+  /// (7850 = gustina čelika kg/m³). Dimenzija, ne novac → `Float`, kao i
+  /// `Item.thickness` / `Item.weightKg`.
+  widthMm     Float?  @map("width_mm")
+  lengthMm    Float?  @map("length_mm")
+
+  @@map("item_rasters")
 }
 
 /// Was: R_Vrste_dokumenata
@@ -1100,6 +1142,10 @@ model Company {
   databaseName              String?  @map("database_name") @db.VarChar(255)
   logo                      Bytes?   @map("logo")
   city                      String?  @map("city") @db.VarChar(50)
+  /// Poštanski broj sedišta — ZASEBAN podatak od mesta (odluka O-F10). Memorandum ga
+  /// štampa uz mesto, potpisni blok i adresa magacina ga NE štampaju (v. migraciju
+  /// 20260803090000_companies_postal_code).
+  postalCode                String?  @map("postal_code") @db.VarChar(10)
   address                   String?  @map("address") @db.VarChar(50)
   phone                     String?  @map("phone") @db.VarChar(50)
   fax                       String?  @map("fax") @db.VarChar(50)
@@ -1368,6 +1414,23 @@ model PaymentAccount {
   sortOrder     Int             @default(0) @map("sort_order") @db.SmallInt
   countryCode   String?         @map("country_code") @db.VarChar(20)
   bankCode      String?         @map("bank_code") @db.VarChar(20)
+
+  // — Bankarske instrukcije za ino fakturu (blok na dnu Invoice 228/25 i na zasebnoj strani 060/26).
+  //   Domaća faktura ovaj blok NEMA — ona nosi samo `accountNumber` („Tekući račun: 160-110610-83")
+  //   u zaglavlju. Do sada su ova polja postojala samo kao tip u štampi (IssuerInfo.iban/swift) i
+  //   nikad se nisu punila, pa se blok banke nije štampao uopšte.
+
+  /// IBAN deviznog računa — red `IBAN :` u koloni „Beneficiary Customer:". ISO 13616, max 34 znaka.
+  iban        String? @map("iban") @db.VarChar(34)
+  /// SWIFT/BIC banke — red `SWIFT:` u koloni „Bank of beneficiary:". BIC je 8 ili 11 znakova.
+  swift       String? @map("swift") @db.VarChar(11)
+  /// Adresa banke ispod njenog naziva, višered („Milentija Popovića 7b, 11070 New Belgrade" +
+  /// „Republic of Serbia") — prelama se po \n, zato Text a ne VarChar kao ostale adrese.
+  bankAddress String? @map("bank_address") @db.Text
+  /// Valuta računa — štampa se uz naziv banke („Banca Intesa a.d. EUR") i po njoj se bira koji se
+  /// devizni račun uzima za valutu fakture. Ista dužina kao Invoice.currency.
+  currency    String? @map("currency") @db.VarChar(3)
+
   self          PaymentAccount  @relation("PaymentAccountSelf", fields: [id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_payment_accounts_self")
   selfReverse   PaymentAccount? @relation("PaymentAccountSelf")
 
@@ -2762,13 +2825,29 @@ model WorkOrderLaunchNotification {
   /// claim was taken but delivery is still PENDING (aggregation window, 016/26
   /// treći krug) or failed (visible hole, not a silent one).
   notifiedAt        DateTime? @map("notified_at") @db.Timestamptz(6)
-  /// 016/26 treći krug (Strahinja: „samo za nacrt, ne po pozicijama"): worker koji
-  /// je lansirao — KLJUČ AGREGACIJE talasa. Redovi istog aktera sa notified_at NULL
-  /// se šalju kao JEDAN zbirni mejl/zvonce kad talas utihne (sweeper u
-  /// LaunchNotifyService). Soft ref → workers.id; NULL = nalog bez vezanog radnika
-  /// ili red upisan pre uvođenja kolone. Partial indeks za pending redove je SQL-only
-  /// (Prisma ne ume WHERE indekse) — vidi migraciju 20260803153000.
+  /// 016/26: worker koji je lansirao — puni „Lansirao: X" u obaveštenju. Od
+  /// ČETVRTOG kruga (04.08) više NIJE ključ agregacije (to je `handoverDraftId`);
+  /// ostaje kao podatak i audit. Soft ref → workers.id; NULL = nalog bez vezanog
+  /// radnika ili red upisan pre uvođenja kolone. Partial indeks po ovoj koloni je
+  /// SQL-only (Prisma ne ume WHERE indekse) — vidi migraciju 20260803153000.
   actorWorkerId     Int?      @map("actor_worker_id")
+  /// 016/26 ČETVRTI krug (Strahinja: „samo obaveštenje kad se lansira primopredaja
+  /// za projekat i to je to"): nacrt (`handover_drafts.id`) iz kog je pozicija
+  /// potekla — KLJUČ AGREGACIJE I DEDUPA. Šalje se TAČNO JEDNO obaveštenje po
+  /// nacrtu (na prvo lansiranje bilo koje njegove pozicije), pa svi sledeći redovi
+  /// istog nacrta samo dobiju `notified_at` bez slanja.
+  /// POPUNJENO SAMO KAD JE VEZA SIGURNA: veza crtež→nacrt nema FK i izmereno je
+  /// dvosmislena za 9,8% crteža (358/3.658 je u više nacrta), pa bi pogrešan
+  /// pogodak TRAJNO ućutkao tuđi nacrt. Uslovi: crtež u TAČNO JEDNOM
+  /// ne-isključenom nacrtu I predmet nacrta = predmet RN-a. NULL = dvosmisleno
+  /// ili nerazrešeno → obaveštenje ide pojedinačno po poziciji (staro ponašanje).
+  /// Dva partial indeksa (pending / isporučeno) su SQL-only — migracija 20260805120000.
+  handoverDraftId   Int?      @map("handover_draft_id")
+  /// Trenutak STVARNE isporuke (bar jedan mejl ili zvonce uspeo) — JEDINI osnov za
+  /// dedup po nacrtu. Razdvojeno od `notifiedAt` (= red obrađen) jer bi inače SMTP
+  /// ispad u trenutku prvog lansiranja nacrta taj nacrt zapečatio zauvek: red bi
+  /// bio „obrađen", a obaveštenje nikad ne bi otišlo.
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
 
   @@unique([drawingHandoverId], map: "uq_work_order_launch_notifications_handover")
   @@index([workOrderId], map: "idx_work_order_launch_notifications_work_order")
@@ -2799,6 +2878,34 @@ model MasinaOtpisPrimalac {
   createdByUserId Int?     @map("created_by_user_id")
 
   @@map("masina_otpis_primaoci")
+}
+
+/// App-owned (zahtev 034/26 — komentar Zorana 29.07). IMENOVANI primaoci obaveštenja o
+/// NEUSAGLAŠENOSTI NA MONTAŽI — zamena za razrešenje po roli `users.role = 'menadzment'`
+/// (004/26 COO krug), koje je na produ slalo na 19 naloga uklj. spoljne/test adrese
+/// (hapfluid.rs, test@, gmail), a PRESKAKALO admin naloge (Zoran, Nenad) i leadpm
+/// (Milan Stojadinović). Zoranova lista je 7 imenovanih ljudi.
+///
+/// Lista je PODEŠAVANJE, ne kod (obrazac `masina_otpis_primaoci`): uređuje se u
+/// Podešavanja → Notifikacije (admin, `settings.system`), a može i INSERT/UPDATE-om
+/// (`active = FALSE` gasi primaoca) — važi od SLEDEĆE prijave, servis čita pri svakom
+/// slanju. Ključ je mejl (čitljiv, primalac ne mora imati nalog); `users` se gleda samo
+/// za `worker_id` most (in-app zvonce).
+model MontazaNmPrimalac {
+  id              Int      @id(map: "pk_montaza_nm_primaoci") @default(autoincrement()) @map("id")
+  /// Malim slovima, bez razmaka (DB CHECK) — inače bi „ista" osoba mogla ući dvaput.
+  email           String   @unique(map: "uq_montaza_nm_primaoci_email") @map("email") @db.VarChar(200)
+  /// Oznaka za čoveka koji čita tabelu; ime u poruci se preuzima iz `users` kad nalog postoji.
+  fullName        String?  @map("full_name") @db.VarChar(150)
+  /// FALSE = primalac ugašen (istorija ostaje). Servis šalje samo aktivnima.
+  active          Boolean  @default(true) @map("active")
+  note            String?  @map("note")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Meki ref → users.id (ko je dodao red; NULL za seed iz migracije).
+  createdByUserId Int?     @map("created_by_user_id")
+
+  @@map("montaza_nm_primaoci")
 }
 
 /// App-owned (2.0, plan §3.2-6, odluka O3). Šifarnik odeljenja (7 redova iz sy15
@@ -4165,10 +4272,25 @@ model Invoice {
   /// (jedan avans ide na više računa i obrnuto — BigBit `T_AVR_Roba`/`T_AVR_Usluge`).
   /// Održava ga `AdvanceInvoiceService`; čitaoci (SEF BillingReference, štampa) ga smeju
   /// koristiti samo za prikaz „prvog" avansa.
+  /// ⚠️ Veza ume da postoji BEZ svog reda u `invoice_advance_applications` („zatečena
+  /// 1:1 veza"): dokumenti knjiženi pre migracije 20260726120000, uvoz BigBit istorije,
+  /// ručna ispravka u bazi (ruta `POST /pdv/advances/link-final` je od Batch C revizije
+  /// zatvorena, pa nove ne pravi). Takva veza NIJE samo prikaz — ona je punopravan
+  /// odbitak (v. komentar na `advanceAppliedAmount`).
   advanceInvoiceId      Int?      @map("advance_invoice_id")
-  /// DENORMALIZOVAN zbir svih AKTIVNIH primena avansa na ovom računu (bruto).
-  /// = SUM(invoice_advance_applications.applied_amount WHERE status='ACTIVE').
+  /// DENORMALIZOVAN zbir SVEGA što je na ovom računu odbijeno od avansa (bruto).
   /// Umanjuje iznos za plaćanje, ne osnovicu prihoda.
+  ///
+  /// ⚠️ NIJE `SUM(invoice_advance_applications.applied_amount WHERE status='ACTIVE')`
+  /// (ispravka komentara 02.08.2026 — ranije je ovde pisalo baš to). Pravilo je UNIJA:
+  /// Σ AKTIVNIH primena **plus** zatečena 1:1 veza iz `advance_invoice_id` kad ona nema
+  /// svoj red u spojnoj tabeli; iznos tog dela je `ova kolona − Σ primena`. Jedina
+  /// tačka istine je `backend/src/modules/sales/advance-deduction.ts` — štampa, SEF,
+  /// ekran računa, lista avansa i `applyAdvance` svi računaju kroz nju.
+  ///
+  /// Zato se kolona NE SME „popraviti" na SUM po spojnoj tabeli (ni skriptom ni
+  /// triger-om): time bi svi zatečeni odbici tiho nestali sa papira i sa e-faktura, a
+  /// kupcima bi porastao iznos za uplatu bez ijedne poruke.
   advanceAppliedAmount  Decimal   @default(0) @map("advance_applied_amount") @db.Decimal(19, 4)
   /// Na AVR-u: datum naplate avansa — PDV obaveza po avansu nastaje NAPLATOM, ne izdavanjem.
   advancePaidAt         DateTime? @map("advance_paid_at") @db.Timestamptz(6)
@@ -4187,7 +4309,21 @@ model Invoice {
   /// DATUM PROMETA DOBARA I USLUGA (BT-72) — propisan sadržaj računa (ZPDV čl. 42)
   /// i obavezan element e-fakture; ide u UBL `cac:Delivery/cbc:ActualDeliveryDate`.
   /// NIKAD se ne izvodi iz `documentDate` (datum izdavanja je drugi podatak, često
-  /// drugi dan). NULL = nije unet → blok `cac:Delivery` se ne emituje.
+  /// drugi dan).
+  ///
+  /// Štampa: „Datum prometa dobara" (traka uslova IFR/IFGP), „Datum prometa" (IFUSL),
+  /// `Date of delivery:` (ino usluga) — v. docs/FAKTURE_ZAKONSKA_USKLADJENOST.md
+  /// nalaz N1 / mera M1.
+  ///
+  /// Popunjava se pri unosu (`CreateProformaDto.supplyDate`); ako korisnik ne unese,
+  /// `postInvoice` ga pri knjiženju postavlja na `documentDate` uz WARN u logu — nikad
+  /// tiho, jer proknjižen račun bez ovog podatka nije potpun. Slanje na SEF bez njega
+  /// PADA (`ubl-builder.service.ts`), osim na avansnom računu.
+  ///
+  /// ⚠️ JEDNO IME ZA JEDAN PODATAK (razrešeno 02.08.2026): grana za štampu je isti
+  /// podatak nakratko nosila kao `deliveryDate` / `delivery_date`. Ostalo je
+  /// `supplyDate` — „datum prometa", ne „datum isporuke". Ne uvoditi drugo polje za
+  /// isti podatak, ni pod imenom `deliveryDate`.
   supplyDate       DateTime? @map("supply_date") @db.Timestamptz(6)
   /// POZIV NA BROJ (BT-83) → UBL `cac:PaymentMeans/cbc:PaymentID`.
   /// NULL = koristi se broj dokumenta (BigBit paritet), ne prazno polje.
@@ -4228,6 +4364,70 @@ model Invoice {
 
   note String? @map("note") @db.Text // napomena / memo (npr. JCI referenca kod izvoza)
 
+  // — Podaci koje traži štampa (docs/STAMPA_IZLAZNIH_FAKTURA.md — pet donetih BigBit obrazaca) —
+  // Imena i tipovi su preuzeti iz legacy `GoodsDocument` svuda gde podatak tamo već postoji,
+  // da dva modela ne govore različitim jezikom o istoj stvari. Sve je opciono — zatečeni računi
+  // nemaju ništa od ovoga i ne smeju da puknu.
+
+  /// Magacin sa kog roba izlazi. Štampa se SAMO na robnoj fakturi, u potpisnom bloku
+  /// „Robu izdao → iz magacina <naziv>"; to je i jedina razlika IFR („Magacin robe") od
+  /// IFGP („Gotovi proizvodi"). Meki ref warehouses.id; predlog vrednosti = DocumentType.defaultWarehouseId.
+  /// ODSTUPANJE od GoodsDocument.warehouseId (NOT NULL, default 1): ovde je opciono, jer usluga
+  /// (IFUSL/IZVUS) magacin nema, a zatečenim računima bi tiho podmetnuta „1" odštampala tuđi magacin.
+  warehouseId Int? @map("warehouse_id")
+
+  /// „Roba je FCO" — prva kolona trake uslova domaće robne fakture (npr. „magacin kupca").
+  /// Isto ime i tip kao GoodsDocument.fco.
+  fco String? @map("fco") @db.VarChar(30)
+
+  /// „Način otpreme robe" — treća kolona iste trake (npr. „lično"). = GoodsDocument.shipmentMethod.
+  shipmentMethod String? @map("shipment_method") @db.VarChar(30)
+
+  /// „Način plaćanja" — druga kolona trake uslova (npr. „virmanom"), a na ino fakturi red
+  /// `Payment terms:` (vrednost ostaje na srpskom — prepisuje se iz šifarnika, ne prevodi se).
+  /// Prepisuje se sa Customer.paymentMethod pri kreiranju predračuna. = GoodsDocument.paymentMethod.
+  paymentMethod String? @map("payment_method") @db.VarChar(50)
+
+  // ⚠️ Datum prometa NE stoji ovde: nosi ga `supplyDate` / kolona `supply_date` gore
+  // (uvedena migracijom 20260727140000). Grana za štampu je 01.08.2026. dodala i
+  // `deliveryDate` / `delivery_date` za isti podatak; pri spajanju 02.08.2026. je
+  // uklonjena — dve kolone za jedan obavezan element računa znače da polovina koda
+  // čita praznu. Tabela `invoices` je na produkciji bila prazna, pa nije bilo šta da
+  // se migrira.
+
+  /// Broj izvozne deklaracije / JCI (npr. „25-0401-000005") — slobodan red ispod zbira na ino
+  /// robnoj fakturi. Do sada se lepio u `note`; sada ima svoje polje, pa `note` ostaje memo.
+  customsDeclarationNo String? @map("customs_declaration_no") @db.VarChar(30)
+
+  // — Otpremni blok ino usluge (Invoice 060/26; nijedan drugi obrazac ga nema) —
+
+  /// „Paritet:" — Incoterms pošiljke (npr. „FCA Dobanovci-Beograd"). NIJE isto što i domaći `fco`
+  /// (drugi šifarnik, drugi obrazac), zato zasebno polje.
+  deliveryTerm String? @map("delivery_term") @db.VarChar(60)
+
+  /// „Količina:" u otpremnom bloku — kolete/ambalaža kao tekst („1 paleta"), a ne količina robe
+  /// (ta je na stavkama).
+  packageDescription String? @map("package_description") @db.VarChar(60)
+
+  /// „Dimenzije:" pošiljke (npr. „400 x 800 x 2400 mm").
+  packageDimensions String? @map("package_dimensions") @db.VarChar(60)
+
+  /// „Ukupna brutto:" u kg. Ručni unos — brutto uključuje paletu/ambalažu, pa se NE može sabrati
+  /// iz Item.weightKg (na 060/26 je brutto − netto = 20 kg).
+  grossWeightKg Decimal? @map("gross_weight_kg") @db.Decimal(19, 3)
+
+  /// „Ukupna Netto:" u kg.
+  netWeightKg Decimal? @map("net_weight_kg") @db.Decimal(19, 3)
+
+  /// „Mesto istovara:" — višered (naziv, ulica, pošta + mesto, država), prelama se po \n.
+  /// ODSTUPANJE: legacy je imao GoodsDocument.deliveryPlaceId (šifarnik mesta isporuke), ali tabele
+  /// mesta isporuke u 4.0 nema — slobodan tekst dok se ne presudi treba li šifarnik (GAP §5.5).
+  unloadingPlace String? @map("unloading_place") @db.Text
+
+  /// „Kontakt špeditera u uvozu:" — firma + telefoni, višered. Slobodan tekst dok se ne presudi
+  /// da li špediteri idu u šifarnik (GAP §5.7).
+  forwarderContact String? @map("forwarder_contact") @db.Text
+
   // — Audit —
   createdByUserId Int?     @map("created_by_user_id")
   updatedByUserId Int?     @map("updated_by_user_id")
@@ -4264,6 +4464,12 @@ model InvoiceItem {
   itemId      Int?    @map("item_id") // meki ref items.id (artikal; null za slobodnu uslužnu stavku)
   description String? @map("description") @db.VarChar(255) // opis stavke (naziv artikla / usluge)
 
+  /// Jedinica mere stavke — kolona `j.m.` (domaći obrasci) / `Unit` (ino obrasci); štampa je na
+  /// sva četiri obrasca. Isti tip kao Item.unit (VarChar(5)). Popunjava se za SLOBODNU uslužnu
+  /// stavku (itemId = null), koja j.m. nema odakle drugde da dobije; kad je upisana, ima prednost
+  /// nad šifarnikom, pa štampa čita: `InvoiceItem.unit ?? Item.unit`.
+  unit String? @map("unit") @db.VarChar(5)
+
   quantity  Decimal @map("quantity") @db.Decimal(19, 6) // količina
   unitPrice Decimal @default(0) @map("unit_price") @db.Decimal(19, 4) // actualWholesalePrice (transakciona VP iz PricingService)
 
@@ -4273,6 +4479,28 @@ model InvoiceItem {
   /// drugi klik na „Primeni koeficijent" ne pomnoži već pomnoženo. Kod dokumenata
   /// bez koeficijenta (=1) obe cene su jednake; migracija je tako i backfill-ovala.
   baseUnitPrice Decimal @default(0) @map("base_unit_price") @db.Decimal(19, 4)
+
+  /// CENA PRE RABATA po jedinici — jedini trag „koliko bi koštalo bez rabata".
+  ///
+  /// ⚠️ NIJE `baseUnitPrice`. `baseUnitPrice` je cena PRE KOEFICIJENTA ali VEĆ POSLE
+  /// rabata i kase (pisci je pune iz `PricedItem.unitPrice`), pa iz nje rabat ne može
+  /// da se izvede. Ova kolona stoji na ISTOM nivou kao `baseUnitPrice` — pre
+  /// koeficijenta dokumenta — pa je istina:
+  ///   `unitPrice = unitPriceBeforeDiscount × (1 − rabat/100) × Invoice.priceCoefficient`
+  /// Kasa je već sadržana (upisuje se `basePrice × (1 − kasa/100)`), jer kolona `R%`
+  /// na papiru tvrdi samo rabat — kad bi kasa ostala napolju, red „Rabat" bi nosio i nju.
+  ///
+  /// ZAŠTO POSTOJI: `PricingService` je ovaj podatak oduvek RAČUNAO (`PricedItem.basePrice`)
+  /// i BACAO — nijedan pisac ga nije čuvao. Štampa je zato rabat vraćala unazad iz neto
+  /// iznosa (`neto × p / (100 − p)`), što kod RABATA OD 100 % znači deljenje nulom: cena
+  /// posle rabata je 0 i u podacima nije ostajao nijedan trag pune cene. Papir je pokazivao
+  /// „R% 100" uz „Rabat: 0,00" — istu protivrečnost zbog koje je red rabata i popravljan.
+  ///
+  /// NULL = nije poznato (stavke starije od kolone i uvoz iz BigBita). Namerno NULLABLE, a ne
+  /// `DEFAULT 0`: kod `baseUnitPrice` je `NOT NULL DEFAULT 0` značilo da se „nije upisano" i
+  /// „cena je nula" ne razlikuju, pa je čitanje moralo da pogađa. Ovde štampa na NULL pada na
+  /// obračun unazad, koji za sve rabate ispod 100 % daje isti iznos.
+  unitPriceBeforeDiscount Decimal? @map("unit_price_before_discount") @db.Decimal(19, 4)
 
   discountPercent     Decimal @default(0) @map("discount_percent") @db.Decimal(19, 4) // Rabat %
   cashDiscountPercent Decimal @default(0) @map("cash_discount_percent") @db.Decimal(19, 4) // Kasa %
@@ -4400,8 +4628,11 @@ model SefOutbox {
 
   ublXml String? @map("ubl_xml") @db.Text // generisan UBL 2.1 XML (telo POST-a)
 
-  /// PENDING | SENT | DELIVERED | REJECTED | CANCELLED
+  /// PENDING | SENT | DELIVERED | REJECTED | CANCELLED | CANCEL_PENDING
   /// (SEF statusi: Draft/New/Sent/Seen/Approved/Rejected/Cancelled/Storno → mapirano)
+  /// CANCEL_PENDING = „storniran kod nas, SEF NIJE potvrdio otkazivanje" — jedino stanje u
+  /// kome se naša evidencija i SEF svesno razilaze; čeka ponovni pokušaj (v. `sef.service.ts`,
+  /// `SEF_OUTBOX_CANCEL_PENDING`). Nije SEF status i ne dolazi sa portala.
   status String @default("PENDING") @map("status") @db.VarChar(20)
 
   sefInvoiceId String? @map("sef_invoice_id") @db.VarChar(64) // SalesInvoiceId vraćen od SEF-a
@@ -4436,9 +4667,16 @@ model SefIncomingInvoice {
   supplierName  String? @map("supplier_name") @db.VarChar(255)
   invoiceNumber String  @map("invoice_number") @db.VarChar(64)
 
-  issueDate    DateTime? @map("issue_date") @db.Timestamptz(6) // datum izdavanja
-  deliveryDate DateTime? @map("delivery_date") @db.Timestamptz(6) // datum prijema na SEF (osnov roka)
-  dueDate      DateTime? @map("due_date") @db.Timestamptz(6)
+  issueDate DateTime? @map("issue_date") @db.Timestamptz(6) // datum izdavanja
+  /// Datum PRIJEMA fakture na SEF — osnov zakonskog roka od 15 dana (acceptDeadline).
+  /// PREIMENOVANO 02.08.2026 iz `deliveryDate` / `delivery_date`: to ime je značilo
+  /// „datum prometa" (danas `Invoice.supplyDate` → UBL cbc:ActualDeliveryDate), pa je isti
+  /// naziv ovde nosio SUPROTNO značenje — sudar koji je već jednom doveo do pogrešnog roka
+  /// (v. komentar u sef-incoming.service.ts uz izbor osnova roka). Ime sada prati značenje.
+  /// NAPOMENA: datum prometa ULAZNE fakture (njen cbc:ActualDeliveryDate) se i dalje NE
+  /// izdvaja u kolonu — ceo UBL stoji u `rawXml`; kad zatreba, dobija SVOJE polje.
+  sefReceivedAt DateTime? @map("sef_received_at") @db.Timestamptz(6)
+  dueDate       DateTime? @map("due_date") @db.Timestamptz(6)
 
   totalAmount Decimal @default(0) @map("total_amount") @db.Decimal(19, 4)
   vatAmount   Decimal @default(0) @map("vat_amount") @db.Decimal(19, 4)
@@ -4446,7 +4684,7 @@ model SefIncomingInvoice {
 
   /// NEW | SEEN | ACCEPTED | REJECTED — lokalni status obrade (SEF status mirror)
   status         String    @default("NEW") @map("status") @db.VarChar(20)
-  acceptDeadline DateTime? @map("accept_deadline") @db.Timestamptz(6) // deliveryDate + 15 dana
+  acceptDeadline DateTime? @map("accept_deadline") @db.Timestamptz(6) // prijem na SEF + 15 dana
   rejectComment  String?   @map("reject_comment") @db.VarChar(500)
 
   alreadyExists     Boolean @default(false) @map("already_exists") // dedup: već u KUF evidenciji (PIB+broj)

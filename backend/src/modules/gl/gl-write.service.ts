@@ -335,8 +335,47 @@ export class GlWriteService {
    * pada u naredni period, pa bi original ušao u ponovni obračun a storno ne — pogrešan
    * iznos I pogrešan predznak kursne razlike. Takav pozivalac prosleđuje presek izvornog
    * obračuna. `opts.documentDate` prati isti razlog (i određuje godinu numeracije).
+   *
+   * Ko GL storno mora da izvede unutar SVOJE transakcije (storno fakture) — zove
+   * `reverseWithin` sa svojim `tx`; telo je isto, obrazloženje uz tu metodu.
    */
   async reverse(
+    entryId: number,
+    actorUserId?: number,
+    opts?: { postingDate?: Date; documentDate?: Date },
+  ) {
+    return this.prisma.$transaction((tx) =>
+      this.reverseWithin(tx, entryId, actorUserId, opts),
+    );
+  }
+
+  /**
+   * ISTI STORNO, ALI U TUĐOJ TRANSAKCIJI.
+   * =============================================================================
+   *
+   * `reverse` iznad je samo `$transaction` + ovaj poziv, pa postoji JEDNO telo storna i
+   * dva ulaza. Ulaz sa `tx` postoji zbog pozivaoca koji GL storno mora da izvede kao
+   * DEO svoje poslovne radnje, a ne pored nje.
+   *
+   * ⚠️ ZAŠTO (izmereno 02.08.2026, storno fakture): `stornoInvoice` je commit-ovao
+   * `status = CANCELLED`, pa TEK ONDA zvao `reverse` — koji otvara SVOJU transakciju.
+   * Kad je izvorni nalog zaključan (FE dijalog „zaključaj period" → `POST
+   * /gl/journal/lock-older`), `reverse` baci 409 „Nalog 500 je zaključan", a faktura
+   * OSTAJE stornirana bez ijednog reda storna u glavnoj knjizi — i sa njom svi koraci
+   * posle: primena avansa ostaje ACTIVE (30.000 na `advance_invoice_id = 9`), SEF cancel
+   * i oslobađanje rezervacija se ne izvrše. Drugi pokušaj storna dobije 409 „već
+   * storniran", pa put nazad ne postoji ni kroz aplikaciju.
+   *
+   * Sa `reverseWithin` ceo storno fakture staje u jednu transakciju: pad reverzije ruši i
+   * CAS, dokument ostaje proknjižen, a operater dobije poruku šta da otključa.
+   *
+   * ČITANJA SU SADA UNUTAR TRANSAKCIJE (pre su bila van nje): guard „već storniran"
+   * (`reversedByEntryId`) je read-then-write, pa su ga dve paralelne reverzije istog
+   * naloga mogle proći obe. U transakciji sa `SELECT` nad istim redom pre `UPDATE`-a
+   * druga sesija vidi upisan `reversedByEntryId` i pada na guardu.
+   */
+  async reverseWithin(
+    tx: Prisma.TransactionClient,
     entryId: number,
     actorUserId?: number,
     opts?: { postingDate?: Date; documentDate?: Date },
@@ -349,7 +388,7 @@ export class GlWriteService {
       opts?.postingDate,
       "postingDate",
     );
-    const source = await this.prisma.journalEntry.findUnique({
+    const source = await tx.journalEntry.findUnique({
       where: { id: entryId },
       include: { lines: true },
     });
@@ -369,57 +408,55 @@ export class GlWriteService {
     const documentDate = overrideDocumentDate ?? source.documentDate;
     const postingDate = overridePostingDate ?? new Date();
 
-    return this.prisma.$transaction(async (tx) => {
-      // Godina se izvodi iz EFEKTIVNOG datuma dokumenta (može biti preklopljen —
-      // revalorizacija stornira u sopstveni presek), kroz `businessYear` helper.
-      const year = businessYear(documentDate);
-      const number = await this.posting.nextJournalNumber(
-        tx,
-        source.companyId,
-        source.orderTypeCode,
+    // Godina se izvodi iz EFEKTIVNOG datuma dokumenta (može biti preklopljen —
+    // revalorizacija stornira u sopstveni presek), kroz `businessYear` helper.
+    const year = businessYear(documentDate);
+    const number = await this.posting.nextJournalNumber(
+      tx,
+      source.companyId,
+      source.orderTypeCode,
+      year,
+    );
+    const storno = await tx.journalEntry.create({
+      data: {
+        number,
+        orderTypeCode: source.orderTypeCode,
         year,
-      );
-      const storno = await tx.journalEntry.create({
-        data: {
-          number,
-          orderTypeCode: source.orderTypeCode,
-          year,
-          companyId: source.companyId,
-          documentDate,
-          postingDate,
-          status: "POSTED",
-          createdByUserId: actorUserId ?? null,
-          reversesEntryId: source.id,
-          lines: {
-            create: source.lines.map((l) => ({
-              accountCode: l.accountCode,
-              analyticalCode: l.analyticalCode,
-              // Storno = zameni strane.
-              debit: l.credit,
-              credit: l.debit,
-              // DEVIZNI par se ogleda ISTO kao dinarski (review C2): bez ovoga se
-              // dinarska strana poništi a devizna ostane, pa devizni saldo otvorene
-              // stavke ostane udvostručen i revalorizacija knjiži ogroman lažan iznos.
-              fxDebit: l.fxCredit,
-              fxCredit: l.fxDebit,
-              fxCurrency: l.fxCurrency,
-              description: `STORNO: ${l.description ?? ""}`.trim(),
-              documentNumber: l.documentNumber,
-              dueDate: l.dueDate,
-              currency: l.currency,
-              // Mesto troška prati stavku — inače storno „prebaci" trošak sa pozicije
-              // na sintetiku i saldo po poslovima (B2) ostane zaglavljen.
-              costCenter: l.costCenter,
-            })),
-          },
+        companyId: source.companyId,
+        documentDate,
+        postingDate,
+        status: "POSTED",
+        createdByUserId: actorUserId ?? null,
+        reversesEntryId: source.id,
+        lines: {
+          create: source.lines.map((l) => ({
+            accountCode: l.accountCode,
+            analyticalCode: l.analyticalCode,
+            // Storno = zameni strane.
+            debit: l.credit,
+            credit: l.debit,
+            // DEVIZNI par se ogleda ISTO kao dinarski (review C2): bez ovoga se
+            // dinarska strana poništi a devizna ostane, pa devizni saldo otvorene
+            // stavke ostane udvostručen i revalorizacija knjiži ogroman lažan iznos.
+            fxDebit: l.fxCredit,
+            fxCredit: l.fxDebit,
+            fxCurrency: l.fxCurrency,
+            description: `STORNO: ${l.description ?? ""}`.trim(),
+            documentNumber: l.documentNumber,
+            dueDate: l.dueDate,
+            currency: l.currency,
+            // Mesto troška prati stavku — inače storno „prebaci" trošak sa pozicije
+            // na sintetiku i saldo po poslovima (B2) ostane zaglavljen.
+            costCenter: l.costCenter,
+          })),
         },
-      });
-      await tx.journalEntry.update({
-        where: { id: source.id },
-        data: { reversedByEntryId: storno.id },
-      });
-      return { stornoEntryId: storno.id, number, reversedEntryId: source.id };
+      },
     });
+    await tx.journalEntry.update({
+      where: { id: source.id },
+      data: { reversedByEntryId: storno.id },
+    });
+    return { stornoEntryId: storno.id, number, reversedEntryId: source.id };
   }
 
   /** Opcioni datum iz `opts` — nevalidan Date je programska greška pozivaoca → 400. */

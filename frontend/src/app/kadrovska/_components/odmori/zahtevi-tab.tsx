@@ -33,14 +33,17 @@ import {
   type VacationChangeRequest,
 } from '@/api/kadrovska';
 import { SummaryChips, sv } from '../common';
+import { matchesStatusFilter, STATUS_FILTER_OPEN } from '../status-filter';
 import { toRosterEmp, type RosterEmp } from './types';
 import { holidaySetFromRows, nextWorkingDay, daysInclusive } from './helpers';
 import { RejectModal, RescheduleModal } from './request-modals';
 import { useOdmoriUi } from './ui';
 
 const STATUS_TONE: Record<string, { tone: Tone; label: string }> = {
-  pending: { tone: 'warn', label: 'Na čekanju' },
-  sef_approved: { tone: 'info', label: 'Odobrio šef (čeka HR)' },
+  pending: { tone: 'warn', label: 'Na čekanju (1. nivo — šef)' },
+  // 068/26: drugi stepen mora da se čita bez tumačenja — šef je dao svoje,
+  // stavka čeka kadrovsku (HR/upravu) i tek njen klik zatvara zahtev.
+  sef_approved: { tone: 'info', label: '2. nivo — čeka kadrovsku' },
   approved: { tone: 'success', label: 'Odobreno' },
   rejected: { tone: 'danger', label: 'Odbijeno' },
   canceled: { tone: 'neutral', label: 'Otkazano' },
@@ -59,7 +62,11 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
   const meQ = useKadrMe();
   const me = meQ.data?.data;
 
-  const [statusF, setStatusF] = useState<string>('pending');
+  // 068/26: podrazumevano OBA stepena koja čekaju odluku. Sa `pending` je badž
+  // taba računao pending+sef_approved („Zahtevi (5)") a tabela prikazivala samo
+  // pending (1) — brojka se videla, sadržaj ne, pa su GO zahtevi drugog stepena
+  // stajali nevidljivi (izmereno 04.08.2026: 4 živa `sef_approved` reda).
+  const [statusF, setStatusF] = useState<string>(STATUS_FILTER_OPEN);
   const [search, setSearch] = useState('');
   const [year, setYear] = useState(new Date().getFullYear());
 
@@ -105,7 +112,7 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return all.filter((r) => {
-      if (statusF && r.status !== statusF) return false;
+      if (!matchesStatusFilter(r.status, statusF)) return false;
       if (year && r.year !== year) return false;
       if (q) {
         const name = (empById.get(r.employeeId)?.name || '').toLowerCase();
@@ -115,6 +122,17 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
       return true;
     });
   }, [all, statusF, year, search, empById]);
+
+  // 068/26, druga polovina istog problema: badž taba i čipovi broje SVE godine,
+  // a tabela je sužena na izabranu godinu — pa zahtev iz druge godine i dalje
+  // ostaje „brojka bez sadržaja". Ne menjam ni badž ni filter (badž mora da vidi
+  // sve, godina je koristan alat), nego GLASNO kažem koliko ih godina skriva.
+  const openHiddenByYear = useMemo(
+    () =>
+      all.filter((r) => matchesStatusFilter(r.status, STATUS_FILTER_OPEN) && r.year !== year)
+        .length,
+    [all, year],
+  );
 
   function submitterCell(r: VacationRequest) {
     const who = (r.submittedBy || '').trim();
@@ -273,6 +291,21 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
       header: 'Status',
       render: (r) => {
         const s = STATUS_TONE[r.status] ?? { tone: 'neutral' as Tone, label: r.status };
+        // 068/26: kod drugog stepena piše KO je dao prvi nivo i kad — razlikuje
+        // stavku koja tek čeka šefa od one koja čeka kadrovsku (i vidi se dual control).
+        if (r.status === 'sef_approved') {
+          const who = sv(r as unknown as Record<string, unknown>, 'level1By');
+          const when = sv(r as unknown as Record<string, unknown>, 'level1At');
+          return (
+            <div className="space-y-0.5">
+              <StatusBadge tone={s.tone} label={s.label} />
+              <div className="text-2xs text-ink-secondary">
+                1. nivo: {who || '—'}
+                {when ? ` · ${formatDate(when)}` : ''}
+              </div>
+            </div>
+          );
+        }
         return <StatusBadge tone={s.tone} label={s.label} />;
       },
     },
@@ -319,20 +352,55 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
 
   return (
     <section className="space-y-3">
+      {/* 068/26: čipovi su i filteri — brojka koja se vidi mora i da se otvori
+          (badž taba „Zahtevi (N)" broji OBA stepena, pa i tabela mora). */}
       <SummaryChips
         items={[
-          { label: 'Na čekanju', value: counts.pending, tone: counts.pending > 0 ? 'warn' : 'default' },
-          { label: 'Čeka HR', value: counts.sef_approved, tone: counts.sef_approved > 0 ? 'warn' : 'default' },
-          { label: 'Odobreno', value: counts.approved },
-          { label: 'Odbijeno', value: counts.rejected, tone: counts.rejected > 0 ? 'danger' : 'default' },
-          { label: 'Ukupno', value: counts.total },
+          {
+            label: 'Čeka odluku',
+            value: counts.pending + counts.sef_approved,
+            tone: counts.pending + counts.sef_approved > 0 ? 'warn' : 'default',
+            onClick: () => setStatusF(STATUS_FILTER_OPEN),
+            active: statusF === STATUS_FILTER_OPEN,
+            title: 'Oba stepena: 1. nivo (šef) + 2. nivo (kadrovska) — isto što broji badž taba',
+          },
+          {
+            label: 'Na čekanju (šef)',
+            value: counts.pending,
+            tone: counts.pending > 0 ? 'warn' : 'default',
+            onClick: () => setStatusF('pending'),
+            active: statusF === 'pending',
+          },
+          {
+            label: 'Čeka kadrovsku',
+            value: counts.sef_approved,
+            tone: counts.sef_approved > 0 ? 'warn' : 'default',
+            onClick: () => setStatusF('sef_approved'),
+            active: statusF === 'sef_approved',
+            title: 'Šef je odobrio (1. nivo) — finalizuje HR ili uprava',
+          },
+          {
+            label: 'Odobreno',
+            value: counts.approved,
+            onClick: () => setStatusF('approved'),
+            active: statusF === 'approved',
+          },
+          {
+            label: 'Odbijeno',
+            value: counts.rejected,
+            tone: counts.rejected > 0 ? 'danger' : 'default',
+            onClick: () => setStatusF('rejected'),
+            active: statusF === 'rejected',
+          },
+          { label: 'Ukupno', value: counts.total, onClick: () => setStatusF(''), active: statusF === '' },
         ]}
       />
       <div className="flex flex-wrap items-center gap-2">
         <select value={statusF} onChange={(e) => setStatusF(e.target.value)} className="h-8 rounded-control border border-line bg-surface px-2 text-sm">
+          <option value={STATUS_FILTER_OPEN}>Čeka odluku (šef + kadrovska)</option>
           <option value="">Svi statusi</option>
-          <option value="pending">Na čekanju</option>
-          <option value="sef_approved">Odobrio šef (čeka HR)</option>
+          <option value="pending">Na čekanju (1. nivo — šef)</option>
+          <option value="sef_approved">2. nivo — čeka kadrovsku</option>
           <option value="approved">Odobreni</option>
           <option value="rejected">Odbijeni</option>
         </select>
@@ -343,6 +411,12 @@ export function ZahteviTab({ onOpenCount }: { onOpenCount?: (n: number) => void 
           <span className="text-xs text-ink-secondary">{filtered.length === counts.total ? `${counts.total} zahteva` : `${filtered.length} / ${counts.total} zahteva`}</span>
         </div>
       </div>
+      {openHiddenByYear > 0 && (
+        <p className="text-xs text-status-warn">
+          ⚠ Još {openHiddenByYear} zahtev(a) čeka odluku, ali su iz druge godine — promeni polje
+          „Godina" da ih vidiš (badž taba ih broji).
+        </p>
+      )}
 
       {/* ZAHTEV 026/26 — molbe radnika za izmenu/otkaz POTVRĐENOG termina */}
       <ChangeRequestsPanel empName={(id: string) => empById.get(id)?.name || id.slice(0, 8)} />

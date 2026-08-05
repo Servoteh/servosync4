@@ -20,7 +20,8 @@ import { byId, uniqueIds } from "../../common/relations";
 import { parseDateParam } from "../../common/date-params";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { roleHasPermission } from "../../common/authz/role-permissions";
-import { resolveManagementWorkerIds } from "../../common/workers/management-criteria";
+import { resolveMontazaNmPrimaoci } from "../../common/workers/montaza-nm-primaoci";
+import { namedPrimaociWorkerIds } from "../../common/workers/named-primaoci";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { NotificationsService } from "../notifications/notifications.service";
 import { MontazaNmNumberingService } from "./montaza-nm-numbering.service";
@@ -526,16 +527,21 @@ export class MontazaNeusaglasenostiService {
   }
 
   /**
-   * Obaveštenje menadžmentu na novu prijavu (§2): (1) in-app zvonce
-   * (`NotificationsService.notifyWorkers` + `resolveManagementWorkerIds`); (2) mail
-   * (best-effort, fire-and-forget). CELA metoda je try/catch — NIKAD ne baca (pad
+   * Obaveštenje na novu prijavu (§2): (1) in-app zvonce (`NotificationsService.
+   * notifyWorkers` nad IMENOVANOM listom `montaza_nm_primaoci` — 034/26, Zoranova
+   * sedmorka umesto role `menadzment`); (2) mail (best-effort, fire-and-forget;
+   * mail servis čita ISTU tabelu). CELA metoda je try/catch — NIKAD ne baca (pad
    * obaveštenja ne sme oboriti prijavu, isti princip kao D8).
    */
   private async emitNewReportNotifications(
     nc: MontageNonconformity,
   ): Promise<void> {
     try {
-      const workerIds = await resolveManagementWorkerIds(this.prisma);
+      // Primalac bez naloga/vezanog radnika nema inbox red — to nije greška
+      // (npr. Nenad J. nema worker_id): mejl ga svejedno pokriva.
+      const workerIds = namedPrimaociWorkerIds(
+        await resolveMontazaNmPrimaoci(this.prisma),
+      );
       if (workerIds.length) {
         const sev = SEVERITY_LABEL[nc.severity] ?? nc.severity.toLowerCase();
         await this.notifications.notifyWorkers(workerIds, {
@@ -556,7 +562,7 @@ export class MontazaNeusaglasenostiService {
     }
     // Mail je fire-and-forget (samostalno guarded, ne baca) — ne blokira odgovor;
     // .catch() je odbrana od nepredviđenog rejecta (prijava mora proći svejedno).
-    void this.mail.notifyManagementNewReport(nc.id).catch(() => undefined);
+    void this.mail.notifyPrimaociNewReport(nc.id).catch(() => undefined);
   }
 
   /** Detalj jedne neusaglašenosti: fotke meta (bez sadržaja) + events + razrešena imena. */

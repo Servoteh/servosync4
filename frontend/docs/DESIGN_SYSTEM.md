@@ -271,7 +271,8 @@ Svaka prečica se prikazuje u tooltip-u odgovarajuće kontrole.
 `AppShell` · `DataTable` · `FilterBar` · `KpiTile` · `StatusBadge` · `ProgressCell` · `DetailPanel` ·
 `FormField` (+ `DateField`, `NumberField`, `ComboBox`) · `Input` · `Select` · `Textarea`
 (višelinijski unos; Enter = novi red, `rows` podrazumevano 3) · `Dialog` · `ConfirmDialog` ·
-`Toast` · `EmptyState` · `PageHeader` · `Tabs` · `UpdateBanner` (globalna traka "nova verzija — osvežite";
+`Toast` · `EmptyState` · `PageHeader` · `Tabs` · `ContextMenu` (meni akcija na desni klik / dugme „…") ·
+`UpdateBanner` (globalna traka "nova verzija — osvežite";
 prikazom upravlja `UpdateNotifier`, montiran jednom u root layout)
 
 Dopune kita:
@@ -281,6 +282,43 @@ Dopune kita:
   `sort`/`onSortToggle` (pozivalac ciklira asc → desc → none i po želji čuva u localStorage) — prvi
   potrošač Kadrovska → Zaposleni. `Column.header` je proširen na `ReactNode` (npr. checkbox
   „selektuj sve" u zaglavlju kolone selekcije).
+* **`DataTable` — široki šifarnici (04.08.2026).** Šest **opcionih i aditivnih** propova; tabela koja ih
+  ne zada renderuje se identično kao pre (komponentu koristi ~120 ekrana, pa je to uslov, ne stil).
+
+  | Prop | Tip | Opis |
+  | --- | --- | --- |
+  | `stickyHeader` | `boolean` | Zaglavlje zalepljeno pri vertikalnom skrolu. **Traži `maxHeight`** — bez zadate visine okvir nikad ne skroluje po vertikali, pa `sticky top-0` nema šta da drži. |
+  | `frozenColumns` | `number` | Koliko PRVIH kolona ostaje uz levu ivicu pri vodoravnom skrolu (šifra + naziv). Pomeraji se **mere** iz ćelija zaglavlja (`ResizeObserver`) i primenjuju kao dinamički `left` — kolone smeju biti proizvoljno široke, za razliku od zakucanih `left-[232px]` u kadrovskom gridu. |
+  | `maxHeight` | `string` | Visina skrol-okvira, npr. `calc(100dvh - 320px)`. **`dvh`, nikad `vh`** (§11.4). |
+  | `rowActions` | `(row) => RowAction[]` | Akcije nad JEDNIM redom: dugme „…" u poslednjoj koloni **i** desni klik na red otvaraju isti `ContextMenu`. Poziva se pri otvaranju menija, pa lista sme da zavisi od stanja reda. |
+  | `selectedKey` | `string \| number \| null` | **Kontrolisan izbor.** Kad je zadat, akcentna traka i `aria-selected` prate NJEGA, a ne interni fokus. Bez njega tabela radi kao pre (interni fokus starta na prvom redu). Uvodi se kad izbor upravlja nečim izvan tabele — npr. dugmad „Detaljno artikal / Kartica artikla" iznad liste; inače bi prvi red izgledao izabrano a dugmad bila siva. |
+  | `onSelectionChange` | `(row \| null) => void` | Javlja promenu izbora (klik, ↑/↓). Ide u paru sa `selectedKey`. |
+
+  `RowAction` je isti oblik kao `ContextMenuItem`: `{ kljuc, labela, onSelect, onemoguceno?, opasno? }`.
+  Klik na „…" **bira** red ali ga ne aktivira (inače bi se uz meni otvorio i detalj). Desni klik se
+  presreće samo kad `rowActions` postoji i kad meta nije ugnežđena kontrola (polje/dugme/link/dijalog) —
+  ista granica kao guard u `onKeyDown` zbog buga 009/26 (`renderExpanded` crta detalj UNUTAR `<tbody>`,
+  pa mu događaji iz polja bubble-uju do reda). Tastaturni ekvivalent je `Shift+F10` / taster „Meni".
+* **`ContextMenu`** (`ui-kit/context-menu.tsx`) — plutajući meni akcija; promovisan iz
+  `kadrovska/_components/grid/cell-context-menu.tsx` uz tri razlike koje su bile uslov za deljenu upotrebu:
+  1. **pozicija se meri, ne pretpostavlja** — original je klampovao iz pretpostavljenih dimenzija
+     (`- 220`, `- 40 - items.length * 32`) i lagao čim labele porastu; sada `getBoundingClientRect()`
+     u `useLayoutEffect`, meni se po potrebi **prevrne** iznad/levo od tačke otvaranja pa tek onda pritegne;
+  2. **Esc ide kroz `escape-layer`** — sopstveni `keydown` na `window` zatvarao bi i dijalog ispod menija;
+  3. **onemogućena stavka nosi razlog** (`onemoguceno` je TEKST) i ostaje u tabu/čitaču ekrana
+     (`aria-disabled`, ne `disabled` — pravi `disabled` element u Firefox-u ne prima pokazivač, pa se
+     `title` nikad ne prikaže i korisnik ne sazna zašto akcija ne radi).
+
+  | Prop | Tip | Opis |
+  | --- | --- | --- |
+  | `origin` | `{ x, y } \| null` | `null` = zatvoreno. Klijentske koordinate (`clientX/Y` ili `getBoundingClientRect()`). |
+  | `items` | `ContextMenuItem[]` | `{ kljuc, labela, onSelect, onemoguceno?, opasno? }`. |
+  | `header` | `ReactNode` | Sitan naslov iznad stavki — kontekst na koji se odnose. |
+  | `onClose` | `() => void` | Zatvaranje: Esc, klik izvan, skrol, promena veličine prozora, Tab, izbor stavke. |
+  | `ariaLabel` | `string` | Pristupačno ime menija (podrazumevano „Meni akcija"). |
+
+  Tastatura: ↑/↓ kruže i **preskaču onemogućene** stavke, Home/End, Enter/Space biraju, Esc/Tab zatvaraju;
+  fokus na otvaranju ide na prvu dostupnu stavku. Dugme „…" postoji jer tablet u pogonu nema desni klik.
 * `Dialog` je dobio opcioni `size`: `'md'` (default) · `'lg'` (forme sa više polja — npr. akcija
   sastanka sa opisom/projektom) · `'xl'` (duge forme sa sekcijama — karton zaposlenog) ·
   `'xl2'` (guste tabele — Istorija zarada) · `'2xl'` (grid unosi — brzi/bulk unos zaposlenih).

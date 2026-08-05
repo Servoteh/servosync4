@@ -10,13 +10,9 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { byId, uniqueIds } from "../../common/relations";
 
 export interface LaunchNotifyInput {
-  /**
-   * `work_orders.id` lansiranog RN-a. Podaci za mejl (ident, pozicija, količina,
-   * predmet) se NE prosleđuju — dočitavaju se iz baze pri flush-u, jer slanje
-   * može da se desi minutima kasnije (i posle restarta, kad memorija ne postoji).
-   */
+  /** `work_orders.id` lansiranog RN-a — izvor predmeta za rutiranje. */
   workOrderId: number;
-  /** `drawing_handovers.id` iz koje je RN nastao — ključ idempotencije claim-a. */
+  /** `drawing_handovers.id` iz koje je RN nastao — ključ claim-a po poziciji. */
   handoverId: number;
   /**
    * `work_order_launches.id` reda kreiranog u upravo komitovanoj transakciji —
@@ -33,68 +29,77 @@ interface PendingRow {
   id: number | null;
   drawingHandoverId: number;
   workOrderId: number;
+  actorWorkerId: number | null;
+  createdAt: Date;
 }
 
-/** Jedna pozicija u zbirnom obaveštenju (RN + naziv + količina + predmet). */
-interface FlushItem {
-  workOrderId: number;
-  rnLabel: string;
-  partLabel: string;
-  pieceCount: number | null;
+/** RN podaci koje obaveštenje koristi (dočitavaju se pri flush-u, iz baze). */
+interface WorkOrderRef {
+  identNumber: string;
+  variant: number;
   projectId: number;
+  drawingNumber: string | null;
+  pieceCount: number | null;
 }
 
-/** Sweeper tik — dovoljno čest da kap na kašnjenje bude ±30 s. */
+/** Sweeper tik — dovoljno čest da kašnjenje obaveštenja bude ±30 s. */
 const SWEEP_INTERVAL_MS = 30_000;
 /**
- * Prozor tišine pre slanja. IZMERENO na produ (27.07–03.08, 129 lansiranja):
- * medijan razmaka između uzastopnih lansiranja ISTOG radnika je 96 s (p75=230 s),
- * a unutar najvećih talasa (10–11 RN za ~11 min) max razmak je 139 s — prozor od
- * „par sekundi" ne bi grupisao skoro ništa (samo 3/67 razmaka ≤30 s). 180 s spaja
- * svaki izmereni veliki talas u JEDAN mejl, uz cenu da i usamljeno lansiranje
- * čeka ~3 min (mejl nije real-time kanal; bolje kasnije nego 30 mejlova).
+ * Prozor tišine pre slanja. Od ČETVRTOG kruga ovo više nije mehanizam
+ * agregacije (to radi dedup po nacrtu), nego samo kratka pauza koja spaja
+ * istovremene klikove u jedan prolaz.
  */
 const DEFAULT_SILENCE_MS = 180_000;
-/** Kapa: i uz neprekidan rad aktera, najstariji pending red čeka najviše ovoliko. */
+/** Kapa: i uz neprekidan rad, najstariji pending red čeka najviše ovoliko. */
 const DEFAULT_MAX_WAIT_MS = 900_000;
-/** Preko ovoliko redova mejl seče listu („… i još N pozicija"). */
-const MAX_MAIL_ROWS = 30;
 
 /**
- * Obaveštenje planerima da je dokumentacija lansirana u proizvodnju (zahtev
- * 016/26; treći krug 03.08 — Strahinja: „Ne želimo obaveštenja za pojedinačne
- * pozicije… Samo za nacrt kad se lansira, ništa više.").
+ * Obaveštenje planerima da je NACRT PRIMOPREDAJE lansiran u proizvodnju
+ * (zahtev 016/26, ČETVRTI krug — Strahinja Petrović 04.08.2026: „Ukinuti da
+ * stižu obaveštenja kad se lansira tehnologija u proizvodnju. Nek stiže
+ * obaveštenje na mejl samo kad se lansira primopredaja i to je to. Ništa
+ * drugo.").
  *
- * Lansiranje NEMA bulk poziv: i ekran „Primopredaje" i ekran „Radni nalozi" šalju
- * jedan HTTP poziv PO POZICIJI, pa je svaki poziv slao svoj mejl + zvonce — nacrt
- * od 30 pozicija = 30 mejlova po planeru. Zato notifyLaunch od trećeg kruga SAMO
- * upisuje claim red (`work_order_launch_notifications`, `notified_at IS NULL` =
- * na čekanju), a slanje radi SWEEPER: in-process tik (30 s, obrazac
- * SchedulerService — bez novih zavisnosti, §10) grupiše pending redove PO AKTERU
- * i šalje JEDAN zbirni mejl/zvonce po planeru kad talas utihne
- * (`LAUNCH_NOTIFY_SILENCE_MS`, default 3 min — izmereno: medijan razmaka između
- * uzastopnih lansiranja je 96 s!) ili kad najstariji red čeka
- * `LAUNCH_NOTIFY_MAX_WAIT_MS` (default 15 min).
+ * ŠTA JE „LANSIRANJE PRIMOPREDAJE" (Strahinjina definicija, komentar 27.07 na
+ * istom zahtevu): „…da stigne za celu primopredaju, tj NACRT primopredaje da je
+ * puštena, a ne za svaku pojedinačnu poziciju u toj primopredaji". Jedinica
+ * obaveštenja je `handover_drafts` (nacrt); ekran sa kog je kliknuto je nebitan
+ * (izmereno: 181/181 lansiranja došlo je sa ekrana „Radni nalozi", nijedno sa
+ * ekrana „Primopredaje" — gašenje tog puta bilo bi nula obaveštenja).
  *
- * Ključ agregacije je AKTER (jedna korisnikova akcija lansiranja), ne nacrt:
- * `drawing_handovers` nema FK ka nacrtu (veza je heuristika preko
- * `handover_draft_items.drawing_id`), a planer talas doživljava kao „X je
- * lansirao gomilu pozicija" — mejl pozicije grupiše po predmetu.
+ * ═══ DEDUP SAMO NA SIGURNOM (review-bloker, isti dan) ═══
+ * Veza crtež→nacrt NEMA FK i IZMERENO je dvosmislena: 358 od 3.658 crteža
+ * (9,8%) pripada više nacrta. Dok je ta veza bila kozmetička etiketa, pogrešan
+ * pogodak je bio bezopasan; kao ključ garancije „tačno jednom zauvek" pogrešan
+ * pogodak TRAJNO ućutkuje tuđi nacrt (izmereno: 4 nacrta bi zanemela odmah po
+ * deploy-u — npr. G-260724-004 → G-260724-009, a G-260724-008 razrešava u
+ * G-260724-010 unutar ISTOG predmeta, pa ni provera predmeta to ne bi uhvatila).
+ * Zato:
+ *   • nacrt se koristi kao ključ SAMO kad crtež pripada TAČNO JEDNOM
+ *     ne-isključenom nacrtu I kad je predmet tog nacrta ISTI kao predmet RN-a;
+ *   • u svakom drugom slučaju NEMA dedupa — obaveštenje ide po poziciji, tačno
+ *     kao pre ovog paketa. Bolje da 9,8% dvosmislenih crteža i dalje šalje
+ *     pojedinačno nego da ijedan nacrt trajno zanemi.
+ * Rutiranje primalaca IDE UVEK PO `work_orders.project_id`, nikad po predmetu
+ * razrešenog nacrta (izmereno: 280 pozicija u 33 nacrta razrešava u nacrt
+ * DRUGOG predmeta — mejl bi otišao tuđim planerima sa tuđim predmetom u tekstu).
  *
- * IDEMPOTENCIJA (nepromenjena): claim po primopredaji (UNIQUE
- * `drawing_handover_id`, INSERT … ON CONFLICT DO NOTHING preko `createMany
- * skipDuplicates`) — dva ulaza (oba ekrana), retry i dupli klik i dalje daju
- * TAČNO jedan red = tačno jedno pojavljivanje u tačno jednom zbirnom mejlu.
+ * ═══ „OBRAĐENO" NIJE „ISPORUČENO" ═══
+ * `notified_at` = red obrađen u nekom prolazu; `sent_at` = bar jedan mejl/zvonce
+ * stvarno uspeo. Dedup broji ISKLJUČIVO `sent_at` — inače bi SMTP ispad u
+ * trenutku prvog lansiranja nacrt zapečatio zauvek. Pad isporuke uz postojeće
+ * primaoce NE markira redove: ostaju pending i sledeći tik pokušava ponovo.
  *
- * RESTART usred prozora ništa ne gubi: pending redovi su u bazi, sweeper posle
- * boot-a nastavlja gde je stao (najgore: talas presečen restartom stigne kao dva
- * mejla — dozvoljeno; izgubljen mejl nije). Restart IZMEĐU slanja i upisa
- * `notified_at` može dati dupli mejl — svesno: duplikat je jeftiniji od tihe rupe.
+ * MEHANIKA: `notifyLaunch` samo upiše claim red (sa nacrtom kad je siguran);
+ * slanje radi SWEEPER (in-process tik 30 s, obrazac SchedulerService — bez novih
+ * zavisnosti, §10) koji grupiše pending redove po nacrtu.
  *
- * Primaoci: planeri predmeta (`predmet_planeri` po `projects.id` pozicije) ∪
- * globalni planeri (`project_id IS NULL`); svaki planer u SVOM mejlu vidi samo
- * pozicije svojih predmeta (globalni sve). Zvonce je worker-scoped — planer bez
- * `users.worker_id` dobija samo mejl (warn u logu).
+ * IDEMPOTENCIJA: (1) claim po primopredaji (UNIQUE `drawing_handover_id`,
+ * INSERT … ON CONFLICT DO NOTHING preko `createMany skipDuplicates`) hvata dupli
+ * klik/retry/oba ekrana; (2) dedup po nacrtu (kad je siguran) hvata ostale
+ * pozicije istog nacrta, i danima kasnije.
+ *
+ * RESTART ništa ne gubi: redovi su u bazi, sweeper posle boot-a nastavlja.
  *
  * Best-effort (D8 obrazac): nijedna metoda ne baca — lansiranje je već komitovano.
  */
@@ -124,22 +129,28 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Zabeleži lansiranje za zbirno obaveštenje planerima. NE šalje odmah — upiše
-   * claim red (idempotencija po primopredaji) i pusti sweeper da pošalje kad
-   * talas utihne. Nikad ne baca.
+   * Zabeleži lansiranje pozicije. NE šalje odmah — upiše claim red (sa nacrtom
+   * kad je veza sigurna) i pusti sweeper da pošalje. Nikad ne baca.
    */
   async notifyLaunch(input: LaunchNotifyInput): Promise<void> {
-    const { workOrderId, handoverId } = input;
+    const { workOrderId, handoverId, actorWorkerId } = input;
     try {
-      const claim = await this.claim(input);
+      const draftId = await this.resolveDraft(handoverId, workOrderId).catch(
+        () => null,
+      );
+      const claim = await this.claim(input, draftId);
       if (claim === "queued" || claim === "already") return;
       // Claim upis PUKAO (ne konflikt!) — red čekanja ne postoji, pa bi čekanje
-      // sweepera obaveštenje tiho izgubilo. Fail-open kao i pre trećeg kruga:
-      // pošalji ODMAH, samo ovu poziciju (najgore dupli mejl, ne izgubljen).
-      await this.flushRows(
-        [{ id: null, drawingHandoverId: handoverId, workOrderId }],
-        input.actorWorkerId,
-      );
+      // sweepera obaveštenje tiho izgubilo. Fail-open: pošalji ODMAH.
+      await this.flush(draftId, [
+        {
+          id: null,
+          drawingHandoverId: handoverId,
+          workOrderId,
+          actorWorkerId,
+          createdAt: new Date(),
+        },
+      ]);
     } catch (e) {
       this.logger.error(
         `Notifikacija primopredaja.lansirana FAIL (RN ${workOrderId}): ${msg(e)}`,
@@ -148,16 +159,16 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Jedan prolaz agregacije: grupiši pending redove po akteru i pošalji grupe
-   * kojima je talas utihnuo (ili kapa istekla). Javna radi testova; u pogonu je
-   * zove tajmer. Nikad ne baca; overlap tikova brani `sweepBusy`.
+   * Jedan prolaz: grupiši pending redove PO NACRTU i pošalji grupe kojima je
+   * prozor istekao. Javna radi testova; u pogonu je zove tajmer. Nikad ne baca;
+   * overlap tikova brani `sweepBusy`.
    */
   async sweep(now: number = Date.now()): Promise<void> {
     if (this.sweepBusy) return;
     this.sweepBusy = true;
     try {
       const groups = await this.prisma.workOrderLaunchNotification.groupBy({
-        by: ["actorWorkerId"],
+        by: ["handoverDraftId"],
         where: { notifiedAt: null },
         _min: { createdAt: true },
         _max: { createdAt: true },
@@ -169,9 +180,8 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
       for (const g of groups) {
         const newest = g._max.createdAt?.getTime() ?? 0;
         const oldest = g._min.createdAt?.getTime() ?? 0;
-        // Tišina od poslednjeg lansiranja ILI kapa od najstarijeg pending reda.
         if (now - newest < silence && now - oldest < maxWait) continue;
-        await this.flushGroup(g.actorWorkerId);
+        await this.flushGroup(g.handoverDraftId);
       }
     } catch (e) {
       this.logger.warn(`Sweep obaveštenja o lansiranju nije prošao: ${msg(e)}`);
@@ -183,14 +193,78 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
   // ---------------------------------------------------------------- claim/queue
 
   /**
-   * Claim po PRIMOPREDAJI (stabilan identitet „dokumentacija je lansirana").
-   * `createMany` + `skipDuplicates` = PG `ON CONFLICT DO NOTHING` (nikad
-   * `ON CONFLICT ON CONSTRAINT <ime>` — prod incident pravilo). count 0 → red
-   * već postoji (poslato ili na čekanju). Launch id je samo audit — SERIAL se
-   * reciklira (alignIdSequence), pa ne sme da nosi idempotenciju (review 25.07).
+   * Nacrt iz kog je pozicija potekla — ali SAMO kad je veza SIGURNA (vidi blok
+   * „DEDUP SAMO NA SIGURNOM" iznad). Dva uslova, oba obavezna:
+   *   1. crtež pripada TAČNO JEDNOM ne-isključenom nacrtu (nema pogađanja
+   *      „najskorijeg" — baš to bi ućutkalo tuđi nacrt);
+   *   2. predmet tog nacrta = predmet RN-a (inače bi mejl otišao tuđim
+   *      planerima sa tuđim predmetom u tekstu).
+   * Kad bilo koji uslov padne → `null` = nema dedupa, obaveštenje ide po
+   * poziciji (staro ponašanje). Warn u logu da se vidi koliko je toga u praksi.
+   */
+  private async resolveDraft(
+    handoverId: number,
+    workOrderId: number,
+  ): Promise<number | null> {
+    const handover = await this.prisma.drawingHandover.findUnique({
+      where: { id: handoverId },
+      select: { drawingId: true },
+    });
+    if (!handover) return null;
+
+    // NAMERNO bez `take`: Prisma primenjuje `take` u SQL-u, a `distinct` tek u
+    // query engine-u — `take: 2` bi moglo da povuče DVA reda ISTOG nacrta (isti
+    // crtež ume da bude više stavki jednog nacrta), distinct bi ih sveo na jedan
+    // i dvosmislen crtež bi PROŠAO kao jednoznačan. Skup po crtežu je mali.
+    //
+    // POZNAT REZIDUAL (svesno prihvaćen): filter `excludeFromHandover: false`
+    // znači da crtež koji je ISKLJUČEN u nacrtu A a ne-isključen tačno u nacrtu
+    // B prolazi kao „jednoznačan" i pripiše se B-u. IZMERENO 04.08: 77 crteža /
+    // 84 primopredaje u tom skupu — od toga 0 sa RAZLIČITIM predmetom i 0
+    // nelansiranih, dakle NULA žive izloženosti. Strože bi bilo brojati i
+    // isključene stavke, ali bi tada svaka ispravka nacrta („izbaci poziciju iz
+    // A, prebaci u B") trajno oborila pokrivenost dedupa — a to je čest,
+    // legitiman potez. Ako se skup ikad promeni, warn iznad to i pokazuje.
+    const items = await this.prisma.handoverDraftItem.findMany({
+      where: { drawingId: handover.drawingId, excludeFromHandover: false },
+      select: { draftId: true },
+      distinct: ["draftId"],
+    });
+    const draftIds = [...new Set(items.map((i) => i.draftId))];
+    if (draftIds.length !== 1) {
+      this.logger.warn(
+        `Nacrt za primopredaju ${handoverId} (crtež ${handover.drawingId}) NIJE jednoznačan (kandidata: ${draftIds.length === 0 ? "0" : "2+"}) — obaveštenje ide po poziciji, bez dedupa po nacrtu.`,
+      );
+      return null;
+    }
+
+    const [draft, workOrder] = await Promise.all([
+      this.prisma.handoverDraft.findUnique({
+        where: { id: draftIds[0] },
+        select: { projectId: true },
+      }),
+      this.prisma.workOrder.findUnique({
+        where: { id: workOrderId },
+        select: { projectId: true },
+      }),
+    ]);
+    if (!draft || !workOrder || draft.projectId !== workOrder.projectId) {
+      this.logger.warn(
+        `Nacrt ${draftIds[0]} ima predmet ${draft?.projectId ?? "—"}, a RN ${workOrderId} predmet ${workOrder?.projectId ?? "—"} — ne poklapa se, obaveštenje ide po poziciji.`,
+      );
+      return null;
+    }
+    return draftIds[0];
+  }
+
+  /**
+   * Claim po PRIMOPREDAJI (`createMany` + `skipDuplicates` = PG `ON CONFLICT DO
+   * NOTHING`; nikad `ON CONFLICT ON CONSTRAINT <ime>` — prod incident pravilo).
+   * count 0 → red već postoji (poslato ili na čekanju).
    */
   private async claim(
     input: LaunchNotifyInput,
+    handoverDraftId: number | null,
   ): Promise<"queued" | "already" | "failed"> {
     const { handoverId, launchId, workOrderId, actorWorkerId, source } = input;
     try {
@@ -202,6 +276,7 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
             workOrderId,
             source,
             actorWorkerId,
+            handoverDraftId,
           },
         ],
         skipDuplicates: true,
@@ -221,29 +296,57 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Pošalji SVE pending redove jednog aktera kao jedno zbirno obaveštenje. */
-  private async flushGroup(actorWorkerId: number | null): Promise<void> {
+  /** Pošalji pending redove jednog NACRTA kao jedno obaveštenje. */
+  private async flushGroup(handoverDraftId: number | null): Promise<void> {
     const rows = await this.prisma.workOrderLaunchNotification.findMany({
-      where: { notifiedAt: null, actorWorkerId },
+      where: { notifiedAt: null, handoverDraftId },
       orderBy: { createdAt: "asc" },
-      select: { id: true, drawingHandoverId: true, workOrderId: true },
+      select: {
+        id: true,
+        drawingHandoverId: true,
+        workOrderId: true,
+        actorWorkerId: true,
+        createdAt: true,
+      },
     });
     if (!rows.length) return;
-    await this.flushRows(rows, actorWorkerId);
+    if (handoverDraftId == null) {
+      // Bez sigurnog nacrta redovi su međusobno NEPOVEZANI (razne primopredaje,
+      // razni predmeti) — svaki ide kao zasebno obaveštenje po poziciji.
+      for (const row of rows) await this.flush(null, [row]);
+      return;
+    }
+    await this.flush(handoverDraftId, rows);
   }
 
   // ---------------------------------------------------------------- flush/slanje
 
   /**
-   * Sastavi i pošalji zbirni mejl + zvonce za dati skup pending redova, pa ih
-   * markiraj (`notified_at`). Podaci se dočitavaju IZ BAZE (redovi mogu biti
-   * minutima stari, i iz života pre restarta). Nikad ne baca.
+   * Sastavi i pošalji obaveštenje za dati skup pending redova. `handoverDraftId`
+   * != null → jedno obaveštenje o NACRTU (Strahinjin šablon); null → obaveštenje
+   * po POZICIJI u dosadašnjem formatu (`rows` tada ima tačno jedan red).
+   * Nikad ne baca.
    */
-  private async flushRows(
+  private async flush(
+    handoverDraftId: number | null,
     rows: PendingRow[],
-    actorWorkerId: number | null,
   ): Promise<void> {
     try {
+      // DEDUP PO NACRTU — broji SAMO stvarno isporučene redove (`sent_at`), pa
+      // pad slanja ne pečati nacrt.
+      if (handoverDraftId != null) {
+        const alreadySent = await this.prisma.workOrderLaunchNotification.count(
+          { where: { handoverDraftId, sentAt: { not: null } } },
+        );
+        if (alreadySent > 0) {
+          this.logger.log(
+            `Nacrt ${handoverDraftId}: obaveštenje je već isporučeno — ${rows.length} novih pozicija samo markirano (016/26: jedno obaveštenje po nacrtu).`,
+          );
+          await this.stamp(rows, false);
+          return;
+        }
+      }
+
       const workOrders = await this.prisma.workOrder.findMany({
         where: { id: { in: uniqueIds(rows.map((r) => r.workOrderId)) } },
         select: {
@@ -256,151 +359,67 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
         },
       });
       const woMap = byId(workOrders);
-      const missing = rows.filter((r) => !woMap.has(r.workOrderId));
-      if (missing.length)
-        // RN obrisan između lansiranja i flush-a (redak, eksplicitan potez) —
-        // markiraj da red ne zaglavi zauvek u pending skupu, izostavi iz mejla.
-        this.logger.warn(
-          `Zbirno obaveštenje: ${missing.length} RN više ne postoji (${missing
-            .map((r) => r.workOrderId)
-            .join(", ")}) — preskočeno u mejlu.`,
-        );
       const live = rows.filter((r) => woMap.has(r.workOrderId));
       if (!live.length) {
-        await this.stamp(rows);
+        // RN obrisan između lansiranja i flush-a — nema šta da se javi.
+        this.logger.warn(
+          `Obaveštenje o lansiranju: nijedan RN više ne postoji (${rows
+            .map((r) => r.workOrderId)
+            .join(", ")}) — ${rows.length} redova markirano bez slanja.`,
+        );
+        await this.stamp(rows, false);
         return;
       }
 
-      // Primaoci su JEDINI tvrdi preduslov — bez planera nema kome da se šalje,
-      // redovi se markiraju (claim je i do sada bio potrošen u tom slučaju).
+      // RUTIRANJE PO RN-u (nikad po predmetu razrešenog nacrta) — vidi blok gore.
       const projectIds = uniqueIds(
         live.map((r) => woMap.get(r.workOrderId)!.projectId),
       );
       const routed = await this.prisma.predmetPlaner.findMany({
         where: { OR: [{ projectId: { in: projectIds } }, { projectId: null }] },
-        select: { plannerUserId: true, projectId: true },
+        select: { plannerUserId: true },
       });
-      if (!routed.length) {
-        await this.stamp(rows);
-        return;
-      }
-      const planners = await this.prisma.user.findMany({
-        where: {
-          id: { in: [...new Set(routed.map((r) => r.plannerUserId))] },
-          active: true,
-        },
-        select: { id: true, email: true, fullName: true, workerId: true },
-      });
+      const planners = routed.length
+        ? await this.prisma.user.findMany({
+            where: {
+              id: { in: [...new Set(routed.map((r) => r.plannerUserId))] },
+              active: true,
+            },
+            select: { id: true, email: true, fullName: true, workerId: true },
+          })
+        : [];
       if (!planners.length) {
-        await this.stamp(rows);
+        // Nema kome — red je OBRAĐEN, ali NIJE isporučen (nacrt ostaje otvoren).
+        await this.stamp(rows, false);
         return;
       }
 
-      // Kozmetički lookup-ovi ne smeju da potope slanje (claim je već potrošen):
-      // svaki pad daje prazan enrich, mejl ide sa onim što ima.
-      const handoverIds = uniqueIds(live.map((r) => r.drawingHandoverId));
-      const [handovers, projects, actorName] = await Promise.all([
-        this.prisma.drawingHandover
-          .findMany({
-            where: { id: { in: handoverIds } },
-            select: { id: true, drawingId: true },
-          })
-          .catch(() => []),
-        this.prisma.project
-          .findMany({
-            where: { id: { in: projectIds } },
-            select: {
-              id: true,
-              projectNumber: true,
-              description: true,
-              customerId: true,
-            },
-          })
-          .catch(() => []),
-        this.resolveActorName(actorWorkerId).catch(() => "korisnik aplikacije"),
-      ]);
-      const handoverMap = byId(handovers);
-      const projectMap = byId(projects);
-      const [drawings, customers] = await Promise.all([
-        this.prisma.drawing
-          .findMany({
-            where: {
-              id: { in: uniqueIds(handovers.map((h) => h.drawingId)) },
-            },
-            select: { id: true, name: true, drawingNumber: true },
-          })
-          .catch(() => []),
-        this.prisma.customer
-          .findMany({
-            where: {
-              id: { in: uniqueIds(projects.map((p) => p.customerId)) },
-            },
-            select: { id: true, name: true },
-          })
-          .catch(() => []),
-      ]);
-      const drawingMap = byId(drawings);
-      const customerMap = byId(customers);
+      const content = await this.compose(handoverDraftId, live, woMap);
 
-      const items: FlushItem[] = live.map((r) => {
-        const wo = woMap.get(r.workOrderId)!;
-        const drawingId = handoverMap.get(r.drawingHandoverId)?.drawingId;
-        const drawing = drawingId ? drawingMap.get(drawingId) : undefined;
-        return {
-          workOrderId: wo.id,
-          rnLabel:
-            wo.variant > 0 ? `${wo.identNumber}-${wo.variant}` : wo.identNumber,
-          partLabel: [drawing?.name, wo.drawingNumber ?? drawing?.drawingNumber]
-            .filter(Boolean)
-            .join(", "),
-          pieceCount: wo.pieceCount,
-          projectId: wo.projectId,
-        };
-      });
-
-      // Kontejner radi u UTC — bez zone bi mejl/zvonce pokazivali drugi sat nego
-      // aplikacija svuda inače.
-      const launchedAt = new Date().toLocaleString("sr-RS", {
-        timeZone: "Europe/Belgrade",
-      });
-
-      // Rutiranje po planeru: predmetni planer vidi SAMO pozicije svojih
-      // predmeta, globalni (project_id IS NULL) sve.
-      const globalPlannerIds = new Set(
-        routed.filter((r) => r.projectId === null).map((r) => r.plannerUserId),
-      );
-      const projectsByPlanner = new Map<number, Set<number>>();
-      for (const r of routed) {
-        if (r.projectId === null) continue;
-        const set = projectsByPlanner.get(r.plannerUserId) ?? new Set<number>();
-        set.add(r.projectId);
-        projectsByPlanner.set(r.plannerUserId, set);
-      }
-
+      let delivered = false;
       const withoutWorker: string[] = [];
       for (const planner of planners) {
-        const mine = globalPlannerIds.has(planner.id)
-          ? items
-          : items.filter((i) =>
-              projectsByPlanner.get(planner.id)?.has(i.projectId),
-            );
-        if (!mine.length) continue;
-
-        const content = this.compose(mine, {
-          plannerName: planner.fullName,
-          actorName,
-          launchedAt,
-          projectMap,
-          customerMap,
-        });
-
         if (planner.email?.includes("@")) {
           try {
-            await this.mail.send({
+            // ⚠️ `MailService.send` NIKAD NE BACA — vraća `false` u tri slučaja:
+            // DRY-RUN bez RESEND_API_KEY, Resend non-2xx (neispravna adresa,
+            // neverifikovan domen, rate limit) i mrežni pad / 8 s timeout.
+            // Zato se ISPORUKA meri POVRATNOM VREDNOŠĆU, ne izostankom izuzetka:
+            // `await` bez provere bi tiho upisao `sent_at` i zapečatio nacrt
+            // zauvek iako mejl nikad nije otišao — baš scenario zbog kog
+            // `sent_at` i postoji.
+            const ok = await this.mail.send({
               to: planner.email,
               subject: content.subject,
-              html: content.html,
+              html:
+                `<p>${planner.fullName ? `Poštovani ${esc(planner.fullName)},` : "Poštovani,"}</p>` +
+                content.html,
             });
+            if (ok) delivered = true;
+            else
+              this.logger.error(
+                `Mejl primopredaja.lansirana planeru ${planner.id} NIJE poslat (MailService vratio false) — nacrt ostaje nezapečaćen.`,
+              );
           } catch (e) {
             this.logger.error(
               `Mejl primopredaja.lansirana planeru ${planner.id} FAIL: ${msg(e)}`,
@@ -409,20 +428,19 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
         }
         if (planner.workerId) {
           try {
+            // Isto pravilo kao za mejl: `notifyWorkers` vraća BROJ upisanih
+            // redova (0 kad nema primalaca) — isporuka je > 0, ne „nije baclo".
             const created = await this.notifications.notifyWorkers(
               [planner.workerId],
               {
                 type: "primopredaja.lansirana",
                 message: content.bell,
-                // POSTOJEĆI FE obrazac skoka na modul (app-shell
-                // NOTIFICATION_ROUTE); ref = prvi RN talasa.
+                // POSTOJEĆI FE obrazac skoka na modul (app-shell NOTIFICATION_ROUTE).
                 refTable: "work_orders",
-                refId: mine[0].workOrderId,
+                refId: live[0].workOrderId,
               },
             );
-            this.logger.log(
-              `Zvonce primopredaja.lansirana (${mine.length} RN, planer ${planner.id}): ${created} primalaca`,
-            );
+            if (created > 0) delivered = true;
           } catch (e) {
             this.logger.error(
               `Zvonce primopredaja.lansirana FAIL (planer ${planner.id}): ${msg(e)}`,
@@ -437,106 +455,93 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
           `Zvonce o lansiranju preskočeno za ${withoutWorker.length} planera bez vezanog radnika (users.worker_id): ${withoutWorker.join(", ")} — mejl je poslat.`,
         );
 
-      await this.stamp(rows);
+      if (!delivered) {
+        // Primaoci POSTOJE, ali nijedan kanal nije prošao (SMTP/DB ispad). NE
+        // markiramo: redovi ostaju pending i sledeći tik pokušava ponovo —
+        // inače bi nacrt ostao trajno nem zbog trenutnog ispada.
+        this.logger.error(
+          `Obaveštenje o lansiranju NIJE isporučeno nijednom od ${planners.length} planera — ${rows.length} redova ostaje na čekanju za sledeći pokušaj.`,
+        );
+        return;
+      }
+
+      await this.stamp(rows, true);
       this.logger.log(
-        `Zbirno obaveštenje o lansiranju poslato: ${live.length} RN, akter ${actorWorkerId ?? "—"}, ${planners.length} planera.`,
+        `Obaveštenje o lansiranju isporučeno (${handoverDraftId != null ? `nacrt ${handoverDraftId}` : `pozicija/RN ${live[0].workOrderId}`}): ${planners.length} planera, ${rows.length} pozicija.`,
       );
     } catch (e) {
-      // Redovi OSTAJU pending (notified_at NULL) — sledeći sweep pokušava opet;
-      // vidljiva rupa umesto tihe (isti princip kao do sada).
+      // Redovi OSTAJU pending — sledeći sweep pokušava opet; vidljiva rupa
+      // umesto tihe.
       this.logger.error(
-        `Zbirno obaveštenje o lansiranju FAIL (${rows.length} redova): ${msg(e)}`,
+        `Obaveštenje o lansiranju FAIL (${rows.length} redova): ${msg(e)}`,
       );
     }
   }
 
   /**
-   * Sastavi subject + HTML mejla + tekst zvonca za JEDNOG planera.
-   * 1 pozicija = dosadašnji format (poznat korisnicima); više = kompaktna lista
-   * (RN, naziv pozicije, količina), preko MAX_MAIL_ROWS „… i još N".
+   * Tekst obaveštenja. Dva režima:
+   *   • NACRT (siguran) — doslovan šablon iz Strahinjinog komentara 27.07:
+   *     nacrt, predmet, komitent, ko je lansirao i kada. Bez RN-ova i pozicija.
+   *   • POZICIJA (nacrt dvosmislen/nerazrešen) — dosadašnji format, poznat
+   *     korisnicima. NIKAD „Nacrt primopredaje: —": kad nacrt nije siguran, o
+   *     nacrtu se i ne govori.
+   * Predmet/komitent UVEK iz RN-a (rutiranje i tekst moraju da se poklapaju).
    */
-  private compose(
-    items: FlushItem[],
-    ctx: {
-      plannerName: string | null;
-      actorName: string;
-      launchedAt: string;
-      projectMap: Map<
-        number,
-        {
-          projectNumber: string | null;
-          description: string | null;
-          customerId: number | null;
-        }
-      >;
-      customerMap: Map<number, { name: string | null }>;
-    },
-  ): { subject: string; html: string; bell: string } {
-    const { plannerName, actorName, launchedAt, projectMap, customerMap } = ctx;
-    const greeting = `<p>${plannerName ? `Poštovani ${plannerName},` : "Poštovani,"}</p>`;
+  private async compose(
+    handoverDraftId: number | null,
+    live: PendingRow[],
+    woMap: Map<number, WorkOrderRef>,
+  ): Promise<{ subject: string; html: string; bell: string }> {
+    const first = woMap.get(live[0].workOrderId)!;
+    const project = await this.prisma.project
+      .findUnique({
+        where: { id: first.projectId },
+        select: { projectNumber: true, description: true, customerId: true },
+      })
+      .catch(() => null);
+    const customer = project?.customerId
+      ? await this.prisma.customer
+          .findUnique({
+            where: { id: project.customerId },
+            select: { name: true },
+          })
+          .catch(() => null)
+      : null;
+    const actorName = await this.resolveActorName(live[0].actorWorkerId).catch(
+      () => "korisnik aplikacije",
+    );
+    // Vreme PRVOG lansiranja (ne trenutak slanja — mejl kasni do 3 min).
+    // Kontejner radi u UTC; bez zone bi sat bio drugačiji nego u aplikaciji.
+    const launchedAt = live[0].createdAt.toLocaleString("sr-RS", {
+      timeZone: "Europe/Belgrade",
+    });
+    const projectNumber = project?.projectNumber ?? `#${first.projectId}`;
     const signature = `<p>— ServoSync</p>`;
+    const intro = `<p>Primopredaja je lansirana u proizvodnju:</p>`;
 
-    const myProjectIds = uniqueIds(items.map((i) => i.projectId));
-    const projectLine = (projectId: number): string => {
-      const p = projectMap.get(projectId);
-      if (!p) return `#${projectId}`;
-      const label = [p.projectNumber, p.description]
-        .filter(Boolean)
-        .join(" — ");
-      const customer = p.customerId
-        ? customerMap.get(p.customerId)?.name
-        : null;
-      return customer ? `${label} (${customer})` : label || `#${projectId}`;
-    };
-    const projectNumbers = myProjectIds
-      .map((id) => projectMap.get(id)?.projectNumber)
-      .filter((n): n is string => Boolean(n));
-    const subjectProjects =
-      projectNumbers.length === 0
-        ? ""
-        : projectNumbers.length === 1
-          ? ` — predmet ${projectNumbers[0]}`
-          : ` — predmeti ${projectNumbers.slice(0, 3).join(", ")}${projectNumbers.length > 3 ? "…" : ""}`;
-
-    if (items.length === 1) {
-      const it = items[0];
-      const p = projectMap.get(it.projectId);
-      const predmetLabel = [p?.projectNumber, p?.description]
-        .filter(Boolean)
-        .join(" — ");
-      const customerName = p?.customerId
-        ? customerMap.get(p.customerId)?.name
-        : null;
-      const rows: string[] = [
-        `<li><strong>Radni nalog:</strong> ${it.rnLabel}</li>`,
-        predmetLabel
-          ? `<li><strong>Predmet:</strong> ${predmetLabel}</li>`
+    if (handoverDraftId != null) {
+      const draft = await this.prisma.handoverDraft
+        .findUnique({
+          where: { id: handoverDraftId },
+          select: { draftNumber: true },
+        })
+        .catch(() => null);
+      const draftLabel = draft?.draftNumber || `#${handoverDraftId}`;
+      const items = [
+        `<li><strong>Nacrt primopredaje:</strong> ${esc(draftLabel)}</li>`,
+        `<li><strong>Predmet:</strong> ${esc(projectNumber)}</li>`,
+        customer?.name
+          ? `<li><strong>Komitent:</strong> ${esc(customer.name)}</li>`
           : "",
-        customerName
-          ? `<li><strong>Komitent:</strong> ${customerName}</li>`
-          : "",
-        it.partLabel
-          ? `<li><strong>Pozicija:</strong> ${it.partLabel}</li>`
-          : "",
-        it.pieceCount != null
-          ? `<li><strong>Količina:</strong> ${it.pieceCount} kom</li>`
-          : "",
-        `<li><strong>Lansirao:</strong> ${actorName}, ${launchedAt}</li>`,
+        `<li><strong>Lansirao:</strong> ${esc(actorName)}, ${esc(launchedAt)}</li>`,
       ].filter(Boolean);
       return {
-        subject: `Lansiran RN ${it.rnLabel}${
-          p?.projectNumber ? ` — predmet ${p.projectNumber}` : ""
-        }`,
-        html:
-          greeting +
-          `<p>Primopredaja je lansirana u proizvodnju:</p>` +
-          `<ul>${rows.join("")}</ul>` +
-          signature,
+        subject: `Lansirana primopredaja — nacrt ${draftLabel}, predmet ${projectNumber}`,
+        html: intro + `<ul>${items.join("")}</ul>` + signature,
         bell: [
-          `Lansiran RN ${it.rnLabel}`,
-          predmetLabel ? `predmet ${predmetLabel}` : "",
-          it.partLabel ? `pozicija ${it.partLabel}` : "",
-          it.pieceCount != null ? `${it.pieceCount} kom` : "",
+          `Lansirana primopredaja — nacrt ${draftLabel}`,
+          `predmet ${projectNumber}`,
+          customer?.name ? `komitent ${customer.name}` : "",
           `lansirao ${actorName}, ${launchedAt}`,
         ]
           .filter(Boolean)
@@ -544,43 +549,45 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    // Više pozicija = jedan talas (016/26 treći krug): kompaktna lista, pozicija
-    // nosi predmet u zagradi samo kad ih je više (inače je red zaglavlja dovoljan).
-    const multiProject = myProjectIds.length > 1;
-    const shown = items.slice(0, MAX_MAIL_ROWS);
-    const rest = items.length - shown.length;
-    const list = shown
-      .map((it) => {
-        const bits = [
-          `<strong>${it.rnLabel}</strong>`,
-          it.partLabel || null,
-          it.pieceCount != null ? `${it.pieceCount} kom` : null,
-        ].filter(Boolean);
-        const suffix = multiProject
-          ? ` (predmet ${projectMap.get(it.projectId)?.projectNumber ?? `#${it.projectId}`})`
-          : "";
-        return `<li>${bits.join(" — ")}${suffix}</li>`;
-      })
-      .join("");
-    const restRow = rest > 0 ? `<li>… i još ${rest} pozicija</li>` : "";
-    const projectsBlock = `<p><strong>${multiProject ? "Predmeti" : "Predmet"}:</strong> ${myProjectIds
-      .map(projectLine)
-      .join("; ")}</p>`;
-
+    // ── Režim POZICIJE (dosadašnji format) ──────────────────────────────────
+    const drawing = await this.resolveDrawing(live[0].drawingHandoverId);
+    const rnLabel =
+      first.variant > 0
+        ? `${first.identNumber}-${first.variant}`
+        : first.identNumber;
+    const predmetLabel = [project?.projectNumber, project?.description]
+      .filter(Boolean)
+      .join(" — ");
+    const partLabel = [
+      drawing?.name,
+      first.drawingNumber ?? drawing?.drawingNumber,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const items = [
+      `<li><strong>Radni nalog:</strong> ${esc(rnLabel)}</li>`,
+      predmetLabel
+        ? `<li><strong>Predmet:</strong> ${esc(predmetLabel)}</li>`
+        : "",
+      customer?.name
+        ? `<li><strong>Komitent:</strong> ${esc(customer.name)}</li>`
+        : "",
+      partLabel ? `<li><strong>Pozicija:</strong> ${esc(partLabel)}</li>` : "",
+      first.pieceCount != null
+        ? `<li><strong>Količina:</strong> ${first.pieceCount} kom</li>`
+        : "",
+      `<li><strong>Lansirao:</strong> ${esc(actorName)}, ${esc(launchedAt)}</li>`,
+    ].filter(Boolean);
     return {
-      subject: `Lansirano ${items.length} RN${subjectProjects}`,
-      html:
-        greeting +
-        `<p>Lansirano je ${items.length} radnih naloga u proizvodnju:</p>` +
-        `<ul>${list}${restRow}</ul>` +
-        projectsBlock +
-        `<p><strong>Lansirao:</strong> ${actorName}, ${launchedAt}</p>` +
-        signature,
+      subject: `Lansiran RN ${rnLabel}${
+        project?.projectNumber ? ` — predmet ${project.projectNumber}` : ""
+      }`,
+      html: intro + `<ul>${items.join("")}</ul>` + signature,
       bell: [
-        `Lansirano ${items.length} RN`,
-        projectNumbers.length
-          ? `${multiProject ? "predmeti" : "predmet"} ${projectNumbers.slice(0, 3).join(", ")}${projectNumbers.length > 3 ? "…" : ""}`
-          : "",
+        `Lansiran RN ${rnLabel}`,
+        predmetLabel ? `predmet ${predmetLabel}` : "",
+        partLabel ? `pozicija ${partLabel}` : "",
+        first.pieceCount != null ? `${first.pieceCount} kom` : "",
         `lansirao ${actorName}, ${launchedAt}`,
       ]
         .filter(Boolean)
@@ -588,17 +595,39 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /** Crtež primopredaje (samo režim pozicije; pad = mejl bez naziva pozicije). */
+  private async resolveDrawing(
+    handoverId: number,
+  ): Promise<{ name: string | null; drawingNumber: string | null } | null> {
+    try {
+      const handover = await this.prisma.drawingHandover.findUnique({
+        where: { id: handoverId },
+        select: { drawingId: true },
+      });
+      if (!handover) return null;
+      return await this.prisma.drawing.findUnique({
+        where: { id: handover.drawingId },
+        select: { name: true, drawingNumber: true },
+      });
+    } catch {
+      return null;
+    }
+  }
+
   /**
-   * Markiraj redove kao poslate. Fail-open red (id null) nema šta da markira;
-   * uslov `notifiedAt: null` čuva stariji timestamp ako je neko već markirao.
+   * Markiraj redove kao obrađene. `sent` = da li je isporuka STVARNO uspela —
+   * samo tada se upisuje `sent_at` (jedini osnov dedupa po nacrtu). Fail-open
+   * red (id null) nema šta da markira; uslov `notifiedAt: null` čuva stariji
+   * timestamp ako je neko već markirao.
    */
-  private async stamp(rows: PendingRow[]): Promise<void> {
+  private async stamp(rows: PendingRow[], sent: boolean): Promise<void> {
     const ids = rows.map((r) => r.id).filter((id): id is number => id != null);
     if (!ids.length) return;
+    const now = new Date();
     try {
       await this.prisma.workOrderLaunchNotification.updateMany({
         where: { id: { in: ids }, notifiedAt: null },
-        data: { notifiedAt: new Date() },
+        data: sent ? { notifiedAt: now, sentAt: now } : { notifiedAt: now },
       });
     } catch (e) {
       this.logger.warn(
@@ -612,11 +641,13 @@ export class LaunchNotifyService implements OnModuleInit, OnModuleDestroy {
     actorWorkerId: number | null,
   ): Promise<string> {
     if (!actorWorkerId) return "korisnik aplikacije";
-    const workers = await this.prisma.worker.findMany({
-      where: { id: { in: [actorWorkerId] } },
-      select: { id: true, fullName: true, username: true },
-    });
-    const actor = workers.find((w) => w.id === actorWorkerId);
+    const workers = byId(
+      await this.prisma.worker.findMany({
+        where: { id: { in: [actorWorkerId] } },
+        select: { id: true, fullName: true, username: true },
+      }),
+    );
+    const actor = workers.get(actorWorkerId);
     return actor?.fullName || actor?.username || "korisnik aplikacije";
   }
 }
@@ -627,6 +658,15 @@ function envMs(name: string, fallback: number): number {
   if (raw == null || raw === "") return fallback;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/** Nazivi predmeta/komitenata su slobodan unos — ne smeju da razbiju HTML mejla. */
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function msg(e: unknown): string {

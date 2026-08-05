@@ -7,6 +7,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PricingService } from "./pricing.service";
 import { SalesService } from "./sales.service";
+import { vatPercentOf } from "./vat-totals";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
@@ -625,5 +626,173 @@ describe("Izvoz — PDV se ne obračunava", () => {
     expect(items[0].vatAmount.toFixed(2)).toBe("0.00");
     expect(items[0].lineTotal.toFixed(2)).toBe("2000.00");
     expect(new D(invoice.vatTotal as Prisma.Decimal).toFixed(2)).toBe("0.00");
+  });
+});
+
+// ── B3′: PDV DOKUMENTA SE RAČUNA PO STOPI, NE SABIRANJEM STAVKI ──────────────
+
+/**
+ * 🔴 VISOK NALAZ (peti krug, 02.08.2026): `vatTotal` je bio ZBIR ZAOKRUŽENIH PDV-a PO
+ * STAVCI, pa jednačina koju papir ŠTAMPA — `osnovica × stopa = PDV` — više nije važila.
+ *
+ * IZMERENO: 5 stavki × 1 kom × 100,01 din uz 20 % → osnovica 500,05, `Σ vatAmount` =
+ * 5 × round2(20,002) = 100,00, a `500,05 × 20 % = 100,01`. Papir je štampao
+ * `PDV po stopi 20 % · 500,05 · 100,00`, SEF bi poslao `TaxSubtotal` koji obara EN 16931
+ * BR-CO-17, a KIF (koji osnovicu IZVODI iz PDV-a) bi nosio 500,00 umesto 500,05.
+ *
+ * Monte Carlo nad 20.000 dokumenata: na 5 stavki se razilazi 43,7 % dokumenata, na 20
+ * stavki 69,4 % i do 0,05 din; na stopi 10 % do 0,06 din.
+ */
+describe("B3′ — PDV zaglavlja se računa iz osnovice po stopi", () => {
+  /** Stavka bez rabata: `qty × cena` je već zaokruženo, kao što ga i `PricingService` piše. */
+  const stavka = (
+    id: number,
+    vatBase: string,
+    vatRateCode = "3",
+  ): ReturnType<typeof itemRow> =>
+    itemRow({
+      id,
+      lineNo: id - 99,
+      quantity: new D(1),
+      baseUnitPrice: new D(vatBase),
+      unitPrice: new D(vatBase),
+      vatRateCode,
+      vatBase: new D(vatBase),
+      vatAmount: new D(vatBase).mul(vatRateCode === "4" ? "0.10" : "0.20")
+        .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+      lineTotal: new D(0),
+    });
+
+  it("5 × 100,01 din uz 20 % → PDV 100,01 (ne 100,00 iz zbira stavki)", async () => {
+    const { db, invoice } = makeDb({
+      items: [100, 101, 102, 103, 104].map((id) => stavka(id, "100.01")),
+    });
+
+    // Bilo koja izmena okida `recalcTotals` — merimo zaglavlje, ne put do njega.
+    await service(db).updateHeader(1, { note: "preračun" }, actor);
+
+    expect(new D(invoice.netTotal as Prisma.Decimal).toFixed(2)).toBe("500.05");
+    expect(new D(invoice.vatTotal as Prisma.Decimal).toFixed(2)).toBe("100.01");
+    expect(new D(invoice.grossTotal as Prisma.Decimal).toFixed(2)).toBe(
+      "600.06",
+    );
+  });
+
+  // ŠIFRE STOPA (ispravka 02.08.2026): snižena stopa 10 % je „4" (NIZA), poljoprivredna
+  // 8 % je „5" (POLJO), a šifre „2" u `R_Tarife` NEMA. Ranije je ovde stajalo „2" za
+  // 10 % i „4" za 8 % — v. `gl/posting/vat-rates.ts`. Iznosi u testovima se NE menjaju,
+  // menja se samo šifra kojom se stopa imenuje.
+  it("dve stope na istom računu: svaka grupa nosi svoj `round2(osnovica × stopa)`", async () => {
+    const { db, invoice } = makeDb({
+      items: [
+        stavka(100, "100.01", "3"),
+        stavka(101, "100.01", "3"),
+        stavka(102, "100.05", "4"),
+        stavka(103, "100.05", "4"),
+      ],
+    });
+
+    await service(db).updateHeader(1, { note: "preračun" }, actor);
+
+    // 20 %: 200,02 × 0,20 = 40,004 → 40,00.  10 %: 200,10 × 0,10 = 20,01.
+    expect(new D(invoice.netTotal as Prisma.Decimal).toFixed(2)).toBe("400.12");
+    expect(new D(invoice.vatTotal as Prisma.Decimal).toFixed(2)).toBe("60.01");
+    expect(new D(invoice.grossTotal as Prisma.Decimal).toFixed(2)).toBe(
+      "460.13",
+    );
+  });
+
+  /**
+   * NALAZ S2 (zatvara se trajno): delimično izmenjen nacrt ume da pomeša zaokružene i
+   * NEZAOKRUŽENE stavke (kolona je `Decimal(19,4)`), pa dokument ne sabira. Na produkciji
+   * danas nema nijedne fakture ni stavke (izmereno 0/0), pa migracija ne treba — ali
+   * uvoz, ručna ispravka u bazi ili budući BigBit uvoz mogu da donesu takav red.
+   * Zbir se zato brani NA SABIRANJU: svaka osnovica se zaokruži pre nego što uđe u zbir.
+   */
+  it("mešan dokument (zaokružena + nezaokružena stavka) sabira ZAOKRUŽENE iznose", async () => {
+    const { db, invoice } = makeDb({
+      items: [
+        // „Uvezen" red: 1,5 × 21,3300 = 31,9950 upisano nezaokruženo.
+        stavka(100, "31.995"),
+        // Red koji je pisao `PricingService` — već na paru.
+        stavka(101, "32.00"),
+      ],
+    });
+
+    await service(db).updateHeader(1, { note: "preračun" }, actor);
+
+    // Papir obe stavke štampa kao `32.00`; osnovica mora biti BAŠ 64,00, ne 63,995.
+    expect(new D(invoice.netTotal as Prisma.Decimal).toFixed(2)).toBe("64.00");
+    expect(new D(invoice.vatTotal as Prisma.Decimal).toFixed(2)).toBe("12.80");
+    expect(new D(invoice.grossTotal as Prisma.Decimal).toFixed(2)).toBe("76.80");
+  });
+
+  /**
+   * INVARIJANTA NAD NASUMIČNIM DOKUMENTIMA — 1–20 stavki, sve stope.
+   * Seme je fiksno (deterministički generator), da pad testa uvek bude ponovljiv.
+   */
+  it("nasumični dokumenti (1–20 stavki, sve stope) drže jednačinu papira", async () => {
+    // „3" i „6" su OBE 20 % — dokument tako uvek meša i par šifri koji se spaja u JEDNU
+    // PDV grupu (v. objašnjenje uz `byRate` ispod). Stope se ne prepisuju ovde: lokalni
+    // spisak stopa je i bio razlog što je ovaj test zastario.
+    const CODES = ["3", "6", "1", "4", "5", "0"] as const;
+    // xorshift32 — bez zavisnosti, ponovljiv, dovoljno raspršen za paru.
+    let seed = 20260802;
+    const rnd = () => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return Math.abs(seed) / 2147483648;
+    };
+
+    for (let doc = 0; doc < 200; doc += 1) {
+      const count = 1 + Math.floor(rnd() * 20);
+      const items = Array.from({ length: count }, (_, i) => {
+        const code = CODES[Math.floor(rnd() * CODES.length)];
+        const amount = (rnd() * 1000 + 0.01).toFixed(2);
+        return stavka(100 + i, amount, code);
+      });
+      const { db, invoice } = makeDb({ items });
+
+      await service(db).updateHeader(1, { note: `doc-${doc}` }, actor);
+
+      // Osnovica = zbir osnovica stavki (jedini zbir stavki koji postoji).
+      const net = items.reduce((s, it) => s.add(it.vatBase), new D(0));
+      // PDV = Σ round2(osnovica_STOPE × stopa) — jednačina koju papir štampa.
+      //
+      // ⚠️ GRUPIŠE SE PO STOPI, NE PO ŠIFRI (ispravka 02.08.2026, nalaz R3): dve šifre
+      // umeju da nose istu stopu („3" i „6" su obe 20 %), a porez je obaveza po PROMETU I
+      // STOPI. Grupisanje po šifri je davalo dva puta `round2` nad polovinama iste
+      // osnovice — izmereno: 100,03 + 100,03 → 20,01 + 20,01 = 40,02 umesto 40,01. Stopa
+      // se čita iz `vatPercentOf` (mapa iz koje je porez i obračunat), pa ovaj test ne
+      // može da zastari kad se šifarnik ispravi — a upravo je zastareo lokalni spisak
+      // stopa i bio razlog što ovaj test pada.
+      const byRate = new Map<string, Prisma.Decimal>();
+      for (const it of items) {
+        const percent = vatPercentOf(it.vatRateCode).toFixed(2);
+        byRate.set(
+          percent,
+          (byRate.get(percent) ?? new D(0)).add(it.vatBase),
+        );
+      }
+      let vat = new D(0);
+      for (const [percent, base] of byRate)
+        vat = vat.add(
+          base
+            .mul(percent)
+            .div(100)
+            .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+        );
+
+      expect(new D(invoice.netTotal as Prisma.Decimal).toFixed(2)).toBe(
+        net.toFixed(2),
+      );
+      expect(new D(invoice.vatTotal as Prisma.Decimal).toFixed(2)).toBe(
+        vat.toFixed(2),
+      );
+      expect(new D(invoice.grossTotal as Prisma.Decimal).toFixed(2)).toBe(
+        net.add(vat).toFixed(2),
+      );
+    }
   });
 });

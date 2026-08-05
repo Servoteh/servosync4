@@ -1,16 +1,25 @@
 {
   "extends": "./tsconfig.json",
-  // "scripts" AND "prisma" MUST stay excluded: ANY .ts file outside src/ shifts
-  // tsc's inferred rootDir to backend/ and the entrypoint moves to dist/src/main.js
-  // — the Docker CMD `node dist/main` then crash-loops (prod incidents 2026-07-19
-  // and again 2026-07-21, that time from prisma/_nacrt-*.ts seed drafts). Standalone
-  // scripts and prisma seeds run via ts-node; they are not part of the nest build.
+  // "scripts", "prisma" AND "reports" MUST stay excluded: ANY .ts file outside src/
+  // shifts tsc's inferred rootDir to backend/ and the entrypoint moves to
+  // dist/src/main.js — the Docker CMD `node dist/main` then crash-loops (prod incidents
+  // 2026-07-19 and again 2026-07-21, that time from prisma/_nacrt-*.ts seed drafts).
+  // Standalone scripts and prisma seeds run via ts-node; they are not part of the build.
+  //
+  // "reports" added 2026-08-03: the folder is gitignored, so a stray .ts there can never
+  // break CI or the deploy runner (clean checkout has no reports/) — but it DOES break
+  // the local `nest build` + `node dist/main` boot smoke that the deploy protocol
+  // requires BEFORE pushing. Measured: two throwaway render-*.ts left in backend/reports/
+  // silently produced dist/src/main.js, so the pre-push boot check failed with
+  // MODULE_NOT_FOUND and looked exactly like a real crash. The guard is free; losing an
+  // hour to a phantom deploy blocker is not.
   "exclude": [
     "node_modules",
     "test",
     "dist",
     "scripts",
     "prisma",
+    "reports",
     "**/*spec.ts"
   ]
 }

@@ -36,6 +36,7 @@ import {
   RATE_VISA,
   RATE_NIZA,
   RATE_POLJO,
+  unknownVatCodeMessage,
 } from "./vat-rates";
 
 const D = Prisma.Decimal;
@@ -543,7 +544,20 @@ export class PostingEngineService {
       // T = Σ Kol × (StvarnaVP − KalkVP)
       T = T.add(stvarnaVp.sub(kalkVp));
 
-      const rate = VAT_RATE_BY_CODE[it.goodsTaxRateCode] ?? ZERO;
+      // ⚠️ GLASNO NA NEPOZNATOJ ŠIFRI (nalaz S3, 02.08.2026). Do ove izmene je stajalo
+      // `?? ZERO` — nemo: dokument sa šifrom koju mapa ne zna (istekla tarifa „18" iz
+      // BigBita, ručna ispravka u bazi) knjižio bi se BEZ IJEDNE PDV LINIJE. Nalog bi
+      // pritom balansirao (D/E/P/Q/U/W su nula na obe strane), pa ga ni kontrola
+      // ΣDug==ΣPot ne bi zaustavila — greška bi se videla tek u POPDV obrascu, mesecima
+      // kasnije. Ovo je GLAVNA KNJIGA: bolje 422 nego nalog bez poreza.
+      const rate = VAT_RATE_BY_CODE[it.goodsTaxRateCode];
+      if (rate === undefined) {
+        throw new UnprocessableEntityException(
+          `${unknownVatCodeMessage(it.goodsTaxRateCode)} Dokument vrste ` +
+            `${doc.documentTypeCode} ima stavku sa tom šifrom — ispravi tarifu ` +
+            `artikla ili stavke, pa ponovi knjiženje.`,
+        );
+      }
       // Osnovica ulaza po legacy šemi = nabavna + zavisni (A+B+C dela ove stavke).
       const inBase = nab.add(zts).add(ztd);
       const inVat = inBase.mul(rate);

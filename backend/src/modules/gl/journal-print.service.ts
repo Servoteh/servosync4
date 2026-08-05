@@ -14,6 +14,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import type { Column, Content, TableCell, TDocumentDefinitions } from "pdfmake/interfaces";
+import { companyAddressLine } from "../../common/company-address";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PdfService } from "../documents/pdf.service";
 import { SERVOTEH_LOGO_DATA_URL } from "../documents/servoteh-logo";
@@ -31,6 +32,8 @@ interface IssuerInfo {
   companyName: string;
   address: string | null;
   city: string | null;
+  /** Poštanski broj (O-F10) — zasebna kolona od 03.08.2026, ne više deo mesta. */
+  postalCode?: string | null;
   taxId: string | null;
   registrationNumber: string | null;
 }
@@ -95,6 +98,7 @@ export class JournalPrintService {
         companyName: true,
         address: true,
         city: true,
+        postalCode: true,
         taxId: true,
         registrationNumber: true,
       },
@@ -298,7 +302,7 @@ export class JournalPrintService {
   private buildIssuer(issuer: IssuerInfo): Content {
     const lines = [
       issuer.companyName,
-      [issuer.address, issuer.city].filter(Boolean).join(", "),
+      companyAddressLine(issuer.address, issuer.postalCode, issuer.city),
       issuer.taxId ? `PIB: ${issuer.taxId}` : "",
       issuer.registrationNumber ? `Matični broj: ${issuer.registrationNumber}` : "",
     ].filter(Boolean);

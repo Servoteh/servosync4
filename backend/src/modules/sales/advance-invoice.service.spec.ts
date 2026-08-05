@@ -35,7 +35,11 @@ function proformaRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 10,
     documentType: "PROF",
-    documentNumber: "PROF0001/2026",
+    // Format `NNN/GG` (O-F1). Brojač je po VRSTI dokumenta, pa predračun i avansni
+    // račun imaju svoje nizove; avansni uz to nosi i prefiks serije (O-F6, da se ne
+    // sudari sa dobavljačevim avansom i sa fakturom u saldakontima) — otud „12/26"
+    // (PROF) uz „A-1/26" (AVR).
+    documentNumber: "12/26",
     level: 250,
     status: "DRAFT",
     companyId: 0,
@@ -61,7 +65,7 @@ function advanceRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 50,
     documentType: "AVR",
-    documentNumber: "AVR0001/2026",
+    documentNumber: "A-1/26",
     level: 0,
     status: "PAID",
     companyId: 0,
@@ -86,7 +90,7 @@ function finalInvoiceRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 100,
     documentType: "IFR",
-    documentNumber: "IFR0007/2026",
+    documentNumber: "7/26",
     level: 0,
     status: "POSTED",
     companyId: 0,
@@ -205,7 +209,7 @@ describe("AdvanceInvoiceService", () => {
         lineCount: 3,
       }),
     };
-    numbering = { next: jest.fn().mockResolvedValue("AVR0001/2026") };
+    numbering = { next: jest.fn().mockResolvedValue("A-1/26") };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -248,7 +252,7 @@ describe("AdvanceInvoiceService", () => {
       expect(data.documentType).toBe("AVR");
       expect(data.advanceDirection).toBe("out");
       expect(data.level).toBe(0);
-      expect(data.documentNumber).toBe("AVR0001/2026");
+      expect(data.documentNumber).toBe("A-1/26");
       expect(data.copiedFromDocId).toBe(10);
       expect(data.netTotal.toFixed(2)).toBe("10000.00");
       expect(data.vatTotal.toFixed(2)).toBe("2000.00");
@@ -291,7 +295,7 @@ describe("AdvanceInvoiceService", () => {
       prisma.invoice.findUnique.mockResolvedValue(proformaRow());
       prisma.invoice.findFirst.mockResolvedValue({
         id: 50,
-        documentNumber: "AVR0001/2026",
+        documentNumber: "A-1/26",
       });
 
       await expect(
@@ -359,14 +363,21 @@ describe("AdvanceInvoiceService", () => {
       expect(sum("debit").equals(sum("credit"))).toBe(true);
     });
 
-    it("PDV 10% ide na konto 4730", async () => {
+    /**
+     * ⚠️ ŠIFRA POPRAVLJENA „2" → „4" (nalaz V1, 02.08.2026). Test je prolazio zato što
+     * je avansni servis držao SVOJ prepis mape stopa u kome je „2" značila 10 % —
+     * a „2" u `R_Tarife` uopšte ne postoji. Snižena stopa je šifra „4" (grupa NIZA).
+     * Da prepis nije uklonjen, ovaj bi test i dalje bio zelen dok predračun sa istom
+     * stavkom računa po drugoj stopi.
+     */
+    it("PDV 10% (šifra „4” = NIZA) ide na konto 4730", async () => {
       prisma.invoice.findUnique.mockResolvedValue(
         advanceRow({
           status: "POSTED",
           advancePaidAt: null,
           advancePaidAmount: new D(0),
           grossTotal: new D(11000),
-          items: [{ vatRateCode: "2", vatBase: new D(10000) }],
+          items: [{ vatRateCode: "4", vatBase: new D(10000) }],
         }),
       );
       prisma.invoice.update.mockResolvedValue(advanceRow());
@@ -499,7 +510,10 @@ describe("AdvanceInvoiceService", () => {
 
       expect(result.payableAmount.toFixed(2)).toBe("0.00");
       expect(result.grossTotal.toFixed(2)).toBe("12000.00");
-      expect(result.advanceInvoiceNumber).toBe("AVR0001/2026");
+      // Broj je u novom obliku (O-F1: NNN/GG) uz prefiks avansne serije (O-F6) —
+      // stara tvrdnja „AVR0001/2026" je pala sa numeracijom, ne sa ovim testom.
+      // Tvrdnja o iznosu dolazi sa main-a.
+      expect(result.advanceInvoiceNumber).toBe("A-1/26");
       expect(result.appliedAmount.toFixed(2)).toBe("12000.00");
 
       // Primena je upisana u spojnu tabelu sa razbijenim iznosima.

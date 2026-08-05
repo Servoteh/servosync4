@@ -276,7 +276,9 @@ export type LocBarcodeResult =
 /**
  * Imperativno razrešavanje skeniranog/otkucanog barkoda (poziva se iz skenera i
  * HID polja, ne kao useQuery — on-demand po skenu). BE parsira RNZ/short/compact
- * (stavka) i LP:/„HALA - POLICA"/šifra police (destinacija).
+ * (stavka) i LP:/„HALA - POLICA"/šifra police/goli kod skladišne lokacije —
+ * pre svega kavez `KV 6` (kavez nalepnica nosi PUN location_code u CODE128) —
+ * kao destinaciju/polaznu (kind:'SHELF').
  */
 export function lookupLocBarcode(code: string): Promise<{ data: LocBarcodeResult }> {
   return apiFetch<{ data: LocBarcodeResult }>(
@@ -300,6 +302,14 @@ export interface LocDrawingLookup {
   nazivDela: string | null;
   /** 'work_orders' (glavna baza) | 'bigtehn_cache' (sy15 legacy keš) | null. */
   source: string | null;
+  /**
+   * Ukupno komada na nalogu (glavna baza `work_orders.piece_count` / sy15 keš
+   * `komada`) — 1.0 `komada_total`. Hrani auto-popunu „Količine" (057/26) i
+   * računicu „Uloži preostalo sa naloga (K kom)" (059/26): K = pieceCount −
+   * Σ trenutnih placements-a. OPCIONO (stariji BE ga ne šalje — FE tada samo
+   * preskoči autofill/preostalo, ništa se ne lomi); `null` = nepouzdano.
+   */
+  pieceCount?: number | null;
 }
 
 /**

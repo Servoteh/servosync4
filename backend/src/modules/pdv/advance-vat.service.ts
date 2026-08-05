@@ -49,9 +49,19 @@ import {
   type RecordIncomingAdvanceDto,
 } from "./dto/advance-vat.dto";
 import type { AuthUser } from "../auth/jwt.strategy";
-// Status AKTIVNE primene avansa — jedna tačka istine je sales/advance-invoice.service
-// (tamo se primena i upisuje i stornira); ovde se samo ČITA za zbir iskorišćenosti.
-import { APPLICATION_ACTIVE } from "../sales/advance-invoice.service";
+// PRAVILO „koliko je avansa odbijeno" ima JEDNU tačku istine u modulu prodaje (tamo se
+// primena i upisuje i stornira); ovde se samo ČITA, za zbir iskorišćenosti na ekranu.
+import {
+  APPLICATION_ACTIVE,
+  computeAdvanceUsageByAdvance,
+  loadAdvanceLinkedInvoices,
+  loadInvoiceAdvanceDeductions,
+} from "../sales/advance-deduction";
+// Brava mora biti ISTA kao u `applyAdvance` — v. komentar uz konstante tamo.
+import {
+  ADVISORY_NS_APPLY_OF_ADVANCE,
+  ADVISORY_NS_APPLY_ON_INVOICE,
+} from "../sales/advance-invoice.service";
 
 const D = Prisma.Decimal;
 const ZERO = new D(0);
@@ -344,6 +354,22 @@ export class AdvanceVatService {
    * Storno ide u poreski period konačnog računa (tada avans prestaje da važi kao
    * samostalan osnov odbitka). Avans koji nikad nije plaćen nema šta da storniram —
    * veza se samo upisuje.
+   *
+   * ⚠️ RUTA JE DANAS ZATVORENA — NIJEDAN POZIV NE PROLAZI (izmereno 02.08.2026).
+   * `loadIncomingAdvanceOrThrow` traži `advanceDirection = 'in'`, a guard ispod baš
+   * ULAZNI avans odbija (review Batch C, nalaz 4: tabela `invoices` drži samo NAŠA
+   * izlazna dokumenta, pa veza nema ispravan cilj dok ne postoji evidencija ulaznih
+   * faktura). Izlazni avans otpada na prvom guardu, ulazni na drugom. Posledica:
+   * zatečene 1:1 veze se kroz aplikaciju VIŠE NE PRAVE — u produkciji ih ima 0, a
+   * preostale će doći uvozom BigBit istorije.
+   *
+   * Brane unutra (zajednička advisory brava sa `applyAdvance`, provera prekoračenja
+   * računa) zato danas ne mogu da se izvrše. Stoje jer je otvaranje ove rute pitanje
+   * evidencije ulaznih faktura, a ne ovih provera: ko je otvori, ne sme usput da
+   * otvori i rupe koje su ovde već zatvorene. PRE otvaranja pročitati
+   * `sales/advance-deduction.ts` (kolona = UKUPNO odbijeno, ne „zbir primena") i
+   * proveriti PDV stranu — storno pretporeza (KUF) ispod važi za ULAZNI avans; za
+   * izlazni bi trebalo stornirati obavezu (KIF), što ovaj kod NE radi.
    */
   async linkIncomingAdvanceToFinal(
     dto: LinkIncomingAdvanceToFinalDto,
@@ -416,15 +442,67 @@ export class AdvanceVatService {
         : null;
 
     return this.prisma.$transaction(async (tx) => {
+      // ── BRAVA (N3) — ISTI PAR KAO `AdvanceInvoiceService.applyAdvance` ────────
+      // Ova ruta piše kolone odbitka, a `applyAdvance` ih ČITA pa UPISUJE
+      // (read-then-write, READ COMMITTED). Bez zajedničke brave je to izgubljen upis:
+      // `applyAdvance` pročita `advance_applied_amount` = 0, ova ruta u međuvremenu
+      // commit-uje 3.000, `applyAdvance` upiše `totalApplied` izveden iz PROČITANE
+      // nule → odbitak od 3.000 nestane sa računa (kupac plati 3.000 više), avans
+      // ostane „slobodan" za još jednu primenu (dupla potrošnja), a `isFirstApplication`
+      // je pri tom bio `true` pa se prepiše i `advance_invoice_id`.
+      // CAS (`advanceInvoiceId: null` u WHERE) to NE hvata — on brani samo od druge
+      // instance OVE rute, ne od druge tabele. Redosled brava je UVEK račun → avans,
+      // isti kao tamo (obrnut redosled u drugoj sesiji = deadlock). ::int kastovi
+      // obavezni (Prisma vezuje bigint).
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADVISORY_NS_APPLY_ON_INVOICE}::int, ${final.id}::int)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ADVISORY_NS_APPLY_OF_ADVANCE}::int, ${advance.id}::int)`;
+
       if (isPaid) {
         await assertVatPeriodNotLocked(tx, year, [month]);
+      }
+
+      // ── PREKORAČENJE RAČUNA (N8b) ────────────────────────────────────────────
+      // Do 02.08.2026. se `applied` upisivalo BEZ ijedne provere prema `grossTotal`:
+      // avans 12.000 na račun od 10.000 je prolazio, pa je papir nosio „TOTAL 10.000 /
+      // Umanjenje −12.000 / Za uplatu 0,00" (`computePayableAmount` klešti na nulu, bez
+      // reči objašnjenja), a 2.000 avansa je nestalo iz svake evidencije. `applyAdvance`
+      // istu grešku odbija sa 422; ovde je nedostajala.
+      // Stanje se čita POD BRAVOM i ISTIM pravilom kao papir/SEF (`advance-deduction`).
+      const locked = await tx.invoice.findUnique({
+        where: { id: final.id },
+        select: {
+          id: true,
+          grossTotal: true,
+          advanceInvoiceId: true,
+          advanceAppliedAmount: true,
+        },
+      });
+      if (!locked) {
+        throw new NotFoundException(
+          `Konačni račun #${final.id} ne postoji (obrisan u međuvremenu).`,
+        );
+      }
+      const already = await loadInvoiceAdvanceDeductions(tx, locked);
+      const invoiceRemaining = locked.grossTotal.sub(already.total);
+      if (applied.greaterThan(invoiceRemaining)) {
+        throw new UnprocessableEntityException(
+          `Avans ${advance.documentNumber} (${applied.toFixed(2)}) je veći od neodbijenog ` +
+            `dela računa ${final.documentNumber} (${invoiceRemaining.toFixed(2)} od ` +
+            `${locked.grossTotal.toFixed(2)}) — račun ne može da odbije više nego što ` +
+            `iznosi.`,
+        );
       }
 
       const claimed = await tx.invoice.updateMany({
         where: { id: final.id, advanceInvoiceId: null },
         data: {
           advanceInvoiceId: advance.id,
-          advanceAppliedAmount: applied,
+          // Kolona znači UKUPNO odbijeno na računu (v. `advance-deduction.ts`), pa se
+          // DODAJE na zatečeni zbir umesto da ga prepiše. CAS iznad danas garantuje da
+          // primena nema (`applyAdvance` popuni `advance_invoice_id` već pri prvoj), pa
+          // je `already.total` u praksi 0 — ali kolona koja bi prepisom pojela postojeće
+          // primene je previše tiha greška da bi se oslanjala na tuđu invariantu.
+          advanceAppliedAmount: already.total.add(applied),
         },
       });
       if (claimed.count !== 1) {
@@ -520,7 +598,7 @@ export class AdvanceVatService {
     ];
     const advanceIds = rows.map((r) => r.id);
 
-    const [partners, applicationRows, legacyLinks] = await Promise.all([
+    const [partners, applicationRows, linkedInvoices] = await Promise.all([
       partnerIds.length
         ? this.prisma.customer.findMany({
             where: { id: { in: partnerIds } },
@@ -552,74 +630,40 @@ export class AdvanceVatService {
           ),
       // LEGACY / CROSS-MODUL veze: pre N:M migracije i kroz `linkIncomingAdvanceToFinal`
       // (ulazni smer) veza živi SAMO u denormalizovanim `invoices.advance_*` kolonama,
-      // bez reda u spojnoj tabeli.
-      advanceIds.length
-        ? this.prisma.invoice.findMany({
-            where: {
-              advanceInvoiceId: { in: advanceIds },
-              status: { not: "CANCELLED" },
-            },
-            orderBy: { id: "asc" },
-            select: {
-              id: true,
-              documentNumber: true,
-              advanceInvoiceId: true,
-              advanceAppliedAmount: true,
-            },
-          })
-        : Promise.resolve(
-            [] as {
-              id: number;
-              documentNumber: string;
-              advanceInvoiceId: number | null;
-              advanceAppliedAmount: Prisma.Decimal;
-            }[],
-          ),
+      // bez reda u spojnoj tabeli. Uz svaki takav račun idu i NJEGOVE aktivne primene —
+      // iznos zatečene veze je `kolona − Σ primena TOG računa`, a kolona je zbir po SVIM
+      // avansima (v. `advance-deduction.ts`).
+      loadAdvanceLinkedInvoices(this.prisma, advanceIds),
     ]);
 
     const partnerName = new Map(partners.map((p) => [p.id, p.name]));
 
-    const appsByAdvance = new Map<number, AdvanceApplicationRef[]>();
-    for (const a of applicationRows) {
-      const list = appsByAdvance.get(a.advanceInvoiceId) ?? [];
-      list.push({
+    // JEDNO PRAVILO ZA CEO SISTEM (`sales/advance-deduction.ts`): UNIJA aktivnih primena
+    // i onih zatečenih 1:1 veza koje u spojnoj tabeli nemaju svoj red. Do 02.08.2026. je
+    // isti račun stajao prepisan ovde; „ili-ili" varijanta je posle prve N:M primene
+    // gubila legacy deo, pa je ekran nudio ostatak koji avans nema — a server ga je
+    // odbijao. Ekran i server sada dele funkciju, ne opis.
+    const usageByAdvance = computeAdvanceUsageByAdvance({
+      advanceInvoiceIds: advanceIds,
+      applicationsOfAdvances: applicationRows.map((a) => ({
+        advanceInvoiceId: a.advanceInvoiceId,
         invoiceId: a.invoiceId,
-        documentNumber: a.invoice.documentNumber,
         appliedAmount: a.appliedAmount,
-      });
-      appsByAdvance.set(a.advanceInvoiceId, list);
-    }
-    const legacyByAdvance = new Map<number, AdvanceApplicationRef[]>();
-    for (const l of legacyLinks) {
-      if (l.advanceInvoiceId == null) continue;
-      const list = legacyByAdvance.get(l.advanceInvoiceId) ?? [];
-      list.push({
-        invoiceId: l.id,
-        documentNumber: l.documentNumber,
-        appliedAmount: l.advanceAppliedAmount,
-      });
-      legacyByAdvance.set(l.advanceInvoiceId, list);
-    }
+        invoiceDocumentNumber: a.invoice.documentNumber,
+      })),
+      linkedInvoices,
+    });
 
     const data: AdvanceRow[] = rows.map((r) => {
-      // ISTO PRAVILO KAO `AdvanceInvoiceService.applyAdvance`: UNIJA aktivnih primena
-      // iz spojne tabele i onih legacy 1:1 veza koje u njoj nemaju svoj red. Ranije je
-      // bilo „ili-ili" (legacy se gleda samo kad primena nema), pa je posle prve N:M
-      // primene legacy deo nestajao iz iskorišćenosti i ekran je nudio ostatak koji
-      // avans nema. Bilo koje drugo pravilo bi dalo ekran koji pokazuje jedan ostatak,
-      // a server dozvoljava drugi.
-      const apps = appsByAdvance.get(r.id) ?? [];
-      const appliedInvoiceIds = new Set(apps.map((a) => a.invoiceId));
-      const applications = [
-        ...apps,
-        ...(legacyByAdvance.get(r.id) ?? []).filter(
-          (l) => !appliedInvoiceIds.has(l.invoiceId),
-        ),
-      ];
-      const appliedAmount = applications.reduce(
-        (acc, a) => acc.add(a.appliedAmount),
-        ZERO,
+      const usage = usageByAdvance.get(r.id);
+      const applications: AdvanceApplicationRef[] = (usage?.lines ?? []).map(
+        (l) => ({
+          invoiceId: l.invoiceId,
+          documentNumber: l.invoiceDocumentNumber ?? "",
+          appliedAmount: l.amount,
+        }),
       );
+      const appliedAmount = usage?.total ?? ZERO;
       const first = applications[0] ?? null;
       return {
         id: r.id,

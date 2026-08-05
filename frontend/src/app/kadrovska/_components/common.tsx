@@ -5,24 +5,48 @@ import { cn } from '@/lib/cn';
 
 // Deljeni primitivci Kadrovske (paritet 1.0 renderSummaryChips / kadr-type-badge).
 
-/** Statistička traka (chips) — labela + vrednost. */
-export function SummaryChips({ items }: { items: { label: string; value: ReactNode; tone?: 'default' | 'warn' | 'danger' | 'accent' }[] }) {
+/**
+ * Statistička traka (chips) — labela + vrednost.
+ * `onClick` (068/26): čip postaje dugme-filter (brojka koja se vidi mora i da se
+ * otvori — ranije je „Čeka kadrovsku 1" stajala iznad prazne tabele). `active`
+ * ga označava kao trenutno izabran (aria-pressed za čitače ekrana).
+ */
+export interface SummaryChipItem {
+  label: string;
+  value: ReactNode;
+  tone?: 'default' | 'warn' | 'danger' | 'accent';
+  onClick?: () => void;
+  active?: boolean;
+  title?: string;
+}
+export function SummaryChips({ items }: { items: SummaryChipItem[] }) {
   return (
     <div className="flex flex-wrap gap-2">
-      {items.map((it, i) => (
-        <div
-          key={i}
-          className={cn(
-            'rounded-panel border border-line bg-surface px-3 py-2',
-            it.tone === 'danger' && 'border-status-danger/40 bg-status-danger-bg',
-            it.tone === 'warn' && 'border-status-warn/40 bg-status-warn-bg',
-            it.tone === 'accent' && 'border-accent/40 bg-accent-subtle',
-          )}
-        >
-          <div className="text-2xs font-semibold uppercase tracking-wider text-ink-secondary">{it.label}</div>
-          <div className="tnums mt-0.5 text-lg font-semibold text-ink">{it.value}</div>
-        </div>
-      ))}
+      {items.map((it, i) => {
+        const cls = cn(
+          'rounded-panel border border-line bg-surface px-3 py-2 text-left',
+          it.tone === 'danger' && 'border-status-danger/40 bg-status-danger-bg',
+          it.tone === 'warn' && 'border-status-warn/40 bg-status-warn-bg',
+          it.tone === 'accent' && 'border-accent/40 bg-accent-subtle',
+          it.onClick && 'cursor-pointer hover:border-accent focus-visible:outline-none focus-visible:border-accent',
+          it.active && 'border-accent ring-1 ring-accent',
+        );
+        const body = (
+          <>
+            <div className="text-2xs font-semibold uppercase tracking-wider text-ink-secondary">{it.label}</div>
+            <div className="tnums mt-0.5 text-lg font-semibold text-ink">{it.value}</div>
+          </>
+        );
+        return it.onClick ? (
+          <button key={i} type="button" className={cls} onClick={it.onClick} aria-pressed={!!it.active} title={it.title}>
+            {body}
+          </button>
+        ) : (
+          <div key={i} className={cls} title={it.title}>
+            {body}
+          </div>
+        );
+      })}
     </div>
   );
 }

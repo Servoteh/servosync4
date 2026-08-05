@@ -102,10 +102,39 @@ export default function SyncsPage() {
       />
 
       <div className="flex-1 space-y-4 overflow-auto p-6">
+        {/*
+          061/26 + reopen (04.08.2026): dugme šalje prazan body → backend
+          PODRAZUMEVANO preskače DEFAULT_SYNC_EXCLUDED (artikli/predmeti/
+          komitenti — vozi ih noćni .mdb uvoz; šest tokova sa praznim QBigTehn
+          izvorom). Napomena stoji stalno i kaže i ŠTA dugme NE donosi —
+          Igorova prijava 04.08. je bila tačno pogrešno očekivanje („sync će
+          doneti novi RN/predmet iz BigBita"). Rok „do 17:30" nije ukras: uvoz u
+          03:45 obrađuje SINOĆNJI izvoz, pa se kasniji unos vidi tek prekosutra.
+        */}
+        <div className="space-y-1 rounded-panel border border-line bg-surface-2 px-4 py-3 text-sm text-ink-secondary">
+          <p>
+            <span className="font-medium text-ink">Šta dugme radi:</span> osvežava QBigTehn
+            šifarnike (konfiguracija, registri, MRP…).{' '}
+            <span className="font-medium text-ink">
+              Artikli, predmeti i komitenti su preskočeni
+            </span>{' '}
+            — njihov QBigTehn izvor je zamrznut od 22.07.2026, pa ih vozi noćni uvoz (vidi
+            ispod).
+          </p>
+          <p>
+            <span className="font-medium text-ink">Šta NE stiže ovim dugmetom:</span> novi
+            predmeti, komitenti i artikli iz BigBit-a stižu automatski{' '}
+            <span className="font-medium text-ink">noćnim uvozom</span> (oko 03:45) — uneto u
+            BigBit do 17:30 vidljivo je sutra ujutru, kasnije prekosutra (izvoz iz BigBita ide
+            jednom dnevno i ne može se ubrzati odavde). Radni nalozi (RN) se ne sinhronizuju
+            uopšte: otvaraju se direktno u aplikaciji i odmah su vidljivi u Praćenju i Planu
+            proizvodnje.
+          </p>
+        </div>
         {runSync.isPending && (
           <div className="rounded-panel border border-status-info/30 bg-status-info-bg px-4 py-3 text-sm text-status-info">
-            Sinhronizacija je pokrenuta — puni ~500.000 redova iz QBigTehn. Može potrajati
-            nekoliko minuta.
+            Sinhronizacija je pokrenuta — osvežava QBigTehn šifarnike (bez artikala, predmeta i
+            komitenata). Obično traje manje od minuta.
           </div>
         )}
         {(runSync.error || logs.error) && (
