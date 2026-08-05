@@ -11,10 +11,12 @@
 > uz **51 već-popisanu otvorenu stavku** iz postojećih planova (Aneks B). Sirovi podaci:
 > workflow `wf_66d06045-aeb` (journal.jsonl).
 
-> **🔴 VERIFIKACIJA 06.08.2026 (Fable, glavna sesija):** svih 153 stavke ovog plana provereno
+> **🔴 VERIFIKACIJA 06.08.2026 (Fable, glavna sesija):** svih 149 stavki ovog plana provereno
 > pojedinačno protiv `origin/main` (git grep/git show, ne na reč dokumenta). Rezultat:
-> **✅ 69 urađeno · 🟨 28 delimično · ⬜ 52 otvoreno · ⚰️ 4 prevaziđeno.** Legenda ispod važi
-> za ceo dokument od ove tačke.
+> **✅ 69 urađeno · 🟨 28 delimično · ⬜ 48 otvoreno · ⚰️ 4 prevaziđeno.** (Nekoliko nalaza se
+> pominje na dva mesta u dokumentu — npr. MONTAZA-01/02, ZARADE-02 — pa je ukupan broj OZNAKA
+> u tekstu 153, ali broj JEDINSTVENIH proverenih nalaza je 149.) Legenda ispod važi za ceo
+> dokument od ove tačke.
 >
 > ✅ URAĐENO (dokaz u kodu) · 🟨 DELIMIČNO (deo urađen, ostatak naveden) ·
 > ⬜ NIJE (i dalje otvoreno) · ⚰️ PREVAZIĐENO (potreba nestala — cutover 1.0 ili arh. promena)
