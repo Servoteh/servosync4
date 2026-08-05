@@ -41,6 +41,13 @@ export class GanttQueryDto {
    * Obavezan `q` (min 2 znaka). Bez scope → postojeći feed (otvorene + planirane).
    */
   @IsOptional() @IsString() scope?: string;
+  /**
+   * 070/26: poredak redova unutar mašine — `rucni` (ručni redosled smene je primaran,
+   * režim u kom se redovi prevlače) ili bilo šta drugo/izostavljeno = PODRAZUMEVANO
+   * „po terminu" (planirani početak je primaran, ponašanje pre 070/26). Namerno bez
+   * `@IsIn` — nepoznata vrednost daje podrazumevani poredak, ne 400.
+   */
+  @IsOptional() @IsString() sort?: string;
 }
 
 export class DrawingsQueryDto {

@@ -1,4 +1,4 @@
-import type { GanttRow } from '@/api/plan-proizvodnje';
+import { opKey, type GanttRow } from '@/api/plan-proizvodnje';
 
 /**
  * Čista logika taba „Gant" (zahtev 046/26): dan-aritmetika vremenske ose, izvođenje kraja
@@ -142,9 +142,12 @@ export function technologyMinutes(row: GanttRow): number {
   return Math.round(tpz + tk * kom);
 }
 
-export function rowKey(r: { work_order_id: string; line_id: string }): string {
-  return `${r.work_order_id}:${r.line_id}`;
-}
+/**
+ * Ključ reda = DELJENI ključ otvorene operacije (`opKey`, `@/api/plan-proizvodnje`).
+ * Namerno isti izraz i isti izvor kao „Po mašini": optimistički upis redosleda (070/26)
+ * mapira gant redove po ovom ključu, pa dva različita računa ključa ne smeju da postoje.
+ */
+export const rowKey = opKey;
 
 /**
  * Geometrija bara u px unutar ose (izvučeno iz `Bar`-a da isti račun koristi i sloj
@@ -273,16 +276,37 @@ export interface HallGroup {
   machines: MachineGroup[];
 }
 
+/** Hala reda (sentinel `NO_HALL` = „Bez hale"). */
+export function hallOf(r: GanttRow): string {
+  return r.hall ?? NO_HALL;
+}
+/** Efektivna mašina reda (posle reassign-a); prazna → sentinel labela grupe. */
+export function machineOf(r: GanttRow): string {
+  return r.effective_machine_code ?? '(bez mašine)';
+}
+/**
+ * Ključ grupe MAŠINE (hala + mašina) — isti ključ koji gradi `groupRows` i po kom
+ * prevlačenje (070/26) skuplja stavke za renumeraciju. Razdvajač je `NO_HALL` sentinel
+ * (￿), znak koji ne može da se pojavi ni u nazivu hale ni u šifri mašine.
+ */
+export function makeGroupKey(hall: string, machine: string): string {
+  return `${hall}${NO_HALL}${machine}`;
+}
+
+export function groupKey(r: GanttRow): string {
+  return makeGroupKey(hallOf(r), machineOf(r));
+}
+
 /**
  * Grupisanje Hala → mašina, uz stabilan poredak: hale abecedno („Bez hale" uvek
- * poslednja preko `NO_HALL` sentinela), mašine abecedno, stavke po planiranom početku
- * pa po ručnom redosledu smene (`shift_sort_order`) — isti kanon kao ostali tabovi.
+ * poslednja preko `NO_HALL` sentinela), mašine abecedno, stavke po `compareRows`
+ * (ručni redosled smene `shift_sort_order` je master — v. dole).
  */
-export function groupRows(rows: GanttRow[]): HallGroup[] {
+export function groupRows(rows: GanttRow[], mode: GanttSort = 'termin'): HallGroup[] {
   const byHall = new Map<string, Map<string, MachineGroup>>();
   for (const r of rows) {
-    const hall = r.hall ?? NO_HALL;
-    const machine = r.effective_machine_code ?? '(bez mašine)';
+    const hall = hallOf(r);
+    const machine = machineOf(r);
     let machines = byHall.get(hall);
     if (!machines) {
       machines = new Map();
@@ -298,20 +322,85 @@ export function groupRows(rows: GanttRow[]): HallGroup[] {
   const out: HallGroup[] = [];
   for (const [hall, machines] of byHall) {
     const list = [...machines.values()].sort((a, b) => a.machine.localeCompare(b.machine, 'sr', { numeric: true }));
-    for (const m of list) m.rows.sort(compareRows);
+    for (const m of list) m.rows.sort((a, b) => compareRows(a, b, mode));
     out.push({ hall, machines: list });
   }
   return out.sort((a, b) => a.hall.localeCompare(b.hall, 'sr', { numeric: true }));
 }
 
-function compareRows(a: GanttRow, b: GanttRow): number {
-  const sa = a.planned_start_at ?? '';
-  const sb = b.planned_start_at ?? '';
-  if (sa !== sb) return sa < sb ? -1 : 1;
+/**
+ * Režim ređanja redova unutar mašine (070/26, prekidač „Ređaj po"):
+ *   • `termin` = PODRAZUMEVANO i identično stanju pre 070/26 — planirani početak je
+ *     primaran, lista ostaje hronološka,
+ *   • `rucni` = ručni redosled smene (`shift_sort_order`) je primaran; jedino u tom
+ *     režimu prevlačenje redova ima šta da pokaže.
+ */
+export type GanttSort = 'termin' | 'rucni';
+
+/** `null`/`undefined` idu POSLE svega (ogledalo `NULLS LAST` iz BE upita). */
+function cmpNullsLast(a: string | null | undefined, b: string | null | undefined): number {
+  const an = a == null || a === '';
+  const bn = b == null || b === '';
+  if (an || bn) return an && bn ? 0 : an ? 1 : -1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Poredak stavki UNUTAR mašine — DOSLOVNO ogledalo BE `gantt()` ORDER BY (v.
+ * `plan-proizvodnje-read.service.ts`), ključ po ključ, u OBA režima:
+ *   termin:  planned_start_at ↦ shift_sort_order ↦ rok_izrade ↦ rn_ident_broj ↦ operacija
+ *   rucni:   shift_sort_order ↦ planned_start_at ↦ rok_izrade ↦ rn_ident_broj ↦ operacija
+ * (grupni ključevi `hall, effective_machine_code` su iznad ovoga — njih radi `groupRows`.)
+ *
+ * ⚠️ Poredak mora da se poklapa sa BE-om zato što se feed SEČE na BE strani (`LIMIT`), a
+ * crta po ovom računu: ako se razmimoiđu, rez uzme druge redove od onih koje prikaz stavlja
+ * na vrh. Zato su ovde i `rok_izrade`/`operacija` (BE ih ima) i zato NULL vrednosti idu
+ * POSLE (`NULLS LAST`) — ranije je FE stavljao stavke bez termina na POČETAK, suprotno BE-u.
+ */
+export function compareRows(a: GanttRow, b: GanttRow, mode: GanttSort = 'termin'): number {
   const oa = a.shift_sort_order ?? Number.MAX_SAFE_INTEGER;
   const ob = b.shift_sort_order ?? Number.MAX_SAFE_INTEGER;
-  if (oa !== ob) return oa - ob;
-  return String(a.rn_ident_broj ?? '').localeCompare(String(b.rn_ident_broj ?? ''), 'sr', { numeric: true });
+  const rucni = oa !== ob ? oa - ob : 0;
+  const termin = cmpNullsLast(a.planned_start_at, b.planned_start_at);
+  if (mode === 'rucni') {
+    if (rucni !== 0) return rucni;
+    if (termin !== 0) return termin;
+  } else {
+    if (termin !== 0) return termin;
+    if (rucni !== 0) return rucni;
+  }
+  const rok = cmpNullsLast(a.rok_izrade, b.rok_izrade);
+  if (rok !== 0) return rok;
+  const rn = String(a.rn_ident_broj ?? '').localeCompare(String(b.rn_ident_broj ?? ''), 'sr', {
+    numeric: true,
+  });
+  if (rn !== 0) return rn;
+  return (Number(a.operacija ?? 0) || 0) - (Number(b.operacija ?? 0) || 0);
+}
+
+/**
+ * Novi redosled liste posle prevlačenja (070/26) — DOSLOVNO isti račun kao „Po mašini"
+ * (`ops-table.tsx` `onDrop`): `after` = puštanje ISPOD polovine reda-mete (umetni POSLE),
+ * a kompenzacija `if (from < to) to -= 1` je obavezna jer se prevučeni red prvo ukloni
+ * (`splice(from, 1)`), pa se svi indeksi desno od njega pomere za 1 (bez nje je
+ * off-by-one). `null` = nema pomeraja → pozivalac NE šalje upis.
+ */
+export function reorderByDrop(
+  list: GanttRow[],
+  dragKey: string,
+  overKey: string,
+  after: boolean,
+): GanttRow[] | null {
+  const from = list.findIndex((r) => rowKey(r) === dragKey);
+  let to = list.findIndex((r) => rowKey(r) === overKey);
+  if (from < 0 || to < 0) return null;
+  if (after) to += 1;
+  if (from < to) to -= 1;
+  if (from === to) return null;
+  const out = [...list];
+  const [moved] = out.splice(from, 1);
+  out.splice(to, 0, moved);
+  return out;
 }
 
 /**

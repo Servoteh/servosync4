@@ -400,13 +400,24 @@ export function useOperationsSearch(q: string) {
 /* ── Gant (046/26) ── */
 
 /** Gant feed (otvorene operacije + sve već isplanirane stavke). `hall='-'` = „Bez hale". */
-export function useGantt(filters: { hall?: string; machine?: string; q?: string } = {}) {
+export function useGantt(
+  filters: { hall?: string; machine?: string; q?: string; sort?: 'termin' | 'rucni' } = {},
+) {
   const term = (filters.q ?? '').trim();
+  // 070/26: `sort` je DEO KLJUČA — feed se seče na BE strani (`LIMIT`) po BE poretku, pa
+  // svaki režim mora imati svoj keš (deljen keš bi crtao rez napravljen u drugom režimu).
+  // `termin` je podrazumevano i NE šalje parametar — stari URL, stari (današnji) odgovor.
+  const sort = filters.sort === 'rucni' ? 'rucni' : 'termin';
   return useQuery({
-    queryKey: [...KEYS.gantt, filters.hall ?? '', filters.machine ?? '', term],
+    queryKey: [...KEYS.gantt, filters.hall ?? '', filters.machine ?? '', term, sort],
     queryFn: () =>
       apiFetch<{ data: GanttRow[]; meta: { limit: number; truncated: boolean } }>(
-        `${BASE}/gantt${qs({ hall: filters.hall, machine: filters.machine, q: term || undefined })}`,
+        `${BASE}/gantt${qs({
+          hall: filters.hall,
+          machine: filters.machine,
+          q: term || undefined,
+          sort: sort === 'rucni' ? 'rucni' : undefined,
+        })}`,
       ),
   });
 }
@@ -764,6 +775,65 @@ export const useOptimisticReorder = () => {
           const isThisMachine = k[2] === 'machine' && k[3] === (v.machine ?? null);
           return !isThisMachine;
         },
+      });
+    },
+  });
+};
+
+/**
+ * Optimistički reorder redova GANTA (zahtev 070/26) — ISTI endpoint i ISTI ključ upisa
+ * kao „Po mašini": `/overlays/reorder` upisuje `shift_sort_order` = 1..n redom kojim
+ * stignu stavke. Razlika je samo keš koji se pipa: gant čita `KEYS.gantt`, pa se
+ * optimistički upisuju NOVE vrednosti `shift_sort_order` u redove (poredak se iz njih
+ * izvodi u `groupRows`/`compareRows`, pa se prikaz pomeri odmah, bez čekanja mreže).
+ *
+ * `orderedRows` je PUN red mašine (i stavke van plana), ne samo vidljivi isečak — inače
+ * bi renumeracija 1..n nad podskupom pomerila stavke koje planer u gantu ne vidi, a koje
+ * „Po mašini" prikazuje (isti `shift_sort_order`, dva prikaza).
+ *
+ * Greška → rollback na zatečeno stanje + ⚠ toast; `onSettled` osvežava i gant i
+ * „Po mašini" (jedan podatak, dva potrošača).
+ */
+export const useGanttReorder = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { orderedRows: GanttRow[] }) =>
+      post('/overlays/reorder', {
+        items: v.orderedRows.map((x) => ({ workOrderId: x.work_order_id, lineId: x.line_id })),
+      }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: KEYS.gantt });
+      const prev = qc.getQueriesData<unknown>({ queryKey: KEYS.gantt }).map(([k, d]) => [k, d] as const);
+      const order = new Map(v.orderedRows.map((r, i) => [opKey(r), i + 1]));
+      for (const [key, data] of qc.getQueriesData<unknown>({ queryKey: KEYS.gantt })) {
+        const d = data as { data?: GanttRow[] } | undefined;
+        if (!d || !Array.isArray(d.data)) continue;
+        qc.setQueryData(key, {
+          ...d,
+          data: d.data.map((r) => {
+            const n = order.get(opKey(r));
+            return n === undefined ? r : { ...r, shift_sort_order: n };
+          }),
+        });
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
+      if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
+      toast('⚠ Redosled nije sačuvan — osvežavam.');
+    },
+    onSuccess: () => toast('✓ Redosled sačuvan'),
+    onSettled: (_d, err) => {
+      void qc.invalidateQueries({ queryKey: KEYS.gantt });
+      // „Po mašini" čita ISTI `shift_sort_order`, pa mora da se osveži — ali NE i njegov
+      // akumulirani mašinski keš (`['pp','operations','machine',…]`), u koji „Još RN"
+      // stranice merge-uju u isti ključ; `useReorderOps` ga namerno štedi (v. gore) i
+      // refetch bi obrisao dovučene stranice. Na GREŠKU se invalidira sve — tada je
+      // zatečeno stanje ionako sumnjivo (isti izbor kao `useReorderOps.onError`).
+      void qc.invalidateQueries({
+        queryKey: KEYS.operations,
+        predicate: (query) => (err ? true : (query.queryKey as unknown[])[2] !== 'machine'),
       });
     },
   });

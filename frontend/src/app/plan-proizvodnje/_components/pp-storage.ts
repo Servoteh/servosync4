@@ -17,6 +17,9 @@ export const LS = {
   procFilter: (tab: string) => `plan-proizvodnje:${tab}:filter`, // 'all' | 'proc'
   // GAP-PM-12 — skok iz Zauzetost/Pregled u „Po mašini" (LS handover, 1.0 jumpToPoMasini).
   jumpMachine: 'plan-proizvodnje:jump-machine',
+  // 070/26 — „Ređaj po" u tabu Gant: 'termin' (podrazumevano) | 'rucni'. Prazno/nepoznato
+  // = 'termin', tj. ponašanje pre 070/26 — izbor se pamti po korisniku (po pregledaču).
+  gantSort: 'plan-proizvodnje:gant:sort',
 } as const;
 
 /** Perzistiran sort Zauzetosti { key, dir }. */

@@ -1,15 +1,28 @@
 'use client';
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, Factory, Link2, Plus, Search } from 'lucide-react';
+import {
+  ArrowDownUp,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Factory,
+  GripVertical,
+  Link2,
+  Plus,
+  Search,
+} from 'lucide-react';
 import {
   useGantt,
   useGanttOverlay,
+  useGanttReorder,
   useMachineHalls,
   type GanttRow,
 } from '@/api/plan-proizvodnje';
 import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
+import { useCan } from '@/lib/can';
+import { PERMISSIONS } from '@/lib/permissions';
 import { formatDate, formatDecimal } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { HaleDialog } from './hale-dialog';
@@ -25,16 +38,22 @@ import {
   addDays,
   barEnd,
   barGeometry,
+  compareRows,
   dayDiff,
+  groupKey,
   groupRows,
+  makeGroupKey,
   isoDay,
   layoutRows,
   linkPath,
   machineRangeMinutes,
+  reorderByDrop,
   rowKey,
   startOfDay,
+  type GanttSort,
   type HallGroup,
 } from './gant-utils';
+import { LS, lsGet, lsSet } from './pp-storage';
 
 /**
  * Tab „Gant" (zahtev 046/26, faza F0+F1) — planiranje mašinske proizvodnje na vremenskoj
@@ -44,6 +63,16 @@ import {
  * ⚠️ PARALELAN POGLED (odluka vlasnika): planirani termini NE menjaju raspored — ručni
  * redosled smene (`shift_sort_order`, tab „Po mašini") ostaje master. Ovde se samo crta i
  * pomera plan; nijedan postojeći sort/bucket ne zavisi od `planned_*` polja.
+ *
+ * Zahtev 070/26 (Strahinja): redovi se ređaju RUČNO, prevlačenjem kvačice u levoj koloni —
+ * isti gest, isti endpoint (`/overlays/reorder`) i isto polje (`shift_sort_order`) kao tab
+ * „Po mašini". Da bi prevučeni red imao gde da se vidi, poredak redova unutar mašine mora
+ * da vodi `shift_sort_order` — ali to NIJE postalo podrazumevano: prekidač „Ređaj po" nudi
+ * „terminu" (PODRAZUMEVANO, tačno kao pre 070/26) i „ručnom redosledu", a izbor se pamti
+ * po korisniku (`pp-storage`, LS). Odluka vlasnika: nikome se ekran ne prevrće preko noći
+ * (mereno: na mašini 3.32 svih 12 barova menja mesto, lista prestaje da bude hronološka).
+ * Master rasporeda time nije pomeren — ostao je `shift_sort_order`, samo ga sad piše i
+ * gant. Termini (`planned_*`) ga i dalje NE diraju.
  *
  * Stavka bez `planned_start_at` NIJE na osi (nema bara) — na plan se stavlja dugmetom
  * „Dodaj na plan". Trajanje je podrazumevano iz tehnologije (TPZ + TK × kom) uz ručni
@@ -78,6 +107,12 @@ const RANGES = [14, 30, 60] as const;
  * odseca uz vidljivu poruku, a ne uz zamrznutu karticu.
  */
 const MAX_ROWS = 300;
+/**
+ * Gornja granica jednog upisa redosleda (070/26) — `OverlayReorderDto` prima najviše
+ * 2.000 stavki. Skup za renumeraciju je iscrtane stavke mašine (≤ `MAX_ROWS`) + one koje
+ * već nose ručni redosled, pa se u praksi meri desetinama; granica je brana, ne režim.
+ */
+const REORDER_MAX = 2000;
 /** Prevlačenje preko ovog praga (px) NIJE klik — bar se pomerao, dijalog se ne otvara. */
 const DRAG_SLOP = 4;
 /**
@@ -107,6 +142,21 @@ interface LinkDragState {
   targetKey: string | null;
 }
 
+/**
+ * Prevlačenje REDA radi ručnog redosleda (zahtev 070/26). Native HTML5 drag — ISTI
+ * mehanizam kao „Po mašini" (`ops-table.tsx`) — ali sa hvatištem: `draggable` stoji SAMO
+ * na kvačici (`GripVertical`) u levoj koloni, jer red nosi i barove sa pointer-gestovima (pomeranje,
+ * resize, povezivanje) i dugme koje otvara dijalog stavke; `draggable` nad celim redom
+ * bi im otimao gest. `group` je ključ grupe mašine — prevlačenje van svoje mašine se
+ * odbija (promena mašine je „Premesti", ne redosled).
+ */
+interface RowDragState {
+  key: string;
+  group: string;
+  /** Ključevi skupa u trenutku `dragstart` — brana od pozadinskog refetch-a (v. `onRowDrop`). */
+  snapshot: string[];
+}
+
 export function GanttTab() {
   const [hall, setHall] = useState('');
   const [rawQ, setRawQ] = useState('');
@@ -114,16 +164,37 @@ export function GanttTab() {
   const [days, setDays] = useState<number>(30);
   const [rangeStart, setRangeStart] = useState<Date>(() => addDays(startOfDay(new Date()), -3));
   const [showUnplanned, setShowUnplanned] = useState(false);
+  /**
+   * 070/26 — „Ređaj po": `termin` (PODRAZUMEVANO, ponašanje pre 070/26) ili `rucni`.
+   * Izbor je korisnikov i pamti se u `localStorage` (isti obrazac kao ostala podešavanja
+   * ovog modula — `pp-storage.ts`; bez nove tabele i bez migracije). Početna vrednost se
+   * NE čita u `useState` inicijalizatoru nego u `useEffect` (static export prerenderuje
+   * stranu — čitanje LS-a u prvom renderu razilazi SSR i klijent markup).
+   */
+  const [sortMode, setSortMode] = useState<GanttSort>('termin');
+  useEffect(() => {
+    if (lsGet(LS.gantSort) === 'rucni') setSortMode('rucni');
+  }, []);
   const [openHalls, setOpenHalls] = useState(false);
   const [openAdd, setOpenAdd] = useState(false);
   const [detail, setDetail] = useState<GanttRow | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [linkDrag, setLinkDrag] = useState<LinkDragState | null>(null);
+  // 070/26 — ručni redosled redova prevlačenjem. `rowDrag` u ref-u (a ne samo u stanju)
+  // jer `dragstart`/`drop` idu kroz native događaje bez ponovnog rendera između.
+  const rowDragRef = useRef<RowDragState | null>(null);
+  const [dropHint, setDropHint] = useState<{ key: string; after: boolean } | null>(null);
 
-  const gantt = useGantt({ hall: hall || undefined, q: q || undefined });
+  const can = useCan();
+  const canEdit = can(PERMISSIONS.PLAN_PROIZVODNJE_EDIT);
+  // `sort` ide i na BE: feed se SEČE po BE poretku (`LIMIT`), a crta po FE `compareRows`
+  // — ta dva moraju biti isti režim, inače rez uzme druge redove od onih koje prikaz
+  // stavlja na vrh. Ključ upita nosi `sort`, pa promena režima povlači svež feed.
+  const gantt = useGantt({ hall: hall || undefined, q: q || undefined, sort: sortMode });
   const halls = useMachineHalls();
   const save = useGanttOverlay({ ok: 'Termin sačuvan' });
   const link = useGanttOverlay({ ok: 'Veza sačuvana', err: 'Veza nije sačuvana.' });
+  const reorder = useGanttReorder();
 
   const rows = useMemo(() => gantt.data?.data ?? [], [gantt.data]);
   const planned = useMemo(() => rows.filter((r) => !!r.planned_start_at), [rows]);
@@ -133,7 +204,112 @@ export function GanttTab() {
     [candidates],
   );
   const cutOff = candidates.length - visible.length;
-  const groups = useMemo(() => groupRows(visible), [visible]);
+  const groups = useMemo(() => groupRows(visible, sortMode), [visible, sortMode]);
+
+  /**
+   * 070/26 — skup stavki mašine koji prevlačenje RENUMERIŠE (`shift_sort_order` = 1..n).
+   * Unija dve grupe, poređana istim kanonom kao prikaz:
+   *   (a) stavke te mašine koje su ISCRTANE (ono što planer vidi i ređa),
+   *   (b) stavke te mašine koje VEĆ nose ručni redosled — makar bile van plana i van
+   *       iscrtanog isečka.
+   *
+   * (b) je uslov da se prikazi ne raziđu: `shift_sort_order` čita i tab „Po mašini", pa
+   * bi upis 1..n samo nad vidljivim (podrazumevano se vide SAMO stavke na planu) pravio
+   * duple brojeve sa zatečenim ručnim rasporedom te mašine (izmereno 05.08.2026: mašina
+   * 3.32 ima 12 stavki na gantu i 22 sa ručnim redosledom).
+   *
+   * Zašto NE ceo red mašine: najveće mašine imaju 4.389 / 3.829 / 2.186 otvorenih
+   * operacija (izmereno), a `/overlays/reorder` prima najviše 2.000 stavki — pun red bi
+   * pucao na 400 i držao dugačku transakciju. Stavke bez ručnog redosleda ionako ostaju
+   * `NULL` i u oba taba idu POSLE ručnih (NULLS LAST), pa ih renumeracija ne dotiče.
+   *
+   * `complete` = grupa je CELA iscrtana (iscrtanih redova te mašine = koliko ih tekući
+   * prikaz uopšte nudi). Bez toga bi `MAX_ROWS` rez tiho krao stavke: mašina na rezu
+   * dobije 1..n nad iscrtanim delom, a njen neiscrtani ostatak ostaje `NULL` i u „Po
+   * mašini" (`shift_sort_order` je prvi ključ, NULLS LAST) padne na DNO — ispod redova
+   * ispred kojih je bio, a planer to nigde ne vidi. Dostižno danas: sa „Prikaži i stavke
+   * van plana" HALA 2B ima 325 otvorenih operacija > `MAX_ROWS`, pa mašina 3.15 sedi na
+   * rezu (iscrtano 34 od 59).
+   */
+  const reorderGroups = useMemo(() => {
+    const drawn = new Set(visible.map(rowKey));
+    const m = new Map<string, { rows: GanttRow[]; complete: boolean }>();
+    const ponudjeno = new Map<string, number>();
+    // Koliko redova te mašine tekući prikaz NUDI (pre `MAX_ROWS` reza) — merilo za
+    // `complete`. `candidates` je ono što su filteri propustili; `visible` je isečak.
+    for (const r of candidates) {
+      const k = groupKey(r);
+      ponudjeno.set(k, (ponudjeno.get(k) ?? 0) + 1);
+    }
+    const iscrtano = new Map<string, number>();
+    for (const r of visible) {
+      const k = groupKey(r);
+      iscrtano.set(k, (iscrtano.get(k) ?? 0) + 1);
+    }
+    for (const r of rows) {
+      if (!drawn.has(rowKey(r)) && r.shift_sort_order == null) continue;
+      const k = groupKey(r);
+      const g = m.get(k);
+      if (g) g.rows.push(r);
+      else m.set(k, { rows: [r], complete: iscrtano.get(k) === ponudjeno.get(k) });
+    }
+    for (const g of m.values()) g.rows.sort((a, b) => compareRows(a, b, 'rucni'));
+    return m;
+  }, [rows, visible, candidates]);
+
+  /**
+   * Prevlačenje traži: pravo izmene, režim „po ručnom redosledu" i POUZDAN presek reda
+   * mašine (isti oprez kao „Po mašini" / 1.0 `canDragInCurrentView` — pretraga po
+   * crtežu/RN daje isečak, pa bi renumeracija ćutke pomerila ono što je filter sakrio).
+   *
+   * Zašto se u režimu „po terminu" NE prevlači: tamo redove ređa `planned_start_at`, pa
+   * upisan `shift_sort_order` ne bi imao nikakav vidljiv efekat — gest bi lagao. Druga
+   * mogućnost (prevlačenje koje samo prebaci režim) je odbijena: jedan gest bi tada
+   * preuredio SVE grupe odjednom, a to je baš prevrtanje ekrana koje je vlasnik odbio.
+   * Umesto toga hvatište je odsutno, a pomoćni tekst kaže gde je prekidač.
+   */
+  const truncated = gantt.data?.meta?.truncated === true;
+  const canReorder = canEdit && !q && sortMode === 'rucni';
+
+  /**
+   * Odsečen feed (`truncated`, prod: 16k kandidata na 5.000) seče NAJVIŠE JEDNU grupu —
+   * BE ređa `hall, effective_machine_code, …`, pa su stavke mašine uzastopne i nepotpuna
+   * može biti samo POSLEDNJA. Njoj se prevlačenje zabranjuje (ne vidimo joj ceo ručni
+   * raspored); sve ostale mašine u feed-u su kompletne. Zabrana celog taba ne dolazi u
+   * obzir — bez filtera je feed odsečen skoro uvek.
+   */
+  const boundaryGroup = truncated && rows.length > 0 ? groupKey(rows[rows.length - 1]) : null;
+
+  /** Puštanje reda: nova lista skupa mašine → `/overlays/reorder` (shift_sort_order 1..n). */
+  function onRowDrop(target: GanttRow, after: boolean) {
+    const d = rowDragRef.current;
+    rowDragRef.current = null;
+    setDropHint(null);
+    if (!canReorder || !d) return;
+    const gk = groupKey(target);
+    if (gk !== d.group) {
+      toast('⚠ Redosled se menja unutar iste mašine — za drugu mašinu koristi „Premesti".');
+      return;
+    }
+    const g = reorderGroups.get(gk);
+    if (!g || !g.complete) return;
+    // Pozadinski refetch ganta (refetchOnWindowFocus, invalidacija posle tuđeg upisa) ume
+    // da stigne IZMEĐU `dragstart` i `drop` — tada je pozicija puštanja računata nad
+    // starim prikazom, a upis bi pošao od novog. Skup snimljen na `dragstart` mora da se
+    // poklapa sa tekućim, inače se odustaje (planer ponovi gest nad onim što vidi).
+    const sada = g.rows.map(rowKey);
+    if (sada.length !== d.snapshot.length || sada.some((k, i) => k !== d.snapshot[i])) {
+      toast('⚠ Prikaz je u međuvremenu osvežen — prevuci ponovo.');
+      return;
+    }
+    if (g.rows.length > REORDER_MAX) {
+      toast(`⚠ Previše stavki za jedan upis (${g.rows.length}) — suzi prikaz.`);
+      return;
+    }
+    const next = reorderByDrop(g.rows, d.key, rowKey(target), after);
+    if (!next) return;
+    reorder.mutate({ orderedRows: next });
+  }
 
   /** Spisak hala za filter (iz šifrarnika, ne iz feed-a — vidi se i prazna hala). */
   const hallOptions = useMemo(() => {
@@ -417,6 +593,26 @@ export function GanttTab() {
           Prikaži i stavke van plana
         </label>
 
+        {/* 070/26 — „Ređaj po": redosled REDOVA unutar mašine. Podrazumevano „termin"
+            (ponašanje pre 070/26); „ručni redosled" je jedini režim u kom prevlačenje
+            ima vidljiv efekat. Izbor se pamti po korisniku (LS, `pp-storage`). */}
+        <label className="inline-flex items-center gap-1.5 text-xs text-ink-secondary">
+          <ArrowDownUp className="h-4 w-4 text-ink-disabled" aria-hidden /> Ređaj po
+          <select
+            aria-label="Redosled redova unutar mašine"
+            value={sortMode}
+            onChange={(e) => {
+              const v: GanttSort = e.target.value === 'rucni' ? 'rucni' : 'termin';
+              setSortMode(v);
+              lsSet(LS.gantSort, v);
+            }}
+            className="h-8 rounded-control border border-line bg-surface px-2 text-sm text-ink"
+          >
+            <option value="termin">terminu</option>
+            <option value="rucni">ručnom redosledu</option>
+          </select>
+        </label>
+
         <div className="ml-auto flex items-center gap-2">
           <Button variant="secondary" className="h-8 px-3 text-xs" onClick={() => setOpenHalls(true)}>
             <Factory className="h-4 w-4" aria-hidden /> Hale
@@ -428,9 +624,31 @@ export function GanttTab() {
       </div>
 
       <p className="text-2xs text-ink-disabled">
-        {planned.length} stavki na planu · redosled smene ostaje u tabu „Po mašini" (gant je paralelan pogled).
-        Prevuci bar da pomeriš termin, prevuci desnu ivicu da promeniš trajanje, klikni za detalje.
-        Veza (uslov): prevuci kružić sa kraja bara na drugi bar — klik na liniju briše vezu, ESC otkazuje.
+        {planned.length} stavki na planu. Prevuci bar da pomeriš termin, prevuci desnu ivicu da promeniš
+        trajanje, klikni za detalje. Veza (uslov): prevuci kružić sa kraja bara na drugi bar — klik na
+        liniju briše vezu, ESC otkazuje.{' '}
+        {/* 070/26: redosled redova je ISTI ručni redosled smene koji piše i tab „Po mašini".
+            Rečenica o prevlačenju se KRIJE na uređajima bez pokazivača (`hover: none`) —
+            HTML5 drag-and-drop se na dodir uopšte ne pokreće, pa bi bila prazno obećanje. */}
+        {canReorder ? (
+          <span className="[@media(pointer:coarse)]:hidden">
+            Redosled stavki unutar mašine: prevuci kvačicu
+            <GripVertical className="mx-0.5 inline h-3 w-3 align-text-bottom" aria-hidden />
+            levo od naziva — to je isti ručni redosled smene koji se vidi i menja u tabu „Po mašini".
+            {cutOff > 0 || truncated
+              ? ' Grupe koje se ne vide cele (odsečen prikaz) se ne ređaju — suzi filter halom ili prozor.'
+              : ''}
+          </span>
+        ) : !canEdit ? (
+          'Redosled stavki menja planer sa pravom izmene.'
+        ) : q ? (
+          'Redosled stavki se ne prevlači dok traje pretraga (prikaz je isečak reda mašine).'
+        ) : (
+          <span className="[@media(pointer:coarse)]:hidden">
+            Za ručno ređanje stavki prebaci „Ređaj po" na <b>ručnom redosledu</b> — u režimu „po
+            terminu" redove ređa planirani početak, pa ručni redosled ne bi imao vidljiv efekat.
+          </span>
+        )}
       </p>
 
       {/* ── Osa ── */}
@@ -506,6 +724,13 @@ export function GanttTab() {
                   {g.machines.map((m) => {
                     // A1 (046/26): zbir planiranih sati stavki mašine u prikazanom prozoru.
                     const minuti = machineRangeMinutes(m.rows, rangeStart, days);
+                    // 070/26: ručni redosled se prevlači unutar grupe mašine. Isključene su
+                    // grupe koje ne vidimo cele — poslednja grupa odsečenog BE feed-a
+                    // (`boundaryGroup`) i svaka koju je `MAX_ROWS` rez presekao (`complete`).
+                    const gk = makeGroupKey(g.hall, m.machine);
+                    const rg = reorderGroups.get(gk);
+                    const groupReorderable =
+                      canReorder && gk !== boundaryGroup && rg?.complete === true && m.rows.length > 1;
                     return (
                     <div key={`${g.hall}:${m.machine}`}>
                       {/* A3 (046/26): red mašine kao vidljiv razdelnik grupa — nijansa
@@ -539,28 +764,102 @@ export function GanttTab() {
                         return (
                           <div
                             key={key}
-                            className="group/row flex border-b border-line-soft hover:bg-surface-2"
+                            className={cn(
+                              'group/row flex border-b border-line-soft hover:bg-surface-2',
+                              // 070/26: meta puštanja — akcentna linija na ivici ka kojoj se umeće
+                              // (inset shadow, isti obrazac kao ručno ređanje faza u Montaži).
+                              dropHint?.key === key && !dropHint.after && 'shadow-[inset_0_2px_0_var(--accent)]',
+                              dropHint?.key === key && dropHint.after && 'shadow-[inset_0_-2px_0_var(--accent)]',
+                            )}
                             style={{ height: ROW_H }}
+                            onDragOver={
+                              groupReorderable
+                                ? (e) => {
+                                    if (!rowDragRef.current) return;
+                                    e.preventDefault();
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    const after = e.clientY - rect.top >= rect.height / 2;
+                                    // `dragover` se pali desetinama puta u sekundi — stanje se menja
+                                    // SAMO kad se meta stvarno promeni (inače re-render celog ganta).
+                                    setDropHint((h) => (h && h.key === key && h.after === after ? h : { key, after }));
+                                  }
+                                : undefined
+                            }
+                            onDragLeave={groupReorderable ? () => setDropHint((h) => (h?.key === key ? null : h)) : undefined}
+                            onDrop={
+                              groupReorderable
+                                ? (e) => {
+                                    e.preventDefault();
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    onRowDrop(r, e.clientY - rect.top >= rect.height / 2);
+                                  }
+                                : undefined
+                            }
                           >
                             <div
-                              className="flex h-full shrink-0 flex-col justify-center overflow-hidden px-3 pl-7 text-xs leading-tight"
+                              className="flex h-full shrink-0 items-center gap-1 overflow-hidden px-3 pl-2 text-xs leading-tight"
                               style={{ width: LABEL_W }}
                             >
-                              <button
-                                type="button"
-                                onClick={() => setDetail(r)}
-                                className="block w-full truncate text-left text-ink hover:underline"
-                                title={`${r.broj_crteza ?? ''} · ${r.naziv_dela ?? ''}`}
+                              {/* 070/26: hvatište za ručni redosled. Nenametljivo (vidljivo tek na
+                                  hover reda), namerno ODVOJENO od naziva — klik na naziv i dalje
+                                  otvara dijalog stavke, a barovi zadržavaju svoje pointer-gestove. */}
+                              {/* Hvatište POSTOJI samo kad prevlačenje stvarno radi. Kad ne
+                                  radi, zauzima isti prostor (`invisible`) da se nazivi ne
+                                  pomeraju, ali je van pristupačnog stabla (`aria-hidden`):
+                                  nema tastaturnog puta za ovaj gest, pa čitač ekrana ne sme
+                                  da najavi kontrolu koja se ne može upotrebiti. Na dodirnim
+                                  uređajima (`hover: none`) se ne crta uopšte — HTML5 drag
+                                  tamo ne postoji, a `group-hover` nikad ne okine. */}
+                              <span
+                                aria-hidden
+                                draggable={groupReorderable}
+                                onDragStart={
+                                  groupReorderable
+                                    ? (e) => {
+                                        e.dataTransfer.effectAllowed = 'move';
+                                        rowDragRef.current = {
+                                          key,
+                                          group: gk,
+                                          snapshot: (rg?.rows ?? []).map(rowKey),
+                                        };
+                                      }
+                                    : undefined
+                                }
+                                onDragEnd={() => {
+                                  rowDragRef.current = null;
+                                  setDropHint(null);
+                                }}
+                                title={
+                                  groupReorderable
+                                    ? 'Prevuci za ručni redosled (isti redosled kao tab „Po mašini")'
+                                    : undefined
+                                }
+                                className={cn(
+                                  'shrink-0 text-ink-disabled [@media(pointer:coarse)]:hidden',
+                                  groupReorderable
+                                    ? 'cursor-grab opacity-0 transition-opacity group-hover/row:opacity-100 active:cursor-grabbing'
+                                    : 'invisible',
+                                )}
                               >
-                                {/* A2 (046/26): redni broj stavke unutar mašine po prikazanom
-                                    redosledu — dijalog stavke ga prima kao „poveži rednim brojem" (C1). */}
-                                <span className="tnums text-ink-disabled">{redniBroj + 1}.</span>{' '}
-                                <span className="tnums text-ink-secondary">{r.rn_ident_broj ?? '—'}</span>{' '}
-                                {r.naziv_dela ?? r.broj_crteza ?? '(bez naziva)'}
-                              </button>
-                              <span className="truncate text-2xs text-ink-disabled">
-                                op. {String(r.operacija ?? '—')} · {r.opis_rada ?? '—'} · {r.komada_total ?? 0} kom
+                                <GripVertical className="h-3.5 w-3.5" aria-hidden />
                               </span>
+                              <div className="flex min-w-0 flex-1 flex-col justify-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setDetail(r)}
+                                  className="block w-full truncate text-left text-ink hover:underline"
+                                  title={`${r.broj_crteza ?? ''} · ${r.naziv_dela ?? ''}`}
+                                >
+                                  {/* A2 (046/26): redni broj stavke unutar mašine po prikazanom
+                                      redosledu — dijalog stavke ga prima kao „poveži rednim brojem" (C1). */}
+                                  <span className="tnums text-ink-disabled">{redniBroj + 1}.</span>{' '}
+                                  <span className="tnums text-ink-secondary">{r.rn_ident_broj ?? '—'}</span>{' '}
+                                  {r.naziv_dela ?? r.broj_crteza ?? '(bez naziva)'}
+                                </button>
+                                <span className="truncate text-2xs text-ink-disabled">
+                                  op. {String(r.operacija ?? '—')} · {r.opis_rada ?? '—'} · {r.komada_total ?? 0} kom
+                                </span>
+                              </div>
                             </div>
                             {/* C2: sklop kome pozicija pripada (053 struktura praćenja). Bez sklopa → prazno. */}
                             <div
