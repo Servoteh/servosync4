@@ -9,6 +9,8 @@ import {
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSamouslugaService } from "./sastanci-samousluga.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { assertPdfAttachment } from "../../common/attachments/attachment-format.util";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
@@ -164,6 +166,8 @@ export class SastanciService {
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
     private readonly policy: AiModelPolicyService,
+    private readonly izvor: SastanciPbSourceService,
+    private readonly samousluga: SastanciSamouslugaService,
   ) {}
 
   // ---------- Liste / pretraga ----------
@@ -1038,6 +1042,20 @@ export class SastanciService {
    *  camelCase da GET /prefs bude identičan FE tipu `Prefs` i PATCH /prefs
    *  (camelCase Prisma model). */
   async myPrefs(email: string) {
+    if (this.izvor.isThreeZero) {
+      const p = await this.samousluga.getOrCreateMyPrefs(email);
+      return {
+        data: {
+          email: p.email,
+          onNewAkcija: p.onNewAkcija,
+          onChangeAkcija: p.onChangeAkcija,
+          onMeetingInvite: p.onMeetingInvite,
+          onMeetingLocked: p.onMeetingLocked,
+          onActionReminder: p.onActionReminder,
+          onMeetingReminder: p.onMeetingReminder,
+        },
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<unknown[]>(
         Prisma.sql`SELECT email,
@@ -1122,11 +1140,16 @@ export class SastanciService {
   /**
    * Sav pristup ide kroz `withUserRls` (GUC + SET LOCAL ROLE authenticated) —
    * RLS paritet sa 1.0 PostgREST-om (konekciona rola je BYPASSRLS, review 12.07).
+   *
+   * 🔴 JEDINI ULAZ U sy15 IZ OVOG SERVISA (uz `runIdem`) — zato je brana
+   * `SASTANCI_PB_IZVOR` ovde, a ne razasuta po 100+ poziva. Pod `3.0` ovaj put
+   * više ne sme da se koristi: tiho čitanje/pisanje sy15 razišlo bi dve baze.
    */
   private async withUserMapped<T>(
     email: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<T> {
+    this.izvor.assertPorted("sastanci: čitanje/upis kroz sy15");
     try {
       return await this.sy15.withUserRls(email, fn);
     } catch (e) {
@@ -1181,13 +1204,15 @@ export class SastanciService {
   // od 403 (postoji ali nema prava). INSERT u sastanci_notification_log je ZABRANJEN
   // (presuda B10) — enqueue ide isključivo kroz postojeće DEFINER RPC-ove.
 
-  /** Idempotentna akcija sa nus-efektima (create/lock/bulk-replace/instantiate). */
+  /** Idempotentna akcija sa nus-efektima (create/lock/bulk-replace/instantiate).
+   *  Drugi (i poslednji) ulaz u sy15 — v. branu u `withUserMapped`. */
   private async runIdem<T>(
     email: string,
     clientEventId: string,
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ) {
+    this.izvor.assertPorted(`sastanci: idempotentna mutacija "${action}" kroz sy15`);
     try {
       const out = await this.sy15.runIdempotentRls(
         email,
@@ -1844,7 +1869,11 @@ export class SastanciService {
   }
 
   /** Moj RSVP (sastanci_set_my_rsvp — svako svoj; idempotentno po vrednosti). */
-  setMyRsvp(email: string, id: string, dto: RsvpDto) {
+  async setMyRsvp(email: string, id: string, dto: RsvpDto) {
+    if (this.izvor.isThreeZero) {
+      const rsvp = await this.samousluga.setMyRsvp(email, id, dto.status ?? null);
+      return { data: { rsvp } };
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: string }[]>(
         Prisma.sql`SELECT sastanci_set_my_rsvp(${id}::uuid, ${dto.status ?? null}) AS result`,
@@ -1855,7 +1884,15 @@ export class SastanciService {
 
   /** Status SOPSTVENE akcije (sastanci_set_my_akcija_status — odluka 26.07): RPC
    *  presuđuje vlasništvo po odgovoran_email; zavrsen → zatvoren_* snapshot u bazi. */
-  setMyAkcijaStatus(email: string, id: string, dto: MyAkcijaStatusDto) {
+  async setMyAkcijaStatus(email: string, id: string, dto: MyAkcijaStatusDto) {
+    if (this.izvor.isThreeZero) {
+      const status = await this.samousluga.setMyAkcijaStatus(email, id, dto.status);
+      if (status === "not_owner")
+        throw new ForbiddenException(
+          "Niste odgovorni za ovu akciju — status menja zapisničar.",
+        );
+      return { data: { status } };
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: string }[]>(
         Prisma.sql`SELECT sastanci_set_my_akcija_status(${id}::uuid, ${dto.status}::text) AS result`,
@@ -1870,7 +1907,18 @@ export class SastanciService {
 
   /** Moja priprema (sastanci_set_my_priprema — odluka 26.07): samo pripremljen +
    *  tekst; prazan tekst čisti polje; pozvan/prisutan ostaje zapisničaru. */
-  setMyPriprema(email: string, id: string, dto: MyPripremaDto) {
+  async setMyPriprema(email: string, id: string, dto: MyPripremaDto) {
+    if (this.izvor.isThreeZero) {
+      const out = await this.samousluga.setMyPriprema(
+        email,
+        id,
+        dto.pripremljen ?? null,
+        dto.priprema ?? null,
+      );
+      if (out === "not_participant")
+        throw new ForbiddenException("Niste učesnik ovog sastanka.");
+      return { data: { ok: true } };
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: string }[]>(
         Prisma.sql`SELECT sastanci_set_my_priprema(${id}::uuid, ${dto.pripremljen ?? null}::boolean, ${dto.priprema ?? null}::text) AS result`,

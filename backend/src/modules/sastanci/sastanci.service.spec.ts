@@ -2,6 +2,7 @@ import { ConflictException, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { SastanciService } from "./sastanci.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
 import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 
 /** Prazan registar modela — `resolve` vraća prosleđen fallback (Talas AI-0). */
@@ -48,6 +49,9 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       {} as never,
       {} as never,
       aiPolicyStub(),
+      // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
+      new SastanciPbSourceService(),
+      {} as never,
     );
     return { svc, sy15, tx };
   }
@@ -449,6 +453,9 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
         {} as never,
         {} as never,
         aiPolicyStub(),
+        // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
+        new SastanciPbSourceService(),
+        {} as never,
       );
     }
 

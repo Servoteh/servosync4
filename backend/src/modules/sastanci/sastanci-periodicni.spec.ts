@@ -7,6 +7,7 @@ import { validate } from "class-validator";
 import { SastanciService } from "./sastanci.service";
 import { SastanciPeriodicniService } from "../scheduler/sastanci-periodicni.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
 import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 import {
   CreateSastanakDto,
@@ -69,6 +70,9 @@ function makeSvc() {
     { upload: jest.fn() } as never,
     { summarize: jest.fn() } as never,
     aiPolicy,
+    // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
+    new SastanciPbSourceService(),
+    {} as never,
   );
   return { svc, tx };
 }
