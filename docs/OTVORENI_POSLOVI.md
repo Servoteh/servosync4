@@ -73,70 +73,36 @@ Roba na neaktivnoj lokaciji bila bi „zaključana", zato je gašenje sa robom z
 
 ---
 
-### B2. Kanon „kraj procesa na delu količine" 🔴 NAJVAŽNIJE
-**Status: čeka odluku Nenada + potvrdu Strahinje/Negovana (pitanje postavljeno u zahtevu 046,
-komentar od 04.08.).** Zahtevi: **064/26** (Strahinja), **046/26** (isto pitanje).
+### B2. ✅ REŠENO 05.08.2026 — kiosk pita kad količina nije puna
+**Odluka Nenada 05.08.:** *„Jedno dugme „Kraj rada", plus pitanje koje iskoči samo kad količina
+nije puna: „Otkucao si 21 od 200. Da li je operacija gotova?" — sa podrazumevanim NE."*
 
-**Problem u jednoj rečenici.** Kiosk dugme **„Kraj rada"** upisuje se kao *„operacija je
-završena"*, a radnici ga koriste kao *„gotov sam za danas"*.
+**Isporučeno** (grana `feat/kiosk-pitanje-gotovo`, na main-u `f038e346`, deploy potvrđen):
+kiosk pita samo ispod plana (podrazumevano „Ne — nastavlja se"); puna količina zatvara bez
+pitanja; server ne veruje ekranu (izostanak odgovora ispod plana → NE zatvara); „Odustani" više
+ne diže zastavicu nego otkupljuje red (komadi ostaju, poruka upućuje na storno);
+`POST /:id/finish` podignut na `TEHNOLOGIJA_WRITE`.
 
-**Trenutno pravilo (kanon):** operacija je završena ako **bilo koji** red u `tech_processes`
-ima `is_process_finished = true` — `bool_or(is_process_finished)`, bez obzira na broj komada.
+**Zašto promena kanona čitanja NIJE potrebna:** zastavica sada znači ono što piše, pa se
+`bool_or` ne dira — otpada korak koji bi menjao ekrane planera i pogona i razišao 1.0.
 
-**Dokaz (izmereno 04.08., Strahinjin primer):** WO **45246**, RN **9400/6/74**, crtež
-**1119578**, plan **1 komad**, operacija **20** (OBRADA NA ZAVRŠNE MERE, mašina 3.33).
-Radnik **Jakov Neđić** (worker 113) zatvorio je operaciju **dva puta sa 0 komada** kroz kiosk
-(POST STOP-WORK, audit 28408 i 30698): 03.08. 12:32→**14:00** i 04.08. 05:19→**14:00** —
-oba puta kraj smene. Sutradan ujutru je **istu operaciju ponovo startovao**.
+**Istorija ispravljena** skriptom
+`backend/docs/sql/kiosk-istorijska-sanacija-gotovo-2026-08-05.sql`
+(granica 01.07.2026, Nenadova odluka): **31 red / 20 operacija / 16 RN**, 18 ostalo vlasniku,
+13 otkupljeno; audit red `audit_log id=32481` omogućava povratak. Preostalo van granice: **497**
+zatvorenih redova ispod plana (svesno nedirano — planiranje ih pušta kroz zaobilaznicu iz 064).
 
-🔴 **Sistem sam sebi protivreči:** upisna strana (FIX A, odluka Nenad 15.07.,
-`backend/src/modules/tech-processes/tech-processes.service.ts:4427-4460`) *namerno dozvoljava*
-ponovno otvaranje zatvorene operacije — dakle pisanje kaže „nastavlja se", a čitanje kaže „gotovo".
+**Ostaje otvoreno (sitno):**
+- Barkod ekran „Završi rad" nema dijalog — tamo radnik ne može da označi operaciju gotovom ispod
+  plana (polje `operacijaGotova` postoji na API-ju, FE ga ne šalje).
+- 🔴 **Radnik 130, RN 9000/95 op 20 RC 3.12: 10 otvorenih redova iste operacije** — zatečeno,
+  nije od ovih izmena. Odluka Nenadu: spojiti u jedan ili otkupiti višak.
+- Otkupljeni redovi sele svoje komade na radnika „Korisnik" u tabu **Učinak po radniku**
+  (izmereno: 5 komada / 7 radnika). Kozmetika, ali nije u upozorenjima skripta.
+- Dva kanona kumulativa i dalje postoje: upis broji SVE kvalitete, `rn-progress`/praćenje samo
+  GOOD. Istorijski se razilaze na 119 operacija; **0 otvorenih danas** — nema žive izloženosti.
 
-**Razmere (prod, 04.08.):**
-| | Operacija | Naloga |
-|---|---|---|
-| „Završeno" a količina nepotpuna | 1.475 | 781 |
-| od toga očigledno u radu (RN otvoren, nije kroz završnu kontrolu) | **1.039** | **420** |
-| od toga sa **0** otkucanih komada | 311 | — |
-| operacija sa radom NASTAVLJENIM posle „kraja procesa" (otvoreni RN) | 597 od 1.084 | — |
-| aktivne u poslednjih 14 dana | 92 | — |
-| trenutno otvoreno (za poređenje) | 16.006 | 4.192 |
-
-**Šta je VEĆ urađeno (04.08., odluka Nenad — zaobilaznica „opcija A"):** picker „Dodaj stavke na
-plan" **pušta** delimično-završene uz oznaku „završeno na X/Y kom — dodaje se svejedno"
-(`frontend/src/app/plan-proizvodnje/_components/gant-dodaj-dialog.tsx`, funkcija `stanjeStavke`).
-FE-only, kanon netaknut. **Ograničenje:** te operacije i dalje **ne postoje u listi „Po mašini"**.
-
-**Preporučeni redosled izvođenja (3 koraka):**
-
-**Korak 1 — kiosk: razdvojiti dugmad (PRVO ovo).**
-„Prekid — nastavljam kasnije" (ne diže `is_process_finished`) i „Gotovo — operacija završena"
-(diže). Bez ovoga promena pravila samo prevodi problem u drugu kolonu. Traži i objašnjenje
-radnicima (pogonska mera). Fajl: kiosk tok u `backend/src/modules/tech-processes/` (POST
-stop-work) + kiosk FE.
-
-**Korak 2 — promena kanona.** „Završena" = kraj procesa **I** kumulativ otkucanih ≥ plan
-(poravnanje sa upisnom stranom / FIX A).
-Cena, izmereno: **1.039 operacija** se vraća u sve otvorene liste (16.006 → ~17.045, **+6,5%**);
-**206 od 4.519** danas „spremnih" operacija **gubi spremnost** (prethodna operacija zapravo nije
-gotova) → menja sortiranje i bucket-e planerima i pogonu.
-**Potrošači koje treba poravnati u istom potezu:**
-- `backend/src/modules/plan-proizvodnje/plan-proizvodnje-read.service.ts` — `OPEN_OPS` (:53),
-  `tr` (:841), `rc` (:830), `prev_blk` (:860)
-- `backend/src/modules/cnc-programs/cnc-programs.service.ts:152` (CAM-done — verovatno neutralno)
-- `loc-tp-feed` šalje sirove redove u sy15 keš → **1.0 ekrani divergiraju** dok se i tamo ne
-  poravna (planirati zajedno)
-- `pracenje-read.service.ts` — **NIJE pogođen** (koristi piece-sum agregate)
-
-**Korak 3 — „Odustani" (dismiss) truje kanon.** Dugme uvedeno 17.07. zatvara red sa
-`is_process_finished = true` **bez komada** → `bool_or` proglasi celu operaciju završenom.
-Danas: 3 operacije „završene" isključivo dismiss redovima (1 sa 0 kom). Popravlja se istom
-izmenom kao korak 2.
-
-**Preporuka:** ići sva tri koraka, redom 1 → 2 → 3. Korak 2 dira ekrane koje koriste i planeri i
-pogon, pa ne kretati bez izričitog „kreni" i bez potvrde Strahinje/Negovana da razdvajanje
-dugmadi odgovara načinu rada.
+**Čeka:** Strahinja i Negovan da potvrde FORMULACIJU pitanja radniku (pitano 05.08. u 064/26).
 
 ---
 
@@ -411,17 +377,35 @@ pozicija (232/646) i dalje ide pojedinačno**, a za porodicu 9400/7 čak 27 od 3
 (G-260724-008 i G-260724-010 dele 27 crteža). Strahinja je o tome iskreno obavešten 05.08.
 Trajno rešenje = FK nacrt↔primopredaja (ista tema kao C6, drugi ugao).
 
+### C16. Pločica „Vozila" verovatno broji isto što je IT pločica brojala (šum)
+05.08. je popravljena IT pločica na `/odrzavanje` — pisala je „N zahtevaju pažnju", a otvaranje
+je pokazivalo uređaje u statusu **Radi**: `reportAttention()` je vraćao SVE nearhivirane redove
+pregleda, bez ijednog uslova. Sad broji samo stvarne razloge (`status <> 'running'` ili otvoren
+radni nalog ili istekla licenca/garancija ili backup `missing`/`stale`) —
+`backend/src/modules/odrzavanje/odrzavanje.service.ts`, `reportAttention()`.
+**Isti obrazac nije proveren na pločici „Vozila"**: ona broji redove plana održavanja uključujući
+`ok` i `inactive`, pa verovatno pokazuje isti tip lažne uzbune.
+**Uraditi:** izmeriti koliko redova pločica broji vs koliko ih stvarno traži akciju, pa suziti
+istim `WHERE`-om. Jeftino, bez migracije.
+⚠️ Vozila su se radila u zasebnoj sesiji („VOZILA — ODRŽAVANJE I EVIDENCIJA") — pre izmene
+proveriti da ne gazi tamošnji rad.
+
 ---
 
 ## D. ČEKA KORISNIKE (ne blokira razvoj)
 
-- **Nenad:** proba nišana na **A16 sutra** (05.08.) — obavezno u **Samsung Internetu** (vidi C1);
+- **Nenad:** proba nišana na **A16** — obavezno u **Samsung Internetu** (vidi C1); 05.08. nije
+  urađena (svi otišli sa terena), prenosi se na prvi dan kad je telefon dostupan;
   proba stonog (wedge) čitača u „Premesti stavku" — 04.08. je isporučeno rastavljanje skena
   u obe aplikacije; proba štampe barkoda 62.65 × 13 mm.
+- **Nenad (odluka, 1 minut):** **radnik 130 ima 10 otvorenih redova na istoj operaciji**
+  (RN 9000/95, op 20, RC 3.12) — zatečeno stanje, nije od izmena 05.08. Spojiti u jedan red ili
+  otkupiti višak? Do odluke „Učinak po radniku" mu deli komade na 10 redova. Vidi B2.
 - **Nenad / Nevena / Zoran:** **6 zahteva** izašlo iz nevidljivosti 04.08. i čeka klik —
   4 GO (Branislav 23.07 · Marija 30.07 · Miljan 10–21.08 · Milan Stojadinović 07.08; prva dva
   za datume koji su VEĆ prošli), 1 zamenski dan (Stamenić 01.08), 1 plaćeno odsustvo.
-- **Strahinja + Negovan:** odgovor na pitanje o „kraju procesa na delu količine" (B2).
+- **Strahinja + Negovan:** potvrda FORMULACIJE pitanja radniku na kiosku (B2 je izveden 05.08.,
+  pitanje je živo; traži se samo saglasnost na tekst — pitano u komentaru na 064/26).
 - **Strahinja (016/26):** 4 pitanja postavljena 04.08. uveče — koji su tačno predmeti
   „Servotransfer prese" (7 kandidata, numeracija se preklapa); da li Dijana prati i nadređeni
   predmet **9400** (789 RN i 55 nacrta ove godine — najživlji, a nije na spisku) i 9400/8; ostaje
@@ -436,7 +420,16 @@ Trajno rešenje = FK nacrt↔primopredaja (ista tema kao C6, drugi ugao).
 
 ---
 
-## Napomene za rad (naučeno 04.08.)
+## Napomene za rad (naučeno 04.–05.08.)
+
+- 🔴 **SQL koji MENJA podatke mora biti u ZASEBNOM fajlu od pregleda (preview-a).** 05.08. je
+  verifikator dobio zadatak „pusti samo KORAK 1 (pregled)", a `sed` opseg je zahvatio i KORAK 2 —
+  33 reda su otvorena na produkciji bez odobrenja (vraćeno za par minuta, ostala je razlika u
+  milisekundama na `finished_at`). Pregled i mutacija u istom fajlu se **ne razdvajaju pouzdano
+  alatom** — razdvojiti ih fajlom, i mutaciju pušta samo čovek.
+- **Agenti imaju mandat SAMO ZA ČITANJE baze.** Svaki `UPDATE`/`INSERT`/`DELETE` priprema se kao
+  fajl, a izvršava se posle ispisanog pregleda.
+
 
 - **Skripte pokretati iz git blob-a**, ne iz checkout-a:
   `git show origin/main:putanja | ssh ubuntusrv 'bash -s'` — primarno stablo često stoji na tuđoj

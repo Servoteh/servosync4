@@ -2900,12 +2900,23 @@ export class TechProcessesService {
         cumulativePieces: acc.cumulativePieces,
         prioritized: acc.prioritized,
         workOrderCompleted: acc.workOrderCompleted,
+        // Deljeni red — gašenje traženo („Da — gotova je") ali preskočeno jer drugi
+        // radnici još imaju otvorene sesije. `accumulateStopWork` ta polja računa i
+        // za ovu putanju (`wantsFinish` otključava upit isto kao `fromMyOpen`); do
+        // sada su ostajala neiskorišćena, pa je barkod ekran ćutao o razlogu i
+        // radnikovo „Da" izgledalo kao da nije ni primljeno. ČISTO PROSLEĐIVANJE —
+        // nijedna odluka se ne menja.
+        finishSkipped: acc.finishSkipped,
+        otherOpenWorkerIds: acc.otherOpenWorkerIds,
         staleWorkOrder: scannedVariant < tp.variant,
         currentVariant: tp.variant,
       };
     });
 
-    const workers = await this.resolveWorkers([result.tp.workerId]);
+    const workers = await this.resolveWorkers([
+      result.tp.workerId,
+      ...result.otherOpenWorkerIds,
+    ]);
     const elapsedSeconds = Math.max(
       0,
       Math.round(
@@ -2934,6 +2945,15 @@ export class TechProcessesService {
         operationsPrioritized: result.prioritized,
         workOrderCompleted: result.workOrderCompleted,
         workOrder: result.workOrder,
+        // Deljeni red (isti oblik kao `:id/stop-work`): gašenje preskočeno + KO još
+        // radi. Barkod ekran nema izbor „Zatvori za sve" (ostaje samo u „Mojim
+        // otvorenim") — ova polja mu služe SAMO da radniku kaže zašto njegovo „Da —
+        // gotova je" nije zatvorilo operaciju.
+        finishSkipped: result.finishSkipped,
+        otherOpenWorkers: result.otherOpenWorkerIds.map(
+          (wid) =>
+            workers.get(wid) ?? { id: wid, fullName: null, username: null },
+        ),
         staleWorkOrder: result.staleWorkOrder,
         printedVariant: scannedVariant,
         currentVariant: result.currentVariant,

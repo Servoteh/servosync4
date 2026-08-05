@@ -432,7 +432,14 @@ export function KioskScanner() {
     }
   }
 
-  async function onZavrsiRad(pieces: number, note?: string) {
+  /**
+   * „Završi rad" sa barkod ekrana (STOP sken). `operacijaGotova` je odgovor na
+   * pitanje iz WorkPanel-a („Da li je operacija gotova?", Nenad 05.08.2026):
+   * `true` = radnik je izričito rekao da jeste iako količina nije puna;
+   * `false` = „Ne — nastavlja se"; `undefined` = pitanje nije ni postavljeno
+   * (plan dostignut ili opšti nalog). Server je autoritet — ovo je samo namera.
+   */
+  async function onZavrsiRad(pieces: number, note?: string, operacijaGotova?: boolean) {
     cancelAutoLogout();
     if (!order || !operation || !worker) return;
     try {
@@ -442,10 +449,13 @@ export function KioskScanner() {
         workerCard: worker.card,
         pieceCount: pieces,
         note,
+        operacijaGotova,
       });
-      // „Napravljeno" je Σ grupe: zbir PRE mutacije + upravo prijavljeni komadi
-      // (backend techProcess.pieceCount je kumulativ SAMO tog reda, ne grupe).
-      const madeAfter = groupSum + data.reportedPieces;
+      // „Napravljeno" je kumulativ CELE operacije. Backend ga od 05.08.2026 vraća
+      // (`cumulativePieces`, isti `_sum` kojim odlučuje o gašenju) — uzmi njega, a
+      // Σ grupe + prijavljeno drži kao fallback za stariji backend (techProcess
+      // .pieceCount je kumulativ SAMO tog reda, ne grupe).
+      const madeAfter = data.cumulativePieces ?? groupSum + data.reportedPieces;
       setOverride({
         id: data.techProcess.id,
         made: madeAfter,
@@ -463,7 +473,38 @@ export function KioskScanner() {
         } kom`,
         `Trajanje ${dur}`,
       ];
-      if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
+      // Ishod se JAVLJA UVEK (isto kao „Moji otvoreni"): radnik mora znati da li je
+      // operacija zatvorena ili ostaje otvorena — nikad tiho. `operationClosed` je
+      // opciono u tipu (scan ga ne vraća), pa fallback na `operationFinished` da
+      // stariji backend ne bi lagao „NIJE zatvorena" nad zatvorenim redom.
+      const closed = data.operationClosed ?? data.operationFinished;
+      if (closed) {
+        if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
+        // Ispod plana ovaj put zatvara ISKLJUČIVO eksplicitno „Da — gotova je":
+        // `wantsFinish = finishIntent === true || (fromMyOpen && withoutProcess)`, a
+        // `stopWork` prosleđuje `fromMyOpen = false`. Izuzetak za opšti nalog („red se
+        // čisti bez pitanja") postoji SAMO na putanji „Moji otvoreni" — ovde ne, pa
+        // treće grane („Red je zatvoren.") ovde nema jer je nedostižna.
+        else parts.push('Operacija je označena kao gotova (količina nije puna).');
+      } else if (data.finishSkipped) {
+        // Deljeni red: „Da — gotova je" JESTE primljeno, ali gašenje je preskočeno jer
+        // operaciju drži još neko. Bez ove grane bi radnik dobio isto „NIJE zatvorena —
+        // nastavlja se" kao da je rekao „Ne", pa bi mu izgledalo da odgovor nije stigao.
+        // Barkod ekran nema „Zatvori za sve" — to ostaje samo u „Mojim otvorenim".
+        const others = (data.otherOpenWorkers ?? [])
+          .map((w) => w.fullName)
+          .filter(Boolean)
+          .join(', ');
+        parts.push(
+          others
+            ? `Tvoje „Da — gotova je" je primljeno, ali operacija ostaje otvorena — još radi: ${others}.`
+            : 'Tvoje „Da — gotova je" je primljeno, ali operacija ostaje otvorena — još neko radi na njoj.',
+        );
+      } else {
+        // Odgovor „Ne — nastavlja se", ali i slučaj kad radnik nije ni pitan a red
+        // svejedno nije zatvoren: poruka je ista i uvek se ispisuje.
+        parts.push('Operacija NIJE zatvorena — nastavlja se.');
+      }
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
       setFeedback({
         tone: 'success',
@@ -899,6 +940,7 @@ export function KioskScanner() {
             drawing={card.data?.data.drawing ?? null}
             planned={planned}
             made={made}
+            withoutProcess={operation.withoutProcess}
             finished={finished}
             missing={missing}
             loading={cardLoading}

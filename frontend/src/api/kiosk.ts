@@ -16,6 +16,7 @@ import type { TechProcess } from './tech-processes';
  * starim otiskom (manja varijanta) vraća `staleWorkOrder` upozorenje. Rute:
  *   POST /v1/tech-processes/barcode/decode  { barcode }
  *   POST /v1/tech-processes/scan            { orderBarcode, operationBarcode, pieceCount }
+ *   POST /v1/tech-processes/work/stop       { orderBarcode, operationBarcode, pieceCount, operacijaGotova? }
  *   POST /v1/tech-processes/:id/stop-work   { pieceCount, operacijaGotova?, finishForAll? }
  *   POST /v1/tech-processes/:id/dismiss     { workerCard?, note? }
  * Sve traže JWT (guard je V1 no-op); komponente zovu samo ove hook-ove.
@@ -208,16 +209,20 @@ export interface StopWorkResult extends ScanResult {
     /** true = trenutna sesija (nije bilo START skena — jednokratni fallback). */
     instant: boolean;
   };
+  /**
+   * Gašenje reda preskočeno — drugi radnici još imaju otvorene sesije. Vraćaju ga
+   * OBE STOP putanje (od 05.08.2026 i barkod `work/stop`): bez toga barkod ekran
+   * nije umeo da kaže zašto radnikovo „Da — gotova je" nije zatvorilo operaciju.
+   */
+  finishSkipped?: boolean;
+  /** Radnici koji su imali otvorenu sesiju na redu u trenutku „Kraja rada". */
+  otherOpenWorkers?: { id: number; fullName: string | null }[];
 }
 
 /** „Kraj rada" po tp.id — STOP + info o deljenom redu (više radnika na operaciji). */
 export interface StopWorkByIdResult extends Omit<StopWorkResult, 'session'> {
   /** null kad nema sesije (star red / jedan sken) — evidentirani samo komadi. */
   session: StopWorkResult['session'] | null;
-  /** Gašenje reda preskočeno — drugi radnici još imaju otvorene sesije. */
-  finishSkipped?: boolean;
-  /** Radnici koji su imali otvorenu sesiju na redu u trenutku „Kraja rada". */
-  otherOpenWorkers?: { id: number; fullName: string | null }[];
 }
 
 export interface OpenSessionResult {
