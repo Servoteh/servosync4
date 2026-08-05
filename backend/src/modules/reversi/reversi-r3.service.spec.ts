@@ -3,6 +3,8 @@ import { Prisma } from "@prisma-sy15/client";
 import { ReversiService } from "./reversi.service";
 import type { Sy15Service, Sy15Tx } from "../../common/sy15/sy15.service";
 import type { LabelPrintService } from "../../common/printing/label-print.service";
+import type { PrismaService } from "../../prisma/prisma.service";
+import { ReversiSourceService } from "./reversi-source.service";
 
 /**
  * Unit — Reversi R3 paritet (PLAN_PARITET_reversi_2026-07-17.md, Drop R3).
@@ -99,9 +101,12 @@ describe("ReversiService — R3 paritet", () => {
         $queryRaw: jest.fn(),
       },
     };
+    // REVERSI_IZVOR nije postavljen -> izvor je "sy15" (default), kao i pre seobe.
     service = new ReversiService(
       sy15 as unknown as Sy15Service,
       {} as unknown as LabelPrintService,
+      new ReversiSourceService(),
+      {} as unknown as PrismaService,
     );
   });
 

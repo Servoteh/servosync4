@@ -2348,6 +2348,16 @@ model User {
   bbSyncLogs          BbSyncLog[]
   userRoles           UserRole[]
   permissionOverrides UserPermissionOverride[]
+  // Reversi (seoba iz sy15) — autori; u sy15 su ovo FK-ovi na `auth.users`.
+  revToolsCreated     RevTool[]                @relation("RevToolCreatedBy")
+  revToolsScrapped    RevTool[]                @relation("RevToolOtpisBy")
+  revDocumentsIssued  RevDocument[]            @relation("RevDocumentIssuedBy")
+  revDocumentsClosed  RevDocument[]            @relation("RevDocumentReturnConfirmedBy")
+  revCuttingCreated   RevCuttingToolCatalog[]  @relation("RevCuttingCatalogCreatedBy")
+  revMachineHeads     RevMachineHead[]         @relation("RevMachineHeadCreatedBy")
+  revBatteries        RevToolBattery[]         @relation("RevToolBatteryCreatedBy")
+  revServiceLogs      RevToolServiceLog[]      @relation("RevToolServiceLogCreatedBy")
+  revStockLedger      RevToolStockLedger[]     @relation("RevToolStockLedgerCreatedBy")
 
   @@map("users")
 }
@@ -6360,4 +6370,412 @@ model WorkOrderDrawingPdf {
   @@index([workOrderId], map: "idx_work_order_drawing_pdfs_work_order")
   @@index([handoverId], map: "idx_work_order_drawing_pdfs_handover")
   @@map("work_order_drawing_pdfs")
+}
+
+// ============================================================================
+// REVERSI (seoba iz sy15 — docs/PLAN_GASENJA_SY15_2026-08-03.md korak 1)
+//
+// STANJE: modeli i migracija su PRIPREMLJENI, ali NISU aktivirani na produkciji.
+// Prekidač `REVERSI_IZVOR` (sy15 | 3.0) bira izvor u runtime-u; default je `sy15`,
+// pa dok ne padne odluka ove tabele stoje prazne. Vidi
+// docs/SEOBA_REVERSA_2026-08-05.md za merenje, redosled koraka i povratak.
+//
+// ŠTA SE MENJA U ODNOSU NA sy15 ŠEMU (`prisma/sy15.prisma`):
+//
+//  1. UUID primarni ključevi se ZADRŽAVAJU (`@db.Uuid`), suprotno §2.1 „legacy ključ
+//     = Int". Razlog: ovo NISU legacy BigBit tabele nego app-owned sy15-native tabele
+//     kojima je uuid prirodni ključ. Zadržavanjem id-jeva prenos je egzaktno
+//     idempotentan (bez remap tabele), a već odštampane nalepnice/PDF-ovi i
+//     `loc_item_ref_id` (rev_tools:<uuid>) ostaju važeći.
+//
+//  2. Autori (`issued_by`, `created_by`, `otpis_by`, `return_confirmed_by`) idu sa
+//     sy15 `auth.users` UUID-a na 3.0 `users.id` (Int, pravi FK). Izmereno 05.08:
+//     samo 2 različita naloga se pojavljuju u celom domenu (Nenad id=2, Duško id=42).
+//     UPOZORENJE: polje u JSON odgovoru menja ime (createdBy -> createdByUserId)
+//     i tip — FE mora da prati; popisano u planu seobe.
+//
+//  3. MEKE VEZE koje OSTAJU uuid bez FK-a (šavovi ka domenima koji su još u sy15) —
+//     isti obrazac kao `KadrGridDayLock.employeeId` i `WorkerEmployeeMap`:
+//       - `*EmployeeId` -> sy15 `employees.id` (kadrovska, korak 4 plana),
+//       - `*LocId` / `locationId` / `locLocationId` / `locItemRefId` /
+//         `issueMovementId` / `returnMovementId` -> sy15 `loc_*` (Lokacije).
+//     Ovi šavovi se ZATVARAJU tek kad se ti domeni presele; do tada su to
+//     nevalidirane reference i to je svesno.
+//
+//  4. `bigtehnSifraArtikla` ostaje Int bez FK-a — u sy15 ima FK na
+//     `bigtehn_artikli_cache`, ali je izmereno 0 popunjenih vrednosti (mrtav šav).
+//
+//  5. CHECK ograničenja: statusni CHECK-ovi iz sy15 se NE prenose (BACKEND_RULES §2 —
+//     dozvoljene vrednosti žive u `///` komentaru, ne u bazi). Brojčane invarijante
+//     (min <= max, delta <> 0, količina >= 0) SE prenose — to su poslovna pravila, ne
+//     katalog vrednosti.
+//
+//  6. FK veze UNUTAR domena se sada deklarišu u Prismi (sy15 ih ima u bazi ali ne u
+//     šemi, pa servis radi ručni batch-resolve). Postojeći kod time nije pogođen —
+//     relacije se ne učitavaju bez `include`.
+//
+//  7. `rev_api_idempotency` se NAMERNO NE SELI. Uprkos `rev_` prefiksu to NIJE
+//     tabela reversa nego zajednički registar idempotencije CELE aplikacije
+//     (`Sy15Service.runIdempotent`/`runIdempotentRls`). Izmereno 05.08: od 643 reda
+//     samo 2 su reversi; ostalo je kadrovska (368+), sastanci, projektni biro,
+//     održavanje i moj-profil — domeni koji ostaju u sy15. Seliti je = polomiti
+//     idempotenciju pet drugih modula.
+// ============================================================================
+
+/// Klasifikacija inventara — nivo 1 (grupa). Seed-ovane grupe (`isSeeded`) se ne brišu.
+/// appliesTo: CUTTING | HAND | BOTH
+model RevInventoryGroup {
+  id           String                 @id(map: "pk_rev_inventory_groups") @default(uuid()) @map("id") @db.Uuid
+  code         String                 @map("code")
+  label        String                 @map("label")
+  appliesTo    String                 @map("applies_to")
+  displayOrder Int                    @default(100) @map("display_order")
+  icon         String?                @map("icon")
+  isSeeded     Boolean                @default(true) @map("is_seeded")
+  napomena     String?                @map("napomena")
+  createdAt    DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  subgroups    RevInventorySubgroup[]
+
+  @@unique([code], map: "uq_rev_inventory_groups_code")
+  @@map("rev_inventory_groups")
+}
+
+/// Klasifikacija inventara — nivo 2 (podgrupa). Korisničke (isSeeded=false) se smeju brisati.
+model RevInventorySubgroup {
+  id             String                    @id(map: "pk_rev_inventory_subgroups") @default(uuid()) @map("id") @db.Uuid
+  groupId        String                    @map("group_id") @db.Uuid
+  code           String                    @map("code")
+  label          String                    @map("label")
+  displayOrder   Int                       @default(100) @map("display_order")
+  isSeeded       Boolean                   @default(true) @map("is_seeded")
+  napomena       String?                   @map("napomena")
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  group          RevInventoryGroup         @relation(fields: [groupId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_rev_inventory_subgroups_group")
+  subsubgroups   RevInventorySubsubgroup[]
+  tools          RevTool[]
+  cuttingCatalog RevCuttingToolCatalog[]
+
+  @@unique([groupId, code], map: "uq_rev_inventory_subgroups_group_code")
+  @@map("rev_inventory_subgroups")
+}
+
+/// Klasifikacija inventara — nivo 3 (podpodgrupa).
+model RevInventorySubsubgroup {
+  id           String               @id(map: "pk_rev_inventory_subsubgroups") @default(uuid()) @map("id") @db.Uuid
+  subgroupId   String               @map("subgroup_id") @db.Uuid
+  code         String               @map("code")
+  label        String               @map("label")
+  displayOrder Int                  @default(100) @map("display_order")
+  isSeeded     Boolean              @default(false) @map("is_seeded")
+  napomena     String?              @map("napomena")
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  subgroup     RevInventorySubgroup @relation(fields: [subgroupId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_rev_inventory_subsubgroups_subgroup")
+  tools        RevTool[]
+
+  @@unique([subgroupId, code], map: "uq_rev_inventory_subsubgroups_subgroup_code")
+  @@map("rev_inventory_subsubgroups")
+}
+
+/// Jedinica ručnog alata. `barcode` (ALAT-NNNNNN) i `locItemRefId` (rev_tools:<uuid>)
+/// dodeljuju BEFORE INSERT trigeri — isti kao u sy15 (vidi migraciju).
+/// status: active | scrapped | lost
+model RevTool {
+  id                  String                   @id(map: "pk_rev_tools") @default(uuid()) @map("id") @db.Uuid
+  oznaka              String                   @map("oznaka")
+  naziv               String                   @map("naziv")
+  serijskiBroj        String?                  @map("serijski_broj")
+  datumKupovine       DateTime?                @map("datum_kupovine") @db.Date
+  status              String                   @default("active") @map("status")
+  napomena            String?                  @map("napomena")
+  /// ŠAV -> sy15 `loc_item_placements.item_ref_id` (uz `item_ref_table='rev_tools'`).
+  /// Kuje ga trigger; ostaje dok se `loc_*` ne preseli.
+  locItemRefId        String?                  @map("loc_item_ref_id")
+  createdAt           DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByUserId     Int?                     @map("created_by")
+  updatedAt           DateTime                 @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Meki ref -> BigBit šifra artikla. FK iz sy15 se NE prenosi (izmereno 0 popunjenih).
+  bigtehnSifraArtikla Int?                     @map("bigtehn_sifra_artikla")
+  /// NOT NULL; dodeljuje ga `rev_tools_set_barcode` trigger kad se ne zada.
+  barcode             String                   @default(dbgenerated()) @map("barcode")
+  subgroupId          String?                  @map("subgroup_id") @db.Uuid
+  isQuantity          Boolean                  @default(false) @map("is_quantity")
+  totalQty            Int                      @default(1) @map("total_qty")
+  isConsumable        Boolean                  @default(false) @map("is_consumable")
+  minStockQty         Int?                     @map("min_stock_qty")
+  maxStockQty         Int?                     @map("max_stock_qty")
+  subsubgroupId       String?                  @map("subsubgroup_id") @db.Uuid
+  garancijaDo         DateTime?                @map("garancija_do") @db.Date
+  garancijaNapomena   String?                  @map("garancija_napomena")
+  imaPunjac           Boolean                  @default(false) @map("ima_punjac")
+  punjacSerijski      String?                  @map("punjac_serijski")
+  otpisDatum          DateTime?                @map("otpis_datum") @db.Date
+  otpisRazlog         String?                  @map("otpis_razlog")
+  otpisByUserId       Int?                     @map("otpis_by")
+  nabavnaVrednost     Decimal?                 @map("nabavna_vrednost") @db.Decimal(12, 2)
+  subgroup            RevInventorySubgroup?    @relation(fields: [subgroupId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tools_subgroup")
+  subsubgroup         RevInventorySubsubgroup? @relation(fields: [subsubgroupId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tools_subsubgroup")
+  createdByUser       User?                    @relation("RevToolCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tools_created_by")
+  otpisByUser         User?                    @relation("RevToolOtpisBy", fields: [otpisByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tools_otpis_by")
+  documentLines       RevDocumentLine[]
+  batteries           RevToolBattery[]
+  serviceLog          RevToolServiceLog[]
+  stockLedger         RevToolStockLedger[]
+
+  @@unique([locItemRefId], map: "uq_rev_tools_loc_item_ref_id")
+  @@unique([barcode], map: "uq_rev_tools_barcode")
+  @@index([subgroupId], map: "idx_rev_tools_subgroup")
+  @@index([status], map: "idx_rev_tools_status")
+  @@index([oznaka], map: "idx_rev_tools_oznaka")
+  @@map("rev_tools")
+}
+
+/// Revers dokument (zaduženje). `docNumber` kuje `rev_next_doc_number` (REV-TOOL/KOOP/RZN-YYYY-NNNN).
+/// docType: TOOL | COOPERATION_GOODS | CUTTING_TOOL
+/// recipientType: EMPLOYEE | DEPARTMENT | EXTERNAL_COMPANY | MACHINE
+/// status: OPEN | PARTIALLY_RETURNED | RETURNED | CANCELLED
+model RevDocument {
+  id                      String                       @id(map: "pk_rev_documents") @default(uuid()) @map("id") @db.Uuid
+  docNumber               String                       @map("doc_number")
+  docType                 String                       @map("doc_type")
+  recipientType           String                       @map("recipient_type")
+  /// ŠAV -> sy15 `employees.id`. Meka veza (bez FK) dok kadrovska ne pređe — isti
+  /// obrazac kao `KadrGridDayLock.employeeId` / `WorkerEmployeeMap.employeeId`.
+  recipientEmployeeId     String?                      @map("recipient_employee_id") @db.Uuid
+  recipientEmployeeName   String?                      @map("recipient_employee_name")
+  recipientDepartment     String?                      @map("recipient_department")
+  recipientCompanyName    String?                      @map("recipient_company_name")
+  recipientCompanyPib     String?                      @map("recipient_company_pib")
+  /// ŠAV -> sy15 `loc_locations.id` (Lokacije). Izmereno: popunjen na 27/27 redova.
+  recipientLocId          String?                      @map("recipient_loc_id") @db.Uuid
+  expectedReturnDate      DateTime?                    @map("expected_return_date") @db.Date
+  issuedAt                DateTime                     @default(now()) @map("issued_at") @db.Timestamptz(6)
+  issuedByUserId          Int                          @map("issued_by")
+  status                  String                       @default("OPEN") @map("status")
+  returnConfirmedByUserId Int?                         @map("return_confirmed_by")
+  returnConfirmedAt       DateTime?                    @map("return_confirmed_at") @db.Timestamptz(6)
+  returnNotes             String?                      @map("return_notes")
+  pdfStoragePath          String?                      @map("pdf_storage_path")
+  pdfGeneratedAt          DateTime?                    @map("pdf_generated_at") @db.Timestamptz(6)
+  napomena                String?                      @map("napomena")
+  createdAt               DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime                     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Meki ref -> `maint_machines.code` (Održavanje, još u sy15).
+  recipientMachineCode    String?                      @map("recipient_machine_code")
+  /// ŠAV -> sy15 `employees.id` (ko je fizički preuzeo).
+  issuedToEmployeeId      String?                      @map("issued_to_employee_id") @db.Uuid
+  issuedToEmployeeName    String?                      @map("issued_to_employee_name")
+  /// SHA-256 ključ masovnog uvoza — prirodna idempotencija bulk reversa.
+  bulkImportLegacyKey     String?                      @map("bulk_import_legacy_key")
+  issuedByUser            User                         @relation("RevDocumentIssuedBy", fields: [issuedByUserId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_rev_documents_issued_by")
+  returnConfirmedByUser   User?                        @relation("RevDocumentReturnConfirmedBy", fields: [returnConfirmedByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_documents_return_confirmed_by")
+  lines                   RevDocumentLine[]
+  cuttingAssignees        RevDocumentCuttingAssignee[]
+  stockLedger             RevToolStockLedger[]
+
+  @@unique([docNumber], map: "uq_rev_documents_doc_number")
+  @@index([docType, status], map: "idx_rev_documents_doc_type_status")
+  @@index([issuedAt], map: "idx_rev_documents_issued_at")
+  @@index([recipientEmployeeId], map: "idx_rev_documents_recipient_employee")
+  @@map("rev_documents")
+}
+
+/// Stavka reversa. Piše je ISKLJUČIVO tok izdavanja/povraćaja (u sy15 su to DB
+/// funkcije `rev_issue_*` / `rev_confirm_*`; u 3.0 ta logika mora u NestJS).
+/// lineType: TOOL | PRODUCTION_PART | CUTTING_TOOL
+/// lineStatus: ISSUED | RETURNED | LOST | SCRAPPED | CONSUMED
+model RevDocumentLine {
+  id                   String                 @id(map: "pk_rev_document_lines") @default(uuid()) @map("id") @db.Uuid
+  documentId           String                 @map("document_id") @db.Uuid
+  sortOrder            Int                    @default(0) @map("sort_order")
+  lineType             String                 @map("line_type")
+  toolId               String?                @map("tool_id") @db.Uuid
+  drawingNo            String?                @map("drawing_no")
+  /// Meki ref (uuid iz 1.0 proizvodnje) — u 3.0 nema ekvivalent; ostaje kako jeste.
+  workOrderId          String?                @map("work_order_id") @db.Uuid
+  partName             String?                @map("part_name")
+  quantity             Decimal                @default(1) @map("quantity") @db.Decimal(12, 3)
+  unit                 String                 @default("kom") @map("unit")
+  napomena             String?                @map("napomena")
+  /// ŠAV -> sy15 `loc_location_movements.id`. Zbog OVOGA izdavanje/povraćaj mora biti
+  /// u ISTOJ transakciji sa Lokacijama — glavni razlog zašto reversi i loc_* idu zajedno.
+  issueMovementId      String?                @map("issue_movement_id") @db.Uuid
+  returnedQuantity     Decimal                @default(0) @map("returned_quantity") @db.Decimal(12, 3)
+  returnMovementId     String?                @map("return_movement_id") @db.Uuid
+  lineStatus           String                 @default("ISSUED") @map("line_status")
+  createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  cuttingToolCatalogId String?                @map("cutting_tool_catalog_id") @db.Uuid
+  document             RevDocument            @relation(fields: [documentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_rev_document_lines_document")
+  tool                 RevTool?               @relation(fields: [toolId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_rev_document_lines_tool")
+  cuttingToolCatalog   RevCuttingToolCatalog? @relation(fields: [cuttingToolCatalogId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_rev_document_lines_cutting_catalog")
+  stockLedger          RevToolStockLedger[]
+
+  @@index([documentId], map: "idx_rev_document_lines_document")
+  @@index([lineStatus], map: "idx_rev_document_lines_status")
+  @@index([toolId], map: "idx_rev_document_lines_tool")
+  @@index([cuttingToolCatalogId], map: "idx_rev_document_lines_cutting_catalog")
+  @@map("rev_document_lines")
+}
+
+/// Preslikavanje primaoca (radnik/odeljenje/firma/mašina) na lokaciju zaduženja.
+/// CELA tabela je most ka Lokacijama — nema smisla bez `loc_locations`.
+/// recipientType: EMPLOYEE | DEPARTMENT | EXTERNAL_COMPANY | MACHINE
+model RevRecipientLocation {
+  id             String   @id(map: "pk_rev_recipient_locations") @default(uuid()) @map("id") @db.Uuid
+  recipientType  String   @map("recipient_type")
+  recipientKey   String   @map("recipient_key")
+  recipientLabel String   @map("recipient_label")
+  /// ŠAV -> sy15 `loc_locations.id`. Izmereno: popunjen na 28/28 redova (NOT NULL).
+  locLocationId  String   @map("loc_location_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([recipientType, recipientKey], map: "uq_rev_recipient_locations_type_key")
+  @@map("rev_recipient_locations")
+}
+
+/// Katalog reznog alata. `barcode` (RZN-NNNNNN) dodeljuje trigger.
+/// status: active | scrapped
+model RevCuttingToolCatalog {
+  id                     String                @id(map: "pk_rev_cutting_tool_catalog") @default(uuid()) @map("id") @db.Uuid
+  barcode                String?               @map("barcode")
+  oznaka                 String                @map("oznaka")
+  naziv                  String                @map("naziv")
+  /// Meki ref -> `maint_machines.code[]` (Održavanje, još u sy15).
+  compatibleMachineCodes String[]              @default([]) @map("compatible_machine_codes")
+  unit                   String                @default("kom") @map("unit")
+  status                 String                @default("active") @map("status")
+  napomena               String?               @map("napomena")
+  createdAt              DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByUserId        Int?                  @map("created_by")
+  updatedAt              DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  bigtehnSifraArtikla    Int?                  @map("bigtehn_sifra_artikla")
+  minStockQty            Int                   @default(0) @map("min_stock_qty")
+  subgroupId             String?               @map("subgroup_id") @db.Uuid
+  maxStockQty            Int?                  @map("max_stock_qty")
+  subgroup               RevInventorySubgroup? @relation(fields: [subgroupId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_cutting_tool_catalog_subgroup")
+  createdByUser          User?                 @relation("RevCuttingCatalogCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_cutting_tool_catalog_created_by")
+  stock                  RevCuttingToolStock[]
+  documentLines          RevDocumentLine[]
+
+  @@unique([barcode], map: "uq_rev_cutting_tool_catalog_barcode")
+  @@index([oznaka], map: "idx_rev_cutting_tool_catalog_oznaka")
+  @@index([status], map: "idx_rev_cutting_tool_catalog_status")
+  @@index([subgroupId], map: "idx_rev_cutting_tool_catalog_subgroup")
+  @@map("rev_cutting_tool_catalog")
+}
+
+/// Stanje reznog alata PO LOKACIJI. Drugi deo primarnog ključa je `loc_locations.id` —
+/// ova tabela je po konstrukciji nerazdvojiva od Lokacija.
+model RevCuttingToolStock {
+  catalogId  String                @map("catalog_id") @db.Uuid
+  /// ŠAV -> sy15 `loc_locations.id` — DEO PRIMARNOG KLJUČA.
+  locationId String                @map("location_id") @db.Uuid
+  onHandQty  Decimal               @default(0) @map("on_hand_qty") @db.Decimal(12, 3)
+  updatedAt  DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  catalog    RevCuttingToolCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_rev_cutting_tool_stock_catalog")
+
+  @@id([catalogId, locationId], map: "pk_rev_cutting_tool_stock")
+  @@index([locationId], map: "idx_rev_cutting_tool_stock_location")
+  @@map("rev_cutting_tool_stock")
+}
+
+/// Zaduženi radnici na reversu reznog alata (primarni/sekundarni operater).
+/// role: PRIMARY | SECONDARY
+model RevDocumentCuttingAssignee {
+  id         String      @id(map: "pk_rev_document_cutting_assignees") @default(uuid()) @map("id") @db.Uuid
+  documentId String      @map("document_id") @db.Uuid
+  /// ŠAV -> sy15 `employees.id` (NOT NULL u sy15, RESTRICT).
+  employeeId String      @map("employee_id") @db.Uuid
+  role       String      @map("role")
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  document   RevDocument @relation(fields: [documentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_rev_document_cutting_assignees_document")
+
+  @@unique([documentId, employeeId], map: "uq_rev_document_cutting_assignees_doc_employee")
+  @@index([documentId], map: "idx_rev_document_cutting_assignees_document")
+  @@map("rev_document_cutting_assignees")
+}
+
+/// Glave/patrone mašine. `machineCode` je meki ref -> `maint_machines.code`.
+/// status: ACTIVE | SERVIS | OTPISANA
+model RevMachineHead {
+  id              String   @id(map: "pk_rev_machine_heads") @default(uuid()) @map("id") @db.Uuid
+  machineCode     String   @map("machine_code")
+  oznaka          String   @map("oznaka")
+  naziv           String   @map("naziv")
+  tip             String?  @map("tip")
+  serijskiBroj    String?  @map("serijski_broj")
+  status          String   @default("ACTIVE") @map("status")
+  napomena        String?  @map("napomena")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByUserId Int?     @map("created_by")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdByUser   User?    @relation("RevMachineHeadCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_machine_heads_created_by")
+
+  @@index([machineCode], map: "idx_rev_machine_heads_machine_code")
+  @@map("rev_machine_heads")
+}
+
+/// Baterija ručnog alata. status: active | scrapped | lost
+model RevToolBattery {
+  id              String    @id(map: "pk_rev_tool_batteries") @default(uuid()) @map("id") @db.Uuid
+  toolId          String    @map("tool_id") @db.Uuid
+  serijskiBroj    String?   @map("serijski_broj")
+  kapacitet       String?   @map("kapacitet")
+  datumNabavke    DateTime? @map("datum_nabavke") @db.Date
+  status          String    @default("active") @map("status")
+  napomena        String?   @map("napomena")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByUserId Int?      @map("created_by")
+  tool            RevTool   @relation(fields: [toolId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_rev_tool_batteries_tool")
+  createdByUser   User?     @relation("RevToolBatteryCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tool_batteries_created_by")
+
+  @@index([toolId], map: "idx_rev_tool_batteries_tool")
+  @@map("rev_tool_batteries")
+}
+
+/// Servisni dnevnik alata.
+/// tip: servis | popravka | zamena_baterije | kalibracija | ostalo
+/// status: planiran | u_toku | zavrsen | otkazan
+model RevToolServiceLog {
+  id              String   @id(map: "pk_rev_tool_service_log") @default(uuid()) @map("id") @db.Uuid
+  toolId          String   @map("tool_id") @db.Uuid
+  datum           DateTime @default(dbgenerated("CURRENT_DATE")) @map("datum") @db.Date
+  tip             String   @default("popravka") @map("tip")
+  opis            String?  @map("opis")
+  izvrsilac       String?  @map("izvrsilac")
+  trosak          Decimal? @map("trosak") @db.Decimal(12, 2)
+  status          String   @default("zavrsen") @map("status")
+  napomena        String?  @map("napomena")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByUserId Int?     @map("created_by")
+  tool            RevTool  @relation(fields: [toolId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_rev_tool_service_log_tool")
+  createdByUser   User?    @relation("RevToolServiceLogCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tool_service_log_created_by")
+
+  @@index([toolId], map: "idx_rev_tool_service_log_tool")
+  @@map("rev_tool_service_log")
+}
+
+/// Knjiga promena zaliha količinskog/potrošnog alata. Invarijanta: suma delta = totalQty.
+/// reason: RECEIPT | ISSUE | RETURN | ADJUST | WRITE_OFF
+model RevToolStockLedger {
+  id              String           @id(map: "pk_rev_tool_stock_ledger") @default(uuid()) @map("id") @db.Uuid
+  toolId          String           @map("tool_id") @db.Uuid
+  delta           Int              @map("delta")
+  reason          String           @map("reason")
+  balanceAfter    Int              @map("balance_after")
+  refDocId        String?          @map("ref_doc_id") @db.Uuid
+  refLineId       String?          @map("ref_line_id") @db.Uuid
+  note            String?          @map("note")
+  createdByUserId Int?             @map("created_by")
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  tool            RevTool          @relation(fields: [toolId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_rev_tool_stock_ledger_tool")
+  refDoc          RevDocument?     @relation(fields: [refDocId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tool_stock_ledger_ref_doc")
+  refLine         RevDocumentLine? @relation(fields: [refLineId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tool_stock_ledger_ref_line")
+  createdByUser   User?            @relation("RevToolStockLedgerCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_rev_tool_stock_ledger_created_by")
+
+  @@index([toolId], map: "idx_rev_tool_stock_ledger_tool")
+  @@index([createdAt], map: "idx_rev_tool_stock_ledger_created_at")
+  @@map("rev_tool_stock_ledger")
 }

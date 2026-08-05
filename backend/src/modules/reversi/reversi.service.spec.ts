@@ -8,6 +8,8 @@ import { Prisma } from "@prisma-sy15/client";
 import { ReversiService } from "./reversi.service";
 import type { Sy15Service, Sy15Tx } from "../../common/sy15/sy15.service";
 import type { LabelPrintService } from "../../common/printing/label-print.service";
+import type { PrismaService } from "../../prisma/prisma.service";
+import { ReversiSourceService } from "./reversi-source.service";
 
 /**
  * Unit — Reversi R0 paritet (PLAN_PARITET_reversi_2026-07-17.md, Drop R0).
@@ -106,9 +108,13 @@ describe("ReversiService — R0 paritet", () => {
       },
     };
     labelPrint = { printRawTspl: jest.fn() };
+    // REVERSI_IZVOR nije postavljen -> ReversiSourceService pada na "sy15",
+    // pa `assertPorted` ništa ne radi i ovi testovi mere sy15 putanju (kao i pre).
     service = new ReversiService(
       sy15 as unknown as Sy15Service,
       labelPrint as unknown as LabelPrintService,
+      new ReversiSourceService(),
+      {} as unknown as PrismaService,
     );
   });
 

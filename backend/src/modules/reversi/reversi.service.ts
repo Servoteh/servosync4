@@ -10,6 +10,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
+import { PrismaService } from "../../prisma/prisma.service";
+import { ReversiSourceService } from "./reversi-source.service";
 import { assertPdfAttachment } from "../../common/attachments/attachment-format.util";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import type {
@@ -213,7 +215,24 @@ export class ReversiService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly labelPrint: LabelPrintService,
+    private readonly source: ReversiSourceService,
+    private readonly prisma: PrismaService,
   ) {}
+
+  /**
+   * Jedini ulaz u sy15 iz ovog servisa (112 poziva). Pod `REVERSI_IZVOR=3.0` baca 503
+   * umesto da propusti upit u staru bazu.
+   *
+   * Zašto je ovo brana a ne udobnost: pod prekidačem u položaju „3.0" upis koji bi i
+   * dalje otišao u sy15 razišao bi dve baze (split-brain), a to se ne vidi odmah —
+   * otkrilo bi se tek kad se brojevi ne poklope. Bolje je da ruta padne glasno.
+   * Prenete putanje (klasifikacija) OVO NE DIRAJU — one pod „3.0" idu na `this.prisma`
+   * pre nego što dođu do ovog getera.
+   */
+  private get sy15Legacy(): Sy15Service {
+    this.source.assertPorted("ova ruta");
+    return this.sy15;
+  }
 
   // ---------- Dokumenti (reversi) ----------
 
@@ -238,18 +257,18 @@ export class ReversiService {
     );
     const where = this.buildDocumentWhere(query);
     const [docs, total] = await Promise.all([
-      this.sy15.db.revDocument.findMany({
+      this.sy15Legacy.db.revDocument.findMany({
         where,
         orderBy: { issuedAt: "desc" },
         skip,
         take,
       }),
-      this.sy15.db.revDocument.count({ where }),
+      this.sy15Legacy.db.revDocument.count({ where }),
     ]);
     // RB-22/25: broj stavki po dokumentu (kolona „Stavki" + CSV) — jedan agregat.
     const ids = docs.map((d) => d.id);
     const counts = ids.length
-      ? await this.sy15.db.revDocumentLine.groupBy({
+      ? await this.sy15Legacy.db.revDocumentLine.groupBy({
           by: ["documentId"],
           where: { documentId: { in: ids } },
           _count: { _all: true },
@@ -332,7 +351,9 @@ export class ReversiService {
         OR recipient_department ILIKE ${like}
         OR recipient_company_name ILIKE ${like})`);
     }
-    const rows = await this.sy15.db.$queryRaw<{ count: number }[]>(Prisma.sql`
+    const rows = await this.sy15Legacy.db.$queryRaw<
+      { count: number }[]
+    >(Prisma.sql`
       SELECT COUNT(DISTINCT CASE
         WHEN recipient_type = 'EMPLOYEE' AND recipient_employee_id IS NOT NULL
           THEN 'e:' || recipient_employee_id::text
@@ -359,9 +380,11 @@ export class ReversiService {
   async openHandLineByBarcode(barcodeRaw?: string) {
     const barcode = this.normalizeBarcode(barcodeRaw);
     if (!barcode) return { data: null };
-    const tool = await this.sy15.db.revTool.findFirst({ where: { barcode } });
+    const tool = await this.sy15Legacy.db.revTool.findFirst({
+      where: { barcode },
+    });
     if (!tool) return { data: null };
-    const lines = await this.sy15.db.revDocumentLine.findMany({
+    const lines = await this.sy15Legacy.db.revDocumentLine.findMany({
       where: { toolId: tool.id, lineStatus: "ISSUED" },
       select: {
         id: true,
@@ -372,7 +395,7 @@ export class ReversiService {
     });
     if (lines.length === 0) return { data: null };
     const docIds = [...new Set(lines.map((l) => l.documentId))];
-    const docs = await this.sy15.db.revDocument.findMany({
+    const docs = await this.sy15Legacy.db.revDocument.findMany({
       where: { id: { in: docIds }, status: { in: [...OPEN_DOC_STATUSES] } },
       select: {
         id: true,
@@ -421,9 +444,11 @@ export class ReversiService {
   }
 
   async findOneDocument(id: string) {
-    const doc = await this.sy15.db.revDocument.findUnique({ where: { id } });
+    const doc = await this.sy15Legacy.db.revDocument.findUnique({
+      where: { id },
+    });
     if (!doc) throw new NotFoundException(`Reversi dokument ${id} ne postoji`);
-    const lines = await this.sy15.db.revDocumentLine.findMany({
+    const lines = await this.sy15Legacy.db.revDocumentLine.findMany({
       where: { documentId: id },
       orderBy: { sortOrder: "asc" },
     });
@@ -432,7 +457,9 @@ export class ReversiService {
       ...new Set(lines.map((l) => l.toolId).filter((x): x is string => !!x)),
     ];
     const tools = toolIds.length
-      ? await this.sy15.db.revTool.findMany({ where: { id: { in: toolIds } } })
+      ? await this.sy15Legacy.db.revTool.findMany({
+          where: { id: { in: toolIds } },
+        })
       : [];
     const toolById = new Map(tools.map((t) => [t.id, t]));
     // R4-PAR-02 — odeljenje radnika-primaoca za potpisnicu PDF „(Radnik — …)"
@@ -440,7 +467,7 @@ export class ReversiService {
     // upit po PK. `recipient_company_pib` je već u `...doc` spread-u (za eksterne firme).
     let recipientEmployeeDepartment: string | null = null;
     if (doc.recipientType === "EMPLOYEE" && doc.recipientEmployeeId) {
-      const rows = await this.sy15.db.$queryRaw<
+      const rows = await this.sy15Legacy.db.$queryRaw<
         { department: string | null }[]
       >(
         Prisma.sql`SELECT department FROM employees WHERE id = ${doc.recipientEmployeeId}::uuid LIMIT 1`,
@@ -483,13 +510,13 @@ export class ReversiService {
         : {}),
     };
     const [data, total] = await Promise.all([
-      this.sy15.db.revTool.findMany({
+      this.sy15Legacy.db.revTool.findMany({
         where,
         orderBy: [{ oznaka: "asc" }],
         skip,
         take,
       }),
-      this.sy15.db.revTool.count({ where }),
+      this.sy15Legacy.db.revTool.count({ where }),
     ]);
     return { data, meta: pageMeta(page, pageSize, total) };
   }
@@ -509,14 +536,14 @@ export class ReversiService {
    * (RB-06), servisi izvršilac+status+trošak (RB-08) — sve u `...` redova.
    */
   async findOneTool(id: string) {
-    const tool = await this.sy15.db.revTool.findUnique({ where: { id } });
+    const tool = await this.sy15Legacy.db.revTool.findUnique({ where: { id } });
     if (!tool) throw new NotFoundException(`Alat ${id} ne postoji`);
     const [batteries, services] = await Promise.all([
-      this.sy15.db.revToolBattery.findMany({
+      this.sy15Legacy.db.revToolBattery.findMany({
         where: { toolId: id },
         orderBy: { createdAt: "desc" },
       }),
-      this.sy15.db.revToolServiceLog.findMany({
+      this.sy15Legacy.db.revToolServiceLog.findMany({
         where: { toolId: id },
         orderBy: [{ datum: "desc" }, { createdAt: "desc" }],
       }),
@@ -525,20 +552,20 @@ export class ReversiService {
     // Klasifikacija (grupa · podgrupa · podpodgrupa) — targetirani lookupi.
     const [sg, ss] = await Promise.all([
       tool.subgroupId
-        ? this.sy15.db.revInventorySubgroup.findUnique({
+        ? this.sy15Legacy.db.revInventorySubgroup.findUnique({
             where: { id: tool.subgroupId },
             select: { id: true, code: true, label: true, groupId: true },
           })
         : Promise.resolve(null),
       tool.subsubgroupId
-        ? this.sy15.db.revInventorySubsubgroup.findUnique({
+        ? this.sy15Legacy.db.revInventorySubsubgroup.findUnique({
             where: { id: tool.subsubgroupId },
             select: { id: true, code: true, label: true },
           })
         : Promise.resolve(null),
     ]);
     const g = sg?.groupId
-      ? await this.sy15.db.revInventoryGroup.findUnique({
+      ? await this.sy15Legacy.db.revInventoryGroup.findUnique({
           where: { id: sg.groupId },
           select: { code: true, label: true },
         })
@@ -548,14 +575,14 @@ export class ReversiService {
     let currentLocationId: string | null = null;
     let currentLocationCode: string | null = null;
     if (tool.locItemRefId) {
-      const pl = await this.sy15.db.locItemPlacement.findFirst({
+      const pl = await this.sy15Legacy.db.locItemPlacement.findFirst({
         where: { itemRefTable: "rev_tools", itemRefId: tool.locItemRefId },
         orderBy: { placedAt: "desc" },
         select: { locationId: true },
       });
       currentLocationId = pl?.locationId ?? null;
       if (currentLocationId) {
-        const loc = await this.sy15.db.locLocation.findUnique({
+        const loc = await this.sy15Legacy.db.locLocation.findUnique({
           where: { id: currentLocationId },
           select: { locationCode: true },
         });
@@ -564,7 +591,7 @@ export class ReversiService {
     }
 
     // Otvoreno zaduženje — ISSUED linija + dokument OPEN/PARTIALLY_RETURNED.
-    const openLines = await this.sy15.db.revDocumentLine.findMany({
+    const openLines = await this.sy15Legacy.db.revDocumentLine.findMany({
       where: { toolId: id, lineStatus: "ISSUED" },
       select: { documentId: true },
     });
@@ -576,7 +603,7 @@ export class ReversiService {
       recipientCompanyName: string | null;
     } | null = null;
     if (openLines.length > 0) {
-      const openDoc = await this.sy15.db.revDocument.findFirst({
+      const openDoc = await this.sy15Legacy.db.revDocument.findFirst({
         where: {
           id: { in: [...new Set(openLines.map((l) => l.documentId))] },
           status: { in: ["OPEN", "PARTIALLY_RETURNED"] },
@@ -624,13 +651,13 @@ export class ReversiService {
    * (Izdato/Dokument/Primalac/Stavka[Vraćen/Zadužen]/Vraćeno) iz `line` + `line.document`.
    */
   async toolDocuments(id: string) {
-    const lines = await this.sy15.db.revDocumentLine.findMany({
+    const lines = await this.sy15Legacy.db.revDocumentLine.findMany({
       where: { toolId: id },
       orderBy: { createdAt: "desc" },
     });
     const docIds = [...new Set(lines.map((l) => l.documentId))];
     const docs = docIds.length
-      ? await this.sy15.db.revDocument.findMany({
+      ? await this.sy15Legacy.db.revDocument.findMany({
           where: { id: { in: docIds } },
           select: {
             id: true,
@@ -662,7 +689,7 @@ export class ReversiService {
    * (paritet 1.0 INSERT pod korisničkom rolom); status default 'active' (DB CHECK).
    */
   async addToolBattery(email: string, toolId: string, dto: CreateBatteryDto) {
-    const row = await this.sy15.withUser(email, (tx) =>
+    const row = await this.sy15Legacy.withUser(email, (tx) =>
       tx.revToolBattery.create({
         data: {
           toolId,
@@ -690,7 +717,7 @@ export class ReversiService {
     if (dto.napomena !== undefined)
       data.napomena = dto.napomena?.trim() || null;
     try {
-      const row = await this.sy15.db.revToolBattery.update({
+      const row = await this.sy15Legacy.db.revToolBattery.update({
         where: { id },
         data,
       });
@@ -709,7 +736,7 @@ export class ReversiService {
   /** Brisanje baterije (RB-07) — typed DELETE; P2025 → 404. */
   async deleteToolBattery(id: string) {
     try {
-      await this.sy15.db.revToolBattery.delete({ where: { id } });
+      await this.sy15Legacy.db.revToolBattery.delete({ where: { id } });
       return { data: { id } };
     } catch (e) {
       if (
@@ -728,7 +755,7 @@ export class ReversiService {
    * „Isplativost" (RB-08) FE računa: Σ trošak SAMO `status='zavrsen'` / nabavna vrednost.
    */
   async addToolService(email: string, toolId: string, dto: CreateServiceDto) {
-    const row = await this.sy15.withUser(email, (tx) =>
+    const row = await this.sy15Legacy.withUser(email, (tx) =>
       tx.revToolServiceLog.create({
         data: {
           toolId,
@@ -758,7 +785,7 @@ export class ReversiService {
     if (dto.napomena !== undefined)
       data.napomena = dto.napomena?.trim() || null;
     try {
-      const row = await this.sy15.db.revToolServiceLog.update({
+      const row = await this.sy15Legacy.db.revToolServiceLog.update({
         where: { id },
         data,
       });
@@ -777,7 +804,7 @@ export class ReversiService {
   /** Brisanje servisa (RB-09) — typed DELETE; P2025 → 404. */
   async deleteToolService(id: string) {
     try {
-      await this.sy15.db.revToolServiceLog.delete({ where: { id } });
+      await this.sy15Legacy.db.revToolServiceLog.delete({ where: { id } });
       return { data: { id } };
     } catch (e) {
       if (
@@ -824,12 +851,12 @@ export class ReversiService {
       where.subgroupId = query.subgroupId;
     } else if (query.groupCode && query.groupCode !== "ALL") {
       // Grupa bez izabrane podgrupe → suzi na podgrupe te grupe (nesvrstano ispada).
-      const group = await this.sy15.db.revInventoryGroup.findUnique({
+      const group = await this.sy15Legacy.db.revInventoryGroup.findUnique({
         where: { code: query.groupCode },
         select: { id: true },
       });
       const subs = group
-        ? await this.sy15.db.revInventorySubgroup.findMany({
+        ? await this.sy15Legacy.db.revInventorySubgroup.findMany({
             where: { groupId: group.id },
             select: { id: true },
           })
@@ -860,8 +887,8 @@ export class ReversiService {
             : [{ oznaka: dir }];
 
     const [tools, total] = await Promise.all([
-      this.sy15.db.revTool.findMany({ where, orderBy, skip, take }),
-      this.sy15.db.revTool.count({ where }),
+      this.sy15Legacy.db.revTool.findMany({ where, orderBy, skip, take }),
+      this.sy15Legacy.db.revTool.count({ where }),
     ]);
     if (tools.length === 0) {
       return { data: [], meta: pageMeta(page, pageSize, total) };
@@ -869,13 +896,13 @@ export class ReversiService {
 
     // Klasifikacija (grupa · podgrupa · podpodgrupa) iz jednokratnih mapa.
     const [groups, subgroups, subsubgroups] = await Promise.all([
-      this.sy15.db.revInventoryGroup.findMany({
+      this.sy15Legacy.db.revInventoryGroup.findMany({
         select: { id: true, code: true, label: true },
       }),
-      this.sy15.db.revInventorySubgroup.findMany({
+      this.sy15Legacy.db.revInventorySubgroup.findMany({
         select: { id: true, code: true, label: true, groupId: true },
       }),
-      this.sy15.db.revInventorySubsubgroup.findMany({
+      this.sy15Legacy.db.revInventorySubsubgroup.findMany({
         select: { id: true, code: true, label: true },
       }),
     ]);
@@ -890,14 +917,14 @@ export class ReversiService {
       ),
     ];
     const placements = refIds.length
-      ? await this.sy15.db.locItemPlacement.findMany({
+      ? await this.sy15Legacy.db.locItemPlacement.findMany({
           where: { itemRefTable: "rev_tools", itemRefId: { in: refIds } },
           select: { itemRefId: true, locationId: true },
         })
       : [];
     const locIds = [...new Set(placements.map((p) => p.locationId))];
     const locs = locIds.length
-      ? await this.sy15.db.locLocation.findMany({
+      ? await this.sy15Legacy.db.locLocation.findMany({
           where: { id: { in: locIds } },
           select: { id: true, locationCode: true },
         })
@@ -907,13 +934,13 @@ export class ReversiService {
 
     // Zaduženje po jedinici — otvorene ISSUED linije + dokument OPEN/PARTIALLY_RETURNED.
     const ids = tools.map((t) => t.id);
-    const lines = await this.sy15.db.revDocumentLine.findMany({
+    const lines = await this.sy15Legacy.db.revDocumentLine.findMany({
       where: { toolId: { in: ids }, lineStatus: "ISSUED" },
       select: { toolId: true, documentId: true },
     });
     const docIds = [...new Set(lines.map((l) => l.documentId))];
     const docs = docIds.length
-      ? await this.sy15.db.revDocument.findMany({
+      ? await this.sy15Legacy.db.revDocument.findMany({
           where: { id: { in: docIds } },
           select: {
             id: true,
@@ -1002,7 +1029,7 @@ export class ReversiService {
     const clientEventId = dto.clientEventId ?? randomUUID();
 
     try {
-      const outcome = await this.sy15.runIdempotent(
+      const outcome = await this.sy15Legacy.runIdempotent(
         email,
         clientEventId,
         "reversi.create-tool",
@@ -1117,7 +1144,10 @@ export class ReversiService {
     if (dto.status !== undefined) data.status = dto.status;
 
     try {
-      const tool = await this.sy15.db.revTool.update({ where: { id }, data });
+      const tool = await this.sy15Legacy.db.revTool.update({
+        where: { id },
+        data,
+      });
       return { data: tool };
     } catch (e) {
       if (
@@ -1132,15 +1162,38 @@ export class ReversiService {
 
   // ---------- Klasifikacija (inventar grupe) ----------
 
+  /**
+   * Stablo klasifikacije (grupa · podgrupa · podpodgrupa).
+   *
+   * PRVA PUTANJA PRENETA NA PREKIDAČ `REVERSI_IZVOR` (v. ReversiSourceService).
+   * Ove tri tabele su jedini deo domena bez ijedne zavisnosti van `rev_*`: nemaju
+   * `created_by`, ne diraju `employees`/`loc_*`, i ne prolaze kroz view ni DEFINER
+   * funkciju. Zato im je oblik reda IDENTIČAN u obe baze i zamena izvora ne menja
+   * JSON odgovor — što je i smisao dokaza izvodljivosti.
+   */
   async inventoryTree() {
+    if (this.source.isThreeZero) {
+      const [groups, subgroups, subsubgroups] = await Promise.all([
+        this.prisma.revInventoryGroup.findMany({
+          orderBy: { displayOrder: "asc" },
+        }),
+        this.prisma.revInventorySubgroup.findMany({
+          orderBy: { displayOrder: "asc" },
+        }),
+        this.prisma.revInventorySubsubgroup.findMany({
+          orderBy: { displayOrder: "asc" },
+        }),
+      ]);
+      return { data: { groups, subgroups, subsubgroups } };
+    }
     const [groups, subgroups, subsubgroups] = await Promise.all([
-      this.sy15.db.revInventoryGroup.findMany({
+      this.sy15Legacy.db.revInventoryGroup.findMany({
         orderBy: { displayOrder: "asc" },
       }),
-      this.sy15.db.revInventorySubgroup.findMany({
+      this.sy15Legacy.db.revInventorySubgroup.findMany({
         orderBy: { displayOrder: "asc" },
       }),
-      this.sy15.db.revInventorySubsubgroup.findMany({
+      this.sy15Legacy.db.revInventorySubsubgroup.findMany({
         orderBy: { displayOrder: "asc" },
       }),
     ]);
@@ -1153,9 +1206,9 @@ export class ReversiService {
    * `fetchInventoryClassificationUsage` — rev_tools + rev_cutting_tool_catalog.
    */
   async inventoryClassificationUsage() {
-    const rows = await this.sy15.db.$queryRaw<
-      { k: string; id: string; n: number }[]
-    >(Prisma.sql`
+    // Prenet na prekidač: upit gazi samo `rev_tools` + `rev_cutting_tool_catalog`
+    // (obe tabele postoje u obe baze), pa je isti SQL ispravan na oba izvora.
+    const sql = `
       SELECT 'tool_sub'::text AS k, subgroup_id::text AS id, count(*)::int AS n
         FROM rev_tools WHERE subgroup_id IS NOT NULL GROUP BY subgroup_id
       UNION ALL
@@ -1163,7 +1216,14 @@ export class ReversiService {
         FROM rev_tools WHERE subsubgroup_id IS NOT NULL GROUP BY subsubgroup_id
       UNION ALL
       SELECT 'cutting_sub', subgroup_id::text, count(*)::int
-        FROM rev_cutting_tool_catalog WHERE subgroup_id IS NOT NULL GROUP BY subgroup_id`);
+        FROM rev_cutting_tool_catalog WHERE subgroup_id IS NOT NULL GROUP BY subgroup_id`;
+    const rows = this.source.isThreeZero
+      ? await this.prisma.$queryRawUnsafe<
+          { k: string; id: string; n: number }[]
+        >(sql)
+      : await this.sy15Legacy.db.$queryRawUnsafe<
+          { k: string; id: string; n: number }[]
+        >(sql);
     const out: {
       tools: Record<string, number>;
       cutting: Record<string, number>;
@@ -1186,7 +1246,7 @@ export class ReversiService {
    */
   async addInventorySubgroup(email: string, dto: AddSubgroupDto) {
     try {
-      const rows = await this.sy15.withUser(
+      const rows = await this.sy15Legacy.withUser(
         email,
         (tx) => tx.$queryRaw<unknown[]>`
           SELECT * FROM rev_add_inventory_subgroup(
@@ -1201,7 +1261,7 @@ export class ReversiService {
   /** Dodaj podpodgrupu (RA-26) — DEFINER fn `rev_add_inventory_subsubgroup`. */
   async addInventorySubsubgroup(email: string, dto: AddSubsubgroupDto) {
     try {
-      const rows = await this.sy15.withUser(
+      const rows = await this.sy15Legacy.withUser(
         email,
         (tx) => tx.$queryRaw<unknown[]>`
           SELECT * FROM rev_add_inventory_subsubgroup(
@@ -1227,20 +1287,20 @@ export class ReversiService {
     const trimmed = label.trim();
     try {
       if (kind === "group") {
-        const row = await this.sy15.db.revInventoryGroup.update({
+        const row = await this.sy15Legacy.db.revInventoryGroup.update({
           where: { id },
           data: { label: trimmed },
         });
         return { data: row };
       }
       if (kind === "subgroup") {
-        const row = await this.sy15.db.revInventorySubgroup.update({
+        const row = await this.sy15Legacy.db.revInventorySubgroup.update({
           where: { id },
           data: { label: trimmed },
         });
         return { data: row };
       }
-      const row = await this.sy15.db.revInventorySubsubgroup.update({
+      const row = await this.sy15Legacy.db.revInventorySubsubgroup.update({
         where: { id },
         data: { label: trimmed },
       });
@@ -1263,7 +1323,7 @@ export class ReversiService {
    * ipak ima → P2003 → 409.
    */
   async deleteInventorySubgroup(id: string) {
-    const row = await this.sy15.db.revInventorySubgroup.findUnique({
+    const row = await this.sy15Legacy.db.revInventorySubgroup.findUnique({
       where: { id },
       select: { isSeeded: true },
     });
@@ -1273,7 +1333,7 @@ export class ReversiService {
         "Sistemska podgrupa se ne može obrisati",
       );
     try {
-      await this.sy15.db.revInventorySubgroup.delete({ where: { id } });
+      await this.sy15Legacy.db.revInventorySubgroup.delete({ where: { id } });
       return { data: { deleted: true } };
     } catch (e) {
       if (
@@ -1290,7 +1350,7 @@ export class ReversiService {
 
   /** Brisanje korisničke podpodgrupe (RA-28). Samo `is_seeded=false`. */
   async deleteInventorySubsubgroup(id: string) {
-    const row = await this.sy15.db.revInventorySubsubgroup.findUnique({
+    const row = await this.sy15Legacy.db.revInventorySubsubgroup.findUnique({
       where: { id },
       select: { isSeeded: true },
     });
@@ -1299,7 +1359,7 @@ export class ReversiService {
       throw new UnprocessableEntityException(
         "Sistemska podpodgrupa se ne može obrisati",
       );
-    await this.sy15.db.revInventorySubsubgroup.delete({ where: { id } });
+    await this.sy15Legacy.db.revInventorySubsubgroup.delete({ where: { id } });
     return { data: { deleted: true } };
   }
 
@@ -1362,13 +1422,13 @@ export class ReversiService {
       ? { toolId: query.toolId }
       : {};
     const [data, total] = await Promise.all([
-      this.sy15.db.revToolStockLedger.findMany({
+      this.sy15Legacy.db.revToolStockLedger.findMany({
         where,
         orderBy: { createdAt: "desc" },
         skip,
         take,
       }),
-      this.sy15.db.revToolStockLedger.count({ where }),
+      this.sy15Legacy.db.revToolStockLedger.count({ where }),
     ]);
     return { data, meta: pageMeta(page, pageSize, total) };
   }
@@ -1403,7 +1463,7 @@ export class ReversiService {
     const whereSql = conds.length
       ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
       : Prisma.empty;
-    const data = await this.sy15.db.$queryRaw<Record<string, unknown>[]>(
+    const data = await this.sy15Legacy.db.$queryRaw<Record<string, unknown>[]>(
       Prisma.sql`
         SELECT ledger_id, tool_id, oznaka, naziv, is_consumable,
                subgroup_label, group_label,
@@ -1425,7 +1485,7 @@ export class ReversiService {
 
   /** Self-service „Moji alati" — view zavisi od `rev_current_employee_id()` → GUC. */
   async reportMyIssued(email: string) {
-    const data = await this.sy15.withUser(
+    const data = await this.sy15Legacy.withUser(
       email,
       (tx) => tx.$queryRaw`SELECT * FROM v_rev_my_issued_tools`,
     );
@@ -1433,7 +1493,7 @@ export class ReversiService {
   }
 
   async reportMyConsumed(email: string) {
-    const data = await this.sy15.withUser(
+    const data = await this.sy15Legacy.withUser(
       email,
       (tx) => tx.$queryRaw`SELECT * FROM v_rev_my_consumed`,
     );
@@ -1441,7 +1501,7 @@ export class ReversiService {
   }
 
   async reportMyMachinesCutting(email: string) {
-    const data = await this.sy15.withUser(
+    const data = await this.sy15Legacy.withUser(
       email,
       (tx) => tx.$queryRaw`SELECT * FROM v_rev_my_machines_cutting_tools`,
     );
@@ -1450,7 +1510,7 @@ export class ReversiService {
 
   /** Tim-scope (TL/šef) — `get_team_issued_tools()` sprovodi `current_user_manages_employee` u bazi. */
   async reportTeamIssued(email: string) {
-    const data = await this.sy15.withUser(
+    const data = await this.sy15Legacy.withUser(
       email,
       (tx) => tx.$queryRaw`SELECT * FROM get_team_issued_tools()`,
     );
@@ -1460,14 +1520,15 @@ export class ReversiService {
   /** Objedinjeno stanje magacina (nije user-scoped). */
   async reportWarehouse(allLocations: boolean) {
     const data = allLocations
-      ? await this.sy15.db
+      ? await this.sy15Legacy.db
           .$queryRaw`SELECT * FROM v_rev_inventory_all_locations`
-      : await this.sy15.db.$queryRaw`SELECT * FROM v_rev_warehouse_unified`;
+      : await this.sy15Legacy.db
+          .$queryRaw`SELECT * FROM v_rev_warehouse_unified`;
     return { data };
   }
 
   async reportScrapped() {
-    const data = await this.sy15.db
+    const data = await this.sy15Legacy.db
       .$queryRaw`SELECT * FROM v_rev_otpisani_alat`;
     return { data };
   }
@@ -1485,12 +1546,12 @@ export class ReversiService {
   async reportMachines() {
     // `machine_code` je tekst u `v_rev_machines`; tipujemo ga eksplicitno (ostala
     // polja ostaju `unknown` i prolaze kroz spread) da bi ključ agregata bio string.
-    const machines = await this.sy15.db.$queryRaw<
+    const machines = await this.sy15Legacy.db.$queryRaw<
       ({ machine_code: string } & Record<string, unknown>)[]
     >(Prisma.sql`SELECT * FROM v_rev_machines`);
     if (machines.length === 0) return { data: [] };
     const [cutRows, headRows] = await Promise.all([
-      this.sy15.db.$queryRaw<
+      this.sy15Legacy.db.$queryRaw<
         { machine_code: string; skus: number; qty: number }[]
       >(Prisma.sql`
         SELECT machine_code, COUNT(*)::int AS skus,
@@ -1498,7 +1559,9 @@ export class ReversiService {
         FROM v_rev_cts_by_machine
         WHERE machine_code IS NOT NULL
         GROUP BY machine_code`),
-      this.sy15.db.$queryRaw<{ machine_code: string; n: number }[]>(Prisma.sql`
+      this.sy15Legacy.db.$queryRaw<
+        { machine_code: string; n: number }[]
+      >(Prisma.sql`
         SELECT machine_code, COUNT(*)::int AS n
         FROM rev_machine_heads
         GROUP BY machine_code`),
@@ -1531,7 +1594,7 @@ export class ReversiService {
       200,
       Math.max(1, Number.parseInt(limit ?? "50", 10) || 50),
     );
-    const data = await this.sy15.db.revDocument.findMany({
+    const data = await this.sy15Legacy.db.revDocument.findMany({
       where: { recipientMachineCode: code },
       orderBy: { issuedAt: "desc" },
       take,
@@ -1558,7 +1621,7 @@ export class ReversiService {
     machineCode: string,
     dto: CreateMachineHeadDto,
   ) {
-    const row = await this.sy15.withUser(email, (tx) =>
+    const row = await this.sy15Legacy.withUser(email, (tx) =>
       tx.revMachineHead.create({
         data: {
           machineCode,
@@ -1586,7 +1649,7 @@ export class ReversiService {
     if (dto.napomena !== undefined)
       data.napomena = dto.napomena?.trim() || null;
     try {
-      const row = await this.sy15.db.revMachineHead.update({
+      const row = await this.sy15Legacy.db.revMachineHead.update({
         where: { id },
         data,
       });
@@ -1605,7 +1668,7 @@ export class ReversiService {
   /** Brisanje glave (RB-57) — typed DELETE; P2025 → 404. */
   async deleteMachineHead(id: string) {
     try {
-      await this.sy15.db.revMachineHead.delete({ where: { id } });
+      await this.sy15Legacy.db.revMachineHead.delete({ where: { id } });
       return { data: { id } };
     } catch (e) {
       if (
@@ -1659,13 +1722,13 @@ export class ReversiService {
     if (machine) where.compatibleMachineCodes = { has: machine };
 
     const [catalog, total] = await Promise.all([
-      this.sy15.db.revCuttingToolCatalog.findMany({
+      this.sy15Legacy.db.revCuttingToolCatalog.findMany({
         where,
         orderBy: { oznaka: "asc" },
         skip,
         take,
       }),
-      this.sy15.db.revCuttingToolCatalog.count({ where }),
+      this.sy15Legacy.db.revCuttingToolCatalog.count({ where }),
     ]);
     if (catalog.length === 0) {
       return { data: [], meta: pageMeta(page, pageSize, total) };
@@ -1673,7 +1736,7 @@ export class ReversiService {
 
     const ids = Prisma.join(catalog.map((c) => Prisma.sql`${c.id}::uuid`));
     // Magacinski raspoloživo (samo WAREHOUSE lokacije) — paritet 1.0 in_warehouse_qty.
-    const warehouse = await this.sy15.db.$queryRaw<
+    const warehouse = await this.sy15Legacy.db.$queryRaw<
       { catalog_id: string; qty: number }[]
     >(Prisma.sql`
       SELECT s.catalog_id::text AS catalog_id, COALESCE(SUM(s.on_hand_qty), 0)::float8 AS qty
@@ -1684,7 +1747,7 @@ export class ReversiService {
     // Izdato po mašinama — DETALJNO (catalog_id, machine_code) da bi se u JS izveo i
     // zbir (`onMachinesQty`, paritet 1.0 on_machines_qty) i `machineBreakdown` (RC-10
     // „raspored po mašinama") u JEDNOM upitu (ista logika kao 1.0 front, bez 3. round-tripa).
-    const machineRows = await this.sy15.db.$queryRaw<
+    const machineRows = await this.sy15Legacy.db.$queryRaw<
       { catalog_id: string; machine_code: string | null; qty: number }[]
     >(Prisma.sql`
       SELECT ms.catalog_id::text AS catalog_id, ms.machine_code,
@@ -1732,11 +1795,11 @@ export class ReversiService {
    * sortirano po količini opadajuće. Nepostojeći id → 404.
    */
   async getCuttingTool(id: string) {
-    const catalog = await this.sy15.db.revCuttingToolCatalog.findUnique({
+    const catalog = await this.sy15Legacy.db.revCuttingToolCatalog.findUnique({
       where: { id },
     });
     if (!catalog) throw new NotFoundException(`Rezni alat ${id} ne postoji`);
-    const stock = await this.sy15.db.$queryRaw<
+    const stock = await this.sy15Legacy.db.$queryRaw<
       {
         location_id: string;
         location_code: string;
@@ -1765,7 +1828,7 @@ export class ReversiService {
    */
   async cuttingOpenLines(email: string, barcodeRaw?: string) {
     const barcode = this.normalizeBarcode(barcodeRaw);
-    const rows = await this.sy15.withUser(
+    const rows = await this.sy15Legacy.withUser(
       email,
       (tx) => tx.$queryRaw<CuttingOpenLineRow[]>`
         SELECT line_id, document_id, doc_number, catalog_id, barcode, oznaka, naziv,
@@ -1800,7 +1863,7 @@ export class ReversiService {
   }
 
   async createCuttingTool(email: string, dto: CuttingToolCreateDto) {
-    return this.sy15.withUser(email, async (tx) => {
+    return this.sy15Legacy.withUser(email, async (tx) => {
       const rows = await tx.$queryRaw<{ id: string }[]>`
         INSERT INTO rev_cutting_tool_catalog (oznaka, naziv, unit, min_stock_qty, compatible_machine_codes, napomena, created_by)
         VALUES (${dto.oznaka.trim()}, ${dto.naziv.trim()}, ${dto.unit ?? "kom"},
@@ -1817,7 +1880,7 @@ export class ReversiService {
     dto: CuttingToolUpdateDto,
   ) {
     try {
-      const data = await this.sy15.db.revCuttingToolCatalog.update({
+      const data = await this.sy15Legacy.db.revCuttingToolCatalog.update({
         where: { id },
         data: {
           ...(dto.naziv !== undefined ? { naziv: dto.naziv.trim() } : {}),
@@ -1865,7 +1928,7 @@ export class ReversiService {
     const whereSql = conds.length
       ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
       : Prisma.empty;
-    const data = await this.sy15.db.$queryRaw(Prisma.sql`
+    const data = await this.sy15Legacy.db.$queryRaw(Prisma.sql`
       SELECT * FROM v_rev_cts_by_machine
       ${whereSql}
       ORDER BY machine_code ASC, oznaka ASC
@@ -1892,7 +1955,7 @@ export class ReversiService {
     const whereSql = conds.length
       ? Prisma.sql`WHERE ${Prisma.join(conds, " AND ")}`
       : Prisma.empty;
-    const data = await this.sy15.db.$queryRaw(Prisma.sql`
+    const data = await this.sy15Legacy.db.$queryRaw(Prisma.sql`
       SELECT * FROM v_rev_cts_by_employee
       ${whereSql}
       ORDER BY employee_name ASC, oznaka ASC
@@ -1902,7 +1965,7 @@ export class ReversiService {
 
   /** Glave na kartici mašine (rev_machine_heads). */
   async machineHeads(machineCode: string) {
-    const data = await this.sy15.db.revMachineHead.findMany({
+    const data = await this.sy15Legacy.db.revMachineHead.findMany({
       where: { machineCode },
       orderBy: { oznaka: "asc" },
     });
@@ -1932,7 +1995,7 @@ export class ReversiService {
     for (const row of rows) {
       const oznaka = row.oznaka.trim();
       try {
-        const existing = await this.sy15.db.revTool.findFirst({
+        const existing = await this.sy15Legacy.db.revTool.findFirst({
           where: { oznaka },
           select: { id: true },
         });
@@ -1943,7 +2006,7 @@ export class ReversiService {
         const isQuantity = row.isQuantity ?? false;
         const isConsumable = row.isConsumable ?? false;
         const qtyLike = isQuantity || isConsumable;
-        const tool = await this.sy15.db.revTool.create({
+        const tool = await this.sy15Legacy.db.revTool.create({
           data: {
             oznaka,
             naziv: row.naziv.trim(),
@@ -1968,7 +2031,7 @@ export class ReversiService {
         const locationId = row.initialPlacementLocationId ?? magacinId;
         if (!qtyLike && tool.locItemRefId && locationId) {
           try {
-            await this.sy15.withUser(email, (tx) =>
+            await this.sy15Legacy.withUser(email, (tx) =>
               this.placeToolInWarehouse(
                 tx,
                 tool.locItemRefId!,
@@ -2000,7 +2063,7 @@ export class ReversiService {
 
   /** ALAT-MAG-01 lokacija (paritet 1.0 `getMagacinLocationId`) — null ako ne postoji. */
   private async resolveMagacinId(): Promise<string | null> {
-    const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+    const rows = await this.sy15Legacy.db.$queryRaw<{ id: string }[]>`
       SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
     return rows[0]?.id ?? null;
   }
@@ -2071,7 +2134,7 @@ export class ReversiService {
     ];
     if (unique.length === 0) return { resolved, missing };
 
-    const emps = await this.sy15.db.$queryRaw<
+    const emps = await this.sy15Legacy.db.$queryRaw<
       { id: string; full_name: string; is_active: boolean }[]
     >`SELECT id, full_name, is_active FROM employees`;
     const indexed = emps.map((e) => ({
@@ -2141,10 +2204,11 @@ export class ReversiService {
     for (const row of rows) {
       const oznaka = row.oznaka.trim();
       try {
-        const existing = await this.sy15.db.revCuttingToolCatalog.findFirst({
-          where: { oznaka },
-          select: { id: true },
-        });
+        const existing =
+          await this.sy15Legacy.db.revCuttingToolCatalog.findFirst({
+            where: { oznaka },
+            select: { id: true },
+          });
         if (existing) {
           skipped++;
           continue;
@@ -2155,7 +2219,7 @@ export class ReversiService {
         const unit = row.unit?.trim() || "kom";
         const minStock = Math.max(0, Math.floor(row.minStockQty ?? 0));
         const initialQty = Math.max(0, Math.floor(row.initialQty ?? 0));
-        const outcome = await this.sy15.withUser(email, async (tx) => {
+        const outcome = await this.sy15Legacy.withUser(email, async (tx) => {
           const ins = await tx.$queryRaw<{ id: string }[]>`
             INSERT INTO rev_cutting_tool_catalog
               (oznaka, naziv, compatible_machine_codes, unit, min_stock_qty, napomena, status, created_by)
@@ -2239,7 +2303,7 @@ export class ReversiService {
       [];
     const catalogByOznaka: Record<string, string | null> = {};
     if (cuttingOznake.length > 0) {
-      const found = await this.sy15.db.revCuttingToolCatalog.findMany({
+      const found = await this.sy15Legacy.db.revCuttingToolCatalog.findMany({
         where: {
           OR: [
             { oznaka: { in: cuttingOznake } },
@@ -2302,7 +2366,7 @@ export class ReversiService {
     const missingToolOznaka: string[] = [];
     const toolList = [...toolOznake];
     if (toolList.length > 0) {
-      const trows = await this.sy15.db.revTool.findMany({
+      const trows = await this.sy15Legacy.db.revTool.findMany({
         where: { oznaka: { in: toolList }, status: "active" },
         select: { id: true, oznaka: true },
         orderBy: { createdAt: "desc" },
@@ -2341,7 +2405,7 @@ export class ReversiService {
     // 7. Duplikat-import: aktivan CUTTING_TOOL revers za iste mašine (heuristika).
     const duplicateDocs: ReversalAnalysisCore["duplicateDocs"] = [];
     if (machineCodes.length > 0) {
-      const dup = await this.sy15.db.revDocument.findMany({
+      const dup = await this.sy15Legacy.db.revDocument.findMany({
         where: {
           docType: "CUTTING_TOOL",
           status: { in: ["OPEN", "PARTIALLY_RETURNED"] },
@@ -2459,7 +2523,7 @@ export class ReversiService {
     // 1. Auto-create nedostajuće šifre kataloga (bez seed-a — alat je „na mašini").
     for (const nc of analysis.newCatalog) {
       try {
-        const newId = await this.sy15.withUser(email, async (tx) => {
+        const newId = await this.sy15Legacy.withUser(email, async (tx) => {
           const ins = await tx.$queryRaw<{ id: string }[]>`
             INSERT INTO rev_cutting_tool_catalog
               (oznaka, naziv, compatible_machine_codes, unit, status, created_by)
@@ -2720,7 +2784,7 @@ export class ReversiService {
     idempotent?: boolean;
   } | null> {
     // fnName je iz zatvorenog skupa (rev_issue_*/rev_confirm_*), nije korisnički unos.
-    return this.sy15.withUser(email, async (tx) => {
+    return this.sy15Legacy.withUser(email, async (tx) => {
       const rows = await tx.$queryRawUnsafe<
         {
           result: {
@@ -2754,7 +2818,7 @@ export class ReversiService {
 
     for (const docId of documentIds) {
       try {
-        const lines = await this.sy15.db.revDocumentLine.findMany({
+        const lines = await this.sy15Legacy.db.revDocumentLine.findMany({
           where: { documentId: docId },
           select: {
             id: true,
@@ -2812,7 +2876,7 @@ export class ReversiService {
   async lookupEmployees(q?: string) {
     const raw = (q ?? "").trim();
     const term = `%${raw}%`;
-    const data = await this.sy15.db.$queryRaw`
+    const data = await this.sy15Legacy.db.$queryRaw`
       SELECT id, full_name, department, "position", is_active
       FROM employees
       WHERE (${raw} = '' OR full_name ILIKE ${term} OR department ILIKE ${term}
@@ -2829,7 +2893,7 @@ export class ReversiService {
    * `return_to_location_id` u `POST /return` (bez izbora BE koristi ALAT-MAG-01).
    */
   async lookupLocations() {
-    const data = await this.sy15.db.$queryRaw`
+    const data = await this.sy15Legacy.db.$queryRaw`
       SELECT id, location_code, name, location_type
       FROM loc_locations
       WHERE is_active IS TRUE
@@ -2859,14 +2923,14 @@ export class ReversiService {
       return { data: { kind: "UNKNOWN", barcode: "", record: null } };
 
     if (/^ALAT-\d{6}$/i.test(barcode)) {
-      const rows = await this.sy15.db.revTool.findMany({
+      const rows = await this.sy15Legacy.db.revTool.findMany({
         where: { barcode },
         take: 1,
       });
       return { data: { kind: "HAND", barcode, record: rows[0] ?? null } };
     }
     if (/^RZN-\d{6}$/i.test(barcode)) {
-      const rows = await this.sy15.db.revCuttingToolCatalog.findMany({
+      const rows = await this.sy15Legacy.db.revCuttingToolCatalog.findMany({
         where: { barcode },
         take: 1,
       });
@@ -2876,14 +2940,14 @@ export class ReversiService {
     // Podržava globalni HID skener (RC-38) da rutira mašinu bez preučitane liste.
     if (/^ZADU-M-/i.test(barcode)) {
       const code = barcode.replace(/^ZADU-M-/i, "").replace(/_/g, ".");
-      const rows = await this.sy15.db.$queryRaw<
+      const rows = await this.sy15Legacy.db.$queryRaw<
         { rj_code: string; name: string | null }[]
       >(Prisma.sql`
         SELECT rj_code, name FROM v_rev_machines WHERE rj_code = ${code} LIMIT 1`);
       return { data: { kind: "MACHINE", barcode, record: rows[0] ?? null } };
     }
     if (/^[A-Z0-9]{4,16}$/i.test(barcode)) {
-      const rows = await this.sy15.db.$queryRaw<
+      const rows = await this.sy15Legacy.db.$queryRaw<
         { id: string; full_name: string; department: string | null }[]
       >`
         SELECT id, full_name, department FROM employees
@@ -2925,7 +2989,7 @@ export class ReversiService {
    */
   async confirmReturn(email: string, dto: JsonPayloadTxDto) {
     if (!dto.payload.return_to_location_id) {
-      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+      const rows = await this.sy15Legacy.db.$queryRaw<{ id: string }[]>`
         SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
       if (!rows[0]) {
         throw new UnprocessableEntityException(
@@ -2944,7 +3008,7 @@ export class ReversiService {
    */
   async cuttingIssue(email: string, dto: JsonPayloadTxDto) {
     if (!dto.payload.source_location_id) {
-      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+      const rows = await this.sy15Legacy.db.$queryRaw<{ id: string }[]>`
         SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
       if (rows[0]) dto.payload.source_location_id = rows[0].id;
     }
@@ -2985,7 +3049,7 @@ export class ReversiService {
   async seedStock(email: string, catalogId: string, dto: SeedStockDto) {
     let locationId = dto.locationId;
     if (!locationId) {
-      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>`
+      const rows = await this.sy15Legacy.db.$queryRaw<{ id: string }[]>`
         SELECT id FROM loc_locations WHERE location_code = 'ALAT-MAG-01' LIMIT 1`;
       if (!rows[0]) {
         throw new UnprocessableEntityException(
@@ -3061,7 +3125,7 @@ export class ReversiService {
     fn: (tx: Sy15Tx) => Promise<T>,
   ) {
     try {
-      const outcome = await this.sy15.runIdempotent(
+      const outcome = await this.sy15Legacy.runIdempotent(
         email,
         clientEventId,
         action,
@@ -3099,7 +3163,9 @@ export class ReversiService {
   async uploadSignaturePdf(id: string, file?: Express.Multer.File) {
     // Magic bytes, ne `mimetype` iz zahteva (klijent ga laže) — `common/attachments`.
     assertPdfAttachment(file);
-    const doc = await this.sy15.db.revDocument.findUnique({ where: { id } });
+    const doc = await this.sy15Legacy.db.revDocument.findUnique({
+      where: { id },
+    });
     if (!doc) throw new NotFoundException(`Reversi dokument ${id} ne postoji`);
     const { base, key } = this.storageCfg();
     const path = `${doc.docNumber.replace(/[^\w.-]+/g, "_")}.pdf`;
@@ -3120,7 +3186,7 @@ export class ReversiService {
         `Upload potpisnice nije uspeo (storage ${res.status}: ${(await res.text()).slice(0, 200)})`,
       );
     }
-    await this.sy15.db.revDocument.update({
+    await this.sy15Legacy.db.revDocument.update({
       where: { id },
       data: { pdfStoragePath: path, pdfGeneratedAt: new Date() },
     });
@@ -3128,7 +3194,9 @@ export class ReversiService {
   }
 
   async getSignaturePdfUrl(id: string) {
-    const doc = await this.sy15.db.revDocument.findUnique({ where: { id } });
+    const doc = await this.sy15Legacy.db.revDocument.findUnique({
+      where: { id },
+    });
     if (!doc) throw new NotFoundException(`Reversi dokument ${id} ne postoji`);
     if (!doc.pdfStoragePath)
       throw new NotFoundException(
