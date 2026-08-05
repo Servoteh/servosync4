@@ -18,6 +18,7 @@ export const AI_TASK = {
   MONTAZA_REPORT: "montaza-izvestaj",
   ZAHTEVI_TRIAGE: "zahtevi-triage",
   ZAHTEVI_ANALYSIS: "zahtevi-analysis",
+  ODRZAVANJE_RACUN: "odrzavanje-racun",
 } as const;
 
 export type AiTask = (typeof AI_TASK)[keyof typeof AI_TASK];

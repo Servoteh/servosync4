@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink, Sparkles } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui-kit/textarea';
 import { formatDate, formatDateTime } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import {
+  readServiceInvoice,
   useAssignableUsers,
   useCreateWoEvent,
   useCreateWoLabor,
@@ -21,10 +22,12 @@ import {
   type AssignableUser,
   type MaintMe,
   type Part,
+  type RacunPredlog,
+  type WoPart,
   type WoStatus,
   type WorkOrderDetail,
 } from '@/api/odrzavanje';
-import { Field, WO_STATUS_LABEL, WO_TYPE_LABEL, WoPriorityBadge, WoStatusBadge } from './common';
+import { Field, money, parsePrice, WO_STATUS_LABEL, WO_TYPE_LABEL, WoPriorityBadge, WoStatusBadge } from './common';
 
 // „Otvori incident" otvara incident-detalj; dinamički import prekida statički ciklus
 // (incident-detail-dialog statički uvozi ovaj modul).
@@ -64,6 +67,7 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
   const [partQty, setPartQty] = useState('');
   const [partUnit, setPartUnit] = useState('');
   const [partCost, setPartCost] = useState('');
+  const [partErr, setPartErr] = useState<string | null>(null);
   const [minutes, setMinutes] = useState('');
   const [laborNotes, setLaborNotes] = useState('');
   const [incidentOpen, setIncidentOpen] = useState(false);
@@ -110,19 +114,26 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
   }
 
   function submitPart() {
-    if (!d || !partName.trim()) return;
+    setPartErr(null);
+    if (!d) return;
+    if (!partName.trim()) {
+      return setPartErr('Naziv dela je obavezan — za samu cenu servisa koristi „Trošak popravke" ispod.');
+    }
     const qty = partQty ? Number(partQty) : undefined;
     if (selectedPart) {
       // Kataloški deo: BE autoritativno uzima naziv/cenu + skida zalihu (out kretanje).
       addPart.mutate({ id: d.woId, partId: selectedPart.partId, partName: selectedPart.name, quantity: qty, unit: partUnit.trim() || undefined });
     } else {
-      // Slobodan unos (bez partId) — zadržava ručna polja.
+      // Slobodan unos (bez partId) — zadržava ručna polja. `parsePrice` jer ljudi kucaju
+      // „10din": goli Number() vrati NaN, BE ga odbije i upis tiho propadne.
+      const cena = parsePrice(partCost);
+      if (Number.isNaN(cena)) return setPartErr('Cena mora biti broj (npr. 10 ili 1.250,50).');
       addPart.mutate({
         id: d.woId,
         partName: partName.trim(),
         quantity: qty,
         unit: partUnit.trim() || undefined,
-        unitCost: partCost ? Number(partCost) : undefined,
+        unitCost: cena ?? undefined,
       });
     }
     setPartName(''); setPartQty(''); setPartUnit(''); setPartCost('');
@@ -170,6 +181,14 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
             <Field label="Kreiran">{formatDateTime(d.createdAt)}</Field>
             <Field label="Završen">{d.completedAt ? formatDateTime(d.completedAt) : '—'}</Field>
           </div>
+
+          {/* Trošak — rezime vide SVI (i bez prava izmene); unos je u edit panelu ispod. */}
+          <TrosakRezime
+            parts={d.parts}
+            costTotal={d.costTotal}
+            estimatedCost={d.estimatedCost}
+            externalServicerName={d.externalServicerName}
+          />
 
           {canEdit && (
             <WoEditPanel
@@ -220,10 +239,13 @@ export function WoDetailDialog({ woId, me, onClose }: { woId: string | null; me:
                     disabled={!!selectedPart}
                     title={selectedPart ? 'Cena iz kataloga (BE autoritativno)' : undefined}
                   />
-                  <Button variant="secondary" disabled={!partName.trim() || busy} onClick={submitPart}>
+                  {/* Dugme je AKTIVNO i bez naziva — sivo dugme je izgledalo kao da
+                      „Dodaj ne radi"; sada `submitPart` kaže šta tačno fali. */}
+                  <Button variant="secondary" disabled={busy} onClick={submitPart}>
                     Dodaj
                   </Button>
                 </div>
+                {partErr && <p className="text-sm text-status-danger">{partErr}</p>}
                 {selectedPart && (
                   <p className="text-2xs text-ink-secondary">
                     Kataloški deo — zaliha se skida, cena/naziv iz kataloga.
@@ -306,6 +328,7 @@ function WoEditPanel({
 }) {
   const [patch, setPatch] = useState<Record<string, unknown>>({});
   const [err, setErr] = useState<string | null>(null);
+  const [racun, setRacun] = useState<RacunPredlog | null>(null);
   /** Originalne (serverske) vrednosti — polje dirnuto pa vraćeno na ovo IZLAZI iz patch-a. */
   const original: Record<string, unknown> = {
     status: d.status,
@@ -313,6 +336,12 @@ function WoEditPanel({
     assignedTo: d.assignedTo ?? null,
     dueAt: d.dueAt ? d.dueAt.slice(0, 10) : '',
     closureComment: d.closureComment ?? '',
+    // Trošak ide kroz ISTI staged patch (060/26): polja se drže kao TEKST dok se ne
+    // sačuvaju, jer čovek kuca „42.800,50" — u broj se prevodi tek u `save()`.
+    costTotal: d.costTotal == null ? '' : String(d.costTotal),
+    estimatedCost: d.estimatedCost == null ? '' : String(d.estimatedCost),
+    externalServicerName: d.externalServicerName ?? '',
+    odometerKmAtService: d.odometerKmAtService == null ? '' : String(d.odometerKmAtService),
   };
   /** Odložena (još nesačuvana) vrednost polja, ili trenutna sa servera. */
   const staged = <T,>(key: string, fallback: T): T => (key in patch ? (patch[key] as T) : fallback);
@@ -349,6 +378,23 @@ function WoEditPanel({
     if ('dueAt' in body) {
       const v = String(body.dueAt ?? '');
       body.dueAt = v ? new Date(v).toISOString() : null;
+    }
+    // Novčana polja: tekst → broj tek ovde. Prazno = obriši (null), smeće = greška
+    // (ranije je NaN odlazio na BE i upis je tiho propadao).
+    for (const key of ['costTotal', 'estimatedCost'] as const) {
+      if (!(key in body)) continue;
+      const n = parsePrice(String(body[key] ?? ''));
+      if (Number.isNaN(n)) {
+        return setErr('Cena mora biti broj (npr. 42800 ili 42.800,50).');
+      }
+      body[key] = n;
+    }
+    if ('odometerKmAtService' in body) {
+      const raw = String(body.odometerKmAtService ?? '').replace(/\D/g, '');
+      body.odometerKmAtService = raw === '' ? null : Number(raw);
+    }
+    if ('externalServicerName' in body) {
+      body.externalServicerName = String(body.externalServicerName ?? '').trim() || null;
     }
     // Napomena zatvaranja važi samo uz zatvarajući status — ako je status u međuvremenu
     // odložen na ne-zatvarajući, ne šalji je (polje je i sakriveno iz forme).
@@ -415,12 +461,186 @@ function WoEditPanel({
           />
         </FormField>
       )}
+
+      {/* Trošak popravke — u istom panelu, pa ga hvata isto „Sačuvaj izmene" (060/26). */}
+      <div className="border-t border-line-soft pt-3">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h4 className="text-sm font-semibold text-ink">Trošak popravke</h4>
+          <RacunCitac
+            woId={d.woId}
+            onRead={(p) => {
+              // Račun samo ODLAŽE vrednosti u isti nacrt — čovek ih vidi, po potrebi
+              // ispravi, pa potvrdi „Sačuvaj izmene". AI ne piše novac sam.
+              if (p.ukupanIznos != null) stage('costTotal', String(p.ukupanIznos));
+              if (p.serviser) stage('externalServicerName', p.serviser);
+              if (p.kilometraza != null) stage('odometerKmAtService', String(p.kilometraza));
+              setRacun(p);
+            }}
+          />
+        </div>
+        {racun && <RacunPredlogPregled predlog={racun} onClose={() => setRacun(null)} />}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <FormField label="Cena popravke (RSD)" hint="ceo iznos sa računa servisa">
+            <Input
+              value={staged('costTotal', original.costTotal as string)}
+              onChange={(e) => stage('costTotal', e.target.value)}
+              inputMode="decimal"
+              placeholder="npr. 42800"
+            />
+          </FormField>
+          <FormField label="Procenjena cena (RSD)">
+            <Input
+              value={staged('estimatedCost', original.estimatedCost as string)}
+              onChange={(e) => stage('estimatedCost', e.target.value)}
+              inputMode="decimal"
+            />
+          </FormField>
+          <FormField label="Servis / radionica">
+            <Input
+              value={staged('externalServicerName', original.externalServicerName as string)}
+              onChange={(e) => stage('externalServicerName', e.target.value)}
+              placeholder="npr. Auto Čačak"
+            />
+          </FormField>
+          {d.assetType === 'vehicle' && (
+            <FormField label="Kilometraža na servisu">
+              <Input
+                value={staged('odometerKmAtService', original.odometerKmAtService as string)}
+                onChange={(e) => stage('odometerKmAtService', e.target.value)}
+                inputMode="numeric"
+              />
+            </FormField>
+          )}
+        </div>
+      </div>
       <div className="flex items-center justify-end gap-3">
         {dirty && !update.isPending && <span className="text-2xs text-ink-secondary">Nesačuvane izmene</span>}
         <Button disabled={!dirty} loading={update.isPending} onClick={save}>
           Sačuvaj izmene
         </Button>
       </div>
+    </div>
+  );
+}
+
+/* ── Trošak popravke ───────────────────────────────────────────────────────── */
+
+/** Σ(kol × cena) stavki „Delovi". */
+export function woPartsSum(parts: WoPart[]): number {
+  return parts.reduce((sum, p) => {
+    const qty = Number(p.quantity ?? 0);
+    const cost = Number(p.unitCost ?? 0);
+    return sum + (Number.isFinite(qty) ? qty : 0) * (Number.isFinite(cost) ? cost : 0);
+  }, 0);
+}
+/**
+ * Trošak naloga = VEĆI od (zbir delova, cena sa fakture). Nikad zbir oba: kad spoljni
+ * servis fakturiše i delove koje smo popisali kao stavke, sabiranje bi ih brojalo
+ * dvaput. Isto pravilo drži `effectiveWoCost` u BE-u — dva ekrana moraju dati isti broj.
+ */
+export function woEffectiveCost(parts: WoPart[], costTotal: string | number | null): number {
+  const ct = Number(costTotal ?? 0);
+  return Math.max(woPartsSum(parts), Number.isFinite(ct) ? ct : 0);
+}
+
+function TrosakRezime({
+  parts, costTotal, estimatedCost, externalServicerName,
+}: {
+  parts: WoPart[];
+  costTotal: string | number | null;
+  estimatedCost: string | number | null;
+  externalServicerName: string | null;
+}) {
+  const partsSum = woPartsSum(parts);
+  const effective = woEffectiveCost(parts, costTotal);
+  return (
+    <div className="rounded-panel border border-line bg-surface-2/40 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h4 className="text-sm font-semibold text-ink">Trošak popravke</h4>
+        <span className="tnums text-md font-semibold text-ink">{money(effective)} RSD</span>
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-2xs text-ink-secondary">
+        <span>Delovi (stavke): <span className="tnums">{money(partsSum)}</span></span>
+        <span>Faktura servisa: <span className="tnums">{costTotal == null ? '—' : money(costTotal)}</span></span>
+        {estimatedCost != null && <span>Procena: <span className="tnums">{money(estimatedCost)}</span></span>}
+        {externalServicerName && <span>Servis: {externalServicerName}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** Dozvoljeni ulazi za čitanje računa (BE isto proverava — ovo je samo picker filter). */
+const RACUN_ACCEPT = 'application/pdf,image/jpeg,image/png,image/webp,image/gif';
+const RACUN_MAX_FAJLOVA = 8;
+
+/** „Pročitaj račun" — slika/PDF → AI predlog. Ne upisuje; puni nacrt edit panela. */
+function RacunCitac({ woId, onRead }: { woId: string; onRead: (p: RacunPredlog) => void }) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function pick(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (!files.length) return;
+    if (files.length > RACUN_MAX_FAJLOVA) return setErr(`Najviše ${RACUN_MAX_FAJLOVA} fajlova.`);
+    setErr(null);
+    setBusy(true);
+    try {
+      onRead((await readServiceInvoice(woId, files)).data);
+    } catch (e2) {
+      setErr((e2 as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <input ref={fileRef} type="file" hidden multiple accept={RACUN_ACCEPT} onChange={pick} />
+      <Button variant="secondary" loading={busy} onClick={() => fileRef.current?.click()}>
+        <Sparkles className="h-4 w-4" aria-hidden /> Pročitaj račun
+      </Button>
+      {err && <p className="mt-1 text-sm text-status-danger">{err}</p>}
+    </div>
+  );
+}
+
+/** Šta je model pročitao — kontekst uz polja koja je upravo popunio. */
+function RacunPredlogPregled({ predlog, onClose }: { predlog: RacunPredlog; onClose: () => void }) {
+  return (
+    <div className="mb-3 space-y-1.5 rounded-panel border border-accent/40 bg-accent-subtle/30 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium text-ink">Pročitano sa računa — proveri pa „Sačuvaj izmene"</span>
+        <button onClick={onClose} className="text-2xs text-ink-secondary hover:text-ink">Sakrij</button>
+      </div>
+      {predlog.necitljivo.length > 0 && (
+        <p className="rounded-control bg-status-warn-bg px-2 py-1 text-2xs text-ink">
+          Nije pročitano: {predlog.necitljivo.join(', ')} — dopuni ručno.
+        </p>
+      )}
+      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-2xs text-ink-secondary">
+        {predlog.datum && <span>Datum: {predlog.datum}</span>}
+        {predlog.brojRacuna && <span>Broj: {predlog.brojRacuna}</span>}
+        {predlog.registracija && <span>Tablice: {predlog.registracija}</span>}
+        {predlog.iznosBezPdv != null && <span>Bez PDV-a: <span className="tnums">{money(predlog.iznosBezPdv)}</span></span>}
+      </div>
+      {predlog.opisRadova && <p className="text-sm text-ink-secondary">{predlog.opisRadova}</p>}
+      {predlog.stavke.length > 0 && (
+        <div className="max-h-32 overflow-auto rounded-control border border-line bg-surface">
+          {predlog.stavke.map((s, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 border-b border-line-soft px-2 py-1 text-2xs last:border-0">
+              <span className="min-w-0 truncate text-ink">{s.naziv}</span>
+              <span className="tnums shrink-0 text-ink-secondary">
+                {s.kolicina ?? '—'} {s.jedinica} {s.iznos != null ? `· ${money(s.iznos)}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-2xs text-ink-secondary">
+        Stavke su informativne — u „Delovi" ih dodaj ručno ako ih vodiš po komadu.
+      </p>
     </div>
   );
 }

@@ -18,7 +18,7 @@ import {
   type ViewRow,
   type WoPriority,
 } from '@/api/odrzavanje';
-import { f, fnum, isoToDateInput, WO_PRIORITY_LABEL } from './common';
+import { f, fnum, isoToDateInput, money, WO_PRIORITY_LABEL } from './common';
 
 const DUE: Record<string, { tone: Tone; label: string }> = {
   ok: { tone: 'success', label: 'OK' },
@@ -88,7 +88,7 @@ export function AssetServicePlanPanel({
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-line text-2xs uppercase tracking-wider text-ink-secondary">
-                <th className="p-2">Stavka</th><th className="p-2">Interval</th><th className="p-2">Poslednji put</th><th className="p-2">Sledeći put</th><th className="p-2">Status</th><th className="p-2"></th>
+                <th className="p-2">Stavka</th><th className="p-2">Interval</th><th className="p-2">Poslednji put</th><th className="p-2">Sledeći put</th><th className="p-2 text-right">Cena servisa</th><th className="p-2">Status</th><th className="p-2"></th>
               </tr>
             </thead>
             <tbody>
@@ -101,6 +101,7 @@ export function AssetServicePlanPanel({
                     <td className="p-2 text-ink-secondary">{fnum(r, 'interval_months') ?? '—'} mes</td>
                     <td className="p-2 text-ink-secondary">{f(r, 'last_done_at') ? formatDate(String(f(r, 'last_done_at'))) : '—'}</td>
                     <td className="p-2 text-ink-secondary">{nextDueText(f(r, 'next_due_at'))}</td>
+                    <td className="tnums p-2 text-right text-ink-secondary">{fnum(r, 'planned_cost') == null ? '—' : money(fnum(r, 'planned_cost'))}</td>
                     <td className="p-2"><StatusBadge tone={due.tone} label={due.label} /></td>
                     <td className="p-2 text-right">
                       <div className="flex justify-end gap-1.5">
@@ -134,6 +135,7 @@ function PlanForm({ assetId, row, onClose }: { assetId: string; row: ViewRow | n
   const [lastAt, setLastAt] = useState(row ? isoToDateInput(f(row, 'last_done_at')) : '');
   const [active, setActive] = useState(row ? f(row, 'active') !== 'false' : true);
   const [notes, setNotes] = useState(row ? String(f(row, 'notes') ?? '') : '');
+  const [plannedCost, setPlannedCost] = useState(row ? String(fnum(row, 'planned_cost') ?? '') : '');
   const [err, setErr] = useState<string | null>(null);
   const selCls = 'h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink';
 
@@ -142,12 +144,15 @@ function PlanForm({ assetId, row, onClose }: { assetId: string; row: ViewRow | n
     if (!name.trim()) return setErr('Naziv je obavezan.');
     const m = Number(months);
     if (!Number.isFinite(m) || m <= 0) return setErr('Interval u mesecima mora biti pozitivan broj.');
+    const pc = plannedCost.trim() === '' ? undefined : Number(plannedCost.trim().replace(',', '.'));
+    if (pc != null && (!Number.isFinite(pc) || pc < 0)) return setErr('Cena servisa mora biti broj ≥ 0.');
     const common = {
       name: name.trim(),
       intervalMonths: Math.round(m),
       lastDoneAt: lastAt || undefined,
       priority: priority as WoPriority,
       notes: notes.trim() || undefined,
+      plannedCost: pc,
       active,
     };
     if (isEdit) update.mutate({ id: assetId, planId: String(f(row!, 'plan_id')), patch: common }, { onSuccess: () => { toast('Sačuvano'); onClose(); }, onError: (e) => setErr((e as Error).message) });
@@ -164,6 +169,7 @@ function PlanForm({ assetId, row, onClose }: { assetId: string; row: ViewRow | n
           <FormField label="Prioritet"><select value={priority} onChange={(e) => setPriority(e.target.value)} className={selCls}>{PRIORITY_KEYS.map((k) => <option key={k} value={k}>{WO_PRIORITY_LABEL[k]}</option>)}</select></FormField>
           <FormField label="Interval — meseci" required><Input value={months} onChange={(e) => setMonths(e.target.value)} inputMode="numeric" placeholder="npr. 12" /></FormField>
           <FormField label="Poslednji put — datum"><Input type="date" value={lastAt} onChange={(e) => setLastAt(e.target.value)} /></FormField>
+          <FormField label="Cena servisa (RSD)" hint="očekivana — ulazi u nalog kao procena"><Input value={plannedCost} onChange={(e) => setPlannedCost(e.target.value)} inputMode="decimal" placeholder="npr. 15000" /></FormField>
         </div>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> Aktivno (uključeno u auto-generisanje WO)</label>
         <FormField label="Napomene"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} /></FormField>

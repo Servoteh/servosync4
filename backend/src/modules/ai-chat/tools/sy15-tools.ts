@@ -549,11 +549,14 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
   },
   {
     name: "prijavi_kvar",
-    description: `Prijavi kvar na mašini u modul Održavanje. PRE poziva prikupi kroz razgovor: mašinu, kratak naslov, opis, ozbiljnost i da li postoji bezbednosni rizik; POKAŽI korisniku rezime i sačekaj izričitu potvrdu, pa pozovi alat. Ako korisnik nema prava, alat vrati nema_prava.`,
+    description: `Prijavi kvar na BILO KOM sredstvu u modulu Održavanje — mašini, vozilu, IT opremi ili objektu. Sredstvo prihvata šifru (npr. 3.12), deo naziva (npr. „Caddy Beli") ili REGISTARSKU OZNAKU vozila (npr. BG2884XA, „BG 2884 XA"). PRE poziva prikupi kroz razgovor: sredstvo, kratak naslov, opis, ozbiljnost i da li postoji bezbednosni rizik; POKAŽI korisniku rezime i sačekaj izričitu potvrdu, pa pozovi alat. Ako sredstvo nije nađeno vraća nema_sredstva, a ako korisnik nema prava — nema_prava.`,
     schema: {
       type: "object",
       properties: {
-        masina: { type: "string", description: `šifra ili naziv mašine` },
+        masina: {
+          type: "string",
+          description: `sredstvo: šifra mašine (3.12), naziv, ili registarska oznaka vozila (BG2884XA)`,
+        },
         naslov: { type: "string", description: `kratak opis kvara` },
         opis: {
           type: "string",
@@ -594,5 +597,110 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
     scopes: LICNI,
     execute: (a, ctx) =>
       rpc(ctx, Prisma.sql`SELECT ai_chat_sql(${str(a.upit)}) AS result`),
+  },
+  {
+    name: "trosak_sredstva",
+    description: `Koliko je koštalo održavanje jednog vozila ili mašine — zbir po radnim nalozima + poslednji nalozi sa iznosima. Prima registarsku oznaku (npr. BG2884XA), šifru sredstva ili deo naziva (npr. „Caddy"), opciono broj meseci unazad. Koristi za „koliko me je koštao…", „šta smo dali na servise…", „najskuplji nalog".`,
+    schema: {
+      type: "object",
+      properties: {
+        sredstvo: {
+          type: "string",
+          description: `tablice, šifra ili naziv vozila/mašine`,
+        },
+        meseci: {
+          type: "integer",
+          description: `opciono: koliko meseci unazad (podrazumevano sve)`,
+        },
+      },
+      required: ["sredstvo"],
+    },
+    kind: "read",
+    scopes: LICNI,
+    // Direktan SELECT kroz withUserRls (RLS presuđuje redove) — namerno BEZ nove DB
+    // funkcije: trošak je čitanje, a pravilo „max(delovi, faktura)" već postoji u
+    // OdrzavanjeService i ovde se ponavlja kao GREATEST da se dva ekrana ne raziđu.
+    execute: async (a, ctx) => {
+      const q = `%${str(a.sredstvo)}%`;
+      const exact = str(a.sredstvo);
+      const meseci = intOrNull(a.meseci);
+      return ctx.deps.sy15.withUserRls(ctx.email, async (tx) => {
+        const assets = await tx.$queryRaw<
+          { asset_id: string; asset_code: string; name: string; asset_type: string }[]
+        >(Prisma.sql`
+          SELECT a.asset_id, a.asset_code, a.name, a.asset_type::text
+            FROM maint_assets a
+            LEFT JOIN maint_vehicle_details vd ON vd.asset_id = a.asset_id
+           WHERE a.archived_at IS NULL
+             AND (a.asset_code ILIKE ${q} OR a.name ILIKE ${q}
+                  OR replace(upper(coalesce(vd.registration_plate,'')), ' ', '')
+                     LIKE replace(upper(${q}), ' ', ''))
+           ORDER BY (upper(a.asset_code) = upper(${exact})) DESC, a.asset_code
+           LIMIT 5`);
+        if (!assets.length) {
+          return {
+            error: "nema_sredstva",
+            poruka: `Vozilo/mašina „${exact}" nije nađeno — proveri tablice, šifru ili naziv.`,
+          };
+        }
+        if (assets.length > 1 && assets[0].asset_code.toUpperCase() !== exact.toUpperCase()) {
+          return {
+            error: "vise_pogodaka",
+            poruka: "Precizirajte koje sredstvo:",
+            pogoci: assets.map((x) => `${x.asset_code} — ${x.name}`),
+          };
+        }
+        const a0 = assets[0];
+        const odKad = meseci && meseci > 0 ? Prisma.sql`AND wo.created_at >= now() - make_interval(months => ${meseci})` : Prisma.empty;
+        const nalozi = await tx.$queryRaw<
+          {
+            wo_number: string | null;
+            title: string;
+            status: string;
+            created_at: Date;
+            trosak: number;
+            servis: string | null;
+          }[]
+        >(Prisma.sql`
+          SELECT wo.wo_number, wo.title, wo.status::text, wo.created_at,
+                 GREATEST(
+                   COALESCE((SELECT SUM(p.quantity * COALESCE(p.unit_cost, mp.unit_cost, 0))
+                               FROM maint_wo_parts p
+                               LEFT JOIN maint_parts mp ON mp.part_id = p.part_id
+                              WHERE p.wo_id = wo.wo_id), 0),
+                   COALESCE(wo.cost_total, 0)
+                 )::float8 AS trosak,
+                 wo.external_servicer_name AS servis
+            FROM maint_work_orders wo
+           WHERE wo.asset_id = ${a0.asset_id}::uuid ${odKad}
+           ORDER BY wo.created_at DESC
+           LIMIT 200`);
+        const ukupno = nalozi.reduce((s, n) => s + (Number(n.trosak) || 0), 0);
+        const saCenom = nalozi.filter((n) => Number(n.trosak) > 0);
+        return {
+          sredstvo: `${a0.asset_code} — ${a0.name}`,
+          tip: a0.asset_type,
+          period: meseci && meseci > 0 ? `poslednjih ${meseci} meseci` : "sve vreme",
+          broj_naloga: nalozi.length,
+          naloga_sa_cenom: saCenom.length,
+          ukupan_trosak_rsd: Math.round(ukupno),
+          prosek_po_nalogu_rsd: saCenom.length
+            ? Math.round(ukupno / saCenom.length)
+            : 0,
+          napomena:
+            saCenom.length < nalozi.length
+              ? `${nalozi.length - saCenom.length} naloga nema upisanu cenu — stvarni trošak je veći.`
+              : undefined,
+          nalozi: nalozi.slice(0, 20).map((n) => ({
+            broj: n.wo_number,
+            naslov: n.title,
+            status: n.status,
+            datum: n.created_at,
+            trosak_rsd: Math.round(Number(n.trosak) || 0),
+            servis: n.servis,
+          })),
+        };
+      });
+    },
   },
 ];

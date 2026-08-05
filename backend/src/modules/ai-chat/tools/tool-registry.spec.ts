@@ -47,8 +47,10 @@ describe("registar alata — poklapanje definicije i handlera", () => {
     expect(() => makeRegistry([jedan, jedan])).toThrow(/Duplo ime/);
   });
 
-  it("20 sy15 alata NEMA app-permisiju — pravo im i dalje presuđuje RLS", () => {
-    expect(SY15_TOOLS).toHaveLength(20);
+  it("sy15 alati NEMAJU app-permisiju — pravo im i dalje presuđuje RLS", () => {
+    // 20 portovanih iz 1.0 + `trosak_sredstva` (03.08.2026). I novi čita sy15 kroz
+    // `withUserRls`, pa važi isto pravilo: red presuđuje RLS, ne app-permisija.
+    expect(SY15_TOOLS).toHaveLength(21);
     for (const t of SY15_TOOLS) expect(t.requiredPermission).toBeUndefined();
   });
 

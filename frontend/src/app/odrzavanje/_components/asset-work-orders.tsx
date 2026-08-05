@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { useWorkOrders, type MaintMe, type WoStatus } from '@/api/odrzavanje';
 import { cn } from '@/lib/cn';
 import { formatDate } from '@/lib/format';
-import { WoPriorityBadge, WoStatusBadge } from './common';
+import { money, WoPriorityBadge, WoStatusBadge } from './common';
 import { WoDetailDialog } from './wo-detail-dialog';
 
 /** Statusi koji se tretiraju kao „gotov" (segment Završeni / isključeni iz Otvoreni). */
@@ -45,6 +45,9 @@ export function AssetWorkOrders({
     if (seg === 'done') return sorted.filter((w) => DONE.has(w.status));
     return sorted;
   }, [all, seg]);
+
+  // Zbir troška prikazanog segmenta — „koliko je ovo sredstvo do sada koštalo".
+  const totalCost = useMemo(() => rows.reduce((s, w) => s + (Number(w.effectiveCost) || 0), 0), [rows]);
 
   const SEGS: { key: Seg; label: string; n: number }[] = [
     { key: 'open', label: 'Otvoreni', n: counts.open },
@@ -90,7 +93,8 @@ export function AssetWorkOrders({
                 <th className="py-1.5 pr-3">Status</th>
                 <th className="py-1.5 pr-3">Prioritet</th>
                 <th className="py-1.5 pr-3">Naslov</th>
-                <th className="py-1.5">Rok</th>
+                <th className="py-1.5 pr-3">Rok</th>
+                <th className="py-1.5 text-right">Cena popravke</th>
               </tr>
             </thead>
             <tbody>
@@ -104,10 +108,24 @@ export function AssetWorkOrders({
                   <td className="py-1.5 pr-3"><WoStatusBadge status={w.status} /></td>
                   <td className="py-1.5 pr-3"><WoPriorityBadge priority={w.priority} /></td>
                   <td className="py-1.5 pr-3 text-ink">{w.title}</td>
-                  <td className="tnums py-1.5 text-ink-secondary">{w.dueAt ? formatDate(w.dueAt) : '—'}</td>
+                  <td className="tnums py-1.5 pr-3 text-ink-secondary">{w.dueAt ? formatDate(w.dueAt) : '—'}</td>
+                  <td className="tnums py-1.5 text-right text-ink">
+                    {w.effectiveCost > 0 ? money(w.effectiveCost) : <span className="text-ink-disabled">—</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
+            {totalCost > 0 && (
+              <tfoot>
+                <tr className="border-t border-line font-semibold">
+                  <td className="py-1.5 pr-3 text-ink-secondary" colSpan={4}>
+                    Ukupno ({seg === 'open' ? 'otvoreni' : seg === 'done' ? 'završeni' : 'svi'})
+                  </td>
+                  <td className="tnums py-1.5 pr-3" />
+                  <td className="tnums py-1.5 text-right text-ink">{money(totalCost)}</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}

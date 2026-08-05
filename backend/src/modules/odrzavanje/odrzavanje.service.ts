@@ -3,6 +3,8 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
@@ -15,7 +17,29 @@ import {
   IMAGE_ATTACHMENT_FORMATS,
 } from "../../common/attachments/attachment-format.util";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import { PrismaService } from "../../prisma/prisma.service";
+import { AiProviderService } from "../../common/ai/ai-provider.service";
+import {
+  AI_TASK,
+  AiModelPolicyService,
+} from "../../common/ai/ai-model-policy.service";
+import { AI_MODULE } from "../../common/ai/ai-limits.service";
+import {
+  fenceUserInput,
+  ODRZAVANJE_INJECTION_FENCE,
+} from "../../common/ai/injection-fence";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
+import {
+  normalizeRacunOut,
+  RACUN_AI_ALLOWED_MODELS,
+  RACUN_AI_DEFAULT_MODEL,
+  RACUN_AI_SYSTEM_PROMPT,
+  RACUN_AI_TOOL,
+  RACUN_MAX_FAJL_B64,
+  RACUN_MAX_FAJLOVA,
+  RACUN_PDF_MIME,
+  RACUN_VISION_MIME,
+} from "./odrzavanje-racun-ai";
 import type {
   CreateAssetServicePlanDto,
   CreateBookingDto,
@@ -215,6 +239,11 @@ export class OdrzavanjeService {
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
     private readonly otpisNotify: MasinaOtpisNotifyService,
+    // AI je opcion: modul mora da se digne i bez AI ključeva (boot-safe, kao storage).
+    // Postojeći unit testovi prave servis sa 3 argumenta — zato @Optional.
+    @Optional() private readonly ai?: AiProviderService,
+    @Optional() private readonly policy?: AiModelPolicyService,
+    @Optional() private readonly prisma?: PrismaService,
   ) {}
 
   // ==========================================================================
@@ -758,15 +787,27 @@ export class OdrzavanjeService {
       ]);
       // WO ↔ sredstvo (H4): kanban/lista mora znati za koje je sredstvo nalog
       // (šifra · naziv; maintWorkOrdersPanel.js:206-220). Batch-resolve iz maint_assets.
-      const assetMap = await this.resolveAssets(
-        tx,
-        rows.map((w) => w.assetId),
-      );
-      const data = rows.map((w) => ({
-        ...w,
-        group: WO_GROUP[w.status] ?? null,
-        asset: assetMap.get(w.assetId) ?? null,
-      }));
+      const [assetMap, partsByWo] = await Promise.all([
+        this.resolveAssets(
+          tx,
+          rows.map((w) => w.assetId),
+        ),
+        // Trošak na redu liste: bez ovoga se cena vidi tek kad se otvori nalog.
+        this.partsCostByWo(
+          tx,
+          rows.map((w) => w.woId),
+        ),
+      ]);
+      const data = rows.map((w) => {
+        const partsCost = partsByWo.get(w.woId) ?? 0;
+        return {
+          ...w,
+          group: WO_GROUP[w.status] ?? null,
+          asset: assetMap.get(w.assetId) ?? null,
+          partsCost,
+          effectiveCost: this.effectiveWoCost(partsCost, w.costTotal),
+        };
+      });
       return { data, meta: pageMeta(page, pageSize, total) };
     });
   }
@@ -1369,10 +1410,68 @@ export class OdrzavanjeService {
   }
 
   /**
-   * WO troškovi — agregacija LINE-ITEM-a (paritet 1.0 maintReportsPanel):
-   * partsCost = Σ(quantity × (wo_parts.unit_cost ?? maint_parts.unit_cost)) nad wo_parts;
-   * laborMinutes = Σ(minutes) nad wo_labor. WO header kolone (cost_total/labor_minutes)
-   * NISU pouzdan rollup (nijedan trigger ih ne agregira iz stavki) — NE sabiraju se.
+   * Zbir stavki „Delovi" po nalogu: Σ(quantity × (wo_parts.unit_cost ?? maint_parts.unit_cost)).
+   * Jedan izvor istine — koriste ga i lista naloga i izveštaj, da isti nalog ne bi
+   * pokazivao dva različita iznosa na dva ekrana.
+   */
+  private async partsCostByWo(
+    tx: Sy15Tx,
+    woIds: string[],
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    if (!woIds.length) return out;
+    const parts = await tx.maintWoPart.findMany({
+      where: { woId: { in: woIds } },
+      select: { woId: true, partId: true, quantity: true, unitCost: true },
+    });
+    // Fallback jedinične cene iz maint_parts kad wo_parts.unit_cost fali (paritet 1.0).
+    const missing = [
+      ...new Set(
+        parts
+          .filter((p) => p.unitCost == null && p.partId)
+          .map((p) => p.partId as string),
+      ),
+    ];
+    const catalogCost = new Map<string, number>();
+    if (missing.length) {
+      const cat = await tx.maintPart.findMany({
+        where: { partId: { in: missing } },
+        select: { partId: true, unitCost: true },
+      });
+      for (const c of cat) catalogCost.set(c.partId, Number(c.unitCost ?? 0));
+    }
+    for (const p of parts) {
+      const unit =
+        p.unitCost != null
+          ? Number(p.unitCost)
+          : p.partId
+            ? (catalogCost.get(p.partId) ?? 0)
+            : 0;
+      out.set(
+        p.woId,
+        (out.get(p.woId) ?? 0) + Number(p.quantity ?? 0) * unit,
+      );
+    }
+    return out;
+  }
+
+  /**
+   * Trošak naloga = VEĆI od (zbir stavki „Delovi", `cost_total` sa fakture servisa).
+   * Nikad zbir oba: kad spoljni servis fakturiše i delove koje smo popisali kao stavke,
+   * sabiranje bi ih brojalo dvaput. `cost_total` NIJE trigger-rollup — unosi ga čovek
+   * iz WO detalja kao ceo iznos sa računa.
+   */
+  private effectiveWoCost(
+    partsCost: number,
+    costTotal: Prisma.Decimal | null,
+  ): number {
+    return Math.max(partsCost, Number(costTotal ?? 0));
+  }
+
+  /**
+   * WO troškovi (paritet 1.0 maintReportsPanel + faktura spoljnog servisa):
+   * partsCost = Σ po nalozima od `effectiveWoCost` (delovi ili faktura, šta je veće);
+   * laborMinutes = Σ(minutes) nad wo_labor (rad se ne monetizuje — nema tarife).
    */
   async reportWorkOrderCosts(email: string, period?: string) {
     const days = this.periodDays(period);
@@ -1382,7 +1481,7 @@ export class OdrzavanjeService {
         : {};
       const wos = await tx.maintWorkOrder.findMany({
         where,
-        select: { woId: true, type: true, assetType: true },
+        select: { woId: true, type: true, assetType: true, costTotal: true },
       });
       const emptyPeriod = days ? `${days}d` : "all";
       if (!wos.length) {
@@ -1398,53 +1497,28 @@ export class OdrzavanjeService {
         };
       }
       const woIds = wos.map((w) => w.woId);
-      const assetTypeByWo = new Map(
-        wos.map((w) => [w.woId, String(w.assetType)]),
-      );
-      const [parts, labor] = await Promise.all([
-        tx.maintWoPart.findMany({
-          where: { woId: { in: woIds } },
-          select: { woId: true, partId: true, quantity: true, unitCost: true },
-        }),
+      const [partsByWo, labor] = await Promise.all([
+        this.partsCostByWo(tx, woIds),
         tx.maintWoLabor.findMany({
           where: { woId: { in: woIds } },
           select: { minutes: true },
         }),
       ]);
-      // Fallback jedinične cene iz maint_parts kad wo_parts.unit_cost fali (paritet 1.0).
-      const missing = [
-        ...new Set(
-          parts
-            .filter((p) => p.unitCost == null && p.partId)
-            .map((p) => p.partId as string),
-        ),
-      ];
-      const catalogCost = new Map<string, number>();
-      if (missing.length) {
-        const cat = await tx.maintPart.findMany({
-          where: { partId: { in: missing } },
-          select: { partId: true, unitCost: true },
-        });
-        for (const c of cat) catalogCost.set(c.partId, Number(c.unitCost ?? 0));
-      }
-      const partCost = (p: {
-        partId: string | null;
-        quantity: Prisma.Decimal | null;
-        unitCost: Prisma.Decimal | null;
-      }) =>
-        Number(p.quantity ?? 0) *
-        (p.unitCost != null
-          ? Number(p.unitCost)
-          : p.partId
-            ? (catalogCost.get(p.partId) ?? 0)
-            : 0);
-      const partsCost = parts.reduce((a, p) => a + partCost(p), 0);
-      const laborMinutes = labor.reduce((a, l) => a + (l.minutes ?? 0), 0);
+      // Agregacija je PO NALOGU (ne po stavci) — tek na nivou naloga se zna da li je
+      // faktura servisa veća od popisanih delova.
+      let partsCost = 0;
       const costByAssetType: Record<string, number> = {};
-      for (const p of parts) {
-        const at = assetTypeByWo.get(p.woId) ?? "—";
-        costByAssetType[at] = (costByAssetType[at] ?? 0) + partCost(p);
+      for (const w of wos) {
+        const cost = this.effectiveWoCost(
+          partsByWo.get(w.woId) ?? 0,
+          w.costTotal,
+        );
+        if (cost === 0) continue;
+        partsCost += cost;
+        const at = String(w.assetType);
+        costByAssetType[at] = (costByAssetType[at] ?? 0) + cost;
       }
+      const laborMinutes = labor.reduce((a, l) => a + (l.minutes ?? 0), 0);
       return {
         data: {
           totalWorkOrders: wos.length,
@@ -2674,6 +2748,13 @@ export class OdrzavanjeService {
             reportedBy: uid!,
             dueAt: this.toDbTs(dto.dueAt) ?? null,
             sourceIncidentId: dto.sourceIncidentId ?? null,
+            // Trošak već pri KREIRANJU: servis se najčešće unosi unazad, sa računom
+            // u ruci — terati čoveka da prvo napravi nalog pa ga ponovo otvara da
+            // upiše cenu je bio glavni razlog što cena nije ni unošena.
+            costTotal: dto.costTotal ?? null,
+            estimatedCost: dto.estimatedCost ?? null,
+            externalServicerName: dto.externalServicerName?.trim() || null,
+            odometerKmAtService: dto.odometerKmAtService ?? null,
           },
         });
       },
@@ -3455,6 +3536,7 @@ export class OdrzavanjeService {
             priority: (dto.priority ?? "p4_planirano") as never,
             notes: dto.notes ?? null,
             active: dto.active ?? true,
+            plannedCost: dto.plannedCost ?? null,
             createdBy: uid,
             updatedBy: uid,
           },
@@ -3496,6 +3578,9 @@ export class OdrzavanjeService {
             : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
+          ...(dto.plannedCost !== undefined
+            ? { plannedCost: dto.plannedCost }
+            : {}),
           updatedBy: uid,
           updatedAt: new Date(),
         },
@@ -3517,14 +3602,173 @@ export class OdrzavanjeService {
     });
   }
 
-  /** Generiši WO iz overdue/due_soon plana vozila (RPC; anti-duplikat has_open_wo). */
+  // ---------- AI: čitanje računa iz servisa (predlog, ne upis) ----------
+
+  /**
+   * Sa fotografije/PDF-a računa servisne radionice izvuče iznos, servisera, datum,
+   * kilometražu i stavke. **Ništa ne upisuje** — vraća predlog koji čovek potvrđuje
+   * običnim PATCH-om nad nalogom. Razlog: AI ne sme sam da menja novčani podatak, a
+   * ovako i greška u čitanju ostaje bezopasna.
+   *
+   * `woId` služi samo kao provera prava (RLS SELECT nad nalogom) i za kontekst.
+   */
+  async readServiceInvoice(
+    email: string,
+    woId: string,
+    files: Express.Multer.File[],
+  ) {
+    if (!this.ai) {
+      throw new ServiceUnavailableException(
+        "AI čitanje računa nije konfigurisano na serveru.",
+      );
+    }
+    if (!files.length) {
+      throw new UnprocessableEntityException(
+        "Priloži bar jednu fotografiju ili PDF računa (multipart `files`).",
+      );
+    }
+    if (files.length > RACUN_MAX_FAJLOVA) {
+      throw new UnprocessableEntityException(
+        `Najviše ${RACUN_MAX_FAJLOVA} fajlova po računu.`,
+      );
+    }
+    // Pravo: ako korisnik ne sme da vidi nalog, ne sme ni da troši AI budžet na njega.
+    const wo = await this.withUserMapped(email, async (tx) => {
+      const row = await tx.maintWorkOrder.findUnique({
+        where: { woId },
+        select: { woId: true, title: true, assetId: true },
+      });
+      if (!row) throw new NotFoundException(`Radni nalog ${woId} ne postoji`);
+      return row;
+    });
+
+    const content: unknown[] = [
+      {
+        type: "text",
+        text:
+          `Račun se odnosi na radni nalog: ${fenceUserInput(wo.title)}.\n` +
+          `Priloženo fajlova: ${files.length}. Pročitaj ih kao jedan račun ` +
+          `(više strana istog dokumenta).`,
+      },
+    ];
+    for (const f of files) {
+      const b64 = f.buffer.toString("base64");
+      if (b64.length > RACUN_MAX_FAJL_B64) {
+        throw new UnprocessableEntityException(
+          `„${f.originalname}" je prevelik (max ~4 MB po fajlu).`,
+        );
+      }
+      const mime = f.mimetype ?? "";
+      if (mime === RACUN_PDF_MIME) {
+        content.push({
+          type: "document",
+          source: { type: "base64", media_type: RACUN_PDF_MIME, data: b64 },
+        });
+      } else if (RACUN_VISION_MIME.includes(mime)) {
+        content.push({
+          type: "image",
+          source: { type: "base64", media_type: mime, data: b64 },
+        });
+      } else {
+        throw new UnprocessableEntityException(
+          `„${f.originalname}": dozvoljeni su PDF i slike (JPG, PNG, WEBP, GIF).`,
+        );
+      }
+    }
+
+    const envModel = process.env.ODRZAVANJE_RACUN_AI_MODEL ?? "";
+    const fallback = (RACUN_AI_ALLOWED_MODELS as readonly string[]).includes(
+      envModel,
+    )
+      ? envModel
+      : RACUN_AI_DEFAULT_MODEL;
+    // Registar (Podešavanja → AI modeli) ima prednost; bez njega ide env/podrazumevani.
+    const resolved = this.policy
+      ? await this.policy.resolve(AI_TASK.ODRZAVANJE_RACUN, fallback)
+      : { model: fallback };
+    const model = (RACUN_AI_ALLOWED_MODELS as readonly string[]).includes(
+      resolved.model,
+    )
+      ? resolved.model
+      : fallback;
+
+    const res = await this.ai.extractWithTool({
+      model,
+      system: `${RACUN_AI_SYSTEM_PROMPT}\n\n${ODRZAVANJE_INJECTION_FENCE}`,
+      tool: RACUN_AI_TOOL,
+      content,
+      maxTokens: 4000,
+      // `ai_usage_log.user_id` je numerički ID iz GLAVNE baze; sy15 `auth.uid()` je
+      // UUID i ne uklapa se — otud mapiranje po e-mailu (null = poziv se i dalje meri,
+      // samo bez korisnika).
+      ctx: {
+        module: AI_MODULE.ODRZAVANJE_RACUN,
+        userId: await this.appUserId(email),
+      },
+    });
+    return {
+      data: normalizeRacunOut(res.toolInput),
+      meta: { model: res.model, usage: res.usage },
+    };
+  }
+
+  /** e-mail → numerički `users.id` glavne baze (za merenje AI potrošnje). */
+  private async appUserId(email: string): Promise<number | null> {
+    if (!this.prisma) return null;
+    try {
+      const u = await this.prisma.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+      return u?.id ?? null;
+    } catch {
+      return null; // merenje ne sme da obori čitanje računa
+    }
+  }
+
+  /**
+   * Generiši WO iz overdue/due_soon plana vozila (RPC; anti-duplikat has_open_wo).
+   * DB fn ne zna za `planned_cost` — posle nje prepisujemo očekivanu cenu iz plana u
+   * `estimated_cost` novih naloga, da planirana cena ne ostane mrtav podatak. Radi se u
+   * app sloju namerno: `ensure_vehicle_service_wos` je živa PROD funkcija koju ne diramo.
+   */
   ensureVehicleServiceWos(email: string, assetId?: string) {
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ n: number }[]>(
         Prisma.sql`SELECT public.ensure_vehicle_service_wos(${assetId ?? null}::uuid) AS n`,
       );
-      return { data: { created: Number(rows[0]?.n ?? 0) } };
+      const created = Number(rows[0]?.n ?? 0);
+      if (created > 0) await this.seedEstimatedCostFromPlan(tx, "vehicle");
+      return { data: { created } };
     });
+  }
+
+  /**
+   * Prepiše `planned_cost` plan stavke u `estimated_cost` naloga koji su iz nje nastali,
+   * ali još nemaju procenu. Idempotentno (uslov `estimated_cost IS NULL`) i usko:
+   * dira samo otvorene naloge sa vezom na plan.
+   */
+  private async seedEstimatedCostFromPlan(
+    tx: Sy15Tx,
+    kind: "vehicle" | "asset",
+  ): Promise<void> {
+    const link =
+      kind === "vehicle"
+        ? Prisma.sql`wo.service_plan_id = p.plan_id`
+        : Prisma.sql`wo.asset_service_plan_id = p.plan_id`;
+    const table =
+      kind === "vehicle"
+        ? Prisma.sql`public.maint_vehicle_service_plan`
+        : Prisma.sql`public.maint_asset_service_plan`;
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE public.maint_work_orders wo
+         SET estimated_cost = p.planned_cost
+        FROM ${table} p
+       WHERE ${link}
+         AND p.planned_cost IS NOT NULL
+         AND wo.estimated_cost IS NULL
+         AND wo.status NOT IN ('zavrsen', 'otkazan')
+    `);
   }
 
   // ---------- Delovi po vozilu (link/unlink/patch) ----------
@@ -3864,6 +4108,7 @@ export class OdrzavanjeService {
             priority: (dto.priority ?? "p4_planirano") as never,
             notes: dto.notes ?? null,
             active: dto.active ?? true,
+            plannedCost: dto.plannedCost ?? null,
             createdBy: uid,
             updatedBy: uid,
           },
@@ -3896,6 +4141,9 @@ export class OdrzavanjeService {
             : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.active !== undefined ? { active: dto.active } : {}),
+          ...(dto.plannedCost !== undefined
+            ? { plannedCost: dto.plannedCost }
+            : {}),
           updatedBy: uid,
           updatedAt: new Date(),
         },
@@ -3922,7 +4170,9 @@ export class OdrzavanjeService {
       const rows = await tx.$queryRaw<{ n: number }[]>(
         Prisma.sql`SELECT public.ensure_asset_service_wos(${assetId ?? null}::uuid) AS n`,
       );
-      return { data: { created: Number(rows[0]?.n ?? 0) } };
+      const created = Number(rows[0]?.n ?? 0);
+      if (created > 0) await this.seedEstimatedCostFromPlan(tx, "asset");
+      return { data: { created } };
     });
   }
 

@@ -4,6 +4,7 @@ import {
   HttpException,
 } from "@nestjs/common";
 import { AiChatService } from "./ai-chat.service";
+import { SY15_TOOLS } from "./tools/sy15-tools";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { AiProviderService } from "../../common/ai/ai-provider.service";
 import type { AiLimitsService } from "../../common/ai/ai-limits.service";
@@ -791,10 +792,12 @@ describe("AiChatService — permisijska brana alata + audit (Talas AI-1)", () =>
     expect(ponudjeni()).toContain("istorija_crteza");
   });
 
-  it("bez actor-a (nepoznat pozivalac) nudi se SAMO starih 20 — fail-closed", async () => {
+  it("bez actor-a (nepoznat pozivalac) nude se SAMO sy15 alati — fail-closed", async () => {
     const { svc, ponudjeni } = makeChat();
     await svc.chat("u@servoteh.com", { message: "zdravo" });
-    expect(ponudjeni()).toHaveLength(20);
+    // sy15 alate štiti RLS baze, pa smeju i bez poznatog actor-a; alati nad
+    // GLAVNOM bazom (bez RLS-a) traže permisiju i moraju izostati.
+    expect(ponudjeni()).toHaveLength(SY15_TOOLS.length);
     expect(ponudjeni()).not.toContain("nadji_radni_nalog");
   });
 

@@ -55,6 +55,7 @@ import {
   fnum,
   GPS_PROVIDER_LABEL,
   isoToDateInput,
+  money,
   OpStatusBadge,
   OWNER_TYPE_LABEL,
   SHELF_OPTIONS,
@@ -370,7 +371,7 @@ function VServis({ id, canManage, me }: { id: string; canManage: boolean; me: Ma
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-line text-2xs uppercase tracking-wider text-ink-secondary">
-                <th className="p-2">Stavka</th><th className="p-2">Interval</th><th className="p-2">Poslednji put</th><th className="p-2">Sledeći put</th><th className="p-2">Status</th><th className="p-2"></th>
+                <th className="p-2">Stavka</th><th className="p-2">Interval</th><th className="p-2">Poslednji put</th><th className="p-2">Sledeći put</th><th className="p-2 text-right">Cena servisa</th><th className="p-2">Status</th><th className="p-2"></th>
               </tr>
             </thead>
             <tbody>
@@ -383,6 +384,7 @@ function VServis({ id, canManage, me }: { id: string; canManage: boolean; me: Ma
                     <td className="p-2 text-ink-secondary">{intervalText(fnum(r, 'interval_km'), fnum(r, 'interval_months'))}</td>
                     <td className="p-2 text-ink-secondary">{f(r, 'last_done_at') ? formatDate(String(f(r, 'last_done_at'))) : '—'}{fnum(r, 'last_done_km') != null ? ` · ${Number(f(r, 'last_done_km')).toLocaleString('sr-RS')} km` : ''}</td>
                     <td className="p-2 text-ink-secondary">{nextDueText(f(r, 'next_due_at'), fnum(r, 'next_due_km'), fnum(r, 'days_to_due'), fnum(r, 'km_to_due'))}</td>
+                    <td className="tnums p-2 text-right text-ink-secondary">{fnum(r, 'planned_cost') == null ? '—' : money(fnum(r, 'planned_cost'))}</td>
                     <td className="p-2"><StatusBadge tone={due.tone} label={due.label} /></td>
                     <td className="p-2 text-right">
                       <div className="flex justify-end gap-1.5">
@@ -440,6 +442,7 @@ function ServicePlanForm({ id, row, onClose }: { id: string; row: ViewRow | null
   const [lastKm, setLastKm] = useState(row ? String(fnum(row, 'last_done_km') ?? '') : '');
   const [active, setActive] = useState(row ? f(row, 'active') !== 'false' : true);
   const [notes, setNotes] = useState(row ? String(f(row, 'notes') ?? '') : '');
+  const [plannedCost, setPlannedCost] = useState(row ? String(fnum(row, 'planned_cost') ?? '') : '');
   const [err, setErr] = useState<string | null>(null);
   const selCls = 'h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink';
 
@@ -451,6 +454,8 @@ function ServicePlanForm({ id, row, onClose }: { id: string; row: ViewRow | null
     if (m == null && k == null) return setErr('Bar jedan interval (meseci ili km) je obavezan.');
     if (m != null && (!Number.isFinite(m) || m <= 0)) return setErr('Interval u mesecima mora biti pozitivan.');
     if (k != null && (!Number.isFinite(k) || k <= 0)) return setErr('Interval u km mora biti pozitivan.');
+    const pc = plannedCost.trim() === '' ? undefined : Number(plannedCost.trim().replace(',', '.'));
+    if (pc != null && (!Number.isFinite(pc) || pc < 0)) return setErr('Cena servisa mora biti broj ≥ 0.');
     const common = {
       name: name.trim(),
       intervalMonths: m,
@@ -460,6 +465,7 @@ function ServicePlanForm({ id, row, onClose }: { id: string; row: ViewRow | null
       vehicleServiceCategory: category || undefined,
       priority: priority as never,
       notes: notes.trim() || undefined,
+      plannedCost: pc,
       active,
     };
     if (isEdit) update.mutate({ id, planId: String(f(row!, 'plan_id')), patch: common }, { onSuccess: () => { toast('Sačuvano'); onClose(); }, onError: (e) => setErr((e as Error).message) });
@@ -479,6 +485,7 @@ function ServicePlanForm({ id, row, onClose }: { id: string; row: ViewRow | null
           <FormField label="Interval — km"><Input value={km} onChange={(e) => setKm(e.target.value)} inputMode="numeric" /></FormField>
           <FormField label="Poslednji put — datum"><Input type="date" value={lastAt} onChange={(e) => setLastAt(e.target.value)} /></FormField>
           <FormField label="Poslednji put — km"><Input value={lastKm} onChange={(e) => setLastKm(e.target.value)} inputMode="numeric" /></FormField>
+          <FormField label="Cena servisa (RSD)" hint="očekivana — ulazi u nalog kao procena"><Input value={plannedCost} onChange={(e) => setPlannedCost(e.target.value)} inputMode="decimal" placeholder="npr. 15000" /></FormField>
         </div>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> Aktivno (uključeno u auto-generisanje WO)</label>
         <FormField label="Napomene"><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} /></FormField>

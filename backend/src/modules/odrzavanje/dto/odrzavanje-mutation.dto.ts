@@ -260,6 +260,11 @@ export class CreateWorkOrderDto extends IdempotentDto {
   @IsOptional() @IsISO8601() dueAt?: string;
   @IsOptional() @IsBoolean() safetyMarker?: boolean;
   @IsOptional() @IsUUID() sourceIncidentId?: string;
+  // Trošak se sme uneti odmah pri kreiranju (servis se unosi unazad, sa računom).
+  @IsOptional() @IsNumber() costTotal?: number;
+  @IsOptional() @IsNumber() estimatedCost?: number;
+  @IsOptional() @IsString() @MaxLength(200) externalServicerName?: string;
+  @IsOptional() @IsInt() odometerKmAtService?: number;
 }
 
 export class UpdateWorkOrderDto {
@@ -414,6 +419,7 @@ export class CreateVehicleServicePlanDto extends IdempotentDto {
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() active?: boolean;
+  @IsOptional() @IsNumber() plannedCost?: number;
 }
 
 export class UpdateVehicleServicePlanDto {
@@ -426,6 +432,7 @@ export class UpdateVehicleServicePlanDto {
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() active?: boolean;
+  @IsOptional() @IsNumber() plannedCost?: number;
 }
 
 export class LinkPartDto extends IdempotentDto {
@@ -526,6 +533,7 @@ export class CreateAssetServicePlanDto extends IdempotentDto {
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() active?: boolean;
+  @IsOptional() @IsNumber() plannedCost?: number;
 }
 
 export class UpdateAssetServicePlanDto {
@@ -535,6 +543,7 @@ export class UpdateAssetServicePlanDto {
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() active?: boolean;
+  @IsOptional() @IsNumber() plannedCost?: number;
 }
 
 /* ════════════════════════ Zalihe / dobavljači / lokacije ════════════════════════ */

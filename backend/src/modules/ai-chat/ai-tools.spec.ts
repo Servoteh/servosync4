@@ -84,10 +84,15 @@ describe("ai-tools — verbatim 1.0 prompt/opisi (anti-truncation)", () => {
     expect(names.indexOf("projekat_info")).toBe(
       names.indexOf("go_istorija") + 1,
     );
-    // Talas AI-1: registar više nije samo sy15 — ali sy15 blok ostaje TAČNO 20
-    // alata i drži prvih 20 mesta u nizu (redosled je load-bearing za model).
-    expect(SY15_TOOLS).toHaveLength(20);
-    expect(TOOL_DEFS.slice(0, 20).map((t) => t.name)).toEqual(
+    // Talas AI-1: registar više nije samo sy15 — ali sy15 blok drži PRVIH 21 mesta
+    // u nizu (redosled je load-bearing za model).
+    // 03.08.2026: 21. alat je `trosak_sredstva` (trošak održavanja vozila/mašine) —
+    // dodat NA KRAJ, da 20 portovanih 1.0 alata zadrži svoje pozicije 1:1.
+    expect(SY15_TOOLS).toHaveLength(21);
+    expect(SY15_TOOLS.slice(0, 20).map((t) => t.name)).not.toContain(
+      "trosak_sredstva",
+    );
+    expect(TOOL_DEFS.slice(0, SY15_TOOLS.length).map((t) => t.name)).toEqual(
       SY15_TOOLS.map((t) => t.name),
     );
   });
@@ -96,6 +101,24 @@ describe("ai-tools — verbatim 1.0 prompt/opisi (anti-truncation)", () => {
     const d = desc("prijavi_kvar");
     expect(d).toContain("nema_prava");
     expect(d).toContain("potvrdu");
+  });
+
+  it("prijavi_kvar radi za SVA sredstva, ne samo mašine (03.08.2026)", () => {
+    // DB fn `ai_chat_prijavi_kvar` od 03.08.2026 razrešava i vozila/IT/objekte
+    // (fallback `ai_chat_asset_resolve`, i po registarskoj oznaci). Ako opis
+    // ostane „samo mašina", model neće ni pokušati prijavu za vozilo — zato se
+    // ovde pinuju i tipovi sredstava i tablice, a ne samo postojanje alata.
+    const d = desc("prijavi_kvar");
+    for (const frag of ["BILO KOM sredstvu", "vozilu", "IT opremi", "objektu"]) {
+      expect(d).toContain(frag);
+    }
+    expect(d).toMatch(/registarsk\w+ oznak\w+/i);
+    expect(d).toContain("nema_sredstva");
+    // Parametar se i dalje zove `masina` (kompatibilnost), ali opis mora reći šire.
+    const input = TOOL_DEFS.find((t) => t.name === "prijavi_kvar")?.input as {
+      properties: { masina: { description: string } };
+    };
+    expect(input.properties.masina.description).toMatch(/registarska oznaka/i);
   });
 
   it("projektni scope: 6 deljenih alata, bez ličnih (GO/sati/SQL)", () => {

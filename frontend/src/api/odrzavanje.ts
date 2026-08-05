@@ -449,7 +449,14 @@ export interface WoAsset {
   name: string;
   assetType: AssetType | string;
 }
-export type WorkOrderRow = WorkOrder & { group: WoGroup | null; asset: WoAsset | null };
+export type WorkOrderRow = WorkOrder & {
+  group: WoGroup | null;
+  asset: WoAsset | null;
+  /** Σ(kol × cena) stavki „Delovi" — BE agregira, da se cena vidi i bez otvaranja naloga. */
+  partsCost: number;
+  /** Trošak naloga = max(partsCost, costTotal sa fakture) — kanonski iznos za prikaz. */
+  effectiveCost: number;
+};
 export interface WoEvent {
   id: string;
   woId: string;
@@ -1209,6 +1216,33 @@ export function useAttachIncidentFiles() {
 
 // ── Radni nalozi
 export const useCreateWorkOrder = () => useOdrCreate<Record<string, unknown>>(`${BASE}/work-orders`);
+/** Predlog sa računa servisa (AI). BE ništa ne upisuje — čovek potvrđuje PATCH-om. */
+export interface RacunPredlog {
+  ukupanIznos: number | null;
+  iznosBezPdv: number | null;
+  valuta: string;
+  datum: string;
+  serviser: string;
+  brojRacuna: string;
+  kilometraza: number | null;
+  registracija: string;
+  opisRadova: string;
+  stavke: Array<{
+    naziv: string;
+    kolicina: number | null;
+    jedinica: string;
+    jedinicnaCena: number | null;
+    iznos: number | null;
+  }>;
+  /** Ključevi koje model nije uspeo da pročita — UI ih ističe da se dopune ručno. */
+  necitljivo: string[];
+}
+export async function readServiceInvoice(woId: string, files: File[]): Promise<One<RacunPredlog>> {
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f, f.name);
+  return apiUpload<One<RacunPredlog>>(`${BASE}/work-orders/${woId}/read-invoice`, fd);
+}
+
 export const useUpdateWorkOrder = () =>
   useOdrMutate<{ id: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/work-orders/${v.id}`, (v) => v.patch);
 export const useDeleteWorkOrder = () => useOdrMutate<{ id: string }>('DELETE', (v) => `${BASE}/work-orders/${v.id}`);
