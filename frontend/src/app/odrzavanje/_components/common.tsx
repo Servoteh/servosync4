@@ -439,12 +439,18 @@ export function KpiButton({
   );
 }
 
-/** Kategorija-tile (dashboard) — ukupno + „zahtevaju pažnju" linija + extra metrika. */
+/**
+ * Kategorija-tile (dashboard) — ukupno + „zahtevaju pažnju" linija + extra metrika.
+ * `attentionHint` objašnjava ŠTA se za tu kategoriju računa kao pažnja (hover/`title`),
+ * da se definicija ne mora tražiti po kodu. Kad je `attention === 0` linija nije
+ * narandžasta nego diskretno „✓ Sve u redu"; `null` (još se učitava) = „—".
+ */
 export function CategoryTile({
   icon,
   label,
   total,
   attention,
+  attentionHint,
   extra,
   onClick,
 }: {
@@ -452,6 +458,7 @@ export function CategoryTile({
   label: string;
   total: number | null;
   attention: number | null;
+  attentionHint?: string;
   extra?: { txt: string; sev: 'down' | 'warn' | 'muted' }[];
   onClick?: () => void;
 }) {
@@ -467,7 +474,7 @@ export function CategoryTile({
         <span className="text-sm font-medium text-ink">{label}</span>
       </div>
       <div className="tnums text-2xl font-semibold text-ink">{total ?? '—'}</div>
-      <div className="text-xs">
+      <div className="text-xs" title={attentionHint}>
         {attention === null || attention === undefined ? (
           <span className="text-ink-secondary">—</span>
         ) : attention > 0 ? (

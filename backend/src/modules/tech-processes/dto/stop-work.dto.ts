@@ -25,6 +25,14 @@ export interface StopWorkDto {
   pieceCount: number;
   /** Napomena (opciono). */
   note?: string;
+  /**
+   * EKSPLICITNA NAMERA „operacija je gotova" (odluka Nenad 2026-08-05). Kad
+   * kumulativ dostigne plan RN-a operacija se zatvara sama (bez ovog polja);
+   * ISPOD plana se zatvara SAMO ako je ovde `true`. Izostanak polja = `false`
+   * (bezbedan smer): stari klijenti time prestaju da lažno zatvaraju nedovršene
+   * operacije. V. `accumulateStopWork` u servisu — pravilo je serversko.
+   */
+  operacijaGotova?: boolean;
 }
 
 export function validateStopWork(dto: StopWorkDto): void {
@@ -46,5 +54,10 @@ export function validateStopWork(dto: StopWorkDto): void {
     (typeof dto.note !== "string" || dto.note.length > 2000)
   )
     errors.push("Polje 'note' mora biti string do 2000 karaktera.");
+  if (
+    dto?.operacijaGotova !== undefined &&
+    typeof dto.operacijaGotova !== "boolean"
+  )
+    errors.push("Polje 'operacijaGotova' mora biti boolean.");
   if (errors.length) throw new BadRequestException(errors);
 }

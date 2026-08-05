@@ -3,6 +3,15 @@
 **Datum:** 22.07.2026 · **Analiza:** Fable · **Izvršenje:** Opus (posle ovog plana)
 **Izvor:** primedbe iz pogona (fotografija legacy „RADNI NALOG 0000.0 rev A, predmet 4521, Op. 5 · RC 0.0 OPŠTI NALOG"; fotografije nalepnica 15-06-26 vs 16-07-26).
 
+> ⚠️ **DELIMIČNO PREVAZIĐENO (05.08.2026, odluka Nenada).** Ovaj plan je zadržao FIX B
+> („Kraj rada" UVEK gasi red, `forceFinish=true`). To je OBORENO: kiosk sada pita
+> „Otkucao si X od Y. Da li je operacija gotova?" (samo kad količina nije puna,
+> podrazumevano NE), a red se ispod plana gasi SAMO uz eksplicitno `operacijaGotova:
+> true`. „Odustani" (`:id/dismiss`) više NIKAD ne upisuje `is_process_finished` —
+> umesto toga otkupljuje red bez komada (`worker_id → 0`). Sve ostalo iz ovog plana
+> (deljeni red, `finishForAll`, `othersOpenCount`, higijena sesija) ostaje na snazi.
+> Sanacija zatečenih podataka: `backend/docs/sql/kiosk-istorijska-sanacija-gotovo-2026-08-05.sql`.
+
 ## STATUS IZVRŠENJA (ažurirano 22.07, Fable)
 
 | Stavka | Status |

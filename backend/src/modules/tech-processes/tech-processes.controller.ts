@@ -200,8 +200,18 @@ export class TechProcessesController {
     return this.techProcesses.scan(dto);
   }
 
+  /**
+   * „Zatvori operaciju" — BEZUSLOVNO gasi red (bez obzira na količinu).
+   *
+   * 🔴 `tehnologija.write`, ne `report_work` (F3, 05.08.2026): od kad kiosk pita
+   * „da li je operacija gotova?" i gasi red samo uz eksplicitnu nameru, ova ruta je
+   * ostala jedini put da se operacija proglasi završenom bez pitanja — a stajala je
+   * pod ISTOM dozvolom kao kiosk dugmad, pa bi je svaki radnik mogao pozvati i
+   * zaobići pravilo. Sada je to tehnolog/šef (isti tier kao `storno`/`reopen`/
+   * `delete`, koji takođe prepravljaju gotovu evidenciju). Kiosk je ne koristi.
+   */
   @Post(":id/finish")
-  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
   finish(
     @Param("id", ParseIntPipe) id: number,
     @Body() dto: FinishTechProcessDto,
@@ -213,6 +223,8 @@ export class TechProcessesController {
    * „Kraj rada" iz „Moji otvoreni" (kiosk): završava RAD po `tech_processes` id-ju
    * (bez barkodova — radnik iz ID kartice ili prijavljenog naloga). Zatvara njegovu
    * otvorenu sesiju + akumulira komade, ista logika kao `POST /work/stop`.
+   * Body `operacijaGotova?: boolean` = eksplicitna namera „operacija je gotova"
+   * (Nenad 05.08.2026): ispod plana se operacija gasi SAMO uz `true`.
    */
   @Post(":id/stop-work")
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
@@ -225,9 +237,11 @@ export class TechProcessesController {
   }
 
   /**
-   * „Odustani" iz „Moji otvoreni" (kiosk): zatvara SVOJ pogrešno otvoren red BEZ
+   * „Odustani" iz „Moji otvoreni" (kiosk): sklanja SVOJ pogrešno otvoren red BEZ
    * dodavanja komada (za redove otvorene greškom kroz probu). Isti nivo dozvole kao
    * „Kraj rada" (report_work) — kiosk operater čisti svoje redove.
+   * 🔴 NE upisuje `is_process_finished` (Nenad 05.08.2026) — čišćenje greške nije
+   * završetak operacije; red bez komada se otkupljuje (worker_id → 0).
    */
   @Post(":id/dismiss")
   @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)

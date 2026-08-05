@@ -227,6 +227,15 @@ export interface StopWorkByIdBody {
    * `true` = eksplicitan kiosk izbor „Zatvori za sve" (gasi red + tuđe sesije).
    */
   finishForAll?: boolean;
+  /**
+   * EKSPLICITNA NAMERA „operacija je gotova" (odluka Nenad 2026-08-05). „Kraj
+   * rada" je do sada UVEK gasio operaciju (`forceFinish`), pa je radnik koji je
+   * otkucao 21 od 200 komada svojim „gotov sam za danas" proglašavao operaciju
+   * završenom (`bool_or(is_process_finished)` je kanon čitanja u celom modulu).
+   * Sada: kumulativ ≥ plan → zatvara se samo (polje se ne gleda); ISPOD plana se
+   * zatvara SAMO uz `true`. Polje nije poslato + ispod plana → `false`.
+   */
+  operacijaGotova?: boolean;
 }
 
 // --- oblici sirovih redova iz $queryRaw upita (snake_case iz baze) ---
@@ -944,10 +953,11 @@ export class TechProcessesService {
       identNumber: r.identNumber,
       variant: r.variant,
     }));
-    const [ops, planned, drawings] = await Promise.all([
+    const [ops, planned, drawings, cumulative] = await Promise.all([
       this.resolveOperationsByCode(visibleRows.map((r) => r.workCenterCode)),
       this.resolvePlannedByTriple(triples),
       this.resolveDrawingByTriple(triples),
+      this.resolveCumulativeByOperation(visibleRows),
     ]);
 
     const data = visibleRows.map((r) => {
@@ -956,6 +966,13 @@ export class TechProcessesService {
         ...r,
         operation: ops.get(r.workCenterCode) ?? null,
         plannedPieces: planned.get(key) ?? null,
+        // Kumulativ CELE operacije (svi redovi te trojke+op+RC), ne samo ovog reda:
+        // FIX A pri nastavku rada otvara NOV red, pa `pieceCount` reda ume da bude
+        // manji od stvarno otkucanog. Kiosk po ovome odlučuje da li pita „gotova?".
+        cumulativePieces:
+          cumulative.get(
+            `${r.projectId}|${r.identNumber}|${r.variant}|${r.operationNumber}|${r.workCenterCode}`,
+          ) ?? r.pieceCount,
         // Crtež RN-a + hasPdf za „Otvori PDF" dugme (reuse resolveCardDrawing);
         // null kad RN/crtež ne postoji.
         drawing: drawings.get(key) ?? null,
@@ -1020,6 +1037,61 @@ export class TechProcessesService {
       }
       map.set(key, drawing);
     }
+    return map;
+  }
+
+  /**
+   * Batch: (trojka + operationNumber + workCenterCode) → KUMULATIV komada na celoj
+   * operaciji (`SUM(piece_count)` svih njenih redova, svi kvaliteti). ISTA metrika
+   * koju koriste `assertPieceCountWithinPlan` (guard „kucanje preko plana") i FIX A
+   * (`belowPlan` u `findOrOpenRoutingTp`) — kiosk mora da pita „gotova?" tačno onda
+   * kad sistem operaciju i dalje smatra radnom. Jedan `groupBy` za sve redove liste.
+   */
+  private async resolveCumulativeByOperation(
+    rows: {
+      projectId: number;
+      identNumber: string;
+      variant: number;
+      operationNumber: number;
+      workCenterCode: string;
+    }[],
+  ): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    if (!rows.length) return map;
+    const keyOf = (r: {
+      projectId: number;
+      identNumber: string;
+      variant: number;
+      operationNumber: number;
+      workCenterCode: string;
+    }) =>
+      `${r.projectId}|${r.identNumber}|${r.variant}|${r.operationNumber}|${r.workCenterCode}`;
+    const seen = new Set<string>();
+    const or: Prisma.TechProcessWhereInput[] = [];
+    for (const r of rows) {
+      const k = keyOf(r);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      or.push({
+        projectId: r.projectId,
+        identNumber: r.identNumber,
+        variant: r.variant,
+        operationNumber: r.operationNumber,
+        workCenterCode: r.workCenterCode,
+      });
+    }
+    const groups = await this.prisma.techProcess.groupBy({
+      by: [
+        "projectId",
+        "identNumber",
+        "variant",
+        "operationNumber",
+        "workCenterCode",
+      ],
+      where: { OR: or },
+      _sum: { pieceCount: true },
+    });
+    for (const g of groups) map.set(keyOf(g), g._sum.pieceCount ?? 0);
     return map;
   }
 
@@ -2113,8 +2185,25 @@ export class TechProcessesService {
         },
       });
 
-      // reachedPlan iz VRAĆENE vrednosti (atomski tačan post-inkrement broj).
-      const reachedPlan = planned !== null && updated.pieceCount >= planned;
+      // 🔴 F1 (05.08.2026): kumulativ CELE operacije, ne jednog reda — isto kao u
+      // `accumulateStopWork`. `updated.pieceCount` je samo TAJ red, pa je posle
+      // FIX A razbijanja kucanja na više redova („brza prijava" na svež red)
+      // operacija sa dostignutim planom ostajala OTVORENA, a dalje kucanje padalo
+      // na 422 „preko plana" — red bez izlaza. Zbir se čita posle inkrementa, u
+      // istoj transakciji, istim ključem kao `assertPieceCountWithinPlan`.
+      const scanCumAgg = await tx.techProcess.aggregate({
+        _sum: { pieceCount: true },
+        where: {
+          projectId,
+          identNumber,
+          variant: tp.variant,
+          operationNumber: tp.operationNumber,
+          workCenterCode: tp.workCenterCode,
+        },
+      });
+      const cumulativePieces = scanCumAgg._sum.pieceCount ?? updated.pieceCount;
+      const reachedPlan =
+        planned !== null && planned > 0 && cumulativePieces >= planned;
 
       // Ako je plan dostignut → drugi mali update u ISTOJ transakciji za zatvaranje.
       // (Zadržavamo oblik odgovora: `updated` nosi finalno stanje reda.)
@@ -2146,6 +2235,7 @@ export class TechProcessesService {
         workOrder,
         planned,
         reachedPlan,
+        cumulativePieces,
         prioritized,
         workOrderCompleted,
         staleWorkOrder,
@@ -2164,6 +2254,9 @@ export class TechProcessesService {
         reportedPieces: dto.pieceCount,
         plannedPieces: result.planned,
         operationFinished: result.reachedPlan,
+        // Kumulativ CELE operacije posle prijave (isti broj koji je odlučio o
+        // zatvaranju) — kiosk njime crta „Napravljeno x/y".
+        cumulativePieces: result.cumulativePieces,
         operationsPrioritized: result.prioritized,
         workOrderCompleted: result.workOrderCompleted,
         workOrder: result.workOrder,
@@ -2787,6 +2880,11 @@ export class TechProcessesService {
         workOrder,
         false,
         note,
+        false,
+        // Barkod „Završi rad" do sada NIJE mogao da zatvori operaciju ispod plana
+        // (bio je plan-gated). Polje `operacijaGotova` mu daje isti eksplicitni
+        // izbor kao „Kraj rada"; bez polja ponašanje je nepromenjeno.
+        dto.operacijaGotova,
       );
 
       return {
@@ -2798,6 +2896,8 @@ export class TechProcessesService {
         workOrder,
         planned: acc.planned,
         reachedPlan: acc.reachedPlan,
+        operationClosed: acc.operationClosed,
+        cumulativePieces: acc.cumulativePieces,
         prioritized: acc.prioritized,
         workOrderCompleted: acc.workOrderCompleted,
         staleWorkOrder: scannedVariant < tp.variant,
@@ -2828,6 +2928,9 @@ export class TechProcessesService {
         reportedPieces: dto.pieceCount,
         plannedPieces: result.planned,
         operationFinished: result.reachedPlan,
+        // Red zatvoren (plan ILI eksplicitno „gotova je") + kumulativ posle prijave.
+        operationClosed: result.operationClosed,
+        cumulativePieces: result.cumulativePieces,
         operationsPrioritized: result.prioritized,
         workOrderCompleted: result.workOrderCompleted,
         workOrder: result.workOrder,
@@ -2849,6 +2952,11 @@ export class TechProcessesService {
    * 0 sekundi), a komadi se svejedno akumuliraju — stari 0/1 red (uneto 1 = plan) se
    * tako prirodno zatvara, a nedovršen visered ostaje otvoren.
    * Machine-access provera kao u `stopWork` (enforce → 403, shadow → upozorenje).
+   *
+   * 🔴 GOTOVOST OPERACIJE (Nenad 2026-08-05): „Kraj rada" VIŠE ne gasi operaciju
+   * ispod plana sam od sebe. Kad je kumulativ ispod plana kiosk pita „Otkucao si X
+   * od Y. Da li je operacija gotova?" (podrazumevano NE) i šalje `operacijaGotova`.
+   * Serversko pravilo je u `accumulateStopWork` — FE-u se ne veruje na reč.
    */
   async stopWorkById(id: number, body: StopWorkByIdBody, user?: AuthUser) {
     this.validateStopWorkById(body);
@@ -2909,13 +3017,15 @@ export class TechProcessesService {
         body.pieceCount,
         now,
         workOrder,
-        // FIX B: „Kraj rada" zatvara taj red i ispod plana (radnik ga završava) —
-        // OSIM kad drugi radnici imaju otvorene sesije (deljeni red): tada se red
-        // gasi samo uz eksplicitno `finishForAll` sa kioska (Nenad 2026-07-22).
+        // Poziv sa „Moji otvoreni" (čita tuđe otvorene sesije; opšti nalog se i
+        // dalje čisti bez pitanja).
         true,
         // K0.1: napomena i na `tech_processes` red (uz sesiju gore).
         note,
         body.finishForAll === true,
+        // 🔴 Nenad 2026-08-05: ispod plana operacija se gasi SAMO na eksplicitno
+        // „Da — gotova je" iz kiosk dijaloga. Bez polja → ostaje otvorena.
+        body.operacijaGotova,
       );
 
       return {
@@ -2926,6 +3036,8 @@ export class TechProcessesService {
         workOrder,
         planned: acc.planned,
         reachedPlan: acc.reachedPlan,
+        operationClosed: acc.operationClosed,
+        cumulativePieces: acc.cumulativePieces,
         prioritized: acc.prioritized,
         workOrderCompleted: acc.workOrderCompleted,
         finishSkipped: acc.finishSkipped,
@@ -2965,6 +3077,10 @@ export class TechProcessesService {
         reportedPieces: body.pieceCount,
         plannedPieces: result.planned,
         operationFinished: result.reachedPlan,
+        // Red zatvoren (plan ILI eksplicitno „Da — gotova je") + kumulativ posle
+        // prijave — kiosk po njima bira poruku i sledeći korak.
+        operationClosed: result.operationClosed,
+        cumulativePieces: result.cumulativePieces,
         operationsPrioritized: result.prioritized,
         workOrderCompleted: result.workOrderCompleted,
         workOrder: result.workOrder,
@@ -2980,12 +3096,29 @@ export class TechProcessesService {
   }
 
   /**
-   * `POST /:id/dismiss` — „Odustani" iz „Moji otvoreni" (Nenad 17.07). Zatvara SVOJ
-   * pogrešno otvoren red BEZ dodavanja komada (za redove otvorene greškom kroz probu
-   * kucanja koji nikad neće dostići plan). Za razliku od „Kraj rada" (stopWorkById)
-   * NE akumulira komade — samo `is_process_finished=true` + zatvori eventualnu otvorenu
-   * sesiju (da ne ostane siroče). Audit snapshot u audit_log (povratljivo). Radnik =
-   * kartica ILI prijavljeni nalog (isti izbor kao stopWorkById); machine-access kao guard.
+   * `POST /:id/dismiss` — „Odustani" iz „Moji otvoreni" (Nenad 17.07). Sklanja SVOJ
+   * pogrešno otvoren red BEZ dodavanja komada (redovi otvoreni greškom kroz probu
+   * kucanja). Za razliku od „Kraj rada" (stopWorkById) NE akumulira komade.
+   *
+   * 🔴 NE UPISUJE `is_process_finished` (Nenad 2026-08-05): odustajanje je ČIŠĆENJE
+   * GREŠKE, ne završetak operacije — a `bool_or(is_process_finished)` je kanon
+   * čitanja u celom modulu, pa je stara verzija tri operacije prijavljivala kao
+   * završene bez ijednog komada. Umesto gašenja reda:
+   *  - zatvara se eventualna MOJA otvorena sesija (da ne ostane siroče), i
+   *  - red se OTKUPLJUJE (`worker_id → 0`) pa nestaje iz „Moji otvoreni" (filter je
+   *    `worker_id` ILI moja otvorena sesija), a ostaje OTVOREN i spreman da ga
+   *    sledeći sken te operacije preuzme (`findOrOpenRoutingTp` traži upravo otvoren
+   *    red te trojke+operacije).
+   *
+   * 🔴 OTKUP IDE I KAD RED NOSI KOMADE (F4, 05.08.2026). Prva verzija je otkupljivala
+   * samo redove sa 0 komada — a proba kucanja po definiciji OSTAVI komade, pa je 60
+   * od 113 otvorenih redova na produ ostajalo bez ikakvog izlaza osim laži („Da —
+   * gotova je"). Komadi se NE diraju (ostaju kao evidencija na redu i u kumulativu
+   * operacije); ispravka pogrešno otkucane količine ide kroz STORNO (`:id/storno`,
+   * kontra-red), koji je za to i napravljen.
+   *
+   * Audit snapshot u audit_log (povratljivo — čuva izvorni `worker_id`). Radnik =
+   * kartica ILI prijavljeni nalog (isti izbor kao stopWorkById); machine-access guard.
    */
   async dismissEntry(id: number, body: StopWorkByIdBody, user?: AuthUser) {
     // Dismiss NE nosi pieceCount (ne evidentira komade) — validira samo workerCard/note,
@@ -3049,10 +3182,8 @@ export class TechProcessesService {
         data: { stoppedAt: new Date() },
       });
 
-      // Deljeni red (Nenad 2026-07-22): „Odustani" jednog radnika NE sme da ugasi
-      // red dok DRUGI imaju otvorene sesije — zatvara se samo sopstveno učešće,
-      // red ostaje otvoren ostalima (bez „za sve" opcije: dismiss ne evidentira
-      // komade, pa bi gašenje za sve bacilo tuđi rad).
+      // Deljeni red (Nenad 2026-07-22): „Odustani" jednog radnika ne dira tuđe
+      // učešće — zatvara se samo sopstvena sesija.
       const otherOpen = await tx.workTimeEntry.findFirst({
         where: {
           techProcessId: id,
@@ -3061,20 +3192,35 @@ export class TechProcessesService {
         },
         select: { id: true },
       });
-      if (!otherOpen)
-        await tx.techProcess.update({
-          where: { id },
-          data: { isProcessFinished: true, finishedAt: new Date() },
-        });
-      return { finishSkipped: Boolean(otherOpen) };
+
+      // 🔴 `is_process_finished` se NE dira (v. docblock). Moj red se OTKUPLJUJE
+      // (worker_id → 0) da nestane iz „Mojih otvorenih" — bez obzira na komade
+      // (F4); komadi ostaju netaknuti, ispravka ide kroz STORNO. Tuđi red se ne
+      // dira (nema šta da se skine sa moje liste).
+      const released = tp.workerId === worker.id;
+      if (released)
+        await tx.techProcess.update({ where: { id }, data: { workerId: 0 } });
+      return {
+        released,
+        pieceCountKept: tp.pieceCount,
+        othersStillOpen: Boolean(otherOpen),
+      };
     });
 
     return {
       data: {
         id,
         dismissed: true,
-        // Red NIJE ugašen (drugi radnici još rade) — zatvoreno samo svoje učešće.
-        finishSkipped: outcome.finishSkipped,
+        // Red je otkupljen (nestaje iz „Mojih otvorenih"); false = red i nije bio
+        // moj (vlasnik je neko drugi), pa nema šta da se skida sa moje liste.
+        released: outcome.released,
+        // Komadi koji OSTAJU upisani na redu (evidencija) — kiosk to i kaže.
+        pieceCountKept: outcome.pieceCountKept,
+        // Na operaciji i dalje radi neko drugi (informativno za poruku na kiosku).
+        othersStillOpen: outcome.othersStillOpen,
+        // Zadržano zbog starijih klijenata: red se od 05.08.2026 NIKAD ne gasi
+        // kroz „Odustani", pa je uvek `false`.
+        finishSkipped: false,
         machineAccessWarning,
       },
     };
@@ -3105,6 +3251,11 @@ export class TechProcessesService {
       typeof body.finishForAll !== "boolean"
     )
       errors.push("Polje 'finishForAll' mora biti boolean.");
+    if (
+      body?.operacijaGotova !== undefined &&
+      typeof body.operacijaGotova !== "boolean"
+    )
+      errors.push("Polje 'operacijaGotova' mora biti boolean.");
     if (errors.length) throw new BadRequestException(errors);
   }
 
@@ -3130,11 +3281,18 @@ export class TechProcessesService {
     pieceCount: number,
     now: Date,
     workOrder: { id: number; pieceCount: number } | null,
-    // FIX B (Nenad 2026-07-15): „Kraj rada" (stopWorkById) UVEK zatvara ovaj red —
-    // radnik ga ručno završava/čisti. Bezbedno je jer FIX A ponovo čini ispod-plan
-    // operaciju radnom (sledeći sken otvara NOV red). Barkod „Završi rad"
-    // (stopWork) ostaje plan-gated (forceFinish=false).
-    forceFinish = false,
+    // `true` = poziv iz „Kraj rada" (stopWorkById, „Moji otvoreni"), `false` =
+    // barkod STOP sken (stopWork).
+    //
+    // FIX B (Nenad 2026-07-15) je ovde značio „Kraj rada UVEK zatvara red" i to je
+    // OBORENO 2026-08-05 (v. `finishIntent` ispod): radnici su dugme koristili kao
+    // „gotov sam za danas", pa je 1.475 operacija sa nepotpunom količinom stajalo
+    // kao završeno. Ostaje samo ono što je i dalje tačno:
+    //  - OPŠTI NALOG (`withoutProcess`) nema plan i po dizajnu je uvek otvoren —
+    //    „Kraj rada" ga i dalje gasi kao ČIŠĆENJE reda (sledeći sken otvara nov,
+    //    findOrOpenRoutingTp zatvoren withoutProcess red tretira kao istoriju);
+    //  - tuđe otvorene sesije se čitaju samo na ovoj putanji (finishSkipped).
+    fromMyOpen = false,
     // K0.1: opciona napomena na `tech_processes` red (kumulativni red — prepisuje).
     note: string | null = null,
     // Više radnika na istoj operaciji (Nenad 2026-07-22): red je DELJEN, pa „Kraj
@@ -3142,6 +3300,11 @@ export class TechProcessesService {
     // red bi nestao svima iz „Mojih otvorenih", a tuđe sesije ostale siročići.
     // `finishForAll=true` je eksplicitan izbor sa kioska („Zatvori za sve").
     finishForAll = false,
+    // 🔴 EKSPLICITNA NAMERA „operacija je gotova" (odluka Nenad 2026-08-05,
+    // doslovno: „pitanje koje iskoči samo kad količina nije puna … sa
+    // podrazumevanim NE"). `undefined` = klijent nije poslao polje → tretira se
+    // kao `false` (bezbedan smer; stari klijenti prestaju da lažno zatvaraju).
+    finishIntent?: boolean,
   ) {
     const planned = workOrder?.pieceCount ?? null;
 
@@ -3167,9 +3330,8 @@ export class TechProcessesService {
       );
 
     // BUG-P1-01 Faza 1 (lost update): akumulacija komada je deljena po redu
-    // operacije → čitaj-modifikuj-piši gubi paralelne prijave. Atomski `{ increment }`,
-    // a `reachedPlan`/`finish` odluka iz VRAĆENE post-inkrement vrednosti
-    // (`updated.pieceCount`). `forceFinish` (Kraj rada) i dalje zatvara bezuslovno.
+    // operacije → čitaj-modifikuj-piši gubi paralelne prijave. Zato atomski
+    // `{ increment }`; odluka o gašenju se donosi iz SVEŽEG zbira ispod.
     let updated = await tx.techProcess.update({
       where: { id: tp.id },
       data: {
@@ -3178,29 +3340,67 @@ export class TechProcessesService {
         ...(note ? { note } : {}),
       },
     });
-    const reachedPlan = planned !== null && updated.pieceCount >= planned;
+
+    // 🔴 KUMULATIV CELE OPERACIJE, ne jednog reda (F1, 05.08.2026). Ranije je ovde
+    // stajalo `updated.pieceCount >= planned` — a to je `piece_count` SAMO TOG REDA.
+    // Kad rad krene ponovo posle zatvaranja, FIX A otvara NOV red, pa se kucanja
+    // razbiju na više redova: red 37 / operacija 50 / plan 50 je davao
+    // `reachedPlan = false` iako je plan dostignut. Posledica je bila ZOMBI RED —
+    // kiosk ne pita (kumulativ ≥ plan), pa polje `operacijaGotova` ne stigne, red
+    // se ne gasi, dokucavanje pada na 422 („preko plana"), a „Odustani" ga ne dira.
+    // Živ primer sa produ: tp 118300 · RN 9000/137 · op 20 · RC 8.4 (37/50, plan 50).
+    // Zbir se čita POSLE inkrementa i u ISTOJ transakciji — isti ključ i isti
+    // `aggregate _sum` koji koriste `assertPieceCountWithinPlan` (dva reda iznad) i
+    // FIX A (`belowPlan` u `findOrOpenRoutingTp`). Sada je tvrdnja o „istoj metrici"
+    // stvarno tačna.
+    const cumAgg = await tx.techProcess.aggregate({
+      _sum: { pieceCount: true },
+      where: {
+        projectId: tp.projectId,
+        identNumber: tp.identNumber,
+        variant: tp.variant,
+        operationNumber: tp.operationNumber,
+        workCenterCode: tp.workCenterCode,
+      },
+    });
+    const cumulativePieces = cumAgg._sum.pieceCount ?? updated.pieceCount;
+    // `planned > 0`: plan 0 (18 RN na produ) NIJE dokaz gotovosti — inače bi
+    // `cum >= 0` gasilo svaki red bez pitanja, a kiosk bi na plan 0 pitao i uzalud
+    // dobijao „Ne". Bez plana odlučuje isključivo eksplicitna namera.
+    const reachedPlan =
+      planned !== null && planned > 0 && cumulativePieces >= planned;
+    // 🔴 PRAVILO GAŠENJA (Nenad 2026-08-05) — serversko, ne veruje se samo FE-u:
+    //   1. kumulativ ≥ plan  → zatvori (kao i do sada; polje se ne gleda),
+    //   2. inače             → zatvori SAMO ako je stigla eksplicitna namera
+    //                          („Da — gotova je" u kiosk dijalogu),
+    //   3. OPŠTI NALOG (withoutProcess) je izuzetak: nema plan, po dizajnu je uvek
+    //      otvoren, pa „Kraj rada" i dalje čisti red bez pitanja.
+    const wantsFinish =
+      finishIntent === true || (fromMyOpen && opDef?.withoutProcess === true);
     // Tuđe otvorene sesije na DELJENOM redu (sopstvena je u ovom trenutku već
     // zatvorena od pozivaoca; filter po workerId je zaštita od duplih sopstvenih).
     // `reachedPlan` i dalje gasi bezuslovno (plan je plan) — higijena ispod počisti.
-    const otherOpenSessions = forceFinish
-      ? await tx.workTimeEntry.findMany({
-          where: {
-            techProcessId: tp.id,
-            stoppedAt: null,
-            workerId: { not: workerId },
-          },
-          select: { workerId: true },
-        })
-      : [];
+    const otherOpenSessions =
+      fromMyOpen || wantsFinish
+        ? await tx.workTimeEntry.findMany({
+            where: {
+              techProcessId: tp.id,
+              stoppedAt: null,
+              workerId: { not: workerId },
+            },
+            select: { workerId: true },
+          })
+        : [];
     const otherOpenWorkerIds = [
       ...new Set(otherOpenSessions.map((s) => s.workerId)),
     ];
     const finish =
       reachedPlan ||
-      (forceFinish && (finishForAll || otherOpenWorkerIds.length === 0));
-    // „Kraj rada" preskočio gašenje reda — drugi radnici još rade (kiosk bez
-    // izbora „za sve" / trka sa svežim START-om drugog radnika).
-    const finishSkipped = forceFinish && !finish;
+      (wantsFinish && (finishForAll || otherOpenWorkerIds.length === 0));
+    // Gašenje reda preskočeno iako je traženo — drugi radnici još rade (kiosk bez
+    // izbora „za sve" / trka sa svežim START-om drugog radnika). Kad gašenje NIJE
+    // ni traženo („Ne — nastavlja se"), ovo je `false`: red normalno ostaje otvoren.
+    const finishSkipped = wantsFinish && !finish;
     if (finish) {
       updated = await tx.techProcess.update({
         where: { id: tp.id },
@@ -3235,6 +3435,13 @@ export class TechProcessesService {
       tp: updated,
       planned,
       reachedPlan,
+      // Red je STVARNO zatvoren (plan dostignut ILI eksplicitno „gotova je" ILI
+      // čišćenje opšteg naloga). `reachedPlan` govori SAMO o količini — kiosk
+      // razlikuje poruke „dostigla plan" vs „označena kao gotova ispod plana".
+      operationClosed: finish,
+      // Kumulativ CELE operacije posle ove prijave (isti broj koji je odlučio o
+      // `reachedPlan`) — kiosk njime osvežava „Napravljeno x/y" i poruku.
+      cumulativePieces,
       prioritized,
       workOrderCompleted,
       finishSkipped,
@@ -4887,6 +5094,7 @@ export class TechProcessesService {
         workCenterName: string;
         workUnitCode: string;
         significantForFinishing: boolean | null;
+        withoutProcess: boolean | null;
       }
     >();
     if (!uniq.length) return map;
@@ -4898,6 +5106,9 @@ export class TechProcessesService {
         workUnitCode: true,
         // K4: front crta „Završna kontrola / Međufazna / Kucanje" bez dodatnog upita.
         significantForFinishing: true,
+        // OPŠTI NALOG: kiosk na „Kraj rada" NE pita „da li je gotova?" (operacija
+        // bez postupka nema plan i po dizajnu je uvek otvorena).
+        withoutProcess: true,
       },
     });
     for (const r of rows) map.set(r.workCenterCode, r);

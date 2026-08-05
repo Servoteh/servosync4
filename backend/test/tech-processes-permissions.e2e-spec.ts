@@ -29,9 +29,9 @@ import {
  *
  * Kontroler ima 4 tier-a permisija (route-permission-coverage.txt):
  *   tehnologija.read        — listinzi/kartice/sesije/label/worker + barcode/decode + PDF crteža
- *   tehnologija.report_work — kiosk unos rada (scan/finish/start/stop/dismiss/labels/print/work·worker/open)
+ *   tehnologija.report_work — kiosk unos rada (scan/start/stop/dismiss/labels/print/work·worker/open)
  *   tehnologija.approve     — završna kontrola (POST /control)
- *   tehnologija.write       — storno/reopen/delete/auto-close
+ *   tehnologija.write       — finish/storno/reopen/delete/auto-close
  * Method-level @RequirePermission override-uje class-level READ (Reflector.getAllAndOverride).
  *
  * ID-jevi su NUMERIČKI (legacy Int, ParseIntPipe) — ne UUID. Guard teče PRE ParseIntPipe,
@@ -254,13 +254,6 @@ describe("Tehnološki postupci permission matrica (e2e, AUTHZ_ENFORCE=true)", ()
       },
     );
 
-    it.each(REPORT_ROLES)("POST /:id/finish → 201 za %s", async (role) => {
-      await post(`/${ID}/finish`, role).expect(201);
-    });
-    it.each(NO_REPORT)("POST /:id/finish → 403 za %s", async (role) => {
-      await post(`/${ID}/finish`, role).expect(403);
-    });
-
     it.each(REPORT_ROLES)("POST /:id/stop-work → 201 za %s", async (role) => {
       await post(`/${ID}/stop-work`, role).expect(201);
     });
@@ -336,6 +329,19 @@ describe("Tehnološki postupci permission matrica (e2e, AUTHZ_ENFORCE=true)", ()
     it.each(NO_WRITE)("POST /:id/reopen → 403 za %s", async (role) => {
       await post(`/${ID}/reopen`, role).expect(403);
     });
+
+    // 🔴 F3 (05.08.2026): „Zatvori operaciju" gasi red BEZUSLOVNO (bez pitanja o
+    // količini), pa je prebačen sa `report_work` na `write` — inače bi svaki kiosk
+    // radnik mogao da zaobiđe „Da li je operacija gotova?" pozivom ove rute.
+    it.each(WRITE_ROLES)("POST /:id/finish → 201 za %s", async (role) => {
+      await post(`/${ID}/finish`, role).expect(201);
+    });
+    it.each(NO_WRITE)(
+      "POST /:id/finish → 403 za %s (report_work više NIJE dovoljan)",
+      async (role) => {
+        await post(`/${ID}/finish`, role).expect(403);
+      },
+    );
 
     it("POST /work/auto-close → 200 nosilac (HttpCode 200, cron), 403 non-holder", async () => {
       await post("/work/auto-close", "sef", { olderThanHours: 12 }).expect(200);
