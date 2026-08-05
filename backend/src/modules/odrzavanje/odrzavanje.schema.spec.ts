@@ -294,3 +294,105 @@ describe("Održavanje — ZAHTEV_065_066_067_IT_OPREMA_POLJA.sql (pin novih kolo
     }
   });
 });
+
+/**
+ * PIN zahteva 071 (IT oprema — tablet/UPS/access point, 05.08.2026):
+ * nastavak 065/066/067 obrasca — servis (upsertItDetails allowlist + Prisma
+ * model MaintItAssetDetails) od ove grane čita/piše 2 nove kolone
+ * `maint_it_asset_details` koje na živu sy15 donosi ISKLJUČIVO ručni SQL fajl.
+ * Tablet NE traži DDL (kolone cpu/motherboard/ram/gpu postoje od 065, menja se
+ * samo FE kategorizacija), a model/status/lokacija za UPS i AP se NE dupliraju
+ * (maint_assets.model, maint_assets.status, details.office_location) — zato su
+ * ovde pinovane tačno 2 kolone, ni jedna više.
+ */
+describe("Održavanje — ZAHTEV_071_IT_OPREMA_UPS_AP.sql (pin UPS/AP kolona)", () => {
+  const raw = readFileSync(
+    join(__dirname, "../../../docs/migration/ZAHTEV_071_IT_OPREMA_UPS_AP.sql"),
+    "utf8",
+  );
+  const sql = raw.replace(/^\s*--[^\n]*/gm, "");
+  const NEW_COLS = ["power_rating", "firmware_version"];
+  const alter = sql.slice(
+    sql.indexOf("ALTER TABLE public.maint_it_asset_details"),
+    sql.indexOf("CREATE OR REPLACE FUNCTION"),
+  );
+  const fnBody = sql.slice(
+    sql.indexOf("CREATE OR REPLACE FUNCTION"),
+    sql.indexOf("CREATE OR REPLACE VIEW"),
+  );
+  const viewBody = sql.slice(sql.indexOf("CREATE OR REPLACE VIEW"));
+
+  it("sečenje fajla je validno (ALTER → FUNCTION → VIEW redosled u stvarnom SQL-u)", () => {
+    expect(alter.length).toBeGreaterThan(0);
+    expect(fnBody.length).toBeGreaterThan(0);
+    expect(viewBody.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * Sva tri koraka moraju biti u JEDNOJ transakciji: pad koraka 2/3 uz
+   * commit-ovane kolone daje TIH polu-rezultat — „Nova IT oprema" i dalje radi,
+   * ali snaga/firmver uneti kroz nju nestaju bez greške (stara fn ih ne zna).
+   */
+  it("ceo fajl je u jednoj transakciji (BEGIN pre ALTER-a, COMMIT posle view-a)", () => {
+    expect(sql).toMatch(/^\s*BEGIN;\s*$/m);
+    expect(sql).toMatch(/^\s*COMMIT;\s*$/m);
+    expect(sql.indexOf("BEGIN;")).toBeLessThan(
+      sql.indexOf("ALTER TABLE public.maint_it_asset_details"),
+    );
+    expect(sql.lastIndexOf("COMMIT;")).toBeGreaterThan(
+      sql.indexOf("CREATE OR REPLACE VIEW"),
+    );
+  });
+
+  /**
+   * Merge na `main` JESTE deploy (deploy-backend.yml okida na backend/**), pa
+   * zaglavlje mora da traži SQL pre MERGE-a, ne tek pre „deploy-a".
+   */
+  it("zaglavlje traži primenu PRE MERGE-a na main (merge = deploy)", () => {
+    expect(raw).toMatch(/PRE MERGE-a NA `main`/);
+    expect(raw).toMatch(/MERGE JESTE DEPLOY/);
+  });
+
+  it("ALTER dodaje obe kolone koje servis mapira (IF NOT EXISTS, text)", () => {
+    for (const c of NEW_COLS) {
+      expect(alter).toMatch(
+        new RegExp(`ADD COLUMN IF NOT EXISTS ${c}\\s+text`),
+      );
+    }
+  });
+
+  it("ne uvodi duplikat za model/status/lokaciju (postoje u maint_assets / office_location)", () => {
+    expect(alter).not.toMatch(/ADD COLUMN IF NOT EXISTS (model|status|location)\b/);
+  });
+
+  it("create_maint_it_asset zadržava potpis (8×text + jsonb) i status enum kast", () => {
+    expect(fnBody).toMatch(
+      /CREATE OR REPLACE FUNCTION public\.create_maint_it_asset\(p_asset_code text, p_name text, p_status text[^)]*p_details jsonb/,
+    );
+    expect(fnBody).toMatch(
+      /COALESCE\(NULLIF\(p_status, ''\), 'running'\)::public\.maint_operational_status/,
+    );
+  });
+
+  it("create_maint_it_asset INSERT-uje i 065/066/067 i 071 details ključeve (NULLIF '' obrazac)", () => {
+    for (const c of [
+      "cpu",
+      "motherboard",
+      "ram",
+      "gpu",
+      "office_location",
+      "toner_cartridges",
+      "unifi_ports",
+      ...NEW_COLS,
+    ]) {
+      expect(fnBody).toMatch(new RegExp(`NULLIF\\(p_details->>'${c}', ''\\)`));
+    }
+  });
+
+  it("v_maint_it_overview izlaže obe nove kolone i EKSPLICITNO ostaje security_invoker", () => {
+    expect(viewBody).toMatch(/WITH \(security_invoker = true\)/);
+    for (const c of NEW_COLS) {
+      expect(viewBody).toMatch(new RegExp(`d\\.${c}`));
+    }
+  });
+});

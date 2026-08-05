@@ -49,7 +49,7 @@ import {
   type MaintTask,
   type OpStatus,
 } from '@/api/odrzavanje';
-import { Field, OpStatusBadge, SEVERITY_LABEL } from './common';
+import { Field, OpStatusBadge, OP_STATUS_OPTIONS, SEVERITY_LABEL } from './common';
 import { AssetWorkOrders } from './asset-work-orders';
 import { Tabs } from './tabs';
 import { QrCanvas } from './qr-canvas';
@@ -65,7 +65,6 @@ const CHECK_RESULTS: { key: CheckResult; label: string }[] = [
   { key: 'fail', label: 'Neispravno' },
   { key: 'skipped', label: 'Preskočeno' },
 ];
-const OP_STATUSES: OpStatus[] = ['running', 'degraded', 'down', 'maintenance'];
 const INTERVAL_UNITS: { key: IntervalUnit; label: string }[] = [
   { key: 'hours', label: 'Po satima' },
   { key: 'days', label: 'Dnevno' },
@@ -509,7 +508,7 @@ function OverrideEditor({ code, canOverride, statusOverride }: {
           {err && <p className="rounded-control bg-status-danger-bg px-3 py-2 text-sm text-status-danger">{err}</p>}
           <div className="flex flex-wrap items-end gap-2">
             <select value={status} onChange={(e) => setStatus(e.target.value as OpStatus)} className="h-9 rounded-control border border-line bg-surface px-2 text-sm text-ink">
-              {OP_STATUSES.map((s) => <option key={s} value={s}>{OP_LABEL[s]}</option>)}
+              {OP_STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Razlog" className="min-w-40 flex-1" />
           </div>
@@ -532,7 +531,6 @@ function OverrideEditor({ code, canOverride, statusOverride }: {
     </div>
   );
 }
-const OP_LABEL: Record<OpStatus, string> = { running: 'U radu', degraded: 'Smetnja', down: 'Zastoj', maintenance: 'Održavanje' };
 function toLocalInput(iso: string): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, '0');

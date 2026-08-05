@@ -28,6 +28,7 @@ import {
   f,
   isoToDateInput,
   itDeviceCategory,
+  OP_STATUS_OPTIONS,
 } from './common';
 
 type Kind = 'it' | 'facility';
@@ -53,6 +54,12 @@ function isoToDtLocal(v: unknown): string {
  * ploča/RAM/grafika · štampač = kancelarija/toneri · switch = lokacija/UniFi
  * portovi) preko itDeviceCategory(); sakrivena polja drugih kategorija se šalju
  * iz stanja (PUT je pun replace) pa se čuvaju, ne brišu.
+ * Zahtev 071 (05.08): tablet ide u računare (isti hardver skup), UPS dobija
+ * „Napajanje" (lokacija + snaga VA/W), mrežna oprema dobija „Firmver / verzija".
+ * Status i Model NISU nova polja — status je operativni status sredstva
+ * (maint_assets.status, do sad se video samo u listi/kartonu a nije se mogao
+ * menjati) i ovde postaje editabilan za IT, a Model je postojeće „Hardver"
+ * polje (za UPS/mrežnu opremu se panel otvara sam da se ne traži).
  */
 export function SredstvoEditModal({
   kind,
@@ -117,6 +124,9 @@ function Form({
   // ── Osnovno ──
   const [assetCode, setAssetCode] = useState('');
   const [name, setName] = useState(sval(d?.name));
+  // Operativni status sredstva (maint_assets.status) — 071: do sad se samo
+  // prikazivao (lista/karton), a create ga je tvrdo slao kao 'running'.
+  const [status, setStatus] = useState(sval(d?.status) || 'running');
   const [locationId, setLocationId] = useState(sval(d?.locationId));
   const [manufacturer, setMfg] = useState(sval(d?.manufacturer));
   const [model, setModel] = useState(sval(d?.model));
@@ -147,6 +157,9 @@ function Form({
   const [officeLocation, setOfficeLocation] = useState(sval(det.officeLocation));
   const [tonerCartridges, setToner] = useState(sval(det.tonerCartridges));
   const [unifiPorts, setUnifiPorts] = useState(sval(det.unifiPorts));
+  // 071: snaga UPS-a i firmver mrežne opreme (isto pravilo — uvek u payload-u).
+  const [powerRating, setPowerRating] = useState(sval(det.powerRating));
+  const [firmwareVersion, setFirmware] = useState(sval(det.firmwareVersion));
 
   // ── Facility-specific ──
   const [facilityType, setFacilityType] = useState(sval(det.facilityType));
@@ -204,6 +217,9 @@ function Form({
         office_location: officeLocation.trim() || null,
         toner_cartridges: tonerCartridges.trim() || null,
         unifi_ports: unifiPorts.trim() || null,
+        // 071 (UPS / mrežna oprema)
+        power_rating: powerRating.trim() || null,
+        firmware_version: firmwareVersion.trim() || null,
         notes: unified,
       };
     }
@@ -247,7 +263,7 @@ function Form({
         {
           assetCode: assetCode.trim(),
           name: name.trim(),
-          status: 'running',
+          status: status || 'running',
           manufacturer: manufacturer.trim() || undefined,
           model: model.trim() || undefined,
           serialNumber: serialNumber.trim() || undefined,
@@ -280,6 +296,9 @@ function Form({
         id,
         patch: {
           name: name.trim(),
+          // Status se šalje samo za IT — samo tamo postoji kontrola u formi
+          // (objekti bi inače dobili slepi upis zatečene vrednosti).
+          ...(isIt ? { status } : {}),
           manufacturer: manufacturer.trim() || null,
           model: model.trim() || null,
           serialNumber: serialNumber.trim() || null,
@@ -325,6 +344,13 @@ function Form({
               <select value={facilityType} onChange={(e) => setFacilityType(e.target.value)} className={selCls}>
                 <option value="">—</option>
                 {facilityTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </FormField>
+          )}
+          {isIt && (
+            <FormField label="Status" hint={'Operativni status opreme (isti onaj iz liste i kartona) — npr. „Zastoj" za access point koji je pao.'}>
+              <select value={status} onChange={(e) => setStatus(e.target.value)} className={selCls}>
+                {OP_STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </FormField>
           )}
@@ -392,6 +418,17 @@ function Form({
               <Section title="Mrežna oprema">
                 <FormField label="Lokacija"><Input value={officeLocation} onChange={(e) => setOfficeLocation(e.target.value)} placeholder="npr. server sala / hala 2" /></FormField>
                 <FormField label="UniFi portovi"><Input value={unifiPorts} onChange={(e) => setUnifiPorts(e.target.value)} placeholder="npr. 24 (PoE 16)" /></FormField>
+                <FormField label="Firmver / verzija" hint={'Verzija sa UniFi naloga (switch/router/AP). Status i model su gore: „Status" u Osnovnom, „Model" u Hardveru.'}>
+                  <Input value={firmwareVersion} onChange={(e) => setFirmware(e.target.value)} placeholder="npr. 6.6.55 (UniFi)" />
+                </FormField>
+              </Section>
+            )}
+            {itCategory === 'power' && (
+              <Section title="Napajanje (UPS)">
+                <FormField label="Lokacija"><Input value={officeLocation} onChange={(e) => setOfficeLocation(e.target.value)} placeholder="npr. server sala / kancelarija 12" /></FormField>
+                <FormField label="Snaga (VA / W)" hint={'Model se unosi u „Hardver" ispod (zajedničko polje sredstva).'}>
+                  <Input value={powerRating} onChange={(e) => setPowerRating(e.target.value)} placeholder="npr. 1500 VA / 900 W" />
+                </FormField>
               </Section>
             )}
 
@@ -417,7 +454,9 @@ function Form({
           </Section>
         )}
 
-        <details className="rounded-panel border border-line p-3" open={!hideTech && hasTech}>
+        {/* 071: za UPS i mrežnu opremu je „Model" izričito tražen — panel se
+            otvara sam da se polje ne traži po skrivenim sekcijama. */}
+        <details className="rounded-panel border border-line p-3" open={!hideTech && (hasTech || itCategory === 'power' || itCategory === 'network')}>
           <summary className="cursor-pointer text-sm font-medium text-ink">{isIt ? 'Hardver (opciono)' : 'Tehnički podaci (opciono)'}</summary>
           {!isIt && hideTech && <p className="mt-2 text-2xs text-ink-secondary">Za hale/zgrade/magacine ova polja obično nisu potrebna — preskoči ako nije primenljivo.</p>}
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">

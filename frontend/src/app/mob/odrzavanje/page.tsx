@@ -513,7 +513,7 @@ const IT_FIELDS: DetailField[] = [
   { label: 'Hostname / IP', keys: ['hostname', 'ip_address', 'ipAddress'] },
   { label: 'OS', keys: ['os', 'os_version', 'operatingSystem'] },
   { label: 'Zadužen', keys: ['assigned_user_name', 'assigned_to_name', 'assignedTo'] },
-  // Polja po tipu uređaja (065/066/067) — kandidat lista, prikaz samo popunjenih.
+  // Polja po tipu uređaja (065/066/067, 071) — kandidat lista, prikaz samo popunjenih.
   { label: 'Procesor', keys: ['cpu'] },
   { label: 'Matična ploča', keys: ['motherboard'] },
   { label: 'RAM', keys: ['ram'] },
@@ -521,6 +521,8 @@ const IT_FIELDS: DetailField[] = [
   { label: 'Kancelarija / lokacija', keys: ['office_location', 'officeLocation'] },
   { label: 'Toneri / ketridži', keys: ['toner_cartridges', 'tonerCartridges'] },
   { label: 'UniFi portovi', keys: ['unifi_ports', 'unifiPorts'] },
+  { label: 'Snaga (VA / W)', keys: ['power_rating', 'powerRating'] },
+  { label: 'Firmver / verzija', keys: ['firmware_version', 'firmwareVersion'] },
   { label: 'Garancija do', keys: ['warranty_until', 'warranty_expires_at', 'warrantyExpiresAt'], date: true },
   { label: 'Licenca do', keys: ['license_expires_at', 'license_expiry', 'licenseExpiresAt'], date: true },
   { label: 'Poslednji backup', keys: ['last_backup_at', 'lastBackupAt'], date: true },
