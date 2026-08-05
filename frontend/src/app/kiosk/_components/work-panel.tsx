@@ -39,7 +39,7 @@ interface WorkPanelProps {
    * `operacijaGotova` = odgovor na pitanje „Da li je operacija gotova?" (Nenad
    * 05.08.2026): `true` samo kad radnik izričito klikne „Da — gotova je";
    * `false` = „Ne — nastavlja se"; `undefined` = pitanje nije ni postavljeno
-   * (plan dostignut / plan nepoznat) — server oba tretira isto.
+   * (plan dostignut ili opšti nalog) — server `false` i `undefined` tretira isto.
    */
   onZavrsiRad: (pieces: number, note?: string, operacijaGotova?: boolean) => void;
   /** Brza prijava (scan) — bez merenja vremena. */
@@ -185,11 +185,12 @@ export function WorkPanel({
   const [note, setNote] = useState('');
   const [showNote, setShowNote] = useState(false);
   // 🔴 Pitanje „Otkucao si X od Y. Da li je operacija gotova?" (null = zatvoreno).
-  // `ukupno` = kumulativ POSLE ove prijave, `plan` = plan RN-a (uvek poznat kad se pita).
+  // `ukupno` = kumulativ POSLE ove prijave, `plan` = plan RN-a; null = plan nije
+  // poznat (isto značenje polja kao u `my-open-panel.tsx`).
   const [finishAsk, setFinishAsk] = useState<{
     pieces: number;
     ukupno: number;
-    plan: number;
+    plan: number | null;
   } | null>(null);
   const busy = evidentiranje || zapocinjanje || zavrsavanje;
   const remaining = planned != null ? Math.max(0, planned - made) : null;
@@ -226,15 +227,23 @@ export function WorkPanel({
   //
   // 🔴 GOTOVOST OPERACIJE (odluka Nenad 05.08.2026) — do sada je barkod „Završi rad"
   // bio jedini put BEZ pitanja: radnik koji stvarno završi operaciju sa nepunom
-  // količinom nije imao kako da to kaže, pa je red ostajao otvoren zauvek. Sada se
-  // pita isto kao u „Moji otvoreni" (`my-open-panel.tsx`): SAMO kad kumulativ POSLE
-  // ove prijave ne dostiže plan. Plan dostignut / plan nepoznat (uključujući plan 0,
-  // 18 RN na produ) / opšti nalog → ne pita se, ponašanje ostaje kao do sada.
+  // količinom nije imao kako da to kaže, pa je red ostajao otvoren zauvek.
+  //
+  // Uslov je DOSLOVNO isti kao u „Moji otvoreni" (`my-open-panel.tsx`, `onStopRequest`):
+  // pita se kad kumulativ POSLE prijave ne dostiže plan ILI kad plan nije poznat
+  // (`planned == null` ili `planned === 0` — 18 RN na produ ima plan 0; da se tu ne
+  // pita, ta operacija se sa barkod ekrana ne bi mogla proglasiti gotovom, a iz
+  // panela bi mogla). Plan dostignut → ne pita se, server gasi sam.
+  //
+  // Jedini izuzetak je OPŠTI NALOG (`withoutProcess`): nema svoj plan — `planned` je
+  // plan celog RN-a (npr. 4521/0000.0 nosi 100.000), pa bi pitanje iskakalo na svaki
+  // „Završi rad". Isti izuzetak postoji i u panelu.
   const stopWork = () => {
     if (busy || pieces < 0) return;
     const ukupno = made + pieces;
-    if (!withoutProcess && planned != null && planned > 0 && ukupno < planned) {
-      setFinishAsk({ pieces, ukupno, plan: planned });
+    const planPoznat = planned != null && planned > 0;
+    if (!withoutProcess && (!planPoznat || ukupno < planned!)) {
+      setFinishAsk({ pieces, ukupno, plan: planPoznat ? planned! : null });
       return;
     }
     onZavrsiRad(pieces, note.trim() || undefined);
@@ -417,9 +426,19 @@ export function WorkPanel({
         {finishAsk && (
           <div className="space-y-4 text-ink">
             <p className="text-3xl font-bold">
-              Otkucao si{' '}
-              <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> od{' '}
-              <span className="tnums">{formatNumber(finishAsk.plan)}</span> kom.
+              {finishAsk.plan != null ? (
+                <>
+                  Otkucao si{' '}
+                  <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> od{' '}
+                  <span className="tnums">{formatNumber(finishAsk.plan)}</span> kom.
+                </>
+              ) : (
+                <>
+                  Otkucano ukupno{' '}
+                  <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> kom
+                  (plan nije poznat).
+                </>
+              )}
             </p>
             <p className="text-xl">
               {operationLabel}

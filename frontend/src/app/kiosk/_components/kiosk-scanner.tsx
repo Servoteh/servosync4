@@ -437,7 +437,7 @@ export function KioskScanner() {
    * pitanje iz WorkPanel-a („Da li je operacija gotova?", Nenad 05.08.2026):
    * `true` = radnik je izričito rekao da jeste iako količina nije puna;
    * `false` = „Ne — nastavlja se"; `undefined` = pitanje nije ni postavljeno
-   * (plan dostignut / plan nepoznat). Server je autoritet — ovo je samo namera.
+   * (plan dostignut ili opšti nalog). Server je autoritet — ovo je samo namera.
    */
   async function onZavrsiRad(pieces: number, note?: string, operacijaGotova?: boolean) {
     cancelAutoLogout();
@@ -480,11 +480,26 @@ export function KioskScanner() {
       const closed = data.operationClosed ?? data.operationFinished;
       if (closed) {
         if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
-        // Zatvorena ispod plana — samo zato što je radnik rekao „Da, gotova je".
-        else if (operacijaGotova === true)
-          parts.push('Operacija je označena kao gotova (količina nije puna).');
-        // Opšti nalog (RC bez postupka): red se čisti bez pitanja — sledeći sken otvara nov.
-        else parts.push('Red je zatvoren.');
+        // Ispod plana ovaj put zatvara ISKLJUČIVO eksplicitno „Da — gotova je":
+        // `wantsFinish = finishIntent === true || (fromMyOpen && withoutProcess)`, a
+        // `stopWork` prosleđuje `fromMyOpen = false`. Izuzetak za opšti nalog („red se
+        // čisti bez pitanja") postoji SAMO na putanji „Moji otvoreni" — ovde ne, pa
+        // treće grane („Red je zatvoren.") ovde nema jer je nedostižna.
+        else parts.push('Operacija je označena kao gotova (količina nije puna).');
+      } else if (data.finishSkipped) {
+        // Deljeni red: „Da — gotova je" JESTE primljeno, ali gašenje je preskočeno jer
+        // operaciju drži još neko. Bez ove grane bi radnik dobio isto „NIJE zatvorena —
+        // nastavlja se" kao da je rekao „Ne", pa bi mu izgledalo da odgovor nije stigao.
+        // Barkod ekran nema „Zatvori za sve" — to ostaje samo u „Mojim otvorenim".
+        const others = (data.otherOpenWorkers ?? [])
+          .map((w) => w.fullName)
+          .filter(Boolean)
+          .join(', ');
+        parts.push(
+          others
+            ? `Tvoje „Da — gotova je" je primljeno, ali operacija ostaje otvorena — još radi: ${others}.`
+            : 'Tvoje „Da — gotova je" je primljeno, ali operacija ostaje otvorena — još neko radi na njoj.',
+        );
       } else {
         // Odgovor „Ne — nastavlja se", ali i slučaj kad radnik nije ni pitan a red
         // svejedno nije zatvoren: poruka je ista i uvek se ispisuje.
