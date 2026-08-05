@@ -3,8 +3,11 @@
   "name": "servosync2",
   "compatibility_date": "2025-06-01",
   "main": "worker/index.ts",
-  // Worker (worker/index.ts) proksira 1.0 mobilnu (/m, /m/*, /assets, /icons,
-  // manifest) sa pages.dev; sve ostalo pada na ASSETS (3.0 static export).
+  // Worker (worker/index.ts) ume da proksira 1.0 mobilnu (/m, /m/*, /assets,
+  // /icons, manifest) sa pages.dev — ali SAMO dok je tamo `PROXY_1_0_AKTIVAN`
+  // postavljen na `true`. Od cutover-a 05.08.2026 je `false`, pa sve pada na
+  // ASSETS (3.0 static export), gde out/m/*.html preusmerava na /mob/*.
+  // `run_worker_first` OSTAJE — bez njega povratak prekidača ne bi radio.
   "assets": {
     "binding": "ASSETS",
     "directory": "./out",

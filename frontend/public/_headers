@@ -8,6 +8,12 @@
 /mob-sw.js
   Cache-Control: no-cache
 
+# Sunset SW root prostora (nasleđe 1.0). Isti razlog kao gore: ispravka mora da
+# stigne do pregledača koji još drži staru registraciju — bez toga zatečeni SW
+# nastavlja da briše `ss3-mob-*` keš 3.0 PWA (bug zatvoren 05.08.2026).
+/sw.js
+  Cache-Control: no-cache
+
 # Energetika / SCADA — HP-HMI ekrani se učitavaju kao <iframe> UNUTAR modula
 # /energetika (isti origin). Kopija 1.0 statike (public/scada-hmi/) — izvor istine
 # je 1.0 repo (ispravke se rade tamo pa kopiraju). Presuda E1 (MODULE_SPEC_scada_30 §7).
