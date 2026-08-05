@@ -14,6 +14,13 @@ const UPSTREAM = 'https://servoteh-plan-montaze.pages.dev';
  *           1:1 na odgovarajući `/mob/*` ekran, pa stari obeleživač i APK
  *           prečica završe na TAČNOM 3.0 ekranu, ne na početnoj.
  *
+ * SVESNO NEPOKRIVENO dok je prekidač `false`: `/assets/*`, `/icons/*` i
+ * `/manifest.webmanifest` su statika SAMO stare 1.0 — 3.0 takve putanje nema
+ * (manifest joj je `/mob.webmanifest`, ikone u `/mob-icons/`), pa one vraćaju
+ * 404. To je odluka, ne propust: APK ljuska i obeleživači ulaze na `/m`, a
+ * desktop PWA 1.0 instaliranu preko `/manifest.webmanifest` praktično niko
+ * nema. Stubovi im se namerno NE prave.
+ *
  * KAKO SE VRAĆA 1.0 (~2 minuta, bez `git revert`):
  *   1. u OVOM fajlu postavi  PROXY_1_0_AKTIVAN = true
  *   2. commit poruka MORA sadržati marker  [worker-change]
