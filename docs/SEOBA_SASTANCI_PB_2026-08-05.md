@@ -361,6 +361,139 @@ Zato korak 9 treba raditi odmah i na jednom sastanku.
 
 ---
 
+## 7b. Prepis logike — šta je urađeno 06.08. i šta je OSTALO
+
+Runbook iznad prenosi *podatke*. Ovaj odeljak je o *logici* koja je živela u bazi.
+
+### Inventar — mereno, ne procenjeno
+
+Spisak se NE pravi po katalogu funkcija nego po **stvarnim pozivima iz 3.0 koda**
+(`grep` nad `backend/src/`, 06.08.2026) i po **FK/triger grafu** žive sy15.
+
+| Šta | Koliko |
+|---|---:|
+| funkcije celog domena (sastanci **+** PB) | 73 (65 `SECURITY DEFINER`) |
+| od toga **samo sastanci** | **39** |
+| direktno pozvane iz 3.0 (`SELECT fn(...)`) | **23** |
+| dodatno dosegnute preko njih (helperi koje te fn zovu) | 5 |
+| trigeri koje domen okida implicitno | 6 |
+| **ukupno dosegnuto = prepisano** | **34 od 39** |
+| 🔴 **potvrđeno mrtve** (definisane, ništa ih ne doseže) | **3** |
+| PB funkcije | 34 — **ne diraju se** (blokirane kadrovskom, §4) |
+
+**Direktno pozvane (23):** `sastanci_set_my_rsvp` · `sastanci_set_my_priprema` ·
+`sastanci_set_my_akcija_status` · `sastanci_get_or_create_my_prefs` *(ove 4 su bile
+prepisane 05.08.)* · `sast_weekly_status` · `sast_dashboard_stats` ·
+`get_sastanci_user_directory` · `sast_enqueue_cancel` · `sast_zakljucaj_sastanak` ·
+`sast_set_zapisnik_datum` · `sastanci_send_invites` · `sastanci_remind_unprepared` ·
+`sastanci_resend_meeting_locked` · `sast_weekly_pomeri` · `sast_weekly_odlozi` ·
+`sast_weekly_vrati` · `set_sastanci_ai_model` · `sastanci_enqueue_action_reminders` ·
+`sastanci_enqueue_meeting_reminders` · `sast_auto_create_weekly` ·
+`sastanci_dispatch_dequeue` · `sastanci_dispatch_mark_sent` ·
+`sastanci_dispatch_mark_failed`.
+
+**Dosegnute preko njih (5):** `sastanci_enqueue_notification` (jezgro mejl kanala) ·
+`sast_create_weekly_at` · `sast_target_week_monday` · `sast_next_week_monday` ·
+`sast_adjust_for_holiday` · plus gejtovi `sast_user_can_move_weekly`,
+`current_user_is_management`, `current_user_is_admin`, `has_edit_role`,
+`is_sastanak_ucesnik` (poslednjih pet nisu `sast*` pa ne ulaze u 39).
+
+**Trigeri koji su LOGIKA, ne mehanika (6)** — migracija ih namerno ne prenosi:
+`sast_trg_ucesnik_invite` · `sast_trg_ucesnik_invite_cleanup` ·
+`sast_trg_meeting_locked` · `akcioni_plan_trg_istorija` · `sast_check_not_locked` ·
+`sast_pm_teme_draft_status_guard`.
+
+### 🔴 Nalaz: tri funkcije su mrtve, i jedna od njih znači da mejl NE STIŽE
+
+| Funkcija | Zašto je mrtva | Posledica |
+|---|---|---|
+| `sast_trg_akcija_new` (1.301 zn.) | **nijedan triger je ne poziva** — provereno `pg_trigger` nad `akcioni_plan`: postoje samo `akcioni_plan_istorija_trg`, `sast_trg_locked_guard_akcioni_plan`, `trg_akcioni_plan_updated` | 🔴 „dodeljena ti je akcija" mejl **se ne šalje** |
+| `sast_trg_akcija_changed` (2.717 zn.) | isto | 🔴 „akcija ti je izmenjena" mejl **se ne šalje** |
+| `sastanci_pulse_notify_dispatch` | pg_cron posao je `f` (dispatch preseljen u 3.0, Talas A) | nema — zamenjena |
+
+**Merenje koje to potvrđuje** (`sastanci_notification_log`, poslednji red po vrsti):
+
+| vrsta | redova | poslednji |
+|---|---:|---|
+| `meeting_invite` | 52 | 04.08.2026 |
+| `meeting_reminder` | 25 | 03.08.2026 |
+| `meeting_locked` | 50 | 28.07.2026 |
+| `action_reminder` | 1 | 05.07.2026 |
+| `akcija_new` | 5 | **23.06.2026** |
+| `akcija_changed` | 1 | **23.06.2026** |
+
+Trigeri su očigledno bili zakačeni pa **skinuti 23.06.2026** i nikad vraćeni — od
+tada odgovorni ne dobija mejl kad mu se dodeli ili izmeni akciona tačka.
+
+> **ODLUKA JE PROSLEĐENA, NE DONETA:** te dve funkcije **nisu** prepisane. Prepis
+> bi ih *oživeo* — ljudi bi odjednom počeli da primaju obaveštenja koja šest
+> nedelja ne stižu, i to za sve akcije koje se u međuvremenu dodeljuju. To je
+> odluka o proizvodu (da li se uopšte želi taj mejl), ne o seobi. Ako se želi,
+> telo je u ovom runbook-u i prepis je pola dana.
+
+### Šta je prepisano (i gde)
+
+| Novo | Sadržaj |
+|---|---|
+| `backend/src/modules/sastanci/sastanci-fn.service.ts` | 17 DEFINER fn + 6 trigera + helperi; svako telo izvučeno sa **žive** sy15 (`pg_get_functiondef`) |
+| `backend/src/modules/sastanci/sastanci-authz.service.ts` | 3.0 parnjak sy15 gejtova nad `users`+`user_roles` |
+| `backend/prisma/migrations/20260806090000_sastanci_view_ovi_3_0/` | `v_akcioni_plan` + `v_pm_teme_pregled` doslovno |
+| testovi | 72 paritet-testa (zaključavanje, TZ podsetnika, istorija akcija — sva tri obavezna) |
+
+**Tri svesna odstupanja od PL/pgSQL izvora**, sva posledica seobe a ne izbor:
+`auth.jwt() ->> 'email'` postaje eksplicitan argument · gejtovi prava čitaju 3.0
+tabele · `kadr_holidays` prosleđuje pozivalac.
+
+### 🔴 Zašto `SastanciAuthzService` MORA da postoji
+
+U sy15 je row-scope sprovodio RLS, pa ga kod **namerno nije duplirao** (doktrina
+A.2a — „scope se NE duplira u WHERE"). U 3.0 RLS-a nema (ODLUKE.md). Da se ovaj
+sloj nije napisao, prava bi **tiho nestala**: svako sa `sastanci.edit` permisijom
+menjao bi i otkazivao TUĐE sastanke, a nijedan test to ne bi primetio.
+
+Prepisano je: `sastanci_update`/`sastanci_delete` scope (mgmt ∨ vodio ∨ zapisničar
+∨ created_by) na `cancel`/`delete`, guard zaključanog sastanka, i mgmt/admin/
+allowlist gejtovi u samim funkcijama.
+
+### Šta pod `3.0` RADI od 06.08.
+
+Sedmični status · KPI Pregleda · direktorijum korisnika · AI model (čitanje i
+upis) · **zaključavanje sastanka + arhiva + zapisnik mejl** · ispravka datuma
+zapisnika · otkazivanje · brisanje · pozivnice · podsetnik nepripremljenima ·
+ponovno slanje zapisnika · pomeri/odloži/vrati sedmični · podešavanja obaveštenja ·
+sve četiri samouslužne radnje (05.08.) · **cela automatika mejlova i dispatch**.
+
+---
+
+## 7c. 🔴 PREOSTALE BLOKADE za preklop sastanaka na `3.0`
+
+Ovo je pun spisak — modul pod `3.0` **još nije ceo**. Rangirano po tome šta
+zaustavlja preklop.
+
+| # | Blokada | Zašto blokira | Procena |
+|---|---|---|---:|
+| **1** | **Registar idempotencije `rev_api_idempotency` ostaje u sy15** | `create-sastanak`, `bulk-ucesnici`, `prenos`, `instantiate` oslanjaju se ISKLJUČIVO na njega da dupli POST ne napravi drugi sastanak/drugi talas mejlova. Bez 3.0 parnjaka te rute i dalje vraćaju 503. (`lock` i `cancel` su prenete jer imaju sopstvenu branu — `already_locked` / `already_cancelled`.) | **1 dan** (tabela + prepis `runIdempotentRls`); odluka je šira od sastanaka — registar dele i reversi/lokacije |
+| **2** | **Tabelarni CRUD još ide kroz `withUserMapped`** (73 poziva) | Liste, detalj, učesnici, tačke, odluke, akcije, teme, šabloni, arhiva, slike. Sve to su obični upiti nad tabelama koje SU prenete, ali prolaze kroz branu ka sy15. | **2–3 dana** |
+| **3** | **RLS write-scope za decu sastanka** | Politike `su_*`, `pa_*`, `ps_*`, `sa_*`, `ap_*`, `pmt_*` = `has_edit_role ∧ (učesnik ∨ mgmt ∨ organizator-trio)`. Prepisan je samo scope nad `sastanci`; scope nad decom ide uz blokadu 2 i **ne sme kasniti za njom** | uključeno u 2 |
+| **4** | **RLS read-scope na dve tabele** | `pm_teme.pmt_select` (predlagač ∨ mgmt ∨ učesnik ∨ draft+edit) i `sastanci_notification_log.snl_select` (svoje ∨ mgmt). Ostale SELECT politike su `true` pa nemaju šta da se prenese. **Ako se blokada 2 uradi bez ovoga, korisnici vide tuđe teme i tuđe mejlove.** | 0,5 dan |
+| **5** | 🔴 **`projekat_id` je promenio TIP** (uuid → Int) | FE danas šalje sy15 uuid predmeta (`?projekatId=`), a 3.0 kolona je `Int`. DTO, picker (`listProjekti`) i svi filteri po predmetu moraju da se prevedu ZAJEDNO sa FE-om. Uz to 3.0 `projects` **nema** `project_code` ni `bigtehn_item_id` — parnjaci su `project_number` i sam `id`, pa se menja i SQL u `AKCIJE_SELECT` | 1 dan (BE+FE zajedno) |
+| **6** | **`kadr_holidays` nije u 3.0** | Pomeranje sedmičnog sa praznika. Danas se čita READ-ONLY sa sy15 (fail-soft: bez praznika termin se ne pomera). Nestaje sa **korakom 4** (kadrovska) — nije potrebno rešavati posebno | — |
+| **7** | **`get_predmet_plan_prioritet_ids()`** (⭐ lista predmeta) | Čita `production.predmet_plan_prioritet` u sy15. Nije domen sastanaka — stiže sa svojim modulom | — |
+| **8** | **Fajlovi ostaju u sy15 storage-u** | Nepromenjeno (§7 rep 1) — putanje su prenete, URL-ovi važe | — |
+
+**Zbir onoga što je ostalo za sastanke: ~4–5 dana** (blokade 1–5). Procena iz §7
+(„4–6 dana") je time potvrđena — prepis logike je pojeo prvi deo tog opsega.
+
+### Redosled koji se preporučuje
+
+1. Blokada **4** (read-scope) — najjeftinija, a bez nje blokada 2 postaje
+   bezbednosni propust.
+2. Blokada **2 + 3** zajedno — CRUD i njegov write-scope se ne razdvajaju.
+3. Blokada **1** — registar idempotencije (odluka šira od ovog modula).
+4. Blokada **5** — traži usklađen FE deploy, pa ide poslednja.
+
+---
+
 ## 8. Preporuka
 
 **Sastanci JESU dobar prvi rez — ali samo sastanci, ne i projektni biro.**
