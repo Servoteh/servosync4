@@ -236,7 +236,11 @@ describe("REGRESSION — deleteEntry() (BUG-P1-03: ne briše work_time_entries)"
 });
 
 describe("PRAKSA (DEO B) — dismissEntry (Odustani iz Moji otvoreni)", () => {
-  it("zatvara red BEZ dodavanja komada + audit DISMISS + zatvori otvorenu sesiju", async () => {
+  // 🔴 05.08.2026 (Nenad): „Odustani" VIŠE ne upisuje `is_process_finished` —
+  // čišćenje pogrešno otvorenog reda nije završetak operacije, a `bool_or(
+  // is_process_finished)` je kanon čitanja u celom modulu (3 operacije su tako
+  // stajale kao gotove bez ijednog komada).
+  it("NE gasi red (zastavica netaknuta) + audit DISMISS + zatvori otvorenu sesiju", async () => {
     const prisma = prismaMock();
     // resolveWorkerByCard (karta) → worker.findFirst
     (prisma.worker.findFirst as jest.Mock).mockResolvedValue({
@@ -257,11 +261,10 @@ describe("PRAKSA (DEO B) — dismissEntry (Odustani iz Moji otvoreni)", () => {
     const res = await svc.dismissEntry(700, { workerCard: "0001765196" } as never);
 
     expect(res.data.dismissed).toBe(true);
-    // Red zatvoren, pieceCount NETAKNUT (nije mu se ništa dodalo).
-    const upd = (prisma.techProcess.update as jest.Mock).mock.calls[0][0];
-    expect(upd.where).toEqual({ id: 700 });
-    expect(upd.data.isProcessFinished).toBe(true);
-    expect(upd.data).not.toHaveProperty("pieceCount");
+    // Red NIJE ugašen; nosi 24 evidentirana komada pa se ni ne otkupljuje —
+    // `tech_processes` se uopšte ne dira.
+    expect(res.data.released).toBe(false);
+    expect(prisma.techProcess.update).not.toHaveBeenCalled();
     // Audit DISMISS upisan pre zatvaranja.
     const audit = (prisma.auditLog.create as jest.Mock).mock.calls[0][0].data;
     expect(audit.action).toContain("DISMISS");

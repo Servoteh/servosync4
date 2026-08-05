@@ -113,7 +113,15 @@ export interface ScanResult {
   techProcess: TechProcess;
   reportedPieces: number;
   plannedPieces: number | null;
+  /** true = kumulativ je DOSTIGAO plan (količinski uslov), pa je operacija zatvorena. */
   operationFinished: boolean;
+  /**
+   * true = red operacije je STVARNO zatvoren — plan dostignut ILI eksplicitno
+   * „Da — gotova je" (STOP putanje, Nenad 05.08.2026). Opciono: `scan` ga ne vraća.
+   */
+  operationClosed?: boolean;
+  /** Kumulativ komada na celoj operaciji posle ove prijave (opciono — STOP putanje). */
+  cumulativePieces?: number;
   operationsPrioritized: number;
   workOrderCompleted: boolean;
   workOrder: KioskWorkOrder | null;
@@ -208,6 +216,11 @@ export interface StopWorkInput {
   /** Broj napravljenih komada u OVOJ sesiji (ceo broj ≥ 1). */
   pieceCount: number;
   note?: string;
+  /**
+   * Eksplicitna namera „operacija je gotova" (Nenad 05.08.2026). Bez nje se red
+   * ISPOD plana ne gasi (kao i do sada na barkod putanji); `true` ga gasi.
+   */
+  operacijaGotova?: boolean;
 }
 
 export interface StopWorkResult extends ScanResult {
@@ -279,6 +292,13 @@ export interface StopWorkByIdInput {
    * kad drugi imaju otvorene sesije; `true` = izbor „Zatvori za sve" iz dijaloga.
    */
   finishForAll?: boolean;
+  /**
+   * 🔴 Odgovor na pitanje „Otkucao si X od Y. Da li je operacija gotova?" (Nenad
+   * 05.08.2026). `true` = „Da — gotova je" → operacija se gasi i ispod plana;
+   * `false`/izostanak = „Ne — nastavlja se" → red ostaje otvoren. Kad je kumulativ
+   * dostigao plan, pitanje se ne postavlja i polje se ne šalje (server gasi sam).
+   */
+  operacijaGotova?: boolean;
 }
 
 /**
@@ -290,10 +310,23 @@ export interface StopWorkByIdInput {
 export function useStopWorkById() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, workerCard, pieceCount, finishForAll }: StopWorkByIdInput) =>
+    mutationFn: ({
+      id,
+      workerCard,
+      pieceCount,
+      finishForAll,
+      operacijaGotova,
+    }: StopWorkByIdInput) =>
       apiFetch<{ data: StopWorkByIdResult }>(`${BASE}/${id}/stop-work`, {
         method: 'POST',
-        body: JSON.stringify({ workerCard, pieceCount, ...(finishForAll ? { finishForAll } : {}) }),
+        body: JSON.stringify({
+          workerCard,
+          pieceCount,
+          ...(finishForAll ? { finishForAll } : {}),
+          // Šalje se i kad je `false` — izostanak polja server tumači kao „nije
+          // gotova", ali eksplicitan odgovor ostaje u zahtevu radi jasnoće.
+          ...(operacijaGotova !== undefined ? { operacijaGotova } : {}),
+        }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
   });
@@ -309,10 +342,12 @@ export interface DismissOpenInput {
 }
 
 /**
- * „Odustani" po tp.id — ZATVARA pogrešno otvoren red BEZ evidentiranja komada
- * (is_process_finished=true, audit). Za pogrešno otvorene redove koje kontrolori
- * nagomilaju u „Moji otvoreni" (kucali kontrolu preko kiosk naloga): „Kraj rada"
- * samo dodaje komade i zatvara tek na plan, pa nije rešenje. Vraća `{ id, dismissed }`.
+ * „Odustani" po tp.id — sklanja pogrešno otvoren red iz „Mojih otvorenih" BEZ
+ * evidentiranja komada (audit snapshot). Za redove koje kontrolori nagomilaju
+ * kucajući kontrolu preko kiosk naloga.
+ * 🔴 NE upisuje `is_process_finished` (Nenad 05.08.2026): odustajanje je čišćenje
+ * greške, ne završetak operacije. Red bez komada se otkupljuje (`released: true`) i
+ * nestaje sa liste; red sa komadima ostaje (završava se kroz „Kraj rada").
  * Poništava keš postupaka (lista „Moji otvoreni" deli prefiks `['tech-processes']`).
  */
 export function useDismissOpen() {
@@ -320,8 +355,16 @@ export function useDismissOpen() {
   return useMutation({
     mutationFn: ({ id, workerCard, note }: DismissOpenInput) =>
       apiFetch<{
-        // finishSkipped: red NIJE ugašen (drugi radnici rade) — zatvoreno samo svoje učešće.
-        data: { id: number; dismissed: true; finishSkipped?: boolean };
+        data: {
+          id: number;
+          dismissed: true;
+          /** Red otkupljen (bez komada) → nestao sa liste. */
+          released?: boolean;
+          /** Na operaciji i dalje radi neko drugi. */
+          othersStillOpen?: boolean;
+          /** Zastarelo (uvek false od 05.08.2026) — red se više ne gasi kroz „Odustani". */
+          finishSkipped?: boolean;
+        };
       }>(`${BASE}/${id}/dismiss`, {
         method: 'POST',
         body: JSON.stringify({ workerCard, note }),
@@ -484,9 +527,22 @@ export interface MyOpenRow {
   variant: number;
   operationNumber: number;
   workCenterCode: string;
-  operation: { workCenterName: string } | null;
-  /** Napravljeno (akumulirano) na operaciji. */
+  operation: {
+    workCenterName: string;
+    /**
+     * true = OPŠTI NALOG (RC bez postupka) — nema plan i po dizajnu je uvek
+     * otvoren, pa „Kraj rada" na njemu NE pita „da li je operacija gotova?".
+     */
+    withoutProcess?: boolean | null;
+  } | null;
+  /** Napravljeno na OVOM redu (`tech_processes.piece_count`). */
   pieceCount: number;
+  /**
+   * Kumulativ komada na CELOJ operaciji (svi njeni redovi). Merodavno za poređenje
+   * sa planom: nastavak rada posle zatvaranja otvara NOV red (FIX A), pa `pieceCount`
+   * jednog reda ume da bude manji od stvarno otkucanog. Opciono (stariji backend).
+   */
+  cumulativePieces?: number;
   /** Planirano (potrebno) — null ako nije poznato. */
   plannedPieces: number | null;
   enteredAt: string;

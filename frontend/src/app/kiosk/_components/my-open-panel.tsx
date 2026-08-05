@@ -23,6 +23,13 @@ import { formatDate, formatNumber } from '@/lib/format';
  * vremensku sesiju na tom postupku i evidentira komade napravljene u toj
  * sesiji (0 = samo vreme). Zamenila je raniju „Zatvori operaciju" — završetak
  * rada iz liste ne traži ponovni sken oba barkoda (backend radi po tp.id).
+ *
+ * 🔴 GOTOVOST OPERACIJE (odluka Nenad 05.08.2026): „Kraj rada" je ranije UVEK
+ * gasio operaciju, pa je „gotov sam za danas" značilo „operacija je završena"
+ * (1.475 operacija je tako stajalo kao gotovo sa nepotpunom količinom). Sada:
+ * kad kumulativ POSLE ove prijave ne dostiže plan, iskače pitanje „Otkucao si X
+ * od Y. Da li je operacija gotova?" sa podrazumevanim NE. Kad je plan dostignut
+ * — nema pitanja, server gasi operaciju kao i do sada.
  */
 export function MyOpenPanel({
   card,
@@ -41,13 +48,33 @@ export function MyOpenPanel({
   // Red za koji je otvorena potvrda „Odustani" (null = zatvorena).
   const [confirmRow, setConfirmRow] = useState<MyOpenRow | null>(null);
   // „Kraj rada" na DELJENOM redu (drugi radnici imaju otvorene sesije) — izbor
-  // „samo moj rad / za sve" pre slanja (null = dijalog zatvoren).
-  const [stopChoice, setStopChoice] = useState<{ row: MyOpenRow; pieces: number } | null>(null);
+  // „samo moj rad / za sve" pre slanja (null = dijalog zatvoren). `gotova` nosi
+  // već dat odgovor na pitanje o gotovosti (undefined = pitanje nije ni bilo).
+  const [stopChoice, setStopChoice] = useState<{
+    row: MyOpenRow;
+    pieces: number;
+    gotova?: boolean;
+  } | null>(null);
+  // Pitanje „Otkucao si X od Y. Da li je operacija gotova?" (null = zatvoreno).
+  const [finishAsk, setFinishAsk] = useState<{
+    row: MyOpenRow;
+    pieces: number;
+    /** Kumulativ na operaciji POSLE ove prijave (X u pitanju). */
+    ukupno: number;
+    /** Plan RN-a (Y u pitanju); null = plan nije poznat. */
+    plan: number | null;
+  } | null>(null);
 
   const rows = query.data?.data ?? [];
 
-  async function onStop(row: MyOpenRow, pieces: number, finishForAll = false) {
+  async function onStop(
+    row: MyOpenRow,
+    pieces: number,
+    finishForAll = false,
+    operacijaGotova?: boolean,
+  ) {
     setStopChoice(null);
+    setFinishAsk(null);
     setFeedback(null);
     setBusyId(row.id);
     try {
@@ -56,6 +83,7 @@ export function MyOpenPanel({
         pieceCount: pieces,
         workerCard: card ?? undefined,
         finishForAll: finishForAll || undefined,
+        operacijaGotova,
       });
       const parts = [
         pieces > 0
@@ -63,6 +91,13 @@ export function MyOpenPanel({
           : 'Evidentirano samo vreme rada',
       ];
       if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
+      // Zatvorena ispod plana — samo zato što je radnik rekao „Da, gotova je".
+      else if (data.operationClosed && operacijaGotova === true)
+        parts.push('Operacija je označena kao gotova (količina nije puna).');
+      // Opšti nalog: red se čisti bez pitanja (sledeći sken otvara nov).
+      else if (data.operationClosed) parts.push('Red je zatvoren.');
+      else if (operacijaGotova === false)
+        parts.push('Operacija ostaje otvorena — nastavlja se.');
       else if (data.finishSkipped) {
         // Deljeni red: gašenje preskočeno — operaciju i dalje koristi neko drugi.
         const others = (data.otherOpenWorkers ?? [])
@@ -89,16 +124,42 @@ export function MyOpenPanel({
     }
   }
 
-  /** „Kraj rada" klik: deljeni red (drugi još rade) prvo pita „samo moj / za sve". */
+  /**
+   * „Kraj rada" klik. Redosled pitanja:
+   *  1. GOTOVOST — samo kad kumulativ POSLE ove prijave ne dostiže plan (Nenad
+   *     05.08.2026). Opšti nalog (RC bez postupka) se preskače: nema plan.
+   *  2. DELJENI RED — „samo moj rad / za sve"; ima smisla samo kad se red i gasi
+   *     (plan dostignut ili odgovor „Da — gotova je").
+   */
   function onStopRequest(row: MyOpenRow, pieces: number) {
-    if ((row.othersOpenCount ?? 0) > 0) setStopChoice({ row, pieces });
-    else void onStop(row, pieces);
+    const plan = row.plannedPieces;
+    // Kumulativ CELE operacije (FIX A ume da razbije kucanja na više redova);
+    // stariji backend ne vraća polje → fallback na red.
+    const ukupno = (row.cumulativePieces ?? row.pieceCount) + pieces;
+    const planPoznat = plan != null && plan > 0;
+    const opstiNalog = row.operation?.withoutProcess === true;
+    if (!opstiNalog && (!planPoznat || ukupno < plan!)) {
+      setFinishAsk({ row, pieces, ukupno, plan: planPoznat ? plan! : null });
+      return;
+    }
+    onStopAfterFinishAnswer(row, pieces, undefined);
+  }
+
+  /** Posle (eventualnog) pitanja o gotovosti — deljeni red pita „samo moj / za sve". */
+  function onStopAfterFinishAnswer(row: MyOpenRow, pieces: number, gotova?: boolean) {
+    setFinishAsk(null);
+    // Red ostaje otvoren („Ne — nastavlja se") → nema šta da se gasi ni za koga.
+    if (gotova !== false && (row.othersOpenCount ?? 0) > 0)
+      setStopChoice({ row, pieces, gotova });
+    else void onStop(row, pieces, false, gotova);
   }
 
   /**
-   * „Odustani" — zatvara pogrešno otvoren red BEZ evidentiranja komada
-   * (POST /:id/dismiss). Isti busyId/spinner obrazac kao onStop. Poziva se tek
-   * POSLE eksplicitne potvrde u dijalogu (komadi se NE evidentiraju).
+   * „Odustani" — sklanja pogrešno otvoren red sa MOJE liste BEZ evidentiranja
+   * komada (POST /:id/dismiss). Od 05.08.2026 NE proglašava operaciju završenom
+   * (odustajanje je čišćenje greške): red bez komada se otkupljuje i nestaje,
+   * red sa komadima ostaje i završava se kroz „Kraj rada". Isti busyId/spinner
+   * obrazac kao onStop; poziva se tek POSLE eksplicitne potvrde u dijalogu.
    */
   async function onDismiss(row: MyOpenRow) {
     setConfirmRow(null);
@@ -108,10 +169,9 @@ export function MyOpenPanel({
       const { data } = await dismissOpen.mutateAsync({ id: row.id, workerCard: card ?? undefined });
       setFeedback({
         ok: true,
-        // finishSkipped: deljeni red — zatvoreno samo svoje učešće, red ostaje ostalima.
-        text: data.finishSkipped
-          ? `RN ${row.identNumber} · Op. ${row.operationNumber} — tvoje učešće je odbačeno; operacija ostaje otvorena (još neko radi na njoj).`
-          : `RN ${row.identNumber} · Op. ${row.operationNumber} — operacija odbačena (bez evidentiranja komada).`,
+        text: data.released
+          ? `RN ${row.identNumber} · Op. ${row.operationNumber} — red je odbačen i sklonjen sa tvoje liste (bez evidentiranja komada). Operacija NIJE proglašena završenom.`
+          : `RN ${row.identNumber} · Op. ${row.operationNumber} — tvoja sesija je zatvorena, ali red nosi evidentirane komade pa ostaje na listi. Završi ga kroz „Kraj rada".`,
       });
       await query.refetch();
     } catch (e) {
@@ -182,7 +242,7 @@ export function MyOpenPanel({
       <Dialog
         open={confirmRow !== null}
         onClose={() => setConfirmRow(null)}
-        title="Odustati od operacije?"
+        title="Odustati od reda?"
         footer={
           <>
             <Button variant="secondary" onClick={() => setConfirmRow(null)}>
@@ -201,19 +261,90 @@ export function MyOpenPanel({
           <div className="space-y-2 text-lg text-ink">
             <p>
               RN <span className="tnums font-semibold">{confirmRow.identNumber}</span> · Op.{' '}
-              <span className="tnums font-semibold">{confirmRow.operationNumber}</span> — red će biti
-              zatvoren <span className="font-semibold">BEZ evidentiranja komada</span>.
+              <span className="tnums font-semibold">{confirmRow.operationNumber}</span> — red se
+              sklanja sa tvoje liste <span className="font-semibold">BEZ evidentiranja komada</span>.
             </p>
             <p className="text-ink-secondary">
-              Koristi ovo samo za pogrešno otvorene redove. Napravljeni komadi se NE evidentiraju.
+              Koristi ovo samo za pogrešno otvorene redove. Operacija se{' '}
+              <span className="font-semibold">NE</span> proglašava završenom — za to služi „Kraj
+              rada".
             </p>
+            {confirmRow.pieceCount > 0 && (
+              <p className="text-ink-secondary">
+                Ovaj red već nosi {formatNumber(confirmRow.pieceCount)} evidentiranih kom, pa ostaje
+                na listi (evidencija se ne briše) — završi ga kroz „Kraj rada".
+              </p>
+            )}
             {(confirmRow.othersOpenCount ?? 0) > 0 && (
               <p className="text-ink-secondary">
                 Na operaciji trenutno radi još {confirmRow.othersOpenCount}{' '}
-                {confirmRow.othersOpenCount === 1 ? 'radnik' : 'radnika'} — zatvoriće se samo
-                tvoje učešće, operacija njima ostaje otvorena.
+                {confirmRow.othersOpenCount === 1 ? 'radnik' : 'radnika'} — njihov rad se ne dira.
               </p>
             )}
+          </div>
+        )}
+      </Dialog>
+
+      {/* 🔴 GOTOVOST OPERACIJE (Nenad 05.08.2026) — iskače SAMO kad količina nije
+          puna. Podrazumevani odgovor je NE (istaknuto dugme + fokus, tako da i
+          slučajan tap/Enter ostavlja operaciju otvorenom). Dodirni ekran u pogonu:
+          krupan tekst, dugmad visine 20 (80px), bez sitnog fonta. */}
+      <Dialog
+        open={finishAsk !== null}
+        onClose={() => setFinishAsk(null)}
+        title="Da li je operacija gotova?"
+        size="lg"
+        footer={
+          <>
+            <Button
+              variant="primary"
+              autoFocus
+              onClick={() =>
+                finishAsk &&
+                onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, false)
+              }
+              className="h-20 flex-1 px-6 text-2xl font-bold"
+            >
+              Ne — nastavlja se
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() =>
+                finishAsk && onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, true)
+              }
+              className="h-20 flex-1 px-6 text-2xl font-bold"
+            >
+              Da — gotova je
+            </Button>
+          </>
+        }
+      >
+        {finishAsk && (
+          <div className="space-y-4 text-ink">
+            <p className="text-3xl font-bold">
+              {finishAsk.plan != null ? (
+                <>
+                  Otkucao si{' '}
+                  <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> od{' '}
+                  <span className="tnums">{formatNumber(finishAsk.plan)}</span> kom.
+                </>
+              ) : (
+                <>
+                  Otkucano ukupno{' '}
+                  <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> kom
+                  (plan nije poznat).
+                </>
+              )}
+            </p>
+            <p className="text-xl">
+              RN <span className="tnums font-semibold">{finishAsk.row.identNumber}</span> · Op.{' '}
+              <span className="tnums font-semibold">{finishAsk.row.operationNumber}</span> ·{' '}
+              {finishAsk.row.operation?.workCenterName ?? finishAsk.row.workCenterCode}
+            </p>
+            <p className="text-xl text-ink-secondary">
+              „Ne" upisuje tvoj rad i vreme, a operacija ostaje otvorena za nastavak. „Da" je
+              zatvara iako količina nije puna.
+            </p>
           </div>
         )}
       </Dialog>
@@ -231,13 +362,19 @@ export function MyOpenPanel({
             </Button>
             <Button
               variant="danger"
-              onClick={() => stopChoice && onStop(stopChoice.row, stopChoice.pieces, true)}
+              onClick={() =>
+                stopChoice &&
+                onStop(stopChoice.row, stopChoice.pieces, true, stopChoice.gotova)
+              }
             >
               Zatvori za sve
             </Button>
             <Button
               variant="primary"
-              onClick={() => stopChoice && onStop(stopChoice.row, stopChoice.pieces)}
+              onClick={() =>
+                stopChoice &&
+                onStop(stopChoice.row, stopChoice.pieces, false, stopChoice.gotova)
+              }
             >
               Završi samo moj rad
             </Button>
@@ -317,7 +454,10 @@ function MyOpenRowItem({
           <span>
             Napravljeno{' '}
             <span className="tnums font-semibold text-ink">
-              {formatNumber(row.pieceCount)}
+              {/* Kumulativ CELE operacije — isti broj koji ulazi u pitanje o gotovosti
+                  i u serversko poređenje sa planom (FIX A ume da razbije kucanja na
+                  više redova, pa `pieceCount` jednog reda nije merodavan). */}
+              {formatNumber(row.cumulativePieces ?? row.pieceCount)}
               {row.plannedPieces != null ? ' / ' + formatNumber(row.plannedPieces) : ''}
             </span>{' '}
             kom
