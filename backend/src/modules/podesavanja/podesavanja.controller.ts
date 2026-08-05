@@ -56,9 +56,19 @@ import {
   SyncSwitchService,
 } from "./sync-switch.service";
 import { CompanyDetailsService } from "./company-details.service";
-import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
+// ⚠️ VREDNOSNI UVOZ, NE `import type` (ispravka 05.08.2026 — uzrok prijave vlasnika).
+// `@Body() dto: X` se validira preko `design:paramtypes` metapodatka, a taj metapodatak
+// mora da nosi SAMU KLASU. Kad je klasa uvezena kroz `import type`, TypeScript je ne može
+// referisati u runtime-u i u metapodatak upiše `Function`; `ValidationPipe` tada radi
+// `plainToInstance(Function, telo)` i vrati FUNKCIJU umesto DTO-a — sva polja `undefined`.
+// Posledica je bila 422 „Nijedno polje nije prosleđeno." na SVAKO snimanje, bez obzira šta
+// je korisnik uneo. Pinovano testom `podesavanja.controller.body-metatype.spec.ts`.
+import { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
 import { PaymentAccountsService } from "./payment-accounts.service";
-import type { UpdatePaymentAccountDto } from "./dto/podesavanja-payment-account.dto";
+import {
+  CreatePaymentAccountDto,
+  UpdatePaymentAccountDto,
+} from "./dto/podesavanja-payment-account.dto";
 import {
   BulkJobPositionProfileDto,
   CreateDepartmentDto,
@@ -80,6 +90,12 @@ import {
 
 interface AuthedRequest {
   user: { userId: number; email: string; role: string };
+  /**
+   * SIROVO telo zahteva — ono koje `ValidationPipe` NE menja (pipe radi nad kopijom iz
+   * `plainToInstance`). Koristi se ISKLJUČIVO za dijagnostiku „nijedno polje nije stiglo"
+   * (`empty-body.ts`); čitati podatak odavde značilo bi obići validaciju.
+   */
+  body?: unknown;
 }
 
 /**
@@ -667,15 +683,25 @@ export class PodesavanjaController {
 
   @Put("firma")
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
-  updateCompanyDetails(@Body() dto: UpdateCompanyDetailsDto) {
-    return this.companyDetails.update(dto.id ?? null, dto);
+  updateCompanyDetails(
+    @Req() req: AuthedRequest,
+    @Body() dto: UpdateCompanyDetailsDto,
+  ) {
+    // `req.body` se prosleđuje SAMO kao dijagnostika za slučaj „nijedno polje nije stiglo"
+    // (`empty-body.ts`): `whitelist: true` nepoznata polja odbacuje tiho, pa je bez ovoga
+    // 422 bio bez uzroka. Podatak se i dalje čita ISKLJUČIVO iz validiranog `dto`-a.
+    return this.companyDetails.update(dto.id ?? null, dto, req.body);
   }
 
   // ----- Devizni računi (blok banke na izvoznoj fakturi) -----
   // IBAN, SWIFT, naziv i adresa banke i valuta. Bez njih izvozna faktura NEMA podatke za
   // uplatu i štampa je odbija (`invoice-pdf.service.ts` → `loadForeignAccount`), pa je ovo
-  // ekran koji odblokira izvoz. Samo IZMENA zatečenih računa — skup redova i njihove
-  // ključeve drži BigBit (`payment-accounts.service.ts` objašnjava zašto).
+  // ekran koji odblokira izvoz.
+  //
+  // UNOS JE OTVOREN 05.08.2026: `payment_accounts` na produkciji ima 0 redova i BigBit
+  // `.mdb` kanal je ne uvozi, pa je „samo izmena zatečenih redova" bio ćorsokak. Nov red
+  // ide u rezervisan 4.0 opseg ključeva (v. `payment-accounts.service.ts`).
+  // Kapija je ISTA (`settings.system`) za sve četiri rute — unos nije slabije čuvan od izmene.
 
   @Get("firma/racuni")
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
@@ -683,13 +709,20 @@ export class PodesavanjaController {
     return this.paymentAccounts.list(companyId ? Number(companyId) : null);
   }
 
+  @Post("firma/racuni")
+  @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
+  createPaymentAccount(@Body() dto: CreatePaymentAccountDto) {
+    return this.paymentAccounts.create(dto);
+  }
+
   @Put("firma/racuni/:id")
   @RequirePermission(PERMISSIONS.SETTINGS_SYSTEM)
   updatePaymentAccount(
+    @Req() req: AuthedRequest,
     @Param("id", ParseIntPipe) id: number,
     @Body() dto: UpdatePaymentAccountDto,
   ) {
-    return this.paymentAccounts.update(id, dto);
+    return this.paymentAccounts.update(id, dto, req.body);
   }
 
   // ----- :id rute POSLEDNJE -----

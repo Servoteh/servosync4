@@ -499,8 +499,42 @@ export const NATIVE_ID_MAX = 2_147_483_647;
  * `assertItemWritesAllowed()` i dalje vraćaju 409 — ovaj skup samo garantuje da
  * unos, KAD SE OTVORI, ne može tiho da nestane. Cilj: otvaranje = jedan
  * prekidač, bez ijednog novog otkrića u tom trenutku.
+ *
+ * ─── `payment_accounts` (dopuna 05.08.2026, prijava vlasnika) ───────────────
+ * Devizni račun se do sada NIJE mogao uneti iz aplikacije: ekran je nudio samo
+ * izmenu zatečenih redova, a `payment_accounts` na produkciji ima NULA redova i
+ * BigBit kanal (`.mdb` uvoz) ovu tabelu ne dodiruje uopšte — izmereno: nijedan
+ * pogodak na `paymentAccount` u `bigbit-mdb-import.service.ts`. Ekran je zato
+ * upućivao na SQL u dokumentaciji, a izvozna faktura u toj valuti odbijala da se
+ * odštampa (brana 02.08.2026) — ćorsokak bez izlaza kroz aplikaciju.
+ *
+ * Bojazan zbog koje unos nije bio otvoren (sudar sa BigBit-ovim `id`-jem) je bila
+ * opravdana, ali je isti problem u ovom repou već rešen za `items`/`customers` —
+ * rezervisanim opsegom ključeva. Zato tabela ulazi OVDE, a ne u novu konvenciju.
+ *
+ * ZAŠTITA JE DVOSTRUKA, i drugi sloj je onaj koji ovde stvarno radi:
+ *   1. `payment_accounts` je i u `NATIVE_COLUMN_TABLES`, pa syncer za nju uzima
+ *      upsert-granu i NIKAD ne poziva `deleteMany` — native red ne može da se
+ *      obriše ni punim osvežavanjem. (Dokaz: `generic.syncer.spec.ts`.)
+ *   2. Upis u ovaj skup dodaje pre-filter: izvorni red čiji `id` upadne u native
+ *      opseg se PRESKAČE, pa ne može da PREGAZI native red kroz `upsert`
+ *      (jedina preostala ruta ka tihom gubitku podatka).
+ *
+ * ⚠️ BEZ CHECK-a U BAZI, svesno: `chk_*_native_id_range` za `items`/`customers`
+ * je oblika `source='NATIVE' ⇔ id >= 900000000`, a `payment_accounts` NEMA
+ * kolonu `source` — poreklo se ovde čita isključivo iz opsega `id`-a. Dodavanje
+ * `source` kolone bi bila migracija šeme radi ograničenja koje ništa novo ne
+ * hvata (opseg je već i jedini nosilac te informacije), pa je izostavljena.
+ * Izmereno na dev bazi 05.08.2026: `id` je `integer` (int4), pa 900.000.000
+ * staje u kolonu, a eksplicitan `id` NE pomera `payment_accounts_id_seq`
+ * (`last_value=1, is_called=false` posle unosa) — native unos ne troši BigBit
+ * prostor ključeva.
  */
-export const NATIVE_ID_RANGE_TABLES = new Set<string>(["items", "customers"]);
+export const NATIVE_ID_RANGE_TABLES = new Set<string>([
+  "items",
+  "customers",
+  "payment_accounts",
+]);
 
 export function hasNativeIdRange(entity: string): boolean {
   return NATIVE_ID_RANGE_TABLES.has(entity);

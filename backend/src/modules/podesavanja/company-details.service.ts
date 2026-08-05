@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { UnprocessableEntityException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { assertIban, assertSwift, normalizeBankCode } from "./bank-codes";
+import { describeEmptyBody } from "./empty-body";
 import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
 
 /**
@@ -137,8 +138,18 @@ export class CompanyDetailsService {
    *
    * IBAN i SWIFT se čuvaju BEZ razmaka i velikim slovima: IBAN se na papiru formatira
    * u grupe od 4, a poređenje sa bankarskim izvorom mora da radi nad kanonskim oblikom.
+   *
+   * @param rawBody sirovo telo zahteva (`req.body`) — SAMO za dijagnostiku kad ni jedno
+   *   polje ne dođe do upisa. Ne čita se kao podatak (to bi obišlo `ValidationPipe`),
+   *   nego kao dokaz ŠTA je klijent poslao: `whitelist: true` nepoznata polja odbacuje
+   *   TIHO, pa je bez ovoga 422 „Nijedno polje nije prosleđeno." bio bez uzroka
+   *   (prijava vlasnika 05.08.2026). Obrazloženje u `empty-body.ts`.
    */
-  async update(id: number | null | undefined, dto: UpdateCompanyDetailsDto) {
+  async update(
+    id: number | null | undefined,
+    dto: UpdateCompanyDetailsDto,
+    rawBody?: unknown,
+  ) {
     const current = await this.get(id);
     const companyId = current.data.id;
 
@@ -187,8 +198,21 @@ export class CompanyDetailsService {
         "Naziv firme ne sme biti prazan — ispisuje se u zaglavlju svakog dokumenta.",
       );
 
-    if (Object.keys(data).length === 0)
-      throw new UnprocessableEntityException("Nijedno polje nije prosleđeno.");
+    if (Object.keys(data).length === 0) {
+      const dijagnostika = describeEmptyBody(
+        rawBody,
+        // Ono što ruta poznaje = polja DTO-a. `Object.keys` nad `EDITABLE_SELECT` je
+        // isti spisak plus `id` (koji se šalje kao izbor firme, ne kao izmena).
+        Object.keys(EDITABLE_SELECT),
+        "podaci firme",
+      );
+      // U log ide DETALJ (nazivi primljenih i odbačenih polja, bez vrednosti) — jedan
+      // pogled u dnevnik mora da odgovori na pitanje koje smo 05.08. nagađali.
+      this.logger.warn(
+        `PUT /admin/firma bez ijednog polja za upis (firma ${companyId}): ${dijagnostika.logDetail}`,
+      );
+      throw new UnprocessableEntityException(dijagnostika.message);
+    }
 
     // IBAN/SWIFT se proveravaju TEK ako su uneti — prazno polje je validno stanje
     // (firma bez izvoza ih nema), a poluunet IBAN bi tiho otišao na ino fakturu.

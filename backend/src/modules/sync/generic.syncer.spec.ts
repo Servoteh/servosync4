@@ -512,9 +512,32 @@ describe('GenericSyncer — rezervisan opseg 4.0-native ključeva', () => {
   const DELEGATE: Record<string, string> = {
     items: 'item',
     customers: 'customer',
+    payment_accounts: 'paymentAccount',
   };
 
   function mappingFor(targetDb: string): TableMapping {
+    if (targetDb === 'payment_accounts') {
+      // Kao u `sync-map.generated.ts`: `UplatniRacuni` NEMA watermark → podrazumevana
+      // strategija je pun refresh. Tabela je uz to u `NATIVE_COLUMN_TABLES`, pa syncer
+      // uzima upsert-granu (kolone `iban`/`swift`/`bank_address`/`currency` izvor ne zna).
+      return {
+        source: 'UplatniRacuni',
+        model: 'PaymentAccount',
+        targetDb,
+        pk: { kind: 'single', field: 'id' },
+        watermark: null,
+        columns: [
+          { src: 'ID', field: 'id', type: 'Int', nullable: false, isId: true },
+          {
+            src: 'UplatniRacun',
+            field: 'accountNumber',
+            type: 'String',
+            nullable: false,
+            isId: false,
+          },
+        ],
+      };
+    }
     if (targetDb === 'customers') {
       return {
         source: 'Komitenti',
@@ -729,6 +752,71 @@ describe('GenericSyncer — rezervisan opseg 4.0-native ključeva', () => {
     expect(result.rowsSkipped).toBe(1);
     // Preskočeni red ne pomera kursor — anomalija se prijavljuje ponovo.
     expect(result.newCursor?.lastModifiedAt).toBe('2026-07-28T10:00:00.000Z');
+  });
+
+  /**
+   * DEVIZNI RAČUN UNET IZ APLIKACIJE PREŽIVLJAVA SYNC (05.08.2026, prijava vlasnika).
+   *
+   * `POST /admin/firma/racuni` pravi red sa `id >= NATIVE_ID_BASE`. Da bi taj unos
+   * imao smisla, sync sme da ga ostavi na miru na SVA TRI načina na koja bi mogao da
+   * ga izgubi: brisanjem, gaženjem kroz `upsert`, i „force" prolazom.
+   */
+  it('payment_accounts: pun refresh NIKAD ne briše — native red ostaje (upsert grana)', async () => {
+    const { syncer, deleteMany, upsert } = setup('payment_accounts', [
+      { ID: 3, UplatniRacun: '160-0000000123456-78' },
+    ]);
+
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    // Tabela je u `NATIVE_COLUMN_TABLES`: nema brisanja NI JEDNOG oblika, pa red
+    // koji izvor ne poznaje (naš devizni račun) fizički ne može da nestane.
+    expect(deleteMany).not.toHaveBeenCalled();
+    // BigBit i dalje osvežava SVOJE redove — kroz upsert po `id`-u.
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect((upsert.mock.calls[0][0] as { where: { id: number } }).where.id).toBe(3);
+    expect(result.rowsUpserted).toBe(1);
+  });
+
+  it('payment_accounts: izvorni red iz native opsega se PRESKAČE (ne gazi devizni račun)', async () => {
+    // Jedina preostala ruta ka tihom gubitku: `upsert` ne razlikuje poreklo, pa bi
+    // BigBit red sa istim `id`-em prepisao broj računa i naziv banke, a naš IBAN
+    // ostavio — jedan red sa DINARSKIM brojem i DEVIZNIM IBAN-om.
+    const { syncer, upsert, deleteMany } = setup('payment_accounts', [
+      { ID: 3, UplatniRacun: '160-0000000123456-78' },
+      { ID: NATIVE_ID_BASE + 1, UplatniRacun: '999-999999999-99' },
+    ]);
+
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect((upsert.mock.calls[0][0] as { where: { id: number } }).where.id).toBe(3);
+    expect(result.rowsSkipped).toBe(1);
+    expect(result.errors[0]).toContain('rezervisanom 4.0 opsegu');
+    expect(result.note).toContain('rezervisanog 4.0 opsega');
+  });
+
+  it('payment_accounts: `force: true` ne otvara brisanje (ručni /sync/run je jednako bezbedan)', async () => {
+    const { syncer, deleteMany } = setup('payment_accounts', [
+      { ID: 3, UplatniRacun: '160-0000000123456-78' },
+    ]);
+
+    await syncer.sync({ strategy: 'full_refresh', cursor: null, force: true });
+
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('payment_accounts: prazan izvor (današnje stanje) ne dira ništa', async () => {
+    // IZMERENO 05.08.2026: `payment_accounts` na produkciji ima 0 redova, a `.mdb`
+    // kanal ovu tabelu ne uvozi uopšte. Sync je dakle no-op — ali mora biti no-op
+    // koji NE BRIŠE, jer bi inače prvi prolaz pojeo ručno unet devizni račun.
+    const { syncer, deleteMany, upsert } = setup('payment_accounts', []);
+
+    const result = await syncer.sync({ strategy: 'full_refresh', cursor: null });
+
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+    expect(result.rowsUpserted).toBe(0);
   });
 
   // Regresija za ostatak sinhronizacije: tabela bez rezervisanog opsega mora i

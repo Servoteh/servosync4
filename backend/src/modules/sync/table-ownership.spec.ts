@@ -96,7 +96,25 @@ describe("table-ownership — rezervisan opseg 4.0-native ključeva", () => {
     // ništa. Od 28.07 važi isto pravilo za obe tabele.
     expect(hasNativeIdRange("items")).toBe(true);
     expect(hasNativeIdRange("customers")).toBe(true);
-    expect([...NATIVE_ID_RANGE_TABLES].sort()).toEqual(["customers", "items"]);
+    // 05.08.2026: `payment_accounts` je treća — devizni račun se od tada unosi iz
+    // aplikacije (`POST /admin/firma/racuni`), pa native red mora imati svoj opseg.
+    expect(hasNativeIdRange("payment_accounts")).toBe(true);
+    expect([...NATIVE_ID_RANGE_TABLES].sort()).toEqual([
+      "customers",
+      "items",
+      "payment_accounts",
+    ]);
+  });
+
+  it("payment_accounts: opseg je iznad svega što BigBit šalje, a native red se poznaje po id-u", () => {
+    // `payment_accounts` NEMA kolonu `source` (za razliku od items/customers), pa je
+    // opseg `id`-a JEDINI nosilac porekla — granica zato mora da bude tvrda.
+    expect(isNativeRow("payment_accounts", NATIVE_ID_BASE - 1)).toBe(false);
+    expect(isNativeRow("payment_accounts", NATIVE_ID_BASE)).toBe(true);
+    expect(isNativeRow("payment_accounts", NATIVE_ID_MAX)).toBe(true);
+    // Šifarnik uplatnih računa je sitan (produkcija: 0 redova, izmereno 05.08.2026),
+    // pa BigBit id nikad i ne priđe granici.
+    expect(isNativeRow("payment_accounts", 5)).toBe(false);
   });
 
   it("nativeRowsSurviveSync: jedno pitanje umesto četiri skupa", () => {
@@ -106,6 +124,9 @@ describe("table-ownership — rezervisan opseg 4.0-native ključeva", () => {
     expect(nativeRowsSurviveSync("companies")).toBe(true); // native kolone
     expect(nativeRowsSurviveSync("tech_processes")).toBe(true); // owned
     expect(nativeRowsSurviveSync("warehouses")).toBe(false); // čist BigBit keš
+    // Devizni račun: native kolone (upsert bez brisanja) I rezervisan opseg.
+    expect(nativeRowsSurviveSync("payment_accounts")).toBe(true);
+    expect(hasNativeColumns("payment_accounts")).toBe(true);
   });
 });
 
