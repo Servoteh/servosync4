@@ -92,6 +92,11 @@ import type {
   WorkOrderLaborDto,
   WorkOrderPartDto,
 } from "./dto/odrzavanje-mutation.dto";
+import {
+  assertAtLeastOneInterval,
+  normalizeAssetIntervalMonths,
+  normalizeInterval,
+} from "./dto/service-plan-intervals";
 
 /**
  * Održavanje (CMMS) — 3.0 TALAS F, R1 read sloj (MODULE_SPEC_odrzavanje_30.md §3).
@@ -3551,14 +3556,20 @@ export class OdrzavanjeService {
 
   // ---------- Servisni plan vozila + generisanje WO ----------
 
-  createVehicleServicePlan(
+  // `async` da bi i sinhrona validacija intervala izašla kao odbijeno obećanje —
+  // pozivalac (controller/test) dobija JEDAN oblik greške, ne dva (073/26).
+  async createVehicleServicePlan(
     email: string,
     assetId: string,
     dto: CreateVehicleServicePlanDto,
   ) {
-    if (dto.intervalKm == null && dto.intervalMonths == null) {
-      throw new UnprocessableEntityException("Zadaj interval (km ili meseci)");
-    }
+    /* 073/26: `0` = korisnikov način da kaže „ne vodi se po tome" → NULL, ne greška.
+       Ostaje samo pravilo koje i baza čuva (maint_vsp_at_least_one_interval) — plan
+       bez ijednog intervala nikad ne bi dospeo, pa nikad ne bi ni napravio nalog. */
+    const intervalKm = normalizeInterval(dto.intervalKm, "km") ?? null;
+    const intervalMonths =
+      normalizeInterval(dto.intervalMonths, "months") ?? null;
+    assertAtLeastOneInterval({ intervalKm, intervalMonths });
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -3569,8 +3580,8 @@ export class OdrzavanjeService {
           data: {
             assetId,
             name: dto.name.trim(),
-            intervalKm: dto.intervalKm ?? null,
-            intervalMonths: dto.intervalMonths ?? null,
+            intervalKm,
+            intervalMonths,
             lastDoneAt: this.toDbDate(dto.lastDoneAt) ?? null,
             lastDoneKm: dto.lastDoneKm ?? null,
             vehicleServiceCategory:
@@ -3592,20 +3603,32 @@ export class OdrzavanjeService {
     planId: string,
     dto: UpdateVehicleServicePlanDto,
   ) {
+    /* 073/26: intervali se normalizuju PRE transakcije (0 → NULL = „ne vodi se po
+       tome"), a pravilo „bar jedan interval" se proverava nad EFEKTIVNIM stanjem —
+       izostavljen ključ zadržava staru vrednost, pa izmena imena ne sme da traži
+       ponovni unos intervala. Bez ovoga je brisanje oba intervala udaralo pravo u
+       DB CHECK i izlazilo kao sirova greška. */
+    const patchKm = normalizeInterval(dto.intervalKm, "km");
+    const patchMonths = normalizeInterval(dto.intervalMonths, "months");
     return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintVehicleServicePlan.count({ where: { planId } })) > 0;
+      const current = await tx.maintVehicleServicePlan.findUnique({
+        where: { planId },
+        select: { intervalKm: true, intervalMonths: true },
+      });
+      const exists = current !== null;
+      if (exists) {
+        assertAtLeastOneInterval(
+          { intervalKm: patchKm, intervalMonths: patchMonths },
+          current,
+        );
+      }
       const uid = await this.uid(tx);
       const { count } = await tx.maintVehicleServicePlan.updateMany({
         where: { planId },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.intervalKm !== undefined
-            ? { intervalKm: dto.intervalKm }
-            : {}),
-          ...(dto.intervalMonths !== undefined
-            ? { intervalMonths: dto.intervalMonths }
-            : {}),
+          ...(patchKm !== undefined ? { intervalKm: patchKm } : {}),
+          ...(patchMonths !== undefined ? { intervalMonths: patchMonths } : {}),
           ...(dto.lastDoneAt !== undefined
             ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) }
             : {}),
@@ -4130,11 +4153,16 @@ export class OdrzavanjeService {
 
   // ---------- Servisni plan IT/objekti + generisanje WO ----------
 
-  createAssetServicePlan(
+  async createAssetServicePlan(
     email: string,
     assetId: string,
     dto: CreateAssetServicePlanDto,
   ) {
+    /* 073/26: `interval_months` je NOT NULL + CHECK > 0 — 0/prazno je do sada
+       izlazilo kao sirova greška baze umesto poruke koja kaže šta da se uradi. */
+    const intervalMonths = normalizeAssetIntervalMonths(dto.intervalMonths, {
+      required: true,
+    })!;
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -4145,7 +4173,7 @@ export class OdrzavanjeService {
           data: {
             assetId,
             name: dto.name.trim(),
-            intervalMonths: dto.intervalMonths,
+            intervalMonths,
             lastDoneAt: this.toDbDate(dto.lastDoneAt) ?? null,
             priority: (dto.priority ?? "p4_planirano") as never,
             notes: dto.notes ?? null,
@@ -4164,6 +4192,9 @@ export class OdrzavanjeService {
     planId: string,
     dto: UpdateAssetServicePlanDto,
   ) {
+    const patchMonths = normalizeAssetIntervalMonths(dto.intervalMonths, {
+      required: false,
+    });
     return this.withUserMapped(email, async (tx) => {
       const exists =
         (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
@@ -4172,9 +4203,7 @@ export class OdrzavanjeService {
         where: { planId },
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.intervalMonths !== undefined
-            ? { intervalMonths: dto.intervalMonths }
-            : {}),
+          ...(patchMonths !== undefined ? { intervalMonths: patchMonths } : {}),
           ...(dto.lastDoneAt !== undefined
             ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) }
             : {}),

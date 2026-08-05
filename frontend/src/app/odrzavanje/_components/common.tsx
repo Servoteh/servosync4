@@ -77,6 +77,26 @@ export function parsePrice(raw: string): number | null {
   return Number.isFinite(n) && n >= 0 ? n : NaN;
 }
 
+/**
+ * Ceo broj iz korisničkog unosa (kilometraža, meseci) — zahtev 073/26.
+ * Isti razlog kao kod `parsePrice`, samo je ovde polje celobrojno: ljudi kucaju
+ * „15.000", „15 000 km", „12 meseci" — goli `Number()` na tome vraća NaN ili, još
+ * gore, tiho pogrešnih 15 („15.000" je za JS 15.0). Vraća `null` za prazno,
+ * `NaN` za stvarno neispravan unos (pozivalac javlja grešku), inače zaokružen broj.
+ * Tačka je hiljade samo kad grupiše po tri cifre; zarez je uvek decimalni.
+ */
+export function parseWholeNumber(raw: string): number | null {
+  const t = raw.replace(/[^\d,.-]/g, '').trim();
+  if (!t) return null;
+  const body = t.includes(',')
+    ? t.replace(/\./g, '').replace(',', '.')
+    : /^-?\d{1,3}(\.\d{3})+$/.test(t)
+      ? t.replace(/\./g, '')
+      : t;
+  const n = Number(body);
+  return Number.isFinite(n) ? Math.round(n) : NaN;
+}
+
 // ── Statusi mašine / operativni ────────────────────────────────────
 // Labele = 1.0 kanon (maintFormatters.js STATUS_LABELS): Radi/Smetnje/Zastoj/Održavanje.
 const OP: Record<OpStatus, { tone: Tone; label: string }> = {
