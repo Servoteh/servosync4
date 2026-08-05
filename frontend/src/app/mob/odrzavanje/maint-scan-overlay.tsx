@@ -18,7 +18,7 @@ import {
 import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-picker';
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 import { ScanHint } from '@/components/ui-kit/scan-hint';
-import { useCameraControls } from '@/lib/use-camera-controls';
+import { CAPS_READY_MS, useCameraControls } from '@/lib/use-camera-controls';
 import {
   ScanDiagLine,
   ScanFocusRing,
@@ -293,13 +293,18 @@ export function MaintScanOverlay({
         // constraint-i odmah po play() ume da budu tiho odbačeni (1.0 lekcija).
         const track = stream.getVideoTracks()[0];
         if (track) {
+          // SERIJALIZOVANO, ne paralelno: `applyConstraints` ZAMENJUJE skup
+          // ograničenja, pa bi tuning (ekspozicija + AF) i auto-zoom u trci gazili
+          // jedan drugog — i to baš na AF-slepim uređajima koje popravljamo.
+          // 800 ms je 1.0 vrednost (`setupZoomUI`, scanModal.js:949): na 500 ms su
+          // capabilities na sporim ROM-ovima još prazne.
           tuneTimer = window.setTimeout(() => {
-            void applyAndroidPostStartTuning(track);
-            // Zoom/torch capability se čitaju TEK posle tuning-a i po slegnutom
-            // pipeline-u — pre toga `getCapabilities()` na Androidu ume da vrati
-            // prazan objekat pa bi klizač zauvek ostao skriven.
-            void camRef.current.attach(track, { lensPicked: Boolean(deviceId) });
-          }, 500);
+            void (async () => {
+              await applyAndroidPostStartTuning(track);
+              if (aborted()) return;
+              await camRef.current.attach(track, { lensPicked: Boolean(deviceId) });
+            })();
+          }, CAPS_READY_MS);
         }
 
         const handle = await attachVideoDecoder({

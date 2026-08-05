@@ -41,6 +41,16 @@ export interface FocusRing {
   ok: boolean;
 }
 
+/**
+ * Odmak od `play()` do čitanja capability-ja i primene zoom-a. 1.0 koristi 800 ms
+ * (`setTimeout(() => setupZoomUI(), 800)` — lokacije `scanModal.js:949`, reversi
+ * `scanOverlay.js:435`); 3.0 je imao 500 ms, što je na sporim ROM-ovima znalo da
+ * uhvati još prazne `getCapabilities()`.
+ */
+export const CAPS_READY_MS = 800;
+/** Drugi pokušaj ako su capabilities i na 800 ms još prazne. */
+export const CAPS_RETRY_MS = 1200;
+
 export function useCameraControls(opts: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   /** Poruka radniku kad telefon ne dozvoljava ručno izoštravanje (jednom po sesiji). */
@@ -65,7 +75,12 @@ export function useCameraControls(opts: {
   zoomCapRef.current = zoom;
   zoomValueRef.current = zoomValue;
   const [torchSupported, setTorchSupported] = useState(false);
+  const torchSupportedRef = useRef(false);
+  torchSupportedRef.current = torchSupported;
   const [torchOn, setTorchOn] = useState(false);
+  // Generacija `attach`-a — obara zakasneli retry kad je kamera u međuvremenu
+  // puštena (pozadina, promena objektiva, zatvaranje skenera).
+  const genRef = useRef(0);
   const [focusRing, setFocusRing] = useState<FocusRing | null>(null);
   const [diag, setDiag] = useState<ScanDiag>({
     model: '?',
@@ -99,12 +114,21 @@ export function useCameraControls(opts: {
     }
   }, []);
 
-  /** Ljuska ovo zove kad je stream živ (posle `play()`). */
+  /**
+   * Ljuska ovo zove kad je stream živ. **Mora se zvati POSLE
+   * `applyAndroidPostStartTuning` (uz `await`), ne paralelno**: `applyConstraints`
+   * ZAMENJUJE skup ograničenja, pa bi tuning (ekspozicija + AF) i auto-zoom u
+   * trci gazili jedan drugog — i to baš na AF-slepim uređajima koje pokušavamo
+   * da popravimo.
+   *
+   * `generation` obara zakasneli retry kad je kamera u međuvremenu puštena.
+   */
   const attach = useCallback(
     async (track: MediaStreamTrack | null, info?: { lensPicked?: boolean }) => {
       trackRef.current = track;
       lensPickedRef.current = Boolean(info?.lensPicked);
       noFocusSaidRef.current = false;
+      const myGen = ++genRef.current;
       setTorchOn(false);
       if (!track) {
         setZoomCap(null);
@@ -117,6 +141,23 @@ export function useCameraControls(opts: {
       const cap = readZoomCapability(track);
       setZoomCap(cap);
       let zoomNow = cap?.current;
+      // RETRY kad capabilities kasne: na Androidu `getCapabilities()` ume da
+      // vrati prazan objekat dok se pipeline ne slegne. Bez ovoga bi se klizač
+      // NIKAD ne bi pojavio na uređaju koji sporo prijavljuje `zoom` — dakle
+      // popravka bi tiho promašila baš ciljni telefon.
+      if (!cap) {
+        window.setTimeout(() => {
+          const t = trackRef.current;
+          if (!t || genRef.current !== myGen || t.readyState !== 'live') return;
+          const late = readZoomCapability(t);
+          if (late) {
+            setZoomCap(late);
+            setZoomValue(late.current);
+          }
+          if (!torchSupportedRef.current) setTorchSupported(readTorchSupport(t));
+          refreshDiag();
+        }, CAPS_RETRY_MS);
+      }
       if (cap) {
         // KLJUČNO za tvrdo pravilo „uređaji koji rade se ne diraju": klizač kreće
         // od ZATEČENE vrednosti uređaja i ništa se ne primenjuje dok radnik ne
@@ -133,6 +174,13 @@ export function useCameraControls(opts: {
         }
       }
 
+      // `attach` je async (čeka primenu zoom-a i AF); ako je `detach` izvršen
+      // dok smo bili u letu, generacija se više ne poklapa — interval se tada NE
+      // sme postaviti, inače bi kucao nad puštenom kamerom do kraja sesije.
+      if (genRef.current !== myGen) {
+        stopAfKick();
+        return;
+      }
       if (shouldPeriodicAfKick(track)) {
         stopAfKick();
         afTimerRef.current = window.setInterval(() => {
@@ -148,6 +196,7 @@ export function useCameraControls(opts: {
   );
 
   const detach = useCallback(() => {
+    genRef.current++; // obara `attach` koji je u letu i zakasneli caps-retry
     stopAfKick();
     if (zoomTimerRef.current) {
       clearTimeout(zoomTimerRef.current);

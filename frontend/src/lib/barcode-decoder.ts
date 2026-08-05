@@ -38,6 +38,9 @@ import type {
   DecodeHintType as ZXDecodeHintType,
 } from '@zxing/library';
 import type { BrowserMultiFormatReader as ZXBrowserMultiFormatReader } from '@zxing/browser';
+// `device-model` NEMA nijedan import — namerno, da bi ga i ovaj modul i
+// `camera-controls` (koji uvozi odavde) čitali bez ciklusa.
+import { getDeviceModelHint } from './device-model';
 
 export type DecodeFormat = 'code_128' | 'code_39' | 'itf' | 'ean_13' | 'qr_code';
 
@@ -133,24 +136,27 @@ export function setDecodeModeOverride(mode: DecodeMode): void {
  * drugde je ubačeni kod USPAVAN (gejt vrati `null` → identičan tok kao pre).
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * PRESUDA 05.08.2026 — GEJT JE PREBAČEN NA OPT-IN (podrazumevano ISKLJUČEN).
+ * ISPRAVKA 05.08.2026 — GEJT SADA STVARNO RADI I U CHROME-U.
  *
  * Nenad je posle terenske probe prijavio „i dalje na A16 nišan ne radi". Merenje
- * zašto: gejt je bio uslovljen UA regexom `SM-A16x/SM-A17x`, a **Chrome na
- * Androidu od v110 šalje redukovan UA** (`Linux; Android 10; K`) — model se ne
- * vidi, pa se na A16 u Chrome-u gejt NIKAD nije ni upalio (isti nalaz je već
- * zaveden u `docs/OTVORENI_POSLOVI.md` C1). Model se vidi samo u Samsung
- * Internetu, koji UA ne redukuje.
+ * zašto: profil je čitan iz `navigator.userAgent`, a **Chrome na Androidu od
+ * v110 šalje redukovan UA** (`Linux; Android 10; K`) — model se ne vidi, pa se
+ * na A16 u Chrome-u gejt NIKAD nije ni upalio (isti nalaz je već bio zaveden u
+ * `docs/OTVORENI_POSLOVI.md` C1). Radio je samo u Samsung Internetu, koji UA ne
+ * redukuje — otud „radi na jednom telefonu, ne radi na drugom istom".
  *
- * Dakle gejt je do sada bio SKRIVENA PROMENLJIVA: na istom telefonu se palio ili
- * ne palio zavisno od pregledača, bez ijednog traga na ekranu. Dok se ne dokaže
- * MERENJEM da pomaže, podrazumevano je isključen — inače se svaka sledeća
- * terenska dijagnostika radi naslepo. Kod NIJE uklonjen: `'on'` ga pali za probu,
- * a `matchesReticleGateProfile()` drži profil spreman za povratak na automatiku.
- * Dijagnostički red u ljusci sada UVEK pokazuje da li je gejt aktivan.
+ * Popravka je da model stiže iz `lib/device-model` (UA-CH
+ * `getHighEntropyValues(['model'])`, greje se pri otvaranju skenera, pre
+ * `attach`-a), pa `matchesReticleGateProfile` presuđuje po PRAVOM modelu.
+ * Automatika po profilu ostaje — gašenje gejta bi vratilo prijavu od 04.08.
+ * („Samsung promaši sken za ~2 cm") tamo gde je gejt radio.
  *
- * Prekidač: sessionStorage `ss3_scan_roi_gate` = `'on'` | `'off'`. Čita se pri
- * KAČENJU dekodera — promena važi od sledećeg otvaranja skenera.
+ * Teren ga sada i vidi i menja bez konzole: dijagnostički red u svakoj ljusci
+ * pokazuje da li je aktivan, a dug pritisak na taj red otvara prekidače.
+ *
+ * Prekidač: sessionStorage `ss3_scan_roi_gate` = `'on'` (forsiraj i van profila)
+ * | `'off'` (kill-switch). Čita se pri KAČENJU dekodera — promena važi od
+ * sledećeg otvaranja skenera.
  */
 export function shouldLimitScanToReticle(): boolean {
   try {
@@ -158,19 +164,21 @@ export function shouldLimitScanToReticle(): boolean {
     if (v === 'on') return true;
     if (v === 'off') return false;
   } catch {
-    /* storage blokiran — ostaje podrazumevano isključeno */
+    /* storage blokiran — odluči po profilu */
   }
-  return false;
+  return matchesReticleGateProfile(getDeviceModelHint());
 }
 
 /**
- * Profil „potvrđeno problematičan model" (A16/A17) — DRŽI SE SPREMAN, ali se od
- * 05.08.2026 više ne koristi za automatsko paljenje nišan-gejta (v. gore).
- * Kad/ako se dokaže da gejt pomaže, ovde se vraća automatika — s tim da model
- * tada MORA da dođe iz `lib/camera-controls.getDeviceModelHint()` (UA-CH), jer
- * `navigator.userAgent` na Chrome-u model ne sadrži.
+ * Profil „potvrđeno problematičan model": A16 (`SM-A16x`) i A17 (`SM-A17x`).
  *
- * A26/S26/iPhone moraju ostati van profila (tvrd uslov 04.08.).
+ * `modelHint` MORA doći iz `lib/device-model.getDeviceModelHint()` — na Chrome-u
+ * `navigator.userAgent` model ne sadrži. UA se i dalje gleda kao rezerva (Samsung
+ * Internet ga zadržava, a UA-CH je asinhron pa u prvoj sesiji ume da kasni).
+ *
+ * Lista se širi SAMO po potvrđenoj prijavi po modelu; A26 potvrđeno radi bez
+ * gejta (Nenad, 04.08) — NE širiti na celu A-seriju. A26/S26/iPhone moraju
+ * ostati van profila (tvrd uslov 04.08.).
  */
 export function matchesReticleGateProfile(modelHint = ''): boolean {
   if (!isAndroidWeb()) return false; // iPhone/desktop: NIKAD (tvrd uslov)

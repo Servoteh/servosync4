@@ -1,6 +1,13 @@
 'use client';
 
+import { useRef, useState } from 'react';
 import { Flashlight } from 'lucide-react';
+import {
+  readScanFlag,
+  writeScanFlag,
+  type ScanFlag,
+  type ScanFlagValue,
+} from '@/lib/camera-controls';
 import type { FocusRing, ScanDiag } from '@/lib/use-camera-controls';
 
 /**
@@ -96,14 +103,104 @@ export function ScanFocusRing({ ring }: { ring: FocusRing | null }) {
  * `app <hash>` marker, radnika ne ometa, a Nenad ga pročita naglas.
  */
 export function ScanDiagLine({ diag, appVersion }: { diag: ScanDiag; appVersion?: string }) {
+  const [open, setOpen] = useState(false);
+  const holdRef = useRef(0);
+
+  // DUG PRITISAK (600 ms) otvara prekidače. Prekidači su do sada postojali samo
+  // u `sessionStorage`, a Nenad je NA TERENU — bez konzole nije mogao ni da ih
+  // upali ni da ih ugasi, pa se nije moglo izmeriti šta zapravo pomaže.
+  const startHold = () => {
+    holdRef.current = window.setTimeout(() => setOpen((v) => !v), 600);
+  };
+  const cancelHold = () => {
+    if (holdRef.current) {
+      clearTimeout(holdRef.current);
+      holdRef.current = 0;
+    }
+  };
+
   return (
-    <div className="tnums pointer-events-none select-text text-2xs leading-tight text-white/45">
-      {appVersion ? <span>app {appVersion} · </span> : null}
-      <span>{diag.model}</span>
-      <span> · soč: {diag.lens}</span>
-      <span> · AF: {diag.af}</span>
-      <span> · zum: {diag.zoom}</span>
-      <span> · nišan-gejt: {diag.roi ? 'DA' : 'ne'}</span>
+    <div className="pointer-events-auto">
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label="Dijagnostika skenera — dug pritisak otvara prekidače"
+        aria-expanded={open}
+        onPointerDown={startHold}
+        onPointerUp={cancelHold}
+        onPointerLeave={cancelHold}
+        onPointerCancel={cancelHold}
+        onContextMenu={(e) => e.preventDefault()} // dug pritisak ne sme da otvori meni sistema
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+        className="tnums select-text text-2xs leading-tight text-white/45"
+      >
+        {appVersion ? <span>app {appVersion} · </span> : null}
+        <span>{diag.model}</span>
+        <span> · soč: {diag.lens}</span>
+        <span> · AF: {diag.af}</span>
+        <span> · zum: {diag.zoom}</span>
+        <span> · nišan-gejt: {diag.roi ? 'DA' : 'ne'}</span>
+      </div>
+      {open && <ScanDebugSwitches onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
+
+const FLAG_LABELS: { key: ScanFlag; label: string }[] = [
+  { key: 'ss3_scan_roi_gate', label: 'Nišan-gejt (čitaj samo iz prozora)' },
+  { key: 'ss3_scan_autozoom', label: 'Auto zum 2× na startu' },
+  { key: 'ss3_scan_af_kick', label: 'Periodično izoštravanje' },
+];
+
+/**
+ * Terenski prekidači. Sve tri opcije imaju stanje `auto` (odluka po profilu
+ * uređaja), `uklj` i `isklj`. Vrednosti žive u `sessionStorage` i čitaju se pri
+ * KAČENJU dekodera, pa promena važi od sledećeg otvaranja skenera — zato je to
+ * i napisano na panelu, da se ne meri pogrešna stvar.
+ */
+function ScanDebugSwitches({ onClose }: { onClose: () => void }) {
+  const [, force] = useState(0);
+  const set = (key: ScanFlag, value: ScanFlagValue) => {
+    writeScanFlag(key, value);
+    force((n) => n + 1);
+  };
+
+  return (
+    <div className="mt-1 space-y-1.5 rounded-control bg-black/80 p-2 text-2xs text-white/80">
+      {FLAG_LABELS.map(({ key, label }) => {
+        const cur = readScanFlag(key);
+        return (
+          <div key={key} className="flex items-center justify-between gap-2">
+            <span className="flex-1">{label}</span>
+            <div className="flex gap-1">
+              {([null, 'on', 'off'] as ScanFlagValue[]).map((v) => (
+                <button
+                  key={String(v)}
+                  type="button"
+                  onClick={() => set(key, v)}
+                  aria-pressed={cur === v}
+                  className={`rounded-control px-2 py-0.5 ${
+                    cur === v ? 'bg-accent text-white' : 'bg-white/10 text-white/70'
+                  }`}
+                >
+                  {v === null ? 'auto' : v === 'on' ? 'uklj' : 'isklj'}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      <p className="text-white/50">
+        Promena važi od SLEDEĆEG otvaranja skenera — zatvori pa otvori ponovo.
+      </p>
+      <button type="button" onClick={onClose} className="rounded-control bg-white/10 px-2 py-0.5">
+        Zatvori
+      </button>
     </div>
   );
 }

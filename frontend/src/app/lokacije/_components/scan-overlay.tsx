@@ -773,6 +773,7 @@ export function ScanOverlay({
         // (kadar ostane mutan i dekoder „gluv"), pa posle uspešne primene ponovo
         // nateramo fokus. iOS/desktop to ne traže — tamo AF prati zoom sam.
         if (ok && !stopped && isAndroidChromeBrowser()) await applyAFBestEffort(track);
+        refreshScanDiag(value);
       }, 220);
     };
 
@@ -893,6 +894,21 @@ export function ScanOverlay({
       }
     };
 
+    /**
+     * Dijagnostički red za teren (05.08.2026) — v. `ScanDiagLine`. Zove se i
+     * posle promene zuma i posle tap-fokusa, ne samo na paljenju kamere: red
+     * koji se ne osvežava pokazuje zastarelo stanje baš dok se meri.
+     */
+    const refreshScanDiag = (zoomValue?: number) => {
+      setDiag(
+        buildScanDiag(getTrack(), {
+          lensPicked: Boolean(curDeviceId),
+          roiGate: shouldLimitScanToReticle(),
+          zoomValue,
+        }),
+      );
+    };
+
     const afterCameraReady = async (track: MediaStreamTrack | null) => {
       if (!track || stopped) return;
       detectTorch(track);
@@ -901,15 +917,7 @@ export function ScanOverlay({
       await refreshLensList(track);
       await setupZoom(track);
       reportDiag(track);
-      // Dijagnostički red za teren (05.08.2026) — v. `ScanDiagLine`. `pickedDeviceId`
-      // je izbor capability-pickera; `zoomValue` je ono što je `setupZoom` stvarno
-      // primenio (auto ~2×), ne zatečena vrednost sa uređaja.
-      setDiag(
-        buildScanDiag(track, {
-          lensPicked: Boolean(curDeviceId),
-          roiGate: shouldLimitScanToReticle(),
-        }),
-      );
+      refreshScanDiag();
       await autoSwitchBadLens(track);
     };
 
@@ -1296,6 +1304,7 @@ export function ScanOverlay({
         await new Promise((r) => setTimeout(r, 320));
         await safeApplyFlat(track, { focusMode: 'continuous' }, isAndroidWebPlatform());
       }
+      refreshScanDiag(); // `focusMode` se posle tapa menja — red mora da to pokaže
     };
 
     // ── Izloži imperativne kontrole ka JSX handlerima ───────────────────────

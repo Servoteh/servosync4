@@ -173,6 +173,7 @@ export function ScanOverlay({
   const [torchSupported, setTorchSupported] = useState(false);
   const [zoom, setZoom] = useState<{ min: number; max: number; step: number; value: number } | null>(null);
   const [diag, setDiag] = useState<ScanDiag | null>(null);
+  const lensPickedRef = useRef(false);
   const [chips, setChips] = useState<{ barcode: string; label: string }[]>([]);
   // `ok:false` = tap primljen, ali uređaj ne podržava ručno izoštravanje (v. `tapFocus`).
   const [focusRing, setFocusRing] = useState<{
@@ -460,6 +461,7 @@ export function ScanOverlay({
           /* capabilities nepodržane — skener i dalje radi bez torch/zoom */
         }
         // Dijagnostički red za teren (05.08.2026) — v. `ScanDiagLine`.
+        lensPickedRef.current = Boolean(deviceId);
         setDiag(
           buildScanDiag(track ?? null, {
             lensPicked: Boolean(deviceId),
@@ -570,6 +572,18 @@ export function ScanOverlay({
     } catch {
       /* ignore */
     }
+    refreshDiag(v);
+  }
+
+  /** Dijagnostički red mora da prati stanje, ne samo trenutak paljenja kamere. */
+  function refreshDiag(zoomValue?: number) {
+    setDiag(
+      buildScanDiag(trackRef.current, {
+        lensPicked: lensPickedRef.current,
+        roiGate: shouldLimitScanToReticle(),
+        zoomValue,
+      }),
+    );
   }
 
   /**
@@ -618,6 +632,7 @@ export function ScanOverlay({
     const id = Date.now();
     setFocusRing({ ...at, id, ok: applied });
     window.setTimeout(() => setFocusRing((r) => (r?.id === id ? null : r)), 600);
+    refreshDiag(); // `focusMode` se posle tapa menja — red mora da to pokaže
   }
 
   async function onPickPhoto(file: File) {

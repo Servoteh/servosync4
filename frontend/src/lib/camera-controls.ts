@@ -35,74 +35,14 @@
  */
 
 import { isAndroidWeb, isIOSWebKit, safeApplyFlatCompat } from './barcode-decoder';
+import { getDeviceModelHint, primeDeviceModelHint } from './device-model';
 
-// ── Model uređaja: UA-CH, jer Chrome na Androidu KRIJE model u UA ───────────
-
-/**
- * Chrome na Androidu od v110 šalje redukovan UA (`Linux; Android 10; K`) — model
- * se NE VIDI, pa svaki gejt po imenu modela tamo tiho ne radi (registar
- * `docs/OTVORENI_POSLOVI.md` C1). Pravi model se dobija asinhrono preko
- * `navigator.userAgentData.getHighEntropyValues(['model'])`. Rezultat kešujemo u
- * modulu i grejemo ga ČIM se skener otvori, da bude spreman pre `attach`-a
- * dekodera (getUserMedia ionako traje stotinama ms).
- *
- * Samsung Internet zadržava model u UA — tamo radi i sinhroni put.
- */
-let modelHint = '';
-let modelHintState: 'idle' | 'pending' | 'done' = 'idle';
-
-interface UADataLike {
-  getHighEntropyValues?: (hints: string[]) => Promise<{ model?: string }>;
-}
-
-function modelFromUaString(): string {
-  if (typeof navigator === 'undefined') return '';
-  const u = navigator.userAgent || '';
-  // Samsung Internet / stariji Chrome: `... ; SM-A165F Build/...`
-  const m = /;\s*([A-Za-z0-9_.\-+ ]{2,40}?)\s*(?:Build\/|\))/.exec(u);
-  const raw = (m?.[1] ?? '').trim();
-  // `K` je Chrome-ov zamenski model posle UA-redukcije — nije informacija.
-  if (!raw || raw === 'K' || /^Android/i.test(raw)) return '';
-  return raw;
-}
-
-/** Pokreni razrešavanje modela (fire-and-forget). Zvati na otvaranju skenera. */
-export function primeDeviceModelHint(): void {
-  if (modelHintState !== 'idle') return;
-  modelHintState = 'pending';
-  const fromUa = modelFromUaString();
-  if (fromUa) modelHint = fromUa;
-  try {
-    const uad = (navigator as unknown as { userAgentData?: UADataLike }).userAgentData;
-    if (!uad?.getHighEntropyValues) {
-      modelHintState = 'done';
-      return;
-    }
-    void uad
-      .getHighEntropyValues(['model'])
-      .then((v) => {
-        const m = String(v?.model ?? '').trim();
-        if (m && m !== 'K') modelHint = m;
-      })
-      .catch(() => {
-        /* best-effort — ostaje UA fallback */
-      })
-      .finally(() => {
-        modelHintState = 'done';
-      });
-  } catch {
-    modelHintState = 'done';
-  }
-}
-
-/** Model uređaja ako je poznat (npr. `SM-A165F`), inače `''`. */
-export function getDeviceModelHint(): string {
-  return modelHint;
-}
+export { getDeviceModelHint, primeDeviceModelHint };
 
 /** Kratka oznaka za dijagnostički red: model ili `UA-skriven`. */
 export function deviceModelLabel(): string {
-  if (modelHint) return modelHint;
+  const m = getDeviceModelHint();
+  if (m) return m;
   if (typeof navigator === 'undefined') return '?';
   if (isIOSWebKit()) return 'iOS';
   return isAndroidWeb() ? 'Android(UA-skriven)' : 'desktop';
@@ -110,7 +50,9 @@ export function deviceModelLabel(): string {
 
 /** Samsung A16/A17 profil — potvrđeno problematični modeli (04.08./05.08.). */
 export function matchesSamsungAProblemModel(): boolean {
-  const hay = `${modelHint} ${typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''}`;
+  const hay = `${getDeviceModelHint()} ${
+    typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
+  }`;
   return /\bSM-A1[67]\d/i.test(hay);
 }
 
@@ -168,15 +110,22 @@ export interface ZoomCap {
 }
 
 /**
- * Zoom opseg ili `null` (nema zoom-a / platforma bez pouzdanog zoom-a).
- * `current` je ZATEČENA vrednost — pozivalac je koristi kao početnu poziciju
- * klizača, čime se uređajima koji rade ništa ne menja.
+ * Da li je zoom KLIZAČ sakriven odlukom platforme (1.0 paritet: Android bez
+ * Chrome-a — Samsung Internet, Firefox — nema pouzdan hardverski zoom).
+ * Hardver i dalje može da ima zoom; ovo je odluka o UI-ju, ne o sposobnosti.
  */
-export function readZoomCapability(track: MediaStreamTrack | null): ZoomCap | null {
+export function isZoomControlHiddenByPlatform(): boolean {
+  return isTorchZoomHiddenPlatform() && !isAndroidChromeBrowser();
+}
+
+/**
+ * Zoom opseg kakav UREĐAJ prijavljuje, BEZ platformskog gejta — samo za
+ * dijagnostiku. Dijagnostika mora da govori istinu o hardveru; ako ovde
+ * primenimo gejt klizača, red bi na Samsung Internetu pisao „zum: nema" iako
+ * reversi ljuska tamo stvarno primeni 2× (i tako je i bilo pre ove ispravke).
+ */
+export function readZoomCapabilityRaw(track: MediaStreamTrack | null): ZoomCap | null {
   if (!track) return null;
-  // 1.0 paritet: Android bez Chrome-a (Samsung Internet, Firefox) nema pouzdan
-  // hardverski zoom — tamo se UI ne prikazuje uopšte.
-  if (isTorchZoomHiddenPlatform() && !isAndroidChromeBrowser()) return null;
   const z = caps(track).zoom;
   if (!z || typeof z !== 'object') return null;
   const min = Number(z.min ?? 1);
@@ -193,10 +142,19 @@ export function readZoomCapability(track: MediaStreamTrack | null): ZoomCap | nu
   };
 }
 
+/**
+ * Zoom opseg za KLIZAČ: hardver + platformski gejt. `current` je ZATEČENA
+ * vrednost — pozivalac je koristi kao početnu poziciju klizača, čime se
+ * uređajima koji rade ništa ne menja.
+ */
+export function readZoomCapability(track: MediaStreamTrack | null): ZoomCap | null {
+  if (isZoomControlHiddenByPlatform()) return null;
+  return readZoomCapabilityRaw(track);
+}
+
 /** Primeni zoom (bez debounce-a — debounce drži hook/pozivalac). */
 export async function applyZoom(track: MediaStreamTrack | null, value: number): Promise<boolean> {
-  if (!track) return false;
-  if (isTorchZoomHiddenPlatform() && !isAndroidChromeBrowser()) return false;
+  if (!track || isZoomControlHiddenByPlatform()) return false;
   return safeApplyFlatCompat(track, { zoom: value });
 }
 
@@ -245,12 +203,23 @@ export function currentFocusMode(track: MediaStreamTrack | null): string {
  *
  * Posledica: S26 (izlaže auto/continuous) i iPhone (nije Android) su VAN profila
  * — na njima se ništa ne menja, što je tvrd uslov 04.08.
+ *
+ * 🔴 PRAZAN `focusMode` NIJE PRESUDA (ispravka posle review-a): `getCapabilities()`
+ * na Androidu ume da vrati prazan objekat dok se pipeline ne slegne — ista stvar
+ * zbog koje zoom/torch čitamo tek posle tuning-a. Kad bi „nema modova" značilo
+ * „AF-slep", S26 i Honor bi u montaži/održavanju dobili auto 2× + `refocusAfterZoom`
+ * (dakle AF lock na startu) samo zato što smo pitali prerano — pravo obaranje
+ * uređaja koji rade. 1.0 na istom mestu radi SUPROTNO: kad `modes` nije izložen,
+ * `ensureProperAFModeBestEffort` samo loguje i IZLAZI (barcode.js:593-598).
+ * A16 se time ne gubi — pokriva ga `matchesSamsungAProblemModel()` grana
+ * u `shouldAutoZoomOnStart`.
  */
 export function isAfBlindAndroid(track: MediaStreamTrack | null): boolean {
   if (!track || !isAndroidWeb()) return false;
-  const modes = readFocusModes(track);
   const cur = currentFocusMode(track);
   if (cur === 'auto' || cur === 'continuous') return false;
+  const modes = readFocusModes(track);
+  if (!modes.length) return false; // caps nisu izložene → nema presude (1.0 paritet)
   return !modes.includes('continuous') && !modes.includes('auto');
 }
 
@@ -310,8 +279,11 @@ export async function tapFocusAt(
       pointsOfInterest: [{ x, y }],
     });
     if (!ok) return false;
+    // 320 ms se čeka BEZUSLOVNO (1.0 barcode.js:1255): to je vreme da AF ciklus
+    // odradi posao. Uslovljavanje te pauze `continuous` granom značilo bi da na
+    // Android Chrome-u odmah javljamo „izoštreno" dok objektiv još putuje.
+    await new Promise((r) => setTimeout(r, 320));
     if (modes.includes('continuous') && !isAndroidChromeBrowser()) {
-      await new Promise((r) => setTimeout(r, 320));
       await safeApplyFlatCompat(track, { focusMode: 'continuous' });
     }
     return true;
@@ -334,7 +306,12 @@ export async function refocusAfterZoom(track: MediaStreamTrack | null): Promise<
 
 // ── Terenski prekidači (sessionStorage, isti obrazac kao ss3_scan_decode_mode) ─
 
-function flag(key: string): 'on' | 'off' | null {
+/** Prekidači koje teren pali/gasi iz dijagnostičkog panela (v. `ScanDiagLine`). */
+export const SCAN_FLAGS = ['ss3_scan_roi_gate', 'ss3_scan_autozoom', 'ss3_scan_af_kick'] as const;
+export type ScanFlag = (typeof SCAN_FLAGS)[number];
+export type ScanFlagValue = 'on' | 'off' | null;
+
+export function readScanFlag(key: ScanFlag | string): ScanFlagValue {
   try {
     const v = sessionStorage.getItem(key);
     return v === 'on' || v === 'off' ? v : null;
@@ -342,6 +319,18 @@ function flag(key: string): 'on' | 'off' | null {
     return null;
   }
 }
+
+/** `null` = vrati na automatiku (obriši ključ). */
+export function writeScanFlag(key: ScanFlag, value: ScanFlagValue): void {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    /* storage blokiran — nema šta da se upiše */
+  }
+}
+
+const flag = readScanFlag;
 
 /**
  * Da li na startu automatski postaviti ~2× zoom.
@@ -407,8 +396,12 @@ export function buildScanDiag(
 ): ScanDiag {
   const modes = readFocusModes(track);
   const cur = currentFocusMode(track);
-  const cap = readZoomCapability(track);
+  // RAW opseg: dijagnostika opisuje HARDVER. Kroz gejtovani `readZoomCapability`
+  // bi na Samsung Internetu pisalo „nema" iako reversi ljuska tamo stvarno
+  // primeni 2× — red bi lagao baš na uređaju koji pokušavamo da izmerimo.
+  const cap = readZoomCapabilityRaw(track);
   const zoomNow = info?.zoomValue ?? cap?.current;
+  const hidden = isZoomControlHiddenByPlatform();
   return {
     model: deviceModelLabel(),
     lens: track ? (info?.lensPicked ? 'picker' : 'podrazumevano') : '—',
@@ -418,7 +411,9 @@ export function buildScanDiag(
         }`
       : '—',
     zoom: cap
-      ? `${(zoomNow ?? cap.min).toFixed(1)}× (${cap.min.toFixed(1)}–${cap.max.toFixed(1)})`
+      ? `${(zoomNow ?? cap.min).toFixed(1)}× (${cap.min.toFixed(1)}–${cap.max.toFixed(1)})${
+          hidden ? ', klizač skriven' : ''
+        }`
       : 'nema',
     roi: Boolean(info?.roiGate),
   };
