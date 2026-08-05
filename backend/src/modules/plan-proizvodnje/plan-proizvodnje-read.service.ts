@@ -327,10 +327,16 @@ export class PlanProizvodnjeReadService {
       conds.push(
         Prisma.sql`(broj_crteza ILIKE ${"%" + term + "%"} OR rn_ident_broj ILIKE ${"%" + term + "%"} OR naziv_dela ILIKE ${"%" + term + "%"})`,
       );
+    // Poredak (070/26): grupa (hala → mašina), pa RUČNI redosled smene, pa planirani
+    // početak. Ručni ključ je PRVI otkad se redovi ganta ređaju prevlačenjem (isti
+    // `shift_sort_order` i isti `/overlays/reorder` kao tab „Po mašini") — dok je
+    // planirani početak bio primaran, upisan ručni redosled nije imao gde da se vidi.
+    // Grupni ključevi (hall, effective_machine_code) ostaju prva dva: na njima počiva to
+    // što `LIMIT` seče NAJVIŠE JEDNU mašinu (FE zabranjuje prevlačenje u toj grupi).
     const sort = sve
       ? Prisma.sql`ORDER BY rn_ident_broj ASC, operacija ASC`
       : Prisma.sql`ORDER BY hall ASC NULLS LAST, effective_machine_code ASC,
-               planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST,
+               shift_sort_order ASC NULLS LAST, planned_start_at ASC NULLS LAST,
                rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC`;
     // C2: sklop lateral se kači na VEĆ isečen skup (posle LIMIT) — v. SKLOP_JOIN doc.
     // Spoljni ${sort} je ponovljen jer SQL ne garantuje redosled podupita kroz JOIN.

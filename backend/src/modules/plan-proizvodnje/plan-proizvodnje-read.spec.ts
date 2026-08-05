@@ -211,6 +211,23 @@ describe("gant feed (046/26)", () => {
     expect(sql).toContain("effective_machine_code IS NOT NULL");
   });
 
+  /**
+   * 070/26 — redovi ganta se ređaju RUČNO (prevlačenje), pa je `shift_sort_order` PRVI
+   * ključ posle grupe. Dva uslova iz kojih raste ponašanje FE-a:
+   *   • ručni ključ pre `planned_start_at` (inače prevučeni red nema gde da se vidi),
+   *   • grupa (hall, effective_machine_code) ostaje ispred svega → `LIMIT` seče najviše
+   *     JEDNU mašinu, pa FE sme da zabrani prevlačenje samo u toj poslednjoj grupi.
+   */
+  it("gantt() ređa po grupi pa po RUČNOM redosledu smene (pre planiranog početka)", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com");
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain(
+      "ORDER BY hall ASC NULLS LAST, effective_machine_code ASC, shift_sort_order ASC NULLS LAST, planned_start_at ASC NULLS LAST",
+    );
+    expect(sql).not.toContain("planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST");
+  });
+
   it("gantt(hall='-') filtrira grupu bez hale", async () => {
     const { svc, calls } = makeGanttSvc();
     await svc.gantt("pm@servoteh.com", { hall: "-" });

@@ -273,16 +273,37 @@ export interface HallGroup {
   machines: MachineGroup[];
 }
 
+/** Hala reda (sentinel `NO_HALL` = „Bez hale"). */
+export function hallOf(r: GanttRow): string {
+  return r.hall ?? NO_HALL;
+}
+/** Efektivna mašina reda (posle reassign-a); prazna → sentinel labela grupe. */
+export function machineOf(r: GanttRow): string {
+  return r.effective_machine_code ?? '(bez mašine)';
+}
+/**
+ * Ključ grupe MAŠINE (hala + mašina) — isti ključ koji gradi `groupRows` i po kom
+ * prevlačenje (070/26) skuplja stavke za renumeraciju. Razdvajač je `NO_HALL` sentinel
+ * (￿), znak koji ne može da se pojavi ni u nazivu hale ni u šifri mašine.
+ */
+export function makeGroupKey(hall: string, machine: string): string {
+  return `${hall}${NO_HALL}${machine}`;
+}
+
+export function groupKey(r: GanttRow): string {
+  return makeGroupKey(hallOf(r), machineOf(r));
+}
+
 /**
  * Grupisanje Hala → mašina, uz stabilan poredak: hale abecedno („Bez hale" uvek
- * poslednja preko `NO_HALL` sentinela), mašine abecedno, stavke po planiranom početku
- * pa po ručnom redosledu smene (`shift_sort_order`) — isti kanon kao ostali tabovi.
+ * poslednja preko `NO_HALL` sentinela), mašine abecedno, stavke po `compareRows`
+ * (ručni redosled smene `shift_sort_order` je master — v. dole).
  */
 export function groupRows(rows: GanttRow[]): HallGroup[] {
   const byHall = new Map<string, Map<string, MachineGroup>>();
   for (const r of rows) {
-    const hall = r.hall ?? NO_HALL;
-    const machine = r.effective_machine_code ?? '(bez mašine)';
+    const hall = hallOf(r);
+    const machine = machineOf(r);
     let machines = byHall.get(hall);
     if (!machines) {
       machines = new Map();
@@ -304,14 +325,50 @@ export function groupRows(rows: GanttRow[]): HallGroup[] {
   return out.sort((a, b) => a.hall.localeCompare(b.hall, 'sr', { numeric: true }));
 }
 
-function compareRows(a: GanttRow, b: GanttRow): number {
-  const sa = a.planned_start_at ?? '';
-  const sb = b.planned_start_at ?? '';
-  if (sa !== sb) return sa < sb ? -1 : 1;
+/**
+ * Poredak stavki UNUTAR mašine (zahtev 070/26 — ogledalo BE `gantt()` ORDER BY):
+ *   1. RUČNI redosled smene `shift_sort_order` (NULLS LAST) — master rasporeda,
+ *   2. planirani početak (NULLS LAST) — automatska osa za stavke bez ručnog reda,
+ *   3. RN (deterministički tie-break).
+ *
+ * ⚠️ Redosled ključeva 1↔2 je zamenjen 070/26: dok je planirani početak bio primaran,
+ * prevlačenje redova NIJE moglo da se vidi (svaki bar ima svoj datum, pa bi upisani
+ * `shift_sort_order` bio nem). Ručni redosled je isti podatak koji piše i tab „Po
+ * mašini" (`/overlays/reorder`) — dva prikaza sad ređaju po ISTOM ključu.
+ */
+export function compareRows(a: GanttRow, b: GanttRow): number {
   const oa = a.shift_sort_order ?? Number.MAX_SAFE_INTEGER;
   const ob = b.shift_sort_order ?? Number.MAX_SAFE_INTEGER;
   if (oa !== ob) return oa - ob;
+  const sa = a.planned_start_at ?? '';
+  const sb = b.planned_start_at ?? '';
+  if (sa !== sb) return sa === '' ? 1 : sb === '' ? -1 : sa < sb ? -1 : 1;
   return String(a.rn_ident_broj ?? '').localeCompare(String(b.rn_ident_broj ?? ''), 'sr', { numeric: true });
+}
+
+/**
+ * Novi redosled liste posle prevlačenja (070/26) — DOSLOVNO isti račun kao „Po mašini"
+ * (`ops-table.tsx` `onDrop`): `after` = puštanje ISPOD polovine reda-mete (umetni POSLE),
+ * a kompenzacija `if (from < to) to -= 1` je obavezna jer se prevučeni red prvo ukloni
+ * (`splice(from, 1)`), pa se svi indeksi desno od njega pomere za 1 (bez nje je
+ * off-by-one). `null` = nema pomeraja → pozivalac NE šalje upis.
+ */
+export function reorderByDrop(
+  list: GanttRow[],
+  dragKey: string,
+  overKey: string,
+  after: boolean,
+): GanttRow[] | null {
+  const from = list.findIndex((r) => rowKey(r) === dragKey);
+  let to = list.findIndex((r) => rowKey(r) === overKey);
+  if (from < 0 || to < 0) return null;
+  if (after) to += 1;
+  if (from < to) to -= 1;
+  if (from === to) return null;
+  const out = [...list];
+  const [moved] = out.splice(from, 1);
+  out.splice(to, 0, moved);
+  return out;
 }
 
 /**

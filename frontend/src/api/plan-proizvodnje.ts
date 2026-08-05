@@ -769,6 +769,57 @@ export const useOptimisticReorder = () => {
   });
 };
 
+/**
+ * Optimistički reorder redova GANTA (zahtev 070/26) — ISTI endpoint i ISTI ključ upisa
+ * kao „Po mašini": `/overlays/reorder` upisuje `shift_sort_order` = 1..n redom kojim
+ * stignu stavke. Razlika je samo keš koji se pipa: gant čita `KEYS.gantt`, pa se
+ * optimistički upisuju NOVE vrednosti `shift_sort_order` u redove (poredak se iz njih
+ * izvodi u `groupRows`/`compareRows`, pa se prikaz pomeri odmah, bez čekanja mreže).
+ *
+ * `orderedRows` je PUN red mašine (i stavke van plana), ne samo vidljivi isečak — inače
+ * bi renumeracija 1..n nad podskupom pomerila stavke koje planer u gantu ne vidi, a koje
+ * „Po mašini" prikazuje (isti `shift_sort_order`, dva prikaza).
+ *
+ * Greška → rollback na zatečeno stanje + ⚠ toast; `onSettled` osvežava i gant i
+ * „Po mašini" (jedan podatak, dva potrošača).
+ */
+export const useGanttReorder = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { orderedRows: GanttRow[] }) =>
+      post('/overlays/reorder', {
+        items: v.orderedRows.map((x) => ({ workOrderId: x.work_order_id, lineId: x.line_id })),
+      }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: KEYS.gantt });
+      const prev = qc.getQueriesData<unknown>({ queryKey: KEYS.gantt }).map(([k, d]) => [k, d] as const);
+      const order = new Map(v.orderedRows.map((r, i) => [opKey(r), i + 1]));
+      for (const [key, data] of qc.getQueriesData<unknown>({ queryKey: KEYS.gantt })) {
+        const d = data as { data?: GanttRow[] } | undefined;
+        if (!d || !Array.isArray(d.data)) continue;
+        qc.setQueryData(key, {
+          ...d,
+          data: d.data.map((r) => {
+            const n = order.get(opKey(r));
+            return n === undefined ? r : { ...r, shift_sort_order: n };
+          }),
+        });
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
+      if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
+      toast('⚠ Redosled nije sačuvan — osvežavam.');
+    },
+    onSuccess: () => toast('✓ Redosled sačuvan'),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: KEYS.gantt });
+      void qc.invalidateQueries({ queryKey: KEYS.operations });
+    },
+  });
+};
+
 /* ── Urgency ── */
 
 export const useSetUrgent = () =>
