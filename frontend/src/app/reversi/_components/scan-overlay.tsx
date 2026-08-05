@@ -15,13 +15,21 @@ import {
   isIOSWebKit,
   isSamsungInternetBrowser,
   preloadVideoDecoder,
-  safeApplyFlatCompat,
+  shouldLimitScanToReticle,
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
 import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-picker';
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 import { ScanHint } from '@/components/ui-kit/scan-hint';
+import {
+  buildScanDiag,
+  mapPointerToVideoNormalized,
+  primeDeviceModelHint,
+  tapFocusAt,
+  type ScanDiag,
+} from '@/lib/camera-controls';
+import { ScanDiagLine } from '@/components/ui-kit/scan-camera-controls';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
 import { useScanPanelInset } from '@/lib/use-scan-panel-inset';
 import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
@@ -164,6 +172,7 @@ export function ScanOverlay({
   const [torchOn, setTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(false);
   const [zoom, setZoom] = useState<{ min: number; max: number; step: number; value: number } | null>(null);
+  const [diag, setDiag] = useState<ScanDiag | null>(null);
   const [chips, setChips] = useState<{ barcode: string; label: string }[]>([]);
   // `ok:false` = tap primljen, ali uređaj ne podržava ručno izoštravanje (v. `tapFocus`).
   const [focusRing, setFocusRing] = useState<{
@@ -256,6 +265,9 @@ export function ScanOverlay({
     // Dekoder chunk (ZXing ~250KB) se vuče LAZY — zagrej ga paralelno sa kamerom
     // (Android od 1.0 kanona 3cffea5 ide na ZXing put, ne na BarcodeDetector).
     preloadVideoDecoder(LIVE_FORMATS);
+    // Model uređaja se razrešava ASINHRONO (UA-CH) — Chrome ga u UA krije; grej ga
+    // odmah da dijagnostički red ne pokaže „nepoznato" u prvoj sekundi.
+    primeDeviceModelHint();
 
     let stopped = false;
     let decoder: VideoDecoderHandle | null = null;
@@ -447,6 +459,13 @@ export function ScanOverlay({
         } catch {
           /* capabilities nepodržane — skener i dalje radi bez torch/zoom */
         }
+        // Dijagnostički red za teren (05.08.2026) — v. `ScanDiagLine`.
+        setDiag(
+          buildScanDiag(track ?? null, {
+            lensPicked: Boolean(deviceId),
+            roiGate: shouldLimitScanToReticle(),
+          }),
+        );
         if (aborted()) return;
 
         const handle = await attachVideoDecoder({
@@ -579,25 +598,16 @@ export function ScanOverlay({
     const v = videoRef.current;
     if (!track || !v) return;
     const rect = v.getBoundingClientRect();
-    const caps = (track.getCapabilities?.() ?? {}) as CamCapabilities;
-    const modes = Array.isArray(caps.focusMode) ? caps.focusMode.map(String) : [];
     const at = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
-    let applied = false;
-    if (modes.includes('single-shot') && 'pointsOfInterest' in caps) {
-      const x = (e.clientX - rect.left) / rect.width;
-      const y = (e.clientY - rect.top) / rect.height;
-      applied = await safeApplyFlatCompat(track, {
-        focusMode: 'single-shot',
-        pointsOfInterest: [{ x, y }],
-      });
-      if (applied && modes.includes('continuous')) {
-        await new Promise((r) => setTimeout(r, 320));
-        await safeApplyFlatCompat(track, { focusMode: 'continuous' });
-      }
-    } else if (modes.includes('continuous')) {
-      applied = await safeApplyFlatCompat(track, { focusMode: 'continuous' });
-    }
+    // ISPRAVKA 05.08.2026 — dva odstupanja od 1.0 su ovde gasila tap-fokus na
+    // Androidu (v. `lib/camera-controls.tapFocusAt`):
+    //  1. tačka interesa se računala kao sirov odnos u `getBoundingClientRect`,
+    //     bez `object-fit: cover` mapiranja — telefon je izoštravao POGREŠNO mesto;
+    //  2. `continuous` se vraćao i na Android Chrome-u, gde 1.0 to NAMERNO
+    //     preskače (barcode.js:1256) jer zaključa mutan fokus za blisku nalepnicu.
+    const m = mapPointerToVideoNormalized(v, e.clientX, e.clientY);
+    const applied = m ? await tapFocusAt(track, m.x, m.y) : false;
     // Prsten je POTVRDA IZOŠTRAVANJA, ne potvrda tapa — na iOS-u se bez primenjenog
     // constraint-a ne crta ništa, pa radnik odmah zna da mora da menja rastojanje.
     if (!applied && !isAndroidWeb()) return;
@@ -818,6 +828,7 @@ export function ScanOverlay({
             }}
           />
         </form>
+        {cameraOn && diag && <ScanDiagLine diag={diag} />}
       </div>
     </div>
   );

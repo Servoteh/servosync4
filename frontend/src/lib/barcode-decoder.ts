@@ -132,10 +132,25 @@ export function setDecodeModeOverride(mode: DecodeMode): void {
  * (camera-picker obrazac — A-serija je i tamo problematični teren), svuda
  * drugde je ubačeni kod USPAVAN (gejt vrati `null` → identičan tok kao pre).
  *
- * Debug prekidač (terenska proba, isti obrazac kao `ss3_scan_decode_mode`):
- * sessionStorage `ss3_scan_roi_gate` = `'on'` (forsiraj i van A-serije) /
- * `'off'` (ugasi i na A-seriji). Čita se pri KAČENJU dekodera — promena važi
- * od sledećeg otvaranja skenera.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PRESUDA 05.08.2026 — GEJT JE PREBAČEN NA OPT-IN (podrazumevano ISKLJUČEN).
+ *
+ * Nenad je posle terenske probe prijavio „i dalje na A16 nišan ne radi". Merenje
+ * zašto: gejt je bio uslovljen UA regexom `SM-A16x/SM-A17x`, a **Chrome na
+ * Androidu od v110 šalje redukovan UA** (`Linux; Android 10; K`) — model se ne
+ * vidi, pa se na A16 u Chrome-u gejt NIKAD nije ni upalio (isti nalaz je već
+ * zaveden u `docs/OTVORENI_POSLOVI.md` C1). Model se vidi samo u Samsung
+ * Internetu, koji UA ne redukuje.
+ *
+ * Dakle gejt je do sada bio SKRIVENA PROMENLJIVA: na istom telefonu se palio ili
+ * ne palio zavisno od pregledača, bez ijednog traga na ekranu. Dok se ne dokaže
+ * MERENJEM da pomaže, podrazumevano je isključen — inače se svaka sledeća
+ * terenska dijagnostika radi naslepo. Kod NIJE uklonjen: `'on'` ga pali za probu,
+ * a `matchesReticleGateProfile()` drži profil spreman za povratak na automatiku.
+ * Dijagnostički red u ljusci sada UVEK pokazuje da li je gejt aktivan.
+ *
+ * Prekidač: sessionStorage `ss3_scan_roi_gate` = `'on'` | `'off'`. Čita se pri
+ * KAČENJU dekodera — promena važi od sledećeg otvaranja skenera.
  */
 export function shouldLimitScanToReticle(): boolean {
   try {
@@ -143,14 +158,24 @@ export function shouldLimitScanToReticle(): boolean {
     if (v === 'on') return true;
     if (v === 'off') return false;
   } catch {
-    /* storage blokiran — odluči po profilu */
+    /* storage blokiran — ostaje podrazumevano isključeno */
   }
+  return false;
+}
+
+/**
+ * Profil „potvrđeno problematičan model" (A16/A17) — DRŽI SE SPREMAN, ali se od
+ * 05.08.2026 više ne koristi za automatsko paljenje nišan-gejta (v. gore).
+ * Kad/ako se dokaže da gejt pomaže, ovde se vraća automatika — s tim da model
+ * tada MORA da dođe iz `lib/camera-controls.getDeviceModelHint()` (UA-CH), jer
+ * `navigator.userAgent` na Chrome-u model ne sadrži.
+ *
+ * A26/S26/iPhone moraju ostati van profila (tvrd uslov 04.08.).
+ */
+export function matchesReticleGateProfile(modelHint = ''): boolean {
   if (!isAndroidWeb()) return false; // iPhone/desktop: NIKAD (tvrd uslov)
-  // SAMO potvrđeno problematični modeli: A16 (SM-A16x) i A17 (SM-A17x).
-  // Lista se širi SAMO po potvrđenoj prijavi po modelu; A26 potvrđeno radi bez
-  // gejta (Nenad, 04.08) — NE širiti na celu A-seriju. S-serija (SM-S…),
-  // Note (SM-N…), tableti (SM-T…) i ostali Androidi ne prolaze.
-  return /\bSM-A1[67]\d/i.test(typeof navigator !== 'undefined' ? navigator.userAgent || '' : '');
+  const hay = `${modelHint} ${typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''}`;
+  return /\bSM-A1[67]\d/i.test(hay);
 }
 
 /** Pravougaonik u VIDEO pikselima (intrinsic `videoWidth`×`videoHeight` prostor). */

@@ -28,6 +28,7 @@ import {
   isCameraDecodeSupported,
   pickPreferredRaw,
   preloadVideoDecoder,
+  shouldLimitScanToReticle,
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
@@ -42,6 +43,8 @@ import {
   looksLikeOperationBarcode,
   OPERATION_BARCODE_HINT,
 } from '@/lib/loc-barcode-shape';
+import { buildScanDiag, primeDeviceModelHint, type ScanDiag } from '@/lib/camera-controls';
+import { ScanDiagLine } from '@/components/ui-kit/scan-camera-controls';
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 import { ScanHint } from '@/components/ui-kit/scan-hint';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
@@ -406,6 +409,7 @@ export function ScanOverlay({
   const [statusKind, setStatusKind] = useState<StatusKind>('info');
   const [manual, setManual] = useState('');
   const [cameraOn, setCameraOn] = useState(false);
+  const [diag, setDiag] = useState<ScanDiag | null>(null);
   const [iosBlocker, setIosBlocker] = useState<string | null>(null);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
@@ -897,6 +901,15 @@ export function ScanOverlay({
       await refreshLensList(track);
       await setupZoom(track);
       reportDiag(track);
+      // Dijagnostički red za teren (05.08.2026) — v. `ScanDiagLine`. `pickedDeviceId`
+      // je izbor capability-pickera; `zoomValue` je ono što je `setupZoom` stvarno
+      // primenio (auto ~2×), ne zatečena vrednost sa uređaja.
+      setDiag(
+        buildScanDiag(track, {
+          lensPicked: Boolean(curDeviceId),
+          roiGate: shouldLimitScanToReticle(),
+        }),
+      );
       await autoSwitchBadLens(track);
     };
 
@@ -1360,6 +1373,8 @@ export function ScanOverlay({
     // bez ovoga prvi sken na pogonskoj mreži čekao mrežu sa upaljenim preview-om.
     // I „Iz slike" put koristi isti chunk, pa se isplati i kad je kamera blokirana.
     preloadVideoDecoder(decodeFormats());
+    // Model uređaja se razrešava ASINHRONO (UA-CH) — Chrome ga u UA krije.
+    primeDeviceModelHint();
     if (pitfalls.blocker) {
       setIosBlocker(pitfalls.blocker);
       say(pitfalls.blocker, 'error');
@@ -1605,6 +1620,12 @@ export function ScanOverlay({
             <RotateCcw className="h-4 w-4" /> Resetuj app
           </button>
         </div>
+
+        {/* Dijagnostički red za teren (05.08.2026): model (Chrome ga krije u UA, pa
+            se dovlači kroz UA-CH), izbor sočiva, stanje AF-a, zum i da li je
+            nišan-gejt aktivan. Bez ovoga se prijava „ne radi na A16" ne može
+            razlučiti od „gejt je tiho odbio pogodak". */}
+        {cameraOn && diag && <ScanDiagLine diag={diag} />}
 
         <input
           ref={fileInputRef}

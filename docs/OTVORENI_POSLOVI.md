@@ -142,15 +142,21 @@ dugmadi odgovara načinu rada.
 
 ## C. TEHNIČKI FOLLOW-UP (nalazi verifikatora, po prioritetu)
 
-### C1. Nišan gejt se ne pali u Chrome-u na Androidu ⚠️
+### C1. Nišan gejt — PREBAČEN NA OPT-IN 05.08., čeka merenje na terenu ⏸
 Popravka „promašaj ~2 cm" (04.08., `frontend/src/lib/barcode-decoder.ts`,
-`shouldLimitScanToReticle()`) gejtovana je na UA `SM-A16x/SM-A17x`. **Chrome na Androidu od v110
-šalje redukovan UA** (`Linux; Android 10; K`) → model se ne vidi → gejt se tiho ne aktivira i
-bag ostaje. Radi u **Samsung Internetu** (UA zadržava model) i verovatno u APK WebView-u.
-**Uraditi:** dopuniti profil kroz `navigator.userAgentData.getHighEntropyValues(['model'])`
-(lokacije `scan-overlay.tsx:139` već čita `userAgentData`), async rezultat keširati **pre**
-`attach`-a. Do tada teren pokriva prekidač `sessionStorage.ss3_scan_roi_gate = 'on'` (i `'off'`
-kao kill-switch). **A26/S26/iPhone moraju ostati van gejta** (Nenadov tvrd uslov, 04.08.).
+`shouldLimitScanToReticle()`) bila je gejtovana na UA `SM-A16x/SM-A17x`. **Chrome na Androidu od
+v110 šalje redukovan UA** (`Linux; Android 10; K`) → model se ne vidi → gejt se tiho NIJE
+aktivirao. Radio je samo u **Samsung Internetu** (UA zadržava model) i verovatno u APK WebView-u.
+Posle Nenadove prijave 05.08. („i dalje na A16 nišan ne radi") gejt je **podrazumevano isključen**
+— dok se ne dokaže merenjem da pomaže, ne sme da bude skrivena promenljiva u dijagnostici. Kod
+NIJE uklonjen: `sessionStorage.ss3_scan_roi_gate = 'on'` ga pali za probu, `'off'` ga drži ugašen,
+a `matchesReticleGateProfile()` čuva profil za povratak na automatiku.
+
+Model uređaja se od 05.08. razrešava kroz `navigator.userAgentData.getHighEntropyValues(['model'])`
+(`frontend/src/lib/camera-controls.ts`, `primeDeviceModelHint()` — greje se pri otvaranju skenera,
+pre `attach`-a) i **prikazuje se u dijagnostičkom redu svake skener-ljuske** zajedno sa stanjem
+gejta. **Uraditi:** na A16 uporediti sken sa `ss3_scan_roi_gate='on'` i `'off'` i tek onda odlučiti
+da li se automatika vraća. **A26/S26/iPhone moraju ostati van gejta** (Nenadov tvrd uslov, 04.08.).
 
 ### C2. Kvalitet modul ima istu „hapfluid" rupu 🔴
 034/26 je sredio primaoce obaveštenja o neusaglašenostima (tabela `montaza_nm_primaoci`), ali

@@ -8,18 +8,23 @@ import {
   buildVideoConstraints,
   cameraCooldownMs,
   decodeImageFile,
-  isAndroidWeb,
   isCameraDecodeSupported,
   isIOSWebKit,
   isSamsungInternetBrowser,
   preloadVideoDecoder,
-  safeApplyFlatCompat,
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
 import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-picker';
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 import { ScanHint } from '@/components/ui-kit/scan-hint';
+import { useCameraControls } from '@/lib/use-camera-controls';
+import {
+  ScanDiagLine,
+  ScanFocusRing,
+  ScanTorchButton,
+  ScanZoomBar,
+} from '@/components/ui-kit/scan-camera-controls';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
 import { useScanPanelInset } from '@/lib/use-scan-panel-inset';
 import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
@@ -70,11 +75,6 @@ import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
  */
 const FORMATS: DecodeFormat[] = ['code_128'];
 
-// focusMode/pointsOfInterest nisu u standardnom TS lib.dom — proširujemo lokalno.
-interface CamCapabilities extends MediaTrackCapabilities {
-  focusMode?: string[];
-}
-
 function normalize(raw: string): string {
   let t = raw.replace(/[\r\n\t]+/g, '').trim();
   if (t.startsWith('*') && t.endsWith('*') && t.length >= 3) t = t.slice(1, -1);
@@ -105,14 +105,6 @@ export function KarticaScanOverlay({
   const [statusKind, setStatusKind] = useState<'info' | 'error'>('info');
   const [manual, setManual] = useState('');
   const [cameraOn, setCameraOn] = useState(false);
-  // `ok:false` = tap primljen, ali uređaj ne podržava ručno izoštravanje (v. `tapFocus`).
-  const [focusRing, setFocusRing] = useState<{
-    x: number;
-    y: number;
-    id: number;
-    ok: boolean;
-  } | null>(null);
-  const noFocusSaidRef = useRef(false);
 
   // Safari URL traka guta gornji deo kadra (1.0 lekcija) — do 02.08. je ovo imala
   // samo lokacijska ljuska; sada je zajednički hook (v. `use-visual-viewport-fix`).
@@ -133,6 +125,19 @@ export function KarticaScanOverlay({
     setStatus(msg);
     setStatusKind(kind);
   }, []);
+
+  // Zoom / torch / tap-fokus / dijagnostika (05.08.2026). Ova ljuska je imala SAMO
+  // tap-fokus, i to sa dva odstupanja od 1.0 (v. `lib/camera-controls`): tačka
+  // interesa se računala bez `object-fit: cover` mapiranja, a `continuous` se
+  // vraćao i na Android Chrome-u (gde 1.0 to NAMERNO preskače jer zaključa mutan
+  // fokus na blizinu). Sada ide kroz zajednički modul.
+  const cam = useCameraControls({ videoRef, onNoFocus: (m) => say(m) });
+  // Kamera-efekat sme da zavisi SAMO od stabilnih vrednosti — `cam` je nov objekat
+  // pri svakom renderu, pa bi u nizu zavisnosti gasio i palio kameru bez prestanka.
+  const camRef = useRef(cam);
+  useEffect(() => {
+    camRef.current = cam;
+  });
 
   const resolve = useCallback(
     (raw: string) => {
@@ -197,6 +202,7 @@ export function KarticaScanOverlay({
     // (NotReadableError guard). Koristi je i retry i cleanup i pagehide.
     const release = () => {
       gen++; // obara i start koji je u letu
+      camRef.current.detach(); // zaustavi debounce zoom-a i periodični AF kick
       if (tuneTimer) {
         clearTimeout(tuneTimer);
         tuneTimer = 0;
@@ -338,7 +344,13 @@ export function KarticaScanOverlay({
         // constraint-i odmah po play() umeju da budu tiho odbačeni (1.0 lekcija).
         const track = trackRef.current;
         if (track) {
-          tuneTimer = window.setTimeout(() => void applyAndroidPostStartTuning(track), 500);
+          tuneTimer = window.setTimeout(() => {
+            void applyAndroidPostStartTuning(track);
+            // Zoom/torch capability se čitaju TEK posle tuning-a i po slegnutom
+            // pipeline-u — pre toga `getCapabilities()` na Androidu ume da vrati
+            // prazan objekat pa bi klizač zauvek ostao skriven.
+            void camRef.current.attach(track, { lensPicked: Boolean(deviceId) });
+          }, 500);
         }
 
         const handle = await attachVideoDecoder({
@@ -412,48 +424,6 @@ export function KarticaScanOverlay({
     return () => window.removeEventListener('keydown', onKey, true);
   }, []);
 
-  /**
-   * Tap-to-focus — isti obrazac kao reversi ljuska (S5 ispravka 02.08.2026):
-   * prsten je POTVRDA IZOŠTRAVANJA, ne potvrda tapa. Na iOS-u WebKit ne izlaže ni
-   * `focusMode` ni `pointsOfInterest`, pa se bez primenjenog constraint-a ne crta
-   * ništa (iPhone tok netaknut); na Androidu tap uvek dobija odziv: puna bela =
-   * fokus primenjen, isprekidana prigušena = „tap primljen, telefon ne dozvoljava
-   * ručno izoštravanje" (uz jednu poruku po sesiji).
-   */
-  async function tapFocus(e: React.PointerEvent<HTMLVideoElement>) {
-    const track = trackRef.current;
-    const v = videoRef.current;
-    if (!track || !v) return;
-    const rect = v.getBoundingClientRect();
-    const caps = (track.getCapabilities?.() ?? {}) as CamCapabilities;
-    const modes = Array.isArray(caps.focusMode) ? caps.focusMode.map(String) : [];
-    const at = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-
-    let applied = false;
-    if (modes.includes('single-shot') && 'pointsOfInterest' in caps) {
-      const x = (e.clientX - rect.left) / rect.width;
-      const y = (e.clientY - rect.top) / rect.height;
-      applied = await safeApplyFlatCompat(track, {
-        focusMode: 'single-shot',
-        pointsOfInterest: [{ x, y }],
-      });
-      if (applied && modes.includes('continuous')) {
-        await new Promise((r) => setTimeout(r, 320));
-        await safeApplyFlatCompat(track, { focusMode: 'continuous' });
-      }
-    } else if (modes.includes('continuous')) {
-      applied = await safeApplyFlatCompat(track, { focusMode: 'continuous' });
-    }
-    if (!applied && !isAndroidWeb()) return;
-    if (!applied && !noFocusSaidRef.current) {
-      noFocusSaidRef.current = true;
-      say('Ovaj telefon ne dozvoljava ručno izoštravanje — menjaj rastojanje (10-15 cm).');
-    }
-    const id = Date.now();
-    setFocusRing({ ...at, id, ok: applied });
-    window.setTimeout(() => setFocusRing((r) => (r?.id === id ? null : r)), 600);
-  }
-
   /** Fallback za loše svetlo: fotografija barkoda → ZXing sa pojačanjem kontrasta. */
   async function onPickPhoto(file: File | undefined) {
     if (!file) return;
@@ -487,37 +457,32 @@ export function KarticaScanOverlay({
         ref={videoRef}
         playsInline
         muted
-        onPointerDown={(e) => void tapFocus(e)}
+        onPointerDown={(e) => void cam.onVideoPointerDown(e)}
         className="absolute inset-0 h-full w-full object-cover"
       />
       {/* Barkod RN kartice je 1D → široki nišan sa laserom (isto kao lokacije/reversi). */}
       {cameraOn && (
         <ScanReticle variant="barcode" bottomInset={panelInset} frameRef={reticleBoxRef} />
       )}
-      {focusRing && (
-        <div
-          // Isprekidan i prigušen prsten = tap primljen, ali uređaj ne podržava ručno
-          // izoštravanje (samo Android — v. `tapFocus`).
-          className={`pointer-events-none absolute z-10 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 ${
-            focusRing.ok ? 'border-white/90' : 'border-dashed border-white/40'
-          }`}
-          style={{ left: focusRing.x, top: focusRing.y }}
-          aria-hidden
-        />
-      )}
+      <ScanFocusRing ring={cam.focusRing} />
 
       {/* `pointer-events-none` na traci, `auto` na dugmetu: traka je providan gradijent
           preko kadra, pa tap kroz nju mora da stigne do `<video>` (tap-to-focus). */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
         <span className="text-md font-semibold">{title}</span>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Zatvori"
-          className="pointer-events-auto rounded-full p-1 hover:bg-white/10"
-        >
-          <X className="h-5 w-5" />
-        </button>
+        <div className="pointer-events-auto flex items-center gap-1">
+          {cam.torchSupported && (
+            <ScanTorchButton on={cam.torchOn} onToggle={() => void cam.toggleTorch()} />
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Zatvori"
+            className="rounded-full p-1 hover:bg-white/10"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       {/* `pointer-events-none` na omotaču + `auto` na svakoj kontroli (prazan prostor
@@ -528,6 +493,16 @@ export function KarticaScanOverlay({
       >
         {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`) — 3.0 je do sada nije imao. */}
         {cameraOn && <ScanHint extra={'Tap na kadar = fokus · „Slikaj barkod" kad ne ide iz ruke'} />}
+        {cam.zoom && (
+          <ScanZoomBar
+            min={cam.zoom.min}
+            max={cam.zoom.max}
+            step={cam.zoom.step}
+            value={cam.zoomValue}
+            onChange={cam.changeZoom}
+            onStep={cam.stepZoom}
+          />
+        )}
         {status && (
           <p
             className={
@@ -582,6 +557,7 @@ export function KarticaScanOverlay({
             }}
           />
         </label>
+        {cameraOn && <ScanDiagLine diag={cam.diag} />}
       </div>
     </div>
   );

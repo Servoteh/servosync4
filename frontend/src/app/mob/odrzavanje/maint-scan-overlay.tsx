@@ -18,6 +18,13 @@ import {
 import { pickPreferredBackCamera, shouldRunCameraPicker } from '@/lib/camera-picker';
 import { ScanReticle } from '@/components/ui-kit/scan-reticle';
 import { ScanHint } from '@/components/ui-kit/scan-hint';
+import { useCameraControls } from '@/lib/use-camera-controls';
+import {
+  ScanDiagLine,
+  ScanFocusRing,
+  ScanTorchButton,
+  ScanZoomBar,
+} from '@/components/ui-kit/scan-camera-controls';
 import { useVisualViewportFix } from '@/lib/use-visual-viewport-fix';
 import { useScanPanelInset } from '@/lib/use-scan-panel-inset';
 import { useHidScanBuffer } from '@/lib/use-hid-scan-buffer';
@@ -92,6 +99,17 @@ export function MaintScanOverlay({
     setStatusKind(kind);
   }, []);
 
+  // Zoom / torch / tap-fokus / dijagnostika (05.08.2026): ova ljuska ih do sada
+  // NIJE imala uopšte — otud prijava „na Samsung A-seriji ne rade zoom i
+  // autofocus" (1.0 ih ima u svakoj ljusci kroz `barcode.js buildController`).
+  const cam = useCameraControls({ videoRef, onNoFocus: (m) => say(m) });
+  // Kamera-efekat sme da zavisi SAMO od stabilnih vrednosti — `cam` je nov objekat
+  // pri svakom renderu, pa bi u nizu zavisnosti gasio i palio kameru bez prestanka.
+  const camRef = useRef(cam);
+  useEffect(() => {
+    camRef.current = cam;
+  });
+
   const resolve = useCallback((raw: string) => {
     const code = normalize(raw);
     if (!code || busyRef.current) return;
@@ -138,6 +156,7 @@ export function MaintScanOverlay({
     // (NotReadableError guard). Koristi je i retry i cleanup i pagehide.
     const release = () => {
       gen++; // obara i start koji je u letu
+      camRef.current.detach(); // zaustavi debounce zoom-a i periodični AF kick
       if (tuneTimer) {
         clearTimeout(tuneTimer);
         tuneTimer = 0;
@@ -274,7 +293,13 @@ export function MaintScanOverlay({
         // constraint-i odmah po play() ume da budu tiho odbačeni (1.0 lekcija).
         const track = stream.getVideoTracks()[0];
         if (track) {
-          tuneTimer = window.setTimeout(() => void applyAndroidPostStartTuning(track), 500);
+          tuneTimer = window.setTimeout(() => {
+            void applyAndroidPostStartTuning(track);
+            // Zoom/torch capability se čitaju TEK posle tuning-a i po slegnutom
+            // pipeline-u — pre toga `getCapabilities()` na Androidu ume da vrati
+            // prazan objekat pa bi klizač zauvek ostao skriven.
+            void camRef.current.attach(track, { lensPicked: Boolean(deviceId) });
+          }, 500);
         }
 
         const handle = await attachVideoDecoder({
@@ -349,19 +374,33 @@ export function MaintScanOverlay({
     // telefonu jeo trećinu kadra.
     <div ref={rootRef} className="fixed inset-0 z-50 bg-black" role="dialog" aria-modal="true" aria-label={title}>
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-      <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover" />
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        // Tap-to-focus (05.08.2026) — jedina ljuska koja ga nije imala. Tačka se
+        // mapira kroz `object-fit: cover` isečak, inače telefon izoštrava pogrešno mesto.
+        onPointerDown={(e) => void cam.onVideoPointerDown(e)}
+        className="absolute inset-0 h-full w-full object-cover"
+      />
       {/* QR karton sredstva → kvadratni nišan; laser je 1D pomagalo, pa je ovde ugašen. */}
       {cameraOn && (
         <ScanReticle variant="qr" laser={false} bottomInset={panelInset} frameRef={reticleBoxRef} />
       )}
+      <ScanFocusRing ring={cam.focusRing} />
 
       {/* `pointer-events-none` na traci, `auto` na dugmetu: traka je providan gradijent
           preko kadra, pa tap kroz nju mora da stigne do `<video>`. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/55 to-transparent px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] text-white">
         <span className="text-md font-semibold">{title}</span>
-        <button type="button" onClick={onClose} aria-label="Zatvori" className="pointer-events-auto rounded-full p-1 hover:bg-white/10">
-          <X className="h-5 w-5" />
-        </button>
+        <div className="pointer-events-auto flex items-center gap-1">
+          {cam.torchSupported && (
+            <ScanTorchButton on={cam.torchOn} onToggle={() => void cam.toggleTorch()} />
+          )}
+          <button type="button" onClick={onClose} aria-label="Zatvori" className="rounded-full p-1 hover:bg-white/10">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       {/* `pointer-events-none` na omotaču + `auto` na kontrolama (prazan prostor panela
@@ -372,6 +411,16 @@ export function MaintScanOverlay({
       >
         {/* S4: instrukcija radniku (1.0 `.loc-scan-hint`) — 3.0 je do sada nije imao. */}
         {cameraOn && <ScanHint extra="QR karton drži ceo u prozoru nišana" />}
+        {cam.zoom && (
+          <ScanZoomBar
+            min={cam.zoom.min}
+            max={cam.zoom.max}
+            step={cam.zoom.step}
+            value={cam.zoomValue}
+            onChange={cam.changeZoom}
+            onStep={cam.stepZoom}
+          />
+        )}
         {status && (
           <p className={statusKind === 'error' ? 'text-sm text-status-danger' : 'text-sm text-white/80'} aria-live="polite">
             {status}
@@ -403,6 +452,7 @@ export function MaintScanOverlay({
             Nađi
           </button>
         </form>
+        {cameraOn && <ScanDiagLine diag={cam.diag} />}
       </div>
     </div>
   );
