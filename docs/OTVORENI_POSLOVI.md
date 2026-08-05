@@ -140,6 +140,98 @@ dugmadi odgovara načinu rada.
 
 ---
 
+## P. PRAVA NAD PODACIMA U APLIKACIJI (osnovano 05.08.2026)
+
+**Zašto poseban odeljak:** 05.08. je zatvoren prvi krug — knjige (glavna knjiga, saldakonta,
+izvodi, plaćanja, kamata, blagajna, PDV, završni račun) skinute su sa role `menadzment` i vraćene
+**imenom** Jeleni Stanišić i Dušku Kostiću, a Radisav Radević dobio `robno.read` (grana
+`feat/erp-prava-allowlist`, commit `3c48c0c5`; dozvole upisane na produkciju pre koda).
+
+Time je krug za knjige sveden sa **24 na 7 ljudi**. Ali analiza je izmerila da **knjige nisu bile
+najveće curenje** — ostatak je ovde, i Nenad je 05.08. rekao da je zasad **U REDU**, da se rešava
+kasnije. Ne brisati dok se ne izvede ili dok se izričito ne odustane.
+
+> **Merodavan izvor:** puna analiza (7 delova, sa predlogom teksta pravila) je u izveštaju od
+> 05.08.2026; ovde stoji samo ono što ostaje da se uradi.
+
+### P1. Kartica artikla pokazuje nabavnu cenu, dobavljača, kupca i rabat — vidi je 67 od 69 ljudi 🔴
+
+**Kontekst.** Kroz isto pravo kojim se gledaju artikli i lager lista (`directory.read`) otvara se i
+kartica artikla, koja **po svakom dokumentu** prikazuje nabavnu cenu, ime dobavljača, ime kupca i
+odobreni rabat — uz dugme za izvoz u Excel.
+
+**Izmereno (05.08.2026):** 67 od 69 aktivnih naloga (svi osim kiosk terminala u pogonu i servisnog
+naloga diktafona). 20.416 redova ulaza/izlaza · 228 dobavljača · 1,36 mlrd RSD nabavne vrednosti ·
+164.574 reda profaktura na 2.361 komitentu · **marža vidljiva na 9.845 redova = 429,5 mil. RSD**.
+
+**🔴 Ovo je REGRESIJA, ne zatečeno stanje.** Brana je postojala: taj deo je ranije tražio pravo za
+robno (24 osobe), a **PR #90 ju je skinuo** i krug se proširio sa 24 na 67.
+
+**Šta uraditi.** Vratiti karticu artikla pod pravo za robno; lager listu i spisak artikala NE dirati
+(odluka Nenad 05.08.: „lager može da vidi sve, ne komplikujmo").
+
+**Rizik/cena:** sitno. **Preporuka:** uraditi u istom potezu sa P2.
+
+### P2. Izvoz u Excel zaobilazi ekran i ne ostavlja trag
+
+**Izmereno.** Dugme „Export" na artiklima i lageru **ne izvozi ono što je na ekranu** — ponovo zove
+server i prolazi kroz sve strane (do 60 zahteva, do 5.000 redova po izvozu), sa kolonama VP cena,
+MP cena, devizna cena. Kapa nije brana: filtriranjem po grupama ceo cenovnik izlazi u više navrata
+(92.620 artikala, 21.760 sa cenom). **Gledanje i izvoz se ne beleže nigde** — dnevnik hvata samo
+izmene.
+
+**Šta uraditi.** Odlučiti da li izvoz traži svoje pravo, i da li se beleži (ko, kad, koliko redova).
+
+### P3. Slanje van kuće ide pod pravom čitanja
+
+**Izmereno.** Dve rute pretvaraju „smem da gledam" u „smem da pošaljem": **IOS bilo kog komitenta**
+i **PP-PDV prijava firme** šalju se na adresu koja se upiše u zahtev — bez ograničenja domena i bez
+evidencije poslatog. (Opomena je urađena kako treba: traži pravo izmene i upisuje se u tabelu.)
+
+**Šta uraditi.** Slanje na spoljnu adresu vezati za pravo iz kruga knjiga + evidentirati primaoca.
+
+### P4. Stari sistem može da promoviše čoveka u administratora
+
+**Izmereno.** Sinhronizacija je namerno jednosmerna: administrator se ne skida, ali **se dodaje** —
+jedan red u staroj bazi i čovek u 3.0 dobija **sva** prava. Danas je rupa prazna (provereno: niko ko
+nije već administrator nema tu rolu u starom sistemu), ali je put od „prazna" do „otvorena glavna
+knjiga" jedan upis u drugom sistemu, koji radi neko ko o ERP pravima ne odlučuje.
+
+### P5. Pravo upisa u šifarnik ima 67 ljudi, drži ga jedan prekidač
+
+**Izmereno.** Ugrađeno pravilo „ko sme da čita šifarnik, sme i da piše" (odluka O-6 od 30.07.) daje
+`masters.write` svakoj roli sa `directory.read`. Danas ih zaustavlja poslovna brana koja vraća
+odbijanje — ali ta brana je **jedan prekidač daleko od otvaranja**, i onog dana kad se unos artikala
+otvori, otvoriće se **svima odjednom**, bez ijedne nove odluke.
+
+### P6. Baza nema drugi pojas
+
+**Izmereno.** Glavna baza ima **0 sigurnosnih politika na 224 tabele** — brana je tačno onoliko jaka
+koliko je tačan spisak dozvola po rutama. Dobra vest, takođe izmereno: stroga provera je **uključena**
+na produkciji (nije „tihi režim") i **nijedna** ERP ruta nije bez prava (skenirano svih 66 kontrolera
+/ 1.257 ruta).
+
+### P7. Kako izgleda čoveku kome se pravo skine
+
+Nije provereno da li dobija razumljivu poruku ili praznu stranu. Pre sledećeg reza proveriti —
+17 ljudi je 05.08. izgubilo uvid u knjige.
+
+### P8. ⚠️ Nije mereno i ne može se meriti odavde: ko ima pristup samom BigBitu
+
+BigBit je živ do prelaska (april 2027) i u njemu su **svi ovi podaci u punom obimu**. Zatvaranje
+3.0 nema smisla ako je BigBit otvoren istom krugu ljudi. **Za Nenada.**
+
+### P9. Rola-prerada (najavljena, nije počela)
+
+Nenad 05.08.: „to ćemo posle rešavati sa ROLAMA". Ostaje otvoreno: 19 ljudi nosi `menadzment`;
+pojedinačna prava **nemaju ekran** (interfejs poznaje samo tri zakucana ključa) ni trag (tabela ima
+4 kolone — bez vremena i bez autora), pa se dodaju SQL-om. Rola `finansije` postoji u katalogu i u
+padajućoj listi, ali **nema nijedno pravo**; probano 05.08. da bude nadskup menadžmenta i
+**odbačeno** — osam paritet-brana (34 testa) pokazalo je da bi uz knjige tiho dala i upravljanje
+SCADA-om, forsiranje plana proizvodnje i izmenu montaže.
+
+---
+
 ## C. TEHNIČKI FOLLOW-UP (nalazi verifikatora, po prioritetu)
 
 ### C1. Nišan gejt — POPRAVLJEN 05.08. (radi i u Chrome-u), čeka potvrdu sa terena ⏸
