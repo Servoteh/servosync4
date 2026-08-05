@@ -106,6 +106,11 @@ export const PERMISSIONS = {
   RFQ_WRITE: 'rfq.write',
   SYNC_RUN: 'sync.run',
   SYNC_READ: 'sync.read',
+  // Zakazani poslovi (noćni uvoz iz BigBita, watchdog, podsetnici…) — mirror BE kataloga.
+  // read = spisak poslova sa istorijom izvršavanja; run = ručno pokretanje („Pokreni sada").
+  // Namerno uže od `sync.*`: pogrešno pokrenut posao može da povuče ceo noćni uvoz usred dana.
+  SCHEDULER_READ: 'scheduler.read',
+  SCHEDULER_RUN: 'scheduler.run',
   // Reversi — 3.0 pilot (2.0 backend docs/design/MODULE_SPEC_reversi.md §3)
   REVERSI_READ: 'reversi.read',
   REVERSI_MANAGE: 'reversi.manage',
