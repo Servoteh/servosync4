@@ -240,6 +240,43 @@ eksplicitnim pozivom i dalje može da pregazi noćni uvoz (sada bar uz warn u lo
 **Preporuka:** ugasiti kad se potvrdi da ništa iz MSSQL-a više nije potrebno — prethodno izmeriti
 da li ijedan tok iz preostalog 21 nosi podatke kojih nema u `.mdb` kanalu.
 
+### C11. Migracije se NIGDE ne proveravaju pre produkcije 🔴
+04.08. je deploy pao usred primene migracije 016 (PostgreSQL 42P01 — ciljna tabela `UPDATE`-a
+referencirana u `JOIN` uslovu unutar `FROM`). Šteta nula (transakcija, 0 primenjenih koraka),
+ali **neuspela migracija blokira SVE naredne**: dok se ne označi kao vraćena, svaki sledeći
+deploy pada. Nijedan gejt (jest, tsc, nest build, e2e) migracije ne izvršava — prvi put se
+pokreću na PRODUKCIJSKOJ bazi.
+**Uraditi:** CI korak koji pusti `prisma migrate deploy` na praznoj bazi (postgres service u
+workflow-u). Jeftino, hvata tačno ovu klasu.
+**Ručni obrazac koji je te večeri radio** (koristiti dok gejta nema): celu migraciju pustiti na
+produ unutar `BEGIN; … ROLLBACK;` i uporediti brojke sa očekivanim, pa tek onda push.
+**Sanacija kad se ipak desi:** `UPDATE _prisma_migrations SET rolled_back_at = now() WHERE
+migration_name = '…' AND finished_at IS NULL;` pa popravka i novi deploy.
+
+### C12. Odbijanje zahteva nema dvostruku kontrolu
+`makeup_reject` traži samo `can_manage_vacreq()` + `manages_employee()` — bez provere
+„prvi nivo nisam ja" koju odobravanje (`makeup_approve`) ima. Šef koji je sam prosledio zahtev
+može ga odbiti. Nije novo, ali je od 04.08. na jedan klik jer se zahtev konačno vidi u listi.
+**Odluka Nenadu:** zaključati i odbijanje kao odobravanje?
+
+### C13. Badž broji sve godine, tabela prikazuje jednu
+U kadrovskim listama zahteva badž taba računa sve godine a tabela je sužena na izabranu — ista
+patologija „brojka se vidi, sadržaj ne" koju je 068 zatvorio za statuse. Dodato je glasno
+upozorenje kad godina skriva zahteve koji čekaju odluku; trajno rešenje nije urađeno. Danas se
+ne pali (svi zahtevi su 2026).
+
+### C14. Prelaz u „šef odobrio" 31.07. u 20:23 nema trag obaveštenja
+Za isti tip prelaza 02.07. postoje 3 reda u `kadr_notification_log`, za ovaj nijedan. Kod poziva
+`kadr_queue_makeup_notification`, ali `queueBestEffort` guta greške — moguće da je nešto tiho
+palo. Uzrok NIJE dokazan; prijavljeno kao merenje. Ako se ponovi, tražiti trag u logu backenda
+u tom minutu.
+
+### C15. 016: veza nacrt ↔ primopredaja i dalje bez FK
+Zbirno obaveštenje po nacrtu radi samo kad je crtež u tačno jednom nacrtu; **oko trećine
+pozicija (232/646) i dalje ide pojedinačno**, a za porodicu 9400/7 čak 27 od 34
+(G-260724-008 i G-260724-010 dele 27 crteža). Strahinja je o tome iskreno obavešten 05.08.
+Trajno rešenje = FK nacrt↔primopredaja (ista tema kao C6, drugi ugao).
+
 ---
 
 ## D. ČEKA KORISNIKE (ne blokira razvoj)
@@ -247,6 +284,9 @@ da li ijedan tok iz preostalog 21 nosi podatke kojih nema u `.mdb` kanalu.
 - **Nenad:** proba nišana na **A16 sutra** (05.08.) — obavezno u **Samsung Internetu** (vidi C1);
   proba stonog (wedge) čitača u „Premesti stavku" — 04.08. je isporučeno rastavljanje skena
   u obe aplikacije; proba štampe barkoda 62.65 × 13 mm.
+- **Nenad / Nevena / Zoran:** **6 zahteva** izašlo iz nevidljivosti 04.08. i čeka klik —
+  4 GO (Branislav 23.07 · Marija 30.07 · Miljan 10–21.08 · Milan Stojadinović 07.08; prva dva
+  za datume koji su VEĆ prošli), 1 zamenski dan (Stamenić 01.08), 1 plaćeno odsustvo.
 - **Strahinja + Negovan:** odgovor na pitanje o „kraju procesa na delu količine" (B2).
 - **Strahinja (016/26):** 4 pitanja postavljena 04.08. uveče — koji su tačno predmeti
   „Servotransfer prese" (7 kandidata, numeracija se preklapa); da li Dijana prati i nadređeni
