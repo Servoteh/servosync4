@@ -56,9 +56,14 @@ import {
   SyncSwitchService,
 } from "./sync-switch.service";
 import { CompanyDetailsService } from "./company-details.service";
-import type { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
+// ⚠️ VREDNOSNI UVOZ, NIKAD `import type` — vidi `common/controller-body-dto.spec.ts`.
+// Kroz `import type` klasa u runtime-u ne postoji, pa `design:paramtypes` dobije
+// `Function`, `ValidationPipe` pozove `plainToInstance(Function, telo)` i telo se
+// pretvori u funkciju sa svim poljima `undefined`. Obe rute ispod su zbog toga na
+// produkciji vraćale 422 „Nijedno polje nije prosleđeno." na SVAKO snimanje.
+import { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
 import { PaymentAccountsService } from "./payment-accounts.service";
-import type { UpdatePaymentAccountDto } from "./dto/podesavanja-payment-account.dto";
+import { UpdatePaymentAccountDto } from "./dto/podesavanja-payment-account.dto";
 import {
   BulkJobPositionProfileDto,
   CreateDepartmentDto,

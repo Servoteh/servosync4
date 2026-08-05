@@ -53,10 +53,12 @@ import type {
   ReleaseReservationDto,
 } from "./dto/reservation.dto";
 import type { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
-import type {
-  CreateStockDocumentDto,
-  UpdateStockDocumentShippingDto,
-} from "./dto/create-stock-document.dto";
+import type { CreateStockDocumentDto } from "./dto/create-stock-document.dto";
+// ⚠️ VREDNOSNI UVOZ, NIKAD `import type` — ovo je KLASA i koristi se kao `@Body()` tip.
+// Kroz `import type` `design:paramtypes` dobije `Function` i `ValidationPipe` uništi
+// telo zahteva (vidi `common/controller-body-dto.spec.ts`). `CreateStockDocumentDto`
+// iznad je interfejs, pa za njega to ne važi.
+import { UpdateStockDocumentShippingDto } from "./dto/create-stock-document.dto";
 import { DocumentEditService } from "./document-edit.service";
 import {
   CreateStockDocumentItemBodyDto,
