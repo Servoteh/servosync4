@@ -16,6 +16,7 @@ import type { TechProcess } from './tech-processes';
  * starim otiskom (manja varijanta) vraća `staleWorkOrder` upozorenje. Rute:
  *   POST /v1/tech-processes/barcode/decode  { barcode }
  *   POST /v1/tech-processes/scan            { orderBarcode, operationBarcode, pieceCount }
+ *   POST /v1/tech-processes/work/stop       { orderBarcode, operationBarcode, pieceCount, operacijaGotova? }
  *   POST /v1/tech-processes/:id/stop-work   { pieceCount, operacijaGotova?, finishForAll? }
  *   POST /v1/tech-processes/:id/dismiss     { workerCard?, note? }
  * Sve traže JWT (guard je V1 no-op); komponente zovu samo ove hook-ove.

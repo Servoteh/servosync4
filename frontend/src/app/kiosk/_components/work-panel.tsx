@@ -3,6 +3,7 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { AlertTriangle, Check, Clock, FileText, Lock, Minus, Play, Plus, Square, StickyNote } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
+import { Dialog } from '@/components/ui-kit/dialog';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { openKioskDrawingPdf } from '@/api/kiosk';
 import { formatNumber } from '@/lib/format';
@@ -18,6 +19,11 @@ interface WorkPanelProps {
   planned: number | null;
   /** Napravljeno (akumulirano) na ovoj operaciji. */
   made: number;
+  /**
+   * Opšti nalog (operacija bez postupka) — nema plan i po dizajnu je uvek otvoren,
+   * pa se pitanje o gotovosti NE postavlja (isti izuzetak kao u „Moji otvoreni").
+   */
+  withoutProcess?: boolean;
   finished: boolean;
   /** Skenirana operacija nije nađena u tehnološkom postupku ovog naloga. */
   missing: boolean;
@@ -28,8 +34,14 @@ interface WorkPanelProps {
   zapocinjanje: boolean;
   zavrsavanje: boolean;
   onZapocni: () => void;
-  /** `note` = opciona napomena radnika (K0.1) — prosleđuje se u STOP mutaciju. */
-  onZavrsiRad: (pieces: number, note?: string) => void;
+  /**
+   * `note` = opciona napomena radnika (K0.1) — prosleđuje se u STOP mutaciju.
+   * `operacijaGotova` = odgovor na pitanje „Da li je operacija gotova?" (Nenad
+   * 05.08.2026): `true` samo kad radnik izričito klikne „Da — gotova je";
+   * `false` = „Ne — nastavlja se"; `undefined` = pitanje nije ni postavljeno
+   * (plan dostignut / plan nepoznat) — server oba tretira isto.
+   */
+  onZavrsiRad: (pieces: number, note?: string, operacijaGotova?: boolean) => void;
   /** Brza prijava (scan) — bez merenja vremena. */
   evidentiranje: boolean;
   /** `note` = opciona napomena radnika (K0.1) — prosleđuje se u scan mutaciju. */
@@ -155,6 +167,7 @@ export function WorkPanel({
   drawing,
   planned,
   made,
+  withoutProcess = false,
   finished,
   missing,
   loading,
@@ -171,6 +184,13 @@ export function WorkPanel({
   // K0.1 napomena radnika (opciono) — deljena između brze prijave (scan) i završetka rada (stop).
   const [note, setNote] = useState('');
   const [showNote, setShowNote] = useState(false);
+  // 🔴 Pitanje „Otkucao si X od Y. Da li je operacija gotova?" (null = zatvoreno).
+  // `ukupno` = kumulativ POSLE ove prijave, `plan` = plan RN-a (uvek poznat kad se pita).
+  const [finishAsk, setFinishAsk] = useState<{
+    pieces: number;
+    ukupno: number;
+    plan: number;
+  } | null>(null);
   const busy = evidentiranje || zapocinjanje || zavrsavanje;
   const remaining = planned != null ? Math.max(0, planned - made) : null;
   // Aktivna sesija (borverk radi danima na komadu) dozvoljava 0 kom; „Evidentiraj" traži ≥ 1.
@@ -203,8 +223,28 @@ export function WorkPanel({
   }
 
   // Sesijski režim prihvata 0 kom (samo vreme); brza prijava traži ≥ 1.
+  //
+  // 🔴 GOTOVOST OPERACIJE (odluka Nenad 05.08.2026) — do sada je barkod „Završi rad"
+  // bio jedini put BEZ pitanja: radnik koji stvarno završi operaciju sa nepunom
+  // količinom nije imao kako da to kaže, pa je red ostajao otvoren zauvek. Sada se
+  // pita isto kao u „Moji otvoreni" (`my-open-panel.tsx`): SAMO kad kumulativ POSLE
+  // ove prijave ne dostiže plan. Plan dostignut / plan nepoznat (uključujući plan 0,
+  // 18 RN na produ) / opšti nalog → ne pita se, ponašanje ostaje kao do sada.
   const stopWork = () => {
-    if (!busy && pieces >= 0) onZavrsiRad(pieces, note.trim() || undefined);
+    if (busy || pieces < 0) return;
+    const ukupno = made + pieces;
+    if (!withoutProcess && planned != null && planned > 0 && ukupno < planned) {
+      setFinishAsk({ pieces, ukupno, plan: planned });
+      return;
+    }
+    onZavrsiRad(pieces, note.trim() || undefined);
+  };
+  /** Odgovor iz dijaloga → STOP mutacija sa eksplicitnom namerom. */
+  const stopWorkAnswered = (gotova: boolean) => {
+    if (!finishAsk) return;
+    const p = finishAsk.pieces;
+    setFinishAsk(null);
+    onZavrsiRad(p, note.trim() || undefined, gotova);
   };
   const quickReport = () => {
     if (!busy && pieces >= 1) onEvidentiraj(pieces, note.trim() || undefined);
@@ -341,6 +381,57 @@ export function WorkPanel({
           </Button>
         </>
       )}
+
+      {/* 🔴 GOTOVOST OPERACIJE (Nenad 05.08.2026) — iskače SAMO kad količina nije
+          puna. Podrazumevani odgovor je NE (istaknuto dugme + fokus, tako da i
+          slučajan tap/Enter ostavlja operaciju otvorenom). Vizuelno i tekstualno
+          ISTO kao dijalog u „Moji otvoreni" (my-open-panel.tsx) — radnik na oba
+          ekrana vidi isto pitanje. Dodirni ekran u pogonu: krupan tekst, dugmad
+          visine 20 (80px), bez sitnog fonta.
+          STRANA DUGMADI: primary („Ne — nastavlja se") je DESNO, isto kao tamo. */}
+      <Dialog
+        open={finishAsk !== null}
+        onClose={() => setFinishAsk(null)}
+        title="Da li je operacija gotova?"
+        size="lg"
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => stopWorkAnswered(true)}
+              className="h-20 flex-1 px-6 text-2xl font-bold"
+            >
+              Da — gotova je
+            </Button>
+            <Button
+              variant="primary"
+              autoFocus
+              onClick={() => stopWorkAnswered(false)}
+              className="h-20 flex-1 px-6 text-2xl font-bold"
+            >
+              Ne — nastavlja se
+            </Button>
+          </>
+        }
+      >
+        {finishAsk && (
+          <div className="space-y-4 text-ink">
+            <p className="text-3xl font-bold">
+              Otkucao si{' '}
+              <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> od{' '}
+              <span className="tnums">{formatNumber(finishAsk.plan)}</span> kom.
+            </p>
+            <p className="text-xl">
+              {operationLabel}
+              {identMark && <span className="tnums"> · Toznaka: {identMark}</span>}
+            </p>
+            <p className="text-xl text-ink-secondary">
+              „Ne" upisuje tvoj rad i vreme, a operacija ostaje otvorena za nastavak. „Da" je
+              zatvara iako količina nije puna.
+            </p>
+          </div>
+        )}
+      </Dialog>
     </div>
   );
 }
