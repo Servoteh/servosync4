@@ -1513,4 +1513,100 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       expect(arg.update.cpu).toBeNull();
     });
   });
+
+  // ------- „Zahtevaju pažnju" (IT / objekti) — uslov je u SQL-u -------
+
+  /**
+   * Regresija 05.08: pločica „IT oprema" je pokazivala „⚠ 5 zahtevaju pažnju" nad 5
+   * sredstava koja sva rade — `reportAttention` je vraćao SVE nearhivirano, bez ijednog
+   * uslova. Odluka o pažnji je JEDNA i živi u SQL-u (isti skup vide i pločica na pregledu
+   * i kartica „Zahteva pažnju" u izveštajima), pa se ovde asertuje bukvalan tekst upita:
+   * to je jedini način da se semantika brani bez žive baze, a hvata i tiho vraćanje na
+   * „SELECT * WHERE archived_at IS NULL" i svako širenje na `unknown`/`due_soon`.
+   * Vrednosti su izmerene nad definicijama `v_maint_it_overview` /
+   * `v_maint_facility_overview` (CASE granama) na živoj sy15.
+   */
+  describe("reportAttention (uslov pažnje za IT i objekte)", () => {
+    /** Tekst `Prisma.sql` šablona (bez parametara) — normalizovan na jedan razmak. */
+    const sqlText = (arg: unknown): string => {
+      const s = arg as { sql?: string; text?: string; strings?: string[] };
+      const raw = s.sql ?? s.text ?? (s.strings ?? []).join("?");
+      return String(raw).replace(/\s+/g, " ").trim();
+    };
+    const run = async () => {
+      const rows = [{ asset_code: "IT-PC-1" }];
+      const $queryRaw = jest.fn().mockResolvedValue(rows);
+      const tx = makeTx({ $queryRaw });
+      const { sy15, withUserRls } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      const out = (await svc.reportAttention("veljko@servoteh.com")) as {
+        data: { itAssets: unknown; facilities: unknown };
+      };
+      const calls = $queryRaw.mock.calls.map((c) => sqlText(c[0]));
+      const it = calls.find((q) => q.includes("v_maint_it_overview")) ?? "";
+      const fac =
+        calls.find((q) => q.includes("v_maint_facility_overview")) ?? "";
+      return { out, rows, it, fac, calls, withUserRls };
+    };
+
+    it("IT: bukvalan uslov — ne radi ∨ otvoren nalog ∨ istekla licenca/garancija ∨ backup missing/stale", async () => {
+      const { it } = await run();
+      expect(it).toBe(
+        "SELECT * FROM v_maint_it_overview " +
+          "WHERE archived_at IS NULL " +
+          "AND (status <> 'running' " +
+          "OR open_wo_count > 0 " +
+          "OR license_status = 'expired' " +
+          "OR warranty_status = 'expired' " +
+          "OR backup_status IN ('missing', 'stale')) " +
+          "ORDER BY asset_code",
+      );
+    });
+
+    it("Objekti: bukvalan uslov — ne radi ∨ otvoren nalog ∨ prekoračena inspekcija/PP pregled", async () => {
+      const { fac } = await run();
+      expect(fac).toBe(
+        "SELECT * FROM v_maint_facility_overview " +
+          "WHERE archived_at IS NULL " +
+          "AND (status <> 'running' " +
+          "OR open_wo_count > 0 " +
+          "OR inspection_status = 'expired' " +
+          "OR fire_safety_status = 'expired') " +
+          "ORDER BY asset_code",
+      );
+    });
+
+    it("otvoren radni nalog JESTE uslov pažnje (obe kategorije)", async () => {
+      const { it, fac } = await run();
+      expect(it).toContain("open_wo_count > 0");
+      expect(fac).toContain("open_wo_count > 0");
+    });
+
+    it("neunet podatak (unknown), nadolazeći rok (due_soon) i not_required NISU pažnja", async () => {
+      const { calls } = await run();
+      for (const q of calls) {
+        // neunet rok = rupa u šifarniku, ne kvar; nadolazeći rok ide u kalendar rokova
+        expect(q).not.toContain("unknown");
+        expect(q).not.toContain("due_soon");
+        expect(q).not.toContain("not_required");
+        // „ok" sme da postoji samo kao deo imena kolone (nikad kao uslov `= 'ok'`)
+        expect(q).not.toContain("'ok'");
+      }
+    });
+
+    it("skup presuđuje baza — servis vraća redove neizmenjene i ide kroz withUserRls", async () => {
+      const { out, rows, withUserRls } = await run();
+      expect(withUserRls).toHaveBeenCalledTimes(1);
+      expect(withUserRls.mock.calls[0][0]).toBe("veljko@servoteh.com");
+      // nema naknadnog JS filtera koji bi se razišao sa SQL uslovom
+      expect(out.data.itAssets).toBe(rows);
+      expect(out.data.facilities).toBe(rows);
+    });
+
+    it("arhivirana sredstva ostaju odsečena (archived_at IS NULL)", async () => {
+      const { it, fac } = await run();
+      expect(it).toContain("archived_at IS NULL");
+      expect(fac).toContain("archived_at IS NULL");
+    });
+  });
 });
