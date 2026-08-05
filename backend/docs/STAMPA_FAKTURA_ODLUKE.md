@@ -282,6 +282,55 @@ EXISTS` je idempotentan sam po sebi, a `UPDATE` ide posle njega — kada kolona 
 
 ---
 
+## O-F11 · Startni broj po seriji je PODESIV, posle uvek od 1
+
+Vlasnik, 05.08.2026: *„od kog broja krećemo 01.04.2027 — to će biti podesljiv broj da ja u
+podešavanjima mogu da upišem prvi startni broj od kog krećemo. A posle kreće od 1 stalno.
+Mada ćemo i tu godinu prekopirati sve i krenuti od 1 u 2027."*
+
+**Šta se pravi:** polje u Podešavanjima za **početno stanje brojača po seriji i godini**
+(faktura, avans, predračun, ponuda, revers). Upisuje ga administrator jednom, pri preuzimanju.
+Posle toga svaka nova godina kreće od 1 — bez ijednog unosa.
+
+**Zašto je ovo bilo potrebno, i zašto O-F1 nije bila dovoljna:** O-F1 kaže „kreće od 1, jer se
+na softver prelazi tek od nove godine". Prelazi se **1. aprila 2027**, dakle usred godine.
+Izmereno nad uvezenom knjigom: BigBit je u 2026. već izdao izlazne fakture u **tačno našem
+obliku** `N/GG` bez vodeće nule — IFR 95 različitih brojeva (`100/26`–`261/26`), IFUSL 32,
+IFGP 21; od 2.453 reda oblika `N/26` njih **1.404 nema vodeću nulu**. Tempo je 23–49 novih
+brojeva mesečno, pa januar–mart 2027. potroši još ~90–110 brojeva **pre** preuzimanja.
+
+Da 4.0 tada krenuo od 1, izdavao bi brojeve koje je BigBit u istoj godini već izdao — a
+otvorene stavke se grupišu po `(konto, komitent, broj)` **bez vrste dokumenta**, pa bi se dve
+različite obaveze tiho spojile u jednu.
+
+⚠️ Uz polje ide i **brana**: broj koji se izdaje ne sme da postoji u knjizi za tu godinu.
+Polje bez brane rešava samo prvi dan; brana rešava i grešku u unosu.
+
+*(Napomena: vlasnik pominje i mogućnost da se cela godina prekopira pa se ipak krene od 1.
+Polje pokriva oba puta — ako se prekopira, upisuje se 1.)*
+
+---
+
+## O-F12 · Poziv na broj OSTAJE; kad ga nema, veže ga poslovni administrator ručno
+
+Vlasnik, 05.08.2026: *„MORA POZIV NA BROJ. Ako ga nema, onda ručno vezuje poslovni
+administrator koji povezuje (tako se sada radi u BigBitu)."*
+
+⚠️ **Ovo ISPRAVLJA raniji odgovor 22** („ne uvodimo poziv na broj"), po kom sam bio zaključio
+da ceo sloj serija i parsera gubi svrhu. Ne gubi — poziv na broj ostaje glavni put, a ručno
+vezivanje je **rezerva**, ne zamena.
+
+**Posledica: ništa se ne ruši.** Odluke O-F5/O-F6/O-F7 (jedan niz za fakture, `A-` za avans,
+prefiksi za predračun/ponudu/revers) i brane u parseru ostaju kakve jesu — one baš i postoje
+da poziv na broj ne bi pogodio pogrešan dokument.
+
+**Ručna ruta već postoji i radi ispravno:** „Poveži po BrDok" (`linkLineToLedger`) normalizuje
+uplatu na broj nađene stavke. Od 05.08.2026. i automatsko knjiženje radi isto — do tada je
+upisivalo **sirov poziv na broj**, pa je plaćen kupac umeo da dobije opomenu pred utuženje
+(nalaz zatvoren istog dana).
+
+---
+
 ## 🔴 ČEKA · Način plaćanja na ino fakturi → prvo provera zakona
 
 Umesto da se doda drugo polje (prvobitni predlog), vlasnik je tražio **proveru da li su naše

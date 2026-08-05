@@ -73,6 +73,19 @@ export const OWNED_PRODUCTION_TABLES = new Set<string>([
   // source `RobnaDokumentaMirror`/`RobneStavkeMirror` — i OSTAJU u syncu.)
   "goods_documents",
   "goods_document_items",
+  // MATIČNI PODACI FIRME (Nenad, 05.08.2026): `companies` je od sada 4.0-owned —
+  // unosi se kroz Podešavanja → Firma, i to je JEDINI izvor. Mapiranje
+  // `Radni fajlovi` → `companies` je IZBAČENO iz `sync-map.generated.ts`.
+  //
+  // POVOD: 03.08.2026. su podaci upisani na produkciju i posle deploy-a potvrđeni;
+  // do 05.08. su NESTALI. Preživeli su samo `postal_code` (nova kolona koju izvor ne
+  // zna) i `iban`/`swift` (zaštićeni kroz `NATIVE_COLUMN_TABLES`) — sve mapirano je
+  // prepisano praznim vrednostima iz izvora. Posledica bi bila faktura bez adrese,
+  // PIB-a i matičnog broja, a da nijedan log ne kaže ništa.
+  //
+  // Uz to je ovo preduslov da program može da se instalira kod DRUGE firme: tamo
+  // BigBita nema, pa se podaci i logotip unose kroz ekran, ne kroz sync.
+  "companies",
   // PDV tarife (Nenad, 26.07.2026): registar se od sada vodi ISKLJUČIVO u 4.0
   // (`POST/PATCH /api/v1/pdv/tax-rates` → `TaxRatesService`), pa je mapiranje
   // `R_Tarife` IZBAČENO iz `sync-map.generated.ts` — isto kao `goods_documents`.
