@@ -88,15 +88,21 @@ FECOUNT=$(docker exec "$CONTAINER" sh -c 'ls /app/frontend-static/ 2>/dev/null |
 if [ "${FECOUNT:-0}" -gt 1 ]; then ok "frontend-static ima $FECOUNT fajlova (login.html uklj.)"
 else bad "frontend-static PRAZAN ($FECOUNT) → deploy je pao na API-only (static export fail?)"; fi
 
-# 6) MOBILNA 1.0 (/m/*) — worker proxy mora servirati 1.0, ne 3.0 Next 404.
+# 6) MOBILNA (/m/*) — rute moraju biti ŽIVE.
 # Incident 21.07: /m/<modul> je vraćao Next 404 (run_worker_first falio). Golo /m
 # je radilo pa je otkaz bio nevidljiv dok se ne proveri PODRUTA.
-say "6) Mobilna 1.0 (/m/*)"
+# Od gašenja 1.0 (PR #95, feat/cutover-1.0-gasenje) /m više ne servira staru
+# aplikaciju nego vodi na 3.0 /mob; postoji i prekidač za povratak na 1.0. Zato
+# se prihvataju OBA ispravna stanja i ispisuje se koje je zatečeno — pada samo
+# kad ruta stvarno crkne (Next 404 ili prazno), a to je scenario zbog kog je
+# provera i uvedena (ceo pogon bez mobilne).
+say "6) Mobilna (/m/*)"
 MOBHOST="${MOBHOST:-https://servosync.servoteh.com}"
 for mp in /m /m/montaza /m/odrzavanje; do
   BODY=$(curl -sS --max-time 12 -A "Mozilla/5.0 (Android)" "${MOBHOST}${mp}" 2>/dev/null || echo "")
-  if printf '%s' "$BODY" | grep -q "Servosync V1.0"; then ok "$mp → 1.0 mobilna"
+  if printf '%s' "$BODY" | grep -q "Servosync V1.0"; then ok "$mp → 1.0 mobilna (prekidač vraćen na staro)"
   elif printf '%s' "$BODY" | grep -qi "could not be found"; then bad "$mp → Next 404 (worker proxy ne hvata — run_worker_first u wrangler.jsonc?)"
+  elif printf '%s' "$BODY" | grep -q "_next"; then ok "$mp → 3.0 (/mob, posle gašenja 1.0)"
   else bad "$mp → neočekivano (${BODY:0:40})"; fi
 done
 
