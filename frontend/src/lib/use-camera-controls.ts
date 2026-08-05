@@ -17,7 +17,7 @@ import {
   type ScanDiag,
   type ZoomCap,
 } from './camera-controls';
-import { isAndroidWeb, shouldLimitScanToReticle } from './barcode-decoder';
+import { isAndroidWeb } from './barcode-decoder';
 
 /**
  * React omotač oko `lib/camera-controls` — zoom klizač, torch dugme, tap-fokus i
@@ -81,6 +81,9 @@ export function useCameraControls(opts: {
   // Generacija `attach`-a — obara zakasneli retry kad je kamera u međuvremenu
   // puštena (pozadina, promena objektiva, zatvaranje skenera).
   const genRef = useRef(0);
+  // Šta je u ovoj generaciji već odrađeno — čuva retry od dvostruke primene.
+  const zoomDoneRef = useRef(false);
+  const kickDoneRef = useRef(false);
   const [focusRing, setFocusRing] = useState<FocusRing | null>(null);
   const [diag, setDiag] = useState<ScanDiag>({
     model: '?',
@@ -88,6 +91,7 @@ export function useCameraControls(opts: {
     af: '—',
     zoom: '—',
     roi: false,
+    roiPending: null,
   });
 
   // Model se razrešava ASINHRONO (UA-CH) — grej ga čim se hook montira, da bude
@@ -97,15 +101,29 @@ export function useCameraControls(opts: {
   }, []);
 
   const lensPickedRef = useRef(false);
+  // STVARNO stanje nišan-gejta u ovoj sesiji — dolazi sa `VideoDecoderHandle`
+  // (`roiGateActive`), a NE iz `shouldLimitScanToReticle()` uživo: prekidač u
+  // panelu menja sessionStorage odmah, dok dekoder svoju odluku drži do sledećeg
+  // otvaranja skenera. Bez ovoga red laže baš o onome što se meri.
+  const roiActiveRef = useRef(false);
   const refreshDiag = useCallback((zoomValue?: number) => {
     setDiag(
       buildScanDiag(trackRef.current, {
         lensPicked: lensPickedRef.current,
-        roiGate: shouldLimitScanToReticle(),
+        roiGate: roiActiveRef.current,
         zoomValue,
       }),
     );
   }, []);
+
+  /** Ljuska ovo zove sa `handle.roiGateActive` čim dekoder krene. */
+  const reportRoiGate = useCallback(
+    (active: boolean) => {
+      roiActiveRef.current = active;
+      refreshDiag();
+    },
+    [refreshDiag],
+  );
 
   const stopAfKick = useCallback(() => {
     if (afTimerRef.current) {
@@ -113,6 +131,61 @@ export function useCameraControls(opts: {
       afTimerRef.current = 0;
     }
   }, []);
+
+  /**
+   * Jedna evaluacija profila uređaja: klizač + torch + auto-zoom + periodični AF.
+   * Zove je i prvi prolaz i retry — zato je IDEMPOTENTNA po generaciji
+   * (`zoomDoneRef` / `kickDoneRef`), pa retry dopuni samo ono što prvi put nije
+   * moglo da se pročita, a ništa se ne primenjuje dvaput.
+   *
+   * Vraća zoom koji treba prikazati u dijagnostici (ili `undefined`).
+   */
+  const evaluateProfile = useCallback(
+    async (track: MediaStreamTrack, myGen: number): Promise<number | undefined> => {
+      let zoomNow: number | undefined;
+
+      if (!torchSupportedRef.current) setTorchSupported(readTorchSupport(track));
+
+      const cap = readZoomCapability(track);
+      if (cap && !zoomDoneRef.current) {
+        zoomDoneRef.current = true;
+        setZoomCap(cap);
+        zoomNow = cap.current;
+        // KLJUČNO za tvrdo pravilo „uređaji koji rade se ne diraju": klizač kreće
+        // od ZATEČENE vrednosti uređaja i ništa se ne primenjuje dok radnik ne
+        // pomeri klizač. Auto-zoom je izuzetak samo za profil koji danas ne radi.
+        if (shouldAutoZoomOnStart(track)) {
+          const auto = Math.min(cap.max, Math.max(cap.min, 2));
+          zoomNow = auto;
+          setZoomValue(auto);
+          const ok = await applyZoom(track, auto);
+          // 1.0 `runRefocusAfterZoom`: zoom na Android Chrome-u razbija AF.
+          if (ok) await refocusAfterZoom(track);
+        } else {
+          setZoomValue(cap.current);
+        }
+      }
+
+      // `applyZoom`/`refocusAfterZoom` su async — ako je `detach` u međuvremenu
+      // odradio, generacija se ne poklapa i interval se NE sme postaviti, inače
+      // bi kucao nad puštenom kamerom do kraja sesije.
+      if (genRef.current !== myGen) {
+        stopAfKick();
+        return zoomNow;
+      }
+      if (!kickDoneRef.current && shouldPeriodicAfKick(track)) {
+        kickDoneRef.current = true;
+        stopAfKick();
+        afTimerRef.current = window.setInterval(() => {
+          const t = trackRef.current;
+          if (!t || t.readyState !== 'live') return;
+          void tapFocusAt(t, 0.5, 0.5);
+        }, AF_KICK_INTERVAL_MS);
+      }
+      return zoomNow;
+    },
+    [stopAfKick],
+  );
 
   /**
    * Ljuska ovo zove kad je stream živ. **Mora se zvati POSLE
@@ -136,63 +209,29 @@ export function useCameraControls(opts: {
         refreshDiag();
         return;
       }
-      setTorchSupported(readTorchSupport(track));
+      zoomDoneRef.current = false;
+      kickDoneRef.current = false;
 
-      const cap = readZoomCapability(track);
-      setZoomCap(cap);
-      let zoomNow = cap?.current;
+      const zoomNow = await evaluateProfile(track, myGen);
+      refreshDiag(zoomNow);
+
       // RETRY kad capabilities kasne: na Androidu `getCapabilities()` ume da
-      // vrati prazan objekat dok se pipeline ne slegne. Bez ovoga bi se klizač
-      // NIKAD ne bi pojavio na uređaju koji sporo prijavljuje `zoom` — dakle
-      // popravka bi tiho promašila baš ciljni telefon.
-      if (!cap) {
+      // vrati prazan objekat dok se pipeline ne slegne. Retry ponavlja PUNU
+      // evaluaciju profila (klizač + auto-zoom + AF kick), ne samo klizač —
+      // inače bi na A16 čije caps kasne (tačno ciljni uređaj) radnik dobio
+      // klizač na 1× i NIKAD auto-2× ni periodično izoštravanje.
+      if (!zoomDoneRef.current || !kickDoneRef.current) {
         window.setTimeout(() => {
           const t = trackRef.current;
           if (!t || genRef.current !== myGen || t.readyState !== 'live') return;
-          const late = readZoomCapability(t);
-          if (late) {
-            setZoomCap(late);
-            setZoomValue(late.current);
-          }
-          if (!torchSupportedRef.current) setTorchSupported(readTorchSupport(t));
-          refreshDiag();
+          void (async () => {
+            const late = await evaluateProfile(t, myGen);
+            if (genRef.current === myGen) refreshDiag(late);
+          })();
         }, CAPS_RETRY_MS);
       }
-      if (cap) {
-        // KLJUČNO za tvrdo pravilo „uređaji koji rade se ne diraju": klizač kreće
-        // od ZATEČENE vrednosti uređaja i ništa se ne primenjuje dok radnik ne
-        // pomeri klizač. Auto-zoom je izuzetak samo za profil koji danas ne radi.
-        if (shouldAutoZoomOnStart(track)) {
-          const auto = Math.min(cap.max, Math.max(cap.min, 2));
-          zoomNow = auto;
-          setZoomValue(auto);
-          const ok = await applyZoom(track, auto);
-          // 1.0 `runRefocusAfterZoom`: zoom na Android Chrome-u razbija AF.
-          if (ok) await refocusAfterZoom(track);
-        } else {
-          setZoomValue(cap.current);
-        }
-      }
-
-      // `attach` je async (čeka primenu zoom-a i AF); ako je `detach` izvršen
-      // dok smo bili u letu, generacija se više ne poklapa — interval se tada NE
-      // sme postaviti, inače bi kucao nad puštenom kamerom do kraja sesije.
-      if (genRef.current !== myGen) {
-        stopAfKick();
-        return;
-      }
-      if (shouldPeriodicAfKick(track)) {
-        stopAfKick();
-        afTimerRef.current = window.setInterval(() => {
-          const t = trackRef.current;
-          if (!t || t.readyState !== 'live') return;
-          void tapFocusAt(t, 0.5, 0.5);
-        }, AF_KICK_INTERVAL_MS);
-      }
-
-      refreshDiag(zoomNow);
     },
-    [refreshDiag, stopAfKick],
+    [refreshDiag, evaluateProfile],
   );
 
   const detach = useCallback(() => {
@@ -286,6 +325,7 @@ export function useCameraControls(opts: {
     focusRing,
     onVideoPointerDown,
     diag,
+    reportRoiGate,
     attach,
     detach,
   };

@@ -318,7 +318,12 @@ export function MaintScanOverlay({
           acceptRegion: () => reticleBoxRef.current?.getBoundingClientRect() ?? null,
         });
         if (aborted()) handle.stop();
-        else decoder = handle;
+        else {
+          decoder = handle;
+          // STVARNO stanje nišan-gejta za ovu sesiju — dekoder ga snima pri
+          // kačenju, pa dijagnostika ne sme da čita prekidač uživo.
+          camRef.current.reportRoiGate(handle.roiGateActive);
+        }
       } catch {
         if (aborted()) return; // tuđi start / zatvaranje — bez lažne greške
         say('Kamera nije dostupna — dozvoli pristup ili ukucaj šifru.', 'error');

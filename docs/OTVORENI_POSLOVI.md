@@ -142,21 +142,27 @@ dugmadi odgovara načinu rada.
 
 ## C. TEHNIČKI FOLLOW-UP (nalazi verifikatora, po prioritetu)
 
-### C1. Nišan gejt — PREBAČEN NA OPT-IN 05.08., čeka merenje na terenu ⏸
+### C1. Nišan gejt — POPRAVLJEN 05.08. (radi i u Chrome-u), čeka potvrdu sa terena ⏸
 Popravka „promašaj ~2 cm" (04.08., `frontend/src/lib/barcode-decoder.ts`,
 `shouldLimitScanToReticle()`) bila je gejtovana na UA `SM-A16x/SM-A17x`. **Chrome na Androidu od
 v110 šalje redukovan UA** (`Linux; Android 10; K`) → model se ne vidi → gejt se tiho NIJE
-aktivirao. Radio je samo u **Samsung Internetu** (UA zadržava model) i verovatno u APK WebView-u.
-Posle Nenadove prijave 05.08. („i dalje na A16 nišan ne radi") gejt je **podrazumevano isključen**
-— dok se ne dokaže merenjem da pomaže, ne sme da bude skrivena promenljiva u dijagnostici. Kod
-NIJE uklonjen: `sessionStorage.ss3_scan_roi_gate = 'on'` ga pali za probu, `'off'` ga drži ugašen,
-a `matchesReticleGateProfile()` čuva profil za povratak na automatiku.
+aktivirao. Radio je samo u **Samsung Internetu** (UA zadržava model) i verovatno u APK WebView-u —
+otud Nenadova prijava 05.08. „i dalje na A16 nišan ne radi".
 
-Model uređaja se od 05.08. razrešava kroz `navigator.userAgentData.getHighEntropyValues(['model'])`
-(`frontend/src/lib/camera-controls.ts`, `primeDeviceModelHint()` — greje se pri otvaranju skenera,
-pre `attach`-a) i **prikazuje se u dijagnostičkom redu svake skener-ljuske** zajedno sa stanjem
-gejta. **Uraditi:** na A16 uporediti sken sa `ss3_scan_roi_gate='on'` i `'off'` i tek onda odlučiti
-da li se automatika vraća. **A26/S26/iPhone moraju ostati van gejta** (Nenadov tvrd uslov, 04.08.).
+**Stanje posle 05.08.: automatika po profilu je ŽIVA i sada stvarno radi i u Chrome-u.** Model se
+razrešava kroz `navigator.userAgentData.getHighEntropyValues(['model'])` —
+`frontend/src/lib/device-model.ts`, `primeDeviceModelHint()` (taj modul namerno NEMA nijedan
+import, da ne pravi ciklus sa `barcode-decoder`; greje se pri otvaranju skenera, pre `attach`-a).
+Odluku donosi `matchesReticleGateProfile(getDeviceModelHint())`.
+
+**Prekidač više ne traži konzolu:** dug pritisak (~450 ms) na dijagnostički red u bilo kojoj
+skener-ljusci otvara panel sa tri prekidača (`ss3_scan_roi_gate`, `ss3_scan_autozoom`,
+`ss3_scan_af_kick`), svaki `auto`/`uklj`/`isklj`. Promena važi **od sledećeg otvaranja skenera** —
+zato red prikazuje STVARNO stanje sesije (`VideoDecoderHandle.roiGateActive`), a prekidač koji se
+s tim ne slaže ispisuje posebno („→ važi od sledećeg otvaranja").
+
+**Uraditi:** na A16 uporediti sken sa gejtom `uklj` i `isklj` i potvrditi da automatika ostaje.
+**A26/S26/iPhone moraju ostati van gejta** (Nenadov tvrd uslov, 04.08.).
 
 ### C2. Kvalitet modul ima istu „hapfluid" rupu 🔴
 034/26 je sredio primaoce obaveštenja o neusaglašenostima (tabela `montaza_nm_primaoci`), ali

@@ -380,8 +380,15 @@ export interface ScanDiag {
   af: string;
   /** Trenutni zoom i opseg. */
   zoom: string;
-  /** Da li je nišan-gejt aktivan u ovoj sesiji. */
+  /**
+   * Da li nišan-gejt STVARNO gejtuje u ovoj sesiji skenera — vrednost snimljena
+   * pri `attach`-u dekodera (`VideoDecoderHandle.roiGateActive`), NE trenutna
+   * vrednost prekidača. Prekidač menja `sessionStorage` odmah, a dekoder svoju
+   * odluku drži do sledećeg otvaranja skenera.
+   */
   roi: boolean;
+  /** Vrednost prekidača ako se RAZLIKUJE od aktivnog stanja (čeka restart skenera). */
+  roiPending: ScanFlagValue;
 }
 
 /**
@@ -392,7 +399,12 @@ export interface ScanDiag {
  */
 export function buildScanDiag(
   track: MediaStreamTrack | null,
-  info?: { lensPicked?: boolean; roiGate?: boolean; zoomValue?: number },
+  info?: {
+    lensPicked?: boolean;
+    /** `VideoDecoderHandle.roiGateActive` — stvarno stanje sesije, ne prekidač. */
+    roiGate?: boolean;
+    zoomValue?: number;
+  },
 ): ScanDiag {
   const modes = readFocusModes(track);
   const cur = currentFocusMode(track);
@@ -416,5 +428,18 @@ export function buildScanDiag(
         }`
       : 'nema',
     roi: Boolean(info?.roiGate),
+    roiPending: roiPendingLabel(Boolean(info?.roiGate)),
   };
+}
+
+/**
+ * Ako prekidač traži nešto drugo nego što sesija stvarno radi, vrati njegovu
+ * vrednost — ljuska je ispiše kao „→ važi od sledećeg otvaranja". Bez toga
+ * radnik prebaci prekidač, ne vidi promenu i zaključi da prekidač ne radi.
+ */
+function roiPendingLabel(active: boolean): ScanFlagValue {
+  const f = readScanFlag('ss3_scan_roi_gate');
+  if (f === 'on' && !active) return 'on';
+  if (f === 'off' && active) return 'off';
+  return null; // prekidač i stvarno stanje se poklapaju (ili je na automatici)
 }

@@ -262,9 +262,10 @@ type RoiCenterGate = (cx: number, cy: number) => boolean;
  */
 function createReticleGate(
   video: HTMLVideoElement,
-  acceptRegion?: () => DOMRectReadOnly | null,
+  acceptRegion: (() => DOMRectReadOnly | null) | undefined,
+  active: boolean,
 ): () => RoiCenterGate | null {
-  if (!acceptRegion || !shouldLimitScanToReticle()) return () => null;
+  if (!acceptRegion || !active) return () => null;
   let cache: { at: number; gate: RoiCenterGate | null } | null = null;
   return () => {
     const now = Date.now();
@@ -423,6 +424,14 @@ function readerOptions(hasQr: boolean) {
 export interface VideoDecoderHandle {
   /** Koji je put aktivan — za dijagnostiku/status poruku. */
   path: 'native' | 'zxing' | 'ios-qr-hybrid';
+  /**
+   * Da li OVAJ attach stvarno gejtuje po nišanu. Odluka se donosi JEDNOM, u
+   * `createReticleGate`, i tu ostaje do kraja sesije skenera. Dijagnostika mora
+   * da čita ovo, a NE `shouldLimitScanToReticle()` uživo: prekidač u panelu menja
+   * sessionStorage odmah, pa bi red pisao „nišan-gejt: ne" dok dekoder još
+   * gejtuje — tačno laž o onome što se meri.
+   */
+  roiGateActive: boolean;
   stop: () => void;
 }
 
@@ -510,7 +519,10 @@ export async function attachVideoDecoder(opts: {
   const { video, formats, onRaw, preferMatching, acceptRegion } = opts;
   const isStopped = opts.isStopped ?? (() => false);
   // Gejt „centar pogotka u nišanu" — `() => null` svuda van SM-A profila.
-  const roiGate = createReticleGate(video, acceptRegion);
+  // Odluka se SNIMA jednom i vraća se na handle-u, da dijagnostika prikazuje
+  // stvarno stanje sesije, a ne trenutnu vrednost prekidača.
+  const roiGateActive = Boolean(acceptRegion) && shouldLimitScanToReticle();
+  const roiGate = createReticleGate(video, acceptRegion, roiGateActive);
 
   // 1) Nativni BarcodeDetector — desktop Chromium / debug override / ekran koji
   //    ga eksplicitno traži (`preferNative`). Na Androidu NIJE default (1.0 kanon
@@ -570,6 +582,7 @@ export async function attachVideoDecoder(opts: {
       // Mutabilan handle — watchdog sme da zameni put bez restarta ljuske/streama.
       const handle: VideoDecoderHandle = {
         path: 'native',
+        roiGateActive,
         stop: () => {
           stopRequested = true;
           live = false;
@@ -582,7 +595,7 @@ export async function attachVideoDecoder(opts: {
         console.warn('[decoder] BarcodeDetector servis ne radi — prelazim na ZXing');
         if (dead()) return;
         try {
-          const inner = await attachZXingToVideo(video, formats, onRaw, dead, preferMatching, roiGate);
+          const inner = await attachZXingToVideo(video, formats, onRaw, dead, preferMatching, roiGate, roiGateActive);
           // Ljuska je u međuvremenu (lazy ZXing chunk ume da traje) zatvorila skener
           // → ugasi tek pokrenutu petlju i NE diraj handle.
           if (dead()) {
@@ -756,6 +769,7 @@ export async function attachVideoDecoder(opts: {
     rafId = requestAnimationFrame(tick);
     return {
       path: 'ios-qr-hybrid',
+      roiGateActive,
       stop: () => {
         live = false;
         cancelAnimationFrame(rafId);
@@ -764,7 +778,7 @@ export async function attachVideoDecoder(opts: {
   }
 
   // 3) ZXing nad <video> (ANDROID default — 1.0 kanon / iPhone item / Firefox…).
-  return attachZXingToVideo(video, formats, onRaw, isStopped, preferMatching, roiGate);
+  return attachZXingToVideo(video, formats, onRaw, isStopped, preferMatching, roiGate, roiGateActive);
 }
 
 /** Koliko se „pogrešan" kod drži pre nego što se ipak pusti (v. `preferMatching`). */
@@ -796,6 +810,8 @@ async function attachZXingToVideo(
   isStopped: () => boolean,
   preferMatching?: (raw: string) => boolean,
   roiGate?: () => RoiCenterGate | null,
+  /** Snimljena odluka nišan-gejta za ovaj attach — v. `VideoDecoderHandle.roiGateActive`. */
+  roiGateActive = false,
 ): Promise<VideoDecoderHandle> {
   // Nišan-gejt getter — `null` gejt (profil van SM-A / bez regiona) = stari tok.
   const gateOf = roiGate ?? (() => null);
@@ -876,6 +892,7 @@ async function attachZXingToVideo(
   }
   return {
     path: 'zxing',
+    roiGateActive,
     stop: () => {
       try {
         controls.stop();

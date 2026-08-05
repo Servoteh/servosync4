@@ -28,7 +28,6 @@ import {
   isCameraDecodeSupported,
   pickPreferredRaw,
   preloadVideoDecoder,
-  shouldLimitScanToReticle,
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
@@ -410,6 +409,9 @@ export function ScanOverlay({
   const [manual, setManual] = useState('');
   const [cameraOn, setCameraOn] = useState(false);
   const [diag, setDiag] = useState<ScanDiag | null>(null);
+  // STVARNO stanje nišan-gejta u ovoj sesiji (`VideoDecoderHandle.roiGateActive`),
+  // a ne trenutna vrednost prekidača — prekidač važi tek od sledećeg otvaranja.
+  const roiActiveRef = useRef(false);
   const [iosBlocker, setIosBlocker] = useState<string | null>(null);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
@@ -903,7 +905,7 @@ export function ScanOverlay({
       setDiag(
         buildScanDiag(getTrack(), {
           lensPicked: Boolean(curDeviceId),
-          roiGate: shouldLimitScanToReticle(),
+          roiGate: roiActiveRef.current,
           zoomValue,
         }),
       );
@@ -1121,6 +1123,10 @@ export function ScanOverlay({
         } else {
           decoder = handle;
           if (handle.path !== 'native') console.info('[scan] decode put:', handle.path);
+          // STVARNO stanje nišan-gejta za ovu sesiju — dekoder ga snima pri
+          // kačenju, pa dijagnostika ne sme da čita prekidač uživo.
+          roiActiveRef.current = handle.roiGateActive;
+          refreshScanDiag();
         }
       } catch (e) {
         say(

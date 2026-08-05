@@ -15,7 +15,6 @@ import {
   isIOSWebKit,
   isSamsungInternetBrowser,
   preloadVideoDecoder,
-  shouldLimitScanToReticle,
   type DecodeFormat,
   type VideoDecoderHandle,
 } from '@/lib/barcode-decoder';
@@ -174,6 +173,7 @@ export function ScanOverlay({
   const [zoom, setZoom] = useState<{ min: number; max: number; step: number; value: number } | null>(null);
   const [diag, setDiag] = useState<ScanDiag | null>(null);
   const lensPickedRef = useRef(false);
+  const roiActiveRef = useRef(false);
   const [chips, setChips] = useState<{ barcode: string; label: string }[]>([]);
   // `ok:false` = tap primljen, ali uređaj ne podržava ručno izoštravanje (v. `tapFocus`).
   const [focusRing, setFocusRing] = useState<{
@@ -465,7 +465,7 @@ export function ScanOverlay({
         setDiag(
           buildScanDiag(track ?? null, {
             lensPicked: Boolean(deviceId),
-            roiGate: shouldLimitScanToReticle(),
+            roiGate: roiActiveRef.current,
           }),
         );
         if (aborted()) return;
@@ -489,7 +489,13 @@ export function ScanOverlay({
           // `ss3_scan_decode_mode='native'` i dalje forsira nativni put kad zatreba.
         });
         if (aborted()) handle.stop();
-        else decoder = handle;
+        else {
+          decoder = handle;
+          // STVARNO stanje nišan-gejta za ovu sesiju — dekoder ga snima pri
+          // kačenju, pa dijagnostika ne sme da čita prekidač uživo.
+          roiActiveRef.current = handle.roiGateActive;
+          refreshDiag();
+        }
       } catch (e) {
         if (aborted()) return; // tuđi start / zatvaranje — bez lažne greške
         // getUserMedia pad → poruka; pad učitavanja dekodera (mreža) → posebna.
@@ -580,7 +586,7 @@ export function ScanOverlay({
     setDiag(
       buildScanDiag(trackRef.current, {
         lensPicked: lensPickedRef.current,
-        roiGate: shouldLimitScanToReticle(),
+        roiGate: roiActiveRef.current,
         zoomValue,
       }),
     );

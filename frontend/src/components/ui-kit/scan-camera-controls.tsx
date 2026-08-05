@@ -106,11 +106,16 @@ export function ScanDiagLine({ diag, appVersion }: { diag: ScanDiag; appVersion?
   const [open, setOpen] = useState(false);
   const holdRef = useRef(0);
 
-  // DUG PRITISAK (600 ms) otvara prekidače. Prekidači su do sada postojali samo
-  // u `sessionStorage`, a Nenad je NA TERENU — bez konzole nije mogao ni da ih
+  // DUG PRITISAK otvara prekidače. Prekidači su do sada postojali samo u
+  // `sessionStorage`, a Nenad je NA TERENU — bez konzole nije mogao ni da ih
   // upali ni da ih ugasi, pa se nije moglo izmeriti šta zapravo pomaže.
+  //
+  // 450 ms, a ne 600: Androidov sopstveni prag dugog pritiska je ~500 ms, pa kad
+  // sistem krene da hvata ručice selekcije Chrome ispali `pointercancel` —
+  // `cancelHold` tada ubije tajmer i panel se NIKAD ne otvori. Iz istog razloga
+  // je red `select-none` (bio `select-text`) i `contextmenu` je preventovan.
   const startHold = () => {
-    holdRef.current = window.setTimeout(() => setOpen((v) => !v), 600);
+    holdRef.current = window.setTimeout(() => setOpen((v) => !v), 450);
   };
   const cancelHold = () => {
     if (holdRef.current) {
@@ -137,14 +142,22 @@ export function ScanDiagLine({ diag, appVersion }: { diag: ScanDiag; appVersion?
             setOpen((v) => !v);
           }
         }}
-        className="tnums select-text text-2xs leading-tight text-white/45"
+        className="tnums select-none text-2xs leading-tight text-white/45"
       >
         {appVersion ? <span>app {appVersion} · </span> : null}
         <span>{diag.model}</span>
         <span> · soč: {diag.lens}</span>
         <span> · AF: {diag.af}</span>
         <span> · zum: {diag.zoom}</span>
+        {/* „aktivno" = ono što dekoder STVARNO radi u ovoj sesiji; prekidač koji
+            se s tim ne slaže se ispisuje posebno, sa napomenom da čeka restart. */}
         <span> · nišan-gejt: {diag.roi ? 'DA' : 'ne'}</span>
+        {diag.roiPending && (
+          <span className="text-status-warn">
+            {' '}
+            (prekidač: {diag.roiPending === 'on' ? 'uklj' : 'isklj'} → važi od sledećeg otvaranja)
+          </span>
+        )}
       </div>
       {open && <ScanDebugSwitches onClose={() => setOpen(false)} />}
     </div>
