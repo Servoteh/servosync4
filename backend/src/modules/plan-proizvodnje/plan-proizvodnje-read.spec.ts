@@ -197,6 +197,55 @@ describe("gant feed (046/26)", () => {
     expect(sql).toContain("is_completed_effective");
   });
 
+  // ── 069/26: gotovost po DOBRIM komadima + oznaka škarta ────────────────────
+  it("069: gotovost broji SAMO dobre komade (dorada i škart ispadaju iz zbira)", () => {
+    const { priv } = makeSvc();
+    const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
+    // Brojač dobrih: sve što NIJE dorada(1)/škart(2).
+    expect(sql).toContain("COALESCE(SUM(t.piece_count) FILTER (WHERE COALESCE(t.quality_type_id, 0) NOT IN (1, 2)), 0) AS good_done");
+    // Kvačica: ručna presuda planera → pa količina DOBRIH ≥ plan.
+    expect(sql).toContain("COALESCE(base.planned_done, CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0");
+    expect(sql).toContain("THEN COALESCE(tr.good_done, 0) >= base.komada_total");
+    // Zastavica kioska preživljava SAMO kao grana za nemerljivu količinu.
+    expect(sql).toContain("ELSE COALESCE(tr.is_done, false) END) AS is_completed_effective");
+  });
+
+  it("069: sirova zastavica `is_done_in_bigtehn` ostaje NETAKNUTA (OPEN_OPS ne sme da se pomeri)", () => {
+    const { priv } = makeSvc();
+    const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
+    // Lista „Po mašini" filtrira po ovome — da promena pravila gotovosti ne bi mogla
+    // ništa da vrati u listu niti da izbaci iz nje.
+    expect(sql).toContain("COALESCE(tr.is_done, false) AS is_done_in_bigtehn");
+  });
+
+  it("069: oznaka škarta stoji dok škart NIJE nadoknađen (isti izraz gotovosti)", () => {
+    const { priv } = makeSvc();
+    const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
+    expect(sql).toContain("(COALESCE(g4.scrap_pieces, 0) > 0 AND NOT (COALESCE(base.planned_done,");
+    expect(sql).toContain(") AS scrap_outstanding");
+    // Izraz gotovosti se pojavljuje DVA puta — kvačica i oznaka moraju iz istog izvora.
+    const hits = sql.split("THEN COALESCE(tr.good_done, 0) >= base.komada_total").length - 1;
+    expect(hits).toBe(2);
+  });
+
+  it("069: `komada_done` ostaje ZBIR SVIH kvaliteta (tuđi brojači se ne pomeraju)", () => {
+    const { priv } = makeSvc();
+    const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
+    expect(sql).toContain("SELECT SUM(t.piece_count) AS komada_done,");
+    expect(sql).toContain("COALESCE(tr.komada_done, 0)::bigint AS komada_done");
+    expect(sql).toContain("COALESCE(tr.good_done, 0)::bigint AS komada_done_good");
+  });
+
+  it("069: gant feed nosi dobre komade + škart (inače dijalog piše 100/100 bez kvačice)", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com");
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain("komada_done_good");
+    expect(sql).toContain("scrap_outstanding");
+    expect(sql).toContain("scrap_pieces");
+    expect(sql).toContain("rework_pieces");
+  });
+
   it("trajanje = COALESCE(override, TPZ + TK × komada)", () => {
     const { priv } = makeSvc();
     const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");

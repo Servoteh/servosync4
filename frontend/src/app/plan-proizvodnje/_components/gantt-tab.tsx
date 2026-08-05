@@ -49,6 +49,7 @@ import {
   machineRangeMinutes,
   reorderByDrop,
   rowKey,
+  scrapOutstanding,
   startOfDay,
   type GanttSort,
   type HallGroup,
@@ -1031,11 +1032,17 @@ function Bar({
 
   const done = row.is_completed_effective === true;
   const ready = row.is_ready_for_machine === true;
+  // 069/26 (Strahinja): pozicija sa NENADOKNAĐENIM škartom ne nosi kvačicu nego oznaku
+  // „ŠKART". BE šalje `scrap_outstanding`; račun je i ovde zbog optimističkog prikaza
+  // odmah posle klika na „Završeno" (stari BE bez kolone → pada na isti FE račun).
+  const skart = row.scrap_outstanding ?? scrapOutstanding(row, done);
   const tone = done
     ? 'bg-surface-2 border-line text-ink-secondary'
-    : ready
-      ? 'bg-status-success-bg border-status-success/50 text-status-success'
-      : 'bg-status-danger-bg border-status-danger/50 text-status-danger';
+    : skart
+      ? 'bg-status-warn-bg border-status-warn/50 text-status-warn'
+      : ready
+        ? 'bg-status-success-bg border-status-success/50 text-status-success'
+        : 'bg-status-danger-bg border-status-danger/50 text-status-danger';
 
   return (
     <div
@@ -1057,7 +1064,11 @@ function Bar({
           down.current = { x: ev.clientX, y: ev.clientY };
           onDragStart('move', ev.clientX);
         }}
-        title={`${row.rn_ident_broj ?? ''} · ${row.naziv_dela ?? ''}\n${formatDate(start.toISOString())} → ${formatDate(end.toISOString())}\n${row.is_urgent ? 'HITNO · ' : ''}${ready ? 'Spremno' : 'Nije spremno'}${clipLeft || clipRight ? '\n(bar se nastavlja van vidljivog prozora)' : ''}`}
+        title={`${row.rn_ident_broj ?? ''} · ${row.naziv_dela ?? ''}\n${formatDate(start.toISOString())} → ${formatDate(end.toISOString())}\n${row.is_urgent ? 'HITNO · ' : ''}${ready ? 'Spremno' : 'Nije spremno'}${
+          skart
+            ? `\nŠKART ${row.scrap_pieces ?? 0} kom — nedostaje ${Math.max(0, (row.komada_total ?? 0) - (row.komada_done_good ?? 0))} dobrih do plana`
+            : ''
+        }${clipLeft || clipRight ? '\n(bar se nastavlja van vidljivog prozora)' : ''}`}
         className={cn(
           'flex h-6 w-full cursor-grab items-center gap-1 overflow-hidden border px-1.5 text-2xs',
           'focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)] active:cursor-grabbing',
@@ -1070,6 +1081,12 @@ function Bar({
         {clipLeft ? <ChevronLeft className="h-3 w-3 shrink-0 opacity-70" aria-hidden /> : null}
         {row.predecessor_work_order_id ? <Link2 className="h-3 w-3 shrink-0" aria-hidden /> : null}
         {done ? <span aria-hidden>✓</span> : null}
+        {/* 069/26: „umesto štiklirano da je gotovo, da piše škart" — reč, ne ikonica,
+            jer je zahtev doslovno o tome da planer PROČITA razlog. `shrink-0` da je
+            odsecanje pojede tek posle crteža/operacije. */}
+        {!done && skart ? (
+          <span className="shrink-0 font-semibold tracking-wide">ŠKART</span>
+        ) : null}
         <span className="truncate">
           {row.broj_crteza ?? row.rn_ident_broj ?? '—'} · op. {String(row.operacija ?? '—')}
         </span>
