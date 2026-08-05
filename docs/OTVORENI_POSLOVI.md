@@ -406,6 +406,244 @@ Trajno rešenje = FK nacrt↔primopredaja (ista tema kao C6, drugi ugao).
 
 ---
 
+## E. TICKETING ODRŽAVANJA — projekat za dalji razvoj (plan od 05.08.2026)
+
+> **Status: ODOBREN PLAN, NIJE POČETO.** Nenad je 05.08. tražio da Održavanje dobije pravi
+> ticketing („prijava što prostija, a da imamo pregled svega — kad je prijavljeno, ko je
+> prijavio, stepen hitnosti — i potvrdu da je rešeno"). Analiza i sve brojke ispod izmerene su
+> na živoj sy15 **05.08.2026**. Pre izvođenja **ponovo izmeriti** (populacija se menja).
+>
+> **Četiri odluke koje je Nenad doneo 05.08. (ne vraćati na sto):**
+> 1. **Potvrđuje PRIJAVILAC** — onaj ko je prijavio kvar potvrđuje da je rešen (ne šef).
+> 2. **Svaki kvar → šef odmah; hitni → i širi krug** uz eskalaciju (sada minor ne ide nikome).
+> 3. **Hitnost ljudskim jezikom, 3 stepena:** *Može da čeka · Smeta u radu · 🔴 Stoji*.
+>    U bazi ostaje `minor/major/critical` — menja se SAMO ono što čovek vidi.
+> 4. **Pored mejla ide i push na telefon** odgovornih (kanal = otvorena odluka, vidi E2c).
+
+### E0. Zašto — zatečeno stanje (izmereno 05.08.2026, 21 kvar)
+
+Baza **već ima ceo ticketing model** i ne treba ga graditi: `maint_incidents` nosi
+`reported_by`, `reported_at`, `severity`, `status` (6 stanja), `assigned_to`, `resolved_at`,
+`closed_at`, `resolution_notes`, `downtime_minutes`, `attachment_urls`, `work_order_id`,
+`safety_marker`; audit je u `maint_incident_events` (21 `created`, 24 `status_change`,
+13 `user_note`, 2 `assigned`); auto-nalog za major/critical/safety **radi**.
+
+Problem je što proces taj model ne koristi:
+
+| # | Nalaz | Brojka |
+|---|---|---|
+| 1 | Nigde se ne vidi KO je prijavio (tabela Kvarovi ima 6 kolona, nijedna nije prijavilac) | 0/6 |
+| 2 | Status ide na „rešen" i tu stane — niko ne zatvara | 18 rešenih · **1 zatvoren** |
+| 3 | Niko ne upiše šta je urađeno | **0 od 21** ima `resolution_notes` |
+| 4 | Vremenski pečati se ne upisuju → nemoguće meriti trajanje | 7 „rešenih" bez `resolved_at` |
+| 5 | Manji kvarovi ne obaveštavaju nikoga | 10 od 21 je `minor` |
+| 6 | Tiket nema vlasnika | 2 od 21 dodeljena |
+| 7 | Naslov nosi ceo opis (forma ne vodi čoveka) | naslov do 143 znaka |
+| 8 | Ništa ne viče kad tiket stoji | 1 otvoren **51 dan** |
+
+**🔴 Najozbiljnije — prijavilac ne vidi svoju prijavu.** Vidljivost ide po SREDSTVU, ne po
+prijaviocu (`maint_incident_row_visible` → `maint_machine_visible`):
+ERP pravo ∨ rola `chief|technician|management|admin` ∨ operator kome je **ta** mašina dodeljena.
+Nigde `reported_by = auth.uid()`. Radnik koji prijavi kvar van svog opsega **izgubi prijavu iz
+vida** — a ticketing bez toga ne postoji.
+
+**🔴 Drugo — obaveštenja o kvarovima ne stižu.** Red se puni, ali:
+
+| Kanal | Zapisa | `recipient='pending'` | Sa `sent_at` | Poslednje |
+|---|---|---|---|---|
+| in_app (kvarovi) | 21 | **17** | 8 | **14.07.** |
+| email (rokovi sredstava) | 22 | **19** | 6 | 04.08. |
+| whatsapp | 3 | 2 | 2 | 20.04. |
+
+`status='sent'` je upisan iako je primalac doslovno `'pending'` a `sent_at` prazan — **status
+laže**. Uzrok je poznat i tačan:
+- `maint_enqueue_notification(...)` radi `coalesce(p_recipient, 'pending')`, a trigger prosleđuje
+  `NULL` — razrešavanje primaoca je posao **dispatchera koji ne postoji**.
+- U telu trigera `maint_incidents_enqueue_notify` stoji **tvrdo**:
+  `IF NEW.severity NOT IN ('major','critical') THEN RETURN NEW; END IF;`
+  → minor ne uđe u red ni kad bi pravilo postojalo. Zato od **14.07.** nema nijednog zapisa:
+  svi kasniji kvarovi (22.07., 23.07., 31.07., 03.08.) su `minor`.
+- Trigger je **samo `AFTER INSERT`** — promena statusa (npr. „rešeno") ne šalje ništa.
+- `maint_settings.notification_channels = {in_app}` → mejl/telegram ne bi prošli ni sa pravilima.
+
+---
+
+### E1. Faza 1 — da se vidi ko, kad i koliko dugo `~1 dan` `rizik: nizak`
+
+**Temelj — bez ovoga ostale faze nemaju na čemu da stoje.**
+
+**Šta uraditi:**
+1. **Kolone u tabeli Kvarovi** (`frontend/src/app/odrzavanje/_components/kvarovi-tab.tsx:29-36`):
+   dodati **Prijavio**, **Dodeljen**, **Star X dana**. BE danas vraća `reportedBy` kao **UUID**
+   (`frontend/src/api/odrzavanje.ts:362`) — treba batch-resolve imena iz
+   `maint_user_profiles.full_name` u `listIncidents`
+   (`backend/src/modules/odrzavanje/odrzavanje.service.ts:622`), po uzoru na `resolveAssets`
+   koji već postoji u istom fajlu.
+2. **Filteri**: „Moje prijave" (`reportedBy = ja`) i „Nezatvoreni" — uz postojeće status/severity.
+3. **sy15 migracija A — vidljivost:** dopuniti `maint_incident_row_visible(p_machine_code, p_asset_id)`
+   sa `OR reported_by = auth.uid()`. ⚠️ Funkcija danas prima samo šifru i asset_id — treba joj
+   proslediti i `reported_by` (izmena potpisa **i** RLS politike `maint_incidents_select`), ili
+   dodati **drugu politiku** `USING (reported_by = auth.uid())` što je manje invazivno i
+   **preporučeno** (RLS politike se OR-uju).
+4. **sy15 migracija B — pečati:** trigger `BEFORE UPDATE` koji postavlja
+   `resolved_at = now()` na prelasku u `resolved` (ako je NULL) i `closed_at = now()` na `closed`.
+   Bez ovoga svako merenje trajanja je izmišljeno.
+5. **Opis rešenja obavezan**: u `updateIncident`
+   (`backend/src/modules/odrzavanje/odrzavanje.service.ts:2589`) odbiti prelaz u `resolved` ako
+   `resolutionNotes` nije zadat (ni u DTO ni u redu). Poruka: „Upiši šta je urađeno."
+6. **Jednokratni backfill** 7 tiketa bez pečata — vreme rekonstruisati iz
+   `maint_incident_events` (`event_type='status_change'`, `to_value='resolved'`). SQL ide u
+   `backend/docs/sql/sy15/`, sa preflight-om i `ROLLBACK` probom.
+
+**Gotovo kad:** u listi se vidi ko je prijavio i koliko tiket stoji; prijavilac vidi svoj tiket
+bez obzira na sredstvo; nijedan „rešen" nema prazan `resolved_at`.
+
+---
+
+### E2. Faza 2 — da obaveštenja stvarno stižu (mejl + PUSH) `~1,5–2 dana` `rizik: SREDNJI`
+
+**Ovo je jedina faza sa nepoznanicom** — dispatcher ne postoji, pa se ne sme tvrditi da radi
+dok probna poruka ne stigne na stvarni telefon/mejl.
+
+#### E2a. Popraviti postojeći lanac
+1. **Skinuti tvrdi filter** iz `maint_incidents_enqueue_notify`: linija
+   `IF NEW.severity NOT IN ('major','critical') THEN RETURN NEW; END IF;` → izbaciti, a odluku
+   prepustiti PRAVILIMA (`maint_notification_rules`). Dodati pravilo `incident_created` za
+   `severity=minor` → `target_role='chief'`.
+2. **Trigger i na UPDATE**: novi `event_type='incident_resolved'` kad status pređe u `resolved`
+   (primalac = `reported_by`), i `incident_reopened` kad se vrati u rad (primalac = `assigned_to`).
+3. **Dispatcher** (novo, `backend/src/modules/odrzavanje/`): čita `maint_notification_log`
+   `WHERE status='queued' AND next_attempt_at <= now()`, razrešava `'pending'` → stvarnog primaoca
+   po `payload->>'target_role'` iz `maint_user_profiles` (`full_name`, `phone`, `telegram_chat_id`)
+   + mejl iz glavne baze (`users.email`), šalje, pa upisuje `sent_at` i `status`.
+   **`status='sent'` sme SAMO posle uspešne isporuke** — inače `failed` + `error` + `attempts++`.
+   Pokretanje: postojeći scheduler (`backend/src/modules/scheduler/`).
+4. **`maint_settings.notification_channels`** proširiti sa `{in_app}` na `{in_app,email,push}`.
+
+#### E2b. Push na telefon — šta treba (nema NIŠTA od toga danas)
+Provereno 05.08.: **0 pogodaka** za `web-push`/`VAPID`/`pushManager` u celom repou.
+Postoji samo `frontend/public/sw.js` (install/activate/fetch — **bez `push` handlera**) i
+PWA manifest na **`/mob.webmanifest`** (`frontend/src/app/layout.tsx:18-26`).
+
+Koraci za Web Push (VAPID):
+1. **VAPID par ključeva** → `.env` (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`)
+   + red u `backend/.env.example` (pravilo BACKEND_RULES §10).
+2. **Nova zavisnost `web-push`** na backendu — ⚠️ BACKEND_RULES §10 traži **izričito odobrenje
+   korisnika** pre dodavanja. Pitati pre početka.
+3. **Tabela pretplata** u GLAVNOJ bazi (ne sy15): `push_subscriptions`
+   (`user_id`, `endpoint` UNIQUE, `p256dh`, `auth`, `user_agent`, `created_at`, `last_seen_at`,
+   `failed_at`). Migracija kroz `npm run migrate:dev`.
+4. **Frontend**: dugme „Uključi obaveštenja na telefonu" u Podešavanjima →
+   `Notification.requestPermission()` → `registration.pushManager.subscribe({userVisibleOnly:true,
+   applicationServerKey})` → POST na BE.
+5. **`sw.js`**: dodati `push` i `notificationclick` handlere (klik otvara `/odrzavanje?kvar=<id>`).
+   ⚠️ `sw.js` je već jednom pravio problem — vidi memoriju „mob-10-izbacivanje-restore-session"
+   (v2 se NE vraća na kill-switch) i „android-paritet" (CF Pages `.html`→307).
+6. **Slanje** iz dispatchera: `web-push.sendNotification`; na `410 Gone`/`404` obrisati pretplatu.
+
+**🔴 Zamka iOS:** Web Push na iPhone-u radi tek od **iOS 16.4** i **samo ako je aplikacija
+dodata na početni ekran** („Add to Home Screen"). PWA manifest postoji, ali za `/mob` — ako
+odgovorna lica koriste desktop `/odrzavanje`, na iPhone-u **neće dobiti push**. Za njih ostaje
+mejl. Ovo mora biti rečeno ljudima, ne otkriveno posle.
+
+#### E2c. 🔴 OTVORENA ODLUKA — koji kanal za push
+Tri staze; treba potvrda **ko šta stvarno koristi na telefonu**:
+
+| Staza | Šta traži | Za | Protiv |
+|---|---|---|---|
+| **A. Web Push (VAPID)** | sve iz E2b | ne zavisi od tuđe platforme; koristi PWA koju već imamo | iOS traži instaliranu PWA; nova zavisnost |
+| **B. Telegram bot** | bot token + slanje | **šema je već spremna**: `maint_user_profiles.telegram_chat_id` postoji, `maint_notification_rules.channel` već ima `telegram`; radi isto na svim telefonima, bez PWA | ljudi moraju imati Telegram i upisati `chat_id` |
+| **C. Oba** | A + B | pokriva sve | najviše posla |
+
+**Preporuka:** krenuti od **B (Telegram)** jer je šema već pripremljena i isporuka je dokaziva
+istog dana, pa **A** dodati kad se potvrdi da ljudi drže PWA na telefonu. WhatsApp je već
+pokušan (3 poruke, poslednja **20.04.**) — Business API je plaćen i sporiji za uvođenje, ne
+preporučuje se kao prvi korak.
+
+**Gotovo kad:** probni kvar tipa „minor" stigne šefu na mejl **i** na telefon, a u
+`maint_notification_log` stoji stvarni primalac i `sent_at` — nijedan `'pending'`.
+
+---
+
+### E3. Faza 3 — petlja potvrde `~1 dan` `rizik: nizak`
+
+**Obrazac se NE izmišlja — preslikava se 1:1 iz modula Zahtevi**, gde već radi:
+`backend/src/modules/zahtevi/zahtevi.controller.ts:259` (`POST /:id/confirm`) i `:273`
+(`POST /:id/reopen`). Vidi i memoriju „zahtevi-potvrda-podnosioca" (živo od 03.08.).
+
+**Šta uraditi:**
+1. **BE rute** `POST /maintenance/incidents/:id/confirm` i `/reopen` uz `UpdateIncidentDto`
+   obrazac; `confirm` → `status='closed'`, `closed_at=now()`, event `confirmed_by_reporter`;
+   `reopen` → nazad na `in_progress`, **razlog obavezan**, event + obaveštenje tehničaru.
+2. **Guard:** potvrdu sme **samo `reported_by`** (i ERP admin kao ispomoć), i **samo** dok je
+   status `resolved`. Nikako šef umesto prijavioca — to je Nenadova odluka od 05.08.
+3. **FE** (`frontend/src/app/odrzavanje/_components/incident-detail-dialog.tsx`): traka sa
+   **✔ Potvrđujem da je rešeno** / **✗ Nije rešeno**, vidljiva po istom uslovu. Prikazati i
+   `resolution_notes` + ko je i kada rešio, da čovek ima šta da potvrdi.
+4. **Obaveštenje** prijaviocu kad tiket pređe u `resolved` (zavisi od E2 — bez njega niko ne
+   sazna da treba da potvrdi).
+
+**Gotovo kad:** kvar prijavljen sa naloga radnika prođe pun krug
+prijava → rad → rešeno → **radnik potvrdi** → zatvoren, i sve to piše u istoriji tiketa.
+
+---
+
+### E4. Faza 4 — prijava u 3 dodira `~1 dan` `rizik: nizak`
+
+Danas forma ima **7 polja** (`prijava-kvara-dialog.tsx`): sredstvo, naslov, ozbiljnost, opis,
+bezbednosni rizik, „u zastoju", fotografije. Rezultat se vidi u podacima — ljudi guraju ceo
+opis u naslov (do 143 znaka), a opis ostaje prazan u 3 od 21 slučaja.
+
+**Šta uraditi:**
+1. **Korak 1 — sredstvo:** QR sken (nalepnice i `QrCanvas` **već postoje**, deep-link
+   `?code=` radi) ili pretraga. Kad se ulazi sa kartona sredstva, korak se preskače.
+2. **Korak 2 — „Šta ne valja?":** JEDNO polje + mikrofon. Diktat već radi
+   (`DictateButton` → `/ai/stt`, OpenAI Whisper; ubačen u prijavu kvara 04.08.).
+   Opciono: AI iz jednog teksta izvuče kratak naslov + opis (obrazac `extractWithTool`, isti kao
+   `odrzavanje-racun-ai.ts`).
+3. **Korak 3 — hitnost, 3 velika dugmeta** (Nenadova odluka):
+   *Može da čeka* → `minor` · *Smeta u radu* → `major` · *🔴 Stoji — ne može da radi* → `critical`.
+   Ispod: jedan checkbox **„Opasno je po ljude"** → `safety_marker`.
+   Labele menjati u `common.tsx` (`SEVERITY_LABEL`) — **enum u bazi se NE dira**.
+4. Fotografija ostaje opciona (`AttachmentInput`, već rešava HEIC i smanjivanje).
+5. „Sredstvo je u zastoju" checkbox skloniti iz forme — izvodi se iz *Stoji*.
+
+**Gotovo kad:** radnik prijavi kvar sa telefona u tri dodira i bez kucanja.
+
+---
+
+### E5. Faza 5 — rokovi i eskalacija `~0,5 dana` `rizik: nizak` *(opciono)*
+
+Brana da se ne ponovi tiket koji stoji **51 dan**.
+1. Rok odziva po hitnosti (predlog: *Stoji* 2 h · *Smeta* isti dan · *Može da čeka* 3 dana) —
+   u `maint_settings` ili novoj tabeli, **ne u kodu**.
+2. Bojenje reda po starosti + kolona „ističe za".
+3. Dnevni podsetnik šefu sa listom probijenih rokova (postojeći scheduler + E2 dispatcher).
+4. `maint_notification_rules.escalation_level` i `delay_minutes` **već postoje** i koriste se —
+   eskalacija se konfiguriše, ne programira.
+
+---
+
+### E6. Redosled, zavisnosti i zamke
+
+**Redosled je obavezan: E1 → E2 → E3 → E4 (→ E5).**
+E3 (potvrda) **ne radi bez E2** — potvrda koja ne stigne do čoveka nije potvrda.
+E4 je najvidljiviji korisniku, ali bez E1 nema pregleda koji Nenad traži.
+
+**Zamke (provereno 05.08.):**
+- `maint_incidents.machine_code` je **NOT NULL** — za vozila/IT/objekte upisuje se `asset_code`
+  (pravilo 24, FE to već radi). Ne pokušavati NULL.
+- Enum `maint_asset_type` = `machine|vehicle|it|facility` (**NE** `it_asset`). Nepostojeći literal
+  u `CASE` nad enum-om obara CELU PL/pgSQL funkciju — vidi memoriju
+  „odrzavanje-cena-i-stvarna-upotreba". Porediti nad `::text`.
+- `maint_notification_log` je INSERT-only ledger — probe ostavljaju trag; testirati kroz
+  `BEGIN … SET LOCAL ROLE authenticated … ROLLBACK` (radi, ne troši `maint_wo_number_counter`).
+- RLS: 102 politike žive na sy15. Dodavanje **nove** politike je bezbednije od izmene postojeće.
+- `ai_chat_prijavi_kvar` (prijava kvara kroz AI chat) od 03.08. radi za sva sredstva i po
+  registarskoj oznaci — ako se menja tok prijave, **i njega uskladiti** (`sy15-tools.ts`).
+
+---
+
 ## Napomene za rad (naučeno 04.08.)
 
 - **Skripte pokretati iz git blob-a**, ne iz checkout-a:
