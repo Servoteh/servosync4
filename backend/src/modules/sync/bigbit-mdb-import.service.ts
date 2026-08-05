@@ -145,6 +145,35 @@ const PROJECTS_BATCH = 1000;
 /** Serija za artikle — 91k redova × 67 kolona; 2000 drži memoriju ispod ~40 MB. */
 const ITEMS_BATCH = 2000;
 
+/**
+ * Serija za robno ogledalo. Mereno u živom fajlu: 27.338 dokumenata, 182.539
+ * robnih stavki, 22.931 trebovanje, 86.779 stavki trebovanja — dakle robno je
+ * NAJVEĆI korak uvoza, veći od glavne knjige i od artikala zajedno.
+ *
+ * Zato robno ne ide red-po-red kao artikli (91k pojedinačnih `update`-a je danas
+ * najsporiji korak), nego se cela stranica upisuje JEDNIM `INSERT ... SELECT`:
+ * 2.000 redova = jedan odlazak u bazu i jedna transakcija, uz isti
+ * `ON CONFLICT ... WHERE IS DISTINCT FROM` koji koriste ostali koraci.
+ *
+ * 🔴 STRANICA SE ŠALJE KAO `jsonb`, NE KAO PARALELNI NIZOVI (`unnest`) — i to
+ * nije stil nego ispravka posle pada na DEV BAZI (05.08.2026):
+ *
+ *     ERROR: cannot cast type integer[] to date[]
+ *
+ * Prisma tip niza POGAĐA iz njegovog sadržaja. Stranica u kojoj su SVE vrednosti
+ * jedne kolone prazne (npr. `DatumIsporuke` — mereno: 2 od 86.779 stavki ga
+ * uopšte nemaju, ali cela stranica od 2.000 lako bude bez ijednog) stiže kao
+ * `integer[]`, a `integer[]` se ne da kastovati u `date[]`. To ne bi bio tihi
+ * kvar nego pad CELOG robnog uvoza, i to zavisan od SADRŽAJA stranice — dakle
+ * takav da prođe kroz svaki test sa lepim podacima i sruši se u martu.
+ *
+ * `jsonb_to_recordset` uklanja pogađanje: tipovi kolona stoje NAPISANI u upitu,
+ * `null` je `null` u svakoj koloni, a datumi/decimale se čitaju kao tekst pa
+ * eksplicitno kastuju — isti razlog iz kog `bbDecimalText` ne prolazi kroz
+ * JS `number`.
+ */
+const GOODS_BATCH = 2000;
+
 /** Koliko preskočenih redova se IMENUJE u `notes` (ostatak se sabere u broj). */
 const MAX_NAMED_SKIPS = 20;
 
@@ -389,6 +418,431 @@ const stageInt = (v: unknown): number | null => {
   return Number.isFinite(num) ? Math.trunc(num) : null;
 };
 
+/** `0` u BigBitu znači „nije popunjeno" na svakoj šifri-referenci (komitent, predmet, magacin). */
+const stageRef = (v: unknown): number | null => {
+  const id = stageInt(v);
+  return id === null || id === 0 ? null : id;
+};
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║  ROBNO OGLEDALO — LAGER („drugi pregled artikala") I KARTICE ARTIKLA      ║
+// ║                                                                          ║
+// ║  Preslikavanje `T_Robna dokumenta` / `T_Robne stavke` / `T_Trebovanja`    ║
+// ║  (+ stavke) u `*_mirror` tabele. Sve odluke ispod su MERENE nad živim     ║
+// ║  BigBit fajlom `BB_T_26_11-07-26.mdb` (27.338 dokumenata / 182.539        ║
+// ║  stavki / 22.931 trebovanje), 05.08.2026. Brojevi stoje uz svako pravilo  ║
+// ║  jer se bez njih pravilo za godinu dana pročita kao proizvoljno.          ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Access `Boolean` kroz `mdb-export` izlazi kao TEKST — a `Boolean("0")` je u
+ * JS-u `true`. Isti spisak vrednosti koji koristi `mapStagedProject`, izdvojen
+ * jer robno o njemu zavisi na tri mesta (`Ulaz`, `Rezervisi`, `Zakljucano`) i
+ * jer je `Ulaz` jedina stvar koja odlučuje da li roba ULAZI ili IZLAZI.
+ */
+export const bbBool = (v: unknown): boolean => {
+  const s = stageText(v);
+  return s === null
+    ? false
+    : ["1", "-1", "true", "yes", "da"].includes(s.toLowerCase());
+};
+
+/**
+ * Broj iz staging teksta — kao TEKST, ne kao JS `number`.
+ *
+ * ZAŠTO NE `Number()`: količine idu u `numeric(18,4)` i sabiraju se u lager.
+ * BigBit ih drži kao `Double` i izvozi ispiše `5.0049999999999`; kad bi se
+ * vrednost provukla kroz JS `number` pa nazad u tekst, u zbir od 182.500 stavki
+ * ušla bi binarna greška koju Postgres ne bi napravio. Ovako Postgres parsira
+ * izvorni zapis i sam ga zaokruži na skalu kolone.
+ *
+ * Neupotrebljiv zapis daje `null` (kolona ostaje prazna), NIKAD pad reda.
+ */
+export const bbDecimalText = (v: unknown): string | null => {
+  const s = stageText(v);
+  if (s === null) return null;
+  const cleaned = s.replace(",", ".").replace(/[^0-9.eE+-]/g, "");
+  if (cleaned === "" || !Number.isFinite(Number(cleaned))) return null;
+  return cleaned;
+};
+
+/**
+ * SMER PROMETA: jedna BigBit količina -> `quantity_in` / `quantity_out`.
+ *
+ * 🔴 ZNAK SE NE DIRA — ni `ABS`, ni „spusti na nulu". Mereno: 87 stavki ima
+ * NEGATIVNU `Kolicina`, i to nije smeće nego način na koji BigBit knjiži
+ * međumagacinski prenos. Doslovan snimak jednog prenosa iz fajla:
+ *
+ *     MMPM  Ulaz=True  magacin 2  SUM(Kolicina) = +5,005
+ *     MMPR  Ulaz=True  magacin 1  SUM(Kolicina) = −5,005
+ *
+ * Dakle OBA dokumenta su „ulaz", a odlazak iz magacina 1 je zapisan negativnom
+ * količinom. Sa `ABS()` bi tih 5,005 bilo DODATO i magacinu 1 i magacinu 2 —
+ * roba bi se umnožila prenosom, i to tiho, jer bi svaki pojedinačni red
+ * izgledao savršeno normalno. `SUM(in) − SUM(out)` sa očuvanim znakom daje
+ * tačan rezultat u oba smera.
+ */
+export const splitGoodsQuantity = (
+  kolicina: unknown,
+  isInflow: boolean,
+): { quantityIn: string; quantityOut: string } => {
+  const q = bbDecimalText(kolicina) ?? "0";
+  return isInflow
+    ? { quantityIn: q, quantityOut: "0" }
+    : { quantityIn: "0", quantityOut: q };
+};
+
+/**
+ * Vrednost onako kako se PRIKAZUJE u poruci o odbijenom redu. Staging je sav
+ * tekst, ali je tip `unknown`, pa golo `String(v)` na objektu ispiše
+ * „[object Object]" — poruka koja ne kaže ništa je gora od poruke koje nema.
+ */
+const shown = (v: unknown): string =>
+  typeof v === "string"
+    ? v
+    : typeof v === "number" || typeof v === "boolean"
+      ? String(v)
+      : "";
+
+/** `YYYY-MM-DD` za `::date[]` — bez zone, jer je kolona `date`. */
+const bbDateText = (v: unknown): string | null => {
+  const d = stageDate(v);
+  return d === null ? null : d.toISOString().slice(0, 10);
+};
+
+const cut = (s: string | null, max: number): string | null =>
+  s === null ? null : s.slice(0, max);
+
+/** Naš artikal iza BigBit šifre. */
+export interface BbItemRef {
+  /** `items.id` — 4.0 ključ, ono što ide u `*_mirror.item_id`. */
+  id: number;
+  catalogNumber: string | null;
+}
+
+/**
+ * BigBit `Sifra artikla` -> naš artikal.
+ *
+ * 🔴 VREDNOST `null` ZNAČI „ŠIFRU DRŽI VIŠE NAŠIH ARTIKALA" — tada se ne pogađa
+ * koji je pravi, nego se stavka preskače i imenuje. Isti stav ima `importItems`
+ * („ne pogađam koji je pravi; razreši dubl kod nas"); dva različita stava o
+ * istoj duploj šifri bi značila da lager i šifarnik pokazuju različit artikal.
+ */
+export type BbItemIndex = Map<number, BbItemRef | null>;
+
+export type MapReject = {
+  ok: false;
+  /** `FILTER` = red nije ni ušao u obradu; `SKIP` = obrađen pa odbijen. */
+  kind: "FILTER" | "SKIP";
+  reason: string;
+};
+export type MapResult<T> = { ok: true; value: T } | MapReject;
+
+export interface MappedGoodsDocument {
+  id: number;
+  documentType: string;
+  documentNumber: string | null;
+  documentDate: string;
+  postingDate: string | null;
+  isInflow: boolean;
+  isReservation: boolean;
+  level: number;
+  warehouseId: number | null;
+  customerId: number | null;
+  projectId: number | null;
+  isLocked: boolean;
+  year: number | null;
+  /** `Vrsta dokumenta` je bila duža od kolone (5) — imenuje se, ne ćuti se. */
+  typeTruncated: boolean;
+}
+
+/**
+ * `T_Robna dokumenta` (staging red) -> `goods_documents_mirror`.
+ *
+ * ŠTA NOSI ZNAČENJE (mereno u fajlu 11.07.2026):
+ *  • `Level` — 0 nosi 1.528 dokumenata TEKUĆE godine (stanje se računa SAMO nad
+ *    njima), 250 nosi 25.810 radnih dokumenata (ponude, predračuni, otpremnice,
+ *    rezervacije) koji se vide na kartici ali NE ulaze u stanje.
+ *  • `Rezervisi` — 1.576 dokumenata. NE poklapa se sa vrstom dokumenta: pored
+ *    REZM (1.071) i REZR (487) rezervišu i OTP (9), PON (6) i PROF (3). Ko bi
+ *    rezervacije prepoznavao po vrsti, promašio bi 18 dokumenata; zato se prenosi
+ *    ZASTAVICA, a ekran čita nju.
+ *  • `Ulaz` — smer. U Level 0: 1.312 ulaznih, 216 izlaznih; ceo Level 250 je
+ *    izlazni.
+ */
+export const mapGoodsDocumentRow = (
+  row: Record<string, unknown>,
+): MapResult<MappedGoodsDocument> => {
+  const id = stageInt(row.id_dok);
+  if (id === null || id <= 0)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason: `odbačeno: IDDok="${shown(row.id_dok)}" nije upotrebljiv broj`,
+    };
+  const documentDate = bbDateText(row.datum_dokumenta);
+  if (documentDate === null)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason:
+        `odbačeno: IDDok=${id} nema upotrebljiv „Datum dokumenta" ` +
+        `("${shown(row.datum_dokumenta)}") — kolona je NOT NULL`,
+    };
+  const rawType = stageText(row.vrsta_dokumenta) ?? "";
+  return {
+    ok: true,
+    value: {
+      id,
+      documentType: rawType.slice(0, 5),
+      typeTruncated: rawType.length > 5,
+      documentNumber: cut(stageText(row.broj_dokumenta), 50),
+      documentDate,
+      postingDate: bbDateText(row.datum_knjizenja),
+      isInflow: bbBool(row.ulaz),
+      isReservation: bbBool(row.rezervisi),
+      isLocked: bbBool(row.zakljucano),
+      level: stageInt(row.level) ?? 0,
+      warehouseId: stageRef(row.id_magacin_dok),
+      customerId: stageRef(row.sifra_komitenta),
+      projectId: stageRef(row.id_predmet),
+      year: stageInt(row.godina),
+    },
+  };
+};
+
+export interface MappedGoodsItem {
+  id: number;
+  documentId: number;
+  itemId: number;
+  catalogNumber: string | null;
+  warehouseId: number;
+  quantity: string | null;
+  quantityIn: string;
+  quantityOut: string;
+  kgQuantity: string | null;
+  purchasePriceNet: string | null;
+  actualWholesalePrice: string | null;
+  actualRetailPrice: string | null;
+  discountPercent: string | null;
+  itemDescription: string | null;
+}
+
+/**
+ * `T_Robne stavke` (staging red) -> `goods_document_items_mirror`.
+ *
+ * 🔴 MAGACIN SE UZIMA SA STAVKE (`IDMagacin`), NIKAD SA ZAGLAVLJA. Mereno:
+ * u Level 0 se ta dva danas poklapaju u svih 18.865 stavki — pa bi provera „radi
+ * isto" prošla — ali u Level 250 se RAZLIKUJU u 523 stavke. A Level 250 je baš
+ * ono što daje kolonu REZERVISANO, dakle 523 rezervacije bi bile pripisane
+ * pogrešnom magacinu, i to samo na jednoj od tri kolone ekrana.
+ *
+ * 🔴 `itemId` JE NAŠ `items.id`, NE BigBit šifra. BigBit šifra je
+ * `items.external_item_id` i sa `items.id` se ne poklapa NIGDE (izmereno
+ * 31.07.2026: 0 od 92.511 redova) — ključ po `id`-u bi lager tiho vezao za
+ * 58.143 nepovezana artikla. Prevođenje radi `BbItemIndex`; šifra bez para se
+ * PRESKAČE i imenuje (ne obara uvoz), jer stavka koja pokazuje na artikal kog
+ * nemamo nema šta da prikaže ni na jednom ekranu. Sledeća noć je vraća čim
+ * `importItems` donese taj artikal.
+ */
+export const mapGoodsItemRow = (
+  row: Record<string, unknown>,
+  /** `IDDok` -> `Ulaz` iz ISTOG drop-a; smer nosi zaglavlje, ne stavka. */
+  directions: Map<number, boolean>,
+  items: BbItemIndex,
+): MapResult<MappedGoodsItem> => {
+  const id = stageInt(row.id_stavke);
+  if (id === null || id <= 0)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason: `odbačeno: IDStavke="${shown(row.id_stavke)}" nije upotrebljiv broj`,
+    };
+  const documentId = stageInt(row.id_dok);
+  if (documentId === null || documentId <= 0)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason: `odbačeno: stavka ${id} nema upotrebljiv IDDok ("${shown(row.id_dok)}")`,
+    };
+  const code = stageInt(row.sifra_artikla);
+  if (code === null || code <= 0)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason: `odbačeno: stavka ${id} ima „Sifra artikla"="${shown(row.sifra_artikla)}"`,
+    };
+  const isInflow = directions.get(documentId);
+  if (isInflow === undefined)
+    return {
+      ok: false,
+      kind: "SKIP",
+      reason: `preskočeno: stavka ${id} pokazuje na dokument ${documentId} kog u ovom fajlu nema`,
+    };
+  if (!items.has(code))
+    return {
+      ok: false,
+      kind: "SKIP",
+      reason: `preskočeno: stavka ${id} nosi BigBit šifru artikla ${code} koju 4.0 ne poznaje`,
+    };
+  const item = items.get(code) ?? null;
+  if (item === null)
+    return {
+      ok: false,
+      kind: "SKIP",
+      reason:
+        `preskočeno: BigBit šifru ${code} (stavka ${id}) drži VIŠE naših artikala — ` +
+        "ne pogađam koji je pravi; razreši dubl kod nas",
+    };
+  const warehouseId = stageInt(row.id_magacin);
+  const { quantityIn, quantityOut } = splitGoodsQuantity(
+    row.kolicina,
+    isInflow,
+  );
+  return {
+    ok: true,
+    value: {
+      id,
+      documentId,
+      itemId: item.id,
+      catalogNumber: cut(item.catalogNumber, 100),
+      // Magacin 0 ne postoji u BigBitu (mereno: 0 od 182.539 stavki), a kolona je
+      // NOT NULL — pa je 0 bezbedan pad koji se vidi na ekranu kao „bez magacina",
+      // umesto reda koji propada na upisu.
+      warehouseId: warehouseId ?? 0,
+      quantity: bbDecimalText(row.kolicina),
+      quantityIn,
+      quantityOut,
+      kgQuantity: bbDecimalText(row.kg_kolicina),
+      purchasePriceNet: bbDecimalText(row.nabavna_cena_neto),
+      actualWholesalePrice: bbDecimalText(row.stvarna_vp_cena),
+      actualRetailPrice: bbDecimalText(row.stvarna_mp_cena),
+      discountPercent: bbDecimalText(row.rabat_proc),
+      itemDescription: cut(stageText(row.opis_stavke), 255),
+    },
+  };
+};
+
+export interface MappedRequisition {
+  id: number;
+  orderNumber: string | null;
+  orderDate: string | null;
+  supplierId: number | null;
+  projectId: number | null;
+  note: string | null;
+  level: number;
+  isOrdered: boolean;
+  year: number | null;
+}
+
+/** `T_Trebovanja` -> `purchase_orders_mirror` (kartica „narudžbine"). */
+export const mapRequisitionRow = (
+  row: Record<string, unknown>,
+): MapResult<MappedRequisition> => {
+  const id = stageInt(row.id_treb);
+  if (id === null || id <= 0)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason: `odbačeno: IDTreb="${shown(row.id_treb)}" nije upotrebljiv broj`,
+    };
+  return {
+    ok: true,
+    value: {
+      id,
+      orderNumber: cut(stageText(row.broj_trebovanja), 50),
+      // Datum je ovde NULLABLE (za razliku od robnog dokumenta), pa nečitljiv
+      // datum NE obara narudžbenicu — broj i dobavljač su i sami upotrebljivi.
+      orderDate: bbDateText(row.datum_trebovanja),
+      supplierId: stageRef(row.sifra_komitenta),
+      projectId: stageRef(row.id_predmet),
+      note: stageText(row.napomena),
+      level: stageInt(row.level) ?? 0,
+      isOrdered: bbBool(row.poruceno),
+      year: stageInt(row.godina),
+    },
+  };
+};
+
+export interface MappedRequisitionItem {
+  id: number;
+  orderId: number;
+  itemId: number;
+  orderedQuantity: string | null;
+  receivedQuantity: string | null;
+  unitPrice: string | null;
+  discountPercent: string | null;
+  description: string | null;
+  expectedDeliveryDate: string | null;
+  deliveryDate: string | null;
+  isDelivered: boolean;
+}
+
+/** `T_Trebovanja stavke` -> `purchase_order_items_mirror`. */
+export const mapRequisitionItemRow = (
+  row: Record<string, unknown>,
+  /** `IDTreb`-ovi koji su STVARNO ušli u ogledalo (FK je `Cascade`, ali postoji). */
+  knownOrders: Set<number>,
+  items: BbItemIndex,
+): MapResult<MappedRequisitionItem> => {
+  const id = stageInt(row.id_stavke);
+  if (id === null || id <= 0)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason: `odbačeno: IDStavke="${shown(row.id_stavke)}" nije upotrebljiv broj`,
+    };
+  const orderId = stageInt(row.id_treb);
+  if (orderId === null || orderId <= 0)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason: `odbačeno: stavka ${id} nema upotrebljiv IDTreb ("${shown(row.id_treb)}")`,
+    };
+  const code = stageInt(row.sifra_artikla);
+  if (code === null || code <= 0)
+    return {
+      ok: false,
+      kind: "FILTER",
+      reason: `odbačeno: stavka ${id} ima „Sifra artikla"="${shown(row.sifra_artikla)}"`,
+    };
+  if (!knownOrders.has(orderId))
+    return {
+      ok: false,
+      kind: "SKIP",
+      reason: `preskočeno: stavka ${id} pokazuje na trebovanje ${orderId} kog u ogledalu nema`,
+    };
+  if (!items.has(code))
+    return {
+      ok: false,
+      kind: "SKIP",
+      reason: `preskočeno: stavka ${id} nosi BigBit šifru artikla ${code} koju 4.0 ne poznaje`,
+    };
+  const item = items.get(code) ?? null;
+  if (item === null)
+    return {
+      ok: false,
+      kind: "SKIP",
+      reason: `preskočeno: BigBit šifru ${code} (stavka ${id}) drži VIŠE naših artikala`,
+    };
+  return {
+    ok: true,
+    value: {
+      id,
+      orderId,
+      itemId: item.id,
+      orderedQuantity: bbDecimalText(row.treb_kol),
+      receivedQuantity: bbDecimalText(row.isporucena_kolicina),
+      unitPrice: bbDecimalText(row.cena),
+      discountPercent: bbDecimalText(row.rabat_proc),
+      description: cut(stageText(row.opis), 255),
+      expectedDeliveryDate: bbDateText(row.ocekivani_datum_isporuke),
+      deliveryDate: bbDateText(row.datum_isporuke),
+      isDelivered: bbBool(row.isporuceno),
+    },
+  };
+};
+
 export interface MdbStepResult {
   entity: string;
   /** Redova u staging tabeli za ovaj drop (pre ijednog filtera). */
@@ -505,6 +959,108 @@ interface CountRow {
   blocked_locked?: bigint | number;
   /** Koliko je odbijenih izmena PRVI put upisano u dnevnik u ovom prolazu. */
   logged_now?: bigint | number;
+}
+
+interface CountOnlyRow {
+  c: bigint | number;
+}
+
+/** Brojači jedne serije grupnog upsert-a (robno ogledalo). */
+interface UpsertCountRow {
+  inserted: bigint | number;
+  updated: bigint | number;
+  /** Redovi koje je `JOIN` na roditelja izbacio pre upisa (nema ga svaki korak). */
+  lost?: bigint | number;
+}
+
+/**
+ * Staging redovi robnog ogledala — čitaju se sirovim SQL-om, po IMENIMA KOLONA
+ * IZ BAZE (a ne kroz generisani Prisma klijent), da uvoz može da se isporuči i
+ * pre nego što migracija ogledala legne (v. `mirrorNotReady`).
+ */
+interface StageGoodsDocRow {
+  id: number;
+  id_dok: string | null;
+  ulaz: string | null;
+  broj_dokumenta: string | null;
+  vrsta_dokumenta: string | null;
+  sifra_komitenta: string | null;
+  datum_dokumenta: string | null;
+  datum_knjizenja: string | null;
+  id_magacin_dok: string | null;
+  level: string | null;
+  id_predmet: string | null;
+  zakljucano: string | null;
+  rezervisi: string | null;
+  godina: string | null;
+}
+
+interface StageGoodsItemRow {
+  id: number;
+  id_stavke: string | null;
+  id_dok: string | null;
+  sifra_artikla: string | null;
+  kolicina: string | null;
+  kg_kolicina: string | null;
+  nabavna_cena_neto: string | null;
+  stvarna_vp_cena: string | null;
+  stvarna_mp_cena: string | null;
+  rabat_proc: string | null;
+  id_magacin: string | null;
+  opis_stavke: string | null;
+}
+
+interface StageRequisitionRow {
+  id: number;
+  id_treb: string | null;
+  broj_trebovanja: string | null;
+  datum_trebovanja: string | null;
+  sifra_komitenta: string | null;
+  id_predmet: string | null;
+  napomena: string | null;
+  level: string | null;
+  poruceno: string | null;
+  godina: string | null;
+}
+
+interface StageRequisitionItemRow {
+  id: number;
+  id_stavke: string | null;
+  id_treb: string | null;
+  sifra_artikla: string | null;
+  treb_kol: string | null;
+  isporucena_kolicina: string | null;
+  cena: string | null;
+  opis: string | null;
+  ocekivani_datum_isporuke: string | null;
+  datum_isporuke: string | null;
+  isporuceno: string | null;
+  rabat_proc: string | null;
+}
+
+/**
+ * Imenovanje preskočenih redova: prvih `MAX_NAMED_SKIPS` se ispiše doslovno,
+ * ostatak se sabere u jedan red. Isti obrazac koji `importItems` ima u sebi —
+ * izdvojen jer ga robno ogledalo koristi na četiri mesta, a poenta je uvek ista:
+ * red koji nije ušao mora da ima IME, a ne samo broj.
+ */
+class Named {
+  private readonly named: string[] = [];
+  private extra = 0;
+
+  add(msg: string): void {
+    if (this.named.length < MAX_NAMED_SKIPS) this.named.push(msg);
+    else this.extra++;
+  }
+
+  into(notes: string[]): void {
+    notes.push(...this.named);
+    if (this.extra > 0)
+      notes.push(
+        `…i još ${this.extra} sličnih redova (imenovano je prvih ${MAX_NAMED_SKIPS}; ` +
+          "puna slika je u bb_mdb_drops.import_row_counts)",
+      );
+  }
 }
 
 interface VanishedMasterRow {
@@ -759,6 +1315,25 @@ export class BigbitMdbImportService {
       // isti nalog zaticao kao LOCKED i odbijao iznose IZ ISTOG FAJLA koji ga je
       // zaključao — zaglavlje preuzeto, iznosi stari. Sada stavke prvo uđu.
       steps.push(await this.applyBigbitLocks(drop.id));
+
+      // ═══ ROBNO OGLEDALO IDE POSLEDNJE ═══════════════════════════════════
+      // Redosled UNUTAR robnog je iznuđen FK-ovima: zaglavlje pre svojih stavki
+      // (stavka bez dokumenta obori CELU seriju od 2.000 redova).
+      //
+      // A ZAŠTO POSLE KNJIGOVODSTVA (odluka, ne navika):
+      //  1. ROBNO NE ULAZI U PDV NI U BILANS — to je ogledalo za ekran (lager,
+      //     kartica artikla). Njegov pad ne sme da odloži glavnu knjigu, koja
+      //     nosi poresku prijavu. Obrnut redosled bi svaki kvar u 182.500 robnih
+      //     stavki pretvorio u izostalu PDV osnovicu.
+      //  2. ZAVISI OD ARTIKALA, a `importItems` je već prošao: stavka se veže za
+      //     `items.id` preko BigBit šifre, pa svaki artikal koji je stigao OVE
+      //     noći odmah ume da primi svoje robno kretanje.
+      //  3. NAJTEŽI KORAK IDE POSLEDNJI — robno je veće od glavne knjige i
+      //     artikala zajedno (182.539 + 86.779 stavki).
+      steps.push(await this.importGoodsDocuments(drop.id));
+      steps.push(await this.importGoodsDocumentItems(drop.id));
+      steps.push(await this.importPurchaseOrders(drop.id));
+      steps.push(await this.importPurchaseOrderItems(drop.id));
 
       // ── NESTALO IZ BIGBITA ───────────────────────────────────────────────
       // Uvoz je čist upsert i NIKAD ne briše, pa nalog obrisan/prekontiran u
@@ -3032,6 +3607,963 @@ export class BigbitMdbImportService {
         `Nema slobodnog broja za nov artikal ispod native opsega (dobijeno: ${String(next)})`,
       );
     return next;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ROBNO OGLEDALO — DOKUMENTI, STAVKE, TREBOVANJA
+  //
+  // IDEMPOTENTNOST (isti obrazac kao ceo ovaj kanal, bez ijednog izuzetka):
+  //   • ključ je BIGBIT-ov (`IDDok`, `IDStavke`, `IDTreb`) i ide u `id` ogledala,
+  //     pa ponovni uvoz istog drop-a MORA da sudari isti red;
+  //   • `INSERT ... ON CONFLICT (id) DO UPDATE ... WHERE <red se STVARNO razlikuje>`
+  //     — drugi prolaz nad istim fajlom ne piše ništa i sve javlja kao „nepromenjeno";
+  //   • `imported_drop_id` NIJE u poređenju (menja se svake noći i sam bi
+  //     „razlikovao" svih 182.500 stavki), kao ni `updated_at`;
+  //   • NEMA `deleteMany` — „ništa se ne briše" važi i ovde (BigBit prazni
+  //     zatvorene godine, pa nestanak reda nije brisanje).
+  //
+  // ⚠️ POSLEDICA KOJU MORA DA ZNA EKRAN, NE UVOZ: pošto se ništa ne briše, posle
+  // prve smene poslovne godine ogledalo drži Level 0 dokumente DVE godine, a
+  // svaka godina već sadrži svoj „Donos po popisu" — prost zbir bi udvostručio
+  // stanje. Mereno u ovom fajlu: Level 0 postoji ISKLJUČIVO za `Godina = 2026`
+  // (1.528 dokumenata), dok Level 250 nosi rep od 2017. naovamo. Zato lager upit
+  // MORA da seče po godini (`year`, ili `document_date >= 01.01.tekuće`) — a
+  // uvoz to MERI i imenuje čim se pojavi druga godina (v. `notes` u koraku).
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * `T_Robna dokumenta` -> `goods_documents_mirror`.
+   *
+   * Zaglavlje ide PRE stavki: stavka ima tvrd FK na dokument
+   * (`fk_goods_document_items_mirror_document`), pa bi obrnut redosled oborio
+   * CELU seriju od 2.000 stavki zbog jednog dokumenta koji još nije stigao.
+   */
+  private async importGoodsDocuments(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const notReady = await this.mirrorNotReady(
+      "goods_documents_mirror",
+      [
+        "level",
+        "is_inflow",
+        "is_reservation",
+        "document_number",
+        "customer_id",
+      ],
+      "bb_mdb_stage_robna_dokumenta",
+      t0,
+    );
+    if (notReady) return notReady;
+
+    const [stagedRow] = await this.prisma.$queryRaw<CountOnlyRow[]>`
+      SELECT count(*) AS c FROM bb_mdb_stage_robna_dokumenta WHERE drop_id = ${dropId}`;
+    const staged = n(stagedRow?.c);
+    let inserted = 0;
+    let updated = 0;
+    let filtered = 0;
+    let truncatedTypes = 0;
+    const seen = new Set<number>();
+    const named = new Named();
+
+    let lastKey = 0;
+    let batches = 0;
+    for (;;) {
+      const page = await this.prisma.$queryRaw<StageGoodsDocRow[]>`
+        SELECT id, id_dok, ulaz, broj_dokumenta, vrsta_dokumenta, sifra_komitenta,
+               datum_dokumenta, datum_knjizenja, id_magacin_dok, level,
+               id_predmet, zakljucano, rezervisi, godina
+          FROM bb_mdb_stage_robna_dokumenta
+         WHERE drop_id = ${dropId} AND id > ${lastKey}
+         ORDER BY id
+         LIMIT ${GOODS_BATCH}`;
+      if (page.length === 0) break;
+      const pageMax = page[page.length - 1].id;
+      if (pageMax <= lastKey) {
+        notes.push(
+          `keyset ne napreduje na staging id=${lastKey} — stranicanje prekinuto ` +
+            "(proveri bb_mdb_stage_robna_dokumenta)",
+        );
+        break;
+      }
+      lastKey = pageMax;
+      batches++;
+
+      const rows: MappedGoodsDocument[] = [];
+      for (const raw of page) {
+        const m = mapGoodsDocumentRow(
+          raw as unknown as Record<string, unknown>,
+        );
+        if (!m.ok) {
+          filtered++;
+          named.add(m.reason);
+          continue;
+        }
+        // Duplikat IDDok-a u istom drop-u bi oborio celu seriju („ON CONFLICT DO
+        // UPDATE cannot affect row a second time"), pa se drugi pojavak odbacuje
+        // i broji. Mereno: danas ih nema nijedan — brana je za bajat izvoz.
+        if (seen.has(m.value.id)) {
+          filtered++;
+          named.add(`odbačeno: IDDok=${m.value.id} se u drop-u ponavlja`);
+          continue;
+        }
+        seen.add(m.value.id);
+        if (m.value.typeTruncated) truncatedTypes++;
+        rows.push(m.value);
+      }
+      if (rows.length === 0) continue;
+
+      // KLJUČEVI SU IMENA KOLONA (snake_case) — `jsonb_to_recordset` spaja po
+      // imenu, a nenavedeni identifikatori u `AS t(...)` su mala slova.
+      const payload = JSON.stringify(
+        rows.map((r) => ({
+          id: r.id,
+          document_type: r.documentType,
+          document_number: r.documentNumber,
+          document_date: r.documentDate,
+          posting_date: r.postingDate,
+          is_inflow: r.isInflow,
+          is_reservation: r.isReservation,
+          is_locked: r.isLocked,
+          level: r.level,
+          warehouse_id: r.warehouseId,
+          customer_id: r.customerId,
+          project_id: r.projectId,
+          year: r.year,
+        })),
+      );
+      const [row] = await this.prisma.$queryRaw<UpsertCountRow[]>`
+        WITH src AS (
+          SELECT id, document_type, document_number,
+                 document_date::date AS document_date,
+                 posting_date::date  AS posting_date,
+                 is_inflow, is_reservation, is_locked, level,
+                 warehouse_id, customer_id, project_id, year
+          FROM jsonb_to_recordset(${payload}::jsonb) AS t(
+            id int, document_type text, document_number text,
+            document_date text, posting_date text,
+            is_inflow boolean, is_reservation boolean, is_locked boolean,
+            level int, warehouse_id int, customer_id int, project_id int, year int)
+        ),
+        ins AS (
+          INSERT INTO goods_documents_mirror
+            (id, document_type, document_number, document_date, posting_date,
+             is_inflow, is_reservation, is_locked, level, warehouse_id,
+             customer_id, project_id, year, imported_drop_id)
+          SELECT id, document_type, document_number, document_date, posting_date,
+                 is_inflow, is_reservation, is_locked, level, warehouse_id,
+                 customer_id, project_id, year, ${dropId}
+          FROM src
+          ON CONFLICT (id) DO UPDATE SET
+            document_type   = EXCLUDED.document_type,
+            document_number = EXCLUDED.document_number,
+            document_date   = EXCLUDED.document_date,
+            posting_date    = EXCLUDED.posting_date,
+            is_inflow       = EXCLUDED.is_inflow,
+            is_reservation  = EXCLUDED.is_reservation,
+            is_locked       = EXCLUDED.is_locked,
+            level           = EXCLUDED.level,
+            warehouse_id    = EXCLUDED.warehouse_id,
+            customer_id     = EXCLUDED.customer_id,
+            project_id      = EXCLUDED.project_id,
+            year            = EXCLUDED.year
+          WHERE (goods_documents_mirror.document_type, goods_documents_mirror.document_number,
+                 goods_documents_mirror.document_date, goods_documents_mirror.posting_date,
+                 goods_documents_mirror.is_inflow, goods_documents_mirror.is_reservation,
+                 goods_documents_mirror.is_locked, goods_documents_mirror.level,
+                 goods_documents_mirror.warehouse_id, goods_documents_mirror.customer_id,
+                 goods_documents_mirror.project_id, goods_documents_mirror.year)
+            IS DISTINCT FROM
+                (EXCLUDED.document_type, EXCLUDED.document_number,
+                 EXCLUDED.document_date, EXCLUDED.posting_date,
+                 EXCLUDED.is_inflow, EXCLUDED.is_reservation,
+                 EXCLUDED.is_locked, EXCLUDED.level,
+                 EXCLUDED.warehouse_id, EXCLUDED.customer_id,
+                 EXCLUDED.project_id, EXCLUDED.year)
+          RETURNING (xmax = 0) AS was_insert
+        )
+        SELECT (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
+               (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated`;
+      inserted += n(row?.inserted);
+      updated += n(row?.updated);
+    }
+
+    const step: MdbStepResult = {
+      entity: "goods_documents_mirror",
+      staged,
+      inserted,
+      updated,
+      unchanged: Math.max(0, staged - inserted - updated - filtered),
+      skipped: 0,
+      filtered,
+      blockedLocked: 0,
+      durationMs: Date.now() - t0,
+      notes,
+    };
+    step.notes.push(`${batches} serija po ${GOODS_BATCH} redova`);
+    if (truncatedTypes > 0)
+      step.notes.push(
+        `${truncatedTypes} dokument(a) ima „Vrsta dokumenta" dužu od 5 znakova i skraćena je — ` +
+          "u BigBitu je ta kolona Text(5) (mereno: najduža je tačno 5), pa ovo znači da se " +
+          "izvor promenio. Proveri pre nego što ekran počne da filtrira po vrsti.",
+      );
+    named.into(step.notes);
+    await this.warnOnMultiYearStock(step);
+    await this.warnOnEmptyStaging(
+      step,
+      staged,
+      "goods_documents_mirror",
+      async () => {
+        const [m] = await this.prisma.$queryRaw<CountOnlyRow[]>`
+          SELECT count(*) AS c FROM goods_documents_mirror`;
+        return n(m?.c);
+      },
+    );
+    return step;
+  }
+
+  /**
+   * `T_Robne stavke` -> `goods_document_items_mirror`. NOSILAC LAGERA.
+   *
+   * Dve stvari koje ovaj korak radi u memoriji, i zašto baš tako:
+   *  • SMER (`IDDok` -> `Ulaz`) se učita jednom za ceo drop (27.338 redova) —
+   *    smer je na ZAGLAVLJU, a stavke se obrađuju po stranicama, pa bi bez mape
+   *    svaka stranica morala nazad u bazu po isto.
+   *  • ŠIFRA -> ARTIKAL (`items.external_item_id` -> `items.id`) isto jednom
+   *    (~92k redova). `items.external_item_id` NEMA indeks, pa bi JOIN po
+   *    stranici značio ~92 puna prolaza kroz tabelu artikala.
+   */
+  private async importGoodsDocumentItems(
+    dropId: number,
+  ): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const notReady = await this.mirrorNotReady(
+      "goods_document_items_mirror",
+      ["quantity_in", "quantity_out", "warehouse_id", "quantity"],
+      "bb_mdb_stage_robne_stavke",
+      t0,
+      "goods_document_items_mirror",
+    );
+    if (notReady) return notReady;
+
+    const [stagedRow] = await this.prisma.$queryRaw<CountOnlyRow[]>`
+      SELECT count(*) AS c FROM bb_mdb_stage_robne_stavke WHERE drop_id = ${dropId}`;
+    const staged = n(stagedRow?.c);
+    const directions = await this.loadGoodsDirections(dropId);
+    const items = await this.loadBbItemIndex();
+    let inserted = 0;
+    let updated = 0;
+    let filtered = 0;
+    let skipped = 0;
+    const seen = new Set<number>();
+    const named = new Named();
+
+    let lastKey = 0;
+    let batches = 0;
+    for (;;) {
+      const page = await this.prisma.$queryRaw<StageGoodsItemRow[]>`
+        SELECT id, id_stavke, id_dok, sifra_artikla, kolicina, kg_kolicina,
+               nabavna_cena_neto, stvarna_vp_cena, stvarna_mp_cena, rabat_proc,
+               id_magacin, opis_stavke
+          FROM bb_mdb_stage_robne_stavke
+         WHERE drop_id = ${dropId} AND id > ${lastKey}
+         ORDER BY id
+         LIMIT ${GOODS_BATCH}`;
+      if (page.length === 0) break;
+      const pageMax = page[page.length - 1].id;
+      if (pageMax <= lastKey) {
+        notes.push(
+          `keyset ne napreduje na staging id=${lastKey} — stranicanje prekinuto ` +
+            "(proveri bb_mdb_stage_robne_stavke)",
+        );
+        break;
+      }
+      lastKey = pageMax;
+      batches++;
+
+      const rows: MappedGoodsItem[] = [];
+      for (const raw of page) {
+        const m = mapGoodsItemRow(
+          raw as unknown as Record<string, unknown>,
+          directions,
+          items,
+        );
+        if (!m.ok) {
+          if (m.kind === "FILTER") filtered++;
+          else skipped++;
+          named.add(m.reason);
+          continue;
+        }
+        if (seen.has(m.value.id)) {
+          filtered++;
+          named.add(`odbačeno: IDStavke=${m.value.id} se u drop-u ponavlja`);
+          continue;
+        }
+        seen.add(m.value.id);
+        rows.push(m.value);
+      }
+      if (rows.length === 0) continue;
+
+      const payload = JSON.stringify(
+        rows.map((r) => ({
+          id: r.id,
+          document_id: r.documentId,
+          item_id: r.itemId,
+          catalog_number: r.catalogNumber,
+          warehouse_id: r.warehouseId,
+          quantity: r.quantity,
+          quantity_in: r.quantityIn,
+          quantity_out: r.quantityOut,
+          kg_quantity: r.kgQuantity,
+          purchase_price_net: r.purchasePriceNet,
+          actual_wholesale_price: r.actualWholesalePrice,
+          actual_retail_price: r.actualRetailPrice,
+          discount_percent: r.discountPercent,
+          item_description: r.itemDescription,
+        })),
+      );
+      // Stavka čiji dokument nije ušao u ogledalo (npr. zaglavlje odbačeno zbog
+      // datuma) oborila bi CELU seriju na FK-u, pa je `JOIN` filter, ne ukras.
+      const [row] = await this.prisma.$queryRaw<UpsertCountRow[]>`
+        WITH src AS (
+          SELECT id, document_id, item_id, catalog_number, warehouse_id,
+                 quantity::numeric               AS quantity,
+                 quantity_in::numeric            AS quantity_in,
+                 quantity_out::numeric           AS quantity_out,
+                 kg_quantity::numeric            AS kg_quantity,
+                 purchase_price_net::numeric     AS purchase_price_net,
+                 actual_wholesale_price::numeric AS actual_wholesale_price,
+                 actual_retail_price::numeric    AS actual_retail_price,
+                 discount_percent::numeric       AS discount_percent,
+                 item_description
+          FROM jsonb_to_recordset(${payload}::jsonb) AS t(
+            id int, document_id int, item_id int, catalog_number text,
+            warehouse_id int, quantity text, quantity_in text, quantity_out text,
+            kg_quantity text, purchase_price_net text, actual_wholesale_price text,
+            actual_retail_price text, discount_percent text, item_description text)
+        ),
+        eligible AS (
+          SELECT s.* FROM src s
+          JOIN goods_documents_mirror d ON d.id = s.document_id
+        ),
+        ins AS (
+          INSERT INTO goods_document_items_mirror
+            (id, document_id, item_id, catalog_number, warehouse_id, quantity,
+             quantity_in, quantity_out, kg_quantity, purchase_price_net,
+             actual_wholesale_price, actual_retail_price, discount_percent,
+             item_description, updated_at)
+          SELECT id, document_id, item_id, catalog_number, warehouse_id, quantity,
+                 quantity_in, quantity_out, kg_quantity, purchase_price_net,
+                 actual_wholesale_price, actual_retail_price, discount_percent,
+                 item_description, now()
+          FROM eligible
+          ON CONFLICT (id) DO UPDATE SET
+            document_id            = EXCLUDED.document_id,
+            item_id                = EXCLUDED.item_id,
+            catalog_number         = EXCLUDED.catalog_number,
+            warehouse_id           = EXCLUDED.warehouse_id,
+            quantity               = EXCLUDED.quantity,
+            quantity_in            = EXCLUDED.quantity_in,
+            quantity_out           = EXCLUDED.quantity_out,
+            kg_quantity            = EXCLUDED.kg_quantity,
+            purchase_price_net     = EXCLUDED.purchase_price_net,
+            actual_wholesale_price = EXCLUDED.actual_wholesale_price,
+            actual_retail_price    = EXCLUDED.actual_retail_price,
+            discount_percent       = EXCLUDED.discount_percent,
+            item_description       = EXCLUDED.item_description,
+            updated_at             = now()
+          -- updated_at NIJE u poređenju: ono se menja pri svakom upisu i samo
+          -- bi „razlikovalo" svih 182.500 stavki svake noći.
+          WHERE (goods_document_items_mirror.document_id, goods_document_items_mirror.item_id,
+                 goods_document_items_mirror.catalog_number, goods_document_items_mirror.warehouse_id,
+                 goods_document_items_mirror.quantity, goods_document_items_mirror.quantity_in,
+                 goods_document_items_mirror.quantity_out, goods_document_items_mirror.kg_quantity,
+                 goods_document_items_mirror.purchase_price_net,
+                 goods_document_items_mirror.actual_wholesale_price,
+                 goods_document_items_mirror.actual_retail_price,
+                 goods_document_items_mirror.discount_percent,
+                 goods_document_items_mirror.item_description)
+            IS DISTINCT FROM
+                (EXCLUDED.document_id, EXCLUDED.item_id,
+                 EXCLUDED.catalog_number, EXCLUDED.warehouse_id,
+                 EXCLUDED.quantity, EXCLUDED.quantity_in,
+                 EXCLUDED.quantity_out, EXCLUDED.kg_quantity,
+                 EXCLUDED.purchase_price_net,
+                 EXCLUDED.actual_wholesale_price,
+                 EXCLUDED.actual_retail_price,
+                 EXCLUDED.discount_percent,
+                 EXCLUDED.item_description)
+          RETURNING (xmax = 0) AS was_insert
+        )
+        SELECT (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
+               (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated,
+               (SELECT count(*) FROM src) - (SELECT count(*) FROM eligible) AS lost`;
+      inserted += n(row?.inserted);
+      updated += n(row?.updated);
+      const lost = n(row?.lost);
+      if (lost > 0) {
+        skipped += lost;
+        named.add(
+          `preskočeno: ${lost} stavk(i) u ovoj seriji pokazuje na dokument koji NIJE u ogledalu ` +
+            "(zaglavlje odbačeno u prethodnom koraku)",
+        );
+      }
+    }
+
+    const step: MdbStepResult = {
+      entity: "goods_document_items_mirror",
+      staged,
+      inserted,
+      updated,
+      unchanged: Math.max(0, staged - inserted - updated - filtered - skipped),
+      skipped,
+      filtered,
+      blockedLocked: 0,
+      durationMs: Date.now() - t0,
+      notes,
+    };
+    step.notes.push(`${batches} serija po ${GOODS_BATCH} redova`);
+    if (skipped > 0)
+      step.notes.push(
+        `${skipped} robnih stavki NIJE u ogledalu — artikal sa tom BigBit šifrom ne postoji u 4.0 ` +
+          "(ili je šifra dupla, ili dokument nije ušao). Te količine ne ulaze u lager: red koji " +
+          "pokazuje na artikal kog nemamo ne može se ni prikazati. Ispravlja se samo od sebe " +
+          "sledeće noći, čim uvoz artikala donese tu šifru.",
+      );
+    named.into(step.notes);
+    await this.warnOnEmptyStaging(
+      step,
+      staged,
+      "goods_document_items_mirror",
+      async () => {
+        const [m] = await this.prisma.$queryRaw<CountOnlyRow[]>`
+          SELECT count(*) AS c FROM goods_document_items_mirror`;
+        return n(m?.c);
+      },
+    );
+    return step;
+  }
+
+  /** `T_Trebovanja` -> `purchase_orders_mirror` (kartica artikla: „narudžbine"). */
+  private async importPurchaseOrders(dropId: number): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const notReady = await this.mirrorNotReady(
+      "purchase_orders_mirror",
+      ["order_number", "order_date", "supplier_id", "level", "is_ordered"],
+      "bb_mdb_stage_trebovanja",
+      t0,
+    );
+    if (notReady) return notReady;
+
+    const [stagedRow] = await this.prisma.$queryRaw<CountOnlyRow[]>`
+      SELECT count(*) AS c FROM bb_mdb_stage_trebovanja WHERE drop_id = ${dropId}`;
+    const staged = n(stagedRow?.c);
+    let inserted = 0;
+    let updated = 0;
+    let filtered = 0;
+    const seen = new Set<number>();
+    const named = new Named();
+
+    let lastKey = 0;
+    let batches = 0;
+    for (;;) {
+      const page = await this.prisma.$queryRaw<StageRequisitionRow[]>`
+        SELECT id, id_treb, broj_trebovanja, datum_trebovanja, sifra_komitenta,
+               id_predmet, napomena, level, poruceno, godina
+          FROM bb_mdb_stage_trebovanja
+         WHERE drop_id = ${dropId} AND id > ${lastKey}
+         ORDER BY id
+         LIMIT ${GOODS_BATCH}`;
+      if (page.length === 0) break;
+      const pageMax = page[page.length - 1].id;
+      if (pageMax <= lastKey) {
+        notes.push(
+          `keyset ne napreduje na staging id=${lastKey} — stranicanje prekinuto ` +
+            "(proveri bb_mdb_stage_trebovanja)",
+        );
+        break;
+      }
+      lastKey = pageMax;
+      batches++;
+
+      const rows: MappedRequisition[] = [];
+      for (const raw of page) {
+        const m = mapRequisitionRow(raw as unknown as Record<string, unknown>);
+        if (!m.ok) {
+          filtered++;
+          named.add(m.reason);
+          continue;
+        }
+        if (seen.has(m.value.id)) {
+          filtered++;
+          named.add(`odbačeno: IDTreb=${m.value.id} se u drop-u ponavlja`);
+          continue;
+        }
+        seen.add(m.value.id);
+        rows.push(m.value);
+      }
+      if (rows.length === 0) continue;
+
+      const payload = JSON.stringify(
+        rows.map((r) => ({
+          id: r.id,
+          order_number: r.orderNumber,
+          order_date: r.orderDate,
+          supplier_id: r.supplierId,
+          project_id: r.projectId,
+          note: r.note,
+          level: r.level,
+          is_ordered: r.isOrdered,
+          year: r.year,
+        })),
+      );
+      const [row] = await this.prisma.$queryRaw<UpsertCountRow[]>`
+        WITH src AS (
+          SELECT id, order_number, order_date::date AS order_date,
+                 supplier_id, project_id, note, level, is_ordered, year
+          FROM jsonb_to_recordset(${payload}::jsonb) AS t(
+            id int, order_number text, order_date text, supplier_id int,
+            project_id int, note text, level int, is_ordered boolean, year int)
+        ),
+        ins AS (
+          INSERT INTO purchase_orders_mirror
+            (id, order_number, order_date, supplier_id, project_id, note,
+             level, is_ordered, year, imported_drop_id)
+          SELECT id, order_number, order_date, supplier_id, project_id, note,
+                 level, is_ordered, year, ${dropId}
+          FROM src
+          ON CONFLICT (id) DO UPDATE SET
+            order_number = EXCLUDED.order_number,
+            order_date   = EXCLUDED.order_date,
+            supplier_id  = EXCLUDED.supplier_id,
+            project_id   = EXCLUDED.project_id,
+            note         = EXCLUDED.note,
+            level        = EXCLUDED.level,
+            is_ordered   = EXCLUDED.is_ordered,
+            year         = EXCLUDED.year
+          WHERE (purchase_orders_mirror.order_number, purchase_orders_mirror.order_date,
+                 purchase_orders_mirror.supplier_id, purchase_orders_mirror.project_id,
+                 purchase_orders_mirror.note, purchase_orders_mirror.level,
+                 purchase_orders_mirror.is_ordered, purchase_orders_mirror.year)
+            IS DISTINCT FROM
+                (EXCLUDED.order_number, EXCLUDED.order_date,
+                 EXCLUDED.supplier_id, EXCLUDED.project_id,
+                 EXCLUDED.note, EXCLUDED.level,
+                 EXCLUDED.is_ordered, EXCLUDED.year)
+          RETURNING (xmax = 0) AS was_insert
+        )
+        SELECT (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
+               (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated`;
+      inserted += n(row?.inserted);
+      updated += n(row?.updated);
+    }
+
+    const step: MdbStepResult = {
+      entity: "purchase_orders_mirror",
+      staged,
+      inserted,
+      updated,
+      unchanged: Math.max(0, staged - inserted - updated - filtered),
+      skipped: 0,
+      filtered,
+      blockedLocked: 0,
+      durationMs: Date.now() - t0,
+      notes,
+    };
+    step.notes.push(`${batches} serija po ${GOODS_BATCH} redova`);
+    named.into(step.notes);
+    await this.warnOnEmptyStaging(
+      step,
+      staged,
+      "purchase_orders_mirror",
+      async () => {
+        const [m] = await this.prisma.$queryRaw<CountOnlyRow[]>`
+          SELECT count(*) AS c FROM purchase_orders_mirror`;
+        return n(m?.c);
+      },
+    );
+    return step;
+  }
+
+  /** `T_Trebovanja stavke` -> `purchase_order_items_mirror`. */
+  private async importPurchaseOrderItems(
+    dropId: number,
+  ): Promise<MdbStepResult> {
+    const t0 = Date.now();
+    const notes: string[] = [];
+    const notReady = await this.mirrorNotReady(
+      "purchase_order_items_mirror",
+      ["order_id", "item_id", "ordered_quantity", "received_quantity"],
+      "bb_mdb_stage_trebovanja_stavke",
+      t0,
+    );
+    if (notReady) return notReady;
+
+    const [stagedRow] = await this.prisma.$queryRaw<CountOnlyRow[]>`
+      SELECT count(*) AS c FROM bb_mdb_stage_trebovanja_stavke WHERE drop_id = ${dropId}`;
+    const staged = n(stagedRow?.c);
+    const knownOrders = await this.loadRequisitionIds(dropId);
+    const items = await this.loadBbItemIndex();
+    let inserted = 0;
+    let updated = 0;
+    let filtered = 0;
+    let skipped = 0;
+    const seen = new Set<number>();
+    const named = new Named();
+
+    let lastKey = 0;
+    let batches = 0;
+    for (;;) {
+      const page = await this.prisma.$queryRaw<StageRequisitionItemRow[]>`
+        SELECT id, id_stavke, id_treb, sifra_artikla, treb_kol, isporucena_kolicina,
+               cena, opis, ocekivani_datum_isporuke, datum_isporuke, isporuceno,
+               rabat_proc
+          FROM bb_mdb_stage_trebovanja_stavke
+         WHERE drop_id = ${dropId} AND id > ${lastKey}
+         ORDER BY id
+         LIMIT ${GOODS_BATCH}`;
+      if (page.length === 0) break;
+      const pageMax = page[page.length - 1].id;
+      if (pageMax <= lastKey) {
+        notes.push(
+          `keyset ne napreduje na staging id=${lastKey} — stranicanje prekinuto ` +
+            "(proveri bb_mdb_stage_trebovanja_stavke)",
+        );
+        break;
+      }
+      lastKey = pageMax;
+      batches++;
+
+      const rows: MappedRequisitionItem[] = [];
+      for (const raw of page) {
+        const m = mapRequisitionItemRow(
+          raw as unknown as Record<string, unknown>,
+          knownOrders,
+          items,
+        );
+        if (!m.ok) {
+          if (m.kind === "FILTER") filtered++;
+          else skipped++;
+          named.add(m.reason);
+          continue;
+        }
+        if (seen.has(m.value.id)) {
+          filtered++;
+          named.add(`odbačeno: IDStavke=${m.value.id} se u drop-u ponavlja`);
+          continue;
+        }
+        seen.add(m.value.id);
+        rows.push(m.value);
+      }
+      if (rows.length === 0) continue;
+
+      const payload = JSON.stringify(
+        rows.map((r) => ({
+          id: r.id,
+          order_id: r.orderId,
+          item_id: r.itemId,
+          ordered_quantity: r.orderedQuantity,
+          received_quantity: r.receivedQuantity,
+          unit_price: r.unitPrice,
+          discount_percent: r.discountPercent,
+          description: r.description,
+          expected_delivery_date: r.expectedDeliveryDate,
+          delivery_date: r.deliveryDate,
+          is_delivered: r.isDelivered,
+        })),
+      );
+      const [row] = await this.prisma.$queryRaw<UpsertCountRow[]>`
+        WITH src AS (
+          SELECT id, order_id, item_id,
+                 ordered_quantity::numeric  AS ordered_quantity,
+                 received_quantity::numeric AS received_quantity,
+                 unit_price::numeric        AS unit_price,
+                 discount_percent::numeric  AS discount_percent,
+                 description,
+                 expected_delivery_date::date AS expected_delivery_date,
+                 delivery_date::date          AS delivery_date,
+                 is_delivered
+          FROM jsonb_to_recordset(${payload}::jsonb) AS t(
+            id int, order_id int, item_id int, ordered_quantity text,
+            received_quantity text, unit_price text, discount_percent text,
+            description text, expected_delivery_date text, delivery_date text,
+            is_delivered boolean)
+        ),
+        eligible AS (
+          SELECT s.* FROM src s
+          JOIN purchase_orders_mirror o ON o.id = s.order_id
+        ),
+        ins AS (
+          INSERT INTO purchase_order_items_mirror
+            (id, order_id, item_id, ordered_quantity, received_quantity,
+             unit_price, discount_percent, description, expected_delivery_date,
+             delivery_date, is_delivered, updated_at)
+          SELECT id, order_id, item_id, ordered_quantity, received_quantity,
+                 unit_price, discount_percent, description, expected_delivery_date,
+                 delivery_date, is_delivered, now()
+          FROM eligible
+          ON CONFLICT (id) DO UPDATE SET
+            order_id               = EXCLUDED.order_id,
+            item_id                = EXCLUDED.item_id,
+            ordered_quantity       = EXCLUDED.ordered_quantity,
+            received_quantity      = EXCLUDED.received_quantity,
+            unit_price             = EXCLUDED.unit_price,
+            discount_percent       = EXCLUDED.discount_percent,
+            description            = EXCLUDED.description,
+            expected_delivery_date = EXCLUDED.expected_delivery_date,
+            delivery_date          = EXCLUDED.delivery_date,
+            is_delivered           = EXCLUDED.is_delivered,
+            updated_at             = now()
+          WHERE (purchase_order_items_mirror.order_id, purchase_order_items_mirror.item_id,
+                 purchase_order_items_mirror.ordered_quantity,
+                 purchase_order_items_mirror.received_quantity,
+                 purchase_order_items_mirror.unit_price,
+                 purchase_order_items_mirror.discount_percent,
+                 purchase_order_items_mirror.description,
+                 purchase_order_items_mirror.expected_delivery_date,
+                 purchase_order_items_mirror.delivery_date,
+                 purchase_order_items_mirror.is_delivered)
+            IS DISTINCT FROM
+                (EXCLUDED.order_id, EXCLUDED.item_id,
+                 EXCLUDED.ordered_quantity,
+                 EXCLUDED.received_quantity,
+                 EXCLUDED.unit_price,
+                 EXCLUDED.discount_percent,
+                 EXCLUDED.description,
+                 EXCLUDED.expected_delivery_date,
+                 EXCLUDED.delivery_date,
+                 EXCLUDED.is_delivered)
+          RETURNING (xmax = 0) AS was_insert
+        )
+        SELECT (SELECT count(*) FROM ins WHERE was_insert)     AS inserted,
+               (SELECT count(*) FROM ins WHERE NOT was_insert) AS updated,
+               (SELECT count(*) FROM src) - (SELECT count(*) FROM eligible) AS lost`;
+      inserted += n(row?.inserted);
+      updated += n(row?.updated);
+      skipped += n(row?.lost);
+    }
+
+    const step: MdbStepResult = {
+      entity: "purchase_order_items_mirror",
+      staged,
+      inserted,
+      updated,
+      unchanged: Math.max(0, staged - inserted - updated - filtered - skipped),
+      skipped,
+      filtered,
+      blockedLocked: 0,
+      durationMs: Date.now() - t0,
+      notes,
+    };
+    step.notes.push(`${batches} serija po ${GOODS_BATCH} redova`);
+    if (skipped > 0)
+      step.notes.push(
+        `${skipped} stavki narudžbenica nije ušlo — nepoznata BigBit šifra artikla, dupla šifra ` +
+          "ili trebovanje koje nije u ogledalu.",
+      );
+    named.into(step.notes);
+    await this.warnOnEmptyStaging(
+      step,
+      staged,
+      "purchase_order_items_mirror",
+      async () => {
+        const [m] = await this.prisma.$queryRaw<CountOnlyRow[]>`
+          SELECT count(*) AS c FROM purchase_order_items_mirror`;
+        return n(m?.c);
+      },
+    );
+    return step;
+  }
+
+  // ── POMOĆNO ZA ROBNO OGLEDALO ──────────────────────────────────────────────
+
+  /**
+   * BRANA PROTIV RAZILAŽENJA SA MIGRACIJOM: robno ogledalo i njegove staging
+   * tabele dolaze migracijom koja se piše ODVOJENO od ovog koda. Dok ona ne
+   * legne na server, ovi koraci bi pucali na „relation does not exist" — i time
+   * OBORILI CEO NOĆNI UVOZ, uključujući glavnu knjigu koja sa robnim nema veze.
+   *
+   * Zato korak koji nema svoju tabelu (ili joj fali kolona) ne puca nego se
+   * PRESKAČE, sa porukom koja imenuje šta tačno nedostaje. To je jedini slučaj
+   * u ovom fajlu gde „ne mogu da radim" nije kvar — jer je stanje prelazno i
+   * samo od sebe prestaje čim migracija prođe.
+   */
+  private async mirrorNotReady(
+    table: string,
+    columns: string[],
+    stageTable: string,
+    t0: number,
+    entity?: string,
+  ): Promise<MdbStepResult | null> {
+    const missing: string[] = [];
+    for (const [name, cols] of [
+      [table, columns],
+      [stageTable, ["drop_id"]],
+    ] as [string, string[]][]) {
+      const present = await this.prisma.$queryRaw<{ column_name: string }[]>`
+        SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = ${name}`;
+      if (present.length === 0) {
+        missing.push(`tabela ${name} ne postoji`);
+        continue;
+      }
+      const have = new Set(present.map((r) => r.column_name));
+      for (const c of cols) if (!have.has(c)) missing.push(`${name}.${c}`);
+    }
+    if (missing.length === 0) return null;
+    const note =
+      `PRESKOČENO — robno ogledalo još nije migrirano: ${missing.join(", ")}. ` +
+      "Ovo NIJE kvar uvoza: korak čeka migraciju (goods_documents_mirror / " +
+      "purchase_orders_mirror + bb_mdb_stage_robna_* tabele). Ostatak uvoza je prošao normalno.";
+    this.logger.warn(`${entity ?? table}: ${note}`);
+    return {
+      entity: entity ?? table,
+      staged: 0,
+      inserted: 0,
+      updated: 0,
+      unchanged: 0,
+      skipped: 0,
+      filtered: 0,
+      blockedLocked: 0,
+      durationMs: Date.now() - t0,
+      notes: [note],
+    };
+  }
+
+  /**
+   * `IDDok` -> `Ulaz` za ceo drop. Smer je na ZAGLAVLJU (BigBit drži jednu
+   * količinu po stavci), pa stavke bez ove mape ne bi znale svoj smer.
+   */
+  private async loadGoodsDirections(
+    dropId: number,
+  ): Promise<Map<number, boolean>> {
+    const map = new Map<number, boolean>();
+    let lastKey = 0;
+    for (;;) {
+      const page = await this.prisma.$queryRaw<
+        { id: number; id_dok: string | null; ulaz: string | null }[]
+      >`
+        SELECT id, id_dok, ulaz FROM bb_mdb_stage_robna_dokumenta
+         WHERE drop_id = ${dropId} AND id > ${lastKey}
+         ORDER BY id LIMIT 10000`;
+      if (page.length === 0) break;
+      lastKey = page[page.length - 1].id;
+      for (const r of page) {
+        const id = stageInt(r.id_dok);
+        // Isti parser (`bbBool`) koji puni `is_inflow` u ogledalu — dva čitanja
+        // iste zastavice ne smeju da imaju dve definicije istine.
+        if (id !== null && id > 0) map.set(id, bbBool(r.ulaz));
+      }
+    }
+    return map;
+  }
+
+  /** `IDTreb`-ovi iz drop-a — stavka bez svog trebovanja ne sme u FK. */
+  private async loadRequisitionIds(dropId: number): Promise<Set<number>> {
+    const ids = new Set<number>();
+    let lastKey = 0;
+    for (;;) {
+      const page = await this.prisma.$queryRaw<
+        { id: number; id_treb: string | null }[]
+      >`
+        SELECT id, id_treb FROM bb_mdb_stage_trebovanja
+         WHERE drop_id = ${dropId} AND id > ${lastKey}
+         ORDER BY id LIMIT 10000`;
+      if (page.length === 0) break;
+      lastKey = page[page.length - 1].id;
+      for (const r of page) {
+        const id = stageInt(r.id_treb);
+        if (id !== null && id > 0) ids.add(id);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * BigBit šifra artikla -> naš `items.id` (+ kataloški broj za prikaz).
+   *
+   * Učitava se JEDNOM po koraku, iz istog razloga iz kog `importItems` unapred
+   * skuplja `sourceExts`: `items.external_item_id` nema indeks, pa bi JOIN po
+   * stranici značio ~92 puna prolaza kroz 92.511 artikala.
+   */
+  private async loadBbItemIndex(): Promise<BbItemIndex> {
+    const index: BbItemIndex = new Map();
+    let lastKey = 0;
+    for (;;) {
+      const page = await this.prisma.$queryRaw<
+        {
+          id: number;
+          external_item_id: number;
+          catalog_number: string | null;
+        }[]
+      >`
+        SELECT id, external_item_id, catalog_number FROM items
+         WHERE external_item_id > 0 AND id > ${lastKey}
+         ORDER BY id LIMIT 10000`;
+      if (page.length === 0) break;
+      lastKey = page[page.length - 1].id;
+      for (const r of page) {
+        const code = Number(r.external_item_id);
+        // Dupla šifra -> `null` = „ne pogađam koji je pravi" (v. `BbItemIndex`).
+        if (index.has(code)) index.set(code, null);
+        else index.set(code, { id: r.id, catalogNumber: r.catalog_number });
+      }
+    }
+    return index;
+  }
+
+  /**
+   * SMENA POSLOVNE GODINE — jedini način na koji lager ume da POGREŠI tiho.
+   *
+   * Uvoz ništa ne briše, pa posle 01.01. ogledalo drži Level 0 dokumente i stare
+   * i nove godine; obe godine nose svoj „Donos po popisu", pa bi prost zbir
+   * udvostručio stanje. Ovo se ne rešava brisanjem (to je knjigovodstvena
+   * odluka) nego SEČENJEM po godini u upitu ekrana — a ovde se MERI i imenuje,
+   * da se ne otkrije tek kad neko primeti duplo stanje.
+   */
+  private async warnOnMultiYearStock(step: MdbStepResult): Promise<void> {
+    const rows = await this.prisma.$queryRaw<
+      { year: number | null; c: bigint | number }[]
+    >`
+      SELECT year, count(*) AS c FROM goods_documents_mirror
+       WHERE level = 0 GROUP BY year ORDER BY year`;
+    if (rows.length <= 1) return;
+    const opis = rows
+      .map((r) => `${r.year ?? "(bez godine)"}: ${n(r.c)}`)
+      .join(", ");
+    const poruka =
+      `⚠️ Ogledalo drži knjižene (Level 0) robne dokumente iz VIŠE godina — ${opis}. ` +
+      "Svaka poslovna godina u BigBitu počinje sopstvenim „Donosom po popisu”, pa zbir " +
+      "PREKO godina duplira stanje. Lager upit MORA da seče po godini (year ili " +
+      "document_date). Uvoz ovde namerno ništa ne briše.";
+    step.notes.push(poruka);
+    this.logger.warn(poruka);
+  }
+
+  /**
+   * Robno nestalo iz izvoza: fajl je stigao (ostali koraci rade), ali BAŠ ove
+   * tabele nose nula redova, a ogledalo ih od ranije ima. Ne obara uvoz —
+   * robno ne ulazi u PDV ni u bilans, pa ne sme da zaustavi knjigovodstvo — ali
+   * se imenuje, jer bi inače lager doveka pokazivao jučerašnje stanje.
+   */
+  private async warnOnEmptyStaging(
+    step: MdbStepResult,
+    staged: number,
+    table: string,
+    /** Broj redova koje ogledalo VEĆ drži — čita se samo kad izvor pošalje nulu. */
+    countExisting: () => Promise<number>,
+  ): Promise<void> {
+    if (staged > 0) return;
+    const existing = await countExisting();
+    if (existing === 0) return;
+    const poruka =
+      `⚠️ Iz BigBita nije stigao NIJEDAN red za ${table}, a ogledalo ih drži ${existing} ` +
+      "od ranije. Lager i kartice artikla od sada pokazuju JUČERAŠNJE stanje. " +
+      "Proveri manifest TABLES u bigbit-mdb-export.sh (T_Robna dokumenta / T_Robne stavke / " +
+      "T_Trebovanja) i da li su tabele preimenovane u BigBitu.";
+    step.notes.push(poruka);
+    this.logger.warn(poruka);
   }
 
   /** Mapiranje `R_Artikli` -> `items` iz `SYNC_MAP` — iste glasne provere kao predmeti. */

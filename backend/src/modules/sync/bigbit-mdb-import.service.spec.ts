@@ -299,6 +299,14 @@ describe("BigbitMdbImportService", () => {
         // primenjivala u koraku zaglavlja, korak stavki je isti nalog zaticao kao
         // LOCKED i odbijao iznose IZ ISTOG FAJLA koji ga je zaključao.
         "journal_entries_lock",
+        // ROBNO OGLEDALO POSLE KNJIGOVODSTVA (05.08.2026): robno ne ulazi ni u PDV
+        // ni u bilans, pa njegov pad ne sme da odloži glavnu knjigu — a i najveći je
+        // korak uvoza (182.539 + 86.779 stavki). Zaglavlje uvek pre svojih stavki:
+        // stavka ima tvrd FK na dokument, pa bi obrnut redosled oborio celu seriju.
+        "goods_documents_mirror",
+        "goods_document_items_mirror",
+        "purchase_orders_mirror",
+        "purchase_order_items_mirror",
       ]);
     });
 
@@ -402,10 +410,11 @@ describe("BigbitMdbImportService", () => {
       });
       const res = await svc(prisma).runImport({ force: true });
       expect(res.status).toBe("DONE");
-      // Trinaest koraka: 2 matična + 4 šifarnika + artikli + 5 uvoznih + ZAKLJUČAVANJE.
-      // Zaključavanje je odvojeno od koraka zaglavlja da korak stavki ne bi zatekao
-      // nalog kao LOCKED i odbio iznose iz ISTOG fajla koji ga je zaključao.
-      expect(res.steps).toHaveLength(13);
+      // Sedamnaest koraka: 2 matična + 4 šifarnika + artikli + 5 uvoznih +
+      // ZAKLJUČAVANJE + 4 robna ogledala. Zaključavanje je odvojeno od koraka
+      // zaglavlja da korak stavki ne bi zatekao nalog kao LOCKED i odbio iznose
+      // iz ISTOG fajla koji ga je zaključao.
+      expect(res.steps).toHaveLength(17);
       expect(res.steps.map((s) => s.entity)).toEqual([
         "customers",
         "projects",
@@ -422,6 +431,10 @@ describe("BigbitMdbImportService", () => {
         "journal_entries",
         "ledger_entries",
         "journal_entries_lock",
+        "goods_documents_mirror",
+        "goods_document_items_mirror",
+        "purchase_orders_mirror",
+        "purchase_order_items_mirror",
       ]);
     });
 

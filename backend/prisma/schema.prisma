@@ -1225,32 +1225,194 @@ model Company {
 }
 
 // ============================================================================
-// GOODS MIRROR (for PDM/MRP sync)
+// BIGBIT ROBNO — OGLEDALO (lager lista + kartice artikla)
+// ----------------------------------------------------------------------------
+// 🔴 ROBNO SE VODI ISKLJUČIVO U BIGBITU. Mereno na produkciji 05.08.2026:
+// `stock_documents` 0, `stock_levels` 0, `stock_reservations` 0,
+// `purchase_orders` 0 — 4.0-native robne tabele su PRAZNE. Sve stanje, sve
+// rezervacije i sve narudžbenice žive u BigBitu i ovamo dolaze SAMO ZA ČITANJE.
+//
+// KANAL: noćni .mdb izvoz (`backend/scripts/bigbit-mdb-export.sh`, tabele
+// T_Robna dokumenta / T_Robne stavke / T_Trebovanja / T_Trebovanja stavke) →
+// `bb_mdb_stage_*` → uvoz u ova ogledala. Tabele `goods_documents_mirror` i
+// `goods_document_items_mirror` POSTOJE OD BASELINE-a i projektovane su baš za
+// ovo; punio ih je MSSQL kanal (`sync-map.generated.ts` → `RobnaDokumentaMirror`)
+// koji je MRTAV od 22.07.2026, pa su ostale prazne. Zato se PROŠIRUJU, a ne
+// prave nove — isti razlog kao kod komitenata i artikala.
+//
+// FORMULA LAGERA (BigBit paritet):
+//   stanje(artikal, magacin)      = SUM(quantity_in) - SUM(quantity_out)
+//                                   nad dokumentima sa `level = 0`
+//   rezervisano(artikal, magacin) = SUM(quantity) nad dokumentima
+//                                   sa `is_reservation = true`
+//   slobodno                      = stanje - rezervisano
+// ⚠️ MAGACIN SE GRUPIŠE PO `goods_document_items_mirror.warehouse_id` (BigBit
+// `T_Robne stavke.IDMagacin`), NE po magacinu zaglavlja: jedan dokument nosi
+// stavke iz više magacina, pa bi grupisanje po zaglavlju tiho pripisalo
+// količine pogrešnom magacinu.
+//
+// NIJE MIGRACIJA PODATAKA: ovo je read-only ogledalo do cutover-a (april 2027).
+// Unos i ispravke i dalje idu u BigBitu.
 // ============================================================================
 
-/// Was: RobnaDokumentaMirror
+/// Was: RobnaDokumentaMirror (T_Robna dokumenta) — zaglavlje robnog dokumenta.
+/// `level` je nosilac značenja: 0 = knjižen promet (ulazi u stanje), 250 =
+/// ponude / predračuni / rezervacije / otpremnice (NE ulaze u stanje, ali se
+/// vide na karticama artikla i daju rezervisanu količinu kad je `isReservation`).
 model GoodsDocumentMirror {
   id           Int                       @id @map("id")
   documentType String                    @map("document_type") @db.VarChar(5)
   documentDate DateTime                  @map("document_date") @db.Date
   items        GoodsDocumentItemMirror[]
 
+  // ── LAGER I KARTICE (05.08.2026) ───────────────────────────────────────────
+  // Sva polja su nullable ili sa difoltom NAMERNO: `sync-map.generated.ts` i
+  // dalje deklariše ovu tabelu sa tri kolone (MSSQL kanal), pa bi NOT NULL bez
+  // difolta oborio taj mapper ako se ikad probudi.
+
+  /// BigBit `Broj dokumenta`. VarChar(50), a ne (20) kao legacy `GoodsDocument`:
+  /// BigBitovi brojevi dokumenata ume da budu duži i sadrže zarez (vidi razdvajač
+  /// `|` u izvozu).
+  documentNumber String? @map("document_number") @db.VarChar(50)
+  /// `Datum knjizenja` — po njemu se seče period, `documentDate` je datum isprave.
+  postingDate DateTime? @map("posting_date") @db.Date
+  /// BigBit `Ulaz` — smer prometa. = legacy `GoodsDocument.isInbound`.
+  isInflow Boolean @default(false) @map("is_inflow")
+  /// BigBit `Level`: 0 = knjiženo, 250 = radni dokumenti (ponude/rezervacije).
+  level Int @default(0) @map("level") @db.SmallInt
+  /// BigBit `Rezervisi` — dokument rezerviše robu. = legacy `GoodsDocument.reserveStock`.
+  isReservation Boolean @default(false) @map("is_reservation")
+  /// `IDMagacinDOK` — magacin ZAGLAVLJA. KONTROLNI podatak; lager se grupiše po
+  /// magacinu STAVKE (`GoodsDocumentItemMirror.warehouseId`).
+  warehouseId Int? @map("warehouse_id")
+  /// `Sifra komitenta` — meki ref na `customers` (sync-keš, bez @relation).
+  customerId Int? @map("customer_id")
+  /// `IDPredmet` — meki ref na `projects`.
+  projectId  Int?    @map("project_id")
+  isLocked   Boolean @default(false) @map("is_locked")
+  year       Int?    @map("year")
+
+  /// OZNAKA POREKLA (noćni .mdb uvoz) — vidi Account.importedDropId.
+  importedDropId Int?       @map("imported_drop_id")
+  importedDrop   BbMdbDrop? @relation(fields: [importedDropId], references: [id], onDelete: Restrict, map: "fk_goods_documents_mirror_imported_drop")
+
+  @@index([level], map: "idx_goods_documents_mirror_level")
+  @@index([isReservation], map: "idx_goods_documents_mirror_reservation")
+  @@index([importedDropId], map: "idx_goods_documents_mirror_imported_drop")
   @@map("goods_documents_mirror")
 }
 
-/// Was: RobneStavkeMirror
+/// Was: RobneStavkeMirror (T_Robne stavke) — stavka robnog dokumenta.
 model GoodsDocumentItemMirror {
   id            Int                 @id @map("id")
   documentId    Int                 @map("document_id")
   itemId        Int                 @map("item_id")
   catalogNumber String?             @map("catalog_number") @db.VarChar(100)
+  /// BigBit `IDMagacin` SA STAVKE — jedina tačna dimenzija magacina za lager.
   warehouseId   Int                 @map("warehouse_id")
   quantityIn    Decimal             @default(0) @map("quantity_in") @db.Decimal(18, 4)
   quantityOut   Decimal             @default(0) @map("quantity_out") @db.Decimal(18, 4)
   updatedAt     DateTime            @default(now()) @map("updated_at") @db.Timestamp(6)
   document      GoodsDocumentMirror @relation(fields: [documentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_goods_document_items_mirror_document")
 
+  // ── LAGER I KARTICE (05.08.2026) ───────────────────────────────────────────
+
+  /// SIROVA `Kolicina` iz BigBita, sa znakom kakav stoji u bazi.
+  /// ZAŠTO UZ quantityIn/quantityOut, a ne umesto njih: BigBit drži JEDNU
+  /// količinu po stavci, a smer nosi zaglavlje (`Ulaz`) — in/out je izvedena
+  /// podela zgodna za `SUM(in) - SUM(out)`. Ali REZERVISANO se po BigBit
+  /// paritetu računa kao `SUM(Kolicina)` nad dokumentima sa `Rezervisi = true`,
+  /// bez obzira na smer; bez sirove kolone taj zbir se ne može tačno dobiti za
+  /// storno/povratne stavke (negativna količina na ulaznom dokumentu).
+  quantity   Decimal? @map("quantity") @db.Decimal(18, 4)
+  /// `KG_Kolicina` — težinska količina za artikle koji se vode i u kg.
+  kgQuantity Decimal? @map("kg_quantity") @db.Decimal(18, 4)
+
+  // Imena novčanih polja preuzeta iz legacy `GoodsDocumentItem` (isti BigBit
+  // izvor), da se protiv ogledala piše istim rečnikom.
+  purchasePriceNet     Decimal? @map("purchase_price_net") @db.Decimal(19, 4) // Nabavna cena - neto
+  actualWholesalePrice Decimal? @map("actual_wholesale_price") @db.Decimal(19, 4) // Stvarna VP cena
+  actualRetailPrice    Decimal? @map("actual_retail_price") @db.Decimal(19, 4) // Stvarna MP cena
+  discountPercent      Decimal? @map("discount_percent") @db.Decimal(9, 4) // RabatProc
+  itemDescription      String?  @map("item_description") @db.VarChar(255) // OpisStavke
+
+  /// LAGER GRUPIŠE PO OVOM PARU nad ~182.500 stavki — bez ovog indeksa je svaki
+  /// prikaz stanja pun prolaz kroz tabelu.
+  @@index([itemId, warehouseId], map: "idx_goods_document_items_mirror_item_wh")
+  @@index([documentId], map: "idx_goods_document_items_mirror_document")
   @@map("goods_document_items_mirror")
+}
+
+/// Was: T_Trebovanja — OGLEDALO narudžbenica iz BigBita (read-only).
+///
+/// ⚠️ NIJE `PurchaseOrder`: taj model je 4.0-native (status-mašina
+/// DRAFT→ORDERED→…, sopstvena numeracija) i na produkciji je PRAZAN. Ovo je
+/// sirov BigBit snimak koji hrani karticu artikla („narudžbine") dok se
+/// narudžbenice ne presele u 4.0. Dva modela namerno stoje jedan pored drugog:
+/// spajanje bi pomešalo izvor istine sa radnim tokom.
+model PurchaseOrderMirror {
+  id          Int       @id @map("id") // IDTreb
+  orderNumber String?   @map("order_number") @db.VarChar(50) // Broj trebovanja
+  orderDate   DateTime? @map("order_date") @db.Date // Datum trebovanja
+  /// `Sifra komitenta` — meki ref na `customers` (dobavljač).
+  supplierId Int?    @map("supplier_id")
+  projectId  Int?    @map("project_id") // IDPredmet — meki ref
+  note       String? @map("note") // Napomena (Memo — nosi CR/LF)
+  level      Int     @default(0) @map("level") @db.SmallInt
+  isOrdered  Boolean @default(false) @map("is_ordered") // Poruceno
+  year       Int?    @map("year")
+
+  /// OZNAKA POREKLA (noćni .mdb uvoz) — vidi Account.importedDropId.
+  importedDropId Int?       @map("imported_drop_id")
+  importedDrop   BbMdbDrop? @relation(fields: [importedDropId], references: [id], onDelete: Restrict, map: "fk_purchase_orders_mirror_imported_drop")
+
+  items PurchaseOrderItemMirror[]
+
+  @@index([level], map: "idx_purchase_orders_mirror_level")
+  @@index([supplierId], map: "idx_purchase_orders_mirror_supplier")
+  @@index([importedDropId], map: "idx_purchase_orders_mirror_imported_drop")
+  @@map("purchase_orders_mirror")
+}
+
+/// Was: T_Trebovanja stavke — stavka BigBit narudžbenice (read-only ogledalo).
+/// Imena količina i cene preuzeta iz `PurchaseOrderItem` (isti pojmovi).
+///
+/// NE PRESLIKAVA `ZaliheKol` / `UlazKol` / `IzlazKol`: to su BigBitovi pomoćni
+/// snimci zaliha u trenutku unosa trebovanja. Stanje se računa iz robnih
+/// dokumenata; preuzimanje bi ponudilo drugi, bajat odgovor na isto pitanje.
+model PurchaseOrderItemMirror {
+  id      Int @id @map("id") // IDStavke
+  orderId Int @map("order_id") // IDTreb
+  itemId  Int @map("item_id") // Sifra artikla — meki ref na `items`
+
+  orderedQuantity  Decimal? @map("ordered_quantity") @db.Decimal(19, 6) // TrebKol
+  receivedQuantity Decimal? @map("received_quantity") @db.Decimal(19, 6) // IsporucenaKolicina
+  unitPrice        Decimal? @map("unit_price") @db.Decimal(19, 4) // Cena
+  discountPercent  Decimal? @map("discount_percent") @db.Decimal(9, 4) // RabatProc
+  description      String?  @map("description") @db.VarChar(255) // Opis
+
+  expectedDeliveryDate DateTime? @map("expected_delivery_date") @db.Date // OcekivaniDatumIsporuke
+  /// BigBit `DatumIsporuke` — STVARNI datum isporuke stavke trebovanja.
+  /// Ime je namerno `actualDeliveryDate`, a NE `deliveryDate`: to ime je u ovom repou
+  /// značilo tri različite stvari (datum prometa, prijem na SEF, druga kolona za isti
+  /// datum) i prvi sudar je proizveo POGREŠAN zakonski rok od 15 dana na ulaznim
+  /// fakturama. Razrešeno 02.08.2026 i od tada zabranjeno branom u
+  /// `modules/sales/datum-prometa.spec.ts` — par `expected_*` / `actual_*` je dosledan
+  /// i ne može se pobrkati sa datumom prometa.
+  actualDeliveryDate   DateTime? @map("actual_delivery_date") @db.Date // DatumIsporuke
+  isDelivered          Boolean   @default(false) @map("is_delivered") // Isporuceno
+
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamp(6)
+
+  /// Cascade (a ne NoAction kao kod `GoodsDocumentItemMirror`): ovde je FK nov i
+  /// piše ga uvoz koji radi pun osvežaj, pa brisanje zaglavlja treba da povuče
+  /// stavke. Kod robnog ogledala NoAction je nasleđe MSSQL sync-a i ne dira se.
+  order PurchaseOrderMirror @relation(fields: [orderId], references: [id], onDelete: Cascade, map: "fk_purchase_order_items_mirror_order")
+
+  /// Kartica artikla čita po artiklu.
+  @@index([itemId], map: "idx_purchase_order_items_mirror_item")
+  @@index([orderId], map: "idx_purchase_order_items_mirror_order")
+  @@map("purchase_order_items_mirror")
 }
 
 // ============================================================================
@@ -5380,6 +5542,8 @@ model BbMdbDrop {
   saldakontoAccounts SaldakontoAccount[]
   journalEntries     JournalEntry[]
   ledgerEntries      LedgerEntry[]
+  goodsDocuments     GoodsDocumentMirror[]
+  purchaseOrders     PurchaseOrderMirror[]
 
   stageGk         BbMdbStageGk[]
   stageNalozi     BbMdbStageNalog[]
@@ -5397,6 +5561,11 @@ model BbMdbDrop {
   stagePoreklo    BbMdbStagePoreklo[]
   stageMagacini   BbMdbStageMagacin[]
   stageArtikli    BbMdbStageArtikal[]
+
+  stageRobnaDokumenta   BbMdbStageRobniDokument[]
+  stageRobneStavke      BbMdbStageRobnaStavka[]
+  stageTrebovanja       BbMdbStageTrebovanje[]
+  stageTrebovanjaStavke BbMdbStageTrebovanjeStavka[]
 
   @@unique([fileName, fileMtime, fileSize], map: "uq_bb_mdb_drops_file")
   @@index([stageStatus, importStatus], map: "idx_bb_mdb_drops_status")
@@ -5782,6 +5951,118 @@ model BbMdbStageArtikal {
 
   @@index([dropId], map: "idx_bb_mdb_stage_artikli_drop")
   @@map("bb_mdb_stage_artikli")
+}
+
+// ── ROBNO: staging (05.08.2026) ──────────────────────────────────────────────
+// 🔴 OVE ČETIRI TABELE SU JEDINE U MANIFESTU KOJE SE UZIMAJU PROJEKTOVANO —
+// izvozi se CELO zaglavlje (brana i dalje poredi svih 61/37/27/20 kolona), a u
+// staging se prepisuje samo podskup naveden u `PICK` bloku skripte
+// `backend/scripts/bigbit-mdb-export.sh`.
+//
+// ZAŠTO: šifarnici su mali i uzimaju se celi (kolona koje se nismo setili se
+// vremenom pojavi); robni promet je ~182.500 stavki PO NOĆI, pa 37 kolona
+// umesto 11 znači ~3× više pisanja doživotno za podatke koje niko ne čita
+// (kalkulativne cene, carinske stope, tarife po stavci).
+//
+// ⚠️ REDOSLED POLJA ISPOD MORA BITI IDENTIČAN REDOSLEDU U `PICK`-u — `INSERT`
+// je POZICIONI (`SELECT nextval(), drop_id, t."Kol1", t."Kol2"…`), bez liste
+// kolona, kao i kod ostalih staging tabela. Premeštanje polja ovde bez
+// premeštanja u skripti tiho upisuje vrednosti u pogrešnu kolonu.
+//
+// Sve kolone su `String?` — vidi napomenu na vrhu STAGING bloka.
+
+/// Was: T_Robna dokumenta — zaglavlje robnog dokumenta (staging, 13 od 61 kolone).
+model BbMdbStageRobniDokument {
+  id     Int @id(map: "pk_bb_mdb_stage_robna_dokumenta") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  idDok           String? @map("id_dok") // IDDok
+  ulaz            String? @map("ulaz") // Ulaz (Access Boolean → '0'/'1') — SMER PROMETA
+  brojDokumenta   String? @map("broj_dokumenta") // Broj dokumenta
+  vrstaDokumenta  String? @map("vrsta_dokumenta") // Vrsta dokumenta (UFROB, IFR, POPIS, REZM/REZR…)
+  sifraKomitenta  String? @map("sifra_komitenta") // Sifra komitenta
+  datumDokumenta  String? @map("datum_dokumenta") // Datum dokumenta
+  datumKnjizenja  String? @map("datum_knjizenja") // Datum knjizenja
+  idMagacinDok    String? @map("id_magacin_dok") // IDMagacinDOK (magacin ZAGLAVLJA — kontrolni!)
+  level           String? @map("level") // Level (0 = knjiženo stanje, 250 = ponude/rezervacije)
+  idPredmet       String? @map("id_predmet") // IDPredmet
+  zakljucano      String? @map("zakljucano") // Zakljucano
+  rezervisi       String? @map("rezervisi") // Rezervisi (1.576 dokumenata u tekućem fajlu)
+  godina          String? @map("godina") // Godina
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_robna_dokumenta_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_robna_dokumenta_drop")
+  @@map("bb_mdb_stage_robna_dokumenta")
+}
+
+/// Was: T_Robne stavke — stavka robnog dokumenta (staging, 11 od 37 kolona).
+/// 🔴 `idMagacin` je magacin STAVKE i JEDINI je tačan za lager — jedan dokument
+/// ume da nosi stavke iz više magacina.
+model BbMdbStageRobnaStavka {
+  id     Int @id(map: "pk_bb_mdb_stage_robne_stavke") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  idStavke        String? @map("id_stavke") // IDStavke
+  idDok           String? @map("id_dok") // IDDok (FK T_Robna dokumenta)
+  sifraArtikla    String? @map("sifra_artikla") // Sifra artikla → items.external_item_id
+  kolicina        String? @map("kolicina") // Kolicina (smer nosi zaglavlje, ne znak!)
+  kgKolicina      String? @map("kg_kolicina") // KG_Kolicina
+  nabavnaCenaNeto String? @map("nabavna_cena_neto") // Nabavna cena - neto
+  stvarnaVpCena   String? @map("stvarna_vp_cena") // Stvarna VP cena
+  stvarnaMpCena   String? @map("stvarna_mp_cena") // Stvarna MP cena
+  rabatProc       String? @map("rabat_proc") // RabatProc
+  idMagacin       String? @map("id_magacin") // IDMagacin (MAGACIN STAVKE — lager grupiše po ovome)
+  opisStavke      String? @map("opis_stavke") // OpisStavke
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_robne_stavke_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_robne_stavke_drop")
+  @@map("bb_mdb_stage_robne_stavke")
+}
+
+/// Was: T_Trebovanja — narudžbenica (staging, 9 od 27 kolona).
+model BbMdbStageTrebovanje {
+  id     Int @id(map: "pk_bb_mdb_stage_trebovanja") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  idTreb          String? @map("id_treb") // IDTreb
+  brojTrebovanja  String? @map("broj_trebovanja") // Broj trebovanja
+  datumTrebovanja String? @map("datum_trebovanja") // Datum trebovanja
+  sifraKomitenta  String? @map("sifra_komitenta") // Sifra komitenta (dobavljač)
+  idPredmet       String? @map("id_predmet") // IDPredmet
+  napomena        String? @map("napomena") // Napomena (Memo — nosi CR/LF)
+  level           String? @map("level") // Level
+  poruceno        String? @map("poruceno") // Poruceno
+  godina          String? @map("godina") // Godina
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_trebovanja_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_trebovanja_drop")
+  @@map("bb_mdb_stage_trebovanja")
+}
+
+/// Was: T_Trebovanja stavke — stavka narudžbenice (staging, 11 od 20 kolona).
+model BbMdbStageTrebovanjeStavka {
+  id     Int @id(map: "pk_bb_mdb_stage_trebovanja_stavke") @default(autoincrement()) @map("id")
+  dropId Int @map("drop_id")
+
+  idStavke               String? @map("id_stavke") // IDStavke
+  idTreb                 String? @map("id_treb") // IDTreb (FK T_Trebovanja)
+  sifraArtikla           String? @map("sifra_artikla") // Sifra artikla
+  trebKol                String? @map("treb_kol") // TrebKol (naručeno)
+  isporucenaKolicina     String? @map("isporucena_kolicina") // IsporucenaKolicina
+  cena                   String? @map("cena") // Cena
+  opis                   String? @map("opis") // Opis
+  ocekivaniDatumIsporuke String? @map("ocekivani_datum_isporuke") // OcekivaniDatumIsporuke
+  datumIsporuke          String? @map("datum_isporuke") // DatumIsporuke
+  isporuceno             String? @map("isporuceno") // Isporuceno
+  rabatProc              String? @map("rabat_proc") // RabatProc
+
+  drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_trebovanja_stavke_drop")
+
+  @@index([dropId], map: "idx_bb_mdb_stage_trebovanja_stavke_drop")
+  @@map("bb_mdb_stage_trebovanja_stavke")
 }
 
 /// Was: Vrsta naloga — staging.
