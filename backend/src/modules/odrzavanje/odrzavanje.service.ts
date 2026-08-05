@@ -3431,6 +3431,10 @@ export class OdrzavanjeService {
         officeLocation: s("office_location"),
         tonerCartridges: s("toner_cartridges"),
         unifiPorts: s("unifi_ports"),
+        // Zahtev 071 (UPS snaga / firmver mrežne opreme) —
+        // kolone dodate kroz ZAHTEV_071_IT_OPREMA_UPS_AP.sql.
+        powerRating: s("power_rating"),
+        firmwareVersion: s("firmware_version"),
         updatedBy: uid,
       };
       const row = await tx.maintItAssetDetails.upsert({

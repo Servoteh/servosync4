@@ -1512,6 +1512,67 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       expect(arg.update.unifiPorts).toBeNull();
       expect(arg.update.cpu).toBeNull();
     });
+
+    // ------- 071: UPS (snaga) i mrežna oprema (firmver) -------
+
+    it("mapira power_rating i firmware_version (071) u obe grane upserta", async () => {
+      const upsert = jest.fn().mockResolvedValue({ assetId: IT_ASSET });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintItAssetDetails: { upsert },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.upsertItDetails("veljko@servoteh.com", IT_ASSET, {
+        details: {
+          device_type: "UPS",
+          office_location: "server sala",
+          power_rating: "1500 VA / 900 W",
+          firmware_version: "6.6.55",
+        },
+      } as never);
+      const arg = upsert.mock.calls[0][0];
+      expect(arg.update.powerRating).toBe("1500 VA / 900 W");
+      expect(arg.update.firmwareVersion).toBe("6.6.55");
+      expect(arg.create.powerRating).toBe("1500 VA / 900 W");
+      expect(arg.create.firmwareVersion).toBe("6.6.55");
+      // Lokacija se NE duplira — ide u postojeći office_location (067).
+      expect(arg.update.officeLocation).toBe("server sala");
+    });
+
+    it("071 polja slušaju isto pravilo praznog/izostavljenog ključa (→ NULL)", async () => {
+      const upsert = jest.fn().mockResolvedValue({ assetId: IT_ASSET });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintItAssetDetails: { upsert },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.upsertItDetails("veljko@servoteh.com", IT_ASSET, {
+        details: { device_type: "tablet", power_rating: "" },
+      } as never);
+      const arg = upsert.mock.calls[0][0];
+      expect(arg.update.powerRating).toBeNull();
+      expect(arg.update.firmwareVersion).toBeNull();
+    });
+
+    it("details allowlist NE prima status/model — to su kolone maint_assets (core patch)", async () => {
+      const upsert = jest.fn().mockResolvedValue({ assetId: IT_ASSET });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintItAssetDetails: { upsert },
+      });
+      const { sy15 } = makeSy15(tx);
+      const svc = new OdrzavanjeService(sy15, storageStub, notifyStub());
+      await svc.upsertItDetails("veljko@servoteh.com", IT_ASSET, {
+        details: { device_type: "access point", status: "down", model: "U6-Pro" },
+      } as never);
+      const arg = upsert.mock.calls[0][0];
+      expect("status" in arg.update).toBe(false);
+      expect("model" in arg.update).toBe(false);
+      expect("status" in arg.create).toBe(false);
+      expect("model" in arg.create).toBe(false);
+    });
   });
 
   // ------- „Zahtevaju pažnju" (IT / objekti) — uslov je u SQL-u -------

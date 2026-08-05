@@ -89,6 +89,9 @@ export function OpStatusBadge({ status }: { status: OpStatus | string | null }) 
   const s = (status && OP[status as OpStatus]) || { tone: 'neutral' as Tone, label: status ?? 'Nepoznato' };
   return <StatusBadge tone={s.tone} label={s.label} />;
 }
+/** Opcije za <select> operativnog statusa — ISTA lista/labele kao badge (bez druge istine). */
+export const OP_STATUS_OPTIONS: { value: OpStatus; label: string }[] =
+  (Object.keys(OP) as OpStatus[]).map((k) => ({ value: k, label: OP[k].label }));
 
 // ── WO statusi / grupe / prioritet ─────────────────────────────────
 export const WO_STATUS_LABEL: Record<WoStatus, string> = {
@@ -302,17 +305,44 @@ export const DEVICE_TYPE_SUGGESTIONS = [
 
 /**
  * Kategorija IT uređaja → koja tip-specifična polja forma/karton prikazuju
- * (zahtevi 065/066/067). `device_type` je slobodan tekst (datalist), pa se
- * kategorija izvodi tolerantno po podstringu (mala slova, sr/en varijante);
- * nepoznat tip = 'other' (bez tip-specifičnih polja, vrednosti se čuvaju).
+ * (zahtevi 065/066/067, prošireno 071). `device_type` je slobodan tekst
+ * (datalist), pa se kategorija izvodi tolerantno po podstringu (mala slova,
+ * sr/en varijante); nepoznat tip = 'other' (bez tip-specifičnih polja,
+ * vrednosti se čuvaju).
+ * 071 (Veljko, 05.08): „tablet" ide u 'computer' (isti hardverski skup kao
+ * laptop/desktop), a UPS dobija svoju kategoriju 'power' (snaga + lokacija) —
+ * u 'other' bi „Snaga (VA/W)" iskakala i na monitoru/telefonu/NAS-u.
+ *
+ * 🔴 Kratke skraćenice se NE traže ni kao goli podniz ni kao tačan niz — sve
+ * TRI idu pod granicu reči, svaka zbog merene zamke:
+ *  1. 'pc' → `\bpcs?\b` (puna granica). `"apc".includes("pc")` je tačno, pa je
+ *     „APC Smart-UPS 1500" (najčešći brend UPS-a) padao u 'computer' i
+ *     korisniku se „Snaga (VA/W)" nikad nije ponudila. Sad „pc" i „PC 01"
+ *     prolaze, a „APC rack" i „PCI kartica" više ne glume računar.
+ *  2. 'ups' → `\bups` (POČETAK reči, bez zatvaranja). Hvata „UPS", „Smart-UPS",
+ *     „Back-UPS" (crtica je granica) i „ups1500va", a ne hvata „backups" u
+ *     sredini reči.
+ *  3. 'ap'  → `\bap\b` (puna granica), RANIJE `t === 'ap'`. Tačan niz je hvatao
+ *     samo doslovno „ap", pa su „Ubiquiti UniFi AP" i „UniFi AP AC Pro" padali
+ *     u 'other' i NE bi dobili nijedno mrežno polje (status, model, firmver) —
+ *     a Veljko u 071 piše da su podaci o access point-ima „na UniFi nalogu", pa
+ *     je baš takav zapis verovatan. Granica reči rešava i ono zbog čega je
+ *     `===` uvedeno: „laptop", „apc" i „cap" i dalje NE pogađaju.
+ * Zato 'power' ide PRVI: uređaj ume da se zove „server UPS" ili „UPS za server
+ * salu", pa bi ga duža reč 'server' inače odvela u 'computer'. Poznata
+ * posledica tog redosleda: „ups switch" je 'power', ne 'network' (dvosmislen
+ * niz, ne postoji u živim podacima). Provereno nad svim živim tipovima i celim
+ * datalist-om — nijedan se ne menja; „access point" se i dalje hvata punim
+ * nazivom.
  */
-export type ItDeviceCategory = 'computer' | 'printer' | 'network' | 'other';
+export type ItDeviceCategory = 'computer' | 'printer' | 'network' | 'power' | 'other';
 export function itDeviceCategory(deviceType: unknown): ItDeviceCategory {
   const t = String(deviceType ?? '').toLowerCase();
   if (!t) return 'other';
-  if (['laptop', 'desktop', 'server', 'pc', 'računar', 'racunar', 'workstation', 'all-in-one'].some((k) => t.includes(k))) return 'computer';
+  if (/\bups/.test(t) || ['inverter', 'invertor'].some((k) => t.includes(k))) return 'power';
+  if (['laptop', 'desktop', 'server', 'računar', 'racunar', 'workstation', 'all-in-one', 'tablet'].some((k) => t.includes(k)) || /\bpcs?\b/.test(t)) return 'computer';
   if (['printer', 'štampač', 'stampac', 'plotter', 'mfp', 'kopir'].some((k) => t.includes(k))) return 'printer';
-  if (['switch', 'router', 'access point', 'firewall', 'gateway'].some((k) => t.includes(k)) || t === 'ap') return 'network';
+  if (['switch', 'router', 'access point', 'firewall', 'gateway'].some((k) => t.includes(k)) || /\bap\b/.test(t)) return 'network';
   return 'other';
 }
 /** Fallback lista tipova objekata kad lookup padne (1.0 FACILITY_TYPE_SUGGESTIONS). */
