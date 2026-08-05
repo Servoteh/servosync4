@@ -1,0 +1,88 @@
+1 . Šeme za kontiranje robe — bez potvrde nijedan robni račun ne može da se proknjiži
+PREPORUKA: Potvrditi svih šest, ali tek posle probnog knjiženja po jednog dokumenta svake vrste na test bazi i poređenja sa starim nalogom. Provera na živim podacima već pokazuje da račun-otpremnica daje 2040/4702/6040/1320/5010, a izlaz gotovih proizvoda 2040/4701/6141/9600/9800 — isto kao stari program.
+ODGOVOR: Potvrdjujemo
+2. Usluge na računu — formalna potvrda konta (kupac 2040, prihod 6140, PDV 4703)
+Odgovor: ugluge se knjiže ručno ( 2040/4703/6140 ili 6796 ili 6501). Knjiže se ručno zato što se u zavisnosti od prometa menja I konto 6. Takodje se kod knjiženja usluga menja I poresko oslobodjenje. Sve zavisi koje se usluge knjiže
+3. Gotov proizvod po nižoj stopi (10 %) — šema tu stavku uopšte ne predviđa
+ODGOVOR: Nemamo ovakvu vrstu prometa
+4. Od kog broja kreću naši dokumenti — u knjigama već stoje brojevi do 261/26
+ODGOVOR: Za svaku novu godinu radimo presek I uvek počinjemo od broja 1
+5. Ponude i predračuni — jedan zajednički niz brojeva ili dva odvojena
+ODGOVOR: Jedan zajednički niz, kao u starom programu — knjiga se nastavlja, nema dva dokumenta sa istim brojem
+6. Registar poreskih stopa je prazan — cenovnik zbog toga ne radi; i stopa broj 6 sama sebi
+Protivreči
+ODGOVOR: koristimo poreske spote 20% I 0 %
+7. Datum prometa — sme li biti isti kao datum računa i šta je kod dugotrajne usluge
+ODGOVOR: Datum prometa za robu je uvek isti kao datum sa računa. Datum prometa sa faktura za usluge ostaviti da se unese peške.
+8. Izvoz robe — koji član zakona ide na fakturu kao osnov oslobođenja od PDV-a
+ODGOVOR: Za izvoz robe koristimo član 24.1.2. Takva faktura ne ide na sef.
+Član 24.1.5 je vezan za robu koja se izdaje kod unosa dobara u slobodnu zonu. Takva faktura se šalje na SEF, I ručno unosimo poreska oslobodjenja.
+9. Usluga stranom kupcu — oslobođenje po članu 24 ili promet koji nije u Srbiji
+ODGOVOR: Za ino fakture koristimo oslobodjenje 24.1.7 – za robu koja je nabavljena od strane ino primaoca a kasnije se njemu I vraća ( oplemenjivanje)
+Za usluge koje su izvršene u inostranstvu pozivamo se na član 12 stav 3 (PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u (mesto prometa usluge je van teritorije Republike Srbije). Ovo se odnosi I na uslugu izvršenu u Srbiji za lice koje je strani poreski obveznik, samo se tada ne navodi VAN TERITORIJE REPUBLIKE SRBIJE
+10. Imamo li domaći promet bez PDV-a (oslobođenje ili obračun poreza od strane kupca)
+ODGOVOR: IMAMO. ( Napomena o poreskom oslobodjenju: Oslobodjeno PDV-a na osnovu člana 24 stav 1 tačka 5 o PDV-u )
+11. Devizni računi — koji IBAN i koja banka idu na izvoznu fakturu, po valutama
+ODGOVOR: Account with institution:
+DBDBRSBG BANCA INTESA AD, BEOGRAD MILENTIJA POPOVIĆA 7B BEOGRAD, REPUBLIKA SRBIJA
+59: Beneficiary:
+/RS35160005010003501186
+BULEVAR OSLOBOĐENJA 76, 21000 NOVI SAD, tel: + 381 (0) 21 4887 141; 4887 305
+fax: + 381 (0) 21 6624 633 e-mail: loro_doznake@bancaintesabeograd.com
+www.bancaintesabeograd.com tekući račun: 908-16001-87
+EUR SERVOTEH DOO DOBANOVCI UGRINOVAČKA 163 Dobanovci Republic of Serbia
+12. Evidentiranje PDV-a u sistemu e-faktura za kupce koji nisu na e-fakturi
+ODGOVOR: Za promet licima koji nisu u sistemu Sefa postoji obaveza elektronskog evidentiranja PDV-a kroz pojedinačnu evidenciju na Sef-u.
+13. Avansni račun — šta mora da sadrži i kako izgleda naš obrazac
+ODGOVOR: Dostavićemo avansni I konačni račun.
+14. Avansni račun i razlika od jedne pare — proveriti kako sistem e-faktura na to reaguje
+ODGOVOR: nebitna greška
+15. Zatezna kamata se obračunava i na avanse koje smo MI platili dobavljaču
+ODGOVOR: Nemamo za sada
+16. Numeracija naloga — jedan nalog dnevno po vrsti dokumenta ili jedan po dokumentu
+ODGOVOR: Kao dosad — jedan nalog po vrsti dokumenta i danu, dnevnik izgleda identično starom
+17. Šta piše u opisu reda naloga — opis dokumenta ili opis linije šeme
+ODGOVOR: opis dokumenta
+18. Knjižno odobrenje kupcu — uvodi li se automatsko knjiženje i na koja konta
+ODGOVOR: Knjižno odobrenje radi se u dokumentu sa pozitivnim brojem, ali se knjiži sa predznakom -. Knjiži se ručno 2040/4703 ili 4702 ili 4701/ 6141 ili 6140 ili 6796 ili 6501 ili 6040
+19. Manjkovi, otpisi, reprezentacija i donacija — na koji konto ide PDV i ostaje li obrazac
+„prodaje samom sebi
+ODGOVOR: nemamo takva dokumenta
+20. Dva PDV konta sa prometom nisu ni u jednom PDV registru
+ODGOVOR: O kojim kontima se radi?
+21. Prihvaćena e-faktura se ne može poništiti iz aplikacije — potvrditi postupak
+ODGOVOR: Prihvaćena e faktura može samo da se stornira
+22.  Poziv na broj ne preživi put kroz banku — kako se uplata vezuje za dokument
+ODGOVOR: ne uvodimo poziv na broj
+23. Prenos robe između sopstvenih magacina — knjiži li se u glavnu knjigu
+ODGOVOR: Sada imo knjiženje I robnog I finansijskog naloga za prenos robe izmedju sopstvenih magacina.
+24. Viškovi materijala i robe — vrsta naloga za koju ne postoji šifra
+ODGOVOR: knjiže se finansijski kroz nalog VISAK za vrstu dokumenta VISAR ili VISAM. Imaju šemu za knjiženje
+25. Rezervacije i utrošak za popravke — isti saldo, drugačiji promet
+ODGOVOR: da prihvatamo.
+26. Stopa od 8 % za poljoprivrednike i jedan artikal na sniženoj stopi
+ODGOVOR: Nemamo prodaju dobara po ovoj stopi  i to nam ne treba u programu
+27. Kada novi sistem preuzima ulaz robe, trebovanja, otpise i ostale magacinske dokumente
+ODGOVOR:  OD 01.04.2027 ako verifikujemo sve do tada
+28. Ko sme da menja pravila kontiranja — knjigovođa sam kroz ekran ili programmer
+ODGOVOR:  KNJIGOVODJA I ADMINISTRATORI ALI DA SE BELEZI IZEMAN
+29. Da li ista vrsta dokumenta ikada treba drugačija konta zavisno od vrste robe
+ODGOVOR: Da izlazna dokumenta za usluge. Isti je dokument ali se menja konto 6 zavisi od vrste usluge
+30. Račun domaćem kupcu u stranoj valuti — dinarska protivvrednost i kurs
+ODGOVOR: Nemamo
+31. Koliko se čuvaju izlazne fakture i gde — danas se nijedna ne arhivira
+ODGOVOR: Čuvaju se fizički I u program
+32. Potvrda spiska obaveznih elemenata računa, pečat i potpis, podaci u podnožju
+ODGOVOR: podaci izdavaoca i kupca PIB I MB OBAVEZNO, mesto i datum izdavanja,valuta plaćanja, broj računa, vrsta i količina robe odnosno obim usluge, datum prometa, primljeni avansi, osnovica, stopa, iznos poreza i napomena o oslobođenju, nači plaćanja, način otpreme, FCO
+33. Zastareli podaci na fakturi: naziv suda, znak ISO 9001:2008, traka partnera, QR kod
+ODGOVOR: OVDE CES MI OBJASNITI ali ISO treba novi znak… traka partnera ostaje...  QR KOD NEMAMO?
+34. Otpremnica bez cena — isti obrazac kao faktura i koliko primeraka
+ODGOVOR: Treba da ima isti obrazac kao I faktura
+35. Domaći račun koji ne stane na jednu stranu — šta ide na drugu
+ODGOVOR:  845-23  FAKTURA NA DVE STRANE.pdf sam ti sacuvao kao primer u guthubu
+36. Uslov plaćanja na izvoznoj fakturi — traži li ga banka ili carina
+ODGOVOR: Uslove plaćanja traži I banka I carina
+37. Otpremni podaci na ino fakturi — mesto istovara, kilaža, špediter
+ODGOVOR: Unosti ručno jer skoro pa uvek imamo drugačije ispise za ino kupce
+38. Sitne razlike u izgledu prema originalu — koliko verno preslikavati
+ODGOVOR:   NE MORA BITI TOTALNA KOPIJA
