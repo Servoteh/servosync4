@@ -625,16 +625,16 @@ ALTER TABLE "sastanak_arhiva" ADD CONSTRAINT "fk_sastanak_arhiva_sastanak" FOREI
 ALTER TABLE "sastanci_template_ucesnici" ADD CONSTRAINT "fk_sastanci_template_ucesnici_template" FOREIGN KEY ("template_id") REFERENCES "sastanci_templates"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- AddForeignKey
-ALTER TABLE "sastanci_notification_log" ADD CONSTRAINT "fk_sastanci_notification_log_sastanak" FOREIGN KEY ("related_sastanak_id") REFERENCES "sastanci"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+ALTER TABLE "sastanci_notification_log" ADD CONSTRAINT "fk_sastanci_notification_log_sastanak" FOREIGN KEY ("related_sastanak_id") REFERENCES "sastanci"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 
 -- AddForeignKey
-ALTER TABLE "sastanci_notification_log" ADD CONSTRAINT "fk_sastanci_notification_log_akcija" FOREIGN KEY ("related_akcija_id") REFERENCES "akcioni_plan"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+ALTER TABLE "sastanci_notification_log" ADD CONSTRAINT "fk_sastanci_notification_log_akcija" FOREIGN KEY ("related_akcija_id") REFERENCES "akcioni_plan"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 
 -- AddForeignKey
 ALTER TABLE "sastanci_ai_settings" ADD CONSTRAINT "fk_sastanci_ai_settings_user" FOREIGN KEY ("updated_by") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 
 -- AddForeignKey
-ALTER TABLE "akcioni_plan" ADD CONSTRAINT "fk_akcioni_plan_sastanak" FOREIGN KEY ("sastanak_id") REFERENCES "sastanci"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+ALTER TABLE "akcioni_plan" ADD CONSTRAINT "fk_akcioni_plan_sastanak" FOREIGN KEY ("sastanak_id") REFERENCES "sastanci"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 
 -- AddForeignKey
 ALTER TABLE "akcioni_plan" ADD CONSTRAINT "fk_akcioni_plan_tema" FOREIGN KEY ("tema_id") REFERENCES "pm_teme"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
@@ -658,7 +658,7 @@ ALTER TABLE "presek_aktivnosti" ADD CONSTRAINT "fk_presek_aktivnosti_sastanak" F
 ALTER TABLE "presek_slike" ADD CONSTRAINT "fk_presek_slike_sastanak" FOREIGN KEY ("sastanak_id") REFERENCES "sastanci"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- AddForeignKey
-ALTER TABLE "presek_slike" ADD CONSTRAINT "fk_presek_slike_aktivnost" FOREIGN KEY ("aktivnost_id") REFERENCES "presek_aktivnosti"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+ALTER TABLE "presek_slike" ADD CONSTRAINT "fk_presek_slike_aktivnost" FOREIGN KEY ("aktivnost_id") REFERENCES "presek_aktivnosti"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 
 -- AddForeignKey
 ALTER TABLE "pb_tasks" ADD CONSTRAINT "fk_pb_tasks_project" FOREIGN KEY ("project_id") REFERENCES "projects"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
