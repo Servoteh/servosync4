@@ -4269,7 +4269,7 @@ export class BigbitMdbImportService {
           discount_percent: r.discountPercent,
           description: r.description,
           expected_delivery_date: r.expectedDeliveryDate,
-          delivery_date: r.deliveryDate,
+          actual_delivery_date: r.deliveryDate,
           is_delivered: r.isDelivered,
         })),
       );
@@ -4282,12 +4282,12 @@ export class BigbitMdbImportService {
                  discount_percent::numeric  AS discount_percent,
                  description,
                  expected_delivery_date::date AS expected_delivery_date,
-                 delivery_date::date          AS delivery_date,
+                 actual_delivery_date::date          AS actual_delivery_date,
                  is_delivered
           FROM jsonb_to_recordset(${payload}::jsonb) AS t(
             id int, order_id int, item_id int, ordered_quantity text,
             received_quantity text, unit_price text, discount_percent text,
-            description text, expected_delivery_date text, delivery_date text,
+            description text, expected_delivery_date text, actual_delivery_date text,
             is_delivered boolean)
         ),
         eligible AS (
@@ -4298,10 +4298,10 @@ export class BigbitMdbImportService {
           INSERT INTO purchase_order_items_mirror
             (id, order_id, item_id, ordered_quantity, received_quantity,
              unit_price, discount_percent, description, expected_delivery_date,
-             delivery_date, is_delivered, updated_at)
+             actual_delivery_date, is_delivered, updated_at)
           SELECT id, order_id, item_id, ordered_quantity, received_quantity,
                  unit_price, discount_percent, description, expected_delivery_date,
-                 delivery_date, is_delivered, now()
+                 actual_delivery_date, is_delivered, now()
           FROM eligible
           ON CONFLICT (id) DO UPDATE SET
             order_id               = EXCLUDED.order_id,
@@ -4312,7 +4312,7 @@ export class BigbitMdbImportService {
             discount_percent       = EXCLUDED.discount_percent,
             description            = EXCLUDED.description,
             expected_delivery_date = EXCLUDED.expected_delivery_date,
-            delivery_date          = EXCLUDED.delivery_date,
+            actual_delivery_date          = EXCLUDED.actual_delivery_date,
             is_delivered           = EXCLUDED.is_delivered,
             updated_at             = now()
           WHERE (purchase_order_items_mirror.order_id, purchase_order_items_mirror.item_id,
@@ -4322,7 +4322,7 @@ export class BigbitMdbImportService {
                  purchase_order_items_mirror.discount_percent,
                  purchase_order_items_mirror.description,
                  purchase_order_items_mirror.expected_delivery_date,
-                 purchase_order_items_mirror.delivery_date,
+                 purchase_order_items_mirror.actual_delivery_date,
                  purchase_order_items_mirror.is_delivered)
             IS DISTINCT FROM
                 (EXCLUDED.order_id, EXCLUDED.item_id,
@@ -4332,7 +4332,7 @@ export class BigbitMdbImportService {
                  EXCLUDED.discount_percent,
                  EXCLUDED.description,
                  EXCLUDED.expected_delivery_date,
-                 EXCLUDED.delivery_date,
+                 EXCLUDED.actual_delivery_date,
                  EXCLUDED.is_delivered)
           RETURNING (xmax = 0) AS was_insert
         )
