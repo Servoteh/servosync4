@@ -368,8 +368,7 @@ const BASE_ROLE_PERMISSIONS: Partial<
     // za sve → BEZ viewer read-baseline; nijedna druga rola (ni sef/tehnolog).
     P.ENERGETIKA_READ,
     P.ENERGETIKA_CONTROL,
-    // 4.0 komercijala + finansije — MENADZMENT ima pun uvid + operativni write.
-    // (Row-politika/finija podela ide uz auth roljne; admin sve kroz ALL.)
+    // 4.0 komercijala — OPERATIVA ostaje uz rolu (nabavka, ponude, roba, prodaja, SEF).
     P.NABAVKA_READ,
     P.NABAVKA_WRITE,
     P.NABAVKA_APPROVE,
@@ -379,20 +378,6 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.ROBNO_READ,
     P.ROBNO_WRITE,
     P.ROBNO_POST,
-    P.GL_READ,
-    P.GL_WRITE,
-    P.BLAGAJNA_READ,
-    P.BLAGAJNA_WRITE,
-    P.KAMATA_READ,
-    P.KAMATA_WRITE,
-    P.SALDAKONTI_READ,
-    P.SALDAKONTI_RECONCILE,
-    P.PLACANJA_READ,
-    P.PLACANJA_PREPARE,
-    P.PLACANJA_EXPORT,
-    P.IZVODI_READ,
-    P.IZVODI_IMPORT,
-    P.IZVODI_POST,
     P.SALES_READ,
     P.SALES_WRITE,
     P.SALES_POST,
@@ -400,10 +385,30 @@ const BASE_ROLE_PERMISSIONS: Partial<
     P.SEF_READ,
     P.SEF_SEND,
     P.SEF_CANCEL,
-    P.PDV_READ,
-    P.PDV_COMPUTE,
-    P.ZR_READ,
-    P.ZR_COMPUTE,
+    // ───────────────────────────────────────────────────────────────────────
+    // KNJIGE SU SKINUTE SA ROLE — odluka Nenad, 05.08.2026.
+    // ───────────────────────────────────────────────────────────────────────
+    // Ranije je ovde stajao i pun finansijski paket: gl.read/write, blagajna,
+    // kamata, saldakonti, placanja, izvodi, pdv, zr. Posledica (IZMERENO
+    // 05.08.2026 nad produkcijom): rolu `menadzment` nosi 19 AKTIVNIH ljudi, pa je
+    // glavnu knjigu, saldakonta, izvode i PDV evidenciju videlo 24 coveka
+    // (19 + 5 admina) — bez veze sa tim da li im je to deo posla.
+    //
+    // Zahtev vlasnika: knjige vide SAMO admini i imenovani ljudi. Posto se Jelena
+    // Stanisic i Dusko Kostic nalaze u istoj roli kao ostalih 17, izdvajanje NIJE
+    // moglo da se uradi dodavanjem — moralo je oduzimanjem sa role, pa vracanjem
+    // IMENOM kroz `user_permission_overrides` (allow=true). Taj put postoji i radi:
+    // `effective-permission.ts` cita override svez pri svakom pozivu, a redosled je
+    // deny > rola > pojedinacna dozvola.
+    //
+    // ⚠️ NE VRACATI OVE PERMISIJE NA ROLU. Ako nekom treba uvid u knjige, dodaje mu
+    // se pojedinacno pravo — tako se zna KO ga ima i ko mu ga je dao. Vracanje na
+    // rolu bi tiho otvorilo knjige svakom buducem `menadzment` korisniku.
+    // Branu drzi `erp-knjige-samo-imenovanima.spec.ts`.
+    //
+    // OPERATIVA je NAMERNO ostala: nabavka, ponude, roba, prodaja i SEF nisu knjige
+    // nego svakodnevni posao; njihovo skidanje bi zaustavilo komercijalu. Finija
+    // podela ide uz najavljenu preradu rola.
   ],
 
   // AKTIVIRANE 10.07.2026 uz 3.0-pilot Reversi (Nenad) — paritet rev_can_manage().
