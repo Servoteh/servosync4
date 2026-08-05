@@ -52,6 +52,9 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
       new SastanciPbSourceService(),
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
     return { svc, sy15, tx };
   }
@@ -455,6 +458,9 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
         aiPolicyStub(),
         // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
         new SastanciPbSourceService(),
+        {} as never,
+        {} as never,
+        {} as never,
         {} as never,
       );
     }

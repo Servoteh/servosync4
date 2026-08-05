@@ -149,6 +149,9 @@ function makeSvc() {
     // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
     new SastanciPbSourceService(),
     {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
   );
   return { svc, sy15, tx, storage, ai };
 }

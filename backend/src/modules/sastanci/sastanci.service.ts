@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -11,6 +12,9 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
 import { SastanciSamouslugaService } from "./sastanci-samousluga.service";
+import { PrismaService } from "../../prisma/prisma.service";
+import { SastanciFnService, type SastanciTx } from "./sastanci-fn.service";
+import { SastanciAuthzService } from "./sastanci-authz.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { assertPdfAttachment } from "../../common/attachments/attachment-format.util";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
@@ -168,7 +172,33 @@ export class SastanciService {
     private readonly policy: AiModelPolicyService,
     private readonly izvor: SastanciPbSourceService,
     private readonly samousluga: SastanciSamouslugaService,
+    private readonly prisma: PrismaService,
+    private readonly fn: SastanciFnService,
+    private readonly authz: SastanciAuthzService,
   ) {}
+
+  private readonly logger = new Logger(SastanciService.name);
+
+  /**
+   * Transakcija nad 3.0 bazom za PRENETE putanje (prekidač u položaju `3.0`).
+   *
+   * ZAŠTO NIJE `withUserMapped`: taj geter je brana ka sy15 i pod `3.0` NAMERNO
+   * pada sa 503. Prenete putanje ne prolaze kroz njega nego kroz ovaj metod —
+   * tako brana ostaje na snazi za sve što JOŠ NIJE preneto, a preneto radi.
+   *
+   * ⚠️ NEMA IDEMPOTENCIJE: `rev_api_idempotency` (registar `clientEventId`-jeva)
+   * živi ISKLJUČIVO u sy15 i NE seli se u ovom koraku (runbook §7, rep 6). Zato
+   * kroz ovaj put idu SAMO radnje koje imaju SOPSTVENU branu ponavljanja u
+   * podacima (`already_locked`, `already_cancelled`) — one kojima je registar
+   * jedina brana (create/bulk/prenos/instantiate) ostaju iza 503.
+   */
+  private async threeZeroTx<T>(fn: (tx: SastanciTx) => Promise<T>): Promise<T> {
+    try {
+      return await this.prisma.$transaction((tx) => fn(tx));
+    } catch (e) {
+      this.rethrowSy15(e);
+    }
+  }
 
   // ---------- Liste / pretraga ----------
 
@@ -1071,8 +1101,52 @@ export class SastanciService {
     });
   }
 
+  /**
+   * Neradni praznici za 3.0 put — 🔴 JEDINA PREOSTALA CROSS-BAZA ZAVISNOST
+   * sastanaka.
+   *
+   * `sast_adjust_for_holiday` (pomeranje sedmičnog kolegijuma sa praznika) čita
+   * `kadr_holidays`. Ta tabela je KADROVSKA i stiže tek u koraku 4 seobe, pa se
+   * pod `3.0` čita READ-ONLY sa sy15 — isti presedan kao fajlovi u sy15 storage-u
+   * (runbook §7, rep 1): referentni podatak koji niko iz ovog domena ne piše, pa
+   * dve baze ne mogu da se raziđu. Nestaje sa korakom 4.
+   *
+   * Fail-soft: bez `SY15_DATABASE_URL` vraća prazan skup i UPOZORAVA. Posledica
+   * je poznata i bezopasna — termin se ne pomera sa praznika (ponašanje kao baza
+   * bez ijednog praznika), umesto da ceo ekran padne.
+   */
+  private async prazniciZaTriNula(): Promise<ReadonlySet<string>> {
+    const od = new Date();
+    od.setUTCHours(0, 0, 0, 0);
+    try {
+      const rows = await this.sy15.db.kadrHoliday.findMany({
+        where: {
+          holidayDate: {
+            gte: od,
+            lte: new Date(od.getTime() + 90 * 86_400_000),
+          },
+          isWorkday: false,
+        },
+        select: { holidayDate: true },
+      });
+      return new Set(rows.map((r) => this.ymd(r.holidayDate)));
+    } catch {
+      this.logger.warn(
+        "Praznici (kadr_holidays) nisu dostupni sa sy15 — sedmični termin se NEĆE pomeriti sa praznika. " +
+          "Nestaje sa korakom 4 seobe (kadrovska).",
+      );
+      return new Set<string>();
+    }
+  }
+
   /** Status sedmičnog (sast_weekly_status → can_move iz movers tabele). */
   async weeklyStatus(email: string) {
+    if (this.izvor.isThreeZero) {
+      const praznici = await this.prazniciZaTriNula();
+      return this.threeZeroTx(async (tx) => ({
+        data: await this.fn.weeklyStatus(tx, email, praznici),
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ sast_weekly_status: unknown }[]>(
         Prisma.sql`SELECT sast_weekly_status() AS sast_weekly_status`,
@@ -1083,6 +1157,11 @@ export class SastanciService {
 
   /** KPI brojke za Pregled (sast_dashboard_stats). */
   async dashboardStats(email: string) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => ({
+        data: await this.fn.dashboardStats(tx),
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ sast_dashboard_stats: unknown }[]>(
         Prisma.sql`SELECT sast_dashboard_stats() AS sast_dashboard_stats`,
@@ -1094,6 +1173,9 @@ export class SastanciService {
   /** Direktorijum korisnika za autocomplete učesnika (get_sastanci_user_directory).
    *  DB fn traži has_edit_role → 42501 (→403) za role bez edit-a; guard je read. */
   async userDirectory(email: string) {
+    if (this.izvor.isThreeZero) {
+      return { data: await this.fn.userDirectory(email) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw<unknown[]>(
         Prisma.sql`SELECT * FROM get_sastanci_user_directory()`,
@@ -1104,6 +1186,29 @@ export class SastanciService {
 
   /** Model za AI rezime (sastanci_ai_settings singleton; PUT je admin/R2). */
   async aiModel(email: string) {
+    if (this.izvor.isThreeZero) {
+      const row = await this.prisma.sastanciAiSettings.findUnique({
+        where: { id: 1 },
+        select: {
+          id: true,
+          model: true,
+          updatedAt: true,
+          updatedByUserId: true,
+        },
+      });
+      // Ugovor odgovora je snake_case (FE ga tako čita) i `updated_by` je tekst —
+      // u sy15 je bio `auth.users.id` (uuid), u 3.0 je `users.id` (Int).
+      return {
+        data: row
+          ? {
+              id: row.id,
+              model: row.model,
+              updated_at: row.updatedAt,
+              updated_by: row.updatedByUserId == null ? null : String(row.updatedByUserId),
+            }
+          : null,
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<
         {
@@ -1259,6 +1364,31 @@ export class SastanciService {
     if (count > 0) return;
     if (!exists) throw new NotFoundException(`${what} ne postoji`);
     throw new ForbiddenException(`Nemate pravo nad: ${what}`);
+  }
+
+  /**
+   * 3.0 parnjak RLS politike `sastanci_update` / `sastanci_delete`:
+   * `mgmt ∨ vodio_email ∨ zapisnicar_email ∨ created_by_email = jwt.email`.
+   *
+   * 🔴 ZAŠTO EKSPLICITNO: u sy15 je ovaj scope sprovodio RLS, pa ga kod NIJE
+   * duplirao (doktrina A.2a). Pod `3.0` RLS-a nema — bez ove provere svako sa
+   * `sastanci.edit` permisijom mogao bi da otkaže/promeni TUĐ sastanak. Prava
+   * ovog obima ne smeju da nestanu usput sa seobom baze.
+   */
+  private async assertMozeMenjatiSastanak(
+    email: string,
+    id: string,
+    s: {
+      vodioEmail: string | null;
+      zapisnicarEmail: string | null;
+      createdByEmail: string | null;
+    },
+  ): Promise<void> {
+    const v = (email ?? "").trim().toLowerCase();
+    const eq = (x: string | null) => (x ?? "").trim().toLowerCase() === v;
+    if (eq(s.vodioEmail) || eq(s.zapisnicarEmail) || eq(s.createdByEmail)) return;
+    if (await this.authz.isManagement(v)) return;
+    throw new ForbiddenException(`Nemate pravo nad: Sastanak ${id}`);
   }
 
   // ---------- Sastanci CRUD ----------
@@ -1538,6 +1668,31 @@ export class SastanciService {
    * DB-u pa cascade ne dira bucket — ostaju siročići (bezopasno, isto kao u 1.0).
    */
   async deleteSastanak(email: string, id: string) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => {
+        const s = await tx.sastanak.findUnique({
+          where: { id },
+          select: {
+            status: true,
+            vodioEmail: true,
+            zapisnicarEmail: true,
+            createdByEmail: true,
+          },
+        });
+        if (!s) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+        // RLS `sastanci_delete` (mgmt ∨ trio) + guard-triger `sast_check_not_locked`
+        // (zaključan sme SAMO mgmt) — oba pod 3.0 eksplicitno, PRE enqueue-a.
+        await this.assertMozeMenjatiSastanak(email, id, s);
+        await this.fn.assertNotLocked(tx, email, id);
+        // Redosled (enqueue → delete) MORA ostati: mejlovi preživljavaju brisanje
+        // (FK je SET NULL), a neuspeh brisanja rollback-uje i njih.
+        if (s.status === "planiran" || s.status === "u_toku") {
+          await this.fn.enqueueCancel(tx, id);
+        }
+        await tx.sastanak.delete({ where: { id } });
+        return { data: { ok: true } };
+      });
+    }
     return this.withUserMapped(email, async (tx) => {
       // Postojanje kroz SELECT (RLS select je širi od delete): null → 404.
       const sastanak = await tx.sastanak.findUnique({
@@ -1591,6 +1746,22 @@ export class SastanciService {
    * `sastanci.datum`, tj. ponašanje identično stanju pre ovog paketa.
    */
   lock(email: string, id: string, dto: LockSastanakDto) {
+    if (this.izvor.isThreeZero) {
+      // Registra idempotencije nema u 3.0 (v. `threeZeroTx`), ali zaključavanje
+      // ima SOPSTVENU branu ponavljanja: drugi poziv vraća `already_locked` i ne
+      // dira ni arhivu ni mejlove. Zato je bezbedno bez registra; `meta` to i
+      // kaže (`idempotent:false` = nije vraćen sačuvan rezultat).
+      return this.threeZeroTx(async (tx) => ({
+        data: await this.fn.zakljucajSastanak(
+          tx,
+          email,
+          id,
+          dto.pdfStoragePath ?? null,
+          dto.zapisnikDatum ?? null,
+        ),
+        meta: { idempotent: false },
+      }));
+    }
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -1620,6 +1791,16 @@ export class SastanciService {
    * novi datum. 404 razrešavamo pre RPC-a (rethrowSy15 P0002 mapira na 422).
    */
   setZapisnikDatum(email: string, id: string, dto: SetZapisnikDatumDto) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => ({
+        data: await this.fn.setZapisnikDatum(
+          tx,
+          email,
+          id,
+          dto.zapisnikDatum,
+        ),
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const exists = (await tx.sastanak.count({ where: { id } })) > 0;
       if (!exists) throw new NotFoundException(`Sastanak ${id} ne postoji`);
@@ -1668,6 +1849,47 @@ export class SastanciService {
    * otkazanim sastankom ne dira bazu i ne enqueue-uje).
    */
   cancel(email: string, id: string, dto: CancelSastanakDto) {
+    if (this.izvor.isThreeZero) {
+      // Kao kod `lock`: registra idempotencije nema, ali sloj (b) iz doc-a gore
+      // (`already_cancelled`) sam po sebi sprečava drugi talas mejlova. Pravo
+      // reda (RLS `sastanci_update` = mgmt ∨ trio) pod 3.0 sprovodi `assertMoze
+      // MenjatiSastanak` PRE upisa — u sy15 ga je sprovodio RLS filter.
+      return this.threeZeroTx(async (tx) => {
+        const s = await tx.sastanak.findUnique({
+          where: { id },
+          select: {
+            status: true,
+            vodioEmail: true,
+            zapisnicarEmail: true,
+            createdByEmail: true,
+          },
+        });
+        if (!s) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+        if (s.status === "zakljucan")
+          return { data: { ok: false, reason: "locked", sastanak_id: id }, meta: { idempotent: false } };
+        if (s.status === "otkazan")
+          return {
+            data: { ok: false, reason: "already_cancelled", sastanak_id: id },
+            meta: { idempotent: false },
+          };
+        await this.assertMozeMenjatiSastanak(email, id, s);
+        const otkazanAt = new Date();
+        await tx.sastanak.update({
+          where: { id },
+          data: { status: "otkazan", updatedAt: otkazanAt },
+        });
+        const obavesteno = await this.fn.enqueueCancel(tx, id);
+        return {
+          data: {
+            ok: true,
+            sastanak_id: id,
+            otkazan_at: otkazanAt.toISOString(),
+            obavesteno,
+          },
+          meta: { idempotent: false },
+        };
+      });
+    }
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -1835,6 +2057,18 @@ export class SastanciService {
 
   /** Pošalji pozivnice + stamp pozivnice_poslate_at (paritet sendInvites; RPC=mgmt). */
   sendInvites(email: string, id: string) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => {
+        const n = await this.fn.sendInvites(tx, email, id);
+        if (n > 0) {
+          await tx.sastanak.updateMany({
+            where: { id },
+            data: { pozivnicePoslateAt: new Date() },
+          });
+        }
+        return { data: { sent: n } };
+      });
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ n: number }[]>(
         Prisma.sql`SELECT sastanci_send_invites(${id}::uuid) AS n`,
@@ -1851,6 +2085,11 @@ export class SastanciService {
   }
 
   remindUnprepared(email: string, id: string) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => ({
+        data: { reminded: await this.fn.remindUnprepared(tx, email, id) },
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ n: number }[]>(
         Prisma.sql`SELECT sastanci_remind_unprepared(${id}::uuid) AS n`,
@@ -1860,6 +2099,11 @@ export class SastanciService {
   }
 
   resendLocked(email: string, id: string) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => ({
+        data: { resent: await this.fn.resendMeetingLocked(tx, email, id) },
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ n: number }[]>(
         Prisma.sql`SELECT sastanci_resend_meeting_locked(${id}::uuid) AS n`,
@@ -2800,6 +3044,36 @@ export class SastanciService {
   // ---------- Prefs (svoje) ----------
 
   updatePrefs(email: string, dto: UpdatePrefsDto) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async () => {
+        // Isti redosled kao sy15 put: osiguraj red (upsert po mejlu) pa PATCH.
+        await this.samousluga.getOrCreateMyPrefs(email);
+        const key = email.toLowerCase();
+        const data = await this.prisma.sastanciNotificationPrefs.update({
+          where: { email: key },
+          data: {
+            ...(dto.onNewAkcija !== undefined ? { onNewAkcija: dto.onNewAkcija } : {}),
+            ...(dto.onChangeAkcija !== undefined
+              ? { onChangeAkcija: dto.onChangeAkcija }
+              : {}),
+            ...(dto.onMeetingInvite !== undefined
+              ? { onMeetingInvite: dto.onMeetingInvite }
+              : {}),
+            ...(dto.onMeetingLocked !== undefined
+              ? { onMeetingLocked: dto.onMeetingLocked }
+              : {}),
+            ...(dto.onActionReminder !== undefined
+              ? { onActionReminder: dto.onActionReminder }
+              : {}),
+            ...(dto.onMeetingReminder !== undefined
+              ? { onMeetingReminder: dto.onMeetingReminder }
+              : {}),
+            updatedAt: new Date(),
+          },
+        });
+        return { data };
+      });
+    }
     return this.withUserMapped(email, async (tx) => {
       // Osiguraj red (DEFINER RPC) pa PATCH svog reda (RLS: svoje po email claim-u).
       await tx.$queryRaw(Prisma.sql`SELECT sastanci_get_or_create_my_prefs()`);
@@ -2838,6 +3112,18 @@ export class SastanciService {
   // ---------- Sedmični (weekly_move gate = sast_weekly_movers tabela u DB kroz GUC) ----------
 
   weeklyPomeri(email: string, dto: WeeklyPomeriDto) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => ({
+        data: {
+          sastanakId: await this.fn.weeklyPomeri(
+            tx,
+            email,
+            dto.datum,
+            dto.vreme ?? "09:00",
+          ),
+        },
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: string }[]>(
         Prisma.sql`SELECT sast_weekly_pomeri(${dto.datum}::date, ${dto.vreme ?? "09:00"}::time) AS result`,
@@ -2847,6 +3133,16 @@ export class SastanciService {
   }
 
   weeklyOdlozi(email: string, dto: WeeklyOdloziDto) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => ({
+        data: await this.fn.weeklyOdlozi(
+          tx,
+          email,
+          dto.weekMonday ?? null,
+          dto.reason ?? null,
+        ),
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: unknown }[]>(
         Prisma.sql`SELECT sast_weekly_odlozi(${dto.weekMonday ?? null}::date, ${dto.reason ?? null}) AS result`,
@@ -2856,6 +3152,11 @@ export class SastanciService {
   }
 
   weeklyVrati(email: string, dto: WeeklyVratiDto) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => ({
+        data: await this.fn.weeklyVrati(tx, email, dto.weekMonday ?? null),
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: unknown }[]>(
         Prisma.sql`SELECT sast_weekly_vrati(${dto.weekMonday ?? null}::date) AS result`,
@@ -2867,6 +3168,11 @@ export class SastanciService {
   // ---------- AI model (admin — set_sastanci_ai_model gate-uje current_user_is_admin) ----------
 
   setAiModel(email: string, dto: SetAiModelDto) {
+    if (this.izvor.isThreeZero) {
+      return this.threeZeroTx(async (tx) => ({
+        data: { model: await this.fn.setAiModel(tx, email, dto.model) },
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: string }[]>(
         Prisma.sql`SELECT set_sastanci_ai_model(${dto.model}) AS result`,
