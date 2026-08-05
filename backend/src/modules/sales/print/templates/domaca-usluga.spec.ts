@@ -103,6 +103,9 @@ function makeCtx(over: Partial<PrintCtx> = {}): PrintCtx {
     // Vrsta usluge nije izabrana — papir 653/25 je nastao pre šifarnika (05.08.2026),
     // pa svi zatečeni testovi u ovom fajlu moraju da ostanu tačni bez nje.
     serviceRevenueNote: null,
+    // Ni osnov oslobođenja nije izabran — isti razlog: zatečeni testovi moraju da ostanu
+    // tačni i za dokument koji ga nema (v. `resolveExemption`, rezervni izvor).
+    vatExemptionBasis: null,
     withoutPrices: false,
     ...over,
   };

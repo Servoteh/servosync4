@@ -4453,6 +4453,51 @@ model ServiceRevenueType {
   @@map("service_revenue_types")
 }
 
+/// OSNOV PORESKOG OSLOBOĐENJA — šifarnik, jer se osnov više ne može IZVESTI iz dokumenta.
+/// Potvrdio knjigovođa 05.08.2026 (odgovori 8, 9, 10; `docs/ODGOVORI_38_UTICAJ.md` §1.3).
+///
+/// Ista situacija „izvoz robe" po odgovorima daje TRI osnova — 24.1.2 redovan izvoz,
+/// 24.1.5 unos u slobodnu zonu, 24.1.7 oplemenjivanje — a sva tri na dokumentu izgledaju
+/// identično (`is_export = true`, PDV nula, ista vrsta). Zato se bira, ne izvodi.
+/// Jedina tačka istine za značenje kolona: `sales/vat-exemption-basis.ts`.
+model VatExemptionBasis {
+  id Int @id(map: "pk_vat_exemption_bases") @default(autoincrement()) @map("id")
+
+  /// IZVOZ-DOBARA | SLOBODNA-ZONA | OPLEMENJIVANJE | DOMACI-OSLOBODJEN |
+  /// USLUGA-VAN-RS | USLUGA-STRANO-LICE (i sve što knjigovođa doda). Jedinstvena.
+  code String @map("code") @db.VarChar(30)
+  /// Naziv sa padajuće liste — opis SITUACIJE, ne prepis člana.
+  name String @map("name") @db.VarChar(150)
+
+  /// DOSLOVAN tekst koji izlazi na papir. Jedini izvor za štampu; `vat-exemption.ts`
+  /// drži samo rezervu za dokument koji osnov nema. DB CHECK zabranjuje prazan tekst.
+  paperText String @map("paper_text") @db.Text
+
+  /// Šifra razloga za SEF (EN16931 BT-121), oblik `PDV-RS-24-1-2`. NULL = šifra za taj
+  /// osnov nije utvrđena (čl. 12 st. 3 nije oslobođenje po čl. 24 nego promet van polja
+  /// primene) — u UBL tada ide samo tekst razloga, što BR-E-10 dozvoljava.
+  sefCode String? @map("sef_code") @db.VarChar(30)
+  /// Tekst razloga za SEF (BT-120). Bez njega SEF odbija svaku kategoriju bez poreza.
+  sefReason String @map("sef_reason") @db.Text
+
+  /// 🔴 IDE LI DOKUMENT SA OVIM OSNOVOM NA SEF (odgovor 8: „24.1.2 … ne ide na sef",
+  /// „24.1.5 … se šalje na SEF"). NIJE izvedeno iz `is_export`: oba su izvozna, a idu
+  /// suprotno. Kapiju čita `sef/sef.service.ts`, v. `basisAllowsSef`.
+  goesToSef Boolean @map("goes_to_sef")
+
+  /// Gašenje ide OVDE, ne brisanjem reda (strani ključ sa `RESTRICT` brisanje i ne da).
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  invoices Invoice[]
+
+  @@unique([code], map: "uq_vat_exemption_bases_code")
+  @@map("vat_exemption_bases")
+}
+
 /// Was: izlazni GoodsDocument (level 0 = knjižen račun / level 250 = draft-predračun).
 /// NOVA app-owned tabela — GoodsDocument je prazna sync-cache, ne piše se više.
 /// Vrste kroz documentType + level; račun nastaje iz predračuna kroz
@@ -4575,6 +4620,23 @@ model Invoice {
   serviceRevenueTypeId Int? @map("service_revenue_type_id")
 
   serviceRevenueType ServiceRevenueType? @relation(fields: [serviceRevenueTypeId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "fk_invoices_service_revenue_types")
+
+  /// OSNOV PORESKOG OSLOBOĐENJA (šifarnik `VatExemptionBasis`) — određuje TEKST NA
+  /// PAPIRU, ŠIFRU NA E-FAKTURI i to DA LI DOKUMENT UOPŠTE IDE NA SEF. NULL = osnov nije
+  /// izabran, pa važi zatečeno izvođenje iz dokumenta (`sales/vat-exemption.ts`) i
+  /// zatečena SEF kapija (`is_export`).
+  ///
+  /// ⚠️ ZAŠTO NA ZAGLAVLJU, A NE NA STAVCI — izmereno 05.08.2026. nad uvezenom glavnom
+  /// knjigom 2026: od **254 izlazna dokumenta njih 13 je oslobođeno U CELINI** (nijedan
+  /// red na kontima 47xx), 241 je sa PDV-om, a **nijedan ne meša oslobođen i oporezovan
+  /// deo** niti nosi više od jednog konta prihoda. Izvozna robna dokumenta iz BigBita
+  /// (26 komada, 12–18 stavki po dokumentu) uopšte nemaju poresku kolonu na stavci, pa
+  /// osnov po stavci nije postojao ni u izvornom sistemu. Uz to: napomena je JEDAN red u
+  /// dnu obrasca, carinska deklaracija prati ceo dokument, a na SEF se ne može poslati
+  /// pola fakture. Isti oblik odluke kao `isExport` i `serviceRevenueTypeId`.
+  vatExemptionBasisId Int? @map("vat_exemption_basis_id")
+
+  vatExemptionBasis VatExemptionBasis? @relation(fields: [vatExemptionBasisId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "fk_invoices_vat_exemption_bases")
 
   // — Koeficijent cene (masovna akcija nad svim stavkama; §8/O1) —
   /// MNOŽILAC SVIH STAVKI. Cena se NIKAD ne upisuje pomnožena:

@@ -173,6 +173,7 @@ function makeCtx(over: Partial<PrintCtx> = {}): PrintCtx {
     currency: "EUR",
     advanceDeductions: [],
     serviceRevenueNote: null,
+    vatExemptionBasis: null,
     withoutPrices: false,
     ...over,
   };
@@ -663,6 +664,30 @@ describe("ino obrazac za robu (izvozna faktura 228/25)", () => {
       expect(collectText(inoRobaTemplate(makeCtx()))).toContain(
         exemptionFor("export-goods")?.paperText,
       );
+    });
+
+    /**
+     * 🔴 IZABRAN OSNOV NADJAČAVA IZVEDENI (05.08.2026). Ista izvozna robna faktura po
+     * odgovorima 8 i 9 može da nosi TRI različita osnova — redovan izvoz (24.1.2), unos u
+     * slobodnu zonu (24.1.5) i oplemenjivanje (24.1.7) — a na dokumentu se ne razlikuju
+     * ničim (`isExport`, PDV nula, ista vrsta). Bez ovog polja bi sve tri odštampale isti
+     * tekst, tj. dve od tri pogrešan pravni osnov na poreskom dokumentu.
+     */
+    it("izabran osnov iz šifarnika štampa SVOJ tekst, ne izvedeni", () => {
+      const basis = {
+        code: "SLOBODNA-ZONA",
+        name: "Unos dobara u slobodnu zonu (čl. 24 st. 1 t. 5)",
+        paperText:
+          "Napomena o poreskom oslobodjenju: Oslobodjeno PDV na osnovu člana 24. stav 1 tačka 5 Zakona o PDV.",
+        sefCode: "PDV-RS-24-1-5",
+        sefReason: "Unos dobara u slobodnu zonu (čl. 24 st. 1 tač. 5 ZPDV)",
+        goesToSef: true,
+      };
+      const text = renderText(makeCtx({ vatExemptionBasis: basis }));
+      expect(text).toContain(basis.paperText);
+      // I izvedeni tekst (tačka 2) mora da NESTANE — dva osnova na istom papiru bi bila
+      // gora od pogrešnog jednog.
+      expect(text).not.toContain("tačka 2 Zakona o PDV.");
     });
 
     it("NE koristi član za uslugu (stav 2) — pogrešan član je poreski problem", () => {

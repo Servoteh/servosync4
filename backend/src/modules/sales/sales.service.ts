@@ -230,6 +230,13 @@ export class SalesService {
       );
     }
 
+    if (patch.vatExemptionBasisId != null) {
+      await this.assertVatExemptionBasisAllowed(
+        invoice.documentNumber,
+        patch.vatExemptionBasisId,
+      );
+    }
+
     const coefficient = patch.priceCoefficient;
 
     return this.prisma.$transaction(async (tx) => {
@@ -486,6 +493,40 @@ export class SalesService {
       throw new UnprocessableEntityException(
         `Vrsta usluge „${row.code} — ${row.name}" je ugašena i ne sme se birati. ` +
           `Ako je ipak potrebna, knjigovođa je vraća u upotrebu u šifarniku vrsta usluge.`,
+      );
+    }
+  }
+
+  /**
+   * OSNOV PORESKOG OSLOBOĐENJA — mora da POSTOJI i da je AKTIVAN.
+   *
+   * ⚠️ NAMERNO NEMA PROVERE VRSTE DOKUMENTA (za razliku od vrste usluge). Osnov nije
+   * vezan ni za robu/uslugu ni za domaći/izvoz: `DOMACI-OSLOBODJEN` stoji na domaćoj
+   * robnoj fakturi, `SLOBODNA-ZONA` na izvoznoj koja IPAK ide na SEF, a čl. 12 st. 3 na
+   * uslužnoj. Uslov po vrsti bi tu zabranio kombinacije koje knjigovođa stvarno koristi.
+   *
+   * Strani ključ hvata samo nepostojeći id, i to porukom baze; UGAŠEN osnov bi kroz njega
+   * prošao i odštampao pravnu tvrdnju koju je knjigovođa namerno povukao iz upotrebe.
+   */
+  private async assertVatExemptionBasisAllowed(
+    documentNumber: string,
+    vatExemptionBasisId: number,
+  ): Promise<void> {
+    const row = await this.prisma.vatExemptionBasis.findUnique({
+      where: { id: vatExemptionBasisId },
+      select: { id: true, code: true, name: true, isActive: true },
+    });
+    if (!row) {
+      throw new NotFoundException(
+        `Osnov poreskog oslobođenja ${vatExemptionBasisId} ne postoji u šifarniku ` +
+          `(dokument ${documentNumber}).`,
+      );
+    }
+    if (!row.isActive) {
+      throw new UnprocessableEntityException(
+        `Osnov oslobođenja „${row.code} — ${row.name}" je ugašen i ne sme se birati. ` +
+          `Ako je ipak potreban, knjigovođa ga vraća u upotrebu u šifarniku osnova ` +
+          `poreskog oslobođenja.`,
       );
     }
   }
@@ -845,6 +886,9 @@ export class SalesService {
     if (patch.lineProfile !== undefined) data.lineProfile = patch.lineProfile;
     if (patch.serviceRevenueTypeId !== undefined) {
       data.serviceRevenueTypeId = patch.serviceRevenueTypeId;
+    }
+    if (patch.vatExemptionBasisId !== undefined) {
+      data.vatExemptionBasisId = patch.vatExemptionBasisId;
     }
     if (coefficient) {
       data.priceCoefficient = coefficient;

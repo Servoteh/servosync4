@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { Content, TableCell } from "pdfmake/interfaces";
 import { companyAddressLine } from "../../../../common/company-address";
-import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
+import { exemptionCaseFor, resolveExemption } from "../../vat-exemption";
 import {
   formatAmount,
   formatDateForeign,
@@ -51,14 +51,20 @@ import {
  * `exemptionFor` dopušta `null` za domaći oporezovan promet.
  */
 function exemptionNote(ctx: PrintCtx): string {
-  const basis = exemptionFor(
-    exemptionCaseFor({
+  // 🔴 OVO JE OBRAZAC NA KOM JE KVAR I ŽIVEO. Papir je citirao čl. 24 st. 1 t. 2, a
+  // e-faktura za isti dokument slala `PDV-RS-24-1-5`. Sada oba idu kroz
+  // `resolveExemption`: papir uzima `paperText`, UBL `sefCode` — sa istog reda.
+  // Izabran osnov razlikuje tri situacije koje na ovom obrascu izgledaju identično
+  // (redovan izvoz 24.1.2 / slobodna zona 24.1.5 / oplemenjivanje 24.1.7); bez izbora
+  // ostaje redovan izvoz, što je i podrazumevana vrednost za `IZVRO`/`IZVGP`.
+  return resolveExemption({
+    basis: ctx.vatExemptionBasis,
+    fallbackCase: exemptionCaseFor({
       isExport: true,
       isService: false,
       vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
     }),
-  );
-  return basis?.paperText ?? NEMA_TEXT;
+  }).paperText;
 }
 
 /**

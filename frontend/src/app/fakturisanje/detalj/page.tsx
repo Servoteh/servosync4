@@ -26,6 +26,7 @@ import {
   usePostInvoice,
   useSendInvoiceMail,
   useServiceRevenueTypes,
+  useVatExemptionBases,
   useStornoInvoice,
   useUpdateInvoiceHeader,
   SALES_STATUS,
@@ -967,6 +968,79 @@ function ServiceRevenueTypeField({ doc }: { doc: InvoiceDetail }) {
   );
 }
 
+/**
+ * OSNOV PORESKOG OSLOBOĐENJA — bira se, ne izvodi (05.08.2026).
+ *
+ * ⚠️ ZAŠTO OVO POLJE POSTOJI: ista izvozna faktura po odgovorima knjigovođe može da nosi
+ * TRI različita osnova — redovan izvoz (čl. 24 st. 1 t. 2), unos u slobodnu zonu (t. 5) i
+ * oplemenjivanje (t. 7) — a na dokumentu se ne razlikuju NIČIM (izvoz, PDV nula, ista
+ * vrsta). Program to ne može da pogodi; zna samo onaj ko posao radi.
+ *
+ * Prikazuje se na SVAKOM dokumentu, i to namerno: osnov nije vezan ni za robu/uslugu ni
+ * za domaći/izvoz (domaći oslobođen promet, slobodna zona, usluga van RS — sve tri su
+ * različite kombinacije), pa bi svako sakrivanje po vrsti zabranilo kombinaciju koju
+ * knjigovođa stvarno koristi.
+ *
+ * Uz naziv se prikazuje i to DA LI DOKUMENT IDE NA SEF, jer je to jedina vidljiva razlika
+ * između izvoza i slobodne zone — a bira se baš po njoj.
+ */
+function VatExemptionBasisField({ doc }: { doc: InvoiceDetail }) {
+  const { data, isLoading } = useVatExemptionBases();
+  const update = useUpdateInvoiceHeader();
+  const [error, setError] = useState<string | null>(null);
+
+  const bases = data?.data ?? [];
+  const selected = bases.find((b) => b.id === doc.vatExemptionBasisId) ?? null;
+  const editable = doc.status === SALES_STATUS.DRAFT && !doc.isLocked;
+
+  if (!editable) {
+    return (
+      <Field label="Osnov oslobođenja">
+        <span className="text-ink">{selected?.name ?? '—'}</span>
+      </Field>
+    );
+  }
+
+  return (
+    <Field label="Osnov oslobođenja">
+      <Select
+        // Prazna opcija je legitiman izbor: bez osnova važi zatečeno izvođenje iz
+        // dokumenta, pa se dosadašnji papiri ne menjaju.
+        placeholder={isLoading ? 'Učitavanje…' : 'Bez izbora (izvodi se iz dokumenta)'}
+        value={doc.vatExemptionBasisId != null ? String(doc.vatExemptionBasisId) : ''}
+        disabled={update.isPending}
+        options={bases.map((b) => ({
+          value: String(b.id),
+          label: `${b.name} — ${b.goesToSef ? 'ide na SEF' : 'ne ide na SEF'}`,
+        }))}
+        onChange={(e) => {
+          setError(null);
+          const value = e.target.value;
+          update.mutate(
+            {
+              id: doc.id,
+              // `null` briše izbor — PATCH razlikuje „polje nije poslato" od „obriši".
+              input: { vatExemptionBasisId: value === '' ? null : Number(value) },
+            },
+            {
+              onError: (err) =>
+                setError(
+                  err instanceof ApiError ? err.message : 'Izmena nije sačuvana.',
+                ),
+            },
+          );
+        }}
+      />
+      {/* Doslovan tekst koji će izaći na papir — jedina provera koju operater ima pre
+          nego što dokument odštampa. */}
+      {selected && (
+        <p className="mt-1 text-2xs text-ink-secondary">{selected.paperText}</p>
+      )}
+      {error && <p className="mt-1 text-2xs text-status-danger">{error}</p>}
+    </Field>
+  );
+}
+
 /** Zaglavlje računa — label/vrednost mreža (DESIGN_SYSTEM §5). */
 function InvoiceHeader({ doc }: { doc: InvoiceDetail }) {
   const s = salesStatusMeta(doc.status);
@@ -1024,6 +1098,7 @@ function InvoiceHeader({ doc }: { doc: InvoiceDetail }) {
           <span className="tnums text-ink">{doc.items.length}</span>
         </Field>
         {showServiceRevenueType && <ServiceRevenueTypeField doc={doc} />}
+        <VatExemptionBasisField doc={doc} />
       </dl>
       {doc.note && (
         <div className="mt-4 border-t border-line-soft pt-4">

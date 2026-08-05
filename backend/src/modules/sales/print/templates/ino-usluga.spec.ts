@@ -175,6 +175,7 @@ const ctx: PrintCtx = {
   currency: "EUR",
   advanceDeductions: [],
   serviceRevenueNote: null,
+  vatExemptionBasis: null,
   withoutPrices: false,
 };
 

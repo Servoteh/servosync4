@@ -201,6 +201,117 @@ describe("SefService.enqueue — PrepaidAmount i BillingReference idu zajedno", 
 });
 
 /**
+ * 🔴 SEF KAPIJA — PRESUĐUJE OSNOV OSLOBOĐENJA, NE ZASTAVICA `isExport` (05.08.2026).
+ * =============================================================================
+ * Odgovor 8 knjigovođe uz osnov vezuje i TOK, i to dva SUPROTNA toka za dva osnova koja
+ * se na dokumentu ne razlikuju NIČIM drugim — oba su `is_export = true`:
+ *
+ *   „Za izvoz robe koristimo član 24.1.2. Takva faktura NE IDE NA SEF.
+ *    Član 24.1.5 je vezan za robu koja se izdaje kod unosa dobara u slobodnu zonu.
+ *    Takva faktura SE ŠALJE NA SEF, i ručno unosimo poreska oslobođenja."
+ *
+ * Do 05.08.2026. je kapija gledala samo zastavicu (`if (invoice.isExport) throw`), pa
+ * faktura za slobodnu zonu — koja MORA na SEF — nije mogla ni da se stavi u red, a poruka
+ * bi glasila „izvozna faktura ne ide na domaći SEF", što je za taj posao netačno.
+ */
+const BASIS_EXPORT = {
+  code: "IZVOZ-DOBARA",
+  name: "Izvoz dobara (čl. 24 st. 1 t. 2)",
+  paperText: "…člana 24. stav 1 tačka 2…",
+  sefCode: "PDV-RS-24-1-2",
+  sefReason: "Izvoz dobara (čl. 24 st. 1 tač. 2 ZPDV)",
+  goesToSef: false,
+};
+
+const BASIS_FREE_ZONE = {
+  code: "SLOBODNA-ZONA",
+  name: "Unos dobara u slobodnu zonu (čl. 24 st. 1 t. 5)",
+  paperText: "…člana 24. stav 1 tačka 5…",
+  sefCode: "PDV-RS-24-1-5",
+  sefReason: "Unos dobara u slobodnu zonu (čl. 24 st. 1 tač. 5 ZPDV)",
+  goesToSef: true,
+};
+
+describe("SefService.enqueue — kapija po OSNOVU oslobođenja", () => {
+  it("izvozna faktura sa osnovom SLOBODNA-ZONA ide na SEF (pre je bila odbijana)", async () => {
+    const { service, prisma, ubl } = makeService({
+      invoice: makeInvoice({
+        documentType: "IZVRO",
+        documentNumber: "12/26",
+        isExport: true,
+        currency: "EUR",
+        vatExemptionBasis: BASIS_FREE_ZONE,
+      }),
+    });
+
+    await service.enqueue(7, 1);
+
+    expect(prisma.sefOutbox.create).toHaveBeenCalledTimes(1);
+    // Osnov mora da stigne do UBL-a, jer nosi i BT-121 šifru.
+    const arg = (ubl.build.mock.calls as unknown[][])[0][0] as {
+      invoice: { vatExemptionBasis: { sefCode: string } | null };
+    };
+    expect(arg.invoice.vatExemptionBasis?.sefCode).toBe("PDV-RS-24-1-5");
+  });
+
+  it("izvozna faktura sa osnovom IZVOZ-DOBARA ne ide na SEF, i poruka kaže zašto", async () => {
+    const { service, prisma } = makeService({
+      invoice: makeInvoice({
+        documentType: "IZVRO",
+        documentNumber: "13/26",
+        isExport: true,
+        vatExemptionBasis: BASIS_EXPORT,
+      }),
+    });
+
+    await expect(service.enqueue(7, 1)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    // Poruka mora da imenuje OSNOV (ne „izvoz"), i da kaže šta da se uradi ako je posao
+    // zapravo slobodna zona — inače korisnik ne zna da izbor uopšte postoji.
+    await expect(service.enqueue(7, 1)).rejects.toThrow(/IZVOZ-DOBARA/);
+    await expect(service.enqueue(7, 1)).rejects.toThrow(/slobodnu zonu/);
+    expect(prisma.sefOutbox.create).not.toHaveBeenCalled();
+  });
+
+  it("DOMAĆA faktura sa osnovom koji ne ide na SEF se takođe odbija (kapija nije o izvozu)", async () => {
+    // Ovo je smisao promene: kapija pita OSNOV, pa deluje i tamo gde `isExport` ne bi.
+    const { service, prisma } = makeService({
+      invoice: makeInvoice({ vatExemptionBasis: BASIS_EXPORT }),
+    });
+
+    await expect(service.enqueue(7, 1)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.sefOutbox.create).not.toHaveBeenCalled();
+  });
+
+  it("bez izabranog osnova važi ZATEČENO pravilo — izvoz se odbija", async () => {
+    // „Osnov nije izabran" nije tvrdnja da dokument sme na SEF, pa se ne sme tumačiti kao
+    // dozvola (v. `basisAllowsSef`, koje za `null` i vraća `null`).
+    const { service, prisma } = makeService({
+      invoice: makeInvoice({
+        documentType: "IZVRO",
+        isExport: true,
+        vatExemptionBasis: null,
+      }),
+    });
+
+    await expect(service.enqueue(7, 1)).rejects.toThrow(/ExportInvoicePolicy/);
+    expect(prisma.sefOutbox.create).not.toHaveBeenCalled();
+  });
+
+  it("bez izabranog osnova domaći račun i dalje prolazi (ništa se nije promenilo)", async () => {
+    const { service, prisma } = makeService({
+      invoice: makeInvoice({ vatExemptionBasis: null }),
+    });
+
+    await service.enqueue(7, 1);
+    expect(prisma.sefOutbox.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
  * SEF SLANJE — TRKA „poslato POSLE storna" (nalaz N5, zatvoreno 03.08.2026).
  * =============================================================================
  * `send()` proveri da faktura nije stornirana, PA ode na mrežu. Mrežni poziv traje

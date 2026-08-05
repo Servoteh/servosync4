@@ -112,6 +112,7 @@ function makeCtx(over: Partial<PrintCtx>): PrintCtx {
     currency: "RSD",
     advanceDeductions: [],
     serviceRevenueNote: null,
+    vatExemptionBasis: null,
     withoutPrices: false,
     ...over,
   };
@@ -811,6 +812,31 @@ describe("obrazac domaće fakture za robu (IFR/IFGP)", () => {
       expect(textOf(bezPdv)).toContain(
         exemptionFor("domestic-exempt")?.paperText,
       );
+    });
+
+    /**
+     * 🔴 DOMAĆI OSLOBOĐEN PROMET DOBIJA PRAVI OSNOV (odgovor 10, 05.08.2026).
+     * Do sada je papir štampao placeholder „promet oslobođen PDV-a — osnov se utvrđuje po
+     * dokumentu" — OPIS SITUACIJE umesto pravnog osnova, na obaveznom elementu računa.
+     * Knjigovođa je dao doslovan tekst sa članom 24 stav 1 tačka 5.
+     */
+    it("izabran osnov zamenjuje placeholder „osnov se utvrđuje po dokumentu“", () => {
+      const bezPdv = ifrCtx({
+        invoice: makeInvoice({ vatTotal: d(0), grossTotal: d(0) }),
+        vatExemptionBasis: {
+          code: "DOMACI-OSLOBODJEN",
+          name: "Domaći oslobođen promet (čl. 24 st. 1 t. 5)",
+          paperText:
+            "Napomena o poreskom oslobođenju: Oslobođeno PDV-a na osnovu člana 24 stav 1 tačka 5 o PDV-u",
+          sefCode: "PDV-RS-24-1-5",
+          sefReason: "Oslobođen promet (čl. 24 st. 1 tač. 5 ZPDV)",
+          goesToSef: true,
+        },
+      });
+      const joined = joinedOf(bezPdv);
+      expect(joined).toContain("člana 24 stav 1 tačka 5");
+      expect(joined).not.toContain("osnov se utvrđuje po dokumentu");
+      expect(joined).not.toContain(NEMA_TEXT);
     });
   });
 

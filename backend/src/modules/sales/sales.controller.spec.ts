@@ -37,6 +37,11 @@ function controller(calls: Call[]) {
     advanceInvoice as never,
     // SalesService (izmena dokumenta) — ovaj set testova ga ne dira.
     {} as never,
+    // Šifarnici — vrste usluge i osnovi oslobođenja. Ni njih ovaj set ne dira, ali
+    // moraju da stoje: konstruktor ih zahteva, a bez njih `tsc` obara ceo fajl (zatečena
+    // greška od uvođenja `ServiceRevenueTypeService`, ovde ispravljena u prolazu).
+    {} as never,
+    {} as never,
   );
 }
 

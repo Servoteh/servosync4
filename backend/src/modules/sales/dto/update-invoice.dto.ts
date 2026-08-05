@@ -171,6 +171,15 @@ export interface UpdateInvoiceHeaderDto {
    * DTO: to je pitanje o vrsti dokumenta, koju DTO ne vidi.
    */
   serviceRevenueTypeId?: number | null;
+  /**
+   * OSNOV PORESKOG OSLOBOĐENJA iz šifarnika (`vat_exemption_bases.id`) — određuje tekst
+   * na papiru, šifru na e-fakturi i to DA LI DOKUMENT IDE NA SEF. `null` briše izbor
+   * (povratak na zatečeno izvođenje iz dokumenta).
+   *
+   * Da li osnov SME da stoji na ovom dokumentu i da li je aktivan proverava servis
+   * (`SalesService`), ne DTO.
+   */
+  vatExemptionBasisId?: number | null;
 }
 
 /** Normalizovan patch: ključ postoji SAMO ako ga je telo poslalo. */
@@ -188,6 +197,7 @@ export interface ValidatedInvoiceHeaderPatch {
   priceCoefficient?: Prisma.Decimal;
   lineProfile?: string | null;
   serviceRevenueTypeId?: number | null;
+  vatExemptionBasisId?: number | null;
 }
 
 export function validateUpdateInvoiceHeader(
@@ -296,6 +306,16 @@ export function validateUpdateInvoiceHeader(
       errors.push("Vrsta usluge nije ispravna.");
     } else {
       patch.serviceRevenueTypeId = v;
+    }
+  }
+
+  if ("vatExemptionBasisId" in body) {
+    const v = body.vatExemptionBasisId;
+    if (v === null) patch.vatExemptionBasisId = null;
+    else if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+      errors.push("Osnov poreskog oslobođenja nije ispravan.");
+    } else {
+      patch.vatExemptionBasisId = v;
     }
   }
 

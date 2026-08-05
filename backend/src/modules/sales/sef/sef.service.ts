@@ -18,6 +18,10 @@ import {
 } from "../../pdv/dto/advance-vat.dto";
 import { loadInvoiceAdvanceDeductions } from "../advance-deduction";
 import { SERVICE_REVENUE_TYPE_SELECT } from "../service-revenue-type";
+import {
+  basisAllowsSef,
+  VAT_EXEMPTION_BASIS_SELECT,
+} from "../vat-exemption-basis";
 import { InvoicePdfService } from "../print/invoice-pdf.service";
 import { SefClientService } from "./sef-client.service";
 import {
@@ -130,13 +134,39 @@ export class SefService {
         items: { orderBy: { lineNo: "asc" } },
         // Poreski tretman dokumenta (kategorija `AE`/`O` u UBL-u) — v. `ubl-builder`.
         serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+        // Osnov oslobođenja: nosi i SEF šifru (BT-121) i KAPIJU „ide / ne ide na SEF".
+        vatExemptionBasis: VAT_EXEMPTION_BASIS_SELECT,
       },
     });
     if (!invoice) throw new NotFoundException(`Faktura ${invoiceId} ne postoji.`);
 
-    if (invoice.isExport) {
+    // ── KAPIJA: PRESUĐUJE OSNOV OSLOBOĐENJA, NE ZASTAVICA `isExport` (05.08.2026) ──
+    // Odgovor 8 knjigovođe uz osnov vezuje i TOK, i to dva SUPROTNA toka za dva osnova
+    // koja se na dokumentu ne razlikuju ničim: „Za izvoz robe koristimo član 24.1.2.
+    // Takva faktura NE IDE NA SEF. Član 24.1.5 je vezan za robu koja se izdaje kod unosa
+    // dobara u slobodnu zonu. Takva faktura SE ŠALJE NA SEF…"
+    //
+    // Oba su `is_export = true`. Dok je odluku donosila zastavica, faktura za slobodnu
+    // zonu — koja MORA na SEF — nije mogla ni da se stavi u red, a poruka bi glasila
+    // „izvozna faktura ne ide na domaći SEF", što je za taj posao netačno.
+    //
+    // Dokument BEZ izabranog osnova zadržava ZATEČENO pravilo (`isExport` odbija). To je
+    // svesno: „osnov nije izabran" nije tvrdnja da dokument sme na SEF, pa se ne sme
+    // tumačiti kao dozvola — v. `basisAllowsSef`, koje za `null` i vraća `null`.
+    const sefAllowedByBasis = basisAllowsSef(invoice.vatExemptionBasis);
+    if (sefAllowedByBasis === false) {
       throw new BadRequestException(
-        "Izvozna faktura ne ide na domaći SEF (ExportInvoicePolicy).",
+        `Dokument ${invoice.documentNumber} nosi osnov oslobođenja ` +
+          `„${invoice.vatExemptionBasis?.code} — ${invoice.vatExemptionBasis?.name}", ` +
+          `koji po odluci knjigovođe ne ide na SEF. Ako je posao zapravo unos dobara u ` +
+          `slobodnu zonu, izaberi taj osnov na dokumentu pa ponovi slanje.`,
+      );
+    }
+    if (sefAllowedByBasis === null && invoice.isExport) {
+      throw new BadRequestException(
+        "Izvozna faktura ne ide na domaći SEF (ExportInvoicePolicy). Ako je posao unos " +
+          "dobara u slobodnu zonu, izaberi taj osnov oslobođenja na dokumentu — takva " +
+          "faktura se šalje na SEF.",
       );
     }
     if (invoice.level !== 0 || invoice.status === "DRAFT") {
@@ -332,6 +362,9 @@ export class SefService {
         // primalac). Bez nje bi e-faktura tvrdila 20 % na dokumentu koji je proknjižen
         // bez poreza — v. `UblInvoiceInput.serviceRevenueType`.
         serviceRevenueType: invoice.serviceRevenueType,
+        // Osnov oslobođenja → `cbc:TaxExemptionReasonCode`/`Reason`. Isti red iz kog
+        // papir uzima svoj tekst — v. `sales/vat-exemption.ts`, `resolveExemption`.
+        vatExemptionBasis: invoice.vatExemptionBasis,
         netTotal: invoice.netTotal,
         vatTotal: invoice.vatTotal,
         grossTotal: invoice.grossTotal,

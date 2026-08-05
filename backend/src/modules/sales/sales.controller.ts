@@ -21,6 +21,7 @@ import { PERMISSIONS } from "../../common/authz/permissions";
 import { FakturisanjeService } from "./fakturisanje.service";
 import { SalesService } from "./sales.service";
 import { ServiceRevenueTypeService } from "./service-revenue-type.service";
+import { VatExemptionBasisService } from "./vat-exemption-basis.service";
 import { DocumentCarryOverService } from "./carry-over.service";
 import { InvoicePdfService } from "./print/invoice-pdf.service";
 import { InvoiceMailService } from "./print/invoice-mail.service";
@@ -75,6 +76,7 @@ export class SalesController {
     private readonly advanceInvoice: AdvanceInvoiceService,
     private readonly sales: SalesService,
     private readonly serviceRevenueTypes: ServiceRevenueTypeService,
+    private readonly vatExemptionBases: VatExemptionBasisService,
   ) {}
 
   // ── ŠIFARNIK VRSTA USLUGE ───────────────────────────────────────────────────
@@ -93,6 +95,21 @@ export class SalesController {
   @Get("service-revenue-types")
   async listServiceRevenueTypes() {
     const data = await this.serviceRevenueTypes.listActive();
+    return { data };
+  }
+
+  // ── ŠIFARNIK OSNOVA PORESKOG OSLOBOĐENJA ────────────────────────────────────
+
+  /**
+   * Osnovi oslobođenja za padajuću listu (`GET /v1/sales/vat-exemption-bases`).
+   *
+   * Vraća SAMO aktivne. Pod `SALES_READ` iz istog razloga kao vrste usluge: ovo je spisak
+   * POSLOVNIH SITUACIJA (redovan izvoz / slobodna zona / oplemenjivanje), a ne kontni plan
+   * — bira ga onaj ko pravi dokument, jer jedino on zna koja je od tri.
+   */
+  @Get("vat-exemption-bases")
+  async listVatExemptionBases() {
+    const data = await this.vatExemptionBases.listActive();
     return { data };
   }
 

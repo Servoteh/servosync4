@@ -154,6 +154,26 @@ export interface ServiceRevenueType {
   sortOrder: number;
 }
 
+/**
+ * Jedan red šifarnika osnova poreskog oslobođenja (`vat_exemption_bases`).
+ *
+ * Osnov određuje TRI stvari: tekst na papiru, šifru na e-fakturi i to da li dokument
+ * uopšte ide na SEF. Poslednje je jedini način da se razlikuju izvoz (čl. 24 st. 1 t. 2,
+ * NE ide na SEF) i unos u slobodnu zonu (t. 5, IDE) — na dokumentu su identični.
+ */
+export interface VatExemptionBasis {
+  id: number;
+  code: string;
+  name: string;
+  /** Doslovan tekst koji izlazi na papir — prikazuje se kao pomoć pri izboru. */
+  paperText: string;
+  /** `PDV-RS-…`; `null` = šifra za taj osnov nije utvrđena (čl. 12 st. 3). */
+  sefCode: string | null;
+  /** Da li dokument sa ovim osnovom ide na SEF. */
+  goesToSef: boolean;
+  sortOrder: number;
+}
+
 /** Detalj računa — zaglavlje + stavke (GET /sales/invoices/:id). */
 export interface InvoiceDetail extends Invoice {
   items: InvoiceItem[];
@@ -162,6 +182,11 @@ export interface InvoiceDetail extends Invoice {
    * pa važi zatečeno ponašanje (konto 6140, PDV po stopi stavke).
    */
   serviceRevenueTypeId?: number | null;
+  /**
+   * Izabran osnov oslobođenja (`invoices.vat_exemption_basis_id`); `null` = nije izabran,
+   * pa se osnov izvodi iz dokumenta kao dosad.
+   */
+  vatExemptionBasisId?: number | null;
 }
 
 // ─────────────────────────────────────────────────────────────── query keys
@@ -248,6 +273,19 @@ export function useServiceRevenueTypes() {
   });
 }
 
+/**
+ * Šifarnik osnova poreskog oslobođenja (GET /sales/vat-exemption-bases) — SAMO AKTIVNI.
+ * Isti `staleTime` kao vrste usluge: kratka lista (danas 6 redova) koja se menja retko.
+ */
+export function useVatExemptionBases() {
+  return useQuery({
+    queryKey: ['sales', 'vat-exemption-bases'],
+    queryFn: () =>
+      apiFetch<{ data: VatExemptionBasis[] }>(`${BASE}/vat-exemption-bases`),
+    staleTime: 5 * 60_000,
+  });
+}
+
 // ─────────────────────────────────────────────────────────────── mutations
 
 function useInvalidateSales() {
@@ -275,6 +313,8 @@ export interface UpdateInvoiceHeaderInput {
   lineProfile?: string | null;
   /** Vrsta usluge iz šifarnika; `null` briše izbor. */
   serviceRevenueTypeId?: number | null;
+  /** Osnov poreskog oslobođenja iz šifarnika; `null` briše izbor. */
+  vatExemptionBasisId?: number | null;
 }
 
 export function useUpdateInvoiceHeader() {

@@ -1,5 +1,6 @@
 import type { Content } from "pdfmake/interfaces";
 import type { Prisma } from "@prisma/client";
+import type { VatExemptionBasisRef } from "../../vat-exemption-basis";
 
 /**
  * ZAJEDNIČKI UGOVOR ZA ČETIRI OBRASCA IZLAZNE FAKTURE (01.08.2026).
@@ -31,7 +32,7 @@ import type { Prisma } from "@prisma/client";
  * pozivalac koji je izostavi obara na prevođenju.
  */
 export type InvoiceWithItems = Prisma.InvoiceGetPayload<{
-  include: { items: true; serviceRevenueType: true };
+  include: { items: true; serviceRevenueType: true; vatExemptionBasis: true };
 }>;
 
 /** Kupac, već razrešen (šablon ne radi JOIN). */
@@ -175,6 +176,18 @@ export interface PrintCtx {
    * druga pravna tvrdnja. Zato ga nose i domaći i ino uslužni obrazac.
    */
   serviceRevenueNote: string | null;
+  /**
+   * OSNOV PORESKOG OSLOBOĐENJA IZABRAN NA DOKUMENTU (`invoices.vat_exemption_basis_id`).
+   * `null` = nije izabran, pa obrazac pada na napomenu vrste usluge odn. na zatečeno
+   * izvođenje iz `sales/vat-exemption.ts`.
+   *
+   * ⚠️ PREDAJE SE CEO RED, A NE GOTOV TEKST, I TO JE SUŠTINA POPRAVKE. Papir uzima
+   * `paperText`, a e-faktura `sefCode`/`sefReason` — SA ISTOG REDA, kroz isti
+   * `resolveExemption`. Dok su tekst i šifra dolazili iz dva izvora, izvoz robe je na
+   * papiru citirao čl. 24 st. 1 t. 2 a na SEF-u slao `PDV-RS-24-1-5`: dva pravna osnova
+   * za isti posao istom kupcu. Sa jednim redom to više nije moguće.
+   */
+  vatExemptionBasis: VatExemptionBasisRef | null;
   /**
    * Otpremnica bez cena. Kolone sa novcem se izostavljaju, a zbir se ne štampa.
    * (Obrazac za ovo nije donet — v. GAP §5 t.11 — pa se zasad štampa isti

@@ -1,6 +1,6 @@
 import type { Column, Content, TableCell } from "pdfmake/interfaces";
 import { companyAddressLine } from "../../../../common/company-address";
-import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
+import { exemptionCaseFor, resolveExemption } from "../../vat-exemption";
 import { taxTreatmentOf } from "../../service-revenue-type";
 import {
   formatAmount,
@@ -122,21 +122,23 @@ export const INO_USLUGA_PAGE_MARGINS: [number, number, number, number] = [
  * `NEMA_TEXT` je nedostižan (izvoz uvek ima osnov) i stoji samo zbog tipa.
  */
 function exemptionNote(ctx: PrintCtx): string {
-  // ⚠️ ŠIFARNIK VRSTE USLUGE IMA PREDNOST (05.08.2026) — v. isti komentar u
-  // `domaca-usluga.ts`. Za `USL-INO` je vlasnik potvrdio čl. 12 st. 3 (mesto prometa
-  // van RS), čime je zatvorena sumnja zapisana u uvodu ovog fajla i u `vat-exemption.ts`.
-  // Zatečeni tekst (čl. 24 st. 2) ostaje za ino uslužni račun bez izabrane vrste, da se
-  // dosadašnji papiri ne bi promenili bez odluke.
-  if (ctx.serviceRevenueNote) return ctx.serviceRevenueNote;
-  const basis = exemptionFor(
-    exemptionCaseFor({
+  // Redosled je u `resolveExemption`: izabran OSNOV → napomena vrste usluge → izvođenje.
+  // Za `IZVUS` je podrazumevan osnov `USLUGA-VAN-RS` (odgovor 9: „Za usluge koje su
+  // izvršene u inostranstvu pozivamo se na član 12 stav 3"), a druga varijanta istog
+  // člana — usluga u RS za stranog poreskog obveznika, „samo se tada ne navodi VAN
+  // TERITORIJE REPUBLIKE SRBIJE" — je zaseban red šifarnika koji se bira.
+  // Zatečeni tekst (čl. 24 st. 2) ostaje samo za ino uslužni račun bez ijednog izbora,
+  // da se dosadašnji papiri ne bi promenili bez odluke.
+  return resolveExemption({
+    basis: ctx.vatExemptionBasis,
+    serviceRevenueNote: ctx.serviceRevenueNote,
+    fallbackCase: exemptionCaseFor({
       isExport: true,
       isService: true,
       vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
       taxTreatment: taxTreatmentOf(ctx.invoice),
     }),
-  );
-  return basis?.paperText ?? NEMA_TEXT;
+  }).paperText;
 }
 
 /** Dva reda ispod napomene, doslovno sa papira (usluga → „Trgovinski sud", ne „Privredni"). */

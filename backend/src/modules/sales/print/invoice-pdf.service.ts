@@ -312,6 +312,10 @@ export class InvoicePdfService {
         // Vrsta usluge nosi i poreski tretman (zbirni blok) i napomenu (dno obrasca) —
         // v. `templates/ctx.ts`, `InvoiceWithItems`.
         serviceRevenueType: true,
+        // Izabran osnov oslobođenja — nosi DOSLOVAN tekst za dno obrasca. Isti red
+        // e-faktura koristi za `TaxExemptionReasonCode`, pa se papir i SEF ne mogu
+        // raziđi (v. `sales/vat-exemption.ts`, `resolveExemption`).
+        vatExemptionBasis: true,
       },
     });
     if (!invoice) throw new NotFoundException(`Račun ${invoiceId} ne postoji.`);
@@ -580,6 +584,8 @@ export class InvoicePdfService {
       // uslužan i da napomena nije prazna — obrazac dobija ili tekst ili `null`, nikad
       // prazan red na poreskom dokumentu.
       serviceRevenueNote: paperNoteOf(invoice),
+      // Izabran osnov oslobođenja (ceo red, ne gotov tekst) — v. `PrintCtx`.
+      vatExemptionBasis: invoice.vatExemptionBasis ?? null,
       withoutPrices,
     };
   }

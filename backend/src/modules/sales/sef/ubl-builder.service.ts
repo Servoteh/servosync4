@@ -8,9 +8,15 @@ import {
 import {
   type DocumentTaxTreatment,
   type ServiceRevenueTypeRef,
+  isServiceDocument,
   taxTreatmentOf,
 } from "../service-revenue-type";
-import { exemptionFor } from "../vat-exemption";
+import {
+  exemptionCaseFor,
+  resolveExemption,
+  type ResolvedExemption,
+} from "../vat-exemption";
+import type { VatExemptionBasisRef } from "../vat-exemption-basis";
 
 /**
  * UBL 2.1 BUILDER — Invoice → SEF e-faktura XML (doc 07 §8, §6.2 field-mapping).
@@ -64,16 +70,22 @@ const SEF_CUSTOMIZATION_ID =
   "urn:cen.eu:en16931:2017#compliant#urn:mfin.gov.rs:srbdt:2021";
 /** UBL profil (procurement). */
 const SEF_PROFILE_ID = "urn:cen.eu:en16931:2017.poacc:billing:3.0";
-/** Osnov oslobođenja za izvoz (BMTS) — čl. 24 st. 1 tač. 5. */
-const EXPORT_EXEMPTION_CODE = "PDV-RS-24-1-5";
-const EXPORT_EXEMPTION_REASON = "Izvoz dobara (čl. 24 st. 1 tač. 5 ZPDV)";
 /**
- * Osnov DOMAĆEG oslobođenja (kategorija E — 0% bez izvoza). EN16931 BR-E-10: kategorija E
- * MORA imati BT-120 (tekst razloga) ILI BT-121 (šifra) — bez toga SEF/CIUS odbija dokument.
- * Privremeni tekst; TODO(Talas 2): tačan osnov i šifra PDV-RS kategorije iz šifarnika kad
- * knjigovođa definiše (tada dodati i cbc:TaxExemptionReasonCode = BT-121).
+ * 🔴 OVDE JE DO 05.08.2026. STAJAO DRUGI PRIMERAK OSNOVA OSLOBOĐENJA, I BIO JE POGREŠAN.
+ *
+ * Konstante `EXPORT_EXEMPTION_CODE = "PDV-RS-24-1-5"` i prateći razlog „čl. 24 st. 1
+ * tač. 5" slale su na SEF DRUGI član nego onaj koji je papir za isti dokument štampao
+ * („član 24. stav 1 tačka 2"). Knjigovođa je presudio (odgovor 8): izvoz je **24.1.2**, a
+ * 24.1.5 pripada **slobodnoj zoni** — dakle papir je bio tačan, a ova šifra pogrešna.
+ *
+ * Popravka nije bila „ispraviti broj" nego UKLONITI DRUGI IZVOR: osnov sada dolazi iz
+ * `sales/vat-exemption.ts` → `resolveExemption`, iz istog poziva iz kog ga uzima i papir.
+ * Dok su postojala dva ukucana mesta, njihovo neslaganje nije moglo da padne ni na jednom
+ * testu — jer nijedan test nije imao razloga da ih uporedi.
+ *
+ * Isto važi i za `DOMESTIC_EXEMPTION_REASON` („Promet oslobodjen PDV", bez šifre BT-121):
+ * odgovor 10 je dao doslovan tekst i tačku 5, pa domaće oslobođenje od sada nosi i šifru.
  */
-const DOMESTIC_EXEMPTION_REASON = "Promet oslobodjen PDV";
 
 /** UBL InvoiceTypeCode: 380 = komercijalna faktura, 386 = avansna. */
 const INVOICE_TYPE_CODE_COMMERCIAL = "380";
@@ -116,22 +128,31 @@ function taxCategoryOf(
 }
 
 /**
- * OSNOV ZA KATEGORIJE `AE` I `O` — iz `../vat-exemption.ts`, ne ukucan ovde.
+ * OSNOV OSLOBOĐENJA ZA JEDAN DOKUMENT — jedan objekat, isti onaj koji dobija i papir.
  *
- * EN 16931 traži razlog (BT-120) ili šifru (BT-121) za svaku kategoriju bez poreza; za
- * `AE` (poreski dužnik je primalac) i `O` (mesto prometa van RS) šifra `PDV-RS` još nije
- * utvrđena, pa ide tekst. Tekst dolazi sa istog mesta odakle ga uzima i papir — dva
- * primerka iste poreske tvrdnje su tačno ono što je `vat-exemption.ts` i osnovan da
- * spreči (pet ukucanih kopija, međusobno neusaglašenih, 02.08.2026).
+ * Za kategorije `Z` (izvoz) i `E` (domaće oslobođenje) razlog i šifru daje IZABRAN OSNOV
+ * (`invoices.vat_exemption_basis_id`); bez izbora se pada na izvođenje iz dokumenta, koje
+ * je do 05.08.2026. bilo jedini izvor i za koje je izvozna šifra ispravljena na
+ * `PDV-RS-24-1-2`. Za `AE` (poreski dužnik je primalac) i `O` (mesto prometa van RS)
+ * `PDV-RS` šifra nije utvrđena, pa ide samo tekst — što BR-E-10 dozvoljava.
  *
- * `null` = kategorija koja razlog ne traži ili ga dobija drugde (S / Z / E).
+ * ⚠️ RAČUNA SE JEDNOM PO DOKUMENTU i prosleđuje i grupi (`cac:TaxCategory`) i liniji
+ * (`cac:ClassifiedTaxCategory`). Da se računa dvaput, dve bi se mogle raziđi — a upravo
+ * je razilaženje dva primerka istog podatka kvar zbog kog je ovo i pisano.
  */
-function extraExemptionReason(category: string): string | null {
-  if (category === "AE")
-    return exemptionFor("domestic-reverse-charge")?.sefReason ?? null;
-  if (category === "O")
-    return exemptionFor("outside-scope-service")?.sefReason ?? null;
-  return null;
+function documentExemption(
+  invoice: UblInvoiceInput,
+  treatment: DocumentTaxTreatment,
+): ResolvedExemption {
+  return resolveExemption({
+    basis: invoice.vatExemptionBasis ?? null,
+    fallbackCase: exemptionCaseFor({
+      isExport: invoice.isExport,
+      isService: isServiceDocument(invoice.documentType),
+      vatTotalIsZero: invoice.vatTotal.isZero(),
+      taxTreatment: treatment,
+    }),
+  });
 }
 
 /**
@@ -346,6 +367,17 @@ export interface UblInvoiceInput {
    * pao i SEF bi dokument odbio.
    */
   serviceRevenueType?: ServiceRevenueTypeRef | null;
+  /**
+   * IZABRAN OSNOV PORESKOG OSLOBOĐENJA (šifarnik `vat_exemption_bases`, 05.08.2026) —
+   * daje `cbc:TaxExemptionReasonCode` (BT-121) i `cbc:TaxExemptionReason` (BT-120).
+   *
+   * ⚠️ ZAŠTO E-FAKTURA MORA DA GA ZNA: izvoz robe (24.1.2), unos u slobodnu zonu (24.1.5)
+   * i oplemenjivanje (24.1.7) na dokumentu izgledaju identično (`isExport`, PDV nula,
+   * ista vrsta), a nose TRI različite šifre. Bez ovog polja bi sva tri išla sa jednom
+   * ukucanom šifrom — što je i bio zatečeni kvar, samo sa pogrešnom šifrom.
+   * `null` = nije izabran, pa se osnov izvodi kao dosad (v. `documentExemption`).
+   */
+  vatExemptionBasis?: VatExemptionBasisRef | null;
   netTotal: Prisma.Decimal;
   vatTotal: Prisma.Decimal;
   grossTotal: Prisma.Decimal;
@@ -462,6 +494,13 @@ export class UblBuilderService {
      * razlog zbog kog `taxCategoryOf` uopšte i postoji kao jedna funkcija.
      */
     const treatment = taxTreatmentOf(invoice);
+
+    /**
+     * OSNOV OSLOBOĐENJA — takođe JEDNOM po dokumentu, iz istog `resolveExemption` kroz
+     * koji prolazi i papir. Prosleđuje se i grupi i liniji, pa `cac:TaxCategory` i
+     * `cac:ClassifiedTaxCategory` ne mogu da navedu različit član.
+     */
+    const exemption = documentExemption(invoice, treatment);
 
     const typeCode = invoice.isPrepayment
       ? INVOICE_TYPE_CODE_PREPAYMENT
@@ -592,7 +631,7 @@ export class UblBuilderService {
         this.buildTaxCategory(
           vatCategoryOf(new D(fallbackPercent), invoice.isExport, treatment),
           fallbackPercent,
-          invoice.isExport,
+          exemption,
         ),
       );
       parts.push("</cac:TaxSubtotal>");
@@ -603,7 +642,7 @@ export class UblBuilderService {
         parts.push(amountEl("cbc:TaxAmount", g.taxAmount, cur));
         // Export osnov oslobođenja samo za izvoznu 0% grupu; domaća 0% (E) bez njega.
         parts.push(
-          this.buildTaxCategory(g.category, g.percent, invoice.isExport && g.percent === 0),
+          this.buildTaxCategory(g.category, g.percent, exemption),
         );
         parts.push("</cac:TaxSubtotal>");
       }
@@ -622,7 +661,7 @@ export class UblBuilderService {
 
     // — Stavke (cac:InvoiceLine) — svaka nosi svoju stopu/kategoriju —
     for (const it of items) {
-      parts.push(this.buildLine(it, cur, invoice.isExport, treatment));
+      parts.push(this.buildLine(it, cur, invoice.isExport, treatment, exemption));
     }
 
     parts.push("</Invoice>");
@@ -804,33 +843,35 @@ export class UblBuilderService {
   }
 
   /**
-   * cac:TaxCategory sa PDV kategorijom (S/Z/E) + osnov oslobođenja. EN16931 BR-Z-* i
-   * BR-E-10: obe oslobođene kategorije MORAJU nositi razlog oslobođenja, inače SEF odbija:
-   *   Z (izvoz)  → TaxExemptionReasonCode (čl.24) + TaxExemptionReason (tekst).
-   *   E (domaće) → TaxExemptionReason (BT-120 tekst); šifra (BT-121) TODO Talas 2.
-   *   S (>0%)    → bez razloga (oporeziva stavka).
+   * cac:TaxCategory sa PDV kategorijom (S/Z/E/AE/O) + osnov oslobođenja. EN16931 BR-Z-*,
+   * BR-E-10 i BR-AE-*: svaka kategorija bez poreza MORA nositi razlog (BT-120) ili šifru
+   * (BT-121), inače SEF odbija dokument. `S` (>0 %) razlog ne nosi — promet je oporeziv.
+   *
+   * ⚠️ RAZLOG I ŠIFRU VIŠE NE BIRA OVA FUNKCIJA nego dolaze GOTOVI iz `documentExemption`,
+   * tj. sa istog reda sa kog papir uzima svoj tekst. Dok su ovde stajale ukucane
+   * konstante, e-faktura je za izvoz robe slala čl. 24 st. 1 tač. 5 dok je papir štampao
+   * tač. 2 — i to nije mogao da uhvati nijedan test ovog fajla, jer je svaki merio ovaj
+   * fajl prema samom sebi.
    */
   private buildTaxCategory(
     category: string,
     percent: number,
-    isExport: boolean,
+    exemption: ResolvedExemption,
   ): string {
     const p: string[] = [];
     p.push("<cac:TaxCategory>");
     p.push(el("cbc:ID", category));
     p.push(el("cbc:Percent", percent.toFixed(2)));
-    if (category === "Z" || isExport) {
-      p.push(el("cbc:TaxExemptionReasonCode", EXPORT_EXEMPTION_CODE));
-      p.push(el("cbc:TaxExemptionReason", EXPORT_EXEMPTION_REASON));
-    } else if (category === "E") {
-      // BR-E-10: domaće oslobođenje MORA imati BT-120 (tekst) ili BT-121 (šifra).
-      // TODO(Talas 2): tačan osnov/šifra PDV-RS kategorije iz šifarnika + TaxExemptionReasonCode.
-      p.push(el("cbc:TaxExemptionReason", DOMESTIC_EXEMPTION_REASON));
-    } else {
-      // `AE` (poreski dužnik je primalac) i `O` (mesto prometa van RS) — v.
-      // `extraExemptionReason`. Bez razloga bi SEF odbio i njih, po istom pravilu.
-      const reason = extraExemptionReason(category);
-      if (reason) p.push(el("cbc:TaxExemptionReason", reason));
+    if (category !== "S") {
+      // Šifra ide samo kad postoji: za čl. 12 st. 3 i za `AE` `PDV-RS` šifra nije
+      // utvrđena, a prazan `cbc:TaxExemptionReasonCode` bi bio nevažeća šifra — gore
+      // od izostavljenog elementa, jer BT-121 mora biti iz šifarnika ako je prisutan.
+      if (exemption.sefCode) {
+        p.push(el("cbc:TaxExemptionReasonCode", exemption.sefCode));
+      }
+      if (exemption.sefReason) {
+        p.push(el("cbc:TaxExemptionReason", exemption.sefReason));
+      }
     }
     p.push(taxScheme());
     p.push("</cac:TaxCategory>");
@@ -842,6 +883,7 @@ export class UblBuilderService {
     cur: string,
     isExport: boolean,
     treatment: DocumentTaxTreatment,
+    exemption: ResolvedExemption,
   ): string {
     // Stopa/kategorija po STVARNOJ stopi stavke; izvoz forsira 0 %, a od 05.08.2026. to
     // isto radi i poreski tretman dokumenta (otpad / mesto prometa van RS). Uslov mora
@@ -881,15 +923,16 @@ export class UblBuilderService {
     p.push("<cac:ClassifiedTaxCategory>");
     p.push(el("cbc:ID", taxCategory));
     p.push(el("cbc:Percent", taxPercent.toFixed(2)));
-    if (taxCategory === "Z" || isExport) {
-      p.push(el("cbc:TaxExemptionReasonCode", EXPORT_EXEMPTION_CODE));
-    } else if (taxCategory === "E") {
-      // BR-E-10: i po liniji domaće oslobođenje nosi razlog (BT-120 tekst).
-      // TODO(Talas 2): tačan osnov/šifra PDV-RS kategorije iz šifarnika.
-      p.push(el("cbc:TaxExemptionReason", DOMESTIC_EXEMPTION_REASON));
-    } else {
-      const reason = extraExemptionReason(taxCategory);
-      if (reason) p.push(el("cbc:TaxExemptionReason", reason));
+    // ISTI `exemption` koji je otišao u grupu — linija i grupa istog prometa ne smeju da
+    // navedu različit član (do 05.08.2026. su ovde stajale iste ukucane konstante kao
+    // gore, pa su se slagale međusobno ali ne i sa papirom).
+    if (taxCategory !== "S") {
+      if (exemption.sefCode) {
+        p.push(el("cbc:TaxExemptionReasonCode", exemption.sefCode));
+      }
+      if (exemption.sefReason) {
+        p.push(el("cbc:TaxExemptionReason", exemption.sefReason));
+      }
     }
     p.push(taxScheme());
     p.push("</cac:ClassifiedTaxCategory>");

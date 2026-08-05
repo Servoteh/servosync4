@@ -1,10 +1,6 @@
 import { Prisma } from "@prisma/client";
 import type { Column, Content, TableCell } from "pdfmake/interfaces";
-import {
-  exemptionCaseFor,
-  exemptionFor,
-  NEMA_TEXT,
-} from "../../vat-exemption";
+import { exemptionCaseFor, resolveExemption } from "../../vat-exemption";
 import {
   formatAmount,
   formatDateDomestic,
@@ -490,14 +486,18 @@ function totalsBlock(ctx: PrintCtx): Content[] {
  * Jedino što se čita sa dokumenta je ono što obrazac ne zna: da li je PDV obračunat.
  */
 function exemptionNote(ctx: PrintCtx): string {
-  const basis = exemptionFor(
-    exemptionCaseFor({
+  // ⚠️ IZABRAN OSNOV IMA PREDNOST (05.08.2026). Domaći oslobođen promet po odgovoru 10
+  // ima svoj doslovan tekst („člana 24 stav 1 tačka 5"), a do sada je ovde izlazio
+  // placeholder „osnov se utvrđuje po dokumentu" — opis situacije umesto pravnog osnova.
+  // Isti `resolveExemption` zove i UBL builder, pa papir i e-faktura ne mogu da se raziđu.
+  return resolveExemption({
+    basis: ctx.vatExemptionBasis,
+    fallbackCase: exemptionCaseFor({
       isExport: false,
       isService: false,
       vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
     }),
-  );
-  return basis?.paperText ?? NEMA_TEXT;
+  }).paperText;
 }
 
 /** Četiri napomene ispod zbira, sitno i levo (prva je poreska, v. `exemptionNote`). */
