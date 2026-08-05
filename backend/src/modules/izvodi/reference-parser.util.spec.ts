@@ -933,6 +933,14 @@ describe("reference-parser.util — parseReference", () => {
 function fakeTx(lastNumber: number): Prisma.TransactionClient {
   return {
     $queryRaw: async () => [{ id: 1, last_number: lastNumber }],
+    // Brana O-F11 (05.08.2026): numeracija pre izdavanja pita glavnu knjigu da li broj
+    // već postoji. Ovde je knjiga PRAZNA — ovaj test meri odnos numeracije i parsera
+    // poziva na broj, pa nijedan broj ne sme da bude preskočen (inače bi očekivano
+    // `7/26` postalo `8/26` i test bi merio nešto treće).
+    ledgerEntry: {
+      findFirst: async () => null,
+      findMany: async () => [],
+    },
     documentNumberSequence: {
       create: async () => ({}),
       update: async () => ({}),

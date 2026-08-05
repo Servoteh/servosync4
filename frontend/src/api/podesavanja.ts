@@ -269,6 +269,8 @@ const KEYS = {
   bigbitSync: ['admin', 'sync', 'bigbit'] as const,
   companyDetails: ['admin', 'firma'] as const,
   paymentAccounts: ['admin', 'firma', 'racuni'] as const,
+  brojaci: ['admin', 'knjigovodstvo', 'brojaci'] as const,
+  vrsteUsluge: ['admin', 'knjigovodstvo', 'vrste-usluge'] as const,
 };
 
 // ------------------------------------------------------------------ queries
@@ -920,3 +922,161 @@ export const useSavePaymentAccount = () =>
       }),
     KEYS.paymentAccounts,
   );
+
+// ============================================================================
+// KNJIGOVODSTVENA PRAVILA (Podešavanja → „Brojači dokumenata" i „Vrste usluge")
+// ----------------------------------------------------------------------------
+// Oba ekrana idu pod pravom `settings.accounting_rules` (BE kontroler
+// `KnjigovodstvoController`, putanja `/v1/admin/knjigovodstvo/*`) — SAMO admin kroz
+// rolu, a knjigovođa IMENOM kroz `user_permission_overrides`. Zato ovi hook-ovi
+// namerno NE dele `BASE` sa ostatkom Podešavanja: druga putanja = druga kapija.
+// ============================================================================
+
+const KNJ = '/v1/admin/knjigovodstvo';
+
+// ---------------------------------------------- Brojači dokumenata (odluka O-F11)
+
+/** Šta glavna knjiga već zna o jednoj seriji i godini (SAMO kupčeva strana, klasa 20). */
+export interface BookUsage {
+  /** Najveći redni broj te serije koji već postoji u knjizi; `null` = nijedan. */
+  maxSeq: number | null;
+  /** Koliko stavki glavne knjige nosi broj iz te serije (ista faktura ima više stavki). */
+  entryCount: number;
+  /** Najveći broj kao STRING, onako kako stoji u knjizi (`261/26`). */
+  maxNumber: string | null;
+}
+
+export interface SequenceTrailEntry {
+  at: string;
+  byEmail: string | null;
+  byUserId: number | null;
+  from: number | null;
+  to: number | null;
+  note: string | null;
+  seriesKey: string | null;
+  year: number | null;
+}
+
+export interface SequenceRow {
+  /** Ključ brojača: `@FAKTURA` (sve izlazne fakture), `AVR`, `PROF`, `PON`, `REV`. */
+  seriesKey: string;
+  seriesLabel: string;
+  /** Prefiks broja; `''` = niz izlaznih faktura (bez prefiksa, O-F1/O-F5). */
+  prefix: string;
+  /** Vrste dokumenata koje dele ovaj brojač (fakture ih dele šest). */
+  documentTypes: string[];
+  year: number;
+  companyId: number;
+  /** `null` = red u bazi ne postoji (još nije izdat nijedan broj). */
+  lastNumber: number | null;
+  neverIssued: boolean;
+  /** Kako će izgledati SLEDEĆI izdat broj — ono što čovek zapravo proverava. */
+  nextNumber: string;
+  book: BookUsage;
+  /** Upozorenje kad brojač zaostaje za knjigom; `null` = uredno. */
+  warning: string | null;
+  lastChange: SequenceTrailEntry | null;
+}
+
+export interface SequencesOverview {
+  companyId: number;
+  years: number[];
+  rows: SequenceRow[];
+  trail: SequenceTrailEntry[];
+}
+
+export function useDocumentSequences(year?: number) {
+  return useQuery({
+    queryKey: [...KEYS.brojaci, year ?? 'sve'] as const,
+    queryFn: () =>
+      apiFetch<{ data: SequencesOverview }>(`${KNJ}/brojaci${qs({ year })}`),
+  });
+}
+
+/** `lastNumber` = POSLEDNJI IZDATI broj; sledeći dokument dobija +1. */
+export interface SetLastNumberVars {
+  seriesKey: string;
+  year: number;
+  lastNumber: number;
+  companyId?: number;
+  note?: string;
+}
+
+export const useSetLastNumber = () =>
+  useAdminMutation<SetLastNumberVars, { data: { nextNumber: string } }>(
+    (v) =>
+      apiFetch<{ data: { nextNumber: string } }>(`${KNJ}/brojaci`, {
+        method: 'PUT',
+        body: JSON.stringify(v),
+      }),
+    KEYS.brojaci,
+  );
+
+// ---------------------------------------------- Šifarnik vrsta usluge (nalaz P10)
+
+/** Ko obračunava PDV — vrednosti dolaze sa servera (`meta.taxTreatments`), ne prekucane. */
+export type VatTreatment = 'TAXED' | 'REVERSE_CHARGE' | 'OUTSIDE_SCOPE';
+
+export interface ServiceRevenueTypeRow {
+  id: number;
+  code: string;
+  name: string;
+  revenueAccountCode: string;
+  /** `null` = konto ne postoji u kontnom planu (zatečen red, unet SQL-om). */
+  revenueAccountName: string | null;
+  vatTreatment: string;
+  paperNote: string | null;
+  isActive: boolean;
+  sortOrder: number;
+  /** Koliko dokumenata već nosi ovu vrstu — cena izmene konta/tretmana. */
+  usedByInvoices: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServiceTypeTrailEntry {
+  at: string;
+  action: string;
+  byEmail: string | null;
+  byUserId: number | null;
+  id: string | null;
+  code: string | null;
+  changes: Record<string, { from: unknown; to: unknown }> | null;
+}
+
+export function useServiceRevenueTypes() {
+  return useQuery({
+    queryKey: KEYS.vrsteUsluge,
+    queryFn: () =>
+      apiFetch<{
+        data: ServiceRevenueTypeRow[];
+        meta: { taxTreatments: string[]; trail: ServiceTypeTrailEntry[] };
+      }>(`${KNJ}/vrste-usluge`),
+  });
+}
+
+export interface SaveServiceRevenueTypeVars {
+  /** Izostavljeno = nova vrsta (POST); prisutno = izmena (PATCH). */
+  id?: number;
+  code?: string;
+  name?: string;
+  revenueAccountCode?: string;
+  vatTreatment?: string;
+  paperNote?: string | null;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+export const useSaveServiceRevenueType = () =>
+  useAdminMutation<SaveServiceRevenueTypeVars, { data: ServiceRevenueTypeRow }>((v) => {
+    const { id, ...body } = v;
+    return id
+      ? apiFetch<{ data: ServiceRevenueTypeRow }>(`${KNJ}/vrste-usluge/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        })
+      : apiFetch<{ data: ServiceRevenueTypeRow }>(`${KNJ}/vrste-usluge`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+  }, KEYS.vrsteUsluge);

@@ -22,8 +22,24 @@ import { ALL_ROLE_KEYS, type RoleKey } from "./roles";
  * se test „popravi" da prođe.
  */
 
+/**
+ * PRAVILA PO KOJIMA KNJIGE NASTAJU — uređuje ih knjigovođa, a važe za sve buduće
+ * dokumente. Ista brana kao za same knjige, i to namerno (odluka 05.08.2026):
+ *
+ *   • startni broj po seriji (`document_number_sequences.last_number`, O-F11) —
+ *     određuje broj SLEDEĆE fakture, dakle broj po kom kupac plaća i po kom uplata
+ *     zatvara stavku u saldakontima;
+ *   • šifarnik vrsta usluge (`service_revenue_types`, P10) — konto prihoda i
+ *     PORESKI TRETMAN; jedan red određuje da li se na promet obračunava PDV.
+ *
+ * Ko sme ovo da menja, sme posredno i da promeni sadržaj knjiga — pa ključ ne sme
+ * da visi ni na jednoj roli, isto kao ni sama knjiga.
+ */
+const PRAVILA_KNJIGA = [P.SETTINGS_ACCOUNTING_RULES] as const;
+
 /** Prava koja čine KNJIGE: glavna knjiga, saldakonta, novac, poreske evidencije. */
 const KNJIGE = [
+  ...PRAVILA_KNJIGA,
   P.GL_READ,
   P.GL_WRITE,
   P.SALDAKONTI_READ,

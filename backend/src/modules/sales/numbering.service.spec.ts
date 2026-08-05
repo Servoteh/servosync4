@@ -1,11 +1,14 @@
 import { Prisma } from "@prisma/client";
 import {
   DOCUMENT_SERIES,
+  DOCUMENT_SERIES_REGISTRY,
   DocumentNumberSequenceService,
   INVOICE_SEQUENCE_KEY,
   sequenceKeyFor,
+  seriesByKey,
   seriesPrefixFor,
 } from "./numbering.service";
+import { MAX_COLLISION_SKIP } from "./document-number-conflict";
 
 /**
  * Numeracija izlaznih dokumenata — format `NNN/GG` (odluka O-F1) i JEDAN
@@ -34,10 +37,32 @@ interface SeqRow {
  * jedna transakcija do `commit()`, ostale čekaju. Time test stvarno proverava da
  * servis čita brojač POD bravom i da broj ne računa ni iz čega drugog.
  */
-function makeDb(seed: SeqRow[] = []) {
+/** Jedna stavka „glavne knjige" u testu: broj dokumenta + konto na kom stoji. */
+type BookEntry = string | { number: string; accountCode: string };
+
+function makeDb(seed: SeqRow[] = [], bookNumbers: BookEntry[] = []) {
   const rows: SeqRow[] = [...seed];
   let nextId = rows.reduce((m, r) => Math.max(m, r.id), 0) + 1;
   const locks = new Map<string, Promise<void>>();
+  /**
+   * „Glavna knjiga" — ono što `ledger_entries` već sadrži.
+   * Postoji zbog brane O-F11: numeracija od 05.08.2026 pita knjigu pre nego što izda
+   * broj, pa lažni klijent mora da ume da odgovori. Prazan skup = knjiga bez ijednog
+   * broja, tj. ponašanje pre brane (zato svi stariji testovi ostaju netaknuti).
+   *
+   * Podrazumevani konto je `2040` (kupci u zemlji) jer tu stoje NAŠI izlazni dokumenti;
+   * test koji hoće dobavljačev broj navodi svoj konto (npr. `435`).
+   */
+  const book = bookNumbers.map((b) =>
+    typeof b === "string" ? { number: b, accountCode: "2040" } : b,
+  );
+  const bookHas = (n: string, accountPrefix?: string) =>
+    book.some(
+      (e) =>
+        e.number === n &&
+        (accountPrefix === undefined ||
+          e.accountCode.startsWith(accountPrefix)),
+    );
 
   const find = (documentType: string, year: number, companyId: number) =>
     rows.find(
@@ -77,6 +102,37 @@ function makeDb(seed: SeqRow[] = []) {
         const row = find(documentType, year, companyId);
         return row ? [{ id: row.id, last_number: row.lastNumber }] : [];
       },
+      // Brana O-F11: „da li ovaj broj već postoji u knjizi?" — tačno poklapanje
+      // stringa (indeks `idx_ledger_entries_document_number`), pa je i lažna
+      // implementacija obično traženje po skupu.
+      ledgerEntry: {
+        findFirst: ({
+          where,
+        }: {
+          where: {
+            documentNumber: string;
+            accountCode?: { startsWith: string };
+          };
+        }) =>
+          Promise.resolve(
+            bookHas(where.documentNumber, where.accountCode?.startsWith)
+              ? { id: 1 }
+              : null,
+          ),
+        findMany: ({
+          where,
+        }: {
+          where: {
+            documentNumber: { in: string[] };
+            accountCode?: { startsWith: string };
+          };
+        }) =>
+          Promise.resolve(
+            where.documentNumber.in
+              .filter((n) => bookHas(n, where.accountCode?.startsWith))
+              .map((documentNumber) => ({ documentNumber })),
+          ),
+      },
       documentNumberSequence: {
         create: async ({ data }: { data: Omit<SeqRow, "id"> }) => {
           opts.onCreate?.(); // tačka za simulaciju P2002 (jedinstveni ključ)
@@ -104,7 +160,7 @@ function makeDb(seed: SeqRow[] = []) {
     };
   }
 
-  return { rows, tx, find };
+  return { rows, tx, find, book };
 }
 
 describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
@@ -451,7 +507,9 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
       // legitimnih oblika PNB-a (`IFR-657/25`, `RAC-657/25`, `PDV-`, `NAL-`…).
       const db = makeDb();
       await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
-      await expect(once(db, "XYZ", 2026)).rejects.toThrow(/registru numeracije/);
+      await expect(once(db, "XYZ", 2026)).rejects.toThrow(
+        /registru numeracije/,
+      );
       // Odbijanje puca PRE upisa — nijedan red sekvence ne ostaje za odbijenu vrstu.
       expect(db.rows.filter((r) => r.documentType === "XYZ")).toHaveLength(0);
     });
@@ -589,6 +647,191 @@ describe("DocumentNumberSequenceService — format NNN/GG (O-F1)", () => {
         service.next(t.client, "IFR", 2026, 0),
       ).rejects.toMatchObject({ code: "P2002" });
       t.commit();
+    });
+  });
+
+  /**
+   * BRANA O-F11: IZDAT BROJ NE SME VEĆ POSTOJATI U KNJIZI.
+   * ═══════════════════════════════════════════════════════════════════════════
+   * Povod je preuzimanje 01.04.2027 — USRED godine. Izmereno nad uvezenom knjigom
+   * 2026: BigBit je već izdao izlazne fakture u TAČNO našem obliku `N/GG` bez vodeće
+   * nule (IFR 95 brojeva `100/26`–`261/26`, IFUSL 32, IFGP 21). Da 4.0 krene od 1,
+   * izdavao bi brojeve koje BigBit u istoj godini već ima — a otvorene stavke se
+   * grupišu po `(konto, komitent, broj)` BEZ vrste dokumenta, pa bi se dve različite
+   * obaveze tiho spojile u jednu.
+   */
+  describe("brana: broj koji je već u knjizi se ne izdaje ponovo (O-F11)", () => {
+    it("zauzet kandidat se PRESKAČE — knjiga ima 1/26, izdaje se 2/26", async () => {
+      const db = makeDb([], ["1/26"]);
+      await expect(once(db, "IFR", 2026)).resolves.toBe("2/26");
+      // Brojač MORA da zapamti preskočenu vrednost; da upiše 1, sledeći poziv bi
+      // ponovo naleteo na isti zauzet broj — i tako svaki put.
+      expect(db.find(INVOICE_SEQUENCE_KEY, 2026, 0)?.lastNumber).toBe(2);
+    });
+
+    it("preskače VIŠE uzastopnih zauzetih (1,2,3 u knjizi → 4/26)", async () => {
+      const db = makeDb([], ["1/26", "2/26", "3/26"]);
+      await expect(once(db, "IFR", 2026)).resolves.toBe("4/26");
+      expect(db.find(INVOICE_SEQUENCE_KEY, 2026, 0)?.lastNumber).toBe(4);
+    });
+
+    it("preskače i kad brojač već postoji (zatečen 43, knjiga ima 44/26 → 45/26)", async () => {
+      const db = makeDb(
+        [
+          {
+            id: 1,
+            documentType: INVOICE_SEQUENCE_KEY,
+            year: 2026,
+            companyId: 0,
+            lastNumber: 43,
+          },
+        ],
+        ["44/26"],
+      );
+      await expect(once(db, "IFR", 2026)).resolves.toBe("45/26");
+    });
+
+    it("SERIJE SU NEZAVISNE: `A-1/26` u knjizi ne blokira fakturu `1/26`", async () => {
+      // Cela odbrana od spajanja stavki počiva na tome da su serije disjunktne kao
+      // STRINGOVI (O-F6/O-F7). Da brana gleda goli redni broj umesto celog broja
+      // dokumenta, avansni račun bi trošio brojeve izlaznih faktura.
+      const db = makeDb([], ["A-1/26", "PROF-1/26", "PON-1/26", "REV-1/26"]);
+      await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
+    });
+
+    it("🔴 DOBAVLJAČEV broj na ulaznoj fakturi NE zauzima naš broj", async () => {
+      // IZMERENO NA PRODUKCIJI 05.08.2026: `ledger_entries.document_number` drži i
+      // DOBAVLJAČEVE brojeve sa ulaznih faktura. Brojevi oblika `N/26` bez prefiksa:
+      //   konto 435 (dobavljači)         581 stavki, najveći 14.630
+      //   konto 270 (PDV u ulaznim f.)   252 stavki, najveći 138.030
+      //   konto 204 (KUPCI)              411 stavki, najveći      261  ← naš niz
+      // Da brana meri celu knjigu, `1/26` bi bio „zauzet" dobavljačevim dokumentom i
+      // numeracija bi preskakala brojeve koji su za naš niz sasvim slobodni — a ekran
+      // bi tražio startni broj 138.030 i odbijao tačnu vrednost 261.
+      //
+      // Sudar je nemoguć jer se otvorene stavke grupišu po (KONTO, komitent, broj):
+      // dobavljačev dokument stoji na 43x uz dobavljača, naš na 204x uz kupca.
+      const db = makeDb(
+        [],
+        [
+          { number: "1/26", accountCode: "4350" }, // obaveza prema dobavljaču
+          { number: "2/26", accountCode: "2700" }, // PDV u primljenoj fakturi
+          { number: "3/26", accountCode: "1320" }, // roba u magacinu
+        ],
+      );
+      await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
+    });
+
+    it("naš broj na KUPČEVOM kontu i dalje zauzima (2050 izvoz, 2023 ostali kupci)", async () => {
+      // Cela klasa 20 je „Potraživanja od kupaca" — izvozna faktura ide na 2050, a
+      // deo zatečenih dokumenata na 2023. Brana ne sme da gleda samo 2040.
+      const db = makeDb([], [{ number: "1/26", accountCode: "2050" }]);
+      await expect(once(db, "IFR", 2026)).resolves.toBe("2/26");
+
+      const db2 = makeDb([], [{ number: "1/26", accountCode: "2023" }]);
+      await expect(once(db2, "IFR", 2026)).resolves.toBe("2/26");
+    });
+
+    it("GODINA JE DEO POKLAPANJA: `1/25` u knjizi ne blokira `1/26`", async () => {
+      const db = makeDb([], ["1/25"]);
+      await expect(once(db, "IFR", 2026)).resolves.toBe("1/26");
+    });
+
+    it("avans preskače u SVOJOJ seriji (`A-1/26` zauzet → `A-2/26`)", async () => {
+      const db = makeDb([], ["A-1/26"]);
+      await expect(once(db, "AVR", 2026)).resolves.toBe("A-2/26");
+    });
+
+    it("BigBit scenario: podešen startni broj 261 → 262/26, BEZ ijednog preskoka", async () => {
+      // Ovo je ishod zbog kog ekran „Brojači dokumenata" i postoji: kad je startni broj
+      // upisan, brana nema šta da radi i niz teče bez rupa.
+      const book = Array.from({ length: 162 }, (_, i) => `${100 + i}/26`); // 100/26 … 261/26
+      const db = makeDb(
+        [
+          {
+            id: 1,
+            documentType: INVOICE_SEQUENCE_KEY,
+            year: 2026,
+            companyId: 0,
+            lastNumber: 261,
+          },
+        ],
+        book,
+      );
+      await expect(once(db, "IFR", 2026)).resolves.toBe("262/26");
+      expect(db.find(INVOICE_SEQUENCE_KEY, 2026, 0)?.lastNumber).toBe(262);
+    });
+
+    it("preko granice preskoka STAJE GLASNO i uputi na Podešavanja (422)", async () => {
+      // Zaostatak veći od `MAX_COLLISION_SKIP` nije slučajan sudar nego nepodešen
+      // brojač; tiho preskakanje bi „popravilo" podešavanje koje čovek treba da potvrdi.
+      const book = Array.from(
+        { length: MAX_COLLISION_SKIP + 1 },
+        (_, i) => `${i + 1}/26`,
+      );
+      const db = makeDb([], book);
+      await expect(once(db, "IFR", 2026)).rejects.toMatchObject({
+        status: 422,
+      });
+      await expect(once(db, "IFR", 2026)).rejects.toThrow(/Brojači dokumenata/);
+    });
+
+    it("tačno na granici preskoka još uspeva (50 zauzetih → 51/26)", async () => {
+      const book = Array.from(
+        { length: MAX_COLLISION_SKIP },
+        (_, i) => `${i + 1}/26`,
+      );
+      const db = makeDb([], book);
+      await expect(once(db, "IFR", 2026)).resolves.toBe(
+        `${MAX_COLLISION_SKIP + 1}/26`,
+      );
+    });
+  });
+
+  /**
+   * REGISTAR SERIJA ZA EKRAN — izveden iz `DOCUMENT_SERIES`, ne prekucan.
+   * Ekran „Brojači dokumenata" prikazuje serije IZ KODA, jer je
+   * `document_number_sequences` na produkciji imala 0 redova — spisak građen iz baze
+   * bi dao praznu stranu baš tamo gde se startni broj upisuje.
+   */
+  describe("registar serija za ekran brojača", () => {
+    it("svaka serija iz registra numeracije ima naziv za čoveka", () => {
+      // Bez ovoga bi nova serija na ekranu izašla kao gola šifra (`@FAKTURA`) ili ne bi
+      // izašla uopšte — pa bi joj startni broj ostao nepodesiv.
+      for (const s of DOCUMENT_SERIES_REGISTRY) {
+        expect(s.label).toBeTruthy();
+        expect(s.label).not.toBe(s.key);
+      }
+    });
+
+    it("registar pokriva TAČNO ključeve brojača iz `DOCUMENT_SERIES`", () => {
+      const izKoda = new Set(
+        [...DOCUMENT_SERIES.keys()].map((t) => sequenceKeyFor(t)),
+      );
+      const izRegistra = new Set(DOCUMENT_SERIES_REGISTRY.map((s) => s.key));
+      expect([...izRegistra].sort()).toEqual([...izKoda].sort());
+    });
+
+    it("izlazne fakture su JEDNA serija sa šest vrsta, bez prefiksa", () => {
+      const fakture = seriesByKey(INVOICE_SEQUENCE_KEY);
+      expect(fakture?.prefix).toBe("");
+      expect(fakture?.documentTypes.sort()).toEqual(
+        ["IFGP", "IFR", "IFUSL", "IZVGP", "IZVRO", "IZVUS"].sort(),
+      );
+    });
+
+    it("prefiks u registru je isti onaj koji numeracija stvarno izdaje", () => {
+      // Dva izvora prefiksa bi značila da ekran pokazuje `PROF-12/26`, a izda se nešto
+      // drugo — a ekran postoji baš da bi se sledeći broj video unapred.
+      for (const s of DOCUMENT_SERIES_REGISTRY) {
+        for (const t of s.documentTypes) {
+          expect(seriesPrefixFor(t)).toBe(s.prefix);
+        }
+      }
+    });
+
+    it("nepoznata serija se ne izmišlja", () => {
+      expect(seriesByKey("NEMA-ME")).toBeUndefined();
     });
   });
 });

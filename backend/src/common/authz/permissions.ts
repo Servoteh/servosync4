@@ -281,6 +281,31 @@ export const PERMISSIONS = {
   SETTINGS_PREDMET_AKTIVACIJA: "settings.predmet_aktivacija",
   SETTINGS_AUDIT: "settings.audit",
   SETTINGS_SYSTEM: "settings.system",
+  /**
+   * KNJIGOVODSTVENA PRAVILA — brojači dokumenata + šifarnik vrsta usluge (05.08.2026).
+   * ───────────────────────────────────────────────────────────────────────────────
+   * Vlasnik: „knjigovođa može ili admin sa svojom šifrom da dobije pristup tom ekranu".
+   *
+   * Šta se iza ovog ključa MENJA, i zašto to nije `settings.system`:
+   *   • `document_number_sequences.last_number` — startni broj po seriji i godini
+   *     (O-F11). Ko ga podesi, određuje koji broj će nositi SLEDEĆA faktura — dakle
+   *     broj po kom kupac plaća, po kom se stavka vodi u saldakontima i po kom uplata
+   *     zatvara obavezu.
+   *   • `service_revenue_types` — konto prihoda i PORESKI TRETMAN po vrsti usluge
+   *     (P10). Izmena jednog reda menja da li se na promet obračunava PDV.
+   * Oboje je knjigovodstvena, a ne sistemska odluka: `settings.system` drži dijagnostiku,
+   * izbor AI modela i prekidač noćnog uvoza — administratorske poluge nad POGONOM
+   * aplikacije, ne nad sadržajem knjiga.
+   *
+   * 🔴 NE DODAVATI NIJEDNOJ ROLI. Ključ ima SAMO `admin` (kroz ALL); knjigovođa ga dobija
+   * IMENOM kroz `user_permission_overrides` (`prisma/seed/knjigovodstveni-sifarnici-imenovani.sql`).
+   * Isti obrazac i isti razlog kao knjige (odluka 05.08.2026, `docs/OTVORENI_POSLOVI.md`
+   * odeljak P): sistem priznaje jednu rolu po čoveku, pa bi rola „finansije" morala da bude
+   * NADSKUP menadžmenta — probano i odbačeno, jer bi uz knjige tiho dala i SCADA kontrolu i
+   * forsiranje plana proizvodnje. Brana je `erp-knjige-samo-imenovanima.spec.ts`, koja ovaj
+   * ključ nabraja zajedno sa knjigama.
+   */
+  SETTINGS_ACCOUNTING_RULES: "settings.accounting_rules",
   // Moj profil (👤 self-service za sve ~157) — agregator kroz GUC (§0.2/§2.5).
   //   self = SVAKI prijavljen (scope visi na lower(email) → aktivan employees red;
   //          bez reda → prazan profil). Row-odluka je RLS/DEFINER u bazi.

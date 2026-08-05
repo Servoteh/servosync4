@@ -3781,6 +3781,13 @@ model LedgerEntry {
   @@index([analyticalCode, reconciledAt], map: "idx_ledger_entries_partner_open")
   @@index([reconciliationGroupId], map: "idx_ledger_entries_recon_group")
   @@index([importedDropId], map: "idx_ledger_entries_imported_drop")
+  // BRANA O-F11 („izdat broj ne sme već postojati u knjizi"): numeracija pri SVAKOM
+  // knjiženju pita `document_number = '<kandidat>'`. Bez indeksa bi to bio pun prolaz
+  // kroz glavnu knjigu unutar transakcije koja već drži bravu nad brojačem — dakle
+  // usporenje koje raste sa knjigom i serijalizuje sva knjiženja. Indeks je OBIČAN (ne
+  // parcijalan): Prisma šema ne ume da opiše `WHERE`, a parcijalan indeks napravljen samo
+  // u SQL-u bi značio da se šema i baza razilaze na svakom sledećem `migrate diff`.
+  @@index([documentNumber], map: "idx_ledger_entries_document_number")
   @@map("ledger_entries")
 }
 

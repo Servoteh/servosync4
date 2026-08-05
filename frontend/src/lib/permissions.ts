@@ -161,6 +161,11 @@ export const PERMISSIONS = {
   SETTINGS_PREDMET_AKTIVACIJA: 'settings.predmet_aktivacija',
   SETTINGS_AUDIT: 'settings.audit',
   SETTINGS_SYSTEM: 'settings.system',
+  // Knjigovodstvena pravila — tabovi „Brojači dokumenata" (startni broj po seriji,
+  // odluka O-F11) i „Vrste usluge" (šifarnik konta prihoda + poreskog tretmana, P10).
+  // Ima ga SAMO rola `admin` (kroz ALL); knjigovođa ga dobija IMENOM kroz
+  // `user_permission_overrides` — zato ga nema smisla tražiti u rola-matrici.
+  SETTINGS_ACCOUNTING_RULES: 'settings.accounting_rules',
   // Održavanje / CMMS — 3.0 TALAS F (backend docs/design/MODULE_SPEC_odrzavanje_30.md §3, presuda F8).
   // Dvoslojni authz: ove permisije = COARSE kapija (read/report/write = sve aktivne uloge,
   // row-scope presuđuje 102 sy15 RLS politike). FINU odluku UI donosi preko `/maintenance/me`

@@ -1,5 +1,14 @@
-import { Injectable, UnprocessableEntityException } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import {
+  documentNumberOf,
+  resolveFreeSequence,
+  twoDigitYear,
+} from "./document-number-conflict";
 
 /**
  * DocumentNumberSequenceService — brojači izlaznih dokumenata.
@@ -242,6 +251,69 @@ export const DOCUMENT_SERIES: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
+ * NAZIVI SERIJA ZA EKRAN „Brojači dokumenata" (Podešavanja, odluka O-F11).
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * Ključ brojača (`sequenceKeyFor`) → naziv koji vidi knjigovođa. Ključevi su tehnički
+ * (`@FAKTURA`, `AVR`), a čovek na ekranu bira „Izlazne fakture", ne šifru.
+ *
+ * ⚠️ Nova serija dodata u `DOCUMENT_SERIES` MORA da dobije naziv i ovde — brana je test
+ * „svaka serija iz registra ima naziv" u `numbering.service.spec.ts`. Bez tog testa bi
+ * nova serija na ekranu izašla kao gola šifra ili, gore, ne bi izašla uopšte — pa bi
+ * njen startni broj ostao nepodesiv, a to je tačno ono što O-F11 rešava.
+ */
+const SERIES_LABELS: ReadonlyMap<string, string> = new Map([
+  [INVOICE_SEQUENCE_KEY, "Izlazne fakture (zajednički niz)"],
+  ["AVR", "Avansni računi"],
+  ["PROF", "Predračuni"],
+  ["PON", "Ponude"],
+  ["REV", "Reversi"],
+]);
+
+/** Jedna serija onako kako je vidi ekran brojača. */
+export interface DocumentSeriesInfo {
+  /** Ključ u `document_number_sequences.document_type` (`@FAKTURA`, `AVR`, …). */
+  key: string;
+  /** Naziv za čoveka. */
+  label: string;
+  /** Prefiks broja (`""` = niz faktura, bez prefiksa). */
+  prefix: string;
+  /** Vrste dokumenata koje dele ovaj brojač (fakture ih dele šest). */
+  documentTypes: string[];
+}
+
+/**
+ * REGISTAR SERIJA ZA EKRAN — IZVEDEN iz `DOCUMENT_SERIES`, nikad prekucan.
+ *
+ * Ekran mora da prikaže SVE serije, i one koje još nemaju red u
+ * `document_number_sequences` (na produkciji je tabela imala 0 redova — nijedna
+ * migracija je ne puni). Da je spisak građen iz baze, ekran bi na prazan registar
+ * prikazao praznu stranu i startni broj ne bi imao gde da se upiše.
+ */
+export const DOCUMENT_SERIES_REGISTRY: readonly DocumentSeriesInfo[] = (() => {
+  const byKey = new Map<string, DocumentSeriesInfo>();
+  for (const [documentType, prefix] of DOCUMENT_SERIES) {
+    const key = prefix === "" ? INVOICE_SEQUENCE_KEY : documentType;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.documentTypes.push(documentType);
+      continue;
+    }
+    byKey.set(key, {
+      key,
+      label: SERIES_LABELS.get(key) ?? key,
+      prefix,
+      documentTypes: [documentType],
+    });
+  }
+  return [...byKey.values()];
+})();
+
+/** Serija po ključu brojača; `undefined` = ključ nije iz registra (zatečen red u bazi). */
+export function seriesByKey(key: string): DocumentSeriesInfo | undefined {
+  return DOCUMENT_SERIES_REGISTRY.find((s) => s.key === key);
+}
+
+/**
  * Prefiks serije za datu vrstu dokumenta (`""` = niz faktura, bez prefiksa).
  *
  * ZAŠTO ŠIFRA VRSTE, A NE JEDNO SLOVO (`P-`, `R-`) ZA NOVE SERIJE: prefiks je ujedno
@@ -316,6 +388,8 @@ export function sequenceKeyFor(documentType: string): string {
 
 @Injectable()
 export class DocumentNumberSequenceService {
+  private readonly logger = new Logger(DocumentNumberSequenceService.name);
+
   /**
    * Rezerviši sledeći broj dokumenta u transakciji `tx`.
    * @returns npr. `657/25` (format `NNN/GG`, v. O-F1) — za vrstu sa sopstvenom serijom
@@ -347,16 +421,38 @@ export class DocumentNumberSequenceService {
       FOR UPDATE
     `;
 
-    let seq: number;
+    // 2) BRANA (O-F11): kandidat NE SME već postojati u glavnoj knjizi.
+    //    Bez nje bi 4.0, pokrenut 01.04.2027 usred godine, izdavao brojeve koje je
+    //    BigBit u istoj godini već izdao (izmereno: 95 IFR brojeva `100/26`–`261/26`) —
+    //    a otvorene stavke se grupišu po broju dokumenta BEZ vrste, pa bi se dve
+    //    različite obaveze tiho spojile u jednu. Puno obrazloženje (zašto preskače, a ne
+    //    odbija; zašto ipak postoji granica) je u `document-number-conflict.ts`.
+    //
+    //    Provera je UNUTAR iste transakcije i pod ISTOM bravom kojom se brojač povećava:
+    //    da je van nje, dve paralelne transakcije bi obe videle isti broj kao slobodan.
+    const prefix = seriesPrefixFor(documentType);
+    const base = rows.length === 0 ? 0 : rows[0].last_number;
+    const free = await resolveFreeSequence(tx, prefix, base + 1, year);
+    const seq = free.seq;
+
+    if (free.skipped.length > 0) {
+      // Rupa u nizu je normalan ishod brane, ali NE sme da bude neobjašnjiva: knjigovođa
+      // koji posle traži „gde je 262/26" mora da nađe zašto je preskočen.
+      this.logger.warn(
+        `Numeracija je preskočila ${free.skipped.length} broj(eva) koji već postoje u glavnoj ` +
+          `knjizi (${free.skipped.join(", ")}) — izdat je „${free.documentNumber}". ` +
+          `Ako se ovo ponavlja, startni broj serije „${seqKey}" za ${year}. treba podesiti u ` +
+          `Podešavanja → Brojači dokumenata.`,
+      );
+    }
+
     if (rows.length === 0) {
-      // Nema reda — kreiraj sa lastNumber=1 (prvi broj). Jedinstveni ključ štiti
-      // od trke: ako drugi commit stigne prvi, ovaj bacia P2002 → tx rollback/retry.
+      // Nema reda — kreiraj ga. Jedinstveni ključ štiti od trke: ako drugi commit stigne
+      // prvi, ovaj baci P2002 → tx rollback/retry.
       await tx.documentNumberSequence.create({
-        data: { documentType: seqKey, year, companyId, lastNumber: 1 },
+        data: { documentType: seqKey, year, companyId, lastNumber: seq },
       });
-      seq = 1;
     } else {
-      seq = rows[0].last_number + 1;
       await tx.documentNumberSequence.update({
         where: { id: rows[0].id },
         data: { lastNumber: seq },
@@ -374,11 +470,11 @@ export class DocumentNumberSequenceService {
     // razdvojen brojač sam po sebi ne pomaže — dva nezavisna niza oba počinju od 1 i
     // oba daju `1/26`. Tek prefiks čini da se serije ne mogu preklopiti ni kao STRING
     // (O-F6/O-F7). Zato prefiks i brojač dolaze iz ISTE mape (`DOCUMENT_SERIES`).
-    return `${seriesPrefixFor(documentType)}${seq}/${twoDigitYear(year)}`;
+    return documentNumberOf(prefix, seq, year);
   }
 }
 
-/** Godina u dvocifrenom obliku: 2026 → „26", 2005 → „05" (uvek dve cifre). */
-function twoDigitYear(year: number): string {
-  return String(((year % 100) + 100) % 100).padStart(2, "0");
-}
+// `twoDigitYear` i `documentNumberOf` žive u `document-number-conflict.ts` — isti string
+// mora da sastavlja i numeracija, i ekran brojača, i poruka o grešci. Re-export je zbog
+// postojećih uvoza (ne prekucavati).
+export { documentNumberOf, twoDigitYear };

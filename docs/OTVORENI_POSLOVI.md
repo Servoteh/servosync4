@@ -120,23 +120,26 @@ kasnije. Ne brisati dok se ne izvede ili dok se izričito ne odustane.
 > **Merodavan izvor:** puna analiza (7 delova, sa predlogom teksta pravila) je u izveštaju od
 > 05.08.2026; ovde stoji samo ono što ostaje da se uradi.
 
-### P1. Kartica artikla pokazuje nabavnu cenu, dobavljača, kupca i rabat — vidi je 67 od 69 ljudi 🔴
+### ~~P1. Kartica artikla — vraćanje pod pravo za robno~~ ✅ ODLUKA: OSTAJE KAKO JESTE
 
-**Kontekst.** Kroz isto pravo kojim se gledaju artikli i lager lista (`directory.read`) otvara se i
-kartica artikla, koja **po svakom dokumentu** prikazuje nabavnu cenu, ime dobavljača, ime kupca i
-odobreni rabat — uz dugme za izvoz u Excel.
+**Odluka Nenad, 05.08.2026:** *„OK, može da se vidi kartica artikala, to nek ostane uz moju
+dozvolu."* — dakle **ne vraća se** brana; kartica ostaje vidljiva svima sa pravom imenika.
+
+**Šta je vlasnik time prihvatio** (ostaje zapisano, jer je odluka svesna a ne previd): kroz isto
+pravo kojim se gledaju artikli i lager lista (`directory.read`) otvara se i kartica artikla, koja
+**po svakom dokumentu** prikazuje nabavnu cenu, ime dobavljača, ime kupca i odobreni rabat — uz
+dugme za izvoz u Excel.
 
 **Izmereno (05.08.2026):** 67 od 69 aktivnih naloga (svi osim kiosk terminala u pogonu i servisnog
 naloga diktafona). 20.416 redova ulaza/izlaza · 228 dobavljača · 1,36 mlrd RSD nabavne vrednosti ·
 164.574 reda profaktura na 2.361 komitentu · **marža vidljiva na 9.845 redova = 429,5 mil. RSD**.
 
-**🔴 Ovo je REGRESIJA, ne zatečeno stanje.** Brana je postojala: taj deo je ranije tražio pravo za
-robno (24 osobe), a **PR #90 ju je skinuo** i krug se proširio sa 24 na 67.
+**Kako je do toga došlo:** brana je postojala (taj deo je tražio pravo za robno, 24 osobe), a
+**PR #90 ju je skinuo** i krug se proširio na 67. Dakle stanje nije nastalo odlukom nego
+regresijom — ali je 05.08. **naknadno odobreno**, pa se ne vraća.
 
-**Šta uraditi.** Vratiti karticu artikla pod pravo za robno; lager listu i spisak artikala NE dirati
-(odluka Nenad 05.08.: „lager može da vidi sve, ne komplikujmo").
-
-**Rizik/cena:** sitno. **Preporuka:** uraditi u istom potezu sa P2.
+⚠️ Ako se ikad predomisliš, popravka je sitna i opisana je gore: kartica ide pod pravo za robno,
+lager lista i spisak artikala se NE diraju.
 
 ### P2. Izvoz u Excel zaobilazi ekran i ne ostavlja trag
 
@@ -206,25 +209,66 @@ t. 1), `ZAKUP` → 6501 uz PDV 20 %. Uslužni račun nosi izbor na zaglavlju
 iz njega. Komercijala bira **šta prodaje**, ne konto. Ekran: padajuća lista na detalju računa
 (`/fakturisanje/detalj`), vidljiva samo na `IFUSL`/`IZVUS` i na predračunu.
 
-**Šta OSTAJE.** Šifarnik je posao **knjigovođe** (odgovor 28 iz upitnika: „knjigovođa i
-administratori, ali da se beleži izmena"), a ekran za njegovo uređivanje **nije napravljen**.
-Danas se nova vrsta, izmena konta ili gašenje rade SQL-om nad produkcijom. Konkretno fali:
+**✅ EKRAN IZVEDEN 05.08.2026** (grana `feat/erp-prava-allowlist`). Podešavanja → **Vrste usluge**:
+spisak (i ugašene vrste), dodavanje, izmena, prekidač „aktivno", uz trag izmene. Rute
+`/v1/admin/knjigovodstvo/vrste-usluge` (`KnjigovodstvoController`). Uz njega je izveden i
+**Podešavanja → Brojači dokumenata** (odluka O-F11) — v. novu stavku P11 ispod.
 
-- ekran u Podešavanjima (spisak + dodavanje + izmena + prekidač „aktivno"), uz rutu koja piše;
-- **pravo** koje to razdvaja od komercijale — ko sme da menja konto prihoda i poreski tretman;
-  danas ruta za čitanje ide pod `sales.read`, a rute za upis nema uopšte;
-- **trag izmene** (ko i kada je promenio konto ili tekst napomene). Tabela ima samo
-  `created_at`/`updated_at`, bez autora — isti nedostatak kao kod pojedinačnih prava iz P9.
+Kako su zatvorene tri tačke koje su ovde stajale kao „fali":
 
-**Zašto nije hitno:** četiri vrste pokrivaju sve što je izmereno u knjizi 2026 (57 od 57 stavki),
-peta se ne očekuje uskoro, a vlasnik je uz 6501 rekao „to može posle da se promeni" — što je
-izmena JEDNOG polja u JEDNOM redu. **Rizik/cena:** srednje (ekran + pravo + audit kolona).
-**Preporuka:** raditi zajedno sa P9 (rola-prerada), jer je to isto pitanje — ko sme šta da menja.
+- **pravo:** novo `settings.accounting_rules`, koje ima SAMO rola `admin` (kroz ALL); knjigovođa
+  ga dobija **imenom** kroz `user_permission_overrides` — SQL je
+  `backend/prisma/seed/knjigovodstveni-sifarnici-imenovani.sql` (Jelena Stanišić, Duško Kostić).
+  🔴 **SQL još NIJE primenjen na produkciju** — pokreće se ručno, pre deploy-a. Brane: ključ je
+  dopisan u `erp-knjige-samo-imenovanima.spec.ts` i ima svoj
+  `knjigovodstvena-pravila-imenovanima.spec.ts` (proverava GOL STRING ključa, jer
+  `user_permission_overrides.key` drži baš njega).
+- **trag izmene:** ide u `audit_log` sa `before`/`after` i spiskom polja koja su se promenila, i to
+  **u istoj transakciji** sa izmenom. Nove kolone na tabeli nisu dodavane namerno — globalni
+  `AuditInterceptor` je fire-and-forget i ne zna prethodnu vrednost, pa bi na „sa čega na šta"
+  odgovorio pola.
+- **brane na unosu:** poreski tretman je padajuća lista (vrednosti sa servera, ne prekucane), a
+  konto prihoda se proverava prema `accounts` — nepostojeći se odbija uz objašnjenje, jer je
+  kolona meki ref (bez FK) pa bi „6104" umesto „6140" inače izašao tek kad knjiženje padne.
+
+**Šta OSTAJE:** ništa od gornjeg. Šifra vrste se **ne preimenuje** (program `USL` poznaje po imenu,
+v. `DEFAULT_SERVICE_REVENUE_TYPE_CODE`) — pogrešna šifra se rešava novom vrstom + gašenjem stare;
+to je svesna odluka, ne propust.
 
 **Nije rešeno ni ovo (uže, tehničko):** avansni račun (`AVR`) za promet po vrsti `OTPAD` /
 `USL-INO`. Danas AVR uvek računa porez iz bruta i ne gleda vrstu usluge; avans na promet gde PDV
 obračunava kupac po zakonu ni ne nosi porez, pa bi ga trebalo ili zabraniti ili obraditi posebno.
 Nije mereno da li se takav avans u praksi izdaje (u knjizi 2026 — nijedan).
+
+### P11. Brojači dokumenata — ekran IZVEDEN, startni broj se upisuje ručno (05.08.2026)
+
+**Šta je urađeno.** Podešavanja → **Brojači dokumenata** (odluka O-F11): red po seriji i godini sa
+poslednjim izdatim brojem i **kako će izgledati sledeći broj** (`PROF-12/26`). Izmena kroz dijalog;
+**dupli klik na broj** ga otvara (navika iz BigBita, doslovan zahtev vlasnika). Prazan registar se
+prikazuje kao „još nije izdat nijedan broj" — na produkciji `document_number_sequences` ima **0
+redova**, pa bi ekran građen iz baze bio prazna strana baš tamo gde se broj upisuje. Isto pravo kao
+šifarnik vrsta usluge (`settings.accounting_rules`), isti trag izmene.
+
+**Brana „broj već postoji u knjizi" je postavljena na OBA kraja:**
+
+- **pri upisu startnog broja** — vrednost niža od najvećeg broja te serije u knjizi se odbija
+  (hvata grešku u kucanju dok čovek gleda u ekran koji mu kaže tačan broj);
+- **pri izdavanju broja** (`numbering.service.ts`, u istoj transakciji i pod istom bravom) —
+  zauzet broj se **preskače** do granice od 50 koraka, pa se staje glasno. Odbijanje umesto
+  preskoka bi bilo trajna blokada: rezervacija broja se poništava sa transakcijom, pa bi svaki
+  sledeći pokušaj računao isti zauzet broj i ponovo padao.
+
+🔴 **NALAZ IZ MERENJA (važno, umalo je promaklo):** `ledger_entries.document_number` NE drži samo
+naše brojeve — na ulaznoj fakturi tu stoji **dobavljačev** broj. Izmereno na produkciji 05.08.2026
+(22.258 stavki), brojevi oblika `N/26`: konto 435 (dobavljači) → najveći **14.630**, konto 270 (PDV
+u ulaznim fakturama) → **138.030**, a konto 204 (kupci) → **261**, što je tačno naš niz. Da je brana
+merila celu knjigu, ekran bi tražio startni broj 138.030 i **odbijao tačnu vrednost 261**. Zato se
+meri samo klasa konta **20** („Potraživanja od kupaca"); sudar preko klasa je nemoguć jer se
+otvorene stavke grupišu po `(konto, komitent, broj)`.
+
+**Šta OSTAJE:** sam **upis startnih brojeva** za 2027. Ekran postoji, ali vrednosti unosi čovek pri
+preuzimanju posla (01.04.2027) — to nije posao koji se može odraditi unapred, jer BigBit do tada
+nastavlja da troši brojeve (tempo 23–49 mesečno).
 
 ---
 

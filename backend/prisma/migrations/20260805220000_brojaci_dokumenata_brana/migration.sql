@@ -1,0 +1,35 @@
+-- BRANA ZA BROJAČE DOKUMENATA: broj koji se izdaje ne sme već postojati u knjizi.
+-- Povod: odluka O-F11 (backend/docs/STAMPA_FAKTURA_ODLUKE.md) + ekran „Brojači dokumenata"
+-- u Podešavanjima. Puno obrazloženje: backend/src/modules/sales/document-number-conflict.ts.
+--
+-- ŠTA OVA MIGRACIJA RADI: dodaje JEDAN indeks. Ništa se ne briše, ništa ne menja oblik.
+--
+-- ZAŠTO JE INDEKS DEO BRANE, A NE „optimizacija za kasnije":
+-- numeracija od sada pri SVAKOM knjiženju pita `SELECT … WHERE document_number = '<kandidat>'`,
+-- i to UNUTAR transakcije koja već drži `FOR UPDATE` bravu nad redom brojača. Bez indeksa je
+-- taj upit pun prolaz kroz `ledger_entries` — pa bi svako knjiženje držalo bravu onoliko dugo
+-- koliko je knjiga velika, a knjiga raste svake noći (BigBit uvoz). Rezultat bi bio da se sva
+-- knjiženja serijalizuju iza jednog sekvencijalnog skena. Sa indeksom je provera jedan pogodak.
+--
+-- ZAŠTO OBIČAN, A NE PARCIJALAN INDEKS (`WHERE document_number IS NOT NULL`):
+-- parcijalan bi bio manji (stavke sintetike i internih naloga nemaju broj), ali ga Prisma šema
+-- ne ume da opiše — pa bi baza i `schema.prisma` odmah bile u drift-u, i prvi sledeći
+-- `migrate diff` bi predložio da se indeks „popravi". Manji indeks ne vredi trajnog razilaženja.
+--
+-- ⚠️ BEZ PL/pgSQL BLOKA I BEZ IJEDNOG `IF EXISTS ( … ) AND <upit nad tabelom>`.
+-- Taj obrazac je 02.08.2026 (`20260802120000_datum_prometa_znacenje`) oborio SVE backend
+-- deploy-e sa `42703`: PL/pgSQL ceo `IF` sprema kao JEDAN upit, pa nema kratkog spoja i
+-- referenca na kolonu koja još ne postoji ruši i granu koja se ne izvršava.
+-- `CREATE INDEX IF NOT EXISTS` je idempotentan sam po sebi i ne traži nikakvu proveru.
+-- Uzor: `20260803090000_companies_postal_code`.
+--
+-- IDEMPOTENTNO: ponovno pokretanje ne radi ništa (`IF NOT EXISTS`).
+--
+-- NAPOMENA O TRAJANJU: `CREATE INDEX` (bez `CONCURRENTLY`) uzima ACCESS SHARE / SHARE bravu
+-- nad tabelom i blokira UPIS dok traje. Namerno NIJE `CONCURRENTLY`, jer se `CONCURRENTLY` ne
+-- sme izvršavati u transakciji, a migracije ovde idu transakciono. Izmereno na produkciji:
+-- `ledger_entries` je reda veličine desetina hiljada redova — indeks se pravi u sekundi, a
+-- deploy ionako ide van radnog vremena.
+
+CREATE INDEX IF NOT EXISTS "idx_ledger_entries_document_number"
+  ON "ledger_entries" ("document_number");

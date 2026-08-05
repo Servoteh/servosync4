@@ -23,6 +23,8 @@ import { NotifikacijeTab } from './_components/notifikacije-tab';
 import { IntegracijeTab } from './_components/integracije-tab';
 import { MastersTab } from './_components/masters-tab';
 import { IzgledTab } from './_components/izgled-tab';
+import { BrojaciTab } from './_components/brojaci-tab';
+import { VrsteUslugeTab } from './_components/vrste-usluge-tab';
 
 type TabKey =
   | 'korisnici'
@@ -35,6 +37,8 @@ type TabKey =
   | 'ocekivanja'
   | 'kompetencije'
   | 'predmet'
+  | 'brojaci'
+  | 'vrste-usluge'
   | 'notifikacije'
   | 'integracije'
   | 'audit'
@@ -54,6 +58,12 @@ const TAB_DEFS: { key: TabKey; label: string; requires: Permission }[] = [
   { key: 'ocekivanja', label: 'Očekivanja', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'kompetencije', label: 'Kompetencije', requires: PERMISSIONS.SETTINGS_ORG_PROFILE },
   { key: 'predmet', label: 'Predmeti', requires: PERMISSIONS.SETTINGS_PREDMET_AKTIVACIJA },
+  // Knjigovodstvena pravila — uređuje ih KNJIGOVOĐA (imenom kroz `user_permission_overrides`)
+  // ili admin. Zaseban ključ od `settings.system`: ovo nisu poluge nad pogonom aplikacije
+  // nego pravila po kojima nastaju knjige — startni broj određuje broj sledeće fakture,
+  // a vrsta usluge nosi konto prihoda I poreski tretman.
+  { key: 'brojaci', label: 'Brojači dokumenata', requires: PERMISSIONS.SETTINGS_ACCOUNTING_RULES },
+  { key: 'vrste-usluge', label: 'Vrste usluge', requires: PERMISSIONS.SETTINGS_ACCOUNTING_RULES },
   { key: 'notifikacije', label: 'Notifikacije', requires: PERMISSIONS.SETTINGS_SYSTEM },
   { key: 'integracije', label: 'Integracije', requires: PERMISSIONS.SETTINGS_SYSTEM },
   { key: 'audit', label: 'Audit log', requires: PERMISSIONS.SETTINGS_AUDIT },
@@ -102,7 +112,7 @@ export default function PodesavanjaPage() {
     return <main className="grid flex-1 place-items-center text-sm text-ink-secondary">Učitavanje…</main>;
   }
 
-  // Fail-closed grana: uloga bez ijedne od 14 tab-permisija. `profile.self` („Izgled") ima
+  // Fail-closed grana: uloga bez ijedne od 16 tab-permisija. `profile.self` („Izgled") ima
   // svaka uloga u katalogu, pa se ovde stiže samo ako dozvole nisu stigle/uloga je nepoznata.
   if (visibleTabs.length === 0) {
     return (
@@ -132,6 +142,8 @@ export default function PodesavanjaPage() {
         {tab === 'ocekivanja' && <ExpectationsTab />}
         {tab === 'kompetencije' && <KompetencijeTab />}
         {tab === 'predmet' && <PredmetAktivacijaTab />}
+        {tab === 'brojaci' && <BrojaciTab />}
+        {tab === 'vrste-usluge' && <VrsteUslugeTab />}
         {tab === 'notifikacije' && <NotifikacijeTab onNavigate={(t) => setTab(t as TabKey)} />}
         {tab === 'integracije' && <IntegracijeTab />}
         {tab === 'audit' && <AuditTab />}
