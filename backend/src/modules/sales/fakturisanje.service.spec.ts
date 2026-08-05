@@ -561,7 +561,10 @@ describe("postInvoice — nalog GK nosi IZDAT broj fakture (N1)", () => {
         create: { accountCode: string; documentNumber: string; description: string }[];
       }
     ).create;
-    expect(lines.map((l) => l.accountCode)).toEqual(["2040", "6140", "4702"]);
+    // ⚠️ 4703, ne 4702 (ispravka 05.08.2026): prihod je 6140 — dakle USLUGA — pa i
+    // porez mora na uslužni konto. Ovaj test je do 05.08. tvrdio prihod usluge uz PDV
+    // robe NA ISTOM NALOGU, i time pinovao kvar umesto da ga uhvati.
+    expect(lines.map((l) => l.accountCode)).toEqual(["2040", "6140", "4703"]);
     expect(lines.map((l) => l.documentNumber)).toEqual([
       "657/26",
       "657/26",
@@ -928,5 +931,47 @@ describe("postInvoice — nalog GK se gradi iz SVEŽEG reda, ne iz zastarelog sn
     });
 
     await expect(h.service.postInvoice(1, ACTOR)).rejects.toThrow();
+  });
+});
+
+describe("PDV usluge ide na SVOJ konto (4703), ne na konto za robu", () => {
+  /**
+   * IZMEREN KVAR (05.08.2026), potvrđen odgovorom knjigovođe na pitanje 2.
+   *
+   * Ručna grana knjiženja — kojom idu BAŠ uslužni računi, jer robni tipovi imaju svoje
+   * šeme — birala je konto izlaznog PDV-a ISKLJUČIVO po procentu, pa je svaka usluga po
+   * 20 % padala na `4702 — PDV 20 % na prodate ROBE`.
+   *
+   * Izmereno nad uvezenom knjigom 2026: `4703` (usluge) 49 stavki / 3.654.711,50 RSD, a
+   * na `4702` NIJEDNA IFUSL stavka. Nalog balansira pa nijedna kontrola ne reaguje —
+   * ali POPDV osnovicu izvodi iz tih konta, pa bi promet usluga završio u kofi za robu.
+   */
+  it("IFUSL: PDV 20 % ide na 4703, prihod na 6140, kupac na 2040", async () => {
+    const h = makePostHarness({
+      invoice: draftInvoice({ documentType: "IFUSL", stockDocumentId: null }),
+    });
+
+    await h.service.postInvoice(1, ACTOR);
+
+    const linije = (h.createdEntries[0]?.lines as { create: Record<string, unknown>[] })
+      ?.create;
+    const konta = linije?.map((l) => String(l.accountCode)).sort();
+    expect(konta).toContain("4703");
+    expect(konta).not.toContain("4702");
+  });
+
+  it("robni račun i dalje ide na 4702 — ispravka ne sme da pomeri robu", async () => {
+    // `IFR` bez vezane izdatnice ide ručnom granom (auto-robna traži stockDocumentId).
+    const h = makePostHarness({
+      invoice: draftInvoice({ documentType: "IFR", stockDocumentId: null }),
+    });
+
+    await h.service.postInvoice(1, ACTOR);
+
+    const linije = (h.createdEntries[0]?.lines as { create: Record<string, unknown>[] })
+      ?.create;
+    const konta = linije?.map((l) => String(l.accountCode));
+    expect(konta).toContain("4702");
+    expect(konta).not.toContain("4703");
   });
 });

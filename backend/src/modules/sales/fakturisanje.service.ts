@@ -102,6 +102,33 @@ const VAT_OUT_ACCOUNT_BY_PERCENT: Readonly<Record<string, string>> = {
   "10": ACC_VAT_OUT_10,
 };
 
+/**
+ * KONTO IZLAZNOG PDV-a ZA USLUGE — `4703`, ne `4702`.
+ *
+ * ⚠️ IZMEREN KVAR (05.08.2026, potvrđen odgovorom knjigovođe na pitanje 2):
+ * ručna grana je za SVAKU stopu od 20 % knjižila na `4702 — PDV 20 % na prodate ROBE`,
+ * jer se konto birao ISKLJUČIVO po procentu. A ručnom granom idu baš uslužni računi
+ * (`IFUSL`, `IZVUS`) — robni tipovi imaju svoje šeme.
+ *
+ * Knjigovođa koristi TRI konta izlaznog PDV-a po tome šta se prodaje (izmereno nad
+ * uvezenom knjigom 2026):
+ *   `4701` PDV 20 % na prodate PROIZVODE  — 33 stavke (ide kroz šemu 36, ne ovuda)
+ *   `4702` PDV 20 % na prodate ROBE       — 170 stavki (šema 33, ne ovuda)
+ *   `4703` Obaveze za PDV — USLUGE 20 %   — 49 stavki / 3.654.711,50 RSD
+ * Na `4702` nema NIJEDNE IFUSL stavke, a `4700`/`4710` imaju nulu — dakle konto za
+ * usluge se u praksi koristi dosledno, a mi smo pisali na tuđi.
+ *
+ * Zašto je kvar tih: nalog balansira (isti iznos s obe strane), pa nijedna kontrola ne
+ * reaguje — ali POPDV osnovicu izvodi IZ TIH KONTA, pa bi promet usluga završio u kofi
+ * za robu.
+ *
+ * ⚠️ Konto PRIHODA za usluge ostaje `6140` i dalje je konstanta. Odgovor 2 kaže da se
+ * on menja po vrsti usluge (`6140` / `6796` / `6501`), a izmereno je i `6151` na izvozu.
+ * To traži polje na dokumentu i spisak „vrsta usluge → konto" od knjigovođe (pitanje
+ * P-E u `docs/ODGOVORI_38_UTICAJ.md`) — ne izmišlja se ovde.
+ */
+const ACC_VAT_OUT_20_SERVICE = "4703";
+
 /** Vrsta naloga za ručno knjiženje računa prodaje. */
 const ORDER_TYPE_SALES = "IF";
 
@@ -179,7 +206,13 @@ export function buildSalesLedgerLines(
   for (const group of totals.groups) {
     if (group.vat.isZero()) continue;
     const percent = group.ratePercent.toFixed(0);
-    const account = VAT_OUT_ACCOUNT_BY_PERCENT[percent];
+    // Usluga po opštoj stopi ide na SVOJ konto (`4703`); sve ostalo po procentu.
+    // Grananje je isto kao kod prihoda dva reda iznad — porez prati vrstu prometa,
+    // ne samo stopu.
+    const account =
+      percent === "20" && SERVICE_TYPES.has(invoice.documentType)
+        ? ACC_VAT_OUT_20_SERVICE
+        : VAT_OUT_ACCOUNT_BY_PERCENT[percent];
     // Stopa bez konta izlaznog PDV-a se do 02.08.2026. TIHO knjižila na konto stope od
     // 20 % (v. `VAT_OUT_ACCOUNT_BY_PERCENT`). Bolje odbiti sa objašnjenjem nego
     // proknjižiti porez na tuđe konto i time pokvariti POPDV.

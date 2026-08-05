@@ -558,7 +558,10 @@ describe("buildSalesLedgerLines — GK po stopi, i dalje balansira", () => {
     const byAcc = new Map(lines.map((l) => [l.accountCode, l]));
     expect(byAcc.get("2040")?.debit.toFixed(2)).toBe("600.06");
     expect(byAcc.get("6140")?.credit.toFixed(2)).toBe("500.05");
-    expect(byAcc.get("4702")?.credit.toFixed(2)).toBe("100.01");
+    // ⚠️ 4703, ne 4702 (ispravka 05.08.2026): dokument je IFUSL — USLUGA — pa porez
+    // ide na uslužni konto, kao i prihod dva reda iznad (6140). Do 05.08. je ovaj test
+    // tvrdio prihod usluge uz PDV robe na istom nalogu.
+    expect(byAcc.get("4703")?.credit.toFixed(2)).toBe("100.01");
 
     const { debit, credit } = balance(lines);
     expect(debit.toFixed(4)).toBe(credit.toFixed(4));
