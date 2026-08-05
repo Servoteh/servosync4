@@ -8,6 +8,18 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PricingService } from "./pricing.service";
 import { documentVatTotals } from "./vat-totals";
+import {
+  isServiceDocument,
+  SERVICE_DOCUMENT_TYPES,
+  SERVICE_REVENUE_TYPE_SELECT,
+  taxTreatmentOf,
+} from "./service-revenue-type";
+
+/**
+ * Nacrti sa kojih se vrsta usluge sme uneti unapred — prepis (`DocumentCarryOverService`)
+ * je prenosi na uslužni račun. Spisak je isti kao `DRAFT_TYPES` u `create-proforma.dto.ts`.
+ */
+const SERVICE_TYPE_DRAFT_TYPES: ReadonlySet<string> = new Set(["PON", "PROF"]);
 import { assertVatPeriodNotLocked } from "../pdv/vat-period-lock";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
@@ -208,6 +220,14 @@ export class SalesService {
       if (!customer) {
         throw new NotFoundException(`Kupac ${patch.customerId} ne postoji.`);
       }
+    }
+
+    if (patch.serviceRevenueTypeId != null) {
+      await this.assertServiceRevenueTypeAllowed(
+        invoice.documentType,
+        invoice.documentNumber,
+        patch.serviceRevenueTypeId,
+      );
     }
 
     const coefficient = patch.priceCoefficient;
@@ -423,6 +443,51 @@ export class SalesService {
     if (!invoice) throw new NotFoundException(`Dokument ${id} ne postoji.`);
     this.assertEditable(invoice);
     return invoice;
+  }
+
+  /**
+   * VRSTA USLUGE SME SAMO NA DOKUMENT KOJI ĆE JE I KORISTITI.
+   *
+   * Dozvoljeni su uslužni računi (`IFUSL`, `IZVUS`) i nacrti (`PON`, `PROF`), jer se
+   * nacrt prepisuje u uslužni račun pa izbor treba da može da se unese već tamo.
+   * Robna faktura se ODBIJA: na njoj vrsta usluge ne bi radila ništa
+   * (`revenueAccountFor` i `taxTreatmentOf` je ignorišu), pa bi ekran pokazivao izbor
+   * koji nema nikakvog dejstva — a operater bi mislio da je knjiženje podesio.
+   *
+   * Uz to se proverava da vrsta POSTOJI i da je AKTIVNA. Strani ključ hvata samo
+   * nepostojeći id, i to porukom baze; ugašena vrsta bi kroz njega prošla i tiho
+   * proknjižila promet na konto koji je knjigovođa namerno povukao iz upotrebe.
+   */
+  private async assertServiceRevenueTypeAllowed(
+    documentType: string,
+    documentNumber: string,
+    serviceRevenueTypeId: number,
+  ): Promise<void> {
+    const type = (documentType ?? "").trim().toUpperCase();
+    if (!isServiceDocument(type) && !SERVICE_TYPE_DRAFT_TYPES.has(type)) {
+      throw new UnprocessableEntityException(
+        `Vrsta usluge se bira samo na uslužnom računu (${[...SERVICE_DOCUMENT_TYPES].join(
+          ", ",
+        )}) ili na predračunu — dokument ${documentNumber} je vrste „${type}". ` +
+          `Konto prihoda robne fakture se ne bira, on je 6040.`,
+      );
+    }
+
+    const row = await this.prisma.serviceRevenueType.findUnique({
+      where: { id: serviceRevenueTypeId },
+      select: { id: true, code: true, name: true, isActive: true },
+    });
+    if (!row) {
+      throw new NotFoundException(
+        `Vrsta usluge ${serviceRevenueTypeId} ne postoji u šifarniku.`,
+      );
+    }
+    if (!row.isActive) {
+      throw new UnprocessableEntityException(
+        `Vrsta usluge „${row.code} — ${row.name}" je ugašena i ne sme se birati. ` +
+          `Ako je ipak potrebna, knjigovođa je vraća u upotrebu u šifarniku vrsta usluge.`,
+      );
+    }
   }
 
   /**
@@ -689,7 +754,14 @@ export class SalesService {
     const [invoice, items] = await Promise.all([
       tx.invoice.findUnique({
         where: { id: invoiceId },
-        select: { isExport: true },
+        select: {
+          isExport: true,
+          // Vrsta dokumenta i vrsta usluge idu ZAJEDNO: `taxTreatmentOf` bez vrste
+          // dokumenta ne ume da razlikuje uslužni račun od predračuna koji tek treba da
+          // se prepiše, pa se traže obe (v. `service-revenue-type.ts`).
+          documentType: true,
+          serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+        },
       }),
       tx.invoiceItem.findMany({
         where: { invoiceId },
@@ -716,9 +788,17 @@ export class SalesService {
      * zastavica ovde prosleđuje SVEJEDNO: preračun zaglavlja mora da daje isti broj kao
      * knjiženje bez obzira na to ko je i kako napisao stavke. Jedna pretpostavka manje
      * je jedini način da ova invarijanta ne zavisi od tuđeg koda.
+     *
+     * ⚠️ ISTO VAŽI ZA PORESKI TRETMAN (05.08.2026, šifarnik vrsta usluge). Račun za
+     * otpad PDV ne obračunava (poreski dužnik je primalac, čl. 10 st. 2 t. 1), a stavke
+     * mu i dalje nose domaću poresku šifru „3" — cenovnik ne zna ništa o vrsti usluge.
+     * Da se tretman ovde ne prosledi, zaglavlje bi nosilo 20 % PDV-a a glavna knjiga
+     * nulu, pa `assertTotalsMatchItems` ne bi dao da se račun uopšte proknjiži.
+     * Isti razlog, ista mera.
      */
     const { netTotal, vatTotal, grossTotal } = documentVatTotals(items, {
       isExport: invoice?.isExport ?? false,
+      taxTreatment: taxTreatmentOf(invoice ?? {}),
     });
 
     await tx.invoice.update({
@@ -729,13 +809,21 @@ export class SalesService {
 
   // ── POMOĆNO ────────────────────────────────────────────────────────────────
 
-  /** Polja zaglavlja spremna za `update` (samo ono što je telo poslalo). */
+  /**
+   * Polja zaglavlja spremna za `update` (samo ono što je telo poslalo).
+   *
+   * ⚠️ `Unchecked` VARIJANTA, a ne `InvoiceUpdateManyMutationInput` (05.08.2026): čim je
+   * `serviceRevenueTypeId` dobio pravu relaciju u šemi, Prisma ga je iz „checked" tipa
+   * izbacila (tamo se veza menja preko `connect`/`disconnect`, što `updateMany` ne
+   * podržava). `Unchecked` prima FK kolonu direktno — a to je i tačno ono što ovde
+   * treba, jer je izmena CAS `updateMany` sa uslovom „još je nacrt".
+   */
   private headerUpdateData(
     patch: ValidatedInvoiceHeaderPatch,
     coefficient: Prisma.Decimal | undefined,
     actor: AuthUser,
-  ): Prisma.InvoiceUpdateManyMutationInput {
-    const data: Prisma.InvoiceUpdateManyMutationInput = {
+  ): Prisma.InvoiceUncheckedUpdateManyInput {
+    const data: Prisma.InvoiceUncheckedUpdateManyInput = {
       updatedByUserId: actor?.userId ?? null,
     };
     if (patch.documentDate !== undefined)
@@ -755,6 +843,9 @@ export class SalesService {
       data.paymentReference = patch.paymentReference;
     }
     if (patch.lineProfile !== undefined) data.lineProfile = patch.lineProfile;
+    if (patch.serviceRevenueTypeId !== undefined) {
+      data.serviceRevenueTypeId = patch.serviceRevenueTypeId;
+    }
     if (coefficient) {
       data.priceCoefficient = coefficient;
       data.priceCoefficientAppliedAt = new Date();
@@ -766,7 +857,12 @@ export class SalesService {
   private async loadWithItems(tx: Prisma.TransactionClient, id: number) {
     const invoice = await tx.invoice.findUnique({
       where: { id },
-      include: { items: { orderBy: { lineNo: "asc" } } },
+      include: {
+        items: { orderBy: { lineNo: "asc" } },
+        // Ovo je odgovor koji ekran dobija posle SVAKE izmene nacrta. Bez vrste usluge
+        // bi padajuća lista posle sopstvene izmene ostala prazna do ponovnog učitavanja.
+        serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+      },
     });
     if (!invoice) throw new NotFoundException(`Dokument ${id} ne postoji.`);
     return invoice;

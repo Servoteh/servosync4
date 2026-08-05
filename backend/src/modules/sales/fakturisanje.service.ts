@@ -15,14 +15,18 @@ import { ReservationService } from "../robno/reservation.service";
 import { DocumentNumberSequenceService } from "./numbering.service";
 import { PricingService } from "./pricing.service";
 import { documentVatTotals } from "./vat-totals";
+import {
+  SERVICE_DOCUMENT_TYPES,
+  SERVICE_REVENUE_TYPE_SELECT,
+  type ServiceRevenueTypeRef,
+  taxTreatmentOf,
+} from "./service-revenue-type";
 import type { AuthUser } from "../auth/jwt.strategy";
 import {
   type CreateProformaDto,
   validateCreateProforma,
 } from "./dto/create-proforma.dto";
-import {
-  type ListInvoicesQuery,
-} from "./dto/list-invoices.dto";
+import { type ListInvoicesQuery } from "./dto/list-invoices.dto";
 import {
   // Advisory brave se UVOZE, ne prepisuju: storno mora da uzme BAŠ one koje drži
   // `applyAdvance` (namespace 4003 = račun, 4004 = avans). Prepisana konstanta bi se
@@ -66,7 +70,14 @@ const ZERO = new D(0);
 const ACC_CUSTOMER_DOMESTIC = "2040"; // kupci u zemlji
 const ACC_CUSTOMER_EXPORT = "2050"; // kupci u inostranstvu
 const ACC_REVENUE_GOODS = "6040"; // prihod od prodaje robe
-const ACC_REVENUE_SERVICE = "6140"; // prihod od usluga (IFUSL)
+/**
+ * REZERVNI konto prihoda od usluga — koristi se SAMO kad na uslužnom računu vrsta usluge
+ * nije izabrana. Stvarni konto dolazi iz šifarnika (`ServiceRevenueType.revenueAccountCode`).
+ * Izmereno nad knjigom 2026: `6140` pokriva 45 od 57 uslužnih stavki, pa je to najmanje
+ * pogrešna vrednost za dokument bez izbora — ali nije pretpostavka koja se ćutke širi:
+ * ekran nudi padajuću listu sa predlogom `USL`.
+ */
+const ACC_REVENUE_SERVICE = "6140";
 const ACC_VAT_OUT_20 = "4702"; // obaveza za izlazni PDV 20% (VISA)
 const ACC_VAT_OUT_10 = "4710"; // obaveza za izlazni PDV 10% (NIZA)
 
@@ -122,17 +133,21 @@ const VAT_OUT_ACCOUNT_BY_PERCENT: Readonly<Record<string, string>> = {
  * reaguje — ali POPDV osnovicu izvodi IZ TIH KONTA, pa bi promet usluga završio u kofi
  * za robu.
  *
- * ⚠️ Konto PRIHODA za usluge ostaje `6140` i dalje je konstanta. Odgovor 2 kaže da se
- * on menja po vrsti usluge (`6140` / `6796` / `6501`), a izmereno je i `6151` na izvozu.
- * To traži polje na dokumentu i spisak „vrsta usluge → konto" od knjigovođe (pitanje
- * P-E u `docs/ODGOVORI_38_UTICAJ.md`) — ne izmišlja se ovde.
+ * ⚠️ Konto PRIHODA za usluge više NIJE konstanta (05.08.2026): dolazi iz šifarnika
+ * vrsta usluge (`service_revenue_types`, v. `service-revenue-type.ts`). `6140` ispod
+ * ostaje samo kao vrednost za račun kod kog vrsta usluge nije izabrana — izmereno je
+ * tačna za 45 od 57 stavki knjige 2026.
  */
 const ACC_VAT_OUT_20_SERVICE = "4703";
 
 /** Vrsta naloga za ručno knjiženje računa prodaje. */
 const ORDER_TYPE_SALES = "IF";
 
-const SERVICE_TYPES = new Set(["IFUSL", "IZVUS"]);
+/**
+ * Uslužne vrste dokumenta. Spisak je od 05.08.2026. u `service-revenue-type.ts`, jer ga
+ * uz knjiženje pita i poreski tretman i validacija izbora vrste usluge — v. tamo.
+ */
+const SERVICE_TYPES = SERVICE_DOCUMENT_TYPES;
 const AUTO_STOCK_TYPES = new Set(["IFR", "IFGP", "IZVRO", "IZVGP"]);
 
 interface LedgerLineDraft {
@@ -141,6 +156,36 @@ interface LedgerLineDraft {
   debit: Prisma.Decimal;
   credit: Prisma.Decimal;
   description: string | null;
+}
+
+/**
+ * KONTO PRIHODA ZA JEDAN DOKUMENT — roba, ili usluga po izabranoj vrsti.
+ *
+ * Redosled je namerno strog:
+ *   1. dokument nije uslužan → `6040` (roba), bez obzira šta piše u zaglavlju;
+ *   2. uslužan sa izabranom vrstom → konto IZ ŠIFARNIKA (`6140`/`6151`/`6796`/`6501`…);
+ *   3. uslužan bez izbora → `6140`, tj. zatečeno ponašanje.
+ *
+ * Prvi korak nije formalnost: vrsta usluge sme da stoji i na predračunu koji se tek
+ * prepisuje u račun, pa bi predračun prepisan u `IFR` inače odneo uslužni konto na
+ * robnu fakturu. Isti uslov drži i `taxTreatmentOf`, pa konto i porez ne mogu da se
+ * raziđu ni u jednoj kombinaciji.
+ *
+ * Konto se NE proverava prema kontnom planu: sva četiri seed konta postoje (izmereno
+ * 05.08.2026 nad `accounts`, 1397 redova), a knjigovođa koji doda petu vrstu sme da je
+ * unese i pre nego što otvori konto. Nepostojeće konto obara upis naloga u GK sa jasnom
+ * porukom baze, na mestu gde se i vidi.
+ */
+function revenueAccountFor(invoice: {
+  documentType: string;
+  serviceRevenueType?: ServiceRevenueTypeRef | null;
+}): string {
+  if (!SERVICE_TYPES.has((invoice.documentType ?? "").trim().toUpperCase()))
+    return ACC_REVENUE_GOODS;
+  const fromCodebook = invoice.serviceRevenueType?.revenueAccountCode?.trim();
+  return fromCodebook && fromCodebook.length > 0
+    ? fromCodebook
+    : ACC_REVENUE_SERVICE;
 }
 
 /**
@@ -167,10 +212,21 @@ export function buildSalesLedgerLines(
     documentNumber: string;
     customerId: number | null;
     isExport: boolean;
+    /**
+     * Izabrana vrsta usluge (šifarnik `service_revenue_types`) — `null`/izostavljeno na
+     * robi i na uslužnom računu bez izbora. Nosi KONTO PRIHODA i PORESKI TRETMAN; oba
+     * dolaze iz istog reda, pa se ne mogu razići (v. `service-revenue-type.ts`).
+     */
+    serviceRevenueType?: ServiceRevenueTypeRef | null;
   },
   items: ReadonlyArray<{ vatRateCode: string; vatBase: Prisma.Decimal }>,
 ): LedgerLineDraft[] {
-  const totals = documentVatTotals(items, { isExport: invoice.isExport });
+  // Poreski tretman spaja vrstu dokumenta i šifarnik — `taxTreatmentOf` je jedino mesto
+  // gde se to spaja, pa vrsta usluge sa predračuna ne može da deluje na robnu fakturu.
+  const totals = documentVatTotals(items, {
+    isExport: invoice.isExport,
+    taxTreatment: taxTreatmentOf(invoice),
+  });
 
   const lines: LedgerLineDraft[] = [
     {
@@ -191,9 +247,12 @@ export function buildSalesLedgerLines(
       description: `Kupac ${invoice.documentNumber}`,
     },
     {
-      accountCode: SERVICE_TYPES.has(invoice.documentType)
-        ? ACC_REVENUE_SERVICE
-        : ACC_REVENUE_GOODS,
+      // ⚠️ KONTO PRIHODA USLUGE DOLAZI IZ ŠIFARNIKA (05.08.2026). Do tada je ovde bio
+      // izraz `usluga ? 6140 : 6040`, tj. konstanta — izmereno tačna za 45 od 57 stavki
+      // uslužnog prometa u knjizi 2026, a pogrešna za preostalih 12 (`6151` izvozna
+      // usluga 2 stavke / 2.490.465,79, `6796` otpad 10 / 1.222.645,05). Komercijala i
+      // dalje ne bira konto — bira ŠTA PRODAJE, a konto stiže uz taj izbor.
+      accountCode: revenueAccountFor(invoice),
       analyticalCode: null,
       debit: ZERO,
       credit: totals.netTotal,
@@ -273,15 +332,22 @@ export function buildSalesLedgerLines(
  * prepisuje zaglavlje iz stavki i time sam popravlja dokument.
  */
 export function assertTotalsMatchItems(invoice: {
+  documentType?: string | null;
   documentNumber: string;
   isExport: boolean;
   netTotal: Prisma.Decimal;
   vatTotal: Prisma.Decimal;
   grossTotal: Prisma.Decimal;
+  serviceRevenueType?: ServiceRevenueTypeRef | null;
   items: ReadonlyArray<{ vatRateCode: string; vatBase: Prisma.Decimal }>;
 }): void {
+  // Tretman ulazi i OVDE, ne samo u knjiženje: ovo je jedina brana koja hvata slučaj da
+  // je neko promenio vrstu usluge a zaglavlje ostalo sa starim porezom (npr. izmena u
+  // bazi mimo `recalcTotals`). Bez toga bi račun za otpad mogao da se proknjiži sa
+  // `vat_total` iz vremena kad je bio obična usluga.
   const totals = documentVatTotals(invoice.items, {
     isExport: invoice.isExport,
+    taxTreatment: taxTreatmentOf(invoice),
   });
   const drift =
     !totals.netTotal.equals(invoice.netTotal) ||
@@ -419,10 +485,13 @@ export class FakturisanjeService {
 
     // T3/A8: kreditni limit kupca — 422 i pri kreiranju predračuna/ponude ako bi
     // projektovani dug prešao limit, osim uz force (telo { force: true }).
-    const force = (dto as CreateProformaDto & { force?: boolean }).force === true;
+    const force =
+      (dto as CreateProformaDto & { force?: boolean }).force === true;
     await this.assertCreditLimit(dto.customerId, grossTotal, force);
 
-    const year = (dto.documentDate ? new Date(dto.documentDate) : new Date()).getFullYear();
+    const year = (
+      dto.documentDate ? new Date(dto.documentDate) : new Date()
+    ).getFullYear();
     // Draft broj (predračun) — dodeljuje se odmah po godišnjem nizu predračuna.
     const invoice = await this.prisma.$transaction(async (tx) => {
       const documentNumber = await this.numbering.next(
@@ -438,7 +507,9 @@ export class FakturisanjeService {
           level: 250,
           companyId,
           customerId: dto.customerId,
-          documentDate: dto.documentDate ? new Date(dto.documentDate) : new Date(),
+          documentDate: dto.documentDate
+            ? new Date(dto.documentDate)
+            : new Date(),
           dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
           // DATUM PROMETA (obavezan element računa po Zakonu o PDV — nalaz N1/M1 iz
           // docs/FAKTURE_ZAKONSKA_USKLADJENOST.md): do sada ga nijedna ruta nije upisivala,
@@ -461,7 +532,10 @@ export class FakturisanjeService {
           updatedByUserId: actor.userId,
           items: { create: itemsData },
         },
-        include: { items: { orderBy: { lineNo: "asc" } } },
+        include: {
+          items: { orderBy: { lineNo: "asc" } },
+          serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+        },
       });
     });
 
@@ -516,7 +590,10 @@ export class FakturisanjeService {
   async getInvoice(id: number) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
-      include: { items: { orderBy: { lineNo: "asc" } } },
+      include: {
+        items: { orderBy: { lineNo: "asc" } },
+        serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+      },
     });
     if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
 
@@ -633,7 +710,10 @@ export class FakturisanjeService {
   async postInvoice(id: number, actor: AuthUser, force = false) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
-      include: { items: { orderBy: { lineNo: "asc" } } },
+      include: {
+        items: { orderBy: { lineNo: "asc" } },
+        serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+      },
     });
     if (!invoice) throw new NotFoundException(`Račun ${id} ne postoji.`);
 
@@ -765,7 +845,10 @@ export class FakturisanjeService {
        */
       const fresh = await tx.invoice.findUniqueOrThrow({
         where: { id },
-        include: { items: { orderBy: { lineNo: "asc" } } },
+        include: {
+          items: { orderBy: { lineNo: "asc" } },
+          serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+        },
       });
       // Zbirovi i stavke moraju da se slažu i na SVEŽEM redu — ista brana kao pre
       // transakcije, samo nad podatkom koji je stvarno proknjižen. Ako je tuđa izmena
@@ -892,7 +975,10 @@ export class FakturisanjeService {
           supplyDate,
           updatedByUserId: actor.userId,
         },
-        include: { items: { orderBy: { lineNo: "asc" } } },
+        include: {
+          items: { orderBy: { lineNo: "asc" } },
+          serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+        },
       });
 
       return posted;
@@ -975,7 +1061,10 @@ export class FakturisanjeService {
 
     const stornoed = await this.prisma.invoice.findUnique({
       where: { id },
-      include: { items: { orderBy: { lineNo: "asc" } } },
+      include: {
+        items: { orderBy: { lineNo: "asc" } },
+        serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+      },
     });
     if (!stornoed) throw new NotFoundException(`Račun ${id} ne postoji.`);
     return {
@@ -1209,7 +1298,11 @@ export class FakturisanjeService {
     let stornoEntryId: number | null = null;
     if (invoice.journalEntryId != null) {
       const entry = reversible.get(invoice.journalEntryId);
-      if (entry && entry.status !== "DRAFT" && entry.reversedByEntryId == null) {
+      if (
+        entry &&
+        entry.status !== "DRAFT" &&
+        entry.reversedByEntryId == null
+      ) {
         const rev = await this.glWrite.reverseWithin(
           tx,
           entry.id,
@@ -1441,7 +1534,9 @@ export class FakturisanjeService {
     // Limit 0 / null = bez kontrole (kupac bez postavljenog kreditnog limita).
     if (limit == null || new D(limit).lessThanOrEqualTo(ZERO)) return;
 
-    const rows = await this.prisma.$queryRaw<{ balance: Prisma.Decimal | null }[]>(
+    const rows = await this.prisma.$queryRaw<
+      { balance: Prisma.Decimal | null }[]
+    >(
       Prisma.sql`
         SELECT COALESCE(SUM(le.debit) - SUM(le.credit), 0) AS balance
         FROM ledger_entries le
@@ -1509,6 +1604,14 @@ export class FakturisanjeService {
       currency: string;
       isExport: boolean;
       workOrderId: number | null;
+      /**
+       * ⚠️ MORA DA STOJI U OVOM TIPU, iako ga pozivalac uvek prosleđuje kroz `issued`
+       * (`{ ...fresh, documentNumber }`). Da ovde nije naveden, `buildSalesLedgerLines`
+       * bi ga po tipu video kao `undefined` — pa bi TypeScript ćutao, a račun za otpad
+       * dobio konto `6140` i obračunat PDV, iako je vrsta usluge izabrana i iako je
+       * podatak u objektu stvarno prisutan. Tip je ovde jedina kontrola koja to hvata.
+       */
+      serviceRevenueType?: ServiceRevenueTypeRef | null;
     },
     year: number,
     actor: AuthUser,

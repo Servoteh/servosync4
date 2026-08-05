@@ -20,8 +20,18 @@ import type { Prisma } from "@prisma/client";
  * tako se štampa može testirati bez baze, a jedno učitavanje opslužuje sve.
  */
 
+/**
+ * ⚠️ ŠIFARNIK VRSTE USLUGE JE DEO OVOG TIPA (05.08.2026), a ne opcion dodatak.
+ *
+ * `vatSummaryRows` (`templates/totals.ts`) predaje ceo ovaj objekat u
+ * `documentVatBreakdown`, koji iz njega izvodi PORESKI TRETMAN. Da relacija nije u
+ * tipu, račun za otpad bi se odštampao sa 20 % PDV-a (jer bi tretman ispao `TAXED`)
+ * iako zaglavlje i glavna knjiga nose nulu — papir bi tvrdio porez koji nije proknjižen
+ * i koji kupac po zakonu obračunava sam. Zato je uključena u `include`, pa je svaki
+ * pozivalac koji je izostavi obara na prevođenju.
+ */
 export type InvoiceWithItems = Prisma.InvoiceGetPayload<{
-  include: { items: true };
+  include: { items: true; serviceRevenueType: true };
 }>;
 
 /** Kupac, već razrešen (šablon ne radi JOIN). */
@@ -153,6 +163,18 @@ export interface PrintCtx {
    * ćutke, `sales/advance-deduction.spec.ts` pita svih pet nad istim scenarijem.
    */
   advanceDeductions: PrintAdvanceDeduction[];
+  /**
+   * NAPOMENA SA IZABRANE VRSTE USLUGE (`service_revenue_types.paper_note`) — doslovno
+   * kako je knjigovođa upisao. `null` = vrsta nije izabrana, nije uslužan dokument, ili
+   * vrsta napomenu nema (`USL`, `ZAKUP`); obrazac tada pada na zatečeni tekst iz
+   * `sales/vat-exemption.ts`.
+   *
+   * ⚠️ OVO JE PODATAK O RAČUNU, NE KONSTANTA OBRASCA. Kod otpada je to jedina rečenica
+   * iz koje kupac vidi da PDV mora da obračuna SAM (poreski dužnik je primalac,
+   * čl. 10 st. 2 t. 1) — bez nje bi papir izgledao kao promet oslobođen PDV-a, što je
+   * druga pravna tvrdnja. Zato ga nose i domaći i ino uslužni obrazac.
+   */
+  serviceRevenueNote: string | null;
   /**
    * Otpremnica bez cena. Kolone sa novcem se izostavljaju, a zbir se ne štampa.
    * (Obrazac za ovo nije donet — v. GAP §5 t.11 — pa se zasad štampa isti

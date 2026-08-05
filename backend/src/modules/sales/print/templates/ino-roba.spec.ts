@@ -172,6 +172,7 @@ function makeCtx(over: Partial<PrintCtx> = {}): PrintCtx {
     warehouseName: "Gotovi proizvodi",
     currency: "EUR",
     advanceDeductions: [],
+    serviceRevenueNote: null,
     withoutPrices: false,
     ...over,
   };

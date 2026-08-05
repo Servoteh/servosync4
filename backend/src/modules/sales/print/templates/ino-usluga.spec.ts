@@ -174,6 +174,7 @@ const ctx: PrintCtx = {
   warehouseName: null,
   currency: "EUR",
   advanceDeductions: [],
+  serviceRevenueNote: null,
   withoutPrices: false,
 };
 
@@ -288,6 +289,25 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
       expect(collectText(inoUslugaTemplate(ctx))).toContain(
         exemptionFor("export-service")?.paperText,
       );
+    });
+
+    /**
+     * ŠIFARNIK VRSTA USLUGE (05.08.2026): za `USL-INO` je vlasnik potvrdio čl. 12 st. 3
+     * (mesto prometa usluge je van teritorije RS), čime je zatvorena sumnja zapisana
+     * 02.08.2026 u `vat-exemption.ts` — da usluga stranom licu možda uopšte nije
+     * „oslobođenje po članu 24". Kad je vrsta izabrana, papir nosi POTVRĐEN tekst.
+     */
+    it("napomena sa vrste usluge (čl. 12 st. 3) potiskuje zatečeni tekst o čl. 24", () => {
+      const note =
+        "PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u " +
+        "(mesto prometa usluge je van teritorije Republike Srbije)";
+      const joined = allText({ ...ctx, serviceRevenueNote: note });
+      expect(joined).toContain(note);
+      expect(joined).not.toContain(exemptionFor("export-service")?.paperText);
+    });
+
+    it("bez izabrane vrste usluge papir ostaje NEPROMENJEN", () => {
+      expect(allText({ ...ctx, serviceRevenueNote: null })).toBe(allText());
     });
 
     it("nosi rok reklamacije i „Trgovinski sud u Beogradu“ (usluga, ne Privredni)", () => {

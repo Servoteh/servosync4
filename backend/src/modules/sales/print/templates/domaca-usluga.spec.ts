@@ -100,6 +100,9 @@ function makeCtx(over: Partial<PrintCtx> = {}): PrintCtx {
     warehouseName: "Magacin robe",
     currency: "RSD",
     advanceDeductions: [],
+    // Vrsta usluge nije izabrana — papir 653/25 je nastao pre šifarnika (05.08.2026),
+    // pa svi zatečeni testovi u ovom fajlu moraju da ostanu tačni bez nje.
+    serviceRevenueNote: null,
     withoutPrices: false,
     ...over,
   };
@@ -628,6 +631,43 @@ describe("IFUSL — domaća faktura za uslugu (653/25)", () => {
 
     it("tekst napomene dolazi iz `vat-exemption.ts` — isti izvor kao SEF", () => {
       expect(paper).toContain(exemptionFor("domestic-taxed")?.paperText ?? NEMA_TEXT);
+    });
+
+    /**
+     * ŠIFARNIK VRSTA USLUGE (05.08.2026). Kod prodaje otpada je ovo JEDINA rečenica iz
+     * koje kupac vidi da PDV mora da obračuna sam (poreski dužnik je primalac,
+     * čl. 10 st. 2 t. 1). Bez nje bi papir izgledao kao promet oslobođen PDV-a — druga
+     * pravna tvrdnja, na dokumentu koji je poreski.
+     *
+     * Vektor: dokument `042/26` iz naloga 236 — 123.552,00 bez ijedne pare poreza.
+     */
+    it("napomena sa izabrane vrste usluge (otpad) izlazi na papir, umesto teksta o oslobođenju", () => {
+      const note =
+        "PDV nije obračunat — poreski dužnik je primalac dobara, član 10. stav 2. " +
+        "tačka 1. Zakona o PDV-u";
+      const otpad = text(
+        domacaUslugaTemplate(
+          makeCtx({
+            invoice: makeInvoice({
+              documentNumber: "042/26",
+              netTotal: d(123552),
+              vatTotal: d(0),
+              grossTotal: d(123552),
+            }),
+            serviceRevenueNote: note,
+          }),
+        ),
+      );
+      expect(otpad).toContain(note);
+      expect(otpad).not.toContain(NEMA_TEXT);
+      // Ne sme istovremeno da tvrdi i „oslobođen promet" — to je drugi osnov.
+      expect(otpad).not.toContain(exemptionFor("domestic-exempt")?.paperText);
+    });
+
+    it("bez napomene sa vrste usluge papir ostaje NEPROMENJEN", () => {
+      expect(text(domacaUslugaTemplate(makeCtx({ serviceRevenueNote: null })))).toBe(
+        paper,
+      );
     });
   });
 

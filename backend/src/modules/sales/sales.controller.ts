@@ -20,6 +20,7 @@ import { RequirePermission } from "../../common/authz/require-permission.decorat
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { FakturisanjeService } from "./fakturisanje.service";
 import { SalesService } from "./sales.service";
+import { ServiceRevenueTypeService } from "./service-revenue-type.service";
 import { DocumentCarryOverService } from "./carry-over.service";
 import { InvoicePdfService } from "./print/invoice-pdf.service";
 import { InvoiceMailService } from "./print/invoice-mail.service";
@@ -73,7 +74,27 @@ export class SalesController {
     private readonly invoiceMail: InvoiceMailService,
     private readonly advanceInvoice: AdvanceInvoiceService,
     private readonly sales: SalesService,
+    private readonly serviceRevenueTypes: ServiceRevenueTypeService,
   ) {}
+
+  // ── ŠIFARNIK VRSTA USLUGE ───────────────────────────────────────────────────
+
+  /**
+   * Vrste usluge za padajuću listu na uslužnom računu (`GET /v1/sales/service-revenue-types`).
+   *
+   * Vraća SAMO aktivne. Komercijala odavde bira ŠTA PRODAJE — konto prihoda i poreski
+   * tretman stižu uz taj izbor i ne biraju se posebno (v. `service-revenue-type.ts`).
+   * Zato ruta ide pod `SALES_READ`, a ne pod knjigovodstvenu permisiju: ovo je spisak
+   * poslovnih situacija, ne kontni plan.
+   *
+   * Uređivanje šifarnika (dodavanje/gašenje vrste, izmena konta) je posao knjigovođe i
+   * još nema svoj ekran — v. `docs/OTVORENI_POSLOVI.md`, odeljak P.
+   */
+  @Get("service-revenue-types")
+  async listServiceRevenueTypes() {
+    const data = await this.serviceRevenueTypes.listActive();
+    return { data };
+  }
 
   // ── IZMENA DOKUMENTA (nacrt) ────────────────────────────────────────────────
   // Dosad modul nije imao NIJEDNU rutu izmene: dokument je mogao da se napravi i

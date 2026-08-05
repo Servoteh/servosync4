@@ -1,6 +1,7 @@
 import type { Column, Content, TableCell } from "pdfmake/interfaces";
 import { companyAddressLine } from "../../../../common/company-address";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
+import { taxTreatmentOf } from "../../service-revenue-type";
 import {
   formatAmount,
   formatDateForeign,
@@ -121,11 +122,18 @@ export const INO_USLUGA_PAGE_MARGINS: [number, number, number, number] = [
  * `NEMA_TEXT` je nedostižan (izvoz uvek ima osnov) i stoji samo zbog tipa.
  */
 function exemptionNote(ctx: PrintCtx): string {
+  // ⚠️ ŠIFARNIK VRSTE USLUGE IMA PREDNOST (05.08.2026) — v. isti komentar u
+  // `domaca-usluga.ts`. Za `USL-INO` je vlasnik potvrdio čl. 12 st. 3 (mesto prometa
+  // van RS), čime je zatvorena sumnja zapisana u uvodu ovog fajla i u `vat-exemption.ts`.
+  // Zatečeni tekst (čl. 24 st. 2) ostaje za ino uslužni račun bez izabrane vrste, da se
+  // dosadašnji papiri ne bi promenili bez odluke.
+  if (ctx.serviceRevenueNote) return ctx.serviceRevenueNote;
   const basis = exemptionFor(
     exemptionCaseFor({
       isExport: true,
       isService: true,
       vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
+      taxTreatment: taxTreatmentOf(ctx.invoice),
     }),
   );
   return basis?.paperText ?? NEMA_TEXT;

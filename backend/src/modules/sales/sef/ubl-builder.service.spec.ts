@@ -736,3 +736,128 @@ describe("UblBuilderService — BR-CO-17 (porez iz osnovice i stope)", () => {
     expect(brco17.sub(groups[0].tax).toFixed(2)).toBe("0.01");
   });
 });
+
+/**
+ * ŠIFARNIK VRSTA USLUGE → PDV KATEGORIJA U E-FAKTURI (05.08.2026).
+ * =============================================================================
+ * Prodaja otpada je DOMAĆI promet i ide na SEF — nije izvoz. Razlika je u tome ko
+ * obračunava porez: po čl. 10 st. 2 t. 1 ZPDV to je PRIMALAC. U EN 16931 to je
+ * kategorija `AE` („VAT reverse charge", UNCL 5305), a ne `E` („oslobođen promet").
+ *
+ * Zašto je razlika skupa: kupac koji dobije `E` nema iz čega da zna da poresku obavezu
+ * ima on — e-faktura mu ćutke skriva obavezu. Uz to bi `cbc:Percent` ostao 20 uz
+ * `TaxAmount` 0, pa bi BR-CO-17 pao i SEF bi dokument odbio.
+ *
+ * Vektor je dokument `042/26` iz naloga 236: 123.552,00 bez ijedne pare poreza.
+ */
+describe("UblBuilderService — poreski tretman iz šifarnika vrsta usluge", () => {
+  const ubl = new UblBuilderService();
+
+  const OTPAD = {
+    code: "OTPAD",
+    revenueAccountCode: "6796",
+    vatTreatment: "REVERSE_CHARGE",
+    paperNote: null,
+  };
+  const USL_INO = {
+    code: "USL-INO",
+    revenueAccountCode: "6151",
+    vatTreatment: "OUTSIDE_SCOPE",
+    paperNote: null,
+  };
+
+  /** XML uslužnog računa `042/26` sa datom vrstom usluge. */
+  function otpadXml(serviceRevenueType: unknown): string {
+    return ubl.build(
+      params({
+        invoice: {
+          ...params().invoice,
+          documentType: "IFUSL",
+          documentNumber: "042/26",
+          serviceRevenueType: serviceRevenueType as never,
+          netTotal: D("123552.00"),
+          // Zaglavlje je bez poreza — baš kako ga upiše `recalcTotals` za ovu vrstu.
+          vatTotal: D("0.00"),
+          grossTotal: D("123552.00"),
+        },
+        items: [
+          line({
+            lineNo: 1,
+            quantity: D(1),
+            unitPrice: D("123552.00"),
+            // Stavka i dalje nosi domaću poresku šifru „3" — cenovnik o vrsti usluge
+            // ne zna ništa, pa je tretman JEDINO što obara stopu.
+            vatRateCode: "3",
+            vatBase: D("123552.00"),
+            vatAmount: D("24710.40"),
+            lineTotal: D("148262.40"),
+          }),
+        ],
+      }),
+    );
+  }
+
+  it("OTPAD: grupa poreza je kategorija AE sa stopom 0,00 i nula poreza", () => {
+    const doc = new XmlDocument(otpadXml(OTPAD));
+    const subtotal = findFirst(doc, "cac:TaxSubtotal");
+    if (!subtotal) throw new Error("nema cac:TaxSubtotal");
+
+    expect(findFirst(subtotal, "cbc:TaxableAmount")?.val).toBe("123552.00");
+    expect(findFirst(subtotal, "cbc:TaxAmount")?.val).toBe("0.00");
+
+    const category = findFirst(subtotal, "cac:TaxCategory");
+    if (!category) throw new Error("nema cac:TaxCategory");
+    expect(findFirst(category, "cbc:ID")?.val).toBe("AE");
+    expect(findFirst(category, "cbc:Percent")?.val).toBe("0.00");
+    // BR-E-10 / BR-AE-*: kategorija bez poreza MORA nositi razlog (BT-120).
+    expect(findFirst(category, "cbc:TaxExemptionReason")?.val).toBeTruthy();
+  });
+
+  it("OTPAD: i STAVKA nosi AE sa 0,00 — linija i grupa se ne smeju razići", () => {
+    const doc = new XmlDocument(otpadXml(OTPAD));
+    const invoiceLine = findFirst(doc, "cac:InvoiceLine");
+    if (!invoiceLine) throw new Error("nema cac:InvoiceLine");
+    const classified = findFirst(invoiceLine, "cac:ClassifiedTaxCategory");
+    if (!classified) throw new Error("nema cac:ClassifiedTaxCategory");
+
+    expect(findFirst(classified, "cbc:ID")?.val).toBe("AE");
+    expect(findFirst(classified, "cbc:Percent")?.val).toBe("0.00");
+  });
+
+  it("OTPAD: BR-CO-14 i BR-CO-17 važe (zbir grupa = TaxAmount zaglavlja)", () => {
+    const doc = new XmlDocument(otpadXml(OTPAD));
+    const taxTotal = findFirst(doc, "cac:TaxTotal");
+    if (!taxTotal) throw new Error("nema cac:TaxTotal");
+    expect(findFirst(taxTotal, "cbc:TaxAmount")?.val).toBe("0.00");
+    expect(findFirst(doc, "cbc:TaxInclusiveAmount")?.val).toBe("123552.00");
+    expect(findFirst(doc, "cbc:PayableAmount")?.val).toBe("123552.00");
+  });
+
+  it("USL-INO na domaćem uslužnom računu → kategorija O (van polja primene)", () => {
+    const doc = new XmlDocument(otpadXml(USL_INO));
+    const category = findFirst(
+      findFirst(doc, "cac:TaxSubtotal") as never,
+      "cac:TaxCategory",
+    );
+    if (!category) throw new Error("nema cac:TaxCategory");
+    expect(findFirst(category, "cbc:ID")?.val).toBe("O");
+    expect(findFirst(category, "cbc:TaxExemptionReason")?.val).toBeTruthy();
+  });
+
+  it("bez izabrane vrste usluge XML ostaje NEPROMENJEN (kategorija S, 20 %)", () => {
+    const doc = new XmlDocument(
+      ubl.build(
+        params({
+          invoice: { ...params().invoice, documentType: "IFUSL" },
+        }),
+      ),
+    );
+    const category = findFirst(
+      findFirst(doc, "cac:TaxSubtotal") as never,
+      "cac:TaxCategory",
+    );
+    if (!category) throw new Error("nema cac:TaxCategory");
+    expect(findFirst(category, "cbc:ID")?.val).toBe("S");
+    expect(findFirst(category, "cbc:Percent")?.val).toBe("20.00");
+  });
+});

@@ -1,5 +1,31 @@
 # Konto prihoda za usluge — predlog sa preporukom (05.08.2026)
 
+> ## ✅ POTVRĐENO I IZVEDENO (05.08.2026)
+>
+> Vlasnik i knjigovođa su prihvatili predlog iz odeljka 2 („**6501 zakup, ali to može posle
+> da se promeni, sve ostalo ok**"). Sva četiri odgovora iz odeljka 3 su time data:
+> spisak je tačan, zakup ide na **6501**, tekstovi napomena su potvrđeni, podrazumevana
+> vrsta je **`USL`**.
+>
+> **Šta je napravljeno.** Šifarnik `service_revenue_types` (migracija
+> `20260805190000_sifarnik_vrsta_usluge`) + polje na **zaglavlju** uslužnog računa
+> (`invoices.service_revenue_type_id`). Iz izabrane vrste sada slede tri stvari:
+> konto prihoda u glavnoj knjizi (`buildSalesLedgerLines`), poreski tretman
+> (`vat-totals.ts` — otpad i ino usluga obaraju PDV na nulu, uz kategorije `AE` odn. `O`
+> u e-fakturi) i napomena na papiru (`domaca-usluga.ts`, `ino-usluga.ts`).
+> Značenje tretmana je na jednom mestu: `backend/src/modules/sales/service-revenue-type.ts`.
+>
+> **Zašto zaglavlje, a ne stavka** — izmereno nad knjigom 2026 po
+> `ledger_entries.document_number`: **57 od 57** dokumenata sa uslužnim prihodom nosi
+> tačno JEDNO konto prihoda. Nalog `236`, koji naizgled meša `6140` i `6796`, je ZBIRNI
+> nalog sa tri zasebna dokumenta (`042/26` otpad bez PDV-a, `043/26` i `044/26` usluga sa
+> PDV-om) — knjigovođa različite vrste već danas razdvaja u zasebne račune.
+>
+> **Otvoreno ostaje** samo ekran kojim knjigovođa uređuje sam šifarnik (danas SQL) —
+> zapisano u `docs/OTVORENI_POSLOVI.md`, **P10**.
+>
+> Tekst ispod je ostavljen nepromenjen, kao zapis o tome šta je i na osnovu čega odlučeno.
+
 Nenad: *„Spisak vrsta usluge → konto za promenljivi konto prihoda nemam da ti odgovorim.
 Daj mi to detaljnije uz preporuku neku."*
 

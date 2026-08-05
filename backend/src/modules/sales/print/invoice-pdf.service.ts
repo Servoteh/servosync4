@@ -18,6 +18,7 @@ import {
   vatPercentOf,
   vatRecapMismatch,
 } from "../vat-totals";
+import { paperNoteOf } from "../service-revenue-type";
 import { BarcodeService } from "../../documents/barcode.service";
 import { buildPageFooter } from "../../documents/doc-layout";
 import { PdfService } from "../../documents/pdf.service";
@@ -306,7 +307,12 @@ export class InvoicePdfService {
   ): Promise<{ buffer: Buffer; fileName: string }> {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
-      include: { items: { orderBy: [{ lineNo: "asc" }, { id: "asc" }] } },
+      include: {
+        items: { orderBy: [{ lineNo: "asc" }, { id: "asc" }] },
+        // Vrsta usluge nosi i poreski tretman (zbirni blok) i napomenu (dno obrasca) —
+        // v. `templates/ctx.ts`, `InvoiceWithItems`.
+        serviceRevenueType: true,
+      },
     });
     if (!invoice) throw new NotFoundException(`Račun ${invoiceId} ne postoji.`);
 
@@ -570,6 +576,10 @@ export class InvoicePdfService {
       warehouseName,
       currency,
       advanceDeductions,
+      // Napomena sa izabrane vrste usluge. `paperNoteOf` sama proverava da je dokument
+      // uslužan i da napomena nije prazna — obrazac dobija ili tekst ili `null`, nikad
+      // prazan red na poreskom dokumentu.
+      serviceRevenueNote: paperNoteOf(invoice),
       withoutPrices,
     };
   }

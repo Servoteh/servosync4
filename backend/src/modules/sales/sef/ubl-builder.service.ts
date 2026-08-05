@@ -5,6 +5,12 @@ import {
   vatCategoryOf,
   vatPercentOf as vatPercentOfCode,
 } from "../vat-totals";
+import {
+  type DocumentTaxTreatment,
+  type ServiceRevenueTypeRef,
+  taxTreatmentOf,
+} from "../service-revenue-type";
+import { exemptionFor } from "../vat-exemption";
 
 /**
  * UBL 2.1 BUILDER — Invoice → SEF e-faktura XML (doc 07 §8, §6.2 field-mapping).
@@ -101,8 +107,31 @@ function vatPercentOf(code: string | null | undefined): number {
  * pravila značio da se linija (`ClassifiedTaxCategory`) i grupa (`TaxCategory`) istog
  * prometa razidu u kategoriji — dokument koji SEF odbija, bez ijedne izmene koda.
  */
-function taxCategoryOf(percent: number, isExport: boolean): string {
-  return vatCategoryOf(new D(percent), isExport);
+function taxCategoryOf(
+  percent: number,
+  isExport: boolean,
+  treatment: DocumentTaxTreatment,
+): string {
+  return vatCategoryOf(new D(percent), isExport, treatment);
+}
+
+/**
+ * OSNOV ZA KATEGORIJE `AE` I `O` — iz `../vat-exemption.ts`, ne ukucan ovde.
+ *
+ * EN 16931 traži razlog (BT-120) ili šifru (BT-121) za svaku kategoriju bez poreza; za
+ * `AE` (poreski dužnik je primalac) i `O` (mesto prometa van RS) šifra `PDV-RS` još nije
+ * utvrđena, pa ide tekst. Tekst dolazi sa istog mesta odakle ga uzima i papir — dva
+ * primerka iste poreske tvrdnje su tačno ono što je `vat-exemption.ts` i osnovan da
+ * spreči (pet ukucanih kopija, međusobno neusaglašenih, 02.08.2026).
+ *
+ * `null` = kategorija koja razlog ne traži ili ga dobija drugde (S / Z / E).
+ */
+function extraExemptionReason(category: string): string | null {
+  if (category === "AE")
+    return exemptionFor("domestic-reverse-charge")?.sefReason ?? null;
+  if (category === "O")
+    return exemptionFor("outside-scope-service")?.sefReason ?? null;
+  return null;
 }
 
 /**
@@ -306,6 +335,17 @@ export interface UblInvoiceInput {
   dueDate?: Date | null;
   currency: string;
   isExport: boolean;
+  /**
+   * IZABRANA VRSTA USLUGE (šifarnik `service_revenue_types`, 05.08.2026) — nosi poreski
+   * tretman dokumenta. `null`/izostavljeno = `TAXED`, tj. zatečeno ponašanje.
+   *
+   * ⚠️ ZAŠTO E-FAKTURA MORA DA GA ZNA: kod otpada PDV obračunava KUPAC (čl. 10 st. 2
+   * t. 1). Bez ovog podatka bi grupa ispala kategorija `E` („oslobođen promet") umesto
+   * `AE` („reverse charge") — kupac iz takve e-fakture ne može da zna da poresku
+   * obavezu ima on. Uz to bi `cbc:Percent` ostao 20 uz `TaxAmount` 0, pa bi BR-CO-17
+   * pao i SEF bi dokument odbio.
+   */
+  serviceRevenueType?: ServiceRevenueTypeRef | null;
   netTotal: Prisma.Decimal;
   vatTotal: Prisma.Decimal;
   grossTotal: Prisma.Decimal;
@@ -413,6 +453,15 @@ export class UblBuilderService {
   build(params: UblBuildParams): string {
     const { invoice, items, supplier, customer } = params;
     const cur = invoice.currency || "RSD";
+
+    /**
+     * PORESKI TRETMAN — izvodi se JEDNOM, iz `taxTreatmentOf` (vrsta dokumenta +
+     * šifarnik vrsta usluge). Isti izvor koristi i `documentVatBreakdown` u
+     * `groupTaxSubtotals`, pa grupa (`cac:TaxCategory`) i linija
+     * (`cac:ClassifiedTaxCategory`) ne mogu da se raziđu u kategoriji — a upravo je to
+     * razlog zbog kog `taxCategoryOf` uopšte i postoji kao jedna funkcija.
+     */
+    const treatment = taxTreatmentOf(invoice);
 
     const typeCode = invoice.isPrepayment
       ? INVOICE_TYPE_CODE_PREPAYMENT
@@ -533,13 +582,16 @@ export class UblBuilderService {
     const taxGroups = groupTaxSubtotals(items, invoice);
     if (taxGroups.length === 0) {
       // Defanzivni fallback (faktura bez stavki) — jedan subtotal iz zaglavlja.
+      // Kategorija se i ovde izvodi iz istog pravila (`vatCategoryOf`), da fallback ne
+      // bi bio jedino mesto u fajlu koje o poreskom tretmanu ne zna ništa.
+      const fallbackPercent = invoice.isExport || treatment !== "TAXED" ? 0 : 20;
       parts.push("<cac:TaxSubtotal>");
       parts.push(amountEl("cbc:TaxableAmount", invoice.netTotal, cur));
       parts.push(amountEl("cbc:TaxAmount", invoice.vatTotal, cur));
       parts.push(
         this.buildTaxCategory(
-          invoice.isExport ? "Z" : "S",
-          invoice.isExport ? 0 : 20,
+          vatCategoryOf(new D(fallbackPercent), invoice.isExport, treatment),
+          fallbackPercent,
           invoice.isExport,
         ),
       );
@@ -570,7 +622,7 @@ export class UblBuilderService {
 
     // — Stavke (cac:InvoiceLine) — svaka nosi svoju stopu/kategoriju —
     for (const it of items) {
-      parts.push(this.buildLine(it, cur, invoice.isExport));
+      parts.push(this.buildLine(it, cur, invoice.isExport, treatment));
     }
 
     parts.push("</Invoice>");
@@ -774,6 +826,11 @@ export class UblBuilderService {
       // BR-E-10: domaće oslobođenje MORA imati BT-120 (tekst) ili BT-121 (šifra).
       // TODO(Talas 2): tačan osnov/šifra PDV-RS kategorije iz šifarnika + TaxExemptionReasonCode.
       p.push(el("cbc:TaxExemptionReason", DOMESTIC_EXEMPTION_REASON));
+    } else {
+      // `AE` (poreski dužnik je primalac) i `O` (mesto prometa van RS) — v.
+      // `extraExemptionReason`. Bez razloga bi SEF odbio i njih, po istom pravilu.
+      const reason = extraExemptionReason(category);
+      if (reason) p.push(el("cbc:TaxExemptionReason", reason));
     }
     p.push(taxScheme());
     p.push("</cac:TaxCategory>");
@@ -784,10 +841,15 @@ export class UblBuilderService {
     it: UblInvoiceItemInput,
     cur: string,
     isExport: boolean,
+    treatment: DocumentTaxTreatment,
   ): string {
-    // Stopa/kategorija po STVARNOJ stopi stavke (izvoz forsira 0%).
-    const taxPercent = isExport ? 0 : vatPercentOf(it.vatRateCode);
-    const taxCategory = taxCategoryOf(taxPercent, isExport);
+    // Stopa/kategorija po STVARNOJ stopi stavke; izvoz forsira 0 %, a od 05.08.2026. to
+    // isto radi i poreski tretman dokumenta (otpad / mesto prometa van RS). Uslov mora
+    // da bude ISTI kao u `vatBreakdown`, inače bi linija i grupa istog prometa nosile
+    // različitu stopu — dokument koji SEF odbija (BR-CO-10 / BR-CO-17).
+    const zeroRated = isExport || treatment !== "TAXED";
+    const taxPercent = zeroRated ? 0 : vatPercentOf(it.vatRateCode);
+    const taxCategory = taxCategoryOf(taxPercent, isExport, treatment);
     const p: string[] = [];
     p.push("<cac:InvoiceLine>");
     p.push(el("cbc:ID", String(it.lineNo)));
@@ -825,6 +887,9 @@ export class UblBuilderService {
       // BR-E-10: i po liniji domaće oslobođenje nosi razlog (BT-120 tekst).
       // TODO(Talas 2): tačan osnov/šifra PDV-RS kategorije iz šifarnika.
       p.push(el("cbc:TaxExemptionReason", DOMESTIC_EXEMPTION_REASON));
+    } else {
+      const reason = extraExemptionReason(taxCategory);
+      if (reason) p.push(el("cbc:TaxExemptionReason", reason));
     }
     p.push(taxScheme());
     p.push("</cac:ClassifiedTaxCategory>");
@@ -900,6 +965,8 @@ function groupTaxSubtotals(
     documentType: string;
     isExport: boolean;
     vatTotal: Prisma.Decimal;
+    /** Nosi poreski tretman — `documentVatBreakdown` ga sam izvodi iz zaglavlja. */
+    serviceRevenueType?: ServiceRevenueTypeRef | null;
   },
 ): TaxGroup[] {
   return documentVatBreakdown(invoice, items).map((g) => ({

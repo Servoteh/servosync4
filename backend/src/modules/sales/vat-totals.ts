@@ -1,6 +1,13 @@
 import { Prisma } from "@prisma/client";
 import { VAT_RATE_BY_CODE } from "../gl/posting/vat-rates";
 import { grossToNet } from "../pdv/vat-bridge.util";
+import {
+  DEFAULT_TAX_TREATMENT,
+  type DocumentTaxTreatment,
+  type TaxTreatmentSource,
+  taxTreatmentOf,
+  treatmentChargesVat,
+} from "./service-revenue-type";
 
 /**
  * PDV ZBIROVI DOKUMENTA — JEDNO PRAVILO ZA CEO IZLAZNI RAČUN.
@@ -208,21 +215,44 @@ export function vatPercentOf(code: string | null | undefined): Prisma.Decimal {
 
 /**
  * PDV KATEGORIJA (EN 16931 BT-118 / `cac:TaxCategory/cbc:ID`):
- *   S — standardna ili snižena stopa (>0 %), domaći promet
- *   Z — izvoz / oslobođeno SA pravom na odbitak (0 %, uz osnov čl. 24)
- *   E — domaće oslobođenje BEZ izvoznog osnova (0 %)
+ *   S  — standardna ili snižena stopa (>0 %), domaći promet
+ *   Z  — izvoz / oslobođeno SA pravom na odbitak (0 %, uz osnov čl. 24)
+ *   E  — domaće oslobođenje BEZ izvoznog osnova (0 %)
+ *   AE — domaći promet gde je poreski dužnik PRIMALAC („VAT reverse charge")
+ *   O  — usluga van polja primene poreza („services outside scope of tax")
  *
  * Zajednička je za zbirove, papir i UBL: kategorija je pola ključa grupisanja, pa bi
  * dve definicije značile dve podele istog dokumenta.
+ *
+ * ⚠️ `AE` I `O` SU DODATE 05.08.2026. uz šifarnik vrsta usluge. Do tada su oba slučaja
+ * padala u `E` („domaće oslobođenje"), što nije isto: `E` znači da je promet OSLOBOĐEN,
+ * a kod otpada promet je OPOREZIV — samo porez obračunava kupac. Kupac koji dobije `E`
+ * umesto `AE` nema iz čega da zna da mora sam da obračuna PDV, pa mu e-faktura ćutke
+ * skriva njegovu poresku obavezu. Šifre su iz UNCL 5305, koji EN 16931 propisuje za
+ * BT-118 (`AE` = VAT Reverse Charge, `O` = Services outside scope of tax).
  */
-export type VatCategory = "S" | "Z" | "E";
+export type VatCategory = "S" | "Z" | "E" | "AE" | "O";
 
+/**
+ * Kategorija po stopi, izvozu i poreskom tretmanu dokumenta.
+ *
+ * `treatment` je NAMERNO opcion sa podrazumevanim `TAXED`: pozivalac koji o vrsti usluge
+ * ne zna ništa (roba, avans, zatečeni kod) dobija tačno zatečeno ponašanje. Uslužni
+ * promet ga uvek prosleđuje kroz `vatBreakdown`.
+ */
 export function vatCategoryOf(
   ratePercent: Prisma.Decimal,
   isExport: boolean,
+  treatment: DocumentTaxTreatment = DEFAULT_TAX_TREATMENT,
 ): VatCategory {
   if (ratePercent.greaterThan(ZERO)) return "S";
-  return isExport ? "Z" : "E";
+  // Izvoz je JAČI od tretmana: čl. 24 je osnov sa pravom na odbitak i on je ono što
+  // stoji na ino obrascu i u SEF-u. Vrsta usluge tada i dalje bira KONTO PRIHODA
+  // (`6151` za uslugu stranom kupcu), samo ne menja poresku kategoriju.
+  if (isExport) return "Z";
+  if (treatment === "REVERSE_CHARGE") return "AE";
+  if (treatment === "OUTSIDE_SCOPE") return "O";
+  return "E";
 }
 
 /** Jedna PDV grupa dokumenta: sve stavke iste KATEGORIJE i STOPE. */
@@ -269,6 +299,20 @@ export interface VatTotalsLine {
 export interface VatBreakdownOptions {
   /** Izvoz obara SVE redove na 0 % / kategoriju Z (čl. 24), ma kakvu šifru nosili. */
   isExport?: boolean;
+  /**
+   * PORESKI TRETMAN DOKUMENTA (šifarnik vrsta usluge, 05.08.2026).
+   *
+   * `REVERSE_CHARGE` i `OUTSIDE_SCOPE` obaraju sve redove na 0 % — isto što `isExport`
+   * radi, ali iz drugog razloga i sa drugom kategorijom (`AE` / `O` umesto `Z`):
+   * kod otpada je promet DOMAĆI i oporeziv, samo porez obračunava kupac.
+   *
+   * ⚠️ NE PROSLEĐUJE SE „RUČNO": tretman se dobija iz `taxTreatmentOf(zaglavlje)`, koje
+   * spaja vrstu dokumenta i šifarnik. Pozivalac koji ga izostavi dobija `TAXED`, dakle
+   * tačno zatečeno ponašanje — a razlika bi se, ako je neko negde ipak zaboravi, videla
+   * na knjiženju: `assertTotalsMatchItems` odbija račun kod kog se zaglavlje i stavke
+   * ne slažu.
+   */
+  taxTreatment?: DocumentTaxTreatment;
 }
 
 /**
@@ -306,7 +350,7 @@ export function vatIsDerivedFromGross(invoice: {
  * rekapitulacija, e-faktura). Traži se CEO ovaj oblik, a ne samo `vatTotal`, baš zato da
  * pozivalac ne bi mogao da objavi porez ne izjasnivši se o vrsti dokumenta.
  */
-export interface VatDocumentHeader {
+export interface VatDocumentHeader extends TaxTreatmentSource {
   documentType?: string | null;
   isExport: boolean;
   /** `invoices.vat_total` — porez koji je dokument objavio (proknjižen, na ekranu, u GK). */
@@ -339,9 +383,15 @@ export function vatBreakdown(
     { ratePercent: Prisma.Decimal; category: VatCategory; base: Prisma.Decimal }
   >();
 
+  const treatment = opts.taxTreatment ?? DEFAULT_TAX_TREATMENT;
+  // Dva nezavisna razloga da na dokumentu nema poreza: izvoz (čl. 24) i poreski tretman
+  // vrste usluge (poreski dužnik je primalac / mesto prometa van RS). Oba obaraju stopu
+  // na nulu, ali daju RAZLIČITU kategoriju — v. `vatCategoryOf`.
+  const zeroRated = (opts.isExport ?? false) || !treatmentChargesVat(treatment);
+
   for (const line of lines) {
-    const ratePercent = opts.isExport ? ZERO : resolveRatePercent(line);
-    const category = vatCategoryOf(ratePercent, opts.isExport ?? false);
+    const ratePercent = zeroRated ? ZERO : resolveRatePercent(line);
+    const category = vatCategoryOf(ratePercent, opts.isExport ?? false, treatment);
     // Ključ nosi OBA dela (BT-118 + BT-119). Sam procenat ne bi bio dovoljan: izvozna
     // 0 % (Z) i domaća oslobođena 0 % (E) su u UBL-u dve grupe sa različitim osnovom
     // oslobođenja. Normalizacija na dve decimale spaja `20` i `20.00`.
@@ -382,7 +432,12 @@ export function documentVatBreakdown(
   invoice: VatDocumentHeader,
   lines: ReadonlyArray<VatTotalsLine>,
 ): VatRateGroup[] {
-  const groups = vatBreakdown(lines, { isExport: invoice.isExport });
+  const groups = vatBreakdown(lines, {
+    isExport: invoice.isExport,
+    // Tretman se IZVODI iz zaglavlja, ne prima kao opcija: papir, rekapitulacija i
+    // e-faktura svi prolaze ovuda, pa nijedan od njih ne može da ga zaboravi.
+    taxTreatment: taxTreatmentOf(invoice),
+  });
   if (vatIsDerivedFromGross(invoice)) {
     applyGrossDerivedVatTotal(groups, lines, invoice.vatTotal);
   }
@@ -553,13 +608,15 @@ export function vatRecapMismatch(
  * postoji: nema šta da se preuzme, ovaj račun i JESTE izvor tog broja.
  *
  * `isExport` obara sve stavke u stopu 0 % (kategorija Z, čl. 24): izvozni račun ne
- * sme da nosi obračunat PDV ni kad je stavka nasledila domaću poresku šifru.
+ * sme da nosi obračunat PDV ni kad je stavka nasledila domaću poresku šifru. Isto radi
+ * i `taxTreatment` različit od `TAXED` (otpad / usluga sa mestom prometa van RS) — v.
+ * `VatBreakdownOptions`.
  */
 export function documentVatTotals(
   lines: ReadonlyArray<VatTotalsLine>,
-  opts: { isExport?: boolean } = {},
+  opts: VatBreakdownOptions = {},
 ): DocumentVatTotals {
-  const groups = vatBreakdown(lines, { isExport: opts.isExport });
+  const groups = vatBreakdown(lines, opts);
 
   let netTotal = ZERO;
   let vatTotal = ZERO;

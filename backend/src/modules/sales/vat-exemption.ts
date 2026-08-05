@@ -24,6 +24,11 @@
  *    poresku kategoriju u SEF-u. Dok knjigovođa ne presudi, ostaje zatečeni tekst.
  */
 
+import {
+  DEFAULT_TAX_TREATMENT,
+  type DocumentTaxTreatment,
+} from "./service-revenue-type";
+
 /** Vrsta prometa koja određuje osnov oslobođenja. */
 export type ExemptionCase =
   /** Domaći promet sa obračunatim PDV-om — nema oslobođenja. */
@@ -33,7 +38,18 @@ export type ExemptionCase =
   /** Izvoz dobara. */
   | "export-goods"
   /** Usluga stranom licu. */
-  | "export-service";
+  | "export-service"
+  /**
+   * DOMAĆI promet na kom PDV obračunava KUPAC (poreski dužnik je primalac, čl. 10 st. 2
+   * t. 1 ZPDV) — prodaja otpada. Kategorija `AE`, ne `E`: promet nije oslobođen nego
+   * oporeziv, samo ga oporezuje druga strana.
+   */
+  | "domestic-reverse-charge"
+  /**
+   * Usluga čije MESTO PROMETA nije u Srbiji (čl. 12 st. 3 ZPDV) — kategorija `O`
+   * („outside scope"). Nije oslobođenje po čl. 24 nego promet van polja primene.
+   */
+  | "outside-scope-service";
 
 export interface ExemptionBasis {
   /** Tekst koji ide na PAPIR, doslovno kako se štampa. */
@@ -79,6 +95,39 @@ export function exemptionFor(kind: ExemptionCase): ExemptionBasis | null {
         sefReason: "Usluga stranom licu (čl. 24 ZPDV)",
         sefCode: null,
       };
+
+    // ── REZERVA, NE DRUGI PRIMERAK ────────────────────────────────────────────
+    // Za dve vrste ispod je MERODAVAN tekst iz šifarnika vrsta usluge
+    // (`service_revenue_types.paper_note`), koji je 05.08.2026. potvrdio vlasnik i koji
+    // uređuje knjigovođa. Papir ga uzima odatle (`PrintCtx.serviceRevenueNote`), a ovde
+    // stoji samo ono što se štampa ako knjigovođa napomenu OBRIŠE — prazan red na
+    // poreskom dokumentu bi bio gori od skraćene formulacije. Za SEF (BT-120) je ovo
+    // ujedno i tekst razloga, jer razlog tamo mora da postoji.
+    case "domestic-reverse-charge":
+      return {
+        paperText:
+          "PDV nije obračunat — poreski dužnik je primalac dobara, član 10. stav 2. " +
+          "tačka 1. Zakona o PDV-u",
+        sefReason:
+          "Obveznik PDV-a je primalac dobara (čl. 10 st. 2 t. 1 ZPDV)",
+        sefCode: null,
+      };
+
+    case "outside-scope-service":
+      // ⚠️ OVO ZATVARA SUMNJU IZ UVODA FAJLA. Tamo je 02.08.2026. zapisano da usluga
+      // stranom licu možda uopšte nije „oslobođenje po članu 24" nego promet čije mesto
+      // nije u Srbiji. Vlasnik i knjigovođa su 05.08.2026. potvrdili baš to — za vrstu
+      // `USL-INO` (konto 6151). Zatečeni `export-service` tekst se NE menja: on i dalje
+      // važi za izvozni uslužni račun kod kog vrsta usluge nije izabrana, pa se stara
+      // formulacija ne gubi dok knjigovođa ne prevede zatečene dokumente.
+      return {
+        paperText:
+          "PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u " +
+          "(mesto prometa usluge je van teritorije Republike Srbije)",
+        sefReason:
+          "Mesto prometa usluge je van teritorije RS (čl. 12 st. 3 ZPDV)",
+        sefCode: null,
+      };
   }
 }
 
@@ -95,7 +144,22 @@ export function exemptionCaseFor(args: {
   isService: boolean;
   /** Ukupan obračunat PDV na dokumentu. */
   vatTotalIsZero: boolean;
+  /**
+   * Poreski tretman iz šifarnika vrsta usluge (05.08.2026). Kad ga nema, ponašanje je
+   * zatečeno — `TAXED`.
+   *
+   * ⚠️ TRETMAN IMA PREDNOST NAD „ima li PDV-a": nula poreza je POSLEDICA, ne razlog.
+   * Faktura za otpad i faktura oslobođena po nekom drugom osnovu izgledaju isto u
+   * `vatTotal` (obe nula), a na papiru moraju da nose različitu — i pravno različitu —
+   * rečenicu. Dok je jedini ulaz bio `vatTotalIsZero`, obe su izlazile kao
+   * „domestic-exempt", tj. kao promet oslobođen PDV-a; kupac otpada iz toga nije mogao
+   * da zna da PDV mora da obračuna sam.
+   */
+  taxTreatment?: DocumentTaxTreatment;
 }): ExemptionCase {
+  const treatment = args.taxTreatment ?? DEFAULT_TAX_TREATMENT;
+  if (treatment === "REVERSE_CHARGE") return "domestic-reverse-charge";
+  if (treatment === "OUTSIDE_SCOPE") return "outside-scope-service";
   if (args.isExport) return args.isService ? "export-service" : "export-goods";
   return args.vatTotalIsZero ? "domestic-exempt" : "domestic-taxed";
 }

@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { Column, Content, TableLayout } from "pdfmake/interfaces";
 import { exemptionCaseFor, exemptionFor, NEMA_TEXT } from "../../vat-exemption";
+import { taxTreatmentOf } from "../../service-revenue-type";
 import { formatAmount, formatDateDomestic, formatInvoiceNumber } from "../format";
 import type { InvoiceTemplate, PrintCtx } from "./ctx";
 import {
@@ -73,11 +74,17 @@ const NOTES: string[] = [
  * da li je PDV uopšte obračunat.
  */
 function exemptionNote(ctx: PrintCtx): string {
+  // ⚠️ ŠIFARNIK VRSTE USLUGE IMA PREDNOST (05.08.2026). Tekst za otpad i za uslugu
+  // stranom kupcu je poresku formulaciju potvrdio vlasnik, a knjigovođa je uređuje —
+  // kod ne sme da je nadglasa. `null` = vrsta nije izabrana ili je bez napomene, pa
+  // ostaje zatečeno ponašanje ispod (nepromenjeno za sve dosadašnje račune).
+  if (ctx.serviceRevenueNote) return ctx.serviceRevenueNote;
   const basis = exemptionFor(
     exemptionCaseFor({
       isExport: false,
       isService: true,
       vatTotalIsZero: ctx.invoice.vatTotal.isZero(),
+      taxTreatment: taxTreatmentOf(ctx.invoice),
     }),
   );
   return basis?.paperText ?? NEMA_TEXT;

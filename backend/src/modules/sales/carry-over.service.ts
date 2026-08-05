@@ -7,6 +7,10 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { documentVatTotals } from "./vat-totals";
+import {
+  SERVICE_REVENUE_TYPE_SELECT,
+  taxTreatmentOf,
+} from "./service-revenue-type";
 
 /**
  * DocumentCarryOverService — prepis predračuna u račun (par PROF → IFR/IFGP/IFUSL/…).
@@ -103,7 +107,10 @@ export class DocumentCarryOverService {
     return this.prisma.$transaction(async (tx) => {
       const proforma = await tx.invoice.findUnique({
         where: { id: proformaId },
-        include: { items: { orderBy: { lineNo: "asc" } } },
+        include: {
+          items: { orderBy: { lineNo: "asc" } },
+          serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+        },
       });
       if (!proforma) {
         throw new NotFoundException(`Predračun ${proformaId} ne postoji.`);
@@ -207,7 +214,24 @@ export class DocumentCarryOverService {
        * `buildSalesLedgerLines`, da zaglavlje, papir i glavna knjiga ne bi mogli da se
        * raziđu ni po konstrukciji.
        */
-      const totals = documentVatTotals(carriedItems, { isExport });
+      /**
+       * VRSTA USLUGE SE PRENOSI, ali deluje TEK NA CILJU (05.08.2026).
+       *
+       * Predračun se prepisuje u sedam različitih ciljnih vrsta, od kojih su samo dve
+       * uslužne (`IFUSL`, `IZVUS`). Zato se tretman računa nad CILJNOM vrstom, a ne nad
+       * predračunom: `PROF` sa izabranom vrstom „otpad", prepisan u `IFR`, mora da
+       * ostane robna faktura sa PDV-om. Uslov je u `taxTreatmentOf`, pa se ne može
+       * zaboraviti ni ovde ni na jednom drugom mestu.
+       */
+      const taxTreatment = taxTreatmentOf({
+        documentType: targetType,
+        serviceRevenueType: proforma.serviceRevenueType,
+      });
+
+      const totals = documentVatTotals(carriedItems, {
+        isExport,
+        taxTreatment,
+      });
 
       const invoice = await tx.invoice.create({
         data: {
@@ -271,10 +295,17 @@ export class DocumentCarryOverService {
           // Ako ga predračun nema (nije ni morao — izdaje se pre prometa), ostaje null i
           // postInvoice ga podrazumeva.
           supplyDate: proforma.supplyDate,
+          // VRSTA USLUGE — prenosi se doslovno, kao i svako drugo polje zaglavlja.
+          // Na robnom cilju je bezopasna (`taxTreatmentOf` i `revenueAccountFor` je
+          // ignorišu), a na uslužnom je jedini način da izbor sa predračuna ne propadne.
+          serviceRevenueTypeId: proforma.serviceRevenueTypeId,
           note: proforma.note,
           items: { create: carriedItems },
         },
-        include: { items: { orderBy: { lineNo: "asc" } } },
+        include: {
+          items: { orderBy: { lineNo: "asc" } },
+          serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+        },
       });
 
       // ── Upiši link nazad na izvor (zatvara anti-duplo guard) — CAS: uslov

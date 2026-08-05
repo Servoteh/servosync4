@@ -230,6 +230,36 @@ padajućoj listi, ali **nema nijedno pravo**; probano 05.08. da bude nadskup men
 **odbačeno** — osam paritet-brana (34 testa) pokazalo je da bi uz knjige tiho dala i upravljanje
 SCADA-om, forsiranje plana proizvodnje i izmenu montaže.
 
+### P10. Šifarnik VRSTA USLUGE nema ekran za uređivanje — menja ga samo SQL (05.08.2026)
+
+**Šta je urađeno.** Uvedena je tabela `service_revenue_types` (migracija
+`20260805190000_sifarnik_vrsta_usluge`) sa četiri potvrđene vrste: `USL` → konto 6140 uz PDV 20 %,
+`USL-INO` → 6151 bez PDV-a (čl. 12 st. 3), `OTPAD` → 6796 gde PDV obračunava KUPAC (čl. 10 st. 2
+t. 1), `ZAKUP` → 6501 uz PDV 20 %. Uslužni račun nosi izbor na zaglavlju
+(`invoices.service_revenue_type_id`), a konto prihoda, poreski tretman i napomena na papiru slede
+iz njega. Komercijala bira **šta prodaje**, ne konto. Ekran: padajuća lista na detalju računa
+(`/fakturisanje/detalj`), vidljiva samo na `IFUSL`/`IZVUS` i na predračunu.
+
+**Šta OSTAJE.** Šifarnik je posao **knjigovođe** (odgovor 28 iz upitnika: „knjigovođa i
+administratori, ali da se beleži izmena"), a ekran za njegovo uređivanje **nije napravljen**.
+Danas se nova vrsta, izmena konta ili gašenje rade SQL-om nad produkcijom. Konkretno fali:
+
+- ekran u Podešavanjima (spisak + dodavanje + izmena + prekidač „aktivno"), uz rutu koja piše;
+- **pravo** koje to razdvaja od komercijale — ko sme da menja konto prihoda i poreski tretman;
+  danas ruta za čitanje ide pod `sales.read`, a rute za upis nema uopšte;
+- **trag izmene** (ko i kada je promenio konto ili tekst napomene). Tabela ima samo
+  `created_at`/`updated_at`, bez autora — isti nedostatak kao kod pojedinačnih prava iz P9.
+
+**Zašto nije hitno:** četiri vrste pokrivaju sve što je izmereno u knjizi 2026 (57 od 57 stavki),
+peta se ne očekuje uskoro, a vlasnik je uz 6501 rekao „to može posle da se promeni" — što je
+izmena JEDNOG polja u JEDNOM redu. **Rizik/cena:** srednje (ekran + pravo + audit kolona).
+**Preporuka:** raditi zajedno sa P9 (rola-prerada), jer je to isto pitanje — ko sme šta da menja.
+
+**Nije rešeno ni ovo (uže, tehničko):** avansni račun (`AVR`) za promet po vrsti `OTPAD` /
+`USL-INO`. Danas AVR uvek računa porez iz bruta i ne gleda vrstu usluge; avans na promet gde PDV
+obračunava kupac po zakonu ni ne nosi porez, pa bi ga trebalo ili zabraniti ili obraditi posebno.
+Nije mereno da li se takav avans u praksi izdaje (u knjizi 2026 — nijedan).
+
 ---
 
 ## C. TEHNIČKI FOLLOW-UP (nalazi verifikatora, po prioritetu)

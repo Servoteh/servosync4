@@ -111,6 +111,7 @@ function makeCtx(over: Partial<PrintCtx>): PrintCtx {
     warehouseName: "Magacin robe",
     currency: "RSD",
     advanceDeductions: [],
+    serviceRevenueNote: null,
     withoutPrices: false,
     ...over,
   };

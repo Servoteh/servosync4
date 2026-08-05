@@ -4392,6 +4392,60 @@ model CompensationOrderLine {
 }
 
 // ── Faza 5: Fakturisanje (izlazni računi) + SEF ───────────────────────────
+
+/// ŠIFARNIK VRSTA USLUGE — komercijala bira ŠTA PRODAJE, a konto i porez slede iz toga.
+///
+/// Konto prihoda uslužnog računa nije jedan (do 05.08.2026. je bio konstanta `6140`).
+/// Izmereno nad uvezenom glavnom knjigom 2026: `6140` 45 stavki / 18.273.557,50 ·
+/// `6151` 2 / 2.490.465,79 · `6796` 10 / 1.222.645,05 · `6501` 0 (zakup postoji na
+/// papiru `IFUSL 653/25` iz 2025, koji nije u uvezenoj knjizi). Uz konto ide i PORESKI
+/// TRETMAN — v. `vatTreatment` — pa se to dvoje bira JEDNIM izborom i ne može se
+/// razići. Puno obrazloženje: `backend/docs/USLUGE_KONTA_PREDLOG.md`.
+///
+/// Šifarnik uređuje KNJIGOVOĐA (nova vrsta = novi red, bez izmene koda i bez puštanja
+/// u rad). Zato se seed migracije radi kroz `ON CONFLICT DO NOTHING` — ponovno
+/// puštanje ne sme da mu vrati našu vrednost.
+model ServiceRevenueType {
+  id Int @id(map: "pk_service_revenue_types") @default(autoincrement()) @map("id")
+
+  /// USL | USL-INO | OTPAD | ZAKUP (i sve što knjigovođa doda). Jedinstvena.
+  code String @map("code") @db.VarChar(20)
+  /// Naziv koji komercijala vidi na padajućoj listi — namerno BEZ konta u tekstu.
+  name String @map("name") @db.VarChar(100)
+
+  /// Meki ref `accounts.code` — konto prihoda za osnovicu ovog prometa.
+  /// Namerno NIJE strani ključ: kontni plan sme da se pregrupiše, a red sme da postoji
+  /// i pre nego što knjigovođa otvori konto.
+  revenueAccountCode String @map("revenue_account_code") @db.VarChar(10)
+
+  /// KO OBRAČUNAVA PDV (DB CHECK `chk_service_revenue_types_vat_treatment`):
+  ///   `TAXED`          — mi, po stopi stavke (USL → 6140, ZAKUP → 6501; PDV na 4703)
+  ///   `REVERSE_CHARGE` — KUPAC (poreski dužnik je primalac, čl. 10 st. 2 t. 1) — OTPAD
+  ///   `OUTSIDE_SCOPE`  — niko (mesto prometa van RS, čl. 12 st. 3) — USL-INO
+  /// Poslednja dva NISU izvoz: promet je domaći odn. van teritorije, a `is_export`
+  /// ostaje zaseban podatak (konto kupca 2050, valuta, ino obrazac). Zajedničko im je
+  /// samo to što na NAŠOJ fakturi PDV-a nema, pa je za uplatu jednako osnovici.
+  /// Jedina tačka istine za značenje: `sales/service-revenue-type.ts`.
+  vatTreatment String @map("vat_treatment") @db.VarChar(20)
+
+  /// Napomena koja mora da izađe na papiru (poreski dokument). NULL = nema napomene.
+  /// Ovo je JEDINI izvor teksta za štampu; `sales/vat-exemption.ts` drži samo rezervu
+  /// za slučaj da knjigovođa napomenu obriše.
+  paperNote String? @map("paper_note") @db.Text
+
+  /// Gašenje ide OVDE, ne brisanjem reda (strani ključ sa `RESTRICT` brisanje i ne da).
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  invoices Invoice[]
+
+  @@unique([code], map: "uq_service_revenue_types_code")
+  @@map("service_revenue_types")
+}
+
 /// Was: izlazni GoodsDocument (level 0 = knjižen račun / level 250 = draft-predračun).
 /// NOVA app-owned tabela — GoodsDocument je prazna sync-cache, ne piše se više.
 /// Vrste kroz documentType + level; račun nastaje iz predračuna kroz
@@ -4497,6 +4551,23 @@ model Invoice {
   /// IZVRO i IFGP — uključujući `IFGP 068/26` iz tekuće godine, unet bez ijedne
   /// robne stavke. Tvrda validacija po vrsti bi odbila stvarne podatke pri uvozu.
   lineProfile String? @map("line_profile") @db.VarChar(10)
+
+  /// VRSTA USLUGE (šifarnik `ServiceRevenueType`) — određuje KONTO PRIHODA i PORESKI
+  /// TRETMAN uslužnog računa (`IFUSL`, `IZVUS`). NULL = zatečeno ponašanje: prihod na
+  /// `6140` uz PDV po stopi stavke (izmereno tačno za 45 od 57 stavki knjige 2026).
+  ///
+  /// ⚠️ ZAŠTO NA ZAGLAVLJU, A NE NA STAVCI: izmereno nad glavnom knjigom 2026 (po
+  /// `ledger_entries.document_number`) — od 57 dokumenata sa uslužnim prihodom njih
+  /// **57 nosi TAČNO JEDNO** konto prihoda; nijedan ne meša dva. Nalog `236` koji
+  /// naizgled meša je ZBIRNI nalog sa TRI zasebna dokumenta (`042/26` otpad bez PDV-a,
+  /// `043/26` i `044/26` usluga sa PDV-om), dakle knjigovođa različite vrste već danas
+  /// razdvaja u zasebne račune. Uz to je poreski tretman po prirodi svojstvo celog
+  /// dokumenta: napomena je JEDAN red u dnu obrasca, `buildSalesLedgerLines` piše JEDAN
+  /// red prihoda, a e-faktura grupiše porez po paru (kategorija, stopa) na nivou
+  /// dokumenta. Isti oblik odluke kao `isExport`.
+  serviceRevenueTypeId Int? @map("service_revenue_type_id")
+
+  serviceRevenueType ServiceRevenueType? @relation(fields: [serviceRevenueTypeId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "fk_invoices_service_revenue_types")
 
   // — Koeficijent cene (masovna akcija nad svim stavkama; §8/O1) —
   /// MNOŽILAC SVIH STAVKI. Cena se NIKAD ne upisuje pomnožena:
@@ -4610,6 +4681,7 @@ model Invoice {
   @@index([documentDate], map: "idx_invoices_date")
   @@index([linkedInvoiceDocId], map: "idx_invoices_linked")
   @@index([journalEntryId], map: "idx_invoices_journal")
+  @@index([serviceRevenueTypeId], map: "idx_invoices_service_revenue_type")
   @@map("invoices")
 }
 

@@ -131,9 +131,37 @@ export interface Invoice {
   updatedAt: string;
 }
 
+/**
+ * VRSTA USLUGE — red šifarnika `service_revenue_types` (05.08.2026).
+ *
+ * Komercijala sa ove liste bira ŠTA PRODAJE; konto prihoda i poreski tretman stižu uz
+ * taj izbor i NE biraju se posebno. Zato `revenueAccountCode` postoji u tipu (koristi
+ * ga knjigovođa u Podešavanjima), ali se komercijali NE prikazuje — v.
+ * `backend/src/modules/sales/service-revenue-type.ts`.
+ */
+export interface ServiceRevenueType {
+  id: number;
+  /** USL | USL-INO | OTPAD | ZAKUP (šifarnik uređuje knjigovođa). */
+  code: string;
+  /** Naziv za padajuću listu, npr. „Prodaja otpada". */
+  name: string;
+  /** Konto prihoda (6140 / 6151 / 6796 / 6501…) — informativno, ne za izbor. */
+  revenueAccountCode: string;
+  /** TAXED | REVERSE_CHARGE | OUTSIDE_SCOPE — ko obračunava PDV. */
+  vatTreatment: string;
+  /** Napomena koja izlazi na papir; `null` = vrsta je nema. */
+  paperNote: string | null;
+  sortOrder: number;
+}
+
 /** Detalj računa — zaglavlje + stavke (GET /sales/invoices/:id). */
 export interface InvoiceDetail extends Invoice {
   items: InvoiceItem[];
+  /**
+   * Izabrana vrsta usluge (`invoices.service_revenue_type_id`); `null` = nije izabrana,
+   * pa važi zatečeno ponašanje (konto 6140, PDV po stopi stavke).
+   */
+  serviceRevenueTypeId?: number | null;
 }
 
 // ─────────────────────────────────────────────────────────────── query keys
@@ -206,11 +234,59 @@ export function useInvoice(id: number | null) {
   });
 }
 
+/**
+ * Šifarnik vrsta usluge (GET /sales/service-revenue-types) — SAMO AKTIVNE, redom kojim
+ * ih knjigovođa poređa. Kratka, stabilna lista (danas 4 reda), pa `staleTime` od 5
+ * minuta: račun se otvara često, a šifarnik se menja retko.
+ */
+export function useServiceRevenueTypes() {
+  return useQuery({
+    queryKey: ['sales', 'service-revenue-types'],
+    queryFn: () =>
+      apiFetch<{ data: ServiceRevenueType[] }>(`${BASE}/service-revenue-types`),
+    staleTime: 5 * 60_000,
+  });
+}
+
 // ─────────────────────────────────────────────────────────────── mutations
 
 function useInvalidateSales() {
   const qc = useQueryClient();
   return () => qc.invalidateQueries({ queryKey: KEYS.all });
+}
+
+/**
+ * Izmena zaglavlja nacrta (PATCH /sales/documents/:id).
+ *
+ * ⚠️ ENVELOPE JE DRUGAČIJI OD OSTALIH HOOK-OVA U OVOM FAJLU: ova ruta vraća
+ * `{ data }`, dok detalj i ostale mutacije vraćaju SIROV `Invoice`
+ * (`sales.controller.ts`, `updateDocument`). Zato je `apiFetch<{ data: … }>` i
+ * `.then(r => r.data)` — bez toga bi ekran dobio omotač umesto računa.
+ */
+export interface UpdateInvoiceHeaderInput {
+  documentDate?: string;
+  dueDate?: string | null;
+  supplyDate?: string | null;
+  customerId?: number;
+  currency?: string;
+  note?: string | null;
+  poNumber?: string | null;
+  paymentReference?: string | null;
+  lineProfile?: string | null;
+  /** Vrsta usluge iz šifarnika; `null` briše izbor. */
+  serviceRevenueTypeId?: number | null;
+}
+
+export function useUpdateInvoiceHeader() {
+  const invalidate = useInvalidateSales();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: number; input: UpdateInvoiceHeaderInput }) =>
+      apiFetch<{ data: InvoiceDetail }>(`${BASE}/documents/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }).then((r) => r.data),
+    onSuccess: invalidate,
+  });
 }
 
 /** Ulazna stavka predračuna (POST /sales/proformas) — 1:1 sa `CreateProformaItemInput`. */

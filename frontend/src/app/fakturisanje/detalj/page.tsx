@@ -25,7 +25,9 @@ import {
   useCreateInvoiceFromProforma,
   usePostInvoice,
   useSendInvoiceMail,
+  useServiceRevenueTypes,
   useStornoInvoice,
+  useUpdateInvoiceHeader,
   SALES_STATUS,
   SALES_DOCUMENT_TYPE,
   INVOICE_PRINT_VARIANT,
@@ -62,6 +64,17 @@ import { salesStatusMeta, DOCUMENT_TYPE_LABEL } from '../page';
 const PROFORMA_TYPES = new Set<string>([
   SALES_DOCUMENT_TYPE.PON,
   SALES_DOCUMENT_TYPE.PROF,
+]);
+
+/**
+ * Uslužne vrste dokumenta — jedine koje nose „vrstu usluge" (konto prihoda + poreski
+ * tretman). Ogledalo `SERVICE_DOCUMENT_TYPES` iz
+ * `backend/src/modules/sales/service-revenue-type.ts`; backend odbija izbor na svemu
+ * ostalom, pa ekran polje ni ne nudi.
+ */
+const SERVICE_DOCUMENT_TYPES = new Set<string>([
+  SALES_DOCUMENT_TYPE.IFUSL,
+  SALES_DOCUMENT_TYPE.IZVUS,
 ]);
 
 /**
@@ -891,9 +904,76 @@ function StornoDialog({
   );
 }
 
+/**
+ * VRSTA USLUGE — jedino polje zaglavlja koje se menja sa ovog ekrana (05.08.2026).
+ *
+ * ZAŠTO OVDE: `IFUSL`/`IZVUS` se ne mogu ni napraviti iz dijaloga za nov dokument (on
+ * nudi samo `PON`/`PROF`) — uslužni račun nastaje PREPISOM predračuna, dakle tek na
+ * ovom ekranu. Da polje nije ovde, izbor bi se mogao uneti samo direktno u bazi.
+ *
+ * ZAŠTO NIJE PONUĐEN KONTO: komercijala bira ŠTA PRODAJE. Konto prihoda (6140 / 6151 /
+ * 6796 / 6501) i poreski tretman stižu uz taj izbor sa backenda i ovde se namerno ne
+ * prikazuju — v. `backend/docs/USLUGE_KONTA_PREDLOG.md`.
+ *
+ * Menja se SAMO dok je dokument nacrt: proknjižen račun je zaključan (`isLocked`), a
+ * i backend bi izmenu odbio sa 409. Zato se tada prikazuje samo naziv izabrane vrste.
+ */
+function ServiceRevenueTypeField({ doc }: { doc: InvoiceDetail }) {
+  const { data, isLoading } = useServiceRevenueTypes();
+  const update = useUpdateInvoiceHeader();
+  const [error, setError] = useState<string | null>(null);
+
+  const types = data?.data ?? [];
+  const selected = types.find((t) => t.id === doc.serviceRevenueTypeId) ?? null;
+  const editable = doc.status === SALES_STATUS.DRAFT && !doc.isLocked;
+
+  if (!editable) {
+    return (
+      <Field label="Vrsta usluge">
+        <span className="text-ink">{selected?.name ?? '—'}</span>
+      </Field>
+    );
+  }
+
+  return (
+    <Field label="Vrsta usluge">
+      <Select
+        // Prazna opcija je legitiman izbor: bez vrste važi zatečeno ponašanje
+        // (prihod 6140, PDV po stopi stavke) — tačno za 45 od 57 izmerenih stavki.
+        placeholder={isLoading ? 'Učitavanje…' : 'Bez izbora (6140)'}
+        value={doc.serviceRevenueTypeId != null ? String(doc.serviceRevenueTypeId) : ''}
+        disabled={update.isPending}
+        options={types.map((t) => ({ value: String(t.id), label: t.name }))}
+        onChange={(e) => {
+          setError(null);
+          const value = e.target.value;
+          update.mutate(
+            {
+              id: doc.id,
+              // `null` briše izbor — PATCH razlikuje „polje nije poslato" od „obriši".
+              input: { serviceRevenueTypeId: value === '' ? null : Number(value) },
+            },
+            {
+              onError: (err) =>
+                setError(
+                  err instanceof ApiError ? err.message : 'Izmena nije sačuvana.',
+                ),
+            },
+          );
+        }}
+      />
+      {error && <p className="mt-1 text-2xs text-status-danger">{error}</p>}
+    </Field>
+  );
+}
+
 /** Zaglavlje računa — label/vrednost mreža (DESIGN_SYSTEM §5). */
 function InvoiceHeader({ doc }: { doc: InvoiceDetail }) {
   const s = salesStatusMeta(doc.status);
+  // Vrsta usluge se tiče SAMO uslužnog računa i predračuna koji će to postati; na
+  // robnoj fakturi ne bi radila ništa, pa se i ne prikazuje (backend je i odbija).
+  const showServiceRevenueType =
+    SERVICE_DOCUMENT_TYPES.has(doc.documentType) || PROFORMA_TYPES.has(doc.documentType);
   return (
     <section className="rounded-panel border border-line bg-surface p-5">
       <dl className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -943,6 +1023,7 @@ function InvoiceHeader({ doc }: { doc: InvoiceDetail }) {
         <Field label="Broj stavki">
           <span className="tnums text-ink">{doc.items.length}</span>
         </Field>
+        {showServiceRevenueType && <ServiceRevenueTypeField doc={doc} />}
       </dl>
       {doc.note && (
         <div className="mt-4 border-t border-line-soft pt-4">

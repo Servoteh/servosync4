@@ -162,6 +162,15 @@ export interface UpdateInvoiceHeaderDto {
   priceCoefficient?: string | number;
   /** GOODS | SERVICE; `null` = uzmi predlog iz registra vrsta. */
   lineProfile?: string | null;
+  /**
+   * VRSTA USLUGE iz šifarnika (`service_revenue_types.id`) — određuje konto prihoda i
+   * poreski tretman uslužnog računa. `null` briše izbor (povratak na zatečeno: konto
+   * `6140`, PDV po stopi stavke).
+   *
+   * Da li vrsta SME da stoji na ovom dokumentu proverava servis (`SalesService`), ne
+   * DTO: to je pitanje o vrsti dokumenta, koju DTO ne vidi.
+   */
+  serviceRevenueTypeId?: number | null;
 }
 
 /** Normalizovan patch: ključ postoji SAMO ako ga je telo poslalo. */
@@ -178,6 +187,7 @@ export interface ValidatedInvoiceHeaderPatch {
   paymentReference?: string | null;
   priceCoefficient?: Prisma.Decimal;
   lineProfile?: string | null;
+  serviceRevenueTypeId?: number | null;
 }
 
 export function validateUpdateInvoiceHeader(
@@ -276,6 +286,16 @@ export function validateUpdateInvoiceHeader(
       errors.push("Profil stavki mora biti GOODS ili SERVICE.");
     } else {
       patch.lineProfile = v.trim().toUpperCase();
+    }
+  }
+
+  if ("serviceRevenueTypeId" in body) {
+    const v = body.serviceRevenueTypeId;
+    if (v === null) patch.serviceRevenueTypeId = null;
+    else if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+      errors.push("Vrsta usluge nije ispravna.");
+    } else {
+      patch.serviceRevenueTypeId = v;
     }
   }
 

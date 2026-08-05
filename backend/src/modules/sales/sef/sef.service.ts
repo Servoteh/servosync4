@@ -17,6 +17,7 @@ import {
   ADVANCE_DOCUMENT_TYPE,
 } from "../../pdv/dto/advance-vat.dto";
 import { loadInvoiceAdvanceDeductions } from "../advance-deduction";
+import { SERVICE_REVENUE_TYPE_SELECT } from "../service-revenue-type";
 import { InvoicePdfService } from "../print/invoice-pdf.service";
 import { SefClientService } from "./sef-client.service";
 import {
@@ -125,7 +126,11 @@ export class SefService {
   async enqueue(invoiceId: number, userId?: number): Promise<EnqueueResult> {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
-      include: { items: { orderBy: { lineNo: "asc" } } },
+      include: {
+        items: { orderBy: { lineNo: "asc" } },
+        // Poreski tretman dokumenta (kategorija `AE`/`O` u UBL-u) — v. `ubl-builder`.
+        serviceRevenueType: SERVICE_REVENUE_TYPE_SELECT,
+      },
     });
     if (!invoice) throw new NotFoundException(`Faktura ${invoiceId} ne postoji.`);
 
@@ -323,6 +328,10 @@ export class SefService {
         dueDate: invoice.dueDate,
         currency: invoice.currency,
         isExport: invoice.isExport,
+        // Vrsta usluge nosi poreski tretman (otpad → kategorija `AE`, poreski dužnik je
+        // primalac). Bez nje bi e-faktura tvrdila 20 % na dokumentu koji je proknjižen
+        // bez poreza — v. `UblInvoiceInput.serviceRevenueType`.
+        serviceRevenueType: invoice.serviceRevenueType,
         netTotal: invoice.netTotal,
         vatTotal: invoice.vatTotal,
         grossTotal: invoice.grossTotal,
