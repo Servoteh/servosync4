@@ -1532,15 +1532,53 @@ export class OdrzavanjeService {
     });
   }
 
-  /** IT/objekti koji „zahtevaju pažnju" — rokovi iz overview view-ova. */
+  /**
+   * IT/objekti koji „zahtevaju pažnju" — sredstva sa STVARNIM problemom SADA.
+   *
+   * Uslov je namerno uzak: pločica na pregledu je ranije brojala SVE nearhivirano
+   * (5/5 IT sredstava koja sva rade), pa je „⚠ 5 zahtevaju pažnju" bilo šum.
+   * Filtriranje je u SQL-u (ne na FE) da isti skup vide i pločica i izveštaj.
+   *
+   * Pažnju traži red kome je BAR JEDNO tačno:
+   *  - `status <> 'running'` — smetnje / zastoj / u održavanju (enum
+   *    `maint_operational_status` = running|degraded|down|maintenance; arhivirano se
+   *    ionako odseca `archived_at IS NULL`). Isto pravilo koje pločica „Mašine"
+   *    već koristi (`status !== 'running'`);
+   *  - `open_wo_count > 0` — ima otvoren radni nalog (novi/dodeljen/u_radu);
+   *  - IT: `license_status`/`warranty_status = 'expired'` — rok je PROŠAO;
+   *  - IT: `backup_status IN ('missing','stale')` — backup je tražen a ne postoji
+   *    (`missing`), ili je stariji od 7 dana (`stale`);
+   *  - Objekti: `inspection_status`/`fire_safety_status = 'expired'` — inspekcija
+   *    odnosno protivpožarni pregled su prekoračeni.
+   *
+   * NE ulazi (svesno):
+   *  - `'unknown'` — podatak NIJE unet (rok je NULL); to je rupa u šifarniku, ne kvar,
+   *    i ne sme da pali alarm nad sredstvom koje radi;
+   *  - `'due_soon'` (≤30 dana) i `backup_status = 'not_required'` — nadolazeći rokovi
+   *    imaju svoje mesto u „Rokovi (narednih 30 dana)" / kalendaru rokova, a
+   *    „backup nije potreban" nije propust.
+   */
   async reportAttention(email: string) {
     return this.withUserMapped(email, async (tx) => {
       const [itAssets, facilities] = await Promise.all([
         tx.$queryRaw(
-          Prisma.sql`SELECT * FROM v_maint_it_overview WHERE archived_at IS NULL`,
+          Prisma.sql`SELECT * FROM v_maint_it_overview
+            WHERE archived_at IS NULL
+              AND (status <> 'running'
+                OR open_wo_count > 0
+                OR license_status = 'expired'
+                OR warranty_status = 'expired'
+                OR backup_status IN ('missing', 'stale'))
+            ORDER BY asset_code`,
         ),
         tx.$queryRaw(
-          Prisma.sql`SELECT * FROM v_maint_facility_overview WHERE archived_at IS NULL`,
+          Prisma.sql`SELECT * FROM v_maint_facility_overview
+            WHERE archived_at IS NULL
+              AND (status <> 'running'
+                OR open_wo_count > 0
+                OR inspection_status = 'expired'
+                OR fire_safety_status = 'expired')
+            ORDER BY asset_code`,
         ),
       ]);
       return { data: { itAssets, facilities } };

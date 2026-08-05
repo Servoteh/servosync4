@@ -31,6 +31,25 @@ import { PrijavaKvaraDialog } from './prijava-kvara-dialog';
 type Nav = (tab: DashNavTab, filter?: MachineListFilter) => void;
 
 /**
+ * Šta se po kategoriji računa kao „zahteva pažnju" — ide u `title` pločice da definicija
+ * bude vidljiva iz ekrana (ne samo iz koda). Tekst mora da prati izvor brojke:
+ * mašine = `v_maint_machine_current_status.status`; vozila = `/vehicles/service-plan-due`;
+ * IT/objekti = `/reports/attention` (BE `reportAttention` — uslov je u SQL-u).
+ */
+const ATTENTION_HINT = {
+  machine: 'Mašine koje ne rade normalno: smetnje, zastoj ili u održavanju.',
+  vehicle: 'Stavke servisnog plana vozila (rokovi po mesecima i kilometraži).',
+  facility:
+    'Objekti sa stvarnim problemom: ne rade normalno, imaju otvoren radni nalog, ' +
+    'ili je prekoračen rok inspekcije / protivpožarnog pregleda. ' +
+    'Neunet rok (nepoznato) i rok koji tek dolazi ne računaju se — oni su u „Rokovi (narednih 30 dana)".',
+  it:
+    'IT oprema sa stvarnim problemom: ne radi normalno, ima otvoren radni nalog, ' +
+    'istekla je licenca ili garancija, ili backup nedostaje / je stariji od 7 dana. ' +
+    'Neunet rok (nepoznato) i rok koji tek dolazi ne računaju se — oni su u „Rokovi (narednih 30 dana)".',
+} as const;
+
+/**
  * Pregled (dashboard) — paritet 1.0 index.js:1399-1846: „Prijavi kvar" CTA, 4 kategorije-tile
  * (sa „zahtevaju pažnju"), unified deadlines (≤30d), 8 klik-KPI + 5 snapshot KPI, i 4 mini-liste
  * (Zahtevaju pažnju / aktivni WO / preventiva due / zastoji). KPI/tile navigiraju na tab uz
@@ -128,10 +147,10 @@ export function PregledTab({
 
       {/* 4 kategorije */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <CategoryTile icon="🛠" label="Mašine" total={catCount.machine ?? null} attention={machinesAttention} onClick={() => onNavigate('masine')} />
-        <CategoryTile icon="🚚" label="Vozila" total={catCount.vehicle ?? null} attention={vehAttention} onClick={() => onNavigate('vozila')} />
-        <CategoryTile icon="🏭" label="Objekti" total={catCount.facility ?? null} attention={facAttention} onClick={() => onNavigate('objekti')} />
-        <CategoryTile icon="💻" label="IT oprema" total={catCount.it ?? null} attention={itAttention} onClick={() => onNavigate('it')} />
+        <CategoryTile icon="🛠" label="Mašine" total={catCount.machine ?? null} attention={machinesAttention} attentionHint={ATTENTION_HINT.machine} onClick={() => onNavigate('masine')} />
+        <CategoryTile icon="🚚" label="Vozila" total={catCount.vehicle ?? null} attention={vehAttention} attentionHint={ATTENTION_HINT.vehicle} onClick={() => onNavigate('vozila')} />
+        <CategoryTile icon="🏭" label="Objekti" total={catCount.facility ?? null} attention={facAttention} attentionHint={ATTENTION_HINT.facility} onClick={() => onNavigate('objekti')} />
+        <CategoryTile icon="💻" label="IT oprema" total={catCount.it ?? null} attention={itAttention} attentionHint={ATTENTION_HINT.it} onClick={() => onNavigate('it')} />
       </div>
 
       {/* Unified deadlines ≤30d */}
