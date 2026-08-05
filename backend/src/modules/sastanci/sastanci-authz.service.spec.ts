@@ -14,6 +14,8 @@ function prismaStub(opts: {
   extraRoles?: string[];
   ucesnikCount?: number;
   moverCount?: number;
+  /** Broj sastanaka koji zadovoljavaju „organizator-trio" upit. */
+  trioCount?: number;
 }) {
   return {
     user: {
@@ -30,6 +32,9 @@ function prismaStub(opts: {
     },
     sastWeeklyMover: {
       count: jest.fn().mockResolvedValue(opts.moverCount ?? 0),
+    },
+    sastanak: {
+      count: jest.fn().mockResolvedValue(opts.trioCount ?? 0),
     },
   } as unknown as PrismaService;
 }
@@ -366,5 +371,97 @@ describe("scopeNotifPrefsWhere — paritet snp_select_own", () => {
   it("🔴 prazan mejl → nijedan red", async () => {
     const s = svc(prismaStub({ user: null }));
     expect(vid(await s.scopeNotifPrefsWhere(null))).toEqual([]);
+  });
+});
+
+// ============================================================================
+// WRITE-SCOPE — gejtovi koje traže rute skinute sa 503 (blokada 1)
+// ============================================================================
+//
+// Izmereno (`pg_policies`, živa sy15):
+//   sastanci_insert            has_edit_role()
+//   su_* / ap_*                has_edit_role() ∧ (mgmt ∨ učesnik ∨ trio)
+
+describe("canCreateSastanak — paritet sastanci_insert", () => {
+  it("edit rola sme, ostali ne", async () => {
+    expect(
+      await svc(prismaStub({ user: { id: 1, role: "pm" } })).canCreateSastanak(JA),
+    ).toBe(true);
+    expect(
+      await svc(prismaStub({ user: { id: 1, role: "sef" } })).canCreateSastanak(JA),
+    ).toBe(false);
+  });
+});
+
+describe("canWriteSastanakChild — paritet su_*/ap_* politika", () => {
+  const S = "sast-1";
+
+  it("🔴 edit rola SAMA po sebi NIJE dovoljna (mora i veza sa sastankom)", async () => {
+    // Ovo je grana koju je najlakše izgubiti: `has_edit_role()` je konjunkt, ne
+    // alternativa. Bez nje bi svaki `pm` menjao učesnike SVAKOG sastanka.
+    const s = svc(
+      prismaStub({ user: { id: 1, role: "pm" }, ucesnikCount: 0, trioCount: 0 }),
+    );
+    expect(await s.canWriteSastanakChild(JA, S)).toBe(false);
+  });
+
+  it("edit rola + učesnik → sme", async () => {
+    const s = svc(prismaStub({ user: { id: 1, role: "pm" }, ucesnikCount: 1 }));
+    expect(await s.canWriteSastanakChild(JA, S)).toBe(true);
+  });
+
+  it("edit rola + organizator-trio (vodio/zapisničar/created_by) → sme", async () => {
+    const s = svc(prismaStub({ user: { id: 1, role: "pm" }, trioCount: 1 }));
+    expect(await s.canWriteSastanakChild(JA, S)).toBe(true);
+  });
+
+  it("rukovodstvo sme i bez ikakve veze sa sastankom", async () => {
+    const s = svc(prismaStub({ user: { id: 1, role: "menadzment" } }));
+    expect(await s.canWriteSastanakChild(JA, S)).toBe(true);
+  });
+
+  it("🔴 BEZ edit role ni učesnik ni trio ne pomažu", async () => {
+    const s = svc(
+      prismaStub({ user: { id: 1, role: "sef" }, ucesnikCount: 1, trioCount: 1 }),
+    );
+    expect(await s.canWriteSastanakChild(JA, S)).toBe(false);
+  });
+
+  it("prazan mejl → false, bez ijednog upita", async () => {
+    const p = prismaStub({ ucesnikCount: 1, trioCount: 1 });
+    expect(await svc(p).canWriteSastanakChild("", S)).toBe(false);
+    expect(p.sastanak.count).not.toHaveBeenCalled();
+  });
+
+  it("assert varijanta baca 403 (sy15 je vraćao 42501 → 403)", async () => {
+    const s = svc(prismaStub({ user: { id: 1, role: "sef" } }));
+    await expect(s.assertCanWriteSastanakChild(JA, S)).rejects.toMatchObject({
+      status: 403,
+    });
+  });
+});
+
+describe("isOrganizatorTrio", () => {
+  it("gleda sve tri kolone, neosetljivo na veličinu slova", async () => {
+    const p = prismaStub({ trioCount: 1 });
+    expect(await svc(p).isOrganizatorTrio("JA@Servoteh.com", "sast-1")).toBe(true);
+    const where = (p.sastanak.count as jest.Mock).mock.calls[0][0].where;
+    expect(where.OR.map((o: Record<string, unknown>) => Object.keys(o)[0])).toEqual([
+      "vodioEmail",
+      "zapisnicarEmail",
+      "createdByEmail",
+    ]);
+    for (const o of where.OR) {
+      expect(Object.values(o)[0]).toEqual({
+        equals: "ja@servoteh.com",
+        mode: "insensitive",
+      });
+    }
+  });
+
+  it("bez sastanka → false bez upita", async () => {
+    const p = prismaStub({ trioCount: 1 });
+    expect(await svc(p).isOrganizatorTrio(JA, null)).toBe(false);
+    expect(p.sastanak.count).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { ForbiddenException, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 
@@ -263,5 +263,86 @@ export class SastanciAuthzService {
     if (key === "") return { email: { in: [] } };
     if (await this.isManagement(key)) return {};
     return { email: { equals: key, mode: "insensitive" } };
+  }
+
+  // ==========================================================================
+  // WRITE-SCOPE (prepis INSERT/UPDATE/DELETE politika) — deo blokade 3
+  // ==========================================================================
+  //
+  // Prepisuje se SAMO ono što traže rute skinute sa 503 u ovom koraku
+  // (create-sastanak, bulk-ucesnici, prenos, instantiate). Ostatak blokade 3
+  // ide zajedno sa tabelarnim CRUD-om (blokada 2) i ne sme da kasni za njim.
+  //
+  // IZMERENO (`pg_policies`, živa sy15, 05.08.2026):
+  //   sastanci_insert                       WITH CHECK: has_edit_role()
+  //   su_insert / su_update / su_delete      has_edit_role() ∧ (učesnik ∨ mgmt ∨ trio)
+  //   ap_insert / ap_update / ap_delete      has_edit_role() ∧ ((sastanak_id IS NULL
+  //                                          ∧ mgmt) ∨ učesnik ∨ mgmt ∨ trio)
+  //
+  // „trio" = `lower(vodio_email | zapisnicar_email | created_by_email)` roditeljskog
+  // sastanka poklapa se sa mejlom iz sesije.
+  //
+  // Grana `(sastanak_id IS NULL ∧ mgmt)` kod `ap_*` je LOGIČKI SUVIŠNA — u istoj
+  // disjunkciji stoji i goli `mgmt`, koji je apsorbuje. Zato je jedan te isti gejt
+  // dovoljan i za `su_*` i za `ap_*`, i zato se ovde NE prepisuje doslovno (prepis
+  // suvišne grane bi sugerisao pravilo koje ne postoji).
+
+  /** `sastanci_insert` — pravo da se NAPRAVI sastanak je samo edit rola. */
+  async canCreateSastanak(email: string | null | undefined): Promise<boolean> {
+    return this.hasEditRole(email);
+  }
+
+  /**
+   * Zajednički gejt za DECU sastanka (`sastanak_ucesnici`, `akcioni_plan`):
+   * `has_edit_role() ∧ (mgmt ∨ učesnik ∨ organizator-trio)`.
+   *
+   * ⚠️ Pri kreiranju NOVOG sastanka učesnika još nema, pa grana „učesnik" ne može
+   * da prođe — prolazi „trio" preko `created_by_email`, koji upis postavlja na
+   * mejl pozivaoca. Tako radi i sy15: ista politika, isti redosled upisa.
+   */
+  async canWriteSastanakChild(
+    email: string | null | undefined,
+    sastanakId: string | null | undefined,
+  ): Promise<boolean> {
+    const key = this.key(email);
+    if (key === "") return false;
+    if (!(await this.hasEditRole(key))) return false;
+    if (await this.isManagement(key)) return true;
+    if (await this.isUcesnik(key, sastanakId)) return true;
+    return this.isOrganizatorTrio(key, sastanakId);
+  }
+
+  /** `vodio_email ∨ zapisnicar_email ∨ created_by_email` sastanka = moj mejl. */
+  async isOrganizatorTrio(
+    email: string | null | undefined,
+    sastanakId: string | null | undefined,
+  ): Promise<boolean> {
+    const key = this.key(email);
+    if (key === "" || !sastanakId) return false;
+    const n = await this.prisma.sastanak.count({
+      where: {
+        id: sastanakId,
+        OR: [
+          { vodioEmail: { equals: key, mode: "insensitive" } },
+          { zapisnicarEmail: { equals: key, mode: "insensitive" } },
+          { createdByEmail: { equals: key, mode: "insensitive" } },
+        ],
+      },
+    });
+    return n > 0;
+  }
+
+  /**
+   * `canWriteSastanakChild` + 403. sy15 je odbijeni upis vraćao kao `42501`, koji
+   * `rethrowSy15` mapira na 403 — ovde se isti HTTP kod diže direktno.
+   */
+  async assertCanWriteSastanakChild(
+    email: string | null | undefined,
+    sastanakId: string | null | undefined,
+  ): Promise<void> {
+    if (await this.canWriteSastanakChild(email, sastanakId)) return;
+    throw new ForbiddenException(
+      "Nemate pravo da menjate podatke ovog sastanka.",
+    );
   }
 }

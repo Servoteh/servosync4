@@ -76,6 +76,8 @@ function makeSvc() {
     {} as never,
     {} as never,
     {} as never,
+    // IdempotencyService (registar u 3.0 bazi) — pod `sy15` se ne dodiruje.
+    {} as never,
   );
   return { svc, tx };
 }

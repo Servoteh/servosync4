@@ -55,6 +55,8 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       {} as never,
       {} as never,
       {} as never,
+      // IdempotencyService (registar u 3.0 bazi) — pod `sy15` se ne dodiruje.
+      {} as never,
     );
     return { svc, sy15, tx };
   }
@@ -462,6 +464,8 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
         {} as never,
         {} as never,
         {} as never,
+        // IdempotencyService (registar u 3.0 bazi) — pod `sy15` se ne dodiruje.
+        {} as never,
       );
     }
 
@@ -521,6 +525,7 @@ describe("notifications — read-scope pod prekidačem 3.0", () => {
       prisma as never,
       {} as never,
       authz as never,
+      {} as never,
     );
     return { svc, tx, sy15, prisma, authz };
   }

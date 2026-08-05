@@ -15,6 +15,7 @@ import { SastanciSamouslugaService } from "./sastanci-samousluga.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { SastanciFnService, type SastanciTx } from "./sastanci-fn.service";
 import { SastanciAuthzService } from "./sastanci-authz.service";
+import { IdempotencyService } from "../../common/idempotency/idempotency.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { assertPdfAttachment } from "../../common/attachments/attachment-format.util";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
@@ -175,6 +176,7 @@ export class SastanciService {
     private readonly prisma: PrismaService,
     private readonly fn: SastanciFnService,
     private readonly authz: SastanciAuthzService,
+    private readonly idem: IdempotencyService,
   ) {}
 
   private readonly logger = new Logger(SastanciService.name);
@@ -1355,6 +1357,34 @@ export class SastanciService {
     }
   }
 
+  /**
+   * 3.0 parnjak `runIdem` — registar je `api_idempotency` u 3.0 bazi
+   * (`IdempotencyService`), pa `create` / `bulk-ucesnici` / `prenos` /
+   * `instantiate` više ne padaju sa 503.
+   *
+   * UGOVOR PREMA KLIJENTU JE ISTI kao pod `sy15`: isti `clientEventId` iz zahteva,
+   * isti `action` prostor imena, isti `{ data, meta: { idempotent } }` odgovor,
+   * isti 409 na ključ upotrebljen za drugu akciju. Klijent ne vidi razliku.
+   *
+   * Razlika je unutra i posledica je seobe: nema `SET LOCAL ROLE authenticated`
+   * (3.0 nema RLS), pa scope reda sprovodi `SastanciAuthzService`, a logički
+   * trigeri (`sast_trg_ucesnik_invite`, `sast_check_not_locked`…) se pozivaju
+   * eksplicitno — u sy15 ih je okidala baza.
+   */
+  private async threeZeroIdem<T>(
+    email: string,
+    clientEventId: string,
+    action: string,
+    fn: (tx: SastanciTx) => Promise<T>,
+  ) {
+    try {
+      const out = await this.idem.run(email, clientEventId, action, fn);
+      return { data: out.result, meta: { idempotent: out.idempotent } };
+    } catch (e) {
+      this.rethrowSy15(e);
+    }
+  }
+
   /** Konverzija 'YYYY-MM-DD' → Date za @db.Date kolonu (Prisma uzima datum-deo). */
   private toDbDate(v?: string | null): Date | null | undefined {
     if (v === undefined) return undefined;
@@ -1521,6 +1551,68 @@ export class SastanciService {
     const status = dto.status ?? "planiran";
     // Triger šalje pozivnice samo za planiran sastanak — samo tada stampuj.
     const invitesSent = ucesnici.length > 0 && status === "planiran";
+    if (this.izvor.isThreeZero) {
+      // `sastanci_insert` WITH CHECK = has_edit_role(). U sy15 je odbijenicu davao
+      // RLS (42501 -> 403); ovde gejt stoji PRE registra idempotencije, da
+      // neovlašćen pokušaj ne potroši `clientEventId`.
+      if (!(await this.authz.canCreateSastanak(email))) {
+        throw new ForbiddenException("Nemate pravo da kreirate sastanak.");
+      }
+      return this.threeZeroIdem(
+        email,
+        dto.clientEventId,
+        "sastanci.create-sastanak",
+        async (tx) => {
+          const row = await tx.sastanak.create({
+            data: {
+              tip: dto.tip ?? "sedmicni",
+              naslov: dto.naslov,
+              datum: this.toDbDate(dto.datum)!,
+              vreme: this.toDbTime(dto.vreme) ?? null,
+              mesto: dto.mesto ?? "",
+              // `projekat_id` je u 3.0 Int (prenosna odluka 2). DTO još nosi sy15
+              // uuid, pa se do blokade 5 (usklađen FE) predmet NE prenosi —
+              // ćutke ispušten predmet je bezopasan, uuid u Int koloni je 500.
+              vodioEmail: dto.vodioEmail ?? null,
+              vodioLabel: dto.vodioLabel ?? null,
+              zapisnicarEmail: dto.zapisnicarEmail ?? null,
+              zapisnicarLabel: dto.zapisnicarLabel ?? null,
+              status,
+              napomena: dto.napomena ?? null,
+              createdByEmail: email,
+              // `interval_days` je u 3.0 redovna kolona modela (u sy15 je bila van
+              // Prisma mape, pa je tamo trebao zaseban raw UPDATE + probe kolone).
+              intervalDays: dto.intervalDays ?? null,
+              pozivnicePoslateAt: invitesSent ? new Date() : null,
+            },
+          });
+          if (ucesnici.length) {
+            await tx.sastanakUcesnik.createMany({
+              data: ucesnici.map((u) => ({
+                sastanakId: row.id,
+                email: u.email.toLowerCase().trim(),
+                label: u.label ?? null,
+                pozvan: true,
+                prisutan: false,
+              })),
+            });
+            // sy15 je pozivnice slao TRIGEROM `sast_trg_ucesnik_invite` (AFTER
+            // INSERT). Migracija taj triger namerno ne prenosi (logika, ne
+            // mehanika), pa se prepis poziva ovde — inače bi novi sastanak
+            // nastao BEZ ijedne pozivnice, tiho.
+            await this.fn.ucesnikInviteTrigger(
+              tx,
+              row.id,
+              ucesnici.map((u) => ({
+                email: u.email.toLowerCase().trim(),
+                label: u.label ?? null,
+              })),
+            );
+          }
+          return row;
+        },
+      );
+    }
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -2011,6 +2103,94 @@ export class SastanciService {
         "Izvorni i ciljni sastanak su isti — prenos nema šta da premesti.",
       );
     }
+    if (this.izvor.isThreeZero) {
+      // Prenos piše u DECU CILJNOG sastanka (`su_*` insert/delete, `ap_update`
+      // WITH CHECK). Gejt ciljnog stoji pre registra; gejt IZVORA se proverava
+      // unutar transakcije, kad se sazna koji je (može biti izabran automatski) —
+      // `ap_update` u sy15 traži i USING (stari red) i WITH CHECK (novi red).
+      await this.authz.assertCanWriteSastanakChild(email, id);
+      return this.threeZeroIdem(
+        email,
+        dto.clientEventId,
+        "sastanci.prenos",
+        async (tx) => {
+          await this.fn.assertNotLocked(tx, email, id);
+          const novi = await tx.sastanak.findUnique({
+            where: { id },
+            select: { datum: true, tip: true },
+          });
+          if (!novi) throw new NotFoundException(`Sastanak ${id} ne postoji`);
+          let source: { id: string; naslov: string | null } | null;
+          if (dto.fromSastanakId) {
+            const izvor = await tx.sastanak.findUnique({
+              where: { id: dto.fromSastanakId },
+              select: { id: true, naslov: true },
+            });
+            if (!izvor) {
+              throw new NotFoundException(
+                `Izvorni sastanak ${dto.fromSastanakId} ne postoji`,
+              );
+            }
+            source = izvor;
+          } else {
+            source = await tx.sastanak.findFirst({
+              where: { id: { not: id }, tip: novi.tip, datum: { lt: novi.datum } },
+              orderBy: [{ datum: "desc" }, { createdAt: "desc" }],
+              select: { id: true, naslov: true },
+            });
+            if (!source) return { ucesnici: 0, akcije: 0, source: null };
+          }
+          // USING strana `ap_update`: akcije se SKIDAJU sa izvora, pa i on mora
+          // da prođe gejt. (Učesnici izvora se samo čitaju — `su_select` je `true`.)
+          await this.authz.assertCanWriteSastanakChild(email, source.id);
+          const uce = await tx.sastanakUcesnik.findMany({
+            where: { sastanakId: source.id },
+            select: { email: true, label: true },
+          });
+          if (uce.length) {
+            const stari = await tx.sastanakUcesnik.findMany({
+              where: { sastanakId: id },
+              select: { email: true },
+            });
+            await tx.sastanakUcesnik.deleteMany({ where: { sastanakId: id } });
+            await this.fn.ucesnikInviteCleanup(
+              tx,
+              id,
+              stari.map((u) => u.email),
+            );
+            await tx.sastanakUcesnik.createMany({
+              data: uce.map((u) => ({
+                sastanakId: id,
+                email: u.email.toLowerCase().trim(),
+                label: u.label ?? null,
+                pozvan: true,
+                prisutan: false,
+              })),
+            });
+            await this.fn.ucesnikInviteTrigger(
+              tx,
+              id,
+              uce.map((u) => ({
+                email: u.email.toLowerCase().trim(),
+                label: u.label ?? null,
+              })),
+            );
+          }
+          const { count } = await tx.akcionaTacka.updateMany({
+            where: {
+              sastanakId: source.id,
+              status: { in: ["otvoren", "u_toku"] },
+            },
+            data: { sastanakId: id, updatedAt: new Date() },
+          });
+          return {
+            ucesnici: uce.length,
+            akcije: count,
+            source: { id: source.id, naslov: source.naslov ?? null },
+          };
+        },
+      );
+    }
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -2200,7 +2380,58 @@ export class SastanciService {
   // ---------- Učesnici ----------
 
   /** Bulk replace (DELETE pa INSERT — regeneriše rsvp_token, briše RSVP; §2 p.6/B8). */
-  bulkUcesnici(email: string, id: string, dto: BulkUcesniciDto) {
+  async bulkUcesnici(email: string, id: string, dto: BulkUcesniciDto) {
+    if (this.izvor.isThreeZero) {
+      // `su_delete` + `su_insert` = has_edit_role ∧ (učesnik ∨ mgmt ∨ trio).
+      await this.authz.assertCanWriteSastanakChild(email, id);
+      return this.threeZeroIdem(
+        email,
+        dto.clientEventId,
+        "sastanci.bulk-ucesnici",
+        async (tx) => {
+          // Guard-triger `sast_check_not_locked` je u sy15 stajao i na deci —
+          // zaključan sastanak menja samo rukovodstvo.
+          await this.fn.assertNotLocked(tx, email, id);
+          const stari = await tx.sastanakUcesnik.findMany({
+            where: { sastanakId: id },
+            select: { email: true },
+          });
+          await tx.sastanakUcesnik.deleteMany({ where: { sastanakId: id } });
+          // AFTER DELETE triger: skinutom učesniku se briše nepokupljena
+          // pozivnica, da mu ne stigne mejl za sastanak sa kog je uklonjen.
+          await this.fn.ucesnikInviteCleanup(
+            tx,
+            id,
+            stari.map((u) => u.email),
+          );
+          if (dto.ucesnici.length) {
+            await tx.sastanakUcesnik.createMany({
+              data: dto.ucesnici.map((u) => ({
+                sastanakId: id,
+                email: u.email.toLowerCase().trim(),
+                label: u.label ?? null,
+                prisutan: u.prisutan !== false,
+                pozvan: u.pozvan !== false,
+                napomena: u.napomena ?? null,
+              })),
+            });
+            await this.fn.ucesnikInviteTrigger(
+              tx,
+              id,
+              dto.ucesnici.map((u) => ({
+                email: u.email.toLowerCase().trim(),
+                label: u.label ?? null,
+              })),
+            );
+            await tx.sastanak.updateMany({
+              where: { id, status: "planiran" },
+              data: { pozivnicePoslateAt: new Date() },
+            });
+          }
+          return { count: dto.ucesnici.length };
+        },
+      );
+    }
     return this.runIdem(
       email,
       dto.clientEventId,
@@ -3016,7 +3247,68 @@ export class SastanciService {
   }
 
   /** Instanciraj šablon → nov sastanak + učesnici (nextOccurrence port; pozivalac uvek u listi). */
-  instantiate(email: string, id: string, dto: InstantiateTemplateDto) {
+  async instantiate(email: string, id: string, dto: InstantiateTemplateDto) {
+    if (this.izvor.isThreeZero) {
+      // Nastaje NOV sastanak → `sastanci_insert` = has_edit_role(). Deca prolaze
+      // preko `created_by_email` grane trija (upisuje se mejl pozivaoca).
+      if (!(await this.authz.canCreateSastanak(email))) {
+        throw new ForbiddenException("Nemate pravo da kreirate sastanak.");
+      }
+      return this.threeZeroIdem(
+        email,
+        dto.clientEventId,
+        "sastanci.instantiate-template",
+        async (tx) => {
+          const tpl = await tx.sastanciTemplate.findUnique({ where: { id } });
+          if (!tpl) throw new NotFoundException(`Šablon ${id} ne postoji`);
+          const ucesnici = await tx.sastanciTemplateUcesnik.findMany({
+            where: { templateId: id },
+          });
+          const datum = nextOccurrence({
+            cadence: tpl.cadence,
+            cadenceDow: tpl.cadenceDow,
+            cadenceDom: tpl.cadenceDom,
+            createdAt: tpl.createdAt,
+          });
+          const sast = await tx.sastanak.create({
+            data: {
+              tip: tpl.tip || "sedmicni",
+              naslov: tpl.naziv,
+              datum: new Date(`${datum}T00:00:00Z`),
+              vreme: tpl.vreme ?? null,
+              mesto: tpl.mesto ?? "",
+              status: "planiran",
+              vodioEmail: tpl.vodioEmail ?? null,
+              zapisnicarEmail: tpl.zapisnicarEmail ?? null,
+              napomena: tpl.napomena ?? null,
+              createdByEmail: email,
+            },
+          });
+          const map = new Map<string, string | null>();
+          for (const u of ucesnici)
+            map.set(u.email.toLowerCase().trim(), u.label ?? u.email);
+          if (!map.has(email)) map.set(email, email);
+          const redovi = [...map.entries()].map(([em, label]) => ({
+            email: em,
+            label: label ?? em,
+          }));
+          await tx.sastanakUcesnik.createMany({
+            data: redovi.map((u) => ({
+              sastanakId: sast.id,
+              email: u.email,
+              label: u.label,
+              prisutan: true,
+              pozvan: true,
+            })),
+          });
+          // Instanca se pravi kao `planiran`, pa AFTER INSERT triger u sy15
+          // OVDE ŠALJE pozivnice. Bez ovog poziva bi „Zakaži po šablonu" tiho
+          // napravilo sastanak na koji niko nije pozvan.
+          await this.fn.ucesnikInviteTrigger(tx, sast.id, redovi);
+          return { id: sast.id, datum };
+        },
+      );
+    }
     return this.runIdem(
       email,
       dto.clientEventId,

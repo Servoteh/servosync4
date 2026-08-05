@@ -4,6 +4,7 @@ import { APP_INTERCEPTOR } from "@nestjs/core";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { PrismaModule } from "./prisma/prisma.module";
+import { IdempotencyModule } from "./common/idempotency/idempotency.module";
 import { AuthzModule } from "./common/authz/authz.module";
 import { MailModule } from "./common/mail/mail.module";
 import { AuditInterceptor } from "./common/audit/audit.interceptor";
@@ -65,6 +66,7 @@ import { MontazaNeusaglasenostiModule } from "./modules/montaza-neusaglasenosti/
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    IdempotencyModule,
     AuthzModule,
     MailModule,
     AuthModule,

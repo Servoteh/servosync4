@@ -353,8 +353,11 @@ Zato korak 9 treba raditi odmah i na jednom sastanku.
 5. 🟡 **`akcioni_plan_istorija` se posle seobe puni iz NestJS-a**, ne iz trigera — dok se to ne
    napiše, izmene akcionih tačaka pod `3.0` ne bi ostavljale trag. Trenutno je to bezopasno jer
    izmene akcija pod `3.0` padaju sa 503.
-6. `rev_api_idempotency` se ne dira — registar cele aplikacije (56 redova sastanaka, 31 PB-a) ostaje
-   u sy15 dok tamo ima ijedan modul.
+6. ~~`rev_api_idempotency` se ne dira~~ — **DOPUNJENO 06.08.** (v. §7e): 3.0 je dobio SVOJ generički
+   registar (`api_idempotency`), pa sastanci pod `3.0` više ne zavise od sy15 registra. sy15
+   `rev_api_idempotency` **se i dalje ne dira i ne prazni** — služi modulima koji su još tamo
+   (kadrovska ~470 redova, PB 31, održavanje 16). Dva registra rade paralelno, svaki za svoju
+   stranu prekidača; **stari ključevi se NE prenose** (registar je kratkotrajan po prirodi).
 7. sy15 tabele domena se **ne brišu** ni posle uspešne seobe. Tek posle 2–3 nedelje mirnog rada, i
    to zasebnom odlukom.
 
@@ -505,10 +508,10 @@ zaustavlja preklop.
 
 | # | Blokada | Zašto blokira | Procena |
 |---|---|---|---:|
-| **1** | **Registar idempotencije `rev_api_idempotency` ostaje u sy15** | `create-sastanak`, `bulk-ucesnici`, `prenos`, `instantiate` oslanjaju se ISKLJUČIVO na njega da dupli POST ne napravi drugi sastanak/drugi talas mejlova. Bez 3.0 parnjaka te rute i dalje vraćaju 503. (`lock` i `cancel` su prenete jer imaju sopstvenu branu — `already_locked` / `already_cancelled`.) | **1 dan** (tabela + prepis `runIdempotentRls`); odluka je šira od sastanaka — registar dele i reversi/lokacije |
+| ~~**1**~~ | ~~**Registar idempotencije `rev_api_idempotency` ostaje u sy15**~~ | ✅ **ZATVORENO 06.08.** — v. §7e. Registar je u 3.0 (`api_idempotency`, generički za celu aplikaciju); `create-sastanak`, `bulk-ucesnici`, `prenos` i `instantiate` više ne vraćaju 503. | — |
 | **2** | **Tabelarni CRUD još ide kroz `withUserMapped`** (73 poziva) | Liste, detalj, učesnici, tačke, odluke, akcije, teme, šabloni, arhiva, slike. Sve to su obični upiti nad tabelama koje SU prenete, ali prolaze kroz branu ka sy15. | **2–3 dana** |
-| **3** | **RLS write-scope za decu sastanka** | Politike `su_*`, `pa_*`, `ps_*`, `sa_*`, `ap_*`, `pmt_*` = `has_edit_role ∧ (učesnik ∨ mgmt ∨ organizator-trio)`. Prepisan je samo scope nad `sastanci`; scope nad decom ide uz blokadu 2 i **ne sme kasniti za njom** | uključeno u 2 |
-| **4** | **RLS read-scope na dve tabele** | `pm_teme.pmt_select` (predlagač ∨ mgmt ∨ učesnik ∨ draft+edit) i `sastanci_notification_log.snl_select` (svoje ∨ mgmt). Ostale SELECT politike su `true` pa nemaju šta da se prenese. **Ako se blokada 2 uradi bez ovoga, korisnici vide tuđe teme i tuđe mejlove.** | 0,5 dan |
+| **3** | **RLS write-scope za OSTALU decu sastanka** | Politike `pa_*`, `ps_*`, `sa_*`, `pmt_*` = `has_edit_role ∧ (učesnik ∨ mgmt ∨ organizator-trio)`. Prepisano je: scope nad `sastanci` (ranije) **i `sastanci_insert` + `su_*` + `ap_*`** (06.08., traže ih četiri rute iz blokade 1). Ostatak ide uz blokadu 2 i **ne sme kasniti za njom** | uključeno u 2 |
+| ~~**4**~~ | ~~**RLS read-scope na dve tabele**~~ | ✅ **ZATVORENO 06.08.** — v. §7e. Merenje je našlo **tri** tabele, ne dve (runbook je promašio `sastanci_notification_prefs`). | — |
 | **5** | 🔴 **`projekat_id` je promenio TIP** (uuid → Int) | FE danas šalje sy15 uuid predmeta (`?projekatId=`), a 3.0 kolona je `Int`. DTO, picker (`listProjekti`) i svi filteri po predmetu moraju da se prevedu ZAJEDNO sa FE-om. Uz to 3.0 `projects` **nema** `project_code` ni `bigtehn_item_id` — parnjaci su `project_number` i sam `id`, pa se menja i SQL u `AKCIJE_SELECT` | 1 dan (BE+FE zajedno) |
 | **6** | **`kadr_holidays` nije u 3.0** | Pomeranje sedmičnog sa praznika. Danas se čita READ-ONLY sa sy15 (fail-soft: bez praznika termin se ne pomera). Nestaje sa **korakom 4** (kadrovska) — nije potrebno rešavati posebno | — |
 | **7** | **`get_predmet_plan_prioritet_ids()`** (⭐ lista predmeta) | Čita `production.predmet_plan_prioritet` u sy15. Nije domen sastanaka — stiže sa svojim modulom | — |
@@ -526,16 +529,156 @@ zaustavlja preklop.
 | view-ovi na probnoj bazi | ✅ primenjeni nad PRAVIM DDL-om tabela; **22 / 24 kolone — isto kao sy15**; `effective_status` izvodi `kasni` sa `dana_do_roka = -5` |
 | FK `ON DELETE` protiv žive sy15 | ✅ 19/19 se poklapa (posle popravke 4 koja su bila `CASCADE` umesto `SET NULL`) |
 
-**Zbir onoga što je ostalo za sastanke: ~4–5 dana** (blokade 1–5). Procena iz §7
-(„4–6 dana") je time potvrđena — prepis logike je pojeo prvi deo tog opsega.
+**Zbir onoga što je ostalo za sastanke: ~3–4 dana** (blokade 2+3 i 5; blokade 1 i 4
+zatvorene 06.08.).
 
 ### Redosled koji se preporučuje
 
-1. Blokada **4** (read-scope) — najjeftinija, a bez nje blokada 2 postaje
-   bezbednosni propust.
-2. Blokada **2 + 3** zajedno — CRUD i njegov write-scope se ne razdvajaju.
-3. Blokada **1** — registar idempotencije (odluka šira od ovog modula).
+1. ~~Blokada **4** (read-scope)~~ ✅ urađeno 06.08. — bilo je prvo namerno: bez
+   njega blokada 2 postaje bezbednosni propust.
+2. ~~Blokada **1** (registar idempotencije)~~ ✅ urađeno 06.08.
+3. Blokada **2 + 3** — CRUD i njegov write-scope se ne razdvajaju. Read-scope i
+   deo write-scope-a (`sastanci_insert`, `su_*`, `ap_*`) su već tu i **moraju se
+   iskoristiti**, ne napisati ponovo.
 4. Blokada **5** — traži usklađen FE deploy, pa ide poslednja.
+
+---
+
+## 7e. Blokade 1 i 4 — šta je urađeno 06.08.
+
+### Blokada 4: RLS read-scope (`SastanciAuthzService`)
+
+Politike su povučene sa **žive sy15** (`pg_policies`), ne iz ovog dokumenta —
+pravilo iz BACKEND_RULES/ODLUKE. Izmereno: **svih 27 tabela domena ima
+`relrowsecurity = TRUE`** i bar jednu SELECT/ALL politiku (nema tabele sa
+podrazumevanom zabranom).
+
+🔴 **Nalaz: blokada 4 je nabrajala DVE tabele, a ima ih TRI.** Tekst iznad kaže
+„ostale SELECT politike su `true` pa nemaju šta da se prenese" — netačno.
+
+| Tabela | SELECT politika | Pravilo | Stanje |
+|---|---|---|---|
+| `pm_teme` | `pmt_select` | predlagač ∨ mgmt ∨ učesnik(sastanak_id) ∨ (draft ∧ bez sastanka ∧ edit) | ✅ `scopeTemeWhere` + `scopeTemeSql` |
+| `sastanci_notification_log` | `snl_select` | primalac ∨ mgmt | ✅ `scopeNotifLogWhere` |
+| **`sastanci_notification_prefs`** | `snp_select_own` | **svoj red ∨ mgmt** | ✅ `scopeNotifPrefsWhere` — **nije bio u spisku** |
+| ostalih 13 tabela sastanaka | — | `true` (javno za `authenticated`) | nema šta da se prenese |
+
+**Otvoreno (`true`), popisano da se ne pogađa ponovo:** `sastanci`,
+`sastanak_ucesnici`, `sastanak_odluke`, `sastanak_arhiva`, `akcioni_plan`,
+`akcioni_plan_istorija`, `presek_aktivnosti`, `presek_slike`,
+`sastanci_templates`, `sastanci_template_ucesnici`, `sastanci_ai_settings`,
+`sast_weekly_movers`, `sast_weekly_skip`.
+
+🔴 **Drugi nalaz: `sast_dashboard_stats` je JEDINA pozvana fn domena koja NIJE
+`SECURITY DEFINER`** (`pg_proc.prosecdef = f`). U sy15 se izvršava pod
+`SET LOCAL ROLE authenticated`, pa njen `count(*) FROM pm_teme` **prolazi kroz
+`pmt_select`**. Prepis na ovoj grani je brojao nesuženo → KPI „Teme na čekanju"
+je pod `3.0` odavao i tuđe (pa i tuđe draft) teme. Popravljeno; ostale četiri
+brojke gledaju objekte sa politikom `true` i **ostaju nesužene** (sužavanje bi
+bilo regresija).
+
+Usput izmereno: oba view-a (`v_pm_teme_pregled`, `v_akcioni_plan`) su u sy15
+`security_invoker = true`, tj. RLS pozivaoca se **primenjuje i kroz view** —
+zato `listTeme` pod `3.0` MORA da spoji `scopeTemeSql`.
+
+**Prvi potrošač:** `notifications()` (lista obaveštenja) skinuta sa 503 — red tog
+outbox-a nosi `subject`, `body_html` i `payload` cele poruke. `myPrefs` je već
+išao kroz `getOrCreateMyPrefs` (upsert po svom mejlu) pa scope zadovoljava po
+konstrukciji. `listTeme` **ostaje na 503** zbog blokade 5 (`projekatId` uuid→Int);
+njen scope je gotov i pokriven testovima.
+
+**⚠️ Jedno svesno odstupanje, mereno:** sy15 `snl_select`/`snp_select_own` porede
+KOLONU doslovno sa `lower(jwt.email)` (samo desna strana spuštena), dok
+`pmt_select` spušta obe. Ovde su sva tri poređenja neosetljiva na veličinu slova.
+Razlika je **nulta na živim podacima** — `sastanci_notification_log` 0/134 i
+`sastanci_notification_prefs` 0/6 redova ima veliko slovo — i može pokazati samo
+sopstveni red, nikad tuđi.
+
+**Projektni biro se NE dira** (pada sa 503 do koraka 4), ali su mu read-politike
+popisane da ne budu promašene kad dođe na red:
+
+| PB tabela | SELECT qual | Traži |
+|---|---|---|
+| `pb_eng_tips` | `deleted_at IS NULL ∧ (published ∨ admin ∨ autor = ja)` | `pb_current_employee_id()` |
+| `pb_eng_tip_files` | `pb_eng_tip_visible(tip_id)` | isto, preko roditelja |
+| `pb_work_reports` | `can_see_all ∨ svoj employee_id` | isto + org struktura |
+| `pb_notification_log` | `recipient_user_id = uid()` (+ admin ALL) | `auth.uid()` |
+| `pb_tasks`, `pb_task_files` | `deleted_at IS NULL` | ništa — soft-delete filter, ne identitet |
+
+### Blokada 1: registar idempotencije (`api_idempotency`)
+
+**Generička 3.0 tabela**, ne „sastanci": izmereno da sy15 `rev_api_idempotency`
+uprkos `rev_` prefiksu nikad nije bio samo za reverse — **643 reda, 35 različitih
+`action` vrednosti**: `kadr.grid.batch` 368, kadrovska ukupno ~470, sastanci 56,
+PB 31, održavanje 16, **reversi 2**. Zato ime, servis (`IdempotencyService`) i
+modul stoje u `common/` i koristiće ih koraci 2–5 gašenja sy15.
+
+| | sy15 `rev_api_idempotency` | 3.0 `api_idempotency` |
+|---|---|---|
+| ključ | `client_event_id uuid` PK | isto (namerno — PK je i brava) |
+| akcija | `action text` | `action varchar(100)` |
+| odgovor | `result jsonb` | isto |
+| akter | **nema** | `actor_email varchar(255)` |
+| TTL | **nema čišćenja UOPŠTE** | 30 dana, `RetentionJobsService` |
+| indeks | samo PK | + `created_at` (za retention brisanje) |
+
+**TTL — mereno, ne procenjeno.** sy15 registar nema ni pg_cron posao ni triger za
+čišćenje; `min(created_at) = 2026-07-10` (dan nastanka registra),
+`max = 2026-08-05`, 643 reda, **nijedan nikad obrisan** → efektivni TTL je
+beskonačan. Stvarna svrha ključa traje sekunde. Uzeto 30 dana (isti red veličine
+kao `DICTATION_DELIVERED_DAYS`) — brisanje starijeg ključa ne može da napravi
+duplikat jer klijent za svaki nov POST kuje NOV uuid.
+
+🔴 **Stari zapisi se NE migriraju.** Prenos 643 tuđa ključa ne bi odbranio nijedan
+zahtev — samo bi preneo smeće.
+
+**Jedna namerna razlika: provera aktera.** sy15 na ponovljen ključ vraća sačuvan
+odgovor **bilo kome** ko ga zna, a odgovor nosi tuđe podatke (id i naslov tuđeg
+sastanka, broj prenetih akcija). Ključ je nasumičan uuid pa je praktično
+neiskoristivo, ali provera ne košta ništa → tuđi ključ dobija 409 umesto tuđeg
+rezultata. Legitiman slučaj (isti korisnik ponavlja svoj zahtev) je netaknut.
+
+**Ugovor prema klijentu je NEPROMENJEN:** isti `clientEventId` iz zahteva, isti
+`action` prostor imena, isti `{ data, meta: { idempotent } }` odgovor, isti 409 na
+ključ upotrebljen za drugu akciju.
+
+**Skinuto sa 503** (pod `SASTANCI_PB_IZVOR=3.0`):
+`POST /sastanci` (`sastanci.create-sastanak`) · `PUT /sastanci/:id/ucesnici`
+(`sastanci.bulk-ucesnici`) · `POST /sastanci/:id/prenos` (`sastanci.prenos`) ·
+`POST /sastanci/templates/:id/instantiate` (`sastanci.instantiate-template`).
+Uz svaku je moralo i ono što je u sy15 radila baza:
+
+- **gejt prava PRE registra** (neovlašćen pokušaj ne sme da potroši korisnikov
+  `clientEventId`) — `sastanci_insert` = `has_edit_role()`, `su_*`/`ap_*` =
+  `has_edit_role ∧ (mgmt ∨ učesnik ∨ organizator-trio)`;
+- **logički trigeri koje migracija namerno ne prenosi**: `sast_trg_ucesnik_invite`
+  (bez njega bi novi sastanak nastao BEZ ijedne pozivnice, tiho),
+  `sast_trg_ucesnik_invite_cleanup`, `sast_check_not_locked`;
+- kod `prenos` gejt se traži **i za izvor i za cilj** — `ap_update` u sy15
+  proverava i `USING` (stari red) i `WITH CHECK` (novi red).
+
+⚠️ **Rep:** `create-sastanak` pod `3.0` **ne upisuje predmet** (`projekat_id`) —
+DTO još nosi sy15 uuid, a 3.0 kolona je `Int` (blokada 5). Predmet se ćutke
+ispušta; uuid u `Int` koloni bi bio 500. Zatvara se sa blokadom 5.
+
+**Merenje umesto pretpostavke — konkurentni isti ključ.** Ceo dizajn stoji na
+tome da `INSERT … ON CONFLICT DO NOTHING` nad PK-om ČEKA, a ne da propusti drugi
+poziv. Provereno na odvojenoj probnoj bazi (`idem_proba`, PostgreSQL 17.6,
+napravljena i obrisana u toku rada): sesija A zauzme ključ i drži transakciju 3 s;
+sesija B sa istim ključem kreće 1 s kasnije i njen INSERT **blokira 1,981 s**
+(tačno do A-inog COMMIT-a), vrati `INSERT 0 0`, pa pročita `result={"id": 1}` —
+dakle **gotov** rezultat, nikad poluupisan red.
+
+### Provere urađene 06.08. (blokade 1 i 4)
+
+| Provera | Rezultat |
+|---|---|
+| `npx tsc --noEmit` | ✅ nula NOVIH grešaka. Ostaje istih 5 **zatečenih** grupa u spec fajlovima (`handovers`, `kadrovska.zahtev-026`, `kamata`, `moj-profil.zahtev-026`, `sales.controller`) — nijedan od tih fajlova nije u diff-u ovog rada (`git diff --name-only` protiv `1028ab37`), pa su zatečene po konstrukciji |
+| `npx jest` (pun set) | ✅ **249 suite / 5.357 testova** (+3 suite, +58 testova) |
+| `npm run build` | ✅ entrypoint `dist/main.js` |
+| 🔴 **boot-smoke `node dist/main`** | ✅ „Nest application successfully started" protiv **žive 3.0 baze**, i sa `SASTANCI_PB_IZVOR=sy15` i sa `=3.0` |
+| migracija `20260806120000_api_idempotency` | ✅ ceo lanac (109 migracija) primenjen na probnu bazu; `migrate status` čist, bez drift-a; probna baza obrisana |
+| konkurentni isti ključ | ✅ izmereno na PostgreSQL-u (v. gore), ne pretpostavljeno |
 
 ---
 

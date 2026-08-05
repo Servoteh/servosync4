@@ -36,16 +36,19 @@ export type SastanciPbIzvor = "sy15" | "3.0";
  *   - 3 scheduler posla sastanaka + dispečer sastanaka,
  *   - READ-SCOPE tri row-scoped SELECT politike (`pm_teme`,
  *     `sastanci_notification_log`, `sastanci_notification_prefs`) +
- *     lista obaveštenja koja ga koristi.
+ *     lista obaveštenja koja ga koristi,
+ *   - REGISTAR IDEMPOTENCIJE u 3.0 bazi (`api_idempotency` +
+ *     `IdempotencyService`, generički za celu aplikaciju) i sa njim
+ *     `create-sastanak` / `bulk-ucesnici` / `prenos` / `instantiate`.
  *
  * JOŠ NIJE PRENETO — zato pod `3.0` i dalje pada sa 503:
  *   - tabelarni CRUD (liste, detalj, učesnici, tačke, odluke, akcije, teme,
  *     šabloni, arhiva, slike) — ide kroz `withUserMapped`, koji je brana,
- *   - RLS WRITE-scope za DECU sastanka (`su_*`, `pa_*`, `ap_*`…) — ide ZAJEDNO
- *     sa CRUD-om i ne sme da kasni za njim,
- *   - registar idempotencije `rev_api_idempotency` (ostaje u sy15) — zato
- *     `create` / `bulk-ucesnici` / `prenos` / `instantiate` i dalje padaju,
- *   - `projekat_id` je promenio tip (uuid -> Int) — traži usklađen FE,
+ *   - RLS WRITE-scope za OSTALU decu sastanka (`pa_*`, `sa_*`, `pmt_*`…) — ide
+ *     ZAJEDNO sa CRUD-om i ne sme da kasni za njim. Prepisan je samo deo koji
+ *     traže četiri rute iznad (`sastanci_insert`, `su_*`, `ap_*`),
+ *   - `projekat_id` je promenio tip (uuid -> Int) — traži usklađen FE; do tada
+ *     `create-sastanak` pod `3.0` NE upisuje predmet (ćutke ga ispušta),
  *   - CEO PROJEKTNI BIRO: `employees` / `departments` / `sub_departments` /
  *     `job_positions` (kadrovska — korak 4; bez njih `pb_current_employee_id`
  *     ne postoji, a on je ulaz u SVA prava modula) i
@@ -75,10 +78,11 @@ export class SastanciPbSourceService {
     if (this.value === "3.0") {
       this.logger.warn(
         "SASTANCI_PB_IZVOR=3.0 — sastanci čitaju/pišu 3.0 bazu: samousluga, zaključavanje i " +
-          "arhiva, pozivnice i podsetnici, sedmični kolegijum, mejl kanal i dispatch. " +
-          "Tabelarni CRUD (liste/detalj/učesnici/tačke/teme/šabloni), rute koje traže registar " +
-          "idempotencije (create/bulk/prenos/instantiate) i CEO projektni biro i dalje vraćaju " +
-          "503. Povratak: SASTANCI_PB_IZVOR=sy15 + restart.",
+          "arhiva, pozivnice i podsetnici, sedmični kolegijum, mejl kanal i dispatch, lista " +
+          "obaveštenja (row-scope) i kreiranje/učesnici/prenos/šablon (3.0 registar " +
+          "idempotencije). Tabelarni CRUD (liste/detalj/tačke/teme/arhiva) i CEO projektni " +
+          "biro i dalje vraćaju 503. Predmet (projekat_id) se pod 3.0 još NE upisuje — " +
+          "čeka usklađen FE (uuid -> Int). Povratak: SASTANCI_PB_IZVOR=sy15 + restart.",
       );
     }
   }

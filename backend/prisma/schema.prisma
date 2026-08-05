@@ -5555,6 +5555,49 @@ model ScheduledJobRun {
   @@map("scheduled_job_runs")
 }
 
+/// Registar idempotencije CELE 3.0 aplikacije — 3.0 parnjak sy15 `rev_api_idempotency`
+/// (koji uprkos `rev_` prefiksu nikad nije bio samo za reverse: 643 reda, 35 različitih
+/// `action` vrednosti iz kadrovske, profila, sastanaka, PB-a i održavanja).
+/// Zato je ovde ime GENERIČKO — koriste ga i preostali koraci gašenja sy15
+/// (docs/PLAN_GASENJA_SY15_2026-08-03.md), ne samo sastanci.
+///
+/// ČEMU SLUŽI: dupli POST (dupli klik, retry posle mrežnog prekida) ne sme da napravi
+/// drugi sastanak / drugi talas mejlova. Klijent šalje `clientEventId`; prvi zahtev ga
+/// upiše i sačuva odgovor, ponovljeni dobija SAČUVAN odgovor bez izvršavanja.
+///
+/// 🔴 KLJUČNO SVOJSTVO: upis ključa i sama akcija idu u ISTOJ transakciji, pa rollback
+/// akcije briše i ključ → neuspeo pokušaj sme da se ponovi. Zato ovde NEMA `@@unique`
+/// preko više kolona: PK je sam `client_event_id`, kao u sy15, da bi konkurentan isti
+/// ključ ČEKAO na speculative-insert bravi dok prva transakcija ne završi.
+///
+/// RAZLIKE OD sy15 IZVORA (obe merene, obe namerne):
+///  1. `actor_email` — sy15 ga NEMA, pa ponovljen zahtev vraća sačuvan odgovor BILO KOME
+///     ko zna ključ. Ovde se pri ponavljanju traži i isti akter, inače 409. Praktično
+///     neiskoristivo u sy15 (ključ je nasumičan uuid), ali odgovor ume da nosi tuđe
+///     podatke, pa je zatvoreno bez troška.
+///  2. TTL — sy15 NEMA čišćenje (izmereno: 0 pg_cron poslova, 0 trigera; najstariji red
+///     je od 10.07.2026, tj. od dana nastanka registra, i nikad ništa nije obrisano).
+///     Registar je po prirodi kratkotrajan (dedup prozor je minut, ne mesec), pa ga
+///     `RetentionJobsService` čisti; zato indeks po `created_at`.
+/// STARI ZAPISI SE NE MIGRIRAJU sa sy15 — v. runbook §7c blokada 1.
+model ApiIdempotency {
+  /// Ključ koji šalje klijent (uuid). PK — namerno bez `action` u ključu: isti
+  /// `clientEventId` upotrebljen za DRUGU akciju je greška klijenta i vraća 409.
+  clientEventId String   @id(map: "pk_api_idempotency") @map("client_event_id") @db.Uuid
+  /// Logičko ime radnje (`sastanci.create-sastanak`, `kadr.grid.batch`…) — isti
+  /// prostor imena kao u sy15 registru, da prelaz ne menja ugovor prema klijentu.
+  action        String   @map("action") @db.VarChar(100)
+  /// Mejl iz sesije onoga ko je ključ potrošio (v. razliku 1 iznad).
+  actorEmail    String   @map("actor_email") @db.VarChar(255)
+  /// Sačuvan odgovor prvog izvršenja — vraća se na ponovljen zahtev BEZ izvršavanja.
+  /// NULL znači „ključ zauzet, izvršenje još traje ili je palo" (upisuje se na kraju).
+  result        Json?    @map("result")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt], map: "idx_api_idempotency_created")
+  @@map("api_idempotency")
+}
+
 /// App-owned prekidač za pozadinske poslove koje korisnik sme da ugasi iz Podešavanja
 /// (stavka B, 26.07.2026). Ključ je stabilan string (npr. `bigbit_mdb_sync`), stanje živi
 /// u bazi — menja se BEZ restarta i BEZ env promenljive. Tabela NIJE u SYNC_MAP i nijedan
