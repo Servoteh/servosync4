@@ -1,4 +1,4 @@
-import type { GanttRow } from '@/api/plan-proizvodnje';
+import { opKey, type GanttRow } from '@/api/plan-proizvodnje';
 
 /**
  * Čista logika taba „Gant" (zahtev 046/26): dan-aritmetika vremenske ose, izvođenje kraja
@@ -142,9 +142,12 @@ export function technologyMinutes(row: GanttRow): number {
   return Math.round(tpz + tk * kom);
 }
 
-export function rowKey(r: { work_order_id: string; line_id: string }): string {
-  return `${r.work_order_id}:${r.line_id}`;
-}
+/**
+ * Ključ reda = DELJENI ključ otvorene operacije (`opKey`, `@/api/plan-proizvodnje`).
+ * Namerno isti izraz i isti izvor kao „Po mašini": optimistički upis redosleda (070/26)
+ * mapira gant redove po ovom ključu, pa dva različita računa ključa ne smeju da postoje.
+ */
+export const rowKey = opKey;
 
 /**
  * Geometrija bara u px unutar ose (izvučeno iz `Bar`-a da isti račun koristi i sloj
@@ -299,7 +302,7 @@ export function groupKey(r: GanttRow): string {
  * poslednja preko `NO_HALL` sentinela), mašine abecedno, stavke po `compareRows`
  * (ručni redosled smene `shift_sort_order` je master — v. dole).
  */
-export function groupRows(rows: GanttRow[]): HallGroup[] {
+export function groupRows(rows: GanttRow[], mode: GanttSort = 'termin'): HallGroup[] {
   const byHall = new Map<string, Map<string, MachineGroup>>();
   for (const r of rows) {
     const hall = hallOf(r);
@@ -319,31 +322,60 @@ export function groupRows(rows: GanttRow[]): HallGroup[] {
   const out: HallGroup[] = [];
   for (const [hall, machines] of byHall) {
     const list = [...machines.values()].sort((a, b) => a.machine.localeCompare(b.machine, 'sr', { numeric: true }));
-    for (const m of list) m.rows.sort(compareRows);
+    for (const m of list) m.rows.sort((a, b) => compareRows(a, b, mode));
     out.push({ hall, machines: list });
   }
   return out.sort((a, b) => a.hall.localeCompare(b.hall, 'sr', { numeric: true }));
 }
 
 /**
- * Poredak stavki UNUTAR mašine (zahtev 070/26 — ogledalo BE `gantt()` ORDER BY):
- *   1. RUČNI redosled smene `shift_sort_order` (NULLS LAST) — master rasporeda,
- *   2. planirani početak (NULLS LAST) — automatska osa za stavke bez ručnog reda,
- *   3. RN (deterministički tie-break).
- *
- * ⚠️ Redosled ključeva 1↔2 je zamenjen 070/26: dok je planirani početak bio primaran,
- * prevlačenje redova NIJE moglo da se vidi (svaki bar ima svoj datum, pa bi upisani
- * `shift_sort_order` bio nem). Ručni redosled je isti podatak koji piše i tab „Po
- * mašini" (`/overlays/reorder`) — dva prikaza sad ređaju po ISTOM ključu.
+ * Režim ređanja redova unutar mašine (070/26, prekidač „Ređaj po"):
+ *   • `termin` = PODRAZUMEVANO i identično stanju pre 070/26 — planirani početak je
+ *     primaran, lista ostaje hronološka,
+ *   • `rucni` = ručni redosled smene (`shift_sort_order`) je primaran; jedino u tom
+ *     režimu prevlačenje redova ima šta da pokaže.
  */
-export function compareRows(a: GanttRow, b: GanttRow): number {
+export type GanttSort = 'termin' | 'rucni';
+
+/** `null`/`undefined` idu POSLE svega (ogledalo `NULLS LAST` iz BE upita). */
+function cmpNullsLast(a: string | null | undefined, b: string | null | undefined): number {
+  const an = a == null || a === '';
+  const bn = b == null || b === '';
+  if (an || bn) return an && bn ? 0 : an ? 1 : -1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Poredak stavki UNUTAR mašine — DOSLOVNO ogledalo BE `gantt()` ORDER BY (v.
+ * `plan-proizvodnje-read.service.ts`), ključ po ključ, u OBA režima:
+ *   termin:  planned_start_at ↦ shift_sort_order ↦ rok_izrade ↦ rn_ident_broj ↦ operacija
+ *   rucni:   shift_sort_order ↦ planned_start_at ↦ rok_izrade ↦ rn_ident_broj ↦ operacija
+ * (grupni ključevi `hall, effective_machine_code` su iznad ovoga — njih radi `groupRows`.)
+ *
+ * ⚠️ Poredak mora da se poklapa sa BE-om zato što se feed SEČE na BE strani (`LIMIT`), a
+ * crta po ovom računu: ako se razmimoiđu, rez uzme druge redove od onih koje prikaz stavlja
+ * na vrh. Zato su ovde i `rok_izrade`/`operacija` (BE ih ima) i zato NULL vrednosti idu
+ * POSLE (`NULLS LAST`) — ranije je FE stavljao stavke bez termina na POČETAK, suprotno BE-u.
+ */
+export function compareRows(a: GanttRow, b: GanttRow, mode: GanttSort = 'termin'): number {
   const oa = a.shift_sort_order ?? Number.MAX_SAFE_INTEGER;
   const ob = b.shift_sort_order ?? Number.MAX_SAFE_INTEGER;
-  if (oa !== ob) return oa - ob;
-  const sa = a.planned_start_at ?? '';
-  const sb = b.planned_start_at ?? '';
-  if (sa !== sb) return sa === '' ? 1 : sb === '' ? -1 : sa < sb ? -1 : 1;
-  return String(a.rn_ident_broj ?? '').localeCompare(String(b.rn_ident_broj ?? ''), 'sr', { numeric: true });
+  const rucni = oa !== ob ? oa - ob : 0;
+  const termin = cmpNullsLast(a.planned_start_at, b.planned_start_at);
+  if (mode === 'rucni') {
+    if (rucni !== 0) return rucni;
+    if (termin !== 0) return termin;
+  } else {
+    if (termin !== 0) return termin;
+    if (rucni !== 0) return rucni;
+  }
+  const rok = cmpNullsLast(a.rok_izrade, b.rok_izrade);
+  if (rok !== 0) return rok;
+  const rn = String(a.rn_ident_broj ?? '').localeCompare(String(b.rn_ident_broj ?? ''), 'sr', {
+    numeric: true,
+  });
+  if (rn !== 0) return rn;
+  return (Number(a.operacija ?? 0) || 0) - (Number(b.operacija ?? 0) || 0);
 }
 
 /**

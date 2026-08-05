@@ -400,13 +400,24 @@ export function useOperationsSearch(q: string) {
 /* ── Gant (046/26) ── */
 
 /** Gant feed (otvorene operacije + sve već isplanirane stavke). `hall='-'` = „Bez hale". */
-export function useGantt(filters: { hall?: string; machine?: string; q?: string } = {}) {
+export function useGantt(
+  filters: { hall?: string; machine?: string; q?: string; sort?: 'termin' | 'rucni' } = {},
+) {
   const term = (filters.q ?? '').trim();
+  // 070/26: `sort` je DEO KLJUČA — feed se seče na BE strani (`LIMIT`) po BE poretku, pa
+  // svaki režim mora imati svoj keš (deljen keš bi crtao rez napravljen u drugom režimu).
+  // `termin` je podrazumevano i NE šalje parametar — stari URL, stari (današnji) odgovor.
+  const sort = filters.sort === 'rucni' ? 'rucni' : 'termin';
   return useQuery({
-    queryKey: [...KEYS.gantt, filters.hall ?? '', filters.machine ?? '', term],
+    queryKey: [...KEYS.gantt, filters.hall ?? '', filters.machine ?? '', term, sort],
     queryFn: () =>
       apiFetch<{ data: GanttRow[]; meta: { limit: number; truncated: boolean } }>(
-        `${BASE}/gantt${qs({ hall: filters.hall, machine: filters.machine, q: term || undefined })}`,
+        `${BASE}/gantt${qs({
+          hall: filters.hall,
+          machine: filters.machine,
+          q: term || undefined,
+          sort: sort === 'rucni' ? 'rucni' : undefined,
+        })}`,
       ),
   });
 }
@@ -813,9 +824,17 @@ export const useGanttReorder = () => {
       toast('⚠ Redosled nije sačuvan — osvežavam.');
     },
     onSuccess: () => toast('✓ Redosled sačuvan'),
-    onSettled: () => {
+    onSettled: (_d, err) => {
       void qc.invalidateQueries({ queryKey: KEYS.gantt });
-      void qc.invalidateQueries({ queryKey: KEYS.operations });
+      // „Po mašini" čita ISTI `shift_sort_order`, pa mora da se osveži — ali NE i njegov
+      // akumulirani mašinski keš (`['pp','operations','machine',…]`), u koji „Još RN"
+      // stranice merge-uju u isti ključ; `useReorderOps` ga namerno štedi (v. gore) i
+      // refetch bi obrisao dovučene stranice. Na GREŠKU se invalidira sve — tada je
+      // zatečeno stanje ionako sumnjivo (isti izbor kao `useReorderOps.onError`).
+      void qc.invalidateQueries({
+        queryKey: KEYS.operations,
+        predicate: (query) => (err ? true : (query.queryKey as unknown[])[2] !== 'machine'),
+      });
     },
   });
 };

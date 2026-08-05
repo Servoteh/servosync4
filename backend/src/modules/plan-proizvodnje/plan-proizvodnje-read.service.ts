@@ -297,7 +297,13 @@ export class PlanProizvodnjeReadService {
    */
   async gantt(
     _email: string,
-    q?: { hall?: string; machine?: string; q?: string; scope?: string },
+    q?: {
+      hall?: string;
+      machine?: string;
+      q?: string;
+      scope?: string;
+      sort?: string;
+    },
   ) {
     const machine = (q?.machine ?? "").trim();
     const hall = (q?.hall ?? "").trim();
@@ -327,16 +333,26 @@ export class PlanProizvodnjeReadService {
       conds.push(
         Prisma.sql`(broj_crteza ILIKE ${"%" + term + "%"} OR rn_ident_broj ILIKE ${"%" + term + "%"} OR naziv_dela ILIKE ${"%" + term + "%"})`,
       );
-    // Poredak (070/26): grupa (hala → mašina), pa RUČNI redosled smene, pa planirani
-    // početak. Ručni ključ je PRVI otkad se redovi ganta ređaju prevlačenjem (isti
-    // `shift_sort_order` i isti `/overlays/reorder` kao tab „Po mašini") — dok je
-    // planirani početak bio primaran, upisan ručni redosled nije imao gde da se vidi.
-    // Grupni ključevi (hall, effective_machine_code) ostaju prva dva: na njima počiva to
-    // što `LIMIT` seče NAJVIŠE JEDNU mašinu (FE zabranjuje prevlačenje u toj grupi).
+    // Poredak (070/26) — DVA režima, izbor je klijentov („Ređaj po" u tabu Gant):
+    //   • bez parametra / `sort=termin` = PODRAZUMEVANO i identično stanju pre 070/26
+    //     (planirani termin je primaran). Stari klijent koji ne šalje `sort` dobija
+    //     današnji ekran — odluka vlasnika: nikome se prikaz ne prevrće preko noći.
+    //   • `sort=rucni` = ručni redosled smene (`shift_sort_order`) je primaran; jedino u
+    //     tom režimu prevlačenje redova ima šta da pokaže.
+    // Nepoznata vrednost pada na podrazumevani režim (nema 400 zbog kozmetike).
+    // ⚠️ Prva dva ključa su u OBA režima grupna (hall, effective_machine_code) — na tome
+    // počiva da `LIMIT` seče NAJVIŠE JEDNU mašinu (FE zabranjuje prevlačenje u njoj), i
+    // da se BE poredak (po kom se seče) ne razilazi sa FE poretkom (po kom se crta).
+    // FE ogledalo: `compareRows(mode)` u `gant-utils.ts` — isti ključevi, isti NULLS LAST.
+    const rucni = q?.sort === "rucni";
     const sort = sve
       ? Prisma.sql`ORDER BY rn_ident_broj ASC, operacija ASC`
-      : Prisma.sql`ORDER BY hall ASC NULLS LAST, effective_machine_code ASC,
+      : rucni
+        ? Prisma.sql`ORDER BY hall ASC NULLS LAST, effective_machine_code ASC,
                shift_sort_order ASC NULLS LAST, planned_start_at ASC NULLS LAST,
+               rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC`
+        : Prisma.sql`ORDER BY hall ASC NULLS LAST, effective_machine_code ASC,
+               planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST,
                rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC`;
     // C2: sklop lateral se kači na VEĆ isečen skup (posle LIMIT) — v. SKLOP_JOIN doc.
     // Spoljni ${sort} je ponovljen jer SQL ne garantuje redosled podupita kroz JOIN.

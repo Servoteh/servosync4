@@ -212,20 +212,35 @@ describe("gant feed (046/26)", () => {
   });
 
   /**
-   * 070/26 — redovi ganta se ređaju RUČNO (prevlačenje), pa je `shift_sort_order` PRVI
-   * ključ posle grupe. Dva uslova iz kojih raste ponašanje FE-a:
-   *   • ručni ključ pre `planned_start_at` (inače prevučeni red nema gde da se vidi),
-   *   • grupa (hall, effective_machine_code) ostaje ispred svega → `LIMIT` seče najviše
-   *     JEDNU mašinu, pa FE sme da zabrani prevlačenje samo u toj poslednjoj grupi.
+   * 070/26 — „Ređaj po" ima DVA režima i podrazumevani MORA ostati kao pre 070/26:
+   * stari klijent (i svaki koji ne šalje `sort`) dobija današnji ekran. Prva dva ključa
+   * su u oba režima grupna → `LIMIT` seče najviše JEDNU mašinu, na čemu počiva FE brana.
    */
-  it("gantt() ređa po grupi pa po RUČNOM redosledu smene (pre planiranog početka)", async () => {
+  const ORDER_TERMIN =
+    "ORDER BY hall ASC NULLS LAST, effective_machine_code ASC, planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST, rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC";
+  const ORDER_RUCNI =
+    "ORDER BY hall ASC NULLS LAST, effective_machine_code ASC, shift_sort_order ASC NULLS LAST, planned_start_at ASC NULLS LAST, rok_izrade ASC NULLS LAST, rn_ident_broj ASC, operacija ASC";
+
+  it("gantt() bez `sort` = PODRAZUMEVANO po terminu (nepromenjeno stanje pre 070/26)", async () => {
     const { svc, calls } = makeGanttSvc();
     await svc.gantt("pm@servoteh.com");
     const sql = calls[0].sql.replace(/\s+/g, " ");
-    expect(sql).toContain(
-      "ORDER BY hall ASC NULLS LAST, effective_machine_code ASC, shift_sort_order ASC NULLS LAST, planned_start_at ASC NULLS LAST",
-    );
-    expect(sql).not.toContain("planned_start_at ASC NULLS LAST, shift_sort_order ASC NULLS LAST");
+    expect(sql).toContain(ORDER_TERMIN);
+    expect(sql).not.toContain(ORDER_RUCNI);
+  });
+
+  it("gantt(sort='rucni') stavlja RUČNI redosled smene pre planiranog početka", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com", { sort: "rucni" });
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain(ORDER_RUCNI);
+    expect(sql).not.toContain(ORDER_TERMIN);
+  });
+
+  it("gantt(sort=<nepoznato>) pada na podrazumevani poredak (bez 400)", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com", { sort: "bilo-sta" });
+    expect(calls[0].sql.replace(/\s+/g, " ")).toContain(ORDER_TERMIN);
   });
 
   it("gantt(hall='-') filtrira grupu bez hale", async () => {
