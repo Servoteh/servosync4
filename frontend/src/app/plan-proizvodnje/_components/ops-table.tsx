@@ -586,8 +586,11 @@ function ReadinessStack({ o }: { o: OpRow }) {
         </span>
       )}
       {o.is_scrap && (
+        // 069/26: isto pisanje kao oznaka u gantu („ŠKART"), da planer dva bedža u istom
+        // modulu ne čita kao dve različite stvari. Značenja se i dalje razlikuju i to je
+        // namerno: ovde = BILO GA JE (koliko komada), u gantu = NIJE NADOKNAĐEN.
         <span className="rounded-full bg-status-danger-bg px-1.5 py-0.5 text-2xs font-medium text-status-danger" title={`Škart komada: ${num(o.scrap_pieces)}`}>
-          SKART{num(o.scrap_pieces) ? ` ${num(o.scrap_pieces)}` : ''}
+          ŠKART{num(o.scrap_pieces) ? ` ${num(o.scrap_pieces)}` : ''}
         </span>
       )}
     </div>

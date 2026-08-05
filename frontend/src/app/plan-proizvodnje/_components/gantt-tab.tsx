@@ -49,7 +49,8 @@ import {
   machineRangeMinutes,
   reorderByDrop,
   rowKey,
-  scrapOutstanding,
+  scrapBadge,
+  scrapText,
   startOfDay,
   type GanttSort,
   type HallGroup,
@@ -857,8 +858,23 @@ export function GanttTab() {
                                   <span className="tnums text-ink-secondary">{r.rn_ident_broj ?? '—'}</span>{' '}
                                   {r.naziv_dela ?? r.broj_crteza ?? '(bez naziva)'}
                                 </button>
-                                <span className="truncate text-2xs text-ink-disabled">
-                                  op. {String(r.operacija ?? '—')} · {r.opis_rada ?? '—'} · {r.komada_total ?? 0} kom
+                                <span className="flex items-center gap-1 truncate text-2xs text-ink-disabled">
+                                  {/* 069/26 (Strahinja): „umesto štiklirano da je gotovo, da piše
+                                      škart". Bedž stoji OVDE, a ne samo na baru, jer je bar na
+                                      produkciji median 10px širok — reč se tamo ne bi pročitala.
+                                      Pun ton (ne tekst na svetloj podlozi) zbog kontrasta: token
+                                      `--status-warn` u svetloj temi daje 2.34:1, ispod AA. */}
+                                  {scrapBadge(r) ? (
+                                    <span
+                                      className="shrink-0 rounded-control bg-status-warn px-1 font-semibold tracking-wide text-surface"
+                                      title={scrapText(r)}
+                                    >
+                                      ŠKART
+                                    </span>
+                                  ) : null}
+                                  <span className="truncate">
+                                    op. {String(r.operacija ?? '—')} · {r.opis_rada ?? '—'} · {r.komada_total ?? 0} kom
+                                  </span>
                                 </span>
                               </div>
                             </div>
@@ -1035,14 +1051,15 @@ function Bar({
   // 069/26 (Strahinja): pozicija sa NENADOKNAĐENIM škartom ne nosi kvačicu nego oznaku
   // „ŠKART". BE šalje `scrap_outstanding`; račun je i ovde zbog optimističkog prikaza
   // odmah posle klika na „Završeno" (stari BE bez kolone → pada na isti FE račun).
-  const skart = row.scrap_outstanding ?? scrapOutstanding(row, done);
+  // ⚠️ Ton bara NAMERNO i dalje sudi po spremnosti: škart je stanje KVALITETA, spremnost
+  // je stanje REDOSLEDA — da je škart preuzeo boju, bar bi prestao da kaže sme li da ide
+  // na mašinu, a tooltip bi i dalje pisao „Spremno" i protivrečio boji.
+  const skart = scrapBadge(row);
   const tone = done
     ? 'bg-surface-2 border-line text-ink-secondary'
-    : skart
-      ? 'bg-status-warn-bg border-status-warn/50 text-status-warn'
-      : ready
-        ? 'bg-status-success-bg border-status-success/50 text-status-success'
-        : 'bg-status-danger-bg border-status-danger/50 text-status-danger';
+    : ready
+      ? 'bg-status-success-bg border-status-success/50 text-status-success'
+      : 'bg-status-danger-bg border-status-danger/50 text-status-danger';
 
   return (
     <div
@@ -1065,9 +1082,7 @@ function Bar({
           onDragStart('move', ev.clientX);
         }}
         title={`${row.rn_ident_broj ?? ''} · ${row.naziv_dela ?? ''}\n${formatDate(start.toISOString())} → ${formatDate(end.toISOString())}\n${row.is_urgent ? 'HITNO · ' : ''}${ready ? 'Spremno' : 'Nije spremno'}${
-          skart
-            ? `\nŠKART ${row.scrap_pieces ?? 0} kom — nedostaje ${Math.max(0, (row.komada_total ?? 0) - (row.komada_done_good ?? 0))} dobrih do plana`
-            : ''
+          skart ? `\n${scrapText(row)}` : ''
         }${clipLeft || clipRight ? '\n(bar se nastavlja van vidljivog prozora)' : ''}`}
         className={cn(
           'flex h-6 w-full cursor-grab items-center gap-1 overflow-hidden border px-1.5 text-2xs',
@@ -1080,12 +1095,20 @@ function Bar({
       >
         {clipLeft ? <ChevronLeft className="h-3 w-3 shrink-0 opacity-70" aria-hidden /> : null}
         {row.predecessor_work_order_id ? <Link2 className="h-3 w-3 shrink-0" aria-hidden /> : null}
-        {done ? <span aria-hidden>✓</span> : null}
-        {/* 069/26: „umesto štiklirano da je gotovo, da piše škart" — reč, ne ikonica,
-            jer je zahtev doslovno o tome da planer PROČITA razlog. `shrink-0` da je
-            odsecanje pojede tek posle crteža/operacije. */}
-        {!done && skart ? (
-          <span className="shrink-0 font-semibold tracking-wide">ŠKART</span>
+        {done ? (
+          <>
+            <span aria-hidden>✓</span>
+            {/* Kvačica je bila samo `aria-hidden` ✓ — čitaču ekrana se „gotovo" nije javljalo
+                nigde. Oznaka škarta se čuje jer je običan tekst; ovo izjednačava to dvoje. */}
+            <span className="sr-only">gotovo</span>
+          </>
+        ) : null}
+        {/* 069/26: reč u baru je BONUS, ne nosilac signala — izmereno na produkciji da je
+            median širina bara 10px (28 od 32 ispod 20px), pa se ovde reč najčešće i ne
+            vidi. Nosilac je bedž u LEVOJ koloni, koja je fiksnih 300px. Zato je uslovljen
+            stvarnom širinom i sme da se skupi (`min-w-0`), da ne pojede broj crteža. */}
+        {!done && skart && width >= 56 ? (
+          <span className="min-w-0 truncate font-semibold tracking-wide">ŠKART</span>
         ) : null}
         <span className="truncate">
           {row.broj_crteza ?? row.rn_ident_broj ?? '—'} · op. {String(row.operacija ?? '—')}

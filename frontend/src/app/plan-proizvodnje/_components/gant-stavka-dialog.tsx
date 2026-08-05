@@ -22,7 +22,7 @@ import {
   isoLocalMinute,
   keepIfSameMinute,
   readyReason,
-  scrapOutstanding,
+  scrapBadge,
   technologyMinutes,
 } from './gant-utils';
 
@@ -126,9 +126,17 @@ export function GantStavkaDialog({
   const ready = row.is_ready_for_machine === true;
   const done = row.is_completed_effective === true;
   // 069/26: nenadoknađen škart — BE kolona, uz FE fallback za stariji odgovor.
-  const skart = row.scrap_outstanding ?? scrapOutstanding(row, done);
-  /** Ima li pozicija MERLJIVU količinu (inače automatika pada na zastavicu kioska). */
-  const mereno = (row.komada_total ?? 0) > 0 && row.is_non_machining !== true;
+  const skart = scrapBadge(row);
+  /**
+   * Ima li pozicija MERLJIVU količinu (inače automatika pada na zastavicu kioska).
+   * ⚠️ Uslovljeno i PRISUSTVOM kolone: frontend (Cloudflare) i backend (GH Actions) se
+   * deployuju nezavisno, pa nekoliko minuta nov ekran priča sa starim serverom. Bez ovog
+   * uslova bi u tom prozoru checkbox stajao štikliran „Završeno", a red ispod pisao
+   * „Automatski: 0 / 100 dobrih kom." — dva odgovora na istom ekranu, tačno klasa greške
+   * zbog koje 069 i postoji. Bez kolone se vraćamo na stari, istinit tekst.
+   */
+  const imaDobre = row.komada_done_good != null;
+  const mereno = imaDobre && (row.komada_total ?? 0) > 0 && row.is_non_machining !== true;
   const overrideDone = row.planned_done !== null && row.planned_done !== undefined;
   const manualReady = row.is_ready_manual === true;
   // Izračunata spremnost BEZ override-a (FE ogledalo BE `is_ready_rb` laterala): nema
@@ -311,9 +319,18 @@ export function GantStavkaDialog({
           />
           {/* 069/26: „Urađeno" pokazuje DOBRE komade, jer se po njima sudi gotovost.
               Bez toga bi pozicija sa škartom pisala „100 / 100" a stajala bez kvačice —
-              što je za planera kvar, a ne objašnjenje. Škart/dorada idu u zasebne redove
-              (i samo kad postoje), pa se ne gubi ni podatak da je nešto otkucano. */}
-          <Fact label="Urađeno (dobri)" value={`${row.komada_done_good ?? row.komada_done ?? 0} / ${row.komada_total ?? 0} kom`} />
+              što je za planera kvar, a ne objašnjenje. Zbir svih kvaliteta se NE gubi:
+              dobija svoj red („Otkucano") čim se razlikuje, pa dva ekrana koja broje
+              različito imaju oba broja jedan pored drugog, umesto da se ćutke raziđu.
+              Bez BE kolone (stariji odgovor) vraća se stara, istinita etiketa. */}
+          {imaDobre ? (
+            <Fact label="Urađeno (dobri)" value={`${row.komada_done_good} / ${row.komada_total ?? 0} kom`} />
+          ) : (
+            <Fact label="Urađeno" value={`${row.komada_done ?? 0} / ${row.komada_total ?? 0} kom`} />
+          )}
+          {imaDobre && (row.komada_done ?? 0) !== row.komada_done_good ? (
+            <Fact label="Otkucano (svi kvaliteti)" value={`${row.komada_done ?? 0} kom`} />
+          ) : null}
           {(row.scrap_pieces ?? 0) > 0 ? (
             <Fact label="Škart" value={`${row.scrap_pieces} kom${skart ? ' · nije nadoknađen' : ''}`} />
           ) : null}

@@ -73,20 +73,25 @@ const EFF_FILTER = Prisma.sql`COALESCE(plan_rn_final_control_done, false) IS NOT
  *
  * Dva bitna detalja, oba mereno na produkciji 05.08.2026:
  *
- * 1. **Broje se SAMO DOBRI komadi** (`quality_type_id = 0`). Škart je otpad, a dorada
- *    NIJE još ispravan deo — kad se dorada ispravi, vraća se SVEŽIM dobrim kucanjem
- *    koje se tek onda broji. Ovo je ISTI kanon koji praćenje već primenjuje
- *    (`QUALITY_GOOD`, pracenje-read.service.ts §kanon kvaliteta) — plan je bio jedini
- *    modul koji je odstupao, pa se time dva modula poravnavaju, ne razilaze.
+ * 1. **Broje se SAMO DOBRI komadi** — `quality_type_id = 0`, doslovno kao praćenje
+ *    (`QUALITY_GOOD`) i tech-processes (`PART_QUALITY.GOOD`). NAMERNO nije napisano kao
+ *    „sve što nije 1/2": tako bi buduća 4. vrsta kvaliteta u planu prošla kao DOBRA, a u
+ *    druga dva modula ne bi — plan bi tiho zatvarao ono što oni drže otvorenim. Škart je
+ *    otpad, a dorada NIJE još ispravan deo — kad se dorada ispravi, vraća se SVEŽIM
+ *    dobrim kucanjem koje se tek onda broji. Plan je bio jedini modul koji je odstupao,
+ *    pa se time tri modula poravnavaju, ne razilaze.
  *    Posledica: operacija sa nenadoknađenim škartom SAMA OD SEBE ne dobije kvačicu —
  *    tako je Strahinjin zahtev („umesto štiklirano da je gotovo, da piše škart")
  *    ispunjen pravilom, bez ijednog dodatnog stanja u bazi.
  *
- * 2. **Zastavica ostaje SAMO gde količina nije merljiva** (`komada_total` prazan/0 ili
- *    mašina `without_process` — opšti nalozi na kojima se komadi ne kucaju). Bez te
- *    grane takve pozicije NIKAD ne bi mogle da se zatvore automatski. Izmereno: danas
- *    ta grana ne spašava nijednu poziciju (0), dakle ne skriva zatečeno ponašanje —
- *    stoji kao brana za operacije bez merljivog plana.
+ * 2. **Zastavica ostaje SAMO gde količina nije merljiva.** Izmereno: `komada_total` nije
+ *    prazan/0 ni na jednoj od 51.321 operacije kroz predmet-gate, pa ta polovina grane
+ *    danas nikad ne okine; živi deo su mašine `without_process` (1.390 operacija, opšti
+ *    nalozi na kojima se komadi ne kucaju — samo 34 ima ijednu prijavu, nijedna škart).
+ *    Grana danas ne spašava NIJEDNU poziciju od gubitka kvačice; stoji zato što bi bez
+ *    nje operacija na kojoj se komadi nikad ne kucaju postala trajno nezatvoriva
+ *    automatikom. Cena: za tih 1.390 kvačica i dalje dolazi iz stare zastavice, a oznaka
+ *    škarta na njima ne može da se upali — svesno, jer tamo nema merila.
  *
  * Izmereno pred izmenu (51.321 operacija kroz predmet-gate): kvačicu GUBI 1.525
  * pozicija (od toga 362 bez ijednog otkucanog komada, 451 na već zatvorenom RN-u,
@@ -98,7 +103,8 @@ const EFF_FILTER = Prisma.sql`COALESCE(plan_rn_final_control_done, false) IS NOT
  *
  * ⚠️ Izraz referiše aliase `base` i `tr` iz `effectiveOpsInner` — koristi se DVA puta
  * (kvačica + oznaka škarta), pa mora ostati JEDAN izvor da se dve grane ne raziđu.
- * FE ogledalo (optimistički update posle klika planera): `autoDone()` u `gant-utils.ts`.
+ * FE ogledalo (optimistički update posle klika planera): `autoDone()` u
+ * `frontend/src/api/plan-proizvodnje.ts`.
  */
 const IS_COMPLETED_EFFECTIVE = Prisma.sql`COALESCE(base.planned_done,
         CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0
@@ -925,7 +931,7 @@ export class PlanProizvodnjeReadService {
              -- sudi gotovost. komada_done iznad ostaje ZBIR SVIH kvaliteta ("koliko je
              -- otkucano") jer ga čitaju i liste van ganta; dve kolone su namerno
              -- razdvojene da promena pravila gotovosti ne pomeri tuđe brojače.
-             COALESCE(SUM(t.piece_count) FILTER (WHERE COALESCE(t.quality_type_id, 0) NOT IN (1, 2)), 0) AS good_done,
+             COALESCE(SUM(t.piece_count) FILTER (WHERE t.quality_type_id = 0), 0) AS good_done,
              COALESCE(SUM(EXTRACT(EPOCH FROM (t.finished_at - t.entered_at))) FILTER (WHERE t.finished_at > t.entered_at), 0)::bigint AS real_seconds,
              bool_or(COALESCE(t.is_process_finished, false)) AS is_done,
              max(t.finished_at) AS last_finished_at,

@@ -225,7 +225,12 @@ export interface GanttRow {
   planned_done: boolean | null;
   planned_done_at: string | null;
   planned_done_by: string | null;
-  /** COALESCE(planned_done, is_done_in_bigtehn) — checkbox „završeno". */
+  /**
+   * Gotovost pozicije: `COALESCE(planned_done, AUTO)` gde je AUTO = 069/26 pravilo
+   * (DOBRIH komada ≥ plan; zastavica kioska samo kad količina nije merljiva). Čitaju je
+   * checkbox „Završeno" i boja bara. Kanon: `IS_COMPLETED_EFFECTIVE` na backendu,
+   * ogledalo `autoDone()` ispod.
+   */
   is_completed_effective: boolean | null;
   predecessor_work_order_id: string | null;
   predecessor_line: string | null;
@@ -310,6 +315,20 @@ export function autoDone(row: GanttRow): boolean {
  */
 export function scrapOutstanding(row: GanttRow, done: boolean): boolean {
   return (row.scrap_pieces ?? 0) > 0 && !done;
+}
+
+/**
+ * Nosi li red oznaku „ŠKART" — BE kolona kad je ima, inače isti FE račun (stariji BE
+ * odgovor nema kolonu; tada `scrap_pieces` fali pa oznaka izostane, što je siguran smer).
+ */
+export function scrapBadge(row: GanttRow): boolean {
+  return row.scrap_outstanding ?? scrapOutstanding(row, row.is_completed_effective === true);
+}
+
+/** Objašnjenje oznake škarta (tooltip): koliko je bačeno i koliko dobrih fali do plana. */
+export function scrapText(row: GanttRow): string {
+  const fali = Math.max(0, (row.komada_total ?? 0) - (row.komada_done_good ?? 0));
+  return `Škart ${row.scrap_pieces ?? 0} kom — nedostaje ${fali} dobrih do plana`;
 }
 
 export const PP_STATUS_LABELS: Record<string, string> = {

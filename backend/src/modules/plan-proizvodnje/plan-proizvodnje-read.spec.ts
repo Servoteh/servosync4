@@ -201,8 +201,9 @@ describe("gant feed (046/26)", () => {
   it("069: gotovost broji SAMO dobre komade (dorada i škart ispadaju iz zbira)", () => {
     const { priv } = makeSvc();
     const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
-    // Brojač dobrih: sve što NIJE dorada(1)/škart(2).
-    expect(sql).toContain("COALESCE(SUM(t.piece_count) FILTER (WHERE COALESCE(t.quality_type_id, 0) NOT IN (1, 2)), 0) AS good_done");
+    // Brojač dobrih: DOSLOVNO `= 0`, isti izraz kao praćenje/tech-processes — ne
+    // „sve što nije 1/2", da buduća 4. vrsta kvaliteta ne bi u planu prošla kao dobra.
+    expect(sql).toContain("COALESCE(SUM(t.piece_count) FILTER (WHERE t.quality_type_id = 0), 0) AS good_done");
     // Kvačica: ručna presuda planera → pa količina DOBRIH ≥ plan.
     expect(sql).toContain("COALESCE(base.planned_done, CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0");
     expect(sql).toContain("THEN COALESCE(tr.good_done, 0) >= base.komada_total");
