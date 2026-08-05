@@ -23,28 +23,35 @@ export type SastanciPbIzvor = "sy15" | "3.0";
  * vezama; razdvojeni prekidači bi dozvolili stanje u kom pola domena čita jednu a
  * pola drugu bazu.
  *
- * ⚠️ STANJE 05.08.2026: prenete su ŠEMA i PODACI (27 tabela, 1.120 redova —
- * dokazano na probnoj bazi), i prepisana je samouslužna logika
- * (`SastanciSamouslugaService`). NIJE preneto, i zato pod `3.0` pada sa 503:
+ * ⚠️ STANJE 06.08.2026.
  *
- *   - 65 `SECURITY DEFINER` funkcija (od 74 ukupno) — među njima
- *     `sast_zakljucaj_sastanak` (zaključavanje + arhiva + PDF),
- *     `sast_auto_create_weekly` / `sast_create_weekly_at` (automat sedmičnog),
- *     `sastanci_enqueue_*` i `pb_enqueue_notifications` (ceo mejl kanal),
- *     `pb_get_load_stats` / `pb_get_team_load_stats` (opterećenje inženjera),
- *     `pb_list_eng_tips` / `pb_save_eng_tip` (baza znanja),
+ * PRENETO (radi pod `3.0`):
+ *   - ŠEMA i PODACI (27 tabela, 1.120 redova — dokazano na probnoj bazi),
  *   - view-ovi `v_akcioni_plan` i `v_pm_teme_pregled`,
- *   - `employees` / `departments` / `sub_departments` / `job_positions`
- *     (kadrovska — korak 4; bez njih `pb_current_employee_id` ne postoji, a on je
- *     ulaz u SVA prava projektnog biroa),
- *   - `auth.uid()` / `auth.jwt()` identitet iz GUC-a (`Sy15Service.setClaims`) i
- *     74 RLS politike koje presuđuju vidljivost reda,
- *   - `production.predmet_aktivacija` (koju zove `pb_list_projects`).
+ *   - 4 samouslužne fn (`SastanciSamouslugaService`) + 17 pozvanih DEFINER fn i
+ *     6 logičkih trigera (`SastanciFnService`) — među njima `sast_zakljucaj_sastanak`
+ *     (zaključavanje + arhiva + zapisnik mejl), `sast_auto_create_weekly`,
+ *     `sastanci_enqueue_*` i dispatch (dakle CEO mejl kanal sastanaka),
+ *   - gejtovi prava koje je ranije sprovodio RLS (`SastanciAuthzService`),
+ *   - 3 scheduler posla sastanaka + dispečer sastanaka.
+ *
+ * JOŠ NIJE PRENETO — zato pod `3.0` i dalje pada sa 503:
+ *   - tabelarni CRUD (liste, detalj, učesnici, tačke, odluke, akcije, teme,
+ *     šabloni, arhiva, slike) — ide kroz `withUserMapped`, koji je brana,
+ *   - RLS scope za DECU sastanka i read-scope na `pm_teme` /
+ *     `sastanci_notification_log` (bez njih bi CRUD curio tuđe redove),
+ *   - registar idempotencije `rev_api_idempotency` (ostaje u sy15) — zato
+ *     `create` / `bulk-ucesnici` / `prenos` / `instantiate` i dalje padaju,
+ *   - `projekat_id` je promenio tip (uuid -> Int) — traži usklađen FE,
+ *   - CEO PROJEKTNI BIRO: `employees` / `departments` / `sub_departments` /
+ *     `job_positions` (kadrovska — korak 4; bez njih `pb_current_employee_id`
+ *     ne postoji, a on je ulaz u SVA prava modula) i
+ *     `production.predmet_aktivacija` (koju zove `pb_list_projects`).
  *
  * Zato pod `SASTANCI_PB_IZVOR=3.0` NEPRENETE putanje NAMERNO padaju sa 503 i
  * jasnom porukom, umesto da tiho vrate prazan ili pogrešan odgovor — upis koji bi
  * ipak otišao u sy15 razišao bi dve baze, a to se ne vidi odmah.
- * Merenje i redosled preostalog posla: docs/SEOBA_SASTANCI_PB_2026-08-05.md.
+ * Merenje i redosled preostalog posla: docs/SEOBA_SASTANCI_PB_2026-08-05.md §7b/§7c.
  */
 @Injectable()
 export class SastanciPbSourceService {
@@ -64,9 +71,11 @@ export class SastanciPbSourceService {
     }
     if (this.value === "3.0") {
       this.logger.warn(
-        "SASTANCI_PB_IZVOR=3.0 — samouslužne putanje (RSVP, priprema, status moje akcije, " +
-          "podešavanja obaveštenja) čitaju/pišu 3.0 bazu; ostale rute sastanaka i projektnog " +
-          "biroa vraćaju 503 dok se seoba ne dovrši. Povratak: SASTANCI_PB_IZVOR=sy15 + restart.",
+        "SASTANCI_PB_IZVOR=3.0 — sastanci čitaju/pišu 3.0 bazu: samousluga, zaključavanje i " +
+          "arhiva, pozivnice i podsetnici, sedmični kolegijum, mejl kanal i dispatch. " +
+          "Tabelarni CRUD (liste/detalj/učesnici/tačke/teme/šabloni), rute koje traže registar " +
+          "idempotencije (create/bulk/prenos/instantiate) i CEO projektni biro i dalje vraćaju " +
+          "503. Povratak: SASTANCI_PB_IZVOR=sy15 + restart.",
       );
     }
   }

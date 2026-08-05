@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { MailService } from "../../../common/mail/mail.service";
 import { Sy15Service } from "../../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
+import { SastanciPbSourceService } from "../../../common/sy15/sastanci-pb-source.service";
 import type { ScheduledJob } from "../scheduler.types";
 
 /*
@@ -74,6 +75,14 @@ import type { ScheduledJob } from "../scheduler.types";
  * Gate: SCHEDULER_ENABLED (pogon uopšte tika) + DISPATCH_ENABLED (poseban
  * prekidač za SLANJE). Bez DISPATCH_ENABLED posao je no-op uz debug log — deploy
  * koda je bezbedan i kad je scheduler već upaljen.
+ *
+ * ── SEOBA (05.08.2026) ──────────────────────────────────────────────────────
+ * PB grana (`dispatchPb`) je u domenu prekidača `SASTANCI_PB_IZVOR`, ali se PB u
+ * ovom koraku NE seli (blokiran kadrovskom: `pb_current_employee_id` visi o
+ * `employees`). Zato PB grana NIJE prepisana — samo prolazi kroz branjeni geter
+ * `assertPorted`, da pod `3.0` GLASNO padne umesto da tiho nastavi da piše u
+ * sy15. Kadrovska (`kadr_*`) i održavanje (`maint_*`) NISU ovaj domen i ostaju
+ * netaknute — one imaju svoju seobu i svoj prekidač.
  */
 
 /** Redovi iz `*_dispatch_dequeue` (RETURNS SETOF <outbox>; čitamo šta koristimo). */
@@ -136,6 +145,7 @@ export class NotifyDispatchService {
     private readonly sy15: Sy15Service,
     private readonly mail: MailService,
     private readonly storage: Sy15StorageService,
+    private readonly izvor: SastanciPbSourceService,
   ) {}
 
   /** Poseban prekidač za SLANJE (uz SCHEDULER_ENABLED koji pali sam pogon). */
@@ -412,6 +422,11 @@ export class NotifyDispatchService {
 
   // ══ PROJEKTNI BIRO ═════════════════════════════════════════════════════════
   async dispatchPb(): Promise<DispatchSummary> {
+    // PB outbox (`pb_dispatch_dequeue` / `_mark_sent` / `_mark_failed`) NIJE
+    // prenet u 3.0 — brana je na ULAZU u granu, pre ijednog upisa, da pod `3.0`
+    // dispečer padne sa 503 umesto da tiho piše u sy15 i razilazi dve baze.
+    this.izvor.assertPorted("projektni biro: dispatch kroz sy15");
+
     const cfgRows = await this.sy15.db.$queryRaw<{ digest_mode: boolean }[]>`
       SELECT digest_mode FROM public.pb_notification_config WHERE id = 1`;
     const digest = Boolean(cfgRows[0]?.digest_mode);

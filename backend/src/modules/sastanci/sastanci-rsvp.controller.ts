@@ -152,10 +152,9 @@ export class SastanciRsvpController {
    */
   @Head()
   head(@Res() res: Response): void {
-    res
-      .status(200)
-      .setHeader("Content-Type", "text/html; charset=utf-8")
-      .end();
+    res.status(200);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.end();
   }
 
   @Get()
@@ -248,11 +247,12 @@ export class SastanciRsvpController {
    * ili u istoriji proxy-ja.
    */
   private send(res: Response, status: number, html: string): void {
-    res
-      .status(status)
-      .setHeader("Content-Type", "text/html; charset=utf-8")
-      .setHeader("Cache-Control", "no-store")
-      .send(html);
+    // Bez ulančavanja: `ServerResponse.setHeader` je tek novije počeo da vraća
+    // `this`, pa lanac ume da pukne na starijem runtime-u.
+    res.status(status);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(html);
   }
 }
 
