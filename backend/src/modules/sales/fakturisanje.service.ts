@@ -9,6 +9,12 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "../gl/posting/posting.service";
+// Zaokruživanje linije, odbacivanje nula-redova i polja otvorene stavke — JEDNO mesto za
+// ručnu i robnu granu knjiženja (do 05.08.2026. su bila dva primerka i razišla su se).
+import {
+  finalizeLedgerLines,
+  openItemFields,
+} from "../gl/posting/ledger-line";
 import { GlWriteService } from "../gl/gl-write.service";
 import { SefService } from "./sef/sef.service";
 import { ReservationService } from "../robno/reservation.service";
@@ -1629,21 +1635,29 @@ export class FakturisanjeService {
 
     const draftLines = buildSalesLedgerLines(invoice, lines);
 
-    // Odbaci nula-redove.
-    const grouped = draftLines.filter(
-      (l) => !(l.debit.isZero() && l.credit.isZero()),
-    );
+    // Polja otvorene stavke (broj/dospeće/valuta) — jedno pravilo za obe grane knjiženja.
+    const openItem = openItemFields(invoice);
+
+    // Zaokruži liniju na skalu kolone `numeric(19,4)`, pa odbaci nula-redove — isti računar
+    // kao robna grana (`finalizeLedgerLines`), da se dve grane ne raziđu. Balans se meri nad
+    // ONIM ŠTO SE UPISUJE, ne nad punim Decimal vrednostima.
+    const prepared = finalizeLedgerLines(draftLines, { dropZeroRows: true });
 
     // BALANS-KONTROLA: ΣDug == ΣPot.
-    let totalDebit = ZERO;
-    let totalCredit = ZERO;
-    for (const l of grouped) {
-      totalDebit = totalDebit.add(l.debit);
-      totalCredit = totalCredit.add(l.credit);
-    }
-    if (!totalDebit.equals(totalCredit)) {
+    if (!prepared.balanced) {
       throw new UnprocessableEntityException(
-        `Nalog ne balansira: ΣDug=${totalDebit.toFixed(4)} ≠ ΣPot=${totalCredit.toFixed(4)}.`,
+        `Nalog ne balansira: ΣDug=${prepared.totalDebit.toFixed(4)} ≠ ΣPot=${prepared.totalCredit.toFixed(4)}.`,
+      );
+    }
+    // Nalog bez ijedne stavke se ne upisuje (isti kvar kao na robnoj grani, v.
+    // `posting.service.ts`): račun na nula dinara bi dobio broj, prešao u POSTED & LOCKED i
+    // ostao bez ijednog reda u glavnoj knjizi — nevidljiv saldakontima, KIF-u i POPDV-u, a
+    // nepromenjiv. `postInvoice` već odbija račun bez stavki; ovo hvata račun sa stavkama
+    // čiji su svi iznosi nula.
+    if (prepared.lines.length === 0) {
+      throw new UnprocessableEntityException(
+        `Račun ${invoice.documentNumber} ne daje nijednu stavku naloga (svi iznosi su nula), ` +
+          `pa se ne može proknjižiti. Ispravi stavke računa, pa ponovi knjiženje.`,
       );
     }
 
@@ -1670,15 +1684,15 @@ export class FakturisanjeService {
         status: "POSTED",
         createdByUserId: actor.userId,
         lines: {
-          create: grouped.map((l) => ({
+          create: prepared.lines.map((l) => ({
             accountCode: l.accountCode,
             analyticalCode: l.analyticalCode,
             debit: l.debit,
             credit: l.credit,
             description: l.description,
-            documentNumber: invoice.documentNumber,
-            dueDate: invoice.dueDate,
-            currency: invoice.currency,
+            // Broj / dospeće / valuta na SVAKI red — pravilo i podrazumevane vrednosti drži
+            // `openItemFields` (deljeno sa robnom granom; v. §3.6a).
+            ...openItem,
             sourceWorkOrderId: invoice.workOrderId ?? null,
           })),
         },

@@ -643,6 +643,31 @@ describe("postInvoice — račun bez naloga GK se NE izdaje (N4)", () => {
     // Auto-robna grana ne pravi ručni nalog.
     expect(h.prisma.journalEntry.create).not.toHaveBeenCalled();
   });
+
+  it("račun sa svim iznosima na nuli → 422 (nalog bez ijedne stavke)", async () => {
+    // Isti kvar je 05.08.2026. izmeren na ROBNOJ grani (dokument bez stavki → nalog bez
+    // ijednog reda, dokument POSTED i nepromenjiv). Ručna grana ima istu rupu na drugom
+    // ulazu: račun SA stavkama, ali sa svim iznosima na nuli, prolazi
+    // `assertTotalsMatchItems` (0 = 0), balansira (0 = 0) i dobija broj — a nalog ostaje
+    // bez ijednog reda. Zato se prazan nalog odbija na obe grane.
+    const h = makePostHarness({
+      invoice: draftInvoice({
+        netTotal: D(0),
+        vatTotal: D(0),
+        grossTotal: D(0),
+        items: [{ vatRateCode: "3", vatBase: D(0) }],
+      }),
+    });
+    h.prisma.invoiceItem.findMany.mockResolvedValue([
+      { vatRateCode: "3", vatBase: D(0) },
+    ]);
+
+    const err = await h.service.postInvoice(300, ACTOR).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as Error).message).toMatch(/nijednu stavku naloga/);
+    expect(h.prisma.journalEntry.create).not.toHaveBeenCalled();
+    expect(h.prisma.invoice.update).not.toHaveBeenCalled();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

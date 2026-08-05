@@ -19,9 +19,13 @@
  *      ne povratnu vrednost funkcije) i poredi ga sa ETALONOM — kontima i stranama
  *      koje stari program (BigBit) stvarno proizvodi, izmerenim nad uvezenom knjigom
  *      2026 na produkciji.
- *   5. Vozi provere koje se lako previde: balans, `document_number`/`due_date` na redu,
- *      analitika (komitent), prazan/nepostojeći dokument, dokument bez stavki,
+ *   5. Vozi provere koje se lako previde: balans, `document_number`/`due_date`/`currency` na
+ *      redu, analitika (komitent), prazan/nepostojeći dokument, dokument bez stavki,
  *      IFGP sa stavkom na 10 % (šema 36 nema liniju za Q), i zaokruživanje ispod pare.
+ *
+ * Uz svaki dokument sa komitentom pravi se i PRODAJNI dokument (`invoices`) vezan preko
+ * `stock_document_id` — kao u pravom toku. Motor sa njega uzima DOSPEĆE i VALUTU za red
+ * glavne knjige (`stock_documents` te dve kolone nema), a broj dokumenta sa same izdatnice.
  *
  * ŠTA NE RADI: ne menja nijednu šemu (to je knjigovođin posao, ne naš) i ne dira
  * produkciju. Razilaženja se SAMO zapisuju.
@@ -155,6 +159,10 @@ const MAG_ROBA = 1; //         Magacin robe (konto 1320)
 const MAG_GP = 44; //          Gotovi proizvodi (konto 9600)
 const GODINA = 2026;
 const DATUM = new Date("2026-08-05T10:00:00.000Z");
+/** Dospeće (valuta) prodajnog dokumenta — 30 dana od izdavanja. */
+const DOSPECE = new Date("2026-09-04T10:00:00.000Z");
+/** Prefiks broja probnog PRODAJNOG dokumenta (po njemu ide i čišćenje). */
+const FAKTURA_PREFIKS = "ZZ-P-";
 
 interface Proba {
   vrsta: string;
@@ -164,6 +172,8 @@ interface Proba {
   magacin: number;
   kupac: number | null;
   tarifa: string;
+  /** Valuta prodajnog dokumenta koji je izdatnicu napravio (izvoz = EUR). */
+  valuta?: string;
   /** Očekivani nalog izračunat NAPAMET iz formula šeme — kontrola motora. */
   ocekivano: Array<{ konto: string; dug: number; pot: number; kako: string }>;
 }
@@ -203,6 +213,7 @@ const PROBE: Proba[] = [
   },
   {
     vrsta: "IZVRO",
+    valuta: "EUR", // izvozni račun je u evrima → red GK nosi valutu prodajnog dokumenta
     semaId: 24,
     naziv: "Izvozna faktura — roba",
     kind: "IZ",
@@ -218,6 +229,7 @@ const PROBE: Proba[] = [
   },
   {
     vrsta: "IZVGP",
+    valuta: "EUR",
     semaId: 47,
     naziv: "Izvozna faktura — gotov proizvod",
     kind: "IZ",
@@ -273,6 +285,10 @@ const PROBE: Proba[] = [
 
 /** Očisti sve što je skript ikad napravio (ponovljivost). */
 async function ocisti() {
+  // Probni PRODAJNI dokumenti (predračun koji „drži" izdatnicu — od njih motor uzima
+  // dospeće i valutu za red glavne knjige). Sirov SQL iz istog razloga kao upis.
+  await prisma.$executeRaw`
+    DELETE FROM invoices WHERE document_number LIKE ${`${FAKTURA_PREFIKS}%`}`;
   const dokumenti = await prisma.stockDocument.findMany({
     where: { note: MARK },
     select: { id: true },
@@ -294,7 +310,15 @@ async function ocisti() {
 }
 
 let brojac = 9000;
-/** Napravi robni dokument sa JEDNOM stavkom po zadatim cenama. */
+/**
+ * Napravi robni dokument sa JEDNOM stavkom po zadatim cenama.
+ *
+ * Kad dokument ima komitenta, uz njega se pravi i PRODAJNI dokument (`invoices`) vezan
+ * preko `stock_document_id` — kao u pravom toku (predračun → izdatnica → knjiženje). Motor
+ * sa njega uzima DOSPEĆE i VALUTU za red glavne knjige (`stock_documents` te dve kolone
+ * nema; provereno u `information_schema.columns`), a broj dokumenta uzima sa same izdatnice.
+ * Popis (MANJR/VISAR) prodajni dokument nema — dospeće tada i treba da ostane prazno.
+ */
 async function napraviDokument(p: {
   vrsta: string;
   kind: string;
@@ -304,7 +328,10 @@ async function napraviDokument(p: {
   nabavna?: Prisma.Decimal;
   vp?: Prisma.Decimal;
   tarifa: string;
+  valuta?: string;
   bezStavki?: boolean;
+  /** Namerno BEZ prodajnog dokumenta (provera podrazumevanih vrednosti). */
+  bezFakture?: boolean;
 }): Promise<number> {
   brojac += 1;
   const doc = await prisma.stockDocument.create({
@@ -338,6 +365,20 @@ async function napraviDokument(p: {
           },
     },
   });
+  if (p.kupac !== null && !p.bezFakture) {
+    // NAMERNO SIROV SQL, ne `prisma.invoice.create`: generisani klijent nosi kolone iz
+    // tekućeg `schema.prisma`, pa svaki `create` pada (P2022) kad na test bazi neka
+    // migracija još nije primenjena. Skript mora da radi nad zatečenom bazom, a ne da traži
+    // migracije. Upisuju se samo tri obavezne kolone bez default-a + ono što motor čita.
+    const valuta = p.valuta ?? "RSD";
+    await prisma.$executeRaw`
+      INSERT INTO invoices (document_type, document_number, document_date, due_date,
+                            level, company_id, customer_id, currency, is_export,
+                            stock_document_id, status)
+      VALUES (${p.vrsta}, ${`${FAKTURA_PREFIKS}${brojac}/${GODINA}`}, ${DATUM}, ${DOSPECE},
+              250, 0, ${p.kupac}, ${valuta}, ${valuta !== "RSD"},
+              ${doc.id}, 'DRAFT')`;
+  }
   return doc.id;
 }
 
@@ -579,21 +620,48 @@ async function main() {
         : `${saAnalitikom}/${redovi.length} redova nosi šifru ${p.kupac}`,
     );
 
-    const saBrojem = redovi.filter((r) => r.brojDokumenta !== null).length;
+    const brojDok = (
+      await prisma.stockDocument.findUniqueOrThrow({
+        where: { id: docId },
+        select: { documentNumber: true },
+      })
+    ).documentNumber;
+    const saBrojem = redovi.filter(
+      (r) => r.brojDokumenta === brojDok,
+    ).length;
     check(
       "document_number na redovima",
       saBrojem === redovi.length,
       saBrojem === 0
-        ? `NIJEDAN red nema broj dokumenta (svi NULL) — otvorene stavke se slepe u jednu (§3.6a)`
-        : `${saBrojem}/${redovi.length}`,
+        ? `NIJEDAN red ne nosi broj dokumenta — otvorene stavke se slepe u jednu (§3.6a)`
+        : `${saBrojem}/${redovi.length} redova nosi „${brojDok}"`,
     );
-    const saDospecem = redovi.filter((r) => r.dospece !== null).length;
+    // Dospeće dolazi sa PRODAJNOG dokumenta; popis ga nema i tada MORA biti prazno
+    // (nema roka plaćanja) — isti obrazac kao provera analitike iznad.
+    const saDospecem = redovi.filter(
+      (r) => r.dospece?.getTime() === DOSPECE.getTime(),
+    ).length;
     check(
-      "due_date (valuta/dospeće) na redovima",
-      saDospecem === redovi.length,
-      saDospecem === 0
-        ? "NIJEDAN red nema dospeće (svi NULL) — aging sve baca u 0–30 dana"
-        : `${saDospecem}/${redovi.length}`,
+      "due_date (dospeće) na redovima",
+      p.kupac === null
+        ? redovi.every((r) => r.dospece === null)
+        : saDospecem === redovi.length,
+      p.kupac === null
+        ? `popis nema prodajni dokument ni rok plaćanja → svih ${redovi.length} redova bez dospeća`
+        : saDospecem === 0
+          ? "NIJEDAN red nema dospeće (svi NULL) — aging sve baca u 0–30 dana"
+          : `${saDospecem}/${redovi.length} redova nosi ${DOSPECE.toISOString().slice(0, 10)}`,
+    );
+    const ocekivanaValuta = p.kupac === null ? "RSD" : (p.valuta ?? "RSD");
+    const saValutom = redovi.filter(
+      (r) => r.valuta === ocekivanaValuta,
+    ).length;
+    check(
+      "currency (valuta) na redovima",
+      saValutom === redovi.length,
+      `${saValutom}/${redovi.length} redova nosi „${ocekivanaValuta}"${
+        p.kupac === null ? " (podrazumevano — nema prodajnog dokumenta)" : ""
+      }`,
     );
     check(
       "traceback source_goods_doc_id",
@@ -776,10 +844,20 @@ async function main() {
       "       posle čega je nepromenjiv — a u glavnoj knjizi nema nijedan red.",
     );
   } catch (e) {
+    // Očekivano od 05.08.2026: 422 sa srpskom porukom, dokument OSTAJE nezaključan.
+    const nalogPosle = await procitajNalog(prazanId);
+    const docPosle = await prisma.stockDocument.findUniqueOrThrow({
+      where: { id: prazanId },
+    });
     check(
       "prazan dokument je odbijen",
       true,
       `${(e as Error).name}: ${(e as Error).message}`,
+    );
+    check(
+      "prazan dokument je ostao NEZAKLJUČAN i bez naloga",
+      docPosle.status === "DRAFT" && nalogPosle === null,
+      `status=${docPosle.status}, naloga: ${nalogPosle ? 1 : 0}`,
     );
   }
 
@@ -864,7 +942,7 @@ async function main() {
   // 5.6 zaokruživanje ispod pare — balans u memoriji vs u bazi
   log("");
   log(
-    "5.6 — zaokruživanje: motor ne zaokružuje liniju, a kolona je numeric(19,4)",
+    "5.6 — zaokruživanje: linija se zaokruži na numeric(19,4) PRE balans-kontrole i upisa",
   );
   const sitanId = await napraviDokument({
     vrsta: "IFR",
@@ -876,33 +954,83 @@ async function main() {
     nabavna: new D("0.5"),
     vp: new D("0.5"),
   });
-  const uMemoriji = await engine.postFromStockDocument(sitanId);
-  let memDug = new D(0);
-  let memPot = new D(0);
-  for (const l of uMemoriji) {
-    memDug = memDug.add(l.debit);
-    memPot = memPot.add(l.credit);
-  }
-  const sitan = await procitajNalog(sitanId);
-  if (sitan) {
-    let dbDug = new D(0);
-    let dbPot = new D(0);
-    for (const r of sitan.redovi) {
-      dbDug = dbDug.add(r.dug);
-      dbPot = dbPot.add(r.pot);
+  try {
+    const uMemoriji = await engine.postFromStockDocument(sitanId);
+    let memDug = new D(0);
+    let memPot = new D(0);
+    for (const l of uMemoriji) {
+      memDug = memDug.add(l.debit);
+      memPot = memPot.add(l.credit);
     }
-    log(
-      `    u memoriji:  ΣDug = ${memDug.toFixed(8)}   ΣPot = ${memPot.toFixed(8)}`,
+    const sitan = await procitajNalog(sitanId);
+    if (sitan) {
+      let dbDug = new D(0);
+      let dbPot = new D(0);
+      for (const r of sitan.redovi) {
+        dbDug = dbDug.add(r.dug);
+        dbPot = dbPot.add(r.pot);
+      }
+      log(
+        `    u memoriji:  ΣDug = ${memDug.toFixed(8)}   ΣPot = ${memPot.toFixed(8)}`,
+      );
+      log(
+        `    u bazi:      ΣDug = ${dbDug.toFixed(4)}       ΣPot = ${dbPot.toFixed(4)}`,
+      );
+      check(
+        "nalog balansira i POSLE upisa u bazu",
+        dbDug.equals(dbPot),
+        dbDug.equals(dbPot)
+          ? "isto"
+          : `razlika ${fmt(dbDug.sub(dbPot), 4)} — svaka linija se u bazi zaokruži nezavisno (§3.6b)`,
+      );
+    }
+  } catch (e) {
+    // Očekivano od 05.08.2026: motor zaokruži liniju PRE balans-kontrole, pa ovaj dokument
+    // ne može ni da uđe u knjigu — zaokruženi ΣDug 0,0006 ≠ ΣPot 0,0007. Bolje odbijeno
+    // knjiženje nego nalog koji u bazi ne zatvara na nulu.
+    const nalogPosle = await procitajNalog(sitanId);
+    const docPosle = await prisma.stockDocument.findUniqueOrThrow({
+      where: { id: sitanId },
+    });
+    check(
+      "neuravnotežen (zaokružen) nalog NIJE upisan",
+      nalogPosle === null && docPosle.status === "DRAFT",
+      `${(e as Error).name}: ${(e as Error).message} · status=${docPosle.status}, naloga: ${
+        nalogPosle ? 1 : 0
+      }`,
     );
-    log(
-      `    u bazi:      ΣDug = ${dbDug.toFixed(4)}       ΣPot = ${dbPot.toFixed(4)}`,
+  }
+
+  // 5.7 zaokruživanje koje NE razbija ravnotežu — iznos u bazi je zaokružen na 4 decimale
+  log("");
+  log("5.7 — zaokruživanje na skalu kolone kad ravnoteža ostaje (nabavna 6.000,00005)");
+  const zaokruzenId = await napraviDokument({
+    vrsta: "IFR",
+    kind: "IZ",
+    magacin: MAG_ROBA,
+    kupac: KUPAC_DOMACI,
+    tarifa: TARIFA_20,
+    nabavna: new D("6000.00005"),
+  });
+  await engine.postFromStockDocument(zaokruzenId);
+  const zaokruzen = await procitajNalog(zaokruzenId);
+  if (zaokruzen) {
+    const zaliha = zaokruzen.redovi.find((r) => r.konto === "1320");
+    let zDug = new D(0);
+    let zPot = new D(0);
+    for (const r of zaokruzen.redovi) {
+      zDug = zDug.add(r.dug);
+      zPot = zPot.add(r.pot);
+    }
+    check(
+      "linija je upisana ZAOKRUŽENA na 4 decimale",
+      zaliha != null && zaliha.pot.equals(new D("6000.0001")),
+      `1320 potražuje ${zaliha ? zaliha.pot.toFixed(5) : "—"} (u memoriji 6000.00005)`,
     );
     check(
-      "nalog balansira i POSLE upisa u bazu",
-      dbDug.equals(dbPot),
-      dbDug.equals(dbPot)
-        ? "isto"
-        : `razlika ${fmt(dbDug.sub(dbPot), 4)} — svaka linija se u bazi zaokruži nezavisno (§3.6b)`,
+      "nalog sa zaokruženim linijama balansira u bazi",
+      zDug.equals(zPot),
+      `${zDug.toFixed(4)} : ${zPot.toFixed(4)}`,
     );
   }
 

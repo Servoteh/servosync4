@@ -15,9 +15,13 @@
  *     ──►  AccountingScheme (orderType)  ──►  AccountingSchemeLine[] (Konto + DefDug/DefPot nad A–Z)
  *       ──►  za svaku liniju: evaluateExpression(defDebit/defCredit, varMap, prismaDecimalArith)
  *              varMap = agregati A–Z sa StockDocumentItem[] (doc 43 §1, AUTORITATIVNO)
- *         ──►  GROUP BY (konto + komitent), Σ, odbaci nula-redove (legacy 2Korak)
- *           ──►  BALANS: ΣDug == ΣPot, inače LedgerNotBalancedException (rollback)
- *             ──►  INSERT JournalEntry(draft) + LedgerEntry[] (NSK_ProknjiziStavkeIzRobnog)
+ *         ──►  GROUP BY (konto + komitent), Σ  ──►  ZAOKRUŽI liniju na skalu kolone
+ *                (numeric(19,4)) i odbaci nula-redove (legacy 2Korak) — `finalizeLedgerLines`
+ *           ──►  nijedna linija nije ostala → 422 (nalog bez stavki se ne upisuje)
+ *           ──►  BALANS: ΣDug == ΣPot nad ZAOKRUŽENIM iznosima, inače
+ *                LedgerNotBalancedException (rollback — dokument ostaje nezaključan)
+ *             ──►  INSERT JournalEntry(draft) + LedgerEntry[] (NSK_ProknjiziStavkeIzRobnog),
+ *                  svaki red nosi broj dokumenta / dospeće / valutu (`openItemFields`)
  *
  * IDEMPOTENCIJA (doc 18 §2.2 t.5: „proknjižen = IZVEDEN, ne flag"):
  *   pre knjiženja proveri postoji li JournalEntry sa sourceGoodsDocId=docId
@@ -30,6 +34,11 @@ import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { evaluateExpression } from "./expression-parser";
+import {
+  finalizeLedgerLines,
+  openItemFields,
+  type OpenItemFields,
+} from "./ledger-line";
 import { prismaDecimalArith } from "./prisma-decimal-arith";
 import {
   VAT_RATE_BY_CODE,
@@ -215,15 +224,23 @@ export class PostingEngineService {
     const companyId = params.companyId ?? 0;
     const year = businessYear(params.documentDate);
 
-    // Balans-kontrola (Decimal je egzaktan → tolerancija 0).
-    let totalDebit = new D(0);
-    let totalCredit = new D(0);
-    for (const l of params.lines) {
-      totalDebit = totalDebit.plus(new D(l.debit ?? 0));
-      totalCredit = totalCredit.plus(new D(l.credit ?? 0));
-    }
-    if (!totalDebit.equals(totalCredit)) {
-      throw new LedgerNotBalancedException(totalDebit, totalCredit);
+    // Balans-kontrola NAD ZAOKRUŽENIM IZNOSIMA — poredi se ono što se stvarno upisuje u
+    // `numeric(19,4)`, ne pune Decimal vrednosti (v. `finalizeLedgerLines`). Nula-redovi
+    // ostaju: ovaj put knjiži proizvoljne linije koje mu pozivalac zada (izvod,
+    // kompenzacija, avans, otvaranje godine) i ne sme da mu ćutke izbaci red.
+    const prepared = finalizeLedgerLines(
+      params.lines.map((l) => ({
+        ...l,
+        debit: new D(l.debit ?? 0),
+        credit: new D(l.credit ?? 0),
+      })),
+      { dropZeroRows: false },
+    );
+    if (!prepared.balanced) {
+      throw new LedgerNotBalancedException(
+        prepared.totalDebit,
+        prepared.totalCredit,
+      );
     }
 
     const number = await this.nextJournalNumber(
@@ -245,11 +262,11 @@ export class PostingEngineService {
         sourceGoodsDocId: params.sourceGoodsDocId ?? null,
         createdByUserId: params.createdByUserId ?? null,
         lines: {
-          create: params.lines.map((l) => ({
+          create: prepared.lines.map((l) => ({
             accountCode: l.accountCode,
             analyticalCode: l.analyticalCode ?? null,
-            debit: new D(l.debit ?? 0),
-            credit: new D(l.credit ?? 0),
+            debit: l.debit,
+            credit: l.credit,
             description: l.description ?? params.description ?? null,
             documentNumber: l.documentNumber ?? null,
             dueDate: l.dueDate ?? null,
@@ -262,7 +279,7 @@ export class PostingEngineService {
     return {
       journalEntryId: journal.id,
       number,
-      lineCount: params.lines.length,
+      lineCount: prepared.lines.length, // = params.lines.length (nula-redovi se ovde ne odbacuju)
     };
   }
 
@@ -328,6 +345,77 @@ export class PostingEngineService {
         include: { lines: { orderBy: { lineNo: "asc" } } },
       });
 
+      /**
+       * DOKUMENT BEZ STAVKI SE NE KNJIŽI (ispravka 05.08.2026).
+       *
+       * ⚠️ IZMERENO (probno knjiženje na test bazi): dokument vrste IFR bez ijedne stavke
+       * daje sve slotove A–Z na nuli → sve linije šeme na nuli → nalog BALANSIRA (0 = 0) →
+       * dobija broj, dokument prelazi u `POSTED` i time postaje nepromenjiv
+       * (`assertItemMutable`/`assertNotLocked`), a u glavnoj knjizi NEMA NIJEDAN RED. Bez
+       * greške i bez traga: `POST /robno/documents/:id/post` vrati `posted: true` sa
+       * `ledgerLines: 0`. Isti kvar je 03.08.2026. već zatvoren na NIV putu
+       * (`postNivLeveling`) — ovde je ostao otvoren.
+       *
+       * Nijedna šema ne može da napravi ne-nulti nalog bez stavki: svih 26 slotova A–Z
+       * računa se ISKLJUČIVO iz `stock_document_items` (`aggregateDocAmounts`) — doc-level
+       * kolone (`customs`, `forwarding`, `otherDependentCosts`) ulaze u nalog posredno,
+       * kroz cene stavki koje piše kalkulacija. Zato je „nema stavki" isto što i „nalog bi
+       * bio prazan", pa se odbija ovde, sa jasnijom porukom.
+       *
+       * ⚠️ IZUZETAK JE NIV (nivelacija) — vrsta dokumenta kod koje je NULA GK REDOVA
+       * ISPRAVAN ISHOD (BigBit paritet, v. blok komentara na vrhu fajla). NIV ovu granu
+       * uopšte ne dostiže: grana se ranije, u `postNivLeveling`, koji ima svoju proveru
+       * „nema nivelacionih stavki". Drugih izuzetaka nema — proveren je svaki `kind`
+       * (`UL`, `IZ`, `PRENOS`, `VISAK`, `MANJAK`): svi nose stavke.
+       */
+      if (items.length === 0) {
+        throw new UnprocessableEntityException(
+          `Robni dokument ${docId} (vrsta ${doc.documentTypeCode}) nema nijednu stavku — ` +
+            `nalog glavne knjige bio bi prazan, pa knjiženje nije moguće. Unesi stavke ` +
+            `dokumenta, pa ponovi knjiženje.`,
+        );
+      }
+
+      /**
+       * POLJA OTVORENE STAVKE (broj dokumenta / dospeće / valuta) — na SVAKI red naloga,
+       * isto kao ručna grana (`FakturisanjeService.postManualLedger`) i isto kao BigBit
+       * (`[Broj dokumenta]` + `[Valuta dokumenta]` na svakoj liniji). Pravilo i podrazumevane
+       * vrednosti drži `openItemFields` (jedno mesto za obe grane).
+       *
+       * ⚠️ IZMEREN KVAR (05.08.2026): robna grana ih nije upisivala — svi redovi svih 6
+       * vrsta imali su `document_number`/`due_date`/`currency` NULL. Posledica je merljiva:
+       * otvorene stavke se grupišu po `(konto, komitent, document_number)`, a Postgres
+       * NULL-ove u `GROUP BY` tretira kao JEDNAKE → sve robne fakture istom kupcu na kontu
+       * 2040 slile bi se u JEDNU otvorenu stavku bez broja; bez `due_date` ceo iznos pada u
+       * bucket 0–30 dana, IOS i opomene štampaju prazan broj, a uparivanje uplate po pozivu
+       * na broj nije moguće.
+       *
+       * ODAKLE VREDNOSTI:
+       *   • broj — sa zaglavlja ROBNOG dokumenta (`stock_documents.document_number`, NOT
+       *     NULL kolona); to je dokument koji se ovde knjiži i na koji nalog pokazuje
+       *     (`source_goods_doc_id`);
+       *   • dospeće i valuta — sa zaglavlja PRODAJNOG dokumenta koji je ovu izdatnicu
+       *     napravio (`invoices.stock_document_id`), jer `stock_documents` te dve kolone
+       *     NEMA (izmereno: `information_schema.columns` daje samo `document_number`).
+       *     Kopije se ne prave (repo lekcija: kopije se razilaze) — čita se izvor istine,
+       *     ista polja koja upisuje i ručna grana (`invoice.dueDate` / `invoice.currency`).
+       *     Popis (MANJR/VISAR) i međuskladišnica nemaju prodajni dokument → dospeće ostaje
+       *     `null` (nema roka plaćanja), valuta podrazumevano `RSD`.
+       *
+       * `invoices.stock_document_id` nema indeks (tabela je danas mala) — ovo je jedan
+       * `findFirst` po knjiženju dokumenta, ne po redu; indeks dodati kad tabela poraste.
+       */
+      const salesDoc = await tx.invoice.findFirst({
+        where: { stockDocumentId: docId },
+        select: { dueDate: true, currency: true },
+        orderBy: { id: "asc" },
+      });
+      const openItem: OpenItemFields = openItemFields({
+        documentNumber: doc.documentNumber,
+        dueDate: salesDoc?.dueDate ?? null,
+        currency: salesDoc?.currency ?? null,
+      });
+
       // 4) varMap A–Z iz agregata robnih stavki (doc 43 §1). Sve već Decimal.
       const amounts = this.aggregateDocAmounts(
         doc,
@@ -364,18 +452,38 @@ export class PostingEngineService {
         });
       }
 
-      // 6) GROUP BY (konto + komitent), Σ, odbaci nula-redove (legacy 2Korak).
+      // 6) GROUP BY (konto + komitent), Σ.
       const grouped = this.groupByAccountAndPartner(rawLines);
 
-      // 7) BALANS-KONTROLA: ΣDug == ΣPot (Decimal je egzaktan → tolerancija 0).
-      let totalDebit = ZERO;
-      let totalCredit = ZERO;
-      for (const l of grouped) {
-        totalDebit = totalDebit.add(l.debit);
-        totalCredit = totalCredit.add(l.credit);
+      // 6b) ZAOKRUŽI SVAKU LINIJU NA SKALU KOLONE, pa odbaci nula-redove (legacy „2Korak").
+      //     Zaokruživanje ide PRE balans-kontrole i PRE upisa — v. `finalizeLedgerLines`
+      //     (izmereno: nalog koji balansira u memoriji ne mora da balansira u bazi).
+      const prepared = finalizeLedgerLines(grouped, { dropZeroRows: true });
+
+      /**
+       * NALOG BEZ IJEDNE STAVKE SE NE UPISUJE (ispravka 05.08.2026, drugi deo iste rupe).
+       * Dokument SA stavkama, ali sa svim cenama/količinama na nuli, daje isti ishod kao
+       * dokument bez stavki: nalog balansira (0 = 0), dobija broj, dokument se zaključa, a u
+       * knjizi nema nijedan red. Zato se posle zaokruživanja i odbacivanja nula-redova
+       * proverava ono što je STVARNO ostalo za upis. (Za NIV, jedinu vrstu kod koje je nula
+       * GK redova ispravna, ova grana se ne dostiže — v. komentar uz proveru stavki iznad.)
+       */
+      if (prepared.lines.length === 0) {
+        throw new UnprocessableEntityException(
+          `Robni dokument ${docId} (vrsta ${doc.documentTypeCode}, šema ${scheme.id}) ne daje ` +
+            `nijednu stavku naloga: sve linije šeme su nula. Najčešći uzrok su nulte cene ili ` +
+            `količine na stavkama (ili nedovršena kalkulacija). Ispravi dokument, pa ponovi ` +
+            `knjiženje.`,
+        );
       }
-      if (!totalDebit.equals(totalCredit)) {
-        throw new LedgerNotBalancedException(totalDebit, totalCredit); // rollback tx
+
+      // 7) BALANS-KONTROLA nad ZAOKRUŽENIM iznosima: ΣDug == ΣPot (tolerancija 0).
+      if (!prepared.balanced) {
+        // rollback tx — dokument ostaje nezaključan
+        throw new LedgerNotBalancedException(
+          prepared.totalDebit,
+          prepared.totalCredit,
+        );
       }
 
       // 8) Kreiraj JournalEntry(draft) + LedgerEntry[] (NSK_ProknjiziStavkeIzRobnog).
@@ -398,12 +506,15 @@ export class PostingEngineService {
           postingSchemeId: scheme.id,
           sourceGoodsDocId: docId,
           lines: {
-            create: grouped.map((l) => ({
+            create: prepared.lines.map((l) => ({
               accountCode: l.accountCode,
               analyticalCode: l.analyticalCode,
               debit: l.debit,
               credit: l.credit,
               description: l.description,
+              documentNumber: openItem.documentNumber,
+              dueDate: openItem.dueDate,
+              currency: openItem.currency,
               sourceGoodsDocId: docId,
               sourceWorkOrderId: doc.workOrderId ?? null,
               sourceProjectId: doc.projectId ?? null,
@@ -421,7 +532,9 @@ export class PostingEngineService {
         data: { journalEntryId: entry.id, status: "POSTED" },
       });
 
-      return grouped;
+      // Vraćaju se linije ONAKVE KAKVE SU UPISANE (zaokružene, bez nula-redova) — pozivalac
+      // koji ih prikaže ili sabere mora videti isto što stoji u bazi.
+      return prepared.lines;
     });
   }
 
@@ -623,7 +736,12 @@ export class PostingEngineService {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // GROUP BY (konto + komitent) → Σ, odbaci nula-redove (legacy 2Korak, doc 43).
+  // GROUP BY (konto + komitent) → Σ (doc 43).
+  //
+  // Odbacivanje nula-redova (legacy „2Korak") se NE radi ovde nego u
+  // `finalizeLedgerLines`, POSLE zaokruživanja na skalu kolone: iznos ispod pola
+  // najmanje jedinice kolone (npr. 0,00004) u bazi je nula, pa je red bez zaokruživanja
+  // izgledao ne-nulti a upisao bi se kao 0,0000.
   // ───────────────────────────────────────────────────────────────────────────
   private groupByAccountAndPartner(
     lines: LedgerLineDraft[],
@@ -639,10 +757,7 @@ export class PostingEngineService {
         map.set(key, { ...l });
       }
     }
-    // odbaci redove gde su i dug i pot nula (legacy „odbaci nula-redove")
-    return [...map.values()].filter(
-      (l) => !(l.debit.isZero() && l.credit.isZero()),
-    );
+    return [...map.values()];
   }
 
   // ───────────────────────────────────────────────────────────────────────────
