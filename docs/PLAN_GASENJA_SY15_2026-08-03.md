@@ -167,7 +167,31 @@ Jednokratna tabela uparivanja sy15 `auth.users.id` ↔ 3.0 `users.id` (po mejlu;
 taj upar u hodu). 60 naloga — sat posla, ali bez nje nijedna od 67 FK kolona ne može da se
 prevede. Pravi se i verifikuje jednom, koristi u svim koracima.
 
-### Korak 1 — sastanci + projektni biro (46 fn, 1,7 MB) — PRVI PRAVI REZ
+### Korak 1 — SAMO SASTANCI (74 fn / 27 tabela / 1.120 redova) — PRVI PRAVI REZ
+
+> **REVIZIJA 2 — 05.08 uveče (nalaz pripreme sastanci+PB, grana `feat/sy15-seoba-sastanci-pb`):**
+> 1. **PB je IZBAČEN iz koraka 1** — `pb_current_employee_id()` traži tabelu `employees`
+>    (ne mapu identiteta) i ulaz je u SVA prava modula; funkcije opterećenja džoinuju i
+>    `departments`/`sub_departments`/`job_positions`. PB pod prekidačem `3.0` vraća 503 u
+>    celini → **PB ide IZA kadrovske (novi korak 4b)**. Podaci PB su preneti i čekaju.
+> 2. **Domen sastanaka je 27 tabela, ne 24**: `LIKE 'sastan%'` promašuje
+>    `akcioni_plan_istorija` (**689 redova — veća od same tabele akcija!**),
+>    `sast_weekly_movers`, `sast_weekly_skip`. Funkcija je 74 (65 DEFINER), ne 46.
+> 3. **`projects` mapa RADI**: sy15 `projects` je IZVEDEN pokazivač
+>    (`uuid5(md5('servoteh_pb_predmet:v1:' || bigtehn_item_id))`, a `bigtehn_item_id` = 3.0
+>    `projects.id`). Provereno 22/22 po id-u I 22/22 po šifri; prenosna skripta odbija rad
+>    ako se ta dva broja raziđu.
+> 4. **Identitet: domen čuva MEJL, ne nalog** — 23/23 pravih ljudi ima 3.0 nalog; 4 sintetičke
+>    vrednosti (seed/auto/tipfeler `.ocm`/test) ostaju doslovno kao podatak.
+> 5. **Prekidač NE pokriva 7 scheduler poslova** koji gađaju sy15 direktno (`$queryRaw` mimo
+>    branjenih getera) — enqueue logika (`sastanci_enqueue_*`, `pb_enqueue_notifications`)
+>    se prepisuje PRE punog preklopa. Mejl dispatch je već u 3.0 (Resend); RSVP magic-link
+>    još gađa sy15 `functions/v1/sastanci-rsvp` (tokeni preneti doslovno — stari linkovi rade).
+>
+> Pripremljeno (dokazano na probnoj bazi): **1.120/1.120 redova, 27/27 tabela, idempotentno**;
+> prekidač `SASTANCI_PB_IZVOR`; 4 samouslužne DEFINER fn prepisane u `SastanciSamouslugaService`
+> (+26 testova). Runbook: `docs/SEOBA_SASTANCI_PB_2026-08-05.md` (na toj grani).
+> **Ostaje:** ~61 DEFINER fn za sastanke (4–6 dana) + enqueue (1–2 dana).
 
 > **REVIZIJA 05.08 (nalaz pripreme reversa):** reversi su izbačeni sa prvog mesta.
 > Priprema (grana `feat/sy15-seoba-reversi`) je dokazala tri stvari:
@@ -183,9 +207,8 @@ prevede. Pravi se i verifikuje jednom, koristi u svim koracima.
 > (dokazana: 195/195 redova, idempotentna), prekidač `REVERSI_IZVOR` (pod `3.0` sve što bi
 > pisalo u sy15 vraća 503 — nema tihog razilaženja). Runbook: `docs/SEOBA_REVERSA_2026-08-05.md`.
 
-Sastanci/PB su **listni domeni bez transakcionih šavova ka drugima**: DEFINER logika je
-samouslužni upis (kanonski `sastanci_set_my_rsvp`), PB vuče 4 FK ka kadrovskoj koje pokriva
-mapa identiteta. Ovo je pravi prvi rez.
+Sastanci su listni domen bez transakcionih šavova ka drugima (2 inbound FK: istorija ide
+zajedno; `production.operativna_aktivnost.izvor_akcioni_plan_id` je mrtav šav — 0 popunjenih).
 
 ### Korak 2 — održavanje (41 fn, 34 tabele + 34 trigera, 2,4 MB + 469 MB fajlova)
 Najviše mehaničkog posla. Ovde prvi put ozbiljno ulazi storage seoba
@@ -197,11 +220,15 @@ Zbog transakcione celine (v. reviziju u koraku 1). Uključuje i preuzimanje
 (korak 5). Priprema reversa je već urađena; dopisuje se loc deo + prepisivanje
 izdavanja/povraćaja u NestJS.
 
-### Korak 4 — kadrovska (58 fn, najosetljivije — poslednja)
+### Korak 4 — kadrovska (58 fn, najosetljivije)
 Plate pod allowlist bravom, audit trag, `hr_*` brane (npr. zabrana direktnih izmena odobrenog
 odmora — bila je predmet oborene revizije 026!). **Tek posle tri uvežbana kruga.**
 Uz nju idu `employee-docs` (24 MB, poverljivo) i `attendance_events` (140 MB stvarnog
 sadržaja — pre seobe utvrditi šta te kolone nose).
+
+### Korak 4b — projektni biro (32 fn, podaci već preneti u koraku 1)
+Uključuje se tek kad `employees`/`departments`/`job_positions` budu u 3.0 bazi (korak 4) —
+`pb_current_employee_id()` je ulaz u sva PB prava i traži te tabele (revizija 2, tačka 1).
 
 ### Korak 5 — SCADA + bridge preusmeravanje (uslov za gašenje)
 - **SCADA:** preusmeriti `bridge-scada` relej na 3.0 bazu + preseliti 5 tabela + prevesti
@@ -237,6 +264,6 @@ odluka: seliti ili arhivirati).
 3. **kadrovska poslednja** (plate, audit, poverljivost),
 4. mapa identiteta (67 FK ka `auth.users`) je preduslov svega — korak 0.
 
-Redosled (revizija 05.08): **identitet → sastanci/PB → održavanje → reversi+lokacije
-(jedan potez) → kadrovska → SCADA/bridge → ostalo → gašenje.** Svaki korak iza prekidača,
-sa povratkom bez novog deploy-a.
+Redosled (revizija 2, 05.08 uveče): **identitet → SAMO sastanci → održavanje →
+reversi+lokacije (jedan potez) → kadrovska → PB (blokiran kadrovskom) → SCADA/bridge →
+ostalo → gašenje.** Svaki korak iza prekidača, sa povratkom bez novog deploy-a.
