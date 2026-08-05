@@ -4,13 +4,18 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
 /**
- * Redirect sa STARE 3.0 mobilne rute `/m/<modul>` na kanonsku `/mob/<modul>`
- * (PLAN_MOB_3.0.md, Faza 0 — seoba ekrana).
+ * Redirect sa stare mobilne rute `/m/<modul>` na kanonsku `/mob/<modul>`
+ * (PLAN_MOB_3.0.md, Faza 0 — seoba ekrana; cutover 1.0 od 05.08.2026).
  *
- * ⚠️ Ovaj kod postoji SAMO zbog LAN bake-a na `:3000` (i obeleživača/linkova
- * nastalih dok su 3.0 ekrani živeli pod `/m/*`). Na javnom domenu se NIKAD ne
- * služi: Cloudflare worker (`run_worker_first`) presreće sve `/m/*` zahteve i
- * proksira ih na 1.0 mobilnu (pages.dev). Rutiranje `/m/*` se ne dira.
+ * Pokriva OBA nasleđa pod `/m/*`: rute 1.0 mobilne (obeleživači radnika + APK
+ * ljuska koja gađa `servosync.servoteh.com/m`) i rute 3.0 ekrana dok su živeli
+ * pod `/m/*` (LAN bake na `:3000`).
+ *
+ * ⚠️ Vidljivost zavisi od prekidača `PROXY_1_0_AKTIVAN` u `worker/index.ts`:
+ * dok je `true`, Cloudflare worker (`run_worker_first`) presreće sve `/m/*` i
+ * proksira ih na 1.0 (pages.dev), pa se ovi stubovi služe samo na LAN-u. Od
+ * cutover-a je `false` → worker ne dira `/m/*` i ovi stubovi su JEDINO što
+ * radnik sa starim obeleživačem vidi. Zato mapiranje mora ostati 1:1.
  *
  * `?query` se prenosi (deep-link `/m/sastanci?open=<id>`, `?id=N` obrazac static
  * export-a). Vidljiv `<a>` fallback je u prerenderovanom HTML-u, pa ruta radi i
