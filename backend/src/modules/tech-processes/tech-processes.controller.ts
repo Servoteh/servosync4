@@ -200,8 +200,18 @@ export class TechProcessesController {
     return this.techProcesses.scan(dto);
   }
 
+  /**
+   * „Zatvori operaciju" — BEZUSLOVNO gasi red (bez obzira na količinu).
+   *
+   * 🔴 `tehnologija.write`, ne `report_work` (F3, 05.08.2026): od kad kiosk pita
+   * „da li je operacija gotova?" i gasi red samo uz eksplicitnu nameru, ova ruta je
+   * ostala jedini put da se operacija proglasi završenom bez pitanja — a stajala je
+   * pod ISTOM dozvolom kao kiosk dugmad, pa bi je svaki radnik mogao pozvati i
+   * zaobići pravilo. Sada je to tehnolog/šef (isti tier kao `storno`/`reopen`/
+   * `delete`, koji takođe prepravljaju gotovu evidenciju). Kiosk je ne koristi.
+   */
   @Post(":id/finish")
-  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_REPORT_WORK)
+  @RequirePermission(PERMISSIONS.TEHNOLOGIJA_WRITE)
   finish(
     @Param("id", ParseIntPipe) id: number,
     @Body() dto: FinishTechProcessDto,

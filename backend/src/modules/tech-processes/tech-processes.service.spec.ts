@@ -714,7 +714,10 @@ describe("TechProcessesService — A1 TVRDI guard kucanja preko plana (scan/stop
   });
 
   it("scan do plana (4+1=5 = 5) prolazi i zatvara operaciju", async () => {
-    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 4 } });
+    // guard (pre inkrementa) 4 → kumulativ operacije (posle inkrementa) 5.
+    prisma.techProcess.aggregate
+      .mockResolvedValueOnce({ _sum: { pieceCount: 4 } })
+      .mockResolvedValueOnce({ _sum: { pieceCount: 5 } });
     prisma.techProcess.update.mockResolvedValue(
       tpRow({ id: 700, pieceCount: 5, isProcessFinished: true, operationNumber: 45 }),
     );
@@ -840,13 +843,16 @@ describe("TechProcessesService — BUG-P1-01 atomska akumulacija komada ({ incre
     expect(updArg.data.pieceCount).toEqual({ increment: 2 });
   });
 
-  it("scan: reachedPlan/zatvaranje se donosi iz VRAĆENE vrednosti update-a (updated.pieceCount)", async () => {
-    // Red 8 kom; prijava 2 → post-inkrement 10 = plan. VRAĆENA vrednost (10) diktira
-    // zatvaranje; drugi update postavlja isProcessFinished (u istoj transakciji).
+  it("scan: reachedPlan/zatvaranje se donosi iz SVEŽEG kumulativa operacije (posle inkrementa)", async () => {
+    // Red 8 kom; prijava 2 → kumulativ operacije 10 = plan. Odluku diktira zbir
+    // POSLE inkrementa (F1: ranije `updated.pieceCount`, tj. samo taj red);
+    // drugi update postavlja isProcessFinished (u istoj transakciji).
     prisma.techProcess.findFirst.mockResolvedValue(
       tpRow({ id: 700, pieceCount: 8, operationNumber: 10, workCenterCode: "0102" }),
     );
-    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 8 } });
+    prisma.techProcess.aggregate
+      .mockResolvedValueOnce({ _sum: { pieceCount: 8 } }) // guard, pre inkrementa
+      .mockResolvedValueOnce({ _sum: { pieceCount: 10 } }); // kumulativ, posle
     prisma.techProcess.update.mockResolvedValue(
       tpRow({ id: 700, pieceCount: 10, isProcessFinished: true }),
     );
@@ -2526,7 +2532,11 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
     prisma.techProcess.findUnique.mockResolvedValue(
       tpRow({ id: 500, pieceCount: 45, workCenterCode: "0102", workOrderId: 900 }),
     );
-    // Plan 50 (iz beforeEach) → 45 + 5 = 50 ≥ 50.
+    // Plan 50 (iz beforeEach) → 45 + 5 = 50 ≥ 50. Prvi aggregate = guard „preko
+    // plana" (pre inkrementa), drugi = kumulativ operacije (posle inkrementa).
+    prisma.techProcess.aggregate
+      .mockResolvedValueOnce({ _sum: { pieceCount: 45 } })
+      .mockResolvedValueOnce({ _sum: { pieceCount: 50 } });
     prisma.workTimeEntry.findFirst.mockResolvedValue(null);
     prisma.techProcess.update.mockResolvedValue(
       tpRow({ id: 500, pieceCount: 50, isProcessFinished: true, workerId: 74 }),
@@ -2547,11 +2557,58 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
     expect(finArg.data.isProcessFinished).toBe(true);
   });
 
+  // 🔴 F1 — ZOMBI RED: red je ispod plana, ali je KUMULATIV operacije (zbir svih
+  // njenih redova; FIX A ih razbije kad rad krene ponovo) plan već dostigao. Pre
+  // popravke se gledao samo `updated.pieceCount` (red), pa `reachedPlan` bude false,
+  // kiosk ne pita (jer on gleda kumulativ), polje `operacijaGotova` ne stigne — i red
+  // ostane otvoren ZAUVEK: dalje kucanje pada 422 „preko plana", „Odustani" ga ne gasi.
+  // Živ slučaj sa produ: tp 118300 · RN 9000/137 · op 20 · RC 8.4 (red 37, kum 50, plan 50).
+  it("F1: red 20 < plan, ali KUMULATIV operacije 50 = plan 50 → red se zatvara", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 20, workCenterCode: "0102", workOrderId: 900 }),
+    );
+    // 0 novih komada → guard „preko plana" izlazi ODMAH (ne zove aggregate), pa je
+    // jedini aggregate onaj posle inkrementa: kumulativ CELE operacije = 50.
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 50 } });
+    prisma.workTimeEntry.findFirst.mockResolvedValue(null);
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 20, isProcessFinished: true, workerId: 74 }),
+    );
+
+    const { data } = await service.stopWorkById(
+      500,
+      { workerCard: "CARD74", pieceCount: 0 },
+      undefined,
+    );
+
+    expect(data.cumulativePieces).toBe(50); // operacija, ne red (red je 20)
+    expect(data.operationFinished).toBe(true);
+    expect(data.operationClosed).toBe(true);
+    const finArg = prisma.techProcess.update.mock.calls[1][0] as {
+      data: Record<string, unknown>;
+    };
+    expect(finArg.data.isProcessFinished).toBe(true);
+    // Dokaz da se zbir čita po KLJUČU OPERACIJE (trojka + op + RC), ne po id reda.
+    expect(prisma.techProcess.aggregate).toHaveBeenCalledWith(
+      containing({
+        _sum: { pieceCount: true },
+        where: containing({
+          projectId: 2597,
+          identNumber: "06/93-4",
+          variant: 0,
+          operationNumber: 10,
+          workCenterCode: "0102",
+        }),
+      }),
+    );
+  });
+
   it("kumulativ PREKO plana (višak sa ranije evidencije): zatvara bez pitanja", async () => {
     // Red već nosi 60 od plana 50 (npr. iz legacy sync-a); 0 novih komada.
     prisma.techProcess.findUnique.mockResolvedValue(
       tpRow({ id: 500, pieceCount: 60, workCenterCode: "0102", workOrderId: 900 }),
     );
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 60 } });
     prisma.workTimeEntry.findFirst.mockResolvedValue(null);
     prisma.techProcess.update.mockResolvedValue(
       tpRow({ id: 500, pieceCount: 60, isProcessFinished: true, workerId: 74 }),
@@ -2565,6 +2622,36 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
 
     expect(data.operationFinished).toBe(true);
     expect(data.operationClosed).toBe(true);
+  });
+
+  it("plan 0 (degenerisan RN): nije dokaz gotovosti — bez namere red ostaje otvoren", async () => {
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 3, workCenterCode: "0102", workOrderId: 900 }),
+    );
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 900,
+      projectId: 2597,
+      identNumber: "06/93-4",
+      variant: 0,
+      pieceCount: 0, // 18 ovakvih RN na produ
+      revision: "A",
+    });
+    prisma.techProcess.aggregate.mockResolvedValue({ _sum: { pieceCount: 3 } });
+    prisma.workTimeEntry.findFirst.mockResolvedValue(null);
+    prisma.techProcess.update.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 3, workerId: 74 }),
+    );
+
+    const { data } = await service.stopWorkById(
+      500,
+      { workerCard: "CARD74", pieceCount: 0 },
+      undefined,
+    );
+
+    // 3 >= 0 bi ranije zatvorilo red bez pitanja — a kiosk na plan 0 PITA.
+    expect(data.operationFinished).toBe(false);
+    expect(data.operationClosed).toBe(false);
+    expect(prisma.techProcess.update).toHaveBeenCalledTimes(1);
   });
 
   it("plan NEPOZNAT (RN nije razrešen) BEZ polja: red ostaje otvoren (bezbedan smer)", async () => {
@@ -2637,6 +2724,10 @@ describe("TechProcessesService — stopWorkById (Kraj rada iz Moji otvoreni)", (
       pieceCount: 1,
       revision: "A",
     });
+    // guard (pre inkrementa) 0 → kumulativ operacije (posle inkrementa) 1.
+    prisma.techProcess.aggregate
+      .mockResolvedValueOnce({ _sum: { pieceCount: 0 } })
+      .mockResolvedValueOnce({ _sum: { pieceCount: 1 } });
     prisma.workTimeEntry.findFirst.mockResolvedValue(null);
     prisma.techProcess.update.mockResolvedValue(
       tpRow({ id: 501, pieceCount: 1, isProcessFinished: true, workerId: 74 }),
@@ -2835,6 +2926,9 @@ describe("TechProcessesService — deljeni red: više radnika na istoj operaciji
       pieceCount: 5,
       revision: "A",
     });
+    prisma.techProcess.aggregate
+      .mockResolvedValueOnce({ _sum: { pieceCount: 2 } })
+      .mockResolvedValueOnce({ _sum: { pieceCount: 5 } });
     prisma.workTimeEntry.findMany.mockResolvedValue([{ workerId: 33 }]);
 
     const { data } = await service.stopWorkById(
@@ -2909,10 +3003,39 @@ describe("TechProcessesService — deljeni red: više radnika na istoj operaciji
     expect(arg.data.finishedAt).toBeUndefined();
   });
 
-  it("Odustani na redu SA komadima: ostaje moj (evidencija), zastavica netaknuta", async () => {
+  // 🔴 F4: proba kucanja po definiciji OSTAVI komade (60 od 113 otvorenih redova na
+  // produ ima piece_count > 0). Da se otkupljuje samo prazan red, ti redovi ne bi
+  // imali izlaz osim laži „Da — gotova je". Komadi ostaju upisani (evidencija),
+  // ispravka ide kroz STORNO.
+  it("Odustani na redu SA komadima: red se OTKUPLJUJE, komadi i zastavica netaknuti", async () => {
     prisma.workTimeEntry.findFirst.mockResolvedValue(null);
     prisma.techProcess.findUnique.mockResolvedValue(
       tpRow({ id: 500, pieceCount: 7, workerId: 74, workCenterCode: "0102" }),
+    );
+
+    const { data } = await service.dismissEntry(
+      500,
+      { workerCard: "CARD74", pieceCount: 0 },
+      undefined,
+    );
+
+    expect(data.released).toBe(true);
+    expect(data.pieceCountKept).toBe(7);
+    expect(prisma.techProcess.update).toHaveBeenCalledWith(
+      containing({ where: { id: 500 }, data: { workerId: 0 } }),
+    );
+    const arg = prisma.techProcess.update.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    // Komadi se NE diraju, zastavica se NE diže.
+    expect(arg.data.pieceCount).toBeUndefined();
+    expect(arg.data.isProcessFinished).toBeUndefined();
+  });
+
+  it("Odustani na TUĐEM redu: ništa se ne otkupljuje (nije na mojoj listi)", async () => {
+    prisma.workTimeEntry.findFirst.mockResolvedValue(null);
+    prisma.techProcess.findUnique.mockResolvedValue(
+      tpRow({ id: 500, pieceCount: 7, workerId: 33, workCenterCode: "0102" }),
     );
 
     const { data } = await service.dismissEntry(

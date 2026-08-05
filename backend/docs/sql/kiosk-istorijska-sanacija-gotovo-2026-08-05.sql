@@ -19,13 +19,31 @@
 -- 🔴 SKRIPT SE NE PUŠTA PRE NEGO ŠTO KOD SA OVE GRANE ODE NA PROD — inače će
 -- kiosk ponovo zatvoriti iste redove istog dana.
 --
--- IZMERENO NA PRODU 05.08.2026 (SELECT-only, kroz `docker exec servosync-pg psql`):
+-- 🔴 KORAK 2 MENJA PODATKE. Pušta se TEK posle pregleda (KORAK 1), i to sam —
+-- `psql -f <ceo fajl>` bi izvršio i njega. (Incident 05.08.: verifikator je
+-- `sed`-om zahvatio sva tri bloka i nehotice upisao izmenu na produ; vraćena je
+-- istog trena.)
 --
---   populacija (definicija iz KORAKA 1, svi filteri):
---     • od 01.07.2026 (era 3.0 kioska, PODRAZUMEVANO):
---         32 reda · 23 operacije · 19 RN · 18 radnika (najstariji 01.07., najnoviji 05.08.)
---     • od 01.01.2026:            274 reda · 149 operacija ·  93 RN · 39 radnika
---     • PUNA ISTORIJA (od 2016):  3.344 reda · 1.577 operacija · 1.311 RN · 74 radnika
+-- ─────────────────────────────────────────────────────────────────────────────
+-- IZMERENO NA PRODU 05.08.2026 u 10:51 (SELECT-only, `docker exec servosync-pg psql`)
+--
+-- ⚠️ POPULACIJA JE ŽIVA — pogon radi dok ovo čitaš. Isti upit je 05.08. u 09:12
+-- vraćao 32 reda, u 10:51 — 31 (u međuvremenu je jedan RN prošao završnu
+-- kontrolu, a pojavili su se novi zatvoreni redovi). Brojke ispod su SNIMAK, ne
+-- konstanta: pusti KORAK 1 neposredno pre KORAKA 2 i radi sa njegovim ispisom.
+--
+--   granica 01.07.2026 (era 3.0 kioska — ODLUKA NENADA, podrazumevano):
+--     • 31 red se OTVARA · 22 operacije · 18 RN
+--     • 19 redova ZADRŽAVA vlasnika (vraćaju se u „Moji otvoreni"; najviše 2 po
+--       radniku, 14 radnika)
+--     • 12 redova se OTKUPLJUJE (`worker_id → 0`) — v. „ZAŠTO SE OTKUPLJUJE"
+--     • 3 operacije već imaju otvoren red (neko je nastavio rad)
+--
+--   za poređenje (isti upit, druge granice — NISU podrazumevane):
+--     • od 01.01.2026:            274 reda · 149 operacija ·  93 RN
+--     • PUNA ISTORIJA (od 2016):  3.344 reda · 1.577 operacija · 1.311 RN · 74
+--       radnika; jednom radniku (id 31) bi vratila 279 redova iz 2016–2024 i
+--       pretrpala kiosk — zato NIJE izabrana.
 --
 --   levak (kako se od svih zatvorenih redova dolazi do populacije, PUNA ISTORIJA):
 --     zatvoreni redovi čija je operacija ispod plana          19.567 redova / 3.398 RN
@@ -40,17 +58,35 @@
 --   plan 1 kom), operacija 20 / RC 3.33 — Jakov Neđić (radnik 113) je 03.08. i
 --   04.08. dva puta kroz „Kraj rada" zatvorio operaciju sa 0 otkucanih komada
 --   (redovi 119002 i 119015), a 05.08. je radnik 119 na istoj operaciji ponovo
---   START-ovao (red 119095, otvoren). Oba zatvorena reda SU u populaciji.
+--   START-ovao (red 119095, otvoren). Oba zatvorena reda SU u populaciji; pošto
+--   operacija VEĆ ima otvoren red, oba se otkupljuju (ne vraćaju se ni na čiju listu).
 --
---   ⚠️ Brojevi iz naloga za rad („1.475 operacija / 781 RN", „1.039 / 420") NISU
---   reprodukovani ni jednom od isprobanih definicija (merenja 05.08. daju 4.647/3.398
---   na najširoj i 1.601/1.323 na „RN otvoren + nije kroz ZK" definiciji). Verovatno
---   je reč o drugoj definiciji kumulativa; ovde važe brojke izmerene gore.
+--   ⚠️ Brojke iz naloga za rad („1.475 operacija / 781 RN", „1.039 / 420") NISU
+--   reprodukovane nijednom isprobanom definicijom (najšira daje 4.647/3.398,
+--   „RN otvoren + nije kroz ZK" 1.601/1.323). Važe brojke izmerene gore.
+-- ─────────────────────────────────────────────────────────────────────────────
 --
--- ŠTA RADI: kandidatima postavlja `is_process_finished = false` i `finished_at =
--- NULL` (isti par kao `reopen()` u servisu) i vraća operaciju na listu prioriteta
--- (255 → 100) SAMO za radna mesta koja prioritet koriste (`operations.uses_priority`
--- — na produ 2 od 90 RC).
+-- ŠTA RADI (u jednoj transakciji):
+--   (a) SVIM kandidat-redovima: `is_process_finished = false`, `finished_at = NULL`
+--       (isti par kao `reopen()` u servisu). Mora SVIM redovima operacije — kanon
+--       čitanja je `bool_or(is_process_finished)`, pa bi jedan preostali `true`
+--       ostavio operaciju „završenom" i posao bi bio uzaludan.
+--   (b) OTKUP (`worker_id → 0`) svima OSIM jednog reda po operaciji.
+--       🔴 ZAŠTO SE OTKUPLJUJE: „Moji otvoreni" lista REDOVE, ne operacije
+--       (`tech_processes WHERE worker_id = ja AND NOT is_process_finished`). Bez
+--       ovoga bi radnik 119 dobio ŠEST identičnih redova za istu operaciju
+--       (RN 9033/7, op 10, RC 3.22, plan 1 — svih 6 zatvorio isti čovek istim
+--       dugmetom). Otkupljen red OSTAJE otvoren i uračunat u kumulativ; samo se
+--       ne prikazuje nikome u „Mojim otvorenim". `worker_id = 0` je postojeći
+--       sentinel („Korisnik") koji `findOrOpenRoutingTp` već koristi za nove
+--       redove; izvorni vlasnik ostaje u `audit_log` snapshotu (v. korak (0)).
+--       Vlasnika zadržava NAJSTARIJI kandidat-red operacije — `findRoutingTp`
+--       bira `ORDER BY is_process_finished ASC, id ASC`, pa je to baš red u koji
+--       će sledeći sken knjižiti; radnik tako vidi red koji se stvarno koristi.
+--       Ako operacija VEĆ ima otvoren red (neko je nastavio rad), otkupljuju se
+--       SVI kandidati — operacija je već živa i vidi je onaj ko na njoj radi.
+--   (c) prioritet 255 → 100 samo za radna mesta koja prioritet koriste
+--       (`operations.uses_priority` — na produ 2 od 90 RC), isto kao `reopen()`.
 --
 -- ŠTA NE DIRA (svesno izostavljeno iz populacije):
 --   • operacije čiji kumulativ JESTE dostigao plan (zastavica je tačna);
@@ -63,10 +99,10 @@
 --   • redove ZAVRŠNE KONTROLE (`significant_for_finishing`) — to je zapis o
 --     kvalitetu, ne o radu;
 --   • redove dorade/škarta (`quality_type_id <> 0`) — isto, zapis kontrole;
---   • operacije koje više NISU u rutingu tekućeg RN-a (BUG-P1-05 fantomski redovi):
---     njihovo otvaranje ne bi imalo gde da se nastavi;
+--   • operacije koje više NISU u rutingu tekućeg RN-a (BUG-P1-05 fantomski redovi);
 --   • operacije u KOOPERACIJI ili ARHIVIRANE u planu proizvodnje;
---   • `work_orders.status` i `part_locations` — ništa se ne skida ni ne knjiži.
+--   • `piece_count` (nijedan komad se ne dodaje ni oduzima), `work_orders.status`,
+--     `part_locations`, `work_time_entries`.
 --
 -- 🔴 UPOZORENJE — OVO MENJA ŠTA KORISNICI VIDE NA VIŠE EKRANA:
 --   • Plan proizvodnje i Praćenje: operacije se vraćaju iz „završeno" u „u radu"
@@ -74,39 +110,39 @@
 --   • „Gotovost RN" (036/26): `finished_operation_count` i „datum realizacije"
 --     (`last_completed_at` = MAX(finished_at)) padaju — RN koji je izgledao gotov
 --     više neće izgledati tako. To je i poenta, ali će ljudi primetiti.
---   • KIOSK „Moji otvoreni": svaki dirnut red se VRAĆA na listu radnika iz kolone
---     `tech_processes.worker_id`. Zato je podrazumevana granica 01.07.2026 (32
---     reda / 18 radnika). PUNA ISTORIJA bi jednom radniku (id 31) vratila 279
---     redova iz 2016–2024 i pretrpala kiosk — ako se ipak želi, to je odluka
---     Nenada, a ne podrazumevano ponašanje ovog skripta.
+--   • KIOSK „Moji otvoreni": 19 redova se vraća na liste 14 radnika (najviše 2 po
+--     radniku). Ostalih 12 je otkupljeno i ne vidi ih niko.
 --   • Operacije se vraćaju na prioritetnu listu samo za 2 RC koja prioritet koriste.
 --
 -- ⚙️ JEDINO PODESIVO: `granica` (CTE u sva tri koraka). Podrazumevano
--- DATE '2026-07-01' (era 3.0 kioska). Za punu istoriju staviti DATE '1900-01-01'
--- u SVA TRI koraka — i tek posle ponovljenog KORAKA 1.
+-- DATE '2026-07-01' (era 3.0 kioska, odluka Nenada 05.08.). Menja se u SVA TRI
+-- koraka istovremeno, i tek posle ponovljenog KORAKA 1.
 --
 -- SIGURNOST:
 --   • IDEMPOTENTNO — posle prolaza kandidati imaju `is_process_finished = false`,
 --     pa ih WHERE (koji traži TRUE) više ne nalazi (drugi prolaz = 0 redova).
---   • Bez INSERT-a i bez DELETE-a → sekvence se ne diraju.
+--   • Bez INSERT-a u proizvodne tabele i bez DELETE-a → sekvence se ne diraju.
+--   • KORAK 2 prvo upiše `audit_log` red sa spiskom svih dirnutih id-eva i njihovih
+--     izvornih `worker_id`/`finished_at` — povratak je moguć i bez CSV-a.
 --   • Sve odluke se računaju iz baze u istoj transakciji; ništa nije ukucano
 --     osim granice datuma.
---   • Povratak: `is_process_finished` se vraća na `true` za id-jeve iz KORAKA 1
---     (spisak sačuvati pre KORAKA 2), ali `finished_at` je posle toga NULL —
---     zato KORAK 1 ISPISUJE i `finished_at`, pa se snimi kao CSV.
 --
--- UPUTSTVO: (1) pusti KORAK 1 i uporedi zbir sa brojkama gore, spisak sačuvaj;
--- (2) pusti KORAK 2 (jedna transakcija); (3) pusti KORAK 3 (provera, očekivano
--- 0 preostalih kandidata + prikaz koliko je dirnuto).
+-- UPUTSTVO: (1) pusti KORAK 1 i uporedi zbir sa njegovim SOPSTVENIM ispisom (ne
+-- sa brojkama iz headera — populacija je živa); (2) pusti KORAK 2 (jedna
+-- transakcija); (3) pusti KORAK 3 (provera).
 --
--- KO GA PUŠTA: nalog sa UPDATE na `tech_processes` i `work_order_operations`.
+-- KO GA PUŠTA: nalog sa UPDATE na `tech_processes` i `work_order_operations` +
+-- INSERT na `audit_log`.
 -- ============================================================================
 
 
 -- ═════════════════════════════════════════════════════════════════════════════
--- KORAK 1 — PREGLED (ništa ne menja). Očekivano (granica 2026-07-01):
---   zbirni red: 32 reda / 23 operacije / 19 RN / 18 radnika
---   spisak: među njima 119002 i 119015 (RN 9400/6/74, op 20, RC 3.33, radnik 113).
+-- KORAK 1 — PREGLED (ništa ne menja).
+-- Kolona `akcija` kaže šta se dešava sa svakim redom:
+--   'OTVARA SE + ostaje vlasniku'                    → vraća se radniku na listu
+--   'OTVARA SE + otkup (duplikat iste operacije)'    → operacija već ima red na listi
+--   'OTVARA SE + otkup (operacija već ima otvoren red)' → neko je nastavio rad
+-- Zbirni red na kraju daje ukupne brojeve.
 -- ═════════════════════════════════════════════════════════════════════════════
 WITH granica AS (SELECT DATE '2026-07-01' AS od),   -- ⚙️ jedina podesiva vrednost
 kum AS (   -- kumulativ CELE operacije (svi redovi, svi kvaliteti) — ista metrika
@@ -118,8 +154,10 @@ kum AS (   -- kumulativ CELE operacije (svi redovi, svi kvaliteti) — ista metr
 ),
 kandidat AS (
   SELECT t.id, t.worker_id, t.piece_count AS red_kom, t.finished_at,
+         t.project_id, t.ident_number, t.variant,
          t.operation_number, t.work_center_code,
-         k.cum AS operacija_kom, wo.id AS wo_id, wo.ident_number, wo.piece_count AS plan
+         k.cum AS operacija_kom, wo.id AS wo_id, wo.ident_number AS rn,
+         wo.piece_count AS plan
   FROM tech_processes t
   CROSS JOIN granica g
   JOIN kum k ON k.project_id = t.project_id AND k.ident_number = t.ident_number
@@ -169,27 +207,56 @@ kandidat AS (
       SELECT 1 FROM plan_proizvodnje_auto_cooperation_groups gg
       WHERE gg.rj_group_code = NULLIF(BTRIM(t.work_center_code), '')
         AND gg.removed_at IS NULL)
+),
+-- operacija koja VEĆ ima otvoren red (neko je nastavio rad) — tu se ne vraća niko
+vec_otvorena AS (
+  SELECT DISTINCT c.wo_id, c.operation_number, c.work_center_code
+  FROM kandidat c
+  WHERE EXISTS (
+    SELECT 1 FROM tech_processes t2
+     WHERE t2.project_id = c.project_id AND t2.ident_number = c.ident_number
+       AND t2.variant = c.variant AND t2.operation_number = c.operation_number
+       AND t2.work_center_code = c.work_center_code
+       AND COALESCE(t2.is_process_finished, false) = false)
+),
+-- JEDAN red po operaciji zadržava vlasnika: najstariji (findRoutingTp bira MIN id)
+vlasnik AS (
+  SELECT DISTINCT ON (wo_id, operation_number, work_center_code) id
+  FROM kandidat c
+  WHERE NOT EXISTS (SELECT 1 FROM vec_otvorena v
+                     WHERE v.wo_id = c.wo_id
+                       AND v.operation_number = c.operation_number
+                       AND v.work_center_code = c.work_center_code)
+  ORDER BY wo_id, operation_number, work_center_code, id
 )
 SELECT 'ZBIR' AS vrsta, NULL::int AS tp_id, NULL::int AS wo_id, NULL::text AS rn,
        NULL::int AS op, NULL::text AS rc, NULL::int AS radnik,
        NULL::int AS red_kom, NULL::bigint AS operacija_kom, NULL::int AS plan,
        NULL::timestamp AS finished_at,
-       COUNT(*)::text || ' redova · ' ||
+       COUNT(*)::text || ' redova se otvara · ' ||
        COUNT(DISTINCT (wo_id, operation_number, work_center_code))::text || ' operacija · ' ||
        COUNT(DISTINCT wo_id)::text || ' RN · ' ||
-       COUNT(DISTINCT worker_id)::text || ' radnika' AS napomena
+       (SELECT COUNT(*) FROM vlasnik)::text || ' ostaje vlasniku · ' ||
+       (COUNT(*) - (SELECT COUNT(*) FROM vlasnik))::text || ' otkup' AS akcija
 FROM kandidat
 UNION ALL
-SELECT 'RED', id, wo_id, ident_number, operation_number, work_center_code, worker_id,
-       red_kom, operacija_kom, plan, finished_at::timestamp(0),
-       'vraća se u rad (' || operacija_kom || '/' || plan || ' kom)'
-FROM kandidat
+SELECT 'RED', c.id, c.wo_id, c.rn, c.operation_number, c.work_center_code, c.worker_id,
+       c.red_kom, c.operacija_kom, c.plan, c.finished_at::timestamp(0),
+       CASE
+         WHEN c.id IN (SELECT id FROM vlasnik) THEN 'OTVARA SE + ostaje vlasniku'
+         WHEN EXISTS (SELECT 1 FROM vec_otvorena v
+                       WHERE v.wo_id = c.wo_id AND v.operation_number = c.operation_number
+                         AND v.work_center_code = c.work_center_code)
+              THEN 'OTVARA SE + otkup (operacija već ima otvoren red)'
+         ELSE 'OTVARA SE + otkup (duplikat iste operacije)'
+       END
+FROM kandidat c
 ORDER BY vrsta, finished_at NULLS FIRST, tp_id;
 
 
 -- ═════════════════════════════════════════════════════════════════════════════
 -- KORAK 2 — UPIS. Jedna transakcija. Ista definicija kandidata kao u KORAKU 1
--- (kopija, ne referenca — skript se pušta i deo po deo).
+-- (kopija, ne referenca — skript se pušta blok po blok).
 -- ═════════════════════════════════════════════════════════════════════════════
 BEGIN;
 
@@ -201,7 +268,8 @@ kum AS (
   GROUP BY 1, 2, 3, 4, 5
 ),
 kandidat AS (
-  SELECT t.id
+  SELECT t.id, t.worker_id, t.finished_at, t.project_id, t.ident_number, t.variant,
+         t.operation_number, t.work_center_code, wo.id AS wo_id
   FROM tech_processes t
   CROSS JOIN granica g
   JOIN kum k ON k.project_id = t.project_id AND k.ident_number = t.ident_number
@@ -247,14 +315,57 @@ kandidat AS (
       WHERE gg.rj_group_code = NULLIF(BTRIM(t.work_center_code), '')
         AND gg.removed_at IS NULL)
 ),
--- (a) skini lažnu zastavicu + datum završetka (isti par kao reopen() u servisu)
+vec_otvorena AS (
+  SELECT DISTINCT c.wo_id, c.operation_number, c.work_center_code
+  FROM kandidat c
+  WHERE EXISTS (
+    SELECT 1 FROM tech_processes t2
+     WHERE t2.project_id = c.project_id AND t2.ident_number = c.ident_number
+       AND t2.variant = c.variant AND t2.operation_number = c.operation_number
+       AND t2.work_center_code = c.work_center_code
+       AND COALESCE(t2.is_process_finished, false) = false)
+),
+vlasnik AS (
+  SELECT DISTINCT ON (wo_id, operation_number, work_center_code) id
+  FROM kandidat c
+  WHERE NOT EXISTS (SELECT 1 FROM vec_otvorena v
+                     WHERE v.wo_id = c.wo_id
+                       AND v.operation_number = c.operation_number
+                       AND v.work_center_code = c.work_center_code)
+  ORDER BY wo_id, operation_number, work_center_code, id
+),
+-- (0) AUDIT PRE UPISA: ceo spisak + izvorne vrednosti (povratak bez CSV-a).
+revizija AS (
+  INSERT INTO audit_log (action, entity_type, entity_id, before_data, metadata, created_at)
+  SELECT 'SANACIJA kiosk-gotovo 2026-08-05 (skidanje lažne zastavice)',
+         'tech-processes',
+         'batch',
+         jsonb_build_object('redovi', (
+           SELECT jsonb_agg(jsonb_build_object(
+                    'id', c.id,
+                    'worker_id', c.worker_id,
+                    'finished_at', c.finished_at,
+                    'otkup', (c.id NOT IN (SELECT id FROM vlasnik)))
+                  ORDER BY c.id)
+             FROM kandidat c)),
+         jsonb_build_object('granica', (SELECT od FROM granica),
+                            'ukupno', (SELECT COUNT(*) FROM kandidat),
+                            'ostaje_vlasniku', (SELECT COUNT(*) FROM vlasnik)),
+         now()
+  RETURNING id
+),
+-- (a) skini lažnu zastavicu SVIM kandidatima (bool_or traži da nijedan ne ostane
+--     true) i (b) otkupi sve osim jednog reda po operaciji
 otvoreno AS (
   UPDATE tech_processes t
-     SET is_process_finished = false, finished_at = NULL
+     SET is_process_finished = false,
+         finished_at = NULL,
+         worker_id = CASE WHEN t.id IN (SELECT id FROM vlasnik) THEN t.worker_id ELSE 0 END
    WHERE t.id IN (SELECT id FROM kandidat)
+     AND (SELECT COUNT(*) FROM revizija) = 1   -- veže audit i upis u isti prolaz
   RETURNING t.work_order_id, t.operation_number, t.work_center_code, t.id
 )
--- (b) vrati operaciju na prioritetnu listu (255 → 100) samo za RC koja prioritet
+-- (c) vrati operaciju na prioritetnu listu (255 → 100) samo za RC koja prioritet
 --     koriste — isto pravilo kao reopen(); ostali RC nisu ni na listi.
 UPDATE work_order_operations l
    SET priority = 100
@@ -271,10 +382,11 @@ COMMIT;
 
 -- ═════════════════════════════════════════════════════════════════════════════
 -- KORAK 3 — PROVERA. Očekivano:
---   „preostali kandidati" = 0 (idempotentnost),
---   „vraćeno u rad danas" = broj dirnutih redova iz KORAKA 1 (32 za granicu 01.07.),
---   „i dalje zatvoreni ispod plana" = redovi koji su svesno ostavljeni
---     (opšti nalog, završna kontrola, RN kroz ZK, završen RN, van rutinga…).
+--   1. preostali kandidati = 0 (idempotentnost),
+--   2. zatvoreni redovi ispod plana od granice = pali za broj iz KORAKA 1,
+--   3. nijedna operacija nema VIŠE od jednog otvorenog reda sa vlasnikom,
+--   4. audit red postoji (povratak je moguć),
+--   5. dokazni primer je otvoren.
 -- ═════════════════════════════════════════════════════════════════════════════
 WITH granica AS (SELECT DATE '2026-07-01' AS od),   -- ⚙️ ISTA vrednost kao gore
 kum AS (
@@ -322,11 +434,10 @@ SELECT '1. preostali kandidati (MORA biti 0 — idempotentnost)' AS mera,
        COUNT(*)::text AS vrednost
 FROM kandidat
 UNION ALL
--- Pre KORAKA 2 ovo je bilo 524 (mereno 05.08. za granicu 01.07.2026); posle
--- popravke mora pasti tačno za broj dirnutih redova (32 → očekivano 492).
--- Ostatak su svesno ostavljeni: opšti nalog, završna kontrola, RN kroz ZK,
--- završen RN, dorada/škart, operacije van rutinga.
-SELECT '2. SVI zatvoreni redovi ispod plana od granice (bilo 524 pre popravke)',
+-- Pre KORAKA 2 ovo je bilo 524 (05.08. 09:12) / 519 (10:51); posle popravke mora
+-- pasti za broj dirnutih redova. Ostatak su svesno ostavljeni (opšti nalog,
+-- završna kontrola, RN kroz ZK, završen RN, dorada/škart, van rutinga).
+SELECT '2. SVI zatvoreni redovi ispod plana od granice',
        (SELECT COUNT(*)::text
           FROM tech_processes t
           CROSS JOIN granica g
@@ -340,15 +451,25 @@ SELECT '2. SVI zatvoreni redovi ispod plana od granice (bilo 524 pre popravke)',
            AND t.finished_at >= g.od
            AND wo.piece_count > 0 AND k.cum < wo.piece_count)
 UNION ALL
--- Dokazni primer: oba reda MORAJU biti `f` (i finished_at NULL).
-SELECT '3. dokazni primer RN 9400/6/74 — redovi 119002/119015 (očekivano f, f)',
+-- 🔴 F2: sanacija ne sme da NAPRAVI operaciju sa više otvorenih redova istog
+-- vlasnika („Moji otvoreni" bi prikazao duplikate).
+-- ⚠️ ZATEČENO STANJE 05.08.2026 = 1 (RN 9000/95, varijanta 1, op 20, RC 3.12 —
+-- radnik 130 ima DESET otvorenih redova iste operacije; nije posledica ovog
+-- skripta, nastalo je ranije kroz FIX A). Posle KORAKA 2 broj MORA ostati 1.
+SELECT '3. operacije sa >1 otvorenim redom koji ima vlasnika (MORA ostati 1)',
+       (SELECT COUNT(*)::text FROM (
+          SELECT 1 FROM tech_processes t
+           WHERE COALESCE(t.is_process_finished, false) = false AND t.worker_id <> 0
+           GROUP BY t.project_id, t.ident_number, t.variant,
+                    t.operation_number, t.work_center_code
+          HAVING COUNT(*) > 1) x)
+UNION ALL
+SELECT '4. audit red sanacije (povratak moguć)',
+       (SELECT COALESCE(MAX(id)::text, 'NEMA')
+          FROM audit_log
+         WHERE action LIKE 'SANACIJA kiosk-gotovo 2026-08-05%')
+UNION ALL
+SELECT '5. dokazni primer RN 9400/6/74 — redovi 119002/119015 (očekivano f, f)',
        (SELECT string_agg(id || '=' || COALESCE(is_process_finished::text, 'null')
                           || '/' || COALESCE(finished_at::text, 'NULL'), ' · ' ORDER BY id)
-          FROM tech_processes WHERE id IN (119002, 119015))
-UNION ALL
--- Prioritet vraćen samo za RC koja ga koriste (na produ 2 od 90) — ostali ostaju 255.
-SELECT '4. operacije na prioritetnoj listi (priority=100) na dirnutim RN-ovima',
-       (SELECT COUNT(*)::text
-          FROM work_order_operations l
-          JOIN operations om ON om.work_center_code = l.work_center_code
-         WHERE om.uses_priority IS TRUE AND l.priority = 100);
+          FROM tech_processes WHERE id IN (119002, 119015));

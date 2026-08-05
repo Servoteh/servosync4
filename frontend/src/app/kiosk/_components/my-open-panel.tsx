@@ -90,16 +90,18 @@ export function MyOpenPanel({
           ? `Prijavljeno ${formatNumber(data.reportedPieces)} kom`
           : 'Evidentirano samo vreme rada',
       ];
-      if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
-      // Zatvorena ispod plana — samo zato što je radnik rekao „Da, gotova je".
-      else if (data.operationClosed && operacijaGotova === true)
-        parts.push('Operacija je označena kao gotova (količina nije puna).');
-      // Opšti nalog: red se čisti bez pitanja (sledeći sken otvara nov).
-      else if (data.operationClosed) parts.push('Red je zatvoren.');
-      else if (operacijaGotova === false)
-        parts.push('Operacija ostaje otvorena — nastavlja se.');
-      else if (data.finishSkipped) {
-        // Deljeni red: gašenje preskočeno — operaciju i dalje koristi neko drugi.
+      // Ishod se JAVLJA UVEK (F1): ranije je radnik u nekim granama video samo
+      // „Prijavljeno N kom" i nije znao da li je operacija zatvorena ili ne.
+      if (data.operationClosed) {
+        if (data.operationFinished) parts.push('Operacija je dostigla plan i zatvorena.');
+        // Zatvorena ispod plana — samo zato što je radnik rekao „Da, gotova je".
+        else if (operacijaGotova === true)
+          parts.push('Operacija je označena kao gotova (količina nije puna).');
+        // Opšti nalog: red se čisti bez pitanja (sledeći sken otvara nov).
+        else parts.push('Red je zatvoren.');
+        if (finishForAll) parts.push('Zatvorena je i za ostale radnike.');
+      } else if (data.finishSkipped) {
+        // Deljeni red: gašenje traženo ali preskočeno — operaciju koristi neko drugi.
         const others = (data.otherOpenWorkers ?? [])
           .map((w) => w.fullName)
           .filter(Boolean)
@@ -109,7 +111,11 @@ export function MyOpenPanel({
             ? `Operacija ostaje otvorena — još radi: ${others}.`
             : 'Operacija ostaje otvorena — još neko radi na njoj.',
         );
-      } else if (finishForAll) parts.push('Operacija zatvorena i za ostale radnike.');
+      } else {
+        // Odgovor „Ne — nastavlja se", ali i slučaj kad radnik nije ni pitan a red
+        // svejedno nije zatvoren: poruka je ista i uvek se ispisuje.
+        parts.push('Operacija NIJE zatvorena — nastavlja se.');
+      }
       if (data.workOrderCompleted) parts.push('Radni nalog je završen.');
       setFeedback({
         ok: true,
@@ -167,11 +173,16 @@ export function MyOpenPanel({
     setBusyId(row.id);
     try {
       const { data } = await dismissOpen.mutateAsync({ id: row.id, workerCard: card ?? undefined });
+      const kept = data.pieceCountKept ?? 0;
       setFeedback({
         ok: true,
         text: data.released
-          ? `RN ${row.identNumber} · Op. ${row.operationNumber} — red je odbačen i sklonjen sa tvoje liste (bez evidentiranja komada). Operacija NIJE proglašena završenom.`
-          : `RN ${row.identNumber} · Op. ${row.operationNumber} — tvoja sesija je zatvorena, ali red nosi evidentirane komade pa ostaje na listi. Završi ga kroz „Kraj rada".`,
+          ? `RN ${row.identNumber} · Op. ${row.operationNumber} — red je sklonjen sa tvoje liste. Operacija NIJE proglašena završenom${
+              kept > 0
+                ? `; ranije otkucanih ${formatNumber(kept)} kom ostaje upisano.`
+                : '.'
+            }`
+          : `RN ${row.identNumber} · Op. ${row.operationNumber} — tvoja sesija je zatvorena (red je u vlasništvu drugog radnika).`,
       });
       await query.refetch();
     } catch (e) {
@@ -271,8 +282,8 @@ export function MyOpenPanel({
             </p>
             {confirmRow.pieceCount > 0 && (
               <p className="text-ink-secondary">
-                Ovaj red već nosi {formatNumber(confirmRow.pieceCount)} evidentiranih kom, pa ostaje
-                na listi (evidencija se ne briše) — završi ga kroz „Kraj rada".
+                Tvojih {formatNumber(confirmRow.pieceCount)} otkucanih komada{' '}
+                <span className="font-semibold">ostaje upisano</span> — ako su greška, traži storno.
               </p>
             )}
             {(confirmRow.othersOpenCount ?? 0) > 0 && (
@@ -295,7 +306,20 @@ export function MyOpenPanel({
         title="Da li je operacija gotova?"
         size="lg"
         footer={
+          /* 🔴 STRANA DUGMADI (F5): primary je UVEK DESNO — isto kao u dijalogu
+             „Na ovoj operaciji radi još neko" koji ume da usledi odmah posle ovog.
+             Da je ovde primary bio levo, radnik bi u dva uzastopna dijaloga tapkao
+             na dve različite strane i naučenim pokretom pogodio „Da — gotova je". */
           <>
+            <Button
+              variant="secondary"
+              onClick={() =>
+                finishAsk && onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, true)
+              }
+              className="h-20 flex-1 px-6 text-2xl font-bold"
+            >
+              Da — gotova je
+            </Button>
             <Button
               variant="primary"
               autoFocus
@@ -306,15 +330,6 @@ export function MyOpenPanel({
               className="h-20 flex-1 px-6 text-2xl font-bold"
             >
               Ne — nastavlja se
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() =>
-                finishAsk && onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, true)
-              }
-              className="h-20 flex-1 px-6 text-2xl font-bold"
-            >
-              Da — gotova je
             </Button>
           </>
         }

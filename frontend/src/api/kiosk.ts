@@ -16,7 +16,8 @@ import type { TechProcess } from './tech-processes';
  * starim otiskom (manja varijanta) vraća `staleWorkOrder` upozorenje. Rute:
  *   POST /v1/tech-processes/barcode/decode  { barcode }
  *   POST /v1/tech-processes/scan            { orderBarcode, operationBarcode, pieceCount }
- *   POST /v1/tech-processes/:id/finish      { pieceCount?, note? }
+ *   POST /v1/tech-processes/:id/stop-work   { pieceCount, operacijaGotova?, finishForAll? }
+ *   POST /v1/tech-processes/:id/dismiss     { workerCard?, note? }
  * Sve traže JWT (guard je V1 no-op); komponente zovu samo ove hook-ove.
  */
 
@@ -133,24 +134,6 @@ export interface ScanResult {
   currentVariant: number;
 }
 
-export interface FinishInput {
-  id: number;
-  /** Konačan broj komada; bez njega → zatvara sa trenutnom evidentiranom količinom. */
-  pieceCount?: number;
-  note?: string;
-  /** ID kartica radnika (audit ko+kada) — opciono. */
-  workerCard?: string;
-}
-
-export interface FinishResult {
-  techProcess: TechProcess;
-  finishedPieces: number;
-  plannedPieces: number | null;
-  operationsPrioritized: number;
-  workOrderCompleted: boolean;
-  workOrder: KioskWorkOrder | null;
-}
-
 /** Parsira/validira JEDAN skenirani barkod (nalog ili operacija). 400 na nevalidan ulaz. */
 export function useDecodeBarcode() {
   return useMutation({
@@ -175,18 +158,10 @@ export function useScan() {
   });
 }
 
-/** Zatvaranje operacije. Bez `pieceCount` → zatvara sa trenutnom količinom. */
-export function useFinish() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, pieceCount, note, workerCard }: FinishInput) =>
-      apiFetch<{ data: FinishResult }>(`${BASE}/${id}/finish`, {
-        method: 'POST',
-        body: JSON.stringify({ pieceCount, note, workerCard }),
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['tech-processes'] }),
-  });
-}
+// `useFinish` (POST /:id/finish) je obrisan 05.08.2026: nijedna komponenta ga nije
+// uvozila, a ruta od tada traži `tehnologija.write` (bezuslovno gašenje operacije je
+// tehnologova korekcija, ne kiosk akcija). Kiosk zatvara operaciju kroz „Kraj rada"
+// (`useStopWorkById` + `operacijaGotova`).
 
 // ------------------------------------------------------------------ START/STOP (A-4: evidencija vremena, „dva skena")
 
@@ -358,8 +333,13 @@ export function useDismissOpen() {
         data: {
           id: number;
           dismissed: true;
-          /** Red otkupljen (bez komada) → nestao sa liste. */
+          /** Red otkupljen (worker_id → 0) → nestao sa moje liste. */
           released?: boolean;
+          /**
+           * Komadi koji OSTAJU upisani na redu. „Odustani" ih nikad ne briše
+           * (evidencija) — ispravka pogrešne količine ide kroz storno.
+           */
+          pieceCountKept?: number;
           /** Na operaciji i dalje radi neko drugi. */
           othersStillOpen?: boolean;
           /** Zastarelo (uvek false od 05.08.2026) — red se više ne gasi kroz „Odustani". */
