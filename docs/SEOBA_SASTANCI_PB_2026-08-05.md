@@ -345,10 +345,9 @@ Zato korak 9 treba raditi odmah i na jednom sastanku.
    URL-ovi se i dalje potpisuju kroz `Sy15StorageService` (`SY15_STORAGE_URL` = javni gateway) i
    **ostaju važeći** — čitanje starih zapisnika radi i posle prebacivanja. Seoba fajlova ide sa
    korakom 2 (održavanje, 469 MB), kad se ionako gradi put za storage.
-2. 🔴 **Mejl kanal ostaje na sy15** (§5) — prekidač ga ne pokriva.
-3. 🔴 **RSVP magic-link i dalje gađa sy15 Edge fn** `sastanci-rsvp`. Tokeni (`rsvp_token`) se prenose
-   **doslovno**, pa već poslati linkovi rade; ali sam endpoint piše u sy15. Prepisati zajedno sa
-   enqueue logikom.
+2. ~~🔴 Mejl kanal ostaje na sy15 (§5)~~ — **ZATVORENO 06.08.** (v. §7b): tri scheduler posla i
+   dispečer sastanaka poštuju prekidač; `pb-enqueue` i PB dispečer idu kroz `assertPorted`.
+3. ~~🔴 RSVP magic-link gađa sy15 Edge fn~~ — **ZATVORENO 06.08.** (v. §7d).
 4. 🟡 **Tipfeler `zoran.jarakovic@servoteh.ocm`** (2 reda) — prenosi se kakav jeste. Ispraviti u
    aplikaciji (šablon učesnika), ne u skripti seobe.
 5. 🟡 **`akcioni_plan_istorija` se posle seobe puni iz NestJS-a**, ne iz trigera — dok se to ne
@@ -465,6 +464,40 @@ sve četiri samouslužne radnje (05.08.) · **cela automatika mejlova i dispatch
 
 ---
 
+## 7d. RSVP magic-link — 3.0 parnjak (poslednja edge fn)
+
+Ruta: **`/api/v1/sastanci-rsvp?t=<token>&r=dolazim|ne_dolazim[&c=1]`**, javna (bez
+JWT-a). `SastanciRsvpController`. Tokeni su preneti doslovno, pa **linkovi koji su
+već u sandučićima rade**. Pod `sy15` ruta ne piše u 3.0 nego radi **302 na sy15
+edge** sa nepromenjenim upitom — klik se beleži kod vlasnika podatka.
+
+### 🔴 Nalaz: edge fn ima treći parametar koji nijedan naš dokument nije pomenuo
+
+Edge funkcija je **pročitana sa živog kontejnera** (`sy15-functions`, 9.829 B), a
+ne izvedena iz linka u mejlu. Da je izvedena, izgubila bi se ova zaštita:
+
+> **Bez `c=1` edge NE PIŠE NIŠTA** — vraća samo stranu potvrde sa dugmetom.
+> Razlog je u komentaru samog edge-a: prvi GET na link iz mejla radi **i svaki
+> mašinski skener** (Microsoft SafeLinks, antivirus, link-preview bot), pa bi upis
+> na prvi GET beležio lažno „Dolazim" za ljude koji link nisu ni otvorili.
+
+Isti razlog traži i **`@Head()` handler deklarisan PRE `@Get()`**: Express
+`router.get()` hvata i HEAD zahteve, pa bi bez toga skener koji radi HEAD na link
+sa `c=1` prošao kroz celu GET granu i upisao RSVP.
+
+### Dva popravljena kvara nađena usput
+
+1. 🔴 **Dispečer je i pod `3.0` čitao `rsvp_token` sa sy15.** Zatečeni tokeni su
+   preneti pa bi „radilo" — ali učesnik dodat POSLE preklopa ne postoji u sy15, pa
+   bi mu pozivnica tiho stigla **bez dugmadi**.
+2. 🔴 **Bazni URL ne sme iz `PUBLIC_APP_URL` lanca** — ta kaskada daje adresu
+   **fronta**, a front i API su različiti hostovi i Worker ne proksira `/api`. Link
+   bi pao na static export → 404, tj. **tačno bag koji je RSVP link već jednom
+   imao**. Zato nova env `PUBLIC_API_URL`, sa produkcionom vrednošću kao
+   podrazumevanom — preklop ne traži novo podešavanje na serveru.
+
+---
+
 ## 7c. 🔴 PREOSTALE BLOKADE za preklop sastanaka na `3.0`
 
 Ovo je pun spisak — modul pod `3.0` **još nije ceo**. Rangirano po tome šta
@@ -480,6 +513,18 @@ zaustavlja preklop.
 | **6** | **`kadr_holidays` nije u 3.0** | Pomeranje sedmičnog sa praznika. Danas se čita READ-ONLY sa sy15 (fail-soft: bez praznika termin se ne pomera). Nestaje sa **korakom 4** (kadrovska) — nije potrebno rešavati posebno | — |
 | **7** | **`get_predmet_plan_prioritet_ids()`** (⭐ lista predmeta) | Čita `production.predmet_plan_prioritet` u sy15. Nije domen sastanaka — stiže sa svojim modulom | — |
 | **8** | **Fajlovi ostaju u sy15 storage-u** | Nepromenjeno (§7 rep 1) — putanje su prenete, URL-ovi važe | — |
+| **9** | 🟡 **Dopuna mejla (`enrichPayload`) i dalje čita sy15** | Dispečer pod `3.0` čita/piše RED u 3.0, ali dopunu tela mejla (zaduženja iz `v_akcioni_plan`, PDF zapisnika iz arhive) i dalje vuče sa sy15. **Svi ti pozivi su fail-soft**, pa je najgori ishod mejl bez dopune — ne pad. Ide uz blokadu 2 | uključeno u 2 |
+
+### Provere urađene 06.08.
+
+| Provera | Rezultat |
+|---|---|
+| `npx tsc --noEmit` | ✅ nula NOVIH grešaka (ostaje 5 **zatečenih** grupa u spec fajlovima) |
+| `npx jest` (pun set) | ✅ **246 suite / 5.299 testova** (+4 suite, +114 testova) |
+| `npm run build` | ✅ entrypoint `dist/main.js` |
+| 🔴 **boot-smoke `node dist/main`** | ✅ „Nest application successfully started" — protiv **žive 3.0 baze**, i sa `SASTANCI_PB_IZVOR=sy15` i sa `=3.0` |
+| view-ovi na probnoj bazi | ✅ primenjeni nad PRAVIM DDL-om tabela; **22 / 24 kolone — isto kao sy15**; `effective_status` izvodi `kasni` sa `dana_do_roka = -5` |
+| FK `ON DELETE` protiv žive sy15 | ✅ 19/19 se poklapa (posle popravke 4 koja su bila `CASCADE` umesto `SET NULL`) |
 
 **Zbir onoga što je ostalo za sastanke: ~4–5 dana** (blokade 1–5). Procena iz §7
 („4–6 dana") je time potvrđena — prepis logike je pojeo prvi deo tog opsega.
