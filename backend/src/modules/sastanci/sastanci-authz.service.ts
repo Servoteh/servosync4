@@ -345,4 +345,182 @@ export class SastanciAuthzService {
       "Nemate pravo da menjate podatke ovog sastanka.",
     );
   }
+
+  // ==========================================================================
+  // WRITE-SCOPE, ostatak blokade 3 (tabelarni CRUD)
+  // ==========================================================================
+  //
+  // IZMERENO nad ŽIVOM sy15 (`pg_policies`, 06.08.2026) — ne iz runbook-a.
+  // Runbook §7c blokadu 3 opisuje kao „politike `pa_*`, `ps_*`, `sa_*`, `pmt_*`
+  // = has_edit_role ∧ (učesnik ∨ mgmt ∨ organizator-trio)". Merenje je to
+  // POTVRDILO za tri od četiri, a za četvrtu (`pmt_*`) OBORILO — v. dole.
+  //
+  //   tabela             | politike             | pravilo
+  //   -------------------+----------------------+--------------------------------
+  //   presek_aktivnosti  | pa_insert/update/del | edit ∧ (učesnik ∨ mgmt ∨ trio)
+  //   presek_slike       | ps_insert/update/del | ISTO, znak za znak
+  //   sastanak_arhiva    | sa_insert/update/del | ISTO, znak za znak
+  //   sastanak_odluke    | sast_odluke_write    | 🔴 SAMO has_edit_role()
+  //   sastanci_templates | sast_tpl_write       | 🔴 SAMO has_edit_role()
+  //   ..._template_ucesnici | sast_tu_write     | 🔴 SAMO has_edit_role()
+  //   pm_teme            | pmt_insert/update/del| 🔴 DRUGAČIJE (v. `canWriteTema`)
+  //   pm_teme            | pm_teme_draft_insert | draft ∧ bez sastanka ∧ edit
+  //   pm_teme            | pm_teme_draft_review | USING ≠ WITH CHECK (!)
+  //   ..._notification_prefs | snp_update_own   | svoj red ∨ mgmt
+  //   ..._notification_log   | snl_insert       | edit ; snl_update/delete = mgmt
+  //
+  // 🟢 `pa_*`, `ps_*` i `sa_*` su DOSLOVNO isti izraz kao `su_*` (upoređena tela
+  // politika, ne opisi) — zato NE dobijaju svoj metod nego koriste postojeći
+  // `canWriteSastanakChild`. Pisanje trećeg identičnog gejta bi samo napravilo
+  // tri mesta koja mogu da se raziđu.
+
+  /**
+   * `pmt_insert` / `pmt_update` / `pmt_delete` — 🔴 NIJE isto što i `ap_*`.
+   *
+   * sy15 (oba, i USING i WITH CHECK):
+   * ```
+   * has_edit_role() AND (
+   *      (sastanak_id IS NULL     AND current_user_is_management())
+   *   OR (sastanak_id IS NOT NULL AND (is_sastanak_ucesnik(sastanak_id)
+   *                                    OR current_user_is_management()
+   *                                    OR organizator-trio))
+   * )
+   * ```
+   *
+   * 🔴 RAZLIKA KOJU JE LAKO PROMAŠITI: kod `ap_*` u istoj disjunkciji stoji i
+   * GOLI `current_user_is_management()`, pa on apsorbuje granu
+   * `(sastanak_id IS NULL ∧ mgmt)` i sve se svodi na `canWriteSastanakChild`
+   * (tako i piše u odeljku iznad). Kod `pmt_*` golog `mgmt` NEMA — obe grane su
+   * uslovljene stanjem `sastanak_id`. Posledica je STVARNO pravilo, ne stilska
+   * razlika: **temu BEZ sastanka sme da piše samo rukovodstvo**, dok je kod
+   * akcija bez sastanka dovoljna edit rola. Prepis kao `canWriteSastanakChild`
+   * bi tiho proširio prava.
+   */
+  async canWriteTema(
+    email: string | null | undefined,
+    sastanakId: string | null | undefined,
+  ): Promise<boolean> {
+    const key = this.key(email);
+    if (key === "") return false;
+    if (!(await this.hasEditRole(key))) return false;
+    if (!sastanakId) return this.isManagement(key);
+    if (await this.isManagement(key)) return true;
+    if (await this.isUcesnik(key, sastanakId)) return true;
+    return this.isOrganizatorTrio(key, sastanakId);
+  }
+
+  /**
+   * `pm_teme_draft_insert` (PERMISSIVE, dakle OR uz `pmt_insert`):
+   * `status='draft' ∧ sastanak_id IS NULL ∧ has_edit_role()`.
+   *
+   * Zbog nje „predloži temu" (draft bez sastanka) radi svakom sa edit rolom,
+   * iako bi ga `pmt_insert` sam odbio (grana `sastanak_id IS NULL ∧ mgmt`).
+   * Dve politike na istoj tabeli se SABIRAJU — ako se prepiše samo stroža,
+   * predlaganje tema bi prestalo da radi svima osim rukovodstvu.
+   */
+  async canInsertDraftTema(
+    email: string | null | undefined,
+    status: string,
+    sastanakId: string | null | undefined,
+  ): Promise<boolean> {
+    if (status !== "draft" || sastanakId) return false;
+    return this.hasEditRole(email);
+  }
+
+  /** Zbir `pmt_insert` ∨ `pm_teme_draft_insert` — pravi gejt za INSERT teme. */
+  async assertCanInsertTema(
+    email: string | null | undefined,
+    status: string,
+    sastanakId: string | null | undefined,
+  ): Promise<void> {
+    if (await this.canInsertDraftTema(email, status, sastanakId)) return;
+    if (await this.canWriteTema(email, sastanakId)) return;
+    throw new ForbiddenException("Nemate pravo da upišete ovu temu.");
+  }
+
+  /**
+   * `pm_teme_draft_review` (PERMISSIVE UPDATE, OR uz `pmt_update`):
+   *
+   * ```
+   * USING      : status = 'draft'                          AND (edit ∨ mgmt)
+   * WITH CHECK : status IN ('usvojeno','odbijeno')          AND (edit ∨ mgmt)
+   * ```
+   *
+   * 🔴 USING I WITH CHECK SE RAZLIKUJU — USING gleda STARI red (mora biti
+   * draft), WITH CHECK NOVI (mora biti usvojeno/odbijeno). Isti obrazac koji je
+   * `prenos` već pokazao kod `ap_update`. Prepis koji bi proverio samo jednu
+   * stranu bio bi ili preširok (pustio bi draft -> bilo šta) ili preuzak
+   * (odbio bi legitiman pregled drafta).
+   */
+  async canDraftReview(
+    email: string | null | undefined,
+    stariStatus: string,
+    noviStatus: string,
+  ): Promise<boolean> {
+    if (stariStatus !== "draft") return false;
+    if (noviStatus !== "usvojeno" && noviStatus !== "odbijeno") return false;
+    const key = this.key(email);
+    if (key === "") return false;
+    return (await this.hasEditRole(key)) || (await this.isManagement(key));
+  }
+
+  /** Zbir `pmt_update` ∨ `pm_teme_draft_review` — pravi gejt za UPDATE teme. */
+  async assertCanUpdateTema(
+    email: string | null | undefined,
+    stari: { status: string; sastanakId: string | null },
+    novi: { status: string; sastanakId: string | null },
+  ): Promise<void> {
+    if (await this.canDraftReview(email, stari.status, novi.status)) return;
+    // `pmt_update` traži pravo i nad STARIM redom (USING) i nad NOVIM (CHECK) —
+    // premeštanje teme sa sastanka A na B mora proći oba.
+    if (
+      (await this.canWriteTema(email, stari.sastanakId)) &&
+      (await this.canWriteTema(email, novi.sastanakId))
+    ) {
+      return;
+    }
+    throw new ForbiddenException("Nemate pravo da menjate ovu temu.");
+  }
+
+  /** `pmt_delete` — samo USING strana (DELETE nema WITH CHECK). */
+  async assertCanDeleteTema(
+    email: string | null | undefined,
+    sastanakId: string | null,
+  ): Promise<void> {
+    if (await this.canWriteTema(email, sastanakId)) return;
+    throw new ForbiddenException("Nemate pravo da obrišete ovu temu.");
+  }
+
+  /**
+   * `sast_odluke_write` (ALL na `sastanak_odluke`) = **samo `has_edit_role()`**.
+   *
+   * 🔴 Namerno ŠIRE od dece sastanka: odluka se ne sužava ni na učesnike ni na
+   * organizatora. Tako je u sy15 (izmereno) — ne „popravljamo" to usput, jer bi
+   * sužavanje bilo regresija prava koju niko nije tražio. Guard zaključanog
+   * sastanka i dalje važi (triger `sast_trg_locked_guard_sastanak_odluke`).
+   */
+  async assertCanWriteOdluka(email: string | null | undefined): Promise<void> {
+    if (await this.hasEditRole(email)) return;
+    throw new ForbiddenException("Nemate pravo da menjate odluke sastanka.");
+  }
+
+  /** `sast_tpl_write` / `sast_tu_write` (ALL) = `has_edit_role()`. */
+  async assertCanWriteTemplate(email: string | null | undefined): Promise<void> {
+    if (await this.hasEditRole(email)) return;
+    throw new ForbiddenException("Nemate pravo da menjate šablone sastanaka.");
+  }
+
+  /**
+   * `snp_update_own` — `email = lower(jwt.email) ∨ mgmt` na OBE strane
+   * (USING i WITH CHECK su isti izraz).
+   */
+  async assertCanWritePrefs(
+    email: string | null | undefined,
+    redEmail: string,
+  ): Promise<void> {
+    const key = this.key(email);
+    if (key !== "" && key === redEmail.trim().toLowerCase()) return;
+    if (await this.isManagement(key)) return;
+    throw new ForbiddenException("Nemate pravo nad tuđim podešavanjima.");
+  }
 }

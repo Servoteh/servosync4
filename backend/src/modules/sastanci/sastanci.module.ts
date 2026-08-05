@@ -5,6 +5,7 @@ import { SastanciService } from "./sastanci.service";
 import { SastanciSamouslugaService } from "./sastanci-samousluga.service";
 import { SastanciAuthzService } from "./sastanci-authz.service";
 import { SastanciFnService } from "./sastanci-fn.service";
+import { SastanciPredmetService } from "./sastanci-predmet.service";
 import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
 
 /**
@@ -34,6 +35,7 @@ import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.se
     SastanciSamouslugaService,
     SastanciAuthzService,
     SastanciFnService,
+    SastanciPredmetService,
     SastanciPbSourceService,
   ],
   exports: [SastanciFnService, SastanciAuthzService, SastanciPbSourceService],

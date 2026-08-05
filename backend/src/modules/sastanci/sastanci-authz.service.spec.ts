@@ -465,3 +465,167 @@ describe("isOrganizatorTrio", () => {
     expect(p.sastanak.count).not.toHaveBeenCalled();
   });
 });
+
+// ============================================================================
+// WRITE-SCOPE, ostatak blokade 3 — svaka politika dobija par „sme svoje" /
+// „NE sme tuđe". Ovi testovi su jedina brana: pod `3.0` RLS-a nema, pa bi
+// olabavljen gejt tiho dao pravo nad tuđim redom.
+// ============================================================================
+
+const EDIT = { id: 1, role: "pm" }; // edit rola, NIJE menadžment
+const MGMT = { id: 2, role: "menadzment" };
+const NIKO = { id: 3, role: "sef" }; // bez edit role
+
+describe("pmt_* (pm_teme write) — canWriteTema", () => {
+  it("🔴 tema BEZ sastanka: rukovodstvo SME, obična edit rola NE SME", async () => {
+    // Ovo je razlika prema `ap_*`, gde goli `mgmt` apsorbuje granu i edit rola
+    // sme i bez sastanka. Prepis po analogiji bi tiho proširio prava.
+    expect(await svc(prismaStub({ user: MGMT })).canWriteTema(JA, null)).toBe(true);
+    expect(await svc(prismaStub({ user: EDIT })).canWriteTema(JA, null)).toBe(false);
+  });
+
+  it("tema NA sastanku: učesnik sa edit rolom sme", async () => {
+    const p = prismaStub({ user: EDIT, ucesnikCount: 1 });
+    expect(await svc(p).canWriteTema(JA, "sast-1")).toBe(true);
+  });
+
+  it("tema NA sastanku: organizator-trio sa edit rolom sme", async () => {
+    const p = prismaStub({ user: EDIT, ucesnikCount: 0, trioCount: 1 });
+    expect(await svc(p).canWriteTema(JA, "sast-1")).toBe(true);
+  });
+
+  it("🔴 NE SME TUĐE: edit rola koja nije ni učesnik ni organizator", async () => {
+    const p = prismaStub({ user: EDIT, ucesnikCount: 0, trioCount: 0 });
+    expect(await svc(p).canWriteTema(JA, "sast-tudji")).toBe(false);
+  });
+
+  it("bez edit role ne pomaže ni učešće ni menadžment-grana", async () => {
+    const p = prismaStub({ user: NIKO, ucesnikCount: 1, trioCount: 1 });
+    expect(await svc(p).canWriteTema(JA, "sast-1")).toBe(false);
+  });
+
+  it("prazan mejl → false", async () => {
+    expect(await svc(prismaStub({ user: MGMT })).canWriteTema("", null)).toBe(false);
+  });
+});
+
+describe("pm_teme_draft_insert — predlaganje drafta", () => {
+  it("draft BEZ sastanka sme svaka edit rola (politika se SABIRA sa pmt_insert)", async () => {
+    const p = prismaStub({ user: EDIT });
+    await expect(
+      svc(p).assertCanInsertTema(JA, "draft", null),
+    ).resolves.toBeUndefined();
+  });
+
+  it("🔴 NE-draft bez sastanka i dalje traži rukovodstvo", async () => {
+    const p = prismaStub({ user: EDIT });
+    await expect(
+      svc(p).assertCanInsertTema(JA, "predlog", null),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("draft VEZAN za sastanak ne prolazi kroz draft granu (pada na pmt_insert)", async () => {
+    const p = prismaStub({ user: EDIT, ucesnikCount: 0, trioCount: 0 });
+    expect(await svc(p).canInsertDraftTema(JA, "draft", "sast-1")).toBe(false);
+    await expect(
+      svc(p).assertCanInsertTema(JA, "draft", "sast-1"),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe("pm_teme_draft_review — USING ≠ WITH CHECK", () => {
+  it("draft → usvojeno/odbijeno prolazi za edit rolu", async () => {
+    const p = prismaStub({ user: EDIT });
+    expect(await svc(p).canDraftReview(JA, "draft", "usvojeno")).toBe(true);
+    expect(await svc(p).canDraftReview(JA, "draft", "odbijeno")).toBe(true);
+  });
+
+  it("🔴 USING strana: red koji NIJE draft ne ulazi u ovu politiku", async () => {
+    const p = prismaStub({ user: EDIT });
+    expect(await svc(p).canDraftReview(JA, "predlog", "usvojeno")).toBe(false);
+  });
+
+  it("🔴 WITH CHECK strana: draft → bilo šta drugo (npr. odlozeno) ne prolazi", async () => {
+    const p = prismaStub({ user: EDIT });
+    expect(await svc(p).canDraftReview(JA, "draft", "odlozeno")).toBe(false);
+    expect(await svc(p).canDraftReview(JA, "draft", "zatvoreno")).toBe(false);
+  });
+
+  it("bez edit role i bez menadžmenta → false", async () => {
+    const p = prismaStub({ user: NIKO });
+    expect(await svc(p).canDraftReview(JA, "draft", "usvojeno")).toBe(false);
+  });
+});
+
+describe("assertCanUpdateTema — obe strane pmt_update", () => {
+  it("🔴 premeštanje teme traži pravo i nad STARIM i nad NOVIM sastankom", async () => {
+    // Učesnik je samo na jednom sastanku (ucesnikCount 1 za oba poziva bi bio
+    // lažno permisivan) — ovde simuliramo „na starom da, na novom ne".
+    const p = prismaStub({ user: EDIT, trioCount: 0 });
+    (p.sastanakUcesnik.count as jest.Mock)
+      .mockResolvedValueOnce(1) // stari sastanak — jesam učesnik
+      .mockResolvedValue(0); // novi sastanak — nisam
+    await expect(
+      svc(p).assertCanUpdateTema(
+        JA,
+        { status: "predlog", sastanakId: "stari" },
+        { status: "predlog", sastanakId: "novi" },
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("draft-review grana prolazi i kad pmt_update ne bi", async () => {
+    const p = prismaStub({ user: EDIT, ucesnikCount: 0, trioCount: 0 });
+    await expect(
+      svc(p).assertCanUpdateTema(
+        JA,
+        { status: "draft", sastanakId: null },
+        { status: "usvojeno", sastanakId: null },
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("sast_odluke_write / sast_tpl_write — SAMO has_edit_role()", () => {
+  it("edit rola sme odluke i šablone i kad nije učesnik ni organizator", async () => {
+    // Namerno šire od dece sastanka — tako je izmereno u sy15; sužavanje bi
+    // bilo regresija prava.
+    const p = prismaStub({ user: EDIT, ucesnikCount: 0, trioCount: 0 });
+    await expect(svc(p).assertCanWriteOdluka(JA)).resolves.toBeUndefined();
+    await expect(svc(p).assertCanWriteTemplate(JA)).resolves.toBeUndefined();
+  });
+
+  it("🔴 bez edit role → 403", async () => {
+    const p = prismaStub({ user: NIKO, ucesnikCount: 1, trioCount: 1 });
+    await expect(svc(p).assertCanWriteOdluka(JA)).rejects.toMatchObject({
+      status: 403,
+    });
+    await expect(svc(p).assertCanWriteTemplate(JA)).rejects.toMatchObject({
+      status: 403,
+    });
+  });
+});
+
+describe("snp_update_own — podešavanja obaveštenja", () => {
+  it("svoj red sme (neosetljivo na veličinu slova), bez ijednog upita", async () => {
+    const p = prismaStub({ user: NIKO });
+    await expect(
+      svc(p).assertCanWritePrefs("JA@Servoteh.com", "ja@servoteh.com"),
+    ).resolves.toBeUndefined();
+    expect(p.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("🔴 NE SME TUĐE — obična rola nad tuđim redom je 403", async () => {
+    const p = prismaStub({ user: EDIT });
+    await expect(
+      svc(p).assertCanWritePrefs(JA, "neko.drugi@servoteh.com"),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("rukovodstvo sme i tuđe (politika ima `∨ mgmt`)", async () => {
+    const p = prismaStub({ user: MGMT });
+    await expect(
+      svc(p).assertCanWritePrefs(JA, "neko.drugi@servoteh.com"),
+    ).resolves.toBeUndefined();
+  });
+});

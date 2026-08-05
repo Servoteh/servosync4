@@ -23,7 +23,7 @@ export type SastanciPbIzvor = "sy15" | "3.0";
  * vezama; razdvojeni prekidači bi dozvolili stanje u kom pola domena čita jednu a
  * pola drugu bazu.
  *
- * ⚠️ STANJE 06.08.2026.
+ * ⚠️ STANJE 06.08.2026 (posle blokada 2+3+5-backend).
  *
  * PRENETO (radi pod `3.0`):
  *   - ŠEMA i PODACI (27 tabela, 1.120 redova — dokazano na probnoj bazi),
@@ -32,27 +32,32 @@ export type SastanciPbIzvor = "sy15" | "3.0";
  *     6 logičkih trigera (`SastanciFnService`) — među njima `sast_zakljucaj_sastanak`
  *     (zaključavanje + arhiva + zapisnik mejl), `sast_auto_create_weekly`,
  *     `sastanci_enqueue_*` i dispatch (dakle CEO mejl kanal sastanaka),
- *   - gejtovi prava koje je ranije sprovodio RLS (`SastanciAuthzService`),
+ *   - gejtovi prava koje je ranije sprovodio RLS (`SastanciAuthzService`) —
+ *     READ-scope tri row-scoped SELECT politike I WRITE-scope svih 20 write
+ *     politika domena sastanaka,
  *   - 3 scheduler posla sastanaka + dispečer sastanaka,
- *   - READ-SCOPE tri row-scoped SELECT politike (`pm_teme`,
- *     `sastanci_notification_log`, `sastanci_notification_prefs`) +
- *     lista obaveštenja koja ga koristi,
  *   - REGISTAR IDEMPOTENCIJE u 3.0 bazi (`api_idempotency` +
- *     `IdempotencyService`, generički za celu aplikaciju) i sa njim
- *     `create-sastanak` / `bulk-ucesnici` / `prenos` / `instantiate`.
+ *     `IdempotencyService`, generički za celu aplikaciju),
+ *   - **CEO TABELARNI CRUD**: liste i pretraga, detalj, učesnici, tačke
+ *     zapisnika, odluke, akcioni plan (uz revizioni trag), teme i draft tok,
+ *     šabloni, arhiva, slike i potpisani URL-ovi,
+ *   - **PREDMET (`projekat_id`) u OBA oblika** (`SastanciPredmetService`): DTO
+ *     prima i sy15 uuid i 3.0 `Int`, a odgovor vraća oba
+ *     (`projekatId` + `projekatUuid`) dok se FE ne uskladi.
  *
  * JOŠ NIJE PRENETO — zato pod `3.0` i dalje pada sa 503:
- *   - tabelarni CRUD (liste, detalj, učesnici, tačke, odluke, akcije, teme,
- *     šabloni, arhiva, slike) — ide kroz `withUserMapped`, koji je brana,
- *   - RLS WRITE-scope za OSTALU decu sastanka (`pa_*`, `sa_*`, `pmt_*`…) — ide
- *     ZAJEDNO sa CRUD-om i ne sme da kasni za njim. Prepisan je samo deo koji
- *     traže četiri rute iznad (`sastanci_insert`, `su_*`, `ap_*`),
- *   - `projekat_id` je promenio tip (uuid -> Int) — traži usklađen FE; do tada
- *     `create-sastanak` pod `3.0` NE upisuje predmet (ćutke ga ispušta),
+ *   - ⭐ lista prioritetnih predmeta (`get_predmet_plan_prioritet_ids` čita
+ *     `production.predmet_plan_prioritet`) — NIJE domen sastanaka, stiže sa
+ *     svojim modulom,
  *   - CEO PROJEKTNI BIRO: `employees` / `departments` / `sub_departments` /
  *     `job_positions` (kadrovska — korak 4; bez njih `pb_current_employee_id`
  *     ne postoji, a on je ulaz u SVA prava modula) i
  *     `production.predmet_aktivacija` (koju zove `pb_list_projects`).
+ *
+ * Dve preostale READ-ONLY zavisnosti od sy15 (ni jedna nije upis, pa dve baze
+ * ne mogu da se raziđu): `kadr_holidays` (pomeranje sedmičnog sa praznika,
+ * fail-soft) i STORAGE bucket-i (fajlovi se u koraku 1 ne sele — putanje su
+ * prenete i stari URL-ovi ostaju važeći).
  *
  * Zato pod `SASTANCI_PB_IZVOR=3.0` NEPRENETE putanje NAMERNO padaju sa 503 i
  * jasnom porukom, umesto da tiho vrate prazan ili pogrešan odgovor — upis koji bi
@@ -77,12 +82,15 @@ export class SastanciPbSourceService {
     }
     if (this.value === "3.0") {
       this.logger.warn(
-        "SASTANCI_PB_IZVOR=3.0 — sastanci čitaju/pišu 3.0 bazu: samousluga, zaključavanje i " +
-          "arhiva, pozivnice i podsetnici, sedmični kolegijum, mejl kanal i dispatch, lista " +
-          "obaveštenja (row-scope) i kreiranje/učesnici/prenos/šablon (3.0 registar " +
-          "idempotencije). Tabelarni CRUD (liste/detalj/tačke/teme/arhiva) i CEO projektni " +
-          "biro i dalje vraćaju 503. Predmet (projekat_id) se pod 3.0 još NE upisuje — " +
-          "čeka usklađen FE (uuid -> Int). Povratak: SASTANCI_PB_IZVOR=sy15 + restart.",
+        "SASTANCI_PB_IZVOR=3.0 — CELI SASTANCI čitaju/pišu 3.0 bazu: tabelarni CRUD " +
+          "(liste, detalj, učesnici, tačke, odluke, akcije + revizioni trag, teme, šabloni, " +
+          "arhiva, slike), samousluga, zaključavanje i arhiva, pozivnice i podsetnici, " +
+          "sedmični kolegijum, mejl kanal i dispatch, registar idempotencije. Predmet " +
+          "(projekat_id) prima OBA oblika (sy15 uuid i 3.0 Int) i vraća oba " +
+          "(projekatId + projekatUuid) — dok se FE ne uskladi. Iz sy15 se JOŠ ČITAJU " +
+          "(read-only): kadr_holidays i storage bucket-i. Sa 503 i dalje padaju ⭐ lista " +
+          "prioritetnih predmeta i CEO projektni biro (čeka kadrovsku, korak 4). " +
+          "Povratak: SASTANCI_PB_IZVOR=sy15 + restart.",
       );
     }
   }

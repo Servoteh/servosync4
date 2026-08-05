@@ -99,6 +99,12 @@ function makeSvc(opts: { sme?: boolean } = {}) {
     withUserRls: jest.fn(),
     runIdempotentRls: jest.fn(),
   };
+  // Prevod predmeta: ovi testovi ga ne gađaju (DTO bez `projekatId`), pa vraća
+  // `undefined` — isto što i „polje nije poslato".
+  const predmet = {
+    razresi: jest.fn().mockResolvedValue(undefined),
+    razresiFilter: jest.fn().mockResolvedValue(undefined),
+  };
   const svc = new SastanciService(
     sy15 as unknown as Sy15Service,
     {} as never,
@@ -110,6 +116,8 @@ function makeSvc(opts: { sme?: boolean } = {}) {
     fn as never,
     authz as never,
     idem as never,
+    // SastanciPredmetService — prevod predmeta uuid<->Int (blokada 5).
+    predmet as never,
   );
   return { svc, tx, idem, authz, fn, sy15 };
 }

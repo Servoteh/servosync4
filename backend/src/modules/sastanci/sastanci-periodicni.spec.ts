@@ -78,6 +78,9 @@ function makeSvc() {
     {} as never,
     // IdempotencyService (registar u 3.0 bazi) — pod `sy15` se ne dodiruje.
     {} as never,
+    // SastanciPredmetService — prevod predmeta uuid<->Int; pod `sy15` prevod je
+    // čist (bez baze), pa stub nije potreban.
+    {} as never,
   );
   return { svc, tx };
 }

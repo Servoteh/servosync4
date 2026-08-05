@@ -154,6 +154,8 @@ function makeSvc() {
     {} as never,
     // IdempotencyService (registar u 3.0 bazi) — pod `sy15` se ne dodiruje.
     {} as never,
+    // SastanciPredmetService — pod `sy15` prevod predmeta je čist (bez baze).
+    {} as never,
   );
   return { svc, sy15, tx, storage, ai };
 }
