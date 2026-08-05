@@ -106,6 +106,53 @@ zatvorenih redova ispod plana (svesno nedirano — planiranje ih pušta kroz zao
 
 ---
 
+### B3. ✅ REŠENO 05.08.2026 — plan sudi gotovost po DOBRIM komadima (069/26)
+
+**Zahtev (Strahinja):** *„kad majstor na mašini završi, tj. kompletira operaciju po planu, da se
+automatski ažurira u planu da je gotova operacija"*; na dopunu je dodao: *„označiti u planu ako
+piše škart, umesto štiklirano da je gotovo, da piše škart"*.
+
+**Merenje je promenilo zahtev.** Automatika je već radila: **nijedna** pozicija ne dobija novu
+kvačicu (0 od 51.321). Pravi problem je bio obrnut — plan je pisao „gotovo" po zastavici
+„Kraj rada", nezavisno od količine.
+
+**Odluka Nenada (05.08.), poklopila se sa Strahinjinim odgovorom nezavisno:**
+```
+gotovo = ručna presuda planera  ILI  DOBRIH komada >= plan
+```
+Škart i dorada se NE broje — isti kanon koji praćenje i tech-processes već primenjuju
+(`QUALITY_GOOD` / `PART_QUALITY.GOOD`). Plan je bio jedini modul koji je odstupao, pa **ovim se
+zatvara pola nalaza „dva kanona kumulativa" iz B2** (čitanje je poravnato; upis je i dalje po
+svim kvalitetima — v. C17). Zastavica kioska preživljava samo gde količina nije merljiva
+(mašine `without_process`, 1.390 operacija). **Bez datumske granice** (odluka Nenada): menja
+1 red na gantu, granica bi bila trajna ružnoća u samom pravilu.
+
+**Izmereno pred izmenu** (51.321 operacija kroz predmet-gate):
+
+| | |
+|---|---|
+| kvačicu GUBI | **1.525** (306 bez ijednog otkucanog komada, 451 na zatvorenom RN-u, 79 sa škartom) |
+| kvačicu DOBIJA | **0** |
+| na gantu (32 planirane pozicije) | menja se **1 red** |
+| lista „Po mašini" | **0** — filtrira po SIROVOJ zastavici `is_done_in_bigtehn`, koja je netaknuta |
+
+**Isporučeno** (grana `feat/plan-gotovost-dobri-komadi-069`): bedž **ŠKART** u levoj koloni ganta
+dok škart nije nadoknađen (nestaje sam kad neko otkuca dovoljno dobrih); dijalog stavke pokazuje
+„Urađeno (dobri)" + „Otkucano (svi kvaliteti)" kad se razlikuju; picker „Dodaj na plan" meri
+dobre komade, pa se pozicija sa škartom MOŽE vratiti na plan radi nadoknade.
+
+🔴 **Pouka (2 verifikatora, nezavisno isti nalaz):** prva verzija je stavila oznaku u bar — a bar
+je na produkciji **median 10px širok** (28 od 32 ispod 20px). Doslovan zahtev „da PIŠE škart" bio
+bi isporučen kao tekst koji se ne vidi. Kad se traži da nešto **piše**, izmeri koliko mesta
+zaista ima.
+
+**Rizik pri potvrdi:** Strahinjin doslovni primer („prihvat 2 obrada", RN `9400/6/74` op. 20) je
+**ručno štikliran** i posle izmene se ne menja; njegov gant dobija **0 novih kvačica i 0 ŠKART
+oznaka**, a gubi **1** kvačicu (RN `9400/2/492` op. 20 „Dorada 400", plan 4 kom, **0 otkucanih**).
+Očekuj „ništa se nije promenilo" ili „nestala mi je kvačica" — v. D odeljak.
+
+---
+
 ## P. PRAVA NAD PODACIMA U APLIKACIJI (osnovano 05.08.2026)
 
 **Zašto poseban odeljak:** 05.08. je zatvoren prvi krug — knjige (glavna knjiga, saldakonta,
@@ -436,6 +483,41 @@ proveriti da ne gazi tamošnji rad.
 
 ---
 
+### C17. Kiosk i plan mere „punu količinu" različito — druga polovina nalaza iz B2
+
+Upisni kanon kioska broji **sve kvalitete**, a plan od 069/26 sudi po **dobrim**. Posledica:
+radnik koji napravi 100 komada od kojih je 5 škart **neće biti pitan** da li je operacija gotova
+(kiosk vidi punu količinu), operacija se zatvori, a plan istu poziciju prikaže kao **ŠKART**.
+
+**Izmereno 05.08.2026:** **63 operacije** su danas u tom procepu (0 na gantu, 4 na otvorenim
+RN-ovima) — mala živa izloženost, ali svaki budući škart pada u istu klasu.
+
+**Odluka koja se traži od Nenada:** da li i kiosk da meri punu količinu po DOBRIM komadima. Ako
+da, radnik bi u ovom slučaju dobio pitanje „Otkucao si 95 od 100. Da li je operacija gotova?" i
+imao priliku da kaže „ne". Ako ne, plan ostaje jedini koji vidi manjak, a planer zakazuje
+nadoknadu. **Kanon upisa je svesno odlučen 05.08. (B2), zato se NE menja bez reči.**
+
+### C18. Groblje radnih naloga koji nikad nisu formalno zatvoreni
+
+Usput izmereno pri radu na 069: od pozicija koje su stajale kao „gotovo" ispod plana,
+**3.184 nije dirano više od godinu dana**, najstarija prijava je **08.09.2016.**, **2.199 nema
+nijedan otkucan dobar komad**, a pogađaju **2.903 radna naloga** koji su formalno otvoreni.
+
+To nije zaostali posao nego nasleđe — treba ga jednom zatvoriti kao **zasebnu čistku**
+(SQL mutacija ide u zaseban fajl od pregleda, pravilo iz Napomena). Ne dirati usput.
+
+### C19. „Urađeno" znači dve različite stvari na različitim ekranima
+
+Posle 069/26 gant dijalog piše „Urađeno (dobri)" (samo `quality_type_id = 0`), dok
+`ops-table.tsx` („Po mašini", „Po crtežu"), `tp-procedure-modal.tsx` i `why-bottleneck-modal.tsx`
+i dalje zbrajaju SVE kvalitete pod istim imenom. **Izmereno: 88 operacija** gde se zbirovi
+razlikuju (npr. `9000/84` op 40: 100/100 po starom, 66/100 dobrih, 34 škarta).
+
+Gant dijalog sada prikazuje OBA broja jedan pored drugog, pa tamo nema zabune. Ostaje da se
+ostali ekrani preimenuju u „Otkucano" ili prikažu `dobri/ukupno`. **Prioritet:**
+`why-bottleneck-modal.tsx:165` — taj broj ide u AI prompt kao kontekst, pa AI objašnjava
+kašnjenje pogrešnim brojem.
+
 ## D. ČEKA KORISNIKE (ne blokira razvoj)
 
 - **Nenad:** proba nišana na **A16** — obavezno u **Samsung Internetu** (vidi C1); 05.08. nije
@@ -450,6 +532,14 @@ proveriti da ne gazi tamošnji rad.
   za datume koji su VEĆ prošli), 1 zamenski dan (Stamenić 01.08), 1 plaćeno odsustvo.
 - **Strahinja + Negovan:** potvrda FORMULACIJE pitanja radniku na kiosku (B2 je izveden 05.08.,
   pitanje je živo; traži se samo saglasnost na tekst — pitano u komentaru na 064/26).
+- **Strahinja (069/26), pri potvrdi mu reći KONKRETNO — inače će reći „ništa se nije promenilo":**
+  (1) njegov primer „prihvat 2 obrada" (RN `9400/6/74` op. 20) je **ručno štikliran**; klikom na
+  „vrati na automatski" kvačica ostaje, a sistem je od sada sam drži (u celoj bazi ima samo 7
+  ručnih override-a, oba DA se slažu sa novom automatikom — potez je bezbedan);
+  (2) jedina vidljiva promena na njegovom gantu je **nestala kvačica** na RN `9400/2/492` op. 20
+  („Dorada 400", plan 4 kom, **0 otkucanih komada**) — treba proveriti sa pogonom da li je
+  urađena pa količina nije uneta; **306 pozicija** u bazi ima „Kraj rada" bez ijednog otkucanog
+  komada, pa očekuj još ovakvih pitanja.
 - **Strahinja (016/26):** 4 pitanja postavljena 04.08. uveče — koji su tačno predmeti
   „Servotransfer prese" (7 kandidata, numeracija se preklapa); da li Dijana prati i nadređeni
   predmet **9400** (789 RN i 55 nacrta ove godine — najživlji, a nije na spisku) i 9400/8; ostaje
