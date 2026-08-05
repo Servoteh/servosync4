@@ -10,11 +10,17 @@
 -- `projects.id`) umesto sy15 `uuid` — ali kolona se u view-u samo PROSLEĐUJE, pa
 -- se telo ne menja. Tip prati baznu tabelu.
 --
--- ⚠️ Oba view-a su u sy15 `security_invoker` (RLS pozivaoca). U 3.0 nema RLS-a
--- (ODLUKE.md — guardovi + query-scoping), pa vidljivost reda sprovodi
--- `SastanciRlsService` u aplikaciji. Konkretno: `v_pm_teme_pregled` u sy15 NIJE
--- javan (politika `pmt_select` = predlagač ∨ mgmt ∨ učesnik ∨ draft+edit) — taj
--- filter je prenet u `SastanciRlsService.scopeTemeWhere()`.
+-- ⚠️ Oba view-a su u sy15 `security_invoker = true` (IZMERENO: `reloptions`), tj.
+-- RLS pozivaoca se PRIMENJUJE i kroz view. U 3.0 nema RLS-a (ODLUKE.md —
+-- guardovi + query-scoping), pa vidljivost reda sprovodi aplikacija:
+--   `v_pm_teme_pregled` u sy15 NIJE javan (politika `pmt_select` = predlagač ∨
+--   mgmt ∨ učesnik ∨ draft+edit) — taj filter je prenet u
+--   `SastanciAuthzService.scopeTemeSql(email, alias)` (SQL oblik, za ovaj view)
+--   odnosno `.scopeTemeWhere(email)` (Prisma oblik, za tabelu `pm_teme`).
+--   `v_akcioni_plan` čita `akcioni_plan`, čija je SELECT politika `true` —
+--   nema šta da se sužava.
+-- 🔴 SVAKO čitanje `v_pm_teme_pregled` pod prekidačem `3.0` MORA da spoji taj
+-- uslov; bez njega lista tema vraća tuđe redove.
 
 -- v_akcioni_plan: akcioni plan + IZVEDENI `effective_status` (rok u prošlosti pomera
 -- otvoren/u_toku u 'kasni') i `dana_do_roka`. Čita ga cela lista akcija, pretraga,

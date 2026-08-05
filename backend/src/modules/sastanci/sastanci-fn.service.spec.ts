@@ -32,6 +32,12 @@ function authzStub(over: Partial<Record<string, boolean>> = {}) {
     hasEditRole: jest.fn().mockResolvedValue(over.hasEditRole ?? false),
     isUcesnik: jest.fn().mockResolvedValue(over.isUcesnik ?? false),
     canMoveWeekly: jest.fn().mockResolvedValue(over.canMoveWeekly ?? false),
+    // Read-scope (blokada 4). Prepoznatljiva vrednost umesto pravog `where`-a —
+    // testu je bitno SAMO da je scope stigao do upita, ne kako izgleda; njegov
+    // sadržaj pokriva `sastanci-authz.service.spec.ts`.
+    scopeTemeWhere: jest.fn().mockResolvedValue({ __scope: "teme" }),
+    scopeNotifLogWhere: jest.fn().mockResolvedValue({ __scope: "notif" }),
+    scopeNotifPrefsWhere: jest.fn().mockResolvedValue({ __scope: "prefs" }),
   } as unknown as SastanciAuthzService;
 }
 
@@ -1006,5 +1012,37 @@ describe("enqueueActionReminders — prozor roka i naslovi", () => {
     );
     expect(n).toBe(0);
     expect(log.created).toHaveLength(0);
+  });
+});
+
+describe("dashboardStats — sast_dashboard_stats (JEDINA INVOKER fn domena)", () => {
+  function statsTx() {
+    return {
+      sastanak: { count: jest.fn().mockResolvedValue(3) },
+      pmTema: { count: jest.fn().mockResolvedValue(1) },
+      $queryRaw: jest.fn().mockResolvedValue([{ otvoreno: 5n, kasni: 2n }]),
+    } as unknown as Tx;
+  }
+
+  it("🔴 pm_teme brojka je SUŽENA read-scope-om, ostale nisu", async () => {
+    // `sast_dashboard_stats` ima `prosecdef = f` (izmereno na živoj sy15), pa se
+    // izvršava pod `SET LOCAL ROLE authenticated` i njen `count(*) FROM pm_teme`
+    // PROLAZI kroz politiku `pmt_select`. Nesužen count bi odao koliko tuđih
+    // (pa i tuđih draft) tema postoji.
+    const authz = authzStub();
+    const tx = statsTx();
+    const out = await svc(authz).dashboardStats(tx as never, "ja@servoteh.com");
+
+    expect(authz.scopeTemeWhere).toHaveBeenCalledWith("ja@servoteh.com");
+    expect((tx as never as Tx).pmTema.count).toHaveBeenCalledWith({
+      where: { AND: [{ status: "predlog" }, { __scope: "teme" }] },
+    });
+    // Sastanci i akcije imaju SELECT politiku `true` → ostaju nesuženi.
+    expect(
+      JSON.stringify((tx as never as Tx).sastanak.count.mock.calls),
+    ).not.toContain("__scope");
+    expect(out.pm_teme_na_cekanju).toBe(1);
+    expect(out.akcije_otvoreno).toBe(5);
+    expect(out.akcije_kasni).toBe(2);
   });
 });

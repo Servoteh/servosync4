@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 
 /**
@@ -114,5 +115,153 @@ export class SastanciAuthzService {
       where: { email: { equals: key, mode: "insensitive" } },
     });
     return n > 0;
+  }
+
+  // ==========================================================================
+  // READ-SCOPE (prepis SELECT RLS politika) — blokada 4 iz runbook-a
+  // ==========================================================================
+  //
+  // 🔴 ZAŠTO OVAJ ODELJAK POSTOJI: u sy15 su SVE tabele domena imale
+  // `relrowsecurity = TRUE` (izmereno: 27/27), a čitanje je sužavala SELECT
+  // politika. 3.0 nema RLS (ODLUKE.md) — bez ovog prepisa bi svaki port
+  // čitanja tiho vratio TUĐE redove, i nijedan postojeći test to ne bi video.
+  //
+  // IZMERENO nad ŽIVOM sy15 (`pg_policies`, 06.08.2026) — ne iz dokumentacije:
+  //
+  //   tabela                        | SELECT qual
+  //   ------------------------------+---------------------------------------
+  //   pm_teme (pmt_select)          | predlagač ∨ mgmt ∨ učesnik ∨ draft+edit
+  //   sastanci_notification_log     | primalac ∨ mgmt
+  //     (snl_select)                |
+  //   sastanci_notification_prefs   | svoj red ∨ mgmt
+  //     (snp_select_own)            |
+  //   ostalih 13 tabela sastanaka   | `true` (javno za `authenticated`)
+  //
+  // 🔴 NALAZ: runbook §7c blokada 4 nabraja SAMO `pm_teme` i
+  // `sastanci_notification_log` („ostale SELECT politike su `true`"). Merenje
+  // je našlo i TREĆU: `sastanci_notification_prefs.snp_select_own`. Bez nje bi
+  // lista podešavanja obaveštenja pokazala tuđe adrese i tuđe opt-out izbore.
+  //
+  // Politike PROJEKTNOG BIROA se OVDE NE prepisuju — PB pod `3.0` u celini pada
+  // sa 503 (zavisi od `employees`, korak 4), a četiri njegove read-politike
+  // (`pb_eng_tips`, `pb_eng_tip_files`, `pb_work_reports`, `pb_notification_log`)
+  // traže `pb_current_employee_id()` koji u 3.0 ne postoji. Popisane su u
+  // runbook-u §7e da ne bi bile promašene kad PB dođe na red.
+  //
+  // ⚠️ SVESNO ODSTUPANJE (jedno, mereno): sy15 `snl_select`/`snp_select_own`
+  // porede KOLONU doslovno sa `lower(jwt.email)` — dakle mejl sa velikim slovom
+  // U KOLONI vlasnik NE BI video. `pmt_select` pak spušta obe strane. Ovde su
+  // sve tri poređenja neosetljiva na veličinu slova (kao i ostatak ovog servisa
+  // i `is_sastanak_ucesnik`). Provereno da je razlika NULTA na živim podacima:
+  // `sastanci_notification_log` 0/134 i `sastanci_notification_prefs` 0/6 redova
+  // ima veliko slovo u mejlu. Odstupanje ne može da pokaže tuđi red — samo tvoj
+  // sopstveni sanduče-zapis koji bi sy15 sakrio zbog razlike u veličini slova.
+  //
+  // UGOVOR: svaki `where` je bezbedan za direktno prosleđivanje Prismi.
+  //   - rukovodstvo -> `{}` (bez sužavanja, kao `current_user_is_management()`),
+  //   - prazan mejl -> nemoguć uslov (0 redova), NIKAD `{}`.
+
+  /** Prazan/nedostajući mejl → 0 redova. Nikad „sve" (bezbedan smer). */
+  private key(email: string | null | undefined): string {
+    return (email ?? "").trim().toLowerCase();
+  }
+
+  /**
+   * Read-scope `pm_teme` (politika `pmt_select`) kao Prisma `where`.
+   *
+   * sy15:
+   *   lower(coalesce(predlozio_email,'')) = lower(coalesce(jwt.email,''))
+   *   OR current_user_is_management()
+   *   OR (sastanak_id IS NOT NULL AND is_sastanak_ucesnik(sastanak_id))
+   *   OR (status = 'draft' AND sastanak_id IS NULL AND has_edit_role())
+   *
+   * Četvrta grana je NAMERNO uža nego što izgleda: draft BEZ sastanka je
+   * „predlog u pripremi" koji vide svi sa edit pravom; draft VEZAN za sastanak
+   * vide samo predlagač, rukovodstvo i učesnici tog sastanka.
+   */
+  async scopeTemeWhere(
+    email: string | null | undefined,
+  ): Promise<Prisma.PmTemaWhereInput> {
+    const key = this.key(email);
+    // Prazan mejl: `lower(coalesce(predlozio_email,'')) = ''` bi u sy15 pokazao
+    // teme bez predlagača. Ovde je 0 redova — sužavanje je bezbedan smer.
+    if (key === "") return { id: { in: [] } };
+    if (await this.isManagement(key)) return {};
+    const or: Prisma.PmTemaWhereInput[] = [
+      { predlozioEmail: { equals: key, mode: "insensitive" } },
+      // `sastanak: { is: … }` nosi i `sastanak_id IS NOT NULL` (relacija je
+      // nullable), tj. tačno prvi konjunkt sy15 grane.
+      {
+        sastanak: {
+          is: { ucesnici: { some: { email: { equals: key, mode: "insensitive" } } } },
+        },
+      },
+    ];
+    if (await this.hasEditRole(key)) {
+      or.push({ status: "draft", sastanakId: null });
+    }
+    return { OR: or };
+  }
+
+  /**
+   * Isti scope kao `scopeTemeWhere`, ali kao SQL uslov — za čitanja koja idu
+   * preko view-a `v_pm_teme_pregled` (Prisma view ne modeluje). Vraća BOOLEAN
+   * izraz, bez `WHERE`, pa se spaja sa ostalim filterima.
+   *
+   * `alias` je obavezan: `EXISTS` podupit džoinuje `sastanak_ucesnici` čija
+   * kolona se takođe zove `sastanak_id`, pa bi bez kvalifikacije spoljna kolona
+   * bila zasenčena i uslov bi tiho postao „učesnik bilo čega".
+   */
+  async scopeTemeSql(
+    email: string | null | undefined,
+    alias: string,
+  ): Promise<Prisma.Sql> {
+    const key = this.key(email);
+    if (key === "") return Prisma.sql`FALSE`;
+    if (await this.isManagement(key)) return Prisma.sql`TRUE`;
+    const a = Prisma.raw(`"${alias.replace(/"/g, "")}"`);
+    const grane: Prisma.Sql[] = [
+      Prisma.sql`lower(coalesce(${a}.predlozio_email, '')) = ${key}`,
+      Prisma.sql`(${a}.sastanak_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM sastanak_ucesnici su
+        WHERE su.sastanak_id = ${a}.sastanak_id AND lower(su.email) = ${key}))`,
+    ];
+    if (await this.hasEditRole(key)) {
+      grane.push(Prisma.sql`(${a}.status = 'draft' AND ${a}.sastanak_id IS NULL)`);
+    }
+    return Prisma.sql`(${Prisma.join(grane, " OR ")})`;
+  }
+
+  /**
+   * Read-scope `sastanci_notification_log` (politika `snl_select`):
+   * `recipient_email = lower(jwt.email) OR current_user_is_management()`.
+   *
+   * Ovo je OUTBOX mejlova — sadrži `subject`, `body_html` i `payload` svakog
+   * poslatog obaveštenja. Bez ovog scope-a lista „Obaveštenja" pokazuje tuđu
+   * poštu.
+   */
+  async scopeNotifLogWhere(
+    email: string | null | undefined,
+  ): Promise<Prisma.SastanciNotificationLogWhereInput> {
+    const key = this.key(email);
+    if (key === "") return { id: { in: [] } };
+    if (await this.isManagement(key)) return {};
+    return { recipientEmail: { equals: key, mode: "insensitive" } };
+  }
+
+  /**
+   * Read-scope `sastanci_notification_prefs` (politika `snp_select_own`):
+   * `email = lower(jwt.email) OR current_user_is_management()`.
+   *
+   * 🔴 Ova politika NIJE u runbook §7c — nađena je merenjem `pg_policies`.
+   * Ključ tabele JESTE mejl, pa je „svoj red" = red sa svojim mejlom.
+   */
+  async scopeNotifPrefsWhere(
+    email: string | null | undefined,
+  ): Promise<Prisma.SastanciNotificationPrefsWhereInput> {
+    const key = this.key(email);
+    if (key === "") return { email: { in: [] } };
+    if (await this.isManagement(key)) return {};
+    return { email: { equals: key, mode: "insensitive" } };
   }
 }

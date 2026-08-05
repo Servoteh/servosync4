@@ -1437,10 +1437,22 @@ export class SastanciFnService {
    * Prepis `sast_dashboard_stats()` — pet KPI brojki za Pregled.
    * `akcije_*` idu preko view-a `v_akcioni_plan` (zbog `effective_status`, koji
    * „kasni" izvodi iz roka i NE postoji kao kolona).
+   *
+   * 🔴 `pm_teme_na_cekanju` MORA biti sužen na vidljive teme. `sast_dashboard_stats`
+   * je JEDINA pozvana fn domena koja NIJE `SECURITY DEFINER` (izmereno:
+   * `pg_proc.prosecdef = f`), pa se u sy15 izvršava pod `SET LOCAL ROLE
+   * authenticated` i njen `count(*) FROM pm_teme` PROLAZI kroz politiku
+   * `pmt_select`. Ostale četiri brojke gledaju tabele/view-ove čija je SELECT
+   * politika `true`, pa se ne sužavaju. Bez ovog sužavanja KPI bi odavao koliko
+   * tuđih (pa i tuđih draft) tema postoji.
    */
-  async dashboardStats(tx: SastanciTx): Promise<Record<string, number>> {
+  async dashboardStats(
+    tx: SastanciTx,
+    email: string,
+  ): Promise<Record<string, number>> {
     const danas = new Date();
     const u14 = new Date(danas.getTime() + 14 * 86_400_000);
+    const temeScope = await this.authz.scopeTemeWhere(email);
     const [upcoming, uToku, akcije, teme] = await Promise.all([
       tx.sastanak.count({
         where: {
@@ -1457,7 +1469,7 @@ export class SastanciFnService {
           count(*) FILTER (WHERE effective_status IN ('otvoren','u_toku','kasni')) AS otvoreno,
           count(*) FILTER (WHERE effective_status = 'kasni') AS kasni
         FROM v_akcioni_plan`),
-      tx.pmTema.count({ where: { status: "predlog" } }),
+      tx.pmTema.count({ where: { AND: [{ status: "predlog" }, temeScope] } }),
     ]);
     return {
       sastanc_upcoming: upcoming,

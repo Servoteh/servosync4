@@ -33,13 +33,16 @@ export type SastanciPbIzvor = "sy15" | "3.0";
  *     (zaključavanje + arhiva + zapisnik mejl), `sast_auto_create_weekly`,
  *     `sastanci_enqueue_*` i dispatch (dakle CEO mejl kanal sastanaka),
  *   - gejtovi prava koje je ranije sprovodio RLS (`SastanciAuthzService`),
- *   - 3 scheduler posla sastanaka + dispečer sastanaka.
+ *   - 3 scheduler posla sastanaka + dispečer sastanaka,
+ *   - READ-SCOPE tri row-scoped SELECT politike (`pm_teme`,
+ *     `sastanci_notification_log`, `sastanci_notification_prefs`) +
+ *     lista obaveštenja koja ga koristi.
  *
  * JOŠ NIJE PRENETO — zato pod `3.0` i dalje pada sa 503:
  *   - tabelarni CRUD (liste, detalj, učesnici, tačke, odluke, akcije, teme,
  *     šabloni, arhiva, slike) — ide kroz `withUserMapped`, koji je brana,
- *   - RLS scope za DECU sastanka i read-scope na `pm_teme` /
- *     `sastanci_notification_log` (bez njih bi CRUD curio tuđe redove),
+ *   - RLS WRITE-scope za DECU sastanka (`su_*`, `pa_*`, `ap_*`…) — ide ZAJEDNO
+ *     sa CRUD-om i ne sme da kasni za njim,
  *   - registar idempotencije `rev_api_idempotency` (ostaje u sy15) — zato
  *     `create` / `bulk-ucesnici` / `prenos` / `instantiate` i dalje padaju,
  *   - `projekat_id` je promenio tip (uuid -> Int) — traži usklađen FE,

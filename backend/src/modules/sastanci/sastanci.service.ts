@@ -916,6 +916,12 @@ export class SastanciService {
    * hitno DESC, za_razmatranje DESC, prioritet ASC, predlozio_at DESC; filteri status/
    * excludeStatuses/sastanakId/projekatId/predlozioEmail/hitnoOnly/razmatranjeOnly.
    * Vidljivost redova (predlagač∨mgmt∨učesnik∨draft+edit) presuđuje RLS (withUserRls).
+   *
+   * 🔴 KAD OVA RUTA BUDE PRENETA (blokada 2): scope se NE nasleđuje ni od čega —
+   * spoji `await this.authz.scopeTemeSql(email, "v")` u `WHERE` (i dodaj alias
+   * `v` view-u). Sam scope je gotov i pokriven testovima; ovde je izostavljen
+   * samo zato što ruta pod `3.0` još pada na `withUserMapped` brani zbog
+   * `projekatId` (uuid → Int, blokada 5) — a ne zato što nije potreban.
    */
   async listTeme(email: string, q: TemeQueryDto) {
     return this.withUserMapped(email, async (tx) => {
@@ -1052,12 +1058,30 @@ export class SastanciService {
     });
   }
 
-  // ---------- Notifikacije (OUTBOX read — row-scope „svoje ∨ mgmt" presuđuje RLS) ----------
+  // ---------- Notifikacije (OUTBOX read — row-scope „svoje ∨ mgmt") ----------
 
+  /**
+   * Pod `sy15` scope presuđuje RLS politika `snl_select`; pod `3.0` isti uslov
+   * sprovodi `SastanciAuthzService.scopeNotifLogWhere` (RLS-a nema — ODLUKE.md).
+   *
+   * 🔴 Scope se NE SME izostaviti: red ovog outbox-a nosi `subject`, `body_html`
+   * i `payload` mejla. Nesuženo čitanje bi svakome dalo tuđu poštu.
+   */
   async notifications(email: string, q: NotificationsQueryDto) {
+    const filter = q.sastanakId ? { relatedSastanakId: q.sastanakId } : {};
+    if (this.izvor.isThreeZero) {
+      const scope = await this.authz.scopeNotifLogWhere(email);
+      return this.threeZeroTx(async (tx) => ({
+        data: await tx.sastanciNotificationLog.findMany({
+          where: { AND: [filter, scope] },
+          orderBy: [{ createdAt: "desc" }],
+          take: 200,
+        }),
+      }));
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.sastanciNotificationLog.findMany({
-        where: q.sastanakId ? { relatedSastanakId: q.sastanakId } : {},
+        where: filter,
         orderBy: [{ createdAt: "desc" }],
         take: 200,
       });
@@ -1159,7 +1183,7 @@ export class SastanciService {
   async dashboardStats(email: string) {
     if (this.izvor.isThreeZero) {
       return this.threeZeroTx(async (tx) => ({
-        data: await this.fn.dashboardStats(tx),
+        data: await this.fn.dashboardStats(tx, email),
       }));
     }
     return this.withUserMapped(email, async (tx) => {
