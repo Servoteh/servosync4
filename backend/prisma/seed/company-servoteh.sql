@@ -15,12 +15,15 @@
 -- odnosno memorandum i podnožje sa `IFR 657/25`, `IFUSL 653/25` i `InoFaktura GP 228-25`.
 -- Ništa nije pretpostavljeno — svaki red se vidi na bar jednom od tih papira.
 --
--- ⚠️ `city` NAMERNO nosi `'11272 Dobanovci'`, a ne goli grad:
---    migracija `20260803090000_companies_postal_code` (odluka O-F10) uvodi kolonu
---    `postal_code` i pri primeni prenosi baš oblik `^\d{5}\s+\S` — dakle posle
---    deploy-a ovaj red se sam razdvoji na `postal_code = '11272'` i `city = 'Dobanovci'`.
---    Do tada memorandum štampa pun oblik, kao na papiru. Da je ovde upisan goli grad,
---    poštanski broj bi nedostajao sve do deploy-a, a niko ga posle ne bi ni tražio.
+-- ⚠️ `city` NOSI GOLI GRAD, a poštanski broj ide u svoju kolonu (ispravka 05.08.2026).
+--    Ranija verzija ovog skripta je NAMERNO pisala `city = '11272 Dobanovci'`, računajući
+--    da će migracija `20260803090000_companies_postal_code` (odluka O-F10) taj oblik sama
+--    razdvojiti pri primeni. To je bilo tačno SAMO dok migracija nije primenjena — a od
+--    05.08. jeste. Ponovno pokretanje starog skripta je zato vratilo broj u `city`, pa je
+--    baza imala `city = '11272 Dobanovci'` I `postal_code = '11272'` istovremeno.
+--    `companyPlace()` (`common/company-address.ts`) spaja to dvoje, pa bi memorandum
+--    izašao sa **„11272 11272 Dobanovci"** — na SVAKOM štampanom dokumentu.
+--    Uhvaćeno odmah po upisu i ispravljeno; skript od sada piše obe kolone izričito.
 --
 -- ⚠️ `company_name` je GOLI naziv (odluka O-F9, „jedno ime svuda"): mesto uz ime
 --    memorandum dopisuje sam iz `city`, pa upisivanje „Servoteh d.o.o. Dobanovci"
@@ -32,7 +35,8 @@
 UPDATE companies
 SET company_name           = 'Servoteh d.o.o.',
     address                = 'Ugrinovačka 163',
-    city                   = '11272 Dobanovci',
+    city                   = 'Dobanovci',
+    postal_code            = '11272',
     phone                  = '+381 11 31 41 564; 373 29 59',
     fax                    = '+381 11 2399 265',
     email                  = 'office@servoteh.rs',
