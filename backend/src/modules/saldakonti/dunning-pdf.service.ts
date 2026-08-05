@@ -16,7 +16,11 @@ import {
   fmtMoney,
   sanitizeText,
 } from "../documents/doc-layout";
-import { OpenItemsService, type OpenItem } from "./open-items.service";
+import {
+  OpenItemsService,
+  isCustomerReceivable,
+  type OpenItem,
+} from "./open-items.service";
 
 /**
  * OPOMENA (dunning) PDF — Talas 3 B6.
@@ -28,8 +32,10 @@ import { OpenItemsService, type OpenItem } from "./open-items.service";
  * OPOMENA PRED UTUŽENJE) i nema polja za overu (opomena je jednosmerna).
  *
  * Otvorene stavke se NE materijalizuju — izveden pogled nad `ledger_entries`
- * kroz `OpenItemsService.listOpenItems`. Dunning je nad POTRAŽIVANJIMA
- * (side=receivable, dugovni saldo) — kupci koji nama duguju.
+ * kroz `OpenItemsService.listOpenItems`. Dunning je nad KUPČEVIM POTRAŽIVANJIMA
+ * (side=receivable I partner_scope=customer, dugovni saldo) — kupci koji nama duguju.
+ * Pre popravke (04.08.2026) je filter bio samo `side === "receivable"`, pa se dati
+ * avans dobavljaču (1520, dugovni saldo) štampao kao njegov dug na opomeni.
  *
  * NOVAC: Prisma.Decimal (NIKAD Float) — `toFixed` nad Decimal-om, srpski zarez.
  */
@@ -111,8 +117,9 @@ export class DunningPdfService {
       this.loadPartner(partnerId),
     ]);
 
-    // Dunning je nad potraživanjima — samo receivable strana registra.
-    const receivable = items.filter((it) => it.side === "receivable");
+    // Dunning je nad KUPČEVIM potraživanjima — receivable strana I partner_scope
+    // 'customer' iz registra (isti uslov kao DunningService, jedan izvor).
+    const receivable = items.filter(isCustomerReceivable);
 
     const docDefinition = this.buildDocDefinition({
       items: receivable,

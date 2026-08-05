@@ -238,3 +238,81 @@ describe("GlWriteService.reverse", () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RUČNI NALOG — brava predatog PDV perioda se NASLEĐUJE od motora (04.08.2026)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Ručni nalog knjigovođe („Unos naloga glavne knjige") nije imao nikakvu bravu
+// perioda: posle predate PDV prijave se i dalje moglo ukucati knjiženje u taj mesec.
+// `createManualEntry` NE dobija sopstvenu proveru — bravu naslede jednim pozivom
+// `PostingEngine.postManualEntry`. Ovde se zaključava samo ono što je na ovom sloju:
+// escape hatch iz tela zahteva mora da stigne do motora (i da bez njega ostane
+// `undefined`, pa se ponašanje redovnog unosa ne menja).
+
+function makeManualEntryService() {
+  const ledgerEntry = {
+    findMany: jest.fn(() => Promise.resolve([])),
+    update: jest.fn(() => Promise.resolve({})),
+  };
+  const prisma = {
+    $transaction: jest.fn((fn: (tx: unknown) => unknown) =>
+      fn({ ledgerEntry }),
+    ),
+  } as unknown as PrismaService;
+
+  const postManualEntry = jest.fn(() =>
+    Promise.resolve({ journalEntryId: 4242, number: "0007", lineCount: 2 }),
+  );
+  const posting = { postManualEntry } as unknown as PostingEngineService;
+
+  return { service: new GlWriteService(prisma, posting), postManualEntry };
+}
+
+const RUCNE_LINIJE = [
+  { accountCode: "2040", debit: 1000 },
+  { accountCode: "4330", credit: 1000 },
+];
+
+/** Drugi argument (params) prvog poziva `postManualEntry` — `tx` je prvi. */
+function engineParams(mock: jest.Mock): Record<string, unknown> {
+  return (
+    mock.mock.calls as unknown as [unknown, Record<string, unknown>][]
+  )[0][1];
+}
+
+describe("GlWriteService.createManualEntry — escape hatch brave perioda", () => {
+  it("`forceLockedPeriod` iz tela zahteva stiže do motora, sa akterom iz tokena", async () => {
+    const h = makeManualEntryService();
+
+    await h.service.createManualEntry(
+      {
+        orderType: "TEMELJ",
+        documentDate: "2026-03-15",
+        forceLockedPeriod: { reason: "ispravka konta u predatom martu" },
+        lines: RUCNE_LINIJE,
+      },
+      9,
+    );
+
+    expect(engineParams(h.postManualEntry).force).toEqual({
+      reason: "ispravka konta u predatom martu",
+      actorUserId: 9,
+    });
+  });
+
+  it("REGRESIJA: bez `forceLockedPeriod` motor dobija `force: undefined`", async () => {
+    const h = makeManualEntryService();
+
+    await h.service.createManualEntry(
+      {
+        orderType: "TEMELJ",
+        documentDate: "2026-08-04",
+        lines: RUCNE_LINIJE,
+      },
+      9,
+    );
+
+    expect(engineParams(h.postManualEntry).force).toBeUndefined();
+  });
+});

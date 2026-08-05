@@ -11,6 +11,7 @@ import { DocumentCarryOverService } from "./carry-over.service";
 import { AdvanceInvoiceService } from "./advance-invoice.service";
 import { SalesService } from "./sales.service";
 import { RobnoModule } from "../robno/robno.module";
+import { IzvodiModule } from "../izvodi/izvodi.module";
 
 /**
  * Modul Sales / Fakturisanje (Faza 5 §A — izlazni računi + carry-over + numeracija).
@@ -26,7 +27,19 @@ import { RobnoModule } from "../robno/robno.module";
   // RobnoModule → ReservationService: storno predračuna mora da OSLOBODI rezervisanu
   // robu, inače rezervacija večno drži zalihu (Batch C review, nalaz F). Jednosmerno
   // Sales→Robno; robno/ ne uvozi sales provajdere, pa nema ciklusa.
-  imports: [PostingModule, GlModule, SefModule, SalesPrintModule, RobnoModule],
+  // IzvodiModule → ExchangeRateService: devizni račun se u GK knjiži po SREDNJEM kursu na
+  // datum dokumenta, a kursnu listu razrešava POSTOJEĆI resolver (`izvodi.module.ts:30` ga
+  // izvozi upravo za cross-modul upotrebu). Uvozi se MODUL, ne pravi se nova instanca —
+  // drugi izbor kursa od onog po kome radi revalorizacija bio bi drugo pravilo za isti
+  // dug. Jednosmerno Sales→Izvodi (izvodi/ ne uvozi sales provajdere), bez ciklusa.
+  imports: [
+    PostingModule,
+    GlModule,
+    SefModule,
+    SalesPrintModule,
+    RobnoModule,
+    IzvodiModule,
+  ],
   controllers: [SalesController],
   providers: [
     FakturisanjeService,

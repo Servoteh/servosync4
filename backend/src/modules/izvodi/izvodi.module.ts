@@ -14,8 +14,13 @@ import { ExchangeRateService } from "./exchange-rate.service";
  *
  * NAPOMENA (integrator): ovaj modul se NE registruje u app.module.ts ovde — to radi
  * integrator. Auto-knjiženje kreira JournalEntry/LedgerEntry direktno (izvod se ne knjiži
- * kroz šemu za kontiranje — doc 21 §A), pa modul zavisi samo od PrismaModule. Uparivanje
- * uplate↔faktura (ReconciliationService iz modula saldakonti) je cross-modul hook (TODO u servisu).
+ * kroz šemu za kontiranje — doc 21 §A), pa modul zavisi samo od PrismaModule.
+ *
+ * ZATVARANJE UPARIVANJA (uplata↔faktura) posle knjiženja radi `ReconciliationService` iz
+ * modula saldakonti (defekt D3, 04.08.2026). Taj modul se OVDE NE UVOZI: `SaldakontiModule`
+ * već uvozi `IzvodiModule` (kursna lista za revalorizaciju), pa bi obrnut uvoz bio ciklus
+ * modula — servis se vadi kroz `ModuleRef` sa `strict: false`
+ * (v. `BankStatementService.resolveReconciliationService`).
  */
 @Module({
   // DocumentsModule → PdfService (štampa izvoda; renderer je zajednički, v. bank-statement-print.service.ts).

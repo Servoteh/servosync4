@@ -7,7 +7,7 @@ import type {
   DocumentPrintService,
   PrintTrace,
 } from "../../documents/document-print.service";
-import { RobnoService } from "../robno.service";
+import { LagerQueryService } from "../lager-query.service";
 import { StockDocumentPdfService } from "./stock-document-pdf.service";
 import { InventoryCountPdfService } from "./inventory-count-pdf.service";
 import { StockReportPdfService } from "./stock-report-pdf.service";
@@ -774,7 +774,7 @@ describe("StockReportPdfService — lager i kartica artikla", () => {
     const service = new StockReportPdfService(
       prisma as unknown as PrismaService,
       pdf as unknown as PdfService,
-      robno as unknown as RobnoService,
+      robno as unknown as LagerQueryService,
     );
     return {
       service,

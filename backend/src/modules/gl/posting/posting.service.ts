@@ -26,9 +26,18 @@
  */
 
 import { businessYear } from "../../../common/business-date";
-import { Injectable, UnprocessableEntityException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
+import {
+  findLockedVatPeriodForDate,
+  type LockedVatPeriod,
+} from "../../pdv/vat-period-lock";
 import { evaluateExpression } from "./expression-parser";
 import { prismaDecimalArith } from "./prisma-decimal-arith";
 import {
@@ -45,44 +54,176 @@ const ZERO = new D(0);
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipizirane domenske greške (BACKEND_RULES §7 — nikad 500 za poslovnu grešku)
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// ZAŠTO NASLEĐUJU `HttpException`, a ne goli `Error` (ispravka 04.08.2026):
+//   `AllExceptionsFilter` (common/http-exception.filter.ts) propušta ISKLJUČIVO
+//   `HttpException`; sve ostalo namerno postaje 500 sa generičkom porukom
+//   („Neočekivana greška na serveru. Prijavi administratoru šifru greške.") da se ne
+//   cure detalji šeme iz Prisma/SQL grešaka. Dok su ove tri klase nasleđivale `Error`,
+//   njihove TAČNE srpske poruke nikad nisu stizale do knjigovođe — on je za
+//   nebalansiran nalog dobijao „Internal server error" i šifru za administratora,
+//   umesto „Nalog ne balansira: ΣDug=… ≠ ΣPot=…".
+//
+// OBLIK TELA: `{ message, code, details }` — isti kao kod sveže pisanih domenskih
+//   grešaka u repou (`saldakonti/compensation-entry-guard.ts`, `pdv/vat-sanity.ts`).
+//   `details` je mašinski čitljiv pa front može da obeleži TAČAN dokument/nalog, a ne
+//   samo da ispiše tekst. Novčani iznosi u `details` idu kao string (`toFixed(4)`) —
+//   nikad Float (BACKEND_RULES §2).
+//
+// `instanceof` OSTAJE ISPRAVAN: `year-open.service.ts` hvata
+//   `LedgerNotBalancedException` i prevodi je u sopstvenu 422 sa kontekstom prenosa
+//   godine (bogatija poruka za taj tok) — ta grana radi nepromenjeno.
 
-/** ΣDug ≠ ΣPot — nalog ne balansira. Cela transakcija se odbija. */
-export class LedgerNotBalancedException extends Error {
+/**
+ * ΣDug ≠ ΣPot — nalog ne balansira. Cela transakcija se odbija.
+ *
+ * 422 (ne 400): zahtev je sintaksno besprekoran — svaka linija ima ispravan konto i
+ * iznos; nevalidna je POSLOVNA celina koju čine, jer dvojno knjigovodstvo zahteva
+ * ΣDug = ΣPot. Ni 409 nije tačan: ništa se nije promenilo pod nama i ponavljanje
+ * istog zahteva ne pomaže — iznosi se moraju ispraviti.
+ */
+export class LedgerNotBalancedException extends UnprocessableEntityException {
   readonly code = "GL_NOT_BALANCED";
   constructor(
     public readonly totalDebit: Prisma.Decimal,
     public readonly totalCredit: Prisma.Decimal,
   ) {
-    super(
-      `Nalog ne balansira: ΣDug=${totalDebit.toFixed(4)} ≠ ΣPot=${totalCredit.toFixed(4)}`,
-    );
+    super({
+      message: `Nalog ne balansira: ΣDug=${totalDebit.toFixed(4)} ≠ ΣPot=${totalCredit.toFixed(4)}`,
+      code: "GL_NOT_BALANCED",
+      details: {
+        totalDebit: totalDebit.toFixed(4),
+        totalCredit: totalCredit.toFixed(4),
+        difference: totalDebit.minus(totalCredit).toFixed(4),
+      },
+    });
     this.name = "LedgerNotBalancedException";
   }
 }
 
-/** Dokument nema posting šablon (postingTemplate 0/null) — nije za auto-knjiženje. */
-export class NoPostingSchemeException extends Error {
+/**
+ * Dokument nema posting šablon (postingTemplate 0/null) — nije za auto-knjiženje.
+ *
+ * 422: fali KONFIGURACIJA (šema kontiranja za tu vrstu dokumenta u
+ * `DocumentType.postingTemplate`), pa se ispravan zahtev nad postojećim dokumentom ne
+ * može obraditi dok administrator ne veže šemu. Namerno NIJE 404 — dokument JESTE tu,
+ * 404 bi korisnika poslao da traži dokument koji postoji.
+ */
+export class NoPostingSchemeException extends UnprocessableEntityException {
   readonly code = "GL_NO_SCHEME";
   constructor(public readonly docId: number) {
-    super(
-      `Robni dokument ${docId}: DocumentType nema posting šablon (postingTemplate 0/null).`,
-    );
+    super({
+      message: `Robni dokument ${docId}: DocumentType nema posting šablon (postingTemplate 0/null).`,
+      code: "GL_NO_SCHEME",
+      details: { docId },
+    });
     this.name = "NoPostingSchemeException";
   }
 }
 
-/** Dokument je već proknjižen i nalog je posted/locked — re-post nije dozvoljen. */
-export class AlreadyPostedException extends Error {
+/**
+ * Dokument je već proknjižen i nalog je posted/locked — re-post nije dozvoljen.
+ *
+ * 409 (ne 422): ulaz je besprekoran — ne poklapa se STANJE SISTEMA sa onim što
+ * pozivalac pretpostavlja (posao je već obavljen, moguće iz druge sesije; guard stoji
+ * pod advisory lock-om upravo zbog paralelnih zahteva). Korisnik treba da OSVEŽI i
+ * otvori postojeći nalog, ne da menja podatke — a to je tačno ono što 409 kaže.
+ * `details.journalEntryId` daje frontu nalog na koji vodi link.
+ */
+export class AlreadyPostedException extends ConflictException {
   readonly code = "GL_ALREADY_POSTED";
   constructor(
     public readonly docId: number,
     public readonly journalEntryId: number,
   ) {
-    super(
-      `Robni dokument ${docId} je već proknjižen (nalog ${journalEntryId}, posted/locked).`,
-    );
+    super({
+      message: `Robni dokument ${docId} je već proknjižen (nalog ${journalEntryId}, posted/locked).`,
+      code: "GL_ALREADY_POSTED",
+      details: { docId, journalEntryId },
+    });
     this.name = "AlreadyPostedException";
   }
+}
+
+/**
+ * Knjiženje u ZAKLJUČAN (predat) PDV period — 409.
+ *
+ * ⚠️ ŠTA SE DEŠAVALO PRE OVE ISPRAVKE (04.08.2026): brava predatog PDV perioda
+ * (`pdv/vat-period-lock.ts`) štitila je samo PDV evidencije i nekoliko `sales`
+ * puteva — deljeni motor knjiženja je NIJE zvao, pa se posle predate PDV prijave i
+ * dalje knjižilo u taj mesec. GK i PP-PDV bi se tiho razišli, a taj red potom ne
+ * može ući ni u jedan PDV obračun (POPDV i KIF/KUF za predat mesec su blokirani).
+ *
+ * 409 (ne 422): ulaz je besprekoran — ne poklapa se STANJE SISTEMA (period je u
+ * međuvremenu predat, moguće iz druge sesije). Korisnik ima dva ispravna izlaza,
+ * i poruka ih imenuje: knjiži u tekući period, ili otključaj prijavu.
+ * `details` nosi period i `vatReturnId` pa front može da odvede na tu prijavu.
+ */
+export class VatPeriodLockedException extends ConflictException {
+  readonly code = "GL_VAT_PERIOD_LOCKED";
+  constructor(
+    public readonly period: LockedVatPeriod,
+    /** Šta se knjižilo (nalog/dokument) — da poruka imenuje i predmet, ne samo period. */
+    what: string,
+  ) {
+    super({
+      message:
+        `PDV period ${period.label} je predat (obračun #${period.vatReturnId}) — ` +
+        `knjiži u tekući period ili otključaj prijavu. ${what}`,
+      code: "GL_VAT_PERIOD_LOCKED",
+      details: {
+        vatReturnId: period.vatReturnId,
+        period: period.label,
+        year: period.year,
+        month: period.month,
+      },
+    });
+    this.name = "VatPeriodLockedException";
+  }
+}
+
+/**
+ * ESCAPE HATCH ZA BRAVU PREDATOG PDV PERIODA — ODLUKA VLASNIKA (04.08.2026).
+ * =========================================================================
+ * Knjiženje u predat period se NE zabranjuje apsolutno: bez ovog izlaza ispravka
+ * legitimne greške u predatom periodu postala bi nemoguća, a to je nova šteta.
+ * Pozivalac zato sme eksplicitno da prosledi `force` — ali uz OBRAZLOŽENJE, koje
+ * je jedini trag zašto je brava preskočena. Tip je namerno objekat, ne `boolean`:
+ * `force: true` bi se moglo dopisati bez razmišljanja, `{ reason }` ne može.
+ */
+export interface ForcePostIntoLockedPeriod {
+  /** Zašto se knjiži u predat period. Obavezno; ulazi u trag (opis naloga + audit). */
+  reason: string;
+  /** Ko forsira. Za `postManualEntry` se izvodi iz `createdByUserId` ako nije dat. */
+  actorUserId?: number;
+}
+
+/**
+ * Odobren force: period koji je bio zaključan + normalizovani podaci za trag.
+ * Vraća ga `assertPostingPeriodOpen`; `null` znači „period otvoren, redovan tok".
+ */
+interface ForcedPosting {
+  period: LockedVatPeriod;
+  reason: string;
+  actorUserId: number | null;
+}
+
+/** `JournalEntry.description` je VarChar(255) — marker se skraćuje na tu meru. */
+const JOURNAL_DESCRIPTION_MAX = 255;
+/** Najkraće smisleno obrazloženje force-a („ok"/„." nisu trag). */
+const MIN_FORCE_REASON_LENGTH = 5;
+/** `audit_log.action` za forsirano knjiženje u predat period (VarChar(100)). */
+const FORCE_AUDIT_ACTION = "FORCE POST U PREDAT PDV PERIOD";
+
+/**
+ * Obrazloženje force-a, normalizovano. `String(...)` je namerno: telo POST rute
+ * `/gl/journal` NIJE class-validirano (DTO je interfejs, pa ga globalni
+ * `ValidationPipe` preskače — v. `test/body-validation-coverage.e2e-spec.ts`), pa
+ * `reason` sa mreže može doći i kao broj/objekat; goli `.trim()` bi tada bio 500
+ * umesto jasne 400.
+ */
+function forceReasonOf(force: ForcePostIntoLockedPeriod): string {
+  return String(force.reason ?? "").trim();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,6 +329,10 @@ export class PostingEngineService {
    * Za tokove koji NE prolaze kroz šemu za kontiranje: kompenzacija (KMP), izvodi,
    * ručna knjiženja. Balans-kontrola ΣDug=ΣPot (baca `LedgerNotBalancedException`).
    * Poziva se UNUTAR postojeće `$transaction` (prima `tx`) da se veže za izvorni entitet.
+   *
+   * BRAVA PREDATOG PDV PERIODA stoji OVDE, u deljenom motoru, pa je svi pisci GK
+   * naslede jednim pozivom (v. `assertPostingPeriodOpen`) — pre ove ispravke je
+   * nijedan pisac nije imao. `force` je escape hatch uz obavezan trag.
    */
   async postManualEntry(
     tx: Prisma.TransactionClient,
@@ -199,6 +344,8 @@ export class PostingEngineService {
       createdByUserId?: number;
       /** Traceback ka izvornom robnom dokumentu (idempotencija za NIV/robno). */
       sourceGoodsDocId?: number;
+      /** Knjiži i u PREDAT PDV period, uz obrazloženje (v. `ForcePostIntoLockedPeriod`). */
+      force?: ForcePostIntoLockedPeriod;
       lines: Array<{
         accountCode: string;
         analyticalCode?: number | null;
@@ -226,6 +373,19 @@ export class PostingEngineService {
       throw new LedgerNotBalancedException(totalDebit, totalCredit);
     }
 
+    // BRAVA PREDATOG PDV PERIODA. Stoji POSLE balansa jer je balans čist izračun bez
+    // baze — nebalansiran nalog se odbija bez ijednog upita. Merena osa je datum
+    // knjiženja: ovaj motor upisuje `postingDate = documentDate` (jedan ulazni datum),
+    // pa je to isti datum po kome PDV obračun kupi stavke.
+    const postingDate = params.documentDate;
+    const forced = await this.assertPostingPeriodOpen(
+      tx,
+      postingDate,
+      `Nalog vrste ${params.orderType}.`,
+      params.force,
+      params.createdByUserId,
+    );
+
     const number = await this.nextJournalNumber(
       tx,
       companyId,
@@ -240,10 +400,16 @@ export class PostingEngineService {
         year,
         companyId,
         documentDate: params.documentDate,
-        postingDate: params.documentDate,
+        postingDate,
         status: "POSTED",
         sourceGoodsDocId: params.sourceGoodsDocId ?? null,
         createdByUserId: params.createdByUserId ?? null,
+        // TRAG FORCE-a na samom nalogu (v. `forcedDescription` — globalni
+        // `AuditInterceptor` NE pokriva servisni sloj). U redovnom toku ostaje
+        // `null`, tačno kao do sada — opis naloga se ovde nikad nije upisivao.
+        description: forced
+          ? this.forcedDescription(forced, params.description)
+          : null,
         lines: {
           create: params.lines.map((l) => ({
             accountCode: l.accountCode,
@@ -259,6 +425,16 @@ export class PostingEngineService {
         },
       },
     });
+
+    if (forced) {
+      await this.writeForcedPostingTrace(tx, forced, {
+        journalEntryId: journal.id,
+        number,
+        orderType: params.orderType,
+        postingDate,
+      });
+    }
+
     return {
       journalEntryId: journal.id,
       number,
@@ -266,11 +442,124 @@ export class PostingEngineService {
     };
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // BRAVA PREDATOG PDV PERIODA — jedno mesto za sve pisce GK (+ escape hatch).
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Odbij knjiženje u period predate PDV prijave (409), sem kad pozivalac
+   * eksplicitno prosledi `force` uz obrazloženje.
+   *
+   * ⚠️ ZAŠTO OVDE: brava `pdv/vat-period-lock.ts` je do 04.08.2026 štitila samo PDV
+   * evidencije — motor knjiženja je nije zvao, pa je posle predate prijave svaki
+   * pisac GK (robno, izvodi, blagajna, kompenzacija, avansi, prenos godine) mirno
+   * knjižio u predat mesec: GK i PP-PDV se raziđu, a taj red ne može ući ni u jedan
+   * PDV obračun. Provera stoji u motoru upravo da je pisci naslede jednim pozivom.
+   *
+   * OSA = DATUM KNJIŽENJA (`journal_entries.posting_date`), jer po njemu PDV obračun
+   * kupi stavke (`VatLedgerService.buildKifKuf` i `PopdvService.sumVatAccounts`
+   * filtriraju `EXTRACT(YEAR/MONTH FROM je.posting_date)`). Mereno po
+   * `document_date` brava bi puštala redove koji ipak ulaze u predat obračun.
+   *
+   * @returns `null` kad je period otvoren (redovan tok), ili odobren force kad je
+   *   pozivalac forsirao — pozivalac tada MORA da upiše trag.
+   * @throws `VatPeriodLockedException` (409) bez `force`;
+   *   `BadRequestException` (400) kad `force` nema smisleno obrazloženje.
+   */
+  private async assertPostingPeriodOpen(
+    tx: Prisma.TransactionClient,
+    postingDate: Date,
+    what: string,
+    force?: ForcePostIntoLockedPeriod,
+    /** Akter kad ga `force` ne nosi (kod `postManualEntry` = `createdByUserId`). */
+    fallbackActorUserId?: number,
+  ): Promise<ForcedPosting | null> {
+    const locked = await findLockedVatPeriodForDate(tx, postingDate);
+    if (!locked) return null; // period otvoren → tok se ne dira (regresioni uslov)
+    if (!force) throw new VatPeriodLockedException(locked, what);
+    // Obrazloženje je JEDINI trag zašto je brava preskočena — prazan/šifrovan
+    // razlog bi escape hatch pretvorio u tihi prekidač.
+    const reason = forceReasonOf(force);
+    if (reason.length < MIN_FORCE_REASON_LENGTH) {
+      throw new BadRequestException(
+        `Knjiženje u predat PDV period ${locked.label} zahteva obrazloženje ` +
+          `(najmanje ${MIN_FORCE_REASON_LENGTH} znakova) — ono je jedini trag ` +
+          `zašto je brava perioda preskočena.`,
+      );
+    }
+    return {
+      period: locked,
+      reason,
+      actorUserId: force.actorUserId ?? fallbackActorUserId ?? null,
+    };
+  }
+
+  /**
+   * Marker force-a za `JournalEntry.description` — ko, kada i u koji period je
+   * knjižio, plus obrazloženje. Ovo je PRIMARNI trag: globalni `AuditInterceptor`
+   * je HTTP-only (čita `ExecutionContext` i telo zahteva), pa servisni sloj ne
+   * pokriva — interni pozivaoci (prenos godine, revalorizacija, avansi) `force`
+   * prosleđuju iz koda i kroz telo zahteva se ne vide uopšte. Zato trag ide na sam
+   * nalog, gde ga vidi svako ko otvori dnevnik, a ne samo administrator audita.
+   */
+  private forcedDescription(forced: ForcedPosting, base?: string): string {
+    const marker =
+      `[FORCE PDV ${forced.period.label} · korisnik ${forced.actorUserId ?? "?"} · ` +
+      `${new Date().toISOString()}] ${forced.reason}`;
+    const full =
+      base != null && base.trim() !== ""
+        ? `${marker} · ${base.trim()}`
+        : marker;
+    return full.slice(0, JOURNAL_DESCRIPTION_MAX);
+  }
+
+  /**
+   * Drugi trag force-a: red u `audit_log` (obrazac `pracenje.service.ts` /
+   * `dictation-inbox.service.ts` — servisni upis kroz `tx`). Namerno je U
+   * TRANSAKCIJI knjiženja: ako nalog padne (balans, FK, paralelna sesija), i trag
+   * nestane s njim — audit ne beleži knjiženja kojih nema.
+   */
+  private async writeForcedPostingTrace(
+    tx: Prisma.TransactionClient,
+    forced: ForcedPosting,
+    entry: {
+      journalEntryId: number;
+      number: string;
+      orderType: string;
+      postingDate: Date;
+    },
+  ): Promise<void> {
+    await tx.auditLog.create({
+      data: {
+        actorUserId: forced.actorUserId,
+        action: FORCE_AUDIT_ACTION,
+        entityType: "gl_journal_entry",
+        entityId: String(entry.journalEntryId),
+        afterData: {
+          journal_entry_id: entry.journalEntryId,
+          journal_number: entry.number,
+          order_type: entry.orderType,
+          posting_date: entry.postingDate.toISOString(),
+          vat_period: forced.period.label,
+          vat_return_id: forced.period.vatReturnId,
+          reason: forced.reason,
+          forced_at: new Date().toISOString(),
+        },
+      },
+    });
+  }
+
   /**
    * Proknjiži jedan ROBNI dokument (StockDocument) u nalog GK. In-transaction,
    * idempotentno. @returns kreirane LedgerEntry linije (Dnevnik / Kartica konta).
+   *
+   * `opts.force` = knjiži i u predat PDV period, uz obrazloženje (v.
+   * `ForcePostIntoLockedPeriod`). Bez njega robni put dobija 409 kao i svaki drugi.
    */
-  async postFromStockDocument(docId: number): Promise<LedgerLineDraft[]> {
+  async postFromStockDocument(
+    docId: number,
+    opts: { force?: ForcePostIntoLockedPeriod } = {},
+  ): Promise<LedgerLineDraft[]> {
     return this.prisma.$transaction(async (tx) => {
       // TOCTOU: idempotencija je read-then-write (findFirst po sourceGoodsDocId
       // bez unique constrainta — parcijalni unique se ne može izraziti Prismom,
@@ -308,6 +597,24 @@ export class PostingEngineService {
       if (doc.kind === "NIV") {
         return this.postNivLeveling(tx, doc);
       }
+
+      // 2b) BRAVA PREDATOG PDV PERIODA (04.08.2026) — robni put je do sada bio
+      //     JEDAN OD ~18 pisaca GK koji je nije imao, pa se roba knjižila u mesec za
+      //     koji je PDV prijava već predata. Osa je `doc.postingDate` (a NE
+      //     `documentDate`): u nalog ide kao `posting_date`, a PDV obračun kupi
+      //     stavke tačno po tom polju.
+      //     STOJI POSLE NIV grane: nivelacija ne pravi nijedan red u glavnoj knjizi
+      //     (v. NIV blok na vrhu fajla), pa ne može razići GK i PP-PDV — brava bi joj
+      //     samo blokirala zatvaranje dokumenta i KEPU.
+      //     STOJI POSLE idempotencije: za već proknjižen dokument je 409 „već
+      //     proknjižen" tačnija poruka od poruke o periodu (a eventualni `delete`
+      //     draft naloga se poništava rollback-om ove transakcije).
+      const forced = await this.assertPostingPeriodOpen(
+        tx,
+        doc.postingDate,
+        `Robni dokument ${docId} (vrsta ${doc.documentTypeCode}).`,
+        opts.force,
+      );
 
       // 3) Robni put — učitaj stavke + tip dokumenta + šemu.
       // Soft-delete (Batch B): meko-obrisana stavka (deletedAt) NE ulazi u GK nalog.
@@ -397,6 +704,8 @@ export class PostingEngineService {
           status: "DRAFT",
           postingSchemeId: scheme.id,
           sourceGoodsDocId: docId,
+          // Trag force-a na samom nalogu; bez force-a ostaje `null` kao i do sada.
+          description: forced ? this.forcedDescription(forced) : null,
           lines: {
             create: grouped.map((l) => ({
               accountCode: l.accountCode,
@@ -420,6 +729,15 @@ export class PostingEngineService {
         where: { id: docId },
         data: { journalEntryId: entry.id, status: "POSTED" },
       });
+
+      if (forced) {
+        await this.writeForcedPostingTrace(tx, forced, {
+          journalEntryId: entry.id,
+          number,
+          orderType: scheme.orderType,
+          postingDate: doc.postingDate,
+        });
+      }
 
       return grouped;
     });

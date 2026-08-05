@@ -16,6 +16,7 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
+import { parseDateParam } from "../../common/date-params";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { GlReadService } from "./gl-read.service";
 import { GlWriteService } from "./gl-write.service";
@@ -211,8 +212,8 @@ export class GlController {
     @Res() res: Response,
   ): Promise<void> {
     const { buffer, fileName } = await this.journalBookPrint.buildJournalBookPdf({
-      from: parseOptionalDate(from),
-      to: parseOptionalDate(to),
+      from: parseDateParam(from, "from"),
+      to: parseDateParam(to, "to"),
       orderType: orderType?.trim() || undefined,
       year: parseOptionalInt(year),
       printedBy: req.user?.email ?? null,
@@ -241,8 +242,8 @@ export class GlController {
       accountCode,
       analyticalCode: parseOptionalInt(analyticalCode),
       costCenter: costCenter?.trim() || undefined,
-      from: parseOptionalDate(from),
-      to: parseOptionalDate(to),
+      from: parseDateParam(from, "from"),
+      to: parseDateParam(to, "to"),
       printedBy: req.user?.email ?? null,
     });
     sendPdf(res, buffer, fileName);
@@ -306,8 +307,9 @@ function parseOptionalInt(v?: string): number | undefined {
   return Number.isInteger(n) ? n : undefined;
 }
 
-function parseOptionalDate(v?: string): Date | undefined {
-  if (v == null || v === "") return undefined;
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
+// Lokalna kopija tihog parsera datuma je OBRISANA 04.08.2026. Vraćala je `undefined` i za
+// nevalidan unos, pa je `?from=blabla` prolazio kao „nije zadato" i izveštaj se pravio nad
+// drugim opsegom nego što je korisnik tražio — bez ijedne poruke. Isti kvar je istog dana
+// nađen u `saldakonti.controller.ts` (šest ruta, među njima IOS koji se potpisuje); ovo je
+// bila druga kopija. Sada oba koriste `parseDateParam` iz `common/date-params.ts`, koji na
+// nevalidan datum baca 400 sa imenom parametra.

@@ -21,6 +21,14 @@ export interface CreateJournalEntryDto {
   documentDate: string; // ISO datum dokumenta
   companyId?: number;
   description?: string;
+  /**
+   * ESCAPE HATCH za bravu predatog PDV perioda (odluka vlasnika 04.08.2026).
+   * Bez ovoga knjiženje u mesec sa predatom PDV prijavom vraća 409 koji imenuje
+   * period; sa `{ reason }` prolazi, a obrazloženje ostaje kao trag (opis naloga +
+   * `audit_log`, oba iz motora). Obrazloženje validira motor (`PostingEngineService`)
+   * pa je pravilo isto za HTTP i za interne pozivaoce.
+   */
+  forceLockedPeriod?: { reason: string };
   lines: CreateJournalEntryLineInput[];
 }
 

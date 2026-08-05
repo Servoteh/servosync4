@@ -10,6 +10,7 @@ import {
   LedgerNotBalancedException,
   PostingEngineService,
 } from "./posting/posting.service";
+import { buildYearOpenDiff, loadCumulativeBalances } from "./year-open-diff";
 
 /**
  * POČETNO STANJE / carry-over godine (BigBit „Prenos u novu godinu", Batch B / B2).
@@ -18,7 +19,10 @@ import {
  * (balans-kontrola ΣDug=ΣPot; ne balansira → 422 sa razlikom):
  *
  *   a) SALDO po kontu na 31.12. fromYear — isti filter kao kartica konta
- *      (`je.status IN (posted, locked)`), kumulativno (document_date < 01.01. sledeće god.).
+ *      (`je.status IN (posted, locked)`), u PROZORU `je.year = fromYear` (PS te godine +
+ *      promet te godine). Do 04.08.2026. je ovde stajao kumulativ `document_date <
+ *      01.01.(fromYear+1)`, koji je na svakom prenosu POSLE prvog brojao klase 0–4 dvaput —
+ *      v. obrazloženje nad `accountBalances`.
  *   b) ZATVARANJE klase 5 (rashodi) i 6 (prihodi) kontra-stavkama; razlika (rezultat)
  *      ide na „konto rezultata" (klasa 3, nađen po prefiksu — DOKUMENTOVANO u `notes`).
  *      Zaključni nalog (orderType ZAK) datiran 31.12. fromYear.
@@ -53,7 +57,18 @@ export interface YearOpenDto {
   resultAccount?: string;
   /** Kompanija (podrazumevano 0 — isti podrazumevani kao ručni nalog). */
   companyId?: number;
+  /**
+   * Samo IZVEŠTAJ, bez upisa: vrati po kontu staru (kumulativnu) i novu (prozor po godini)
+   * osnovu i razliku. Obrazac je isti kao `lockOlder` u ovom modulu — FE ga koristi da
+   * korisnik VIDI šta se menja pre nego što se nalog napravi.
+   */
+  dryRun?: boolean;
 }
+
+// `YearOpenDiffRow` živi u `year-open-diff.ts`, uz sam izveštaj koji ga proizvodi.
+// Re-eksport stoji da postojeći `import { YearOpenDiffRow } from "./year-open.service"`
+// nastavi da radi — tip je javni oblik odgovora rute.
+export type { YearOpenDiffRow } from "./year-open-diff";
 
 interface AccountBalance {
   accountCode: string;
@@ -138,8 +153,68 @@ export class YearOpenService {
             `Storniraj postojeći PS nalog pa ponovi prenos.`,
         );
 
+      // IZVEŠTAJ RAZLIKE (dryRun) — ništa se ne upisuje. Pokazuje po kontu staru
+      // (kumulativnu) i novu (prozor po godini) osnovu, pa se pre prenosa vidi da li je
+      // zatečeno početno stanje bilo naduvano i za koliko. Odluka vlasnika 04.08.2026:
+      // popravka koda + izveštaj, BEZ automatskog backfill-a zatečenih godina.
+      // FAIL-SAFE ČITANJE `dryRun`: telo ove rute NIJE validirano (`YearOpenDto` je
+      // interfejs, pa ga globalni `ValidationPipe` preskače — jedna od 164 takve rute,
+      // v. `test/body-validation-coverage.e2e-spec.ts`). Da je provera bila `=== true`,
+      // klijent koji pošalje `"true"` kao STRING dobio bi PRAVI prenos umesto izveštaja —
+      // dakle upis u knjige na osnovu neprepoznate vrednosti. Zato je pravilo obrnuto:
+      // prenos se izvršava samo kad je `dryRun` ODSUTAN ili izričito neistina.
+      const wantsDryRun =
+        dto.dryRun !== undefined &&
+        dto.dryRun !== null &&
+        String(dto.dryRun).trim().toLowerCase() !== "false" &&
+        String(dto.dryRun).trim() !== "";
+      if (wantsDryRun) {
+        return {
+          data: {
+            dryRun: true as const,
+            fromYear,
+            toYear,
+            companyId,
+            rows: buildYearOpenDiff(
+              await this.accountBalances(tx, companyId, fromYear),
+              await loadCumulativeBalances(tx, companyId, cutoff),
+            ),
+          },
+        };
+      }
+
+      // BRANA KOJU PROZOR PO GODINI ZAHTEVA (v. `accountBalances`): ako knjige sadrže
+      // godine PRE `fromYear`, a `fromYear` NEMA svoj PS nalog, prozor izostavlja zatečeni
+      // saldo i početno stanje bi izašlo PREMALO. Tiho manje početno stanje je kvar gori od
+      // dvostrukog brojanja koje se ovde ispravlja, pa se prenos ODBIJA sa uputstvom.
+      const earliest = await tx.journalEntry.aggregate({
+        _min: { year: true },
+        where: { companyId, status: { in: ["POSTED", "LOCKED"] } },
+      });
+      const earliestYear = earliest._min.year;
+      if (earliestYear != null && earliestYear < fromYear) {
+        const psForFromYear = await tx.journalEntry.findFirst({
+          where: {
+            orderTypeCode: OPENING_ORDER_TYPE,
+            year: fromYear,
+            companyId,
+            reversedByEntryId: null,
+            reversesEntryId: null,
+          },
+          select: { id: true },
+        });
+        if (!psForFromYear)
+          throw new ConflictException(
+            `Prenos nije moguć: knjige sadrže godine od ${earliestYear}, a ${fromYear} nema ` +
+              `svoj PS (početno stanje) nalog — saldo zatečen pre ${fromYear} ne bi ušao u ` +
+              `prenos i početno stanje za ${toYear} bilo bi premalo. Napravi PS za ${fromYear} ` +
+              `(prenos ${fromYear - 1} → ${fromYear}) pa ponovi. Za pregled razlike pozovi ` +
+              `istu rutu sa "dryRun": true.`,
+          );
+      }
+
       // (a) + (b) ZATVARANJE klasa 5/6 → rezultat na konto rezultata.
-      const balances = await this.accountBalances(tx, companyId, cutoff);
+      const balances = await this.accountBalances(tx, companyId, fromYear);
       const closing = await this.closeIncomeStatement(tx, balances, {
         fromYear,
         companyId,
@@ -149,7 +224,7 @@ export class YearOpenService {
       });
 
       // (c) PS NALOG za toYear (recompute klasa 0–4 — sad uključuje rezultat iz zaključnog).
-      const opening = await this.openBalanceSheet(tx, companyId, cutoff, {
+      const opening = await this.openBalanceSheet(tx, companyId, fromYear, {
         fromYear,
         toYear,
         psDate,
@@ -168,13 +243,35 @@ export class YearOpenService {
     });
   }
 
+
   // ───────────────────────────────────────────────────────────────────────────
-  // (a) Saldo po kontu (kumulativ do cutoff) — filter kao kartica: posted+locked.
+  // (a) Saldo po kontu za GODINU `fromYear` — filter kao kartica: posted+locked.
   // ───────────────────────────────────────────────────────────────────────────
+  /**
+   * PROZOR JE `je.year = fromYear`, NE kumulativ od početka knjiga (ispravka 04.08.2026).
+   *
+   * ŠTA SE DEŠAVALO PRE: uslov je bio `je.document_date < cutoff`, gde je `cutoff` =
+   * 01.01.(fromYear+1) — dakle SVE godine od početka knjiga, kumulativno. Na PRVOM prenosu
+   * to je slučajno tačno (nema starijih godina). Na DRUGOM je pogrešno: PS nalog godine
+   * `fromYear` (koji je napravio prethodni prenos i koji SAŽIMA saldo godine fromYear−1)
+   * sabira se ZAJEDNO sa prometom te iste fromYear−1 — pa se klase 0–4 broje DVAPUT.
+   * Kvar sazreva tek na drugom prenosu, dakle prvi put boli u januaru 2028, kad je već u
+   * knjigama. Za klase 5/6 isti propust sabira prihod svih ranijih godina u rezultat.
+   *
+   * Dvostruko brojanje se NE izbegava izuzimanjem PS naloga (BigBit ga uračunava:
+   * `ZR_BrutoStanje.Duguje = UkPrometDuguje`), nego time što ranija godina UOPŠTE NIJE u
+   * prozoru — identično kako se `zavrsni/gkeval.service.ts:36-48` brani od istog kvara, i
+   * kolona je ista: `je.year` (verbatim iz BigBit uvoza), ne `posting_date`/`document_date`.
+   *
+   * PREDUSLOV koji ovaj prozor uvodi: `fromYear` MORA imati svoj PS nalog kad knjige sadrže
+   * ranije godine — inače prozor izostavi zatečeni saldo i početno stanje izađe PREMALO.
+   * Taj slučaj hvata brana u `createYearOpen` (odbija sa uputstvom na `dryRun` izveštaj);
+   * tiho manje početno stanje bilo bi kvar gori od onog koji se ovde ispravlja.
+   */
   private async accountBalances(
     tx: Prisma.TransactionClient,
     companyId: number,
-    cutoff: Date,
+    fromYear: number,
   ): Promise<AccountBalance[]> {
     const rows = await tx.$queryRaw<
       Array<{
@@ -193,7 +290,7 @@ export class YearOpenService {
       JOIN accounts a ON a.code = le.account_code
       WHERE je.status IN ('POSTED', 'LOCKED')
         AND je.company_id = ${companyId}
-        AND je.document_date < ${cutoff}
+        AND je.year = ${fromYear}
       GROUP BY le.account_code, a.account_class
       HAVING COALESCE(SUM(le.debit), 0) <> COALESCE(SUM(le.credit), 0)
       ORDER BY le.account_code ASC
@@ -303,6 +400,12 @@ export class YearOpenService {
       companyId: opts.companyId,
       description: `Zatvaranje klasa 5 i 6 za ${opts.fromYear}`,
       createdByUserId: opts.actorUserId,
+      // Brava predatog PDV perioda se OVDE svesno preskače (v. `postBalanced`):
+      // zaključni nalog je po zakonu datiran 31.12., a decembarska prijava je do
+      // trenutka prenosa gotovo uvek predata. Zatvaraju se ISKLJUČIVO klase 5 i 6
+      // (rashodi/prihodi) — nijedno PDV konto (27x/47x), pa PDV obračun tog meseca
+      // ostaje netaknut. Alternativa (datirati u tekući period) bila bi pogrešna.
+      forceReason: `Zaključni nalog ${CLOSING_ORDER_TYPE} 31.12.${opts.fromYear} — zatvaranje klasa 5/6 pri prenosu godine (bez PDV konta)`,
       lines: closingLines,
     });
 
@@ -320,12 +423,15 @@ export class YearOpenService {
   private async openBalanceSheet(
     tx: Prisma.TransactionClient,
     companyId: number,
-    cutoff: Date,
+    fromYear: number,
     opts: { fromYear: number; toYear: number; psDate: Date; actorUserId?: number },
   ): Promise<{ journalEntryId: number; openingLineCount: number }> {
-    // Recompute: zaključni nalog (datiran 31.12. fromYear, posted) je < cutoff, pa je
-    // rezultat (klasa 3) sada u saldu. Time PS klasa 0–4 balansira samo od sebe.
-    const balances = await this.accountBalances(tx, companyId, cutoff);
+    // Recompute: zaključni nalog (ZAK) je datiran 31.12. `fromYear`, a `postManualEntry`
+    // izvodi `year = businessYear(documentDate)` — dakle ZAK JE u prozoru `je.year = fromYear`
+    // i rezultat (klasa 3) je sada u saldu. Time PS klasa 0–4 balansira samo od sebe.
+    // (PS nalog je datiran 01.01. `toYear`, pa dobija `year = toYear` i u prozor NE ulazi —
+    // to je i uslov da se sopstveni PS ne uračuna u osnovu iz koje se pravi.)
+    const balances = await this.accountBalances(tx, companyId, fromYear);
     const psLines: ManualLine[] = [];
     for (const b of balances) {
       if (b.accountClass < 0 || b.accountClass > 4) continue;
@@ -359,6 +465,11 @@ export class YearOpenService {
       companyId,
       description: `Početno stanje ${opts.toYear} (prenos sa ${opts.fromYear})`,
       createdByUserId: opts.actorUserId,
+      // Brava se preskače i za PS: prenos se u praksi radi tek u toku naredne godine,
+      // pa je januar `toYear` (datum PS naloga) tada već predat. PS je jedno jedino
+      // knjiženje po godini i ne sme da se pomeri u „tekući period" — inače saldi
+      // klasa 0–4 nedostaju svim čitaocima od 01.01. do datuma prenosa.
+      forceReason: `Nalog početnog stanja ${OPENING_ORDER_TYPE} za ${opts.toYear} — prenos salda klasa 0–4 sa ${opts.fromYear}`,
       lines: psLines,
     });
     return {
@@ -427,6 +538,14 @@ export class YearOpenService {
   // ───────────────────────────────────────────────────────────────────────────
   // Knjiži balansiran nalog kroz PostingEngine; ne balansira → 422 sa razlikom.
   // ───────────────────────────────────────────────────────────────────────────
+  /**
+   * `forceReason` — PRENOS GODINE MORA da knjiži u predat PDV period po dizajnu.
+   * Od 04.08.2026 motor (`postManualEntry`) odbija knjiženje u mesec za koji je PDV
+   * prijava predata; oba naloga prenosa su datirana fiksno (ZAK 31.12. `fromYear`,
+   * PS 01.01. `toYear`) i ne mogu se pomeriti u tekući period, pa im se brava
+   * eksplicitno preskače uz obrazloženje. Brava se NE gasi tiho: obrazloženje ide u
+   * opis naloga i u `audit_log`, pa se u dnevniku vidi ko je i zašto forsirao.
+   */
   private async postBalanced(
     tx: Prisma.TransactionClient,
     params: {
@@ -435,6 +554,7 @@ export class YearOpenService {
       companyId: number;
       description: string;
       createdByUserId?: number;
+      forceReason: string;
       lines: ManualLine[];
     },
   ): Promise<{ journalEntryId: number; number: string; lineCount: number }> {
@@ -445,6 +565,10 @@ export class YearOpenService {
         companyId: params.companyId,
         description: params.description,
         createdByUserId: params.createdByUserId,
+        force: {
+          reason: params.forceReason,
+          actorUserId: params.createdByUserId,
+        },
         lines: params.lines.map((l) => ({
           accountCode: l.accountCode,
           debit: l.debit.toFixed(4),

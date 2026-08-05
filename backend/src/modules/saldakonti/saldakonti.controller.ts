@@ -17,6 +17,7 @@ import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
 import { PERMISSIONS } from "../../common/authz/permissions";
 import { MailService } from "../../common/mail/mail.service";
+import { parseDateParam } from "../../common/date-params";
 import type { AuthUser } from "../auth/jwt.strategy";
 import { OpenItemsService } from "./open-items.service";
 import { ReconciliationService } from "./reconciliation.service";
@@ -86,7 +87,7 @@ export class SaldakontiController {
   @Get("open-items")
   async listOpenItems(@Query() query: ListOpenItemsQuery) {
     const partnerId = parseOptionalInt(query.partnerId);
-    const asOf = parseOptionalDate(query.asOf);
+    const asOf = parseDateParam(query.asOf, "asOf");
     const data = await this.openItems.listOpenItems(
       query.accountCode,
       partnerId,
@@ -97,7 +98,7 @@ export class SaldakontiController {
 
   @Get("aging")
   async aging(@Query() query: AgingQuery) {
-    const asOf = parseOptionalDate(query.asOf);
+    const asOf = parseDateParam(query.asOf, "asOf");
     const data = await this.openItems.agingByPartner(query.accountCode, asOf);
     return { data, meta: { count: data.length } };
   }
@@ -120,7 +121,7 @@ export class SaldakontiController {
     if (id == null) {
       throw new BadRequestException("Parametar partnerId je obavezan.");
     }
-    const asOfDate = parseOptionalDate(asOf);
+    const asOfDate = parseDateParam(asOf, "asOf");
     const { buffer, fileName } = await this.iosPdf.buildIosPdf(id, asOfDate);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
@@ -148,7 +149,7 @@ export class SaldakontiController {
       throw new BadRequestException("Parametar partnerId je obavezan.");
     }
     const to = requireEmail(dto.to);
-    const asOf = parseOptionalDate(dto.asOf);
+    const asOf = parseDateParam(dto.asOf, "asOf");
     const { buffer, fileName } = await this.iosPdf.buildIosPdf(id, asOf);
     const subject = `IOS obrazac usaglašavanja - komitent ${id}`;
     const html =
@@ -186,8 +187,8 @@ export class SaldakontiController {
     const data = await this.partnerCard.getPartnerCard(
       id,
       accountCode?.trim() || undefined,
-      parseOptionalDate(from),
-      parseOptionalDate(to),
+      parseDateParam(from, "from"),
+      parseDateParam(to, "to"),
     );
     return { data };
   }
@@ -212,8 +213,8 @@ export class SaldakontiController {
     const { buffer, fileName } = await this.partnerCard.buildPartnerCardPdf(
       id,
       accountCode?.trim() || undefined,
-      parseOptionalDate(from),
-      parseOptionalDate(to),
+      parseDateParam(from, "from"),
+      parseDateParam(to, "to"),
     );
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
@@ -324,7 +325,9 @@ export class SaldakontiController {
    */
   @Get("collection-dashboard")
   async collectionDashboardData(@Query("asOf") asOf?: string) {
-    const data = await this.collectionDashboard.build(parseOptionalDate(asOf));
+    const data = await this.collectionDashboard.build(
+      parseDateParam(asOf, "asOf"),
+    );
     return { data };
   }
 
@@ -357,7 +360,7 @@ export class SaldakontiController {
    */
   @Get("dunning/candidates")
   async dunningCandidates(@Query("asOf") asOf?: string) {
-    const data = await this.dunning.candidates(parseOptionalDate(asOf));
+    const data = await this.dunning.candidates(parseDateParam(asOf, "asOf"));
     return { data, meta: { count: data.length } };
   }
 
@@ -382,7 +385,7 @@ export class SaldakontiController {
     const { buffer, fileName } = await this.dunningPdf.buildDunningPdf(
       id,
       parseOptionalLevel(level) ?? 1,
-      parseOptionalDate(asOf),
+      parseDateParam(asOf, "asOf"),
     );
     sendPdf(res, buffer, fileName);
   }
@@ -423,7 +426,10 @@ export class SaldakontiController {
     @Req() req: { user: AuthUser },
   ) {
     const data = await this.dunning.sendBatch(
-      { asOf: parseOptionalDate(dto.asOf), maxLevel: parseOptionalLevel(dto.maxLevel) },
+      {
+        asOf: parseDateParam(dto.asOf, "asOf"),
+        maxLevel: parseOptionalLevel(dto.maxLevel),
+      },
       req.user.userId,
     );
     return { data };
@@ -503,16 +509,24 @@ function sendPdf(res: Response, buffer: Buffer, fileName: string): void {
   res.send(buffer);
 }
 
+/**
+ * DATUMI IDU KROZ `parseDateParam` (`src/common/date-params.ts`) — prazno → „danas",
+ * NEVALIDNO → 400 sa imenom parametra.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ŠTA SE DEŠAVALO PRE POPRAVKE (D2, 04.08.2026): lokalni `parseOptionalDate` je na
+ * nevalidan unos vraćao `undefined`, isto kao na prazan, pa je pozivalac padao na
+ * podrazumevano „danas" BEZ IJEDNE PORUKE. Za deset ruta modula (12 parametara:
+ * `asOf` na osam, `from`/`to` na kartici komitenta i njenom PDF-u) to je značilo presek
+ * na pogrešan dan, a među njima je i IOS obrazac koji se POTPISUJE — `?asOf=blabla`
+ * (ili `?asOf=31.12.2025` u domaćem zapisu) davao je overen saldo na današnji dan
+ * umesto na traženi presek. Prazno = danas je i dalje namerno (default preseka);
+ * nevalidno više nikad ne prolazi kao prazno. Isti obrazac već ima
+ * `parseOptionalLevel` ispod.
+ */
 function parseOptionalInt(v?: string): number | undefined {
   if (v === undefined || v === null || v === "") return undefined;
   const n = Number(v);
   return Number.isInteger(n) && n > 0 ? n : undefined;
-}
-
-function parseOptionalDate(v?: string): Date | undefined {
-  if (v === undefined || v === null || v === "") return undefined;
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
 /** Opcioni nivo opomene (1|2|3); prazno → undefined; nevalidno → 400. */

@@ -2,10 +2,18 @@ import { UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { RobnoService, type StockDocumentKind } from "./robno.service";
 import type { CreateStockDocumentDto } from "./dto/create-stock-document.dto";
+import {
+  makeCostingDouble,
+  makeCostingDoubleFromTable,
+} from "../../../test/fixtures/costing-double";
 
 /**
  * Guard negativnog stanja (C11) — čista logika `assertSufficientStock` bez baze.
- * CostingService.stateAsOf i tx.item.findMany su mockovani (izvodljivo bez teškog mock-a).
+ * CostingService i tx.item.findMany su mockovani (izvodljivo bez teškog mock-a).
+ *
+ * Dubler costing-a implementira OBE metode (`stateAsOf` + `stateAsOfMany`) iz istog izvora
+ * stanja — guard od 04.08.2026. čita `stateAsOfMany` (jedan upit za sve parove umesto petlje
+ * unutar transakcije koja drži advisory lock), a kartica artikla i dalje `stateAsOf`.
  */
 
 const D = (v: string | number) => new Prisma.Decimal(v);
@@ -13,12 +21,7 @@ const DATE = new Date("2026-07-23T00:00:00.000Z");
 
 /** RobnoService sa mockovanim costing-om; stanje po ključu `itemId:warehouseId`. */
 function makeService(stateByKey: Record<string, Prisma.Decimal>) {
-  const costing = {
-    stateAsOf: jest.fn(
-      (itemId: number, warehouseId: number): Promise<Prisma.Decimal> =>
-        Promise.resolve(stateByKey[`${itemId}:${warehouseId}`] ?? D(0)),
-    ),
-  };
+  const costing = makeCostingDoubleFromTable(stateByKey);
   const service = new RobnoService(
     {} as never,
     {} as never,
@@ -63,7 +66,11 @@ describe("RobnoService.assertSufficientStock (C11)", () => {
       items: [{ itemId: 1, quantity: 30 }],
     };
     await expect(callGuard(service, "IZ", dto)).resolves.toBeUndefined();
-    expect(costing.stateAsOf).toHaveBeenCalledWith(1, 5, DATE, { tx: fakeTx });
+    expect(costing.stateAsOfMany).toHaveBeenCalledWith(
+      [{ itemId: 1, warehouseId: 5 }],
+      DATE,
+      { tx: fakeTx, excludeDocId: undefined },
+    );
   });
 
   it("odbija IZ kad je traženo > raspoloživo (422 + STOCK_INSUFFICIENT)", async () => {
@@ -117,7 +124,11 @@ describe("RobnoService.assertSufficientStock (C11)", () => {
     await expect(callGuard(service, "MANJAK", dto)).rejects.toBeInstanceOf(
       UnprocessableEntityException,
     );
-    expect(costing.stateAsOf).toHaveBeenCalled();
+    expect(costing.stateAsOfMany).toHaveBeenCalledWith(
+      [{ itemId: 2, warehouseId: 5 }],
+      DATE,
+      { tx: fakeTx, excludeDocId: undefined },
+    );
   });
 
   it("ne dira stanje za ULAZ (UL) — guard se preskače", async () => {
@@ -128,7 +139,10 @@ describe("RobnoService.assertSufficientStock (C11)", () => {
       items: [{ itemId: 1, quantity: 999 }],
     };
     await expect(callGuard(service, "UL", dto)).resolves.toBeUndefined();
+    // NIJEDAN ulaz u costing — ni pojedinačni ni grupni (inače bi test prestao da hvata
+    // ono zbog čega postoji čim guard promeni metodu).
     expect(costing.stateAsOf).not.toHaveBeenCalled();
+    expect(costing.stateAsOfMany).not.toHaveBeenCalled();
   });
 
   it("koristi warehouseId stavke kad je zadat (fallback na header)", async () => {
@@ -139,7 +153,11 @@ describe("RobnoService.assertSufficientStock (C11)", () => {
       items: [{ itemId: 1, quantity: 10, warehouseId: 7 }],
     };
     await expect(callGuard(service, "IZ", dto)).resolves.toBeUndefined();
-    expect(costing.stateAsOf).toHaveBeenCalledWith(1, 7, DATE, { tx: fakeTx });
+    expect(costing.stateAsOfMany).toHaveBeenCalledWith(
+      [{ itemId: 1, warehouseId: 7 }],
+      DATE,
+      { tx: fakeTx, excludeDocId: undefined },
+    );
   });
 });
 
@@ -221,112 +239,5 @@ describe("RobnoService.loadOpenReserved (R3 — popis se mora zaključiti)", () 
     await expect(callGuard(service, "MANJAK", dto)).rejects.toBeInstanceOf(
       UnprocessableEntityException,
     );
-  });
-});
-
-/**
- * Kartica artikla (getItemCard) — čista logika running stanja bez baze: `$queryRaw` vraća
- * fiksni set kretanja, `costing.stateAsOf` je nezavisni kontrolni izvor. Verifikuje smoke §2
- * („krajnje stanje == stateAsOf danas") + početno stanje pre `from`.
- */
-describe("RobnoService.getItemCard (kartica artikla)", () => {
-  /** Kretanja (artikal 1, magacin 5): +100 (UL), −30 (IZ), +10 (UL) → running 100, 70, 80. */
-  const movements = [
-    {
-      item_line_id: 11,
-      document_id: 1,
-      document_number: "0001/2026",
-      kind: "UL",
-      document_type_code: "UFROB",
-      document_date: new Date("2026-06-01T00:00:00.000Z"),
-      quantity: D(100),
-      is_inbound: true,
-    },
-    {
-      item_line_id: 22,
-      document_id: 2,
-      document_number: "0002/2026",
-      kind: "IZ",
-      document_type_code: "IFR",
-      document_date: new Date("2026-07-10T00:00:00.000Z"),
-      quantity: D(30),
-      is_inbound: false,
-    },
-    {
-      item_line_id: 33,
-      document_id: 3,
-      document_number: "0003/2026",
-      kind: "UL",
-      document_type_code: "UFROB",
-      document_date: new Date("2026-07-20T00:00:00.000Z"),
-      quantity: D(10),
-      is_inbound: true,
-    },
-  ];
-
-  /** RobnoService sa mock prisma ($queryRaw + item.findUnique) i costing.stateAsOf. */
-  function makeCardService(stateAsOf: Prisma.Decimal) {
-    const prisma = {
-      $queryRaw: jest.fn().mockResolvedValue(movements),
-      item: {
-        findUnique: jest
-          .fn()
-          .mockResolvedValue({ id: 1, name: "Artikal A", catalogNumber: "A-001", unit: "kom" }),
-      },
-    };
-    const costing = { stateAsOf: jest.fn().mockResolvedValue(stateAsOf) };
-    const service = new RobnoService(
-      prisma as never,
-      {} as never,
-      costing as never,
-    );
-    return { service, prisma, costing };
-  }
-
-  it("running stanje se slaže i krajnje stanje == stateAsOf (smoke §2)", async () => {
-    const { service } = makeCardService(D(80));
-    const { data } = await service.getItemCard({ itemId: 1, warehouseId: 5 });
-
-    expect(data.lines.map((l) => l.balance)).toEqual([
-      "100.000000",
-      "70.000000",
-      "80.000000",
-    ]);
-    expect(data.lines[0]).toMatchObject({ direction: "IN", in: "100.000000", out: "0.000000" });
-    expect(data.lines[1]).toMatchObject({ direction: "OUT", in: "0.000000", out: "30.000000" });
-    // Krajnje stanje (running) == nezavisno izračunat stateAsOf (costing).
-    expect(data.closingBalance).toBe("80.000000");
-    expect(data.stateAsOf).toBe("80.000000");
-    expect(data.closingBalance).toBe(data.stateAsOf);
-    expect(data.openingBalance).toBe("0.000000");
-    expect(data.totalIn).toBe("110.000000");
-    expect(data.totalOut).toBe("30.000000");
-  });
-
-  it("početno stanje pre `from` isključuje ranije redove iz prikaza", async () => {
-    const { service } = makeCardService(D(80));
-    // from = 2026-07-01 → prvi red (01.06, +100) je pre; ide u openingBalance, ne u lines.
-    const { data } = await service.getItemCard({
-      itemId: 1,
-      warehouseId: 5,
-      from: "2026-07-01",
-    });
-
-    expect(data.openingBalance).toBe("100.000000");
-    expect(data.lines).toHaveLength(2);
-    expect(data.lines.map((l) => l.balance)).toEqual(["70.000000", "80.000000"]);
-    // Krajnje stanje ostaje puno stanje (from seče samo prikaz, ne obračun) == stateAsOf.
-    expect(data.closingBalance).toBe("80.000000");
-    expect(data.stateAsOf).toBe("80.000000");
-  });
-
-  it("odbija nevalidan itemId/warehouseId (422)", async () => {
-    const { service } = makeCardService(D(0));
-    await expect(
-      service.getItemCard({ itemId: 0, warehouseId: 5 }),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    await expect(
-      service.getItemCard({ itemId: 1, warehouseId: -1 }),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 });

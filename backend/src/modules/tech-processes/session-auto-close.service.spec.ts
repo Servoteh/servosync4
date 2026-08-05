@@ -115,6 +115,59 @@ function make(
   );
 }
 
+/**
+ * NOĆNA SMENA — IZLAZ JE SUTRA (nalaz revizije 04.08.2026).
+ * =============================================================================
+ * Kapijski upit je tražio izlaz uz `event_ts_local::date = (started_at …)::date`, dakle samo
+ * u KALENDARSKOM DANU početka sesije. Noćna smena 22:00 → 06:00 izlaz ima sutra, pa se nije
+ * nalazio NIKAD: sesija se zatvarala kao „neispravno kucanje" sa 0 minuta, a šefu je išao
+ * e-mail da radnik nije evidentirao izlaz. Radnik koji je odradio celu noć dobijao je nulu i
+ * prijavu nadređenom.
+ *
+ * ZAŠTO SU OVE TVRDNJE NAD SQL-om, A NE NAD ISHODOM: dubler `$queryRawUnsafe` rutira po
+ * tekstu upita i vraća konzervisan red — `WHERE` uopšte ne izvršava. Test nad ishodom bi zato
+ * prolazio i sa kalendarskim uslovom (upravo zato ga zatečenih 8 testova i nije uhvatilo).
+ * Semantika prozora nad pravim podacima traži sy15 dev bazu (`attendance_events`) i nije
+ * pokrivena ovde — to je zabeleženo u registru revizije.
+ */
+describe("SessionAutoCloseService — kapijski upit ne sme biti vezan za kalendarski dan", () => {
+  const EMP = "11111111-1111-1111-1111-111111111111";
+
+  /** Vrati SQL kapijskog upita koji je servis zaista poslao. */
+  async function gateSql(): Promise<{ sql: string; params: unknown[] }> {
+    const prisma = prismaMock({
+      sessions: [session({ id: 7, workerId: 100 })],
+      maps: [{ workerId: 100, employeeId: EMP }],
+    });
+    const sy15 = sy15Mock({ lastOut: new Date("2026-07-17T06:00:00.000Z") });
+    await make(prisma, sy15, mailMock()).run(12);
+    const call = (sy15.__queryRawUnsafe.mock.calls as unknown[][]).find((c) =>
+      String(c[0]).includes("attendance_events"),
+    );
+    if (!call) throw new Error("kapijski upit nije ni poslat");
+    return { sql: String(call[0]), params: call.slice(1) };
+  }
+
+  it("upit NE sadrži uslov po kalendarskom danu (`event_ts_local::date = …`)", async () => {
+    const { sql } = await gateSql();
+    // Ovo je tvrdnja koja pada na zatečenom kodu: baš taj uslov je promašivao noćnu smenu.
+    expect(sql).not.toMatch(/event_ts_local::date\s*=/);
+  });
+
+  it("gornja granica je PROZOR od početka sesije, i prosleđen je kao parametar", async () => {
+    const { sql, params } = await gateSql();
+    // Prozor mora postojati (inače bi `max` mogao da dohvati bilo koji budući izlaz)…
+    expect(sql).toMatch(/make_interval\(hours\s*=>/);
+    // …i mora biti parametrizovan brojem sati, ne zakucan u tekst upita.
+    expect(params).toContain(18);
+  });
+
+  it("donja granica ostaje `>= started_at` (izlaz pre početka sesije nije njen izlaz)", async () => {
+    const { sql } = await gateSql();
+    expect(sql).toMatch(/event_ts_local\s*>=/);
+  });
+});
+
 describe("SessionAutoCloseService.run", () => {
   const EMP = "11111111-1111-1111-1111-111111111111";
 

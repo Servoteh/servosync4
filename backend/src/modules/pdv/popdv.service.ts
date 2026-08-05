@@ -42,6 +42,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -755,32 +756,72 @@ export class PopdvService {
   }
 }
 
-/** Nevalidan POPDV period (izbor mesec/kvartal). */
-export class PopdvPeriodException extends Error {
+// ─────────────────────────────────────────────────────────────────────────────
+// Domenske greške POPDV obračuna
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Sve tri nasleđuju `HttpException` potomka (ispravka 04.08.2026). Kao goli `Error`
+// prolazile su kroz `AllExceptionsFilter` u generičku 500, pa je knjigovođa umesto
+// „Navedi tačno jedan period: mesec (1..12) ILI kvartal (1..4)." dobijao
+// „Neočekivana greška na serveru". Telo je `{ message, code, details }` kao kod
+// ostalih domenskih grešaka u repou (`pdv/vat-sanity.ts`).
+
+/**
+ * Nevalidan POPDV period (izbor mesec/kvartal).
+ *
+ * 422 (ne 400): `year`/`month`/`quarter` SU brojevi — tip je ispravan; pada poslovno
+ * pravilo koje DTO ne ume da izrazi („isključivo ili": obveznik je mesečni ILI
+ * kvartalni, nikad oba, nikad nijedan) i opseg kvartala. `ValidationPipe` takav
+ * uslov ne proverava, pa poruka MORA doći iz servisa — i mora biti čitljiva.
+ */
+export class PopdvPeriodException extends UnprocessableEntityException {
   readonly code = "PDV_POPDV_PERIOD";
   constructor(message: string) {
-    super(message);
+    super({ message, code: "PDV_POPDV_PERIOD" });
     this.name = "PopdvPeriodException";
   }
 }
 
-/** Ciklus u POPDV AOP formulama (npr. 1.5 referiše sam sebe). */
-export class PopdvCycleException extends Error {
+/**
+ * Ciklus u POPDV AOP formulama (npr. 1.5 referiše sam sebe).
+ *
+ * 422: AOP formule (`popdv_definitions.formula`) su KONFIGURACIJA koja se menja
+ * migracijom baze — ciklus u njima znači da se obračun ne može izvesti dok se
+ * definicija ne ispravi. Nije 500 (uzrok je poznat i imenovan) ni 409 (nema
+ * konkurencije — ponavljanje daje isti rezultat). `details.aop` imenuje AOP na kojem
+ * je ciklus zatvoren, pa front obeleži TAČAN red obrasca.
+ */
+export class PopdvCycleException extends UnprocessableEntityException {
   readonly code = "PDV_POPDV_CYCLE";
   constructor(public readonly aop: string) {
-    super(`Ciklus u POPDV formulama kod AOP "${aop}".`);
+    super({
+      message: `Ciklus u POPDV formulama kod AOP "${aop}".`,
+      code: "PDV_POPDV_CYCLE",
+      details: { aop },
+    });
     this.name = "PopdvCycleException";
   }
 }
 
-/** Neispravna POPDV formula (parser/eval greška). */
-export class PopdvFormulaException extends Error {
+/**
+ * Neispravna POPDV formula (parser/eval greška).
+ *
+ * 422, iz istog razloga kao {@link PopdvCycleException}: formula je podatak iz
+ * `popdv_account_map.column_def` / `popdv_definitions.formula`, dakle konfiguracija.
+ * `details` nosi i formulu i uzrok (poruku parsera) pa se u FE prikazu vidi ŠTA je
+ * neispravno, a ne samo da nešto jeste.
+ */
+export class PopdvFormulaException extends UnprocessableEntityException {
   readonly code = "PDV_POPDV_FORMULA";
   constructor(
     public readonly formula: string,
     public readonly reason: string,
   ) {
-    super(`Neispravna POPDV formula "${formula}": ${reason}`);
+    super({
+      message: `Neispravna POPDV formula "${formula}": ${reason}`,
+      code: "PDV_POPDV_FORMULA",
+      details: { formula, reason },
+    });
     this.name = "PopdvFormulaException";
   }
 }

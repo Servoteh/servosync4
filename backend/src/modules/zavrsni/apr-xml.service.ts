@@ -10,15 +10,23 @@
  * emituje `<a:NumerickoPolje>` po koloni:
  *
  *   <a:Naziv>aop-{aop}-{startColumn+n}</a:Naziv>          (n = 0..columnCount-1)
- *   <a:Vrednosti>Round(amount,0)</a:Vrednosti>            (ili i:nil="true" kad je 0)
+ *   <a:Vrednosti>Round(amount/1000,0)</a:Vrednosti>       (ili i:nil="true" kad je 0)
+ *
+ * JEDINICA: iznosi u bazi (FinancialStatementLine.amount) su u PUNIM DINARIMA — isto
+ * kao glavna knjiga, da se obračun može uporediti red za red — a APR eFI obrazac se
+ * predaje U HILJADAMA, pa se svođenje radi PRI IZVOZU (`naHiljade`, jedno mesto).
+ * PRE POPRAVKE je XML emitovao sirove dinare, pa je cela predaja APR-u bila 1000× veća
+ * od stvarne (štampa je delila sa 1.000, izvoz nije — dva izlaza su govorila različit broj).
  *
  * KOLONE PO OBRASCU (verbatim iz VBA — BrojKolona gating):
  *   BS (Bilans stanja)     — kolone 1/2/3  (Iznos_1/Iznos_2/Iznos_3)
  *   BU (Bilans uspeha)     — kolone 1/2    (Iznos_1/Iznos_2)
  *   SI (Statistički izv.)  — kolone 1/2/3
  *
- * i:nil="true" NA 0 (BigBit `XmlTag`): ako je Round(vrednost,0) == 0 ili null →
- * `<a:Vrednosti i:nil="true"/>`; inače `<a:Vrednosti>{Round(vrednost,0)}</a:Vrednosti>`.
+ * i:nil="true" NA 0 (BigBit `XmlTag`): ako je zaokružena vrednost == 0 ili null →
+ * `<a:Vrednosti i:nil="true"/>`; inače `<a:Vrednosti>{zaokružena vrednost}</a:Vrednosti>`.
+ * Pošto se zaokružuje NAD HILJADAMA, svaki iznos do 499 din je nula i izlazi kao i:nil —
+ * to je namerno i ispravno po obrascu (u hiljadama to JE nula), nisu „nestali podaci".
  * Ovaj servis primenjuje `XmlTag` na SVE obrasce (task); BigBit ima istu logiku
  * doslovno samo na BS, a na BU/SI piše sirov `<a:Vrednosti>` — razlika je bezopasna
  * (nil vs. eksplicitna 0), a task traži konzistentno i:nil-na-0 ponašanje.
@@ -43,7 +51,9 @@
  *
  * DECIMAL, NIKAD FLOAT (BACKEND_RULES §2): iznosi su Prisma.Decimal; Round(x,0)
  * radi Decimal.toDecimalPlaces(0, ROUND_HALF_UP) — VBA `Round` je banker's rounding,
- * ali APR prima cele brojeve i HALF_UP je bezbedan/uobičajen izbor za valutu.
+ * ali APR prima cele brojeve i HALF_UP je bezbedan/uobičajen izbor za valutu. Isti
+ * način zaokruživanja koristi i štampa (`statement-pdf.service.fmtAmount`), da se
+ * predaja i obrazac na papiru ne raziđu na .5 slučajevima.
  */
 
 import { Injectable, NotFoundException } from "@nestjs/common";
@@ -60,6 +70,9 @@ const NS_APPDEF = "http://schemas.datacontract.org/2004/07/AppDef";
 
 /** Default StartnaKolona dok ZR_AOP_Modla nije seed-ovan (VBA primer: aop-9001-3). */
 const DEFAULT_START_COLUMN = 3;
+
+/** Delilac za svođenje dinara na jedinicu APR obrasca (hiljade) — vidi `naHiljade`. */
+const APR_DELILAC_HILJADE = new D(1000);
 
 /**
  * Veličina obveznika (Zakon o računovodstvu: MIKRO/MALO/SREDNJE/VELIKO) — NIJE u
@@ -308,16 +321,37 @@ const FORM_SHORT_CODE: Record<string, string> = {
 };
 
 /**
- * Port BigBit `XmlTag(tag, Vrednost)` (modul ZRXML):
- *   null ILI Round(Nz(Vrednost,0),0) == 0  →  <tag i:nil="true"/>
- *   inače                                  →  <tag>{Round(Vrednost,0)}</tag>
+ * DINARI → HILJADE: jedino mesto na kom se iznos svodi na jedinicu APR eFI obrasca.
+ * =========================================================================
+ * `FinancialStatementLine.amount` je u PUNIM DINARIMA (namerno — baza tako ostaje
+ * uporediva sa glavnom knjigom), a obrazac se predaje u hiljadama; legacy uzor je
+ * `Iznos_1 = VrednostIzraza(Definicija)/1000` (doc 37 §F, BigBit `ZR_StavkeZaExport`).
+ * PRE POPRAVKE je izvoz emitovao `Round(amount, 0)` nad dinarima, pa je predaja APR-u
+ * bila 1000× veća od stvarne.
+ *
+ * Deljenje ide OBAVEZNO PRE zaokruživanja — obrnutim redom bi se greška zaokruživanja
+ * na dinar pomnožila hiljadu puta. Način zaokruživanja (ROUND_HALF_UP) je isti kao u
+ * `statement-pdf.service.fmtAmount`, da se štampa i predaja ne raziđu na .5 slučajevima
+ * (razilaženje ta dva izlaza je i bio koren nalaza).
+ */
+function naHiljade(value: Prisma.Decimal | null | undefined): Prisma.Decimal {
+  if (value == null) return new D(0);
+  return value.div(APR_DELILAC_HILJADE).toDecimalPlaces(0, D.ROUND_HALF_UP);
+}
+
+/**
+ * Port BigBit `XmlTag(tag, Vrednost)` (modul ZRXML), nad vrednošću svedenom na hiljade:
+ *   null ILI Round(Nz(Vrednost,0)/1000,0) == 0  →  <tag i:nil="true"/>
+ *   inače                                       →  <tag>{Round(Vrednost/1000,0)}</tag>
  * VBA piše `i:nil = "true"` (sa razmacima); ovde standardni `i:nil="true"`
  * (ekvivalentno po XML-u; APR parser čita atribut, ne bajt-po-bajt).
  */
 function xmlTag(tag: string, value: Prisma.Decimal | null | undefined): string {
-  const rounded =
-    value == null ? new D(0) : value.toDecimalPlaces(0, D.ROUND_HALF_UP);
+  const rounded = naHiljade(value);
   if (rounded.isZero()) {
+    // NAMERNA POSLEDICA svođenja na hiljade: posle deljenja svaki iznos do 499 din je
+    // nula, pa više polja izlazi kao i:nil nego pre popravke. Podaci nisu izgubljeni —
+    // u jedinici obrasca (hiljade) to jeste nula, tako se i predaje.
     return `<${tag} i:nil="true"/>`;
   }
   return `<${tag}>${rounded.toFixed(0)}</${tag}>`;

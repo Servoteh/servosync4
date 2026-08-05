@@ -4590,6 +4590,51 @@ export class TechProcessesService {
    * `control()` (legacy SacuvajRNSIzUnosaBarKoda). 404 ako RN ne postoji;
    * 422 ako operacija nije u routingu.
    */
+  /**
+   * Otvori red operacije, a ako je paralelni poziv stigao prvi — vrati NJEGOV red.
+   *
+   * ZAŠTO POSTOJI (nalaz revizije 04.08.2026): `findOrOpenRoutingTp` čita postojeći red pa
+   * ga, ako ga nema, kreira. Ključ (predmet, ident, varijanta, operacija, RC) je do sada
+   * nosio samo `@@index`, ne unique — pa su dva istovremena PRVA skena iste operacije oba
+   * prolazila čitanje i oba upisivala red. Od tada dve prijave žive paralelno, a agregati
+   * koji broje komade i odlučuju o gotovosti gledaju dva reda kao dva različita posla.
+   *
+   * Parcijalni unique `uq_tech_processes_open` (migracija 20260804160000) to sada zaustavlja
+   * u BAZI — ali brava bez ovog hvatanja samo bi tihi duplikat pretvorila u glasan 500 na
+   * terminalu radnika, koji bi onda skenirao ponovo. Zato se `P2002` NE propagira: znači
+   * „drugi je stigao prvi", i tada je ispravno ponovo pročitati njegov red i nastaviti —
+   * ishod za radnika je isti kao da je on bio prvi.
+   */
+  private async createOrReuseOpenTp(
+    tx: Prisma.TransactionClient,
+    data: Prisma.TechProcessUncheckedCreateInput,
+  ) {
+    try {
+      return await tx.techProcess.create({ data });
+    } catch (e) {
+      if (
+        !(e instanceof Prisma.PrismaClientKnownRequestError) ||
+        e.code !== "P2002"
+      )
+        throw e;
+      const existing = await tx.techProcess.findFirst({
+        where: {
+          projectId: data.projectId as number,
+          identNumber: data.identNumber as string,
+          variant: data.variant as number,
+          operationNumber: data.operationNumber as number,
+          workCenterCode: data.workCenterCode as string,
+          isProcessFinished: { not: true },
+        },
+        orderBy: { id: "asc" },
+      });
+      if (existing) return existing;
+      // Ne može se pročitati red koji je bravu i aktivirao — to nije trka nego nešto
+      // neočekivano; ne izmišlja se novi red, greška ide dalje.
+      throw e;
+    }
+  }
+
   private async findOrOpenRoutingTp(
     tx: Prisma.TransactionClient,
     projectId: number,
@@ -4693,19 +4738,19 @@ export class TechProcessesService {
       }
       // Serijska sekvenca (synced eksplicitni id-jevi) — poravnaj pre insert-a.
       await this.alignTechProcessSequence(tx);
-      const tp = await tx.techProcess.create({
-        data: {
-          projectId,
-          identNumber,
-          variant: wo.variant,
-          // belowPlan: nasledi op. broj zatvorenog reda (routing ga već ima).
-          operationNumber: operationNumber ?? existing?.operationNumber ?? 0,
-          workCenterCode,
-          identMark: identMark || "0",
-          pieceCount: 0,
-          workerId: creatorWorkerId,
-          workOrderId: wo.id,
-        },
+      // Trka dva prva skena: ako je paralelni poziv upisao red pre nas, `uq_tech_processes_open`
+      // vrati P2002 i helper pročita NJEGOV red — v. `createOrReuseOpenTp`.
+      const tp = await this.createOrReuseOpenTp(tx, {
+        projectId,
+        identNumber,
+        variant: wo.variant,
+        // belowPlan: nasledi op. broj zatvorenog reda (routing ga već ima).
+        operationNumber: operationNumber ?? existing?.operationNumber ?? 0,
+        workCenterCode,
+        identMark: identMark || "0",
+        pieceCount: 0,
+        workerId: creatorWorkerId,
+        workOrderId: wo.id,
       });
       return { tp, opened: true };
     }
@@ -4729,18 +4774,16 @@ export class TechProcessesService {
       );
 
     await this.alignTechProcessSequence(tx);
-    const tp = await tx.techProcess.create({
-      data: {
-        projectId,
-        identNumber,
-        variant: wo.variant,
-        operationNumber: routing.operationNumber,
-        workCenterCode,
-        identMark: identMark || "0",
-        pieceCount: 0,
-        workerId: creatorWorkerId,
-        workOrderId: wo.id,
-      },
+    const tp = await this.createOrReuseOpenTp(tx, {
+      projectId,
+      identNumber,
+      variant: wo.variant,
+      operationNumber: routing.operationNumber,
+      workCenterCode,
+      identMark: identMark || "0",
+      pieceCount: 0,
+      workerId: creatorWorkerId,
+      workOrderId: wo.id,
     });
     return { tp, opened: true };
   }

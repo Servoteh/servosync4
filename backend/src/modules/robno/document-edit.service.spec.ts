@@ -6,6 +6,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { DocumentEditService, demandByKey } from "./document-edit.service";
 import { RobnoService } from "./robno.service";
+import { makeCostingDoubleFromTable } from "../../../test/fixtures/costing-double";
 
 /* Lažni Prisma klijent vraća Promise-e, ali unutra nema pravih `await`-ova. */
 /* eslint-disable @typescript-eslint/require-await */
@@ -184,12 +185,9 @@ function makeHarness(opts: HarnessOptions = {}) {
     $transaction: jest.fn((cb: (t: unknown) => unknown) => cb(tx)),
   };
 
-  const costing = {
-    stateAsOf: jest.fn(
-      async (itemId: number, warehouseId: number): Promise<Prisma.Decimal> =>
-        state[`${itemId}:${warehouseId}`] ?? D(0),
-    ),
-  };
+  // Dubler nudi OBE metode iz iste tabele `state` — guard ide kroz `stateAsOfMany`
+  // (jedan upit za sve parove), a `stateAsOf` ostaje za ostale pozivaoce.
+  const costing = makeCostingDoubleFromTable(state);
   const robno = new RobnoService(
     prisma as never,
     {} as never,
@@ -371,7 +369,9 @@ describe("DocumentEditService.addItem — ulaz robe (primka)", () => {
   it("ULAZ ne dira proveru zaliha (nema šta da nedostaje)", async () => {
     const { service, costing } = makeHarness({ kind: "UL", state: {} });
     await service.addItem(77, { itemId: 1, quantity: 99999 }, 3);
+    // Nijedan ulaz u costing — ni pojedinačni ni grupni.
     expect(costing.stateAsOf).not.toHaveBeenCalled();
+    expect(costing.stateAsOfMany).not.toHaveBeenCalled();
   });
 
   it("količina 0 → 422", async () => {
@@ -490,9 +490,8 @@ describe("DocumentEditService — provera zaliha (brana 3)", () => {
       state: { "2:1": D(50) },
     });
     await service.addItem(77, { itemId: 2, quantity: 10 }, 3);
-    expect(costing.stateAsOf).toHaveBeenCalledWith(
-      2,
-      1,
+    expect(costing.stateAsOfMany).toHaveBeenCalledWith(
+      expect.arrayContaining([{ itemId: 2, warehouseId: 1 }]),
       DOC_DATE,
       expect.objectContaining({ excludeDocId: 77 }),
     );
@@ -657,9 +656,8 @@ describe("DocumentEditService.updateItem", () => {
     await expect(
       service.updateItem(77, 10, { warehouseId: 2 }, 3),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(costing.stateAsOf).toHaveBeenCalledWith(
-      1,
-      2,
+    expect(costing.stateAsOfMany).toHaveBeenCalledWith(
+      expect.arrayContaining([{ itemId: 1, warehouseId: 2 }]),
       DOC_DATE,
       expect.objectContaining({ excludeDocId: 77 }),
     );
@@ -758,9 +756,8 @@ describe("DocumentEditService.updateHeader", () => {
     await expect(
       service.updateHeader(77, { documentDate: "2026-01-05" }, 3),
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(costing.stateAsOf).toHaveBeenCalledWith(
-      1,
-      1,
+    expect(costing.stateAsOfMany).toHaveBeenCalledWith(
+      expect.arrayContaining([{ itemId: 1, warehouseId: 1 }]),
       new Date("2026-01-05"),
       expect.objectContaining({ excludeDocId: 77 }),
     );

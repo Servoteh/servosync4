@@ -14,6 +14,7 @@ import { StockDocumentPdfService } from "../src/modules/robno/print/stock-docume
 import { InventoryCountPdfService } from "../src/modules/robno/print/inventory-count-pdf.service";
 import { StockReportPdfService } from "../src/modules/robno/print/stock-report-pdf.service";
 import { RobnoService } from "../src/modules/robno/robno.service";
+import { LagerQueryService } from "../src/modules/robno/lager-query.service";
 import { CostingService } from "../src/modules/robno/costing.service";
 import { StockDocumentNumberingService } from "../src/modules/robno/stock-document-numbering.service";
 
@@ -41,12 +42,13 @@ async function main() {
   const costing = new CostingService(prisma);
   const numbering = new StockDocumentNumberingService(); // bez zavisnosti (prima `tx` po pozivu)
   const robno = new RobnoService(prisma, numbering, costing);
+  const lagerQuery = new LagerQueryService(prisma, costing);
   // Trag štampe piše u `document_prints` iste baze — dokazna štampa ga vozi PRAVI,
   // da se u dokazima vidi i drugi primerak sa žigom „KOPIJA".
   const prints = new DocumentPrintService(prisma);
   const stockPdf = new StockDocumentPdfService(prisma, pdf, barcode, prints);
   const countPdf = new InventoryCountPdfService(prisma, pdf, prints);
-  const reportPdf = new StockReportPdfService(prisma, pdf, robno);
+  const reportPdf = new StockReportPdfService(prisma, pdf, lagerQuery);
 
   mkdirSync(OUT_DIR, { recursive: true });
   const results: Array<[string, number]> = [];
@@ -54,8 +56,8 @@ async function main() {
   const ids = await seed(prisma);
 
   // Dijagnostika: izveštajne štampe moraju da imaju STVARNE redove, ne prazan obrazac.
-  const lagerProbe: any = await robno.listLager({ onlyInStock: false, take: 500 });
-  const cardProbe: any = await robno.getItemCard({
+  const lagerProbe: any = await lagerQuery.listLager({ onlyInStock: false, take: 500 });
+  const cardProbe: any = await lagerQuery.getItemCard({
     itemId: SEED.items[0],
     warehouseId: SEED.warehouseA,
   });

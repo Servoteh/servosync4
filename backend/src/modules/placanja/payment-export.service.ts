@@ -13,7 +13,7 @@
  *
  * VODEĆI slog (leader):
  *   banka(3) + racun(15,left-pad"0") + naziv(35,right-pad" ") + mesto(20,right-pad" ")
- *   + ukupno(15,left-pad"0",*100) + brSlogova(5,left-pad"0") + "YUM"
+ *   + ukupno(15,left-pad"0",*100) + brSlogova(5,left-pad"0") + oznakaValute(3; „YUM"=RSD)
  *   + kontakt(27" ") + tel1(11" ") + tel2(11" ") + fax(11" ") + email(22" ") + "3" + "9"
  *
  * DETALJNI slog (po nalogu):
@@ -102,8 +102,61 @@ export class PaymentExportService {
 
     const orderDate = leader.orderDate ?? new Date();
 
+    // ── D2: JEDNA VALUTA PO PAKETU + oznaka izvedena iz nje (nalaz 04.08.2026) ──
+    // ŠTA SE DEŠAVALO PRE POPRAVKE: kontrolni zbir zaglavlja sabirao je `o.amount` preko
+    // SVIH naloga bez obzira na valutu i uz to tvrdo pisao „YUM", pa je paket sa 100.000 RSD
+    // i 1.000 EUR banci prijavljivao „101.000 YUM" — zbir koji ne postoji ni u jednoj valuti,
+    // a fajl je i dalje prolazio kao dinarski.
+    // Zato: valuta se PROVERAVA pre građenja fajla, a oznaka se IZVODI iz nje (nikad literal).
+    const currencies = [
+      ...new Set(orders.map((o) => normalizeCurrency(o.currency))),
+    ].sort();
+    if (currencies.length > 1) {
+      throw new BadRequestException(
+        `Izvoz prekinut — izbor meša valute (${currencies.join(", ")}). Jedan FX fajl nosi ` +
+          `JEDAN kontrolni zbir i JEDNU oznaku valute u vodećem slogu, pa se nalozi izvoze ` +
+          `po valuti odvojeno.`,
+      );
+    }
+    const packCurrency = currencies[0];
+    const currencyTag = FX_CURRENCY_TAG.get(packCurrency);
+    if (!currencyTag) {
+      throw new BadRequestException(
+        `Izvoz prekinut — valuta ${packCurrency} nema poznatu oznaku u FX obrascu. ` +
+          `Podržan je samo dinar; naloge u drugim valutama obradite kroz aplikaciju banke.`,
+      );
+    }
+
+    // ── D3: naziv primaoca — JEDAN upit za ceo paket (nalaz 04.08.2026) ─────────
+    // ŠTA SE DEŠAVALO PRE POPRAVKE: `supplierName()` je vraćao "" pa je polje naziva
+    // primaoca (35 znakova) u SVAKOM detaljnom slogu izlazilo kao 35 praznih znakova —
+    // banka je dobijala nalog za prenos bez imena primaoca (samo račun).
+    // Jedan `findMany` po celom paketu (ne upit po nalogu — izvoz ide i za desetine naloga).
+    const supplierIds = [...new Set(orders.map((o) => o.supplierId))];
+    const customers = await this.prisma.customer.findMany({
+      where: { id: { in: supplierIds } },
+      select: { id: true, name: true },
+    });
+    const supplierNames = new Map<number, string>();
+    for (const c of customers) {
+      const name = (c.name ?? "").trim();
+      if (name !== "") supplierNames.set(c.id, name);
+    }
+    // Naziv se NE izmišlja i ne ostaje prazan: fajl bez imena primaoca banka ili odbija,
+    // ili izvrši kao neidentifikovan nalog — oba su neprihvatljiva, pa pada ceo izvoz.
+    const missingNames = orders
+      .filter((o) => !supplierNames.has(o.supplierId))
+      .map((o) => `${o.orderNumber}: komitent ${o.supplierId}`);
+    if (missingNames.length > 0) {
+      throw new BadRequestException(
+        `Izvoz prekinut — primalac nema naziv u šifarniku komitenata: ` +
+          `${missingNames.join("; ")}. Nalog za banku bez naziva primaoca ne sme da izađe.`,
+      );
+    }
+
     // ── VODEĆI slog ──────────────────────────────────────────────────────────
     // totalzaisplatu = Round(Σ Iznos, 2) * 100  (pare, bez decimalne tačke)
+    // Zbir je smislen samo zato što je iznad potvrđeno da je paket JEDNOVALUTAN.
     let total = new D(0);
     for (const o of orders) total = total.add(o.amount);
     const totalCents = total.toDecimalPlaces(2).mul(100).toFixed(0); // celobrojne pare
@@ -121,7 +174,7 @@ export class PaymentExportService {
     leaderRec += padRight(right(leader.debitPlace ?? "", 20), 20, " "); // mesto
     leaderRec += padLeft(totalCents, 15, "0"); // ukupno *100
     leaderRec += padLeft(recordCount, 5, "0"); // broj naloga (slogova)
-    leaderRec += "YUM";
+    leaderRec += currencyTag; // oznaka valute (3) — izvedena iz valute paketa (D2)
     leaderRec += padRight("", 27, " "); // kontakt osoba
     leaderRec += padRight("", 11, " "); // telefon 1
     leaderRec += padRight("", 11, " "); // telefon 2
@@ -142,7 +195,7 @@ export class PaymentExportService {
       let rec = "";
       rec += rBank.slice(0, 3); // Left(partijast,3)
       rec += padLeft(rNum, 15, "0"); // racun primaoca
-      rec += padRight(left(supplierName(o), 35), 35, " "); // naziv primaoca
+      rec += padRight(left(supplierName(o, supplierNames), 35), 35, " "); // naziv primaoca
       rec += padRight(left("", 20), 20, " "); // mesto primaoca (nema u nalogu → prazno)
       rec += " "; // " "
       rec += "  "; // "  "
@@ -236,11 +289,43 @@ function formatDdMmYyyy(d: Date): string {
 }
 
 /**
- * Naziv primaoca za detaljni slog. PaymentOrder ne nosi denormalizovan naziv
- * (samo supplierId, meki ref); dok se ne uveže Customer join, koristi se prazno
- * (legacy je vukao UKoristNaziv iz upita — ostavljeno kao proširenje kad servis
- * dobije customers čitanje). Ne izmišlja se sadržaj — samo se ispoštuje širina.
+ * Naziv primaoca za detaljni slog (legacy `UKoristNaziv`). `PaymentOrder` ne nosi
+ * denormalizovan naziv (samo `supplierId`, meki ref), pa se čita iz šifarnika komitenata
+ * JEDNIM upitom za ceo paket i predaje ovde kao mapa. Prazno se NE vraća — poziv u
+ * `exportFx` je pre građenja sloga odbio ceo izvoz ako naziv fali, tako da je vrednost
+ * ovde uvek prisutna; `?? ""` je samo tipska brana. Širinu (35) i sečenje (`left` =
+ * VBA `Left$`) radi pozivalac, kao i za sva ostala polja obrasca.
  */
-function supplierName(_o: { supplierId: number }): string {
-  return "";
+function supplierName(
+  o: { supplierId: number },
+  names: Map<number, string>,
+): string {
+  return names.get(o.supplierId) ?? "";
 }
+
+/**
+ * Valuta naloga → normalizovan ISO kod. Prazno/NULL = RSD: `payment_orders.currency`
+ * ima default „RSD", a nalog za prenos je domaći bezgotovinski platni promet.
+ */
+function normalizeCurrency(currency: string | null | undefined): string {
+  const c = (currency ?? "").trim().toUpperCase();
+  return c === "" ? "RSD" : c;
+}
+
+/**
+ * Oznaka valute u VODEĆEM slogu FX obrasca (polje širine 3).
+ *
+ * ODAKLE ZNAM da je „YUM" legacy oznaka DINARA, a ne greška u prepisu:
+ *   1) Izvor obrasca (`PrebaciUFX`, `Module__ExportTXTCSVXML.txt:764-898`, doc 21 §B)
+ *      upisuje literal „YUM" BEZUSLOVNO, u fajl koji je čisto dinarski — `payment_orders.
+ *      currency` ima default „RSD", a virman/nalog za prenos je instrument DOMAĆEG
+ *      platnog prometa (devizna plaćanja idu drugim tokom, kroz aplikaciju banke).
+ *   2) „YUM" je ISO 4217 kod jugoslovenskog dinara, zamenjen kodom „RSD" 2003. godine;
+ *      obrazac je stariji od te zamene i zadržao je staru oznaku, a FX klijent je nikad
+ *      nije menjao (format je zamrznut — Nenad, doc 21).
+ * Zato „YUM" stoji ISKLJUČIVO za RSD.
+ *
+ * ⚠️ NOVE VALUTE SE NE DODAJU „PO ANALOGIJI" (npr. EUR→„EUR"): oznaka mora doći iz
+ * specifikacije FX fajla ili od banke. Valuta koja nije u mapi = izvoz PADA (v. D2).
+ */
+const FX_CURRENCY_TAG: ReadonlyMap<string, string> = new Map([["RSD", "YUM"]]);

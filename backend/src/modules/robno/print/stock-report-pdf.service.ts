@@ -7,7 +7,7 @@ import type {
 } from "pdfmake/interfaces";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { PdfService } from "../../documents/pdf.service";
-import { RobnoService } from "../robno.service";
+import { LagerQueryService } from "../lager-query.service";
 import {
   DEFAULT_STYLE,
   PAGE_LANDSCAPE,
@@ -33,7 +33,7 @@ import {
  * Izveštajne štampe robnog modula: LAGER LISTA (stanje zaliha) i KARTICA ARTIKLA
  * (hronološko kretanje po magacinu) — BigBit `Lager lista` i `Kartica artikla`.
  *
- * Podaci se čitaju kroz POSTOJEĆI `RobnoService` (`listLager`, `getItemCard`), pa je
+ * Podaci se čitaju kroz `LagerQueryService` (`listLager`, `getItemCard`), pa je
  * štampa uvek 1:1 sa ekranom — nema drugog izvora istine i nema drugog obračuna.
  *
  * Nadgradnja u odnosu na BigBit:
@@ -48,7 +48,7 @@ export class StockReportPdfService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly pdf: PdfService,
-    private readonly robno: RobnoService,
+    private readonly lager: LagerQueryService,
   ) {}
 
   // ───────────────────────────────────────────────────────────── lager lista
@@ -64,7 +64,7 @@ export class StockReportPdfService {
     let total = 0;
     // Paginirani servis se prolazi do kraja — štampa ne sme da preseče listu na 100 redova.
     for (;;) {
-      const page = (await this.robno.listLager({
+      const page = (await this.lager.listLager({
         ...query,
         skip,
         take: 500,
@@ -223,7 +223,7 @@ export class StockReportPdfService {
     params: { itemId: number; warehouseId: number; from?: string; to?: string },
     userId?: number | null,
   ): Promise<{ buffer: Buffer; fileName: string }> {
-    const card = (await this.robno.getItemCard(params)) as { data: ItemCard };
+    const card = (await this.lager.getItemCard(params)) as { data: ItemCard };
     const data = card.data;
 
     const [issuer, printedBy, warehouse] = await Promise.all([
@@ -370,7 +370,7 @@ export class StockReportPdfService {
   }
 }
 
-// ─────────────────────────────────── tipovi odgovora RobnoService (Decimal → string)
+// ─────────────────────────────────── tipovi odgovora LagerQueryService (Decimal → string)
 
 interface LagerRow {
   itemId: number;

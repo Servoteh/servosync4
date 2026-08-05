@@ -66,7 +66,7 @@
  * `resolveAop` mapira A(col 1) → Iznos_3; to je odluka pozivaoca, ne ovog motora.
  */
 
-import { Injectable } from "@nestjs/common";
+import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 
@@ -132,14 +132,29 @@ export function fiscalYearPeriod(year: number): GkEvalPeriod {
   return { fiscalYear: year };
 }
 
-/** Greška parsiranja/evaluacije bilansne formule. */
-export class GkEvalError extends Error {
+/**
+ * Greška parsiranja/evaluacije bilansne formule.
+ *
+ * 422 kao `HttpException`, ne goli `Error` (ispravka 04.08.2026): formule AOP pozicija
+ * (`balance_formulas`, seed-ovane migracijom) su KONFIGURACIJA obrasca — neispravna
+ * formula znači da se bilans ne može izračunati dok se seed ne ispravi. Dok je klasa
+ * nasleđivala `Error`, `AllExceptionsFilter` je poruku pretvarao u generičku 500, pa
+ * je računovođa umesto „Nepoznat prefiks u atomu "X123"" video „Neočekivana greška na
+ * serveru" i nije imao šta da javi. Nije 500 (uzrok je poznat i imenovan) ni 400
+ * (korisnik nije poslao formulu). `details.position` je 0-bazna pozicija u formuli, pa
+ * front može da obeleži TAČAN znak.
+ */
+export class GkEvalError extends UnprocessableEntityException {
   readonly code = "ZR_FORMULA_INVALID";
   constructor(
     message: string,
     public readonly position: number = -1,
   ) {
-    super(message);
+    super({
+      message,
+      code: "ZR_FORMULA_INVALID",
+      details: { position },
+    });
     this.name = "GkEvalError";
   }
 }

@@ -10,6 +10,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { parseDateParam } from "../../common/date-params";
 import { toDec, ZERO } from "./decimal.util";
+import { V_STOCK_MOVEMENTS, stockKeyOf } from "./stock-movements";
 import {
   EXPIRY_RELEASE_REASON,
   PROFORMA_DOCUMENT_TYPES,
@@ -794,10 +795,9 @@ export type ReservationDb = Pick<Prisma.TransactionClient, "stockReservation">;
 /** Klijent koji ume da uzme advisory lock (radi samo unutar transakcije). */
 export type LockDb = Pick<Prisma.TransactionClient, "$executeRaw">;
 
-/** Ključ mape po (artikal, magacin). */
-export function stockKeyOf(itemId: number, warehouseId: number): string {
-  return `${itemId}:${warehouseId}`;
-}
+// `stockKeyOf` živi u `stock-movements.ts` (jedna definicija ključa za ceo modul);
+// re-eksport je ovde zbog postojećih import-a iz `reservation.service`.
+export { stockKeyOf } from "./stock-movements";
 
 /**
  * Ključ advisory lock-a po (artikal, magacin) — JEDNO mesto, jer isti ključ moraju uzeti
@@ -874,9 +874,9 @@ export async function sumOpenReservations(
 }
 
 /**
- * Stanje (`onHand`) po (artikal, magacin) — JEDAN agregatni upit nad kretanjima, sa
- * ISTIM filtrima kao `CostingService.stateAsOf` (KODJ izuzet, `affects_stock`, znak iz
- * `DocumentType.isInbound`, meko obrisane stavke izuzete).
+ * Stanje (`onHand`) po (artikal, magacin) — JEDAN agregatni upit nad pogledom
+ * `v_stock_movements` (isti izvor koji koristi i `CostingService`, pa doslednost više
+ * nije stvar prepisivanja filtera nego činjenica na nivou baze).
  *
  * Zašto ne `stock_levels`: taj snapshot NIKO ne upisuje (nema nijednog pisca u kodu), pa je
  * čitanje iz njega davalo `onHand = 0` za svu robu — rezervacija je padala sa „raspoloživo 0",
@@ -894,8 +894,14 @@ export async function computeOnHand(
   const out = new Map<string, Prisma.Decimal>();
   if (keys.length === 0) return out;
 
-  const itemIds = [...new Set(keys.map((k) => k.itemId))];
-  const warehouseIds = [...new Set(keys.map((k) => k.warehouseId))];
+  // Tačan par (artikal, magacin) — ne dve odvojene `IN` liste, koje bi agregirale i
+  // parove koje niko nije tražio (rezultat isti, posao veći).
+  const uniquePairs = [
+    ...new Map(keys.map((k) => [stockKeyOf(k.itemId, k.warehouseId), k])).values(),
+  ];
+  const pairs = Prisma.join(
+    uniquePairs.map((k) => Prisma.sql`(${k.itemId}, ${k.warehouseId})`),
+  );
   const rows = await db.$queryRaw<
     Array<{
       item_id: number;
@@ -903,19 +909,10 @@ export async function computeOnHand(
       state: Prisma.Decimal | null;
     }>
   >(Prisma.sql`
-      SELECT sdi.item_id, sdi.warehouse_id,
-             COALESCE(SUM(
-               CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END
-             ), 0) AS state
-      FROM stock_document_items sdi
-      JOIN stock_documents sd ON sd.id = sdi.document_id
-      JOIN document_types dt ON dt.code = sd.document_type_code
-      WHERE sdi.item_id IN (${Prisma.join(itemIds)})
-        AND sdi.warehouse_id IN (${Prisma.join(warehouseIds)})
-        AND sd.document_type_code <> 'KODJ'
-        AND COALESCE(dt.affects_stock, TRUE) = TRUE
-        AND sdi.deleted_at IS NULL
-      GROUP BY sdi.item_id, sdi.warehouse_id
+      SELECT m.item_id, m.warehouse_id, COALESCE(SUM(m.signed_quantity), 0) AS state
+      FROM ${V_STOCK_MOVEMENTS} m
+      WHERE (m.item_id, m.warehouse_id) IN (${pairs})
+      GROUP BY m.item_id, m.warehouse_id
     `);
   for (const r of rows)
     out.set(

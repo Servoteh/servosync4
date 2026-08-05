@@ -36,6 +36,9 @@ on:
       - "backend/package-lock.json"
       - "backend/tsconfig*.json"
       - "backend/eslint.config.*"
+      # Skener obrazaca + njegov baseline — izmena praga mora da prođe kroz kapiju.
+      - "backend/scripts/audit-code.mjs"
+      - "backend/scripts/audit-baseline.json"
       - ".github/workflows/ci-backend.yml"
   pull_request:
     branches: [main]
@@ -106,3 +109,20 @@ jobs:
       # bazu) je namerno ISKLJUČEN filterom — ovaj korak ne provizionira Postgres.
       - name: Permission matrice + coverage audit (e2e, bez baze)
         run: npx jest --config ./test/jest-e2e.json --ci --runInBand "permissions|coverage|command-safety"
+
+      # Tvrda kapija #4: skener obrazaca koji TIHO kvare ERP (docs/REVIEW_SISTEM.md).
+      #
+      # Ne traži nulu — repo ima zatečene nalaze i to je normalno. Traži da broj NE RASTE
+      # u odnosu na `scripts/audit-baseline.json`. Time je nazadovanje nemoguće, a čišćenje
+      # se radi tempom koji tim bira: popraviš grupu → `npm run audit:baseline` spusti prag.
+      #
+      # Obrasci su izmereni u OVOM repou, ne prepisani iz opšte liste dobre prakse:
+      # dupliran SQL predikat (10 kopija „šta je kretanje zalihe", 20 kopija „šta je
+      # proknjižen nalog"), upit u petlji pod advisory lock-om, mrtva kopija žive logike,
+      # telo mutirajuće rute koje ValidationPipe tiho preskače, NaN iz query-ja u SQL-u,
+      # filtriranje posle LIMIT-a.
+      #
+      # Skener je NALAZAČ KANDIDATA (preciznost ~50 %), namerno podešen da radije prijavi
+      # višak — propušten nalaz košta nedelju dana, lažni jedan pogled u kod.
+      - name: Audit obrazaca (bez pogoršanja vs baseline)
+        run: npm run audit:check

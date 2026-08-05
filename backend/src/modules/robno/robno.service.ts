@@ -16,19 +16,22 @@ import {
 } from "../gl/posting/vat-rates";
 import { StockDocumentNumberingService } from "./stock-document-numbering.service";
 import { CostingService } from "./costing.service";
-import { toDec } from "./decimal.util";
+import { toDec, ZERO } from "./decimal.util";
+import {
+  V_STOCK_MOVEMENTS,
+  stockKeyOf,
+  type StockMovementRow,
+} from "./stock-movements";
 import {
   CreateStockDocumentDto,
   CreateStockDocumentItemDto,
+  STOCK_DOCUMENT_KINDS,
   UpdateStockDocumentShippingDto,
+  type StockDocumentKind,
 } from "./dto/create-stock-document.dto";
 import { ListStockDocumentsQuery } from "./dto/list-stock-documents.dto";
 import { computeKepuEntries, writeKepuEntries } from "./kepu-book.util";
-import {
-  lockStockKeys,
-  stockKeyOf,
-  sumOpenReservations,
-} from "./reservation.service";
+import { lockStockKeys, sumOpenReservations } from "./reservation.service";
 import type { ReservationSourceRef, StockKey } from "./dto/reservation.dto";
 import {
   NOT_DELETED,
@@ -37,14 +40,10 @@ import {
   softDelete,
 } from "../../common/soft-delete.util";
 
-/** Diskriminator robnog dokumenta (`stock_documents.kind`). */
-export type StockDocumentKind =
-  | "UL"
-  | "IZ"
-  | "NIV"
-  | "PRENOS"
-  | "VISAK"
-  | "MANJAK";
+// `StockDocumentKind` je definisan uz DTO (`dto/create-stock-document.dto.ts`), gde ga
+// `@IsIn(STOCK_DOCUMENT_KINDS)` i koristi — jedan spisak vrsta za tip i za validaciju.
+// Re-eksport stoji zbog postojećih `import { StockDocumentKind } from "./robno.service"`.
+export type { StockDocumentKind } from "./dto/create-stock-document.dto";
 
 /**
  * Prozor transakcije kreiranja robnog dokumenta: unutra se čekaju DVA advisory lock-a
@@ -56,14 +55,7 @@ export const STOCK_DOCUMENT_TX_OPTIONS = {
   timeout: 20_000,
 } as const;
 
-const VALID_KINDS: readonly StockDocumentKind[] = [
-  "UL",
-  "IZ",
-  "NIV",
-  "PRENOS",
-  "VISAK",
-  "MANJAK",
-];
+const VALID_KINDS: readonly StockDocumentKind[] = STOCK_DOCUMENT_KINDS;
 
 /**
  * Vrste dokumenata REZERVISANE za `TransferService` (obe strane međuskladišnice).
@@ -165,274 +157,6 @@ export class RobnoService {
   }
 
   /**
-   * Lager lista (BigBit paritet — stanje zaliha po magacinu + prosečne cene).
-   *
-   * IZVOR STANJA (review A, 25.07): agregat kretanja iz `stock_document_items` — ISTI izvor i
-   * isti filtri kao `CostingService.stateAsOf` i kao raspoloživo u rezervacijama. Ranije se
-   * čitao `stock_levels` snapshot, koji NIJEDAN kod ne upisuje (nema pisca u `src/`), pa je
-   * lager lista bila trajno PRAZNA — a upravo su joj C3 dodali kolone „Rezervisano"/„Raspoloživo".
-   * Prosečne cene se računaju istom ponderisanom formulom kao costing (§C):
-   *   avgPurchaseNet = Σ(±Kol*(Nab+ZTsop+ZTdob)) / Σ(±Kol),  avgWholesale = Σ(±Kol*KalkVP) / Σ(±Kol).
-   *
-   * REZERVISANO (C3): `reserved` je AGREGAT otvorenih redova `stock_reservations`
-   * (`status='OPEN'`), NE denormalizovana kolona `StockLevel.reserved` — ta kolona je mrtav
-   * legacy snapshot koji niko ne upisuje (uvek 0) i namerno se ne dira. Polje
-   * `available = onHand − reserved` je ono što se sme obećati kupcu. Jedan agregatni upit
-   * po strani (`groupBy`), bez N+1.
-   */
-  async listLager(query: {
-    warehouseId?: number;
-    onlyInStock?: boolean;
-    q?: string;
-    skip?: number;
-    take?: number;
-  }) {
-    const take = Math.min(query.take ?? 100, 500);
-    const skip = query.skip ?? 0;
-
-    // DB-060 + Batch C: lager se UVEK racuna iz kretanja (stock_document_items),
-    // nikad iz snapshot-a stock_levels. Uslovni fallback (koristi snapshot ako
-    // tabela NIJE prazna) i dalje veruje zastarelom redu - na dev bazi je jedini
-    // takav red tvrdio 12 dok su kretanja govorila 10. Isti izvor istine koristi i
-    // raspolozivo (ReservationService), pa o stanju nema dve istine.
-    const warehouseFilter =
-      query.warehouseId != null
-        ? Prisma.sql`AND sdi.warehouse_id = ${query.warehouseId}`
-        : Prisma.empty;
-    // „Samo sa stanjem" se filtrira NAD AGREGATOM (HAVING), da paginacija broji iste redove.
-    const havingInStock = query.onlyInStock
-      ? Prisma.sql`HAVING SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) > 0`
-      : Prisma.empty;
-    // Pretraga MORA u SQL, pre LIMIT/OFFSET: post-filter nad već izvučenom stranom
-    // pravi prazne međustrane (pogoci na 3. strani se izgube) i ostavlja `total`
-    // nefiltriran, pa i ekran i štampa tiho gube redove.
-    const term = query.q?.trim();
-    const itemFilter =
-      term && term !== ""
-        ? Prisma.sql`AND sdi.item_id IN (
-            SELECT i.id FROM items i
-            WHERE lower(i.name) LIKE ${`%${term.toLowerCase()}%`}
-               OR lower(i.catalog_number) LIKE ${`%${term.toLowerCase()}%`}
-          )`
-        : Prisma.empty;
-    const aggregate = Prisma.sql`
-      SELECT sdi.item_id,
-             sdi.warehouse_id,
-             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) AS on_hand,
-             SUM(CASE WHEN dt.is_inbound THEN 1 ELSE -1 END * sdi.quantity *
-                 (sdi.purchase_price_net + sdi.dependent_cost_own + sdi.dependent_cost_supplier)
-             ) AS weighted_nab,
-             SUM(CASE WHEN dt.is_inbound THEN 1 ELSE -1 END * sdi.quantity *
-                 sdi.calculated_wholesale_price) AS weighted_vp
-      FROM stock_document_items sdi
-      JOIN stock_documents sd ON sd.id = sdi.document_id
-      JOIN document_types dt ON dt.code = sd.document_type_code
-      WHERE sd.document_type_code <> 'KODJ'
-        AND COALESCE(dt.affects_stock, TRUE) = TRUE
-        AND sdi.deleted_at IS NULL
-        ${warehouseFilter}
-        ${itemFilter}
-      GROUP BY sdi.item_id, sdi.warehouse_id
-      ${havingInStock}
-    `;
-
-    const [rows, totalRows] = await Promise.all([
-      this.prisma.$queryRaw<
-        Array<{
-          item_id: number;
-          warehouse_id: number;
-          on_hand: Prisma.Decimal | null;
-          weighted_nab: Prisma.Decimal | null;
-          weighted_vp: Prisma.Decimal | null;
-        }>
-      >(Prisma.sql`
-        WITH agg AS (${aggregate})
-        SELECT * FROM agg
-        ORDER BY warehouse_id ASC, item_id ASC
-        LIMIT ${take} OFFSET ${skip}
-      `),
-      this.prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
-        WITH agg AS (${aggregate})
-        SELECT COUNT(*)::bigint AS count FROM agg
-      `),
-    ]);
-    const total = Number(totalRows[0]?.count ?? 0);
-
-    const levels = rows.map((r) => {
-      const onHand = new Prisma.Decimal(r.on_hand ?? 0);
-      // Stanje 0 → prosek se ne može podeliti; cena ostaje 0 (fallback „poslednja cena" je
-      // stvar kartice/kalkulacije, ne lager liste).
-      const avg = (weighted: Prisma.Decimal | null) =>
-        onHand.isZero()
-          ? new Prisma.Decimal(0)
-          : new Prisma.Decimal(weighted ?? 0).div(onHand);
-      return {
-        itemId: r.item_id,
-        warehouseId: r.warehouse_id,
-        onHand,
-        avgPurchaseNet: avg(r.weighted_nab),
-        avgWholesalePrice: avg(r.weighted_vp),
-      };
-    });
-
-    // Pridruži naziv/šifru artikla (meki ref items.id) — jedan upit po skupu id-jeva.
-    const itemIds = [...new Set(levels.map((l) => l.itemId))];
-    const items = itemIds.length
-      ? await this.prisma.item.findMany({
-          where: { id: { in: itemIds } },
-          select: { id: true, name: true, catalogNumber: true, unit: true },
-        })
-      : [];
-    const itemById = new Map(items.map((i) => [i.id, i]));
-
-    // Rezervisano = Σ OPEN rezervacija po (artikal, magacin) — jedan groupBy za celu stranu.
-    const reservedByKey = await sumOpenReservations(
-      this.prisma,
-      levels.map((l) => ({ itemId: l.itemId, warehouseId: l.warehouseId })),
-    );
-
-    const data = levels.map((l) => {
-      const it = itemById.get(l.itemId);
-      const reserved =
-        reservedByKey.get(stockKeyOf(l.itemId, l.warehouseId)) ??
-        new Prisma.Decimal(0);
-      return {
-        itemId: l.itemId,
-        warehouseId: l.warehouseId,
-        itemName: it?.name ?? null,
-        itemCode: it?.catalogNumber ?? null,
-        unit: it?.unit ?? null,
-        onHand: l.onHand.toFixed(3),
-        reserved: reserved.toFixed(3),
-        /** Raspoloživo za obećanje kupcu = stanje − otvorene rezervacije (može biti < 0). */
-        available: l.onHand.sub(reserved).toFixed(3),
-        avgPurchaseNet: l.avgPurchaseNet.toFixed(2),
-        avgWholesalePrice: l.avgWholesalePrice.toFixed(2),
-        // Vrednost iz ISTE zaokružene cene koja se prikazuje (review NIZAK) — da ručna
-        // kontrola „stanje × cena = vrednost" štima; puna preciznost pravila lažne razlike.
-        stockValue: l.onHand
-          .mul(l.avgPurchaseNet.toDecimalPlaces(2))
-          .toFixed(2),
-      };
-    });
-
-    // Pretraga je već primenjena u agregatu (`itemFilter`), pa je `total` filtriran
-    // i strane se ne mogu razići sa prikazom.
-    return { data, meta: { total, skip, take } };
-  }
-
-  /**
-   * Lager as-of NAD KRETANJIMA (DB-060 fallback dok stock_levels nema pisca).
-   * onHand = Σ(±Kol); prosečne cene ponderisano (doc 39 §C):
-   * avgNab = Σ(±Kol×(A+B+C))/Σ(±Kol), avgVP = Σ(±Kol×KalkVP)/Σ(±Kol).
-   * Napomena: za grupe sa Σ=0 ponder nije definisan → cena 0 (poslednja-cena
-   * fallback iz CostingService.averageAsOf ovde se ne radi — lager tipično
-   * gleda „samo sa stanjem"); reserved nema izvor u kretanjima → 0.
-   */
-  private async listLagerAsOf(
-    query: { warehouseId?: number; onlyInStock?: boolean; q?: string },
-    take: number,
-    skip: number,
-  ) {
-    const whFilter =
-      query.warehouseId != null
-        ? Prisma.sql`AND sdi.warehouse_id = ${query.warehouseId}`
-        : Prisma.empty;
-    const having = query.onlyInStock
-      ? Prisma.sql`HAVING SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) > 0`
-      : Prisma.empty;
-
-    const groups = await this.prisma.$queryRaw<
-      {
-        item_id: number;
-        warehouse_id: number;
-        on_hand: Prisma.Decimal;
-        pn_weight: Prisma.Decimal;
-        vp_weight: Prisma.Decimal;
-      }[]
-    >(Prisma.sql`
-      SELECT sdi.item_id, sdi.warehouse_id,
-             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END) AS on_hand,
-             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END
-                 * (sdi.purchase_price_net + sdi.dependent_cost_own + sdi.dependent_cost_supplier)) AS pn_weight,
-             SUM(CASE WHEN dt.is_inbound THEN sdi.quantity ELSE -sdi.quantity END
-                 * sdi.calculated_wholesale_price) AS vp_weight
-      FROM stock_document_items sdi
-      JOIN stock_documents sd ON sd.id = sdi.document_id
-      JOIN document_types dt ON dt.code = sd.document_type_code
-      WHERE sd.document_type_code <> 'KODJ'
-        AND COALESCE(dt.affects_stock, TRUE) = TRUE
-        AND sdi.deleted_at IS NULL
-        ${whFilter}
-      GROUP BY sdi.item_id, sdi.warehouse_id
-      ${having}
-      ORDER BY sdi.warehouse_id, sdi.item_id
-      LIMIT ${take} OFFSET ${skip}
-    `);
-    const totalRows = await this.prisma.$queryRaw<{ total: bigint }[]>(
-      Prisma.sql`
-        SELECT COUNT(*)::bigint AS total FROM (
-          SELECT 1
-          FROM stock_document_items sdi
-          JOIN stock_documents sd ON sd.id = sdi.document_id
-          JOIN document_types dt ON dt.code = sd.document_type_code
-          WHERE sd.document_type_code <> 'KODJ'
-            AND COALESCE(dt.affects_stock, TRUE) = TRUE
-            AND sdi.deleted_at IS NULL
-            ${whFilter}
-          GROUP BY sdi.item_id, sdi.warehouse_id
-          ${having}
-        ) g
-      `,
-    );
-    const total = Number(totalRows[0]?.total ?? 0);
-
-    const itemIds = [...new Set(groups.map((g) => g.item_id))];
-    const items = itemIds.length
-      ? await this.prisma.item.findMany({
-          where: { id: { in: itemIds } },
-          select: { id: true, name: true, catalogNumber: true, unit: true },
-        })
-      : [];
-    const itemById = new Map(items.map((i) => [i.id, i]));
-
-    const ZERO = new Prisma.Decimal(0);
-    let data = groups.map((g) => {
-      const it = itemById.get(g.item_id);
-      const onHand = new Prisma.Decimal(g.on_hand ?? 0);
-      const avgNab = onHand.isZero()
-        ? ZERO
-        : new Prisma.Decimal(g.pn_weight ?? 0).div(onHand);
-      const avgVp = onHand.isZero()
-        ? ZERO
-        : new Prisma.Decimal(g.vp_weight ?? 0).div(onHand);
-      return {
-        itemId: g.item_id,
-        warehouseId: g.warehouse_id,
-        itemName: it?.name ?? null,
-        itemCode: it?.catalogNumber ?? null,
-        unit: it?.unit ?? null,
-        onHand: onHand.toFixed(3),
-        reserved: "0.000",
-        avgPurchaseNet: avgNab.toFixed(2),
-        avgWholesalePrice: avgVp.toFixed(2),
-        stockValue: onHand.mul(avgNab.toDecimalPlaces(2)).toFixed(2),
-      };
-    });
-
-    if (query.q && query.q.trim() !== "") {
-      const term = query.q.trim().toLowerCase();
-      data = data.filter(
-        (r) =>
-          (r.itemName ?? "").toLowerCase().includes(term) ||
-          (r.itemCode ?? "").toLowerCase().includes(term),
-      );
-    }
-
-    return { data, meta: { total, skip, take } };
-  }
-
-  /**
    * Detalj robnog dokumenta.
    *
    * Stavke nose i NAZIV/ŠIFRU/JM artikla (meki ref `items.id`, jedan upit po skupu id-jeva).
@@ -494,142 +218,6 @@ export class RobnoService {
         items: doc.items.map(decorate),
         stockLevelingItems: doc.stockLevelingItems.map(decorate),
         transferPair,
-      },
-    };
-  }
-
-  /**
-   * Kartica artikla (BigBit paritet — hronološka kartica kretanja po magacinu). Vraća redove
-   * `stock_document_items` za (artikal, magacin) do gornje granice `to` (ili „danas"), hronološki,
-   * sa kolonama datum/dokument/vrsta/ulaz/izlaz/running-stanje. Početno stanje pre `from` = `openingBalance`.
-   *
-   * DOSLEDNOST SA COSTING-om (garantovano): filter je IDENTIČAN `CostingService.stateAsOf` — KODJ izuzet,
-   * `affects_stock`, znak iz `DocumentType.is_inbound`, BEZ filtera po statusu (costing broji sva kretanja).
-   * Zato `closingBalance` (running na kraju) == `stateAsOf` (nezavisno izračunat kroz costing) — v. smoke §2
-   * („krajnje stanje == stateAsOf danas"). `from`/`to` samo seku prozor prikaza, ne menjaju obračun stanja.
-   */
-  async getItemCard(params: {
-    itemId: number;
-    warehouseId: number;
-    from?: string;
-    to?: string;
-  }) {
-    const { itemId, warehouseId } = params;
-    if (!Number.isInteger(itemId) || itemId <= 0)
-      throw new UnprocessableEntityException(
-        "itemId je obavezan — pozitivan ceo broj.",
-      );
-    if (!Number.isInteger(warehouseId) || warehouseId <= 0)
-      throw new UnprocessableEntityException(
-        "warehouseId je obavezan — pozitivan ceo broj.",
-      );
-
-    const from = parseDateParam(params.from, "from");
-    const to = parseDateParam(params.to, "to");
-    // Gornja granica prikaza/obračuna = `to` ili „sada" (stanje na dan danas kad `to` nije zadat).
-    const effectiveTo = to ?? new Date();
-
-    // Sva kretanja (artikal, magacin) do `effectiveTo`, hronološki. Filter VERBATIM iz costing.stateAsOf.
-    const rows = await this.prisma.$queryRaw<
-      Array<{
-        item_line_id: number;
-        document_id: number;
-        document_number: string;
-        kind: string;
-        document_type_code: string;
-        document_date: Date;
-        quantity: Prisma.Decimal;
-        is_inbound: boolean;
-      }>
-    >(
-      Prisma.sql`
-        SELECT sdi.id AS item_line_id, sd.id AS document_id, sd.document_number,
-               sd.kind, sd.document_type_code, sd.document_date,
-               sdi.quantity, dt.is_inbound
-        FROM stock_document_items sdi
-        JOIN stock_documents sd ON sd.id = sdi.document_id
-        JOIN document_types dt ON dt.code = sd.document_type_code
-        WHERE sdi.item_id = ${itemId}
-          AND sdi.warehouse_id = ${warehouseId}
-          AND sd.document_date <= ${effectiveTo}
-          AND sd.document_type_code <> 'KODJ'
-          AND COALESCE(dt.affects_stock, TRUE) = TRUE
-          AND sdi.deleted_at IS NULL
-        ORDER BY sd.document_date ASC, sd.id ASC, sdi.id ASC
-      `,
-    );
-
-    let running = new Prisma.Decimal(0);
-    let opening = new Prisma.Decimal(0);
-    let totalIn = new Prisma.Decimal(0);
-    let totalOut = new Prisma.Decimal(0);
-    const lines: Array<{
-      itemLineId: number;
-      documentId: number;
-      documentNumber: string;
-      kind: string;
-      documentTypeCode: string;
-      documentDate: string;
-      direction: "IN" | "OUT";
-      in: string;
-      out: string;
-      balance: string;
-    }> = [];
-
-    for (const r of rows) {
-      const signed = r.is_inbound ? r.quantity : r.quantity.negated();
-      running = running.add(signed);
-      // Redovi pre `from` ne ulaze u prikaz — zbir do njih je početno stanje.
-      if (from && r.document_date < from) {
-        opening = running;
-        continue;
-      }
-      if (r.is_inbound) totalIn = totalIn.add(r.quantity);
-      else totalOut = totalOut.add(r.quantity);
-      lines.push({
-        itemLineId: r.item_line_id,
-        documentId: r.document_id,
-        documentNumber: r.document_number,
-        kind: r.kind,
-        documentTypeCode: r.document_type_code,
-        documentDate: r.document_date.toISOString(),
-        direction: r.is_inbound ? "IN" : "OUT",
-        in: r.is_inbound ? r.quantity.toFixed(6) : "0.000000",
-        out: r.is_inbound ? "0.000000" : r.quantity.toFixed(6),
-        balance: running.toFixed(6),
-      });
-    }
-    const closing = running;
-
-    // Nezavisna provera stanja kroz costing (mora == closing; smoke §2). Meki ref naziva artikla.
-    const [stateAsOf, item] = await Promise.all([
-      this.costing.stateAsOf(itemId, warehouseId, effectiveTo),
-      this.prisma.item.findUnique({
-        where: { id: itemId },
-        select: { id: true, name: true, catalogNumber: true, unit: true },
-      }),
-    ]);
-
-    return {
-      data: {
-        itemId,
-        warehouseId,
-        from: from ? from.toISOString() : null,
-        to: effectiveTo.toISOString(),
-        item: item
-          ? {
-              id: item.id,
-              name: item.name,
-              code: item.catalogNumber,
-              unit: item.unit,
-            }
-          : null,
-        openingBalance: opening.toFixed(6),
-        closingBalance: closing.toFixed(6),
-        stateAsOf: stateAsOf.toFixed(6),
-        totalIn: totalIn.toFixed(6),
-        totalOut: totalOut.toFixed(6),
-        lines,
       },
     };
   }
@@ -943,7 +531,9 @@ export class RobnoService {
     >();
     for (const it of dto.items) {
       const warehouseId = it.warehouseId ?? dto.warehouseId;
-      const key = `${it.itemId}:${warehouseId}`;
+      // `stockKeyOf`, ne ručni template — ključ mape mora imati JEDNU definiciju,
+      // inače se mape tiho prestanu poklapati čim se format promeni.
+      const key = stockKeyOf(it.itemId, warehouseId);
       const qty = toDec(it.quantity).abs();
       const cur = requested.get(key);
       if (cur) cur.qty = cur.qty.add(qty);
@@ -1002,30 +592,36 @@ export class RobnoService {
     const now = new Date();
     const checkNowToo = documentDate.getTime() < now.getTime();
 
+    // Stanje za SVE tražene parove u dva upita (as-of + „sada"), ne dva PO STAVCI.
+    // Ranije je ovo bila petlja sa `stateAsOf` po stavci — do 2 uzastopna upita za svaku
+    // stavku, i to UNUTAR transakcije koja već drži advisory lock na svim tim ključevima:
+    // izdatnica sa 60 stavki = do 120 serijskih upita dok 60 (artikal, magacin) ključeva
+    // stoji zaključano, pa svaki drugi izlaz tih artikala čeka. Rezervacije su isti posao
+    // odavno radile jednim agregatom; sada i stanje.
+    // Redom, ne `Promise.all`: oba upita idu kroz isti `tx` klijent (jedna konekcija).
+    const stateOpts = { tx, excludeDocId: opts.excludeDocId };
+    const keys = requests.map((r) => ({
+      itemId: r.itemId,
+      warehouseId: r.warehouseId,
+    }));
+    const asOfByKey = await this.costing.stateAsOfMany(
+      keys,
+      documentDate,
+      stateOpts,
+    );
+    const nowByKey = checkNowToo
+      ? await this.costing.stateAsOfMany(keys, now, stateOpts)
+      : null;
+
     for (const r of requests) {
-      const stateOpts = { tx, excludeDocId: opts.excludeDocId };
-      const onHandAsOf = await this.costing.stateAsOf(
-        r.itemId,
-        r.warehouseId,
-        documentDate,
-        stateOpts,
-      );
-      const onHand = checkNowToo
-        ? minDec(
-            onHandAsOf,
-            await this.costing.stateAsOf(
-              r.itemId,
-              r.warehouseId,
-              now,
-              stateOpts,
-            ),
-          )
+      const key = stockKeyOf(r.itemId, r.warehouseId);
+      const onHandAsOf = asOfByKey.get(key) ?? ZERO;
+      const onHand = nowByKey
+        ? minDec(onHandAsOf, nowByKey.get(key) ?? ZERO)
         : onHandAsOf;
       // Raspoloživo = stanje − tuđe otvorene rezervacije (C3); rezervacije ovog dokumenta
       // su već izuzete u `loadOpenReserved`, pa potrošač ne blokira sam sebe.
-      const reserved =
-        reservedByKey.get(stockKeyOf(r.itemId, r.warehouseId)) ??
-        new Prisma.Decimal(0);
+      const reserved = reservedByKey.get(key) ?? ZERO;
       const available = onHand.sub(reserved);
       if (available.lessThan(r.qty)) {
         shortages.push({
@@ -1289,86 +885,19 @@ export class RobnoService {
     });
   }
 
-  // ----------------------------------------------------------------- KEPU
-
-  /**
-   * Sinhronizuj KEPU red(ove) za jedan robni dokument (doc 39 §E, task D5be) — idempotentno
-   * po documentId. Poziva se iz `robno post` toka (posle knjiženja IZ/NIV/…) i iz retro-punjenja.
-   * Učitava zaglavlje + stavke + nivelacione parove + `DocumentType.kepuDefault*` (default smer),
-   * računa red(ove) u `kepu-book.util` i briše+upisuje po documentId. Vraća broj upisanih redova.
-   */
-  async writeKepuForDocument(docId: number): Promise<number> {
-    return this.prisma.$transaction(async (tx) => {
-      const doc = await tx.stockDocument.findUnique({
-        where: { id: docId },
-        include: {
-          // Soft-delete (Batch B): obrisana stavka NE ulazi u KEPU vrednost.
-          items: { where: NOT_DELETED, orderBy: { id: "asc" } },
-          stockLevelingItems: { orderBy: { id: "asc" } },
-        },
-      });
-      if (!doc)
-        throw new NotFoundException(`Robni dokument ${docId} ne postoji.`);
-
-      const docType = await tx.documentType.findFirst({
-        where: { code: doc.documentTypeCode },
-        select: {
-          kepuDefaultCharge: true,
-          kepuDefaultDischarge: true,
-          // Smer je obavezan za stranu para prenosa (PREIZ razdužuje, PREUL zadužuje).
-          isInbound: true,
-        },
-      });
-      const entries = computeKepuEntries(
-        doc,
-        doc.items,
-        doc.stockLevelingItems,
-        docType,
-      );
-      return writeKepuEntries(tx, doc.id, entries);
-    });
-  }
-
-  /**
-   * Retro-punjenje KEPU knjige za postojeće dokumente (task D5be). Idempotentno prolazi kroz sve
-   * dokumente van DRAFT-a (imaju finalne vrednosti) i (pre)računava KEPU redove. Opcioni filter po godini.
-   * Svaki dokument ide u sopstvenoj transakciji (delete+insert po documentId) — bezbedno za ponovni poziv.
-   */
-  async rebuildKepu(query: { year?: number } = {}): Promise<{
-    documents: number;
-    entries: number;
-  }> {
-    const where: Prisma.StockDocumentWhereInput = { status: { not: "DRAFT" } };
-    if (query.year != null) where.year = query.year;
-
-    const docs = await this.prisma.stockDocument.findMany({
-      where,
-      select: { id: true },
-      orderBy: [{ documentDate: "asc" }, { id: "asc" }],
-    });
-
-    let entries = 0;
-    for (const d of docs) {
-      entries += await this.writeKepuForDocument(d.id);
-    }
-    this.logger.log(
-      `KEPU rebuild: obrađeno ${docs.length} dokumenata, upisano ${entries} redova` +
-        (query.year != null ? ` (godina ${query.year})` : "") +
-        ".",
-    );
-    return { documents: docs.length, entries };
-  }
-
   /**
    * Mapiraj DTO stavku → Prisma create input (sirovi iznosi; landed popunjava kalkulacija).
    *
-   * ⚠️ OVDE JE ULAZNA BRANA ZA PORESKU ŠIFRU (nalaz S3, 02.08.2026). `CreateStockDocumentItemDto`
-   * je INTERFEJS (bez `class-validator` dekoratora), pa ga globalni `ValidationPipe` uopšte ne
-   * gleda — `goodsTaxRateCode` je do sada ulazio nepregledan. Šifra koju mapa ne zna posle toga
-   * ćuti na dva mesta koja rade novac: `CalculationService.taxRateOf` (maloprodajna cena bez
-   * PDV-a) i `PostingEngine.aggregateDocAmounts` (nalog bez PDV linije). Zato pada ovde, na
-   * unosu, dok je dokument još prazan — a ne na knjiženju, kad je već sve upisano.
-   * (Put IZMENE ima svoju branu: `@IsIn` u `update-stock-document.dto.ts` — isti izveden spisak.)
+   * ⚠️ OVDE JE ULAZNA BRANA ZA PORESKU ŠIFRU (nalaz S3, 02.08.2026). Šifra koju mapa poreskih
+   * stopa ne zna ćuti na dva mesta koja rade novac: `CalculationService.taxRateOf`
+   * (maloprodajna cena bez PDV-a) i `PostingEngine.aggregateDocAmounts` (nalog bez PDV linije).
+   * Zato pada ovde, na unosu, dok je dokument još prazan — a ne na knjiženju, kad je već sve
+   * upisano. (Put IZMENE ima svoju branu: `@IsIn` u `update-stock-document.dto.ts`.)
+   *
+   * NAPOMENA (04.08.2026): `CreateStockDocumentItemDto` je od tada KLASA sa `class-validator`
+   * dekoratorima, pa HTTP put sada validira i `ValidationPipe`. Ova provera OSTAJE, jer
+   * interni pozivaoci (`CarryOverService`, `TransferService`, `InventoryService.finalize`)
+   * grade DTO u kodu i zovu servis direktno — kroz njih pipe uopšte ne prolazi.
    */
   private buildItemData(
     it: CreateStockDocumentItemDto,

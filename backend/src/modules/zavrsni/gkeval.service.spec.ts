@@ -1,5 +1,6 @@
+import { HttpException, HttpStatus } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { GkEvalService, fiscalYearPeriod } from "./gkeval.service";
+import { GkEvalError, GkEvalService, fiscalYearPeriod } from "./gkeval.service";
 
 /**
  * Spec motora bilansnih formula (BigBit DSL).
@@ -558,5 +559,75 @@ describe("GkEvalService — aritmetika izraza", () => {
     const v = await service.evalFormula("D9999*", PERIOD_2023, () => new D(0));
 
     expect(v.toFixed(2)).toBe("0.00");
+  });
+});
+
+/**
+ * GREŠKA U BILANSNOJ FORMULI MORA BITI OBJAŠNJENA (defekt 04.08.2026).
+ * =========================================================================
+ * `AllExceptionsFilter` (common/http-exception.filter.ts) propušta ISKLJUČIVO
+ * `HttpException`; sve ostalo namerno postaje 500 sa generičkom porukom. Dok je
+ * `GkEvalError` nasleđivala goli `Error`, računovođa je umesto „Nepoznat prefiks u
+ * atomu …" dobijao „Neočekivana greška na serveru" i nije imao šta da javi.
+ *
+ * 422 je izabran jer su formule AOP pozicija (`balance_formulas`) KONFIGURACIJA
+ * obrasca, seed-ovana migracijom: obračun se ne može izvesti dok se seed ne ispravi.
+ * Nije 500 (uzrok je poznat i imenovan) ni 400 (korisnik ne šalje formulu).
+ *
+ * Bez ispravke ovi testovi padaju na `toBeInstanceOf(HttpException)`.
+ */
+describe("GkEvalError je HttpException 422 (a bio je 500)", () => {
+  const caught = async (fn: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await fn();
+    } catch (e) {
+      return e;
+    }
+    throw new Error("Očekivana greška nije bačena.");
+  };
+
+  it("prazna formula kroz evalFormula → 422 sa originalnom porukom i `code`", async () => {
+    const service = makeService(makePrisma());
+    const e = await caught(() =>
+      service.evalFormula("", PERIOD_2023, () => new D(0)),
+    );
+
+    expect(e).toBeInstanceOf(GkEvalError);
+    expect(e).toBeInstanceOf(HttpException);
+    expect((e as HttpException).getStatus()).toBe(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    expect((e as Error).message).toBe("Prazna formula");
+    expect((e as HttpException).getResponse()).toEqual({
+      message: "Prazna formula",
+      code: "ZR_FORMULA_INVALID",
+      details: { position: -1 },
+    });
+  });
+
+  it("nepoznat znak u formuli → 422, `details.position` lokalizuje sporni znak", async () => {
+    const service = makeService(makePrisma());
+    const e = await caught(() =>
+      service.evalFormula("D600*@P602*", PERIOD_2023, () => new D(0)),
+    );
+
+    expect((e as HttpException).getStatus()).toBe(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    expect((e as Error).message).toContain("@");
+    const details = (e as HttpException).getResponse() as {
+      details: { position: number };
+    };
+    expect(details.details.position).toBeGreaterThanOrEqual(0);
+    expect((e as GkEvalError).position).toBe(details.details.position);
+  });
+
+  it("ostaje `Error` (postojeći `instanceof` i logovi rade nepromenjeno)", async () => {
+    const service = makeService(makePrisma());
+    const e = await caught(() =>
+      service.evalFormula("", PERIOD_2023, () => new D(0)),
+    );
+    expect(e).toBeInstanceOf(Error);
+    expect(typeof (e as Error).stack).toBe("string");
   });
 });

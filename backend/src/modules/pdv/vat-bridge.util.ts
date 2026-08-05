@@ -18,6 +18,7 @@
  *   netToGross(1000, 20) → { gross: 1200.00, vat: 200.00 }
  */
 
+import { UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
 const D = Prisma.Decimal;
@@ -39,11 +40,24 @@ export interface GrossVat {
   vat: Prisma.Decimal;
 }
 
-/** Nevalidan ulaz mosta (stopa/iznos) — poslovna greška, ne 500. */
-export class VatBridgeError extends Error {
+/**
+ * Nevalidan ulaz mosta (stopa/iznos) — poslovna greška, ne 500.
+ *
+ * Komentar je i do sada tvrdio „ne 500", ali klasa je nasleđivala goli `Error` pa je
+ * `AllExceptionsFilter` pravio TAČNO 500 sa generičkom porukom (ispravka 04.08.2026).
+ *
+ * 422, ne 400: most zovu i putevi u kojima iznos/stopa NE dolaze iz tela zahteva nego
+ * iz baze — `advance-vat.service` uzima stopu iz registra tarifa (`TaxRate`),
+ * `sales/vat-totals` proverava iznose već upisanog dokumenta. Tamo „loš zahtev" nije
+ * istina; istina je da je vrednost stigla a obračun se nad njom ne može izvesti, što
+ * je upravo značenje 422. Isti status je tačan i za HTTP put (avansna uplata), gde
+ * DTO već garantuje da je polje broj — ostaje poslovna provera (stopa ≥ 0, konačan
+ * iznos).
+ */
+export class VatBridgeError extends UnprocessableEntityException {
   readonly code = "PDV_BRIDGE_INPUT";
   constructor(message: string) {
-    super(message);
+    super({ message, code: "PDV_BRIDGE_INPUT" });
     this.name = "VatBridgeError";
   }
 }

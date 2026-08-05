@@ -66,6 +66,11 @@ export class GlWriteService {
    * Ručni unos naloga (BigBit „Unos naloga glavne knjige"). Otvara sopstvenu
    * transakciju i delegira na PostingEngine.postManualEntry (balans-kontrola +
    * numeracija). Vraća {journalEntryId, number, lineCount}.
+   *
+   * BRAVA PREDATOG PDV PERIODA se NASLEĐUJE od motora (04.08.2026) — ovaj put je
+   * dobija bez ijedne provere ovde. `dto.forceLockedPeriod` je escape hatch koji
+   * knjigovođi omogućava ispravku legitimne greške u predatom periodu; obrazloženje
+   * validira i u trag upisuje motor.
    */
   async createManualEntry(dto: CreateJournalEntryDto, actorUserId?: number) {
     validateCreateJournalEntry(dto);
@@ -95,6 +100,12 @@ export class GlWriteService {
         companyId: dto.companyId ?? 0,
         description: dto.description,
         createdByUserId: actorUserId,
+        force: dto.forceLockedPeriod
+          ? {
+              reason: String(dto.forceLockedPeriod.reason ?? ""),
+              actorUserId,
+            }
+          : undefined,
         lines: dto.lines.map((l) => ({
           accountCode: l.accountCode,
           analyticalCode: l.analyticalCode ?? null,
@@ -368,6 +379,16 @@ export class GlWriteService {
    *
    * Sa `reverseWithin` ceo storno fakture staje u jednu transakciju: pad reverzije ruši i
    * CAS, dokument ostaje proknjižen, a operater dobije poruku šta da otključa.
+   *
+   * BRAVA PREDATOG PDV PERIODA (04.08.2026) — SVESNO NIJE OVDE, i to nije propust:
+   * storno je upravo onaj tok koji po dizajnu MORA da uđe u zatvoren period (ispravka
+   * greške u predatom mesecu). Podrazumevano ga ionako ne dira: `postingDate = danas`,
+   * dakle tekući period. Kad ga pozivalac pomeri u stariji presek (revalorizacija
+   * deviznih stavki), izvorni nalog tog perioda je gotovo uvek `LOCKED` i guard tri
+   * reda iznad ga već odbija sa uputstvom da se prvo otključa. Ako se ova metoda
+   * jednog dana zatvori bravom, escape hatch mora ići uz oba pozivaoca sa `tx`
+   * (`fakturisanje.stornoInvoice`, `fx-revaluation`) — inače storno fakture ostane na
+   * pola, tačno kao u incidentu opisanom iznad.
    *
    * ČITANJA SU SADA UNUTAR TRANSAKCIJE (pre su bila van nje): guard „već storniran"
    * (`reversedByEntryId`) je read-then-write, pa su ga dve paralelne reverzije istog

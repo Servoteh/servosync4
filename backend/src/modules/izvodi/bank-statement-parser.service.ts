@@ -22,11 +22,21 @@ import { Prisma } from "@prisma/client";
  * SMER (doc 21 §A): `DugPotInd(148,1)` → DEBIT/CREDIT. Legacy koristi klasu konta za stranu
  *   knjiženja, ali indikator na stavci izvoda je Dug/Pot flag ("D"/"C" ili "1"/"2").
  *   Mapiranje: "C"/"K"/"P"/"2" = CREDIT (priliv, potražuje se banka),
- *              "D"/"1" = DEBIT (odliv). Nepoznato → CREDIT (priliv je default izvoda naplate)
- *              uz warn log.
+ *              "D"/"1" = DEBIT (odliv). NEPOZNAT kod = GREŠKA reda, ne pretpostavka.
  *
  * DATUM (189,8): 4-cifrena godina (dec spec). Format `ddmmyyyy` (FX export koristi ddmmyyyy,
  *   doc 21 §B) → parsiramo `DDMMYYYY`; ako je 8 cifara ali očito `YYYYMMDD`, detektujemo.
+ *
+ * 🔴 NEPROČITAN RED SE PRIJAVLJUJE, NE PRESKAČE (defekt D1, 04.08.2026).
+ * ─────────────────────────────────────────────────────────────────────────
+ * ŠTA SE DEŠAVALO PRE POPRAVKE: red kraći od `MIN_LINE_LENGTH`, red bez `DatumDok` i red sa
+ * neparsabilnim iznosom su se preskakali sa `logger.debug`/`logger.warn` i `continue`, a
+ * NEPOZNAT `DugPotInd` se tumačio kao priliv — pa je uplata koja je stigla na račun mogla da
+ * ne postoji u sistemu (ili da uđe sa pogrešnim smerom), bez ijednog vidljivog znaka.
+ * Sada `parse` vraća `{ lines, skipped }`, a uvoz (`BankStatementService.importStatement`) ODBIJA
+ * izvod ako `skipped` nije prazan — izvod je jedan celovit dokument banke i ne sme se uvesti
+ * delimično. `previewParse` iste redove samo PRIKAŽE (dry-run pre uvoza), da korisnik zna šta
+ * da ispravi. Ni jedan razlog ne ostaje samo u logu.
  *
  * ⚠️ `Opis(100,35)` SE NE ČITA (nalaz S7, 02.08.2026). Kolona je gore popisana, ali se
  *   nigde ne vadi iz reda niti se prosleđuje dalje — `BankStatementLine` nema polje za
@@ -55,12 +65,33 @@ export interface ParsedStatementLine {
   documentDate: Date | null; // DatumDok (189,8)
 }
 
+/**
+ * Red TXT-a koji NIJE postao stavka izvoda, sa razlogom (D1). Ovo NIJE log — ide korisniku
+ * i obara uvoz, jer nepročitan red može biti uplata koja je stigla na račun.
+ */
+export interface SkippedStatementLine {
+  /** Broj reda u FAJLU (1-baziran) — po njemu korisnik nalazi red u TXT-u. */
+  fileLineNo: number;
+  /** Svi razlozi za taj red, spojeni sa " · " (srpski, za prikaz). */
+  reason: string;
+  /** Početak sirovog reda (sečen) — da se problem vidi bez otvaranja fajla. */
+  excerpt: string;
+}
+
+/** Rezultat parsiranja: pročitane stavke + redovi koje parser NIJE mogao da pročita. */
+export interface ParseStatementResult {
+  lines: ParsedStatementLine[];
+  skipped: SkippedStatementLine[];
+}
+
 @Injectable()
 export class BankStatementParserService {
   private readonly logger = new Logger(BankStatementParserService.name);
 
   /** Minimalna dužina reda da bi imao sva relevantna polja (do DatumDok kraj = 189+8-1 = 196). */
   private static readonly MIN_LINE_LENGTH = 196;
+  /** Koliko znakova sirovog reda ide korisniku u izveštaj o nepročitanom redu. */
+  private static readonly EXCERPT_LENGTH = 120;
 
   // Access Start je 1-baziran; helper vraća 0-bazirani slice [start-1, start-1+width).
   private field(line: string, start: number, width: number): string {
@@ -68,24 +99,33 @@ export class BankStatementParserService {
   }
 
   /**
-   * Parsira ceo TXT sadržaj (jedan izvod, više redova) → niz draft stavki.
-   * Robustno: prazne/prekratke redove preskače uz debug log (ne obara ceo import).
+   * Parsira ceo TXT sadržaj (jedan izvod, više redova) → `{ lines, skipped }`.
+   *
+   * PRAZAN red je jedino što se preskače bez prijave (završni prelaz reda / razmaknica nije
+   * zapis). SVE ostalo što se ne pročita ide u `skipped` sa brojem reda i razlogom, pa uvoz
+   * može da ga odbije — v. blok „NEPROČITAN RED SE PRIJAVLJUJE" u zaglavlju fajla.
    */
-  parse(txtContent: string): ParsedStatementLine[] {
-    const lines = txtContent.split(/\r\n|\r|\n/);
+  parse(txtContent: string): ParseStatementResult {
+    const rawLines = txtContent.split(/\r\n|\r|\n/);
     const result: ParsedStatementLine[] = [];
+    const skipped: SkippedStatementLine[] = [];
     let lineNo = 0;
 
-    for (let i = 0; i < lines.length; i++) {
-      const raw = lines[i];
+    for (let i = 0; i < rawLines.length; i++) {
+      const raw = rawLines[i];
       if (raw == null) continue;
       const line = raw.replace(/\s+$/u, ""); // trim samo desno (fiksne kolone drže levu poziciju)
-      if (line.trim().length === 0) continue; // prazan red
+      if (line.trim().length === 0) continue; // prazan red — nije zapis
+
+      const fileLineNo = i + 1;
 
       if (line.length < BankStatementParserService.MIN_LINE_LENGTH) {
-        this.logger.debug(
-          `Preskačem red ${i + 1}: dužina ${line.length} < ${BankStatementParserService.MIN_LINE_LENGTH} (nije puna FX stavka).`,
-        );
+        // Kraći red: polja se ne mogu ni izvaditi, pa nema smisla tražiti dalje razloge.
+        skipped.push({
+          fileLineNo,
+          reason: `dužina ${line.length} < ${BankStatementParserService.MIN_LINE_LENGTH} znakova (nije puna FX stavka)`,
+          excerpt: this.excerpt(line),
+        });
         continue;
       }
 
@@ -97,11 +137,29 @@ export class BankStatementParserService {
       const referenceNumber = this.field(line, 169, 20) || null;
       const datumRaw = this.field(line, 189, 8);
 
+      // Svi razlozi za JEDAN red se skupljaju zajedno — korisnik popravlja red jednom,
+      // a ne u onoliko krugova uvoza koliko polja u njemu ne štima.
+      const problems: string[] = [];
+
       const amount = this.parseAmount(amountRaw);
-      if (amount === null) {
-        this.logger.warn(
-          `Red ${i + 1}: neparsabilan iznos "${amountRaw}" — preskačem stavku.`,
+      if (amount === null) problems.push(`neparsabilan iznos "${amountRaw}"`);
+
+      const direction = this.parseDirection(dugPotInd);
+      if (direction === null)
+        problems.push(
+          `nepoznat indikator smera (DugPotInd) "${dugPotInd}" — smer se ne sme pretpostaviti`,
         );
+
+      const documentDate = this.parseDate(datumRaw);
+      if (documentDate === null)
+        problems.push(`neparsabilan datum dokumenta (DatumDok) "${datumRaw}"`);
+
+      if (problems.length > 0 || amount === null || direction === null) {
+        skipped.push({
+          fileLineNo,
+          reason: problems.join(" · "),
+          excerpt: this.excerpt(line),
+        });
         continue;
       }
 
@@ -111,17 +169,23 @@ export class BankStatementParserService {
         partnerAccount,
         partnerName,
         amount,
-        direction: this.parseDirection(dugPotInd, i + 1),
+        direction,
         referenceNumber,
         model,
-        documentDate: this.parseDate(datumRaw),
+        documentDate,
       });
     }
 
+    // Log ostaje, ali NIJE jedini kanal — `skipped` ide pozivaocu (i korisniku).
     this.logger.log(
-      `Isparsirano ${result.length} stavki izvoda (od ${lines.length} redova).`,
+      `Isparsirano ${result.length} stavki izvoda (od ${rawLines.length} redova); nepročitanih redova: ${skipped.length}.`,
     );
-    return result;
+    return { lines: result, skipped };
+  }
+
+  /** Početak sirovog reda za izveštaj o nepročitanom redu (bez desnih razmaka). */
+  private excerpt(line: string): string {
+    return line.slice(0, BankStatementParserService.EXCERPT_LENGTH).trimEnd();
   }
 
   /**
@@ -138,20 +202,24 @@ export class BankStatementParserService {
     return new D(`${dinari}.${pare}`);
   }
 
-  /** DugPotInd → DEBIT/CREDIT (doc 21 §A). Nepoznat kod → CREDIT (priliv) uz warn. */
-  private parseDirection(ind: string, lineNumber: number): "DEBIT" | "CREDIT" {
+  /**
+   * DugPotInd → DEBIT/CREDIT (doc 21 §A). Nepoznat/prazan kod → `null` = GREŠKA reda.
+   * Pre popravke se nepoznat kod tumačio kao CREDIT (priliv) uz warn log — pogrešan smer je
+   * pogrešan novac (odliv proknjižen kao naplata zatvara dug koji nije plaćen), pa se smer
+   * više ne pretpostavlja.
+   */
+  private parseDirection(ind: string): "DEBIT" | "CREDIT" | null {
     const c = ind.trim().toUpperCase();
     if (c === "D" || c === "1") return "DEBIT";
     if (c === "C" || c === "K" || c === "P" || c === "2") return "CREDIT";
-    this.logger.warn(
-      `Red ${lineNumber}: nepoznat DugPotInd "${ind}" → tumačim kao CREDIT (priliv).`,
-    );
-    return "CREDIT";
+    return null;
   }
 
   /**
    * DatumDok (189,8), 4-cifrena godina. Podržava `DDMMYYYY` (FX default, doc 21 §B) i
-   * `YYYYMMDD`. Nevalidan/prazan → null (stavka se i dalje uvozi).
+   * `YYYYMMDD`. Nevalidan/prazan → `null` = GREŠKA reda: red pune dužine NOSI ovu kolonu po
+   * FX specifikaciji, pa je nečitljiv datum znak da red nije ono što mislimo da je (pre
+   * popravke se stavka uvozila sa `documentDate = null`, bez ijednog znaka korisniku).
    */
   private parseDate(raw: string): Date | null {
     const s = raw.replace(/\D/gu, "");
