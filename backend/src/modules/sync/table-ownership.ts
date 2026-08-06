@@ -337,6 +337,35 @@ export function isAdditiveRefreshTable(entity: string): boolean {
  * BigBit kolona i tabela nema `watermark`, dakle vozi FULL REFRESH: bez ovog upisa prvi
  * noćni sync posle unosa obrisao bi IBAN bez traga u logu, a izvozna faktura bi opet
  * izašla bez podataka za uplatu — isti kvar, samo sa nedelju dana zakašnjenja.
+ *
+ * ─── ZAŠTO `items` NIJE OVDE (odluka 06.08.2026, minimalna količina) ─────────
+ * Vlasnik je 06.08.2026. presudio da `items.min_quantity` prelazi u vlasništvo 4.0
+ * (unose je magacioneri). Prirodno je pomisliti da tabela zato treba OVDE. NE TREBA,
+ * iz tri merena razloga — i to je odluka, ne previd:
+ *
+ *   1. OVAJ SKUP NE BI STIGAO DO PRAVOG PISCA. `hasNativeColumns()` čita
+ *      ISKLJUČIVO `GenericSyncer` (jedan poziv, `generic.syncer.ts`), a to je MSSQL
+ *      put — koji je za `items` u `FROZEN_MSSQL_EXCLUDED` (mrtav izvor, admin-only).
+ *      Kolonu je stvarno prepisivao NOĆNI `.mdb` KANAL (`BigbitMdbImportService.
+ *      importItems`), koji `table-ownership` uopšte ne pita: on gradi `data` iz sync
+ *      mape. Upis ovde bi bio popravka na pogrešnim vratima — brava na sporednom
+ *      ulazu dok glavni stoji otvoren.
+ *   2. SEMANTIKA JE DRUGA. Ovaj skup čuva kolone kojih U IZVORU NEMA (`iban`,
+ *      `swift`). BigBit `Minimalna kolicina` POSTOJI i uredno stiže; pitanje nije
+ *      „kako da preživi ono što izvor ne zna" nego „ko je vlasnik kolone koju znaju
+ *      oba sistema". Poluga za to je u ovom repou uvek bila MAPA (`R_Tarife`,
+ *      `companies`, `goods_documents`), pa je i ovde izbačena iz mape.
+ *   3. CENA BEZ KORISTI. Upis bi `items` (92.625 redova) prebacio sa bulk
+ *      full-refresh-a na upsert red-po-red — trošak na putu koji je već označen kao
+ *      štetan i koji se ne pokreće, za zaštitu koju mapa već daje.
+ *
+ * ⚠️ PREOSTALI RIZIK, svesno prihvaćen i imenovan: ako admin EKSPLICITNO pokrene
+ * zamrznuti MSSQL tok `items` (`POST /sync/run` sa `entities:["items"]` — jedini
+ * način, uz upozorenje u logu), full refresh radi `deleteMany({id < 900M})` +
+ * `createMany`, pa bi BigBit-origin redovi nastali ponovo sa DB default-om
+ * `min_quantity = 0`. Taj put već nosi istu, dokumentovanu štetu za sve ostale
+ * kolone (vraća stanje na 22.07.2026), pa ovo ne uvodi nov razred kvara — ali ko
+ * ga pokrene, gubi i ručno unete minimalne količine.
  */
 export const NATIVE_COLUMN_TABLES = new Set<string>([
   "companies",

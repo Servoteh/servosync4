@@ -23,7 +23,11 @@ import type {
   OrdersCardQuery,
   ProformaCardQuery,
 } from "./dto/list-lager.dto";
-import type { CreateItemDto, UpdateItemDto } from "./dto/upsert-item.dto";
+import type {
+  CreateItemDto,
+  SetMinQuantityDto,
+  UpdateItemDto,
+} from "./dto/upsert-item.dto";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
@@ -41,6 +45,9 @@ import type { AuthUser } from "../auth/jwt.strategy";
  *   GET   /api/v1/artikli/:id/kartica-profakture  — dokumenti `Level >= 250`
  *   POST  /api/v1/artikli          — nov artikal (pun skup polja forme „Unos artikala")
  *   PATCH /api/v1/artikli/:id      — izmena artikla (samo 4.0-native red)
+ *   PATCH /api/v1/artikli/:id/minimalna-kolicina
+ *                                  — SAMO `min_quantity`, i nad BigBit-origin redom
+ *                                    (kolona je od 06.08.2026 4.0-owned)
  *
  * Lager i tri kartice su READ-ONLY OGLEDALO BigBit robnog (`*_mirror` tabele koje
  * puni noćni `.mdb` uvoz) — 4.0 native robne tabele su na produkciji prazne, a
@@ -78,6 +85,9 @@ import type { AuthUser } from "../auth/jwt.strategy";
  *     nijedno pravo se ne dodaje da bi se sakrio podatak koji je već dostupan.
  *     Kad robno pređe u 4.0 kao izvor istine (cutover april 2027), UPIS će tražiti
  *     svoj ključ; čitanje ostaje ovde.
+ *   • minimalna količina = `masters.min_quantity` (METHOD-LEVEL) — uzak ključ za jednu
+ *     kolonu; nijedna rola ga ne nosi, troje imenovanih ga ima kroz
+ *     `user_permission_overrides` (`prisma/seed/minimalne-kolicine-imenovani.sql`).
  *   • upis    = `masters.write` (METHOD-LEVEL, nadjačava klasnu — `getAllAndOverride`
  *     uzima handler pre klase). Do 28.07.2026 je upis visio na `sync.run`, što je
  *     semantički pogrešno (to je „pokreni sinhronizaciju", admin-only) — v. obrazloženje
@@ -157,6 +167,32 @@ export class ItemsController {
   @RequirePermission(PERMISSIONS.MASTERS_WRITE)
   create(@Body() dto: CreateItemDto, @Req() req: { user: AuthUser }) {
     return this.items.create(dto, req.user);
+  }
+
+  /**
+   * MINIMALNA KOLIČINA — uska izmena jedne kolone (odluka vlasnika 06.08.2026).
+   *
+   * ⚠️ MORA STAJATI PRE `@Patch(":id")`. Nest bira prvu rutu koja se poklopi, redom
+   * deklaracije. Broj segmenata ovde jeste drugačiji, pa se rute danas ne sudaraju —
+   * ali pravilo u ovom fajlu (v. `lookups`/`lager`) je da uža ruta ide iznad, da
+   * sledeća promena putanje ne otvori tiho pogrešan handler.
+   *
+   * Pravo je `masters.min_quantity`, NE `masters.write`: vlasnik je imenovao TROJICU
+   * ljudi (dva magacionera + Duško), a `masters.write` je kišobran nad celim
+   * šifarnikom koji bi im na dan otvaranja unosa artikala dao mnogo više od minimalne
+   * količine. Obrazloženje ključa je uz `PERMISSIONS.MASTERS_MIN_QUANTITY`.
+   *
+   * Ova ruta NAMERNO ne pada na 409 branu koja zatvara ostatak kartice — razlog i
+   * brane koje to čuvaju su uz `ItemsService.setMinQuantity`.
+   */
+  @Patch(":id/minimalna-kolicina")
+  @RequirePermission(PERMISSIONS.MASTERS_MIN_QUANTITY)
+  setMinQuantity(
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: SetMinQuantityDto,
+    @Req() req: { user: AuthUser },
+  ) {
+    return this.items.setMinQuantity(id, dto, req.user);
   }
 
   @Patch(":id")

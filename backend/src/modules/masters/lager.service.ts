@@ -166,6 +166,12 @@ export class LagerService {
              it.unit                       AS "unit",
              it.shelf                      AS "shelf",
              it.group_code                 AS "groupCode",
+             -- MINIMALNA KOLIČINA — 4.0-owned kolona (unose je magacioneri, 06.08.2026).
+             -- ::numeric::text, a ne golo ::text: kolona je double precision, pa bi
+             -- direktan ::text umeo da ispiše 1e-05 ili 0.30000000000000004. Prolaz
+             -- kroz numeric daje tačan decimalni zapis, isti oblik kao ostale
+             -- količine na ovom ekranu.
+             it.min_quantity::numeric::text AS "minQuantity",
              it.wholesale_price::text      AS "wholesalePrice",
              w.name                        AS "warehouseName",
              COUNT(*) OVER ()::int         AS "totalCount"
@@ -195,6 +201,10 @@ export class LagerService {
         stock: decText(r.stock),
         reserved: decText(r.reserved),
         free: decText(r.free),
+        // PRAZNO OSTAJE PRAZNO: `null` znači „prag nije postavljen", a `0` znači
+        // „prag je nula". Razlika je stvarna i mora da preživi do ekrana — mereno na
+        // produkciji 06.08.2026: 162 artikla imaju prag > 0, 92.460 nulu, 3 prazno.
+        minQuantity: decText(r.minQuantity),
         wholesalePrice: decText(r.wholesalePrice),
       })),
       meta: {
@@ -702,6 +712,7 @@ interface LagerRow {
   unit: string | null;
   shelf: string | null;
   groupCode: string | null;
+  minQuantity: string | null;
   wholesalePrice: string | null;
   warehouseName: string | null;
   totalCount: number;
@@ -788,6 +799,7 @@ const SORT_EXPR: Record<LagerSortColumn, string> = {
   stock: "l.stock",
   reserved: "l.reserved",
   free: "l.free",
+  minQuantity: "it.min_quantity",
   wholesalePrice: "it.wholesale_price",
 };
 

@@ -142,6 +142,31 @@ export function assertItemWritesAllowed(): void {
 }
 
 /**
+ * KOLONE ARTIKLA KOJE JE 4.0 PREUZEO OD BigBita (uže od cele tabele).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * `assertItemWritesAllowed()` + `assertItemIsNative()` zatvaraju CELU karticu
+ * artikla, i to ostaje: BigBit i dalje piše svih ostalih ~66 kolona, pa bi izmena
+ * bilo koje od njih nestala pri prvom noćnom uvozu.
+ *
+ * Ali vlasništvo nad kolonom nije stvar cele tabele. Odlukom vlasnika 06.08.2026.
+ * `min_quantity` je IZBAČENA iz sync mape (`sync-map.generated.ts`), pa je vrednost
+ * upisana iz aplikacije jedina koja postoji — uvoz je više ne dira. Tek to čini
+ * bezbednim da postoji USKA ruta koja tu jednu kolonu menja i nad BigBit-origin
+ * redom (`PATCH /v1/artikli/:id/minimalna-kolicina`, pravo `masters.min_quantity`).
+ *
+ * ⚠️ OVAJ SPISAK NIJE DEKORACIJA — on je USLOV. Kolona sme ovde SAMO ako je
+ * izbačena iz sync mape; inače uska ruta postaje tih gubitak podatka (unos preko
+ * dana, brisanje u 03:45). Brane koje to čuvaju:
+ *   • `items.write-policy.spec.ts` — svaka kolona odavde mora biti van sync mape;
+ *   • `sync/bigbit-mdb-import.items.spec.ts` — uvoz je stvarno ne upisuje.
+ *
+ * Imena su polja Prisma modela `Item` (ista imena koja koristi `ITEM_FIELDS`).
+ */
+export const ITEM_FIELDS_OWNED_BY_40 = ["minQuantity"] as const;
+
+export type ItemFieldOwnedBy40 = (typeof ITEM_FIELDS_OWNED_BY_40)[number];
+
+/**
  * ODVOJEN OPSEG ID-JEVA ZA 4.0-NATIVE ARTIKLE.
  *
  * `Item.id` je `@default(autoincrement())`, ali sync upisuje EKSPLICITNE id-jeve iz

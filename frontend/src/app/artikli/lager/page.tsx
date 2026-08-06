@@ -21,6 +21,7 @@ import {
   isLagerSortColumn,
   useLagerSkrol,
   useMagacinOpcije,
+  useSetMinimalnaKolicina,
   LAGER_SKROL_KAPA,
   type LagerListParams,
   type LagerRow,
@@ -28,6 +29,7 @@ import {
   type LagerSortDir,
   type ReservationScope,
 } from '@/api/lager';
+import { PERMISSIONS } from '@/lib/permissions';
 
 /**
  * LAGER LISTA — „drugi pregled artikala" (zahtev vlasnika 05.08.2026: „oba prikaza imaju
@@ -144,6 +146,12 @@ function bojaKolicine(v: string | null): string {
   return Number(v) < 0 ? 'text-status-danger' : 'text-ink';
 }
 
+/** Poruka posle izmene minimalne količine — uspeh i greška se moraju razlikovati bojom. */
+interface Poruka {
+  vrsta: 'ok' | 'greska';
+  tekst: string;
+}
+
 const columns: Column<LagerRow>[] = [
   {
     key: 'catalogNumber',
@@ -244,6 +252,105 @@ const columns: Column<LagerRow>[] = [
   },
 ];
 
+/**
+ * MINIMALNA KOLIČINA — jedina kolona ovog ekrana koja se UNOSI (vlasnik, 06.08.2026).
+ *
+ * Vraća se kao funkcija, a ne kao konstanta, jer mora da zna dve stvari koje postoje
+ * tek u komponenti: da li korisnik SME da menja (`smeIzmenu`) i koji red je trenutno
+ * u izmeni. Kolona se ubacuje između SLOBODNO i VP CENE — uz slobodnu količinu, jer
+ * se prag poredi baš sa njom.
+ *
+ * 🔴 KO NEMA PRAVO, NE VIDI NI MOGUĆNOST. Bez prava ćelija je običan tekst, bez
+ * kursora, bez `title`-a koji nudi izmenu i bez ikakvog nagoveštaja da se klikom
+ * nešto dešava. Zahtev je izričit: ne „klikni pa dobiješ 403".
+ */
+function kolonaMinimalna(opts: {
+  smeIzmenu: boolean;
+  uIzmeni: number | null;
+  nacrt: string;
+  cuvaSe: boolean;
+  /** Sveže sačuvane vrednosti — dok osvežavanje liste ne stigne (v. `sveze` u ekranu). */
+  sveze: Record<number, string | null>;
+  pocni: (r: LagerRow) => void;
+  promeni: (v: string) => void;
+  potvrdi: (r: LagerRow) => void;
+  odustani: () => void;
+}): Column<LagerRow> {
+  const prikaz = (r: LagerRow): string | null =>
+    r.itemId in opts.sveze ? opts.sveze[r.itemId] : r.minQuantity;
+
+  return {
+    key: 'minQuantity',
+    header: 'Min. kol.',
+    align: 'right',
+    numeric: true,
+    sortable: true,
+    render: (r) => {
+      if (opts.smeIzmenu && opts.uIzmeni === r.itemId) {
+        return (
+          <input
+            autoFocus
+            value={opts.nacrt}
+            disabled={opts.cuvaSe}
+            aria-label={`Minimalna količina za ${r.catalogNumber ?? `#${r.itemId}`}`}
+            onChange={(e) => opts.promeni(e.target.value)}
+            // Klik u polje ne sme da bubble-uje u red (izbor/otvaranje kartice).
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') opts.potvrdi(r);
+              if (e.key === 'Escape') opts.odustani();
+            }}
+            // Blur ODUSTAJE, ne čuva: klik bilo gde po ekranu ne sme tiho da upiše
+            // broj koji je magacioner tek počeo da kuca. Snima se Enter-om ili
+            // dugmetom — svesnom radnjom.
+            onBlur={() => {
+              if (!opts.cuvaSe) opts.odustani();
+            }}
+            className="tnums w-20 rounded-control border border-accent bg-surface px-1 py-0.5 text-right text-sm text-ink outline-none"
+          />
+        );
+      }
+
+      const v = prikaz(r);
+      const tekst = v === null ? '—' : formatDecimal(v, 3);
+
+      if (!opts.smeIzmenu)
+        return (
+          <span
+            className={cn('tnums', v === null ? 'text-ink-disabled' : 'text-ink-secondary')}
+            title={v === null ? 'Minimalna količina nije postavljena' : undefined}
+          >
+            {tekst}
+          </span>
+        );
+
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            opts.pocni(r);
+          }}
+          onDoubleClick={(e) => e.stopPropagation()}
+          title={
+            v === null
+              ? 'Minimalna količina nije postavljena — klikni da upišeš'
+              : 'Klikni da izmeniš minimalnu količinu'
+          }
+          className={cn(
+            'tnums w-full rounded-control px-1 text-right underline decoration-dotted underline-offset-4 hover:bg-surface-2',
+            v === null ? 'text-ink-disabled' : 'text-ink',
+          )}
+        >
+          {tekst}
+        </button>
+      );
+    },
+  };
+}
+
 /** CSV = iste kolone, istim redosledom; decimalni zarez, jer Excel sr inače čita tekst. */
 const csvDec = (v: string | null | undefined): string =>
   v === null || v === undefined || v === '' ? '' : v.replace('.', ',');
@@ -257,6 +364,8 @@ const csvColumns: CsvColumn<LagerRow>[] = [
   { header: 'Stanje', value: (r) => csvDec(r.stock) },
   { header: 'Rezervisano', value: (r) => csvDec(r.reserved) },
   { header: 'Slobodno', value: (r) => csvDec(r.free) },
+  // Prazno ostaje prazno i u CSV-u: „prag nije postavljen" nije „prag je nula".
+  { header: 'Min. kol.', value: (r) => csvDec(r.minQuantity) },
   { header: 'VP cena', value: (r) => csvDec(r.wholesalePrice) },
 ];
 
@@ -271,7 +380,7 @@ function Polje({ labela, sirina, children }: { labela: string; sirina: string; c
 }
 
 export default function LagerPage() {
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, can } = useAuth();
   const router = useRouter();
 
   // Filteri i sort žive U URL-u (frontend/CLAUDE.md §12) — povratak sa kartice vraća listu
@@ -290,6 +399,25 @@ export default function LagerPage() {
 
   const [izvozUToku, setIzvozUToku] = useState(false);
   const [izvozPoruka, setIzvozPoruka] = useState<string | null>(null);
+
+  // ─── Minimalna količina (jedina izmena na ekranu) ──────────────────────────
+  // Pravo NEMA nijedna rola — nose ga troje imenovanih kroz `user_permission_overrides`
+  // (odluka vlasnika 06.08.2026). `can()` odlučuje da li se mogućnost UOPŠTE prikazuje.
+  const smeMinimalnu = can(PERMISSIONS.MASTERS_MIN_QUANTITY);
+  const upisMinimalne = useSetMinimalnaKolicina();
+  const [uIzmeni, setUIzmeni] = useState<number | null>(null);
+  const [nacrt, setNacrt] = useState('');
+  const [minPoruka, setMinPoruka] = useState<Poruka | null>(null);
+  /**
+   * Sveže sačuvane vrednosti dok osvežavanje liste ne stigne.
+   *
+   * Bez ovoga bi ćelija posle snimanja na tren pokazala STARU vrednost (mutacija
+   * poništi keš, ali `useInfiniteQuery` mora ponovo da dovuče sve učitane strane) —
+   * a magacioner bi pomislio da unos nije primljen i upisao ga opet.
+   * Briše se pri svakoj promeni filtera: tada je u pitanju nov upit, pa nasleđene
+   * vrednosti više nemaju veze sa onim što se prikazuje.
+   */
+  const [sveze, setSveze] = useState<Record<number, string | null>>({});
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -398,8 +526,16 @@ export default function LagerPage() {
 
   // Promena filtera ili sorta poništava izbor: red iz prethodnog spiska ne mora uopšte
   // biti u novom, a dugmad iznad liste bi radila nad njim.
+  //
+  // Isto važi i za unos minimalne količine: otvoreno polje bi posle promene filtera
+  // stajalo nad DRUGIM artiklom (`uIzmeni` je `itemId`, a redosled se promenio), a
+  // sveže vrednosti bi se prikazivale u listi kojoj ne pripadaju.
   useEffect(() => {
     izaberi(null);
+    setUIzmeni(null);
+    setNacrt('');
+    setSveze({});
+    setMinPoruka(null);
   }, [filters, izaberi]);
 
   const redIzDogadjaja = useCallback(
@@ -478,6 +614,97 @@ export default function LagerPage() {
   );
 
   const akcijeIznad = akcijeZaRed(izabran);
+
+  // ─── Unos minimalne količine ───────────────────────────────────────────────
+
+  const pocniMinimalnu = useCallback((r: LagerRow) => {
+    setMinPoruka(null);
+    setUIzmeni(r.itemId);
+    // Polje kreće od zatečene vrednosti; prazno = „prag nije postavljen".
+    setNacrt(r.minQuantity ?? '');
+  }, []);
+
+  const odustaniMinimalnu = useCallback(() => {
+    setUIzmeni(null);
+    setNacrt('');
+  }, []);
+
+  /**
+   * Snimanje: prazno polje znači OBRIŠI PRAG (`null`), a `0` je prag nula — dve
+   * različite stvari i backend ih razlikuje. Poruka posle snimanja kaže ŠTA je
+   * promenjeno („2 → 5"), ne samo „sačuvano": magacioner mora da vidi da je
+   * pogodio pravi red, jer isti artikal ume da stoji u više magacina.
+   */
+  const potvrdiMinimalnu = useCallback(
+    (r: LagerRow) => {
+      const uneto = nacrt.trim();
+      const vrednost = uneto === '' ? null : uneto;
+      const staro = r.minQuantity;
+      const oznaka = r.catalogNumber ?? `#${r.itemId}`;
+
+      // Bez izmene se ne šalje zahtev — ni upis, ni trag u `updated_by`.
+      if ((staro ?? '') === (vrednost ?? '')) {
+        odustaniMinimalnu();
+        return;
+      }
+
+      upisMinimalne.mutate(
+        { itemId: r.itemId, minQuantity: vrednost },
+        {
+          onSuccess: (res) => {
+            const noviTekst = res.minQuantity === null ? '(nije postavljena)' : String(res.minQuantity);
+            const stariTekst =
+              res.previousMinQuantity === null ? '(nije postavljena)' : String(res.previousMinQuantity);
+            setSveze((p) => ({
+              ...p,
+              [r.itemId]: res.minQuantity === null ? null : String(res.minQuantity),
+            }));
+            setMinPoruka({
+              vrsta: 'ok',
+              tekst: `Minimalna količina · ${oznaka} — ${res.name ?? r.name ?? ''}: ${stariTekst} → ${noviTekst}. Sačuvano.`,
+            });
+            odustaniMinimalnu();
+          },
+          onError: (e) => {
+            // Polje OSTAJE otvoreno sa unetom vrednošću — da se ne kuca ponovo.
+            setMinPoruka({
+              vrsta: 'greska',
+              tekst: `Minimalna količina za ${oznaka} NIJE sačuvana: ${(e as Error).message}`,
+            });
+          },
+        },
+      );
+    },
+    [nacrt, odustaniMinimalnu, upisMinimalne],
+  );
+
+  /** Kolone: statične + „Min. kol." ubačena uz SLOBODNO (prag se poredi sa njim). */
+  const kolone = useMemo(() => {
+    const min = kolonaMinimalna({
+      smeIzmenu: smeMinimalnu,
+      uIzmeni,
+      nacrt,
+      cuvaSe: upisMinimalne.isPending,
+      sveze,
+      pocni: pocniMinimalnu,
+      promeni: setNacrt,
+      potvrdi: potvrdiMinimalnu,
+      odustani: odustaniMinimalnu,
+    });
+    const at = columns.findIndex((c) => c.key === 'free');
+    const out = [...columns];
+    out.splice(at + 1, 0, min);
+    return out;
+  }, [
+    smeMinimalnu,
+    uIzmeni,
+    nacrt,
+    upisMinimalne.isPending,
+    sveze,
+    pocniMinimalnu,
+    potvrdiMinimalnu,
+    odustaniMinimalnu,
+  ]);
 
   /**
    * „Export" izvozi CELU filtriranu listu, ne učitane redove — kad skrol stane na kapi,
@@ -692,6 +919,22 @@ export default function LagerPage() {
           </span>
         </div>
 
+        {/* Ishod izmene minimalne količine — stoji IZNAD tabele, uz red radnji, da se
+            vidi bez skrolovanja i pošto se izmena dešava u redu koji može biti bilo gde. */}
+        {minPoruka && (
+          <div
+            role="status"
+            className={cn(
+              'rounded-panel border px-4 py-2 text-sm',
+              minPoruka.vrsta === 'ok'
+                ? 'border-status-success/40 bg-status-success-bg text-status-success'
+                : 'border-status-danger/40 bg-status-danger-bg text-status-danger',
+            )}
+          >
+            {minPoruka.tekst}
+          </div>
+        )}
+
         {upit.error && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
             {(upit.error as Error).message}
@@ -734,7 +977,7 @@ export default function LagerPage() {
           }}
         >
           <DataTable
-            columns={columns}
+            columns={kolone}
             rows={redovi}
             rowKey={kljucReda}
             loading={upit.isLoading}
@@ -787,9 +1030,15 @@ export default function LagerPage() {
           {izvozPoruka && <span className="text-sm text-ink-secondary">{izvozPoruka}</span>}
         </div>
 
+        {/* Ekran mora sam da kaže šta je čije: STANJE/REZERVISANO/SLOBODNO su BigBit-ovi i
+            samo za čitanje, a MIN. KOL. je od 06.08.2026 naša kolona — noćni uvoz je više
+            ne prepisuje. Bez te rečenice bi magacioner s pravom sumnjao da mu unos „nestane". */}
         <p className="text-sm text-ink-disabled">
           Zalihe iz BigBit-a (noćno ogledalo, samo za čitanje) · STANJE = knjižen promet tekuće
           poslovne godine · SLOBODNO = STANJE − REZERVISANO
+          {smeMinimalnu
+            ? ' · MIN. KOL. se unosi ovde (klikni vrednost) i noćni uvoz je ne menja — prazno polje briše prag'
+            : ' · MIN. KOL. se vodi u aplikaciji, ne u BigBit-u'}
         </p>
       </div>
     </AppShell>

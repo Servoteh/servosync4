@@ -95,6 +95,9 @@ function lagerRow(over: Partial<Record<string, unknown>> = {}) {
     unit: "kom",
     shelf: "A-1-3",
     groupCode: "10",
+    // Minimalna količina (06.08.2026) — kolona koju magacioner unosi; upit je uvek
+    // vraća (`it.min_quantity::numeric::text`), pa je i fixture uvek nosi.
+    minQuantity: "2",
     wholesalePrice: "1250.0000",
     warehouseName: "Magacin robe",
     totalCount: 1,
@@ -462,6 +465,25 @@ describe("Lager — oblik odgovora", () => {
     expect(rows[1].warehouse).toEqual({ id: 44, name: "Magacin 44" });
   });
 
+  it("minimalna količina je u odgovoru, normalizovana kao i ostale količine", async () => {
+    // Kolona je `double precision` u šemi, pa upit ide kroz `::numeric::text` —
+    // bez toga bi 0.3 umelo da stigne kao „0.30000000000000004" i magacioner bi
+    // video sopstveni unos izobličen.
+    const { service } = makeService({ lager: [lagerRow({ minQuantity: "2.500" })] });
+    const [row] = (await service.lager({})).data;
+    expect(row.minQuantity).toBe("2.5");
+  });
+
+  it("🔴 prazna minimalna OSTAJE prazna — `null` nije `0`", async () => {
+    // „Prag nije postavljen" i „prag je nula" nisu isto: mereno 06.08.2026 na
+    // produkciji, 92.460 artikala ima 0, a 3 imaju prazno. Kad bi se prazno
+    // prikazalo kao 0, spisak „ispod minimalne" bi ta tri reda tretirao kao
+    // praćene artikle sa pragom nula.
+    const { service } = makeService({ lager: [lagerRow({ minQuantity: null })] });
+    const [row] = (await service.lager({})).data;
+    expect(row.minQuantity).toBeNull();
+  });
+
   it("grupa se razrešava batch-om i preživljava PRAZAN šifarnik", async () => {
     // `item_groups` je danas prazan (syncer za `R_Grupa` ne postoji) — obavezan
     // JOIN bi ovde vratio 500 umesto liste zaliha.
@@ -827,6 +849,42 @@ describe("ItemsController — lager i kartice", () => {
       expect(
         Reflect.getMetadata(PERMISSION_KEY_METADATA, handler),
       ).toBeUndefined();
+    }
+  });
+
+  it("🔴 izmena minimalne traži SVOJ ključ, ne klasni `directory.read`", () => {
+    // `directory.read` ima skoro svaka rola (VIEWER_READ_BASELINE). Da metoda ne
+    // nosi svoj `@RequirePermission`, nasledila bi klasni ključ i minimalne
+    // količine bi mogao da menja svako ko vidi šifarnik — umesto troje imenovanih.
+    const handler = Object.getOwnPropertyDescriptor(
+      ItemsController.prototype,
+      "setMinQuantity",
+    )?.value as object;
+    expect(handler).toBeDefined();
+    expect(Reflect.getMetadata(PERMISSION_KEY_METADATA, handler)).toBe(
+      PERMISSIONS.MASTERS_MIN_QUANTITY,
+    );
+    // I NE `masters.write`: taj kišobran nosi ceo šifarnik (artikli + komitenti).
+    expect(Reflect.getMetadata(PERMISSION_KEY_METADATA, handler)).not.toBe(
+      PERMISSIONS.MASTERS_WRITE,
+    );
+  });
+
+  it("🔴 SORT_EXPR i LAGER_SORT_COLUMNS se ne smeju razići — allowlist je jedina brana", async () => {
+    // Izraz sorta ide kroz `Prisma.raw`. Kolona koja je u DTO spisku a nije u
+    // `SORT_EXPR` dala bi `undefined` u ORDER BY (500 ili, gore, `Prisma.raw` nad
+    // nedefinisanim); obrnut smer ostavlja mrtav izraz. Provera je posredna, jer je
+    // `SORT_EXPR` privatan: svaka kolona iz spiska mora da proizvede ORDER BY sa
+    // stvarnim SQL izrazom, nikad sa imenom iz zahteva.
+    for (const column of LAGER_SORT_COLUMNS) {
+      const { prisma, service } = makeService();
+      await service.lager({ sort: column });
+      const sql = lagerSql(prisma);
+      const orderBy = sql.slice(sql.indexOf("ORDER BY"));
+      expect(orderBy).not.toContain("undefined");
+      // Ime kolone iz zahteva (camelCase) ne sme da procuri u SQL — u ORDER BY
+      // stoji izraz nad tabelom (`it.min_quantity`, `l.stock`, `w.name`…).
+      expect(orderBy).toMatch(/ORDER BY (it|l|w)\.[a-z_]+ (ASC|DESC) NULLS LAST/);
     }
   });
 

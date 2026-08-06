@@ -161,6 +161,39 @@ export const PERMISSIONS = {
    * da se, kad se brana preklopi, ne otkrije i rupa u ovlašćenjima u istom trenutku.
    */
   MASTERS_WRITE: "masters.write",
+  /**
+   * MINIMALNA KOLIČINA ARTIKLA — jedna kolona, troje ljudi (vlasnik, 06.08.2026).
+   * ───────────────────────────────────────────────────────────────────────────────
+   * Vlasnik: „ISPOD MINIMALNE KOLIČINE UNOSE MAGACIONERI, za sada korisnici sa mejlom
+   * dusko.kostic, radisav.radevic, nikola.savic."
+   *
+   * ŠTA OTVARA: isključivo `items.min_quantity`, kroz
+   * `PATCH /api/v1/artikli/:id/minimalna-kolicina`. Ništa drugo sa kartice artikla —
+   * pun unos artikala je i dalje zatvoren branom `assertItemWritesAllowed()` (409),
+   * jer čeka razrešenje 4.298 duplih kataloških brojeva.
+   *
+   * ZAŠTO NIJE `masters.write`: taj ključ je kišobran za CEO šifarnik (artikli +
+   * komitenti) i nosi ga krug admin + menadzment + nabavka_view. Ovde se traži
+   * OBRNUTO — najuže moguće ovlašćenje za tri imenovana magacionera, od kojih dvojica
+   * `masters.write` nemaju niti treba da ga dobiju. Kišobran bi im usput dao ceo
+   * šifarnik na dan kad se unos artikala otvori. Katalog za takav slučaj već ima
+   * presedan (`settings.accounting_rules`): uzak ključ pored kišobrana, ne umesto njega.
+   *
+   * ZAŠTO SME DA PIŠE PREKO BigBit-ovog REDA: `Minimalna kolicina` je 06.08.2026.
+   * IZBAČENA iz sync mape (`sync/sync-map.generated.ts`), pa noćni `.mdb` uvoz tu
+   * kolonu više ne dira — vrednost uneta ovde je jedina koja postoji. Bez tog koraka
+   * bi ovo pravo bilo obećanje koje sistem gazi svake noći u 03:45.
+   *
+   * 🔴 NE DODAVATI NIJEDNOJ ROLI — ni `magacioner`, ni `menadzment`. Ključ ima SAMO
+   * `admin` (kroz ALL); trojica ga dobijaju IMENOM kroz `user_permission_overrides`
+   * (`prisma/seed/minimalne-kolicine-imenovani.sql`). Isti obrazac i isti razlog kao
+   * knjige 05.08, i to je MERENO na produkciji 06.08.2026: rola `magacioner` ima
+   * 8 aktivnih ljudi, a `menadzment` 19 — dakle najuža rola koja pokriva svu trojicu
+   * (dva magacionera + Duško iz menadžmenta) otvorila bi kolonu 27 ljudima umesto 3,
+   * i to bez veze sa tim ko stvarno vodi zalihe. Brana je
+   * `minimalna-kolicina-samo-imenovanima.spec.ts`.
+   */
+  MASTERS_MIN_QUANTITY: "masters.min_quantity",
   // RFQ kupca (zahtev za ponudu) — 4.0-native, prodaja.
   // NAPOMENA: `projects.write` je UKLONJEN 26.07.2026 — predmete i komitente vodi
   // BigBit, ServoSync ih samo čita (odluka vlasnika, vidi modules/directory/bigbit-owned.ts).

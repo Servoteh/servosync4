@@ -302,6 +302,13 @@ export const ARTIKAL_SRC_TO_STAGE_FIELD: Record<string, string> = {
   "MP cena": "mpCena",
   "NabDevCena": "nabDevCena",
   "ProdDevCena": "prodDevCena",
+  // ⚠️ NAMERNO OSTAJE IAKO SE NE UVOZI (odluka vlasnika 06.08.2026): kolona
+  // `Minimalna kolicina` je IZBAČENA iz sync mape jer je `items.min_quantity` od
+  // 06.08. 4.0-owned (unose je magacioneri) — v. nadgrobnik u
+  // `sync-map.generated.ts`. Staging je i dalje prima, pa se u svakom trenutku vidi
+  // ŠTA BigBit misli da je minimum, bez rizika da to pregazi našu vrednost.
+  // Brana u `itemsMapping()` proverava samo smer MAPA → STAGING, pa nekorišćen
+  // staging red ne obara uvoz. (Dokaz: `bigbit-mdb-import.items.spec.ts`.)
   "Minimalna kolicina": "minimalnaKolicina",
   "ArtTaksa": "artTaksa",
   "Odlozeno": "odlozeno",

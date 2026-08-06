@@ -1869,13 +1869,37 @@ export const SYNC_MAP: TableMapping[] = [
         nullable: true,
         isId: false,
       },
-      {
-        src: "Minimalna kolicina",
-        field: "minQuantity",
-        type: "Float",
-        nullable: true,
-        isId: false,
-      },
+      // ┌───────────────────────────────────────────────────────────────────┐
+      // │ MINIMALNA KOLIČINA — 4.0 JE VLASNIK (odluka vlasnika, 06.08.2026) │
+      // └───────────────────────────────────────────────────────────────────┘
+      // NADGROBNIK — kolona `Minimalna kolicina` → `items.min_quantity` je
+      // IZBAČENA IZ MAPE, istim postupkom kao ranije `R_Tarife`, `companies` i
+      // `goods_documents` (samo užim zahvatom: jedna kolona, ne cela tabela).
+      //
+      // POVOD: vlasnik je 06.08.2026. odlučio da minimalne količine unose
+      // MAGACIONERI kroz aplikaciju (troje imenovanih, pravo `masters.min_quantity`).
+      // Dok je kolona stajala ovde, noćni .mdb uvoz u 03:45 ju je prepisivao
+      // BigBit-ovom vrednošću: `importItems()` gradi `data` upravo iz ovih kolona,
+      // pa bi unos magacionera nestao do sledećeg jutra — tiho, bez ijednog reda u
+      // logu. Isti razred kvara koji je 05.08. pojeo podatke firme.
+      //
+      // IZMERENO NA PRODUKCIJI 06.08.2026 (dokaz da je kanal bio živ): u poslednjem
+      // drop-u (id 7) 162 od 91.207 staging redova nosi ne-nultu minimalnu, a
+      // poređenje `bb_mdb_stage_artikli` ↔ `items` po `external_item_id` daje
+      // **0 razlika na 92.623 uparena reda** — dakle uvoz je kolonu držao u
+      // savršenom koraku sa BigBitom, što je tačno ono što bi pregazilo magacionera.
+      // Stanje kolone: 162 artikla ≠ 0, 92.460 nula, 3 prazno (od 92.625).
+      //
+      // ⚠️ ZAŠTO OVDE, A NE `NATIVE_COLUMN_TABLES`: v. obrazloženje uz taj skup u
+      // `sync/table-ownership.ts` — ukratko, taj set čita ISKLJUČIVO `GenericSyncer`
+      // (MSSQL put), a živi pisac ove kolone je `.mdb` kanal, koji ga nikad ne pita.
+      //
+      // ⚠️ `ARTIKAL_SRC_TO_STAGE_FIELD` NAMERNO zadržava `"Minimalna kolicina"`:
+      // staging i dalje prima BigBit-ovu vrednost (vidi se šta BigBit misli), a brana
+      // u `itemsMapping()` proverava samo smer mapa → staging, pa je nekorišćen
+      // staging red bezopasan. NE VRAĆATI ovu kolonu u mapu bez odluke vlasnika —
+      // pada brana `bigbit-mdb-import.items.spec.ts` („minimalna količina je
+      // 4.0-owned kolona").
       {
         src: "ArtTaksa",
         field: "itemFee",

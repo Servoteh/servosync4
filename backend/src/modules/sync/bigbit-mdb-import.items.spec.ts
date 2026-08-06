@@ -480,3 +480,136 @@ describe("uvoz artikala iz .mdb — ključ je BigBit šifra, ne naš id", () => 
     expect(res.notes.join(" ")).not.toMatch(/brojači se ne zbrajaju/);
   });
 });
+
+/**
+ * MINIMALNA KOLIČINA JE 4.0-OWNED KOLONA — BRANA UZ ODLUKU VLASNIKA, 06.08.2026.
+ * =============================================================================
+ * ODLUKA: „ISPOD MINIMALNE KOLIČINE UNOSE MAGACIONERI" — `items.min_quantity` od
+ * 06.08.2026. puni aplikacija (pravo `masters.min_quantity`, troje imenovanih), a
+ * BigBit-ova vrednost se više NE uvozi.
+ *
+ * ZAŠTO TEST, A NE SAMO NADGROBNIK U MAPI: `sync-map.generated.ts` je GENERISAN
+ * fajl. Sledeće pokretanje generatora — ili jedan „vraćam kolonu koja fali" —
+ * ćutke bi vratio blok od šest redova, a `importItems()` bi od naredne noći opet
+ * pisao u kolonu. Kvar bi bio nevidljiv: unos magacionera nestane u 03:45, bez
+ * ijedne greške u logu, i primeti se tek kad neko traži zašto „ispod minimalne"
+ * više ne prijavljuje ono što je juče uneto.
+ *
+ * IZMERENO NA PRODUKCIJI 06.08.2026 (dokaz da je kanal bio živ, a ne teorijski):
+ * poslednji drop (id 7) nosi 162 od 91.207 staging redova sa ne-nultom minimalnom,
+ * a poređenje `bb_mdb_stage_artikli` ↔ `items` po `external_item_id` daje
+ * **0 razlika na 92.623 uparena reda** — uvoz je kolonu držao u savršenom koraku
+ * sa BigBitom.
+ *
+ * ⚠️ Ako se pravilo ikad promeni, menja se UZ ODLUKU VLASNIKA — ne tako što se
+ * test „popravi" da prođe.
+ */
+describe("minimalna količina je 4.0-owned kolona — uvoz je NE piše", () => {
+  it("mapiranje `items` NEMA `minQuantity` (kolona je izbačena 06.08.2026)", () => {
+    const m = SYNC_MAP.find((x) => x.targetDb === "items");
+    const sporne = (m?.columns ?? []).filter(
+      (c) => c.field === "minQuantity" || c.src === "Minimalna kolicina",
+    );
+    // Poruka nabraja nađeno, da onaj ko obori branu odmah vidi ŠTA je vratio.
+    expect(sporne).toEqual([]);
+  });
+
+  it("staging i dalje prima BigBit vrednost — vidi se, ali se ne upisuje", () => {
+    // Brana u `itemsMapping()` gleda samo smer MAPA → STAGING, pa nekorišćen
+    // staging red ne obara uvoz. Zadržan je namerno: u svakom trenutku se sme
+    // pitati šta BigBit misli da je minimum, bez rizika da to pregazi našu vrednost.
+    expect(ARTIKAL_SRC_TO_STAGE_FIELD["Minimalna kolicina"]).toBe(
+      "minimalnaKolicina",
+    );
+  });
+
+  it("uvoz NE dira `min_quantity` postojećeg reda, ni kad BigBit šalje drugu vrednost", async () => {
+    const { service, items, update } = makeService({
+      items: [
+        {
+          id: 2,
+          externalItemId: 17048,
+          catalogNumber: "K-1",
+          name: "staro ime",
+          // Vrednost koju je upisao magacioner kroz aplikaciju.
+          minQuantity: 12,
+        },
+      ],
+      stage: [
+        stage(1, {
+          "Sifra artikla": "17048",
+          "Kataloski broj": "K-1",
+          Naziv: "novo ime",
+          Grupa: "1",
+          // BigBit tvrdi nešto sasvim drugo — i to više nije bitno.
+          "Minimalna kolicina": "999",
+        }),
+      ],
+    });
+
+    const res = await runItems(service);
+
+    // Red se AŽURIRA (ime se stvarno promenilo), ali minimalna nije u `data`.
+    expect(res.updated).toBe(1);
+    expect(update.mock.calls[0][0].data).not.toHaveProperty("minQuantity");
+    expect(items.find((i) => i.id === 2)?.minQuantity).toBe(12);
+    expect(items.find((i) => i.id === 2)?.name).toBe("novo ime");
+  });
+
+  it("promena SAMO minimalne u BigBitu nije izmena — red se ni ne dira", async () => {
+    // `sameProjectRow` poredi po kolonama iz mape. Da je `minQuantity` ostao u njoj,
+    // ovaj red bi se svake noći „menjao" i vraćao na BigBit vrednost.
+    const { service, update, create } = makeService({
+      items: [
+        {
+          id: 2,
+          externalItemId: 17048,
+          catalogNumber: "K-1",
+          name: "isto ime",
+          groupCode: "1",
+          originCode: "",
+          subgroupCode: "",
+          goodsTaxRateCode: "",
+          serviceTaxRateCode: "",
+          minQuantity: 12,
+        },
+      ],
+      stage: [
+        stage(1, {
+          "Sifra artikla": "17048",
+          "Kataloski broj": "K-1",
+          Naziv: "isto ime",
+          Grupa: "1",
+          "Minimalna kolicina": "999",
+        }),
+      ],
+    });
+
+    const res = await runItems(service);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(res.unchanged).toBe(1);
+  });
+
+  it("nov BigBit artikal se ubacuje BEZ minimalne — ostaje DB default (0)", async () => {
+    const { service, create } = makeService({
+      items: [],
+      stage: [
+        stage(1, {
+          "Sifra artikla": "99001",
+          "Kataloski broj": "K-NOVO",
+          Naziv: "nov artikal",
+          Grupa: "1",
+          "Minimalna kolicina": "5",
+        }),
+      ],
+      maxBigbitId: 100,
+    });
+
+    const res = await runItems(service);
+
+    expect(res.inserted).toBe(1);
+    expect(create.mock.calls[0][0].data).not.toHaveProperty("minQuantity");
+  });
+});

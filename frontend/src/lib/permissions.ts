@@ -99,6 +99,20 @@ export const PERMISSIONS = {
   // /artikli i /komitenti zato ostaje na DIRECTORY_READ — ovo je za dugmad
   // „Sačuvaj"/„Novi", da `can()` na dan otvaranja odmah kaže istinu.
   MASTERS_WRITE: 'masters.write',
+  /**
+   * MINIMALNA KOLIČINA ARTIKLA — jedna kolona, troje imenovanih (vlasnik, 06.08.2026).
+   *
+   * Za razliku od `MASTERS_WRITE`, ovaj ključ ZAISTA otvara upis: kolona
+   * `items.min_quantity` je istog dana izbačena iz sync mape, pa je noćni uvoz više
+   * ne prepisuje i `PATCH /v1/artikli/:id/minimalna-kolicina` radi i nad
+   * BigBit-origin artiklom.
+   *
+   * Nijedna rola ga ne nosi (ni `magacioner` ni `menadzment`) — dodela ide imenom
+   * kroz `user_permission_overrides`. Ekran (`/artikli/lager`) zato mora da pita
+   * `can()` PRE nego što ponudi izmenu: ko nema pravo ne sme ni da vidi polje, a ne
+   * da klikne pa dobije 403.
+   */
+  MASTERS_MIN_QUANTITY: 'masters.min_quantity',
   // RFQ kupca — 4.0-native (mirror backend kataloga).
   // `projects.write` je uklonjen 26.07.2026: komitente i predmete vodi BigBit,
   // ServoSync ih samo čita (nema više write ekrana ni dugmadi).

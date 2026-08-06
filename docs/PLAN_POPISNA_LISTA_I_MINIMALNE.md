@@ -92,7 +92,7 @@ Merenje BigBit originala je rađeno nad `_legacy/Izvoz/` (SaveAsText izvoz Servo
 | Rezervacije + **slobodna količina** — BigBit ogledalo | **POSTOJI I ŽIVO** | `backend/src/modules/masters/lager.service.ts` |
 | Lager ekran sa kolonama Stanje/Rezervisano/Slobodno/**Polica** | **POSTOJI I ŽIVO** | `frontend/src/app/artikli/lager/page.tsx` |
 | Polica na artiklu (`items.shelf`) | **POSTOJI**, puni je .mdb uvoz | `backend/prisma/schema.prisma` (model `Item`) |
-| Minimalna količina (`items.minQuantity`) | **POSTOJI**, puni je .mdb uvoz | isto |
+| Minimalna količina (`items.minQuantity`) | **POSTOJI**; do 06.08.2026. punio je .mdb uvoz, od tada **4.0-owned** (unose magacioneri) | isto |
 | Ekran/izveštaj „ispod minimalne" | **NE POSTOJI NIGDE** | mereno grep-om nad celim `backend/src` + `frontend/src` |
 | Štampa (pdfmake stog, firma iz baze, trag štampe) | **POSTOJI, zreo** | `documents/pdf.service.ts`, `documents/doc-layout/`, `robno/print/robno-doc-layout.ts` |
 | Štampa **živog** lagera (ogledala) | **NE POSTOJI** | postojeći `/robno/lager/pdf` gleda prazan native lager |
@@ -221,7 +221,9 @@ Text, ne šifarnik, i u podacima to i piše.
 ### 1.5 Minimalna količina
 
 **`items.minQuantity`** — `Float? @default(0) @map("min_quantity")`, BigBit `Minimalna kolicina`.
-Puni je isti .mdb uvoz, poklapanje 1:1 (0 razlika).
+Do 06.08.2026. punio ju je isti .mdb uvoz, poklapanje 1:1 (0 razlika) — a baš to savršeno
+poklapanje je i bio dokaz da bi uvoz pregazio svaki ručni unos. **IZVEDENO 06.08.2026:** kolona
+je izbačena iz sync mape i prešla u vlasništvo 4.0 (v. §0-A); uvoz je više ne upisuje.
 
 Gde se prikazuje: **samo u formi artikla** (`frontend/src/app/artikli/_forma/…`, polje „Minimalna
 količina"). Nije kolona ni na jednoj listi. **Nijedan ekran, izveštaj ni ruta „ispod minimalne" ne
@@ -451,7 +453,7 @@ već ima u CMMS-u (`odrzavanje.service.ts:1195`, paritet 1.0). Uz to kolona **`N
 |---|---|
 | Razlika „po stanju" vs „po slobodnoj" je **danas 0** (86 = 86) | Izbor se ne vidi na prvi pogled — mora da postoji **oznaka na ekranu i na papiru** po kom kriterijumu je lista napravljena, inače niko neće znati šta gleda |
 | **79 od 86** pogodaka su artikli **bez ijednog prometa u 2026** | Bez filtera bi izveštaj otvorio 79 lažnih uzbuna i niko ga ne bi koristio → **prekidač „samo artikli sa prometom u tekućoj godini", podrazumevano UKLJUČEN** |
-| Samo **162 od 92.625** artikala ima minimalnu količinu (0,17 %) | Izveštaj je danas skoro prazan. Ako se od njega očekuje da vodi nabavku, minimalne se moraju popuniti — **u BigBitu**, jer je on master do cutovera (P7) |
+| Samo **162 od 92.625** artikala ima minimalnu količinu (0,17 %) | Izveštaj je danas skoro prazan. Ako se od njega očekuje da vodi nabavku, minimalne se moraju popuniti — **u 4.0**, kroz lager listu; kolona je od 06.08.2026 naša (P7 REŠEN) |
 | Nije poznato šta BigBit tačno radi (`LL_ArtikliIspodMinKolicine` nije u izvozu) | Ne može se garantovati paritet broja redova sa BigBitom — mora se reći korisniku, ne prećutati (P6) |
 
 ---
@@ -662,7 +664,7 @@ cutovera.
 | P4 | vlasnik | Grupisanje popisne liste: **po polici** (predlog) ili po grupi artikla kao BigBit? | **Po polici** — komisija fizički ide policu po policu | K3 |
 | P5 | vlasnik | **4.789 od 7.179** redova sa stanjem NEMA policu. Štampaju se u grupi „BEZ POLICE" ili se izostavljaju? | **Štampaju se**, na kraju liste — izostavljena roba se pri popisu ponaša kao manjak | K3 |
 | P6 | vlasnik | „Ispod minimalne": porediti sa **slobodnom** (predlog) ili sa stanjem? I prag `<` ili `<=`? | **Slobodna**, prag **`<=`**, uz prekidač za oba. 🔴 BigBitov `LL_ArtikliIspodMinKolicine` nije u izvozu → paritet se ne može garantovati | K2 |
-| P7 | vlasnik | Samo **162 od 92.625** artikala ima minimalnu količinu. Ko je popunjava i gde — u BigBitu (master) ili u 4.0? | **U BigBitu** dok je on master; u 4.0 bi je noćni uvoz pregazio | K2 (upotrebljivost) |
+| ~~P7~~ | vlasnik | Samo **162 od 92.625** artikala ima minimalnu količinu. Ko je popunjava i gde — u BigBitu (master) ili u 4.0? | ✅ **ODLUČENO I IZVEDENO 06.08.2026: U 4.0.** Kolona je izbačena iz sync mape, unose je tri imenovana magacionera kroz `/artikli/lager` (pravo `masters.min_quantity`). Preporuka „u BigBitu" je time PREVAZIĐENA — v. §0-A | — |
 | P8 | vlasnik | Rezervacije: seći ih po **poslovnoj godini** (naše podrazumevano) ili uzimati pun BigBit zbir? BigBit ih ne seče — ni po godini ni po magacinu | **Zadržati sečenje po godini**; bez njega bi „Slobodno" pokazivalo ≈ 1,08 M jedinica prezauzetosti umesto ≈ 71 k | K1, K2, K3 |
 | P9 | vlasnik | Štampa li se popisna lista i za magacin **„Gotovi proizvodi"** (30 redova, svih 30 sa stanjem 0)? | Ne podrazumevano; ponuditi kao izbor magacina | K3 |
 

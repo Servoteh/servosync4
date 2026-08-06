@@ -112,6 +112,12 @@ export const LAGER_SORT_COLUMNS = [
   "stock",
   "reserved",
   "free",
+  // `minQuantity` (06.08.2026) — kolona koju magacioner unosi. Sort po njoj je jedini
+  // način da se sa ekrana odgovori na „koje artikle uopšte pratimo": danas ih je
+  // 162 od 92.625, pa bi bez sorta bili razbacani po 7.727 redova lagera.
+  // 🔴 SVAKA nova kolona MORA i u `SORT_EXPR` (lager.service.ts) — ta dva spiska su
+  // allowlist i JEDINA brana od SQL injekcije (izraz sorta ide kroz `Prisma.raw`).
+  "minQuantity",
   "wholesalePrice",
 ] as const;
 

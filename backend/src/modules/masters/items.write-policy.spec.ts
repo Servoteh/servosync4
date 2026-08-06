@@ -12,6 +12,7 @@ import {
   isNativeItemId,
   ITEMS_ENTITY,
   ITEMS_WRITE_OPEN,
+  ITEM_FIELDS_OWNED_BY_40,
   ITEM_FIELDS_REQUIRING_MIGRATION,
   itemsSurviveSync,
   NATIVE_ITEM_ID_BASE,
@@ -90,13 +91,32 @@ describe("items.write-policy — brana upisa", () => {
     expect(mapping?.targetDb).toBe(ITEMS_ENTITY);
   });
 
-  it("NATIVE_COLUMN_TABLES ne bi spasao `items`: nijedno polje forme nije van sync mape", () => {
-    // Zaštita „nemapiranih kolona" čuva SAMO ono čega u mapi nema. Za `items` je
-    // taj skup PRAZAN, pa upis ne postaje bezbedan ni kad bi se tabela tu upisala.
+  it("van sync mape je TAČNO jedno polje forme — `minQuantity` (4.0-owned od 06.08.2026)", () => {
+    // Do 06.08.2026 je ovaj test tvrdio da je skup PRAZAN, i to je bio argument
+    // zašto `NATIVE_COLUMN_TABLES` ne bi ništa spasao. Odlukom vlasnika je
+    // `Minimalna kolicina` izbačena iz mape (magacioneri je unose kroz aplikaciju),
+    // pa skup više nije prazan — ali ostaje TAČNO ta jedna kolona.
+    //
+    // Zaključak se time NE menja: sve ostale kolone forme su i dalje mapirane, pa
+    // otvaranje punog unosa artikala i dalje ne bi bilo bezbedno. Test je zato
+    // pinovan na tačan spisak, a ne na „prazno" — inače bi sledeća kolona koja
+    // ispadne iz mape prošla neprimećeno.
     const mapping = SYNC_MAP.find((m) => m.source === "R_Artikli");
     const mapped = new Set(mapping?.columns.map((c) => c.field));
     const unmapped = Object.keys(ITEM_FIELDS).filter((f) => !mapped.has(f));
-    expect(unmapped).toEqual([]);
+    expect(unmapped).toEqual([...ITEM_FIELDS_OWNED_BY_40]);
+  });
+
+  it("`minQuantity` je van mape — brana da je uvoz više ne prepisuje", () => {
+    // Ista činjenica iz ugla SINHRONIZACIJE (ponašanje uvoza pinuje
+    // `sync/bigbit-mdb-import.items.spec.ts`). Ovde stoji jer je to jedini razlog
+    // zašto uzak upis minimalne količine (`masters.min_quantity`) sme da postoji
+    // iznad reda koji je inače BigBit-ov: da kolona ostane u mapi, unos bi nestao
+    // pri prvom noćnom uvozu.
+    const mapping = SYNC_MAP.find((m) => m.source === "R_Artikli");
+    expect(
+      (mapping?.columns ?? []).filter((c) => c.field === "minQuantity"),
+    ).toEqual([]);
   });
 
   it("popis „traži migraciju” pominje raster i multi-barkod — prateće tabele", () => {
@@ -153,14 +173,30 @@ describe("items.write-policy — odvojen opseg id-a (marker porekla)", () => {
 // ═══════════════════════════════════════════════════════════ pokrivenost polja
 
 describe("Katalog polja artikla — paritet sa BigBit formom", () => {
-  it("pokriva sve kolone modela `Item` osim četiri koje drži server", () => {
+  it("pokriva sve kolone modela `Item` osim četiri koje drži server (+ 4.0-owned)", () => {
+    // Do 06.08.2026 je forma bila TAČNO „mapa minus četiri serverske kolone".
+    // Izbacivanjem `Minimalna kolicina` iz mape (vlasništvo 4.0) forma je postala
+    // mapa minus serverske PLUS 4.0-owned — polje se i dalje prikazuje i unosi,
+    // samo mu izvor više nije BigBit. Pinuje se sabiranje, ne broj.
     const mapping = SYNC_MAP.find((m) => m.source === "R_Artikli");
     const serverOwned = ["id", "externalItemId", "signature", "createdAt"];
-    const expected = (mapping?.columns ?? [])
-      .map((c) => c.field)
-      .filter((f) => !serverOwned.includes(f))
-      .sort();
+    const expected = [
+      ...(mapping?.columns ?? [])
+        .map((c) => c.field)
+        .filter((f) => !serverOwned.includes(f)),
+      ...ITEM_FIELDS_OWNED_BY_40,
+    ].sort();
     expect(Object.keys(ITEM_FIELDS).sort()).toEqual(expected);
+  });
+
+  it("svaka 4.0-owned kolona MORA biti van sync mape (inače je unos tih gubitak)", () => {
+    // Uslov iz zaglavlja `ITEM_FIELDS_OWNED_BY_40`: uska ruta upisa sme da postoji
+    // samo nad kolonom koju uvoz ne prepisuje. Ko doda kolonu na taj spisak a
+    // zaboravi da je izbaci iz mape, obara ovaj test — a ne korisnikov unos u 03:45.
+    const mapping = SYNC_MAP.find((m) => m.source === "R_Artikli");
+    const mapped = new Set((mapping?.columns ?? []).map((c) => c.field));
+    const jos_u_mapi = ITEM_FIELDS_OWNED_BY_40.filter((f) => mapped.has(f));
+    expect(jos_u_mapi).toEqual([]);
   });
 
   it("svako polje nosi srpsku oznaku i BigBit izvor", () => {

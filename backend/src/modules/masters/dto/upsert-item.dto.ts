@@ -13,8 +13,13 @@ import { Prisma } from "@prisma/client";
  * ─────────────────────────────────────────────────────────────────────────────
  * `docs/migration/BIGBIT_ARTIKLI.md` §1 popisuje 67 kolona `R_Artikli` (+ `BBSifra
  * artikla` koja postoji samo u QBigTehn kopiji). Prisma model `Item` ima TAČNO 68
- * kolona i SVAKA od njih je u sync mapi (`sync-map.generated.ts`, `source: "R_Artikli"`)
- * — provereno diff-om, presek je prazan u oba smera.
+ * kolona i sve su bile u sync mapi (`sync-map.generated.ts`, `source: "R_Artikli"`).
+ *
+ * ⚠️ OD 06.08.2026 JEDNA VIŠE NIJE: `minQuantity` je odlukom vlasnika izbačena iz mape
+ * (minimalne količine unose magacioneri, pa ih noćni uvoz više ne prepisuje). Ona je
+ * i dalje u OVOM katalogu — polje se prikazuje i unosi, samo mu izvor nije BigBit.
+ * Spisak 4.0-owned kolona drži `items.write-policy.ts` (`ITEM_FIELDS_OWNED_BY_40`),
+ * a razliku pinuje `items.write-policy.spec.ts`.
  *
  * Ovaj katalog (`ITEM_FIELDS`) pokriva svih 68 minus 4 koje server drži sam:
  *   • `id`             — dodeljuje servis iz native opsega (`items.write-policy.ts`),
@@ -177,6 +182,47 @@ export interface CreateItemDto extends ItemWriteFields, RasterWeightInput {
 }
 
 export type UpdateItemDto = ItemWriteFields & RasterWeightInput;
+
+/**
+ * TELO USKE IZMENE MINIMALNE KOLIČINE (`PATCH /v1/artikli/:id/minimalna-kolicina`).
+ *
+ * Zaseban tip, a ne `UpdateItemDto`, iz jednog razloga: `UpdateItemDto` prima svih
+ * ~66 polja kartice, pa bi telo `{ minQuantity: 5, name: "…" }` prošlo validaciju,
+ * a servis bi `name` TIHO odbacio. Uska ruta mora da odbije ono što ne sme da menja,
+ * ne da to prećuti — v. `validateSetMinQuantity`.
+ *
+ * `null` je dozvoljen i znači „obriši prag" (kolona je `Float?`); nula znači
+ * „prag je nula". Razlika je stvarna: 92.460 artikala danas ima 0, a 3 imaju prazno.
+ */
+export interface SetMinQuantityDto {
+  minQuantity: NumericInput | null;
+}
+
+/**
+ * Validacija uske izmene: telo sme da nosi TAČNO jedno polje.
+ *
+ * Numerička pravila se ne prepisuju — pozivaju se ista koja važe na kartici
+ * (`ITEM_FIELDS.minQuantity`: `kind: "quantity"`, `min: 0`, srpski decimalni zarez),
+ * pa se granica ne može razići između dva ekrana.
+ */
+export function validateSetMinQuantity(dto: SetMinQuantityDto): void {
+  const errors: string[] = [];
+  const keys = Object.keys(dto ?? {});
+  const visak = keys.filter((k) => k !== "minQuantity");
+  if (visak.length)
+    errors.push(
+      `Ova izmena menja samo minimalnu količinu — odbijena polja: ${visak.join(", ")}.`,
+    );
+  if (!keys.includes("minQuantity"))
+    errors.push("Minimalna količina je obavezna.");
+  if (errors.length) throw new BadRequestException(errors);
+
+  // Dalje presuđuje katalog polja (ista pravila kao kartica artikla).
+  // `null` se prosleđuje KAO NULL, ne kao `undefined`: `undefined` bi za
+  // `validateUpdateItem` značilo „polje nije poslato" i vratilo bi „Nema polja za
+  // izmenu.", pa brisanje praga ne bi bilo moguće.
+  validateUpdateItem({ minQuantity: dto.minQuantity } as UpdateItemDto);
+}
 
 /** Gustina čelika u kg/m³ (BIGBIT_ARTIKLI.md §4.10). */
 export const STEEL_DENSITY_KG_PER_M3 = 7850;

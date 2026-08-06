@@ -23,10 +23,12 @@ import {
   computeKilogramsPerPiece,
   toItemColumns,
   validateCreateItem,
+  validateSetMinQuantity,
   validateUpdateItem,
   type CreateItemDto,
   type ItemWriteFields,
   type RasterWeightInput,
+  type SetMinQuantityDto,
   type UpdateItemDto,
 } from "./dto/upsert-item.dto";
 import {
@@ -618,6 +620,68 @@ export class ItemsService {
     );
 
     return this.findOne(id);
+  }
+
+  /**
+   * MINIMALNA KOLIČINA — jedina kolona artikla koju 4.0 sme da menja i nad
+   * BigBit-origin redom (odluka vlasnika 06.08.2026, pravo `masters.min_quantity`).
+   *
+   * ⚠️ NAMERNO BEZ `assertItemWritesAllowed()` I BEZ `assertItemIsNative()`, i to je
+   * ceo smisao ove metode. Te dve brane čuvaju kolone koje BigBit i dalje piše: 409
+   * postoji zato što bi izmena nestala pri prvom noćnom uvozu. Za `min_quantity` taj
+   * razlog VIŠE NE POSTOJI — kolona je 06.08.2026. izbačena iz sync mape
+   * (`sync/sync-map.generated.ts`), pa je uvoz ne dira. Držati branu i ovde značilo
+   * bi odbiti upis zbog opasnosti koje nema, i to nad 92.622 od 92.625 artikala
+   * (koliko ih je BigBit-origin) — tj. pravo bi bilo mrtvo slovo.
+   *
+   * DA SE KOLONA IKAD VRATI U MAPU, ova ruta postaje tih gubitak podatka. Zato
+   * vlasništvo ne visi na komentaru nego na dve brane koje padaju u testu:
+   *   • `masters/items.write-policy.spec.ts` — svaka kolona iz
+   *     `ITEM_FIELDS_OWNED_BY_40` mora biti van sync mape;
+   *   • `sync/bigbit-mdb-import.items.spec.ts` — uvoz je zaista ne upisuje.
+   *
+   * `updatedAt`/`updatedBy` se upisuju kao trag (kolone su iz migracije
+   * `20260728170000` i NISU u sync mapi, pa ih uvoz ne gazi). `signature` se NE dira:
+   * to je BigBit-ov `PotpisArt` nad celim slogom, a ovde se menja jedna naša kolona —
+   * prepisati ga značilo bi tvrditi da je čitav artikal naš.
+   */
+  async setMinQuantity(id: number, dto: SetMinQuantityDto, user: AuthUser) {
+    validateSetMinQuantity(dto);
+
+    const existing = await this.prisma.item.findUnique({
+      where: { id },
+      select: { id: true, catalogNumber: true, name: true, minQuantity: true },
+    });
+    if (!existing) throw new NotFoundException(`Artikal ${id} ne postoji`);
+
+    // `toItemColumns` primenjuje ista pravila kao kartica (srpski decimalni zarez,
+    // spuštanje u broj za legacy `Float` kolonu) i `null` propušta kao `null`
+    // („obriši prag"). Ključ je uvek prisutan — `validateSetMinQuantity` to garantuje.
+    const columns = toItemColumns({
+      minQuantity: dto.minQuantity,
+    } as ItemWriteFields);
+
+    const updated = await this.prisma.item.update({
+      where: { id },
+      data: {
+        minQuantity: columns.minQuantity as number | null,
+        updatedAt: new Date(),
+        updatedBy: signatureFor(user),
+      },
+      select: { id: true, catalogNumber: true, name: true, minQuantity: true },
+    });
+
+    // Odgovor je NAMERNO uzak (ne `findOne`): ekran koji ovo zove je lager lista, koja
+    // od izmene traži samo novu vrednost za jednu ćeliju. `findOne` bi uz nju povukao
+    // šifarnike, PDV stope i dimenzije — skupo, i ekran to ne prikazuje.
+    return {
+      itemId: updated.id,
+      catalogNumber: updated.catalogNumber,
+      name: updated.name,
+      minQuantity: updated.minQuantity,
+      /** Prethodna vrednost — ekran u poruci kaže ŠTA je promenio, ne samo „sačuvano". */
+      previousMinQuantity: existing.minQuantity,
+    };
   }
 
   /**

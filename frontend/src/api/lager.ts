@@ -1,6 +1,6 @@
 'use client';
 
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { apiFetch } from './client';
 import type { CodeRef } from './masters';
@@ -14,12 +14,19 @@ import { useWarehousesLookup } from './lookups';
  *   GET /v1/artikli/:id/kartica-robno       · hronološko kretanje + tekuće stanje (Level 0)
  *   GET /v1/artikli/:id/kartica-profakture  · ponude/rezervacije/otpremnice (Level ≥ 250)
  *   GET /v1/artikli/:id/kartica-narudzbine  · trebovanja koja sadrže artikal
+ * plus JEDNA mutacija, pod svojim pravom `masters.min_quantity` (v. izuzetak ispod):
+ *   PATCH /v1/artikli/:id/minimalna-kolicina · prag ispod kog se poručuje
  *
- * ⚠️ OVDE NEMA NIJEDNE MUTACIJE, i to nije stvar opreza nego stanja podataka: robno se
- * do cutover-a (april 2027) vodi ISKLJUČIVO u BigBit-u. Mereno na produkciji 04.08.2026:
+ * ⚠️ ZALIHE SU READ-ONLY, i to nije stvar opreza nego stanja podataka: robno se do
+ * cutover-a (april 2027) vodi ISKLJUČIVO u BigBit-u. Mereno na produkciji 04.08.2026:
  * `stock_documents` = 0, `stock_levels` = 0, `stock_reservations` = 0, `purchase_orders` = 0.
  * Sve ispod čita `*_mirror` tabele koje puni noćni `.mdb` uvoz. Ekran koji bi ovde pisao
- * pisao bi u prazne 4.0 tabele, a magacioner bi i dalje gledao BigBit.
+ * stanje pisao bi u prazne 4.0 tabele, a magacioner bi i dalje gledao BigBit.
+ *
+ * JEDAN IZUZETAK (06.08.2026): `useSetMinimalnaKolicina` — `items.min_quantity` NIJE
+ * podatak o zalihi nego prag koji određuje Servoteh. Kolona je istog dana izbačena iz
+ * sync mape, pa je uvoz više ne prepisuje; unose je magacioneri (troje imenovanih,
+ * pravo `masters.min_quantity`). Sve ostalo ostaje bez ijedne mutacije.
  *
  * 🔴 DVE GRANICE KOJE SE NE VIDE IZ BROJEVA, A MENJAJU IH (obe stižu u `meta`, i obe se
  * MORAJU ispisati na ekranu — v. `lager/page.tsx`):
@@ -101,6 +108,17 @@ export interface LagerRow {
   reserved: string;
   /** `stock − reserved`. Negativno = obećano više nego što postoji. */
   free: string;
+  /**
+   * MINIMALNA KOLIČINA (`items.min_quantity`) — prag ispod kog se poručuje.
+   *
+   * 🔴 `null` NIJE `0`. „Prag nije postavljen" i „prag je nula" su različite stvari i
+   * ekran ih prikazuje različito (— vs 0). Mereno na produkciji 06.08.2026:
+   * 162 artikla ima prag > 0, 92.460 ima nulu, 3 imaju prazno (od 92.625).
+   *
+   * Od 06.08.2026 ovu kolonu NE puni BigBit nego magacioner kroz ovaj ekran
+   * (kolona je izbačena iz sync mape) — v. `useSetMinimalnaKolicina`.
+   */
+  minQuantity: string | null;
   /** VP cena iz šifarnika artikala (`items.wholesale_price`), ne nabavna vrednost zalihe. */
   wholesalePrice: string | null;
 }
@@ -138,6 +156,7 @@ export const LAGER_SORT_COLUMNS = [
   'stock',
   'reserved',
   'free',
+  'minQuantity',
   'wholesalePrice',
 ] as const;
 
@@ -252,6 +271,56 @@ export function useLagerSkrol(
     /** `true` = stalo se zbog KAPE, a ne zbog kraja spiska — ekran to mora reći. */
     naKapi: redovi.length >= kapa && ukupno > redovi.length,
   };
+}
+
+// ────────────────────────────────────────────── UNOS MINIMALNE KOLIČINE (jedina mutacija)
+
+/** Odgovor uske izmene — dovoljno da ekran osveži ćeliju i napiše ŠTA je promenio. */
+export interface MinimalnaKolicinaOdgovor {
+  itemId: number;
+  catalogNumber: string | null;
+  name: string | null;
+  minQuantity: number | null;
+  /** Vrednost PRE izmene — poruka kaže „2 → 5", ne samo „sačuvano". */
+  previousMinQuantity: number | null;
+}
+
+/**
+ * MINIMALNA KOLIČINA — jedina mutacija na ovom ekranu (odluka vlasnika 06.08.2026).
+ *
+ * ⚠️ Zaglavlje ovog fajla kaže „OVDE NEMA NIJEDNE MUTACIJE". To je i dalje tačno za
+ * ZALIHE — stanje, rezervisano i slobodno su BigBit-ovi i ostaju read-only do
+ * cutover-a. `min_quantity` je izuzetak jer NIJE podatak o zalihi nego prag koji
+ * određuje Servoteh: kolona je izbačena iz sync mape, pa je noćni uvoz više ne
+ * prepisuje i vrednost uneta ovde je jedina koja postoji.
+ *
+ * Pravo je `masters.min_quantity` i NEMA GA NIJEDNA ROLA — troje imenovanih ga nosi
+ * kroz `user_permission_overrides`. Ekran zato mora da gejtuje prikaz kroz `can()`,
+ * a ne da se osloni na 403 posle klika.
+ *
+ * `invalidateQueries` gađa CEO lager keš namerno: isti artikal ume da stoji u više
+ * magacina (više redova), a prag je na ARTIKLU — ručno krpljenje jednog reda
+ * ostavilo bi ostale sa starom vrednošću dok se ekran ne osveži.
+ */
+export function useSetMinimalnaKolicina() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      itemId,
+      minQuantity,
+    }: {
+      itemId: number;
+      /** `null` = obriši prag (nije isto što i 0). String dozvoljava srpski zarez. */
+      minQuantity: string | number | null;
+    }) =>
+      apiFetch<MinimalnaKolicinaOdgovor>(`/v1/artikli/${itemId}/minimalna-kolicina`, {
+        method: 'PATCH',
+        body: JSON.stringify({ minQuantity }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['masters', 'lager'] });
+    },
+  });
 }
 
 /** Gornja granica jednog izvoza — ista kao kapa skrola (izvoz je izlaz iz kape). */
