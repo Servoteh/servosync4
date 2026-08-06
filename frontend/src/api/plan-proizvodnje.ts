@@ -200,6 +200,13 @@ export interface GanttRow {
   hall: string | null;
   rn_ident_broj: string | null;
   broj_crteza: string | null;
+  /**
+   * 079/26 — postoji li PDF crteža u PDM kešu (`bigtehn_drawings`). Opciona (`?:`) da
+   * FE preživi stariji BE odgovor bez kolone (CF frontend deploy je nezavisan od BE);
+   * `undefined` se tumači kao „možda ima" (link se nudi, promašaj javlja toast), a
+   * `false` kao „nema" (broj crteža ostaje običan tekst) — isti obrazac kao TP modal.
+   */
+  has_bigtehn_drawing?: boolean | null;
   naziv_dela: string | null;
   materijal: string | null;
   komada_total: number | null;

@@ -157,10 +157,16 @@ const ALL_COLS = Prisma.sql`line_id, work_order_id, effective_machine_code, broj
  * `komada_done_good` + `scrap_pieces`/`rework_pieces`/`scrap_outstanding` = 069/26:
  * gant sudi gotovost po DOBRIM komadima, pa mora i da IH POKAŽE — inače bi dijalog
  * pisao „100/100 urađeno" bez kvačice (škart popunio zbir) i to bi izgledalo kao kvar.
+ * `has_bigtehn_drawing` = 079/26: kartica pozicije nudi broj crteža kao link na PDF,
+ * ali SAMO kad crtež stvarno postoji (izmereno 05.08.2026: od 218 naloga u planu njih
+ * 107 ima PDF sadržaj). Bez ove kolone kartica ne zna da li ga ima, pa bi ili polovina
+ * pozicija dobila mrtav link, ili nijedna ne bi dobila živ. Kolona već postoji u
+ * `effectiveOpsInner` i u `ALL_COLS` — gant feed je jedini koji ju je preskakao.
  */
 const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   effective_machine_code, original_machine_code, original_machine_name, hall,
-  rn_ident_broj, broj_crteza, naziv_dela, materijal, komada_total, komada_done,
+  rn_ident_broj, broj_crteza, has_bigtehn_drawing,
+  naziv_dela, materijal, komada_total, komada_done,
   komada_done_good, scrap_pieces, rework_pieces, scrap_outstanding,
   rok_izrade, tpz_min, tk_min, effective_duration_minutes,
   planned_start_at, planned_end_at, planned_duration_minutes,

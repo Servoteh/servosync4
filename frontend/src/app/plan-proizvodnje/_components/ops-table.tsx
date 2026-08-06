@@ -16,15 +16,12 @@ import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui-kit/button';
 import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Dialog } from '@/components/ui-kit/dialog';
-import { toast } from '@/lib/toast';
-import { fetchDrawingObjectUrl } from '@/lib/plan-proizvodnje-pdf';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
 import {
   useOptimisticOverlay,
   useOptimisticUrgent,
   useOptimisticReorder,
-  fetchBigtehnDrawingSignUrl,
   opKey,
   type OpRow,
 } from '@/api/plan-proizvodnje';
@@ -38,6 +35,7 @@ import {
   rokUrgencyClass,
   urgencyPillClass,
   customerLabel,
+  openBigtehnPdfTab,
   sanitizeDrawingNo,
   num,
 } from './shared';
@@ -114,30 +112,6 @@ export function OpsTable({
   function restoreOriginal(o: OpRow) {
     if (!canEdit) return;
     overlay.mutate({ workOrderId: o.work_order_id, lineId: o.line_id, assignedMachineCode: null });
-  }
-
-  async function openBigtehnPdf(o: OpRow) {
-    const broj = sanitizeDrawingNo(o.broj_crteza);
-    if (!broj) return;
-    const tab = window.open('about:blank', '_blank');
-    if (!tab) {
-      toast('⚠ Pop-up blokiran.');
-      return;
-    }
-    try {
-      const res = await fetchBigtehnDrawingSignUrl(broj);
-      if (!res.data?.url) {
-        tab.close();
-        toast('⚠ PDF nije pronađen.');
-        return;
-      }
-      const objectUrl = await fetchDrawingObjectUrl(res.data.url);
-      tab.location.href = objectUrl;
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-    } catch {
-      tab.close();
-      toast('⚠ Greška pri otvaranju PDF-a.');
-    }
   }
 
   /**
@@ -293,7 +267,7 @@ export function OpsTable({
                           {hasPdf ? (
                             <button
                               type="button"
-                              onClick={() => openBigtehnPdf(o)}
+                              onClick={() => void openBigtehnPdfTab(o.broj_crteza)}
                               title={`Otvori PDF crtež ${brojSan} u novom tabu`}
                               className="inline-flex items-center gap-0.5 rounded-control px-1 py-0.5 text-2xs text-accent hover:bg-surface-2"
                             >

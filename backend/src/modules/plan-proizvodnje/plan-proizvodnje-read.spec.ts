@@ -393,6 +393,18 @@ describe("gant feed (046/26)", () => {
     expect(sql).toContain("is_ready_manual, ready_override_at, ready_override_by,");
   });
 
+  // 079/26: kartica pozicije nudi broj crteža kao link na PDF — ali samo kad crtež
+  // postoji (prod 05.08.2026: 107 od 218 naloga u planu ima PDF sadržaj). Kolona je
+  // odavno u `effectiveOpsInner` i u ALL_COLS; jedino ju je GANT feed preskakao, pa je
+  // kartica nije ni imala. Bez nje FE bira između mrtvog linka na polovini pozicija i
+  // nijednog linka — traži se susedni niz iz GANTT_COLS liste (isti obrazac kao A4/B).
+  it("gant kolone nose has_bigtehn_drawing (postoji li PDF crteža) — 079/26", async () => {
+    const { svc, calls } = makeGanttSvc();
+    await svc.gantt("pm@servoteh.com");
+    const sql = calls[0].sql.replace(/\s+/g, " ");
+    expect(sql).toContain("rn_ident_broj, broj_crteza, has_bigtehn_drawing,");
+  });
+
   it("machineHalls() vraća SVE mašine (LEFT JOIN šifrarnika), ne samo dodeljene", async () => {
     const { svc, calls } = makeGanttSvc();
     await svc.machineHalls("pm@servoteh.com");

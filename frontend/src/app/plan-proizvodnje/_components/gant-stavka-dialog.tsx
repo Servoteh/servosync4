@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link2, X } from 'lucide-react';
+import { FileText, Link2, X } from 'lucide-react';
 import {
   useGanttOverlay,
   useGanttReassign,
@@ -16,6 +16,7 @@ import { ComboBox } from '@/components/ui-kit/combo-box';
 import { cn } from '@/lib/cn';
 import { formatDate, formatDateTime } from '@/lib/format';
 import { toast } from '@/lib/toast';
+import { openBigtehnPdfTab, sanitizeDrawingNo } from './shared';
 import {
   addMinutesLocal,
   effectiveMinutes,
@@ -137,6 +138,16 @@ export function GantStavkaDialog({
    */
   const imaDobre = row.komada_done_good != null;
   const mereno = imaDobre && (row.komada_total ?? 0) > 0 && row.is_non_machining !== true;
+  /**
+   * 079/26 — broj crteža je link na PDF SAMO kad crtež postoji. Izmereno na produ
+   * 05.08.2026: od 218 naloga u planu njih 107 (49 %) ima PDF sadržaj, pa bi bezuslovan
+   * link na polovini pozicija vodio u prazno. `!== false` (a ne `=== true`) jer se
+   * frontend (Cloudflare) i backend (GH Actions) deployuju nezavisno: dok BE još ne
+   * vraća kolonu, `undefined` znači „ne znam" i link se nudi — promašaj tada uredno
+   * javi „PDF nije pronađen" umesto da ekran tiho ostane bez funkcije. Isti obrazac
+   * kao `hasPdf` u TP proceduri.
+   */
+  const hasPdf = row.has_bigtehn_drawing !== false && !!sanitizeDrawingNo(row.broj_crteza);
   const overrideDone = row.planned_done !== null && row.planned_done !== undefined;
   const manualReady = row.is_ready_manual === true;
   // Izračunata spremnost BEZ override-a (FE ogledalo BE `is_ready_rb` laterala): nema
@@ -306,7 +317,11 @@ export function GantStavkaDialog({
         <div className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-panel border border-line bg-surface-2 p-3 text-sm md:grid-cols-3">
           <Fact label="Naziv pozicije" value={row.naziv_dela} />
           <Fact label="Količina" value={row.komada_total != null ? `${row.komada_total} kom` : null} />
-          <Fact label="Crtež" value={row.broj_crteza} />
+          <Fact
+            label="Crtež"
+            value={row.broj_crteza}
+            onOpen={hasPdf ? () => void openBigtehnPdfTab(row.broj_crteza) : undefined}
+          />
           <Fact label="RN" value={row.rn_ident_broj} />
           <Fact label="Predmet (sklop)" value={sklop(row)} />
           <Fact label="Kupac" value={row.customer_short ?? row.customer_name} />
@@ -537,13 +552,40 @@ function overlayErrorMessage(e: unknown): string | undefined {
   return undefined;
 }
 
-function Fact({ label, value }: { label: string; value: string | number | null | undefined }) {
+/**
+ * Jedan AUTO podatak (etiketa + vrednost). Uz `onOpen` vrednost postaje dugme-link
+ * (079/26 — broj crteža otvara PDF u novom tabu); bez njega ostaje običan tekst, pa
+ * pozicija bez crteža izgleda kao i do sada, umesto da nudi link koji ne vodi nikuda.
+ * Izgled dugmeta = isti kao „Crtež" u TP proceduri (ikonica + akcentni tekst).
+ */
+function Fact({
+  label,
+  value,
+  onOpen,
+}: {
+  label: string;
+  value: string | number | null | undefined;
+  onOpen?: () => void;
+}) {
+  const text = value != null && value !== '' ? String(value) : '—';
   return (
     <div>
       <div className="text-2xs uppercase tracking-wide text-ink-disabled">{label}</div>
-      <div className="truncate text-ink" title={value != null ? String(value) : undefined}>
-        {value != null && value !== '' ? String(value) : '—'}
-      </div>
+      {onOpen ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="flex max-w-full items-center gap-1 rounded-control text-accent hover:underline"
+          title="Otvori PDF crteža u novom tabu"
+        >
+          <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="truncate">{text}</span>
+        </button>
+      ) : (
+        <div className="truncate text-ink" title={value != null ? String(value) : undefined}>
+          {text}
+        </div>
+      )}
     </div>
   );
 }

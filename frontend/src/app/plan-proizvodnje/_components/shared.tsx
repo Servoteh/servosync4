@@ -2,7 +2,9 @@
 
 import { cn } from '@/lib/cn';
 import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
-import type { OpRow } from '@/api/plan-proizvodnje';
+import { toast } from '@/lib/toast';
+import { fetchDrawingObjectUrl } from '@/lib/plan-proizvodnje-pdf';
+import { fetchBigtehnDrawingSignUrl, type OpRow } from '@/api/plan-proizvodnje';
 
 /**
  * Odeljenja (chip-tabovi „Po mašini"-ja) — DOSLOVNI port 1.0
@@ -299,6 +301,46 @@ export function sanitizeDrawingNo(broj: unknown): string | null {
   if (!s) return null;
   if (/^[.\s]*$/.test(s)) return null;
   return s;
+}
+
+/**
+ * Otvaranje PDF-a crteža iz PDM keša u NOVOM tabu — JEDAN izvor za ceo modul
+ * („Po mašini" tabela, TP procedura modal i kartica pozicije na gantu, 079/26).
+ * Do 079/26 je isti postupak stajao prepisan na dva mesta; treća kopija bi bila
+ * treća prilika da se granaju (pouka 030/26: duplirana logika = isti bug dvaput).
+ *
+ * Dva koraka koja se NE smeju preskočiti:
+ *   1. Tab se otvara ODMAH, u sinhronom delu klika (`about:blank`) — pregledač
+ *      blokira `window.open` posle `await`-a, pa bi „otvori PDF" ćutke ne uradio ništa.
+ *   2. Sadržaj se povlači kao BLOB: ruta je auth-gated (`plan_proizvodnje.read`), pa
+ *      običan `href`/`window.open` na nju vraća 401 — bearer nosi samo `apiBlob`.
+ *
+ * Pozicija bez crteža u kešu → tab se zatvara i javlja se razlog (ne ostaje prazan
+ * prozor). Pozivalac je dužan da dugme i ne ponudi kad zna da PDF-a nema
+ * (`has_bigtehn_drawing === false`) — ovo je poslednja brana, ne prva.
+ */
+export async function openBigtehnPdfTab(broj: unknown): Promise<void> {
+  const san = sanitizeDrawingNo(broj);
+  if (!san) return;
+  const tab = window.open('about:blank', '_blank');
+  if (!tab) {
+    toast('⚠ Pop-up blokiran.');
+    return;
+  }
+  try {
+    const res = await fetchBigtehnDrawingSignUrl(san);
+    if (!res.data?.url) {
+      tab.close();
+      toast('⚠ PDF nije pronađen.');
+      return;
+    }
+    const objectUrl = await fetchDrawingObjectUrl(res.data.url);
+    tab.location.href = objectUrl;
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  } catch {
+    tab.close();
+    toast('⚠ Greška pri otvaranju PDF-a.');
+  }
 }
 
 /**

@@ -4,20 +4,14 @@ import { useState } from 'react';
 import { FileText, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Dialog } from '@/components/ui-kit/dialog';
-import { toast } from '@/lib/toast';
-import { fetchDrawingObjectUrl } from '@/lib/plan-proizvodnje-pdf';
-import {
-  useTechProcedure,
-  fetchBigtehnDrawingSignUrl,
-  type OpRow,
-  type TechLog,
-} from '@/api/plan-proizvodnje';
+import { useTechProcedure, type OpRow, type TechLog } from '@/api/plan-proizvodnje';
 import {
   plannedSeconds,
   formatSecondsHm,
   rokUrgencyClass,
   urgencyPillClass,
   customerLabel,
+  openBigtehnPdfTab,
   sanitizeDrawingNo,
   num,
 } from './shared';
@@ -34,30 +28,6 @@ export function TpProcedureModal({ workOrderId, onClose }: { workOrderId: string
   const operations = q.data?.data.operations ?? [];
   const logs = q.data?.data.logs ?? [];
   const header = q.data?.data.header ?? null;
-
-  async function openPdf(broj: string | null | undefined) {
-    const san = sanitizeDrawingNo(broj);
-    if (!san) return;
-    const tab = window.open('about:blank', '_blank');
-    if (!tab) {
-      toast('⚠ Pop-up blokiran.');
-      return;
-    }
-    try {
-      const res = await fetchBigtehnDrawingSignUrl(san);
-      if (!res.data?.url) {
-        tab.close();
-        toast('⚠ PDF nije pronađen.');
-        return;
-      }
-      const objectUrl = await fetchDrawingObjectUrl(res.data.url);
-      tab.location.href = objectUrl;
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-    } catch {
-      tab.close();
-      toast('⚠ Greška pri otvaranju PDF-a.');
-    }
-  }
 
   // Grupisanje prijava po operaciji + totali (Plan/Real).
   const logsByOp = new Map<string, TechLog[]>();
@@ -82,7 +52,7 @@ export function TpProcedureModal({ workOrderId, onClose }: { workOrderId: string
         <div className="py-8 text-center text-sm text-ink-disabled">Nema operacija za ovaj RN.</div>
       ) : (
         <div className="space-y-4">
-          {header && <RnHeader header={header} onPdf={() => openPdf(header.broj_crteza)} />}
+          {header && <RnHeader header={header} onPdf={() => void openBigtehnPdfTab(header.broj_crteza)} />}
 
           <section>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
