@@ -543,7 +543,7 @@ proveriti da ne gazi tamošnji rad.
 
 ---
 
-### B4. ✅ ISPORUČENO 06.08.2026 — pet zahteva, svi verifikovani na produkciji
+### B4. ✅ ISPORUČENO 06.08.2026 — šest zahteva, svi verifikovani na produkciji
 
 | zahtev | ko | šta | stanje |
 |---|---|---|---|
@@ -552,6 +552,7 @@ proveriti da ne gazi tamošnji rad.
 | **076/26** | Strahinja | Trajanje operacije se kuca u **satima** (2 → 120 min), prima decimalni zarez. Baza ostaje u minutima. | READY_FOR_TEST |
 | **077/26** | Jovica | „Otkucaj TP" više ne otvara tuđi nalog — v. C20 za pun opis i merenje. | READY_FOR_TEST |
 | **079/26** | Strahinja | Broj crteža u kartici pozicije otvara PDF; gde ga nema (111 od 218), ostaje običan tekst. | **DONE** (potvrdio podnosilac) |
+| **075/26** | Strahinja | Kaskadno pomeranje vezanih pozicija (F2 iz 046/26) — v. C22 za latentne rizike. Prevlačenjem se ceo lanac pomera za ISTI broj dana, razmaci se čuvaju, dug potez traži potvrdu uz pregled, posle upisa stoji „Poništi" 30 s. Završene pozicije se preskaču pri upisu ali se kroz njih PROLAZI. Tasteri strelica namerno ostaju bez kaskade. | READY_FOR_TEST |
 
 🔴 **Pouke dana** (detalji u commit porukama):
 - Kad korisnik traži da nešto **„piše"** — izmeri koliko mesta zaista ima. Prva verzija 069 stavila
@@ -642,6 +643,52 @@ doradu/škart **nasleđuju** `drawingHandoverId` (`work-orders.service.ts:1762`;
 clone-variant ga izričito nuluju, dorada ne). Dakle primopredaja koja je ikad imala doradu uvek
 razrešava na prvi, originalni nalog. Odluka: da li je to namerno (docstring kaže da jeste) ili
 treba da vodi na najnoviji.
+
+### C22. Kaskadno pomeranje (075/26) — tri latentna rizika koja NISU regresija
+
+Zapisano iz završne verifikacije 06.08.2026; nijedno nije dostižno na današnjim podacima, ali
+svako čeka prvog ko dirne modul.
+
+**A. Bezbednost kaskadnog `UPDATE`-a je EMERGENTNA, ne strukturna.** Set-based `UPDATE` u
+`shiftChain` **ne** zaključava po `(work_order_id, line_id)`; bezbedan je samo zato što
+`lockOverlays` prethodno zaključa **nadskup**, a `chainHash` pokriva i `moved` i `skipped` pa
+svaka promena članstva ide na 409. Ko god suzi pre-lock na `moved` ili izbaci `skipped` iz
+hash-a — **tiho otvara deadlock.**
+
+**B. `plan_proizvodnje_reassign_audit` je drugi cilj upisa UNUTAR petlje** `bulkReassign`-a
+(O₁,A₁,O₂,A₂…), i nije pomenut u kanonu zaključavanja. Bez zastoja je danas samo zato što je
+`cev` per-request `randomUUID()` **i** što su parovi sortirani. Nema test.
+
+**C. `lockOverlays` se oslanja na to da PostgreSQL stavi `LockRows` iznad `Sort`** — to je
+svojstvo PLANA, ne jezika. Tim je već jednom pao na toj klasi (`FOR UPDATE` nad rekurzivnim
+CTE-om koji tiho ne zaključava ništa).
+
+🔴 **Pouka o kanonu zaključavanja koja je koštala jedan pun krug:** prva popravka je dodala
+`lockOverlays` (`SELECT … FOR UPDATE`) i izgledala je tačno — a bila je **bez dejstva za 217.490
+od 217.732 parova**, jer zaključava samo redove KOJI POSTOJE, a ti pisci rade `upsert` koji je
+najčešće INSERT. Pravo rešenje je **sortiranje parova po ključu pre petlje** (INSERT-i tada uzimaju
+brave kanonskim redosledom). Test to nije uhvatio jer je mock uvek vraćao redove — **mock koji
+uvek vraća podatke ne testira put upisa.**
+
+### C23. 🔴 Ispad GitHub Actions-a ume da RAZIĐE frontend i backend na produkciji
+
+06.08.2026 je Actions bio u `major_outage`. Posledica na isporuci 075/26: **frontend deploy je
+prošao, backend je posle 51 minuta čekanja OTKAZAN.** Nastalo je stanje u kom je na produkciji
+živ ekran koji zove rutu kojoj u kontejneru nema ni traga (mereno: `shift-chain` 1× u CF chunk-u,
+**0×** u `dist`-u backenda) — svako prevlačenje vezanog bara vraćalo bi grešku.
+
+**Zašto je važno:** dva deploy-a su nezavisna (Cloudflare vs. self-hosted runner), pa svaki
+poremećaj koji pogodi samo jedan pravi razilaženje. Danas je razrešeno ponovnim pokretanjem
+backend deploy-a preko API-ja (`POST /actions/runs/{id}/rerun`) čim se runner vratio na `online`.
+
+🔴 **Pouka o dijagnozi:** runner se GitHub-u prijavljivao kao **`offline` I `busy` istovremeno** —
+savršeno liči na zaglavljen servis i očigledan potez je restart. Restart bi bio POGREŠAN: dnevnik
+(`_diag/Runner_*.log`) je pokazao da runner uredno radi i da **GitHub vraća HTTP 503**
+(`upstream connect error … reset reason: overflow`), a `githubstatus.com` je to potvrdio.
+**Pre restarta bilo čega — pročitaj dnevnik i proveri spoljni status.**
+
+**Otvoreno:** vredi razmisliti o proveri koja posle svakog deploy-a uporedi da li su FE i BE sa
+ISTOG commita, pa javi ako nisu.
 
 ## D. ČEKA KORISNIKE (ne blokira razvoj)
 
