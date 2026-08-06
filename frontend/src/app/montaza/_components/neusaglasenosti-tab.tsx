@@ -44,7 +44,15 @@ const SEVERITY_OPTIONS = [
  * (status/ozbiljnost/pretraga) + prijava (dijalog) + detalj (dijalog). Prijavljuju svi
  * sa pristupom Montaži (montaza.neusaglasenosti.write); istragu/status vode manage role.
  */
-export function NeusaglasenostiTab({ initialOpenId }: { initialOpenId?: number | null } = {}) {
+export function NeusaglasenostiTab({
+  deepLinkId,
+  onDeepLinkConsumed,
+}: {
+  /** Jednokratan deep-link iz mejla/zvonca (`/montaza?view=neusaglasenosti&id=N`). */
+  deepLinkId?: number | null;
+  /** Javi roditelju da je deep-link odrađen — da se isti zapis ne otvara ponovo. */
+  onDeepLinkConsumed?: () => void;
+} = {}) {
   const { can } = useAuth();
   const canWrite = can(PERMISSIONS.MONTAZA_NEUSAGLASENOSTI_WRITE);
 
@@ -55,8 +63,18 @@ export function NeusaglasenostiTab({ initialOpenId }: { initialOpenId?: number |
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
-  const [openId, setOpenId] = useState<number | null>(initialOpenId ?? null);
+  const [openId, setOpenId] = useState<number | null>(deepLinkId ?? null);
   const [prijavaOpen, setPrijavaOpen] = useState(false);
+
+  // Deep-link sme da stigne i POSLE montiranja taba: zvonce stoji na svakoj strani, pa se
+  // klik dešava i kad si već na `/montaza?view=neusaglasenosti`. Tada je `deepLinkId` NOVA
+  // vrednost propa, a ne početna vrednost `useState` — bez ovog efekta popravka čitača
+  // parametra u strani ne bi promenila baš ništa na ekranu.
+  useEffect(() => {
+    if (deepLinkId == null) return;
+    setOpenId(deepLinkId);
+    onDeepLinkConsumed?.();
+  }, [deepLinkId, onDeepLinkConsumed]);
 
   // Debounce pretrage (300ms), reset na prvu stranu.
   useEffect(() => {

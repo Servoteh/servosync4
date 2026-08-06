@@ -86,7 +86,9 @@ import {
 } from '@/api/notifications';
 import { CommandPalette } from '@/components/ui-kit/command-palette';
 import { AiWidget } from '@/components/ui-kit/ai-widget';
-import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { StatusBadge } from '@/components/ui-kit/status-badge';
+import { notificationBadge, resolveNotificationRoute } from '@/lib/notifications-nav';
+import { toast } from '@/lib/toast';
 import { formatDateTime } from '@/lib/format';
 
 // ------------------------------------------------------------------ AppShellContext
@@ -215,35 +217,6 @@ function useCurrentSearch(pathname: string): string {
 
 // ------------------------------------------------------------------ zvonce (D8 notifikacije)
 
-/** Tip notifikacije → StatusBadge (kanonska mapa, DESIGN_SYSTEM §7). */
-const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
-  'kontrola.skart': { tone: 'danger', label: 'Škart' },
-  'kontrola.dorada': { tone: 'warn', label: 'Dorada' },
-  'primopredaja.nova': { tone: 'info', label: 'Primopredaja' },
-  'primopredaja.preuzeta': { tone: 'info', label: 'Preuzeta izrada' },
-  // Zahtev 016/26: planer dobija zvonce kad se primopredaja lansira u proizvodnju.
-  // Ton/labela prate kanonsku mapu statusa RN-a (DESIGN_SYSTEM §7) — „Lansiran" je
-  // info svuda drugde (work-orders, handovers), pa ne sme ovde biti success.
-  'primopredaja.lansirana': { tone: 'info', label: 'Lansiran' },
-  // Zahtev 037/26: šef proizvodnje dobija zvonce kad se mašina otpiše (treba da
-  // preraspodeli poslove). `warn`, ne `danger` — nije kvar nego planska radnja.
-  'odrzavanje.masina-otpis': { tone: 'warn', label: 'Otpis mašine' },
-};
-
-/** refTable → ruta modula (funkcija prima refId za deep-link kad modul to podržava). */
-const NOTIFICATION_ROUTE: Record<string, (refId: number | null) => string> = {
-  // Zahtev 016/26: klik na zvonce vodi pravo na lansirani RN (ekran već čita ?open=).
-  work_orders: (id) => (id != null ? `/work-orders?open=${id}` : '/work-orders'),
-  handover_drafts: () => '/nacrti',
-  drawing_handovers: () => '/handovers',
-  // Neusaglašenosti na montaži (zahtev 004/26): deep-link otvara detalj u tabu.
-  montage_nonconformities: (id) =>
-    `/montaza?view=neusaglasenosti${id != null ? `&id=${id}` : ''}`,
-  // Mašina je ključana TEKSTOM (machine_code), a `ref_id` je Int → nema deep-linka na
-  // karton; vodimo na registar mašina, a šifra stoji u tekstu notifikacije.
-  maint_machines: () => '/odrzavanje?tab=masine',
-};
-
 type BellVariant = 'sidebar' | 'rail' | 'header';
 
 /**
@@ -289,12 +262,30 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
     };
   }, [open]);
 
+  /**
+   * Klik na stavku panela (C20). Tri stvari koje su ranije falile:
+   *
+   * 1) `emitNavEvent(route)` PRE `router.push` — zvonce stoji na SVAKOJ strani, pa je klik
+   *    često navigacija na stranu na kojoj korisnik VEĆ jeste. Next tada ne remount-uje
+   *    stranu (query nije deo ključa za remount), a `router.push` ne okida `popstate` —
+   *    adresa se promeni, ekran ostane isti. `servosync:nav` je kućni kanal kojim sidebar i
+   *    paleta javljaju cilj (`useQueryTab`/`useIdParam` ga slušaju); bez njega
+   *    `/odrzavanje?tab=masine` ne prebaci tab, a to je 4 izmerena klika koja su ljude
+   *    ostavila na tabu „Pregled".
+   * 2) Rute za `quality_events` i `app_switches` (v. `lib/notifications-nav.ts`).
+   * 3) Poruka kad rute NEMA. Tiho zatvaranje panela izgleda kao da je akcija uspela —
+   *    gore je od greške, jer korisnik ne zna da treba da traži drugim putem.
+   */
   function onActivate(n: AppNotification) {
     if (!n.readAt) markRead.mutate(n.id);
-    const build = n.refTable ? NOTIFICATION_ROUTE[n.refTable] : undefined;
-    const route = build?.(n.refId ?? null);
-    if (route) router.push(route);
+    const route = resolveNotificationRoute(n.refTable, n.refId);
     setOpen(false);
+    if (!route) {
+      toast('Ovo obaveštenje nema ekran na koji vodi — označeno je pročitanim.');
+      return;
+    }
+    emitNavEvent(route);
+    router.push(route);
   }
 
   if (!enabled) return null;
@@ -363,7 +354,7 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
               </div>
             ) : (
               rows.map((n) => {
-                const badge = NOTIFICATION_BADGE[n.type];
+                const badge = notificationBadge(n.type);
                 return (
                   <button
                     key={n.id}
@@ -374,11 +365,7 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
                     )}
                   >
                     <div className="flex items-center gap-2">
-                      {badge ? (
-                        <StatusBadge tone={badge.tone} label={badge.label} />
-                      ) : (
-                        <StatusBadge tone="neutral" label={n.type} />
-                      )}
+                      <StatusBadge tone={badge.tone} label={badge.label} />
                       <span className="tnums ml-auto shrink-0 text-xs text-ink-secondary">
                         {formatDateTime(n.createdAt)}
                       </span>

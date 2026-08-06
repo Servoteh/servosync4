@@ -234,6 +234,10 @@ export const NAV_DOMAINS: NavDomain[] = [
         children: [
           { label: 'Evidencija škarta', href: '/kvalitet?tab=skart', keywords: ['skart', 'neusaglasenost', 'nc', 'KVA-SK'] },
           { label: 'Evidencija dorada', href: '/kvalitet?tab=dorada', keywords: ['dorada', 'rework', 'popravka', 'KVA-DO'] },
+          // C20: tab „Škart i dorada" (živi tok prijava sa kioska) postoji u strani od
+          // uvođenja `quality_events`, ali ga nav nije imao — do reda čekanja se stizalo
+          // samo klikom na tab u samoj strani. Sada je i odredište rute iz zvonca.
+          { label: 'Škart i dorada', href: '/kvalitet?tab=skart-dorada', keywords: ['skart i dorada', 'prijave sa kioska', 'red cekanja', 'pareto', 'KVA-SD'] },
           { label: 'Aktivnost kontrole', href: '/kvalitet?tab=aktivnost', requires: PERMISSIONS.TEHNOLOGIJA_READ, keywords: ['aktivnost kontrole', 'kontrolori', 'kucanja', 'KVA-AK'] },
           { label: 'Izveštaji', href: '/kvalitet?tab=izvestaji', keywords: ['izvestaji kvaliteta', 'analitika skarta', 'KVA-IZ'] },
           { label: 'Dokumenti', href: '/kvalitet?tab=dokumenti', keywords: ['dokumenti', 'sertifikati', 'atesti', 'KVA-DK'] },

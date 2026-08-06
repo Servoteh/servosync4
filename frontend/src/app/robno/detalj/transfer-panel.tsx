@@ -6,6 +6,7 @@ import { ArrowRight, Undo2 } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { toast } from '@/lib/toast';
+import { emitNavEvent } from '@/lib/use-query-tab';
 import { ApiError } from '@/api/client';
 import {
   useReverseTransfer,
@@ -26,6 +27,19 @@ export function TransferPanel({ doc }: { doc: StockDocumentDetail }) {
   const pair = useTransfer(doc.kind === 'PRENOS' ? doc.id : null);
   const reverse = useReverseTransfer();
   const [reason, setReason] = useState('');
+
+  /**
+   * Skok sa detalja na DRUGI dokument ISTE rute (`/robno/detalj?id=…`). Next tada ne
+   * remont-uje stranu (query nije deo ključa za remount) i `router.push` ne okida
+   * `popstate`, pa je adresa pokazivala drugu stranu prenosa a ekran stari dokument —
+   * posle storna je magacioner gledao dokument koji misli da je nov. `servosync:nav` je
+   * kućni kanal kojim se javlja cilj; `useIdParam` na strani ga sluša (C20).
+   */
+  const goToDoc = (id: number) => {
+    const href = `/robno/detalj?id=${id}`;
+    emitNavEvent(href);
+    router.push(href);
+  };
 
   if (doc.kind !== 'PRENOS') return null;
 
@@ -81,7 +95,7 @@ export function TransferPanel({ doc }: { doc: StockDocumentDetail }) {
       {!current && (
         <button
           className="mt-2 text-sm text-accent underline"
-          onClick={() => router.push(`/robno/detalj?id=${d.id}`)}
+          onClick={() => goToDoc(d.id)}
         >
           Otvori drugu stranu
         </button>
@@ -139,7 +153,7 @@ export function TransferPanel({ doc }: { doc: StockDocumentDetail }) {
                 {
                   onSuccess: (res) => {
                     toast('Prenos je storniran.');
-                    router.push(`/robno/detalj?id=${res.data.outbound.id}`);
+                    goToDoc(res.data.outbound.id);
                   },
                   onError: (e) =>
                     toast(

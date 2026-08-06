@@ -910,9 +910,9 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
                       {a.izvor === 'iz_sastanka' && a.izvor_akcioni_plan_id ? (
                         <button
                           type="button"
-                          onClick={() => jumpToSastanak(String(a.izvor_akcioni_plan_id))}
+                          onClick={() => jumpToSastanak()}
                           className="inline-flex items-center gap-0.5 rounded-full bg-accent-subtle px-1.5 py-0.5 text-2xs font-medium text-accent hover:underline"
-                          title="Otvori akcionu tačku u Sastancima"
+                          title="Otvori Akcioni plan u Sastancima"
                         >
                           ↔ Iz sastanka
                         </button>
@@ -1028,9 +1028,18 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
   );
 }
 
-/** Skok na akcionu tačku u Sastancima (SPA client navigacija) — paritet 1.0 oaMeetingLink. */
-function jumpToSastanak(akcijaId: string) {
-  const path = `/sastanci?akcija=${encodeURIComponent(akcijaId)}`;
+/**
+ * Skok na akcioni plan u Sastancima (SPA client navigacija) — paritet 1.0 oaMeetingLink.
+ *
+ * C20: ovde je do sada stajalo `/sastanci?akcija=<id>`, a parametar `akcija` NE ČITA
+ * NIKO — `git grep -n "akcija" frontend/src/app/sastanci` daje nula pogodaka. Korisnik je
+ * sletao na tab „Pregled" sa visećim parametrom u adresi, bez otvorene akcione tačke.
+ * Dok `AkcioniPlanTab` ne dobije čitač po id-u (zaseban posao — menja stranu, ne link),
+ * vodimo bar na tab „Akcioni plan" umesto na Pregled; `?tab=` je ključ koji `useQueryTab`
+ * na /sastanci već razume.
+ */
+function jumpToSastanak() {
+  const path = '/sastanci?tab=akcioni';
   // 1.0 (aktivnostModal.js:161) radi ČIST meki SPA prelaz: pushState + popstate.
   // Next App Router presreće popstate i mekano rutira — bez reload-a.
   window.history.pushState(null, '', path);

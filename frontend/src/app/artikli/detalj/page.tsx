@@ -10,6 +10,7 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { listHref } from '@/lib/use-id-param';
+import { parseIdParam } from '@/lib/deep-link';
 import { useArtikal, useItemLookups } from '@/api/masters';
 import { MaticniEkran } from '../_forma/polja';
 import { BRANA_ARTIKAL } from '../_forma/pravila';
@@ -47,9 +48,9 @@ export default function ArtikalDetaljPage() {
   const [rezim, setRezim] = useState<Rezim>('pregled');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const raw = params.get('id');
-    const n = raw ? Number(raw) : NaN;
-    setValidId(Number.isInteger(n) && n > 0 ? n : null);
+    // `parseIdParam` je stroža od golog `Number()`: „0x10" (=16), „1e3" (=1000) i „+5" bi
+    // inače prošli, pa prelomljen link iz mejla otvara TUĐI artikal (C20, kanon 077/26).
+    setValidId(parseIdParam(params.get('id')));
     setRezim(params.get('rezim') === 'izmena' ? 'izmena' : 'pregled');
     setIdResolved(true);
   }, []);

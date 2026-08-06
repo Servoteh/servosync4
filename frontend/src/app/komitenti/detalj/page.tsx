@@ -10,6 +10,7 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDateTime, formatDecimal } from '@/lib/format';
+import { parseIdParam } from '@/lib/deep-link';
 import { useKomitent, codeRefLabel, salespersonLabel, type CustomerDetail } from '@/api/masters';
 import { MaticniEkran } from '@/app/artikli/_forma/polja';
 import { BRANA_KOMITENT } from '@/app/artikli/_forma/pravila';
@@ -233,10 +234,10 @@ export default function KomitentDetaljPage() {
   const [rezim, setRezim] = useState<'pregled' | 'izmena'>('pregled');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const raw = params.get('id');
-    const n = raw ? Number(raw) : NaN;
-    // Komitent 0 je legitiman (Servoteh d.o.o., interni) — zato `>= 0`, ne `> 0`.
-    setValidId(Number.isInteger(n) && n >= 0 ? n : null);
+    // Komitent 0 je legitiman (Servoteh d.o.o., interni) — zato `allowZero`. Ostalo je
+    // stroga dekadna provera: goli `Number()` bi propustio „0x10" (=16) i „1e3" (=1000),
+    // pa prelomljen link iz mejla otvara TUĐEG komitenta (C20).
+    setValidId(parseIdParam(params.get('id'), { allowZero: true }));
     setRezim(params.get('rezim') === 'izmena' ? 'izmena' : 'pregled');
     setIdResolved(true);
   }, []);
