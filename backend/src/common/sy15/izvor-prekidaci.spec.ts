@@ -1,6 +1,7 @@
 import { Logger, ServiceUnavailableException } from "@nestjs/common";
 import { SastanciSourceService } from "./sastanci-source.service";
 import { PbSourceService } from "./pb-source.service";
+import { OdrzavanjeSourceService } from "./odrzavanje-source.service";
 
 /**
  * Prekidači izvora `SASTANCI_IZVOR` i `PB_IZVOR` — pin za tri stvari koje moraju
@@ -17,7 +18,12 @@ import { PbSourceService } from "./pb-source.service";
  *     pa stari naziv više ne može da obori modul koji se ne seli.
  */
 
-const ENVS = ["SASTANCI_IZVOR", "PB_IZVOR", "SASTANCI_PB_IZVOR"] as const;
+const ENVS = [
+  "SASTANCI_IZVOR",
+  "PB_IZVOR",
+  "ODRZAVANJE_IZVOR",
+  "SASTANCI_PB_IZVOR",
+] as const;
 const ORIG = Object.fromEntries(ENVS.map((k) => [k, process.env[k]]));
 
 /** Čist start: nijedan prekidač nije postavljen. */
@@ -196,6 +202,107 @@ describe("nezavisnost prekidača — 4 kombinacije (incident 06.08.2026)", () =>
       ServiceUnavailableException,
     );
     expect(() => pb.assertPorted("x")).toThrow(ServiceUnavailableException);
+  });
+});
+
+/*
+ * ODRŽAVANJE (korak 2 gašenja sy15, 06.08.2026) — TREĆI nezavisan prekidač.
+ * Isti pin kao gore: preklop jednog domena ne sme da pomeri druga dva.
+ */
+describe("OdrzavanjeSourceService (ODRZAVANJE_IZVOR)", () => {
+  it("bez env-a: sy15, brana ne puca", () => {
+    const s = new OdrzavanjeSourceService();
+    expect(s.izvor).toBe("sy15");
+    expect(s.isThreeZero).toBe(false);
+    expect(() => s.assertPorted("maint-deadlines")).not.toThrow();
+  });
+
+  it("3.0: brana puca sa 503 i IMENUJE putanju + način povratka", () => {
+    hvatajWarn();
+    postavi({ ODRZAVANJE_IZVOR: "3.0" });
+    const s = new OdrzavanjeSourceService();
+    expect(s.isThreeZero).toBe(true);
+    let poruka = "";
+    try {
+      s.assertPorted("maint-notify-dispatch (maint_dispatch_*)");
+    } catch (e) {
+      poruka = (e as ServiceUnavailableException).message;
+    }
+    expect(poruka).toContain("maint-notify-dispatch");
+    expect(poruka).toContain("ODRZAVANJE_IZVOR=sy15");
+  });
+
+  it("nepoznata vrednost NE postaje 3.0 (razilaženje baza je nevidljivo)", () => {
+    hvatajWarn();
+    postavi({ ODRZAVANJE_IZVOR: "3,0" });
+    const s = new OdrzavanjeSourceService();
+    expect(s.izvor).toBe("sy15");
+    expect(() => s.assertPorted("x")).not.toThrow();
+  });
+
+  it("🔴 zastareli SASTANCI_PB_IZVOR NE pomera održavanje", () => {
+    hvatajWarn();
+    postavi({ SASTANCI_PB_IZVOR: "3.0" });
+    const s = new OdrzavanjeSourceService();
+    expect(s.izvor).toBe("sy15");
+    expect(() => s.assertPorted("x")).not.toThrow();
+  });
+});
+
+/*
+ * 🔴 TRI DOMENA — pin da svaki preklop dira SAMO svoj domen. Ovo je isti test
+ * koji bi 06.08.2026 sprečio incident da je postojao pre uvođenja prekidača.
+ */
+describe("nezavisnost SVA TRI prekidača (pouka incidenta 06.08.2026)", () => {
+  const svi = () => ({
+    sastanci: new SastanciSourceService(),
+    pb: new PbSourceService(),
+    odrzavanje: new OdrzavanjeSourceService(),
+  });
+
+  it("ODRZAVANJE_IZVOR=3.0: sastanci i PB rade NORMALNO", () => {
+    hvatajWarn();
+    postavi({ ODRZAVANJE_IZVOR: "3.0" });
+    const { sastanci, pb, odrzavanje } = svi();
+    expect(odrzavanje.isThreeZero).toBe(true);
+    expect(() => odrzavanje.assertPorted("maint-deadlines")).toThrow(
+      ServiceUnavailableException,
+    );
+    // Preklop održavanja ne sme da obori tuđe module ni njihove scheduler poslove.
+    expect(sastanci.izvor).toBe("sy15");
+    expect(pb.izvor).toBe("sy15");
+    expect(() => sastanci.assertPorted("sast-weekly-auto")).not.toThrow();
+    expect(() => pb.assertPorted("pb-enqueue")).not.toThrow();
+  });
+
+  it("SASTANCI_IZVOR=3.0: održavanje NETAKNUTO (maint-deadlines radi)", () => {
+    hvatajWarn();
+    postavi({ SASTANCI_IZVOR: "3.0" });
+    const { odrzavanje } = svi();
+    expect(odrzavanje.izvor).toBe("sy15");
+    expect(() => odrzavanje.assertPorted("maint-deadlines")).not.toThrow();
+  });
+
+  it("PB_IZVOR=3.0: održavanje NETAKNUTO", () => {
+    hvatajWarn();
+    postavi({ PB_IZVOR: "3.0" });
+    const { odrzavanje } = svi();
+    expect(odrzavanje.izvor).toBe("sy15");
+    expect(() => odrzavanje.assertPorted("maint-notify-dispatch")).not.toThrow();
+  });
+
+  it("sva tri na 3.0: sve tri brane pucaju (nijedna ne pokriva tuđu)", () => {
+    hvatajWarn();
+    postavi({
+      SASTANCI_IZVOR: "3.0",
+      PB_IZVOR: "3.0",
+      ODRZAVANJE_IZVOR: "3.0",
+    });
+    const { sastanci, pb, odrzavanje } = svi();
+    for (const s of [sastanci, pb, odrzavanje]) {
+      expect(s.isThreeZero).toBe(true);
+      expect(() => s.assertPorted("x")).toThrow(ServiceUnavailableException);
+    }
   });
 });
 

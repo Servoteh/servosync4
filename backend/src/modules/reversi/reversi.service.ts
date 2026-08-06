@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -10,6 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { assertPdfAttachment } from "../../common/attachments/attachment-format.util";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import type {
@@ -213,6 +215,10 @@ export class ReversiService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly labelPrint: LabelPrintService,
+    // Prekidač TUĐEG domena (održavanje): Reversi čitaju mašine kroz
+    // `v_rev_machines` nad `maint_machines` — v. `reportMachines()`.
+    // @Optional: bez njega brana ne radi ništa (ponašanje kao `sy15`).
+    @Optional() private readonly odrIzvor?: OdrzavanjeSourceService,
   ) {}
 
   // ---------- Dokumenti (reversi) ----------
@@ -1483,6 +1489,24 @@ export class ReversiService {
    * `fetchMachineHeadCounts`); ovde ih vraćamo obogaćene u JEDNOM pozivu.
    */
   async reportMachines() {
+    // 🔴 ŠAV KA DOMENU ODRŽAVANJA (korak 2 gašenja sy15, 06.08.2026).
+    //
+    // `v_rev_machines` je u sy15 doslovno `SELECT … FROM maint_machines` — dakle
+    // Reversi mašine NE POSEDUJU, nego ih čitaju iz tuđeg domena. FK graf taj šav
+    // NE POKAZUJE (nema nijednog inbound FK-a ka `maint_*`); našao ga je tek
+    // `pg_depend` nad view-ovima.
+    //
+    // Posledica: čim mašine pređu u 3.0, sy15 kopija prestaje da se menja, pa bi
+    // ovaj izveštaj TIHO prikazivao zastarelo stanje (preimenovana mašina pod
+    // starim imenom, novoarhivirana kao aktivna, nova mašina da ne postoji).
+    // Zato brana ide pod `ODRZAVANJE_IZVOR` — prekidač prati POZIVAOCE podataka,
+    // ne naziv modula (pouka incidenta 06.08.2026).
+    //
+    // ⚠️ Ovo je JEDINO mesto u Reversima pod tim prekidačem. Sve `rev_*` tabele su
+    // domen Reversa (korak 3) i idu pod svoj `REVERSI_IZVOR` kad na njih dođe red.
+    this.odrIzvor?.assertPorted(
+      "izveštaj mašina u Reversima (v_rev_machines nad maint_machines)",
+    );
     // `machine_code` je tekst u `v_rev_machines`; tipujemo ga eksplicitno (ostala
     // polja ostaju `unknown` i prolaze kroz spread) da bi ključ agregata bio string.
     const machines = await this.sy15.db.$queryRaw<

@@ -262,6 +262,23 @@ zajedno; `production.operativna_aktivnost.izvor_akcioni_plan_id` je mrtav šav �
 Najviše mehaničkog posla. Ovde prvi put ozbiljno ulazi storage seoba
 (`maint-machine-files`, 469 MB).
 
+> ✅ **PRIPREMA URAĐENA 06.08.2026** (grana `feat/sy15-seoba-odrzavanje`): 34 Prisma modela,
+> offline migracija, prenosna skripta (dokazana na probnoj bazi: 34/34 tabele, drugi prolaz
+> `ins=0`), prekidač `ODRZAVANJE_IZVOR` i 3.0 parnjak RLS-a (`OdrzavanjeAuthzService`).
+> Runbook i sva merenja: **`docs/SEOBA_ODRZAVANJA_2026-08-06.md`**.
+>
+> Tri korekcije ovog plana, obe izmerene:
+> * **34 tabele, ne 33**, i **59 funkcija, ne 41** — 16 funkcija koje diraju `maint_*` ne nose
+>   prefiks domena (6 su `ai_chat_*`), a `maint_wo_number_counter` (brojač radnih naloga) nema
+>   Prisma model pa ga spisak po modelima promaši.
+> * 🔴 **Domen NIJE samostalan** iako nema NIJEDAN inbound FK: `v_rev_machines` (Reversi) čita
+>   `maint_machines`, triger `maint_machines_sync_to_loc` PIŠE u `loc_locations` (Lokacije), a
+>   `ai_chat_prijavi_kvar` INSERT-uje u `maint_incidents`. Sva tri šava našli su `pg_depend` i
+>   `grep`, ne FK graf — pa su i sva tri pod prekidačem održavanja.
+> * 🟢 **Održavanje NE ČEKA kadrovsku** (za razliku od PB-a): nijedna `maint*` funkcija ne
+>   pominje `employees`/`departments`/`profiles` (izmereno, 0 pogodaka). Korak 2 se sme izvesti
+>   pre koraka 4.
+
 ### Korak 3 — reversi + lokacije ZAJEDNO (jedan potez, ~49 fn)
 Zbog transakcione celine (v. reviziju u koraku 1). Uključuje i preuzimanje
 `loc_bigtehn_ingest` cron logike u 3.0 scheduler — čime se delimično načinje i bridge

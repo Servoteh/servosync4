@@ -2,6 +2,7 @@ import { Logger } from "@nestjs/common";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
@@ -31,6 +32,7 @@ beforeEach(() => {
   delete process.env.SASTANCI_IZVOR;
   delete process.env.PB_IZVOR;
   delete process.env.SASTANCI_PB_IZVOR;
+  delete process.env.ODRZAVANJE_IZVOR;
 });
 afterEach(() => {
   process.env = { ...OLD_ENV };
@@ -125,6 +127,7 @@ function make(
     p.prisma,
     fn.sastFn,
     new PbSourceService(),
+    new OdrzavanjeSourceService(),
   );
   return {
     jobs: new Map(svc.buildJobs().map((j) => [j.key, j])),
@@ -431,5 +434,67 @@ describe("prekidači su NEZAVISNI — sve 4 kombinacije (incident 06.08.2026)", 
     // Stari naziv više NE MOŽE da obori PB — to je bila poenta incidenta.
     await expect(run(jobs.get("pb-enqueue")!)).resolves.toBeDefined();
     expect(sy15.sql).toEqual(["SELECT public.pb_enqueue_notifications();"]);
+  });
+});
+
+/*
+ * 🔴 ODRŽAVANJE (korak 2 gašenja sy15) — TREĆI prekidač u ovom registru.
+ *
+ * Isti pin kao za PB, i iz istog razloga: `maint-deadlines` ne sme da postane
+ * talac tuđeg preklopa, ni da tiho nastavi da piše u sy15 kad domen pređe.
+ */
+describe("ODRZAVANJE_IZVOR — maint-deadlines je nezavisan od druga dva domena", () => {
+  it("podrazumevano (sy15): maint-deadlines zove sy15 fn", async () => {
+    const { jobs, sy15 } = make();
+    await run(jobs.get("maint-deadlines")!);
+    expect(sy15.sql).toEqual([
+      "SELECT * FROM public.maint_check_all_deadlines(30);",
+    ]);
+  });
+
+  it("ODRZAVANJE_IZVOR=3.0: maint-deadlines GLASNO pada, NIJEDAN sy15 poziv", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const { jobs, sy15 } = make();
+    await expect(run(jobs.get("maint-deadlines")!)).rejects.toThrow(
+      /nije preneto na 3\.0/i,
+    );
+    // Ključno: brana je PRE poziva — outbox se ne prazni iz stare baze.
+    expect(sy15.sql).toEqual([]);
+  });
+
+  it("🔴 ODRZAVANJE_IZVOR=3.0 NE obara poslove sastanaka ni PB-a", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const { jobs, sy15 } = make(
+      sy15Mock(),
+      prismaMock(),
+      sastFnMock({ action: 2 }),
+    );
+    await expect(run(jobs.get("sast-action-reminders")!)).resolves.toBeDefined();
+    await expect(run(jobs.get("pb-enqueue")!)).resolves.toBeDefined();
+    await expect(run(jobs.get("kadr-hr-reminders")!)).resolves.toBeDefined();
+    expect(sy15.sql).toEqual([
+      "SELECT public.sastanci_enqueue_action_reminders();",
+      "SELECT public.pb_enqueue_notifications();",
+      "SELECT * FROM public.kadr_schedule_hr_reminders();",
+    ]);
+  });
+
+  it("🔴 SASTANCI_IZVOR=3.0 + PB_IZVOR=3.0 NE obaraju maint-deadlines", async () => {
+    process.env.SASTANCI_IZVOR = "3.0";
+    process.env.PB_IZVOR = "3.0";
+    const { jobs, sy15 } = make();
+    await expect(run(jobs.get("maint-deadlines")!)).resolves.toBeDefined();
+    expect(sy15.sql).toEqual([
+      "SELECT * FROM public.maint_check_all_deadlines(30);",
+    ]);
+  });
+
+  it("zastareli SASTANCI_PB_IZVOR=3.0 NE pomera održavanje", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const { jobs, sy15 } = make();
+    await expect(run(jobs.get("maint-deadlines")!)).resolves.toBeDefined();
+    expect(sy15.sql).toEqual([
+      "SELECT * FROM public.maint_check_all_deadlines(30);",
+    ]);
   });
 });

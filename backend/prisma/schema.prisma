@@ -7269,3 +7269,941 @@ model PbNotificationLog {
   // SQL-only: parcijalni indeksi reda čekanja (WHERE status = 'pending' / IN (…)).
   @@map("pb_notification_log")
 }
+
+// ============================================================================
+// SEOBA sy15 — KORAK 2: ODRŽAVANJE (CMMS) (06.08.2026)
+// ============================================================================
+// Merenje, obrazloženje i runbook: docs/SEOBA_ODRZAVANJA_2026-08-06.md.
+// Korak 2 iz docs/PLAN_GASENJA_SY15_2026-08-03.md; obrazac preuzet od koraka 1
+// (sastanci + PB, docs/SEOBA_SASTANCI_PB_2026-08-05.md).
+//
+// OBIM (izmereno `count(*)` nad živom sy15, 06.08.2026): **34 tabele, 764 reda**.
+// ⚠️ 34, ne 33: `prisma/sy15.prisma` NAMERNO nema model za `maint_wo_number_counter`
+// (deny-all RLS, dodela broja isključivo kroz trigger), pa spisak „po modelima"
+// promašuje baš tabelu koja nosi BROJAČ RADNIH NALOGA. Bez nje bi numeracija posle
+// preklopa krenula od nule i sudarila se sa postojećim brojevima — ista klasa
+// previda kao `akcioni_plan_istorija` u koraku 1.
+//
+// PRENOSNE ODLUKE (sve izmerene, ne pretpostavljene):
+//
+//  1. UUID PK-ovi se ZADRŽAVAJU 1:1 -> prenos je egzaktno idempotentan (upsert po
+//     `id`), bez remap tabele. Isti presedan kao korak 1 i `rev_*`.
+//  2. Kolone koje su u sy15 imale FK na `auth.users(id)` (uuid) prevode se u
+//     **Int na `users.id`** — izmereno **21/21** razrešenih naloga po mejlu
+//     (domen koristi 21 različit `auth.users` nalog; svi imaju parnjaka u 3.0).
+//     Tih kolona ima **46** i sve su „ko je uradio" (`*_by`, `reported_by`,
+//     `assigned_to`, `actor`, `technician_id`, `responsible_user_id`…). FK
+//     ograničenja se prave u migraciji kao **SQL-only** (isti obrazac kao CHECK-ovi
+//     i parcijalni indeksi): 46 Prisma relacija tražilo bi 46 povratnih polja na
+//     `User`, a modul ih NIKAD ne džoinuje — imena autora se rešavaju batch-om.
+//     ON DELETE semantika je prepisana sa žive sy15 (SET NULL / RESTRICT / CASCADE),
+//     ne izmišljena.
+//  3. **23 PG enum tipa -> String + CHECK** (BACKEND_RULES §2.2), isti skup
+//     vrednosti, `VarChar(20)` (najduža vrednost je `motor_transmisija` = 17).
+//  4. Unutrašnji FK-ovi domena (37) OSTAJU prave Prisma relacije — njih modul
+//     stvarno prati (nalog -> sredstvo, incident -> nalog, dokument -> vozač…).
+//  5. RLS politike se NE prenose (**102 politike na 34 tabele**) — 3.0 koristi
+//     guardove i query-scoping (ODLUKE.md). Zato `OdrzavanjeAuthzService`
+//     MORA da postoji: u sy15 je row-scope sprovodio RLS pa ga kod namerno nije
+//     duplirao; bez prepisa bi prava TIHO nestala.
+//  6. Trigeri se dele: **mehanika se prenosi** (`touch_updated_at` na 18 tabela,
+//     dodela `wo_number`), **logika se prepisuje u NestJS** (auto-kreiranje naloga
+//     iz incidenta, audit tragovi, enqueue obaveštenja, guardovi tipa sredstva).
+//     Spisak izostavljenih je u zaglavlju migracije.
+//  7. Fajlovi OSTAJU u sy15 storage-u (`maint-machine-files`, 59 objekata / 469 MB).
+//     Prenose se samo putanje; URL-ovi ka sy15 gateway-u ostaju važeći.
+//
+// ŠAVOVI KA DRUGIM DOMENIMA (nema ih po FK grafu, ali POSTOJE po view/triger
+// grafu — v. runbook §4; ovo je glavna korekcija polazne pretpostavke):
+//   a) `v_rev_machines` je `SELECT … FROM maint_machines` — Reversi (korak 3)
+//      čitaju mašine odavde;
+//   b) triger `maint_machines_sync_to_loc` PIŠE u `loc_locations` (Lokacije, korak 3);
+//   c) `ai_chat_prijavi_kvar` INSERT-uje u `maint_incidents` — AI-chat piše u
+//      ovaj domen iz drugog modula.
+
+/// CMMS sredstvo (mašina/vozilo/IT/objekat). Was: sy15 `public.maint_assets`.
+/// assetType: machine | vehicle | it | facility
+/// status: running | degraded | down | maintenance
+model MaintAsset {
+  assetId           String    @id(map: "pk_maint_assets") @default(uuid(4)) @map("asset_id") @db.Uuid
+  assetCode         String    @map("asset_code")
+  assetType         String    @map("asset_type") @db.VarChar(20)
+  name              String    @map("name")
+  status            String    @default("running") @map("status") @db.VarChar(20)
+  locationId        String?   @map("location_id") @db.Uuid
+  /// U sy15 `auth.users.id` (uuid); prevedeno na `users.id` (odluka 2).
+  responsibleUserId Int?      @map("responsible_user_id")
+  manufacturer      String?   @map("manufacturer")
+  model             String?   @map("model")
+  serialNumber      String?   @map("serial_number")
+  dateOfPurchase    DateTime? @map("date_of_purchase") @db.Date
+  warrantyUntil     DateTime? @map("warranty_until") @db.Date
+  supplier          String?   @map("supplier")
+  /// Token QR nalepnice sredstva — jedinstven, prenosi se DOSLOVNO (odštampane
+  /// nalepnice moraju da nastave da rade posle preklopa).
+  qrToken           String    @default(uuid(4)) @map("qr_token")
+  active            Boolean   @default(true) @map("active")
+  archivedAt        DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy         Int?      @map("updated_by")
+  notes             String?   @map("notes")
+  archiveReason     String?   @map("archive_reason")
+  archivedBy        Int?      @map("archived_by")
+
+  location            MaintLocation?            @relation(fields: [locationId], references: [locationId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_assets_location")
+  machine             MaintMachine?
+  vehicleDetails      MaintVehicleDetails?
+  itDetails           MaintItAssetDetails?
+  facilityDetails     MaintFacilityDetails?
+  workOrders          MaintWorkOrder[]
+  incidents           MaintIncident[]
+  documents           MaintDocument[]
+  tasks               MaintTask[]
+  tires               MaintVehicleTire[]
+  bookings            MaintVehicleBooking[]
+  partVehicles        MaintPartVehicle[]
+  servicePlans        MaintAssetServicePlan[]
+  vehicleServicePlans MaintVehicleServicePlan[]
+
+  // SQL-only: uq lower(asset_code), uq qr_token, parcijalni idx po tipu, CHECK-ovi.
+  @@map("maint_assets")
+}
+
+/// Mašina pogona (šifra RJ). PK je `machine_code` — ne uuid. Was: sy15 `maint_machines`.
+/// `v_rev_machines` (Reversi) i sinhronizacija ka `loc_locations` vise o ovoj tabeli.
+model MaintMachine {
+  machineCode       String    @id(map: "pk_maint_machines") @map("machine_code")
+  name              String    @map("name")
+  type              String?   @map("type")
+  manufacturer      String?   @map("manufacturer")
+  model             String?   @map("model")
+  serialNumber      String?   @map("serial_number")
+  yearOfManufacture Int?      @map("year_of_manufacture")
+  yearCommissioned  Int?      @map("year_commissioned")
+  location          String?   @map("location")
+  /// Šifra pogona („01".."21") — TEKST, ne FK; izvedena iz šifre mašine
+  /// (`maint_machine_dept_code`). Nije veza ka kadrovskoj `departments`.
+  departmentId      String?   @map("department_id")
+  powerKw           Decimal?  @map("power_kw") @db.Decimal(6, 2)
+  weightKg          Decimal?  @map("weight_kg") @db.Decimal(10, 2)
+  notes             String?   @map("notes")
+  tracked           Boolean   @default(true) @map("tracked")
+  archivedAt        DateTime? @map("archived_at") @db.Timestamptz(6)
+  source            String    @default("manual") @map("source")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy         Int?      @map("updated_by")
+  responsibleUserId Int?      @map("responsible_user_id")
+  assetId           String    @unique(map: "uq_maint_machines_asset") @map("asset_id") @db.Uuid
+
+  asset MaintAsset @relation(fields: [assetId], references: [assetId], onDelete: Restrict, onUpdate: NoAction, map: "fk_maint_machines_asset")
+
+  // SQL-only: parcijalni indeksi (aktivne/arhivirane/odgovorni), CHECK source/godine.
+  @@map("maint_machines")
+}
+
+/// Radni nalog. Was: sy15 `public.maint_work_orders`.
+/// type: kvar | preventiva | inspekcija | servis | administrativni | incident | preventive
+/// priority: p1_zastoj | p2_smetnja | p3_manje | p4_planirano
+/// status: novi | potvrden | dodeljen | u_radu | ceka_deo | ceka_dobavljaca | ceka_korisnika | kontrola | zavrsen | otkazan
+model MaintWorkOrder {
+  woId                   String    @id(map: "pk_maint_work_orders") @default(uuid(4)) @map("wo_id") @db.Uuid
+  /// Broj naloga — dodeljuje ga trigger iz `maint_wo_number_counter`.
+  woNumber               String?   @map("wo_number")
+  type                   String    @map("type") @db.VarChar(20)
+  assetId                String    @map("asset_id") @db.Uuid
+  assetType              String    @map("asset_type") @db.VarChar(20)
+  sourceIncidentId       String?   @map("source_incident_id") @db.Uuid
+  sourcePreventiveTaskId String?   @map("source_preventive_task_id") @db.Uuid
+  title                  String    @map("title")
+  description            String?   @map("description")
+  priority               String    @map("priority") @db.VarChar(20)
+  safetyMarker           Boolean   @default(false) @map("safety_marker")
+  status                 String    @default("novi") @map("status") @db.VarChar(20)
+  reportedBy             Int       @map("reported_by")
+  assignedTo             Int?      @map("assigned_to")
+  dueAt                  DateTime? @map("due_at") @db.Timestamptz(6)
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  startedAt              DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt            DateTime? @map("completed_at") @db.Timestamptz(6)
+  downtimeFrom           DateTime? @map("downtime_from") @db.Timestamptz(6)
+  downtimeTo             DateTime? @map("downtime_to") @db.Timestamptz(6)
+  laborMinutes           Int?      @map("labor_minutes")
+  costTotal              Decimal?  @map("cost_total") @db.Decimal(10, 2)
+  closureComment         String?   @map("closure_comment")
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy              Int?      @map("updated_by")
+  vehicleServiceCategory String?   @map("vehicle_service_category") @db.VarChar(20)
+  odometerKmAtService    Int?      @map("odometer_km_at_service")
+  triggerOdometerKm      Int?      @map("trigger_odometer_km")
+  estimatedCost          Decimal?  @map("estimated_cost") @db.Decimal(10, 2)
+  externalServicerName   String?   @map("external_servicer_name")
+  servicePlanId          String?   @map("service_plan_id") @db.Uuid
+  assetServicePlanId     String?   @map("asset_service_plan_id") @db.Uuid
+
+  asset                MaintAsset               @relation(fields: [assetId], references: [assetId], onDelete: Restrict, onUpdate: NoAction, map: "fk_maint_wo_asset")
+  sourceIncident       MaintIncident?           @relation("WoSourceIncident", fields: [sourceIncidentId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_wo_source_incident")
+  sourcePreventiveTask MaintTask?               @relation(fields: [sourcePreventiveTaskId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_wo_source_task")
+  servicePlan          MaintVehicleServicePlan? @relation(fields: [servicePlanId], references: [planId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_wo_service_plan")
+  assetServicePlan     MaintAssetServicePlan?   @relation(fields: [assetServicePlanId], references: [planId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_wo_asset_service_plan")
+  events               MaintWoEvent[]
+  labor                MaintWoLabor[]
+  parts                MaintWoPart[]
+  documents            MaintDocument[]
+  stockMovements       MaintPartStockMovement[]
+  /// Incident koji je OVAJ nalog rešio (`maint_incidents.work_order_id`).
+  incidents            MaintIncident[]          @relation("IncidentWorkOrder")
+
+  @@index([assetId], map: "idx_maint_wo_asset")
+  @@index([assignedTo], map: "idx_maint_wo_assigned")
+  @@index([dueAt], map: "idx_maint_wo_due")
+  @@index([status], map: "idx_maint_wo_status")
+  @@index([sourceIncidentId], map: "idx_maint_wo_source_incident")
+  // SQL-only: uq parcijalni po `wo_number`, parcijalni indeksi planova/km, CHECK-ovi.
+  @@map("maint_work_orders")
+}
+
+/// BROJAČ RADNIH NALOGA po godini. Was: sy15 `public.maint_wo_number_counter`.
+/// U sy15 ima deny-all RLS (upis samo kroz `maint_work_orders_assign_wo_number`).
+/// NEMA model u `prisma/sy15.prisma` — zato ga „spisak po modelima" promaši, a
+/// bez njega numeracija naloga posle preklopa kreće od nule.
+model MaintWoNumberCounter {
+  year      Int @id(map: "pk_maint_wo_number_counter") @map("year")
+  lastValue Int @default(0) @map("last_value")
+
+  @@map("maint_wo_number_counter")
+}
+
+/// Prijava kvara. Was: sy15 `public.maint_incidents`.
+/// severity: minor | major | critical
+/// status: open | acknowledged | in_progress | awaiting_parts | resolved | closed
+model MaintIncident {
+  id              String    @id(map: "pk_maint_incidents") @default(uuid(4)) @map("id") @db.Uuid
+  machineCode     String    @map("machine_code")
+  reportedBy      Int       @map("reported_by")
+  reportedAt      DateTime  @default(now()) @map("reported_at") @db.Timestamptz(6)
+  title           String    @map("title")
+  description     String?   @map("description")
+  severity        String    @default("minor") @map("severity") @db.VarChar(20)
+  status          String    @default("open") @map("status") @db.VarChar(20)
+  assignedTo      Int?      @map("assigned_to")
+  resolvedAt      DateTime? @map("resolved_at") @db.Timestamptz(6)
+  closedAt        DateTime? @map("closed_at") @db.Timestamptz(6)
+  resolutionNotes String?   @map("resolution_notes")
+  downtimeMinutes Int?      @map("downtime_minutes")
+  attachmentUrls  String[]  @default([]) @map("attachment_urls")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy       Int?      @map("updated_by")
+  workOrderId     String?   @map("work_order_id") @db.Uuid
+  assetId         String?   @map("asset_id") @db.Uuid
+  assetType       String?   @map("asset_type") @db.VarChar(20)
+  safetyMarker    Boolean   @default(false) @map("safety_marker")
+
+  asset     MaintAsset?          @relation(fields: [assetId], references: [assetId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_incidents_asset")
+  workOrder MaintWorkOrder?      @relation("IncidentWorkOrder", fields: [workOrderId], references: [woId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_incidents_work_order")
+  events    MaintIncidentEvent[]
+  documents MaintDocument[]
+  /// Nalozi kojima je OVAJ incident izvor (`maint_work_orders.source_incident_id`).
+  sourcedWorkOrders MaintWorkOrder[] @relation("WoSourceIncident")
+
+  @@index([machineCode], map: "idx_maint_incidents_machine")
+  // SQL-only: parcijalni indeksi (otvoreni/dodeljeni/bezbednosni/nalog/sredstvo), CHECK.
+  @@map("maint_incidents")
+}
+
+/// Trag na prijavi kvara (promena statusa/dodele/komentar). Was: sy15 `maint_incident_events`.
+model MaintIncidentEvent {
+  id         String   @id(map: "pk_maint_incident_events") @default(uuid(4)) @map("id") @db.Uuid
+  incidentId String   @map("incident_id") @db.Uuid
+  actor      Int?     @map("actor")
+  at         DateTime @default(now()) @map("at") @db.Timestamptz(6)
+  eventType  String   @map("event_type")
+  fromValue  String?  @map("from_value")
+  toValue    String?  @map("to_value")
+  comment    String?  @map("comment")
+
+  incident MaintIncident @relation(fields: [incidentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_incident_events_incident")
+
+  @@index([incidentId, at], map: "idx_maint_incident_events_incident")
+  @@map("maint_incident_events")
+}
+
+/// Trag na radnom nalogu. Was: sy15 `public.maint_wo_events`.
+model MaintWoEvent {
+  id        String   @id(map: "pk_maint_wo_events") @default(uuid(4)) @map("id") @db.Uuid
+  woId      String   @map("wo_id") @db.Uuid
+  actor     Int?     @map("actor")
+  at        DateTime @default(now()) @map("at") @db.Timestamptz(6)
+  eventType String   @map("event_type")
+  fromValue String?  @map("from_value")
+  toValue   String?  @map("to_value")
+  comment   String?  @map("comment")
+
+  workOrder MaintWorkOrder @relation(fields: [woId], references: [woId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_wo_events_wo")
+
+  @@index([woId, at(sort: Desc)], map: "idx_maint_wo_events_wo")
+  @@map("maint_wo_events")
+}
+
+/// Utrošen rad na nalogu. Was: sy15 `public.maint_wo_labor`.
+model MaintWoLabor {
+  id           String    @id(map: "pk_maint_wo_labor") @default(uuid(4)) @map("id") @db.Uuid
+  woId         String    @map("wo_id") @db.Uuid
+  technicianId Int?      @map("technician_id")
+  startedAt    DateTime? @map("started_at") @db.Timestamptz(6)
+  endedAt      DateTime? @map("ended_at") @db.Timestamptz(6)
+  minutes      Int?      @map("minutes")
+  notes        String?   @map("notes")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  workOrder MaintWorkOrder @relation(fields: [woId], references: [woId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_wo_labor_wo")
+
+  @@index([woId], map: "idx_maint_wo_labor_wo")
+  @@map("maint_wo_labor")
+}
+
+/// Ugrađen deo na nalogu. Was: sy15 `public.maint_wo_parts`.
+model MaintWoPart {
+  id        String   @id(map: "pk_maint_wo_parts") @default(uuid(4)) @map("id") @db.Uuid
+  woId      String   @map("wo_id") @db.Uuid
+  partName  String   @map("part_name")
+  quantity  Decimal? @map("quantity") @db.Decimal(12, 4)
+  unit      String?  @map("unit")
+  unitCost  Decimal? @map("unit_cost") @db.Decimal(10, 2)
+  supplier  String?  @map("supplier")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  partId    String?  @map("part_id") @db.Uuid
+
+  workOrder MaintWorkOrder @relation(fields: [woId], references: [woId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_wo_parts_wo")
+  part      MaintPart?     @relation(fields: [partId], references: [partId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_wo_parts_part")
+
+  @@index([woId], map: "idx_maint_wo_parts_wo")
+  @@index([partId], map: "idx_maint_wo_parts_part")
+  @@map("maint_wo_parts")
+}
+
+/// Rezervni deo (magacin održavanja). Was: sy15 `public.maint_parts`.
+model MaintPart {
+  partId       String   @id(map: "pk_maint_parts") @default(uuid(4)) @map("part_id") @db.Uuid
+  partCode     String   @unique(map: "uq_maint_parts_code") @map("part_code")
+  name         String   @map("name")
+  description  String?  @map("description")
+  unit         String   @default("kom") @map("unit")
+  supplierId   String?  @map("supplier_id") @db.Uuid
+  manufacturer String?  @map("manufacturer")
+  model        String?  @map("model")
+  minStock     Decimal  @default(0) @map("min_stock") @db.Decimal(12, 4)
+  currentStock Decimal  @default(0) @map("current_stock") @db.Decimal(12, 4)
+  unitCost     Decimal? @map("unit_cost") @db.Decimal(12, 2)
+  active       Boolean  @default(true) @map("active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy    Int?     @map("updated_by")
+
+  supplier       MaintSupplier?           @relation(fields: [supplierId], references: [supplierId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_parts_supplier")
+  stockMovements MaintPartStockMovement[]
+  partVehicles   MaintPartVehicle[]
+  woParts        MaintWoPart[]
+
+  @@index([supplierId], map: "idx_maint_parts_supplier")
+  @@index([active, name], map: "idx_maint_parts_active_name")
+  @@map("maint_parts")
+}
+
+/// Dobavljač delova. Was: sy15 `public.maint_suppliers`.
+model MaintSupplier {
+  supplierId String   @id(map: "pk_maint_suppliers") @default(uuid(4)) @map("supplier_id") @db.Uuid
+  name       String   @unique(map: "uq_maint_suppliers_name") @map("name")
+  contact    String?  @map("contact")
+  email      String?  @map("email")
+  phone      String?  @map("phone")
+  notes      String?  @map("notes")
+  active     Boolean  @default(true) @map("active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy  Int?     @map("updated_by")
+
+  parts MaintPart[]
+
+  @@map("maint_suppliers")
+}
+
+/// Kretanje zaliha dela. Was: sy15 `public.maint_part_stock_movements`.
+/// movementType: in | out | adjustment | return
+model MaintPartStockMovement {
+  movementId   String   @id(map: "pk_maint_part_stock_movements") @default(uuid(4)) @map("movement_id") @db.Uuid
+  partId       String   @map("part_id") @db.Uuid
+  woId         String?  @map("wo_id") @db.Uuid
+  movementType String   @map("movement_type") @db.VarChar(20)
+  quantity     Decimal  @map("quantity") @db.Decimal(12, 4)
+  unitCost     Decimal? @map("unit_cost") @db.Decimal(12, 2)
+  note         String?  @map("note")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy    Int?     @map("created_by")
+
+  part      MaintPart       @relation(fields: [partId], references: [partId], onDelete: Restrict, onUpdate: NoAction, map: "fk_maint_stock_movements_part")
+  workOrder MaintWorkOrder? @relation(fields: [woId], references: [woId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_stock_movements_wo")
+
+  @@index([partId, createdAt(sort: Desc)], map: "idx_maint_stock_movements_part")
+  @@index([woId, createdAt(sort: Desc)], map: "idx_maint_stock_movements_wo")
+  @@map("maint_part_stock_movements")
+}
+
+/// Veza deo <-> vozilo (koji deo ide na koje vozilo). Was: sy15 `maint_part_vehicles`.
+model MaintPartVehicle {
+  assetId   String   @map("asset_id") @db.Uuid
+  partId    String   @map("part_id") @db.Uuid
+  qtyMin    Decimal? @map("qty_min") @db.Decimal(12, 4)
+  notes     String?  @map("notes")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy Int?     @map("created_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy Int?     @map("updated_by")
+
+  asset MaintAsset @relation(fields: [assetId], references: [assetId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_part_vehicles_asset")
+  part  MaintPart  @relation(fields: [partId], references: [partId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_part_vehicles_part")
+
+  @@id([assetId, partId], map: "pk_maint_part_vehicles")
+  @@index([partId], map: "idx_maint_part_vehicles_part")
+  @@map("maint_part_vehicles")
+}
+
+/// Detalji vozila (1:1 na sredstvo). Was: sy15 `public.maint_vehicle_details`.
+/// vehicleKind: teretno | putnicko | kombi | radno | prikolica
+/// usageType: posao | posao_kuca | licne_potrebe
+/// gpsProvider: nema | smartivo | drugi
+model MaintVehicleDetails {
+  assetId                 String    @id(map: "pk_maint_vehicle_details") @map("asset_id") @db.Uuid
+  registrationPlate       String?   @map("registration_plate")
+  vin                     String?   @map("vin")
+  odometerKm              Int?      @map("odometer_km")
+  fuelType                String?   @map("fuel_type")
+  registrationExpiresAt   DateTime? @map("registration_expires_at") @db.Date
+  insuranceExpiresAt      DateTime? @map("insurance_expires_at") @db.Date
+  serviceDueAt            DateTime? @map("service_due_at") @db.Date
+  serviceIntervalKm       Int?      @map("service_interval_km")
+  nextServiceMileageKm    Int?      @map("next_service_mileage_km")
+  notes                   String?   @map("notes")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy               Int?      @map("updated_by")
+  yearOfManufacture       Int?      @map("year_of_manufacture") @db.SmallInt
+  vehicleKind             String?   @map("vehicle_kind") @db.VarChar(20)
+  payloadKg               Int?      @map("payload_kg")
+  passengerSeats          Int?      @map("passenger_seats") @db.SmallInt
+  usageType               String?   @map("usage_type") @db.VarChar(20)
+  gpsProvider             String    @default("nema") @map("gps_provider") @db.VarChar(20)
+  gpsDeviceId             String?   @map("gps_device_id")
+  firstAidKitExpiresAt    DateTime? @map("first_aid_kit_expires_at") @db.Date
+  isPrivateVehicle        Boolean   @default(false) @map("is_private_vehicle")
+  ownerId                 String?   @map("owner_id") @db.Uuid
+  primaryDriverId         String?   @map("primary_driver_id") @db.Uuid
+  partsShelf              String?   @map("parts_shelf")
+  hasPartsSet             Boolean   @default(false) @map("has_parts_set")
+  partsNotes              String?   @map("parts_notes")
+  primaryPhotoStoragePath String?   @map("primary_photo_storage_path")
+  tollTagSerial           String?   @map("toll_tag_serial")
+  tollTagProvider         String?   @map("toll_tag_provider")
+  tollTagNotes            String?   @map("toll_tag_notes")
+
+  asset         MaintAsset         @relation(fields: [assetId], references: [assetId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_vehicle_details_asset")
+  owner         MaintVehicleOwner? @relation(fields: [ownerId], references: [ownerId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_vehicle_details_owner")
+  primaryDriver MaintDriver?       @relation(fields: [primaryDriverId], references: [driverId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_vehicle_details_driver")
+
+  @@index([registrationExpiresAt], map: "idx_maint_vehicle_details_registration_due")
+  @@index([serviceDueAt], map: "idx_maint_vehicle_details_service_due")
+  // SQL-only: uq upper(registration_plate) parcijalni, parcijalni idx (gps/owner/first_aid/shelf/driver), CHECK-ovi.
+  @@map("maint_vehicle_details")
+}
+
+/// Vlasnik vozila (firma/lizing/zaposleni/spoljni). Was: sy15 `maint_vehicle_owners`.
+/// ownerType: firma | leasing | zaposleni | spoljni
+model MaintVehicleOwner {
+  ownerId   String   @id(map: "pk_maint_vehicle_owners") @default(uuid(4)) @map("owner_id") @db.Uuid
+  name      String   @unique(map: "uq_maint_vehicle_owners_name") @map("name")
+  ownerType String   @map("owner_type") @db.VarChar(20)
+  contact   String?  @map("contact")
+  notes     String?  @map("notes")
+  active    Boolean  @default(true) @map("active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy Int?     @map("updated_by")
+
+  vehicles MaintVehicleDetails[]
+
+  @@index([ownerType], map: "idx_maint_vehicle_owners_type")
+  @@map("maint_vehicle_owners")
+}
+
+/// Vozač (interni ili spoljni). Was: sy15 `public.maint_drivers`.
+/// `auth_user_id` je nalog vozača — prevodi se na `users.id` kao i ostali (odluka 2).
+model MaintDriver {
+  driverId                 String    @id(map: "pk_maint_drivers") @default(uuid(4)) @map("driver_id") @db.Uuid
+  fullName                 String    @map("full_name")
+  isInternal               Boolean   @default(true) @map("is_internal")
+  authUserId               Int?      @map("auth_user_id")
+  driversLicenseNumber     String?   @map("drivers_license_number")
+  driversLicenseCategories String[]  @map("drivers_license_categories")
+  driversLicenseValidUntil DateTime? @map("drivers_license_valid_until") @db.Date
+  idCardNumber             String?   @map("id_card_number")
+  idCardValidUntil         DateTime? @map("id_card_valid_until") @db.Date
+  medicalCheckValidUntil   DateTime? @map("medical_check_valid_until") @db.Date
+  phone                    String?   @map("phone")
+  jmbg                     String?   @map("jmbg")
+  address                  String?   @map("address")
+  notes                    String?   @map("notes")
+  active                   Boolean   @default(true) @map("active")
+  archivedAt               DateTime? @map("archived_at") @db.Timestamptz(6)
+  archiveReason            String?   @map("archive_reason")
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                Int?      @map("created_by")
+  updatedAt                DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy                Int?      @map("updated_by")
+
+  vehicles  MaintVehicleDetails[]
+  bookings  MaintVehicleBooking[]
+  documents MaintDocument[]
+
+  // SQL-only: parcijalni indeksi (aktivni/istek dozvole/nalog), CHECK-ovi.
+  @@map("maint_drivers")
+}
+
+/// Rezervacija vozila. Was: sy15 `public.maint_vehicle_bookings`.
+/// status: planirana | u_toku | zavrsena | otkazana
+model MaintVehicleBooking {
+  bookingId String   @id(map: "pk_maint_vehicle_bookings") @default(uuid(4)) @map("booking_id") @db.Uuid
+  assetId   String   @map("asset_id") @db.Uuid
+  driverId  String?  @map("driver_id") @db.Uuid
+  startAt   DateTime @map("start_at") @db.Timestamptz(6)
+  endAt     DateTime @map("end_at") @db.Timestamptz(6)
+  purpose   String?  @map("purpose")
+  status    String   @default("planirana") @map("status") @db.VarChar(20)
+  notes     String?  @map("notes")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy Int?     @map("created_by")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy Int?     @map("updated_by")
+
+  asset  MaintAsset   @relation(fields: [assetId], references: [assetId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_bookings_asset")
+  driver MaintDriver? @relation(fields: [driverId], references: [driverId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_bookings_driver")
+
+  @@index([assetId, startAt], map: "idx_maint_bookings_asset")
+  // SQL-only: parcijalni indeksi (aktivne rezervacije, po vozaču), CHECK end > start.
+  @@map("maint_vehicle_bookings")
+}
+
+/// Garnitura guma vozila. Was: sy15 `public.maint_vehicle_tires`.
+/// season: summer | winter | all_season · status: nove | koriscene | dotrajale | bacene
+model MaintVehicleTire {
+  tireSetId          String    @id(map: "pk_maint_vehicle_tires") @default(uuid(4)) @map("tire_set_id") @db.Uuid
+  assetId            String    @map("asset_id") @db.Uuid
+  season             String    @map("season") @db.VarChar(20)
+  dimension          String    @map("dimension")
+  count              Int       @map("count") @db.SmallInt
+  status             String    @default("koriscene") @map("status") @db.VarChar(20)
+  shelfCode          String?   @map("shelf_code")
+  installedOnVehicle Boolean   @default(false) @map("installed_on_vehicle")
+  purchasedAt        DateTime? @map("purchased_at") @db.Date
+  notes              String?   @map("notes")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy          Int?      @map("updated_by")
+
+  asset MaintAsset @relation(fields: [assetId], references: [assetId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_vehicle_tires_asset")
+
+  @@index([assetId], map: "idx_maint_vehicle_tires_asset")
+  @@index([assetId, season], map: "idx_maint_vehicle_tires_season")
+  // SQL-only: parcijalni idx montiranih guma, CHECK count > 0 / dimenzija.
+  @@map("maint_vehicle_tires")
+}
+
+/// Plan servisa vozila (po km i/ili mesecima). Was: sy15 `maint_vehicle_service_plan`.
+/// vehicleServiceCategory: mali | veliki | kocnice | elektrika | oslanjanje | motor_transmisija | karoserija | odluka_o_zameni | ostalo
+model MaintVehicleServicePlan {
+  planId                 String    @id(map: "pk_maint_vehicle_service_plan") @default(uuid(4)) @map("plan_id") @db.Uuid
+  assetId                String    @map("asset_id") @db.Uuid
+  name                   String    @map("name")
+  vehicleServiceCategory String?   @map("vehicle_service_category") @db.VarChar(20)
+  intervalKm             Int?      @map("interval_km")
+  intervalMonths         Int?      @map("interval_months")
+  lastDoneAt             DateTime? @map("last_done_at") @db.Date
+  lastDoneKm             Int?      @map("last_done_km")
+  notes                  String?   @map("notes")
+  /// Očekivana cena servisa (RSD) — prepisuje se u WO `estimated_cost`.
+  plannedCost            Decimal?  @map("planned_cost") @db.Decimal(10, 2)
+  priority               String    @default("p4_planirano") @map("priority") @db.VarChar(20)
+  active                 Boolean   @default(true) @map("active")
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy              Int?      @map("created_by")
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy              Int?      @map("updated_by")
+
+  asset      MaintAsset       @relation(fields: [assetId], references: [assetId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_vsp_asset")
+  workOrders MaintWorkOrder[]
+
+  // SQL-only: parcijalni idx aktivnih planova, CHECK „bar jedan interval".
+  @@map("maint_vehicle_service_plan")
+}
+
+/// Plan servisa sredstva (mesečni interval). Was: sy15 `maint_asset_service_plan`.
+model MaintAssetServicePlan {
+  planId         String    @id(map: "pk_maint_asset_service_plan") @default(uuid(4)) @map("plan_id") @db.Uuid
+  assetId        String    @map("asset_id") @db.Uuid
+  name           String    @map("name")
+  intervalMonths Int       @map("interval_months")
+  lastDoneAt     DateTime? @map("last_done_at") @db.Date
+  notes          String?   @map("notes")
+  /// Očekivana cena servisa (RSD) — prepisuje se u WO `estimated_cost`.
+  plannedCost    Decimal?  @map("planned_cost") @db.Decimal(10, 2)
+  priority       String    @default("p4_planirano") @map("priority") @db.VarChar(20)
+  active         Boolean   @default(true) @map("active")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      Int?      @map("created_by")
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy      Int?      @map("updated_by")
+
+  asset      MaintAsset       @relation(fields: [assetId], references: [assetId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_asp_asset")
+  workOrders MaintWorkOrder[]
+
+  // SQL-only: parcijalni idx aktivnih planova, CHECK interval > 0 / naziv.
+  @@map("maint_asset_service_plan")
+}
+
+/// Preventivni zadatak (kontrolna lista po intervalu). Was: sy15 `public.maint_tasks`.
+/// intervalUnit: hours | days | weeks | months · severity: normal | important | critical
+/// requiredRole: operator | technician | chief | management | admin
+model MaintTask {
+  id                String   @id(map: "pk_maint_tasks") @default(uuid(4)) @map("id") @db.Uuid
+  machineCode       String   @map("machine_code")
+  title             String   @map("title")
+  description       String?  @map("description")
+  instructions      String?  @map("instructions")
+  intervalValue     Int      @map("interval_value")
+  intervalUnit      String   @map("interval_unit") @db.VarChar(20)
+  severity          String   @default("normal") @map("severity") @db.VarChar(20)
+  requiredRole      String   @default("operator") @map("required_role") @db.VarChar(20)
+  gracePeriodDays   Int      @default(3) @map("grace_period_days")
+  active            Boolean  @default(true) @map("active")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         Int?     @map("created_by")
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy         Int?     @map("updated_by")
+  checklistTemplate Json     @map("checklist_template")
+  assetId           String?  @map("asset_id") @db.Uuid
+
+  asset      MaintAsset?      @relation(fields: [assetId], references: [assetId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_tasks_asset")
+  checks     MaintCheck[]
+  documents  MaintDocument[]
+  workOrders MaintWorkOrder[]
+
+  // SQL-only: parcijalni indeksi (aktivni po mašini/sredstvu), CHECK-ovi.
+  @@map("maint_tasks")
+}
+
+/// Izvršena kontrola preventivnog zadatka. Was: sy15 `public.maint_checks`.
+/// result: ok | warning | fail | skipped
+model MaintCheck {
+  id             String   @id(map: "pk_maint_checks") @default(uuid(4)) @map("id") @db.Uuid
+  taskId         String   @map("task_id") @db.Uuid
+  machineCode    String   @map("machine_code")
+  performedBy    Int      @map("performed_by")
+  performedAt    DateTime @default(now()) @map("performed_at") @db.Timestamptz(6)
+  result         String   @map("result") @db.VarChar(20)
+  notes          String?  @map("notes")
+  attachmentUrls String[] @default([]) @map("attachment_urls")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy      Int?     @map("updated_by")
+
+  task MaintTask @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_checks_task")
+
+  @@index([machineCode, performedAt(sort: Desc)], map: "idx_maint_checks_machine_time")
+  @@index([taskId, performedAt(sort: Desc)], map: "idx_maint_checks_task_time")
+  @@map("maint_checks")
+}
+
+/// Dokument uz sredstvo/nalog/incident/zadatak/vozača. Was: sy15 `maint_documents`.
+/// entityType: asset | work_order | incident | preventive_task | driver
+/// Fajl OSTAJE u sy15 storage-u — prenosi se samo `storage_path`.
+model MaintDocument {
+  documentId       String    @id(map: "pk_maint_documents") @default(uuid(4)) @map("document_id") @db.Uuid
+  entityType       String    @map("entity_type") @db.VarChar(20)
+  entityId         String    @map("entity_id") @db.Uuid
+  assetId          String?   @map("asset_id") @db.Uuid
+  woId             String?   @map("wo_id") @db.Uuid
+  incidentId       String?   @map("incident_id") @db.Uuid
+  preventiveTaskId String?   @map("preventive_task_id") @db.Uuid
+  fileName         String    @map("file_name")
+  storagePath      String    @unique(map: "uq_maint_documents_storage_path") @map("storage_path")
+  mimeType         String?   @map("mime_type")
+  sizeBytes        BigInt?   @map("size_bytes")
+  category         String?   @map("category")
+  description      String?   @map("description")
+  uploadedAt       DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy       Int?      @map("uploaded_by")
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
+  validUntil       DateTime? @map("valid_until") @db.Date
+  driverId         String?   @map("driver_id") @db.Uuid
+
+  asset          MaintAsset?     @relation(fields: [assetId], references: [assetId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_documents_asset")
+  workOrder      MaintWorkOrder? @relation(fields: [woId], references: [woId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_documents_wo")
+  incident       MaintIncident?  @relation(fields: [incidentId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_documents_incident")
+  preventiveTask MaintTask?      @relation(fields: [preventiveTaskId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_documents_task")
+  driver         MaintDriver?    @relation(fields: [driverId], references: [driverId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_documents_driver")
+
+  // SQL-only: parcijalni indeksi (po entitetu, WHERE deleted_at IS NULL), 4 CHECK-a.
+  @@map("maint_documents")
+}
+
+/// Fajl uz mašinu (uputstvo, šema, foto). Was: sy15 `public.maint_machine_files`.
+model MaintMachineFile {
+  id          String    @id(map: "pk_maint_machine_files") @default(uuid(4)) @map("id") @db.Uuid
+  machineCode String    @map("machine_code")
+  fileName    String    @map("file_name")
+  storagePath String    @unique(map: "uq_maint_machine_files_storage_path") @map("storage_path")
+  mimeType    String?   @map("mime_type")
+  sizeBytes   BigInt?   @map("size_bytes")
+  category    String?   @map("category")
+  description String?   @map("description")
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  uploadedAt  DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy  Int?      @map("uploaded_by")
+
+  // SQL-only: parcijalni idx (machine_code, uploaded_at DESC) WHERE deleted_at IS NULL.
+  @@map("maint_machine_files")
+}
+
+/// Napomena uz mašinu. Was: sy15 `public.maint_machine_notes`.
+model MaintMachineNote {
+  id          String    @id(map: "pk_maint_machine_notes") @default(uuid(4)) @map("id") @db.Uuid
+  machineCode String    @map("machine_code")
+  author      Int       @map("author")
+  content     String    @map("content")
+  pinned      Boolean   @default(false) @map("pinned")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  // SQL-only: parcijalni idx (machine_code, pinned DESC, created_at DESC) WHERE deleted_at IS NULL.
+  @@map("maint_machine_notes")
+}
+
+/// Ručno postavljen status mašine (nadjačava izvedeni). Was: sy15 `maint_machine_status_override`.
+/// status: running | degraded | down | maintenance
+model MaintMachineStatusOverride {
+  machineCode String    @id(map: "pk_maint_machine_status_override") @map("machine_code")
+  status      String    @map("status") @db.VarChar(20)
+  reason      String    @map("reason")
+  setBy       Int       @map("set_by")
+  setAt       DateTime  @default(now()) @map("set_at") @db.Timestamptz(6)
+  validUntil  DateTime? @map("valid_until") @db.Timestamptz(6)
+
+  @@map("maint_machine_status_override")
+}
+
+/// Trag tvrdog brisanja mašine (snimak reda + razlog). Was: sy15 `maint_machines_deletion_log`.
+model MaintMachineDeletionLog {
+  id             String   @id(map: "pk_maint_machines_deletion_log") @default(uuid(4)) @map("id") @db.Uuid
+  machineCode    String   @map("machine_code")
+  machineName    String?  @map("machine_name")
+  snapshot       Json     @map("snapshot")
+  relatedCounts  Json     @map("related_counts")
+  reason         String   @map("reason")
+  deletedAt      DateTime @default(now()) @map("deleted_at") @db.Timestamptz(6)
+  deletedBy      Int?     @map("deleted_by")
+  /// Mejl se čuva DOSLOVNO uz `deleted_by` — trag mora preživeti i gašenje naloga.
+  deletedByEmail String?  @map("deleted_by_email")
+
+  @@index([machineCode], map: "idx_maint_mmdl_code")
+  @@index([deletedAt(sort: Desc)], map: "idx_maint_mmdl_at")
+  @@map("maint_machines_deletion_log")
+}
+
+/// Lokacija CMMS-a (stablo). Was: sy15 `public.maint_locations`.
+/// NIJE isto što i `loc_locations` (domen Lokacije, korak 3) — ovo je CMMS stablo.
+model MaintLocation {
+  locationId       String   @id(map: "pk_maint_locations") @default(uuid(4)) @map("location_id") @db.Uuid
+  parentLocationId String?  @map("parent_location_id") @db.Uuid
+  locationType     String   @default("lokacija") @map("location_type")
+  code             String?  @map("code")
+  name             String   @map("name")
+  active           Boolean  @default(true) @map("active")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  parent   MaintLocation?  @relation("MaintLocationTree", fields: [parentLocationId], references: [locationId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_locations_parent")
+  children MaintLocation[] @relation("MaintLocationTree")
+  assets   MaintAsset[]
+
+  // SQL-only: parcijalni indeksi (aktivne, po roditelju), CHECK naziv.
+  @@map("maint_locations")
+}
+
+/// Detalji IT opreme (1:1 na sredstvo). Was: sy15 `public.maint_it_asset_details`.
+model MaintItAssetDetails {
+  assetId           String    @id(map: "pk_maint_it_asset_details") @map("asset_id") @db.Uuid
+  deviceType        String?   @map("device_type")
+  hostname          String?   @map("hostname")
+  ipAddress         String?   @map("ip_address") @db.Inet
+  macAddress        String?   @map("mac_address")
+  operatingSystem   String?   @map("operating_system")
+  /// Slobodan tekst („kome je dodeljeno") — NIJE nalog i NIJE FK.
+  assignedTo        String?   @map("assigned_to")
+  licenseKey        String?   @map("license_key")
+  licenseExpiresAt  DateTime? @map("license_expires_at") @db.Date
+  warrantyExpiresAt DateTime? @map("warranty_expires_at") @db.Date
+  backupRequired    Boolean   @default(false) @map("backup_required")
+  lastBackupAt      DateTime? @map("last_backup_at") @db.Timestamptz(6)
+  notes             String?   @map("notes")
+  cpu               String?   @map("cpu")
+  motherboard       String?   @map("motherboard")
+  ram               String?   @map("ram")
+  gpu               String?   @map("gpu")
+  officeLocation    String?   @map("office_location")
+  tonerCartridges   String?   @map("toner_cartridges")
+  unifiPorts        String?   @map("unifi_ports")
+  powerRating       String?   @map("power_rating")
+  firmwareVersion   String?   @map("firmware_version")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy         Int?      @map("updated_by")
+
+  asset MaintAsset @relation(fields: [assetId], references: [assetId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_it_details_asset")
+
+  @@index([licenseExpiresAt], map: "idx_maint_it_asset_license_due")
+  @@index([warrantyExpiresAt], map: "idx_maint_it_asset_warranty_due")
+  // SQL-only: uq lower(hostname) parcijalni.
+  @@map("maint_it_asset_details")
+}
+
+/// Detalji objekta (1:1 na sredstvo). Was: sy15 `public.maint_facility_details`.
+/// criticality: low | medium | high | critical
+model MaintFacilityDetails {
+  assetId          String    @id(map: "pk_maint_facility_details") @map("asset_id") @db.Uuid
+  facilityType     String?   @map("facility_type")
+  floorAreaM2      Decimal?  @map("floor_area_m2") @db.Decimal(12, 2)
+  floorOrZone      String?   @map("floor_or_zone")
+  criticality      String?   @map("criticality")
+  inspectionDueAt  DateTime? @map("inspection_due_at") @db.Date
+  fireSafetyDueAt  DateTime? @map("fire_safety_due_at") @db.Date
+  serviceContract  String?   @map("service_contract")
+  serviceProvider  String?   @map("service_provider")
+  lastInspectionAt DateTime? @map("last_inspection_at") @db.Date
+  /// 🔴 NALAZ SEOBE: ove kolone u ŽIVOJ sy15 NEMA (izmereno `pg_attribute` —
+  /// `maint_facility_details` tamo ima 14 kolona), a `prisma/sy15.prisma` je
+  /// deklariše i `odrzavanje.service.ts:3476` je upisuje pri svakom čuvanju
+  /// detalja objekta. Zato taj upis na produkciji pada sa 42703 → 500, i zato
+  /// `maint_assets` nema NIJEDAN red tipa `facility` (0 objekata, 0 detalja).
+  /// U 3.0 kolona POSTOJI (FE je nudi kao „Katastarske parcele"), pa preklop
+  /// usput popravlja taj ekran. Prenos je preskače — u izvoru nema šta da uzme.
+  cadastralParcels String?   @map("cadastral_parcels")
+  notes            String?   @map("notes")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy        Int?      @map("updated_by")
+
+  asset MaintAsset @relation(fields: [assetId], references: [assetId], onDelete: Cascade, onUpdate: NoAction, map: "fk_maint_facility_details_asset")
+
+  @@index([criticality], map: "idx_maint_facility_criticality")
+  @@index([inspectionDueAt], map: "idx_maint_facility_inspection_due")
+  @@index([fireSafetyDueAt], map: "idx_maint_facility_fire_safety_due")
+  @@map("maint_facility_details")
+}
+
+/// CMMS profil korisnika (rola u održavanju + mašine operatera). Was: sy15 `maint_user_profiles`.
+/// OVO JE IDENTITET MODULA: `maint_profile_role()` i `maint_assigned_machine_codes()`
+/// su u sy15 radili po `auth.uid()`; u 3.0 rade po `users.id` (odluka 2). 9 redova.
+/// role: operator | technician | chief | management | admin
+model MaintUserProfile {
+  userId               Int      @id(map: "pk_maint_user_profiles") @map("user_id")
+  fullName             String   @map("full_name")
+  role                 String   @default("operator") @map("role") @db.VarChar(20)
+  telegramChatId       String?  @map("telegram_chat_id")
+  assignedMachineCodes String[] @default([]) @map("assigned_machine_codes")
+  active               Boolean  @default(true) @map("active")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  phone                String?  @map("phone")
+
+  // SQL-only: parcijalni idx po roli WHERE active.
+  @@map("maint_user_profiles")
+}
+
+/// Outbox obaveštenja održavanja. Was: sy15 `public.maint_notification_log`.
+/// channel: telegram | email | in_app | whatsapp · status: queued | sent | failed
+/// `recipient` za kanal `email` u sy15 NOSI TELEFON (`maint_dispatch_fanout` kopira
+/// `maint_user_profiles.phone`) — poznat defekt 1.0, prenosi se kakav jeste.
+model MaintNotificationLog {
+  id                String    @id(map: "pk_maint_notification_log") @default(uuid(4)) @map("id") @db.Uuid
+  channel           String    @map("channel") @db.VarChar(20)
+  recipient         String    @map("recipient")
+  recipientUserId   Int?      @map("recipient_user_id")
+  subject           String?   @map("subject")
+  body              String    @map("body")
+  relatedEntityType String?   @map("related_entity_type")
+  relatedEntityId   String?   @map("related_entity_id") @db.Uuid
+  machineCode       String?   @map("machine_code")
+  escalationLevel   Int       @default(0) @map("escalation_level")
+  status            String    @default("queued") @map("status") @db.VarChar(20)
+  error             String?   @map("error")
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  scheduledAt       DateTime  @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt     DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastAttemptAt     DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  attempts          Int       @default(0) @map("attempts")
+  payload           Json?     @map("payload")
+
+  @@index([relatedEntityType, relatedEntityId], map: "idx_maint_notif_entity")
+  @@index([machineCode, createdAt(sort: Desc)], map: "idx_maint_notif_machine")
+  // SQL-only: parcijalni idx reda čekanja WHERE status IN ('queued','failed').
+  @@map("maint_notification_log")
+}
+
+/// Pravilo obaveštavanja (događaj -> rola -> kanal). Was: sy15 `maint_notification_rules`.
+model MaintNotificationRule {
+  ruleId          String   @id(map: "pk_maint_notification_rules") @default(uuid(4)) @map("rule_id") @db.Uuid
+  eventType       String   @map("event_type")
+  severity        String?  @map("severity")
+  assetType       String?  @map("asset_type") @db.VarChar(20)
+  targetRole      String?  @map("target_role") @db.VarChar(20)
+  channel         String   @map("channel") @db.VarChar(20)
+  delayMinutes    Int      @default(0) @map("delay_minutes")
+  escalationLevel Int      @default(0) @map("escalation_level")
+  enabled         Boolean  @default(true) @map("enabled")
+  notes           String?  @map("notes")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy       Int?     @map("updated_by")
+
+  @@index([eventType, severity, assetType, enabled], map: "idx_maint_notification_rules_match")
+  @@map("maint_notification_rules")
+}
+
+/// Podešavanja CMMS-a — JEDAN red (`id = 1`). Was: sy15 `public.maint_settings`.
+model MaintSettings {
+  id                        Int      @id(map: "pk_maint_settings") @default(1) @map("id")
+  autoCreateWoMajor         Boolean  @default(true) @map("auto_create_wo_major")
+  autoCreateWoCritical      Boolean  @default(true) @map("auto_create_wo_critical")
+  safetyMarkerRequiresWo    Boolean  @default(true) @map("safety_marker_requires_wo")
+  defaultWoPriority         String   @default("p4_planirano") @map("default_wo_priority") @db.VarChar(20)
+  majorWoDueHours           Int      @default(48) @map("major_wo_due_hours")
+  criticalWoDueHours        Int      @default(8) @map("critical_wo_due_hours")
+  preventiveDueWarningDays  Int      @default(7) @map("preventive_due_warning_days")
+  notificationEnabled       Boolean  @default(true) @map("notification_enabled")
+  notifyOnMajorIncident     Boolean  @default(true) @map("notify_on_major_incident")
+  notifyOnCriticalIncident  Boolean  @default(true) @map("notify_on_critical_incident")
+  notifyOnOverduePreventive Boolean  @default(true) @map("notify_on_overdue_preventive")
+  notificationChannels      String[] @default(["in_app"]) @map("notification_channels")
+  statusLabels              Json     @map("status_labels")
+  woStatusLabels            Json     @map("wo_status_labels")
+  notes                     String?  @map("notes")
+  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy                 Int?     @map("updated_by")
+
+  // SQL-only: CHECK id = 1 (singleton) + CHECK-ovi rokova.
+  @@map("maint_settings")
+}

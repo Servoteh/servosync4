@@ -5,6 +5,7 @@ import type { ScheduledJob } from "./scheduler.types";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
 
 function prismaMock() {
@@ -17,7 +18,11 @@ function prismaMock() {
     },
   } as unknown as PrismaService & {
     $queryRaw: jest.Mock;
-    scheduledJobRun: { update: jest.Mock; findMany: jest.Mock; findFirst: jest.Mock };
+    scheduledJobRun: {
+      update: jest.Mock;
+      findMany: jest.Mock;
+      findFirst: jest.Mock;
+    };
   };
 }
 
@@ -35,25 +40,39 @@ describe("SchedulerService — computeDueSlot (Europe/Belgrade)", () => {
     const slot = svc.computeDueSlot({ kind: "daily", at: "09:00" }, 180, now);
     expect(slot?.toISOString()).toBe("2026-07-24T07:00:00.000Z");
     const late = new Date("2026-07-24T13:01:00Z"); // 15:01 lokalno — 6h posle
-    expect(svc.computeDueSlot({ kind: "daily", at: "09:00" }, 180, late)).toBeNull();
+    expect(
+      svc.computeDueSlot({ kind: "daily", at: "09:00" }, 180, late),
+    ).toBeNull();
   });
 
   it("daily: pre termina danas vraća JUČERAŠNJI samo unutar prozora (inače null)", () => {
     const now = new Date("2026-07-24T06:30:00Z"); // 08:30 lokalno, pre 09:00
-    expect(svc.computeDueSlot({ kind: "daily", at: "09:00" }, 180, now)).toBeNull();
+    expect(
+      svc.computeDueSlot({ kind: "daily", at: "09:00" }, 180, now),
+    ).toBeNull();
   });
 
   it("weekly pet 08:00: petak 08:10 lokalno → slot 06:00Z; subota → null (van prozora)", () => {
     const fri = new Date("2026-07-24T06:10:00Z"); // petak 08:10 lokalno
-    const slot = svc.computeDueSlot({ kind: "weekly", isoDow: 5, at: "08:00" }, 180, fri);
+    const slot = svc.computeDueSlot(
+      { kind: "weekly", isoDow: 5, at: "08:00" },
+      180,
+      fri,
+    );
     expect(slot?.toISOString()).toBe("2026-07-24T06:00:00.000Z");
     const sat = new Date("2026-07-25T09:00:00Z");
-    expect(svc.computeDueSlot({ kind: "weekly", isoDow: 5, at: "08:00" }, 180, sat)).toBeNull();
+    expect(
+      svc.computeDueSlot({ kind: "weekly", isoDow: 5, at: "08:00" }, 180, sat),
+    ).toBeNull();
   });
 
   it("everyMinutes 30: vraća poslednji slot (floor), bez backfill-a", () => {
     const now = new Date("2026-07-24T07:17:00Z");
-    const slot = svc.computeDueSlot({ kind: "everyMinutes", minutes: 30 }, 30, now);
+    const slot = svc.computeDueSlot(
+      { kind: "everyMinutes", minutes: 30 },
+      30,
+      now,
+    );
     expect(slot?.toISOString()).toBe("2026-07-24T07:00:00.000Z");
   });
 
@@ -81,15 +100,17 @@ describe("SchedulerService — claim/retry/izvršenje", () => {
     svc.register(jb);
     prisma.$queryRaw.mockResolvedValueOnce([{ id: 7, attempts: 1 }]);
     // pristup privatnoj metodi radi testa claim toka
-    await (svc as unknown as { claimAndRun(j: ScheduledJob, s: Date): Promise<void> }).claimAndRun(
-      jb,
-      new Date("2026-07-24T07:00:00Z"),
-    );
+    await (
+      svc as unknown as { claimAndRun(j: ScheduledJob, s: Date): Promise<void> }
+    ).claimAndRun(jb, new Date("2026-07-24T07:00:00Z"));
     expect(jb.run).toHaveBeenCalledTimes(1);
     expect(prisma.scheduledJobRun.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 7 },
-        data: expect.objectContaining({ status: "DONE", summary: "enqueued=1" }),
+        data: expect.objectContaining({
+          status: "DONE",
+          summary: "enqueued=1",
+        }),
       }),
     );
   });
@@ -98,10 +119,9 @@ describe("SchedulerService — claim/retry/izvršenje", () => {
     const { svc, prisma } = makeService();
     const jb = job();
     prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
-    await (svc as unknown as { claimAndRun(j: ScheduledJob, s: Date): Promise<void> }).claimAndRun(
-      jb,
-      new Date("2026-07-24T07:00:00Z"),
-    );
+    await (
+      svc as unknown as { claimAndRun(j: ScheduledJob, s: Date): Promise<void> }
+    ).claimAndRun(jb, new Date("2026-07-24T07:00:00Z"));
     expect(jb.run).not.toHaveBeenCalled();
   });
 
@@ -111,16 +131,17 @@ describe("SchedulerService — claim/retry/izvršenje", () => {
     prisma.$queryRaw
       .mockResolvedValueOnce([]) // INSERT conflict
       .mockResolvedValueOnce([{ id: 9, attempts: 2 }]); // UPDATE re-claim
-    await (svc as unknown as { claimAndRun(j: ScheduledJob, s: Date): Promise<void> }).claimAndRun(
-      jb,
-      new Date("2026-07-24T07:00:00Z"),
-    );
+    await (
+      svc as unknown as { claimAndRun(j: ScheduledJob, s: Date): Promise<void> }
+    ).claimAndRun(jb, new Date("2026-07-24T07:00:00Z"));
     expect(jb.run).toHaveBeenCalledTimes(1);
   });
 
   it("pad posla → FAILED sa porukom greške", async () => {
     const { svc, prisma } = makeService();
-    const jb = job({ run: jest.fn().mockRejectedValue(new Error("sy15 down")) });
+    const jb = job({
+      run: jest.fn().mockRejectedValue(new Error("sy15 down")),
+    });
     const res = await svc.execute(jb, new Date(), 3, 1);
     expect(res.status).toBe("FAILED");
     expect(prisma.scheduledJobRun.update).toHaveBeenCalledWith(
@@ -163,10 +184,7 @@ describe("SchedulerService — claim/retry/izvršenje", () => {
   it("re-claim koristi staleAfterMinutes posla (default 10, dug posao svoj prag)", async () => {
     const { svc, prisma } = makeService();
     const slot = new Date("2026-07-24T07:00:00Z");
-    const claimAndRun = (
-      s: typeof svc,
-      j: ScheduledJob,
-    ): Promise<void> =>
+    const claimAndRun = (s: typeof svc, j: ScheduledJob): Promise<void> =>
       (
         s as unknown as {
           claimAndRun(j: ScheduledJob, d: Date): Promise<void>;
@@ -185,7 +203,9 @@ describe("SchedulerService — claim/retry/izvršenje", () => {
 
   it("runNow blokadu meri runNowBlockMinutes (pa staleAfterMinutes, pa 10)", async () => {
     const { svc, prisma } = makeService();
-    svc.register(job({ key: "dug", staleAfterMinutes: 60, runNowBlockMinutes: 60 }));
+    svc.register(
+      job({ key: "dug", staleAfterMinutes: 60, runNowBlockMinutes: 60 }),
+    );
     prisma.$queryRaw.mockResolvedValueOnce([{ id: 3 }]);
     const t0 = Date.now();
     await svc.runNow("dug");
@@ -217,8 +237,8 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
       {} as unknown as PrismaService,
       {} as unknown as SastanciFnService,
       new PbSourceService(),
+      new OdrzavanjeSourceService(),
     );
-
   it("12 poslova, jedinstveni ključevi, validni rasporedi", () => {
     const jobs = cronJobs(sy15Mock()).buildJobs();
     expect(jobs).toHaveLength(12);
@@ -233,8 +253,15 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
   });
 
   it("guard-poslovi zakazani TAČNO u sat unutrašnjeg fn guarda (06h/pon 06h/pet 08h)", () => {
-    const byKey = new Map(cronJobs(sy15Mock()).buildJobs().map((x) => [x.key, x]));
-    expect(byKey.get("kadr-attendance-alerts")?.schedule).toEqual({ kind: "daily", at: "06:00" });
+    const byKey = new Map(
+      cronJobs(sy15Mock())
+        .buildJobs()
+        .map((x) => [x.key, x]),
+    );
+    expect(byKey.get("kadr-attendance-alerts")?.schedule).toEqual({
+      kind: "daily",
+      at: "06:00",
+    });
     expect(byKey.get("kadr-attendance-digest")?.schedule).toEqual({
       kind: "weekly",
       isoDow: 1,
@@ -250,10 +277,14 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
   it("summary sažima rezultat fn-a (enqueued/skipped); BigInt bez 'n'; jsonb kao JSON", async () => {
     const jobs = cronJobs(sy15Mock([{ enqueued: 2n, skipped: 5 }])).buildJobs();
     const maint = jobs.find((x) => x.key === "maint-deadlines")!;
-    await expect(maint.run({ scheduledFor: new Date() })).resolves.toBe("enqueued=2 skipped=5");
+    await expect(maint.run({ scheduledFor: new Date() })).resolves.toBe(
+      "enqueued=2 skipped=5",
+    );
 
     const jsonJobs = cronJobs(
-      sy15Mock([{ kadr_schedule_corrective_reminders: { overdue: 1, followup: 0 } }]),
+      sy15Mock([
+        { kadr_schedule_corrective_reminders: { overdue: 1, followup: 0 } },
+      ]),
     ).buildJobs();
     const corr = jsonJobs.find((x) => x.key === "kadr-corrective")!;
     await expect(corr.run({ scheduledFor: new Date() })).resolves.toBe(
@@ -277,7 +308,11 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
   });
 
   it("guard-poslovi imaju catch-up ograničen na guard-sat (55/25/55 min)", () => {
-    const byKey = new Map(cronJobs(sy15Mock()).buildJobs().map((x) => [x.key, x]));
+    const byKey = new Map(
+      cronJobs(sy15Mock())
+        .buildJobs()
+        .map((x) => [x.key, x]),
+    );
     expect(byKey.get("kadr-attendance-alerts")?.catchUpMinutes).toBe(55);
     expect(byKey.get("kadr-attendance-digest")?.catchUpMinutes).toBe(25);
     expect(byKey.get("sast-weekly-auto")?.catchUpMinutes).toBe(55);

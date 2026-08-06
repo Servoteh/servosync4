@@ -4,6 +4,7 @@ import type { MailService } from "../../../common/mail/mail.service";
 import type { Sy15Service } from "../../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
 import { PbSourceService } from "../../../common/sy15/pb-source.service";
+import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
 
 /*
  * Talas A-2a — dispatch worker. Testiramo PARITET sa 1.0 edge fn:
@@ -21,8 +22,11 @@ class NotifyDispatchService extends RealNotifyDispatchService {
     mail: MailService,
     storage: Sy15StorageService,
     izvor: PbSourceService = new PbSourceService(),
+    // Prekidač održavanja (korak 2 gašenja sy15) — isti obrazac kao gore:
+    // podrazumevan argument, čita `process.env` po konstrukciji.
+    odrIzvor: OdrzavanjeSourceService = new OdrzavanjeSourceService(),
   ) {
-    super(sy15, mail, storage, izvor);
+    super(sy15, mail, storage, izvor, odrIzvor);
   }
 }
 
@@ -109,6 +113,7 @@ beforeEach(() => {
   // brišu se da bi test merio baš tu nezavisnost, a ne zatečeno okruženje.
   delete process.env.SASTANCI_IZVOR;
   delete process.env.SASTANCI_PB_IZVOR;
+  delete process.env.ODRZAVANJE_IZVOR;
   delete process.env.WA_ACCESS_TOKEN;
   delete process.env.WA_PHONE_NUMBER_ID;
   delete process.env.WA_TEMPLATE_NAME;
@@ -1226,5 +1231,69 @@ describe("prekidač PB_IZVOR — PB grana (seoba 05.08)", () => {
       /projektni biro: dispatch kroz sy15/,
     );
     expect(m.calls).toHaveLength(0);
+  });
+});
+
+/*
+ * 🔴 ODRŽAVANJE (korak 2 gašenja sy15) — `maint-notify-dispatch` pod svojim prekidačem.
+ *
+ * Isti pin kao za PB granu, i iz istog razloga: dispečer održavanja ne sme da
+ * postane talac tuđeg preklopa, ali NE SME ni tiho da nastavi da prazni STARI
+ * outbox kad domen pređe u 3.0 (obaveštenja o kvarovima bi prestala da stižu, a
+ * u logu ne bi bilo ni jedne greške).
+ */
+describe("ODRZAVANJE_IZVOR — maint grana dispečera", () => {
+  it("podrazumevano (sy15): dispatchMaint normalno zove sy15 dequeue", async () => {
+    const m = sy15Mock();
+    m.pushResult([]);
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    await expect(svc.dispatchMaint()).resolves.toBeDefined();
+    expect(m.sqlOf(0)).toContain("maint_dispatch_dequeue");
+  });
+
+  it("ODRZAVANJE_IZVOR=3.0: pada sa 503 PRE ijednog sy15 poziva", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const m = sy15Mock();
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    await expect(svc.dispatchMaint()).rejects.toThrow(/nije preneto na 3\.0/i);
+    expect(m.calls).toHaveLength(0);
+  });
+
+  it("🔴 ODRZAVANJE_IZVOR=3.0 NE obara kadr ni pb granu", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const m = sy15Mock();
+    m.pushResult([]);
+    m.pushResult([]);
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    await expect(svc.dispatchKadr()).resolves.toBeDefined();
+    await expect(svc.dispatchPb()).resolves.toBeDefined();
+    expect(m.find("kadr_dispatch_dequeue")).toHaveLength(1);
+    expect(m.find("maint_dispatch_dequeue")).toHaveLength(0);
+  });
+
+  it("🔴 PB_IZVOR=3.0 i SASTANCI_IZVOR=3.0 NE obaraju maint granu", async () => {
+    process.env.PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
+    const m = sy15Mock();
+    m.pushResult([]);
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    await expect(svc.dispatchMaint()).resolves.toBeDefined();
+    expect(m.sqlOf(0)).toContain("maint_dispatch_dequeue");
   });
 });

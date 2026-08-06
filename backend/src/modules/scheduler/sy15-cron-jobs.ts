@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   SastanciFnService,
@@ -73,6 +74,9 @@ export class Sy15CronJobs {
     private readonly sastFn: SastanciFnService,
     // Zaseban prekidač PB-a: `pb-enqueue` NE SME da zavisi od preklopa sastanaka.
     private readonly pbIzvor: PbSourceService,
+    // Zaseban prekidač održavanja: `maint-deadlines` ne zavisi ni od sastanaka ni
+    // od PB-a. Ovaj fajl je jedino mesto u kodu koje drži SVA TRI prekidača.
+    private readonly odrIzvor: OdrzavanjeSourceService,
   ) {}
 
   /**
@@ -291,12 +295,23 @@ export class Sy15CronJobs {
         },
       },
       // ── Održavanje / Projektni biro ───────────────────────────────────────
-      j(
-        "maint-deadlines",
-        "CMMS rokovi: vozila+vozači+dokumenti+IT/objekti (lookahead 30d)",
-        { kind: "daily", at: "09:00" },
-        "SELECT * FROM public.maint_check_all_deadlines(30);",
-      ),
+      {
+        key: "maint-deadlines",
+        description: "CMMS rokovi: vozila+vozači+dokumenti+IT/objekti (lookahead 30d)",
+        schedule: { kind: "daily", at: "09:00" },
+        run: async () => {
+          // Korak 2 gašenja sy15: održavanje se u ovom talasu SELI, ali logika
+          // `maint_check_all_deadlines` (9.595 znakova, tri petlje + enqueue u
+          // `maint_notification_log`) JOŠ NIJE prepisana. Branjeni geter je tu da
+          // posao ne može TIHO da zaobiđe prekidač — pod `3.0` pada sa 503 i
+          // imenom putanje u dnevniku, umesto da nastavi da piše u sy15 i razilazi
+          // dve baze.
+          // 🔴 `odrIzvor`, NE `izvor`: preklop sastanaka ne sme da obori ovaj
+          // posao, ni obrnuto (incident 06.08.2026).
+          this.odrIzvor.assertPorted("maint-deadlines (maint_check_all_deadlines)");
+          return this.call("SELECT * FROM public.maint_check_all_deadlines(30);");
+        },
+      },
       {
         key: "pb-enqueue",
         description: "Projektni biro: dnevne notifikacije (rokovi zadataka)",
