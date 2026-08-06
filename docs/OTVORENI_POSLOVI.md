@@ -319,6 +319,50 @@ nastavlja da troši brojeve (tempo 23–49 mesečno).
 
 ---
 
+### P12. ✅ IZVEDENO 06.08.2026 — `@Body()` DTO kao `import type` je ubijao tri rute
+
+Ostavljeno u registru kao **zapis o razredu greške**, ne kao otvorena stavka.
+
+Vlasnik je 05.08. prijavio da ne može da snimi podatke firme — `PUT /admin/firma` je vraćao
+422 „Nijedno polje nije prosleđeno." Uzrok se iz izvora **nije video**: DTO je imao svih 19
+polja, servis ih je sve obrađivao, ekran ih je sve slao. Kvar je bio u PREVODU — klasa uvezena
+kroz `import type` u runtime-u ne postoji, pa `design:paramtypes` dobije `Function`,
+`ValidationPipe` pozove `plainToInstance(Function, telo)` i vrati funkciju sa svim poljima
+`undefined`.
+
+Pogođene rute (sve tri izmerene u deployiranom izdanju): `PUT /admin/firma`,
+`PUT /admin/firma/racuni/:id`, `PATCH /robno/documents/:id/shipping`. Ekran Firma je time bio
+mrtav s kraja na kraj.
+
+🔴 **Zašto nijedan test ovo nije uhvatio:** `ts-jest` za isti kod upiše `Object`, koji
+`ValidationPipe` PRESKAČE — telo prođe netaknuto i sve „radi". Kvar postoji isključivo u
+`tsc -p tsconfig.build.json`. Zato je brana **statička analiza izvora** (TS AST,
+`backend/src/common/controller-body-dto.spec.ts`), a ne runtime test.
+
+**OSTAJE (blaži, širi nalaz iz iste analize):** `@Body()` čiji je tip **interfejs** dobija
+`Object`, pa `ValidationPipe` proveru preskoči — telo prolazi **NEVALIDIRANO**, ali prolazi.
+Nije kvar u radu, jeste rupa u proveri ulaza. Treba prebrojati koliko je takvih ruta i odlučiti
+da li se prevode u klase.
+
+---
+
+### P13. ✅ IZVEDENO 06.08.2026 — devizni račun se unosi sa ekrana (bio ćorsokak)
+
+Ekran Podešavanja → Firma je nudio **izmenu** deviznog računa, a `payment_accounts` na
+produkciji ima **0 redova** i BigBit ne donosi nijedan; POST rute nije bilo. Poruka je upućivala
+na „administratora baze". Istovremeno štampa izvozne fakture bez IBAN-a i SWIFT-a **odbija** da
+se napravi. Papir se dakle nije mogao odštampati dok se račun ne unese, a račun se nije mogao
+uneti.
+
+Zabrana unosa je bila osnovana (nov red bi udario u BigBit-ov `id`), ali je rešenje u repou već
+postojalo: tabela je sada u `NATIVE_ID_RANGE_TABLES`, nov red dobija `id >= 900.000.000` — isti
+obrazac kao `items` i `customers`; full refresh briše samo `id < NATIVE_ID_BASE`.
+
+**OSTAJE:** unos nije proban nad živim podacima — tabela je na produkciji i dalje prazna dok
+vlasnik ne unese prvi račun.
+
+---
+
 ## C. TEHNIČKI FOLLOW-UP (nalazi verifikatora, po prioritetu)
 
 ### C1. Nišan gejt — POPRAVLJEN 05.08. (radi i u Chrome-u), čeka potvrdu sa terena ⏸
