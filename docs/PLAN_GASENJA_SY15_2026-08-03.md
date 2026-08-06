@@ -158,6 +158,43 @@ posao za sebe koji nijedan domenski korak ne pokriva.
 
 Za poređenje: 3.0 baza danas ima **225 tabela / 2,7 GB** — prostor nije ograničenje.
 
+### 🔴 4b. UPRAVLJANJE NALOZIMA — prava blokada gašenja (izmereno 06.08.2026)
+
+Nalaz drugog agenta, **potvrđen merenjem na produkciji**. Tri mesta i dalje vezuju naloge
+za sy15, i to je posao za sebe koji nije bio u ovom planu:
+
+| Šta | Izmereno stanje | Zašto blokira |
+|---|---|---|
+| **Ekran Podešavanja → Korisnici** | `podesavanja.service.ts` čita `SELECT … FROM user_roles` (sy15) — i lista i pojedinačan red | Bez sy15 admin **nema spisak korisnika** ni izmenu |
+| **Reset lozinke** | `resetPassword()` ulazi preko `resolveSy15Row(sy15RoleId)`, pa traži GoTrue nalog (`findUserIdByEmail`) — bez **oba** puca | Bez sy15 **nema reseta lozinke ni za koga** |
+| **Rola-sync na prijavi** | `auth.service.ts` `syncRoleByEmail` → `SELECT role FROM user_roles WHERE is_active` na **svakoj** prijavi | v. ispravku niže — ovo se gasi samo |
+
+**Brojke (produkcija, 06.08):** sy15 `user_roles` = **60 redova, svih 60 `is_active`**;
+3.0 `users` = **71 aktivan**. Presek: **11 naloga postoji u 3.0 a ne u sy15** — od toga
+4 servisna (`kiosk`, `pdm-bridge`, `diktafon-agent`, `ai-maint-test` — namerno 3.0-native)
+i **7 stvarnih** (`bogdan.krstic`, `dejan.cirkovic`, `dimitrije.uzelac`, `jovan.blagojevic`,
+`marina.mutic`, `nemanja.petrovic`, `tehnologija`). Tih 7 **mogu da se prijave** (imaju hash,
+`active`), ali ih admin **ne vidi na ekranu Korisnici** i **ne može im resetovati lozinku**.
+Pet od njih se nikad nije prijavilo; `bogdan.krstic` i `tehnologija` poslednji put 09.07.
+
+**🔴 ISPRAVKA PRIORITETA (moja, posle merenja):** rola-sync **nije blokada gašenja — on je
+rizik DOK sy15 živi.** Kad sy15 nestane, `fetchSy15RoleByEmail` baca, `catch` vraća korisnika
+nepromenjenog, i tiha degradacija prestaje da bude moguća. Obrnuto važi za druga dva reda
+tabele: oni pucaju tek kad sy15 nestane. Dakle:
+
+- **Sada (dok sy15 živi):** izloženo **51 od 71 naloga** — svaki koji nije admin, ima rolu iz
+  sy15 kataloga i ima aktivan sy15 red. Ako u sy15 neko spusti rolu, sledeća prijava je tiho
+  spušta i u 3.0. Zaštićeni su samo: **5 admina** (`applyRoleSync` ih ne degradira),
+  **11 sa 3.0-native rolom** (`sef`, `kontrolor`, `tehnolog`, `agent_bot`… — `SY15_KNOWN_ROLES`
+  ih ne poznaje pa ih ne dira) i **4 bez sy15 reda**. Pravilo „nema aktivnog reda → ne diraj"
+  štiti **samo brisanje/deaktivaciju, ne i izmenu role**.
+- **Trenutni drift = 0** (izmereno nad svih 51) — dakle ništa nije pokvareno, ali samo zato
+  što sy15 `user_roles` niko nije dirao.
+
+**Posledica za plan:** dodaje se **korak 4c — prevezivanje upravljanja nalozima na 3.0
+`users`** (lista/izmena korisnika, reset lozinke, ukidanje rola-synca). Ide **uz kadrovsku
+(korak 4)** jer deli istu tabelu zaposlenih, i **mora pre gašenja GoTrue/PostgREST**.
+
 ---
 
 ## 5. Predloženi redosled (revizija posle punog merenja)
@@ -240,6 +277,21 @@ sadržaja — pre seobe utvrditi šta te kolone nose).
 ### Korak 4b — projektni biro (32 fn, podaci već preneti u koraku 1)
 Uključuje se tek kad `employees`/`departments`/`job_positions` budu u 3.0 bazi (korak 4) —
 `pb_current_employee_id()` je ulaz u sva PB prava i traži te tabele (revizija 2, tačka 1).
+
+### 🔴 Korak 4c — upravljanje nalozima na 3.0 `users` (v. §4b, izmereno 06.08)
+Ide **uz korak 4** (deli tabelu zaposlenih) i **mora pre gašenja GoTrue/PostgREST**:
+
+1. **Lista i izmena korisnika** — `podesavanja.service.ts` prebaciti sa `user_roles` (sy15) na
+   3.0 `users`. Odmah rešava i to što **7 stvarnih naloga danas nije vidljivo** adminu.
+2. **Reset lozinke** — ulaz više ne sme biti sy15 red (`resolveSy15Row`); ide preko 3.0
+   `users.id`. GoTrue upis ostaje dok GoTrue živi, ali prestaje da bude **uslov** za reset.
+   ⚠️ Zadržati `expectedEmail` branu (P0 31.07 — lozinka je umela da ode tuđem nalogu).
+3. **Rola-sync ukinuti** (`syncRoleByEmail` na prijavi) — 3.0 postaje jedini izvor role.
+   Tada nestaje izloženost 51 naloga tihoj degradaciji. **Do tada ne dirati sy15 `user_roles`
+   bez svesti da svaka izmena role tamo curi u 3.0 na sledećoj prijavi.**
+
+**Provera pre i posle:** drift 3.0↔sy15 rola (danas **0/51**) mora ostati 0 tokom celog
+zahvata; 7 naloga van sy15 mora postati vidljivo na ekranu Korisnici.
 
 ### Korak 5 — SCADA + bridge preusmeravanje (uslov za gašenje)
 - **SCADA:** preusmeriti `bridge-scada` relej na 3.0 bazu + preseliti 5 tabela + prevesti
