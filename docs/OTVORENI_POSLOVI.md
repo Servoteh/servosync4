@@ -339,10 +339,26 @@ mrtav s kraja na kraj.
 `tsc -p tsconfig.build.json`. Zato je brana **statička analiza izvora** (TS AST,
 `backend/src/common/controller-body-dto.spec.ts`), a ne runtime test.
 
-**OSTAJE (blaži, širi nalaz iz iste analize):** `@Body()` čiji je tip **interfejs** dobija
-`Object`, pa `ValidationPipe` proveru preskoči — telo prolazi **NEVALIDIRANO**, ali prolazi.
-Nije kvar u radu, jeste rupa u proveri ulaza. Treba prebrojati koliko je takvih ruta i odlučiti
-da li se prevode u klase.
+**OSTAJE (blaži, širi nalaz iz iste analize) — IZMERENO 06.08.2026:** `@Body()` čiji tip nije
+klasa (interfejs, `unknown`, inline `{…}`) dobija `Object`, pa `ValidationPipe` proveru
+**preskoči u celosti** — telo prolazi nevalidirano, i bez `whitelist`-a, tako da i nepoznata
+polja stižu do servisa. Nije kvar u radu (telo prolazi), jeste rupa u proveri ulaza.
+
+| ukupno `@Body()` parametara | telo se proverava (klasa) | telo NEVALIDIRANO |
+|---|---|---|
+| **523** | 359 | **164** (≈31 %) |
+
+Najviše ih nose `zahtevi` (17), `robno` (12), `tech-processes` (12), `sales` (11),
+`saldakonti` (9). 🔴 Najosetljiviji su u `auth`: **`LoginBody`, `SsoBody`,
+`ChangePasswordBody`** — prijava i promena lozinke primaju telo koje niko ne proverava.
+
+⚠️ **Zamka pri merenju, da se ne ponovi:** prva verzija je dala **264**, jer su tipovi uvezeni
+kroz prostor imena (`D.OptIdempotentDto`, `import * as D`) prepoznati kao „nepoznati" iako su
+klase — sam kadrovski kontroler je time lažno nosio 100 nalaza. Ime tipa se mora razrešiti i
+posle tačke. Merenje: `backend/reports/meri-body.ts` (gitignorisano, ponovljivo).
+
+**Predlog redosleda:** prvo `auth` (3 rute, spolja dostupne), pa moduli koji primaju iznose
+(`saldakonti`, `sales`, `robno`); ostalo po potrebi.
 
 ---
 
