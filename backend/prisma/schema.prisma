@@ -8091,6 +8091,13 @@ model MaintFacilityDetails {
   serviceContract  String?   @map("service_contract")
   serviceProvider  String?   @map("service_provider")
   lastInspectionAt DateTime? @map("last_inspection_at") @db.Date
+  /// 🔴 NALAZ SEOBE: ove kolone u ŽIVOJ sy15 NEMA (izmereno `pg_attribute` —
+  /// `maint_facility_details` tamo ima 14 kolona), a `prisma/sy15.prisma` je
+  /// deklariše i `odrzavanje.service.ts:3476` je upisuje pri svakom čuvanju
+  /// detalja objekta. Zato taj upis na produkciji pada sa 42703 → 500, i zato
+  /// `maint_assets` nema NIJEDAN red tipa `facility` (0 objekata, 0 detalja).
+  /// U 3.0 kolona POSTOJI (FE je nudi kao „Katastarske parcele"), pa preklop
+  /// usput popravlja taj ekran. Prenos je preskače — u izvoru nema šta da uzme.
   cadastralParcels String?   @map("cadastral_parcels")
   notes            String?   @map("notes")
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
