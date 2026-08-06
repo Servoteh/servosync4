@@ -471,15 +471,12 @@ export function GanttTab() {
   }
 
   /**
-   * 🔴 JEDAN PUT ZA SVE GESTOVE KOJI POMERAJU LANAC (prevlačenje i ←/→).
+   * 🔴 JEDINI PUT DO KASKADE — gest PREVLAČENJA bara. ←/→ NAMERNO ne prolazi ovuda
+   * (odluka vlasnika, treći krug 075/26; obrazloženje je uz `onBarKey`): kaskadu je
+   * Strahinja tražio za prevlačenje, a provlačenje strelice kroz isti put je koštalo
+   * četiri nalaza. Strelica ostaje jednoredni upis kakav je bio pre 075/26.
    *
-   * Do popravke je tastatura zvala `posaljiKaskadu` DIREKTNO — bez pregleda, bez
-   * dijaloga, bez `expectedHash`, bez provere veličine lanca i završenih sledbenika —
-   * dok je ISTI lanac pomeren mišem obavezno otvarao dijalog. Domet ←/→ je time porastao
-   * sa jednog bara (ponašanje pre 075/26) na 15 pozicija na 15 naloga, bez ikakve promene
-   * u gestu. Zato gejt živi u JEDNOJ funkciji (`chainGateBrzPut`) koju zovu oba puta.
-   *
-   * Semantika ostaje: pomera se SIDRO i ceo lanac sledbenika za ISTI broj dana — razmaci
+   * Semantika: pomera se SIDRO i ceo lanac sledbenika za ISTI broj dana — razmaci
    * se čuvaju (10 od 30 izmerenih razmaka je pozitivno, jedan je i negativan; lepljenje
    * za kraj prethodnika bi ih uništilo).
    *
@@ -495,6 +492,15 @@ export function GanttTab() {
     if (!row.planned_start_at || deltaDays === 0) return;
     const key = rowKey(row);
     const kljucevi = [key, ...sledbenici];
+    /**
+     * 🔴 ŽIG GESTA SE UZIMA PRE GEJTA, NE POSLE. Barovi ostaju hvatljivi dok se čeka
+     * pregled, pa planer sme da prevuče potez B dok pregled poteza A još putuje. Da žig
+     * živi samo na sporom putu, potez B kroz BRZI put ne bi pomerio brojač — pregled
+     * poteza A bi stigao, prošao proveru i otvorio dijalog sa lancem A dok je ekran već
+     * pomeren po B. Planer bi potvrđivao ono što ne vidi. Ovako svako novo prevlačenje
+     * obesmišljava svaki pregled koji stigne posle njega.
+     */
+    const gest = ++gestRef.current;
     const brzo = chainGateBrzPut({
       kljucevi,
       sledbenici,
@@ -507,12 +513,8 @@ export function GanttTab() {
       return;
     }
 
-    // Neizvesno ili veliko → pregled pa odluka.
-    // 🔴 ŽIG GESTA: `pendingShift` drži barove vizuelno pomerene DOK se čeka pregled, a
-    // barovi ostaju hvatljivi. Bez žiga bi pregled poteza A koji stigne posle poteza B
-    // otvorio dijalog sa lancem poteza A dok su barovi pomereni po B — planer bi
-    // potvrđivao ono što ne vidi. Zakasneo odgovor se ODBACUJE.
-    const gest = ++gestRef.current;
+    // Neizvesno ili veliko → pregled pa odluka. `pendingShift` drži barove vizuelno
+    // pomerene DOK se čeka pregled; zakasneo odgovor se ODBACUJE (v. žig iznad).
     setPendingShift({ anchor: key, keys: new Set(kljucevi), deltaDays });
     const res = await ucitajPlanLanca(row.work_order_id, row.line_id, deltaDays);
     if (gestRef.current !== gest) return; // zakasneo — noviji gest je vlasnik ekrana
@@ -544,8 +546,8 @@ export function GanttTab() {
   const commitRef = useRef(pokreniKaskadu);
   commitRef.current = pokreniKaskadu;
   /**
-   * Redni broj tekućeg gesta koji čeka pregled. Raste na SVAKI nov gest (prevlačenje,
-   * ←/→) i time obesmišljava svaki pregled koji stigne posle njega — v. `pokreniKaskadu`.
+   * Redni broj tekućeg prevlačenja koje čeka pregled. Raste na SVAKO novo prevlačenje i
+   * time obesmišljava svaki pregled koji stigne posle njega — v. `pokreniKaskadu`.
    */
   const gestRef = useRef(0);
 
@@ -562,9 +564,8 @@ export function GanttTab() {
       setDrag(null);
       if (!d || d.deltaDays === 0) return;
       if (d.mode === 'move') {
-        // 075/26: pomeranje ide kroz KASKADU (server razrešava lanac), kroz ISTI gejt
-        // kao ←/→ — dve grane logike za isti potez su tačno ono što je i napravilo
-        // regresiju („tastatura zaobilazi kapiju potvrde").
+        // 075/26: prevlačenje ide kroz KASKADU (server razrešava lanac) — to je JEDINI
+        // gest koji pomera i pozicije ispod, i jedini koji je korisnik tražio takvim.
         const moved = rows.find((r) => rowKey(r) === d.key);
         if (moved) void commitRef.current(moved, d.deltaDays, d.chain);
         return;
@@ -717,30 +718,38 @@ export function GanttTab() {
   /**
    * Tastatura nad fokusiranim barom: ←/→ pomeri dan, Shift+←/→ produži/skrati.
    *
-   * 🔴 DVE BRANE KOJE OVDE MORAJU DA STOJE (obe su bile probijene):
-   *  1. `e.repeat` — držanje tastera daje ~30 događaja/s, a od 075/26 svaki nosi NOV
-   *     `clientEventId` i deltu ±1; `mutate` ih ne serijalizuje, pa bi to bilo ~30
-   *     paralelnih POST-ova koji svaki zaključavaju CEO lanac. Prva prođe, ostale dobiju
-   *     `409 chain_changed` — planer pritisne N dana, a upiše se manje, uz roj upozorenja.
-   *     Odluka je u `barKeyAkcija` (čista funkcija, ima test).
-   *  2. ←/→ ide kroz ISTI GEJT kao prevlačenje (`pokreniKaskadu`): kratak i izvestan
-   *     lanac odmah, dug ili neizvestan na pregled pa dijalog. Ranije je tastatura zvala
-   *     upis direktno i time zaobilazila celu kapiju potvrde.
+   * 🔴 ←/→ NE KASKADIRA — ODLUKA VLASNIKA (treći krug 075/26). Strelica radi TAČNO ono
+   * što je radila pre 075/26: jednoredni upis APSOLUTNIH termina, bez lanca, bez pregleda
+   * i bez dijaloga. Kaskadu pokreće SAMO prevlačenje — to je gest koji je Strahinja i
+   * tražio („kada pomerim poziciju, želim i pozicije ispod"). Provlačenje strelice kroz
+   * kaskadu je koštalo četiri nalaza odjednom: žig gesta je otvarao dijalog za lanac koji
+   * više nije bio na ekranu, uzastopni tapovi su gubili dane (drugi je kretao iz starog
+   * keša, jer brzi put ne čeka odgovor), tap iza već otvorenog dijaloga menjao je sadržaj
+   * potvrde ispod planerove ruke, a držana strelica je skrolovala osu. Sva četiri padaju
+   * sa ovim vraćanjem — nijedna zaobilaznica nije potrebna.
+   *
+   * Brana koja OSTAJE: `barKeyAkcija` guši auto-ponavljanje (`'guseno'`). Roj od ~30
+   * PATCH-eva/s nad istim redom se ni kod jednorednog upisa ne serijalizuje — pobedio bi
+   * poslednji ODGOVOR, ne poslednji pritisak. `'guseno'` ipak proguta taster
+   * (`preventDefault` PRE izlaska), inače držana strelica skroluje osu ispod bara.
    */
   function onBarKey(e: React.KeyboardEvent, row: GanttRow) {
     const akcija = barKeyAkcija(e);
     if (akcija === null) return;
+    // 🔴 Taster PRIPADA baru i kad je upis ugušen — inače ga preuzme vodoravni skrol ose.
     e.preventDefault();
+    if (akcija === 'guseno') return;
     if (akcija === 'otvori') {
       setDetail(row);
       return;
     }
     if (!row.planned_start_at) return;
     const step = e.key === 'ArrowLeft' ? -1 : 1;
+    const start = new Date(row.planned_start_at);
+    const end = barEnd(row);
     if (akcija === 'resize') {
-      // Shift+←/→ menja SAMO kraj (resize) — ne kaskadira, isti razlog kao hvataljka.
-      const start = new Date(row.planned_start_at);
-      const nextEnd = addDays(barEnd(row), step);
+      // Shift+←/→ menja SAMO kraj — produžavanje ne gura red čekanja na mašini.
+      const nextEnd = addDays(end, step);
       if (nextEnd.getTime() <= start.getTime()) return;
       save.mutate({
         workOrderId: row.work_order_id,
@@ -750,7 +759,14 @@ export function GanttTab() {
       });
       return;
     }
-    void pokreniKaskadu(row, step, chainFrom(rowKey(row), buildSuccessorIndex(rows)));
+    // Apsolutni termini kroz redovan put upisa (isto kao pre 075/26): pomera se JEDAN
+    // bar. Uzastopni tapovi se sabiraju jer optimistički keš već nosi novi termin.
+    save.mutate({
+      workOrderId: row.work_order_id,
+      lineId: row.line_id,
+      plannedStartAt: addDays(start, step).toISOString(),
+      plannedEndAt: addDays(end, step).toISOString(),
+    });
   }
 
   const timelineW = days * DAY_W;
@@ -855,19 +871,28 @@ export function GanttTab() {
 
       {/* 075/26 — traka „Poništi" posle kaskade. NAMERNO nije u toastu: `lib/toast.ts`
           prima SAMO tekst, traje 3,2 s i nema dugme; graditi dugme u njemu bi bio nov
-          mehanizam zbog jedne trake. Poništavanje je tačno inverzno (kalendarski dan je
-          invertibilan u fiksnoj zoni), a `expectedHash` iz `hash_after` brani od
-          poništavanja PREKO tuđe izmene.
+          mehanizam zbog jedne trake. `expectedHash` iz `hash_after` brani od poništavanja
+          PREKO tuđe izmene.
+
+          ⚠️ „Poništi" vraća ISTI broj kalendarskih dana unazad — što je inverzno za svaki
+          red osim jednog izuzetka: kad pomak padne NA dan prelaska na letnje vreme, red
+          koji traje preko nepostojećeg lokalnog sata dobija kraj klampovan na početak
+          (`shiftEndExpr`, `GREATEST`) i time TRAJNO izgubi to trajanje. Povratak vraća
+          termine, ne trajanje. Izmereno na produkciji: 0 pogođenih redova danas, ali
+          tvrdnja „tačno inverzno" ne sme da stoji — zato je dijalog i dobio kolonu
+          „Novi kraj", da se ta jedina promena trajanja VIDI pre potvrde.
 
           🔴 PLUTA (fixed), ne stoji u toku: kao element u toku je ceo gant skakao ~34 px
           i kad se pojavi i kad nestane — a nestaje sam, 30 s posle poteza, dakle usred
           rada. Pilula u dnu ne pomera nijedan red.
 
-          `bottom-16` (a ne `bottom-4`): `lib/toast.ts` drži svoje pilule na `bottom:16px`
-          sa `z-index:9999`, pa bi se na donjoj ivici preklopile — i to baš u prvih 3,2 s,
-          kad planer i gleda ishod. */}
+          🔴 `bottom-28` (112 px), a ne `bottom-16`: `lib/toast.ts` je KOLONA usidrena na
+          `bottom:16px` koja RASTE naviše, sa `z-index:9999` i `pointer-events:auto` na
+          svakoj piluli. Dva toasta (16→92 px) ili jedan dvoredni prekriju traku na 64 px i
+          POJEDU klik na „Poništi" punih 3,2 s. Dva toasta su svakodnevni slučaj: mutacioni
+          `onError` diže svoj, a dijalog svoj. */}
       {lastShift?.sidro ? (
-        <div className="pointer-events-none fixed inset-x-0 bottom-16 z-40 flex justify-center px-4">
+        <div className="pointer-events-none fixed inset-x-0 bottom-28 z-40 flex justify-center px-4">
           <div className="pointer-events-auto flex items-center gap-2 rounded-panel border border-line bg-surface-2 px-3 py-1.5 text-xs text-ink-secondary shadow-lg">
             <Undo2 className="h-4 w-4 shrink-0 text-ink-disabled" aria-hidden />
             <span>

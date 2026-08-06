@@ -47,12 +47,18 @@ function makeIdem(tx: unknown) {
 function makeService(queryReturns: QReturn[] = []) {
   const captured: {
     overlay?: { where: unknown; create: Record<string, unknown>; update: Record<string, unknown> };
+    /**
+     * SVI `upsert`-i redom (075/26 treći krug): kanon brave nad tabelom u kojoj 217.490
+     * od 217.732 parova NEMA red se poštuje samo REDOSLEDOM UPISA — `FOR UPDATE` nad
+     * nepostojećim redom ne uzima ništa. Bez ove liste se to ne može ni izmeriti.
+     */
+    overlays: { where: unknown; create: Record<string, unknown>; update: Record<string, unknown> }[];
     urgency?: { where: unknown; create: Record<string, unknown>; update: Record<string, unknown> };
     exec?: { values: unknown[] };
     execs: { values: unknown[] }[];
     /** Tekst SVAKOG izvršenog `$queryRaw` iskaza, redom (075/26 kanon brave). */
     queries: string[];
-  } = { execs: [], queries: [] };
+  } = { execs: [], overlays: [], queries: [] };
   let qi = 0;
   const tx = {
     $queryRaw: jest.fn(async (sql: unknown) => {
@@ -67,6 +73,7 @@ function makeService(queryReturns: QReturn[] = []) {
     planProizvodnjeOverlay: {
       upsert: jest.fn(async (a: typeof captured.overlay) => {
         captured.overlay = a;
+        captured.overlays.push(a!);
         return { id: 1, ...a!.create };
       }),
     },
@@ -258,6 +265,45 @@ describe("bulkReassign", () => {
     expect(captured.queries[0]).not.toContain("work_order_operations");
     // Oba para su u JEDNOM iskazu brave (jedna VALUES lista, ne dve brave).
     expect(captured.queries.filter((q) => q.includes("FOR UPDATE"))).toHaveLength(1);
+  });
+
+  /**
+   * 🔴 NALAZ S1 (treći krug): brava sama NE zatvara par (reorder ↔ bulkReassign), jer
+   * `FOR UPDATE` hvata samo POSTOJEĆE redove, a `upsert` je ovde najčešće INSERT
+   * (izmereno: 217.490 od 217.732 parova nema overlay red). Ovde brava NAMERNO vraća
+   * prazan skup i meri se redosled UPISA — to je jedino što na INSERT putu i postoji.
+   */
+  it("🔴 bulkReassign: i kad brava vrati PRAZNO (INSERT put), upisi idu kanonskim redom", async () => {
+    const { svc, captured } = makeService([
+      [], // brava: nijedan par nema overlay red
+      machine("3.1"),
+      targetExists(true),
+      machine("3.1"),
+      targetExists(true),
+      machine("3.1"),
+      targetExists(true),
+    ]);
+    await svc.bulkReassign(
+      email,
+      {
+        // Prikazni redosled je OBRNUT od kanonskog.
+        pairs: [
+          { workOrderId: "11", lineId: "3" },
+          { workOrderId: "10", lineId: "9" },
+          { workOrderId: "10", lineId: "2" },
+        ],
+        targetMachine: "3.9",
+        clientEventId: UUID,
+      },
+      true,
+    );
+    expect(
+      captured.overlays.map((o) => (o.where as { workOrderId_lineId: unknown }).workOrderId_lineId),
+    ).toEqual([
+      { workOrderId: 10, lineId: 2 },
+      { workOrderId: 10, lineId: 9 },
+      { workOrderId: 11, lineId: 3 },
+    ]);
   });
 });
 
@@ -783,14 +829,31 @@ describe("gant kaskada — 075/26", () => {
     expect(captured.queries[0]).not.toMatch(/s\.dubina <[^=]/);
   });
 
-  it("zatvorenje veće od kape → 422 cascade_too_large, bez upisa", async () => {
+  /**
+   * 🔴 NALAZ S4 (treći krug): ovaj test je bio PRAZAN. Fikstura je pravila 501 čvor sa
+   * `dubina: i` (0…500), a od popravke `cascade_too_deep` ide PRE provere skupa — pucao je
+   * dakle na dubini, ne na veličini, a test je i dalje prolazio jer je proveravao samo
+   * KLASU izuzetka. `CASCADE_MAX_NODES` time nije imao NIJEDAN test.
+   *
+   * Zato je fikstura sada u ŠIRINU (jedno sidro + 500 sledbenika na dubini 1) i asertuje
+   * se KOD, ne klasa. To je i jedini oblik u kom kapa čvorova uopšte može da okine na
+   * pravom podatku: granat lanac, a ne nizanje.
+   */
+  it("🔴 zatvorenje veće od kape čvorova (ŠIRINA, ne dubina) → 422 cascade_too_large, bez upisa", async () => {
     const preveliko = Array.from({ length: 501 }, (_, i) =>
-      cvor(String(i + 1), String((i + 1) * 10), { dubina: i }),
+      cvor(String(i + 1), String((i + 1) * 10), { dubina: i === 0 ? 0 : 1 }),
     );
     const { svc, captured } = makeService([preveliko]);
-    await expect(svc.shiftChain(email, upis())).rejects.toBeInstanceOf(
-      UnprocessableEntityException,
-    );
+    const greska = await svc.shiftChain(email, upis()).catch((e: unknown) => e);
+    expect(greska).toBeInstanceOf(UnprocessableEntityException);
+    const body = (greska as UnprocessableEntityException).getResponse() as {
+      code: string;
+      zahvat: number;
+      cap: number;
+    };
+    expect(body.code).toBe("cascade_too_large");
+    expect(body.zahvat).toBe(501);
+    expect(body.cap).toBe(500);
     expect(captured.queries.some((q) => jeUpdate(q))).toBe(false);
   });
 
@@ -1208,9 +1271,20 @@ describe("075/26 — anti-ciklus na vezi i kanon brave u reorder-u", () => {
     expect(captured.overlay).toBeUndefined();
   });
 
-  it("hod naviše koji stane TAČNO na kapi prolazi (kapa je granica, ne strah)", async () => {
-    // Koren je na `CASCADE_MAX_DEPTH`-tom hopu — poslednji hop nema prethodnika.
-    const hopovi = Array.from({ length: CASCADE_MAX_DEPTH }, (_, i) => [
+  /**
+   * 🔴 NALAZ N2 (treći krug): čuvar je bio za TAČNO 1 labaviji od kape koju brani.
+   *
+   * Sa `dubina <= CASCADE_MAX_DEPTH` je hod posećivao 51 pretka i vezu PUŠTAO, a
+   * `collectChain` nad korenom je toj istoj poziciji davao `dubina 51 > 50` →
+   * `cascade_too_deep`. Ishod: veza se upiše, a lanac postane NEPOMERLJIV — najgori
+   * mogući, jer greška stiže tek na potez koji sa vezom nema veze.
+   *
+   * Račun: hod poseti pretke `P0…Pk`, nova pozicija sedi na dubini `k + 1`. Prolazi
+   * dakle najviše `CASCADE_MAX_DEPTH` predaka; `CASCADE_MAX_DEPTH + 1` mora da padne.
+   */
+  it("hod naviše sa TAČNO `cap` predaka prolazi (nova pozicija sedne na `cap`)", async () => {
+    // 49 hopova sa prethodnikom + 50-ti bez njega = 50 posećenih predaka (P0…P49).
+    const hopovi = Array.from({ length: CASCADE_MAX_DEPTH - 1 }, (_, i) => [
       { predecessor_work_order_id: 100000 + i, predecessor_line: 1 },
     ]);
     const { svc, captured } = makeService([
@@ -1227,6 +1301,32 @@ describe("075/26 — anti-ciklus na vezi i kanon brave u reorder-u", () => {
     expect(captured.overlay!.update.predecessorWorkOrderId).toBe(5500);
   });
 
+  it("🔴 hod naviše sa `cap + 1` predaka PADA — inače bi lanac ostao nepomerljiv", async () => {
+    // 50 hopova sa prethodnikom + koren = 51 predak → nova pozicija bi bila na dubini 51,
+    // a kaskada odbija sve preko 50. Veza se zato ne upisuje uopšte.
+    const hopovi = Array.from({ length: CASCADE_MAX_DEPTH }, (_, i) => [
+      { predecessor_work_order_id: 100000 + i, predecessor_line: 1 },
+    ]);
+    const { svc, captured } = makeService([
+      prazan(),
+      ...hopovi,
+      [{ predecessor_work_order_id: null, predecessor_line: null }],
+    ]);
+    const greska = await svc
+      .upsertOverlay(email, {
+        workOrderId: "9400",
+        lineId: "12",
+        predecessorWorkOrderId: "5500",
+        predecessorLine: "77",
+      })
+      .catch((e: unknown) => e);
+    expect(greska).toBeInstanceOf(UnprocessableEntityException);
+    expect(
+      ((greska as UnprocessableEntityException).getResponse() as { code: string }).code,
+    ).toBe("cascade_too_deep");
+    expect(captured.overlay).toBeUndefined();
+  });
+
   it("reorderOverlays: PRVI iskaz je kanonski pre-lock (ORDER BY wo, line + FOR UPDATE)", async () => {
     const { svc, captured } = makeService();
     await svc.reorderOverlays(email, {
@@ -1237,5 +1337,41 @@ describe("075/26 — anti-ciklus na vezi i kanon brave u reorder-u", () => {
     });
     expect(captured.queries[0]).toContain("FOR UPDATE");
     expect(captured.queries[0]).toContain("ORDER BY work_order_id, line_id");
+  });
+
+  /**
+   * 🔴 NALAZ S1 (treći krug): pre-lock JE BIO NO-OP ZA SKORO SVE. `SELECT … FOR UPDATE`
+   * zaključava samo redove KOJI POSTOJE, a oba potrošača rade `upsert` — dakle najčešće
+   * INSERT. Izmereno na produkciji:
+   *
+   *     operacija_ukupno | ima_overlay | bez_overlaya
+   *               217732 |         242 |       217490
+   *
+   * Za par bez overlay reda brava ne uzme ništa i INSERT ide na unique indeks
+   * `uq_…_wo_line` PRIKAZNIM redosledom — dakle ABBA sa kaskadom je ostao živ tačno kao
+   * pre popravke. Zato oba testa ispod puštaju bravu da vrati PRAZAN skup (INSERT put,
+   * podrazumevano ponašanje mocka) i mere REDOSLED UPISA, ne tekst brave.
+   */
+  it("🔴 reorderOverlays: i kad brava vrati PRAZNO (INSERT put), upisi idu kanonskim redom", async () => {
+    // Brava vraća `[]` → nijedan par nema overlay red, kao za 217.490 od 217.732 parova.
+    const { svc, captured } = makeService([[]]);
+    await svc.reorderOverlays(email, {
+      // Prikazni redosled (hala/mašina/`shift_sort_order`) je OBRNUT od kanonskog.
+      items: [
+        { workOrderId: "2", lineId: "20" },
+        { workOrderId: "2", lineId: "5" },
+        { workOrderId: "1", lineId: "10" },
+      ],
+    });
+    expect(
+      captured.overlays.map((o) => (o.where as { workOrderId_lineId: unknown }).workOrderId_lineId),
+    ).toEqual([
+      { workOrderId: 1, lineId: 10 },
+      { workOrderId: 2, lineId: 5 },
+      { workOrderId: 2, lineId: 20 },
+    ]);
+    // 🔴 Sortira se REDOSLED UPISA, ne značenje: redni broj ostaje vezan za PRIKAZNI
+    // položaj stavke (inače bi sortiranje tiho prevrnulo ručni redosled smene).
+    expect(captured.overlays.map((o) => o.create.shiftSortOrder)).toEqual([3, 2, 1]);
   });
 });

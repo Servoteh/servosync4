@@ -29,8 +29,8 @@ import {
  * v. `gantt-tab.tsx` `onUp`.
  *
  * Dijalog prikazuje PLAN sa servera (`dryRun`), ne sopstveni račun: `stavke[].new_start`
- * je izračunat ISTIM SQL izrazom kojim će se i upisati, pa ono što planer potvrdi jeste
- * ono što se dogodi. Potvrda šalje `expectedHash` iz tog plana — ako se plan u
+ * i `new_end` su izračunati ISTIM SQL izrazima kojima će se i upisati, pa ono što planer
+ * potvrdi jeste ono što se dogodi. Potvrda šalje `expectedHash` iz tog plana — ako se plan u
  * međuvremenu promenio, server vraća 409 sa SVEŽIM planom i dijalog se prerenderuje bez
  * drugog poziva.
  */
@@ -181,6 +181,14 @@ export function GantLanacDialog({
                 <th className="px-2 py-1.5 text-left">Mašina</th>
                 <th className="px-2 py-1.5 text-left">Početak</th>
                 <th className="px-2 py-1.5 text-left">Novi početak</th>
+                {/* 🔴 „Novi kraj" JE POTREBAN, iako je pomak isti za start i za kraj:
+                    `shiftEndExpr` klampuje kraj na početak (`GREATEST`) kad pomak padne NA
+                    dan prelaska na letnje vreme — red 02:30→03:00 tada postane 03:30→03:30,
+                    dakle TRAJANJE 30 min ode na 0, i „Poništi" to ne vraća. Izmereno na
+                    produkciji: 0 takvih redova danas, ali to je svojstvo podataka, ne
+                    modela. Jedina promena koju kaskada ume da napravi mimo čistog pomaka
+                    mora da se vidi PRE potvrde. */}
+                <th className="px-2 py-1.5 text-left">Novi kraj</th>
               </tr>
             </thead>
             <tbody>
@@ -211,6 +219,9 @@ export function GantLanacDialog({
                   </td>
                   <td className="px-2 py-1 tnums font-medium text-accent">
                     {s.new_start ? formatDateTime(s.new_start) : '—'}
+                  </td>
+                  <td className="px-2 py-1 tnums font-medium text-accent">
+                    {s.new_end ? formatDateTime(s.new_end) : '—'}
                   </td>
                 </tr>
               ))}

@@ -356,10 +356,18 @@ export class PlanProizvodnjeService {
    * mogu da sklope ciklus. `CYCLE` guard u kaskadi (`collectChain`) je KONAČNA brana i
    * ostaje i pored ovoga.
    *
-   * 🔴 KAPA MORA DA SE ČUJE (isto pravilo kao `collectChain`): hod ide do
-   * `CASCADE_MAX_DEPTH + 1`, i ako se ni tada nije zaustavio, veza se ODBIJA sa
-   * `cascade_too_deep`. Ranije se ćutke izlazilo iz petlje i veza je PROLAZILA — a to je
-   * tačno onaj lanac koji kaskada posle ne ume da pomeri celog.
+   * 🔴 KAPA MORA DA SE ČUJE: ako se hod ne zaustavi, veza se ODBIJA sa `cascade_too_deep`.
+   * Ranije se ćutke izlazilo iz petlje i veza je PROLAZILA — a to je tačno onaj lanac koji
+   * kaskada posle ne ume da pomeri celog.
+   *
+   * 🔴 GRANICA JE `dubina < CASCADE_MAX_DEPTH`, NE `<=` (treći krug 075/26). Sa `<=` je
+   * hod posećivao 51 pretka i puštao vezu, a `collectChain` nad korenom je toj istoj
+   * poziciji davao `dubina = 51 > 50` → `cascade_too_deep`: veza se upiše, a lanac
+   * postane NEPOMERLJIV. Čuvar mora da bude bar toliko strog koliko i kapa koju brani.
+   *
+   * Račun: hod poseti pretke `P0…Pk` (`P0` je predloženi prethodnik). Posle upisa je nova
+   * pozicija na dubini `k + 1` od korena, pa mora da važi `k + 1 <= CASCADE_MAX_DEPTH`,
+   * tj. najviše `CASCADE_MAX_DEPTH` poseta — tačno `dubina` u `0 … CASCADE_MAX_DEPTH − 1`.
    */
   private async assertNoPredecessorCycle(
     tx: Tx,
@@ -370,7 +378,7 @@ export class PlanProizvodnjeService {
   ): Promise<void> {
     const visited = new Set<string>();
     let cur: ChainNode | null = { wo: pwo, line: pline };
-    for (let dubina = 0; dubina <= CASCADE_MAX_DEPTH && cur !== null; dubina++) {
+    for (let dubina = 0; dubina < CASCADE_MAX_DEPTH && cur !== null; dubina++) {
       const node: ChainNode = cur;
       if (node.wo === wo && node.line === line) {
         throw new UnprocessableEntityException({
@@ -392,7 +400,8 @@ export class PlanProizvodnjeService {
           ? { wo: p.predecessor_work_order_id, line: p.predecessor_line }
           : null;
     }
-    // Hod se nije zaustavio ni na `CASCADE_MAX_DEPTH + 1` — kapa je DODIRNUTA.
+    // Hod nije stigao do korena ni posle `CASCADE_MAX_DEPTH` predaka — nova pozicija bi
+    // sela na dubinu ≥ `CASCADE_MAX_DEPTH + 1`, tj. na lanac koji kaskada odbija.
     if (cur !== null) {
       throw new UnprocessableEntityException({
         message: "cascade_too_deep",
@@ -434,36 +443,46 @@ export class PlanProizvodnjeService {
   /**
    * Bulk reorder — `shift_sort_order` = 1..n u datom redosledu (jedan tx).
    *
-   * 🔴 075/26: PRE petlje ide KANONSKI pre-lock. Petlja upserta inače uzima brave
-   * redom koji pošalje FE (poredak prikaza: hala/mašina/`shift_sort_order`), a kaskada
-   * ih uzima po `(work_order_id, line_id)`. Nad presecajućim skupom je to `40P01`
-   * (deadlock) posle `deadlock_timeout = 1 s`, a planeru izgleda kao 500. Pet linija —
-   * bez njih se zastoj prihvata SLUČAJNO, a ne svesno.
+   * 🔴 075/26 (treći krug): KANON SE POŠTUJE REDOSLEDOM UPISA, ne samo pre-lock-om.
+   * Prva verzija je stavila samo `lockOverlays` PRE petlje i to je bio no-op za skoro
+   * sve: `SELECT … FOR UPDATE` zaključava samo redove KOJI POSTOJE, a `upsert` je ovde
+   * najčešće INSERT. Izmereno na produkciji: od 217.732 operacija samo 242 ima overlay
+   * red — 217.490 parova brava ne bi ni dotakla, pa bi INSERT-i i dalje uzimali brave
+   * nad unique indeksom `uq_…_wo_line` PRIKAZNIM redosledom (hala/mašina/
+   * `shift_sort_order`) dok ih kaskada uzima po `(work_order_id, line_id)`. To je `40P01`
+   * posle `deadlock_timeout = 1 s`, planeru vidljiv kao 500.
+   *
+   * Zato se parovi SORTIRAJU po `(work_order_id, line_id)` pre petlje. Redni broj
+   * (`shiftSortOrder`) se veže za stavku PRE sortiranja — sortira se REDOSLED UPISA, ne
+   * značenje podatka.
+   *
+   * `lockOverlays` OSTAJE i pored sortiranja: za 242 postojeća reda uzima sve brave u
+   * jednom iskazu i u kanonskom redosledu ODMAH, pa se međusobno presecajući poslovi
+   * sudaraju na prvom iskazu (jasan `40P01`/čekanje) umesto na sredini petlje, sa pola
+   * upisanih redova iza sebe.
    */
   async reorderOverlays(email: string, dto: OverlayReorderDto) {
     const now = new Date();
+    const stavke = dto.items
+      .map((it, i) => ({
+        wo: Number(it.workOrderId),
+        line: Number(it.lineId),
+        redni: i + 1,
+      }))
+      .sort((a, b) => a.wo - b.wo || a.line - b.line);
     return this.prisma.$transaction(async (tx) => {
-      await this.lockOverlays(
-        tx,
-        dto.items.map((it) => ({
-          wo: Number(it.workOrderId),
-          line: Number(it.lineId),
-        })),
-      );
-      for (let i = 0; i < dto.items.length; i++) {
-        const it = dto.items[i];
-        const wo = Number(it.workOrderId);
-        const line = Number(it.lineId);
+      await this.lockOverlays(tx, stavke);
+      for (const s of stavke) {
         await tx.planProizvodnjeOverlay.upsert({
-          where: { workOrderId_lineId: { workOrderId: wo, lineId: line } },
+          where: { workOrderId_lineId: { workOrderId: s.wo, lineId: s.line } },
           create: {
-            workOrderId: wo,
-            lineId: line,
-            shiftSortOrder: i + 1,
+            workOrderId: s.wo,
+            lineId: s.line,
+            shiftSortOrder: s.redni,
             createdBy: email,
             updatedBy: email,
           },
-          update: { shiftSortOrder: i + 1, updatedBy: email, updatedAt: now },
+          update: { shiftSortOrder: s.redni, updatedBy: email, updatedAt: now },
         });
       }
       return { data: { reordered: dto.items.length } };
@@ -989,6 +1008,18 @@ export class PlanProizvodnjeService {
    * KANON ZAKLJUČAVANJA `plan_proizvodnje_overlays`: `(work_order_id, line_id)` RASTUĆE.
    * Svaki pisac koji uzima više od jednog reda ove tabele mora da poštuje isti kanon.
    *
+   * 🔴 DOMET OVE BRAVE JE OGRANIČEN, I TO SE MORA ZNATI: `SELECT … FOR UPDATE` zaključava
+   * SAMO REDOVE KOJI POSTOJE. Izmereno na produkciji: od 217.732 operacija samo 242 ima
+   * overlay red. Za pisce koji rade `upsert` (`reorderOverlays`, `bulkReassign`) to znači
+   * da je za 217.490 parova ovaj poziv no-op, a stvarnu bravu uzme tek INSERT na unique
+   * indeksu `uq_…_wo_line` — redosledom kojim petlja ide. Zato oba ta pisca SORTIRAJU
+   * ulaz po `(wo, line)` pre petlje; ova brava je dopuna (postojeći redovi, jedan iskaz,
+   * odmah na početku transakcije), ne zamena za kanonski redosled upisa.
+   *
+   * Kaskada (`shiftChain`) je jedini potrošač kom je brava dovoljna sama: ona radi
+   * isključivo `UPDATE` nad redovima koje je `collectChain` već našao, dakle nad
+   * postojećim redovima.
+   *
    * Zašto ne advisory lock po mašini (iako je danas 34/34 veza unutar iste mašine): to
    * je svojstvo PODATAKA, ne modela. Gest bar-na-bar dozvoljava vezu preko mašina, a
    * `reassign` iz dijaloga ume postojeću vezu tiho da učini međumašinskom — ključ po
@@ -1116,31 +1147,33 @@ export class PlanProizvodnjeService {
   /**
    * Bulk reassign (JEDAN client_event_uuid za ceo bulk; paritet 1.0).
    *
-   * 🔴 075/26: PRE petlje ide KANONSKI pre-lock, iz istog razloga kao u `reorderOverlays`.
-   * `reassign-dialog.tsx` šalje parove redom kako stoje NA EKRANU (hala / mašina /
-   * `shift_sort_order`), a kaskada i reorder brave uzimaju po `(work_order_id, line_id)`.
+   * 🔴 075/26 (treći krug): KANONSKI REDOSLED UPISA + pre-lock, iz istog razloga i sa
+   * istim merenjem kao u `reorderOverlays` — 217.490 od 217.732 parova NEMA overlay red,
+   * pa `FOR UPDATE` nad njima ne uzima ništa i brava ostaje ona koju INSERT uzme na
+   * unique indeksu. `reassign-dialog.tsx` šalje parove redom kako stoje NA EKRANU (hala /
+   * mašina / `shift_sort_order`), a kaskada i reorder idu po `(work_order_id, line_id)`.
    * Oba gesta se pokreću sa ISTOG ekrana („Po mašini": prevlačenje redosleda + „Premesti"
-   * nad izborom), pa je bez ovoga par (reorder ↔ bulkReassign) živ `40P01` posle
-   * `deadlock_timeout = 1 s` — planeru izgleda kao 500.
+   * nad izborom), pa je bez sortiranja par (reorder ↔ bulkReassign) živ `40P01` posle
+   * `deadlock_timeout = 1 s` — planeru vidljiv kao 500.
+   *
+   * Redosled parova ovde NE nosi značenje (svi idu na istu ciljnu mašinu, sa istim
+   * `client_event_uuid`), pa se sortira sam ulaz.
    */
   async bulkReassign(email: string, dto: BulkReassignDto, canForce: boolean) {
     const cev = dto.clientEventId ?? randomUUID();
+    const parovi = dto.pairs
+      .map((p) => ({ wo: Number(p.workOrderId), line: Number(p.lineId) }))
+      .sort((a, b) => a.wo - b.wo || a.line - b.line);
     return this.prisma.$transaction(async (tx) => {
-      await this.lockOverlays(
-        tx,
-        dto.pairs.map((p) => ({
-          wo: Number(p.workOrderId),
-          line: Number(p.lineId),
-        })),
-      );
+      await this.lockOverlays(tx, parovi);
       let count = 0;
-      for (const p of dto.pairs) {
+      for (const p of parovi) {
         await this.reassignOne(
           tx,
           email,
           canForce,
-          Number(p.workOrderId),
-          Number(p.lineId),
+          p.wo,
+          p.line,
           dto.targetMachine ?? null,
           !!dto.force,
           dto.reason ?? null,

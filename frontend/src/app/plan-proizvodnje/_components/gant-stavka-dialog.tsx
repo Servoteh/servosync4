@@ -86,8 +86,8 @@ export function GantStavkaDialog({
   /**
    * 075/26 — ishod kaskade pokrenute IZ KARTICE, propušten naviše.
    *
-   * 🔴 Ovo je JEDINI put koji prima proizvoljan broj dana (prevlačenje je ograničeno
-   * širinom ose, tastatura na ±1), pa je najskuplji potez u modulu bio i jedini bez
+   * 🔴 Ovo je JEDINI put koji prima proizvoljan broj dana (drugi put do kaskade je
+   * prevlačenje, a ono je ograničeno širinom ose), pa je najskuplji potez u modulu bio i jedini bez
    * povratka. Kroz ovaj prop oba puta dele ISTU traku „Poništi" (i isti pomak prozora
    * kad pomak izbaci sve barove van njega).
    */

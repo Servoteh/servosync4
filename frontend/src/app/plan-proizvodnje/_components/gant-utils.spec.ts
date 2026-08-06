@@ -260,9 +260,8 @@ test('overlayErrorMessage prevodi kodove kaskade (planer ne sme da vidi engleski
 });
 
 /**
- * FE gejt za potvrdu — sada nad STVARNOM funkcijom (`chainGateBrzPut`), ne nad kopijom
- * pravila u testu. Ta kopija je i bila deo problema: gejt je živeo samo u
- * `pomeriLanac`, pa je tastatura mogla da ga zaobiđe a da nijedan test ne pukne.
+ * FE gejt za potvrdu prevlačenja — nad STVARNOM funkcijom (`chainGateBrzPut`), ne nad
+ * kopijom pravila u testu.
  *
  * Gejt sme da greši SAMO u bezbednom smeru: kad FE ne vidi ceo lanac, ne upisuje
  * naslepo nego pita server.
@@ -333,23 +332,31 @@ test('gejt: lanac TAČNO na pragu prolazi brzim putem (prag je > , ne >=)', () =
 });
 
 /**
- * 🔴 REGRESIJA KOJU JE UVELA SAMA IZMENA (075/26): ←/→ je zvao upis DIREKTNO, bez
- * pregleda i bez `e.repeat` brane.
+ * 🔴 ODLUKA VLASNIKA (treći krug 075/26): ←/→ je JEDNOREDNI upis, ne kaskada. Kaskadu
+ * pokreće samo prevlačenje — gest koji je korisnik i tražio. Ovaj test je brana od
+ * ponovnog provlačenja strelice kroz kaskadu: `'pomeri'` ≠ `'kaskada'`.
  *
- * Držanje tastera daje ~30 događaja/s, a svaki nosi NOV `clientEventId` i deltu ±1 —
- * to je ~30 paralelnih POST-ova koji svaki zaključavaju CEO lanac (izmereno: 19 redova).
- * Prva prođe, ostale dobiju `409 chain_changed`: planer pritisne N dana a upiše se manje.
- * Pre 075/26 je isti gest slao APSOLUTNE termine iz keša — bezopasno.
+ * Auto-ponavljanje i dalje mora da se guši: držanje tastera daje ~30 događaja/s, a
+ * `mutate` ih ne serijalizuje — roj PATCH-eva nad istim redom se pregazi (pobedi
+ * poslednji ODGOVOR, ne poslednji pritisak).
  */
-test('🔴 auto-ponavljanje (`repeat`) NE pokreće ni kaskadu ni resize', () => {
+test('🔴 ←/→ je jednoredni „pomeri" (ne kaskada), a auto-ponavljanje se guši', () => {
   assert.equal(
     barKeyAkcija({ key: 'ArrowRight', shiftKey: false, repeat: false }),
-    'kaskada',
+    'pomeri',
   );
-  assert.equal(barKeyAkcija({ key: 'ArrowRight', shiftKey: false, repeat: true }), null);
-  assert.equal(barKeyAkcija({ key: 'ArrowLeft', shiftKey: false, repeat: true }), null);
   assert.equal(barKeyAkcija({ key: 'ArrowLeft', shiftKey: true, repeat: false }), 'resize');
-  assert.equal(barKeyAkcija({ key: 'ArrowLeft', shiftKey: true, repeat: true }), null);
+});
+
+/**
+ * 🔴 NALAZ N4: ugušen taster mora da se razlikuje od TUĐEG tastera. Da `repeat` vraća
+ * `null`, `onBarKey` bi izašao PRE `preventDefault`-a i držana strelica bi propala u
+ * pretraživač — a on njome vodoravno skroluje osu ispod fokusiranog bara.
+ */
+test('🔴 `repeat` daje „guseno" (≠ null) — taster ostaje kod bara, ne skroluje osu', () => {
+  assert.equal(barKeyAkcija({ key: 'ArrowRight', shiftKey: false, repeat: true }), 'guseno');
+  assert.equal(barKeyAkcija({ key: 'ArrowLeft', shiftKey: false, repeat: true }), 'guseno');
+  assert.equal(barKeyAkcija({ key: 'ArrowLeft', shiftKey: true, repeat: true }), 'guseno');
 });
 
 test('barKeyAkcija: Enter/Space otvaraju karticu i pri ponavljanju, ostali tasteri ćute', () => {

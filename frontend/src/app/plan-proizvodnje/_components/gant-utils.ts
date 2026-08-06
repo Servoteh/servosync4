@@ -580,42 +580,48 @@ export function shiftPreview(
 export const CHAIN_CONFIRM_OVER = 8;
 
 /** Šta jedan pritisak tastera nad barom znači (v. `barKeyAkcija`). */
-export type BarKeyAkcija = 'otvori' | 'resize' | 'kaskada' | null;
+export type BarKeyAkcija = 'otvori' | 'resize' | 'pomeri' | 'guseno' | null;
 
 /**
  * 🔴 JEDNO MESTO NA KOM SE ODLUČUJE ŠTA TASTER RADI — uključujući `repeat`.
  *
- * Auto-ponavljanje tastature daje ~30 događaja u sekundi. Od 075/26 svaki od njih nosi
- * NOV `clientEventId` i deltu ±1, a `mutate` ih ne serijalizuje — to je ~30 paralelnih
- * POST-ova, svaki zaključava CEO lanac (izmereno: 19 redova). Prva transakcija prođe,
- * ostale dobiju `409 chain_changed`: planer pritisne N dana, a upiše se manje, uz roj
- * upozorenja. Uz to svaka transakcija drži konekciju iz Prisma pula dok čeka bravu
- * (`maxWait` 2 s → `P2024` na NEPOVEZANIM zahtevima).
+ * 🔴 ODLUKA VLASNIKA (treći krug 075/26): ←/→ NE POKREĆE KASKADU. Strahinja je tražio
+ * „kada pomerim poziciju, želim i pozicije ispod" — a to je gest PREVLAČENJA. Kaskada na
+ * strelicu nije tražena; nastala je iz težnje da dva gesta budu ista, i platila se sa
+ * četiri nalaza (žig gesta na brzom putu, gubitak dana pri uzastopnim tapovima, kaskada
+ * iza otvorenog dijaloga, skrol ose pri držanju tastera). Strelica zato radi tačno ono
+ * što je radila pre 075/26: pomera SAMO uhvaćenu poziciju, apsolutnim terminima, bez
+ * lanca, bez dijaloga i bez pregleda. Prevlačenje ostaje JEDINI put do kaskade.
  *
- * Pre 075/26 je isti gest slao APSOLUTNE termine iz optimistički ažuriranog keša, pa je
- * ponavljanje bilo bezopasno — regresiju uvodi baš prelazak na deltu.
+ * Ostaju DVE brane koje moraju da stoje u ovoj funkciji:
+ *
+ *  • `'guseno'` (auto-ponavljanje): držanje tastera daje ~30 događaja u sekundi, a
+ *    `mutate` ih ne serijalizuje — to je roj paralelnih PATCH-eva nad istim redom, koji
+ *    se međusobno pregaze (poslednji odgovor pobeđuje, a ne poslednji pritisak).
+ *    Vraća se `'guseno'`, a NE `null`: pozivalac mora da razlikuje „nije moj taster" od
+ *    „moj taster, ali upis je ugušen" — inače ponovljena strelica propadne u pretraživač
+ *    i vodoravno skroluje osu ispod fokusiranog bara (nalaz N4).
+ *
+ *  • Enter/Space smeju da se ponavljaju: otvaranje kartice je idempotentno, a gutanje
+ *    `preventDefault`-a na ponovljenom Space-u bi vratilo skrol strane ispod fokusa.
  */
 export function barKeyAkcija(e: {
   key: string;
   shiftKey: boolean;
   repeat: boolean;
 }): BarKeyAkcija {
-  // Enter/Space smeju da se ponavljaju: otvaranje kartice je idempotentno, a gutanje
-  // `preventDefault`-a na ponovljenom Space-u bi vratilo skrol strane ispod fokusa.
   if (e.key === 'Enter' || e.key === ' ') return 'otvori';
   if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return null;
-  if (e.repeat) return null;
-  return e.shiftKey ? 'resize' : 'kaskada';
+  if (e.repeat) return 'guseno';
+  return e.shiftKey ? 'resize' : 'pomeri';
 }
 
 /**
- * 🔴 GEJT KASKADE — JEDNA funkcija za OBA puta (prevlačenje i ←/→).
+ * 🔴 GEJT KASKADE — za gest PREVLAČENJA (jedini gest koji kaskadira, v. `barKeyAkcija`).
  *
- * Do popravke je `onBarKey` zvao upis DIREKTNO: bez pregleda, bez dijaloga, bez
- * `expectedHash`, bez provere veličine lanca i završenih sledbenika — dok je ISTI lanac
- * pomeren MIŠEM obavezno otvarao dijalog. Izmereno na produkciji: koren lanca mašine 3.40
- * (`47617/231323`) ima 19 čvorova i pomera 15 pozicija na 15 naloga, a pre 075/26 je ←/→
- * pomerao TAČNO JEDAN bar. Domet gesta je porastao sa 1 na 15 bez ikakve promene u gestu.
+ * Izmereno na produkciji: koren lanca mašine 3.40 (`47617/231323`) ima 19 čvorova i
+ * pomera 15 pozicija na 15 naloga. Domet jednog poteza je toliki da mora da postoji
+ * granica preko koje se PITA — inače planer prevuče jedan bar i pomeri tuđe naloge.
  *
  * `true` = kratak i IZVESTAN lanac → upis bez ijednog klika.
  * `false` = dug ili neizvestan → prvo `dryRun`, pa odluka (v. `gantt-tab.tsx`).
@@ -647,8 +653,8 @@ export function chainGateBrzPut(a: {
 /**
  * Da li posle kaskade ijedan POMEREN bar pada u tekući prozor ose.
  *
- * Put kroz karticu pozicije prima PROIZVOLJAN broj dana (prevlačenje je ograničeno
- * širinom ose, tastatura na ±1), pa pomak od 30 dana izbaci sve barove van prozora
+ * Put kroz karticu pozicije prima PROIZVOLJAN broj dana (drugi put do kaskade —
+ * prevlačenje — ograničen je širinom ose), pa pomak od 30 dana izbaci sve barove van prozora
  * (`barGeometry` → `visible:false`) i planer ostane pred redovima BEZ ijednog bara i bez
  * objašnjenja. Kad je tako, prozor prati pomak.
  */
