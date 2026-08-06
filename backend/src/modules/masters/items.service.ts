@@ -34,12 +34,14 @@ import {
 import {
   assertItemIsNative,
   assertItemWritesAllowed,
+  assertMinQuantityWriteAllowed,
   catalogDuplicateException,
   isCatalogDuplicateError,
   isNativeItemId,
   NATIVE_ITEM_ID_BASE,
   NATIVE_ITEM_ID_MAX,
   NATIVE_ITEM_SOURCE,
+  VLASNIK_MINIMALNE_KOLICINE,
 } from "./items.write-policy";
 import type { AuthUser } from "../auth/jwt.strategy";
 
@@ -623,29 +625,42 @@ export class ItemsService {
   }
 
   /**
-   * MINIMALNA KOLIČINA — jedina kolona artikla koju 4.0 sme da menja i nad
-   * BigBit-origin redom (odluka vlasnika 06.08.2026, pravo `masters.min_quantity`).
+   * MINIMALNA KOLIČINA — uska izmena jedne kolone artikla, i nad BigBit-origin redom.
    *
-   * ⚠️ NAMERNO BEZ `assertItemWritesAllowed()` I BEZ `assertItemIsNative()`, i to je
-   * ceo smisao ove metode. Te dve brane čuvaju kolone koje BigBit i dalje piše: 409
-   * postoji zato što bi izmena nestala pri prvom noćnom uvozu. Za `min_quantity` taj
-   * razlog VIŠE NE POSTOJI — kolona je 06.08.2026. izbačena iz sync mape
-   * (`sync/sync-map.generated.ts`), pa je uvoz ne dira. Držati branu i ovde značilo
-   * bi odbiti upis zbog opasnosti koje nema, i to nad 92.622 od 92.625 artikala
-   * (koliko ih je BigBit-origin) — tj. pravo bi bilo mrtvo slovo.
+   * 🔴 DANAS OVA METODA UVEK ODBIJA UPIS (409), i to je odluka vlasnika, ne propust.
+   * Ispravka od 06.08.2026: „ovde nema UNOSA dok ne krenemo da radimo sa APP. Rekli
+   * smo da ćemo samo čitati podatke iz BigBita. Neka ti je pripremljeno sve, ali
+   * nećemo ga testirati." Ruta i pravo `masters.min_quantity` zato OSTAJU spremni —
+   * na dan prelaska (01.04.2027) radi sve bez novog SQL-a i bez novog koda.
    *
-   * DA SE KOLONA IKAD VRATI U MAPU, ova ruta postaje tih gubitak podatka. Zato
-   * vlasništvo ne visi na komentaru nego na dve brane koje padaju u testu:
-   *   • `masters/items.write-policy.spec.ts` — svaka kolona iz
-   *     `ITEM_FIELDS_OWNED_BY_40` mora biti van sync mape;
-   *   • `sync/bigbit-mdb-import.items.spec.ts` — uvoz je zaista ne upisuje.
+   * Odluku ne donosi ova metoda nego JEDAN PREKIDAČ:
+   * `VLASNIK_MINIMALNE_KOLICINE` (`items.write-policy.ts`). Prekidač se ovde ČITA i
+   * PREDAJE brani — iz njega sledi i da kolona `Minimalna kolicina` mora stajati u
+   * sync mapi, pa se ta dva ponašanja ne mogu raziđi (brana:
+   * `items.minimalna-kolicina-prekidac.spec.ts`, oba stanja prekidača).
+   *
+   * ZAŠTO ODBIJA, A NE PRIHVATA: dok kolonom vlada BigBit, uvoz u 03:45 gradi `data`
+   * iz sync mape i prepisuje je. Mereno 06.08.2026: `bb_mdb_stage_artikli` ↔ `items`
+   * po `external_item_id` daje 0 razlika na 92.623 uparena reda — dakle svaki unos bi
+   * nestao do jutra, bez greške i bez traga. Tiho prihvatanje izmene koja će nestati
+   * je gore od odbijanja, pa poruka (`MIN_QUANTITY_BIGBIT_OWNED_MESSAGE`) kaže i ZAŠTO.
+   *
+   * ⚠️ NAMERNO BEZ `assertItemWritesAllowed()` I BEZ `assertItemIsNative()`: te dve
+   * brane zatvaraju CELU karticu i traže 4.0-native red, a ovde je smisao upravo da
+   * na dan prelaska prođe izmena nad BigBit-origin artiklom (92.622 od 92.625). Njih
+   * zamenjuje jedna brana koja pita samo za OVU kolonu.
    *
    * `updatedAt`/`updatedBy` se upisuju kao trag (kolone su iz migracije
    * `20260728170000` i NISU u sync mapi, pa ih uvoz ne gazi). `signature` se NE dira:
-   * to je BigBit-ov `PotpisArt` nad celim slogom, a ovde se menja jedna naša kolona —
+   * to je BigBit-ov `PotpisArt` nad celim slogom, a ovde se menja jedna kolona —
    * prepisati ga značilo bi tvrditi da je čitav artikal naš.
    */
   async setMinQuantity(id: number, dto: SetMinQuantityDto, user: AuthUser) {
+    // PRVA linija metode: dok kolonom vlada BigBit, ne dira se ni telo zahteva ni
+    // baza. Odbijanje mora da bude jednako glasno za ispravan i za neispravan unos —
+    // inače bi 400 na zarez odao da bi „ispravan" broj prošao.
+    assertMinQuantityWriteAllowed(VLASNIK_MINIMALNE_KOLICINE);
+
     validateSetMinQuantity(dto);
 
     const existing = await this.prisma.item.findUnique({

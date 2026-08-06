@@ -253,19 +253,25 @@ const columns: Column<LagerRow>[] = [
 ];
 
 /**
- * MINIMALNA KOLIČINA — jedina kolona ovog ekrana koja se UNOSI (vlasnik, 06.08.2026).
+ * MINIMALNA KOLIČINA — kolona se UVEK PRIKAZUJE, a menja se samo kad `smeIzmenu`.
  *
  * Vraća se kao funkcija, a ne kao konstanta, jer mora da zna dve stvari koje postoje
- * tek u komponenti: da li korisnik SME da menja (`smeIzmenu`) i koji red je trenutno
- * u izmeni. Kolona se ubacuje između SLOBODNO i VP CENE — uz slobodnu količinu, jer
- * se prag poredi baš sa njom.
+ * tek u komponenti: da li se sme menjati (`smeIzmenu`) i koji red je trenutno u
+ * izmeni. Kolona se ubacuje između SLOBODNO i VP CENE — uz slobodnu količinu, jer se
+ * prag poredi baš sa njom.
  *
- * 🔴 KO NEMA PRAVO, NE VIDI NI MOGUĆNOST. Bez prava ćelija je običan tekst, bez
- * kursora, bez `title`-a koji nudi izmenu i bez ikakvog nagoveštaja da se klikom
- * nešto dešava. Zahtev je izričit: ne „klikni pa dobiješ 403".
+ * 🔴 KAD SE NE SME MENJATI, NEMA NI NAGOVEŠTAJA IZMENE. Ćelija je običan tekst: bez
+ * dugmeta, bez podvlake, bez `hover` pozadine i bez kursora koji poziva na klik.
+ * Zahtev je izričit — ne sme da izgleda kao polje koje se otvara pa vrati grešku.
+ * `title` u tom slučaju kaže GDE se prag unosi (BigBit), a ne šta se ovde ne može.
+ *
+ * `smeIzmenu` nosi OBA uslova (pravo korisnika I vlasništvo nad kolonom) — v.
+ * `smeMinimalnu` u ekranu; ovde se više ne pita ko je od njih dva zakazao.
  */
 function kolonaMinimalna(opts: {
   smeIzmenu: boolean;
+  /** Kolonom vlada BigBit — objašnjenje umesto ponude izmene (v. `title` niže). */
+  uBigBitu: boolean;
   uIzmeni: number | null;
   nacrt: string;
   cuvaSe: boolean;
@@ -320,7 +326,17 @@ function kolonaMinimalna(opts: {
         return (
           <span
             className={cn('tnums', v === null ? 'text-ink-disabled' : 'text-ink-secondary')}
-            title={v === null ? 'Minimalna količina nije postavljena' : undefined}
+            title={
+              // Kad kolonom vlada BigBit, `title` UPUĆUJE — objašnjenje mora da bude
+              // tu gde čovek gleda broj, a ne tek u greški posle pokušaja izmene.
+              opts.uBigBitu
+                ? `Minimalna količina se unosi u BigBit-u${
+                    v === null ? ' (za ovaj artikal nije postavljena)' : ''
+                  } — ovde se samo prikazuje`
+                : v === null
+                  ? 'Minimalna količina nije postavljena'
+                  : undefined
+            }
           >
             {tekst}
           </span>
@@ -400,10 +416,11 @@ export default function LagerPage() {
   const [izvozUToku, setIzvozUToku] = useState(false);
   const [izvozPoruka, setIzvozPoruka] = useState<string | null>(null);
 
-  // ─── Minimalna količina (jedina izmena na ekranu) ──────────────────────────
+  // ─── Minimalna količina ────────────────────────────────────────────────────
   // Pravo NEMA nijedna rola — nose ga troje imenovanih kroz `user_permission_overrides`
-  // (odluka vlasnika 06.08.2026). `can()` odlučuje da li se mogućnost UOPŠTE prikazuje.
-  const smeMinimalnu = can(PERMISSIONS.MASTERS_MIN_QUANTITY);
+  // (odluka vlasnika 06.08.2026). Pravo je SAMO PRVI od dva uslova: drugi je ko vlada
+  // kolonom (`meta.minQuantityOwner`), v. `smeMinimalnu` ispod.
+  const imaPravoNaMinimalnu = can(PERMISSIONS.MASTERS_MIN_QUANTITY);
   const upisMinimalne = useSetMinimalnaKolicina();
   const [uIzmeni, setUIzmeni] = useState<number | null>(null);
   const [nacrt, setNacrt] = useState('');
@@ -463,6 +480,24 @@ export default function LagerPage() {
   );
 
   const { upit, redovi, meta, ukupno, ucitano, naKapi } = useLagerSkrol(filters);
+
+  /**
+   * SME LI SE „Min. kol." MENJATI — DVA USLOVA, OBA OBAVEZNA.
+   *
+   * 1) korisnik ima pravo `masters.min_quantity` (troje imenovanih), i
+   * 2) kolonom vlada 4.0, što javlja BACKEND kroz `meta.minQuantityOwner`.
+   *
+   * 🔴 DANAS JE DRUGI USLOV NETAČAN i polje se NE OTVARA NIKOME — ni onome ko ima
+   * pravo. Vlasnik, 06.08.2026: „ovde nema UNOSA dok ne krenemo da radimo sa APP.
+   * Rekli smo da ćemo samo čitati podatke iz BigBita." Prag se do prelaska
+   * (01.04.2027) unosi u BigBit-u, jer bi ga noćni uvoz u 03:45 vratio na staro.
+   *
+   * ⚠️ Nepoznata/izostavljena vrednost NIKAD se ne tumači kao „4.0": stariji backend
+   * (ili neuspeo upit) ostavlja `meta` prazan, a gejt na ekranu sme da greši SAMO u
+   * bezbednom smeru — bolje sakriveno polje koje radi nego ponuđeno koje vraća 409.
+   */
+  const kolonuDrzi40 = meta?.minQuantityOwner === '4.0';
+  const smeMinimalnu = imaPravoNaMinimalnu && kolonuDrzi40;
 
   const lookups = useItemLookups();
   const groupOptions = useMemo(
@@ -682,6 +717,7 @@ export default function LagerPage() {
   const kolone = useMemo(() => {
     const min = kolonaMinimalna({
       smeIzmenu: smeMinimalnu,
+      uBigBitu: !kolonuDrzi40,
       uIzmeni,
       nacrt,
       cuvaSe: upisMinimalne.isPending,
@@ -697,6 +733,7 @@ export default function LagerPage() {
     return out;
   }, [
     smeMinimalnu,
+    kolonuDrzi40,
     uIzmeni,
     nacrt,
     upisMinimalne.isPending,
@@ -1030,15 +1067,16 @@ export default function LagerPage() {
           {izvozPoruka && <span className="text-sm text-ink-secondary">{izvozPoruka}</span>}
         </div>
 
-        {/* Ekran mora sam da kaže šta je čije: STANJE/REZERVISANO/SLOBODNO su BigBit-ovi i
-            samo za čitanje, a MIN. KOL. je od 06.08.2026 naša kolona — noćni uvoz je više
-            ne prepisuje. Bez te rečenice bi magacioner s pravom sumnjao da mu unos „nestane". */}
+        {/* Ekran mora sam da kaže šta je čije. Za MIN. KOL. to nije kozmetika: kolona se
+            vidi i korisna je, ali se do prelaska ne menja ovde — a čovek koji vidi broj bez
+            objašnjenja pretpostavlja da može da ga ispravi. Rečenica mu unapred kaže gde se
+            unosi, umesto da to sazna iz greške posle klika. */}
         <p className="text-sm text-ink-disabled">
           Zalihe iz BigBit-a (noćno ogledalo, samo za čitanje) · STANJE = knjižen promet tekuće
           poslovne godine · SLOBODNO = STANJE − REZERVISANO
           {smeMinimalnu
-            ? ' · MIN. KOL. se unosi ovde (klikni vrednost) i noćni uvoz je ne menja — prazno polje briše prag'
-            : ' · MIN. KOL. se vodi u aplikaciji, ne u BigBit-u'}
+            ? ' · MIN. KOL. se unosi ovde (klikni vrednost) — prazno polje briše prag'
+            : ' · MIN. KOL. se unosi u BigBit-u i ovde se samo prikazuje — izmena upisana ovde nestala bi pri noćnom uvozu u 03:45'}
         </p>
       </div>
     </AppShell>

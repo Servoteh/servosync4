@@ -1,28 +1,36 @@
 import "reflect-metadata";
-import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ItemsService } from "./items.service";
-import { ITEM_FIELDS_OWNED_BY_40 } from "./items.write-policy";
+import {
+  ITEM_FIELDS_OWNED_BY_40,
+  MIN_QUANTITY_BIGBIT_OWNED_MESSAGE,
+  VLASNIK_MINIMALNE_KOLICINE,
+} from "./items.write-policy";
 import type { AuthUser } from "../auth/jwt.strategy";
 
 /**
- * UNOS MINIMALNE KOLIČINE — USKA RUTA KOJA SME I NAD BigBit-ovim ARTIKLOM.
+ * MINIMALNA KOLIČINA — DANAS SE UNOSI U BigBit-u, RUTA ODBIJA UPIS.
  * =============================================================================
- * ODLUKA VLASNIKA 06.08.2026: „ISPOD MINIMALNE KOLIČINE UNOSE MAGACIONERI."
+ * ISPRAVKA VLASNIKA 06.08.2026 (istog dana kad je unos bio otvoren commitom
+ * `b2d11e8c`): „Ma pazi, ovde nema UNOSA dok ne krenemo da radimo sa APP. Rekli smo
+ * da ćemo samo čitati podatke iz BigBita. Neka ti je pripremljeno sve, ali nećemo
+ * ga testirati."
  *
- * Ovaj spec NAMERNO NE MOKUJE `items.write-policy` (za razliku od `items.write.spec.ts`,
- * koji simulira dan kad se otvori pun unos). Razlog: najvažnija tvrdnja ove rute je
- * da 409 brana `assertItemWritesAllowed()` NE sme da je zaustavi — a mok bi tu
- * tvrdnju pretvorio u tautologiju. Ovde je politika STVARNA, sa `ITEMS_WRITE_OPEN =
- * false`, tačno kao na produkciji.
+ * Ruta `PATCH /v1/artikli/:id/minimalna-kolicina` i pravo `masters.min_quantity`
+ * zato OSTAJU — pripremljeni su, i troje imenovanih pravo već nosi na produkciji.
+ * Ali dok kolonom vlada BigBit (`VLASNIK_MINIMALNE_KOLICINE = "BigBit"`), upis mora
+ * da bude ODBIJEN, i to razumljivom porukom.
  *
- * Zašto je to bezbedno: kolona `min_quantity` je istog dana izbačena iz sync mape,
- * pa je uvoz više ne prepisuje (brana: `sync/bigbit-mdb-import.items.spec.ts`).
- * Bez tog koraka bi ova ruta bila tih gubitak podatka — unos preko dana, brisanje
- * u 03:45.
+ * 🔴 ZAŠTO ODBIJANJE, A NE TIHO PRIHVATANJE: kolona `Minimalna kolicina` je u sync
+ * mapi, pa je noćni uvoz u 03:45 prepisuje BigBit-ovom vrednošću. Mereno na
+ * produkciji 06.08.2026: `bb_mdb_stage_artikli` ↔ `items` po `external_item_id` daje
+ * 0 razlika na 92.623 uparena reda — dakle uvoz drži kolonu u savršenom koraku sa
+ * BigBitom i pregazio bi svaki unos, bez greške i bez traga u logu. Prihvatiti izmenu
+ * koja će nestati gore je nego odbiti je.
  *
- * IZMERENO 06.08.2026: od 92.625 artikala samo 3 su 4.0-native, pa bi ruta koja
- * traži native red bila mrtvo slovo — 92.622 artikla bi vraćalo 409.
+ * PONAŠANJE PRIPREMLJENE RUTE (šta se dešava kad prekidač 01.04.2027 stane na „4.0")
+ * pinuje `items.minimalna-kolicina-posle-prelaska.spec.ts` — ovde bi bilo neizvodljivo,
+ * jer brana odbija pre nego što se telo zahteva uopšte pogleda.
  */
 
 const MAGACIONER: AuthUser = {
@@ -40,144 +48,103 @@ const BIGBIT_ARTIKAL = {
   minQuantity: 2,
 };
 
-function makeService(zatecen: Record<string, unknown> | null = BIGBIT_ARTIKAL) {
-  const update = jest.fn(
-    (args: { where: { id: number }; data: Record<string, unknown> }) =>
-      Promise.resolve({
-        ...(zatecen ?? {}),
-        id: args.where.id,
-        minQuantity: args.data.minQuantity,
-      }),
-  );
+function makeService() {
   const prisma = {
     item: {
-      findUnique: jest.fn(() => Promise.resolve(zatecen)),
-      update,
+      findUnique: jest.fn(() => Promise.resolve(BIGBIT_ARTIKAL)),
+      update: jest.fn(() => Promise.resolve(BIGBIT_ARTIKAL)),
     },
   };
   return {
-    update,
-    prisma: prisma as unknown as PrismaService,
+    findUnique: prisma.item.findUnique,
+    update: prisma.item.update,
     service: new ItemsService(prisma as unknown as PrismaService),
   };
 }
 
-function porukeOf(e: unknown): string[] {
-  const body = (e as BadRequestException).getResponse() as {
-    message: string[];
-  };
-  return body.message;
+async function uhvati(fn: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await fn();
+  } catch (e) {
+    return e;
+  }
+  return null;
 }
 
-describe("ItemsService.setMinQuantity — minimalna količina nad BigBit artiklom", () => {
-  it("MENJA minimalnu na BigBit-origin redu (409 brana se NE okida)", async () => {
-    const { service, update } = makeService();
+function telo(e: unknown): Record<string, unknown> {
+  return (e as { getResponse: () => Record<string, unknown> }).getResponse();
+}
 
-    const res = await service.setMinQuantity(
-      BIGBIT_ARTIKAL.id,
-      { minQuantity: 5 },
-      MAGACIONER,
+describe("ItemsService.setMinQuantity — dok kolonom vlada BigBit, upis se ODBIJA", () => {
+  it("zatečeno stanje prekidača je „BigBit”", () => {
+    expect(VLASNIK_MINIMALNE_KOLICINE).toBe("BigBit");
+  });
+
+  it("ispravan upis nad BigBit artiklom → 409, i baza se NE dira", async () => {
+    const { service, update, findUnique } = makeService();
+
+    const e = await uhvati(() =>
+      service.setMinQuantity(BIGBIT_ARTIKAL.id, { minQuantity: 5 }, MAGACIONER),
     );
 
-    expect(update).toHaveBeenCalledTimes(1);
-    expect(update.mock.calls[0][0].where).toEqual({ id: BIGBIT_ARTIKAL.id });
-    expect(update.mock.calls[0][0].data.minQuantity).toBe(5);
-    expect(res.minQuantity).toBe(5);
-    // Poruka na ekranu kaže ŠTA se promenilo, ne samo „sačuvano".
-    expect(res.previousMinQuantity).toBe(2);
-    expect(res.catalogNumber).toBe("R900407394");
-  });
-
-  it("dira ISKLJUČIVO minimalnu + trag izmene — nijednu BigBit kolonu", async () => {
-    const { service, update } = makeService();
-
-    await service.setMinQuantity(BIGBIT_ARTIKAL.id, { minQuantity: 5 }, MAGACIONER);
-
-    const data = update.mock.calls[0][0].data;
-    expect(Object.keys(data).sort()).toEqual([
-      "minQuantity",
-      "updatedAt",
-      "updatedBy",
-    ]);
-    // `signature` (BigBit `PotpisArt`) se NE prepisuje: menja se naša kolona, ne slog.
-    expect(data).not.toHaveProperty("signature");
-    expect(data).not.toHaveProperty("catalogNumber");
-    // Trag nosi potpis korisnika (`signatureFor` = e-mail, isečen na 50 znakova).
-    expect(data.updatedBy).toBe("radisav.radevic@servoteh.com");
-    expect(data.updatedAt).toBeInstanceOf(Date);
-  });
-
-  it("`null` briše prag; `0` je prag nula — dve različite stvari", async () => {
-    const { service, update } = makeService();
-
-    await service.setMinQuantity(BIGBIT_ARTIKAL.id, { minQuantity: null }, MAGACIONER);
-    expect(update.mock.calls[0][0].data.minQuantity).toBeNull();
-
-    await service.setMinQuantity(BIGBIT_ARTIKAL.id, { minQuantity: 0 }, MAGACIONER);
-    expect(update.mock.calls[1][0].data.minQuantity).toBe(0);
-  });
-
-  it("srpski decimalni zarez prolazi (magacioner kuca 2,5)", async () => {
-    const { service, update } = makeService();
-    await service.setMinQuantity(BIGBIT_ARTIKAL.id, { minQuantity: "2,5" }, MAGACIONER);
-    expect(update.mock.calls[0][0].data.minQuantity).toBe(2.5);
-  });
-
-  it("negativna vrednost → 400 sa srpskom porukom, bez dodira baze", async () => {
-    const { service, update } = makeService();
-    await expect(
-      service.setMinQuantity(BIGBIT_ARTIKAL.id, { minQuantity: -1 }, MAGACIONER),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(e).not.toBeNull();
+    expect(telo(e).statusCode).toBe(409);
+    expect(telo(e).code).toBe("BIGBIT_OWNED_READ_ONLY");
+    // Ni čitanja ni upisa: odbija se pre nego što se artikal uopšte potraži.
+    expect(findUnique).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("smeće umesto broja → 400", async () => {
+  it("poruka objašnjava ZAŠTO — BigBit, noćni uvoz u 03:45, do prelaska", async () => {
+    // ⚠️ Ovo je razlog postojanja cele izmene: čovek koji dobije „nije dozvoljeno"
+    // bez razloga pokušaće ponovo ili prijaviti kvar. Poruka mora da ga uputi u
+    // BigBit i da kaže do kada pravilo važi.
     const { service } = makeService();
-    await expect(
-      service.setMinQuantity(BIGBIT_ARTIKAL.id, { minQuantity: "abc" }, MAGACIONER),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    const e = await uhvati(() =>
+      service.setMinQuantity(BIGBIT_ARTIKAL.id, { minQuantity: 5 }, MAGACIONER),
+    );
+    expect(String(telo(e).message)).toBe(MIN_QUANTITY_BIGBIT_OWNED_MESSAGE);
+    expect(String(telo(e).message)).toContain("BigBit-u");
+    expect(String(telo(e).message)).toContain("03:45");
+    expect(String(telo(e).message)).toContain("01.04.2027");
   });
 
-  it("telo sa DRUGIM poljem se ODBIJA, ne prećutkuje", async () => {
-    // Najopasniji tihi kvar uske rute: klijent pošalje i `name`, ruta ga ignoriše,
-    // korisnik veruje da je sačuvano. Ovde to pada sa imenom odbijenog polja.
+  it("odbija se PRE validacije tela — 409 i za neispravan unos, ne 400", async () => {
+    // Da se prvo validiralo telo, magacioner bi po vrsti greške mogao da zaključi da
+    // bi „ispravan" broj prošao (400 na zarez, 409 na broj) — pa bi pokušavao dok ne
+    // pogodi. Odbijanje mora biti jednako glasno za svaki unos.
     const { service, update } = makeService();
-    let thrown: unknown;
-    try {
-      await service.setMinQuantity(
-        BIGBIT_ARTIKAL.id,
-        { minQuantity: 5, name: "podmetnuto" } as never,
-        MAGACIONER,
+    for (const zahtev of [
+      { minQuantity: -1 }, // negativno
+      { minQuantity: "abc" }, // smeće
+      { minQuantity: 5, name: "podmetnuto" }, // višak polja
+      {}, // prazno telo
+      { minQuantity: null }, // „obriši prag"
+    ]) {
+      const e = await uhvati(() =>
+        service.setMinQuantity(BIGBIT_ARTIKAL.id, zahtev as never, MAGACIONER),
       );
-    } catch (e) {
-      thrown = e;
+      expect(telo(e).statusCode).toBe(409);
+      expect(telo(e).code).toBe("BIGBIT_OWNED_READ_ONLY");
     }
-    expect(thrown).toBeInstanceOf(BadRequestException);
-    expect(porukeOf(thrown)[0]).toContain("name");
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("prazno telo → 400 = Minimalna količina je obavezna", async () => {
-    const { service } = makeService();
-    let thrown: unknown;
-    try {
-      await service.setMinQuantity(BIGBIT_ARTIKAL.id, {} as never, MAGACIONER);
-    } catch (e) {
-      thrown = e;
-    }
-    expect(porukeOf(thrown)).toContain("Minimalna količina je obavezna.");
+  it("ni 4.0-native artikal ne prolazi — vlasništvo je po KOLONI, ne po redu", async () => {
+    // Zamka: „native red je naš, pa valjda sme". Ne sme — kolona je u sync mapi za
+    // sve redove, a pravilo mora da bude jedno, inače bi se ista kolona ponašala
+    // različito na 3 od 92.625 artikala.
+    const { service, update } = makeService();
+    const e = await uhvati(() =>
+      service.setMinQuantity(900_000_001, { minQuantity: 5 }, MAGACIONER),
+    );
+    expect(telo(e).statusCode).toBe(409);
+    expect(update).not.toHaveBeenCalled();
   });
 
-  it("nepostojeći artikal → 404, ne tihi no-op", async () => {
-    const { service } = makeService(null);
-    await expect(
-      service.setMinQuantity(999_999, { minQuantity: 5 }, MAGACIONER),
-    ).rejects.toBeInstanceOf(NotFoundException);
-  });
-
-  it("kolona je na spisku 4.0-owned — ruta i vlasništvo su jedna odluka", () => {
-    // Ako neko ikad skine `minQuantity` sa tog spiska (jer je vratio kolonu u sync
-    // mapu), ova ruta postaje tih gubitak podatka. Spisak i ruta zato padaju zajedno.
-    expect([...ITEM_FIELDS_OWNED_BY_40]).toContain("minQuantity");
+  it("kolona NIJE 4.0-owned — spisak prati prekidač", () => {
+    // Ogledalo tvrdnje iz `items.write-policy.spec.ts`: da je `minQuantity` ostao na
+    // spisku dok upis pada, spisak bi lagao o tome ko puni kolonu.
+    expect([...ITEM_FIELDS_OWNED_BY_40]).not.toContain("minQuantity");
   });
 });

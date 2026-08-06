@@ -482,48 +482,47 @@ describe("uvoz artikala iz .mdb — ključ je BigBit šifra, ne naš id", () => 
 });
 
 /**
- * MINIMALNA KOLIČINA JE 4.0-OWNED KOLONA — BRANA UZ ODLUKU VLASNIKA, 06.08.2026.
+ * MINIMALNU KOLIČINU PUNI BigBit — DO PRELASKA (01.04.2027).
  * =============================================================================
- * ODLUKA: „ISPOD MINIMALNE KOLIČINE UNOSE MAGACIONERI" — `items.min_quantity` od
- * 06.08.2026. puni aplikacija (pravo `masters.min_quantity`, troje imenovanih), a
- * BigBit-ova vrednost se više NE uvozi.
+ * KOLONA JE 06.08.2026. BILA IZBAČENA IZ MAPE (commit `b2d11e8c`, „minimalne
+ * količine unose magacioneri") PA ISTOG DANA VRAĆENA. Vlasnik je ispravio odluku:
+ * „ovde nema UNOSA dok ne krenemo da radimo sa APP. Rekli smo da ćemo samo čitati
+ * podatke iz BigBita."
  *
- * ZAŠTO TEST, A NE SAMO NADGROBNIK U MAPI: `sync-map.generated.ts` je GENERISAN
- * fajl. Sledeće pokretanje generatora — ili jedan „vraćam kolonu koja fali" —
- * ćutke bi vratio blok od šest redova, a `importItems()` bi od naredne noći opet
- * pisao u kolonu. Kvar bi bio nevidljiv: unos magacionera nestane u 03:45, bez
- * ijedne greške u logu, i primeti se tek kad neko traži zašto „ispod minimalne"
- * više ne prijavljuje ono što je juče uneto.
+ * ZAŠTO OVAJ TEST POSTOJI I POSLE VRAĆANJA: opasnost je simetrična, a kvar je u OBA
+ * smera nevidljiv — ništa ne pukne, podatak samo prestane da bude istinit.
+ *   • kolona VAN mape, a unos odbijen (stanje koje je `b2d11e8c` napravio): kolonu ne
+ *     puni NIKO i mesecima zastareva na 162 vrednosti;
+ *   • kolona U mapi, a unos otvoren: uvoz u 03:45 pregazi svaki unos magacionera.
+ * Zato ovde stoji šta uvoz STVARNO radi, a odnos prekidača i mape (oba smera) čuva
+ * `masters/items.minimalna-kolicina-prekidac.spec.ts`.
  *
- * IZMERENO NA PRODUKCIJI 06.08.2026 (dokaz da je kanal bio živ, a ne teorijski):
+ * IZMERENO NA PRODUKCIJI 06.08.2026 (dokaz da je kanal živ, a ne teorijski):
  * poslednji drop (id 7) nosi 162 od 91.207 staging redova sa ne-nultom minimalnom,
  * a poređenje `bb_mdb_stage_artikli` ↔ `items` po `external_item_id` daje
- * **0 razlika na 92.623 uparena reda** — uvoz je kolonu držao u savršenom koraku
- * sa BigBitom.
+ * **0 razlika na 92.623 uparena reda** — uvoz drži kolonu u savršenom koraku sa
+ * BigBitom. Stanje `items` posle vraćanja (pre uvoza u 03:45): 162 ≠ 0, 92.460 nula,
+ * 3 prazno, od 92.625 — ništa nije izgubljeno dok je kolona bila van mape.
  *
- * ⚠️ Ako se pravilo ikad promeni, menja se UZ ODLUKU VLASNIKA — ne tako što se
- * test „popravi" da prođe.
+ * ⚠️ Ako se pravilo ikad promeni, menja se UZ ODLUKU VLASNIKA (i prevrtanjem
+ * prekidača `VLASNIK_MINIMALNE_KOLICINE`) — ne tako što se test „popravi" da prođe.
  */
-describe("minimalna količina je 4.0-owned kolona — uvoz je NE piše", () => {
-  it("mapiranje `items` NEMA `minQuantity` (kolona je izbačena 06.08.2026)", () => {
+describe("minimalnu količinu puni BigBit — uvoz je UPISUJE", () => {
+  it("mapiranje `items` IMA `minQuantity` (kolona vraćena 06.08.2026)", () => {
+    // Da ovo padne, noćni uvoz bi prestao da puni kolonu, a unos iz aplikacije je
+    // odbijen — pa je ne bi punio niko.
     const m = SYNC_MAP.find((x) => x.targetDb === "items");
-    const sporne = (m?.columns ?? []).filter(
-      (c) => c.field === "minQuantity" || c.src === "Minimalna kolicina",
-    );
-    // Poruka nabraja nađeno, da onaj ko obori branu odmah vidi ŠTA je vratio.
-    expect(sporne).toEqual([]);
+    const kolona = (m?.columns ?? []).find((c) => c.field === "minQuantity");
+    expect(kolona?.src).toBe("Minimalna kolicina");
   });
 
-  it("staging i dalje prima BigBit vrednost — vidi se, ali se ne upisuje", () => {
-    // Brana u `itemsMapping()` gleda samo smer MAPA → STAGING, pa nekorišćen
-    // staging red ne obara uvoz. Zadržan je namerno: u svakom trenutku se sme
-    // pitati šta BigBit misli da je minimum, bez rizika da to pregazi našu vrednost.
+  it("staging prima BigBit vrednost — ista kolona koju mapa čita", () => {
     expect(ARTIKAL_SRC_TO_STAGE_FIELD["Minimalna kolicina"]).toBe(
       "minimalnaKolicina",
     );
   });
 
-  it("uvoz NE dira `min_quantity` postojećeg reda, ni kad BigBit šalje drugu vrednost", async () => {
+  it("uvoz UPISUJE `min_quantity` iz BigBita u postojeći red", async () => {
     const { service, items, update } = makeService({
       items: [
         {
@@ -531,7 +530,6 @@ describe("minimalna količina je 4.0-owned kolona — uvoz je NE piše", () => {
           externalItemId: 17048,
           catalogNumber: "K-1",
           name: "staro ime",
-          // Vrednost koju je upisao magacioner kroz aplikaciju.
           minQuantity: 12,
         },
       ],
@@ -541,7 +539,6 @@ describe("minimalna količina je 4.0-owned kolona — uvoz je NE piše", () => {
           "Kataloski broj": "K-1",
           Naziv: "novo ime",
           Grupa: "1",
-          // BigBit tvrdi nešto sasvim drugo — i to više nije bitno.
           "Minimalna kolicina": "999",
         }),
       ],
@@ -549,17 +546,16 @@ describe("minimalna količina je 4.0-owned kolona — uvoz je NE piše", () => {
 
     const res = await runItems(service);
 
-    // Red se AŽURIRA (ime se stvarno promenilo), ali minimalna nije u `data`.
     expect(res.updated).toBe(1);
-    expect(update.mock.calls[0][0].data).not.toHaveProperty("minQuantity");
-    expect(items.find((i) => i.id === 2)?.minQuantity).toBe(12);
-    expect(items.find((i) => i.id === 2)?.name).toBe("novo ime");
+    expect(update.mock.calls[0][0].data.minQuantity).toBe(999);
+    expect(items.find((i) => i.id === 2)?.minQuantity).toBe(999);
   });
 
-  it("promena SAMO minimalne u BigBitu nije izmena — red se ni ne dira", async () => {
-    // `sameProjectRow` poredi po kolonama iz mape. Da je `minQuantity` ostao u njoj,
-    // ovaj red bi se svake noći „menjao" i vraćao na BigBit vrednost.
-    const { service, update, create } = makeService({
+  it("promena SAMO minimalne u BigBitu JESTE izmena — red se ažurira", async () => {
+    // `sameProjectRow` poredi po kolonama iz mape. Ovo je test da je kolona stvarno
+    // u poređenju: da nije, izmena praga u BigBitu ne bi stigla do nas sve dok se ne
+    // promeni i neko drugo polje artikla.
+    const { service, update, items } = makeService({
       items: [
         {
           id: 2,
@@ -587,12 +583,12 @@ describe("minimalna količina je 4.0-owned kolona — uvoz je NE piše", () => {
 
     const res = await runItems(service);
 
-    expect(update).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
-    expect(res.unchanged).toBe(1);
+    expect(res.updated).toBe(1);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(items.find((i) => i.id === 2)?.minQuantity).toBe(999);
   });
 
-  it("nov BigBit artikal se ubacuje BEZ minimalne — ostaje DB default (0)", async () => {
+  it("nov BigBit artikal ulazi SA minimalnom, ne sa DB default-om", async () => {
     const { service, create } = makeService({
       items: [],
       stage: [
@@ -610,6 +606,6 @@ describe("minimalna količina je 4.0-owned kolona — uvoz je NE piše", () => {
     const res = await runItems(service);
 
     expect(res.inserted).toBe(1);
-    expect(create.mock.calls[0][0].data).not.toHaveProperty("minQuantity");
+    expect(create.mock.calls[0][0].data.minQuantity).toBe(5);
   });
 });

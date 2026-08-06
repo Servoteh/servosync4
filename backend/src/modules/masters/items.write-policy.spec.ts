@@ -91,32 +91,30 @@ describe("items.write-policy — brana upisa", () => {
     expect(mapping?.targetDb).toBe(ITEMS_ENTITY);
   });
 
-  it("van sync mape je TAČNO jedno polje forme — `minQuantity` (4.0-owned od 06.08.2026)", () => {
-    // Do 06.08.2026 je ovaj test tvrdio da je skup PRAZAN, i to je bio argument
-    // zašto `NATIVE_COLUMN_TABLES` ne bi ništa spasao. Odlukom vlasnika je
-    // `Minimalna kolicina` izbačena iz mape (magacioneri je unose kroz aplikaciju),
-    // pa skup više nije prazan — ali ostaje TAČNO ta jedna kolona.
+  it("NIJEDNO polje forme nije van sync mape — 4.0 matične podatke samo ČITA", () => {
+    // 06.08.2026 je ovaj test nakratko tvrdio da je `minQuantity` van mape (kolona je
+    // bila prebačena u vlasništvo 4.0, commit `b2d11e8c`). Vlasnik je odluku istog
+    // dana ispravio — „samo čitamo podatke iz BigBita dok ne krenemo sa APP" — pa je
+    // kolona vraćena u mapu i skup je opet PRAZAN.
     //
-    // Zaključak se time NE menja: sve ostale kolone forme su i dalje mapirane, pa
-    // otvaranje punog unosa artikala i dalje ne bi bilo bezbedno. Test je zato
-    // pinovan na tačan spisak, a ne na „prazno" — inače bi sledeća kolona koja
-    // ispadne iz mape prošla neprimećeno.
+    // Test se ne pinuje na „prazno" nego na `ITEM_FIELDS_OWNED_BY_40`, koji je izveden
+    // iz prekidača `VLASNIK_MINIMALNE_KOLICINE`: 01.04.2027, kad prekidač stane na
+    // „4.0" i kolona izađe iz mape, obe strane se pomere zajedno i test ostaje
+    // ispravan. Ali svaka DRUGA kolona koja ispadne iz mape i dalje pada ovde.
     const mapping = SYNC_MAP.find((m) => m.source === "R_Artikli");
     const mapped = new Set(mapping?.columns.map((c) => c.field));
     const unmapped = Object.keys(ITEM_FIELDS).filter((f) => !mapped.has(f));
     expect(unmapped).toEqual([...ITEM_FIELDS_OWNED_BY_40]);
   });
 
-  it("`minQuantity` je van mape — brana da je uvoz više ne prepisuje", () => {
-    // Ista činjenica iz ugla SINHRONIZACIJE (ponašanje uvoza pinuje
-    // `sync/bigbit-mdb-import.items.spec.ts`). Ovde stoji jer je to jedini razlog
-    // zašto uzak upis minimalne količine (`masters.min_quantity`) sme da postoji
-    // iznad reda koji je inače BigBit-ov: da kolona ostane u mapi, unos bi nestao
-    // pri prvom noćnom uvozu.
+  it("`minQuantity` JE u mapi — BigBit je i dalje puni (v. prekidač)", () => {
+    // Ista činjenica iz ugla SINHRONIZACIJE. Ovde stoji zato što je to razlog zašto
+    // uzak upis minimalne količine (`masters.min_quantity`) danas MORA da bude odbijen:
+    // dok je kolona u mapi, noćni uvoz u 03:45 prepisuje svaki unos.
+    // Oba smera (prekidač ↔ mapa) čuva `items.minimalna-kolicina-prekidac.spec.ts`.
     const mapping = SYNC_MAP.find((m) => m.source === "R_Artikli");
-    expect(
-      (mapping?.columns ?? []).filter((c) => c.field === "minQuantity"),
-    ).toEqual([]);
+    const kolona = (mapping?.columns ?? []).find((c) => c.field === "minQuantity");
+    expect(kolona?.src).toBe("Minimalna kolicina");
   });
 
   it("popis „traži migraciju” pominje raster i multi-barkod — prateće tabele", () => {
@@ -174,10 +172,10 @@ describe("items.write-policy — odvojen opseg id-a (marker porekla)", () => {
 
 describe("Katalog polja artikla — paritet sa BigBit formom", () => {
   it("pokriva sve kolone modela `Item` osim četiri koje drži server (+ 4.0-owned)", () => {
-    // Do 06.08.2026 je forma bila TAČNO „mapa minus četiri serverske kolone".
-    // Izbacivanjem `Minimalna kolicina` iz mape (vlasništvo 4.0) forma je postala
-    // mapa minus serverske PLUS 4.0-owned — polje se i dalje prikazuje i unosi,
-    // samo mu izvor više nije BigBit. Pinuje se sabiranje, ne broj.
+    // Forma je „mapa minus četiri serverske kolone PLUS 4.0-owned". Drugi sabirak je
+    // danas prazan (`VLASNIK_MINIMALNE_KOLICINE = "BigBit"`), pa se svodi na prvo —
+    // ali stoji u računu da 01.04.2027, kad `minQuantity` izađe iz mape, forma ne bi
+    // izgubila polje. Pinuje se SABIRANJE, ne broj.
     const mapping = SYNC_MAP.find((m) => m.source === "R_Artikli");
     const serverOwned = ["id", "externalItemId", "signature", "createdAt"];
     const expected = [

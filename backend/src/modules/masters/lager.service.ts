@@ -16,6 +16,7 @@ import {
   type OrdersCardQuery,
   type ProformaCardQuery,
 } from "./dto/list-lager.dto";
+import { VLASNIK_MINIMALNE_KOLICINE } from "./items.write-policy";
 
 /**
  * LAGER LISTA I KARTICE ARTIKLA — READ-ONLY OGLEDALO BigBit ROBNOG.
@@ -166,7 +167,8 @@ export class LagerService {
              it.unit                       AS "unit",
              it.shelf                      AS "shelf",
              it.group_code                 AS "groupCode",
-             -- MINIMALNA KOLIČINA — 4.0-owned kolona (unose je magacioneri, 06.08.2026).
+             -- MINIMALNA KOLIČINA — do prelaska (01.04.2027) je puni BigBit, ovde se
+             -- SAMO ČITA (v. VLASNIK_MINIMALNE_KOLICINE u items.write-policy.ts).
              -- ::numeric::text, a ne golo ::text: kolona je double precision, pa bi
              -- direktan ::text umeo da ispiše 1e-05 ili 0.30000000000000004. Prolaz
              -- kroz numeric daje tačan decimalni zapis, isti oblik kao ostale
@@ -213,6 +215,17 @@ export class LagerService {
         reservationScope,
         onlyWithStock,
         onlyNegative,
+        /**
+         * KO VLADA KOLONOM „Min. kol." — ekran to NE SME da pretpostavlja.
+         *
+         * Ekran mora da zna smeju li se minimalne količine menjati, a jedini koji to
+         * zna je backend (`VLASNIK_MINIMALNE_KOLICINE`). Da frontend drži svoju
+         * kopiju te odluke, na dan prelaska bi se menjala DVA mesta u dva repoa —
+         * tačno ono razilaženje koje ceo ovaj prekidač sprečava. Zato putuje uz
+         * podatke: `"BigBit"` = polje se samo prikazuje, `"4.0"` = otvara se unos
+         * (uz pravo `masters.min_quantity`).
+         */
+        minQuantityOwner: VLASNIK_MINIMALNE_KOLICINE,
       },
     };
   }

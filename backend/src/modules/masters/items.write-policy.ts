@@ -141,30 +141,174 @@ export function assertItemWritesAllowed(): void {
     throw new ItemWriteBlockedException(ITEM_WRITE_BLOCKED_MESSAGE);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// MINIMALNA KOLIČINA — JEDAN PREKIDAČ ZA VLASNIŠTVO NAD KOLONOM
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Dve moguće vrednosti prekidača vlasništva nad `items.min_quantity`. */
+export type VlasnikMinimalneKolicine = "BigBit" | "4.0";
+
+/**
+ * 🔴 JEDINI PREKIDAČ: KO VLADA KOLONOM `items.min_quantity`.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Iz OVE JEDNE VREDNOSTI slede DVE stvari koje moraju da se slažu, jer bi njihovo
+ * razilaženje bilo tih gubitak ili tiho zastarevanje podatka:
+ *
+ *   `"BigBit"` (DANAS) → kolona `Minimalna kolicina` MORA stajati u sync mapi
+ *                        (`sync/sync-map.generated.ts`), a `PATCH /v1/artikli/:id/
+ *                        minimalna-kolicina` MORA odbiti upis.
+ *   `"4.0"`            → kolona NE SME stajati u sync mapi, a upis MORA proći.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ZAŠTO PREKIDAČ POSTOJI (dva kvara u istom danu, 06.08.2026)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Commit `b2d11e8c` je kolonu izbacio iz mape i otvorio unos trojici imenovanih
+ * magacionera. Vlasnik je odluku ISPRAVIO isti dan: „Ma pazi, ovde nema UNOSA dok
+ * ne krenemo da radimo sa APP. Rekli smo da ćemo samo čitati podatke iz BigBita.
+ * Neka ti je pripremljeno sve, ali nećemo ga testirati."
+ *
+ * Posledica izbacivanja NIJE bila pad nego TIŠINA: BigBit-ove minimalne količine
+ * su prestale da stižu, a niko ih nije unosio ovde — pa bi kolona ostala zamrznuta
+ * na 162 vrednosti (mereno na produkciji 06.08.2026, pre uvoza u 03:45: 162 ≠ 0,
+ * 92.460 nula, 3 prazno, od 92.625) i mesecima tiho zastarevala.
+ *
+ * Obrnut smer je isti razred kvara, samo brži: da je unos radio DOK je kolona u
+ * mapi, uvoz u 03:45 bi ga prepisao BigBit-ovom vrednošću bez ijednog reda u logu.
+ * Mereno istog dana: poređenje `bb_mdb_stage_artikli` ↔ `items` po
+ * `external_item_id` dalo je 0 razlika na 92.623 uparena reda — uvoz je kolonu
+ * držao u savršenom koraku sa BigBitom, dakle pregazio bi svaki unos.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ŠTA SE RADI 01.04.2027 (prelazak na 4.0 kao izvor istine)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   1. ovde: `VLASNIK_MINIMALNE_KOLICINE = "4.0"`;
+ *   2. u `sync/sync-map.generated.ts`: obrisati blok `src: "Minimalna kolicina"`
+ *      iz mapiranja `R_Artikli` (ostaviti nadgrobnik-komentar);
+ *   3. `npx jest items.minimalna-kolicina bigbit-mdb-import.items` i preneti
+ *      tvrdnje o ZATEČENOM STANJU (samo one — ostalo se pomera samo):
+ *        • `items.minimalna-kolicina-prekidac.spec.ts`, blok „ZATEČENO STANJE";
+ *        • `items.minimalna-kolicina.spec.ts` — „danas se odbija" postaje istorija
+ *          (ponašanje posle prelaska već pinuje `…-posle-prelaska.spec.ts`);
+ *        • `sync/bigbit-mdb-import.items.spec.ts` — uvoz prestaje da piše kolonu.
+ *
+ * ⚠️ Korak 3 NIJE „popravi test da prođe": brana `razilazenjeVlasnistvaMinimalne`
+ * pada ako je urađen samo jedan od koraka 1–2, i to je njena jedina svrha.
+ *
+ * NIŠTA DRUGO — bez SQL-a: pravo `masters.min_quantity` i ruta su VEĆ na produkciji
+ * (troje imenovanih ga nosi kroz `user_permission_overrides`, provereno 06.08.2026).
+ */
+export const VLASNIK_MINIMALNE_KOLICINE: VlasnikMinimalneKolicine = "BigBit";
+
+/** Prekidač na `"4.0"` — upis iz aplikacije prolazi, uvoz kolonu ne dira. */
+export function minimalnuKolicinuUnosiAplikacija(
+  vlasnik: VlasnikMinimalneKolicine,
+): boolean {
+  return vlasnik === "4.0";
+}
+
+/** Prekidač na `"BigBit"` — kolona MORA ostati u sync mapi, da uvoz nastavi da je puni. */
+export function minimalnaKolicinaMoraBitiUSyncMapi(
+  vlasnik: VlasnikMinimalneKolicine,
+): boolean {
+  return vlasnik === "BigBit";
+}
+
+/**
+ * Poruka onome ko pokuša unos dok kolonom vlada BigBit.
+ *
+ * ⚠️ MORA DA KAŽE ZAŠTO, NE SAMO „NIJE DOZVOLJENO". Tiho prihvatanje izmene koja
+ * će nestati je gore od odbijanja, a poruka bez razloga navodi čoveka da pokuša
+ * ponovo (ili da prijavi „aplikacija ne radi") umesto da ode u BigBit.
+ */
+export const MIN_QUANTITY_BIGBIT_OWNED_MESSAGE =
+  "Minimalna količina se do prelaska na ServoSync (01.04.2027) unosi u BigBit-u i ovde " +
+  "se samo čita. Upis je odbijen namerno, a ne zbog vaših prava: kolonu i dalje puni " +
+  "noćni uvoz iz BigBita u 03:45, pa bi vrednost uneta ovde nestala do sutra ujutru — " +
+  "bez greške i bez traga. Upišite prag u BigBit-u; ovde se vidi sledećeg jutra " +
+  "(uneto do 17:30 sutra, kasnije prekosutra).";
+
+/**
+ * BRANA UPISA MINIMALNE KOLIČINE — izvedena iz prekidača, ne iz sopstvene odluke.
+ *
+ * `vlasnik` je OBAVEZAN parametar, namerno: pozivalac mora da pročita prekidač
+ * (`VLASNIK_MINIMALNE_KOLICINE`) i preda ga, pa test može da odigra OBA stanja bez
+ * mokovanja same brane — mok bi tvrdnju „upis je odbijen" pretvorio u tautologiju.
+ *
+ * 409, ne 403: nije stvar prava korisnika (troje imenovanih pravo IMA) nego stanja
+ * sistema — isti `code` koji već nose komitenti/predmeti, pa ga frontend zna.
+ */
+export function assertMinQuantityWriteAllowed(
+  vlasnik: VlasnikMinimalneKolicine,
+): void {
+  if (!minimalnuKolicinuUnosiAplikacija(vlasnik))
+    throw new ItemWriteBlockedException(MIN_QUANTITY_BIGBIT_OWNED_MESSAGE);
+}
+
+/**
+ * BRANA DA SE PREKIDAČ I SYNC MAPA NE RAZIĐU — vraća opis razilaženja ili `null`.
+ *
+ * Dva mesta koja opisuju isto vlasništvo (prekidač i sync mapa) su tačno onaj
+ * oblik dupliranja koji tiho zastari. Ovde se porede, a `items.minimalna-kolicina-
+ * prekidac.spec.ts` to proverava nad STVARNOM mapom i nad oba stanja prekidača.
+ *
+ * Vraća STRING (a ne baca) da bi test mogao da tvrdi i pozitivan i negativan slučaj,
+ * a poruka nabraja ŠTA treba uraditi — ne samo da nešto ne štima.
+ */
+export function razilazenjeVlasnistvaMinimalne(
+  vlasnik: VlasnikMinimalneKolicine,
+  mapaSadrziMinimalnu: boolean,
+): string | null {
+  const traziSeUMapi = minimalnaKolicinaMoraBitiUSyncMapi(vlasnik);
+  if (traziSeUMapi === mapaSadrziMinimalnu) return null;
+
+  return traziSeUMapi
+    ? 'VLASNIK_MINIMALNE_KOLICINE="BigBit", ali kolona `Minimalna kolicina` NIJE u ' +
+        "sync mapi (`sync-map.generated.ts`, `R_Artikli`) — noćni uvoz je prestao da " +
+        "puni `items.min_quantity`, a unos iz aplikacije je odbijen, pa kolonu ne puni " +
+        "NIKO i tiho zastareva. Vrati kolonu u mapu ILI prebaci prekidač na \"4.0\"."
+    : 'VLASNIK_MINIMALNE_KOLICINE="4.0", ali kolona `Minimalna kolicina` JE u sync ' +
+        "mapi — uvoz u 03:45 bi prepisao svaki unos magacionera, bez greške i bez " +
+        "traga. Obriši kolonu iz mape ILI vrati prekidač na \"BigBit\".";
+}
+
+/** Nosi li mapiranje `R_Artikli` kolonu minimalne količine (oba smera: `src` i `field`). */
+export function syncMapaSadrziMinimalnu(
+  mapa: readonly { source: string; columns: readonly { src: string; field: string }[] }[],
+): boolean {
+  const artikli = mapa.find((m) => m.source === "R_Artikli");
+  return (artikli?.columns ?? []).some(
+    (c) => c.field === "minQuantity" || c.src === "Minimalna kolicina",
+  );
+}
+
 /**
  * KOLONE ARTIKLA KOJE JE 4.0 PREUZEO OD BigBita (uže od cele tabele).
  * ─────────────────────────────────────────────────────────────────────────────
  * `assertItemWritesAllowed()` + `assertItemIsNative()` zatvaraju CELU karticu
- * artikla, i to ostaje: BigBit i dalje piše svih ostalih ~66 kolona, pa bi izmena
+ * artikla, i to ostaje: BigBit i dalje piše svih ostalih ~67 kolona, pa bi izmena
  * bilo koje od njih nestala pri prvom noćnom uvozu.
  *
- * Ali vlasništvo nad kolonom nije stvar cele tabele. Odlukom vlasnika 06.08.2026.
- * `min_quantity` je IZBAČENA iz sync mape (`sync-map.generated.ts`), pa je vrednost
- * upisana iz aplikacije jedina koja postoji — uvoz je više ne dira. Tek to čini
- * bezbednim da postoji USKA ruta koja tu jednu kolonu menja i nad BigBit-origin
- * redom (`PATCH /v1/artikli/:id/minimalna-kolicina`, pravo `masters.min_quantity`).
+ * ⚠️ DANAS JE SPISAK PRAZAN, i to je IZVEDENO iz prekidača
+ * `VLASNIK_MINIMALNE_KOLICINE` (`"BigBit"`), a ne zapisano rukom. Do prelaska
+ * (01.04.2027) 4.0 samo ČITA matične podatke iz BigBita — ni jedna kolona artikla
+ * nije naša.
  *
  * ⚠️ OVAJ SPISAK NIJE DEKORACIJA — on je USLOV. Kolona sme ovde SAMO ako je
- * izbačena iz sync mape; inače uska ruta postaje tih gubitak podatka (unos preko
- * dana, brisanje u 03:45). Brane koje to čuvaju:
+ * izbačena iz sync mape; inače uska ruta upisa postaje tih gubitak podatka (unos
+ * preko dana, brisanje u 03:45). Brane koje to čuvaju:
  *   • `items.write-policy.spec.ts` — svaka kolona odavde mora biti van sync mape;
- *   • `sync/bigbit-mdb-import.items.spec.ts` — uvoz je stvarno ne upisuje.
+ *   • `items.minimalna-kolicina-prekidac.spec.ts` — prekidač ↔ mapa, oba smera;
+ *   • `sync/bigbit-mdb-import.items.spec.ts` — šta uvoz stvarno upisuje.
  *
  * Imena su polja Prisma modela `Item` (ista imena koja koristi `ITEM_FIELDS`).
  */
-export const ITEM_FIELDS_OWNED_BY_40 = ["minQuantity"] as const;
+export const ITEM_FIELDS_OWNED_BY_40: readonly ItemFieldOwnedBy40[] =
+  minimalnuKolicinuUnosiAplikacija(VLASNIK_MINIMALNE_KOLICINE)
+    ? ["minQuantity"]
+    : [];
 
-export type ItemFieldOwnedBy40 = (typeof ITEM_FIELDS_OWNED_BY_40)[number];
+/** Kolone koje prekidač MOŽE dati 4.0 — danas tačno jedna kandidatkinja. */
+export type ItemFieldOwnedBy40 = "minQuantity";
 
 /**
  * ODVOJEN OPSEG ID-JEVA ZA 4.0-NATIVE ARTIKLE.

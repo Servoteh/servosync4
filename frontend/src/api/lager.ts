@@ -115,13 +115,27 @@ export interface LagerRow {
    * ekran ih prikazuje različito (— vs 0). Mereno na produkciji 06.08.2026:
    * 162 artikla ima prag > 0, 92.460 ima nulu, 3 imaju prazno (od 92.625).
    *
-   * Od 06.08.2026 ovu kolonu NE puni BigBit nego magacioner kroz ovaj ekran
-   * (kolona je izbačena iz sync mape) — v. `useSetMinimalnaKolicina`.
+   * Do prelaska (01.04.2027) ovu kolonu puni BigBit i ovde se SAMO ČITA —
+   * v. `meta.minQuantityOwner` i `useSetMinimalnaKolicina`.
    */
   minQuantity: string | null;
   /** VP cena iz šifarnika artikala (`items.wholesale_price`), ne nabavna vrednost zalihe. */
   wholesalePrice: string | null;
 }
+
+/**
+ * KO VLADA KOLONOM „Min. kol." — odgovor stiže IZ BACKEND-a, ne iz konstante ovde.
+ *
+ * `'BigBit'` = prag se unosi u BigBit-u, ekran ga samo prikazuje (noćni uvoz u 03:45
+ * bi svaki unos odavde pregazio, pa ga backend odbija sa 409).
+ * `'4.0'`    = prag se unosi ovde (uz pravo `masters.min_quantity`).
+ *
+ * 🔴 NE PRAVITI KOPIJU OVE ODLUKE NA FRONTU. Jedini vlasnik je
+ * `VLASNIK_MINIMALNE_KOLICINE` u `backend/src/modules/masters/items.write-policy.ts`;
+ * kopija bi značila da se na dan prelaska menjaju dva mesta u dva repoa — i da ekran
+ * neko vreme nudi unos koji backend odbija (ili obrnuto, krije polje koje radi).
+ */
+export type MinQuantityOwner = 'BigBit' | '4.0';
 
 export interface LagerMeta {
   pagination: PaginationMeta;
@@ -131,6 +145,8 @@ export interface LagerMeta {
   reservationScope: ReservationScope;
   onlyWithStock: boolean;
   onlyNegative: boolean;
+  /** Ko puni „Min. kol." — v. `MinQuantityOwner`. Stariji odgovor bez polja = `'BigBit'`. */
+  minQuantityOwner?: MinQuantityOwner;
 }
 
 export interface LagerResponse {
@@ -286,17 +302,24 @@ export interface MinimalnaKolicinaOdgovor {
 }
 
 /**
- * MINIMALNA KOLIČINA — jedina mutacija na ovom ekranu (odluka vlasnika 06.08.2026).
+ * MINIMALNA KOLIČINA — PRIPREMLJENA mutacija, danas se NE KORISTI.
  *
- * ⚠️ Zaglavlje ovog fajla kaže „OVDE NEMA NIJEDNE MUTACIJE". To je i dalje tačno za
- * ZALIHE — stanje, rezervisano i slobodno su BigBit-ovi i ostaju read-only do
- * cutover-a. `min_quantity` je izuzetak jer NIJE podatak o zalihi nego prag koji
- * određuje Servoteh: kolona je izbačena iz sync mape, pa je noćni uvoz više ne
- * prepisuje i vrednost uneta ovde je jedina koja postoji.
+ * 🔴 DOK `meta.minQuantityOwner === 'BigBit'` (danas), ovaj hook se NE POZIVA i ekran
+ * ne sme da ponudi polje: backend vraća 409 sa objašnjenjem da se prag do prelaska
+ * (01.04.2027) unosi u BigBit-u, jer bi ga noćni uvoz u 03:45 vratio na staro.
+ * Vlasnik, 06.08.2026: „ovde nema UNOSA dok ne krenemo da radimo sa APP… neka ti je
+ * pripremljeno sve, ali nećemo ga testirati."
+ *
+ * Zato ostaje netaknut: na dan prelaska backend prevrne prekidač, `meta` počne da
+ * javlja `'4.0'` i ekran otvori unos — bez ijedne izmene ovde.
+ *
+ * ⚠️ Zaglavlje ovog fajla kaže „ZALIHE SU READ-ONLY". To je tačno i ostaje tačno:
+ * stanje, rezervisano i slobodno su BigBit-ovi do cutover-a. `min_quantity` je jedini
+ * kandidat za izuzetak, i to tek kad prekidač to kaže.
  *
  * Pravo je `masters.min_quantity` i NEMA GA NIJEDNA ROLA — troje imenovanih ga nosi
- * kroz `user_permission_overrides`. Ekran zato mora da gejtuje prikaz kroz `can()`,
- * a ne da se osloni na 403 posle klika.
+ * kroz `user_permission_overrides`. Ekran mora da gejtuje prikaz kroz `can()` I kroz
+ * `minQuantityOwner`, a ne da se osloni na grešku posle klika.
  *
  * `invalidateQueries` gađa CEO lager keš namerno: isti artikal ume da stoji u više
  * magacina (više redova), a prag je na ARTIKLU — ručno krpljenje jednog reda
