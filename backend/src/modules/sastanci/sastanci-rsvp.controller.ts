@@ -1,7 +1,7 @@
 import { Controller, Get, Head, Logger, Query, Res } from "@nestjs/common";
 import type { Response } from "express";
 import { PrismaService } from "../../prisma/prisma.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { sy15FunctionsBase } from "../../common/sy15/sy15-functions-base";
 
 /**
@@ -142,7 +142,7 @@ export class SastanciRsvpController {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly izvor: SastanciPbSourceService,
+    private readonly izvor: SastanciSourceService,
   ) {}
 
   /**

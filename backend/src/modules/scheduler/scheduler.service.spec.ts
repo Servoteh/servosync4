@@ -3,7 +3,8 @@ import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import type { ScheduledJob } from "./scheduler.types";
 import { Sy15Service } from "../../common/sy15/sy15.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
+import { PbSourceService } from "../../common/sy15/pb-source.service";
 import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
 
 function prismaMock() {
@@ -205,15 +206,17 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
     } as unknown as Sy15Service;
   }
 
-  // Seoba 05.08: registar zna i za prekidač `SASTANCI_PB_IZVOR` + 3.0 prepis
-  // fn-ova. Ovde se testira SAMO sy15 put (bez env-a prekidač je `sy15`), pa su
-  // 3.0 zavisnosti prazni stub-ovi; grananje po izvoru pinuje sy15-cron-jobs.spec.ts.
+  // Seoba 05.08: registar zna i za prekidače `SASTANCI_IZVOR` / `PB_IZVOR`
+  // (razdvojeni 06.08.) + 3.0 prepis fn-ova. Ovde se testira SAMO sy15 put (bez
+  // env-a oba prekidača su `sy15`), pa su 3.0 zavisnosti prazni stub-ovi;
+  // grananje po izvoru pinuje sy15-cron-jobs.spec.ts.
   const cronJobs = (sy15: Sy15Service): Sy15CronJobs =>
     new Sy15CronJobs(
       sy15,
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       {} as unknown as PrismaService,
       {} as unknown as SastanciFnService,
+      new PbSourceService(),
     );
 
   it("12 poslova, jedinstveni ključevi, validni rasporedi", () => {

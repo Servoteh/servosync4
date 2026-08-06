@@ -12,7 +12,7 @@ import { jeUuid } from "../sastanci-predmet";
  * skine sa akcije). Zato polje NE sme biti samo `@IsOptional()` — razlika
  * između „nije poslato" i „poslato kao null" je nosilac ponašanja.
  *
- * ZAŠTO NIJE `@IsUUID()` KAO PRE: pod `SASTANCI_PB_IZVOR=3.0` kolona je `Int`.
+ * ZAŠTO NIJE `@IsUUID()` KAO PRE: pod `SASTANCI_IZVOR=3.0` kolona je `Int`.
  * Da je validacija ostala samo na uuid-u, novi FE ne bi mogao da pošalje broj;
  * da je postala samo broj, stari FE bi dobijao 400 na svaki filter po predmetu.
  * Prevod radi `SastanciPredmetService`.

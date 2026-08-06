@@ -3,14 +3,14 @@ import { NotifyDispatchService as RealNotifyDispatchService } from "./notify-dis
 import type { MailService } from "../../../common/mail/mail.service";
 import type { Sy15Service } from "../../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
-import { SastanciPbSourceService } from "../../../common/sy15/sastanci-pb-source.service";
+import { PbSourceService } from "../../../common/sy15/pb-source.service";
 
 /*
  * Talas A-2a — dispatch worker. Testiramo PARITET sa 1.0 edge fn:
  * per-row mark_sent odmah, tačan backoff, oblik WA poziva, DRY-RUN kanali,
  * maint fanout stub, pb digest grupisanje i gate (DISPATCH_ENABLED).
  *
- * Seoba 05.08 — servis je dobio ČETVRTU zavisnost: prekidač `SASTANCI_PB_IZVOR`
+ * Seoba 05.08 — servis je dobio ČETVRTU zavisnost: prekidač `PB_IZVOR`
  * (PB grana pod `3.0` pada sa 503, jer PB nije prenet). Da se ne bi diralo ~35
  * postojećih konstrukcija, prekidač se ovde dodaje kao PODRAZUMEVAN argument;
  * čita `process.env` po konstrukciji, pa test koji hoće `3.0` samo postavi env.
@@ -20,7 +20,7 @@ class NotifyDispatchService extends RealNotifyDispatchService {
     sy15: Sy15Service,
     mail: MailService,
     storage: Sy15StorageService,
-    izvor: SastanciPbSourceService = new SastanciPbSourceService(),
+    izvor: PbSourceService = new PbSourceService(),
   ) {
     super(sy15, mail, storage, izvor);
   }
@@ -104,6 +104,10 @@ const OLD_ENV = { ...process.env };
 beforeEach(() => {
   process.env.DISPATCH_ENABLED = "true";
   // Podrazumevani izvor je sy15 — inače bi PB testovi zavisili od okruženja.
+  delete process.env.PB_IZVOR;
+  // Sastanci prekidač (i zastareli zajednički) NE SMEJU da utiču na PB granu —
+  // brišu se da bi test merio baš tu nezavisnost, a ne zatečeno okruženje.
+  delete process.env.SASTANCI_IZVOR;
   delete process.env.SASTANCI_PB_IZVOR;
   delete process.env.WA_ACCESS_TOKEN;
   delete process.env.WA_PHONE_NUMBER_ID;
@@ -1091,7 +1095,7 @@ describe("dispatchPb — dopuna", () => {
   });
 });
 
-describe("prekidač SASTANCI_PB_IZVOR — PB grana (seoba 05.08)", () => {
+describe("prekidač PB_IZVOR — PB grana (seoba 05.08)", () => {
   const pbRow = (id: string) => ({
     id,
     channel: "email",
@@ -1102,7 +1106,7 @@ describe("prekidač SASTANCI_PB_IZVOR — PB grana (seoba 05.08)", () => {
   });
 
   it("izvor=3.0: dispatchPb PADA sa 503 PRE ijednog sy15 poziva (PB nije prenet)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.PB_IZVOR = "3.0";
     const m = sy15Mock();
     m.pushResult([{ digest_mode: false }]);
     m.pushResult([pbRow(ID_A)]);
@@ -1117,7 +1121,7 @@ describe("prekidač SASTANCI_PB_IZVOR — PB grana (seoba 05.08)", () => {
   });
 
   it("izvor=3.0: poruka greške imenuje putanju (da se u dnevniku vidi ŠTA je zapelo)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.PB_IZVOR = "3.0";
     const svc = new NotifyDispatchService(
       sy15Mock().sy15,
       mailMock().mail,
@@ -1129,7 +1133,7 @@ describe("prekidač SASTANCI_PB_IZVOR — PB grana (seoba 05.08)", () => {
   });
 
   it("izvor=3.0: KADROVSKA i ODRŽAVANJE ostaju netaknuti (nisu ovaj domen)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.PB_IZVOR = "3.0";
     const m = sy15Mock();
     m.pushResult([]); // kadr dequeue
     m.pushResult([]); // maint dequeue
@@ -1146,7 +1150,7 @@ describe("prekidač SASTANCI_PB_IZVOR — PB grana (seoba 05.08)", () => {
   });
 
   it("izvor=sy15 (podrazumevano): PB ide starim putem, bez ijedne izmene", async () => {
-    delete process.env.SASTANCI_PB_IZVOR;
+    delete process.env.PB_IZVOR;
     const m = sy15Mock();
     m.pushResult([{ digest_mode: false }]);
     m.pushResult([pbRow(ID_A)]);
@@ -1164,7 +1168,7 @@ describe("prekidač SASTANCI_PB_IZVOR — PB grana (seoba 05.08)", () => {
   });
 
   it("nepoznata vrednost prekidača NE pali 3.0 granu (pada na bezbedan sy15)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3";
+    process.env.PB_IZVOR = "3";
     const m = sy15Mock();
     m.pushResult([{ digest_mode: false }]);
     m.pushResult([]);
@@ -1174,5 +1178,53 @@ describe("prekidač SASTANCI_PB_IZVOR — PB grana (seoba 05.08)", () => {
       storageMock().storage,
     );
     await expect(svc.dispatchPb()).resolves.toMatchObject({ processed: 0 });
+  });
+
+  /*
+   * 🔴 INCIDENT 06.08.2026 — `pb-notify-dispatch` je padao na svaka 2 minuta čim
+   * je zajednički prekidač `SASTANCI_PB_IZVOR` stao na `3.0` zbog SASTANAKA.
+   * Ova tri testa su pin da se to ne može ponoviti.
+   */
+  it("🔴 SASTANCI_IZVOR=3.0 + PB_IZVOR=sy15: pb-notify-dispatch RADI (scenario koji je pao)", async () => {
+    process.env.SASTANCI_IZVOR = "3.0";
+    const m = sy15Mock();
+    m.pushResult([{ digest_mode: false }]);
+    m.pushResult([pbRow(ID_A)]);
+    const { mail, send } = mailMock();
+    const svc = new NotifyDispatchService(m.sy15, mail, storageMock().storage);
+
+    const r = await svc.dispatchPb();
+    expect(r).toMatchObject({ processed: 1, sent: 1, failed: 0 });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(m.sqlOf(1)).toContain("pb_dispatch_dequeue");
+    expect(m.find("pb_dispatch_mark_sent")).toHaveLength(1);
+  });
+
+  it("🔴 zastareli SASTANCI_PB_IZVOR=3.0 ne obara PB granu (ne čita ga)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const m = sy15Mock();
+    m.pushResult([{ digest_mode: false }]);
+    m.pushResult([]);
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    await expect(svc.dispatchPb()).resolves.toMatchObject({ processed: 0 });
+  });
+
+  it("SASTANCI_IZVOR=3.0 + PB_IZVOR=3.0: PB i dalje pada (njegov prekidač presuđuje)", async () => {
+    process.env.SASTANCI_IZVOR = "3.0";
+    process.env.PB_IZVOR = "3.0";
+    const m = sy15Mock();
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    await expect(svc.dispatchPb()).rejects.toThrow(
+      /projektni biro: dispatch kroz sy15/,
+    );
+    expect(m.calls).toHaveLength(0);
   });
 });

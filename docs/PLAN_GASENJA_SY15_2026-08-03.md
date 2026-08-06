@@ -193,6 +193,17 @@ prevede. Pravi se i verifikuje jednom, koristi u svim koracima.
 > (+26 testova). Runbook: `docs/SEOBA_SASTANCI_PB_2026-08-05.md` (na toj grani).
 > **Ostaje:** ~61 DEFINER fn za sastanke (4–6 dana) + enqueue (1–2 dana).
 
+> **🔴 INCIDENT 06.08 — PRAVILO ZA SVE PREOSTALE KORAKE: JEDAN PREKIDAČ = JEDAN DOMEN.**
+> Zajednički prekidač `SASTANCI_PB_IZVOR` je na produkciji prebačen na `3.0` zbog SASTANAKA
+> (koji su bili spremni) i tim potezom oborio **ceo Projektni biro u 503** + posao
+> `pb-notify-dispatch` koji je počeo da pada na svaka 2 min. Vraćen za ~2 min, bez upisa u
+> međuvremenu, pa nema podataka za usklađivanje. Prekidač je razdvojen na
+> **`SASTANCI_IZVOR`** i **`PB_IZVOR`** (oba podrazumevano `sy15`).
+> **Pre uvođenja prekidača u koracima 2–5 (održavanje, reversi, kadrovska) izmeriti koje sve
+> module dodiruje** — `grep` za pozivaoce branjenog getera (`assertPorted` / `isThreeZero`), ne
+> po imenu promenljive. Ako dodiruje domen koji se u tom koraku ne seli, razdvojiti ga ODMAH.
+> Detalji i pouke: `docs/SEOBA_SASTANCI_PB_2026-08-05.md` **§7h**.
+
 > **REVIZIJA 05.08 (nalaz pripreme reversa):** reversi su izbačeni sa prvog mesta.
 > Priprema (grana `feat/sy15-seoba-reversi`) je dokazala tri stvari:
 > 1. **Reversi i Lokacije su transakciono JEDNO** — izdavanje alata u istom `COMMIT`-u piše

@@ -1,5 +1,5 @@
 import { ProjektniBiroService } from "./projektni-biro.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { PbSourceService } from "../../common/sy15/pb-source.service";
 import type { Sy15Service, Sy15Tx } from "../../common/sy15/sy15.service";
 
 /**
@@ -24,10 +24,12 @@ describe("ProjektniBiroService.listTips — mapiranje filtera (paritet pb_list_e
       withUserRls: (_email: string, fn: (tx: Sy15Tx) => Promise<unknown>) =>
         fn(tx),
     } as unknown as Sy15Service;
-    const storage = {} as unknown as import(
-      "../../common/sy15/sy15-storage.service"
-    ).Sy15StorageService;
-    return { svc: new ProjektniBiroService(sy15, storage, new SastanciPbSourceService()), calls };
+    const storage =
+      {} as unknown as import("../../common/sy15/sy15-storage.service").Sy15StorageService;
+    return {
+      svc: new ProjektniBiroService(sy15, storage, new PbSourceService()),
+      calls,
+    };
   };
 
   /** Izvuci prosleđeni p_filter JSON iz zabeleženog Prisma.Sql (jedini string value). */
@@ -120,5 +122,48 @@ describe("ProjektniBiroService.listTips — mapiranje filtera (paritet pb_list_e
         allowed: true,
       });
     }
+  });
+
+  /*
+   * 🔴 INCIDENT 06.08.2026: zajednički prekidač `SASTANCI_PB_IZVOR=3.0` je oborio
+   * CEO ovaj modul u 503 iako se selio samo domen sastanaka. Od razdvajanja PB
+   * gleda isključivo `PB_IZVOR`.
+   */
+  describe("prekidač PB_IZVOR je nezavisan od sastanaka", () => {
+    const ENVS = ["SASTANCI_IZVOR", "PB_IZVOR", "SASTANCI_PB_IZVOR"] as const;
+    const ORIG = Object.fromEntries(ENVS.map((k) => [k, process.env[k]]));
+    beforeEach(() => {
+      for (const k of ENVS) delete process.env[k];
+    });
+    afterEach(() => {
+      for (const k of ENVS) {
+        const o = ORIG[k];
+        if (o === undefined) delete process.env[k];
+        else process.env[k] = o;
+      }
+    });
+
+    it("🔴 SASTANCI_IZVOR=3.0: PB rute rade normalno (scenario koji je pao)", async () => {
+      process.env.SASTANCI_IZVOR = "3.0";
+      const { svc, calls } = makeSvc();
+      await expect(svc.listTips("e@x", {})).resolves.toBeDefined();
+      expect(calls).toHaveLength(1);
+    });
+
+    it("zastareli SASTANCI_PB_IZVOR=3.0 ne obara PB (ne čita ga)", async () => {
+      process.env.SASTANCI_PB_IZVOR = "3.0";
+      const { svc, calls } = makeSvc();
+      await expect(svc.listTips("e@x", {})).resolves.toBeDefined();
+      expect(calls).toHaveLength(1);
+    });
+
+    it("PB_IZVOR=3.0: modul pada sa 503 PRE ijednog sy15 poziva (čeka kadrovsku)", async () => {
+      process.env.PB_IZVOR = "3.0";
+      const { svc, calls } = makeSvc();
+      await expect(svc.listTips("e@x", {})).rejects.toThrow(
+        /projektni biro: čitanje\/upis kroz sy15/,
+      );
+      expect(calls).toHaveLength(0);
+    });
   });
 });

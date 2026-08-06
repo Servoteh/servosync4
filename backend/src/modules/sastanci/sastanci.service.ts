@@ -14,7 +14,7 @@ import { Prisma } from "@prisma-sy15/client";
 // Alias je obavezan: bez njega bi 3.0 upiti tiho preuzeli sy15 tipove.
 import { Prisma as PrismaTriNula } from "@prisma/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { SastanciSamouslugaService } from "./sastanci-samousluga.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { SastanciFnService, type SastanciTx } from "./sastanci-fn.service";
@@ -200,7 +200,7 @@ export class SastanciService {
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
     private readonly policy: AiModelPolicyService,
-    private readonly izvor: SastanciPbSourceService,
+    private readonly izvor: SastanciSourceService,
     private readonly samousluga: SastanciSamouslugaService,
     private readonly prisma: PrismaService,
     private readonly fn: SastanciFnService,
@@ -2058,7 +2058,7 @@ export class SastanciService {
    * RLS paritet sa 1.0 PostgREST-om (konekciona rola je BYPASSRLS, review 12.07).
    *
    * 🔴 JEDINI ULAZ U sy15 IZ OVOG SERVISA (uz `runIdem`) — zato je brana
-   * `SASTANCI_PB_IZVOR` ovde, a ne razasuta po 100+ poziva. Pod `3.0` ovaj put
+   * `SASTANCI_IZVOR` ovde, a ne razasuta po 100+ poziva. Pod `3.0` ovaj put
    * više ne sme da se koristi: tiho čitanje/pisanje sy15 razišlo bi dve baze.
    */
   private async withUserMapped<T>(

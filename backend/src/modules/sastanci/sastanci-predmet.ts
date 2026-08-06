@@ -190,7 +190,7 @@ export function legacyPredmetIds(): number[] {
 /**
  * Vrednost predmeta za **sy15 granu** (kolona je tamo i dalje `uuid`).
  *
- * Pod `SASTANCI_PB_IZVOR=sy15` ponašanje mora ostati bajt-za-bajt isto: uuid iz
+ * Pod `SASTANCI_IZVOR=sy15` ponašanje mora ostati bajt-za-bajt isto: uuid iz
  * zahteva prolazi NEPROMENJEN (osim spuštanja na mala slova, što Postgres
  * `uuid` tip ionako radi). Grana za `Int` postoji samo zato što DTO od sada
  * prima i taj oblik — dok FE ne pređe, ona se u praksi ne poziva.

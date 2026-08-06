@@ -2,7 +2,7 @@ import { ConflictException, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { SastanciService } from "./sastanci.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 
 /** Prazan registar modela — `resolve` vraća prosleđen fallback (Talas AI-0). */
@@ -50,7 +50,7 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       {} as never,
       aiPolicyStub(),
       // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       {} as never,
       {} as never,
       {} as never,
@@ -461,7 +461,7 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
         {} as never,
         aiPolicyStub(),
         // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
-        new SastanciPbSourceService(),
+        new SastanciSourceService(),
         {} as never,
         {} as never,
         {} as never,
@@ -495,14 +495,14 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
  * body_html i payload cele poruke). Politika: `snl_select` na živoj sy15.
  */
 describe("notifications — read-scope pod prekidačem 3.0", () => {
-  const orig = process.env.SASTANCI_PB_IZVOR;
+  const orig = process.env.SASTANCI_IZVOR;
   afterEach(() => {
-    if (orig === undefined) delete process.env.SASTANCI_PB_IZVOR;
-    else process.env.SASTANCI_PB_IZVOR = orig;
+    if (orig === undefined) delete process.env.SASTANCI_IZVOR;
+    else process.env.SASTANCI_IZVOR = orig;
   });
 
   function make(izvor: string) {
-    process.env.SASTANCI_PB_IZVOR = izvor;
+    process.env.SASTANCI_IZVOR = izvor;
     const tx = {
       sastanciNotificationLog: { findMany: jest.fn().mockResolvedValue([]) },
     };
@@ -524,7 +524,7 @@ describe("notifications — read-scope pod prekidačem 3.0", () => {
       {} as never,
       {} as never,
       aiPolicyStub(),
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       {} as never,
       prisma as never,
       {} as never,
