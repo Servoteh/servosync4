@@ -300,13 +300,15 @@ Zato je jedini ulaz u sy15 iz oba servisa sveden na **dva getera sa branom**
 
 ## 7. Šta uraditi na produkciji kad odluka padne
 
-⚠️ **Preduslov koji nije ispunjen:** koraci ispod prenose *podatke*. Moduli će raditi na 3.0 tek kad
-se napiše i ono što danas živi u bazi. Procena preostalog posla:
+⚠️ Koraci ispod prenose *podatke*. Moduli rade na 3.0 tek kad se napiše i ono što je živelo u
+bazi. Stanje tog posla **06.08.2026** (bio je procenjen na 5–8 dana):
 
-| Posao | Procena |
+| Posao | Stanje |
 |---|---|
-| Sastanci: 21 `sast_*` + 14 `sastanci_*` fn + 2 view-a + zaključavanje/arhiva/PDF | **4–6 dana** |
-| Sastanci: enqueue mejlova (`sastanci_enqueue_*`) + trigeri pozivnica | 1–2 dana |
+| Sastanci: pozvane `sast_*`/`sastanci_*` fn + 2 view-a + zaključavanje/arhiva/PDF | ✅ **urađeno** (§7b) |
+| Sastanci: enqueue mejlova (`sastanci_enqueue_*`) + trigeri pozivnica | ✅ **urađeno** (§7b) |
+| Sastanci: tabelarni CRUD + write-scope + predmet (uuid→Int, backend) | ✅ **urađeno** (§7f) |
+| Sastanci: **FE deo za `projekat_id`** | 🟡 **jedino što ostaje** — v. §7g A |
 | PB: **blokiran do koraka 4** (kadrovska) — `pb_current_employee_id` i org struktura | — |
 
 Sam prenos podataka je **~10 minuta**.
@@ -509,14 +511,14 @@ zaustavlja preklop.
 | # | Blokada | Zašto blokira | Procena |
 |---|---|---|---:|
 | ~~**1**~~ | ~~**Registar idempotencije `rev_api_idempotency` ostaje u sy15**~~ | ✅ **ZATVORENO 06.08.** — v. §7e. Registar je u 3.0 (`api_idempotency`, generički za celu aplikaciju); `create-sastanak`, `bulk-ucesnici`, `prenos` i `instantiate` više ne vraćaju 503. | — |
-| **2** | **Tabelarni CRUD još ide kroz `withUserMapped`** (73 poziva) | Liste, detalj, učesnici, tačke, odluke, akcije, teme, šabloni, arhiva, slike. Sve to su obični upiti nad tabelama koje SU prenete, ali prolaze kroz branu ka sy15. | **2–3 dana** |
-| **3** | **RLS write-scope za OSTALU decu sastanka** | Politike `pa_*`, `ps_*`, `sa_*`, `pmt_*` = `has_edit_role ∧ (učesnik ∨ mgmt ∨ organizator-trio)`. Prepisano je: scope nad `sastanci` (ranije) **i `sastanci_insert` + `su_*` + `ap_*`** (06.08., traže ih četiri rute iz blokade 1). Ostatak ide uz blokadu 2 i **ne sme kasniti za njom** | uključeno u 2 |
+| ~~**2**~~ | ~~**Tabelarni CRUD još ide kroz `withUserMapped`** (73 poziva)~~ | ✅ **ZATVORENO 06.08.** — v. §7f. Svih 73 `withUserMapped` poziva + 6 `runIdem`-only ruta imaju granu pod `3.0`. | — |
+| ~~**3**~~ | ~~**RLS write-scope za OSTALU decu sastanka**~~ | ✅ **ZATVORENO 06.08.** — v. §7f. Merenje je opis iz ovog reda potvrdilo za `pa_*`/`ps_*`/`sa_*` a **oborilo za `pmt_*`**. | — |
 | ~~**4**~~ | ~~**RLS read-scope na dve tabele**~~ | ✅ **ZATVORENO 06.08.** — v. §7e. Merenje je našlo **tri** tabele, ne dve (runbook je promašio `sastanci_notification_prefs`). | — |
-| **5** | 🔴 **`projekat_id` je promenio TIP** (uuid → Int) | FE danas šalje sy15 uuid predmeta (`?projekatId=`), a 3.0 kolona je `Int`. DTO, picker (`listProjekti`) i svi filteri po predmetu moraju da se prevedu ZAJEDNO sa FE-om. Uz to 3.0 `projects` **nema** `project_code` ni `bigtehn_item_id` — parnjaci su `project_number` i sam `id`, pa se menja i SQL u `AKCIJE_SELECT` | 1 dan (BE+FE zajedno) |
+| **5** | 🟡 **`projekat_id` je promenio TIP** (uuid → Int) | ✅ **BACKEND ZATVOREN 06.08.** (v. §7f/§7g): DTO prima OBA oblika, odgovor vraća oba (`projekatId` Int + `projekatUuid`), `AKCIJE_SELECT` je preveden na `project_number`/`id`. **OSTAJE SAMO FE** — tačan spisak izmena je u §7g. | ~pola dana (samo FE) |
 | **6** | **`kadr_holidays` nije u 3.0** | Pomeranje sedmičnog sa praznika. Danas se čita READ-ONLY sa sy15 (fail-soft: bez praznika termin se ne pomera). Nestaje sa **korakom 4** (kadrovska) — nije potrebno rešavati posebno | — |
-| **7** | **`get_predmet_plan_prioritet_ids()`** (⭐ lista predmeta) | Čita `production.predmet_plan_prioritet` u sy15. Nije domen sastanaka — stiže sa svojim modulom | — |
+| **7** | **`get_predmet_plan_prioritet_ids()`** (⭐ lista predmeta) | Čita `production.predmet_plan_prioritet` u sy15. Nije domen sastanaka — stiže sa svojim modulom. **Namerno OSTAJE iza 503** i pod `3.0` (tiho prazna ⭐ lista izgledala bi kao „nema prioritetnih predmeta"); pokriveno testom | — |
 | **8** | **Fajlovi ostaju u sy15 storage-u** | Nepromenjeno (§7 rep 1) — putanje su prenete, URL-ovi važe | — |
-| **9** | 🟡 **Dopuna mejla (`enrichPayload`) i dalje čita sy15** | Dispečer pod `3.0` čita/piše RED u 3.0, ali dopunu tela mejla (zaduženja iz `v_akcioni_plan`, PDF zapisnika iz arhive) i dalje vuče sa sy15. **Svi ti pozivi su fail-soft**, pa je najgori ishod mejl bez dopune — ne pad. Ide uz blokadu 2 | uključeno u 2 |
+| **9** | 🟡 **Dopuna mejla (`enrichPayload`) i dalje čita sy15** | **OSTAJE OTVORENA** — blokada 2 je bila o `SastanciService`, a ovo je `SastanciDispatchService`. Tri fetch-a i dalje gađaju `this.sy15.db`: `fetchZapisnikAttachment` (PDF iz arhive), `fetchDiffSummary` (`v_akcioni_plan`) i `fetchResponsibilities` (zaduženja). `fetchRsvpToken` je JEDINI već prebačen (čita 3.0 pod `3.0`, popravka iz §7d). **Svi su fail-soft**, pa je najgori ishod mejl bez dopune — ne pad, i ne razilaženje baza (samo čitanje). Ne blokira preklop | ~2 h |
 
 ### Provere urađene 06.08.
 
@@ -529,18 +531,19 @@ zaustavlja preklop.
 | view-ovi na probnoj bazi | ✅ primenjeni nad PRAVIM DDL-om tabela; **22 / 24 kolone — isto kao sy15**; `effective_status` izvodi `kasni` sa `dana_do_roka = -5` |
 | FK `ON DELETE` protiv žive sy15 | ✅ 19/19 se poklapa (posle popravke 4 koja su bila `CASCADE` umesto `SET NULL`) |
 
-**Zbir onoga što je ostalo za sastanke: ~3–4 dana** (blokade 2+3 i 5; blokade 1 i 4
-zatvorene 06.08.).
+**Zbir onoga što je ostalo za sastanke: ~pola dana FE-a** (blokade 1, 2, 3, 4 i
+backend deo 5 zatvoreni 06.08.). Backend je spreman za preklop; tačan preostali
+spisak je u **§7g**.
 
 ### Redosled koji se preporučuje
 
 1. ~~Blokada **4** (read-scope)~~ ✅ urađeno 06.08. — bilo je prvo namerno: bez
    njega blokada 2 postaje bezbednosni propust.
 2. ~~Blokada **1** (registar idempotencije)~~ ✅ urađeno 06.08.
-3. Blokada **2 + 3** — CRUD i njegov write-scope se ne razdvajaju. Read-scope i
-   deo write-scope-a (`sastanci_insert`, `su_*`, `ap_*`) su već tu i **moraju se
-   iskoristiti**, ne napisati ponovo.
-4. Blokada **5** — traži usklađen FE deploy, pa ide poslednja.
+3. ~~Blokada **2 + 3**~~ ✅ urađeno 06.08. (v. §7f) — CRUD i write-scope nisu
+   razdvajani; read-scope i već napisani deo write-scope-a su ISKORIŠĆENI, ne
+   pisani ponovo.
+4. ~~Blokada **5**, backend deo~~ ✅ urađeno 06.08. (v. §7f). **Ostaje FE** — v. §7g.
 
 ---
 
@@ -682,6 +685,185 @@ dakle **gotov** rezultat, nikad poluupisan red.
 
 ---
 
+## 7f. Blokade 2, 3 i 5(backend) — šta je urađeno 06.08.
+
+Ovo je **poslednja velika backend blokada** preklopa. Posle nje sastanci pod
+`SASTANCI_PB_IZVOR=3.0` rade CELI, osim onoga što nije njihov domen.
+
+### Obim — mereno, ne procenjeno
+
+| Šta | Koliko |
+|---|---:|
+| `withUserMapped` poziva u `sastanci.service.ts` | **73** (tačno koliko je blokada 2 najavila) |
+| `runIdem`-only ruta bez 3.0 grane | **6** |
+| **ukupno prevedeno** | **79 poziva / 57 ruta** |
+| direktnih sy15 poziva mimo dva branjena getera | **1** — `prazniciZaTriNula` (`kadr_holidays`, namerno, blokada 6) |
+
+Posle prevoda `withUserMapped` i `runIdem` **i dalje postoje i i dalje su brana** —
+ali ih pod `3.0` doseže još samo ⭐ lista prioritetnih predmeta (blokada 7).
+
+### 🔴 Nalaz 1: write politike — jedna od četiri NIJE ono što runbook kaže
+
+Politike su povučene sa **žive sy15** (`pg_policies`, `USING` i `WITH CHECK`
+odvojeno). Blokada 3 ih je opisala kao „`pa_*`, `ps_*`, `sa_*`, `pmt_*` =
+`has_edit_role ∧ (učesnik ∨ mgmt ∨ organizator-trio)`". Merenje je to
+**potvrdilo za tri, a za četvrtu oborilo**:
+
+| Politika | Izmereno | Posledica za prepis |
+|---|---|---|
+| `pa_*`, `ps_*`, `sa_*` | **znak za znak isti izraz kao `su_*`** | 🟢 koriste postojeći `canWriteSastanakChild` — treći prepis istog pravila bi samo napravio tri mesta koja mogu da se raziđu |
+| **`pmt_*`** | `edit ∧ ((sast_id IS NULL ∧ mgmt) ∨ (sast_id IS NOT NULL ∧ (učesnik ∨ mgmt ∨ trio)))` | 🔴 **NIJE isto kao `ap_*`.** Kod `ap_*` u istoj disjunkciji stoji i GOLI `mgmt`, pa on apsorbuje prvu granu i sve se svodi na `canWriteSastanakChild`. Kod `pmt_*` golog `mgmt` NEMA → **temu BEZ sastanka sme SAMO rukovodstvo**. Prepis po analogiji bi tiho proširio prava → zaseban `canWriteTema` |
+| `pm_teme_draft_insert` | `status='draft' ∧ sast_id IS NULL ∧ edit` | 🔴 PERMISSIVE → **SABIRA se** sa `pmt_insert`. Da je prepisana samo stroža, „predloži temu" bi prestalo da radi svima osim rukovodstvu |
+| `pm_teme_draft_review` | USING `status='draft' ∧ (edit ∨ mgmt)` · CHECK `status ∈ ('usvojeno','odbijeno') ∧ (edit ∨ mgmt)` | 🔴 **USING ≠ WITH CHECK** (stari red mora biti draft, novi usvojeno/odbijeno) — isti obrazac koji je `prenos` već pokazao kod `ap_update` |
+| `sast_odluke_write`, `sast_tpl_write`, `sast_tu_write` | **samo `has_edit_role()`** | 🔴 namerno ŠIRE od dece sastanka. Sužavanje na učesnike bilo bi regresija prava koju niko nije tražio — nije „popravljeno" usput |
+| `snp_update_own` | svoj red ∨ mgmt (isto USING i CHECK) | prepisano; ruta ionako piše samo svoj red |
+| `snl_insert` / `snl_update` / `snl_delete` | edit / mgmt / mgmt | ne prepisuje se: BE **nikad** ne piše u outbox direktno (presuda B10) — enqueue radi `SastanciFnService` |
+
+### 🔴 Nalaz 2: trigeri — `sast_check_not_locked` stoji na OSAM tabela, ne na jednoj
+
+Mereno `pg_trigger` nad živom sy15, ne po spisku iz dokumentacije:
+
+| Triger | Na kojim tabelama | Gde se sad zove |
+|---|---|---|
+| `sast_check_not_locked` | `sastanci`, `sastanak_ucesnici`, `sastanak_odluke`, `sastanak_arhiva`, `presek_aktivnosti`, `presek_slike`, `akcioni_plan`, `pm_teme` — **8** | `fn.assertNotLocked` na SVAKOM write putu tih tabela |
+| `akcioni_plan_istorija_trg` | `akcioni_plan` (AFTER **UPDATE**) | `fn.akcijaIstorija` u `patchAkcija` **i `bulkStatus`** |
+| `sast_notif_ucesnik_invite` / `_cleanup` | `sastanak_ucesnici` (AFTER INSERT / DELETE) | `addUcesnik`, `removeUcesnik` (uz ranije `create`/`bulk`/`prenos`/`instantiate`) |
+| `sast_trg_pm_teme_draft_status_guard` | `pm_teme` (BEFORE UPDATE OF status) | `updateTema`, `patchTema`, `draftReview` |
+
+Dve zamke koje je merenje otkrilo:
+
+1. **`bulkStatus` je masovna radnja, a triger je okidao PO REDU.** Prepis koji bi
+   upisao jedan trag za ceo batch izgubio bi 2/3 istorije. Zato petlja po redu.
+2. **`reopen` NE sme da zove `assertNotLocked`** — on po definiciji dira zaključan
+   sastanak. U sy15 je isti guard tu radnju puštao **samo menadžmentu**, dok je
+   `assertMozeMenjatiSastanak` širi (mgmt ∨ trio). Zato `reopen` traži izričito
+   rukovodstvo, kao baza. Bez toga bi organizator mogao da otključa tuđi zapisnik.
+
+### 🔴 Nalaz 3 (blokada 5): „`projects.id = uuid5(bigtehn_item_id)`" NE VAŽI za sve redove
+
+§2 ovog runbook-a zaključuje da je sy15 uuid predmeta IZVEDEN iz 3.0 id-a, pa bi
+prevod mogao biti čist račun. **Izmereno nad živom sy15:**
+
+```sql
+SELECT count(*), count(bigtehn_item_id),
+       count(*) FILTER (WHERE id = pb_predmet_project_uuid(bigtehn_item_id))
+  FROM public.projects;          -- 23 | 22 | 20   🔴
+```
+
+**Dva reda imaju v4-nasumičan uuid** (nastali pre nego što je funkcija uvedena):
+
+| 3.0 `projects.id` | šifra | uuid u sy15 | uuid koji bi RAČUN dao |
+|---|---|---|---|
+| 9068 | 7701 | `bc09f06f-81f8-4601-…` | `aeba8c00-bdf6-5083-…` |
+| 9470 | 9000 | `a60c610f-9ac1-4fe0-…` | `02b694d1-7bcf-5e7a-…` |
+
+I to **nisu mrtvi redovi**: domen koristi **15 različitih predmeta, a 2 od tih 15
+su baš ova dva** (`akcioni_plan` 83 reda, `sastanci` 1, `pm_teme` 0). Čist račun
+bi ih tiho promašio — isti obrazac kao zamka BigBit artikala (uparivanje po
+`items.id` = 0/92.511).
+
+**Zato prevod ima dva puta:** izračunat uuid5 (za 20, i za svaki budući red koji
+funkcija napravi) **plus izmerena tabela izuzetaka** za ta dva. TS prepis
+`pb_predmet_project_uuid` daje **identičan rezultat kao PostgreSQL za sva 22 živa
+reda** (zamka u prepisu: znakovi na pozicijama 16 i 20 se NAMERNO preskaču — tako
+izvor pravi mesto za oznaku verzije `5` i varijante `8`).
+
+**Bezbedan smer:** nerazrešiv uuid je **422**, nikad tiho `null`. Tiho ispuštanje
+predmeta je tačno kvar koji se ovim zatvara (rep iz §7e).
+
+### 🔴 Nalaz 4: 3.0 model kolonu zove `projectId`, a ugovor prema FE-u je `projekatId`
+
+sy15 Prisma model je `projekat_id` mapirao u `projekatId`; 3.0 model ga mapira u
+`projectId`. **Sam prelazak na 3.0 bi, bez prevoda, TIHO PREIMENOVAO polje u
+svakom odgovoru** i FE bi svuda video „bez predmeta" — bez ijedne greške u logu.
+Zato svaki red koji nosi predmet prolazi kroz `saPredmetom`: izlaz zadržava ime
+`projekatId` (sad `Int`) i **dodaje `projekatUuid`** za klijente koji još porede
+po uuid-u.
+
+### Šta je napisano (i gde)
+
+| Novo / izmenjeno | Sadržaj |
+|---|---|
+| `backend/src/modules/sastanci/sastanci-predmet.ts` | čist prevod uuid↔Int + izmerena tabela izuzetaka + `saPredmetom` |
+| `backend/src/modules/sastanci/sastanci-predmet.service.ts` | razrešavanje uuid→Int nad kandidatima iz 3.0 `projects`, keš + jedno osvežavanje na promašaj |
+| `backend/src/modules/sastanci/dto/is-predmet-ref.ts` | DTO validator koji prima OBA oblika |
+| `sastanci-authz.service.ts` | +7 write-scope metoda (`canWriteTema`, `canInsertDraftTema`, `canDraftReview`, `assertCanWriteOdluka`, `assertCanWriteTemplate`, `assertCanWritePrefs`, `assertCanUpdateTema`/`assertCanDeleteTema`) |
+| `sastanci.service.ts` | 79 prevedenih poziva; 3.0 parnjaci `list`/`findFull`/`dodajSledeci`/`weeklyDiffCounts`/`listTemplates`/`sastanakWeeklyDiff`; `AKCIJE_SELECT_30` |
+| testovi | **+25** (`sastanci-crud-3-0.spec.ts`) **+22** (`sastanci-predmet.spec.ts`) **+20** (write-scope u `sastanci-authz.service.spec.ts`) |
+
+Sitnije odluke koje su usput izmerene i zadržane:
+
+- **`bulkStatus` i `reorderRang` preskaču red bez prava, ne padaju.** U sy15 je
+  RLS filtrirao `updateMany`, pa je odgovor nosio STVARNO izmenjen broj — dizanje
+  403 na prvi tuđi red bilo bi promena ponašanja masovne radnje.
+- **`listTeme` / `draftTeme` / `seedFromTeme` spajaju read-scope `pmt_select`.**
+  Oba view-a su u sy15 `security_invoker = true`, tj. RLS se primenjivao I KROZ
+  VIEW. `seedFromTeme` je pritom write ruta koja ČITA teme — bez scope-a bi u
+  zapisnik uvukla i temu koju pozivalac ne sme da vidi.
+- **`updateSastanak` pod `3.0` više nema `ConflictException` o „periodičnim
+  kolonama".** `interval_days`/`prethodni_sastanak_id` su u 3.0 redovna polja
+  modela, pa proba kolona (`periodicniKolone`) i njen raw put ne postoje.
+- **3.0 `projects` nema `project_code`/`bigtehn_item_id`.** Parnjaci su
+  `project_number` i sam `id` — izmereno da je naziv u `project_name`
+  (7.472/7.631 popunjeno), ne u `description` (4.044).
+
+### Provere urađene 06.08. (blokade 2+3+5-backend)
+
+| Provera | Rezultat |
+|---|---|
+| `npx tsc --noEmit` | ✅ **nula NOVIH grešaka**. Ostaje istih 5 **zatečenih** grupa u spec fajlovima (`handovers`, `kadrovska.zahtev-026`, `kamata`, `moj-profil.zahtev-026`, `sales.controller`) |
+| `npx jest` (pun set) | ✅ **251 suite / 5.424 testa** (+2 suite, +67 testova u odnosu na 249/5.357) |
+| `npm run build` | ✅ entrypoint `dist/main.js` |
+| ceo lanac migracija | ✅ **109 migracija** primenjeno na svežu probnu bazu `sastanci_crud_proba` (dev kluster, NE prod); `migrate status` → „Database schema is up to date!", **bez drift-a**; provereno 17/17 tabela domena + `api_idempotency`, `sastanci.projekat_id` je `integer`, oba view-a postoje. **Probna baza obrisana.** |
+| 🔴 **boot-smoke `node dist/main`** | ✅ „Nest application successfully started" — **protiv PRAVE ciljne šeme** (ta ista sveže migrirana baza), i sa `SASTANCI_PB_IZVOR=sy15` i sa `=3.0`. Ponovljeno i protiv dev baze. |
+
+---
+
+## 7g. 🔴 ŠTA JOŠ DELI GRANU OD PREKLOPA
+
+Backend je gotov. Ostaje **jedna izmena koja traži FE** i **odluke koje čekaju
+Nenada**.
+
+### A. FE deo blokade 5 (`projekat_id` uuid → Int) — jedini kod koji fali
+
+Backend prima i vraća OBA oblika, pa **FE i backend mogu da se deploy-uju
+nezavisno**. Ništa ne puca ako FE ostane kakav jeste — ali dok se ne uskladi,
+predmet putuje kao uuid i svaki filter plaća jedan prevod.
+
+| # | Gde | Šta promeniti |
+|---|---|---|
+| 1 | RN picker (`listProjekti` potrošač) | Odgovor pod `3.0` nosi `{ id: Int, code, naziv, uuid }`. Uzimati **`id`** kao vrednost, ne `uuid`. |
+| 2 | Svi filteri `?projekatId=` (lista sastanaka, akcije, teme, weekly-diff) | Slati **`Int`**. Uuid i dalje radi, pa se može menjati postepeno. |
+| 3 | Forme koje šalju `projekatId` (sastanak, akcija, tema, draft tema) | Slati **`Int`**; `null` i dalje znači „obriši vezu". |
+| 4 | Čitanje predmeta iz odgovora | Polje se i dalje zove **`projekatId`**, ali je od sada **broj**. Ako se negde poredi sa uuid-om, koristiti novo polje `projekatUuid` ili preći na `id`. |
+| 5 | Grupisanje akcija po RN-u | `bigtehnItemId` je i dalje `string` (ugovor nepromenjen), ali sada dolazi iz 3.0 `projects.id`. |
+
+**Kad FE bude gotov**, iz backend-a se brišu: `projekatUuid` iz odgovora, uuid
+grana u `SastanciPredmetService`, `sastanci-predmet.ts` tabela izuzetaka i
+`is-predmet-ref.ts`. Sve je označeno kao prelazno.
+
+### B. Otvoreno, ali NE blokira preklop
+
+| Šta | Stanje |
+|---|---|
+| Blokada 9 — `enrichPayload` (3 fetch-a) čita sy15 | fail-soft: najgori ishod je mejl bez dopune. ~2 h, može posle preklopa |
+| Blokada 6 — `kadr_holidays` sa sy15 | read-only, fail-soft; nestaje sa korakom 4 (kadrovska) |
+| Blokada 7 — ⭐ lista prioritetnih predmeta | namerno iza 503; nije domen sastanaka |
+| Blokada 8 — fajlovi u sy15 storage-u | putanje prenete, URL-ovi važe; seli se uz korak 2 |
+| Projektni biro | ceo iza 503 do koraka 4 (kadrovska) — nepromenjeno |
+
+### C. 🔴 Odluke koje čekaju Nenada (ne kod)
+
+1. **Da li se oživljavaju „dodeljena ti je akcija" / „akcija ti je izmenjena"
+   mejlovi?** Trigeri su skinuti 23.06.2026. i od tada ne stižu (§7b). Prepis nije
+   rađen jer bi ih *oživeo* — to je odluka o proizvodu, ne o seobi. Telo je
+   sačuvano, prepis je pola dana.
+2. **Tipfeler `zoran.jarakovic@servoteh.ocm`** (2 reda) — ispravlja se u aplikaciji,
+   ne u skripti seobe (§7 rep 4).
+3. **Termin preklopa** — sam prenos je ~10 min + 5 min probe (§7).
+
+---
+
 ## 8. Preporuka
 
 **Sastanci JESU dobar prvi rez — ali samo sastanci, ne i projektni biro.**
@@ -697,12 +879,14 @@ Merenje je potvrdilo premisu plana u jednom delu i oborilo je u drugom:
 
 Zato predlog za sledeći potez:
 
-1. **Prepisati sastanke** (4–6 dana) i pustiti ih na `3.0` same — PB ostaje na sy15 pod istim
-   prekidačem (i danas tako pada sa 503).
-2. Ako se traži brži dobitak: **razdvojiti prekidač** na `SASTANCI_IZVOR` i `PB_IZVOR` tek kad
-   sastanci budu gotovi — danas bi razdvajanje samo dozvolilo pola domena u jednoj a pola u drugoj
-   bazi bez ijedne koristi.
-3. **PB pomeriti iza kadrovske** u redosledu plana (bio je korak 1, treba da bude korak 4b).
+1. ~~**Prepisati sastanke** (4–6 dana)~~ ✅ **URAĐENO 06.08.** — sastanci pod `3.0` rade celi
+   (§7b, §7e, §7f). PB ostaje na sy15 pod istim prekidačem (i dalje pada sa 503).
+2. **Uskladiti FE za `projekat_id`** (§7g A) — jedina preostala izmena koda. Backend prima i vraća
+   oba oblika, pa deploy FE-a i backenda **ne moraju biti istovremeni**.
+3. Ako se traži brži dobitak: **razdvojiti prekidač** na `SASTANCI_IZVOR` i `PB_IZVOR` — sada to
+   IMA smisla (ranije nije, jer sastanci nisu bili gotovi): sastanci bi mogli na 3.0 odmah, a PB da
+   sačeka kadrovsku. Odluka čeka Nenada.
+4. **PB pomeriti iza kadrovske** u redosledu plana (bio je korak 1, treba da bude korak 4b).
 
 Ono što je ovde napisano važi u oba slučaja: šema, migracija, skripta prenosa i mapa identiteta su
 gotove i dokazane, a helper `sy15-identity.ts` je zajednički za sve preostale korake.
