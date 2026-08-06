@@ -51,7 +51,7 @@ naloga na pola posla = destruktivno i zabranjeno.
 ```
 1. GoTrue create (A)   idempotentno: 422/"already" → findByEmail → uzmi postojeći id
                        PAD → ABORT (ništa nije grantovano nigde; retry bezbedan)
-2. 2.0 tx (C)          upsert users(email) [SSO-only random hash, active=true, role]
+2. 2.0 tx (C)          upsert users(email) [bcrypt(dodeljena lozinka) — B1, v. §9; active=true, role]
                        + zameni global UserRole + upsert overrides (D2)
                        PAD → GoTrue postoji, 2.0 nema → SSO/JIT ili retry dovrši; NIJE lockout
 3. sy15 tx (B)         INSERT user_roles AKO ne postoji (email+role+coalesce(project_id))
@@ -165,6 +165,9 @@ generisanu lozinku.
 **Root cause (dva nezavisna propusta koji su se poklopili):**
 1. `resetPassword()`/`invite()` su generisale lozinku, upisale je u GoTrue (A) i 2.0 hash (C), pa je
    **odbacile** — API odgovor je vraćao samo `{ email, reset: true, ... }`, nikad `password`.
+   > ⚠️ **NETAČNO za `invite()` — ispravljeno 06.08.2026 (§9).** Invite je lozinku upisivao SAMO u
+   > GoTrue; 2.0 hash je bio slučajan niz. Ova rečenica je 6 dana stajala kao „dokaz" da je invite
+   > grana pokrivena, pa se kvar nije tražio na pravom mestu. Vidi §9.
 2. Reset/welcome mejl (D, `queueWelcomeEmail`) je korisnika upućivao da klikne „Zaboravljena lozinka"
    — **opcija koja ne postoji nigde u 3.0** (nema je ni na `/login`, ni bilo gde u frontendu; nema ni
    backend rute za self-service request). Nasleđeno iz 1.0 edge template-a bez provere da 3.0 ima
@@ -193,3 +196,46 @@ prebacuje na `/promena-lozinke`.
 - Prava self-service „zaboravljena lozinka" stranica (token/magic-link + `/postavi-lozinku` ruta) —
   veći posao, arhitektonska odluka za R0/kasnije.
 - GoTrue Site URL / redirect konfiguracija koja šalje na nepostojeću 3.0 rutu (infra, van koda).
+
+## 9. Incident 06.08.2026 — pozvan nalog se NE MOŽE prijaviti („Pogrešan email ili lozinka")
+
+**Simptom:** admin (Nenad) je kroz Podešavanja → Korisnici otvorio naloge za Đuru Trkulju i Nenada
+Miladinovića, dodelio im lozinke i prosledio ih — na prijavi oba dobijaju „Pogrešan email ili lozinka".
+Nalozi postoje, `active=true`, `last_login_at` je NULL.
+
+**Root cause:** `invite()` je lozinku upisivao **samo u GoTrue (A)**. Poziv `write2_0(...)` nije
+prosleđivao `passwordHash`, pa je `write2_0` u CREATE grani stavljao *SSO-only slučajan hash*
+(`bcrypt(randomBytes(32))`) — lozinku koju **niko ne zna, uključujući admina**. Dok je 1.0 živela to
+je prolazilo neprimetno: ulaz je išao kroz 1.0 shell + SSO, a `ssoLogin()` lozinku ni ne gleda. Posle
+cutovera 03.08 (1.0 ugašena, §CUTOVER) je **direktan 3.0 login jedini ulaz**, a `AuthService.validate()`
+poredi ISKLJUČIVO `users.password_hash` → nijedan nalog otvoren kroz „Pozovi korisnika" nije mogao da uđe.
+
+Isti kvar je bio prisutan i pre cutovera, ali je bio nevidljiv — zato je i §8 (30.07, Aleksandar Ilić)
+lečio simptom „admin ne vidi lozinku", a ne uzrok. `resetPassword()` je B1 dobio, `invite()` nije:
+popravka je otišla na jednog pozivaoca umesto u zajedničku granu.
+
+**Zašto testovi nisu pali:** spec je bcrypt mock-ovao kao `hash: () => "hashed"` — konstanta koja je
+ISTA i za hash dodeljene lozinke i za hash slučajnog niza, pa je test „upisan je passwordHash" prolazio
+zeleno u obe varijante. Mock sad nosi ulaz (`hash:<plaintext>`) i razlikuje ih.
+
+**Blast radius (izmereno na produkciji):** 3 naloga otvorena kroz invite koji se nikad nisu prijavili —
+`djurotrkulja@gmail.com` (83), `miladinovicnenad628@gmail.com` (84), `iliczaleksandar@gmail.com` (71).
+
+**Sanacija (06.08, bez deploy-a):** `users.password_hash` prepisan bcrypt hashom iz
+`auth.users.encrypted_password` (GoTrue je držao lozinku koju je admin stvarno video i prosledio), pa
+već podeljena lozinka radi bez ponovnog slanja. GoTrue piše `$2a$`, 3.0 `$2b$` — provereno da node
+`bcrypt` uredno verifikuje `$2a$` hash. `must_change_password` ostaje `true`, pa prva prijava i dalje
+vodi na `/promena-lozinke` i tamo se upisuje svež `$2b$` hash.
+
+**Fix u kodu:**
+- `invite()` prosleđuje `passwordHash: bcrypt(password)` u `write2_0` — **samo kad je `auth.created`**.
+  Idempotentna grana `createUser`-a vraća POSTOJEĆI GoTrue nalog i NE menja mu lozinku; upis bi tu
+  napravio isti razlaz u suprotnom smeru (3.0 nova lozinka, GoTrue stara).
+- Za `created:false` odgovor vraća `password: null`, a FE piše „Nalog je već postojao — lozinka NIJE
+  menjana", umesto da prikaže novogenerisanu lozinku koja ne radi nigde (isti kvar u malom).
+- Dva testa drže obe strane invarijante; provereno da oba PADAJU na kodu pre popravke.
+
+**Pouka:** invarijanta „jedna lozinka u obe aplikacije" mora da važi na SVIM putanjama koje postavljaju
+lozinku (`invite`, `resetPassword`, `changePassword`), a ne na onoj gde je kvar prvi put primećen.
+Prirodno mesto je `write2_0` — ali dok GoTrue create ostaje idempotentan-bez-promene-lozinke, odluka
+„da li se lozinka uopšte menja" pripada pozivaocu, pa je invarijantu čuvaju testovi.

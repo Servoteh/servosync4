@@ -240,8 +240,10 @@ export interface DualWriteResult {
   email: string;
   role?: string;
   /** Postavljena lozinka (invite/reset) — nema self-service "zaboravljena lozinka" toka, pa je
-   * ovo jedino mesto gde je admin vidi da bi je prosledio korisniku direktno. */
-  password?: string;
+   * ovo jedino mesto gde je admin vidi da bi je prosledio korisniku direktno.
+   * `null` na invite-u kad je nalog VEĆ postojao: tada lozinka nije menjana ni u jednom
+   * sistemu, pa se namerno ne prikazuje (prikazana bi nigde ne radila). */
+  password?: string | null;
   sy15Synced?: boolean;
   sy15Error?: string;
   [k: string]: unknown;

@@ -304,7 +304,11 @@ function UserModal({ mode, user, allUsers, onClose }: { mode: 'invite' | 'edit';
         if (!email.trim()) return setErr('Email je obavezan.');
         const res = await inviteM.mutateAsync({ email: email.trim(), role, password: password || undefined, ...fields });
         const d = res.data;
-        const pwLine = d.password ? ` Lozinka: ${d.password} — pošalji je korisniku direktno (nema mejla sa lozinkom).` : '';
+        // Nalog je već postojao → lozinka nije menjana ni u jednom sistemu (backend vraća null).
+        // Ranije se ovde prikazivala novogenerisana lozinka koja nigde ne radi.
+        const pwLine = d.password
+          ? ` Lozinka: ${d.password} — pošalji je korisniku direktno (nema mejla sa lozinkom).`
+          : ' Nalog je već postojao — lozinka NIJE menjana. Ako je čovek ne zna, upotrebi „Resetuj lozinku".';
         setResult(
           `Nalog kreiran (${d.email}).${pwLine}${d.sy15Synced === false ? ' ⚠ sy15 sinhronizacija nije uspela — ponovi.' : ''}`,
         );
@@ -427,7 +431,7 @@ function UserModal({ mode, user, allUsers, onClose }: { mode: 'invite' | 'edit';
 function ResetModal({ user, onClose }: { user: UserRoleRow; onClose: () => void }) {
   const resetM = useResetPassword();
   const [password, setPassword] = useState('');
-  const [result, setResult] = useState<{ email: string; password?: string } | null>(null);
+  const [result, setResult] = useState<{ email: string; password?: string | null } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 

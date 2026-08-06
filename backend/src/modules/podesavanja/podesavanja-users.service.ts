@@ -55,6 +55,18 @@ export class PodesavanjaUsersService {
    * Nov nalog: GoTrue create (A, idempotentno) → 2.0 upsert (C) → sy15 user_roles insert (B) →
    * welcome mejl (D, best-effort). Prirodni ključevi (email/userId+role) čine ceo tok idempotentnim:
    * ponovljen invite KONVERGIRA, ne duplira. must_change_password=true (paritet 1.0 edge).
+   *
+   * B1-INVARIJANTA („jedna lozinka u obe aplikacije") VAŽI I OVDE (06.08.2026): do ove popravke
+   * je invite lozinku upisivao SAMO u GoTrue, a `write2_0` je 3.0 redu davao SSO-only random hash.
+   * Dok je 1.0 živela to je prolazilo (ulaz je išao kroz 1.0 shell + SSO); posle cutovera 03.08
+   * je 3.0 login jedini ulaz i `validate()` poredi ISKLJUČIVO `users.password_hash` — pa nijedan
+   * pozvan nalog nije mogao da se prijavi („Pogrešan email ili lozinka"), iako je admin lozinku
+   * uredno dodelio i prosledio. Popravka: hash nove lozinke ide i u 3.0.
+   *
+   * SAMO kad je GoTrue nalog STVARNO kreiran (`auth.created`): idempotentna grana `createUser`-a
+   * vraća POSTOJEĆI nalog i NE menja mu lozinku, pa bi upis ovde napravio isti razlaz u suprotnom
+   * smeru (3.0 nova lozinka, GoTrue stara). Za takav nalog lozinka se ne dira i ne prikazuje se —
+   * promena lozinke postojećem nalogu ide isključivo kroz „Resetuj lozinku" (`resetPassword`).
    */
   async invite(adminEmail: string, dto: InviteUserDto) {
     const email = this.normEmail(dto.email);
@@ -74,6 +86,10 @@ export class PodesavanjaUsersService {
       fullName: dto.fullName,
       active: true,
       mustChangePassword: true,
+      // B1: ista lozinka i u 3.0 auth — ali samo za STVARNO nov GoTrue nalog (vidi doc iznad).
+      ...(auth.created
+        ? { passwordHash: await bcrypt.hash(password, 10) }
+        : {}),
       managedSubDepartmentIds: dto.managedSubDepartmentIds ?? [],
       resetGlobalRole: true,
       overrides: this.overridesFromDto(dto, true),
@@ -92,11 +108,14 @@ export class PodesavanjaUsersService {
 
     // Nema self-service "zaboravljena lozinka" toka — admin MORA lozinku proslediti
     // korisniku direktno, pa je odgovor jedino mesto gde je iko može videti.
+    // `password: null` kad je nalog VEĆ postojao: tada nijedan sistem nije dobio ovu lozinku,
+    // pa bi je prikazati značilo poslati čoveku lozinku koja nigde ne radi (upravo kvar koji
+    // ova popravka zatvara). FE tada uputi admina na „Resetuj lozinku".
     return {
       data: {
         email,
         role,
-        password,
+        password: auth.created ? password : null,
         authUserId: auth.id,
         authCreated: auth.created,
         twoZeroUserId,

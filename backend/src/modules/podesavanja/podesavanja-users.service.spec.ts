@@ -10,7 +10,12 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { Sy15AuthAdminService } from "../../common/sy15/sy15-auth-admin.service";
 
 // bcrypt je spor (cost 10) i nebitan za logiku — mock ubrzava/determinizuje.
-jest.mock("bcrypt", () => ({ hash: jest.fn(() => Promise.resolve("hashed")) }));
+// Hash NOSI ulaz (`hash:<plaintext>`) da test može da razlikuje „hash DODELJENE lozinke" od
+// „hash slučajnog niza" — bez toga obe grane daju istu konstantu i kvar iz 06.08.2026 (invite
+// nikad ne upiše lozinku u 3.0) prolazi zeleno.
+jest.mock("bcrypt", () => ({
+  hash: jest.fn((v: string) => Promise.resolve(`hash:${v}`)),
+}));
 
 const ADMIN = "admin@servoteh.com";
 const ROLE_ID = "3b241101-e2bb-4255-8caf-4136c566a962";
@@ -157,6 +162,36 @@ describe("PodesavanjaUsersService (D1 dual-write)", () => {
       const res = await svc.invite(ADMIN, baseDto);
       expect(res.data.authCreated).toBe(false);
       expect(res.data.sy15Synced).toBe(true);
+    });
+
+    /* ===== B1 na invite-u (kvar 06.08.2026) =====
+     * Invite je lozinku upisivao SAMO u GoTrue; 3.0 red je dobijao slučajan hash koji niko ne
+     * zna. Posle gašenja 1.0 (cutover 03.08) je 3.0 login jedini ulaz i poredi ISKLJUČIVO
+     * `users.password_hash` → svaki pozvan nalog je na prijavi dobijao „Pogrešan email ili
+     * lozinka" (potvrđeno na 3 živa naloga). Ova dva testa drže obe strane invarijante. */
+
+    it("dodeljena lozinka se upisuje i u 2.0 users (inače pozvan nalog ne može da se prijavi)", async () => {
+      sy15QueryRaw.mockResolvedValueOnce([{ id: "role-1" }]);
+      const res = await svc.invite(ADMIN, { ...baseDto, password: "Tajna123!" });
+
+      expect(res.data.password).toBe("Tajna123!");
+      const arg = (userUpsert.mock.calls as Array<[UpsertCall]>)[0][0];
+      // Hash BAŠ te lozinke — ne bilo koji hash (slučajan niz bi ovde dao `hash:<hex>`).
+      expect(arg.create.passwordHash).toBe("hash:Tajna123!");
+      expect(arg.update.passwordHash).toBe("hash:Tajna123!");
+    });
+
+    it("nalog VEĆ postojao u GoTrue → lozinka se ne dira ni u 2.0 ni u odgovoru", async () => {
+      // createUser idempotentna grana NE menja lozinku postojećem nalogu; upis u 2.0 bi
+      // napravio isti razlaz u suprotnom smeru (3.0 nova, GoTrue stara).
+      createUser.mockResolvedValueOnce({ id: "auth-1", created: false });
+      sy15QueryRaw.mockResolvedValueOnce([{ id: "role-1" }]);
+      const res = await svc.invite(ADMIN, { ...baseDto, password: "Tajna123!" });
+
+      expect(res.data.password).toBeNull(); // ne prikazuj lozinku koja nigde ne radi
+      const arg = (userUpsert.mock.calls as Array<[UpsertCall]>)[0][0];
+      expect(arg.update.passwordHash).toBeUndefined(); // postojeći 2.0 hash netaknut
+      expect(arg.create.passwordHash).not.toBe("hash:Tajna123!"); // INSERT → SSO-only random
     });
 
     it("sy15 insert pad → sy15Synced:false ALI 2.0+GoTrue prošli i welcome poslat (NEMA lockout)", async () => {
@@ -348,10 +383,11 @@ describe("PodesavanjaUsersService (D1 dual-write)", () => {
       sy15QueryRaw.mockResolvedValueOnce([
         { email: "u@servoteh.com", role: "viewer", is_active: true },
       ]);
-      await svc.resetPassword(ADMIN, ROLE_ID, {});
+      const res = await svc.resetPassword(ADMIN, ROLE_ID, {});
       const arg = (userUpsert.mock.calls as Array<[UpsertCall]>)[0][0];
-      expect(arg.update.passwordHash).toBe("hashed"); // postojeći nalog dobija nov hash
-      expect(arg.create.passwordHash).toBe("hashed"); // i INSERT grana (ako 2.0 red fali)
+      const expected = `hash:${res.data.password}`; // hash BAŠ prikazane lozinke, ne bilo koji hash
+      expect(arg.update.passwordHash).toBe(expected); // postojeći nalog dobija nov hash
+      expect(arg.create.passwordHash).toBe(expected); // i INSERT grana (ako 2.0 red fali)
       expect(arg.update.mustChangePassword).toBe(true); // must_change ostaje
     });
   });
