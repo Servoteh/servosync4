@@ -173,6 +173,29 @@ const AKCIJE_SELECT_30 = Prisma.sql`SELECT a.*,
   FROM v_akcioni_plan a
   LEFT JOIN projects p ON p.id = a.projekat_id`;
 
+/**
+ * ⭐ uređena lista `predmet_item_id` iz sy15 (`get_predmet_plan_prioritet_ids()`
+ * → `production.predmet_plan_prioritet`, slot 0..n-1). Normalizacija je paritet
+ * 1.0 `pullPredmetPlanPrioritetIds`: Number, konačan, > 0 (Number(null) = 0 bi
+ * lažno pogodio prazan id), cap 50; izlaz `string[]` jer je ugovor prema FE-u
+ * `string|null` po redu akcije (`bigtehnItemId`).
+ *
+ * Izdvojeno iz metode jer se ISTI upit izvršava kroz dva omotača: `withUserMapped`
+ * (režim `sy15`) i `Sy15Service.withUserRls` direktno (režim `3.0`, read-only
+ * izuzetak) — v. `SastanciService.predmetPrioritet`.
+ */
+async function citajPrioritetIds(tx: Sy15Tx): Promise<string[]> {
+  const rows = await tx.$queryRaw<{ ids: unknown }[]>(
+    Prisma.sql`SELECT get_predmet_plan_prioritet_ids() AS ids`,
+  );
+  const raw = rows[0]?.ids;
+  return (Array.isArray(raw) ? raw : [])
+    .map(Number)
+    .filter((x) => Number.isFinite(x) && x > 0)
+    .slice(0, 50)
+    .map(String);
+}
+
 /** Sastanak koji je „prošao" — kandidat za kolonu „Sledeći" u listi (024/26 d.29.07-1). */
 const ZAVRSNI_STATUSI = ["zavrsen", "zakljucan", "otkazan"] as const;
 
@@ -1112,25 +1135,53 @@ export class SastanciService {
    * get_predmet_plan_prioritet_ids() → production.predmet_plan_prioritet
    * predmet_item_id redom slot 0..n-1 (max 10). Ista normalizacija kao 1.0
    * (Number, konačan, >0, cap 50); izlaz string[] (ID-jevi su bigtehn item id).
+   *
+   * 🔴 ČITA sy15 I POD `3.0`, I TO JE NAMERNO — READ-ONLY, kao `kadr_holidays`
+   * (`prazniciZaTriNula`) i storage bucket-i. `production.predmet_plan_prioritet`
+   * piše ISKLJUČIVO modul Podešavanja → Predmeti (`PodesavanjaService`
+   * `setPredmetPrioritet` → `set_predmet_plan_prioritet`), koji je i dalje na
+   * sy15; sastanci je samo čitaju za redosled RN grupa. Nijedan upis iz ovog
+   * domena ne ide tim putem, pa dve baze ne mogu da se raziđu.
+   *
+   * ZAŠTO JE RANIJE BILA IZA `assertPorted` (i zašto to više ne stoji): brana je
+   * postavljena da tiho prazna lista ne izgleda kao „nema prioritetnih". Ali pod
+   * `3.0` je ishod bio GORI od tišine — ruta je vraćala 503 na svaki otvoren
+   * ekran akcionog plana, FE hook nema `retry:false`, pa je svaki ulazak pravio
+   * tri neuspela zahteva, a redosled je svejedno padao na šifru. Čitanje ŽIVE
+   * liste vraća i funkcionalnost i tišinu, bez ijednog upisa u sy15.
+   *
+   * ZAŠTO NE 3.0 `predmet_aktivacije.plan_priority` (izvor koji servira
+   * `/v1/pracenje/plan-prioritet`) — IZMERENO na produkciji 06.08.2026: ta
+   * kolona nosi SEED od 23.06 ({9466,9068,9833,9470,8247,9426,9427,9509,9510};
+   * svih 9 redova ima `updated_at = 2026-07-19` = dan migracije
+   * `pracenje_native_f1` i od tada nijedan upis), dok je živa sy15 lista
+   * promenjena 31.07. na {10470}. Čitanje 3.0 kopije bi ekranima sastanaka
+   * prikazalo junski redosled kao da je aktuelan — tiho pogrešan odgovor.
+   *
+   * KLJUČ SE NE PREVODI: sy15 `predmet_item_id` = 3.0 `projects.id` (izmereno,
+   * 8/8 poklapanja po `project_code` + `project_name`), a pod `3.0` je
+   * `bigtehnItemId` na redu akcije baš `projects.id` (v. `AKCIJE_SELECT_30`).
+   *
+   * Fail-soft pod `3.0` (sy15 nedostupna / bez `SY15_DATABASE_URL`): prazna
+   * lista + upozorenje, isto kao praznici — redosled RN grupa pada na šifru, a
+   * ekran ostaje. Pod `sy15` ponašanje je nepromenjeno (greška ide kroz
+   * `rethrowSy15`).
    */
   async predmetPrioritet(email: string) {
-    // 🔴 `get_predmet_plan_prioritet_ids()` čita `production.predmet_plan_prioritet`
-    // u sy15 i NIJE domen sastanaka (runbook §7c blokada 7) — stiže sa svojim
-    // modulom. Zato ostaje iza brane i pod `3.0`, umesto da tiho vrati praznu
-    // ⭐ listu (koja bi izgledala kao „nema prioritetnih predmeta").
-    this.izvor.assertPorted("sastanci: ⭐ lista prioritetnih predmeta");
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ ids: unknown }[]>(
-        Prisma.sql`SELECT get_predmet_plan_prioritet_ids() AS ids`,
-      );
-      const raw = rows[0]?.ids;
-      const ids = (Array.isArray(raw) ? raw : [])
-        .map(Number)
-        .filter((x) => Number.isFinite(x) && x > 0)
-        .slice(0, 50)
-        .map(String);
-      return { data: ids };
-    });
+    if (this.izvor.isThreeZero) {
+      try {
+        return { data: await this.sy15.withUserRls(email, citajPrioritetIds) };
+      } catch (e) {
+        this.logger.warn(
+          "⭐ lista prioritetnih predmeta (sy15 production.predmet_plan_prioritet) " +
+            `nije dostupna — RN grupe se sortiraju po šifri: ${(e as Error).message}`,
+        );
+        return { data: [] as string[] };
+      }
+    }
+    return this.withUserMapped(email, async (tx) => ({
+      data: await citajPrioritetIds(tx),
+    }));
   }
 
   /**

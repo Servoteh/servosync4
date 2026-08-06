@@ -380,13 +380,59 @@ describe("🔴 pod 3.0 nijedan CRUD ne ulazi u sy15 i nijedan ne vraća 503", ()
     expect(sy15.runIdempotentRls).not.toHaveBeenCalled();
   });
 
-  it("⭐ lista prioritetnih predmeta OSTAJE iza 503 (nije domen sastanaka)", async () => {
-    // `get_predmet_plan_prioritet_ids` čita `production.predmet_plan_prioritet`
-    // u sy15. Tiho vraćanje prazne liste izgledalo bi kao „nema prioritetnih".
-    const { svc } = makeSvc();
-    await expect(svc.predmetPrioritet(JA)).rejects.toMatchObject({
-      status: 503,
+});
+
+// ============================================================================
+// 1b. ⭐ lista prioritetnih predmeta — READ-ONLY izuzetak, NE 503
+// ============================================================================
+
+/**
+ * 🔴 REGRESIJA 06.08.2026 koju ovi testovi zaključavaju.
+ *
+ * `GET /v1/sastanci/predmet-prioritet` je stajao iza `assertPorted`, pa je pod
+ * živim `SASTANCI_IZVOR=3.0` vraćao 503 na SVAKI otvoren akcioni plan. Ekran se
+ * nije rušio (`prioQ.data?.data` je `undefined`), ali je React Query pravio tri
+ * neuspela zahteva po ulasku, a redosled RN grupa je tiho pao sa ⭐ prioriteta
+ * na šifru.
+ *
+ * Podatak NIJE domen sastanaka: `production.predmet_plan_prioritet` piše modul
+ * Podešavanja → Predmeti, koji je i dalje na sy15. Zato se čita READ-ONLY, isti
+ * presedan kao `kadr_holidays` — nijedan upis iz ovog domena ne ide tim putem,
+ * pa dve baze ne mogu da se raziđu.
+ */
+describe("⭐ lista prioritetnih predmeta pod 3.0 (read-only sy15, bez 503)", () => {
+  /** sy15 koji odgovori `ids` kroz `withUserRls` (isti put kao u režimu sy15). */
+  const sy15Vraca = (ids: unknown) =>
+    jest.fn(async (_e: string, f: (tx: unknown) => Promise<unknown>) =>
+      f({ $queryRaw: jest.fn().mockResolvedValue([{ ids }]) }),
+    );
+
+  it("ne baca 503 — vraća ŽIVU sy15 listu, uz normalizaciju 1.0", async () => {
+    const { svc, sy15 } = makeSvc();
+    sy15.withUserRls = sy15Vraca([10470, 0, -1, 9068, null]) as never;
+    await expect(svc.predmetPrioritet(JA)).resolves.toEqual({
+      data: ["10470", "9068"],
     });
+    expect(sy15.withUserRls).toHaveBeenCalledTimes(1);
+  });
+
+  it("NE čita 3.0 kopiju (`predmet_aktivacije.plan_priority`)", async () => {
+    // Tu kopiju servira `/v1/pracenje/plan-prioritet`. IZMERENO 06.08.2026 na
+    // produkciji: zamrznut seed od 23.06 (9 redova, svima `updated_at` = dan
+    // migracije `pracenje_native_f1`), dok je živa sy15 lista promenjena 31.07.
+    // Čitanje kopije bi prikazalo junski redosled kao da je aktuelan.
+    const { svc, sy15, prisma, tx } = makeSvc();
+    sy15.withUserRls = sy15Vraca([10470]) as never;
+    await svc.predmetPrioritet(JA);
+    // `tx.$queryRaw` je isti mock koji vidi i `prisma` (prisma = {...tx, $transaction}).
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("sy15 nedostupna → prazna lista BEZ greške (fail-soft kao praznici)", async () => {
+    // Podrazumevani stub `withUserRls` baca; ekran mora ostati, samo bez ⭐ reda.
+    const { svc } = makeSvc();
+    await expect(svc.predmetPrioritet(JA)).resolves.toEqual({ data: [] });
   });
 });
 

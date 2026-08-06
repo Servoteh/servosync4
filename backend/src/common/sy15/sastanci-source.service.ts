@@ -55,15 +55,25 @@ export type SastanciIzvor = Izvor;
  *     prima i sy15 uuid i 3.0 `Int`, a odgovor vraća oba
  *     (`projekatId` + `projekatUuid`) dok se FE ne uskladi.
  *
- * JOŠ NIJE PRENETO — zato pod `3.0` i dalje pada sa 503:
- *   - ⭐ lista prioritetnih predmeta (`get_predmet_plan_prioritet_ids` čita
- *     `production.predmet_plan_prioritet`) — NIJE domen sastanaka, stiže sa
- *     svojim modulom.
+ * JOŠ NIJE PRENETO — ali NIJEDNA ruta sastanaka više ne pada sa 503 pod `3.0`.
  *
- * Dve preostale READ-ONLY zavisnosti od sy15 (ni jedna nije upis, pa dve baze
- * ne mogu da se raziđu): `kadr_holidays` (pomeranje sedmičnog sa praznika,
- * fail-soft) i STORAGE bucket-i (fajlovi se u koraku 1 ne sele — putanje su
- * prenete i stari URL-ovi ostaju važeći).
+ * TRI READ-ONLY zavisnosti od sy15 (ni jedna nije upis, pa dve baze ne mogu da
+ * se raziđu; sve tri fail-soft ili sa važećim starim URL-om):
+ *   - `kadr_holidays` (pomeranje sedmičnog sa praznika, fail-soft),
+ *   - STORAGE bucket-i (fajlovi se u koraku 1 ne sele — putanje su prenete i
+ *     stari URL-ovi ostaju važeći),
+ *   - ⭐ lista prioritetnih predmeta (`get_predmet_plan_prioritet_ids` čita
+ *     `production.predmet_plan_prioritet`) — NIJE domen sastanaka nego
+ *     Podešavanja → Predmeti, koja je i PIŠU i koja su i dalje na sy15.
+ *     Do 06.08.2026 je stajala IZA brane, uz obrazloženje da tiho prazna lista
+ *     izgleda kao „nema prioritetnih predmeta". Ishod je na produkciji bio gori
+ *     od tišine: `GET /v1/sastanci/predmet-prioritet` je vraćao 503 na svaki
+ *     otvoren akcioni plan (FE hook nema `retry:false` → tri neuspela zahteva
+ *     po ulasku), a redosled RN grupa je svejedno padao na šifru. Sada se ŽIVA
+ *     lista čita read-only, kao praznici. Merenje zašto se NE čita 3.0 kopija
+ *     (`predmet_aktivacije.plan_priority`, koju servira `/v1/pracenje/
+ *     plan-prioritet`) je u `SastanciService.predmetPrioritet`: ta kopija je
+ *     zamrznut seed od 23.06, a živa lista je promenjena 31.07.
  *
  * Zato pod `SASTANCI_IZVOR=3.0` NEPRENETE putanje NAMERNO padaju sa 503 i
  * jasnom porukom, umesto da tiho vrate prazan ili pogrešan odgovor — upis koji bi
@@ -85,8 +95,9 @@ export class SastanciSourceService extends IzvorPrekidac {
         "sedmični kolegijum, mejl kanal i dispatch, registar idempotencije. Predmet " +
         "(projekat_id) prima OBA oblika (sy15 uuid i 3.0 Int) i vraća oba " +
         "(projekatId + projekatUuid) — dok se FE ne uskladi. Iz sy15 se JOŠ ČITAJU " +
-        "(read-only): kadr_holidays i storage bucket-i. Sa 503 i dalje pada ⭐ lista " +
-        "prioritetnih predmeta (nije domen sastanaka). PROJEKTNI BIRO NIJE DIRNUT — " +
+        "(read-only, fail-soft): kadr_holidays, storage bucket-i i ⭐ lista " +
+        "prioritetnih predmeta (piše je modul Podešavanja predmeta, ne sastanci). " +
+        "Nijedna ruta sastanaka više ne pada sa 503. PROJEKTNI BIRO NIJE DIRNUT — " +
         "on ima svoj prekidač PB_IZVOR.",
     });
   }
