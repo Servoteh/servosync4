@@ -847,6 +847,14 @@ model Project {
   orderDate         DateTime?       @map("order_date") @db.Timestamp(6)
   handoverDrafts    HandoverDraft[]
   partLocations     PartLocation[]
+  // Seoba sy15 (korak 1) — sastanci/PB vezuju predmet po `projects.id`; u sy15 je
+  // to bio uuid iz `public.projects` izveden iz `bigtehn_item_id` = ovaj `id`
+  // (izmereno 22/22 poklapanja, docs/SEOBA_SASTANCI_PB_2026-08-05.md §2).
+  sastanci          Sastanak[]
+  akcionePlanStavke AkcionaTacka[]
+  pmTeme            PmTema[]
+  pbTasks           PbTask[]
+  pbEngTips         PbEngTip[]
 
   // SQL-only parcijalni unique uq_projects_project_number (WHERE btrim<>'', 20260725200000)
   // — broj predmeta je poslovni identitet dual unosa 3.0→BigBit (DB-005).
@@ -2348,6 +2356,13 @@ model User {
   bbSyncLogs          BbSyncLog[]
   userRoles           UserRole[]
   permissionOverrides UserPermissionOverride[]
+  // Seoba sy15 (korak 1): kolone koje su u sy15 gađale `auth.users(id)` (uuid).
+  // Izmereno 6/6 uuid-a razrešeno po mejlu u `users` — zato pravi FK, ne meka veza.
+  pbTaskComments      PbTaskComment[]
+  pbTaskFiles         PbTaskFile[]
+  pbEngTipLikes       PbEngTipLike[]
+  pbNotificationLogs  PbNotificationLog[]
+  sastanciAiSettings  SastanciAiSettings[]
 
   @@map("users")
 }
@@ -5540,6 +5555,49 @@ model ScheduledJobRun {
   @@map("scheduled_job_runs")
 }
 
+/// Registar idempotencije CELE 3.0 aplikacije — 3.0 parnjak sy15 `rev_api_idempotency`
+/// (koji uprkos `rev_` prefiksu nikad nije bio samo za reverse: 643 reda, 35 različitih
+/// `action` vrednosti iz kadrovske, profila, sastanaka, PB-a i održavanja).
+/// Zato je ovde ime GENERIČKO — koriste ga i preostali koraci gašenja sy15
+/// (docs/PLAN_GASENJA_SY15_2026-08-03.md), ne samo sastanci.
+///
+/// ČEMU SLUŽI: dupli POST (dupli klik, retry posle mrežnog prekida) ne sme da napravi
+/// drugi sastanak / drugi talas mejlova. Klijent šalje `clientEventId`; prvi zahtev ga
+/// upiše i sačuva odgovor, ponovljeni dobija SAČUVAN odgovor bez izvršavanja.
+///
+/// 🔴 KLJUČNO SVOJSTVO: upis ključa i sama akcija idu u ISTOJ transakciji, pa rollback
+/// akcije briše i ključ → neuspeo pokušaj sme da se ponovi. Zato ovde NEMA `@@unique`
+/// preko više kolona: PK je sam `client_event_id`, kao u sy15, da bi konkurentan isti
+/// ključ ČEKAO na speculative-insert bravi dok prva transakcija ne završi.
+///
+/// RAZLIKE OD sy15 IZVORA (obe merene, obe namerne):
+///  1. `actor_email` — sy15 ga NEMA, pa ponovljen zahtev vraća sačuvan odgovor BILO KOME
+///     ko zna ključ. Ovde se pri ponavljanju traži i isti akter, inače 409. Praktično
+///     neiskoristivo u sy15 (ključ je nasumičan uuid), ali odgovor ume da nosi tuđe
+///     podatke, pa je zatvoreno bez troška.
+///  2. TTL — sy15 NEMA čišćenje (izmereno: 0 pg_cron poslova, 0 trigera; najstariji red
+///     je od 10.07.2026, tj. od dana nastanka registra, i nikad ništa nije obrisano).
+///     Registar je po prirodi kratkotrajan (dedup prozor je minut, ne mesec), pa ga
+///     `RetentionJobsService` čisti; zato indeks po `created_at`.
+/// STARI ZAPISI SE NE MIGRIRAJU sa sy15 — v. runbook §7c blokada 1.
+model ApiIdempotency {
+  /// Ključ koji šalje klijent (uuid). PK — namerno bez `action` u ključu: isti
+  /// `clientEventId` upotrebljen za DRUGU akciju je greška klijenta i vraća 409.
+  clientEventId String   @id(map: "pk_api_idempotency") @map("client_event_id") @db.Uuid
+  /// Logičko ime radnje (`sastanci.create-sastanak`, `kadr.grid.batch`…) — isti
+  /// prostor imena kao u sy15 registru, da prelaz ne menja ugovor prema klijentu.
+  action        String   @map("action") @db.VarChar(100)
+  /// Mejl iz sesije onoga ko je ključ potrošio (v. razliku 1 iznad).
+  actorEmail    String   @map("actor_email") @db.VarChar(255)
+  /// Sačuvan odgovor prvog izvršenja — vraća se na ponovljen zahtev BEZ izvršavanja.
+  /// NULL znači „ključ zauzet, izvršenje još traje ili je palo" (upisuje se na kraju).
+  result        Json?    @map("result")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt], map: "idx_api_idempotency_created")
+  @@map("api_idempotency")
+}
+
 /// App-owned prekidač za pozadinske poslove koje korisnik sme da ugasi iz Podešavanja
 /// (stavka B, 26.07.2026). Ključ je stabilan string (npr. `bigbit_mdb_sync`), stanje živi
 /// u bazi — menja se BEZ restarta i BEZ env promenljive. Tabela NIJE u SYNC_MAP i nijedan
@@ -6501,4 +6559,713 @@ model WorkOrderDrawingPdf {
   @@index([workOrderId], map: "idx_work_order_drawing_pdfs_work_order")
   @@index([handoverId], map: "idx_work_order_drawing_pdfs_handover")
   @@map("work_order_drawing_pdfs")
+}
+
+// ============================================================================
+// SEOBA sy15 — KORAK 1: SASTANCI + PROJEKTNI BIRO (05.08.2026)
+// ============================================================================
+// Merenje, obrazloženje i runbook: docs/SEOBA_SASTANCI_PB_2026-08-05.md.
+// Korak 1 iz docs/PLAN_GASENJA_SY15_2026-08-03.md; obrazac preuzet od pripreme
+// reversa (grana feat/sy15-seoba-reversi).
+//
+// PRENOSNE ODLUKE (sve izmerene, ne pretpostavljene):
+//
+//  1. UUID PK-ovi se ZADRŽAVAJU 1:1 -> prenos je egzaktno idempotentan (upsert po
+//     `id`), bez remap tabele. Odstupanje od BACKEND_RULES §2.1 („ID-jevi nisu
+//     UUID") je svesno i ograničeno na preseljene sy15 tabele — isti presedan kao
+//     `rev_*`: legacy ključ ostaje ključ.
+//  2. `projekat_id`/`project_id` (uuid -> sy15 `public.projects`) postaje **Int FK
+//     na 3.0 `projects.id`**. sy15 `projects.id` je DETERMINISTIČKI izveden iz
+//     `bigtehn_item_id` (`pb_predmet_project_uuid`: md5('servoteh_pb_predmet:v1:'||id)),
+//     a `bigtehn_item_id` JESTE 3.0 `projects.id` — izmereno 22/22 poklapanja i po
+//     id-u i po šifri (`project_code` = `project_number`). Jedini nepoklopljeni red
+//     je sintetički `PRAC-PROD-TEST` koji nijedan red domena ne referencira.
+//  3. Identitet ljudi ostaje **mejl** (tekst, doslovno). Ceo domen je mejl-baziran:
+//     PK učesnika je (sastanak_id, email), RSVP/priprema/RLS porede
+//     `lower(email) = jwt.email`, primaoci notifikacija su mejlovi (i za ljude bez
+//     naloga). Prevođenje u `users.id` bi polomilo i PK i mejl kanal. Mapa
+//     identiteta se koristi za AUTORIZACIJU, ne za skladištenje.
+//  4. Kolone koje su u sy15 imale FK na `auth.users(id)` (uuid) prevode se u
+//     **Int FK na `users.id`** — izmereno 6/6 razrešenih po mejlu.
+//  5. `employees.id` (uuid) ostaje **meka veza bez FK-a** (obrazac
+//     `KadrGridDayLock`) — kadrovska je korak 4, još je u sy15.
+//  6. PG enum tipovi (`pb_task_status`, `pb_task_vrsta`, `pb_prioritet`,
+//     `pb_eng_tip_status`) prelaze u **String + CHECK** — BACKEND_RULES §2.2.
+//  7. RLS politike se NE prenose (74 politike u sy15) — 3.0 koristi guardove i
+//     query-scoping (ODLUKE.md).
+
+/// Sastanak (sedmični/projektni/tematski/dnevni/periodični). Was: sy15 `public.sastanci`.
+/// tip: sedmicni | projektni | tematski | dnevni | periodicni
+/// status: planiran | u_toku | zavrsen | zakljucan | otkazan
+model Sastanak {
+  id                  String    @id(map: "pk_sastanci") @default(uuid(4)) @map("id") @db.Uuid
+  tip                 String    @default("sedmicni") @map("tip") @db.VarChar(20)
+  naslov              String    @map("naslov")
+  datum               DateTime  @map("datum") @db.Date
+  vreme               DateTime? @map("vreme") @db.Time(6)
+  mesto               String?   @default("") @map("mesto")
+  /// Predmet (3.0 `projects.id`). U sy15 je bio uuid — v. prenosnu odluku 2.
+  projectId           Int?      @map("projekat_id")
+  vodioEmail          String?   @map("vodio_email") @db.VarChar(255)
+  vodioLabel          String?   @map("vodio_label")
+  zapisnicarEmail     String?   @map("zapisnicar_email") @db.VarChar(255)
+  zapisnicarLabel     String?   @map("zapisnicar_label")
+  status              String    @default("planiran") @map("status") @db.VarChar(20)
+  zakljucanAt         DateTime? @map("zakljucan_at") @db.Timestamptz(6)
+  zakljucanByEmail    String?   @map("zakljucan_by_email") @db.VarChar(255)
+  napomena            String?   @map("napomena")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Mejl kreatora; `auto@sistem` za sastanke koje kuje automat (sast_auto_create_weekly).
+  createdByEmail      String?   @map("created_by_email") @db.VarChar(255)
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  pozivnicePoslateAt  DateTime? @map("pozivnice_poslate_at") @db.Timestamptz(6)
+  zapisnikDatum       DateTime? @map("zapisnik_datum") @db.Date
+  /// Period ponavljanja za tip `periodicni` (1..365 dana).
+  intervalDays        Int?      @map("interval_days")
+  prethodniSastanakId String?   @map("prethodni_sastanak_id") @db.Uuid
+
+  project           Project?                 @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_project")
+  prethodniSastanak Sastanak?                @relation("SastanakLanac", fields: [prethodniSastanakId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_prethodni")
+  /// Prisma vezu drži kao 1:N jer je u sy15 jedinstvenost PARCIJALNA
+  /// (`WHERE prethodni_sastanak_id IS NOT NULL`) — to Prisma ne ume izraziti,
+  /// pa taj unique ostaje SQL-only u migraciji (stvarna kardinalnost je 1:1).
+  sledeciSastanci   Sastanak[]               @relation("SastanakLanac")
+  ucesnici          SastanakUcesnik[]
+  odluke            SastanakOdluka[]
+  arhiva            SastanakArhiva?
+  akcije            AkcionaTacka[]
+  teme              PmTema[]
+  presekAktivnosti  PresekAktivnost[]
+  presekSlike       PresekSlika[]
+  notifikacije      SastanciNotificationLog[]
+
+  @@index([datum(sort: Desc)], map: "idx_sastanci_datum")
+  @@index([projectId], map: "idx_sastanci_projekat")
+  // SQL-only: CHECK-ovi (tip/status/interval_days), parcijalni unique
+  // `sastanci_prethodni_sastanak_uq` (WHERE prethodni_sastanak_id IS NOT NULL) i
+  // funkcijski indeksi nad `lower(...)` mejla — Prisma ih ne ume izraziti.
+  @@map("sastanci")
+}
+
+/// Učesnik sastanka. PK je (sastanak_id, email) — identitet je MEJL, ne nalog:
+/// na sastanak se poziva i neko ko nema nalog u 3.0. Was: sy15 `sastanak_ucesnici`.
+/// rsvpStatus: null | dolazim | ne_dolazim
+model SastanakUcesnik {
+  sastanakId  String    @map("sastanak_id") @db.Uuid
+  email       String    @map("email") @db.VarChar(255)
+  label       String?   @map("label")
+  prisutan    Boolean   @default(true) @map("prisutan")
+  pozvan      Boolean   @default(true) @map("pozvan")
+  napomena    String?   @map("napomena")
+  pripremljen Boolean   @default(false) @map("pripremljen")
+  priprema    String?   @map("priprema")
+  rsvpStatus  String?   @map("rsvp_status") @db.VarChar(20)
+  rsvpAt      DateTime? @map("rsvp_at") @db.Timestamptz(6)
+  /// TAJNA magic-linka za RSVP iz mejla — NIKAD se ne vraća kroz API
+  /// (`UCESNIK_SELECT` u sastanci.service.ts je izostavlja).
+  rsvpToken   String    @default(uuid(4)) @map("rsvp_token") @db.Uuid
+
+  sastanak Sastanak @relation(fields: [sastanakId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_sastanak_ucesnici_sastanak")
+
+  @@id([sastanakId, email], map: "pk_sastanak_ucesnici")
+  @@unique([rsvpToken], map: "uq_sastanak_ucesnici_rsvp_token")
+  @@map("sastanak_ucesnici")
+}
+
+/// Odluka doneta na sastanku. Was: sy15 `sastanak_odluke`.
+/// status: na_snazi | opozvana
+model SastanakOdluka {
+  id           String    @id(map: "pk_sastanak_odluke") @default(uuid(4)) @map("id") @db.Uuid
+  sastanakId   String    @map("sastanak_id") @db.Uuid
+  rb           Int?      @map("rb")
+  naslov       String    @map("naslov")
+  opis         String?   @map("opis")
+  odlucioEmail String?   @map("odlucio_email") @db.VarChar(255)
+  odlucioLabel String?   @map("odlucio_label")
+  odlukaDatum  DateTime? @map("odluka_datum") @db.Date
+  uticaj       String?   @map("uticaj")
+  vezaTemaId   String?   @map("veza_tema_id") @db.Uuid
+  vezaAkcijaId String?   @map("veza_akcija_id") @db.Uuid
+  status       String    @default("na_snazi") @map("status") @db.VarChar(20)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  sastanak   Sastanak      @relation(fields: [sastanakId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_sastanak_odluke_sastanak")
+  vezaTema   PmTema?       @relation(fields: [vezaTemaId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanak_odluke_tema")
+  vezaAkcija AkcionaTacka? @relation(fields: [vezaAkcijaId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanak_odluke_akcija")
+
+  @@index([sastanakId], map: "idx_sast_odluke_sastanak")
+  @@index([status], map: "idx_sast_odluke_status")
+  @@map("sastanak_odluke")
+}
+
+/// Arhiva zaključanog sastanka: JSONB snimak + putanja PDF zapisnika u storage-u.
+/// `zapisnikStoragePath` pokazuje na sy15 bucket `sastanci-arhiva` — fajlovi se u
+/// koraku 1 NE sele (v. runbook §6). Was: sy15 `sastanak_arhiva`.
+model SastanakArhiva {
+  id                  String    @id(map: "pk_sastanak_arhiva") @default(uuid(4)) @map("id") @db.Uuid
+  sastanakId          String    @unique(map: "uq_sastanak_arhiva_sastanak") @map("sastanak_id") @db.Uuid
+  snapshot            Json      @map("snapshot")
+  zapisnikStoragePath String?   @map("zapisnik_storage_path")
+  zapisnikSizeBytes   BigInt?   @map("zapisnik_size_bytes")
+  zapisnikGeneratedAt DateTime? @map("zapisnik_generated_at") @db.Timestamptz(6)
+  arhiviraoEmail      String?   @map("arhivirao_email") @db.VarChar(255)
+  arhiviraoLabel      String?   @map("arhivirao_label")
+  arhiviranoAt        DateTime  @default(now()) @map("arhivirano_at") @db.Timestamptz(6)
+
+  sastanak Sastanak @relation(fields: [sastanakId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_sastanak_arhiva_sastanak")
+
+  @@index([arhiviranoAt(sort: Desc)], map: "idx_sa_arhivirano_at")
+  @@map("sastanak_arhiva")
+}
+
+/// Šablon sastanka (iz njega automat kuje termine). Was: sy15 `sastanci_templates`.
+/// cadence: weekly | biweekly | monthly | daily | none
+model SastanciTemplate {
+  id              String    @id(map: "pk_sastanci_templates") @default(uuid(4)) @map("id") @db.Uuid
+  naziv           String    @map("naziv")
+  tip             String    @map("tip") @db.VarChar(20)
+  mesto           String?   @map("mesto")
+  vodioEmail      String?   @map("vodio_email") @db.VarChar(255)
+  zapisnicarEmail String?   @map("zapisnicar_email") @db.VarChar(255)
+  cadence         String    @map("cadence") @db.VarChar(20)
+  /// Dan u nedelji 0..6 (0 = nedelja) za weekly/biweekly.
+  cadenceDow      Int?      @map("cadence_dow")
+  /// Dan u mesecu 1..31 za monthly.
+  cadenceDom      Int?      @map("cadence_dom")
+  vreme           DateTime? @map("vreme") @db.Time(6)
+  napomena        String?   @map("napomena")
+  isActive        Boolean   @default(true) @map("is_active")
+  createdByEmail  String?   @map("created_by_email") @db.VarChar(255)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  ucesnici SastanciTemplateUcesnik[]
+
+  @@map("sastanci_templates")
+}
+
+/// Podrazumevani učesnik šablona. Was: sy15 `sastanci_template_ucesnici`.
+model SastanciTemplateUcesnik {
+  templateId String  @map("template_id") @db.Uuid
+  email      String  @map("email") @db.VarChar(255)
+  label      String? @map("label")
+
+  template SastanciTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_sastanci_template_ucesnici_template")
+
+  @@id([templateId, email], map: "pk_sastanci_template_ucesnici")
+  @@map("sastanci_template_ucesnici")
+}
+
+/// Red čekanja + trag poslatih obaveštenja sastanaka (mejl kanal).
+/// Ovo je RED ČEKANJA, ne samo log: `status='queued'` čeka dispatch
+/// (`SastanciDispatchService`, job `sastanci-notify-dispatch`).
+/// Was: sy15 `sastanci_notification_log`.
+/// kind: akcija_new | akcija_changed | meeting_invite | meeting_locked |
+///       action_reminder | meeting_reminder | meeting_prep_reminder | meeting_cancel
+/// channel: email | whatsapp ; status: queued | sent | failed | skipped
+model SastanciNotificationLog {
+  id                String    @id(map: "pk_sastanci_notification_log") @default(uuid(4)) @map("id") @db.Uuid
+  kind              String    @map("kind") @db.VarChar(40)
+  channel           String    @default("email") @map("channel") @db.VarChar(20)
+  recipientEmail    String    @map("recipient_email") @db.VarChar(255)
+  recipientLabel    String?   @map("recipient_label")
+  subject           String    @map("subject")
+  bodyHtml          String?   @map("body_html")
+  bodyText          String?   @map("body_text")
+  relatedSastanakId String?   @map("related_sastanak_id") @db.Uuid
+  relatedAkcijaId   String?   @map("related_akcija_id") @db.Uuid
+  status            String    @default("queued") @map("status") @db.VarChar(20)
+  scheduledAt       DateTime  @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt     DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastAttemptAt     DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  attempts          Int       @default(0) @map("attempts")
+  maxAttempts       Int       @default(5) @map("max_attempts")
+  error             String?   @map("error")
+  payload           Json?     @map("payload")
+  createdByEmail    String?   @map("created_by_email") @db.VarChar(255)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
+
+  sastanak Sastanak?     @relation(fields: [relatedSastanakId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_notification_log_sastanak")
+  akcija   AkcionaTacka? @relation(fields: [relatedAkcijaId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_notification_log_akcija")
+
+  @@index([recipientEmail, kind, createdAt(sort: Desc)], map: "idx_sast_notif_recipient")
+  // SQL-only: parcijalni indeks reda čekanja + DVA parcijalna unique-a koji
+  // sprečavaju dupli podsetnik po događaju/akciji (WHERE status IN ('queued','sent')).
+  @@map("sastanci_notification_log")
+}
+
+/// Podešavanja obaveštenja po korisniku (ključ = MEJL). Was: sy15 `sastanci_notification_prefs`.
+model SastanciNotificationPrefs {
+  email             String   @id(map: "pk_sastanci_notification_prefs") @map("email") @db.VarChar(255)
+  onNewAkcija       Boolean  @default(true) @map("on_new_akcija")
+  onChangeAkcija    Boolean  @default(true) @map("on_change_akcija")
+  onMeetingInvite   Boolean  @default(true) @map("on_meeting_invite")
+  onMeetingLocked   Boolean  @default(true) @map("on_meeting_locked")
+  onActionReminder  Boolean  @default(true) @map("on_action_reminder")
+  onMeetingReminder Boolean  @default(true) @map("on_meeting_reminder")
+  /// Alternativna adresa za slanje (ako je različita od ključa).
+  emailAddress      String?  @map("email_address") @db.VarChar(255)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("sastanci_notification_prefs")
+}
+
+/// Jedan red (id=1): izabrani LLM model za rezime sastanaka. Was: sy15 `sastanci_ai_settings`.
+model SastanciAiSettings {
+  id              Int      @id(map: "pk_sastanci_ai_settings") @default(1) @map("id") @db.SmallInt
+  model           String   @map("model") @db.VarChar(80)
+  /// U sy15 je bio `auth.users.id` (uuid); prevedeno na `users.id` (odluka 4).
+  updatedByUserId Int?     @map("updated_by")
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  updatedBy User? @relation(fields: [updatedByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_ai_settings_user")
+
+  @@map("sastanci_ai_settings")
+}
+
+/// Nedelje u kojima se sedmični sastanak PRESKAČE. Was: sy15 `sast_weekly_skip`.
+model SastWeeklySkip {
+  weekMonday     DateTime @id(map: "pk_sast_weekly_skip") @map("week_monday") @db.Date
+  reason         String?  @map("reason")
+  createdByEmail String?  @map("created_by_email") @db.VarChar(255)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("sast_weekly_skip")
+}
+
+/// Allowlist mejlova koji smeju da pomeraju/odlažu sedmični sastanak.
+/// Was: sy15 `sast_weekly_movers` (koristi ga `sast_user_can_move_weekly`).
+model SastWeeklyMover {
+  email     String   @id(map: "pk_sast_weekly_movers") @map("email") @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("sast_weekly_movers")
+}
+
+/// Akciona tačka („akcioni plan") — NAJVEĆA tabela domena sastanaka.
+/// Was: sy15 `public.akcioni_plan`.
+/// status: otvoren | u_toku | zavrsen | kasni | odlozen | otkazan
+/// prioritet: 1 (visok) | 2 (srednji) | 3 (nizak)
+model AkcionaTacka {
+  id               String    @id(map: "pk_akcioni_plan") @default(uuid(4)) @map("id") @db.Uuid
+  sastanakId       String?   @map("sastanak_id") @db.Uuid
+  temaId           String?   @map("tema_id") @db.Uuid
+  /// Predmet (3.0 `projects.id`) — v. prenosnu odluku 2.
+  projectId        Int?      @map("projekat_id")
+  rb               Int?      @map("rb")
+  naslov           String    @map("naslov")
+  opis             String?   @map("opis")
+  odgovoranEmail   String?   @map("odgovoran_email") @db.VarChar(255)
+  odgovoranLabel   String?   @map("odgovoran_label")
+  /// Slobodan tekst kad odgovorni nije nalog (spoljni saradnik, odeljenje…).
+  odgovoranText    String?   @map("odgovoran_text")
+  rok              DateTime? @map("rok") @db.Date
+  rokText          String?   @map("rok_text")
+  status           String    @default("otvoren") @map("status") @db.VarChar(20)
+  prioritet        Int       @default(2) @map("prioritet")
+  zatvorenAt       DateTime? @map("zatvoren_at") @db.Timestamptz(6)
+  zatvorenByEmail  String?   @map("zatvoren_by_email") @db.VarChar(255)
+  zatvorenNapomena String?   @map("zatvoren_napomena")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByEmail   String?   @map("created_by_email") @db.VarChar(255)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  sastanak     Sastanak?                @relation(fields: [sastanakId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_sastanak")
+  tema         PmTema?                  @relation(fields: [temaId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_tema")
+  project      Project?                 @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_project")
+  istorija     AkcionaTackaIstorija[]
+  odluke       SastanakOdluka[]
+  notifikacije SastanciNotificationLog[]
+
+  @@index([odgovoranEmail], map: "idx_ap_odgovoran")
+  @@index([projectId], map: "idx_ap_projekat")
+  @@index([rok], map: "idx_ap_rok")
+  @@index([sastanakId], map: "idx_ap_sastanak")
+  @@index([status], map: "idx_ap_status")
+  @@map("akcioni_plan")
+}
+
+/// Revizioni trag izmena akcione tačke (u sy15 ga je pisao trigger
+/// `akcioni_plan_trg_istorija`; u 3.0 ga piše servis). 689 redova — veći od same
+/// tabele akcija; bez njega se gubi istorijat. Was: sy15 `akcioni_plan_istorija`.
+model AkcionaTackaIstorija {
+  id           String   @id(map: "pk_akcioni_plan_istorija") @default(uuid(4)) @map("id") @db.Uuid
+  akcijaId     String   @map("akcija_id") @db.Uuid
+  polje        String   @map("polje") @db.VarChar(60)
+  staro        String?  @map("staro")
+  novo         String?  @map("novo")
+  izmenioEmail String?  @map("izmenio_email") @db.VarChar(255)
+  izmenjenoAt  DateTime @default(now()) @map("izmenjeno_at") @db.Timestamptz(6)
+
+  akcija AkcionaTacka @relation(fields: [akcijaId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_akcioni_plan_istorija_akcija")
+
+  @@index([akcijaId, izmenjenoAt(sort: Desc)], map: "idx_akcioni_plan_istorija_akcija")
+  @@map("akcioni_plan_istorija")
+}
+
+/// Tema/problem/predlog za sastanak (PM tabla). Was: sy15 `pm_teme`.
+/// vrsta: tema | problem | predlog | rizik | pitanje
+/// oblast: opste | proizvodnja | montaza | nabavka | kadrovi | finansije | kvalitet | klijent | ostalo
+/// status: draft | predlog | usvojeno | odbijeno | odlozeno | zatvoreno
+model PmTema {
+  id               String    @id(map: "pk_pm_teme") @default(uuid(4)) @map("id") @db.Uuid
+  vrsta            String    @default("tema") @map("vrsta") @db.VarChar(20)
+  oblast           String    @default("opste") @map("oblast") @db.VarChar(20)
+  naslov           String    @map("naslov")
+  opis             String?   @map("opis")
+  /// Predmet (3.0 `projects.id`) — v. prenosnu odluku 2.
+  projectId        Int?      @map("projekat_id")
+  status           String    @default("predlog") @map("status") @db.VarChar(20)
+  prioritet        Int       @default(2) @map("prioritet")
+  sastanakId       String?   @map("sastanak_id") @db.Uuid
+  predlozioEmail   String    @map("predlozio_email") @db.VarChar(255)
+  predlozioLabel   String?   @map("predlozio_label")
+  predlozioAt      DateTime  @default(now()) @map("predlozio_at") @db.Timestamptz(6)
+  resioEmail       String?   @map("resio_email") @db.VarChar(255)
+  resioLabel       String?   @map("resio_label")
+  resioAt          DateTime? @map("resio_at") @db.Timestamptz(6)
+  resioNapomena    String?   @map("resio_napomena")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  hitno            Boolean   @default(false) @map("hitno")
+  zaRazmatranje    Boolean   @default(false) @map("za_razmatranje")
+  adminRang        Int?      @map("admin_rang")
+  adminRangByEmail String?   @map("admin_rang_by_email") @db.VarChar(255)
+  adminRangAt      DateTime? @map("admin_rang_at") @db.Timestamptz(6)
+
+  project  Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pm_teme_project")
+  sastanak Sastanak?        @relation(fields: [sastanakId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pm_teme_sastanak")
+  akcije   AkcionaTacka[]
+  odluke   SastanakOdluka[]
+
+  @@index([predlozioEmail], map: "idx_pm_teme_predlozio")
+  @@index([projectId], map: "idx_pm_teme_projekat")
+  @@index([projectId, adminRang], map: "idx_pm_teme_projekat_rang")
+  @@index([sastanakId], map: "idx_pm_teme_sastanak")
+  @@index([status], map: "idx_pm_teme_status")
+  // SQL-only: parcijalni indeksi (draft po projektu, hitno=true, za_razmatranje=true).
+  @@map("pm_teme")
+}
+
+/// Stavka „preseka stanja" na projektnom sastanku. Was: sy15 `presek_aktivnosti`.
+/// status: planiran | u_toku | zavrsen | blokirano | odlozeno
+model PresekAktivnost {
+  id             String    @id(map: "pk_presek_aktivnosti") @default(uuid(4)) @map("id") @db.Uuid
+  sastanakId     String    @map("sastanak_id") @db.Uuid
+  rb             Int       @map("rb")
+  redosled       Int       @default(0) @map("redosled")
+  naslov         String    @map("naslov")
+  podRn          String?   @map("pod_rn") @db.VarChar(60)
+  sadrzajHtml    String?   @map("sadrzaj_html")
+  sadrzajText    String?   @map("sadrzaj_text")
+  odgovoranEmail String?   @map("odgovoran_email") @db.VarChar(255)
+  odgovoranLabel String?   @map("odgovoran_label")
+  odgovoranText  String?   @map("odgovoran_text")
+  rok            DateTime? @map("rok") @db.Date
+  rokText        String?   @map("rok_text")
+  status         String    @default("u_toku") @map("status") @db.VarChar(20)
+  napomena       String?   @map("napomena")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// MEKA veza -> `pm_teme.id`. sy15 ovde NEMA FK; ne izmišljamo ga (prenos 1:1).
+  temaId         String?   @map("tema_id") @db.Uuid
+
+  sastanak Sastanak      @relation(fields: [sastanakId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_presek_aktivnosti_sastanak")
+  slike    PresekSlika[]
+
+  @@index([sastanakId, redosled], map: "idx_pa_sastanak")
+  @@index([status], map: "idx_pa_status")
+  @@map("presek_aktivnosti")
+}
+
+/// Fotografija uz stavku preseka stanja. `storagePath` pokazuje na sy15 bucket
+/// `sastanak-slike` — fajlovi se u koraku 1 NE sele. Was: sy15 `presek_slike`.
+model PresekSlika {
+  id              String   @id(map: "pk_presek_slike") @default(uuid(4)) @map("id") @db.Uuid
+  sastanakId      String   @map("sastanak_id") @db.Uuid
+  aktivnostId     String?  @map("aktivnost_id") @db.Uuid
+  storagePath     String   @map("storage_path")
+  fileName        String?  @map("file_name")
+  mimeType        String?  @map("mime_type") @db.VarChar(120)
+  sizeBytes       BigInt?  @map("size_bytes")
+  caption         String?  @map("caption")
+  redosled        Int      @default(0) @map("redosled")
+  uploadedByEmail String?  @map("uploaded_by_email") @db.VarChar(255)
+  uploadedAt      DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+
+  sastanak  Sastanak         @relation(fields: [sastanakId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_presek_slike_sastanak")
+  aktivnost PresekAktivnost? @relation(fields: [aktivnostId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_presek_slike_aktivnost")
+
+  @@index([aktivnostId], map: "idx_ps_aktivnost")
+  @@index([sastanakId, redosled], map: "idx_ps_sastanak")
+  @@map("presek_slike")
+}
+
+// ---------------------------------------------------------------------------
+// PROJEKTNI BIRO
+// ---------------------------------------------------------------------------
+
+/// Zadatak projektnog biroa. Was: sy15 `pb_tasks`.
+/// vrsta: Projektovanje 3D | Dokumentacija | Nabavka | Algoritam | Montaža (bio PG enum)
+/// prioritet: Visok | Srednji | Nizak (bio PG enum)
+/// status: Nije počelo | U toku | Pregled | Završeno | Blokirano (bio PG enum)
+model PbTask {
+  id                  String    @id(map: "pk_pb_tasks") @default(uuid(4)) @map("id") @db.Uuid
+  naziv               String    @map("naziv")
+  opis                String?   @map("opis")
+  problem             String?   @map("problem")
+  /// Predmet (3.0 `projects.id`) — v. prenosnu odluku 2.
+  projectId           Int?      @map("project_id")
+  /// MEKA veza -> sy15 `employees.id` (uuid). Kadrovska je korak 4 — odluka 5.
+  employeeId          String?   @map("employee_id") @db.Uuid
+  vrsta               String    @default("Projektovanje 3D") @map("vrsta") @db.VarChar(40)
+  prioritet           String    @default("Srednji") @map("prioritet") @db.VarChar(20)
+  status              String    @default("Nije počelo") @map("status") @db.VarChar(20)
+  datumPocetkaPlan    DateTime? @map("datum_pocetka_plan") @db.Date
+  datumZavrsetkaPlan  DateTime? @map("datum_zavrsetka_plan") @db.Date
+  datumPocetkaReal    DateTime? @map("datum_pocetka_real") @db.Date
+  datumZavrsetkaReal  DateTime? @map("datum_zavrsetka_real") @db.Date
+  procenatZavrsenosti Int       @default(0) @map("procenat_zavrsenosti")
+  /// Norma 1..7 sati dnevno — ulaz u `pb_get_load_stats`.
+  normaSatiDan        Int       @default(4) @map("norma_sati_dan")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy           String?   @map("created_by") @db.VarChar(255)
+  updatedBy           String?   @map("updated_by") @db.VarChar(255)
+  deletedAt           DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  project       Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pb_tasks_project")
+  comments      PbTaskComment[]
+  files         PbTaskFile[]
+  depsFrom      PbTaskDep[]         @relation("PbTaskDepTask")
+  depsOn        PbTaskDep[]         @relation("PbTaskDepDependsOn")
+  notifications PbNotificationLog[]
+
+  @@index([employeeId], map: "idx_pb_tasks_employee")
+  @@index([projectId], map: "idx_pb_tasks_project")
+  @@index([status], map: "idx_pb_tasks_status")
+  @@map("pb_tasks")
+}
+
+/// Komentar na zadatku. Was: sy15 `pb_task_comments`.
+model PbTaskComment {
+  id              String    @id(map: "pk_pb_task_comments") @default(uuid(4)) @map("id") @db.Uuid
+  taskId          String    @map("task_id") @db.Uuid
+  body            String    @map("body")
+  /// Pomenuti mejlovi (@mention) — čist tekst, ne FK.
+  mentions        String[]  @default([]) @map("mentions")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy       String?   @map("created_by") @db.VarChar(255)
+  /// U sy15 je bio `auth.users.id` (uuid); prevedeno na `users.id` (odluka 4).
+  createdByUserId Int?      @map("created_by_user_id")
+  editedAt        DateTime? @map("edited_at") @db.Timestamptz(6)
+
+  task        PbTask @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pb_task_comments_task")
+  createdUser User?  @relation(fields: [createdByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pb_task_comments_user")
+
+  @@index([taskId, createdAt(sort: Desc)], map: "idx_ptc_task_created")
+  @@map("pb_task_comments")
+}
+
+/// Zavisnost između zadataka (`task` čeka `dependsOn`). Ciklus brani servis
+/// (u sy15 je to radio trigger `pb_task_deps_check_cycle_trg`). Was: sy15 `pb_task_deps`.
+model PbTaskDep {
+  id              String   @id(map: "pk_pb_task_deps") @default(uuid(4)) @map("id") @db.Uuid
+  taskId          String   @map("task_id") @db.Uuid
+  dependsOnTaskId String   @map("depends_on_task_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy       String?  @map("created_by") @db.VarChar(255)
+
+  task      PbTask @relation("PbTaskDepTask", fields: [taskId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pb_task_deps_task")
+  dependsOn PbTask @relation("PbTaskDepDependsOn", fields: [dependsOnTaskId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pb_task_deps_depends_on")
+
+  @@unique([taskId, dependsOnTaskId], map: "uq_pb_task_deps_task_depends")
+  @@index([dependsOnTaskId], map: "idx_ptd_depends_on")
+  @@index([taskId], map: "idx_ptd_task")
+  @@map("pb_task_deps")
+}
+
+/// Prilog na zadatku. `storagePath` pokazuje na sy15 bucket `pb-task-files`.
+/// Was: sy15 `pb_task_files`.
+model PbTaskFile {
+  id               String    @id(map: "pk_pb_task_files") @default(uuid(4)) @map("id") @db.Uuid
+  taskId           String    @map("task_id") @db.Uuid
+  fileName         String    @map("file_name")
+  storagePath      String    @unique(map: "uq_pb_task_files_storage_path") @map("storage_path")
+  mimeType         String?   @map("mime_type") @db.VarChar(120)
+  sizeBytes        BigInt?   @map("size_bytes")
+  category         String?   @map("category") @db.VarChar(40)
+  description      String?   @map("description")
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
+  uploadedAt       DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  /// U sy15 je bio `auth.users.id` (uuid); prevedeno na `users.id` (odluka 4).
+  uploadedByUserId Int?      @map("uploaded_by")
+  uploadedByEmail  String?   @map("uploaded_by_email") @db.VarChar(255)
+
+  task       PbTask @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pb_task_files_task")
+  uploadedBy User?  @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pb_task_files_user")
+
+  // SQL-only: parcijalni indeks `idx_ptf_task_active` (WHERE deleted_at IS NULL).
+  @@map("pb_task_files")
+}
+
+/// Dnevni izveštaj o radu inženjera. Was: sy15 `pb_work_reports`.
+model PbWorkReport {
+  id         String   @id(map: "pk_pb_work_reports") @default(uuid(4)) @map("id") @db.Uuid
+  /// MEKA veza -> sy15 `employees.id` (uuid) — odluka 5.
+  employeeId String?  @map("employee_id") @db.Uuid
+  datum      DateTime @map("datum") @db.Date
+  sati       Decimal  @map("sati") @db.Decimal(4, 1)
+  opis       String?  @map("opis")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by") @db.VarChar(255)
+
+  @@index([datum], map: "idx_pb_work_reports_datum")
+  @@index([employeeId], map: "idx_pb_work_reports_employee")
+  @@map("pb_work_reports")
+}
+
+/// Kategorija inženjerskog saveta. Was: sy15 `pb_eng_tip_categories`.
+model PbEngTipCategory {
+  id        String   @id(map: "pk_pb_eng_tip_categories") @default(uuid(4)) @map("id") @db.Uuid
+  naziv     String   @unique(map: "uq_pb_eng_tip_categories_naziv") @map("naziv")
+  slug      String   @unique(map: "uq_pb_eng_tip_categories_slug") @map("slug")
+  ikona     String?  @map("ikona") @db.VarChar(80)
+  boja      String?  @map("boja") @db.VarChar(40)
+  redosled  Int      @default(0) @map("redosled")
+  jeAktivna Boolean  @default(true) @map("je_aktivna")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tips PbEngTip[]
+
+  @@map("pb_eng_tip_categories")
+}
+
+/// Inženjerski savet (baza znanja projektnog biroa). Was: sy15 `pb_eng_tips`.
+/// status: draft | published (bio PG enum `pb_eng_tip_status`)
+model PbEngTip {
+  id          String    @id(map: "pk_pb_eng_tips") @default(uuid(4)) @map("id") @db.Uuid
+  naslov      String    @map("naslov")
+  telo        String    @map("telo")
+  categoryId  String?   @map("category_id") @db.Uuid
+  tags        String[]  @default([]) @map("tags")
+  vendor      String?   @map("vendor")
+  url         String?   @map("url")
+  /// Predmet (3.0 `projects.id`) — v. prenosnu odluku 2.
+  projectId   Int?      @map("project_id")
+  status      String    @default("draft") @map("status") @db.VarChar(20)
+  /// MEKA veza -> sy15 `employees.id` (uuid) — odluka 5.
+  authorId    String?   @map("author_id") @db.Uuid
+  authorEmail String?   @map("author_email") @db.VarChar(255)
+  likesCount  Int       @default(0) @map("likes_count")
+  viewsCount  Int       @default(0) @map("views_count")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.VarChar(255)
+  updatedBy   String?   @map("updated_by") @db.VarChar(255)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  category PbEngTipCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pb_eng_tips_category")
+  project  Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pb_eng_tips_project")
+  files    PbEngTipFile[]
+  likes    PbEngTipLike[]
+
+  // SQL-only: kolona `search_tsv` (tsvector) + GIN indeks + trigger koji je puni,
+  // GIN nad `tags`, i parcijalni indeksi (WHERE deleted_at IS NULL) — Prisma ih ne
+  // ume izraziti; prenose se migracijom.
+  @@map("pb_eng_tips")
+}
+
+/// Prilog uz inženjerski savet; `storagePath` -> sy15 bucket `pb-eng-tip-files`.
+/// Was: sy15 `pb_eng_tip_files`.
+model PbEngTipFile {
+  id          String   @id(map: "pk_pb_eng_tip_files") @default(uuid(4)) @map("id") @db.Uuid
+  tipId       String   @map("tip_id") @db.Uuid
+  storagePath String   @map("storage_path")
+  fileName    String   @map("file_name")
+  mimeType    String?  @map("mime_type") @db.VarChar(120)
+  sizeBytes   BigInt?  @map("size_bytes")
+  uploadedBy  String?  @map("uploaded_by") @db.VarChar(255)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tip PbEngTip @relation(fields: [tipId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pb_eng_tip_files_tip")
+
+  // SQL-only: generisana kolona `is_image` (mime_type LIKE 'image/%') — prenosi se migracijom.
+  @@index([tipId], map: "idx_pb_eng_tip_files_tip")
+  @@map("pb_eng_tip_files")
+}
+
+/// „Sviđa mi se" na savetu. PK je (tip, korisnik). Was: sy15 `pb_eng_tip_likes`
+/// (tamo je `user_id` bio `auth.users.id` uuid; ovde `users.id` — odluka 4).
+model PbEngTipLike {
+  tipId     String   @map("tip_id") @db.Uuid
+  userId    Int      @map("user_id")
+  userEmail String?  @map("user_email") @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tip  PbEngTip @relation(fields: [tipId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pb_eng_tip_likes_tip")
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pb_eng_tip_likes_user")
+
+  @@id([tipId, userId], map: "pk_pb_eng_tip_likes")
+  @@map("pb_eng_tip_likes")
+}
+
+/// Jedan red (id=1): podešavanje obaveštenja projektnog biroa.
+/// Was: sy15 `pb_notification_config`.
+model PbNotificationConfig {
+  id                      Int       @id(map: "pk_pb_notification_config") @default(1) @map("id")
+  enabled                 Boolean   @default(true) @map("enabled")
+  deadlineWarningDays     Int       @default(3) @map("deadline_warning_days")
+  overloadThresholdPct    Int       @default(100) @map("overload_threshold_pct")
+  emailRecipients         String[]  @default([]) @map("email_recipients")
+  notifyOnBlocked         Boolean   @default(true) @map("notify_on_blocked")
+  notifyOnOverload        Boolean   @default(true) @map("notify_on_overload")
+  notifyOnDeadlineWarning Boolean   @default(true) @map("notify_on_deadline_warning")
+  notifyOnDeadlineOverdue Boolean   @default(true) @map("notify_on_deadline_overdue")
+  notifyOnNoEngineer      Boolean   @default(false) @map("notify_on_no_engineer")
+  updatedAt               DateTime? @map("updated_at") @db.Timestamptz(6)
+  updatedBy               String?   @map("updated_by") @db.VarChar(255)
+  quietHoursStart         DateTime? @map("quiet_hours_start") @db.Time(6)
+  quietHoursEnd           DateTime? @map("quiet_hours_end") @db.Time(6)
+  quietHoursTz            String    @default("Europe/Belgrade") @map("quiet_hours_tz") @db.VarChar(60)
+  digestMode              Boolean   @default(false) @map("digest_mode")
+
+  @@map("pb_notification_config")
+}
+
+/// Red čekanja + trag obaveštenja projektnog biroa. Was: sy15 `pb_notification_log`.
+/// channel: email | whatsapp
+/// status: pending | processing | sent | failed | dead_letter
+model PbNotificationLog {
+  id                String    @id(map: "pk_pb_notification_log") @default(uuid(4)) @map("id") @db.Uuid
+  channel           String    @map("channel") @db.VarChar(20)
+  recipient         String    @map("recipient") @db.VarChar(255)
+  /// U sy15 je bio `auth.users.id` (uuid); prevedeno na `users.id` (odluka 4).
+  recipientUserId   Int?      @map("recipient_user_id")
+  subject           String?   @map("subject")
+  body              String    @map("body")
+  triggerType       String    @map("trigger_type") @db.VarChar(60)
+  relatedTaskId     String?   @map("related_task_id") @db.Uuid
+  /// MEKA veza -> sy15 `employees.id` (uuid) — odluka 5.
+  relatedEmployeeId String?   @map("related_employee_id") @db.Uuid
+  status            String    @default("pending") @map("status") @db.VarChar(20)
+  error             String?   @map("error")
+  attempts          Int       @default(0) @map("attempts")
+  scheduledAt       DateTime  @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt     DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastAttemptAt     DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  payload           Json?     @map("payload")
+  processedAt       DateTime? @map("processed_at") @db.Timestamptz(6)
+
+  task          PbTask? @relation(fields: [relatedTaskId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_pb_notification_log_task")
+  recipientUser User?   @relation(fields: [recipientUserId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_pb_notification_log_user")
+
+  // SQL-only: parcijalni indeksi reda čekanja (WHERE status = 'pending' / IN (…)).
+  @@map("pb_notification_log")
 }

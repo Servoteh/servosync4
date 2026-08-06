@@ -1,4 +1,5 @@
 import { PrismaService } from "../../prisma/prisma.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
 import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import {
@@ -111,7 +112,17 @@ describe("BigbitSyncJobs — prekidač i registracija", () => {
     const sy15 = {
       db: { $queryRawUnsafe: jest.fn().mockResolvedValue([]) },
     } as unknown as ConstructorParameters<typeof Sy15CronJobs>[0];
-    const keys = new Sy15CronJobs(sy15).buildJobs().map((j) => j.key);
+    // Seoba sastanaka (05.08): registar poslova od sada zna i za prekidač
+    // `SASTANCI_PB_IZVOR` + 3.0 prepis fn-ova. Ovde se testiraju SAMO ključevi,
+    // pa su ostale zavisnosti prazni stub-ovi.
+    const keys = new Sy15CronJobs(
+      sy15,
+      new SastanciPbSourceService(),
+      {} as unknown as ConstructorParameters<typeof Sy15CronJobs>[2],
+      {} as unknown as ConstructorParameters<typeof Sy15CronJobs>[3],
+    )
+      .buildJobs()
+      .map((j) => j.key);
     expect(keys).not.toContain(BIGBIT_NIGHTLY_SYNC_JOB_KEY);
   });
 
@@ -150,7 +161,11 @@ describe("BigbitSyncJobs — izvršenje i ishod u dnevniku", () => {
     const arg = calls[0][0];
     expect(arg.trigger).toBe("cron");
     // customers/projects/items su van prolaza (DEFAULT_SYNC_EXCLUDED, reopen 061/26).
-    expect(arg.entities).toEqual(["document_types", "global_config", "salespeople"]);
+    expect(arg.entities).toEqual([
+      "document_types",
+      "global_config",
+      "salespeople",
+    ]);
     expect(arg.force).toBeUndefined();
     expect(arg.strategy).toBeUndefined();
   });

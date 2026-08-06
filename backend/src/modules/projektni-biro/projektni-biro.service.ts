@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
 import { jsonSafe } from "../../common/sy15/json-safe";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import type {
@@ -57,6 +58,7 @@ export class ProjektniBiroService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
+    private readonly izvor: SastanciPbSourceService,
   ) {}
 
   // ---------- Dropdown / lookup (DEFINER RPC) ----------
@@ -303,10 +305,17 @@ export class ProjektniBiroService {
 
   // ---------- interno ----------
 
+  /**
+   * 🔴 JEDINI ULAZ U sy15 IZ OVOG SERVISA (uz `runIdem`) — brana `SASTANCI_PB_IZVOR`
+   * je zato ovde. Pod `3.0` ceo projektni biro pada sa 503: nijedna njegova putanja
+   * nije prenosiva dok `employees` (kadrovska, korak 4) ne pređe — `pb_current_employee_id()`
+   * je ulaz u SVA prava modula.
+   */
   private async withUserMapped<T>(
     email: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<T> {
+    this.izvor.assertPorted("projektni biro: čitanje/upis kroz sy15");
     try {
       return await this.sy15.withUserRls(email, fn);
     } catch (e) {
@@ -349,13 +358,17 @@ export class ProjektniBiroService {
   // pa idu kroz $queryRaw. RLS-filtrovan UPDATE/DELETE (0 redova) → `assertAffected`
   // razdvaja 404 (ne postoji) od 403 (postoji ali nema prava).
 
-  /** Idempotentna mutacija sa nus-efektima (create task/comment/work-report/tip/file). */
+  /** Idempotentna mutacija sa nus-efektima (create task/comment/work-report/tip/file).
+   *  Drugi (i poslednji) ulaz u sy15 — v. branu u `withUserMapped`. */
   private async runIdem<T>(
     email: string,
     clientEventId: string,
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ) {
+    this.izvor.assertPorted(
+      `projektni biro: idempotentna mutacija "${action}" kroz sy15`,
+    );
     try {
       const out = await this.sy15.runIdempotentRls(
         email,

@@ -14,6 +14,7 @@ import { RobnoModule } from "../robno/robno.module";
 import { ReservationService } from "../robno/reservation.service";
 import { SyncModule } from "../sync/sync.module";
 import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
+import { SastanciModule } from "../sastanci/sastanci.module";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -46,13 +47,18 @@ import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
  * posao SAMO ČITA sistemske kataloge i ne šalje ništa dok ne nađe nalaz, pa nema
  * šta da se „aktivira" — a prekidač na bezbednosnoj proveri je samo još jedno
  * mesto na kome ona može tiho da ostane ugašena.
+ *
+ * Seoba sastanaka (05.08.2026) — SastanciModule daje `SastanciFnService` (prepis
+ * sy15 DEFINER fn nad 3.0 bazom) i `SastanciPbSourceService` (prekidač
+ * `SASTANCI_PB_IZVOR`). Poslovi domena sastanaka pod `3.0` idu kroz ISTU logiku
+ * kao kontroler, ne kroz kopiju. SastanciModule ne uvozi scheduler → nema ciklusa.
  */
 @Module({
   // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
   // (bez toga `expiresAt` ne radi ništa i rezervacija večno drži zalihu).
   // SyncModule → SyncService: noćni BigBit sync zove ISTI servis kao /sync/run
   // (bez duplirane logike). SyncModule ne uvozi scheduler → nema ciklusa.
-  imports: [Sy15Module, RobnoModule, SyncModule],
+  imports: [Sy15Module, RobnoModule, SyncModule, SastanciModule],
   controllers: [SchedulerController],
   providers: [
     SchedulerService,

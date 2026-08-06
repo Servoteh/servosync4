@@ -19,6 +19,7 @@ import {
   ValidateNested,
 } from "class-validator";
 import { IsCalendarDate } from "../../moj-profil/dto/is-calendar-date";
+import { IsPredmetRef } from "./is-predmet-ref";
 
 /**
  * Mutacioni DTO-ovi za Sastanci R2 (MODULE_SPEC_sastanci_ai_30.md §3).
@@ -71,7 +72,8 @@ export class CreateSastanakDto extends IdempotentDto {
 
   @IsOptional() @Matches(TIME_RE) vreme?: string;
   @IsOptional() @IsString() mesto?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid; `null` briše vezu (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number | null;
   @IsOptional() @IsString() vodioEmail?: string;
   @IsOptional() @IsString() vodioLabel?: string;
   @IsOptional() @IsString() zapisnicarEmail?: string;
@@ -113,7 +115,8 @@ export class UpdateSastanakDto {
   @IsOptional() @IsISO8601() datum?: string;
   @IsOptional() @Matches(TIME_OR_CLEAR_RE) vreme?: string;
   @IsOptional() @IsString() mesto?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid; `null` briše vezu (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number | null;
   @IsOptional() @IsString() vodioEmail?: string;
   @IsOptional() @IsString() vodioLabel?: string;
   @IsOptional() @IsString() zapisnicarEmail?: string;
@@ -271,7 +274,8 @@ export class CreateAkcijaDto extends IdempotentDto {
   @IsString() @MaxLength(500) naslov!: string;
   @IsOptional() @IsUUID() sastanakId?: string;
   @IsOptional() @IsUUID() temaId?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid; `null` briše vezu (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number | null;
   @IsOptional() @IsInt() rb?: number;
   // 4000 = odbrana u dubinu za PDF prelom (zahtev 014/26 t.6); naslov ima 500.
   @IsOptional() @IsString() @MaxLength(4000) opis?: string;
@@ -287,7 +291,8 @@ export class CreateAkcijaDto extends IdempotentDto {
 export class PatchAkcijaDto {
   @IsOptional() @IsString() @MaxLength(500) naslov?: string;
   @IsOptional() @IsUUID() sastanakId?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid; `null` briše vezu (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number | null;
   @IsOptional() @IsInt() rb?: number;
   @IsOptional() @IsString() @MaxLength(4000) opis?: string;
   @IsOptional() @IsString() odgovoranEmail?: string;
@@ -312,7 +317,8 @@ export class CreateTemaDto extends IdempotentDto {
   @IsOptional() @IsString() vrsta?: string;
   @IsOptional() @IsString() oblast?: string;
   @IsOptional() @IsString() opis?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid; `null` briše vezu (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number | null;
   @IsOptional() @IsUUID() sastanakId?: string;
   @IsOptional() @IsString() status?: string;
   @IsOptional() @IsInt() prioritet?: number;
@@ -325,7 +331,8 @@ export class UpdateTemaDto {
   @IsOptional() @IsString() vrsta?: string;
   @IsOptional() @IsString() oblast?: string;
   @IsOptional() @IsString() opis?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid; `null` briše vezu (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number | null;
   @IsOptional() @IsUUID() sastanakId?: string;
   @IsOptional() @IsString() status?: string;
   @IsOptional() @IsInt() prioritet?: number;
@@ -365,7 +372,8 @@ export class RangItemDto {
 }
 
 export class CreateDraftTemaDto extends IdempotentDto {
-  @IsUUID() projektId!: string;
+  /** Predmet je OBAVEZAN za draft temu; 3.0 `Int` ILI sy15 uuid (blokada 5). */
+  @IsPredmetRef() projektId!: string | number;
   @IsString() @MaxLength(500) naslov!: string;
   @IsOptional() @IsString() vrsta?: string;
   @IsOptional() @IsString() oblast?: string;
