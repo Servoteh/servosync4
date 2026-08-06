@@ -7,7 +7,7 @@ import {
 import { ProjektniBiroService } from "./projektni-biro.service";
 import type { Sy15Service, Sy15Tx } from "../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { PbSourceService } from "../../common/sy15/pb-source.service";
 
 /**
  * R2 mutacije PB — jedinični testovi (bez žive baze). Pinuju: (1) write kroz
@@ -85,7 +85,7 @@ function makeSvc() {
     sy15 as unknown as Sy15Service,
     storage as unknown as Sy15StorageService,
     // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
-    new SastanciPbSourceService(),
+    new PbSourceService(),
   );
   return { svc, sy15, tx, storage };
 }

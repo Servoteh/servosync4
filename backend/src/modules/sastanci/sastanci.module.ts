@@ -6,13 +6,15 @@ import { SastanciSamouslugaService } from "./sastanci-samousluga.service";
 import { SastanciAuthzService } from "./sastanci-authz.service";
 import { SastanciFnService } from "./sastanci-fn.service";
 import { SastanciPredmetService } from "./sastanci-predmet.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 
 /**
  * Sastanci — 3.0 TALAS B.
  *
  * Podaci danas žive u sy15 bazi (Sy15Module, globalan). Seoba u 3.0 stoji iza
- * prekidača `SASTANCI_PB_IZVOR` (docs/SEOBA_SASTANCI_PB_2026-08-05.md). Pod `3.0`:
+ * prekidača `SASTANCI_IZVOR` (docs/SEOBA_SASTANCI_PB_2026-08-05.md §7h — od
+ * 06.08. je odvojen od `PB_IZVOR`, pa preklop sastanaka ne dira projektni biro).
+ * Pod `3.0`:
  *  - `SastanciSamouslugaService` — 4 samouslužne DEFINER fn (RSVP, priprema,
  *    status moje akcije, moja podešavanja),
  *  - `SastanciFnService` — 17 pozvanih DEFINER fn + 6 logičkih trigera domena,
@@ -36,8 +38,8 @@ import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.se
     SastanciAuthzService,
     SastanciFnService,
     SastanciPredmetService,
-    SastanciPbSourceService,
+    SastanciSourceService,
   ],
-  exports: [SastanciFnService, SastanciAuthzService, SastanciPbSourceService],
+  exports: [SastanciFnService, SastanciAuthzService, SastanciSourceService],
 })
 export class SastanciModule {}

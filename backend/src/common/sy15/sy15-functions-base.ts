@@ -3,7 +3,7 @@
  *
  * Izdvojeno iz `SastanciDispatchService.functionsBase()` kad je RSVP dobio 3.0
  * parnjaka (`SastanciRsvpController`): oba mesta moraju da grade ISTI sy15 URL —
- * dispečer kad pod `SASTANCI_PB_IZVOR=sy15` šalje link u mejlu, kontroler kad
+ * dispečer kad pod `SASTANCI_IZVOR=sy15` šalje link u mejlu, kontroler kad
  * pod istim prekidačem preusmeri klik na vlasnika podatka. Dve kopije bi se
  * razišle prvom izmenom lanca.
  *

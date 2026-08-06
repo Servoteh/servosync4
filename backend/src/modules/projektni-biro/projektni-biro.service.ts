@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { jsonSafe } from "../../common/sy15/json-safe";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import type {
@@ -58,7 +58,7 @@ export class ProjektniBiroService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly storage: Sy15StorageService,
-    private readonly izvor: SastanciPbSourceService,
+    private readonly izvor: PbSourceService,
   ) {}
 
   // ---------- Dropdown / lookup (DEFINER RPC) ----------
@@ -306,7 +306,7 @@ export class ProjektniBiroService {
   // ---------- interno ----------
 
   /**
-   * 🔴 JEDINI ULAZ U sy15 IZ OVOG SERVISA (uz `runIdem`) — brana `SASTANCI_PB_IZVOR`
+   * 🔴 JEDINI ULAZ U sy15 IZ OVOG SERVISA (uz `runIdem`) — brana `PB_IZVOR`
    * je zato ovde. Pod `3.0` ceo projektni biro pada sa 503: nijedna njegova putanja
    * nije prenosiva dok `employees` (kadrovska, korak 4) ne pređe — `pb_current_employee_id()`
    * je ulaz u SVA prava modula.

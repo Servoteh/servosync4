@@ -15,6 +15,7 @@ import { ReservationService } from "../robno/reservation.service";
 import { SyncModule } from "../sync/sync.module";
 import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
 import { SastanciModule } from "../sastanci/sastanci.module";
+import { PbSourceService } from "../../common/sy15/pb-source.service";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -49,9 +50,15 @@ import { SastanciModule } from "../sastanci/sastanci.module";
  * mesto na kome ona može tiho da ostane ugašena.
  *
  * Seoba sastanaka (05.08.2026) — SastanciModule daje `SastanciFnService` (prepis
- * sy15 DEFINER fn nad 3.0 bazom) i `SastanciPbSourceService` (prekidač
- * `SASTANCI_PB_IZVOR`). Poslovi domena sastanaka pod `3.0` idu kroz ISTU logiku
+ * sy15 DEFINER fn nad 3.0 bazom) i `SastanciSourceService` (prekidač
+ * `SASTANCI_IZVOR`). Poslovi domena sastanaka pod `3.0` idu kroz ISTU logiku
  * kao kontroler, ne kroz kopiju. SastanciModule ne uvozi scheduler → nema ciklusa.
+ *
+ * 🔴 Razdvajanje prekidača (06.08.2026, runbook §7h) — scheduler je JEDINO mesto
+ * kome trebaju OBA: `Sy15CronJobs` drži tri posla sastanaka (`SASTANCI_IZVOR`) i
+ * `pb-enqueue` (`PB_IZVOR`), a `NotifyDispatchService` drži `pb-notify-dispatch`
+ * (`PB_IZVOR`). Zato `PbSourceService` stoji ovde u providers — dok su prekidači
+ * bili jedan, preklop sastanaka je obarao oba PB posla.
  */
 @Module({
   // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
@@ -70,6 +77,7 @@ import { SastanciModule } from "../sastanci/sastanci.module";
     BigbitSyncJobs,
     DailyBriefService,
     SecurityAuditService,
+    PbSourceService,
   ],
   // NotifyDispatchService se izvozi da bi Kadrovska/Moj profil mogli da okinu
   // ISTI dispečer sinhrono („Pošalji čekaće" / pulse posle mutacije) umesto da

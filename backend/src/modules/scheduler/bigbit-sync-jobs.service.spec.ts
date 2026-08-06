@@ -1,5 +1,6 @@
 import { PrismaService } from "../../prisma/prisma.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
+import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import {
@@ -112,14 +113,15 @@ describe("BigbitSyncJobs — prekidač i registracija", () => {
     const sy15 = {
       db: { $queryRawUnsafe: jest.fn().mockResolvedValue([]) },
     } as unknown as ConstructorParameters<typeof Sy15CronJobs>[0];
-    // Seoba sastanaka (05.08): registar poslova od sada zna i za prekidač
-    // `SASTANCI_PB_IZVOR` + 3.0 prepis fn-ova. Ovde se testiraju SAMO ključevi,
-    // pa su ostale zavisnosti prazni stub-ovi.
+    // Seoba sastanaka (05.08): registar poslova od sada zna i za prekidače
+    // `SASTANCI_IZVOR` / `PB_IZVOR` (razdvojeni 06.08.) + 3.0 prepis fn-ova.
+    // Ovde se testiraju SAMO ključevi, pa su ostale zavisnosti prazni stub-ovi.
     const keys = new Sy15CronJobs(
       sy15,
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       {} as unknown as ConstructorParameters<typeof Sy15CronJobs>[2],
       {} as unknown as ConstructorParameters<typeof Sy15CronJobs>[3],
+      new PbSourceService(),
     )
       .buildJobs()
       .map((j) => j.key);

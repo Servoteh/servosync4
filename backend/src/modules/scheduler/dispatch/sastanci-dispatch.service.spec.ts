@@ -3,7 +3,7 @@ import { SastanciDispatchService as RealSastanciDispatchService } from "./sastan
 import type { MailService } from "../../../common/mail/mail.service";
 import type { Sy15Service } from "../../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
-import { SastanciPbSourceService } from "../../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../../common/sy15/sastanci-source.service";
 import type { PrismaService } from "../../../prisma/prisma.service";
 import type { SastanciFnService } from "../../sastanci/sastanci-fn.service";
 
@@ -16,7 +16,7 @@ import type { SastanciFnService } from "../../sastanci/sastanci-fn.service";
  * Uz to čuvamo NAMERNO ODSTUPANJE: deep-linkovi su 3.0 oblika (`?open=` /
  * `?tab=`), jer je stari `sastanci/<uuid>` oblik 404 na današnjem domenu.
  *
- * Seoba 05.08 — servis je dobio tri nove zavisnosti (prekidač `SASTANCI_PB_IZVOR`,
+ * Seoba 05.08 — servis je dobio tri nove zavisnosti (prekidač `SASTANCI_IZVOR`,
  * 3.0 Prisma i `SastanciFnService`). Postojeći testovi pinuju `sy15` put i grade
  * servis sa tri argumenta, pa se ostatak dodaje kao PODRAZUMEVAN (vidi wrapper
  * ispod); testovi 3.0 puta prosleđuju svoje mock-ove.
@@ -112,7 +112,7 @@ class SastanciDispatchService extends RealSastanciDispatchService {
     sy15: Sy15Service,
     mail: MailService,
     storage: Sy15StorageService,
-    izvor: SastanciPbSourceService = new SastanciPbSourceService(),
+    izvor: SastanciSourceService = new SastanciSourceService(),
     prisma: PrismaService = prismaMock().prisma,
     sastFn: SastanciFnService = sastFnMock().sastFn,
   ) {
@@ -150,7 +150,7 @@ const OLD_ENV = { ...process.env };
 beforeEach(() => {
   process.env.DISPATCH_SASTANCI_ENABLED = "true";
   // Podrazumevani izvor je sy15 — postojeći testovi pinuju STARI put.
-  delete process.env.SASTANCI_PB_IZVOR;
+  delete process.env.SASTANCI_IZVOR;
   process.env.PUBLIC_APP_URL = APP;
   process.env.SY15_FUNCTIONS_URL = FN_BASE;
   // Prod vrednost je LAN (192.168.64.28:8090) — RSVP link NIKAD ne sme odavde.
@@ -1037,7 +1037,7 @@ describe("privatnost logova", () => {
   });
 });
 
-describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
+describe("prekidač SASTANCI_IZVOR — red outbox-a (seoba 05.08)", () => {
   /** Servis sa punim setom 3.0 mock-ova; `rows` je ono što dequeue vrati. */
   function make(rows: Array<Record<string, unknown>> = []) {
     const m = sy15Mock();
@@ -1048,7 +1048,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
       m.sy15,
       mail,
       storageMock().storage,
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       p.prisma,
       fn.sastFn,
     );
@@ -1056,7 +1056,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
   }
 
   it("izvor=3.0: dequeue ide kroz SastanciFnService u 3.0 transakciji, NE na sy15", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { svc, m, fn, p } = make([]);
 
     const r = await svc.dispatchSastanci();
@@ -1070,7 +1070,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
   });
 
   it("izvor=3.0: mark_sent ide kroz prepis (ARRAY potpis), a ne na sy15 RPC", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { svc, m, fn, sent } = make([row({ id: ID_A })]);
 
     const r = await svc.dispatchSastanci();
@@ -1083,7 +1083,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
   });
 
   it("izvor=3.0: mark_failed ide kroz prepis, sa ISTIM backoff-om kao sy15 put", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const m = sy15Mock();
     const p = prismaMock();
     const fn = sastFnMock([row({ id: ID_A, attempts: 1 })]);
@@ -1091,7 +1091,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
       m.sy15,
       mailMock(true, false).mail, // Resend pada
       storageMock().storage,
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       p.prisma,
       fn.sastFn,
     );
@@ -1109,7 +1109,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
   });
 
   it("izvor=3.0: whatsapp red i dalje pada permanentno (backoff ~godina) — kroz prepis", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { svc, fn, send } = make([row({ channel: "whatsapp" })]);
 
     const r = await svc.dispatchSastanci();
@@ -1119,7 +1119,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
   });
 
   it("izvor=sy15 (podrazumevano): sve tri tačke idu STARIM putem, prepis se ne dira", async () => {
-    delete process.env.SASTANCI_PB_IZVOR;
+    delete process.env.SASTANCI_IZVOR;
     const m = sy15Mock();
     m.pushResult([row({ id: ID_A })]);
     const p = prismaMock();
@@ -1128,7 +1128,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
       m.sy15,
       mailMock().mail,
       storageMock().storage,
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       p.prisma,
       fn.sastFn,
     );
@@ -1143,7 +1143,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
   });
 
   it("nepoznata vrednost prekidača NE pali 3.0 granu (pada na bezbedan sy15)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "30";
+    process.env.SASTANCI_IZVOR = "30";
     const m = sy15Mock();
     m.pushResult([]);
     const fn = sastFnMock();
@@ -1151,7 +1151,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
       m.sy15,
       mailMock().mail,
       storageMock().storage,
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       prismaMock().prisma,
       fn.sastFn,
     ).dispatchSastanci();
@@ -1167,7 +1167,7 @@ describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
  * preneti DOSLOVNO, pa isti `t` postoji u obe baze — i baš zato bi pogrešan host
  * u linku tiho pisao u bazu koja nije izvor istine. Ovi testovi to pinuju.
  */
-describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
+describe("prekidač SASTANCI_IZVOR — RSVP link u pozivnici", () => {
   /** Podrazumevana javna baza 3.0 API-ja (prod; docs/infra/INFRASTRUKTURA.md §6). */
   const API_30 = "https://api.servosync2.servoteh.com/api/v1/sastanci-rsvp";
 
@@ -1191,7 +1191,7 @@ describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
       m.sy15,
       mail,
       storageMock().storage,
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       p.prisma,
       fn.sastFn,
     );
@@ -1200,7 +1200,7 @@ describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
   }
 
   it("izvor=3.0: dugmad vode na 3.0 JAVNU rutu, ne na sy15 edge", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { sent } = await invite30("tok-123");
 
     expect(sent[0].html).toContain(`${API_30}?t=tok-123&amp;r=dolazim`);
@@ -1210,7 +1210,7 @@ describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
   });
 
   it("izvor=3.0: PUBLIC_API_URL presuđuje bazu (i završna '/' ne pravi dupli separator)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     process.env.PUBLIC_API_URL = "https://api.test.servoteh.com/api/";
     const { sent } = await invite30("tok-123");
 
@@ -1221,7 +1221,7 @@ describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
   });
 
   it("🔴 izvor=3.0: RSVP link NE ide na front (worker ne proksira /api → 404, mrtva dugmad)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     process.env.PUBLIC_APP_URL = "https://servosync2.servoteh.com/";
     const { sent } = await invite30("tok-123");
 
@@ -1232,7 +1232,7 @@ describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
   });
 
   it("izvor=3.0: token se čita iz 3.0 baze, a NE sa sy15 (novi učesnik u sy15 ne postoji)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { p, m } = await invite30("tok-123");
 
     expect(p.findFirst).toHaveBeenCalledWith({
@@ -1243,7 +1243,7 @@ describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
   });
 
   it("izvor=3.0 bez tokena: pozivnica ide bez RSVP sekcije (ne pada)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { sent } = await invite30(null);
 
     expect(sent).toHaveLength(1);
@@ -1251,7 +1251,7 @@ describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
   });
 
   it("izvor=sy15 (podrazumevano): link ostaje na sy15 edge fn", async () => {
-    delete process.env.SASTANCI_PB_IZVOR;
+    delete process.env.SASTANCI_IZVOR;
     const m = sy15Mock();
     m.pushResult([
       row({

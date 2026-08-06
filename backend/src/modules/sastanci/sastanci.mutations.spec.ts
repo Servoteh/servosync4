@@ -19,7 +19,7 @@ const aiPolicyStub = (): AiModelPolicyService =>
       ),
   }) as unknown as AiModelPolicyService;
 import type { Sy15Service } from "../../common/sy15/sy15.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import {
   ArhivaPdfDto,
   CreateSastanakDto,
@@ -147,7 +147,7 @@ function makeSvc() {
     ai as never,
     aiPolicyStub(),
     // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
-    new SastanciPbSourceService(),
+    new SastanciSourceService(),
     {} as never,
     {} as never,
     {} as never,

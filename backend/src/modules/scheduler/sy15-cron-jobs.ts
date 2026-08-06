@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Sy15Service } from "../../common/sy15/sy15.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
+import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   SastanciFnService,
@@ -34,16 +35,21 @@ import type { ScheduledJob } from "./scheduler.types";
  * ── SEOBA SASTANAKA (05.08.2026, docs/SEOBA_SASTANCI_PB_2026-08-05.md) ────────
  * TRI posla iz ovog registra diraju domen sastanaka (`sast-action-reminders`,
  * `sast-meeting-reminders`, `sast-weekly-auto`) i od sada POŠTUJU prekidač
- * `SASTANCI_PB_IZVOR`:
+ * `SASTANCI_IZVOR`:
  *   • `sy15` (podrazumevano) — ponašanje NETAKNUTO: isti `SELECT public.<fn>()`.
  *   • `3.0`                  — isti posao kroz `SastanciFnService` nad 3.0 bazom.
  * Summary string je NAMERNO istog oblika u oba slučaja (`<ime_fn>=<vrednost>`),
  * da dnevnik (`scheduled_job_runs.summary`) ostane uporediv pre i posle preklopa.
  *
  * ⚠️ Ostali poslovi (kadrovska, održavanje, BigTehn kartice) NISU ovaj domen i
- * ostaju na sy15 putu bez prekidača. `pb-enqueue` JESTE domen prekidača, ali PB
- * se ne seli u ovom koraku (blokiran kadrovskom) — zato ide kroz branjeni geter
- * `assertPorted`, da pod `3.0` GLASNO padne umesto da tiho piše u sy15.
+ * ostaju na sy15 putu bez prekidača.
+ *
+ * 🔴 `pb-enqueue` gleda SVOJ prekidač `PB_IZVOR`, ne sastanci prekidač — ovaj
+ * registar je jedino mesto u kodu koje drži OBA. Do 06.08.2026 su delili jedan
+ * (`SASTANCI_PB_IZVOR`), pa je preklop sastanaka na `3.0` obarao i `pb-enqueue`
+ * (503 u dnevniku) iako se PB ne seli. PB je blokiran kadrovskom, pa i dalje ide
+ * kroz branjeni geter `assertPorted` — ali sad pod svojim prekidačem, tj. pod
+ * `SASTANCI_IZVOR=3.0` + `PB_IZVOR=sy15` posao radi normalno.
  */
 
 interface RawRow {
@@ -62,9 +68,11 @@ export class Sy15CronJobs {
 
   constructor(
     private readonly sy15: Sy15Service,
-    private readonly izvor: SastanciPbSourceService,
+    private readonly izvor: SastanciSourceService,
     private readonly prisma: PrismaService,
     private readonly sastFn: SastanciFnService,
+    // Zaseban prekidač PB-a: `pb-enqueue` NE SME da zavisi od preklopa sastanaka.
+    private readonly pbIzvor: PbSourceService,
   ) {}
 
   /**
@@ -84,7 +92,12 @@ export class Sy15CronJobs {
       query,
       new Promise<never>((_, rej) =>
         setTimeout(
-          () => rej(new Error(`sy15 poziv nije odgovorio za ${SY15_CALL_TIMEOUT_MS / 1000}s`)),
+          () =>
+            rej(
+              new Error(
+                `sy15 poziv nije odgovorio za ${SY15_CALL_TIMEOUT_MS / 1000}s`,
+              ),
+            ),
           SY15_CALL_TIMEOUT_MS,
         ).unref?.(),
       ),
@@ -132,7 +145,7 @@ export class Sy15CronJobs {
    *
    * 🔴 OVO JE JEDINA PREOSTALA CROSS-BAZA ZAVISNOST SASTANAKA: `kadr_holidays`
    * je KADROVSKA tabela, a kadrovska je KORAK 4 seobe — u 3.0 je još nema. Zato
-   * se praznici i pod `SASTANCI_PB_IZVOR=3.0` čitaju READ-ONLY sa sy15. Kad
+   * se praznici i pod `SASTANCI_IZVOR=3.0` čitaju READ-ONLY sa sy15. Kad
    * kadrovska pređe, ovaj metod se BRIŠE i praznici se čitaju iz 3.0 (jedan
    * izvor); do tada je ovo jedini razlog zbog kog sastanci još dodiruju sy15.
    *
@@ -225,7 +238,7 @@ export class Sy15CronJobs {
         "SELECT public.sync_qbigtehn_operator_cards()::text AS result;",
       ),
       // ── Sastanci (outbox: sastanci_notification_log) ──────────────────────
-      // Ova TRI posla poštuju `SASTANCI_PB_IZVOR` (vidi `callSastanci`).
+      // Ova TRI posla poštuju `SASTANCI_IZVOR` (vidi `callSastanci`).
       {
         key: "sast-action-reminders",
         description:
@@ -293,7 +306,9 @@ export class Sy15CronJobs {
           // visi o `employees`). Branjeni geter je tu da posao ne može TIHO da
           // zaobiđe prekidač — pod `3.0` pada sa 503 i imenom putanje u dnevniku,
           // umesto da nastavi da piše u sy15 i razilazi dve baze.
-          this.izvor.assertPorted(
+          // 🔴 `pbIzvor`, NE `izvor`: preklop sastanaka na `3.0` ne sme da obori
+          // ovaj posao (incident 06.08.2026).
+          this.pbIzvor.assertPorted(
             "projektni biro: enqueue notifikacija kroz sy15",
           );
           return this.call("SELECT public.pb_enqueue_notifications();");

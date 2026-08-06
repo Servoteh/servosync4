@@ -2,7 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { MailService } from "../../../common/mail/mail.service";
 import { Sy15Service } from "../../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
-import { SastanciPbSourceService } from "../../../common/sy15/sastanci-pb-source.service";
+import { PbSourceService } from "../../../common/sy15/pb-source.service";
 import type { ScheduledJob } from "../scheduler.types";
 
 /*
@@ -76,13 +76,18 @@ import type { ScheduledJob } from "../scheduler.types";
  * prekidač za SLANJE). Bez DISPATCH_ENABLED posao je no-op uz debug log — deploy
  * koda je bezbedan i kad je scheduler već upaljen.
  *
- * ── SEOBA (05.08.2026) ──────────────────────────────────────────────────────
- * PB grana (`dispatchPb`) je u domenu prekidača `SASTANCI_PB_IZVOR`, ali se PB u
+ * ── SEOBA (05.08.2026, razdvojen prekidač 06.08.) ────────────────────────────
+ * PB grana (`dispatchPb`) je u domenu prekidača `PB_IZVOR`, ali se PB u
  * ovom koraku NE seli (blokiran kadrovskom: `pb_current_employee_id` visi o
  * `employees`). Zato PB grana NIJE prepisana — samo prolazi kroz branjeni geter
  * `assertPorted`, da pod `3.0` GLASNO padne umesto da tiho nastavi da piše u
  * sy15. Kadrovska (`kadr_*`) i održavanje (`maint_*`) NISU ovaj domen i ostaju
  * netaknute — one imaju svoju seobu i svoj prekidač.
+ *
+ * 🔴 `PB_IZVOR` je NEZAVISAN od `SASTANCI_IZVOR` — i to je popravka incidenta
+ * 06.08.2026: dok su delili jedan prekidač, preklop SASTANAKA na `3.0` obarao je
+ * i ovaj posao (`pb-notify-dispatch` padao na svaka 2 min, ceo PB 503). Pod
+ * `SASTANCI_IZVOR=3.0` + `PB_IZVOR=sy15` ova grana MORA da radi normalno.
  */
 
 /** Redovi iz `*_dispatch_dequeue` (RETURNS SETOF <outbox>; čitamo šta koristimo). */
@@ -145,7 +150,7 @@ export class NotifyDispatchService {
     private readonly sy15: Sy15Service,
     private readonly mail: MailService,
     private readonly storage: Sy15StorageService,
-    private readonly izvor: SastanciPbSourceService,
+    private readonly izvor: PbSourceService,
   ) {}
 
   /** Poseban prekidač za SLANJE (uz SCHEDULER_ENABLED koji pali sam pogon). */
@@ -499,7 +504,11 @@ export class NotifyDispatchService {
     } else {
       for (const row of emailRows) {
         try {
-          const r = await this.sendPbEmail(row.recipient, row.subject, row.body);
+          const r = await this.sendPbEmail(
+            row.recipient,
+            row.subject,
+            row.body,
+          );
           if (r.ok) {
             await this.markSentPb(row.id);
             sent++;

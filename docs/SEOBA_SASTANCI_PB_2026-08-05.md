@@ -197,6 +197,9 @@ Sedam poslova 3.0 schedulera dira ovaj domen — **svi i dalje gađaju sy15**:
 | `pb-notify-dispatch` | svakih 5 min | `pb_dispatch_dequeue/mark_sent/mark_failed` | `scheduler/dispatch/notify-dispatch.service.ts:174` |
 | `sast-periodicni-auto` | dnevno 08:00 | direktan upis u sy15 `sastanci` / `sastanak_ucesnici` / `akcioni_plan` | `scheduler/sastanci-periodicni.service.ts:77` |
 
+> ⚠️ *Blok ispod je PREVAZIĐEN* — mejl kanal poštuje prekidač od 06.08. (§7b, rep 2), a prekidač
+> se od istog dana zove `SASTANCI_IZVOR` i više ne dodiruje PB (§7h). Zadržano radi istorije.
+>
 > 🔴 **Prekidač `SASTANCI_PB_IZVOR` NE prebacuje mejl kanal.** Ti poslovi ne prolaze kroz
 > `withUserMapped`/`runIdem` (idu direktno preko `Sy15Service.db.$queryRaw`, bez RLS-a), pa branu
 > ne vide. To je **namerno**: pod `3.0` sastanci i dalje šalju podsetnike iz sy15 podataka, što je
@@ -217,7 +220,7 @@ Sedam poslova 3.0 schedulera dira ovaj domen — **svi i dalje gađaju sy15**:
 | Zajednički helper identiteta i predmeta | `backend/scripts/lib/sy15-identity.ts` | ✅ koristiće ga koraci 2–5 |
 | Skripta prenosa | `backend/scripts/migrate-sastanci-pb-sy15.ts` | ✅ dry-run + `--apply` + `--verify-only` |
 | Prepis DEFINER samouslužne logike | `backend/src/modules/sastanci/sastanci-samousluga.service.ts` | ✅ 4 funkcije, 15 testova |
-| Prekidač `SASTANCI_PB_IZVOR` | `backend/src/common/sy15/sastanci-pb-source.service.ts` | ✅ 11 testova |
+| Prekidač `SASTANCI_PB_IZVOR` | ~~`backend/src/common/sy15/sastanci-pb-source.service.ts`~~ | ⚠️ **razdvojen 06.08. na `SASTANCI_IZVOR` + `PB_IZVOR`** (§7h): `izvor-prekidac.ts` + `sastanci-source.service.ts` + `pb-source.service.ts` |
 | Env red | `backend/.env.example` | ✅ |
 
 ### Prenosne odluke (sve izmerene)
@@ -283,6 +286,10 @@ Probna baza je posle dokaza **obrisana**.
 
 ### Prekidač — šta stvarno radi danas
 
+> ⚠️ Ovaj odeljak opisuje stanje od 05.08. sa JEDNIM prekidačem `SASTANCI_PB_IZVOR`.
+> **Od 06.08. prekidača ima DVA — `SASTANCI_IZVOR` i `PB_IZVOR` (v. §7h).** Zadržano
+> radi istorije: obim „šta radi pod 3.0" je od tada mnogo veći (§7b/§7e/§7f).
+
 `SASTANCI_PB_IZVOR=sy15` (podrazumevano, **i za svaku neprepoznatu vrednost**) = ponašanje kao do sada.
 
 `SASTANCI_PB_IZVOR=3.0`:
@@ -324,7 +331,7 @@ Sam prenos podataka je **~10 minuta**.
 | 4 | `npx ts-node --transpile-only backend/scripts/migrate-sastanci-pb-sy15.ts` (**dry-run**) — sekcija „BLOKADE" mora biti prazna, a mapa predmeta mora dati **isti broj po id-u i po šifri** | ~30 s | ništa se ne piše |
 | 5 | `... --apply` — 1.120 redova | ~2 min | `TRUNCATE` 27 tabela + ponovi (sy15 je i dalje netaknut izvor) |
 | 6 | `... --verify-only` — svih 27 redova mora reći `OK` | ~10 s | — |
-| 7 | `SASTANCI_PB_IZVOR=3.0` u `backend.env` + `systemctl restart` / redeploy kontejnera | ~2 min | **`SASTANCI_PB_IZVOR=sy15` + restart = ~2 min** |
+| 7 | **`SASTANCI_IZVOR=3.0`** u `backend.env` + `systemctl restart` / redeploy kontejnera. 🔴 **`PB_IZVOR` se NE dira — ostaje `sy15`** (v. §7h) | ~2 min | **`SASTANCI_IZVOR=sy15` + restart = ~2 min** |
 | 8 | `ssh ubuntusrv 'bash -s' < backend/scripts/post-deploy-verify.sh` — mora 🟢 EXIT 0 | ~1 min | — |
 | 9 | Ručna proba: otvori sastanak, potvrdi dolazak (RSVP), upiši pripremu, promeni status svoje akcije | 5 min | v. korak 7 |
 
@@ -332,11 +339,11 @@ Sam prenos podataka je **~10 minuta**.
 
 ### Povratak (rollback)
 
-Jedan potez, bez deploy-a koda: **`SASTANCI_PB_IZVOR=sy15` + restart (~2 min).** sy15 se tokom
+Jedan potez, bez deploy-a koda: **`SASTANCI_IZVOR=sy15` + restart (~2 min).** sy15 se tokom
 seobe ne dira, pa je u svakom trenutku važeći izvor. Prenete 3.0 tabele ostaju kao mrtav teret dok
 se ne pokuša ponovo — ne smetaju.
 
-⚠️ **Tačka bez povratka:** čim se pod `SASTANCI_PB_IZVOR=3.0` upiše **prvi** RSVP ili status akcije,
+⚠️ **Tačka bez povratka:** čim se pod `SASTANCI_IZVOR=3.0` upiše **prvi** RSVP ili status akcije,
 3.0 ima podatak koji sy15 nema. Od tada povratak traži ručno prenošenje tih redova nazad.
 Zato korak 9 treba raditi odmah i na jednom sastanku.
 
@@ -645,7 +652,7 @@ rezultata. Legitiman slučaj (isti korisnik ponavlja svoj zahtev) je netaknut.
 `action` prostor imena, isti `{ data, meta: { idempotent } }` odgovor, isti 409 na
 ključ upotrebljen za drugu akciju.
 
-**Skinuto sa 503** (pod `SASTANCI_PB_IZVOR=3.0`):
+**Skinuto sa 503** (pod `SASTANCI_IZVOR=3.0`):
 `POST /sastanci` (`sastanci.create-sastanak`) · `PUT /sastanci/:id/ucesnici`
 (`sastanci.bulk-ucesnici`) · `POST /sastanci/:id/prenos` (`sastanci.prenos`) ·
 `POST /sastanci/templates/:id/instantiate` (`sastanci.instantiate-template`).
@@ -688,7 +695,7 @@ dakle **gotov** rezultat, nikad poluupisan red.
 ## 7f. Blokade 2, 3 i 5(backend) — šta je urađeno 06.08.
 
 Ovo je **poslednja velika backend blokada** preklopa. Posle nje sastanci pod
-`SASTANCI_PB_IZVOR=3.0` rade CELI, osim onoga što nije njihov domen.
+`SASTANCI_IZVOR=3.0` rade CELI, osim onoga što nije njihov domen.
 
 ### Obim — mereno, ne procenjeno
 
@@ -864,6 +871,92 @@ grana u `SastanciPredmetService`, `sastanci-predmet.ts` tabela izuzetaka i
 
 ---
 
+## 7h. 🔴 INCIDENT 06.08.2026 i razdvajanje prekidača na DVA
+
+### Šta se desilo (činjenično)
+
+| | |
+|---|---|
+| **Kad** | 06.08.2026, na produkciji |
+| **Šta je urađeno** | `SASTANCI_PB_IZVOR` prebačen sa `sy15` na `3.0` — prvi korak plana gašenja sy15; sastanci su bili spremni (27/27 tabela, 1.115/1.115 redova prenetih) |
+| **Šta je radilo** | Sastanci — ispravno, po očekivanju (§7b/§7e/§7f) |
+| **Šta je palo** | **Ceo modul Projektni biro → 503** (`withUserMapped`/`runIdem` brana) i scheduler posao **`pb-notify-dispatch` je počeo da pada na svaka 2 minuta** (`dispatchPb` brana). Isto bi zahvatilo i `pb-enqueue` (dnevno 09:00). |
+| **Zašto** | Prekidač je bio ZAJEDNIČKI za dva domena. PB nije spreman i ne može biti pre koraka 4 (kadrovska: `pb_current_employee_id()` → `employees`), pa je za njega `3.0` **stanje kvara, ne radno stanje** — što je dizajn i predviđao, samo je bio vezan za tuđi preklop. |
+| **Kako je zatvoreno** | Prekidač odmah vraćen na `sy15` (~2 min, bez deploy-a). **Potvrđeno da u međuvremenu niko ništa nije upisao — nema podataka za usklađivanje.** Zatim je prekidač razdvojen na dva nezavisna (ova grana). |
+
+### Nova podešavanja
+
+| Env | Podrazumevano | Pokriva | Stanje 06.08. |
+|---|---|---|---|
+| `SASTANCI_IZVOR` | `sy15` | `sastanci*`, `akcioni_plan*`, `pm_teme*`, `presek_*`, `sast_weekly_*` + njihova samousluga, mejl kanal, dispatch i 3 scheduler posla | **spremno za `3.0`** (§7g: ostaje samo FE deo za `projekat_id`) |
+| `PB_IZVOR` | `sy15` | `pb_*` (zadaci, komentari, prilozi, saveti, izveštaji, notifikacije) + `pb-enqueue` i `pb-notify-dispatch` | **ostaje `sy15` do koraka 4b** (posle kadrovske) |
+
+Obe primaju iste vrednosti (`sy15` \| `3.0`), obe padaju na `sy15` za svaku neprepoznatu
+vrednost, obe se menjaju bez deploy-a koda (env + restart ~2 min). Zajedničko telo je
+`backend/src/common/sy15/izvor-prekidac.ts` — jedno parsiranje, da se dva prekidača ne raziđu.
+
+**Zastareli `SASTANCI_PB_IZVOR`** je zadržan, ali NESIMETRIČNO i namerno:
+
+- **sastanci** ga čitaju kao rezervu — samo ako `SASTANCI_IZVOR` nije postavljen — uz glasno
+  upozorenje u logu i uz to da poruka o povratku imenuje baš njega;
+- **PB ga NE čita.** Da ga čita, stari naziv bi i dalje mogao da obori projektni biro, tj.
+  incident bi ostao ponovljiv. Ako je zatečen na `3.0`, `PbSourceService` to prijavi u logu i
+  ostaje na `sy15` — **greška ide u bezbednom smeru** (modul radi nad svojim izvorom istine).
+
+### Šta se u kodu promenilo (po fajlu)
+
+| Fajl | Tretman |
+|---|---|
+| `common/sy15/izvor-prekidac.ts` **(novo)** | zajedničko telo: parsiranje, `izvor`/`isThreeZero`, `assertPorted`, alias-rezerva |
+| `common/sy15/sastanci-source.service.ts` **(novo)** | `SastanciSourceService` — `SASTANCI_IZVOR` |
+| `common/sy15/pb-source.service.ts` **(novo)** | `PbSourceService` — `PB_IZVOR`, bez alias-a |
+| ~~`common/sy15/sastanci-pb-source.service.ts`~~ | **obrisan** (zamenjen sa tri gornja) |
+| `modules/sastanci/*` (module, service, rsvp controller, predmet, dto) | sastanci prekidač |
+| `modules/scheduler/dispatch/sastanci-dispatch.service.ts` | sastanci prekidač |
+| `modules/projektni-biro/*` (module, service) | PB prekidač |
+| `modules/scheduler/dispatch/notify-dispatch.service.ts` | **samo PB grana** (`dispatchPb`); `kadr`/`maint` grane nisu ovaj domen i nisu dirane |
+| `modules/scheduler/sy15-cron-jobs.ts` | **OBA** — jedino mesto u kodu koje drži oba: 3 posla sastanaka na `SASTANCI_IZVOR`, `pb-enqueue` na `PB_IZVOR` |
+| `modules/scheduler/scheduler.module.ts` | provider `PbSourceService` (sastanci prekidač i dalje stiže iz `SastanciModule`) |
+| `common/idempotency/idempotency.module.ts` | **generički registar — logika NIJE dirana**, samo komentar imenuje nov prekidač |
+| `common/sy15/sy15-functions-base.ts` | **helper za URL — logika NIJE dirana**, samo komentar |
+| `backend/.env.example` | dva nova reda + zastareli naziv označen |
+
+### Testovi
+
+`common/sy15/izvor-prekidaci.spec.ts` (novo, zamenjuje `sastanci-pb-source.service.spec.ts`)
+pokriva **sve 4 kombinacije** i alias. Isti raspored kombinacija ponovljen je tamo gde je
+incident i boleo:
+
+| Gde | Šta pinuje |
+|---|---|
+| `scheduler/sy15-cron-jobs.spec.ts` | 4 kombinacije nad registrom poslova; **`SASTANCI_IZVOR=3.0` + `PB_IZVOR=sy15` → `pb-enqueue` radi** |
+| `scheduler/dispatch/notify-dispatch.service.spec.ts` | **`pb-notify-dispatch` radi** pod `SASTANCI_IZVOR=3.0` (scenario koji je pao) i pod zastarelim nazivom |
+| `projektni-biro/projektni-biro.service.spec.ts` | PB rute rade pod `SASTANCI_IZVOR=3.0`; pod `PB_IZVOR=3.0` i dalje 503 pre ijednog sy15 poziva |
+
+### Provere urađene 06.08. (razdvajanje prekidača)
+
+| Provera | Rezultat |
+|---|---|
+| `npx tsc --noEmit` | ✅ nula NOVIH grešaka (ostaju zatečene grupe: `handovers`, `kadrovska.zahtev-026`, `kamata`, `moj-profil.zahtev-026` — nijedan nije u diff-u) |
+| `npx jest` (pun set) | ✅ **260 suite / 5.627 testova** |
+| `npm run build` | ✅ entrypoint `dist/main.js` |
+| ceo lanac migracija | ✅ **111 migracija** na svežu probnu bazu `prekidac_proba` (dev kluster, NE prod); `migrate status` → „Database schema is up to date!", bez drift-a; **probna baza obrisana** |
+| 🔴 **boot-smoke `node dist/main` × 4 kombinacije** | ✅ sve četiri „Nest application successfully started" protiv te iste sveže migrirane baze: `sy15/sy15`, `sy15/3.0`, **`3.0/sy15`**, `3.0/3.0`. Log dokazuje razdvojenost — pod `sy15/3.0` upozorenje daje SAMO `PbSourceService`, pod `3.0/sy15` SAMO `SastanciSourceService`; u kritičnoj kombinaciji 22 posla registrovana, **0 ERROR redova**. |
+
+### 🔴 Pouka za preostale korake seobe (održavanje, reversi, kadrovska)
+
+> **JEDAN PREKIDAČ = JEDAN DOMEN.** Pre uvođenja prekidača izmeriti KOJE SVE module dodiruje —
+> ne po imenu promenljive nego po pozivaocima branjenog getera (`grep` za `assertPorted` /
+> `isThreeZero`). Ako dodiruje domen koji se ne seli u tom koraku, prekidač se **razdvaja pre
+> preklopa, ne posle incidenta**.
+>
+> Prateća pouka: obrazloženje „domeni su isprepletani, pa jedan prekidač" (koje je 05.08. i
+> uvelo zajednički prekidač) **nije bilo izmereno** — §4 istog ovog dokumenta je već tada
+> pokazao da domeni nemaju transakcioni šav. Merenje je postojalo, ali odluka o prekidaču nije
+> bila usklađena s njim.
+
+---
+
 ## 8. Preporuka
 
 **Sastanci JESU dobar prvi rez — ali samo sastanci, ne i projektni biro.**
@@ -883,9 +976,9 @@ Zato predlog za sledeći potez:
    (§7b, §7e, §7f). PB ostaje na sy15 pod istim prekidačem (i dalje pada sa 503).
 2. **Uskladiti FE za `projekat_id`** (§7g A) — jedina preostala izmena koda. Backend prima i vraća
    oba oblika, pa deploy FE-a i backenda **ne moraju biti istovremeni**.
-3. Ako se traži brži dobitak: **razdvojiti prekidač** na `SASTANCI_IZVOR` i `PB_IZVOR` — sada to
-   IMA smisla (ranije nije, jer sastanci nisu bili gotovi): sastanci bi mogli na 3.0 odmah, a PB da
-   sačeka kadrovsku. Odluka čeka Nenada.
+3. ~~Ako se traži brži dobitak: **razdvojiti prekidač** na `SASTANCI_IZVOR` i `PB_IZVOR`~~
+   ✅ **URAĐENO 06.08.** — i to ne kao „brži dobitak" nego kao popravka incidenta: zajednički
+   prekidač je na produkciji oborio ceo PB. Detalji, nova imena i pouka: **§7h**.
 4. **PB pomeriti iza kadrovske** u redosledu plana (bio je korak 1, treba da bude korak 4b).
 
 Ono što je ovde napisano važi u oba slučaja: šema, migracija, skripta prenosa i mapa identiteta su

@@ -1,11 +1,11 @@
 import { ForbiddenException } from "@nestjs/common";
 import { SastanciService } from "./sastanci.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 
 /**
- * Blokade 2+3 iz runbook-a: tabelarni CRUD pod `SASTANCI_PB_IZVOR=3.0`.
+ * Blokade 2+3 iz runbook-a: tabelarni CRUD pod `SASTANCI_IZVOR=3.0`.
  *
  * 🔴 ŠTA OVI TESTOVI ČUVAJU — sve četiri stvari su NEVIDLJIVE bez njih:
  *
@@ -65,7 +65,7 @@ function makeSvc(
     tx?: Record<string, unknown>;
   } = {},
 ) {
-  process.env.SASTANCI_PB_IZVOR = opts.izvor ?? "3.0";
+  process.env.SASTANCI_IZVOR = opts.izvor ?? "3.0";
   const sme = opts.sme !== false;
 
   const tx: Record<string, unknown> = {
@@ -168,7 +168,7 @@ function makeSvc(
     storage as never,
     {} as never,
     aiPolicyStub(),
-    new SastanciPbSourceService(),
+    new SastanciSourceService(),
     {} as never,
     prisma as never,
     fn as never,
@@ -179,10 +179,10 @@ function makeSvc(
   return { svc, tx, prisma, sy15, authz, fn, idem, predmet, storage };
 }
 
-const orig = process.env.SASTANCI_PB_IZVOR;
+const orig = process.env.SASTANCI_IZVOR;
 afterEach(() => {
-  if (orig === undefined) delete process.env.SASTANCI_PB_IZVOR;
-  else process.env.SASTANCI_PB_IZVOR = orig;
+  if (orig === undefined) delete process.env.SASTANCI_IZVOR;
+  else process.env.SASTANCI_IZVOR = orig;
 });
 
 // ============================================================================
@@ -888,7 +888,7 @@ describe("🔴 predmet: create-sastanak ga VIŠE NE ISPUŠTA (rep zatvoren)", ()
 
 describe("pod sy15 sve i dalje ide kroz sy15 (bajt-za-bajt)", () => {
   it("liste i mutacije zovu withUserRls / runIdempotentRls, ne 3.0 Prismu", async () => {
-    process.env.SASTANCI_PB_IZVOR = "sy15";
+    process.env.SASTANCI_IZVOR = "sy15";
     const tx = {
       sastanak: modelStub(),
       sastanakUcesnik: modelStub(),
@@ -919,7 +919,7 @@ describe("pod sy15 sve i dalje ide kroz sy15 (bajt-za-bajt)", () => {
       {} as never,
       {} as never,
       aiPolicyStub(),
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       {} as never,
       prisma as never,
       {} as never,
@@ -935,7 +935,7 @@ describe("pod sy15 sve i dalje ide kroz sy15 (bajt-za-bajt)", () => {
   });
 
   it("🔴 Int u DTO-u se pod sy15 prevodi u ZATEČENI uuid, ne u izmišljen", async () => {
-    process.env.SASTANCI_PB_IZVOR = "sy15";
+    process.env.SASTANCI_IZVOR = "sy15";
     const tx = {
       sastanak: modelStub({
         create: jest.fn().mockResolvedValue({ id: ID }),
@@ -961,7 +961,7 @@ describe("pod sy15 sve i dalje ide kroz sy15 (bajt-za-bajt)", () => {
       {} as never,
       {} as never,
       aiPolicyStub(),
-      new SastanciPbSourceService(),
+      new SastanciSourceService(),
       {} as never,
       {} as never,
       {} as never,

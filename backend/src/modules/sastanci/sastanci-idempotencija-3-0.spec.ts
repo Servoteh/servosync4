@@ -1,12 +1,12 @@
 import { ForbiddenException } from "@nestjs/common";
 import { SastanciService } from "./sastanci.service";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 
 /**
  * Blokada 1 iz runbook-a: `create-sastanak` / `bulk-ucesnici` / `prenos` /
- * `instantiate` su pod `SASTANCI_PB_IZVOR=3.0` padale sa 503 jer registra
+ * `instantiate` su pod `SASTANCI_IZVOR=3.0` padale sa 503 jer registra
  * idempotencije u 3.0 bazi nije bilo.
  *
  * 🔴 ŠTA OVI TESTOVI ČUVAJU:
@@ -110,7 +110,7 @@ function makeSvc(opts: { sme?: boolean } = {}) {
     {} as never,
     {} as never,
     aiPolicyStub(),
-    new SastanciPbSourceService(),
+    new SastanciSourceService(),
     {} as never,
     {} as never,
     fn as never,
@@ -123,13 +123,13 @@ function makeSvc(opts: { sme?: boolean } = {}) {
 }
 
 describe("blokada 1 — četiri rute pod 3.0 idu kroz 3.0 registar", () => {
-  const orig = process.env.SASTANCI_PB_IZVOR;
+  const orig = process.env.SASTANCI_IZVOR;
   beforeEach(() => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
   });
   afterEach(() => {
-    if (orig === undefined) delete process.env.SASTANCI_PB_IZVOR;
-    else process.env.SASTANCI_PB_IZVOR = orig;
+    if (orig === undefined) delete process.env.SASTANCI_IZVOR;
+    else process.env.SASTANCI_IZVOR = orig;
   });
 
   const pozovi = async (svc: SastanciService, ruta: string) => {
@@ -235,13 +235,13 @@ describe("blokada 1 — četiri rute pod 3.0 idu kroz 3.0 registar", () => {
 });
 
 describe("pod sy15 ponašanje četiri rute je NETAKNUTO", () => {
-  const orig = process.env.SASTANCI_PB_IZVOR;
+  const orig = process.env.SASTANCI_IZVOR;
   beforeEach(() => {
-    process.env.SASTANCI_PB_IZVOR = "sy15";
+    process.env.SASTANCI_IZVOR = "sy15";
   });
   afterEach(() => {
-    if (orig === undefined) delete process.env.SASTANCI_PB_IZVOR;
-    else process.env.SASTANCI_PB_IZVOR = orig;
+    if (orig === undefined) delete process.env.SASTANCI_IZVOR;
+    else process.env.SASTANCI_IZVOR = orig;
   });
 
   it("create ide kroz sy15 registar, 3.0 registar se NE dodiruje", async () => {

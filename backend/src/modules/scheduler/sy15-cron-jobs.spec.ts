@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
+import { PbSourceService } from "../../common/sy15/pb-source.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
@@ -10,7 +11,7 @@ import type { ScheduledJob } from "./scheduler.types";
  * Seoba sastanaka (05.08.2026, docs/SEOBA_SASTANCI_PB_2026-08-05.md).
  *
  * ŠTA OVI TESTOVI ČUVAJU:
- *  1. TRI posla domena sastanaka poštuju `SASTANCI_PB_IZVOR` — pod `3.0` idu kroz
+ *  1. TRI posla domena sastanaka poštuju `SASTANCI_IZVOR` — pod `3.0` idu kroz
  *     `SastanciFnService` (3.0 baza), pod `sy15` NEPROMENJENIM SQL-om na sy15.
  *     Bez ovoga bi prekidač bio „poluprekidač": rute bi čitale 3.0, a scheduler
  *     bi u istoj sekundi kvačio mejlove u sy15 outbox → dve istine.
@@ -18,12 +19,17 @@ import type { ScheduledJob } from "./scheduler.types";
  *     dnevnik `scheduled_job_runs` može porediti pre i posle preklopa.
  *  3. Praznici pod `3.0` dolaze READ-ONLY sa sy15 (`kadr_holidays` je kadrovska,
  *     korak 4) i njihov IZOSTANAK ne obara posao — sedmični se samo ne pomera.
- *  4. `pb-enqueue` pod `3.0` GLASNO pada (PB nije prenet), a kadrovska/održavanje
- *     poslovi ostaju netaknuti — oni nisu ovaj domen.
+ *  4. `pb-enqueue` pod `PB_IZVOR=3.0` GLASNO pada (PB nije prenet), a
+ *     kadrovska/održavanje poslovi ostaju netaknuti — oni nisu ovaj domen.
+ *  5. 🔴 PREKIDAČI SU NEZAVISNI (incident 06.08.2026): pod `SASTANCI_IZVOR=3.0`
+ *     + `PB_IZVOR=sy15` `pb-enqueue` MORA da radi normalno. Dok je prekidač bio
+ *     jedan (`SASTANCI_PB_IZVOR`), preklop sastanaka ga je obarao u 503.
  */
 
 const OLD_ENV = { ...process.env };
 beforeEach(() => {
+  delete process.env.SASTANCI_IZVOR;
+  delete process.env.PB_IZVOR;
   delete process.env.SASTANCI_PB_IZVOR;
 });
 afterEach(() => {
@@ -115,9 +121,10 @@ function make(
 } {
   const svc = new Sy15CronJobs(
     sy15.sy15,
-    new SastanciPbSourceService(),
+    new SastanciSourceService(),
     p.prisma,
     fn.sastFn,
+    new PbSourceService(),
   );
   return {
     jobs: new Map(svc.buildJobs().map((j) => [j.key, j])),
@@ -166,7 +173,7 @@ describe("registar poslova — oblik se NE menja seobom", () => {
   });
 });
 
-describe("SASTANCI_PB_IZVOR=sy15 (podrazumevano) — ponašanje NETAKNUTO", () => {
+describe("SASTANCI_IZVOR=sy15 (podrazumevano) — ponašanje NETAKNUTO", () => {
   it("sast-action-reminders zove sy15 fn, prepis se ne dodiruje", async () => {
     const { jobs, sy15, fn, p } = make();
     sy15.vrati([{ sastanci_enqueue_action_reminders: 7 }]);
@@ -211,9 +218,9 @@ describe("SASTANCI_PB_IZVOR=sy15 (podrazumevano) — ponašanje NETAKNUTO", () =
   });
 });
 
-describe("SASTANCI_PB_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => {
+describe("SASTANCI_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => {
   it("sast-action-reminders: prepis u 3.0 transakciji, NIJEDAN sy15 poziv", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { jobs, sy15, fn, p } = make(
       sy15Mock(),
       prismaMock(),
@@ -231,7 +238,7 @@ describe("SASTANCI_PB_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => 
   });
 
   it("sast-meeting-reminders: prepis u 3.0 transakciji, NIJEDAN sy15 poziv", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { jobs, sy15, fn } = make(
       sy15Mock(),
       prismaMock(),
@@ -245,7 +252,7 @@ describe("SASTANCI_PB_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => 
   });
 
   it("sast-weekly-auto: praznici se čitaju READ-ONLY sa sy15 i stižu kao Set 'YYYY-MM-DD'", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const s = sy15Mock({
       praznici: [
         new Date("2026-11-11T00:00:00Z"),
@@ -281,7 +288,7 @@ describe("SASTANCI_PB_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => 
   });
 
   it("sast-weekly-auto: bez sedmičnog termina summary je `=null` (kao NULL kolona na sy15)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { jobs } = make(
       sy15Mock(),
       prismaMock(),
@@ -293,7 +300,7 @@ describe("SASTANCI_PB_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => 
   });
 
   it("sy15 nedostupna (nema SY15_DATABASE_URL): posao NE pada — praznici prazni + upozorenje", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const warn = jest
       .spyOn(Logger.prototype, "warn")
       .mockImplementation((): void => undefined);
@@ -315,19 +322,8 @@ describe("SASTANCI_PB_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => 
     );
   });
 
-  it("pb-enqueue GLASNO pada (503) — PB nije prenet, tih upis u sy15 bi razišao baze", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
-    const { jobs, sy15 } = make();
-
-    await expect(run(jobs.get("pb-enqueue")!)).rejects.toThrow(
-      /projektni biro: enqueue notifikacija kroz sy15/,
-    );
-    // Brana je PRE poziva — nijedan upis ne sme da procuri u sy15.
-    expect(sy15.sql).toEqual([]);
-  });
-
   it("kadrovska i održavanje NISU ovaj domen — idu na sy15 kao i do sad", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.SASTANCI_IZVOR = "3.0";
     const { jobs, sy15, p } = make();
 
     await run(jobs.get("kadr-hr-reminders")!);
@@ -342,7 +338,7 @@ describe("SASTANCI_PB_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => 
   });
 
   it("nepoznata vrednost prekidača NE pali 3.0 granu (pada na bezbedan sy15)", async () => {
-    process.env.SASTANCI_PB_IZVOR = "3";
+    process.env.SASTANCI_IZVOR = "3";
     const { jobs, sy15, fn } = make();
 
     await run(jobs.get("sast-action-reminders")!);
@@ -350,5 +346,90 @@ describe("SASTANCI_PB_IZVOR=3.0 — sastanci idu kroz SastanciFnService", () => 
       "SELECT public.sastanci_enqueue_action_reminders();",
     ]);
     expect(fn.enqueueActionReminders).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * 🔴 INCIDENT 06.08.2026 — ZBOG ČEGA POSTOJI OVAJ BLOK.
+ *
+ * Prekidač je bio JEDAN (`SASTANCI_PB_IZVOR`). Čim je na produkciji stao na
+ * `3.0` (sastanci su bili spremni), `pb-enqueue` je počeo da pada sa 503 iako se
+ * projektni biro uopšte ne seli. Ova četiri testa su pin za sve četiri
+ * kombinacije — treći je tačno scenario koji je pao.
+ */
+describe("prekidači su NEZAVISNI — sve 4 kombinacije (incident 06.08.2026)", () => {
+  const kombinacija = (
+    sastanci: string | undefined,
+    pb: string | undefined,
+  ) => {
+    if (sastanci) process.env.SASTANCI_IZVOR = sastanci;
+    if (pb) process.env.PB_IZVOR = pb;
+    const { jobs, sy15, fn } = make(
+      sy15Mock(),
+      prismaMock(),
+      sastFnMock({ action: 1 }),
+    );
+    return { jobs, sy15, fn };
+  };
+
+  it("sy15 / sy15 (podrazumevano): oba posla na sy15", async () => {
+    const { jobs, sy15, fn } = kombinacija(undefined, undefined);
+    await run(jobs.get("sast-action-reminders")!);
+    await run(jobs.get("pb-enqueue")!);
+    expect(sy15.sql).toEqual([
+      "SELECT public.sastanci_enqueue_action_reminders();",
+      "SELECT public.pb_enqueue_notifications();",
+    ]);
+    expect(fn.enqueueActionReminders).not.toHaveBeenCalled();
+  });
+
+  it("sy15 / 3.0: PB pada sa 503, sastanci NETAKNUTI na sy15", async () => {
+    const { jobs, sy15, fn } = kombinacija(undefined, "3.0");
+    await run(jobs.get("sast-action-reminders")!);
+    await expect(run(jobs.get("pb-enqueue")!)).rejects.toThrow(
+      /projektni biro: enqueue notifikacija kroz sy15/,
+    );
+    // Brana je PRE poziva — nijedan PB upis ne sme da procuri u sy15.
+    expect(sy15.sql).toEqual([
+      "SELECT public.sastanci_enqueue_action_reminders();",
+    ]);
+    expect(fn.enqueueActionReminders).not.toHaveBeenCalled();
+  });
+
+  it("🔴 3.0 / sy15 (scenario koji je pao): sastanci u 3.0, pb-enqueue RADI", async () => {
+    const { jobs, sy15, fn } = kombinacija("3.0", undefined);
+    expect(await run(jobs.get("sast-action-reminders")!)).toBe(
+      "sastanci_enqueue_action_reminders=1",
+    );
+    expect(fn.enqueueActionReminders).toHaveBeenCalledTimes(1);
+    // Ovaj red je cela poenta razdvajanja: PB posao ne sme ni da zna za preklop.
+    await expect(run(jobs.get("pb-enqueue")!)).resolves.toBeDefined();
+    expect(sy15.sql).toEqual(["SELECT public.pb_enqueue_notifications();"]);
+  });
+
+  it("3.0 / 3.0: sastanci u 3.0, PB i dalje pada sa 503", async () => {
+    const { jobs, sy15, fn } = kombinacija("3.0", "3.0");
+    await run(jobs.get("sast-action-reminders")!);
+    expect(fn.enqueueActionReminders).toHaveBeenCalledTimes(1);
+    await expect(run(jobs.get("pb-enqueue")!)).rejects.toThrow(
+      /projektni biro: enqueue notifikacija kroz sy15/,
+    );
+    expect(sy15.sql).toEqual([]);
+  });
+
+  it("zastareli SASTANCI_PB_IZVOR=3.0 pomera SAMO sastanke — PB ostaje živ", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const { jobs, sy15, fn } = make(
+      sy15Mock(),
+      prismaMock(),
+      sastFnMock({ action: 4 }),
+    );
+    expect(await run(jobs.get("sast-action-reminders")!)).toBe(
+      "sastanci_enqueue_action_reminders=4",
+    );
+    expect(fn.enqueueActionReminders).toHaveBeenCalledTimes(1);
+    // Stari naziv više NE MOŽE da obori PB — to je bila poenta incidenta.
+    await expect(run(jobs.get("pb-enqueue")!)).resolves.toBeDefined();
+    expect(sy15.sql).toEqual(["SELECT public.pb_enqueue_notifications();"]);
   });
 });

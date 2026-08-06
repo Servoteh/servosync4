@@ -1,7 +1,7 @@
 import { Logger } from "@nestjs/common";
 import type { Response } from "express";
 import { SastanciRsvpController } from "./sastanci-rsvp.controller";
-import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 
 /**
@@ -12,7 +12,7 @@ import type { PrismaService } from "../../prisma/prisma.service";
  *   1) upis SAMO na potvrđen klik (`c=1`) — bez toga skener mejla potvrđuje
  *      dolazak umesto čoveka,
  *   2) nepoznat/loš token ne otkriva ništa i ne piše ništa,
- *   3) pod `SASTANCI_PB_IZVOR=sy15` ruta NE SME da piše u 3.0 bazu (vlasnik je
+ *   3) pod `SASTANCI_IZVOR=sy15` ruta NE SME da piše u 3.0 bazu (vlasnik je
  *      tada sy15; upis bi tiho razišao dve baze).
  * Uz to: `rsvp_token` nikad ne sme u log.
  */
@@ -55,19 +55,19 @@ function resMock() {
 }
 
 function make(izvor: "sy15" | "3.0", count = 1) {
-  process.env.SASTANCI_PB_IZVOR = izvor;
+  process.env.SASTANCI_IZVOR = izvor;
   const updateMany = jest.fn().mockResolvedValue({ count });
   const prisma = {
     sastanakUcesnik: { updateMany },
   } as unknown as PrismaService;
-  const ctrl = new SastanciRsvpController(prisma, new SastanciPbSourceService());
+  const ctrl = new SastanciRsvpController(prisma, new SastanciSourceService());
   return { ctrl, updateMany };
 }
 
 const OLD_ENV = { ...process.env };
 beforeEach(() => {
   process.env.SY15_FUNCTIONS_URL = FN_BASE;
-  delete process.env.SASTANCI_PB_IZVOR;
+  delete process.env.SASTANCI_IZVOR;
 });
 afterEach(() => {
   process.env = { ...OLD_ENV };
@@ -201,7 +201,7 @@ describe("3.0 — nevažeći ulaz ne otkriva ništa i ne piše ništa", () => {
 
 // ── prekidač: pod sy15 se NE piše u 3.0 ─────────────────────────────────────
 
-describe("prekidač SASTANCI_PB_IZVOR — vlasnik podatka presuđuje", () => {
+describe("prekidač SASTANCI_IZVOR — vlasnik podatka presuđuje", () => {
   it("🔴 pod `sy15` ruta NE PIŠE u 3.0 bazu", async () => {
     const { ctrl, updateMany } = make("sy15");
     const { res } = resMock();

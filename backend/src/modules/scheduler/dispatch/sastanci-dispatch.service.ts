@@ -2,7 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { MailService } from "../../../common/mail/mail.service";
 import { Sy15Service } from "../../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
-import { SastanciPbSourceService } from "../../../common/sy15/sastanci-pb-source.service";
+import { SastanciSourceService } from "../../../common/sy15/sastanci-source.service";
 import { sy15FunctionsBase } from "../../../common/sy15/sy15-functions-base";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { SastanciFnService } from "../../sastanci/sastanci-fn.service";
@@ -55,7 +55,7 @@ import { buildEmailFor, sastanakLink, str } from "./sastanci-templates";
  *   2) RSVP LINK JE POPRAVLJEN — edge ga gradi iz svog internog `SUPABASE_URL`
  *      (`http://<gateway>/functions/v1/…`), pa su „Dolazim / Ne dolazim" dugmad
  *      u pozivnici bila MRTVA za SVE primaoce. Ovde ide kroz `SY15_FUNCTIONS_URL`
- *      (javni gateway) — vidi `functionsBase()`. Pod `SASTANCI_PB_IZVOR=3.0` link
+ *      (javni gateway) — vidi `functionsBase()`. Pod `SASTANCI_IZVOR=3.0` link
  *      vodi na 3.0 javnu rutu `…/api/v1/sastanci-rsvp` (`rsvpBase30()`), jer je
  *      tada 3.0 baza vlasnik `sastanak_ucesnici` — vidi `SastanciRsvpController`.
  *   3) 4xx vs 5xx od Resend-a se NE razlikuje. Edge tretira 4xx kao permanent
@@ -81,7 +81,7 @@ import { buildEmailFor, sastanakLink, str } from "./sastanci-templates";
  *
  * ── SEOBA (05.08.2026) ──────────────────────────────────────────────────────
  * TRI dodira sa outbox REDOM (`dequeue`, `mark_sent`, `mark_failed`) poštuju
- * `SASTANCI_PB_IZVOR`: pod `sy15` idu na sy15 RPC (netaknuto), pod `3.0` kroz
+ * `SASTANCI_IZVOR`: pod `sy15` idu na sy15 RPC (netaknuto), pod `3.0` kroz
  * `SastanciFnService` nad 3.0 bazom. Ostatak (gradnja mejla, .ics, RSVP) se NE
  * menja — `enrichPayload` i prilozi i dalje čitaju sy15 (`v_akcioni_plan`,
  * `sastanak_ucesnici`, arhiva), jer ti pogledi nisu preneti; svi su fail-soft,
@@ -146,7 +146,7 @@ export class SastanciDispatchService {
     private readonly sy15: Sy15Service,
     private readonly mail: MailService,
     private readonly storage: Sy15StorageService,
-    private readonly izvor: SastanciPbSourceService,
+    private readonly izvor: SastanciSourceService,
     private readonly prisma: PrismaService,
     private readonly sastFn: SastanciFnService,
   ) {}
@@ -181,7 +181,7 @@ export class SastanciDispatchService {
 
   /**
    * Puna adresa 3.0 RSVP rute (`…/api/v1/sastanci-rsvp`) — koristi se pod
-   * `SASTANCI_PB_IZVOR=3.0`, kad je vlasnik `sastanak_ucesnici` 3.0 baza.
+   * `SASTANCI_IZVOR=3.0`, kad je vlasnik `sastanak_ucesnici` 3.0 baza.
    *
    * ⚠️ ZAŠTO NE `appUrl()` (PUBLIC_APP_URL → SY15_APP_URL → servosync…): ta
    * kaskada daje adresu FRONTA, a front i API su RAZLIČITI hostovi
