@@ -409,30 +409,41 @@ export class UpdateTireDto {
   @IsOptional() @IsString() notes?: string;
 }
 
+/**
+ * Servisni plan vozila (073/26). `null` je dozvoljena vrednost svuda gde polje sme
+ * da se OBRIŠE — `@IsOptional()` propušta i `null` i `undefined`, a servis ih razlikuje:
+ * izostavljen ključ = ne diraj, `null` = obriši. Bez `| null` u tipu ekran nije mogao
+ * da skine već upisan interval (JSON.stringify izbacuje `undefined`), pa je izmena
+ * naizgled prolazila a stara vrednost ostajala u bazi.
+ */
 export class CreateVehicleServicePlanDto extends IdempotentDto {
   @IsString() @MaxLength(300) name!: string;
-  @IsOptional() @IsInt() intervalKm?: number;
-  @IsOptional() @IsInt() intervalMonths?: number;
-  @IsOptional() @IsISO8601() lastDoneAt?: string;
-  @IsOptional() @IsInt() lastDoneKm?: number;
-  @IsOptional() @IsIn(VEHICLE_SVC_CATEGORY) vehicleServiceCategory?: string;
+  @IsOptional() @IsInt() intervalKm?: number | null;
+  @IsOptional() @IsInt() intervalMonths?: number | null;
+  @IsOptional() @IsISO8601() lastDoneAt?: string | null;
+  @IsOptional() @IsInt() lastDoneKm?: number | null;
+  @IsOptional()
+  @IsIn(VEHICLE_SVC_CATEGORY)
+  vehicleServiceCategory?: string | null;
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
-  @IsOptional() @IsString() notes?: string;
+  @IsOptional() @IsString() notes?: string | null;
   @IsOptional() @IsBoolean() active?: boolean;
-  @IsOptional() @IsNumber() plannedCost?: number;
+  @IsOptional() @IsNumber() plannedCost?: number | null;
 }
 
 export class UpdateVehicleServicePlanDto {
   @IsOptional() @IsString() @MaxLength(300) name?: string;
-  @IsOptional() @IsInt() intervalKm?: number;
-  @IsOptional() @IsInt() intervalMonths?: number;
-  @IsOptional() @IsISO8601() lastDoneAt?: string;
-  @IsOptional() @IsInt() lastDoneKm?: number;
-  @IsOptional() @IsIn(VEHICLE_SVC_CATEGORY) vehicleServiceCategory?: string;
+  @IsOptional() @IsInt() intervalKm?: number | null;
+  @IsOptional() @IsInt() intervalMonths?: number | null;
+  @IsOptional() @IsISO8601() lastDoneAt?: string | null;
+  @IsOptional() @IsInt() lastDoneKm?: number | null;
+  @IsOptional()
+  @IsIn(VEHICLE_SVC_CATEGORY)
+  vehicleServiceCategory?: string | null;
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
-  @IsOptional() @IsString() notes?: string;
+  @IsOptional() @IsString() notes?: string | null;
   @IsOptional() @IsBoolean() active?: boolean;
-  @IsOptional() @IsNumber() plannedCost?: number;
+  @IsOptional() @IsNumber() plannedCost?: number | null;
 }
 
 export class LinkPartDto extends IdempotentDto {
@@ -526,24 +537,30 @@ export class UpdateDriverDto {
 
 /* ════════════════════════ Servisni plan IT/objekti ════════════════════════ */
 
+/**
+ * IT/objekti: `interval_months` je NOT NULL + CHECK > 0 u bazi, pa ostaje obavezan.
+ * Dekorator je ipak `@IsOptional()` da bi obaveznost javio servis (`normalizeAssetIntervalMonths`)
+ * porukom na srpskom koja kaže šta da se uradi — class-validator bi vratio engleski
+ * „intervalMonths must be an integer number" (073/26).
+ */
 export class CreateAssetServicePlanDto extends IdempotentDto {
   @IsString() @MaxLength(300) name!: string;
-  @IsInt() intervalMonths!: number;
-  @IsOptional() @IsISO8601() lastDoneAt?: string;
+  @IsOptional() @IsInt() intervalMonths?: number | null;
+  @IsOptional() @IsISO8601() lastDoneAt?: string | null;
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
-  @IsOptional() @IsString() notes?: string;
+  @IsOptional() @IsString() notes?: string | null;
   @IsOptional() @IsBoolean() active?: boolean;
-  @IsOptional() @IsNumber() plannedCost?: number;
+  @IsOptional() @IsNumber() plannedCost?: number | null;
 }
 
 export class UpdateAssetServicePlanDto {
   @IsOptional() @IsString() @MaxLength(300) name?: string;
-  @IsOptional() @IsInt() intervalMonths?: number;
-  @IsOptional() @IsISO8601() lastDoneAt?: string;
+  @IsOptional() @IsInt() intervalMonths?: number | null;
+  @IsOptional() @IsISO8601() lastDoneAt?: string | null;
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
-  @IsOptional() @IsString() notes?: string;
+  @IsOptional() @IsString() notes?: string | null;
   @IsOptional() @IsBoolean() active?: boolean;
-  @IsOptional() @IsNumber() plannedCost?: number;
+  @IsOptional() @IsNumber() plannedCost?: number | null;
 }
 
 /* ════════════════════════ Zalihe / dobavljači / lokacije ════════════════════════ */

@@ -1273,8 +1273,14 @@ export const useUpdateTire = () =>
   useOdrMutate<{ id: string; tireId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/vehicles/${v.id}/tires/${v.tireId}`, (v) => v.patch);
 export const useDeleteTire = () =>
   useOdrMutate<{ id: string; tireId: string }>('DELETE', (v) => `${BASE}/vehicles/${v.id}/tires/${v.tireId}`);
+/**
+ * `null` = polje se briše / nije zadato (073/26). BE razlikuje izostavljen ključ
+ * (ne diraj) od `null` (obriši) — `undefined` bi JSON.stringify izbacio, pa se
+ * već upisan interval nikad ne bi mogao skinuti. `plannedCost` je ekran slao i
+ * ranije, ali ga tip nije priznavao.
+ */
 export const useCreateVehicleServicePlan = () =>
-  useOdrCreate<{ id: string; name: string; intervalKm?: number; intervalMonths?: number; lastDoneAt?: string; lastDoneKm?: number; vehicleServiceCategory?: string; priority?: WoPriority; notes?: string; active?: boolean }>((v) => `${BASE}/vehicles/${v.id}/service-plan`);
+  useOdrCreate<{ id: string; name: string; intervalKm?: number | null; intervalMonths?: number | null; lastDoneAt?: string | null; lastDoneKm?: number | null; vehicleServiceCategory?: string | null; priority?: WoPriority; notes?: string | null; active?: boolean; plannedCost?: number | null }>((v) => `${BASE}/vehicles/${v.id}/service-plan`);
 export const useUpdateVehicleServicePlan = () =>
   useOdrMutate<{ id: string; planId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/vehicles/${v.id}/service-plan/${v.planId}`, (v) => v.patch);
 export const useDeleteVehicleServicePlan = () =>
@@ -1322,7 +1328,7 @@ export const useArchiveAsset = () =>
 export const useRestoreAsset = () =>
   useOdrMutate<{ id: string }>('POST', (v) => `${BASE}/assets/${v.id}/restore`);
 export const useCreateAssetServicePlan = () =>
-  useOdrCreate<{ id: string; name: string; intervalMonths: number; priority?: WoPriority; notes?: string; lastDoneAt?: string; active?: boolean }>((v) => `${BASE}/assets/${v.id}/service-plan`);
+  useOdrCreate<{ id: string; name: string; intervalMonths: number; priority?: WoPriority; notes?: string | null; lastDoneAt?: string | null; active?: boolean; plannedCost?: number | null }>((v) => `${BASE}/assets/${v.id}/service-plan`);
 export const useUpdateAssetServicePlan = () =>
   useOdrMutate<{ id: string; planId: string; patch: Record<string, unknown> }>('PATCH', (v) => `${BASE}/assets/${v.id}/service-plan/${v.planId}`, (v) => v.patch);
 export const useDeleteAssetServicePlan = () =>

@@ -150,6 +150,14 @@ export function technologyMinutes(row: GanttRow): number {
 export const rowKey = opKey;
 
 /**
+ * 069/26 — oznaka škarta: JEDAN izvor je `@/api/plan-proizvodnje` (tamo živi i
+ * optimistički update koji je koristi). Ovde samo re-eksport, da tab i dijalog nastave
+ * da uvoze logiku ganta s jednog mesta (isti obrazac kao `rowKey`).
+ * `autoDone` se NE re-eksportuje — troši ga samo optimistički update u api sloju.
+ */
+export { scrapOutstanding, scrapBadge, scrapText } from '@/api/plan-proizvodnje';
+
+/**
  * Geometrija bara u px unutar ose (izvučeno iz `Bar`-a da isti račun koristi i sloj
  * veza — linija mora da pogodi TAČNO ivicu bara). `shiftMs`/`growMs` su pomaci živog
  * prevlačenja (move pomera ceo interval, resize samo kraj; pod = 30 min vidljivog bara).

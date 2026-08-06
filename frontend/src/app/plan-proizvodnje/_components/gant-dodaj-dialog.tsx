@@ -308,13 +308,21 @@ type Stanje =
  * je prošao završnu kontrolu stiže ovde i sa NEOTKUCANIM operacijama — bez ove grane
  * takva operacija bi dobila živ „Dodaj" i planer bi isplanirao gotov RN (izmereno na
  * produ 03.08.2026: 537 operacija u tom stanju).
+ *
+ * 069/26: količina se meri DOBRIM komadima, isto kao gotovost u gantu. Bez toga bi se
+ * dva ekrana protivrečila baš u slučaju zbog kog 069 i postoji: pozicija sa 5 škarta od
+ * 100 nosi na gantu oznaku „ŠKART" (fali 5 dobrih), a picker bi je odbio sa „završeno
+ * (100/100 kom)" — dakle planer vidi da nešto fali, a ne može to da isplanira. Izmereno
+ * na produ 05.08.2026: 4 takve pozicije danas, ali svaki budući škart pada u istu klasu.
+ * Smer greške je bezbedan: širi se SAMO na pozicije kojima po novom kanonu fali dobrih.
  */
 function stanjeStavke(r: GanttRow, added: boolean): Stanje {
   if (added || r.planned_start_at) return { addable: false, label: '✓ na planu', ok: true };
   const plannerDone = r.planned_done === true || r.local_status === 'completed';
   if (r.is_completed_effective || r.is_done_in_bigtehn || plannerDone) {
     const total = r.komada_total ?? 0;
-    const done = r.komada_done ?? 0;
+    // `?? komada_done` = stariji BE odgovor bez 069 kolone (CF deploy je nezavisan).
+    const done = r.komada_done_good ?? r.komada_done ?? 0;
     const delimicnoNaOtvorenom =
       r.is_done_in_bigtehn === true && !plannerDone && total > 0 && done < total &&
       !r.rn_zavrsen && !r.plan_rn_final_control_done &&

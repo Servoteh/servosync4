@@ -203,7 +203,16 @@ export interface GanttRow {
   naziv_dela: string | null;
   materijal: string | null;
   komada_total: number | null;
+  /** Zbir SVIH kvaliteta („koliko je otkucano"). */
   komada_done: number | null;
+  // ── 069/26: gotovost se sudi po DOBRIM komadima, pa gant mora i da ih pokaže.
+  //    Opciona (`?:`) da FE preživi stariji BE odgovor bez ovih kolona (CF deploy je nezavisan).
+  /** Samo DOBRI komadi (bez dorade i škarta) — brojač po kom se sudi gotovost. */
+  komada_done_good?: number | null;
+  scrap_pieces?: number | null;
+  rework_pieces?: number | null;
+  /** Ima škarta, a dobrih komada još nema dovoljno → oznaka „ŠKART" umesto kvačice. */
+  scrap_outstanding?: boolean | null;
   rok_izrade: string | null;
   tpz_min: number | null;
   tk_min: number | null;
@@ -216,7 +225,12 @@ export interface GanttRow {
   planned_done: boolean | null;
   planned_done_at: string | null;
   planned_done_by: string | null;
-  /** COALESCE(planned_done, is_done_in_bigtehn) — checkbox „završeno". */
+  /**
+   * Gotovost pozicije: `COALESCE(planned_done, AUTO)` gde je AUTO = 069/26 pravilo
+   * (DOBRIH komada ≥ plan; zastavica kioska samo kad količina nije merljiva). Čitaju je
+   * checkbox „Završeno" i boja bara. Kanon: `IS_COMPLETED_EFFECTIVE` na backendu,
+   * ogledalo `autoDone()` ispod.
+   */
   is_completed_effective: boolean | null;
   predecessor_work_order_id: string | null;
   predecessor_line: string | null;
@@ -270,6 +284,51 @@ export interface MachineHallRow {
 /** Deljeni ključ otvorene operacije. */
 export function opKey(o: { work_order_id: string; line_id: string }): string {
   return `${o.work_order_id}:${o.line_id}`;
+}
+
+/**
+ * 069/26 — FE OGLEDALO automatske gotovosti. BE kanon je `IS_COMPLETED_EFFECTIVE`
+ * (`plan-proizvodnje-read.service.ts`): broje se SAMO DOBRI komadi, a zastavica sa
+ * kioska (`is_done_in_bigtehn`) vredi jedino kad količina nije merljiva — prazan/nula
+ * plan ili operacija bez procesa (opšti nalozi, gde se komadi i ne kucaju).
+ *
+ * Služi ISKLJUČIVO optimističkom prikazu: kad planer skine svoj ručni override
+ * („Završeno" nazad na auto = `planned_done: null`), red mora odmah da pokaže ono što
+ * će BE vratiti. Bez toga kvačica trepne u pogrešno stanje do sledećeg mrežnog kruga.
+ *
+ * ⚠️ Promeni li se BE pravilo, MORA i ovde. Dve grane iste formule su već jednom
+ * proizvele isti bug dvaput (numeracija RN-a, 030/26) — zato je ovo jedini FE račun
+ * gotovosti; `gant-utils` ga samo re-eksportuje (isti obrazac kao `rowKey = opKey`).
+ */
+export function autoDone(row: GanttRow): boolean {
+  const plan = row.komada_total;
+  if (plan != null && plan > 0 && row.is_non_machining !== true) {
+    return (row.komada_done_good ?? 0) >= plan;
+  }
+  return row.is_done_in_bigtehn === true;
+}
+
+/**
+ * 069/26 (Strahinja) — „umesto štiklirano da je gotovo, da piše škart": pozicija ima
+ * škarta, a DOBRIH komada još nema dovoljno. Oznaka nestaje SAMA čim se škart
+ * nadoknadi ili planer ručno presudi da je gotovo. BE ogledalo: `scrap_outstanding`.
+ */
+export function scrapOutstanding(row: GanttRow, done: boolean): boolean {
+  return (row.scrap_pieces ?? 0) > 0 && !done;
+}
+
+/**
+ * Nosi li red oznaku „ŠKART" — BE kolona kad je ima, inače isti FE račun (stariji BE
+ * odgovor nema kolonu; tada `scrap_pieces` fali pa oznaka izostane, što je siguran smer).
+ */
+export function scrapBadge(row: GanttRow): boolean {
+  return row.scrap_outstanding ?? scrapOutstanding(row, row.is_completed_effective === true);
+}
+
+/** Objašnjenje oznake škarta (tooltip): koliko je bačeno i koliko dobrih fali do plana. */
+export function scrapText(row: GanttRow): string {
+  const fali = Math.max(0, (row.komada_total ?? 0) - (row.komada_done_good ?? 0));
+  return `Škart ${row.scrap_pieces ?? 0} kom — nedostaje ${fali} dobrih do plana`;
 }
 
 export const PP_STATUS_LABELS: Record<string, string> = {
@@ -665,10 +724,16 @@ export const useGanttOverlay = (msgs?: {
             if (!(r.work_order_id === v.workOrderId && r.line_id === v.lineId)) return r;
             const next = { ...r, ...p };
             // `is_completed_effective` je BE izvedeno polje (COALESCE(planned_done,
-            // is_done_in_bigtehn)) koje čitaju i checkbox „Završeno" i boja bara — bez
-            // ovog koraka klik izgleda mrtvo dok ne prođe mrežni krug.
+            // AUTO)) koje čitaju i checkbox „Završeno" i boja bara — bez ovog koraka
+            // klik izgleda mrtvo dok ne prođe mrežni krug. AUTO grana je 069/26
+            // pravilo (dobri komadi ≥ plan), pa mora kroz `autoDone` — ne kroz sirovu
+            // zastavicu kioska, inače skidanje override-a nakratko pokaže tuđu istinu.
             if (v.plannedDone !== undefined) {
-              next.is_completed_effective = v.plannedDone ?? r.is_done_in_bigtehn ?? false;
+              const done = v.plannedDone ?? autoDone(r);
+              next.is_completed_effective = done;
+              // Oznaka „ŠKART" je izvedena iz iste gotovosti — mora da prati u istom
+              // koraku, da bar ne ostane sa ✓ i oznakom istovremeno.
+              next.scrap_outstanding = scrapOutstanding(r, done);
             }
             // `is_ready_for_machine` je takođe BE izvedeno (override OR prethodne
             // operacije završene) — bedž spremnosti i boja bara moraju da reaguju odmah.

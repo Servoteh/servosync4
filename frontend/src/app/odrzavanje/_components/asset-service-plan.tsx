@@ -18,7 +18,7 @@ import {
   type ViewRow,
   type WoPriority,
 } from '@/api/odrzavanje';
-import { f, fnum, isoToDateInput, money, WO_PRIORITY_LABEL } from './common';
+import { f, fnum, isoToDateInput, money, parsePrice, parseWholeNumber, WO_PRIORITY_LABEL } from './common';
 
 const DUE: Record<string, { tone: Tone; label: string }> = {
   ok: { tone: 'success', label: 'OK' },
@@ -139,19 +139,24 @@ function PlanForm({ assetId, row, onClose }: { assetId: string; row: ViewRow | n
   const [err, setErr] = useState<string | null>(null);
   const selCls = 'h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink';
 
+  /**
+   * IT/objekti nemaju kilometražu — plan dospeva samo po vremenu, pa je interval u
+   * mesecima ovde stvarno obavezan (kolona je NOT NULL + CHECK > 0). 073/26: menja se
+   * samo poruka (kaže šta da se uradi) i parsiranje unosa („12 meseci" više nije NaN).
+   */
   function submit() {
     setErr(null);
     if (!name.trim()) return setErr('Naziv je obavezan.');
-    const m = Number(months);
-    if (!Number.isFinite(m) || m <= 0) return setErr('Interval u mesecima mora biti pozitivan broj.');
-    const pc = plannedCost.trim() === '' ? undefined : Number(plannedCost.trim().replace(',', '.'));
-    if (pc != null && (!Number.isFinite(pc) || pc < 0)) return setErr('Cena servisa mora biti broj ≥ 0.');
+    const m = parseWholeNumber(months);
+    if (m == null || Number.isNaN(m) || m <= 0) return setErr('Interval — meseci je obavezan: unesi ceo broj meseci veći od 0 (npr. 12). IT oprema i objekti nemaju kilometražu, pa se plan vodi samo po vremenu.');
+    const pc = parsePrice(plannedCost);
+    if (pc != null && Number.isNaN(pc)) return setErr('Cena servisa mora biti broj ≥ 0.');
     const common = {
       name: name.trim(),
-      intervalMonths: Math.round(m),
-      lastDoneAt: lastAt || undefined,
+      intervalMonths: m,
+      lastDoneAt: lastAt || null,
       priority: priority as WoPriority,
-      notes: notes.trim() || undefined,
+      notes: notes.trim() || null,
       plannedCost: pc,
       active,
     };

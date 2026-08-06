@@ -56,13 +56,13 @@ import {
   SyncSwitchService,
 } from "./sync-switch.service";
 import { CompanyDetailsService } from "./company-details.service";
-// ⚠️ VREDNOSNI UVOZ, NE `import type` (ispravka 05.08.2026 — uzrok prijave vlasnika).
+// ⚠️ VREDNOSNI UVOZ, NIKAD `import type` — brana je `common/controller-body-dto.spec.ts`.
 // `@Body() dto: X` se validira preko `design:paramtypes` metapodatka, a taj metapodatak
-// mora da nosi SAMU KLASU. Kad je klasa uvezena kroz `import type`, TypeScript je ne može
-// referisati u runtime-u i u metapodatak upiše `Function`; `ValidationPipe` tada radi
-// `plainToInstance(Function, telo)` i vrati FUNKCIJU umesto DTO-a — sva polja `undefined`.
-// Posledica je bila 422 „Nijedno polje nije prosleđeno." na SVAKO snimanje, bez obzira šta
-// je korisnik uneo. Pinovano testom `podesavanja.controller.body-metatype.spec.ts`.
+// mora da nosi SAMU KLASU. Kroz `import type` klasa u runtime-u ne postoji, pa TS upiše
+// `Function`; `ValidationPipe` tada pozove `plainToInstance(Function, telo)` i vrati
+// FUNKCIJU umesto DTO-a — sva polja `undefined`. Obe rute ispod su zbog toga na produkciji
+// vraćale 422 „Nijedno polje nije prosleđeno." na SVAKO snimanje, bez obzira šta je
+// korisnik uneo (prijava vlasnika 05.08.2026, popravljeno istog dana).
 import { UpdateCompanyDetailsDto } from "./dto/podesavanja-company-details.dto";
 import { PaymentAccountsService } from "./payment-accounts.service";
 import {

@@ -58,6 +58,61 @@ const OPEN_OPS = Prisma.sql`is_done_in_bigtehn IS FALSE AND rn_zavrsen IS FALSE
 const EFF_FILTER = Prisma.sql`COALESCE(plan_rn_final_control_done, false) IS NOT TRUE`;
 
 /**
+ * 069/26 — GOTOVOST POZICIJE U PLANU (Strahinja, odluka Nenad 05.08.2026).
+ *
+ * Kanon kvaliteta delova (ogledalo `PART_QUALITY`, tech-processes.service.ts §1):
+ * **0=dobar, 1=dorada, 2=škart** — u SQL-u ostaju doslovni brojevi, kao svuda u ovom
+ * fajlu (g4 lateral, `bigtehn_rework_scrap_cache` u zaglavlju).
+ *
+ * Zatečeno pravilo je bilo `COALESCE(planned_done, bool_or(is_process_finished))` —
+ * dakle „gotovo" čim je RADNIK NEGDE pritisnuo „Kraj rada", bez obzira na količinu.
+ * To je nasleđe starog značenja te zastavice („gotov sam za danas"), zbog kog je
+ * 05.08. sanirana istorija kioska. Novo pravilo:
+ *
+ *   gotovo = ručna presuda planera  ILI  DOBRIH komada ≥ plan
+ *
+ * Dva bitna detalja, oba mereno na produkciji 05.08.2026:
+ *
+ * 1. **Broje se SAMO DOBRI komadi** — `quality_type_id = 0`, doslovno kao praćenje
+ *    (`QUALITY_GOOD`) i tech-processes (`PART_QUALITY.GOOD`). NAMERNO nije napisano kao
+ *    „sve što nije 1/2": tako bi buduća 4. vrsta kvaliteta u planu prošla kao DOBRA, a u
+ *    druga dva modula ne bi — plan bi tiho zatvarao ono što oni drže otvorenim. Škart je
+ *    otpad, a dorada NIJE još ispravan deo — kad se dorada ispravi, vraća se SVEŽIM
+ *    dobrim kucanjem koje se tek onda broji. Plan je bio jedini modul koji je odstupao,
+ *    pa se time tri modula poravnavaju, ne razilaze.
+ *    Posledica: operacija sa nenadoknađenim škartom SAMA OD SEBE ne dobije kvačicu —
+ *    tako je Strahinjin zahtev („umesto štiklirano da je gotovo, da piše škart")
+ *    ispunjen pravilom, bez ijednog dodatnog stanja u bazi.
+ *
+ * 2. **Zastavica ostaje SAMO gde količina nije merljiva.** Izmereno: `komada_total` nije
+ *    prazan/0 ni na jednoj od 51.321 operacije kroz predmet-gate, pa ta polovina grane
+ *    danas nikad ne okine; živi deo su mašine `without_process` (1.390 operacija, opšti
+ *    nalozi na kojima se komadi ne kucaju — samo 34 ima ijednu prijavu, nijedna škart).
+ *    Grana danas ne spašava NIJEDNU poziciju od gubitka kvačice; stoji zato što bi bez
+ *    nje operacija na kojoj se komadi nikad ne kucaju postala trajno nezatvoriva
+ *    automatikom. Cena: za tih 1.390 kvačica i dalje dolazi iz stare zastavice, a oznaka
+ *    škarta na njima ne može da se upali — svesno, jer tamo nema merila.
+ *
+ * Izmereno pred izmenu (51.321 operacija kroz predmet-gate): kvačicu GUBI 1.525
+ * pozicija (od toga 362 bez ijednog otkucanog komada, 451 na već zatvorenom RN-u,
+ * 79 sa škartom), a DOBIJA je **0** — dakle ne postoji slučaj u kom je količina
+ * kompletirana a plan to nije pokupio; promena je isključivo „prestani da lažeš".
+ * Na gantu (32 planirane pozicije) menja se **1 red**. Lista „Po mašini" se NE dira:
+ * ona filtrira po SIROVOJ zastavici (`OPEN_OPS` → `is_done_in_bigtehn`), pa promena
+ * pravila ne može ništa da vrati u listu niti da izbaci iz nje.
+ *
+ * ⚠️ Izraz referiše aliase `base` i `tr` iz `effectiveOpsInner` — koristi se DVA puta
+ * (kvačica + oznaka škarta), pa mora ostati JEDAN izvor da se dve grane ne raziđu.
+ * FE ogledalo (optimistički update posle klika planera): `autoDone()` u
+ * `frontend/src/api/plan-proizvodnje.ts`.
+ */
+const IS_COMPLETED_EFFECTIVE = Prisma.sql`COALESCE(base.planned_done,
+        CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0
+                  AND base.is_non_machining IS NOT TRUE
+             THEN COALESCE(tr.good_done, 0) >= base.komada_total
+             ELSE COALESCE(tr.is_done, false) END)`;
+
+/**
  * BE sort kanon (dept/all/search) — sy15 OPS_SORT SA tie-breakerom (`rn_ident_broj,
  * operacija`). Deterministican poredak redova. Razlika od RPC-a (v. `RPC_SORT`).
  */
@@ -99,10 +154,14 @@ const ALL_COLS = Prisma.sql`line_id, work_order_id, effective_machine_code, broj
  * (M6) sa neotkucanom operacijom izgleda kao živ „Dodaj" (izmereno: 537 operacija).
  * `ready_override_at/by` = pečat ručnog override-a spremnosti (046/26 Paket B —
  * dijalog stavke prikazuje ko/kada je označio).
+ * `komada_done_good` + `scrap_pieces`/`rework_pieces`/`scrap_outstanding` = 069/26:
+ * gant sudi gotovost po DOBRIM komadima, pa mora i da IH POKAŽE — inače bi dijalog
+ * pisao „100/100 urađeno" bez kvačice (škart popunio zbir) i to bi izgledalo kao kvar.
  */
 const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   effective_machine_code, original_machine_code, original_machine_name, hall,
   rn_ident_broj, broj_crteza, naziv_dela, materijal, komada_total, komada_done,
+  komada_done_good, scrap_pieces, rework_pieces, scrap_outstanding,
   rok_izrade, tpz_min, tk_min, effective_duration_minutes,
   planned_start_at, planned_end_at, planned_duration_minutes,
   planned_done, planned_done_at, planned_done_by, is_completed_effective,
@@ -750,8 +809,14 @@ export class PlanProizvodnjeReadService {
         base.planned_duration_minutes,
         (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int
       )::int AS effective_duration_minutes,
-      COALESCE(base.planned_done, COALESCE(tr.is_done, false)) AS is_completed_effective,
+      ${IS_COMPLETED_EFFECTIVE} AS is_completed_effective,
+      -- 069/26 (Strahinja): „umesto štiklirano da je gotovo, da piše škart". Oznaka
+      -- stoji DOK škart nije nadoknađen — čim neko otkuca dovoljno DOBRIH komada,
+      -- pozicija pređe u gotovu i oznaka nestaje sama, bez ijednog klika planera.
+      -- Isti izraz gotovosti kao red iznad (JEDAN izvor, v. IS_COMPLETED_EFFECTIVE).
+      (COALESCE(g4.scrap_pieces, 0) > 0 AND NOT (${IS_COMPLETED_EFFECTIVE})) AS scrap_outstanding,
       COALESCE(tr.komada_done, 0)::bigint AS komada_done,
+      COALESCE(tr.good_done, 0)::bigint AS komada_done_good,
       COALESCE(tr.real_seconds, 0)::bigint AS real_seconds,
       COALESCE(tr.is_done, false) AS is_done_in_bigtehn,
       tr.last_finished_at, tr.prijava_count,
@@ -862,6 +927,11 @@ export class PlanProizvodnjeReadService {
     ) rc ON true
     LEFT JOIN LATERAL (
       SELECT SUM(t.piece_count) AS komada_done,
+             -- 069/26: DOBRI komadi (sve što nije dorada/škart) — jedini brojač koji
+             -- sudi gotovost. komada_done iznad ostaje ZBIR SVIH kvaliteta ("koliko je
+             -- otkucano") jer ga čitaju i liste van ganta; dve kolone su namerno
+             -- razdvojene da promena pravila gotovosti ne pomeri tuđe brojače.
+             COALESCE(SUM(t.piece_count) FILTER (WHERE t.quality_type_id = 0), 0) AS good_done,
              COALESCE(SUM(EXTRACT(EPOCH FROM (t.finished_at - t.entered_at))) FILTER (WHERE t.finished_at > t.entered_at), 0)::bigint AS real_seconds,
              bool_or(COALESCE(t.is_process_finished, false)) AS is_done,
              max(t.finished_at) AS last_finished_at,

@@ -1670,4 +1670,187 @@ describe("OdrzavanjeService (R1 read sloj)", () => {
       expect(fac).toContain("archived_at IS NULL");
     });
   });
+
+  // ------- Servisni plan vozila (073/26) -------
+
+  /**
+   * Zahtev 073/26 (Duško Kostić, BUG/HIGH): „Ne mogu da sačuvam servisni plan,
+   * izbacuje mi grešku 'interval u mesecima mora biti pozitivan'. Ne mogu da
+   * sačuvam izmene."
+   *
+   * Ekran vozila (vozilo-karton.tsx / ServicePlanForm) je odbijao `0` u mesecima —
+   * a `0` je korisnikov način da kaže „ovaj servis se ne vodi po mesecima". Na
+   * izmeni je ispražnjeno polje slao kao `undefined`, što `JSON.stringify` izbaci,
+   * pa je BE zadržavao staru vrednost i izmena se nije mogla sačuvati.
+   *
+   * Popravka ide u BRANU: servis normalizuje 0/null → NULL i traži samo ono što
+   * traži i baza (`maint_vsp_at_least_one_interval`) — a to proverava nad
+   * EFEKTIVNIM stanjem posle patch-a, ne nad poslatim ključevima.
+   */
+  describe("Servisni plan vozila — intervali (073/26)", () => {
+    const VEHICLE = "c3333333-3333-4333-8333-333333333333";
+    const PLAN = "d4444444-4444-4444-8444-444444444444";
+    type Intervals = {
+      intervalKm: number | null;
+      intervalMonths: number | null;
+    };
+
+    /** `data` iz prvog poziva Prisma moka, bez `any` gimnastike po testovima. */
+    const dataOf = (m: jest.Mock): Record<string, unknown> => {
+      const calls = m.mock.calls as { data: Record<string, unknown> }[][];
+      return calls[0][0].data;
+    };
+
+    const planTx = (current: Intervals | null, updated = 1) => {
+      const create = jest.fn().mockResolvedValue({ planId: PLAN });
+      const findUnique = jest.fn().mockResolvedValue(current);
+      const updateMany = jest.fn().mockResolvedValue({ count: updated });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintVehicleServicePlan: { create, findUnique, updateMany },
+      });
+      const svc = new OdrzavanjeService(
+        makeSy15(tx).sy15,
+        storageStub,
+        notifyStub(),
+      );
+      return { svc, create, findUnique, updateMany };
+    };
+
+    it("PRIJAVLJENI SLUČAJ: plan samo sa kilometražom se čuva (meseci prazni)", async () => {
+      const { svc, create } = planTx(null);
+      await svc.createVehicleServicePlan("veljko@servoteh.com", VEHICLE, {
+        clientEventId: "e1",
+        name: "Veliki servis",
+        intervalKm: 15000,
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(dataOf(create).intervalKm).toBe(15000);
+      expect(dataOf(create).intervalMonths).toBeNull();
+    });
+
+    it("PRIJAVLJENI SLUČAJ: 0 u mesecima nije greška — znači nije zadato", async () => {
+      const { svc, create } = planTx(null);
+      await svc.createVehicleServicePlan("veljko@servoteh.com", VEHICLE, {
+        clientEventId: "e2",
+        name: "Zamena ulja",
+        intervalKm: 10000,
+        intervalMonths: 0,
+      });
+      expect(dataOf(create).intervalMonths).toBeNull();
+      expect(dataOf(create).intervalKm).toBe(10000);
+    });
+
+    it("null u mesecima se ponaša isto kao prazno polje", async () => {
+      const { svc, create } = planTx(null);
+      await svc.createVehicleServicePlan("veljko@servoteh.com", VEHICLE, {
+        clientEventId: "e3",
+        name: "Gume",
+        intervalKm: 40000,
+        intervalMonths: null,
+      });
+      expect(dataOf(create).intervalMonths).toBeNull();
+    });
+
+    it("bez ijednog intervala → 422 sa uputstvom (plan inače nikad ne bi dospeo)", async () => {
+      const { svc, create } = planTx(null);
+      await expect(
+        svc.createVehicleServicePlan("veljko@servoteh.com", VEHICLE, {
+          clientEventId: "e4",
+          name: "Nešto",
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+      await expect(
+        svc.createVehicleServicePlan("veljko@servoteh.com", VEHICLE, {
+          clientEventId: "e5",
+          name: "Nešto",
+          intervalKm: 0,
+          intervalMonths: 0,
+        }),
+      ).rejects.toThrow(/bar jedan interval/);
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it("PRIJAVLJENI SLUČAJ: izmena imena ne dira mesece i ne traži ponovni unos", async () => {
+      const { svc, updateMany } = planTx({
+        intervalKm: null,
+        intervalMonths: 12,
+      });
+      await svc.updateVehicleServicePlan("veljko@servoteh.com", PLAN, {
+        name: "Veliki servis 2026",
+      });
+      const data = dataOf(updateMany);
+      expect(data.name).toBe("Veliki servis 2026");
+      // izostavljen ključ = ne diraj (inače bi PATCH imena obrisao interval)
+      expect("intervalMonths" in data).toBe(false);
+      expect("intervalKm" in data).toBe(false);
+    });
+
+    it("PRIJAVLJENI SLUČAJ: prelazak sa meseci na kilometražu briše mesece", async () => {
+      const { svc, updateMany } = planTx({
+        intervalKm: null,
+        intervalMonths: 12,
+      });
+      await svc.updateVehicleServicePlan("veljko@servoteh.com", PLAN, {
+        intervalKm: 15000,
+        intervalMonths: null,
+      });
+      const data = dataOf(updateMany);
+      expect(data.intervalKm).toBe(15000);
+      expect(data.intervalMonths).toBeNull();
+    });
+
+    it("0 na izmeni briše interval (isto značenje kao na unosu)", async () => {
+      const { svc, updateMany } = planTx({
+        intervalKm: 15000,
+        intervalMonths: 12,
+      });
+      await svc.updateVehicleServicePlan("veljko@servoteh.com", PLAN, {
+        intervalMonths: 0,
+      });
+      expect(dataOf(updateMany).intervalMonths).toBeNull();
+    });
+
+    it("brisanje POSLEDNJEG intervala → 422, bez dodira baze (ne sirovi DB CHECK)", async () => {
+      const { svc, updateMany } = planTx({
+        intervalKm: null,
+        intervalMonths: 12,
+      });
+      await expect(
+        svc.updateVehicleServicePlan("veljko@servoteh.com", PLAN, {
+          intervalMonths: null,
+        }),
+      ).rejects.toThrow(/bar jedan interval/);
+      expect(updateMany).not.toHaveBeenCalled();
+    });
+
+    it("nepostojeći/nevidljiv plan i dalje daje 404, ne poruku o intervalu", async () => {
+      const { svc } = planTx(null, 0);
+      await expect(
+        svc.updateVehicleServicePlan("veljko@servoteh.com", PLAN, {
+          intervalMonths: null,
+        }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it("IT/objekti: prazan interval daje poruku na srpskom, ne NOT NULL iz baze", async () => {
+      const create = jest.fn().mockResolvedValue({ planId: PLAN });
+      const tx = makeTx({
+        $queryRaw: jest.fn().mockResolvedValue([{ uid: "u1" }]),
+        maintAssetServicePlan: { create },
+      });
+      const svc = new OdrzavanjeService(
+        makeSy15(tx).sy15,
+        storageStub,
+        notifyStub(),
+      );
+      await expect(
+        svc.createAssetServicePlan("veljko@servoteh.com", VEHICLE, {
+          clientEventId: "e6",
+          name: "Preventivni pregled",
+        }),
+      ).rejects.toThrow(/Interval — meseci je obavezan/);
+      expect(create).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -58,6 +58,8 @@ import {
   money,
   OpStatusBadge,
   OWNER_TYPE_LABEL,
+  parsePrice,
+  parseWholeNumber,
   SHELF_OPTIONS,
   TIRE_SEASON_LABEL,
   TIRE_STATUS_LABEL,
@@ -446,25 +448,36 @@ function ServicePlanForm({ id, row, onClose }: { id: string; row: ViewRow | null
   const [err, setErr] = useState<string | null>(null);
   const selCls = 'h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink';
 
+  /**
+   * 073/26 — servis automobila se vodi po kilometraži, po vremenu, ili po oba.
+   * Prazno polje i `0` znače isto: „ne vodi se po tome" (korisnici kucaju 0 kad
+   * hoće to da kažu). Sve što se pošalje kao `null` briše prethodnu vrednost —
+   * `undefined` bi ispalo iz JSON-a i stara vrednost bi ostala u bazi, pa izmena
+   * ne bi mogla da se sačuva iako dijalog kaže „Sačuvano".
+   */
   function submit() {
     setErr(null);
     if (!name.trim()) return setErr('Naziv je obavezan.');
-    const m = months.trim() === '' ? undefined : Number(months);
-    const k = km.trim() === '' ? undefined : Number(km);
-    if (m == null && k == null) return setErr('Bar jedan interval (meseci ili km) je obavezan.');
-    if (m != null && (!Number.isFinite(m) || m <= 0)) return setErr('Interval u mesecima mora biti pozitivan.');
-    if (k != null && (!Number.isFinite(k) || k <= 0)) return setErr('Interval u km mora biti pozitivan.');
-    const pc = plannedCost.trim() === '' ? undefined : Number(plannedCost.trim().replace(',', '.'));
-    if (pc != null && (!Number.isFinite(pc) || pc < 0)) return setErr('Cena servisa mora biti broj ≥ 0.');
+    const m = parseWholeNumber(months);
+    const k = parseWholeNumber(km);
+    const lk = parseWholeNumber(lastKm);
+    if (Number.isNaN(m) || (m != null && m < 0)) return setErr('Interval — meseci: unesi ceo broj meseci (npr. 12) ili ostavi prazno ako se servis ne vodi po mesecima.');
+    if (Number.isNaN(k) || (k != null && k < 0)) return setErr('Interval — km: unesi ceo broj kilometara (npr. 15000) ili ostavi prazno ako se servis ne vodi po kilometraži.');
+    if (Number.isNaN(lk) || (lk != null && lk < 0)) return setErr('Poslednji put — km: unesi stanje kilometraže (npr. 84000) ili ostavi prazno.');
+    const mv = m != null && m > 0 ? m : null;
+    const kv = k != null && k > 0 ? k : null;
+    if (mv == null && kv == null) return setErr('Unesi bar jedan interval: km (npr. 15000), meseci (npr. 12), ili oba. Po tome sistem računa kada servis dospeva.');
+    const pc = parsePrice(plannedCost);
+    if (pc != null && Number.isNaN(pc)) return setErr('Cena servisa mora biti broj ≥ 0.');
     const common = {
       name: name.trim(),
-      intervalMonths: m,
-      intervalKm: k,
-      lastDoneAt: lastAt || undefined,
-      lastDoneKm: lastKm.trim() === '' ? undefined : Number(lastKm),
-      vehicleServiceCategory: category || undefined,
+      intervalMonths: mv,
+      intervalKm: kv,
+      lastDoneAt: lastAt || null,
+      lastDoneKm: lk,
+      vehicleServiceCategory: category || null,
       priority: priority as never,
-      notes: notes.trim() || undefined,
+      notes: notes.trim() || null,
       plannedCost: pc,
       active,
     };
@@ -481,10 +494,10 @@ function ServicePlanForm({ id, row, onClose }: { id: string; row: ViewRow | null
         <div className="grid grid-cols-2 gap-3">
           <FormField label="Kategorija"><select value={category} onChange={(e) => setCategory(e.target.value)} className={selCls}><option value="">— bez —</option>{SVC_CAT_KEYS.map((k) => <option key={k} value={k}>{VEHICLE_SVC_CATEGORY_LABEL[k]}</option>)}</select></FormField>
           <FormField label="Prioritet"><select value={priority} onChange={(e) => setPriority(e.target.value)} className={selCls}>{SVC_PRIORITY_KEYS.map((k) => <option key={k} value={k}>{WO_PRIORITY_LABEL[k]}</option>)}</select></FormField>
-          <FormField label="Interval — meseci"><Input value={months} onChange={(e) => setMonths(e.target.value)} inputMode="numeric" /></FormField>
-          <FormField label="Interval — km"><Input value={km} onChange={(e) => setKm(e.target.value)} inputMode="numeric" /></FormField>
+          <FormField label="Interval — meseci" hint="prazno = ne vodi se po mesecima"><Input value={months} onChange={(e) => setMonths(e.target.value)} inputMode="numeric" placeholder="npr. 12" /></FormField>
+          <FormField label="Interval — km" hint="prazno = ne vodi se po kilometraži"><Input value={km} onChange={(e) => setKm(e.target.value)} inputMode="numeric" placeholder="npr. 15000" /></FormField>
           <FormField label="Poslednji put — datum"><Input type="date" value={lastAt} onChange={(e) => setLastAt(e.target.value)} /></FormField>
-          <FormField label="Poslednji put — km"><Input value={lastKm} onChange={(e) => setLastKm(e.target.value)} inputMode="numeric" /></FormField>
+          <FormField label="Poslednji put — km"><Input value={lastKm} onChange={(e) => setLastKm(e.target.value)} inputMode="numeric" placeholder="npr. 84000" /></FormField>
           <FormField label="Cena servisa (RSD)" hint="očekivana — ulazi u nalog kao procena"><Input value={plannedCost} onChange={(e) => setPlannedCost(e.target.value)} inputMode="decimal" placeholder="npr. 15000" /></FormField>
         </div>
         <label className="flex cursor-pointer items-center gap-2 text-sm text-ink"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> Aktivno (uključeno u auto-generisanje WO)</label>
