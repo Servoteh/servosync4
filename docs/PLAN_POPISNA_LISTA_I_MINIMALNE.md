@@ -17,6 +17,39 @@ Dve od četiri stvari koje je plan ostavio otvorenim su odlučene istog dana:
 | **Artikli bez police na popisnoj listi** (4.789 od 7.179 redova sa stanjem) | Lista se **grupiše po polici**, a sve bez police ide na **kraj, pod naslov „Bez police"** | Grupisanje + poslednja grupa; njen naslov mora da nosi i broj redova, jer taj spisak služi i kao podsetnik šta fali da se upiše |
 | **„Artikli ispod minimalne količine" — sa čim se poredi** | Sa **SLOBODNOM količinom**, ne sa ukupnim stanjem | ⚠️ **Namerno odstupanje od BigBita**, koji poredi sa ukupnim stanjem. Naš spisak će biti **duži** od njegovog: artikal koji je ceo rezervisan kod nas se pojavljuje, kod njega ne. To je namera (rezervisano je već obećano nekom nalogu, pa za nabavku ne postoji), a ne greška — i mora tako da piše na samom ekranu, da niko ne prijavi „razliku u odnosu na BigBit" kao kvar |
 
+### Dopuna istog dana — ko unosi minimalne količine i čija je to kolona
+
+Vlasnik: *„ISPOD MINIMALNE KOLIČINE UNOSE MAGACIONERI, za sada korisnici sa mejlom
+dusko.kostic, radisav.radevic, nikola.savic."*
+
+🔴 **Prepreka nađena pri merenju, pre bilo kakvog koda:** `items.minQuantity` danas puni
+**noćni .mdb uvoz**. Potvrđeno iz dva nezavisna izvora:
+
+- mapa sinhronizacije za `items` (`sync-map.generated.ts`) nosi `Minimalna kolicina → minQuantity`,
+  a `importItems()` gradi `data` upravo iz te mape (`itemsMapping()`), pa se kolona upisuje;
+- u staging tabeli `bb_mdb_stage_artikli` **810 od 455.897** redova nosi ne-nultu minimalnu.
+
+Dakle unos magacionera bi **prebrisao uvoz u 03:45**. To je isti razred kvara koji je 05.08.
+pojeo podatke firme (`companies`), pa se rešava istim postupkom.
+
+| pitanje | ODLUKA vlasnika (06.08.2026) |
+|---|---|
+| Čija je kolona `min_quantity` | **4.0 preuzima vlasništvo** — `minQuantity` izlazi iz mape sinhronizacije, uz branu koja pada ako je neko vrati. BigBit-ovih **162** vrednosti prestaju da stižu ovamo (u BigBitu ostaju netaknute do prelaska) |
+| Ko sme da menja | **Samo tri imenovana čoveka**, kroz `user_permission_overrides` — isto kao knjige 05.08. Rola `magacioner` pravo **NE** nosi |
+
+Izmereno na produkciji 06.08.2026:
+
+| korisnik | id | rola | zatečena pojedinačna prava |
+|---|---|---|---|
+| dusko.kostic@servoteh.com | 42 | menadzment | 19 prava nad knjigama |
+| radisav.radevic@servoteh.com | 51 | magacioner | `robno.read` |
+| nikola.savic@servoteh.com | 52 | magacioner | — |
+
+Stanje kolone: **162** artikla imaju minimalnu ≠ 0, **92.460** nulu, **3** prazno (od 92.625).
+
+⚠️ Pravo je **usko — samo minimalna količina**. Ostatak kartice artikla ostaje zaključan
+(unos artikala čeka razrešenje 4.298 duplih kataloških brojeva).
+
 **Ostaje otvoreno i dalje blokira** (v. odeljak sa pitanjima):
 
 - 🔴 **za knjigovođu:** sme li roba ugrađena u mašinu uopšte da stoji na 1320, ili se razdužuje u
