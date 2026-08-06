@@ -1047,7 +1047,7 @@ export class MojProfilService {
         );
     } else {
       if (!dto.absenceDate)
-        throw new UnprocessableEntityException("Unesi datum izostanka.");
+        throw new UnprocessableEntityException("Unesi datum odsustva.");
       if (!(hours > 0 && hours <= 24))
         throw new UnprocessableEntityException("Broj sati mora biti 0.5–24.");
       if (!dto.makeupPlan?.trim())
@@ -1065,14 +1065,12 @@ export class MojProfilService {
     }
     if (!dto.reason?.trim())
       throw new UnprocessableEntityException("Razlog je obavezan.");
-    if (
-      dto.makeupDeadline &&
-      dto.absenceDate &&
-      dto.makeupDeadline < dto.absenceDate
-    )
-      throw new UnprocessableEntityException(
-        "Rok nadoknade ne može biti pre datuma izostanka.",
-      );
+    // 074/26 — UKLONJENO pravilo „datum nadoknade ne sme biti pre datuma odsustva".
+    // Podnosilac (Miljan Nikodijević, 06.08.2026, komentar na zahtevu) na pitanje da li
+    // nadoknada sme biti PRE odsustva odgovara doslovno: „Da, u nekim situacijama je i
+    // takva opcija potrebna" — sati odrađeni UNAPRED. Zabrana je dolazila iz pretpostavke
+    // da se sati uvek odrađuju posle; ta pretpostavka nije tačna, pa pada pravilo, a ne
+    // korisnik. Ostaje samo ono što baza i dalje traži: oba datuma moraju biti datumi.
 
     // 074/26 (Miljan Nikodijević): kolona `absence_date` je NOT NULL, a za
     // 'dan_odmora' je do sada bila PUKI DUPLIKAT `weekend_work_date` (mereno

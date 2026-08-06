@@ -73,6 +73,7 @@ describe("Moj profil 074/26 — dan odmora nosi dan rada i planirani slobodan da
     const v = ins!.values as unknown[];
     return {
       absenceDate: v[1],
+      makeupDeadline: v[5],
       compensationType: v[6],
       weekendWorkDate: v[7],
     };
@@ -159,5 +160,28 @@ describe("Moj profil 074/26 — dan odmora nosi dan rada i planirani slobodan da
     expect(ins.compensationType).toBe("nadoknada");
     expect(ins.absenceDate).toBe("2026-08-04");
     expect(ins.weekendWorkDate).toBeNull();
+  });
+
+  /**
+   * 074/26 dopuna (Miljan Nikodijević, komentar 06.08.2026): na pitanje da li datum
+   * nadoknade sme biti PRE datuma odsustva odgovorio je doslovno „Da, u nekim
+   * situacijama je i takva opcija potrebna" — sati odrađeni UNAPRED. Do tada je i BE
+   * i FE odbijao taj slučaj sa „Rok nadoknade ne može biti pre datuma izostanka".
+   * Test pinuje da pravilo VIŠE NE POSTOJI, da se ne bi vratilo pri sledećoj reviziji.
+   */
+  it("nadoknada SME da bude pre odsustva (sati odrađeni unapred)", async () => {
+    const { svc, calls } = mkSvc();
+    await svc.submitMakeup(EMAIL, {
+      clientEventId: CID,
+      absenceDate: "2026-08-20",
+      absenceHours: 8,
+      reason: "Unapred odrađeno",
+      makeupPlan: "Odradio sam 10.08.",
+      makeupDeadline: "2026-08-10", // PRE datuma odsustva
+      compensationType: "nadoknada",
+    });
+    const ins = insertOf(calls);
+    expect(ins.absenceDate).toBe("2026-08-20");
+    expect(ins.makeupDeadline).toBe("2026-08-10");
   });
 });

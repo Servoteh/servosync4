@@ -148,10 +148,10 @@ BEGIN
                     THEN '<p>Planirani slobodan dan: <strong>' || to_char(v_free_day,'DD.MM.YYYY') || '</strong></p>'
                     ELSE '' END
        ELSE
-            '<p>Datum izostanka: <strong>' || to_char(v_abs_date,'DD.MM.YYYY') || '</strong> ('
+            '<p>Datum odsustva: <strong>' || to_char(v_abs_date,'DD.MM.YYYY') || '</strong> ('
             || v_hours::text || ' h). Status: <strong>' || p_status || '</strong>.</p>'
             || CASE WHEN v_deadline IS NOT NULL
-                    THEN '<p>Rok nadoknade: <strong>' || to_char(v_deadline,'DD.MM.YYYY') || '</strong></p>'
+                    THEN '<p>Datum nadoknade sati: <strong>' || to_char(v_deadline,'DD.MM.YYYY') || '</strong></p>'
                     ELSE '' END
        END
     || CASE WHEN COALESCE(v_reason,'') <> '' THEN '<p>Razlog: ' || v_reason || '</p>' ELSE '' END

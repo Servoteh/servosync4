@@ -137,13 +137,13 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
           'Za +1 dan odmora potrebno je najmanje 8h rada (ceo dan). Za manje sati podnesi zahtev za nadoknadu sati.',
         );
     } else {
-      if (!absenceDate) return setErr('Unesi datum izostanka.');
+      if (!absenceDate) return setErr('Unesi datum odsustva.');
       if (!(absenceHours > 0 && absenceHours <= 24)) return setErr('Broj sati mora biti 0.5–24.');
       if (!makeupPlan.trim()) return setErr('Predlog nadoknade je obavezan.');
     }
     if (!reason.trim()) return setErr('Razlog je obavezan.');
-    if (makeupDeadline && absenceDate && makeupDeadline < absenceDate)
-      return setErr('Rok nadoknade ne može biti pre datuma izostanka.');
+    // 074/26: pravilo „nadoknada ne sme pre odsustva" je UKLONJENO — podnosilac je
+    // potvrdio da se sati ponekad odrađuju UNAPRED. Kanon je BE; ovde nema ogledala.
     try {
       await submitM.mutateAsync({
         clientEventId: newClientEventId(),
@@ -209,7 +209,7 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
             </FormField>
           </>
         ) : (
-          <FormField label="Datum izostanka" required>
+          <FormField label="Datum odsustva" required>
             <Input type="date" value={absenceDate} onChange={(e) => setAbsenceDate(e.target.value)} />
           </FormField>
         )}
@@ -224,7 +224,7 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
             <FormField label="Predlog nadoknade (dani/vreme)">
               <Textarea value={makeupPlan} onChange={(e) => setPlan(e.target.value)} rows={2} maxLength={300} />
             </FormField>
-            <FormField label="Rok nadoknade">
+            <FormField label="Datum nadoknade sati" hint="sme i pre datuma odsustva (sati odrađeni unapred)">
               <Input type="date" value={makeupDeadline} onChange={(e) => setDeadline(e.target.value)} />
             </FormField>
           </>
