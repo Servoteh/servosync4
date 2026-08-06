@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Building2, Landmark, Save } from 'lucide-react';
+import { Building2, Landmark, Plus, Save } from 'lucide-react';
 import { ApiError } from '@/api/client';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui-kit/button';
@@ -9,10 +9,12 @@ import { FormField, Input } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import {
   useCompanyDetails,
+  useCreatePaymentAccount,
   usePaymentAccounts,
   useSaveCompanyDetails,
   useSavePaymentAccount,
   type CompanyDetails,
+  type CreatePaymentAccountVars,
   type PaymentAccount,
   type SaveCompanyDetailsVars,
   type SavePaymentAccountVars,
@@ -258,11 +260,19 @@ function Section({
 // račun da plati, a papir je izgledao potpuno ispravno. Od 02.08. štampa takav račun ODBIJA
 // da napravi i uputi ovde.
 //
-// SAMO IZMENA, BEZ DODAVANJA I BRISANJA: skup računa i njihove ključeve drži BigBit
-// (`UplatniRacuni`), a tabela nema rezervisan 4.0 opseg ključeva — red napravljen odavde
-// sudario bi se sa BigBit-ovim `id`-jem i dao bi račun sa dinarskim brojem i deviznim
-// IBAN-om. Ako devizni račun ne postoji ni kao red, unosi ga jednom administrator baze
-// (SQL je u backend/docs/STAMPA_IZLAZNIH_FAKTURA.md §8).
+// UNOS JE OTVOREN 06.08.2026. Do tada je ovde stajalo „samo izmena, bez dodavanja", uz
+// uputstvo da račun unese administrator baze SQL-om. To je bio ĆORSOKAK, i to merljiv:
+// `payment_accounts` je na produkciji imala NULA redova, BigBit ne donosi nijedan, a štampa
+// izvozne fakture bez IBAN-a i SWIFT-a odbija da se napravi — dakle ekran je upućivao na
+// izmenu nečega što ne postoji. Vlasnik je na to i naišao 05.08.
+//
+// Bojazan iza starog pravila je bila tačna (nov red bi udario u BigBit-ov `id`), ali je
+// rešenje već postojalo u repou: tabela je sada u `NATIVE_ID_RANGE_TABLES`, pa nov red
+// dobija `id >= 900.000.000` — isti obrazac kao artikli i komitenti. Sync takav red ne
+// prepisuje i ne briše.
+//
+// BROJ RAČUNA: na BigBit-ovom redu ostaje njihov (backend izmenu odbija glasno, jer bi je
+// sledeći sync vratio na staro); na 4.0-native redu je naš i menja se ovde.
 // ============================================================================
 
 type AccountKey = 'iban' | 'swift' | 'bankName' | 'bankAddress' | 'currency';
@@ -303,6 +313,7 @@ const ACCOUNT_FIELDS: AccountFieldDef[] = [
 function DevizniRacuni() {
   const q = usePaymentAccounts();
   const saveM = useSavePaymentAccount();
+  const [adding, setAdding] = useState(false);
   const accounts = q.data?.data ?? [];
 
   if (q.isLoading)
@@ -325,13 +336,14 @@ function DevizniRacuni() {
         Broj računa donosi BigBit i ne menja se ovde.
       </p>
 
-      {accounts.length === 0 ? (
-        <p className="rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm text-status-warn">
-          Za ovu firmu nema nijednog računa za plaćanje. Račune donosi BigBit sinhronizacija; ako
-          devizni račun ne postoji ni tamo, mora ga jednom uneti administrator baze (uputstvo je u
-          dokumentaciji: STAMPA_IZLAZNIH_FAKTURA.md, odeljak „Devizni račun").
+      {accounts.length === 0 && !adding && (
+        <p className="mb-4 rounded-panel border border-status-warn/40 bg-status-warn-bg px-4 py-3 text-sm text-status-warn">
+          Za ovu firmu nema nijednog računa za plaćanje, pa izvozna faktura ne može da se
+          odštampa ni u jednoj valuti. Unesite račun dugmetom ispod.
         </p>
-      ) : (
+      )}
+
+      {accounts.length > 0 && (
         <div className="space-y-4">
           {accounts.map((a) => (
             <AccountCard
@@ -343,7 +355,190 @@ function DevizniRacuni() {
           ))}
         </div>
       )}
+
+      {adding ? (
+        <NewAccountForm
+          postojeceValute={accounts.map((a) => a.currency ?? '').filter(Boolean)}
+          onCancel={() => setAdding(false)}
+          onDone={() => setAdding(false)}
+        />
+      ) : (
+        <div className="mt-4">
+          <Button variant="secondary" onClick={() => setAdding(true)}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Dodaj devizni račun
+          </Button>
+        </div>
+      )}
     </section>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// UNOS NOVOG RAČUNA
+//
+// Sva četiri polja su OBAVEZNA, i to nije strogoća radi strogoće: račun bez valute se ne
+// bira za fakturu, a bez IBAN-a i SWIFT-a blok „Beneficiary" ostaje prazan — pa bi unos
+// napravio red koji i dalje ne otključava štampu. Bolje da obrazac odbije nego da korisnik
+// pomisli da je posao gotov.
+//
+// Broj računa ovde JESTE naš: red nastaje u 4.0-native opsegu ključeva (`id >= 900.000.000`),
+// koji sinhronizacija ne dira. Na BigBit-ovim redovima broj i dalje ostaje njihov.
+// ----------------------------------------------------------------------------
+
+const NEW_ACCOUNT_FIELDS: {
+  key: keyof Omit<CreatePaymentAccountVars, 'companyId'>;
+  label: string;
+  maxLength: number;
+  required?: boolean;
+  placeholder?: string;
+  hint?: string;
+  multiline?: boolean;
+}[] = [
+  {
+    key: 'currency',
+    label: 'Valuta računa',
+    maxLength: 3,
+    required: true,
+    placeholder: 'EUR',
+    hint: 'ISO 4217. Po njoj se bira račun za valutu fakture.',
+  },
+  {
+    key: 'accountNumber',
+    label: 'Broj računa',
+    maxLength: 50,
+    required: true,
+    placeholder: '160-0050100035011-86',
+    hint: 'Kako stoji na izvodu.',
+  },
+  {
+    key: 'iban',
+    label: 'IBAN',
+    maxLength: 40,
+    required: true,
+    placeholder: 'RS35 1600 0501 0003 5011 86',
+    hint: 'Razmaci su dozvoljeni pri kucanju — čuva se bez njih. Ispravnost se proverava (MOD-97).',
+  },
+  {
+    key: 'swift',
+    label: 'SWIFT / BIC',
+    maxLength: 11,
+    required: true,
+    placeholder: 'DBDBRSBG',
+    hint: '8 ili 11 znakova.',
+  },
+  {
+    key: 'bankName',
+    label: 'Naziv banke',
+    maxLength: 50,
+    placeholder: 'Banca Intesa a.d.',
+    hint: 'Uz naziv se na papiru sama dopisuje valuta dokumenta.',
+  },
+  {
+    key: 'bankAddress',
+    label: 'Adresa banke',
+    maxLength: 255,
+    multiline: true,
+    placeholder: 'Milentija Popovića 7b, 11070 New Belgrade\nRepublic of Serbia',
+    hint: 'Prelom reda je deo podatka — ispisuje se na papiru kako je ovde ukucan.',
+  },
+];
+
+function NewAccountForm({
+  postojeceValute,
+  onCancel,
+  onDone,
+}: {
+  postojeceValute: string[];
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const createM = useCreatePaymentAccount();
+  const [form, setForm] = useState<Record<string, string>>({});
+
+  const val = (k: string) => form[k] ?? '';
+  const obavezna = NEW_ACCOUNT_FIELDS.filter((f) => f.required);
+  const fali = obavezna.filter((f) => val(f.key).trim() === '');
+
+  // Dva reda za istu valutu značila bi da štampa ćutke bira jedan od njih. Backend to
+  // odbija, ali korisnik to treba da vidi PRE nego što popuni ceo obrazac.
+  const valuta = val('currency').trim().toUpperCase();
+  const duplaValuta = valuta !== '' && postojeceValute.includes(valuta);
+
+  async function save() {
+    const body = {
+      accountNumber: val('accountNumber').trim(),
+      currency: valuta,
+      iban: val('iban').trim(),
+      swift: val('swift').trim(),
+      bankName: val('bankName').trim() || null,
+      bankAddress: val('bankAddress').trim() || null,
+    };
+    try {
+      await createM.mutateAsync(body);
+      toast(`Devizni račun (${body.currency}) je unet.`);
+      onDone();
+    } catch (e) {
+      const msg =
+        e instanceof ApiError && e.status === 403
+          ? 'Nemate dozvolu za unos računa.'
+          : (e as Error).message || 'Unos nije uspeo — pokušajte ponovo.';
+      toast(msg);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-panel border border-line bg-surface-subtle p-4">
+      <h4 className="mb-3 text-sm font-semibold text-ink">Nov devizni račun</h4>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {NEW_ACCOUNT_FIELDS.map((f) => (
+          <FormField key={f.key} label={f.label} required={f.required} hint={f.hint}>
+            {f.multiline ? (
+              <Textarea
+                rows={2}
+                value={val(f.key)}
+                maxLength={f.maxLength}
+                placeholder={f.placeholder}
+                onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))}
+              />
+            ) : (
+              <Input
+                value={val(f.key)}
+                maxLength={f.maxLength}
+                placeholder={f.placeholder}
+                onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))}
+              />
+            )}
+          </FormField>
+        ))}
+      </div>
+
+      {duplaValuta && (
+        <p className="mt-3 text-xs text-status-danger">
+          Za valutu {valuta} već postoji račun. Dva računa u istoj valuti znače da papir bira
+          jedan od njih nasumično — izmenite postojeći umesto da unosite nov.
+        </p>
+      )}
+
+      <div className="mt-4 flex items-center justify-end gap-3">
+        {fali.length > 0 && (
+          <span className="text-xs text-ink-secondary">
+            Fali: {fali.map((f) => f.label).join(', ')}.
+          </span>
+        )}
+        <Button variant="ghost" onClick={onCancel} disabled={createM.isPending}>
+          Odustani
+        </Button>
+        <Button
+          onClick={save}
+          loading={createM.isPending}
+          disabled={fali.length > 0 || duplaValuta}
+        >
+          <Save className="h-4 w-4" aria-hidden />
+          Unesi račun
+        </Button>
+      </div>
+    </div>
   );
 }
 

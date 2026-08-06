@@ -1,7 +1,7 @@
 import { NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import type { PrismaService } from "../../prisma/prisma.service";
 import { PaymentAccountsService } from "./payment-accounts.service";
-import { NATIVE_COLUMN_TABLES } from "../sync/table-ownership";
+import { NATIVE_COLUMN_TABLES, NATIVE_ID_BASE } from "../sync/table-ownership";
 
 /**
  * UNOS DEVIZNOG RAČUNA — jedina vrata kroz koja IBAN i SWIFT mogu da uđu u
@@ -145,20 +145,48 @@ describe("PaymentAccountsService — unos deviznog računa", () => {
   });
 
   /**
-   * BigBit kolone se NE menjaju iz forme: sync ih prepisuje na sledećem prolazu, pa bi
-   * izmena bila obećanje koje sistem ne može da održi. `whitelist: true` u `ValidationPipe`
-   * ih odbacuje već na ulazu; ovde se pinuje da ih ni servis ne propušta.
+   * ⚠️ OVAJ TEST JE 06.08.2026. PROMENJEN JER SE NAMERA PROMENILA, ne da bi prošao.
+   *
+   * Ranije je ekran znao SAMO da menja BigBit-ove redove, pa je broj računa bio tuđa
+   * kolona u svakom slučaju i test je pinovao da servis takvo polje TIHO odbaci. Otkad
+   * račun može da nastane i ovde (`create`, native opseg ključeva `id >= 900.000.000`),
+   * ista kolona ima dva različita vlasnika:
+   *
+   *   • BigBit red  → broj donosi `UplatniRacuni`; izmena bi preživela do prvog sync-a,
+   *     pa se odbija GLASNO. Tiho gutanje polja je tačno onaj razred kvara zbog kog je
+   *     vlasnik 05.08. i prijavio „snimio sam, a nije snimljeno".
+   *   • native red  → broj je NAŠ i sme da se menja; syncer ga ne dira.
+   *
+   * `isDefault` i dalje nije ničije polje sa ovog ekrana i ostaje odbačeno bez reči —
+   * nije ni u `UpdatePaymentAccountDto`, pa ga `whitelist: true` odbaci već na ulazu.
    */
-  it("BigBit kolone ne mogu da se promene ni kad se podmetnu", async () => {
+  it("BigBit red: broj računa se odbija GLASNO, ne tiho", async () => {
     const prisma = makePrisma();
-    await makeService(prisma).update(5, {
-      currency: "EUR",
-      accountNumber: "999-999999-99",
-      isDefault: false,
-    } as never);
+    await expect(
+      makeService(prisma).update(5, {
+        currency: "EUR",
+        accountNumber: "999-999999-99",
+      }),
+    ).rejects.toThrow(/BigBit/);
+    expect(prisma.paymentAccount.update).not.toHaveBeenCalled();
+  });
+
+  it("native red: broj računa SME da se promeni — kolona je naša", async () => {
+    const id = NATIVE_ID_BASE + 1;
+    const prisma = makePrisma();
+    prisma.paymentAccount.findUnique = jest.fn(() => Promise.resolve({ id }));
+
+    await makeService(prisma).update(id, { accountNumber: "265-0000000123456-11" });
 
     const data = prisma.paymentAccount.update.mock.calls[0][0].data;
-    expect(data).not.toHaveProperty("accountNumber");
+    expect(data.accountNumber).toBe("265-0000000123456-11");
+  });
+
+  it("`isDefault` se ne upisuje ni na jednom redu", async () => {
+    const prisma = makePrisma();
+    await makeService(prisma).update(5, { currency: "EUR", isDefault: false } as never);
+
+    const data = prisma.paymentAccount.update.mock.calls[0][0].data;
     expect(data).not.toHaveProperty("isDefault");
   });
 

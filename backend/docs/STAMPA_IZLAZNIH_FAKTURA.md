@@ -260,6 +260,30 @@ uzimaju se samo kad nijedan račun nema bankarske podatke. Nose IBAN i SWIFT, al
 adresu banke (`companies` te kolone nema), pa je to minimum po kom uplata može da se izvrši,
 a ne pun blok.
 
+### ⚠️ Od 06.08.2026. SQL više NIJE potreban — račun se unosi sa ekrana
+
+Sve ispod (jednokratni `INSERT`, „pusti ga administrator baze") je ostalo kao **zapis o tome
+kako je bilo i zašto**, ali više nije put kojim se ide.
+
+Povod za izmenu: 05.08.2026. vlasnik je otvorio Podešavanja → Firma i naišao na ćorsokak.
+Izmereno tog dana — `payment_accounts` na produkciji ima **0 redova**, BigBit ne donosi
+nijedan, registrovane su bile samo rute `GET /admin/firma/racuni` i
+`PUT /admin/firma/racuni/:id`, **a POST nije postojao**. Ekran je dakle nudio izmenu nečega
+čega nema i upućivao na ovaj dokument, dok je štampa izvozne fakture istovremeno odbijala da
+radi bez IBAN-a. Zatvoren krug.
+
+Bojazan iz odeljka ispod bila je tačna — nov red bi udario u BigBit-ov `id`. Rešenje je
+postojalo u repou i pre ovoga: `payment_accounts` je sada u `NATIVE_ID_RANGE_TABLES`, pa red
+napravljen sa ekrana dobija `id >= 900.000.000` (isti obrazac kao `items` i `customers`).
+Full refresh briše samo `id < NATIVE_ID_BASE`, tako da native red preživljava sinhronizaciju.
+
+| ruta | šta radi |
+|---|---|
+| `POST /api/admin/firma/racuni` | nov račun; valuta, broj, IBAN i SWIFT su obavezni, druga ista valuta se odbija |
+| `PUT /api/admin/firma/racuni/:id` | izmena; **broj računa** samo na native redu — na BigBit redu se odbija glasno, jer bi ga sledeći sync vratio na staro |
+
+Na ekranu: **Podešavanja → Firma → Devizni računi → „Dodaj devizni račun"**.
+
 ### Zašto stvarni podaci NISU u migraciji ni u seedu
 
 Postojeći seed obrazac (`prisma/migrations/*_seed_*`, `prisma/seed/*.sql`) drži **šifarnike i

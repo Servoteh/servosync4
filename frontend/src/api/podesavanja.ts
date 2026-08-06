@@ -879,14 +879,28 @@ export const useSaveCompanyDetails = () =>
 // ČITA, ali ih nijedan ekran nije punio — izvozna faktura je izlazila bez ijedne bankarske
 // instrukcije, pa strani kupac nije imao gde da plati.
 //
-// SAMO IZMENA, BEZ DODAVANJA I BRISANJA: skup računa i njihove ključeve drži BigBit
-// (`UplatniRacuni`), a tabela nema rezervisan 4.0 opseg ključeva — red napravljen ovde bi se
-// sudario sa BigBit-ovim `id`-jem. Menjaju se samo četiri kolone koje sync ne poznaje.
+// UNOS JE OTVOREN 06.08.2026 (ranije je ovde stajalo „samo izmena"). Bojazan je bila da bi
+// red napravljen odavde udario u BigBit-ov `id` — što je tačno, ali tabela je od te izmene u
+// `NATIVE_ID_RANGE_TABLES`, pa nov red dobija `id >= 900.000.000` (isti obrazac kao artikli i
+// komitenti) i sync ga ne može ni prepisati ni obrisati. Bez toga je ekran bio ĆORSOKAK:
+// `payment_accounts` je na produkciji imala NULA redova, BigBit ne donosi nijedan, a izvozna
+// faktura bez IBAN-a i SWIFT-a odbija da se odštampa — pa se nije imalo šta ni izmeniti.
+//
+// BROJ RAČUNA i dalje ostaje BigBit-ov na BigBit-ovim redovima (backend takvu izmenu odbija
+// glasno); na 4.0-native redu je naš i menja se ovde.
+
+/** Prag 4.0-native ključeva — ispod je BigBit-ov red, iznad naš (`sync/table-ownership.ts`). */
+export const NATIVE_ID_BASE = 900_000_000;
+
+/** Da li je račun nastao ovde (pa mu je i broj naš) ili ga donosi BigBit. */
+export function isNativeAccount(a: Pick<PaymentAccount, 'id'>): boolean {
+  return a.id >= NATIVE_ID_BASE;
+}
 
 export interface PaymentAccount {
   id: number;
   companyId: number;
-  /** Broj računa — BigBit-ov, prikazuje se ali se ne menja odavde. */
+  /** Broj računa — na BigBit redu se prikazuje ali se ne menja; na native redu se menja. */
   accountNumber: string;
   bankName: string | null;
   isDefault: boolean;
@@ -918,6 +932,32 @@ export const useSavePaymentAccount = () =>
     ({ id, ...body }) =>
       apiFetch<{ data: PaymentAccount }>(`${BASE}/firma/racuni/${id}`, {
         method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    KEYS.paymentAccounts,
+  );
+
+/**
+ * Nov račun. Sva četiri polja su OBAVEZNA jer račun bez njih ne otključava štampu:
+ * bez valute se ne bira, bez IBAN-a i SWIFT-a blok banke ostaje prazan, a bez broja
+ * se ne prepoznaje na izvodu. `bankName`/`bankAddress` su neobavezni.
+ */
+export interface CreatePaymentAccountVars {
+  accountNumber: string;
+  /** ISO 4217, npr. „EUR" — po njoj štampa bira ovaj račun. */
+  currency: string;
+  iban: string;
+  swift: string;
+  bankName?: string | null;
+  bankAddress?: string | null;
+  companyId?: number;
+}
+
+export const useCreatePaymentAccount = () =>
+  useAdminMutation<CreatePaymentAccountVars, { data: PaymentAccount }>(
+    (body) =>
+      apiFetch<{ data: PaymentAccount }>(`${BASE}/firma/racuni`, {
+        method: 'POST',
         body: JSON.stringify(body),
       }),
     KEYS.paymentAccounts,
