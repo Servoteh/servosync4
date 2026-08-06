@@ -1,28 +1,142 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { IdempotencyService } from "../../common/idempotency/idempotency.service";
 import { assertAttachment } from "../../common/attachments/attachment-format.util";
 import { jsonSafe } from "../../common/json-safe";
 import { machineGroupSlug } from "./departments";
+import { IS_COMPLETED_EFFECTIVE } from "./plan-proizvodnje.sql";
 import type {
   BulkReassignDto,
   CooperationGroupPatchDto,
   CooperationGroupUpsertDto,
   MachineHallUpsertDto,
   OverlayReorderDto,
+  OverlayShiftChainDto,
   OverlayUpsertDto,
   ReassignDto,
   SetUrgentDto,
 } from "./dto/plan-proizvodnje-mutation.dto";
 
 type Tx = Prisma.TransactionClient;
+/** Čitač za `collectChain` — isti upit ide i van transakcije (pregled) i u njoj (upis). */
+type ChainDb = Tx | PrismaService;
+
+/**
+ * Kućni presedan za WRITE guard (`pracenje.service.ts:34` `CYCLE_MAX_DEPTH`).
+ * MAX_DEPTH=20 iz `pracenje-read`/pdm je PRETESNO — izmeren lanac na mašini 3.40 ima
+ * 16 ivica (19 čvorova), pa bi ga kapa od 20 dodirivala već sledeće sezone.
+ */
+const CASCADE_MAX_DEPTH = 50;
+/** Tvrda kapa skupa. Danas je maksimum 19 čvorova — kapa čuva od budućih podataka. */
+const CASCADE_MAX_NODES = 500;
+/** Prisma default je 5 s, a ČEKANJE NA BRAVE ulazi u budžet (cnc-programs.service.ts). */
+const CASCADE_TX_TIMEOUT_MS = 15_000;
+
+/**
+ * Zona po kojoj se meri „ceo kalendarski dan".
+ *
+ * 🔴 Sesijska zona baze je `Etc/UTC` (izmereno 06.08.2026), gde je `+ interval '5 days'`
+ * zapravo 120 SATI: `2026-10-23 08:00` postaje `2026-10-28 07:00` po beogradskom zidnom
+ * satu (prelaz na zimsko 25.10.2026). Roundtrip `AT TIME ZONE 'Europe/Belgrade'` daje
+ * `08:00` i poklapa se sa FE `addDays` (`setDate`, zidni sat). Izmereno na produkciji:
+ * sa zonom 2026-10-28 08:00, naivno 2026-10-28 07:00.
+ */
+const PLAN_TZ = "Europe/Belgrade";
+
+/**
+ * `AT TIME ZONE 'Europe/Belgrade'` kao SQL TEKST, ne kao bind parametar.
+ *
+ * `Prisma.raw` je ovde bezbedan po konstrukciji: `PLAN_TZ` je modulna konstanta i u
+ * izraz ne ulazi nijedan podatak sa zahteva. Tekst (a ne parametar) je namerno — tako
+ * izraz stoji u SQL-u čitljiv i proverljiv testom, umesto da se krije iza `$3`.
+ */
+const AT_PLAN_TZ = Prisma.raw(`AT TIME ZONE '${PLAN_TZ}'`);
+
+/** Razlog preskoka pri kaskadi (075/26) — kod + srpski tekst za planera. */
+const SKIP_RAZLOZI = {
+  orfan: "operacija više ne postoji (mrtva veza)",
+  arhivirano: "pozicija je arhivirana",
+  bez_termina: "nema planiran termin",
+  zavrseno: "pozicija je završena",
+} as const;
+type SkipKod = keyof typeof SKIP_RAZLOZI;
+/** Slovo klase u otisku stanja lanca (v. `chainHash`). */
+const KLASA_SLOVO: Record<SkipKod | "moved", string> = {
+  moved: "M",
+  zavrseno: "Z",
+  bez_termina: "T",
+  arhivirano: "A",
+  orfan: "O",
+};
+
+/** Čvor lanca — par ključeva `plan_proizvodnje_overlays`. */
+interface ChainNode {
+  wo: number;
+  line: number;
+}
+
+/** Uslov („prethodnik") jednog overlay reda — čita ga hod naviše u anti-ciklus brani. */
+interface PredecessorRef {
+  predecessor_work_order_id: number | null;
+  predecessor_line: number | null;
+}
+
+/** Jedan čvor zatvorenja lanca, onako kako ga vraća `collectChain` SQL. */
+interface ChainRow {
+  work_order_id: string;
+  line_id: string;
+  dubina: number;
+  ciklus: boolean;
+  putanja_txt: string[];
+  planned_start_at: Date | null;
+  planned_end_at: Date | null;
+  /** Izračunat NOV termin (isti izraz kao UPDATE) — pregled je bit-identičan upisu. */
+  novi_start: Date | null;
+  novi_end: Date | null;
+  orfan: boolean;
+  arhivirano: boolean;
+  rn_ident_broj: string | null;
+  operacija: number | null;
+  broj_crteza: string | null;
+  effective_machine_code: string | null;
+  zavrseno: boolean;
+}
+
+interface SkippedRow extends ChainRow {
+  razlog_kod: SkipKod;
+  razlog: string;
+}
+
+interface ChainPlan {
+  /** Ciklus u zatvorenju — sve ostalo je tada prazno; upis se NE radi. */
+  ciklus: { putanja: string[]; ivica: string } | null;
+  sidro: ChainRow | null;
+  moved: ChainRow[];
+  skipped: SkippedRow[];
+  dubinaMax: number;
+  zahvat: number;
+}
+
+/**
+ * `409 chain_changed` — plan se promenio između pregleda i upisa. Telo nosi SVEŽ plan
+ * (isti oblik kao uspešan odgovor), da dijalog može da se prerenderuje BEZ drugog
+ * poziva. `message` je KOD (FE `overlayErrorMessage` traži kod u `String(e.message)`).
+ */
+export class ChainChangedException extends ConflictException {
+  constructor(plan: unknown) {
+    super({ message: "chain_changed", code: "chain_changed", plan });
+  }
+}
 
 /**
  * Skice se primaju po SADRŽAJU (`common/attachments`), ne po MIME listi iz 1.0
@@ -49,7 +163,11 @@ type Tx = Prisma.TransactionClient;
  */
 @Injectable()
 export class PlanProizvodnjeService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // `IdempotencyModule` je `@Global` (app.module.ts) → modul se ne dira.
+    private readonly idem: IdempotencyService,
+  ) {}
 
   // ==========================================================================
   // Overlays (merge upsert)
@@ -171,7 +289,9 @@ export class PlanProizvodnjeService {
    *   • `planned_end_before_start`    — kraj pre početka,
    *   • `predecessor_self_reference`  — stavka kao sopstveni uslov (ciklus dužine 1),
    *   • `predecessor_pair_incomplete` — uslov je PAR (RN + linija); pola para je siroče
-   *     na kome bi se F2 auto-pomeranje po uslovu zavrtelo.
+   *     na kome bi se F2 auto-pomeranje po uslovu zavrtelo,
+   *   • `predecessor_cycle`           — 075/26: veza koja zatvara petlju DUŽE od 1
+   *     (`A→B→A` je do sada prolazio; kaskada bi se na njemu vrtela).
    */
   private async assertPlanConsistent(
     tx: Tx,
@@ -215,6 +335,57 @@ export class PlanProizvodnjeService {
       if ((pwo === null) !== (pline === null)) {
         throw new UnprocessableEntityException("predecessor_pair_incomplete");
       }
+      if (pwo !== null && pline !== null) {
+        await this.assertNoPredecessorCycle(tx, wo, line, pwo, pline);
+      }
+    }
+  }
+
+  /**
+   * 075/26 — anti-ciklus PRI KREIRANJU veze. Do sada se branila samo samo-referenca
+   * (ciklus dužine 1), pa je `A→B→A` prolazio; kaskadno pomeranje bi na takvom podatku
+   * moralo da se oslanja isključivo na `CYCLE` guard u SQL-u.
+   *
+   * Postavljanje uslova (wo,line) → (pwo,pline) zatvara petlju TAČNO kad je (wo,line)
+   * već PREDAK predloženog prethodnika. Čvor ima NAJVIŠE JEDNOG prethodnika (par kolona
+   * na redu, ne tabela veza), pa je ovo LINEARAN hod naviše — ne BFS kao uzor
+   * `pracenje.service.ts` `wouldCreateParentCycle`.
+   *
+   * ⚠️ GRANICA KOJU TREBA ZNATI: ovaj hod čita redove koje jednoredni `FOR UPDATE` iz
+   * `assertPlanConsistent` NE zaključava, pa dva istovremena upisa i dalje teorijski
+   * mogu da sklope ciklus. `CYCLE` guard u kaskadi (`collectChain`) je KONAČNA brana i
+   * ostaje i pored ovoga.
+   */
+  private async assertNoPredecessorCycle(
+    tx: Tx,
+    wo: number,
+    line: number,
+    pwo: number,
+    pline: number,
+  ): Promise<void> {
+    const visited = new Set<string>();
+    let cur: ChainNode | null = { wo: pwo, line: pline };
+    for (let dubina = 0; dubina < CASCADE_MAX_DEPTH && cur !== null; dubina++) {
+      const node: ChainNode = cur;
+      if (node.wo === wo && node.line === line) {
+        throw new UnprocessableEntityException({
+          message: "predecessor_cycle",
+          code: "predecessor_cycle",
+        });
+      }
+      const kljuc = `${node.wo}:${node.line}`;
+      // Zatečen ciklus UZVODNO (bez naše ivice) nije naš problem — prekid, ne greška.
+      if (visited.has(kljuc)) return;
+      visited.add(kljuc);
+      const rows: PredecessorRef[] = await tx.$queryRaw<PredecessorRef[]>(Prisma.sql`
+        SELECT predecessor_work_order_id, predecessor_line
+          FROM plan_proizvodnje_overlays
+         WHERE work_order_id = ${node.wo} AND line_id = ${node.line}`);
+      const p: PredecessorRef | undefined = rows[0];
+      cur =
+        p?.predecessor_work_order_id != null && p.predecessor_line != null
+          ? { wo: p.predecessor_work_order_id, line: p.predecessor_line }
+          : null;
     }
   }
 
@@ -246,10 +417,25 @@ export class PlanProizvodnjeService {
     return min != null ? min - 1 : 1;
   }
 
-  /** Bulk reorder — `shift_sort_order` = 1..n u datom redosledu (jedan tx). */
+  /**
+   * Bulk reorder — `shift_sort_order` = 1..n u datom redosledu (jedan tx).
+   *
+   * 🔴 075/26: PRE petlje ide KANONSKI pre-lock. Petlja upserta inače uzima brave
+   * redom koji pošalje FE (poredak prikaza: hala/mašina/`shift_sort_order`), a kaskada
+   * ih uzima po `(work_order_id, line_id)`. Nad presecajućim skupom je to `40P01`
+   * (deadlock) posle `deadlock_timeout = 1 s`, a planeru izgleda kao 500. Pet linija —
+   * bez njih se zastoj prihvata SLUČAJNO, a ne svesno.
+   */
   async reorderOverlays(email: string, dto: OverlayReorderDto) {
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
+      await this.lockOverlays(
+        tx,
+        dto.items.map((it) => ({
+          wo: Number(it.workOrderId),
+          line: Number(it.lineId),
+        })),
+      );
       for (let i = 0; i < dto.items.length; i++) {
         const it = dto.items[i];
         const wo = Number(it.workOrderId);
@@ -268,6 +454,501 @@ export class PlanProizvodnjeService {
       }
       return { data: { reordered: dto.items.length } };
     });
+  }
+
+  // ==========================================================================
+  // Kaskadno pomeranje vezanih pozicija (075/26 — F2 iz 046/26)
+  // ==========================================================================
+
+  /**
+   * Pomeri SIDRO i ceo lanac njegovih sledbenika za ISTI broj kalendarskih dana.
+   *
+   * SEMANTIKA (presuđena merenjem 06.08.2026, ne preispitivati):
+   *  • **ISTI POMAK**, nikad „prilepi za kraj prethodnika". Od 30 izmerenih razmaka
+   *    bar-do-bar 10 je POZITIVNO (6 su granice kalendara — noć 16:00→08:00, vikend
+   *    petak 16:00→ponedeljak 08:00; 1 je namerna rezerva od 24 h), a JEDAN živ razmak
+   *    je NEGATIVAN (`47616/231315` traje do 12:00, sledbenik `47610/231280` počinje u
+   *    11:00). Svako pravilo „sledbenik posle prethodnika" bacalo bi 422 nad zatečenim
+   *    podatkom, a lepljenje bi uništilo namerne razmake.
+   *  • **Sidro se pomera UVEK**, i kad je završeno: koren lanca mašine 3.40
+   *    (`47617/231323`) JESTE završen, pa bi brana nad sidrom učinila gest nevidljivim.
+   *  • **Preskok se odnosi na UPIS, nikad na HOD.** 5 od 7 završenih pozicija je u
+   *    SREDINI lanca; prekid hoda bi na 3.40 pomerio 0 umesto 15 pozicija.
+   *  • **`work_orders.is_locked` se NE proverava.** Svih 39 vezanih pozicija je na
+   *    zaključanim nalozima, a `is_locked` je danas SAMO PRIKAZ (u backendu se pojavljuje
+   *    isključivo u modulu `handovers`). Brana bi bila mrtva funkcija, ne stroga.
+   *  • **Kaskada je SERVERSKA.** `LinkLayer` razrešava veze samo među iscrtanih ~300
+   *    redova (`gantt-tab.tsx` `MAX_ROWS`) nad feed-om koji je i sam `LIMIT 5000` sa
+   *    serverskim `hall`/`q` filterima — klijentski spisak bi tiho gubio rep lanca.
+   *    Zato klijent šalje SAMO sidro i deltu.
+   */
+  async shiftChain(email: string, dto: OverlayShiftChainDto) {
+    const wo = Number(dto.workOrderId);
+    const line = Number(dto.lineId);
+    const delta = dto.deltaDays;
+    const pregled = dto.dryRun === true;
+
+    // Bez posla — nula dodira baze, nula potrošenog ključa idempotencije.
+    if (delta === 0 && !pregled) {
+      throw new UnprocessableEntityException({
+        message: "delta_zero",
+        code: "delta_zero",
+      });
+    }
+
+    // PREGLED — bez transakcije, bez brave, NE troši idempotency ključ.
+    if (pregled) {
+      const plan = await this.collectChain(this.prisma, wo, line, delta);
+      return {
+        data: this.chainResponse(plan, delta, null),
+        meta: { dry_run: true, cap: CASCADE_MAX_NODES },
+      };
+    }
+
+    // UPIS. Delta NIJE idempotentna sama po sebi (dva puta primenjeno = 10 umesto 5
+    // dana), pa se ključ NE izmišlja na serveru — za razliku od `reassign`-a.
+    if (!dto.clientEventId) {
+      throw new BadRequestException({
+        message: "client_event_required",
+        code: "client_event_required",
+      });
+    }
+    const ishod = await this.idem.run(
+      email,
+      dto.clientEventId,
+      "plan_proizvodnje.gant.shift_chain",
+      (tx) => this.applyShiftChain(tx, email, dto, wo, line, delta),
+      { timeoutMs: CASCADE_TX_TIMEOUT_MS },
+    );
+    return {
+      data: ishod.result,
+      meta: {
+        dry_run: false,
+        idempotent: ishod.idempotent,
+        cap: CASCADE_MAX_NODES,
+      },
+    };
+  }
+
+  /** Pet koraka u JEDNOJ transakciji: plan → brave → ponovni plan → UPDATE → odgovor. */
+  private async applyShiftChain(
+    tx: Tx,
+    email: string,
+    dto: OverlayShiftChainDto,
+    wo: number,
+    line: number,
+    delta: number,
+  ) {
+    // (a) plan pre brava
+    const plan1 = await this.collectChain(tx, wo, line, delta);
+    if (plan1.ciklus) {
+      throw new UnprocessableEntityException({
+        message: "predecessor_cycle",
+        code: "predecessor_cycle",
+        cycle: plan1.ciklus,
+      });
+    }
+
+    // (b) BRAVE — ZASEBAN iskaz, kanonski redosled, nad CELIM skupom (moved + skipped).
+    // 🔴 `FOR UPDATE` nad rekurzivnim CTE-om TIHO NE ZAKLJUČAVA NIŠTA: upit prođe bez
+    // greške i vrati redove, ali `EXPLAIN` pokazuje samo `CTE Scan`, BEZ `LockRows`
+    // (provereno na produkciji 06.08.2026). Zato OBAVEZNO dva odvojena iskaza.
+    // Zaključava se i `skipped` — preskočena pozicija sme u međuvremenu da dobije termin.
+    await this.lockOverlays(tx, [
+      ...plan1.moved.map((r) => ({
+        wo: Number(r.work_order_id),
+        line: Number(r.line_id),
+      })),
+      ...plan1.skipped.map((r) => ({
+        wo: Number(r.work_order_id),
+        line: Number(r.line_id),
+      })),
+    ]);
+
+    // (c) ISTI upit, sada POD BRAVOM.
+    const plan2 = await this.collectChain(tx, wo, line, delta);
+    const hash1 = this.chainHash(plan1);
+    const hash2 = this.chainHash(plan2);
+    if (
+      hash1 !== hash2 ||
+      (dto.expectedHash && dto.expectedHash !== hash2)
+    ) {
+      throw new ChainChangedException(this.chainResponse(plan2, delta, null));
+    }
+
+    // (d) JEDAN UPDATE nad plan2.moved.
+    const parovi = plan2.moved.map((r) => ({
+      wo: Number(r.work_order_id),
+      line: Number(r.line_id),
+    }));
+    const updated = await tx.$queryRaw<
+      {
+        work_order_id: string;
+        line_id: string;
+        planned_start_at: Date | null;
+        planned_end_at: Date | null;
+      }[]
+    >(Prisma.sql`
+      UPDATE plan_proizvodnje_overlays o
+         SET planned_start_at = ${this.shiftExpr(Prisma.raw("o.planned_start_at"), delta)},
+             planned_end_at   = ${this.shiftExpr(Prisma.raw("o.planned_end_at"), delta)},
+             updated_by = ${email},
+             updated_at = now()
+       WHERE (o.work_order_id, o.line_id) IN (${this.pairsSql(parovi)})
+         AND o.planned_start_at IS NOT NULL
+      RETURNING o.work_order_id::text AS work_order_id, o.line_id::text AS line_id,
+                o.planned_start_at, o.planned_end_at`);
+
+    if (updated.length !== plan2.moved.length) {
+      // Pod bravom je ovo nemoguće — signal je da je brava izgubljena, ne poslovni slučaj.
+      throw new InternalServerErrorException(
+        `Kaskada: očekivano ${plan2.moved.length} pomerenih redova, upisano ${updated.length}.`,
+      );
+    }
+
+    // (e) odgovor iz RETURNING-a + hash POSLE (računa se u JS-u, bez trećeg upita).
+    return this.chainResponse(plan2, delta, updated);
+  }
+
+  /**
+   * Zatvorenje SLEDBENIKA sidra (rekurzivni CTE), BEZ ijedne brave — brave uzima
+   * pozivalac zasebnim iskazom (v. `applyShiftChain` korak b).
+   *
+   * 🔴 DVA PONAŠANJA KOJA SE NAJLAKŠE POBRKAJU: **hod** (rekurzija) prolazi KROZ svaki
+   * čvor bez obzira na klasu; **preskok** se odnosi ISKLJUČIVO na upis. Da se hod
+   * zaustavljao na bezterminskom čvoru, lanac bi tiho pucao na 4 mesta i planer to
+   * nigde ne bi video.
+   *
+   * `LEFT JOIN` ka `work_order_operations`/`work_orders`/`operations` je namerno LEFT:
+   * orfan overlay (veza na operaciju koja više ne postoji) mora da OSTANE u rezultatu i
+   * da se KLASIFIKUJE, a ne da tiho ispadne iz oba skupa.
+   *
+   * Aliasi podupita su tačno `base` i `tr` — to je uslov da `IS_COMPLETED_EFFECTIVE`
+   * (jedan izvor sa read slojem) radi neizmenjen.
+   *
+   * ⚠️ ODSTUPANJE OD SPECIFIKACIJE (izmereno, ne pretpostavljeno): specifikacija je
+   * tražila `GROUP BY` + `(array_agg(putanja_txt ORDER BY …))[1]`. Oba dela tog izraza
+   * su neispravna u PostgreSQL-u i provereno na produkciji 06.08.2026:
+   *   1. `(array_agg(text[]))[1]` vraća **NULL** (jedan indeks nad 2-D nizom), pa
+   *      prijava ciklusa nikad ne bi nosila putanju;
+   *   2. `array_agg` nad putanjama RAZLIČITE dužine je tvrda greška
+   *      („cannot accumulate arrays of different dimensionality") — a različite dužine
+   *      pravi TAČNO ciklus, tj. jedini slučaj zbog kog izraz i postoji. Umesto čistog
+   *      422 `predecessor_cycle` planer bi dobio 500.
+   * Zamena je `DISTINCT ON (work_order_id, line_id)` + prozorske `min`/`bool_or`:
+   * `min(dubina)` i `bool_or(je_ciklus)` su identični, a putanja dolazi iz izabranog
+   * reda (ciklični prvi, inače najplići) i stvarno je popunjena.
+   */
+  private async collectChain(
+    db: ChainDb,
+    wo: number,
+    line: number,
+    delta: number,
+  ): Promise<ChainPlan> {
+    const rows = await db.$queryRaw<ChainRow[]>(Prisma.sql`
+      WITH RECURSIVE succ AS (
+        SELECT o.work_order_id, o.line_id, 0 AS dubina,
+               ARRAY[o.work_order_id || ':' || o.line_id] AS putanja_txt
+          FROM plan_proizvodnje_overlays o
+         WHERE o.work_order_id = ${wo} AND o.line_id = ${line}
+        UNION ALL                                 -- CYCLE klauzula TRAŽI UNION ALL
+        SELECT n.work_order_id, n.line_id, s.dubina + 1,
+               s.putanja_txt || (n.work_order_id || ':' || n.line_id)
+          FROM plan_proizvodnje_overlays n
+          JOIN succ s ON n.predecessor_work_order_id = s.work_order_id
+                     AND n.predecessor_line          = s.line_id
+         WHERE s.dubina < ${CASCADE_MAX_DEPTH}
+      ) CYCLE work_order_id, line_id SET je_ciklus USING pg_putanja
+      , cvor AS (
+        SELECT DISTINCT ON (work_order_id, line_id)
+               work_order_id, line_id,
+               min(dubina)        OVER (PARTITION BY work_order_id, line_id) AS dubina,
+               bool_or(je_ciklus) OVER (PARTITION BY work_order_id, line_id) AS ciklus,
+               putanja_txt
+          FROM succ
+         ORDER BY work_order_id, line_id, je_ciklus DESC, dubina ASC
+      )
+      SELECT c.work_order_id::text AS work_order_id,
+             c.line_id::text       AS line_id,
+             c.dubina, c.ciklus, c.putanja_txt,
+             base.planned_start_at, base.planned_end_at,
+             ${this.shiftExpr(Prisma.raw("base.planned_start_at"), delta)} AS novi_start,
+             ${this.shiftExpr(Prisma.raw("base.planned_end_at"), delta)}   AS novi_end,
+             (base.line_id_raw IS NULL)     AS orfan,
+             (base.archived_at IS NOT NULL) AS arhivirano,
+             base.rn_ident_broj, base.operacija, base.broj_crteza, base.effective_machine_code,
+             COALESCE(${IS_COMPLETED_EFFECTIVE}, false) AS zavrseno
+        FROM cvor c
+        JOIN LATERAL (
+          SELECT o.planned_start_at, o.planned_end_at, o.planned_done, o.archived_at,
+                 l.id AS line_id_raw, l.work_order_id AS wo_raw,
+                 l.operation_number AS operacija,
+                 COALESCE(o.assigned_machine_code, NULLIF(BTRIM(l.work_center_code), '')) AS effective_machine_code,
+                 wo.piece_count AS komada_total,
+                 COALESCE(NULLIF(BTRIM(wo.ident_number), ''), '(no-' || wo.id || ')') AS rn_ident_broj,
+                 NULLIF(BTRIM(wo.drawing_number), '') AS broj_crteza,
+                 COALESCE(m.without_process, false) AS is_non_machining
+            FROM plan_proizvodnje_overlays o
+            LEFT JOIN work_order_operations l ON l.work_order_id = o.work_order_id AND l.id = o.line_id
+            LEFT JOIN work_orders wo ON wo.id = l.work_order_id
+            LEFT JOIN operations m  ON m.work_center_code = l.work_center_code
+           WHERE o.work_order_id = c.work_order_id AND o.line_id = c.line_id
+        ) base ON true
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(SUM(t.piece_count) FILTER (WHERE t.quality_type_id = 0), 0) AS good_done,
+                 bool_or(COALESCE(t.is_process_finished, false)) AS is_done
+            FROM tech_processes t
+           WHERE t.work_order_id = base.wo_raw AND t.operation_number = base.operacija
+        ) tr ON true
+       ORDER BY c.dubina, c.work_order_id, c.line_id`);
+
+    if (rows.length === 0) {
+      throw new NotFoundException({
+        message: "overlay_not_found",
+        code: "overlay_not_found",
+      });
+    }
+
+    const ciklicni = rows.filter((r) => r.ciklus);
+    if (ciklicni.length > 0) {
+      const putanja = ciklicni[0].putanja_txt ?? [];
+      const ivica =
+        putanja.length >= 2
+          ? `${putanja[putanja.length - 2]} -> ${putanja[putanja.length - 1]}`
+          : (putanja[0] ?? `${wo}:${line}`);
+      return {
+        ciklus: { putanja, ivica },
+        sidro: rows[0],
+        moved: [],
+        skipped: [],
+        dubinaMax: 0,
+        zahvat: rows.length,
+      };
+    }
+
+    if (rows.length > CASCADE_MAX_NODES) {
+      throw new UnprocessableEntityException({
+        message: "cascade_too_large",
+        code: "cascade_too_large",
+        zahvat: rows.length,
+        cap: CASCADE_MAX_NODES,
+      });
+    }
+
+    const sidro = rows[0]; // dubina 0, uvek tačno jedan
+    if (sidro.planned_start_at == null) {
+      throw new UnprocessableEntityException({
+        message: "anchor_without_terms",
+        code: "anchor_without_terms",
+      });
+    }
+
+    const moved: ChainRow[] = [];
+    const skipped: SkippedRow[] = [];
+    const skip = (r: ChainRow, kod: SkipKod) =>
+      skipped.push({ ...r, razlog_kod: kod, razlog: SKIP_RAZLOZI[kod] });
+    for (const r of rows) {
+      // SIDRO SE NE PRESKAČE NIKAD — izričita radnja planera.
+      if (Number(r.work_order_id) === wo && Number(r.line_id) === line) {
+        moved.push(r);
+        continue;
+      }
+      if (r.orfan) skip(r, "orfan");
+      else if (r.arhivirano) skip(r, "arhivirano");
+      else if (r.planned_start_at == null) skip(r, "bez_termina");
+      else if (r.zavrseno) skip(r, "zavrseno");
+      else moved.push(r);
+    }
+
+    return {
+      ciklus: null,
+      sidro,
+      moved,
+      skipped,
+      dubinaMax: rows.reduce((m, r) => Math.max(m, Number(r.dubina) || 0), 0),
+      zahvat: rows.length,
+    };
+  }
+
+  /**
+   * Kanonski otisak STANJA lanca (skup + termini + klasifikacija) — ne zahteva.
+   *
+   * Koristi se na tačno dva mesta i ni na jednom više:
+   *  • interno: `hash(plan1) !== hash(plan2)` POD BRAVOM → `409 chain_changed`
+   *    (strože je i jeftinije od poređenja samih ključeva);
+   *  • kao `expectedHash` kad je planer potvrdio listu u dijalogu ili kliknuo „Poništi".
+   *
+   * `posle` (opciono) zamenjuje termine pomerenih redova — tako se `hash_after` računa
+   * bez trećeg upita u bazu.
+   */
+  private chainHash(
+    plan: ChainPlan,
+    posle?: Map<string, { start: Date | null; end: Date | null }>,
+  ): string {
+    const t = (d: Date | null) => (d ? String(new Date(d).getTime()) : "-");
+    const stavke: { kljuc: string; klasa: string; start: Date | null; end: Date | null }[] = [
+      ...plan.moved.map((r) => ({
+        kljuc: `${r.work_order_id}:${r.line_id}`,
+        klasa: KLASA_SLOVO.moved,
+        start: r.planned_start_at,
+        end: r.planned_end_at,
+      })),
+      ...plan.skipped.map((r) => ({
+        kljuc: `${r.work_order_id}:${r.line_id}`,
+        klasa: KLASA_SLOVO[r.razlog_kod],
+        start: r.planned_start_at,
+        end: r.planned_end_at,
+      })),
+    ];
+    const red = stavke
+      .map((s) => {
+        const n = posle?.get(s.kljuc);
+        return n ? { ...s, start: n.start, end: n.end } : s;
+      })
+      .sort((a, b) => a.kljuc.localeCompare(b.kljuc))
+      .map((s) => `${s.kljuc}|${s.klasa}|${t(s.start)}|${t(s.end)}`)
+      .join(";");
+    return createHash("sha256").update(red).digest("hex").slice(0, 16);
+  }
+
+  /**
+   * Telo odgovora kaskade.
+   *
+   * 🔴 JSON-STABILNOST JE USLOV, NE KOZMETIKA: `IdempotencyService` čuva
+   * `JSON.stringify(result)` u `jsonb`, pa PONOVLJEN poziv vraća ISO **stringove**.
+   * Zato se termini ovde već pretvaraju u `.toISOString()` — inače bi prvi poziv vraćao
+   * `Date`, a retry string, i FE ušivanje bi puklo tek na ponavljanju.
+   *
+   * Razlike po režimu:
+   *  • pregled (`updated === null`): `stavke[].planned_*` nose STARO stanje, a
+   *    `new_start`/`new_end` NOVO (izračunato ISTIM SQL izrazom kao UPDATE);
+   *  • upis: `stavke[].planned_*` nose NOVO stanje iz `RETURNING`, `new_*` su `null`.
+   */
+  private chainResponse(
+    plan: ChainPlan,
+    delta: number,
+    updated:
+      | {
+          work_order_id: string;
+          line_id: string;
+          planned_start_at: Date | null;
+          planned_end_at: Date | null;
+        }[]
+      | null,
+  ) {
+    const iso = (d: Date | null | undefined) =>
+      d ? new Date(d).toISOString() : null;
+    const posle = updated
+      ? new Map(
+          updated.map((u) => [
+            `${u.work_order_id}:${u.line_id}`,
+            { start: u.planned_start_at, end: u.planned_end_at },
+          ]),
+        )
+      : null;
+
+    const stavke = plan.moved.map((r) => {
+      const n = posle?.get(`${r.work_order_id}:${r.line_id}`);
+      return {
+        work_order_id: r.work_order_id,
+        line_id: r.line_id,
+        dubina: Number(r.dubina) || 0,
+        rn_ident_broj: r.rn_ident_broj,
+        operacija: r.operacija,
+        broj_crteza: r.broj_crteza,
+        machine: r.effective_machine_code,
+        planned_start_at: iso(n ? n.start : r.planned_start_at),
+        planned_end_at: iso(n ? n.end : r.planned_end_at),
+        new_start: posle ? null : iso(r.novi_start),
+        new_end: posle ? null : iso(r.novi_end),
+      };
+    });
+    const preskoceno = plan.skipped.map((r) => ({
+      work_order_id: r.work_order_id,
+      line_id: r.line_id,
+      dubina: Number(r.dubina) || 0,
+      rn_ident_broj: r.rn_ident_broj,
+      operacija: r.operacija,
+      broj_crteza: r.broj_crteza,
+      machine: r.effective_machine_code,
+      razlog_kod: r.razlog_kod,
+      razlog: r.razlog,
+    }));
+    const zavrsenih = plan.skipped.filter(
+      (r) => r.razlog_kod === "zavrseno",
+    ).length;
+
+    return jsonSafe({
+      sidro: plan.sidro
+        ? {
+            work_order_id: plan.sidro.work_order_id,
+            line_id: plan.sidro.line_id,
+            rn_ident_broj: plan.sidro.rn_ident_broj,
+            operacija: plan.sidro.operacija,
+            machine: plan.sidro.effective_machine_code,
+          }
+        : null,
+      delta_dana: delta,
+      zahvat: plan.zahvat,
+      dubina_max: plan.dubinaMax,
+      hash: this.chainHash(plan),
+      hash_after: posle ? this.chainHash(plan, posle) : null,
+      /**
+       * 🔴 NAMERNO NIJE `preskoceno > 0`: bezterminski list je TRAJNO svojstvo lanca
+       * (na 3.40 vise na dubinama 3 i 4), pa bi se dijalog otvarao na SVAKI potez i
+       * naučio planera da klikće naslepo.
+       */
+      needs_confirm: stavke.length > 8 || zavrsenih > 0,
+      totals: {
+        pomereno: stavke.length,
+        preskoceno: preskoceno.length,
+        preskoceno_zavrsenih: zavrsenih,
+      },
+      stavke,
+      preskoceno,
+      ciklus: plan.ciklus,
+    });
+  }
+
+  /**
+   * KANON ZAKLJUČAVANJA `plan_proizvodnje_overlays`: `(work_order_id, line_id)` RASTUĆE.
+   * Svaki pisac koji uzima više od jednog reda ove tabele mora da poštuje isti kanon.
+   *
+   * Zašto ne advisory lock po mašini (iako je danas 34/34 veza unutar iste mašine): to
+   * je svojstvo PODATAKA, ne modela. Gest bar-na-bar dozvoljava vezu preko mašina, a
+   * `reassign` iz dijaloga ume postojeću vezu tiho da učini međumašinskom — ključ po
+   * mašini bi tada propustio da serijalizuje baš onaj slučaj zbog kog brava postoji.
+   */
+  private async lockOverlays(
+    tx: Tx,
+    parovi: { wo: number; line: number }[],
+  ): Promise<void> {
+    if (parovi.length === 0) return;
+    await tx.$queryRaw(Prisma.sql`
+      SELECT work_order_id, line_id
+        FROM plan_proizvodnje_overlays
+       WHERE (work_order_id, line_id) IN (${this.pairsSql(parovi)})
+       ORDER BY work_order_id, line_id
+       FOR UPDATE`);
+  }
+
+  /** `VALUES (a::int, b::int), …` za `IN`-listu parova (uvek neprazna kod pozivaoca). */
+  private pairsSql(parovi: { wo: number; line: number }[]): Prisma.Sql {
+    return Prisma.sql`VALUES ${Prisma.join(
+      parovi.map((p) => Prisma.sql`(${p.wo}::int, ${p.line}::int)`),
+      ", ",
+    )}`;
+  }
+
+  /**
+   * Pomak termina za CELE KALENDARSKE DANE u zoni plana. Isti izraz koristi i pregled
+   * (`novi_start`/`novi_end`) i UPDATE — zato pregled ne može da se razidje sa upisom.
+   * `::int` na delti je obavezan: Prisma parametar nije nužno `integer`, a
+   * `make_interval(days => …)` ne prima bigint kroz implicitni cast.
+   */
+  private shiftExpr(col: Prisma.Sql, delta: number): Prisma.Sql {
+    return Prisma.sql`CASE WHEN ${col} IS NULL THEN NULL
+             ELSE ((${col} ${AT_PLAN_TZ} + make_interval(days => ${delta}::int)) ${AT_PLAN_TZ}) END`;
   }
 
   // ==========================================================================

@@ -480,6 +480,128 @@ export function reorderByDrop(
   return out;
 }
 
+// ── Kaskadno pomeranje vezanih pozicija (zahtev 075/26 — F2 iz 046/26) ────────
+//
+// Strahinjin zahtev: „ako su pozicije vezane, kada pomerim prvu na listi za 5 dana
+// želim i pozicije ispod da se pomere u skladu sa tim".
+//
+// 🔴 KANON JE SERVERSKI (`POST /overlays/shift-chain`): FE razrešava lanac SAMO za
+// optimistički pregled dok gest traje. Feed ide do 5.000 redova a crta se najviše
+// `MAX_ROWS` (300), pa FE lanac ume da bude KRAĆI od stvarnog — zato se posle odgovora
+// keš ušiva po `data.stavke` sa SERVERA, ne po ovom pregledu.
+
+/**
+ * Indeks prethodnik → sledbenici, po ISTOM ključu kao `LinkLayer` (`opKey`).
+ *
+ * 🔴 Gradi se nad `rows` (CEO učitan feed), NIKAD nad `visible`/`groups` — inače je
+ * lanac tiho kraći od onog koji server stvarno pomera, pa barovi tokom prevlačenja
+ * pokazuju jedno, a upis uradi drugo.
+ */
+export function buildSuccessorIndex(rows: GanttRow[]): Map<string, GanttRow[]> {
+  const index = new Map<string, GanttRow[]>();
+  for (const r of rows) {
+    if (!r.predecessor_work_order_id || !r.predecessor_line) continue;
+    const k = `${r.predecessor_work_order_id}:${r.predecessor_line}`;
+    const lista = index.get(k);
+    if (lista) lista.push(r);
+    else index.set(k, [r]);
+  }
+  return index;
+}
+
+/**
+ * Ključevi SVIH sledbenika (tranzitivno), redom obilaska, BEZ polaznog.
+ *
+ * 🔴 `Set` posećenih je OBAVEZAN, ne higijena: do 075/26 je backend branio samo
+ * `predecessor_self_reference`, pa je `A→B→A` bio upisiv i danas ume da postoji u
+ * zatečenim podacima. Petlja u render putu zamrzava ceo tab. Graf ima i grananje
+ * (izmereno: 2 čvora sa po 2 sledbenika), pa se čvor sme uzeti najviše jednom.
+ *
+ * ⚠️ Čvor BEZ `planned_start_at` se NE pomera, ali se hod NASTAVLJA kroz njega —
+ * doslovno isto pravilo kao na serveru (hod ≠ preskok). Da hod staje na takvom čvoru,
+ * lanac bi tiho pucao, a server bi ipak pomerio rep.
+ */
+export function chainFrom(startKey: string, index: Map<string, GanttRow[]>): string[] {
+  const visited = new Set<string>([startKey]);
+  const out: string[] = [];
+  const red: string[] = [startKey];
+  while (red.length > 0) {
+    const cur = red.shift() as string;
+    for (const r of index.get(cur) ?? []) {
+      const k = rowKey(r);
+      if (visited.has(k)) continue;
+      visited.add(k);
+      out.push(k);
+      red.push(k);
+    }
+  }
+  return out;
+}
+
+/**
+ * Optimistički pregled kaskade: `opKey` → novi termini, za redove koji se STVARNO
+ * pomeraju. Jedan izvor računa (`addDays` nad početkom i krajem) — pregled tako izgleda
+ * tačno kao ono što će server upisati.
+ *
+ * Pravila su ogledalo serverskih:
+ *  • SIDRO se pomera UVEK (i kad je završeno) — dok god ima planiran početak;
+ *  • sledbenik se preskače kad je ZAVRŠEN ili nema `planned_start_at`;
+ *  • `end` ostaje `null` kad red nema `planned_end_at` — IZVEDEN kraj ostaje izveden.
+ *    (Zatečeni `onUp` je tu materijalizovao `barEnd(row)` i time gasio „auto iz
+ *    tehnologije"; izmereno 06.08.2026: 0 od 38 planiranih redova danas nema
+ *    `planned_end_at`, pa nijedan postojeći red nije pogođen — ali za buduće jeste.)
+ */
+export function shiftPreview(
+  rows: GanttRow[],
+  anchorKey: string,
+  keys: string[],
+  deltaDays: number,
+): Map<string, { start: string; end: string | null }> {
+  const byKey = new Map(rows.map((r) => [rowKey(r), r]));
+  const out = new Map<string, { start: string; end: string | null }>();
+  for (const k of keys) {
+    const r = byKey.get(k);
+    if (!r?.planned_start_at) continue;
+    if (k !== anchorKey && r.is_completed_effective === true) continue;
+    out.set(k, {
+      start: addDays(new Date(r.planned_start_at), deltaDays).toISOString(),
+      end: r.planned_end_at
+        ? addDays(new Date(r.planned_end_at), deltaDays).toISOString()
+        : null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Prevod BE kodova greške u razlog na srpskom — planer mora da vidi ZAŠTO nije
+ * sačuvano, a ne generično „Nije sačuvano". Živi ovde (a ne u dijalogu stavke) od
+ * 075/26: dele ga i tab i dijalog, jer je kaskada JEDINI gest koji ume da odbije ceo
+ * potez, a bez prevoda bi planer video sirov engleski kod.
+ */
+export const BE_RAZLOZI: Record<string, string> = {
+  predecessor_self_reference: 'Stavka ne može da zavisi od same sebe.',
+  predecessor_pair_incomplete: 'Uslov mora imati i RN i liniju prethodne operacije.',
+  planned_end_before_start: 'Kraj ne može biti pre početka — ispravi datume.',
+  invalid_timestamp: 'Neispravan datum termina.',
+  // ── 075/26 (kaskada)
+  predecessor_cycle: 'Veze prave petlju — pozicija bi zavisila sama od sebe preko lanca.',
+  cascade_too_large: 'Lanac je predugačak za jedan upis — javi da se podigne granica.',
+  chain_changed: 'Plan se u međuvremenu promenio — osveži gant i pomeri ponovo.',
+  anchor_without_terms: 'Pozicija nema planiran termin.',
+  overlay_not_found: 'Pozicija nije na planu.',
+  delta_zero: 'Nema pomaka.',
+};
+
+/** Nepoznat kod → `undefined` (hook tada javlja svoju podrazumevanu poruku). */
+export function overlayErrorMessage(e: unknown): string | undefined {
+  const msg = String((e as Error)?.message ?? '');
+  for (const [code, razlog] of Object.entries(BE_RAZLOZI)) {
+    if (msg.includes(code)) return razlog;
+  }
+  return undefined;
+}
+
 /**
  * Razlog za „spremnost = NE" (prikaz u dijalogu stavke). Kanon spremnosti je BE
  * (`is_ready_for_machine`) — ovde se samo objašnjava ČIME je oborena.

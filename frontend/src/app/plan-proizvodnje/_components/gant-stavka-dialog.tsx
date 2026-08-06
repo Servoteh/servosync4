@@ -25,10 +25,13 @@ import {
   isoLocalMinute,
   keepIfSameMinute,
   minutesFromHoursInput,
+  overlayErrorMessage,
   readyReason,
   scrapBadge,
   technologyMinutes,
 } from './gant-utils';
+import { GantLanacDialog, ucitajPlanLanca } from './gant-lanac-dialog';
+import type { ShiftChainPlan } from '@/api/plan-proizvodnje';
 
 /**
  * Detalj gant stavke (zahtev 046/26) — „popover" nad barom, izveden kao kit `Dialog`
@@ -82,6 +85,10 @@ export function GantStavkaDialog({
   const [dur, setDur] = useState('');
   const [machine, setMachine] = useState('');
   const [pred, setPred] = useState<OpRow | null>(null);
+  // 075/26 — „Pomeri lanac…": put KUCANJA dobija kaskadu, ali svesno i kroz pregled.
+  const [lanacDana, setLanacDana] = useState('1');
+  const [lanacPlan, setLanacPlan] = useState<ShiftChainPlan | null>(null);
+  const [lanacUcitava, setLanacUcitava] = useState(false);
 
   // `row` dobija NOVU identičnost posle svake optimističke izmene/refetch-a (npr. čekiranje
   // „Završeno" iz ovog istog dijaloga). Init sme da se odigra SAMO pri otvaranju i promeni
@@ -290,6 +297,36 @@ export function GantStavkaDialog({
   }
 
   /**
+   * 075/26 — „Pomeri lanac…": pomeri ovu poziciju I sve ispod nje u lancu za ukucan broj
+   * CELIH dana. Ide ISKLJUČIVO kroz pregled (`dryRun`) pa potvrdu — put kucanja nema
+   * gest koji bi rekao „ovoliko", pa planer mora da vidi šta tačno potpisuje.
+   *
+   * 🔴 `saveTermini` NAMERNO ne izvodi deltu sam od sebe: ono polje piše proizvoljan
+   * `datetime-local` na MINUT, a kaskada radi u celim danima. Pomak koji nije ceo broj
+   * dana odgurnuo bi ceo lanac u noć ili vikend (6 od 10 izmerenih pozitivnih razmaka su
+   * upravo granica kalendara).
+   */
+  async function otvoriLanac() {
+    const dana = Number(String(lanacDana).replace(',', '.'));
+    if (!Number.isInteger(dana) || dana === 0) {
+      toast('⚠ Pomak se zadaje kao CEO broj dana, različit od nule (npr. 5 ili -2).');
+      return;
+    }
+    setLanacUcitava(true);
+    const res = await ucitajPlanLanca(row.work_order_id, row.line_id, dana);
+    setLanacUcitava(false);
+    if ('greska' in res) {
+      toast(`⚠ ${res.greska}`);
+      return;
+    }
+    if (res.plan.ciklus) {
+      toast(`⚠ Veze prave petlju (${res.plan.ciklus.ivica}) — razveži pa pomeri.`);
+      return;
+    }
+    setLanacPlan(res.plan);
+  }
+
+  /**
    * Ručni override spremnosti (Strahinjin komentar uz 046/26): „DA" i kad prethodne
    * operacije nisu otkucane — fizički znamo da je pozicija spremna. POSTOJEĆI
    * `ready_override` mehanizam (isti kao „SPREMNO (override)" u tabu „Po mašini");
@@ -301,6 +338,7 @@ export function GantStavkaDialog({
   }
 
   return (
+    <>
     <Dialog
       open={open}
       onClose={onClose}
@@ -504,11 +542,36 @@ export function GantStavkaDialog({
                 placeholder={ordinals ? 'Traži RN / crtež — ili redni broj…' : 'Traži RN / crtež…'}
               />
             )}
+            {/* 075/26: F2 je ISPORUČEN — tekst mora da opiše stvarno ponašanje.
+                Ranije je pisalo „Ne pomera termine automatski — to je F2." */}
             <p className="mt-1 text-2xs text-ink-disabled">
-              Ručna FS veza (počinje posle završetka). Ne pomera termine automatski — to je F2.
+              Ručna FS veza (počinje posle završetka). Prevlačenje bara pomera i sve pozicije
+              ispod u lancu za isti broj dana.
               {ordinals ? ' Možeš ukucati i redni broj stavke sa ove mašine (npr. 3).' : null}
               {' '}Vezu praviš i prevlačenjem kružića sa kraja bara na drugi bar u gantu.
             </p>
+            {/* 075/26 — kaskada i iz kartice: unos u CELIM danima, pa pregled pa potvrda. */}
+            {row.planned_start_at ? (
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={lanacDana}
+                  onChange={(e) => setLanacDana(e.target.value)}
+                  aria-label="Pomak lanca u danima"
+                  className="h-8 w-16 rounded-control border border-line bg-surface px-2 text-sm text-ink tnums"
+                />
+                <span className="text-2xs text-ink-disabled">dana</span>
+                <Button
+                  variant="secondary"
+                  className="h-8 px-3 text-xs"
+                  loading={lanacUcitava}
+                  onClick={() => void otvoriLanac()}
+                >
+                  Pomeri lanac…
+                </Button>
+              </div>
+            ) : null}
           </Field>
 
           <Field label="Završeno">
@@ -551,26 +614,27 @@ export function GantStavkaDialog({
         </div>
       </div>
     </Dialog>
+    {/* 075/26 — potvrda kaskade iz kartice. SIBLING dijaloga stavke (ne dete), da
+        `Esc` sloj i stacking budu isti kao kod svakog drugog modala; kartica ostaje
+        otvorena ispod, a po uspehu se zatvara i ona — termini koje prikazuje su
+        upravo promenjeni, pa bi inače prikazivala staro stanje. */}
+    {lanacPlan && (
+      <GantLanacDialog
+        open
+        plan={lanacPlan}
+        nevidljivih={0}
+        onClose={() => setLanacPlan(null)}
+        onDone={(p) => {
+          setLanacPlan(null);
+          toast(
+            `✓ Pomereno ${p.totals.pomereno}${p.totals.preskoceno > 0 ? ` · preskočeno ${p.totals.preskoceno}` : ''}`,
+          );
+          onClose();
+        }}
+      />
+    )}
+    </>
   );
-}
-
-/**
- * Prevod BE 422 kodova u razlog na srpskom — planer mora da vidi ZAŠTO nije sačuvano,
- * a ne generično „Nije sačuvano". Nepoznat kod → undefined (hook javlja podrazumevanu).
- */
-const BE_RAZLOZI: Record<string, string> = {
-  predecessor_self_reference: 'Stavka ne može da zavisi od same sebe.',
-  predecessor_pair_incomplete: 'Uslov mora imati i RN i liniju prethodne operacije.',
-  planned_end_before_start: 'Kraj ne može biti pre početka — ispravi datume.',
-  invalid_timestamp: 'Neispravan datum termina.',
-};
-
-function overlayErrorMessage(e: unknown): string | undefined {
-  const msg = String((e as Error)?.message ?? '');
-  for (const [code, razlog] of Object.entries(BE_RAZLOZI)) {
-    if (msg.includes(code)) return razlog;
-  }
-  return undefined;
 }
 
 /**

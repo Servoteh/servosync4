@@ -82,6 +82,38 @@ export class OverlayReorderDto {
   items!: OverlayReorderItemDto[];
 }
 
+/* ── Kaskadno pomeranje lanca (075/26, F2 iz 046/26) ── */
+
+/**
+ * Pomeranje SIDRA + celog zatvorenja njegovih sledbenika po `predecessor_*` vezi.
+ * Klijent NIKAD ne šalje spisak stavki — server razrešava lanac (FE vidi samo ~300
+ * iscrtanih redova nad feed-om koji je i sam `LIMIT 5000`, pa bi klijentski spisak
+ * tiho gubio rep lanca).
+ */
+export class OverlayShiftChainDto {
+  /** Sidro — pozicija koju je planer stvarno uhvatio. */
+  @Matches(DIGITS) workOrderId!: string;
+  @Matches(DIGITS) lineId!: string;
+  /**
+   * Pomak u CELIM KALENDARSKIM danima (Europe/Belgrade), ne apsolutni termini:
+   * server tada radi svu aritmetiku jednim izrazom, pa sidro i rep ne mogu da se
+   * raziđu preko prelaza na zimsko računanje vremena (25.10.2026).
+   */
+  @IsInt() @Min(-3650) @Max(3650) deltaDays!: number;
+  /**
+   * OBAVEZAN pri upisu (`dryRun !== true`). Delta NIJE idempotentna sama po sebi —
+   * dva puta primenjeno je 10 dana umesto 5. NIKAD `?? randomUUID()` kao kod reassign-a.
+   */
+  @IsOptional() @IsUUID() clientEventId?: string;
+  /** Samo pregled — ništa se ne upisuje i ključ se NE troši. */
+  @IsOptional() @IsBoolean() dryRun?: boolean;
+  /**
+   * Token ugovora: hash pregleda koji je planer POTVRDIO u dijalogu. Šalje ga SAMO
+   * put kroz dijalog i „Poništi"; brzi put (prevlačenje bez potvrde) ga ne šalje.
+   */
+  @IsOptional() @IsString() @MaxLength(64) expectedHash?: string;
+}
+
 /* ── Urgency (HITNO) ── */
 
 export class SetUrgentDto {

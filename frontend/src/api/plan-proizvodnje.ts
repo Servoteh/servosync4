@@ -911,6 +911,178 @@ export const useGanttReorder = () => {
   });
 };
 
+/* ── Kaskadno pomeranje lanca (075/26 — F2 iz 046/26) ── */
+
+/** Jedna stavka plana kaskade (pomerena). */
+export interface ShiftChainStavka {
+  work_order_id: string;
+  line_id: string;
+  dubina: number;
+  rn_ident_broj: string | null;
+  operacija: number | string | null;
+  broj_crteza: string | null;
+  machine: string | null;
+  planned_start_at: string | null;
+  planned_end_at: string | null;
+  /** Pregled (`dryRun`) — NOVI termini; pri upisu su `null` (novo stanje je gore). */
+  new_start: string | null;
+  new_end: string | null;
+}
+
+/** Jedna preskočena stavka (u lancu je, ali se NE upisuje). */
+export interface ShiftChainPreskoceno {
+  work_order_id: string;
+  line_id: string;
+  dubina: number;
+  rn_ident_broj: string | null;
+  operacija: number | string | null;
+  broj_crteza: string | null;
+  machine: string | null;
+  razlog_kod: 'zavrseno' | 'bez_termina' | 'arhivirano' | 'orfan';
+  razlog: string;
+}
+
+export interface ShiftChainPlan {
+  sidro: {
+    work_order_id: string;
+    line_id: string;
+    rn_ident_broj: string | null;
+    operacija: number | string | null;
+    machine: string | null;
+  } | null;
+  delta_dana: number;
+  zahvat: number;
+  dubina_max: number;
+  /** Otisak STANJA lanca — vraća se serveru kao `expectedHash` iz dijaloga / „Poništi". */
+  hash: string;
+  /** Otisak POSLE upisa — sidro za dugme „Poništi". `null` u pregledu. */
+  hash_after: string | null;
+  needs_confirm: boolean;
+  totals: { pomereno: number; preskoceno: number; preskoceno_zavrsenih: number };
+  stavke: ShiftChainStavka[];
+  preskoceno: ShiftChainPreskoceno[];
+  ciklus: { putanja: string[]; ivica: string } | null;
+}
+
+export interface ShiftChainVars {
+  workOrderId: string;
+  lineId: string;
+  deltaDays: number;
+  /** 🔴 Kuje ga POZIVALAC, ne hook — v. dole. */
+  clientEventId: string;
+  expectedHash?: string;
+  /** Optimistički pregled: opKey → novi termini. NE šalje se na server. */
+  optimistic?: Map<string, { start: string; end: string | null }>;
+}
+
+/**
+ * PREGLED kaskade — obična funkcija, NE mutacija: ne dira keš i ne troši idempotency
+ * ključ. Server vraća isti oblik plana kao upis, samo sa `new_start`/`new_end`.
+ */
+export const ganttShiftChainPreview = (v: {
+  workOrderId: string;
+  lineId: string;
+  deltaDays: number;
+}) =>
+  apiFetch<TxResponse<ShiftChainPlan>>(`${BASE}/overlays/shift-chain`, {
+    method: 'POST',
+    body: JSON.stringify({ ...v, dryRun: true }),
+  });
+
+/**
+ * Kaskadno pomeranje lanca (075/26). Obrazac je `useGanttReorder` (batch telo + mapa
+ * nad SVIM redovima keša + rollback), a NE `useGanttOverlay`: taj pravi jedan konstantan
+ * `Partial<GanttRow>` i primenjuje ga na jedan red, a lancu treba N RAZLIČITIH vrednosti.
+ *
+ * 🔴 `clientEventId` se kuje NA MESTU POZIVA i putuje kroz `variables`. NIKAD unutar
+ * `mutationFn`: React Query na retry ponovo zove `mutationFn` sa ISTIM varijablama, pa
+ * ključ mora da živi u varijablama — inače bi retry napravio DRUGI pomak (delta nije
+ * idempotentna: dva puta primenjeno je 10 dana umesto 5).
+ *
+ * `onSuccess` ušiva keš po `data.stavke` iz ODGOVORA (ne po optimističkom pregledu) —
+ * tako se pomeraju i redovi koje FE nikad nije video kao vezu (van iscrtanih 300).
+ *
+ * Toast se NE diže ovde: samo tab zna koliko je pomerenih redova zaista iscrtano, pa
+ * poruku diže on kroz per-poziv `onSuccess`.
+ */
+export const useGanttShiftChain = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: ShiftChainVars) =>
+      post<ShiftChainPlan>('/overlays/shift-chain', {
+        workOrderId: v.workOrderId,
+        lineId: v.lineId,
+        deltaDays: v.deltaDays,
+        clientEventId: v.clientEventId,
+        ...(v.expectedHash ? { expectedHash: v.expectedHash } : {}),
+      }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: KEYS.gantt });
+      const prev = qc.getQueriesData<unknown>({ queryKey: KEYS.gantt }).map(([k, d]) => [k, d] as const);
+      const opt = v.optimistic;
+      if (opt) {
+        for (const [key, data] of qc.getQueriesData<unknown>({ queryKey: KEYS.gantt })) {
+          const d = data as { data?: GanttRow[] } | undefined;
+          if (!d || !Array.isArray(d.data)) continue;
+          qc.setQueryData(key, {
+            ...d,
+            data: d.data.map((r) => {
+              const x = opt.get(opKey(r));
+              return x ? { ...r, planned_start_at: x.start, planned_end_at: x.end } : r;
+            }),
+          });
+        }
+      }
+      return { prev };
+    },
+    onError: (e, _v, ctx) => {
+      const c = ctx as { prev?: (readonly [readonly unknown[], unknown])[] } | undefined;
+      if (c?.prev) for (const [k, d] of c.prev) qc.setQueryData(k as readonly unknown[], d);
+      toast(`⚠ ${ganttChainErrorMessage(e) ?? 'Lanac nije pomeren — osvežavam.'}`);
+    },
+    onSuccess: (r) => {
+      const m = new Map(r.data.stavke.map((x) => [opKey(x), x]));
+      for (const [key, data] of qc.getQueriesData<unknown>({ queryKey: KEYS.gantt })) {
+        const d = data as { data?: GanttRow[] } | undefined;
+        if (!d || !Array.isArray(d.data)) continue;
+        qc.setQueryData(key, {
+          ...d,
+          data: d.data.map((row) => {
+            const x = m.get(opKey(row));
+            return x
+              ? { ...row, planned_start_at: x.planned_start_at, planned_end_at: x.planned_end_at }
+              : row;
+          }),
+        });
+      }
+    },
+    // JEDNA invalidacija. `KEYS.operations` se NAMERNO ne invalidira (za razliku od
+    // `useGanttOverlay`): kaskada ne dira ni mašinu, ni spremnost, ni `shift_sort_order`,
+    // a „Po mašini" termine i ne prikazuje. Feed ide do 5.000 redova — ušteda je stvarna.
+    onSettled: () => void qc.invalidateQueries({ queryKey: KEYS.gantt }),
+  });
+};
+
+/**
+ * Prevod BE koda kaskade u srpski razlog. Namerno je DUPLIKAT mape iz
+ * `gant-utils.ts`: api sloj ne sme da uvozi iz `app/` (obrnut smer zavisnosti), a hook
+ * mora da ume da javi razlog i kad ga pozivalac ne obradi. Tab i dijalog koriste
+ * `overlayErrorMessage` iz `gant-utils`.
+ */
+function ganttChainErrorMessage(e: unknown): string | undefined {
+  const msg = String((e as Error)?.message ?? '');
+  const mapa: Record<string, string> = {
+    predecessor_cycle: 'Veze prave petlju — pozicija bi zavisila sama od sebe preko lanca.',
+    cascade_too_large: 'Lanac je predugačak za jedan upis — javi da se podigne granica.',
+    chain_changed: 'Plan se u međuvremenu promenio — osveži gant i pomeri ponovo.',
+    anchor_without_terms: 'Pozicija nema planiran termin.',
+    overlay_not_found: 'Pozicija nije na planu.',
+    delta_zero: 'Nema pomaka.',
+  };
+  for (const [code, razlog] of Object.entries(mapa)) if (msg.includes(code)) return razlog;
+  return undefined;
+}
+
 /* ── Urgency ── */
 
 export const useSetUrgent = () =>

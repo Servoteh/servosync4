@@ -3312,6 +3312,9 @@ model PlanProizvodnjeOverlay {
 
   @@unique([workOrderId, lineId], map: "uq_plan_proizvodnje_overlays_wo_line")
   @@index([plannedStartAt], map: "idx_plan_proizvodnje_overlays_planned_start")
+  /// 075/26: kaskadno pomeranje lanca hoda ka SLEDBENICIMA po ovom paru — bez indeksa
+  /// je rekurzivni član CTE-a Seq Scan po svakom nivou, a upit se izvršava i POD BRAVAMA.
+  @@index([predecessorWorkOrderId, predecessorLine], map: "idx_plan_proizvodnje_overlays_predecessor")
   @@map("plan_proizvodnje_overlays")
 }
 

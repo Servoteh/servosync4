@@ -11,14 +11,18 @@ import {
   Link2,
   Plus,
   Search,
+  Undo2,
 } from 'lucide-react';
 import {
   useGantt,
   useGanttOverlay,
   useGanttReorder,
+  useGanttShiftChain,
   useMachineHalls,
   type GanttRow,
+  type ShiftChainPlan,
 } from '@/api/plan-proizvodnje';
+import { newClientId } from '@/api/plan-montaze';
 import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
 import { useCan } from '@/lib/can';
@@ -28,6 +32,7 @@ import { toast } from '@/lib/toast';
 import { HaleDialog } from './hale-dialog';
 import { GantStavkaDialog } from './gant-stavka-dialog';
 import { DodajNaPlanDialog } from './gant-dodaj-dialog';
+import { GantLanacDialog, ucitajPlanLanca } from './gant-lanac-dialog';
 import {
   BAR_TOP,
   DAY_MS,
@@ -38,6 +43,8 @@ import {
   addDays,
   barEnd,
   barGeometry,
+  buildSuccessorIndex,
+  chainFrom,
   compareRows,
   dayDiff,
   groupKey,
@@ -51,6 +58,7 @@ import {
   rowKey,
   scrapBadge,
   scrapText,
+  shiftPreview,
   startOfDay,
   type GanttSort,
   type HallGroup,
@@ -123,11 +131,45 @@ const DRAG_SLOP = 4;
  */
 const DAY_GRID_BG = `repeating-linear-gradient(to right, transparent 0 ${DAY_W - 1}px, var(--color-line-soft) ${DAY_W - 1}px ${DAY_W}px)`;
 
+/**
+ * Prag iznad kog se pomeranje lanca PITA (075/26). Ispod praga gest ide bez ijednog
+ * klika — kratak lanac je očigledna posledica veza koje je planer sam napravio.
+ */
+const CHAIN_CONFIRM_OVER = 8;
+/** Koliko dugo traka „Poništi" stoji u zaglavlju ganta (ms). */
+const UNDO_MS = 30_000;
+
 type DragMode = 'move' | 'resize';
 interface DragState {
   key: string;
   mode: DragMode;
   startX: number;
+  deltaDays: number;
+  /**
+   * 075/26 — ključevi SVIH sledbenika sidra, popunjeni JEDNOM na `pointerdown`.
+   * Indeks nad do 5.000 redova ne sme da se gradi na svakom `pointermove`.
+   */
+  chain: string[];
+}
+
+/**
+ * 075/26 — lanac koji je vizuelno POMEREN dok čeka potvrdu u dijalogu. Barovi se crtaju
+ * na novim mestima, a podaci su nepromenjeni.
+ *
+ * 🔴 Mora da se obriše u SVAKOJ izlaznoj grani (uspeh, greška, otkazivanje, 409,
+ * `pointercancel`, unmount). Ako ostane, ekran laže — barovi stoje na terminima koji
+ * nisu upisani, a to je najgori mogući ishod ovog gesta.
+ */
+interface PendingShift {
+  /** `opKey` sidra — jedini red koji se pomera i kad je završen. */
+  anchor: string;
+  keys: Set<string>;
+  deltaDays: number;
+}
+
+/** Vizuelni pomak jednog bara tokom gesta (podskup `DragState`-a koji `Bar` čita). */
+interface GestPomak {
+  mode: DragMode;
   deltaDays: number;
 }
 
@@ -182,6 +224,10 @@ export function GanttTab() {
   const [detail, setDetail] = useState<GanttRow | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [linkDrag, setLinkDrag] = useState<LinkDragState | null>(null);
+  // 075/26 — kaskada: pregled koji čeka potvrdu + traka „Poništi" posle upisa.
+  const [pendingShift, setPendingShift] = useState<PendingShift | null>(null);
+  const [chainPlan, setChainPlan] = useState<ShiftChainPlan | null>(null);
+  const [lastShift, setLastShift] = useState<ShiftChainPlan | null>(null);
   // 070/26 — ručni redosled redova prevlačenjem. `rowDrag` u ref-u (a ne samo u stanju)
   // jer `dragstart`/`drop` idu kroz native događaje bez ponovnog rendera između.
   const rowDragRef = useRef<RowDragState | null>(null);
@@ -197,6 +243,7 @@ export function GanttTab() {
   const save = useGanttOverlay({ ok: 'Termin sačuvan' });
   const link = useGanttOverlay({ ok: 'Veza sačuvana', err: 'Veza nije sačuvana.' });
   const reorder = useGanttReorder();
+  const shift = useGanttShiftChain();
 
   const rows = useMemo(() => gantt.data?.data ?? [], [gantt.data]);
   const planned = useMemo(() => rows.filter((r) => !!r.planned_start_at), [rows]);
@@ -335,11 +382,154 @@ export function GanttTab() {
     [dayList, todayIdx],
   );
 
+  // ── Kaskadno pomeranje lanca (075/26) ──────────────────────────────────────
+  //
+  // Prikaz se osvežava u TRI SLOJA, redom:
+  //  1. tokom prevlačenja — `chainSet` + `shiftPreview` pomeraju barove i sidra veza
+  //     uživo (najbolji napor nad onim što FE vidi);
+  //  2. odmah po odgovoru — keš se krpi po `data.stavke` iz ODGOVORA, ne po pregledu:
+  //     tu se ispravlja svaka razlika između FE predviđanja i onoga što je server
+  //     stvarno upisao (i pomeraju se redovi koje FE nikad nije video kao vezu);
+  //  3. `onSettled` — jedna invalidacija ganta → merodavan refetch.
+
+  /** Redovi kojima je vezni gest pomerio bar (drag u toku ili čekanje potvrde). */
+  const chainSet = useMemo(() => {
+    if (pendingShift) return pendingShift.keys;
+    if (drag?.mode === 'move') return new Set([drag.key, ...drag.chain]);
+    return null;
+  }, [drag, pendingShift]);
+
+  /**
+   * Vizuelni pomak jednog bara tokom gesta — JEDAN račun za `Bar` i za sloj veza
+   * (`LinkLayer`), da linija ne ostane zakačena za staru poziciju bara.
+   *
+   * Ogledalo pravila iz `shiftPreview`: sidro se pomera uvek, sledbenik se preskače kad
+   * je ZAVRŠEN ili nema planiran početak. Bez tog izuzimanja bi se bar koji server neće
+   * dirati vizuelno pomerio, pa vratio nazad po refetch-u.
+   */
+  const gestPomak = (key: string, r: GanttRow): GestPomak | null => {
+    if (drag && drag.key === key) return drag;
+    const sidro = drag?.mode === 'move' ? drag.key : (pendingShift?.anchor ?? null);
+    const delta = drag?.mode === 'move' ? drag.deltaDays : (pendingShift?.deltaDays ?? 0);
+    if (sidro === null || chainSet?.has(key) !== true) return null;
+    if (!r.planned_start_at) return null;
+    if (key !== sidro && r.is_completed_effective === true) return null;
+    return { mode: 'move', deltaDays: delta };
+  };
+
+  /** Koliko stavki plana NIJE iscrtano — jedina zaštita od tihe razlike ekran↔baza. */
+  const nijeNaEkranu = (stavke: { work_order_id: string; line_id: string }[]) => {
+    const vidljivi = layoutRows(groups).map;
+    return stavke.filter((s) => !vidljivi.has(`${s.work_order_id}:${s.line_id}`)).length;
+  };
+
+  /** Ishod kaskade: SERVEROVI brojevi + broj koji zna samo klijent (van ekrana). */
+  function prikaziRezultat(plan: ShiftChainPlan) {
+    const t = plan.totals;
+    const van = nijeNaEkranu(plan.stavke);
+    const delovi = [`Pomereno ${t.pomereno}`];
+    if (t.preskoceno > 0) {
+      const ostalo = t.preskoceno - t.preskoceno_zavrsenih;
+      const razlozi = [
+        t.preskoceno_zavrsenih > 0 ? `${t.preskoceno_zavrsenih} završenih` : null,
+        ostalo > 0 ? `${ostalo} bez termina / van plana` : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+      delovi.push(`preskočeno ${t.preskoceno}${razlozi ? ` (${razlozi})` : ''}`);
+    }
+    if (van > 0) delovi.push(`${van} nije na ekranu`);
+    toast(`✓ ${delovi.join(' · ')}`);
+    setLastShift(plan);
+  }
+
+  /** Brzi put — bez ijednog klika. `expectedHash` se šalje samo kad ga imamo. */
+  function posaljiKaskadu(row: GanttRow, deltaDays: number, kljucevi: string[], expectedHash?: string) {
+    shift.mutate(
+      {
+        workOrderId: row.work_order_id,
+        lineId: row.line_id,
+        deltaDays,
+        clientEventId: newClientId(),
+        expectedHash,
+        optimistic: shiftPreview(rows, rowKey(row), kljucevi, deltaDays),
+      },
+      {
+        onSuccess: (r) => {
+          setPendingShift(null);
+          prikaziRezultat(r.data);
+        },
+        onError: () => setPendingShift(null),
+      },
+    );
+  }
+
+  /**
+   * Puštanje bara u režimu „pomeri" (075/26). Pomera se SIDRO i ceo lanac sledbenika za
+   * ISTI broj dana — razmaci se čuvaju (10 od 30 izmerenih razmaka je pozitivno, jedan
+   * je i negativan; lepljenje za kraj prethodnika bi ih uništilo).
+   *
+   * 🔴 FE GEJT SME DA GREŠI SAMO U BEZBEDNOM SMERU. „Neizvesno" je svaki prikaz u kom
+   * FE ne može da vidi ceo lanac: aktivan filter hale/pretrage, odsečen feed, ili čvor
+   * lanca koji nije među iscrtanim redovima.
+   *
+   * ⚠️ ODSTUPANJE OD SPECIFIKACIJE (svesno, zbog svakodnevne upotrebe): „neizvesno" NE
+   * otvara dijalog odmah, nego prvo pita SERVER (`dryRun`). Strahinja radi sa filterom
+   * hale skoro uvek, pa bi pravilo „neizvesno → dijalog" tražilo potvrdu za SVAKI potez,
+   * uključujući pomeranje jednog bara BEZ ijednog sledbenika — a to je tačno navika koja
+   * nauči čoveka da klikće naslepo. Bezbednost je očuvana: kad je neizvesno, FE NIKAD ne
+   * upisuje naslepo — pita, pa upisuje tek ako je server potvrdio da je zahvat mali,
+   * bez preskočenih i tačno onakav kakav je FE predvideo (uz `expectedHash`).
+   */
+  async function pomeriLanac(d: DragState) {
+    const row = rows.find((r) => rowKey(r) === d.key);
+    if (!row?.planned_start_at) return;
+    const kljucevi = [d.key, ...d.chain];
+    const vidljivi = layoutRows(groups).map;
+    const neizvesno =
+      !!hall || !!q || truncated || kljucevi.some((k) => !vidljivi.has(k));
+    // Završenost se gleda SAMO na sledbenicima — sidro se pomera uvek (isto pravilo
+    // kao serverski `needs_confirm`), pa završen bar koji je planer sam uhvatio ne
+    // otvara dijalog.
+    const zavrsenSledbenik = d.chain.some(
+      (k) => rows.find((r) => rowKey(r) === k)?.is_completed_effective === true,
+    );
+
+    if (kljucevi.length <= CHAIN_CONFIRM_OVER && !zavrsenSledbenik && !neizvesno) {
+      posaljiKaskadu(row, d.deltaDays, kljucevi);
+      return;
+    }
+
+    // Neizvesno ili veliko → pregled pa odluka.
+    setPendingShift({ anchor: d.key, keys: new Set(kljucevi), deltaDays: d.deltaDays });
+    const res = await ucitajPlanLanca(row.work_order_id, row.line_id, d.deltaDays);
+    if ('greska' in res) {
+      setPendingShift(null);
+      toast(`⚠ ${res.greska}`);
+      return;
+    }
+    const plan = res.plan;
+    if (plan.ciklus) {
+      setPendingShift(null);
+      toast(`⚠ Veze prave petlju (${plan.ciklus.ivica}) — razveži pa pomeri.`);
+      return;
+    }
+    const kaoStoSmoVideli =
+      plan.totals.pomereno === kljucevi.length && plan.totals.preskoceno === 0;
+    if (!plan.needs_confirm && kaoStoSmoVideli) {
+      posaljiKaskadu(row, d.deltaDays, kljucevi, plan.hash);
+      return;
+    }
+    setChainPlan(plan);
+  }
+
   // ── Drag (pomeranje / promena trajanja bara) ───────────────────────────────
   // Pointer eventi na `window` dok traje prevlačenje: bar sme da izađe iz svog reda,
   // a `pointercancel` (skrol na dodiru) mora da poništi radnju bez upisa.
   const dragRef = useRef<DragState | null>(null);
   dragRef.current = drag;
+  const commitRef = useRef(pomeriLanac);
+  commitRef.current = pomeriLanac;
 
   useEffect(() => {
     if (!drag) return;
@@ -353,31 +543,32 @@ export function GanttTab() {
       const d = dragRef.current;
       setDrag(null);
       if (!d || d.deltaDays === 0) return;
+      if (d.mode === 'move') {
+        // 075/26: pomeranje ide kroz KASKADU (server razrešava lanac).
+        void commitRef.current(d);
+        return;
+      }
+      // `resize` NE kaskadira: menja samo kraj, delte u danima nema, a produžavanje
+      // bara bi gurnulo ceo red čekanja na mašini.
       const row = rows.find((r) => rowKey(r) === d.key);
       if (!row?.planned_start_at) return;
       const start = new Date(row.planned_start_at);
       const end = barEnd(row);
-      if (d.mode === 'move') {
-        save.mutate({
-          workOrderId: row.work_order_id,
-          lineId: row.line_id,
-          plannedStartAt: addDays(start, d.deltaDays).toISOString(),
-          plannedEndAt: addDays(end, d.deltaDays).toISOString(),
-        });
-      } else {
-        const nextEnd = addDays(end, d.deltaDays);
-        // Kraj ne sme pre početka — minimum je isti dan (30 min vidljivog bara).
-        const floor = new Date(start.getTime() + 30 * 60_000);
-        const eff = nextEnd.getTime() < floor.getTime() ? floor : nextEnd;
-        save.mutate({
-          workOrderId: row.work_order_id,
-          lineId: row.line_id,
-          plannedEndAt: eff.toISOString(),
-          plannedDurationMinutes: Math.max(1, Math.round((eff.getTime() - start.getTime()) / 60_000)),
-        });
-      }
+      const nextEnd = addDays(end, d.deltaDays);
+      // Kraj ne sme pre početka — minimum je isti dan (30 min vidljivog bara).
+      const floor = new Date(start.getTime() + 30 * 60_000);
+      const eff = nextEnd.getTime() < floor.getTime() ? floor : nextEnd;
+      save.mutate({
+        workOrderId: row.work_order_id,
+        lineId: row.line_id,
+        plannedEndAt: eff.toISOString(),
+        plannedDurationMinutes: Math.max(1, Math.round((eff.getTime() - start.getTime()) / 60_000)),
+      });
     };
-    const onCancel = () => setDrag(null);
+    const onCancel = () => {
+      setDrag(null);
+      setPendingShift(null); // ekran ne sme da ostane sa pomerenim barovima
+    };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onCancel);
@@ -387,6 +578,15 @@ export function GanttTab() {
       window.removeEventListener('pointercancel', onCancel);
     };
   }, [drag, rows, save]);
+
+  // Traka „Poništi" nestaje sama; `pendingShift` se čisti i pri odlasku sa taba
+  // (unmount) — inače bi se sledeći ulazak zatekao sa pomerenim barovima bez podataka.
+  useEffect(() => {
+    if (!lastShift) return;
+    const t = setTimeout(() => setLastShift(null), UNDO_MS);
+    return () => clearTimeout(t);
+  }, [lastShift]);
+  useEffect(() => () => setPendingShift(null), []);
 
   // ── Povezivanje prevlačenjem (C1) ──────────────────────────────────────────
   // Odvojen gest od pomeranja/resize-a bara: počinje ISKLJUČIVO na kružnoj hvataljci
@@ -493,7 +693,13 @@ export function GanttTab() {
     return undefined;
   }, [groups, detail]);
 
-  /** Tastatura nad fokusiranim barom: ←/→ pomeri dan, Shift+←/→ produži/skrati. */
+  /**
+   * Tastatura nad fokusiranim barom: ←/→ pomeri dan, Shift+←/→ produži/skrati.
+   *
+   * 075/26: ←/→ ide kroz ISTU kaskadu kao prevlačenje, ali BEZ dijaloga — jedan dan je
+   * najmanje iznenađujuća radnja, a ponovljeni pritisci ne smeju da otvaraju modal.
+   * Bez ovoga bi tastatura ostala jedini tihi način da se lanac razbije.
+   */
   function onBarKey(e: React.KeyboardEvent, row: GanttRow) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -507,6 +713,7 @@ export function GanttTab() {
     const start = new Date(row.planned_start_at);
     const end = barEnd(row);
     if (e.shiftKey) {
+      // Shift+←/→ menja SAMO kraj (resize) — ne kaskadira, isti razlog kao hvataljka.
       const nextEnd = addDays(end, step);
       if (nextEnd.getTime() <= start.getTime()) return;
       save.mutate({
@@ -515,14 +722,11 @@ export function GanttTab() {
         plannedEndAt: nextEnd.toISOString(),
         plannedDurationMinutes: Math.max(1, Math.round((nextEnd.getTime() - start.getTime()) / 60_000)),
       });
-    } else {
-      save.mutate({
-        workOrderId: row.work_order_id,
-        lineId: row.line_id,
-        plannedStartAt: addDays(start, step).toISOString(),
-        plannedEndAt: addDays(end, step).toISOString(),
-      });
+      return;
     }
+    const key = rowKey(row);
+    const kljucevi = [key, ...chainFrom(key, buildSuccessorIndex(rows))];
+    posaljiKaskadu(row, step, kljucevi);
   }
 
   const timelineW = days * DAY_W;
@@ -625,10 +829,60 @@ export function GanttTab() {
         </div>
       </div>
 
+      {/* 075/26 — traka „Poništi" posle kaskade. NAMERNO nije u toastu: `lib/toast.ts`
+          prima SAMO tekst, traje 3,2 s i nema dugme; graditi dugme u njemu bi bio nov
+          mehanizam zbog jedne trake. Poništavanje je tačno inverzno (kalendarski dan je
+          invertibilan u fiksnoj zoni), a `expectedHash` iz `hash_after` brani od
+          poništavanja PREKO tuđe izmene. */}
+      {lastShift?.sidro ? (
+        <div className="flex items-center gap-2 rounded-panel border border-line bg-surface-2 px-3 py-1.5 text-xs text-ink-secondary">
+          <Undo2 className="h-4 w-4 shrink-0 text-ink-disabled" aria-hidden />
+          <span>
+            Pomereno {lastShift.totals.pomereno}{' '}
+            {lastShift.totals.pomereno === 1 ? 'pozicija' : 'pozicija'} za{' '}
+            {lastShift.delta_dana > 0 ? `+${lastShift.delta_dana}` : lastShift.delta_dana}{' '}
+            {Math.abs(lastShift.delta_dana) === 1 ? 'dan' : 'dana'}.
+          </span>
+          <Button
+            variant="secondary"
+            className="ml-auto h-7 px-2 text-xs"
+            loading={shift.isPending}
+            onClick={() => {
+              const p = lastShift;
+              if (!p.sidro) return;
+              shift.mutate(
+                {
+                  workOrderId: p.sidro.work_order_id,
+                  lineId: p.sidro.line_id,
+                  deltaDays: -p.delta_dana,
+                  clientEventId: newClientId(),
+                  expectedHash: p.hash_after ?? undefined,
+                },
+                {
+                  onSuccess: () => {
+                    setLastShift(null);
+                    toast('✓ Pomeranje poništeno');
+                  },
+                },
+              );
+            }}
+          >
+            Poništi
+          </Button>
+        </div>
+      ) : null}
+
       <p className="text-2xs text-ink-disabled">
         {planned.length} stavki na planu. Prevuci bar da pomeriš termin, prevuci desnu ivicu da promeniš
         trajanje, klikni za detalje. Veza (uslov): prevuci kružić sa kraja bara na drugi bar — klik na
         liniju briše vezu, ESC otkazuje.{' '}
+        {/* 075/26 (Strahinja): gest je promenio ZNAČENJE — pomeranje bara sada nosi i sve
+            vezane pozicije ispod. To mora da piše ovde, a ne samo u kartici pozicije. */}
+        <span>
+          Pomeranje bara nosi i sve <b>vezane pozicije ispod</b> — za isti broj dana, pa razmaci
+          između njih ostaju isti. Završene pozicije i one bez termina se preskaču. Razvlačenje
+          ivice menja samo tu poziciju.{' '}
+        </span>
         {/* 070/26: redosled redova je ISTI ručni redosled smene koji piše i tab „Po mašini".
             Rečenica o prevlačenju se KRIJE na uređajima bez pokazivača (`hover: none`) —
             HTML5 drag-and-drop se na dodir uopšte ne pokreće, pa bi bila prazno obećanje. */}
@@ -762,7 +1016,11 @@ export function GanttTab() {
                       </div>
                       {m.rows.map((r, redniBroj) => {
                         const key = rowKey(r);
-                        const d = drag?.key === key ? drag : null;
+                        // 075/26: bar prati gest i kad NIJE uhvaćen — ako je u lancu
+                        // sidra. Bez toga planer vuče jedan bar, ostatak stoji, „elbow"
+                        // linije usput skaču u back-link rutu, pa sve poskoči tek po
+                        // puštanju: gest izgleda pokvareno iako upis radi ispravno.
+                        const d = gestPomak(key, r);
                         return (
                           <div
                             key={key}
@@ -904,7 +1162,20 @@ export function GanttTab() {
                                   linkSource={linkDrag?.sourceKey === key}
                                   onOpen={() => setDetail(r)}
                                   onKeyDown={(e) => onBarKey(e, r)}
-                                  onDragStart={(mode, x) => setDrag({ key, mode, startX: x, deltaDays: 0 })}
+                                  // 075/26: lanac se razrešava JEDNOM, na `pointerdown`
+                                  // — indeks nad do 5.000 redova ne sme u `pointermove`.
+                                  onDragStart={(mode, x) =>
+                                    setDrag({
+                                      key,
+                                      mode,
+                                      startX: x,
+                                      deltaDays: 0,
+                                      chain:
+                                        mode === 'move'
+                                          ? chainFrom(key, buildSuccessorIndex(rows))
+                                          : [],
+                                    })
+                                  }
                                   onLinkStart={(x, y) => startLink(key, x, y)}
                                 />
                               ) : (
@@ -930,7 +1201,7 @@ export function GanttTab() {
                 rangeStart={rangeStart}
                 days={days}
                 width={AXIS_X + timelineW}
-                drag={drag}
+                shiftOf={gestPomak}
                 linkDrag={linkDrag}
                 onDelete={deleteLink}
               />
@@ -966,6 +1237,24 @@ export function GanttTab() {
           row={rows.find((r) => rowKey(r) === rowKey(detail)) ?? detail}
           ordinals={detailOrdinals}
           onClose={() => setDetail(null)}
+        />
+      )}
+      {/* 075/26 — potvrda kaskade. `pendingShift` drži barove vizuelno pomerene dok
+          dijalog stoji, i briše se u SVAKOJ izlaznoj grani (potvrda, odustajanje,
+          greška, 409) — ekran ne sme da ostane pomeren nad nepromenjenim podacima. */}
+      {chainPlan && (
+        <GantLanacDialog
+          open
+          plan={chainPlan}
+          nevidljivih={nijeNaEkranu(chainPlan.stavke)}
+          onClose={() => {
+            setChainPlan(null);
+            setPendingShift(null);
+          }}
+          onDone={(p) => {
+            setPendingShift(null);
+            prikaziRezultat(p);
+          }}
         />
       )}
     </div>
@@ -1170,7 +1459,7 @@ function LinkLayer({
   rangeStart,
   days,
   width,
-  drag,
+  shiftOf,
   linkDrag,
   onDelete,
 }: {
@@ -1178,14 +1467,18 @@ function LinkLayer({
   rangeStart: Date;
   days: number;
   width: number;
-  drag: DragState | null;
+  /**
+   * 075/26 — vizuelni pomak reda tokom gesta. Bio je `drag` (samo uhvaćen bar), a sada
+   * je funkcija: kaskada pomera i sledbenike, pa i njihova sidra veza moraju da prate.
+   */
+  shiftOf: (key: string, row: GanttRow) => GestPomak | null;
   linkDrag: LinkDragState | null;
   onDelete: (succ: GanttRow, pred: GanttRow) => void;
 }) {
   const { map, totalH } = useMemo(() => layoutRows(groups), [groups]);
 
   const geomOf = (row: GanttRow, key: string) => {
-    const d = drag && drag.key === key ? drag : null;
+    const d = shiftOf(key, row);
     const shiftMs = (d?.mode === 'move' ? d.deltaDays : 0) * DAY_MS;
     const growMs = (d?.mode === 'resize' ? d.deltaDays : 0) * DAY_MS;
     return barGeometry(row, rangeStart, days, shiftMs, growMs);

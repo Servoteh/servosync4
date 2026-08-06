@@ -41,6 +41,7 @@ import {
   BigtehnDrawingSignQueryDto,
   MachineHallUpsertDto,
   OverlayReorderDto,
+  OverlayShiftChainDto,
   OverlayUpsertDto,
   ReassignDto,
   SetUrgentDto,
@@ -149,6 +150,17 @@ export class PlanProizvodnjeController {
   @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
   reorderOverlays(@Req() req: AuthedRequest, @Body() dto: OverlayReorderDto) {
     return this.pp.reorderOverlays(req.user.email, dto);
+  }
+
+  /**
+   * 075/26 (F2 iz 046/26) — pomeri sidro I ceo lanac njegovih sledbenika za ISTI broj
+   * kalendarskih dana. I PREGLED (`dryRun`) ide pod `edit`: to je namera upisa, ne
+   * čitanje plana.
+   */
+  @Post("overlays/shift-chain")
+  @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
+  shiftChain(@Req() req: AuthedRequest, @Body() dto: OverlayShiftChainDto) {
+    return this.pp.shiftChain(req.user.email, dto);
   }
 
   // ---------- Šifrarnik hala — 046/26 (edit) ----------
