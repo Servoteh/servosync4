@@ -170,9 +170,33 @@ export const INPUT_CLS =
 // 'status' (akcioni plan). Zvanični PDF/print namerno ostaju na rb dok se
 // redosled štampe ne potvrdi sa vlasnikom modula (v. plan §S2).
 
+/**
+ * Prikaz predmeta kad ga BE nije mogao da ozvuči šifrom/nazivom.
+ *
+ * Od seobe 06.08.2026 `projekat_id` je 3.0 `projects.id` (Int), a šifra/naziv
+ * dolaze LEFT JOIN-om na `projects` — red koji pokazuje na predmet BEZ parnjaka
+ * u registru (npr. sintetički `PRAC-PROD-TEST` iz sy15, koji nema 3.0 blizanca)
+ * stiže sa `projekatCode = projekatNaziv = null`. Bez ovoga bi takav zadatak
+ * ćutke ispao pod prazno zaglavlje „—" i izgledao kao da nema RN.
+ */
+export function predmetLabel(
+  id: number | null | undefined,
+  code: string | null | undefined,
+  naziv: string | null | undefined,
+): string {
+  const c = code?.trim() || '';
+  const n = naziv?.trim() || '';
+  if (c && n) return `${c} — ${n}`;
+  if (c || n) return c || n;
+  if (id != null) return `Predmet #${id} — nije prepoznat`;
+  return '—';
+}
+
 export interface RnGroup {
-  /** projekat_id ili '__none__'. */
+  /** Ključ grupe za React/Map: `String(projekat_id)` ili '__none__'. */
   key: string;
+  /** 3.0 `projects.id` grupe; `null` = „Bez RN / projekta". */
+  projekatId: number | null;
   code: string;
   naziv: string;
   rows: AkcijaRow[];
@@ -203,9 +227,11 @@ export function groupAkcijeByRn(
     if (Number.isFinite(n) && n > 0 && !idxByItem.has(n)) idxByItem.set(n, i);
   });
 
+  // Ključ je STRING i kad je predmet Int — Map po broju bi radio, ali `key` ide i
+  // u React `key` i u poređenje sa '__none__', pa se normalizuje na jedan tip.
   const buckets = new Map<string, AkcijaRow[]>();
   for (const a of rows) {
-    const k = a.projekat_id ?? '__none__';
+    const k = a.projekat_id == null ? '__none__' : String(a.projekat_id);
     const b = buckets.get(k);
     if (b) b.push(a);
     else buckets.set(k, [a]);
@@ -243,10 +269,18 @@ export function groupAkcijeByRn(
 
   return keys.map((k) => {
     const groupRows = buckets.get(k)!.slice().sort(cmp);
+    const bezRn = k === '__none__';
+    const projekatId = bezRn ? null : first(k).projekat_id;
+    const code = codeOf(k);
+    const naziv = bezRn ? '' : first(k).projekatNaziv ?? '';
+    // Predmet BEZ parnjaka u registru nema ni šifru ni naziv (LEFT JOIN promašaj) —
+    // takva grupa bi inače dobila prazno zaglavlje i izgledala kao „bez RN".
+    const nepoznat = !bezRn && !code && !naziv;
     return {
       key: k,
-      code: codeOf(k),
-      naziv: k === '__none__' ? BEZ_RN_LABEL : first(k).projekatNaziv ?? '',
+      projekatId,
+      code,
+      naziv: bezRn ? BEZ_RN_LABEL : nepoznat ? predmetLabel(projekatId, code, naziv) : naziv,
       rows: groupRows,
     };
   });

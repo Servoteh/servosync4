@@ -8,20 +8,24 @@ import { INPUT_CLS, PRIORITET_LABEL, TemaStatusBadge } from './common';
 
 /**
  * Master-rang tema po projektu (admin) — paritet 1.0 pregledPoProjektuTab.
- * NAPOMENA (R4): puni izbor projekta traži sy15 projects-by-uuid lookup (ne postoji
- * BE endpoint; FE `useProjectsLookup` je BigBit numerički ID, drugi prostor). Do tada
- * projekti se izvode iz `projekat_id` postojećih tema; rang se čuva kroz reorder-rang.
+ * Projekti se izvode iz `projekat_id` postojećih tema (posle seobe 06.08.2026 to je
+ * 3.0 `projects.id`, Int); rang se čuva kroz reorder-rang.
+ *
+ * NAPOMENA: view `v_pm_teme_pregled` ne nosi šifru/naziv predmeta (za razliku od
+ * `v_akcioni_plan`), a lookup predmeta je pretraga po šifri/nazivu — ne po ID-u.
+ * Zato su stavke u listi označene ID-em predmeta; ranije je stajao uuid skraćen na
+ * 8 znakova, što je bilo jednako neinformativno i puklo bi na broju.
  */
 export function PoProjektuTab() {
   const temeQ = useTeme({});
   const reorder = useReorderRang();
-  const [projekat, setProjekat] = useState<string | null>(null);
+  const [projekat, setProjekat] = useState<number | null>(null);
   const [ranks, setRanks] = useState<Record<string, number | null>>({});
 
   const byProject = useMemo(() => {
-    const m = new Map<string, PmTemaRow[]>();
+    const m = new Map<number, PmTemaRow[]>();
     for (const t of temeQ.data?.data ?? []) {
-      if (!t.projekat_id) continue;
+      if (t.projekat_id == null) continue;
       if (!m.has(t.projekat_id)) m.set(t.projekat_id, []);
       m.get(t.projekat_id)!.push(t);
     }
@@ -29,7 +33,7 @@ export function PoProjektuTab() {
   }, [temeQ.data]);
 
   const projects = [...byProject.keys()];
-  const active = projekat && byProject.has(projekat) ? projekat : projects[0] ?? null;
+  const active = projekat != null && byProject.has(projekat) ? projekat : projects[0] ?? null;
   const rows = active ? (byProject.get(active) ?? []) : [];
 
   useEffect(() => {
@@ -66,7 +70,7 @@ export function PoProjektuTab() {
               p === active ? 'bg-accent-subtle text-ink' : 'text-ink-secondary hover:bg-surface-2',
             )}
           >
-            <span className="truncate">{p.slice(0, 8)}…</span>
+            <span className="truncate">Predmet #{p}</span>
             <span className="tnums text-xs text-ink-disabled">{byProject.get(p)!.length}</span>
           </button>
         ))}
