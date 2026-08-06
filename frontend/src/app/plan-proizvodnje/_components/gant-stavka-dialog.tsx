@@ -20,8 +20,11 @@ import { openBigtehnPdfTab, sanitizeDrawingNo } from './shared';
 import {
   addMinutesLocal,
   effectiveMinutes,
+  hoursInputFromMinutes,
+  hoursLabel,
   isoLocalMinute,
   keepIfSameMinute,
+  minutesFromHoursInput,
   readyReason,
   scrapBadge,
   technologyMinutes,
@@ -47,6 +50,11 @@ import {
  *     preko vikenda/zastoja: raspon ≠ radni minuti) — dok sledeća izmena početka ili
  *     trajanja ponovo ne izračuna kraj;
  *   • prazan KRAJ se pri snimanju izvede iz početka + trajanja (isto pravilo).
+ *
+ * TRAJANJE se od 076/26 KUCA U SATIMA („upišem 2 → 120 minuta"), a čuva i šalje u
+ * MINUTIMA — prevod je samo u ovom polju (`minutesFromHoursInput` /
+ * `hoursInputFromMinutes` u `gant-utils`). Prevlačenje i razvlačenje bara na gantu i
+ * dalje pišu minute; da nije tako, jedan potez mišem bi promenio trajanje 60 puta.
  */
 export function GantStavkaDialog({
   open,
@@ -70,6 +78,7 @@ export function GantStavkaDialog({
 
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
+  /** Trajanje-override u SATIMA (076/26) — baza i API ostaju u minutima. */
   const [dur, setDur] = useState('');
   const [machine, setMachine] = useState('');
   const [pred, setPred] = useState<OpRow | null>(null);
@@ -85,7 +94,7 @@ export function GantStavkaDialog({
     const r = rowRef.current;
     setStart(r.planned_start_at ? isoLocalMinute(new Date(r.planned_start_at)) : '');
     setEnd(r.planned_end_at ? isoLocalMinute(new Date(r.planned_end_at)) : '');
-    setDur(r.planned_duration_minutes != null ? String(r.planned_duration_minutes) : '');
+    setDur(hoursInputFromMinutes(r.planned_duration_minutes));
     setMachine(r.effective_machine_code ?? '');
     setPred(null);
   }, [rowKey, open]);
@@ -160,10 +169,13 @@ export function GantStavkaDialog({
    * 24 h (stavka bez tehnologije mora imati vidljiv bar; isti fallback kao `barEnd`).
    * Namerno NE gleda zatečeni override iz baze kad je polje ispražnjeno — prazno
    * polje znači „vrati na tehnologiju", pa i auto-kraj mora da prati tehnologiju.
+   *
+   * 076/26: polje nosi SATE, pa se ovde i pretvara u minute (`null` = prazno,
+   * `NaN` = neispravan unos — oba padaju na tehnologiju dok se kuca).
    */
   function liveMinutes(durStr: string): number {
-    const n = Number(durStr.trim());
-    if (durStr.trim() !== '' && Number.isFinite(n) && n >= 1) return Math.round(n);
+    const min = minutesFromHoursInput(durStr);
+    if (min !== null && Number.isFinite(min)) return min;
     return tech > 0 ? tech : 24 * 60;
   }
 
@@ -191,9 +203,10 @@ export function GantStavkaDialog({
       toast('⚠ Zadaj planirani početak (datum i vreme).');
       return;
     }
-    const durNum = dur.trim() === '' ? null : Number(dur.trim());
-    if (durNum !== null && (!Number.isFinite(durNum) || durNum < 1)) {
-      toast('⚠ Trajanje mora biti broj minuta veći od 0.');
+    // 076/26: polje je u SATIMA, upis u minutima (DTO je `@IsInt`) — v. `minutesFromHoursInput`.
+    const durNum = minutesFromHoursInput(dur);
+    if (durNum !== null && !Number.isFinite(durNum)) {
+      toast('⚠ Trajanje se unosi u SATIMA, kao broj veći od 0 (npr. 2 ili 1,5).');
       return;
     }
     const startIso = keepIfSameMinute(row.planned_start_at, start) ?? new Date(start).toISOString();
@@ -328,9 +341,11 @@ export function GantStavkaDialog({
           <Fact label="Faza obrade" value={`${String(row.operacija ?? '—')} · ${row.opis_rada ?? '—'}`} />
           <Fact label="Materijal" value={row.materijal} />
           <Fact label="Rok izrade" value={row.rok_izrade ? formatDate(row.rok_izrade) : null} />
+          {/* 076/26: sati su sada MERA u kojoj planer kuca, pa idu prvi; minuti ostaju
+              uz njih (baza je u minutima). Decimalni zarez — kanon dizajn sistema. */}
           <Fact
             label="Tehnologija (TPZ + TK × kom)"
-            value={tech > 0 ? `${tech} min (${(tech / 60).toFixed(1)} h)` : null}
+            value={tech > 0 ? `${hoursLabel(tech)} (${tech} min)` : null}
           />
           {/* 069/26: „Urađeno" pokazuje DOBRE komade, jer se po njima sudi gotovost.
               Bez toga bi pozicija sa škartom pisala „100 / 100" a stajala bez kvačice —
@@ -412,18 +427,24 @@ export function GantStavkaDialog({
             </p>
           </Field>
 
-          <Field label="Trajanje (min) — override">
+          {/* 076/26: polje prima SATE (2 → 120 min). `type="text"` + `inputMode="decimal"`
+              JER `input[type=number]` odbacuje srpski decimalni zarez — „1,5" bi u njemu
+              stiglo kao prazna vrednost, pa bi polje ćutke gutalo pola unosa. Nema više ni
+              `min={1}`: minimum je jedan MINUT, a ne jedan sat. */}
+          <Field label="Trajanje (h) — override">
             <input
-              type="number"
-              min={1}
+              type="text"
+              inputMode="decimal"
               value={dur}
               onChange={(e) => changeDur(e.target.value)}
-              placeholder={String(tech || '')}
+              placeholder={hoursInputFromMinutes(tech || null)}
+              aria-label="Trajanje u satima (override)"
               className="h-9 w-full rounded-control border border-line bg-surface px-2 text-sm text-ink tnums"
             />
             <p className="mt-1 text-2xs text-ink-disabled">
-              Prazno = iz tehnologije ({tech} min). Trenutno u primeni: {eff} min. Izmena odmah preračunava
-              planirani kraj.
+              Unosi se u <strong>satima</strong> (2 = 2 h = 120 min; decimalni zarez: 1,5 = 90 min).
+              Prazno = iz tehnologije ({hoursLabel(tech)} = {tech} min). Trenutno u primeni:{' '}
+              {hoursLabel(eff)} = {eff} min. Izmena odmah preračunava planirani kraj.
             </p>
           </Field>
 

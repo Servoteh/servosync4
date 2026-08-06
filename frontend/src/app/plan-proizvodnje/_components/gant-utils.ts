@@ -142,6 +142,75 @@ export function technologyMinutes(row: GanttRow): number {
   return Math.round(tpz + tk * kom);
 }
 
+// ── Trajanje se KUCA u satima, ČUVA u minutima (zahtev 076/26) ────────────────
+//
+// Strahinjin zahtev: polje „Trajanje — override" da prima SATE („ako upišem 2,
+// sistem sam pretvori u 120 minuta"). Izmereno 05.08.2026 nad 37 unetih override-a:
+// 31 (84 %) je tačan umnožak 60 minuta, najmanji 60 min, prosek 889 min (≈14,8 h),
+// najveći 10.100 min (168 h) — ljudi već misle u satima a kucaju minute.
+//
+// ⚠️ BAZA I API OSTAJU U MINUTIMA (`planned_duration_minutes INTEGER`, DTO `@IsInt`).
+// Prevod je ISKLJUČIVO u polju kartice: zatečeni podaci se ne diraju (Strahinjina
+// reč), a prevlačenje i razvlačenje bara na gantu i dalje pišu MINUTE — inače bi
+// jedan potez mišem promenio trajanje 60 puta. Iz istog broja se računaju dužina
+// bara i zauzetost mašine, pa je jedina bezbedna granica ovaj par funkcija.
+
+/**
+ * Broj iz korisničkog unosa sa SRPSKIM decimalnim zarezom. `Number("1,5")` je `NaN`,
+ * pa bi goli `Number()` odbio unos koji ljudi ovde najčešće kucaju. Prima i zarez i
+ * tačku (isti obrazac kao `parsePrice`/`parseWholeNumber` u modulu održavanja):
+ * kad zarez postoji on je decimalni, a tačke su hiljade; bez zareza tačka je decimalna.
+ *
+ * Vraća `null` za PRAZNO (to je legitimna vrednost = „vrati na tehnologiju") i `NaN`
+ * za stvarno neispravan unos — dve različite stvari koje pozivalac mora da razlikuje.
+ */
+export function parseDecimalCommaInput(raw: string): number | null {
+  const t = String(raw ?? '').replace(/[^\d,.-]/g, '').trim();
+  if (!t) return null;
+  const body = t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t;
+  const n = Number(body);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/**
+ * SATI iz polja → CELI MINUTI za upis (`planned_duration_minutes`). DTO je `@IsInt`,
+ * pa zaokruživanje mora ovde: `2` → 120, `1,5` → 90, `2,51` → 151 (150,6 min).
+ *
+ * Vraća `null` za prazno polje („vrati na tehnologiju"), `NaN` za neispravan unos i
+ * za nulu/negativno (trajanje mora biti pozitivno — pozivalac javlja razlog). Pod je
+ * 1 minut: sitan ali pozitivan unos (`0,001` h) je namera da nešto traje, a ne nula.
+ */
+export function minutesFromHoursInput(raw: string): number | null {
+  const h = parseDecimalCommaInput(raw);
+  if (h === null) return null;
+  if (!Number.isFinite(h) || h <= 0) return NaN;
+  return Math.max(1, Math.round(h * 60));
+}
+
+/**
+ * MINUTI iz baze → tekst polja u SATIMA (decimalni zarez, bez suvišnih nula):
+ * 120 → „2", 90 → „1,5", 10.100 → „168,33".
+ *
+ * Dve decimale su DOVOLJNE da povratak bude tačan: greška zaokruživanja je najviše
+ * 0,005 h = 0,3 min < pola minuta, pa `minutesFromHoursInput` uvek vrati IDENTIČAN
+ * broj minuta. Zato „Sačuvaj termin" bez ijedne izmene polja ostaje idempotentan i
+ * nasleđeni podaci u minutima ne mogu tiho da odlutaju kroz otvaranje kartice.
+ */
+export function hoursInputFromMinutes(minutes: number | null | undefined): string {
+  if (minutes == null) return '';
+  const n = Number(minutes);
+  if (!Number.isFinite(n)) return '';
+  return (n / 60)
+    .toFixed(2)
+    .replace(/\.?0+$/, '')
+    .replace('.', ',');
+}
+
+/** Minuti → „X h" za pomoćni tekst (jedna decimala, decimalni zarez). */
+export function hoursLabel(minutes: number): string {
+  return `${(minutes / 60).toFixed(1).replace('.', ',')} h`;
+}
+
 /**
  * Ključ reda = DELJENI ključ otvorene operacije (`opKey`, `@/api/plan-proizvodnje`).
  * Namerno isti izraz i isti izvor kao „Po mašini": optimistički upis redosleda (070/26)

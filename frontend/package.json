@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
+    "test": "node --experimental-transform-types --no-warnings --import ./test/alias-hook.mjs --test \"src/**/*.spec.ts\"",
     "start": "next start -p 3001",
     "deploy": "next build && wrangler deploy",
     "preview": "next build && wrangler dev"
