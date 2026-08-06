@@ -543,6 +543,30 @@ proveriti da ne gazi tamošnji rad.
 
 ---
 
+### B4. ✅ ISPORUČENO 06.08.2026 — pet zahteva, svi verifikovani na produkciji
+
+| zahtev | ko | šta | stanje |
+|---|---|---|---|
+| **073/26** | Duško | Servisni plan vozila prima **samo kilometražu** (`0`/prazno = ne vodi se po tome), i izmena može da skine već upisan interval — ranije je `undefined` ispadao iz `JSON.stringify` pa je dijalog lagao „Sačuvano". Tabela je u **sy15**. | READY_FOR_TEST |
+| **074/26** | Miljan | Mejl nadoknade nosi **oba datuma** i ne zove više rad vikendom „izostankom"; uklonjena zabrana da nadoknada bude PRE odsustva (podnosilac potvrdio da se sati ponekad odrađuju unapred). sy15 fn primenjena, fajl za povratak uz nju. | READY_FOR_TEST |
+| **076/26** | Strahinja | Trajanje operacije se kuca u **satima** (2 → 120 min), prima decimalni zarez. Baza ostaje u minutima. | READY_FOR_TEST |
+| **077/26** | Jovica | „Otkucaj TP" više ne otvara tuđi nalog — v. C20 za pun opis i merenje. | READY_FOR_TEST |
+| **079/26** | Strahinja | Broj crteža u kartici pozicije otvara PDF; gde ga nema (111 od 218), ostaje običan tekst. | **DONE** (potvrdio podnosilac) |
+
+🔴 **Pouke dana** (detalji u commit porukama):
+- Kad korisnik traži da nešto **„piše"** — izmeri koliko mesta zaista ima. Prva verzija 069 stavila
+  je reč u gant bar, a bar je na produkciji **median 10px** širok (28 od 32 ispod 20px).
+- `post-deploy-verify.sh` pušten iz **primarnog direktorijuma** daje LAŽNO CRVENO (kopija je od pre
+  gašenja 1.0) i traži `tr -d '\r'` jer worktree čekira CRLF.
+- **Pročitaj komentare na zahtevu pre izrade, i ponovi upit ako padne.** Kod 074 je podnosilac
+  odgovorio na sva pitanja, a upit nad `change_request_comments` pao je na nepostojećoj koloni
+  (`created_by_user_id` NE POSTOJI u toj tabeli) — pa je prvi paket i dalje odbijao ono što je tražio.
+- Tekst mejla dokaži tako što ga **proizvedeš**: poziv sy15 funkcije unutar `BEGIN … ROLLBACK` i
+  čitanje reda iz `kadr_notification_log` — nijedan mejl ne ode, a tekst je dokazan.
+- **`npm run lint` u backendu je `eslint --fix`** i prepiše ~250 nepovezanih fajlova.
+- ✅ **Frontend konačno ima testove koji se pokreću** (`npm test`, `node --test` + alias hook, bez
+  ijedne nove zavisnosti): 65 testova. Time pada deo nalaza iz C9 („nijedan FE test se ne pokreće").
+
 ### C17. Kiosk i plan mere „punu količinu" različito — druga polovina nalaza iz B2
 
 Upisni kanon kioska broji **sve kvalitete**, a plan od 069/26 sudi po **dobrim**. Posledica:
@@ -577,6 +601,47 @@ Gant dijalog sada prikazuje OBA broja jedan pored drugog, pa tamo nema zabune. O
 ostali ekrani preimenuju u „Otkucano" ili prikažu `dobri/ukupno`. **Prioritet:**
 `why-bottleneck-modal.tsx:165` — taj broj ide u AI prompt kao kontekst, pa AI objašnjava
 kašnjenje pogrešnim brojem.
+
+### C20. 🔴 Deep-link iz zvonca ne radi na pola ekrana — IZMERENO ko to pogađa
+
+Otkriveno pri radu na 077/26. Klik na obaveštenje gradi adresu tipa `/ekran?open=N`, ali
+**Next App Router NAMERNO izostavlja query iz ključa za remount** — pa ako korisnik već stoji na
+tom ekranu, parametar se tiho ignoriše. Zvonce se renderuje na **svakoj** strani, pa okida taj
+slučaj redovno, a ne slučajno.
+
+**Izmereno 06.08.2026** (`app_notifications`, poslednjih 30 dana):
+
+| ruta | obaveštenja | ljudi | otvoreno | stanje |
+|---|---|---|---|---|
+| `work_orders` → `/work-orders?open=N` | 411 | 12 | **352** | ✅ POPRAVLJENO (077/26) |
+| `montage_nonconformities` → `/montaza?id=N` | 12 | 12 | 10 | 🔴 isti kvar, NIJE dirano |
+| `maint_machines` → `/odrzavanje?tab=masine` | 8 | 4 | 4 | 🔴 tab se ne prebaci ako si već tamo |
+| `quality_events` | 12 | 12 | 9 | 🔴 **NEMA rute u mapi** — klik ne radi NIŠTA |
+| `app_switches` | 1 | 1 | 0 | 🔴 nema rute |
+| `handover_drafts` → `/nacrti` | 942 | 15 | 714 | ✓ nema parametra, nije pogođeno |
+| `drawing_handovers` → `/handovers` | 12 | 4 | 12 | ✓ nema parametra |
+
+Najgore je poslednje: `onActivate` (`components/ui-kit/app-shell.tsx:292-297`) kad nema rute samo
+označi pročitanim i zatvori panel — **korisnik klikne i ne desi se ništa**. Pogađa 12 ljudi.
+
+**Popravka je poznata i mala** — obrazac je već primenjen u 077/26 (`work-orders/page.tsx`):
+čitač parametra koji reaguje na promenu adrese + „trošenje" parametra preko `history.replaceState`
+(uzor `montaza/page.tsx:69-76`). Za `quality_events` i `app_switches` treba samo dopuniti
+`NOTIFICATION_ROUTE`.
+
+Isti obrazac (mount-only, bez `popstate`) potvrđen još u: `mob/sastanci/page.tsx:41` (bez ikakve
+validacije ida), `zahtevi/detalj/page.tsx:70`, `mob/kadrovska/page.tsx:87`,
+`handovers/_components/drafts-tab.tsx:1403`.
+
+### C21. Primopredaja sa doradom uvek otvara ORIGINALNI nalog
+
+Drugi, nezavisan put do „otvara mi drugi nalog" (nađen uz 077/26, NIJE popravljen):
+`handovers.service.ts` `findHandoverWorkOrder` radi `findFirst(where: { drawingHandoverId },
+orderBy: { id: 'asc' })`, a docstring to i priznaje („'original' = najmanji id"). Deca za
+doradu/škart **nasleđuju** `drawingHandoverId` (`work-orders.service.ts:1762`; bulk-clone i
+clone-variant ga izričito nuluju, dorada ne). Dakle primopredaja koja je ikad imala doradu uvek
+razrešava na prvi, originalni nalog. Odluka: da li je to namerno (docstring kaže da jeste) ili
+treba da vodi na najnoviji.
 
 ## D. ČEKA KORISNIKE (ne blokira razvoj)
 
