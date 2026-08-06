@@ -40,9 +40,11 @@ export function AkcijaModal({
   const [prioritet, setPrioritet] = useState(edit?.prioritet ?? 2);
   const [status, setStatus] = useState(edit?.status ?? 'otvoren');
   // S5/S6 — izbor projekta/RN. Kod izmene se seed-uje iz denormalizovanih polja
-  // reda (projekat_id + projekatCode/projekatNaziv); kod nove akcije iz S6 prefill-a.
+  // reda (projekat_id = 3.0 `projects.id` + projekatCode/projekatNaziv); kod nove
+  // akcije iz S6 prefill-a. Šifra/naziv smeju biti `null` (predmet bez parnjaka u
+  // registru) — picker tada prikaže „Predmet #N — nije prepoznat", a NE briše vezu.
   const [projekat, setProjekat] = useState<ProjekatIzbor | null>(
-    edit?.projekat_id
+    edit?.projekat_id != null
       ? { id: edit.projekat_id, code: edit.projekatCode, naziv: edit.projekatNaziv }
       : (initialProjekat ?? null),
   );
@@ -64,7 +66,7 @@ export function AkcijaModal({
     };
     try {
       if (edit) {
-        // `projekatId: null` (bez izbora) → BE patch briše vezu; string → menja je.
+        // `projekatId: null` (bez izbora) → BE patch briše vezu; Int → menja je.
         await patchM.mutateAsync({ id: edit.id, patch: { ...common, projekatId: projekat?.id ?? null } });
       } else {
         await create.mutateAsync({

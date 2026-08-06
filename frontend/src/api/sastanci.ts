@@ -5,13 +5,22 @@ import { apiFetch, apiUpload } from './client';
 
 // ============================================================================
 // Sastanci — 3.0 TALAS B (MODULE_SPEC_sastanci_ai_30.md §4). Data sloj: TanStack
-// Query hooks nad NestJS `/v1/sastanci/*`. Podaci žive u sy15 (1.0) bazi; backend
-// vraća DVA oblika:
+// Query hooks nad NestJS `/v1/sastanci/*`. Podaci žive u 3.0 (glavnoj) bazi od
+// seobe 06.08.2026; backend vraća DVA oblika:
 //   • Prisma modeli (sastanci/ucesnici/aktivnosti/odluke/…) → camelCase polja,
-//   • sy15 view-ovi (`v_akcioni_plan` / `v_pm_teme_pregled`) → snake_case kolone.
+//   • view-ovi (`v_akcioni_plan` / `v_pm_teme_pregled`) → snake_case kolone.
 // Mutacije sa nus-efektima nose `clientEventId` (idempotency ključ — vidi
 // newClientEventId; paritet reversi.ts). Row-nivo (organizator-trio/učesnik-scope/
-// pm_teme vidljivost) presuđuje sy15 RLS na backendu — FE ga NE duplira.
+// pm_teme vidljivost) presuđuje backend — FE ga NE duplira.
+//
+// 🔴 PREDMET (`projekatId` / `projekat_id`) JE `Int`, NE uuid.
+// Do seobe je kolona bila sy15 `uuid` (FK na sy15 `projects`); u 3.0 je `Int` FK
+// na `projects.id` — isti prostor ID-jeva koji koristi `useProjectsLookup`
+// (`bigtehnItemId` na redu akcije je sada baš taj `projects.id`). Backend je
+// PRELAZNO dvosmeran (docs/SEOBA_SASTANCI_PB_2026-08-05.md §7g A): prima i uuid
+// i `Int`, a uz `projekatId` (Int) vraća i `projekatUuid` za klijente koji nisu
+// prešli. FE od sada šalje i čita ISKLJUČIVO `Int` — `projekatUuid` se namerno
+// ne modelira ovde da ne bi preživeo brisanje uuid grane na backendu.
 // ============================================================================
 
 // ------------------------------------------------------------------ helpers
@@ -77,7 +86,8 @@ export interface Sastanak {
   datum: string;
   vreme: string | null;
   mesto: string | null;
-  projekatId: string | null;
+  /** 3.0 `projects.id` (Int) — v. napomenu o predmetu na vrhu fajla. */
+  projekatId: number | null;
   vodioEmail: string | null;
   vodioLabel: string | null;
   zapisnicarEmail: string | null;
@@ -185,7 +195,9 @@ export interface AkcijaRow {
   id: string;
   sastanak_id: string | null;
   tema_id: string | null;
-  projekat_id: string | null;
+  /** 3.0 `projects.id` (Int). `projekatCode`/`projekatNaziv` su LEFT JOIN — ostaju
+   *  `null` ako predmet nema parnjaka u registru (v. `predmetLabel` u common.tsx). */
+  projekat_id: number | null;
   rb: number | null;
   naslov: string;
   opis: string | null;
@@ -218,7 +230,9 @@ export interface PmTemaRow {
   oblast: string;
   naslov: string;
   opis: string | null;
-  projekat_id: string | null;
+  /** 3.0 `projects.id` (Int). View NE nosi šifru/naziv predmeta — prikaz ide kroz
+   *  `predmetLabel` (common.tsx) ili kroz izbor u `ProjekatPicker`-u. */
+  projekat_id: number | null;
   status: string;
   prioritet: number;
   sastanak_id: string | null;
@@ -246,7 +260,8 @@ export interface PmTema {
   oblast: string;
   naslov: string;
   opis: string | null;
-  projekatId: string | null;
+  /** 3.0 `projects.id` (Int). */
+  projekatId: number | null;
   status: string;
   prioritet: number;
   sastanakId: string | null;
@@ -386,7 +401,7 @@ export interface SearchResult {
     id: string;
     naslov: string;
     sastanak_id: string | null;
-    projekat_id: string | null;
+    projekat_id: number | null;
     effective_status: string;
     status: string;
     rok: string | null;
@@ -443,7 +458,8 @@ const KEYS = {
 export interface ListParams {
   tip?: string;
   status?: string;
-  projekatId?: string;
+  /** 3.0 `projects.id` (Int) — `qs()` ga serijalizuje kao broj u query stringu. */
+  projekatId?: number;
   q?: string;
   from?: string;
   to?: string;
@@ -528,7 +544,7 @@ export function useAiModel() {
 
 export interface AkcijeParams {
   sastanakId?: string;
-  projekatId?: string;
+  projekatId?: number;
   status?: string;
   odgovoranEmail?: string;
 }
@@ -547,7 +563,7 @@ export interface WeeklyDiff {
   aktivnih: number;
 }
 
-export function useAkcijeWeeklyDiff(params: { since?: string; projekatId?: string } = {}) {
+export function useAkcijeWeeklyDiff(params: { since?: string; projekatId?: number } = {}) {
   return useQuery({
     queryKey: [...KEYS.akcije, 'weekly-diff', params],
     queryFn: () => apiFetch<{ data: WeeklyDiff }>(`${BASE}/akcije/weekly-diff${qs({ ...params })}`),
@@ -607,7 +623,7 @@ export function useAkcijaIstorija(akcijaId: string | null) {
 export interface TemeParams {
   status?: string;
   excludeStatuses?: string;
-  projekatId?: string;
+  projekatId?: number;
   sastanakId?: string;
   oblast?: string;
   predlozioEmail?: string;
@@ -622,9 +638,13 @@ export function useTeme(params: TemeParams = {}) {
   });
 }
 
-/** Red liste projekata/RN za picker akcije (S5): `code — naziv`. */
+/**
+ * Red liste projekata/RN za picker akcije (S5): `code — naziv`.
+ * `id` je 3.0 `projects.id` (Int) — vrednost koja se upisuje u `projekatId`.
+ * (BE prelazno prilaže i `uuid`; FE ga NE koristi — v. napomenu na vrhu fajla.)
+ */
 export interface SastanciProjekat {
-  id: string;
+  id: number;
   code: string | null;
   naziv: string | null;
 }
@@ -643,11 +663,11 @@ export function useSastanciProjekti(q: string) {
   });
 }
 
-export function useDraftTeme(projektId: string | null) {
+export function useDraftTeme(projektId: number | null) {
   return useQuery({
     queryKey: [...KEYS.teme, 'draft', projektId],
-    enabled: !!projektId,
-    queryFn: () => apiFetch<{ data: PmTema[] }>(`${BASE}/teme/draft${qs({ projektId: projektId ?? '' })}`),
+    enabled: projektId != null,
+    queryFn: () => apiFetch<{ data: PmTema[] }>(`${BASE}/teme/draft${qs({ projektId })}`),
   });
 }
 
@@ -749,7 +769,8 @@ export interface CreateSastanakVars {
   datum: string;
   vreme?: string;
   mesto?: string;
-  projekatId?: string;
+  /** 3.0 `projects.id` (Int). */
+  projekatId?: number;
   vodioEmail?: string;
   vodioLabel?: string;
   zapisnicarEmail?: string;
@@ -1071,7 +1092,8 @@ export interface AkcijaInput {
   naslov: string;
   sastanakId?: string;
   temaId?: string;
-  projekatId?: string;
+  /** 3.0 `projects.id` (Int). */
+  projekatId?: number;
   rb?: number;
   opis?: string;
   odgovoranEmail?: string;
@@ -1092,8 +1114,10 @@ export const useCreateAkcija = () =>
 export interface AkcijaPatch {
   naslov?: string;
   sastanakId?: string;
-  /** `null` briše vezu sa projektom/RN (S5) — akcija pada u „Bez RN / projekta". */
-  projekatId?: string | null;
+  /** 3.0 `projects.id` (Int); `null` briše vezu sa projektom/RN (S5) — akcija pada
+   *  u „Bez RN / projekta". Razlika `undefined` (ne diraj) vs `null` (obriši) je
+   *  nosilac ponašanja i na backendu (`IsPredmetRef`). */
+  projekatId?: number | null;
   rb?: number;
   opis?: string;
   odgovoranEmail?: string;
@@ -1123,7 +1147,8 @@ export interface TemaInput {
   vrsta?: string;
   oblast?: string;
   opis?: string;
-  projekatId?: string;
+  /** 3.0 `projects.id` (Int). */
+  projekatId?: number;
   sastanakId?: string;
   status?: string;
   prioritet?: number;
@@ -1150,7 +1175,8 @@ export const useReorderRang = () =>
 
 export interface DraftTemaVars {
   clientEventId: string;
-  projektId: string;
+  /** 3.0 `projects.id` (Int) — BE DTO polje se ovde zove `projektId`, ne `projekatId`. */
+  projektId: number;
   naslov: string;
   vrsta?: string;
   oblast?: string;

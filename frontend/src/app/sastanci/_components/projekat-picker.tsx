@@ -3,18 +3,13 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, X } from 'lucide-react';
 import { useSastanciProjekti, type SastanciProjekat } from '@/api/sastanci';
-import { INPUT_CLS } from './common';
+import { INPUT_CLS, predmetLabel } from './common';
 
-/** Izabrani projekat u AkcijaModal (S5) — id + prikazni podaci (`code — naziv`). */
-export type ProjekatIzbor = { id: string; code: string | null; naziv: string | null };
-
-/** Prikaz jednog projekta: „code — naziv" (bilo koje polje sme faliti). */
-function labelOf(p: { code: string | null; naziv: string | null }): string {
-  const code = p.code?.trim() || '';
-  const naziv = p.naziv?.trim() || '';
-  if (code && naziv) return `${code} — ${naziv}`;
-  return code || naziv || '—';
-}
+/**
+ * Izabrani projekat/predmet (S5) — `id` je 3.0 `projects.id` (Int), ista vrednost
+ * koja ide u `projekatId`. Do seobe 06.08.2026 je ovde stajao sy15 uuid.
+ */
+export type ProjekatIzbor = { id: number; code: string | null; naziv: string | null };
 
 /**
  * Biranje projekta/RN za akciju (S5). Obrazac kao `DirectoryPicker`, ali pretraga
@@ -47,7 +42,7 @@ export function ProjekatPicker({
     return (
       <div className="flex items-center gap-2">
         <span className="flex-1 truncate rounded-control border border-line bg-surface px-2.5 py-1.5 text-sm text-ink">
-          {labelOf(value)}
+          {predmetLabel(value.id, value.code, value.naziv)}
         </span>
         <button
           type="button"
@@ -107,7 +102,9 @@ export function ProjekatPicker({
                 }}
                 className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-surface-2"
               >
-                <span className="text-sm text-ink">{p.code || p.naziv || '—'}</span>
+                {/* Predmet iz registra bez šifre i naziva i dalje mora biti biran —
+                    prikaži ga bar po ID-u umesto praznog „—". */}
+                <span className="text-sm text-ink">{p.code || p.naziv || `Predmet #${p.id}`}</span>
                 {p.code && p.naziv && <span className="text-xs text-ink-disabled">{p.naziv}</span>}
               </button>
             ))

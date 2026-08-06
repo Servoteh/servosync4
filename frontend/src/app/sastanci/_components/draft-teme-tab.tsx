@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui-kit/button';
 import { FormField } from '@/components/ui-kit/form-field';
 import {
@@ -13,19 +13,25 @@ import {
   useTeme,
 } from '@/api/sastanci';
 import { INPUT_CLS, TEMA_OBLASTI, TEMA_VRSTE } from './common';
+import { ProjekatPicker, type ProjekatIzbor } from './projekat-picker';
 
 /**
  * Draft teme tok (predlog → pregled → usvajanje → uvedi na sastanak) — paritet 1.0
- * draftTemePanel. Izbor projekta izveden iz postojećih tema (vidi napomenu u
- * po-projektu-tab: nedostaje sy15 projects-by-uuid lookup — R4).
+ * draftTemePanel.
+ *
+ * Izbor predmeta ide kroz isti `ProjekatPicker` kao akcije (pretraga po šifri/nazivu
+ * nad `/sastanci/projekti`). Ranije je bio `<select>` sklopljen od `projekat_id`
+ * postojećih tema, sa uuid-om skraćenim na 8 znakova kao natpisom — to je posle
+ * seobe (predmet je `Int`) i puklo bi (`number.slice`) i pokazivalo goli broj;
+ * time nestaje i stara R4 napomena o „projects-by-uuid lookup"-u koji ne postoji.
  */
 export function DraftTemeTab() {
-  const temeQ = useTeme({});
-  const [projektId, setProjektId] = useState<string>('');
-  const drafts = useDraftTeme(projektId || null);
+  const [projekat, setProjekat] = useState<ProjekatIzbor | null>(null);
+  const projektId = projekat?.id ?? null;
+  const drafts = useDraftTeme(projektId);
   // Usvojene teme BEZ sastanka = kandidati za „Uvedi na sastanak" (paritet 1.0
   // draftTemePanel: zasebna kolona; draftUvedi radi SAMO na status='usvojeno').
-  const usvojeneQ = useTeme({ status: 'usvojeno', projekatId: projektId || undefined });
+  const usvojeneQ = useTeme({ status: 'usvojeno', projekatId: projektId ?? undefined });
   const planiraniQ = useSastanci({ status: 'planiran', pageSize: 100 });
   const createDraft = useCreateDraftTema();
   const review = useDraftReview();
@@ -36,17 +42,11 @@ export function DraftTemeTab() {
   const [oblast, setOblast] = useState('opste');
   const [error, setError] = useState<string | null>(null);
 
-  const projects = useMemo(() => {
-    const s = new Set<string>();
-    for (const t of temeQ.data?.data ?? []) if (t.projekat_id) s.add(t.projekat_id);
-    return [...s];
-  }, [temeQ.data]);
-
   const planirani = planiraniQ.data?.data ?? [];
 
   async function addDraft() {
     setError(null);
-    if (!projektId) return setError('Izaberi projekat.');
+    if (projektId == null) return setError('Izaberi projekat.');
     if (!naslov.trim()) return setError('Naslov je obavezan.');
     try {
       await createDraft.mutateAsync({
@@ -70,17 +70,14 @@ export function DraftTemeTab() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
-        <FormField label="Projekat">
-          <select className={`${INPUT_CLS} w-64`} value={projektId} onChange={(e) => setProjektId(e.target.value)}>
-            <option value="">— izaberi projekat —</option>
-            {projects.map((p) => (
-              <option key={p} value={p}>{p.slice(0, 8)}…</option>
-            ))}
-          </select>
-        </FormField>
+        <div className="w-72">
+          <FormField label="Projekat" hint="Ukucaj broj RN ili naziv predmeta.">
+            <ProjekatPicker value={projekat} onChange={setProjekat} />
+          </FormField>
+        </div>
       </div>
 
-      {projektId && (
+      {projektId != null && (
         <>
           <section className="space-y-2 rounded-panel border border-line bg-surface p-4">
             <h3 className="text-sm font-semibold text-ink">Predloži nacrt teme</h3>

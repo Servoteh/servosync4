@@ -118,7 +118,13 @@ export function DetaljAkcije({ sastanakId, canEdit }: { sastanakId: string; canE
                     type="button"
                     title="Dodaj zadatak u ovaj RN / projekat"
                     className="flex items-center gap-1 rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface-2"
-                    onClick={() => openNova(g.key === '__none__' ? null : { id: g.key, code: g.code || null, naziv: g.naziv || null })}
+                    onClick={() =>
+                      openNova(
+                        g.projekatId == null
+                          ? null
+                          : { id: g.projekatId, code: g.code || null, naziv: g.naziv || null },
+                      )
+                    }
                   >
                     + Zadatak
                   </button>
