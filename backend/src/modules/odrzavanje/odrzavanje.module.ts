@@ -1,7 +1,9 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
+import { OdrzavanjeAuthzService } from "./odrzavanje-authz.service";
 import { OdrzavanjeController } from "./odrzavanje.controller";
 import { OdrzavanjeService } from "./odrzavanje.service";
 
@@ -16,6 +18,16 @@ import { OdrzavanjeService } from "./odrzavanje.service";
 @Module({
   imports: [PrismaModule, NotificationsModule],
   controllers: [OdrzavanjeController],
-  providers: [OdrzavanjeService, MasinaOtpisNotifyService],
+  providers: [
+    OdrzavanjeService,
+    MasinaOtpisNotifyService,
+    // Korak 2 gašenja sy15: prekidač `ODRZAVANJE_IZVOR` + 3.0 parnjak RLS-a.
+    // `OdrzavanjeSourceService` se EXPORT-uje jer ga koriste i scheduler
+    // (`maint-deadlines`, `maint-notify-dispatch`), AI-chat (maint alati) i
+    // Reversi (čitanje mašina kroz `v_rev_machines`) — v. zaglavlje tog servisa.
+    OdrzavanjeSourceService,
+    OdrzavanjeAuthzService,
+  ],
+  exports: [OdrzavanjeSourceService, OdrzavanjeAuthzService],
 })
 export class OdrzavanjeModule {}

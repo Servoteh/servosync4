@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import {
   assertAttachment,
   assertAttachments,
@@ -249,7 +250,25 @@ export class OdrzavanjeService {
     @Optional() private readonly ai?: AiProviderService,
     @Optional() private readonly policy?: AiModelPolicyService,
     @Optional() private readonly prisma?: PrismaService,
+    // Prekidač izvora (korak 2 gašenja sy15). @Optional iz istog razloga kao gore;
+    // kad ga nema, `assertPorted` ne radi ništa → ponašanje je kao `sy15`, tj.
+    // izostanak prekidača NIKAD ne može da prebaci modul na 3.0 (bezbedan smer).
+    @Optional() private readonly izvor?: OdrzavanjeSourceService,
   ) {}
+
+  /**
+   * Brana prekidača. Pod `ODRZAVANJE_IZVOR=sy15` ne radi ništa; pod `3.0` baca 503
+   * sa imenom putanje.
+   *
+   * Sav saobraćaj modula prolazi kroz `withUserMapped`/`runIdem` — izmereno 121 + 24
+   * poziva, i nijedan direktan sirov pristup sy15 datasource-u mimo njih (to i
+   * pinuje `odrzavanje.set-role-discipline.spec.ts`). Zato je dovoljno postaviti
+   * branu na ta dva mesta da nijedan upis ne može TIHO da ode u sy15 dok se logika
+   * prepisuje.
+   */
+  private assertPorted(feature: string): void {
+    this.izvor?.assertPorted(feature);
+  }
 
   // ==========================================================================
   // /maintenance/me — dvoslojni profil pozivaoca (server računa preko GUC-a)
@@ -1803,6 +1822,7 @@ export class OdrzavanjeService {
     email: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<T> {
+    this.assertPorted("čitanje/upis održavanja");
     try {
       return await this.sy15.withUserRls(email, fn);
     } catch (e) {
@@ -1875,6 +1895,9 @@ export class OdrzavanjeService {
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ) {
+    // Brana PRE registra idempotencije — neovlašćen/neprenet poziv ne sme da
+    // potroši korisnikov `clientEventId` (isti redosled kao kod sastanaka, §7e).
+    this.assertPorted(action);
     try {
       const out = await this.sy15.runIdempotentRls(
         email,

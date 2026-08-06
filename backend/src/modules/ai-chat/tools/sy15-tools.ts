@@ -48,6 +48,23 @@ async function rpc(ctx: ToolCtx, sql: Prisma.Sql): Promise<unknown> {
   });
 }
 
+/**
+ * Brana prekidača `ODRZAVANJE_IZVOR` za alate koji rade nad `maint_*` podacima.
+ *
+ * 🔴 ZAŠTO POSTOJI (pouka incidenta 06.08.2026 — prekidač prati POZIVAOCE, ne ime
+ * domena): pet alata ovde čita/piše domen ODRŽAVANJA, iako fajl pripada AI-chatu.
+ * Presudan je `prijavi_kvar`: `ai_chat_prijavi_kvar` radi `INSERT INTO
+ * maint_incidents`. Kad održavanje pređe na `3.0`, prijava kvara kroz asistenta
+ * bi i dalje išla u sy15 — nastale bi DVE istine o kvarovima, a to se ne vidi
+ * odmah nego tek kad se brojevi raziđu.
+ *
+ * Zato ti alati pod `3.0` GLASNO padaju (503) umesto da tiho pišu na pogrešno
+ * mesto. Skidaju se sa 503 tek kad se `ai_chat_*` funkcije prepišu nad 3.0 bazom.
+ */
+function assertMaintPorted(ctx: ToolCtx, alat: string): void {
+  ctx.deps.odrzavanjeIzvor?.assertPorted(`AI alat "${alat}" (maint_* podaci)`);
+}
+
 /** Embedding se meri kao zaseban modul (`embed`), ali nosi istog korisnika. */
 function embedCtx(ctx: ToolCtx): AiCallContext {
   return { module: AI_MODULE.EMBED, userId: ctx.call?.userId ?? null };
@@ -497,11 +514,13 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
     },
     kind: "read",
     scopes: LICNI,
-    execute: (a, ctx) =>
-      rpc(
+    execute: (a, ctx) => {
+      assertMaintPorted(ctx, "masina_info");
+      return rpc(
         ctx,
         Prisma.sql`SELECT ai_chat_masina_info(${str(a.masina)}) AS result`,
-      ),
+      );
+    },
   },
   {
     name: "kvar_istorija",
@@ -519,11 +538,13 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
     },
     kind: "read",
     scopes: LICNI,
-    execute: (a, ctx) =>
-      rpc(
+    execute: (a, ctx) => {
+      assertMaintPorted(ctx, "kvar_istorija");
+      return rpc(
         ctx,
         Prisma.sql`SELECT ai_chat_kvar_istorija(${strOrNull(a.masina)}, ${strOrNull(a.upit)}) AS result`,
-      ),
+      );
+    },
   },
   {
     name: "masina_uputstvo",
@@ -539,6 +560,8 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
     kind: "read",
     scopes: LICNI,
     execute: async (a, ctx) => {
+      // Brana PRE `embed()` — neprenet alat ne sme da potroši AI poziv (i pare).
+      assertMaintPorted(ctx, "masina_uputstvo");
       const pitanje = str(a.pitanje);
       const emb = await ctx.deps.ai.embed(pitanje, embedCtx(ctx));
       return rpc(
@@ -575,13 +598,19 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
     },
     kind: "write",
     scopes: LICNI,
-    execute: (a, ctx) =>
-      rpc(
+    execute: (a, ctx) => {
+      // 🔴 JEDINI UPIS AI-chata u tuđi domen: `ai_chat_prijavi_kvar` radi
+      // `INSERT INTO maint_incidents`. Bez ove brane bi pod `ODRZAVANJE_IZVOR=3.0`
+      // prijave kvara kroz asistenta nastavile da idu u sy15 dok modul piše u 3.0 —
+      // dve istine o kvarovima, bez ijedne poruke o grešci.
+      assertMaintPorted(ctx, "prijavi_kvar");
+      return rpc(
         ctx,
         Prisma.sql`SELECT ai_chat_prijavi_kvar(${str(a.masina)}, ${str(a.naslov)},
           ${strOrNull(a.opis)}, ${a.ozbiljnost ? str(a.ozbiljnost) : "minor"},
           ${a.bezbednosni_rizik === true}) AS result`,
-      ),
+      );
+    },
   },
   {
     name: "sql_upit",
@@ -621,6 +650,9 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
     // funkcije: trošak je čitanje, a pravilo „max(delovi, faktura)" već postoji u
     // OdrzavanjeService i ovde se ponavlja kao GREATEST da se dva ekrana ne raziđu.
     execute: async (a, ctx) => {
+      // Sirov SELECT nad `maint_assets`/`maint_work_orders`/`maint_wo_parts` —
+      // isti domen kao `masina_info`, samo bez DEFINER fn-a između.
+      assertMaintPorted(ctx, "trosak_sredstva");
       const q = `%${str(a.sredstvo)}%`;
       const exact = str(a.sredstvo);
       const meseci = intOrNull(a.meseci);

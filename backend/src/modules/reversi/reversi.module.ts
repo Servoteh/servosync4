@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { PrintingModule } from "../../common/printing/printing.module";
 import { ReversiController } from "./reversi.controller";
 import { ReversiService } from "./reversi.service";
@@ -11,6 +12,12 @@ import { ReversiService } from "./reversi.service";
 @Module({
   imports: [PrintingModule],
   controllers: [ReversiController],
-  providers: [ReversiService],
+  providers: [
+    ReversiService,
+    // Prekidač TUĐEG domena: `reportMachines()` čita `v_rev_machines` nad
+    // `maint_machines` (održavanje, korak 2 gašenja sy15). Bez njega bi posle
+    // preklopa održavanja izveštaj mašina tiho prikazivao zastarelo stanje.
+    OdrzavanjeSourceService,
+  ],
 })
 export class ReversiModule {}
