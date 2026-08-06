@@ -3,6 +3,7 @@ import { MailService } from "../../../common/mail/mail.service";
 import { Sy15Service } from "../../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
 import { PbSourceService } from "../../../common/sy15/pb-source.service";
+import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
 import type { ScheduledJob } from "../scheduler.types";
 
 /*
@@ -151,6 +152,9 @@ export class NotifyDispatchService {
     private readonly mail: MailService,
     private readonly storage: Sy15StorageService,
     private readonly izvor: PbSourceService,
+    // Zaseban prekidač održavanja — `maint-notify-dispatch` ne sme da zavisi od
+    // preklopa PB-a ni sastanaka (incident 06.08.2026).
+    private readonly odrIzvor: OdrzavanjeSourceService,
   ) {}
 
   /** Poseban prekidač za SLANJE (uz SCHEDULER_ENABLED koji pali sam pogon). */
@@ -348,6 +352,14 @@ export class NotifyDispatchService {
 
   // ══ ODRŽAVANJE ═════════════════════════════════════════════════════════════
   async dispatchMaint(): Promise<DispatchSummary> {
+    // Korak 2 gašenja sy15. Outbox (`maint_notification_log`) i cela dispatch
+    // logika (`maint_dispatch_dequeue`/`_fanout`/`_mark_sent`/`_mark_failed`)
+    // još žive u sy15 DEFINER funkcijama i NISU prepisane. Pod `3.0` posao pada
+    // sa 503 umesto da nastavi da prazni STARI outbox dok modul piše u novi —
+    // to bi značilo da obaveštenja o kvarovima tiho prestanu da stižu.
+    // 🔴 SAMO ova grana ide pod `ODRZAVANJE_IZVOR`. `dispatchKadr()` je kadrovska
+    // (korak 4), `dispatchPb()` je pod `PB_IZVOR` — ni jedan ni drugi se ne diraju.
+    this.odrIzvor.assertPorted("maint-notify-dispatch (maint_dispatch_*)");
     const rows = await this.sy15.db.$queryRaw<MaintRow[]>`
       SELECT * FROM public.maint_dispatch_dequeue(${MAINT_BATCH}::int, ${MAINT_MAX_ATTEMPTS}::int)`;
     let sent = 0;

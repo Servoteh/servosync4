@@ -16,6 +16,7 @@ import { SyncModule } from "../sync/sync.module";
 import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
 import { SastanciModule } from "../sastanci/sastanci.module";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -78,6 +79,11 @@ import { PbSourceService } from "../../common/sy15/pb-source.service";
     DailyBriefService,
     SecurityAuditService,
     PbSourceService,
+    // Treći prekidač (korak 2 gašenja sy15): `maint-deadlines` u `Sy15CronJobs` i
+    // `maint-notify-dispatch` u `NotifyDispatchService`. Stoji ovde iz istog
+    // razloga kao `PbSourceService` — scheduler drži poslove SVA TRI domena, pa
+    // mora imati sva tri prekidača da nijedan preklop ne obori tuđi posao.
+    OdrzavanjeSourceService,
   ],
   // NotifyDispatchService se izvozi da bi Kadrovska/Moj profil mogli da okinu
   // ISTI dispečer sinhrono („Pošalji čekaće" / pulse posle mutacije) umesto da

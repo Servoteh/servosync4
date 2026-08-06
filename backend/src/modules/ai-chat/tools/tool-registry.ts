@@ -1,3 +1,4 @@
+import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
 import type { ToolDef } from "../../../common/ai/ai-provider.service";
 import type { AiCallContext } from "../../../common/ai/ai-usage.service";
 import type { PermissionKey } from "../../../common/authz/permissions";
@@ -39,6 +40,19 @@ export interface ToolDeps {
   prisma: PrismaService;
   /** Postojeći servis kadrovske (prisustvo) — logika se NE duplira (plan §2.4). */
   kadrovska: KadrovskaService;
+  /**
+   * Prekidač izvora ODRŽAVANJA (`ODRZAVANJE_IZVOR`, korak 2 gašenja sy15).
+   *
+   * 🔴 Zašto je AI-chat uopšte pod tuđim prekidačem: pet alata ovde radi nad
+   * `maint_*` podacima, a `prijavi_kvar` (`ai_chat_prijavi_kvar`) radi
+   * `INSERT INTO maint_incidents`. Kad održavanje pređe na 3.0, prijava kvara
+   * kroz asistenta bi i dalje pisala u sy15 — dve baze bi se razišle, i to se
+   * NE BI VIDELO dok se brojevi ne raziđu. Zato ti alati pod `3.0` padaju sa 503.
+   *
+   * Opciono: kad ga nema (npr. u testovima), brana ne radi ništa → ponašanje je
+   * kao `sy15`, tj. izostanak prekidača nikad ne prebacuje alat na 3.0.
+   */
+  odrzavanjeIzvor?: OdrzavanjeSourceService;
 }
 
 export interface ToolCtx {

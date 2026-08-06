@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
   UnauthorizedException,
   UnprocessableEntityException,
@@ -15,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import {
   AiProviderService,
   ENGINES,
@@ -119,6 +121,14 @@ export class AiChatService {
     private readonly prisma: PrismaService,
     /** Postojeći servis kadrovske — alat `prisustvo_danas` ne piše svoj upit. */
     private readonly kadrovska: KadrovskaService,
+    /**
+     * Prekidač izvora ODRŽAVANJA (`ODRZAVANJE_IZVOR`, korak 2 gašenja sy15).
+     * Pet alata (`masina_info`, `kvar_istorija`, `masina_uputstvo`,
+     * `prijavi_kvar`, `trosak_sredstva`) radi nad `maint_*` podacima, a
+     * `prijavi_kvar` u njih i PIŠE — v. `assertMaintPorted` u `sy15-tools.ts`.
+     * @Optional: bez njega brana ne radi ništa (ponašanje kao `sy15`).
+     */
+    @Optional() private readonly odrzavanjeIzvor?: OdrzavanjeSourceService,
   ) {}
 
   /** Liste niti: lične (own, auth.uid()) + projektne (scope='project', vide svi) — RLS scoping. */
@@ -784,6 +794,7 @@ export class AiChatService {
       ai: this.ai,
       prisma: this.prisma,
       kadrovska: this.kadrovska,
+      odrzavanjeIzvor: this.odrzavanjeIzvor,
     };
     try {
       const out = await tool.execute(args, {
