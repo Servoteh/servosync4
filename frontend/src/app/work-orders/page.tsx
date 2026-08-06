@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AlertTriangle,
   Copy,
@@ -1785,6 +1785,54 @@ function BulkCloneProjectDialog({ open, onClose }: { open: boolean; onClose: () 
   );
 }
 
+/**
+ * Čitač deep-link parametra `?open=<id>` — JEDINO mesto koje reaguje na promenu adrese.
+ *
+ * Bug 077/26 („Otkucaj TP otvara neki već otkucan nalog") imao je DVA uzroka, oba ovde:
+ *
+ * 1) Parametar se čitao u efektu sa PRAZNIM nizom zavisnosti, tj. samo pri montiranju.
+ *    Next App Router NAMERNO izostavlja query iz ključa za remount
+ *    (`createRouterCacheKey(activeSegment, true) // no search params`, layout-router.js,
+ *    Next 16.2.10), pa `/work-orders?open=X` → `?open=Y` NE remount-uje stranu: novi
+ *    `?open=` se ignorisao, a `expanded` je držao PRETHODNI nalog. Zato je greška bila
+ *    „povremena" — javljala se kad se strana ne remontira (npr. zvonce iz app-shell-a,
+ *    koje gradi isti `/work-orders?open=` i sa SAME strane), a radila kad se remontira.
+ *
+ * 2) `setOpenId(null)` čisti samo React stanje — `open=X` je ostajao U ADRESI celu sesiju,
+ *    pa se X ponovo otvarao pri SVAKOM kasnijem remount-u (Nazad, F5, PWA reload, povratak
+ *    u tab). Zato se parametar sada „troši" (vidi niže).
+ *
+ * Zašto `useSearchParams`, uz repo-pravilo da ga izbegavamo: `popstate` ne pomaže jer ga
+ * `router.push` NE okida (lib/use-id-param.ts), a `servosync:nav` emituju samo sidebar/paleta
+ * — ne i pet mesta koja ovde push-uju. Jedini izvor koji reaguje na query-only navigaciju je
+ * `useSearchParams`. Dosadašnja zabrana je bila uperena u „Suspense oko CELE strane"; ovde je
+ * čitač izdvojen u komponentu koja renderuje `null`, pa bailout pogađa samo to prazno
+ * podstablo — ostatak `/work-orders` se i dalje prerenderuje u statički HTML.
+ */
+function DeepLinkOpenParam({ onOpen }: { onOpen: (id: number) => void }) {
+  const params = useSearchParams();
+  const raw = params.get('open');
+  useEffect(() => {
+    if (raw == null || raw.trim() === '') return;
+    // SAMO dekadni zapis (kanon iz lib/use-id-param.ts): goli `Number()` prima i „0x10" (=16),
+    // „1e3" (=1000) i „+5", pa prelomljen link iz mejla otvara TUĐI nalog umesto da bude
+    // ignorisan.
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) return;
+    const id = Number(trimmed);
+    if (!Number.isInteger(id) || id <= 0) return;
+    onOpen(id);
+    // „Potroši" deep-link (obrazac iz /montaza): skini `open` sa adrese preko `replaceState`.
+    // `replaceState` menja TEKUĆI unos u istoriji, pa Nazad ne vraća `?open=` — auto-otvaranje
+    // ostaje jednokratno, kako je i bilo zamišljeno. Uzgred rešava i ponovni klik na ISTI
+    // nalog: param ide „X" → null → „X", pa se efekat opet okine.
+    const url = new URL(window.location.href);
+    url.searchParams.delete('open');
+    window.history.replaceState(null, '', url.toString());
+  }, [raw, onOpen]);
+  return null;
+}
+
 export default function WorkOrdersPage() {
   const { user, isLoading, can } = useAuth();
   // Komitent-filter ide pod `directory.read` (isti ključ kao /v1/directory/*);
@@ -1818,13 +1866,16 @@ export default function WorkOrdersPage() {
 
   // Deep-link ?open=<id> (dolazak sa /handovers: „Otkucaj TP" / „Otvori RN") —
   // učitaj taj RN, filtriraj listu po njegovom identu (da red sigurno bude
-  // vidljiv) i otvori expand sa TP editorom. window.location umesto
-  // useSearchParams jer je build statički export (Suspense zahtev).
+  // vidljiv) i otvori expand sa TP editorom. Sam parametar čita
+  // <DeepLinkOpenParam> (vidi komentar iznad te komponente) — ovde ostaje samo
+  // reakcija na njega.
   const [openId, setOpenId] = useState<number | null>(null);
-  useEffect(() => {
-    const raw = new URLSearchParams(window.location.search).get('open');
-    const id = raw ? Number(raw) : NaN;
-    if (Number.isInteger(id) && id > 0) setOpenId(id);
+  const handleDeepLinkOpen = useCallback((id: number) => {
+    setOpenId(id);
+    // Nov `?open=` mora ODMAH da sklopi prethodno otvoren red. Bez ovoga, dok se
+    // novi RN dovlači sa servera, na ekranu i dalje stoji razvijen TP prethodnog
+    // naloga — tačno slika koju je Jovica prijavio u 077/26.
+    setExpanded(null);
   }, []);
   const openRn = useWorkOrder(openId);
   const openRnData = openRn.data?.data;
@@ -1833,7 +1884,9 @@ export default function WorkOrdersPage() {
     setQ(openRnData.identNumber);
     setPage(1);
     setExpanded(openRnData.id);
-    setOpenId(null); // jednokratno — dalja pretraga/filteri su korisnikovi
+    // Jednokratno — dalja pretraga/filteri su korisnikovi. Ovo čisti React stanje;
+    // sam `?open=` je već skinut sa adrese u DeepLinkOpenParam (drugi deo 077/26).
+    setOpenId(null);
   }, [openRnData]);
 
   useEffect(() => {
@@ -1854,6 +1907,10 @@ export default function WorkOrdersPage() {
 
   return (
     <AppShell>
+      {/* Renderuje `null` — vidi komentar uz DeepLinkOpenParam zašto stoji pod Suspense-om. */}
+      <Suspense fallback={null}>
+        <DeepLinkOpenParam onOpen={handleDeepLinkOpen} />
+      </Suspense>
       <PageHeader
         title="Radni nalozi"
         count={meta ? `${formatNumber(meta.total)} zapisa` : undefined}
