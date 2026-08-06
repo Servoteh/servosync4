@@ -67,6 +67,26 @@ function s(r: MakeupRequest, key: string): string {
   return v == null ? '' : String(v);
 }
 
+// 074/26 (Miljan Nikodijević): „dan odmora" ima DVA datuma — dan kada se RADI
+// (`weekendWorkDate`) i NEOBAVEZAN planirani slobodan dan (`absenceDate`, kad se
+// razlikuje od dana rada). Do 06.08.2026 se u koloni „Izostanak" prikazivao samo
+// `absenceDate`, što je za rad vikendom bilo obrnuto od istine.
+function workDateOf(r: MakeupRequest): string {
+  return s(r, 'weekendWorkDate') || r.absenceDate;
+}
+function plannedFreeDayOf(r: MakeupRequest): string | null {
+  const w = s(r, 'weekendWorkDate');
+  return s(r, 'compensationType') === 'dan_odmora' && w && r.absenceDate && r.absenceDate !== w
+    ? r.absenceDate
+    : null;
+}
+/** Kratak opis datuma za dijaloge/potvrde — nikad ne zove rad vikendom „izostankom". */
+function dateCtx(r: MakeupRequest): string {
+  if (s(r, 'compensationType') !== 'dan_odmora') return formatDate(r.absenceDate);
+  const free = plannedFreeDayOf(r);
+  return `rad vikendom ${formatDate(workDateOf(r))}${free ? ` · planirani slobodan dan ${formatDate(free)}` : ''}`;
+}
+
 export function NadoknadaTab() {
   const { can } = useAuth();
   const canManage = can(PERMISSIONS.KADROVSKA_VACREQ_MANAGE);
@@ -149,7 +169,7 @@ export function NadoknadaTab() {
    *  incident Stamenić 04.07). Nova odobrenja upisuju dan atomski na BE. */
   async function grantBonusGo(r: MakeupRequest) {
     if (busyIds.has(r.id)) return;
-    const datum = formatDate(s(r, 'weekendWorkDate') || r.absenceDate);
+    const datum = formatDate(workDateOf(r));
     if (
       !window.confirm(
         `Upisati +1 dan GO za ${empName(r.employeeId)} (rad vikendom ${datum})? ` +
@@ -162,7 +182,7 @@ export function NadoknadaTab() {
       const res = await grantBonus.mutateAsync({
         clientEventId: newClientEventId(),
         employeeId: r.employeeId,
-        workDate: s(r, 'weekendWorkDate') || r.absenceDate,
+        workDate: workDateOf(r),
         days: 1,
         reason: r.reason || 'Rad vikendom',
         makeupRequestId: r.id,
@@ -188,9 +208,7 @@ export function NadoknadaTab() {
     const isFinalize = r.status === 'sef_approved';
     const danOdmora = s(r, 'compensationType') === 'dan_odmora';
     const who = empName(r.employeeId);
-    const ctx = danOdmora
-      ? `rad vikendom ${formatDate(s(r, 'weekendWorkDate') || r.absenceDate)} (${r.absenceHours}h)`
-      : `${formatDate(r.absenceDate)} (${r.absenceHours}h)`;
+    const ctx = `${dateCtx(r)} (${r.absenceHours}h)`;
     const sta = danOdmora ? 'dan odmora (+1 dan GO)' : 'nadoknadu sati';
     // Napomena o satima: zamena dana ISKLJUČUJE plaćene sate tog dana (presuda
     // vlasnika 31.07.2026) — grant na BE briše kucane sate za odrađeni vikend-dan.
@@ -320,7 +338,21 @@ export function NadoknadaTab() {
       ),
     },
     { key: 'dept', header: 'Odeljenje', render: (r) => emps.get(r.employeeId)?.department || '—' },
-    { key: 'absDate', header: 'Izostanak', render: (r) => (r.absenceDate ? formatDate(r.absenceDate) : '—') },
+    {
+      key: 'absDate',
+      header: 'Datum',
+      render: (r) => {
+        if (s(r, 'compensationType') !== 'dan_odmora')
+          return r.absenceDate ? formatDate(r.absenceDate) : '—';
+        const free = plannedFreeDayOf(r);
+        return (
+          <div>
+            <div>Radi vikendom: {formatDate(workDateOf(r))}</div>
+            {free && <div className="text-2xs text-ink-secondary">Planirani slobodan dan: {formatDate(free)}</div>}
+          </div>
+        );
+      },
+    },
     { key: 'hours', header: 'Sati', align: 'right', numeric: true, render: (r) => `${Number(r.absenceHours || 0)}h` },
     {
       key: 'deadline',
@@ -375,7 +407,7 @@ export function NadoknadaTab() {
           <div className="max-w-60 text-xs text-ink-secondary">
             {danOdmora && (
               <span className="mr-1 inline-flex rounded-full bg-status-success-bg px-2 py-0.5 text-2xs font-medium text-status-success">
-                🏖 Dan odmora (rad vikendom {formatDate(s(r, 'weekendWorkDate') || r.absenceDate)})
+                🏖 Dan odmora (rad vikendom {formatDate(workDateOf(r))})
               </span>
             )}
             {parts.join(' · ') || '—'}
@@ -538,7 +570,7 @@ export function NadoknadaTab() {
       {rejectFor && (
         <ReasonDialog
           title="Odbij zahtev za nadoknadu"
-          subtitle={`${empName(rejectFor.employeeId)} — ${formatDate(rejectFor.absenceDate)} (${rejectFor.absenceHours}h)`}
+          subtitle={`${empName(rejectFor.employeeId)} — ${dateCtx(rejectFor)} (${rejectFor.absenceHours}h)`}
           confirmLabel="Odbij"
           requireNote
           onConfirm={(note) => doReject(rejectFor, note)}
@@ -548,7 +580,7 @@ export function NadoknadaTab() {
       {stornoFor && (
         <ReasonDialog
           title="↩ Storno zahteva za nadoknadu"
-          subtitle={`${empName(stornoFor.employeeId)} — ${formatDate(stornoFor.absenceDate)} (${stornoFor.absenceHours}h)${
+          subtitle={`${empName(stornoFor.employeeId)} — ${dateCtx(stornoFor)} (${stornoFor.absenceHours}h)${
             s(stornoFor, 'compensationType') === 'dan_odmora'
               ? ' · dan odmora: skida se +1 dan GO iz salda; obrisani sati tog dana se NE vraćaju automatski (ručni unos u grid)'
               : ''

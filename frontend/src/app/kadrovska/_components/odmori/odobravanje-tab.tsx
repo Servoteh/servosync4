@@ -134,9 +134,19 @@ export function OdobravanjeTab({ onCount }: { onCount?: (n: number) => void }) {
     const r = it.r;
     if (it.type === 'go') return `${formatDate(String(r.dateFrom))} – ${formatDate(String(r.dateTo))} · ${r.daysCount || ''} dana`;
     if (it.type === 'makeup') {
-      return r.compensationType === 'dan_odmora'
-        ? `Rad vikendom ${formatDate(String(r.weekendWorkDate || r.absenceDate))} (${r.absenceHours}h) → +1 dan GO u saldo (kucani sati tog dana se brišu — zamena, ne duplo)`
-        : `Izostanak ${formatDate(String(r.absenceDate))} (${r.absenceHours}h)${r.makeupPlan ? ` · plan: ${r.makeupPlan}` : ''}`;
+      // 074/26: zahtev nosi DVA datuma i odobravalac mora da vidi oba — za „dan
+      // odmora" dan RADA (weekendWorkDate) + neobavezan planirani slobodan dan
+      // (absenceDate kad se razlikuje), za nadoknadu izostanak + rok nadoknade.
+      if (r.compensationType === 'dan_odmora') {
+        const free =
+          r.weekendWorkDate && r.absenceDate && r.absenceDate !== r.weekendWorkDate ? String(r.absenceDate) : null;
+        return `Rad vikendom ${formatDate(String(r.weekendWorkDate || r.absenceDate))} (${r.absenceHours}h)${
+          free ? ` · planirani slobodan dan ${formatDate(free)}` : ''
+        } → +1 dan GO u saldo (kucani sati tog dana se brišu — zamena, ne duplo)`;
+      }
+      return `Izostanak ${formatDate(String(r.absenceDate))} (${r.absenceHours}h)${
+        r.makeupDeadline ? ` · rok nadoknade ${formatDate(String(r.makeupDeadline))}` : ''
+      }${r.makeupPlan ? ` · plan: ${r.makeupPlan}` : ''}`;
     }
     if (it.type === 'paid') return `${PAID_LEAVE_LABEL[String(r.leaveType)] || r.leaveType} · ${formatDate(String(r.dateFrom))} – ${formatDate(String(r.dateTo))} · ${r.daysCount || ''} dana`;
     return `${formatDate(String(r.workDate))}${r.reason ? ` · ${r.reason}` : ''}`;

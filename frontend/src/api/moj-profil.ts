@@ -648,6 +648,8 @@ export const useSubmitMakeup = () =>
     makeupDeadline?: string;
     compensationType?: 'nadoknada' | 'dan_odmora';
     weekendWorkDate?: string;
+    /** 074/26 — NEOBAVEZAN planirani slobodan dan; SAMO za `dan_odmora` (BE odbija za `nadoknada`). */
+    plannedAbsenceDate?: string;
     employeeId?: string;
   }>((v) => post('/makeup', v), KEYS.makeupPaidLeave);
 export const useDeleteMakeup = () => useProfileMutation<{ id: string }>((v) => del(`/makeup/${v.id}`), KEYS.makeupPaidLeave);

@@ -1054,6 +1054,14 @@ export class MojProfilService {
         throw new UnprocessableEntityException(
           "Predlog nadoknade je obavezan.",
         );
+      // 074/26: `plannedAbsenceDate` ODBIJAMO umesto da ga tiho ignorišemo — kod
+      // tipa `nadoknada` bi upis u `absence_date` pregazio datum izostanka (jedini
+      // datum koji taj tip ima), a tiho odbacivanje bi klijentu ostavilo utisak da
+      // je vrednost sačuvana. Ovaj tip već ima oba svoja datuma: izostanak + rok.
+      if (dto.plannedAbsenceDate)
+        throw new UnprocessableEntityException(
+          "„Planirani slobodan dan“ postoji samo za dan odmora (rad vikendom). Za nadoknadu sati koristi „Datum izostanka“ i „Rok nadoknade“.",
+        );
     }
     if (!dto.reason?.trim())
       throw new UnprocessableEntityException("Razlog je obavezan.");
@@ -1066,6 +1074,18 @@ export class MojProfilService {
         "Rok nadoknade ne može biti pre datuma izostanka.",
       );
 
+    // 074/26 (Miljan Nikodijević): kolona `absence_date` je NOT NULL, a za
+    // 'dan_odmora' je do sada bila PUKI DUPLIKAT `weekend_work_date` (mereno
+    // 06.08.2026: 6/6 redova jednako, 0/6 bez `weekend_work_date`). Sad prima
+    // NEOBAVEZAN „Planirani slobodan dan"; kad ga radnik ne zna, ostaje dan rada
+    // vikendom — tj. tačno današnje ponašanje. Dan RADA ide isključivo u
+    // `weekend_work_date`, pa svi potrošači `COALESCE(weekend_work_date,
+    // absence_date)` (grid-autofill, autoFill predlozi, grant/storno +1 dana GO,
+    // bonus_granted bedž) vide nepromenjenu vrednost.
+    const absenceDateToStore = danOdmora
+      ? (dto.plannedAbsenceDate ?? dto.weekendWorkDate)
+      : dto.absenceDate;
+
     const out = await this.runIdem(
       email,
       dto.clientEventId,
@@ -1076,7 +1096,7 @@ export class MojProfilService {
           Prisma.sql`INSERT INTO makeup_requests
              (employee_id, absence_date, absence_hours, reason, makeup_plan, makeup_deadline,
               compensation_type, weekend_work_date, submitted_by, status)
-             VALUES (${empId}::uuid, ${dto.absenceDate}::date, ${dto.absenceHours},
+             VALUES (${empId}::uuid, ${absenceDateToStore}::date, ${dto.absenceHours},
                ${dto.reason ?? ""}, ${dto.makeupPlan ?? ""}, ${dto.makeupDeadline ?? null}::date,
                ${dto.compensationType === "dan_odmora" ? "dan_odmora" : "nadoknada"},
                ${dto.weekendWorkDate ?? null}::date, lower(${email}), 'pending')

@@ -73,6 +73,15 @@ export class SubmitMakeupDto extends ProfileIdempotentDto {
   @IsIn(["nadoknada", "dan_odmora"])
   compensationType?: string;
   @IsOptional() @IsISO8601() weekendWorkDate?: string;
+  /**
+   * ZAHTEV 074/26 — NEOBAVEZAN „Planirani slobodan dan" za tip `dan_odmora`
+   * (odluka vlasnika 06.08.2026). Ko zna kad će koristiti dobijeni dan — upiše ga;
+   * ko ne zna — ostavi prazno i sve radi kao ranije. Servis ga upisuje u
+   * `absence_date` (kolona je NOT NULL i za `dan_odmora` je do sada bila puki
+   * duplikat `weekend_work_date`). Za tip `nadoknada` polje NEMA smisla — servis
+   * ga odbija sa jasnom porukom (vidi `submitMakeup`).
+   */
+  @IsOptional() @IsISO8601() plannedAbsenceDate?: string;
   @IsOptional() @IsUUID() employeeId?: string;
 }
 

@@ -478,6 +478,10 @@ function MakeupList() {
 function MakeupCard({ r }: { r: MakeupRequest }) {
   const danOdmora = r.compensation_type === 'dan_odmora';
   const datum = danOdmora ? r.weekend_work_date || r.absence_date : r.absence_date;
+  // 074/26: „dan odmora" sme da nosi i planirani slobodan dan (absence_date kad se
+  // razlikuje od dana rada) — bez toga se dva pojma vide kao jedan datum.
+  const planiraniSlobodan =
+    danOdmora && r.weekend_work_date && r.absence_date !== r.weekend_work_date ? r.absence_date : null;
   // Tri stanja: true = upisan; false = nije (warn); undefined (stari BE bez
   // polja) = neutralan status bez tvrdnje.
   const badge =
@@ -498,6 +502,7 @@ function MakeupCard({ r }: { r: MakeupRequest }) {
           <p className="tnums text-sm text-ink-secondary">
             {formatDate(datum)} · {Number(r.absence_hours)}h
             {!danOdmora && r.makeup_deadline ? ` · rok ${formatDate(r.makeup_deadline)}` : ''}
+            {planiraniSlobodan ? ` · slobodan ${formatDate(planiraniSlobodan)}` : ''}
           </p>
         </div>
         <span className="shrink-0">{badge}</span>

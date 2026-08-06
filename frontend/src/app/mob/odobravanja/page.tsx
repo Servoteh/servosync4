@@ -183,9 +183,18 @@ export default function MobOdobravanjaPage() {
     const r = it.r;
     if (it.type === 'go') return `${formatDate(String(r.dateFrom))} – ${formatDate(String(r.dateTo))} · ${r.daysCount || ''} dana`;
     if (it.type === 'makeup') {
-      return r.compensationType === 'dan_odmora'
-        ? `Rad vikendom ${formatDate(String(r.weekendWorkDate || r.absenceDate))} (${r.absenceHours}h) → +1 dan GO u saldo (kucani sati tog dana se brišu — zamena, ne duplo)`
-        : `Izostanak ${formatDate(String(r.absenceDate))} (${r.absenceHours}h)${r.makeupPlan ? ` · plan: ${r.makeupPlan}` : ''}`;
+      // 074/26: isti prikaz kao desktop odobravanje — dva datuma, nikad rad
+      // vikendom pod nazivom „izostanak".
+      if (r.compensationType === 'dan_odmora') {
+        const free =
+          r.weekendWorkDate && r.absenceDate && r.absenceDate !== r.weekendWorkDate ? String(r.absenceDate) : null;
+        return `Rad vikendom ${formatDate(String(r.weekendWorkDate || r.absenceDate))} (${r.absenceHours}h)${
+          free ? ` · planirani slobodan dan ${formatDate(free)}` : ''
+        } → +1 dan GO u saldo (kucani sati tog dana se brišu — zamena, ne duplo)`;
+      }
+      return `Izostanak ${formatDate(String(r.absenceDate))} (${r.absenceHours}h)${
+        r.makeupDeadline ? ` · rok nadoknade ${formatDate(String(r.makeupDeadline))}` : ''
+      }${r.makeupPlan ? ` · plan: ${r.makeupPlan}` : ''}`;
     }
     if (it.type === 'paid') return `${PAID_LEAVE_LABEL[String(r.leaveType)] || r.leaveType} · ${formatDate(String(r.dateFrom))} – ${formatDate(String(r.dateTo))} · ${r.daysCount || ''} dana`;
     return `${formatDate(String(r.workDate))}${r.reason ? ` · ${r.reason}` : ''}`;

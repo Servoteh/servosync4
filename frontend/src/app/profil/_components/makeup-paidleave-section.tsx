@@ -59,7 +59,16 @@ export function MakeupSection() {
               return (
                 <tr key={r.id} className="border-b border-line-soft">
                   <td className="py-1.5">{danOdmora ? '🏖 Dan odmora (rad vikendom)' : 'Nadoknada sati'}</td>
-                  <td className="py-1.5 tnums">{formatDate(danOdmora ? r.weekend_work_date || r.absence_date : r.absence_date)}</td>
+                  {/* 074/26: za „dan odmora" datum u prvom redu je dan RADA; ako je
+                      radnik uneo i planirani slobodan dan (absence_date različit od
+                      weekend_work_date), pokazujemo i njega — inače se dva različita
+                      pojma vide kao jedan datum. */}
+                  <td className="py-1.5 tnums">
+                    {formatDate(danOdmora ? r.weekend_work_date || r.absence_date : r.absence_date)}
+                    {danOdmora && r.weekend_work_date && r.absence_date !== r.weekend_work_date && (
+                      <div className="text-2xs text-ink-secondary">slobodan: {formatDate(r.absence_date)}</div>
+                    )}
+                  </td>
                   <td className="py-1.5 tnums">{r.absence_hours}h</td>
                   <td className="py-1.5 tnums">{danOdmora ? '—' : r.makeup_deadline ? formatDate(r.makeup_deadline) : '—'}</td>
                   <td className="py-1.5">
@@ -97,6 +106,9 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
   const [compensationType, setCT] = useState<'nadoknada' | 'dan_odmora'>('nadoknada');
   const [absenceDate, setAbsenceDate] = useState('');
   const [weekendWorkDate, setWeekend] = useState('');
+  // 074/26: NEOBAVEZAN planirani slobodan dan za „dan odmora" — dva datuma su
+  // različite stvari (kad RADI vs kad UZIMA slobodno) i mejl mora da nosi oba.
+  const [plannedAbsenceDate, setPlannedFree] = useState('');
   const [absenceHours, setHours] = useState(8);
   const [reason, setReason] = useState('');
   const [makeupPlan, setPlan] = useState('');
@@ -135,13 +147,18 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
     try {
       await submitM.mutateAsync({
         clientEventId: newClientEventId(),
-        absenceDate: compensationType === 'dan_odmora' ? weekendWorkDate || absenceDate : absenceDate,
+        // 074/26: BE za 'dan_odmora' upisuje `plannedAbsenceDate` (ako je dat) u
+        // `absence_date`, inače `weekendWorkDate` — `absenceDate` ovde ostaje samo
+        // radi starijih BE verzija (kolona je NOT NULL). Dan RADA nosi
+        // `weekendWorkDate`, planirani slobodan dan `plannedAbsenceDate`.
+        absenceDate: compensationType === 'dan_odmora' ? plannedAbsenceDate || weekendWorkDate || absenceDate : absenceDate,
         absenceHours,
         reason: reason || undefined,
         makeupPlan: makeupPlan || undefined,
         makeupDeadline: makeupDeadline || undefined,
         compensationType,
         weekendWorkDate: compensationType === 'dan_odmora' ? weekendWorkDate || undefined : undefined,
+        plannedAbsenceDate: compensationType === 'dan_odmora' ? plannedAbsenceDate || undefined : undefined,
         employeeId: forEmp || undefined, // '' → za sebe (server presuđuje)
       });
       onClose();
@@ -177,9 +194,20 @@ function MakeupModal({ onClose }: { onClose: () => void }) {
           </select>
         </FormField>
         {compensationType === 'dan_odmora' ? (
-          <FormField label="Datum rada vikendom" required>
-            <Input type="date" value={weekendWorkDate} onChange={(e) => setWeekend(e.target.value)} />
-          </FormField>
+          <>
+            <FormField label="Datum rada vikendom" required hint="Dan kada RADITE (subota ili nedelja)">
+              <Input type="date" value={weekendWorkDate} onChange={(e) => setWeekend(e.target.value)} />
+            </FormField>
+            {/* 074/26 (Miljan Nikodijević): mejl je do sada ispisivao dan rada pod
+                nazivom „Datum izostanka". Sad su to dva odvojena polja; slobodan
+                dan je NEOBAVEZAN — ko ga još ne zna, ostavi prazno. */}
+            <FormField
+              label="Planirani slobodan dan"
+              hint="Neobavezno — dan kada planirate da iskoristite dobijeni dan odmora. Ako još ne znate, ostavite prazno."
+            >
+              <Input type="date" value={plannedAbsenceDate} onChange={(e) => setPlannedFree(e.target.value)} />
+            </FormField>
+          </>
         ) : (
           <FormField label="Datum izostanka" required>
             <Input type="date" value={absenceDate} onChange={(e) => setAbsenceDate(e.target.value)} />
