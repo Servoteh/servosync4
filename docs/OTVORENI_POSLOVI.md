@@ -8,6 +8,10 @@ Brojke su merene na živim bazama na navedeni datum — pre izvođenja ih **pono
 (populacije se menjaju svakodnevno). Kad se stavka izvede: obriši je odavde i zabeleži u
 odgovarajući modul-doc ili commit poruku.
 
+**Odeljci:** [A](#a-donete-odluke-ne-vraćati-na-sto) odluke · [B](#b-čeka-nenada--pogon-spremno-za-izvođenje) čeka Nenada/pogon ·
+[P](#p-prava-nad-podacima-u-aplikaciji-osnovano-05082026) prava nad podacima · [C](#c-tehnički-follow-up-nalazi-verifikatora-po-prioritetu) tehnički follow-up ·
+[D](#d-čeka-korisnike-ne-blokira-razvoj) čeka korisnike · **[K](#k-kadrovska--zamrznuta-do-pune-seobe-na-30-osnovano-06082026) Kadrovska — 🔴 ZAMRZNUTA (i dorade i popravke) do seobe na 3.0**
+
 ---
 
 ## A. DONETE ODLUKE (ne vraćati na sto)
@@ -758,6 +762,262 @@ ISTOG commita, pa javi ako nisu.
   (Nedeljko Stamenić, subota 01.08.) — čim popravka „zahtevi za odobravanje" bude živa, pojaviće
   se u listi. Detalji u forenzici 068: ništa nije obrisano, fali tačno taj jedan dan.
 - **Podnosioci:** potvrde na zahtevima u statusu „Spreman za test" (dugme „✔ Potvrđujem — radi").
+
+---
+
+## K. KADROVSKA — ZAMRZNUTA do pune seobe na 3.0 (osnovano 06.08.2026)
+
+### 🔴 K0. PRE BILO KOG RADA IZ OVOG ODELJKA: PROVERI STANJE NA `origin/main`
+
+Sve niže je izmereno **06.08.2026 nad `origin/main`**. Kadrovska se menja gotovo svakodnevno
+(samo u poslednjih nedelju dana: 063 zbirovi u gridu, 068 statusi zahteva, 074 nadoknada sa dva
+datuma) — **ovi nalazi zastarevaju i moraju se ponovo izmeriti pre izvođenja.**
+
+```bash
+git fetch origin
+git ls-tree -r --name-only origin/main -- frontend/src/app/kadrovska backend/src/modules/kadrovska
+git show origin/main:<putanja>        # NIKAD čitati iz primarnog stabla — nosi tuđu granu
+```
+
+**Dve zamke koje su se već desile pri ovoj analizi:**
+
+1. **Odsustvo u radnoj kopiji NIJE dokaz da nešto ne postoji.** Primarno stablo je 06.08. stajalo
+   **393 commita iza** `origin/main` i bez 47 migracija. Svako „toga nema" mora biti provereno
+   kroz `git show origin/main:`.
+2. 🔴 **Ni komentar u kodu nije dokaz.** Prva verzija ove analize je tvrdila da backend pretražuje
+   zaposlene **samo po `full_name`** — to je pisalo u komentaru u `zaposleni-tab.tsx`.
+   **Komentar je zastareo:** `kadrovska.service.ts` (`employees()`) odavno pretražuje po **osam
+   polja** (`full_name, position, email, phone_work, department, sub_department_name, team, note`).
+   Da nije provereno, naručio bi se posao koji je već urađen. **Tvrdnja iz komentara se proverava
+   u implementaciji.**
+
+---
+
+### K1. ODLUKA (Nenad, 06.08.2026): prvo puna seoba na 3.0, pa tek onda sve ostalo 🔴
+
+**Ništa se na Kadrovskoj ne radi dok modul ne bude u celini na 3.0 bazi** — ni dorade, ni
+popravke. Cilj je da posao ne ode u sy15, jer sve što ode tamo mora da se piše dvaput.
+
+**Razlog:** Kadrovska danas **ne živi u glavnoj bazi**. `KadrovskaService` čita i piše u sy15
+kroz `@prisma-sy15/client`; sopstvena doktrina servisa to kaže izričito: *„Podaci žive u sy15 (1.0)
+bazi (doktrina §A.1)"*. Glavna (3.0) baza se u tom servisu koristi **isključivo** za odluku o
+permisiji pozivaoca, nikad za HR podatke. Prava presuđuje sy15 RLS kroz `withUserRls`.
+
+Znači: svaka izmena napisana danas piše se nad **sy15 objektima** (SECURITY DEFINER funkcije, RLS
+politike, kanonski view-ovi), i pri seobi se prevodi ponovo. **To je dupli posao i ne radimo ga.**
+
+**Šta ovo NIJE:** nije otkazivanje. Ništa iz K3/K4 se ne briše — sve čeka red. Ovo je odluka o
+**redosledu**, ne o obimu.
+
+**Šta ovo obuhvata:** sve UX i funkcionalne dorade (karton zaposlenog, lanac razvoja, statusi
+meseca sati, verzionisanje ugovora, virtuelizacija grida, reorganizacija navigacije, filter
+nepravilnosti, klikabilne brojke, lažne nule, latinica…).
+
+🔴 **NEMA IZUZETAKA — ni za greške tačnosti.** Na izričito pitanje da li C12–C14 (mesta gde
+sistem daje pogrešan rezultat) smeju ranije, odgovor Nenada 06.08.2026. je: **sve čeka 3.0, da
+ne bude sy15.** Vidi K5.
+
+**Jedino što se sme raditi:** unos poslovnog sadržaja koji **ne traži nijedan red koda** —
+K4.7 (onboarding/offboarding šabloni). To rade HR i rukovodioci kroz postojeći ekran.
+
+---
+
+### K2. Gde Kadrovska stoji u redu za seobu (izmereno 03.–06.08.2026)
+
+Izvor: [PLAN_GASENJA_SY15_2026-08-03.md](PLAN_GASENJA_SY15_2026-08-03.md), revizija 2 od 05.08.
+
+| Korak | Domen | Stanje na 06.08.2026 |
+|---|---|---|
+| 0 | mapa identiteta (60 naloga, 67 FK ka `auth.users`) | preduslov SVAKOG koraka; „sat posla", nije urađeno |
+| 1 | sastanci (74 fn / 27 tabela / 1.120 redova) | u toku — grana `feat/sy15-seoba-sastanci-pb`; ostaje ~61 DEFINER fn (4–6 dana) + enqueue (1–2 dana) |
+| 2 | održavanje (41 fn, 34 tabele + 34 trigera, 2,4 MB + 469 MB fajlova) | počelo — grana `feat/sy15-seoba-odrzavanje` (lokalni worktree, još nije na remote-u) |
+| 3 | reversi + lokacije zajedno (~49 fn) | pripremljeno — grana `feat/sy15-seoba-reversi`; dopisuje se `loc` deo |
+| **4** | **KADROVSKA (58 fn, „najosetljivije")** | **nije počelo — plan izričito kaže „Tek posle tri uvežbana kruga"** |
+| 4b | projektni biro (32 fn) | **blokiran korakom 4** — `pb_current_employee_id()` traži `employees`/`departments`/`job_positions` u 3.0 bazi |
+| 5 | SCADA + bridge preusmeravanje | poslednji pisac; kad on pređe, sy15 se gasi |
+| 6 | „ostalo" (`ai_chat_*`, `assessment_*`, arhive, GoTrue) | uključuje `assessment_*` (~15 fn) — **to je 360° ocenjivanje, deo Kadrovske po korisničkom osećaju, a po planu ide tek u koraku 6** |
+
+**Obim koraka 4:** 58 funkcija + `employee-docs` (24 MB, poverljivo) + `attendance_events`
+(140 MB — pre seobe utvrditi šta te kolone stvarno nose). Domen u sy15 = 18 tabela / 8,0 MB.
+Za širinu korisničke površine v. [MODULE_SPEC_kadrovska_30.md](../backend/docs/design/MODULE_SPEC_kadrovska_30.md)
+(snimak 13.07: ~49 tabela, 119 fn, 141 RLS politika, ~20 trigera, 9 pg_cron poslova, 4 edge fn,
+1 privatni storage bucket, 15 tabova u 5 hub-grupa).
+
+⚠️ **Kadrovska nosi i ograničenje iz incidenta 06.08:** *„JEDAN PREKIDAČ = JEDAN DOMEN."*
+Zajednički prekidač `SASTANCI_PB_IZVOR` je oborio ceo Projektni biro u 503. Pre uvođenja prekidača
+za kadrovsku **izmeriti šta sve taj prekidač dodiruje** — npr. `rev_api_idempotency` je registar
+cele aplikacije i **476 od 643 reda su kadrovska**.
+
+**Rok:** plan **nema kalendar** za korake 2–4. Postoje procene u danima samo za ostatak koraka 1 i
+za deo koraka 3. **Ne izmišljati datum** — govoriti „tri uvežbana kruga daleko".
+
+---
+
+### K3. NIJE nedostatak — VEĆ POSTOJI na `main` (da se ne naruči dvaput)
+
+Spoljna UX analiza (ChatGPT, 06.08.) je označila niz stvari kao „nedostaje". Provera nad
+`origin/main` je pokazala da **postoje i rade**. Zapisano da niko ne potroši dan na već urađeno.
+
+| Tvrdnja „nedostaje" | Stvarno stanje na `main` |
+|---|---|
+| Radni sati: zamrznuti ime i zaglavlje | **postoji** — `grid-table.tsx` ima `sticky` zaglavlje + #, ime, Vrsta i Σ kolonu (uvedeno zahtevom 063/26) |
+| Radni sati: zaključavanje meseca | **postoji** — `grid-tab.tsx`, `locked` + traka „Mesec je zaključan — obračun zarada je isplaćen" |
+| Radni sati: uvoz sa kapije gazi ručne izmene | **ne gazi** — „Popuni iz kapije" preskače popunjene dane i vraća broj `skipped` |
+| Radni sati: jedna izmena osvežava celu tabelu | **ne osvežava** — `GridTable` i `EmployeeBlock` su `memo`, izmene žive u `useRef` sa revizionim brojačem **po zaposlenom** |
+| Prisustvo je sirov listing događaja | **nije** — podrazumevani prikaz je **po zaposlenom** (imenik ⨝ `v_attendance_now`, status badž, filteri Prisutan/Pauza/Odsutan); sirovi feed je sekundaran, ispod |
+| Prisustvo: nema poređenja sa gridom | **postoji** — pogledi „Poređenje sa gridom" (shadow) i „Za potvrdu" (kontrola) |
+| Onboarding nema šablone | **ima ceo mehanizam** — `useOnboardingTemplates`, `NewTemplateModal`, pokretanje toka iz šablona, zadaci `done/skipped`, progres %. **Fali SADRŽAJ, ne kod** (v. K4.7) |
+| Zarade nemaju tok statusa | **imaju** — `draft → advance_paid → finalized → paid`, otključavanje uz potvrdu i audit trag, + triger nepromenljivosti na bazi |
+| Nema kartona zaposlenog | **postoji dvoje:** `dossier.tsx` (modal: osnovno, PII sekcije, ugovori, lekarski, sertifikati, dokumenta, audit) i **`/profil` sa 20 sekcija** |
+| Nema menadžerskog uvida u tuđe zaposlene | **postoji** — `/profil` → **„Moj tim"** radi drill-down po članu: GO linija, trenutno/sledeće odsustvo, zaduženja alata, karnet PDF, korekcija kucanja, opis pozicije. Iza prava `profile.team`, endpoint `GET /v1/profile/team` |
+| Klik na red u listi zaposlenih ne otvara karton | **otvara** — red otvara `DosijeDialog` |
+| Pregled nema prioritizaciju obaveza | **ima** — „Šta čeka mene" nosi rok-pilule (Isteklo / Danas / Sutra / za N d) sa tonovima i deep-link na tab |
+| Pregled prikazuje nule dok učitava | **ne prikazuje** — `pregled-tab.tsx` ima skeleton (`Skel`) i `—` za `null`. **Ostatak modula prikazuje** (v. K4.1) |
+| Backend pretražuje samo `full_name` | **osam polja** — v. K0 zamku 2 |
+| Pretraga po JMBG-u ne postoji | **filter „Bez JMBG" postoji** i bezbedan je; puna pretraga po JMBG-u je izvodljiva ali nosi zamku — v. K6.1 |
+
+**Zaključak K3:** dijagnoza „modul deluje kao 15 ekrana, ne kao sistem" je tačna. **Inventar
+nedostataka nije** — otprilike trećina tvrdnji opisuje postojeće funkcije. Spoljne UX analize
+Kadrovske se **ne smeju uzimati kao radni nalog bez provere nad `main`.**
+
+---
+
+### K4. STVARNI nedostaci — backlog POSLE seobe (K1)
+
+Redosled je predlog, ne obaveza. Prve tri su najjeftinije i nezavisne od šeme, pa mogu u jedan
+paket čim seoba prođe.
+
+**K4.1. Lažne nule u celom modulu (osim Pregleda).** `SummaryChips` (`_components/common.tsx`)
+nema stanje učitavanja — vrednosti se računaju iz `?? 0`, pa svaki tab na trenutak pokaže nule
+kao da su podatak. **Jedna izmena u jednom fajlu pokriva ceo modul** (uvesti `loading`/`error`
+stanje, skeleton umesto `0`).
+
+**K4.2. Brojke na Pregledu nisu klikabilne.** `KpiCard` je `<article>`, ne dugme. Pravilo već
+postoji u modulu — zahtev 068/26 je uveo `onClick` na `SummaryChips` sa obrazloženjem *„brojka
+koja se vidi mora i da se otvori"*. Pregled je jedino mesto koje je van tog pravila. Mapiranje:
+aktivni → zaposleni · odsutni danas → odsutni · GO/nadoknada/plaćeno → odgovarajući inbox ·
+**grid popunjenost → K4.4 (zavisnost: bez K4.4 ta jedna kartica nema cilj).**
+
+**K4.3. Ćirilica na ekranu.** `common.tsx` → `CYR_MONTHS` / `cyrMonthLabel()` daje „август", i
+`grid-tab.tsx` to prikazuje pored birača meseca. ⚠️ **Nije prosta zamena:** isti `monthLabel` ide
+i u Karnet PDF, Istoriju meseca i Primedbe, a HR dokumenta su **namerno ćirilična** (MODULE_SPEC:
+„HR generatori PDF, puna ćirilica"). Rešenje = razdvojiti `screenMonthLabel` (latinica) od
+`documentMonthLabel` (ćirilica).
+
+**K4.4. „Prikaži samo nepravilnosti" u radnim satima.** Funkcionalno najvrednija stavka cele
+analize i jedina za koju grid nema nikakav pandan. Prva verzija se može napraviti **bez novih
+polja**, iz onoga što grid već ima: prazan regularan dan, odstupanje kapija↔grid (shadow već to
+računa), nema izlaza, ručna korekcija, neuobičajeno velik/mali broj sati, rad vikendom/praznikom,
+teren bez predmeta (grid to već boji trouglom). **Najkorisnije dugme na tom ekranu nije „Osveži"
+nego „Prikaži nepravilnosti".**
+
+**K4.5. Performanse grida — MERITI PRE NEGO ŠTO SE IŠTA PIŠE.** Procena (nije mereno u
+pregledaču): ~150 zaposlenih × **5 redova po zaposlenom** (Redovni / Prekov. / Teren / 2 maš. /
+Σ isplata) × 31 dan ≈ **23.000 ćelija, većina sa `<input>`**.
+- Skupa strana kucanja je **već rešena** (memo + rev po zaposlenom, v. K3) → ostaje samo cena
+  montiranja i skrola.
+- ⚠️ **Blok zaposlenog nosi `rowSpan={5}`** → **nijedan gotov virtualizer redova to ne ume**;
+  mora se pisati prozorenje po bloku zaposlenog, ručno. To je prepisivanje tabele, ne dodavanje
+  biblioteke.
+- Jeftinija provera prva: grid već filtrira po odeljenju. Ako HR ionako radi jedno po jedno
+  odeljenje, DOM je desetina i virtuelizacija možda uopšte ne treba.
+- **Ne spajati sa drugim UX izmenama u isti PR** (rizik regresije unosa/fokusa/prečica).
+
+**K4.6. Sitni nedostaci liste zaposlenih i odmora.** Nema izbora kolona (`DataTable` nema picker)
+ni sačuvanih pogleda. Saldo odmora koristi ikonice `⚙ 🛫 📜 📄` umesto `⋯` menija — a `DataTable`
+**već ima `rowActions` sa `⋯`**, samo se tu ne koristi. Odmori se otvaraju na „Stanje (saldo)"
+umesto na inbox — badževi `Zahtevi (N)` / `Za odobravanje (N)` već postoje; ⚠️ prebacivanje sme
+**samo pri prvom učitavanju**, jer brojke stižu asinhrono iz skriveno montiranih podtabova i
+kasnije prebacivanje bi menjalo ekran korisniku pod rukom.
+
+**K4.7. Onboarding/offboarding šabloni — SADRŽAJ, ne kod. Izvan zamrzavanja.** Mehanizam radi,
+ali `templates.length === 0` → prazno stanje. Unose HR i rukovodioci, bez programera:
+- *Standardni onboarding:* ugovor i prijava · lekarski pregled · nalog i email · pristupi
+  aplikacijama · zaštitna i radna oprema · zaduženja · upoznavanje sa procedurama · mentor ·
+  obuka za radno mesto · kontrola posle 7, 30 i 90 dana.
+- *Standardni offboarding:* dokumentacija o prestanku · odjava pristupa · povraćaj opreme ·
+  razduženje · neiskorišćen godišnji odmor · završni obračun · izlazni razgovor.
+
+**K4.8. Menadžerski karton zaposlenog — proširenje `/profil`, NE nova gradnja.** Cilj: HR/šef
+otvori jednog čoveka i vidi sve. Mehanizam postoji (K3: „Moj tim"), fali **opseg i širina**:
+danas vidi samo rukovodilac za svoj tim i samo deo sekcija. Opseg po sloju: vlasnik/admin sve ·
+HR dozvoljene zaposlene i sekcije (**bez PII i bez zarada — to je pravilo firme, ne propust**) ·
+rukovodilac svoje ljude · zaposleni sebe. Svaka sekcija nosi svoj scope.
+⚠️ **Ovo je jedina stavka za koju vredi proveriti da li joj treba CELA seoba** — možda joj je
+dovoljno da `employees` / `departments` / `job_positions` pređu u 3.0 (isti uslov koji čeka
+Projektni biro, korak 4b). Proveriti pri planiranju koraka 4, ne sada.
+
+**K4.9. Lanac razvoja.** `360° procena → razgovor → cilj → razvojni plan → kontrolni datum →
+rezultat`. Delovi postoje (`razvoj-tab` sa procenama/planovima/razgovorima; `/profil` ima ocene i
+razgovore), veza ne postoji. Traži nova polja → **strogo posle seobe.** ⚠️ `assessment_*` po planu
+gašenja ide tek u **koraku 6**, ne sa kadrovskom — dakle ovo čeka duže od ostatka modula.
+Jedina sitnica koja ne čeka ništa: **obavezan naziv 360° kampanje** (danas mogu bez naziva).
+
+**K4.10. Navigacija — NE dirati na osnovu utiska.** Stanje: sidebar nosi 5 podstavki (`?grupa=`),
+a strana crta **istu** traku od 5 grupa — realna duplikacija. Ali hub + grupe su **presuđena
+odluka** (paritet 1.0 `KADR_GROUPS`, PODMENIJI F2 §6.4), a 13 tabova ne staje u jednu traku.
+⚠️ **Predlog „meriti korišćenje pa odlučiti" nije izvodljiv** — u aplikaciji **ne postoji
+telemetrija korišćenja**; `/session-analytics` meri proizvodne radne sesije operatera, ne UI.
+Za firmu ove veličine odluka se donosi **razgovorom sa ljudima koji Kadrovsku koriste svaki dan**,
+ne merenjem. Najjeftiniji potez ako se ide: ukloniti HUB kao podrazumevani ulaz (da `/kadrovska`
+otvara Pregled), grupnu traku zadržati → 5 nivoa postaje 3.
+
+**K4.11. Ugovori — „čeka potpis" NIJE moguće danas.** Chips (Ukupno / Aktivni / Ističu <30d /
+Istekli / Neaktivni) i arhiva postoje. Ali `contract-generate.tsx` izričito kaže:
+*„Potpisivanje je svojeručno, van sistema"* — dakle nema stanja potpisa koje bi se pratilo, ni
+osnove za verzionisanje potpisanog dokumenta. **Pre koda treba poslovna i pravna odluka:
+prati li se potpis uopšte.** Trivijalno i bez odluke: pragovi 7/30/60 dana umesto samo <30.
+
+---
+
+### K5. Greške tačnosti C12–C14 — ODLUKA: i one čekaju 3.0 🔴
+
+C12, C13, C14 (v. odeljak C) i dalje stoje. To **nisu dorade** — to su mesta gde sistem daje
+pogrešan rezultat, pa je 06.08.2026. izričito pitano da li smeju ranije.
+
+> **ODLUKA (Nenad, 06.08.2026): NE. Sve čeka 3.0, da ne bude sy15.** Bez izuzetka, i za greške.
+
+**Cena te odluke, da bude zapisana i da niko ne bude iznenađen:**
+- **C12** — do koraka 4 šef i dalje može da odbije zahtev koji je sam prosledio. Od 04.08. je to
+  na jedan klik, jer se zahtev konačno vidi u listi.
+- **C13** — brojka na badžu i sadržaj tabele ostaju u neskladu. Danas se ne pali (svi zahtevi su
+  2026), pali se prvim zahtevom iz druge godine.
+- **C14** — uzrok se **neće ni dijagnostikovati** dok se ne uvede trag. Ako se ponovi, jedini
+  izvor ostaje log backenda u tom minutu.
+
+| | Šta je | Gde živi | Zašto nije obično „popravi" |
+|---|---|---|---|
+**Zatečeno stanje, da se pri koraku 4 ne istražuje iznova:**
+
+| | Šta je | Gde živi | Napomena za izvođenje |
+|---|---|---|---|
+| C12 | šef može da odbije zahtev koji je sam prosledio | **sy15 RPC** `makeup_reject` (poziva ga `kadrovska-mutations.service.ts`) | **Nije samo bug nego i otvorena odluka** — registar ga vodi kao *„Odluka Nenadu: zaključati i odbijanje kao odobravanje?"*. **To pitanje ostaje otvoreno i mora se odgovoriti pre nego što se piše kod**, nezavisno od seobe. `makeup_approve` već ima proveru „prvi nivo nisam ja" — obrazac postoji, samo nije primenjen na odbijanje |
+| C13 | badž broji sve godine, tabela prikazuje jednu | FE (kadrovske liste zahteva) | Jedina od tri koja **ne dira sy15** — kad brana padne, ide prva jer se sigurno ne radi dvaput. Glasno upozorenje kad godina skriva zahteve je već dodato; trajno rešenje nije |
+| C14 | prelaz „šef odobrio" 31.07. nema trag obaveštenja | `queueBestEffort` guta greške | **Uzrok NIJE dokazan** — vodi se kao merenje, ne kao kvar. Ispravna akcija je *instrumentacija* (evidentirati primaoca, vreme i ishod slanja), ne „popravka". Obeležiti kao dijagnostiku da niko ne prijavi „rešeno" kad se samo upalilo svetlo |
+
+---
+
+### K6. Zamke za izvođenje (kad dođe red)
+
+**K6.1. JMBG u pretrazi je bezbedan SAMO kroz `v_employees_safe`.** U tom view-u je `personal_id`
+za ne-PII pozivaoca **uvek `NULL`** (maskiran) — zato `ILIKE` prosto ne pogađa i nema curenja.
+To je isti razlog zbog kog čip „Bez JMBG" bezbedno preteruje umesto da curi.
+🔴 **Zabrana:** ako neko kasnije „popravi" to što HR-u pretraga po JMBG-u ne radi tako što spoji
+osnovnu tabelu `employees` — **probija PII masku koju cela arhitektura čuva** (HR NAMERNO nema
+PII; PII = admin ∨ poslovni_admin).
+
+**K6.2. Nikad `this.sy15.db` za HR čitanje.** Konekciona rola `servosync2_app` je **BYPASSRLS**.
+Svaki HR read mora kroz `Sy15Service.withUserRls` — inače pada PII maska i zarade. Ovo piše u
+doktrini servisa; ponavlja se ovde jer je najskuplja moguća greška u modulu.
+
+**K6.3. Zarade i PII ostaju zatvoreni i posle seobe.** `kadrovska.salary` = allowlist (Nenad +
+Nevena); HR nema ni zarade ni PII. Pri seobi se **preslikava**, ne „pojednostavljuje".
+Presedan: 30.07. je popravka curenja plata bila **nepotpuna** — plate su i dalje curile kroz
+6 `SECURITY DEFINER` RPC-ova i kroz ugovor-PDF u storage-u; zatvoreno tek 04.08. Pri seobi
+proveriti **svaki** put do plate, ne samo tabelu.
+
+**K6.4. Sadržaj analize koja je pokrenula ovaj odeljak** je u istoriji razgovora od 06.08.2026.
+Ako zatreba ponovo, **ne pokretati je iznova nad ekranom** — počinje od `main`, kako kaže K0.
 
 ---
 
