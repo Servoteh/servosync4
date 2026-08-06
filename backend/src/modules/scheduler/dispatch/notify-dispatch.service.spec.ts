@@ -1,14 +1,30 @@
 import { Logger } from "@nestjs/common";
-import { NotifyDispatchService } from "./notify-dispatch.service";
+import { NotifyDispatchService as RealNotifyDispatchService } from "./notify-dispatch.service";
 import type { MailService } from "../../../common/mail/mail.service";
 import type { Sy15Service } from "../../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
+import { SastanciPbSourceService } from "../../../common/sy15/sastanci-pb-source.service";
 
 /*
  * Talas A-2a — dispatch worker. Testiramo PARITET sa 1.0 edge fn:
  * per-row mark_sent odmah, tačan backoff, oblik WA poziva, DRY-RUN kanali,
  * maint fanout stub, pb digest grupisanje i gate (DISPATCH_ENABLED).
+ *
+ * Seoba 05.08 — servis je dobio ČETVRTU zavisnost: prekidač `SASTANCI_PB_IZVOR`
+ * (PB grana pod `3.0` pada sa 503, jer PB nije prenet). Da se ne bi diralo ~35
+ * postojećih konstrukcija, prekidač se ovde dodaje kao PODRAZUMEVAN argument;
+ * čita `process.env` po konstrukciji, pa test koji hoće `3.0` samo postavi env.
  */
+class NotifyDispatchService extends RealNotifyDispatchService {
+  constructor(
+    sy15: Sy15Service,
+    mail: MailService,
+    storage: Sy15StorageService,
+    izvor: SastanciPbSourceService = new SastanciPbSourceService(),
+  ) {
+    super(sy15, mail, storage, izvor);
+  }
+}
 
 type MailParams = Parameters<MailService["send"]>[0];
 
@@ -87,6 +103,8 @@ const ID_C = "33333333-3333-3333-3333-333333333333";
 const OLD_ENV = { ...process.env };
 beforeEach(() => {
   process.env.DISPATCH_ENABLED = "true";
+  // Podrazumevani izvor je sy15 — inače bi PB testovi zavisili od okruženja.
+  delete process.env.SASTANCI_PB_IZVOR;
   delete process.env.WA_ACCESS_TOKEN;
   delete process.env.WA_PHONE_NUMBER_ID;
   delete process.env.WA_TEMPLATE_NAME;
@@ -782,7 +800,12 @@ describe("dispatchPb", () => {
     const svc = new NotifyDispatchService(m.sy15, mail, storageMock().storage);
 
     const r = await svc.dispatchPb();
-    expect(r).toMatchObject({ processed: 2, sent: 2, failed: 0, digest: false });
+    expect(r).toMatchObject({
+      processed: 2,
+      sent: 2,
+      failed: 0,
+      digest: false,
+    });
     expect(send).toHaveBeenCalledTimes(2);
     expect(sent[0].html).toContain("<pre");
     expect(sent[0].html).toContain("Zadatak kasni");
@@ -977,8 +1000,22 @@ describe("privatnost logova", () => {
     const p = sy15Mock();
     p.pushResult([{ digest_mode: false }]);
     p.pushResult([
-      { id: ID_A, channel: "email", recipient: EMAIL, subject: "s", body: "b", attempts: 0 },
-      { id: ID_B, channel: "whatsapp", recipient: PHONE, subject: "s", body: "b", attempts: 0 },
+      {
+        id: ID_A,
+        channel: "email",
+        recipient: EMAIL,
+        subject: "s",
+        body: "b",
+        attempts: 0,
+      },
+      {
+        id: ID_B,
+        channel: "whatsapp",
+        recipient: PHONE,
+        subject: "s",
+        body: "b",
+        attempts: 0,
+      },
     ]);
     await new NotifyDispatchService(
       p.sy15,
@@ -1051,5 +1088,91 @@ describe("dispatchPb — dopuna", () => {
     // 'pending' → slepa ulica po dizajnu (zatečeno 1.0 ponašanje).
     expect(failed[0].values).toHaveLength(2);
     expect(failed[0].values[0]).toBe(ID_A);
+  });
+});
+
+describe("prekidač SASTANCI_PB_IZVOR — PB grana (seoba 05.08)", () => {
+  const pbRow = (id: string) => ({
+    id,
+    channel: "email",
+    recipient: "p@x.rs",
+    subject: "s",
+    body: "b",
+    attempts: 0,
+  });
+
+  it("izvor=3.0: dispatchPb PADA sa 503 PRE ijednog sy15 poziva (PB nije prenet)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const m = sy15Mock();
+    m.pushResult([{ digest_mode: false }]);
+    m.pushResult([pbRow(ID_A)]);
+    const { mail, send } = mailMock();
+    const svc = new NotifyDispatchService(m.sy15, mail, storageMock().storage);
+
+    await expect(svc.dispatchPb()).rejects.toThrow(/nije preneto na 3\.0/);
+    // Brana je na ULAZU: ni config, ni dequeue, ni mark_* ne smeju da se dese —
+    // tihi upis u sy15 pod „3.0" razišao bi dve baze.
+    expect(m.calls).toHaveLength(0);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("izvor=3.0: poruka greške imenuje putanju (da se u dnevniku vidi ŠTA je zapelo)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const svc = new NotifyDispatchService(
+      sy15Mock().sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    await expect(svc.dispatchPb()).rejects.toThrow(
+      /projektni biro: dispatch kroz sy15/,
+    );
+  });
+
+  it("izvor=3.0: KADROVSKA i ODRŽAVANJE ostaju netaknuti (nisu ovaj domen)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const m = sy15Mock();
+    m.pushResult([]); // kadr dequeue
+    m.pushResult([]); // maint dequeue
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+
+    await expect(svc.dispatchKadr()).resolves.toMatchObject({ processed: 0 });
+    await expect(svc.dispatchMaint()).resolves.toMatchObject({ processed: 0 });
+    expect(m.sqlOf(0)).toContain("kadr_dispatch_dequeue");
+    expect(m.sqlOf(1)).toContain("maint_dispatch_dequeue");
+  });
+
+  it("izvor=sy15 (podrazumevano): PB ide starim putem, bez ijedne izmene", async () => {
+    delete process.env.SASTANCI_PB_IZVOR;
+    const m = sy15Mock();
+    m.pushResult([{ digest_mode: false }]);
+    m.pushResult([pbRow(ID_A)]);
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+
+    const r = await svc.dispatchPb();
+    expect(r).toMatchObject({ processed: 1, sent: 1, failed: 0 });
+    expect(m.sqlOf(0)).toContain("pb_notification_config");
+    expect(m.sqlOf(1)).toContain("pb_dispatch_dequeue");
+    expect(m.find("pb_dispatch_mark_sent")).toHaveLength(1);
+  });
+
+  it("nepoznata vrednost prekidača NE pali 3.0 granu (pada na bezbedan sy15)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3";
+    const m = sy15Mock();
+    m.pushResult([{ digest_mode: false }]);
+    m.pushResult([]);
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    await expect(svc.dispatchPb()).resolves.toMatchObject({ processed: 0 });
   });
 });

@@ -29,6 +29,23 @@ const MDB_STAGE_KEEP_DROPS = 7;
 // NEPREUZETI (delivered_at IS NULL) se NIKAD ne diraju (čekaju Claude pull).
 const DICTATION_DELIVERED_DAYS = 30;
 
+/**
+ * Registar idempotencije (`api_idempotency`) — koliko dugo se čuva potrošen ključ.
+ *
+ * 🔴 sy15 parnjak (`rev_api_idempotency`) NEMA ČIŠĆENJE UOPŠTE: izmereno 05.08.2026 —
+ * 0 pg_cron poslova i 0 trigera nad tabelom, najstariji red od 10.07.2026 (dana kad je
+ * registar nastao), 643 reda, nijedan nikad obrisan. Tabela je mala pa to još nije
+ * zasmetalo, ali raste monotono i zauvek.
+ *
+ * Stvarna svrha ključa traje SEKUNDE (dupli klik, retry posle mrežnog prekida). 30 dana
+ * je dakle ~4 reda veličine više nego što dedup traži — namerno, jer je jedini trošak
+ * nekoliko hiljada uskih redova, a dobitak je da se odgovor na „zašto mi je vratilo
+ * stari rezultat" može pogledati mesec dana unazad. Brisanje starijeg ključa NE MOŽE
+ * da napravi duplikat: klijent za svaki nov POST kuje NOV uuid, pa ključ stariji od
+ * mesec dana nema ko da ponovi.
+ */
+const IDEMPOTENCY_KEYS_DAYS = 30;
+
 @Injectable()
 export class RetentionJobsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -40,7 +57,8 @@ export class RetentionJobsService {
         description:
           `Retention: audit_log > ${AUDIT_LOG_MONTHS} mes., pročitane notifikacije > ` +
           `${NOTIFICATIONS_READ_DAYS} d, završeni job-runovi > ${JOB_RUNS_DAYS} d, ` +
-          `preuzeti diktati > ${DICTATION_DELIVERED_DAYS} d`,
+          `preuzeti diktati > ${DICTATION_DELIVERED_DAYS} d, ključevi idempotencije > ` +
+          `${IDEMPOTENCY_KEYS_DAYS} d`,
         // 03:30 — POSLE noćnog backupa (02:30–02:35): sve što se briše već je u
         // sinoćnom dump-u, pa je svaki obrisani red i dalje povrativ iz kopije.
         schedule: { kind: "daily", at: "03:30" },
@@ -55,6 +73,7 @@ export class RetentionJobsService {
           const dictCutoff = new Date(
             now - DICTATION_DELIVERED_DAYS * 86_400_000,
           );
+          const idemCutoff = new Date(now - IDEMPOTENCY_KEYS_DAYS * 86_400_000);
 
           const audit = await this.prisma.auditLog.deleteMany({
             where: { createdAt: { lt: auditCutoff } },
@@ -76,11 +95,18 @@ export class RetentionJobsService {
           const dict = await this.prisma.dictationInbox.deleteMany({
             where: { deliveredAt: { lt: dictCutoff } },
           });
+          // Registar idempotencije: briše se SAMO po starosti. Nema uslova na
+          // `result` — red sa `result IS NULL` je pao pokušaj (akcija se rollback-ovala
+          // pa je i ključ nestao) ili pokušaj u toku; posle 30 dana ni jedno ni drugo
+          // nema koga da brani.
+          const idem = await this.prisma.apiIdempotency.deleteMany({
+            where: { createdAt: { lt: idemCutoff } },
+          });
           const stage = await this.purgeMdbStaging();
           return (
             `audit_log −${audit.count}, notifikacije −${notif.count}, ` +
             `job-runovi −${runs.count}, diktati −${dict.count}, ` +
-            `bb_mdb staging −${stage}`
+            `ključevi idempotencije −${idem.count}, bb_mdb staging −${stage}`
           );
         },
       },

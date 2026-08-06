@@ -1,4 +1,5 @@
 import { ProjektniBiroService } from "./projektni-biro.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
 import type { Sy15Service, Sy15Tx } from "../../common/sy15/sy15.service";
 
 /**
@@ -26,7 +27,7 @@ describe("ProjektniBiroService.listTips — mapiranje filtera (paritet pb_list_e
     const storage = {} as unknown as import(
       "../../common/sy15/sy15-storage.service"
     ).Sy15StorageService;
-    return { svc: new ProjektniBiroService(sy15, storage), calls };
+    return { svc: new ProjektniBiroService(sy15, storage, new SastanciPbSourceService()), calls };
   };
 
   /** Izvuci prosleđeni p_filter JSON iz zabeleženog Prisma.Sql (jedini string value). */

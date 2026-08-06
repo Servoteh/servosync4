@@ -1,5 +1,11 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Sy15Service } from "../../common/sy15/sy15.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import { PrismaService } from "../../prisma/prisma.service";
+import {
+  SastanciFnService,
+  type SastanciTx,
+} from "../sastanci/sastanci-fn.service";
 import type { ScheduledJob } from "./scheduler.types";
 
 /*
@@ -24,6 +30,20 @@ import type { ScheduledJob } from "./scheduler.types";
  * sastanci-dispatch.service.ts za sastanke), ali iza svojih prekidača
  * (`DISPATCH_ENABLED` / `DISPATCH_SASTANCI_ENABLED`). Dok su isključeni, šalje
  * i dalje sy15 (VM cron dispatch-loop.sh + edge fn) — vidi ODLUKE #39 / Talas F.
+ *
+ * ── SEOBA SASTANAKA (05.08.2026, docs/SEOBA_SASTANCI_PB_2026-08-05.md) ────────
+ * TRI posla iz ovog registra diraju domen sastanaka (`sast-action-reminders`,
+ * `sast-meeting-reminders`, `sast-weekly-auto`) i od sada POŠTUJU prekidač
+ * `SASTANCI_PB_IZVOR`:
+ *   • `sy15` (podrazumevano) — ponašanje NETAKNUTO: isti `SELECT public.<fn>()`.
+ *   • `3.0`                  — isti posao kroz `SastanciFnService` nad 3.0 bazom.
+ * Summary string je NAMERNO istog oblika u oba slučaja (`<ime_fn>=<vrednost>`),
+ * da dnevnik (`scheduled_job_runs.summary`) ostane uporediv pre i posle preklopa.
+ *
+ * ⚠️ Ostali poslovi (kadrovska, održavanje, BigTehn kartice) NISU ovaj domen i
+ * ostaju na sy15 putu bez prekidača. `pb-enqueue` JESTE domen prekidača, ali PB
+ * se ne seli u ovom koraku (blokiran kadrovskom) — zato ide kroz branjeni geter
+ * `assertPorted`, da pod `3.0` GLASNO padne umesto da tiho piše u sy15.
  */
 
 interface RawRow {
@@ -33,11 +53,19 @@ interface RawRow {
 /** Viseći sy15 poziv (mrtva veza / lock na sy15) ne sme da zakuca ceo tik. */
 const SY15_CALL_TIMEOUT_MS = 120_000;
 
+/** Koliko dana unapred se čitaju praznici za pomeranje sedmičnog termina. */
+const PRAZNICI_PROZOR_DANA = 90;
+
 @Injectable()
 export class Sy15CronJobs {
   private readonly logger = new Logger(Sy15CronJobs.name);
 
-  constructor(private readonly sy15: Sy15Service) {}
+  constructor(
+    private readonly sy15: Sy15Service,
+    private readonly izvor: SastanciPbSourceService,
+    private readonly prisma: PrismaService,
+    private readonly sastFn: SastanciFnService,
+  ) {}
 
   /**
    * SELECT fn() na sy15 i sažmi rezultat u summary string.
@@ -72,6 +100,63 @@ export class Sy15CronJobs {
       )
       .join("; ")
       .slice(0, 500);
+  }
+
+  /**
+   * Posao domena SASTANAKA — jedina tačka na kojoj se bira izvor.
+   *
+   * Pod `sy15` prosleđuje netaknut `fnSql` u `call()` (isti SQL, isti summary).
+   * Pod `3.0` izvršava `run` u JEDNOJ 3.0 transakciji (kao što je sy15 DEFINER fn
+   * bila jedna transakcija) i sam sklapa summary u ISTOM obliku koji bi `call()`
+   * dao za tu funkciju: `<ime_fn>=<vrednost>`. Bez toga bi dnevnik posle preklopa
+   * promenio format i poređenje „pre/posle" ne bi radilo.
+   */
+  private async callSastanci(
+    fnSql: string,
+    fnName: string,
+    // Prepisane fn vraćaju broj upisanih redova ili id/NULL — isti skup tipova
+    // koji bi stigao i kao kolona sa sy15.
+    run: (tx: SastanciTx) => Promise<number | string | null>,
+  ): Promise<string> {
+    if (!this.izvor.isThreeZero) return this.call(fnSql);
+    const value = await this.prisma.$transaction((tx) => run(tx));
+    // `??` (ne `||`): 0 upisanih redova je VALIDAN rezultat, ne „nema vrednosti".
+    // NULL daje "null" — isto što `call()` upiše za NULL kolonu.
+    return `${fnName}=${value ?? "null"}`;
+  }
+
+  /**
+   * Neradni praznici (`is_workday = false`) u prozoru od danas + 90 dana, kao
+   * skup 'YYYY-MM-DD'. Njima `sast_auto_create_weekly` pomera sedmični termin sa
+   * praznika na prvi slobodan dan Pon..Pet.
+   *
+   * 🔴 OVO JE JEDINA PREOSTALA CROSS-BAZA ZAVISNOST SASTANAKA: `kadr_holidays`
+   * je KADROVSKA tabela, a kadrovska je KORAK 4 seobe — u 3.0 je još nema. Zato
+   * se praznici i pod `SASTANCI_PB_IZVOR=3.0` čitaju READ-ONLY sa sy15. Kad
+   * kadrovska pređe, ovaj metod se BRIŠE i praznici se čitaju iz 3.0 (jedan
+   * izvor); do tada je ovo jedini razlog zbog kog sastanci još dodiruju sy15.
+   *
+   * Bez `SY15_DATABASE_URL` (`sy15.db` baca 503) posao se NE obara: praznici
+   * nisu dostupni, pa sedmični termin NEĆE biti pomeren sa praznika — što je
+   * bezbedniji ishod od preskočene automatike (sastanak se ručno pomeri).
+   */
+  private async prazniciSaSy15(): Promise<ReadonlySet<string>> {
+    const od = new Date();
+    const doo = new Date(od.getTime() + PRAZNICI_PROZOR_DANA * 86_400_000);
+    try {
+      const rows = await this.sy15.db.kadrHoliday.findMany({
+        where: { holidayDate: { gte: od, lte: doo }, isWorkday: false },
+        select: { holidayDate: true },
+      });
+      return new Set(rows.map((r) => r.holidayDate.toISOString().slice(0, 10)));
+    } catch (e) {
+      this.logger.warn(
+        "Praznici (sy15 kadr_holidays) nisu dostupni — sedmični sastanak NEĆE biti " +
+          "pomeren sa praznika (ako termin padne na neradni dan, pomeriti ga ručno). " +
+          `Uzrok: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return new Set<string>();
+    }
   }
 
   /** Svi poslovi za registraciju u SchedulerService. */
@@ -140,14 +225,21 @@ export class Sy15CronJobs {
         "SELECT public.sync_qbigtehn_operator_cards()::text AS result;",
       ),
       // ── Sastanci (outbox: sastanci_notification_log) ──────────────────────
-      j(
-        "sast-action-reminders",
-        "Akcione tačke: rok juče/danas/sutra → podsetnik odgovornom",
-        { kind: "daily", at: "09:00" },
-        "SELECT public.sastanci_enqueue_action_reminders();",
-      ),
-      j(
-        "sast-meeting-reminders",
+      // Ova TRI posla poštuju `SASTANCI_PB_IZVOR` (vidi `callSastanci`).
+      {
+        key: "sast-action-reminders",
+        description:
+          "Akcione tačke: rok juče/danas/sutra → podsetnik odgovornom",
+        schedule: { kind: "daily", at: "09:00" },
+        run: async () =>
+          this.callSastanci(
+            "SELECT public.sastanci_enqueue_action_reminders();",
+            "sastanci_enqueue_action_reminders",
+            (tx) => this.sastFn.enqueueActionReminders(tx),
+          ),
+      },
+      {
+        key: "sast-meeting-reminders",
         // 024/26 („podsetnik pola sata pred sastanak"): kadenca 5 min uz fn
         // prozor 25–35 min → mejl stiže ~30–35 min pre početka. ⚠️ KADENCA I
         // PROZOR SU SPREGNUTI (prozor mora biti širi od kadence, inače tik
@@ -155,17 +247,36 @@ export class Sy15CronJobs {
         // backend/docs/sql/sy15/sastanci-024-periodicni-2026-08-04/20_….
         // Dok skripta nije primenjena (prozor još 15–45), ista kadenca samo
         // šalje ~40–45 min ranije; dedup u fn (1 h) i dalje garantuje 1 mejl.
-        "Sastanci: podsetnik učesnicima ~30 min pre početka (fn prozor 25–35)",
-        { kind: "everyMinutes", minutes: 5 },
-        "SELECT public.sastanci_enqueue_meeting_reminders();",
-      ),
-      j(
-        "sast-weekly-auto",
-        "Sedmični kolegijum: auto-kreiranje petkom 08h (fn guard pet+08h; skip/prenos akcija u fn)",
-        { kind: "weekly", isoDow: 5, at: "08:00" },
-        "SELECT public.sast_auto_create_weekly();",
-        55,
-      ),
+        // (3.0 prepis već nosi prozor 25–35 — `enqueueMeetingReminders`.)
+        description:
+          "Sastanci: podsetnik učesnicima ~30 min pre početka (fn prozor 25–35)",
+        schedule: { kind: "everyMinutes", minutes: 5 },
+        run: async () =>
+          this.callSastanci(
+            "SELECT public.sastanci_enqueue_meeting_reminders();",
+            "sastanci_enqueue_meeting_reminders",
+            (tx) => this.sastFn.enqueueMeetingReminders(tx),
+          ),
+      },
+      {
+        key: "sast-weekly-auto",
+        description:
+          "Sedmični kolegijum: auto-kreiranje petkom 08h (fn guard pet+08h; skip/prenos akcija u fn)",
+        schedule: { kind: "weekly", isoDow: 5, at: "08:00" },
+        catchUpMinutes: 55,
+        run: async () => {
+          // Praznici se učitavaju SAMO pod `3.0` (sy15 fn ih čita sama iz
+          // `kadr_holidays`, u istoj bazi) — inače bi `sy15` put plaćao suvišan upit.
+          const praznici = this.izvor.isThreeZero
+            ? await this.prazniciSaSy15()
+            : new Set<string>();
+          return this.callSastanci(
+            "SELECT public.sast_auto_create_weekly();",
+            "sast_auto_create_weekly",
+            (tx) => this.sastFn.autoCreateWeekly(tx, praznici),
+          );
+        },
+      },
       // ── Održavanje / Projektni biro ───────────────────────────────────────
       j(
         "maint-deadlines",
@@ -173,12 +284,21 @@ export class Sy15CronJobs {
         { kind: "daily", at: "09:00" },
         "SELECT * FROM public.maint_check_all_deadlines(30);",
       ),
-      j(
-        "pb-enqueue",
-        "Projektni biro: dnevne notifikacije (rokovi zadataka)",
-        { kind: "daily", at: "09:00" },
-        "SELECT public.pb_enqueue_notifications();",
-      ),
+      {
+        key: "pb-enqueue",
+        description: "Projektni biro: dnevne notifikacije (rokovi zadataka)",
+        schedule: { kind: "daily", at: "09:00" },
+        run: async () => {
+          // PB se u ovom koraku NE seli (blokiran kadrovskom: `pb_current_employee_id`
+          // visi o `employees`). Branjeni geter je tu da posao ne može TIHO da
+          // zaobiđe prekidač — pod `3.0` pada sa 503 i imenom putanje u dnevniku,
+          // umesto da nastavi da piše u sy15 i razilazi dve baze.
+          this.izvor.assertPorted(
+            "projektni biro: enqueue notifikacija kroz sy15",
+          );
+          return this.call("SELECT public.pb_enqueue_notifications();");
+        },
+      },
     ];
   }
 }

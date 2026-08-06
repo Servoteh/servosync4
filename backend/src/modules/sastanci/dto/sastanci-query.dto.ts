@@ -6,6 +6,7 @@ import {
   MaxLength,
   IsUUID,
 } from "class-validator";
+import { IsPredmetRef } from "./is-predmet-ref";
 
 /**
  * Query DTO-i za Sastanci read endpointe (review 12.07, nalaz 3g):
@@ -16,7 +17,8 @@ import {
 export class ListSastanciQueryDto {
   @IsOptional() @IsString() tip?: string;
   @IsOptional() @IsString() status?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number;
   @IsOptional() @IsString() q?: string;
   @IsOptional() @IsISO8601() from?: string;
   @IsOptional() @IsISO8601() to?: string;
@@ -26,7 +28,8 @@ export class ListSastanciQueryDto {
 
 export class AkcijeQueryDto {
   @IsOptional() @IsUUID() sastanakId?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number;
   /** Filter po effective_status (1.0 loadAkcije effectiveStatus). */
   @IsOptional() @IsString() status?: string;
   @IsOptional() @IsString() odgovoranEmail?: string;
@@ -35,14 +38,16 @@ export class AkcijeQueryDto {
 export class WeeklyDiffQueryDto {
   /** ISO timestamp prethodnog zaključanja (1.0 sinceIso); bez njega novo/zavrsenoOveNedelje = 0. */
   @IsOptional() @IsISO8601() since?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number;
 }
 
 export class TemeQueryDto {
   @IsOptional() @IsString() status?: string;
   /** CSV lista statusa za isključivanje (1.0 excludeStatuses → status=not.in). */
   @IsOptional() @IsString() excludeStatuses?: string;
-  @IsOptional() @IsUUID() projekatId?: string;
+  /** Predmet: 3.0 `Int` ILI sy15 uuid (prelazno — blokada 5). */
+  @IsOptional() @IsPredmetRef() projekatId?: string | number;
   @IsOptional() @IsUUID() sastanakId?: string;
   @IsOptional() @IsString() oblast?: string;
   @IsOptional() @IsString() predlozioEmail?: string;

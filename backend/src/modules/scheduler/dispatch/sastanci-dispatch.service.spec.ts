@@ -1,8 +1,11 @@
 import { Logger } from "@nestjs/common";
-import { SastanciDispatchService } from "./sastanci-dispatch.service";
+import { SastanciDispatchService as RealSastanciDispatchService } from "./sastanci-dispatch.service";
 import type { MailService } from "../../../common/mail/mail.service";
 import type { Sy15Service } from "../../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
+import { SastanciPbSourceService } from "../../../common/sy15/sastanci-pb-source.service";
+import type { PrismaService } from "../../../prisma/prisma.service";
+import type { SastanciFnService } from "../../sastanci/sastanci-fn.service";
 
 /*
  * Talas A-2b — sastanci dispatch worker. Testiramo PARITET sa 1.0 edge fn
@@ -12,6 +15,11 @@ import type { Sy15StorageService } from "../../../common/sy15/sy15-storage.servi
  *
  * Uz to čuvamo NAMERNO ODSTUPANJE: deep-linkovi su 3.0 oblika (`?open=` /
  * `?tab=`), jer je stari `sastanci/<uuid>` oblik 404 na današnjem domenu.
+ *
+ * Seoba 05.08 — servis je dobio tri nove zavisnosti (prekidač `SASTANCI_PB_IZVOR`,
+ * 3.0 Prisma i `SastanciFnService`). Postojeći testovi pinuju `sy15` put i grade
+ * servis sa tri argumenta, pa se ostatak dodaje kao PODRAZUMEVAN (vidi wrapper
+ * ispod); testovi 3.0 puta prosleđuju svoje mock-ove.
  */
 
 type MailParams = Parameters<MailService["send"]>[0];
@@ -57,6 +65,61 @@ function storageMock(bytes?: Uint8Array) {
   return { storage: { download } as unknown as Sy15StorageService, download };
 }
 
+/** 3.0 Prisma mock: `$transaction(cb)` samo izvrši callback (bez prave tx). */
+function prismaMock(rsvpToken: string | null = null) {
+  const tx = {};
+  const $transaction = jest.fn((cb: (t: unknown) => unknown) =>
+    Promise.resolve(cb(tx)),
+  );
+  // Pod izvorom 3.0 se RSVP token magic-linka čita iz 3.0 baze (ne sa sy15).
+  const findFirst = jest
+    .fn()
+    .mockResolvedValue(rsvpToken ? { rsvpToken } : null);
+  return {
+    prisma: {
+      $transaction,
+      sastanakUcesnik: { findFirst },
+    } as unknown as PrismaService,
+    $transaction,
+    findFirst,
+  };
+}
+
+/** `SastanciFnService` mock — samo tri metode kojima dispečer dodiruje red. */
+function sastFnMock(rows: Array<Record<string, unknown>> = []) {
+  const dispatchDequeue = jest.fn().mockResolvedValue(rows);
+  const dispatchMarkSent = jest.fn().mockResolvedValue(1);
+  const dispatchMarkFailed = jest.fn().mockResolvedValue(undefined);
+  return {
+    sastFn: {
+      dispatchDequeue,
+      dispatchMarkSent,
+      dispatchMarkFailed,
+    } as unknown as SastanciFnService,
+    dispatchDequeue,
+    dispatchMarkSent,
+    dispatchMarkFailed,
+  };
+}
+
+/**
+ * Testni omotač: postojeći testovi grade servis sa TRI argumenta (sy15 put).
+ * Prekidač čita `process.env` po konstrukciji, pa 3.0 test samo postavi env i
+ * prosledi svoje `prisma`/`sastFn` mock-ove.
+ */
+class SastanciDispatchService extends RealSastanciDispatchService {
+  constructor(
+    sy15: Sy15Service,
+    mail: MailService,
+    storage: Sy15StorageService,
+    izvor: SastanciPbSourceService = new SastanciPbSourceService(),
+    prisma: PrismaService = prismaMock().prisma,
+    sastFn: SastanciFnService = sastFnMock().sastFn,
+  ) {
+    super(sy15, mail, storage, izvor, prisma, sastFn);
+  }
+}
+
 const ID_A = "11111111-1111-1111-1111-111111111111";
 const ID_B = "22222222-2222-2222-2222-222222222222";
 const SAST_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -86,6 +149,8 @@ function row(over: Partial<Record<string, unknown>> = {}) {
 const OLD_ENV = { ...process.env };
 beforeEach(() => {
   process.env.DISPATCH_SASTANCI_ENABLED = "true";
+  // Podrazumevani izvor je sy15 — postojeći testovi pinuju STARI put.
+  delete process.env.SASTANCI_PB_IZVOR;
   process.env.PUBLIC_APP_URL = APP;
   process.env.SY15_FUNCTIONS_URL = FN_BASE;
   // Prod vrednost je LAN (192.168.64.28:8090) — RSVP link NIKAD ne sme odavde.
@@ -969,5 +1034,244 @@ describe("privatnost logova", () => {
     expect(lines.length).toBeGreaterThan(0);
     expect(all).not.toContain(EMAIL);
     expect(all).toContain("per…");
+  });
+});
+
+describe("prekidač SASTANCI_PB_IZVOR — red outbox-a (seoba 05.08)", () => {
+  /** Servis sa punim setom 3.0 mock-ova; `rows` je ono što dequeue vrati. */
+  function make(rows: Array<Record<string, unknown>> = []) {
+    const m = sy15Mock();
+    const { mail, send, sent } = mailMock();
+    const p = prismaMock();
+    const fn = sastFnMock(rows);
+    const svc = new SastanciDispatchService(
+      m.sy15,
+      mail,
+      storageMock().storage,
+      new SastanciPbSourceService(),
+      p.prisma,
+      fn.sastFn,
+    );
+    return { svc, m, send, sent, p, fn };
+  }
+
+  it("izvor=3.0: dequeue ide kroz SastanciFnService u 3.0 transakciji, NE na sy15", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const { svc, m, fn, p } = make([]);
+
+    const r = await svc.dispatchSastanci();
+    expect(r).toMatchObject({ processed: 0 });
+    expect(fn.dispatchDequeue).toHaveBeenCalledTimes(1);
+    // Isti default-i kao sy15 fn (batch 25, max_attempts 5).
+    expect(fn.dispatchDequeue.mock.calls[0].slice(1)).toEqual([25, 5]);
+    expect(p.$transaction).toHaveBeenCalledTimes(1);
+    // NIJEDAN sy15 upit — inače bi red bio čitan iz jedne, a pisan u drugu bazu.
+    expect(m.calls).toHaveLength(0);
+  });
+
+  it("izvor=3.0: mark_sent ide kroz prepis (ARRAY potpis), a ne na sy15 RPC", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const { svc, m, fn, sent } = make([row({ id: ID_A })]);
+
+    const r = await svc.dispatchSastanci();
+    expect(r).toMatchObject({ processed: 1, sent: 1, failed: 0 });
+    expect(sent).toHaveLength(1);
+    expect(fn.dispatchMarkSent).toHaveBeenCalledTimes(1);
+    expect(fn.dispatchMarkSent.mock.calls[0][1]).toEqual([ID_A]);
+    expect(m.find("sastanci_dispatch_mark_sent")).toHaveLength(0);
+    expect(m.find("sastanci_dispatch_dequeue")).toHaveLength(0);
+  });
+
+  it("izvor=3.0: mark_failed ide kroz prepis, sa ISTIM backoff-om kao sy15 put", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const m = sy15Mock();
+    const p = prismaMock();
+    const fn = sastFnMock([row({ id: ID_A, attempts: 1 })]);
+    const svc = new SastanciDispatchService(
+      m.sy15,
+      mailMock(true, false).mail, // Resend pada
+      storageMock().storage,
+      new SastanciPbSourceService(),
+      p.prisma,
+      fn.sastFn,
+    );
+
+    const r = await svc.dispatchSastanci();
+    expect(r).toMatchObject({ sent: 0, failed: 1 });
+    expect(fn.dispatchMarkFailed).toHaveBeenCalledTimes(1);
+    // (tx, id, error, backoffSec) — 300 * 2^(2-1) = 600 za attempts=1.
+    expect(fn.dispatchMarkFailed.mock.calls[0].slice(1)).toEqual([
+      ID_A,
+      "resend send failed",
+      600,
+    ]);
+    expect(m.find("sastanci_dispatch_mark_failed")).toHaveLength(0);
+  });
+
+  it("izvor=3.0: whatsapp red i dalje pada permanentno (backoff ~godina) — kroz prepis", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const { svc, fn, send } = make([row({ channel: "whatsapp" })]);
+
+    const r = await svc.dispatchSastanci();
+    expect(r).toMatchObject({ failed: 1, skippedWa: 1 });
+    expect(send).not.toHaveBeenCalled();
+    expect(fn.dispatchMarkFailed.mock.calls[0][3]).toBe(365 * 24 * 3600);
+  });
+
+  it("izvor=sy15 (podrazumevano): sve tri tačke idu STARIM putem, prepis se ne dira", async () => {
+    delete process.env.SASTANCI_PB_IZVOR;
+    const m = sy15Mock();
+    m.pushResult([row({ id: ID_A })]);
+    const p = prismaMock();
+    const fn = sastFnMock();
+    const svc = new SastanciDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+      new SastanciPbSourceService(),
+      p.prisma,
+      fn.sastFn,
+    );
+
+    const r = await svc.dispatchSastanci();
+    expect(r).toMatchObject({ processed: 1, sent: 1 });
+    expect(m.sqlOf(0)).toContain("sastanci_dispatch_dequeue");
+    expect(m.find("sastanci_dispatch_mark_sent")).toHaveLength(1);
+    expect(fn.dispatchDequeue).not.toHaveBeenCalled();
+    expect(fn.dispatchMarkSent).not.toHaveBeenCalled();
+    expect(p.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("nepoznata vrednost prekidača NE pali 3.0 granu (pada na bezbedan sy15)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "30";
+    const m = sy15Mock();
+    m.pushResult([]);
+    const fn = sastFnMock();
+    await new SastanciDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+      new SastanciPbSourceService(),
+      prismaMock().prisma,
+      fn.sastFn,
+    ).dispatchSastanci();
+
+    expect(m.sqlOf(0)).toContain("sastanci_dispatch_dequeue");
+    expect(fn.dispatchDequeue).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * RSVP magic-link „Dolazim / Ne dolazim" mora da vodi u bazu koja je VLASNIK
+ * `sastanak_ucesnici`, jer klik piše `rsvp_status`/`rsvp_at`. Tokeni su u seobi
+ * preneti DOSLOVNO, pa isti `t` postoji u obe baze — i baš zato bi pogrešan host
+ * u linku tiho pisao u bazu koja nije izvor istine. Ovi testovi to pinuju.
+ */
+describe("prekidač SASTANCI_PB_IZVOR — RSVP link u pozivnici", () => {
+  /** Podrazumevana javna baza 3.0 API-ja (prod; docs/infra/INFRASTRUKTURA.md §6). */
+  const API_30 = "https://api.servosync2.servoteh.com/api/v1/sastanci-rsvp";
+
+  async function invite30(rsvpToken: string | null) {
+    const m = sy15Mock();
+    const { mail, sent } = mailMock();
+    const p = prismaMock(rsvpToken);
+    const fn = sastFnMock([
+      row({
+        kind: "meeting_invite",
+        related_sastanak_id: SAST_ID,
+        payload: {
+          naslov: "Kolegijum",
+          datum: "2026-07-24",
+          vreme: "09:30",
+          sastanak_id: SAST_ID,
+        },
+      }),
+    ]);
+    const svc = new SastanciDispatchService(
+      m.sy15,
+      mail,
+      storageMock().storage,
+      new SastanciPbSourceService(),
+      p.prisma,
+      fn.sastFn,
+    );
+    await svc.dispatchSastanci();
+    return { sent, m, p };
+  }
+
+  it("izvor=3.0: dugmad vode na 3.0 JAVNU rutu, ne na sy15 edge", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const { sent } = await invite30("tok-123");
+
+    expect(sent[0].html).toContain(`${API_30}?t=tok-123&amp;r=dolazim`);
+    expect(sent[0].html).toContain(`${API_30}?t=tok-123&amp;r=ne_dolazim`);
+    expect(sent[0].text).toContain(`${API_30}?t=tok-123&r=dolazim`);
+    expect(sent[0].html).not.toContain("functions/v1");
+  });
+
+  it("izvor=3.0: PUBLIC_API_URL presuđuje bazu (i završna '/' ne pravi dupli separator)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.PUBLIC_API_URL = "https://api.test.servoteh.com/api/";
+    const { sent } = await invite30("tok-123");
+
+    expect(sent[0].html).toContain(
+      "https://api.test.servoteh.com/api/v1/sastanci-rsvp?t=tok-123&amp;r=dolazim",
+    );
+    expect(sent[0].html).not.toContain("api//v1");
+  });
+
+  it("🔴 izvor=3.0: RSVP link NE ide na front (worker ne proksira /api → 404, mrtva dugmad)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    process.env.PUBLIC_APP_URL = "https://servosync2.servoteh.com/";
+    const { sent } = await invite30("tok-123");
+
+    expect(sent[0].html).not.toContain(
+      "https://servosync2.servoteh.com/api/v1/sastanci-rsvp",
+    );
+    expect(sent[0].html).toContain(`${API_30}?t=tok-123`);
+  });
+
+  it("izvor=3.0: token se čita iz 3.0 baze, a NE sa sy15 (novi učesnik u sy15 ne postoji)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const { p, m } = await invite30("tok-123");
+
+    expect(p.findFirst).toHaveBeenCalledWith({
+      where: { sastanakId: SAST_ID, email: "pera@servoteh.com" },
+      select: { rsvpToken: true },
+    });
+    expect(m.find("sastanak_ucesnici")).toHaveLength(0);
+  });
+
+  it("izvor=3.0 bez tokena: pozivnica ide bez RSVP sekcije (ne pada)", async () => {
+    process.env.SASTANCI_PB_IZVOR = "3.0";
+    const { sent } = await invite30(null);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].html).not.toContain("sastanci-rsvp");
+  });
+
+  it("izvor=sy15 (podrazumevano): link ostaje na sy15 edge fn", async () => {
+    delete process.env.SASTANCI_PB_IZVOR;
+    const m = sy15Mock();
+    m.pushResult([
+      row({
+        kind: "meeting_invite",
+        related_sastanak_id: SAST_ID,
+        payload: { naslov: "Kolegijum", datum: "2026-07-24", vreme: "09:30" },
+      }),
+    ]);
+    m.pushResult([]); // zaduženja
+    m.pushResult([{ rsvp_token: "tok-123" }]); // token sa sy15
+    const { mail, sent } = mailMock();
+    await new SastanciDispatchService(
+      m.sy15,
+      mail,
+      storageMock().storage,
+    ).dispatchSastanci();
+
+    expect(sent[0].html).toContain(
+      `${FN_BASE}/sastanci-rsvp?t=tok-123&amp;r=dolazim`,
+    );
+    expect(sent[0].html).not.toContain("servosync2.servoteh.com");
   });
 });

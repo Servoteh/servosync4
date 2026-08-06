@@ -3,6 +3,8 @@ import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import type { ScheduledJob } from "./scheduler.types";
 import { Sy15Service } from "../../common/sy15/sy15.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
+import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
 
 function prismaMock() {
   return {
@@ -203,8 +205,19 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
     } as unknown as Sy15Service;
   }
 
+  // Seoba 05.08: registar zna i za prekidač `SASTANCI_PB_IZVOR` + 3.0 prepis
+  // fn-ova. Ovde se testira SAMO sy15 put (bez env-a prekidač je `sy15`), pa su
+  // 3.0 zavisnosti prazni stub-ovi; grananje po izvoru pinuje sy15-cron-jobs.spec.ts.
+  const cronJobs = (sy15: Sy15Service): Sy15CronJobs =>
+    new Sy15CronJobs(
+      sy15,
+      new SastanciPbSourceService(),
+      {} as unknown as PrismaService,
+      {} as unknown as SastanciFnService,
+    );
+
   it("12 poslova, jedinstveni ključevi, validni rasporedi", () => {
-    const jobs = new Sy15CronJobs(sy15Mock()).buildJobs();
+    const jobs = cronJobs(sy15Mock()).buildJobs();
     expect(jobs).toHaveLength(12);
     expect(new Set(jobs.map((x) => x.key)).size).toBe(12);
     for (const jb of jobs) {
@@ -217,7 +230,7 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
   });
 
   it("guard-poslovi zakazani TAČNO u sat unutrašnjeg fn guarda (06h/pon 06h/pet 08h)", () => {
-    const byKey = new Map(new Sy15CronJobs(sy15Mock()).buildJobs().map((x) => [x.key, x]));
+    const byKey = new Map(cronJobs(sy15Mock()).buildJobs().map((x) => [x.key, x]));
     expect(byKey.get("kadr-attendance-alerts")?.schedule).toEqual({ kind: "daily", at: "06:00" });
     expect(byKey.get("kadr-attendance-digest")?.schedule).toEqual({
       kind: "weekly",
@@ -232,11 +245,11 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
   });
 
   it("summary sažima rezultat fn-a (enqueued/skipped); BigInt bez 'n'; jsonb kao JSON", async () => {
-    const jobs = new Sy15CronJobs(sy15Mock([{ enqueued: 2n, skipped: 5 }])).buildJobs();
+    const jobs = cronJobs(sy15Mock([{ enqueued: 2n, skipped: 5 }])).buildJobs();
     const maint = jobs.find((x) => x.key === "maint-deadlines")!;
     await expect(maint.run({ scheduledFor: new Date() })).resolves.toBe("enqueued=2 skipped=5");
 
-    const jsonJobs = new Sy15CronJobs(
+    const jsonJobs = cronJobs(
       sy15Mock([{ kadr_schedule_corrective_reminders: { overdue: 1, followup: 0 } }]),
     ).buildJobs();
     const corr = jsonJobs.find((x) => x.key === "kadr-corrective")!;
@@ -247,7 +260,7 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
 
   it("void fn se zovu sa ::text cast-om, TABLE fn kroz SELECT * FROM (Prisma raw ograničenja)", async () => {
     const sy15 = sy15Mock([]);
-    const jobs = new Sy15CronJobs(sy15).buildJobs();
+    const jobs = cronJobs(sy15).buildJobs();
     const sqlOf = async (key: string): Promise<string> => {
       (sy15.db.$queryRawUnsafe as jest.Mock).mockClear();
       await jobs.find((x) => x.key === key)!.run({ scheduledFor: new Date() });
@@ -261,7 +274,7 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
   });
 
   it("guard-poslovi imaju catch-up ograničen na guard-sat (55/25/55 min)", () => {
-    const byKey = new Map(new Sy15CronJobs(sy15Mock()).buildJobs().map((x) => [x.key, x]));
+    const byKey = new Map(cronJobs(sy15Mock()).buildJobs().map((x) => [x.key, x]));
     expect(byKey.get("kadr-attendance-alerts")?.catchUpMinutes).toBe(55);
     expect(byKey.get("kadr-attendance-digest")?.catchUpMinutes).toBe(25);
     expect(byKey.get("sast-weekly-auto")?.catchUpMinutes).toBe(55);

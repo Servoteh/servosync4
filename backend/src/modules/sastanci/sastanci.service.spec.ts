@@ -2,6 +2,7 @@ import { ConflictException, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { SastanciService } from "./sastanci.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
+import { SastanciPbSourceService } from "../../common/sy15/sastanci-pb-source.service";
 import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
 
 /** Prazan registar modela — `resolve` vraća prosleđen fallback (Talas AI-0). */
@@ -48,6 +49,16 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
       {} as never,
       {} as never,
       aiPolicyStub(),
+      // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
+      new SastanciPbSourceService(),
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      // IdempotencyService (registar u 3.0 bazi) — pod `sy15` se ne dodiruje.
+      {} as never,
+      // SastanciPredmetService — pod `sy15` prevod predmeta je čist (bez baze).
+      {} as never,
     );
     return { svc, sy15, tx };
   }
@@ -449,6 +460,16 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
         {} as never,
         {} as never,
         aiPolicyStub(),
+        // Prekidac u podrazumevanom polozaju (sy15) = brana ne radi nista.
+        new SastanciPbSourceService(),
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        // IdempotencyService (registar u 3.0 bazi) — pod `sy15` se ne dodiruje.
+        {} as never,
+        // SastanciPredmetService — pod `sy15` prevod predmeta je čist (bez baze).
+        {} as never,
       );
     }
 
@@ -464,5 +485,91 @@ describe("SastanciService — withUserRls most + BigInt out", () => {
         }),
       ).rejects.toBeInstanceOf(ConflictException);
     });
+  });
+});
+
+/**
+ * 🔴 Pod `3.0` RLS-a nema, pa row-scope mora da sprovede kod. Ovaj test je
+ * jedini koji bi primetio da je scope ispao iz `notifications()` — bez njega bi
+ * lista „Obaveštenja" tiho počela da vraća TUĐE mejlove (red nosi subject,
+ * body_html i payload cele poruke). Politika: `snl_select` na živoj sy15.
+ */
+describe("notifications — read-scope pod prekidačem 3.0", () => {
+  const orig = process.env.SASTANCI_PB_IZVOR;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.SASTANCI_PB_IZVOR;
+    else process.env.SASTANCI_PB_IZVOR = orig;
+  });
+
+  function make(izvor: string) {
+    process.env.SASTANCI_PB_IZVOR = izvor;
+    const tx = {
+      sastanciNotificationLog: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const prisma = {
+      $transaction: jest.fn((fn: (t: unknown) => Promise<unknown>) => fn(tx)),
+    };
+    const sy15 = {
+      withUserRls: jest.fn(
+        (_e: string, fn: (t: unknown) => Promise<unknown>) => fn(tx),
+      ),
+    };
+    const authz = {
+      scopeNotifLogWhere: jest
+        .fn()
+        .mockResolvedValue({ recipientEmail: { equals: "ja@x.com" } }),
+    };
+    const svc = new SastanciService(
+      sy15 as unknown as Sy15Service,
+      {} as never,
+      {} as never,
+      aiPolicyStub(),
+      new SastanciPbSourceService(),
+      {} as never,
+      prisma as never,
+      {} as never,
+      authz as never,
+      {} as never,
+      // SastanciPredmetService — `notifications` ne dira predmet.
+      {} as never,
+    );
+    return { svc, tx, sy15, prisma, authz };
+  }
+
+  it("pod 3.0 čita 3.0 bazu i UVEK primeni scope (ne dira sy15)", async () => {
+    const { svc, tx, sy15, authz } = make("3.0");
+    await svc.notifications("ja@x.com", {});
+    expect(sy15.withUserRls).not.toHaveBeenCalled();
+    expect(authz.scopeNotifLogWhere).toHaveBeenCalledWith("ja@x.com");
+    expect(tx.sastanciNotificationLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { AND: [{}, { recipientEmail: { equals: "ja@x.com" } }] },
+      }),
+    );
+  });
+
+  it("scope se kombinuje SA filterom po sastanku (AND, ne zamena)", async () => {
+    const { svc, tx } = make("3.0");
+    await svc.notifications("ja@x.com", { sastanakId: "s-1" });
+    expect(tx.sastanciNotificationLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { relatedSastanakId: "s-1" },
+            { recipientEmail: { equals: "ja@x.com" } },
+          ],
+        },
+      }),
+    );
+  });
+
+  it("pod sy15 ponašanje NETAKNUTO — scope ne postoji (presuđuje RLS)", async () => {
+    const { svc, tx, sy15, authz } = make("sy15");
+    await svc.notifications("ja@x.com", {});
+    expect(sy15.withUserRls).toHaveBeenCalledTimes(1);
+    expect(authz.scopeNotifLogWhere).not.toHaveBeenCalled();
+    expect(tx.sastanciNotificationLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: {} }),
+    );
   });
 });

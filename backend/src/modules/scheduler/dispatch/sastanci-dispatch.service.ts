@@ -2,6 +2,10 @@ import { Injectable, Logger } from "@nestjs/common";
 import { MailService } from "../../../common/mail/mail.service";
 import { Sy15Service } from "../../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
+import { SastanciPbSourceService } from "../../../common/sy15/sastanci-pb-source.service";
+import { sy15FunctionsBase } from "../../../common/sy15/sy15-functions-base";
+import { PrismaService } from "../../../prisma/prisma.service";
+import { SastanciFnService } from "../../sastanci/sastanci-fn.service";
 import type { ScheduledJob } from "../scheduler.types";
 import { buildEmailFor, sastanakLink, str } from "./sastanci-templates";
 
@@ -51,7 +55,9 @@ import { buildEmailFor, sastanakLink, str } from "./sastanci-templates";
  *   2) RSVP LINK JE POPRAVLJEN — edge ga gradi iz svog internog `SUPABASE_URL`
  *      (`http://<gateway>/functions/v1/…`), pa su „Dolazim / Ne dolazim" dugmad
  *      u pozivnici bila MRTVA za SVE primaoce. Ovde ide kroz `SY15_FUNCTIONS_URL`
- *      (javni gateway) — vidi `functionsBase()`.
+ *      (javni gateway) — vidi `functionsBase()`. Pod `SASTANCI_PB_IZVOR=3.0` link
+ *      vodi na 3.0 javnu rutu `…/api/v1/sastanci-rsvp` (`rsvpBase30()`), jer je
+ *      tada 3.0 baza vlasnik `sastanak_ucesnici` — vidi `SastanciRsvpController`.
  *   3) 4xx vs 5xx od Resend-a se NE razlikuje. Edge tretira 4xx kao permanent
  *      (backoff 1 godina), 5xx kao transient. `MailService.send()` vraća samo
  *      boolean (ne izlaže status), pa je svaki neuspeh slanja transient uz
@@ -72,6 +78,14 @@ import { buildEmailFor, sastanakLink, str } from "./sastanci-templates";
  * pa PRE slanja gledamo `mail.configured` (isto kao A-2a).
  *
  * Gate: SCHEDULER_ENABLED (pogon tika) + DISPATCH_SASTANCI_ENABLED (slanje).
+ *
+ * ── SEOBA (05.08.2026) ──────────────────────────────────────────────────────
+ * TRI dodira sa outbox REDOM (`dequeue`, `mark_sent`, `mark_failed`) poštuju
+ * `SASTANCI_PB_IZVOR`: pod `sy15` idu na sy15 RPC (netaknuto), pod `3.0` kroz
+ * `SastanciFnService` nad 3.0 bazom. Ostatak (gradnja mejla, .ics, RSVP) se NE
+ * menja — `enrichPayload` i prilozi i dalje čitaju sy15 (`v_akcioni_plan`,
+ * `sastanak_ucesnici`, arhiva), jer ti pogledi nisu preneti; svi su fail-soft,
+ * pa pod `3.0` najgori ishod je mejl bez dopune, a ne izgubljen mejl.
  */
 
 /** Bucket sa PDF zapisnicima (edge: `ARHIVA_BUCKET`). */
@@ -132,6 +146,9 @@ export class SastanciDispatchService {
     private readonly sy15: Sy15Service,
     private readonly mail: MailService,
     private readonly storage: Sy15StorageService,
+    private readonly izvor: SastanciPbSourceService,
+    private readonly prisma: PrismaService,
+    private readonly sastFn: SastanciFnService,
   ) {}
 
   /** Poseban prekidač za SLANJE sastanci outbox-a (uz SCHEDULER_ENABLED). */
@@ -154,35 +171,35 @@ export class SastanciDispatchService {
   }
 
   /**
-   * Baza sy15 edge funkcija (`…/functions/v1`) za RSVP magic-link.
-   * RSVP tok NAMERNO ostaje na sy15 edge-u (`sastanci-rsvp`): to je javna ruta
-   * bez prijave koju 3.0 još nema — paritet, ne propust.
-   *
-   * ⚠️ MORA BITI JAVNI URL, i to je POPRAVKA a ne paritet: stari edge je link
-   * gradio iz svog `SUPABASE_URL`, tj. `http://<gateway>/functions/v1/…` —
-   * interna adresa, pa su RSVP dugmad („Dolazim / Ne dolazim") u pozivnici bila
-   * MRTVA za SVE primaoce, ne samo van LAN-a. Iz istog razloga se ovde NE sme
-   * koristiti `SY15_REST_URL`: na produ je to LAN adresa (192.168.64.28:8090),
-   * pa bi dugmad radila samo sa LAN-a.
-   * Lanac: `SY15_FUNCTIONS_URL` (javni gateway) → izvedeno iz `SY15_STORAGE_URL`
-   * (jedini env za koji je javnost garantovana — vidi memo „SY15 storage URL =
-   * javni gateway") → izvođenje iz `SY15_REST_URL` kao poslednja slamka.
+   * Baza sy15 edge funkcija (`…/functions/v1`) za RSVP magic-link pod `sy15`.
+   * Lanac i razlozi su u `sy15FunctionsBase()` — izdvojen je jer isti URL gradi i
+   * `SastanciRsvpController` kad pod `sy15` preusmeri klik na vlasnika podatka.
    */
   private functionsBase(): string {
-    const explicit = (process.env.SY15_FUNCTIONS_URL || "").trim();
-    if (explicit) return explicit.replace(/\/$/, "");
+    return sy15FunctionsBase();
+  }
 
-    const storage = (process.env.SY15_STORAGE_URL || "").trim();
-    if (storage) {
-      return storage
-        .replace(/\/$/, "")
-        .replace(/\/storage\/v1$/, "/functions/v1");
-    }
-
-    const base = (
-      process.env.SY15_REST_URL || "https://api.servosync.servoteh.com/rest/v1"
-    ).replace(/\/rest\/v1\/?$/, "");
-    return `${base}/functions/v1`;
+  /**
+   * Puna adresa 3.0 RSVP rute (`…/api/v1/sastanci-rsvp`) — koristi se pod
+   * `SASTANCI_PB_IZVOR=3.0`, kad je vlasnik `sastanak_ucesnici` 3.0 baza.
+   *
+   * ⚠️ ZAŠTO NE `appUrl()` (PUBLIC_APP_URL → SY15_APP_URL → servosync…): ta
+   * kaskada daje adresu FRONTA, a front i API su RAZLIČITI hostovi
+   * (docs/infra/INFRASTRUKTURA.md §6: front `servosync2.servoteh.com` na
+   * Cloudflare Workers, API `api.servosync2.servoteh.com` kroz tunel na
+   * `localhost:3000`). Worker (`frontend/worker/index.ts`) NE proksira `/api` —
+   * `${appUrl()}api/v1/sastanci-rsvp` bi pao na static export i vratio 404, tj.
+   * dugmad bi opet bila mrtva. Zato zaseban env, sa produkcionom vrednošću kao
+   * podrazumevanom (ista koju front već nosi u `NEXT_PUBLIC_API_URL`), da
+   * preklop prekidača NE traži novo podešavanje na serveru.
+   *
+   * Vraća bez završne kose crte.
+   */
+  private rsvpBase30(): string {
+    const raw = (
+      process.env.PUBLIC_API_URL || "https://api.servosync2.servoteh.com/api"
+    ).trim();
+    return `${raw.replace(/\/+$/, "")}/v1/sastanci-rsvp`;
   }
 
   // ── Posao za registraciju u SchedulerService ───────────────────────────────
@@ -210,8 +227,7 @@ export class SastanciDispatchService {
 
   // ══ Batch ══════════════════════════════════════════════════════════════════
   async dispatchSastanci(): Promise<SastanciDispatchSummary> {
-    const rows = await this.sy15.db.$queryRaw<SastRow[]>`
-      SELECT * FROM public.sastanci_dispatch_dequeue(${SAST_BATCH}::int, ${SAST_MAX_ATTEMPTS}::int)`;
+    const rows = await this.dequeue();
 
     let sent = 0;
     let failed = 0;
@@ -365,9 +381,16 @@ export class SastanciDispatchService {
         );
         if (token) {
           const t = encodeURIComponent(token);
-          const base = this.functionsBase();
-          extra.rsvp_yes_url = `${base}/sastanci-rsvp?t=${t}&r=dolazim`;
-          extra.rsvp_no_url = `${base}/sastanci-rsvp?t=${t}&r=ne_dolazim`;
+          // Link mora da vodi u bazu koja je VLASNIK `sastanak_ucesnici`, jer
+          // klik piše `rsvp_status`/`rsvp_at`. Pod `3.0` to je javna 3.0 ruta
+          // (SastanciRsvpController), pod `sy15` i dalje edge fn `sastanci-rsvp`.
+          // Tokeni su preneti DOSLOVNO, pa isti `t` radi u obe baze — ali upis
+          // sme da ide samo u onu koja je izvor istine.
+          const base = this.izvor.isThreeZero
+            ? this.rsvpBase30()
+            : `${this.functionsBase()}/sastanci-rsvp`;
+          extra.rsvp_yes_url = `${base}?t=${t}&r=dolazim`;
+          extra.rsvp_no_url = `${base}?t=${t}&r=ne_dolazim`;
         }
       }
       return {
@@ -531,6 +554,12 @@ export class SastanciDispatchService {
    * Poređenje mejla je nad LOWERCASE ulazom, tačno kao edge (`email=eq.<lower>`);
    * ako je adresa u bazi upisana velikim slovima, token se ne nađe i pozivnica
    * ide bez RSVP dugmadi (zatečeno 1.0 ponašanje, ne regresija).
+   *
+   * ⚠️ Token se čita IZ ISTE baze u koju RSVP klik piše (`rsvpBase30()` /
+   * `functionsBase()`). Postojeći tokeni su preneti DOSLOVNO, pa bi čitanje iz
+   * sy15 i pod `3.0` „radilo" za zatečene učesnike — ali NE za onog ko je dodat
+   * posle preklopa (njega u sy15 nema), pa bi mu pozivnica tiho stigla BEZ
+   * dugmadi. Zato grana ide po prekidaču, ne po zatečenim podacima.
    */
   private async fetchRsvpToken(
     sastanakId: string,
@@ -538,6 +567,13 @@ export class SastanciDispatchService {
   ): Promise<string | null> {
     try {
       if (!sastanakId || !email) return null;
+      if (this.izvor.isThreeZero) {
+        const row = await this.prisma.sastanakUcesnik.findFirst({
+          where: { sastanakId, email: email.toLowerCase() },
+          select: { rsvpToken: true },
+        });
+        return row?.rsvpToken || null;
+      }
       const rows = await this.sy15.db.$queryRaw<
         { rsvp_token: string | null }[]
       >`
@@ -622,13 +658,34 @@ export class SastanciDispatchService {
     }
   }
 
-  // ── sy15 RPC omotači ───────────────────────────────────────────────────────
-  // ⚠️ Pravilo iz sy15-cron-jobs.ts: `RETURNS VOID` fn se MORA zvati sa `::text`
-  // cast-om (Prisma ne deserializuje void kolonu), skalarne (INT) dobijaju alias,
-  // a dequeue je `RETURNS SETOF <tabela>` → `SELECT * FROM fn(...)`.
+  // ── Dodiri sa outbox REDOM (jedine tri tačke koje biraju izvor) ────────────
+  // ⚠️ Pravilo iz sy15-cron-jobs.ts (važi za `sy15` granu): `RETURNS VOID` fn se
+  // MORA zvati sa `::text` cast-om (Prisma ne deserializuje void kolonu),
+  // skalarne (INT) dobijaju alias, a dequeue je `RETURNS SETOF <tabela>` →
+  // `SELECT * FROM fn(...)`. Pod `3.0` isti posao radi `SastanciFnService`
+  // (prepis istih funkcija, uklj. `FOR UPDATE SKIP LOCKED` u dequeue-u).
+
+  /** Atomski claim batch-a: sy15 `sastanci_dispatch_dequeue` ili 3.0 prepis. */
+  private async dequeue(): Promise<SastRow[]> {
+    if (this.izvor.isThreeZero) {
+      const rows = await this.prisma.$transaction((tx) =>
+        this.sastFn.dispatchDequeue(tx, SAST_BATCH, SAST_MAX_ATTEMPTS),
+      );
+      // Prepis vraća `RETURNING n.*` — iste snake_case kolone kao sy15 fn.
+      return rows as unknown as SastRow[];
+    }
+    return this.sy15.db.$queryRaw<SastRow[]>`
+      SELECT * FROM public.sastanci_dispatch_dequeue(${SAST_BATCH}::int, ${SAST_MAX_ATTEMPTS}::int)`;
+  }
 
   /** sastanci_dispatch_mark_sent(uuid[]) RETURNS INT — batch potpis, zovemo po redu. */
   private async markSent(id: string): Promise<void> {
+    if (this.izvor.isThreeZero) {
+      await this.prisma.$transaction((tx) =>
+        this.sastFn.dispatchMarkSent(tx, [id]),
+      );
+      return;
+    }
     await this.sy15.db
       .$queryRaw`SELECT public.sastanci_dispatch_mark_sent(ARRAY[${id}::uuid]) AS n`;
   }
@@ -639,6 +696,12 @@ export class SastanciDispatchService {
     error: string,
     backoffSec: number,
   ): Promise<void> {
+    if (this.izvor.isThreeZero) {
+      await this.prisma.$transaction((tx) =>
+        this.sastFn.dispatchMarkFailed(tx, id, error, backoffSec),
+      );
+      return;
+    }
     await this.sy15.db
       .$queryRaw`SELECT public.sastanci_dispatch_mark_failed(${id}::uuid, ${error}, ${backoffSec}::int)::text AS r`;
   }
