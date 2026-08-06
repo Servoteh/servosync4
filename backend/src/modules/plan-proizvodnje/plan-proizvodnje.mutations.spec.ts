@@ -5,7 +5,10 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
-import { PlanProizvodnjeService } from "./plan-proizvodnje.service";
+import {
+  CASCADE_MAX_DEPTH,
+  PlanProizvodnjeService,
+} from "./plan-proizvodnje.service";
 import type { IdempotencyService } from "../../common/idempotency/idempotency.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 
@@ -198,8 +201,10 @@ describe("reassign (port sy15 reassign_production_line)", () => {
 
 describe("bulkReassign", () => {
   it("JEDAN deljen client_event_uuid za ceo bulk; updated_count", async () => {
-    // 2 para, ista grupa (3.1→3.9), bez force → 2 machine-lookup + 2 target-exists.
+    // [0] kanonski pre-lock; pa 2 para, ista grupa (3.1→3.9), bez force →
+    // 2 machine-lookup + 2 target-exists.
     const { svc } = makeService([
+      [],
       machine("3.1"),
       targetExists(true),
       machine("3.1"),
@@ -218,6 +223,41 @@ describe("bulkReassign", () => {
       true,
     )) as { data: { updated_count: number } };
     expect(res.data.updated_count).toBe(2);
+  });
+
+  /**
+   * 🔴 NALAZ 3 (ABBA): pre 075/26 su i `reorderOverlays` i `bulkReassign` uzimali brave
+   * PRIKAZNIM redosledom, pa para nije bilo. Kanonski pre-lock u reorder-u NOVO uvodi par
+   * (reorder ↔ bulkReassign) — oba gesta žive na ISTOM ekranu („Po mašini": prevlačenje
+   * redosleda + „Premesti" nad izborom), pa bulk mora na ISTI kanon.
+   */
+  it("🔴 PRVI iskaz je kanonski pre-lock (ORDER BY wo, line + FOR UPDATE), PRE petlje", async () => {
+    const { svc, captured } = makeService([
+      [],
+      machine("3.1"),
+      targetExists(true),
+      machine("3.1"),
+      targetExists(true),
+    ]);
+    await svc.bulkReassign(
+      email,
+      {
+        // Prikazni redosled je OBRNUT od kanonskog — brava ga mora poravnati.
+        pairs: [
+          { workOrderId: "11", lineId: "3" },
+          { workOrderId: "10", lineId: "2" },
+        ],
+        targetMachine: "3.9",
+        clientEventId: UUID,
+      },
+      true,
+    );
+    expect(captured.queries[0]).toContain("FOR UPDATE");
+    expect(captured.queries[0]).toContain("ORDER BY work_order_id, line_id");
+    // Brava ide PRE ijednog reassign upita (machine lookup je prvi u `reassignOne`).
+    expect(captured.queries[0]).not.toContain("work_order_operations");
+    // Oba para su u JEDNOM iskazu brave (jedna VALUES lista, ne dve brave).
+    expect(captured.queries.filter((q) => q.includes("FOR UPDATE"))).toHaveLength(1);
   });
 });
 
@@ -689,6 +729,60 @@ describe("gant kaskada — 075/26", () => {
     expect(captured.queries.some((q) => jeUpdate(q))).toBe(false);
   });
 
+  /**
+   * 🔴 NALAZ 4 — KAPA DUBINE MORA DA SE ČUJE.
+   *
+   * Sa `WHERE s.dubina < CASCADE_MAX_DEPTH` je lanac dublji od kape bio TIHO prepolovljen:
+   * `rows.length` = 51 (ispod kape čvorova 500), nema ciklusa, server mirno pomeri 51
+   * poziciju i javi „Pomereno 51" — a rep ostane na starim terminima, čime se trajno
+   * pokvare baš oni razmaci koje funkcija obećava da čuva. Rekurzija zato ide JEDAN nivo
+   * preko kape (`<=`), pa se dodir kape prijavljuje kao 422.
+   */
+  it("🔴 lanac dublji od kape → 422 cascade_too_deep (ne tiho odsečen rep), bez upisa", async () => {
+    // 52 čvora, dubine 0..51 — dubina 51 je JEDAN nivo preko kape (50).
+    const predubok = Array.from({ length: CASCADE_MAX_DEPTH + 2 }, (_, i) =>
+      cvor(String(i + 1), String((i + 1) * 10), { dubina: i }),
+    );
+    const { svc, captured } = makeService([predubok]);
+    const greska = await svc.shiftChain(email, upis()).catch((e: unknown) => e);
+    expect(greska).toBeInstanceOf(UnprocessableEntityException);
+    const body = (greska as UnprocessableEntityException).getResponse() as {
+      code: string;
+      dubina: number;
+      cap: number;
+    };
+    expect(body.code).toBe("cascade_too_deep");
+    expect(body.dubina).toBe(CASCADE_MAX_DEPTH + 1);
+    expect(body.cap).toBe(CASCADE_MAX_DEPTH);
+    expect(captured.queries.some((q) => jeUpdate(q))).toBe(false);
+  });
+
+  it("lanac TAČNO na kapi (dubina = cap) prolazi — kapa je granica, ne strah", async () => {
+    const naKapi = Array.from({ length: CASCADE_MAX_DEPTH + 1 }, (_, i) =>
+      cvor(String(i + 1), String((i + 1) * 10), { dubina: i }),
+    );
+    const vraceni = naKapi.map((r) => vracen(r.work_order_id, r.line_id));
+    const { svc } = makeService([naKapi, [], naKapi, vraceni]);
+    const res = (await svc.shiftChain(email, upis())) as {
+      data: { totals: { pomereno: number }; dubina_max: number };
+    };
+    expect(res.data.totals.pomereno).toBe(CASCADE_MAX_DEPTH + 1);
+    expect(res.data.dubina_max).toBe(CASCADE_MAX_DEPTH);
+  });
+
+  it("🔴 rekurzija ide JEDAN nivo PREKO kape (`<=`) — inače se dodir kape ne vidi", async () => {
+    const { svc, captured } = makeService([lanac2()]);
+    await svc.shiftChain(email, {
+      workOrderId: "1",
+      lineId: "10",
+      deltaDays: 5,
+      dryRun: true,
+    });
+    expect(captured.queries[0]).toMatch(/s\.dubina <= /);
+    // Ni jednog `<` bez `=` — stara kapa (`<`) je tiho sekla rep.
+    expect(captured.queries[0]).not.toMatch(/s\.dubina <[^=]/);
+  });
+
   it("zatvorenje veće od kape → 422 cascade_too_large, bez upisa", async () => {
     const preveliko = Array.from({ length: 501 }, (_, i) =>
       cvor(String(i + 1), String((i + 1) * 10), { dubina: i }),
@@ -708,6 +802,42 @@ describe("gant kaskada — 075/26", () => {
     };
     expect(res.data.stavke.map((s) => s.work_order_id)).toEqual(["1"]);
     expect(res.data.preskoceno).toHaveLength(0);
+  });
+
+  /**
+   * 🔴 NALAZ 10 — SIDRO JE IZUZETO SAMO OD `zavrseno`.
+   *
+   * Arhivirana pozicija se crta na gantu i može da se prevuče; ista ta pozicija kao TUĐ
+   * sledbenik biva preskočena uz obrazloženje „pozicija je arhivirana". Dve suprotne
+   * presude o istom redu — sada se sudi jednako, uz zaseban 422 nad sidrom.
+   */
+  it("🔴 ARHIVIRANO SIDRO → 422 anchor_archived (isti red se ne sudi dvojako)", async () => {
+    const { svc, captured } = makeService([[cvor("1", "10", { arhivirano: true })]]);
+    const greska = await svc.shiftChain(email, upis()).catch((e: unknown) => e);
+    expect(greska).toBeInstanceOf(UnprocessableEntityException);
+    expect(
+      ((greska as UnprocessableEntityException).getResponse() as { code: string }).code,
+    ).toBe("anchor_archived");
+    expect(captured.queries.some((q) => jeUpdate(q))).toBe(false);
+  });
+
+  it("🔴 ORFAN SIDRO (veza na obrisanu operaciju) → 422 anchor_orphan", async () => {
+    const { svc, captured } = makeService([[cvor("1", "10", { orfan: true })]]);
+    const greska = await svc.shiftChain(email, upis()).catch((e: unknown) => e);
+    expect(greska).toBeInstanceOf(UnprocessableEntityException);
+    expect(
+      ((greska as UnprocessableEntityException).getResponse() as { code: string }).code,
+    ).toBe("anchor_orphan");
+    expect(captured.queries.some((q) => jeUpdate(q))).toBe(false);
+  });
+
+  it("ZAVRŠENO sidro i dalje PROLAZI — jedini izuzetak koji sidro ima", async () => {
+    const redovi = [cvor("1", "10", { zavrseno: true })];
+    const { svc } = makeService([redovi, [], redovi, [vracen("1", "10")]]);
+    const res = (await svc.shiftChain(email, upis())) as {
+      data: { totals: { pomereno: number } };
+    };
+    expect(res.data.totals.pomereno).toBe(1);
   });
 
   it("🔴 sledbenik BEZ termina je preskočen, ali je NJEGOV sledbenik pomeren (hod ≠ preskok)", async () => {
@@ -851,6 +981,32 @@ describe("gant kaskada — 075/26", () => {
     expect(captured.queries.some((q) => jeUpdate(q))).toBe(false);
   });
 
+  /**
+   * 🔴 NALAZ 8 — CIKLUS NASTAO IZMEĐU DVA ČITANJA JE 422, NE 409.
+   *
+   * Bez ove grane bi razlika hash-eva dala `chain_changed` sa PRAZNIM stavkama: dijalog
+   * prikaže praznu tabelu sa aktivnim dugmetom „Pomeri", nikad ne pročita `plan.ciklus`,
+   * a ciklus je TRAJNO stanje → planer klikće u beskonačnoj petlji.
+   */
+  it("🔴 ciklus nastao POD BRAVOM → 422 predecessor_cycle sa ivicom (ne 409 sa praznom tabelom)", async () => {
+    const pre = lanac2();
+    const posle = [
+      cvor("1", "10", { ciklus: true, putanja_txt: ["1:10", "2:20", "1:10"] }),
+      cvor("2", "20", { dubina: 1, putanja_txt: ["1:10", "2:20"] }),
+    ];
+    const { svc, captured } = makeService([pre, [], posle]);
+    const greska = await svc.shiftChain(email, upis()).catch((e: unknown) => e);
+    expect(greska).toBeInstanceOf(UnprocessableEntityException);
+    expect(greska).not.toBeInstanceOf(ConflictException);
+    const body = (greska as UnprocessableEntityException).getResponse() as {
+      code: string;
+      cycle: { ivica: string };
+    };
+    expect(body.code).toBe("predecessor_cycle");
+    expect(body.cycle.ivica).toBe("2:20 -> 1:10"); // koju vezu razvezati
+    expect(captured.queries.some((q) => jeUpdate(q))).toBe(false);
+  });
+
   it("expectedHash se ne poklapa → 409 chain_changed, bez UPDATE-a", async () => {
     const redovi = lanac2();
     const { svc, captured } = makeService([redovi, [], redovi]);
@@ -871,6 +1027,58 @@ describe("gant kaskada — 075/26", () => {
     expect(sql).toContain("updated_by");
     // `plan_proizvodnje_overlays` nema nijedan triger, a `updatedAt` je @default(now()),
     // NE @updatedAt — bez ručnog pečata bi rupa u auditu bila odmah vidljiva.
+  });
+
+  /**
+   * 🔴 NALAZ 7 — PRELAZ NA LETNJE VREME PRAVI KRAJ PRE POČETKA.
+   *
+   * Pozicija `02:30 → 03:00` pomerena NA dan prelaska (lokalnog sata 02:30 tada nema)
+   * dobija početak koji „preskoči" u 03:30, a kraj ostane 03:00. Redovan upis to odbija
+   * sa 422 (`planned_end_before_start`), a kaskada `assertPlanConsistent` ne zove.
+   */
+  it("🔴 kraj se KLAMPUJE na novi početak (GREATEST) — prelaz na letnje vreme", async () => {
+    const redovi = [cvor("1", "10")];
+    const { svc, captured } = makeService([redovi, [], redovi, [vracen("1", "10")]]);
+    await svc.shiftChain(email, upis());
+    const sql = captured.queries.find((q) => jeUpdate(q)) ?? "";
+    expect(sql).toContain("GREATEST");
+    // Spoljni `CASE` je uslov: `GREATEST` IGNORIŠE NULL, pa bi red bez `planned_end_at`
+    // (izveden kraj iz tehnologije) dobio kraj = novi početak i „auto" bi se tiho ugasilo.
+    expect(sql).toMatch(/planned_end_at\s+=\s+CASE WHEN o\.planned_end_at IS NULL THEN NULL/);
+  });
+
+  it("🔴 PREGLED koristi ISTI klamp kao UPIS (inače se `new_end` razilazi sa upisanim)", async () => {
+    const { svc, captured } = makeService([lanac2()]);
+    await svc.shiftChain(email, {
+      workOrderId: "1",
+      lineId: "10",
+      deltaDays: 5,
+      dryRun: true,
+    });
+    expect(captured.queries[0]).toContain("GREATEST");
+  });
+
+  /**
+   * NALAZ 13 — `ORDER BY … dubina ASC` u `cvor` CTE-u je bio MRTAV: golo ime se u
+   * `ORDER BY` prvo razrešava kao IZLAZNI alias, a izlaz je bio `min(dubina) OVER (…)`,
+   * tj. konstanta unutar particije. Sa aliasom `dubina_min` se `dubina` razrešava kao
+   * ULAZNA kolona i izbor najplićeg reda (putanje) je stvaran.
+   */
+  it("izlazni alias prozorskog min-a je `dubina_min` — `ORDER BY dubina` gađa ULAZNU kolonu", async () => {
+    const { svc, captured } = makeService([lanac2()]);
+    await svc.shiftChain(email, {
+      workOrderId: "1",
+      lineId: "10",
+      deltaDays: 5,
+      dryRun: true,
+    });
+    const sql = captured.queries[0];
+    expect(sql).toMatch(
+      /min\(dubina\)\s+OVER \(PARTITION BY work_order_id, line_id\) AS dubina_min/,
+    );
+    expect(sql).toContain("ORDER BY work_order_id, line_id, je_ciklus DESC, dubina ASC");
+    // Nijedan izlazni alias se ne zove `dubina` — inače `ORDER BY dubina` opet umire.
+    expect(sql).not.toMatch(/OVER \([^)]*\) AS dubina[,\s]/);
   });
 
   it("🔴 odgovor je JSON-stabilan: termini su ISO STRINGOVI, ne Date", async () => {
@@ -959,6 +1167,55 @@ describe("075/26 — anti-ciklus na vezi i kanon brave u reorder-u", () => {
   it("veza bez petlje prolazi (hod naviše stane na korenu)", async () => {
     const { svc, captured } = makeService([
       prazan(),
+      [{ predecessor_work_order_id: null, predecessor_line: null }],
+    ]);
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      predecessorWorkOrderId: "5500",
+      predecessorLine: "77",
+    });
+    expect(captured.overlay!.update.predecessorWorkOrderId).toBe(5500);
+  });
+
+  /**
+   * 🔴 NALAZ 4 (isti pojas slepila, drugi kraj): hod NAVIŠE je ranije posle 50 koraka
+   * ćutke izlazio iz petlje i vezu PUŠTAO. Sada ide do `CASCADE_MAX_DEPTH + 1` i, ako se
+   * ni tada nije zaustavio, odbija vezu — jer je to tačno onaj lanac koji kaskada posle
+   * ne ume da pomeri celog.
+   */
+  it("🔴 hod naviše duži od kape → 422 cascade_too_deep (veza se NE upisuje)", async () => {
+    // [0] zatečen red stavke; pa 60 hopova, svaki sa NOVIM (nikad ponovljenim) prethodnikom.
+    const hopovi = Array.from({ length: 60 }, (_, i) => [
+      { predecessor_work_order_id: 100000 + i, predecessor_line: 1 },
+    ]);
+    const { svc, captured } = makeService([prazan(), ...hopovi]);
+    const greska = await svc
+      .upsertOverlay(email, {
+        workOrderId: "9400",
+        lineId: "12",
+        predecessorWorkOrderId: "5500",
+        predecessorLine: "77",
+      })
+      .catch((e: unknown) => e);
+    expect(greska).toBeInstanceOf(UnprocessableEntityException);
+    const body = (greska as UnprocessableEntityException).getResponse() as {
+      code: string;
+      cap: number;
+    };
+    expect(body.code).toBe("cascade_too_deep");
+    expect(body.cap).toBe(CASCADE_MAX_DEPTH);
+    expect(captured.overlay).toBeUndefined();
+  });
+
+  it("hod naviše koji stane TAČNO na kapi prolazi (kapa je granica, ne strah)", async () => {
+    // Koren je na `CASCADE_MAX_DEPTH`-tom hopu — poslednji hop nema prethodnika.
+    const hopovi = Array.from({ length: CASCADE_MAX_DEPTH }, (_, i) => [
+      { predecessor_work_order_id: 100000 + i, predecessor_line: 1 },
+    ]);
+    const { svc, captured } = makeService([
+      prazan(),
+      ...hopovi,
       [{ predecessor_work_order_id: null, predecessor_line: null }],
     ]);
     await svc.upsertOverlay(email, {

@@ -1074,8 +1074,11 @@ function ganttChainErrorMessage(e: unknown): string | undefined {
   const mapa: Record<string, string> = {
     predecessor_cycle: 'Veze prave petlju — pozicija bi zavisila sama od sebe preko lanca.',
     cascade_too_large: 'Lanac je predugačak za jedan upis — javi da se podigne granica.',
+    cascade_too_deep: 'Lanac veza je predubok za jedan upis — javi da se podigne granica.',
     chain_changed: 'Plan se u međuvremenu promenio — osveži gant i pomeri ponovo.',
     anchor_without_terms: 'Pozicija nema planiran termin.',
+    anchor_orphan: 'Pozicija više ne postoji (mrtva veza) — ne može da se pomeri.',
+    anchor_archived: 'Pozicija je arhivirana — ne može da se pomeri.',
     overlay_not_found: 'Pozicija nije na planu.',
     delta_zero: 'Nema pomaka.',
   };

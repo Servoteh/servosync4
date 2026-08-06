@@ -2,13 +2,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  CHAIN_CONFIRM_OVER,
+  barKeyAkcija,
   buildSuccessorIndex,
   chainFrom,
+  chainGateBrzPut,
+  danLabel,
   hoursInputFromMinutes,
   hoursLabel,
+  kaskadaVanProzora,
   minutesFromHoursInput,
   overlayErrorMessage,
   parseDecimalCommaInput,
+  pozicijaLabel,
   shiftPreview,
 } from './gant-utils';
 import type { GanttRow } from '@/api/plan-proizvodnje';
@@ -244,44 +250,158 @@ test('overlayErrorMessage prevodi kodove kaskade (planer ne sme da vidi engleski
   assert.ok(kao('predecessor_cycle')?.includes('petlju'));
   assert.ok(kao('chain_changed')?.includes('promenio'));
   assert.ok(kao('cascade_too_large')?.includes('predugačak'));
+  assert.ok(kao('cascade_too_deep')?.includes('predubok'));
   assert.ok(kao('anchor_without_terms')?.includes('termin'));
+  // Sidro se izuzima SAMO od „završeno" — mrtva veza i arhiva se sude i nad njim.
+  assert.ok(kao('anchor_orphan')?.includes('mrtva veza'));
+  assert.ok(kao('anchor_archived')?.includes('arhivirana'));
   // Nepoznat kod → undefined (hook tada javlja svoju podrazumevanu poruku).
   assert.equal(overlayErrorMessage(new Error('nesto_deseto')), undefined);
 });
 
 /**
- * FE gejt za potvrdu — ogledalo `pomeriLanac` iz `gantt-tab.tsx`. Testira se PRAVILO,
- * ne komponenta: gejt sme da greši SAMO u bezbednom smeru (kad FE ne vidi ceo lanac,
- * NE upisuje naslepo nego pita server).
+ * FE gejt za potvrdu — sada nad STVARNOM funkcijom (`chainGateBrzPut`), ne nad kopijom
+ * pravila u testu. Ta kopija je i bila deo problema: gejt je živeo samo u
+ * `pomeriLanac`, pa je tastatura mogla da ga zaobiđe a da nijedan test ne pukne.
+ *
+ * Gejt sme da greši SAMO u bezbednom smeru: kad FE ne vidi ceo lanac, ne upisuje
+ * naslepo nego pita server.
  */
-function trebaPitatiServer(u: {
-  duzinaLanca: number;
-  zavrsenSledbenik: boolean;
-  filterHale: boolean;
-  pretraga: boolean;
-  odsecenFeed: boolean;
-  svakiCvorIscrtan: boolean;
-}): boolean {
-  const neizvesno = u.filterHale || u.pretraga || u.odsecenFeed || !u.svakiCvorIscrtan;
-  return u.duzinaLanca > 8 || u.zavrsenSledbenik || neizvesno;
+function gejt(o: Partial<Parameters<typeof chainGateBrzPut>[0]> = {}): boolean {
+  const rows = [
+    red('1', '10'),
+    red('2', '20', { predecessor_work_order_id: '1', predecessor_line: '10' }),
+  ];
+  return chainGateBrzPut({
+    kljucevi: ['1:10', '2:20'],
+    sledbenici: ['2:20'],
+    rows,
+    iscrtani: new Set(['1:10', '2:20']),
+    neizvestanPrikaz: false,
+    ...o,
+  });
 }
 
 test('gejt potvrde: sve što FE ne vidi pouzdano ide PRVO na server', () => {
-  const osnovno = {
-    duzinaLanca: 2,
-    zavrsenSledbenik: false,
-    filterHale: false,
-    pretraga: false,
-    odsecenFeed: false,
-    svakiCvorIscrtan: true,
-  };
   // Mali, potpuno vidljiv lanac → brzi put (bez ijednog klika).
-  assert.equal(trebaPitatiServer(osnovno), false);
-  // Svaki oblik neizvesnosti obara u „pitaj pa upiši".
-  assert.equal(trebaPitatiServer({ ...osnovno, duzinaLanca: 9 }), true);
-  assert.equal(trebaPitatiServer({ ...osnovno, zavrsenSledbenik: true }), true);
-  assert.equal(trebaPitatiServer({ ...osnovno, filterHale: true }), true);
-  assert.equal(trebaPitatiServer({ ...osnovno, pretraga: true }), true);
-  assert.equal(trebaPitatiServer({ ...osnovno, odsecenFeed: true }), true);
-  assert.equal(trebaPitatiServer({ ...osnovno, svakiCvorIscrtan: false }), true);
+  assert.equal(gejt(), true);
+  // Duži od praga (9 > CHAIN_CONFIRM_OVER).
+  assert.equal(
+    gejt({ kljucevi: Array.from({ length: 9 }, (_, i) => `${i}:${i}`) }),
+    false,
+  );
+  // Aktivan filter hale / pretraga / odsečen feed.
+  assert.equal(gejt({ neizvestanPrikaz: true }), false);
+  // Čvor lanca koji NIJE među iscrtanim redovima.
+  assert.equal(gejt({ iscrtani: new Set(['1:10']) }), false);
+});
+
+test('gejt: ZAVRŠEN sledbenik traži potvrdu, završeno SIDRO ne', () => {
+  const sidroZavrseno = [
+    red('1', '10', { is_completed_effective: true }),
+    red('2', '20', { predecessor_work_order_id: '1', predecessor_line: '10' }),
+  ];
+  // Sidro se pomera uvek — završenost sidra ne otvara dijalog (isto pravilo kao
+  // serverski `needs_confirm`).
+  assert.equal(gejt({ rows: sidroZavrseno }), true);
+
+  const sledbenikZavrsen = [
+    red('1', '10'),
+    red('2', '20', {
+      predecessor_work_order_id: '1',
+      predecessor_line: '10',
+      is_completed_effective: true,
+    }),
+  ];
+  assert.equal(gejt({ rows: sledbenikZavrsen }), false);
+});
+
+test('gejt: lanac TAČNO na pragu prolazi brzim putem (prag je > , ne >=)', () => {
+  const kljucevi = Array.from({ length: CHAIN_CONFIRM_OVER }, (_, i) => `${i}:${i}`);
+  assert.equal(
+    gejt({ kljucevi, sledbenici: [], iscrtani: new Set(kljucevi) }),
+    true,
+  );
+  assert.equal(
+    gejt({
+      kljucevi: [...kljucevi, 'x:x'],
+      sledbenici: [],
+      iscrtani: new Set([...kljucevi, 'x:x']),
+    }),
+    false,
+  );
+});
+
+/**
+ * 🔴 REGRESIJA KOJU JE UVELA SAMA IZMENA (075/26): ←/→ je zvao upis DIREKTNO, bez
+ * pregleda i bez `e.repeat` brane.
+ *
+ * Držanje tastera daje ~30 događaja/s, a svaki nosi NOV `clientEventId` i deltu ±1 —
+ * to je ~30 paralelnih POST-ova koji svaki zaključavaju CEO lanac (izmereno: 19 redova).
+ * Prva prođe, ostale dobiju `409 chain_changed`: planer pritisne N dana a upiše se manje.
+ * Pre 075/26 je isti gest slao APSOLUTNE termine iz keša — bezopasno.
+ */
+test('🔴 auto-ponavljanje (`repeat`) NE pokreće ni kaskadu ni resize', () => {
+  assert.equal(
+    barKeyAkcija({ key: 'ArrowRight', shiftKey: false, repeat: false }),
+    'kaskada',
+  );
+  assert.equal(barKeyAkcija({ key: 'ArrowRight', shiftKey: false, repeat: true }), null);
+  assert.equal(barKeyAkcija({ key: 'ArrowLeft', shiftKey: false, repeat: true }), null);
+  assert.equal(barKeyAkcija({ key: 'ArrowLeft', shiftKey: true, repeat: false }), 'resize');
+  assert.equal(barKeyAkcija({ key: 'ArrowLeft', shiftKey: true, repeat: true }), null);
+});
+
+test('barKeyAkcija: Enter/Space otvaraju karticu i pri ponavljanju, ostali tasteri ćute', () => {
+  // Otvaranje kartice je idempotentno; gutanje `preventDefault`-a na ponovljenom
+  // Space-u bi vratilo skrol strane ispod fokusiranog bara.
+  assert.equal(barKeyAkcija({ key: 'Enter', shiftKey: false, repeat: true }), 'otvori');
+  assert.equal(barKeyAkcija({ key: ' ', shiftKey: false, repeat: true }), 'otvori');
+  assert.equal(barKeyAkcija({ key: 'Tab', shiftKey: false, repeat: false }), null);
+  assert.equal(barKeyAkcija({ key: 'ArrowUp', shiftKey: false, repeat: false }), null);
+});
+
+/** Srpska množina za 2–4 („2 pozicija" je bila greška, a i mrtav ternar). */
+test('srPlural: 1 / 2–4 / 5+ i izuzetak 11–14', () => {
+  assert.equal(pozicijaLabel(1), 'pozicija');
+  assert.equal(pozicijaLabel(2), 'pozicije');
+  assert.equal(pozicijaLabel(4), 'pozicije');
+  assert.equal(pozicijaLabel(5), 'pozicija');
+  assert.equal(pozicijaLabel(11), 'pozicija'); // 11–14 idu na oblik za mnogo
+  assert.equal(pozicijaLabel(12), 'pozicija');
+  assert.equal(pozicijaLabel(21), 'pozicija');
+  assert.equal(pozicijaLabel(22), 'pozicije');
+  assert.equal(pozicijaLabel(0), 'pozicija');
+});
+
+test('danLabel: znak pomaka se ignoriše (−2 dana, +21 dan)', () => {
+  assert.equal(danLabel(1), 'dan');
+  assert.equal(danLabel(-1), 'dan');
+  assert.equal(danLabel(2), 'dana');
+  assert.equal(danLabel(-2), 'dana');
+  assert.equal(danLabel(5), 'dana');
+  assert.equal(danLabel(21), 'dan');
+  assert.equal(danLabel(-30), 'dana');
+});
+
+/**
+ * Put kroz karticu prima proizvoljan broj dana; pomak od 30 dana izbaci SVE barove van
+ * prozora, pa planer ostane pred redovima bez ijednog bara i bez objašnjenja.
+ */
+test('kaskadaVanProzora: tačno kad NIJEDAN pomeren bar ne pada u prozor', () => {
+  const prozor = new Date('2026-08-10T00:00:00');
+  const s = (iso: string | null) => ({ planned_start_at: iso });
+  // Bar unutar prozora → prozor se ne pomera.
+  assert.equal(kaskadaVanProzora([s('2026-08-12T06:00:00')], prozor, 30), false);
+  // Svi iza prozora (pomak +30) → prozor prati.
+  assert.equal(kaskadaVanProzora([s('2026-09-12T06:00:00')], prozor, 30), true);
+  // Ispred prozora (pomak unazad) → isto.
+  assert.equal(kaskadaVanProzora([s('2026-07-01T06:00:00')], prozor, 30), true);
+  // Jedan unutra je dovoljan da prozor ostane gde jeste.
+  assert.equal(
+    kaskadaVanProzora([s('2026-09-12T06:00:00'), s('2026-08-12T06:00:00')], prozor, 30),
+    false,
+  );
+  // Prazan ishod ne pomera ništa.
+  assert.equal(kaskadaVanProzora([], prozor, 30), false);
 });

@@ -36,7 +36,7 @@ type ChainDb = Tx | PrismaService;
  * MAX_DEPTH=20 iz `pracenje-read`/pdm je PRETESNO — izmeren lanac na mašini 3.40 ima
  * 16 ivica (19 čvorova), pa bi ga kapa od 20 dodirivala već sledeće sezone.
  */
-const CASCADE_MAX_DEPTH = 50;
+export const CASCADE_MAX_DEPTH = 50;
 /** Tvrda kapa skupa. Danas je maksimum 19 čvorova — kapa čuva od budućih podataka. */
 const CASCADE_MAX_NODES = 500;
 /** Prisma default je 5 s, a ČEKANJE NA BRAVE ulazi u budžet (cnc-programs.service.ts). */
@@ -355,6 +355,11 @@ export class PlanProizvodnjeService {
    * `assertPlanConsistent` NE zaključava, pa dva istovremena upisa i dalje teorijski
    * mogu da sklope ciklus. `CYCLE` guard u kaskadi (`collectChain`) je KONAČNA brana i
    * ostaje i pored ovoga.
+   *
+   * 🔴 KAPA MORA DA SE ČUJE (isto pravilo kao `collectChain`): hod ide do
+   * `CASCADE_MAX_DEPTH + 1`, i ako se ni tada nije zaustavio, veza se ODBIJA sa
+   * `cascade_too_deep`. Ranije se ćutke izlazilo iz petlje i veza je PROLAZILA — a to je
+   * tačno onaj lanac koji kaskada posle ne ume da pomeri celog.
    */
   private async assertNoPredecessorCycle(
     tx: Tx,
@@ -365,7 +370,7 @@ export class PlanProizvodnjeService {
   ): Promise<void> {
     const visited = new Set<string>();
     let cur: ChainNode | null = { wo: pwo, line: pline };
-    for (let dubina = 0; dubina < CASCADE_MAX_DEPTH && cur !== null; dubina++) {
+    for (let dubina = 0; dubina <= CASCADE_MAX_DEPTH && cur !== null; dubina++) {
       const node: ChainNode = cur;
       if (node.wo === wo && node.line === line) {
         throw new UnprocessableEntityException({
@@ -386,6 +391,15 @@ export class PlanProizvodnjeService {
         p?.predecessor_work_order_id != null && p.predecessor_line != null
           ? { wo: p.predecessor_work_order_id, line: p.predecessor_line }
           : null;
+    }
+    // Hod se nije zaustavio ni na `CASCADE_MAX_DEPTH + 1` — kapa je DODIRNUTA.
+    if (cur !== null) {
+      throw new UnprocessableEntityException({
+        message: "cascade_too_deep",
+        code: "cascade_too_deep",
+        dubina: CASCADE_MAX_DEPTH + 1,
+        cap: CASCADE_MAX_DEPTH,
+      });
     }
   }
 
@@ -567,6 +581,17 @@ export class PlanProizvodnjeService {
 
     // (c) ISTI upit, sada POD BRAVOM.
     const plan2 = await this.collectChain(tx, wo, line, delta);
+    // 🔴 CIKLUS NASTAO IZMEĐU DVA ČITANJA IDE NA 422, NE NA 409: ciklus je TRAJNO stanje
+    // podatka, pa bi `chain_changed` (koji planera šalje da „pogleda ponovo") vratio
+    // dijalog sa PRAZNOM tabelom i aktivnim dugmetom „Pomeri" — beskonačna petlja nad
+    // stanjem koje se samo od sebe ne popravlja. 422 nosi ivicu koju treba razvezati.
+    if (plan2.ciklus) {
+      throw new UnprocessableEntityException({
+        message: "predecessor_cycle",
+        code: "predecessor_cycle",
+        cycle: plan2.ciklus,
+      });
+    }
     const hash1 = this.chainHash(plan1);
     const hash2 = this.chainHash(plan2);
     if (
@@ -591,7 +616,11 @@ export class PlanProizvodnjeService {
     >(Prisma.sql`
       UPDATE plan_proizvodnje_overlays o
          SET planned_start_at = ${this.shiftExpr(Prisma.raw("o.planned_start_at"), delta)},
-             planned_end_at   = ${this.shiftExpr(Prisma.raw("o.planned_end_at"), delta)},
+             planned_end_at   = ${this.shiftEndExpr(
+               Prisma.raw("o.planned_start_at"),
+               Prisma.raw("o.planned_end_at"),
+               delta,
+             )},
              updated_by = ${email},
              updated_at = now()
        WHERE (o.work_order_id, o.line_id) IN (${this.pairsSql(parovi)})
@@ -638,6 +667,18 @@ export class PlanProizvodnjeService {
    * Zamena je `DISTINCT ON (work_order_id, line_id)` + prozorske `min`/`bool_or`:
    * `min(dubina)` i `bool_or(je_ciklus)` su identični, a putanja dolazi iz izabranog
    * reda (ciklični prvi, inače najplići) i stvarno je popunjena.
+   *
+   * ⚠️ Prozorski `min` se zove `dubina_min`, NE `dubina`: golo ime u `ORDER BY` se prvo
+   * razrešava kao IZLAZNI alias, pa bi `ORDER BY … dubina ASC` sortirao po
+   * `min() OVER (…)` — konstanti unutar particije, tj. MRTAV izraz koji ne bira najplići
+   * red. Sa `dubina_min` se `dubina` razrešava kao ULAZNA kolona `succ.dubina` i izbor
+   * putanje je stvaran.
+   *
+   * 🔴 KAPA DUBINE MORA DA SE ČUJE: rekurzija ide do `CASCADE_MAX_DEPTH + 1` (`<=`), pa
+   * se posle materijalizacije baca `cascade_too_deep`. Sa `<` bi se lanac dublji od kape
+   * TIHO prepolovio: server bi mirno pomerio prvih 51 poziciju i javio „Pomereno 51", a
+   * rep bi ostao na starim terminima — čime bi se trajno pokvarili baš oni razmaci koje
+   * funkcija obećava da čuva.
    */
   private async collectChain(
     db: ChainDb,
@@ -657,12 +698,12 @@ export class PlanProizvodnjeService {
           FROM plan_proizvodnje_overlays n
           JOIN succ s ON n.predecessor_work_order_id = s.work_order_id
                      AND n.predecessor_line          = s.line_id
-         WHERE s.dubina < ${CASCADE_MAX_DEPTH}
+         WHERE s.dubina <= ${CASCADE_MAX_DEPTH}
       ) CYCLE work_order_id, line_id SET je_ciklus USING pg_putanja
       , cvor AS (
         SELECT DISTINCT ON (work_order_id, line_id)
                work_order_id, line_id,
-               min(dubina)        OVER (PARTITION BY work_order_id, line_id) AS dubina,
+               min(dubina)        OVER (PARTITION BY work_order_id, line_id) AS dubina_min,
                bool_or(je_ciklus) OVER (PARTITION BY work_order_id, line_id) AS ciklus,
                putanja_txt
           FROM succ
@@ -670,10 +711,14 @@ export class PlanProizvodnjeService {
       )
       SELECT c.work_order_id::text AS work_order_id,
              c.line_id::text       AS line_id,
-             c.dubina, c.ciklus, c.putanja_txt,
+             c.dubina_min AS dubina, c.ciklus, c.putanja_txt,
              base.planned_start_at, base.planned_end_at,
              ${this.shiftExpr(Prisma.raw("base.planned_start_at"), delta)} AS novi_start,
-             ${this.shiftExpr(Prisma.raw("base.planned_end_at"), delta)}   AS novi_end,
+             ${this.shiftEndExpr(
+               Prisma.raw("base.planned_start_at"),
+               Prisma.raw("base.planned_end_at"),
+               delta,
+             )} AS novi_end,
              (base.line_id_raw IS NULL)     AS orfan,
              (base.archived_at IS NOT NULL) AS arhivirano,
              base.rn_ident_broj, base.operacija, base.broj_crteza, base.effective_machine_code,
@@ -700,7 +745,7 @@ export class PlanProizvodnjeService {
             FROM tech_processes t
            WHERE t.work_order_id = base.wo_raw AND t.operation_number = base.operacija
         ) tr ON true
-       ORDER BY c.dubina, c.work_order_id, c.line_id`);
+       ORDER BY c.dubina_min, c.work_order_id, c.line_id`);
 
     if (rows.length === 0) {
       throw new NotFoundException({
@@ -726,6 +771,19 @@ export class PlanProizvodnjeService {
       };
     }
 
+    // KAPA DUBINE JE DODIRNUTA (rekurzija je puštena JEDAN nivo preko kape baš da bi se
+    // to videlo). Tiho sečenje repa je gore od odbijanja: pomerila bi se glava lanca, a
+    // rep bi ostao — tj. pokvarili bi se razmaci koje ova funkcija čuva.
+    const najdublji = rows.reduce((m, r) => Math.max(m, Number(r.dubina) || 0), 0);
+    if (najdublji > CASCADE_MAX_DEPTH) {
+      throw new UnprocessableEntityException({
+        message: "cascade_too_deep",
+        code: "cascade_too_deep",
+        dubina: najdublji,
+        cap: CASCADE_MAX_DEPTH,
+      });
+    }
+
     if (rows.length > CASCADE_MAX_NODES) {
       throw new UnprocessableEntityException({
         message: "cascade_too_large",
@@ -736,6 +794,22 @@ export class PlanProizvodnjeService {
     }
 
     const sidro = rows[0]; // dubina 0, uvek tačno jedan
+    // 🔴 SIDRO JE IZUZETO SAMO OD `zavrseno` (presuđena odluka — koren izmerenog lanca
+    // 3.40 JESTE završen). Mrtva veza i arhivirana pozicija se sude ISTO i nad sidrom:
+    // inače isti red dobija dve suprotne presude — kao sidro se pomeri, a kao TUĐ
+    // sledbenik se preskoči uz obrazloženje „pozicija je arhivirana".
+    if (sidro.orfan) {
+      throw new UnprocessableEntityException({
+        message: "anchor_orphan",
+        code: "anchor_orphan",
+      });
+    }
+    if (sidro.arhivirano) {
+      throw new UnprocessableEntityException({
+        message: "anchor_archived",
+        code: "anchor_archived",
+      });
+    }
     if (sidro.planned_start_at == null) {
       throw new UnprocessableEntityException({
         message: "anchor_without_terms",
@@ -748,7 +822,8 @@ export class PlanProizvodnjeService {
     const skip = (r: ChainRow, kod: SkipKod) =>
       skipped.push({ ...r, razlog_kod: kod, razlog: SKIP_RAZLOZI[kod] });
     for (const r of rows) {
-      // SIDRO SE NE PRESKAČE NIKAD — izričita radnja planera.
+      // SIDRO SE NE PRESKAČE NIKAD — izričita radnja planera (a orfan/arhivirano su
+      // već presuđeni gore, pa ovde ostaje samo `zavrseno` kao izuzetak).
       if (Number(r.work_order_id) === wo && Number(r.line_id) === line) {
         moved.push(r);
         continue;
@@ -765,7 +840,7 @@ export class PlanProizvodnjeService {
       sidro,
       moved,
       skipped,
-      dubinaMax: rows.reduce((m, r) => Math.max(m, Number(r.dubina) || 0), 0),
+      dubinaMax: najdublji,
       zahvat: rows.length,
     };
   }
@@ -951,6 +1026,28 @@ export class PlanProizvodnjeService {
              ELSE ((${col} ${AT_PLAN_TZ} + make_interval(days => ${delta}::int)) ${AT_PLAN_TZ}) END`;
   }
 
+  /**
+   * Isto kao `shiftExpr`, ali KRAJ ne sme da padne pre POČETKA.
+   *
+   * 🔴 PRELAZ NA LETNJE VREME PRAVI KRAJ PRE POČETKA: pozicija koja traje `02:30 → 03:00`
+   * pomerena NA dan prelaska (npr. 2027-03-28, kad lokalnog sata 02:30 nema) dobija
+   * početak koji „preskoči" u 03:30, a kraj ostane 03:00. To je stanje koje redovan upis
+   * odbija sa 422 (`assertPlanConsistent` → `planned_end_before_start`), a kaskada ga
+   * upisuje jer tu proveru ne zove. `GREATEST` je najjeftinija brana koja to ne dozvoljava.
+   *
+   * Spoljni `CASE` je OBAVEZAN: `GREATEST` u PostgreSQL-u IGNORIŠE `NULL`, pa bi red bez
+   * `planned_end_at` (izveden kraj iz tehnologije) dobio kraj = novi početak i time bi se
+   * „auto iz tehnologije" TIHO ugasilo.
+   */
+  private shiftEndExpr(
+    startCol: Prisma.Sql,
+    endCol: Prisma.Sql,
+    delta: number,
+  ): Prisma.Sql {
+    return Prisma.sql`CASE WHEN ${endCol} IS NULL THEN NULL
+             ELSE GREATEST(${this.shiftExpr(endCol, delta)}, ${this.shiftExpr(startCol, delta)}) END`;
+  }
+
   // ==========================================================================
   // Urgency (HITNO) — set/clear, DELETE nikad
   // ==========================================================================
@@ -1016,10 +1113,26 @@ export class PlanProizvodnjeService {
     );
   }
 
-  /** Bulk reassign (JEDAN client_event_uuid za ceo bulk; paritet 1.0). */
+  /**
+   * Bulk reassign (JEDAN client_event_uuid za ceo bulk; paritet 1.0).
+   *
+   * 🔴 075/26: PRE petlje ide KANONSKI pre-lock, iz istog razloga kao u `reorderOverlays`.
+   * `reassign-dialog.tsx` šalje parove redom kako stoje NA EKRANU (hala / mašina /
+   * `shift_sort_order`), a kaskada i reorder brave uzimaju po `(work_order_id, line_id)`.
+   * Oba gesta se pokreću sa ISTOG ekrana („Po mašini": prevlačenje redosleda + „Premesti"
+   * nad izborom), pa je bez ovoga par (reorder ↔ bulkReassign) živ `40P01` posle
+   * `deadlock_timeout = 1 s` — planeru izgleda kao 500.
+   */
   async bulkReassign(email: string, dto: BulkReassignDto, canForce: boolean) {
     const cev = dto.clientEventId ?? randomUUID();
     return this.prisma.$transaction(async (tx) => {
+      await this.lockOverlays(
+        tx,
+        dto.pairs.map((p) => ({
+          wo: Number(p.workOrderId),
+          line: Number(p.lineId),
+        })),
+      );
       let count = 0;
       for (const p of dto.pairs) {
         await this.reassignOne(

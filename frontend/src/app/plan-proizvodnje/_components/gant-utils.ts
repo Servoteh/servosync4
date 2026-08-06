@@ -574,6 +574,127 @@ export function shiftPreview(
 }
 
 /**
+ * Prag iznad kog se pomeranje lanca PITA (075/26). Ispod praga gest ide bez ijednog
+ * klika — kratak lanac je očigledna posledica veza koje je planer sam napravio.
+ */
+export const CHAIN_CONFIRM_OVER = 8;
+
+/** Šta jedan pritisak tastera nad barom znači (v. `barKeyAkcija`). */
+export type BarKeyAkcija = 'otvori' | 'resize' | 'kaskada' | null;
+
+/**
+ * 🔴 JEDNO MESTO NA KOM SE ODLUČUJE ŠTA TASTER RADI — uključujući `repeat`.
+ *
+ * Auto-ponavljanje tastature daje ~30 događaja u sekundi. Od 075/26 svaki od njih nosi
+ * NOV `clientEventId` i deltu ±1, a `mutate` ih ne serijalizuje — to je ~30 paralelnih
+ * POST-ova, svaki zaključava CEO lanac (izmereno: 19 redova). Prva transakcija prođe,
+ * ostale dobiju `409 chain_changed`: planer pritisne N dana, a upiše se manje, uz roj
+ * upozorenja. Uz to svaka transakcija drži konekciju iz Prisma pula dok čeka bravu
+ * (`maxWait` 2 s → `P2024` na NEPOVEZANIM zahtevima).
+ *
+ * Pre 075/26 je isti gest slao APSOLUTNE termine iz optimistički ažuriranog keša, pa je
+ * ponavljanje bilo bezopasno — regresiju uvodi baš prelazak na deltu.
+ */
+export function barKeyAkcija(e: {
+  key: string;
+  shiftKey: boolean;
+  repeat: boolean;
+}): BarKeyAkcija {
+  // Enter/Space smeju da se ponavljaju: otvaranje kartice je idempotentno, a gutanje
+  // `preventDefault`-a na ponovljenom Space-u bi vratilo skrol strane ispod fokusa.
+  if (e.key === 'Enter' || e.key === ' ') return 'otvori';
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return null;
+  if (e.repeat) return null;
+  return e.shiftKey ? 'resize' : 'kaskada';
+}
+
+/**
+ * 🔴 GEJT KASKADE — JEDNA funkcija za OBA puta (prevlačenje i ←/→).
+ *
+ * Do popravke je `onBarKey` zvao upis DIREKTNO: bez pregleda, bez dijaloga, bez
+ * `expectedHash`, bez provere veličine lanca i završenih sledbenika — dok je ISTI lanac
+ * pomeren MIŠEM obavezno otvarao dijalog. Izmereno na produkciji: koren lanca mašine 3.40
+ * (`47617/231323`) ima 19 čvorova i pomera 15 pozicija na 15 naloga, a pre 075/26 je ←/→
+ * pomerao TAČNO JEDAN bar. Domet gesta je porastao sa 1 na 15 bez ikakve promene u gestu.
+ *
+ * `true` = kratak i IZVESTAN lanac → upis bez ijednog klika.
+ * `false` = dug ili neizvestan → prvo `dryRun`, pa odluka (v. `gantt-tab.tsx`).
+ *
+ * „Neizvesno" je svaki prikaz u kom FE ne može da vidi ceo lanac: aktivan filter
+ * hale/pretrage, odsečen feed, ili čvor lanca koji nije među iscrtanim redovima.
+ * Završenost se gleda SAMO na sledbenicima — sidro se pomera uvek (isto pravilo kao
+ * serverski `needs_confirm`), pa završen bar koji je planer sam uhvatio ne otvara dijalog.
+ */
+export function chainGateBrzPut(a: {
+  /** Sidro + svi sledbenici (ključevi `opKey`). */
+  kljucevi: string[];
+  /** Samo sledbenici (bez sidra) — nad njima se meri završenost. */
+  sledbenici: string[];
+  /** Ceo učitan feed (ne isečak) — izvor `is_completed_effective`. */
+  rows: GanttRow[];
+  /** Ključevi redova koji su STVARNO iscrtani (`layoutRows(groups).map`). */
+  iscrtani: ReadonlySet<string>;
+  /** Aktivan filter hale/pretrage ili odsečen feed. */
+  neizvestanPrikaz: boolean;
+}): boolean {
+  if (a.kljucevi.length > CHAIN_CONFIRM_OVER) return false;
+  if (a.neizvestanPrikaz) return false;
+  if (a.kljucevi.some((k) => !a.iscrtani.has(k))) return false;
+  const byKey = new Map(a.rows.map((r) => [rowKey(r), r]));
+  return !a.sledbenici.some((k) => byKey.get(k)?.is_completed_effective === true);
+}
+
+/**
+ * Da li posle kaskade ijedan POMEREN bar pada u tekući prozor ose.
+ *
+ * Put kroz karticu pozicije prima PROIZVOLJAN broj dana (prevlačenje je ograničeno
+ * širinom ose, tastatura na ±1), pa pomak od 30 dana izbaci sve barove van prozora
+ * (`barGeometry` → `visible:false`) i planer ostane pred redovima BEZ ijednog bara i bez
+ * objašnjenja. Kad je tako, prozor prati pomak.
+ */
+export function kaskadaVanProzora(
+  stavke: { planned_start_at: string | null }[],
+  rangeStart: Date,
+  days: number,
+): boolean {
+  if (stavke.length === 0) return false;
+  const od = startOfDay(rangeStart).getTime();
+  const do_ = addDays(startOfDay(rangeStart), days).getTime();
+  return !stavke.some((s) => {
+    if (!s.planned_start_at) return false;
+    const t = new Date(s.planned_start_at).getTime();
+    return t >= od && t < do_;
+  });
+}
+
+/**
+ * Srpska množina za 2–4 (075/26 nalaz: „2 pozicija" umesto „2 pozicije").
+ *
+ * Pravilo: `n % 100` u 11–14 → oblik za mnogo (11 pozicija, 12 dana); inače `n % 10 === 1`
+ * → jednina (21 pozicija, 31 dan), `n % 10` u 2–4 → oblik za 2–4 (22 pozicije, 23 dana).
+ * Znak se ignoriše — pomak ume da bude i negativan (−2 dana).
+ */
+export function srPlural(n: number, jedan: string, dvaTri: string, mnogo: string): string {
+  const a = Math.abs(Math.trunc(n));
+  const stotina = a % 100;
+  if (stotina >= 11 && stotina <= 14) return mnogo;
+  const jedinica = a % 10;
+  if (jedinica === 1) return jedan;
+  if (jedinica >= 2 && jedinica <= 4) return dvaTri;
+  return mnogo;
+}
+
+/** „1 dan" · „2 dana" · „5 dana" · „21 dan". */
+export function danLabel(n: number): string {
+  return srPlural(n, 'dan', 'dana', 'dana');
+}
+
+/** „1 pozicija" · „2 pozicije" · „5 pozicija" · „22 pozicije". */
+export function pozicijaLabel(n: number): string {
+  return srPlural(n, 'pozicija', 'pozicije', 'pozicija');
+}
+
+/**
  * Prevod BE kodova greške u razlog na srpskom — planer mora da vidi ZAŠTO nije
  * sačuvano, a ne generično „Nije sačuvano". Živi ovde (a ne u dijalogu stavke) od
  * 075/26: dele ga i tab i dijalog, jer je kaskada JEDINI gest koji ume da odbije ceo
@@ -587,8 +708,11 @@ export const BE_RAZLOZI: Record<string, string> = {
   // ── 075/26 (kaskada)
   predecessor_cycle: 'Veze prave petlju — pozicija bi zavisila sama od sebe preko lanca.',
   cascade_too_large: 'Lanac je predugačak za jedan upis — javi da se podigne granica.',
+  cascade_too_deep: 'Lanac veza je predubok za jedan upis — javi da se podigne granica.',
   chain_changed: 'Plan se u međuvremenu promenio — osveži gant i pomeri ponovo.',
   anchor_without_terms: 'Pozicija nema planiran termin.',
+  anchor_orphan: 'Pozicija više ne postoji (mrtva veza) — ne može da se pomeri.',
+  anchor_archived: 'Pozicija je arhivirana — ne može da se pomeri.',
   overlay_not_found: 'Pozicija nije na planu.',
   delta_zero: 'Nema pomaka.',
 };

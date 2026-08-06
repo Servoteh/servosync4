@@ -12,7 +12,13 @@ import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { formatDateTime } from '@/lib/format';
-import { overlayErrorMessage } from './gant-utils';
+import { toast } from '@/lib/toast';
+import {
+  danLabel,
+  overlayErrorMessage,
+  pozicijaLabel,
+  type GanttSort,
+} from './gant-utils';
 
 /**
  * Potvrda kaskadnog pomeranja lanca (zahtev 075/26 — F2 iz 046/26).
@@ -33,12 +39,22 @@ export function GantLanacDialog({
   plan: planProp,
   /** Koliko stavki plana NIJE iscrtano na ekranu (računa tab nad `layoutRows`). */
   nevidljivih,
+  /**
+   * 070/26 „Ređaj po" — režim ređanja redova unutar mašine. U `termin` režimu kaskada
+   * PREUREDI redosled na mašini (ključ je `planned_start_at`); u `rucni` režimu je
+   * primarni ključ `shift_sort_order`, pa se posle kaskade NIJEDAN red ne premešta.
+   * Bez ovoga dijalog tvrdi neistinu u pola slučajeva — planer ili potpisuje posledicu
+   * koja se neće dogoditi, ili odustaje od poteza da ne bi „pokvario redosled smene"
+   * koji kaskada uopšte ne dira.
+   */
+  sortMode,
   onClose,
   onDone,
 }: {
   open: boolean;
   plan: ShiftChainPlan;
   nevidljivih: number;
+  sortMode: GanttSort;
   onClose: () => void;
   onDone: (plan: ShiftChainPlan) => void;
 }) {
@@ -70,8 +86,22 @@ export function GantLanacDialog({
           onClose();
         },
         onError: (e) => {
+          const body =
+            e instanceof ApiError
+              ? (e.body as {
+                  plan?: ShiftChainPlan;
+                  cycle?: { ivica: string };
+                } | null)
+              : null;
+          // 🔴 CIKLUS JE TRAJNO STANJE, NE „osveži pa probaj": 422 `predecessor_cycle`
+          // nosi IVICU koju treba razvezati. Dijalog se zatvara — ostajanje sa aktivnim
+          // dugmetom „Pomeri" nad stanjem koje se samo od sebe ne popravlja je petlja.
+          if (body?.cycle?.ivica) {
+            toast(`⚠ Veze prave petlju (${body.cycle.ivica}) — razveži pa pomeri.`);
+            onClose();
+            return;
+          }
           // 409 nosi SVEŽ plan u telu — prerenderuj bez drugog poziva.
-          const body = e instanceof ApiError ? (e.body as { plan?: ShiftChainPlan } | null) : null;
           if (body?.plan) {
             setPlan(body.plan);
             setZastarelo(true);
@@ -86,6 +116,11 @@ export function GantLanacDialog({
 
   const dani = plan.delta_dana;
   const smer = dani > 0 ? `+${dani}` : String(dani);
+  /**
+   * Ciklus u SVEŽEM planu (409 → prerender). Tada nema šta da se pomeri: tabela je
+   * prazna, pa dugme „Pomeri" mora biti zaključano, a ivica ispisana.
+   */
+  const ciklusIvica = plan.ciklus?.ivica ?? null;
 
   return (
     <Dialog
@@ -99,15 +134,26 @@ export function GantLanacDialog({
           <Button variant="secondary" onClick={onClose} disabled={shift.isPending}>
             Odustani
           </Button>
-          {/* Onemogućeno dok traje upis — dvoklik bi dao DVOSTRUKU deltu. */}
-          <Button onClick={pomeri} loading={shift.isPending} disabled={shift.isPending}>
+          {/* Onemogućeno dok traje upis (dvoklik bi dao DVOSTRUKU deltu) i nad ciklusom
+              (nema šta da se pomeri dok se veza ne razveže). */}
+          <Button
+            onClick={pomeri}
+            loading={shift.isPending}
+            disabled={shift.isPending || ciklusIvica !== null}
+          >
             Pomeri
           </Button>
         </div>
       }
     >
       <div className="space-y-3">
-        {zastarelo ? (
+        {ciklusIvica ? (
+          <p className="flex items-start gap-2 rounded-panel border border-status-danger/40 bg-status-danger-bg px-3 py-2 text-sm text-status-danger">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            Veze prave petlju ({ciklusIvica}) — razveži tu vezu pa pomeri. Dok petlja
+            postoji, nijedna pozicija ne može da se pomeri.
+          </p>
+        ) : zastarelo ? (
           <p className="flex items-start gap-2 rounded-panel border border-status-warn/40 bg-status-warn-bg px-3 py-2 text-sm text-status-warn">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             Plan se u međuvremenu promenio — pogledaj ponovo pre potvrde.
@@ -116,7 +162,10 @@ export function GantLanacDialog({
 
         <p className="text-2xs text-ink-secondary">
           Sve pozicije se pomeraju za <b>isti broj dana</b> — razmaci između njih ostaju
-          nepromenjeni. Redosled na mašini će se preurediti: ređanje je po terminu.
+          nepromenjeni.{' '}
+          {sortMode === 'rucni'
+            ? 'Ručni redosled stavki na mašini se NE menja — menjaju se samo termini.'
+            : 'Redosled na mašini će se preurediti: ređanje je po terminu.'}
           {nevidljivih > 0
             ? ` ${nevidljivih} ${pozicijaLabel(nevidljivih)} nije prikazano na ekranu (van prozora ili van 300 iscrtanih redova).`
             : ''}
@@ -192,14 +241,6 @@ export function GantLanacDialog({
 /** Uvlačenje po dubini u lancu (px) — plitko, da tabela ostane čitljiva i na 16 nivoa. */
 function uvlacenje(dubina: number): number {
   return Math.min(dubina, 8) * 10;
-}
-
-function danLabel(n: number): string {
-  return Math.abs(n) === 1 ? 'dan' : 'dana';
-}
-
-function pozicijaLabel(n: number): string {
-  return n === 1 ? 'pozicija' : 'pozicija';
 }
 
 /**

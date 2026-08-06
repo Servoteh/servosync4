@@ -29,6 +29,7 @@ import {
   readyReason,
   scrapBadge,
   technologyMinutes,
+  type GanttSort,
 } from './gant-utils';
 import { GantLanacDialog, ucitajPlanLanca } from './gant-lanac-dialog';
 import type { ShiftChainPlan } from '@/api/plan-proizvodnje';
@@ -64,6 +65,8 @@ export function GantStavkaDialog({
   row,
   onClose,
   ordinals,
+  sortMode = 'termin',
+  onLanacDone,
 }: {
   open: boolean;
   row: GanttRow;
@@ -74,6 +77,21 @@ export function GantStavkaDialog({
    * rednim brojem"): ukucan broj se mapira u stavku i nudi kao prvi rezultat.
    */
   ordinals?: { broj: number; row: GanttRow }[];
+  /**
+   * 070/26 „Ređaj po" iz taba — samo se prosleđuje dijalogu lanca, da tekst o posledici
+   * ne tvrdi preuređivanje redosleda u režimu u kom se nijedan red ne premešta. Dolazi
+   * kao prop (a ne iz `localStorage` u renderu) jer static export prerenderuje stranu.
+   */
+  sortMode?: GanttSort;
+  /**
+   * 075/26 — ishod kaskade pokrenute IZ KARTICE, propušten naviše.
+   *
+   * 🔴 Ovo je JEDINI put koji prima proizvoljan broj dana (prevlačenje je ograničeno
+   * širinom ose, tastatura na ±1), pa je najskuplji potez u modulu bio i jedini bez
+   * povratka. Kroz ovaj prop oba puta dele ISTU traku „Poništi" (i isti pomak prozora
+   * kad pomak izbaci sve barove van njega).
+   */
+  onLanacDone?: (plan: ShiftChainPlan) => void;
 }) {
   const save = useGanttOverlay({ ok: 'Sačuvano', err: overlayErrorMessage });
   const reassign = useGanttReassign();
@@ -623,12 +641,19 @@ export function GantStavkaDialog({
         open
         plan={lanacPlan}
         nevidljivih={0}
+        // Bez ovoga bi ovaj put tvrdio „redosled na mašini će se preurediti" i u režimu
+        // „ručni redosled", u kom se posle kaskade nijedan red ne premešta.
+        sortMode={sortMode}
         onClose={() => setLanacPlan(null)}
         onDone={(p) => {
           setLanacPlan(null);
-          toast(
-            `✓ Pomereno ${p.totals.pomereno}${p.totals.preskoceno > 0 ? ` · preskočeno ${p.totals.preskoceno}` : ''}`,
-          );
+          // Ishod ide TABU (traka „Poništi" + pomak prozora). Bez pozivaoca ostaje
+          // zatečeni toast — kartica sme da živi i van ganta.
+          if (onLanacDone) onLanacDone(p);
+          else
+            toast(
+              `✓ Pomereno ${p.totals.pomereno}${p.totals.preskoceno > 0 ? ` · preskočeno ${p.totals.preskoceno}` : ''}`,
+            );
           onClose();
         }}
       />
