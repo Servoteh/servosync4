@@ -253,12 +253,38 @@ export const LAGER_SKROL_KAPA = 5000;
  */
 export function useLagerSkrol(
   params: LagerListParams,
-  pageSize: number = LAGER_STRANA_SKROLA,
-  kapa: number = LAGER_SKROL_KAPA,
+  opcije: {
+    pageSize?: number;
+    kapa?: number;
+    /**
+     * `false` = upit se NE šalje. Ekran ga drži isključenim dok filteri iz adrese nisu
+     * pročitani: bez toga prvi render posle povratka sa detalja gađa NEFILTRIRAN upit od
+     * 200 redova, a taj odgovor onda i sedne u keš pod pogrešnim ključem.
+     */
+    enabled?: boolean;
+  } = {},
 ) {
+  const { pageSize = LAGER_STRANA_SKROLA, kapa = LAGER_SKROL_KAPA, enabled = true } = opcije;
   const upit = useInfiniteQuery({
     queryKey: ['masters', 'lager', 'skrol', { ...params, pageSize }],
     initialPageParam: 1,
+    enabled,
+    /**
+     * 🔴 KEŠ MORA DA PREŽIVI POSETU DETALJU ARTIKLA.
+     *
+     * Podrazumevanih 5 minuta (`gcTime`) je kraće od jednog pogleda u karticu artikla —
+     * po povratku bi keš bio pometen i lista bi krenula od PRVE strane, pa bi magacioner
+     * izgubio i mesto i svih 15 učitanih strana. 30 minuta pokriva stvarnu radnju.
+     *
+     * `refetchOnMount: false` iz istog razloga: uz podrazumevano ponašanje bi povratak
+     * ponovo dovukao SVE učitane strane redom (do 25 uzastopnih agregacija nad
+     * ogledalom). Svežina ovde ionako ništa ne znači — `*_mirror` tabele puni noćni
+     * `.mdb` uvoz u 03:45, pa se podaci tokom radnog dana ne menjaju. Jedina izmena koja
+     * ih dira (`useSetMinimalnaKolicina`) poništava keš izričito i tada se osvežavanje
+     * svejedno dešava.
+     */
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
     queryFn: ({ pageParam }) =>
       apiFetch<LagerResponse>(`/v1/artikli/lager${buildLagerQuery({ ...params, page: pageParam, pageSize })}`),
     getNextPageParam: (poslednja, sve) => {
@@ -284,6 +310,12 @@ export function useLagerSkrol(
     meta,
     ukupno,
     ucitano: redovi.length,
+    /**
+     * Koliko strana keš STVARNO drži u ovom trenutku. Ekran po tome zna sme li da vrati
+     * zapamćeno mesto: ako je keš u međuvremenu istekao, strana ima manje nego što je
+     * zapamćeno i restauracija se napušta umesto da se strane dovlače u petlji.
+     */
+    strane: strane?.length ?? 0,
     /** `true` = stalo se zbog KAPE, a ne zbog kraja spiska — ekran to mora reći. */
     naKapi: redovi.length >= kapa && ukupno > redovi.length,
   };

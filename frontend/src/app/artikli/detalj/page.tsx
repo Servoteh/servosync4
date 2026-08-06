@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Pencil } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -10,6 +10,11 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { listHref } from '@/lib/use-id-param';
+import {
+  citajIzvorListeArtikala,
+  putanjaListeArtikala,
+  type IzvorListeArtikala,
+} from '@/lib/povratak-na-listu';
 import { useArtikal, useItemLookups } from '@/api/masters';
 import { MaticniEkran } from '../_forma/polja';
 import { BRANA_ARTIKAL } from '../_forma/pravila';
@@ -45,14 +50,32 @@ export default function ArtikalDetaljPage() {
   const [validId, setValidId] = useState<number | null>(null);
   const [idResolved, setIdResolved] = useState(false);
   const [rezim, setRezim] = useState<Rezim>('pregled');
+
+  /**
+   * ODAKLE SE DOŠLO — detalj artikla ima DVA ulaza (pregled artikala i lager lista), pa
+   * „Nazad" ne sme da bude zakucan. Do 07.08.2026 su sva tri izlaza (Esc, `onIzlaz`,
+   * dugme „Nazad") vodila na `/artikli`, pa je magacioner koji je iz lagera otvorio
+   * „Detaljno artikal" završavao na pregledu artikala — sa filterima te druge liste.
+   * Vlasnik je to prijavio kao „vrati me na početnu stranu".
+   *
+   * Isti obrazac kao na kartici artikla; obe strane sada koriste ISTOG pomoćnika.
+   */
+  const [izvor, setIzvor] = useState<IzvorListeArtikala>('artikli');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const raw = params.get('id');
     const n = raw ? Number(raw) : NaN;
     setValidId(Number.isInteger(n) && n > 0 ? n : null);
     setRezim(params.get('rezim') === 'izmena' ? 'izmena' : 'pregled');
+    setIzvor(citajIzvorListeArtikala(window.location.search));
     setIdResolved(true);
   }, []);
+
+  /** Povratak na listu iz koje se došlo, SA njenim poslednjim filterima. */
+  const nazadNaListu = useCallback(
+    () => router.push(listHref(putanjaListeArtikala(izvor))),
+    [router, izvor],
+  );
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -63,11 +86,11 @@ export default function ArtikalDetaljPage() {
   useEffect(() => {
     if (rezim === 'izmena') return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') router.push(listHref('/artikli'));
+      if (e.key === 'Escape') nazadNaListu();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [router, rezim]);
+  }, [nazadNaListu, rezim]);
 
   const q = useArtikal(validId);
   const sifarnici = useItemLookups();
@@ -153,7 +176,7 @@ export default function ArtikalDetaljPage() {
         vrednosti={vrednosti}
         onPromena={setVrednosti}
         opcijePolja={opcije}
-        onIzlaz={() => router.push(listHref('/artikli'))}
+        onIzlaz={nazadNaListu}
         akcije={
           <>
             {a.active ? (
@@ -184,7 +207,7 @@ export default function ArtikalDetaljPage() {
       <PageHeader
         title="Artikal"
         actions={
-          <Button variant="secondary" onClick={() => router.push(listHref('/artikli'))}>
+          <Button variant="secondary" onClick={nazadNaListu}>
             <ArrowLeft className="h-4 w-4" aria-hidden />
             Nazad
           </Button>

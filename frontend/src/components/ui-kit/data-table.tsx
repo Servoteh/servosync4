@@ -8,6 +8,7 @@ import {
   useState,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
 } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -79,6 +80,17 @@ interface DataTableProps<T> {
    * viewport, pa dno tabele završi pod donjom trakom Safarija.
    */
   maxHeight?: string;
+  /**
+   * RUČKA NA SKROL-OKVIR tabele (opciono, čisto aditivno).
+   *
+   * Uz `maxHeight`/`stickyHeader` tabela ne skroluje prozorom nego SOPSTVENIM okvirom,
+   * pa `window.scrollY` o njoj ne zna ništa — ekran koji hoće da zapamti gde je
+   * korisnik stao (povratak sa detalja na beskonačan skrol) nema drugog načina da
+   * dohvati `scrollTop`.
+   *
+   * Prima i objektni i callback ref. Ekrani koji ga ne zadaju se renderuju identično.
+   */
+  scrollRef?: Ref<HTMLDivElement>;
   /**
    * Akcije nad redom. Postavljeno = tabela dobija poslednju kolonu sa dugmetom „…"
    * i isti meni na desni klik na red. Poziva se pri OTVARANJU menija, pa lista
@@ -154,6 +166,7 @@ export function DataTable<T>({
   stickyHeader,
   frozenColumns,
   maxHeight,
+  scrollRef,
   rowActions,
   selectedKey,
   onSelectionChange,
@@ -293,6 +306,7 @@ export function DataTable<T>({
   return (
     <>
     <div
+      ref={scrollRef}
       className={cn(
         'overflow-x-auto rounded-panel border border-line bg-surface',
         // Zamrznuto zaglavlje traži da OVAJ okvir bude skrol-kontejner po obe ose.

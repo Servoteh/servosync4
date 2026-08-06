@@ -12,7 +12,7 @@ import { Select } from '@/components/ui-kit/select';
 import { Input } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
-import { listHref, useListQueryState } from '@/lib/use-id-param';
+import { listHref, useListQueryState, useZapamcenaPozicijaListe } from '@/lib/use-id-param';
 import { exportTableToCsv, type CsvColumn } from '@/lib/table-csv';
 import { formatDecimal, formatNumber } from '@/lib/format';
 import { useItemLookups } from '@/api/masters';
@@ -401,7 +401,10 @@ export default function LagerPage() {
 
   // Filteri i sort žive U URL-u (frontend/CLAUDE.md §12) — povratak sa kartice vraća listu
   // tačno kakva je bila, a adresa lagera se sme poslati kolegi u poruci.
-  const { values, setValues } = useListQueryState(PRAZAN_FILTER);
+  // `resolved` je false do prvog efekta, dok se filteri ne pročitaju iz adrese. Bez njega
+  // bi prvi render posle povratka sa detalja poslao NEFILTRIRAN upit od 200 redova i
+  // upisao ga u keš — pa bi se lista na tren prikazala nefiltrirana.
+  const { values, resolved, setValues } = useListQueryState(PRAZAN_FILTER);
 
   // Tekstualno polje se kuca lokalno, pa se posle KUCANJE_MS upisuje u URL.
   const [trazi, setTrazi] = useState(values.trazi);
@@ -479,7 +482,25 @@ export default function LagerPage() {
     [values, sort, godina, magacinBroj],
   );
 
-  const { upit, redovi, meta, ukupno, ucitano, naKapi } = useLagerSkrol(filters);
+  const { upit, redovi, meta, ukupno, ucitano, naKapi, strane } = useLagerSkrol(filters, {
+    enabled: resolved,
+  });
+
+  /**
+   * MESTO U LISTI preko odlaska na detalj/karticu (prijava vlasnika 07.08.2026).
+   *
+   * Potpis je ceo serverski filter — svaka njegova promena je druga lista, pa se zapis
+   * briše i skrol vraća na vrh. `spremno` traži da redovi budu STVARNO u DOM-u: pre toga
+   * okvir nema visinu i `scrollTop` bi pregledač odsekao na 0.
+   */
+  const potpisFiltera = useMemo(() => JSON.stringify(filters), [filters]);
+  const { okvirRef, izgubljenoRedova } = useZapamcenaPozicijaListe({
+    kljuc: '/artikli/lager',
+    potpis: potpisFiltera,
+    spremno: resolved && redovi.length > 0,
+    straneUKesu: strane,
+    redova: redovi.length,
+  });
 
   /**
    * SME LI SE „Min. kol." MENJATI — DVA USLOVA, OBA OBAVEZNA.
@@ -640,7 +661,10 @@ export default function LagerPage() {
           labela: 'Detaljno artikal',
           onemoguceno: razlog,
           onSelect: () => {
-            if (red) router.push(`/artikli/detalj?id=${red.itemId}`);
+            // `izvor=lager` iz ISTOG razloga kao kod kartice iznad: bez njega je detalj
+            // vraćao na PREGLED ARTIKALA, sa filterima te druge liste — vlasnik je to
+            // prijavio kao „vrati me na početnu stranu" (07.08.2026).
+            if (red) router.push(`/artikli/detalj?id=${red.itemId}&izvor=lager`);
           },
         },
       ];
@@ -1017,12 +1041,16 @@ export default function LagerPage() {
             columns={kolone}
             rows={redovi}
             rowKey={kljucReda}
-            loading={upit.isLoading}
+            // `!resolved` MORA ući u učitavanje: dok se filteri čitaju iz adrese upit je
+            // isključen, pa je `isLoading` false i tabela bi na tren treperila kao prazna.
+            loading={!resolved || upit.isLoading}
             sort={sort}
             onSortToggle={prebaciSort}
             stickyHeader
             frozenColumns={2}
             maxHeight={VISINA_TABELE}
+            // Tabela skroluje sopstveni okvir, ne prozor — ovo je jedina ručka na njega.
+            scrollRef={okvirRef}
             rowActions={akcijeZaRed}
             selectedKey={izabran ? kljucReda(izabran) : null}
             onSelectionChange={izaberi}
@@ -1045,6 +1073,16 @@ export default function LagerPage() {
           <span className="text-sm text-ink-secondary">
             Prikazano {formatNumber(ucitano)} od {formatNumber(ukupno)}
           </span>
+
+          {/* Bio je ovde duže nego što keš živi (ili je lista otvorena u novom tabu), pa
+              se zapamćeno mesto NE vraća — dovlačenje 15 strana redom bi bio plotun
+              zahteva nad ogledalom. Umesto toga se kaže dokle je ranije bio stigao, a
+              „Učitaj još" stoji odmah pored. */}
+          {izgubljenoRedova > ucitano && (
+            <span className="text-sm text-ink-secondary">
+              ranije učitano {formatNumber(izgubljenoRedova)} redova
+            </span>
+          )}
 
           {upit.hasNextPage && (
             <Button

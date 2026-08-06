@@ -17,6 +17,11 @@ import { ExportCsvButton } from '@/components/export-csv-button';
 import type { CsvColumn } from '@/lib/table-csv';
 import { cn } from '@/lib/cn';
 import { listHref, useIdParam } from '@/lib/use-id-param';
+import {
+  citajIzvorListeArtikala,
+  putanjaListeArtikala,
+  type IzvorListeArtikala,
+} from '@/lib/povratak-na-listu';
 import { useQueryTab } from '@/lib/use-query-tab';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
 import { useArtikal } from '@/api/masters';
@@ -567,13 +572,16 @@ export default function KarticaArtiklaPage() {
   // ne sme da bude fiksan: povratak na tuđu listu izgleda kao da se ekran „izgubio".
   // Lager lista zato u adresu upisuje `izvor=lager`; sve ostalo (i deljen link) vodi na
   // pregled artikala. `listHref` uz to vraća i poslednje filtere te liste.
-  const [izvor, setIzvor] = useState<'artikli' | 'lager'>('artikli');
+  // Čitanje izvora i mapa putanja žive u `@/lib/povratak-na-listu` — ISTI pomoćnik
+  // koristi i detalj artikla, da se dva ekrana ne raziđu (a raziđeni su i bili: detalj
+  // je do 07.08.2026 sva tri izlaza vodio na pregled artikala).
+  const [izvor, setIzvor] = useState<IzvorListeArtikala>('artikli');
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get('izvor') === 'lager') setIzvor('lager');
+    setIzvor(citajIzvorListeArtikala(window.location.search));
   }, []);
 
   const nazadNaListu = useCallback(
-    () => router.push(listHref(izvor === 'lager' ? '/artikli/lager' : '/artikli')),
+    () => router.push(listHref(putanjaListeArtikala(izvor))),
     [router, izvor],
   );
 
@@ -614,12 +622,21 @@ export default function KarticaArtiklaPage() {
     );
   }
 
-  return <Kartica id={id} onNazad={nazadNaListu} />;
+  return <Kartica id={id} izvor={izvor} onNazad={nazadNaListu} />;
 }
 
 // ──────────────────────────────────────────────────────────────────────── sadržaj
 
-function Kartica({ id, onNazad }: { id: number; onNazad: () => void }) {
+function Kartica({
+  id,
+  izvor,
+  onNazad,
+}: {
+  id: number;
+  /** Prosleđuje se dalje na detalj — v. dugme „Detaljno artikal". */
+  izvor: IzvorListeArtikala;
+  onNazad: () => void;
+}) {
   const router = useRouter();
   const { can } = useAuth();
 
@@ -684,7 +701,10 @@ function Kartica({ id, onNazad }: { id: number; onNazad: () => void }) {
           <div className="flex items-center gap-2">
             <Button
               variant="secondary"
-              onClick={() => router.push(`/artikli/detalj?id=${id}`)}
+              // Izvor se PROSLEĐUJE dalje: put lager → kartica → detalj je inače gubio
+              // trag posle prvog skoka, pa je „Nazad" sa detalja opet vodio na pregled
+              // artikala umesto na lager.
+              onClick={() => router.push(`/artikli/detalj?id=${id}&izvor=${izvor}`)}
               title="Matični slog artikla (67 kolona)"
             >
               <FileText className="h-4 w-4" aria-hidden />
