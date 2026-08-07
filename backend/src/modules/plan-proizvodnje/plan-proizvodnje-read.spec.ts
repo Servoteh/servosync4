@@ -257,7 +257,7 @@ describe("gant feed (046/26)", () => {
     // „sve što nije 1/2", da buduća 4. vrsta kvaliteta ne bi u planu prošla kao dobra.
     expect(sql).toContain("COALESCE(SUM(t.piece_count) FILTER (WHERE t.quality_type_id = 0), 0) AS good_done");
     // Kvačica: ručna presuda planera → pa količina DOBRIH ≥ plan.
-    expect(sql).toContain("COALESCE(base.planned_done, CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0");
+    expect(sql).toContain("COALESCE(tp.planned_done, CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0");
     expect(sql).toContain("THEN COALESCE(tr.good_done, 0) >= base.komada_total");
     // Zastavica kioska preživljava SAMO kao grana za nemerljivu količinu.
     expect(sql).toContain("ELSE COALESCE(tr.is_done, false) END) AS is_completed_effective");
@@ -274,7 +274,7 @@ describe("gant feed (046/26)", () => {
   it("069: oznaka škarta stoji dok škart NIJE nadoknađen (isti izraz gotovosti)", () => {
     const { priv } = makeSvc();
     const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
-    expect(sql).toContain("(COALESCE(g4.scrap_pieces, 0) > 0 AND NOT (COALESCE(base.planned_done,");
+    expect(sql).toContain("(COALESCE(g4.scrap_pieces, 0) > 0 AND NOT (COALESCE(tp.planned_done,");
     expect(sql).toContain(") AS scrap_outstanding");
     // Izraz gotovosti se pojavljuje DVA puta — kvačica i oznaka moraju iz istog izvora.
     const hits = sql.split("THEN COALESCE(tr.good_done, 0) >= base.komada_total").length - 1;
@@ -302,7 +302,7 @@ describe("gant feed (046/26)", () => {
   it("trajanje = COALESCE(override, TPZ + TK × komada)", () => {
     const { priv } = makeSvc();
     const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
-    expect(sql).toContain("COALESCE( base.planned_duration_minutes, (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int )");
+    expect(sql).toContain("COALESCE( tp.planned_duration_minutes, (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int )");
   });
 
   it("gantt() zadržava i ZATVORENE stavke koje su već na osi (planned_start_at IS NOT NULL)", async () => {

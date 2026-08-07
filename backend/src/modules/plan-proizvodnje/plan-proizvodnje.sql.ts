@@ -66,7 +66,10 @@ import { Prisma } from "@prisma/client";
  * FE ogledalo (optimistički update posle klika planera): `autoDone()` u
  * `frontend/src/api/plan-proizvodnje.ts`.
  */
-export const IS_COMPLETED_EFFECTIVE = Prisma.sql`COALESCE(base.planned_done,
+// 078/26: ručni override završenosti dolazi iz TERMINA (`tp`), ne više sa overlay-a —
+// v. lateral „najraniji nezavršen termin" u `effectiveOpsInner`. Ostatak izraza
+// (kucanja, plan, ne-mašinske operacije) je NETAKNUT.
+export const IS_COMPLETED_EFFECTIVE = Prisma.sql`COALESCE(tp.planned_done,
         CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0
                   AND base.is_non_machining IS NOT TRUE
              THEN COALESCE(tr.good_done, 0) >= base.komada_total
