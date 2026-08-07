@@ -8,6 +8,7 @@ import {
   SastanciFnService,
   type SastanciTx,
 } from "../sastanci/sastanci-fn.service";
+import { OdrzavanjeFnService } from "../odrzavanje/odrzavanje-fn.service";
 import type { ScheduledJob } from "./scheduler.types";
 
 /*
@@ -42,8 +43,16 @@ import type { ScheduledJob } from "./scheduler.types";
  * Summary string je NAMERNO istog oblika u oba slučaja (`<ime_fn>=<vrednost>`),
  * da dnevnik (`scheduled_job_runs.summary`) ostane uporediv pre i posle preklopa.
  *
- * ⚠️ Ostali poslovi (kadrovska, održavanje, BigTehn kartice) NISU ovaj domen i
- * ostaju na sy15 putu bez prekidača.
+ * ⚠️ Ostali poslovi (kadrovska, BigTehn kartice) NISU ovaj domen i ostaju na
+ * sy15 putu bez prekidača.
+ *
+ * ── SEOBA ODRŽAVANJA (07.08.2026) ────────────────────────────────────────────
+ * `maint-deadlines` poštuje ČETVRTI, sopstveni prekidač `ODRZAVANJE_IZVOR`:
+ * pod `3.0` ide kroz `OdrzavanjeFnService.checkAllDeadlines` (3.0 baza), pod
+ * `sy15` netaknutim `SELECT * FROM public.maint_check_all_deadlines(30)`.
+ * 🔴 Preklop je SPREGNUT sa radnikom `maint-notify-dispatch` (isti prekidač,
+ * `dispatch/notify-dispatch.service.ts`): outbox-a su dva, pa bi preklop samo
+ * jednog značio da obaveštenja TIHO prestanu da stižu (red bi samo stajao).
  *
  * 🔴 `pb-enqueue` gleda SVOJ prekidač `PB_IZVOR`, ne sastanci prekidač — ovaj
  * registar je jedino mesto u kodu koje drži OBA. Do 06.08.2026 su delili jedan
@@ -77,6 +86,9 @@ export class Sy15CronJobs {
     // Zaseban prekidač održavanja: `maint-deadlines` ne zavisi ni od sastanaka ni
     // od PB-a. Ovaj fajl je jedino mesto u kodu koje drži SVA TRI prekidača.
     private readonly odrIzvor: OdrzavanjeSourceService,
+    // Prepis sy15 DEFINER funkcija održavanja nad 3.0 bazom — pogon posla
+    // `maint-deadlines` pod `ODRZAVANJE_IZVOR=3.0`.
+    private readonly odrFn: OdrzavanjeFnService,
   ) {}
 
   /**
@@ -300,16 +312,36 @@ export class Sy15CronJobs {
         description: "CMMS rokovi: vozila+vozači+dokumenti+IT/objekti (lookahead 30d)",
         schedule: { kind: "daily", at: "09:00" },
         run: async () => {
-          // Korak 2 gašenja sy15: održavanje se u ovom talasu SELI, ali logika
-          // `maint_check_all_deadlines` (9.595 znakova, tri petlje + enqueue u
-          // `maint_notification_log`) JOŠ NIJE prepisana. Branjeni geter je tu da
-          // posao ne može TIHO da zaobiđe prekidač — pod `3.0` pada sa 503 i
-          // imenom putanje u dnevniku, umesto da nastavi da piše u sy15 i razilazi
-          // dve baze.
+          // Korak 2 gašenja sy15: pod `3.0` posao ide kroz prepis
+          // `maint_check_all_deadlines` u `OdrzavanjeFnService` (3.0 baza), pod
+          // `sy15` NEPROMENJENIM SQL-om na sy15.
+          //
           // 🔴 `odrIzvor`, NE `izvor`: preklop sastanaka ne sme da obori ovaj
           // posao, ni obrnuto (incident 06.08.2026).
-          this.odrIzvor.assertPorted("maint-deadlines (maint_check_all_deadlines)");
-          return this.call("SELECT * FROM public.maint_check_all_deadlines(30);");
+          //
+          // 🔴 BEZ TRANSAKCIJE (`undefined` kao `tx`), za razliku od sastanaka:
+          // ovo je duga petlja preko svih vozila, vozača, dokumenata, IT opreme i
+          // objekata, a idempotencija je PO REDU (`postojiRok` pred svaki upis).
+          // Prekid na pola je zato bezopasan — sledeći dan (ili retry) preskoči
+          // već poslato i nastavi ostatak; jedna dugačka transakcija bi samo
+          // držala brave nad outboxom bez ijedne dobiti.
+          if (this.odrIzvor.isThreeZero) {
+            const rows = await this.odrFn.checkAllDeadlines(undefined, 30);
+            // Summary je NAMERNO istog oblika koji `call()` daje za sy15 TABLE fn
+            // `TABLE(source text, enqueued int, skipped int)` — inače bi dnevnik
+            // `scheduled_job_runs` promenio format i poređenje „pre/posle
+            // preklopa" ne bi radilo.
+            return rows
+              .map(
+                (r) =>
+                  `source=${r.source} enqueued=${r.enqueued} skipped=${r.skipped}`,
+              )
+              .join("; ")
+              .slice(0, 500);
+          }
+          return this.call(
+            "SELECT * FROM public.maint_check_all_deadlines(30);",
+          );
         },
       },
       {

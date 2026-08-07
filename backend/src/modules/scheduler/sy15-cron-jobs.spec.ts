@@ -6,6 +6,7 @@ import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.ser
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
+import type { OdrzavanjeFnService } from "../odrzavanje/odrzavanje-fn.service";
 import type { ScheduledJob } from "./scheduler.types";
 
 /*
@@ -111,15 +112,34 @@ function sastFnMock(
   };
 }
 
+/**
+ * `OdrzavanjeFnService` mock — scheduler iz njega dodiruje SAMO
+ * `checkAllDeadlines` (posao `maint-deadlines`).
+ */
+function odrFnMock(
+  redovi: { source: string; enqueued: number; skipped: number }[] = [
+    { source: "vehicle", enqueued: 0, skipped: 0 },
+    { source: "it_facility", enqueued: 0, skipped: 0 },
+  ],
+) {
+  const checkAllDeadlines = jest.fn().mockResolvedValue(redovi);
+  return {
+    odrFn: { checkAllDeadlines } as unknown as OdrzavanjeFnService,
+    checkAllDeadlines,
+  };
+}
+
 function make(
   sy15 = sy15Mock(),
   p = prismaMock(),
   fn = sastFnMock(),
+  odr = odrFnMock(),
 ): {
   jobs: Map<string, ScheduledJob>;
   sy15: ReturnType<typeof sy15Mock>;
   p: ReturnType<typeof prismaMock>;
   fn: ReturnType<typeof sastFnMock>;
+  odr: ReturnType<typeof odrFnMock>;
 } {
   const svc = new Sy15CronJobs(
     sy15.sy15,
@@ -128,12 +148,14 @@ function make(
     fn.sastFn,
     new PbSourceService(),
     new OdrzavanjeSourceService(),
+    odr.odrFn,
   );
   return {
     jobs: new Map(svc.buildJobs().map((j) => [j.key, j])),
     sy15,
     p,
     fn,
+    odr,
   };
 }
 
@@ -452,14 +474,32 @@ describe("ODRZAVANJE_IZVOR — maint-deadlines je nezavisan od druga dva domena"
     ]);
   });
 
-  it("ODRZAVANJE_IZVOR=3.0: maint-deadlines GLASNO pada, NIJEDAN sy15 poziv", async () => {
+  it("ODRZAVANJE_IZVOR=3.0: maint-deadlines ide kroz 3.0 fn, NIJEDAN sy15 poziv", async () => {
     process.env.ODRZAVANJE_IZVOR = "3.0";
-    const { jobs, sy15 } = make();
-    await expect(run(jobs.get("maint-deadlines")!)).rejects.toThrow(
-      /nije preneto na 3\.0/i,
+    const { jobs, sy15, odr } = make(
+      sy15Mock(),
+      prismaMock(),
+      sastFnMock(),
+      odrFnMock([
+        { source: "vehicle", enqueued: 3, skipped: 11 },
+        { source: "it_facility", enqueued: 1, skipped: 4 },
+      ]),
     );
-    // Ključno: brana je PRE poziva — outbox se ne prazni iz stare baze.
+    const summary = await run(jobs.get("maint-deadlines")!);
+
+    // 🔴 Ovo je bila brana (503) do preklopa 07.08.2026 — sada je skretnica.
+    // Ključno ostaje ISTO: kad je izvor 3.0, u sy15 ne sme da ode NIJEDAN upit,
+    // inače bi rokovi nastajali u obe baze.
     expect(sy15.sql).toEqual([]);
+    expect(odr.checkAllDeadlines).toHaveBeenCalledTimes(1);
+    // `undefined` kao `tx`: posao NAMERNO ne ide u jednu dugu transakciju
+    // (idempotencija je po redu), pa prekid na pola preskoči već poslato.
+    expect(odr.checkAllDeadlines).toHaveBeenCalledWith(undefined, 30);
+    // Summary zadržava oblik sy15 TABLE fn — dnevnik `scheduled_job_runs` mora
+    // ostati uporediv pre i posle preklopa.
+    expect(summary).toBe(
+      "source=vehicle enqueued=3 skipped=11; source=it_facility enqueued=1 skipped=4",
+    );
   });
 
   it("🔴 ODRZAVANJE_IZVOR=3.0 NE obara poslove sastanaka ni PB-a", async () => {

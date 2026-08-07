@@ -4,6 +4,7 @@ import { Sy15Service } from "../../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
 import { PbSourceService } from "../../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
+import { OdrzavanjeFnService } from "../../odrzavanje/odrzavanje-fn.service";
 import type { ScheduledJob } from "../scheduler.types";
 
 /*
@@ -82,8 +83,20 @@ import type { ScheduledJob } from "../scheduler.types";
  * ovom koraku NE seli (blokiran kadrovskom: `pb_current_employee_id` visi o
  * `employees`). Zato PB grana NIJE prepisana — samo prolazi kroz branjeni geter
  * `assertPorted`, da pod `3.0` GLASNO padne umesto da tiho nastavi da piše u
- * sy15. Kadrovska (`kadr_*`) i održavanje (`maint_*`) NISU ovaj domen i ostaju
- * netaknute — one imaju svoju seobu i svoj prekidač.
+ * sy15. Kadrovska (`kadr_*`) NIJE ovaj domen i ostaje netaknuta — ima svoju
+ * seobu (korak 4) i svoj prekidač.
+ *
+ * ── SEOBA ODRŽAVANJA (07.08.2026) ────────────────────────────────────────────
+ * Maint grana (`dispatchMaint`) VIŠE NIJE brana nego SKRETNICA pod sopstvenim
+ * prekidačem `ODRZAVANJE_IZVOR`: pod `3.0` prazni 3.0 `maint_notification_log`
+ * kroz `OdrzavanjeFnService`, pod `sy15` netaknute DEFINER RPC-ove. Petlja je
+ * JEDNA za oba izvora (`MaintOutboxPort`), da se edge paritet — stub/fanout,
+ * backoff, per-row markiranje — ne održava dvaput.
+ *
+ * 🔴 Ovaj preklop je SPREGNUT sa poslom `maint-deadlines` (isti prekidač, v.
+ * `sy15-cron-jobs.ts`): outbox-a su DVA. Da je prešao samo cron, novi redovi bi
+ * nastajali u 3.0 dok radnik prazni sy15 — obaveštenja o kvarovima bi TIHO
+ * prestala da stižu, bez ijedne greške u dnevniku. Zato su prešli u istom PR-u.
  *
  * 🔴 `PB_IZVOR` je NEZAVISAN od `SASTANCI_IZVOR` — i to je popravka incidenta
  * 06.08.2026: dok su delili jedan prekidač, preklop SASTANAKA na `3.0` obarao je
@@ -105,10 +118,27 @@ interface MaintRow {
   id: string;
   channel: string;
   recipient: string;
-  recipient_user_id: string | null;
+  // 🔴 Unija tipa je posledica seobe: uuid na sy15, Int u 3.0. Radnik ga koristi
+  // ISKLJUČIVO kao „ima/nema" (prepoznavanje stub reda), pa vrednost nikad ne
+  // izlazi iz ove petlje.
+  recipient_user_id: string | number | null;
   subject: string | null;
   body: string;
   attempts: number;
+}
+
+/**
+ * Outbox održavanja iza jednog šava. Ista petlja `dispatchMaint()` radi nad oba
+ * izvora — sy15 kroz DEFINER RPC-ove, 3.0 kroz `OdrzavanjeFnService`. Bez ovog
+ * šava bi postojale DVE petlje i edge paritet (stub/fanout/backoff) bi morao da
+ * se održava dvaput.
+ */
+interface MaintOutboxPort {
+  dequeue(): Promise<MaintRow[]>;
+  markSent(id: string): Promise<void>;
+  markFailed(id: string, error: string, backoffSec: number): Promise<void>;
+  /** Vraća broj dece; roditelja zatvara SAM (v. `dispatchMaint`). */
+  fanout(id: string): Promise<number>;
 }
 interface PbRow {
   id: string;
@@ -155,6 +185,9 @@ export class NotifyDispatchService {
     // Zaseban prekidač održavanja — `maint-notify-dispatch` ne sme da zavisi od
     // preklopa PB-a ni sastanaka (incident 06.08.2026).
     private readonly odrIzvor: OdrzavanjeSourceService,
+    // Prepis maint outbox funkcija nad 3.0 bazom (dequeue/mark_sent/mark_failed/
+    // fanout). Koristi se ISKLJUČIVO u `dispatchMaint()` pod `3.0`.
+    private readonly odrFn: OdrzavanjeFnService,
   ) {}
 
   /** Poseban prekidač za SLANJE (uz SCHEDULER_ENABLED koji pali sam pogon). */
@@ -351,17 +384,52 @@ export class NotifyDispatchService {
   }
 
   // ══ ODRŽAVANJE ═════════════════════════════════════════════════════════════
+  /**
+   * Izvor outbox-a održavanja za tekući položaj prekidača.
+   *
+   * 🔴 SAMO ova grana ide pod `ODRZAVANJE_IZVOR`. `dispatchKadr()` je kadrovska
+   * (korak 4), `dispatchPb()` je pod `PB_IZVOR` — ni jedan ni drugi se ne diraju.
+   */
+  private maintPort(): MaintOutboxPort {
+    if (this.odrIzvor.isThreeZero) {
+      return {
+        dequeue: () =>
+          this.odrFn.dispatchDequeue(
+            undefined,
+            MAINT_BATCH,
+            MAINT_MAX_ATTEMPTS,
+          ),
+        markSent: async (id) => {
+          await this.odrFn.dispatchMarkSent(undefined, [id]);
+        },
+        markFailed: async (id, error, backoffSec) => {
+          await this.odrFn.dispatchMarkFailed(undefined, id, error, backoffSec);
+        },
+        fanout: (id) => this.odrFn.dispatchFanout(undefined, id),
+      };
+    }
+    return {
+      dequeue: () => this.sy15.db.$queryRaw<MaintRow[]>`
+        SELECT * FROM public.maint_dispatch_dequeue(${MAINT_BATCH}::int, ${MAINT_MAX_ATTEMPTS}::int)`,
+      markSent: (id) => this.markSentMaint(id),
+      markFailed: (id, error, backoffSec) =>
+        this.markFailedMaint(id, error, backoffSec),
+      fanout: (id) => this.maintFanout(id),
+    };
+  }
+
   async dispatchMaint(): Promise<DispatchSummary> {
-    // Korak 2 gašenja sy15. Outbox (`maint_notification_log`) i cela dispatch
-    // logika (`maint_dispatch_dequeue`/`_fanout`/`_mark_sent`/`_mark_failed`)
-    // još žive u sy15 DEFINER funkcijama i NISU prepisane. Pod `3.0` posao pada
-    // sa 503 umesto da nastavi da prazni STARI outbox dok modul piše u novi —
-    // to bi značilo da obaveštenja o kvarovima tiho prestanu da stižu.
-    // 🔴 SAMO ova grana ide pod `ODRZAVANJE_IZVOR`. `dispatchKadr()` je kadrovska
-    // (korak 4), `dispatchPb()` je pod `PB_IZVOR` — ni jedan ni drugi se ne diraju.
-    this.odrIzvor.assertPorted("maint-notify-dispatch (maint_dispatch_*)");
-    const rows = await this.sy15.db.$queryRaw<MaintRow[]>`
-      SELECT * FROM public.maint_dispatch_dequeue(${MAINT_BATCH}::int, ${MAINT_MAX_ATTEMPTS}::int)`;
+    // Korak 2 gašenja sy15 (07.08.2026): outbox održavanja je prenet, pa ova
+    // grana više nije brana nego SKRETNICA — pod `3.0` prazni 3.0
+    // `maint_notification_log` kroz `OdrzavanjeFnService`, pod `sy15` netaknute
+    // DEFINER RPC-ove. Petlja ispod je JEDNA za oba izvora.
+    //
+    // 🔴 Preklop je SPREGNUT sa poslom `maint-deadlines` (isti prekidač): outbox-a
+    // su dva, i ako se preklopi samo jedno, novi redovi idu u 3.0 a radnik prazni
+    // sy15 → obaveštenja o kvarovima TIHO prestanu da stižu (nema greške u logu,
+    // red samo stoji). Zato su cron i radnik prešli u ISTOM PR-u.
+    const port = this.maintPort();
+    const rows = await port.dequeue();
     let sent = 0;
     let failed = 0;
     let fanouts = 0;
@@ -372,7 +440,7 @@ export class NotifyDispatchService {
         if (isStub) {
           // Fanout raspiše na konkretne primaoce i SAM markira parent 'sent' —
           // worker NE sme da zove mark_sent za parent (edge paritet).
-          const children = await this.maintFanout(row.id);
+          const children = await port.fanout(row.id);
           this.logger.debug(
             `maint fanout ${this.mask(row.id)} → ${children} primalaca`,
           );
@@ -381,11 +449,11 @@ export class NotifyDispatchService {
         }
         const res = await this.sendMaint(row);
         if (res.ok) {
-          await this.markSentMaint(row.id);
+          await port.markSent(row.id);
           sent++;
           if (row.channel !== "whatsapp") skipped++;
         } else {
-          await this.markFailedMaint(
+          await port.markFailed(
             row.id,
             res.error,
             this.maintBackoff(row.attempts + 1),
@@ -401,7 +469,7 @@ export class NotifyDispatchService {
           failed++;
           continue;
         }
-        await this.markFailedMaint(
+        await port.markFailed(
           row.id,
           this.errStr(e),
           this.maintBackoff(row.attempts + 1),

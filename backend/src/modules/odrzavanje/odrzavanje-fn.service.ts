@@ -1973,6 +1973,121 @@ export class OdrzavanjeFnService {
     });
     return red != null;
   }
+
+  // =========================================================================
+  // DEFINER FUNKCIJE — outbox radnik (posao `maint-notify-dispatch`)
+  // =========================================================================
+  //
+  // Tri funkcije koje prazne `maint_notification_log`. Izvučene sa ŽIVE sy15
+  // (`pg_get_functiondef`, 07.08.2026) i prepisane istim obrascem kao ostatak
+  // ovog fajla (`tx` prvi argument; `auth.uid()` ovde ni nema — radnik nema
+  // korisnika, kao ni u izvoru).
+  //
+  // 🔴 ZAŠTO IDU U ISTOM KORAKU KAO `maint-deadlines`: outbox-a su DVA. Pod
+  // `ODRZAVANJE_IZVOR=3.0` novi red nastaje u 3.0 `maint_notification_log`, a
+  // stari radnik prazni sy15. Ako se preklopi samo jedno od to dvoje,
+  // obaveštenja o kvarovima TIHO prestanu da stižu — nema greške, red samo
+  // stoji. Zato cron i radnik moraju preći ZAJEDNO.
+
+  /**
+   * `maint_dispatch_dequeue(p_batch_size, p_max_attempts)` — claim redova.
+   *
+   * 🔴 Prepis je NAMERNO sirov SQL, ne Prisma upit: izvor u JEDNOM iskazu bira
+   * (`FOR UPDATE SKIP LOCKED`) i diže `attempts`, pa dva radnika nikad ne uzmu
+   * isti red. Rastavljeno na `findMany` + `updateMany` ta garancija nestaje.
+   *
+   * ⚠️ `RETURNING n.*` u PostgreSQL-u vraća NOVE vrednosti, pa je `attempts`
+   * VEĆ uvećan — isto kao na sy15. Pozivalac koji računa backoff mora to znati
+   * (radnik i dalje računa `attempts + 1`, tačan paritet 1.0 edge-a).
+   *
+   * ⚠️ Prozor slanja je VAN brave: claim vraća `status='queued'` i ne pomera
+   * `next_attempt_at`, pa red odmah opet zadovoljava uslov dequeue-a. To je
+   * zatečeno 1.0 ponašanje (v. zaglavlje `notify-dispatch.service.ts`) — zato
+   * aktivacija mora biti ATOMSKI PREKLOP, nikad paralelan rad dva dispečera.
+   */
+  async dispatchDequeue(
+    tx: OdrzavanjeTx | undefined,
+    batchSize = 25,
+    maxAttempts = 8,
+  ): Promise<MaintDispatchRow[]> {
+    return this.db(tx).$queryRaw<MaintDispatchRow[]>(Prisma.sql`
+      WITH picked AS (
+        SELECT id
+          FROM maint_notification_log
+         WHERE status IN ('queued', 'failed')
+           AND next_attempt_at <= now()
+           AND attempts < ${maxAttempts}::int
+         ORDER BY next_attempt_at ASC, created_at ASC
+         LIMIT ${batchSize}::int
+         FOR UPDATE SKIP LOCKED
+      )
+      UPDATE maint_notification_log n
+         SET attempts        = n.attempts + 1,
+             last_attempt_at = now(),
+             status          = 'queued'
+        FROM picked p
+       WHERE n.id = p.id
+      RETURNING n.id, n.channel, n.recipient, n.recipient_user_id,
+                n.subject, n.body, n.attempts`);
+  }
+
+  /**
+   * `maint_dispatch_mark_sent(p_ids uuid[])` — vraća broj stvarno pogođenih
+   * redova (izvor: `count(*)` nad CTE-om `RETURNING 1`).
+   *
+   * 🔴 Radnik ovo NE SME da pozove za STUB roditelja (`recipient='pending'` bez
+   * `recipient_user_id`) — njega zatvara `dispatchFanout` sam, pošto raspiše
+   * decu. Prevremeni `markSent` prekida fanout i deca se nikad ne pošalju.
+   */
+  async dispatchMarkSent(
+    tx: OdrzavanjeTx | undefined,
+    ids: string[],
+  ): Promise<number> {
+    if (ids.length === 0) return 0;
+    const r = await this.db(tx).maintNotificationLog.updateMany({
+      where: { id: { in: ids } },
+      data: { status: "sent", sentAt: new Date(), error: null },
+    });
+    return r.count;
+  }
+
+  /**
+   * `maint_dispatch_mark_failed(p_id, p_error, p_backoff_sec)` — re-arm reda.
+   * Paritet izvora: `left(error, 1000)`, `greatest(backoff, 5)` sekundi, i
+   * `updateMany` (ne `update`) da nepostojeći id bude no-op, kao `WHERE id = p_id`.
+   */
+  async dispatchMarkFailed(
+    tx: OdrzavanjeTx | undefined,
+    id: string,
+    error: string,
+    backoffSec = 60,
+  ): Promise<void> {
+    const sek = Math.max(backoffSec, 5);
+    await this.db(tx).maintNotificationLog.updateMany({
+      where: { id },
+      data: {
+        status: "failed",
+        error: (error ?? "").slice(0, 1000),
+        nextAttemptAt: new Date(Date.now() + sek * 1000),
+      },
+    });
+  }
+}
+
+/**
+ * Red koji `dispatchDequeue` vraća radniku — imena kolona su snake_case, kao
+ * sa sy15 RPC-a, da ista petlja radnika radi nad oba izvora bez preslikavanja.
+ * ⚠️ `recipient_user_id` je Int u 3.0 (uuid u sy15) — radnik ga koristi samo
+ * kao „ima/nema", pa je tip namerno unija.
+ */
+export interface MaintDispatchRow {
+  id: string;
+  channel: string;
+  recipient: string;
+  recipient_user_id: string | number | null;
+  subject: string | null;
+  body: string;
+  attempts: number;
 }
 
 /** `to_char(d, 'DD.MM.YYYY')` — format iz tela sy15 funkcija. */
