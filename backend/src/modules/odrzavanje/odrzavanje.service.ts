@@ -39,11 +39,16 @@ import {
   ODRZAVANJE_INJECTION_FENCE,
 } from "../../common/ai/injection-fence";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
+// 🔴 NE `import type` — sve tri klase su DI tokeni (Nest ih traži u runtime-u).
 import {
   OdrzavanjeAuthzService,
   type MaintScope,
 } from "./odrzavanje-authz.service";
-import { OdrzavanjeFnService } from "./odrzavanje-fn.service";
+import {
+  OdrzavanjeFnService,
+  type OdrzavanjeTx,
+} from "./odrzavanje-fn.service";
+import { OdrzavanjeLokacijeMostService } from "./odrzavanje-lokacije-most.service";
 import {
   normalizeRacunOut,
   RACUN_AI_ALLOWED_MODELS,
@@ -302,6 +307,10 @@ export class OdrzavanjeService {
     // izostanak zavisnosti nikad ne može tiho da vrati saobraćaj u sy15.
     @Optional() private readonly authz?: OdrzavanjeAuthzService,
     @Optional() private readonly fnSvc?: OdrzavanjeFnService,
+    // 🔴 MOST ka `loc_locations` (sy15) — treba ISKLJUČIVO upisnoj polovini (§7.1):
+    // mašina upisana u 3.0 mora da dobije/izgubi lokaciju u tuđoj bazi. Isti
+    // `@Optional` razlog; kad ga nema, `mostSync` samo preskoči (nikad ne pukne).
+    @Optional() private readonly locMost?: OdrzavanjeLokacijeMostService,
   ) {}
 
   /**
@@ -3725,6 +3734,146 @@ export class OdrzavanjeService {
     return s || "file";
   }
 
+  // ==========================================================================
+  // 3.0 GRANA UPISA — skretnice, snimak prava, most (korak 2 seobe, §7.1)
+  // ==========================================================================
+  // Nastavlja se na čitanja: `tri30`/`tri()`/`scope30` iz read sloja su ISTI
+  // ovde — jedan snimak prava, jedna brana, jedno ponašanje. Ovo dodaje samo ono
+  // što upisi traže: transakciju, gejt sa imenom politike i most ka lokacijama.
+  //
+  // Zašto NE kroz izmenu `withUserMapped`/`runIdem`: te dve tačke su brana
+  // („neprenet put pada sa 503") i namerno ostaju NEDIRNUTE. `wum30`/`idem30` se
+  // naslanjaju NA njih — pod `sy15` prosleđuju posao netaknut, a pod `3.0` uopšte
+  // ne uđu u sy15 granu. Prisustvo `fn30` tela je i dalje jedina oznaka „preneto".
+
+  /** Gejtovi 3.0 (parnjak RLS-a) — kratko ime za `tri().az` u telima upisa. */
+  private get az(): OdrzavanjeAuthzService {
+    return this.tri().az;
+  }
+
+  /** Prepis DEFINER fn i logičkih trigera — kratko ime za `tri().fn`. */
+  private get fns(): OdrzavanjeFnService {
+    return this.tri().fn;
+  }
+
+  /** 403 sa porukom koja imenuje sy15 politiku čiji je ovo prepis. */
+  private gejt(dozvoljeno: boolean, politika: string): void {
+    if (!dozvoljeno)
+      throw new ForbiddenException(`Nemate pravo za ovu izmenu (${politika}).`);
+  }
+
+  /**
+   * Snimak prava SAMO kad upis stvarno ide 3.0 putem; inače `null`.
+   *
+   * 🔴 Uslov je `tri30`, ne samo prekidač: kad prekidač JESTE na `3.0` ali neka
+   * zavisnost fali, vraća se `null` pa poziv pada natrag na `withUserMapped`,
+   * gde ga dočeka brana `assertPorted` (503). Izostanak zavisnosti tako nikad ne
+   * može tiho da vrati UPIS u sy15 — isti bezbedan smer kao kod čitanja.
+   *
+   * Učitava se PRE transakcije (u sy15 su gejtovi bili `STABLE`, pa ih je planer
+   * računao jednom po naredbi) — transakcija ne troši drugu konekciju iz pula.
+   */
+  private async scope30Ako(email: string): Promise<MaintScope | null> {
+    if (!this.tri30) return null;
+    return this.scope30(email);
+  }
+
+  /**
+   * `withUserMapped` parnjak za PRENETE putanje. Pod `sy15` je doslovno
+   * `withUserMapped(email, fn)`; pod `3.0` otvara transakciju 3.0 baze i predaje
+   * je `fn30` zajedno sa snimkom prava.
+   *
+   * 🔴 `fn30` OBAVEZNO prima `tx` — svaki poziv `OdrzavanjeFnService` metode
+   * unutra mora da ga prosledi dalje, inače „obriši mašinu + upiši trag" prestaje
+   * da bude jedan potez (u sy15 su DEFINER fn radile u istoj transakciji).
+   */
+  // ⚠️ DVA TIPA REZULTATA, ne jedan: `maintMachine` iz `@prisma-sy15/client` i iz
+  // `@prisma/client` su RAZLIČITI tipovi (npr. `responsible_user_id` je uuid u sy15,
+  // `Int` u 3.0). Zato `T | U` — a ne prisilno svođenje na jedan, koje bi zahtevalo
+  // `as` i sakrilo baš tu razliku.
+  private async wum30<T, U>(
+    email: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+    fn30: (tx: OdrzavanjeTx, scope: MaintScope) => Promise<U>,
+    opts?: { timeoutMs?: number },
+  ): Promise<T | U> {
+    const scope = await this.scope30Ako(email);
+    if (scope) {
+      const { db } = this.tri();
+      try {
+        return await db.$transaction(
+          (tx) => fn30(tx, scope),
+          opts?.timeoutMs != null ? { timeout: opts.timeoutMs } : undefined,
+        );
+      } catch (e) {
+        // Isti mapper kao sy15 grana: Prisma kodovi (P2002/P2025/23505/23514…)
+        // znače isto u obe baze, a domenske izuzetke propušta netaknute.
+        this.rethrowSy15(e);
+      }
+    }
+    return this.withUserMapped(email, fn);
+  }
+
+  /** `runIdem` parnjak za prenete „create" putanje — dodaje snimak prava u `fn30`. */
+  private async idem30<T, U>(
+    email: string,
+    clientEventId: string,
+    action: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+    fn30: (tx: OdrzavanjeTx, scope: MaintScope) => Promise<U>,
+    opts?: { timeoutMs?: number },
+  ) {
+    // Pod `sy15` snimak je `null` → `fn30` se NE prosleđuje, pa `runIdem` ide
+    // starim putem i `assertPorted` (koji je pod `sy15` nem) ostaje na svom mestu.
+    const scope = await this.scope30Ako(email);
+    return this.runIdem<T | U>(email, clientEventId, action, fn, {
+      ...(scope ? { fn30: (tx: IdempotencyTx) => fn30(tx, scope) } : {}),
+      ...(opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
+    });
+  }
+
+  /**
+   * Most ka `loc_locations` — 🔴 POSLE COMMIT-a 3.0 transakcije, nikad unutar nje
+   * (`loc_locations` je DRUGA baza; unutar `$transaction` bi 3.0 upis visio na
+   * sy15 latenciji). Fail-soft je u samom mostu — nikad ne baca.
+   */
+  private async mostSync(
+    m: {
+      machineCode: string;
+      name: string | null;
+      archivedAt: Date | null;
+      tracked: boolean;
+    },
+    op: "INSERT" | "UPDATE",
+  ): Promise<void> {
+    if (this.locMost?.aktivan() !== true) return;
+    await this.locMost.syncMachineToLoc(m, op);
+  }
+
+  /**
+   * 🔴 IDENTITET NIJE PRENET: DTO polja koja nose korisnika (`responsibleUserId`,
+   * `assignedTo`) su `@IsUUID()` — to je sy15 `auth.users.id`. U 3.0 je ista
+   * kolona `Int` (`users.id`), a `users` NEMA kolonu sa sy15 uuid-om (izmereno:
+   * prenosna skripta ih je razrešila po mejlu, van runtime-a).
+   *
+   * Zato takva vrednost pod `3.0` GLASNO pada umesto da se tiho odbaci — tiho
+   * odbacivanje bi značilo „sačuvao sam nalog, ali dodela je nestala". Polje koje
+   * klijent NIJE poslao (`undefined`) prolazi netaknuto, pa 95% upisa radi.
+   */
+  private id30(
+    v: string | undefined,
+    polje: string,
+  ): number | null | undefined {
+    if (v === undefined) return undefined;
+    if (v === null || v === "") return null;
+    if (/^\d+$/.test(v)) return Number(v);
+    throw new UnprocessableEntityException(
+      `Polje „${polje}" nosi sy15 uuid (${v}), a pod ODRZAVANJE_IZVOR=3.0 se očekuje ` +
+        "numerički `users.id`. Prevod identiteta stiže sa korakom 3 seobe " +
+        "(docs/SEOBA_ODRZAVANJA_2026-08-06.md); do tada ovo polje radi samo pod `sy15`.",
+    );
+  }
+
   // ---------- Mašine: katalog CRUD / arhiva / rename / import / hard-delete ----------
 
   /**
@@ -3787,8 +3936,36 @@ export class OdrzavanjeService {
     return free;
   }
 
-  createMachine(email: string, dto: CreateMachineDto) {
-    return this.runIdem(
+  /**
+   * 3.0 parnjak `firstFreeMachineCode`. Isti niz kandidata i ista poruka; niz se
+   * pravi u kodu umesto `generate_series` — i dalje JEDAN upit, pa se guard
+   * „bazna šifra je zauzeta" ponaša identično.
+   */
+  private async firstFreeMachineCode30(
+    tx: OdrzavanjeTx,
+    base: string,
+  ): Promise<string> {
+    const kandidati = Array.from({ length: 50 }, (_, i) =>
+      i === 0 ? base : `${base}-${i + 1}`,
+    );
+    const zauzete = new Set(
+      (
+        await tx.maintMachine.findMany({
+          where: { machineCode: { in: kandidati } },
+          select: { machineCode: true },
+        })
+      ).map((m) => m.machineCode),
+    );
+    const free = kandidati.find((c) => !zauzete.has(c));
+    if (!free)
+      throw new ConflictException(
+        `Sve šifre od ${base} do ${base}-50 su zauzete — ručno preimenuj neku od njih pa ponovi`,
+      );
+    return free;
+  }
+
+  async createMachine(email: string, dto: CreateMachineDto) {
+    const out = await this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-machine",
@@ -3830,54 +4007,190 @@ export class OdrzavanjeService {
         });
         return row;
       },
+      // ── 3.0 ──────────────────────────────────────────────────────────────
+      async (tx, scope) => {
+        // `maint_machines_insert` CHECK: erp_admin ∨ chief/admin.
+        this.gejt(this.az.canWriteCatalog(scope), "maint_machines_insert");
+        const code = this.assertUsableMachineCode(dto.machineCode);
+        const taken = await tx.maintMachine.findUnique({
+          where: { machineCode: code },
+          select: { machineCode: true, name: true, archivedAt: true },
+        });
+        if (taken) {
+          throw new ConflictException(
+            taken.archivedAt
+              ? `Šifra ${code} pripada otpisanoj mašini „${taken.name}" — vrati je iz arhive ili je preimenuj u arhivi`
+              : `Mašina sa šifrom ${code} već postoji`,
+          );
+        }
+        // 🔴 BEFORE INSERT triger `maint_machines_ensure_asset` — `asset_id` je
+        // NOT NULL i u 3.0 ga NEMA ko drugi da popuni (triger NIJE prenet u bazu).
+        const name = dto.name.trim();
+        const assetId = await this.fns.machineEnsureAsset(tx, {
+          assetId: null,
+          machineCode: code,
+          name,
+          responsibleUserId:
+            this.id30(dto.responsibleUserId, "responsibleUserId") ?? null,
+          manufacturer: dto.manufacturer ?? null,
+          model: dto.model ?? null,
+          serialNumber: dto.serialNumber ?? null,
+          notes: dto.notes ?? null,
+          archivedAt: null,
+        });
+        return tx.maintMachine.create({
+          data: {
+            machineCode: code,
+            name,
+            type: dto.type ?? null,
+            manufacturer: dto.manufacturer ?? null,
+            model: dto.model ?? null,
+            serialNumber: dto.serialNumber ?? null,
+            yearOfManufacture: dto.yearOfManufacture ?? null,
+            yearCommissioned: dto.yearCommissioned ?? null,
+            location: dto.location ?? null,
+            departmentId: dto.departmentId ?? null,
+            powerKw: dto.powerKw ?? null,
+            weightKg: dto.weightKg ?? null,
+            notes: dto.notes ?? null,
+            tracked: dto.tracked !== false,
+            source: dto.source ?? "manual",
+            responsibleUserId:
+              this.id30(dto.responsibleUserId, "responsibleUserId") ?? null,
+            updatedBy: scope.userId,
+            assetId,
+          },
+        });
+      },
     );
+    // 🔴 Most ka `loc_locations` TEK POSLE commit-a (druga baza). Ponovljen
+    // zahtev (`idempotent: true`) ne izvršava telo, pa ne diramo ni most.
+    if (out.meta.idempotent !== true) {
+      await this.mostSync(
+        {
+          machineCode: this.assertUsableMachineCode(dto.machineCode),
+          name: dto.name.trim(),
+          archivedAt: null,
+          tracked: dto.tracked !== false,
+        },
+        "INSERT",
+      );
+    }
+    return out;
   }
 
   async updateMachine(email: string, code: string, dto: UpdateMachineDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintMachine.updateMany({
-        where: { machineCode: code },
-        data: {
-          ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.type !== undefined ? { type: dto.type } : {}),
-          ...(dto.manufacturer !== undefined
-            ? { manufacturer: dto.manufacturer }
-            : {}),
-          ...(dto.model !== undefined ? { model: dto.model } : {}),
-          ...(dto.serialNumber !== undefined
-            ? { serialNumber: dto.serialNumber }
-            : {}),
-          ...(dto.yearOfManufacture !== undefined
-            ? { yearOfManufacture: dto.yearOfManufacture }
-            : {}),
-          ...(dto.yearCommissioned !== undefined
-            ? { yearCommissioned: dto.yearCommissioned }
-            : {}),
-          ...(dto.location !== undefined ? { location: dto.location } : {}),
-          ...(dto.departmentId !== undefined
-            ? { departmentId: dto.departmentId }
-            : {}),
-          ...(dto.powerKw !== undefined ? { powerKw: dto.powerKw } : {}),
-          ...(dto.weightKg !== undefined ? { weightKg: dto.weightKg } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.tracked !== undefined ? { tracked: dto.tracked } : {}),
-          ...(dto.responsibleUserId !== undefined
-            ? { responsibleUserId: dto.responsibleUserId }
-            : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Mašina ${code}`);
-      return {
-        data: await tx.maintMachine.findUnique({
+    const out = await this.wum30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintMachine.updateMany({
           where: { machineCode: code },
-        }),
-      };
-    });
+          data: {
+            ...(dto.name !== undefined ? { name: dto.name } : {}),
+            ...(dto.type !== undefined ? { type: dto.type } : {}),
+            ...(dto.manufacturer !== undefined
+              ? { manufacturer: dto.manufacturer }
+              : {}),
+            ...(dto.model !== undefined ? { model: dto.model } : {}),
+            ...(dto.serialNumber !== undefined
+              ? { serialNumber: dto.serialNumber }
+              : {}),
+            ...(dto.yearOfManufacture !== undefined
+              ? { yearOfManufacture: dto.yearOfManufacture }
+              : {}),
+            ...(dto.yearCommissioned !== undefined
+              ? { yearCommissioned: dto.yearCommissioned }
+              : {}),
+            ...(dto.location !== undefined ? { location: dto.location } : {}),
+            ...(dto.departmentId !== undefined
+              ? { departmentId: dto.departmentId }
+              : {}),
+            ...(dto.powerKw !== undefined ? { powerKw: dto.powerKw } : {}),
+            ...(dto.weightKg !== undefined ? { weightKg: dto.weightKg } : {}),
+            ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+            ...(dto.tracked !== undefined ? { tracked: dto.tracked } : {}),
+            ...(dto.responsibleUserId !== undefined
+              ? { responsibleUserId: dto.responsibleUserId }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Mašina ${code}`);
+        return {
+          data: await tx.maintMachine.findUnique({
+            where: { machineCode: code },
+          }),
+        };
+      },
+      // ── 3.0 ──────────────────────────────────────────────────────────────
+      async (tx, scope) => {
+        // `maint_machines_update` USING/CHECK: erp_admin ∨ chief/admin.
+        this.gejt(this.az.canWriteCatalog(scope), "maint_machines_update");
+        const exists =
+          (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+        const { count } = await tx.maintMachine.updateMany({
+          where: { machineCode: code },
+          data: {
+            ...(dto.name !== undefined ? { name: dto.name } : {}),
+            ...(dto.type !== undefined ? { type: dto.type } : {}),
+            ...(dto.manufacturer !== undefined
+              ? { manufacturer: dto.manufacturer }
+              : {}),
+            ...(dto.model !== undefined ? { model: dto.model } : {}),
+            ...(dto.serialNumber !== undefined
+              ? { serialNumber: dto.serialNumber }
+              : {}),
+            ...(dto.yearOfManufacture !== undefined
+              ? { yearOfManufacture: dto.yearOfManufacture }
+              : {}),
+            ...(dto.yearCommissioned !== undefined
+              ? { yearCommissioned: dto.yearCommissioned }
+              : {}),
+            ...(dto.location !== undefined ? { location: dto.location } : {}),
+            ...(dto.departmentId !== undefined
+              ? { departmentId: dto.departmentId }
+              : {}),
+            ...(dto.powerKw !== undefined ? { powerKw: dto.powerKw } : {}),
+            ...(dto.weightKg !== undefined ? { weightKg: dto.weightKg } : {}),
+            ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+            ...(dto.tracked !== undefined ? { tracked: dto.tracked } : {}),
+            ...(dto.responsibleUserId !== undefined
+              ? {
+                  responsibleUserId: this.id30(
+                    dto.responsibleUserId,
+                    "responsibleUserId",
+                  ),
+                }
+              : {}),
+            updatedBy: scope.userId,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Mašina ${code}`);
+        return {
+          data: await tx.maintMachine.findUnique({
+            where: { machineCode: code },
+          }),
+        };
+      },
+    );
+    // AFTER UPDATE `maint_machines_sync_to_loc` — posle commit-a (druga baza).
+    const m = out.data;
+    if (m)
+      await this.mostSync(
+        {
+          machineCode: m.machineCode,
+          name: m.name,
+          archivedAt: m.archivedAt,
+          tracked: m.tracked,
+        },
+        "UPDATE",
+      );
+    return out;
   }
 
   /**
@@ -3903,90 +4216,183 @@ export class OdrzavanjeService {
    */
   async otpisMachine(email: string, code: string, reason: string) {
     const razlog = reason.trim();
-    const out = await this.withUserMapped(email, async (tx) => {
-      const machine = await tx.maintMachine.findUnique({
-        where: { machineCode: code },
-        select: {
-          machineCode: true,
-          name: true,
-          assetId: true,
-          archivedAt: true,
-        },
-      });
-      const exists = machine !== null;
-      const uid = await this.uid(tx);
-      const now = new Date();
+    const out = await this.wum30(
+      email,
+      async (tx) => {
+        const machine = await tx.maintMachine.findUnique({
+          where: { machineCode: code },
+          select: {
+            machineCode: true,
+            name: true,
+            assetId: true,
+            archivedAt: true,
+          },
+        });
+        const exists = machine !== null;
+        const uid = await this.uid(tx);
+        const now = new Date();
 
-      const { count } = await tx.maintMachine.updateMany({
-        where: { machineCode: code },
-        data: {
-          archivedAt: now,
+        const { count } = await tx.maintMachine.updateMany({
+          where: { machineCode: code },
+          data: {
+            archivedAt: now,
+            tracked: false,
+            updatedBy: uid,
+            updatedAt: now,
+          },
+        });
+        this.assertAffected(exists, count, `Mašina ${code}`);
+
+        // Otvoreni nalozi se čitaju PRE nego što ih iko preraspodeli — broj ide i u
+        // poruku šefu. `notIn` je isti skup kao `openOnly` u listWorkOrders.
+        const openWorkOrders = await tx.maintWorkOrder.findMany({
+          where: {
+            assetId: machine!.assetId,
+            status: { notIn: ["zavrsen", "otkazan"] as never[] },
+          },
+          select: { woNumber: true, title: true, status: true },
+          orderBy: { createdAt: "asc" },
+          take: 50,
+        });
+
+        await tx.maintAsset.updateMany({
+          where: { assetId: machine!.assetId },
+          data: {
+            archivedAt: now,
+            archiveReason: razlog,
+            archivedBy: uid,
+            active: false,
+            updatedBy: uid,
+            updatedAt: now,
+          },
+        });
+
+        // Zahtev 047/26: šifra se OSLOBAĐA za novu mašinu. PK se menja atomski kroz
+        // isti RPC koji koristi `renameMachine` (propagira kroz sve child tabele), i to
+        // TEK POSLE update-a — tako RLS provera prava (`assertAffected`) i dalje presuđuje
+        // nad izvornom šifrom. Već otpisana mašina se ne preimenuje drugi put.
+        //
+        // ⚠️ ZAVISNOST: traži popravljen `maint_machine_rename` iz
+        // `backend/docs/migration/ZAHTEV_047_MASINA_RENAME_FIX.sql` (mora biti primenjen
+        // na sy15 PRE deploy-a). Popravljena verzija u kopiju reda nosi `asset_id` i u
+        // istoj transakciji preimenuje `maint_assets.asset_code` → sredstvo PRATI mašinu,
+        // pa arhiva (`archive_reason`/`archived_by` upisani gore) i cela istorija naloga i
+        // dokumenata ostaju uz otpisanu mašinu, a oslobođena šifra ne pokazuje ni na jedno
+        // sredstvo. Zato je redosled bitan: asset se arhivira PRE rename-a (isti red).
+        let newCode = code;
+        if (machine!.archivedAt == null) {
+          const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+          newCode = await this.firstFreeMachineCode(
+            tx,
+            `${this.baseMachineCode(code)}#ARH-${stamp}`,
+          );
+          await tx.$queryRaw(
+            Prisma.sql`SELECT public.maint_machine_rename(${code}, ${newCode}) AS result`,
+          );
+        }
+
+        return {
+          alreadyArchived: machine!.archivedAt != null,
+          machineName: machine!.name,
+          newCode,
+          openWorkOrders: openWorkOrders.map((w) => ({
+            woNumber: w.woNumber ?? null,
+            title: w.title,
+            status: String(w.status),
+          })),
+        };
+      },
+      // ── 3.0 ──────────────────────────────────────────────────────────────
+      async (tx, scope) => {
+        // `maint_machines_update` + `maint_assets_update` — isti izraz za oba.
+        this.gejt(this.az.canWriteCatalog(scope), "maint_machines_update");
+        const machine = await tx.maintMachine.findUnique({
+          where: { machineCode: code },
+          select: {
+            machineCode: true,
+            name: true,
+            assetId: true,
+            archivedAt: true,
+          },
+        });
+        const exists = machine !== null;
+        const now = new Date();
+        const { count } = await tx.maintMachine.updateMany({
+          where: { machineCode: code },
+          data: {
+            archivedAt: now,
+            tracked: false,
+            updatedBy: scope.userId,
+            updatedAt: now,
+          },
+        });
+        this.assertAffected(exists, count, `Mašina ${code}`);
+
+        const openWorkOrders = await tx.maintWorkOrder.findMany({
+          where: {
+            assetId: machine!.assetId,
+            status: { notIn: ["zavrsen", "otkazan"] },
+          },
+          select: { woNumber: true, title: true, status: true },
+          orderBy: { createdAt: "asc" },
+          take: 50,
+        });
+
+        await tx.maintAsset.updateMany({
+          where: { assetId: machine!.assetId },
+          data: {
+            archivedAt: now,
+            archiveReason: razlog,
+            archivedBy: scope.userId,
+            active: false,
+            updatedBy: scope.userId,
+            updatedAt: now,
+          },
+        });
+
+        let newCode = code;
+        if (machine!.archivedAt == null) {
+          const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+          newCode = await this.firstFreeMachineCode30(
+            tx,
+            `${this.baseMachineCode(code)}#ARH-${stamp}`,
+          );
+          // 🔴 ISTI `tx` — prepis `maint_machine_rename` mora ostati u istoj
+          // transakciji kao arhiviranje (u sy15 je bio DEFINER poziv iz nje).
+          await this.fns.machineRename(tx, scope, code, newCode);
+        }
+
+        return {
+          alreadyArchived: machine!.archivedAt != null,
+          machineName: machine!.name,
+          newCode,
+          openWorkOrders: openWorkOrders.map((w) => ({
+            woNumber: w.woNumber ?? null,
+            title: w.title,
+            status: String(w.status),
+          })),
+        };
+      },
+    );
+
+    // AFTER UPDATE most: arhivirana mašina mora da postane `is_active = false` i u
+    // `loc_locations`.
+    //
+    // 🔴 Ide pod IZVORNOM šifrom, ne pod novom arhivskom — u sy15 je triger pucao na
+    // UPDATE-u koji je bio PRE rename-a, a `maint_machine_rename` `loc_locations`
+    // NAMERNO ne dira (§2.5.14). Red u lokacijama zato i dalje nosi staru šifru;
+    // gađanje nove ne bi našlo ništa i lokacija bi tiho ostala „aktivna".
+    if (!out.alreadyArchived) {
+      await this.mostSync(
+        {
+          machineCode: code,
+          name: out.machineName,
+          archivedAt: new Date(),
           tracked: false,
-          updatedBy: uid,
-          updatedAt: now,
         },
-      });
-      this.assertAffected(exists, count, `Mašina ${code}`);
-
-      // Otvoreni nalozi se čitaju PRE nego što ih iko preraspodeli — broj ide i u
-      // poruku šefu. `notIn` je isti skup kao `openOnly` u listWorkOrders.
-      const openWorkOrders = await tx.maintWorkOrder.findMany({
-        where: {
-          assetId: machine!.assetId,
-          status: { notIn: ["zavrsen", "otkazan"] as never[] },
-        },
-        select: { woNumber: true, title: true, status: true },
-        orderBy: { createdAt: "asc" },
-        take: 50,
-      });
-
-      await tx.maintAsset.updateMany({
-        where: { assetId: machine!.assetId },
-        data: {
-          archivedAt: now,
-          archiveReason: razlog,
-          archivedBy: uid,
-          active: false,
-          updatedBy: uid,
-          updatedAt: now,
-        },
-      });
-
-      // Zahtev 047/26: šifra se OSLOBAĐA za novu mašinu. PK se menja atomski kroz
-      // isti RPC koji koristi `renameMachine` (propagira kroz sve child tabele), i to
-      // TEK POSLE update-a — tako RLS provera prava (`assertAffected`) i dalje presuđuje
-      // nad izvornom šifrom. Već otpisana mašina se ne preimenuje drugi put.
-      //
-      // ⚠️ ZAVISNOST: traži popravljen `maint_machine_rename` iz
-      // `backend/docs/migration/ZAHTEV_047_MASINA_RENAME_FIX.sql` (mora biti primenjen
-      // na sy15 PRE deploy-a). Popravljena verzija u kopiju reda nosi `asset_id` i u
-      // istoj transakciji preimenuje `maint_assets.asset_code` → sredstvo PRATI mašinu,
-      // pa arhiva (`archive_reason`/`archived_by` upisani gore) i cela istorija naloga i
-      // dokumenata ostaju uz otpisanu mašinu, a oslobođena šifra ne pokazuje ni na jedno
-      // sredstvo. Zato je redosled bitan: asset se arhivira PRE rename-a (isti red).
-      let newCode = code;
-      if (machine!.archivedAt == null) {
-        const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-        newCode = await this.firstFreeMachineCode(
-          tx,
-          `${this.baseMachineCode(code)}#ARH-${stamp}`,
-        );
-        await tx.$queryRaw(
-          Prisma.sql`SELECT public.maint_machine_rename(${code}, ${newCode}) AS result`,
-        );
-      }
-
-      return {
-        alreadyArchived: machine!.archivedAt != null,
-        machineName: machine!.name,
-        newCode,
-        openWorkOrders: openWorkOrders.map((w) => ({
-          woNumber: w.woNumber ?? null,
-          title: w.title,
-          status: String(w.status),
-        })),
-      };
-    });
+        "UPDATE",
+      );
+    }
 
     // Obaveštenje TEK po uspešnom otpisu i fire-and-forget: mail (N primalaca ×
     // Resend timeout) ne sme da drži odgovor otvoren, a pad slanja ne sme da obori
@@ -4016,70 +4422,145 @@ export class OdrzavanjeService {
 
   /** Vraćanje otpisane mašine u upotrebu — simetrično čisti i ogledalo u `maint_assets`. */
   async restoreMachine(email: string, code: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const machine = await tx.maintMachine.findUnique({
-        where: { machineCode: code },
-        select: { assetId: true },
-      });
-      const exists = machine !== null;
-      const uid = await this.uid(tx);
-      const now = new Date();
-      const { count } = await tx.maintMachine.updateMany({
-        where: { machineCode: code },
-        data: {
-          archivedAt: null,
-          tracked: true,
-          updatedBy: uid,
-          updatedAt: now,
-        },
-      });
-      this.assertAffected(exists, count, `Mašina ${code}`);
-      await tx.maintAsset.updateMany({
-        where: { assetId: machine!.assetId },
-        data: {
-          archivedAt: null,
-          archiveReason: null,
-          archivedBy: null,
-          active: true,
-          updatedBy: uid,
-          updatedAt: now,
-        },
-      });
+    const out = await this.wum30(
+      email,
+      async (tx) => {
+        const machine = await tx.maintMachine.findUnique({
+          where: { machineCode: code },
+          select: { assetId: true },
+        });
+        const exists = machine !== null;
+        const uid = await this.uid(tx);
+        const now = new Date();
+        const { count } = await tx.maintMachine.updateMany({
+          where: { machineCode: code },
+          data: {
+            archivedAt: null,
+            tracked: true,
+            updatedBy: uid,
+            updatedAt: now,
+          },
+        });
+        this.assertAffected(exists, count, `Mašina ${code}`);
+        await tx.maintAsset.updateMany({
+          where: { assetId: machine!.assetId },
+          data: {
+            archivedAt: null,
+            archiveReason: null,
+            archivedBy: null,
+            active: true,
+            updatedBy: uid,
+            updatedAt: now,
+          },
+        });
 
-      // Simetrično otpisu: `#ARH-…` sufiks se skida i mašina se vraća pod svojom
-      // izvornom šifrom — ali samo ako je u međuvremenu niko nije zauzeo (zahtev 047/26).
-      //
-      // Odarhiviranje sredstva iznad gađa `machine.assetId`, a to je (sa popravljenim
-      // RPC-om iz ZAHTEV_047_MASINA_RENAME_FIX.sql) IZVORNO sredstvo mašine — ono koje
-      // nosi naloge i dokumenta. Rename ga zatim vraća i pod baznu `asset_code`, pa
-      // posle restore-a mašina ima AKTIVNO sredstvo sa očuvanom istorijom i nigde ne
-      // ostaje fantomski `#ARH` red (privremeno sredstvo se više i ne pravi).
-      let newCode = code;
-      const base = this.baseMachineCode(code);
-      if (base !== code && base.length > 0) {
-        const free = await this.firstFreeMachineCode(tx, base);
-        if (free !== base) {
-          throw new ConflictException(
-            `Šifra ${base} je u međuvremenu zauzeta drugom mašinom — preimenuj tu mašinu ili ovu vrati pod drugom šifrom`,
+        // Simetrično otpisu: `#ARH-…` sufiks se skida i mašina se vraća pod svojom
+        // izvornom šifrom — ali samo ako je u međuvremenu niko nije zauzeo (zahtev 047/26).
+        //
+        // Odarhiviranje sredstva iznad gađa `machine.assetId`, a to je (sa popravljenim
+        // RPC-om iz ZAHTEV_047_MASINA_RENAME_FIX.sql) IZVORNO sredstvo mašine — ono koje
+        // nosi naloge i dokumenta. Rename ga zatim vraća i pod baznu `asset_code`, pa
+        // posle restore-a mašina ima AKTIVNO sredstvo sa očuvanom istorijom i nigde ne
+        // ostaje fantomski `#ARH` red (privremeno sredstvo se više i ne pravi).
+        let newCode = code;
+        const base = this.baseMachineCode(code);
+        if (base !== code && base.length > 0) {
+          const free = await this.firstFreeMachineCode(tx, base);
+          if (free !== base) {
+            throw new ConflictException(
+              `Šifra ${base} je u međuvremenu zauzeta drugom mašinom — preimenuj tu mašinu ili ovu vrati pod drugom šifrom`,
+            );
+          }
+          await tx.$queryRaw(
+            Prisma.sql`SELECT public.maint_machine_rename(${code}, ${base}) AS result`,
           );
+          newCode = base;
         }
-        await tx.$queryRaw(
-          Prisma.sql`SELECT public.maint_machine_rename(${code}, ${base}) AS result`,
-        );
-        newCode = base;
-      }
-      return { data: { ok: true, machineCode: newCode } };
-    });
+        return { data: { ok: true, machineCode: newCode } };
+      },
+      // ── 3.0 ──────────────────────────────────────────────────────────────
+      async (tx, scope) => {
+        this.gejt(this.az.canWriteCatalog(scope), "maint_machines_update");
+        const machine = await tx.maintMachine.findUnique({
+          where: { machineCode: code },
+          select: { assetId: true, name: true },
+        });
+        const exists = machine !== null;
+        const now = new Date();
+        const { count } = await tx.maintMachine.updateMany({
+          where: { machineCode: code },
+          data: {
+            archivedAt: null,
+            tracked: true,
+            updatedBy: scope.userId,
+            updatedAt: now,
+          },
+        });
+        this.assertAffected(exists, count, `Mašina ${code}`);
+        await tx.maintAsset.updateMany({
+          where: { assetId: machine!.assetId },
+          data: {
+            archivedAt: null,
+            archiveReason: null,
+            archivedBy: null,
+            active: true,
+            updatedBy: scope.userId,
+            updatedAt: now,
+          },
+        });
+
+        let newCode = code;
+        const base = this.baseMachineCode(code);
+        if (base !== code && base.length > 0) {
+          const free = await this.firstFreeMachineCode30(tx, base);
+          if (free !== base) {
+            throw new ConflictException(
+              `Šifra ${base} je u međuvremenu zauzeta drugom mašinom — preimenuj tu mašinu ili ovu vrati pod drugom šifrom`,
+            );
+          }
+          await this.fns.machineRename(tx, scope, code, base);
+          newCode = base;
+        }
+        return {
+          data: { ok: true, machineCode: newCode, name: machine!.name },
+        };
+      },
+    );
+
+    // ⚠️ SVESNO ODSTUPANJE (jedno, i mereno): u sy15 je triger pucao dok je mašina
+    // još nosila `#ARH-` šifru, pa je u `loc_locations` NASTAJAO red pod arhivskom
+    // šifrom (izvorni `3.10` red je ostajao neaktivan) — smeće koje niko ne čisti.
+    // Ovde most gađa KONAČNU (baznu) šifru: isti željeni ishod („lokacija je opet
+    // aktivna"), bez novog reda. Zabeleženo da se ne pripiše kvaru posle preklopa.
+    await this.mostSync(
+      {
+        machineCode: out.data.machineCode,
+        name: "name" in out.data ? (out.data.name ?? null) : null,
+        archivedAt: null,
+        tracked: true,
+      },
+      "UPDATE",
+    );
+    return { data: { ok: true, machineCode: out.data.machineCode } };
   }
 
   /** Uvoz mašina iz BigTehn cache (RPC; ON CONFLICT DO NOTHING → idempotentno). */
   importMachines(email: string, codes: string[]) {
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ n: number }[]>(
-        Prisma.sql`SELECT public.maint_machines_import_from_cache(${codes}::text[]) AS n`,
-      );
-      return { data: { imported: Number(rows[0]?.n ?? 0) } };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ n: number }[]>(
+          Prisma.sql`SELECT public.maint_machines_import_from_cache(${codes}::text[]) AS n`,
+        );
+        return { data: { imported: Number(rows[0]?.n ?? 0) } };
+      },
+      // ── 3.0 ──────────────────────────────────────────────────────────────
+      // 🔴 JEDINA putanja domena koja pod `3.0` GLASNO pada: izvor čita
+      // `bigtehn_machines_cache`, tabelu koja nije `maint_*` i koju 3.0 baza NEMA
+      // (blokada 9 runbook-a). Tiho „uvezeno 0" bi izgledalo kao prazan katalog.
+      // Nije `async`: telo nema šta da čeka — jedini mu je posao da padne.
+      () => this.fns.importFromCacheNijePreneto(),
+    );
   }
 
   /**
@@ -4091,12 +4572,22 @@ export class OdrzavanjeService {
    */
   async renameMachine(email: string, oldCode: string, newCode: string) {
     const target = this.assertUsableMachineCode(newCode);
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ result: unknown }[]>(
-        Prisma.sql`SELECT public.maint_machine_rename(${oldCode}, ${target}) AS result`,
-      );
-      return { data: rows[0]?.result ?? null };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: unknown }[]>(
+          Prisma.sql`SELECT public.maint_machine_rename(${oldCode}, ${target}) AS result`,
+        );
+        return { data: rows[0]?.result ?? null };
+      },
+      // ── 3.0 ──────────────────────────────────────────────────────────────
+      // Gejt je UNUTAR `machineRename` (uži je od hard-delete-a: bez
+      // `erp_admin_or_management`) — zato se ovde NE duplira. Mosta NEMA namerno:
+      // `loc_locations` se pri preimenovanju ne dira (skriveno pravilo §2.5.14).
+      async (tx, scope) => ({
+        data: await this.fns.machineRename(tx, scope, oldCode, target),
+      }),
+    );
   }
 
   /**
@@ -4107,58 +4598,114 @@ export class OdrzavanjeService {
    */
   async deleteMachineHard(email: string, code: string, reason: string) {
     // 1) Skupi putanje fajlova (RLS SELECT), pa best-effort obriši iz bucketa.
-    const paths = await this.withUserMapped(email, async (tx) => {
-      const files = await tx.maintMachineFile.findMany({
-        where: { machineCode: code },
-        select: { storagePath: true },
-      });
-      return files.map((f) => f.storagePath).filter(Boolean);
-    });
+    //    Bajtovi OSTAJU u sy15 storage-u i pod `3.0` — seli se samo putanja.
+    const paths = await this.wum30(
+      email,
+      async (tx) => {
+        const files = await tx.maintMachineFile.findMany({
+          where: { machineCode: code },
+          select: { storagePath: true },
+        });
+        return files.map((f) => f.storagePath).filter(Boolean);
+      },
+      async (tx) => {
+        const files = await tx.maintMachineFile.findMany({
+          where: { machineCode: code },
+          select: { storagePath: true },
+        });
+        return files.map((f) => f.storagePath).filter(Boolean);
+      },
+    );
     for (const p of paths) await this.storage.remove(MAINT_BUCKET, p);
     // 2) RPC (auth: erp-admin ∨ chief/admin; validira razlog ≥5; P0002 ako ne postoji).
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ result: unknown }[]>(
-        Prisma.sql`SELECT public.maint_machine_delete_hard(${code}, ${reason}) AS result`,
-      );
-      return { data: rows[0]?.result ?? null };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ result: unknown }[]>(
+          Prisma.sql`SELECT public.maint_machine_delete_hard(${code}, ${reason}) AS result`,
+        );
+        return { data: rows[0]?.result ?? null };
+      },
+      // ── 3.0 ──────────────────────────────────────────────────────────────
+      // Gejt, validacija razloga (≥5) i 🔴 trag u `maint_machines_deletion_log`
+      // (upisan PRE brisanja, sa celim redom mašine) su UNUTAR `machineDeleteHard`.
+      // Isti `tx` = „obriši mašinu + upiši trag" je jedan potez ili nijedan.
+      async (tx, scope) => ({
+        data: await this.fns.machineDeleteHard(tx, scope, email, code, reason),
+      }),
+      // Brisanje 7 tabela dece bez FK CASCADE ume da probije 5 s podrazumevanog
+      // prozora Prisma transakcije (bulk putanja — v. zaglavlje `runIdem`).
+      { timeoutMs: 60_000 },
+    );
   }
 
   // ---------- Ručni status override ----------
 
   /** Upsert override (PK machine_code); set_by = ja (paritet upsertMaintMachineOverride). */
   async setStatusOverride(email: string, code: string, dto: StatusOverrideDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      const data = {
-        status: dto.status as never,
-        reason: dto.reason,
-        setBy: uid!,
-        setAt: new Date(),
-        validUntil: this.toDbTs(dto.validUntil) ?? null,
-      };
-      const row = await tx.maintMachineStatusOverride.upsert({
-        where: { machineCode: code },
-        create: { machineCode: code, ...data },
-        update: data,
-      });
-      return { data: row };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const uid = await this.uid(tx);
+        const data = {
+          status: dto.status as never,
+          reason: dto.reason,
+          setBy: uid!,
+          setAt: new Date(),
+          validUntil: this.toDbTs(dto.validUntil) ?? null,
+        };
+        const row = await tx.maintMachineStatusOverride.upsert({
+          where: { machineCode: code },
+          create: { machineCode: code, ...data },
+          update: data,
+        });
+        return { data: row };
+      },
+      // ── 3.0 ── `maint_override_insert`/`_update`: erp_admin ∨ chief/admin.
+      async (tx, scope) => {
+        this.gejt(this.az.canWriteCatalog(scope), "maint_override_insert");
+        const data = {
+          status: dto.status,
+          reason: dto.reason,
+          setBy: scope.userId,
+          setAt: new Date(),
+          validUntil: this.toDbTs(dto.validUntil) ?? null,
+        };
+        return {
+          data: await tx.maintMachineStatusOverride.upsert({
+            where: { machineCode: code },
+            create: { machineCode: code, ...data },
+            update: data,
+          }),
+        };
+      },
+    );
   }
 
   async clearStatusOverride(email: string, code: string) {
-    return this.withUserMapped(email, async (tx) => {
-      await tx.maintMachineStatusOverride.deleteMany({
-        where: { machineCode: code },
-      });
-      return { data: { ok: true } };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        await tx.maintMachineStatusOverride.deleteMany({
+          where: { machineCode: code },
+        });
+        return { data: { ok: true } };
+      },
+      // ── 3.0 ── `maint_override_delete`: erp_admin ∨ chief/admin.
+      async (tx, scope) => {
+        this.gejt(this.az.canWriteCatalog(scope), "maint_override_delete");
+        await tx.maintMachineStatusOverride.deleteMany({
+          where: { machineCode: code },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   // ---------- Napomene mašine (24h pravilo je u RLS) ----------
 
   createNote(email: string, code: string, dto: CreateNoteDto) {
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-note",
@@ -4173,27 +4720,82 @@ export class OdrzavanjeService {
           },
         });
       },
+      // ── 3.0 ── `maint_notes_insert` CHECK: author = ja ∧ mašina vidljiva ∧
+      // (erp_admin ∨ profil operator/technician/chief/admin). Poslednji član NEMA
+      // svoj helper (nije RLS-scope nego role-gate) — zato je ovde ispisan.
+      async (tx, scope) => {
+        const smePisatiNapomene =
+          this.az.isErpAdmin(scope) ||
+          ["operator", "technician", "chief", "admin"].includes(
+            scope.profileRole ?? "",
+          );
+        this.gejt(
+          this.az.machineVisible(scope, code) && smePisatiNapomene,
+          "maint_notes_insert",
+        );
+        return tx.maintMachineNote.create({
+          data: {
+            machineCode: code,
+            author: scope.userId,
+            content: dto.content,
+            pinned: dto.pinned === true,
+          },
+        });
+      },
     );
   }
 
   async updateNote(email: string, noteId: string, dto: UpdateNoteDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintMachineNote.count({ where: { id: noteId } })) > 0;
-      const { count } = await tx.maintMachineNote.updateMany({
-        where: { id: noteId },
-        data: {
-          ...(dto.content !== undefined ? { content: dto.content } : {}),
-          ...(dto.pinned !== undefined ? { pinned: dto.pinned } : {}),
-          ...(dto.deleted !== undefined
-            ? { deletedAt: dto.deleted ? new Date() : null }
-            : {}),
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Napomena ${noteId}`);
-      return { data: { ok: true } };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintMachineNote.count({ where: { id: noteId } })) > 0;
+        const { count } = await tx.maintMachineNote.updateMany({
+          where: { id: noteId },
+          data: {
+            ...(dto.content !== undefined ? { content: dto.content } : {}),
+            ...(dto.pinned !== undefined ? { pinned: dto.pinned } : {}),
+            ...(dto.deleted !== undefined
+              ? { deletedAt: dto.deleted ? new Date() : null }
+              : {}),
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Napomena ${noteId}`);
+        return { data: { ok: true } };
+      },
+      // ── 3.0 ── `maint_notes_update` USING: mašina vidljiva ∧ (erp_admin ∨
+      // chief/admin ∨ autor u prvih 24 h sa rolom operator/technician).
+      // 🔴 „24 sata" je najlakše propušteno pravilo cele seobe (v. `canEditOwnWithin24h`).
+      async (tx, scope) => {
+        const row = await tx.maintMachineNote.findUnique({
+          where: { id: noteId },
+          select: { machineCode: true, author: true, createdAt: true },
+        });
+        if (!row) throw new NotFoundException(`Napomena ${noteId} ne postoji`);
+        this.gejt(
+          this.az.machineVisible(scope, row.machineCode) &&
+            this.az.canEditOwnWithin24h(scope, {
+              authorId: row.author,
+              createdAt: row.createdAt,
+            }),
+          "maint_notes_update",
+        );
+        await tx.maintMachineNote.update({
+          where: { id: noteId },
+          data: {
+            ...(dto.content !== undefined ? { content: dto.content } : {}),
+            ...(dto.pinned !== undefined ? { pinned: dto.pinned } : {}),
+            ...(dto.deleted !== undefined
+              ? { deletedAt: dto.deleted ? new Date() : null }
+              : {}),
+            updatedAt: new Date(),
+          },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   // ---------- Fajlovi mašine (storage proxy F4) ----------
@@ -4212,21 +4814,48 @@ export class OdrzavanjeService {
     }
     const uuid = randomUUID().replace(/-/g, "").slice(0, 12);
     const storagePath = `${code}/${uuid}_${this.safeFileName(file.originalname)}`;
-    const meta = await this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      return tx.maintMachineFile.create({
-        data: {
-          machineCode: code,
-          fileName: file.originalname,
-          storagePath,
-          mimeType: file.mimetype ?? null,
-          sizeBytes: BigInt(file.buffer.length),
-          category: dto.category ?? null,
-          description: dto.description ?? null,
-          uploadedBy: uid,
-        },
-      });
-    });
+    const meta = await this.wum30(
+      email,
+      async (tx) => {
+        const uid = await this.uid(tx);
+        return tx.maintMachineFile.create({
+          data: {
+            machineCode: code,
+            fileName: file.originalname,
+            storagePath,
+            mimeType: file.mimetype ?? null,
+            sizeBytes: BigInt(file.buffer.length),
+            category: dto.category ?? null,
+            description: dto.description ?? null,
+            uploadedBy: uid,
+          },
+        });
+      },
+      // ── 3.0 ── `mmf_insert` CHECK: uploaded_by = ja ∧ (erp_admin ∨
+      // erp_admin_or_management ∨ profil operator/technician/chief/admin).
+      // Bajtovi i dalje idu u sy15 bucket — seli se SAMO meta red (putanja).
+      async (tx, scope) => {
+        const smeSlati =
+          this.az.isErpAdmin(scope) ||
+          this.az.isErpAdminOrManagement(scope) ||
+          ["operator", "technician", "chief", "admin"].includes(
+            scope.profileRole ?? "",
+          );
+        this.gejt(smeSlati, "mmf_insert");
+        return tx.maintMachineFile.create({
+          data: {
+            machineCode: code,
+            fileName: file.originalname,
+            storagePath,
+            mimeType: file.mimetype ?? null,
+            sizeBytes: BigInt(file.buffer.length),
+            category: dto.category ?? null,
+            description: dto.description ?? null,
+            uploadedBy: scope.userId,
+          },
+        });
+      },
+    );
     try {
       await this.storage.upload(
         MAINT_BUCKET,
@@ -4236,68 +4865,147 @@ export class OdrzavanjeService {
         false,
       );
     } catch (e) {
-      await this.withUserMapped(email, async (tx) => {
-        await tx.maintMachineFile.deleteMany({ where: { id: meta.id } });
-      }).catch(() => {});
+      // Poništavanje meta reda ide u ISTI izvor u koji je i upisan.
+      await this.wum30(
+        email,
+        async (tx) => {
+          await tx.maintMachineFile.deleteMany({ where: { id: meta.id } });
+        },
+        async (tx) => {
+          await tx.maintMachineFile.deleteMany({ where: { id: meta.id } });
+        },
+      ).catch(() => {});
       throw e;
     }
     return { data: this.withNumSize(meta) };
   }
 
   updateMachineFile(email: string, id: string, dto: FileMetaDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintMachineFile.count({ where: { id } })) > 0;
-      const { count } = await tx.maintMachineFile.updateMany({
-        where: { id },
-        data: {
-          ...(dto.category !== undefined ? { category: dto.category } : {}),
-          ...(dto.description !== undefined
-            ? { description: dto.description }
-            : {}),
-        },
-      });
-      this.assertAffected(exists, count, `Fajl ${id}`);
-      return { data: { ok: true } };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const exists = (await tx.maintMachineFile.count({ where: { id } })) > 0;
+        const { count } = await tx.maintMachineFile.updateMany({
+          where: { id },
+          data: {
+            ...(dto.category !== undefined ? { category: dto.category } : {}),
+            ...(dto.description !== undefined
+              ? { description: dto.description }
+              : {}),
+          },
+        });
+        this.assertAffected(exists, count, `Fajl ${id}`);
+        return { data: { ok: true } };
+      },
+      // ── 3.0 ── `mmf_update`: erp_admin ∨ chief/admin ∨ vlasnik u prvih 24 h.
+      async (tx, scope) => {
+        const row = await tx.maintMachineFile.findUnique({
+          where: { id },
+          select: { uploadedBy: true, uploadedAt: true },
+        });
+        if (!row) throw new NotFoundException(`Fajl ${id} ne postoji`);
+        this.gejt(
+          this.az.canEditOwnWithin24h(scope, {
+            authorId: row.uploadedBy,
+            createdAt: row.uploadedAt,
+          }),
+          "mmf_update",
+        );
+        await tx.maintMachineFile.update({
+          where: { id },
+          data: {
+            ...(dto.category !== undefined ? { category: dto.category } : {}),
+            ...(dto.description !== undefined
+              ? { description: dto.description }
+              : {}),
+          },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   /** Soft-delete fajla (deleted_at) pod RLS + best-effort brisanje bajtova. */
   async deleteMachineFile(email: string, id: string) {
-    const path = await this.withUserMapped(email, async (tx) => {
-      const row = await tx.maintMachineFile.findUnique({
-        where: { id },
-        select: { storagePath: true },
-      });
-      const exists = !!row;
-      const { count } = await tx.maintMachineFile.updateMany({
-        where: { id },
-        data: { deletedAt: new Date() },
-      });
-      this.assertAffected(exists, count, `Fajl ${id}`);
-      return row?.storagePath ?? null;
-    });
+    const path = await this.wum30(
+      email,
+      async (tx) => {
+        const row = await tx.maintMachineFile.findUnique({
+          where: { id },
+          select: { storagePath: true },
+        });
+        const exists = !!row;
+        const { count } = await tx.maintMachineFile.updateMany({
+          where: { id },
+          data: { deletedAt: new Date() },
+        });
+        this.assertAffected(exists, count, `Fajl ${id}`);
+        return row?.storagePath ?? null;
+      },
+      // ── 3.0 ── `mmf_delete`: isti izraz kao `mmf_update` (24 h pravilo).
+      // ⚠️ Pod `3.0` NESTAJE 1.0 defekt „soft-delete čini red nevidljiv pa RLS
+      // WITH CHECK obori upis" (paritet §C) — ovde gejt presuđuje pre upisa.
+      async (tx, scope) => {
+        const row = await tx.maintMachineFile.findUnique({
+          where: { id },
+          select: {
+            storagePath: true,
+            uploadedBy: true,
+            uploadedAt: true,
+          },
+        });
+        if (!row) throw new NotFoundException(`Fajl ${id} ne postoji`);
+        this.gejt(
+          this.az.canEditOwnWithin24h(scope, {
+            authorId: row.uploadedBy,
+            createdAt: row.uploadedAt,
+          }),
+          "mmf_delete",
+        );
+        await tx.maintMachineFile.update({
+          where: { id },
+          data: { deletedAt: new Date() },
+        });
+        return row.storagePath;
+      },
+    );
     if (path) await this.storage.remove(MAINT_BUCKET, path);
     return { data: { ok: true } };
   }
 
   /** Presigned URL fajla mašine (RLS SELECT presuđuje vidljivost PRE potpisivanja). */
   async signMachineFile(email: string, id: string) {
-    const path = await this.withUserMapped(email, async (tx) => {
-      const row = await tx.maintMachineFile.findUnique({
-        where: { id },
-        select: { storagePath: true, deletedAt: true },
-      });
-      if (!row || row.deletedAt)
-        throw new NotFoundException(`Fajl ${id} ne postoji`);
-      return row.storagePath;
-    });
+    const path = await this.wum30(
+      email,
+      async (tx) => {
+        const row = await tx.maintMachineFile.findUnique({
+          where: { id },
+          select: { storagePath: true, deletedAt: true },
+        });
+        if (!row || row.deletedAt)
+          throw new NotFoundException(`Fajl ${id} ne postoji`);
+        return row.storagePath;
+      },
+      // ── 3.0 ── `mmf_select`: mašina vidljiva. Vidljivost se presuđuje PRE
+      // potpisivanja — potpisan URL zaobilazi svaku kasniju proveru.
+      async (tx, scope) => {
+        const row = await tx.maintMachineFile.findUnique({
+          where: { id },
+          select: { storagePath: true, deletedAt: true, machineCode: true },
+        });
+        if (!row || row.deletedAt)
+          throw new NotFoundException(`Fajl ${id} ne postoji`);
+        this.gejt(this.az.machineVisible(scope, row.machineCode), "mmf_select");
+        return row.storagePath;
+      },
+    );
     return { data: await this.storage.signUrl(MAINT_BUCKET, path, 300) };
   }
 
   // ---------- Preventiva: šabloni + kontrole + WO iz šablona ----------
 
   createTask(email: string, dto: CreateTaskDto) {
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-task",
@@ -4321,70 +5029,151 @@ export class OdrzavanjeService {
           },
         });
       },
+      // ── 3.0 ── `maint_tasks_insert` CHECK: erp_admin ∨ chief/admin.
+      async (tx, scope) => {
+        this.gejt(this.az.canWriteCatalog(scope), "maint_tasks_insert");
+        return tx.maintTask.create({
+          data: {
+            machineCode: dto.machineCode,
+            title: dto.title,
+            description: dto.description ?? null,
+            instructions: dto.instructions ?? null,
+            intervalValue: dto.intervalValue,
+            intervalUnit: dto.intervalUnit,
+            severity: dto.severity ?? "normal",
+            requiredRole: dto.requiredRole ?? "operator",
+            gracePeriodDays: dto.gracePeriodDays ?? 3,
+            active: dto.active ?? true,
+            createdBy: scope.userId,
+            updatedBy: scope.userId,
+            checklistTemplate: [],
+          },
+        });
+      },
     );
   }
 
   async updateTask(email: string, id: string, dto: UpdateTaskDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintTask.count({ where: { id } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintTask.updateMany({
-        where: { id },
-        data: {
-          ...(dto.title !== undefined ? { title: dto.title } : {}),
-          ...(dto.description !== undefined
-            ? { description: dto.description }
-            : {}),
-          ...(dto.instructions !== undefined
-            ? { instructions: dto.instructions }
-            : {}),
-          ...(dto.intervalValue !== undefined
-            ? { intervalValue: dto.intervalValue }
-            : {}),
-          ...(dto.intervalUnit !== undefined
-            ? { intervalUnit: dto.intervalUnit as never }
-            : {}),
-          ...(dto.severity !== undefined
-            ? { severity: dto.severity as never }
-            : {}),
-          ...(dto.requiredRole !== undefined
-            ? { requiredRole: dto.requiredRole as never }
-            : {}),
-          ...(dto.gracePeriodDays !== undefined
-            ? { gracePeriodDays: dto.gracePeriodDays }
-            : {}),
-          ...(dto.active !== undefined ? { active: dto.active } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Šablon ${id}`);
-      return { data: await tx.maintTask.findUnique({ where: { id } }) };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const exists = (await tx.maintTask.count({ where: { id } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintTask.updateMany({
+          where: { id },
+          data: {
+            ...(dto.title !== undefined ? { title: dto.title } : {}),
+            ...(dto.description !== undefined
+              ? { description: dto.description }
+              : {}),
+            ...(dto.instructions !== undefined
+              ? { instructions: dto.instructions }
+              : {}),
+            ...(dto.intervalValue !== undefined
+              ? { intervalValue: dto.intervalValue }
+              : {}),
+            ...(dto.intervalUnit !== undefined
+              ? { intervalUnit: dto.intervalUnit as never }
+              : {}),
+            ...(dto.severity !== undefined
+              ? { severity: dto.severity as never }
+              : {}),
+            ...(dto.requiredRole !== undefined
+              ? { requiredRole: dto.requiredRole as never }
+              : {}),
+            ...(dto.gracePeriodDays !== undefined
+              ? { gracePeriodDays: dto.gracePeriodDays }
+              : {}),
+            ...(dto.active !== undefined ? { active: dto.active } : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Šablon ${id}`);
+        return { data: await tx.maintTask.findUnique({ where: { id } }) };
+      },
+      // ── 3.0 ── `maint_tasks_update`: erp_admin ∨ chief/admin.
+      async (tx, scope) => {
+        this.gejt(this.az.canWriteCatalog(scope), "maint_tasks_update");
+        const exists = (await tx.maintTask.count({ where: { id } })) > 0;
+        const { count } = await tx.maintTask.updateMany({
+          where: { id },
+          data: {
+            ...(dto.title !== undefined ? { title: dto.title } : {}),
+            ...(dto.description !== undefined
+              ? { description: dto.description }
+              : {}),
+            ...(dto.instructions !== undefined
+              ? { instructions: dto.instructions }
+              : {}),
+            ...(dto.intervalValue !== undefined
+              ? { intervalValue: dto.intervalValue }
+              : {}),
+            ...(dto.intervalUnit !== undefined
+              ? { intervalUnit: dto.intervalUnit }
+              : {}),
+            ...(dto.severity !== undefined ? { severity: dto.severity } : {}),
+            ...(dto.requiredRole !== undefined
+              ? { requiredRole: dto.requiredRole }
+              : {}),
+            ...(dto.gracePeriodDays !== undefined
+              ? { gracePeriodDays: dto.gracePeriodDays }
+              : {}),
+            ...(dto.active !== undefined ? { active: dto.active } : {}),
+            updatedBy: scope.userId,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Šablon ${id}`);
+        return { data: await tx.maintTask.findUnique({ where: { id } }) };
+      },
+    );
   }
 
   /** DELETE šablona (CASCADE briše maint_checks istoriju — 1.0 preporučuje active=false). */
   async deleteTask(email: string, id: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintTask.count({ where: { id } })) > 0;
-      const { count } = await tx.maintTask.deleteMany({ where: { id } });
-      this.assertAffected(exists, count, `Šablon ${id}`);
-      return { data: { ok: true } };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const exists = (await tx.maintTask.count({ where: { id } })) > 0;
+        const { count } = await tx.maintTask.deleteMany({ where: { id } });
+        this.assertAffected(exists, count, `Šablon ${id}`);
+        return { data: { ok: true } };
+      },
+      // ── 3.0 ── `maint_tasks_delete`: erp_admin ∨ chief/admin.
+      async (tx, scope) => {
+        this.gejt(this.az.canWriteCatalog(scope), "maint_tasks_delete");
+        const exists = (await tx.maintTask.count({ where: { id } })) > 0;
+        const { count } = await tx.maintTask.deleteMany({ where: { id } });
+        this.assertAffected(exists, count, `Šablon ${id}`);
+        return { data: { ok: true } };
+      },
+    );
   }
 
   /** Kreiraj (ili vrati postojeći) WO iz preventivnog šablona (RPC; anti-duplikat u DB). */
   createPreventiveWorkOrder(email: string, taskId: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ wo: string | null }[]>(
-        Prisma.sql`SELECT public.maint_create_preventive_work_order(${taskId}::uuid) AS wo`,
-      );
-      return { data: { woId: rows[0]?.wo ?? null } };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ wo: string | null }[]>(
+          Prisma.sql`SELECT public.maint_create_preventive_work_order(${taskId}::uuid) AS wo`,
+        );
+        return { data: { woId: rows[0]?.wo ?? null } };
+      },
+      // ── 3.0 ── Gejt (technician+), 🔴 anti-duplikat („nalog za ovaj šablon koji
+      // NIJE otkazan → vrati postojeći") i `preventive_auto_wo` trag su UNUTAR
+      // prepisa. Broj naloga dodeljuje DB triger `trg_maint_wo_assign_number`.
+      async (tx, scope) => ({
+        data: {
+          woId: await this.fns.createPreventiveWorkOrder(tx, scope, taskId),
+        },
+      }),
+    );
   }
 
   createCheck(email: string, dto: CreateCheckDto) {
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-check",
@@ -4396,6 +5185,23 @@ export class OdrzavanjeService {
             machineCode: dto.machineCode,
             performedBy: uid!,
             result: dto.result as never,
+            notes: dto.notes ?? null,
+            attachmentUrls: [],
+          },
+        });
+      },
+      // ── 3.0 ── `maint_checks_insert` CHECK: performed_by = ja ∧ mašina vidljiva.
+      async (tx, scope) => {
+        this.gejt(
+          this.az.canCreateCheck(scope, scope.userId, dto.machineCode),
+          "maint_checks_insert",
+        );
+        return tx.maintCheck.create({
+          data: {
+            taskId: dto.taskId,
+            machineCode: dto.machineCode,
+            performedBy: scope.userId,
+            result: dto.result,
             notes: dto.notes ?? null,
             attachmentUrls: [],
           },
@@ -4414,7 +5220,7 @@ export class OdrzavanjeService {
    * asset_type popunjava trigger; auto-WO/auto-notify trigeri se okidaju u bazi.
    */
   reportIncident(email: string, dto: ReportIncidentDto) {
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.report-incident",
@@ -4431,51 +5237,203 @@ export class OdrzavanjeService {
             ${dto.safetyMarker === true}, 'open'::maint_incident_status, '{}'::text[])`);
         return { id };
       },
+      // ── 3.0 ─────────────────────────────────────────────────────────────
+      // 🔴 ČETIRI TRIGERA IZ sy15 KOJIH U 3.0 BAZI NEMA — sva četiri se zovu
+      // ODAVDE, redom kojim ih je baza izvršavala. Zaobići bilo koji znači tih
+      // gubitak: kvar bez traga, KRITIČAN kvar bez auto-naloga, major/critical
+      // kvar bez ijednog obaveštenja. Ništa ne pukne — samo podatak nedostaje.
+      async (tx, scope) => {
+        // `maint_incidents_insert` CHECK je SAMO `reported_by = auth.uid()`:
+        // prijava kvara je NAMERNO otvorena celoj firmi (§2.5.4).
+        this.gejt(
+          this.az.canReportIncident(scope, scope.userId),
+          "maint_incidents_insert",
+        );
+        // 1) BEFORE INSERT — denormalizacija sredstva.
+        const polja = await this.fns.incidentSetAssetFields(tx, {
+          machineCode: dto.machineCode,
+          assetId: dto.assetId ?? null,
+        });
+        const inc = await tx.maintIncident.create({
+          data: {
+            machineCode: polja.machineCode ?? dto.machineCode,
+            assetId: polja.assetId,
+            // Triger prepisuje tip samo kad je sredstvo NAŠAO; inače ostaje ono
+            // što je klijent poslao (izvor tada ne dira NEW).
+            assetType: polja.assetType ?? dto.assetType ?? null,
+            reportedBy: scope.userId,
+            title: dto.title,
+            description: dto.description ?? null,
+            severity: dto.severity,
+            safetyMarker: dto.safetyMarker === true,
+            status: "open",
+            attachmentUrls: [],
+          },
+        });
+        // 2) AFTER INSERT — revizioni trag (`created`, TAČNO jedan red).
+        await this.fns.incidentLogChanges(tx, {
+          incidentId: inc.id,
+          actor: scope.userId,
+          op: "INSERT",
+          neu: { status: inc.status, assignedTo: inc.assignedTo },
+        });
+        // 3) AFTER INSERT — auto radni nalog (critical → rok 8 h, status
+        //    `potvrden`, prioritet `p1_zastoj`; sve iz `maint_settings`).
+        await this.fns.incidentAutocreateWorkOrder(tx, {
+          id: inc.id,
+          machineCode: inc.machineCode,
+          assetId: inc.assetId,
+          severity: inc.severity,
+          safetyMarker: inc.safetyMarker,
+          title: inc.title,
+          description: inc.description,
+          reportedBy: inc.reportedBy,
+          assignedTo: inc.assignedTo,
+          workOrderId: inc.workOrderId,
+        });
+        // 4) AFTER INSERT — outbox obaveštenja (bez pravila i dalje JEDAN
+        //    `in_app` red; bez toga bi kvar prošao nemo).
+        await this.fns.incidentEnqueueNotify(tx, {
+          id: inc.id,
+          machineCode: inc.machineCode,
+          assetId: inc.assetId,
+          assetType: inc.assetType,
+          severity: inc.severity,
+          status: inc.status,
+          title: inc.title,
+          reportedBy: inc.reportedBy,
+          assignedTo: inc.assignedTo,
+        });
+        return { id: inc.id };
+      },
     );
   }
 
   async updateIncident(email: string, id: string, dto: UpdateIncidentDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintIncident.count({ where: { id } })) > 0;
-      const uid = await this.uid(tx);
-      // CHECK (u closed samo maint_can_close_incident) presuđuje DB → 23514/42501.
-      const { count } = await tx.maintIncident.updateMany({
-        where: { id },
-        data: {
-          ...(dto.status !== undefined ? { status: dto.status as never } : {}),
-          ...(dto.assignedTo !== undefined
-            ? { assignedTo: dto.assignedTo }
-            : {}),
-          ...(dto.severity !== undefined
-            ? { severity: dto.severity as never }
-            : {}),
-          ...(dto.resolutionNotes !== undefined
-            ? { resolutionNotes: dto.resolutionNotes }
-            : {}),
-          ...(dto.downtimeMinutes !== undefined
-            ? { downtimeMinutes: dto.downtimeMinutes }
-            : {}),
-          ...(dto.resolvedAt !== undefined
-            ? { resolvedAt: this.toDbTs(dto.resolvedAt) }
-            : {}),
-          ...(dto.closedAt !== undefined
-            ? { closedAt: this.toDbTs(dto.closedAt) }
-            : {}),
-          ...(dto.safetyMarker !== undefined
-            ? { safetyMarker: dto.safetyMarker }
-            : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Kvar ${id}`);
-      return { data: await tx.maintIncident.findUnique({ where: { id } }) };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const exists = (await tx.maintIncident.count({ where: { id } })) > 0;
+        const uid = await this.uid(tx);
+        // CHECK (u closed samo maint_can_close_incident) presuđuje DB → 23514/42501.
+        const { count } = await tx.maintIncident.updateMany({
+          where: { id },
+          data: {
+            ...(dto.status !== undefined
+              ? { status: dto.status as never }
+              : {}),
+            ...(dto.assignedTo !== undefined
+              ? { assignedTo: dto.assignedTo }
+              : {}),
+            ...(dto.severity !== undefined
+              ? { severity: dto.severity as never }
+              : {}),
+            ...(dto.resolutionNotes !== undefined
+              ? { resolutionNotes: dto.resolutionNotes }
+              : {}),
+            ...(dto.downtimeMinutes !== undefined
+              ? { downtimeMinutes: dto.downtimeMinutes }
+              : {}),
+            ...(dto.resolvedAt !== undefined
+              ? { resolvedAt: this.toDbTs(dto.resolvedAt) }
+              : {}),
+            ...(dto.closedAt !== undefined
+              ? { closedAt: this.toDbTs(dto.closedAt) }
+              : {}),
+            ...(dto.safetyMarker !== undefined
+              ? { safetyMarker: dto.safetyMarker }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Kvar ${id}`);
+        return { data: await tx.maintIncident.findUnique({ where: { id } }) };
+      },
+      // ── 3.0 ─────────────────────────────────────────────────────────────
+      // `maint_incidents_update` USING: red vidljiv ∧ (erp_admin_or_management ∨
+      // erp_admin ∨ profil technician/chief/admin) — to je TAČNO izraz koji nosi
+      // `canUpdateWorkOrder` (deljen predikat „tehničar naviše", isti u sy15).
+      // WITH CHECK dodaje close-gate: u `closed` samo `maint_can_close_incident`.
+      async (tx, scope) => {
+        const stari = await tx.maintIncident.findUnique({
+          where: { id },
+          select: {
+            machineCode: true,
+            assetId: true,
+            status: true,
+            assignedTo: true,
+            asset: { select: { assetType: true } },
+          },
+        });
+        if (!stari) throw new NotFoundException(`Kvar ${id} ne postoji`);
+        this.gejt(
+          this.az.incidentRowVisible(scope, {
+            machineCode: stari.machineCode,
+            asset: stari.assetId
+              ? {
+                  assetType: stari.asset?.assetType ?? "machine",
+                  machineCode: stari.machineCode,
+                }
+              : null,
+          }) && this.az.canUpdateWorkOrder(scope),
+          "maint_incidents_update",
+        );
+        if (dto.status === "closed") {
+          this.gejt(
+            this.az.canCloseIncident(scope),
+            "maint_incidents_update (close-gate)",
+          );
+        }
+        const noviAssignedTo = this.id30(dto.assignedTo, "assignedTo");
+        await tx.maintIncident.update({
+          where: { id },
+          data: {
+            ...(dto.status !== undefined ? { status: dto.status } : {}),
+            ...(noviAssignedTo !== undefined
+              ? { assignedTo: noviAssignedTo }
+              : {}),
+            ...(dto.severity !== undefined ? { severity: dto.severity } : {}),
+            ...(dto.resolutionNotes !== undefined
+              ? { resolutionNotes: dto.resolutionNotes }
+              : {}),
+            ...(dto.downtimeMinutes !== undefined
+              ? { downtimeMinutes: dto.downtimeMinutes }
+              : {}),
+            ...(dto.resolvedAt !== undefined
+              ? { resolvedAt: this.toDbTs(dto.resolvedAt) }
+              : {}),
+            ...(dto.closedAt !== undefined
+              ? { closedAt: this.toDbTs(dto.closedAt) }
+              : {}),
+            ...(dto.safetyMarker !== undefined
+              ? { safetyMarker: dto.safetyMarker }
+              : {}),
+            updatedBy: scope.userId,
+            updatedAt: new Date(),
+          },
+        });
+        // 🔴 AFTER UPDATE `maint_incidents_log_changes` — status i dodela se
+        // pišu u `maint_incident_events`. U 3.0 to NEMA trigger.
+        await this.fns.incidentLogChanges(tx, {
+          incidentId: id,
+          actor: scope.userId,
+          op: "UPDATE",
+          old: { status: stari.status, assignedTo: stari.assignedTo },
+          neu: {
+            status: dto.status ?? stari.status,
+            assignedTo:
+              noviAssignedTo !== undefined ? noviAssignedTo : stari.assignedTo,
+          },
+        });
+        return { data: await tx.maintIncident.findUnique({ where: { id } }) };
+      },
+    );
   }
 
   /** Ručni komentar/tok incidenta. Idempotentan po clientEventId (dupli-klik ≠ dupli event). */
   createIncidentEvent(email: string, id: string, dto: IncidentEventDto) {
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-incident-event",
@@ -4485,6 +5443,29 @@ export class OdrzavanjeService {
           data: {
             incidentId: id,
             actor: uid,
+            eventType: dto.eventType,
+            comment: dto.comment ?? null,
+            fromValue: dto.fromValue ?? null,
+            toValue: dto.toValue ?? null,
+          },
+        });
+      },
+      // ── 3.0 ── `maint_inc_events_insert` CHECK: postoji incident čija je mašina
+      // vidljiva ∧ (actor IS NULL ∨ actor = ja). Actor je uvek pozivalac.
+      async (tx, scope) => {
+        const inc = await tx.maintIncident.findUnique({
+          where: { id },
+          select: { machineCode: true },
+        });
+        if (!inc) throw new NotFoundException(`Kvar ${id} ne postoji`);
+        this.gejt(
+          this.az.machineVisible(scope, inc.machineCode),
+          "maint_inc_events_insert",
+        );
+        return tx.maintIncidentEvent.create({
+          data: {
+            incidentId: id,
+            actor: scope.userId,
             eventType: dto.eventType,
             comment: dto.comment ?? null,
             fromValue: dto.fromValue ?? null,
@@ -4521,14 +5502,25 @@ export class OdrzavanjeService {
       hint: "Kvar je prijavljen — prijavu ne unosite ponovo; ispravite fotografiju pa je priložite uz istu prijavu.",
     });
     // machine_code incidenta (za 1.0-kompatibilnu putanju); RLS SELECT presuđuje vidljivost.
-    const machineCode = await this.withUserMapped(email, async (tx) => {
-      const inc = await tx.maintIncident.findUnique({
-        where: { id },
-        select: { machineCode: true },
-      });
-      // Reporter možda NE VIDI svoj incident (F6) → fallback na "incident/<id>" putanju.
-      return inc?.machineCode ?? `incident/${id}`;
-    });
+    const machineCode = await this.wum30(
+      email,
+      async (tx) => {
+        const inc = await tx.maintIncident.findUnique({
+          where: { id },
+          select: { machineCode: true },
+        });
+        // Reporter možda NE VIDI svoj incident (F6) → fallback na "incident/<id>".
+        return inc?.machineCode ?? `incident/${id}`;
+      },
+      // ── 3.0 ── isti fallback; putanja u bucketu ostaje 1.0-kompatibilna.
+      async (tx) => {
+        const inc = await tx.maintIncident.findUnique({
+          where: { id },
+          select: { machineCode: true },
+        });
+        return inc?.machineCode ?? `incident/${id}`;
+      },
+    );
     const paths: string[] = [];
     for (const { file: f, contentType } of checked) {
       const uuid = randomUUID().replace(/-/g, "").slice(0, 12);
@@ -4542,12 +5534,19 @@ export class OdrzavanjeService {
       );
       paths.push(p);
     }
-    const ok = await this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ ok: boolean }[]>(
-        Prisma.sql`SELECT public.maint_attach_incident_files(${id}::uuid, ${paths}::text[]) AS ok`,
-      );
-      return rows[0]?.ok === true;
-    });
+    const ok = await this.wum30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ ok: boolean }[]>(
+          Prisma.sql`SELECT public.maint_attach_incident_files(${id}::uuid, ${paths}::text[]) AS ok`,
+        );
+        return rows[0]?.ok === true;
+      },
+      // ── 3.0 ── 🔴 Najskrivenije pravilo modula (`reported_by = ja`, bez ijedne
+      // role) je UNUTAR prepisa i vraća `false` umesto greške — zato se ovde ne
+      // duplira, a orphan bajtovi se čiste ispod, isto kao pod sy15.
+      async (tx, scope) => this.fns.attachIncidentFiles(tx, scope, id, paths),
+    );
     // RPC je autoritet (reported_by = auth.uid()). Ako odbije (nisi prijavilac),
     // OČISTI upload-ovane bajtove — inače ostaju kao orphan u bucketu (review nalaz,
     // merge-klasa „autorizacija oko upload-a"; RPC ostaje jedini izvor authz-a).
@@ -4566,7 +5565,7 @@ export class OdrzavanjeService {
 
   /** Kreiraj WO (reported_by = ja; wo_number dodeljuje trigger — NE generišemo ga). */
   createWorkOrder(email: string, dto: CreateWorkOrderDto) {
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-work-order",
@@ -4606,110 +5605,339 @@ export class OdrzavanjeService {
           },
         });
       },
+      // ── 3.0 ── `maint_wo_insert` CHECK: reported_by = ja ∧ sredstvo vidljivo ∧
+      // (erp_admin_or_management ∨ profil operator/technician/chief/admin).
+      // 🔴 `wo_number` dodeljuje DB triger `trg_maint_wo_assign_number` (JESTE
+      // prenet) — ovde se NE generiše; dupla dodela bi potrošila brojač.
+      async (tx, scope) => {
+        const asset = await tx.maintAsset.findUnique({
+          where: { assetId: dto.assetId },
+          select: {
+            archivedAt: true,
+            name: true,
+            assetType: true,
+            machine: { select: { machineCode: true } },
+          },
+        });
+        this.gejt(
+          this.az.canCreateWorkOrder(scope, scope.userId) &&
+            this.az.assetVisible(
+              scope,
+              asset
+                ? {
+                    assetType: asset.assetType,
+                    machineCode: asset.machine?.machineCode ?? null,
+                  }
+                : null,
+            ),
+          "maint_wo_insert",
+        );
+        if (asset?.archivedAt)
+          throw new UnprocessableEntityException(
+            `Sredstvo „${asset.name}" je otpisano — novi radni nalog nije moguć. Vratite ga u upotrebu ili izaberite drugo.`,
+          );
+        return tx.maintWorkOrder.create({
+          data: {
+            type: dto.type,
+            assetId: dto.assetId,
+            assetType: dto.assetType,
+            title: dto.title,
+            description: dto.description ?? null,
+            priority: dto.priority,
+            safetyMarker: dto.safetyMarker === true,
+            status: "novi",
+            reportedBy: scope.userId,
+            dueAt: this.toDbTs(dto.dueAt) ?? null,
+            sourceIncidentId: dto.sourceIncidentId ?? null,
+            costTotal: dto.costTotal ?? null,
+            estimatedCost: dto.estimatedCost ?? null,
+            externalServicerName: dto.externalServicerName?.trim() || null,
+            odometerKmAtService: dto.odometerKmAtService ?? null,
+          },
+        });
+      },
     );
   }
 
   /** Kanban status/dodela/prioritet/rok/closure. wo_events piše trigger — NE dupliramo. */
   async updateWorkOrder(email: string, id: string, dto: UpdateWorkOrderDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const current = await tx.maintWorkOrder.findUnique({
-        where: { woId: id },
-        select: { startedAt: true, completedAt: true },
-      });
-      const exists = current !== null;
-      const uid = await this.uid(tx);
-      // Pečatiranje prelaza statusa (audit MEDIUM; 1.0 pečatira KLIJENT — skriveno pravilo 9,
-      // maintWorkOrdersPanel.js:367-368/754): u_radu → started_at (samo ako DTO ga ne nosi i
-      // još nije pečatiran), zavrsen → completed_at (samo ako DTO ga ne nosi I još nije
-      // pečatiran — 1.0 `st==='zavrsen' && !wo.completed_at`). Bez `!current?.completedAt`
-      // čuvara ponovljeni „zavrsen" PATCH bi pregazio originalni završetak (kvari
-      // downtime/trošak/kompletiranje izveštaje) — simetrično sa stampStarted.
-      const stampStarted =
-        dto.status === "u_radu" &&
-        dto.startedAt === undefined &&
-        !current?.startedAt;
-      const stampCompleted =
-        dto.status === "zavrsen" &&
-        dto.completedAt === undefined &&
-        !current?.completedAt;
-      const { count } = await tx.maintWorkOrder.updateMany({
-        where: { woId: id },
-        data: {
-          ...(dto.status !== undefined ? { status: dto.status as never } : {}),
-          ...(dto.priority !== undefined
-            ? { priority: dto.priority as never }
-            : {}),
-          ...(dto.assignedTo !== undefined
-            ? { assignedTo: dto.assignedTo }
-            : {}),
-          ...(dto.dueAt !== undefined ? { dueAt: this.toDbTs(dto.dueAt) } : {}),
-          ...(dto.title !== undefined ? { title: dto.title } : {}),
-          ...(dto.description !== undefined
-            ? { description: dto.description }
-            : {}),
-          ...(dto.closureComment !== undefined
-            ? { closureComment: dto.closureComment }
-            : {}),
-          ...(dto.startedAt !== undefined
-            ? { startedAt: this.toDbTs(dto.startedAt) }
-            : {}),
-          ...(dto.completedAt !== undefined
-            ? { completedAt: this.toDbTs(dto.completedAt) }
-            : {}),
-          ...(dto.downtimeFrom !== undefined
-            ? { downtimeFrom: this.toDbTs(dto.downtimeFrom) }
-            : {}),
-          ...(dto.downtimeTo !== undefined
-            ? { downtimeTo: this.toDbTs(dto.downtimeTo) }
-            : {}),
-          ...(dto.laborMinutes !== undefined
-            ? { laborMinutes: dto.laborMinutes }
-            : {}),
-          ...(dto.costTotal !== undefined ? { costTotal: dto.costTotal } : {}),
-          ...(dto.estimatedCost !== undefined
-            ? { estimatedCost: dto.estimatedCost }
-            : {}),
-          ...(dto.safetyMarker !== undefined
-            ? { safetyMarker: dto.safetyMarker }
-            : {}),
-          ...(dto.vehicleServiceCategory !== undefined
-            ? { vehicleServiceCategory: dto.vehicleServiceCategory as never }
-            : {}),
-          ...(dto.odometerKmAtService !== undefined
-            ? { odometerKmAtService: dto.odometerKmAtService }
-            : {}),
-          ...(dto.externalServicerName !== undefined
-            ? { externalServicerName: dto.externalServicerName }
-            : {}),
-          ...(stampStarted ? { startedAt: new Date() } : {}),
-          ...(stampCompleted ? { completedAt: new Date() } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Radni nalog ${id}`);
-      const wo = await tx.maintWorkOrder.findUnique({ where: { woId: id } });
-      return {
-        data: wo ? { ...wo, group: WO_GROUP[wo.status] ?? null } : null,
-      };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const current = await tx.maintWorkOrder.findUnique({
+          where: { woId: id },
+          select: { startedAt: true, completedAt: true },
+        });
+        const exists = current !== null;
+        const uid = await this.uid(tx);
+        // Pečatiranje prelaza statusa (audit MEDIUM; 1.0 pečatira KLIJENT — skriveno pravilo 9,
+        // maintWorkOrdersPanel.js:367-368/754): u_radu → started_at (samo ako DTO ga ne nosi i
+        // još nije pečatiran), zavrsen → completed_at (samo ako DTO ga ne nosi I još nije
+        // pečatiran — 1.0 `st==='zavrsen' && !wo.completed_at`). Bez `!current?.completedAt`
+        // čuvara ponovljeni „zavrsen" PATCH bi pregazio originalni završetak (kvari
+        // downtime/trošak/kompletiranje izveštaje) — simetrično sa stampStarted.
+        const stampStarted =
+          dto.status === "u_radu" &&
+          dto.startedAt === undefined &&
+          !current?.startedAt;
+        const stampCompleted =
+          dto.status === "zavrsen" &&
+          dto.completedAt === undefined &&
+          !current?.completedAt;
+        const { count } = await tx.maintWorkOrder.updateMany({
+          where: { woId: id },
+          data: {
+            ...(dto.status !== undefined
+              ? { status: dto.status as never }
+              : {}),
+            ...(dto.priority !== undefined
+              ? { priority: dto.priority as never }
+              : {}),
+            ...(dto.assignedTo !== undefined
+              ? { assignedTo: dto.assignedTo }
+              : {}),
+            ...(dto.dueAt !== undefined
+              ? { dueAt: this.toDbTs(dto.dueAt) }
+              : {}),
+            ...(dto.title !== undefined ? { title: dto.title } : {}),
+            ...(dto.description !== undefined
+              ? { description: dto.description }
+              : {}),
+            ...(dto.closureComment !== undefined
+              ? { closureComment: dto.closureComment }
+              : {}),
+            ...(dto.startedAt !== undefined
+              ? { startedAt: this.toDbTs(dto.startedAt) }
+              : {}),
+            ...(dto.completedAt !== undefined
+              ? { completedAt: this.toDbTs(dto.completedAt) }
+              : {}),
+            ...(dto.downtimeFrom !== undefined
+              ? { downtimeFrom: this.toDbTs(dto.downtimeFrom) }
+              : {}),
+            ...(dto.downtimeTo !== undefined
+              ? { downtimeTo: this.toDbTs(dto.downtimeTo) }
+              : {}),
+            ...(dto.laborMinutes !== undefined
+              ? { laborMinutes: dto.laborMinutes }
+              : {}),
+            ...(dto.costTotal !== undefined
+              ? { costTotal: dto.costTotal }
+              : {}),
+            ...(dto.estimatedCost !== undefined
+              ? { estimatedCost: dto.estimatedCost }
+              : {}),
+            ...(dto.safetyMarker !== undefined
+              ? { safetyMarker: dto.safetyMarker }
+              : {}),
+            ...(dto.vehicleServiceCategory !== undefined
+              ? { vehicleServiceCategory: dto.vehicleServiceCategory as never }
+              : {}),
+            ...(dto.odometerKmAtService !== undefined
+              ? { odometerKmAtService: dto.odometerKmAtService }
+              : {}),
+            ...(dto.externalServicerName !== undefined
+              ? { externalServicerName: dto.externalServicerName }
+              : {}),
+            ...(stampStarted ? { startedAt: new Date() } : {}),
+            ...(stampCompleted ? { completedAt: new Date() } : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Radni nalog ${id}`);
+        const wo = await tx.maintWorkOrder.findUnique({ where: { woId: id } });
+        return {
+          data: wo ? { ...wo, group: WO_GROUP[wo.status] ?? null } : null,
+        };
+      },
+      // ── 3.0 ─────────────────────────────────────────────────────────────
+      // `maint_wo_update` USING: red vidljiv ∧ (erp_admin_or_management ∨ profil
+      // technician/chief/admin). Uz to TRI trigera koja u 3.0 nemaju parnjaka u
+      // bazi: trag izmena (BEFORE U) i zatvaranje roka plana servisa (AFTER U ×2).
+      async (tx, scope) => {
+        const current = await tx.maintWorkOrder.findUnique({
+          where: { woId: id },
+          select: {
+            startedAt: true,
+            completedAt: true,
+            status: true,
+            assignedTo: true,
+            reportedBy: true,
+            priority: true,
+            servicePlanId: true,
+            assetServicePlanId: true,
+            odometerKmAtService: true,
+            asset: {
+              select: {
+                assetType: true,
+                machine: { select: { machineCode: true } },
+              },
+            },
+          },
+        });
+        if (!current)
+          throw new NotFoundException(`Radni nalog ${id} ne postoji`);
+        this.gejt(
+          this.az.woRowVisible(scope, {
+            assignedTo: current.assignedTo,
+            reportedBy: current.reportedBy,
+            asset: {
+              assetType: current.asset.assetType,
+              machineCode: current.asset.machine?.machineCode ?? null,
+            },
+          }) && this.az.canUpdateWorkOrder(scope),
+          "maint_wo_update",
+        );
+
+        const noviAssignedTo = this.id30(dto.assignedTo, "assignedTo");
+        // 🔴 BEFORE UPDATE `maint_wo_log_field_changes` — PRE upisa, sa starim
+        // vrednostima. Bez njega nalog menja status bez ijednog reda u
+        // `maint_wo_events` (u 3.0 taj trigger NE POSTOJI).
+        await this.fns.woLogFieldChanges(tx, {
+          woId: id,
+          actor: scope.userId,
+          old: {
+            status: current.status,
+            assignedTo: current.assignedTo,
+            priority: current.priority,
+          },
+          neu: {
+            ...(dto.status !== undefined ? { status: dto.status } : {}),
+            ...(noviAssignedTo !== undefined
+              ? { assignedTo: noviAssignedTo }
+              : {}),
+            ...(dto.priority !== undefined ? { priority: dto.priority } : {}),
+          },
+        });
+
+        const stampStarted =
+          dto.status === "u_radu" &&
+          dto.startedAt === undefined &&
+          !current.startedAt;
+        const stampCompleted =
+          dto.status === "zavrsen" &&
+          dto.completedAt === undefined &&
+          !current.completedAt;
+        await tx.maintWorkOrder.update({
+          where: { woId: id },
+          data: {
+            ...(dto.status !== undefined ? { status: dto.status } : {}),
+            ...(dto.priority !== undefined ? { priority: dto.priority } : {}),
+            ...(noviAssignedTo !== undefined
+              ? { assignedTo: noviAssignedTo }
+              : {}),
+            ...(dto.dueAt !== undefined
+              ? { dueAt: this.toDbTs(dto.dueAt) }
+              : {}),
+            ...(dto.title !== undefined ? { title: dto.title } : {}),
+            ...(dto.description !== undefined
+              ? { description: dto.description }
+              : {}),
+            ...(dto.closureComment !== undefined
+              ? { closureComment: dto.closureComment }
+              : {}),
+            ...(dto.startedAt !== undefined
+              ? { startedAt: this.toDbTs(dto.startedAt) }
+              : {}),
+            ...(dto.completedAt !== undefined
+              ? { completedAt: this.toDbTs(dto.completedAt) }
+              : {}),
+            ...(dto.downtimeFrom !== undefined
+              ? { downtimeFrom: this.toDbTs(dto.downtimeFrom) }
+              : {}),
+            ...(dto.downtimeTo !== undefined
+              ? { downtimeTo: this.toDbTs(dto.downtimeTo) }
+              : {}),
+            ...(dto.laborMinutes !== undefined
+              ? { laborMinutes: dto.laborMinutes }
+              : {}),
+            ...(dto.costTotal !== undefined
+              ? { costTotal: dto.costTotal }
+              : {}),
+            ...(dto.estimatedCost !== undefined
+              ? { estimatedCost: dto.estimatedCost }
+              : {}),
+            ...(dto.safetyMarker !== undefined
+              ? { safetyMarker: dto.safetyMarker }
+              : {}),
+            ...(dto.vehicleServiceCategory !== undefined
+              ? { vehicleServiceCategory: dto.vehicleServiceCategory }
+              : {}),
+            ...(dto.odometerKmAtService !== undefined
+              ? { odometerKmAtService: dto.odometerKmAtService }
+              : {}),
+            ...(dto.externalServicerName !== undefined
+              ? { externalServicerName: dto.externalServicerName }
+              : {}),
+            ...(stampStarted ? { startedAt: new Date() } : {}),
+            ...(stampCompleted ? { completedAt: new Date() } : {}),
+            updatedBy: scope.userId,
+            updatedAt: new Date(),
+          },
+        });
+
+        const wo = await tx.maintWorkOrder.findUnique({ where: { woId: id } });
+        // AFTER UPDATE ×2 — zatvaranje roka plana servisa (vozilo i sredstvo).
+        // Okidaju SAMO na PRELAZ u `zavrsen`; oba čuvara su unutar prepisa.
+        if (wo) {
+          await this.fns.woVehicleServicePlanCompletion(tx, {
+            servicePlanId: wo.servicePlanId,
+            status: wo.status,
+            oldStatus: current.status,
+            completedAt: wo.completedAt,
+            odometerKmAtService: wo.odometerKmAtService,
+            updatedBy: wo.updatedBy,
+          });
+          await this.fns.woAssetServicePlanCompletion(
+            tx,
+            {
+              assetServicePlanId: wo.assetServicePlanId,
+              status: wo.status,
+              oldStatus: current.status,
+              completedAt: wo.completedAt,
+            },
+            scope.userId,
+          );
+        }
+        return {
+          data: wo ? { ...wo, group: WO_GROUP[wo.status] ?? null } : null,
+        };
+      },
+    );
   }
 
   async deleteWorkOrder(email: string, id: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintWorkOrder.count({ where: { woId: id } })) > 0;
-      const { count } = await tx.maintWorkOrder.deleteMany({
-        where: { woId: id },
-      });
-      this.assertAffected(exists, count, `Radni nalog ${id}`);
-      return { data: { ok: true } };
-    });
+    return this.wum30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintWorkOrder.count({ where: { woId: id } })) > 0;
+        const { count } = await tx.maintWorkOrder.deleteMany({
+          where: { woId: id },
+        });
+        this.assertAffected(exists, count, `Radni nalog ${id}`);
+        return { data: { ok: true } };
+      },
+      // ── 3.0 ── `maint_wo_delete` USING: erp_admin_or_management ∨ chief/admin.
+      // ⚠️ To je ŠIRE od `canUpdateWorkOrder` (bez `technician`) — brisanje naloga
+      // nije isto pravo kao izmena; predikat je `canWriteStock` (isti izraz).
+      async (tx, scope) => {
+        this.gejt(this.az.canWriteStock(scope), "maint_wo_delete");
+        const exists =
+          (await tx.maintWorkOrder.count({ where: { woId: id } })) > 0;
+        const { count } = await tx.maintWorkOrder.deleteMany({
+          where: { woId: id },
+        });
+        this.assertAffected(exists, count, `Radni nalog ${id}`);
+        return { data: { ok: true } };
+      },
+    );
   }
 
   /** Ručni WO komentar/prelaz. Idempotentan po clientEventId (dupli-klik ≠ dupli event). */
   createWoEvent(email: string, id: string, dto: WorkOrderEventDto) {
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-wo-event",
@@ -4726,6 +5954,59 @@ export class OdrzavanjeService {
           },
         });
       },
+      // ── 3.0 ── `maint_wo_events_write` CHECK: nalog vidljiv ∧ tehničar naviše.
+      async (tx, scope) => {
+        await this.assertWoWritable30(tx, scope, id, "maint_wo_events_write");
+        return tx.maintWoEvent.create({
+          data: {
+            woId: id,
+            actor: scope.userId,
+            eventType: dto.eventType,
+            comment: dto.comment ?? null,
+            fromValue: dto.fromValue ?? null,
+            toValue: dto.toValue ?? null,
+          },
+        });
+      },
+    );
+  }
+
+  /**
+   * Zajednički gejt dece naloga (`maint_wo_events` / `_parts` / `_labor`, i
+   * `wo_id` grana `maint_stock_movements_insert`): red naloga mora biti vidljiv
+   * pozivaocu I pozivalac mora biti tehničar naviše. Isti `EXISTS` podupit stoji
+   * u sve četiri sy15 politike — zato je ovde jedan helper, ne četiri prepisa.
+   */
+  private async assertWoWritable30(
+    tx: OdrzavanjeTx,
+    scope: MaintScope,
+    woId: string,
+    politika: string,
+  ): Promise<void> {
+    const wo = await tx.maintWorkOrder.findUnique({
+      where: { woId },
+      select: {
+        assignedTo: true,
+        reportedBy: true,
+        asset: {
+          select: {
+            assetType: true,
+            machine: { select: { machineCode: true } },
+          },
+        },
+      },
+    });
+    if (!wo) throw new NotFoundException(`Radni nalog ${woId} ne postoji`);
+    this.gejt(
+      this.az.woRowVisible(scope, {
+        assignedTo: wo.assignedTo,
+        reportedBy: wo.reportedBy,
+        asset: {
+          assetType: wo.asset.assetType,
+          machineCode: wo.asset.machine?.machineCode ?? null,
+        },
+      }) && this.az.canUpdateWorkOrder(scope),
+      politika,
     );
   }
 
@@ -4739,7 +6020,7 @@ export class OdrzavanjeService {
    * gde su bili 3 nezavisna zahteva) — svesno pojačanje (H5 = pouzdana potrošnja delova).
    */
   createWoPart(email: string, id: string, dto: WorkOrderPartDto) {
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-wo-part",
@@ -4800,6 +6081,69 @@ export class OdrzavanjeService {
         });
         return row;
       },
+      // ── 3.0 ─────────────────────────────────────────────────────────────
+      // `maint_wo_parts_all` CHECK + `maint_stock_movements_insert` CHECK dele
+      // isti izraz (nalog vidljiv ∧ tehničar naviše ∧ created_by = ja).
+      // 🔴 `current_stock += delta` NEMA trigger u 3.0 — postoji SAMO u
+      // `applyPartStockMovement`. Bez tog poziva ledger raste, a zaliha stoji.
+      async (tx, scope) => {
+        await this.assertWoWritable30(tx, scope, id, "maint_wo_parts_all");
+        const catalog = dto.partId
+          ? await tx.maintPart.findUnique({
+              where: { partId: dto.partId },
+              select: { name: true, unit: true, unitCost: true },
+            })
+          : null;
+        const partName = (catalog?.name ?? dto.partName).trim();
+        const unit = dto.unit?.trim() || catalog?.unit || null;
+        const unitCost = catalog
+          ? (catalog.unitCost ?? null)
+          : (dto.unitCost ?? null);
+        const row = await tx.maintWoPart.create({
+          data: {
+            woId: id,
+            partName,
+            partId: dto.partId ?? null,
+            quantity: dto.quantity ?? null,
+            unit,
+            unitCost,
+            supplier: dto.supplier ?? null,
+          },
+        });
+        if (dto.partId && dto.quantity != null && dto.quantity > 0) {
+          const wo = await tx.maintWorkOrder.findUnique({
+            where: { woId: id },
+            select: { woNumber: true },
+          });
+          await tx.maintPartStockMovement.create({
+            data: {
+              partId: dto.partId,
+              woId: id,
+              movementType: "out",
+              quantity: dto.quantity,
+              unitCost,
+              note: `WO ${wo?.woNumber ?? id}: ${partName}`,
+              createdBy: scope.userId,
+            },
+          });
+          // AFTER INSERT `maint_apply_part_stock_movement` — u istoj transakciji,
+          // kao u sy15. Zaliha SME u minus (skriveno pravilo 16).
+          await this.fns.applyPartStockMovement(tx, {
+            partId: dto.partId,
+            movementType: "out",
+            quantity: dto.quantity,
+          });
+        }
+        await tx.maintWoEvent.create({
+          data: {
+            woId: id,
+            actor: scope.userId,
+            eventType: "user_note",
+            comment: `Dodat deo: ${partName}`,
+          },
+        });
+        return row;
+      },
     );
   }
 
@@ -4808,7 +6152,7 @@ export class OdrzavanjeService {
     if (!Number.isFinite(dto.minutes) || dto.minutes <= 0) {
       throw new UnprocessableEntityException("Minuti rada moraju biti > 0");
     }
-    return this.runIdem(
+    return this.idem30(
       email,
       dto.clientEventId,
       "odrzavanje.create-wo-labor",
@@ -4827,6 +6171,30 @@ export class OdrzavanjeService {
           data: {
             woId: id,
             actor: uid,
+            eventType: "user_note",
+            comment: `Dodato vreme rada: ${minutes} min${
+              dto.notes ? ` — ${dto.notes}` : ""
+            }`,
+          },
+        });
+        return row;
+      },
+      // ── 3.0 ── `maint_wo_labor_all` CHECK: nalog vidljiv ∧ tehničar naviše.
+      async (tx, scope) => {
+        await this.assertWoWritable30(tx, scope, id, "maint_wo_labor_all");
+        const minutes = Math.round(dto.minutes);
+        const row = await tx.maintWoLabor.create({
+          data: {
+            woId: id,
+            technicianId: scope.userId,
+            minutes,
+            notes: dto.notes ?? null,
+          },
+        });
+        await tx.maintWoEvent.create({
+          data: {
+            woId: id,
+            actor: scope.userId,
             eventType: "user_note",
             comment: `Dodato vreme rada: ${minutes} min${
               dto.notes ? ` — ${dto.notes}` : ""
