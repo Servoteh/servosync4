@@ -25,15 +25,18 @@ export interface UpdateInventoryCountItemDto {
 }
 
 /**
- * Zaključivanje popisa — kreira robne dokumente VISAK (višak) i MANJAK (manjak).
+ * Zaključivanje popisa — kreira SAMO robni dokument VIŠKA.
  *
- * Vrste dokumenta (`DocumentType.code`) su opcione; podrazumevano roba: `VISAR` (Sema 46 → 1320/6740)
- * i `MANJR` (Sema 50 → 1320/5741). Za magacin materijala prosledi `VISAM` / `MANJM` (Sema 41/49,
- * doc 39 §D). Telo sme biti prazno — tada se koriste podrazumevane roba-vrste.
+ * Vrsta dokumenta (`DocumentType.code`) je opciona; podrazumevano roba `VISAR` (Sema 46 →
+ * 1320/6740). Za magacin materijala prosledi `VISAM` (Sema 41, doc 39 §D). Telo sme biti
+ * prazno — tada se koristi podrazumevana roba-vrsta.
+ *
+ * 🔴 MANJAK NEMA SVOJU VRSTU DOKUMENTA (07.08.2026): popis sa manjkom se ODBIJA, ne knjiži —
+ * odluka knjigovođe „takav dokument ne treba da postoji" (obrazloženje i merenja u
+ * `InventoryService.finalize`). Polje `shortageDocumentTypeCode` je zato uklonjeno; ako ga
+ * neki stariji klijent i dalje šalje, biće ignorisano (ruta ne odbija nepoznata polja).
  */
 export interface FinalizeInventoryCountDto {
   /** Vrsta dokumenta za višak (default `VISAR`). */
   surplusDocumentTypeCode?: string;
-  /** Vrsta dokumenta za manjak (default `MANJR`). */
-  shortageDocumentTypeCode?: string;
 }

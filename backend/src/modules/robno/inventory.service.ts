@@ -21,13 +21,18 @@ import type {
 const COMPANY_ID = 0;
 
 /**
- * Podrazumevane vrste robnog dokumenta za knjiženje razlike popisa (doc 39 §D — ROBA):
- *   VISAR (Sema 46 → duguje 1320 zaliha, potražuje 6740 višak prihod),
- *   MANJR (Sema 50 → potražuje 1320 zaliha, duguje 5741 manjak rashod).
- * Za magacin materijala klijent prosledi VISAM / MANJM u telu finalize-a.
+ * Podrazumevana vrsta robnog dokumenta za VIŠAK (doc 39 §D — ROBA): `VISAR`
+ * (Sema 46 → duguje 1320 zaliha, potražuje 6740 „Viškovi materijala"). Za magacin
+ * materijala klijent prosledi `VISAM` (Sema 41) u telu finalize-a.
+ *
+ * Višak se KORISTI i potvrđen je: u uvezenoj knjizi 2026 postoji nalog vrste `VISAK`
+ * (broj 260119, 19.01.2026) — `1320` duguje 190.168,91 / `6740` potražuje 190.168,91,
+ * tačno po šemi 46 (izmereno na produkciji 07.08.2026).
+ *
+ * ⚠️ MANJKA NEMA — v. `finalize`. Konstanta `DEFAULT_SHORTAGE_DOCUMENT_TYPE = "MANJR"`
+ * je uklonjena 07.08.2026. jer dokument manjka po odluci knjigovođe ne postoji.
  */
 const DEFAULT_SURPLUS_DOCUMENT_TYPE = "VISAR";
-const DEFAULT_SHORTAGE_DOCUMENT_TYPE = "MANJR";
 
 /**
  * PopisService (inventura, doc 39 §D) — predpunjenje → unos KolPop → razlika → knjiženje VISAK/MANJAK.
@@ -324,23 +329,51 @@ export class InventoryService {
   }
 
   /**
-   * Zaključi popis: kreiraj robne dokumente VISAK (diff>0) i MANJAK (diff<0) kroz POSTOJEĆI
-   * `RobnoService.createStockDocument`, pa CAS COUNTING → POSTED kao POSLEDNJI korak. Prazan
-   * dokument (bez stavki) se preskače; `inventoryCountId` vezuje dokumente za popis. Već POSTED
-   * → 409 (idempotencija).
+   * Zaključi popis: kreiraj robni dokument VIŠKA (diff>0) kroz POSTOJEĆI
+   * `RobnoService.createStockDocument`, pa CAS COUNTING → POSTED kao POSLEDNJI korak.
+   * `inventoryCountId` vezuje dokument za popis. Već POSTED → 409 (idempotencija).
+   *
+   * 🔴 MANJAK ZAUSTAVLJA ZAKLJUČIVANJE — DOKUMENT MANJKA NE POSTOJI (07.08.2026)
+   * ═══════════════════════════════════════════════════════════════════════════════
+   * ODGOVOR KNJIGOVOĐE, doslovno: **„kada se utvrdi da je popisano manje nego što knjige kažu
+   * onda to ne radimo kroz dokument manjak. Takav dokument ne treba da postoji"**.
+   *
+   * Do ove izmene je zaključivanje samo od sebe pravilo dokument vrste `MANJR`. Zašto to nije
+   * bila bezopasna pogodnost, nego pogrešno knjiženje — šema 50 (`MANJR`) sa produkcije glasi:
+   *     1320 potražuje A · 4700 potražuje P · 6040 potražuje A · 5010 duguje A · 5741 duguje A+P
+   * Dakle manjak u starom programu NIJE prosto smanjenje zalihe: nosi i **izlazni PDV** (`4700`)
+   * i rashod „Manjovi robe" (`5741`) — to je poreski tretman manjka iznad normativa (manjak se
+   * oporezuje kao promet). Popisna komisija taj tretman ne sme da odluči klikom na „Zaključi";
+   * to je odluka knjigovođe po svakom pojedinačnom slučaju (kalo/rastur `5112`, otpis `OTPIR`
+   * šema 53, teret odgovornog lica…).
+   *
+   * IZMERENO NA PRODUKCIJI (07.08.2026, uvezena knjiga 2026): **nijedan manjak nije proknjižen**
+   * — konta `5740` („Manjkovi materijala") i `5741` („Manjovi robe") postoje u kontnom planu ali
+   * imaju NULA stavki, a među 41 vrstom naloga nema nijednog `MANJR`/`MANJM`. Višak ima tačno
+   * jedan nalog. Stari program se, dakle, ponašao isto kao ova odluka.
+   *
+   * ZAŠTO ODBIJANJE, A NE „prođi bez ijednog dokumenta": otvoreno pitanje — šta onda spušta
+   * knjigovodstveno stanje na popisano — knjigovođa NIJE odgovorio. Tiho zaključenje bi popis
+   * proglasilo gotovim, a zalihe ostavilo netačnim (knjige i dalje pokazuju robu koje nema) i
+   * to bez ijednog traga da nešto nije razrešeno. Odbijanje je vidljivo, ne pravi nijedan
+   * pogrešan zapis i ostavlja popis u `COUNTING` da se manjak razreši (ponovno brojanje,
+   * ispravka knjiženja koje ga je izazvalo, ili dokument otpisa koji knjigovođa odobri) — pa se
+   * zaključivanje ponovi. Kad odgovor stigne, ovde se dodaje TAJ put; do tada se ne izmišlja.
    *
    * Redosled (retry-safe; obrazac lock-a iz posting.service 4001):
    *   (1) advisory xact lock po popisu (namespace 4002) — serijalizuje paralelne finalize;
    *   (2) status-guard čitanje (mora COUNTING);
-   *   (3) čišćenje orphan VISAK/MANJAK dokumenata prethodnog (palog) pokušaja — bez reuse
+   *   (3) BRANA MANJKA — pre ijedne izmene, da odbijen popis ne ostavi nijedan trag;
+   *   (4) čišćenje orphan VISAK/MANJAK dokumenata prethodnog (palog) pokušaja — bez reuse
    *       zastarelih količina (F2): bezbedne (DRAFT, bez naloga, nekalkulisane) se BRIŠU, a
-   *       nebezbedne (kalkulisane/proknjižene) → 409 (ručna sanacija);
-   *   (4) kreiranje sveže VISAK pa MANJAK dokumenata iz TEKUĆIH razlika;
-   *   (5) CAS COUNTING → POSTED kao poslednji korak.
+   *       nebezbedne (kalkulisane/proknjižene) → 409 (ručna sanacija). `MANJAK` ostaje u filteru
+   *       zbog dokumenata koje je napravila starija verzija ovog koda;
+   *   (5) kreiranje svežeg VISAK dokumenta iz TEKUĆIH razlika;
+   *   (6) CAS COUNTING → POSTED kao poslednji korak.
    *
-   * Pad pre koraka (5) ostavlja popis u COUNTING + eventualne DRAFT dokumente; retry ih u koraku
-   * (3) obriše i kreira nove iz aktuelnih količina. Zato NEMA kompenzacionog vraćanja statusa —
-   * status se pomera tek kad su dokumenti sigurno kreirani (nema „POSTED bez/na osnovu starih dok").
+   * Pad pre koraka (6) ostavlja popis u COUNTING + eventualni DRAFT dokument; retry ga u koraku
+   * (4) obriše i kreira novi iz aktuelnih količina. Zato NEMA kompenzacionog vraćanja statusa —
+   * status se pomera tek kad je dokument sigurno kreiran (nema „POSTED bez/na osnovu starih dok").
    */
   async finalize(
     countId: number,
@@ -371,26 +404,52 @@ export class InventoryService {
     // Razlika po stavci: RazlikaKol = KolPop − KolKng (doc 39 §D). >0 višak, <0 manjak.
     const surplus: Array<{ itemId: number; quantity: string; price: string }> =
       [];
-    const shortage: Array<{ itemId: number; quantity: string; price: string }> =
-      [];
+    const shortageItems: Array<{ itemId: number; diff: Prisma.Decimal }> = [];
     for (const it of count.items) {
       const diff = it.countedQuantity.minus(it.bookQuantity);
       const price = it.price.toFixed(4);
       if (diff.greaterThan(0)) {
         surplus.push({ itemId: it.itemId, quantity: diff.toFixed(6), price });
       } else if (diff.lessThan(0)) {
-        // Manjak: u robnom dokumentu ide POZITIVNA količina (znak izlaza vozi kind=MANJAK /
-        // DocumentType). Legacy je INSERT-ovao negativnu; 2.0 čuva pozitivno + kind, pa važi
-        // guard nedovoljnog stanja (MANJAK smanjuje stanje, doc 39 §D + §C).
-        shortage.push({
-          itemId: it.itemId,
-          quantity: diff.abs().toFixed(6),
-          price,
-        });
+        shortageItems.push({ itemId: it.itemId, diff });
       }
     }
 
-    // (3) Očisti orphan dokumente prethodnog (palog) pokušaja — NE reuse-uj ih (mogu nositi
+    // (3) BRANA MANJKA — pre ijedne izmene (v. blok iznad: dokument manjka ne postoji).
+    //     Poruka imenuje artikle da se manjak može razrešiti bez kopanja po tabu „Razlike";
+    //     spisak je skraćen na 5 da odgovor ostane čitljiv i kad popis ima stotine stavki.
+    if (shortageItems.length > 0) {
+      const meta = await this.prisma.item.findMany({
+        where: { id: { in: shortageItems.slice(0, 5).map((s) => s.itemId) } },
+        select: { id: true, name: true, catalogNumber: true },
+      });
+      const imeById = new Map(meta.map((m) => [m.id, m]));
+      const spisak = shortageItems
+        .slice(0, 5)
+        .map((s) => {
+          const m = imeById.get(s.itemId);
+          const ime = m
+            ? `${m.catalogNumber ?? m.id} ${m.name ?? ""}`.trim()
+            : `#${s.itemId}`;
+          return `${ime} (manjak ${s.diff.abs().toFixed(3)})`;
+        })
+        .join(", ");
+      const ostatak =
+        shortageItems.length > 5 ? ` i još ${shortageItems.length - 5}` : "";
+
+      throw new UnprocessableEntityException(
+        `Popis ${count.countNumber} ne može da se zaključi: ${shortageItems.length} ` +
+          `${shortageItems.length === 1 ? "artikal ima" : "artikala ima"} manje nego što ` +
+          `knjige kažu — ${spisak}${ostatak}. Dokument manjka se NE pravi (odluka knjigovođe ` +
+          `od 07.08.2026: „kada se utvrdi da je popisano manje nego što knjige kažu, onda to ` +
+          `ne radimo kroz dokument manjak; takav dokument ne treba da postoji"). Razreši manjak ` +
+          `— proveri brojanje i knjiženja koja su ga izazvala, pa ispravi popisanu količinu; ` +
+          `ako je manjak stvaran, način otpisa određuje knjigovođa. Popis ostaje otvoren ` +
+          `(COUNTING) dok se to ne uradi. Višak se knjiži normalno i ne smeta zaključivanju.`,
+      );
+    }
+
+    // (4) Očisti orphan dokumente prethodnog (palog) pokušaja — NE reuse-uj ih (mogu nositi
     //     zastarele količine posle re-brojanja, F2). Bezbedno za brisanje = vezan za OVAJ popis,
     //     kind VISAK/MANJAK, status DRAFT, bez journalEntryId i nekalkulisan (delete kaskadira na
     //     stavke — schema onDelete: Cascade). Nebezbedan (kalkulisan/proknjižen/vezan za nalog)
@@ -419,15 +478,13 @@ export class InventoryService {
         where: { id: { in: priorDocs.map((d) => d.id) } },
       });
 
-    // (4) Kreiraj SVEŽE dokumente iz TEKUĆIH razlika (svaki createStockDocument je sopstvena tx).
+    // (5) Kreiraj SVEŽ dokument viška iz TEKUĆIH razlika (createStockDocument je sopstvena tx).
+    //     Manjka ovde više ne može biti — brana u koraku (3) je zaustavila takav popis.
     const surplusType =
       opts.surplusDocumentTypeCode?.trim() || DEFAULT_SURPLUS_DOCUMENT_TYPE;
-    const shortageType =
-      opts.shortageDocumentTypeCode?.trim() || DEFAULT_SHORTAGE_DOCUMENT_TYPE;
     const countDateIso = count.countDate.toISOString();
 
     let surplusDocumentId: number | null = null;
-    let shortageDocumentId: number | null = null;
     if (surplus.length > 0) {
       const doc = await this.robno.createStockDocument("VISAK", {
         documentTypeCode: surplusType,
@@ -443,37 +500,19 @@ export class InventoryService {
       });
       surplusDocumentId = doc.data.id;
     }
-    if (shortage.length > 0) {
-      const doc = await this.robno.createStockDocument("MANJAK", {
-        documentTypeCode: shortageType,
-        warehouseId: count.warehouseId,
-        documentDate: countDateIso,
-        inventoryCountId: count.id,
-        createdByUserId: userId ?? undefined,
-        items: shortage.map((s) => ({
-          itemId: s.itemId,
-          quantity: s.quantity,
-          invoicePrice: s.price,
-        })),
-      });
-      shortageDocumentId = doc.data.id;
-    }
 
-    // (5) CAS COUNTING → POSTED — POSLEDNJI korak (dokumenti su sigurno kreirani). Pad pre ovoga
-    //     ostavlja COUNTING + DRAFT dokumente koje sledeći pokušaj u koraku (3) počisti (retry-safe).
+    // (6) CAS COUNTING → POSTED — POSLEDNJI korak (dokument je sigurno kreiran). Pad pre ovoga
+    //     ostavlja COUNTING + DRAFT dokument koji sledeći pokušaj u koraku (4) počisti (retry-safe).
     const claimed = await this.prisma.inventoryCount.updateMany({
       where: { id: countId, status: "COUNTING" },
       data: { status: "POSTED" },
     });
     if (claimed.count === 0) {
-      // Trka (uprkos lock-u): drugi finalize je preuzeo popis dok smo kreirali dokumente. Naši
-      // dokumenti su sad orphani, a popis više nije COUNTING pa ih retry ne bi počistio → obriši ih.
-      const createdIds = [surplusDocumentId, shortageDocumentId].filter(
-        (id): id is number => id != null,
-      );
-      if (createdIds.length)
+      // Trka (uprkos lock-u): drugi finalize je preuzeo popis dok smo kreirali dokument. Naš
+      // dokument je sad orphan, a popis više nije COUNTING pa ga retry ne bi počistio → obriši ga.
+      if (surplusDocumentId != null)
         await this.prisma.stockDocument.deleteMany({
-          where: { id: { in: createdIds } },
+          where: { id: surplusDocumentId },
         });
       throw new ConflictException(
         `Popis ${countId} je u međuvremenu promenjen; osveži pa pokušaj ponovo.`,
@@ -481,15 +520,17 @@ export class InventoryService {
     }
 
     this.logger.log(
-      `Zaključen popis ${count.countNumber}: VISAK doc=${surplusDocumentId ?? "-"}, MANJAK doc=${shortageDocumentId ?? "-"}.`,
+      `Zaključen popis ${count.countNumber}: VISAK doc=${surplusDocumentId ?? "-"} (manjka nema — brana).`,
     );
     return {
       data: {
         countId: count.id,
         status: "POSTED",
-        // Imena po FE ugovoru (api/inventory.ts FinalizeResult) — visak/manjak dokumenti.
+        // Imena po FE ugovoru (api/inventory.ts FinalizeResult). `manjakDocId` OSTAJE u
+        // odgovoru i uvek je `null`: FE ga i dalje čita (`count-detail.tsx`), a `get()` ga
+        // popunjava iz baze za popise koje je zaključila starija verzija ovog koda.
         visakDocId: surplusDocumentId,
-        manjakDocId: shortageDocumentId,
+        manjakDocId: null,
       },
     };
   }

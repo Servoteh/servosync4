@@ -9,10 +9,14 @@
  *   §2  dokument BEZ STAVKI je davao nalog bez ijednog reda, dobijao broj i zaključavao
  *       dokument (`POSTED`) — tiha rupa bez greške i bez traga;
  *   §3  linija se nije zaokruživala pre upisa, pa je nalog balansirao u memoriji a NE u
- *       koloni `numeric(19,4)` (izmereno ΣDug 0,0006 ≠ ΣPot 0,0007).
+ *       koloni `numeric(19,4)` (izmereno ΣDug 0,0006 ≠ ΣPot 0,0007);
+ *   §4  (07.08.2026) dokument je nosio PDV po stopi za koju ŠEMA NEMA RED — porez je nestajao
+ *       bez traga, a nalog je pri tom balansirao. Izmereno na šemi 36 (IFGP, gotov proizvod):
+ *       stavka na 10 % daje 2040 duguje SAMO osnovicu, PDV od 1.000 ni na jednom kontu,
+ *       ΣDug 16.000 = ΣPot 16.000 → ni kontrola ravnoteže ne reaguje.
  *
  * Prisma je stubovana (obrazac `gl-write.service.spec.ts`) — testira se motor, ne baza.
- * Šema u stubu je verna kopija BigBit šeme 33 (IFR) sa produkcije.
+ * Šeme u stubu su verne kopije BigBit šema 33 (IFR) i 36 (IFGP) sa produkcije.
  */
 import { UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
@@ -52,9 +56,15 @@ function stockItem(over: Partial<Record<string, unknown>> = {}) {
 }
 
 /**
- * Šema 33 „Izlazna faktura — roba" (BigBit, prepisana sa produkcije):
- * kupac O+P+Q duguje, izlazni PDV P potražuje, prihod O potražuje,
- * zaliha A potražuje, nabavna vrednost prodate robe A duguje.
+ * Šema 33 „Izlazna faktura — roba" (BigBit, prepisana sa produkcije — `accounting_scheme_lines`,
+ * ponovo izmerena 07.08.2026): kupac `O+P+Q` duguje, izlazni PDV 20 % `P` potražuje na 4702,
+ * izlazni PDV 10 % `Q` potražuje na **4710**, prihod `O` potražuje, zaliha `A` potražuje,
+ * nabavna vrednost prodate robe `A` duguje.
+ *
+ * ⚠️ Red `4710 / Q` je ovde do 07.08.2026. NEDOSTAJAO iako stub tvrdi da je kopija produkcije.
+ * Na stavci od 20 % se to ne vidi (`Q` = 0 → red se ionako odbaci kao nula), pa je nedostatak
+ * bio nevidljiv — ali je stub time lažno prikazivao šemu 33 kao šemu bez snižene stope, tj.
+ * kao istu rupu koju šema 36 stvarno ima. Razlika između te dve šeme je poenta §4.
  */
 const SEMA_33 = [
   {
@@ -75,6 +85,14 @@ const SEMA_33 = [
   },
   {
     lineNo: 3,
+    accountCode: "4710",
+    defDebit: null,
+    defCredit: "Q",
+    postsAnalytics: true,
+    description: null,
+  },
+  {
+    lineNo: 4,
     accountCode: "6040",
     defDebit: null,
     defCredit: "O",
@@ -82,7 +100,7 @@ const SEMA_33 = [
     description: null,
   },
   {
-    lineNo: 4,
+    lineNo: 5,
     accountCode: "1320",
     defDebit: null,
     defCredit: "A",
@@ -90,8 +108,56 @@ const SEMA_33 = [
     description: null,
   },
   {
-    lineNo: 5,
+    lineNo: 6,
     accountCode: "5010",
+    defDebit: "A",
+    defCredit: null,
+    postsAnalytics: true,
+    description: null,
+  },
+];
+
+/**
+ * Šema 36 „IZLAZ GOT.PROIZVODA" (BigBit, prepisana sa produkcije — `accounting_scheme_lines`,
+ * merenje 07.08.2026). ⚠️ NEMA REDA ZA SNIŽENU STOPU: slot `Q` (izlazni PDV 10 %) se ne
+ * pominje ni u jednom `defDebit`/`defCredit`. Kupac se zadužuje sa `O+P`, ne `O+P+Q`.
+ */
+const SEMA_36 = [
+  {
+    lineNo: 1,
+    accountCode: "2040",
+    defDebit: "O+P",
+    defCredit: null,
+    postsAnalytics: true,
+    description: null,
+  },
+  {
+    lineNo: 2,
+    accountCode: "6141",
+    defDebit: null,
+    defCredit: "O",
+    postsAnalytics: true,
+    description: null,
+  },
+  {
+    lineNo: 3,
+    accountCode: "4701",
+    defDebit: null,
+    defCredit: "P",
+    postsAnalytics: true,
+    description: null,
+  },
+  {
+    lineNo: 4,
+    accountCode: "9600",
+    defDebit: null,
+    defCredit: "A",
+    postsAnalytics: true,
+    description: null,
+  },
+  {
+    lineNo: 5,
+    accountCode: "9800",
     defDebit: "A",
     defCredit: null,
     postsAnalytics: true,
@@ -110,13 +176,20 @@ function makeEngine(
     /** Prodajni dokument vezan za izdatnicu (`invoices.stock_document_id`). */
     salesDoc?: { dueDate: Date | null; currency: string } | null;
     customerId?: number | null;
+    /** Vrsta dokumenta + šema (default IFR/33; za gotov proizvod IFGP/36). */
+    documentTypeCode?: string;
+    schemeId?: number;
+    orderType?: string;
+    isInbound?: boolean;
   } = {},
 ) {
+  const documentTypeCode = over.documentTypeCode ?? "IFR";
+  const schemeId = over.schemeId ?? 33;
   const doc = {
     id: 77,
     companyId: 0,
     kind: "IZ",
-    documentTypeCode: "IFR",
+    documentTypeCode,
     documentNumber: "9001/2026",
     year: 2026,
     warehouseId: 1,
@@ -154,17 +227,17 @@ function makeEngine(
     documentType: {
       findFirstOrThrow: jest.fn(() =>
         Promise.resolve({
-          code: "IFR",
-          postingTemplate: over.postingTemplate ?? 33,
-          isInbound: false,
+          code: documentTypeCode,
+          postingTemplate: over.postingTemplate ?? schemeId,
+          isInbound: over.isInbound ?? false,
         }),
       ),
     },
     accountingScheme: {
       findUniqueOrThrow: jest.fn(() =>
         Promise.resolve({
-          id: 33,
-          orderType: "IFR",
+          id: schemeId,
+          orderType: over.orderType ?? documentTypeCode,
           description: "Izlazna faktura - roba",
           lines: over.schemeLines ?? SEMA_33,
         }),
@@ -369,6 +442,120 @@ describe("PostingEngineService.postFromStockDocument", () => {
         ["1320", "0.00", "6000.00"],
         ["5010", "6000.00", "0.00"],
       ]);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // §4 — PDV po stopi za koju šema NEMA red (odluka knjigovođe 07.08.2026)
+  // ───────────────────────────────────────────────────────────────────────────
+  describe("§4 stopa koju šema ne knjiži", () => {
+    /** Gotov proizvod na 10 % — šema 36 nema slot `Q`, pa PDV nema gde da legne. */
+    const gpNa10 = () =>
+      makeEngine({
+        documentTypeCode: "IFGP",
+        schemeId: 36,
+        orderType: "IFGP",
+        schemeLines: SEMA_36,
+        items: [stockItem({ goodsTaxRateCode: "4" })], // NIZA = 10 %
+      });
+
+    it("🔴 IFGP sa stavkom na sniženu stopu (10 %) se ODBIJA — PDV bi nestao a nalog bi balansirao", async () => {
+      // Zatečeno ponašanje (bez brane): 2040 duguje 10.000 (samo osnovica), 6141 potražuje
+      // 10.000, PDV od 1.000 nigde, 9600/9800 po 6.000 → ΣDug 16.000 = ΣPot 16.000. Nalog
+      // prolazi kontrolu ravnoteže i dokument se ZAKLJUČAVA sa knjigom bez poreza.
+      const h = gpNa10();
+
+      await expect(h.engine.postFromStockDocument(77)).rejects.toThrow(
+        UnprocessableEntityException,
+      );
+      // Ni nalog ni prelaz u POSTED — dokument ostaje promenjiv da se tarifa ispravi.
+      expect(h.journalEntry.create).not.toHaveBeenCalled();
+      expect(h.stockDocumentUpdate).not.toHaveBeenCalled();
+    });
+
+    it("poruka kaže KOJA stopa, KOLIKO poreza bi nestalo i ZAŠTO", async () => {
+      // Poruka je jedino što magacioner/knjigovođa vidi — mora sama da objasni šta da uradi.
+      for (const ocekivano of [
+        /sniženom stopom \(10 %\)/, // KOJA stopa
+        /šema za kontiranje 36 \(IFGP\) NEMA red za tu stopu/, // ZAŠTO ne prolazi
+        /1000\.00/, // KOLIKO poreza bi ispalo (10.000 × 10 %)
+        /iz glavne knjige i iz PDV prijave/, // POSLEDICA
+        /07\.08\.2026/, // odluka knjigovođe
+        /Ispravi poresku tarifu/, // ŠTA DALJE
+      ]) {
+        await expect(gpNa10().engine.postFromStockDocument(77)).rejects.toThrow(
+          ocekivano,
+        );
+      }
+    });
+
+    it("isti gotov proizvod na OPŠTOJ stopi (20 %) prolazi nepromenjen", async () => {
+      // Kontrolna grupa: brana ne sme da dira ono što danas legitimno prolazi. Izmereno na
+      // produkciji — svih 28 stavki IFGP naloga u 2026. je po 20 % (4701/6141 = 0,200000).
+      const h = makeEngine({
+        documentTypeCode: "IFGP",
+        schemeId: 36,
+        orderType: "IFGP",
+        schemeLines: SEMA_36,
+      });
+
+      await h.engine.postFromStockDocument(77);
+
+      const iznosi = h.created[0].lines.create.map((l) => [
+        l.accountCode,
+        l.debit.toFixed(2),
+        l.credit.toFixed(2),
+      ]);
+      expect(iznosi).toEqual([
+        ["2040", "12000.00", "0.00"],
+        ["6141", "0.00", "10000.00"],
+        ["4701", "0.00", "2000.00"],
+        ["9600", "0.00", "6000.00"],
+        ["9800", "6000.00", "0.00"],
+      ]);
+    });
+
+    it("oslobođen promet (stopa 0 %) prolazi — brana se okida SAMO na ne-nulti porez", async () => {
+      const h = makeEngine({
+        documentTypeCode: "IFGP",
+        schemeId: 36,
+        orderType: "IFGP",
+        schemeLines: SEMA_36,
+        items: [stockItem({ goodsTaxRateCode: "1" })], // BEZPDV = 0 %
+      });
+
+      await h.engine.postFromStockDocument(77);
+
+      expect(h.journalEntry.create).toHaveBeenCalled();
+      // Bez PDV reda (4701 = 0 → odbačen), kupac duguje samo osnovicu.
+      const lines = h.created[0].lines.create;
+      expect(lines.map((l) => l.accountCode)).toEqual([
+        "2040",
+        "6141",
+        "9600",
+        "9800",
+      ]);
+      expect(lines[0].debit.toFixed(2)).toBe("10000.00");
+    });
+
+    it("šema 33 (IFR) knjiži i sniženu stopu — roba na 10 % i dalje prolazi", async () => {
+      // Dokaz da brana gleda ŠEMU, a ne stopu: ista stavka na 10 % pod šemom koja ima slot
+      // `Q` (4710) prolazi i porez legne na konto. Da je brana vezana za „stopa 10 % = stop",
+      // ovaj test bi pao i oborila bi prodaju robe po sniženoj stopi.
+      const h = makeEngine({
+        items: [stockItem({ goodsTaxRateCode: "4" })],
+      });
+
+      await h.engine.postFromStockDocument(77);
+
+      const lines = h.created[0].lines.create;
+      expect(
+        lines.find((l) => l.accountCode === "4710")?.credit.toFixed(2),
+      ).toBe("1000.00");
+      // Kupac je zadužen za osnovicu + PDV (10.000 + 1.000), a ne samo za osnovicu.
+      expect(
+        lines.find((l) => l.accountCode === "2040")?.debit.toFixed(2),
+      ).toBe("11000.00");
     });
   });
 });

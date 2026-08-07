@@ -13,8 +13,10 @@
  * TOK (doc 43 §0, doc 18 §2.2, doc 30 §B):
  *   StockDocument.documentTypeCode  ──►  DocumentType.postingTemplate (=IDSeme)
  *     ──►  AccountingScheme (orderType)  ──►  AccountingSchemeLine[] (Konto + DefDug/DefPot nad A–Z)
+ *       ──►  varMap = agregati A–Z sa StockDocumentItem[] (doc 43 §1, AUTORITATIVNO)
+ *         ──►  BRANA: svaka stopa sa ne-nultim PDV-om mora imati red u šemi, inače 422
+ *              (`assertSchemeCoversVat` — porez koji šema ne knjiži nestaje bez traga)
  *       ──►  za svaku liniju: evaluateExpression(defDebit/defCredit, varMap, prismaDecimalArith)
- *              varMap = agregati A–Z sa StockDocumentItem[] (doc 43 §1, AUTORITATIVNO)
  *         ──►  GROUP BY (konto + komitent), Σ  ──►  ZAOKRUŽI liniju na skalu kolone
  *                (numeric(19,4)) i odbaci nula-redove (legacy 2Korak) — `finalizeLedgerLines`
  *           ──►  nijedna linija nije ostala → 422 (nalog bez stavki se ne upisuje)
@@ -152,6 +154,29 @@ export class AlreadyPostedException extends Error {
 // Knjiženje samo `valueAdjustment`-a naduvavalo bi konto zaliha za 500 i trajno ga razilazilo sa
 // stvarnom vrednošću magacina. Nivelacija zato ostaje ISKLJUČIVO robni događaj (ItemValuation +
 // KEPU); u finansijsko ulazi posredno, kroz nabavnu vrednost prodate robe pri sledećoj prodaji.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PDV SLOTOVI PO SMERU DOKUMENTA — brana „šema nema red za tu stopu"
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Slova koja nose STVARAN POREZ (onaj koji ulazi u knjigu i u PDV prijavu), razdvojena po
+// smeru dokumenta. NE ulaze J/K/V (PDV na kalkulativnu VP cenu): to je međurezultat
+// maloprodajne kalkulacije, ne poreska obaveza ni pretporez.
+//
+// Smer se bira po `DocumentType.isInbound` jer `aggregateDocAmounts` UVEK računa i ulazni i
+// izlazni PDV (v. `void isInbound` na kraju te metode) — na izlaznoj fakturi je i `D`
+// ne-nulto (osnovica × stopa nad nabavnom cenom), a nijedna izlazna šema ga ne referiše.
+// Provera bez razdvajanja po smeru bi zato odbila SVAKI izlazni dokument.
+const VAT_SLOTS_OUTBOUND = [
+  { letter: "P" as const, label: "opštom stopom (20 %)" },
+  { letter: "Q" as const, label: "sniženom stopom (10 %)" },
+  { letter: "W" as const, label: "poljoprivrednom stopom (8 %)" },
+];
+const VAT_SLOTS_INBOUND = [
+  { letter: "D" as const, label: "opštom stopom (20 %)" },
+  { letter: "E" as const, label: "sniženom stopom (10 %)" },
+  { letter: "U" as const, label: "poljoprivrednom stopom (8 %)" },
+];
 
 type DocVarMap = Record<string, Prisma.Decimal>;
 
@@ -422,6 +447,16 @@ export class PostingEngineService {
         items,
         docType.isInbound ?? false,
       );
+
+      // 4b) BRANA: šema mora imati red za SVAKU stopu koja se na dokumentu pojavila.
+      this.assertSchemeCoversVat(
+        docId,
+        doc.documentTypeCode,
+        scheme,
+        amounts,
+        docType.isInbound ?? false,
+      );
+
       const varMap = this.buildDocVarMap(amounts);
 
       // 5) Za svaku liniju šeme evaluiraj DefDug/DefPot ŽIVIM parserom (Decimal).
@@ -586,6 +621,91 @@ export class PostingEngineService {
     });
 
     return [];
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // BRANA: ŠEMA MORA IMATI RED ZA STOPU KOJA SE NA DOKUMENTU POJAVILA
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Odbij knjiženje ako je dokument obračunao PDV po stopi za koju šema za kontiranje NEMA
+   * nijedan red — jer bi taj porez tiho nestao.
+   *
+   * ⚠️ IZMEREN KVAR (probno knjiženje `scripts/proof-knjizenje-po-semama.ts` §5.5)
+   * ─────────────────────────────────────────────────────────────────────────────
+   * Šema 36 (IFGP — izlazna faktura za GOTOV PROIZVOD) ima svega tri izlazne linije:
+   * `2040 = O+P` (kupac), `6141 = O` (prihod), `4701 = P` (izlazni PDV 20 %). Slot `Q`
+   * (izlazni PDV 10 %) se **ne pominje nigde**. Stavka na 10 % zato daje:
+   *   2040 duguje 10.000 (SAMO osnovica), 6141 potražuje 10.000, 4701 = 0 → red se odbaci,
+   *   9600/9800 nabavna 6.000 na obe strane → ΣDug 16.000 = ΣPot 16.000.
+   * PDV od 1.000 ne postoji ni na jednom kontu, a nalog BALANSIRA — pa ni
+   * `LedgerNotBalancedException`, ni „nalog bez stavki", ni provera nepoznate šifre stope ga
+   * ne zaustavljaju. Greška bi se videla tek u POPDV obrascu, mesecima kasnije, i to kao
+   * manjak prijavljenog poreza.
+   *
+   * ODLUKA KNJIGOVOĐE 07.08.2026 (doslovno): **„ne prodaje se GP po stopi od 10 %"**.
+   * Šema se zato NE dopunjuje redom za sniženu stopu (dopuna bi ozakonila promet koji ne
+   * postoji); umesto toga se takav dokument ODBIJA. Isti zaključak potvrđuje i uvezena knjiga
+   * 2026 na produkciji: svih 28 stavki naloga vrste `IFGP` ima PDV samo na kontu `4701`, a
+   * odnos `4701 / 6141` je tačno **0,200000** — nijedna prodaja gotovog proizvoda u 2026. nije
+   * bila po sniženoj stopi, pa brana ne obara nijedan zatečen slučaj.
+   *
+   * ZAŠTO JE PROVERA OPŠTA, A NE „ako je IFGP i stopa 10 %": rupa nije svojstvo šeme 36 nego
+   * svojstvo SVAKE šeme koja ne referiše slovo u kom je porez završio. Izmereno nad svih 21
+   * šemom na produkciji: slot `W` (8 % poljoprivredna) ne referiše NIJEDNA šema, `Q` referišu
+   * samo 33 (IFR) i 40 (REPRE), a izvozne šeme 24/47 nemaju nijedan PDV red (tamo je stopa 0,
+   * pa se brana ni ne okine). Pravilo „porez postoji, a šema nema gde da ga stavi → stani"
+   * pokriva sve te slučajeve jednim uslovom i ne može da zastari kad se šeme dopune.
+   *
+   * ⚠️ GREŠI SAMO U BEZBEDNOM SMERU: okida se ISKLJUČIVO kad je iznos poreza RAZLIČIT OD NULE.
+   * Oslobođen/izvozni promet (stopa 0) daje nulu u svim slotovima i prolazi kao i do sada.
+   */
+  private assertSchemeCoversVat(
+    docId: number,
+    documentTypeCode: string,
+    scheme: {
+      id: number;
+      orderType: string;
+      lines: Array<{ defDebit: string | null; defCredit: string | null }>;
+    },
+    amounts: DocAmounts,
+    isInbound: boolean,
+  ): void {
+    // Slova koja šema uopšte pominje. Tokenizer parsera prima promenljivu SAMO kao jedno
+    // veliko slovo A–Z (`expression-parser.ts`), pa je skeniranje znakova ovde potpuno:
+    // nema višeslovnih imena u kojima bi se slovo moglo sakriti.
+    const referenced = new Set<string>();
+    for (const line of scheme.lines) {
+      for (const expr of [line.defDebit, line.defCredit]) {
+        if (!expr) continue;
+        for (const ch of expr) {
+          if (ch >= "A" && ch <= "Z") referenced.add(ch);
+        }
+      }
+    }
+
+    for (const slot of isInbound ? VAT_SLOTS_INBOUND : VAT_SLOTS_OUTBOUND) {
+      const iznos = amounts[slot.letter];
+      if (iznos.isZero() || referenced.has(slot.letter)) continue;
+
+      const strana = isInbound ? "pretporez" : "izlazni PDV";
+      // Napomena o odluci ide samo tamo gde je i doneta — na gotovom proizvodu.
+      const napomenaGP =
+        scheme.orderType === "IFGP" || scheme.orderType === "IZVGP"
+          ? "Odluka knjigovođe od 07.08.2026: gotov proizvod se prodaje ISKLJUČIVO po opštoj " +
+            "stopi (20 %) — snižena stopa za gotov proizvod ne postoji. "
+          : "";
+
+      throw new UnprocessableEntityException(
+        `Robni dokument ${docId} (vrsta ${documentTypeCode}) ima stavku oporezovanu ` +
+          `${slot.label}, a šema za kontiranje ${scheme.id} (${scheme.orderType}) NEMA red za ` +
+          `tu stopu. ${strana} od ${iznos.toFixed(2)} ne bi legao ni na jedan konto — tiho bi ` +
+          `ispao iz glavne knjige i iz PDV prijave, a nalog bi pri tom balansirao pa ga ni ` +
+          `kontrola ravnoteže ne bi zaustavila. ${napomenaGP}Ispravi poresku tarifu na ` +
+          `stavkama dokumenta ili dokument prebaci na vrstu koja tu stopu knjiži, pa ponovi ` +
+          `knjiženje.`,
+      );
+    }
   }
 
   // ───────────────────────────────────────────────────────────────────────────

@@ -21,7 +21,8 @@
  *      2026 na produkciji.
  *   5. Vozi provere koje se lako previde: balans, `document_number`/`due_date`/`currency` na
  *      redu, analitika (komitent), prazan/nepostojeći dokument, dokument bez stavki,
- *      IFGP sa stavkom na 10 % (šema 36 nema liniju za Q), i zaokruživanje ispod pare.
+ *      IFGP sa stavkom na 10 % (šema 36 nema liniju za Q — mora biti ODBIJEN, v. §5.5),
+ *      i zaokruživanje ispod pare.
  *
  * Uz svaki dokument sa komitentom pravi se i PRODAJNI dokument (`invoices`) vezan preko
  * `stock_document_id` — kao u pravom toku. Motor sa njega uzima DOSPEĆE i VALUTU za red
@@ -901,9 +902,18 @@ async function main() {
   );
   log("      ali znači i da se broj naloga u međuvremenu menja.");
 
-  // 5.5 IFGP sa stavkom na 10 % — šema 36 nema liniju za slot Q
+  // 5.5 IFGP sa stavkom na 10 % — šema 36 nema liniju za slot Q → BRANA GA ODBIJA
+  //
+  // ⚠️ ISTORIJA OVE PROVERE (07.08.2026): do tada je ovde stajao dokaz RUPE — dokument je
+  // PROLAZIO, 2040 je dobijao samo osnovicu, PDV od 10 % nije postojao ni na jednom kontu, a
+  // nalog je balansirao pa ga kontrola ravnoteže nije hvatala. Knjigovođa je 07.08.2026. na to
+  // odgovorio: „ne prodaje se GP po stopi od 10 %". Šema se zato NIJE dopunila redom za sniženu
+  // stopu — ugrađena je brana koja takav dokument ODBIJA (`assertSchemeCoversVat`). Provera je
+  // okrenuta: sada se dokazuje da knjiženje pukne i da nalog NE nastane.
   log("");
-  log("5.5 — IFGP sa stavkom na 10 % (šema 36 NEMA liniju za slot Q)");
+  log(
+    "5.5 — IFGP sa stavkom na 10 % (šema 36 NEMA liniju za slot Q) → mora biti ODBIJEN",
+  );
   const ifgp10 = await napraviDokument({
     vrsta: "IFGP",
     kind: "IZ",
@@ -911,33 +921,20 @@ async function main() {
     kupac: KUPAC_DOMACI,
     tarifa: "4", // NIZA = 10 %
   });
-  await engine.postFromStockDocument(ifgp10);
-  const p10 = await procitajNalog(ifgp10);
-  if (p10) {
-    let d = new D(0);
-    let c = new D(0);
-    for (const r of p10.redovi) {
-      d = d.add(r.dug);
-      c = c.add(r.pot);
-    }
-    const kupacRed = p10.redovi.find((r) => r.konto === "2040");
-    const pdvRed = p10.redovi.find(
-      (r) => r.konto === "4710" || r.konto === "4701",
-    );
-    log(
-      `    2040 duguje = ${fmt(kupacRed?.dug ?? 0)} (= samo osnovica; PDV 10 % = ${fmt(
-        VP.mul("0.10"),
-      )} nigde ne postoji)`,
-    );
-    log(
-      `    red za PDV: ${pdvRed ? `${pdvRed.konto} = ${fmt(pdvRed.pot)}` : "NEMA GA"}`,
-    );
-    check(
-      "PDV 10 % je izgubljen a nalog balansira",
-      d.equals(c) && !p10.redovi.some((r) => r.konto === "4710"),
-      `ΣDug=${fmt(d)} ΣPot=${fmt(c)} — kontrola ravnoteže ovo NE hvata (§3.4)`,
-    );
+  let porukaBrane = "";
+  try {
+    await engine.postFromStockDocument(ifgp10);
+  } catch (e) {
+    porukaBrane = e instanceof Error ? e.message : String(e);
   }
+  log(`    poruka: ${porukaBrane || "(NEMA — knjiženje je prošlo!)"}`);
+  const p10 = await procitajNalog(ifgp10);
+  check(
+    "IFGP na 10 % je odbijen i nalog NIJE nastao",
+    porukaBrane.includes("NEMA red za tu stopu") && p10 === null,
+    `nalog=${p10 ? p10.nalog.number : "nema"} — bez brane bi prošao sa PDV-om od ` +
+      `${fmt(VP.mul("0.10"))} nigde na nalogu (v. komentar iznad)`,
+  );
 
   // 5.6 zaokruživanje ispod pare — balans u memoriji vs u bazi
   log("");
