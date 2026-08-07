@@ -1,9 +1,12 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../../prisma/prisma.module";
+import { IdempotencyModule } from "../../common/idempotency/idempotency.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
 import { OdrzavanjeAuthzService } from "./odrzavanje-authz.service";
+import { OdrzavanjeFnService } from "./odrzavanje-fn.service";
+import { OdrzavanjeLokacijeMostService } from "./odrzavanje-lokacije-most.service";
 import { OdrzavanjeController } from "./odrzavanje.controller";
 import { OdrzavanjeService } from "./odrzavanje.service";
 
@@ -14,9 +17,14 @@ import { OdrzavanjeService } from "./odrzavanje.service";
  * (zahtev 037/26): primaoci (šef proizvodnje) i inbox zvonceta žive u GLAVNOJ bazi,
  * a CMMS outbox za mejl je mrtav po dizajnu — obrazloženje u
  * `masina-otpis-notify.service.ts`. `MailService` je globalan (@Global), pa nije u imports.
+ *
+ * `IdempotencyModule` je registar idempotencije 3.0 baze (`api_idempotency`) — 3.0
+ * parnjak sy15 `rev_api_idempotency` koji `runIdem` koristi pod `ODRZAVANJE_IZVOR=3.0`.
+ * Modul JESTE `@Global` (app.module.ts), ali se navodi izričito: zavisnost se vidi na
+ * mestu gde nastaje, i modul se može dići samostalno u testu bez cele aplikacije.
  */
 @Module({
-  imports: [PrismaModule, NotificationsModule],
+  imports: [PrismaModule, IdempotencyModule, NotificationsModule],
   controllers: [OdrzavanjeController],
   providers: [
     OdrzavanjeService,
@@ -27,7 +35,17 @@ import { OdrzavanjeService } from "./odrzavanje.service";
     // Reversi (čitanje mašina kroz `v_rev_machines`) — v. zaglavlje tog servisa.
     OdrzavanjeSourceService,
     OdrzavanjeAuthzService,
+    // Prepis 14 DEFINER funkcija + 11 logičkih trigera nad 3.0 bazom.
+    OdrzavanjeFnService,
+    // 🔴 Privremeni MOST ka `loc_locations` (sy15) — dug za korak 3 (Lokacije).
+    // Jedini upis održavanja u sy15 pod `ODRZAVANJE_IZVOR=3.0`; v. zaglavlje.
+    OdrzavanjeLokacijeMostService,
   ],
-  exports: [OdrzavanjeSourceService, OdrzavanjeAuthzService],
+  exports: [
+    OdrzavanjeSourceService,
+    OdrzavanjeAuthzService,
+    OdrzavanjeFnService,
+    OdrzavanjeLokacijeMostService,
+  ],
 })
 export class OdrzavanjeModule {}

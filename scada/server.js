@@ -179,13 +179,32 @@ function tempFor(zone) {
 }
 
 // ---------- Poll ----------
+// Prvi prolaz SA PODACIMA posle starta samo PUNI stanje — bez dojave.
+// Razlog (mereno 07.08.2026): `prevAlarm` je pri startu prazan, pa je za svaki trenutno
+// aktivan alarm uslov `!prevAlarm[ime]` tacan i alarm koji odavno traje izgleda kao svez
+// prelaz 0->1. Zato je SVAKI restart servisa slao ponovo sve zatecene alarme (tog dana
+// ALARM_ZASTITE, aktivan od ranije) — kvar je postojao oduvek, ne samo pri seobi.
+// Isti obrazac je vec primenjen na Sigen listu sistema ("na praznom startu ne spamuj").
+// PAZI: osnova se ne hvata po REDOSLEDU poziva nego po prvom prolazu SA OCITANJEM —
+// dok PLC nije povezan `state` je prazan, svi alarmi bi bili "0" i poplava bi se samo
+// odlozila za prvi prolaz sa podacima.
+// Zatecen alarm nije izgubljen: relej ga i dalje pise u `scada_alarms` i vidi se na
+// /energetika — preskace se samo push-dojava za ono sto je prijavljeno pre restarta.
 const prevAlarm = {};
+let alarmBaseline = false;
 function checkAlarms() {
-  for (const t of TAGS) {
-    if (t.kind !== 'alarm') continue;
+  const alarms = TAGS.filter(t => t.kind === 'alarm');
+  if (!alarms.some(t => state[t.name] !== undefined)) return;   // jos nema ocitanja — nema ni osnove
+  const baseline = !alarmBaseline;
+  for (const t of alarms) {
     const on = !!(state[t.name] && state[t.name].value);
-    if (on && !prevAlarm[t.name]) notifier.alarm(t.name, t.label);  // edge 0->1
+    if (on && !prevAlarm[t.name] && !baseline) notifier.alarm(t.name, t.label);  // edge 0->1
     prevAlarm[t.name] = on;
+  }
+  if (baseline) {
+    alarmBaseline = true;
+    const zat = alarms.filter(t => prevAlarm[t.name]).map(t => t.name);
+    console.log(`[alarmi] osnova posle starta: ${zat.length ? 'zateceno aktivno — ' + zat.join(', ') : 'nema aktivnih'} (bez dojave)`);
   }
 }
 
@@ -344,10 +363,19 @@ async function sigRefreshSystems(first = false) {
   const nova = sigSystems.filter(s => !prev.has(s.systemId));
   const nestali = [...prev].filter(id => !sigSystemIds.includes(id));
   console.log(`[Sigen] ${sigSystemIds.length} sistem(a): ${sigSystems.map(s => `${s.name} (${s.systemId})`).join(', ')}`);
-  if (prev.size && nova.length) {                    // na praznom startu ne spamuj — tad je "novo" sve
+  if (nova.length) {
     const txt = nova.map(s => `${s.name} (${s.systemId})`).join(', ');
-    console.log('[Sigen] NOVI SISTEM na nalogu: ' + txt);
-    notifier.send(`ℹ️ SIGENERGY — nov sistem na nalogu: ${txt}\nDodat je u očitavanje automatski.`);
+    // `prev.size`: na praznom startu ne spamuj — tad je "novo" sve.
+    // `!first`: prvo ocitavanje posle starta je OSNOVA, a ne vest. `prev` tad drzi samo seed iz
+    // .env (SIGEN_SYSTEM_ID), pa je svaki sistem koji seed ne pominje "nov" — i to iznova na
+    // SVAKOM restartu. Mereno 07.08.2026: "Servoteh_110 (2)" (WJUBP1783340126) radi (99.9 kW),
+    // uredno ga hvata discovery, ali nije u seed-u — guard `prev.size` to nije hvatao.
+    if (prev.size && !first) {
+      console.log('[Sigen] NOVI SISTEM na nalogu: ' + txt);
+      notifier.send(`ℹ️ SIGENERGY — nov sistem na nalogu: ${txt}\nDodat je u očitavanje automatski.`);
+    } else {
+      console.log(`[Sigen] osnova posle starta: van .env seed-a — ${txt} (bez dojave)`);
+    }
   }
   if (nestali.length) console.warn('[Sigen] sistem više nije na nalogu: ' + nestali.join(', '));
   // Očitaj odmah SAMO nove sisteme (da ne čekaju pun ciklus). Stare NE diramo — tek su
@@ -464,6 +492,13 @@ let blHist = [];   // ring buffer PV krive dana (Power Metrics grafik)
 // --- alarmi i dojava (nauceno 29.07.2026: 5 invertora je 19h bilo van magistrale a niko nije znao) ---
 let blAlarms = [], blOverview = null, blAlarmAt = 0;
 let blSeenAlarm = new Map();   // "deviceId:code" -> opis (za edge-detekciju i "alarm prosao")
+// Ista rupa kao kod PLC `checkAlarms`: `blSeenAlarm` je pri startu prazan, pa bi svaki
+// vec aktivan alarm loggera bio "nov". Prvi prolaz zato samo puni stanje, a kljuceve
+// zatecene tada drzimo u `blStartAlarms` — za njih ne ide ni Telegram ni MEJL dok ne prodju
+// (mejl grana ne gleda `blSeenAlarm` nego `a.start` sa loggera, pa bi inace poslala
+// obavestenje o kvaru koji je prijavljen jos pre restarta).
+let blAlarmBaseline = false;
+let blStartAlarms = new Set();
 let blLastSeenTs = {};         // deviceId -> poslednji trenutak sa podatkom (za "ne javlja" mrezu bezbednosti)
 let blDownSince = null;        // otkad je logger nedostupan
 const FNE = 'FNE SERVOTEH';
@@ -528,14 +563,21 @@ async function blPoll() {
 function blCheckAlarms(st) {
   const now = Date.now();
   const activeAlarms = (st.alarms || []).filter(a => a.active);
+  const baseline = !blAlarmBaseline;        // prvi prolaz posle starta = samo osnova (v. blStartAlarms)
   const seen = new Map();
   for (const a of activeAlarms) {
     const key = `${a.deviceId}:${a.code}`;
     const what = `${a.deviceName || a.deviceId} — ${a.message || a.code}${a.port ? ` [${a.port}]` : ''}`;
     seen.set(key, what);
-    if (!blSeenAlarm.has(key)) notifier.alarm('bl:' + key, what, FNE);
+    if (baseline) blStartAlarms.add(key);
+    else if (!blSeenAlarm.has(key)) notifier.alarm('bl:' + key, what, FNE);
   }
-  for (const [key, what] of blSeenAlarm) if (!seen.has(key)) notifier.clear('bl:' + key, what, FNE);
+  // alarm koji je nestao vise nije "zatecen" — ako se vrati, javlja se normalno
+  for (const [key, what] of blSeenAlarm) {
+    if (seen.has(key)) continue;
+    notifier.clear('bl:' + key, what, FNE);
+    blStartAlarms.delete(key);
+  }
   blSeenAlarm = seen;
 
   const alarmed = new Set(activeAlarms.map(a => a.deviceId));
@@ -545,7 +587,10 @@ function blCheckAlarms(st) {
     if (inv.ts) blLastSeenTs[inv.id] = inv.ts;
     if (inv.online) { notifier.clear(key, label, FNE); continue; }
     const last = blLastSeenTs[inv.id];
-    if (last && now - last > blOfflineMs() && !alarmed.has(inv.id)) {
+    // `!baseline`: na prvom prolazu `blLastSeenTs` se tek puni iz `inv.ts` (vreme koje javlja
+    // logger) — ako je taj podatak zatecen zastareo, uslov bi odmah bio ispunjen i restart bi
+    // poslao dojavu za invertor koji je vec prijavljen ranije.
+    if (last && now - last > blOfflineMs() && !alarmed.has(inv.id) && !baseline) {
       notifier.alarm(key, `${label} ${Math.round((now - last) / 60000)} min`, FNE);
     }
   }
@@ -554,6 +599,7 @@ function blCheckAlarms(st) {
   const p = st.plant || {};
   for (const a of activeAlarms) {
     if (!blMailCodes().includes(a.code)) continue;              // nije na spisku → nikad mejl
+    if (blStartAlarms.has(`${a.deviceId}:${a.code}`)) continue; // zatecen pri startu -> prijavljen pre restarta
     if (!a.start || now - a.start < blMailAfterMs()) continue;  // trepće → ne šalji
     const who = a.address != null ? `INV ${a.address}` : (a.deviceName || a.deviceId);
     notifier.critical(`bl:crit:${a.deviceId}:${a.code}`,
@@ -577,6 +623,13 @@ function blCheckAlarms(st) {
        `Iznad praga: ${Math.round((now - blHotSince[inv.id]) / 60000)} min`,
        `Trenutna snaga: ${inv.pAc != null ? (inv.pAc / 1000).toFixed(1) + ' kW' : '—'}`,
        `Proizvodnja danas: ${inv.eDay != null ? (inv.eDay / 1000).toFixed(1) + ' kWh' : '—'}`], FNE);
+  }
+  // "pregrejan" nema svoju granu za osnovu: `blHotSince` je pri startu prazan pa prvi prolaz
+  // tek pocinje da meri trajanje — dojava ne moze da ode pre isteka ALERT_MAIL_AFTER_MIN.
+
+  if (baseline) {
+    blAlarmBaseline = true;
+    console.log(`[blue'Log] osnova alarma posle starta: ${blStartAlarms.size ? 'zateceno aktivno — ' + [...blStartAlarms].join(', ') : 'nema aktivnih'} (bez dojave)`);
   }
 }
 

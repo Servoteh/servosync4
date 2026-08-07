@@ -1,4 +1,5 @@
 import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
+import type { OdrzavanjeFnService } from "../../odrzavanje/odrzavanje-fn.service";
 import type { ToolDef } from "../../../common/ai/ai-provider.service";
 import type { AiCallContext } from "../../../common/ai/ai-usage.service";
 import type { PermissionKey } from "../../../common/authz/permissions";
@@ -53,6 +54,13 @@ export interface ToolDeps {
    * kao `sy15`, tj. izostanak prekidača nikad ne prebacuje alat na 3.0.
    */
   odrzavanjeIzvor?: OdrzavanjeSourceService;
+  /**
+   * Prepis DEFINER logike održavanja nad 3.0 bazom (korak 2 seobe).
+   * Koristi ga SAMO `prijavi_kvar` i SAMO pod `ODRZAVANJE_IZVOR=3.0` — jedini
+   * upis AI-chata u tuđi domen. Opciono iz istog razloga kao prekidač: kad ga
+   * nema, alat pada na 503 umesto da tiho piše u sy15 (bezbedan smer).
+   */
+  odrzavanjeFn?: OdrzavanjeFnService;
 }
 
 export interface ToolCtx {
