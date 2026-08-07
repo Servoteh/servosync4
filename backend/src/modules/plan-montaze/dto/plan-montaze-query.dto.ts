@@ -26,6 +26,6 @@ export class PredmetiLookupQueryDto {
 }
 
 export class DrawingsLookupQueryDto {
-  /** CSV brojeva crteža za exists-check (bigtehn_drawings_cache). */
+  /** CSV brojeva crteža (`broj_REVIZIJA`) za exists-check (3.0 `drawing_pdfs`). */
   @IsString() codes!: string;
 }

@@ -10,12 +10,16 @@ import {
   Put,
   Query,
   Req,
+  Res,
+  StreamableFile,
   UploadedFile,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { FileInterceptor, FilesInterceptor } from "@nestjs/platform-express";
+import { drawingPdfHeaders } from "../../common/work-order-drawing-pdf.util";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PermissionsGuard } from "../../common/authz/permissions.guard";
 import { RequirePermission } from "../../common/authz/require-permission.decorator";
@@ -272,9 +276,38 @@ export class PlanMontazeController {
     return this.montaza.lookupDrawings(req.user.email, q.codes);
   }
 
-  /** Presigned URL crteža iz bigtehn keša (chip „Veza sa crtežima"; gate can_read_production_drawings). */
+  /**
+   * URL PDF-a crteža (chip „Veza sa crtežima"). Od 07.08.2026 vraća auth-gated content
+   * rutu ispod (3.0 `drawing_pdfs`) umesto potpisanog sy15 storage URL-a — oblik
+   * `{ url, expiresIn }` je nepromenjen, `expiresIn: 0`. Gate je sada `montaza.drawings_read`
+   * (prepis sy15 `can_read_production_drawings()` — v. role-permissions.ts).
+   */
   @Get("lookups/drawings/sign")
+  @RequirePermission(PERMISSIONS.MONTAZA_DRAWINGS_READ)
   drawingSign(@Req() req: AuthedRequest, @Query("code") code: string) {
     return this.montaza.drawingSignUrl(req.user.email, code ?? "");
+  }
+
+  /**
+   * Sadržaj PDF-a crteža iz 3.0 `drawing_pdfs` (inline). Zamena za sy15 storage:
+   * glavna baza nema object storage, bajtovi su bytea u bazi — isti obrazac kao
+   * `handovers` `drawing-pdfs/:pdfId/content` i `pracenje` `crtez/:id/pdf/content`.
+   *
+   * Ključ je `?code=` (broj_REVIZIJA, npr. `1029486_C`) jer je to ono što faza nosi u
+   * `linked_drawings`; NE ide preko `drawings.id` — 346 crteža koje montaža danas otvara
+   * nema reda u `drawings` (izmereno 07.08.2026) i pali bi 404.
+   *
+   * ⚠️ Ruta je auth-gated (JWT), pa je FE MORA povlačiti kroz `apiBlob` (Authorization
+   * header) i prikazivati iz blob URL-a — običan `window.open` na nju pada 401.
+   */
+  @Get("lookups/drawings/pdf/content")
+  @RequirePermission(PERMISSIONS.MONTAZA_DRAWINGS_READ)
+  async drawingPdfContent(
+    @Query("code") code: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { buffer, fileName } = await this.montaza.streamDrawingPdf(code ?? "");
+    res.set(drawingPdfHeaders(fileName, "application/pdf"));
+    return new StreamableFile(buffer);
   }
 }

@@ -190,11 +190,14 @@ export interface PredmetOption {
   customer_name: string | null;
 }
 
-/** Exists-check crteža. */
+/**
+ * Exists-check crteža. `storage_path` je uklonjen 07.08.2026 (prelaz na 3.0
+ * `drawing_pdfs`): bio je putanja u sy15 storage bucket-u, a 3.0 drži bajtove u bazi.
+ * Nijedna komponenta ga nije čitala.
+ */
 export interface DrawingExists {
   drawing_no: string;
   exists: boolean;
-  storage_path: string | null;
   file_name: string | null;
 }
 
@@ -327,12 +330,17 @@ export function fetchReportPdfUrl(id: string): Promise<{ data: { url: string; ex
   return apiFetch(`/v1/montaza/reports/${id}/pdf`);
 }
 
-/** Exists-check + putanje za listu brojeva crteža (zarezom razdvojeni). */
+/** Exists-check za listu brojeva crteža (zarezom razdvojeni) — 3.0 `drawing_pdfs`. */
 export function fetchDrawingsExists(codes: string[]): Promise<{ data: DrawingExists[] }> {
   return apiFetch(`/v1/montaza/lookups/drawings${qs({ codes: codes.join(',') })}`);
 }
 
-/** Presigned URL PDF-a crteža iz bigtehn keša (gate can_read_production_drawings). */
+/**
+ * URL PDF-a crteža (gate `montaza.drawings_read`). Od 07.08.2026 vraća auth-gated
+ * content rutu 3.0 baze, a NE potpisan sy15 storage URL — `expiresIn` je uvek 0.
+ * ⚠️ Vraćeni URL se NE sme otvoriti `window.open`-om (pao bi 401 bez Authorization
+ * header-a); koristi `openMontazaDrawingPdf` iz `@/lib/montaza-pdf`.
+ */
 export function fetchDrawingSignedUrl(code: string): Promise<{ data: { url: string; expiresIn?: number } }> {
   return apiFetch(`/v1/montaza/lookups/drawings/sign${qs({ code })}`);
 }

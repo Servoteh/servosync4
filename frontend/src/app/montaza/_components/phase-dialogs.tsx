@@ -10,7 +10,8 @@ import { Trash2, Check, X, ExternalLink } from 'lucide-react';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
-import { fetchDrawingsExists, fetchDrawingSignedUrl } from '@/api/plan-montaze';
+import { fetchDrawingsExists } from '@/api/plan-montaze';
+import { openMontazaDrawingPdf } from '@/lib/montaza-pdf';
 
 export function PhaseDescriptionDialog({
   open,
@@ -75,10 +76,10 @@ export function PhaseLinkedDrawingsDialog({
   async function openDrawing(no: string) {
     setOpening(no);
     try {
-      const res = await fetchDrawingSignedUrl(no);
-      if (res.data?.url) window.open(res.data.url, '_blank', 'noopener');
+      // 3.0 `drawing_pdfs` kroz apiBlob (auth-gated ruta) — v. @/lib/montaza-pdf.
+      await openMontazaDrawingPdf(no);
     } catch {
-      /* nema PDF-a u kešu / bez dozvole */
+      /* nema PDF-a / bez dozvole */
     } finally {
       setOpening(null);
     }
