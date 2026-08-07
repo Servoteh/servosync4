@@ -74,8 +74,9 @@ const OPS_SORT = Prisma.sql`ORDER BY shift_sort_order ASC NULLS LAST, auto_sort_
  * kroz `MIN(_sort_idx)`; unutar RN-a redosled operacija prati _sort_idx. Namerno se
  * NE dodaje tie-breaker — paritet sa sy15 RPC-om (§4.1 nalaz).
  */
-const RPC_SORT = Prisma.sql`ORDER BY shift_sort_order ASC NULLS LAST, auto_sort_bucket ASC,
+const RPC_SORT_KEYS = Prisma.sql`shift_sort_order ASC NULLS LAST, auto_sort_bucket ASC,
   rok_izrade ASC NULLS LAST, prioritet_bigtehn ASC`;
+const RPC_SORT = Prisma.sql`ORDER BY ${RPC_SORT_KEYS}`;
 
 const ALL_OPS_LIMIT = 10000;
 const DEPT_LIMIT = 5000;
@@ -241,9 +242,47 @@ export class PlanProizvodnjeReadService {
       term.length > 0
         ? Prisma.sql`AND (broj_crteza ILIKE ${"%" + term + "%"} OR rn_ident_broj ILIKE ${"%" + term + "%"})`
         : Prisma.empty;
+    // 🔴 080/26 — „Po mašini" PRATI GANT (odluka Nenad 07.08.2026), ali SAMO za
+    // pozicije koje su na gantu; pozicija bez termina ostaje tačno tamo gde je bila.
+    //
+    // Suženje je izričito („za one bez termina ostaje ručno prevlačenje kao i dosad"),
+    // pa se ono ovde garantuje KONSTRUKCIJOM, a ne srećom sa podacima: pozicije sa
+    // terminom preuređuju se ISKLJUČIVO MEĐUSOBNO, po mestima koja i inače zauzimaju.
+    // Skup rednih brojeva koje drže ostaje isti, pa red bez termina po definiciji ne
+    // može da se pomeri. (Prva verzija ovog pravila ubacivala je termin u sam
+    // `ORDER BY`; mereno na produkciji, to je posle jednog „Dodaj na plan" pomeralo
+    // 4 pozicije BEZ termina na mašini 3.32 — tiho, bez ijedne poruke na ekranu.)
+    //
+    // `kanon` je NETAKNUT `RPC_SORT` (paritet sa sy15 RPC-om, §4.1) — ovde se samo
+    // materijalizuje kao redni broj da bi se mesta mogla zameniti.
     const rows = (await this.prisma.$queryRaw(Prisma.sql`
-      SELECT * FROM (${this.effectiveOpsInner(baseFilter)}) eff
-      WHERE ${EFF_FILTER} AND ${OPEN_OPS} ${search} ${RPC_SORT}`)) as {
+      WITH filtrirano AS (
+        SELECT * FROM (${this.effectiveOpsInner(baseFilter)}) eff
+        WHERE ${EFF_FILTER} AND ${OPEN_OPS} ${search}
+      ),
+      poredak AS (
+        SELECT f.*, row_number() OVER (ORDER BY ${RPC_SORT_KEYS}) AS kanon_rang
+        FROM filtrirano f
+      ),
+      -- mesta u kanonskom poretku koja drže pozicije sa termina (ta se NE menjaju)
+      mesta AS (
+        SELECT kanon_rang, row_number() OVER (ORDER BY kanon_rang) AS k
+        FROM poredak WHERE planned_start_at IS NOT NULL
+      ),
+      -- iste te pozicije, ali poređane po terminu sa ganta
+      po_terminu AS (
+        SELECT line_id,
+               row_number() OVER (ORDER BY planned_start_at ASC, kanon_rang ASC) AS k
+        FROM poredak WHERE planned_start_at IS NOT NULL
+      )
+      -- Vraća se f.* (ne p.*) da kanon_rang NE iscuri u odgovor — payload ostaje
+      -- isti kao pre, menja se samo redosled redova. (Bez backtick-ova: prekinuli
+      -- bi ovaj template literal — v. istu zamku u kiosk tekstovima.)
+      SELECT f.* FROM filtrirano f
+      JOIN poredak p ON p.line_id = f.line_id
+      LEFT JOIN po_terminu t ON t.line_id = f.line_id
+      LEFT JOIN mesta m ON m.k = t.k
+      ORDER BY COALESCE(m.kanon_rang, p.kanon_rang) ASC`)) as {
       work_order_id: string;
     }[];
 
