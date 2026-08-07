@@ -424,12 +424,12 @@ export class OdrzavanjeService {
     if (n) {
       if (!codes.length) return P30.sql`asset_type <> 'machine'`;
       return P30.sql`(asset_type <> 'machine' OR asset_id IN (
-        SELECT mm.asset_id FROM maint_machines mm WHERE mm.machine_code = ANY(${codes})))`;
+        SELECT mm.asset_id FROM maint_machines mm WHERE mm.machine_code = ANY(${codes}::text[])))`;
     }
     // Operater: samo dodeljene mašine; bez ijedne -> nula redova (kao RLS).
     if (!codes.length) return P30.sql`FALSE`;
     return P30.sql`(asset_type = 'machine' AND asset_id IN (
-      SELECT mm.asset_id FROM maint_machines mm WHERE mm.machine_code = ANY(${codes})))`;
+      SELECT mm.asset_id FROM maint_machines mm WHERE mm.machine_code = ANY(${codes}::text[])))`;
   }
 
   // ==========================================================================

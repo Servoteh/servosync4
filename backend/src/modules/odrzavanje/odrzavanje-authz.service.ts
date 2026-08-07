@@ -521,19 +521,30 @@ export class OdrzavanjeAuthzService {
     | {
         OR: (
           | { assetId: { not: null }; asset: AssetScopeWhere }
-          | { assetId: null; machineCode: { in: string[] } }
+          | { assetId: null; machineCode?: { in: string[] } }
         )[];
       }
     | undefined {
     const assetScope = this.assetListWhere(s);
     if (!assetScope) return undefined;
+    // 🔴 Grana `asset_id IS NULL` ide kroz `maint_machine_visible`, a ta funkcija
+    // za `technician` (kao i `chief`/`management`/`admin`/floor-read) vraća TRUE
+    // BEZ gledanja dodeljenih šifara — v. snimak žive baze
+    // `authz-snapshots/talasF-fn-defs-2026-07-12.sql:1683`.
+    // Zato je parnjak `machineListWhere` (`undefined` = bez sužavanja), a NE
+    // `assignedMachineCodes`: sa njim bi tehničar, koji po pravilu nema dodeljene
+    // šifre, dobio `in: []` i izgubio SVAKI incident bez sredstva — baš rola koja
+    // kvarove i popravlja. Sužavanje je greška u TIHOM smeru (manje redova), pa ga
+    // nijedan test tipa „ima li podataka" ne hvata.
+    const machineScope = this.machineListWhere(s);
     return {
       OR: [
         { assetId: { not: null }, asset: assetScope },
-        {
-          assetId: null,
-          machineCode: { in: this.assignedMachineCodes(s) },
-        },
+        // Bez spread-a namerno: `assetId` i `machineCode` se ne sudaraju, ali
+        // izričito nabrajanje sprečava da kasnija izmena tiho pregazi ključ.
+        machineScope
+          ? { assetId: null, machineCode: machineScope.machineCode }
+          : { assetId: null },
       ],
     };
   }
@@ -721,7 +732,7 @@ export class OdrzavanjeAuthzService {
     // Operater bez dodeljenih mašina: `= ANY('{}')` je već FALSE, ali eksplicitno
     // `FALSE` je čitljivije i ne šalje prazan niz kroz drajver.
     if (codes.length === 0) return Prisma.sql`FALSE`;
-    return Prisma.sql`${Prisma.raw(kolona)} = ANY(${codes})`;
+    return Prisma.sql`${Prisma.raw(kolona)} = ANY(${codes}::text[])`;
   }
 
   /**

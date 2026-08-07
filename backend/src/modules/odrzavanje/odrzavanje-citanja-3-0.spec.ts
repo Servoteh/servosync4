@@ -80,6 +80,12 @@ const RELACIJE: Record<
     },
     driver: { tabela: "maintDriver", kljuc: "driverId", strani: "driverId" },
   },
+  // Gume vise o sredstvu — `vehicleTires` sužava kroz `assetScopedWhere`
+  // (`{ asset: … }`). Bez ovog reda lažna baza ne ume da pređe vezu, pa bi
+  // test scope-a pao na „Nepodržan operator" umesto da meri pravo.
+  maintVehicleTire: {
+    asset: { tabela: "maintAsset", kljuc: "assetId", strani: "assetId" },
+  },
 };
 
 function poklapaOperator(v: unknown, op: Record<string, unknown>): boolean {
@@ -955,9 +961,12 @@ describe("(a) Incidenti — i ASIMETRIJA traga kvara", () => {
   it.each([
     [ADMIN, 4],
     [MONTER, 4],
-    // Tehničar: n1+n2 (mašinska sredstva). n3 je vozilo; n4 nema sredstvo pa ide
-    // granom `machine_code`, a tehničar nema dodeljenih šifara.
-    [TEHNICAR, 2],
+    // Tehničar: n1+n2 (mašinska sredstva) + n4. n3 je vozilo pa otpada.
+    // 🔴 n4 nema sredstvo → ide granom `machine_code`, a `maint_machine_visible`
+    // za `technician` vraća TRUE BEZ gledanja dodeljenih šifara
+    // (`talasF-fn-defs-2026-07-12.sql:1683`). Raniji broj (2) je bio pogrešan:
+    // pinovao je sužavanje koje politika ne traži.
+    [TEHNICAR, 3],
     // Operater: n1 (a1 = 3.12) + n4 (bez sredstva, machine_code 6.1).
     [OPERATER, 2],
     [OPERATER0, 0],
@@ -973,6 +982,25 @@ describe("(a) Incidenti — i ASIMETRIJA traga kvara", () => {
     const { svc } = napraviServis();
     const out = await svc.listIncidents(OPERATER, {});
     expect(out.data.map((i) => i.id).sort()).toEqual(["n1", "n4"]);
+  });
+
+  it("🔴 tehničar VIDI kvar bez sredstva na mašini koja mu NIJE dodeljena (n4)", async () => {
+    // Regresija: grana `asset_id IS NULL` je ranije išla kroz `assignedMachineCodes`,
+    // pa je tehničar (bez dodeljenih šifara) dobijao `in: []` i gubio SVAKI takav
+    // kvar. Politika `maint_machine_visible` za `technician` ne gleda dodele.
+    const { svc } = napraviServis();
+    const out = await svc.listIncidents(TEHNICAR, {});
+    expect(out.data.map((i) => i.id).sort()).toEqual(["n1", "n2", "n4"]);
+    // n3 je vozilo — asimetrija `assetListWhere` ostaje netaknuta.
+    expect(out.data.map((i) => i.id)).not.toContain("n3");
+  });
+
+  it("🔴 operater bez dodeljenih mašina NE vidi kvar bez sredstva (prazan `in` = nula redova)", async () => {
+    // Druga strana iste grane: za operatera sužavanje OSTAJE, i prazan `in: []`
+    // mora ostati prazan — pretvaranje u `undefined` značilo bi „vidi sve".
+    const { svc } = napraviServis();
+    const out = await svc.listIncidents(OPERATER0, {});
+    expect(out.data).toHaveLength(0);
   });
 
   it("🔴 ASIMETRIJA: trag kvara gleda `maint_machine_visible`, NE `maint_incident_row_visible`", async () => {
@@ -1507,5 +1535,86 @@ describe("Prekidač presuđuje — 3.0 grana ne sme da procuri pod `sy15`", () =
     await expect(svc.listMachines(ADMIN, {})).rejects.toThrow(
       /nije prenet|503|ODRZAVANJE_IZVOR/i,
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔴 MUTACIONA BRANA — pet mesta gde je scope DANAS ispravan, ali ga do sada
+// ništa nije držalo.
+//
+// Mutaciona proba nad zatečenim skupom (389 testova) pustila je 28 kvarenja
+// scope-a: 22 su pala, a 6 je PREŽIVELO. Uzrok je bio isti kod svih: postojeći
+// testovi zovu rute BEZ filtera (`listAssets(e)`, `listMachines(e, {})`) i ne
+// diraju detaljne rute uopšte. Testovi ispod zovu ih SA filterom i tvrde TAČAN
+// BROJ REDOVA za usku rolu — „> 0" ovu klasu kvara ne hvata.
+//
+// Svaki test u naslovu nosi mutaciju koju mora da obori.
+// ═══════════════════════════════════════════════════════════════════════════════
+describe("🔴 mutaciona brana: scope pod filterom i na detaljnim rutama", () => {
+  it("`listAssets` + ?type=vehicle: AND se NE SME zameniti spread-om (tehničar ne vidi vozila)", async () => {
+    // Tehničar: `assetListWhere` = { assetType: 'machine' } (asimetrija je namerna).
+    // Sa `AND: [{assetType:'vehicle'}, {assetType:'machine'}]` -> nula redova.
+    // Sa spread-om bi `assetType:'vehicle'` PREGAZIO scope -> tehničar vidi v1.
+    const { svc } = napraviServis();
+    const out = await svc.listAssets(TEHNICAR, "vehicle");
+    expect(out.data).toHaveLength(0);
+    // Kontrola da podatak uopšte postoji: admin ga vidi.
+    expect((await svc.listAssets(ADMIN, "vehicle")).data).toHaveLength(1);
+    // I da tehničar NIJE prazan uopšte — mašine vidi sve tri.
+    expect((await svc.listAssets(TEHNICAR, "machine")).data).toHaveLength(3);
+  });
+
+  it("`listMachines` + ?deadline=overdue: presek sa scope-om se NE SME zameniti `??`", async () => {
+    // Pogled vraća 8.2 — mašinu koja operateru NIJE dodeljena (ima 3.12 i 6.1).
+    // Presek `codeFilter ∩ scopeCodes` -> [] -> nula redova.
+    // Sa `codeFilter ?? scopeCodes` operater bi video tuđu mašinu 8.2.
+    const { svc } = napraviServis({
+      v_maint_machine_current_status: [{ machine_code: "8.2" }],
+    });
+    const out = await svc.listMachines(OPERATER, { deadline: "overdue" });
+    expect(out.data).toHaveLength(0);
+    expect(out.meta.pagination.total).toBe(0);
+    // Admin nema sužavanje pa istu mašinu vidi — dokaz da podatak postoji.
+    const adm = await svc.listMachines(ADMIN, { deadline: "overdue" });
+    expect(adm.data.map((m) => m.machineCode)).toEqual(["8.2"]);
+  });
+
+  it("`vehicleTires`: bez `assetScopedWhere` operater bi video gume tuđeg vozila", async () => {
+    const { svc } = napraviServis();
+    const out = await svc.vehicleTires(OPERATER, "v1");
+    expect(out.data).toHaveLength(0);
+    // Podatak postoji — admin ga vidi.
+    expect((await svc.vehicleTires(ADMIN, "v1")).data).toHaveLength(1);
+  });
+
+  it("`findVehicle`: bez `assetListWhere` operater bi otvorio karton bilo kog vozila", async () => {
+    // Karton nosi registraciju, vlasnika i kilometražu — širenje prava, ne sitnica.
+    const { svc } = napraviServis();
+    await expect(svc.findVehicle(OPERATER, "v1")).rejects.toThrow(
+      /ne postoji ili nije vidljivo/i,
+    );
+    // Tehničar takođe ne sme (vozila nisu u njegovom skupu)…
+    await expect(svc.findVehicle(TEHNICAR, "v1")).rejects.toThrow(
+      /ne postoji ili nije vidljivo/i,
+    );
+    // …a admin sme, što dokazuje da red postoji.
+    expect((await svc.findVehicle(ADMIN, "v1")).data.assetId).toBe("v1");
+  });
+
+  it("`findItAsset`/`findFacility`: bez `assetListWhere` operater bi otvorio karticu bilo kog sredstva", async () => {
+    const { svc } = napraviServis();
+    await expect(svc.findItAsset(OPERATER, "i1")).rejects.toThrow(
+      /ne postoji ili nije vidljivo/i,
+    );
+    await expect(svc.findFacility(OPERATER, "f1")).rejects.toThrow(
+      /ne postoji ili nije vidljivo/i,
+    );
+    // Tehničar isto ne sme — IT i objekti nisu mašine.
+    await expect(svc.findItAsset(TEHNICAR, "i1")).rejects.toThrow(
+      /ne postoji ili nije vidljivo/i,
+    );
+    // Admin sme.
+    expect((await svc.findItAsset(ADMIN, "i1")).data.assetId).toBe("i1");
+    expect((await svc.findFacility(ADMIN, "f1")).data.assetId).toBe("f1");
   });
 });
