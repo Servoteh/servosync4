@@ -17,6 +17,8 @@ import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
 import { SastanciModule } from "../sastanci/sastanci.module";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { ScadaSourceService } from "../../common/sy15/scada-source.service";
+import { ScadaJobsService } from "./scada-jobs.service";
 
 /**
  * Talas A — scheduler pogon + registar poslova. Poslovi su tanki pozivi
@@ -84,6 +86,12 @@ import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.ser
     // razloga kao `PbSourceService` — scheduler drži poslove SVA TRI domena, pa
     // mora imati sva tri prekidača da nijedan preklop ne obori tuđi posao.
     OdrzavanjeSourceService,
+    // Četvrti prekidač (korak 5 gašenja sy15): `ScadaJobsService` drži watchdog i
+    // retenciju istorije, i OBA se registruju samo pod `SCADA_IZVOR=3.0`. Isti
+    // razlog kao gore — svaki domen nosi svoj prekidač, da preklop jednog ne
+    // dodirne poslove drugog.
+    ScadaSourceService,
+    ScadaJobsService,
   ],
   // NotifyDispatchService se izvozi da bi Kadrovska/Moj profil mogli da okinu
   // ISTI dispečer sinhrono („Pošalji čekaće" / pulse posle mutacije) umesto da
@@ -104,6 +112,7 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     private readonly securityAudit: SecurityAuditService,
     private readonly reservation: ReservationService,
     private readonly bigbitMdbJobs: BigbitMdbJobs,
+    private readonly scadaJobs: ScadaJobsService,
   ) {}
 
   onModuleInit(): void {
@@ -130,6 +139,11 @@ export class SchedulerModule implements OnModuleInit, OnApplicationBootstrap {
     for (const job of this.dailyBrief.buildJobs()) this.scheduler.register(job);
     // Nedeljna bezbednosna provera sy15 (ponedeljak 07:15) — samo čitanje.
     for (const job of this.securityAudit.buildJobs())
+      this.scheduler.register(job);
+    // SCADA watchdog + retencija istorije (seoba korak 5, 07.08.2026). Pod
+    // `SCADA_IZVOR=sy15` `buildJobs()` vraća PRAZNO — dok je izvor sy15, taj posao
+    // tamo radi pg_cron `scada_watchdog_every_5_min` i ne sme da se duplira.
+    for (const job of this.scadaJobs.buildJobs())
       this.scheduler.register(job);
 
     // Istekle rezervacije zaliha (Batch C). `expiresAt` puni rok važenja

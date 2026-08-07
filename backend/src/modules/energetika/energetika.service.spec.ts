@@ -5,6 +5,8 @@ import {
   genIdempotencyKey,
 } from "./energetika.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
+import { ScadaSourceService } from "../../common/sy15/scada-source.service";
+import type { PrismaService } from "../../prisma/prisma.service";
 import type { SendCommandDto } from "./dto/send-command.dto";
 
 /**
@@ -14,6 +16,25 @@ import type { SendCommandDto } from "./dto/send-command.dto";
  * tačan `data` koji ide u `scadaCommand.create` (odnosno RPC argument za cancel).
  */
 describe("EnergetikaService — komande (R2)", () => {
+  /**
+   * Servis pod `SCADA_IZVOR=sy15` (podrazumevano) — SVI testovi u ovom fajlu pinuju
+   * sy15 putanju, koja je i dalje živa na produkciji. 3.0 putanja ima svoj fajl
+   * (`energetika-3-0.spec.ts`), da se dva izvora ne mešaju u istim mokovima.
+   *
+   * `prisma` je namerno prazan objekat: pod `sy15` se 3.0 klijent NE DODIRUJE, pa bi
+   * svaki poziv nad njim pukao — to je brana, ne propust. Ako neki test iz ovog fajla
+   * počne da pada na „cannot read property of undefined", znači da je putanja greškom
+   * otišla na 3.0.
+   */
+  function makeSy15Service(sy15: Sy15Service): EnergetikaService {
+    delete process.env.SCADA_IZVOR;
+    return new EnergetikaService(
+      sy15,
+      {} as PrismaService,
+      new ScadaSourceService(),
+    );
+  }
+
   /** Mok koji hvata create `data`; withUserRls prosleđuje fake tx i beleži email. */
   function makeCreateHarness() {
     const created: Record<string, unknown>[] = [];
@@ -36,7 +57,7 @@ describe("EnergetikaService — komande (R2)", () => {
         },
       ),
     } as unknown as Sy15Service;
-    return { service: new EnergetikaService(sy15), created, calls, tx, sy15 };
+    return { service: makeSy15Service(sy15), created, calls, tx, sy15 };
   }
 
   const baseDto = (over: Partial<SendCommandDto> = {}): SendCommandDto => ({
@@ -133,7 +154,7 @@ describe("EnergetikaService — komande (R2)", () => {
           (email: string, fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
         ),
       } as unknown as Sy15Service;
-      return new EnergetikaService(sy15);
+      return makeSy15Service(sy15);
     }
 
     it("dupli idempotency_key (TYPED create → P2002 top-level, BEZ meta.code) → 409 ConflictException, NE 500", async () => {
@@ -170,7 +191,7 @@ describe("EnergetikaService — komande (R2)", () => {
           (email: string, fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
         ),
       } as unknown as Sy15Service;
-      const service = new EnergetikaService(sy15);
+      const service = makeSy15Service(sy15);
       const out = await service.cancel(
         "a@b.com",
         "3b241101-e2bb-4255-8caf-4136c566a962",
@@ -190,7 +211,7 @@ describe("EnergetikaService — komande (R2)", () => {
           (email: string, fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
         ),
       } as unknown as Sy15Service;
-      const out = await new EnergetikaService(sy15).cancel(
+      const out = await makeSy15Service(sy15).cancel(
         "a@b.com",
         "3b241101-e2bb-4255-8caf-4136c566a962",
       );
@@ -206,7 +227,7 @@ describe("EnergetikaService — komande (R2)", () => {
           (email: string, fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
         ),
       } as unknown as Sy15Service;
-      return new EnergetikaService(sy15);
+      return makeSy15Service(sy15);
     }
 
     it("kot1: metrics = pun spisak trend tagova (key/label/kind), series po key + long-format data", async () => {
