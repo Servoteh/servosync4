@@ -134,9 +134,35 @@ else
   else bad "setval pod $APPROLE NE prolazi (42501? — vidi memory incident-sekvence-2026-07-27)"; fi
 fi
 
+########################################################################
+# 8) Vremenska zona — mora biti UTC na SVA TRI mesta
+#
+# Zašto brana: 121 kolona u 48 tabela je `timestamp WITHOUT time zone`
+# (nasleđe BigBit uvoza). One nemaju zonu u sebi, pa im značenje daje TZ
+# procesa koji ih čita i piše. Danas je sve UTC — host, baza i backend —
+# pa `pg` te vrednosti tumači kao UTC, API ih šalje sa `Z`, a pregledač
+# ih prikaže u beogradskom vremenu. Ispravno, ali PO DOGOVORU, ne po tipu.
+#
+# Ako iko postavi TZ=Europe/Belgrade na backend kontejneru, tih 121 kolona
+# se pomeri za 2 sata — i u čitanju i u UPISU, tiho i unazad nepopravljivo
+# (nema traga koja vrednost je zapisana pod kojom zonom). Zato se meri.
+########################################################################
+say ""
+say "8) Vremenska zona (UTC na sva tri mesta)"
+TZ_HOST=$(date +%Z 2>/dev/null || echo "?")
+TZ_DB=$(printf "SHOW timezone;" | psqlq | head -1 | tr -d ' ')
+TZ_API=$(docker exec "$CONTAINER" node -e 'process.stdout.write(String(new Date().getTimezoneOffset()))' 2>/dev/null || echo "?")
+if [ "$TZ_HOST" = "UTC" ]; then ok "host: UTC"; else bad "host NIJE UTC (=$TZ_HOST)"; fi
+case "$TZ_DB" in
+  Etc/UTC|UTC) ok "baza: $TZ_DB" ;;
+  *) bad "baza NIJE UTC (=$TZ_DB) — 121 kolona bez zone menja značenje" ;;
+esac
+if [ "$TZ_API" = "0" ]; then ok "backend kontejner: UTC (offset 0)"
+else bad "backend kontejner NIJE UTC (offset=$TZ_API min) — kolone bez zone se pomeraju u UPISU"; fi
+
 say ""
 if [ "$FAIL" = "0" ]; then
-  say "🟢 DEPLOY OK — web + LAN + boot + upis svi zeleni."
+  say "🟢 DEPLOY OK — web + LAN + boot + upis + TZ svi zeleni."
 else
   say "🔴 DEPLOY DEFEKTAN — NE javljati 'radi'. Vidi ❌ iznad. (docs: incident 21.07, memory incident-4.0-deploy-crash-lan)"
 fi
