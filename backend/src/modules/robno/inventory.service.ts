@@ -442,10 +442,13 @@ export class InventoryService {
           `${shortageItems.length === 1 ? "artikal ima" : "artikala ima"} manje nego što ` +
           `knjige kažu — ${spisak}${ostatak}. Dokument manjka se NE pravi (odluka knjigovođe ` +
           `od 07.08.2026: „kada se utvrdi da je popisano manje nego što knjige kažu, onda to ` +
-          `ne radimo kroz dokument manjak; takav dokument ne treba da postoji"). Razreši manjak ` +
-          `— proveri brojanje i knjiženja koja su ga izazvala, pa ispravi popisanu količinu; ` +
-          `ako je manjak stvaran, način otpisa određuje knjigovođa. Popis ostaje otvoren ` +
-          `(COUNTING) dok se to ne uradi. Višak se knjiži normalno i ne smeta zaključivanju.`,
+          `ne radimo kroz dokument manjak; takav dokument ne treba da postoji"). ` +
+          `KAKO SE RAZREŠAVA: roba koja fizički nije na polici razdužuje se TREBOVANJEM na ` +
+          `radni nalog (vlasnik, 07.08.2026: „mi istrebujemo na neki nalog tu robu i zato ne ` +
+          `radimo [manjak]"). Napravi trebovanje za tu količinu, pa ponovi zaključenje — tada ` +
+          `se knjige i popis poklapaju sami. Ako roba stvarno nedostaje a nije utrošena, način ` +
+          `otpisa određuje knjigovođa. Popis ostaje otvoren (COUNTING) dok se to ne uradi. ` +
+          `Višak se knjiži normalno i ne smeta zaključivanju.`,
       );
     }
 
