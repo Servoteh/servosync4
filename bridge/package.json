@@ -48,8 +48,8 @@
     "mssql": "^11.0.1",
     "node-cron": "^3.0.3",
     "node-windows": "^1.0.0-beta.8",
+    "pg": "^8.22.0",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0"
-  },
-  "devDependencies": {}
+  }
 }

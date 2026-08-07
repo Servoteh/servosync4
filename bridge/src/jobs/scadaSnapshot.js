@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import { getSupabase } from '../db/supabase.js';
+import { getScadaStore } from '../db/scadaStore.js';
 import { logJob } from '../logger.js';
 import { NORMALIZERS } from '../scada/normalize.js';
 import { getBluelog, getLoxone, getS7, getSigen, getState } from '../scada/scadaClient.js';
@@ -21,14 +21,15 @@ const FETCHERS = {
  *  - postojeći kod → osveži text/severity ako se promenio
  *  - kod koji više nije aktivan → active=false + cleared_at
  * Jedan bridge = jedan pisac, pa je select→diff→write bezbedan.
+ *
+ * 🔴 OVAJ DIFF GASI I `BRIDGE_STALE`: watchdog (pg_cron u sy15 / posao
+ * `scada-watchdog` u 3.0) ume samo da UBACI alarm da se relej ne javlja, ali ne i
+ * da ga skloni. Kad se relej vrati, taj kod nije u `activeAlarms` uređaja pa upada
+ * u `toClear` i ovde se zatvori. Zato watchdog i relej NISU dva pisca nad istim
+ * redom: jedan otvara, drugi zatvara.
  */
-async function syncAlarms(supa, siteKey, activeAlarms) {
-  const { data: dbRows, error } = await supa
-    .from('scada_alarms')
-    .select('id, code, severity, text')
-    .eq('site_key', siteKey)
-    .eq('active', true);
-  if (error) throw new Error(`[scada] alarms select ${siteKey}: ${error.message}`);
+async function syncAlarms(store, siteKey, activeAlarms) {
+  const dbRows = await store.listActiveAlarms(siteKey);
 
   const wanted = new Map(activeAlarms.map((a) => [a.code, a]));
   const existing = new Map((dbRows || []).map((r) => [r.code, r]));
@@ -44,24 +45,15 @@ async function syncAlarms(supa, siteKey, activeAlarms) {
     .filter(({ a, db }) => db && (db.text !== a.text || db.severity !== a.severity));
 
   for (const { a, db } of toUpdate) {
-    const { error: updErr } = await supa
-      .from('scada_alarms')
-      .update({ text: a.text, severity: a.severity })
-      .eq('id', db.id);
-    if (updErr) throw new Error(`[scada] alarms update ${siteKey}: ${updErr.message}`);
+    await store.updateAlarm(db.id, { text: a.text, severity: a.severity });
   }
 
   if (toInsert.length) {
-    const { error: insErr } = await supa.from('scada_alarms').insert(toInsert);
-    if (insErr) throw new Error(`[scada] alarms insert ${siteKey}: ${insErr.message}`);
+    await store.insertAlarms(toInsert);
     log.warn({ siteKey, codes: toInsert.map((a) => a.code) }, 'novi alarmi');
   }
   if (toClear.length) {
-    const { error: clrErr } = await supa
-      .from('scada_alarms')
-      .update({ active: false, cleared_at: new Date().toISOString() })
-      .in('id', toClear);
-    if (clrErr) throw new Error(`[scada] alarms clear ${siteKey}: ${clrErr.message}`);
+    await store.clearAlarms(toClear);
     log.info({ siteKey, cleared: toClear.length }, 'alarmi očišćeni');
   }
 }
@@ -77,7 +69,10 @@ async function syncAlarms(supa, siteKey, activeAlarms) {
  */
 export async function scadaSnapshotOnce({ withHistory = true, logRun = false } = {}) {
   const run = logRun ? await startRun('scada_snapshot') : null;
-  const supa = getSupabase();
+  // Store bira prekidač `SCADA_IZVOR` (sy15 PostgREST / 3.0 direktan Postgres).
+  // `startRun`/`finishRun` NAMERNO ostaju na sy15: `bridge_sync_log` je dnevnik
+  // releja, ne SCADA podatak (v. scadaStore.js).
+  const store = getScadaStore();
   const now = new Date();
   // history ts poravnat na minut → PK (site,metric,ts) prirodno dedupuje uzorke
   const histTs = new Date(Math.floor(now.getTime() / 60_000) * 60_000).toISOString();
@@ -104,22 +99,17 @@ export async function scadaSnapshotOnce({ withHistory = true, logRun = false } =
         okCount += 1;
       }
 
-      const { error: snapErr } = await supa.from('scada_snapshots').upsert(
-        {
-          site_key: siteKey,
-          payload: norm.payload,
-          online: norm.online,
-          updated_at: now.toISOString(),
-        },
-        { onConflict: 'site_key' },
-      );
-      if (snapErr) throw new Error(`[scada] snapshot upsert ${siteKey}: ${snapErr.message}`);
+      await store.upsertSnapshot({
+        site_key: siteKey,
+        payload: norm.payload,
+        online: norm.online,
+        updated_at: now.toISOString(),
+      });
 
-      const { error: siteErr } = await supa
-        .from('scada_sites')
-        .update({ online: norm.online, last_seen: now.toISOString() })
-        .eq('key', siteKey);
-      if (siteErr) throw new Error(`[scada] site update ${siteKey}: ${siteErr.message}`);
+      await store.updateSite(siteKey, {
+        online: norm.online,
+        last_seen: now.toISOString(),
+      });
 
       if (withHistory && norm.history.length) {
         for (const h of norm.history) {
@@ -127,14 +117,11 @@ export async function scadaSnapshotOnce({ withHistory = true, logRun = false } =
         }
       }
 
-      await syncAlarms(supa, siteKey, norm.alarms);
+      await syncAlarms(store, siteKey, norm.alarms);
     }
 
     if (historyRows.length) {
-      const { error: histErr } = await supa
-        .from('scada_history')
-        .upsert(historyRows, { onConflict: 'site_key,metric,ts' });
-      if (histErr) throw new Error(`[scada] history upsert: ${histErr.message}`);
+      await store.upsertHistory(historyRows);
       histCount = historyRows.length;
     }
 
@@ -150,15 +137,23 @@ export async function scadaSnapshotOnce({ withHistory = true, logRun = false } =
 /**
  * Retencija istorije — briše uzorke starije od SCADA_HISTORY_RETENTION_DAYS.
  * Poziva se jednom dnevno iz loop-a.
+ *
+ * 🔴 POD `SCADA_IZVOR=3.0` OVO NE RADI NIŠTA — retenciju preuzima 3.0 scheduler
+ * (posao `scada-retention`, isti rok od 90 dana, sa dnevnikom u `scheduled_job_runs`).
+ * Da su ostala oba, brisala bi ista dva mehanizma istu tabelu; a scheduler je i
+ * ispravnije mesto, jer relej o bazi ne zna ništa osim da u nju upisuje.
+ * Pod `sy15` ostaje netaknuto (i to je putanja na koju se vraćamo pri povratku).
  */
 export async function scadaHistoryCleanup() {
+  const store = getScadaStore();
+  if (store.izvor === '3.0') return;
   const days = config.scada.historyRetentionDays;
   if (!days || days <= 0) return;
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  const supa = getSupabase();
-  const { error } = await supa.from('scada_history').delete().lt('ts', cutoff);
-  if (error) {
-    log.warn({ err: error.message }, 'history cleanup failed (nastavljamo)');
+  try {
+    await store.deleteHistoryBefore(cutoff);
+  } catch (err) {
+    log.warn({ err: err.message }, 'history cleanup failed (nastavljamo)');
     return;
   }
   log.info({ cutoff, days }, 'history retention cleanup done');

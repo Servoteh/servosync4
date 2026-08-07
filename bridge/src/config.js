@@ -121,9 +121,38 @@ export const config = Object.freeze({
     /* kill-switch: false trenutno zaustavlja IZVRŠAVANJE komandi (nadzor radi dalje) */
     control: optBool('SCADA_CONTROL', true),
     cmdRatePerMin: optInt('SCADA_CMD_RATE_PER_MIN', 10),
+    /* Retencija istorije. POD `SCADA_IZVOR=3.0` OVO VIŠE NE RADI RELEJ nego 3.0
+       scheduler (posao `scada-retention`, isti rok od 90 dana) — v. runbook §5.
+       Vrednost ostaje ovde zbog sy15 putanje i povratka. */
     historyRetentionDays: optInt('SCADA_HISTORY_RETENTION_DAYS', 90),
+    /* 🔴 PREKIDAČ IZVORA — gde relej UPISUJE scada_* podatke.
+         sy15 (podrazumevano, i za svaku neprepoznatu vrednost) — PostgREST na
+              `SUPABASE_URL`, tačno kao do sada.
+         3.0                                                    — direktan Postgres
+              upis u glavnu bazu (`SCADA_PG_URL`).
+       Neprepoznata vrednost NIKAD ne sme da se protumači kao `3.0`: preklop u
+       pogrešnom smeru razilazi dve baze i to se ne vidi dok se brojevi ne raziđu
+       (isto pravilo kao `IzvorPrekidac` u backendu).
+       Parnjak u backendu je `SCADA_IZVOR` (ScadaSourceService) — OBA moraju da se
+       preklope, relej PRVI. Detalji: docs/SEOBA_SCADA_2026-08-07.md §4. */
+    izvor: /^3\.0$/.test(optStr('SCADA_IZVOR', 'sy15')) ? '3.0' : 'sy15',
+    /* Konekcija ka 3.0 bazi — obavezna SAMO kad je `SCADA_IZVOR=3.0` (v. niže).
+       Bridge se ovde kači kao običan Postgres klijent; 3.0 nema PostgREST. */
+    pgUrl: optStr('SCADA_PG_URL', ''),
+    pgPoolMax: optInt('SCADA_PG_POOL_MAX', 4),
   }),
 });
+
+/* Kad je relej preklopljen na 3.0, konekcija MORA postojati — inače bi proces
+   startovao „uspešno" i tek na prvom upisu počeo da baca greške, a snapshotovi bi
+   tiho stajali (upravo stanje koje watchdog prijavljuje kao BRIDGE_STALE).
+   Bolje pasti odmah, na startu, sa jasnim razlogom. */
+if (config.scada.enabled && config.scada.izvor === '3.0' && !config.scada.pgUrl) {
+  throw new Error(
+    '[config] SCADA_IZVOR=3.0 zahteva SCADA_PG_URL (konekcija ka 3.0 bazi). ' +
+      'Povratak: SCADA_IZVOR=sy15 + restart.',
+  );
+}
 
 export function describeConfig() {
   return {
