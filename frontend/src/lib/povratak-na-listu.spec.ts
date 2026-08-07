@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ULAZI_ARTIKAL,
+  ULAZI_ROBNI_DOKUMENT,
   citajIzvor,
   citajZapisPozicije,
   hrefIzvora,
@@ -31,6 +32,11 @@ const KARTICA = path.join(KOREN, 'app', 'artikli', 'kartica', 'page.tsx');
 const ARTIKLI = path.join(KOREN, 'app', 'artikli', 'page.tsx');
 const MASTERS = path.join(KOREN, 'api', 'masters.ts');
 const USE_ID_PARAM = path.join(KOREN, 'lib', 'use-id-param.ts');
+const ROBNO = path.join(KOREN, 'app', 'robno', 'page.tsx');
+const ROBNO_DETALJ = path.join(KOREN, 'app', 'robno', 'detalj', 'page.tsx');
+const ROBNO_PRENOS = path.join(KOREN, 'app', 'robno', 'detalj', 'transfer-panel.tsx');
+const POPIS = path.join(KOREN, 'app', 'robno', 'popis', 'page.tsx');
+const POPIS_DETALJ = path.join(KOREN, 'app', 'robno', 'popis', 'count-detail.tsx');
 
 const izvor = (f: string) => fs.readFileSync(f, 'utf8');
 
@@ -208,6 +214,79 @@ describe('ekrani artikala su povezani na izvor liste', () => {
     for (const a of adrese) {
       assert.ok(/[?&]izvor=\$\{izvor\}/.test(a), `izvor se gubi na skoku ka detalju: ${a}`);
     }
+  });
+});
+
+/**
+ * ROBNI DOKUMENT ima dva ulaza: radnu listu `/robno` i panel detalja popisa (dugmad
+ * „Višak"/„Manjak" posle zaključenja). Magacioner koji je iz popisa otvorio generisani
+ * dokument viška završavao je u listi robnih dokumenata.
+ */
+describe('izvor liste robnih dokumenata', () => {
+  test('`izvor=popis` vodi nazad na popis', () => {
+    assert.equal(citajIzvor('?id=8&izvor=popis', ULAZI_ROBNI_DOKUMENT, 'robno'), 'popis');
+    assert.equal(hrefIzvora(ULAZI_ROBNI_DOKUMENT.popis), '/robno/popis');
+  });
+
+  test('bez izvora, sa smećem, i sa TUĐIM tokenom pada na listu robnih dokumenata', () => {
+    // `izvor=lager` je validan token DRUGOG modula — ovde ne sme da prođe, inače bi
+    // dugme „Nazad" sa robnog dokumenta odvelo u lager listu artikala.
+    for (const s of ['', '?id=8', '?izvor=', '?izvor=lager', '?izvor=artikli', '?izvor=Popis']) {
+      assert.equal(citajIzvor(s, ULAZI_ROBNI_DOKUMENT, 'robno'), 'robno', s);
+    }
+    assert.equal(hrefIzvora(ULAZI_ROBNI_DOKUMENT.robno), '/robno');
+  });
+});
+
+describe('ekrani robnog su povezani na izvor liste', () => {
+  test('popis potpisuje OBA prelaza na generisani dokument sa `izvor=popis`', () => {
+    const src = izvor(POPIS_DETALJ);
+    const adrese = [...src.matchAll(/`\/robno\/detalj\?[^`]*`/g)].map((m) => m[0]);
+    assert.ok(adrese.length >= 2, 'popis više ne otvara višak i manjak — test je zastareo');
+    for (const a of adrese) {
+      assert.ok(/[?&]izvor=popis/.test(a), `prelaz bez izvora vodi na tuđu listu: ${a}`);
+    }
+  });
+
+  test('detalj robnog dokumenta izvodi povratak iz `izvor`', () => {
+    const src = izvor(ROBNO_DETALJ);
+    sadrzi(src, /citajIzvor\(/, 'detalj ne čita odakle je došao');
+    sadrzi(src, /hrefIzvora\(/, 'detalj ne izvodi adresu iz izvora');
+    neSadrzi(
+      src,
+      /listHref\(\s*['"]\/robno['"]\s*\)/,
+      'izlaz sa detalja je i dalje tvrdo zakucan na listu robnih dokumenata',
+    );
+  });
+
+  test('🔴 panel prenosa PRENOSI izvor na drugu stranu para', () => {
+    // Bez ovoga trag pukne posle prvog skoka: popis → dokument viška → „Otvori drugu
+    // stranu" → adresa više nema `izvor` → „Nazad" vodi u listu robnih dokumenata.
+    const src = izvor(ROBNO_PRENOS);
+    sadrzi(src, /izvor/, 'skok na drugu stranu prenosa gubi izvor');
+  });
+});
+
+describe('popis pamti izabrani popis i mesto u listi', () => {
+  test('🔴 izabran popis živi u URL-u, ne u `useState`', () => {
+    // Sa `useState` se izbor gubi i na povratak sa detalja, i na Nazad pregledača, i
+    // na osvežavanje strane — a `listState:/robno/popis` ostaje prazan, pa `listHref`
+    // nema šta da vrati.
+    const src = izvor(POPIS);
+    sadrzi(src, /useListQueryState/, 'popis ne drži izbor u URL-u');
+    neSadrzi(
+      src,
+      /useState<number \| null>\(null\)/,
+      'izabran popis je i dalje goli `useState` — gubi se na svaki povratak',
+    );
+    sadrzi(src, /parseIdParam/, 'id popisa se čita iz adrese bez provere (`?popis=0x10` → popis 16)');
+  });
+
+  test('obe strane robnog pamte skrol', () => {
+    sadrzi(izvor(ROBNO), /useZapamcenaPozicijaListe/, 'lista robnih dokumenata ne pamti skrol');
+    sadrzi(izvor(ROBNO), /kljuc:\s*'\/robno'/, 'mesto se pamti pod tuđim ključem');
+    sadrzi(izvor(POPIS), /useZapamcenaPozicijaListe/, 'popis ne pamti skrol');
+    sadrzi(izvor(POPIS), /kljuc:\s*'\/robno\/popis'/, 'mesto se pamti pod tuđim ključem');
   });
 });
 

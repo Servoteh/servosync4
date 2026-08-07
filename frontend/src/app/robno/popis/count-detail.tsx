@@ -340,7 +340,7 @@ export function CountDetail({ countId }: { countId: number }) {
             {result.visakDocId != null ? (
               <Button
                 variant="secondary"
-                onClick={() => router.push(`/robno/detalj?id=${result.visakDocId}`)}
+                onClick={() => router.push(`/robno/detalj?id=${result.visakDocId}&izvor=popis`)}
               >
                 Visak (dokument #{result.visakDocId})
               </Button>
@@ -350,7 +350,7 @@ export function CountDetail({ countId }: { countId: number }) {
             {result.manjakDocId != null ? (
               <Button
                 variant="secondary"
-                onClick={() => router.push(`/robno/detalj?id=${result.manjakDocId}`)}
+                onClick={() => router.push(`/robno/detalj?id=${result.manjakDocId}&izvor=popis`)}
               >
                 Manjak (dokument #{result.manjakDocId})
               </Button>

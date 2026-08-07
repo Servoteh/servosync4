@@ -162,6 +162,20 @@ export const ULAZI_ARTIKAL = {
 
 export type IzvorArtikla = keyof typeof ULAZI_ARTIKAL;
 
+/**
+ * Ulazi u detalj ROBNOG DOKUMENTA.
+ *
+ * Scenario koji je ovo tražio: zaključen popis → dugme „Višak (dokument #N)" → „Nazad"
+ * je vodio u listu robnih dokumenata, a magacioner je došao iz popisa i tamo mu je i
+ * ostatak posla (dokument manjka, razlike).
+ */
+export const ULAZI_ROBNI_DOKUMENT = {
+  robno: { putanja: '/robno' },
+  popis: { putanja: '/robno/popis' },
+} satisfies Record<string, UlazUDetalj>;
+
+export type IzvorRobnogDokumenta = keyof typeof ULAZI_ROBNI_DOKUMENT;
+
 // ────────────────────────────────────────────── 2. GDE SE STALO (mesto u listi)
 
 /** Zapamćeno mesto u jednoj radnoj listi. */

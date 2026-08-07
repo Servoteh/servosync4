@@ -4,7 +4,8 @@ import { useEffect, useCallback, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Printer, Trash2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
-import { useIdParam, listHref } from '@/lib/use-id-param';
+import { useIdParam } from '@/lib/use-id-param';
+import { ULAZI_ROBNI_DOKUMENT, citajIzvor, hrefIzvora } from '@/lib/povratak-na-listu';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { DataTable, type Column } from '@/components/ui-kit/data-table';
@@ -158,9 +159,23 @@ export default function RobnoDetailPage() {
   // efekat bi toast ugasio tek posle komita, pa bi jedan render prikazao tuđe „Poništi".
   const activePending = pending && pending.docId === validId ? pending : null;
 
-  // Povratak na listu VRAĆA I FILTERE (`listHref` čita poslednje stanje
-  // liste) — bez toga se posle svakog otvorenog dokumenta gubio filter i strana.
-  const goBack = useCallback(() => router.push(listHref('/robno')), [router]);
+  /**
+   * Povratak vodi NA LISTU IZ KOJE SE DOŠLO, sa njenim poslednjim stanjem. Detalj ima dva
+   * ulaza: radnu listu `/robno` i panel popisa (dugmad „Višak"/„Manjak" posle zaključenja),
+   * pa je zakucan izlaz magacionera iz popisa izbacivao u listu robnih dokumenata.
+   * `listHref` uz to vraća i filtere/stranu — bez toga se posle svakog otvorenog dokumenta
+   * gubio filter i strana.
+   *
+   * Izvor se čita U TRENUTKU KLIKA, a ne u `useState`+`useEffect` kao na artiklima:
+   * `useIdParam` menja `?id=` U MESTU (panel prenosa, storno, Nazad/Napred) bez remounta,
+   * pa bi zapamćen izvor mogao da zastari. `goBack` se izvršava samo na korisničku radnju,
+   * gde je `window` zagarantovan — nema ni stanja, ni efekta, ni `resolved` zastavice.
+   * Jedan `goBack` opslužuje i dugme „Nazad" i Esc.
+   */
+  const goBack = useCallback(() => {
+    const izvor = citajIzvor(window.location.search, ULAZI_ROBNI_DOKUMENT, 'robno');
+    router.push(hrefIzvora(ULAZI_ROBNI_DOKUMENT[izvor]));
+  }, [router]);
 
   // Proknjižen (booked) = ima nalog GK (journalEntryId) — uslov za zaključavanje.
   const isBooked = doc != null && doc.journalEntryId != null;

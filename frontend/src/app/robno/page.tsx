@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useListQueryState } from '@/lib/use-id-param';
+import { useListQueryState, useZapamcenaPozicijaListe } from '@/lib/use-id-param';
 import { Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -142,7 +142,7 @@ export default function RobnoPage() {
 
   // Filteri i strana žive U URL-u (vidi `useListQueryState`) — povratak sa
   // detalja dokumenta vraća listu tačno kakva je bila.
-  const { values, setValues } = useListQueryState({
+  const { values, resolved, setValues } = useListQueryState({
     vrsta: '',
     status: '',
     broj: '',
@@ -188,6 +188,24 @@ export default function RobnoPage() {
   const rows = list.data?.data ?? [];
   const total = list.data?.meta.pagination.total ?? 0;
   const totalPages = list.data?.meta.pagination.totalPages ?? 1;
+
+  /**
+   * MESTO U LISTI. Strana je u URL-u, ali skrol nije: 50 redova je oko 1.750 px, pa se
+   * referent koji je otvorio 40. red sa strane 7 vraćao na vrh te strane.
+   *
+   * `potpis` uključuje i `strana`, pa promena strane uredno resetuje skrol na vrh (novi
+   * sadržaj — vrh je tačno mesto). `straneUKesu: 1` je pošteno za serverski paginiranu
+   * listu: grana „odustani" se tada nikad ne pali. `resolved` je uslov jer se prvi render
+   * dešava sa PODRAZUMEVANIM filterima — bez njega bi se skrol vraćao nad tuđim redovima.
+   */
+  const potpisFiltera = JSON.stringify(values);
+  const { okvirRef } = useZapamcenaPozicijaListe({
+    kljuc: '/robno',
+    potpis: potpisFiltera,
+    spremno: resolved && rows.length > 0,
+    straneUKesu: list.data ? 1 : 0,
+    redova: rows.length,
+  });
 
   if (isLoading || !user) {
     return (
@@ -251,7 +269,7 @@ export default function RobnoPage() {
         />
       )}
 
-      <div className="flex-1 space-y-4 overflow-auto p-6">
+      <div ref={okvirRef} className="flex-1 space-y-4 overflow-auto p-6">
         <div className="flex flex-wrap items-end gap-3">
           {/* Pretraga po broju dokumenta (§3.17): bez nje se konkretna primka među
               hiljadama tražila prelistavanjem strana. Filtrira se u SQL-u, pa je i

@@ -40,7 +40,13 @@ export function TransferPanel({ doc }: { doc: StockDocumentDetail }) {
    * kućni kanal kojim se javlja cilj; `useIdParam` na strani ga sluša (C20).
    */
   const goToDoc = (id: number) => {
-    const href = `/robno/detalj?id=${id}`;
+    // Izvor („odakle sam ušao u detalj") mora da preživi i ovaj skok, inače trag pukne
+    // posle prvog prelaza: popis → dokument viška → „Otvori drugu stranu" → adresa više
+    // nema `izvor` → „Nazad" vodi u listu robnih dokumenata umesto u popis.
+    // Čita se PRE `emitNavEvent`, dok je `window.location.search` još stari.
+    // `encodeURIComponent` jer je vrednost korisnički unos iz adrese.
+    const izvor = new URLSearchParams(window.location.search).get('izvor');
+    const href = `/robno/detalj?id=${id}${izvor ? `&izvor=${encodeURIComponent(izvor)}` : ''}`;
     emitNavEvent(href);
     router.push(href);
   };

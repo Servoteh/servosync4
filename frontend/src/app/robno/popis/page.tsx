@@ -13,6 +13,8 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatNumber } from '@/lib/format';
+import { useListQueryState, useZapamcenaPozicijaListe } from '@/lib/use-id-param';
+import { parseIdParam } from '@/lib/deep-link';
 import { useInventoryCounts, type InventoryCountRow } from '@/api/inventory';
 import { NewCountDialog } from './new-count-dialog';
 import { CountDetail, popisStatusMeta } from './count-detail';
@@ -34,7 +36,22 @@ export default function PopisPage() {
   const canWrite = can(PERMISSIONS.ROBNO_WRITE);
 
   const [newOpen, setNewOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+
+  /**
+   * IZABRAN POPIS ŽIVI U URL-u (`?popis=N`), ne u `useState`.
+   *
+   * Izbor je IDENTITET onoga što je na ekranu (panel detalja se crta ispod liste), a
+   * kanon repoa je da identitet živi u adresi. Sa `useState` se gubio na sve tri strane:
+   * na povratak sa robnog dokumenta (remount strane), na Nazad pregledača (unutar iste
+   * rute nije radio NIŠTA) i na osvežavanje. Usput je `listState:/robno/popis` ostajao
+   * prazan, pa `listHref('/robno/popis')` nije ni imao šta da vrati.
+   *
+   * `setValues` radi `router.replace` (ne `push`), pa izbor ne pravi unos u istoriji —
+   * inače bi „Nazad" prolazio kroz svaki popis koji je korisnik usput otvorio.
+   * `parseIdParam`, a ne goli `Number()`: `?popis=0x10` bi inače otvorio popis 16.
+   */
+  const { values, resolved, setValues } = useListQueryState({ popis: '' });
+  const selectedId = parseIdParam(values.popis);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -43,6 +60,23 @@ export default function PopisPage() {
   const list = useInventoryCounts();
   const rows = list.data?.data ?? [];
   const total = rows.length;
+
+  /**
+   * MESTO U LISTI. Panel detalja se crta ISPOD liste, pa je korisnik pri zaključivanju
+   * popisa skrolovan nadole — povratak sa dokumenta viška ga je vraćao na vrh.
+   *
+   * `potpis` je NAMERNO konstantan: kad bi bio izabrani popis, klik na drugi red bi
+   * obrisao zapis i trznuo skrol na vrh baš u trenutku kad se panel otvara ispod.
+   * Skrol-okvir je STRANA (`DataTable` ovde nema `maxHeight`), pa `okvirRef` ide na `div` —
+   * hook traži samo element sa `scrollTop`.
+   */
+  const { okvirRef } = useZapamcenaPozicijaListe({
+    kljuc: '/robno/popis',
+    potpis: '',
+    spremno: resolved && rows.length > 0,
+    straneUKesu: list.data ? 1 : 0,
+    redova: rows.length,
+  });
 
   const columns: Column<InventoryCountRow>[] = [
     {
@@ -109,10 +143,10 @@ export default function PopisPage() {
       <NewCountDialog
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        onCreated={(id) => setSelectedId(id)}
+        onCreated={(id) => setValues({ popis: String(id) })}
       />
 
-      <div className="flex-1 space-y-4 overflow-auto p-6">
+      <div ref={okvirRef} className="flex-1 space-y-4 overflow-auto p-6">
         {list.error && (
           <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
             {(list.error as Error).message}
@@ -123,7 +157,7 @@ export default function PopisPage() {
           columns={columns}
           rows={rows}
           rowKey={(r) => r.id}
-          onRowActivate={(r) => setSelectedId(r.id)}
+          onRowActivate={(r) => setValues({ popis: String(r.id) })}
           loading={list.isLoading}
           rowClassName={(r) =>
             r.id === selectedId ? 'bg-accent-subtle shadow-[inset_3px_0_0_var(--accent)]' : undefined
