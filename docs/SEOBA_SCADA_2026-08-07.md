@@ -234,6 +234,53 @@ Sve protiv **sveže migrirane probne baze** na dev klusteru (napravljena, izmere
 Obrnut redosled znači prazan ekran (backend čita 3.0 koju još niko ne puni). Između dva
 koraka je normalno da ekran kratko pokazuje stare sy15 podatke.
 
+---
+
+### 🔴 KOMANDE U LETU — prozor u kome se komanda MOŽE IZGUBITI
+
+**Ovo nije samo prikaz podataka.** Aplikacija kroz `scada_commands` **stvarno upravlja opremom
+u kotlarnicama** — potvrda vlasnika 07.08. i izmereno u istoriji komandi:
+
+| site | target | op | value | ishod |
+|---|---|---|---|---|
+| `kot2` | `Web_P1`, `Web_P2` | set | `{"v": true}` | **pumpe UKLJUČENE**, `applied` |
+| `kot2` | `Web_K7`, `Web_K8`, `Web_K10` | set | `{"v": true}` | **kaloriferi**, `applied` |
+| `kot3` | `…:value` | set | `{"v": 0/1}` | **ventil/ventilator**, `applied` |
+
+**Za solarne elektrane nema nijedne komande** — tamo se ništa ne pali (potvrda vlasnika).
+
+Stanje na dan pisanja: **23 `applied`, 6 `rejected`, 0 `pending`**; poslednja komanda 03.08.
+
+**Lanac:** aplikacija upiše red u `scada_commands` (`pending`) → relej ga `claim`-uje
+(`FOR UPDATE SKIP LOCKED`) → izvrši na PLC-u → upiše `applied`.
+
+**🔴 Problem:** između koraka 1 (relej na 3.0) i koraka 3 (backend na 3.0) backend i dalje
+piše komande u **sy15**, a relej ih traži u **3.0**. Komanda poslata u tom prozoru:
+- ostaje zauvek `pending` u sy15,
+- **oprema se NE upali/ugasi**,
+- korisnik **ne dobija grešku** — dugme izgleda kao da je odradilo posao.
+
+**Isti rizik postoji i u obrnutom redosledu** — nijedan redosled ga sam po sebi ne uklanja.
+
+**Obavezno pre preklopa:**
+
+1. **Ne preklapati dok neko upravlja kotlarnicom.** Komande se šalju retko i ručno (poslednja
+   4 dana pre preklopa), pa je prozor u praksi prazan — ali to se **proverava, ne pretpostavlja**.
+2. **Skratiti prozor:** korake 1 i 3 izvršiti jedan za drugim, bez pauze. Provera iz koraka 2
+   (da 3.0 prima snapshot-ove) može i **posle** prelaska backend-a — prikaz sme kratko da
+   trepne, upravljanje ne sme.
+3. **Proveriti `pending` pre i posle** (mora biti 0 na obe strane):
+```bash
+docker exec sy15-db psql -U supabase_admin -d postgres -tAc \
+  "SELECT count(*) FROM scada_commands WHERE status='pending';"
+docker exec servosync-pg psql -U servosync -d servosync -tAc \
+  "SELECT count(*) FROM scada_commands WHERE status='pending';"
+```
+4. **Ako se posle preklopa nađe `pending` u sy15** — to je izgubljena komanda: oprema NIJE
+   dobila nalog. Ponoviti je kroz ekran (ne prepisivati red u bazi).
+5. **Prva stvar posle preklopa:** poslati jednu bezopasnu komandu kroz ekran i potvrditi da je
+   stigla do PLC-a (`status='applied'` u **3.0**). Dok to ne prođe, **ne gasiti sy15 watchdog**.
+
 ```bash
 # 1. RELEJ na 3.0
 ssh ubuntusrv
