@@ -251,6 +251,14 @@ export const PERMISSIONS = {
   MONTAZA_EDIT: "montaza.edit",
   MONTAZA_IZVESTAJI: "montaza.izvestaji",
   MONTAZA_AI_ADMIN: "montaza.ai_admin",
+  // PDF crteža u Planu montaže (chip „Veza sa crtežima"). UŽE od `montaza.read`:
+  // modul je ungated (svaka rola), ali crtež je intelektualna svojina → pogon ga NE vidi.
+  // Do 07.08.2026 je taj rez radila sy15 fn `can_read_production_drawings()` (SECURITY
+  // DEFINER nad `user_roles`); prelaskom crteža na 3.0 `drawing_pdfs` gate se seli ovde,
+  // sa DOSLOVNO istim spiskom rola (v. role-permissions.ts D_MONTAZA_DRAWINGS).
+  // ⚠️ NIJE `pdm.read` — ta permisija je u `VIEWER_READ_BASELINE`, tj. ima je SVAKO
+  // ko se uloguje; gejtovanje na njoj bi rez tiho ukinulo i otvorilo crteže pogonu.
+  MONTAZA_DRAWINGS_READ: "montaza.drawings_read",
   // Neusaglašenosti na montaži — zaseban 2.0-native modul (zahtev 004/26,
   // MODULE_SPEC_montaza_neusaglasenosti §2). read+write idu CELOM montaža krugu
   // (svaka rola koja ima montaza.read — Montaža je ungated), manage (istraga +

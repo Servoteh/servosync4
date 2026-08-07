@@ -57,8 +57,35 @@ import {
 } from "./montaza-ai";
 
 const MONTAZA_BUCKET = "montaza-izvestaji";
-const BIGTEHN_DRAWINGS_BUCKET = "bigtehn-drawings";
-const DRAWING_SIGNED_URL_TTL = 300;
+
+/**
+ * Broj crteža iz Plana montaže (`phases.linked_drawings`) → ključ 3.0 `drawing_pdfs`.
+ *
+ * Stari sy15 keš je držao broj i reviziju SPOJENE u jednoj koloni (`drawing_no`), 3.0 ih
+ * drži ODVOJENO (`drawing_number` + `revision`, složeni PK). Pravilo spajanja je izmereno
+ * na produ 07.08.2026, ne pretpostavljeno:
+ *
+ *   drawing_no  ===  drawing_number || '_' || revision
+ *
+ * Potvrde:
+ *   • SVIH 5.426 aktivnih `drawing_no` ima TAČNO JEDNU donju crtu (0 sa dve+, 0 bez) →
+ *     podela je jednoznačna, prva i poslednja `_` daju identičan rezultat (5.426/5.426).
+ *   • `drawing_pdfs.file_name` je doslovno `{drawing_number}_{revision}.pdf` (npr. `1125707_C.pdf`).
+ *   • Prazna revizija je LEGITIMNA (209 redova u 3.0): `1029554_` → broj `1029554`, revizija ``.
+ *     Zato se NE odbacuje prazan drugi deo i NE radi se `filter(Boolean)`.
+ *   • Poklapanje starog keša sa 3.0: 5.426/5.426 (100%), svih 5.426 ima `pdf_binary`.
+ *     3.0 je NADSKUP — ima još 670 parova kojih u kešu nema.
+ *
+ * Vraća `null` za kod bez donje crte (nije validan ključ `drawing_pdfs`) → pozivalac 404/exists:false.
+ */
+export function splitDrawingCode(
+  code: string,
+): { drawingNumber: string; revision: string } | null {
+  const s = String(code ?? "").trim();
+  const i = s.lastIndexOf("_");
+  if (i <= 0) return null;
+  return { drawingNumber: s.slice(0, i), revision: s.slice(i + 1) };
+}
 
 type ProjectRow = {
   id: string;
@@ -310,8 +337,13 @@ export class PlanMontazeService {
   }
 
   /**
-   * Exists-check brojeva crteža (bigtehn_drawings_cache, aktivni). Signed URL = R2 (storage).
-   * Paritet 1.0 drawings exists-check: vraća samo brojeve koji imaju keširan PDF.
+   * Exists-check brojeva crteža — od 07.08.2026 iz 3.0 `drawing_pdfs` (v. `splitDrawingCode`).
+   * Paritet 1.0: vraća samo brojeve za koje POSTOJI PDF sa sadržajem (`pdf_binary`).
+   *
+   * `storage_path` je UKLONJEN iz odgovora: bio je putanja u sy15 storage bucket-u
+   * `bigtehn-drawings`, a 3.0 drži bajtove u bazi — putanja više ne postoji kao pojam.
+   * Nijedna FE komponenta ga nije čitala (samo deklaracija u `DrawingExists`), pa je
+   * uklanjanje bezbedno; `file_name` ostaje (`drawing_pdfs.file_name`, npr. `1125707_C.pdf`).
    */
   async lookupDrawings(email: string, codes: string) {
     const list = [
@@ -323,71 +355,109 @@ export class PlanMontazeService {
       ),
     ];
     if (!list.length) return { data: [] };
-    return this.read(email, async (tx) => {
-      const rows = await tx.$queryRaw<
-        { drawing_no: string; storage_path: string; file_name: string | null }[]
+    // 3.0 matični crteži nisu RLS-ovani (isto kao `lookupPredmeti`); pravo je na kontroleru.
+    void email;
+    const pairs = list
+      .map((code) => ({ code, split: splitDrawingCode(code) }))
+      .filter((p) => p.split != null) as {
+      code: string;
+      split: { drawingNumber: string; revision: string };
+    }[];
+    const found = new Map<string, string | null>();
+    if (pairs.length) {
+      const rows = await this.prisma.$queryRaw<
+        { drawing_number: string; revision: string; file_name: string | null }[]
       >(
-        Prisma.sql`SELECT drawing_no, storage_path, file_name FROM bigtehn_drawings_cache
-          WHERE removed_at IS NULL AND drawing_no IN (${Prisma.join(list)})`,
+        AppPrisma.sql`SELECT drawing_number, revision, file_name FROM drawing_pdfs
+          WHERE pdf_binary IS NOT NULL
+            AND (drawing_number, revision) IN (${AppPrisma.join(
+              pairs.map(
+                (p) =>
+                  AppPrisma.sql`(${p.split.drawingNumber}, ${p.split.revision})`,
+              ),
+            )})`,
       );
-      const found = new Map(rows.map((r) => [r.drawing_no, r]));
-      const data = list.map((code) => ({
+      for (const r of rows)
+        found.set(`${r.drawing_number}_${r.revision}`, r.file_name);
+    }
+    const data = list.map((code) => {
+      const s = splitDrawingCode(code);
+      const key = s ? `${s.drawingNumber}_${s.revision}` : null;
+      return {
         drawing_no: code,
-        exists: found.has(code),
-        storage_path: found.get(code)?.storage_path ?? null,
-        file_name: found.get(code)?.file_name ?? null,
-      }));
-      return { data };
+        exists: key != null && found.has(key),
+        file_name: key != null ? (found.get(key) ?? null) : null,
+      };
     });
+    return { data };
   }
 
   /**
-   * Presigned URL crteža iz bigtehn keša (chip „Veza sa crtežima" u fazi). Isti obrazac
-   * kao plan-proizvodnje.bigtehnDrawingSignUrl (SPEC §3 „lookups/drawings + signed URL"):
-   * sanitizacija broja + revizija fallback (`{broj}_A/B`), gate `can_read_production_drawings`
-   * (SPEC §2-5 — pogon ne vidi IP crteže). Bucket `bigtehn-drawings` (deljen sa PP/Lokacije).
+   * URL PDF-a crteža (chip „Veza sa crtežima" u fazi) — od 07.08.2026 iz 3.0 `drawing_pdfs`.
+   *
+   * Ranije je vraćao POTPISAN URL ka sy15 storage bucket-u `bigtehn-drawings` (TTL 300s).
+   * 3.0 nema object storage — bajtovi su `drawing_pdfs.pdf_binary` (bytea) — pa se, po
+   * PRESEDANU praćenja (`pracenje-read.service.ts` `crtezSignUrl`), vraća auth-gated
+   * content ruta ovog istog modula. Oblik `{ url, expiresIn }` je NEPROMENJEN;
+   * `expiresIn: 0` = nema potpisa/TTL-a, autorizacija ide kroz JWT + `montaza.drawings_read`.
+   *
+   * ⚠️ Ključ je `drawing_number` + `revision`, a NE `drawings.id` (kako radi praćenje):
+   * izmereno 07.08.2026 na produ — 354 reda u `drawing_pdfs` NEMA parnjaka u `drawings`,
+   * a 346 od njih je aktivno u starom kešu, tj. montaža ih danas otvara. Razrešavanje
+   * kroz `drawings` bi tih 346 crteža TIHO oborilo na 404.
    */
   async drawingSignUrl(email: string, code: string) {
     const clean = sanitizeDrawingNo(code);
     if (!clean) throw new BadRequestException("Neispravan broj crteža.");
-    const path = await this.read(email, async (tx) => {
-      await this.assertCanReadDrawings(tx);
-      const exact = await tx.$queryRaw<{ storage_path: string }[]>(
-        Prisma.sql`SELECT storage_path FROM bigtehn_drawings_cache
-          WHERE drawing_no = ${clean} AND removed_at IS NULL LIMIT 1`,
-      );
-      if (exact[0]?.storage_path) return exact[0].storage_path;
-      const cands = await tx.$queryRaw<
-        { drawing_no: string; storage_path: string }[]
-      >(
-        Prisma.sql`SELECT drawing_no, storage_path FROM bigtehn_drawings_cache
-          WHERE drawing_no LIKE ${clean + "%"} AND removed_at IS NULL
-          ORDER BY drawing_no DESC LIMIT 50`,
-      );
-      const hit = cands.find(
-        (c) => c.drawing_no === clean || c.drawing_no.startsWith(clean + "_"),
-      );
-      if (!hit?.storage_path)
-        throw new NotFoundException(`Crtež ${clean} nije u kešu.`);
-      return hit.storage_path;
-    });
+    void email;
+    await this.assertDrawingPdfExists(clean);
     return {
-      data: await this.storage.signUrl(
-        BIGTEHN_DRAWINGS_BUCKET,
-        path,
-        DRAWING_SIGNED_URL_TTL,
-      ),
+      data: {
+        url: `/api/v1/montaza/lookups/drawings/pdf/content?code=${encodeURIComponent(clean)}`,
+        expiresIn: 0,
+      },
     };
   }
 
-  /** Gate za PDF crteža (storage.objects politika u DB) — proveravamo mi (service ključ zaobilazi RLS). */
-  private async assertCanReadDrawings(tx: Sy15Tx): Promise<void> {
-    const rows = await tx.$queryRaw<{ ok: boolean }[]>(
-      Prisma.sql`SELECT can_read_production_drawings() AS ok`,
+  /** 404 ako broj nije u `drawing_pdfs` ili nema binarnog sadržaja (bez čitanja bajtova). */
+  private async assertDrawingPdfExists(clean: string): Promise<void> {
+    const s = splitDrawingCode(clean);
+    if (!s) throw new NotFoundException(`Crtež ${clean} nije pronađen.`);
+    const rows = await this.prisma.$queryRaw<{ ok: boolean }[]>(
+      AppPrisma.sql`SELECT (pdf_binary IS NOT NULL) AS ok FROM drawing_pdfs
+        WHERE drawing_number = ${s.drawingNumber} AND revision = ${s.revision} LIMIT 1`,
     );
-    if (!rows[0]?.ok) {
-      throw new ForbiddenException("Nemate pravo na PDF crteža.");
-    }
+    if (!rows[0]?.ok)
+      throw new NotFoundException(`Crtež ${clean} nije pronađen.`);
+  }
+
+  /**
+   * Strim uskladištenog PDF-a crteža (`drawing_pdfs.pdf_binary`) — zamena za sy15 signed URL.
+   * Gate je na kontroleru (`montaza.drawings_read`). Bajtovi se učitavaju SAMO ovde;
+   * liste/exists-check NIKAD ne selektuju `pdf_binary` (v. `DRAWING_PDF_SELECT` doktrina).
+   */
+  async streamDrawingPdf(
+    code: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    const clean = sanitizeDrawingNo(code);
+    if (!clean) throw new BadRequestException("Neispravan broj crteža.");
+    const s = splitDrawingCode(clean);
+    if (!s) throw new NotFoundException(`Crtež ${clean} nije pronađen.`);
+    const rows = await this.prisma.$queryRaw<
+      { pdf_binary: Buffer | null; file_name: string | null }[]
+    >(
+      AppPrisma.sql`SELECT pdf_binary, file_name FROM drawing_pdfs
+        WHERE drawing_number = ${s.drawingNumber} AND revision = ${s.revision} LIMIT 1`,
+    );
+    const row = rows[0];
+    if (!row?.pdf_binary)
+      throw new NotFoundException(
+        `PDF crteža ${clean} nema uskladišten sadržaj.`,
+      );
+    return {
+      buffer: Buffer.from(row.pdf_binary),
+      fileName: row.file_name?.trim() || `${clean}.pdf`,
+    };
   }
 
   // ==========================================================================

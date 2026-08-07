@@ -24,7 +24,40 @@ import { Sy15Service } from "../../common/sy15/sy15.service";
  * verify nalaz B1-OPS-1). U `bridge_sync_log` se runovi ipak UPISUJU pod legacy
  * imenima jobova — `syncHealth.cacheStale` i `monitor-sy15.sh` nastavljaju da rade
  * bez izmene — ali se odatle nikad ne čita watermark.
+ *
+ * ──────────────────────────────────────────────────────────────────────────────
+ * ⛔ ISKLJUČENO 07.08.2026 — hranilica piše u prazno (kod OSTAJE, v. LOC_TP_FEED_ENABLED)
+ *
+ * Nizvodni lanac opisan gore VIŠE NE POSTOJI: jedini potrošač ovih 5 tabela bio je
+ * pg_cron job 12 → `loc_bigtehn_ingest_run()`, ugašen 07.08.2026 (`cron.unschedule(12)`)
+ * jer je bio `armed: false`, `processed_total: 0`, a watermark zamrznut na 117529 —
+ * 288 praznih prolaza dnevno. Izmereno: od 318 kretanja lokacija u 30 dana, 0 iz ingesta
+ * (sva ručna iz aplikacije). Provereno 07.08.2026 da drugog potrošača NEMA:
+ *   • u `cron.job` nema više nijednog poziva ingesta (ostali su samo `_loc_purge_synced_events_cron`
+ *     i neaktivan `loc_sync_pulse_monitor_dispatch`);
+ *   • u kodu feed pokreće ISKLJUČIVO ručna admin ruta `POST /locations/sync/feed-run`
+ *     (LOKACIJE_ADMIN + `{confirm:true}`) — nema `@Cron`, nema scheduler registracije,
+ *     nema host crontab-a ni sy15-scheduler unosa;
+ *   • tabele `bigtehn_work_orders_cache`/`_lines_cache`/`_tech_routing_cache` se JOŠ ČITAJU
+ *     (`LocationsService.lookupDrawing`, plan-proizvodnje/praćenje mapiranja), ali kao
+ *     ZAMRZNUTA legacy BigTehn istorija: `lookupDrawing` gleda 3.0 `work_orders` PRVO i
+ *     autoritativno, a keš samo za MSSQL redove kojih 3.0 nema. Prestanak punjenja im
+ *     ne menja sadržaj — feed je u njih upisivao 3.0 redove isključivo zarad ingesta.
+ *
+ * POVRATAK U POGON (ako se ingest lanac ikad oživi): `LOC_TP_FEED_ENABLED=true` u
+ * backend okruženju + ponovo zakazati `loc_bigtehn_ingest_run()` u pg_cron-u. Bez
+ * OBA koraka feed opet piše u prazno. `status()` (watermark uvid) radi i dalje —
+ * namerno, da runbook verifikacija ostane moguća bez paljenja upisa.
  */
+
+/**
+ * Prekidač hranilice (opt-in, kućni obrazac `process.env.X === "true"`). Podrazumevano
+ * ISKLJUČENA — v. blok iznad. Čita se pri svakom `run()` da se stanje menja restartom
+ * kontejnera, bez rebuild-a.
+ */
+function isFeedEnabled(): boolean {
+  return process.env.LOC_TP_FEED_ENABLED === "true";
+}
 
 /** Red 2.0 `tech_processes` SELECT-a, već preimenovan u cache kolone. */
 export interface TpFeedRow {
@@ -160,6 +193,16 @@ export class LocTpFeedService {
 
   /** Admin/cron ulaz: jedan kompletan feed ciklus (tech_routing + WO + lines). */
   async run() {
+    // ⛔ 07.08.2026: hranilica bez potrošača (v. blok na vrhu fajla). Odbijamo PRE
+    // overlap guarda i pre ijednog upisa — feed pomera watermark, pa „samo probaj"
+    // ne sme da prođe. Kod ostaje netaknut; paljenje = LOC_TP_FEED_ENABLED=true.
+    if (!isFeedEnabled()) {
+      throw new ConflictException(
+        "loc-tp-feed je isključen 07.08.2026 — jedini potrošač " +
+          "(pg_cron loc_bigtehn_ingest_run) je ugašen, pa hranilica piše u prazno. " +
+          "Paljenje: LOC_TP_FEED_ENABLED=true + ponovo zakazati ingest u pg_cron-u.",
+      );
+    }
     if (this.running) {
       throw new ConflictException("feed-run je već u toku (overlap guard)");
     }

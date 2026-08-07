@@ -136,6 +136,11 @@ export const PERMISSIONS = {
   MONTAZA_EDIT: 'montaza.edit',
   MONTAZA_IZVESTAJI: 'montaza.izvestaji',
   MONTAZA_AI_ADMIN: 'montaza.ai_admin',
+  // PDF crteža u Planu montaže (chip „Veza sa crtežima"). UŽE od `montaza.read` —
+  // modul je ungated, ali crtež je IP i pogon ga ne vidi. Chip se NE skriva po ovoj
+  // permisiji (BE presuđuje: 403/404 → chip pokaže grešku), ključ stoji radi pariteta
+  // kataloga sa backendom.
+  MONTAZA_DRAWINGS_READ: 'montaza.drawings_read',
   // Neusaglašenosti na montaži — zaseban 2.0-native modul (zahtev 004/26).
   // read+write = ceo montaža krug (svako sa pristupom Montaži prijavljuje); manage
   // (istraga + status) = admin/menadzment/pm/leadpm/tim_lider. Mirror BE kataloga.

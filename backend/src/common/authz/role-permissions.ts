@@ -768,6 +768,33 @@ for (const role of D_PREDMET_AKTIVACIJA)
 for (const role of D_PROFILE_TEAM) addPerms(role, [P.PROFILE_TEAM]);
 // pb.admin / settings.users / settings.audit / settings.system = SAMO admin (već u ALL) — bez dodele.
 
+/**
+ * PDF crteža u Planu montaže (`montaza.drawings_read`) — PREPIS sy15 gate-a, ne nova politika.
+ *
+ * Do 07.08.2026 je crteže Plana montaže čuvao sy15 (`bigtehn_drawings_cache` + storage
+ * bucket), a pravo je presuđivala DEFINER fn `can_read_production_drawings()`:
+ *
+ *   role in ('admin','menadzment','pm','leadpm','inzenjer',
+ *            'projektant_vodja','magacioner','poslovni_admin')
+ *
+ * Crteži su prešli na 3.0 `drawing_pdfs`, pa se gate seli na guard-sloj sa ISTIM spiskom
+ * (svih 8 ključeva postoji u `roles.ts` sa identičnim string vrednostima — provereno).
+ * `admin` je pokriven kroz ALL, pa se ovde ne dodeljuje. Rez ostaje isti: modul „Montaža"
+ * je ungated (`montaza.read` ima svaka rola), ali PDF crteža vidi samo ovaj krug —
+ * pogon (proizvodni_radnik/cnc_operater/tim_lider/monter/kontrolor/tehnolog/sef) NE.
+ */
+const D_MONTAZA_DRAWINGS: readonly RoleKey[] = [
+  ROLES.MENADZMENT,
+  ROLES.PM,
+  ROLES.LEADPM,
+  ROLES.INZENJER,
+  ROLES.PROJEKTANT_VODJA,
+  ROLES.MAGACIONER,
+  ROLES.POSLOVNI_ADMIN,
+];
+for (const role of D_MONTAZA_DRAWINGS)
+  addPerms(role, [P.MONTAZA_DRAWINGS_READ]);
+
 // Razvojna faza 2.0 — indeks-stranica WIP modula (Talasi B–G) za testiranje pre
 // promocije u stalni 1.0 hub (odluka Nenad 15.07.2026). SAMO admin (kroz ALL) +
 // menadzment + hr/poslovni_admin ("kadrovska-admin" ekvivalent) — namerno UŽE

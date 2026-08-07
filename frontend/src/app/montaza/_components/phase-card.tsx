@@ -10,15 +10,18 @@ import { useState } from 'react';
 import { ChevronUp, ChevronDown, Trash2, FileText, Link2, Loader2, Pencil, Check } from 'lucide-react';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { cn } from '@/lib/cn';
-import { fetchDrawingSignedUrl, type PhaseVM } from '@/api/plan-montaze';
+import { type PhaseVM } from '@/api/plan-montaze';
+import { openMontazaDrawingPdf } from '@/lib/montaza-pdf';
 import { STATUSES, CHECK_SHORT, CHECK_LABELS } from '@/lib/plan-montaze/constants';
 import { calcDuration } from '@/lib/plan-montaze/date';
 import { calcReadiness, calcRisk, riskTone, RISK_LABEL, locationColor } from '@/lib/plan-montaze/phase';
 
 /**
- * Chip povezanog crteža (paritet 1.0 planTable.js „phase-linked-chip"): klik dohvata
- * signed URL i otvara PDF u novom tabu. Vidljiv i vieweru — BE gate presuđuje pristup.
- * Greška → tiho u konzolu + kratko crveno stanje na chipu.
+ * Chip povezanog crteža (paritet 1.0 planTable.js „phase-linked-chip"): klik povlači PDF
+ * i otvara ga u novom tabu. Vidljiv i vieweru — BE gate (`montaza.drawings_read`) presuđuje
+ * pristup. Greška → tiho u konzolu + kratko crveno stanje na chipu.
+ *
+ * Od 07.08.2026 izvor je 3.0 `drawing_pdfs` (bajtovi kroz `apiBlob`), ne sy15 signed URL.
  */
 export function DrawingChip({ code }: { code: string }) {
   const [busy, setBusy] = useState(false);
@@ -29,10 +32,7 @@ export function DrawingChip({ code }: { code: string }) {
     setBusy(true);
     setFailed(false);
     try {
-      const res = await fetchDrawingSignedUrl(code);
-      const url = res.data?.url;
-      if (!url) throw new Error('Prazan signed URL');
-      window.open(url, '_blank', 'noopener');
+      await openMontazaDrawingPdf(code);
     } catch (e) {
       console.error('[montaza] Otvaranje PDF-a crteža nije uspelo:', code, e);
       setFailed(true);
