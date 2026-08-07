@@ -193,6 +193,13 @@ Sve protiv **sveže migrirane probne baze** na dev klusteru (napravljena, izmere
   kamata, moj-profil.zahtev-026).
 - `npm run build` — prolazi.
 - `npx jest` — **5.795 testova, 266 suita, sve prolazi.**
+- 🔴 `npx jest --config ./test/jest-e2e.json --ci --runInBand "permissions|coverage|command-safety"`
+  — **25 suita, 4.590 testova, prolazi.** Ovo je ZASEBAN korak CI-ja i `npx jest` ga
+  **ne pokriva**: `test/*.e2e-spec.ts` ide drugim configom, pa promena konstruktora nekog
+  servisa ovde pukne a lokalni `jest` (samo `src`) to ne vidi. Tako je 07.08.2026 propuštena
+  regresija — `EnergetikaService` je dobio treću zavisnost (`ScadaSourceService`), a
+  `energetika-command-safety.e2e-spec.ts` gradi testni modul ručno i nije je pružao.
+  **Svaka izmena konstruktora servisa traži i ovu komandu, ne samo `npx jest`.**
 - **boot `node dist/main` u OBA položaja prekidača**, protiv sveže migrirane baze:
   - `SCADA_IZVOR` nepostavljen → diže se, tiho (sy15 je podrazumevano)
   - `SCADA_IZVOR=3.0` → diže se + upozorenje sa načinom povratka

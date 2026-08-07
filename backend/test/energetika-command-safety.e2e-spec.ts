@@ -12,6 +12,7 @@ import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { EnergetikaController } from "../src/modules/energetika/energetika.controller";
 import { EnergetikaService } from "../src/modules/energetika/energetika.service";
 import { Sy15Service } from "../src/common/sy15/sy15.service";
+import { ScadaSourceService } from "../src/common/sy15/scada-source.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 /**
@@ -174,13 +175,20 @@ describe("Energetika SAFETY e2e — van-allowlist → rejected BEZ dodira PLC-a"
 
   beforeAll(async () => {
     process.env.AUTHZ_ENFORCE = "true";
+    // 🔴 Ovaj test dokazuje sy15 komandni lanac (`FakeSy15` + `withUserRls`), pa izvor
+    // mora biti PINOVAN, ne nasleđen iz okruženja: pod `SCADA_IZVOR=3.0` servis uopšte
+    // ne bi zvao `withUserRls` nego 3.0 Prisma klijent, `fake.commands` bi ostao prazan
+    // i bezbednosna tvrdnja („BE nikad ne piše na PLC") bi prolazila iz pogrešnog razloga.
+    process.env.SCADA_IZVOR = "sy15";
     const moduleRef = await Test.createTestingModule({
       controllers: [EnergetikaController],
       providers: [
         { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
-        
         EnergetikaService,
         { provide: Sy15Service, useValue: fake },
+        // Prekidač izvora (seoba 07.08.2026) — bez stanja je, čita env pri konstrukciji,
+        // pa ide prava klasa umesto moka (isto kao u `EnergetikaModule`).
+        ScadaSourceService,
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -209,8 +217,14 @@ describe("Energetika SAFETY e2e — van-allowlist → rejected BEZ dodira PLC-a"
   });
 
   afterAll(async () => {
-    await app.close();
+    // `app?` namerno: ako `compile()` padne (npr. nedostaje provider), `app` ostane
+    // undefined i `app.close()` baci TypeError koji OBORI ceo suite i SAKRIJE pravu
+    // grešku iza šuma „Cannot read properties of undefined". Tako je propuštena
+    // regresija 07.08.2026 — prava poruka (Nest can't resolve ScadaSourceService)
+    // bila je nekoliko ekrana iznad.
+    await app?.close();
     delete process.env.AUTHZ_ENFORCE;
+    delete process.env.SCADA_IZVOR;
   });
 
   beforeEach(() => fake.reset());
