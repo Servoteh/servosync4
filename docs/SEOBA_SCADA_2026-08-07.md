@@ -298,7 +298,10 @@ docker exec servosync-pg psql -U servosync -d servosync -c \
 docker exec servosync-pg psql -U servosync -d servosync -c \
   "SELECT count(*) FROM scada_history;"          # mora rasti
 
-# 3. BACKEND na 3.0 — SCADA_IZVOR=3.0 u backend okruženju + restart
+# 3. BACKEND na 3.0 — SCADA_IZVOR=3.0 u backend.env
+#    🔴 `docker restart` NE UČITAVA izmenjen env — mora `up -d` (v. zamku ispod)
+cd /home/admluka/servosync && docker compose up -d backend    # mora ispisati "Recreated"
+docker exec servosync-backend printenv | grep '^SCADA_IZVOR='  # OBAVEZNA potvrda
 #    (u logu mora da se pojavi WARN [ScadaSourceService] SCADA_IZVOR=3.0 …)
 
 # 4. Provera ekrana: /energetika — 5 sistema, snapshotovi sveži, trend PRAZAN (očekivano)
@@ -310,6 +313,22 @@ docker exec sy15-db psql -U supabase_admin -d postgres -c \
 
 Korak 5 je **namerno poslednji i odvojen**: dok se ne preklopi, sy15 watchdog je i dalje
 korisna brana. Posle preklopa on samo alarmira nad bazom koju niko ne gleda.
+
+### 🔴 ZAMKA KOJA JE ZAMALO NAPRAVILA TIHI ISPAD (uhvaćena pri izvođenju 07.08)
+
+`docker restart servosync-backend` **ne učitava izmenjen `backend.env`** — Docker peče
+`env_file` u trenutku *create*, a `restart` samo ponovo pokreće postojeći kontejner sa
+zatečenim okruženjem. Kontejner se digne **zdrav, bez ijedne greške**, ali radi po **starom**
+prekidaču.
+
+Opasno je baš ovde jer se relej (systemd, `EnvironmentFile`) preklopi **ispravno** i odmah
+prestane da piše u sy15 — pa ekran služi zamrznute podatke bez ikakve poruke o grešci.
+Kod nas je prozor trajao ~15 min (10:59–11:14); izmereno `scada_commands` u sy15 = **0**,
+dakle nijedna komanda nije izgubljena, ali da jeste — oprema se ne bi upalila.
+
+**Lek:** `docker compose up -d backend` (izlaz mora sadržati `Recreated`) pa **obavezno**
+`docker exec servosync-backend printenv | grep '^SCADA_IZVOR='`. Prazan izlaz = preklop nije
+izvršen. Isto važi za svaki naredni prekidač (`ODRZAVANJE_IZVOR`, `PB_IZVOR`, …).
 
 ### Povratak (rollback) — ~2 min, bez deploy-a
 
@@ -328,13 +347,33 @@ upserti sa conflict targetom, pa je ponovni prelaz bezbedan.
 
 ---
 
-## 9. Šta ostaje otvoreno
+## 9. ✅ IZVEDENO 07.08.2026 u 11:14 — i šta ostaje otvoreno
 
-- **`npm install` na živom releju** — `pg` nije instaliran (korak 2 preduslova). Bez toga
-  relej pod `3.0` ne startuje.
-- **`SCADA_PG_URL`** — treba odlučiti kojim nalogom se relej kači na 3.0 bazu. Danas se kači
-  `service_role` ključem na sy15 (pun pristup); najmanje što mu treba je `SELECT/INSERT/
-  UPDATE/DELETE` nad šest `scada_*` tabela.
+**Preklop je izvršen na produkciji.** Rešeno u toku izvođenja:
+
+- **`npm install --omit=dev`** odrađen na živom releju — `pg` instaliran.
+- **`SCADA_PG_URL`** = nalog **`servosync_app`** (već je imao INSERT/UPDATE nad svih šest
+  `scada_*` tabela). Poseban uži nalog nije pravljen: relej ionako nosi `service_role` ključ
+  za sy15, pa se nivo poverenja ne menja. Host je **`127.0.0.1:5435`**, ne `servosync-pg:5432`
+  — relej radi na hostu, van docker mreže.
+
+**Izmereno posle preklopa:** svih 5 sistema `online=t`, snimci stari 1 s; 8 aktivnih alarma
+poklapa se red-po-red sa sy15 (verna slika, ne novi alarmi); komanda `Web_P1` prošla ceo lanac
+za **3 s** (claimed 11:04:38 → applied 11:04:41, odgovor `{"ok":true,"tag":"Web_P1","value":1}`)
+— proba je bila bezbedna jer je pumpa već bila upaljena. sy15 `pg_cron` jobid 21 ugašen;
+zamenio ga backend posao `scada-watchdog`, prvi prolaz „svi sistemi svezi".
+`post-deploy-verify` 🟢.
+
+**🔴 FORMAT KOMANDE:** vrednost je **`{"v": 1}`**, ne golo `true` — allowlist releja čita
+`value?.v` i golu vrednost odbija sa „vrednost mora 0/1".
+
+**Ostaje otvoreno:**
+
+- **🔴 VRATITI ALARME** — Telegram i mail su **namerno ispražnjeni** za vreme seobe (odluka
+  vlasnika: „mail za scadu blokiraj dok radiš, posle puštamo kada sve preselimo"). Originali
+  stoje u komentaru iznad svake linije u `/home/admnenad/scada-app/.env`
+  (`ALERT_TELEGRAM_CHAT_ID=1183773172`, `ALERT_MAIL_TO=` tri adrese).
+  Snimak: `.env.bak-20260807-125107-pre-seobe-alarmi`.
 - **Web-push na alarme** ostaje mrtav dok se pretplate ne obnove (nije regresija — ne radi
   ni danas).
 - **Gašenje sy15 `scada_*` tabela** — tek posle nekoliko dana stabilnog rada na 3.0;
