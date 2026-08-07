@@ -1,127 +1,165 @@
 # Put do jedne baze — šta je ostalo da 3.0 bude jedini sistem
 
 > **Za koga je ovaj dokument:** za odluke, ne za programiranje. Tehnički detalji su u
-> `PLAN_GASENJA_SY15_2026-08-03.md` i pojedinačnim runbook-ovima; ovde piše **šta se menja,
-> koliko traje i šta se dobija.**
+> `PLAN_GASENJA_SY15_2026-08-03.md` i pojedinačnim runbook-ovima (`SEOBA_*.md`); ovde piše
+> **šta se menja, koliko traje i šta se dobija.**
 >
-> Stanje na dan **06.08.2026.**
+> Stanje na dan **07.08.2026.** — sve brojke su merene na produkciji tog dana.
 
 ---
 
 ## 1. Gde smo sada — jednom rečenicom
 
-Stara baza (`sy15`) više **ne drži nijedan ekran koji korisnik otvara na staroj adresi** — stara
-aplikacija je ugašena 03.08. Ali **podaci** za veći deo firme još uvek žive tamo, i 3.0 ih čita
-preko mosta. Cilj je da se ti podaci presele, most ukine, a stara baza ugasi.
+Stara baza (`sy15`) više ne drži nijedan ekran na staroj adresi (stara aplikacija ugašena 03.08),
+a od 07.08. više ne prima ni merenja sa uređaja. Ali **podaci** za veći deo firme još žive tamo.
+Cilj je da se presele, most ukine, a stara baza ugasi.
 
-**Šta je već preseljeno (živo na 3.0):**
+**Već preseljeno i živo na 3.0:**
 
-| Domen | Kada |
-|---|---|
-| Sastanci, akcione tačke, teme, zapisnici | **06.08.2026** ✅ |
+| Domen | Kada | Potvrda merenjem |
+|---|---|---|
+| Sastanci, akcione tačke, teme, zapisnici | **06.08.2026** ✅ | stara baza zamrznuta 04.08, nova piše svakodnevno |
+| **SCADA** (kotlarnice, solarne elektrane) | **07.08.2026** ✅ | svih 5 sistema online, komanda do uređaja za 3 s |
+| Šifarnici (predmeti, komitenti, artikli) | **07.08.2026** ✅ | 7.633 / 6.259 / 92.638, sinhronizacija u 03:45 |
+| Mrtav most ka staroj proizvodnji | **ugašen 07.08** ✅ | 647 prolaza u 7 dana, **0 izmena** — radio je u prazno |
 
-**Šta je pripremljeno ali još nije prebačeno:**
+**Pripremljeno, ali prekidač još nije prebačen:**
 
 | Domen | Stanje |
 |---|---|
-| Održavanje (mašine, vozila, kvarovi, radni nalozi) | podaci spremni, preklop u toku |
-| Reversi (alati) | podaci spremni, čeka lokacije |
-| Projektni biro | podaci već preneti, čeka kadrovsku |
+| Održavanje | šema, podaci, pravila i prava — **gotovo**; ostaje ožičenje ekrana |
+| Reversi + Lokacije | kreće |
+| Kadrovska | kreće |
+| Projektni biro | podaci preneti, ali **kopija je zastarela** — mora se osvežiti pred preklop |
 
 ---
 
 ## 2. Šta još drži staru bazu u životu
 
-Ovo je ključno: **čak i kad se svi ekrani presele, stara baza ne može da se ugasi dok ovo troje ne
-pređe.** Aplikacija je zapravo njen *najmanji* korisnik.
+Ranija verzija ovog dokumenta ovde je imala **grešku** koju je merenje oborilo: pisalo je da most
+ka BigBit-u upisuje ~262 hiljade izmena. To nije bio taj most. Ispravno stanje:
 
-| Ko piše u staru bazu | Koliko | Šta je to |
+| Ko piše u staru bazu | Koliko (mereno) | Šta je to |
 |---|---|---|
-| **SCADA** (kotlarnice, solarne) | ~4 miliona izmena | Merenja sa uređaja, svakih 5 sekundi |
-| **Most ka BigBit-u** | ~262 hiljade | Noćni uvoz artikala, kupaca, radnika |
-| **Sama aplikacija 3.0** | ~20 hiljada | Ono što ljudi rade kroz ekrane |
+| **Živi korisnici — Lokacije** | stalno, kroz radni dan | 🔴 **jedino mesto gde ljudi još upisuju u staru bazu** |
+| **Kapija (Katze)** | 2.297 zapisa / 7 dana | Dolasci i odlasci radnika |
+| **Noćni uvoz iz BigBit-a** | 99.295 izmena / 7 dana, jednom dnevno | Artikli, kupci, radnici, mašine |
+| ~~SCADA~~ | **0 od 07.08.** | Preseljena |
+| ~~Most ka staroj proizvodnji~~ | **0 — bio mrtav** | Ugašen |
 
-Uz to, tri stvari oko **naloga korisnika** još uvek idu preko stare baze: spisak korisnika u
+Uz to, tri stvari oko **naloga korisnika** i dalje idu preko stare baze: spisak korisnika u
 Podešavanjima, resetovanje lozinke, i provera role pri svakoj prijavi.
 
+**Zaključak:** stara baza više nije opterećena — ostala je zbog **podataka**, ne zbog saobraćaja.
+
 ---
 
-## 3. Redosled — šta ide kada i zašto tim redom
+## 3. Koliko je stvarno urađeno
 
-Redosled nije proizvoljan; svaki korak otključava sledeći.
+Mereno kroz tri nezavisna metra, da brojka ne zavisi od načina brojanja:
 
-### ✅ Korak 1 — Sastanci (GOTOVO 06.08)
-Najmanji domen sa najviše pravila — namerno prvi, da se postupak uvežba na nečemu bezopasnom.
-Prošlo je čisto iz drugog pokušaja; prvi je oborio Projektni biro pa je vraćen za dva minuta.
+| Metar | Ukupno | Gotovo | Udeo |
+|---|---:|---:|---:|
+| Pravila iz baze koja treba prepisati | 216 | 32 | 15 % |
+| Mesta u kodu koja idu preko mosta | 358 | 76 | 21 % |
+| Tabela preseljenih | 150 | 19 | 13 % |
 
-### 🔄 Korak 2 — Održavanje (U TOKU)
-**Procena: 10–14 radnih dana.** Najviše mehaničkog posla: 145 mesta u kodu, 14 pravila iz baze,
-34 tabele, 469 MB fajlova (uputstva i slike mašina).
-**Dobra vest:** ne zavisi ni od čega drugog — može ceo da prođe sam.
-⚠️ Jedna odluka čeka: održavanje danas upisuje mašine u Lokacije. Dok Lokacije ne pređu (korak 3),
-taj upis mora privremeno da ide u staru bazu.
+**Iza nas je oko petine posla.** Zvuči malo, ali **prva petina je bila najskuplja**: na sastancima
+je napravljen alat i postupak koji svi naredni koraci koriste besplatno — svaki domen se preklapa
+jednim prekidačem, sa povratkom unazad za dva minuta ako nešto krene naopako. Održavanje je zato
+za jedan dan dobilo ono što je sastancima trajalo četiri.
+
+---
+
+## 4. Redosled — šta ide kada i zašto tim redom
+
+Redosled nije proizvoljan; svaka zavisnost dole je **izmerena**, ne pretpostavljena.
+
+### 🔄 Korak 2 — Održavanje (U TOKU, najdalje odmaklo)
+**Procena je pala sa 10–14 na 5–7 dana**, jer je najteži deo već isporučen: prepisano je svih
+14 pravila iz baze, 15 pogleda i ceo sloj prava. Ostaje ožičenje ekrana na nove podatke.
+Ne zavisi ni od čega — može ceo da prođe sam.
 
 ### Korak 3 — Reversi + Lokacije ZAJEDNO
-**Procena: 12–18 dana.** Idu zajedno jer nisu razdvojivi: izdavanje alata u jednom potezu upisuje
-i u reverse i u lokacije. Razdvajanje bi značilo da se pola posla može upisati a pola ne.
-Ovde se prvi put dodiruje i **most ka BigBit-u** (lokacije se pune iz njega na svakih 5 minuta).
+**Procena: 8–12 dana.** Idu zajedno jer nisu razdvojivi: izdavanje alata u jednom potezu upisuje
+i u reverse i u lokacije; razdvajanje bi značilo da se pola posla upiše a pola ne.
+
+🔴 **Ovo bih stavio odmah iza održavanja, a ne na kraj** — lokacije su jedino mesto gde ljudi
+i dalje uživo pišu u staru bazu. Svaki dan odlaganja je dan sa dva izvora istine.
+
+⚠️ Najteži pojedinačni komad u celoj seobi je ovde: dva pravila o razduživanju alata postoje
+**samo** kao logika u bazi i moraju se napisati iznova (5–8 dana od gornje procene).
 
 ### Korak 4 — Kadrovska
-**Procena: 15–20 dana.** Najosetljivije: plate su pod posebnom bravom, postoji trag ko je šta
-menjao, i pravila oko odmora su strogo određena. Namerno poslednja od poslovnih domena —
-tek posle tri uvežbana kruga.
+**Procena: 10–15 dana.** Najveći domen: 64 tabele, pola miliona zapisa o dolascima, i najviše
+pravila o pravima u celoj bazi. Plate su pod posebnom bravom.
 
 ### Korak 4b — Projektni biro
-**Procena: 3–5 dana.** Podaci su već preneti; čeka isključivo kadrovsku, jer njegova prava kreću
-od pitanja „koji je ovo zaposleni".
+**Procena: 2–3 dana.** Čeka isključivo kadrovsku, jer njegova prava kreću od pitanja „koji je ovo
+zaposleni". 🔴 **Kopija podataka je zastarela** (stoji od 06.08. dok se u staroj bazi radilo) —
+prenos se mora ponoviti neposredno pred preklop, inače se tiho gubi dan i po rada.
 
 ### Korak 4c — Nalozi i lozinke
-**Procena: 5–8 dana.** Ide uporedo sa kadrovskom. Spisak korisnika, reset lozinke i provera role
-prelaze na 3.0. **Danas 7 stvarnih ljudi nije vidljivo adminu** i njima se ne može resetovati
-lozinka — ovo to rešava.
+**Procena: 2–3 dana.** Ide uporedo sa kadrovskom. **Danas 7 stvarnih ljudi nije vidljivo adminu**
+i njima se ne može resetovati lozinka — ovo to rešava.
 
-### Korak 5 — SCADA i most
-**Procena: 8–12 dana.** Najveći pisac u staru bazu. SCADA program je već naš i radi na našem
-serveru — menja se samo gde upisuje. Most ka BigBit-u je vezan za BigBit, čije je gašenje
-planirano za **februar 2027** — tu treba odluka: ili most piše u 3.0, ili stara baza živi do tada.
+### Korak 5 — Noćni uvoz i kapija
+**Procena: 2–3 dana.** Ne sme ranije: taj uvoz i dalje hrani mašine za održavanje.
 
 ### Korak 6 — Gašenje
-Kad prethodno prođe: prvo se stara baza **zaključa za pisanje** (nedelju dana, da se vidi da niko
-ne pišti), pa se napravi trajna kopija, pa se gasi.
+Stara baza se prvo **zaključa za pisanje** na nedelju dana (da se vidi da niko ne pišti), pa se
+napravi trajna kopija, pa se gasi.
 
 ---
 
-## 4. Koliko ukupno
+## 5. Koliko ukupno
 
 | Scenario | Procena |
 |---|---|
-| **Ako se radi redom, jedan po jedan korak** | ~3 meseca |
-| **Ako se radi paralelno gde je moguće** (održavanje ‖ nalozi, reversi ‖ kadrovska) | **~7–9 nedelja** |
+| Redom, jedan po jedan korak | **2–3 meseca** |
+| Paralelno, dve grane | **7–8 nedelja** |
+| Paralelno, tri grane | **5–6 nedelja** |
 
-Paralelno je izvodljivo jer koraci diraju različite delove sistema. Ograničenje nije mašina nego
-provera — svaki preklop traži da neko iz firme potvrdi da modul radi.
-
-**Najveća nepoznanica nije nijedan od ovih koraka nego most ka BigBit-u** (korak 5). Ako BigBit
-ostaje do februara 2027, stara baza može da živi samo zbog njega — u tom slučaju se sve ostalo
-preseli, a ona ostane kao prazna ljuska sa jednim jedinim poslom.
+Paralelno je izvodljivo jer se domeni ne preklapaju. Ograničenje nije mašina nego dve stvari:
+sve izmene baze prolaze kroz istu proveru redosleda, i **svaki preklop traži da neko iz firme
+potvrdi da modul radi**.
 
 ---
 
-## 5. Šta se dobija
+## 6. Šta se dobija
 
-- **Jedna baza** umesto dve — kraj razilaženju podataka (dva puta smo večeras uhvatili mesta gde
-  bi se dve istine tiho razišle).
-- **Kraj mostu** — nema više kašnjenja od 5 minuta i „zašto se ovo nije osvežilo".
-- **Prava na jednom mestu** — danas ista osoba ima zapis u dva sistema i oni mogu da se raziđu.
+- **Jedna baza** umesto dve — kraj razilaženju podataka. Samo tokom ove seobe uhvaćeno je više
+  mesta gde su se dve istine tiho razilazile (spisak predmeta koji je lagao o statusu, zastarela
+  kopija Projektnog biroa, prioriteti iz dva izvora).
+- **Kraj kašnjenju** — nema više „zašto se ovo nije osvežilo".
+- **Prava na jednom mestu** — danas ista osoba ima zapis u dva sistema; dok stara baza živi,
+  **51 od 71 naloga** je izložen tihoj promeni prava.
 - **Manje troška** — stara baza nosi servise koji postoje samo zbog nje.
 
 ---
 
-## 6. Šta traži tvoju odluku (ne moju)
+## 7. Šta traži tvoju odluku (ne moju)
 
-1. **Most ka BigBit-u** — da li da piše direktno u 3.0 (pa stara baza može ranije), ili ostaje kako
-   jeste do gašenja BigBit-a u februaru 2027.
-2. **SCADA istorija** — 2,4 miliona merenja, 558 MB. Sve prebaciti, ili zadržati skraćeno
-   (npr. godinu dana) pa staro arhivirati?
-3. **Tempo** — da li idemo redom (sigurnije, ~3 meseca) ili paralelno (~7–9 nedelja, više provere
-   odjednom na tvojoj strani).
+1. **SCADA istorija** — 2,56 miliona merenja, 599 MB (dve trećine cele stare baze). Preseliti sve,
+   zadržati skraćeno, ili arhivirati na disk? *Odluka može uštedeti nedelju dana.*
+2. **Crteži** — 995 MB u starom skladištu. U novo skladište ili arhiva na disk?
+3. **Veza mašina ↔ lokacija** — dok su mašine u novoj a lokacije u staroj bazi, ta veza je „meka":
+   ako stara baza ne odgovori, nova mašina neće dobiti lokaciju i to se neće javiti kao greška.
+   Prihvatljivo, ili upis mašine mora da padne?
+4. **Pristup kontrole** — nalog `kontrola@servoteh.com` danas vidi pogon; u novom sistemu bi to
+   izgubio. Zadržati?
+5. **Tempo** — redom (sigurnije) ili paralelno (brže, ali više provere odjednom na tvojoj strani).
+
+---
+
+## 8. Usput nađeno — kvarovi koji nemaju veze sa seobom
+
+Merenja su otkrila tri stvari koje žive na produkciji nezavisno od ovog posla:
+
+- **Modul „Objekti" ne može da sačuva nijedan red** — fali kolona u staroj bazi, ekran vraća
+  grešku otkad postoji (0 sačuvanih objekata).
+- **Skeniranje nalepnice mašine** (`ZADU-M-*`) tiho puca iz istog razloga.
+- **Stari spisak predmeta lagao je o statusu** — 1.861 predmet koji je BigBit vodio kao gotov
+  prikazivan je kao „u toku".
+
+Prva dva su popravljena na novoj strani; treći je rešen prelaskom na nov izvor.
