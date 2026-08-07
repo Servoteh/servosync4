@@ -8213,3 +8213,154 @@ model MaintSettings {
   // SQL-only: CHECK id = 1 (singleton) + CHECK-ovi rokova.
   @@map("maint_settings")
 }
+
+// ============================================================================
+// ENERGETIKA / SCADA  (seoba sy15 -> 3.0, korak 5 — 07.08.2026)
+// ============================================================================
+// Nadzor kotlarnica i solarnih elektrana. Do 07.08.2026 su ove tabele živele
+// ISKLJUČIVO u sy15 (1.0) bazi; ovde su preslikane sa žive sy15 strukture
+// (`information_schema.columns` + `\d`, mereno 07.08.2026), ne po sećanju.
+// Merenje, runbook i redosled preklopa: docs/SEOBA_SCADA_2026-08-07.md.
+//
+// 🔴 ISTORIJA SE NE PRENOSI (odluka vlasnika 07.08.2026: „ne hajemo za stare
+// podatke … ostati bez te istorije čak i od dva meseca, ne treba nam"). Tabele
+// startuju PRAZNE i puni ih relej od trenutka preklopa — 2,55 miliona redova
+// `scada_history` iz sy15 se NE seli i umire zajedno sa tom bazom.
+// JEDINI izuzetak je `scada_sites` (5 redova): to nije istorija nego KONFIGURACIJA,
+// i mora postojati pre prvog upisa jer je FK roditelj svima ostalima, a relej je
+// samo UPDATE-uje (nikad ne insertuje). Seed je u migraciji.
+//
+// RAZLIKA U ODNOSU NA sy15 — RLS: u sy15 svih 6 tabela ima `SELECT` politike vezane
+// za `scada_is_admin_or_management()` (globalna rola admin/menadzment). 3.0 baza NEMA
+// RLS (v. BACKEND_RULES §11 — „RLS-ready sada, nativni RLS u 3.0"), pa pravo presuđuje
+// HTTP sloj: `energetika.read` / `energetika.control` u PermissionsGuard-u. To NIJE
+// gubitak brane po pristupu kroz aplikaciju — ali jeste razlog zašto se DATABASE_URL
+// 3.0 baze nikad ne sme dati klijentu (sy15 je to trpeo preko `anon`).
+
+/// Nadzirani sistem (kotlarnica ili FNE). 5 redova, menja se retko i ručno;
+/// relej upisuje samo `online`/`last_seen` heartbeat.
+model ScadaSite {
+  /// Stabilan ključ sistema (`kot1`, `kot2`, `kot3`, `solar-kaco`, `solar-sigen`) —
+  /// isti string koristi i SCADA gateway (`FETCHERS` u bridge/src/jobs/scadaSnapshot.js).
+  key       String    @id(map: "pk_scada_sites") @map("key")
+  name      String    @map("name")
+  /// `kotlarnica` | `fne` — CHECK je SQL-only (v. migraciju).
+  kind      String    @map("kind")
+  /// Protokol uređaja (`pcom`, `s7`, `loxone`, `bluelog`, `sigen`) — informativno.
+  protocol  String?   @map("protocol")
+  online    Boolean   @default(false) @map("online")
+  lastSeen  DateTime? @map("last_seen") @db.Timestamptz(6)
+  sortOrder Int       @default(0) @map("sort_order")
+  /// `{"api": "/api/state"}` — putanja na SCADA gateway-u sa koje relej čita stanje.
+  meta      Json      @default("{}") @map("meta")
+
+  snapshots ScadaSnapshot[]
+  history   ScadaHistory[]
+  alarms    ScadaAlarm[]
+  commands  ScadaCommand[]
+
+  @@map("scada_sites")
+}
+
+/// Poslednje poznato stanje sistema (1 red po sistemu, upsert na svaki prolaz releja).
+/// `payload` je normalizovan JSON koji front direktno crta.
+model ScadaSnapshot {
+  siteKey   String   @id(map: "pk_scada_snapshots") @map("site_key")
+  payload   Json     @map("payload")
+  online    Boolean  @default(false) @map("online")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  site ScadaSite @relation(fields: [siteKey], references: [key], onDelete: Cascade, map: "fk_scada_snapshots_site")
+
+  @@map("scada_snapshots")
+}
+
+/// Uzorci trendova (long format). Jedina tabela koja stvarno raste: ~3.540 redova/sat
+/// izmereno na sy15 07.08.2026. Čisti je `retention-cleanup` posao u 3.0 scheduler-u
+/// (`SCADA_HISTORY_RETENTION_DAYS`, isti rok kao relej na sy15).
+///
+/// PK (site_key, metric, ts) NIJE samo identitet nego DEDUP: relej poravnava `ts` na
+/// pun minut, pa učestaliji prolaz upsertuje isti „bucket" umesto da gomila redove.
+model ScadaHistory {
+  siteKey String   @map("site_key")
+  metric  String   @map("metric")
+  ts      DateTime @map("ts") @db.Timestamptz(6)
+  value   Float?   @map("value")
+
+  site ScadaSite @relation(fields: [siteKey], references: [key], onDelete: Cascade, map: "fk_scada_history_site")
+
+  @@id([siteKey, metric, ts], map: "pk_scada_history")
+  /// Čitanje je uvek „poslednjih N sati jedne metrike" → DESC po ts (v. `history()` u servisu).
+  @@index([siteKey, metric, ts(sort: Desc)], map: "idx_scada_history_lookup")
+  @@map("scada_history")
+}
+
+/// Alarmi sistema. Relej radi diff-sync: nov kod → INSERT, nestao kod → `active=false`
+/// + `cleared_at`. Red se ne briše pri gašenju alarma — to je i trag i audit.
+model ScadaAlarm {
+  /// bigint identity. Prisma vraća JS BigInt (nije JSON-serializabilan) — servis ga
+  /// preslikava u Number pre odgovora (`serializeAlarm`).
+  id        BigInt    @id(map: "pk_scada_alarms") @default(autoincrement()) @map("id")
+  siteKey   String    @map("site_key")
+  code      String    @map("code")
+  severity  Int       @default(3) @map("severity") @db.SmallInt
+  text      String?   @map("text")
+  active    Boolean   @default(true) @map("active")
+  raisedAt  DateTime  @default(now()) @map("raised_at") @db.Timestamptz(6)
+  clearedAt DateTime? @map("cleared_at") @db.Timestamptz(6)
+
+  site ScadaSite @relation(fields: [siteKey], references: [key], onDelete: Cascade, map: "fk_scada_alarms_site")
+
+  @@index([siteKey, active], map: "idx_scada_alarms_active")
+  // SQL-only: parcijalni UNIQUE (site_key, code) WHERE active — brana da isti aktivan
+  // alarm ne postoji dvaput. Prisma ne ume parcijalne indekse (v. migraciju).
+  @@map("scada_alarms")
+}
+
+/// Komande ka uređajima — outbox + audit u jednom. Front INSERT-uje `pending`,
+/// relej ih preuzima (`claimCommands`), izvršava i upisuje ishod.
+/// NIKAD se ne briše: svaki red je trag ko je šta i kada poslao na PLC.
+model ScadaCommand {
+  id             String    @id(map: "pk_scada_commands") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  siteKey        String    @map("site_key")
+  target         String    @map("target")
+  op             String    @default("set") @map("op")
+  value          Json?     @map("value")
+  /// pending | claimed | applied | failed | expired | rejected (CHECK je SQL-only).
+  status         String    @default("pending") @map("status")
+  /// Mejl iz sesije onoga ko je poslao komandu (ne uid — paritet 1.0).
+  requestedBy    String    @map("requested_by")
+  requestedAt    DateTime  @default(now()) @map("requested_at") @db.Timestamptz(6)
+  claimedAt      DateTime? @map("claimed_at") @db.Timestamptz(6)
+  appliedAt      DateTime? @map("applied_at") @db.Timestamptz(6)
+  /// Komanda koju relej ne preuzme za 2 min ističe — PLC se NE dira posle toga.
+  expiresAt      DateTime  @default(dbgenerated("(now() + '00:02:00'::interval)")) @map("expires_at") @db.Timestamptz(6)
+  /// `ui-<ts>-<rand>` iz UI-ja; parcijalni UNIQUE (SQL-only) — dupli klik → 409, ne dupli upis na PLC.
+  idempotencyKey String?   @map("idempotency_key")
+  result         Json?     @map("result")
+
+  site ScadaSite @relation(fields: [siteKey], references: [key], map: "fk_scada_commands_site")
+
+  @@index([siteKey, requestedAt(sort: Desc)], map: "idx_scada_commands_recent")
+  // SQL-only: parcijalni indeks (status, site_key) WHERE status='pending' (poll releja)
+  // + parcijalni UNIQUE (idempotency_key) WHERE NOT NULL.
+  @@map("scada_commands")
+}
+
+/// Podešavanja obaveštenja o alarmima po korisniku.
+///
+/// 🔴 IZMERENO 07.08.2026: tabela ima 0 redova i u sy15, a jedini potrošač joj je bio
+/// triger `scada_alarm_push_trg` koji je gađao `push-dispatch` edge funkciju — web-push
+/// u 3.0 NE RADI (v. memoriju „cutover 1.0": tri mrtve pretplate). Prenosi se ipak, jer
+/// je to šesta tabela domena i bez nje sy15 ne može da se ugasi do kraja; ostaje prazna
+/// dok se push ne oživi. Prazan red = podrazumevano (uključeno, severity ≤ 3, svi sistemi).
+model ScadaNotifyPref {
+  userEmail   String   @id(map: "pk_scada_notify_prefs") @map("user_email")
+  enabled     Boolean  @default(true) @map("enabled")
+  minSeverity Int      @default(3) @map("min_severity") @db.SmallInt
+  /// Prazno = svi sistemi.
+  sites       String[] @map("sites")
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("scada_notify_prefs")
+}
