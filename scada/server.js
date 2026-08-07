@@ -363,10 +363,19 @@ async function sigRefreshSystems(first = false) {
   const nova = sigSystems.filter(s => !prev.has(s.systemId));
   const nestali = [...prev].filter(id => !sigSystemIds.includes(id));
   console.log(`[Sigen] ${sigSystemIds.length} sistem(a): ${sigSystems.map(s => `${s.name} (${s.systemId})`).join(', ')}`);
-  if (prev.size && nova.length) {                    // na praznom startu ne spamuj — tad je "novo" sve
+  if (nova.length) {
     const txt = nova.map(s => `${s.name} (${s.systemId})`).join(', ');
-    console.log('[Sigen] NOVI SISTEM na nalogu: ' + txt);
-    notifier.send(`ℹ️ SIGENERGY — nov sistem na nalogu: ${txt}\nDodat je u očitavanje automatski.`);
+    // `prev.size`: na praznom startu ne spamuj — tad je "novo" sve.
+    // `!first`: prvo ocitavanje posle starta je OSNOVA, a ne vest. `prev` tad drzi samo seed iz
+    // .env (SIGEN_SYSTEM_ID), pa je svaki sistem koji seed ne pominje "nov" — i to iznova na
+    // SVAKOM restartu. Mereno 07.08.2026: "Servoteh_110 (2)" (WJUBP1783340126) radi (99.9 kW),
+    // uredno ga hvata discovery, ali nije u seed-u — guard `prev.size` to nije hvatao.
+    if (prev.size && !first) {
+      console.log('[Sigen] NOVI SISTEM na nalogu: ' + txt);
+      notifier.send(`ℹ️ SIGENERGY — nov sistem na nalogu: ${txt}\nDodat je u očitavanje automatski.`);
+    } else {
+      console.log(`[Sigen] osnova posle starta: van .env seed-a — ${txt} (bez dojave)`);
+    }
   }
   if (nestali.length) console.warn('[Sigen] sistem više nije na nalogu: ' + nestali.join(', '));
   // Očitaj odmah SAMO nove sisteme (da ne čekaju pun ciklus). Stare NE diramo — tek su
