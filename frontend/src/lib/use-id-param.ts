@@ -24,17 +24,25 @@ import { NAV_EVENT, emitNavEvent, searchFromNavEvent } from './use-query-tab';
  * - `popstate` — browser Nazad/Napred između dva dokumenta ISTE rute menja samo query,
  *   pa se komponenta ne remontira; bez slušaoca bi se URL promenio a sadržaj ne.
  * - `servosync:nav` (C20) — detalj → detalj SA DRUGE komponente (npr. „Otvori drugu
- *   stranu" u panelu prenosa, link na duplikat zahteva). `router.push`/`<Link>` na ISTU
- *   rutu ne remount-uje stranu (Next namerno izostavlja query iz ključa za remount) i ne
- *   okida `popstate`, pa je adresa pokazivala drugi dokument a ekran stari — magacioner
- *   je posle storna prenosa gledao dokument koji misli da je nov. Pozivalac koji navigira
- *   na istu rutu MORA da emituje `emitNavEvent(href)` pre navigacije.
+ *   stranu" u panelu prenosa `/robno/detalj`). `router.push`/`<Link>` na ISTU rutu ne
+ *   remount-uje stranu (Next namerno izostavlja query iz ključa za remount) i ne okida
+ *   `popstate`, pa je adresa pokazivala drugi dokument a ekran stari — magacioner je posle
+ *   storna prenosa gledao dokument koji misli da je nov. Pozivalac koji navigira na istu
+ *   rutu MORA da emituje `emitNavEvent(href)` pre navigacije.
  * - `go(nextId)` — navigacija detalj → detalj iz same strane; emituje isti event, pa se
  *   usaglase i drugi čitaoci na ekranu.
  *
  * `?id=` na ruti detalja je TRAJNO stanje adrese (osvežavanje/bookmark moraju da pogode
  * isti dokument) — zato se ovde NIKAD ne „troši" (v. `consumeParam` u `deep-link.ts`,
  * koji je za jednokratne deep-linkove tipa `?open=`).
+ *
+ * ⚠️ CENA KOJU STRANA MORA DA PLATI: ovaj hook menja identitet zapisa U MESTU — komponenta
+ * se NE remontira, pa svako stanje strane preživi promenu `?id=`. Pre nego što se hook uvede
+ * na nov ekran, mora se proći kroz SVE što taj ekran drži: otvorene dijaloge (naročito one
+ * bez `dismissable`), nacrte unosa, priloge, odabrane redove, `pending` prozore. Ili se veže
+ * za identitet (`key={id}`, `docId` u samom stanju — v. `/robno/detalj`), ili se hook NE
+ * uvodi. Ekran koji to ne izdrži upisuje polja jednog zapisa na drugi; zbog toga
+ * `/zahtevi/detalj` NAMERNO ostaje na sopstvenom čitaču bez `popstate` (C20, 07.08.2026).
  */
 export function useIdParam(paramName = 'id'): {
   id: number | null;

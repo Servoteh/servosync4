@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { isModifiedNavClick } from './nav-click';
 
 /**
- * B1: ctrl/⌘-klik na link duplikata prebacivao je TEKUĆI tab na tuđi zahtev.
+ * B1: ctrl/⌘-klik na podstavku sidebara prebacivao je i TEKUĆI tab na drugi pogled.
  *
  * Tablica ispod je cela logika popravke — gard mora da uhvati SVAKI način na koji korisnik
  * kaže „otvori drugde": Ctrl (Windows/Linux), ⌘ (Mac), Shift (nov prozor), Alt (preuzimanje)

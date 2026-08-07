@@ -16,8 +16,6 @@ import { Button } from '@/components/ui-kit/button';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { toast } from '@/lib/toast';
-import { emitNavEvent } from '@/lib/use-query-tab';
-import { isModifiedNavClick } from '@/lib/nav-click';
 import { formatDateTime } from '@/lib/format';
 import {
   useRetriage,
@@ -65,33 +63,6 @@ export function AiTab({
       {triage && <TriageCard detail={detail} triage={triage} isAdmin={isAdmin} />}
       {detailed && <DetailedCard detail={detail} analysis={detailed} isAdmin={isAdmin} />}
     </section>
-  );
-}
-
-/**
- * Link na mogući duplikat — sa /zahtevi/detalj na /zahtevi/detalj, tj. na ISTU rutu sa
- * drugim `?id=`. Next namerno izostavlja query iz ključa za remount, pa se strana ne
- * remont-uje i običan `<Link>` bi promenio samo adresu: na ekranu bi ostao STARI zahtev
- * (C20). `emitNavEvent(href)` javlja cilj kroz kućni kanal `servosync:nav`, koji
- * `useIdParam` na strani sluša — isto što radi klik na podstavku u sidebaru.
- *
- * Gard `isModifiedNavClick`: poređenje dva zahteva se radi CTRL/⌘-klikom (nov tab). Tada
- * Next prepušta navigaciju browseru i tekuća strana mora da ostane netaknuta — bez garda
- * bi event svejedno prebacio STARI tab na tuđi zahtev, a adresa bi ostala na starom id-ju.
- */
-function DuplicateLink({ requestId }: { requestId: number }) {
-  const href = `/zahtevi/detalj?id=${requestId}`;
-  return (
-    <Link
-      href={href}
-      onClick={(e) => {
-        if (isModifiedNavClick(e)) return;
-        emitNavEvent(href);
-      }}
-      className="text-accent hover:underline"
-    >
-      Zahtev #{requestId}
-    </Link>
   );
 }
 
@@ -162,7 +133,12 @@ function TriageCard({
               <ul className="mt-1 space-y-1">
                 {result.duplicates.map((d) => (
                   <li key={d.requestId} className="text-sm text-ink">
-                    <DuplicateLink requestId={d.requestId} />{' '}
+                    <Link
+                      href={`/zahtevi/detalj?id=${d.requestId}`}
+                      className="text-accent hover:underline"
+                    >
+                      Zahtev #{d.requestId}
+                    </Link>{' '}
                     <span className="text-2xs text-ink-secondary">
                       ({d.confidence === 'HIGH' ? 'visoka' : 'srednja'} pouzdanost)
                     </span>{' '}

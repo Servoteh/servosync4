@@ -1,13 +1,13 @@
 // Klik na link koji BROWSER obrađuje sam — a mi ga svejedno „propratimo" u tekućem tabu.
 //
 // Kućni kanal `servosync:nav` (v. `use-query-tab.ts`) postoji zato što Next NE remount-uje
-// stranu kad se menja samo query, pa link `/zahtevi/detalj?id=5` → `?id=12` menja adresu a
-// ne i ekran. Rešenje je `emitNavEvent(href)` u `onClick` <Link>-a. Ali `onClick` se izvrši
-// i kad korisnik drži Ctrl/⌘ (otvori u NOVOM tabu), Shift (nov prozor) ili klikne srednjim
-// tasterom — tada Next namerno prepušta navigaciju browseru, TEKUĆA strana ostaje gde jeste,
-// a naš event bi joj svejedno rekao „prikaži cilj". Ishod: korisnik ctrl-klikne duplikat da
-// ga uporedi, dobije ga u novom tabu — i zatekne da mu je STARI tab takođe skočio na tuđi
-// zahtev, dok adresa i dalje pokazuje onaj koji je gledao.
+// stranu kad se menja samo query, pa podstavka sidebara `/odrzavanje?tab=masine` → `?tab=kvarovi`
+// menja adresu a ne i ekran. Rešenje je `emitNavEvent(href)` u `onClick` <Link>-a. Ali `onClick`
+// se izvrši i kad korisnik drži Ctrl/⌘ (otvori u NOVOM tabu), Shift (nov prozor) ili klikne
+// srednjim tasterom — tada Next namerno prepušta navigaciju browseru, TEKUĆA strana ostaje gde
+// jeste, a naš event bi joj svejedno rekao „prikaži cilj". Ishod: korisnik ctrl-klikne
+// „Održavanje → Kvarovi" da ga uporedi sa tekućim pogledom, dobije ga u novom tabu — i zatekne
+// da mu je STARI tab takođe skočio na Kvarove, dok adresa i dalje pokazuje pogled koji je gledao.
 //
 // Zato svaki <Link> koji emituje nav event MORA prvo da propusti ovaj gard. U app-shell-u je
 // to obezbeđeno tipom (`NavigateHandler` prima događaj kao prvi argument, pa nov link koji ga

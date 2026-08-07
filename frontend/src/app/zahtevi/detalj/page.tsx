@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, RefreshCw, HelpCircle } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useCan } from '@/lib/can';
-import { useIdParam } from '@/lib/use-id-param';
 import { PERMISSIONS } from '@/lib/permissions';
 import { formatDecimal } from '@/lib/format';
 import { AppShell } from '@/components/ui-kit/app-shell';
@@ -64,15 +63,15 @@ export default function ZahtevDetailPage() {
   // Statička ruta `?id=N` umesto `[id]` segmenta: dinamički segmenti NE rade na
   // static exportu — klijentska navigacija traži neizvezen prerender pa hard-404
   // (incident 22.07; [id] obrazac ostaje samo za 4.0 module na dev serveru).
-  //
-  // C20: ovde je do sada stajao sopstveni čitač sa PRAZNIM nizom zavisnosti i bez
-  // `popstate` slušaoca, uz goli `Number()`. Dva merljiva kvara: (1) link na duplikat u
-  // tabu „AI analiza" vodi sa /zahtevi/detalj na /zahtevi/detalj — Next ne remont-uje
-  // stranu na promenu samog query-ja, pa se adresa menjala a na ekranu ostajao STARI
-  // zahtev; (2) `Number('0x10')` je 16, pa je prelomljen link iz mejla otvarao TUĐI
-  // zahtev umesto da bude odbijen. Deljeni `useIdParam` rešava oboje (popstate +
-  // `servosync:nav` + stroga dekadna provera).
-  const { id: validId, resolved: idResolved } = useIdParam();
+  // Bez useSearchParams — on bi u output:export tražio Suspense oko cele stranice.
+  const [validId, setValidId] = useState<number | null>(null);
+  const [idResolved, setIdResolved] = useState(false);
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get('id');
+    const n = raw ? Number(raw) : NaN;
+    setValidId(Number.isInteger(n) && n > 0 ? n : null);
+    setIdResolved(true);
+  }, []);
 
   const [tab, setTab] = useState<Tab>('zahtev');
   // Baner „Odgovori" (owner, NEEDS_INFO) → prebaci na tab Pitanja i fokusiraj polje.
@@ -106,15 +105,15 @@ export default function ZahtevDetailPage() {
   const pollStartRef = useRef<number | null>(null);
   const [pollTimedOut, setPollTimedOut] = useState(false);
 
-  // Nov ciklus merenja = svaka promena stanja „u letu" ILI promena samog zahteva. `validId`
-  // je u zavisnostima jer se identitet zahteva menja U MESTU (link na duplikat u tabu „AI
-  // analiza" vodi /zahtevi/detalj → /zahtevi/detalj, bez remount-a strane): bez njega bi novi
-  // zahtev nasledio tajmer i baner „AI je zapeo" od prethodnog. Dok se zahtev ne promeni i AI
-  // ostaje u letu, zavisnosti miruju — kapa od 5 minuta se meri od pravog početka, kao i pre.
   useEffect(() => {
-    pollStartRef.current = aiInFlight ? Date.now() : null;
-    setPollTimedOut(false);
-  }, [aiInFlight, validId]);
+    if (aiInFlight) {
+      if (pollStartRef.current == null) pollStartRef.current = Date.now();
+    } else {
+      // AI više nije „u letu" → resetuj tajmer i banner za sledeći ciklus.
+      pollStartRef.current = null;
+      setPollTimedOut(false);
+    }
+  }, [aiInFlight]);
 
   const shouldPoll = aiInFlight && !pollTimedOut;
   const polledQuery = useZahtev(validId, { refetchInterval: shouldPoll ? 4000 : false });
