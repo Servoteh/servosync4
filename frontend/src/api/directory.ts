@@ -108,6 +108,11 @@ export interface ProjectListParams {
 }
 
 // -------------------------------------------------------------------- KOMITENTI
+//
+// ⚠️ BEZ POTROŠAČA od 07.08.2026: jedini ekran koji je koristio `useCustomers`/`useCustomer`
+// bio je `/customers`, ugašen odlukom vlasnika (ostala je preusmera na `/komitenti`, koji
+// ide na `/v1/komitenti` i vraća pun slog). Backend ruta `/v1/directory/customers` OSTAJE
+// i radi — hook-ovi stoje uz nju dok se ne odluči da li se i ta ruta gasi.
 
 /** Paginirana lista komitenata (+ pretraga naziv/PIB/mesto). */
 export function useCustomers(params: CustomerListParams) {

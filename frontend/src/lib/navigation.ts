@@ -511,9 +511,11 @@ export const NAV_DOMAINS: NavDomain[] = [
         // Matični podaci 4.0 (backend `masters`) — READ-ONLY pregled BigBit cache
         // tabela `items`/`customers`. Unos ostaje u BigBit-u (prelazni režim), pa
         // ovde nema „Novi artikal/komitent" — samo pretraga i kartica.
-        // ⚠️ „Komitenti" postoji i u domenu „Sistem" (`/customers`) — to je stariji,
-        // NAMERNO suženi 2.0 pregled (bez računa/rabata/limita); ova stavka je pun
-        // matični karton 4.0. Obe rute stoje na `directory.read`.
+        // ⚠️ „Komitenti" je do 07.08.2026 stajao i u domenu „Sistem" (`/customers`, stariji
+        // suženi 2.0 pregled) — dve stavke istog imena, pa se iz menija nije videlo koja je
+        // koja. ODLUKA VLASNIKA 07.08.2026: stariji se gasi, ovo je jedini ulaz. Ruta
+        // `/customers` još postoji, ali samo kao tiha preusmera ovamo (obeleživači i linkovi
+        // iz mejlova) — `app/customers/page.tsx`. Brani `lib/navigation.spec.ts`.
         id: 'maticni-podaci',
         title: 'Matični podaci',
         icon: Layers,
@@ -527,7 +529,9 @@ export const NAV_DOMAINS: NavDomain[] = [
           // ⚠️ Podaci su OGLEDALO BigBita (4.0 tabele zaliha su prazne do cutover-a),
           // zato ključne reči nose i „bigbit" — tako ga nađe i ko ga traži po poreklu.
           { label: 'Lager lista', href: '/artikli/lager', icon: Warehouse, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['lager', 'zalihe', 'stanje', 'rezervisano', 'slobodno', 'magacin', 'lager lista', 'bigbit', 'maticni podaci'] },
-          { label: 'Komitenti', href: '/komitenti', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['komitenti', 'kupci', 'dobavljaci', 'pib', 'sifarnik komitenata', 'maticni podaci'] },
+          // `klijenti` je nasleđeno od ugašene stavke `/customers` (07.08.2026) — ko je ekran
+          // do sada nalazio kucanjem te reči u Ctrl+K, nalazi ga i dalje.
+          { label: 'Komitenti', href: '/komitenti', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['komitenti', 'kupci', 'klijenti', 'dobavljaci', 'pib', 'sifarnik komitenata', 'maticni podaci'] },
         ],
       },
       {
@@ -681,7 +685,9 @@ export const NAV_DOMAINS: NavDomain[] = [
       // Zahtevi — AI PM modul (bug/dorada/nova funkcija + Decision Log). Domen „Sistem"
       // (presuda §13.5); vidljivost = zahtevi.read (svima; row-scope u servisu sužava na svoje).
       { label: 'Zahtevi', href: '/zahtevi', icon: Lightbulb, requires: PERMISSIONS.ZAHTEVI_READ, keywords: ['zahtevi', 'ideje', 'bug', 'greska', 'predlog', 'dorada', 'inbox'] },
-      { label: 'Komitenti', href: '/customers', icon: Building2, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['komitenti', 'kupci', 'klijenti'] },
+      // „Komitenti" (`/customers`) UKLONJEN 07.08.2026 — bio je drugi meni istog imena pored
+      // `/komitenti` u „Matičnim podacima" (v. komentar tamo). Ključne reči `kupci`/`klijenti`
+      // su prebačene na novu stavku da Ctrl+K i dalje nalazi ekran po starim rečima.
       { label: 'Predmeti', href: '/projects', icon: Briefcase, requires: PERMISSIONS.DIRECTORY_READ, keywords: ['predmeti', 'projekti'] },
       { label: 'Sinhronizacije', href: '/syncs', icon: RefreshCw, requires: PERMISSIONS.SYNC_READ, keywords: ['sync', 'sinhronizacija'] },
     ],
