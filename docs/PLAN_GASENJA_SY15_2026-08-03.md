@@ -114,6 +114,20 @@ Energetika u 3.0 čita tih 5 `scada_*` tabela iz sy15 (`energetika.service.ts:13
 (`SCADA_HISTORY_RETENTION_DAYS`), pa 558 MB nije večno — može se doneti i odluka o kraćoj
 retenciji umesto seobe cele istorije.
 
+> **✅ IZVEDENO 07.08.2026 — grana `feat/scada-na-3-0-bazu`.**
+> Runbook i merenje: **[SEOBA_SCADA_2026-08-07.md](SEOBA_SCADA_2026-08-07.md)**.
+>
+> Dve ispravke ovog odeljka koje je merenje donelo:
+> 1. **Tabela je ŠEST, ne pet** — `scada_notify_prefs` nema Prisma model u `sy15.prisma`
+>    pa je „spisak po modelima" promaši (ista zamka kao `maint_wo_number_counter`).
+> 2. **Istorija se NE PRENOSI** — odluka vlasnika 07.08.2026 („ne hajemo za stare podatke").
+>    Time je odgovoreno i na dilemu iz gornjeg pasusa: umesto kraće retencije, cela istorija
+>    (2,55 mil. redova) ostaje da umre sa sy15. Nema skripte za prenos.
+>
+> Preklop je na prekidaču `SCADA_IZVOR` (backend **i** relej, oba podrazumevano `sy15`);
+> watchdog i retencija su prešli u 3.0 scheduler. Preostaje samo izvršiti runbook §8 —
+> `npm install` na živom releju (`pg` je nova zavisnost) i odluka o nalogu za `SCADA_PG_URL`.
+
 ## 3. Logika u bazi — stvarna mera posla (ne podaci, već funkcije)
 
 **346 `SECURITY DEFINER` funkcija** u `public` šemi:
