@@ -40,6 +40,8 @@ import {
 } from "../../common/ai/injection-fence";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
 // 🔴 NE `import type` — sve tri klase su DI tokeni (Nest ih traži u runtime-u).
+// 🔴 Korak 2 seobe: prepis DEFINER funkcija/trigera + 3.0 parnjak RLS-a.
+// Bez njih upisni put pod `3.0` NE POSTOJI (brana `assertPorted` ostaje na snazi).
 import {
   OdrzavanjeAuthzService,
   type MaintScope,
@@ -303,7 +305,7 @@ export class OdrzavanjeService {
     // 3.0 parnjak sy15 RLS-a (`OdrzavanjeAuthzService`) i prepis DEFINER funkcija
     // (`OdrzavanjeFnService`). `@Optional` iz istog razloga kao gore — postojeći
     // unit testovi prave servis sa 3 argumenta. Kad ih NEMA, `tri30` je `false`,
-    // pa čitanje pod `3.0` pada na `withUserMapped` gde ga dočeka brana (503):
+    // pa čitanje/upis pod `3.0` pada na `withUserMapped` gde ga dočeka brana (503):
     // izostanak zavisnosti nikad ne može tiho da vrati saobraćaj u sy15.
     @Optional() private readonly authz?: OdrzavanjeAuthzService,
     @Optional() private readonly fnSvc?: OdrzavanjeFnService,
@@ -6247,6 +6249,145 @@ export class OdrzavanjeService {
     );
   }
 
+  // ==========================================================================
+  // SKRETNICA UPISNOG PUTA (sy15 ↔ 3.0) za vozila, vozače i zalihe
+  // ==========================================================================
+  //
+  // `runIdem` (gore) je skretnica za IDEMPOTENTNE „create" akcije, a `tri30` +
+  // `scope30` (gore, uz čitanja) su zajednički temelj 3.0 grane. Ovde je ono što
+  // je UPISU svojstveno:
+  //
+  //   1. `withUser30` — parnjak `runIdem`-a za sve OSTALE upise (PATCH / DELETE /
+  //      upsert / RPC), u JEDNOJ 3.0 transakciji;
+  //   2. `idem30` — `runIdem` predaje `fn30` samo `tx`, a skoro svaki 3.0 upis uz
+  //      `tx` traži i `MaintScope`; ovaj omotač ga učitava UNUTAR transakcije
+  //      (ponovljen zahtev sa istim ključem ga i ne izvršava).
+  //
+  // 🔴 Zašto se scope čita a ne pretpostavlja: u sy15 su prava sprovodile 102 RLS
+  // politike pod `SET LOCAL ROLE authenticated`. 3.0 nema RLS — kad gejt izostane,
+  // prava TIHO nestaju: upis prolazi, samo upisuje red koji sy15 nikad ne bi primila.
+
+  /**
+   * Ne-idempotentan upis — JEDAN ulaz za oba izvora, isto kao `runIdem`.
+   *
+   *   `ODRZAVANJE_IZVOR=sy15` (PODRAZUMEVANO) — `withUserMapped` (RLS presuđuje red).
+   *   `ODRZAVANJE_IZVOR=3.0`                  — `fn30` u 3.0 transakciji, sa
+   *                                             učitanim `MaintScope`-om.
+   *
+   * 🔴 Prisustvo `fn30` je OZNAKA DA JE PUTANJA PRENETA (isto pravilo kao kod
+   * `runIdem`): bez njega putanja pod `3.0` i dalje pada sa 503 — to je brana,
+   * ne kvar. Zato `withUserMapped` (koji nosi `assertPorted`) ostaje netaknut.
+   *
+   * 🔴 SVE u JEDNOJ transakciji: u sy15 su ovi upisi bili jedna naredba plus
+   * AFTER trigeri iz iste transakcije. Prepis mora zadržati atomičnost, inače
+   * npr. `maint_part_stock_movements` red ostane bez `current_stock` korekcije.
+   */
+  // ⚠️ DVA tipska parametra, ne jedan: `Sy15Tx` i `OdrzavanjeTx` su klijenti DVE
+  // Prisma šeme, pa isti red ima različit tip (`updated_by` je `uuid` u sy15,
+  // `Int` u 3.0). Zajednički `T` bi zato bio greška prevoda na svakoj putanji
+  // koja vraća red. Pozivalac dobija uniju — a to i JESTE istina o odgovoru.
+  private async withUser30<T, U = T>(
+    email: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+    fn30?: (tx: OdrzavanjeTx, s: MaintScope) => Promise<U>,
+    opts?: { timeoutMs?: number },
+  ): Promise<T | U> {
+    // `tri30` je ISTA kapija kao kod čitanja: prekidač na `3.0` I sve tri
+    // zavisnosti prisutne. Uz nju `fn30` — bez tela 3.0 grane putanja NIJE
+    // preneta i pod `3.0` pada na 503 (brana, ne kvar).
+    if (fn30 && this.tri30) {
+      const { db } = this.tri();
+      try {
+        const s = await this.scope30(email);
+        return await db.$transaction(
+          async (tx) => fn30(tx, s),
+          opts?.timeoutMs != null ? { timeout: opts.timeoutMs } : undefined,
+        );
+      } catch (e) {
+        this.rethrowSy15(e);
+      }
+    }
+    // Pod `sy15` — netaknuto. Pod `3.0` bez `fn30` (ili bez zavisnosti) —
+    // `withUserMapped` odmah baca 503 kroz `assertPorted`.
+    return this.withUserMapped(email, fn);
+  }
+
+  /**
+   * Omotač `fn30` za `runIdem`: dodaje `MaintScope` telu idempotentne akcije.
+   *
+   * ⚠️ Kast `as T` je JEDINO mesto gde se gubi tipska veza sy15↔3.0 reda, i tu
+   * je namerno: `runIdem` (zajednički za ceo modul) traži da obe grane vrate
+   * ISTI tip, a 3.0 red to po konstrukciji nije (v. `withUser30`). Odgovor
+   * klijentu je JSON i oblik mu pinuju spec-ovi, ne prevodilac.
+   */
+  private idem30<T>(
+    email: string,
+    fn30: (tx: OdrzavanjeTx, s: MaintScope) => Promise<unknown>,
+  ): (tx: IdempotencyTx) => Promise<T> {
+    return async (tx) => (await fn30(tx, await this.scope30(email))) as T;
+  }
+
+  /** Prepis DEFINER funkcija/trigera — kratko ime za `this.tri().fn`. */
+  private get fn30(): OdrzavanjeFnService {
+    return this.tri().fn;
+  }
+
+  /** 3.0 parnjak sy15 RLS-a — kratko ime za `this.tri().az`. */
+  private get az(): OdrzavanjeAuthzService {
+    return this.tri().az;
+  }
+
+  /** Jedan izraz za `RAISE EXCEPTION 'Nemaš ovlašćenje…'` iz sy15 funkcija. */
+  private assert30(ok: boolean, poruka: string): void {
+    if (!ok) throw new ForbiddenException(poruka);
+  }
+
+  /** `NULLIF(x, '')` iz sy15 funkcija — prazan string je NULL, ne vrednost. */
+  private prazanUNull(v?: string | null): string | null {
+    const t = (v ?? "").trim();
+    return t === "" ? null : t;
+  }
+
+  /**
+   * `maint_asset_visible(asset_id)` nad KONKRETNIM redom — u sy15 ga je nosio
+   * `USING` svake SELECT politike, pa ga upis nije morao pisati. Vraća `false`
+   * i kad sredstva nema (tada pozivalac dobija 404, ne 403).
+   */
+  private async assetVidljivo30(
+    tx: OdrzavanjeTx,
+    s: MaintScope,
+    assetId: string,
+  ): Promise<boolean> {
+    const a = await tx.maintAsset.findUnique({
+      where: { assetId },
+      select: { assetType: true, machine: { select: { machineCode: true } } },
+    });
+    if (!a) return false;
+    return this.az.assetVisible(s, {
+      assetType: a.assetType,
+      machineCode: a.machine?.machineCode ?? null,
+    });
+  }
+
+  /**
+   * Zajednička brana upisa nad sredstvom: 404 kad ga nema, 403 kad nije vidljivo
+   * ili pozivalac nema pravo pisanja. Redosled je bitan — „nema ga" se ne sme
+   * prikazati kao „nemaš pravo" (i obrnuto: tuđe sredstvo se ne sme odati).
+   */
+  private async assertAssetWrite30(
+    tx: OdrzavanjeTx,
+    s: MaintScope,
+    assetId: string,
+    what: string,
+  ): Promise<void> {
+    const postoji = (await tx.maintAsset.count({ where: { assetId } })) > 0;
+    if (!postoji) throw new NotFoundException(`${what} ne postoji`);
+    if (!(await this.assetVidljivo30(tx, s, assetId))) {
+      throw new ForbiddenException(`Nemate pravo nad: ${what}`);
+    }
+    this.assert30(this.az.canWriteStock(s), `Nemate pravo nad: ${what}`);
+  }
+
   // ---------- Vozila (RPC create/archive/restore + details + pod-entiteti) ----------
 
   createVehicle(email: string, dto: CreateMaintAssetDto) {
@@ -6255,6 +6396,7 @@ export class OdrzavanjeService {
       dto,
       "create_maint_vehicle",
       "create-vehicle",
+      "vehicle",
     );
   }
   createItAsset(email: string, dto: CreateMaintAssetDto) {
@@ -6263,6 +6405,7 @@ export class OdrzavanjeService {
       dto,
       "create_maint_it_asset",
       "create-it-asset",
+      "it",
     );
   }
   createFacility(email: string, dto: CreateMaintAssetDto) {
@@ -6271,6 +6414,7 @@ export class OdrzavanjeService {
       dto,
       "create_maint_facility",
       "create-facility",
+      "facility",
     );
   }
 
@@ -6279,6 +6423,7 @@ export class OdrzavanjeService {
     dto: CreateMaintAssetDto,
     fn: string,
     action: string,
+    kind: "vehicle" | "it" | "facility",
   ) {
     return this.runIdem(
       email,
@@ -6298,7 +6443,93 @@ export class OdrzavanjeService {
         );
         return { assetId: rows[0]?.id ?? null };
       },
+      {
+        fn30: this.idem30(email, (tx, s) =>
+          this.createAsset30(tx, s, dto, kind),
+        ),
+      },
     );
+  }
+
+  /**
+   * 3.0 prepis `create_maint_vehicle` / `create_maint_it_asset` /
+   * `create_maint_facility` (izvor: `docs/design/authz-snapshots/talasF-fn-defs-2026-07-12.sql`).
+   *
+   * Sve tri funkcije imaju ISTI oblik: gejt → dve validacije → `maint_assets`
+   * INSERT → `maint_*_details` INSERT, atomski. Zato je ovde jedan prepis sa tri
+   * grane detalja, a ne tri kopije.
+   *
+   * 🔴 `NULLIF(x, '')` iz izvora znači: PRAZAN STRING JE NULL. Prepis koji bi
+   * upisao `''` napravio bi red koji izgleda popunjeno a nije — i `COALESCE`
+   * provere nizvodno (npr. „ima li tablice") bi ga primile kao vrednost.
+   */
+  private async createAsset30(
+    tx: OdrzavanjeTx,
+    s: MaintScope,
+    dto: CreateMaintAssetDto,
+    kind: "vehicle" | "it" | "facility",
+  ): Promise<{ assetId: string | null }> {
+    const naziv =
+      kind === "vehicle" ? "vozila" : kind === "it" ? "IT opreme" : "objekta";
+    this.assert30(
+      this.az.canWriteStock(s),
+      `Nemaš ovlašćenje za kreiranje ${naziv} (potreban je ERP admin/menadzment ili maint chief/admin)`,
+    );
+    const assetCode = (dto.assetCode ?? "").trim();
+    const name = (dto.name ?? "").trim();
+    if (!assetCode)
+      throw new UnprocessableEntityException(`Šifra ${naziv} je obavezna`);
+    if (!name)
+      throw new UnprocessableEntityException(`Naziv ${naziv} je obavezan`);
+
+    const asset = await tx.maintAsset.create({
+      data: {
+        assetType: kind,
+        assetCode,
+        name,
+        // `COALESCE(NULLIF(p_status, ''), 'running')`
+        status: (dto.status ?? "").trim() || "running",
+        manufacturer: this.prazanUNull(dto.manufacturer),
+        model: this.prazanUNull(dto.model),
+        serialNumber: this.prazanUNull(dto.serialNumber),
+        supplier: this.prazanUNull(dto.supplier),
+        notes: this.prazanUNull(dto.assetNotes),
+        active: true,
+        updatedBy: s.userId,
+      },
+      select: { assetId: true },
+    });
+
+    const d: Record<string, unknown> = dto.details ?? {};
+    if (kind === "vehicle") {
+      await tx.maintVehicleDetails.create({
+        data: {
+          assetId: asset.assetId,
+          ...this.pickVehicleDetails(d),
+          updatedBy: s.userId,
+        },
+      });
+    } else if (kind === "it") {
+      await tx.maintItAssetDetails.create({
+        data: {
+          assetId: asset.assetId,
+          ...this.pickItDetails(d),
+          updatedBy: s.userId,
+        },
+      });
+    } else {
+      await tx.maintFacilityDetails.create({
+        data: {
+          assetId: asset.assetId,
+          ...this.pickFacilityDetails(d),
+          // ✅ Kolona koje u sy15 NEMA (v. `upsertFacilityDetails`) — pod `3.0`
+          // se objekat konačno može sačuvati sa katastarskim parcelama.
+          cadastralParcels: this.pickCadastralParcels(d),
+          updatedBy: s.userId,
+        },
+      });
+    }
+    return { assetId: asset.assetId };
   }
 
   archiveVehicle(email: string, assetId: string, reason: string) {
@@ -6306,6 +6537,12 @@ export class OdrzavanjeService {
       email,
       "archive_maint_vehicle",
       Prisma.sql`${assetId}::uuid, ${reason}`,
+      (tx, s) =>
+        this.arhivirajSredstvo30(tx, s, assetId, reason, ["vehicle"], {
+          gejt: "Nemaš ovlašćenje za arhiviranje vozila",
+          razlog:
+            "Razlog arhiviranja je obavezan (npr. prodato, rashodovano, vraćeno leasingu)",
+        }),
     );
   }
   restoreVehicle(email: string, assetId: string) {
@@ -6313,6 +6550,14 @@ export class OdrzavanjeService {
       email,
       "restore_maint_vehicle",
       Prisma.sql`${assetId}::uuid`,
+      (tx, s) =>
+        this.vratiSredstvo30(
+          tx,
+          s,
+          assetId,
+          ["vehicle"],
+          "Nemaš ovlašćenje za vraćanje vozila u upotrebu",
+        ),
     );
   }
   /** archive/restore IT+objekti (isti RPC za oba; guard asset_type IN it/facility). */
@@ -6321,6 +6566,11 @@ export class OdrzavanjeService {
       email,
       "archive_maint_asset",
       Prisma.sql`${assetId}::uuid, ${reason}`,
+      (tx, s) =>
+        this.arhivirajSredstvo30(tx, s, assetId, reason, ["it", "facility"], {
+          gejt: "Nemaš ovlašćenje za arhiviranje sredstva",
+          razlog: "Razlog arhiviranja je obavezan",
+        }),
     );
   }
   restoreAsset(email: string, assetId: string) {
@@ -6328,16 +6578,93 @@ export class OdrzavanjeService {
       email,
       "restore_maint_asset",
       Prisma.sql`${assetId}::uuid`,
+      (tx, s) =>
+        this.vratiSredstvo30(
+          tx,
+          s,
+          assetId,
+          ["it", "facility"],
+          "Nemaš ovlašćenje za vraćanje sredstva u upotrebu",
+        ),
     );
   }
 
-  private rpcBool(email: string, fn: string, args: Prisma.Sql) {
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ ok: boolean }[]>(
-        Prisma.sql`SELECT public.${Prisma.raw(fn)}(${args}) AS ok`,
-      );
-      return { data: { ok: rows[0]?.ok === true } };
+  /**
+   * 3.0 prepis `archive_maint_vehicle` / `archive_maint_asset`.
+   * ⚠️ `archived_at = COALESCE(archived_at, now())` — ponovljeno arhiviranje NE
+   * pomera datum otpisa (prepis, ne previd); menja se samo razlog i akter.
+   */
+  private async arhivirajSredstvo30(
+    tx: OdrzavanjeTx,
+    s: MaintScope,
+    assetId: string,
+    reason: string,
+    tipovi: string[],
+    poruke: { gejt: string; razlog: string },
+  ): Promise<boolean> {
+    this.assert30(this.az.canWriteStock(s), poruke.gejt);
+    if (!assetId)
+      throw new UnprocessableEntityException("asset_id je obavezan");
+    if (!reason || reason.trim().length === 0)
+      throw new UnprocessableEntityException(poruke.razlog);
+    const red = await tx.maintAsset.findFirst({
+      where: { assetId, assetType: { in: tipovi } },
+      select: { archivedAt: true },
     });
+    if (!red) return false; // `ROW_COUNT = 0` -> `RETURN false`, ne greška
+    const { count } = await tx.maintAsset.updateMany({
+      where: { assetId, assetType: { in: tipovi } },
+      data: {
+        archivedAt: red.archivedAt ?? new Date(),
+        archiveReason: reason.trim(),
+        archivedBy: s.userId,
+        active: false,
+        updatedBy: s.userId,
+        updatedAt: new Date(),
+      },
+    });
+    return count > 0;
+  }
+
+  /** 3.0 prepis `restore_maint_vehicle` / `restore_maint_asset`. */
+  private async vratiSredstvo30(
+    tx: OdrzavanjeTx,
+    s: MaintScope,
+    assetId: string,
+    tipovi: string[],
+    gejt: string,
+  ): Promise<boolean> {
+    this.assert30(this.az.canWriteStock(s), gejt);
+    const { count } = await tx.maintAsset.updateMany({
+      where: { assetId, assetType: { in: tipovi } },
+      data: {
+        archivedAt: null,
+        archiveReason: null,
+        archivedBy: null,
+        active: true,
+        updatedBy: s.userId,
+        updatedAt: new Date(),
+      },
+    });
+    return count > 0;
+  }
+
+  private rpcBool(
+    email: string,
+    fn: string,
+    args: Prisma.Sql,
+    fn30?: (tx: OdrzavanjeTx, s: MaintScope) => Promise<boolean>,
+  ) {
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ ok: boolean }[]>(
+          Prisma.sql`SELECT public.${Prisma.raw(fn)}(${args}) AS ok`,
+        );
+        return { data: { ok: rows[0]?.ok === true } };
+      },
+      fn30 ? async (tx, s) => ({ data: { ok: await fn30(tx, s) } }) : undefined,
+    );
   }
 
   /**
@@ -6347,36 +6674,75 @@ export class OdrzavanjeService {
    * (asset_visible ∧ erp/chief/admin — `maint_assets_update` RLS) presuđuje DB (42501→403).
    */
   async patchAssetCore(email: string, assetId: string, dto: PatchAssetCoreDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintAsset.count({ where: { assetId } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintAsset.updateMany({
-        where: { assetId },
-        data: {
-          ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.status !== undefined ? { status: dto.status as never } : {}),
-          ...(dto.manufacturer !== undefined
-            ? { manufacturer: dto.manufacturer }
-            : {}),
-          ...(dto.model !== undefined ? { model: dto.model } : {}),
-          ...(dto.serialNumber !== undefined
-            ? { serialNumber: dto.serialNumber }
-            : {}),
-          ...(dto.supplier !== undefined ? { supplier: dto.supplier } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.locationId !== undefined
-            ? { locationId: dto.locationId }
-            : {}),
-          ...(dto.responsibleUserId !== undefined
-            ? { responsibleUserId: dto.responsibleUserId }
-            : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Sredstvo ${assetId}`);
-      return { data: await tx.maintAsset.findUnique({ where: { assetId } }) };
-    });
+    const patch = {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.manufacturer !== undefined
+        ? { manufacturer: dto.manufacturer }
+        : {}),
+      ...(dto.model !== undefined ? { model: dto.model } : {}),
+      ...(dto.serialNumber !== undefined
+        ? { serialNumber: dto.serialNumber }
+        : {}),
+      ...(dto.supplier !== undefined ? { supplier: dto.supplier } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      ...(dto.locationId !== undefined ? { locationId: dto.locationId } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists = (await tx.maintAsset.count({ where: { assetId } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintAsset.updateMany({
+          where: { assetId },
+          data: {
+            ...patch,
+            ...(dto.status !== undefined
+              ? { status: dto.status as never }
+              : {}),
+            ...(dto.responsibleUserId !== undefined
+              ? { responsibleUserId: dto.responsibleUserId }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Sredstvo ${assetId}`);
+        return { data: await tx.maintAsset.findUnique({ where: { assetId } }) };
+      },
+      async (tx, s) => {
+        // 🔴 `maint_assets_update` je UŽE od ostalih write politika sredstva:
+        // `maint_is_erp_admin() ∨ chief/admin` — BEZ menadzment/magacioner.
+        // Zato ovde `canWriteCatalog`, a NE `canWriteStock` (koji važi za detalje).
+        const exists = (await tx.maintAsset.count({ where: { assetId } })) > 0;
+        if (!exists)
+          throw new NotFoundException(`Sredstvo ${assetId} ne postoji`);
+        this.assert30(
+          this.az.canWriteCatalog(s),
+          `Nemate pravo nad: Sredstvo ${assetId}`,
+        );
+        const { count } = await tx.maintAsset.updateMany({
+          where: { assetId },
+          data: {
+            ...patch,
+            ...(dto.status !== undefined ? { status: dto.status } : {}),
+            // 🔴 `responsible_user_id` je ISTI ŠAV kao `auth_user_id` vozača:
+            // uuid u sy15, `users.id` (Int) u 3.0. `null` = razduži.
+            ...(dto.responsibleUserId !== undefined
+              ? {
+                  responsibleUserId:
+                    dto.responsibleUserId == null
+                      ? null
+                      : this.profileUserId30(dto.responsibleUserId),
+                }
+              : {}),
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Sredstvo ${assetId}`);
+        return { data: await tx.maintAsset.findUnique({ where: { assetId } }) };
+      },
+    );
   }
 
   /** Allowlist kolona details (paritet 1.0 upsert body — nema mass-assignment). */
@@ -6413,66 +6779,191 @@ export class OdrzavanjeService {
     };
   }
 
+  /**
+   * Allowlist kolona `maint_it_asset_details` — JEDAN izvor za create i upsert.
+   *
+   * ⚠️ ŠIRI JE OD sy15 `create_maint_it_asset` (koji zna samo 13 polja): kolone
+   * 065/066/067 i 071 (cpu, ram, toner, UPS…) u sy15 postoje ali ih CREATE fn
+   * ne upisuje, pa ih je korisnik morao uneti drugi put kroz „izmeni". Pod `3.0`
+   * ih upisuje i create — to je NADSKUP, bez gubitka i bez promene prava.
+   */
+  private pickItDetails(d: Record<string, unknown>) {
+    const s = (k: string) =>
+      d[k] == null || d[k] === "" ? null : String(d[k]);
+    return {
+      deviceType: s("device_type"),
+      hostname: s("hostname"),
+      ipAddress: s("ip_address"),
+      macAddress: s("mac_address"),
+      operatingSystem: s("operating_system"),
+      assignedTo: s("assigned_to"),
+      licenseKey: s("license_key"),
+      licenseExpiresAt: this.toDbDate(s("license_expires_at")) ?? null,
+      warrantyExpiresAt: this.toDbDate(s("warranty_expires_at")) ?? null,
+      backupRequired: Boolean(d.backup_required),
+      lastBackupAt: this.toDbTs(s("last_backup_at")) ?? null,
+      notes: s("notes"),
+      // Polja po tipu uređaja (065 računar / 066 štampač / 067 switch) —
+      // kolone dodate kroz ZAHTEV_065_066_067_IT_OPREMA_POLJA.sql.
+      cpu: s("cpu"),
+      motherboard: s("motherboard"),
+      ram: s("ram"),
+      gpu: s("gpu"),
+      officeLocation: s("office_location"),
+      tonerCartridges: s("toner_cartridges"),
+      unifiPorts: s("unifi_ports"),
+      // Zahtev 071 (UPS snaga / firmver mrežne opreme) —
+      // kolone dodate kroz ZAHTEV_071_IT_OPREMA_UPS_AP.sql.
+      powerRating: s("power_rating"),
+      firmwareVersion: s("firmware_version"),
+    };
+  }
+
+  /**
+   * Allowlist kolona `maint_facility_details` — SAMO 14 kolona koje postoje i u
+   * sy15. „Katastarske parcele" NISU ovde namerno: ta kolona u sy15 NE POSTOJI
+   * (v. `upsertFacilityDetails`), pa bi je sy15 grana oborila sa 42703 → 500.
+   * 3.0 grana je dodaje posebno.
+   */
+  private pickFacilityDetails(d: Record<string, unknown>) {
+    const s = (k: string) =>
+      d[k] == null || d[k] === "" ? null : String(d[k]);
+    const n = (k: string) =>
+      d[k] == null || d[k] === "" ? null : Number(d[k]);
+    return {
+      facilityType: s("facility_type"),
+      floorAreaM2: n("floor_area_m2"),
+      floorOrZone: s("floor_or_zone"),
+      criticality: s("criticality"),
+      inspectionDueAt: this.toDbDate(s("inspection_due_at")) ?? null,
+      fireSafetyDueAt: this.toDbDate(s("fire_safety_due_at")) ?? null,
+      serviceContract: s("service_contract"),
+      serviceProvider: s("service_provider"),
+      lastInspectionAt: this.toDbDate(s("last_inspection_at")) ?? null,
+      notes: s("notes"),
+    };
+  }
+
+  /** „Katastarske parcele" — POSTOJI SAMO u 3.0 (v. `upsertFacilityDetails`). */
+  private pickCadastralParcels(d: Record<string, unknown>): string | null {
+    const v = d["cadastral_parcels"];
+    if (typeof v !== "string") return null;
+    return v.trim() === "" ? null : v;
+  }
+
   /** Upsert details vozila (PK asset_id; paritet upsertMaintVehicleDetails). */
   async upsertVehicleDetails(
     email: string,
     assetId: string,
     dto: DetailsUpsertDto,
   ) {
-    return this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      const base = { ...this.pickVehicleDetails(dto.details), updatedBy: uid };
-      const row = await tx.maintVehicleDetails.upsert({
-        where: { assetId },
-        create: { assetId, ...base },
-        update: base,
-      });
-      return { data: row };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const uid = await this.uid(tx);
+        const base = {
+          ...this.pickVehicleDetails(dto.details),
+          updatedBy: uid,
+        };
+        const row = await tx.maintVehicleDetails.upsert({
+          where: { assetId },
+          create: { assetId, ...base },
+          update: base,
+        });
+        return { data: row };
+      },
+      async (tx, s) => {
+        // `maint_vehicle_details_insert/update` CHECK: asset_visible ∧ write krug.
+        await this.assertAssetWrite30(tx, s, assetId, `Vozilo ${assetId}`);
+        const base = {
+          ...this.pickVehicleDetails(dto.details),
+          updatedBy: s.userId,
+        };
+        const row = await tx.maintVehicleDetails.upsert({
+          where: { assetId },
+          create: { assetId, ...base },
+          update: base,
+        });
+        return { data: row };
+      },
+    );
   }
 
   patchVehicleTollTag(email: string, assetId: string, dto: TollTagDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintVehicleDetails.updateMany({
-        where: { assetId },
-        data: {
-          tollTagSerial: dto.tollTagSerial ?? null,
-          tollTagProvider: dto.tollTagProvider ?? null,
-          tollTagNotes: dto.tollTagNotes ?? null,
-          updatedBy: uid,
-        },
-      });
-      this.assertAffected(exists, count, `Detalji vozila ${assetId}`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintVehicleDetails.updateMany({
+          where: { assetId },
+          data: {
+            tollTagSerial: dto.tollTagSerial ?? null,
+            tollTagProvider: dto.tollTagProvider ?? null,
+            tollTagNotes: dto.tollTagNotes ?? null,
+            updatedBy: uid,
+          },
+        });
+        this.assertAffected(exists, count, `Detalji vozila ${assetId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        await this.assertAssetWrite30(tx, s, assetId, `Vozilo ${assetId}`);
+        const exists =
+          (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
+        const { count } = await tx.maintVehicleDetails.updateMany({
+          where: { assetId },
+          data: {
+            tollTagSerial: dto.tollTagSerial ?? null,
+            tollTagProvider: dto.tollTagProvider ?? null,
+            tollTagNotes: dto.tollTagNotes ?? null,
+            updatedBy: s.userId,
+          },
+        });
+        this.assertAffected(exists, count, `Detalji vozila ${assetId}`);
+        return { data: { ok: true } };
+      },
+    );
   }
 
   patchVehicleShelf(email: string, assetId: string, dto: ShelfDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintVehicleDetails.updateMany({
-        where: { assetId },
-        data: {
-          ...(dto.hasPartsSet !== undefined
-            ? { hasPartsSet: dto.hasPartsSet }
-            : {}),
-          ...(dto.partsShelf !== undefined
-            ? { partsShelf: dto.partsShelf || null }
-            : {}),
-          ...(dto.partsNotes !== undefined
-            ? { partsNotes: dto.partsNotes || null }
-            : {}),
-          updatedBy: uid,
-        },
-      });
-      this.assertAffected(exists, count, `Detalji vozila ${assetId}`);
-      return { data: { ok: true } };
-    });
+    const patch = {
+      ...(dto.hasPartsSet !== undefined
+        ? { hasPartsSet: dto.hasPartsSet }
+        : {}),
+      ...(dto.partsShelf !== undefined
+        ? { partsShelf: dto.partsShelf || null }
+        : {}),
+      ...(dto.partsNotes !== undefined
+        ? { partsNotes: dto.partsNotes || null }
+        : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintVehicleDetails.updateMany({
+          where: { assetId },
+          data: { ...patch, updatedBy: uid },
+        });
+        this.assertAffected(exists, count, `Detalji vozila ${assetId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        await this.assertAssetWrite30(tx, s, assetId, `Vozilo ${assetId}`);
+        const exists =
+          (await tx.maintVehicleDetails.count({ where: { assetId } })) > 0;
+        const { count } = await tx.maintVehicleDetails.updateMany({
+          where: { assetId },
+          data: { ...patch, updatedBy: s.userId },
+        });
+        this.assertAffected(exists, count, `Detalji vozila ${assetId}`);
+        return { data: { ok: true } };
+      },
+    );
   }
 
   // ---------- Foto vozila (storage proxy F2-P4a; 1.0-kompatibilne putanje) ----------
@@ -6506,31 +6997,64 @@ export class OdrzavanjeService {
     const storagePath = `documents/asset/${assetId}/${uuid}_${this.safeFileName(file.originalname)}`;
     // Meta PRE bajtova: RLS INSERT enforce + provera da je asset VIDLJIVO vozilo
     // (findFirst assetType='vehicle' → 404 kad ne postoji/nevidljivo; paritet findVehicle).
-    const meta = await this.withUserMapped(email, async (tx) => {
-      const asset = await tx.maintAsset.findFirst({
-        where: { assetId, assetType: "vehicle" },
-        select: { assetId: true },
-      });
-      if (!asset)
-        throw new NotFoundException(
-          `Vozilo ${assetId} ne postoji ili nije vidljivo`,
-        );
-      const uid = await this.uid(tx);
-      return tx.maintDocument.create({
-        data: {
-          entityType: "asset" as never,
-          entityId: assetId,
-          assetId,
-          fileName: file.originalname,
-          storagePath,
-          mimeType: contentType,
-          sizeBytes: BigInt(file.buffer.length),
-          category: "vehicle_photo",
-          description: "Glavna fotografija vozila",
-          uploadedBy: uid,
-        },
-      });
-    });
+    // 🔴 STORAGE OSTAJE U sy15 I POD `3.0` — menja se SAMO gde živi meta red.
+    // Šema putanje (`documents/asset/<assetId>/<uuid>_<ime>`) se NE SME dirati:
+    // stare fotografije su zapisane u `primary_photo_storage_path` i jedini način
+    // da ih 3.0 nađe je da putanja ostane doslovno ista.
+    const meta = await this.withUser30(
+      email,
+      async (tx) => {
+        const asset = await tx.maintAsset.findFirst({
+          where: { assetId, assetType: "vehicle" },
+          select: { assetId: true },
+        });
+        if (!asset)
+          throw new NotFoundException(
+            `Vozilo ${assetId} ne postoji ili nije vidljivo`,
+          );
+        const uid = await this.uid(tx);
+        return tx.maintDocument.create({
+          data: {
+            entityType: "asset" as never,
+            entityId: assetId,
+            assetId,
+            fileName: file.originalname,
+            storagePath,
+            mimeType: contentType,
+            sizeBytes: BigInt(file.buffer.length),
+            category: "vehicle_photo",
+            description: "Glavna fotografija vozila",
+            uploadedBy: uid,
+          },
+        });
+      },
+      async (tx, s) => {
+        const asset = await tx.maintAsset.findFirst({
+          where: { assetId, assetType: "vehicle" },
+          select: { assetId: true },
+        });
+        if (!asset)
+          throw new NotFoundException(
+            `Vozilo ${assetId} ne postoji ili nije vidljivo`,
+          );
+        // `maint_documents_insert` CHECK = uploaded_by = uid ∧ document_visible.
+        await this.assertAssetWrite30(tx, s, assetId, `Vozilo ${assetId}`);
+        return tx.maintDocument.create({
+          data: {
+            entityType: "asset",
+            entityId: assetId,
+            assetId,
+            fileName: file.originalname,
+            storagePath,
+            mimeType: contentType,
+            sizeBytes: BigInt(file.buffer.length),
+            category: "vehicle_photo",
+            description: "Glavna fotografija vozila",
+            uploadedBy: s.userId,
+          },
+        });
+      },
+    );
     try {
       await this.storage.upload(
         MAINT_BUCKET,
@@ -6540,27 +7064,49 @@ export class OdrzavanjeService {
         false,
       );
     } catch (e) {
-      await this.withUserMapped(email, async (tx) => {
-        await tx.maintDocument.deleteMany({
-          where: { documentId: meta.documentId },
-        });
-      }).catch(() => {});
+      await this.withUser30(
+        email,
+        async (tx) => {
+          await tx.maintDocument.deleteMany({
+            where: { documentId: meta.documentId },
+          });
+        },
+        async (tx) => {
+          await tx.maintDocument.deleteMany({
+            where: { documentId: meta.documentId },
+          });
+        },
+      ).catch(() => {});
       throw e;
     }
     // Postavi pointer glavne fotografije (paritet 1.0 PATCH primary_photo_storage_path).
     // Upsert jer details red praktično uvek postoji za vozilo, ali je bezbedno i kad ne.
-    await this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      await tx.maintVehicleDetails.upsert({
-        where: { assetId },
-        create: {
-          assetId,
-          primaryPhotoStoragePath: storagePath,
-          updatedBy: uid,
-        },
-        update: { primaryPhotoStoragePath: storagePath, updatedBy: uid },
-      });
-    });
+    await this.withUser30(
+      email,
+      async (tx) => {
+        const uid = await this.uid(tx);
+        await tx.maintVehicleDetails.upsert({
+          where: { assetId },
+          create: {
+            assetId,
+            primaryPhotoStoragePath: storagePath,
+            updatedBy: uid,
+          },
+          update: { primaryPhotoStoragePath: storagePath, updatedBy: uid },
+        });
+      },
+      async (tx, s) => {
+        await tx.maintVehicleDetails.upsert({
+          where: { assetId },
+          create: {
+            assetId,
+            primaryPhotoStoragePath: storagePath,
+            updatedBy: s.userId,
+          },
+          update: { primaryPhotoStoragePath: storagePath, updatedBy: s.userId },
+        });
+      },
+    );
     return {
       data: { ...this.withNumSize(meta), primaryPhotoStoragePath: storagePath },
     };
@@ -6571,23 +7117,42 @@ export class OdrzavanjeService {
    * 404 čisto kad vozilo nema fotografiju ili nije vidljivo (RLS SELECT presuđuje PRE potpisa).
    */
   async vehiclePhotoUrl(email: string, assetId: string) {
-    const path = await this.withUserMapped(email, async (tx) => {
-      const asset = await tx.maintAsset.findFirst({
-        where: { assetId, assetType: "vehicle" },
-        select: { assetId: true },
-      });
-      if (!asset)
-        throw new NotFoundException(
-          `Vozilo ${assetId} ne postoji ili nije vidljivo`,
-        );
-      const details = await tx.maintVehicleDetails.findUnique({
-        where: { assetId },
-        select: { primaryPhotoStoragePath: true },
-      });
-      const p = details?.primaryPhotoStoragePath ?? null;
-      if (!p) throw new NotFoundException("Vozilo nema fotografiju");
-      return p;
-    });
+    const nemaVozila = () =>
+      new NotFoundException(`Vozilo ${assetId} ne postoji ili nije vidljivo`);
+    const path = await this.withUser30(
+      email,
+      async (tx) => {
+        const asset = await tx.maintAsset.findFirst({
+          where: { assetId, assetType: "vehicle" },
+          select: { assetId: true },
+        });
+        if (!asset) throw nemaVozila();
+        const details = await tx.maintVehicleDetails.findUnique({
+          where: { assetId },
+          select: { primaryPhotoStoragePath: true },
+        });
+        const p = details?.primaryPhotoStoragePath ?? null;
+        if (!p) throw new NotFoundException("Vozilo nema fotografiju");
+        return p;
+      },
+      async (tx, s) => {
+        // Pod sy15 je vidljivost presudio RLS SELECT; u 3.0 mora eksplicitno,
+        // PRE potpisivanja — potpisan URL zaobilazi svaku dalju proveru.
+        const asset = await tx.maintAsset.findFirst({
+          where: { assetId, assetType: "vehicle" },
+          select: { assetId: true },
+        });
+        if (!asset) throw nemaVozila();
+        if (!(await this.assetVidljivo30(tx, s, assetId))) throw nemaVozila();
+        const details = await tx.maintVehicleDetails.findUnique({
+          where: { assetId },
+          select: { primaryPhotoStoragePath: true },
+        });
+        const p = details?.primaryPhotoStoragePath ?? null;
+        if (!p) throw new NotFoundException("Vozilo nema fotografiju");
+        return p;
+      },
+    );
     return { data: await this.storage.signUrl(MAINT_BUCKET, path, 3600) };
   }
 
@@ -6597,25 +7162,42 @@ export class OdrzavanjeService {
    * već-prazan pointer (ili nepostojeći details red) vraća `ok` bez greške.
    */
   async deleteVehiclePhoto(email: string, assetId: string) {
-    const path = await this.withUserMapped(email, async (tx) => {
-      const details = await tx.maintVehicleDetails.findUnique({
-        where: { assetId },
-        select: { primaryPhotoStoragePath: true },
-      });
-      const p = details?.primaryPhotoStoragePath ?? null;
-      if (!p) return null; // nema šta da se ukloni — idempotentno ok
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintVehicleDetails.updateMany({
-        where: { assetId },
-        data: { primaryPhotoStoragePath: null, updatedBy: uid },
-      });
-      // Red je vidljiv (findUnique ga vratio) ali UPDATE politika odbila → 403.
-      if (count === 0)
-        throw new ForbiddenException(
-          `Nemate pravo nad: Foto vozila ${assetId}`,
-        );
-      return p;
-    });
+    const path = await this.withUser30(
+      email,
+      async (tx) => {
+        const details = await tx.maintVehicleDetails.findUnique({
+          where: { assetId },
+          select: { primaryPhotoStoragePath: true },
+        });
+        const p = details?.primaryPhotoStoragePath ?? null;
+        if (!p) return null; // nema šta da se ukloni — idempotentno ok
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintVehicleDetails.updateMany({
+          where: { assetId },
+          data: { primaryPhotoStoragePath: null, updatedBy: uid },
+        });
+        // Red je vidljiv (findUnique ga vratio) ali UPDATE politika odbila → 403.
+        if (count === 0)
+          throw new ForbiddenException(
+            `Nemate pravo nad: Foto vozila ${assetId}`,
+          );
+        return p;
+      },
+      async (tx, s) => {
+        const details = await tx.maintVehicleDetails.findUnique({
+          where: { assetId },
+          select: { primaryPhotoStoragePath: true },
+        });
+        const p = details?.primaryPhotoStoragePath ?? null;
+        if (!p) return null;
+        await this.assertAssetWrite30(tx, s, assetId, `Foto vozila ${assetId}`);
+        await tx.maintVehicleDetails.updateMany({
+          where: { assetId },
+          data: { primaryPhotoStoragePath: null, updatedBy: s.userId },
+        });
+        return p;
+      },
+    );
     if (path) await this.storage.remove(MAINT_BUCKET, path);
     return { data: { ok: true } };
   }
@@ -6624,45 +7206,29 @@ export class OdrzavanjeService {
 
   async upsertItDetails(email: string, assetId: string, dto: DetailsUpsertDto) {
     const d = dto.details;
-    const s = (k: string) =>
-      d[k] == null || d[k] === "" ? null : String(d[k]);
-    return this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      const base = {
-        deviceType: s("device_type"),
-        hostname: s("hostname"),
-        ipAddress: s("ip_address"),
-        macAddress: s("mac_address"),
-        operatingSystem: s("operating_system"),
-        assignedTo: s("assigned_to"),
-        licenseKey: s("license_key"),
-        licenseExpiresAt: this.toDbDate(s("license_expires_at")) ?? null,
-        warrantyExpiresAt: this.toDbDate(s("warranty_expires_at")) ?? null,
-        backupRequired: Boolean(d.backup_required),
-        lastBackupAt: this.toDbTs(s("last_backup_at")) ?? null,
-        notes: s("notes"),
-        // Polja po tipu uređaja (065 računar / 066 štampač / 067 switch) —
-        // kolone dodate kroz ZAHTEV_065_066_067_IT_OPREMA_POLJA.sql.
-        cpu: s("cpu"),
-        motherboard: s("motherboard"),
-        ram: s("ram"),
-        gpu: s("gpu"),
-        officeLocation: s("office_location"),
-        tonerCartridges: s("toner_cartridges"),
-        unifiPorts: s("unifi_ports"),
-        // Zahtev 071 (UPS snaga / firmver mrežne opreme) —
-        // kolone dodate kroz ZAHTEV_071_IT_OPREMA_UPS_AP.sql.
-        powerRating: s("power_rating"),
-        firmwareVersion: s("firmware_version"),
-        updatedBy: uid,
-      };
-      const row = await tx.maintItAssetDetails.upsert({
-        where: { assetId },
-        create: { assetId, ...base },
-        update: base,
-      });
-      return { data: row };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const uid = await this.uid(tx);
+        const base = { ...this.pickItDetails(d), updatedBy: uid };
+        const row = await tx.maintItAssetDetails.upsert({
+          where: { assetId },
+          create: { assetId, ...base },
+          update: base,
+        });
+        return { data: row };
+      },
+      async (tx, s) => {
+        await this.assertAssetWrite30(tx, s, assetId, `IT oprema ${assetId}`);
+        const base = { ...this.pickItDetails(d), updatedBy: s.userId };
+        const row = await tx.maintItAssetDetails.upsert({
+          where: { assetId },
+          create: { assetId, ...base },
+          update: base,
+        });
+        return { data: row };
+      },
+    );
   }
 
   async upsertFacilityDetails(
@@ -6671,53 +7237,48 @@ export class OdrzavanjeService {
     dto: DetailsUpsertDto,
   ) {
     const d = dto.details;
-    const s = (k: string) =>
-      d[k] == null || d[k] === "" ? null : String(d[k]);
-    const n = (k: string) =>
-      d[k] == null || d[k] === "" ? null : Number(d[k]);
-    return this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      const base = {
-        facilityType: s("facility_type"),
-        floorAreaM2: n("floor_area_m2"),
-        floorOrZone: s("floor_or_zone"),
-        criticality: s("criticality"),
-        inspectionDueAt: this.toDbDate(s("inspection_due_at")) ?? null,
-        fireSafetyDueAt: this.toDbDate(s("fire_safety_due_at")) ?? null,
-        serviceContract: s("service_contract"),
-        serviceProvider: s("service_provider"),
-        lastInspectionAt: this.toDbDate(s("last_inspection_at")) ?? null,
-        notes: s("notes"),
-        updatedBy: uid,
-      };
-      // ═══════════════════════════════════════════════════════════════════
-      // 🔴 ZATEČEN KVAR, POPRAVLJEN 06.08.2026 — „Objekti" NIKAD nisu radili
-      // ═══════════════════════════════════════════════════════════════════
-      // Ovde je stajalo `cadastralParcels: s("cadastral_parcels")`, a kolone
-      // `cadastral_parcels` u ŽIVOJ sy15 NEMA — izmereno `pg_attribute`:
-      // `maint_facility_details` tamo ima TAČNO 14 kolona i ta nije među njima.
-      // Prisma je kolonu ipak slala u INSERT/UPDATE (model `prisma/sy15.prisma`
-      // ju je deklarisao), baza je vraćala 42703, a `rethrowSy15` taj SQLSTATE
-      // ne mapira → 500. Zato na produkciji `maint_assets` tipa `facility` ima
-      // 0 redova i `maint_facility_details` 0 redova — modul Objekti nije mogao
-      // da sačuva NIJEDAN red otkad postoji.
-      //
-      // 🔴 Isti previd je obarao i ČITANJE: `findUnique` (v. `assetDetails`)
-      // takođe traži sve skalarne kolone modela. Zato je popravka MORALA da ide
-      // u model — polje je uklonjeno iz `prisma/sy15.prisma`, pa sy15 klijent
-      // više ni ne pominje kolonu. Ovde ostaje samo izostavljen upis.
-      //
-      // U 3.0 kolona POSTOJI (FE je nudi kao „Katastarske parcele"), pa preklop
-      // taj ekran usput popravlja u punom obimu. Upis parcela pod `3.0` je posao
-      // CRUD faze — dok se ne napiše, ceo ovaj put pod `3.0` ionako pada na 503
-      // (`withUserMapped` → `assertPorted`).
-      const row = await tx.maintFacilityDetails.upsert({
-        where: { assetId },
-        create: { assetId, ...base },
-        update: base,
-      });
-      return { data: row };
-    });
+    // ═══════════════════════════════════════════════════════════════════
+    // 🔴 ZATEČEN KVAR, POPRAVLJEN 06.08.2026 — „Objekti" NIKAD nisu radili
+    // ═══════════════════════════════════════════════════════════════════
+    // U sy15 grani je ovde stajalo `cadastralParcels: s("cadastral_parcels")`,
+    // a kolone `cadastral_parcels` u ŽIVOJ sy15 NEMA — izmereno `pg_attribute`:
+    // `maint_facility_details` tamo ima TAČNO 14 kolona i ta nije među njima.
+    // Prisma je kolonu ipak slala u INSERT/UPDATE (model `prisma/sy15.prisma`
+    // ju je deklarisao), baza je vraćala 42703, a `rethrowSy15` taj SQLSTATE
+    // ne mapira → 500. Zato na produkciji `maint_assets` tipa `facility` ima
+    // 0 redova i `maint_facility_details` 0 redova — modul Objekti nije mogao
+    // da sačuva NIJEDAN red otkad postoji.
+    //
+    // ✅ POD `3.0` KOLONA POSTOJI (FE je nudi kao „Katastarske parcele"), pa je
+    // 3.0 grana ISPOD i upisuje — preklop taj ekran usput popravlja u punom
+    // obimu. sy15 grana je i dalje bez nje: tamo bi je oborila baza.
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const uid = await this.uid(tx);
+        const base = { ...this.pickFacilityDetails(d), updatedBy: uid };
+        const row = await tx.maintFacilityDetails.upsert({
+          where: { assetId },
+          create: { assetId, ...base },
+          update: base,
+        });
+        return { data: row };
+      },
+      async (tx, s) => {
+        await this.assertAssetWrite30(tx, s, assetId, `Objekat ${assetId}`);
+        const base = {
+          ...this.pickFacilityDetails(d),
+          cadastralParcels: this.pickCadastralParcels(d),
+          updatedBy: s.userId,
+        };
+        const row = await tx.maintFacilityDetails.upsert({
+          where: { assetId },
+          create: { assetId, ...base },
+          update: base,
+        });
+        return { data: row };
+      },
+    );
   }
 
   // ---------- Gume ----------
@@ -6744,48 +7305,112 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          // `maint_vehicle_tires_write` = asset_visible ∧ (erp adm/mgmt ∨ chief/admin).
+          await this.assertAssetWrite30(tx, s, assetId, `Vozilo ${assetId}`);
+          return tx.maintVehicleTire.create({
+            data: {
+              assetId,
+              season: dto.season,
+              dimension: dto.dimension,
+              count: dto.count,
+              status: dto.status ?? "koriscene",
+              shelfCode: dto.shelfCode ?? null,
+              installedOnVehicle: dto.installedOnVehicle === true,
+              purchasedAt: this.toDbDate(dto.purchasedAt) ?? null,
+              notes: dto.notes ?? null,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
   async updateTire(email: string, tireId: string, dto: UpdateTireDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintVehicleTire.count({ where: { tireSetId: tireId } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintVehicleTire.updateMany({
-        where: { tireSetId: tireId },
-        data: {
-          ...(dto.season !== undefined ? { season: dto.season as never } : {}),
-          ...(dto.dimension !== undefined ? { dimension: dto.dimension } : {}),
-          ...(dto.count !== undefined ? { count: dto.count } : {}),
-          ...(dto.status !== undefined ? { status: dto.status as never } : {}),
-          ...(dto.shelfCode !== undefined ? { shelfCode: dto.shelfCode } : {}),
-          ...(dto.installedOnVehicle !== undefined
-            ? { installedOnVehicle: dto.installedOnVehicle }
-            : {}),
-          ...(dto.purchasedAt !== undefined
-            ? { purchasedAt: this.toDbDate(dto.purchasedAt) }
-            : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Guma ${tireId}`);
-      return { data: { ok: true } };
-    });
+    const patch = {
+      ...(dto.dimension !== undefined ? { dimension: dto.dimension } : {}),
+      ...(dto.count !== undefined ? { count: dto.count } : {}),
+      ...(dto.shelfCode !== undefined ? { shelfCode: dto.shelfCode } : {}),
+      ...(dto.installedOnVehicle !== undefined
+        ? { installedOnVehicle: dto.installedOnVehicle }
+        : {}),
+      ...(dto.purchasedAt !== undefined
+        ? { purchasedAt: this.toDbDate(dto.purchasedAt) }
+        : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintVehicleTire.count({ where: { tireSetId: tireId } })) >
+          0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintVehicleTire.updateMany({
+          where: { tireSetId: tireId },
+          data: {
+            ...patch,
+            ...(dto.season !== undefined
+              ? { season: dto.season as never }
+              : {}),
+            ...(dto.status !== undefined
+              ? { status: dto.status as never }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Guma ${tireId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const red = await tx.maintVehicleTire.findUnique({
+          where: { tireSetId: tireId },
+          select: { assetId: true },
+        });
+        if (!red) throw new NotFoundException(`Guma ${tireId} ne postoji`);
+        await this.assertAssetWrite30(tx, s, red.assetId, `Guma ${tireId}`);
+        await tx.maintVehicleTire.updateMany({
+          where: { tireSetId: tireId },
+          data: {
+            ...patch,
+            ...(dto.season !== undefined ? { season: dto.season } : {}),
+            ...(dto.status !== undefined ? { status: dto.status } : {}),
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   async deleteTire(email: string, tireId: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintVehicleTire.count({ where: { tireSetId: tireId } })) > 0;
-      const { count } = await tx.maintVehicleTire.deleteMany({
-        where: { tireSetId: tireId },
-      });
-      this.assertAffected(exists, count, `Guma ${tireId}`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintVehicleTire.count({ where: { tireSetId: tireId } })) >
+          0;
+        const { count } = await tx.maintVehicleTire.deleteMany({
+          where: { tireSetId: tireId },
+        });
+        this.assertAffected(exists, count, `Guma ${tireId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const red = await tx.maintVehicleTire.findUnique({
+          where: { tireSetId: tireId },
+          select: { assetId: true },
+        });
+        if (!red) throw new NotFoundException(`Guma ${tireId} ne postoji`);
+        await this.assertAssetWrite30(tx, s, red.assetId, `Guma ${tireId}`);
+        await tx.maintVehicleTire.deleteMany({ where: { tireSetId: tireId } });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   // ---------- Servisni plan vozila + generisanje WO ----------
@@ -6829,6 +7454,32 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          // `maint_vsp_insert` = erp adm/mgmt ∨ chief/admin (BEZ asset_visible).
+          this.assert30(
+            this.az.canWriteStock(s),
+            "Nemate pravo nad: Plan servisa vozila",
+          );
+          return tx.maintVehicleServicePlan.create({
+            data: {
+              assetId,
+              name: dto.name.trim(),
+              intervalKm,
+              intervalMonths,
+              lastDoneAt: this.toDbDate(dto.lastDoneAt) ?? null,
+              lastDoneKm: dto.lastDoneKm ?? null,
+              vehicleServiceCategory: dto.vehicleServiceCategory ?? null,
+              priority: dto.priority ?? "p4_planirano",
+              notes: dto.notes ?? null,
+              active: dto.active ?? true,
+              plannedCost: dto.plannedCost ?? null,
+              createdBy: s.userId,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
@@ -6844,61 +7495,110 @@ export class OdrzavanjeService {
        DB CHECK i izlazilo kao sirova greška. */
     const patchKm = normalizeInterval(dto.intervalKm, "km");
     const patchMonths = normalizeInterval(dto.intervalMonths, "months");
-    return this.withUserMapped(email, async (tx) => {
-      const current = await tx.maintVehicleServicePlan.findUnique({
-        where: { planId },
-        select: { intervalKm: true, intervalMonths: true },
-      });
-      const exists = current !== null;
-      if (exists) {
+    const patch = {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(patchKm !== undefined ? { intervalKm: patchKm } : {}),
+      ...(patchMonths !== undefined ? { intervalMonths: patchMonths } : {}),
+      ...(dto.lastDoneAt !== undefined
+        ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) }
+        : {}),
+      ...(dto.lastDoneKm !== undefined ? { lastDoneKm: dto.lastDoneKm } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
+      ...(dto.plannedCost !== undefined
+        ? { plannedCost: dto.plannedCost }
+        : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const current = await tx.maintVehicleServicePlan.findUnique({
+          where: { planId },
+          select: { intervalKm: true, intervalMonths: true },
+        });
+        const exists = current !== null;
+        if (exists) {
+          assertAtLeastOneInterval(
+            { intervalKm: patchKm, intervalMonths: patchMonths },
+            current,
+          );
+        }
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintVehicleServicePlan.updateMany({
+          where: { planId },
+          data: {
+            ...patch,
+            ...(dto.vehicleServiceCategory !== undefined
+              ? { vehicleServiceCategory: dto.vehicleServiceCategory as never }
+              : {}),
+            ...(dto.priority !== undefined
+              ? { priority: dto.priority as never }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Plan servisa ${planId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const current = await tx.maintVehicleServicePlan.findUnique({
+          where: { planId },
+          select: { intervalKm: true, intervalMonths: true },
+        });
+        if (!current)
+          throw new NotFoundException(`Plan servisa ${planId} ne postoji`);
+        // 073/26 — pravilo „bar jedan interval" nad EFEKTIVNIM stanjem, PRE upisa.
         assertAtLeastOneInterval(
           { intervalKm: patchKm, intervalMonths: patchMonths },
           current,
         );
-      }
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintVehicleServicePlan.updateMany({
-        where: { planId },
-        data: {
-          ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(patchKm !== undefined ? { intervalKm: patchKm } : {}),
-          ...(patchMonths !== undefined ? { intervalMonths: patchMonths } : {}),
-          ...(dto.lastDoneAt !== undefined
-            ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) }
-            : {}),
-          ...(dto.lastDoneKm !== undefined
-            ? { lastDoneKm: dto.lastDoneKm }
-            : {}),
-          ...(dto.vehicleServiceCategory !== undefined
-            ? { vehicleServiceCategory: dto.vehicleServiceCategory as never }
-            : {}),
-          ...(dto.priority !== undefined
-            ? { priority: dto.priority as never }
-            : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.active !== undefined ? { active: dto.active } : {}),
-          ...(dto.plannedCost !== undefined
-            ? { plannedCost: dto.plannedCost }
-            : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Plan servisa ${planId}`);
-      return { data: { ok: true } };
-    });
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Plan servisa ${planId}`,
+        );
+        await tx.maintVehicleServicePlan.updateMany({
+          where: { planId },
+          data: {
+            ...patch,
+            ...(dto.vehicleServiceCategory !== undefined
+              ? { vehicleServiceCategory: dto.vehicleServiceCategory }
+              : {}),
+            ...(dto.priority !== undefined ? { priority: dto.priority } : {}),
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   async deleteVehicleServicePlan(email: string, planId: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintVehicleServicePlan.count({ where: { planId } })) > 0;
-      const { count } = await tx.maintVehicleServicePlan.deleteMany({
-        where: { planId },
-      });
-      this.assertAffected(exists, count, `Plan servisa ${planId}`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintVehicleServicePlan.count({ where: { planId } })) > 0;
+        const { count } = await tx.maintVehicleServicePlan.deleteMany({
+          where: { planId },
+        });
+        this.assertAffected(exists, count, `Plan servisa ${planId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintVehicleServicePlan.count({ where: { planId } })) > 0;
+        if (!exists)
+          throw new NotFoundException(`Plan servisa ${planId} ne postoji`);
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Plan servisa ${planId}`,
+        );
+        await tx.maintVehicleServicePlan.deleteMany({ where: { planId } });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   // ---------- AI: čitanje računa iz servisa (predlog, ne upis) ----------
@@ -6932,14 +7632,50 @@ export class OdrzavanjeService {
       );
     }
     // Pravo: ako korisnik ne sme da vidi nalog, ne sme ni da troši AI budžet na njega.
-    const wo = await this.withUserMapped(email, async (tx) => {
-      const row = await tx.maintWorkOrder.findUnique({
-        where: { woId },
-        select: { woId: true, title: true, assetId: true },
-      });
-      if (!row) throw new NotFoundException(`Radni nalog ${woId} ne postoji`);
-      return row;
-    });
+    const wo = await this.withUser30(
+      email,
+      async (tx) => {
+        const row = await tx.maintWorkOrder.findUnique({
+          where: { woId },
+          select: { woId: true, title: true, assetId: true },
+        });
+        if (!row) throw new NotFoundException(`Radni nalog ${woId} ne postoji`);
+        return row;
+      },
+      async (tx, s) => {
+        const row = await tx.maintWorkOrder.findUnique({
+          where: { woId },
+          select: {
+            woId: true,
+            title: true,
+            assetId: true,
+            assignedTo: true,
+            reportedBy: true,
+            asset: {
+              select: {
+                assetType: true,
+                machine: { select: { machineCode: true } },
+              },
+            },
+          },
+        });
+        if (!row) throw new NotFoundException(`Radni nalog ${woId} ne postoji`);
+        // `maint_wo_select` = `maint_wo_row_visible(asset, assigned, reported)`.
+        const vidljiv = this.az.woRowVisible(s, {
+          assignedTo: row.assignedTo,
+          reportedBy: row.reportedBy,
+          asset: row.asset
+            ? {
+                assetType: row.asset.assetType,
+                machineCode: row.asset.machine?.machineCode ?? null,
+              }
+            : null,
+        });
+        if (!vidljiv)
+          throw new NotFoundException(`Radni nalog ${woId} ne postoji`);
+        return { woId: row.woId, title: row.title, assetId: row.assetId };
+      },
+    );
 
     const content: unknown[] = [
       {
@@ -7032,14 +7768,24 @@ export class OdrzavanjeService {
    * app sloju namerno: `ensure_vehicle_service_wos` je živa PROD funkcija koju ne diramo.
    */
   ensureVehicleServiceWos(email: string, assetId?: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ n: number }[]>(
-        Prisma.sql`SELECT public.ensure_vehicle_service_wos(${assetId ?? null}::uuid) AS n`,
-      );
-      const created = Number(rows[0]?.n ?? 0);
-      if (created > 0) await this.seedEstimatedCostFromPlan(tx, "vehicle");
-      return { data: { created } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ n: number }[]>(
+          Prisma.sql`SELECT public.ensure_vehicle_service_wos(${assetId ?? null}::uuid) AS n`,
+        );
+        const created = Number(rows[0]?.n ?? 0);
+        if (created > 0) await this.seedEstimatedCostFromPlan(tx, "vehicle");
+        return { data: { created } };
+      },
+      async (tx, s) => {
+        // 🔴 Idempotencija je U SAMOM prepisu (`has_open_wo = FALSE` u view-u):
+        // drugi uzastopni poziv za isto sredstvo daje 0 novih naloga.
+        const created = await this.fn30.ensureVehicleServiceWos(tx, s, assetId);
+        if (created > 0) await this.seedEstimatedCost30(tx, "vehicle");
+        return { data: { created } };
+      },
+    );
   }
 
   /**
@@ -7070,7 +7816,44 @@ export class OdrzavanjeService {
     `);
   }
 
+  /**
+   * 3.0 parnjak `seedEstimatedCostFromPlan`. Isti SQL — imena tabela i kolona su
+   * u 3.0 nepromenjena — ali drugi klijent (`OdrzavanjeTx`) i drugi `Prisma`
+   * namespace, pa se metod ne može deliti sa sy15 granom.
+   */
+  private async seedEstimatedCost30(
+    tx: OdrzavanjeTx,
+    kind: "vehicle" | "asset",
+  ): Promise<void> {
+    const link =
+      kind === "vehicle"
+        ? P30.sql`wo.service_plan_id = p.plan_id`
+        : P30.sql`wo.asset_service_plan_id = p.plan_id`;
+    const table =
+      kind === "vehicle"
+        ? P30.sql`public.maint_vehicle_service_plan`
+        : P30.sql`public.maint_asset_service_plan`;
+    await tx.$executeRaw(P30.sql`
+      UPDATE public.maint_work_orders wo
+         SET estimated_cost = p.planned_cost
+        FROM ${table} p
+       WHERE ${link}
+         AND p.planned_cost IS NOT NULL
+         AND wo.estimated_cost IS NULL
+         AND wo.status NOT IN ('zavrsen', 'otkazan')
+    `);
+  }
+
   // ---------- Delovi po vozilu (link/unlink/patch) ----------
+
+  /**
+   * `maint_pv_insert`/`maint_pv_update` = erp adm/mgmt ∨ chief/admin/**technician**.
+   * ⚠️ ŠIRE od `canWriteStock` (tehničar sme da veže deo za vozilo), a
+   * `maint_pv_delete` je UŽE (bez tehničara) — zato dva različita izraza.
+   */
+  private mozePisatiVezuDeoVozilo(s: MaintScope): boolean {
+    return this.az.canWriteStock(s) || s.profileRole === "technician";
+  }
 
   linkPartToVehicle(email: string, assetId: string, dto: LinkPartDto) {
     return this.runIdem(
@@ -7088,6 +7871,24 @@ export class OdrzavanjeService {
             updatedBy: await this.uid(tx),
           },
         }),
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          this.assert30(
+            this.mozePisatiVezuDeoVozilo(s),
+            "Nemate pravo nad: Veza deo↔vozilo",
+          );
+          return tx.maintPartVehicle.create({
+            data: {
+              assetId,
+              partId: dto.partId,
+              qtyMin: dto.qtyMin ?? null,
+              notes: dto.notes ?? null,
+              createdBy: s.userId,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
@@ -7097,34 +7898,65 @@ export class OdrzavanjeService {
     partId: string,
     dto: UpdatePartLinkDto,
   ) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintPartVehicle.count({ where: { assetId, partId } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintPartVehicle.updateMany({
-        where: { assetId, partId },
-        data: {
-          ...(dto.qtyMin !== undefined ? { qtyMin: dto.qtyMin } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Veza deo↔vozilo`);
-      return { data: { ok: true } };
-    });
+    const patch = {
+      ...(dto.qtyMin !== undefined ? { qtyMin: dto.qtyMin } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintPartVehicle.count({ where: { assetId, partId } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintPartVehicle.updateMany({
+          where: { assetId, partId },
+          data: { ...patch, updatedBy: uid, updatedAt: new Date() },
+        });
+        this.assertAffected(exists, count, `Veza deo↔vozilo`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintPartVehicle.count({ where: { assetId, partId } })) > 0;
+        if (!exists) throw new NotFoundException(`Veza deo↔vozilo ne postoji`);
+        this.assert30(
+          this.mozePisatiVezuDeoVozilo(s),
+          "Nemate pravo nad: Veza deo↔vozilo",
+        );
+        await tx.maintPartVehicle.updateMany({
+          where: { assetId, partId },
+          data: { ...patch, updatedBy: s.userId, updatedAt: new Date() },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   async unlinkPartFromVehicle(email: string, assetId: string, partId: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintPartVehicle.count({ where: { assetId, partId } })) > 0;
-      const { count } = await tx.maintPartVehicle.deleteMany({
-        where: { assetId, partId },
-      });
-      this.assertAffected(exists, count, `Veza deo↔vozilo`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintPartVehicle.count({ where: { assetId, partId } })) > 0;
+        const { count } = await tx.maintPartVehicle.deleteMany({
+          where: { assetId, partId },
+        });
+        this.assertAffected(exists, count, `Veza deo↔vozilo`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintPartVehicle.count({ where: { assetId, partId } })) > 0;
+        if (!exists) throw new NotFoundException(`Veza deo↔vozilo ne postoji`);
+        // 🔴 `maint_pv_delete` NEMA tehničara — brisanje veze je uže od izmene.
+        this.assert30(
+          this.az.canWriteStock(s),
+          "Nemate pravo nad: Veza deo↔vozilo",
+        );
+        await tx.maintPartVehicle.deleteMany({ where: { assetId, partId } });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   // ---------- Carpool rezervacije ----------
@@ -7150,60 +7982,155 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          // 🔴 `maint_booking_insert` je NAJŠIRA write politika modula:
+          // erp adm/mgmt ∨ chief/admin/technician/**operator** — vozilo rezerviše
+          // i operater. Sužavanje na `canWriteStock` bi oborilo carpool.
+          this.assert30(
+            this.az.canWriteStock(s) ||
+              s.profileRole === "technician" ||
+              s.profileRole === "operator",
+            "Nemate pravo nad: Rezervacija vozila",
+          );
+          return tx.maintVehicleBooking.create({
+            data: {
+              assetId,
+              driverId: dto.driverId ?? null,
+              startAt: new Date(dto.startAt),
+              endAt: new Date(dto.endAt),
+              purpose: dto.purpose ?? null,
+              status: dto.status ?? "planirana",
+              notes: dto.notes ?? null,
+              createdBy: s.userId,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
   async updateBooking(email: string, bookingId: string, dto: UpdateBookingDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintVehicleBooking.updateMany({
-        where: { bookingId },
-        data: {
-          ...(dto.startAt !== undefined
-            ? { startAt: new Date(dto.startAt) }
-            : {}),
-          ...(dto.endAt !== undefined ? { endAt: new Date(dto.endAt) } : {}),
-          ...(dto.driverId !== undefined ? { driverId: dto.driverId } : {}),
-          ...(dto.purpose !== undefined ? { purpose: dto.purpose } : {}),
-          ...(dto.status !== undefined ? { status: dto.status as never } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Rezervacija ${bookingId}`);
-      return { data: { ok: true } };
-    });
+    const patch = {
+      ...(dto.startAt !== undefined ? { startAt: new Date(dto.startAt) } : {}),
+      ...(dto.endAt !== undefined ? { endAt: new Date(dto.endAt) } : {}),
+      ...(dto.driverId !== undefined ? { driverId: dto.driverId } : {}),
+      ...(dto.purpose !== undefined ? { purpose: dto.purpose } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintVehicleBooking.updateMany({
+          where: { bookingId },
+          data: {
+            ...patch,
+            ...(dto.status !== undefined
+              ? { status: dto.status as never }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Rezervacija ${bookingId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const red = await tx.maintVehicleBooking.findUnique({
+          where: { bookingId },
+          select: { createdBy: true },
+        });
+        if (!red)
+          throw new NotFoundException(`Rezervacija ${bookingId} ne postoji`);
+        // 🔴 „Moja rezervacija je moja" — `maint_booking_update` ima granu
+        // `created_by = uid()`. Bez nje operater ne bi mogao da izmeni ni svoju.
+        this.assert30(
+          this.az.canUpdateBooking(s, red.createdBy),
+          `Nemate pravo nad: Rezervacija ${bookingId}`,
+        );
+        await tx.maintVehicleBooking.updateMany({
+          where: { bookingId },
+          data: {
+            ...patch,
+            ...(dto.status !== undefined ? { status: dto.status } : {}),
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   async deleteBooking(email: string, bookingId: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
-      const { count } = await tx.maintVehicleBooking.deleteMany({
-        where: { bookingId },
-      });
-      this.assertAffected(exists, count, `Rezervacija ${bookingId}`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
+        const { count } = await tx.maintVehicleBooking.deleteMany({
+          where: { bookingId },
+        });
+        this.assertAffected(exists, count, `Rezervacija ${bookingId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintVehicleBooking.count({ where: { bookingId } })) > 0;
+        if (!exists)
+          throw new NotFoundException(`Rezervacija ${bookingId} ne postoji`);
+        // ⚠️ `maint_booking_delete` NEMA granu „moja rezervacija": brisanje je
+        // uže od izmene (erp adm/mgmt ∨ chief/admin). Prepis doslovan.
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Rezervacija ${bookingId}`,
+        );
+        await tx.maintVehicleBooking.deleteMany({ where: { bookingId } });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   /** Ručni run rokova vozila (RPC; dedupe u DB → idempotentan). */
   vehicleDeadlineCheck(email: string, dto: DeadlineCheckDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ enqueued: number; skipped: number }[]>(
-        Prisma.sql`SELECT * FROM public.maint_check_vehicle_deadlines(${dto.lookaheadDays ?? 30}::int)`,
-      );
-      const r = rows[0];
-      return {
-        data: {
-          enqueued: Number(r?.enqueued ?? 0),
-          skipped: Number(r?.skipped ?? 0),
-        },
-      };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<
+          { enqueued: number; skipped: number }[]
+        >(
+          Prisma.sql`SELECT * FROM public.maint_check_vehicle_deadlines(${dto.lookaheadDays ?? 30}::int)`,
+        );
+        const r = rows[0];
+        return {
+          data: {
+            enqueued: Number(r?.enqueued ?? 0),
+            skipped: Number(r?.skipped ?? 0),
+          },
+        };
+      },
+      // ⚠️ Bez role-gejta — `maint_check_vehicle_deadlines` je u sy15 DEFINER
+      // funkcija BEZ ijedne provere prava (izmereno u fn-defs snapshot-u); modul
+      // gejtuje HTTP guard. Dodavanje gejta ovde bilo bi tiha promena ponašanja.
+      //
+      // 🔴 Dedupe je u `postojiRok` (entitet + `deadline_kind` + `deadline_date`
+      // uz `status IN ('queued','sent')`) — dva uzastopna poziva za isti rok
+      // upisuju TAČNO JEDAN red u `maint_notification_log`, drugi ide u `skipped`.
+      // Bez toga bi vozači svakog dana dobijali isto obaveštenje.
+      async (tx) => ({
+        data: await this.fn30.checkVehicleDeadlines(
+          tx,
+          dto.lookaheadDays ?? 30,
+        ),
+      }),
+      // Tri petlje (vozila, vozači, dokumenta) + `enqueue` po nalazu probijaju
+      // podrazumevanih 5 s Prisma transakcije na punom skupu.
+      { timeoutMs: 60_000 },
+    );
   }
 
   // ---------- Vlasnici vozila ----------
@@ -7225,6 +8152,24 @@ export class OdrzavanjeService {
             updatedBy: uid,
           },
         });
+      },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          this.assert30(
+            this.az.canWriteStock(s),
+            "Nemate pravo nad: Vlasnik vozila",
+          );
+          return tx.maintVehicleOwner.create({
+            data: {
+              name: dto.name.trim(),
+              ownerType: dto.ownerType ?? "spoljni",
+              contact: dto.contact ?? null,
+              notes: dto.notes ?? null,
+              active: true,
+              updatedBy: s.userId,
+            },
+          });
+        }),
       },
     );
   }
@@ -7265,124 +8210,277 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          // 🔴 VOZAČ JE LIČNI PODATAK (JMBG, adresa, lekarski). `maint_drivers_insert`
+          // = erp adm/mgmt ∨ chief/admin — UŽE od `maint_drivers_select`
+          // (`canReadAllDrivers`, koji uključuje i tehničara/operatera).
+          this.assert30(this.az.canWriteStock(s), "Nemate pravo nad: Vozač");
+          // 🔴 `auth_user_id` je u 3.0 `users.id` (Int), a DTO nosi sy15 uuid.
+          // Prevod ovde NE POSTOJI: spoljni vozač ionako nema nalog, a interni se
+          // vezuje kroz `lookupEmployees` (numerički id). Zato se ne-numerička
+          // vrednost odbija umesto da tiho padne u NULL i „odveže" vozača.
+          const authUserId = this.authUserId30(dto.authUserId, dto.isInternal);
+          return tx.maintDriver.create({
+            data: {
+              fullName: dto.fullName.trim(),
+              isInternal: dto.isInternal !== false,
+              authUserId,
+              driversLicenseNumber: dto.driversLicenseNumber.trim(),
+              driversLicenseCategories: dto.driversLicenseCategories
+                .map((c) => c.trim())
+                .filter(Boolean),
+              driversLicenseValidUntil: this.toDbDate(
+                dto.driversLicenseValidUntil,
+              )!,
+              idCardNumber: dto.idCardNumber ?? null,
+              idCardValidUntil: this.toDbDate(dto.idCardValidUntil) ?? null,
+              medicalCheckValidUntil:
+                this.toDbDate(dto.medicalCheckValidUntil) ?? null,
+              phone: dto.phone ?? null,
+              jmbg: dto.jmbg ?? null,
+              address: dto.address ?? null,
+              notes: dto.notes ?? null,
+              active: dto.active !== false,
+              createdBy: s.userId,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
+  /**
+   * `maint_drivers.auth_user_id`: u sy15 `auth.users.id` (uuid), u 3.0 `users.id`
+   * (Int) — odluka 2 seobe. DTO je pisan za sy15, pa vrednost mora da se pročita
+   * kao broj; sve što nije broj je greška, NIKAD tiho `null`.
+   *
+   * Spoljni vozač (`isInternal === false`) uvek dobija `null` — to je skriveno
+   * pravilo 11 (DB CHECK), isto u obe baze.
+   */
+  private authUserId30(
+    raw: string | null | undefined,
+    isInternal: boolean | undefined,
+  ): number | null {
+    if (isInternal === false) return null;
+    if (raw == null || raw === "") return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n)) {
+      throw new UnprocessableEntityException(
+        `„${raw}" nije korisnički ID iz 3.0 baze (očekivan je broj) — izaberi zaposlenog iz liste`,
+      );
+    }
+    return n;
+  }
+
   async updateDriver(email: string, id: string, dto: UpdateDriverDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
-      const uid = await this.uid(tx);
-      // Skriveno pravilo 11 (DB CHECK): spoljni vozač NE sme imati auth_user_id.
-      // Kad payload nosi is_internal=false → auth_user_id se forsira na null (paritet
-      // insertMaintDriver, maintenance.js:2836); inače se postavlja ako je zadat (null = odveži).
-      const authUserIdPatch =
-        dto.isInternal === false
-          ? { authUserId: null }
-          : dto.authUserId !== undefined
-            ? { authUserId: dto.authUserId }
-            : {};
-      const { count } = await tx.maintDriver.updateMany({
-        where: { driverId: id },
-        data: {
-          ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
-          ...(dto.isInternal !== undefined
-            ? { isInternal: dto.isInternal }
-            : {}),
-          ...authUserIdPatch,
-          ...(dto.driversLicenseNumber !== undefined
-            ? { driversLicenseNumber: dto.driversLicenseNumber }
-            : {}),
-          ...(dto.driversLicenseCategories !== undefined
-            ? { driversLicenseCategories: dto.driversLicenseCategories }
-            : {}),
-          ...(dto.driversLicenseValidUntil !== undefined
-            ? {
-                driversLicenseValidUntil: this.toDbDate(
-                  dto.driversLicenseValidUntil,
-                ),
-              }
-            : {}),
-          ...(dto.idCardNumber !== undefined
-            ? { idCardNumber: dto.idCardNumber }
-            : {}),
-          ...(dto.idCardValidUntil !== undefined
-            ? { idCardValidUntil: this.toDbDate(dto.idCardValidUntil) }
-            : {}),
-          ...(dto.medicalCheckValidUntil !== undefined
-            ? {
-                medicalCheckValidUntil: this.toDbDate(
-                  dto.medicalCheckValidUntil,
-                ),
-              }
-            : {}),
-          ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
-          ...(dto.jmbg !== undefined ? { jmbg: dto.jmbg } : {}),
-          ...(dto.address !== undefined ? { address: dto.address } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.active !== undefined ? { active: dto.active } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Vozač ${id}`);
-      return {
-        data: await tx.maintDriver.findUnique({ where: { driverId: id } }),
-      };
-    });
+    // Polja koja su ista u obe baze (bez `auth_user_id` — v. `authUserId30`).
+    const patch = {
+      ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
+      ...(dto.isInternal !== undefined ? { isInternal: dto.isInternal } : {}),
+      ...(dto.driversLicenseNumber !== undefined
+        ? { driversLicenseNumber: dto.driversLicenseNumber }
+        : {}),
+      ...(dto.driversLicenseCategories !== undefined
+        ? { driversLicenseCategories: dto.driversLicenseCategories }
+        : {}),
+      ...(dto.driversLicenseValidUntil !== undefined
+        ? {
+            driversLicenseValidUntil: this.toDbDate(
+              dto.driversLicenseValidUntil,
+            ),
+          }
+        : {}),
+      ...(dto.idCardNumber !== undefined
+        ? { idCardNumber: dto.idCardNumber }
+        : {}),
+      ...(dto.idCardValidUntil !== undefined
+        ? { idCardValidUntil: this.toDbDate(dto.idCardValidUntil) }
+        : {}),
+      ...(dto.medicalCheckValidUntil !== undefined
+        ? { medicalCheckValidUntil: this.toDbDate(dto.medicalCheckValidUntil) }
+        : {}),
+      ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+      ...(dto.jmbg !== undefined ? { jmbg: dto.jmbg } : {}),
+      ...(dto.address !== undefined ? { address: dto.address } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
+    };
+    // Skriveno pravilo 11 (DB CHECK): spoljni vozač NE sme imati auth_user_id.
+    // Kad payload nosi is_internal=false → auth_user_id se forsira na null (paritet
+    // insertMaintDriver, maintenance.js:2836); inače se postavlja ako je zadat (null = odveži).
+    const diraAuthUserId =
+      dto.isInternal === false || dto.authUserId !== undefined;
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+        const uid = await this.uid(tx);
+        const authUserIdPatch =
+          dto.isInternal === false
+            ? { authUserId: null }
+            : dto.authUserId !== undefined
+              ? { authUserId: dto.authUserId }
+              : {};
+        const { count } = await tx.maintDriver.updateMany({
+          where: { driverId: id },
+          data: {
+            ...patch,
+            ...authUserIdPatch,
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Vozač ${id}`);
+        return {
+          data: await tx.maintDriver.findUnique({ where: { driverId: id } }),
+        };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+        if (!exists) throw new NotFoundException(`Vozač ${id} ne postoji`);
+        // `maint_drivers_update` = erp adm/mgmt ∨ chief/admin. 🔴 NIJE
+        // `canReadAllDrivers`: tehničar/operater vozača VIDI, ali ga NE MENJA.
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Vozač ${id}`,
+        );
+        const authUserIdPatch = diraAuthUserId
+          ? { authUserId: this.authUserId30(dto.authUserId, dto.isInternal) }
+          : {};
+        await tx.maintDriver.updateMany({
+          where: { driverId: id },
+          data: {
+            ...patch,
+            ...authUserIdPatch,
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        return {
+          data: await tx.maintDriver.findUnique({ where: { driverId: id } }),
+        };
+      },
+    );
   }
 
   archiveDriver(email: string, id: string, reason: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintDriver.updateMany({
-        where: { driverId: id },
-        data: {
-          archivedAt: new Date(),
-          archiveReason: reason.trim(),
-          active: false,
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Vozač ${id}`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintDriver.updateMany({
+          where: { driverId: id },
+          data: {
+            archivedAt: new Date(),
+            archiveReason: reason.trim(),
+            active: false,
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Vozač ${id}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+        if (!exists) throw new NotFoundException(`Vozač ${id} ne postoji`);
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Vozač ${id}`,
+        );
+        await tx.maintDriver.updateMany({
+          where: { driverId: id },
+          data: {
+            archivedAt: new Date(),
+            archiveReason: reason.trim(),
+            active: false,
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   restoreDriver(email: string, id: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintDriver.updateMany({
-        where: { driverId: id },
-        data: {
-          archivedAt: null,
-          archiveReason: null,
-          active: true,
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Vozač ${id}`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintDriver.updateMany({
+          where: { driverId: id },
+          data: {
+            archivedAt: null,
+            archiveReason: null,
+            active: true,
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Vozač ${id}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+        if (!exists) throw new NotFoundException(`Vozač ${id} ne postoji`);
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Vozač ${id}`,
+        );
+        await tx.maintDriver.updateMany({
+          where: { driverId: id },
+          data: {
+            archivedAt: null,
+            archiveReason: null,
+            active: true,
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   /** Hard-delete vozača (RLS: erp adm/mgmt ∨ SAMO maint admin profil — chief NE, §2.5.9). */
   async deleteDriver(email: string, id: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
-      const { count } = await tx.maintDriver.deleteMany({
-        where: { driverId: id },
-      });
-      this.assertAffected(exists, count, `Vozač ${id}`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+        const { count } = await tx.maintDriver.deleteMany({
+          where: { driverId: id },
+        });
+        this.assertAffected(exists, count, `Vozač ${id}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintDriver.count({ where: { driverId: id } })) > 0;
+        if (!exists) throw new NotFoundException(`Vozač ${id} ne postoji`);
+        // 🔴 `maint_drivers_delete` je UŽE od izmene: erp adm/mgmt ∨ SAMO maint
+        // `admin` profil — `chief` NE sme (§2.5.9). Zato `canDeleteDriver`, a ne
+        // `canWriteStock`; brisanje vozača briše i PII trag zauvek.
+        this.assert30(
+          this.az.canDeleteDriver(s),
+          `Nemate pravo nad: Vozač ${id}`,
+        );
+        await tx.maintDriver.deleteMany({ where: { driverId: id } });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   // ---------- Servisni plan IT/objekti + generisanje WO ----------
@@ -7418,6 +8516,29 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          // `maint_asp_write` je [ALL] politika: isti izraz za I/U/D.
+          this.assert30(
+            this.az.canWriteStock(s),
+            "Nemate pravo nad: Plan servisa sredstva",
+          );
+          return tx.maintAssetServicePlan.create({
+            data: {
+              assetId,
+              name: dto.name.trim(),
+              intervalMonths,
+              lastDoneAt: this.toDbDate(dto.lastDoneAt) ?? null,
+              priority: dto.priority ?? "p4_planirano",
+              notes: dto.notes ?? null,
+              active: dto.active ?? true,
+              plannedCost: dto.plannedCost ?? null,
+              createdBy: s.userId,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
@@ -7429,56 +8550,106 @@ export class OdrzavanjeService {
     const patchMonths = normalizeAssetIntervalMonths(dto.intervalMonths, {
       required: false,
     });
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintAssetServicePlan.updateMany({
-        where: { planId },
-        data: {
-          ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(patchMonths !== undefined ? { intervalMonths: patchMonths } : {}),
-          ...(dto.lastDoneAt !== undefined
-            ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) }
-            : {}),
-          ...(dto.priority !== undefined
-            ? { priority: dto.priority as never }
-            : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.active !== undefined ? { active: dto.active } : {}),
-          ...(dto.plannedCost !== undefined
-            ? { plannedCost: dto.plannedCost }
-            : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Plan servisa ${planId}`);
-      return { data: { ok: true } };
-    });
+    const patch = {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(patchMonths !== undefined ? { intervalMonths: patchMonths } : {}),
+      ...(dto.lastDoneAt !== undefined
+        ? { lastDoneAt: this.toDbDate(dto.lastDoneAt) }
+        : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
+      ...(dto.plannedCost !== undefined
+        ? { plannedCost: dto.plannedCost }
+        : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintAssetServicePlan.updateMany({
+          where: { planId },
+          data: {
+            ...patch,
+            ...(dto.priority !== undefined
+              ? { priority: dto.priority as never }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Plan servisa ${planId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
+        if (!exists)
+          throw new NotFoundException(`Plan servisa ${planId} ne postoji`);
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Plan servisa ${planId}`,
+        );
+        await tx.maintAssetServicePlan.updateMany({
+          where: { planId },
+          data: {
+            ...patch,
+            ...(dto.priority !== undefined ? { priority: dto.priority } : {}),
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   async deleteAssetServicePlan(email: string, planId: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
-      const { count } = await tx.maintAssetServicePlan.deleteMany({
-        where: { planId },
-      });
-      this.assertAffected(exists, count, `Plan servisa ${planId}`);
-      return { data: { ok: true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
+        const { count } = await tx.maintAssetServicePlan.deleteMany({
+          where: { planId },
+        });
+        this.assertAffected(exists, count, `Plan servisa ${planId}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintAssetServicePlan.count({ where: { planId } })) > 0;
+        if (!exists)
+          throw new NotFoundException(`Plan servisa ${planId} ne postoji`);
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Plan servisa ${planId}`,
+        );
+        await tx.maintAssetServicePlan.deleteMany({ where: { planId } });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   ensureAssetServiceWos(email: string, assetId?: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ n: number }[]>(
-        Prisma.sql`SELECT public.ensure_asset_service_wos(${assetId ?? null}::uuid) AS n`,
-      );
-      const created = Number(rows[0]?.n ?? 0);
-      if (created > 0) await this.seedEstimatedCostFromPlan(tx, "asset");
-      return { data: { created } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ n: number }[]>(
+          Prisma.sql`SELECT public.ensure_asset_service_wos(${assetId ?? null}::uuid) AS n`,
+        );
+        const created = Number(rows[0]?.n ?? 0);
+        if (created > 0) await this.seedEstimatedCostFromPlan(tx, "asset");
+        return { data: { created } };
+      },
+      async (tx, s) => {
+        // Idempotentno kao i vozilski parnjak: `has_open_wo = FALSE` u view-u.
+        const created = await this.fn30.ensureAssetServiceWos(tx, s, assetId);
+        if (created > 0) await this.seedEstimatedCost30(tx, "asset");
+        return { data: { created } };
+      },
+    );
   }
 
   // ---------- Zalihe: delovi + dobavljači + stock ledger (insert-only) ----------
@@ -7507,43 +8678,80 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          this.assert30(this.az.canWriteStock(s), "Nemate pravo nad: Deo");
+          return tx.maintPart.create({
+            data: {
+              partCode: dto.partCode.trim(),
+              name: dto.name.trim(),
+              description: dto.description ?? null,
+              unit: dto.unit ?? "kom",
+              supplierId: dto.supplierId ?? null,
+              manufacturer: dto.manufacturer ?? null,
+              model: dto.model ?? null,
+              minStock: dto.minStock ?? 0,
+              currentStock: dto.currentStock ?? 0,
+              unitCost: dto.unitCost ?? null,
+              active: dto.active ?? true,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
   async updatePart(email: string, id: string, dto: UpdatePartDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists = (await tx.maintPart.count({ where: { partId: id } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintPart.updateMany({
-        where: { partId: id },
-        data: {
-          ...(dto.partCode !== undefined ? { partCode: dto.partCode } : {}),
-          ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.description !== undefined
-            ? { description: dto.description }
-            : {}),
-          ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
-          ...(dto.supplierId !== undefined
-            ? { supplierId: dto.supplierId }
-            : {}),
-          ...(dto.manufacturer !== undefined
-            ? { manufacturer: dto.manufacturer }
-            : {}),
-          ...(dto.model !== undefined ? { model: dto.model } : {}),
-          ...(dto.minStock !== undefined ? { minStock: dto.minStock } : {}),
-          // current_stock održava trigger iz ledger-a; ručni patch dozvoljen (paritet 1.0).
-          ...(dto.currentStock !== undefined
-            ? { currentStock: dto.currentStock }
-            : {}),
-          ...(dto.unitCost !== undefined ? { unitCost: dto.unitCost } : {}),
-          ...(dto.active !== undefined ? { active: dto.active } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Deo ${id}`);
-      return { data: await tx.maintPart.findUnique({ where: { partId: id } }) };
-    });
+    const patch = {
+      ...(dto.partCode !== undefined ? { partCode: dto.partCode } : {}),
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.description !== undefined
+        ? { description: dto.description }
+        : {}),
+      ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+      ...(dto.supplierId !== undefined ? { supplierId: dto.supplierId } : {}),
+      ...(dto.manufacturer !== undefined
+        ? { manufacturer: dto.manufacturer }
+        : {}),
+      ...(dto.model !== undefined ? { model: dto.model } : {}),
+      ...(dto.minStock !== undefined ? { minStock: dto.minStock } : {}),
+      // current_stock održava trigger iz ledger-a; ručni patch dozvoljen (paritet 1.0).
+      ...(dto.currentStock !== undefined
+        ? { currentStock: dto.currentStock }
+        : {}),
+      ...(dto.unitCost !== undefined ? { unitCost: dto.unitCost } : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintPart.count({ where: { partId: id } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintPart.updateMany({
+          where: { partId: id },
+          data: { ...patch, updatedBy: uid, updatedAt: new Date() },
+        });
+        this.assertAffected(exists, count, `Deo ${id}`);
+        return {
+          data: await tx.maintPart.findUnique({ where: { partId: id } }),
+        };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintPart.count({ where: { partId: id } })) > 0;
+        if (!exists) throw new NotFoundException(`Deo ${id} ne postoji`);
+        this.assert30(this.az.canWriteStock(s), `Nemate pravo nad: Deo ${id}`);
+        await tx.maintPart.updateMany({
+          where: { partId: id },
+          data: { ...patch, updatedBy: s.userId, updatedAt: new Date() },
+        });
+        return {
+          data: await tx.maintPart.findUnique({ where: { partId: id } }),
+        };
+      },
+    );
   }
 
   /** Insert-only kretanje zaliha (trigger primenjuje delta na current_stock; sme u minus). */
@@ -7571,7 +8779,82 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          // `maint_stock_movements_insert` = created_by = uid ∧ (erp adm/mgmt ∨
+          // technician/chief/admin) ∧ (wo_id IS NULL ∨ nalog je vidljiv).
+          this.assert30(
+            this.az.canWriteStock(s) || s.profileRole === "technician",
+            "Nemate pravo nad: Kretanje zaliha",
+          );
+          if (dto.woId) await this.assertWoVidljiv30(tx, s, dto.woId);
+          const red = await tx.maintPartStockMovement.create({
+            data: {
+              partId,
+              woId: dto.woId ?? null,
+              movementType: dto.movementType,
+              quantity: dto.quantity,
+              unitCost: dto.unitCost ?? null,
+              note: dto.note ?? null,
+              createdBy: s.userId,
+            },
+          });
+          // ═══════════════════════════════════════════════════════════════
+          // 🔴 OVAJ POZIV JE OBAVEZAN — 3.0 NEMA TRIGGER
+          // ═══════════════════════════════════════════════════════════════
+          // U sy15 `maint_apply_part_stock_movement` je AFTER INSERT trigger, pa
+          // je `current_stock` održavala baza. U 3.0 tog trigera NEMA (mereno:
+          // migracija prenosi 23 mehanička trigera, ovaj nije među njima) —
+          // postoji SAMO kao `OdrzavanjeFnService.applyPartStockMovement`.
+          // Upis u ledger mimo ovog poziva TIHO razilazi `current_stock` sa
+          // zbirom kretanja: nema greške, nema loga, i vidi se tek na popisu.
+          // Zato je u ISTOJ transakciji — ledger i stanje su jedan potez.
+          await this.fn30.applyPartStockMovement(tx, {
+            partId,
+            movementType: dto.movementType,
+            quantity: dto.quantity,
+          });
+          return red;
+        }),
+      },
     );
+  }
+
+  /**
+   * `maint_wo_row_visible(...)` nad konkretnim nalogom — u sy15 ga je nosio
+   * `EXISTS (…)` u WITH CHECK klauzuli, pa ga kod nije morao pisati.
+   */
+  private async assertWoVidljiv30(
+    tx: OdrzavanjeTx,
+    s: MaintScope,
+    woId: string,
+  ): Promise<void> {
+    const wo = await tx.maintWorkOrder.findUnique({
+      where: { woId },
+      select: {
+        assignedTo: true,
+        reportedBy: true,
+        asset: {
+          select: {
+            assetType: true,
+            machine: { select: { machineCode: true } },
+          },
+        },
+      },
+    });
+    if (!wo) throw new NotFoundException(`Radni nalog ${woId} ne postoji`);
+    const vidljiv = this.az.woRowVisible(s, {
+      assignedTo: wo.assignedTo,
+      reportedBy: wo.reportedBy,
+      asset: wo.asset
+        ? {
+            assetType: wo.asset.assetType,
+            machineCode: wo.asset.machine?.machineCode ?? null,
+          }
+        : null,
+    });
+    if (!vidljiv)
+      throw new ForbiddenException(`Nemate pravo nad: Radni nalog ${woId}`);
   }
 
   createSupplier(email: string, dto: CreateSupplierDto) {
@@ -7593,35 +8876,82 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          this.assert30(
+            this.az.canWriteStock(s),
+            "Nemate pravo nad: Dobavljač",
+          );
+          return tx.maintSupplier.create({
+            data: {
+              name: dto.name.trim(),
+              contact: dto.contact ?? null,
+              email: dto.email ?? null,
+              phone: dto.phone ?? null,
+              notes: dto.notes ?? null,
+              active: dto.active ?? true,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
   async updateSupplier(email: string, id: string, dto: UpdateSupplierDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintSupplier.count({ where: { supplierId: id } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintSupplier.updateMany({
-        where: { supplierId: id },
-        data: {
-          ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.contact !== undefined ? { contact: dto.contact } : {}),
-          ...(dto.email !== undefined ? { email: dto.email } : {}),
-          ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.active !== undefined ? { active: dto.active } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Dobavljač ${id}`);
-      return {
-        data: await tx.maintSupplier.findUnique({ where: { supplierId: id } }),
-      };
-    });
+    const patch = {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.contact !== undefined ? { contact: dto.contact } : {}),
+      ...(dto.email !== undefined ? { email: dto.email } : {}),
+      ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintSupplier.count({ where: { supplierId: id } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintSupplier.updateMany({
+          where: { supplierId: id },
+          data: { ...patch, updatedBy: uid, updatedAt: new Date() },
+        });
+        this.assertAffected(exists, count, `Dobavljač ${id}`);
+        return {
+          data: await tx.maintSupplier.findUnique({
+            where: { supplierId: id },
+          }),
+        };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintSupplier.count({ where: { supplierId: id } })) > 0;
+        if (!exists) throw new NotFoundException(`Dobavljač ${id} ne postoji`);
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Dobavljač ${id}`,
+        );
+        await tx.maintSupplier.updateMany({
+          where: { supplierId: id },
+          data: { ...patch, updatedBy: s.userId, updatedAt: new Date() },
+        });
+        return {
+          data: await tx.maintSupplier.findUnique({
+            where: { supplierId: id },
+          }),
+        };
+      },
+    );
   }
 
   // ---------- CMMS lokacije (≠ loc_locations) ----------
+
+  // 🔴 `maint_locations` (CMMS stablo) NIJE `loc_locations` (domen Lokacije,
+  // korak 3 gašenja sy15). Zamena tabela ne bi dala nikakvu grešku — samo
+  // pogrešno stablo u padajućoj listi sredstava. Ovde se dira ISKLJUČIVO
+  // `maint_locations`; most ka `loc_locations` je `OdrzavanjeLokacijeMostService`
+  // i on se ovde NE poziva.
 
   createLocation(email: string, dto: CreateLocationDto) {
     return this.runIdem(
@@ -7638,31 +8968,67 @@ export class OdrzavanjeService {
             active: dto.active ?? true,
           },
         }),
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          // `maint_locations_insert` = erp_admin ∨ chief/admin — 🔴 UŽE od
+          // `canWriteStock` (menadzment/magacioner NE menjaju CMMS stablo).
+          this.assert30(
+            this.az.canWriteCatalog(s),
+            "Nemate pravo nad: CMMS lokacija",
+          );
+          return tx.maintLocation.create({
+            data: {
+              name: dto.name.trim(),
+              code: dto.code?.trim() || null,
+              locationType: dto.locationType?.trim() || "lokacija",
+              parentLocationId: dto.parentLocationId ?? null,
+              active: dto.active ?? true,
+            },
+          });
+        }),
+      },
     );
   }
 
   async updateLocation(email: string, id: string, dto: UpdateLocationDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintLocation.count({ where: { locationId: id } })) > 0;
-      const { count } = await tx.maintLocation.updateMany({
-        where: { locationId: id },
-        data: {
-          ...(dto.name !== undefined ? { name: dto.name } : {}),
-          ...(dto.code !== undefined ? { code: dto.code || null } : {}),
-          ...(dto.locationType !== undefined
-            ? { locationType: dto.locationType }
-            : {}),
-          ...(dto.parentLocationId !== undefined
-            ? { parentLocationId: dto.parentLocationId }
-            : {}),
-          ...(dto.active !== undefined ? { active: dto.active } : {}),
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Lokacija ${id}`);
-      return { data: { ok: true } };
-    });
+    const patch = {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.code !== undefined ? { code: dto.code || null } : {}),
+      ...(dto.locationType !== undefined
+        ? { locationType: dto.locationType }
+        : {}),
+      ...(dto.parentLocationId !== undefined
+        ? { parentLocationId: dto.parentLocationId }
+        : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintLocation.count({ where: { locationId: id } })) > 0;
+        const { count } = await tx.maintLocation.updateMany({
+          where: { locationId: id },
+          data: { ...patch, updatedAt: new Date() },
+        });
+        this.assertAffected(exists, count, `Lokacija ${id}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintLocation.count({ where: { locationId: id } })) > 0;
+        if (!exists) throw new NotFoundException(`Lokacija ${id} ne postoji`);
+        this.assert30(
+          this.az.canWriteCatalog(s),
+          `Nemate pravo nad: Lokacija ${id}`,
+        );
+        await tx.maintLocation.updateMany({
+          where: { locationId: id },
+          data: { ...patch, updatedAt: new Date() },
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   // ---------- Dokumenta (storage proxy F4; svi entiteti + valid_until) ----------
@@ -7679,30 +9045,52 @@ export class OdrzavanjeService {
       );
     }
     const uuid = randomUUID().replace(/-/g, "").slice(0, 16);
+    // 🔴 Putanja se NE MENJA pod `3.0` — bajtovi ostaju u sy15 storage-u, a
+    // `storage_path` je jedina veza sa njima (v. `uploadVehiclePhoto`).
     const storagePath = `documents/${dto.entityType}/${dto.entityId}/${uuid}_${this.safeFileName(file.originalname)}`;
-    const meta = await this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      return tx.maintDocument.create({
-        data: {
-          entityType: dto.entityType as never,
-          entityId: dto.entityId,
-          assetId: dto.entityType === "asset" ? dto.entityId : null,
-          woId: dto.entityType === "work_order" ? dto.entityId : null,
-          incidentId: dto.entityType === "incident" ? dto.entityId : null,
-          preventiveTaskId:
-            dto.entityType === "preventive_task" ? dto.entityId : null,
-          driverId: dto.entityType === "driver" ? dto.entityId : null,
-          fileName: file.originalname,
-          storagePath,
-          mimeType: file.mimetype ?? null,
-          sizeBytes: BigInt(file.buffer.length),
-          category: dto.category ?? null,
-          description: dto.description ?? null,
-          validUntil: this.toDbDate(dto.validUntil) ?? null,
-          uploadedBy: uid,
-        },
-      });
-    });
+    const veze = {
+      assetId: dto.entityType === "asset" ? dto.entityId : null,
+      woId: dto.entityType === "work_order" ? dto.entityId : null,
+      incidentId: dto.entityType === "incident" ? dto.entityId : null,
+      preventiveTaskId:
+        dto.entityType === "preventive_task" ? dto.entityId : null,
+      driverId: dto.entityType === "driver" ? dto.entityId : null,
+    };
+    const zajednicko = {
+      entityId: dto.entityId,
+      ...veze,
+      fileName: file.originalname,
+      storagePath,
+      mimeType: file.mimetype ?? null,
+      sizeBytes: BigInt(file.buffer.length),
+      category: dto.category ?? null,
+      description: dto.description ?? null,
+      validUntil: this.toDbDate(dto.validUntil) ?? null,
+    };
+    const meta = await this.withUser30(
+      email,
+      async (tx) => {
+        const uid = await this.uid(tx);
+        return tx.maintDocument.create({
+          data: {
+            entityType: dto.entityType as never,
+            ...zajednicko,
+            uploadedBy: uid,
+          },
+        });
+      },
+      async (tx, s) => {
+        // `maint_documents_insert` CHECK = uploaded_by = uid ∧ document_visible.
+        await this.assertDocumentVisible30(tx, s, dto.entityType, dto.entityId);
+        return tx.maintDocument.create({
+          data: {
+            entityType: dto.entityType,
+            ...zajednicko,
+            uploadedBy: s.userId,
+          },
+        });
+      },
+    );
     try {
       await this.storage.upload(
         MAINT_BUCKET,
@@ -7712,120 +9100,289 @@ export class OdrzavanjeService {
         false,
       );
     } catch (e) {
-      await this.withUserMapped(email, async (tx) => {
-        await tx.maintDocument.deleteMany({
-          where: { documentId: meta.documentId },
-        });
-      }).catch(() => {});
+      await this.withUser30(
+        email,
+        async (tx) => {
+          await tx.maintDocument.deleteMany({
+            where: { documentId: meta.documentId },
+          });
+        },
+        async (tx) => {
+          await tx.maintDocument.deleteMany({
+            where: { documentId: meta.documentId },
+          });
+        },
+      ).catch(() => {});
       throw e;
     }
     return { data: this.withNumSize(meta) };
   }
 
-  updateDocument(email: string, id: string, dto: UpdateDocumentDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintDocument.count({ where: { documentId: id } })) > 0;
-      const { count } = await tx.maintDocument.updateMany({
-        where: { documentId: id },
-        data: {
-          ...(dto.validUntil !== undefined
-            ? { validUntil: this.toDbDate(dto.validUntil) }
-            : {}),
-          ...(dto.category !== undefined ? { category: dto.category } : {}),
-          ...(dto.description !== undefined
-            ? { description: dto.description }
-            : {}),
+  /**
+   * `maint_document_visible(entity_type, asset, wo, incident, task, driver)` nad
+   * entitetom KOJI SE TEK PRILAŽE. Kaskada ide istim redosledom kao izvor;
+   * `ELSE FALSE` znači da dokument bez ijedne poznate veze ne prolazi.
+   */
+  private async assertDocumentVisible30(
+    tx: OdrzavanjeTx,
+    s: MaintScope,
+    entityType: string,
+    entityId: string,
+  ): Promise<void> {
+    const odbij = () =>
+      new ForbiddenException(`Nemate pravo nad: ${entityType} ${entityId}`);
+    if (entityType === "asset") {
+      if (!(await this.assetVidljivo30(tx, s, entityId))) throw odbij();
+      return;
+    }
+    if (entityType === "work_order") {
+      await this.assertWoVidljiv30(tx, s, entityId);
+      return;
+    }
+    if (entityType === "incident") {
+      const inc = await tx.maintIncident.findUnique({
+        where: { id: entityId },
+        select: {
+          machineCode: true,
+          asset: {
+            select: {
+              assetType: true,
+              machine: { select: { machineCode: true } },
+            },
+          },
         },
       });
-      this.assertAffected(exists, count, `Dokument ${id}`);
-      return { data: { ok: true } };
+      if (!inc) throw new NotFoundException(`Kvar ${entityId} ne postoji`);
+      const ok = this.az.incidentRowVisible(s, {
+        machineCode: inc.machineCode,
+        asset: inc.asset
+          ? {
+              assetType: inc.asset.assetType,
+              machineCode: inc.asset.machine?.machineCode ?? null,
+            }
+          : null,
+      });
+      if (!ok) throw odbij();
+      return;
+    }
+    if (entityType === "preventive_task") {
+      // 🔴 Izvor NE gleda `tasks.asset_id` nego SREDSTVO MAŠINE zadatka
+      // (join po `machine_code`) — v. `documentListWhere`.
+      const t = await tx.maintTask.findUnique({
+        where: { id: entityId },
+        select: { machineCode: true },
+      });
+      if (!t) throw new NotFoundException(`Zadatak ${entityId} ne postoji`);
+      if (!this.az.machineVisible(s, t.machineCode)) throw odbij();
+      return;
+    }
+    if (entityType === "driver") {
+      const d = await tx.maintDriver.findUnique({
+        where: { driverId: entityId },
+        select: { authUserId: true },
+      });
+      if (!d) throw new NotFoundException(`Vozač ${entityId} ne postoji`);
+      // 🔴 Per-red grana: vozač bez ijedne role vidi (i prilaže na) SVOJ red.
+      const ok =
+        this.az.canReadAllDrivers(s) ||
+        (d.authUserId != null && d.authUserId === s.userId);
+      if (!ok) throw odbij();
+      return;
+    }
+    throw odbij(); // `ELSE FALSE`
+  }
+
+  /** Vidljivost POSTOJEĆEG dokumenta — ista kaskada, ali po redu iz baze. */
+  private async assertExistingDocumentVisible30(
+    tx: OdrzavanjeTx,
+    s: MaintScope,
+    documentId: string,
+  ): Promise<{ storagePath: string; deletedAt: Date | null }> {
+    const doc = await tx.maintDocument.findUnique({
+      where: { documentId },
+      select: {
+        storagePath: true,
+        deletedAt: true,
+        entityType: true,
+        entityId: true,
+      },
     });
+    if (!doc) throw new NotFoundException(`Dokument ${documentId} ne postoji`);
+    await this.assertDocumentVisible30(tx, s, doc.entityType, doc.entityId);
+    return { storagePath: doc.storagePath, deletedAt: doc.deletedAt };
+  }
+
+  updateDocument(email: string, id: string, dto: UpdateDocumentDto) {
+    const patch = {
+      ...(dto.validUntil !== undefined
+        ? { validUntil: this.toDbDate(dto.validUntil) }
+        : {}),
+      ...(dto.category !== undefined ? { category: dto.category } : {}),
+      ...(dto.description !== undefined
+        ? { description: dto.description }
+        : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintDocument.count({ where: { documentId: id } })) > 0;
+        const { count } = await tx.maintDocument.updateMany({
+          where: { documentId: id },
+          data: patch,
+        });
+        this.assertAffected(exists, count, `Dokument ${id}`);
+        return { data: { ok: true } };
+      },
+      async (tx, s) => {
+        await this.assertExistingDocumentVisible30(tx, s, id);
+        await tx.maintDocument.updateMany({
+          where: { documentId: id },
+          data: patch,
+        });
+        return { data: { ok: true } };
+      },
+    );
   }
 
   async deleteDocument(email: string, id: string) {
-    const path = await this.withUserMapped(email, async (tx) => {
-      const row = await tx.maintDocument.findUnique({
-        where: { documentId: id },
-        select: { storagePath: true },
-      });
-      const exists = !!row;
-      const { count } = await tx.maintDocument.updateMany({
-        where: { documentId: id },
-        data: { deletedAt: new Date() },
-      });
-      this.assertAffected(exists, count, `Dokument ${id}`);
-      return row?.storagePath ?? null;
-    });
+    const path = await this.withUser30(
+      email,
+      async (tx) => {
+        const row = await tx.maintDocument.findUnique({
+          where: { documentId: id },
+          select: { storagePath: true },
+        });
+        const exists = !!row;
+        const { count } = await tx.maintDocument.updateMany({
+          where: { documentId: id },
+          data: { deletedAt: new Date() },
+        });
+        this.assertAffected(exists, count, `Dokument ${id}`);
+        return row?.storagePath ?? null;
+      },
+      async (tx, s) => {
+        const doc = await this.assertExistingDocumentVisible30(tx, s, id);
+        await tx.maintDocument.updateMany({
+          where: { documentId: id },
+          data: { deletedAt: new Date() },
+        });
+        return doc.storagePath;
+      },
+    );
     if (path) await this.storage.remove(MAINT_BUCKET, path);
     return { data: { ok: true } };
   }
 
   /** Presigned URL dokumenta (RLS SELECT presuđuje vidljivost PRE potpisivanja). */
   async signDocument(email: string, id: string) {
-    const path = await this.withUserMapped(email, async (tx) => {
-      const row = await tx.maintDocument.findUnique({
-        where: { documentId: id },
-        select: { storagePath: true, deletedAt: true },
-      });
-      if (!row || row.deletedAt)
-        throw new NotFoundException(`Dokument ${id} ne postoji`);
-      return row.storagePath;
-    });
+    const path = await this.withUser30(
+      email,
+      async (tx) => {
+        const row = await tx.maintDocument.findUnique({
+          where: { documentId: id },
+          select: { storagePath: true, deletedAt: true },
+        });
+        if (!row || row.deletedAt)
+          throw new NotFoundException(`Dokument ${id} ne postoji`);
+        return row.storagePath;
+      },
+      async (tx, s) => {
+        // Vidljivost PRE potpisa — potpisan URL više ne prolazi kroz prava.
+        const doc = await this.assertExistingDocumentVisible30(tx, s, id);
+        if (doc.deletedAt)
+          throw new NotFoundException(`Dokument ${id} ne postoji`);
+        return doc.storagePath;
+      },
+    );
     return { data: await this.storage.signUrl(MAINT_BUCKET, path, 300) };
   }
 
   // ---------- Podešavanja / notifikaciona pravila / retry ----------
 
   updateSettings(email: string, dto: UpdateSettingsDto) {
-    return this.withUserMapped(email, async (tx) => {
-      const uid = await this.uid(tx);
-      await tx.maintSettings.updateMany({
-        where: { id: 1 },
-        data: {
-          ...(dto.autoCreateWoMajor !== undefined
-            ? { autoCreateWoMajor: dto.autoCreateWoMajor }
-            : {}),
-          ...(dto.autoCreateWoCritical !== undefined
-            ? { autoCreateWoCritical: dto.autoCreateWoCritical }
-            : {}),
-          ...(dto.safetyMarkerRequiresWo !== undefined
-            ? { safetyMarkerRequiresWo: dto.safetyMarkerRequiresWo }
-            : {}),
-          ...(dto.defaultWoPriority !== undefined
-            ? { defaultWoPriority: dto.defaultWoPriority as never }
-            : {}),
-          ...(dto.majorWoDueHours !== undefined
-            ? { majorWoDueHours: dto.majorWoDueHours }
-            : {}),
-          ...(dto.criticalWoDueHours !== undefined
-            ? { criticalWoDueHours: dto.criticalWoDueHours }
-            : {}),
-          ...(dto.preventiveDueWarningDays !== undefined
-            ? { preventiveDueWarningDays: dto.preventiveDueWarningDays }
-            : {}),
-          ...(dto.notificationEnabled !== undefined
-            ? { notificationEnabled: dto.notificationEnabled }
-            : {}),
-          ...(dto.notifyOnMajorIncident !== undefined
-            ? { notifyOnMajorIncident: dto.notifyOnMajorIncident }
-            : {}),
-          ...(dto.notifyOnCriticalIncident !== undefined
-            ? { notifyOnCriticalIncident: dto.notifyOnCriticalIncident }
-            : {}),
-          ...(dto.notifyOnOverduePreventive !== undefined
-            ? { notifyOnOverduePreventive: dto.notifyOnOverduePreventive }
-            : {}),
-          ...(dto.notificationChannels !== undefined
-            ? { notificationChannels: dto.notificationChannels as never }
-            : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      return { data: await tx.maintSettings.findUnique({ where: { id: 1 } }) };
-    });
+    const patch = {
+      ...(dto.autoCreateWoMajor !== undefined
+        ? { autoCreateWoMajor: dto.autoCreateWoMajor }
+        : {}),
+      ...(dto.autoCreateWoCritical !== undefined
+        ? { autoCreateWoCritical: dto.autoCreateWoCritical }
+        : {}),
+      ...(dto.safetyMarkerRequiresWo !== undefined
+        ? { safetyMarkerRequiresWo: dto.safetyMarkerRequiresWo }
+        : {}),
+      ...(dto.majorWoDueHours !== undefined
+        ? { majorWoDueHours: dto.majorWoDueHours }
+        : {}),
+      ...(dto.criticalWoDueHours !== undefined
+        ? { criticalWoDueHours: dto.criticalWoDueHours }
+        : {}),
+      ...(dto.preventiveDueWarningDays !== undefined
+        ? { preventiveDueWarningDays: dto.preventiveDueWarningDays }
+        : {}),
+      ...(dto.notificationEnabled !== undefined
+        ? { notificationEnabled: dto.notificationEnabled }
+        : {}),
+      ...(dto.notifyOnMajorIncident !== undefined
+        ? { notifyOnMajorIncident: dto.notifyOnMajorIncident }
+        : {}),
+      ...(dto.notifyOnCriticalIncident !== undefined
+        ? { notifyOnCriticalIncident: dto.notifyOnCriticalIncident }
+        : {}),
+      ...(dto.notifyOnOverduePreventive !== undefined
+        ? { notifyOnOverduePreventive: dto.notifyOnOverduePreventive }
+        : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const uid = await this.uid(tx);
+        await tx.maintSettings.updateMany({
+          where: { id: 1 },
+          data: {
+            ...patch,
+            ...(dto.defaultWoPriority !== undefined
+              ? { defaultWoPriority: dto.defaultWoPriority as never }
+              : {}),
+            ...(dto.notificationChannels !== undefined
+              ? { notificationChannels: dto.notificationChannels as never }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        return {
+          data: await tx.maintSettings.findUnique({ where: { id: 1 } }),
+        };
+      },
+      async (tx, s) => {
+        // ⚠️ `maint_settings_update` je UŽE od `maint_settings_select`: čitaju i
+        // operater/tehničar, menjaju samo erp adm/mgmt ∨ chief/admin.
+        this.assert30(
+          this.az.canWriteStock(s),
+          "Nemate pravo nad: Podešavanja održavanja",
+        );
+        await tx.maintSettings.updateMany({
+          where: { id: 1 },
+          data: {
+            ...patch,
+            ...(dto.defaultWoPriority !== undefined
+              ? { defaultWoPriority: dto.defaultWoPriority }
+              : {}),
+            ...(dto.notificationChannels !== undefined
+              ? { notificationChannels: dto.notificationChannels }
+              : {}),
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        // 🔴 Čita se kroz `fn.settings(tx)`, ne sirovim `findUnique`: kad reda
+        // `id = 1` nema, sy15 funkcije su radile sa `SETTINGS_FALLBACK`-om, pa
+        // odgovor mora pokazati ONO PO ČEMU MODUL STVARNO RADI, a ne `null`.
+        return { data: await this.fn30.settings(tx) };
+      },
+    );
   }
 
   createNotificationRule(email: string, dto: CreateNotificationRuleDto) {
@@ -7850,6 +9407,28 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          this.assert30(
+            this.az.canWriteStock(s),
+            "Nemate pravo nad: Pravilo obaveštavanja",
+          );
+          return tx.maintNotificationRule.create({
+            data: {
+              eventType: dto.eventType ?? "incident_created",
+              severity: dto.severity ?? null,
+              assetType: dto.assetType ?? null,
+              targetRole: dto.targetRole ?? null,
+              channel: dto.channel ?? "in_app",
+              delayMinutes: dto.delayMinutes ?? 0,
+              escalationLevel: dto.escalationLevel ?? 0,
+              enabled: dto.enabled ?? true,
+              notes: dto.notes ?? null,
+              updatedBy: s.userId,
+            },
+          });
+        }),
+      },
     );
   }
 
@@ -7858,53 +9437,96 @@ export class OdrzavanjeService {
     id: string,
     dto: UpdateNotificationRuleDto,
   ) {
-    return this.withUserMapped(email, async (tx) => {
-      const exists =
-        (await tx.maintNotificationRule.count({ where: { ruleId: id } })) > 0;
-      const uid = await this.uid(tx);
-      const { count } = await tx.maintNotificationRule.updateMany({
-        where: { ruleId: id },
-        data: {
-          ...(dto.eventType !== undefined ? { eventType: dto.eventType } : {}),
-          ...(dto.severity !== undefined ? { severity: dto.severity } : {}),
-          ...(dto.assetType !== undefined
-            ? { assetType: dto.assetType as never }
-            : {}),
-          ...(dto.targetRole !== undefined
-            ? { targetRole: dto.targetRole as never }
-            : {}),
-          ...(dto.channel !== undefined
-            ? { channel: dto.channel as never }
-            : {}),
-          ...(dto.delayMinutes !== undefined
-            ? { delayMinutes: dto.delayMinutes }
-            : {}),
-          ...(dto.escalationLevel !== undefined
-            ? { escalationLevel: dto.escalationLevel }
-            : {}),
-          ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          updatedBy: uid,
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Pravilo ${id}`);
-      return {
-        data: await tx.maintNotificationRule.findUnique({
+    const patch = {
+      ...(dto.eventType !== undefined ? { eventType: dto.eventType } : {}),
+      ...(dto.severity !== undefined ? { severity: dto.severity } : {}),
+      ...(dto.delayMinutes !== undefined
+        ? { delayMinutes: dto.delayMinutes }
+        : {}),
+      ...(dto.escalationLevel !== undefined
+        ? { escalationLevel: dto.escalationLevel }
+        : {}),
+      ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const exists =
+          (await tx.maintNotificationRule.count({ where: { ruleId: id } })) > 0;
+        const uid = await this.uid(tx);
+        const { count } = await tx.maintNotificationRule.updateMany({
           where: { ruleId: id },
-        }),
-      };
-    });
+          data: {
+            ...patch,
+            ...(dto.assetType !== undefined
+              ? { assetType: dto.assetType as never }
+              : {}),
+            ...(dto.targetRole !== undefined
+              ? { targetRole: dto.targetRole as never }
+              : {}),
+            ...(dto.channel !== undefined
+              ? { channel: dto.channel as never }
+              : {}),
+            updatedBy: uid,
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Pravilo ${id}`);
+        return {
+          data: await tx.maintNotificationRule.findUnique({
+            where: { ruleId: id },
+          }),
+        };
+      },
+      async (tx, s) => {
+        const exists =
+          (await tx.maintNotificationRule.count({ where: { ruleId: id } })) > 0;
+        if (!exists) throw new NotFoundException(`Pravilo ${id} ne postoji`);
+        this.assert30(
+          this.az.canWriteStock(s),
+          `Nemate pravo nad: Pravilo ${id}`,
+        );
+        await tx.maintNotificationRule.updateMany({
+          where: { ruleId: id },
+          data: {
+            ...patch,
+            ...(dto.assetType !== undefined
+              ? { assetType: dto.assetType }
+              : {}),
+            ...(dto.targetRole !== undefined
+              ? { targetRole: dto.targetRole }
+              : {}),
+            ...(dto.channel !== undefined ? { channel: dto.channel } : {}),
+            updatedBy: s.userId,
+            updatedAt: new Date(),
+          },
+        });
+        return {
+          data: await tx.maintNotificationRule.findUnique({
+            where: { ruleId: id },
+          }),
+        };
+      },
+    );
   }
 
   /** Retry pale notifikacije (RPC: failed → queued; erp-admin ∨ chief/admin). Dispatch OSTAJE MRTAV (F1). */
   retryNotification(email: string, id: string) {
-    return this.withUserMapped(email, async (tx) => {
-      const rows = await tx.$queryRaw<{ ok: boolean }[]>(
-        Prisma.sql`SELECT public.maint_notification_retry(${id}::uuid) AS ok`,
-      );
-      return { data: { requeued: rows[0]?.ok === true } };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        const rows = await tx.$queryRaw<{ ok: boolean }[]>(
+          Prisma.sql`SELECT public.maint_notification_retry(${id}::uuid) AS ok`,
+        );
+        return { data: { requeued: rows[0]?.ok === true } };
+      },
+      // Gejt i `LEAST(attempts, 7)` su U SAMOM prepisu (`notificationRetry`) —
+      // ovde se ne ponavljaju da se ne raziđu sa izvorom.
+      async (tx, s) => ({
+        data: { requeued: await this.fn30.notificationRetry(tx, s, id) },
+      }),
+    );
   }
 
   // ============================================================================
@@ -7921,14 +9543,28 @@ export class OdrzavanjeService {
    * u CMMS Podešavanjima, samo za administraciju).
    */
   async listProfiles(email: string) {
-    return this.withUserMapped(email, async (tx) => {
-      await this.assertErpAdmin(tx);
-      const data = await tx.maintUserProfile.findMany({
-        orderBy: { fullName: "asc" },
-        take: 500,
-      });
-      return { data };
-    });
+    return this.withUser30(
+      email,
+      async (tx) => {
+        await this.assertErpAdmin(tx);
+        const data = await tx.maintUserProfile.findMany({
+          orderBy: { fullName: "asc" },
+          take: 500,
+        });
+        return { data };
+      },
+      async (tx, s) => {
+        this.assert30(
+          this.az.isErpAdmin(s),
+          "Samo ERP admin vidi profile održavanja",
+        );
+        const data = await tx.maintUserProfile.findMany({
+          orderBy: { fullName: "asc" },
+          take: 500,
+        });
+        return { data };
+      },
+    );
   }
 
   /**
@@ -7966,7 +9602,50 @@ export class OdrzavanjeService {
           },
         });
       },
+      {
+        fn30: this.idem30(email, async (tx, s) => {
+          this.assert30(
+            this.az.isErpAdmin(s),
+            "Samo ERP admin sme da menja profile održavanja",
+          );
+          // 🔴 `userId` je u 3.0 `users.id` (Int); DTO ga već nosi kao broj
+          // (`@IsInt`), ali ovde je i jedina razlika prema sy15 uuid-u.
+          const userId = this.profileUserId30(dto.userId);
+          const existing = await tx.maintUserProfile.findUnique({
+            where: { userId },
+          });
+          if (existing) {
+            throw new ConflictException(
+              "Profil sa ovim korisničkim ID-em već postoji (koristi izmenu)",
+            );
+          }
+          return tx.maintUserProfile.create({
+            data: {
+              userId,
+              fullName: dto.fullName.trim(),
+              role: dto.role,
+              assignedMachineCodes: (dto.assignedMachineCodes ?? [])
+                .map((c) => c.trim())
+                .filter(Boolean),
+              phone: dto.phone ?? null,
+              telegramChatId: dto.telegramChatId ?? null,
+              active: dto.active !== false,
+            },
+          });
+        }),
+      },
     );
+  }
+
+  /** `maint_user_profiles.user_id`: uuid u sy15, `users.id` (Int) u 3.0. */
+  private profileUserId30(raw: string | number): number {
+    const n = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isInteger(n)) {
+      throw new UnprocessableEntityException(
+        `„${raw}" nije korisnički ID iz 3.0 baze (očekivan je broj)`,
+      );
+    }
+    return n;
   }
 
   /**
@@ -7974,35 +9653,71 @@ export class OdrzavanjeService {
    * `role`/`active` menja ionako samo erp-admin (DB trigger). Idempotentan PATCH.
    */
   async updateProfile(email: string, id: string, dto: UpdateProfileDto) {
-    return this.withUserMapped(email, async (tx) => {
-      await this.assertErpAdmin(tx);
-      const exists =
-        (await tx.maintUserProfile.count({ where: { userId: id } })) > 0;
-      const { count } = await tx.maintUserProfile.updateMany({
-        where: { userId: id },
-        data: {
-          ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
-          ...(dto.role !== undefined ? { role: dto.role as never } : {}),
-          ...(dto.assignedMachineCodes !== undefined
-            ? {
-                assignedMachineCodes: dto.assignedMachineCodes
-                  .map((c) => c.trim())
-                  .filter(Boolean),
-              }
-            : {}),
-          ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
-          ...(dto.telegramChatId !== undefined
-            ? { telegramChatId: dto.telegramChatId }
-            : {}),
-          ...(dto.active !== undefined ? { active: dto.active } : {}),
-          updatedAt: new Date(),
-        },
-      });
-      this.assertAffected(exists, count, `Profil ${id}`);
-      return {
-        data: await tx.maintUserProfile.findUnique({ where: { userId: id } }),
-      };
-    });
+    const patch = {
+      ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
+      ...(dto.assignedMachineCodes !== undefined
+        ? {
+            assignedMachineCodes: dto.assignedMachineCodes
+              .map((c) => c.trim())
+              .filter(Boolean),
+          }
+        : {}),
+      ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+      ...(dto.telegramChatId !== undefined
+        ? { telegramChatId: dto.telegramChatId }
+        : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
+    };
+    return this.withUser30(
+      email,
+      async (tx) => {
+        await this.assertErpAdmin(tx);
+        const exists =
+          (await tx.maintUserProfile.count({ where: { userId: id } })) > 0;
+        const { count } = await tx.maintUserProfile.updateMany({
+          where: { userId: id },
+          data: {
+            ...patch,
+            ...(dto.role !== undefined ? { role: dto.role as never } : {}),
+            updatedAt: new Date(),
+          },
+        });
+        this.assertAffected(exists, count, `Profil ${id}`);
+        return {
+          data: await tx.maintUserProfile.findUnique({ where: { userId: id } }),
+        };
+      },
+      async (tx, s) => {
+        this.assert30(
+          this.az.isErpAdmin(s),
+          "Samo ERP admin sme da menja profile održavanja",
+        );
+        const userId = this.profileUserId30(id);
+        const stari = await tx.maintUserProfile.findUnique({
+          where: { userId },
+          select: { role: true, active: true },
+        });
+        if (!stari) throw new NotFoundException(`Profil ${id} ne postoji`);
+        // 🔴 Trigger `maint_profiles_guard_role` (BEFORE UPDATE) — u 3.0 postoji
+        // SAMO kao `assertProfileRoleChange`. Bez njega bi RLS grana „menjam svoj
+        // red" (koju erp-admin gejt ovde ionako pokriva) ostala bez druge brane.
+        this.fn30.assertProfileRoleChange(s, stari, {
+          role: dto.role,
+          active: dto.active,
+        });
+        await tx.maintUserProfile.updateMany({
+          where: { userId },
+          data: {
+            ...patch,
+            ...(dto.role !== undefined ? { role: dto.role } : {}),
+            updatedAt: new Date(),
+          },
+        });
+        return {
+          data: await tx.maintUserProfile.findUnique({ where: { userId } }),
+        };
+      },
+    );
   }
 
   // ============================================================================
@@ -8018,27 +9733,41 @@ export class OdrzavanjeService {
    */
   async lookupEmployees(email: string, q?: string) {
     const term = (q ?? "").trim();
+    const gde = {
+      isActive: true,
+      ...(term
+        ? {
+            OR: [
+              { fullName: { contains: term, mode: "insensitive" as const } },
+              { firstName: { contains: term, mode: "insensitive" as const } },
+              { lastName: { contains: term, mode: "insensitive" as const } },
+            ],
+          }
+        : {}),
+    };
+    const izbor = {
+      id: true,
+      fullName: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+    };
+    // ═══════════════════════════════════════════════════════════════════════
+    // 🔴 NIJE PRENETO — I TO JE MERENJE, NE PROPUST
+    // ═══════════════════════════════════════════════════════════════════════
+    // `employees` je KADROVSKA tabela i u 3.0 bazi JE NEMA (provereno u
+    // `prisma/schema.prisma`: nijedan model ne mapira `employees`; postoji samo
+    // `WorkerEmployeeMap`, što je druga stvar). Kadrovska je korak 4 gašenja sy15
+    // i seli se sa svojim domenom — a i zamrznuta je do seobe.
+    //
+    // Zato ovaj put pod `3.0` GLASNO pada sa 503 (`withUserMapped` →
+    // `assertPorted`), umesto da tiho vrati praznu listu. Prazna lista bi u
+    // driver modalu izgledala kao „nema takvog zaposlenog", pa bi se vozači
+    // unosili ručno i ostajali bez veze sa nalogom — tiho i nepovratno.
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.employee.findMany({
-        where: {
-          isActive: true,
-          ...(term
-            ? {
-                OR: [
-                  { fullName: { contains: term, mode: "insensitive" } },
-                  { firstName: { contains: term, mode: "insensitive" } },
-                  { lastName: { contains: term, mode: "insensitive" } },
-                ],
-              }
-            : {}),
-        },
-        select: {
-          id: true,
-          fullName: true,
-          firstName: true,
-          lastName: true,
-          email: true,
-        },
+        where: gde,
+        select: izbor,
         orderBy: { lastName: "asc" },
         take: 500,
       });

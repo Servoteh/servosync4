@@ -1325,11 +1325,18 @@ export class OdrzavanjeController {
     return this.odr.createProfile(req.user.email, dto);
   }
 
+  /**
+   * 🔴 BEZ `ParseUUIDPipe`: `maint_user_profiles.user_id` je JEDINI ključ modula
+   * koji nije uuid u obe baze — u sy15 je `auth.users.id` (uuid), u 3.0 `users.id`
+   * (Int, odluka 2 seobe). Pipe bi pod `ODRZAVANJE_IZVOR=3.0` odbio SVAKI ispravan
+   * id sa 400, pre nego što zahtev uopšte dođe do servisa. Oblik presuđuje servis
+   * prema aktivnom izvoru (`profileUserId30`), pa je greška razumljiva.
+   */
   @Patch("profiles/:id")
   @RequirePermission(PERMISSIONS.ODRZAVANJE_WRITE)
   updateProfile(
     @Req() req: AuthedRequest,
-    @Param("id", ParseUUIDPipe) id: string,
+    @Param("id") id: string,
     @Body() dto: UpdateProfileDto,
   ) {
     return this.odr.updateProfile(req.user.email, id, dto);

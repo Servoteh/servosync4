@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   MinLength,
   ValidateIf,
@@ -366,10 +367,16 @@ export class PatchAssetCoreDto {
   @IsOptional() @ValidateIf((_o, v) => v !== null) @IsUUID() locationId?:
     | string
     | null;
-  /** uuid odgovornog korisnika ILI null (unassign). */
+  /**
+   * Odgovorni korisnik ILI null (unassign).
+   * 🔴 ŠAV SEOBE: uuid pod `sy15`, `users.id` (Int) pod `3.0` — v.
+   * `AUTH_USER_ID_OBA_IZVORA` (definisan niže, uz vozače).
+   */
   @IsOptional()
   @ValidateIf((_o, v) => v !== null)
-  @IsUUID()
+  @Matches(
+    /^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)$/,
+  )
   responsibleUserId?: string | null;
 }
 
@@ -488,10 +495,21 @@ export class CreateOwnerDto extends IdempotentDto {
 
 /* ════════════════════════ Vozači (PII) ════════════════════════ */
 
+/**
+ * 🔴 ŠAV SEOBE (`ODRZAVANJE_IZVOR`): `maint_drivers.auth_user_id` je u sy15
+ * `auth.users.id` (**uuid**), a u 3.0 `users.id` (**Int**, odluka 2). Isti DTO
+ * opslužuje oba položaja prekidača, pa validacija mora primiti OBA oblika —
+ * `@IsUUID()` bi pod `3.0` odbio svaki ispravan id pre nego što zahtev uopšte
+ * stigne do servisa (422 bez ikakve veze sa uzrokom). Koji je oblik ispravan
+ * presuđuje servis, prema aktivnom izvoru.
+ */
+const AUTH_USER_ID_OBA_IZVORA =
+  /^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)$/;
+
 export class CreateDriverDto extends IdempotentDto {
   @IsString() @MaxLength(300) fullName!: string;
   @IsOptional() @IsBoolean() isInternal?: boolean;
-  @IsOptional() @IsUUID() authUserId?: string;
+  @IsOptional() @Matches(AUTH_USER_ID_OBA_IZVORA) authUserId?: string;
   @IsString() @MaxLength(100) driversLicenseNumber!: string;
   @IsArray()
   @ArrayMinSize(1)
@@ -516,9 +534,10 @@ export class UpdateDriverDto {
    * spoljni vozač (is_internal=false) NE sme imati auth_user_id (DB CHECK) — service
    * forsira null (maintenance.js:2836). `null` = eksplicitno odveži.
    */
-  @IsOptional() @ValidateIf((_o, v) => v !== null) @IsUUID() authUserId?:
-    | string
-    | null;
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @Matches(AUTH_USER_ID_OBA_IZVORA)
+  authUserId?: string | null;
   @IsOptional() @IsString() driversLicenseNumber?: string;
   @IsOptional()
   @IsArray()
@@ -707,8 +726,12 @@ export class UpdateNotificationRuleDto {
  * paritet 1.0 = slobodan tekst (bez stroge validacije, doktrina §C), pa ostaje `@IsString`.
  */
 export class CreateProfileDto extends IdempotentDto {
-  /** auth.users.id korisnika (= maint_user_profiles.user_id, PK). */
-  @IsUUID() userId!: string;
+  /**
+   * Korisnik čiji je ovo CMMS profil (= `maint_user_profiles.user_id`, PK).
+   * 🔴 ŠAV SEOBE: `auth.users.id` (uuid) pod `sy15`, `users.id` (Int) pod `3.0` —
+   * isti razlog i isti oblik kao `CreateDriverDto.authUserId`.
+   */
+  @Matches(AUTH_USER_ID_OBA_IZVORA) userId!: string;
   @IsString() @MaxLength(300) fullName!: string;
   @IsIn(MAINT_ROLE) role!: string;
   @IsOptional() @IsArray() @IsString({ each: true })
