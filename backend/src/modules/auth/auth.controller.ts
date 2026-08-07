@@ -17,6 +17,9 @@ import {
   throttleKey,
 } from "../../common/login-throttle";
 import { AuthService, RequestMeta } from "./auth.service";
+/* 🔴 VREDNOSNI uvoz (nikad `import type`): `ValidationPipe` čita `design:paramtypes`, a
+ * taj metapodatak mora da nosi SAMU KLASU — vidi `common/controller-body-dto.spec.ts`. */
+import { ChangePasswordDto, LoginDto, SsoDto } from "./dto/auth.dto";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 import { AuthUser } from "./jwt.strategy";
 import { permissionsForRoles } from "../../common/authz/role-permissions";
@@ -25,22 +28,14 @@ import { OVERRIDE_KEYS } from "../../common/authz/permissions";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 
-interface LoginBody {
-  email?: string;
-  password?: string;
-}
-
-interface SsoBody {
-  token?: string;
-}
-
+/* `LoginBody` / `SsoBody` / `ChangePasswordBody` su bili INTERFEJSI — pa je globalni
+ * `ValidationPipe` njihova tela preskakao u celosti (P12, 06.08.2026). Sada su klase u
+ * `dto/auth.dto.ts` (tamo je i merenje na kome počiva svako pravilo).
+ * `RefreshBody` NAMERNO ostaje interfejs: `/auth/logout` ima ugovor „uvek { ok: true }"
+ * za PROIZVOLJNO telo, pa bi mu klasa promenila ponašanje; obe rute zato imaju
+ * eksplicitne `typeof` provere niže. */
 interface RefreshBody {
   refreshToken?: string;
-}
-
-interface ChangePasswordBody {
-  currentPassword?: string;
-  newPassword?: string;
 }
 
 /** Minimalni oblik Express zahteva iz koga vadimo trag refresh tokena. */
@@ -73,11 +68,17 @@ export class AuthController {
    * (IP + email) u 15 min → 429 na 15 min. Uspešna prijava briše brojač.
    */
   @Post("login")
-  async login(@Body() body: LoginBody, @Req() req: RequestLike) {
+  async login(@Body() body: LoginDto, @Req() req: RequestLike) {
+    /* Druga linija odbrane: `LoginDto` je već odbio prazna/ne-string polja kroz globalni
+     * pipe. Provera ostaje za direktan poziv metode (unit testovi, budući interni pozivalac)
+     * — bez nje bi `undefined` otišao u throttle ključ i bcrypt. */
     if (!body?.email || !body?.password) {
-      throw new BadRequestException("email and password are required");
+      throw new BadRequestException("E-pošta i lozinka su obavezni.");
     }
-    const key = throttleKey(requestMeta(req).ipAddress ?? undefined, body.email);
+    const key = throttleKey(
+      requestMeta(req).ipAddress ?? undefined,
+      body.email,
+    );
     this.assertNotThrottled(key, body.email);
     try {
       const result = await this.auth.login(
@@ -95,9 +96,10 @@ export class AuthController {
 
   /** SSO sa ServoSync 1.0 shell-a (iframe modul „Tehnologija") — vidi AuthService.ssoLogin. */
   @Post("sso")
-  async sso(@Body() body: SsoBody, @Req() req: RequestLike) {
+  async sso(@Body() body: SsoDto, @Req() req: RequestLike) {
+    /* Druga linija odbrane — vidi `login` iznad; `SsoDto` je primarna. */
     if (!body?.token) {
-      throw new BadRequestException("token is required");
+      throw new BadRequestException("SSO token je obavezan.");
     }
     // Ista brute-force zaštita kao login (ključ po IP-u; SSO token je tajna kao lozinka).
     const key = throttleKey(requestMeta(req).ipAddress ?? undefined, "sso");
@@ -116,7 +118,9 @@ export class AuthController {
   private assertNotThrottled(key: string, who: string): void {
     const wait = loginBlockedSeconds(key);
     if (wait > 0) {
-      this.logger.warn(`THROTTLE blokiran pokušaj prijave (${who}), još ${wait}s`);
+      this.logger.warn(
+        `THROTTLE blokiran pokušaj prijave (${who}), još ${wait}s`,
+      );
       throw new HttpException(
         `Previše neuspelih pokušaja prijave. Pokušaj ponovo za ${Math.ceil(wait / 60)} min.`,
         HttpStatus.TOO_MANY_REQUESTS,
@@ -127,10 +131,14 @@ export class AuthController {
   /** Broji SAMO greške autentikacije (401) — 400/500 ne troše kvotu. */
   private noteFailure(key: string, who: string, err: unknown): void {
     const status =
-      err instanceof HttpException ? err.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+      err instanceof HttpException
+        ? err.getStatus()
+        : HttpStatus.INTERNAL_SERVER_ERROR;
     if (status !== HttpStatus.UNAUTHORIZED) return;
     if (recordLoginFailure(key)) {
-      this.logger.warn(`THROTTLE aktiviran za ${who} (previše neuspelih prijava)`);
+      this.logger.warn(
+        `THROTTLE aktiviran za ${who} (previše neuspelih prijava)`,
+      );
     }
   }
 
@@ -177,15 +185,15 @@ export class AuthController {
   @Post("change-password")
   async changePassword(
     @Req() req: { user: AuthUser },
-    @Body() body: ChangePasswordBody,
+    @Body() body: ChangePasswordDto,
   ) {
+    /* Druga linija odbrane — vidi `login` iznad; `ChangePasswordDto` je primarna
+     * (ona i sprovodi minimum od 8 znakova NA NOVOJ lozinki, pre svakog rada sa bazom). */
     if (
       typeof body?.currentPassword !== "string" ||
       typeof body?.newPassword !== "string"
     ) {
-      throw new BadRequestException(
-        "currentPassword and newPassword are required",
-      );
+      throw new BadRequestException("Trenutna i nova lozinka su obavezne.");
     }
     const res = await this.auth.changePassword(
       req.user.userId,

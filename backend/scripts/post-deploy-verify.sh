@@ -57,14 +57,24 @@ else
   docker logs "$CONTAINER" 2>&1 | tail -8 | sed 's/^/      /'
 fi
 
-# 3) WEB — javni gateway (login endpoint mora odgovoriti, 200/401/400 = živ, 000/5xx = mrtav)
+# 3) WEB — javni gateway (login endpoint mora odgovoriti, 401 = živ do baze, 000/5xx = mrtav)
+#
+# ⚠️ Proba MORA biti ispravnog OBLIKA e-pošte (07.08.2026): od kada `/auth/login` ima pravi
+# DTO (P12), telo `{"email":"_probe_"}` se odbija na `ValidationPipe`-u sa 400 — dakle PRE
+# `AuthService` i pre ijednog dodira baze. Takva proba bi i dalje javljala „živ", a zapravo
+# više ne bi dokazivala ništa osim da proces sluša. Sa ispravnim oblikom proba prolazi
+# validaciju, stigne do `users` upita i vrati 401 „nepostojeći nalog" — to je dokaz da je
+# CELA putanja prijave (ruta → guard → servis → baza) živa.
 say "3) WEB pristup (gateway $GATEWAY)"
+PROBE_BODY='{"email":"_probe_@servoteh.local","password":"_probe_"}'
 WCODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$GATEWAY/api/auth/login" \
-          -H 'Content-Type: application/json' -d '{"email":"_probe_","password":"_probe_"}' 2>/dev/null || echo 000)
+          -H 'Content-Type: application/json' -d "$PROBE_BODY" 2>/dev/null || echo 000)
 case "$WCODE" in
-  200|400|401) ok "WEB login endpoint živ (HTTP $WCODE)" ;;
-  000)         bad "WEB login NEDOSTUPAN (gateway ne odgovara)" ;;
-  *)           bad "WEB login neočekivan HTTP $WCODE" ;;
+  401)  ok "WEB login endpoint živ do baze (HTTP 401 za nepostojeći nalog)" ;;
+  200)  ok "WEB login endpoint živ (HTTP 200 — probni nalog postoji?)" ;;
+  400)  bad "WEB login vraća 400 na ISPRAVNO oblikovanu probu — validacija odbija telo pre servisa" ;;
+  000)  bad "WEB login NEDOSTUPAN (gateway ne odgovara)" ;;
+  *)    bad "WEB login neočekivan HTTP $WCODE" ;;
 esac
 
 # 4) LAN — same-origin :3000 mora servirati /login (NE 404 = API-only otkaz)
@@ -74,12 +84,13 @@ for path in / /login /index.html; do
   if [ "$LCODE" = "200" ]; then ok "LAN $path → 200"
   else bad "LAN $path → $LCODE (očekivano 200; 404 = frontend NIJE baked → LAN/offline login mrtav)"; fi
 done
-# LAN auth API isto mora biti živ
+# LAN auth API isto mora biti živ (ista proba ispravnog oblika — vidi obrazloženje u tački 3)
 ACODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://${LAN_IP}:${PORT}/api/auth/login" \
-          -H 'Content-Type: application/json' -d '{"email":"_probe_","password":"_probe_"}' 2>/dev/null || echo 000)
+          -H 'Content-Type: application/json' -d "$PROBE_BODY" 2>/dev/null || echo 000)
 case "$ACODE" in
-  200|400|401) ok "LAN auth API živ (HTTP $ACODE)" ;;
-  *)           bad "LAN auth API HTTP $ACODE" ;;
+  401|200) ok "LAN auth API živ do baze (HTTP $ACODE)" ;;
+  400)     bad "LAN auth API vraća 400 na ISPRAVNO oblikovanu probu — telo pada na validaciji" ;;
+  *)       bad "LAN auth API HTTP $ACODE" ;;
 esac
 
 # 5) Frontend baked u kontejneru (potvrda za tačku 4)

@@ -68,10 +68,15 @@ export default function LoginPage() {
       // Redirect radi useEffect gore čim se `user` (email+role) učita — tako
       // landingRoute dobije rolu i kontrolor sleti na /kvalitet, ne /work-orders.
     } catch (err) {
+      // 401 ostaje NAMERNO neutralno (ne odaje da li nalog postoji). 400 = telo nije prošlo
+      // backend validaciju (P12, 06.08.2026): zod iznad hvata većinu, ali ne sve (npr.
+      // predugačka adresa), a „Pokušajte ponovo" bi tu bio pogrešan savet — greška je u unosu.
       const message =
         err instanceof ApiError && err.status === 401
           ? 'Pogrešan email ili lozinka'
-          : 'Prijava trenutno nije moguća. Pokušajte ponovo.';
+          : err instanceof ApiError && err.status === 400
+            ? err.message
+            : 'Prijava trenutno nije moguća. Pokušajte ponovo.';
       setError('root', { message });
     }
   }

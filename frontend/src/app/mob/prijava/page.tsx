@@ -127,11 +127,18 @@ function PrijavaForma() {
       // Preusmeravanje radi efekat u stranici (čim `user` stigne) — ili forma za novu
       // lozinku, ako nalog nosi `mustChangePassword`.
     } catch (err) {
+      // 401 = neuspela prijava → NAMERNO neutralno (nikad se ne odaje da li nalog postoji).
+      // 400 = telo nije prošlo validaciju (P12, 06.08.2026) — ovaj ekran, za razliku od
+      // `/login`, ne proverava OBLIK email-a pre slanja, pa „pera" bez @ sada stiže kao 400.
+      // Bez ove grane korisnik bi dobio „proveri vezu", a veza je ispravna — greška je unos.
+      // Backend poruka govori isključivo o obliku unosa, pa je bezbedno prikazati je.
       setGreske({
         root:
           err instanceof ApiError && err.status === 401
             ? 'Pogrešan email ili lozinka'
-            : 'Prijava trenutno nije moguća. Proveri vezu pa pokušaj ponovo.',
+            : err instanceof ApiError && err.status === 400
+              ? err.message
+              : 'Prijava trenutno nije moguća. Proveri vezu pa pokušaj ponovo.',
       });
     } finally {
       setBusy(false);

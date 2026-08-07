@@ -104,5 +104,10 @@ jobs:
       # reflection nad AppModule metapodacima). `npx jest` (src) NE vozi test/*.e2e-spec.ts,
       # pa se ove matrice inače uopšte ne izvršavaju u CI-ju. `app.e2e-spec` (traži živu
       # bazu) je namerno ISKLJUČEN filterom — ovaj korak ne provizionira Postgres.
-      - name: Permission matrice + coverage audit (e2e, bez baze)
-        run: npx jest --config ./test/jest-e2e.json --ci --runInBand "permissions|coverage|command-safety"
+      #
+      # `auth-body` (P12, 06.08.2026): brana da telo prijave/SSO/promene lozinke i dalje
+      # PROLAZI kroz ValidationPipe. Mora biti u filteru — inače je mrtva brana: obrazac
+      # iznad je ne bi pokupio, a jedini način da se kvar vrati (DTO klasa → interfejs,
+      # ili vrednosni uvoz → `import type`) jeste tiha izmena koju samo test hvata.
+      - name: Permission matrice + coverage audit + auth telo (e2e, bez baze)
+        run: npx jest --config ./test/jest-e2e.json --ci --runInBand "permissions|coverage|command-safety|auth-body"

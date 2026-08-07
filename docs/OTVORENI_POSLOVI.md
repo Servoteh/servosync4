@@ -344,21 +344,41 @@ klasa (interfejs, `unknown`, inline `{…}`) dobija `Object`, pa `ValidationPipe
 **preskoči u celosti** — telo prolazi nevalidirano, i bez `whitelist`-a, tako da i nepoznata
 polja stižu do servisa. Nije kvar u radu (telo prolazi), jeste rupa u proveri ulaza.
 
-| ukupno `@Body()` parametara | telo se proverava (klasa) | telo NEVALIDIRANO |
-|---|---|---|
-| **523** | 359 | **164** (≈31 %) |
+| merenje | ukupno `@Body()` parametara | telo se proverava (klasa) | telo NEVALIDIRANO |
+|---|---|---|---|
+| 06.08.2026 (nalaz) | 523 | 359 | **164** (≈31 %) |
+| 07.08.2026 (posle `auth`) | 525 | 363 | **162** (≈31 %) |
 
 Najviše ih nose `zahtevi` (17), `robno` (12), `tech-processes` (12), `sales` (11),
-`saldakonti` (9). 🔴 Najosetljiviji su u `auth`: **`LoginBody`, `SsoBody`,
-`ChangePasswordBody`** — prijava i promena lozinke primaju telo koje niko ne proverava.
+`saldakonti` (9).
+
+✅ **`auth` ZATVOREN 07.08.2026.** `LoginBody`, `SsoBody` i `ChangePasswordBody` su sada klase
+u `backend/src/modules/auth/dto/auth.dto.ts`, uvezene VREDNOSNO. Izmereno na zatečenom kodu:
+`POST /auth/login` sa `{"password": 12345}` i sa `{"email":"nije-eposta"}` je vraćao **201** —
+broj je stizao do `bcrypt`-a, a e-pošta bez `@` do baze; `POST /auth/sso` sa `{"token": 42}`
+isto 201. Sada su sve tri **400**.
+
+🔴 **Pravilo koje se NIJE smelo uvesti:** minimum dužine lozinke pri PRIJAVI. Na produkciji je
+71 nalog i svih 71 lozinki je bcrypt heš (`$2a$`/`$2b$`, 60 znakova) — dužina same lozinke se
+iz heša **ne može pročitati**, pa bi `@MinLength(8)` trajno zaključao svakoga ko danas ima
+kraću, bez ikakvog načina da se izmeri koliko je takvih. Minimum je ostao samo na
+`newPassword`, gde ga `AuthService` i FE forme ionako već sprovode. `@IsEmail` je bezbedan:
+71/71 adresa je standardnog oblika, 17–34 znaka.
+
+`RefreshBody` (2×, `/auth/refresh` + `/auth/logout`) NAMERNO ostaje interfejs — `logout` ima
+ugovor „uvek `{ ok: true }`" za proizvoljno telo. Brane: `test/auth-body-validation.e2e-spec.ts`
+(u CI filteru) i `src/modules/auth/dto/auth.dto.spec.ts`.
 
 ⚠️ **Zamka pri merenju, da se ne ponovi:** prva verzija je dala **264**, jer su tipovi uvezeni
 kroz prostor imena (`D.OptIdempotentDto`, `import * as D`) prepoznati kao „nepoznati" iako su
 klase — sam kadrovski kontroler je time lažno nosio 100 nalaza. Ime tipa se mora razrešiti i
 posle tačke. Merenje: `backend/reports/meri-body.ts` (gitignorisano, ponovljivo).
 
-**Predlog redosleda:** prvo `auth` (3 rute, spolja dostupne), pa moduli koji primaju iznose
-(`saldakonti`, `sales`, `robno`); ostalo po potrebi.
+**Predlog redosleda:** ~~prvo `auth` (3 rute, spolja dostupne)~~ ✅ izvedeno; sledeći su moduli
+koji primaju IZNOSE — `saldakonti` (9), `sales` (11), `robno` (12); pa `zahtevi` (17, najveći
+broj ali bez novca) i `tech-processes` (12). Pouka iz `auth`-a važi svuda: pravilo se sme uvesti
+tek pošto se izmeri šta produkcija DANAS prima, jer validacija strožija od zatečenih podataka
+ne štiti nego zaključava.
 
 ---
 
