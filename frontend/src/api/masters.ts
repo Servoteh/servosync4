@@ -721,7 +721,7 @@ export interface CustomerListParams {
 }
 
 /** Paginirana lista komitenata (pretraga naziv/PIB/mesto). */
-export function useKomitenti(params: CustomerListParams) {
+export function useKomitenti(params: CustomerListParams, opcije: { enabled?: boolean } = {}) {
   const qs = new URLSearchParams();
   if (params.page && params.page > 1) qs.set('page', String(params.page));
   if (params.pageSize) qs.set('pageSize', String(params.pageSize));
@@ -730,6 +730,10 @@ export function useKomitenti(params: CustomerListParams) {
   const query = qs.toString();
   return useQuery({
     queryKey: ['masters', 'komitenti', params],
+    // `false` = upit se NE šalje dok ekran ne pročita filtere iz adrese. Bez toga bi prvi
+    // render posle povratka sa detalja poslao NEFILTRIRAN upit strane 1, upisao ga u keš i
+    // na tren prikazao pogrešnu listu.
+    enabled: opcije.enabled ?? true,
     queryFn: () => apiFetch<Paginated<CustomerRow>>(`/v1/komitenti${query ? `?${query}` : ''}`),
   });
 }

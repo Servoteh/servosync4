@@ -176,6 +176,22 @@ export const ULAZI_ROBNI_DOKUMENT = {
 
 export type IzvorRobnogDokumenta = keyof typeof ULAZI_ROBNI_DOKUMENT;
 
+/**
+ * Ulazi u detalj KOMITENTA — jedini modul u kome drugi ulaz NIJE radna lista.
+ *
+ * Kartica „Dupli PIB kod komitenata" (Podešavanja → Integracije, O-7 spisak od
+ * 30.07.2026) je tab, a ne lista sa `useListQueryState`: za nju ne postoji zapis
+ * `listState:/podesavanja`, pa bi `listHref` vratio go `/podesavanja` i izbacio
+ * administratora na podrazumevani tab „Korisnici". Zato `radnaLista: false` + fiksan
+ * `query`; `useQueryTab` taj `?tab=` čita pri montiranju.
+ */
+export const ULAZI_KOMITENT = {
+  komitenti: { putanja: '/komitenti' },
+  podesavanja: { putanja: '/podesavanja', radnaLista: false, query: 'tab=integracije' },
+} satisfies Record<string, UlazUDetalj>;
+
+export type IzvorKomitenta = keyof typeof ULAZI_KOMITENT;
+
 // ────────────────────────────────────────────── 2. GDE SE STALO (mesto u listi)
 
 /** Zapamćeno mesto u jednoj radnoj listi. */

@@ -458,7 +458,10 @@ function DupliPibCard() {
                         {g.customers.map((c) => (
                           <div key={c.id}>
                             <Link
-                              href={`/komitenti/detalj?id=${c.id}`}
+                              // `izvor=podesavanja` da „Nazad" sa komitenta vrati NA OVU
+                              // karticu (tab Integracije), a ne na listu komitenata —
+                              // ovaj spisak se čisti red po red.
+                              href={`/komitenti/detalj?id=${c.id}&izvor=podesavanja`}
                               className="text-accent underline underline-offset-2 hover:opacity-80"
                             >
                               {c.name}

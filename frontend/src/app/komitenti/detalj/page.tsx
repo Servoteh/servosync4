@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Pencil } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
@@ -11,6 +11,7 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDateTime, formatDecimal } from '@/lib/format';
 import { parseIdParam } from '@/lib/deep-link';
+import { ULAZI_KOMITENT, citajIzvor, hrefIzvora, type IzvorKomitenta } from '@/lib/povratak-na-listu';
 import { useKomitent, codeRefLabel, salespersonLabel, type CustomerDetail } from '@/api/masters';
 import { MaticniEkran } from '@/app/artikli/_forma/polja';
 import { BRANA_KOMITENT } from '@/app/artikli/_forma/pravila';
@@ -232,6 +233,14 @@ export default function KomitentDetaljPage() {
   const [validId, setValidId] = useState<number | null>(null);
   const [idResolved, setIdResolved] = useState(false);
   const [rezim, setRezim] = useState<'pregled' | 'izmena'>('pregled');
+
+  /**
+   * ODAKLE SE DOŠLO. Detalj komitenta ima DVA ulaza: listu komitenata i karticu „Dupli
+   * PIB kod komitenata" u Podešavanjima. Sva tri izlaza (Esc, dugme „Nazad", „Odustani"
+   * na unosu) bila su zakucana na `/komitenti`, pa je administrator koji čisti O-7 spisak
+   * duplih PIB-ova posle svakog komitenta morao ponovo: Podešavanja → Integracije → skrol.
+   */
+  const [izvorListe, setIzvorListe] = useState<IzvorKomitenta>('komitenti');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     // Komitent 0 je legitiman (Servoteh d.o.o., interni) — zato `allowZero`. Ostalo je
@@ -239,8 +248,15 @@ export default function KomitentDetaljPage() {
     // pa prelomljen link iz mejla otvara TUĐEG komitenta (C20).
     setValidId(parseIdParam(params.get('id'), { allowZero: true }));
     setRezim(params.get('rezim') === 'izmena' ? 'izmena' : 'pregled');
+    setIzvorListe(citajIzvor(window.location.search, ULAZI_KOMITENT, 'komitenti'));
     setIdResolved(true);
   }, []);
+
+  /** Povratak na mesto sa kog se došlo, sa njegovim stanjem. */
+  const nazadNaListu = useCallback(
+    () => router.push(hrefIzvora(ULAZI_KOMITENT[izvorListe])),
+    [router, izvorListe],
+  );
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -250,11 +266,11 @@ export default function KomitentDetaljPage() {
   useEffect(() => {
     if (rezim === 'izmena') return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') router.push('/komitenti');
+      if (e.key === 'Escape') nazadNaListu();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [router, rezim]);
+  }, [nazadNaListu, rezim]);
 
   const q = useKomitent(validId);
 
@@ -323,7 +339,7 @@ export default function KomitentDetaljPage() {
                 <span className="max-sm:hidden">Izmeni</span>
               </Button>
             )}
-            <Button variant="secondary" onClick={() => router.push('/komitenti')}>
+            <Button variant="secondary" onClick={nazadNaListu}>
               <ArrowLeft className="h-4 w-4" aria-hidden />
               Nazad
             </Button>

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ULAZI_ARTIKAL,
+  ULAZI_KOMITENT,
   ULAZI_ROBNI_DOKUMENT,
   citajIzvor,
   citajZapisPozicije,
@@ -37,6 +38,10 @@ const ROBNO_DETALJ = path.join(KOREN, 'app', 'robno', 'detalj', 'page.tsx');
 const ROBNO_PRENOS = path.join(KOREN, 'app', 'robno', 'detalj', 'transfer-panel.tsx');
 const POPIS = path.join(KOREN, 'app', 'robno', 'popis', 'page.tsx');
 const POPIS_DETALJ = path.join(KOREN, 'app', 'robno', 'popis', 'count-detail.tsx');
+const KOMITENTI = path.join(KOREN, 'app', 'komitenti', 'page.tsx');
+const KOMITENT_DETALJ = path.join(KOREN, 'app', 'komitenti', 'detalj', 'page.tsx');
+const KOMITENT_NOV = path.join(KOREN, 'app', 'komitenti', 'nov', 'page.tsx');
+const INTEGRACIJE = path.join(KOREN, 'app', 'podesavanja', '_components', 'integracije-tab.tsx');
 
 const izvor = (f: string) => fs.readFileSync(f, 'utf8');
 
@@ -287,6 +292,78 @@ describe('popis pamti izabrani popis i mesto u listi', () => {
     sadrzi(izvor(ROBNO), /kljuc:\s*'\/robno'/, 'mesto se pamti pod tuđim ključem');
     sadrzi(izvor(POPIS), /useZapamcenaPozicijaListe/, 'popis ne pamti skrol');
     sadrzi(izvor(POPIS), /kljuc:\s*'\/robno\/popis'/, 'mesto se pamti pod tuđim ključem');
+  });
+});
+
+/**
+ * KOMITENT ima ulaz koji NIJE radna lista: kartica „Dupli PIB kod komitenata" u
+ * Podešavanjima (`/podesavanja?tab=integracije`). Za nju ne postoji `listState:` zapis,
+ * pa bi je `listHref` svukao na podrazumevani tab „Korisnici" — administrator koji čisti
+ * O-7 spisak bi posle svakog komitenta morao ponovo: Podešavanja → Integracije → skrol.
+ */
+describe('izvor liste komitenata', () => {
+  test('`izvor=podesavanja` vodi nazad NA TAB, ne kroz `listHref`', () => {
+    assert.equal(citajIzvor('?id=5&izvor=podesavanja', ULAZI_KOMITENT, 'komitenti'), 'podesavanja');
+    assert.equal(hrefIzvora(ULAZI_KOMITENT.podesavanja), '/podesavanja?tab=integracije');
+  });
+
+  test('bez izvora i sa tuđim tokenom pada na listu komitenata', () => {
+    for (const s of ['', '?id=5', '?izvor=', '?izvor=lager', '?izvor=popis', '?izvor=smece']) {
+      assert.equal(citajIzvor(s, ULAZI_KOMITENT, 'komitenti'), 'komitenti', s);
+    }
+    assert.equal(hrefIzvora(ULAZI_KOMITENT.komitenti), '/komitenti');
+  });
+});
+
+describe('ekrani komitenata su povezani na izvor liste', () => {
+  test('kartica „Dupli PIB" potpisuje prelaz sa `izvor=podesavanja`', () => {
+    const src = izvor(INTEGRACIJE);
+    const adrese = [...src.matchAll(/`\/komitenti\/detalj\?[^`]*`/g)].map((m) => m[0]);
+    assert.ok(adrese.length >= 1, 'Podešavanja više ne otvaraju komitenta — test je zastareo');
+    for (const a of adrese) {
+      assert.ok(/[?&]izvor=podesavanja/.test(a), `prelaz bez izvora vodi na tuđu listu: ${a}`);
+    }
+  });
+
+  test('🔴 SVA TRI izlaza sa detalja komitenta izvode adresu iz izvora', () => {
+    // Esc, dugme „Nazad" i „Odustani" na unosu — na artiklima su sva tri bila zakucana
+    // i vlasnik je to prijavio; ovde su sva tri bila zakucana na `/komitenti`.
+    const src = izvor(KOMITENT_DETALJ);
+    sadrzi(src, /citajIzvor\(/, 'detalj komitenta ne čita odakle je došao');
+    sadrzi(src, /hrefIzvora\(/, 'detalj komitenta ne izvodi adresu iz izvora');
+    neSadrzi(src, /router\.push\(\s*['"]\/komitenti['"]\s*\)/, 'izlaz je i dalje tvrdo zakucan');
+    neSadrzi(
+      izvor(KOMITENT_NOV),
+      /router\.push\(\s*['"]\/komitenti['"]\s*\)/,
+      '„Odustani" na unosu novog komitenta briše pretragu i stranu',
+    );
+  });
+
+  test('🔴 režim izmene NIJE izlaz sa ekrana', () => {
+    // `onIzlaz` na `MaticniEkran` vraća iz izmene u pregled — vezivanje na povratak
+    // na listu bi izbacilo korisnika iz ekrana umesto iz sloja.
+    sadrzi(
+      izvor(KOMITENT_DETALJ),
+      /promeniRezim\('pregled'\)/,
+      'izlaz iz izmene više ne vraća u pregled',
+    );
+  });
+});
+
+describe('lista komitenata pamti pretragu i stranu', () => {
+  test('🔴 pretraga i strana žive u URL-u, ne u `useState`', () => {
+    // Nad šifarnikom od desetina hiljada komitenata gubitak pretrage i strane je
+    // doslovno „vrati me na početnu stranu".
+    const src = izvor(KOMITENTI);
+    sadrzi(src, /useListQueryState/, 'lista komitenata ne drži stanje u URL-u');
+    neSadrzi(src, /useState\(1\)/, 'strana je i dalje goli `useState`');
+    sadrzi(src, /enabled:\s*resolved/, 'upit kreće pre nego što se filteri pročitaju iz adrese');
+  });
+
+  test('imena parametara prate zatečenu konvenciju (`trazi`/`strana`)', () => {
+    const src = izvor(KOMITENTI);
+    sadrzi(src, /trazi:\s*''/, 'parametar pretrage nije `trazi`');
+    sadrzi(src, /strana:\s*'1'/, 'parametar strane nije `strana`');
   });
 });
 

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { listHref } from '@/lib/use-id-param';
 import { MaticniEkran } from '@/app/artikli/_forma/polja';
 import { BRANA_KOMITENT } from '@/app/artikli/_forma/pravila';
 import {
@@ -49,7 +50,11 @@ export default function NovKomitentPage() {
       nepokriveno={NEPOKRIVENO_KOMITENT}
       vrednosti={vrednosti}
       onPromena={setVrednosti}
-      onIzlaz={() => router.push('/komitenti')}
+      // „Odustani" vraća listu TAČNO kakva je bila — `listHref` čita zapamćenu pretragu i
+      // stranu, pa se ne gubi mesto sa kog je korisnik pritisnuo Alt+N (isto kao
+      // `/artikli/nov`). Iz Podešavanja se ovde ne dolazi — „Nov komitent" postoji samo
+      // na listi komitenata.
+      onIzlaz={() => router.push(listHref('/komitenti'))}
     />
   );
 }

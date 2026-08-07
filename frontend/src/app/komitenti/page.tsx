@@ -12,6 +12,7 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
 import { Pager } from '@/components/ui-kit/pager';
 import { formatNumber } from '@/lib/format';
+import { useListQueryState } from '@/lib/use-id-param';
 import { useKomitenti, codeRefLabel, salespersonLabel, type CustomerRow } from '@/api/masters';
 
 /**
@@ -25,6 +26,9 @@ import { useKomitenti, codeRefLabel, salespersonLabel, type CustomerRow } from '
  */
 
 const PAGE_SIZE = 50;
+
+/** `SearchBox` nema sopstveni debounce, a `setValues` piše kroz `router.replace`. */
+const KUCANJE_MS = 300;
 
 const columns: Column<CustomerRow>[] = [
   {
@@ -71,8 +75,28 @@ export default function KomitentiPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
 
-  const [q, setQ] = useState('');
-  const [page, setPage] = useState(1);
+  /**
+   * Pretraga i strana žive U URL-u (frontend/CLAUDE.md §12) — povratak sa kartice
+   * komitenta vraća listu tačno kakvu je korisnik ostavio. Do 07.08.2026 su oboje bili
+   * goli `useState`, pa je remount strane brisao I pretragu I stranu: nad šifarnikom od
+   * desetina hiljada komitenata to je doslovno „vrati me na početnu stranu".
+   * Imena `trazi`/`strana` prate `/artikli`, `/nabavka`, `/robno`, `/izvodi`.
+   */
+  const { values, resolved, setValues } = useListQueryState({ trazi: '', strana: '1' });
+  const page = Math.max(1, Number(values.strana) || 1);
+
+  // Kucanje ostaje trenutno na ekranu, a URL se ažurira tek posle KUCANJE_MS — inače bi
+  // svaki otkucani karakter bio jedan `router.replace`.
+  const [trazi, setTrazi] = useState(values.trazi);
+  useEffect(() => {
+    setTrazi(values.trazi);
+  }, [values.trazi]);
+  useEffect(() => {
+    if (trazi === values.trazi) return;
+    const t = setTimeout(() => setValues({ trazi, strana: '1' }), KUCANJE_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trazi]);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -92,7 +116,10 @@ export default function KomitentiPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [router]);
 
-  const list = useKomitenti({ page, pageSize: PAGE_SIZE, q: q.trim() || undefined });
+  const list = useKomitenti(
+    { page, pageSize: PAGE_SIZE, q: values.trazi.trim() || undefined },
+    { enabled: resolved },
+  );
 
   if (isLoading || !user) {
     return (
@@ -113,11 +140,8 @@ export default function KomitentiPage() {
         actions={
           <div className="flex items-center gap-2">
             <SearchBox
-              value={q}
-              onChange={(v) => {
-                setQ(v);
-                setPage(1);
-              }}
+              value={trazi}
+              onChange={setTrazi}
               placeholder="Naziv, PIB, mesto…"
             />
             {/* Na 360 px ostaje samo ikona — naslov i pretraga imaju prednost (§11). */}
@@ -150,7 +174,9 @@ export default function KomitentiPage() {
           columns={columns}
           rows={rows}
           rowKey={(k) => k.id}
-          loading={list.isLoading}
+          // Dok upit čeka filtere iz adrese `isLoading` je `false`, pa bi tabela na tren
+          // nacrtala „Nema komitenata".
+          loading={!resolved || list.isLoading}
           onRowActivate={(k) => router.push(`/komitenti/detalj?id=${k.id}`)}
           empty={
             <EmptyState
@@ -164,8 +190,8 @@ export default function KomitentiPage() {
           <Pager
             page={meta.page}
             totalPages={meta.totalPages}
-            onPrev={() => setPage((p) => Math.max(1, p - 1))}
-            onNext={() => setPage((p) => Math.min(meta.totalPages, p + 1))}
+            onPrev={() => setValues({ strana: String(Math.max(1, page - 1)) })}
+            onNext={() => setValues({ strana: String(Math.min(meta.totalPages, page + 1)) })}
           />
         )}
       </div>
