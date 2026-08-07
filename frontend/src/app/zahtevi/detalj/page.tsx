@@ -6,6 +6,7 @@ import { ArrowLeft, RefreshCw, HelpCircle } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useCan } from '@/lib/can';
 import { PERMISSIONS } from '@/lib/permissions';
+import { listHref } from '@/lib/use-id-param';
 import { formatDecimal } from '@/lib/format';
 import { AppShell } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
@@ -136,7 +137,17 @@ export default function ZahtevDetailPage() {
     void polledQuery.refetch();
   };
 
-  const goBack = () => router.push('/zahtevi');
+  /**
+   * Povratak vraća listu TAČNO kakvu je korisnik ostavio — tab, filtere, pretragu i
+   * stranu. Do 07.08.2026 je bio go `router.push('/zahtevi')`, pa je povratak sa bilo
+   * kog od 7 ulaza uvek završavao u Inboxu, bez filtera, na strani 1.
+   *
+   * `?izvor=` se NE uvodi: svih 7 ulaza vodi na ISTU putanju, razlika je samo tab — a
+   * tab sada i sam putuje kroz `listHref`. `listHref` čita `sessionStorage` u trenutku
+   * klika (nema zastarelog zatvaranja) i uredno pada na go `/zahtevi` za ulaz iz mejla
+   * ili novog taba.
+   */
+  const goBack = useCallback(() => router.push(listHref('/zahtevi')), [router]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -147,8 +158,7 @@ export default function ZahtevDetailPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [goBack]);
 
   if (isLoading || !user) {
     return (

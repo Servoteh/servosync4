@@ -42,6 +42,13 @@ const KOMITENTI = path.join(KOREN, 'app', 'komitenti', 'page.tsx');
 const KOMITENT_DETALJ = path.join(KOREN, 'app', 'komitenti', 'detalj', 'page.tsx');
 const KOMITENT_NOV = path.join(KOREN, 'app', 'komitenti', 'nov', 'page.tsx');
 const INTEGRACIJE = path.join(KOREN, 'app', 'podesavanja', '_components', 'integracije-tab.tsx');
+const ZAHTEVI = path.join(KOREN, 'app', 'zahtevi', 'page.tsx');
+const ZAHTEV_DETALJ = path.join(KOREN, 'app', 'zahtevi', 'detalj', 'page.tsx');
+const ZAHTEV_AKCIJE = path.join(KOREN, 'app', 'zahtevi', 'detalj', '_components', 'action-bars.tsx');
+const ZAHTEV_NOVI = path.join(KOREN, 'app', 'zahtevi', 'novi', 'page.tsx');
+const ZAHTEVI_NAGRADE = path.join(KOREN, 'app', 'zahtevi', '_components', 'nagrade-tab.tsx');
+const ZAHTEVI_ODLUKE = path.join(KOREN, 'app', 'zahtevi', '_components', 'odluke-tab.tsx');
+const ZAHTEVI_STANJE = path.join(KOREN, 'app', 'zahtevi', '_lib', 'list-state.ts');
 
 const izvor = (f: string) => fs.readFileSync(f, 'utf8');
 
@@ -53,8 +60,18 @@ const izvor = (f: string) => fs.readFileSync(f, 'utf8');
 function sadrzi(src: string, re: RegExp, poruka: string): void {
   assert.ok(re.test(src), poruka);
 }
+
+/**
+ * Provera „ovo više ne sme da postoji" gleda SAMO kod: objašnjenje uz popravku po pravilu
+ * citira zatečeni oblik („do 07.08.2026 je bio go `router.push('/zahtevi')`"), pa bi test
+ * nad sirovim fajlom padao baš zato što je popravka uredno dokumentovana.
+ *
+ * Skidaju se blok komentari i komentari u sopstvenom redu; `//` usred reda se NE dira, da
+ * se ne odseče ostatak reda sa adresom tipa `https://…`.
+ */
 function neSadrzi(src: string, re: RegExp, poruka: string): void {
-  assert.ok(!re.test(src), poruka);
+  const kod = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  assert.ok(!re.test(kod), poruka);
 }
 
 // ───────────────────────────────────────────────────── A. na KOJU listu se vraća
@@ -367,6 +384,100 @@ describe('lista komitenata pamti pretragu i stranu', () => {
   });
 });
 
+/**
+ * ZAHTEVI — jedina radna lista u aplikaciji koja nije koristila `useListQueryState`
+ * (krši `frontend/CLAUDE.md` §12). Celo stanje admin liste (tab, status, modul, tip,
+ * podnosilac, pretraga, strana) bilo je u `useState`, a izlaz sa detalja zakucan na
+ * `router.push('/zahtevi')` — povratak sa BILO KOG od 7 ulaza je uvek isti: Inbox,
+ * bez filtera, strana 1.
+ *
+ * `?izvor=` se NAMERNO NE uvodi: svih 7 ulaza vodi na ISTU putanju `/zahtevi`, razlika
+ * je samo u tabu — a tab posle ove izmene i sam živi u URL-u i u `sessionStorage`.
+ */
+describe('zahtevi — stanje liste preživljava povratak sa detalja', () => {
+  test('🔴 celo stanje admin liste živi u URL-u, ne u `useState`', () => {
+    const src = izvor(ZAHTEVI);
+    sadrzi(src, /useListQueryState/, 'lista zahteva ne drži stanje u URL-u');
+    for (const kljuc of ['tab', 'strana', 'status', 'modul', 'tip', 'trazi', 'podnosilac']) {
+      sadrzi(src, new RegExp(`\\b${kljuc}:`), `filter „${kljuc}" se ne pamti`);
+    }
+    neSadrzi(src, /useState<AdminTab>\('inbox'\)/, 'tab je i dalje `useState` — povratak vraća na Inbox');
+    neSadrzi(src, /useState\(1\)/, 'strana je i dalje goli `useState`');
+  });
+
+  test('upit čeka filtere iz adrese i tabela to kaže', () => {
+    const src = izvor(ZAHTEVI);
+    sadrzi(src, /enabled:\s*resolved/, 'lista šalje nefiltriran upit pre nego što pročita adresu');
+    sadrzi(
+      src,
+      /loading=\{!resolved \|\| list\.isPending\}/,
+      'uz isključen upit `isLoading` je netačno `false` — tabela na tren piše „Inbox je prazan"',
+    );
+  });
+
+  test('🔴 SVA ČETIRI izlaza sa zahteva idu kroz `listHref`', () => {
+    // Dugme „Nazad"/Esc na detalju, „Obriši nacrt", pa Esc i „Nazad" na novom zahtevu.
+    // Popravka mora da pokrije SVA mesta, ne samo dugme Nazad.
+    for (const [ime, fajl] of [
+      ['detalj', ZAHTEV_DETALJ],
+      ['akcije detalja', ZAHTEV_AKCIJE],
+      ['novi zahtev', ZAHTEV_NOVI],
+    ] as const) {
+      const src = izvor(fajl);
+      neSadrzi(
+        src,
+        /router\.push\(\s*['"]\/zahtevi['"]\s*\)/,
+        `izlaz sa „${ime}" je i dalje tvrdo zakucan na go /zahtevi (Inbox, strana 1)`,
+      );
+    }
+    sadrzi(izvor(ZAHTEV_DETALJ), /listHref\(\s*['"]\/zahtevi['"]\s*\)/, 'detalj ne vraća stanje liste');
+  });
+
+  test('🔴 provera duplikata ne sme da uništi popunjenu formu', () => {
+    // Klik na sličan zahtev je radio `router.push` i brisao naslov, opis, priloge i
+    // snimljenu glasovnu poruku — a baš tu korisnika teramo da proveri duplikat.
+    const src = izvor(ZAHTEV_NOVI);
+    sadrzi(src, /isModifiedNavClick/, 'klik na sličan zahtev otima Ctrl/srednji klik');
+    sadrzi(src, /target="_blank"/, 'sličan zahtev se otvara u istom tabu i briše popunjenu formu');
+  });
+
+  test('🔴 tabovi Nagrade i Odluke NAVODE i ključeve roditelja', () => {
+    // `setValues` serijalizuje SAMO svoje ključeve i to piše kroz `router.replace`. Tab
+    // koji navede samo svoje obrisao bi `tab=nagrade` iz adrese, pa bi administratora
+    // prva promena meseca izbacila na Inbox.
+    for (const [ime, fajl] of [
+      ['Nagrade', ZAHTEVI_NAGRADE],
+      ['Odluke', ZAHTEVI_ODLUKE],
+    ] as const) {
+      const src = izvor(fajl);
+      sadrzi(src, /useListQueryState/, `tab „${ime}" ne pamti svoje stanje`);
+      sadrzi(
+        src,
+        /\.\.\.STANJE_LISTE_ZAHTEVA/,
+        `tab „${ime}" ne navodi ključeve roditelja — njegov upis briše tab iz adrese`,
+      );
+    }
+    // Jedan izvor ključeva, da se tabovi i roditelj ne raziđu.
+    sadrzi(izvor(ZAHTEVI_STANJE), /tab:\s*'inbox'/, 'podrazumevani tab više nije `inbox`');
+  });
+
+  test('lista zahteva pamti i skrol strane', () => {
+    // Skrol-okvir je strana (`flex-1 overflow-auto`), a ne `DataTable` — tabela nema
+    // `maxHeight`, pa `scrollRef` ovde ne bi imao šta da uhvati.
+    const src = izvor(ZAHTEVI);
+    sadrzi(src, /useZapamcenaPozicijaListe/, 'lista zahteva ne pamti skrol');
+    sadrzi(src, /kljuc:\s*'\/zahtevi'/, 'mesto se pamti pod tuđim ključem');
+  });
+
+  test('Odluke koriste ODVOJENE ključeve od liste zahteva', () => {
+    // Roditelj drži `strana`/`trazi` za svoju tabelu; deljenje bi pomešalo dve liste.
+    const src = izvor(ZAHTEVI_ODLUKE);
+    for (const kljuc of ['odlukeStrana', 'odlukeTrazi', 'odlukeTag']) {
+      sadrzi(src, new RegExp(kljuc), `Decision Log nema sopstveni ključ „${kljuc}"`);
+    }
+  });
+});
+
 // ────────────────────────────────────────────── B. na KOJE MESTO u listi se vraća
 
 const ZAPIS: ZapisPozicijeListe = { potpis: 'A', strane: 3, redova: 600, skrol: 1840 };
@@ -439,6 +550,10 @@ describe('mesto u listi ne curi u URL', () => {
   for (const [ime, fajl] of [
     ['lager', LAGER],
     ['pregled artikala', ARTIKLI],
+    ['robni dokumenti', ROBNO],
+    ['popis', POPIS],
+    ['komitenti', KOMITENTI],
+    ['zahtevi', ZAHTEVI],
   ] as const) {
     test(`${ime} ne upisuje skrol ni broj strana kroz setValues`, () => {
       const src = izvor(fajl);

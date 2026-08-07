@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Plus, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui-kit/button';
@@ -12,6 +12,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Pager } from '@/components/ui-kit/pager';
 import { toast } from '@/lib/toast';
 import { formatDate } from '@/lib/format';
+import { useListQueryState } from '@/lib/use-id-param';
+import { STANJE_LISTE_ZAHTEVA } from '../_lib/list-state';
 import {
   useDecisions,
   useCreateDecision,
@@ -35,11 +37,35 @@ function today(): string {
  * vidljive samo uz canWrite (BE i dalje autoritativno; 403 inače).
  */
 export function OdlukeTab({ canWrite }: { canWrite: boolean }) {
-  const [page, setPage] = useState(1);
-  const [qInput, setQInput] = useState('');
-  const [q, setQ] = useState('');
-  const [tag, setTag] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  /**
+   * Strana, pretraga i tag Decision Log-a žive U URL-u: link „→ Povezani zahtev" je jedan
+   * od ulaza u detalj, a povratak je do sada brisao i stranu i pretragu.
+   *
+   * Ključevi su ODVOJENI od ključeva liste zahteva (`odluke*`) — parent drži `strana`
+   * i `trazi` za svoju tabelu, pa bi deljenje ključeva pomešalo dve liste.
+   * 🔴 `defaults` nosi i sve ključeve roditelja: bez njih bi `setValues` obrisao
+   * `tab=odluke` iz adrese i vratio administratora na Inbox.
+   */
+  const { values, setValues } = useListQueryState({
+    ...STANJE_LISTE_ZAHTEVA,
+    odlukeStrana: '1',
+    odlukeTrazi: '',
+    odlukeTag: '',
+    odlukeStatus: '',
+  });
+  const page = Math.max(1, Number(values.odlukeStrana) || 1);
+  const q = values.odlukeTrazi;
+  const tag = values.odlukeTag;
+  const statusFilter = values.odlukeStatus;
+
+  // Nacrt pretrage ostaje lokalan — u URL ide tek na Enter.
+  const [qInput, setQInput] = useState(values.odlukeTrazi);
+  useEffect(() => {
+    setQInput(values.odlukeTrazi);
+  }, [values.odlukeTrazi]);
+
+  // Dijalog se NAMERNO ne obnavlja iz adrese: otvaranje dijaloga iz linka je druga klasa
+  // ponašanja i nije deo ove prijave.
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
 
@@ -65,8 +91,7 @@ export function OdlukeTab({ canWrite }: { canWrite: boolean }) {
               onChange={(e) => setQInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  setQ(qInput.trim());
-                  setPage(1);
+                  setValues({ odlukeTrazi: qInput.trim(), odlukeStrana: '1' });
                 }
               }}
               placeholder="Naslov, odluka, kontekst…"
@@ -77,10 +102,9 @@ export function OdlukeTab({ canWrite }: { canWrite: boolean }) {
             Tag
             <input
               value={tag}
-              onChange={(e) => {
-                setTag(e.target.value.trim());
-                setPage(1);
-              }}
+              onChange={(e) =>
+                setValues({ odlukeTag: e.target.value.trim(), odlukeStrana: '1' })
+              }
               placeholder="npr. authz"
               className="h-9 w-40 rounded-control border border-line bg-surface px-3 text-sm text-ink placeholder:text-ink-disabled focus-visible:border-accent focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]"
             />
@@ -88,11 +112,13 @@ export function OdlukeTab({ canWrite }: { canWrite: boolean }) {
           {(q || tag || statusFilter) && (
             <button
               onClick={() => {
-                setQ('');
+                setValues({
+                  odlukeTrazi: '',
+                  odlukeTag: '',
+                  odlukeStatus: '',
+                  odlukeStrana: '1',
+                });
                 setQInput('');
-                setTag('');
-                setStatusFilter('');
-                setPage(1);
               }}
               className="h-9 self-end rounded-control border border-line px-3 text-sm text-ink-secondary hover:bg-surface-2"
             >
@@ -131,8 +157,8 @@ export function OdlukeTab({ canWrite }: { canWrite: boolean }) {
         <Pager
           page={page}
           totalPages={totalPages}
-          onPrev={() => setPage((p) => Math.max(1, p - 1))}
-          onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
+          onPrev={() => setValues({ odlukeStrana: String(Math.max(1, page - 1)) })}
+          onNext={() => setValues({ odlukeStrana: String(Math.min(totalPages, page + 1)) })}
         />
       )}
 

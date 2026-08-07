@@ -332,7 +332,7 @@ export interface ZahteviFilters {
 // ─────────────────────────────────────────────────────────────── queries
 
 /** Lista zahteva (server-side paginacija; ne-admin sužen na svoje u servisu). */
-export function useZahtevi(filters: ZahteviFilters = {}) {
+export function useZahtevi(filters: ZahteviFilters = {}, opts?: { enabled?: boolean }) {
   const query = qs({
     status: filters.status,
     module: filters.module,
@@ -344,6 +344,11 @@ export function useZahtevi(filters: ZahteviFilters = {}) {
   });
   return useQuery({
     queryKey: KEYS.list(filters),
+    // `false` = upit se NE šalje. Ekran ga drži isključenim dok `useListQueryState` ne
+    // pročita tab i filtere iz adrese: bez toga bi lista pri svakom povratku sa detalja
+    // PRVO poslala nefiltriran upit (Inbox, strana 1), upisala ga u keš i na tren
+    // prikazala — isti mig „izbacilo me na početnu" koji se ovde i rešava.
+    enabled: opts?.enabled ?? true,
     queryFn: () => apiFetch<List<ChangeRequest>>(`${BASE}${query}`),
   });
 }

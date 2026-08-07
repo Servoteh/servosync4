@@ -16,6 +16,7 @@ import { Button } from '@/components/ui-kit/button';
 import { Select } from '@/components/ui-kit/select';
 import { Tabs, KpiTile } from '@/components/ui-kit/tabs';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
+import { useListQueryState, useZapamcenaPozicijaListe } from '@/lib/use-id-param';
 import {
   useZahtevi,
   useInboxMeta,
@@ -29,6 +30,7 @@ import { HelpProvider, HelpToggleButton, HelpBanner } from '@/components/ui-kit/
 import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { HelpTour } from '@/components/ui-kit/help-tour';
 import { statusMeta } from './_lib/status';
+import { PRAZNI_FILTERI_ZAHTEVA, STANJE_LISTE_ZAHTEVA } from './_lib/list-state';
 import { HELP, ADMIN_TOUR } from './_lib/help';
 import { moduleOptions, kindOptions } from './_lib/form';
 import { NagradeTab } from './_components/nagrade-tab';
@@ -155,6 +157,15 @@ export default function ZahteviPage() {
   const can = useCan();
   const isAdmin = can(PERMISSIONS.ZAHTEVI_ADMIN);
 
+  /**
+   * Ekran skroluje SOPSTVENI okvir (`html,body{height:100%}` + `flex-1 overflow-auto`),
+   * pa `window.scrollY` o njemu ne zna ništa, a `DataTable` nema `maxHeight` (nije
+   * skrol-kontejner). Okvir se zato drži u stanju i predaje pogledu, koji jedini zna
+   * filtere i redove. Callback ref (ne `useRef`): okvir se pojavljuje tek posle kapije
+   * prijave, a dolazak mora da okine render.
+   */
+  const [okvir, setOkvir] = useState<HTMLDivElement | null>(null);
+
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
@@ -184,9 +195,9 @@ export default function ZahteviPage() {
           </div>
         }
       />
-      <div className="flex-1 space-y-4 overflow-auto p-6">
+      <div ref={setOkvir} className="flex-1 space-y-4 overflow-auto p-6">
         <HelpBanner onStartTour={isAdmin ? undefined : startTourOnNovi} />
-        {isAdmin ? <AdminView /> : <MyRequestsView />}
+        {isAdmin ? <AdminView okvir={okvir} /> : <MyRequestsView okvir={okvir} />}
       </div>
       <HelpTour steps={isAdmin ? ADMIN_TOUR : []} />
     </AppShell>
@@ -194,16 +205,54 @@ export default function ZahteviPage() {
   );
 }
 
+/**
+ * MESTO U LISTI ZAHTEVA — zajedničko za oba pogleda.
+ *
+ * Skrol-okvir je strana, a ne tabela, pa ga vlasnik (`ZahteviPage`) predaje ovamo, gde su
+ * filteri i redovi. `potpis` je ceo skup URL vrednosti (uključujući `tab` i `strana`):
+ * promena bilo čega je drugi sadržaj i skrol tada treba da ide na vrh.
+ * `straneUKesu: 1` je pošteno za serverski paginiranu listu — grana „odustani" se ne pali.
+ */
+function useSkrolZahteva({
+  okvir,
+  values,
+  resolved,
+  imaPodatke,
+  redova,
+}: {
+  okvir: HTMLDivElement | null;
+  values: Record<string, string>;
+  resolved: boolean;
+  imaPodatke: boolean;
+  redova: number;
+}) {
+  const { okvirRef } = useZapamcenaPozicijaListe({
+    kljuc: '/zahtevi',
+    potpis: JSON.stringify(values),
+    spremno: resolved && redova > 0,
+    straneUKesu: imaPodatke ? 1 : 0,
+    redova,
+  });
+  useEffect(() => {
+    okvirRef(okvir);
+  }, [okvir, okvirRef]);
+}
+
 /* ────────────────────────────────────────────────────── korisnik: „Moji zahtevi" */
 
-function MyRequestsView() {
+function MyRequestsView({ okvir }: { okvir: HTMLDivElement | null }) {
   const router = useRouter();
-  const [page, setPage] = useState(1);
+  // Strana živi U URL-u — korisnik sa preko 50 zahteva se posle svakog otvorenog
+  // detalja vraćao na stranu 1.
+  const { values, resolved, setValues } = useListQueryState({ strana: '1' });
+  const page = Math.max(1, Number(values.strana) || 1);
   // „Sve svoje" — bez filtera po statusu (korisnik ima malo zahteva); jednostavno.
-  const list = useZahtevi({ page, pageSize: TAKE });
+  const list = useZahtevi({ page, pageSize: TAKE }, { enabled: resolved });
   const rows = list.data?.data ?? [];
   const total = list.data?.meta.pagination.total ?? 0;
   const totalPages = list.data?.meta.pagination.totalPages ?? 1;
+
+  useSkrolZahteva({ okvir, values, resolved, imaPodatke: !!list.data, redova: rows.length });
 
   // Tihi režim nagrada (presuda 24.07): korisnik NE vidi ocene/iznose — kartica „Moje
   // nagrade ovog meseca" i kolone Ocena/Iznos su uklonjene; obračun radi administrator.
@@ -221,7 +270,7 @@ function MyRequestsView() {
           rows={rows}
           rowKey={(r) => r.id}
           onRowActivate={(r) => router.push(`/zahtevi/detalj?id=${r.id}`)}
-          loading={list.isLoading}
+          loading={!resolved || list.isPending}
           empty={
             <EmptyState
               title="Nemate zahteva"
@@ -235,8 +284,8 @@ function MyRequestsView() {
         <Pager
           page={page}
           totalPages={totalPages}
-          onPrev={() => setPage((p) => Math.max(1, p - 1))}
-          onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
+          onPrev={() => setValues({ strana: String(Math.max(1, page - 1)) })}
+          onNext={() => setValues({ strana: String(Math.min(totalPages, page + 1)) })}
         />
       )}
       <p className="text-2xs text-ink-secondary">
@@ -250,19 +299,38 @@ function MyRequestsView() {
 
 const INBOX_STATUSES = ['SUBMITTED', 'ANALYZED', 'TESTING'] as const;
 
-function AdminView() {
+function AdminView({ okvir }: { okvir: HTMLDivElement | null }) {
   const router = useRouter();
   const can = useCan();
   const canDecisionsRead = can(PERMISSIONS.ZAHTEVI_DECISIONS_READ);
   const canDecisionsWrite = can(PERMISSIONS.ZAHTEVI_DECISIONS_WRITE);
-  const [tab, setTab] = useState<AdminTab>('inbox');
-  const [page, setPage] = useState(1);
-  const [status, setStatus] = useState('');
-  const [module, setModule] = useState('');
-  const [kind, setKind] = useState('');
-  const [q, setQ] = useState('');
-  const [qInput, setQInput] = useState('');
-  const [createdBy, setCreatedBy] = useState('');
+  /**
+   * CELO STANJE LISTE ŽIVI U URL-u (frontend/CLAUDE.md §12).
+   *
+   * Do 07.08.2026 je bilo sedam golih `useState`-ova, pa je povratak sa detalja
+   * (remount strane) vraćao tab na Inbox i brisao status, modul, tip, podnosioca,
+   * pretragu i stranu — doslovno „vrati me na početnu stranu" iz prijave vlasnika.
+   *
+   * Tab ide kroz `useListQueryState`, a NE kroz `useQueryTab`: `useQueryTab` piše
+   * `history.replaceState` i ne upisuje u `sessionStorage`, pa ga `listHref` ne vidi;
+   * uz to bi dva pisca istog URL-a gazila jedno drugo. `useQueryTab` je za module sa
+   * podmenijem u sidebaru — `/zahtevi` ga nema. Presedan: `glavna-knjiga/page.tsx`.
+   */
+  const { values, resolved, setValues } = useListQueryState(STANJE_LISTE_ZAHTEVA);
+  const tab = values.tab as AdminTab;
+  const page = Math.max(1, Number(values.strana) || 1);
+  const status = values.status;
+  const module = values.modul;
+  const kind = values.tip;
+  const q = values.trazi;
+  const createdBy = values.podnosilac;
+
+  // Nacrt pretrage ostaje lokalan — u URL ide tek na Enter (isti obrazac kao `trazi`
+  // na lageru), da adresa ne dobija unos po otkucanom karakteru.
+  const [qInput, setQInput] = useState(values.trazi);
+  useEffect(() => {
+    setQInput(values.trazi);
+  }, [values.trazi]);
 
   const inboxMeta = useInboxMeta(true);
   // Podnosioci (admin): opcije filtera + izvor imena za kolonu „Podnosilac".
@@ -278,7 +346,6 @@ function AdminView() {
   );
   const adminColumns = useMemo(() => makeAdminColumns(nameById), [nameById]);
 
-  const resetPage = () => setPage(1);
 
   // Filter po tabu: Inbox = statusi koji čekaju admina; Arhiva = ARCHIVED; Svi = filteri.
   const effectiveStatus =
@@ -288,16 +355,19 @@ function AdminView() {
         ? 'ARCHIVED'
         : status || undefined;
 
-  const list = useZahtevi({
-    page,
-    pageSize: TAKE,
-    status: effectiveStatus,
-    module: module || undefined,
-    kind: kind || undefined,
-    q: q || undefined,
-    // Filter po podnosiocu radi samo na tabu „Svi zahtevi" (tamo je i kontrola).
-    createdBy: tab === 'all' && createdBy ? Number(createdBy) : undefined,
-  });
+  const list = useZahtevi(
+    {
+      page,
+      pageSize: TAKE,
+      status: effectiveStatus,
+      module: module || undefined,
+      kind: kind || undefined,
+      q: q || undefined,
+      // Filter po podnosiocu radi samo na tabu „Svi zahtevi" (tamo je i kontrola).
+      createdBy: tab === 'all' && createdBy ? Number(createdBy) : undefined,
+    },
+    { enabled: resolved },
+  );
 
   const allRows = list.data?.data ?? [];
   // Inbox bez izabranog statusa: prikaži samo redove u „čekajućim" statusima.
@@ -312,21 +382,17 @@ function AdminView() {
   const counts = inboxMeta.data?.data.byStatus ?? {};
   const inboxTotal = inboxMeta.data?.data.total ?? 0;
 
+  useSkrolZahteva({ okvir, values, resolved, imaPodatke: !!list.data, redova: rows.length });
+
   // Tabovi koji prikazuju listu zahteva (nagrade/odluke imaju svoj sadržaj).
   const isListTab = tab === 'inbox' || tab === 'all' || tab === 'archive';
 
   function applySearch() {
-    setQ(qInput.trim());
-    resetPage();
+    setValues({ trazi: qInput.trim(), strana: '1' });
   }
   function clearFilters() {
-    setStatus('');
-    setModule('');
-    setKind('');
-    setCreatedBy('');
-    setQ('');
+    setValues(PRAZNI_FILTERI_ZAHTEVA);
     setQInput('');
-    resetPage();
   }
 
   return (
@@ -335,9 +401,12 @@ function AdminView() {
         <Tabs<AdminTab>
           ariaLabel="Prikaz zahteva"
           value={tab}
+          // Promena taba čisti filtere (Inbox i „Svi" imaju različite kontrole), ali
+          // mora u JEDNOM upisu: dva uzastopna `setValues` = dva `router.replace` i dva
+          // zapisa u `sessionStorage`, pa bi Nazad pregledača prolazio kroz međustanje.
           onChange={(t) => {
-            setTab(t);
-            clearFilters();
+            setValues({ ...PRAZNI_FILTERI_ZAHTEVA, tab: t });
+            setQInput('');
           }}
           tabs={[
             { key: 'inbox', label: `Inbox${inboxTotal ? ` (${inboxTotal})` : ''}` },
@@ -363,38 +432,26 @@ function AdminView() {
             value={counts.SUBMITTED ?? 0}
             label="Podneti — čeka pregled"
             tone="warn"
-            onClick={() => {
-              setStatus('SUBMITTED');
-              resetPage();
-            }}
+            onClick={() => setValues({ status: 'SUBMITTED', strana: '1' })}
             active={status === 'SUBMITTED'}
           />
           <KpiTile
             value={counts.ANALYZED ?? 0}
             label="AI obrađen — čeka odluku"
             tone="warn"
-            onClick={() => {
-              setStatus('ANALYZED');
-              resetPage();
-            }}
+            onClick={() => setValues({ status: 'ANALYZED', strana: '1' })}
             active={status === 'ANALYZED'}
           />
           <KpiTile
             value={counts.TESTING ?? 0}
             label="Na testiranju"
             tone="info"
-            onClick={() => {
-              setStatus('TESTING');
-              resetPage();
-            }}
+            onClick={() => setValues({ status: 'TESTING', strana: '1' })}
             active={status === 'TESTING'}
           />
           {status && (
             <button
-              onClick={() => {
-                setStatus('');
-                resetPage();
-              }}
+              onClick={() => setValues({ status: '', strana: '1' })}
               className="self-center rounded-control border border-line px-3 py-1.5 text-sm text-ink-secondary hover:bg-surface-2"
             >
               Prikaži sve
@@ -412,10 +469,7 @@ function AdminView() {
               <Select
                 placeholder="Svi"
                 value={status}
-                onChange={(e) => {
-                  setStatus(e.target.value);
-                  resetPage();
-                }}
+                onChange={(e) => setValues({ status: e.target.value, strana: '1' })}
                 options={STATUS_FILTER_OPTIONS}
               />
             </div>
@@ -426,10 +480,7 @@ function AdminView() {
               <Select
                 placeholder="Svi"
                 value={module}
-                onChange={(e) => {
-                  setModule(e.target.value);
-                  resetPage();
-                }}
+                onChange={(e) => setValues({ modul: e.target.value, strana: '1' })}
                 options={moduleOptions()}
               />
             </div>
@@ -440,10 +491,7 @@ function AdminView() {
               <Select
                 placeholder="Svi"
                 value={kind}
-                onChange={(e) => {
-                  setKind(e.target.value);
-                  resetPage();
-                }}
+                onChange={(e) => setValues({ tip: e.target.value, strana: '1' })}
                 options={kindOptions}
               />
             </div>
@@ -454,10 +502,7 @@ function AdminView() {
               <Select
                 placeholder="Svi"
                 value={createdBy}
-                onChange={(e) => {
-                  setCreatedBy(e.target.value);
-                  resetPage();
-                }}
+                onChange={(e) => setValues({ podnosilac: e.target.value, strana: '1' })}
                 options={podnosilacOptions}
               />
             </div>
@@ -498,7 +543,7 @@ function AdminView() {
           rows={rows}
           rowKey={(r) => r.id}
           onRowActivate={(r) => router.push(`/zahtevi/detalj?id=${r.id}`)}
-          loading={list.isLoading}
+          loading={!resolved || list.isPending}
           empty={
             <EmptyState
               title={tab === 'inbox' ? 'Inbox je prazan' : tab === 'archive' ? 'Arhiva je prazna' : 'Nema zahteva'}
@@ -517,8 +562,8 @@ function AdminView() {
         <Pager
           page={page}
           totalPages={totalPages}
-          onPrev={() => setPage((p) => Math.max(1, p - 1))}
-          onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
+          onPrev={() => setValues({ strana: String(Math.max(1, page - 1)) })}
+          onNext={() => setValues({ strana: String(Math.min(totalPages, page + 1)) })}
         />
       )}
       {isListTab && tab !== 'inbox' && (

@@ -8,6 +8,7 @@ import { Input, FormField } from '@/components/ui-kit/form-field';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { toast } from '@/lib/toast';
+import { listHref } from '@/lib/use-id-param';
 import { formatDecimal } from '@/lib/format';
 import { lastEventTime } from '../../_lib/status';
 import {
@@ -136,7 +137,9 @@ export function OwnerActions({ detail }: { detail: ChangeRequestDetail }) {
           del.mutate(detail.id, {
             onSuccess: () => {
               toast('Nacrt je obrisan.');
-              router.push('/zahtevi');
+              // Drugi izlaz sa istog ekrana — mora kroz `listHref`, inače „Obriši nacrt"
+              // i dalje izbacuje na Inbox iako je korisnik došao sa filtriranog taba.
+              router.push(listHref('/zahtevi'));
             },
             onError: (e) => toast((e as Error).message),
           })

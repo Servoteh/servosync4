@@ -10,6 +10,8 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { HelpSpot } from '@/components/ui-kit/help-spot';
 import { toast } from '@/lib/toast';
 import { formatDecimal } from '@/lib/format';
+import { useListQueryState } from '@/lib/use-id-param';
+import { STANJE_LISTE_ZAHTEVA } from '../_lib/list-state';
 import {
   usePayoutReport,
   useCloseMonth,
@@ -41,7 +43,20 @@ export function NagradeTab() {
 /* ─────────────────────────────────────────────────────────── mesečni obračun */
 
 function MonthlyPayout() {
-  const [month, setMonth] = useState(currentMonth());
+  /**
+   * Mesec obračuna živi U URL-u: povratak sa zahteva otvorenog iz obračuna vraćao je
+   * mesec na tekući, pa je administrator koji kontroliše jul morao ponovo da bira mesec.
+   *
+   * 🔴 `defaults` NUŽNO nosi i sve ključeve roditelja (`STANJE_LISTE_ZAHTEVA`) —
+   * `setValues` serijalizuje samo svoje ključeve, pa bi bez toga prva promena meseca
+   * obrisala `tab=nagrade` iz adrese i vratila administratora na Inbox.
+   */
+  const { values, setValues } = useListQueryState({
+    ...STANJE_LISTE_ZAHTEVA,
+    mesec: currentMonth(),
+  });
+  const month = values.mesec;
+  const setMonth = (v: string) => setValues({ mesec: v });
   const report = usePayoutReport(month);
   const closeMonth = useCloseMonth();
   const [confirmClose, setConfirmClose] = useState(false);

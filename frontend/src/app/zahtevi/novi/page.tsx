@@ -14,6 +14,8 @@ import { AttachmentInput } from '@/components/ui-kit/attachment-input';
 import { AudioRecorder } from '@/components/ui-kit/audio-recorder';
 import { DictateButton, RefineButton } from '@/components/voice-controls';
 import { toast } from '@/lib/toast';
+import { listHref } from '@/lib/use-id-param';
+import { isModifiedNavClick } from '@/lib/nav-click';
 import {
   useCreateZahtev,
   useUploadAttachments,
@@ -171,7 +173,9 @@ export default function NoviZahtevPage() {
         if (!busy) void save(true);
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        router.push('/zahtevi');
+        // Odustajanje vraća listu kakvu je korisnik ostavio (tab, filteri, strana) —
+        // do sada ga je vraćalo na Inbox iako je došao sa taba „Svi zahtevi".
+        router.push(listHref('/zahtevi'));
       }
     };
     window.addEventListener('keydown', onKey);
@@ -194,7 +198,7 @@ export default function NoviZahtevPage() {
         actions={
           <div className="flex items-center gap-2">
             <HelpToggleButton />
-            <Button variant="ghost" onClick={() => router.push('/zahtevi')}>
+            <Button variant="ghost" onClick={() => router.push(listHref('/zahtevi'))}>
               <ArrowLeft className="h-4 w-4" aria-hidden />
               Nazad
             </Button>
@@ -238,11 +242,17 @@ export default function NoviZahtevPage() {
               <ul className="mt-2 space-y-1.5">
                 {slicni.map((s) => (
                   <li key={s.id}>
+                    {/* 🔴 Otvara se u NOVOM tabu: `router.push` je uništavao popunjenu
+                        formu — naslov, opis, priloge i snimljenu glasovnu poruku — a
+                        baš tu korisnika teramo da proveri duplikat. Gard za
+                        Ctrl/Cmd/srednji klik ide PRE `preventDefault`, da pregledač
+                        odradi svoje. */}
                     <a
                       href={`/zahtevi/detalj?id=${s.id}`}
+                      target="_blank"
+                      rel="noopener"
                       onClick={(e) => {
-                        e.preventDefault();
-                        router.push(`/zahtevi/detalj?id=${s.id}`);
+                        if (isModifiedNavClick(e)) return;
                       }}
                       className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline"
                     >
