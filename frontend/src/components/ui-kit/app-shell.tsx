@@ -77,6 +77,7 @@ import {
   type SidebarLayout,
 } from '@/lib/use-ui-prefs';
 import { NAV_EVENT, emitNavEvent, type NavEventDetail } from '@/lib/use-query-tab';
+import { isModifiedNavClick, type NavClickLike } from '@/lib/nav-click';
 import {
   useMarkAllNotificationsRead,
   useMarkNotificationRead,
@@ -86,7 +87,9 @@ import {
 } from '@/api/notifications';
 import { CommandPalette } from '@/components/ui-kit/command-palette';
 import { AiWidget } from '@/components/ui-kit/ai-widget';
-import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
+import { StatusBadge } from '@/components/ui-kit/status-badge';
+import { notificationBadge, resolveNotificationRoute } from '@/lib/notifications-nav';
+import { toast } from '@/lib/toast';
 import { formatDateTime } from '@/lib/format';
 
 // ------------------------------------------------------------------ AppShellContext
@@ -215,35 +218,6 @@ function useCurrentSearch(pathname: string): string {
 
 // ------------------------------------------------------------------ zvonce (D8 notifikacije)
 
-/** Tip notifikacije → StatusBadge (kanonska mapa, DESIGN_SYSTEM §7). */
-const NOTIFICATION_BADGE: Record<string, { tone: Tone; label: string }> = {
-  'kontrola.skart': { tone: 'danger', label: 'Škart' },
-  'kontrola.dorada': { tone: 'warn', label: 'Dorada' },
-  'primopredaja.nova': { tone: 'info', label: 'Primopredaja' },
-  'primopredaja.preuzeta': { tone: 'info', label: 'Preuzeta izrada' },
-  // Zahtev 016/26: planer dobija zvonce kad se primopredaja lansira u proizvodnju.
-  // Ton/labela prate kanonsku mapu statusa RN-a (DESIGN_SYSTEM §7) — „Lansiran" je
-  // info svuda drugde (work-orders, handovers), pa ne sme ovde biti success.
-  'primopredaja.lansirana': { tone: 'info', label: 'Lansiran' },
-  // Zahtev 037/26: šef proizvodnje dobija zvonce kad se mašina otpiše (treba da
-  // preraspodeli poslove). `warn`, ne `danger` — nije kvar nego planska radnja.
-  'odrzavanje.masina-otpis': { tone: 'warn', label: 'Otpis mašine' },
-};
-
-/** refTable → ruta modula (funkcija prima refId za deep-link kad modul to podržava). */
-const NOTIFICATION_ROUTE: Record<string, (refId: number | null) => string> = {
-  // Zahtev 016/26: klik na zvonce vodi pravo na lansirani RN (ekran već čita ?open=).
-  work_orders: (id) => (id != null ? `/work-orders?open=${id}` : '/work-orders'),
-  handover_drafts: () => '/nacrti',
-  drawing_handovers: () => '/handovers',
-  // Neusaglašenosti na montaži (zahtev 004/26): deep-link otvara detalj u tabu.
-  montage_nonconformities: (id) =>
-    `/montaza?view=neusaglasenosti${id != null ? `&id=${id}` : ''}`,
-  // Mašina je ključana TEKSTOM (machine_code), a `ref_id` je Int → nema deep-linka na
-  // karton; vodimo na registar mašina, a šifra stoji u tekstu notifikacije.
-  maint_machines: () => '/odrzavanje?tab=masine',
-};
-
 type BellVariant = 'sidebar' | 'rail' | 'header';
 
 /**
@@ -289,12 +263,30 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
     };
   }, [open]);
 
+  /**
+   * Klik na stavku panela (C20). Tri stvari koje su ranije falile:
+   *
+   * 1) `emitNavEvent(route)` PRE `router.push` — zvonce stoji na SVAKOJ strani, pa je klik
+   *    često navigacija na stranu na kojoj korisnik VEĆ jeste. Next tada ne remount-uje
+   *    stranu (query nije deo ključa za remount), a `router.push` ne okida `popstate` —
+   *    adresa se promeni, ekran ostane isti. `servosync:nav` je kućni kanal kojim sidebar i
+   *    paleta javljaju cilj (`useQueryTab`/`useIdParam` ga slušaju); bez njega
+   *    `/odrzavanje?tab=masine` ne prebaci tab, a to je 4 izmerena klika koja su ljude
+   *    ostavila na tabu „Pregled".
+   * 2) Rute za `quality_events` i `app_switches` (v. `lib/notifications-nav.ts`).
+   * 3) Poruka kad rute NEMA. Tiho zatvaranje panela izgleda kao da je akcija uspela —
+   *    gore je od greške, jer korisnik ne zna da treba da traži drugim putem.
+   */
   function onActivate(n: AppNotification) {
     if (!n.readAt) markRead.mutate(n.id);
-    const build = n.refTable ? NOTIFICATION_ROUTE[n.refTable] : undefined;
-    const route = build?.(n.refId ?? null);
-    if (route) router.push(route);
+    const route = resolveNotificationRoute(n.refTable, n.refId);
     setOpen(false);
+    if (!route) {
+      toast('Ovo obaveštenje nema ekran na koji vodi — označeno je pročitanim.');
+      return;
+    }
+    emitNavEvent(route);
+    router.push(route);
   }
 
   if (!enabled) return null;
@@ -363,7 +355,7 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
               </div>
             ) : (
               rows.map((n) => {
-                const badge = NOTIFICATION_BADGE[n.type];
+                const badge = notificationBadge(n.type);
                 return (
                   <button
                     key={n.id}
@@ -374,11 +366,7 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
                     )}
                   >
                     <div className="flex items-center gap-2">
-                      {badge ? (
-                        <StatusBadge tone={badge.tone} label={badge.label} />
-                      ) : (
-                        <StatusBadge tone="neutral" label={n.type} />
-                      )}
+                      <StatusBadge tone={badge.tone} label={badge.label} />
                       <span className="tnums ml-auto shrink-0 text-xs text-ink-secondary">
                         {formatDateTime(n.createdAt)}
                       </span>
@@ -405,8 +393,13 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
  * (podstavka nosi query, npr. `/odrzavanje?tab=kvarovi`); shell ga javlja kroz `servosync:nav`
  * da bi strana koja ostaje montirana promenila tab (PLAN_NAV_PODMENIJI §4.3). Bez njega se
  * podrazumeva `mruHref` (obični redovi modula — href reda JESTE cilj).
+ *
+ * Događaj klika je PRVI argument i nije opcion namerno: nav event sme da se emituje samo za
+ * običan levi klik (v. `lib/nav-click.ts`). Ctrl/⌘-klik na podstavku otvara nov tab, a tekuća
+ * strana mora da ostane na svom pogledu — nov `<Link>` koji zaboravi da prosledi događaj ne
+ * prolazi `tsc`, pa gard ne može da se izgubi kao komentar.
  */
-type NavigateHandler = (mruHref: string, navHref?: string) => void;
+type NavigateHandler = (e: NavClickLike, mruHref: string, navHref?: string) => void;
 
 /**
  * Podstavka modula (treći nivo — pogled/tab, PLAN_NAV_PODMENIJI §4.2) u punom sidebaru:
@@ -431,7 +424,7 @@ function SidebarSubItemRow({
       href={item.href}
       // MRU ide na modul, cilj navigacije je pun href podstavke (query!) — shell ga
       // emituje kao `servosync:nav`, pa strana menja tab i bez remount-a (§4.3).
-      onClick={() => onNavigate(parentHref, item.href)}
+      onClick={(e) => onNavigate(e, parentHref, item.href)}
       aria-current={active ? 'page' : undefined}
       className={cn(
         // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11), kao i redovi modula.
@@ -548,7 +541,7 @@ function SidebarModuleRow({
         )}
         <Link
           href={module.href}
-          onClick={() => onNavigate(module.href)}
+          onClick={(e) => onNavigate(e, module.href)}
           // Kad je aktivna PODSTAVKA, ona nosi jedini aria-current — roditelj samo stil.
           aria-current={ariaCurrent && !activeSub ? 'page' : undefined}
           title={markerTitle}
@@ -1009,7 +1002,7 @@ function FlyoutModuleLink({
       <Link
         href={module.href}
         role="menuitem"
-        onClick={() => onNavigate(module.href)}
+        onClick={(e) => onNavigate(e, module.href)}
         aria-current={active && !activeSubHref ? 'page' : undefined}
         title={markerTitle}
         className={cn(
@@ -1035,7 +1028,7 @@ function FlyoutModuleLink({
                 role="menuitem"
                 // MRU/Omiljeno ostaju na nivou modula (F0) — roditeljev href; cilj
                 // navigacije je pun href podstavke (§4.3, promena taba bez remount-a).
-                onClick={() => onNavigate(module.href, c.href)}
+                onClick={(e) => onNavigate(e, module.href, c.href)}
                 aria-current={subActive ? 'page' : undefined}
                 className={cn(
                   'flex min-w-0 items-center rounded-control py-1 pl-3 pr-2 text-sm',
@@ -1292,8 +1285,10 @@ function RailNav({
                     setFlyout(null);
                     focusIcon(i);
                   }}
-                  onNavigate={(href, navHref) => {
-                    onNavigate(href, navHref);
+                  onNavigate={(e, href, navHref) => {
+                    onNavigate(e, href, navHref);
+                    // Flyout se zatvara i na ctrl-klik: meni je odradio svoje (cilj je
+                    // otvoren u novom tabu), a tekuća strana ostaje netaknuta.
                     setFlyout(null);
                   }}
                 />
@@ -1575,7 +1570,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // `/odrzavanje?tab=masine` ne bi uradio ništa. Cilj se šalje kao `detail.href` jer `onClick`
   // <Link>-a prethodi promeni URL-a; potrošači (`useQueryTab`, `useCurrentSearch`) ga primaju
   // samo za ISTI pathname — kod prave promene rute strana se remount-uje i čita URL sama.
-  const onNavigate: NavigateHandler = (href, navHref) => {
+  //
+  // Ctrl/⌘/Shift/Alt/srednji klik = „otvori drugde": Next prepušta navigaciju browseru, pa
+  // tekuća strana ne sme da se pomeri NI JEDNIM od ovih efekata (ni tab, ni MRU, ni zatvaranje
+  // sidebara). Ranije je ctrl-klik na „Održavanje → Kvarovi" otvarao nov tab I prebacivao
+  // stari, a adresa starog je i dalje pokazivala prethodni pogled.
+  const onNavigate: NavigateHandler = (e, href, navHref) => {
+    if (isModifiedNavClick(e)) return;
     pushRecentModule(href);
     setOverlayOpen(false);
     setOverlayHover(false);

@@ -76,6 +76,7 @@ import {
   type ProjectLookup,
 } from '@/api/lookups';
 import { formatDate, formatNumber } from '@/lib/format';
+import { consumeParam, parseIdParam } from '@/lib/deep-link';
 import { toast } from '@/lib/toast';
 
 const STATUS_META: Record<number, { tone: Tone; label: string }> = {
@@ -1813,22 +1814,13 @@ function DeepLinkOpenParam({ onOpen }: { onOpen: (id: number) => void }) {
   const params = useSearchParams();
   const raw = params.get('open');
   useEffect(() => {
-    if (raw == null || raw.trim() === '') return;
-    // SAMO dekadni zapis (kanon iz lib/use-id-param.ts): goli `Number()` prima i „0x10" (=16),
-    // „1e3" (=1000) i „+5", pa prelomljen link iz mejla otvara TUĐI nalog umesto da bude
-    // ignorisan.
-    const trimmed = raw.trim();
-    if (!/^\d+$/.test(trimmed)) return;
-    const id = Number(trimmed);
-    if (!Number.isInteger(id) || id <= 0) return;
+    // Stroga provera i „trošenje" parametra su od C20 u `lib/deep-link.ts` — isti kod je
+    // bio prepisan na četiri mesta, pa je stroga validacija falila baš tamo gde nije
+    // prepisana.
+    const id = parseIdParam(raw);
+    if (id == null) return;
     onOpen(id);
-    // „Potroši" deep-link (obrazac iz /montaza): skini `open` sa adrese preko `replaceState`.
-    // `replaceState` menja TEKUĆI unos u istoriji, pa Nazad ne vraća `?open=` — auto-otvaranje
-    // ostaje jednokratno, kako je i bilo zamišljeno. Uzgred rešava i ponovni klik na ISTI
-    // nalog: param ide „X" → null → „X", pa se efekat opet okine.
-    const url = new URL(window.location.href);
-    url.searchParams.delete('open');
-    window.history.replaceState(null, '', url.toString());
+    consumeParam('open');
   }, [raw, onOpen]);
   return null;
 }

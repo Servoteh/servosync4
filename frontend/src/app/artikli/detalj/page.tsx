@@ -15,6 +15,7 @@ import {
   putanjaListeArtikala,
   type IzvorListeArtikala,
 } from '@/lib/povratak-na-listu';
+import { parseIdParam } from '@/lib/deep-link';
 import { useArtikal, useItemLookups } from '@/api/masters';
 import { MaticniEkran } from '../_forma/polja';
 import { BRANA_ARTIKAL } from '../_forma/pravila';
@@ -63,9 +64,9 @@ export default function ArtikalDetaljPage() {
   const [izvor, setIzvor] = useState<IzvorListeArtikala>('artikli');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const raw = params.get('id');
-    const n = raw ? Number(raw) : NaN;
-    setValidId(Number.isInteger(n) && n > 0 ? n : null);
+    // `parseIdParam` je stroža od golog `Number()`: „0x10" (=16), „1e3" (=1000) i „+5" bi
+    // inače prošli, pa prelomljen link iz mejla otvara TUĐI artikal (C20, kanon 077/26).
+    setValidId(parseIdParam(params.get('id')));
     setRezim(params.get('rezim') === 'izmena' ? 'izmena' : 'pregled');
     setIzvor(citajIzvorListeArtikala(window.location.search));
     setIdResolved(true);

@@ -8,6 +8,7 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '@/components/ui-kit/tabs';
 import { Button } from '@/components/ui-kit/button';
 import { toast } from '@/lib/toast';
+import { parseIdParam } from '@/lib/deep-link';
 import { ApiError } from '@/api/client';
 import { useEnsureRn, resolveRn } from '@/api/pracenje';
 import { KontrolnaTab } from './_components/kontrolna-tab';
@@ -51,7 +52,11 @@ export default function PracenjePage() {
     const predmet = sp.get('predmet');
     const root = sp.get('root') || undefined;
     if (rn) return { kind: 'rn', rnId: rn };
-    if (predmet) return { kind: 'predmet', itemId: Number(predmet), rootRn: root };
+    // Stroga dekadna provera (C20): goli `Number()` je od „1e3" pravio 1000, a od „abc"
+    // NaN koji je odlazio u API poziv. Neispravan `?predmet=` sada pada na tab, ne na
+    // ekran predmeta koji ne postoji.
+    const itemId = parseIdParam(predmet);
+    if (itemId != null) return { kind: 'predmet', itemId, rootRn: root };
     const hashTab = window.location.hash.replace(/^#tab=/, '') as TabKey;
     const tab: TabKey = (['kontrolna', 'predmeti', 'pretraga'] as const).includes(hashTab) ? hashTab : 'kontrolna';
     return { kind: 'tab', tab };

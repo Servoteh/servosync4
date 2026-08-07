@@ -8,6 +8,8 @@ import {
   odlukaOPoziciji,
   type ZapisPozicijeListe,
 } from './povratak-na-listu';
+import { parseIdParam } from './deep-link';
+import { NAV_EVENT, emitNavEvent, searchFromNavEvent } from './use-query-tab';
 
 /**
  * Reads the document id from `?id=N` on a STATIC detail route.
@@ -19,14 +21,34 @@ import {
  * `/modul/detalj?id=N` (isti obrazac kao `/zahtevi/detalj`).
  *
  * Zašto ne `useSearchParams`: pod `output: "export"` bi tražio `<Suspense>` oko cele
- * stranice; čitanje iz `window.location` u efektu je jednostavnije i već ustaljeno.
+ * stranice, a hook se zove IZNAD auth-gejta (`if (!user) return …`) — tamo bi se pri
+ * `next build` stvarno izvršio i oborio build. Reaktivnost se zato dobija kroz kućni
+ * kanal `servosync:nav` (isti koji koriste sidebar i paleta), ne kroz `useSearchParams`.
  *
  * - `resolved` — false do prvog efekta. BEZ njega bi prvi render (pre efekta) uvek
  *   pokazao lažno „nije pronađen", jer je `id` još null.
  * - `popstate` — browser Nazad/Napred između dva dokumenta ISTE rute menja samo query,
  *   pa se komponenta ne remontira; bez slušaoca bi se URL promenio a sadržaj ne.
- * - `go(nextId)` — navigacija detalj → detalj (npr. prepis predračuna u račun).
- *   `router.push` NE okida `popstate`, zato state postavljamo i ručno.
+ * - `servosync:nav` (C20) — detalj → detalj SA DRUGE komponente (npr. „Otvori drugu
+ *   stranu" u panelu prenosa `/robno/detalj`). `router.push`/`<Link>` na ISTU rutu ne
+ *   remount-uje stranu (Next namerno izostavlja query iz ključa za remount) i ne okida
+ *   `popstate`, pa je adresa pokazivala drugi dokument a ekran stari — magacioner je posle
+ *   storna prenosa gledao dokument koji misli da je nov. Pozivalac koji navigira na istu
+ *   rutu MORA da emituje `emitNavEvent(href)` pre navigacije.
+ * - `go(nextId)` — navigacija detalj → detalj iz same strane; emituje isti event, pa se
+ *   usaglase i drugi čitaoci na ekranu.
+ *
+ * `?id=` na ruti detalja je TRAJNO stanje adrese (osvežavanje/bookmark moraju da pogode
+ * isti dokument) — zato se ovde NIKAD ne „troši" (v. `consumeParam` u `deep-link.ts`,
+ * koji je za jednokratne deep-linkove tipa `?open=`).
+ *
+ * ⚠️ CENA KOJU STRANA MORA DA PLATI: ovaj hook menja identitet zapisa U MESTU — komponenta
+ * se NE remontira, pa svako stanje strane preživi promenu `?id=`. Pre nego što se hook uvede
+ * na nov ekran, mora se proći kroz SVE što taj ekran drži: otvorene dijaloge (naročito one
+ * bez `dismissable`), nacrte unosa, priloge, odabrane redove, `pending` prozore. Ili se veže
+ * za identitet (`key={id}`, `docId` u samom stanju — v. `/robno/detalj`), ili se hook NE
+ * uvodi. Ekran koji to ne izdrži upisuje polja jednog zapisa na drugi; zbog toga
+ * `/zahtevi/detalj` NAMERNO ostaje na sopstvenom čitaču bez `popstate` (C20, 07.08.2026).
  */
 export function useIdParam(paramName = 'id'): {
   id: number | null;
@@ -38,16 +60,31 @@ export function useIdParam(paramName = 'id'): {
   const [resolved, setResolved] = useState(false);
 
   useEffect(() => {
-    setId(readIdFromLocation(paramName));
+    const apply = (search: string) =>
+      setId(parseIdParam(new URLSearchParams(search).get(paramName)));
+    apply(window.location.search);
     setResolved(true);
-    const onPop = () => setId(readIdFromLocation(paramName));
+
+    const onPop = () => apply(window.location.search);
+    const onNav = (e: Event) => {
+      const fromEvent = searchFromNavEvent(e);
+      if (fromEvent === null) return; // druga ruta — ignoriši (strana se remount-uje)
+      apply(fromEvent ?? window.location.search);
+    };
     window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
+    window.addEventListener(NAV_EVENT, onNav);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      window.removeEventListener(NAV_EVENT, onNav);
+    };
   }, [paramName]);
 
   const go = useCallback(
     (nextId: number) => {
-      router.push(`${window.location.pathname}?${paramName}=${nextId}`);
+      const href = `${window.location.pathname}?${paramName}=${nextId}`;
+      // URL još nije promenjen → cilj putuje u `detail.href` (isto kao klik u sidebaru).
+      emitNavEvent(href);
+      router.push(href);
       setId(nextId);
     },
     [router, paramName],
@@ -333,15 +370,4 @@ export function useZapamcenaPozicijaListe({
   );
 
   return { okvirRef, izgubljenoRedova };
-}
-
-/** `?id=N` → pozitivan ceo broj; sve ostalo (fali, prazno, „abc", 0, −5) → null. */
-function readIdFromLocation(paramName = 'id'): number | null {
-  const raw = new URLSearchParams(window.location.search).get(paramName);
-  if (raw == null || raw.trim() === '') return null;
-  // SAMO dekadni zapis. `Number()` prima i „0x10" (=16), „1e3" (=1000) i „+5" —
-  // prelomljen link iz mejla tako otvara TUĐI dokument umesto da javi grešku.
-  if (!/^\d+$/.test(raw.trim())) return null;
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : null;
 }

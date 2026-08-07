@@ -43,8 +43,11 @@ export function emitNavEvent(href?: string): void {
  * Query iz `detail.href` ako je isti pathname; `null` kad poruku treba ignorisati
  * (druga ruta — nju hvata remount/promena pathname-a), `undefined` kad detalja nema
  * (pozivalac tada čita `window.location.search`).
+ *
+ * Izvezeno jer isti kanal koristi i `useIdParam` (`?id=` na ruti detalja) — logika
+ * „da li se ova poruka mene tiče" sme da postoji samo na jednom mestu.
  */
-function searchFromEvent(e: Event): string | null | undefined {
+export function searchFromNavEvent(e: Event): string | null | undefined {
   const href = (e as CustomEvent<NavEventDetail>).detail?.href;
   if (!href) return undefined;
   try {
@@ -118,7 +121,7 @@ export function useQueryTab<T extends string>(
 
     const onPop = () => apply(window.location.search);
     const onNav = (e: Event) => {
-      const fromEvent = searchFromEvent(e);
+      const fromEvent = searchFromNavEvent(e);
       if (fromEvent === null) return; // druga ruta — ignoriši (strana se remount-uje)
       apply(fromEvent ?? window.location.search);
     };

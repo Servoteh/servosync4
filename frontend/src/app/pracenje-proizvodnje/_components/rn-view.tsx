@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   ArrowLeft,
   Plus,
@@ -22,6 +23,7 @@ import { StatusBadge, type Tone } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Dialog } from '@/components/ui-kit/dialog';
 import { cn } from '@/lib/cn';
+import { emitNavEvent } from '@/lib/use-query-tab';
 import { formatDate } from '@/lib/format';
 import { ApiError } from '@/api/client';
 import {
@@ -720,6 +722,29 @@ interface DashboardData {
 }
 
 function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }) {
+  const router = useRouter();
+  /**
+   * Skok na akcioni plan u Sastancima — OBIČNA klijentska navigacija.
+   *
+   * C20 (prva verzija) je ovde radila `history.pushState` + ručno sklopljen `PopStateEvent`,
+   * doslovan prepis 1.0 (`aktivnostModal.js:161`). U Next App Routeru to NE renderuje
+   * /sastanci: `pushState` je podržan samo kao PLITKA izmena adrese, a sintetički `popstate`
+   * usput obara `useQueryTab`/`useIdParam` na TEKUĆOJ strani (oni ga slušaju), pa je korisnik
+   * ostajao na Praćenju, izbačen iz RN pogleda, sa adresom koja laže da je na /sastanci.
+   * Ugrađeni fallback nije mogao da pomogne jer je gledao `location.pathname` — a njega je
+   * `pushState` već prepravio na /sastanci.
+   *
+   * `emitNavEvent` pre `router.push` je kućni redosled za svaku programsku navigaciju. Ovde
+   * je danas bezopasan no-op — cilj je DRUGA ruta, a potrošači poruku sa tuđim pathname-om
+   * ignorišu (`searchFromNavEvent` vraća `null`) jer ih remount ionako osveži. Stoji zato što
+   * jedini ispravan redosled sme da bude jedan: kad se ovaj pogled sutra ugnezdi negde gde
+   * ruta JESTE ista, ništa se ne menja.
+   */
+  const goToSastanak = (akcijaId: string) => {
+    const href = sastanakAkcijaHref(akcijaId);
+    emitNavEvent(href);
+    router.push(href);
+  };
   const plan = useOperativniPlan(rnId);
   const allAktivnosti = useMemo(() => normalizeAktivnosti(plan.data?.data), [plan.data]);
   const dashboard = ((plan.data?.data as { dashboard?: DashboardData } | undefined)?.dashboard ?? {}) as DashboardData;
@@ -910,9 +935,9 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
                       {a.izvor === 'iz_sastanka' && a.izvor_akcioni_plan_id ? (
                         <button
                           type="button"
-                          onClick={() => jumpToSastanak(String(a.izvor_akcioni_plan_id))}
+                          onClick={() => goToSastanak(String(a.izvor_akcioni_plan_id))}
                           className="inline-flex items-center gap-0.5 rounded-full bg-accent-subtle px-1.5 py-0.5 text-2xs font-medium text-accent hover:underline"
-                          title="Otvori akcionu tačku u Sastancima"
+                          title="Otvori Akcioni plan u Sastancima"
                         >
                           ↔ Iz sastanka
                         </button>
@@ -1028,20 +1053,17 @@ function OperativniPlanTab({ rnId, canEdit }: { rnId: string; canEdit: boolean }
   );
 }
 
-/** Skok na akcionu tačku u Sastancima (SPA client navigacija) — paritet 1.0 oaMeetingLink. */
-function jumpToSastanak(akcijaId: string) {
-  const path = `/sastanci?akcija=${encodeURIComponent(akcijaId)}`;
-  // 1.0 (aktivnostModal.js:161) radi ČIST meki SPA prelaz: pushState + popstate.
-  // Next App Router presreće popstate i mekano rutira — bez reload-a.
-  window.history.pushState(null, '', path);
-  window.dispatchEvent(new PopStateEvent('popstate'));
-  // Fallback SAMO ako meki prelaz ne uhvati modul (URL i dalje van /sastanci) —
-  // uslovno, tek po sledećem ticku, da ne obara SPA prelaz bezuslovnim reload-om.
-  window.setTimeout(() => {
-    if (!window.location.pathname.startsWith('/sastanci')) {
-      window.location.assign(path);
-    }
-  }, 0);
+/**
+ * Adresa akcione tačke u Sastancima — paritet 1.0 oaMeetingLink.
+ *
+ * `tab=akcioni` je TRAJNO stanje adrese koje `useQueryTab` na /sastanci već razume, pa
+ * korisnik sleće na „Akcioni plan" umesto na „Pregled". `akcija=<id>` još NE ČITA niko
+ * (`grep -n "akcija" src/app/sastanci` daje nula čitača) — ostaje u adresi namerno: gubitak
+ * id-ja bio bi korak unazad u odnosu na 1.0, a čim `AkcioniPlanTab` dobije čitač (zaseban
+ * posao — menja stranu, ne link) ovaj link proradi do kraja bez ijedne izmene ovde.
+ */
+function sastanakAkcijaHref(akcijaId: string): string {
+  return `/sastanci?tab=akcioni&akcija=${encodeURIComponent(akcijaId)}`;
 }
 
 function FilterLabel({ text, children }: { text: string; children: React.ReactNode }) {

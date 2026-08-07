@@ -144,9 +144,19 @@ export default function RobnoDetailPage() {
   const restoreItem = useRestoreStockItem();
 
   // Poslednje meko-obrisana stavka (za „Poništi" toast). null = nema aktivnog undo prozora.
-  const [pending, setPending] = useState<{ itemLineId: number; label: string } | null>(
-    null,
-  );
+  //
+  // `docId` je deo stanja jer se identitet dokumenta menja U MESTU: `/robno/detalj?id=…` →
+  // `?id=…` (panel prenosa „Otvori drugu stranu", storno, Nazad/Napred) ne remount-uje stranu,
+  // pa je „Poništi" iz prethodnog dokumenta ostajao na ekranu i gađao `restore` sa NOVIM
+  // `doc.id` i STARIM `itemLineId` — vraćanje stavke na pogrešnom dokumentu.
+  const [pending, setPending] = useState<{
+    docId: number;
+    itemLineId: number;
+    label: string;
+  } | null>(null);
+  // Undo prozor važi samo za dokument u kome je i otvoren. Izvedeno stanje (ne efekat):
+  // efekat bi toast ugasio tek posle komita, pa bi jedan render prikazao tuđe „Poništi".
+  const activePending = pending && pending.docId === validId ? pending : null;
 
   // Povratak na listu VRAĆA I FILTERE (`listHref` čita poslednje stanje
   // liste) — bez toga se posle svakog otvorenog dokumenta gubio filter i strana.
@@ -171,7 +181,7 @@ export default function RobnoDetailPage() {
         { docId: doc.id, itemLineId: it.id },
         {
           onSuccess: () =>
-            setPending({ itemLineId: it.id, label: `Stavka #${it.lineNo}` }),
+            setPending({ docId: doc.id, itemLineId: it.id, label: `Stavka #${it.lineNo}` }),
           onError: (e) => toast((e as Error).message),
         },
       );
@@ -180,9 +190,11 @@ export default function RobnoDetailPage() {
   );
 
   const onUndoDelete = useCallback(() => {
-    if (!doc || !pending) return;
+    // `activePending` (ne `pending`): storno brisanja ide na dokument U KOME je stavka
+    // obrisana, nikad na onaj koji je u međuvremenu otvoren u istoj strani.
+    if (!doc || !activePending || activePending.docId !== doc.id) return;
     restoreItem.mutate(
-      { docId: doc.id, itemLineId: pending.itemLineId },
+      { docId: activePending.docId, itemLineId: activePending.itemLineId },
       {
         onSuccess: () => {
           setPending(null);
@@ -194,7 +206,7 @@ export default function RobnoDetailPage() {
         },
       },
     );
-  }, [doc, pending, restoreItem]);
+  }, [doc, activePending, restoreItem]);
 
   const onDismissUndo = useCallback(() => setPending(null), []);
 
@@ -342,12 +354,19 @@ export default function RobnoDetailPage() {
             <DocumentHeader doc={doc} />
 
             {/* Prenos: obe strane para + storno. Detalj jedne strane bez druge ne
-                govori gde je roba otišla. */}
-            <TransferPanel doc={doc} />
+                govori gde je roba otišla.
+
+                `key={doc.id}` na oba panela nije kozmetika: identitet dokumenta se menja U
+                MESTU (klik „Otvori drugu stranu", storno, Nazad/Napred), a strana se tada ne
+                remount-uje. Bez ključa je razlog storna ostajao od prethodnog dokumenta, a u
+                „Uslovima otpreme" je zatečen režim izmene nosio TUĐA polja u `Snimi` — upis
+                podataka jednog dokumenta na drugi. Ključ je jedini oblik koji pokriva i
+                stanje koje se u ove panele tek doda. */}
+            <TransferPanel key={doc.id} doc={doc} />
 
             {/* Uslovi otpreme — polja koja štampa otpremnica. Dok su prazna, papir
                 ostavlja liniju za ručni upis (ranije je štampao izmišljene konstante). */}
-            <ShippingPanel doc={doc} />
+            <ShippingPanel key={doc.id} doc={doc} />
 
             <section className="space-y-2">
               <h2 className="text-md font-semibold text-ink">Stavke</h2>
@@ -367,10 +386,10 @@ export default function RobnoDetailPage() {
         )}
       </div>
 
-      {pending && (
+      {activePending && (
         <UndoToast
-          key={pending.itemLineId}
-          message={`${pending.label} obrisana.`}
+          key={`${activePending.docId}:${activePending.itemLineId}`}
+          message={`${activePending.label} obrisana.`}
           onUndo={onUndoDelete}
           onDismiss={onDismissUndo}
           undoing={restoreItem.isPending}

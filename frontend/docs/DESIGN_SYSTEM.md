@@ -91,6 +91,18 @@
   `href` podstavke sme da nosi query (`/montaza?view=gantt`) — poređenje rute ide preko
   `hrefPath()`, a aktivnost traži i da svi query parovi postoje u tekućem URL-u.
   Query se čita iz `window.location.search` (nikad `useSearchParams` — static export).
+  **Izuzetak (077/26 + C20):** JEDNOKRATAN deep-link parametar (`?open=`, `?id=` na listi/tabu,
+  koji dolazi iz zvonca ili mejla) mora da reaguje i kad se strana NE remontira — Next namerno
+  izostavlja query iz ključa za remount, a `router.push` ne okida `popstate`. Takav parametar
+  sme da se čita `useSearchParams`-om, ali ISKLJUČIVO u komponenti koja renderuje `null`, pod
+  `<Suspense fallback={null}>` i ISPOD auth-gejta (bailout tada pogađa samo prazno podstablo,
+  strana ostaje `○ (Static)`; hook iznad gejta obara `next build`, tj. ceo deploy frontenda).
+  Uzori: `work-orders/page.tsx` i `montaza/page.tsx`; helperi u `lib/deep-link.ts`
+  (`parseIdParam` — stroga dekadna provera, `consumeParam` — „potroši" parametar).
+  **TRAJNO stanje adrese** (`?tab=`, `?view=`, `?id=` na ruti detalja, filteri liste) se NIKAD
+  ne troši i ne treba mu `useSearchParams` — reaktivnost daje kućni kanal `servosync:nav`
+  (`emitNavEvent(href)` pre svake navigacije na ISTU rutu; slušaju ga `useQueryTab` i
+  `useIdParam`).
   U dnu punog sidebara stoji diskretno **„Razgranaj sve / Skupi sve"** (prevrće se po stanju).
 * **Vidljivost u nav-u (RBAC) — tri pravila, jedan izvor** (`navigation.ts`, F1 26.07.2026):
   modul se filtrira `canAccessNavModule` (`requires` = jedna permisija; **`requiresAny` = OR i

@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AlertTriangle,
   FileText,
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { useQueryTab } from '@/lib/use-query-tab';
+import { consumeParam, parseIdParam } from '@/lib/deep-link';
 import { AppShell, WideMode } from '@/components/ui-kit/app-shell';
 import { PageHeader } from '@/components/ui-kit/page-header';
 import { Tabs, type TabItem } from '@/app/reversi/_components/tabs';
@@ -41,6 +42,42 @@ const VIEWS: { key: Exclude<ViewKey, 'hub'>; label: string; icon: LucideIcon; de
 const VALID = new Set<ViewKey>(['plan', 'gantt', 'total', 'izvestaji', 'neusaglasenosti']);
 
 /**
+ * Čitač JEDNOKRATNOG deep-link parametra `?id=<neusaglašenost>` (mejl menadžmentu i zvonce:
+ * `/montaza?view=neusaglasenosti&id=N`). Renderuje `null` — kanon iz buga 077/26.
+ *
+ * Zašto `useSearchParams`, uz repo-pravilo da ga izbegavamo: parametar se do sada čitao u
+ * efektu sa PRAZNIM nizom zavisnosti, tj. samo pri montiranju. Next App Router NAMERNO
+ * izostavlja query iz ključa za remount (`createRouterCacheKey(activeSegment, true)`), pa
+ * `/montaza` → `/montaza?view=neusaglasenosti&id=12` ne remontira stranu i nov `id` se tiho
+ * gubi — a zvonce stoji na SVAKOJ strani, uključujući samu Montažu, pa taj slučaj okida
+ * redovno. `popstate` ne pomaže (`router.push` ga ne okida), a `servosync:nav` ovde ne bi
+ * mogao da „potroši" parametar u pravom trenutku (URL se menja tek posle push-a).
+ *
+ * Čitač je zato izdvojen u komponentu koja vraća `null` i stoji pod `<Suspense fallback={null}>`
+ * ISPOD auth-gejta — bailout pogađa samo to prazno podstablo, pa strana ostaje statički
+ * prerenderovana (provereno u izlazu `next build`: `/montaza` je `○ (Static)`).
+ *
+ * Troši se ISKLJUČIVO `id`. `view` je TRAJNO stanje adrese (bookmark/F5/highlight podstavke
+ * u sidebaru moraju da pogode isti pogled) i nikad se ne skida.
+ *
+ * MONTIRA SE SAMO UZ SVOJ POGLED (v. mesto ugradnje): `?id=` je jednokratan deep-link ka
+ * neusaglašenosti i sme da se „potroši" jedino kad ima ko da ga primi. Bezuslovno montiran
+ * čitač je na `/montaza?id=5` (bez `view=`) pojeo parametar na hubu i zapamtio ga u stanju,
+ * pa je zapis iskakao kasnije, kad korisnik uopšte nije tražio deep-link.
+ */
+function DeepLinkNcParam({ onOpen }: { onOpen: (id: number) => void }) {
+  const params = useSearchParams();
+  const raw = params.get('id');
+  useEffect(() => {
+    const id = parseIdParam(raw);
+    if (id == null) return;
+    onOpen(id);
+    consumeParam('id');
+  }, [raw, onOpen]);
+  return null;
+}
+
+/**
  * Plan montaže — 3.0 TALAS C (MODULE_SPEC_planovi_pracenje_30.md). Hub landing + 4 pogleda
  * (Plan / Gantt / Ukupan Gant / Izveštaji) sa deep-link-om `?view=`. Paritet 1.0
  * planMontaze/index.js: bez ?view= parametra ulaz je HUB (izbor prikaza karticama);
@@ -55,25 +92,14 @@ export default function MontazaPage() {
   // menja pogled i kad smo VEĆ na /montaza — Next tada ne remount-uje stranu), a `changeView`
   // upisuje URL nazad. `omitDefault` čuva 1.0 paritet: hub = /montaza BEZ `?view=`.
   const [view, changeView] = useQueryTab<ViewKey>('view', 'hub', { valid: VALID, omitDefault: true });
-  // Deep-link ka konkretnoj neusaglašenosti (mejl menadžmentu: ?view=neusaglasenosti&id=N).
-  const [initialNcId, setInitialNcId] = useState<number | null>(null);
-
-  // Deep-link init iz URL-a (window da izbegnemo useSearchParams Suspense pod static export-om).
-  // `?view=` čita hook — ovde ostaje samo jednokratni `?id=`.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const idRaw = params.get('id');
-    const idNum = idRaw ? Number.parseInt(idRaw, 10) : NaN;
-    if (Number.isInteger(idNum) && idNum > 0) setInitialNcId(idNum);
-    // „Potroši" deep-link ?id= (obrazac ?tour=1): očisti iz URL-a da se detalj ne
-    // otvara ponovo pri promeni pogleda / remount-u (auto-open je jednokratan).
-    if (idRaw) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete('id');
-      window.history.replaceState(null, '', url.toString());
-    }
-  }, []);
+  // Deep-link ka konkretnoj neusaglašenosti (mejl menadžmentu i zvonce:
+  // `?view=neusaglasenosti&id=N`). Sam parametar čita <DeepLinkNcParam> (vidi komentar uz
+  // tu komponentu); ovde ostaje samo reakcija. `null` = nema aktivnog deep-linka.
+  const [deepLinkNcId, setDeepLinkNcId] = useState<number | null>(null);
+  // Tab javlja kad je otvorio detalj → gasimo signal. Bez ovoga bi prop ostao postavljen,
+  // pa bi svaki povratak na pogled „Neusaglašenosti" ponovo otvarao isti zapis (isti kvar
+  // kao viseći `?id=` u adresi, samo u React stanju).
+  const consumeNcDeepLink = useCallback(() => setDeepLinkNcId(null), []);
 
   useEffect(() => {
     if (!isLoading && !user) router.replace('/login');
@@ -90,6 +116,18 @@ export default function MontazaPage() {
 
   return (
     <AppShell>
+      {/* Renderuje `null` — vidi komentar uz DeepLinkNcParam zašto stoji pod Suspense-om.
+          Uslov `view === 'neusaglasenosti'` je deo popravke, ne kozmetika: bez njega adresa
+          `/montaza?id=5` (bez `view=`) potroši `?id=` na hubu i zapamti ga za kasnije.
+          Gard NE SME da bude efekat tipa „ako view nije taj, obriši zapamćen id": efekti
+          deteta (čitač) idu PRE efekata roditelja, a `useQueryTab` pogled razrešava tek u
+          svom efektu — takav gard bi u prvom komitu obrisao tek pročitan deep-link i ubio
+          upravo ono što C20 popravlja. */}
+      {view === 'neusaglasenosti' && (
+        <Suspense fallback={null}>
+          <DeepLinkNcParam onOpen={setDeepLinkNcId} />
+        </Suspense>
+      )}
       {/* Gantt pogledi su „široki": sidebar se auto-sklanja dok su aktivni (F1 shell);
           hub/plan/izveštaji zadržavaju normalan raspored. */}
       <WideMode active={view === 'gantt' || view === 'total'} />
@@ -124,7 +162,9 @@ export default function MontazaPage() {
             {view === 'gantt' && <GanttTab />}
             {view === 'total' && <TotalGanttTab />}
             {view === 'izvestaji' && <IzvestajiTab />}
-            {view === 'neusaglasenosti' && <NeusaglasenostiTab initialOpenId={initialNcId} />}
+            {view === 'neusaglasenosti' && (
+              <NeusaglasenostiTab deepLinkId={deepLinkNcId} onDeepLinkConsumed={consumeNcDeepLink} />
+            )}
           </>
         )}
       </div>
