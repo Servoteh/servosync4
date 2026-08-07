@@ -25,6 +25,15 @@ Sve na **ubuntusrv**, kao `systemd --user` jedinice (`Linger=yes`, dižu se posl
 
 Dve odvojene instance istog koda, razdvojene `.env`-om — jedna ne sme da čeka drugu.
 Isporuka je ručna: `scp` u odgovarajući folder pa `systemctl --user restart <jedinica>`.
+
+🔴 **SCADA relej ima prekidač izvora `SCADA_IZVOR` (seoba 07.08.2026,
+[docs/SEOBA_SCADA_2026-08-07.md](../docs/SEOBA_SCADA_2026-08-07.md)).**
+`sy15` (podrazumevano) piše kroz PostgREST kao i do sad; `3.0` piše **direktnim
+Postgresom** u glavnu bazu (`SCADA_PG_URL`) jer 3.0 nema PostgREST. Dve posledice za
+isporuku: (1) `pg` je **nova zavisnost** — posle `scp` obavezno `npm install` u
+`~/bridge-scada`, inače relej pod `3.0` ne startuje; (2) parnjak istog imena postoji u
+**backend** okruženju (odakle se čita) i oba moraju da se preklope — **relej prvi**.
+`bridge_sync_log` ostaje u sy15 u oba položaja (dnevnik releja, ne SCADA podatak).
 `node` nije u PATH-u za neinteraktivni SSH → `/home/admnenad/.nvm/versions/node/v22.23.1/bin/node`.
 
 ⚠️ **Isporuka sa Windows mašine šalje CRLF.** U git-u je LF i na serveru je LF, ali Windows

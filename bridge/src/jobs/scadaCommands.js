@@ -1,6 +1,6 @@
 import { notifyError, notifyInfo } from '../alerts/notifier.js';
 import { config } from '../config.js';
-import { getSupabase } from '../db/supabase.js';
+import { getScadaStore } from '../db/scadaStore.js';
 import { logJob } from '../logger.js';
 import { validateCommand } from '../scada/allowlist.js';
 import { scadaSnapshotOnce } from './scadaSnapshot.js';
@@ -42,11 +42,15 @@ function markExecuted(siteKey) {
   _executedAt.set(siteKey, arr);
 }
 
-async function setOutcome(supa, id, status, result) {
-  const patch = { status, result };
-  if (status === 'applied' || status === 'failed') patch.applied_at = new Date().toISOString();
-  const { error } = await supa.from('scada_commands').update(patch).eq('id', id);
-  if (error) log.error({ id, status, err: error.message }, 'ne mogu da upišem ishod komande');
+/* Ishod se upisuje „best effort": greška se loguje ali NE prekida obradu ostalih
+   komandi (zadržano ponašanje). Zaglavljenu `claimed` bez ishoda posle 2 min
+   pokupi sledeći `claimCommands` i zatvori je kao `failed`. */
+async function setOutcome(store, id, status, result) {
+  try {
+    await store.setCommandOutcome(id, status, result);
+  } catch (err) {
+    log.error({ id, status, err: err.message }, 'ne mogu da upišem ishod komande');
+  }
 }
 
 /**
@@ -60,9 +64,10 @@ async function setOutcome(supa, id, status, result) {
  * Svaki red u scada_commands je trajni audit — nikad se ne briše.
  */
 export async function scadaCommandsOnce() {
-  const supa = getSupabase();
-  const { data: claimed, error } = await supa.rpc('scada_claim_commands', { p_limit: 10 });
-  if (error) throw new Error(`[scada] claim_commands RPC: ${error.message}`);
+  // Store bira prekidač `SCADA_IZVOR`: pod `sy15` je ovo DEFINER RPC
+  // `scada_claim_commands`, pod `3.0` isti algoritam kao transakcija (v. scadaStore.js).
+  const store = getScadaStore();
+  const claimed = await store.claimCommands(10);
   if (!claimed?.length) return { processed: 0 };
 
   let applied = 0;
@@ -70,20 +75,20 @@ export async function scadaCommandsOnce() {
     const ctx = { id: cmd.id, site: cmd.site_key, target: cmd.target, by: cmd.requested_by };
 
     if (!config.scada.control) {
-      await setOutcome(supa, cmd.id, 'rejected', { error: 'SCADA_CONTROL=false (kill-switch)' });
+      await setOutcome(store, cmd.id, 'rejected', { error: 'SCADA_CONTROL=false (kill-switch)' });
       log.warn(ctx, 'komanda odbijena — kill-switch');
       continue;
     }
 
     const check = validateCommand(cmd);
     if (!check.ok) {
-      await setOutcome(supa, cmd.id, 'rejected', { error: check.reason });
+      await setOutcome(store, cmd.id, 'rejected', { error: check.reason });
       log.warn({ ...ctx, reason: check.reason }, 'komanda van allowlist-a');
       continue;
     }
 
     if (rateLimited(cmd.site_key)) {
-      await setOutcome(supa, cmd.id, 'rejected', {
+      await setOutcome(store, cmd.id, 'rejected', {
         error: `rate-limit: max ${config.scada.cmdRatePerMin} komandi/min po sistemu`,
       });
       log.warn(ctx, 'komanda odbijena — rate-limit');
@@ -93,7 +98,7 @@ export async function scadaCommandsOnce() {
     try {
       const res = await check.exec();
       markExecuted(cmd.site_key);
-      await setOutcome(supa, cmd.id, 'applied', { ok: true, response: res ?? null });
+      await setOutcome(store, cmd.id, 'applied', { ok: true, response: res ?? null });
       applied += 1;
       log.info({ ...ctx, value: cmd.value }, 'komanda primenjena');
       // info alert (throttle 1h po jobu) — daljinska komanda je događaj vredan traga.
@@ -106,11 +111,11 @@ export async function scadaCommandsOnce() {
     } catch (err) {
       if (err?.reject) {
         // validacija u exec fazi (npr. Loxone max po tagu) → rejected, ne failed
-        await setOutcome(supa, cmd.id, 'rejected', { error: String(err.message) });
+        await setOutcome(store, cmd.id, 'rejected', { error: String(err.message) });
         log.warn({ ...ctx, reason: err.message }, 'komanda odbijena u exec validaciji');
         continue;
       }
-      await setOutcome(supa, cmd.id, 'failed', { error: String(err?.message || err) });
+      await setOutcome(store, cmd.id, 'failed', { error: String(err?.message || err) });
       log.error({ ...ctx, err }, 'komanda neuspešna');
       notifyError({ jobName: 'scada_commands', error: err, context: `${cmd.site_key}/${cmd.target}` });
     }
