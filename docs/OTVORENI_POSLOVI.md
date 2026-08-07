@@ -603,7 +603,40 @@ ostali ekrani preimenuju u „Otkucano" ili prikažu `dobri/ukupno`. **Prioritet
 `why-bottleneck-modal.tsx:165` — taj broj ide u AI prompt kao kontekst, pa AI objašnjava
 kašnjenje pogrešnim brojem.
 
-### C20. 🔴 Deep-link iz zvonca ne radi na pola ekrana — IZMERENO ko to pogađa
+### C20. ✅ REŠENO 07.08.2026 — deep-link iz zvonca sada vodi negde
+
+**Isporučeno** (grana `fix/deep-link-obavestenja-c20`, verify 🟢, rute potvrđene u CF chunk-u):
+dodate rute za `quality_events` → `/kvalitet?tab=skart-dorada` i `app_switches` →
+`/podesavanja?tab=integracije` (do sada klik nije radio ništa — 12 ljudi); `/montaza` i
+`/odrzavanje` primili 077/26 obrazac; skok na Sastanke nosi `akcija` id; gard na modifikovan
+klik u sidebaru; poruka kad rute nema. **CI sada pokreće frontend testove** pre build-a.
+
+🔴 **Pouka 1 — kad popravka počne da vuče nove ekrane, suzi obim.** Grana je usput prebacila
+`/zahtevi/detalj` na `useIdParam`, čime je dodala `popstate` tamo gde ga nije bilo. Sa linkom na
+duplikat to znači da **dugme Nazad menja identitet zahteva U MESTU**, a dijalozi („Isporučeno",
+„Odluka", nacrt) drže stanje prethodnog i šalju ŽIVI `detail.id` — dakle *polja jednog zahteva
+upisuju se na drugi*, uz priloge i mejl pogrešnom podnosiocu. Ekran je **izbačen iz grane**
+(dokaz: `git rev-parse HEAD:frontend/src/app/zahtevi` = isti hash kao main). Isti obrazac kao
+vraćanje strelica u 075/26: jedna odluka o obimu obriše celu klasu nalaza jeftinije od pet popravki.
+
+🔴 **Pouka 2 — frontend testove NIJE pokretao nijedan workflow.** `ci-backend` vrti `npx jest`, ali
+za frontend je postojao samo deploy. Sve brane pisane u `frontend/src/lib/*.spec.ts` bile su
+dekorativne. Korak je dodat u `deploy-frontend.yml` PRE build-a i **pao je dvaput**:
+(a) runner **nema `npm` na hostu** — zato i build ide kroz `docker run node:22-bookworm-slim`;
+(b) u kontejner treba montirati **`$GITHUB_WORKSPACE`**, ne `frontend/` — brana čita `backend/src`
+preko `import.meta.dirname/../../..`. Dok je bio pokvaren, **blokirao je sve frontend deploye na
+main-u**; kapija je pritom radila ispravno (staje PRE build-a, produkcija netaknuta).
+
+**Ostaje otvoreno kao zaseban posao** (audit ih je našao, nisu deo C20 jer su van zvonca):
+- `/zahtevi/detalj` — klik na „mogući duplikat" menja adresu a ostavlja stari zahtev. **Ispravan
+  redosled je obrnut od očiglednog:** prvo dijalozi tog ekrana moraju da vežu stanje za identitet,
+  pa tek onda reaktivan čitač `?id=`. Tu je i jedini preostali `?id=` ekran sa golim `Number()`
+  (prima `0x10`, `1e3`, `+5`).
+- `/robno/detalj` — „Otvori drugu stranu" i storno prenosa (sanirano u ovoj grani, ali vredi test).
+- `/pracenje-proizvodnje` — `?akcija=` ulaz **nema čitaoca** na `/sastanci`.
+- `DESIGN_SYSTEM.md` pravilo o `emitNavEvent` ne pominje svestan izuzetak na `/zahtevi/detalj`.
+
+<details><summary>Merenje i uzrok (za istoriju)</summary>
 
 Otkriveno pri radu na 077/26. Klik na obaveštenje gradi adresu tipa `/ekran?open=N`, ali
 **Next App Router NAMERNO izostavlja query iz ključa za remount** — pa ako korisnik već stoji na
@@ -633,6 +666,8 @@ označi pročitanim i zatvori panel — **korisnik klikne i ne desi se ništa**.
 Isti obrazac (mount-only, bez `popstate`) potvrđen još u: `mob/sastanci/page.tsx:41` (bez ikakve
 validacije ida), `zahtevi/detalj/page.tsx:70`, `mob/kadrovska/page.tsx:87`,
 `handovers/_components/drafts-tab.tsx:1403`.
+
+</details>
 
 ### C21. Primopredaja sa doradom uvek otvara ORIGINALNI nalog
 
