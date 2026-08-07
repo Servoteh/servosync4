@@ -299,9 +299,11 @@ describe("ino obrazac za uslugu (IZVUS, 060/26)", () => {
      * „oslobođenje po članu 24". Kad je vrsta izabrana, papir nosi POTVRĐEN tekst.
      */
     it("napomena sa vrste usluge (čl. 12 st. 3) potiskuje zatečeni tekst o čl. 24", () => {
+      // Odobreni oblik od 07.08.2026 (P-F/b) — isti tekst i u `service_revenue_types` i u
+      // šifarniku osnova, v. `20260807200000_tekstovi_oslobodjenja_potvrda`.
       const note =
-        "PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u " +
-        "(mesto prometa usluge je van teritorije Republike Srbije)";
+        "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV — " +
+        "mesto prometa usluge je van teritorije Republike Srbije.";
       const joined = allText({ ...ctx, serviceRevenueNote: note });
       expect(joined).toContain(note);
       expect(joined).not.toContain(exemptionFor("export-service")?.paperText);

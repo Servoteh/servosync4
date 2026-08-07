@@ -102,6 +102,11 @@ export function citationsContradict(
  * o SAGLASNOSTI TRI POLJA JEDNOG REDA — ona važi za vrednost, ne za način dopreme. Kad
  * knjigovođa doda red kroz šifarnik, isti invariant se meri nad njegovim redom istim
  * `citedArticle`-om; ovde stoje potvrđeni redovi iz odgovora 8, 9 i 10.
+ *
+ * 🔴 07.08.2026: tri reda su dobila DOSLOVAN tekst koji je knjigovođa odobrio (pitanje
+ * P-F), a četvrti (`DOMACI-OSLOBODJEN`) dopunjenu reč „Zakona" koja je u odgovoru 10
+ * falila. Do tada su tri od njih nosila našu rekonstrukciju uz izričito „ČEKA POTVRDU" —
+ * v. `prisma/migrations/20260807200000_tekstovi_oslobodjenja_potvrda`.
  */
 const SEED: readonly VatExemptionBasisRef[] = [
   {
@@ -125,8 +130,9 @@ const SEED: readonly VatExemptionBasisRef[] = [
   {
     code: VAT_EXEMPTION_BASIS_CODES.INWARD_PROCESSING,
     name: "Oplemenjivanje — povraćaj robe ino primaocu (čl. 24 st. 1 t. 7)",
+    // Potvrdio knjigovođa 07.08.2026 (P-F/a) — v. `20260807200000_tekstovi_oslobodjenja_potvrda`.
     paperText:
-      "Napomena o poreskom oslobodjenju: Oslobodjeno PDV na osnovu člana 24. stav 1 tačka 7 Zakona o PDV.",
+      "Oslobođeno PDV-a na osnovu člana 24. stav 1 tačka 7 Zakona o PDV.",
     sefCode: "PDV-RS-24-1-7",
     sefReason: "Oplemenjivanje dobara (čl. 24 st. 1 tač. 7 ZPDV)",
     goesToSef: false,
@@ -134,8 +140,9 @@ const SEED: readonly VatExemptionBasisRef[] = [
   {
     code: VAT_EXEMPTION_BASIS_CODES.DOMESTIC_EXEMPT,
     name: "Domaći oslobođen promet (čl. 24 st. 1 t. 5)",
+    // 07.08.2026: dopunjena reč „Zakona", koja je u odgovoru 10 falila („…tačka 5 o PDV-u").
     paperText:
-      "Napomena o poreskom oslobođenju: Oslobođeno PDV-a na osnovu člana 24 stav 1 tačka 5 o PDV-u",
+      "Oslobođeno PDV-a na osnovu člana 24. stav 1 tačka 5 Zakona o PDV.",
     sefCode: "PDV-RS-24-1-5",
     sefReason: "Oslobođen promet (čl. 24 st. 1 tač. 5 ZPDV)",
     goesToSef: true,
@@ -143,8 +150,9 @@ const SEED: readonly VatExemptionBasisRef[] = [
   {
     code: VAT_EXEMPTION_BASIS_CODES.SERVICE_OUTSIDE_RS,
     name: "Usluga izvršena u inostranstvu (čl. 12 st. 3)",
+    // Potvrdio knjigovođa 07.08.2026 (P-F/b) — dopuna ide CRTOM, ne zagradom.
     paperText:
-      "PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u (mesto prometa usluge je van teritorije Republike Srbije)",
+      "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV — mesto prometa usluge je van teritorije Republike Srbije.",
     sefCode: null,
     sefReason: "Mesto prometa usluge je van teritorije RS (čl. 12 st. 3 ZPDV)",
     goesToSef: false,
@@ -152,8 +160,8 @@ const SEED: readonly VatExemptionBasisRef[] = [
   {
     code: VAT_EXEMPTION_BASIS_CODES.SERVICE_FOREIGN_TAXPAYER,
     name: "Usluga u RS za stranog poreskog obveznika (čl. 12 st. 3)",
-    paperText:
-      "PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u",
+    // Potvrdio knjigovođa 07.08.2026 (P-F/c) — ISTA rečenica kao gore, BEZ dopune o mestu.
+    paperText: "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV.",
     sefCode: null,
     sefReason: "Mesto prometa usluge se određuje po čl. 12 st. 3 ZPDV",
     goesToSef: false,
@@ -185,6 +193,22 @@ describe("citedArticle — čita član i iz teksta i iz SEF šifre", () => {
     ],
     ["PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u", "12-3"],
     ["član 10. stav 2. tačka 1. Zakona o PDV-u", "10-2-1"],
+    // Oblici odobreni 07.08.2026. Prvi je zamka: dopuna iza CRTE sadrži reči
+    // („teritorije") koje liče na početak „tačka", pa bi labaviji parser iz njega izvukao
+    // nepostojeću tačku i time lažno prijavio neslaganje sa šifrom.
+    [
+      "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV — mesto prometa usluge je van teritorije Republike Srbije.",
+      "12-3",
+    ],
+    ["PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV.", "12-3"],
+    [
+      "Oslobođeno PDV-a na osnovu člana 24. stav 1 tačka 7 Zakona o PDV.",
+      "24-1-7",
+    ],
+    [
+      "Oslobođeno PDV-a na osnovu člana 24. stav 1 tačka 5 Zakona o PDV.",
+      "24-1-5",
+    ],
   ])("citat iz teksta [%s] je %s", (text, expected) => {
     expect(citedArticle(text)).toBe(expected);
   });
@@ -292,6 +316,136 @@ describe("🔴 SAGLASNOST PAPIRA I E-FAKTURE — isti dokument, isti osnov", () 
     },
   );
 
+  /**
+   * DOSLOVNI TEKSTOVI KOJE JE KNJIGOVOĐA ODOBRIO 07.08.2026 (pitanje P-F).
+   *
+   * Ovaj test NE meri saglasnost nego SADRŽAJ: da u šifarniku stoji baš ona rečenica koja
+   * je odobrena. Postoji zato što su ta tri teksta do 07.08. bila NAŠA rekonstrukcija —
+   * sastavljena po obrascu, uz „ČEKA POTVRDU" — pa bi njihova tiha promena vratila
+   * neodobrenu formulaciju na poreski dokument, a nijedan test saglasnosti to ne bi
+   * primetio (član ostaje isti, menja se samo rečenica).
+   */
+  it.each([
+    [
+      VAT_EXEMPTION_BASIS_CODES.INWARD_PROCESSING,
+      "Oslobođeno PDV-a na osnovu člana 24. stav 1 tačka 7 Zakona o PDV.",
+      "24-1-7",
+    ],
+    [
+      VAT_EXEMPTION_BASIS_CODES.SERVICE_OUTSIDE_RS,
+      "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV — mesto prometa usluge je van teritorije Republike Srbije.",
+      "12-3",
+    ],
+    [
+      VAT_EXEMPTION_BASIS_CODES.SERVICE_FOREIGN_TAXPAYER,
+      "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV.",
+      "12-3",
+    ],
+  ])(
+    "osnov [%s] nosi DOSLOVAN tekst koji je knjigovođa odobrio 07.08.2026",
+    (code, odobreniTekst, ocekivanClan) => {
+      const row = bySeedCode(code);
+      expect(row.paperText).toBe(odobreniTekst);
+      expect(citedArticle(row.paperText)).toBe(ocekivanClan);
+      // Odobrena rečenica i razlog za SEF moraju da citiraju isti član — inače bi papir i
+      // e-faktura opet govorili različito, samo sa potvrđenim tekstom na jednoj strani.
+      expect(citedArticle(row.sefReason)).toBe(ocekivanClan);
+    },
+  );
+
+  /**
+   * Dve varijante čl. 12 st. 3 razlikuju se TAČNO po dopuni o mestu prometa — ni po čemu
+   * drugom. Pitanje P-F(c) je tražilo „istu rečenicu BEZ tih reči", pa se to i meri:
+   * varijanta za stranog poreskog obveznika mora biti prefiks one druge.
+   */
+  it("dve varijante čl. 12 st. 3 se razlikuju SAMO po dopuni o mestu prometa", () => {
+    const vanRs = bySeedCode(VAT_EXEMPTION_BASIS_CODES.SERVICE_OUTSIDE_RS);
+    const stranoLice = bySeedCode(
+      VAT_EXEMPTION_BASIS_CODES.SERVICE_FOREIGN_TAXPAYER,
+    );
+
+    const zajednicko = "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV";
+    expect(stranoLice.paperText.startsWith(zajednicko)).toBe(true);
+    expect(vanRs.paperText.startsWith(zajednicko)).toBe(true);
+
+    // Samo jedna od dve pominje teritoriju — to je jedina razlika koja sme da postoji.
+    expect(vanRs.paperText).toContain("van teritorije Republike Srbije");
+    expect(stranoLice.paperText).not.toContain("teritorije");
+  });
+
+  /**
+   * ⚠️ REZERVA I ŠIFARNIK MORAJU DA GOVORE ISTU REČENICU.
+   *
+   * `exemptionFor("outside-scope-service")` je IZVEDENA rezerva za izvoznu uslužnu fakturu
+   * bez izabranog osnova. Da je ostala na staroj formulaciji, isti posao bi na papiru
+   * nosio jednu rečenicu sa izabranim osnovom, a drugu bez njega — dve verzije istog
+   * člana, što je klasa kvara zbog koje ovaj modul postoji.
+   */
+  it("izvedena rezerva za čl. 12 st. 3 nosi ISTI odobreni tekst kao šifarnik", () => {
+    expect(exemptionFor("outside-scope-service")!.paperText).toBe(
+      bySeedCode(VAT_EXEMPTION_BASIS_CODES.SERVICE_OUTSIDE_RS).paperText,
+    );
+  });
+
+  /**
+   * 🔴 TEST KOJI PADA AKO NEKO RAZDVOJI TEKST NA PAPIRU OD ŠIFRE ZA SEF.
+   *
+   * Svi testovi iznad tvrde da se papir i SEF SLAŽU. Ovaj tvrdi ono suprotno i jače: da bi
+   * se neslaganje STVARNO videlo. Bez njega bi `citedArticle` mogao tiho da prestane da
+   * čita neki oblik (kao što se već desilo sa `\b` pred „čl") i ceo fajl bi „prolazio"
+   * tako što bi svuda vraćao `null` — lažno tvrdeći saglasnost.
+   *
+   * Zato se ovde svakom redu šifarnika ŠIFRA namerno zameni šifrom DRUGOG člana, tačno
+   * onako kako bi izgledalo da neko popravi tekst na papiru a zaboravi SEF (ili obrnuto) —
+   * i traži se da provera to prijavi.
+   */
+  it.each(SEED.map((r) => [r.code, r] as const))(
+    "red [%s]: podmetnuta TUĐA SEF šifra mora da obori proveru saglasnosti",
+    (_code, row) => {
+      const paper = citedArticle(row.paperText);
+      expect(paper).not.toBeNull();
+
+      // Šifra nekog sasvim drugog člana — ono što bi ostalo posle jednostrane izmene.
+      const podmetnuta = paper === "24-1-2" ? "PDV-RS-24-1-5" : "PDV-RS-24-1-2";
+      const razdvojen: VatExemptionBasisRef = { ...row, sefCode: podmetnuta };
+
+      expect(citedArticle(razdvojen.sefCode)).not.toBe(paper);
+      expect(
+        citationsContradict(paper, citedArticle(razdvojen.sefCode)),
+      ).toBe(true);
+    },
+  );
+
+  /**
+   * ISTO, ali kraj do kraja: papir kroz `resolveExemption`, XML kroz `UblBuilderService`.
+   * Meri SVAKI red šifarnika, i one bez SEF šifre (čl. 12 st. 3) — za njih se poredi tekst
+   * razloga (BT-120), jer BT-121 tamo namerno ne postoji.
+   */
+  it.each(SEED.map((r) => [r.code, r] as const))(
+    "red [%s]: član na papiru = član u UBL-u (kraj do kraja)",
+    (_code, row) => {
+      const paperArticle = citedArticle(
+        resolveExemption({ basis: row, fallbackCase: "export-goods" }).paperText,
+      );
+      expect(paperArticle).not.toBeNull();
+
+      const xml = buildExportXml(row);
+      const xmlCode = /<cbc:TaxExemptionReasonCode>([^<]+)</.exec(xml)?.[1];
+      const xmlReason = /<cbc:TaxExemptionReason>([^<]+)</.exec(xml)?.[1];
+
+      // Razlog (BT-120) mora da postoji uvek — bez njega SEF odbija kategoriju bez poreza.
+      expect(xmlReason).toBeDefined();
+      expect(citedArticle(xmlReason)).toBe(paperArticle);
+
+      if (row.sefCode === null) {
+        // Šifra nije utvrđena → u XML-u je NEMA (prazna bi bila nevažeća šifra).
+        expect(xmlCode).toBeUndefined();
+      } else {
+        expect(citedArticle(xmlCode)).toBe(paperArticle);
+      }
+    },
+  );
+
   it("domaći oslobođen promet više ne ide na SEF bez šifre (BT-121 je bio prazan)", () => {
     const basis = bySeedCode(VAT_EXEMPTION_BASIS_CODES.DOMESTIC_EXEMPT);
     const resolved = resolveExemption({
@@ -365,9 +519,45 @@ describe("basisAllowsSef — kapija po osnovu, ne po zastavici", () => {
     ).toBe(true);
   });
 
-  it("domaći oslobođen promet ide na SEF", () => {
+  /**
+   * 🔴 POTVRDA 07.08.2026 — DO TADA IZVEDENO, OD SADA ODLUKA KNJIGOVOĐE.
+   *
+   * Za ova tri osnova je `goes_to_sef = false` bio NAŠ zaključak (u migraciji od 05.08.
+   * izričito označen sa „ČEKA POTVRDU"): rasuđivali smo da je primalac ino lice, a SEF
+   * domaći registar. Knjigovođa je 07.08. potvrdio baš to, doslovno:
+   *
+   *   „Svakako ovakve fakture se ne evidentiraju u sistemu e faktura jer se rade kao
+   *    izvozna dokumenta"
+   *
+   * Vrednosti se time NE MENJAJU — menja se njihov status, iz pretpostavke u odluku. Zato
+   * ih ovaj test od danas zaključava: ranije ih je smelo promeniti bolje rasuđivanje, sad
+   * ih sme promeniti samo nov odgovor knjigovođe.
+   */
+  it.each([
+    VAT_EXEMPTION_BASIS_CODES.INWARD_PROCESSING,
+    VAT_EXEMPTION_BASIS_CODES.SERVICE_OUTSIDE_RS,
+    VAT_EXEMPTION_BASIS_CODES.SERVICE_FOREIGN_TAXPAYER,
+  ])("osnov [%s] NE ide na SEF (potvrdio knjigovođa 07.08.2026)", (code) => {
+    expect(basisAllowsSef(bySeedCode(code))).toBe(false);
+  });
+
+  /**
+   * ⚠️ OVAJ RED OSTAJE `true` I POSLE REČENICE O „IZVOZNIM DOKUMENTIMA" — OTVORENO.
+   *
+   * Čl. 24 st. 1 t. 5 stoji u DVA reda: `SLOBODNA-ZONA` (izvozni promet) i
+   * `DOMACI-OSLOBODJEN` (domaći). Obrazloženje „jer se rade kao izvozna dokumenta" po svom
+   * tekstu pokriva samo promet stranom licu; za domaći oslobođen račun knjigovođa NIJE
+   * odgovorio. Oboriti ga na `false` po analogiji značilo bi zaustaviti promet koji ide
+   * svaki dan, i to tumačenjem koje niko nije izrekao — pa se ne dira dok ne odgovori.
+   */
+  it("domaći oslobođen promet ide na SEF (⚠️ pitanje se vraća knjigovođi)", () => {
     expect(
       basisAllowsSef(bySeedCode(VAT_EXEMPTION_BASIS_CODES.DOMESTIC_EXEMPT)),
+    ).toBe(true);
+    // Slobodna zona je izričito potvrđena odgovorom 8 i rečenica o izvoznim dokumentima
+    // je NE dira — inače bi faktura koja MORA na SEF prestala da se šalje.
+    expect(
+      basisAllowsSef(bySeedCode(VAT_EXEMPTION_BASIS_CODES.FREE_ZONE)),
     ).toBe(true);
   });
 

@@ -129,10 +129,18 @@ export function exemptionFor(kind: ExemptionCase): ExemptionBasis | null {
       // `USL-INO` (konto 6151). Zatečeni `export-service` tekst se NE menja: on i dalje
       // važi za izvozni uslužni račun kod kog vrsta usluge nije izabrana, pa se stara
       // formulacija ne gubi dok knjigovođa ne prevede zatečene dokumente.
+      //
+      // 🔴 TEKST JE 07.08.2026. DOBIO ODOBREN OBLIK (pitanje P-F(b)). Ovo je REZERVA za
+      // dokument bez izabranog osnova, a odobrena rečenica živi u šifarniku
+      // (`USLUGA-VAN-RS`) — ali obe se štampaju na papiru kao ISTA tvrdnja o istom članu,
+      // pa ne smeju da se razlikuju u formulaciji. Kad bi rezerva ostala na staroj
+      // varijanti, ista izvozna uslužna faktura bi nosila jednu rečenicu sa izabranim
+      // osnovom, a drugu bez njega. Menja se SAMO tekst; `sefReason` i `sefCode` (null)
+      // ostaju, jer o njima knjigovođa nije govorio.
       return {
         paperText:
-          "PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u " +
-          "(mesto prometa usluge je van teritorije Republike Srbije)",
+          "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV — " +
+          "mesto prometa usluge je van teritorije Republike Srbije.",
         sefReason:
           "Mesto prometa usluge je van teritorije RS (čl. 12 st. 3 ZPDV)",
         sefCode: null,

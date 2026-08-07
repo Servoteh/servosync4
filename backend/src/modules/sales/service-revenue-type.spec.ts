@@ -51,9 +51,12 @@ const USL_INO: ServiceRevenueTypeRef = {
   code: "USL-INO",
   revenueAccountCode: "6151",
   vatTreatment: "OUTSIDE_SCOPE",
+  // Prepis produkcije. Odobreni oblik od 07.08.2026 — v. migraciju
+  // `20260807200000_tekstovi_oslobodjenja_potvrda`, koja istu rečenicu poravnava i ovde i
+  // u šifarniku osnova, da papir ne bi imao dve verzije istog člana.
   paperNote:
-    "PDV nije obračunat u skladu sa članom 12. stav 3. Zakona o PDV-u " +
-    "(mesto prometa usluge je van teritorije Republike Srbije)",
+    "PDV nije obračunat u skladu sa članom 12. stav 3 Zakona o PDV — " +
+    "mesto prometa usluge je van teritorije Republike Srbije.",
 };
 const OTPAD: ServiceRevenueTypeRef = {
   code: "OTPAD",
