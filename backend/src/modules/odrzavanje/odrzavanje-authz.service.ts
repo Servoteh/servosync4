@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 
 /**
@@ -91,6 +92,29 @@ export interface MaintScope {
   /** `maint_user_profiles.assigned_machine_codes` (prazan niz ako nema profila). */
   assignedMachineCodes: string[];
 }
+
+/** Prisma `where` isečak nad `MaintAsset` (rezultat `assetListWhere`). */
+export type AssetScopeWhere =
+  | { assetType: string }
+  | { assetType: string; machine: { machineCode: { in: string[] } } }
+  | {
+      OR: (
+        | { assetType: { not: string } }
+        | { machine: { machineCode: { in: string[] } } }
+      )[];
+    };
+
+/** Prisma `where` isečak nad tabelom koja ima kolonu `machine_code`. */
+export type MachineScopeWhere = { machineCode: { in: string[] } };
+
+/** Prisma `where` isečak nad `MaintWorkOrder` (rezultat `workOrderListWhere`). */
+export type WorkOrderScopeWhere = {
+  OR: (
+    | { assignedTo: number }
+    | { reportedBy: number }
+    | { asset: AssetScopeWhere }
+  )[];
+};
 
 @Injectable()
 export class OdrzavanjeAuthzService {
@@ -322,29 +346,44 @@ export class OdrzavanjeAuthzService {
    * Sužavanje liste sredstava (`maint_assets` SELECT = `maint_asset_visible`).
    *
    * Pravilo je asimetrično i to je NAMERNO (prepis, ne previd): ne-mašinska
-   * sredstva nemaju per-red scope, pa pozivalac koji nema pravo na njih NE VIDI
-   * NIJEDNO, a mašinska filtrira po dodeljenim šiframa.
+   * sredstva nemaju per-red scope (vide se ili sva ili nijedno), a mašinska
+   * filtrira po dodeljenim šiframa.
+   *
+   * 🔴 ISPRAVKA 06.08.2026, mereno nad tabelom istinitosti sy15 izraza:
+   * prva verzija ove metode bila je pogrešna za **tehničara bez ERP role**.
+   * Neka je `M = machineVisibleForAll`, `N = nonMachineVisible`, `C` = dodeljene
+   * šifre. sy15 izraz je:
+   *
+   *   (tip = 'machine' ∧ (M ∨ code ∈ C)) ∨ (tip ≠ 'machine' ∧ N)
+   *
+   * Pošto je `N ⊆ M` (svaka rola koja daje `N` daje i `M`; `erp_admin ⊆ floor_read`),
+   * postoje samo TRI žive kombinacije: `M∧N` (sve), `M∧¬N` (SAMO tehničar — sve
+   * mašine, nijedno vozilo/IT/objekat) i `¬M∧¬N` (operater — samo svoje mašine).
+   * Stara verzija je u slučaju `M∧¬N` vraćala filter po `C`, a tehničar `C` po
+   * pravilu nema → **tehničar nije video NIJEDNO sredstvo**. Greška je išla u
+   * bezbednom smeru (uže), ali je modul za tu rolu bio prazan.
    */
-  assetListWhere(
-    s: MaintScope,
-  ):
-    | undefined
-    | { OR: ({ machine: { machineCode: { in: string[] } } } | { assetType: { not: string } })[] }
-    | { machine: { machineCode: { in: string[] } } } {
-    if (this.machineVisibleForAll(s) && this.nonMachineVisible(s)) return undefined;
-    const clauses: (
-      | { machine: { machineCode: { in: string[] } } }
-      | { assetType: { not: string } }
-    )[] = [];
-    if (this.machineVisibleForAll(s)) {
-      // Sve mašine, ali ne i ostalo — izraženo kao „tip = machine".
-      clauses.push({ assetType: { not: "machine" } });
+  assetListWhere(s: MaintScope): AssetScopeWhere | undefined {
+    const m = this.machineVisibleForAll(s);
+    const n = this.nonMachineVisible(s);
+    if (m && n) return undefined;
+    // Tehničar: sve mašine, ništa od vozila/IT/objekata.
+    if (m) return { assetType: "machine" };
+    // (Mrtva grana po konstrukciji — `N ⊆ M`. Ostaje doslovna radi tačnosti
+    // prepisa: da se skup rola sutra promeni, izraz i dalje važi.)
+    if (n) {
+      return {
+        OR: [
+          { assetType: { not: "machine" } },
+          { machine: { machineCode: { in: this.assignedMachineCodes(s) } } },
+        ],
+      };
     }
-    clauses.push({ machine: { machineCode: { in: this.assignedMachineCodes(s) } } });
-    if (this.nonMachineVisible(s)) {
-      return { OR: clauses };
-    }
-    return { machine: { machineCode: { in: this.assignedMachineCodes(s) } } };
+    // Operater: samo dodeljene mašine. Prazan `in` -> nula redova (kao RLS).
+    return {
+      assetType: "machine",
+      machine: { machineCode: { in: this.assignedMachineCodes(s) } },
+    };
   }
 
   /** `true` kad pozivalac vidi vozila/IT/objekte (ne-mašinska sredstva). */
@@ -383,6 +422,366 @@ export class OdrzavanjeAuthzService {
       s.profileRole === "chief" ||
       s.profileRole === "management" ||
       s.profileRole === "admin"
+    );
+  }
+
+  // =========================================================================
+  // 🔴 PUN READ-SCOPE — 34 tabele, po SELECT politikama sa ŽIVE `pg_policies`
+  // =========================================================================
+  //
+  // Politike su povučene sa žive sy15 06.08.2026 (`pg_policies`, `qual` odvojen
+  // od `with_check`), NE iz dokumentacije. Ispod je za svaku tabelu naveden
+  // izvorni `qual`, pa 3.0 parnjak. Tri tabele NEMAJU šta da se prenese i to je
+  // izmereno, ne pretpostavljeno:
+  //
+  //   `maint_vehicle_owners`     -> `maint_vehicle_owners_select` = `true`
+  //                                 (svi ulogovani vide vlasnike vozila)
+  //   `maint_wo_number_counter`  -> `maint_wo_num_counter_deny` = `false` za SVE
+  //                                 komande; jedini upis je kroz brojač naloga
+  //                                 (`OdrzavanjeFnService.dodeliBrojNaloga`)
+  //   `maint_machines_deletion_log` -> INSERT/UPDATE/DELETE su `false`; upisuje
+  //                                 SAMO `maint_machine_delete_hard`
+  //
+  // ⚠️ Sve metode ispod vraćaju `undefined` kad NEMA sužavanja. Pozivalac ih
+  // spaja u svoj `where` (`{ ...ostalo, ...scope }`), pa `undefined` znači „ne
+  // dodaj ništa". Prazan `in: []` NIJE isto što i `undefined` — to je „nula
+  // redova", tačan parnjak RLS-a za operatera bez dodeljenih mašina.
+
+  /**
+   * Read-scope svake tabele koja ima kolonu `machine_code` i politiku
+   * `maint_machine_visible(machine_code)`:
+   * `maint_checks` · `maint_tasks` · `maint_machine_files` ·
+   * `maint_machine_status_override` · `maint_machine_notes`.
+   *
+   * (`maint_machines` ide kroz `machineListWhere` — isto pravilo, druga tabela.)
+   */
+  machineScopedWhere(s: MaintScope): MachineScopeWhere | undefined {
+    return this.machineListWhere(s);
+  }
+
+  /**
+   * `maint_machine_notes` SELECT = `deleted_at IS NULL AND maint_machine_visible(...)`.
+   *
+   * 🔴 Soft-delete filter je DEO POLITIKE, ne deo upita modula. U sy15 ga nosi
+   * RLS, pa ga kod nigde ne piše; pod `3.0` bi obrisane napomene tiho iskrsle
+   * nazad u listi da ovaj `deletedAt: null` ne uđe u upit.
+   */
+  machineNotesWhere(s: MaintScope): {
+    deletedAt: null;
+    machineCode?: { in: string[] };
+  } {
+    const scope = this.machineListWhere(s);
+    return scope ? { deletedAt: null, ...scope } : { deletedAt: null };
+  }
+
+  /**
+   * Read-scope tabela koje vise o sredstvu (`maint_asset_visible(asset_id)`):
+   * `maint_asset_service_plan` · `maint_vehicle_service_plan` ·
+   * `maint_part_vehicles` · `maint_vehicle_tires` · `maint_vehicle_bookings` ·
+   * `maint_vehicle_details` · `maint_it_asset_details` · `maint_facility_details`.
+   */
+  assetScopedWhere(s: MaintScope): { asset: AssetScopeWhere } | undefined {
+    const scope = this.assetListWhere(s);
+    return scope ? { asset: scope } : undefined;
+  }
+
+  /**
+   * `maint_work_orders` SELECT = `maint_wo_row_visible(asset_id, assigned_to, reported_by)`.
+   *
+   * 🔴 „Moj nalog je uvek moj": dodeljeni i prijavilac vide nalog i kad sredstvo
+   * ne vide. Zato ovo NIJE prosto `assetScopedWhere` — disjunkcija mora ostati,
+   * inače operater gubi iz vida nalog koji je sam prijavio na tuđoj mašini.
+   */
+  workOrderListWhere(s: MaintScope): WorkOrderScopeWhere | undefined {
+    const scope = this.assetListWhere(s);
+    if (!scope) return undefined;
+    return {
+      OR: [{ assignedTo: s.userId }, { reportedBy: s.userId }, { asset: scope }],
+    };
+  }
+
+  /**
+   * Read-scope dece radnog naloga (`maint_wo_events`, `maint_wo_labor`,
+   * `maint_wo_parts`) — sve tri imaju `EXISTS (… maint_wo_row_visible …)`.
+   */
+  woChildWhere(
+    s: MaintScope,
+  ): { workOrder: WorkOrderScopeWhere } | undefined {
+    const scope = this.workOrderListWhere(s);
+    return scope ? { workOrder: scope } : undefined;
+  }
+
+  /**
+   * `maint_incidents` SELECT = `maint_incident_row_visible(machine_code, asset_id)`
+   * = `asset_id IS NOT NULL ? asset_visible(asset_id) : machine_visible(machine_code)`.
+   */
+  incidentListWhere(
+    s: MaintScope,
+  ):
+    | {
+        OR: (
+          | { assetId: { not: null }; asset: AssetScopeWhere }
+          | { assetId: null; machineCode: { in: string[] } }
+        )[];
+      }
+    | undefined {
+    const assetScope = this.assetListWhere(s);
+    if (!assetScope) return undefined;
+    return {
+      OR: [
+        { assetId: { not: null }, asset: assetScope },
+        {
+          assetId: null,
+          machineCode: { in: this.assignedMachineCodes(s) },
+        },
+      ],
+    };
+  }
+
+  /**
+   * `maint_incident_events` SELECT.
+   *
+   * 🔴 ASIMETRIJA KOJU JE LAKO PROMAŠITI: politika ovde gleda
+   * `maint_machine_visible(i.machine_code)`, a NE `maint_incident_row_visible`.
+   * Dakle trag kvara na VOZILU/IT/objektu (gde je `machine_code` šifra sredstva,
+   * ne mašine) vidi se samo ako pozivalac vidi sve mašine. Prepis „po analogiji
+   * sa `maint_incidents`" bi tiho PROŠIRIO prava — zato doslovno.
+   */
+  incidentEventWhere(
+    s: MaintScope,
+  ): { incident: { machineCode: { in: string[] } } } | undefined {
+    const scope = this.machineListWhere(s);
+    return scope ? { incident: scope } : undefined;
+  }
+
+  /**
+   * `maint_drivers` SELECT = `floor_read ∨ erp_admin_or_mgmt ∨
+   * profil ∈ (chief, admin, technician, operator) ∨ auth_user_id = uid()`.
+   *
+   * 🔴 Poslednji član je PER-RED: vozač bez ijedne od tih rola vidi SVOJ red.
+   * Zato ovo nije bool nego `where`.
+   */
+  driverListWhere(s: MaintScope): { authUserId: number } | undefined {
+    if (this.canReadAllDrivers(s)) return undefined;
+    return { authUserId: s.userId };
+  }
+
+  /** Bool deo `maint_drivers_select` (bez per-red grane „ja sam taj vozač"). */
+  canReadAllDrivers(s: MaintScope): boolean {
+    return (
+      this.hasFloorReadAccess(s) ||
+      this.isErpAdminOrManagement(s) ||
+      s.profileRole === "chief" ||
+      s.profileRole === "admin" ||
+      s.profileRole === "technician" ||
+      s.profileRole === "operator"
+    );
+  }
+
+  /**
+   * `maint_user_profiles` SELECT = `uid() = user_id ∨ erp_admin`.
+   * Bez ovoga bi svako video CMMS role i dodeljene mašine cele firme.
+   */
+  userProfileListWhere(s: MaintScope): { userId: number } | undefined {
+    if (this.isErpAdmin(s)) return undefined;
+    return { userId: s.userId };
+  }
+
+  /**
+   * `maint_documents` SELECT = `maint_document_visible(...)` — kaskada po tome
+   * koji je FK popunjen, ISTIM redosledom kao izvor (asset → nalog → incident →
+   * preventivni zadatak → vozač), sa `ELSE FALSE` na kraju.
+   *
+   * 🔴 Grana preventivnog zadatka u sy15 NE gleda `tasks.asset_id` nego džoinuje
+   * `maint_machines` po `machine_code` pa proverava `maint_asset_visible` nad
+   * SREDSTVOM MAŠINE. Prepis po `tasks.asset_id` bi za zadatke nad vozilima dao
+   * drugačiji odgovor — zato relacija ide kroz mašinu.
+   *
+   * `ELSE FALSE` je izražen tako što `OR` nabraja SAMO grane koje postoje:
+   * dokument bez ijednog od pet FK-ova ne zadovoljava nijednu -> ne vidi se.
+   */
+  documentListWhere(s: MaintScope): Record<string, unknown> | undefined {
+    const assetScope = this.assetListWhere(s);
+    const woScope = this.workOrderListWhere(s);
+    const incScope = this.incidentListWhere(s);
+    const machineScope = this.machineListWhere(s);
+    const driverAll = this.canReadAllDrivers(s);
+    // Nema nijednog sužavanja ni na jednoj grani -> nema šta da se doda.
+    if (!assetScope && !woScope && !incScope && !machineScope && driverAll) {
+      return undefined;
+    }
+    return {
+      OR: [
+        { assetId: { not: null }, ...(assetScope ? { asset: assetScope } : {}) },
+        {
+          assetId: null,
+          woId: { not: null },
+          ...(woScope ? { workOrder: woScope } : {}),
+        },
+        {
+          assetId: null,
+          woId: null,
+          incidentId: { not: null },
+          ...(incScope ? { incident: incScope } : {}),
+        },
+        {
+          assetId: null,
+          woId: null,
+          incidentId: null,
+          preventiveTaskId: { not: null },
+          ...(machineScope
+            ? {
+                preventiveTask: {
+                  // Sredstvo MAŠINE zadatka, kao u sy15 (join po `machine_code`).
+                  machineCode: machineScope.machineCode,
+                },
+              }
+            : {}),
+        },
+        {
+          assetId: null,
+          woId: null,
+          incidentId: null,
+          preventiveTaskId: null,
+          driverId: { not: null },
+          ...(driverAll ? {} : { driver: { authUserId: s.userId } }),
+        },
+      ],
+    };
+  }
+
+  /**
+   * `maint_notification_rules` SELECT = `erp_admin_or_mgmt ∨
+   * profil ∈ (chief, management, admin)`.
+   * ⚠️ ŠIRE od `canReadNotificationLog` (magacioner vidi pravila, ali ne outbox).
+   */
+  canReadNotificationRules(s: MaintScope): boolean {
+    return (
+      this.isErpAdminOrManagement(s) ||
+      s.profileRole === "chief" ||
+      s.profileRole === "management" ||
+      s.profileRole === "admin"
+    );
+  }
+
+  /**
+   * `maint_settings` SELECT = `erp_admin_or_mgmt ∨
+   * profil ∈ (operator, technician, chief, admin)`.
+   *
+   * 🔴 Spisak profila NE SADRŽI `management` — a `maint_settings_update` ga isto
+   * ne sadrži. To je zatečena nedoslednost sy15 (rukovodstvo bez ERP role ne vidi
+   * podešavanja CMMS-a), prenosi se DOSLOVNO. Popravka je odluka o proizvodu.
+   */
+  canReadSettings(s: MaintScope): boolean {
+    return (
+      this.isErpAdminOrManagement(s) ||
+      s.profileRole === "operator" ||
+      s.profileRole === "technician" ||
+      s.profileRole === "chief" ||
+      s.profileRole === "admin"
+    );
+  }
+
+  /**
+   * `maint_machines_deletion_log` SELECT = `erp_admin ∨ erp_admin_or_mgmt ∨
+   * profil ∈ (chief, admin, management)`. Upis je zabranjen politikom (`false`) —
+   * jedini pisac je `maint_machine_delete_hard`.
+   */
+  canReadDeletionLog(s: MaintScope): boolean {
+    return (
+      this.isErpAdmin(s) ||
+      this.isErpAdminOrManagement(s) ||
+      s.profileRole === "chief" ||
+      s.profileRole === "admin" ||
+      s.profileRole === "management"
+    );
+  }
+
+  // =========================================================================
+  // 🔴 SCOPE ZA `security_invoker` VIEW-OVE — mora u UPIT, view ga više ne nosi
+  // =========================================================================
+  //
+  // Izmereno na živoj sy15 (`pg_class.reloptions`): SVIH 16 `v_maint_*` view-ova
+  // ima `security_invoker = true`, tj. RLS pozivaoca se primenjivao I KROZ VIEW.
+  // U 3.0 RLS-a nema, pa view vraća SVE redove — scope MORA ući u `WHERE` upita
+  // koji view čita. Ovo je najtiši način da prava nestanu: upit i dalje radi,
+  // samo vraća više redova nego što sme.
+  //
+  // Ispod su SQL isečci (`Prisma.sql`) jer se view-ovi čitaju sirovim upitom.
+  // Svaki vraća FRAGMENT bez `WHERE`/`AND` — pozivalac ga spaja sam.
+
+  /**
+   * Uslov nad kolonom `machine_code` view-a (`v_maint_machine_current_status`,
+   * `v_maint_task_due_dates`, `v_maint_machine_last_check`).
+   * `null` = nema sužavanja.
+   */
+  machineScopeSql(s: MaintScope, kolona = "machine_code"): Prisma.Sql | null {
+    if (this.machineVisibleForAll(s)) return null;
+    const codes = this.assignedMachineCodes(s);
+    // Operater bez dodeljenih mašina: `= ANY('{}')` je već FALSE, ali eksplicitno
+    // `FALSE` je čitljivije i ne šalje prazan niz kroz drajver.
+    if (codes.length === 0) return Prisma.sql`FALSE`;
+    return Prisma.sql`${Prisma.raw(kolona)} = ANY(${codes})`;
+  }
+
+  /**
+   * Uslov nad kolonom `asset_id` view-a (`v_maint_vehicle_overview`,
+   * `v_maint_it_overview`, `v_maint_facility_overview`, `v_maint_vehicle_bookings`,
+   * `v_maint_vehicle_parts`, `v_maint_*_service_plan_due`).
+   *
+   * 🔴 Svi ti view-ovi vraćaju ISKLJUČIVO ne-mašinska sredstva (vozila / IT /
+   * objekte), a za njih `maint_asset_visible` nema per-red scope: pravilo je
+   * „sva ili nijedno" (`nonMachineVisible`). Zato je ovde odgovor bool-ski, a ne
+   * lista id-jeva — i `FALSE` je tačan parnjak, ne prazna lista.
+   */
+  nonMachineViewScopeSql(s: MaintScope): Prisma.Sql | null {
+    return this.nonMachineVisible(s) ? null : Prisma.sql`FALSE`;
+  }
+
+  /**
+   * `v_maint_drivers_overview` — parnjak `maint_drivers_select`
+   * (bool deo ∨ `auth_user_id = ja`).
+   */
+  driversViewScopeSql(s: MaintScope): Prisma.Sql | null {
+    if (this.canReadAllDrivers(s)) return null;
+    return Prisma.sql`auth_user_id = ${s.userId}`;
+  }
+
+  /**
+   * `v_maint_parts_with_vehicles` i `v_maint_vehicle_parts` — magacin delova
+   * (`maint_parts_select`). Nema per-red scope: `canReadStock` ili ništa.
+   */
+  partsViewScopeSql(s: MaintScope): Prisma.Sql | null {
+    return this.canReadStock(s) ? null : Prisma.sql`FALSE`;
+  }
+
+  /**
+   * Spaja scope fragment u `WHERE` klauzulu upita nad view-om.
+   * Bez fragmenta vraća prazan `Prisma.sql` (upit ostaje nepromenjen).
+   */
+  viewWhere(fragment: Prisma.Sql | null): Prisma.Sql {
+    return fragment ? Prisma.sql` WHERE ${fragment}` : Prisma.empty;
+  }
+
+  /**
+   * 🔴 `v_maint_cmms_daily_summary` — KPI kartica.
+   *
+   * View je skup `count(*)` podupita nad `maint_work_orders`, `maint_incidents`,
+   * `v_maint_task_due_dates` i `maint_parts`. U sy15 se izvršavao pod RLS-om
+   * pozivaoca (security_invoker), pa su SVE brojke bile SUŽENE na ono što
+   * pozivalac sme da vidi. U 3.0 view broji sve.
+   *
+   * Zato KPI pod `3.0` sme da se prikaže SAMO onome ko ionako vidi sve — a to je
+   * tačno `machineVisibleForAll ∧ nonMachineVisible ∧ canReadStock`. Ostalima se
+   * mora računati suženo (posao CRUD faze) ili ne prikazivati. Vraćanje
+   * nesuženih brojki bilo bi curenje: „7 otvorenih kvarova" operateru koji sme
+   * da vidi jednu mašinu odaje stanje cele firme.
+   */
+  canReadFullSummary(s: MaintScope): boolean {
+    return (
+      this.machineVisibleForAll(s) &&
+      this.nonMachineVisible(s) &&
+      this.canReadStock(s)
     );
   }
 

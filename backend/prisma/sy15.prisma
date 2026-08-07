@@ -1446,7 +1446,15 @@ model MaintFacilityDetails {
   serviceContract String? @map("service_contract")
   serviceProvider String? @map("service_provider")
   lastInspectionAt DateTime? @db.Date @map("last_inspection_at")
-  cadastralParcels String? @map("cadastral_parcels")
+  /// 🔴 `cadastral_parcels` je UKLONJEN 06.08.2026 — te kolone u ŽIVOJ sy15 NEMA.
+  /// Izmereno `pg_attribute`: ova tabela tamo ima TAČNO 14 kolona. Dok je model
+  /// deklarisao 15., svaki `findUnique`/`upsert` slao je nepostojeću kolonu, baza
+  /// je vraćala 42703, a `rethrowSy15` ga ne mapira → 500. Zato modul „Objekti"
+  /// na produkciji nije mogao ni da pročita ni da sačuva detalje (0 objekata).
+  /// U 3.0 šemi kolona POSTOJI (`schema.prisma` → `MaintFacilityDetails`) i FE je
+  /// nudi kao „Katastarske parcele" — radi posle preklopa. Prenos je preskače
+  /// (`skip: ["cadastral_parcels"]` u `migrate-odrzavanje-sy15.ts`) jer u izvoru
+  /// nema šta da uzme.
   notes String?
   createdAt DateTime @db.Timestamptz(6) @default(now()) @map("created_at")
   updatedAt DateTime @db.Timestamptz(6) @default(now()) @map("updated_at")

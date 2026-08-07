@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { PrismaModule } from "../../prisma/prisma.module";
 import { PrintingModule } from "../../common/printing/printing.module";
 import { ReversiController } from "./reversi.controller";
 import { ReversiService } from "./reversi.service";
@@ -10,7 +11,7 @@ import { ReversiService } from "./reversi.service";
  * (RA-22 bulk štampa nalepnica / RB-47 nalepnica pri dodavanju).
  */
 @Module({
-  imports: [PrintingModule],
+  imports: [PrintingModule, PrismaModule],
   controllers: [ReversiController],
   providers: [
     ReversiService,

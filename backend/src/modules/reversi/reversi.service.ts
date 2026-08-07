@@ -12,6 +12,7 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { PrismaService } from "../../prisma/prisma.service";
 import { assertPdfAttachment } from "../../common/attachments/attachment-format.util";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import type {
@@ -216,9 +217,12 @@ export class ReversiService {
     private readonly sy15: Sy15Service,
     private readonly labelPrint: LabelPrintService,
     // Prekidač TUĐEG domena (održavanje): Reversi čitaju mašine kroz
-    // `v_rev_machines` nad `maint_machines` — v. `reportMachines()`.
-    // @Optional: bez njega brana ne radi ništa (ponašanje kao `sy15`).
+    // `v_rev_machines` nad `maint_machines` — v. `masineIzIzvora()`.
+    // @Optional: bez njega izvor ostaje sy15 (bezbedan smer).
     @Optional() private readonly odrIzvor?: OdrzavanjeSourceService,
+    // 3.0 klijent — potreban SAMO kad je `ODRZAVANJE_IZVOR=3.0` (mašine).
+    // Sve `rev_*` tabele ostaju u sy15 do koraka 3.
+    @Optional() private readonly prisma?: PrismaService,
   ) {}
 
   // ---------- Dokumenti (reversi) ----------
@@ -1488,6 +1492,98 @@ export class ReversiService {
    * računa klijentski iz 3 poziva (`fetchMachines`+`fetchCuttingByMachine`+
    * `fetchMachineHeadCounts`); ovde ih vraćamo obogaćene u JEDNOM pozivu.
    */
+  /**
+   * 🔴 ŠAV KA DOMENU ODRŽAVANJA — jedini izvor mašina za Reverse.
+   *
+   * `v_rev_machines` je u sy15 doslovno `SELECT <14 kolona> FROM maint_machines`,
+   * dakle Reversi mašine NE POSEDUJU nego ih čitaju iz tuđeg domena. FK graf taj
+   * šav NE POKAZUJE (nema nijednog inbound FK-a ka `maint_*`) — našao ga je tek
+   * `pg_depend` nad view-ovima.
+   *
+   * Pod `ODRZAVANJE_IZVOR=3.0` mašine su u 3.0 bazi; sy15 kopija od tog trenutka
+   * prestaje da se menja, pa bi čitanje iz nje TIHO davalo zastarelo stanje
+   * (preimenovana mašina pod starim imenom, novoarhivirana kao aktivna, nova
+   * mašina da ne postoji). Zato izvor prati prekidač ODRŽAVANJA, ne Reversa:
+   * prekidač prati POZIVAOCE podataka, ne naziv modula (pouka incidenta 06.08.).
+   *
+   * Oblik reda je NEPROMENJEN u oba položaja — istih 14 kolona pod istim
+   * (snake_case) imenima, jer ih FE tako čita.
+   *
+   * ⚠️ Ovo i `lookupBarcode` su JEDINA dva mesta u Reversima pod tim prekidačem.
+   * Sve `rev_*` tabele su domen Reversa (korak 3) i idu pod `REVERSI_IZVOR`.
+   */
+  private async masineIzIzvora(): Promise<
+    ({ machine_code: string } & Record<string, unknown>)[]
+  > {
+    if (this.odrIzvor?.isThreeZero !== true) {
+      return this.sy15.db.$queryRaw<
+        ({ machine_code: string } & Record<string, unknown>)[]
+      >(Prisma.sql`SELECT * FROM v_rev_machines`);
+    }
+    if (!this.prisma) {
+      throw new ServiceUnavailableException(
+        "Reversi: čitanje mašina iz 3.0 traži PrismaModule (ODRZAVANJE_IZVOR=3.0).",
+      );
+    }
+    // Isti spisak kolona kao `v_rev_machines`, istim redosledom i istim imenima.
+    const rows = await this.prisma.maintMachine.findMany({
+      select: {
+        machineCode: true,
+        name: true,
+        type: true,
+        manufacturer: true,
+        model: true,
+        serialNumber: true,
+        yearOfManufacture: true,
+        yearCommissioned: true,
+        location: true,
+        departmentId: true,
+        powerKw: true,
+        notes: true,
+        tracked: true,
+        archivedAt: true,
+      },
+    });
+    return rows.map((m) => ({
+      machine_code: m.machineCode,
+      name: m.name,
+      type: m.type,
+      manufacturer: m.manufacturer,
+      model: m.model,
+      serial_number: m.serialNumber,
+      year_of_manufacture: m.yearOfManufacture,
+      year_commissioned: m.yearCommissioned,
+      location: m.location,
+      department_id: m.departmentId,
+      power_kw: m.powerKw,
+      notes: m.notes,
+      tracked: m.tracked,
+      archived_at: m.archivedAt,
+    }));
+  }
+
+  /**
+   * Jedna mašina po šifri — drugi potrošač šava ka održavanju (`lookupBarcode`).
+   * Vraća `{ rj_code, name }` (ugovor prema FE-u ostaje nepromenjen) ili `null`.
+   */
+  private async masinaPoSifri(
+    code: string,
+  ): Promise<{ rj_code: string; name: string | null } | null> {
+    if (this.odrIzvor?.isThreeZero === true && this.prisma) {
+      const m = await this.prisma.maintMachine.findUnique({
+        where: { machineCode: code },
+        select: { machineCode: true, name: true },
+      });
+      return m ? { rj_code: m.machineCode, name: m.name } : null;
+    }
+    const rows = await this.sy15.db.$queryRaw<
+      { rj_code: string; name: string | null }[]
+    >(Prisma.sql`
+      SELECT machine_code AS rj_code, name FROM v_rev_machines
+       WHERE machine_code = ${code} LIMIT 1`);
+    return rows[0] ?? null;
+  }
+
   async reportMachines() {
     // 🔴 ŠAV KA DOMENU ODRŽAVANJA (korak 2 gašenja sy15, 06.08.2026).
     //
@@ -1504,14 +1600,13 @@ export class ReversiService {
     //
     // ⚠️ Ovo je JEDINO mesto u Reversima pod tim prekidačem. Sve `rev_*` tabele su
     // domen Reversa (korak 3) i idu pod svoj `REVERSI_IZVOR` kad na njih dođe red.
-    this.odrIzvor?.assertPorted(
-      "izveštaj mašina u Reversima (v_rev_machines nad maint_machines)",
-    );
-    // `machine_code` je tekst u `v_rev_machines`; tipujemo ga eksplicitno (ostala
-    // polja ostaju `unknown` i prolaze kroz spread) da bi ključ agregata bio string.
-    const machines = await this.sy15.db.$queryRaw<
-      ({ machine_code: string } & Record<string, unknown>)[]
-    >(Prisma.sql`SELECT * FROM v_rev_machines`);
+    // ✅ ZATVORENO 06.08.2026 (faza „logika + read-scope"): pod `3.0` se mašine
+    // čitaju iz 3.0 `maint_machines` — v. `masineIzIzvora()`. Brana više nije
+    // potrebna jer izvor prati prekidač; ostatak izveštaja (`rev_*` agregati) je
+    // domen Reversa i i dalje ide iz sy15, što je tačno do koraka 3.
+    // `machine_code` je tekst; tipujemo ga eksplicitno (ostala polja ostaju
+    // `unknown` i prolaze kroz spread) da bi ključ agregata bio string.
+    const machines = await this.masineIzIzvora();
     if (machines.length === 0) return { data: [] };
     const [cutRows, headRows] = await Promise.all([
       this.sy15.db.$queryRaw<
@@ -2896,15 +2991,25 @@ export class ReversiService {
       });
       return { data: { kind: "CUTTING", barcode, record: rows[0] ?? null } };
     }
-    // RC-29: nalepnica mašinske lokacije „ZADU-M-<kod>" → rj_code (podvlaka→tačka).
-    // Podržava globalni HID skener (RC-38) da rutira mašinu bez preučitane liste.
+    // RC-29: nalepnica mašinske lokacije „ZADU-M-<kod>" → šifra mašine
+    // (podvlaka→tačka). Podržava globalni HID skener (RC-38) da rutira mašinu
+    // bez preučitane liste.
+    //
+    // 🔴 ZATEČEN KVAR, NAĐEN MERENJEM 06.08.2026 (nije posledica seobe):
+    // ovaj upit je glasio `SELECT rj_code, name FROM v_rev_machines WHERE
+    // rj_code = …`, a `v_rev_machines` **nema kolonu `rj_code`** — izmereno
+    // `pg_attribute` nad živom sy15: view ima `machine_code, name, type,
+    // manufacturer, model, serial_number, year_of_manufacture,
+    // year_commissioned, location, department_id, power_kw, notes, tracked,
+    // archived_at`. Ime `rj_code` nosi `bigtehn_machines_cache`, druga tabela.
+    // Zato je skeniranje nalepnice mašine na produkciji padalo sa 42703 → 500,
+    // i to TIHO (nijedan test nije dodirivao ovu granu). Ispravljeno u oba
+    // položaja prekidača; odgovor ka FE-u ZADRŽAVA ključ `rj_code` da se ugovor
+    // ne promeni usput.
     if (/^ZADU-M-/i.test(barcode)) {
       const code = barcode.replace(/^ZADU-M-/i, "").replace(/_/g, ".");
-      const rows = await this.sy15.db.$queryRaw<
-        { rj_code: string; name: string | null }[]
-      >(Prisma.sql`
-        SELECT rj_code, name FROM v_rev_machines WHERE rj_code = ${code} LIMIT 1`);
-      return { data: { kind: "MACHINE", barcode, record: rows[0] ?? null } };
+      const record = await this.masinaPoSifri(code);
+      return { data: { kind: "MACHINE", barcode, record } };
     }
     if (/^[A-Z0-9]{4,16}$/i.test(barcode)) {
       const rows = await this.sy15.db.$queryRaw<

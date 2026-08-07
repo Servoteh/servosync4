@@ -598,12 +598,39 @@ PAŽNJA: periodi su RADNI DANI odsustva rasečeni vikendima/praznicima — jedan
     },
     kind: "write",
     scopes: LICNI,
-    execute: (a, ctx) => {
+    execute: async (a, ctx) => {
       // 🔴 JEDINI UPIS AI-chata u tuđi domen: `ai_chat_prijavi_kvar` radi
-      // `INSERT INTO maint_incidents`. Bez ove brane bi pod `ODRZAVANJE_IZVOR=3.0`
-      // prijave kvara kroz asistenta nastavile da idu u sy15 dok modul piše u 3.0 —
-      // dve istine o kvarovima, bez ijedne poruke o grešci.
-      assertMaintPorted(ctx, "prijavi_kvar");
+      // `INSERT INTO maint_incidents`. Pod `ODRZAVANJE_IZVOR=3.0` prijava MORA u
+      // 3.0 bazu — inače bi asistent pisao u sy15 dok modul piše u 3.0, pa bi
+      // nastale dve istine o kvarovima, bez ijedne poruke o grešci.
+      //
+      // ✅ ZATVORENO 06.08.2026: prepis je u `OdrzavanjeFnService.aiPrijaviKvar`
+      // (u DOMENU, ne ovde) da bi prijava kroz asistenta prošla kroz iste trigere
+      // kao prijava kroz ekran. Ugovor odgovora je nepromenjen.
+      if (ctx.deps.odrzavanjeIzvor?.isThreeZero === true) {
+        if (!ctx.deps.odrzavanjeFn) {
+          // Bezbedan smer: bez servisa NE pišemo u sy15 „za svaki slučaj".
+          assertMaintPorted(ctx, "prijavi_kvar");
+        }
+        const uid = await ctx.deps.prisma.user.findFirst({
+          where: { email: ctx.email },
+          select: { id: true },
+        });
+        if (!uid) {
+          return {
+            error: "nema_prava",
+            poruka:
+              "Ne mogu da povežem tvoj nalog sa evidencijom — obrati se administratoru.",
+          };
+        }
+        return ctx.deps.odrzavanjeFn!.aiPrijaviKvar(uid.id, {
+          masina: str(a.masina),
+          naslov: str(a.naslov),
+          opis: strOrNull(a.opis),
+          ozbiljnost: a.ozbiljnost ? str(a.ozbiljnost) : "minor",
+          bezbednosniRizik: a.bezbednosni_rizik === true,
+        });
+      }
       return rpc(
         ctx,
         Prisma.sql`SELECT ai_chat_prijavi_kvar(${str(a.masina)}, ${str(a.naslov)},

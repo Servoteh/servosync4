@@ -4,6 +4,8 @@ import { NotificationsModule } from "../notifications/notifications.module";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
 import { OdrzavanjeAuthzService } from "./odrzavanje-authz.service";
+import { OdrzavanjeFnService } from "./odrzavanje-fn.service";
+import { OdrzavanjeLokacijeMostService } from "./odrzavanje-lokacije-most.service";
 import { OdrzavanjeController } from "./odrzavanje.controller";
 import { OdrzavanjeService } from "./odrzavanje.service";
 
@@ -27,7 +29,17 @@ import { OdrzavanjeService } from "./odrzavanje.service";
     // Reversi (čitanje mašina kroz `v_rev_machines`) — v. zaglavlje tog servisa.
     OdrzavanjeSourceService,
     OdrzavanjeAuthzService,
+    // Prepis 14 DEFINER funkcija + 11 logičkih trigera nad 3.0 bazom.
+    OdrzavanjeFnService,
+    // 🔴 Privremeni MOST ka `loc_locations` (sy15) — dug za korak 3 (Lokacije).
+    // Jedini upis održavanja u sy15 pod `ODRZAVANJE_IZVOR=3.0`; v. zaglavlje.
+    OdrzavanjeLokacijeMostService,
   ],
-  exports: [OdrzavanjeSourceService, OdrzavanjeAuthzService],
+  exports: [
+    OdrzavanjeSourceService,
+    OdrzavanjeAuthzService,
+    OdrzavanjeFnService,
+    OdrzavanjeLokacijeMostService,
+  ],
 })
 export class OdrzavanjeModule {}
