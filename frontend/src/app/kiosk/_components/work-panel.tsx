@@ -8,6 +8,12 @@ import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { openKioskDrawingPdf } from '@/api/kiosk';
 import { formatNumber } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import {
+  TEKST_GOTOVOST,
+  oblikPitanja,
+  planZaPitanje,
+  trebaPitatiZaGotovost,
+} from './gotovost-pitanje';
 
 interface WorkPanelProps {
   /** npr. „Op. 30 · Struganje". */
@@ -241,9 +247,10 @@ export function WorkPanel({
   const stopWork = () => {
     if (busy || pieces < 0) return;
     const ukupno = made + pieces;
-    const planPoznat = planned != null && planned > 0;
-    if (!withoutProcess && (!planPoznat || ukupno < planned!)) {
-      setFinishAsk({ pieces, ukupno, plan: planPoznat ? planned! : null });
+    // Gejt je deljen sa „Mojim otvorenim" (`gotovost-pitanje.ts`) — ranije je bio
+    // doslovno prepisan u oba fajla.
+    if (trebaPitatiZaGotovost(withoutProcess, planned, ukupno)) {
+      setFinishAsk({ pieces, ukupno, plan: planZaPitanje(planned) });
       return;
     }
     onZavrsiRad(pieces, note.trim() || undefined);
@@ -397,36 +404,74 @@ export function WorkPanel({
           ISTO kao dijalog u „Moji otvoreni" (my-open-panel.tsx) — radnik na oba
           ekrana vidi isto pitanje. Dodirni ekran u pogonu: krupan tekst, dugmad
           visine 20 (80px), bez sitnog fonta.
-          STRANA DUGMADI: primary („Ne — nastavlja se") je DESNO, isto kao tamo. */}
+          STRANA DUGMADI: primary („Ne — nastavlja se") je DESNO, isto kao tamo.
+
+          🔴 NULA KOMADA (Nenad 07.08.2026) — JEDAN dijalog, dva lica: kad je
+          kumulativ ≤ 0, „Da — gotova je" se ne nudi uopšte. Sadržaj se GRANA
+          unutar istog <Dialog>-a (drugi Dialog vezan za isto stanje = dvostruka
+          prijava `useEscapeLayer`-u, regresija V11). Nula-oblik je i inače u
+          rečniku ovog ekrana — `PieceStepper` u STOP režimu već ispisuje
+          „0 kom — evidentira se samo vreme rada.". */}
       <Dialog
         open={finishAsk !== null}
         onClose={() => setFinishAsk(null)}
-        title="Da li je operacija gotova?"
+        title={TEKST_GOTOVOST[oblikPitanja(finishAsk?.ukupno ?? 1)].naslov}
         size="lg"
         footer={
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => stopWorkAnswered(true)}
-              className="h-20 flex-1 px-6 text-2xl font-bold"
-            >
-              Da — gotova je
-            </Button>
-            <Button
-              variant="primary"
-              autoFocus
-              onClick={() => stopWorkAnswered(false)}
-              className="h-20 flex-1 px-6 text-2xl font-bold"
-            >
-              Ne — nastavlja se
-            </Button>
-          </>
+          finishAsk && oblikPitanja(finishAsk.ukupno) === 'nula' ? (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => stopWorkAnswered(false)}
+                className="h-20 flex-1 px-6 text-2xl font-bold"
+              >
+                {TEKST_GOTOVOST.nula.levo}
+              </Button>
+              {/* Ništa se ne šalje — isti efekat kao X / Esc / klik na pozadinu. */}
+              <Button
+                variant="primary"
+                autoFocus
+                onClick={() => setFinishAsk(null)}
+                className="h-20 flex-1 px-6 text-2xl font-bold"
+              >
+                {TEKST_GOTOVOST.nula.desno}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => stopWorkAnswered(true)}
+                className="h-20 flex-1 px-6 text-2xl font-bold"
+              >
+                {TEKST_GOTOVOST['ispod-plana'].levo}
+              </Button>
+              <Button
+                variant="primary"
+                autoFocus
+                onClick={() => stopWorkAnswered(false)}
+                className="h-20 flex-1 px-6 text-2xl font-bold"
+              >
+                {TEKST_GOTOVOST['ispod-plana'].desno}
+              </Button>
+            </>
+          )
         }
       >
         {finishAsk && (
           <div className="space-y-4 text-ink">
             <p className="text-3xl font-bold">
-              {finishAsk.plan != null ? (
+              {oblikPitanja(finishAsk.ukupno) === 'nula' ? (
+                finishAsk.plan != null ? (
+                  <>
+                    Otkucano{' '}
+                    <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> od{' '}
+                    <span className="tnums">{formatNumber(finishAsk.plan)}</span> kom.
+                  </>
+                ) : (
+                  <>Na ovoj operaciji još nema otkucanih komada.</>
+                )
+              ) : finishAsk.plan != null ? (
                 <>
                   Otkucao si{' '}
                   <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> od{' '}
@@ -445,8 +490,7 @@ export function WorkPanel({
               {identMark && <span className="tnums"> · Toznaka: {identMark}</span>}
             </p>
             <p className="text-xl text-ink-secondary">
-              „Ne" upisuje tvoj rad i vreme, a operacija ostaje otvorena za nastavak. „Da" je
-              zatvara iako količina nije puna.
+              {TEKST_GOTOVOST[oblikPitanja(finishAsk.ukupno)].objasnjenje}
             </p>
           </div>
         )}

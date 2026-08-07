@@ -2323,6 +2323,33 @@ export class TechProcessesService {
           `Napravljeno (${effectivePieces}) premašuje planirano (${planned}) — kucanje preko plana nije dozvoljeno.`,
         );
 
+      // 🔴 NULA KOMADA NIJE „GOTOVO" — ISTA brana kao u `accumulateStopWork`
+      // (odluka Nenad 2026-08-07). Bez nje bi ova ruta bila rupa kroz koju se cela
+      // sanacija poništava JEDNIM pozivom: `finish` gasi red BEZUSLOVNO, ne prima
+      // `operacijaGotova`, i ne gleda količinu. Danas je nedostižna iz UI-ja (FE hook
+      // obrisan 05.08.), ali ruta živi pod `TEHNOLOGIJA_WRITE` — a brana koja pokriva
+      // samo puteve kojih se sećamo nije brana (pouka 077/26: pozivalaca je bilo 7,
+      // ne 5). Ovde se meri KUMULATIV operacije, ne `piece_count` ovog reda, jer se
+      // količina kuca kroz više sesija; `<= 0` zbog storna koji piše negativan broj.
+      const cum = await tx.techProcess.aggregate({
+        where: {
+          projectId: tp.projectId,
+          identNumber: tp.identNumber,
+          variant: tp.variant,
+          operationNumber: tp.operationNumber,
+        },
+        _sum: { pieceCount: true },
+      });
+      const kumulativ =
+        (cum._sum.pieceCount ?? 0) -
+        tp.pieceCount +
+        (dto?.pieceCount ?? tp.pieceCount);
+      if (kumulativ <= 0)
+        throw new UnprocessableEntityException(
+          `Na operaciji nije otkucan nijedan komad — ne može biti označena kao gotova. ` +
+            `Prvo upiši broj komada, pa zatvori operaciju.`,
+        );
+
       const updated = await tx.techProcess.update({
         where: { id },
         data: {
@@ -3389,6 +3416,58 @@ export class TechProcessesService {
     // dobijao „Ne". Bez plana odlučuje isključivo eksplicitna namera.
     const reachedPlan =
       planned !== null && planned > 0 && cumulativePieces >= planned;
+    // 🔴 NULA KOMADA NIJE „GOTOVO" (odluka Nenad 2026-08-07) — brana na SERVERU,
+    // jer FE gejt ume da promaši (na barkod ekranu `withoutProcess` dolazi iz
+    // decode odgovora sa `?? false`, pa nerazrešena operacija tiho izgubi izuzetak).
+    //
+    // ZAŠTO: od 05.08. (kad je pitanje uvedeno) operacija je 16 puta zatvorena sa
+    // NULA komada, 9 različitih radnika. Dugme ne radi ono što radnik misli — od
+    // 069/26 plan računa gotovost po DOBRIM komadima, pa operacija bez ijednog
+    // komada nikad ne dobije kvačicu u planu; jedini stvarni efekat je da NESTANE
+    // sa liste otvorenih. Za „otvorio sam greškom" postoji „Odustani" (`:id/dismiss`),
+    // koji zastavicu izričito NE diže.
+    //
+    // TRI USLOVA, svaki nosi svoju težinu:
+    //  • `finishIntent === true`, a NE `wantsFinish`: `wantsFinish` je istinit i za
+    //    OPŠTI NALOG preko `fromMyOpen` (čišćenje reda) — brana na njemu bi oborila
+    //    put kojim je RC 0.0 zatvorio 3.969 redova sa nula komada. Hvata se samo
+    //    EKSPLICITNA namera koju je poslao klijent.
+    //  • `withoutProcess !== true`: pojas i tregeri. Svež opšti nalog / svež CAM
+    //    posao (17.0/17.1) kreće od kumulativa 0, pa bi budući klijent koji polje
+    //    šalje uvek ostao bez izlaza.
+    //  • `<= 0`, ne `=== 0`: storno upisuje kontra-red sa NEGATIVNIM `piece_count`,
+    //    pa kumulativ ume da padne ispod nule.
+    //
+    // MESTO: pre `wantsFinish` i pre upita o tuđim sesijama — inače bi deljeni red
+    // umesto 422 dao tihi `finishSkipped` („još neko radi") i sakrio pravi razlog.
+    // Sudara se sa `reachedPlan` ne može: on traži `planned > 0 && cum >= planned`.
+    // Baca se U TRANSAKCIJI, pa se rolbekuju i zatvaranje sesije i inkrement komada.
+    if (
+      finishIntent === true &&
+      opDef?.withoutProcess !== true &&
+      cumulativePieces <= 0
+    )
+      throw new UnprocessableEntityException(
+        // Backtick-ovi: srpski navodnici u repou su „ + ASCII " (v. kiosk tekstove),
+        // a ASCII " bi prekinuo dvostruko navođen literal.
+        `Na operaciji nije otkucan nijedan komad — ne može biti označena kao gotova. ` +
+          // 🔴 Prvi savet je IZLAZ IZ ĆORSOKAKA, ne objašnjenje: kiosk terminal stoji
+          // otvoren danima, pa posle isporuke radnik može da vidi STARI dijalog koji i
+          // dalje nudi „Da — gotova je". Tada dobija ovaj 422, a cela transakcija se
+          // rolbekuje — njegova sesija ostaje otvorena i VREME MU NIJE UPISANO. Bez
+          // ove rečenice ne zna da mu jedan tap na drugo dugme rešava problem, ode
+          // kući, i red visi do noćnog auto-close-a (koji šalje mejl šefu).
+          //
+          // Savet imenuje BAŠ „Ne — nastavlja se" jer 422 po definiciji vidi samo
+          // radnik sa STARIM paketom, a na starom paketu OBA kiosk ekrana nose taj
+          // natpis (provereno na origin/main: work-panel.tsx:421 i my-open-panel.tsx:332).
+          // Nov natpis „Upiši samo vreme" ovde se NE pominje — ko ga vidi, taj je
+          // već na novom paketu i do ove poruke ne može ni da dođe.
+          `Ako si samo završio smenu — pritisni „Ne — nastavlja se": vreme se ` +
+          `upisuje, a operacija ostaje otvorena. ` +
+          `Ako si radio, prvo upiši broj komada pa ponovi „Kraj rada". ` +
+          `Ako si red otvorio greškom, skloni ga dugmetom „Odustani" u listi „Moji otvoreni".`,
+      );
     // 🔴 PRAVILO GAŠENJA (Nenad 2026-08-05) — serversko, ne veruje se samo FE-u:
     //   1. kumulativ ≥ plan  → zatvori (kao i do sada; polje se ne gleda),
     //   2. inače             → zatvori SAMO ako je stigla eksplicitna namera
