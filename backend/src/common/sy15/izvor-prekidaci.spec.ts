@@ -2,6 +2,7 @@ import { Logger, ServiceUnavailableException } from "@nestjs/common";
 import { SastanciSourceService } from "./sastanci-source.service";
 import { PbSourceService } from "./pb-source.service";
 import { OdrzavanjeSourceService } from "./odrzavanje-source.service";
+import { ScadaSourceService } from "./scada-source.service";
 
 /**
  * Prekidači izvora `SASTANCI_IZVOR` i `PB_IZVOR` — pin za tri stvari koje moraju
@@ -22,6 +23,7 @@ const ENVS = [
   "SASTANCI_IZVOR",
   "PB_IZVOR",
   "ODRZAVANJE_IZVOR",
+  "SCADA_IZVOR",
   "SASTANCI_PB_IZVOR",
 ] as const;
 const ORIG = Object.fromEntries(ENVS.map((k) => [k, process.env[k]]));
@@ -300,6 +302,108 @@ describe("nezavisnost SVA TRI prekidača (pouka incidenta 06.08.2026)", () => {
     });
     const { sastanci, pb, odrzavanje } = svi();
     for (const s of [sastanci, pb, odrzavanje]) {
+      expect(s.isThreeZero).toBe(true);
+      expect(() => s.assertPorted("x")).toThrow(ServiceUnavailableException);
+    }
+  });
+});
+
+/*
+ * SCADA / ENERGETIKA (korak 5 gašenja sy15, 07.08.2026) — ČETVRTI nezavisan prekidač.
+ * Runbook: docs/SEOBA_SCADA_2026-08-07.md.
+ */
+describe("ScadaSourceService (SCADA_IZVOR)", () => {
+  it("bez env-a: sy15 (relej i dalje piše u sy15)", () => {
+    const s = new ScadaSourceService();
+    expect(s.izvor).toBe("sy15");
+    expect(s.isThreeZero).toBe(false);
+  });
+
+  it("3.0: prekidač stoji na 3.0 i poruka imenuje način povratka", () => {
+    hvatajWarn();
+    postavi({ SCADA_IZVOR: "3.0" });
+    const s = new ScadaSourceService();
+    expect(s.isThreeZero).toBe(true);
+    let poruka = "";
+    try {
+      s.assertPorted("energetika: nešto neprepisano");
+    } catch (e) {
+      poruka = (e as ServiceUnavailableException).message;
+    }
+    expect(poruka).toContain("SCADA_IZVOR=sy15");
+  });
+
+  it("nepoznata vrednost NE postaje 3.0 (relej bi pisao u drugu bazu od čitanja)", () => {
+    hvatajWarn();
+    postavi({ SCADA_IZVOR: "3,0" });
+    expect(new ScadaSourceService().izvor).toBe("sy15");
+  });
+
+  it("🔴 zastareli SASTANCI_PB_IZVOR NE pomera SCADA-u", () => {
+    hvatajWarn();
+    postavi({ SASTANCI_PB_IZVOR: "3.0" });
+    expect(new ScadaSourceService().izvor).toBe("sy15");
+  });
+});
+
+/*
+ * 🔴 ČETIRI DOMENA — isti pin kao za tri, prošireni. Najvažniji red je prvi:
+ * SASTANCI SU ŽIVI NA `3.0` NA PRODUKCIJI, pa uvođenje SCADA prekidača ne sme
+ * ni na koji način da ih pomeri (ni obrnuto).
+ */
+describe("nezavisnost SVA ČETIRI prekidača (SCADA uvedena 07.08.2026)", () => {
+  const svi = () => ({
+    sastanci: new SastanciSourceService(),
+    pb: new PbSourceService(),
+    odrzavanje: new OdrzavanjeSourceService(),
+    scada: new ScadaSourceService(),
+  });
+
+  it("🔴 SASTANCI_IZVOR=3.0 (živo na produkciji): SCADA ostaje na sy15", () => {
+    hvatajWarn();
+    postavi({ SASTANCI_IZVOR: "3.0" });
+    const { sastanci, scada } = svi();
+    expect(sastanci.isThreeZero).toBe(true);
+    expect(scada.izvor).toBe("sy15");
+    expect(scada.isThreeZero).toBe(false);
+  });
+
+  it("SCADA_IZVOR=3.0: sastanci, PB i održavanje NETAKNUTI", () => {
+    hvatajWarn();
+    postavi({ SCADA_IZVOR: "3.0" });
+    const { sastanci, pb, odrzavanje, scada } = svi();
+    expect(scada.isThreeZero).toBe(true);
+    // Preklop energetike ne sme da obori nijedan tuđi modul ni njegov posao.
+    expect(sastanci.izvor).toBe("sy15");
+    expect(pb.izvor).toBe("sy15");
+    expect(odrzavanje.izvor).toBe("sy15");
+    expect(() => sastanci.assertPorted("sast-weekly-auto")).not.toThrow();
+    expect(() => pb.assertPorted("pb-enqueue")).not.toThrow();
+    expect(() => odrzavanje.assertPorted("maint-deadlines")).not.toThrow();
+  });
+
+  it("🔴 stvarno stanje produkcije posle preklopa: sastanci=3.0 + SCADA=3.0, ostala dva na sy15", () => {
+    hvatajWarn();
+    postavi({ SASTANCI_IZVOR: "3.0", SCADA_IZVOR: "3.0" });
+    const { sastanci, pb, odrzavanje, scada } = svi();
+    expect(sastanci.isThreeZero).toBe(true);
+    expect(scada.isThreeZero).toBe(true);
+    expect(pb.isThreeZero).toBe(false);
+    expect(odrzavanje.isThreeZero).toBe(false);
+    expect(() => pb.assertPorted("pb-enqueue")).not.toThrow();
+    expect(() => odrzavanje.assertPorted("maint-deadlines")).not.toThrow();
+  });
+
+  it("sva četiri na 3.0: svaka brana puca sama za sebe", () => {
+    hvatajWarn();
+    postavi({
+      SASTANCI_IZVOR: "3.0",
+      PB_IZVOR: "3.0",
+      ODRZAVANJE_IZVOR: "3.0",
+      SCADA_IZVOR: "3.0",
+    });
+    const { sastanci, pb, odrzavanje, scada } = svi();
+    for (const s of [sastanci, pb, odrzavanje, scada]) {
       expect(s.isThreeZero).toBe(true);
       expect(() => s.assertPorted("x")).toThrow(ServiceUnavailableException);
     }
