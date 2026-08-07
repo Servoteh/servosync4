@@ -509,8 +509,13 @@ function makePostHarness(opts: {
           Promise.resolve({ ...invoice, ...data }),
         ),
     },
-    // Kupac bez kreditnog limita — `assertCreditLimit` izlazi odmah.
-    customer: { findUnique: jest.fn().mockResolvedValue({ creditLimit: null }) },
+    // Kupac bez kreditnog limita — `assertCreditLimit` izlazi odmah. `name` je tu jer isti
+    // šifarnik od 07.08.2026. daje i NAZIV za opis reda naloga (`ledgerDescription`).
+    customer: {
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ creditLimit: null, name: "FMB d.o.o." }),
+    },
     invoiceItem: { findMany: jest.fn().mockResolvedValue([ITEM_20]) },
     journalEntry: {
       findFirst: jest.fn().mockResolvedValue(opts.stockEntry ?? null),
@@ -570,11 +575,15 @@ describe("postInvoice — nalog GK nosi IZDAT broj fakture (N1)", () => {
       "657/26",
       "657/26",
     ]);
-    // I opisi: „Kupac DRAFT-300" je isti podatak na drugom mestu.
+    // I opisi nose IZDAT broj, ne `DRAFT-300`. ⚠️ Oblik je promenjen 07.08.2026:
+    // do tada su glasili `Kupac 657/26` / `Prihod 657/26` / `PDV 20% 657/26` — opis PO
+    // KONTU, koji (a) ne nosi nijedan podatak koji na istom redu već ne stoji u
+    // `document_number` i samom kontu, i (b) razilazio se sa robnom granom i sa BigBitom
+    // (izmereno: 131 od 132 grupe „nalog+dokument" ima ISTI opis na svim kontima).
     expect(lines.map((l) => l.description)).toEqual([
-      "Kupac 657/26",
-      "Prihod 657/26",
-      "PDV 20% 657/26",
+      "IFUSL 657/26 · FMB d.o.o.",
+      "IFUSL 657/26 · FMB d.o.o.",
+      "IFUSL 657/26 · FMB d.o.o.",
     ]);
     // Isti broj mora otići i na sam dokument (bez toga bi se GK i papir opet razišli).
     expect(h.prisma.invoice.update).toHaveBeenCalledWith(

@@ -307,6 +307,9 @@ async function ocisti() {
     });
     await prisma.stockDocument.deleteMany({ where: { id: { in: ids } } });
   }
+  // Probni PREDMET (broj predmeta ulazi u opis reda naloga). Briše se POSLE dokumenata i
+  // isključivo po markeru — `projects` na test bazi drži i tuđe podatke.
+  await prisma.project.deleteMany({ where: { memo: MARK } });
   return ids.length;
 }
 
@@ -333,6 +336,12 @@ async function napraviDokument(p: {
   bezStavki?: boolean;
   /** Namerno BEZ prodajnog dokumenta (provera podrazumevanih vrednosti). */
   bezFakture?: boolean;
+  /**
+   * Predmet na zaglavlju izdatnice (`stock_documents.project_id`). Kad ga ima, njegov
+   * BROJ mora da uđe u opis reda naloga — to je podatak koji je knjigovođa u starom
+   * programu kucao rukom (izmereno: 106 od 118 opisa = `projects.project_number`).
+   */
+  predmet?: number | null;
 }): Promise<number> {
   brojac += 1;
   const doc = await prisma.stockDocument.create({
@@ -344,6 +353,7 @@ async function napraviDokument(p: {
       year: GODINA,
       warehouseId: p.magacin,
       customerId: p.kupac,
+      projectId: p.predmet ?? null,
       documentDate: DATUM,
       postingDate: DATUM,
       status: "DRAFT",
@@ -428,6 +438,32 @@ async function main() {
   const obrisano = await ocisti();
   if (obrisano) log(`(očišćeno ${obrisano} zatečenih probnih dokumenata)`);
 
+  /**
+   * PREDMET ZA PROBU — vezuje se na IFR izdatnicu da bi se videlo da njegov BROJ ulazi u
+   * opis reda naloga (to je podatak koji je knjigovođa u starom programu kucao rukom:
+   * izmereno 106 od 118 opisa = `projects.project_number`, 0 od 118 = broj radnog naloga).
+   * Pravi se SVOJ, obeležen markerom, jer test baza `projects` ume da bude prazna
+   * (izmereno 07.08.2026: 0 redova) — `ocisti()` ga briše po istom markeru.
+   */
+  const predmetZaProbu = await prisma.project.create({
+    data: {
+      projectNumber: "ZZ-9997",
+      description: "Probni predmet — dokaz opisa reda naloga",
+      customerId: KUPAC_DOMACI,
+      memo: MARK,
+    },
+    select: { id: true, projectNumber: true },
+  });
+  /** Nazivi komitenata — ulaze u opis reda (isti izvor koji čita i motor). */
+  const nazivKomitenta = new Map(
+    (
+      await prisma.customer.findMany({
+        where: { id: { in: [KUPAC_DOMACI, KUPAC_INO] } },
+        select: { id: true, name: true },
+      })
+    ).map((c) => [c.id, c.name]),
+  );
+
   // ── KORAK 1: veži vrste dokumenata za šeme ───────────────────────────────────
   log("");
   log(
@@ -493,7 +529,10 @@ async function main() {
       );
     }
 
-    const docId = await napraviDokument(p);
+    // Predmet ide SAMO na IFR — jedna proba da se vidi da broj predmeta ulazi u opis, a
+    // ostale vrste da pokažu oblik bez predmeta (na produkciji ga 77 % izdatnica nema).
+    const predmet = p.vrsta === "IFR" ? predmetZaProbu : null;
+    const docId = await napraviDokument({ ...p, predmet: predmet?.id ?? null });
     const stopa = p.tarifa === TARIFA_20 ? "20 %" : "0 %";
     const pdv = p.tarifa === TARIFA_20 ? VP.mul("0.20") : new D(0);
     log("");
@@ -664,6 +703,42 @@ async function main() {
         p.kupac === null ? " (podrazumevano — nema prodajnog dokumenta)" : ""
       }`,
     );
+    /**
+     * OPIS REDA (ispravka 07.08.2026) — zahtev knjigovođe: „u opis sami ručno upisujemo…".
+     * Do ispravke je opis dolazio ISKLJUČIVO iz šeme, gde je na produkciji 76 od 78 linija
+     * prazno → svaki nalog od paljenja prekidača nosio bi prazan opis (a IFGP/2040 doslovno
+     * „0"). Proverava se troje: da NIJEDAN red nije prazan, da je opis ISTI na svim redovima
+     * (BigBit paritet — 131 od 132 grupe „nalog+dokument" ima jedan tekst na svim kontima),
+     * i da je taj tekst tačno „vrsta broj [· predmet N] [· naziv komitenta]".
+     */
+    const ocekivanOpis = [
+      `${p.vrsta} ${brojDok}`,
+      predmet ? `predmet ${predmet.projectNumber}` : null,
+      p.kupac !== null ? (nazivKomitenta.get(p.kupac) ?? null) : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const opisi = new Set(redovi.map((r) => r.opis ?? ""));
+    check(
+      "opis NIJE prazan ni na jednom redu",
+      redovi.every((r) => (r.opis ?? "").trim().length > 0),
+      redovi.every((r) => (r.opis ?? "").trim().length > 0)
+        ? `svih ${redovi.length} redova nosi tekst`
+        : `${redovi.filter((r) => !(r.opis ?? "").trim()).length}/${redovi.length} redova je PRAZNO — knjigovođa bi ih dopunjavao ručno`,
+    );
+    check(
+      "opis je ISTI na svim redovima (BigBit paritet)",
+      opisi.size === 1,
+      opisi.size === 1
+        ? `jedan tekst na svih ${redovi.length} redova`
+        : `${opisi.size} različitih tekstova: ${[...opisi].map((o) => `„${o}"`).join(", ")}`,
+    );
+    check(
+      "opis = vrsta + broj + predmet + komitent",
+      opisi.size === 1 && [...opisi][0] === ocekivanOpis,
+      `očekivano „${ocekivanOpis}", dobijeno ${[...opisi].map((o) => `„${o}"`).join(", ")}`,
+    );
+
     check(
       "traceback source_goods_doc_id",
       redovi.every((r) => r.izvorniDok === docId),

@@ -9,6 +9,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { PostingEngineService } from "./posting/posting.service";
+import { clipLedgerDescription } from "./posting/ledger-line";
 import {
   type CreateJournalEntryDto,
   type CreateJournalEntryLineInput,
@@ -441,7 +442,13 @@ export class GlWriteService {
             fxDebit: l.fxCredit,
             fxCredit: l.fxDebit,
             fxCurrency: l.fxCurrency,
-            description: `STORNO: ${l.description ?? ""}`.trim(),
+            // ⚠️ SEČENJE JE OBAVEZNO: prefiks „STORNO: " (8 znakova) na opisu koji je već
+            // pun (`VarChar(255)`) daje 263 → Postgres odbija upis (22001) i obara CELU
+            // transakciju storna. Dok je opis bio prazan to se nije moglo desiti; od
+            // 07.08.2026. opis nosi vrstu, broj, predmet i naziv komitenta, pa može.
+            description: clipLedgerDescription(
+              `STORNO: ${l.description ?? ""}`,
+            ),
             documentNumber: l.documentNumber,
             dueDate: l.dueDate,
             currency: l.currency,

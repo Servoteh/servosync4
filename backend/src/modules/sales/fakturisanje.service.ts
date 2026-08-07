@@ -13,6 +13,7 @@ import { PostingEngineService } from "../gl/posting/posting.service";
 // ručnu i robnu granu knjiženja (do 05.08.2026. su bila dva primerka i razišla su se).
 import {
   finalizeLedgerLines,
+  ledgerDescription,
   openItemFields,
 } from "../gl/posting/ledger-line";
 import { GlWriteService } from "../gl/gl-write.service";
@@ -224,6 +225,19 @@ export function buildSalesLedgerLines(
      * dolaze iz istog reda, pa se ne mogu razići (v. `service-revenue-type.ts`).
      */
     serviceRevenueType?: ServiceRevenueTypeRef | null;
+    /**
+     * Naziv kupca (`customers.name`) za OPIS reda naloga. Opciono: `postManualLedger` ga
+     * dovlači, a pred-provera na `postInvoice` (koja ovu funkciju zove samo da bi uhvatila
+     * stopu bez konta) ne mora — opis tada nije ni bitan, jer se ništa ne upisuje.
+     */
+    customerName?: string | null;
+    /**
+     * Broj predmeta za opis. Danas UVEK prazno: `invoices` nema `project_id` (izmereno u
+     * `information_schema.columns`), a `invoices.work_order_id` nijedan kod ne upisuje.
+     * Parametar stoji da obe grane knjiženja imaju ISTI oblik opisa čim veza postane
+     * stvarna — ne da bi se veza pretpostavljala.
+     */
+    projectNumber?: string | null;
   },
   items: ReadonlyArray<{ vatRateCode: string; vatBase: Prisma.Decimal }>,
 ): LedgerLineDraft[] {
@@ -232,6 +246,24 @@ export function buildSalesLedgerLines(
   const totals = documentVatTotals(items, {
     isExport: invoice.isExport,
     taxTreatment: taxTreatmentOf(invoice),
+  });
+
+  /**
+   * OPIS — ISTI NA SVIM REDOVIMA JEDNOG RAČUNA (07.08.2026).
+   *
+   * ⚠️ ŠTA JE BILO: `Kupac 243/26` / `Prihod 243/26` / `PDV 20% 243/26` — opis PO KONTU.
+   * To se razilazilo sa robnom granom u dva pravca odjednom: ona je (do iste ispravke)
+   * pisala prazno, a BigBit je pisao ISTI tekst na svim kontima jednog dokumenta
+   * (izmereno: 131 od 132 grupe „nalog + dokument"). Uz to nijedan od ta tri teksta nije
+   * nosio novu informaciju — broj računa već stoji u `document_number` na istom redu, a
+   * ulogu konta govori samo konto. Pravilo drži `ledgerDescription` (`ledger-line.ts`),
+   * jedno mesto za obe grane.
+   */
+  const description = ledgerDescription({
+    documentTypeCode: invoice.documentType,
+    documentNumber: invoice.documentNumber,
+    projectNumber: invoice.projectNumber ?? null,
+    partnerName: invoice.customerName ?? null,
   });
 
   const lines: LedgerLineDraft[] = [
@@ -250,7 +282,7 @@ export function buildSalesLedgerLines(
       // rečenica iznad zaista tačna, a ne samo željena.
       debit: totals.grossTotal,
       credit: ZERO,
-      description: `Kupac ${invoice.documentNumber}`,
+      description,
     },
     {
       // ⚠️ KONTO PRIHODA USLUGE DOLAZI IZ ŠIFARNIKA (05.08.2026). Do tada je ovde bio
@@ -262,7 +294,7 @@ export function buildSalesLedgerLines(
       analyticalCode: null,
       debit: ZERO,
       credit: totals.netTotal,
-      description: `Prihod ${invoice.documentNumber}`,
+      description,
     },
   ];
 
@@ -293,7 +325,7 @@ export function buildSalesLedgerLines(
       analyticalCode: null,
       debit: ZERO,
       credit: group.vat,
-      description: `PDV ${percent}% ${invoice.documentNumber}`,
+      description,
     });
   }
 
@@ -1633,7 +1665,23 @@ export class FakturisanjeService {
         select: { vatRateCode: true, vatBase: true },
       }));
 
-    const draftLines = buildSalesLedgerLines(invoice, lines);
+    /**
+     * NAZIV KUPCA ZA OPIS REDA — jedan `findUnique` po knjiženju (ne po redu).
+     * Kupca koga u šifarniku nema (ili računa bez kupca) opis prosto ne pominje; knjiženje
+     * se zbog toga NE obara — `ledgerDescription` tada vrati „vrsta + broj".
+     */
+    const customer =
+      invoice.customerId != null
+        ? await tx.customer.findUnique({
+            where: { id: invoice.customerId },
+            select: { name: true },
+          })
+        : null;
+
+    const draftLines = buildSalesLedgerLines(
+      { ...invoice, customerName: customer?.name ?? null },
+      lines,
+    );
 
     // Polja otvorene stavke (broj/dospeće/valuta) — jedno pravilo za obe grane knjiženja.
     const openItem = openItemFields(invoice);

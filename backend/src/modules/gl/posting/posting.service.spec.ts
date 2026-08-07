@@ -181,6 +181,11 @@ function makeEngine(
     schemeId?: number;
     orderType?: string;
     isInbound?: boolean;
+    /** Predmet na zaglavlju izdatnice (`stock_documents.project_id`) i njegov broj. */
+    projectId?: number | null;
+    projectNumber?: string | null;
+    /** Naziv komitenta (`customers.name`); `null` = komitent ne postoji u šifarniku. */
+    customerName?: string | null;
   } = {},
 ) {
   const documentTypeCode = over.documentTypeCode ?? "IFR";
@@ -199,7 +204,7 @@ function makeEngine(
     postingDate: DATUM,
     isImport: false,
     workOrderId: null,
-    projectId: null,
+    projectId: over.projectId ?? null,
     status: "DRAFT",
   };
 
@@ -249,6 +254,26 @@ function makeEngine(
           over.salesDoc === undefined
             ? { dueDate: DOSPECE, currency: "RSD" }
             : over.salesDoc,
+        ),
+      ),
+    },
+    // Naziv komitenta i broj predmeta idu u OPIS reda naloga (§5). Oba se čitaju samo
+    // kad zaglavlje dokumenta nosi šifru — stub to verno prati (`null` → motor ne pita).
+    customer: {
+      findUnique: jest.fn(() =>
+        Promise.resolve(
+          over.customerName === null
+            ? null
+            : { name: over.customerName ?? "FMB d.o.o." },
+        ),
+      ),
+    },
+    project: {
+      findUnique: jest.fn(() =>
+        Promise.resolve(
+          over.projectNumber == null
+            ? null
+            : { projectNumber: over.projectNumber },
         ),
       ),
     },
@@ -556,6 +581,115 @@ describe("PostingEngineService.postFromStockDocument", () => {
       expect(
         lines.find((l) => l.accountCode === "2040")?.debit.toFixed(2),
       ).toBe("11000.00");
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // §5 — OPIS reda naloga (`ledger_entries.description`)
+  //
+  // Zatečeno stanje (07.08.2026, dan paljenja prekidača): opis se uzimao ISKLJUČIVO iz
+  // `accounting_scheme_lines.description`, a tamo je na produkciji 76 od 78 linija prazno
+  // → svaki novi nalog nosi prazan opis. Knjigovođa taj podatak popunjava ručno
+  // („broj RN za koji je izlazna faktura vezana"), pa bi se posao gomilao od prvog naloga.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe("§5 opis reda naloga", () => {
+    it("🔴 SVAKI red nosi opis izveden iz dokumenta (ne prazan, ne iz šeme)", async () => {
+      const h = makeEngine();
+
+      await h.engine.postFromStockDocument(77);
+
+      const lines = h.created[0].lines.create;
+      expect(lines).toHaveLength(5);
+      for (const l of lines) {
+        expect(l.description).toBe("IFR 9001/2026 · FMB d.o.o.");
+      }
+    });
+
+    it("dokument SA predmetom nosi i broj predmeta (ono što je knjigovođa kucao rukom)", async () => {
+      // Izmereno nad uvezenom knjigom 2026: 106 od 118 opisa je doslovno
+      // `projects.project_number`; 0 od 118 je `work_orders.ident_number`.
+      const h = makeEngine({ projectId: 10466, projectNumber: "9997" });
+
+      await h.engine.postFromStockDocument(77);
+
+      for (const l of h.created[0].lines.create) {
+        expect(l.description).toBe("IFR 9001/2026 · predmet 9997 · FMB d.o.o.");
+      }
+    });
+
+    it("popis (bez komitenta i bez predmeta): opis je vrsta + broj, nikad prazan", async () => {
+      const h = makeEngine({ salesDoc: null, customerId: null });
+
+      await h.engine.postFromStockDocument(77);
+
+      for (const l of h.created[0].lines.create) {
+        expect(l.description).toBe("IFR 9001/2026");
+      }
+      // Komitenta nema → šifarnik se i ne pita (nema šta da se traži).
+      expect(h.tx.customer.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("komitent koji ne postoji u šifarniku ne obara knjiženje — opis ostane bez naziva", async () => {
+      const h = makeEngine({ customerName: null });
+
+      await h.engine.postFromStockDocument(77);
+
+      for (const l of h.created[0].lines.create) {
+        expect(l.description).toBe("IFR 9001/2026");
+      }
+    });
+
+    it("opis iz ŠEME se više ne prepisuje u red (na produkciji je to doslovna nula)", async () => {
+      // `IFGP`/`2040` na produkciji nosi `description = "0"` — jedina popunjena linija među
+      // upaljenim vrstama. Da se prepisuje, taj red bi i dalje glasio „0".
+      const h = makeEngine({
+        documentTypeCode: "IFGP",
+        schemeId: 36,
+        orderType: "IFGP",
+        schemeLines: SEMA_36.map((l) =>
+          l.accountCode === "2040" ? { ...l, description: "0" } : l,
+        ),
+      });
+
+      await h.engine.postFromStockDocument(77);
+
+      const kupac = h.created[0].lines.create.find(
+        (l) => l.accountCode === "2040",
+      );
+      expect(kupac?.description).toBe("IFGP 9001/2026 · FMB d.o.o.");
+    });
+
+    it("predugačak naziv komitenta se seče na 255 znakova (kolona VarChar(255))", async () => {
+      const h = makeEngine({ customerName: "К".repeat(300) });
+
+      await h.engine.postFromStockDocument(77);
+
+      for (const l of h.created[0].lines.create) {
+        expect(l.description).not.toBeNull();
+        expect(l.description!.length).toBe(255);
+        expect(l.description!.startsWith("IFR 9001/2026 · ")).toBe(true);
+        expect(l.description!.endsWith("…")).toBe(true);
+      }
+    });
+
+    it("iznosi i konta ostaju NEDIRNUTI kad se opis doda (regresija)", async () => {
+      const h = makeEngine({ projectId: 10466, projectNumber: "9997" });
+
+      await h.engine.postFromStockDocument(77);
+
+      expect(
+        h.created[0].lines.create.map((l) => [
+          l.accountCode,
+          l.debit.toFixed(2),
+          l.credit.toFixed(2),
+        ]),
+      ).toEqual([
+        ["2040", "12000.00", "0.00"],
+        ["4702", "0.00", "2000.00"],
+        ["6040", "0.00", "10000.00"],
+        ["1320", "0.00", "6000.00"],
+        ["5010", "6000.00", "0.00"],
+      ]);
     });
   });
 });

@@ -73,6 +73,105 @@ export function openItemFields(source: OpenItemSource): OpenItemFields {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// OPIS REDA NALOGA (`ledger_entries.description`) — jedno pravilo za obe grane
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Dužina kolone `ledger_entries.description` (`schema.prisma`: `VarChar(255)`).
+ * Sve što ide u tu kolonu MORA proći kroz `clipLedgerDescription` — Postgres ne seče
+ * sam, nego odbija upis (`22001 value too long`) i time obara celu transakciju
+ * knjiženja.
+ */
+export const LEDGER_DESCRIPTION_MAX = 255;
+
+/** Razdvajač delova opisa. Isti znak koristi i kartica komitenta za spoj „broj · nalog". */
+const LEDGER_DESCRIPTION_SEP = " · ";
+
+/**
+ * Skrati opis na dužinu kolone, sa „…" na kraju kad je sečen (da se na papiru vidi da
+ * tekst NIJE ceo). Delovi opisa idu od najvažnijeg ka najmanje važnom (vrsta+broj →
+ * predmet → naziv komitenta), pa sečenje s kraja gubi baš ono što se najlakše nadoknadi
+ * iz susedne kolone.
+ */
+export function clipLedgerDescription(text: string): string {
+  const t = text.trim();
+  if (t.length <= LEDGER_DESCRIPTION_MAX) return t;
+  return `${t.slice(0, LEDGER_DESCRIPTION_MAX - 1).trimEnd()}…`;
+}
+
+/** Podaci sa ZAGLAVLJA dokumenta iz kojih se sklapa opis reda naloga. */
+export interface LedgerDescriptionSource {
+  /** Vrsta dokumenta (`IFR`, `IFGP`, `IZVRO`…) — `stock_documents.document_type_code` / `invoices.document_type`. */
+  documentTypeCode: string;
+  /** Broj dokumenta (`243/26`) — isti broj koji nosi i `openItemFields`. */
+  documentNumber: string;
+  /**
+   * Broj predmeta (`projects.project_number`) kad dokument NOSI predmet
+   * (`stock_documents.project_id`). Prazno kad ga nema — ne izvodi se ni iz čega drugog.
+   */
+  projectNumber?: string | null;
+  /** Naziv komitenta (`customers.name`) — kupac na izlazu, dobavljač na ulazu. */
+  partnerName?: string | null;
+}
+
+/**
+ * OPIS REDA NALOGA — isti tekst na SVIM redovima jednog dokumenta.
+ * =============================================================================
+ *
+ * ⚠️ ZAŠTO POSTOJI (zahtev knjigovođe, 06.08.2026): „u opis sami ručno upisujemo obično
+ * broj RN za koji je izlazna faktura vezana". Do 07.08.2026. opis je dolazio ISKLJUČIVO iz
+ * šeme kontiranja (`accounting_scheme_lines.description`), a tamo je izmereno na produkciji
+ * 76 od 78 linija prazno; jedina popunjena među upaljenim vrstama je `IFGP`/`2040` sa
+ * doslovnim tekstom `"0"`. Prekidač knjiženja je za pet vrsta (IFR, IFGP, IZVRO, IZVGP,
+ * VISAR) upaljen 07.08.2026, pa bi svaki nalog od tog trenutka nastao sa praznim opisom.
+ *
+ * ⚠️ NIJE BROJ RADNOG NALOGA, I TO NIJE PROPUST — MERENJE (produkcija, samo čitanje):
+ * u uvezenoj knjizi 2026 (`ledger_entries` iz BigBita, vrste IFR/IFGP/IZVRO/IZVGP) ima 118
+ * različitih vrednosti opisa. Od njih se **0** poklapa sa `work_orders.ident_number`, a
+ * **106** doslovno sa `projects.project_number` (ostatak su ručne varijante istog broja:
+ * `9000 001`, `9000/009`, `9000  001`, i slobodan tekst `cilindri elevacije`). Knjigovođa
+ * dakle kuca BROJ PREDMETA, a ne ident radnog naloga — u 4.0 su to dva različita podatka
+ * (RN ident je `{broj_predmeta}/{redni}`, npr. `9400/7/163`).
+ *
+ * ⚠️ ZATO SE VEZA KA RADNOM NALOGU NE IZMIŠLJA: `invoices` nema `project_id`, a
+ * `invoices.work_order_id` nijedan kod ne upisuje; `carry-over` (faktura → izdatnica) ne
+ * prosleđuje ni `projectId` ni `workOrderId`. Predmet ulazi u opis SAMO kad ga dokument
+ * stvarno nosi (`stock_documents.project_id`, ručni unos ga puni) — nikad izveden iz
+ * pretpostavke. Automatsko punjenje predmeta/RN na izdatnici je zasebna odluka.
+ *
+ * OBLIK (isti na svim redovima jednog dokumenta — BigBit paritet: izmereno 131 od 132
+ * grupe „nalog+dokument" ima identičan opis na svim kontima):
+ *
+ *   `IFR 243/26 · predmet 9997 · FMB d.o.o.`
+ *   `IFR 243/26 · FMB d.o.o.`            (dokument bez predmeta)
+ *   `VISAR 12/26`                        (popis — nema ni predmet ni komitenta)
+ *
+ * ZAŠTO I KOMITENT, IAKO GA STAVKA VEĆ NOSI: `analytical_code` se upisuje SAMO na linije
+ * šeme sa `postsAnalytics` — na kontu prihoda (6040) i izlaznog PDV-a (4702) je prazan, pa
+ * na tim redovima naziv u opisu jedini govori čiji je promet. Na nalogu za knjiženje (PDF)
+ * kolona „Komitent" ionako prikazuje samo šifru.
+ *
+ * ⚠️ ŠEMA VIŠE NIJE IZVOR OPISA: `accounting_scheme_lines.description` se ne prepisuje u
+ * red naloga. Od 78 linija na produkciji tekst ima 2, i oba su neupotrebljiva kao opis
+ * stavke (`"0"` na IFGP/2040 i `"MATERIIJAL"` — slovna greška, na šemi čiji je prekidač
+ * ugašen). Kolona ostaje u modelu i podaci se ne diraju; samo se više ne rutira ovamo.
+ */
+export function ledgerDescription(src: LedgerDescriptionSource): string {
+  const head = [src.documentTypeCode?.trim(), src.documentNumber?.trim()]
+    .filter((p): p is string => !!p)
+    .join(" ");
+  const parts = [head];
+
+  const projectNumber = src.projectNumber?.trim();
+  if (projectNumber) parts.push(`predmet ${projectNumber}`);
+
+  const partnerName = src.partnerName?.trim();
+  if (partnerName) parts.push(partnerName);
+
+  return clipLedgerDescription(parts.filter(Boolean).join(LEDGER_DESCRIPTION_SEP));
+}
+
 /** Minimum koji linija naloga mora da nosi da bi se pripremila za upis. */
 export interface LedgerAmounts {
   debit: Prisma.Decimal;

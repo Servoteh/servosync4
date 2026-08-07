@@ -38,6 +38,7 @@ import { PrismaService } from "../../../prisma/prisma.service";
 import { evaluateExpression } from "./expression-parser";
 import {
   finalizeLedgerLines,
+  ledgerDescription,
   openItemFields,
   type OpenItemFields,
 } from "./ledger-line";
@@ -459,8 +460,50 @@ export class PostingEngineService {
 
       const varMap = this.buildDocVarMap(amounts);
 
-      // 5) Za svaku liniju šeme evaluiraj DefDug/DefPot ŽIVIM parserom (Decimal).
       const analyticalCode = doc.supplierId ?? doc.customerId ?? null; // komitent
+
+      /**
+       * OPIS REDA NALOGA — isti tekst na svakom redu ovog dokumenta (07.08.2026).
+       *
+       * ⚠️ IZMEREN KVAR: opis je do sada dolazio ISKLJUČIVO iz šeme kontiranja
+       * (`line.description`), a na produkciji je tamo 76 od 78 linija prazno — svaki nalog
+       * koji od paljenja prekidača nastane nosio bi prazan opis, a knjigovođa taj podatak
+       * popunjava ručno. Pravilo i oblik drži `ledgerDescription` (jedno mesto za obe grane
+       * knjiženja — v. `ledger-line.ts`, tamo je i merenje „predmet, ne radni nalog").
+       *
+       * ODAKLE VREDNOSTI (sve sa ZAGLAVLJA dokumenta koji se knjiži — ništa se ne izvodi
+       * iz pretpostavke):
+       *   • vrsta i broj — `stock_documents.document_type_code` / `document_number`;
+       *   • komitent — ista šifra koja ide u `analytical_code` (dobavljač na ulazu, kupac
+       *     na izlazu); naziv iz šifarnika. Komitent koga u šifarniku nema NE obara
+       *     knjiženje — opis tada ostane bez naziva;
+       *   • predmet — SAMO kad ga dokument stvarno nosi (`stock_documents.project_id`).
+       *
+       * Dva `findUnique`-a po dokumentu (ne po redu), i to samo kad šifra postoji — i tek
+       * OVDE, posle svih brana (nema stavki / nema šeme / šema ne pokriva stopu), da
+       * dokument koji ionako pada ne plaća dva upita.
+       */
+      const partner =
+        analyticalCode != null
+          ? await tx.customer.findUnique({
+              where: { id: analyticalCode },
+              select: { name: true },
+            })
+          : null;
+      const project = doc.projectId
+        ? await tx.project.findUnique({
+            where: { id: doc.projectId },
+            select: { projectNumber: true },
+          })
+        : null;
+      const description = ledgerDescription({
+        documentTypeCode: doc.documentTypeCode,
+        documentNumber: doc.documentNumber,
+        projectNumber: project?.projectNumber ?? null,
+        partnerName: partner?.name ?? null,
+      });
+
+      // 5) Za svaku liniju šeme evaluiraj DefDug/DefPot ŽIVIM parserom (Decimal).
       const rawLines: LedgerLineDraft[] = [];
       for (const line of scheme.lines) {
         const debit = line.defDebit
@@ -483,7 +526,10 @@ export class PostingEngineService {
           analyticalCode: line.postsAnalytics ? analyticalCode : null,
           debit,
           credit,
-          description: line.description ?? null,
+          // Opis je po DOKUMENTU, ne po liniji šeme — v. blok uz `ledgerDescription` iznad.
+          // (Time i `groupByAccountAndPartner`, koji pri spajanju zadrži opis PRVOG reda
+          // grupe, više ne može ništa da izgubi: svi redovi nose isti tekst.)
+          description,
         });
       }
 

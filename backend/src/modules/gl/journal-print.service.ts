@@ -216,7 +216,21 @@ export class JournalPrintService {
         {
           table: {
             headerRows: 1,
-            widths: ["auto", "auto", "*", "auto", "auto", "auto", "auto"],
+            /**
+             * „Naziv konta" i „Opis" su OBA rastegljiva (`*`) — dele slobodnu širinu na
+             * jednake delove. Do 07.08.2026. je „Opis" bio `auto`, što je bilo bezopasno
+             * dok je opis bio prazan; od kad nosi vrstu, broj, predmet i naziv komitenta
+             * nije.
+             *
+             * ⚠️ IZMERENO (renderovan pravi PDF sa opisom od 255 znakova, obe varijante):
+             * `auto` NE gura tabelu preko margine — pdfmake stisne kolone i strana ostane
+             * cela. Kvar je drugačiji i tiši: `auto` kolona uzima širinu prema SVOM sadržaju,
+             * pa dugačak opis pojede prostor jedine `*` kolone i „Naziv konta" se prelomi na
+             * 2–3 reda („Prihodi od prodaje / robe na domaćem / tržištu"). A naziv konta je
+             * baš ono što knjigovođa čita da proveri kontiranje. Sa dva `*` naziv konta staje
+             * u JEDAN red, a prelama se opis — koji se ionako ponavlja na svakom redu naloga.
+             */
+            widths: ["auto", "auto", "*", "auto", "*", "auto", "auto"],
             body: [head, ...bodyRows, totalRow],
           },
           layout: tableLayout,
