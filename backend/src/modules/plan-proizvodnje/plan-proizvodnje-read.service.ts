@@ -792,14 +792,14 @@ export class PlanProizvodnjeReadService {
       base.overlay_created_at, base.overlay_created_by,
       -- Zahtev 046/26 (gant): planirani termini + „uslov" + override završenosti.
       -- PARALELNA polja — NIJEDAN postojeći sort/bucket/filter ih ne koristi.
-      base.planned_start_at, base.planned_end_at, base.planned_duration_minutes,
-      base.planned_done, base.planned_done_at, base.planned_done_by,
+      tp.planned_start_at, tp.planned_end_at, tp.planned_duration_minutes,
+      tp.planned_done, tp.planned_done_at, tp.planned_done_by,
       base.predecessor_work_order_id::text AS predecessor_work_order_id,
       base.predecessor_line::text AS predecessor_line,
       mh.hall,
       -- Default trajanje iz tehnologije: TPZ + TK × komada (min); override gazi.
       COALESCE(
-        base.planned_duration_minutes,
+        tp.planned_duration_minutes,
         (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int
       )::int AS effective_duration_minutes,
       ${IS_COMPLETED_EFFECTIVE} AS is_completed_effective,
@@ -892,8 +892,6 @@ export class PlanProizvodnjeReadService {
         COALESCE(o.cooperation_status, 'none') AS cooperation_status,
         o.cooperation_partner, o.cooperation_set_by, o.cooperation_set_at, o.cooperation_expected_return,
         COALESCE(o.ready_override, false) AS ready_override, o.ready_override_at, o.ready_override_by,
-        o.planned_start_at, o.planned_end_at, o.planned_duration_minutes,
-        o.planned_done, o.planned_done_at, o.planned_done_by,
         o.predecessor_work_order_id, o.predecessor_line,
         COALESCE(o.local_status, 'waiting') AS local_status_eff
       FROM work_order_operations l
@@ -904,6 +902,34 @@ export class PlanProizvodnjeReadService {
       WHERE ${predmetGate}
         ${baseFilter}
     ) base
+    -- 🔴 078/26: termin se od sada čita iz plan_proizvodnje_termini, a NE sa overlay-a.
+    -- (Bez backtick-ova u komentaru — prekinuli bi ovaj template literal.)
+    --
+    -- Stoji OVDE, a ne u base podupitu, iz istog razloga kao ostali laterali: mašinski
+    -- filter je već primenjen, pa se termin traži samo za redove koji su prošli filter.
+    -- (Test „baseFilter se ubacuje u najdublju WHERE granu" to izričito čuva.)
+    --
+    -- Ovaj upit hrani SVE ekrane (gant, „Po mašini", praćenje, TP modal), pa MORA da
+    -- ostane 1:1 — da je postao 1:N, pomnožili bi se svi odjednom. Zato LIMIT 1:
+    -- operacija i dalje daje TAČNO JEDAN red, samo joj termin bira pravilo.
+    --
+    -- Pravilo je NAJRANIJI NEZAVRŠEN termin (odluka Nenad 07.08.2026) — ono što mašina
+    -- sledeće radi. planned_done je tri-state override (NULL = auto iz kucanja), pa
+    -- COALESCE(...,false) znači „dok planer izričito ne kaže da je gotov, termin se
+    -- računa kao nezavršen". Po opciji A svi termini operacije se zatvaraju zajedno, pa
+    -- se ovo u praksi svodi na „najraniji" — osim kad planer ručno zatvori jedan
+    -- termin, i tada se lista sama pomeri na sledeći, bez ijednog klika.
+    --
+    -- Dok traje Faza A (jedan termin po operaciji, drži ga privremeni jedinstveni
+    -- indeks) ovaj lateral vraća DOSLOVNO isto što je vraćao o.planned_*.
+    LEFT JOIN LATERAL (
+      SELECT t.planned_start_at, t.planned_end_at, t.planned_duration_minutes,
+             t.planned_done, t.planned_done_at, t.planned_done_by
+        FROM plan_proizvodnje_termini t
+       WHERE t.overlay_id = base.overlay_id
+       ORDER BY COALESCE(t.planned_done, false) ASC, t.planned_start_at ASC, t.id ASC
+       LIMIT 1
+    ) tp ON TRUE
     LEFT JOIN plan_proizvodnje_machine_halls mh ON mh.machine_code = base.effective_machine_code
     LEFT JOIN plan_proizvodnje_auto_cooperation_groups g ON g.rj_group_code = base.original_machine_code AND g.removed_at IS NULL
     LEFT JOIN plan_proizvodnje_urgency_overrides u ON u.work_order_id = base.wo_raw AND u.is_urgent IS TRUE AND u.cleared_at IS NULL
