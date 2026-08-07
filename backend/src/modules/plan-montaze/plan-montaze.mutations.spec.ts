@@ -5,6 +5,15 @@ import type { Sy15StorageService } from "../../common/sy15/sy15-storage.service"
 import type { AiProviderService } from "../../common/ai/ai-provider.service";
 import type { CreateReportDto } from "./dto/plan-montaze-mutation.dto";
 import type { AiModelPolicyService } from "../../common/ai/ai-model-policy.service";
+import type { PrismaService } from "../../prisma/prisma.service";
+
+/**
+ * 3.0 glavna baza (predmeti/komitenti od 07.08.2026). Bez `withUserRls` omotača —
+ * matični podaci se čitaju direktno, isto kao u plan-proizvodnje read sloju.
+ */
+const prismaMock = (
+  queryRaw: jest.Mock = jest.fn(async () => []),
+): PrismaService => ({ $queryRaw: queryRaw }) as unknown as PrismaService;
 
 /**
  * Talas AI-0: registar modela je prazan u testovima — `resolve` vraća fallback
@@ -57,7 +66,13 @@ describe("PlanMontazeService.createReport (idempotency + payload)", () => {
     const sy15 = { runIdempotentRls } as unknown as Sy15Service;
     const storage = {} as Sy15StorageService;
     const ai = {} as AiProviderService;
-    const svc = new PlanMontazeService(sy15, storage, ai, policyMock());
+    const svc = new PlanMontazeService(
+      sy15,
+      storage,
+      ai,
+      policyMock(),
+      prismaMock(),
+    );
     return { svc, runIdempotentRls, create };
   };
 
@@ -130,6 +145,7 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
       storage,
       {} as AiProviderService,
       policyMock(),
+      prismaMock(),
     );
     const file = {
       buffer: Buffer.from("%PDF-1.4 fake"),
@@ -166,6 +182,7 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
       storage,
       {} as AiProviderService,
       policyMock(),
+      prismaMock(),
     );
     const file = {
       buffer: Buffer.from("%PDF-1.4"),
@@ -179,28 +196,31 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
   });
 
   // ── Nalaz #2 (HIGH paritet) ──
-  const makeLookup = () => {
-    const captured: { itemsSql?: string } = {};
+  /**
+   * Od 07.08.2026 predmeti/komitenti se čitaju iz 3.0 (`projects`/`customers`), pa
+   * mock ide na `PrismaService`, a sy15 mora ostati NEDIRNUT (asercija ispod).
+   */
+  const makeLookup = (items: Record<string, unknown>[] = []) => {
+    const captured: { itemsSql?: string; custSql?: string } = {};
     const queryRaw = jest.fn(async (sql: unknown) => {
       const t = sqlText(sql);
-      if (t.includes("bigtehn_items_cache")) {
+      if (t.includes("FROM projects")) {
         captured.itemsSql = t;
-        return []; // items — sadržaj nebitan za ovaj test
+        return items;
       }
-      return []; // customers
+      captured.custSql = t;
+      return [{ id: 42, name: "Klijent doo", short_name: "KL" }];
     });
-    const withUserRls = jest.fn(
-      async (_e: string, fn: (t: unknown) => Promise<unknown>) =>
-        fn({ $queryRaw: queryRaw }),
-    );
+    const withUserRls = jest.fn();
     const sy15 = { withUserRls } as unknown as Sy15Service;
     const svc = new PlanMontazeService(
       sy15,
       {} as Sy15StorageService,
       {} as AiProviderService,
       policyMock(),
+      prismaMock(queryRaw),
     );
-    return { svc, captured };
+    return { svc, captured, withUserRls };
   };
 
   it("lookupPredmeti: DEFAULT (bez onlyActive) → SQL bez active-filtera (vraća i zatvorene)", async () => {
@@ -208,23 +228,98 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
     await svc.lookupPredmeti(email, "8500");
     expect(captured.itemsSql).toBeDefined();
     expect(captured.itemsSql).not.toContain("U TOKU");
-    expect(captured.itemsSql).not.toContain("datum_zakljucenja IS NULL");
+    expect(captured.itemsSql).not.toContain("closed_at IS NULL");
   });
 
   it("lookupPredmeti: onlyActive='1' → SQL sadrži active-filter (samo aktivni)", async () => {
     const { svc, captured } = makeLookup();
     await svc.lookupPredmeti(email, "8500", "1");
+    // Isti kanon kao pre seobe, 3.0 imenima: status + „nije zaključen".
     expect(captured.itemsSql).toContain("U TOKU");
-    expect(captured.itemsSql).toContain("datum_zakljucenja IS NULL");
+    expect(captured.itemsSql).toContain("closed_at IS NULL");
+  });
+
+  it("lookupPredmeti: čita 3.0 projects/customers, NE sy15 bigtehn keš", async () => {
+    const { svc, captured, withUserRls } = makeLookup([
+      { id: 10493, customer_id: 42 },
+    ]);
+    await svc.lookupPredmeti(email, "10020");
+    expect(captured.itemsSql).toContain("FROM projects");
+    expect(captured.custSql).toContain("FROM customers");
+    expect(captured.itemsSql).not.toContain("bigtehn_items_cache");
+    expect(captured.custSql).not.toContain("bigtehn_customers_cache");
+    // sy15 se za matične podatke više NE dodiruje.
+    expect(withUserRls).not.toHaveBeenCalled();
+  });
+
+  it("lookupPredmeti: mapira 3.0 kolone nazad na FE ugovor (PredmetOption)", async () => {
+    const { svc, captured } = makeLookup([{ id: 10493, customer_id: 42 }]);
+    await svc.lookupPredmeti(email);
+    const sql = captured.itemsSql ?? "";
+    // FE (frontend/src/api/plan-montaze.ts) očekuje stara imena — aliasi ih drže.
+    for (const [src, alias] of [
+      ["project_number", "broj_predmeta"],
+      ["project_name", "naziv_predmeta"],
+      ["description", "opis"],
+      ["work_unit_code", "department_code"],
+      ["contract_number", "broj_ugovora"],
+      ["order_number", "broj_narudzbenice"],
+      ["deadline", "rok_zavrsetka"],
+      ["closed_at", "datum_zakljucenja"],
+      // `created_at` = BigBit `DatumIVreme` = izvor starog `modified_at` (izmereno).
+      ["created_at", "modified_at"],
+    ]) {
+      expect(sql).toMatch(
+        new RegExp(`${src}\\s+AS\\s+${alias}`.replace(/\s\+/g, "\\s+")),
+      );
+    }
+  });
+
+  it("lookupPredmeti: sort po created_at DESC NULLS LAST + id DESC tie-breaker", async () => {
+    // Stari keš je imao bulk-pečat na milisekundu → `LIMIT 50` je bio nasumičan;
+    // `id DESC` čini poredak determinističkim.
+    const { svc, captured } = makeLookup();
+    await svc.lookupPredmeti(email);
+    expect(captured.itemsSql).toContain("created_at DESC NULLS LAST");
+    expect(captured.itemsSql).toContain("id DESC");
+  });
+
+  it("lookupPredmeti: pretraga ide po 3.0 kolonama (broj/naziv/ugovor/narudžbenica)", async () => {
+    const { svc, captured } = makeLookup();
+    await svc.lookupPredmeti(email, "0260");
+    const sql = captured.itemsSql ?? "";
+    for (const col of [
+      "project_number",
+      "project_name",
+      "contract_number",
+      "order_number",
+    ]) {
+      expect(sql).toContain(`${col} ILIKE`);
+    }
+  });
+
+  it("lookupPredmeti: customer_name se puni iz 3.0 customers (name, ne short_name)", async () => {
+    const { svc } = makeLookup([
+      { id: 10493, customer_id: 42 },
+      { id: 10492, customer_id: null },
+    ]);
+    const res = await svc.lookupPredmeti(email);
+    expect(res.data[0].customer_name).toBe("Klijent doo");
+    expect(res.data[1].customer_name).toBeNull(); // bez komitenta → null, ne pad
   });
 
   // ── Nalaz #3 (MEDIUM paritet) ──
   it("aiGenerate/enrichPredmet: NE filtrira zatvorene → popuni predmet_item_id/naziv/klijent", async () => {
     let itemsSql = "";
-    const queryRaw = jest.fn(async (sql: unknown) => {
+    // Model i dalje ide iz sy15 (`montaza_ai_settings`); predmet/komitent iz 3.0.
+    const sy15QueryRaw = jest.fn(async () => [{ model: null }]); // → default model
+    const withUserRls = jest.fn(
+      async (_e: string, fn: (t: unknown) => Promise<unknown>) =>
+        fn({ $queryRaw: sy15QueryRaw }),
+    );
+    const appQueryRaw = jest.fn(async (sql: unknown) => {
       const t = sqlText(sql);
-      if (t.includes("montaza_ai_settings")) return [{ model: null }]; // → default model
-      if (t.includes("bigtehn_items_cache")) {
+      if (t.includes("FROM projects")) {
         itemsSql = t;
         return [
           {
@@ -235,14 +330,10 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
           },
         ];
       }
-      if (t.includes("bigtehn_customers_cache"))
+      if (t.includes("FROM customers"))
         return [{ name: "Klijent doo", short_name: "KL" }];
       return [];
     });
-    const withUserRls = jest.fn(
-      async (_e: string, fn: (t: unknown) => Promise<unknown>) =>
-        fn({ $queryRaw: queryRaw }),
-    );
     const extractWithTool = jest.fn(async () => ({
       toolInput: {
         predmet: "8500/1",
@@ -259,12 +350,14 @@ describe("PlanMontazeService — R2 review nalazi (IDOR + paritet)", () => {
       {} as Sy15StorageService,
       ai,
       policyMock(),
+      prismaMock(appQueryRaw),
     );
 
     const res = await svc.aiGenerate(email, {
       tekst: "bio na servisu za 8500/1",
     });
-    expect(itemsSql).not.toContain("datum_zakljucenja IS NULL"); // ORDER BY sme, filter NE
+    expect(itemsSql).not.toContain("closed_at IS NULL"); // ORDER BY sme, filter NE
+    expect(itemsSql).not.toContain("bigtehn_items_cache"); // izvor je 3.0
     expect(res.data.predmet_item_id).toBe(8500);
     expect(res.data.naziv_projekta).toBe("Zatvoren projekat");
     expect(res.data.klijent).toBe("KL");
