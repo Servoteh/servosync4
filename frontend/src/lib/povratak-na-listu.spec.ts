@@ -49,8 +49,40 @@ const ZAHTEV_NOVI = path.join(KOREN, 'app', 'zahtevi', 'novi', 'page.tsx');
 const ZAHTEVI_NAGRADE = path.join(KOREN, 'app', 'zahtevi', '_components', 'nagrade-tab.tsx');
 const ZAHTEVI_ODLUKE = path.join(KOREN, 'app', 'zahtevi', '_components', 'odluke-tab.tsx');
 const ZAHTEVI_STANJE = path.join(KOREN, 'app', 'zahtevi', '_lib', 'list-state.ts');
+const ROBNO_API = path.join(KOREN, 'api', 'robno.ts');
+const INVENTORY_API = path.join(KOREN, 'api', 'inventory.ts');
+
+/**
+ * Servis popisa ČITAN IZ BACKENDA (isti obrazac kao `notifications-nav.spec.ts`): id-evi
+ * dokumenata razlike su ugovor dva sloja, pa prepisan spisak ovde ne bi hvatao baš ono
+ * zbog čega postoji — da server prestane da ih vraća, a ekran ostane bez dugmadi.
+ */
+const BE_POPIS = path.resolve(
+  import.meta.dirname,
+  '..',
+  '..',
+  '..',
+  'backend',
+  'src',
+  'modules',
+  'robno',
+  'inventory.service.ts',
+);
 
 const izvor = (f: string) => fs.readFileSync(f, 'utf8');
+
+/**
+ * Isečak izvora od jednog do drugog obeležja — provera „ova funkcija radi X" ne sme da
+ * prođe zato što X postoji NEGDE u fajlu (npr. `visakDocId` u `finalize` ne dokazuje da
+ * ga vraća i detalj popisa).
+ */
+function odsecak(src: string, od: RegExp, doKraja: RegExp): string {
+  const i = src.search(od);
+  assert.ok(i >= 0, `odsečak nije nađen (${od}) — test je zastareo`);
+  const ostatak = src.slice(i);
+  const j = ostatak.slice(1).search(doKraja);
+  return j < 0 ? ostatak : ostatak.slice(0, j + 1);
+}
 
 /**
  * Provera nad izvorom se NE piše kroz `assert.match`: kad padne, on u poruku ispiše ceo
@@ -313,6 +345,44 @@ describe('popis pamti izabrani popis i mesto u listi', () => {
 });
 
 /**
+ * 🔴 BRANA `enabled: resolved` NA LISTI ROBNIH DOKUMENATA.
+ *
+ * Bez nje prvi render (dok je `resolved` još `false`) gađa PODRAZUMEVANI ključ upita
+ * `{page:1, kind:'', …}`. Taj ključ po pravilu IMA podatke u kešu — korisnik je u modul
+ * ušao na golu listu pa tek onda filtrirao — pa je `loading` netačno `false` i tabela
+ * ispaint-uje 50 redova NEFILTRIRANE strane 1 pre nego što je drugi render zameni
+ * tačnima (efekat ide posle paint-a). To je bljesak koji je vlasnik prijavio kao
+ * „izbacilo me na početnu stranu"; kad keša nema, isti render umesto bljeska pošalje
+ * jedan uzaludan zahtev na SVAKI povratak sa detalja.
+ */
+describe('lista robnih dokumenata čeka filtere iz adrese', () => {
+  test('🔴 `useStockDocuments` UOPŠTE ima gejt (kao `useKomitenti`/`useZahtevi`/`useArtikliSkrol`)', () => {
+    // Kraj odsečka je i `/**` sledećeg hooka, ne samo `export`: dokumentacija SUSEDNOG
+    // hooka (`useStockDocument`) pominje `enabled`, pa bi širi odsečak lažno prolazio.
+    const hook = odsecak(izvor(ROBNO_API), /export function useStockDocuments\(/, /\n(\/\*\*|export )/);
+    sadrzi(
+      hook,
+      /enabled/,
+      'useStockDocuments nema opciju `enabled` — ekran nema čime da zaustavi nefiltriran upit',
+    );
+  });
+
+  test('🔴 ekran drži upit isključenim dok ne pročita adresu, i tabela to kaže', () => {
+    const src = izvor(ROBNO);
+    sadrzi(
+      src,
+      /enabled:\s*resolved/,
+      'lista robnih dokumenata šalje nefiltriran upit pre nego što pročita adresu',
+    );
+    sadrzi(
+      src,
+      /loading=\{!resolved \|\| list\.isLoading\}/,
+      'uz isključen upit `isLoading` je netačno `false` — tabela na tren piše „Nema robnih dokumenata"',
+    );
+  });
+});
+
+/**
  * KOMITENT ima ulaz koji NIJE radna lista: kartica „Dupli PIB kod komitenata" u
  * Podešavanjima (`/podesavanja?tab=integracije`). Za nju ne postoji `listState:` zapis,
  * pa bi je `listHref` svukao na podrazumevani tab „Korisnici" — administrator koji čisti
@@ -381,6 +451,18 @@ describe('lista komitenata pamti pretragu i stranu', () => {
     const src = izvor(KOMITENTI);
     sadrzi(src, /trazi:\s*''/, 'parametar pretrage nije `trazi`');
     sadrzi(src, /strana:\s*'1'/, 'parametar strane nije `strana`');
+  });
+
+  test('🔴 pamti i MESTO u listi, ne samo stranu', () => {
+    // Tačna strana bez skrola je pola posla: 50 redova je oko 1.750 px, pa je referent
+    // koji je sa strane 4 otvorio 40. red posle „Nazad" stajao na vrhu te strane i
+    // ponovo skrolovao. Isti defekt je na `/robno` zaslužio sopstveni komentar.
+    const src = izvor(KOMITENTI);
+    sadrzi(src, /useZapamcenaPozicijaListe/, 'lista komitenata ne pamti mesto u listi');
+    sadrzi(src, /kljuc:\s*'\/komitenti'/, 'mesto se pamti pod tuđim ključem');
+    // Skrol-okvir je STRANA (`flex-1 … overflow-auto`), a ne `DataTable` — tabela nema
+    // `maxHeight`, pa `scrollRef` ovde ne bi imao šta da uhvati.
+    sadrzi(src, /ref=\{okvirRef\}/, 'skrol-okvir strane nije predat hooku — nema šta da se vrati');
   });
 });
 
@@ -589,4 +671,101 @@ describe('pregled artikala pamti mesto u listi', () => {
     sadrzi(src, /gcTime:\s*30\s*\*\s*60_000/, 'keš ističe za 5 min — kraće od jednog pogleda u karticu');
     sadrzi(src, /refetchOnMount:\s*false/, 'povratak ponovo dovlači SVE učitane strane redom');
   });
+});
+
+// ─────────────────────── C. ono ZBOG ČEGA se korisnik vraća mora da dočeka povratak
+
+/**
+ * 🔴 POPIS: dugmad ka generisanim dokumentima razlike.
+ *
+ * Vraćanje na mesto u popisu je rešeno, ali je samo mesto bilo prazno: id-evi kreiranih
+ * VISAK/MANJAK dokumenata živeli su u `useState` panela, pa je povratak sa jednog od njih
+ * brisao dugme za DRUGI. Popis koji je napravio i višak i manjak ostavljao je magacionera
+ * bez ijednog puta do drugog dokumenta — a to je jedini razlog zbog kog se i vraća.
+ *
+ * Izvor istine je BAZA, ne pregledač: veza `stock_documents.inventory_count_id` već postoji
+ * (upisuje je `finalize`), pa detalj popisa samo mora da je pročita. `sessionStorage` bi bio
+ * drugi zapis iste činjenice — i lagao bi čim se popis otvori na drugoj mašini.
+ */
+describe('popis: dokumenti razlike preživljavaju povratak', () => {
+  test('🔴 DETALJ popisa (ne samo `finalize`) vraća id-eve dokumenata razlike', () => {
+    const get = odsecak(izvor(BE_POPIS), /async get\(/, /\n {2}async \w+\(/);
+    sadrzi(
+      get,
+      /visakDocId/,
+      'detalj popisa sa servera ne nosi id-eve kreiranih dokumenata (nosi ih samo odgovor `finalize`, koji se ne pamti)',
+    );
+    sadrzi(get, /manjakDocId/, 'detalj popisa vraća samo jedan od dva dokumenta razlike');
+    sadrzi(
+      get,
+      /inventoryCountId:\s*id/,
+      'id-evi se ne izvode iz veze `stock_documents.inventory_count_id` — negde su prepisani',
+    );
+  });
+
+  test('FE tip detalja popisa prati backend ugovor', () => {
+    const tip = odsecak(izvor(INVENTORY_API), /interface InventoryCountDetail/, /\n}/);
+    sadrzi(tip, /visakDocId/, 'InventoryCountDetail ne deklariše `visakDocId`');
+    sadrzi(tip, /manjakDocId/, 'InventoryCountDetail ne deklariše `manjakDocId`');
+  });
+
+  test('🔴 panel čita id-eve SA SERVERA, a odgovor `finalize` mu je samo trenutna dopuna', () => {
+    const src = izvor(POPIS_DETALJ);
+    sadrzi(
+      src,
+      /count\?\.visakDocId/,
+      'panel dugmad izvodi isključivo iz `result` (`useState`) — povratak sa jednog dokumenta briše dugme za drugi',
+    );
+    sadrzi(src, /count\?\.manjakDocId/, 'panel ne čita id manjka sa servera');
+  });
+});
+
+// ───────────────── D. NAJVIŠE JEDAN AUTOMATSKI ZAHTEV PRI MONTIRANJU (zamka paketa)
+
+/**
+ * Restauracija mesta ne sme da postane pogon za dovlačenje: kad je zapamćeno više strana
+ * nego što keš drži, `odlukaOPoziciji` vraća `odustani` (mereno gore), a EKRAN mora da
+ * prikaže prvu stranu i rečenicom kaže koliko je ranije bilo učitano. Ovde se meri druga
+ * polovina te tvrdnje — da nijedan ekran iz paketa ne dovlači strane sam od sebe.
+ */
+describe('nijedan ekran ne vrti dovlačenje pri montiranju', () => {
+  for (const [ime, fajl] of [
+    ['pregled artikala', ARTIKLI],
+    ['lager', LAGER],
+  ] as const) {
+    test(`${ime}: sledeća strana se dovlači SAMO na klik, i gubitak se kaže rečenicom`, () => {
+      const src = izvor(fajl);
+      const mesta = [...src.matchAll(/^.*fetchNextPage.*$/gm)].map((m) => m[0]);
+      assert.ok(mesta.length >= 1, `${ime} više ne dovlači strane — test je zastareo`);
+      for (const m of mesta) {
+        assert.ok(
+          /onClick=/.test(m),
+          `strana se dovlači bez klika korisnika (efekat/posmatrač = plotun zahteva): ${m.trim()}`,
+        );
+      }
+      sadrzi(
+        src,
+        /izgubljenoRedova\s*>/,
+        `${ime} ne kaže koliko je ranije bilo učitano — korisnik ne zna da mu fali deo spiska`,
+      );
+    });
+  }
+
+  for (const [ime, fajl] of [
+    ['robni dokumenti', ROBNO],
+    ['popis', POPIS],
+    ['komitenti', KOMITENTI],
+    ['zahtevi', ZAHTEVI],
+  ] as const) {
+    test(`${ime}: serverska paginacija prijavljuje TAČNO jednu stranu u kešu`, () => {
+      // Kod serverske paginacije je strana u URL-u, pa keš uvek drži tačno jednu stranu.
+      // Prijaviti više bi značilo da grana „odustani" laže; prijaviti rastući broj bi
+      // uvelo dovlačenje kog na ovim ekranima nema.
+      sadrzi(
+        izvor(fajl),
+        /straneUKesu:[^,\n]*\?\s*1\s*:\s*0/,
+        `${ime} ne prijavljuje broj strana kao „ima podataka → 1, nema → 0"`,
+      );
+    });
+  }
 });

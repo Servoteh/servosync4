@@ -153,6 +153,29 @@ export function CountDetail({ countId }: { countId: number }) {
   const isPosted = status === POPIS_STATUS.POSTED;
   const editable = status === POPIS_STATUS.COUNTING && canWrite;
 
+  /**
+   * DOKUMENTI RAZLIKE — izvor je SERVER, `result` je samo trenutna dopuna.
+   *
+   * `result` je odgovor upravo izvrsenog zakljucivanja i zivi u `useState`: povratak sa
+   * dokumenta viska remontira stranu i brise ga, pa je nestajalo dugme za MANJAK — popis
+   * koji je dao i visak i manjak ostavljao je magacionera bez ijednog puta do drugog
+   * dokumenta, a upravo zbog tog drugog se i vraca. Detalj popisa sada nosi oba id-a
+   * (`stock_documents.inventory_count_id`), pa dugmad prezivljavaju i povratak, i
+   * osvezavanje, i otvaranje popisa na drugoj masini.
+   *
+   * `result` ostaje prvi u redu samo zato sto invalidacija detalja stigne kadar-dva
+   * kasnije — bez njega bi dugmad na tren treperila odmah po zakljucivanju. Vazi SAMO za
+   * svoj popis: efekat koji ga cisti pri promeni `countId` radi tek posle prvog rendera,
+   * pa bi bez ove provere klik na drugi popis na tren nudio dokument prethodnog.
+   */
+  const svez = result?.countId === countId ? result : null;
+  const visakDocId = svez?.visakDocId ?? count?.visakDocId ?? null;
+  const manjakDocId = svez?.manjakDocId ?? count?.manjakDocId ?? null;
+  // Odmah po zakljucivanju traka se prikazuje i kad razlika nije bilo (poruka „Bez viska /
+  // Bez manjka" je potvrda da je radnja prosla); kasnije samo ako dokument stvarno postoji.
+  const prikaziDokumente =
+    svez != null || (isPosted && (visakDocId != null || manjakDocId != null));
+
   const itemColumns: Column<InventoryCountItem>[] = [
     {
       key: 'item',
@@ -333,26 +356,26 @@ export function CountDetail({ countId }: { countId: number }) {
         </div>
       )}
 
-      {result && (
+      {prikaziDokumente && (
         <div className="space-y-2 rounded-panel border border-status-success/40 bg-status-success-bg px-4 py-3 text-sm text-status-success">
           <div className="font-medium">Popis je zakljucen. Kreirani robni dokumenti:</div>
           <div className="flex flex-wrap gap-2">
-            {result.visakDocId != null ? (
+            {visakDocId != null ? (
               <Button
                 variant="secondary"
-                onClick={() => router.push(`/robno/detalj?id=${result.visakDocId}&izvor=popis`)}
+                onClick={() => router.push(`/robno/detalj?id=${visakDocId}&izvor=popis`)}
               >
-                Visak (dokument #{result.visakDocId})
+                Visak (dokument #{visakDocId})
               </Button>
             ) : (
               <span className="text-ink-secondary">Bez viska</span>
             )}
-            {result.manjakDocId != null ? (
+            {manjakDocId != null ? (
               <Button
                 variant="secondary"
-                onClick={() => router.push(`/robno/detalj?id=${result.manjakDocId}&izvor=popis`)}
+                onClick={() => router.push(`/robno/detalj?id=${manjakDocId}&izvor=popis`)}
               >
-                Manjak (dokument #{result.manjakDocId})
+                Manjak (dokument #{manjakDocId})
               </Button>
             ) : (
               <span className="text-ink-secondary">Bez manjka</span>

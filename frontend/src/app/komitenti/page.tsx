@@ -12,7 +12,7 @@ import { SearchBox } from '@/components/ui-kit/search-box';
 import { Button } from '@/components/ui-kit/button';
 import { Pager } from '@/components/ui-kit/pager';
 import { formatNumber } from '@/lib/format';
-import { useListQueryState } from '@/lib/use-id-param';
+import { useListQueryState, useZapamcenaPozicijaListe } from '@/lib/use-id-param';
 import { useKomitenti, codeRefLabel, salespersonLabel, type CustomerRow } from '@/api/masters';
 
 /**
@@ -121,6 +121,33 @@ export default function KomitentiPage() {
     { enabled: resolved },
   );
 
+  // Čita se PRE kapije prijave: `useZapamcenaPozicijaListe` je hook i ne sme iza `return`.
+  const rows = list.data?.data ?? [];
+  const meta = list.data?.meta.pagination;
+
+  /**
+   * MESTO U LISTI. Strana i pretraga su u URL-u, ali skrol nije: `PAGE_SIZE` je 50, što je
+   * oko 1.750 px, pa je referent koji je sa strane 4 otvorio 40. red posle „Nazad" stajao
+   * na vrhu te strane i ponovo skrolovao ceo put. Isti defekt kao na `/robno`.
+   *
+   * `potpis` uključuje i `strana`, pa promena strane uredno vraća skrol na vrh (novi
+   * sadržaj — vrh je tačno mesto). `straneUKesu: 1` je pošteno za serverski paginiranu
+   * listu: grana „odustani" se tada nikad ne pali, pa restauracija ne može da okine
+   * nijedan dodatni zahtev. `resolved` je uslov jer se prvi render dešava sa
+   * PODRAZUMEVANIM filterima — bez njega bi se skrol vraćao nad tuđim redovima.
+   *
+   * Skrol-okvir je STRANA (`flex-1 … overflow-auto`), a ne `DataTable`: tabela ovde nema
+   * `maxHeight`, pa `scrollRef` ne bi imao šta da uhvati — hook traži samo element sa
+   * `scrollTop`, pa `okvirRef` ide na `div`.
+   */
+  const { okvirRef } = useZapamcenaPozicijaListe({
+    kljuc: '/komitenti',
+    potpis: JSON.stringify(values),
+    spremno: resolved && rows.length > 0,
+    straneUKesu: list.data ? 1 : 0,
+    redova: rows.length,
+  });
+
   if (isLoading || !user) {
     return (
       <main className="grid flex-1 place-items-center text-sm text-ink-secondary">
@@ -128,9 +155,6 @@ export default function KomitentiPage() {
       </main>
     );
   }
-
-  const rows = list.data?.data ?? [];
-  const meta = list.data?.meta.pagination;
 
   return (
     <AppShell>
@@ -158,7 +182,7 @@ export default function KomitentiPage() {
         }
       />
 
-      <div className="flex-1 space-y-4 overflow-auto p-6">
+      <div ref={okvirRef} className="flex-1 space-y-4 overflow-auto p-6">
         <p className="text-sm text-ink-disabled">
           Podaci iz BigBit-a — unos i izmena su zaključani odlukom od 26.07.2026 (ekran unosa
           objašnjava šta uraditi)

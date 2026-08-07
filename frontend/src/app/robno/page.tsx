@@ -178,13 +178,26 @@ export default function RobnoPage() {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  const list = useStockDocuments({
-    page,
-    pageSize: PAGE_SIZE,
-    kind,
-    status,
-    q: search,
-  });
+  /**
+   * 🔴 `enabled: resolved` — upit čeka da se filteri pročitaju iz adrese.
+   *
+   * Bez gejta prvi render (dok je `resolved` još `false`) gađa podrazumevani ključ
+   * `{page:1, kind:'', …}`, koji po pravilu VEĆ ima podatke u kešu — korisnik u modul uđe
+   * na golu listu pa tek onda filtrira. Zato `loading` bude `false` i ekran ispaint-uje
+   * 50 redova NEFILTRIRANE strane 1, pa ih drugi render zameni: povratak sa dokumenta na
+   * `vrsta=UL, strana=7` je magacioneru izgledao kao „izbacilo me na početnu stranu".
+   * Kad keša nema, ista rupa umesto bljeska šalje jedan uzaludan zahtev po povratku.
+   */
+  const list = useStockDocuments(
+    {
+      page,
+      pageSize: PAGE_SIZE,
+      kind,
+      status,
+      q: search,
+    },
+    { enabled: resolved },
+  );
   const rows = list.data?.data ?? [];
   const total = list.data?.meta.pagination.total ?? 0;
   const totalPages = list.data?.meta.pagination.totalPages ?? 1;
@@ -339,7 +352,9 @@ export default function RobnoPage() {
           rows={rows}
           rowKey={(d) => d.id}
           onRowActivate={(d) => router.push(`/robno/detalj?id=${d.id}`)}
-          loading={list.isLoading}
+          // Dok upit čeka filtere iz adrese `isLoading` je `false`, pa bi tabela na tren
+          // nacrtala „Nema robnih dokumenata".
+          loading={!resolved || list.isLoading}
           empty={
             <EmptyState
               title="Nema robnih dokumenata"

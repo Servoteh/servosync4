@@ -204,8 +204,21 @@ function buildQuery(params: Record<string, string | number | undefined>): string
  * Radna lista robnih dokumenata (filter po tipu/statusu/magacinu/godini/opsegu
  * datuma, server-side paginacija preko `page`/`pageSize`). Vraća `{ data, meta:
  * { pagination } }`. `pageSize` podrazumevano 50.
+ *
+ * `opts.enabled === false` → upit se NE šalje. Ekran ga drži isključenim dok
+ * `useListQueryState` ne pročita filtere i stranu iz adrese. Bez tog gejta prvi render
+ * gađa PODRAZUMEVANI ključ (`{page:1, kind:'', …}`), a taj ključ po pravilu već ima
+ * podatke u kešu — korisnik u modul uđe na golu listu pa tek onda filtrira. Zato
+ * `isLoading` bude netačno `false` i tabela ispaint-uje 50 redova NEFILTRIRANE strane 1
+ * pre nego što drugi render ubaci tačne (efekat ide posle paint-a): magacioner koji se
+ * sa dokumenta vraća na `vrsta=UL, strana=7` vidi bljesak tuđe liste. Kad keša nema,
+ * isti render umesto bljeska pošalje jedan uzaludan zahtev na SVAKI povratak.
+ * Isti gejt imaju `useKomitenti`, `useZahtevi` i `useArtikliSkrol`.
  */
-export function useStockDocuments(filters: RobnoFilters = {}) {
+export function useStockDocuments(
+  filters: RobnoFilters = {},
+  opts: { enabled?: boolean } = {},
+) {
   const pageSize = filters.pageSize && filters.pageSize > 0 ? filters.pageSize : 50;
   const page = filters.page && filters.page > 0 ? filters.page : 1;
   const query = buildQuery({
@@ -222,6 +235,7 @@ export function useStockDocuments(filters: RobnoFilters = {}) {
   });
   return useQuery({
     queryKey: [...KEYS.documents, filters],
+    enabled: opts.enabled ?? true,
     queryFn: () => apiFetch<Paginated<StockDocument>>(`${BASE}/documents${query}`),
   });
 }

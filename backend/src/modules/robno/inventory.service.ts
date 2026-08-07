@@ -69,11 +69,23 @@ export class InventoryService {
   }
 
   /**
-   * Detalj popisa (zaglavlje + stavke).
+   * Detalj popisa (zaglavlje + stavke + id-evi dokumenata razlike).
    *
    * Stavke nose i NAZIV/ŠIFRU/JM artikla (meki ref `items.id`, jedan upit po skupu id-jeva).
    * Bez toga je glavni tab popisa prikazivao samo `#90001` — komisija je brojala robu koju
    * ekran ne imenuje (nalaz §3.10). Tab „Razlike" je to već imao; sada su oba ista.
+   *
+   * 🔴 `visakDocId`/`manjakDocId` — id-evi VISAK/MANJAK dokumenata koje je napravilo
+   * zaključivanje. Do 07.08.2026 ih je vraćao SAMO odgovor `finalize`, a ekran ih je držao
+   * u `useState` panela: povratak sa dokumenta viška remontira stranu, stanje se izgubi i
+   * dugme za MANJAK nestane — popis koji je dao i višak i manjak ostavljao je magacionera
+   * bez ijednog puta do drugog dokumenta. Izvor istine je baza, ne pregledač: veza
+   * `stock_documents.inventory_count_id` postoji od početka (upisuje je `finalize`), pa
+   * detalj samo mora da je pročita.
+   *
+   * Uzima se NAJVEĆI id po vrsti (`orderBy: desc` + prvi pogodak): `finalize` pre svakog
+   * pokušaja obriše bezbedne dokumente prethodnog (palog) pokušaja, pa je u praksi po
+   * jedan — ali ako ih ikad bude više, važi POSLEDNJE zaključivanje, ne prvo.
    */
   async get(id: number) {
     const count = await this.prisma.inventoryCount.findUnique({
@@ -91,9 +103,18 @@ export class InventoryService {
       : [];
     const byId = new Map(meta.map((m) => [m.id, m]));
 
+    const razlikeDocs = await this.prisma.stockDocument.findMany({
+      where: { inventoryCountId: id, kind: { in: ["VISAK", "MANJAK"] } },
+      select: { id: true, kind: true },
+      orderBy: { id: "desc" },
+    });
+
     return {
       data: {
         ...count,
+        // Imena po FE ugovoru (api/inventory.ts) — ista kao u odgovoru `finalize`.
+        visakDocId: razlikeDocs.find((d) => d.kind === "VISAK")?.id ?? null,
+        manjakDocId: razlikeDocs.find((d) => d.kind === "MANJAK")?.id ?? null,
         items: count.items.map((it) => ({
           ...it,
           itemName: byId.get(it.itemId)?.name ?? null,

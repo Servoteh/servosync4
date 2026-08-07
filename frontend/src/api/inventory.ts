@@ -67,10 +67,20 @@ export interface InventoryCountItem {
   price: string;
 }
 
-/** Detalj popisa -- zaglavlje + stavke (GET /:id). */
+/**
+ * Detalj popisa -- zaglavlje + stavke + id-evi dokumenata razlike (GET /:id).
+ *
+ * `visakDocId`/`manjakDocId` su isti podatak koji vraca i `finalize`, samo iz BAZE
+ * (`stock_documents.inventory_count_id`) umesto iz odgovora jedne mutacije. Bez njih je
+ * panel drzao id-eve u `useState`, pa je povratak sa dokumenta viska (remount strane)
+ * brisao dugme za manjak -- popis sa oba dokumenta ostavljao je korisnika bez puta do
+ * drugog. `null` = ta vrsta razlike nije ni postojala (ili popis jos nije zakljucen).
+ */
 export interface InventoryCountDetail extends InventoryCountRow {
   note?: string | null;
   items: InventoryCountItem[];
+  visakDocId?: number | null;
+  manjakDocId?: number | null;
 }
 
 /**
@@ -117,8 +127,15 @@ export interface DifferencesResult {
   };
 }
 
-/** Rezultat zakljucivanja -- id-evi kreiranih robnih dokumenata (POST /:id/finalize). */
+/**
+ * Rezultat zakljucivanja -- id-evi kreiranih robnih dokumenata (POST /:id/finalize).
+ *
+ * `countId` je deo backend odgovora od pocetka, a FE ga deklarise zato sto panel drzi
+ * ovaj odgovor u `useState`: bez provere kome pripada, prvi render posle klika na DRUGI
+ * popis jos nosi stari `result` i ponudi dugme ka dokumentu TUDJEG popisa.
+ */
 export interface FinalizeResult {
+  countId?: number;
   visakDocId?: number | null;
   manjakDocId?: number | null;
 }
