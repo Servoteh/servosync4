@@ -3318,6 +3318,58 @@ model PlanProizvodnjeOverlay {
   @@map("plan_proizvodnje_overlays")
 }
 
+/// App-owned (2.0, zahtev 078/26 — odluka Nenad 07.08.2026). TERMIN pozicije na gantu.
+///
+/// Razdvajanje od `PlanProizvodnjeOverlay`: overlay ostaje JEDAN red po operaciji i nosi
+/// STANJE (lokalni status, ručni redosled, cam_ready, kooperacija, arhiva); ovde je TERMIN,
+/// i njih po operaciji sme biti VIŠE — zahtev je da se serijski komadi planiraju u više
+/// navrata („5 pa 3 pa 2 od ukupno 10"), eventualno na različitim mašinama.
+///
+/// 🔴 FAZA A: `@@unique([overlayId])` DRŽI 1:1 i time garantuje da se nijedan postojeći
+/// `LEFT JOIN` nad overlay-om ne može pomnožiti dok kod za N termina ne postoji. Posebno
+/// 080/26 u `plan-proizvodnje-read.service.ts` spaja `poredak` po `line_id` — bezbedno samo
+/// dok po `line_id` postoji tačno jedan red. Skidanje ovog `@@unique` je početak Faze B i
+/// TAČKA BEZ POVRATKA; ide zasebnom migracijom.
+///
+/// 🔴 `predecessor*` NAMERNO OSTAJE na overlay-u i NE seli se ovamo: rekurzija `collectChain`
+/// prolazi KROZ čvor bez termina (v. komentar u `plan-proizvodnje.service.ts`), a takav čvor
+/// ovde nema red — lanac bi na njemu tiho pukao.
+///
+/// Meki ref → `plan_proizvodnje_overlays.id` (BEZ DB FK). Kućni obrazac modula, ali i svesna
+/// odluka: nijedan kod ne briše overlay redove, pa bi jedini brisač bio čovek na psql-u —
+/// `ON DELETE CASCADE` bi mu tiho odneo i plan, a ovako termini ostaju kao zapis iz kog se
+/// plan rekonstruiše.
+model PlanProizvodnjeTermin {
+  id                     Int       @id(map: "pk_plan_proizvodnje_termini") @default(autoincrement()) @map("id")
+  /// Meki ref → plan_proizvodnje_overlays.id.
+  overlayId              Int       @map("overlay_id")
+  /// Denormalizovano iz overlay-a — čitanja se spajaju po ovom paru, bez skoka kroz overlay.
+  workOrderId            Int       @map("work_order_id")
+  lineId                 Int       @map("line_id")
+  /// Tip je NAMERNO isti kao na overlay-u (Timestamptz): razilaženje bi tiho pomerilo 2 sata.
+  plannedStartAt         DateTime  @map("planned_start_at") @db.Timestamptz(6)
+  plannedEndAt           DateTime? @map("planned_end_at") @db.Timestamptz(6)
+  plannedDurationMinutes Int?      @map("planned_duration_minutes")
+  /// Količina komada u OVOM terminu. NULL-dozvoljena da orfan overlay ne obori migraciju;
+  /// u Fazi A je uvek puna količina operacije (jedan termin po operaciji).
+  kolicina               Int?      @map("kolicina")
+  /// Sopstvena mašina termina. NULL = „nasledi sa overlay-a"; NIKAD prazan string.
+  assignedMachineCode    String?   @map("assigned_machine_code") @db.VarChar(50)
+  plannedDone            Boolean?  @map("planned_done")
+  plannedDoneAt          DateTime? @map("planned_done_at") @db.Timestamptz(6)
+  plannedDoneBy          String?   @map("planned_done_by")
+  createdBy              String?   @map("created_by")
+  updatedBy              String?   @map("updated_by")
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  /// 🔴 FAZA A ONLY — skida se na početku Faze B (v. doc iznad).
+  @@unique([overlayId], map: "uq_plan_proizvodnje_termini_overlay_faza_a")
+  @@index([plannedStartAt], map: "idx_plan_proizvodnje_termini_start")
+  @@index([workOrderId, lineId], map: "idx_plan_proizvodnje_termini_wo_line")
+  @@map("plan_proizvodnje_termini")
+}
+
 /// App-owned (2.0, zahtev 046/26 F0). RUČNI ŠIFRARNIK hala: mašina (`operations.work_center_code`)
 /// → hala. Odluka vlasnika: mapa hala↔mašina se NE izvodi iz šifre/odeljenja nego se kuca ručno.
 /// Koristi ga gant (grupisanje redova Hala → mašina); mašine bez reda ovde idu u grupu „Bez hale".

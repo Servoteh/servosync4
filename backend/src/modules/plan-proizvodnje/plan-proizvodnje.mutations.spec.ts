@@ -44,7 +44,17 @@ function makeIdem(tx: unknown) {
  * @param queryReturns FIFO red odgovora za `tx.$queryRaw` (svaki poziv uzima sledeći).
  *   reassignOne redosled: [0] machine lookup, [1] target-exists (samo ako target!=null).
  */
-function makeService(queryReturns: QReturn[] = []) {
+/**
+ * @param zatecen ZATEČENO stanje overlay reda pre upisa (078/26). Prisma `upsert` vraća
+ *   CEO red iz baze, ne samo poslata polja — a merge-patch (resize bara, Shift+←/→)
+ *   po definiciji radi nad redom koji već ima termin. Bez ovoga mock ne ume da razlikuje
+ *   „nikad nije bio na gantu" od „jeste, menja mu se samo kraj", pa se dvostruki upis
+ *   ne može ni testirati.
+ */
+function makeService(
+  queryReturns: QReturn[] = [],
+  zatecen: { plannedStartAt?: Date | null } = {},
+) {
   const captured: {
     overlay?: { where: unknown; create: Record<string, unknown>; update: Record<string, unknown> };
     /**
@@ -58,12 +68,38 @@ function makeService(queryReturns: QReturn[] = []) {
     execs: { values: unknown[] }[];
     /** Tekst SVAKOG izvršenog `$queryRaw` iskaza, redom (075/26 kanon brave). */
     queries: string[];
-  } = { execs: [], overlays: [], queries: [] };
+    /** 078/26: svaki upis u tabelu termina (dvostruki upis Faze A). */
+    termini: { where: unknown; create: Record<string, unknown>; update: Record<string, unknown> }[];
+    /** 078/26: brisanja termina (pozicija skinuta sa ganta). */
+    terminBrisanja: { where: { overlayId: number } }[];
+  } = { execs: [], overlays: [], queries: [], termini: [], terminBrisanja: [] };
   let qi = 0;
+  // 078/26 FAZA A: kaskada posle UPDATE-a nad overlay-ima pušta još jedan iskaz koji
+  // isti pomak preslikava u `plan_proizvodnje_termini`, i poredi brojeve. Da se ne dira
+  // FIFO red u svakom postojećem testu, mock taj iskaz PREPOZNAJE po tekstu i vraća
+  // tačno onoliko redova koliko je overlay UPDATE vratio — što je i stvarno ponašanje
+  // (1:1 je u Fazi A garantovano jedinstvenim indeksom). Test koji hoće da proveri
+  // branu namerno vraća drugi broj kroz `queryReturns`.
+  let poslednjiOverlayUpdate = 0;
   const tx = {
     $queryRaw: jest.fn(async (sql: unknown) => {
-      captured.queries.push(sqlText(sql));
-      return queryReturns[qi++] ?? [];
+      const tekst = sqlText(sql);
+      captured.queries.push(tekst);
+      if (tekst.includes("INSERT INTO plan_proizvodnje_termini")) {
+        const zadat = queryReturns[qi];
+        if (Array.isArray(zadat)) {
+          qi++;
+          return zadat;
+        }
+        return Array.from({ length: poslednjiOverlayUpdate }, (_, i) => ({
+          id: String(i + 1),
+        }));
+      }
+      const out = queryReturns[qi++] ?? [];
+      if (tekst.includes("UPDATE plan_proizvodnje_overlays o") && Array.isArray(out)) {
+        poslednjiOverlayUpdate = out.length;
+      }
+      return out;
     }),
     $executeRaw: jest.fn(async (sql: { values: unknown[] }) => {
       captured.exec = sql;
@@ -74,7 +110,17 @@ function makeService(queryReturns: QReturn[] = []) {
       upsert: jest.fn(async (a: typeof captured.overlay) => {
         captured.overlay = a;
         captured.overlays.push(a!);
-        return { id: 1, ...a!.create };
+        // Prisma vraća CEO red: zatečena polja pa preko njih ono što je upisano.
+        return {
+          plannedStartAt: zatecen.plannedStartAt ?? null,
+          plannedEndAt: null,
+          plannedDurationMinutes: null,
+          plannedDone: null,
+          plannedDoneAt: null,
+          plannedDoneBy: null,
+          id: 1,
+          ...a!.create,
+        };
       }),
     },
     planProizvodnjeUrgency: {
@@ -82,6 +128,22 @@ function makeService(queryReturns: QReturn[] = []) {
         captured.urgency = a;
         return { workOrderId: 9400, isUrgent: false };
       }),
+    },
+    // 078/26 FAZA A — dvostruki upis termina. Hvata se SVAKI poziv, jer se baš na
+    // ovome meri da preslikač uzima ZAVRŠNO stanje overlay reda, a ne patch.
+    planProizvodnjeTermin: {
+      upsert: jest.fn(async (a: (typeof captured.termini)[number]) => {
+        captured.termini.push(a);
+        return { id: 1, ...a.create };
+      }),
+      deleteMany: jest.fn(async (a: { where: { overlayId: number } }) => {
+        captured.terminBrisanja.push(a);
+        return { count: 1 };
+      }),
+    },
+    // Količina termina se čita odavde (pun plan operacije u Fazi A).
+    workOrder: {
+      findUnique: jest.fn(async () => ({ pieceCount: 7 })),
     },
   };
   const prisma = {
@@ -1373,5 +1435,94 @@ describe("075/26 — anti-ciklus na vezi i kanon brave u reorder-u", () => {
     // 🔴 Sortira se REDOSLED UPISA, ne značenje: redni broj ostaje vezan za PRIKAZNI
     // položaj stavke (inače bi sortiranje tiho prevrnulo ručni redosled smene).
     expect(captured.overlays.map((o) => o.create.shiftSortOrder)).toEqual([3, 2, 1]);
+  });
+});
+
+/**
+ * 078/26 FAZA A — dvostruki upis u `plan_proizvodnje_termini`.
+ *
+ * Ova faza NE menja nijedan ekran: čitanje i dalje ide sa overlay-a, a tabela termina
+ * se samo puni. Zato je jedino što ovde ima smisla zaključati baš ono što će biti mera
+ * pred prelazak čitanja: da se dve tabele NE MOGU razići.
+ */
+describe("078/26 Faza A — dvostruki upis termina", () => {
+  it("🔴 preslikava ZAVRŠNO stanje overlay reda, ne patch (merge-patch zamka)", async () => {
+    // FE resize bara i Shift+←/→ šalju SAMO `plannedEndAt`. Da se preslikavao patch,
+    // termin bi dobio `plannedStartAt = undefined/NULL` iako ga korisnik nije dirao,
+    // a overlay bi zadržao staru vrednost — tiho razilaženje koje se nigde ne prijavljuje.
+    // Bar VEĆ stoji na gantu (inače se ne bi ni mogao resize-ovati) — zato zatečen start.
+    const zatecenStart = new Date("2026-08-03T05:00:00.000Z");
+    const { svc, captured } = makeService([], { plannedStartAt: zatecenStart });
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedEndAt: "2026-08-05T05:00:00.000Z",
+    });
+
+    expect(captured.termini).toHaveLength(1);
+    const t = captured.termini[0];
+    // Mock `planProizvodnjeOverlay.upsert` vraća `{ id: 1, ...create }`, pa je ovo
+    // doslovno ono što je red imao POSLE upisa.
+    expect(t.create.plannedEndAt).toBeInstanceOf(Date);
+    expect(t.update.plannedEndAt).toBeInstanceOf(Date);
+    // 🔴 SRŽ: početak koji patch NIJE nosio mora ostati zatečena vrednost, a ne NULL.
+    // Da se preslikavao patch, ovde bi stajalo undefined i termin bi se razišao sa
+    // overlay-om na prvom resize-u bara.
+    expect(t.update.plannedStartAt).toEqual(zatecenStart);
+    expect(t.create.plannedStartAt).toEqual(zatecenStart);
+  });
+
+  it("termin je LENJ — nastaje tek kad pozicija dobije termin", async () => {
+    // Dva mesta prave overlay BEZ termina (`reorderOverlays`, `bulkReassign`). Da je
+    // termin obavezan, oba bi morala u dvostruki upis i ušla bi u budžet svoje
+    // transakcije (2000 stavki / 5 s). Jedinstveni indeks dozvoljava NULA redova.
+    const { svc, captured } = makeService();
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      shiftNote: "samo beleška",
+    });
+    // Ono što je bitno: NIJEDAN termin nije nastao.
+    expect(captured.termini).toHaveLength(0);
+    // 🔴 Prati se i `deleteMany`, jer je baš ovde nađena greška: provera je bila
+    // `=== null`, pa je red koji nikad nije bio na gantu (polje odsutno, dakle
+    // `undefined`) padao u granu koja PRAVI termin — sa praznim početkom, a kolona je
+    // NOT NULL. To bi u pogonu bilo 500 na običnoj izmeni beleške. Sada je `== null`,
+    // pa takav red ide u čišćenje: bezopasno brisanje nepostojećeg reda.
+    expect(captured.terminBrisanja).toHaveLength(1);
+  });
+
+  it("skidanje sa ganta briše termin (deleteMany, ne delete — reda ne mora biti)", async () => {
+    const { svc, captured } = makeService();
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: null,
+      plannedEndAt: null,
+    });
+    expect(captured.termini).toHaveLength(0);
+    expect(captured.terminBrisanja).toHaveLength(1);
+  });
+
+  it("količina termina je PUN plan operacije (u Fazi A se ne deli)", async () => {
+    const { svc, captured } = makeService();
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: "2026-08-03T05:00:00.000Z",
+    });
+    expect(captured.termini[0].create.kolicina).toBe(7); // mock `workOrder.pieceCount`
+  });
+
+  it("izmena NE dira `kolicina` ni mašinu termina (to je Faza B, planerova odluka)", async () => {
+    const { svc, captured } = makeService();
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: "2026-08-03T05:00:00.000Z",
+    });
+    const u = captured.termini[0].update;
+    expect(Object.keys(u)).not.toContain("kolicina");
+    expect(Object.keys(u)).not.toContain("assignedMachineCode");
   });
 });

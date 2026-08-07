@@ -272,7 +272,83 @@ export class PlanProizvodnjeService {
         },
         update: { ...patch, updatedBy: email, updatedAt: now },
       });
+      await this.preslikajTerminFazaA(tx, row, email, now);
       return { data: jsonSafe(row) };
+    });
+  }
+
+  /**
+   * 078/26 FAZA A — dvostruki upis termina u `plan_proizvodnje_termini`.
+   *
+   * 🔴 Preslikava se ZAVRŠNO STANJE OVERLAY REDA, ne patch. To je jedina razlika koja
+   * ovu fazu čini bezbednom: API je merge-patch (FE resize bara i Shift+←/→ šalju SAMO
+   * `plannedEndAt`), pa bi preslikavanje patch-a upisalo NULL u polje koje korisnik nije
+   * ni dirao, dok bi overlay zadržao staru vrednost — tiho razilaženje koje se nigde ne
+   * prijavljuje. Kopiranjem celog reda razilaženje je nemoguće po konstrukciji, pa
+   * provera „razlika mora biti 0" pred prelazak čitanja ima smisla.
+   *
+   * LENJ: termin nastaje tek kad pozicija dobije `plannedStartAt`, i briše se kad ga
+   * izgubi (skidanje sa ganta). Time dva mesta koja prave overlay BEZ termina
+   * (`reorderOverlays`, `bulkReassign`) ostaju netaknuta — jedinstveni indeks dozvoljava
+   * NULA redova, pa im ne treba nikakav upis i ne ulaze u budžet svoje transakcije.
+   *
+   * U Fazi B ovaj preslikač NESTAJE — tada gant piše direktno u termine, a overlay više
+   * ne nosi `planned_*`.
+   */
+  private async preslikajTerminFazaA(
+    tx: Tx,
+    row: {
+      id: number;
+      workOrderId: number;
+      lineId: number;
+      plannedStartAt: Date | null;
+      plannedEndAt: Date | null;
+      plannedDurationMinutes: number | null;
+      plannedDone: boolean | null;
+      plannedDoneAt: Date | null;
+      plannedDoneBy: string | null;
+    },
+    email: string,
+    now: Date,
+  ): Promise<void> {
+    // `== null` NAMERNO (hvata i `undefined`), ne `=== null`. Overlay red koji nikad
+    // nije bio na gantu vraća polje kao odsutno, ne kao NULL — a `planned_start_at` u
+    // tabeli termina je NOT NULL, pa bi strogo poređenje ovde napravilo upis bez
+    // početka i srušilo zahtev na 500. Nema početka → nema termina, tačka.
+    if (row.plannedStartAt == null) {
+      // Pozicija je skinuta sa ganta (ili nikad nije bila) — termina nema. `deleteMany`
+      // (ne `delete`) jer reda ne mora biti: upis je lenj, a `delete` bi pukao na P2025.
+      await tx.planProizvodnjeTermin.deleteMany({ where: { overlayId: row.id } });
+      return;
+    }
+    // Količina se u Fazi A ne deli — jedan termin nosi pun plan operacije. Čita se
+    // ovde (a ne u `create` grani) da vrednost bude ista i kad red tek nastaje.
+    const wo = await tx.workOrder.findUnique({
+      where: { id: row.workOrderId },
+      select: { pieceCount: true },
+    });
+    const zajednicko = {
+      plannedStartAt: row.plannedStartAt,
+      plannedEndAt: row.plannedEndAt,
+      plannedDurationMinutes: row.plannedDurationMinutes,
+      plannedDone: row.plannedDone,
+      plannedDoneAt: row.plannedDoneAt,
+      plannedDoneBy: row.plannedDoneBy,
+      updatedBy: email,
+    };
+    await tx.planProizvodnjeTermin.upsert({
+      where: { overlayId: row.id },
+      create: {
+        overlayId: row.id,
+        workOrderId: row.workOrderId,
+        lineId: row.lineId,
+        kolicina: wo?.pieceCount ?? null,
+        createdBy: email,
+        ...zajednicko,
+      },
+      // `kolicina` i `assignedMachineCode` se NAMERNO ne diraju pri izmeni — u Fazi B
+      // ih postavlja planer po terminu, a ovaj put sme da menja samo vremena.
+      update: { ...zajednicko, updatedAt: now },
     });
   }
 
@@ -651,6 +727,44 @@ export class PlanProizvodnjeService {
       // Pod bravom je ovo nemoguće — signal je da je brava izgubljena, ne poslovni slučaj.
       throw new InternalServerErrorException(
         `Kaskada: očekivano ${plan2.moved.length} pomerenih redova, upisano ${updated.length}.`,
+      );
+    }
+
+    // ── 078/26 FAZA A: isti pomak i u `plan_proizvodnje_termini` ────────────────
+    //
+    // 🔴 Sa SOPSTVENOM brojačkom branom. Bez nje bi podupis bio NEM: odgovor se gradi
+    // iz `RETURNING`-a overlay-a, pa bi FE optimistički prerenderovao barove na nova
+    // vremena dok bi termini držali stara — laž na ekranu, najgora klasa u ovom modulu.
+    //
+    // Jedan iskaz koji i LEČI i pomera: `ON CONFLICT` popravlja red koji iz bilo kog
+    // razloga nedostaje (npr. overlay nastao pre ove faze), umesto da kaskada — inače
+    // ispravna i korisniku vidljiva radnja — pukne zbog knjigovodstva koje niko ne čita.
+    // Vremena se uzimaju sa VEĆ AŽURIRANOG overlay-a, pa se ne mogu razići sa njim.
+    // `kolicina` i `assigned_machine_code` se NE diraju (`shiftExpr` pomera samo vreme).
+    const preslikano = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+      INSERT INTO plan_proizvodnje_termini (
+        overlay_id, work_order_id, line_id,
+        planned_start_at, planned_end_at, planned_duration_minutes,
+        kolicina, planned_done, planned_done_at, planned_done_by,
+        created_by, updated_by)
+      SELECT o.id, o.work_order_id, o.line_id,
+             o.planned_start_at, o.planned_end_at, o.planned_duration_minutes,
+             wo.piece_count, o.planned_done, o.planned_done_at, o.planned_done_by,
+             ${email}, ${email}
+        FROM plan_proizvodnje_overlays o
+        LEFT JOIN work_orders wo ON wo.id = o.work_order_id
+       WHERE (o.work_order_id, o.line_id) IN (${this.pairsSql(parovi)})
+         AND o.planned_start_at IS NOT NULL
+      ON CONFLICT (overlay_id) DO UPDATE
+        SET planned_start_at = EXCLUDED.planned_start_at,
+            planned_end_at   = EXCLUDED.planned_end_at,
+            updated_by       = EXCLUDED.updated_by,
+            updated_at       = now()
+      RETURNING id::text AS id`);
+
+    if (preslikano.length !== updated.length) {
+      throw new InternalServerErrorException(
+        `Kaskada (termini): pomereno ${updated.length} overlay redova, a preslikano ${preslikano.length}.`,
       );
     }
 
