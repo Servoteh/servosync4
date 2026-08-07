@@ -12,7 +12,18 @@ import type { Sy15Service } from "../../common/sy15/sy15.service";
 /**
  * B1 loc-most feeder — mapiranje/watermark/guard testovi (Prisma-MOCK, bez baze).
  * Živa verifikacija upserta ide kroz runbook korake (feed-run + spot-check SQL).
+ *
+ * ⛔ Hranilica je ISKLJUČENA 07.08.2026 (`LOC_TP_FEED_ENABLED`, v. servis). Testovi
+ * MEHANIKE feed-a (mapiranje/watermark/holdback) i dalje moraju da rade, pa se prekidač
+ * u ovom fajlu pali eksplicitno — sam prekidač ima svoj describe blok na dnu.
  */
+const FEED_ENV = "LOC_TP_FEED_ENABLED";
+beforeEach(() => {
+  process.env[FEED_ENV] = "true";
+});
+afterEach(() => {
+  delete process.env[FEED_ENV];
+});
 
 describe("cleanCacheDate (legacy cleanDate paritet)", () => {
   it("propušta validan datum netaknut", () => {
@@ -206,5 +217,49 @@ describe("LocTpFeedService.run", () => {
     const first = service.run();
     await expect(service.run()).rejects.toThrow(ConflictException);
     await first;
+  });
+});
+
+/**
+ * ⛔ Prekidač hranilice (07.08.2026). Jedini potrošač feed-a — pg_cron
+ * `loc_bigtehn_ingest_run()` — ugašen je, pa `run()` po difoltu odbija da piše.
+ * Kod OSTAJE (ništa nije obrisano); paljenje je `LOC_TP_FEED_ENABLED=true`.
+ */
+describe("LocTpFeedService.run — prekidač LOC_TP_FEED_ENABLED", () => {
+  const svc = () =>
+    new LocTpFeedService(
+      { $queryRaw: jest.fn(), $executeRaw: jest.fn() } as unknown as PrismaService,
+      { db: jest.fn(), withUserRls: jest.fn() } as unknown as Sy15Service,
+    );
+
+  it("bez prekidača: 409 sa objašnjenjem i uputstvom za povratak", async () => {
+    delete process.env.LOC_TP_FEED_ENABLED;
+    await expect(svc().run()).rejects.toThrow(ConflictException);
+    await expect(svc().run()).rejects.toThrow(/LOC_TP_FEED_ENABLED=true/);
+  });
+
+  it("odbija PRE ijednog upisa (watermark se ne sme pomeriti)", async () => {
+    delete process.env.LOC_TP_FEED_ENABLED;
+    const prisma = {
+      $queryRaw: jest.fn(),
+      $executeRaw: jest.fn(),
+    } as unknown as PrismaService;
+    const sy15 = {
+      db: jest.fn(),
+      withUserRls: jest.fn(),
+    } as unknown as Sy15Service;
+    await expect(new LocTpFeedService(prisma, sy15).run()).rejects.toThrow(
+      ConflictException,
+    );
+    expect((prisma as unknown as { $queryRaw: jest.Mock }).$queryRaw).not.toHaveBeenCalled();
+    expect((prisma as unknown as { $executeRaw: jest.Mock }).$executeRaw).not.toHaveBeenCalled();
+    expect((sy15 as unknown as { db: jest.Mock }).db).not.toHaveBeenCalled();
+  });
+
+  it("`false` nije dovoljno — prekidač je strogi opt-in na 'true'", async () => {
+    process.env.LOC_TP_FEED_ENABLED = "false";
+    await expect(svc().run()).rejects.toThrow(/isključen/);
+    process.env.LOC_TP_FEED_ENABLED = "1";
+    await expect(svc().run()).rejects.toThrow(/isključen/);
   });
 });
