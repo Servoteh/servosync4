@@ -523,7 +523,7 @@ zaustavlja preklop.
 | ~~**4**~~ | ~~**RLS read-scope na dve tabele**~~ | ✅ **ZATVORENO 06.08.** — v. §7e. Merenje je našlo **tri** tabele, ne dve (runbook je promašio `sastanci_notification_prefs`). | — |
 | **5** | 🟡 **`projekat_id` je promenio TIP** (uuid → Int) | ✅ **BACKEND ZATVOREN 06.08.** (v. §7f/§7g): DTO prima OBA oblika, odgovor vraća oba (`projekatId` Int + `projekatUuid`), `AKCIJE_SELECT` je preveden na `project_number`/`id`. **OSTAJE SAMO FE** — tačan spisak izmena je u §7g. | ~pola dana (samo FE) |
 | **6** | **`kadr_holidays` nije u 3.0** | Pomeranje sedmičnog sa praznika. Danas se čita READ-ONLY sa sy15 (fail-soft: bez praznika termin se ne pomera). Nestaje sa **korakom 4** (kadrovska) — nije potrebno rešavati posebno | — |
-| **7** | **`get_predmet_plan_prioritet_ids()`** (⭐ lista predmeta) | Čita `production.predmet_plan_prioritet` u sy15. Nije domen sastanaka — stiže sa svojim modulom. **Namerno OSTAJE iza 503** i pod `3.0` (tiho prazna ⭐ lista izgledala bi kao „nema prioritetnih predmeta"); pokriveno testom | — |
+| ~~**7**~~ | ~~**`get_predmet_plan_prioritet_ids()`** (⭐ lista predmeta) — „namerno iza 503"~~ | ✅ **ZATVORENO 06.08. — v. §7i.** Brana je bila POGREŠNA odluka i pravila je tihu regresiju na produkciji: ruta je vraćala 503 na svaki otvoren akcioni plan (FE hook bez `retry:false` → tri neuspela zahteva po ulasku), a ⭐ redosled RN grupa je svejedno padao na šifru — dakle „prazna lista" ishod, samo uz greške. Sada se ŽIVA lista čita **READ-ONLY sa sy15**, isti presedan kao blokada 6 (`kadr_holidays`): tabelu piše ISKLJUČIVO modul Podešavanja predmeta, sastanci je samo čitaju, pa dve baze ne mogu da se raziđu. Nestaje sa korakom „Praćenje/production". | — |
 | **8** | **Fajlovi ostaju u sy15 storage-u** | Nepromenjeno (§7 rep 1) — putanje su prenete, URL-ovi važe | — |
 | **9** | 🟡 **Dopuna mejla (`enrichPayload`) i dalje čita sy15** | **OSTAJE OTVORENA** — blokada 2 je bila o `SastanciService`, a ovo je `SastanciDispatchService`. Tri fetch-a i dalje gađaju `this.sy15.db`: `fetchZapisnikAttachment` (PDF iz arhive), `fetchDiffSummary` (`v_akcioni_plan`) i `fetchResponsibilities` (zaduženja). `fetchRsvpToken` je JEDINI već prebačen (čita 3.0 pod `3.0`, popravka iz §7d). **Svi su fail-soft**, pa je najgori ishod mejl bez dopune — ne pad, i ne razilaženje baza (samo čitanje). Ne blokira preklop | ~2 h |
 
@@ -704,10 +704,11 @@ Ovo je **poslednja velika backend blokada** preklopa. Posle nje sastanci pod
 | `withUserMapped` poziva u `sastanci.service.ts` | **73** (tačno koliko je blokada 2 najavila) |
 | `runIdem`-only ruta bez 3.0 grane | **6** |
 | **ukupno prevedeno** | **79 poziva / 57 ruta** |
-| direktnih sy15 poziva mimo dva branjena getera | **1** — `prazniciZaTriNula` (`kadr_holidays`, namerno, blokada 6) |
+| direktnih sy15 poziva mimo dva branjena getera | **2** — `prazniciZaTriNula` (`kadr_holidays`, blokada 6) i `predmetPrioritet` (⭐ lista, blokada 7, od §7i); oba namerna, read-only i fail-soft |
 
-Posle prevoda `withUserMapped` i `runIdem` **i dalje postoje i i dalje su brana** —
-ali ih pod `3.0` doseže još samo ⭐ lista prioritetnih predmeta (blokada 7).
+Posle prevoda `withUserMapped` i `runIdem` **i dalje postoje i i dalje su brana**,
+ali ih pod `3.0` više ne doseže NIJEDNA ruta — dakle nijedan poziv sastanaka ne
+vraća 503 (⭐ lista je izuzeta u §7i).
 
 ### 🔴 Nalaz 1: write politike — jedna od četiri NIJE ono što runbook kaže
 
@@ -855,7 +856,7 @@ grana u `SastanciPredmetService`, `sastanci-predmet.ts` tabela izuzetaka i
 |---|---|
 | Blokada 9 — `enrichPayload` (3 fetch-a) čita sy15 | fail-soft: najgori ishod je mejl bez dopune. ~2 h, može posle preklopa |
 | Blokada 6 — `kadr_holidays` sa sy15 | read-only, fail-soft; nestaje sa korakom 4 (kadrovska) |
-| Blokada 7 — ⭐ lista prioritetnih predmeta | namerno iza 503; nije domen sastanaka |
+| Blokada 7 — ⭐ lista prioritetnih predmeta | ✅ zatvorena 06.08. (§7i): read-only sa sy15, fail-soft — više ne vraća 503 |
 | Blokada 8 — fajlovi u sy15 storage-u | putanje prenete, URL-ovi važe; seli se uz korak 2 |
 | Projektni biro | ceo iza 503 do koraka 4 (kadrovska) — nepromenjeno |
 
@@ -954,6 +955,84 @@ incident i boleo:
 > uvelo zajednički prekidač) **nije bilo izmereno** — §4 istog ovog dokumenta je već tada
 > pokazao da domeni nemaju transakcioni šav. Merenje je postojalo, ali odluka o prekidaču nije
 > bila usklađena s njim.
+
+---
+
+## 7i. 🔴 REGRESIJA 06.08.2026 — ⭐ lista prioritetnih predmeta je vraćala 503
+
+Blokada 7 je bila **jedina ruta sastanaka koju je `assertPorted` još dosezao** pod
+`SASTANCI_IZVOR=3.0`, i to po odluci iz §7c: „tiho prazna ⭐ lista izgledala bi kao
+_nema prioritetnih predmeta_, pa bolje 503". Merenje na živoj produkciji je tu odluku
+oborilo.
+
+### Šta se stvarno dešavalo
+
+| | |
+|---|---|
+| Ruta | `GET /v1/sastanci/predmet-prioritet` → `SastanciService.predmetPrioritet()` → `assertPorted` → **503** |
+| Potrošači | **šest** ekrana sastanaka preko `usePredmetPrioritet()` (`akcioni-plan-tab`, `detalj-akcije`, `detalj-arhiva`, `pregled-tab`, `sastanak-detalj`, `zapisnik-pdf`) |
+| Vidljiv efekat | ekran se NE ruši (`prioQ.data?.data` je `undefined`, grupisanje radi) — ali React Query pravi **3 uzastopna neuspela zahteva** po otvaranju (hook nije imao `retry:false`), a redosled RN grupa tiho pada sa ⭐ prioriteta na šifru |
+| 🔴 Zašto je odluka bila pogrešna | ishod 503 je BIO „prazna ⭐ lista" — brana nije sprečila ništa što je htela da spreči, samo je uz isti ishod dodala greške u konzoli i tri promašena zahteva |
+
+### Merenje: postoje DVA izvora ⭐ liste i RAZIŠLI SU SE
+
+Ključno pitanje je bilo može li se čitati isti izvor kao `/v1/pracenje/plan-prioritet`
+(ruta koja radi i pod `sastanci=3.0`, jer je u drugom modulu). **Ne — to nije isti podatak:**
+
+| Izvor | Gde živi | Sadržaj (06.08.2026) | Ko piše |
+|---|---|---|---|
+| `production.predmet_plan_prioritet` (kroz DEFINER `get_predmet_plan_prioritet_ids()`) | **sy15** | **1 red**: `{10470}`, `updated_at = 31.07.`; `prev = {9068}`, `max = 15` | **Podešavanja → Predmeti** (`set_predmet_plan_prioritet`) — modul JOŠ na sy15 |
+| `predmet_aktivacije.plan_priority` (servira `/v1/pracenje/plan-prioritet`) | **3.0** | **9 redova**: `{9466,9068,9833,9470,8247,9426,9427,9509,9510}`, svima `updated_at = 19.07.` = dan migracije `pracenje_native_f1` | Praćenje (`PUT /pracenje/plan-prioritet`) — od seed-a nijedan upis |
+
+`production.predmet_plan_prioritet_audit` presuđuje: 3.0 skup je **doslovno SEED od
+23.06.** (`op = SEED`, `changed_by = manual-restore-2026-06-23`), a živa sy15 lista je
+posle toga menjana. Dakle 3.0 kopija je **zamrznut junski snimak** — čitanje te kopije
+bi ekranima sastanaka prikazalo junski redosled kao da je aktuelan. Tiho pogrešan
+odgovor je gori i od 503 i od praznog.
+
+### Rešenje: read-only sa sy15 (presedan blokade 6), NE seoba podataka
+
+`predmetPrioritet()` pod `3.0` više ne ide kroz `withUserMapped` (branjeni geter) nego
+kroz `Sy15Service.withUserRls` **direktno** — isti obrazac kao `prazniciZaTriNula`
+(`kadr_holidays`): SELECT, fail-soft, uz upozorenje. Opravdanje je isto: tabelu iz
+domena sastanaka **niko ne piše**, pa dve baze ne mogu da se raziđu. Tabela se **NE
+prenosi** u 3.0 — to je posao koraka „Praćenje/production".
+
+Ključ se ne prevodi: sy15 `predmet_item_id` **= 3.0 `projects.id`** (izmereno, 8/8
+poklapanja po `project_code` + `project_name`, npr. `9466` = šifra `8069` „linija za
+sužavanje" u obe baze), a pod `3.0` je `bigtehnItemId` na redu akcije baš `projects.id`
+(`AKCIJE_SELECT_30`). Zato živa lista radi bez ijedne konverzije.
+
+### Provere urađene 06.08. (regresija ⭐ liste)
+
+| Provera | Rezultat |
+|---|---|
+| `authenticated` sme da izvrši RPC | ✅ `has_function_privilege` = t; `SET LOCAL ROLE authenticated` → `{10470}` (isti put kao pod `sy15`) |
+| `npx tsc --noEmit` (backend) | ✅ nula NOVIH grešaka (zatečene: `handovers`, `kadrovska.zahtev-026`, `kamata`, `moj-profil.zahtev-026`) |
+| `npx jest` (pun set) | ✅ **265 suite / 5.735 testova** |
+| `npm run build` | ✅ |
+| 🔴 boot-smoke `node dist/main` pod `SASTANCI_IZVOR=3.0` | ✅ „Nest application successfully started"; `GET /api/v1/sastanci/predmet-prioritet` → **200 `{"data":[]}`** (fail-soft, jer lokalni boot nema `SY15_DATABASE_URL`) — **više NE 503** |
+| FE `npx tsc --noEmit` / `npx next build` / `npm test` | ✅ / ✅ / ✅ 65 testova |
+
+### 🟡 Nalaz koji OSTAJE otvoren (ne ova grana)
+
+⭐ lista ima **dva editora nad dva store-a**: Podešavanja predmeta pišu sy15, Praćenje
+piše 3.0 `predmet_aktivacije.plan_priority`. Zato `usePredmetPrioritetIds` u
+`api/lokacije.ts` (picker „Pregled predmeta") danas sortira po **junskom snimku**, dok
+Podešavanja prikazuju živu listu. Spajanje ta dva store-a pripada koraku
+„Praćenje/production" — v. `docs/PLAN_F5_GASENJE_MOSTA.md` i
+`docs/PLAN_PRACENJE_PROIZVODNJE_2026-07.md`.
+
+### 🔴 Pouka
+
+> **„Bolje 503 nego tiho prazno" vredi samo ako 503 sprečava POGREŠAN ishod.** Ovde je
+> ishod bio identičan (prazna ⭐ lista → sort po šifri), pa je brana kupila samo šum.
+> Pre postavljanja brane izmeriti ŠTA klijent radi sa greškom: ako je potrošač već
+> fail-soft (`prioQ.data?.data`), brana ne štiti podatak — samo ga zameni greškom.
+>
+> Prateća pouka: **fail-soft na klijentu ne sme biti izgovor za tvrd pad na serveru.**
+> `usePredmetPrioritet` nije imao `retry:false` iako ga je bliznakinja u `api/lokacije.ts`
+> imala od početka, sa tačnim obrazloženjem („prioritet je kozmetički — samo redosled").
 
 ---
 

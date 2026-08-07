@@ -604,11 +604,28 @@ export function useSastanakWeeklyDiff(id: string | null) {
 /**
  * ⭐ Top prioritet predmeta (Podešavanja → Predmeti) — uređena lista bigtehn_item_id
  * (1.0 pullPredmetPlanPrioritetIds paritet); index u listi = rang.
+ *
+ * `retry:false` + tih fallback na `[]` — isto kao bliznakinja
+ * `usePredmetPrioritetIds` u `api/lokacije.ts`: prioritet je KOZMETIČKI (samo
+ * redosled RN grupa), a hook visi na šest ekrana sastanaka. Kad je ruta 06.08.
+ * pod `SASTANCI_IZVOR=3.0` vraćala 503, svaki ulazak u akcioni plan je pravio
+ * TRI neuspela zahteva i punio konzolu, iako se ekran nije rušio. Brana je
+ * popravljena na backendu (ruta čita ⭐ listu read-only sa sy15 i fail-soft
+ * vraća praznu), ovo je druga linija — za 403 role bez prava i za mrežni pad.
  */
 export function usePredmetPrioritet() {
   return useQuery({
     queryKey: [...KEYS.all, 'predmet-prioritet'],
-    queryFn: () => apiFetch<{ data: string[] }>(`${BASE}/predmet-prioritet`),
+    retry: false,
+    staleTime: 60_000,
+    queryFn: async (): Promise<{ data: string[] }> => {
+      try {
+        const r = await apiFetch<{ data: string[] }>(`${BASE}/predmet-prioritet`);
+        return { data: Array.isArray(r.data) ? r.data : [] };
+      } catch {
+        return { data: [] };
+      }
+    },
   });
 }
 
