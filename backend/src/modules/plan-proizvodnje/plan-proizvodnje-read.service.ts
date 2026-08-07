@@ -792,14 +792,21 @@ export class PlanProizvodnjeReadService {
       base.overlay_created_at, base.overlay_created_by,
       -- Zahtev 046/26 (gant): planirani termini + „uslov" + override završenosti.
       -- PARALELNA polja — NIJEDAN postojeći sort/bucket/filter ih ne koristi.
-      tp.planned_start_at, tp.planned_end_at, tp.planned_duration_minutes,
-      tp.planned_done, tp.planned_done_at, tp.planned_done_by,
+      -- 078/26: termin je glavni izvor, overlay je REZERVA (v. ov_* u base podupitu).
+      -- Time je čitanje NADSKUP starog: pozicija bez termina zadržava svoje ručne
+      -- override-e umesto da ih tiho izgubi.
+      COALESCE(tp.planned_start_at, base.ov_planned_start_at) AS planned_start_at,
+      COALESCE(tp.planned_end_at, base.ov_planned_end_at) AS planned_end_at,
+      COALESCE(tp.planned_duration_minutes, base.ov_planned_duration_minutes) AS planned_duration_minutes,
+      COALESCE(tp.planned_done, base.ov_planned_done) AS planned_done,
+      COALESCE(tp.planned_done_at, base.ov_planned_done_at) AS planned_done_at,
+      COALESCE(tp.planned_done_by, base.ov_planned_done_by) AS planned_done_by,
       base.predecessor_work_order_id::text AS predecessor_work_order_id,
       base.predecessor_line::text AS predecessor_line,
       mh.hall,
       -- Default trajanje iz tehnologije: TPZ + TK × komada (min); override gazi.
       COALESCE(
-        tp.planned_duration_minutes,
+        COALESCE(tp.planned_duration_minutes, base.ov_planned_duration_minutes),
         (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int
       )::int AS effective_duration_minutes,
       ${IS_COMPLETED_EFFECTIVE} AS is_completed_effective,
@@ -893,6 +900,19 @@ export class PlanProizvodnjeReadService {
         o.cooperation_partner, o.cooperation_set_by, o.cooperation_set_at, o.cooperation_expected_return,
         COALESCE(o.ready_override, false) AS ready_override, o.ready_override_at, o.ready_override_by,
         o.predecessor_work_order_id, o.predecessor_line,
+        -- 🔴 078/26: ZATEČENI planirani podaci sa overlay-a, kao REZERVA ispod termina.
+        -- Backfill je preselio samo redove sa planned_start_at, ali override trajanja
+        -- i override gotovosti postoje i na pozicijama koje NISU na gantu — izmereno na
+        -- produkciji 07.08.: 12 takvih nosi ručno trajanje, 3 ručnu gotovost. Bez ove
+        -- rezerve čitanje iz termina ih je tiho izgubilo (pozicija ručno označena kao
+        -- gotova vratila bi se na automatsku procenu iz kucanja). Sa njom je čitanje
+        -- NADSKUP starog — nikad manje nego pre.
+        o.planned_start_at AS ov_planned_start_at,
+        o.planned_end_at AS ov_planned_end_at,
+        o.planned_duration_minutes AS ov_planned_duration_minutes,
+        o.planned_done AS ov_planned_done,
+        o.planned_done_at AS ov_planned_done_at,
+        o.planned_done_by AS ov_planned_done_by,
         COALESCE(o.local_status, 'waiting') AS local_status_eff
       FROM work_order_operations l
       JOIN work_orders wo ON wo.id = l.work_order_id
