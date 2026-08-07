@@ -156,6 +156,58 @@ describe("machineOps — 040/26 server-side crtež/RN filter", () => {
     expect(calls[0].sql).not.toContain("broj_crteza ILIKE");
   });
 
+  // ── 080/26: „Po mašini" prati gant SAMO za pozicije koje su na gantu ──────────
+  //
+  // Suženje je izričito (Nenad 07.08.2026): „prati gant samo za pozicije koje su na
+  // gantu, a za one bez termina ostaje ručno prevlačenje kao i dosad". Zato se ovde
+  // zaključava OBLIK upita — pozicije sa terminom smeju da se preurede samo
+  // MEĐUSOBNO, po mestima koja i inače zauzimaju. Prva verzija pravila ubacivala je
+  // termin u sam `ORDER BY`; mereno na produkciji, to je pomeralo i redove BEZ
+  // termina (4 pozicije na mašini 3.32 posle jednog „Dodaj na plan").
+
+  it("🔴 kanon poretka (RPC_SORT) ostaje NETAKNUT — paritet sa sy15 RPC-om", async () => {
+    const { priv, calls } = svcWithCapture();
+    await priv.machineOps("3.32", 100, 0);
+    const sql = calls[0].sql;
+    // Isti ključevi, istim redom, kao pre 080/26.
+    expect(sql).toContain("shift_sort_order ASC NULLS LAST");
+    expect(sql).toContain("auto_sort_bucket ASC");
+    expect(sql).toContain("rok_izrade ASC NULLS LAST");
+    expect(sql).toContain("prioritet_bigtehn ASC");
+    // Termin NE sme da uđe u sam kanon — inače bi pomerao i redove bez termina.
+    expect(sql).not.toContain("planned_start_at ASC NULLS LAST");
+  });
+
+  it("🔴 preuređuju se SAMO pozicije sa terminom, na SVOJIM mestima", async () => {
+    const { priv, calls } = svcWithCapture();
+    await priv.machineOps("3.32", 100, 0);
+    const sql = calls[0].sql;
+    // Mesta koja drže planirane pozicije se izdvajaju iz kanonskog poretka…
+    expect(sql).toContain("mesta");
+    expect(sql).toContain("WHERE planned_start_at IS NOT NULL");
+    // …a raspoređuju se po terminu sa ganta.
+    expect(sql).toContain("ORDER BY planned_start_at ASC");
+    // Konačni poredak: planirana pozicija sedne na mesto, ostali zadrže kanon_rang.
+    expect(sql).toContain("COALESCE(m.kanon_rang, p.kanon_rang)");
+  });
+
+  it("`kanon_rang` NE curi u odgovor — payload ostaje isti kao pre", async () => {
+    const { priv, calls } = svcWithCapture();
+    await priv.machineOps("3.32", 100, 0);
+    // Vraća se `f.*` iz filtriranog skupa, ne `p.*` iz poretka.
+    expect(calls[0].sql).toContain("SELECT f.* FROM filtrirano f");
+    expect(calls[0].sql).not.toContain("SELECT p.* FROM poredak");
+  });
+
+  it("filter i pretraga i dalje idu PRE poretka (dohvat iza prvih 100 RN)", async () => {
+    const { priv, calls } = svcWithCapture();
+    await priv.machineOps("3.32", 100, 0, "1141072");
+    const sql = calls[0].sql;
+    // 040/26 ne sme da se pokvari: ILIKE je u `filtrirano`, dakle pre rangiranja.
+    expect(sql.indexOf("broj_crteza ILIKE")).toBeLessThan(sql.indexOf("poredak AS"));
+    expect(calls[0].values).toContain("%1141072%");
+  });
+
   it("prazna mašina → nema query-ja (rani izlaz)", async () => {
     const { priv, calls } = svcWithCapture();
     const res = (await priv.machineOps("", 100, 0, "x")) as {

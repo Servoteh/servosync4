@@ -112,7 +112,24 @@ export interface OpRow {
   rn_zakljucano?: boolean | null;
   is_done_in_bigtehn?: boolean | null;
   last_finished_at?: string | null;
+  /**
+   * 080/26: termin sa GANTA. Kad postoji, pozicija PRATI gant i ne prevlači se
+   * ručno u „Po mašini" (server je već poređao — v. `plan-proizvodnje-read.service.ts`,
+   * `machineOps`). Kad je `null`, ponašanje ostaje netaknuto: ručno prevlačenje.
+   */
+  planned_start_at?: string | null;
   [k: string]: unknown;
+}
+
+/**
+ * 080/26 — jedini izvor pravila „prati gant" na frontendu.
+ *
+ * Server je merodavan za REDOSLED (preuređuje pozicije sa terminom međusobno,
+ * pozicije bez termina ne dira). FE po istoj zastavici gasi ručno prevlačenje —
+ * da se ne pojavi tiho neslaganje između onoga što se vidi i onoga što se sme.
+ */
+export function pratiGant(o: OpRow): boolean {
+  return o.planned_start_at != null;
 }
 
 /** Jedan red prijave rada (tech-procedure `logs[]` iz bigtehn_tech_routing_cache). */
