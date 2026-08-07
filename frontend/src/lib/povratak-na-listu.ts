@@ -10,41 +10,157 @@
  *  2. NA KOJE MESTO u toj listi. Lista je beskonačan skrol, pa nije dovoljno vratiti
  *     putanju: mora i koliko je strana bilo učitano i gde je skrol stajao.
  *
- * Zašto zaseban fajl, a ne `use-id-param.ts` gde su `useListQueryState`/`listHref`:
- * taj modul uvozi `next/navigation`, pa se pod `node --test` (bez bundlera) ne može
- * učitati — a ovo je jedina logika koja se ovde da izmeriti testom. Hook koji je
- * koristi (`useZapamcenaPozicijaListe`) ostaje uz ostale, u `use-id-param.ts`.
+ * Zašto zaseban fajl, a ne `use-id-param.ts` gde je `useListQueryState`: taj modul uvozi
+ * `next/navigation`, pa se pod `node --test` (bez bundlera) ne može učitati — a ovo je
+ * jedina logika koja se ovde da izmeriti testom. Zato su OVDE i `listHref`/`listStateKey`
+ * (ne koriste `next/*`), pa `hrefIzvora` može da ih pozove bez povlačenja Next-a u čist
+ * modul; `use-id-param.ts` ih re-eksportuje da zatečeni uvozi ostanu netaknuti. Hookovi
+ * (`useListQueryState`, `useZapamcenaPozicijaListe`) ostaju tamo.
  */
+
+// ───────────────────────────────── 0. ADRESA RADNE LISTE SA POSLEDNJIM FILTERIMA
+
+/**
+ * Ključ pod kojim se pamti POSLEDNJE stanje jedne radne liste (filteri, strana, tab) —
+ * da povratak sa detalja vrati listu tačno kakva je bila.
+ */
+export function listStateKey(listPath: string): string {
+  return `listState:${listPath}`;
+}
+
+/**
+ * Adresa radne liste SA poslednjim filterima — za dugme „Nazad" na detalju.
+ * Kad ničega nema u pamćenju (deljen link, novi tab), vraća čistu listu.
+ */
+export function listHref(listPath: string): string {
+  if (typeof window === 'undefined') return listPath;
+  try {
+    const search = window.sessionStorage.getItem(listStateKey(listPath));
+    return search ? `${listPath}?${search}` : listPath;
+  } catch {
+    return listPath;
+  }
+}
+
+/**
+ * Kanonski oblik stanja liste: samo ključevi koje ta lista POSEDUJE (`defaults`), bez
+ * praznih i bez podrazumevanih vrednosti.
+ *
+ * 🔴 Nikad se ne piše sirov `window.location.search`: na ruti liste umeju da stoje i
+ * tuđi, jednokratni parametri (deep-link `?open=`, `?izvor=`), a oni bi se kroz „Nazad"
+ * vratili korisniku kao filteri — ili bi ponovo otvorili dijalog koji je već zatvorio.
+ */
+export function serijalizujStanjeListe(
+  values: Record<string, string>,
+  defaults: Record<string, string>,
+): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(values)) {
+    if (!Object.prototype.hasOwnProperty.call(defaults, k)) continue;
+    if (v !== '' && v !== defaults[k]) q.set(k, v);
+  }
+  return q.toString();
+}
+
+/**
+ * Stanje za upis pri MONTIRANJU liste (i na `popstate`) — spoj sopstvenih ključeva sa
+ * onima koje drži drugi pogled na istoj ruti.
+ *
+ * Zašto spajanje, a ne prost upis: jedna ruta ume da ima DVA pisca istog ključa —
+ * `/glavna-knjiga` drži `tab` u roditelju, a filtere u detetu (`DnevnikView`). React
+ * pušta efekte deteta PRE roditeljevih, pa bi roditeljev upis bez spajanja obrisao
+ * filtere koje je dete upravo zapisalo.
+ *
+ * Zadržava se SAMO ključ koji (a) nije u sopstvenom `defaults` i (b) je i dalje u adresi —
+ * time zapamćeno stanje ostaje verno ogledalo tekuće adrese: zastareli filter iz ranije
+ * posete se ne vaskrsava, a tuđi parametar iz adrese se ne usvaja.
+ */
+export function spojiStanjeListe(
+  postojeci: string | null,
+  urlSearch: string,
+  values: Record<string, string>,
+  defaults: Record<string, string>,
+): string {
+  const q = new URLSearchParams(serijalizujStanjeListe(values, defaults));
+  if (!postojeci) return q.toString();
+  const uAdresi = new URLSearchParams(urlSearch);
+  for (const k of new URLSearchParams(postojeci).keys()) {
+    if (Object.prototype.hasOwnProperty.call(defaults, k)) continue; // ovaj pogled je vlasnik
+    if (q.has(k)) continue;
+    const v = uAdresi.get(k);
+    if (v == null) continue; // više nije u adresi → ne vaskrsavaj
+    q.set(k, v);
+  }
+  return q.toString();
+}
 
 // ─────────────────────────────────────────────── 1. ODAKLE SE DOŠLO (koja lista)
 
-/** Lista sa koje je otvoren detalj/kartica artikla. */
-export type IzvorListeArtikala = 'artikli' | 'lager';
-
-const PUTANJE_LISTE_ARTIKALA: Record<IzvorListeArtikala, string> = {
-  artikli: '/artikli',
-  lager: '/artikli/lager',
-};
+/**
+ * Jedan ULAZ u ekran detalja — mesto sa kog se došlo i na koje „Nazad" mora da vrati.
+ *
+ * 🔴 `radnaLista: false` postoji zato što svaki ulaz NIJE lista: u detalj komitenta se
+ * ulazi i iz kartice „Dupli PIB" u Podešavanjima (`/podesavanja?tab=integracije`). Za
+ * takvu metu ne postoji zapis `listState:`, pa bi je `listHref` svukao na podrazumevani
+ * tab („Korisnici") — administrator koji čisti spisak duplih PIB-ova bi posle svakog
+ * komitenta morao ponovo: Podešavanja → tab Integracije → skrol do kartice.
+ */
+export interface UlazUDetalj {
+  /** Putanja mesta sa kog se došlo. */
+  putanja: string;
+  /** `false` = meta nije radna lista sa `useListQueryState`, pa se NE ide kroz `listHref`. */
+  radnaLista?: boolean;
+  /** Fiksan query za metu koja nije radna lista (npr. `tab=integracije`). */
+  query?: string;
+}
 
 /**
- * `?…&izvor=lager` → `'lager'`; sve ostalo → `'artikli'`.
+ * `?…&izvor=<ključ>` → ključ iz TABELE ULAZA tog modula; sve ostalo → podrazumevani.
  *
- * Nepoznata vrednost NAMERNO pada na pregled artikala umesto da baci grešku: adresa je
+ * Nepoznata vrednost NAMERNO pada na podrazumevani ulaz umesto da baci grešku: adresa je
  * korisnički unos (deljen link, prelomljena poruka), a dugme „Nazad" sme da promaši
  * listu — ne sme da prestane da radi.
+ *
+ * 🔴 Provera je `hasOwnProperty`, ne `in`: `?izvor=constructor` bi kroz `in` prošao kao
+ * validan ključ, pa bi `hrefIzvora` dobio funkciju iz prototipa umesto ulaza i dugme
+ * „Nazad" bi puklo.
+ *
+ * Zašto tabela PO MODULU, a ne jedan globalan registar: podrazumevana vrednost mora biti
+ * po modulu. Sa globalnim skupom bi `/komitenti/detalj?izvor=lager` „radio" i odveo
+ * korisnika u lager listu artikala; ovako svaki detalj vidi samo svoje ulaze i svaka
+ * promašena vrednost pada na SVOJU listu.
  */
-export function citajIzvorListeArtikala(search: string): IzvorListeArtikala {
+export function citajIzvor<T extends string>(
+  search: string,
+  ulazi: Readonly<Record<T, UlazUDetalj>>,
+  podrazumevani: T,
+): T {
   const v = new URLSearchParams(search).get('izvor');
-  return v === 'lager' ? 'lager' : 'artikli';
+  if (v != null && Object.prototype.hasOwnProperty.call(ulazi, v)) return v as T;
+  return podrazumevani;
 }
 
 /**
- * Putanja liste iz koje se došlo, BEZ filtera — filtere dopisuje `listHref`
- * (`use-id-param.ts`), koji ih čita iz `sessionStorage`.
+ * KONAČNA adresa za „Nazad": radnoj listi se dopisuju poslednji filteri (`listHref`),
+ * ostalim ulazima njihov fiksan query.
  */
-export function putanjaListeArtikala(izvor: IzvorListeArtikala): string {
-  return PUTANJE_LISTE_ARTIKALA[izvor];
+export function hrefIzvora(ulaz: UlazUDetalj): string {
+  if (ulaz.radnaLista === false) {
+    return ulaz.query ? `${ulaz.putanja}?${ulaz.query}` : ulaz.putanja;
+  }
+  return listHref(ulaz.putanja);
 }
+
+/**
+ * Ulazi u karticu i detalj ARTIKLA. Podrazumevani (`artikli`) se NE upisuje u adresu —
+ * deljen link ostaje čitljiv, a izostavljena vrednost pada baš na njega.
+ */
+export const ULAZI_ARTIKAL = {
+  artikli: { putanja: '/artikli' },
+  lager: { putanja: '/artikli/lager' },
+} satisfies Record<string, UlazUDetalj>;
+
+export type IzvorArtikla = keyof typeof ULAZI_ARTIKAL;
 
 // ────────────────────────────────────────────── 2. GDE SE STALO (mesto u listi)
 

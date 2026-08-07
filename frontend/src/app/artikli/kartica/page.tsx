@@ -18,9 +18,10 @@ import type { CsvColumn } from '@/lib/table-csv';
 import { cn } from '@/lib/cn';
 import { listHref, useIdParam } from '@/lib/use-id-param';
 import {
-  citajIzvorListeArtikala,
-  putanjaListeArtikala,
-  type IzvorListeArtikala,
+  ULAZI_ARTIKAL,
+  citajIzvor,
+  hrefIzvora,
+  type IzvorArtikla,
 } from '@/lib/povratak-na-listu';
 import { useQueryTab } from '@/lib/use-query-tab';
 import { formatDate, formatDecimal, formatNumber } from '@/lib/format';
@@ -575,13 +576,13 @@ export default function KarticaArtiklaPage() {
   // Čitanje izvora i mapa putanja žive u `@/lib/povratak-na-listu` — ISTI pomoćnik
   // koristi i detalj artikla, da se dva ekrana ne raziđu (a raziđeni su i bili: detalj
   // je do 07.08.2026 sva tri izlaza vodio na pregled artikala).
-  const [izvor, setIzvor] = useState<IzvorListeArtikala>('artikli');
+  const [izvor, setIzvor] = useState<IzvorArtikla>('artikli');
   useEffect(() => {
-    setIzvor(citajIzvorListeArtikala(window.location.search));
+    setIzvor(citajIzvor(window.location.search, ULAZI_ARTIKAL, 'artikli'));
   }, []);
 
   const nazadNaListu = useCallback(
-    () => router.push(listHref(putanjaListeArtikala(izvor))),
+    () => router.push(hrefIzvora(ULAZI_ARTIKAL[izvor])),
     [router, izvor],
   );
 
@@ -634,7 +635,7 @@ function Kartica({
 }: {
   id: number;
   /** Prosleđuje se dalje na detalj — v. dugme „Detaljno artikal". */
-  izvor: IzvorListeArtikala;
+  izvor: IzvorArtikla;
   onNazad: () => void;
 }) {
   const router = useRouter();

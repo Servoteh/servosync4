@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  citajIzvorListeArtikala,
+  ULAZI_ARTIKAL,
+  citajIzvor,
   citajZapisPozicije,
+  hrefIzvora,
   odlukaOPoziciji,
-  putanjaListeArtikala,
+  serijalizujStanjeListe,
+  spojiStanjeListe,
   type ZapisPozicijeListe,
 } from '@/lib/povratak-na-listu';
 
@@ -25,6 +28,9 @@ const KOREN = path.resolve(import.meta.dirname, '..');
 const LAGER = path.join(KOREN, 'app', 'artikli', 'lager', 'page.tsx');
 const DETALJ = path.join(KOREN, 'app', 'artikli', 'detalj', 'page.tsx');
 const KARTICA = path.join(KOREN, 'app', 'artikli', 'kartica', 'page.tsx');
+const ARTIKLI = path.join(KOREN, 'app', 'artikli', 'page.tsx');
+const MASTERS = path.join(KOREN, 'api', 'masters.ts');
+const USE_ID_PARAM = path.join(KOREN, 'lib', 'use-id-param.ts');
 
 const izvor = (f: string) => fs.readFileSync(f, 'utf8');
 
@@ -44,20 +50,117 @@ function neSadrzi(src: string, re: RegExp, poruka: string): void {
 
 describe('izvor liste artikala', () => {
   test('`izvor=lager` iz adrese vodi nazad na lager listu', () => {
-    assert.equal(citajIzvorListeArtikala('?id=42&izvor=lager'), 'lager');
-    assert.equal(putanjaListeArtikala(citajIzvorListeArtikala('?id=42&izvor=lager')), '/artikli/lager');
+    assert.equal(citajIzvor('?id=42&izvor=lager', ULAZI_ARTIKAL, 'artikli'), 'lager');
+    assert.equal(hrefIzvora(ULAZI_ARTIKAL.lager), '/artikli/lager');
   });
 
   test('bez `izvor` (deljen link, pregled artikala) vodi na pregled artikala', () => {
-    assert.equal(citajIzvorListeArtikala('?id=42'), 'artikli');
-    assert.equal(citajIzvorListeArtikala(''), 'artikli');
-    assert.equal(putanjaListeArtikala(citajIzvorListeArtikala('?id=42')), '/artikli');
+    assert.equal(citajIzvor('?id=42', ULAZI_ARTIKAL, 'artikli'), 'artikli');
+    assert.equal(citajIzvor('', ULAZI_ARTIKAL, 'artikli'), 'artikli');
+    assert.equal(hrefIzvora(ULAZI_ARTIKAL.artikli), '/artikli');
   });
 
   test('prelomljena vrednost ne obara „Nazad" nego pada na pregled artikala', () => {
     for (const s of ['?izvor=', '?izvor=smece', '?izvor=LAGER', '?izvor=lager2', '?izvor[]=lager']) {
-      assert.equal(citajIzvorListeArtikala(s), 'artikli', s);
+      assert.equal(citajIzvor(s, ULAZI_ARTIKAL, 'artikli'), 'artikli', s);
     }
+  });
+
+  test('🔴 ključ iz prototipa NIJE validan izvor', () => {
+    // `v in ulazi` bi ovde prošao i `hrefIzvora(ULAZI[v])` bi dobio funkciju umesto ulaza —
+    // dugme „Nazad" bi puklo na `undefined.putanja`. Zato provera ide preko `hasOwnProperty`.
+    for (const s of ['?izvor=constructor', '?izvor=__proto__', '?izvor=toString', '?izvor=valueOf']) {
+      assert.equal(citajIzvor(s, ULAZI_ARTIKAL, 'artikli'), 'artikli', s);
+    }
+  });
+});
+
+/**
+ * Meta koja NIJE radna lista (tab u Podešavanjima, kartica) ne sme kroz `listHref`:
+ * za nju ne postoji zapis `listState:` pa bi je `listHref` svukao na podrazumevani tab.
+ */
+describe('href izvora razlikuje radnu listu od ostalih ulaza', () => {
+  test('radna lista ide kroz `listHref` (u testu bez `window` → gola putanja)', () => {
+    assert.equal(hrefIzvora({ putanja: '/robno' }), '/robno');
+    assert.equal(hrefIzvora({ putanja: '/robno', radnaLista: true }), '/robno');
+  });
+
+  test('ulaz koji nije lista nosi SVOJ fiksan query', () => {
+    assert.equal(
+      hrefIzvora({ putanja: '/podesavanja', radnaLista: false, query: 'tab=integracije' }),
+      '/podesavanja?tab=integracije',
+    );
+    assert.equal(hrefIzvora({ putanja: '/podesavanja', radnaLista: false }), '/podesavanja');
+  });
+});
+
+// ──────────────────────────────────── A2. stanje liste se pamti i BEZ diranja filtera
+
+describe('serijalizacija stanja radne liste', () => {
+  const D = { tab: 'inbox', strana: '1', trazi: '' };
+
+  test('sve podrazumevano → prazno (adresa ostaje čitljiva)', () => {
+    assert.equal(serijalizujStanjeListe({ ...D }, D), '');
+  });
+
+  test('samo ono što odstupa od podrazumevanog', () => {
+    assert.equal(serijalizujStanjeListe({ ...D, strana: '7' }, D), 'strana=7');
+  });
+
+  test('prazna vrednost se izostavlja i kad podrazumevana nije prazna', () => {
+    assert.equal(serijalizujStanjeListe({ ...D, tab: '' }, D), '');
+  });
+
+  test('🔴 ključ koji nije u `defaults` se NE piše (tuđi parametar ne curi u „Nazad")', () => {
+    assert.equal(serijalizujStanjeListe({ ...D, open: '3', izvor: 'lager' }, D), '');
+  });
+});
+
+describe('spajanje stanja radne liste (ugnežđeni pogledi)', () => {
+  // `/glavna-knjiga` ima DVA pisca istog ključa: roditelj drži `tab`, dete filtere.
+  // Dete montira PRE roditelja, pa bi roditeljev upis bez spajanja obrisao filtere deteta.
+  const RODITELJ = { tab: 'dnevnik' };
+
+  test('roditelj čuva ključeve deteta koji su i dalje u adresi', () => {
+    assert.equal(
+      spojiStanjeListe('vrsta=UL&strana=7', '?vrsta=UL&strana=7', { tab: 'dnevnik' }, RODITELJ),
+      'vrsta=UL&strana=7',
+    );
+  });
+
+  test('🔴 zastareo ključ kog VIŠE NEMA u adresi se ne vaskrsava', () => {
+    // Korisnik je ranije filtrirao, pa ušao u modul čist iz sidebara — „Nazad" mora
+    // da vrati golu listu, a ne filtere kojih na ekranu nema.
+    assert.equal(spojiStanjeListe('vrsta=UL&strana=7', '', { tab: 'dnevnik' }, RODITELJ), '');
+  });
+
+  test('tuđi parametar iz adrese ne ulazi u pamćenje ako ga u pamćenju nije ni bilo', () => {
+    assert.equal(spojiStanjeListe('', '?open=3', { tab: 'dnevnik' }, RODITELJ), '');
+  });
+
+  test('sopstveni ključ uvek pobeđuje zapamćeni', () => {
+    assert.equal(
+      spojiStanjeListe('tab=kartica', '?tab=dnevnik', { tab: 'dnevnik' }, RODITELJ),
+      '',
+    );
+  });
+});
+
+describe('useListQueryState pamti stanje i kad korisnik ne dira filtere', () => {
+  test('🔴 upis ide i pri montiranju/`popstate`, ne samo iz `setValues`', () => {
+    // Bez toga: deljen link `/robno?vrsta=UL&strana=7` → klik na red → „Nazad" vraća
+    // golu listu, jer `listHref` nema šta da pročita. Pogađa SVE liste koje hook koriste.
+    const src = izvor(USE_ID_PARAM);
+    sadrzi(
+      src,
+      /spojiStanjeListe/,
+      'useListQueryState ne upisuje stanje pri montiranju — deljen link i Nazad pregledača gube filtere',
+    );
+    sadrzi(
+      src,
+      /serijalizujStanjeListe/,
+      'setValues drži sopstvenu kopiju serijalizacije umesto deljenog pomoćnika',
+    );
   });
 });
 
@@ -81,8 +184,8 @@ describe('ekrani artikala su povezani na izvor liste', () => {
 
   test('detalj artikla izvodi povratak iz `izvor`, a ne iz zakucane putanje', () => {
     const src = izvor(DETALJ);
-    sadrzi(src, /citajIzvorListeArtikala/, 'detalj ne čita odakle je došao');
-    sadrzi(src, /putanjaListeArtikala/, 'detalj ne izvodi putanju liste iz izvora');
+    sadrzi(src, /citajIzvor\(/, 'detalj ne čita odakle je došao');
+    sadrzi(src, /hrefIzvora\(/, 'detalj ne izvodi adresu liste iz izvora');
     neSadrzi(
       src,
       /listHref\(\s*['"]\/artikli['"]\s*\)/,
@@ -92,8 +195,8 @@ describe('ekrani artikala su povezani na izvor liste', () => {
 
   test('kartica artikla koristi ISTOG pomoćnika (jedan izvor za oba ekrana)', () => {
     const src = izvor(KARTICA);
-    sadrzi(src, /citajIzvorListeArtikala/, 'kartica drži sopstvenu kopiju čitanja izvora');
-    sadrzi(src, /putanjaListeArtikala/, 'kartica drži sopstvenu kopiju putanja listi');
+    sadrzi(src, /citajIzvor\(/, 'kartica drži sopstvenu kopiju čitanja izvora');
+    sadrzi(src, /hrefIzvora\(/, 'kartica drži sopstvenu kopiju putanja listi');
   });
 
   test('kartica PROSLEĐUJE izvor dalje na detalj (lager → kartica → detalj)', () => {
@@ -177,11 +280,42 @@ describe('odluka o vraćanju na zapamćeno mesto', () => {
  *     primaoca okinuo 15 sekvencijalnih agregacija nad ogledalom.
  */
 describe('mesto u listi ne curi u URL', () => {
-  test('lager ne upisuje skrol ni broj strana kroz setValues', () => {
-    const src = izvor(LAGER);
-    for (const m of src.matchAll(/setValues\(\s*\{[^}]*\}/g)) {
-      assert.ok(!/\b(skrol|strane|pozicija|scrollTop)\b/.test(m[0]), `skrol curi u URL: ${m[0]}`);
-    }
-    neSadrzi(src, /\bstrane:\s*String\(/, 'broj strana se upisuje u URL');
+  for (const [ime, fajl] of [
+    ['lager', LAGER],
+    ['pregled artikala', ARTIKLI],
+  ] as const) {
+    test(`${ime} ne upisuje skrol ni broj strana kroz setValues`, () => {
+      const src = izvor(fajl);
+      for (const m of src.matchAll(/setValues\(\s*\{[^}]*\}/g)) {
+        assert.ok(!/\b(skrol|strane|pozicija|scrollTop)\b/.test(m[0]), `skrol curi u URL: ${m[0]}`);
+      }
+      neSadrzi(src, /\bstrane:\s*String\(/, 'broj strana se upisuje u URL');
+    });
+  }
+});
+
+/**
+ * `/artikli` je druga lista sa beskonačnim skrolom (92.592 artikla, strana po 200), a do
+ * 07.08.2026 nije imala NIJEDAN deo mehanizma: ni `enabled`, ni `strane`, ni `scrollRef`.
+ */
+describe('pregled artikala pamti mesto u listi', () => {
+  test('ekran je zakačen na pamćenje mesta pod SVOJIM ključem', () => {
+    const src = izvor(ARTIKLI);
+    sadrzi(src, /useZapamcenaPozicijaListe/, 'pregled artikala ne pamti mesto u listi');
+    sadrzi(src, /kljuc:\s*'\/artikli'/, "mesto se pamti pod tuđim ključem (lager i artikli bi se gazili)");
+    sadrzi(src, /scrollRef=\{okvirRef\}/, 'skrol-okvir tabele nije predat hooku — nema šta da se vrati');
+  });
+
+  test('🔴 upit čeka filtere iz adrese (`enabled: resolved`)', () => {
+    // Bez gejta prvi render pošalje NEFILTRIRAN upit od 200 redova nad 92.592 artikla i
+    // sedne u keš pod pogrešnim ključem — a restauracija tiho otkaže (potpis se ne poklopi).
+    sadrzi(izvor(ARTIKLI), /enabled:\s*resolved/, 'lista šalje nefiltriran upit pre nego što pročita adresu');
+  });
+
+  test('keš skrola artikala preživljava posetu detalju', () => {
+    const src = izvor(MASTERS);
+    sadrzi(src, /strane:\s*strane\?\.length/, 'useArtikliSkrol ne vraća broj strana u kešu');
+    sadrzi(src, /gcTime:\s*30\s*\*\s*60_000/, 'keš ističe za 5 min — kraće od jednog pogleda u karticu');
+    sadrzi(src, /refetchOnMount:\s*false/, 'povratak ponovo dovlači SVE učitane strane redom');
   });
 });

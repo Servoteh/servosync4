@@ -9,11 +9,11 @@ import { PageHeader } from '@/components/ui-kit/page-header';
 import { StatusBadge } from '@/components/ui-kit/status-badge';
 import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
-import { listHref } from '@/lib/use-id-param';
 import {
-  citajIzvorListeArtikala,
-  putanjaListeArtikala,
-  type IzvorListeArtikala,
+  ULAZI_ARTIKAL,
+  citajIzvor,
+  hrefIzvora,
+  type IzvorArtikla,
 } from '@/lib/povratak-na-listu';
 import { parseIdParam } from '@/lib/deep-link';
 import { useArtikal, useItemLookups } from '@/api/masters';
@@ -61,20 +61,20 @@ export default function ArtikalDetaljPage() {
    *
    * Isti obrazac kao na kartici artikla; obe strane sada koriste ISTOG pomoćnika.
    */
-  const [izvor, setIzvor] = useState<IzvorListeArtikala>('artikli');
+  const [izvor, setIzvor] = useState<IzvorArtikla>('artikli');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     // `parseIdParam` je stroža od golog `Number()`: „0x10" (=16), „1e3" (=1000) i „+5" bi
     // inače prošli, pa prelomljen link iz mejla otvara TUĐI artikal (C20, kanon 077/26).
     setValidId(parseIdParam(params.get('id')));
     setRezim(params.get('rezim') === 'izmena' ? 'izmena' : 'pregled');
-    setIzvor(citajIzvorListeArtikala(window.location.search));
+    setIzvor(citajIzvor(window.location.search, ULAZI_ARTIKAL, 'artikli'));
     setIdResolved(true);
   }, []);
 
   /** Povratak na listu iz koje se došlo, SA njenim poslednjim filterima. */
   const nazadNaListu = useCallback(
-    () => router.push(listHref(putanjaListeArtikala(izvor))),
+    () => router.push(hrefIzvora(ULAZI_ARTIKAL[izvor])),
     [router, izvor],
   );
 

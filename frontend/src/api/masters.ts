@@ -419,8 +419,9 @@ export const ARTIKLI_SKROL_KAPA = 5000;
  *
  * Zašto `useInfiniteQuery`, a ne ručno skupljanje u `useState`: povratak sa
  * detalja/kartice remontira ekran, a keš upita vraća sve već dovučene strane
- * odjednom (isti `queryKey`), pa korisnik ne gubi mesto u spisku. Ručno skupljanje
- * bi krenulo od prve strane.
+ * odjednom (isti `queryKey`) — ali SAMO uz `gcTime`/`refetchOnMount` ispod (do
+ * 07.08.2026 ih nije bilo, pa je keš isticao za 5 minuta i lista je ćutke kretala
+ * od prve strane). Ručno skupljanje bi krenulo od prve strane uvek.
  *
  * Dovlačenje je UVEK na zahtev (dugme „Učitaj još"), nikad na dolazak dna: na
  * dodirnom ekranu odskok na dnu (`overscroll`) okine posmatrača više puta zaredom
@@ -431,12 +432,39 @@ export const ARTIKLI_SKROL_KAPA = 5000;
  */
 export function useArtikliSkrol(
   params: ItemListParams,
-  pageSize: number = ARTIKLI_STRANA_SKROLA,
-  kapa: number = ARTIKLI_SKROL_KAPA,
+  opcije: {
+    pageSize?: number;
+    kapa?: number;
+    /**
+     * `false` = upit se NE šalje. Ekran ga drži isključenim dok filteri iz adrese nisu
+     * pročitani: bez toga prvi render posle povratka sa detalja gađa NEFILTRIRAN upit od
+     * 200 redova nad 92.592 artikla, a taj odgovor onda i sedne u keš pod pogrešnim ključem.
+     */
+    enabled?: boolean;
+  } = {},
 ) {
+  const { pageSize = ARTIKLI_STRANA_SKROLA, kapa = ARTIKLI_SKROL_KAPA, enabled = true } = opcije;
   const upit = useInfiniteQuery({
     queryKey: ['masters', 'artikli', 'skrol', { ...params, pageSize }],
     initialPageParam: 1,
+    enabled,
+    /**
+     * 🔴 KEŠ MORA DA PREŽIVI POSETU KARTICI/DETALJU ARTIKLA.
+     *
+     * Podrazumevanih 5 minuta (`gcTime`) je kraće od jednog pogleda u karticu — po
+     * povratku bi keš bio pometen i lista bi krenula od PRVE strane, pa bi referent
+     * izgubio i mesto i sve učitane strane.
+     *
+     * `refetchOnMount: false` iz istog razloga: uz podrazumevano ponašanje bi povratak
+     * ponovo dovukao SVE učitane strane redom (do 25 uzastopnih zahteva). Svežina ovde
+     * ionako ništa ne znači — `items` puni noćni `.mdb` uvoz u 03:45, a `masters.ts` nema
+     * nijednu mutaciju nad artiklima (v. `BRANA_ARTIKAL`).
+     *
+     * ⚠️ Kad se unos/izmena artikla otključaju, ta mutacija MORA da radi
+     * `invalidateQueries(['masters','artikli'])` — inače nov artikal „nedostaje" u listi.
+     */
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
     queryFn: ({ pageParam }) =>
       apiFetch<Paginated<ItemRow>>(
         `/v1/artikli${buildItemQuery({ ...params, page: pageParam, pageSize })}`,
@@ -465,6 +493,12 @@ export function useArtikliSkrol(
     ukupno,
     /** Koliko je učitano do sad. */
     ucitano: redovi.length,
+    /**
+     * Koliko strana keš STVARNO drži u ovom trenutku. Ekran po tome zna sme li da vrati
+     * zapamćeno mesto: ako je keš u međuvremenu istekao, strana ima manje nego što je
+     * zapamćeno i restauracija se napušta umesto da se strane dovlače u petlji.
+     */
+    strane: strane?.length ?? 0,
     /** `true` = stalo se zbog KAPE, a ne zbog kraja spiska — ekran to mora reći. */
     naKapi: redovi.length >= kapa && ukupno > redovi.length,
   };

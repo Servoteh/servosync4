@@ -5,9 +5,19 @@ import { useRouter } from 'next/navigation';
 import {
   citajZapisPozicije,
   kljucPozicijeListe,
+  listStateKey,
   odlukaOPoziciji,
+  serijalizujStanjeListe,
+  spojiStanjeListe,
   type ZapisPozicijeListe,
 } from './povratak-na-listu';
+
+/**
+ * `listHref` živi u `povratak-na-listu.ts` (čist modul, bez `next/*`) da bi ga `hrefIzvora`
+ * mogao pozvati i da bi grana „ulaz nije radna lista" bila merljiva pod `node --test`.
+ * Re-eksport drži zatečenih 8 uvoza `from '@/lib/use-id-param'` netaknutim.
+ */
+export { listHref } from './povratak-na-listu';
 import { parseIdParam } from './deep-link';
 import { NAV_EVENT, emitNavEvent, searchFromNavEvent } from './use-query-tab';
 
@@ -94,14 +104,6 @@ export function useIdParam(paramName = 'id'): {
 }
 
 /**
- * Ključ pod kojim se pamti POSLEDNJE stanje jedne radne liste (filteri, strana,
- * tab) — da povratak sa detalja vrati listu tačno kakva je bila.
- */
-function listStateKey(listPath: string): string {
-  return `listState:${listPath}`;
-}
-
-/**
  * Filteri / strana / tab radne liste, DRŽANI U URL-u.
  *
  * Zašto: detalj dokumenta je zasebna ruta, pa povratak na listu remontira
@@ -115,6 +117,16 @@ function listStateKey(listPath: string): string {
  * - isto stanje ide i u `sessionStorage`, odakle ga detalj čita za dugme
  *   „Nazad" (vidi `listHref`) — radi i posle osvežavanja i za deljen link;
  * - `popstate` se sluša da browser Nazad/Napred vrati i vrednosti filtera.
+ *
+ * 🔴 UPIS U PAMĆENJE IDE I PRI MONTIRANJU, NE SAMO IZ `setValues` (07.08.2026). Dok je
+ * pamćenje punio isključivo `setValues`, ono je bilo tačno samo ako je korisnik LIČNO
+ * pipnuo filter u toj poseti — a to je grešilo u OBA smera:
+ *   • deljen link `/robno?vrsta=UL&strana=7` (ili povratak kroz Nazad pregledača) → klik
+ *     na red → „Nazad" vraća golu listu, jer `listHref` nema šta da pročita;
+ *   • suprotno: korisnik ranije u sesiji filtrira, ode drugde, pa uđe čist iz sidebara →
+ *     „Nazad" mu vrati filtere kojih na ekranu nema.
+ * Popravka je namerno OVDE, u brani, a ne na ekranima: hook koristi 8 radnih listi, pa bi
+ * ispravljanje na pozivaocu značilo osam kopija iste zakrpe.
  */
 export function useListQueryState<T extends Record<string, string>>(
   defaults: T,
@@ -136,27 +148,48 @@ export function useListQueryState<T extends Record<string, string>>(
     return next;
   }, []);
 
+  /**
+   * Pamćenje se poravnava sa ADRESOM, bez `router.replace` — upis pri montiranju ne sme
+   * da pravi unos u istoriji, jer ovde ništa nije ni promenjeno.
+   */
+  const upisiIzAdrese = useCallback((next: T) => {
+    const path = window.location.pathname;
+    try {
+      const kljuc = listStateKey(path);
+      window.sessionStorage.setItem(
+        kljuc,
+        spojiStanjeListe(
+          window.sessionStorage.getItem(kljuc),
+          window.location.search,
+          next,
+          defaultsRef.current,
+        ),
+      );
+    } catch {
+      // privatni režim / pun storage — povratak radi i bez pamćenja
+    }
+  }, []);
+
   useEffect(() => {
     const initial = readFromLocation();
     setState(initial);
     setResolved(true);
-    const onPop = () => setState(readFromLocation());
+    upisiIzAdrese(initial);
+    const onPop = () => {
+      const next = readFromLocation();
+      setState(next);
+      upisiIzAdrese(next);
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
-  }, [readFromLocation]);
+  }, [readFromLocation, upisiIzAdrese]);
 
   const setValues = useCallback(
     (patch: Partial<T>) => {
       setState((prev) => {
         const next = { ...prev, ...patch };
-        const q = new URLSearchParams();
-        for (const [k, v] of Object.entries(next)) {
-          // Podrazumevana vrednost se NE piše u URL — adresa ostaje čitljiva.
-          if (v !== '' && v !== (defaultsRef.current as Record<string, string>)[k]) {
-            q.set(k, v);
-          }
-        }
-        const search = q.toString();
+        // Podrazumevana vrednost se NE piše u URL — adresa ostaje čitljiva.
+        const search = serijalizujStanjeListe(next, defaultsRef.current);
         const path = window.location.pathname;
         router.replace(search ? `${path}?${search}` : path);
         try {
@@ -171,20 +204,6 @@ export function useListQueryState<T extends Record<string, string>>(
   );
 
   return { values, resolved, setValues };
-}
-
-/**
- * Adresa radne liste SA poslednjim filterima — za dugme „Nazad" na detalju.
- * Kad ničega nema u pamćenju (deljen link, novi tab), vraća čistu listu.
- */
-export function listHref(listPath: string): string {
-  if (typeof window === 'undefined') return listPath;
-  try {
-    const search = window.sessionStorage.getItem(listStateKey(listPath));
-    return search ? `${listPath}?${search}` : listPath;
-  } catch {
-    return listPath;
-  }
 }
 
 /**

@@ -12,7 +12,7 @@ import { Select } from '@/components/ui-kit/select';
 import { Input } from '@/components/ui-kit/form-field';
 import { Button } from '@/components/ui-kit/button';
 import { cn } from '@/lib/cn';
-import { listHref, useListQueryState } from '@/lib/use-id-param';
+import { listHref, useListQueryState, useZapamcenaPozicijaListe } from '@/lib/use-id-param';
 import { exportTableToCsv, type CsvColumn } from '@/lib/table-csv';
 import { formatDecimal, formatNumber } from '@/lib/format';
 import {
@@ -407,7 +407,7 @@ export default function ArtikliPage() {
 
   // Filteri i sort žive U URL-u (frontend/CLAUDE.md §12) — povratak sa detalja
   // artikla vraća listu tačno kakva je bila. Strane nema: lista se skroluje.
-  const { values, setValues } = useListQueryState(PRAZAN_FILTER);
+  const { values, resolved, setValues } = useListQueryState(PRAZAN_FILTER);
 
   // Tekstualna polja se kucaju lokalno, pa se posle KUCANJE_MS upisuju u URL.
   // `jm` je ovde zbog TEKSTUALNOG rezervnog polja (šifarnik jedinica nije stigao);
@@ -494,7 +494,28 @@ export default function ArtikliPage() {
     [values, sort],
   );
 
-  const { upit, redovi, ukupno, ucitano, naKapi } = useArtikliSkrol(filters);
+  const { upit, redovi, ukupno, ucitano, strane, naKapi } = useArtikliSkrol(filters, {
+    enabled: resolved,
+  });
+
+  /**
+   * MESTO U LISTI — povratak sa kartice/detalja vraća i skrol i učitane strane.
+   *
+   * `potpis` je CEO serverski filter (uključujući sort i smer): promena bilo čega je
+   * druga lista, pa se zapis briše i skrol ide na vrh — inače bi korisnik posle
+   * filtriranja završio nasred spiska koji nikad nije video.
+   * Ključ `/artikli` je odvojen prostor od `/artikli/lager`, da dve liste ne gaze mesto
+   * jedna drugoj.
+   */
+  const potpisFiltera = useMemo(() => JSON.stringify(filters), [filters]);
+  const { okvirRef, izgubljenoRedova } = useZapamcenaPozicijaListe({
+    kljuc: '/artikli',
+    potpis: potpisFiltera,
+    spremno: resolved && redovi.length > 0,
+    straneUKesu: strane,
+    redova: redovi.length,
+  });
+
   const lookups = useItemLookups();
   const sifarnici = lookups.data?.data;
 
@@ -993,12 +1014,15 @@ export default function ArtikliPage() {
             columns={columns}
             rows={redovi}
             rowKey={(a) => a.id}
-            loading={upit.isLoading}
+            // Dok upit čeka filtere iz adrese `isLoading` je `false`, pa bi tabela na
+            // tren nacrtala „Nema artikala" — otud `!resolved`.
+            loading={!resolved || upit.isLoading}
             sort={sort}
             onSortToggle={prebaciSort}
             stickyHeader
             frozenColumns={2}
             maxHeight={VISINA_TABELE}
+            scrollRef={okvirRef}
             rowActions={akcijeZaRed}
             selectedKey={izabran?.id ?? null}
             onSelectionChange={izaberi}
@@ -1018,6 +1042,16 @@ export default function ArtikliPage() {
           <span className="text-sm text-ink-secondary">
             Prikazano {formatNumber(ucitano)} od {formatNumber(ukupno)}
           </span>
+
+          {/* Bio je ovde duže nego što keš živi (ili je lista otvorena u novom tabu), pa
+              se zapamćeno mesto NE vraća — dovlačenje 25 strana redom bi bio plotun
+              zahteva. Umesto toga se kaže dokle je ranije bio stigao, a „Učitaj još"
+              stoji odmah pored. */}
+          {izgubljenoRedova > ucitano && (
+            <span className="text-sm text-ink-secondary">
+              ranije učitano {formatNumber(izgubljenoRedova)} redova
+            </span>
+          )}
 
           {upit.hasNextPage && (
             <Button
