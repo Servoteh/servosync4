@@ -83,9 +83,16 @@ export class InventoryService {
    * `stock_documents.inventory_count_id` postoji od početka (upisuje je `finalize`), pa
    * detalj samo mora da je pročita.
    *
-   * Uzima se NAJVEĆI id po vrsti (`orderBy: desc` + prvi pogodak): `finalize` pre svakog
-   * pokušaja obriše bezbedne dokumente prethodnog (palog) pokušaja, pa je u praksi po
-   * jedan — ali ako ih ikad bude više, važi POSLEDNJE zaključivanje, ne prvo.
+   * Uzima se NAJVEĆI id po vrsti (`orderBy: desc` + prvi pogodak). Ne zato što
+   * `finalize` ume da napravi dva — CAS na statusu (COUNTING → POSTED) to ne dopušta, a
+   * pre svakog pokušaja se bezbedni dokumenti palog prethodnog pokušaja i obrišu.
+   * Duplikat dolazi DRUGIM putem: veza je obično polje na dokumentu, pa je `POST
+   * /robno/documents` sa `inventoryCountId` u telu (`CreateStockDocumentDto`) sme upisati
+   * ručno, koliko god puta. Za takav slučaj nema „tačnog" odgovora — bira se najskoriji,
+   * jer je to ono što je korisnik poslednje napravio.
+   *
+   * ⚠️ Indeks: `stock_documents (inventory_count_id, kind) WHERE inventory_count_id IS NOT
+   * NULL` — parcijalni, SQL-only (migracija 20260807120000), kao `uq_stock_documents_po`.
    */
   async get(id: number) {
     const count = await this.prisma.inventoryCount.findUnique({

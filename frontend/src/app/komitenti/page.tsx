@@ -160,7 +160,9 @@ export default function KomitentiPage() {
     <AppShell>
       <PageHeader
         title="Komitenti"
-        count={meta ? `${formatNumber(meta.total)} komitenata` : undefined}
+        // `resolved` iz istog razloga kao `enabled` na upitu: dok pretraga iz adrese nije
+        // pročitana, keš pod PODRAZUMEVANIM ključem vraća broj NEFILTRIRANE liste.
+        count={resolved && meta ? `${formatNumber(meta.total)} komitenata` : undefined}
         actions={
           <div className="flex items-center gap-2">
             <SearchBox
@@ -210,7 +212,9 @@ export default function KomitentiPage() {
           }
         />
 
-        {meta && meta.totalPages > 1 && (
+        {/* I pager čeka `resolved`: pre toga `meta` opisuje tuđi (podrazumevani) ključ, pa
+            bi „Prethodna/Sledeća" pomerala stranu nad brojem koji ne pripada ovoj listi. */}
+        {resolved && meta && meta.totalPages > 1 && (
           <Pager
             page={meta.page}
             totalPages={meta.totalPages}

@@ -74,7 +74,12 @@ export interface InventoryCountItem {
  * (`stock_documents.inventory_count_id`) umesto iz odgovora jedne mutacije. Bez njih je
  * panel drzao id-eve u `useState`, pa je povratak sa dokumenta viska (remount strane)
  * brisao dugme za manjak -- popis sa oba dokumenta ostavljao je korisnika bez puta do
- * drugog. `null` = ta vrsta razlike nije ni postojala (ili popis jos nije zakljucen).
+ * drugog.
+ *
+ * `null` znaci SAMO „za ovaj popis nema dokumenta te vrste" -- nista vise. Ne sme se
+ * citati kao „popis jos nije zakljucen": zakljucen popis bez ijedne razlike u toj vrsti
+ * nema sta ni da napravi, a i POSTED popis moze imati samo visak ili samo manjak. Status
+ * se cita iz `status`, jedinog polja koje ga nosi.
  */
 export interface InventoryCountDetail extends InventoryCountRow {
   note?: string | null;
@@ -169,12 +174,20 @@ export function useInventoryCounts() {
 /**
  * Detalj jednog popisa (zaglavlje + stavke) -- GET /inventory-counts/:id.
  * `enabled` gasi upit dok id nije poznat (selekcija u master listi).
+ *
+ * 🔴 `gcTime` je podignut zbog POVRATKA SA DOKUMENTA RAZLIKE (07.08.2026). Visinu strane
+ * `/robno/popis` pravi panel detalja, pa vraćanje skrola čeka baš ove stavke (v. `spremno`
+ * na toj strani). Uz podrazumevanih 5 minuta bi svaki povratak duži od toga zatekao prazan
+ * keš, pa bi strana bila kratka dok stavke ne stignu — a dotle je pregledač već odsekao
+ * `scrollTop`. Isti razlog kao kod beskonačnih listi, samo bez `staleTime`: popisane
+ * količine se menjaju U TOKU rada (`useUpdateCountItem`) i moraju biti sveže.
  */
 export function useInventoryCount(id: number | null) {
   return useQuery({
     queryKey: id != null ? KEYS.detail(id) : [...KEYS.list, 'detail', null],
     queryFn: () => apiFetch<Envelope<InventoryCountDetail>>(`${BASE}/${id}`),
     enabled: id != null,
+    gcTime: 30 * 60_000,
   });
 }
 

@@ -15,7 +15,7 @@ import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatNumber } from '@/lib/format';
 import { useListQueryState, useZapamcenaPozicijaListe } from '@/lib/use-id-param';
 import { parseIdParam } from '@/lib/deep-link';
-import { useInventoryCounts, type InventoryCountRow } from '@/api/inventory';
+import { useInventoryCount, useInventoryCounts, type InventoryCountRow } from '@/api/inventory';
 import { NewCountDialog } from './new-count-dialog';
 import { CountDetail, popisStatusMeta } from './count-detail';
 
@@ -62,6 +62,19 @@ export default function PopisPage() {
   const total = rows.length;
 
   /**
+   * 🔴 VISINU STRANE PRAVI PANEL DETALJA, PA I RESTAURACIJA MORA DA GA SAČEKA
+   * (07.08.2026).
+   *
+   * Isti upit koji vrti `CountDetail` ispod — ISTI `queryKey`, dakle jedan jedini zahtev,
+   * samo još jedan posmatrač nad istim kešom. Bez njega je `spremno` postajalo `true` čim
+   * stigne master lista (nekoliko redova, strana kratka), a `useZapamcenaPozicijaListe` u
+   * istom `rAF`-u postavi `scrollTop` pa odmah pozove `upisi()`: dok stavki još nema,
+   * pregledač odseče vrednost na maksimum kratke strane i hook tu odsečenu vrednost upiše
+   * NAZAD preko zapisa. `resenoRef` je time potrošen, pa druge prilike nema.
+   */
+  const detalj = useInventoryCount(selectedId);
+
+  /**
    * MESTO U LISTI. Panel detalja se crta ISPOD liste, pa je korisnik pri zaključivanju
    * popisa skrolovan nadole — povratak sa dokumenta viška ga je vraćao na vrh.
    *
@@ -73,7 +86,7 @@ export default function PopisPage() {
   const { okvirRef } = useZapamcenaPozicijaListe({
     kljuc: '/robno/popis',
     potpis: '',
-    spremno: resolved && rows.length > 0,
+    spremno: resolved && rows.length > 0 && (selectedId == null || !!detalj.data),
     straneUKesu: list.data ? 1 : 0,
     redova: rows.length,
   });

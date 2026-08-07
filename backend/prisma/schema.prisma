@@ -3958,6 +3958,9 @@ model StockDocument {
   // (20260727120000_prenos_izmedju_magacina) — parcijalne indekse Prisma ne ume da izrazi.
   // purchaseOrderId pokriva SQL-only parcijalni unique uq_stock_documents_po
   // (20260723140000_review_fixes_guards) — poseban plain indeks je bio duplikat.
+  // inventoryCountId pokriva SQL-only parcijalni idx_stock_documents_inventory_count
+  // ((inventory_count_id, kind) WHERE inventory_count_id IS NOT NULL, migracija
+  // 20260807120000_popis_dokumenti_razlike_idx) — detalj popisa čita dokumente razlike.
   @@map("stock_documents")
 }
 

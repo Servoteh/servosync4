@@ -152,6 +152,30 @@ export function hrefIzvora(ulaz: UlazUDetalj): string {
 }
 
 /**
+ * ADRESA DETALJA PRI PREBACIVANJU PREGLED ↔ IZMENA — čuva SVE što je već u njoj.
+ *
+ * 🔴 Do 07.08.2026 su `artikli/detalj` i `komitenti/detalj` prepisivali adresu na
+ * `?id=N[&rezim=izmena]` i time BRISALI `?izvor=`. Posledica: lager → „Detaljno" →
+ * „Izmeni" → F5 → „Nazad" vodi na `/artikli` (podrazumevani ulaz), a ne na lager iz kog
+ * je korisnik došao — baš u toku u kome je i prijavljen kvar. `izvor` je deo identiteta
+ * zapisa na ekranu, isto kao `id`, i ne sme da nestane zato što se menja režim.
+ *
+ * Gradi se iz ZATEČENOG `search`-a, pa preživljava i svaki naredni parametar koji neko
+ * doda; `rezim` se dopisuje ili briše, `id` se poravnava sa prikazanim zapisom.
+ */
+export function adresaDetaljaSaRezimom(
+  search: string,
+  id: number,
+  rezim: 'pregled' | 'izmena',
+): string {
+  const q = new URLSearchParams(search);
+  q.set('id', String(id));
+  if (rezim === 'izmena') q.set('rezim', 'izmena');
+  else q.delete('rezim');
+  return `?${q.toString()}`;
+}
+
+/**
  * Ulazi u karticu i detalj ARTIKLA. Podrazumevani (`artikli`) se NE upisuje u adresu —
  * deljen link ostaje čitljiv, a izostavljena vrednost pada baš na njega.
  */

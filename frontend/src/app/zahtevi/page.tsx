@@ -219,18 +219,28 @@ function useSkrolZahteva({
   resolved,
   imaPodatke,
   redova,
+  crtaSeLista = true,
 }: {
   okvir: HTMLDivElement | null;
   values: Record<string, string>;
   resolved: boolean;
   imaPodatke: boolean;
   redova: number;
+  /**
+   * 🔴 `false` na tabovima koji NE crtaju listu zahteva (Nagrade, Odluke) — 07.08.2026.
+   *
+   * Upit liste ide bez obzira na tab, pa su `imaPodatke` i `redova` tačni i tamo gde
+   * tabele nema. Restauracija se izvodi TAČNO JEDNOM (`resenoRef`): kad bi `spremno`
+   * postalo `true` nad DOM-om tuđeg taba, jedina prilika da se vrati mesto potrošila bi
+   * se u prazno, a upis bi preko zapisa prelio skrol tog drugog taba.
+   */
+  crtaSeLista?: boolean;
 }) {
   const { okvirRef } = useZapamcenaPozicijaListe({
     kljuc: '/zahtevi',
     potpis: JSON.stringify(values),
-    spremno: resolved && redova > 0,
-    straneUKesu: imaPodatke ? 1 : 0,
+    spremno: crtaSeLista && resolved && redova > 0,
+    straneUKesu: crtaSeLista && imaPodatke ? 1 : 0,
     redova,
   });
   useEffect(() => {
@@ -382,10 +392,17 @@ function AdminView({ okvir }: { okvir: HTMLDivElement | null }) {
   const counts = inboxMeta.data?.data.byStatus ?? {};
   const inboxTotal = inboxMeta.data?.data.total ?? 0;
 
-  useSkrolZahteva({ okvir, values, resolved, imaPodatke: !!list.data, redova: rows.length });
-
   // Tabovi koji prikazuju listu zahteva (nagrade/odluke imaju svoj sadržaj).
   const isListTab = tab === 'inbox' || tab === 'all' || tab === 'archive';
+
+  useSkrolZahteva({
+    okvir,
+    values,
+    resolved,
+    imaPodatke: !!list.data,
+    redova: rows.length,
+    crtaSeLista: isListTab,
+  });
 
   function applySearch() {
     setValues({ trazi: qInput.trim(), strana: '1' });

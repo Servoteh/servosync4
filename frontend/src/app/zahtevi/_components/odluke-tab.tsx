@@ -46,7 +46,7 @@ export function OdlukeTab({ canWrite }: { canWrite: boolean }) {
    * 🔴 `defaults` nosi i sve ključeve roditelja: bez njih bi `setValues` obrisao
    * `tab=odluke` iz adrese i vratio administratora na Inbox.
    */
-  const { values, setValues } = useListQueryState({
+  const { values, resolved, setValues } = useListQueryState({
     ...STANJE_LISTE_ZAHTEVA,
     odlukeStrana: '1',
     odlukeTrazi: '',
@@ -69,16 +69,32 @@ export function OdlukeTab({ canWrite }: { canWrite: boolean }) {
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
 
-  const list = useDecisions({
-    q: q || undefined,
-    tag: tag || undefined,
-    status: statusFilter || undefined,
-    page,
-    pageSize: TAKE,
-  });
+  /**
+   * 🔴 `resolved` GEJT IDE I NA UPIT I NA PRIKAZ (07.08.2026).
+   *
+   * Roditelj uslovno montira ovaj tab (`{tab === 'odluke' && <OdlukeTab />}`), pa se
+   * komponenta REMONTIRA na svaki povratak i uvek ima jedan render pre efekta — sa
+   * PODRAZUMEVANIM vrednostima (strana 1, bez pretrage). `enabled: false` gasi zahtev,
+   * ali ne i čitanje keša, pa je povratak na `?tab=odluke&odlukeTrazi=…&odlukeStrana=3`
+   * iscrtavao stranu 1 bez pretrage pre nego što ga drugi render zameni.
+   *
+   * `ucitava` postoji jer je uz isključen upit `isLoading` netačno `false` — bez njega bi
+   * ekran u istom trenu napisao „Nema odluka".
+   */
+  const list = useDecisions(
+    {
+      q: q || undefined,
+      tag: tag || undefined,
+      status: statusFilter || undefined,
+      page,
+      pageSize: TAKE,
+    },
+    resolved,
+  );
 
-  const rows = list.data?.data ?? [];
-  const totalPages = list.data?.meta.pagination.totalPages ?? 1;
+  const rows = resolved ? (list.data?.data ?? []) : [];
+  const ucitava = !resolved || list.isLoading;
+  const totalPages = resolved ? (list.data?.meta.pagination.totalPages ?? 1) : 1;
 
   return (
     <div className="space-y-3">
@@ -134,13 +150,13 @@ export function OdlukeTab({ canWrite }: { canWrite: boolean }) {
         )}
       </div>
 
-      {list.error && (
+      {resolved && list.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
           {(list.error as Error).message}
         </div>
       )}
 
-      {rows.length === 0 && !list.isLoading ? (
+      {rows.length === 0 && !ucitava ? (
         <EmptyState
           title="Nema odluka"
           hint="Decision Log beleži tehničke i poslovne odluke sa obrazloženjem. Dodajte prvu ili je zabeležite uz odluku o zahtevu."

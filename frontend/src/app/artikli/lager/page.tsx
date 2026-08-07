@@ -805,7 +805,9 @@ export default function LagerPage() {
     <AppShell>
       <PageHeader
         title="Lager lista"
-        count={upit.data ? `${formatNumber(ukupno)} redova` : undefined}
+        // `resolved` iz istog razloga kao `enabled` na upitu: dok filteri iz adrese nisu
+        // pročitani, keš pod PODRAZUMEVANIM ključem vraća broj NEFILTRIRANE liste.
+        count={resolved && upit.data ? `${formatNumber(ukupno)} redova` : undefined}
         actions={
           <div className="flex items-center gap-2">
             <Button
@@ -1070,9 +1072,13 @@ export default function LagerPage() {
         {/* Brojač + dovlačenje NA ZAHTEV. Automatsko dovlačenje na dolazak dna se ne
             koristi: na dodirnom ekranu odskok na dnu okine posmatrača više puta. */}
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm text-ink-secondary">
-            Prikazano {formatNumber(ucitano)} od {formatNumber(ukupno)}
-          </span>
+          {/* Brojači su izvan tabele, pa ih `loading` na `DataTable` ne pokriva: dok filteri
+              iz adrese nisu pročitani, `ucitano`/`ukupno` dolaze iz keša NEFILTRIRANE liste. */}
+          {resolved && (
+            <span className="text-sm text-ink-secondary">
+              Prikazano {formatNumber(ucitano)} od {formatNumber(ukupno)}
+            </span>
+          )}
 
           {/* Bio je ovde duže nego što keš živi (ili je lista otvorena u novom tabu), pa
               se zapamćeno mesto NE vraća — dovlačenje 15 strana redom bi bio plotun
@@ -1084,7 +1090,8 @@ export default function LagerPage() {
             </span>
           )}
 
-          {upit.hasNextPage && (
+          {/* I dugme čeka `resolved`: klik pre toga bi dovukao stranu 2 POGREŠNOG ključa. */}
+          {resolved && upit.hasNextPage && (
             <Button
               type="button"
               variant="secondary"
@@ -1095,7 +1102,7 @@ export default function LagerPage() {
             </Button>
           )}
 
-          {naKapi && (
+          {resolved && naKapi && (
             <span className="text-sm text-status-warn">
               Prikazano {formatNumber(LAGER_SKROL_KAPA)} od {formatNumber(ukupno)} — suzi filter
               ili izvezi u Excel

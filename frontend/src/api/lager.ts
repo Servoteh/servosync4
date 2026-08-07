@@ -3,6 +3,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { apiFetch } from './client';
+import { KES_BESKONACNE_LISTE } from './kes-liste';
 import type { CodeRef } from './masters';
 import { useWarehousesLookup } from './lookups';
 
@@ -270,21 +271,12 @@ export function useLagerSkrol(
     initialPageParam: 1,
     enabled,
     /**
-     * 🔴 KEŠ MORA DA PREŽIVI POSETU DETALJU ARTIKLA.
-     *
-     * Podrazumevanih 5 minuta (`gcTime`) je kraće od jednog pogleda u karticu artikla —
-     * po povratku bi keš bio pometen i lista bi krenula od PRVE strane, pa bi magacioner
-     * izgubio i mesto i svih 15 učitanih strana. 30 minuta pokriva stvarnu radnju.
-     *
-     * `refetchOnMount: false` iz istog razloga: uz podrazumevano ponašanje bi povratak
-     * ponovo dovukao SVE učitane strane redom (do 25 uzastopnih agregacija nad
-     * ogledalom). Svežina ovde ionako ništa ne znači — `*_mirror` tabele puni noćni
-     * `.mdb` uvoz u 03:45, pa se podaci tokom radnog dana ne menjaju. Jedina izmena koja
-     * ih dira (`useSetMinimalnaKolicina`) poništava keš izričito i tada se osvežavanje
-     * svejedno dešava.
+     * 🔴 KEŠ MORA DA PREŽIVI POSETU DETALJU ARTIKLA, I POVRATAK NE SME DA BUDE PLOTUN —
+     * obrazloženje i merenje su u `kes-liste.ts` (`kes-liste.spec.ts`). Jedina mutacija
+     * koja dira ove podatke (`useSetMinimalnaKolicina`) poništava keš izričito, pa
+     * osvežavanje tada svejedno prolazi kroz `staleTime`.
      */
-    gcTime: 30 * 60_000,
-    refetchOnMount: false,
+    ...KES_BESKONACNE_LISTE,
     queryFn: ({ pageParam }) =>
       apiFetch<LagerResponse>(`/v1/artikli/lager${buildLagerQuery({ ...params, page: pageParam, pageSize })}`),
     getNextPageParam: (poslednja, sve) => {

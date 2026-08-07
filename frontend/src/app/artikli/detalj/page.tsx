@@ -11,6 +11,7 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import {
   ULAZI_ARTIKAL,
+  adresaDetaljaSaRezimom,
   citajIzvor,
   hrefIzvora,
   type IzvorArtikla,
@@ -115,11 +116,16 @@ export default function ArtikalDetaljPage() {
     [sifarnici.data, vrednosti],
   );
 
-  /** Režim ide i u URL (`replace`, ne `push`) — osvežavanje ne izbacuje iz izmene. */
+  /**
+   * Režim ide i u URL (`replace`, ne `push`) — osvežavanje ne izbacuje iz izmene.
+   * Adresa se GRADI iz zatečene (`adresaDetaljaSaRezimom`), a ne sklapa iz `id`: sklapanje
+   * je brisalo `?izvor=`, pa je lager → Detaljno → Izmeni → F5 → „Nazad" vodio na
+   * `/artikli` umesto na lager.
+   */
   function promeniRezim(sledeci: Rezim) {
     setRezim(sledeci);
     if (validId === null) return;
-    const put = sledeci === 'izmena' ? `?id=${validId}&rezim=izmena` : `?id=${validId}`;
+    const put = adresaDetaljaSaRezimom(window.location.search, validId, sledeci);
     window.history.replaceState(null, '', `${window.location.pathname}${put}`);
   }
 

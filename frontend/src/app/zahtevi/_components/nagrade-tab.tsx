@@ -51,20 +51,36 @@ function MonthlyPayout() {
    * `setValues` serijalizuje samo svoje ključeve, pa bi bez toga prva promena meseca
    * obrisala `tab=nagrade` iz adrese i vratila administratora na Inbox.
    */
-  const { values, setValues } = useListQueryState({
+  const { values, resolved, setValues } = useListQueryState({
     ...STANJE_LISTE_ZAHTEVA,
     mesec: currentMonth(),
   });
   const month = values.mesec;
   const setMonth = (v: string) => setValues({ mesec: v });
-  const report = usePayoutReport(month);
+  const report = usePayoutReport(month, resolved);
   const closeMonth = useCloseMonth();
   const [confirmClose, setConfirmClose] = useState(false);
   // Tihi režim (24.07): korisnici inače ne vide nagrade; admin OPCIONO (default OFF) može pri
   // zaključenju poslati zbirni mesečni pregled (spisak zahteva + ukupan iznos, bez ocena).
   const [notifyUsers, setNotifyUsers] = useState(false);
 
-  const data = report.data?.data;
+  /**
+   * 🔴 `resolved` GEJT IDE I NA UPIT I NA PRIKAZ — POGREŠAN NOVAC NA EKRANU ZA
+   * ZAKLJUČENJE MESECA (07.08.2026).
+   *
+   * Roditelj uslovno montira ovaj tab (`{tab === 'nagrade' && <NagradeTab />}`), pa se
+   * komponenta REMONTIRA na svaki povratak i uvek ima jedan render pre efekta. U tom
+   * renderu `mesec` još nije iz adrese nego je TEKUĆI mesec — a baš taj ključ je gotovo
+   * uvek u kešu, jer je administrator na njemu i počeo. Zato `enabled: resolved` nije
+   * dovoljan: `enabled: false` gasi ZAHTEV, ali ne i čitanje keša, pa bi administrator
+   * koji se vraća u obračun jula na tren video avgustovske iznose po korisnicima i
+   * „Ukupno … RSD". Prikaz zato čeka isti gejt.
+   *
+   * `ucitava` postoji jer je uz isključen upit `isLoading` netačno `false` — bez njega bi
+   * ekran u istom trenu napisao „Nema potvrđenih nagrada" za mesec koji tek stiže.
+   */
+  const data = resolved ? report.data?.data : undefined;
+  const ucitava = !resolved || report.isLoading;
   const closed = data?.closed ?? false;
   const empty = (data?.itemCount ?? 0) === 0;
 
@@ -95,7 +111,7 @@ function MonthlyPayout() {
         </div>
         <Button
           variant="primary"
-          disabled={closed || empty || report.isLoading}
+          disabled={closed || empty || ucitava}
           loading={closeMonth.isPending}
           onClick={() => setConfirmClose(true)}
           title={
@@ -111,7 +127,7 @@ function MonthlyPayout() {
       </div>
       </HelpSpot>
 
-      {report.error && (
+      {resolved && report.error && (
         <div className="rounded-panel border border-status-danger/40 bg-status-danger-bg px-4 py-3 text-sm text-status-danger">
           {(report.error as Error).message}
         </div>
@@ -131,7 +147,7 @@ function MonthlyPayout() {
           ))}
         </div>
       ) : (
-        !report.isLoading && (
+        !ucitava && (
           <EmptyState
             title="Nema potvrđenih nagrada"
             hint="Za izabrani mesec nema potvrđenih ocena. Potvrdite ocene u Inbox-u ili detalju zahteva."

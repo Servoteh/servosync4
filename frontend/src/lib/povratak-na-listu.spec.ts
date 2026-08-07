@@ -6,6 +6,7 @@ import {
   ULAZI_ARTIKAL,
   ULAZI_KOMITENT,
   ULAZI_ROBNI_DOKUMENT,
+  adresaDetaljaSaRezimom,
   citajIzvor,
   citajZapisPozicije,
   hrefIzvora,
@@ -668,8 +669,14 @@ describe('pregled artikala pamti mesto u listi', () => {
   test('keš skrola artikala preživljava posetu detalju', () => {
     const src = izvor(MASTERS);
     sadrzi(src, /strane:\s*strane\?\.length/, 'useArtikliSkrol ne vraća broj strana u kešu');
-    sadrzi(src, /gcTime:\s*30\s*\*\s*60_000/, 'keš ističe za 5 min — kraće od jednog pogleda u karticu');
-    sadrzi(src, /refetchOnMount:\s*false/, 'povratak ponovo dovlači SVE učitane strane redom');
+    // Same keš opcije su od 07.08.2026 u `api/kes-liste.ts` i pokrivene su MERENJEM
+    // (`kes-liste.spec.ts` broji pozive `queryFn` pri montiranju sa promenom ključa) —
+    // ovde ostaje samo veza, jer prepisan spisak literala ovde ništa ne bi dokazao.
+    sadrzi(
+      src,
+      /\.\.\.KES_BESKONACNE_LISTE/,
+      'useArtikliSkrol ne koristi zajednički keš profil — keš ističe za 5 min i povratak dovlači sve strane redom',
+    );
   });
 });
 
@@ -768,4 +775,159 @@ describe('nijedan ekran ne vrti dovlačenje pri montiranju', () => {
       );
     });
   }
+});
+
+// ───────────────────── D. adversarijalni pregled paketa (07.08.2026) — druga runda
+
+/**
+ * 🔴 TAB KOJI RODITELJ USLOVNO MONTIRA UVEK IMA JEDAN RENDER SA `resolved === false`.
+ *
+ * `/zahtevi` montira Nagrade i Odluke kroz `{tab === '…' && <Tab />}`, pa se komponenta
+ * REMONTIRA na svaki povratak i prvi render ide sa PODRAZUMEVANIM vrednostima (tekući
+ * mesec, strana 1, bez pretrage). `enabled: false` gasi ZAHTEV, ali ne i čitanje keša —
+ * a baš podrazumevani ključ je gotovo uvek u kešu. Zato brana mora i na PRIKAZ:
+ * administrator koji se vraća u obračun jula je video kadar AVGUSTOVSKIH iznosa po
+ * korisnicima i „Ukupno … RSD" — pogrešan novac na ekranu za zaključenje meseca.
+ */
+describe('zahtevi: tabovi Nagrade i Odluke imaju branu `resolved`', () => {
+  test('🔴 obračun nagrada: i upit i prikaz čekaju mesec iz adrese', () => {
+    const src = izvor(ZAHTEVI_NAGRADE);
+    sadrzi(src, /\bresolved\b[^\n]*\}\s*=\s*useListQueryState/, 'tab ne uzima `resolved` iz `useListQueryState`');
+    sadrzi(src, /usePayoutReport\([^)]*\bresolved\b/, 'obračun se traži pre nego što se pročita mesec iz adrese');
+    sadrzi(
+      src,
+      /const data = resolved \?/,
+      '🔴 iznosi po korisnicima i „Ukupno … RSD" se crtaju iz keša TEKUĆEG meseca — `enabled: false` ne gasi čitanje keša',
+    );
+    sadrzi(src, /const ucitava = !resolved/, 'uz isključen upit `isLoading` je netačno `false` — ekran napiše „Nema potvrđenih nagrada"');
+  });
+
+  test('🔴 odluke: i upit i prikaz čekaju stranu/pretragu iz adrese', () => {
+    const src = izvor(ZAHTEVI_ODLUKE);
+    sadrzi(src, /\bresolved\b[^\n]*\}\s*=\s*useListQueryState/, 'tab ne uzima `resolved` iz `useListQueryState`');
+    const poziv = odsecak(src, /const list = useDecisions\(/, /\n\s*\);/);
+    sadrzi(poziv, /\bresolved\b/, 'lista odluka se traži pre nego što se pročita adresa');
+    sadrzi(
+      src,
+      /const rows = resolved \?/,
+      'povratak na `?odlukeTrazi=…&odlukeStrana=3` iscrtava stranu 1 bez pretrage (keš podrazumevanog ključa)',
+    );
+    sadrzi(src, /const ucitava = !resolved/, 'uz isključen upit `isLoading` je netačno `false` — ekran napiše „Nema odluka"');
+  });
+
+  test('🔴 restauracija mesta se NE troši na tabu koji listu ne crta', () => {
+    // Upit liste ide bez obzira na tab, pa su `imaPodatke`/`redova` tačni i na Nagradama.
+    // Restauracija se izvodi TAČNO JEDNOM: kad bi `spremno` postalo `true` nad DOM-om
+    // tuđeg taba, jedina prilika da se vrati mesto potrošila bi se u prazno.
+    sadrzi(
+      izvor(ZAHTEVI),
+      /crtaSeLista:\s*isListTab/,
+      'pamćenje mesta ne zna na kom je tabu — `spremno` postaje `true` nad DOM-om Nagrada/Odluka',
+    );
+  });
+});
+
+/**
+ * 🔴 `promeniRezim` je brisao `?izvor=` iz adrese.
+ *
+ * Adresa se sklapala iz `id` (`?id=N[&rezim=izmena]`), pa je lager → „Detaljno" →
+ * „Izmeni" → F5 → „Nazad" vodio na `/artikli` umesto na lager. `izvor` je deo identiteta
+ * onoga što je na ekranu, isto kao `id`, i ne sme da nestane zato što se menja režim.
+ */
+describe('prebacivanje pregled ↔ izmena čuva izvor liste', () => {
+  test('izvor i svaki drugi parametar preživljavaju ulazak u izmenu', () => {
+    const u = new URLSearchParams(adresaDetaljaSaRezimom('?id=42&izvor=lager', 42, 'izmena'));
+    assert.equal(u.get('izvor'), 'lager');
+    assert.equal(u.get('rezim'), 'izmena');
+    assert.equal(u.get('id'), '42');
+  });
+
+  test('izlazak iz izmene briše SAMO `rezim`', () => {
+    const u = new URLSearchParams(adresaDetaljaSaRezimom('?id=42&izvor=lager&rezim=izmena', 42, 'pregled'));
+    assert.equal(u.get('rezim'), null);
+    assert.equal(u.get('izvor'), 'lager');
+  });
+
+  test('adresa bez izvora (deljen link) ostaje čitljiva', () => {
+    assert.equal(adresaDetaljaSaRezimom('?id=42', 42, 'pregled'), '?id=42');
+  });
+
+  test('`id` se poravnava sa prikazanim zapisom, ne prepisuje iz adrese', () => {
+    const u = new URLSearchParams(adresaDetaljaSaRezimom('?id=1&izvor=lager', 42, 'pregled'));
+    assert.equal(u.get('id'), '42');
+  });
+
+  for (const [ime, fajl] of [
+    ['artikal', DETALJ],
+    ['komitent', KOMITENT_DETALJ],
+  ] as const) {
+    test(`detalj ${ime}a gradi adresu iz zatečene, ne sklapa je iz id-a`, () => {
+      const src = izvor(fajl);
+      sadrzi(src, /adresaDetaljaSaRezimom\(window\.location\.search/, `detalj ${ime}a ne čuva zatečene parametre`);
+      neSadrzi(
+        src,
+        /`\?id=\$\{validId\}(&rezim=izmena)?`/,
+        `detalj ${ime}a i dalje sklapa adresu iz id-a — \`?izvor=\` se briše na svaki ulazak/izlazak iz izmene`,
+      );
+    });
+  }
+});
+
+/**
+ * 🔴 POPIS: visinu strane pravi PANEL DETALJA, pa i restauracija mora da ga sačeka.
+ *
+ * `useZapamcenaPozicijaListe` u istom `rAF`-u postavi `scrollTop` pa odmah pozove `upisi()`.
+ * Dok je strana kratka (master lista je nekoliko redova, stavki još nema), pregledač odseče
+ * vrednost i hook tu odsečenu vrednost upiše NAZAD preko zapisa — `resenoRef` je potrošen.
+ */
+describe('popis: restauracija čeka panel detalja', () => {
+  test('🔴 `spremno` uslovljava i stavkama izabranog popisa', () => {
+    const src = izvor(POPIS);
+    sadrzi(src, /useInventoryCount\(selectedId\)/, 'strana ne zna je li panel detalja dobio stavke');
+    sadrzi(
+      src,
+      /spremno:[^\n]*detalj\.data/,
+      'mesto se vraća dok je strana još kratka — pregledač odseče `scrollTop`, a hook odsečenu vrednost upiše nazad',
+    );
+  });
+
+  test('keš detalja popisa preživljava povratak sa dokumenta razlike', () => {
+    const detalj = odsecak(izvor(INVENTORY_API), /export function useInventoryCount\(/, /\n\}/);
+    sadrzi(
+      detalj,
+      /gcTime/,
+      'detalj popisa ističe za 5 min, pa je za svaki duži povratak strana kratka baš u trenutku restauracije',
+    );
+  });
+});
+
+/**
+ * BROJAČI IZVAN TABELE nisu pokriveni `loading`-om na `DataTable`: dok filteri iz adrese
+ * nisu pročitani, dolaze iz keša NEFILTRIRANE liste („Prikazano 200 od 92.592" za suženu
+ * pretragu). Dugme „Učitaj još" je gore od kozmetike — klik pre `resolved` dovlači stranu
+ * 2 POGREŠNOG ključa.
+ */
+describe('brojači i paginacija izvan tabele su pod `resolved`', () => {
+  for (const [ime, fajl] of [
+    ['pregled artikala', ARTIKLI],
+    ['lager', LAGER],
+  ] as const) {
+    test(`${ime}: brojači i „Učitaj još" čekaju adresu`, () => {
+      const src = izvor(fajl);
+      sadrzi(src, /count=\{resolved && upit\.data/, `${ime}: broj u zaglavlju je iz keša nefiltrirane liste`);
+      sadrzi(src, /\{resolved && \(\s*\n\s*<span/, `${ime}: „Prikazano X od Y" je iz keša nefiltrirane liste`);
+      sadrzi(
+        src,
+        /\{resolved && upit\.hasNextPage/,
+        `${ime}: „Učitaj još" pre gejta dovlači stranu 2 POGREŠNOG ključa`,
+      );
+      sadrzi(src, /\{resolved && naKapi/, `${ime}: upozorenje o kapi računa nad tuđim brojem`);
+    });
+  }
+
+  test('komitenti: broj u zaglavlju i pager čekaju adresu', () => {
+    const src = izvor(KOMITENTI);
+    sadrzi(src, /count=\{resolved && meta/, 'broj komitenata je iz keša nefiltrirane liste');
+    sadrzi(src, /\{resolved && meta && meta\.totalPages > 1/, 'pager pomera stranu nad brojem koji ne pripada ovoj listi');
+  });
 });

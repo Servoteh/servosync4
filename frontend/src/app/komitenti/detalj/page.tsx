@@ -11,7 +11,13 @@ import { EmptyState } from '@/components/ui-kit/empty-state';
 import { Button } from '@/components/ui-kit/button';
 import { formatDate, formatDateTime, formatDecimal } from '@/lib/format';
 import { parseIdParam } from '@/lib/deep-link';
-import { ULAZI_KOMITENT, citajIzvor, hrefIzvora, type IzvorKomitenta } from '@/lib/povratak-na-listu';
+import {
+  ULAZI_KOMITENT,
+  adresaDetaljaSaRezimom,
+  citajIzvor,
+  hrefIzvora,
+  type IzvorKomitenta,
+} from '@/lib/povratak-na-listu';
 import { useKomitent, codeRefLabel, salespersonLabel, type CustomerDetail } from '@/api/masters';
 import { MaticniEkran } from '@/app/artikli/_forma/polja';
 import { BRANA_KOMITENT } from '@/app/artikli/_forma/pravila';
@@ -282,11 +288,16 @@ export default function KomitentDetaljPage() {
   /** Polazni slog — po njemu se broji šta je operater dirao. */
   const polazne = useMemo(() => (ucitan ? vrednostiIzKomitenta(ucitan) : null), [ucitan]);
 
-  /** Režim ide i u URL (`replace`) — osvežavanje strane ne izbacuje iz izmene. */
+  /**
+   * Režim ide i u URL (`replace`) — osvežavanje strane ne izbacuje iz izmene.
+   * Adresa se GRADI iz zatečene (`adresaDetaljaSaRezimom`), a ne sklapa iz `id`: sklapanje
+   * je brisalo `?izvor=`, pa je Podešavanja/Dupli PIB → Detaljno → Izmeni → F5 → „Nazad"
+   * vodio na `/komitenti` umesto nazad na tab integracija.
+   */
   function promeniRezim(sledeci: 'pregled' | 'izmena') {
     setRezim(sledeci);
     if (validId === null) return;
-    const put = sledeci === 'izmena' ? `?id=${validId}&rezim=izmena` : `?id=${validId}`;
+    const put = adresaDetaljaSaRezimom(window.location.search, validId, sledeci);
     window.history.replaceState(null, '', `${window.location.pathname}${put}`);
   }
 

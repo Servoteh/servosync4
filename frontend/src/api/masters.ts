@@ -3,6 +3,7 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { apiFetch } from './client';
+import { KES_BESKONACNE_LISTE } from './kes-liste';
 import type { Paginated } from './tech-processes';
 
 /**
@@ -419,8 +420,8 @@ export const ARTIKLI_SKROL_KAPA = 5000;
  *
  * Zašto `useInfiniteQuery`, a ne ručno skupljanje u `useState`: povratak sa
  * detalja/kartice remontira ekran, a keš upita vraća sve već dovučene strane
- * odjednom (isti `queryKey`) — ali SAMO uz `gcTime`/`refetchOnMount` ispod (do
- * 07.08.2026 ih nije bilo, pa je keš isticao za 5 minuta i lista je ćutke kretala
+ * odjednom (isti `queryKey`) — ali SAMO uz keš profil `KES_BESKONACNE_LISTE` ispod
+ * (do 07.08.2026 ga nije bilo, pa je keš isticao za 5 minuta i lista je ćutke kretala
  * od prve strane). Ručno skupljanje bi krenulo od prve strane uvek.
  *
  * Dovlačenje je UVEK na zahtev (dugme „Učitaj još"), nikad na dolazak dna: na
@@ -449,22 +450,12 @@ export function useArtikliSkrol(
     initialPageParam: 1,
     enabled,
     /**
-     * 🔴 KEŠ MORA DA PREŽIVI POSETU KARTICI/DETALJU ARTIKLA.
-     *
-     * Podrazumevanih 5 minuta (`gcTime`) je kraće od jednog pogleda u karticu — po
-     * povratku bi keš bio pometen i lista bi krenula od PRVE strane, pa bi referent
-     * izgubio i mesto i sve učitane strane.
-     *
-     * `refetchOnMount: false` iz istog razloga: uz podrazumevano ponašanje bi povratak
-     * ponovo dovukao SVE učitane strane redom (do 25 uzastopnih zahteva). Svežina ovde
-     * ionako ništa ne znači — `items` puni noćni `.mdb` uvoz u 03:45, a `masters.ts` nema
-     * nijednu mutaciju nad artiklima (v. `BRANA_ARTIKAL`).
-     *
-     * ⚠️ Kad se unos/izmena artikla otključaju, ta mutacija MORA da radi
-     * `invalidateQueries(['masters','artikli'])` — inače nov artikal „nedostaje" u listi.
+     * 🔴 KEŠ MORA DA PREŽIVI POSETU KARTICI/DETALJU ARTIKLA, I POVRATAK NE SME DA BUDE
+     * PLOTUN — obrazloženje i merenje su u `kes-liste.ts` (`kes-liste.spec.ts`).
+     * `masters.ts` nema nijednu mutaciju nad artiklima (v. `BRANA_ARTIKAL`), pa svežina
+     * ovde ionako ništa ne znači.
      */
-    gcTime: 30 * 60_000,
-    refetchOnMount: false,
+    ...KES_BESKONACNE_LISTE,
     queryFn: ({ pageParam }) =>
       apiFetch<Paginated<ItemRow>>(
         `/v1/artikli${buildItemQuery({ ...params, page: pageParam, pageSize })}`,
