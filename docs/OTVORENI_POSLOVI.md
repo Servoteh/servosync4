@@ -10,7 +10,7 @@ odgovarajući modul-doc ili commit poruku.
 
 **Odeljci:** [A](#a-donete-odluke-ne-vraćati-na-sto) odluke · [B](#b-čeka-nenada--pogon-spremno-za-izvođenje) čeka Nenada/pogon ·
 [P](#p-prava-nad-podacima-u-aplikaciji-osnovano-05082026) prava nad podacima · [C](#c-tehnički-follow-up-nalazi-verifikatora-po-prioritetu) tehnički follow-up ·
-[D](#d-čeka-korisnike-ne-blokira-razvoj) čeka korisnike · **[K](#k-kadrovska--zamrznuta-do-pune-seobe-na-30-osnovano-06082026) Kadrovska — 🔴 ZAMRZNUTA (i dorade i popravke) do seobe na 3.0**
+[D](#d-čeka-korisnike-ne-blokira-razvoj) čeka korisnike · **[K](#k-kadrovska--zamrznuta-do-pune-seobe-na-30-osnovano-06082026) Kadrovska — 🔴 ZAMRZNUTA (i dorade i popravke) do seobe na 3.0; novi zahtevi → K7 red čekanja**
 
 ---
 
@@ -769,9 +769,9 @@ ISTOG commita, pa javi ako nisu.
 
 ### 🔴 K0. PRE BILO KOG RADA IZ OVOG ODELJKA: PROVERI STANJE NA `origin/main`
 
-Sve niže je izmereno **06.08.2026 nad `origin/main`**. Kadrovska se menja gotovo svakodnevno
-(samo u poslednjih nedelju dana: 063 zbirovi u gridu, 068 statusi zahteva, 074 nadoknada sa dva
-datuma) — **ovi nalazi zastarevaju i moraju se ponovo izmeriti pre izvođenja.**
+Izmereno **06.08.2026**, osveženo **07.08.2026** nad `origin/main`. Kadrovska se menja gotovo
+svakodnevno (samo u poslednjih nedelju dana: 063 zbirovi u gridu, 068 statusi zahteva, 074
+nadoknada sa dva datuma) — **ovi nalazi zastarevaju i moraju se ponovo izmeriti pre izvođenja.**
 
 ```bash
 git fetch origin
@@ -779,7 +779,20 @@ git ls-tree -r --name-only origin/main -- frontend/src/app/kadrovska backend/src
 git show origin/main:<putanja>        # NIKAD čitati iz primarnog stabla — nosi tuđu granu
 ```
 
-**Dve zamke koje su se već desile pri ovoj analizi:**
+**„Da li je Kadrovska već preseljena?" — IZMERI, ne pamti i ne izvodi iz suseda.** Provera u
+jednoj liniji nad 3.0 bazom (`servosync-pg`):
+
+```sql
+SELECT to_regclass('public.makeup_requests') AS kadrovska,  -- NULL = kadrovska JOŠ NIJE u 3.0
+       to_regclass('public.maint_assets')    AS odrzavanje; -- postoji od 07.08. — NIJE dokaz za kadrovsku!
+```
+
+07.08. je upravo ova zabuna napravljena: preseljeno je **ODRŽAVANJE** (`maint_*` u 3.0), i to je
+moglo da se pročita kao „seoba ide, kadrovska je sledeća/gotova". Nije: `kadrovska*.service.ts` i
+`moj-profil.service.ts` i dalje uvoze `@prisma-sy15/client`, a `employees`/`work_hours`/
+`makeup_requests` postoje samo u sy15.
+
+**Tri zamke koje su se već desile pri ovoj analizi:**
 
 1. **Odsustvo u radnoj kopiji NIJE dokaz da nešto ne postoji.** Primarno stablo je 06.08. stajalo
    **393 commita iza** `origin/main` i bez 47 migracija. Svako „toga nema" mora biti provereno
@@ -790,6 +803,11 @@ git show origin/main:<putanja>        # NIKAD čitati iz primarnog stabla — no
    polja** (`full_name, position, email, phone_work, department, sub_department_name, team, note`).
    Da nije provereno, naručio bi se posao koji je već urađen. **Tvrdnja iz komentara se proverava
    u implementaciji.**
+3. **Ni plan nije dokaz — koraci se NE izvode redom kojim su napisani.** Plan gašenja je 06.08.
+   vodio SCADA-u kao poslednji korak (5); izvedena je **07.08, pre reversa (3) i pre dovršetka
+   sastanaka (1)**, jer je bila spremna i nezavisna. Statusna kolona u K2 je snimak dana — pre
+   oslanjanja na nju proveri anotacije `✅ IZVEDENO` u samom
+   [PLAN_GASENJA_SY15](PLAN_GASENJA_SY15_2026-08-03.md) i izmeri prekidače na produkciji.
 
 ---
 
@@ -820,36 +838,59 @@ ne bude sy15.** Vidi K5.
 **Jedino što se sme raditi:** unos poslovnog sadržaja koji **ne traži nijedan red koda** —
 K4.7 (onboarding/offboarding šabloni). To rade HR i rukovodioci kroz postojeći ekran.
 
+**Novi zahtevi za Kadrovsku koji stignu tokom zamrzavanja se NE izvode i NE odbijaju** — upisuju
+se u **K7 (red čekanja)** sa datumom, merenjem i spiskom sy15 objekata koje bi dirali. Prvi je
+već upisan (nastavak 074/26).
+
+⚠️ **Odluka važi od 06.08.2026, nezavisno od toga gde ovaj tekst stoji.** Zamka koja se već
+desila 07.08: dok PR sa ovim odeljkom nije merge-ovan, `grep` po `main`-u ne nalazi §K — i to je
+navelo na sumnju da pravilo ne postoji. **Odsustvo odeljka na `main`-u ne ukida odluku**; proveri
+status PR-a pre nego što zaključiš da pravila nema.
+
 ---
 
-### K2. Gde Kadrovska stoji u redu za seobu (izmereno 03.–06.08.2026)
+### K2. Gde Kadrovska stoji u redu za seobu (izmereno 03.–07.08.2026)
 
-Izvor: [PLAN_GASENJA_SY15_2026-08-03.md](PLAN_GASENJA_SY15_2026-08-03.md), revizija 2 od 05.08.
+Izvor: [PLAN_GASENJA_SY15_2026-08-03.md](PLAN_GASENJA_SY15_2026-08-03.md) (revizija 2 od 05.08.
++ anotacije `✅ IZVEDENO` od 07.08). Redosled u planu je **preporuka, ne raspored** — spremni i
+nezavisni koraci preskaču red (SCADA je to već uradila; održavanje je izmerilo da NE ČEKA
+kadrovsku). **Kadrovska nema tu privilegiju:** ona je „najosetljivije" i drži branu
+„tek posle tri uvežbana kruga".
 
-| Korak | Domen | Stanje na 06.08.2026 |
+| Korak | Domen | Stanje na 07.08.2026 |
 |---|---|---|
 | 0 | mapa identiteta (60 naloga, 67 FK ka `auth.users`) | preduslov SVAKOG koraka; „sat posla", nije urađeno |
-| 1 | sastanci (74 fn / 27 tabela / 1.120 redova) | u toku — grana `feat/sy15-seoba-sastanci-pb`; ostaje ~61 DEFINER fn (4–6 dana) + enqueue (1–2 dana) |
-| 2 | održavanje (41 fn, 34 tabele + 34 trigera, 2,4 MB + 469 MB fajlova) | počelo — grana `feat/sy15-seoba-odrzavanje` (lokalni worktree, još nije na remote-u) |
-| 3 | reversi + lokacije zajedno (~49 fn) | pripremljeno — grana `feat/sy15-seoba-reversi`; dopisuje se `loc` deo |
-| **4** | **KADROVSKA (58 fn, „najosetljivije")** | **nije počelo — plan izričito kaže „Tek posle tri uvežbana kruga"** |
+| 1 | sastanci (74 fn / 27 tabela / 1.120 redova) | u toku — prenos dokazan (1.120/1.120, idempotentan), prekidači razdvojeni na `SASTANCI_IZVOR` + `PB_IZVOR` posle incidenta 06.08; **ostaje ~61 DEFINER fn (4–6 dana) + enqueue (1–2 dana)** |
+| 2 | održavanje (**59 fn, ne 41** — 16 bez `maint_` prefiksa; 34 tabele + 34 trigera + 469 MB fajlova) | **priprema IZVEDENA i na main-u** (PR #106): 34 Prisma modela + migracija u 3.0 šemi, prenos dokazan (34/34, drugi prolaz `ins=0`), prekidač `ODRZAVANJE_IZVOR`, 3.0 parnjak RLS-a; `maint_*` tabele postoje u `servosync-pg` (izmereno 07.08). **Da li je PREKLOP izvršen — izmeri prekidač, ne pamti** |
+| 3 | reversi + lokacije zajedno (~49 fn) | pripremljeno — prenos dokazan (195/195), prekidač `REVERSI_IZVOR`; ostaje `loc` deo + prepisivanje `rev_issue_reversal`/`rev_confirm_return` u NestJS (~5–8 dana, piše se iznova) |
+| **4** | **KADROVSKA (58 fn, „najosetljivije")** | **nije počelo — i dalje iza brane „tek posle tri uvežbana kruga"** (izmereno 07.08: `kadrovska*.service.ts` uvozi `@prisma-sy15/client`; `employees`/`work_hours`/`makeup_requests` samo u sy15) |
 | 4b | projektni biro (32 fn) | **blokiran korakom 4** — `pb_current_employee_id()` traži `employees`/`departments`/`job_positions` u 3.0 bazi |
-| 5 | SCADA + bridge preusmeravanje | poslednji pisac; kad on pređe, sy15 se gasi |
+| **4c** | 🔴 **upravljanje nalozima na 3.0 `users`** (novo u planu, izmereno 06.08) | **ide UZ korak 4** (deli tabelu zaposlenih) — lista/izmena korisnika sa sy15 `user_roles` na 3.0 `users` (7 stvarnih naloga danas nevidljivo adminu), reset lozinke preko 3.0 `users.id` (zadržati `expectedEmail` branu iz P0!), ukidanje rola-sync na prijavi. **Obim koraka 4 je time VEĆI nego što je K-odeljak prvobitno zapisao** |
+| 5 | SCADA + bridge preusmeravanje | **SCADA ✅ IZVEDENA 07.08** (PR #111, van reda — bila spremna i nezavisna): kod + runbook + prekidač `SCADA_IZVOR`; **istorija se NE prenosi** (odluka vlasnika — 2,55 mil. redova umire sa sy15); ostaje runbook §8 na živom releju. Bridge .mdb deo: BigTehn MSSQL most **ugašen 07.08** (mrtav — 4.669 prolaza / 0 izmena), masteri od 07.08 idu SAMO iz 3.0 |
 | 6 | „ostalo" (`ai_chat_*`, `assessment_*`, arhive, GoTrue) | uključuje `assessment_*` (~15 fn) — **to je 360° ocenjivanje, deo Kadrovske po korisničkom osećaju, a po planu ide tek u koraku 6** |
 
 **Obim koraka 4:** 58 funkcija + `employee-docs` (24 MB, poverljivo) + `attendance_events`
-(140 MB — pre seobe utvrditi šta te kolone stvarno nose). Domen u sy15 = 18 tabela / 8,0 MB.
+(140 MB — pre seobe utvrditi šta te kolone stvarno nose) **+ korak 4c** (upravljanje nalozima —
+v. red iznad; nije bio u prvobitnom obimu ovog odeljka). Domen u sy15 = 18 tabela / 8,0 MB.
 Za širinu korisničke površine v. [MODULE_SPEC_kadrovska_30.md](../backend/docs/design/MODULE_SPEC_kadrovska_30.md)
 (snimak 13.07: ~49 tabela, 119 fn, 141 RLS politika, ~20 trigera, 9 pg_cron poslova, 4 edge fn,
 1 privatni storage bucket, 15 tabova u 5 hub-grupa).
 
 ⚠️ **Kadrovska nosi i ograničenje iz incidenta 06.08:** *„JEDAN PREKIDAČ = JEDAN DOMEN."*
-Zajednički prekidač `SASTANCI_PB_IZVOR` je oborio ceo Projektni biro u 503. Pre uvođenja prekidača
-za kadrovsku **izmeriti šta sve taj prekidač dodiruje** — npr. `rev_api_idempotency` je registar
-cele aplikacije i **476 od 643 reda su kadrovska**.
+Zajednički prekidač `SASTANCI_PB_IZVOR` je oborio ceo Projektni biro u 503; razdvojen je istog
+dana. Pre uvođenja prekidača za kadrovsku **izmeriti šta sve taj prekidač dodiruje** — `grep` za
+pozivaoce branjenog getera, ne po imenu promenljive. Poznata mina: `rev_api_idempotency` je
+registar cele aplikacije i **476 od 643 reda su kadrovska**. Druga poznata mina (nalaz seobe
+održavanja): šavovi se nalaze kroz `pg_depend` + `grep`, **ne kroz FK graf** — održavanje je imalo
+tri skrivena šava sa nula inbound FK-ova.
 
-**Rok:** plan **nema kalendar** za korake 2–4. Postoje procene u danima samo za ostatak koraka 1 i
-za deo koraka 3. **Ne izmišljati datum** — govoriti „tri uvežbana kruga daleko".
+**Napredak brane „tri uvežbana kruga" (07.08):** nijedan korisnički domen još nije IZVRŠEN do
+kraja (sastanci ~61 fn od kraja; održavanje i reversi imaju dokazane pripreme, preklop nije
+potvrđen). SCADA jeste izvedena, ali je mašinski domen bez korisničkih prava (preusmeren relej,
+ne prevedena DEFINER/RLS površina) — **procena, ne izmereno pravilo:** verovatno se ne računa
+kao „uvežban krug" za kadrovska merila; ako se računa, to je odluka Nenada, ne podrazumevana.
+**Rok:** plan i dalje **nema kalendar** za korake 2–4. **Ne izmišljati datum** — govoriti
+„tri uvežbana kruga daleko".
 
 ---
 
@@ -1018,6 +1059,26 @@ proveriti **svaki** put do plate, ne samo tabelu.
 
 **K6.4. Sadržaj analize koja je pokrenula ovaj odeljak** je u istoriji razgovora od 06.08.2026.
 Ako zatreba ponovo, **ne pokretati je iznova nad ekranom** — počinje od `main`, kako kaže K0.
+
+---
+
+### K7. RED ČEKANJA — zahtevi pristigli TOKOM zamrzavanja (ne izvode se, ne odbijaju se)
+
+Zamrzavanje (K1) će trajati mesecima, a zahtevi za Kadrovsku neće prestati da stižu. **Svaki novi
+zahtev se upisuje OVDE** sa: datumom · ko traži · šta traži (rečima podnosioca) · koje sy15
+objekte bi dirao (izmeriti!) · šta korisniku reći danas. Time pri koraku 4 seobe imamo gotov
+spisak „šta se gradi odmah posle", a podnosilac dobija pošten odgovor umesto tišine.
+
+**Pravila reda:**
+- Upis u red **nije obećanje redosleda** — prioritete presuđuje Nenad kad brana padne.
+- Ako zahtev NE dira sy15 objekte (čist FE), to se **izričito zapisuje** — takvi su prvi
+  kandidati čim se brana preispita, ali se do tada NE izvode (odluka K1 nema izuzetke).
+- Zahtev koji prijavljuje **pogrešan rezultat** (klasa C12–C14) se upisuje i ovde i u odeljak C,
+  sa unakrsnom referencom.
+
+| # | Datum | Ko | Šta traži | sy15 objekti | Odgovor korisniku danas |
+|---|---|---|---|---|---|
+| K7.1 | 07.08.2026 | Nenad (nastavak 074/26) | (a) **grupisanje više dana u JEDAN zahtev za nadoknadu** (danas svaki dan = zaseban zahtev i zaseban mejl); (b) novo pravilo: **„+1 dan GO se dodaje TEK kad se fizički otkuca da je zamenski dan odrađen"** — danas se dodaje već na ODOBRENJE, pa odobren-a-neodrađen dan stoji kao poklonjen GO | **4 sy15 objekta** (izmereno 07.08. u sesiji koja je zahtev odložila; pre rada **ponovo izmeriti** — u igri su `makeup_requests`, tok odobravanja, `kadr_queue_makeup_notification` i dodela +1 dana GO; v. i [kadr-makeup SQL-ove od 06.08](../backend/docs/sql/) i zamku „fn briše sate" iz zamene dana) | „Zapisano i čeka seobu Kadrovske na 3.0 — radi se u prvom paketu posle nje. Do tada: dan po dan, a +1 dan GO se dodaje na odobrenje (postojeće ponašanje)" |
 
 ---
 
