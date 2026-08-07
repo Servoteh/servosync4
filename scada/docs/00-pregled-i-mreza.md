@@ -110,6 +110,27 @@ trajati (`ALERT_MAIL_AFTER_MIN`, 10 min) i tvrda dnevna kapica (`ALERT_MAIL_MAX_
 12). „Alarm prošao" nikad ne ide na mejl. Kotlarnice **nisu** na mejlu — v.
 [OTVORENI-POSLOVI.md](OTVORENI-POSLOVI.md).
 
+### Restart ne šalje zatečene alarme (osnova pri startu)
+
+Dojava je **edge-triggered**, a pamćenje prethodnog stanja je u memoriji procesa — prazno
+pri startu. Zato je do 07.08.2026. svaki restart servisa slao kao „nov" **svaki alarm koji
+je tad bio aktivan** (mereno tog dana: `ALARM_ZASTITE` na kot1, aktivan od ranije). Sada
+prvi prolaz **sa očitanjem** samo puni stanje i upiše u log šta je zatekao:
+
+```
+[alarmi] osnova posle starta: zateceno aktivno — ALARM_ZASTITE (bez dojave)
+[blue'Log] osnova alarma posle starta: nema aktivnih (bez dojave)
+```
+
+Osnova se hvata po prvom prolazu **sa podacima**, ne po redosledu poziva — dok PLC nije
+povezan `state` je prazan, pa bi „prvi prolaz" video sve alarme kao ugašene i poplava bi se
+samo odložila. Isti obrazac odranije važi za Sigen listu sistema.
+
+Zatečen alarm **nije izgubljen**: relej ga i dalje upisuje u `scada_alarms` i vidi se na
+`/energetika`; preskače se samo push-poruka za ono što je prijavljeno pre restarta. Cena je
+poznata i prihvaćena: alarm koji nastane dok je servis ugašen neće imati push — vidi se u
+logu gornjeg reda i na ERP ekranu.
+
 ## Šta gde stoji u repou
 
 | Putanja | Šta je |
