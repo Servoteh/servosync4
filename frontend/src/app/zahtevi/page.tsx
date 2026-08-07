@@ -290,7 +290,11 @@ function MyRequestsView({ okvir }: { okvir: HTMLDivElement | null }) {
         />
       </HelpSpot>
 
-      {totalPages > 1 && (
+      {/* I pager čeka `resolved`: `enabled: false` gasi zahtev, ali ne i čitanje keša, pa
+          je `page` iz adrese („2") stajalo uz `totalPages` podrazumevanog ključa. Najblaži
+          slučaj u paketu — `total` je isti za sve strane istog filtera, pa greši samo
+          prikazan broj strane — ali je ista klasa greške. */}
+      {resolved && totalPages > 1 && (
         <Pager
           page={page}
           totalPages={totalPages}

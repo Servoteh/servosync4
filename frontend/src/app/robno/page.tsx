@@ -234,7 +234,10 @@ export default function RobnoPage() {
     <AppShell>
       <PageHeader
         title="Robno / magacin"
-        count={list.data ? `${formatNumber(total)} dokumenata` : undefined}
+        // `resolved` iz istog razloga kao `enabled` na upitu: `enabled: false` gasi ZAHTEV,
+        // ali ne i čitanje keša — dok filteri iz adrese nisu pročitani, `list.data` je
+        // podatak PODRAZUMEVANOG ključa („1.284 dokumenata" umesto „37" za `?vrsta=UL`).
+        count={resolved && list.data ? `${formatNumber(total)} dokumenata` : undefined}
         actions={
           <div className="flex items-center gap-2">
             <Button variant="secondary" onClick={() => router.push('/robno/rezervacije')}>
@@ -363,7 +366,9 @@ export default function RobnoPage() {
           }
         />
 
-        {totalPages > 1 && (
+        {/* I pager čeka `resolved`: pre toga `totalPages` opisuje tuđi (podrazumevani)
+            ključ, pa je prvi kadar umeo da piše „1 / 26" nad listom koja ima jednu stranu. */}
+        {resolved && totalPages > 1 && (
           <Pager
             page={page}
             totalPages={totalPages}

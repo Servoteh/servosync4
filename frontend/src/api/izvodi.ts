@@ -227,8 +227,12 @@ function buildQuery(params: Record<string, string | number | undefined>): string
  * Lista izvoda (filter po statusu i žiro računu, skip/take paginacija). Vraća
  * `{ data, meta: { total, skip, take } }`. Redovi nose `_count.lines`. Permisija
  * IZVODI_READ.
+ *
+ * `enabled` (isti obrazac kao `useStockDocuments`) postoji da ekran može da drži upit
+ * isključenim dok `useListQueryState` ne pročita filtere iz adrese — bez toga svaki
+ * povratak sa detalja izvoda šalje jedan uzaludan zahtev nad PODRAZUMEVANIM ključem.
  */
-export function useStatements(filters: StatementFilters = {}) {
+export function useStatements(filters: StatementFilters = {}, opts: { enabled?: boolean } = {}) {
   const query = buildQuery({
     status: filters.status === '' ? undefined : filters.status,
     bankAccount: filters.bankAccount || undefined,
@@ -237,6 +241,7 @@ export function useStatements(filters: StatementFilters = {}) {
   });
   return useQuery({
     queryKey: [...KEYS.list, filters],
+    enabled: opts.enabled ?? true,
     queryFn: () => apiFetch<StatementListResponse>(`${BASE}${query}`),
   });
 }

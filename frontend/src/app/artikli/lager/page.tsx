@@ -929,8 +929,11 @@ export default function LagerPage() {
         </details>
 
         {/* OBRAZLOŽENJE BROJEVA — nije ukras: bez ove rečenice ekran prikazuje brojeve
-            jedne poslovne godine, a korisnik ne zna koje ni koje rezervacije su u njima. */}
-        {meta && (
+            jedne poslovne godine, a korisnik ne zna koje ni koje rezervacije su u njima.
+            Zato i ono čeka `resolved`: `meta` je `strane?.[0]?.meta`, dakle iz keša TUĐEG
+            (podrazumevanog) ključa dok se adresa ne pročita — povratak sa kartice na
+            `?godina=2025` je u prvom kadru pisao „Poslovna godina 2026". */}
+        {resolved && meta && (
           <p className="text-sm text-ink-secondary">
             Poslovna godina <span className="tnums font-semibold text-ink">{meta.year}</span>
             {meta.yearSource === 'latest' && ' (poslednja zatečena u BigBit-u)'}

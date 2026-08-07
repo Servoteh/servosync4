@@ -169,8 +169,12 @@ function buildQuery(params: Record<string, string | number | undefined>): string
 /**
  * Dnevnik: lista naloga (filter po vrsti/godini/statusu, server-side paginacija
  * preko `skip`/`take`). Vraća `{ data, meta: { total } }`. `pageSize` podrazumevano 50.
+ *
+ * `enabled` (isti obrazac kao `useStockDocuments`) postoji da ekran može da drži upit
+ * isključenim dok `useListQueryState` ne pročita filtere iz adrese — bez toga svaki
+ * povratak sa detalja naloga šalje jedan uzaludan zahtev nad PODRAZUMEVANIM ključem.
  */
-export function useJournalEntries(filters: JournalFilters = {}) {
+export function useJournalEntries(filters: JournalFilters = {}, opts: { enabled?: boolean } = {}) {
   const pageSize = filters.pageSize && filters.pageSize > 0 ? filters.pageSize : 50;
   const page = filters.page && filters.page > 0 ? filters.page : 1;
   const skip = (page - 1) * pageSize;
@@ -183,6 +187,7 @@ export function useJournalEntries(filters: JournalFilters = {}) {
   });
   return useQuery({
     queryKey: [...KEYS.journal, filters],
+    enabled: opts.enabled ?? true,
     queryFn: () => apiFetch<SkipTakePaginated<JournalEntry>>(`${BASE}/journal${query}`),
   });
 }

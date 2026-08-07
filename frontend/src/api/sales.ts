@@ -227,8 +227,12 @@ function buildQuery(params: Record<string, string | number | undefined>): string
  * Radna lista računa (filter po tipu/statusu/nivou/kupcu/izvozu, server-side
  * paginacija preko `skip`/`take`). Vraća `{ data, meta: { total, skip, take } }`.
  * `pageSize` podrazumevano 50.
+ *
+ * `enabled` (isti obrazac kao `useStockDocuments`) postoji da ekran može da drži upit
+ * isključenim dok `useListQueryState` ne pročita filtere iz adrese — bez toga svaki
+ * povratak sa detalja računa šalje jedan uzaludan zahtev nad PODRAZUMEVANIM ključem.
  */
-export function useInvoices(filters: InvoiceFilters = {}) {
+export function useInvoices(filters: InvoiceFilters = {}, opts: { enabled?: boolean } = {}) {
   const pageSize = filters.pageSize && filters.pageSize > 0 ? filters.pageSize : 50;
   const page = filters.page && filters.page > 0 ? filters.page : 1;
   const skip = (page - 1) * pageSize;
@@ -243,6 +247,7 @@ export function useInvoices(filters: InvoiceFilters = {}) {
   });
   return useQuery({
     queryKey: [...KEYS.invoices, filters],
+    enabled: opts.enabled ?? true,
     queryFn: () => apiFetch<SalesListResponse<Invoice>>(`${BASE}/invoices${query}`),
   });
 }

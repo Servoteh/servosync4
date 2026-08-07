@@ -54,6 +54,20 @@ const ROBNO_API = path.join(KOREN, 'api', 'robno.ts');
 const INVENTORY_API = path.join(KOREN, 'api', 'inventory.ts');
 
 /**
+ * SESTRINSKE RADNE LISTE sa serverskom paginacijom. Istog su oblika kao `/robno`
+ * (filteri + strana u URL-u, `Pager`, brojač u zaglavlju), pa im i brana mora biti ista —
+ * inače popravka `/robno` samo premesti bljesak, umesto da ga obriše.
+ */
+const IZVODI = path.join(KOREN, 'app', 'izvodi', 'page.tsx');
+const NABAVKA = path.join(KOREN, 'app', 'nabavka', 'page.tsx');
+const FAKTURISANJE = path.join(KOREN, 'app', 'fakturisanje', 'page.tsx');
+const GLAVNA_KNJIGA = path.join(KOREN, 'app', 'glavna-knjiga', 'page.tsx');
+const IZVODI_API = path.join(KOREN, 'api', 'izvodi.ts');
+const NABAVKA_API = path.join(KOREN, 'api', 'nabavka.ts');
+const SALES_API = path.join(KOREN, 'api', 'sales.ts');
+const GK_API = path.join(KOREN, 'api', 'glavna-knjiga.ts');
+
+/**
  * Servis popisa ČITAN IZ BACKENDA (isti obrazac kao `notifications-nav.spec.ts`): id-evi
  * dokumenata razlike su ugovor dva sloja, pa prepisan spisak ovde ne bi hvatao baš ono
  * zbog čega postoji — da server prestane da ih vraća, a ekran ostane bez dugmadi.
@@ -930,4 +944,102 @@ describe('brojači i paginacija izvan tabele su pod `resolved`', () => {
     sadrzi(src, /count=\{resolved && meta/, 'broj komitenata je iz keša nefiltrirane liste');
     sadrzi(src, /\{resolved && meta && meta\.totalPages > 1/, 'pager pomera stranu nad brojem koji ne pripada ovoj listi');
   });
+
+  /**
+   * 🔴 `/robno` je prvo dobilo branu na UPITU i na TABELI, pa je ovaj describe promašio
+   * baš njega — petlja je išla samo kroz liste sa beskonačnim skrolom. Izmereno nad
+   * `@tanstack/query-core` 5.101.2: isključen upit i dalje ČITA keš svog ključa, pa prvi
+   * render (podrazumevani ključ) daje `count="1284 dokumenata"` i pager `1 / 26`, a drugi
+   * (ključ iz `?vrsta=UL&strana=7`) `count="37 dokumenata"` i `1 / 1`.
+   */
+  test('🔴 robni dokumenti: broj u zaglavlju i pager čekaju adresu', () => {
+    const src = izvor(ROBNO);
+    sadrzi(src, /count=\{resolved && list\.data/, 'broj robnih dokumenata je iz keša nefiltrirane liste');
+    sadrzi(
+      src,
+      /\{resolved && totalPages > 1/,
+      'pager robnih dokumenata pomera stranu nad brojem koji ne pripada ovoj listi',
+    );
+  });
+
+  /**
+   * 🔴 Rečenica o poslovnoj godini NIJE ukras — tako i piše u zaglavlju `lager/page.tsx`:
+   * bez nje ekran prikazuje brojeve „neke" godine. `meta` je `strane?.[0]?.meta`, dakle iz
+   * keša TUĐEG ključa dok se adresa ne pročita: lager → godina 2025 → kartica → Nazad je u
+   * prvom kadru pisao „Poslovna godina 2026 (poslednja zatečena u BigBit-u)".
+   */
+  test('🔴 lager: rečenica o poslovnoj godini čeka adresu', () => {
+    sadrzi(
+      izvor(LAGER),
+      /\{resolved && meta && \(/,
+      'obrazloženje brojeva pripada tuđoj (podrazumevanoj) godini — ekran izgleda ispravno dok laže',
+    );
+  });
+
+  /**
+   * Pager „Mojih zahteva": `total`/`totalPages` su isti za sve strane istog filtera, pa
+   * greši samo prikazan broj strane („1 / 3" umesto „2 / 3"). Najblaži slučaj u paketu,
+   * ali ista klasa — a klasa se zatvara na svim mestima ili nigde.
+   */
+  test('zahtevi („Moji zahtevi"): pager čeka stranu iz adrese', () => {
+    sadrzi(
+      izvor(ZAHTEVI),
+      /\{resolved && totalPages > 1/,
+      'pager „Mojih zahteva" crta broj strane iz keša podrazumevanog ključa',
+    );
+  });
+});
+
+/**
+ * 🔴 SESTRINSKE LISTE — brana mora i ovde, i to je NAŠ POTPIS, ne zatečeni kvar.
+ *
+ * `useListQueryState` od 07.08.2026 UPISUJE stanje u `sessionStorage` već pri montiranju
+ * (`upisiIzAdrese`), pa `listHref` ovim ekranima sad vraća FILTRIRANU adresu i tamo gde je
+ * ranije vraćao golu. Posledica: povratak sa detalja pogađa drugi ključ nego prvi render,
+ * pa se bljesak nefiltrirane strane 1 pomerio sa retkog na REDOVAN. Neto je i dalje bolje
+ * nego pre, ali gejt je jednolinijski i nema razloga da bljesak ostane.
+ *
+ * Tri sloja moraju biti na broju, jer nijedan sam ne zatvara rupu:
+ *   1. `enabled: resolved` na upitu — gasi uzaludan zahtev nad podrazumevanim ključem;
+ *   2. `loading={!resolved || …}` na tabeli — uz isključen upit `isLoading` je netačno
+ *      `false`, pa bi tabela na tren nacrtala prazno stanje;
+ *   3. `resolved` na BROJAČU i PAGERU — `enabled: false` gasi zahtev, ali NE i čitanje
+ *      keša, a podrazumevani ključ je gotovo uvek u kešu.
+ */
+describe('sestrinske radne liste čekaju filtere iz adrese', () => {
+  for (const [ime, fajl, api, hook, brojac] of [
+    ['izvodi', IZVODI, IZVODI_API, 'useStatements', 'izvoda'],
+    ['nabavka', NABAVKA, NABAVKA_API, 'useNabavkaRequests', 'zahteva'],
+    ['fakturisanje', FAKTURISANJE, SALES_API, 'useInvoices', 'računa'],
+    // Glavna knjiga nema brojač u zaglavlju (`PageHeader` je na roditelju, bez `count`).
+    ['glavna knjiga', GLAVNA_KNJIGA, GK_API, 'useJournalEntries', null],
+  ] as const) {
+    test(`🔴 ${ime}: upit, tabela i pager čekaju adresu`, () => {
+      // Kraj odsečka je i `/**` sledećeg hooka: dokumentacija SUSEDNOG hooka (detalj po
+      // id-u) po pravilu pominje `enabled`, pa bi širi odsečak lažno prolazio.
+      const kod = odsecak(izvor(api), new RegExp(`export function ${hook}\\(`), /\n(\/\*\*|export )/);
+      sadrzi(kod, /enabled/, `${hook} nema opciju \`enabled\` — ekran nema čime da zaustavi nefiltriran upit`);
+
+      const src = izvor(fajl);
+      sadrzi(src, /\bresolved\b[^\n]*\}\s*=\s*useListQueryState/, `${ime}: ekran ne uzima \`resolved\``);
+      sadrzi(src, /enabled:\s*resolved/, `${ime}: lista šalje nefiltriran upit pre nego što pročita adresu`);
+      sadrzi(
+        src,
+        /loading=\{!resolved \|\| list\.isLoading\}/,
+        `${ime}: uz isključen upit \`isLoading\` je netačno \`false\` — tabela na tren crta prazno stanje`,
+      );
+      sadrzi(
+        src,
+        /\{resolved && totalPages > 1/,
+        `${ime}: pager pomera stranu nad brojem koji ne pripada ovoj listi`,
+      );
+      if (brojac) {
+        sadrzi(
+          src,
+          new RegExp(`count=\\{resolved && list\\.data`),
+          `${ime}: broj ${brojac} u zaglavlju je iz keša nefiltrirane liste`,
+        );
+      }
+    });
+  }
 });

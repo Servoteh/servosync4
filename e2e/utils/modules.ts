@@ -41,7 +41,11 @@ export const MODULES: ModuleDef[] = [
   { key: 'odrzavanje-sredstva', name: 'Održavanje — Sredstva', route: '/odrzavanje/sredstva', group: 'Oprema' },
   { key: 'odrzavanje-vozila', name: 'Održavanje — Vozila', route: '/odrzavanje/vozila', group: 'Oprema' },
   // Šifarnici / master data
-  { key: 'customers', name: 'Komitenti', route: '/customers', group: 'Šifarnici' },
+  // `/customers` je od 07.08.2026 samo preusmera na `/komitenti` (stariji suženi pregled
+  // je ugašen). U katalogu je stajala STARA ruta, pa je smoke odlazio na preusmeru, bivao
+  // prebačen i prijavljivao PASS — taj red je tiho testirao `/komitenti`, koji svoj ključ
+  // nije ni imao. Ključ i ruta zato pokazuju na ekran koji stvarno postoji.
+  { key: 'komitenti', name: 'Komitenti', route: '/komitenti', group: 'Šifarnici' },
   { key: 'projects', name: 'Predmeti', route: '/projects', group: 'Šifarnici' },
   { key: 'structures', name: 'Proizvodne strukture', route: '/structures', group: 'Šifarnici' },
   // Sistem

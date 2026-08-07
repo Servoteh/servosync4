@@ -113,7 +113,7 @@ export default function NabavkaPage() {
 
   // Filteri i strana žive U URL-u (vidi `useListQueryState`) — povratak sa
   // detalja zahteva vraća listu tačno kakva je bila.
-  const { values, setValues } = useListQueryState({ status: '', strana: '1' });
+  const { values, resolved, setValues } = useListQueryState({ status: '', strana: '1' });
   const status = values.status as NabavkaStatus | '';
   const page = Math.max(1, Number(values.strana) || 1);
   const setStatus = (v: NabavkaStatus | '') => setValues({ status: v, strana: '1' });
@@ -128,7 +128,14 @@ export default function NabavkaPage() {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  const list = useNabavkaRequests({ page, take: TAKE, status });
+  /**
+   * 🔴 `enabled: resolved` — upit čeka da se filteri pročitaju iz adrese (isto kao
+   * `/robno`). Bez gejta prvi render gađa podrazumevani ključ, koji po pravilu VEĆ ima
+   * podatke u kešu, pa ekran ispaint-uje nefiltriranu stranu 1 i tek je drugi render
+   * zameni. `enabled: false` gasi ZAHTEV, ali ne i čitanje keša — zato brana ide i na
+   * tabelu, brojač i pager.
+   */
+  const list = useNabavkaRequests({ page, take: TAKE, status }, { enabled: resolved });
   const rows = list.data?.data ?? [];
   const total = list.data?.meta.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / TAKE));
@@ -145,7 +152,7 @@ export default function NabavkaPage() {
     <AppShell>
       <PageHeader
         title="Nabavka"
-        count={list.data ? `${formatNumber(total)} zahteva` : undefined}
+        count={resolved && list.data ? `${formatNumber(total)} zahteva` : undefined}
         actions={
           <Button onClick={() => setNewOpen(true)}>
             <Plus className="h-4 w-4" aria-hidden />
@@ -201,7 +208,9 @@ export default function NabavkaPage() {
           rows={rows}
           rowKey={(r) => r.id}
           onRowActivate={(r) => router.push(`/nabavka/detalj?id=${r.id}`)}
-          loading={list.isLoading}
+          // Dok upit čeka filtere iz adrese `isLoading` je `false`, pa bi tabela na tren
+          // nacrtala „Nema zahteva za nabavku".
+          loading={!resolved || list.isLoading}
           empty={
             <EmptyState
               title="Nema zahteva za nabavku"
@@ -210,7 +219,9 @@ export default function NabavkaPage() {
           }
         />
 
-        {totalPages > 1 && (
+        {/* I pager čeka `resolved`: pre toga `totalPages` opisuje tuđi (podrazumevani)
+            ključ, pa bi „Prethodna/Sledeća" pomerala stranu nad brojem koji nije ovaj. */}
+        {resolved && totalPages > 1 && (
           <Pager
             page={page}
             totalPages={totalPages}

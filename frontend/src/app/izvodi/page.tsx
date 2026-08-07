@@ -126,7 +126,7 @@ export default function IzvodiPage() {
 
   // Filteri i strana žive U URL-u (vidi `useListQueryState`) — povratak sa
   // detalja izvoda vraća listu tačno kakva je bila.
-  const { values, setValues } = useListQueryState({ status: '', strana: '1' });
+  const { values, resolved, setValues } = useListQueryState({ status: '', strana: '1' });
   const status = values.status as StatementStatus | '';
   const page = Math.max(1, Number(values.strana) || 1);
   const setStatus = (v: StatementStatus | '') =>
@@ -142,7 +142,17 @@ export default function IzvodiPage() {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  const list = useStatements({ status, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE });
+  /**
+   * 🔴 `enabled: resolved` — upit čeka da se filteri pročitaju iz adrese (isto kao
+   * `/robno`). Bez gejta prvi render gađa podrazumevani ključ, koji po pravilu VEĆ ima
+   * podatke u kešu, pa ekran ispaint-uje nefiltriranu stranu 1 i tek je drugi render
+   * zameni. `enabled: false` gasi ZAHTEV, ali ne i čitanje keša — zato brana ide i na
+   * tabelu, brojač i pager.
+   */
+  const list = useStatements(
+    { status, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE },
+    { enabled: resolved },
+  );
   // Štampa izvoda direktno iz liste (bez ulaska u detalj) — `stopPropagation` da
   // klik na dugme ne otvori i red.
   const statementPdf = useStatementPdf();
@@ -187,7 +197,7 @@ export default function IzvodiPage() {
     <AppShell>
       <PageHeader
         title="Izvodi"
-        count={list.data ? `${formatNumber(total)} izvoda` : undefined}
+        count={resolved && list.data ? `${formatNumber(total)} izvoda` : undefined}
         actions={
           <Button onClick={() => setImportOpen(true)}>
             <Upload className="h-4 w-4" aria-hidden />
@@ -237,7 +247,9 @@ export default function IzvodiPage() {
           rows={rows}
           rowKey={(s) => s.id}
           onRowActivate={(s) => router.push(`/izvodi/detalj?id=${s.id}`)}
-          loading={list.isLoading}
+          // Dok upit čeka filtere iz adrese `isLoading` je `false`, pa bi tabela na tren
+          // nacrtala „Nema izvoda".
+          loading={!resolved || list.isLoading}
           empty={
             <EmptyState
               title="Nema izvoda"
@@ -246,7 +258,9 @@ export default function IzvodiPage() {
           }
         />
 
-        {totalPages > 1 && (
+        {/* I pager čeka `resolved`: pre toga `totalPages` opisuje tuđi (podrazumevani)
+            ključ, pa bi „Prethodna/Sledeća" pomerala stranu nad brojem koji nije ovaj. */}
+        {resolved && totalPages > 1 && (
           <Pager
             page={page}
             totalPages={totalPages}

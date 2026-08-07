@@ -145,7 +145,7 @@ export default function FakturisanjePage() {
 
   // Filteri i strana žive U URL-u — povratak sa detalja (i browser „Nazad")
   // vraća listu tačno kakva je bila. Vidi `useListQueryState`.
-  const { values, setValues } = useListQueryState({
+  const { values, resolved, setValues } = useListQueryState({
     tip: '',
     status: '',
     strana: '1',
@@ -167,7 +167,17 @@ export default function FakturisanjePage() {
     if (!isLoading && !user) router.replace('/login');
   }, [user, isLoading, router]);
 
-  const list = useInvoices({ page, pageSize: PAGE_SIZE, documentType, status });
+  /**
+   * 🔴 `enabled: resolved` — upit čeka da se filteri pročitaju iz adrese (isto kao
+   * `/robno`). Bez gejta prvi render gađa podrazumevani ključ, koji po pravilu VEĆ ima
+   * podatke u kešu, pa ekran ispaint-uje nefiltriranu stranu 1 i tek je drugi render
+   * zameni. `enabled: false` gasi ZAHTEV, ali ne i čitanje keša — zato brana ide i na
+   * tabelu, brojač i pager.
+   */
+  const list = useInvoices(
+    { page, pageSize: PAGE_SIZE, documentType, status },
+    { enabled: resolved },
+  );
   const rows = list.data?.data ?? [];
   const total = list.data?.meta.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -186,7 +196,7 @@ export default function FakturisanjePage() {
     <AppShell>
       <PageHeader
         title="Fakturisanje"
-        count={list.data ? `${formatNumber(total)} računa` : undefined}
+        count={resolved && list.data ? `${formatNumber(total)} računa` : undefined}
         actions={
           <div className="flex items-center gap-2">
             {/* C1b: avansni računi (oba smera) su zaseban ekran — ulaz je odavde
@@ -266,7 +276,9 @@ export default function FakturisanjePage() {
           rows={rows}
           rowKey={(inv) => inv.id}
           onRowActivate={(inv) => router.push(`/fakturisanje/detalj?id=${inv.id}`)}
-          loading={list.isLoading}
+          // Dok upit čeka filtere iz adrese `isLoading` je `false`, pa bi tabela na tren
+          // nacrtala „Nema računa".
+          loading={!resolved || list.isLoading}
           empty={
             <EmptyState
               title="Nema računa"
@@ -275,7 +287,9 @@ export default function FakturisanjePage() {
           }
         />
 
-        {totalPages > 1 && (
+        {/* I pager čeka `resolved`: pre toga `totalPages` opisuje tuđi (podrazumevani)
+            ključ, pa bi „Prethodna/Sledeća" pomerala stranu nad brojem koji nije ovaj. */}
+        {resolved && totalPages > 1 && (
           <Pager
             page={page}
             totalPages={totalPages}

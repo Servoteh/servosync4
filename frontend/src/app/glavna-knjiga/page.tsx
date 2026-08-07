@@ -175,7 +175,7 @@ const journalColumns: Column<JournalEntry>[] = [
 function DnevnikView({ onOpen }: { onOpen: (id: number) => void }) {
   // Filteri i strana žive U URL-u (uz `tab` iz roditelja) — povratak sa detalja
   // naloga vraća dnevnik tačno kakav je bio.
-  const { values, setValues } = useListQueryState({
+  const { values, resolved, setValues } = useListQueryState({
     tab: 'dnevnik',
     vrsta: '',
     godina: '',
@@ -196,7 +196,17 @@ function DnevnikView({ onOpen }: { onOpen: (id: number) => void }) {
     });
   const resetPage = () => setValues({ strana: '1' });
 
-  const list = useJournalEntries({ page, pageSize: PAGE_SIZE, orderType, year, status });
+  /**
+   * 🔴 `enabled: resolved` — upit čeka da se filteri pročitaju iz adrese (isto kao
+   * `/robno`). Bez gejta prvi render gađa podrazumevani ključ, koji po pravilu VEĆ ima
+   * podatke u kešu, pa dnevnik ispaint-uje naloge SVIH godina i tek ih drugi render
+   * zameni izborom iz adrese. `enabled: false` gasi ZAHTEV, ali ne i čitanje keša — zato
+   * brana ide i na tabelu i na pager.
+   */
+  const list = useJournalEntries(
+    { page, pageSize: PAGE_SIZE, orderType, year, status },
+    { enabled: resolved },
+  );
   // Štampa knjiga GK: dnevnik knjiženja (isti filteri kao lista) i bruto bilans za
   // izabranu godinu. Bez ovih dugmadi se knjige nisu mogle odštampati (nalaz revizije).
   const bookPdf = useJournalBookPdf();
@@ -330,7 +340,9 @@ function DnevnikView({ onOpen }: { onOpen: (id: number) => void }) {
         rows={rows}
         rowKey={(n) => n.id}
         onRowActivate={(n) => onOpen(n.id)}
-        loading={list.isLoading}
+        // Dok upit čeka filtere iz adrese `isLoading` je `false`, pa bi tabela na tren
+        // nacrtala „Nema naloga".
+        loading={!resolved || list.isLoading}
         empty={
           <EmptyState
             title="Nema naloga"
@@ -339,7 +351,9 @@ function DnevnikView({ onOpen }: { onOpen: (id: number) => void }) {
         }
       />
 
-      {totalPages > 1 && (
+      {/* I pager čeka `resolved`: pre toga `totalPages` opisuje tuđi (podrazumevani)
+          ključ, pa bi „Prethodna/Sledeća" pomerala stranu nad brojem koji nije ovaj. */}
+      {resolved && totalPages > 1 && (
         <Pager
           page={page}
           totalPages={totalPages}

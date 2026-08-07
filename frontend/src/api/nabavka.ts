@@ -374,8 +374,15 @@ function buildQuery(params: Record<string, string | number | undefined>): string
  * Radna lista zahteva za nabavku (+ filter po statusu i predmetu, server-side
  * paginacija). Backend paginira preko `skip`/`take` i vraća `{ data, meta:{total} }`
  * — page (1-bazan) se ovde prevodi u `skip`. `take` podrazumevano 50.
+ *
+ * `enabled` (isti obrazac kao `useStockDocuments`) postoji da ekran može da drži upit
+ * isključenim dok `useListQueryState` ne pročita filtere iz adrese — bez toga svaki
+ * povratak sa detalja zahteva šalje jedan uzaludan zahtev nad PODRAZUMEVANIM ključem.
  */
-export function useNabavkaRequests(filters: NabavkaRequestFilters = {}) {
+export function useNabavkaRequests(
+  filters: NabavkaRequestFilters = {},
+  opts: { enabled?: boolean } = {},
+) {
   const take = filters.take && filters.take > 0 ? filters.take : 50;
   const page = filters.page && filters.page > 0 ? filters.page : 1;
   const query = buildQuery({
@@ -386,6 +393,7 @@ export function useNabavkaRequests(filters: NabavkaRequestFilters = {}) {
   });
   return useQuery({
     queryKey: [...KEYS.requests, filters],
+    enabled: opts.enabled ?? true,
     queryFn: () => apiFetch<PaginatedTotal<PurchaseRequest>>(`${BASE}/requests${query}`),
   });
 }
