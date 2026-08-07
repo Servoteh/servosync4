@@ -149,6 +149,21 @@ jobs:
           echo "::error::ci-backend nije završio ni posle 25 min (i dalje traje) — blokiram deploy. Re-run kad CI završi."
           exit 1
 
+      # C20: frontend testovi do sada NIJE pokretao niko — ni jedan workflow ih nije zvao,
+      # pa su brane koje se pišu u `frontend/src/lib/*.spec.ts` bile dekorativne. Najvažnija
+      # je ona koja spisak kanala obaveštenja IZVODI iz `backend/src`: kad neko doda nov
+      # `refTable` a zaboravi rutu u `NOTIFICATION_ROUTE`, klik na to obaveštenje ne radi
+      # ništa — tačno kvar zbog kog C20 i postoji. Bez ovog koraka bi se tiho vratio.
+      #
+      # Ide PRE build-a i namerno OBARA deploy: pokvarena brana ne sme da stigne do korisnika.
+      # Goli `node --test` (bez jsdom-a i novih zavisnosti), ~0,5 s, deterministički.
+      - name: Testovi (frontend)
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+
       - name: Build & deploy (Cloudflare Worker servosync2)
         working-directory: frontend
         env:
