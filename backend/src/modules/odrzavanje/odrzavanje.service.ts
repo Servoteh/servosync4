@@ -18,6 +18,10 @@ import {
   IMAGE_ATTACHMENT_FORMATS,
 } from "../../common/attachments/attachment-format.util";
 import { pageMeta, parsePagination } from "../../common/pagination";
+import {
+  IdempotencyService,
+  type IdempotencyTx,
+} from "../../common/idempotency/idempotency.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
 import {
@@ -254,6 +258,11 @@ export class OdrzavanjeService {
     // kad ga nema, `assertPorted` ne radi ništa → ponašanje je kao `sy15`, tj.
     // izostanak prekidača NIKAD ne može da prebaci modul na 3.0 (bezbedan smer).
     @Optional() private readonly izvor?: OdrzavanjeSourceService,
+    // Registar idempotencije 3.0 baze (`api_idempotency`) — 3.0 parnjak sy15
+    // `runIdempotentRls`. `@Optional` iz istog razloga kao `izvor`: postojeći unit
+    // testovi prave servis sa 3 argumenta. Kad ga nema, `runIdem` NE prelazi u 3.0
+    // granu (v. branu tamo) — izostanak zavisnosti nikad ne pomera izvor podataka.
+    @Optional() private readonly idem?: IdempotencyService,
   ) {}
 
   /**
@@ -1888,16 +1897,79 @@ export class OdrzavanjeService {
   // (RLS WITH CHECK to i traži). Notif outbox INSERT je DENY-ALL (enqueue = trigeri/cron).
   // Dispatch OSTAJE MRTAV (presuda F1) — seli se samo log+retry+rules.
 
-  /** Idempotentna „create" akcija (clientEventId ključ; runIdempotentRls). */
+  /**
+   * Idempotentna „create" akcija (`clientEventId` je ključ) — JEDAN ulaz za oba
+   * izvora (§7.5 runbook-a, korak 2 gašenja sy15).
+   *
+   *   `ODRZAVANJE_IZVOR=sy15` (PODRAZUMEVANO) — sy15 registar `rev_api_idempotency`
+   *                                             kroz `Sy15Service.runIdempotentRls`.
+   *   `ODRZAVANJE_IZVOR=3.0`                   — 3.0 registar `api_idempotency`
+   *                                             kroz generički `IdempotencyService`.
+   *
+   * UGOVOR PREMA KLIJENTU JE IDENTIČAN u oba položaja: isti `clientEventId` iz
+   * zahteva, isti prostor imena `action`, isti odgovor `{ data, meta: { idempotent } }`,
+   * isti 409 na ključ upotrebljen za drugu akciju. FE ga tako čita i ne vidi razliku.
+   *
+   * 🔴 REDOSLED JE DEO UGOVORA: `assertPorted` je PRVI RED. Da je ispod poziva
+   * registra, neprenet (ili neovlašćen) poziv bi prvo POTROŠIO korisnikov
+   * `clientEventId`, pa tek onda bio odbijen — ponovljen pokušaj posle preklopa
+   * dobio bi 409 „ključ već upotrebljen" umesto 503, i to tiho.
+   *
+   * 🔴 `fn` NE MOŽE biti isto telo za obe grane: `Sy15Tx` je sy15 klijent (RLS,
+   * `SET LOCAL ROLE authenticated`, `maint_*` DEFINER fn), a `IdempotencyTx` je
+   * `Prisma.TransactionClient` nad 3.0 bazom — tipovi se ne poklapaju. Zato se 3.0
+   * telo predaje zasebno kao `opts.fn30`. Prisustvo `fn30` je ujedno i OZNAKA DA JE
+   * PUTANJA PRENETA: bez njega brana ostaje na snazi i putanja pod `3.0` i dalje
+   * pada sa 503 (to je brana, ne kvar). Tela `fn30` pišu delovi 3 i 4 seobe —
+   * ovaj korak samo otvara put.
+   *
+   * ⚠️ NAMERNA PROMENA PONAŠANJA POD `3.0`: `IdempotencyService` poredi i
+   * `actor_email`, pa isti ključ od DRUGOG korisnika dobija 409. sy15 registar tu
+   * kolonu nema i takvom pozivaocu vraća sačuvan (tuđi) odgovor. Ključ je nasumičan
+   * uuid pa je razlika praktično neuočljiva, ali JESTE stroža — zabeleženo ovde da
+   * se ne pripiše kvaru posle preklopa. Detalji u `idempotency.service.ts`.
+   *
+   * ⚠️ Stari ključevi se NE PRENOSE (izmereno: 21 ključ u sy15 `rev_api_idempotency`
+   * za `odrzavanje.*`). Prvi zahtev posle preklopa je zato uvek „prvo izvršenje".
+   *
+   * ⚠️ `IdempotencyService.run` otvara SVOJU Prisma transakciju sa podrazumevanih
+   * 5 s. Bulk akcije (hard-delete mašine, uvoz iz kataloga, stock ledger) to ume da
+   * probiju — takva putanja mora da preda `opts.timeoutMs`.
+   */
   private async runIdem<T>(
     email: string,
     clientEventId: string,
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
+    opts?: {
+      /** 3.0 telo iste akcije; bez njega putanja NIJE preneta (brana 503). */
+      fn30?: (tx: IdempotencyTx) => Promise<T>;
+      /** Timeout 3.0 transakcije u ms (podrazumevano Prisma 5 s) — samo za bulk. */
+      timeoutMs?: number;
+    },
   ) {
+    const fn30 = opts?.fn30;
     // Brana PRE registra idempotencije — neovlašćen/neprenet poziv ne sme da
     // potroši korisnikov `clientEventId` (isti redosled kao kod sastanaka, §7e).
-    this.assertPorted(action);
+    // Izostanak registra (`IdempotencyService` nije ubrizgan) tretira se kao
+    // NEPRENETA putanja: pod `3.0` 503, nikad tih upis u sy15 bazu.
+    if (!fn30 || !this.idem) this.assertPorted(action);
+
+    if (fn30 && this.idem && this.izvor?.isThreeZero === true) {
+      try {
+        const out = await this.idem.run(
+          email,
+          clientEventId,
+          action,
+          fn30,
+          opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : undefined,
+        );
+        return { data: out.result, meta: { idempotent: out.idempotent } };
+      } catch (e) {
+        this.rethrowSy15(e);
+      }
+    }
+
     try {
       const out = await this.sy15.runIdempotentRls(
         email,
