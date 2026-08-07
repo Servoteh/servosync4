@@ -161,8 +161,13 @@ jobs:
         working-directory: frontend
         run: |
           set -euo pipefail
-          npm ci
-          npm test
+          # ⚠️ Runner NEMA node ni npm na hostu — zato i build ispod ide kroz `docker run`.
+          # Prva verzija ovog koraka zvala je `npm` direktno i pala je sa
+          # „npm: command not found" (exit 127). Isti kontejner i isti oblik kao build.
+          docker run --rm \
+            -u "$(id -u):$(id -g)" -e HOME=/tmp -e npm_config_cache=/tmp/.npm \
+            -v "$PWD":/work -w /work node:22-bookworm-slim \
+            sh -c "npm ci && npm test"
 
       - name: Build & deploy (Cloudflare Worker servosync2)
         working-directory: frontend
