@@ -161,12 +161,17 @@ jobs:
         working-directory: frontend
         run: |
           set -euo pipefail
-          # ⚠️ Runner NEMA node ni npm na hostu — zato i build ispod ide kroz `docker run`.
-          # Prva verzija ovog koraka zvala je `npm` direktno i pala je sa
-          # „npm: command not found" (exit 127). Isti kontejner i isti oblik kao build.
+          # ⚠️ Dve zamke, obe već jednom oborile ovaj korak:
+          #  1. Runner NEMA node ni npm na hostu — zato sve ide kroz `docker run`
+          #     (isti kontejner kao build ispod). Direktan `npm` = exit 127.
+          #  2. Montira se KOREN monorepoa, ne `frontend/`. Brana iz C20 čita
+          #     `backend/src` da bi spisak kanala obaveštenja izvela iz izvora; sa
+          #     montiranim samo `frontend`-om ta putanja ne postoji i test padne sa
+          #     „nema backend/src na očekivanoj putanji". Zato `-v $GITHUB_WORKSPACE:/work`
+          #     uz `-w /work/frontend` — tako `..` iz frontenda vodi u koren, kao lokalno.
           docker run --rm \
             -u "$(id -u):$(id -g)" -e HOME=/tmp -e npm_config_cache=/tmp/.npm \
-            -v "$PWD":/work -w /work node:22-bookworm-slim \
+            -v "$GITHUB_WORKSPACE":/work -w /work/frontend node:22-bookworm-slim \
             sh -c "npm ci && npm test"
 
       - name: Build & deploy (Cloudflare Worker servosync2)
