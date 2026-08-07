@@ -51,6 +51,14 @@ import { useOperations, type Operation } from '@/api/structures';
 import { openDrawingPdf } from '@/api/pdm';
 import { OperationsTable } from '@/app/work-orders/_components/operations-table';
 import { TechnologySuggestionPanel } from '@/app/work-orders/_components/technology-suggestion';
+import {
+  natpisIzbora,
+  natpisNaloga,
+  recenicaPotvrde,
+  ukupnoStavki,
+  type BrojStavki,
+  type NalogZaSazetak,
+} from '@/app/work-orders/_components/copy-from-sazetak';
 import { useWorkOrderTimeEstimate } from '@/api/time-estimate';
 import { PrintDrawingsDialog } from '@/app/handovers/_components/print-drawings-dialog';
 import { ApiError } from '@/api/client';
@@ -663,6 +671,11 @@ function WorkOrderDetail({
 
       <CopyFromWorkOrderDialog
         targetId={id}
+        target={{
+          identNumber: rn.identNumber,
+          partName: rn.partName,
+          drawingNumber: rn.drawingNumber,
+        }}
         open={copyOpen}
         initialSource={copySeed}
         onClose={() => {
@@ -850,11 +863,14 @@ function WorkOrderDetail({
 /** „Kopiraj iz naloga" — izbor izvornog RN-a → prepiši sve stavke u prazan cilj. */
 function CopyFromWorkOrderDialog({
   targetId,
+  target,
   open,
   onClose,
   initialSource,
 }: {
   targetId: number;
+  /** Cilj se IMENUJE u potvrdi — ident sam ne razlikuje susedne naloge (v. `copy-from-sazetak.ts`). */
+  target: NalogZaSazetak;
   open: boolean;
   onClose: () => void;
   /** TALAS AI-6: predlog seed-uje izvor (reprezentativan nalog); ostaje izmenljiv. */
@@ -862,6 +878,16 @@ function CopyFromWorkOrderDialog({
 }) {
   const [source, setSource] = useState<WorkOrder | null>(null);
   const copy = useCopyFromWorkOrder();
+  // Broj stavki se čita iz POSTOJEĆEG detalja izvora — bez nove rute. Dok se ne
+  // učita, „Kopiraj" stoji onemogućeno: potvrda bez brojke nije potvrda.
+  //
+  // Dok upis traje upit se GASI (`null`): `useCopyFromWorkOrder` u `onSuccess` zove
+  // `invalidate` PRE nego što se `mutateAsync` razreši, pa bi aktivan posmatrač
+  // odmah povukao ceo `findOne` izvora (6 relacija) drugi put, bez ikakve koristi.
+  // Gasi se upit, a NE briše izbor — pri grešci (npr. 409 „cilj već ima stavke")
+  // izbor mora da ostane, jer ponovno biranje među skoro istim natpisima je baš
+  // ona radnja koju ova popravka pokušava da učini bezbednijom.
+  const sourceDetail = useWorkOrder(copy.isPending ? null : (source?.id ?? null));
 
   // Seed iz predloga pri otvaranju; korisnik i dalje može da promeni izvor.
   useEffect(() => {
@@ -880,13 +906,25 @@ function CopyFromWorkOrderDialog({
       await copy.mutateAsync({ id: targetId, sourceId: source.id });
       close();
     } catch {
-      /* greška se prikazuje ispod */
+      /* greška se prikazuje ispod; izbor OSTAJE da se ne bira ponovo (v. niže) */
     }
   }
 
   const err =
     copy.error instanceof ApiError ? copy.error.message : (copy.error as Error)?.message;
   const sameAsTarget = source?.id === targetId;
+
+  const src = sourceDetail.data?.data;
+  const stavke: BrojStavki | null = src
+    ? {
+        operacije: src.operations.length,
+        obradjeniDelovi: src.machinedParts.length,
+        nestandardniDelovi: src.nonStandardParts.length,
+        pripremci: src.blanks.length,
+      }
+    : null;
+  // Prazan izvor bi „uspešno" prepisao NIŠTA, a korisnik bi mislio da je gotovo.
+  const izvorPrazan = stavke !== null && ukupnoStavki(stavke) === 0;
 
   return (
     <Dialog
@@ -901,7 +939,11 @@ function CopyFromWorkOrderDialog({
           >
             Otkaži
           </button>
-          <Button onClick={submit} loading={copy.isPending} disabled={!source || sameAsTarget}>
+          <Button
+            onClick={submit}
+            loading={copy.isPending}
+            disabled={!source || sameAsTarget || stavke === null || izvorPrazan}
+          >
             Kopiraj
           </Button>
         </>
@@ -922,6 +964,14 @@ function CopyFromWorkOrderDialog({
             getSublabel={(w) =>
               [w.partName, w.drawingNumber].filter(Boolean).join(' · ')
             }
+            /* 🔴 Naziv pozicije MORA ostati vidljiv i posle izbora. U padajućoj listi
+               se video (getSublabel), ali se ComboBox posle izbora skupi na dugme sa
+               jednim natpisom — pa je do 07.08.2026. u trenutku pritiska na „Kopiraj"
+               na ekranu stajao samo goli ident. Susedni nalozi se razlikuju u jednom
+               znaku (…/120 vs …/122), a nazivi im se razlikuju u celoj reči
+               („obrada" vs „zavarivanje"). Isti lek je 052/26 već primenjen na birač
+               crteža — v. handovers/_components/drafts-tab.tsx. */
+            getValueLabel={natpisIzbora}
             placeholder="Ident, naziv pozicije, crtež…"
           />
         </FormField>
@@ -929,6 +979,56 @@ function CopyFromWorkOrderDialog({
           <p className="text-xs text-status-danger" role="alert">
             Izvor i cilj moraju biti različiti nalozi.
           </p>
+        )}
+        {/* 🔴 POTVRDA PRE UPISA (odluka Nenad 07.08.2026). Kopiranje nema opoziv —
+            povratak je ručno brisanje operacija jednu po jednu — pa pre pritiska
+            mora da piše ODAKLE, KUDA i KOLIKO. Dok se broj ne učita, dugme stoji
+            onemogućeno; potvrda bez brojke ne bi ništa značila. */}
+        {source && !sameAsTarget && (
+          <div className="rounded-control border border-line bg-surface-2 px-3 py-2">
+            {copy.isPending ? (
+              /* Upit je za to vreme ugašen (v. gore), pa brojke nema — ne pokazuj
+                 „Brojim stavke…", jer se u tom trenutku već upisuje. */
+              <p className="text-xs text-ink-disabled">Prepisujem stavke…</p>
+            ) : sourceDetail.error ? (
+              /* 🔴 Bez ove grane jedan prolazni pad GET-a zaključa dijalog zauvek:
+                 `query-provider.tsx` ima `retry: false`, pa se upit sam ne ponavlja,
+                 a „Kopiraj" ostaje onemogućen dok nema brojke. Ponuda „Pokušaj
+                 ponovo" je jedini izlaz koji ne traži zatvaranje dijaloga. */
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm text-status-danger" role="alert">
+                  Ne mogu da prebrojim stavke izvora.
+                </p>
+                <button
+                  onClick={() => void sourceDetail.refetch()}
+                  className="shrink-0 rounded-control border border-line px-2 py-1 text-xs text-ink-secondary hover:bg-surface"
+                >
+                  Pokušaj ponovo
+                </button>
+              </div>
+            ) : sourceDetail.isLoading || !stavke ? (
+              <p className="text-xs text-ink-disabled">Brojim stavke izvora…</p>
+            ) : izvorPrazan ? (
+              <p className="text-sm text-status-danger" role="alert">
+                Nalog {natpisNaloga(src ?? source)} nema nijednu stavku — nema šta da se
+                prepiše.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-ink">
+                  {/* Naziv izvora se uzima iz DOHVAĆENOG detalja, ne iz izbora u
+                      biraču: AI-6 panel seed-uje izvor sa `partName: ''` (v. poziv
+                      `setCopySeed` gore), pa bi potvrda baš na tom putu ostala gola
+                      — a to je put na kome se najčešće i prepisuje. */}
+                  {recenicaPotvrde(src ?? source, target, stavke)}
+                </p>
+                <p className="mt-1 text-xs text-ink-disabled">
+                  Proveri naziv pozicije na obe strane. Kopiranje se ne može
+                  opozvati — jedini povratak je ručno brisanje stavki.
+                </p>
+              </>
+            )}
+          </div>
         )}
         {err && (
           <p className="text-sm text-status-danger" role="alert">

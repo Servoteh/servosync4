@@ -4,7 +4,12 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { AuditInterceptor } from "./audit.interceptor";
 
 /** Minimalan `ExecutionContext` — interceptor iz njega čita samo HTTP zahtev. */
-function ctx(method: string, url: string, body: unknown): ExecutionContext {
+function ctx(
+  method: string,
+  url: string,
+  body: unknown,
+  params?: Record<string, unknown>,
+): ExecutionContext {
   const req = {
     method,
     originalUrl: url,
@@ -13,6 +18,7 @@ function ctx(method: string, url: string, body: unknown): ExecutionContext {
     headers: { "user-agent": "jest" },
     user: { userId: 42, email: "agent@servoteh.com" },
     body,
+    params,
   };
   return {
     switchToHttp: () => ({ getRequest: () => req }),
@@ -120,6 +126,153 @@ describe("AuditInterceptor — šta sme, a šta NE sme u audit_log", () => {
       ),
     );
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  // ────────────────────────────────────────────────── TRAG RUTE (metadata)
+
+  /** `metadata` iz jedinog upisa koji je interceptor napravio. */
+  function metadata(): Record<string, unknown> {
+    const calls = prisma.auditLog.create.mock.calls as unknown as [
+      { data: { metadata?: Record<string, unknown> } },
+    ][];
+    return calls[0][0].data.metadata ?? {};
+  }
+
+  it("🔴 COPY-FROM: IZVOR kopiranja mora ostati u tragu", async () => {
+    // 07.08.2026: prijavljeno je da se tehnološki postupak „sam pojavio" na novom
+    // nalogu. Upisao ga je čovek klikom na „Kopiraj iz naloga", ali audit je pamtio
+    // samo CILJ — `:sourceId` je bio šesti segment, a interceptor čita do petog.
+    // Zbog toga se promašen izbor izvora nije mogao razlikovati od kvara u kodu.
+    await firstValueFrom(
+      interceptor.intercept(
+        ctx("POST", "/api/v1/work-orders/47717/copy-from/47719", {}, {
+          id: "47717",
+          sourceId: "47719",
+        }),
+        next,
+      ),
+    );
+
+    expect(metadata().params).toEqual({ id: "47717", sourceId: "47719" });
+    expect(metadata().path).toBe("/api/v1/work-orders/47717/copy-from/47719");
+    // Izvođenje starih polja se NE menja — po njima se pretražuje istorija.
+    const data = (
+      prisma.auditLog.create.mock.calls as unknown as [
+        { data: Record<string, unknown> },
+      ][]
+    )[0][0].data;
+    expect(data.action).toBe("POST COPY-FROM");
+    expect(data.entityType).toBe("work-orders");
+    expect(data.entityId).toBe("47717");
+  });
+
+  it("operacija koja se menja ili briše mora biti prepoznatljiva (`opId`)", async () => {
+    // 2.171 poziv u 30 dana; do sada se videlo samo da je nalog dirnut, ne i KOJA
+    // operacija — pa se izmena norme nije mogla vezati za red.
+    await firstValueFrom(
+      interceptor.intercept(
+        ctx(
+          "DELETE",
+          "/api/v1/work-orders/47717/operations/232726",
+          undefined,
+          { id: "47717", opId: "232726" },
+        ),
+        next,
+      ),
+    );
+
+    expect(metadata().params).toEqual({ id: "47717", opId: "232726" });
+  });
+
+  it("ruta bez parametara upisuje bar putanju (trag nikad nije prazan)", async () => {
+    await firstValueFrom(
+      interceptor.intercept(ctx("POST", "/api/v1/sync/run", {}), next),
+    );
+
+    expect(metadata()).toEqual({ path: "/api/v1/sync/run" });
+  });
+
+  it("upitni deo (`?…`) ne ulazi u trag — tamo umeju da budu filteri, ne identitet", async () => {
+    await firstValueFrom(
+      interceptor.intercept(
+        ctx("PATCH", "/api/v1/work-orders/123?tab=operacije", {}, { id: "123" }),
+        next,
+      ),
+    );
+
+    expect(metadata().path).toBe("/api/v1/work-orders/123");
+  });
+
+  it("🔴 tuđi e-mail iz putanje NE sme da uđe u trag (sastanci/učesnici)", async () => {
+    // Trag rute inače uvodi NOV podatak u audit: `:email` je šesti segment na
+    // PATCH/DELETE /sastanci/:id/ucesnici/:email i do sada ga u `audit_log` nije
+    // bilo. To je TUĐA adresa (učesnikova), a retencija je 24 meseca.
+    await firstValueFrom(
+      interceptor.intercept(
+        ctx(
+          "DELETE",
+          "/api/v1/sastanci/8f3c/ucesnici/pera.peric@servoteh.com",
+          undefined,
+          { id: "8f3c", email: "pera.peric@servoteh.com" },
+        ),
+        next,
+      ),
+    );
+
+    expect(metadata().path).toBe("/api/v1/sastanci/8f3c/ucesnici/[redacted]");
+    expect(metadata().params).toEqual({ id: "8f3c", email: "[redacted]" });
+    expect(JSON.stringify(prisma.auditLog.create.mock.calls)).not.toContain(
+      "pera.peric",
+    );
+  });
+
+  it("e-mail u `%40` obliku se takođe redigure", async () => {
+    await firstValueFrom(
+      interceptor.intercept(
+        ctx(
+          "PATCH",
+          "/api/v1/sastanci/8f3c/ucesnici/mika%40servoteh.com",
+          {},
+          { id: "8f3c" },
+        ),
+        next,
+      ),
+    );
+
+    expect(metadata().path).toBe("/api/v1/sastanci/8f3c/ucesnici/[redacted]");
+    expect(JSON.stringify(prisma.auditLog.create.mock.calls)).not.toContain(
+      "mika",
+    );
+  });
+
+  it("redakcija ne dira obične brojčane segmente (kopiranje ostaje čitljivo)", async () => {
+    await firstValueFrom(
+      interceptor.intercept(
+        ctx("POST", "/api/v1/work-orders/47717/copy-from/47719", {}, {
+          id: "47717",
+          sourceId: "47719",
+        }),
+        next,
+      ),
+    );
+
+    expect(metadata().path).toContain("47719");
+  });
+
+  it("neimenovane (numeričke) grupe iz Express-a se ne upisuju", async () => {
+    // Express uz imenovane parametre ume da doda i `0`, `1`… za wildcard grupe;
+    // čitaocu audita ne znače ništa i samo prljaju trag.
+    await firstValueFrom(
+      interceptor.intercept(
+        ctx("POST", "/api/v1/documents/5/files/x.pdf", {}, {
+          id: "5",
+          0: "x.pdf",
+        }),
+        next,
+      ),
+    );
+
+    expect(metadata().params).toEqual({ id: "5" });
   });
 
   it("pad audit upisa NE obara zahtev (fire-and-forget)", async () => {

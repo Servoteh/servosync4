@@ -15,6 +15,13 @@ interface RequestLike {
   ip?: string;
   headers: Record<string, string | string[] | undefined>;
   body?: unknown;
+  /**
+   * Imenovani parametri rute (`:id`, `:sourceId`, `:opId`…). Express ih popuni
+   * pri uparivanju rute, a interceptor se izvršava POSLE toga — pa su ovde
+   * dostupni. Ako neki drugi transport ne popuni `params`, pada se na segmente
+   * putanje (v. `routeTrail`).
+   */
+  params?: Record<string, unknown>;
   user?: { userId: number; email: string };
 }
 
@@ -44,6 +51,21 @@ const REDACTED_BODY_FIELDS: Record<string, readonly string[]> = {
 
 /** Ista oznaka kao za lozinke/tokene niže — jedan obrazac za ceo audit. */
 const REDACTED = "[redacted]";
+
+/**
+ * E-mail u SEGMENTU PUTANJE (`…/ucesnici/pera@servoteh.com`), i u `%40` obliku.
+ *
+ * 🔴 Zašto postoji: dodavanje putanje u `metadata` inače uvodi NOV podatak u audit.
+ * `PATCH`/`DELETE /api/v1/sastanci/:id/ucesnici/:email` nose tuđu adresu (učesnikovu,
+ * ne akterovu) kao šesti segment; do sada je nije bilo nigde u `audit_log`, a
+ * retencija je 24 meseca. Trag rute sme da kaže KOJA je ruta pozvana — ne i čija je
+ * adresa u njoj. `actor_username` (ko je radio) se ne dira i ostaje kao i pre.
+ */
+const EMAIL_U_PUTANJI = /[^/@\s]+(?:@|%40)[^/@\s]+\.[A-Za-z]{2,}/g;
+
+function redactEmails(s: string): string {
+  return s.replace(EMAIL_U_PUTANJI, REDACTED);
+}
 
 /**
  * Globalni audit mutirajućih HTTP operacija → `audit_log` (BACKEND_RULES §8).
@@ -79,6 +101,7 @@ export class AuditInterceptor implements NestInterceptor {
               entityType: resource,
               entityId: maybeId ?? null,
               afterData: this.safeBody(req.body, resource),
+              metadata: this.routeTrail(req.params, url),
               ipAddress: req.ip ?? null,
               userAgent: Array.isArray(ua) ? ua[0] : (ua ?? null),
             },
@@ -90,6 +113,47 @@ export class AuditInterceptor implements NestInterceptor {
           );
       }),
     );
+  }
+
+  /**
+   * 🔴 TRAG RUTE — puna putanja + SVI imenovani parametri (odluka Nenad 07.08.2026).
+   *
+   * Zašto: `entityId` se izvodi iz ČETVRTOG segmenta URL-a, a `action` iz petog.
+   * Sve dalje se do sada trajno gubilo. Praktična posledica, izmereno na produkciji:
+   *
+   *   • `POST /work-orders/:id/copy-from/:sourceId` (346 poziva u 30 dana) upisivao je
+   *     samo cilj — IZ KOG naloga je postupak prepisan nije se moglo saznati. Kad je
+   *     07.08. prijavljeno da se „postupak sam pojavio" na nalogu 9811-2/120, audit je
+   *     mogao da kaže KO i KADA, ali ne i ODAKLE. Bez toga se promašen izbor izvora ne
+   *     razlikuje od kvara u kodu, pa se dan potroši na lov na duha.
+   *   • `PATCH` i `DELETE /work-orders/:id/operations/:opId` (2.171 poziv u 30 dana)
+   *     gube `opId` — vidi se da je operacija dirnuta, ne i KOJA.
+   *   • `PATCH /work-orders/operations/:opId/priority` uparuje se pogrešno
+   *     (`entityId = "operations"`), jer `:opId` stoji na mestu akcije.
+   *
+   * Namerno se NE dira izvođenje `action`/`entityType`/`entityId` — po njima se već
+   * pretražuje istorija i postojeći upiti bi se raspali. Trag se DODAJE u `metadata`,
+   * koja je do sada bila prazna na svim rutama, pa nema šta da se pokvari.
+   *
+   * `params` su izvor istine (semantični su: `{id, sourceId}`), a putanja ide uz njih
+   * kao dokaz — po njoj se sanira i slučaj gde `params` iz bilo kog razloga izostanu.
+   * (Da Nest u trenutku globalnog interceptora popuni `params` NIJE dokazano nad
+   * pravim rutiranjem — zato `path` stoji UVEK i nosi isti podatak i bez njih.)
+   */
+  private routeTrail(
+    params: Record<string, unknown> | undefined,
+    url: string,
+  ): object {
+    const path = redactEmails(url.split("?")[0]);
+    const clean: Record<string, string> = {};
+    for (const [k, v] of Object.entries(params ?? {})) {
+      // Express ume da doda i numeričke ključeve za neimenovane grupe — ti ne znače
+      // ništa čitaocu audita, pa u trag idu samo imenovani parametri.
+      if (/^\d+$/.test(k)) continue;
+      if (typeof v === "string" || typeof v === "number")
+        clean[k] = redactEmails(String(v));
+    }
+    return Object.keys(clean).length > 0 ? { path, params: clean } : { path };
   }
 
   /**
