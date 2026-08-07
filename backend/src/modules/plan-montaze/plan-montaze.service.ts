@@ -13,6 +13,10 @@ import {
 } from "../../common/attachments/attachment-format.util";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
+// Matični podaci (predmeti/komitenti) se od 07.08.2026 čitaju iz 3.0 glavne baze —
+// `AppPrisma` je tagged-template motor te baze (sy15 `Prisma` ostaje za sve ostalo).
+import { Prisma as AppPrisma } from "@prisma/client";
+import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
@@ -72,8 +76,11 @@ type ProjectRow = {
 /**
  * Plan montaže + izveštaji montera — 3.0 TALAS C, R1 read sloj
  * (MODULE_SPEC_planovi_pracenje_30.md §3). Public tabele (projects/WP/phases,
- * montaza_izvestaji/_fotke, montaza_ai_settings, bigtehn_*_cache) kroz Prisma/$queryRaw,
- * sve u `withUserRls`. Lista projekata = `pb_list_projects()` (DEFINER RPC, projekti
+ * montaza_izvestaji/_fotke, montaza_ai_settings) kroz Prisma/$queryRaw,
+ * sve u `withUserRls`. **Izuzetak od 07.08.2026:** matični podaci (predmeti/komitenti)
+ * se čitaju iz 3.0 glavne baze (`projects`/`customers`, `PrismaService`) — sy15
+ * `bigtehn_items_cache`/`bigtehn_customers_cache` više se NE koriste (v. `lookupPredmeti`).
+ * Lista projekata = `pb_list_projects()` (DEFINER RPC, projekti
  * ⋈ predmet_aktivacija je_aktivan∧je_projektovanje_montaza). Mutacije (faze/WP/projekt
  * upsert, izveštaji POST + AI port + storage) su R2.
  */
@@ -84,6 +91,7 @@ export class PlanMontazeService {
     private readonly storage: Sy15StorageService,
     private readonly ai: AiProviderService,
     private readonly policy: AiModelPolicyService,
+    private readonly prisma: PrismaService,
   ) {}
 
   // ---------- Projekti (stablo) ----------
@@ -210,13 +218,29 @@ export class PlanMontazeService {
   // ---------- Lookups ----------
 
   /**
-   * Pretraga predmeta (bigtehn_items_cache) — paritet searchBigtehnItems (deli sa
-   * Lokacijama/Talas A): ilike po broj/naziv/ugovor/narudžbenica, + kratki naziv komitenta.
+   * Pretraga predmeta — ilike po broj/naziv/ugovor/narudžbenica, + naziv komitenta.
    *
    * ⚠️ `onlyActive` je DEFAULT `false` — paritet 1.0 montaža „Poveži predmet" picker-a
    * (`searchBigtehnItems(q,40,{onlyActive:false})`, izvestajiView.js): serviser vezuje
    * izveštaj na ZATVOREN predmet (servisni rad ide POSLE zatvaranja projekta). Aktivni-only
-   * filter (`status='U TOKU' ∧ datum_zakljucenja IS NULL`) se primenjuje SAMO kad se traži.
+   * filter se primenjuje SAMO kad se traži.
+   *
+   * ── IZVOR: 3.0 `projects`/`customers`, NE sy15 `bigtehn_*_cache` (odluka 07.08.2026:
+   * „komitente, predmete i artikle koristimo SAMO iz nove baze 3.0"). Bez prekidača izvora
+   * (za razliku od sastanaka, gde se u sy15 PISALO) — ovde je čitanje, a stari keš je
+   * dokazano MRTAV, ne alternativa. Izmereno na produkciji 07.08.2026:
+   *
+   *   • Stari keš puni bridge `syncItems.js` iz **SQL Servera** (QBigTehn), koji je ugašen
+   *     22.07.2026: `max(modified_at)` = `2026-07-22 08:47:03` i tu stoji. 3.0 `projects`
+   *     puni ŽIVI `.mdb` kanal iz BigBita (`bb_mdb_stage_predmeti`, drop 06.08.2026).
+   *   • Zato keš LAŽE o statusu: 1.861 predmeta koje BigBit danas vodi kao `GOTOVO` keš
+   *     još drži na `U TOKU`. Provereno u sirovom drop-u (id 10450/10442/10439/10437/
+   *     10429/10403 → svi `GOTOVO` u BigBitu, svi `U TOKU` u kešu).
+   *   • `onlyActive=true`: keš 1.804 reda, 3.0 **91** — i BigBit drop nezavisno daje
+   *     tačno 91. Sužavanje je ISPRAVKA (keš je pokazivao zatvorene kao aktivne),
+   *     ne regresija. Vrednosti statusa su iste u oba izvora (`U TOKU` / `GOTOVO`).
+   *   • 3.0 je nadskup: 7.633 vs 7.626 reda; keš staje na `id` 10486, 3.0 ima i
+   *     10487–10493. Komitenti 6.259 vs 6.251.
    */
   async lookupPredmeti(email: string, q?: string, onlyActiveRaw?: string) {
     const s = (q ?? "").trim();
@@ -224,46 +248,65 @@ export class PlanMontazeService {
     const onlyActive = ["1", "true", "yes"].includes(
       String(onlyActiveRaw ?? "").toLowerCase(),
     );
+    // Isti kanon kao pre, samo 3.0 imena kolona: `datum_zakljucenja` → `closed_at`.
     const activeFilter = onlyActive
-      ? Prisma.sql`status = 'U TOKU' AND datum_zakljucenja IS NULL`
-      : Prisma.sql`TRUE`;
-    return this.read(email, async (tx) => {
-      const items = await tx.$queryRaw<
-        Array<
-          Record<string, unknown> & { id: number; customer_id: number | null }
-        >
+      ? AppPrisma.sql`p.status = 'U TOKU' AND p.closed_at IS NULL`
+      : AppPrisma.sql`TRUE`;
+    // `email` se ne koristi za RLS (3.0 matični podaci nisu RLS-ovani, isto kao
+    // plan-proizvodnje read sloj); pravo se proverava na kontroleru (MONTAZA_READ).
+    void email;
+    const items = await this.prisma.$queryRaw<
+      Array<Record<string, unknown> & { id: number; customer_id: number | null }>
+    >(
+      // Aliasi drže FE ugovor (`PredmetOption`, frontend/src/api/plan-montaze.ts)
+      // NEPROMENJENIM — ekrani montaže i dalje dobijaju `broj_predmeta`/`naziv_predmeta`/…
+      //
+      // `created_at AS modified_at` NIJE improvizacija: 3.0 `projects.created_at` je
+      // BigBit `Predmeti.DatumIVreme` — ISTA kolona koju je bridge upisivao u
+      // `bigtehn_items_cache.modified_at` (`DatumIVreme AS modified_at`, syncItems.js).
+      // Provereno 7.630/7.631 uparenih redova identično sa sirovim drop-om.
+      //
+      // Sort ostaje `DESC NULLS LAST`, ali sada RADI: u kešu su 9 NAJNOVIJIH predmeta
+      // (10478–10486) imali `modified_at IS NULL`, pa ih je `NULLS LAST` gurao na dno i
+      // u podrazumevanoj listi (q prazno) se NIKAD nisu videli. U 3.0 NULL ima samo 502
+      // predmeta iz 2016 (id 2338–2882) — njih je i ispravno držati na dnu.
+      // `id DESC` je dodat kao tie-breaker: keš je imao bulk-pečat na milisekundu
+      // (10465 i 10469 oba `08:47:03.05`), pa je poredak pri `LIMIT 50` bio nasumičan.
+      AppPrisma.sql`SELECT p.id,
+          p.project_number  AS broj_predmeta,
+          p.project_name    AS naziv_predmeta,
+          p.description     AS opis,
+          p.status,
+          p.work_unit_code  AS department_code,
+          p.contract_number AS broj_ugovora,
+          p.order_number    AS broj_narudzbenice,
+          p.deadline        AS rok_zavrsetka,
+          p.created_at      AS modified_at,
+          p.closed_at       AS datum_zakljucenja,
+          p.customer_id
+        FROM projects p
+        WHERE ${activeFilter}
+          ${like ? AppPrisma.sql`AND (p.project_number ILIKE ${like} OR p.project_name ILIKE ${like} OR p.contract_number ILIKE ${like} OR p.order_number ILIKE ${like})` : AppPrisma.empty}
+        ORDER BY p.created_at DESC NULLS LAST, p.id DESC LIMIT 50`,
+    );
+    const custIds = [
+      ...new Set(items.map((r) => r.customer_id).filter((v) => v != null)),
+    ] as number[];
+    let custMap = new Map<number, { name: string; short_name: string | null }>();
+    if (custIds.length) {
+      const custRows = await this.prisma.$queryRaw<
+        { id: number; name: string; short_name: string | null }[]
       >(
-        Prisma.sql`SELECT id, broj_predmeta, naziv_predmeta, opis, status, department_code,
-            broj_ugovora, broj_narudzbenice, rok_zavrsetka, modified_at, datum_zakljucenja, customer_id
-          FROM bigtehn_items_cache
-          WHERE ${activeFilter}
-            ${like ? Prisma.sql`AND (broj_predmeta ILIKE ${like} OR naziv_predmeta ILIKE ${like} OR broj_ugovora ILIKE ${like} OR broj_narudzbenice ILIKE ${like})` : Prisma.empty}
-          ORDER BY modified_at DESC NULLS LAST LIMIT 50`,
+        AppPrisma.sql`SELECT id, name, short_name FROM customers WHERE id IN (${AppPrisma.join(custIds)})`,
       );
-      const custIds = [
-        ...new Set(items.map((r) => r.customer_id).filter((v) => v != null)),
-      ] as number[];
-      let custMap = new Map<
-        number,
-        { name: string; short_name: string | null }
-      >();
-      if (custIds.length) {
-        const custRows = await tx.$queryRaw<
-          { id: number; name: string; short_name: string | null }[]
-        >(
-          Prisma.sql`SELECT id, name, short_name FROM bigtehn_customers_cache WHERE id IN (${Prisma.join(custIds)})`,
-        );
-        custMap = new Map(custRows.map((c) => [c.id, c]));
-      }
-      const data = items.map((r) => ({
-        ...r,
-        customer_name:
-          r.customer_id != null
-            ? (custMap.get(r.customer_id)?.name ?? null)
-            : null,
-      }));
-      return { data: jsonSafe(data) };
-    });
+      custMap = new Map(custRows.map((c) => [c.id, c]));
+    }
+    const data = items.map((r) => ({
+      ...r,
+      customer_name:
+        r.customer_id != null ? (custMap.get(r.customer_id)?.name ?? null) : null,
+    }));
+    return { data: jsonSafe(data) };
   }
 
   /**
@@ -810,8 +853,8 @@ export class PlanMontazeService {
   /**
    * AI strukturiranje izveštaja (PRESUDA C6: port edge → NestJS, BE ANTHROPIC_API_KEY).
    * Identičan prompt/tool-schema/limiti/model-allowlist kao 1.0 edge; model iz
-   * `montaza_ai_settings` (allowlist), obogaćivanje predmeta iz `bigtehn_items_cache`
-   * kroz `withUserRls`. 1.0 edge ostaje živ za paralelni rad.
+   * `montaza_ai_settings` (allowlist), obogaćivanje predmeta iz 3.0 `projects`
+   * (v. `enrichPredmet`). 1.0 edge ostaje živ za paralelni rad.
    */
   async aiGenerate(
     email: string,
@@ -889,43 +932,50 @@ export class PlanMontazeService {
     return { data: out, meta: { model: res.model, usage: res.usage } };
   }
 
-  /** Obogati predmet iz bigtehn keša (edge enrichPredmet; DB je autoritet). */
+  /**
+   * Obogati predmet iz 3.0 `projects`/`customers` (edge enrichPredmet; DB je autoritet).
+   * Izvor prebačen sa sy15 keša zajedno sa `lookupPredmeti` — isto obrazloženje (v. tamo):
+   * keš je zamrznut snimak ugašenog QBigTehn-a, 3.0 je živi BigBit nadskup. `id` prostor
+   * je isti, pa `predmet_item_id` koji ide u izveštaj ostaje isti broj kao i pre.
+   */
   private async enrichPredmet(email: string, out: MontazaAiOut): Promise<void> {
     if (!out.predmet) return;
-    await this.read(email, async (tx) => {
-      const items = await tx.$queryRaw<
-        {
-          id: number;
-          broj_predmeta: string;
-          naziv_predmeta: string | null;
-          customer_id: number | null;
-        }[]
+    void email; // 3.0 matični podaci nisu RLS-ovani (v. lookupPredmeti).
+    const items = await this.prisma.$queryRaw<
+      {
+        id: number;
+        broj_predmeta: string;
+        naziv_predmeta: string | null;
+        customer_id: number | null;
+      }[]
+    >(
+      // ⚠️ NEMA `AND closed_at IS NULL` — veran port edge-a (enrichPredmet,
+      // montaza-izvestaj-ai/index.ts): većina predmeta su zatvoreni, sa jedinstvenim
+      // brojem; filter bi za njih vratio 0 i ostavio predmet_item_id/naziv/klijent prazne.
+      // `ORDER closed_at DESC NULLS FIRST` = aktivan ima prednost, ali vraća i zatvoren.
+      AppPrisma.sql`SELECT id,
+          project_number AS broj_predmeta,
+          project_name   AS naziv_predmeta,
+          customer_id
+        FROM projects
+        WHERE project_number = ${out.predmet}
+        ORDER BY closed_at DESC NULLS FIRST LIMIT 1`,
+    );
+    const it = items[0];
+    if (!it) return;
+    let klijent = "";
+    if (it.customer_id != null) {
+      const cust = await this.prisma.$queryRaw<
+        { name: string | null; short_name: string | null }[]
       >(
-        // ⚠️ NEMA `AND datum_zakljucenja IS NULL` — veran port edge-a (enrichPredmet,
-        // montaza-izvestaj-ai/index.ts): 67% keša su zatvoreni predmeti sa jedinstvenim
-        // brojem; filter bi za njih vratio 0 i ostavio predmet_item_id/naziv/klijent prazne.
-        // `ORDER datum_zakljucenja DESC NULLS FIRST` = aktivan ima prednost, ali vraća i zatvoren.
-        Prisma.sql`SELECT id, broj_predmeta, naziv_predmeta, customer_id
-          FROM bigtehn_items_cache
-          WHERE broj_predmeta = ${out.predmet}
-          ORDER BY datum_zakljucenja DESC NULLS FIRST LIMIT 1`,
+        AppPrisma.sql`SELECT name, short_name FROM customers WHERE id = ${it.customer_id} LIMIT 1`,
       );
-      const it = items[0];
-      if (!it) return;
-      let klijent = "";
-      if (it.customer_id != null) {
-        const cust = await tx.$queryRaw<
-          { name: string | null; short_name: string | null }[]
-        >(
-          Prisma.sql`SELECT name, short_name FROM bigtehn_customers_cache WHERE id = ${it.customer_id} LIMIT 1`,
-        );
-        klijent = cust[0]?.short_name || cust[0]?.name || "";
-      }
-      out.predmet_item_id = Number(it.id);
-      out.predmet = it.broj_predmeta || out.predmet;
-      out.naziv_projekta = it.naziv_predmeta || out.naziv_projekta;
-      out.klijent = klijent;
-    });
+      klijent = cust[0]?.short_name || cust[0]?.name || "";
+    }
+    out.predmet_item_id = Number(it.id);
+    out.predmet = it.broj_predmeta || out.predmet;
+    out.naziv_projekta = it.naziv_predmeta || out.naziv_projekta;
+    out.klijent = klijent;
   }
 
   /** Model iz montaza_ai_settings (allowlist), fallback env/default (edge resolveModel). */
