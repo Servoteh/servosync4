@@ -77,6 +77,7 @@ import {
   type SidebarLayout,
 } from '@/lib/use-ui-prefs';
 import { NAV_EVENT, emitNavEvent, type NavEventDetail } from '@/lib/use-query-tab';
+import { isModifiedNavClick, type NavClickLike } from '@/lib/nav-click';
 import {
   useMarkAllNotificationsRead,
   useMarkNotificationRead,
@@ -392,8 +393,13 @@ function NotificationBell({ enabled, variant = 'sidebar' }: { enabled: boolean; 
  * (podstavka nosi query, npr. `/odrzavanje?tab=kvarovi`); shell ga javlja kroz `servosync:nav`
  * da bi strana koja ostaje montirana promenila tab (PLAN_NAV_PODMENIJI §4.3). Bez njega se
  * podrazumeva `mruHref` (obični redovi modula — href reda JESTE cilj).
+ *
+ * Događaj klika je PRVI argument i nije opcion namerno: nav event sme da se emituje samo za
+ * običan levi klik (v. `lib/nav-click.ts`). Ctrl/⌘-klik na podstavku otvara nov tab, a tekuća
+ * strana mora da ostane na svom pogledu — nov `<Link>` koji zaboravi da prosledi događaj ne
+ * prolazi `tsc`, pa gard ne može da se izgubi kao komentar.
  */
-type NavigateHandler = (mruHref: string, navHref?: string) => void;
+type NavigateHandler = (e: NavClickLike, mruHref: string, navHref?: string) => void;
 
 /**
  * Podstavka modula (treći nivo — pogled/tab, PLAN_NAV_PODMENIJI §4.2) u punom sidebaru:
@@ -418,7 +424,7 @@ function SidebarSubItemRow({
       href={item.href}
       // MRU ide na modul, cilj navigacije je pun href podstavke (query!) — shell ga
       // emituje kao `servosync:nav`, pa strana menja tab i bez remount-a (§4.3).
-      onClick={() => onNavigate(parentHref, item.href)}
+      onClick={(e) => onNavigate(e, parentHref, item.href)}
       aria-current={active ? 'page' : undefined}
       className={cn(
         // max-lg:min-h-11 = touch-meta ≥44px na <1024px (DS §11), kao i redovi modula.
@@ -535,7 +541,7 @@ function SidebarModuleRow({
         )}
         <Link
           href={module.href}
-          onClick={() => onNavigate(module.href)}
+          onClick={(e) => onNavigate(e, module.href)}
           // Kad je aktivna PODSTAVKA, ona nosi jedini aria-current — roditelj samo stil.
           aria-current={ariaCurrent && !activeSub ? 'page' : undefined}
           title={markerTitle}
@@ -996,7 +1002,7 @@ function FlyoutModuleLink({
       <Link
         href={module.href}
         role="menuitem"
-        onClick={() => onNavigate(module.href)}
+        onClick={(e) => onNavigate(e, module.href)}
         aria-current={active && !activeSubHref ? 'page' : undefined}
         title={markerTitle}
         className={cn(
@@ -1022,7 +1028,7 @@ function FlyoutModuleLink({
                 role="menuitem"
                 // MRU/Omiljeno ostaju na nivou modula (F0) — roditeljev href; cilj
                 // navigacije je pun href podstavke (§4.3, promena taba bez remount-a).
-                onClick={() => onNavigate(module.href, c.href)}
+                onClick={(e) => onNavigate(e, module.href, c.href)}
                 aria-current={subActive ? 'page' : undefined}
                 className={cn(
                   'flex min-w-0 items-center rounded-control py-1 pl-3 pr-2 text-sm',
@@ -1279,8 +1285,10 @@ function RailNav({
                     setFlyout(null);
                     focusIcon(i);
                   }}
-                  onNavigate={(href, navHref) => {
-                    onNavigate(href, navHref);
+                  onNavigate={(e, href, navHref) => {
+                    onNavigate(e, href, navHref);
+                    // Flyout se zatvara i na ctrl-klik: meni je odradio svoje (cilj je
+                    // otvoren u novom tabu), a tekuća strana ostaje netaknuta.
                     setFlyout(null);
                   }}
                 />
@@ -1562,7 +1570,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // `/odrzavanje?tab=masine` ne bi uradio ništa. Cilj se šalje kao `detail.href` jer `onClick`
   // <Link>-a prethodi promeni URL-a; potrošači (`useQueryTab`, `useCurrentSearch`) ga primaju
   // samo za ISTI pathname — kod prave promene rute strana se remount-uje i čita URL sama.
-  const onNavigate: NavigateHandler = (href, navHref) => {
+  //
+  // Ctrl/⌘/Shift/Alt/srednji klik = „otvori drugde": Next prepušta navigaciju browseru, pa
+  // tekuća strana ne sme da se pomeri NI JEDNIM od ovih efekata (ni tab, ni MRU, ni zatvaranje
+  // sidebara). Ranije je ctrl-klik na „Održavanje → Kvarovi" otvarao nov tab I prebacivao
+  // stari, a adresa starog je i dalje pokazivala prethodni pogled.
+  const onNavigate: NavigateHandler = (e, href, navHref) => {
+    if (isModifiedNavClick(e)) return;
     pushRecentModule(href);
     setOverlayOpen(false);
     setOverlayHover(false);

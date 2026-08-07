@@ -17,6 +17,7 @@ import { Dialog } from '@/components/ui-kit/dialog';
 import { Textarea } from '@/components/ui-kit/textarea';
 import { toast } from '@/lib/toast';
 import { emitNavEvent } from '@/lib/use-query-tab';
+import { isModifiedNavClick } from '@/lib/nav-click';
 import { formatDateTime } from '@/lib/format';
 import {
   useRetriage,
@@ -73,11 +74,22 @@ export function AiTab({
  * remont-uje i običan `<Link>` bi promenio samo adresu: na ekranu bi ostao STARI zahtev
  * (C20). `emitNavEvent(href)` javlja cilj kroz kućni kanal `servosync:nav`, koji
  * `useIdParam` na strani sluša — isto što radi klik na podstavku u sidebaru.
+ *
+ * Gard `isModifiedNavClick`: poređenje dva zahteva se radi CTRL/⌘-klikom (nov tab). Tada
+ * Next prepušta navigaciju browseru i tekuća strana mora da ostane netaknuta — bez garda
+ * bi event svejedno prebacio STARI tab na tuđi zahtev, a adresa bi ostala na starom id-ju.
  */
 function DuplicateLink({ requestId }: { requestId: number }) {
   const href = `/zahtevi/detalj?id=${requestId}`;
   return (
-    <Link href={href} onClick={() => emitNavEvent(href)} className="text-accent hover:underline">
+    <Link
+      href={href}
+      onClick={(e) => {
+        if (isModifiedNavClick(e)) return;
+        emitNavEvent(href);
+      }}
+      className="text-accent hover:underline"
+    >
       Zahtev #{requestId}
     </Link>
   );

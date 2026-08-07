@@ -59,6 +59,11 @@ const VALID = new Set<ViewKey>(['plan', 'gantt', 'total', 'izvestaji', 'neusagla
  *
  * Troši se ISKLJUČIVO `id`. `view` je TRAJNO stanje adrese (bookmark/F5/highlight podstavke
  * u sidebaru moraju da pogode isti pogled) i nikad se ne skida.
+ *
+ * MONTIRA SE SAMO UZ SVOJ POGLED (v. mesto ugradnje): `?id=` je jednokratan deep-link ka
+ * neusaglašenosti i sme da se „potroši" jedino kad ima ko da ga primi. Bezuslovno montiran
+ * čitač je na `/montaza?id=5` (bez `view=`) pojeo parametar na hubu i zapamtio ga u stanju,
+ * pa je zapis iskakao kasnije, kad korisnik uopšte nije tražio deep-link.
  */
 function DeepLinkNcParam({ onOpen }: { onOpen: (id: number) => void }) {
   const params = useSearchParams();
@@ -111,10 +116,18 @@ export default function MontazaPage() {
 
   return (
     <AppShell>
-      {/* Renderuje `null` — vidi komentar uz DeepLinkNcParam zašto stoji pod Suspense-om. */}
-      <Suspense fallback={null}>
-        <DeepLinkNcParam onOpen={setDeepLinkNcId} />
-      </Suspense>
+      {/* Renderuje `null` — vidi komentar uz DeepLinkNcParam zašto stoji pod Suspense-om.
+          Uslov `view === 'neusaglasenosti'` je deo popravke, ne kozmetika: bez njega adresa
+          `/montaza?id=5` (bez `view=`) potroši `?id=` na hubu i zapamti ga za kasnije.
+          Gard NE SME da bude efekat tipa „ako view nije taj, obriši zapamćen id": efekti
+          deteta (čitač) idu PRE efekata roditelja, a `useQueryTab` pogled razrešava tek u
+          svom efektu — takav gard bi u prvom komitu obrisao tek pročitan deep-link i ubio
+          upravo ono što C20 popravlja. */}
+      {view === 'neusaglasenosti' && (
+        <Suspense fallback={null}>
+          <DeepLinkNcParam onOpen={setDeepLinkNcId} />
+        </Suspense>
+      )}
       {/* Gantt pogledi su „široki": sidebar se auto-sklanja dok su aktivni (F1 shell);
           hub/plan/izveštaji zadržavaju normalan raspored. */}
       <WideMode active={view === 'gantt' || view === 'total'} />

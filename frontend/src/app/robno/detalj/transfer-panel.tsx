@@ -26,6 +26,10 @@ export function TransferPanel({ doc }: { doc: StockDocumentDetail }) {
   const router = useRouter();
   const pair = useTransfer(doc.kind === 'PRENOS' ? doc.id : null);
   const reverse = useReverseTransfer();
+  // Razlog storna važi za JEDAN dokument. Strana panel montira sa `key={doc.id}`, pa promena
+  // identiteta dokumenta u mestu (skok na drugu stranu para) resetuje ovo stanje remount-om —
+  // zato ovde NEMA efekta „obriši na promenu doc.id": ključ pokriva i svako stanje koje se u
+  // panel tek doda, a efekat bi pokrio samo ono na koje se neko setio.
   const [reason, setReason] = useState('');
 
   /**

@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   NOTIFICATION_BADGE,
@@ -9,19 +11,60 @@ import {
 } from './notifications-nav';
 
 /**
- * Ogledalo backenda. Kad neko doda nov upis u `app_notifications`, ovaj test pada i
- * tera da se dopuni mapa — bez toga klik na obaveštenje tiho ne radi ništa (C20).
- * Izvor: `git grep -n "refTable" backend/src` (bez .spec) — 10 mesta upisa.
+ * Ogledalo backenda — ČITANO IZ BACKENDA, ne prepisano.
+ *
+ * Prva verzija ovog testa držala je ručno prepisan spisak `ref_table` vrednosti. Takav test
+ * ne može da uhvati baš ono zbog čega postoji: kad backend uvede nov kanal obaveštenja, spisak
+ * u testu ostaje isti, testovi prođu, a klik na novo obaveštenje opet ne radi ništa (C20 se
+ * tiho vraća). Zato se spisak IZVODI iz izvora — monorepo je jedan repo i putanja
+ * `backend/src` je stabilna (v. CLAUDE.md, koren repoa).
+ *
+ * Izvode se samo `refTable` vrednosti: one su na svim mestima upisa string-literali. Tipovi
+ * (`type:`) se mestimično sklapaju u runtime-u (npr. `kvalitet.${event.type.toLowerCase()}`),
+ * pa se iz izvora ne mogu pouzdano pročitati i ostaju nabrojani ručno — labela koja fali je
+ * uz to kozmetički kvar (neutralan bedž), ne mrtav klik.
  */
-const BACKEND_REF_TABLES = [
-  'work_orders',
-  'handover_drafts',
-  'drawing_handovers',
-  'montage_nonconformities',
-  'maint_machines',
-  'quality_events',
-  'app_switches',
-] as const;
+const BACKEND_SRC = path.resolve(import.meta.dirname, '..', '..', '..', 'backend', 'src');
+
+/** Sva `refTable: "…"` mesta u backendu (bez testova) — jedan po jedan literal. */
+function backendRefTables(dir: string, found = new Set<string>()): Set<string> {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      backendRefTables(full, found);
+    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.spec.ts')) {
+      // `latin1`, ne `utf8`: `handover-drafts.service.ts` nosi NUL bajt (git ga zato drži za
+      // binarni fajl, `grep` ga preskače kao „Binary file … matches"). Traženi obrazac je čist
+      // ASCII, pa čitanje bajt-po-bajt uklanja svako pitanje dekodiranja.
+      const src = fs.readFileSync(full, 'latin1');
+      for (const m of src.matchAll(/refTable:\s*["']([a-z0-9_]+)["']/g)) found.add(m[1]);
+    }
+  }
+  return found;
+}
+
+test('spisak kanala se izvodi iz backenda, ne prepisuje', () => {
+  // Ako ovo padne, promenio se raspored monorepoa — popravi putanju, NEMOJ preskočiti test:
+  // test koji ume tiho da se isključi je upravo kvar koji ovde popravljamo.
+  assert.ok(
+    fs.existsSync(BACKEND_SRC),
+    `nema backend/src na očekivanoj putanji (${BACKEND_SRC}) — proveri raspored monorepoa`,
+  );
+  const tables = backendRefTables(BACKEND_SRC);
+  // Donja granica je brana od „regex više ništa ne hvata pa test prolazi prazan".
+  assert.ok(tables.size >= 7, `nađeno samo ${tables.size} ref_table vrednosti — regex je zastareo`);
+});
+
+test('svaki ref_table koji backend upisuje ima rutu (izvedeno iz backenda)', () => {
+  for (const t of backendRefTables(BACKEND_SRC)) {
+    assert.ok(
+      NOTIFICATION_ROUTE[t],
+      `backend upisuje ref_table "${t}", a frontend nema rutu za njega — klik na to ` +
+        'obaveštenje ne vodi nigde (dopuni NOTIFICATION_ROUTE u lib/notifications-nav.ts)',
+    );
+    assert.ok(resolveNotificationRoute(t, 1), `resolve vraća null za "${t}"`);
+  }
+});
 
 const BACKEND_TYPES = [
   'kontrola.skart',
@@ -37,13 +80,6 @@ const BACKEND_TYPES = [
   'kvalitet.dorada',
   'bigbit.sync.alarm',
 ] as const;
-
-test('svaki ref_table koji backend upisuje ima rutu', () => {
-  for (const t of BACKEND_REF_TABLES) {
-    assert.ok(NOTIFICATION_ROUTE[t], `nema rute za ref_table "${t}"`);
-    assert.ok(resolveNotificationRoute(t, 1), `resolve vraća null za "${t}"`);
-  }
-});
 
 test('svaki tip koji backend šalje ima srpsku labelu (ne mašinski ključ)', () => {
   for (const t of BACKEND_TYPES) {
