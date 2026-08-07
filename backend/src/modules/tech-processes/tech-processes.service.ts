@@ -3389,6 +3389,44 @@ export class TechProcessesService {
     // dobijao „Ne". Bez plana odlučuje isključivo eksplicitna namera.
     const reachedPlan =
       planned !== null && planned > 0 && cumulativePieces >= planned;
+    // 🔴 NULA KOMADA NIJE „GOTOVO" (odluka Nenad 2026-08-07) — brana na SERVERU,
+    // jer FE gejt ume da promaši (na barkod ekranu `withoutProcess` dolazi iz
+    // decode odgovora sa `?? false`, pa nerazrešena operacija tiho izgubi izuzetak).
+    //
+    // ZAŠTO: od 05.08. (kad je pitanje uvedeno) operacija je 16 puta zatvorena sa
+    // NULA komada, 9 različitih radnika. Dugme ne radi ono što radnik misli — od
+    // 069/26 plan računa gotovost po DOBRIM komadima, pa operacija bez ijednog
+    // komada nikad ne dobije kvačicu u planu; jedini stvarni efekat je da NESTANE
+    // sa liste otvorenih. Za „otvorio sam greškom" postoji „Odustani" (`:id/dismiss`),
+    // koji zastavicu izričito NE diže.
+    //
+    // TRI USLOVA, svaki nosi svoju težinu:
+    //  • `finishIntent === true`, a NE `wantsFinish`: `wantsFinish` je istinit i za
+    //    OPŠTI NALOG preko `fromMyOpen` (čišćenje reda) — brana na njemu bi oborila
+    //    put kojim je RC 0.0 zatvorio 3.969 redova sa nula komada. Hvata se samo
+    //    EKSPLICITNA namera koju je poslao klijent.
+    //  • `withoutProcess !== true`: pojas i tregeri. Svež opšti nalog / svež CAM
+    //    posao (17.0/17.1) kreće od kumulativa 0, pa bi budući klijent koji polje
+    //    šalje uvek ostao bez izlaza.
+    //  • `<= 0`, ne `=== 0`: storno upisuje kontra-red sa NEGATIVNIM `piece_count`,
+    //    pa kumulativ ume da padne ispod nule.
+    //
+    // MESTO: pre `wantsFinish` i pre upita o tuđim sesijama — inače bi deljeni red
+    // umesto 422 dao tihi `finishSkipped` („još neko radi") i sakrio pravi razlog.
+    // Sudara se sa `reachedPlan` ne može: on traži `planned > 0 && cum >= planned`.
+    // Baca se U TRANSAKCIJI, pa se rolbekuju i zatvaranje sesije i inkrement komada.
+    if (
+      finishIntent === true &&
+      opDef?.withoutProcess !== true &&
+      cumulativePieces <= 0
+    )
+      throw new UnprocessableEntityException(
+        // Backtick-ovi: srpski navodnici u repou su „ + ASCII " (v. kiosk tekstove),
+        // a ASCII " bi prekinuo dvostruko navođen literal.
+        `Na operaciji nije otkucan nijedan komad — ne može biti označena kao gotova. ` +
+          `Ako si radio, prvo upiši broj komada pa ponovi „Kraj rada". ` +
+          `Ako si red otvorio greškom, skloni ga dugmetom „Odustani" u listi „Moji otvoreni".`,
+      );
     // 🔴 PRAVILO GAŠENJA (Nenad 2026-08-05) — serversko, ne veruje se samo FE-u:
     //   1. kumulativ ≥ plan  → zatvori (kao i do sada; polje se ne gleda),
     //   2. inače             → zatvori SAMO ako je stigla eksplicitna namera

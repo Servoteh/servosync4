@@ -14,6 +14,12 @@ import {
   type MyOpenRow,
 } from '@/api/kiosk';
 import { formatDate, formatNumber } from '@/lib/format';
+import {
+  TEKST_GOTOVOST,
+  oblikPitanja,
+  planZaPitanje,
+  trebaPitatiZaGotovost,
+} from './gotovost-pitanje';
 
 /**
  * „Moji otvoreni" (runda 2 t.3) — panel svih operacija koje je prijavljeni
@@ -142,10 +148,11 @@ export function MyOpenPanel({
     // Kumulativ CELE operacije (FIX A ume da razbije kucanja na više redova);
     // stariji backend ne vraća polje → fallback na red.
     const ukupno = (row.cumulativePieces ?? row.pieceCount) + pieces;
-    const planPoznat = plan != null && plan > 0;
     const opstiNalog = row.operation?.withoutProcess === true;
-    if (!opstiNalog && (!planPoznat || ukupno < plan!)) {
-      setFinishAsk({ row, pieces, ukupno, plan: planPoznat ? plan! : null });
+    // Gejt je deljen sa barkod ekranom (`gotovost-pitanje.ts`) — ranije je bio
+    // doslovno prepisan u oba fajla.
+    if (trebaPitatiZaGotovost(opstiNalog, plan, ukupno)) {
+      setFinishAsk({ row, pieces, ukupno, plan: planZaPitanje(plan) });
       return;
     }
     onStopAfterFinishAnswer(row, pieces, undefined);
@@ -299,45 +306,87 @@ export function MyOpenPanel({
       {/* 🔴 GOTOVOST OPERACIJE (Nenad 05.08.2026) — iskače SAMO kad količina nije
           puna. Podrazumevani odgovor je NE (istaknuto dugme + fokus, tako da i
           slučajan tap/Enter ostavlja operaciju otvorenom). Dodirni ekran u pogonu:
-          krupan tekst, dugmad visine 20 (80px), bez sitnog fonta. */}
+          krupan tekst, dugmad visine 20 (80px), bez sitnog fonta.
+
+          🔴 NULA KOMADA (Nenad 07.08.2026) — JEDAN dijalog, dva lica. Kad je
+          kumulativ ≤ 0, „Da — gotova je" se ne nudi uopšte; ostaju „Vrati me" i
+          „Upiši samo vreme" (oba ostavljaju operaciju otvorenom). Sadržaj se
+          GRANA unutar istog <Dialog>-a — drugi Dialog vezan za isto stanje bi se
+          dvaput prijavio `useEscapeLayer`-u i Esc bi propadao kroz slojeve
+          (regresija V11, v. `escape-layer.ts`). */}
       <Dialog
         open={finishAsk !== null}
         onClose={() => setFinishAsk(null)}
-        title="Da li je operacija gotova?"
+        title={TEKST_GOTOVOST[oblikPitanja(finishAsk?.ukupno ?? 1)].naslov}
         size="lg"
         footer={
           /* 🔴 STRANA DUGMADI (F5): primary je UVEK DESNO — isto kao u dijalogu
              „Na ovoj operaciji radi još neko" koji ume da usledi odmah posle ovog.
              Da je ovde primary bio levo, radnik bi u dva uzastopna dijaloga tapkao
-             na dve različite strane i naučenim pokretom pogodio „Da — gotova je". */
-          <>
-            <Button
-              variant="secondary"
-              onClick={() =>
-                finishAsk && onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, true)
-              }
-              className="h-20 flex-1 px-6 text-2xl font-bold"
-            >
-              Da — gotova je
-            </Button>
-            <Button
-              variant="primary"
-              autoFocus
-              onClick={() =>
-                finishAsk &&
-                onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, false)
-              }
-              className="h-20 flex-1 px-6 text-2xl font-bold"
-            >
-              Ne — nastavlja se
-            </Button>
-          </>
+             na dve različite strane i naučenim pokretom pogodio „Da — gotova je".
+             U nula-obliku desno stoji „Upiši samo vreme" — ista posledica
+             (operacija ostaje otvorena), pa naučen pokret ostaje tačan. */
+          finishAsk && oblikPitanja(finishAsk.ukupno) === 'nula' ? (
+            <>
+              {/* Ništa se ne šalje — isti efekat kao X / Esc / klik na pozadinu. */}
+              <Button
+                variant="secondary"
+                onClick={() => setFinishAsk(null)}
+                className="h-20 flex-1 px-6 text-2xl font-bold"
+              >
+                {TEKST_GOTOVOST.nula.levo}
+              </Button>
+              <Button
+                variant="primary"
+                autoFocus
+                onClick={() =>
+                  onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, false)
+                }
+                className="h-20 flex-1 px-6 text-2xl font-bold"
+              >
+                {TEKST_GOTOVOST.nula.desno}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  finishAsk && onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, true)
+                }
+                className="h-20 flex-1 px-6 text-2xl font-bold"
+              >
+                {TEKST_GOTOVOST['ispod-plana'].levo}
+              </Button>
+              <Button
+                variant="primary"
+                autoFocus
+                onClick={() =>
+                  finishAsk &&
+                  onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, false)
+                }
+                className="h-20 flex-1 px-6 text-2xl font-bold"
+              >
+                {TEKST_GOTOVOST['ispod-plana'].desno}
+              </Button>
+            </>
+          )
         }
       >
         {finishAsk && (
           <div className="space-y-4 text-ink">
             <p className="text-3xl font-bold">
-              {finishAsk.plan != null ? (
+              {oblikPitanja(finishAsk.ukupno) === 'nula' ? (
+                finishAsk.plan != null ? (
+                  <>
+                    Otkucano{' '}
+                    <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> od{' '}
+                    <span className="tnums">{formatNumber(finishAsk.plan)}</span> kom.
+                  </>
+                ) : (
+                  <>Na ovoj operaciji još nema otkucanih komada.</>
+                )
+              ) : finishAsk.plan != null ? (
                 <>
                   Otkucao si{' '}
                   <span className="tnums text-accent">{formatNumber(finishAsk.ukupno)}</span> od{' '}
@@ -357,9 +406,11 @@ export function MyOpenPanel({
               {finishAsk.row.operation?.workCenterName ?? finishAsk.row.workCenterCode}
             </p>
             <p className="text-xl text-ink-secondary">
-              „Ne" upisuje tvoj rad i vreme, a operacija ostaje otvorena za nastavak. „Da" je
-              zatvara iako količina nije puna.
+              {TEKST_GOTOVOST[oblikPitanja(finishAsk.ukupno)].objasnjenje}
             </p>
+            {oblikPitanja(finishAsk.ukupno) === 'nula' && (
+              <p className="text-xl text-ink-secondary">{TEKST_GOTOVOST.nula.odustani}</p>
+            )}
           </div>
         )}
       </Dialog>
