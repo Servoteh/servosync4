@@ -26,6 +26,33 @@
 -- `sed`-om zahvatio sva tri bloka i nehotice upisao izmenu na produ.)
 --
 -- ─────────────────────────────────────────────────────────────────────────────
+-- ✅ IZVEDENO 07.08.2026. u 12:42 po Beogradu (10:42 UTC) — posle deploy-a koda
+-- iz PR #112 i zelenog `post-deploy-verify.sh`. Šta je stvarno urađeno:
+--
+--   • KORAK 1 pušten NEPOSREDNO pre upisa → populacija je do tada pala sa 2 na
+--     **1 red**: tp 119234 · RN 9400/2/340 · op 40 · RC 3.16 · plan 1.
+--     Drugi jutrošnji kandidat (tp 119224, RN 9400/3/300) ispao je sam — njegov
+--     RN je u međuvremenu prošao završnu kontrolu, pa je zastavica postala tačna.
+--     To je tačno ono čemu služi napomena „brojke su SNIMAK, ne konstanta".
+--   • KORAK 2 pušten iz ZASEBNOG fajla (samo linije `BEGIN;`…`COMMIT;`), pošto je
+--     prethodno provereno da izdvojeni blok ne sadrži ništa iz koraka 1 i 3.
+--     Ispis je bio `UPDATE 0` — to je tag SPOLJAŠNJEG upita (prioritet 255→100) i
+--     ISPRAVAN je: RC 3.16 ima `uses_priority = false`, pa nije ni na listi
+--     prioriteta. Upisi unutar CTE-ova (`revizija`, `otvoreno`) su se svejedno
+--     izvršili — data-modifying CTE radi i kad spoljašnji upit pogodi nula redova.
+--   • KORAK 3 (provera): preostalih kandidata **0** (idempotentno) · tp 119234 =
+--     `is_process_finished = false`, `finished_at = NULL`, vlasnik 133 zadržan ·
+--     operacije sa >1 otvorenim redom ostale na 1 (zatečeno, nije dirnuto).
+--   • POVRATAK: `audit_log id = 35186` (`SANACIJA kiosk-nula-komada 2026-08-07`)
+--     nosi `before_data` sa id-em, vlasnikom i izvornim `finished_at`.
+--
+--   ⚠️ Mera 3 iz KORAKA 3 („otvorene operacije sa kumulativom 0") ostala je 15
+--   umesto očekivanih 16. NIJE greška: u ta tri sata pogon je upisao 23 reda sa
+--   komadima, pa je bar jedna od jutrošnjih 15 izašla iz skupa taman kad je ova
+--   ušla. Apsolutan broj nad živom tabelom nije dokaz — dokaz su mera 1 (nula
+--   preostalih kandidata) i mera 6 (imenovani red je otvoren).
+-- ─────────────────────────────────────────────────────────────────────────────
+--
 -- IZMERENO NA PRODU 07.08.2026 (SELECT-only, `docker exec servosync-pg psql`)
 --
 -- 🕐 ZONA — pročitaj pre nego što uporediš bilo koje vreme odavde sa smenom:
