@@ -23,6 +23,7 @@ import {
   useOptimisticUrgent,
   useOptimisticReorder,
   opKey,
+  pratiGant,
   type OpRow,
 } from '@/api/plan-proizvodnje';
 import {
@@ -128,6 +129,12 @@ export function OpsTable({
     if (overKey === dragKey) return;
 
     const fromIdx = ops.findIndex((x) => opKey(x) === dragKey);
+    // 🔴 080/26: brana ide po IZVORU prevlačenja, ne po odredištu. Pozicija sa
+    // terminom se ne pomera ručno — ali se PREKO nje sme prevući red bez termina
+    // (njegovo mesto je i dalje njegovo). Da brana stoji na odredištu, red bez
+    // termina ne bi mogao da se spusti ispod planirane pozicije, što suženje
+    // izričito ostavlja kako je bilo.
+    if (fromIdx >= 0 && pratiGant(ops[fromIdx])) return;
     let toIdx = ops.findIndex((x) => opKey(x) === overKey);
     if (fromIdx < 0 || toIdx < 0) return;
 
@@ -146,6 +153,10 @@ export function OpsTable({
 
   /** „Idi na poziciju N" (GAP-PM-09): clamp + optimistički reorder. */
   function applyPosition(o: OpRow, targetPos: number) {
+    // 080/26: isti razlog kao u `onDrop` — pozicija sa terminom prati gant.
+    // Dugme se i ne prikazuje za takav red, ali brana stoji i ovde jer je ovo
+    // drugi ulaz u isti upis (pouka 077/26: pozivalaca uvek ima više nego što se seća).
+    if (pratiGant(o)) return;
     const from = ops.findIndex((x) => opKey(x) === opKey(o));
     if (from < 0) return;
     const clamped = Math.max(1, Math.min(ops.length, Math.round(targetPos)));
@@ -226,7 +237,7 @@ export function OpsTable({
               <FragRow key={key}>
                 <tr
                   className={cn('border-b border-line-soft hover:bg-surface-2', rowClasses(o))}
-                  draggable={reorderable && canEdit}
+                  draggable={reorderable && canEdit && !pratiGant(o)}
                   onDragStart={() => setDragKey(key)}
                   onDragOver={(e) => reorderable && e.preventDefault()}
                   onDrop={(e) => onDrop(o, e)}
@@ -237,13 +248,30 @@ export function OpsTable({
                     </td>
                   )}
                   {reorderable && (
-                    <td className="px-1 py-1.5 text-center align-middle" title={canEdit ? 'Prevuci za prioritet' : 'Drag za pm/admin'}>
-                      <span className="cursor-grab text-ink-disabled">⠿</span>
+                    /* 080/26: pozicija sa termina ne nosi hvatište nego oznaku ganta —
+                       hvatište koje ništa ne radi planer tumači kao pokvaren ekran. */
+                    <td
+                      className="px-1 py-1.5 text-center align-middle"
+                      title={
+                        pratiGant(o)
+                          ? 'Termin je na gantu — redosled prati gant. Pomeri ga u tabu „Gant".'
+                          : canEdit
+                            ? 'Prevuci za prioritet'
+                            : 'Drag za pm/admin'
+                      }
+                    >
+                      {pratiGant(o) ? (
+                        <span className="text-accent" aria-label="Prati gant">
+                          📅
+                        </span>
+                      ) : (
+                        <span className="cursor-grab text-ink-disabled">⠿</span>
+                      )}
                     </td>
                   )}
                   {/* Redosled — apsolutna pozicija (klik → popover) */}
                   <td className="tnums px-2 py-1.5">
-                    {reorderable && canEdit ? (
+                    {reorderable && canEdit && !pratiGant(o) ? (
                       <button
                         type="button"
                         className="rounded-control bg-surface-2 px-1.5 py-0.5 text-2xs font-medium text-ink hover:bg-line-soft"
