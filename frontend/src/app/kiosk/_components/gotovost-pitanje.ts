@@ -57,11 +57,12 @@ export function oblikPitanja(ukupno: number): GotovostOblik {
 /**
  * Tekstovi dijaloga — deljeni, da oba ekrana kažu radniku DOSLOVNO isto.
  *
- * 🔴 STRANA DUGMADI: primary je UVEK DESNO i u oba oblika ima ISTU posledicu —
- * operacija OSTAJE OTVORENA („Ne — nastavlja se" / „Upiši samo vreme"). Naučen
- * pokret radnika tako ostaje tačan i kad dijalog promeni lice, a „Da — gotova je"
- * u nula-obliku fizički NESTANE sa ekrana (disabled dugme na dodirnom ekranu
- * radnik tapka i misli da ekran ne radi).
+ * 🔴 STRANA DUGMADI: primary je UVEK DESNO, ali posledica se razlikuje po obliku.
+ * U „ispod-plana" desno je „Ne — nastavlja se" (operacija ostaje otvorena, upisuje
+ * se rad). U „nula" je desno „Vrati me — upisujem količinu" (ne šalje se ništa) —
+ * tako je tražio Nenad 07.08.2026. Bezbedno je jer u nula-obliku NIJEDNO dugme ne
+ * zatvara operaciju: „Da — gotova je" tu fizički NESTANE sa ekrana (disabled dugme
+ * na dodirnom ekranu radnik tapka i misli da ekran ne radi).
  */
 export const TEKST_GOTOVOST = {
   'ispod-plana': {
@@ -75,10 +76,17 @@ export const TEKST_GOTOVOST = {
   },
   nula: {
     naslov: 'Nisi otkucao nijedan komad',
-    /** secondary, levo — samo zatvara dijalog, ništa se ne šalje. */
-    levo: 'Vrati me — upisujem količinu',
-    /** primary, desno — `operacijaGotova = false` (upisuje se samo vreme rada). */
-    desno: 'Upiši samo vreme',
+    /**
+     * secondary, levo — `operacijaGotova = false` (upisuje se samo vreme rada).
+     * 🔴 REDOSLED JE VLASNIKOVA ODLUKA (Nenad 07.08.2026): „nek prvo ponudi Upiši
+     * samo vreme sa leve strane a desno da bude Vrati me". Zato je ovde primary
+     * DESNO = „Vrati me", a ne radnja — svesno odstupanje od pravila „desno uvek
+     * ima istu posledicu". Greši u bezbednom smeru: slučajan tap/Enter ne upiše
+     * ništa nego vrati radnika da unese količinu, umesto da zatvori praznu smenu.
+     */
+    levo: 'Upiši samo vreme',
+    /** primary, desno — samo zatvara dijalog, ništa se ne šalje (kao X / Esc). */
+    desno: 'Vrati me — upisujem količinu',
     objasnjenje:
       'Kraj rada bez komada upisuje SAMO tvoje vreme rada — operacija OSTAJE OTVORENA. Operacija sa nula komada ne može biti označena kao gotova.',
     /** Dopuna samo u „Moji otvoreni" — tamo dugme „Odustani" i postoji. */

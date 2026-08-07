@@ -324,24 +324,25 @@ export function MyOpenPanel({
              „Na ovoj operaciji radi još neko" koji ume da usledi odmah posle ovog.
              Da je ovde primary bio levo, radnik bi u dva uzastopna dijaloga tapkao
              na dve različite strane i naučenim pokretom pogodio „Da — gotova je".
-             U nula-obliku desno stoji „Upiši samo vreme" — ista posledica
-             (operacija ostaje otvorena), pa naučen pokret ostaje tačan. */
+             U NULA-obliku redosled je obrnut po Nenadovoj odluci (07.08.2026):
+             levo „Upiši samo vreme", desno (primary + fokus) „Vrati me". Tamo
+             nijedno dugme ne zatvara operaciju, pa promašaj košta samo jedan tap. */
           finishAsk && oblikPitanja(finishAsk.ukupno) === 'nula' ? (
             <>
-              {/* Ništa se ne šalje — isti efekat kao X / Esc / klik na pozadinu. */}
               <Button
                 variant="secondary"
-                onClick={() => setFinishAsk(null)}
+                onClick={() =>
+                  onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, false)
+                }
                 className="h-20 flex-1 px-6 text-2xl font-bold"
               >
                 {TEKST_GOTOVOST.nula.levo}
               </Button>
+              {/* Ništa se ne šalje — isti efekat kao X / Esc / klik na pozadinu. */}
               <Button
                 variant="primary"
                 autoFocus
-                onClick={() =>
-                  onStopAfterFinishAnswer(finishAsk.row, finishAsk.pieces, false)
-                }
+                onClick={() => setFinishAsk(null)}
                 className="h-20 flex-1 px-6 text-2xl font-bold"
               >
                 {TEKST_GOTOVOST.nula.desno}

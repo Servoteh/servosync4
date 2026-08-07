@@ -73,7 +73,9 @@ test('tekst: nula-oblik ne nudi „Da — gotova je" ni na jednom dugmetu', () =
     false,
   );
   assert.equal(TEKST_GOTOVOST.nula.naslov, 'Nisi otkucao nijedan komad');
-  assert.equal(TEKST_GOTOVOST.nula.desno, 'Upiši samo vreme');
+  // Redosled je Nenadova odluka 07.08.2026 — levo radnja, desno povratak.
+  assert.equal(TEKST_GOTOVOST.nula.levo, 'Upiši samo vreme');
+  assert.equal(TEKST_GOTOVOST.nula.desno, 'Vrati me — upisujem količinu');
   assert.match(TEKST_GOTOVOST.nula.objasnjenje, /OSTAJE OTVORENA/);
   assert.match(TEKST_GOTOVOST.nula.odustani, /Odustani/);
 });

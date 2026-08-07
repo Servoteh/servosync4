@@ -420,18 +420,18 @@ export function WorkPanel({
         footer={
           finishAsk && oblikPitanja(finishAsk.ukupno) === 'nula' ? (
             <>
-              {/* Ništa se ne šalje — isti efekat kao X / Esc / klik na pozadinu. */}
               <Button
                 variant="secondary"
-                onClick={() => setFinishAsk(null)}
+                onClick={() => stopWorkAnswered(false)}
                 className="h-20 flex-1 px-6 text-2xl font-bold"
               >
                 {TEKST_GOTOVOST.nula.levo}
               </Button>
+              {/* Ništa se ne šalje — isti efekat kao X / Esc / klik na pozadinu. */}
               <Button
                 variant="primary"
                 autoFocus
-                onClick={() => stopWorkAnswered(false)}
+                onClick={() => setFinishAsk(null)}
                 className="h-20 flex-1 px-6 text-2xl font-bold"
               >
                 {TEKST_GOTOVOST.nula.desno}

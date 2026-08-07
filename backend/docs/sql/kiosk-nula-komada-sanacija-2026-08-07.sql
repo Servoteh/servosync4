@@ -28,6 +28,14 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- IZMERENO NA PRODU 07.08.2026 (SELECT-only, `docker exec servosync-pg psql`)
 --
+-- 🕐 ZONA — pročitaj pre nego što uporediš bilo koje vreme odavde sa smenom:
+-- `tech_processes.finished_at` i `entered_at` su `timestamp WITHOUT time zone`, a
+-- aplikacija u njih piše UTC. Zato `SET TIME ZONE 'Europe/Belgrade'` NE pomera te
+-- kolone — psql ih ispisuje sirovo, dva sata unazad. Konverzija je izričita:
+--     finished_at AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Belgrade'
+-- Sva vremena u OVOM zaglavlju su već prevedena u BEOGRADSKO. Kad pustiš KORAK 1,
+-- njegov ispis je SIROV (UTC) — dodaj 2 sata pre nego što kažeš „kraj smene".
+--
 -- ⚠️ POPULACIJA JE ŽIVA — pogon radi dok ovo čitaš, i to se već videlo:
 -- u 09:00 je kandidata bilo TRI, a u 10:00 DVA, jer je RN 9400/2/486 (op 35,
 -- RC 8.2) u međuvremenu prošao ZAVRŠNU KONTROLU (op 70 / RC 8.3, 07.08. u 07:35)
@@ -37,8 +45,10 @@
 --
 --   granica 05.08.2026 (dan uvođenja pitanja o gotovosti — ODLUKA NENADA):
 --     • 2 operacije · 2 reda · 2 RN — sve tri stavke ispod se otvaraju:
---         tp 119234 · RN 9400/2/340 · op 40 · RC 3.16 · plan 1 · zatvoreno 06.08 15:59
---         tp 119224 · RN 9400/3/300 · op 20 · RC 3.40 · plan 4 · zatvoreno 06.08 15:59
+--         tp 119234 · RN 9400/2/340 · op 40 · RC 3.16 · plan 1 · zatvoreno 06.08 15:59 BGD (13:59 UTC)
+--         tp 119224 · RN 9400/3/300 · op 20 · RC 3.40 · plan 4 · zatvoreno 06.08 15:59 BGD (13:59 UTC)
+--       Oba u istom minutu na KRAJU SMENE — to je „čišćenje liste na izlasku",
+--       a ne stvarno završena operacija; zato se i vraćaju u otvoreno.
 --     • 0 redova se otkupljuje (svaka operacija ima tačno JEDAN red)
 --
 --   levak (kako se od svih „nula" zatvaranja stiže do populacije):
