@@ -9,6 +9,11 @@ import {
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
+// 🔴 DVA KLIJENTA U ISTOM FAJLU. `Prisma` je sy15 (1.0) klijent, `P30` je 3.0.
+// Alias je NAMERNO kratak i vidljiv: `Prisma.sql` i `P30.sql` prave upit nad
+// RAZLIČITIM bazama, pa zamena jednog drugim ne pada nego tiho čita pogrešnu
+// bazu. Pravilo: sve u `*30` metodama ide kroz `P30`, sve ostalo kroz `Prisma`.
+import { Prisma as P30 } from "@prisma/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
@@ -34,6 +39,11 @@ import {
   ODRZAVANJE_INJECTION_FENCE,
 } from "../../common/ai/injection-fence";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
+import {
+  OdrzavanjeAuthzService,
+  type MaintScope,
+} from "./odrzavanje-authz.service";
+import { OdrzavanjeFnService } from "./odrzavanje-fn.service";
 import {
   normalizeRacunOut,
   RACUN_AI_ALLOWED_MODELS,
@@ -178,6 +188,28 @@ export interface PartsQuery {
   pageSize?: string;
 }
 
+/**
+ * Redovi view-ova koje `board` čita. Izdvojeni u tipove jer ih sada čitaju DVE
+ * grane (sy15 i 3.0) i sklapa ih zajednički `boardData` — da se oblik odgovora
+ * ne bi razišao između izvora.
+ */
+export interface BoardDueRed {
+  task_id: string;
+  machine_code: string;
+  title: string;
+  severity: string | null;
+  interval_value: number | null;
+  interval_unit: string | null;
+  next_due_at: Date | string;
+  bucket: string;
+}
+export interface BoardOverrideRed {
+  machine_code: string;
+  status: string;
+  override_reason: string | null;
+  override_valid_until: Date | string | null;
+}
+
 /** Allowliste enum vrednosti (paritet žive šeme; filter van skupa = ignorisan, ne 500). */
 const WO_STATUSES = new Set([
   "novi",
@@ -263,6 +295,13 @@ export class OdrzavanjeService {
     // testovi prave servis sa 3 argumenta. Kad ga nema, `runIdem` NE prelazi u 3.0
     // granu (v. branu tamo) — izostanak zavisnosti nikad ne pomera izvor podataka.
     @Optional() private readonly idem?: IdempotencyService,
+    // 3.0 parnjak sy15 RLS-a (`OdrzavanjeAuthzService`) i prepis DEFINER funkcija
+    // (`OdrzavanjeFnService`). `@Optional` iz istog razloga kao gore — postojeći
+    // unit testovi prave servis sa 3 argumenta. Kad ih NEMA, `tri30` je `false`,
+    // pa čitanje pod `3.0` pada na `withUserMapped` gde ga dočeka brana (503):
+    // izostanak zavisnosti nikad ne može tiho da vrati saobraćaj u sy15.
+    @Optional() private readonly authz?: OdrzavanjeAuthzService,
+    @Optional() private readonly fnSvc?: OdrzavanjeFnService,
   ) {}
 
   /**
@@ -280,6 +319,120 @@ export class OdrzavanjeService {
   }
 
   // ==========================================================================
+  // 3.0 — ZAJEDNIČKI ULAZ U READ GRANU (§7.1 / §7.4 runbook-a)
+  // ==========================================================================
+  //
+  // 🔴 ZAŠTO SVAKO ČITANJE ISPOD NOSI EKSPLICITAN SCOPE
+  //
+  // U sy15 row-scope sprovodi 102 RLS politike, a svih 15 `v_maint_*` view-ova je
+  // `security_invoker = true` — dakle RLS pozivaoca se primenjivao I KROZ VIEW.
+  // 3.0 nema RLS (ODLUKE.md), pa `SELECT * FROM v_maint_vehicle_overview` vraća
+  // SVA vozila i operateru koji ne sme da vidi nijedno. To je NAJTIŠI mogući kvar
+  // cele seobe: upit ne puca, ruta ne vraća grešku, ekran se otvori — samo ima
+  // više redova nego što sme. Test koji proverava „ima li podataka" to NE hvata;
+  // hvata ga isključivo test koji BROJI redove za usku rolu (v.
+  // `odrzavanje-citanja-3-0.spec.ts`, tabela istinitosti po roli).
+  //
+  // Zato nijedan `*30` metod ispod ne čita bazu pre `scope30(email)`, i svaki
+  // upit spaja isečak iz `OdrzavanjeAuthzService`. Pravilo je:
+  //   `undefined`/`null`  = „ne dodaj ništa" (pozivalac ionako vidi sve);
+  //   prazan `in: []`     = „nula redova" — TAČAN parnjak RLS-a za operatera bez
+  //                         dodeljenih mašina; NIKAD ga ne pretvarati u `undefined`.
+  //
+  // ⚠️ Fiksni filter ekrana i scope se spajaju kroz `AND: [...]`, a NE kroz spread.
+  // Spread bi kod sudara ključeva (`machineCode`, `assetType`, `OR`) drugi objekat
+  // pustio da PREGAZI prvi — i to bi u pola slučajeva proširilo prava.
+
+  /** Da li ovo čitanje ide 3.0 putem (prekidač JE na `3.0` i sve zavisnosti postoje). */
+  private get tri30(): boolean {
+    return (
+      this.izvor?.isThreeZero === true &&
+      !!this.prisma &&
+      !!this.authz &&
+      !!this.fnSvc
+    );
+  }
+
+  /**
+   * 3.0 zavisnosti kao ne-null trojka. Postojanje je već provereno u `tri30`, pa
+   * je bacanje ovde samo mreža: kad zavisnosti FALE, `tri30` je `false` i poziv
+   * pada natrag na `withUserMapped`, gde ga pod `3.0` dočeka brana `assertPorted`
+   * (503). Izostanak zavisnosti tako NIKAD ne može tiho da vrati čitanje u sy15.
+   */
+  private tri(): {
+    db: PrismaService;
+    az: OdrzavanjeAuthzService;
+    fn: OdrzavanjeFnService;
+  } {
+    if (!this.prisma || !this.authz || !this.fnSvc) {
+      throw new ServiceUnavailableException(
+        "Održavanje (3.0): nedostaje PrismaService/OdrzavanjeAuthzService/OdrzavanjeFnService.",
+      );
+    }
+    return { db: this.prisma, az: this.authz, fn: this.fnSvc };
+  }
+
+  /**
+   * e-mail pozivaoca → snimak prava (`MaintScope`).
+   *
+   * U sy15 je isti posao radio GUC (`auth.uid()` + `jwt.email`) pa su ga gejtovi
+   * čitali sami; u 3.0 se mora izmeriti unapred i proslediti u svaki upit.
+   * Nalog koji 3.0 baza ne poznaje NE dobija „prazna prava" nego 403: prazan
+   * scope bi za neke rute (npr. one bez sužavanja) bio isto što i puna prava.
+   */
+  private async scope30(email: string): Promise<MaintScope> {
+    const { db, az } = this.tri();
+    const u = await db.user.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (!u) {
+      throw new ForbiddenException(
+        `Nalog ${email} ne postoji u 3.0 bazi — prava održavanja se ne mogu odrediti`,
+      );
+    }
+    return az.loadScope(u.id);
+  }
+
+  /** Spaja SQL isečke u jedan `AND` uslov; `null` kad nijedan ne postoji. */
+  private andSql(...delovi: (P30.Sql | null)[]): P30.Sql | null {
+    const zivi = delovi.filter((d): d is P30.Sql => d != null);
+    if (!zivi.length) return null;
+    return zivi.reduce((a, b) => P30.sql`${a} AND ${b}`);
+  }
+
+  /**
+   * SQL parnjak `assetListWhere` nad view-om koji nabraja SVE tipove sredstava
+   * (`v_maint_asset_service_plan_due` — jedini takav).
+   *
+   * 🔴 `nonMachineViewScopeSql` ovde NE VAŽI: taj helper sme samo nad view-ovima
+   * koji vraćaju isključivo ne-mašinska sredstva. Da se upotrebi ovde, tehničar
+   * (`M ∧ ¬N`) bi izgubio i mašinske planove, a operater bi dobio `FALSE` umesto
+   * svojih mašina. Odluku i dalje donosi `OdrzavanjeAuthzService`
+   * (`machineVisibleForAll` / `nonMachineVisible` / `assignedMachineCodes`) —
+   * ovde se ona samo prevodi u SQL.
+   */
+  private assetTipViewScopeSql(s: MaintScope): P30.Sql | null {
+    const { az } = this.tri();
+    const m = az.machineVisibleForAll(s);
+    const n = az.nonMachineVisible(s);
+    if (m && n) return null;
+    // Tehničar: sve mašine, nijedno vozilo/IT/objekat.
+    if (m) return P30.sql`asset_type = 'machine'`;
+    const codes = az.assignedMachineCodes(s);
+    // (Mrtva grana po konstrukciji — `N ⊆ M`; ostaje doslovna radi tačnosti prepisa.)
+    if (n) {
+      if (!codes.length) return P30.sql`asset_type <> 'machine'`;
+      return P30.sql`(asset_type <> 'machine' OR asset_id IN (
+        SELECT mm.asset_id FROM maint_machines mm WHERE mm.machine_code = ANY(${codes})))`;
+    }
+    // Operater: samo dodeljene mašine; bez ijedne -> nula redova (kao RLS).
+    if (!codes.length) return P30.sql`FALSE`;
+    return P30.sql`(asset_type = 'machine' AND asset_id IN (
+      SELECT mm.asset_id FROM maint_machines mm WHERE mm.machine_code = ANY(${codes})))`;
+  }
+
+  // ==========================================================================
   // /maintenance/me — dvoslojni profil pozivaoca (server računa preko GUC-a)
   // ==========================================================================
 
@@ -289,6 +442,7 @@ export class OdrzavanjeService {
    * FE fino-gejtuje po ovome (guard/rola sloj NE može izraziti maint profil).
    */
   async me(email: string) {
+    if (this.tri30) return this.me30(email);
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.$queryRaw<
         {
@@ -314,35 +468,81 @@ export class OdrzavanjeService {
       const profile = r.uid
         ? await tx.maintUserProfile.findUnique({ where: { userId: r.uid } })
         : null;
-      const role = r.maint_role;
-      const isChiefAdmin = role === "chief" || role === "admin";
-      const erpMgmt = r.erp_admin_or_management;
-      // FE gate-ovi (paritet 1.0 §2.4). Guard/RLS su autoritativni; ovo je za PRIKAZ.
-      const gates = {
-        canManageMaintCatalog: erpMgmt || isChiefAdmin,
-        canManageMaintTasks: erpMgmt || isChiefAdmin, // 1.0 maintTasksTab.js:32-35 — erp adm/mgmt/magacioner ∨ chief/admin (spec §2.4 „bez erp kruga" oboren auditom 17.07; RLS ostaje autoritativan)
-        canEditWorkOrder: erpMgmt || role === "technician" || isChiefAdmin,
-        canManageMaintOverride: erpMgmt || isChiefAdmin,
-        canAccessMaintNotifications:
-          erpMgmt ||
-          role === "chief" ||
-          role === "management" ||
-          role === "admin",
-        canManageInventory: erpMgmt || isChiefAdmin,
-        canMoveInventory: erpMgmt || isChiefAdmin || role === "technician",
-        canCreateWo: erpMgmt || role === "technician" || isChiefAdmin,
-      };
       return {
-        data: {
-          maintRole: role,
-          floorRead: r.floor_read,
-          erpAdmin: r.erp_admin,
-          erpAdminOrManagement: erpMgmt,
+        data: this.meData(
+          r.maint_role,
+          r.floor_read,
+          r.erp_admin,
+          r.erp_admin_or_management,
           profile,
-          gates,
-        },
+        ),
       };
     });
+  }
+
+  /**
+   * 3.0 parnjak `me()`. Četiri GUC helpera (`maint_profile_role`,
+   * `maint_has_floor_read_access`, `maint_is_erp_admin`,
+   * `maint_is_erp_admin_or_management`) zamenjuje JEDAN `loadScope` — isti snimak
+   * prava koji potom nose i svi ostali upiti, pa `/me` i liste ne mogu da se raziđu.
+   *
+   * ⚠️ UGOVOR PREMA FE-u JE NEPROMENJEN: ista polja, isti `gates` — jedina razlika
+   * je da `profile.userId` postaje broj (3.0 `users.id`) umesto uuid-a, što je
+   * posledica odluke 2 seobe i važi za ceo modul.
+   */
+  private async me30(email: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    // `maint_user_profiles` SELECT = `uid() = user_id ∨ erp_admin` — SVOJ red
+    // pozivalac vidi uvek, pa `/me` ne traži dodatno sužavanje.
+    const profile = await db.maintUserProfile.findUnique({
+      where: { userId: scope.userId },
+    });
+    return {
+      data: this.meData(
+        az.profileRole(scope),
+        az.hasFloorReadAccess(scope),
+        az.isErpAdmin(scope),
+        az.isErpAdminOrManagement(scope),
+        profile,
+      ),
+    };
+  }
+
+  /**
+   * Ugovor `/maintenance/me` — JEDAN izvor za oba izvora podataka.
+   * FE gate-ovi (paritet 1.0 §2.4): guard/RLS su autoritativni, ovo je za PRIKAZ.
+   */
+  private meData(
+    role: string | null,
+    floorRead: boolean,
+    erpAdmin: boolean,
+    erpMgmt: boolean,
+    profile: unknown,
+  ) {
+    const isChiefAdmin = role === "chief" || role === "admin";
+    const gates = {
+      canManageMaintCatalog: erpMgmt || isChiefAdmin,
+      canManageMaintTasks: erpMgmt || isChiefAdmin, // 1.0 maintTasksTab.js:32-35 — erp adm/mgmt/magacioner ∨ chief/admin (spec §2.4 „bez erp kruga" oboren auditom 17.07; RLS ostaje autoritativan)
+      canEditWorkOrder: erpMgmt || role === "technician" || isChiefAdmin,
+      canManageMaintOverride: erpMgmt || isChiefAdmin,
+      canAccessMaintNotifications:
+        erpMgmt ||
+        role === "chief" ||
+        role === "management" ||
+        role === "admin",
+      canManageInventory: erpMgmt || isChiefAdmin,
+      canMoveInventory: erpMgmt || isChiefAdmin || role === "technician",
+      canCreateWo: erpMgmt || role === "technician" || isChiefAdmin,
+    };
+    return {
+      maintRole: role,
+      floorRead,
+      erpAdmin,
+      erpAdminOrManagement: erpMgmt,
+      profile,
+      gates,
+    };
   }
 
   // ==========================================================================
@@ -351,6 +551,7 @@ export class OdrzavanjeService {
 
   /** Objedinjeni pregled: statusi mašina + dnevni sažetak + brojevi kategorija (1 poziv umesto 9). */
   async dashboard(email: string) {
+    if (this.tri30) return this.dashboard30(email);
     return this.withUserMapped(email, async (tx) => {
       const [machineStatus, dailySummary, categoryCounts] = await Promise.all([
         tx.$queryRaw(Prisma.sql`SELECT * FROM v_maint_machine_current_status`),
@@ -381,26 +582,82 @@ export class OdrzavanjeService {
   }
 
   /**
+   * 3.0 parnjak `dashboard()`. Sve četiri brojke su u sy15 bile SUŽENE RLS-om
+   * pozivaoca (i kroz view i kroz `count`), pa svaka ovde nosi svoj isečak.
+   *
+   * 🔴 `v_maint_cmms_daily_summary` je jedini view koji se ne da suziti u `WHERE`
+   * — on je skup `count(*)` podupita nad celom bazom. Zato ga sme videti samo
+   * onaj kome `canReadFullSummary()` kaže da ionako vidi sve; ostalima ide `null`.
+   * Vraćanje nesuženih brojki bilo bi curenje: „7 otvorenih kvarova" operateru
+   * koji sme da vidi jednu mašinu odaje stanje cele firme.
+   */
+  private async dashboard30(email: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const [machineStatus, dailySummary, kategorije] = await Promise.all([
+      db.$queryRaw(
+        P30.sql`SELECT * FROM v_maint_machine_current_status${az.viewWhere(
+          az.machineScopeSql(scope),
+        )}`,
+      ),
+      az.canReadFullSummary(scope)
+        ? db.$queryRaw(P30.sql`SELECT * FROM v_maint_cmms_daily_summary`)
+        : Promise.resolve([] as unknown[]),
+      db.maintAsset.groupBy({
+        by: ["assetType"],
+        where: {
+          AND: [
+            { archivedAt: null },
+            (az.assetListWhere(scope) ?? {}) as P30.MaintAssetWhereInput,
+          ],
+        },
+        _count: { _all: true },
+      }),
+    ]);
+    const [openIncidents, openWorkOrders] = await Promise.all([
+      db.maintIncident.count({
+        where: {
+          AND: [
+            { status: { notIn: ["resolved", "closed"] } },
+            (az.incidentListWhere(scope) ?? {}) as P30.MaintIncidentWhereInput,
+          ],
+        },
+      }),
+      db.maintWorkOrder.count({
+        where: {
+          AND: [
+            { status: { notIn: ["zavrsen", "otkazan"] } },
+            (az.workOrderListWhere(scope) ??
+              {}) as P30.MaintWorkOrderWhereInput,
+          ],
+        },
+      }),
+    ]);
+    return {
+      data: {
+        machineStatus,
+        dailySummary: this.numRows((dailySummary as unknown[])[0] ?? null),
+        categoryCounts: kategorije.map((k) => ({
+          asset_type: k.assetType,
+          n: k._count._all,
+        })),
+        openIncidents,
+        openWorkOrders,
+      },
+    };
+  }
+
+  /**
    * Board (#33): preventivni taskovi grupisani u kolone Prekoračeno/Danas/Narednih 7 dana
    * (bucket iz `v_maint_task_due_dates` po DB clock-u — kalendarski dan, paritet 1.0
    * bucketTaskDueDates index.js:494-513) + aktivni override-i po mašini (za „PAUZA" izdvajanje
    * na dno kolone, splitByOverride index.js:1349-1357) + imena mašina. FE renderuje/izdvaja.
    */
   async board(email: string) {
+    if (this.tri30) return this.board30(email);
     return this.withUserMapped(email, async (tx) => {
       const [dues, statuses, machines] = await Promise.all([
-        tx.$queryRaw<
-          {
-            task_id: string;
-            machine_code: string;
-            title: string;
-            severity: string | null;
-            interval_value: number | null;
-            interval_unit: string | null;
-            next_due_at: Date | string;
-            bucket: string;
-          }[]
-        >(
+        tx.$queryRaw<BoardDueRed[]>(
           Prisma.sql`SELECT task_id, machine_code, title, severity,
               interval_value, interval_unit, next_due_at,
               CASE
@@ -413,34 +670,79 @@ export class OdrzavanjeService {
             WHERE next_due_at IS NOT NULL
             ORDER BY next_due_at ASC`,
         ),
-        tx.$queryRaw<
-          {
-            machine_code: string;
-            status: string;
-            override_reason: string | null;
-            override_valid_until: Date | string | null;
-          }[]
-        >(
+        tx.$queryRaw<BoardOverrideRed[]>(
           Prisma.sql`SELECT machine_code, status, override_reason, override_valid_until
             FROM v_maint_machine_current_status WHERE override_reason IS NOT NULL`,
         ),
         tx.maintMachine.findMany({ select: { machineCode: true, name: true } }),
       ]);
-      const overdue = dues.filter((d) => d.bucket === "overdue");
-      const today = dues.filter((d) => d.bucket === "today");
-      const week = dues.filter((d) => d.bucket === "week");
-      const overrides = statuses.map((s) => ({
+      return { data: this.boardData(dues, statuses, machines) };
+    });
+  }
+
+  /**
+   * 3.0 parnjak `board()` — oba view-a nose `machineScopeSql`, a spisak imena
+   * mašina `machineListWhere`.
+   *
+   * ⚠️ `v_maint_task_due_dates` ima `COALESCE(..., now())`: zadatak koji NIKAD
+   * nije izvršen dospeva ODMAH i pada u kolonu „Prekoračeno". To je prepis, ne
+   * greška — ali znači da broj stavki kalendara zavisi od toga koliko zadataka
+   * nema nijednu kontrolu, pa se paritetno merenje radi po istoj definiciji.
+   */
+  private async board30(email: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const masine = az.machineScopeSql(scope);
+    const [dues, statuses, machines] = await Promise.all([
+      db.$queryRaw<BoardDueRed[]>(
+        P30.sql`SELECT task_id, machine_code, title, severity,
+              interval_value, interval_unit, next_due_at,
+              CASE
+                WHEN next_due_at < date_trunc('day', now()) THEN 'overdue'
+                WHEN next_due_at < date_trunc('day', now()) + interval '1 day' THEN 'today'
+                WHEN next_due_at < date_trunc('day', now()) + interval '8 days' THEN 'week'
+                ELSE 'later'
+              END AS bucket
+            FROM v_maint_task_due_dates${az.viewWhere(
+              this.andSql(P30.sql`next_due_at IS NOT NULL`, masine),
+            )}
+            ORDER BY next_due_at ASC`,
+      ),
+      db.$queryRaw<BoardOverrideRed[]>(
+        P30.sql`SELECT machine_code, status, override_reason, override_valid_until
+            FROM v_maint_machine_current_status${az.viewWhere(
+              this.andSql(P30.sql`override_reason IS NOT NULL`, masine),
+            )}`,
+      ),
+      db.maintMachine.findMany({
+        where: az.machineListWhere(scope),
+        select: { machineCode: true, name: true },
+      }),
+    ]);
+    return { data: this.boardData(dues, statuses, machines) };
+  }
+
+  /** Sklapanje odgovora `board` — JEDAN izvor za oba izvora podataka. */
+  private boardData(
+    dues: BoardDueRed[],
+    statuses: BoardOverrideRed[],
+    machines: { machineCode: string; name: string }[],
+  ) {
+    return {
+      overdue: dues.filter((d) => d.bucket === "overdue"),
+      today: dues.filter((d) => d.bucket === "today"),
+      week: dues.filter((d) => d.bucket === "week"),
+      overrides: statuses.map((s) => ({
         machineCode: s.machine_code,
         status: s.status,
         reason: s.override_reason,
         validUntil: s.override_valid_until,
-      }));
-      const machineNames = machines.map((m) => ({
+      })),
+      machineNames: machines.map((m) => ({
         machineCode: m.machineCode,
         name: m.name,
-      }));
-      return { data: { overdue, today, week, overrides, machineNames } };
-    });
+      })),
+    };
   }
 
   // ==========================================================================
@@ -448,6 +750,7 @@ export class OdrzavanjeService {
   // ==========================================================================
 
   async listMachines(email: string, query: MachinesQuery) {
+    if (this.tri30) return this.listMachines30(email, query);
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
@@ -517,12 +820,94 @@ export class OdrzavanjeService {
   }
 
   /**
+   * 3.0 parnjak `listMachines()`.
+   *
+   * 🔴 DVA NEZAVISNA SUŽAVANJA PO ISTOJ KOLONI: filter ekrana (status/rok, izveden
+   * iz view-ova) i scope (`machineListWhere`). Spajaju se PRESEKOM, ne spread-om —
+   * dva `machineCode: { in: … }` u istom objektu značila bi da drugo pregazi prvo,
+   * i to bi u pola slučajeva vratilo mašine koje pozivalac ne sme da vidi.
+   */
+  private async listMachines30(email: string, query: MachinesQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const scopeCodes = az.machineListWhere(scope)?.machineCode.in;
+    const codeFilter = await this.machineCodeFilter30(scope, query);
+    const codes =
+      codeFilter && scopeCodes
+        ? codeFilter.filter((c) => scopeCodes.includes(c))
+        : (codeFilter ?? scopeCodes);
+    const where: P30.MaintMachineWhereInput = {
+      ...(query.archived === "true" ? {} : { archivedAt: null }),
+      ...(query.source ? { source: query.source } : {}),
+      ...(query.location ? { location: query.location } : {}),
+      ...(codes ? { machineCode: { in: codes } } : {}),
+      // `auth.uid()` -> `scope.userId` (3.0 `users.id`, Int).
+      ...(query.mine === "true" ? { responsibleUserId: scope.userId } : {}),
+      ...(query.q
+        ? {
+            OR: [
+              { machineCode: { contains: query.q, mode: "insensitive" } },
+              { name: { contains: query.q, mode: "insensitive" } },
+              { manufacturer: { contains: query.q, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+    const [rows, total] = await Promise.all([
+      db.maintMachine.findMany({
+        where,
+        orderBy: [{ machineCode: "asc" }],
+        skip,
+        take,
+      }),
+      db.maintMachine.count({ where }),
+    ]);
+    const kodovi = rows.map((m) => m.machineCode);
+    const [statuses, responsibles] = await Promise.all([
+      kodovi.length
+        ? db.$queryRaw<{ machine_code: string; status: string }[]>(
+            // Skup `kodovi` je već sužen scope-om (dolazi iz `rows`), pa dodatni
+            // isečak ovde ne bi ništa promenio — `IN` je uži od njega.
+            P30.sql`SELECT machine_code, status
+                FROM v_maint_machine_current_status
+                WHERE machine_code IN (${P30.join(kodovi)})`,
+          )
+        : Promise.resolve([]),
+      this.resolveProfiles30(
+        scope,
+        rows.map((m) => m.responsibleUserId),
+      ),
+    ]);
+    const statusByCode = new Map(
+      statuses.map((s) => [s.machine_code, s.status]),
+    );
+    const data = rows.map((m) => ({
+      ...m,
+      effectiveStatus: statusByCode.get(m.machineCode) ?? null,
+      responsibleName: m.responsibleUserId
+        ? (responsibles.get(m.responsibleUserId) ?? null)
+        : null,
+    }));
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
+  /**
    * Kandidati za uvoz iz BigTehn cache (view). Skriveno pravilo 6: default SAKRIVA
    * pomoćne operacije (`no_procedure=true`: Kontrola/Kooperacija… nisu mašine) —
    * paritet 1.0 `no_procedure=is.false` (maintenance.js:1431-1432). `includeNoProcedure=true`
    * prikazuje sve.
+   *
+   * 🔴 Pod `3.0` NE POSTOJI: `v_maint_machines_importable` čita
+   * `bigtehn_machines_cache`, tabelu koja nije `maint_*` i koju 3.0 baza nema
+   * (blokada 9 runbook-a). View se NAMERNO ne pravi prazan — prazan view bi tiho
+   * nudio nula mašina i izgledao kao „nema kandidata". Zato pada glasno (422).
    */
   async importableMachines(email: string, includeNoProcedure?: boolean) {
+    if (this.tri30) return this.tri().fn.importFromCacheNijePreneto();
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         includeNoProcedure
@@ -536,6 +921,7 @@ export class OdrzavanjeService {
 
   /** Audit log hard-delete-a (RLS: erp-admin ∨ chief/admin/management). */
   async deletionLog(email: string) {
+    if (this.tri30) return this.deletionLog30(email);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintMachineDeletionLog.findMany({
         orderBy: { deletedAt: "desc" },
@@ -545,7 +931,24 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * 3.0 parnjak. `maint_machines_deletion_log` nema per-red scope — politika je
+   * bool (`canReadDeletionLog`). Onome ko nema pravo RLS je vraćao NULA REDOVA,
+   * ne grešku, pa i ovde ide prazna lista: 403 bi bio NOVO ponašanje.
+   */
+  private async deletionLog30(email: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    if (!az.canReadDeletionLog(scope)) return { data: [] };
+    const data = await db.maintMachineDeletionLog.findMany({
+      orderBy: { deletedAt: "desc" },
+      take: 200,
+    });
+    return { data };
+  }
+
   async findMachine(email: string, code: string) {
+    if (this.tri30) return this.findMachine30(email, code);
     return this.withUserMapped(email, async (tx) => {
       const machine = await tx.maintMachine.findUnique({
         where: { machineCode: code },
@@ -576,7 +979,46 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * 3.0 parnjak `findMachine()`.
+   * ⚠️ Nevidljiva mašina daje ISTU 404 poruku kao nepostojeća — kao pod RLS-om,
+   * gde je red naprosto izostao iz rezultata. Poseban 403 bi odao da mašina postoji.
+   */
+  private async findMachine30(email: string, code: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const machine = az.machineVisible(scope, code)
+      ? await db.maintMachine.findUnique({ where: { machineCode: code } })
+      : null;
+    if (!machine)
+      throw new NotFoundException(
+        `Mašina ${code} ne postoji ili nije vidljiva`,
+      );
+    const [statusRows, override, responsibles] = await Promise.all([
+      db.$queryRaw<{ status: string }[]>(
+        P30.sql`SELECT status FROM v_maint_machine_current_status
+            WHERE machine_code = ${code}`,
+      ),
+      this.activeOverride30(scope, code),
+      this.resolveProfiles30(scope, [machine.responsibleUserId]),
+    ]);
+    return {
+      data: {
+        ...machine,
+        effectiveStatus: statusRows[0]?.status ?? null,
+        statusOverride: override,
+        responsibleName: machine.responsibleUserId
+          ? (responsibles.get(machine.responsibleUserId) ?? null)
+          : null,
+      },
+    };
+  }
+
   async machineStatusOverride(email: string, code: string) {
+    if (this.tri30) {
+      const scope = await this.scope30(email);
+      return { data: await this.activeOverride30(scope, code) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await this.activeOverride(tx, code);
       return { data };
@@ -584,6 +1026,7 @@ export class OdrzavanjeService {
   }
 
   async machineNotes(email: string, code: string) {
+    if (this.tri30) return this.machineNotes30(email, code);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintMachineNote.findMany({
         where: { machineCode: code, deletedAt: null },
@@ -593,7 +1036,28 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * 3.0 parnjak. `machineNotesWhere` nosi `deletedAt: null` jer je soft-delete
+   * DEO POLITIKE (`maint_machine_notes` SELECT), a ne deo upita modula — u sy15
+   * ga je nosio RLS. Da se izgubi, obrisane napomene bi tiho iskrsle nazad.
+   */
+  private async machineNotes30(email: string, code: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const data = await db.maintMachineNote.findMany({
+      where: {
+        AND: [
+          { machineCode: code },
+          az.machineNotesWhere(scope) as P30.MaintMachineNoteWhereInput,
+        ],
+      },
+      orderBy: [{ pinned: "desc" }, { createdAt: "desc" }],
+    });
+    return { data };
+  }
+
   async machineFiles(email: string, code: string) {
+    if (this.tri30) return this.machineFiles30(email, code);
     return this.withUserMapped(email, async (tx) => {
       const rows = await tx.maintMachineFile.findMany({
         where: { machineCode: code, deletedAt: null },
@@ -603,8 +1067,25 @@ export class OdrzavanjeService {
     });
   }
 
+  private async machineFiles30(email: string, code: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const rows = await db.maintMachineFile.findMany({
+      where: {
+        AND: [
+          { machineCode: code, deletedAt: null },
+          (az.machineScopedWhere(scope) ??
+            {}) as P30.MaintMachineFileWhereInput,
+        ],
+      },
+      orderBy: { uploadedAt: "desc" },
+    });
+    return { data: rows.map((f) => this.withNumSize(f)) };
+  }
+
   /** Šabloni kontrola (preventiva) za mašinu (?machine=) — CRUD je R2 (chief/admin). */
   async listTasks(email: string, machineCode?: string) {
+    if (this.tri30) return this.listTasks30(email, machineCode);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintTask.findMany({
         where: {
@@ -617,7 +1098,23 @@ export class OdrzavanjeService {
     });
   }
 
+  private async listTasks30(email: string, machineCode?: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const data = await db.maintTask.findMany({
+      where: {
+        AND: [
+          { active: true, ...(machineCode ? { machineCode } : {}) },
+          (az.machineScopedWhere(scope) ?? {}) as P30.MaintTaskWhereInput,
+        ],
+      },
+      orderBy: [{ machineCode: "asc" }, { title: "asc" }],
+    });
+    return { data };
+  }
+
   async findTask(email: string, id: string) {
+    if (this.tri30) return this.findTask30(email, id);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintTask.findUnique({ where: { id } });
       if (!data)
@@ -626,8 +1123,24 @@ export class OdrzavanjeService {
     });
   }
 
+  private async findTask30(email: string, id: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const data = await db.maintTask.findFirst({
+      where: {
+        AND: [
+          { id },
+          (az.machineScopedWhere(scope) ?? {}) as P30.MaintTaskWhereInput,
+        ],
+      },
+    });
+    if (!data) throw new NotFoundException(`Šablon kontrole ${id} ne postoji`);
+    return { data };
+  }
+
   /** Due preventiva (view). */
   async tasksDue(email: string) {
+    if (this.tri30) return this.tasksDue30(email);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_task_due_dates`,
@@ -636,8 +1149,20 @@ export class OdrzavanjeService {
     });
   }
 
+  private async tasksDue30(email: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const data = await db.$queryRaw(
+      P30.sql`SELECT * FROM v_maint_task_due_dates${az.viewWhere(
+        az.machineScopeSql(scope),
+      )}`,
+    );
+    return { data };
+  }
+
   /** Urađene kontrole (?machine=) — history. */
   async listChecks(email: string, machineCode?: string) {
+    if (this.tri30) return this.listChecks30(email, machineCode);
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintCheck.findMany({
         where: machineCode ? { machineCode } : {},
@@ -648,11 +1173,28 @@ export class OdrzavanjeService {
     });
   }
 
+  private async listChecks30(email: string, machineCode?: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const data = await db.maintCheck.findMany({
+      where: {
+        AND: [
+          machineCode ? { machineCode } : {},
+          (az.machineScopedWhere(scope) ?? {}) as P30.MaintCheckWhereInput,
+        ],
+      },
+      orderBy: { performedAt: "desc" },
+      take: 500,
+    });
+    return { data };
+  }
+
   // ==========================================================================
   // Incidenti (kvarovi) — GET (prijava/tok su R2)
   // ==========================================================================
 
   async listIncidents(email: string, query: IncidentsQuery) {
+    if (this.tri30) return this.listIncidents30(email, query);
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
@@ -704,7 +1246,74 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * 3.0 parnjak `listIncidents()`.
+   * ⚠️ Ugnježđen nalog nosi SVOJ scope (`workOrderListWhere`): vidljiv incident ne
+   * znači vidljiv nalog, pa se za nalog ne sme pretpostaviti pravo po roditelju.
+   */
+  private async listIncidents30(email: string, query: IncidentsQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const where: P30.MaintIncidentWhereInput = {
+      AND: [
+        {
+          ...(query.status && INCIDENT_STATUSES.has(query.status)
+            ? { status: query.status }
+            : {}),
+          ...(query.severity && INCIDENT_SEVERITIES.has(query.severity)
+            ? { severity: query.severity }
+            : {}),
+          ...(query.machineCode ? { machineCode: query.machineCode } : {}),
+        },
+        az.incidentListWhere(scope) ?? {},
+      ],
+    };
+    const [rows, total] = await Promise.all([
+      db.maintIncident.findMany({
+        where,
+        orderBy: { reportedAt: "desc" },
+        skip,
+        take,
+      }),
+      db.maintIncident.count({ where }),
+    ]);
+    const woIds = [
+      ...new Set(
+        rows.map((r) => r.workOrderId).filter((x): x is string => !!x),
+      ),
+    ];
+    const wos = woIds.length
+      ? await db.maintWorkOrder.findMany({
+          where: {
+            AND: [
+              { woId: { in: woIds } },
+              (az.workOrderListWhere(scope) ??
+                {}) as P30.MaintWorkOrderWhereInput,
+            ],
+          },
+          select: {
+            woId: true,
+            woNumber: true,
+            status: true,
+            title: true,
+            priority: true,
+          },
+        })
+      : [];
+    const woById = new Map(wos.map((w) => [w.woId, w]));
+    const data = rows.map((r) => ({
+      ...r,
+      workOrder: r.workOrderId ? (woById.get(r.workOrderId) ?? null) : null,
+    }));
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
   async findIncident(email: string, id: string) {
+    if (this.tri30) return this.findIncident30(email, id);
     return this.withUserMapped(email, async (tx) => {
       const incident = await tx.maintIncident.findUnique({ where: { id } });
       if (!incident)
@@ -724,7 +1333,41 @@ export class OdrzavanjeService {
     });
   }
 
+  private async findIncident30(email: string, id: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const incident = await db.maintIncident.findFirst({
+      where: {
+        AND: [
+          { id },
+          (az.incidentListWhere(scope) ?? {}) as P30.MaintIncidentWhereInput,
+        ],
+      },
+    });
+    if (!incident)
+      throw new NotFoundException(`Kvar ${id} ne postoji ili nije vidljiv`);
+    const [events, workOrder] = await Promise.all([
+      this.incidentEventsRows30(scope, id),
+      incident.workOrderId
+        ? db.maintWorkOrder.findFirst({
+            where: {
+              AND: [
+                { woId: incident.workOrderId },
+                (az.workOrderListWhere(scope) ??
+                  {}) as P30.MaintWorkOrderWhereInput,
+              ],
+            },
+          })
+        : Promise.resolve(null),
+    ]);
+    return { data: { ...incident, events, workOrder } };
+  }
+
   async incidentEvents(email: string, id: string) {
+    if (this.tri30) {
+      const scope = await this.scope30(email);
+      return { data: await this.incidentEventsRows30(scope, id) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintIncidentEvent.findMany({
         where: { incidentId: id },
@@ -734,21 +1377,41 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * Trag na prijavi kvara pod 3.0 scope-om.
+   *
+   * 🔴 ASIMETRIJA KOJU JE LAKO PROMAŠITI: `maint_incident_events` politika gleda
+   * `maint_machine_visible(i.machine_code)`, a NE `maint_incident_row_visible`.
+   * Zato ovde ide `incidentEventWhere`, ne `incidentListWhere` — prepis „po
+   * analogiji sa incidentima" bi TIHO proširio prava (trag kvara na vozilu/IT/
+   * objektu postao bi vidljiv onome ko sredstvo ne vidi). Ostavljeno doslovno,
+   * uključujući i posledicu da za neke incidente lista traga bude prazna.
+   */
+  private async incidentEventsRows30(scope: MaintScope, id: string) {
+    const { db, az } = this.tri();
+    return db.maintIncidentEvent.findMany({
+      where: {
+        AND: [
+          { incidentId: id },
+          (az.incidentEventWhere(scope) ??
+            {}) as P30.MaintIncidentEventWhereInput,
+        ],
+      },
+      orderBy: { at: "asc" },
+    });
+  }
+
   // ==========================================================================
   // Radni nalozi (WO) — kanban lista + detalj read
   // ==========================================================================
 
   async listWorkOrders(email: string, query: WorkOrdersQuery) {
+    if (this.tri30) return this.listWorkOrders30(email, query);
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
     );
-    const statusFilter: string[] | undefined =
-      query.group && WO_STATUSES_BY_GROUP[query.group]
-        ? WO_STATUSES_BY_GROUP[query.group]
-        : query.status && WO_STATUSES.has(query.status)
-          ? [query.status]
-          : undefined;
+    const statusFilter = this.woStatusFilter(query);
     return this.withUserMapped(email, async (tx) => {
       // Pretraga (q) uključuje sredstvo (asset_code/name) koje je u maint_assets, ne u
       // maint_work_orders → prvo razrešimo asset_id-eve koji matchuju pa OR-ujemo
@@ -845,8 +1508,121 @@ export class OdrzavanjeService {
     });
   }
 
+  /** Kanban grupa → spisak statusa (jedan izvor za oba izvora podataka). */
+  private woStatusFilter(query: WorkOrdersQuery): string[] | undefined {
+    return query.group && WO_STATUSES_BY_GROUP[query.group]
+      ? WO_STATUSES_BY_GROUP[query.group]
+      : query.status && WO_STATUSES.has(query.status)
+        ? [query.status]
+        : undefined;
+  }
+
+  /**
+   * 3.0 parnjak `listWorkOrders()`.
+   *
+   * 🔴 `workOrderListWhere` NIJE isto što i `assetScopedWhere`: politika
+   * `maint_wo_row_visible` ima disjunkciju „moj nalog je uvek moj" (dodeljeni i
+   * prijavilac vide nalog i kad sredstvo ne vide). Bez nje bi operater izgubio iz
+   * vida nalog koji je sam prijavio na tuđoj mašini.
+   *
+   * ⚠️ Ceo `where` je AND-lista: `OR` iz pretrage (q) i `OR` iz scope-a ne smeju
+   * da dele isti ključ, inače bi jedan pregazio drugi.
+   */
+  private async listWorkOrders30(email: string, query: WorkOrdersQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const statusFilter = this.woStatusFilter(query);
+    const qTerm = query.q?.trim();
+    let assetIdMatches: string[] | undefined;
+    if (qTerm) {
+      // I pomoćni upit nad `maint_assets` nosi scope: bez njega bi pretraga po
+      // nazivu sredstva „provukla" asset_id tuđe mašine u glavni `OR`.
+      const assets = await db.maintAsset.findMany({
+        where: {
+          AND: [
+            {
+              OR: [
+                { assetCode: { contains: qTerm, mode: "insensitive" } },
+                { name: { contains: qTerm, mode: "insensitive" } },
+              ],
+            },
+            (az.assetListWhere(scope) ?? {}) as P30.MaintAssetWhereInput,
+          ],
+        },
+        select: { assetId: true },
+        take: 500,
+      });
+      assetIdMatches = assets.map((a) => a.assetId);
+    }
+    const openOnly = query.openOnly !== "false";
+    const overdue = query.overdue === "true";
+    const uslovi: P30.MaintWorkOrderWhereInput[] = [];
+    if (statusFilter) uslovi.push({ status: { in: statusFilter } });
+    if (openOnly || overdue)
+      uslovi.push({ status: { notIn: ["zavrsen", "otkazan"] } });
+    if (query.priority && WO_PRIORITIES.has(query.priority))
+      uslovi.push({ priority: query.priority });
+    if (query.type && WO_TYPES.has(query.type))
+      uslovi.push({ type: query.type });
+    if (query.assetId) uslovi.push({ assetId: query.assetId });
+    if (query.mine === "true") uslovi.push({ assignedTo: scope.userId });
+    if (overdue) uslovi.push({ dueAt: { lt: new Date() } });
+    if (qTerm)
+      uslovi.push({
+        OR: [
+          { woNumber: { contains: qTerm, mode: "insensitive" } },
+          { title: { contains: qTerm, mode: "insensitive" } },
+          { description: { contains: qTerm, mode: "insensitive" } },
+          ...(assetIdMatches && assetIdMatches.length
+            ? [{ assetId: { in: assetIdMatches } }]
+            : []),
+        ],
+      });
+    uslovi.push(az.workOrderListWhere(scope) ?? {});
+    const where: P30.MaintWorkOrderWhereInput = { AND: uslovi };
+    const [rows, total] = await Promise.all([
+      db.maintWorkOrder.findMany({
+        where,
+        orderBy: [{ priority: "asc" }, { createdAt: "desc" }],
+        skip,
+        take,
+      }),
+      db.maintWorkOrder.count({ where }),
+    ]);
+    const [assetMap, partsByWo] = await Promise.all([
+      this.resolveAssets30(
+        scope,
+        rows.map((w) => w.assetId),
+      ),
+      this.partsCostByWo30(
+        scope,
+        rows.map((w) => w.woId),
+      ),
+    ]);
+    const data = rows.map((w) => {
+      const partsCost = partsByWo.get(w.woId) ?? 0;
+      return {
+        ...w,
+        group: WO_GROUP[w.status] ?? null,
+        asset: assetMap.get(w.assetId) ?? null,
+        partsCost,
+        effectiveCost: this.effectiveWoCost(partsCost, w.costTotal),
+      };
+    });
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
   /** Dropdown dodele (RPC — SECURITY DEFINER, samo aktivni operator/technician/chief/admin). */
   async assignableUsers(email: string) {
+    if (this.tri30) {
+      // DEFINER fn nije imala role-guard (svako ulogovan je smeo da povuče
+      // spisak) — prepis to prati doslovno, `OdrzavanjeFnService.assignableUsers`.
+      return { data: await this.tri().fn.assignableUsers() };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM public.maint_assignable_users()`,
@@ -856,6 +1632,7 @@ export class OdrzavanjeService {
   }
 
   async findWorkOrder(email: string, id: string) {
+    if (this.tri30) return this.findWorkOrder30(email, id);
     return this.withUserMapped(email, async (tx) => {
       const wo = await tx.maintWorkOrder.findUnique({ where: { woId: id } });
       if (!wo)
@@ -894,7 +1671,44 @@ export class OdrzavanjeService {
     });
   }
 
+  private async findWorkOrder30(email: string, id: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const woScope = (az.workOrderListWhere(scope) ??
+      {}) as P30.MaintWorkOrderWhereInput;
+    const wo = await db.maintWorkOrder.findFirst({
+      where: { AND: [{ woId: id }, woScope] },
+    });
+    if (!wo)
+      throw new NotFoundException(
+        `Radni nalog ${id} ne postoji ili nije vidljiv`,
+      );
+    const [events, parts, labor, assetMap] = await Promise.all([
+      this.woEventsRows30(scope, id),
+      this.woPartsRows30(scope, id),
+      this.woLaborRows30(scope, id),
+      this.resolveAssets30(scope, [wo.assetId]),
+    ]);
+    return {
+      data: {
+        ...wo,
+        group: WO_GROUP[wo.status] ?? null,
+        // Sredstvo se razrešava POD SVOJIM scope-om: „moj nalog je uvek moj" daje
+        // pravo na NALOG, ne i na karticu sredstva — zato ovde sme da bude `null`.
+        asset: assetMap.get(wo.assetId) ?? null,
+        incidentId: wo.sourceIncidentId ?? null,
+        events,
+        parts,
+        labor,
+      },
+    };
+  }
+
   async woEvents(email: string, id: string) {
+    if (this.tri30) {
+      const scope = await this.scope30(email);
+      return { data: await this.woEventsRows30(scope, id) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintWoEvent.findMany({
         where: { woId: id },
@@ -905,6 +1719,10 @@ export class OdrzavanjeService {
   }
 
   async woParts(email: string, id: string) {
+    if (this.tri30) {
+      const scope = await this.scope30(email);
+      return { data: await this.woPartsRows30(scope, id) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintWoPart.findMany({
         where: { woId: id },
@@ -915,6 +1733,10 @@ export class OdrzavanjeService {
   }
 
   async woLabor(email: string, id: string) {
+    if (this.tri30) {
+      const scope = await this.scope30(email);
+      return { data: await this.woLaborRows30(scope, id) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintWoLabor.findMany({
         where: { woId: id },
@@ -924,11 +1746,66 @@ export class OdrzavanjeService {
     });
   }
 
+  // Deca naloga (`maint_wo_events` / `maint_wo_parts` / `maint_wo_labor`) imaju u
+  // sy15 politiku `EXISTS (… maint_wo_row_visible …)` — dakle scope RODITELJA, ne
+  // svoj. `woChildWhere` je taj isečak; bez njega bi trag rada i utrošeni delovi
+  // tuđeg naloga bili čitljivi svakome ko pogodi `wo_id`.
+
+  private async woEventsRows30(scope: MaintScope, id: string) {
+    const { db, az } = this.tri();
+    return db.maintWoEvent.findMany({
+      where: {
+        AND: [
+          { woId: id },
+          (az.woChildWhere(scope) ?? {}) as P30.MaintWoEventWhereInput,
+        ],
+      },
+      orderBy: { at: "asc" },
+    });
+  }
+
+  private async woPartsRows30(scope: MaintScope, id: string) {
+    const { db, az } = this.tri();
+    return db.maintWoPart.findMany({
+      where: {
+        AND: [
+          { woId: id },
+          (az.woChildWhere(scope) ?? {}) as P30.MaintWoPartWhereInput,
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+  }
+
+  private async woLaborRows30(scope: MaintScope, id: string) {
+    const { db, az } = this.tri();
+    return db.maintWoLabor.findMany({
+      where: {
+        AND: [
+          { woId: id },
+          (az.woChildWhere(scope) ?? {}) as P30.MaintWoLaborWhereInput,
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+  }
+
   // ==========================================================================
   // Vozila / Vozači (spec §4.5)
   // ==========================================================================
 
   async listVehicles(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      return {
+        data: await db.$queryRaw(
+          P30.sql`SELECT * FROM v_maint_vehicle_overview${az.viewWhere(
+            az.nonMachineViewScopeSql(scope),
+          )}`,
+        ),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_vehicle_overview`,
@@ -938,6 +1815,7 @@ export class OdrzavanjeService {
   }
 
   async findVehicle(email: string, assetId: string) {
+    if (this.tri30) return this.findVehicle30(email, assetId);
     return this.withUserMapped(email, async (tx) => {
       const asset = await tx.maintAsset.findFirst({
         where: { assetId, assetType: "vehicle" },
@@ -958,7 +1836,52 @@ export class OdrzavanjeService {
     });
   }
 
+  private async findVehicle30(email: string, assetId: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const asset = await db.maintAsset.findFirst({
+      where: {
+        AND: [
+          { assetId, assetType: "vehicle" },
+          (az.assetListWhere(scope) ?? {}) as P30.MaintAssetWhereInput,
+        ],
+      },
+    });
+    if (!asset)
+      throw new NotFoundException(
+        `Vozilo ${assetId} ne postoji ili nije vidljivo`,
+      );
+    // Detalji vise o sredstvu (`maint_asset_visible`) koje je gore već provereno.
+    const details = await db.maintVehicleDetails.findUnique({
+      where: { assetId },
+    });
+    // ⚠️ `maint_vehicle_owners_select` je u sy15 doslovno `true` — vlasnike vozila
+    // vide SVI ulogovani. Prepis to prati; sužavanje bi bilo NOVO pravilo.
+    const owner = details?.ownerId
+      ? await db.maintVehicleOwner.findUnique({
+          where: { ownerId: details.ownerId },
+        })
+      : null;
+    return { data: { ...asset, details, owner } };
+  }
+
   async vehicleTires(email: string, assetId: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      return {
+        data: await db.maintVehicleTire.findMany({
+          where: {
+            AND: [
+              { assetId },
+              (az.assetScopedWhere(scope) ??
+                {}) as P30.MaintVehicleTireWhereInput,
+            ],
+          },
+          orderBy: { createdAt: "desc" },
+        }),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintVehicleTire.findMany({
         where: { assetId },
@@ -975,6 +1898,20 @@ export class OdrzavanjeService {
    * due_status pa next_due_at nulls last). View je security_invoker → RLS pozivaoca važi.
    */
   async vehicleServicePlan(email: string, assetId: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      const data = await db.$queryRaw(
+        P30.sql`SELECT * FROM v_maint_vehicle_service_plan_due${az.viewWhere(
+          this.andSql(
+            P30.sql`asset_id = ${assetId}::uuid`,
+            az.nonMachineViewScopeSql(scope),
+          ),
+        )}
+          ORDER BY due_status ASC, next_due_at ASC NULLS LAST`,
+      );
+      return { data: this.numRows(data) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_vehicle_service_plan_due
@@ -986,6 +1923,22 @@ export class OdrzavanjeService {
   }
 
   async vehicleParts(email: string, assetId: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      // Dva nezavisna kruga: magacin delova (`maint_parts_select`) I sredstvo
+      // (vozilo). Ko ne sme u magacin ne sme ni ovde, i obrnuto — zato AND.
+      const data = await db.$queryRaw(
+        P30.sql`SELECT * FROM v_maint_vehicle_parts${az.viewWhere(
+          this.andSql(
+            P30.sql`asset_id = ${assetId}::uuid`,
+            az.partsViewScopeSql(scope),
+            az.nonMachineViewScopeSql(scope),
+          ),
+        )}`,
+      );
+      return { data };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_vehicle_parts WHERE asset_id = ${assetId}::uuid`,
@@ -995,6 +1948,19 @@ export class OdrzavanjeService {
   }
 
   async vehicleBookings(email: string, assetId: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      const data = await db.$queryRaw(
+        P30.sql`SELECT * FROM v_maint_vehicle_bookings${az.viewWhere(
+          this.andSql(
+            P30.sql`asset_id = ${assetId}::uuid`,
+            az.nonMachineViewScopeSql(scope),
+          ),
+        )}`,
+      );
+      return { data };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_vehicle_bookings WHERE asset_id = ${assetId}::uuid`,
@@ -1004,6 +1970,17 @@ export class OdrzavanjeService {
   }
 
   async vehicleServicePlanDue(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      return {
+        data: await db.$queryRaw(
+          P30.sql`SELECT * FROM v_maint_vehicle_service_plan_due${az.viewWhere(
+            az.nonMachineViewScopeSql(scope),
+          )}`,
+        ),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_vehicle_service_plan_due`,
@@ -1013,6 +1990,18 @@ export class OdrzavanjeService {
   }
 
   async vehicleOwners(email: string) {
+    if (this.tri30) {
+      const { db } = this.tri();
+      // Scope-a NEMA i to je izmereno: `maint_vehicle_owners_select` = `true`.
+      // Ipak prolazi kroz `scope30` da nepoznat nalog ne prođe kroz modul.
+      await this.scope30(email);
+      return {
+        data: await db.maintVehicleOwner.findMany({
+          where: { active: true },
+          orderBy: { name: "asc" },
+        }),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintVehicleOwner.findMany({
         where: { active: true },
@@ -1023,6 +2012,20 @@ export class OdrzavanjeService {
   }
 
   async listDrivers(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      // 🔴 `driversViewScopeSql` ima PER-RED granu (`auth_user_id = ja`): vozač bez
+      // ijedne rangirane role vidi SVOJ karton, i ništa više. Zamena bool gejtom
+      // bi ga ili zaključala ili mu otvorila tuđe lične podatke (JMBG, adresa).
+      return {
+        data: await db.$queryRaw(
+          P30.sql`SELECT * FROM v_maint_drivers_overview${az.viewWhere(
+            az.driversViewScopeSql(scope),
+          )}`,
+        ),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_drivers_overview`,
@@ -1033,6 +2036,7 @@ export class OdrzavanjeService {
 
   /** Karton vozača (PII — bez maskiranja; RLS krug §2.2 odlučuje ko vidi). */
   async findDriver(email: string, id: string) {
+    if (this.tri30) return this.findDriver30(email, id);
     return this.withUserMapped(email, async (tx) => {
       const driver = await tx.maintDriver.findUnique({
         where: { driverId: id },
@@ -1052,11 +2056,52 @@ export class OdrzavanjeService {
     });
   }
 
+  private async findDriver30(email: string, id: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const driver = await db.maintDriver.findFirst({
+      where: {
+        AND: [
+          { driverId: id },
+          (az.driverListWhere(scope) ?? {}) as P30.MaintDriverWhereInput,
+        ],
+      },
+    });
+    if (!driver)
+      throw new NotFoundException(`Vozač ${id} ne postoji ili nije vidljiv`);
+    const documents = await db.maintDocument.findMany({
+      where: {
+        AND: [
+          { driverId: id, deletedAt: null },
+          (az.documentListWhere(scope) ?? {}) as P30.MaintDocumentWhereInput,
+        ],
+      },
+      orderBy: { uploadedAt: "desc" },
+    });
+    return {
+      data: {
+        ...driver,
+        documents: documents.map((d) => this.withNumSize(d)),
+      },
+    };
+  }
+
   // ==========================================================================
   // IT oprema / Objekti / Sredstva (spec §4.6)
   // ==========================================================================
 
   async listItAssets(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      return {
+        data: await db.$queryRaw(
+          P30.sql`SELECT * FROM v_maint_it_overview${az.viewWhere(
+            az.nonMachineViewScopeSql(scope),
+          )}`,
+        ),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_it_overview`,
@@ -1066,6 +2111,17 @@ export class OdrzavanjeService {
   }
 
   async listFacilities(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      return {
+        data: await db.$queryRaw(
+          P30.sql`SELECT * FROM v_maint_facility_overview${az.viewWhere(
+            az.nonMachineViewScopeSql(scope),
+          )}`,
+        ),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_facility_overview`,
@@ -1087,6 +2143,7 @@ export class OdrzavanjeService {
     assetId: string,
     type: "it" | "facility",
   ) {
+    if (this.tri30) return this.assetCard30(email, assetId, type);
     return this.withUserMapped(email, async (tx) => {
       const asset = await tx.maintAsset.findFirst({
         where: { assetId, assetType: type },
@@ -1107,8 +2164,45 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * 3.0 parnjak kartice IT/objekta.
+   * ⚠️ Tehničar (`M ∧ ¬N`) ovde legitimno dobija 404: `assetListWhere` mu daje
+   * `{ assetType: 'machine' }`, pa IT/objekat naprosto nije u njegovom skupu —
+   * isto što je radio RLS. To NIJE kvar i ne treba ga „popravljati" proširenjem.
+   */
+  private async assetCard30(
+    email: string,
+    assetId: string,
+    type: "it" | "facility",
+  ) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const asset = await db.maintAsset.findFirst({
+      where: {
+        AND: [
+          { assetId, assetType: type },
+          (az.assetListWhere(scope) ?? {}) as P30.MaintAssetWhereInput,
+        ],
+      },
+    });
+    if (!asset)
+      throw new NotFoundException(
+        `Sredstvo ${assetId} ne postoji ili nije vidljivo`,
+      );
+    const details =
+      type === "it"
+        ? await db.maintItAssetDetails.findUnique({ where: { assetId } })
+        : await db.maintFacilityDetails.findUnique({ where: { assetId } });
+    const servicePlan = await db.maintAssetServicePlan.findMany({
+      where: { assetId },
+      orderBy: { createdAt: "asc" },
+    });
+    return { data: { ...asset, details, servicePlan } };
+  }
+
   /** Picker/registar sredstava (maint_assets) — filter po tipu/aktivnosti. */
   async listAssets(email: string, type?: string, activeOnly?: boolean) {
+    if (this.tri30) return this.listAssets30(email, type, activeOnly);
     return this.withUserMapped(email, async (tx) => {
       const validType =
         type && ["machine", "vehicle", "it", "facility"].includes(type)
@@ -1127,11 +2221,57 @@ export class OdrzavanjeService {
   }
 
   /**
+   * 3.0 parnjak. `assetListWhere` i sam ume da nosi `assetType` (tehničar dobija
+   * `{ assetType: 'machine' }`), pa se sa filterom ekrana spaja kroz `AND` —
+   * spread bi jedan od ta dva TIHO obrisao.
+   */
+  private async listAssets30(
+    email: string,
+    type?: string,
+    activeOnly?: boolean,
+  ) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const validType =
+      type && ["machine", "vehicle", "it", "facility"].includes(type)
+        ? type
+        : undefined;
+    const data = await db.maintAsset.findMany({
+      where: {
+        AND: [
+          {
+            ...(validType ? { assetType: validType } : {}),
+            ...(activeOnly ? { archivedAt: null } : {}),
+          },
+          (az.assetListWhere(scope) ?? {}) as P30.MaintAssetWhereInput,
+        ],
+      },
+      orderBy: [{ assetType: "asc" }, { name: "asc" }],
+      take: 1000,
+    });
+    return { data };
+  }
+
+  /**
    * Servisni plan IT/objekta sa RAČUNATIM „due" kolonama — čita
    * `v_maint_asset_service_plan_due` umesto sirove tabele (paritet 1.0
    * fetchMaintAssetServicePlan, maintenance.js:2696-2701). View je security_invoker.
    */
   async assetServicePlan(email: string, assetId: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      const data = await db.$queryRaw(
+        P30.sql`SELECT * FROM v_maint_asset_service_plan_due${az.viewWhere(
+          this.andSql(
+            P30.sql`asset_id = ${assetId}::uuid`,
+            this.assetTipViewScopeSql(scope),
+          ),
+        )}
+          ORDER BY due_status ASC, next_due_at ASC NULLS LAST`,
+      );
+      return { data: this.numRows(data) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_asset_service_plan_due
@@ -1143,6 +2283,17 @@ export class OdrzavanjeService {
   }
 
   async assetServicePlanDue(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      return {
+        data: await db.$queryRaw(
+          P30.sql`SELECT * FROM v_maint_asset_service_plan_due${az.viewWhere(
+            this.assetTipViewScopeSql(scope),
+          )}`,
+        ),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.$queryRaw(
         Prisma.sql`SELECT * FROM v_maint_asset_service_plan_due`,
@@ -1164,6 +2315,7 @@ export class OdrzavanjeService {
   // ==========================================================================
 
   async calendarDeadlines(email: string) {
+    if (this.tri30) return this.calendarDeadlines30(email);
     return this.withUserMapped(email, async (tx) => {
       const [vehicleServiceDue, assetServiceDue, itAssets, facilities] =
         await Promise.all([
@@ -1190,11 +2342,60 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * 3.0 parnjak kalendara — četiri view-a, četiri isečka.
+   * ⚠️ Plan sredstva ide kroz `assetTipViewScopeSql` (view nabraja SVE tipove), a
+   * ostala tri kroz `nonMachineViewScopeSql` (vraćaju samo ne-mašinska sredstva).
+   */
+  private async calendarDeadlines30(email: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const neMasine = az.nonMachineViewScopeSql(scope);
+    const dospelo = P30.sql`due_status IN ('overdue','due_soon')`;
+    const [vehicleServiceDue, assetServiceDue, itAssets, facilities] =
+      await Promise.all([
+        db.$queryRaw(
+          P30.sql`SELECT * FROM v_maint_vehicle_service_plan_due${az.viewWhere(
+            this.andSql(dospelo, neMasine),
+          )}`,
+        ),
+        db.$queryRaw(
+          P30.sql`SELECT * FROM v_maint_asset_service_plan_due${az.viewWhere(
+            this.andSql(dospelo, this.assetTipViewScopeSql(scope)),
+          )}`,
+        ),
+        db.$queryRaw(
+          P30.sql`SELECT asset_id, asset_code, name, license_expires_at, warranty_expires_at
+              FROM v_maint_it_overview${az.viewWhere(
+                this.andSql(
+                  P30.sql`archived_at IS NULL
+                AND (license_expires_at IS NOT NULL OR warranty_expires_at IS NOT NULL)`,
+                  neMasine,
+                ),
+              )}`,
+        ),
+        db.$queryRaw(
+          P30.sql`SELECT asset_id, asset_code, name, inspection_due_at, fire_safety_due_at
+              FROM v_maint_facility_overview${az.viewWhere(
+                this.andSql(
+                  P30.sql`archived_at IS NULL
+                AND (inspection_due_at IS NOT NULL OR fire_safety_due_at IS NOT NULL)`,
+                  neMasine,
+                ),
+              )}`,
+        ),
+      ]);
+    return {
+      data: { vehicleServiceDue, assetServiceDue, itAssets, facilities },
+    };
+  }
+
   // ==========================================================================
   // Zalihe / dobavljači / lokacije (spec §4.8)
   // ==========================================================================
 
   async listParts(email: string, query: PartsQuery) {
+    if (this.tri30) return this.listParts30(email, query);
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
@@ -1257,7 +2458,89 @@ export class OdrzavanjeService {
     });
   }
 
+  /**
+   * 3.0 parnjak `listParts()`.
+   *
+   * 🔴 `maint_parts_select` NEMA per-red scope — pravilo je „ceo magacin ili
+   * ništa" (`canReadStock`). Ko nema pravo, pod RLS-om je dobijao NULA REDOVA (ne
+   * 403), pa i ovde ide prazna strana sa `total = 0`. Da se umesto toga vrati
+   * puna lista, procenjena vrednost zaliha cele firme bila bi vidljiva svakome.
+   */
+  private async listParts30(email: string, query: PartsQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    if (query.vehicleId) {
+      const vid = query.vehicleId;
+      if (!UUID_RE.test(vid)) return { data: [] };
+      const asset = await db.maintAsset.findFirst({
+        where: {
+          AND: [
+            { assetId: vid, assetType: "vehicle" },
+            (az.assetListWhere(scope) ?? {}) as P30.MaintAssetWhereInput,
+          ],
+        },
+        select: { assetCode: true },
+      });
+      if (!asset) return { data: [] };
+      const data = await db.$queryRaw(
+        P30.sql`SELECT * FROM v_maint_parts_with_vehicles${az.viewWhere(
+          this.andSql(
+            P30.sql`${asset.assetCode} = ANY(vehicle_codes)`,
+            az.partsViewScopeSql(scope),
+          ),
+        )}`,
+      );
+      return { data };
+    }
+    if (!az.canReadStock(scope)) {
+      return { data: [], meta: pageMeta(page, pageSize, 0) };
+    }
+    let lowIds: string[] | undefined;
+    if (query.lowStock === "true") {
+      const rows = await db.$queryRaw<{ part_id: string }[]>(
+        P30.sql`SELECT part_id FROM maint_parts WHERE current_stock <= min_stock`,
+      );
+      lowIds = rows.map((r) => r.part_id);
+    }
+    const where: P30.MaintPartWhereInput = {
+      ...(query.includeInactive === "true" ? {} : { active: true }),
+      ...(lowIds ? { partId: { in: lowIds } } : {}),
+      ...(query.q
+        ? {
+            OR: [
+              { partCode: { contains: query.q, mode: "insensitive" } },
+              { name: { contains: query.q, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+    const [data, total] = await Promise.all([
+      db.maintPart.findMany({
+        where,
+        orderBy: { partCode: "asc" },
+        skip,
+        take,
+      }),
+      db.maintPart.count({ where }),
+    ]);
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
   async findPart(email: string, id: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      const data = az.canReadStock(scope)
+        ? await db.maintPart.findUnique({ where: { partId: id } })
+        : null;
+      if (!data)
+        throw new NotFoundException(`Deo ${id} ne postoji ili nije vidljiv`);
+      return { data };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintPart.findUnique({ where: { partId: id } });
       if (!data)
@@ -1267,6 +2550,18 @@ export class OdrzavanjeService {
   }
 
   async partStockMovements(email: string, id: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      if (!az.canReadStock(scope)) return { data: [] };
+      return {
+        data: await db.maintPartStockMovement.findMany({
+          where: { partId: id },
+          orderBy: { createdAt: "desc" },
+          take: 500,
+        }),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintPartStockMovement.findMany({
         where: { partId: id },
@@ -1283,23 +2578,48 @@ export class OdrzavanjeService {
    * su deaktivirani dobavljači zauvek nevidljivi.
    */
   async listSuppliers(email: string, active?: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      if (!az.canReadStock(scope)) return { data: [] };
+      return {
+        data: await db.maintSupplier.findMany({
+          where: this.supplierWhere(active),
+          orderBy: { name: "asc" },
+        }),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
-      const where: Prisma.MaintSupplierWhereInput =
-        active === "all"
-          ? {}
-          : active === "false"
-            ? { active: false }
-            : { active: true };
       const data = await tx.maintSupplier.findMany({
-        where,
+        where: this.supplierWhere(active),
         orderBy: { name: "asc" },
       });
       return { data };
     });
   }
 
+  /** `active` param → where (jedan izvor za oba izvora podataka). */
+  private supplierWhere(active?: string): { active?: boolean } {
+    if (active === "all") return {};
+    if (active === "false") return { active: false };
+    return { active: true };
+  }
+
   /** CMMS interna hijerarhija lokacija (≠ loc_locations). */
   async listLocations(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      // `maint_locations_select` deli krug sa magacinom (`canReadStock`) — mereno
+      // sa `pg_policies`, nije izvedeno „po logici".
+      if (!az.canReadStock(scope)) return { data: [] };
+      return {
+        data: await db.maintLocation.findMany({
+          where: { active: true },
+          orderBy: [{ locationType: "asc" }, { name: "asc" }],
+        }),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintLocation.findMany({
         where: { active: true },
@@ -1314,21 +2634,16 @@ export class OdrzavanjeService {
   // ==========================================================================
 
   async listDocuments(email: string, query: DocumentsQuery) {
+    if (this.tri30) return this.listDocuments30(email, query);
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
     );
-    const validEntity =
-      query.entityType &&
-      ["asset", "work_order", "incident", "preventive_task", "driver"].includes(
-        query.entityType,
-      )
-        ? (query.entityType as never)
-        : undefined;
+    const validEntity = this.validEntityType(query.entityType);
     return this.withUserMapped(email, async (tx) => {
       const where: Prisma.MaintDocumentWhereInput = {
         deletedAt: null,
-        ...(validEntity ? { entityType: validEntity } : {}),
+        ...(validEntity ? { entityType: validEntity as never } : {}),
         ...(query.assetId ? { assetId: query.assetId } : {}),
         ...(query.woId ? { woId: query.woId } : {}),
         ...(query.incidentId ? { incidentId: query.incidentId } : {}),
@@ -1350,7 +2665,75 @@ export class OdrzavanjeService {
     });
   }
 
+  private validEntityType(v?: string): string | undefined {
+    return v &&
+      ["asset", "work_order", "incident", "preventive_task", "driver"].includes(
+        v,
+      )
+      ? v
+      : undefined;
+  }
+
+  /**
+   * 3.0 parnjak `listDocuments()`. `documentListWhere` je KASKADA po tome koji je
+   * FK popunjen (sredstvo → nalog → incident → preventivni zadatak → vozač), sa
+   * `ELSE FALSE` na kraju: dokument bez ijedne veze se NE VIDI. Zato se dokumenta
+   * ne smeju svesti na „scope sredstva" — pola njih visi o nalogu ili vozaču.
+   */
+  private async listDocuments30(email: string, query: DocumentsQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const validEntity = this.validEntityType(query.entityType);
+    const where: P30.MaintDocumentWhereInput = {
+      AND: [
+        {
+          deletedAt: null,
+          ...(validEntity ? { entityType: validEntity } : {}),
+          ...(query.assetId ? { assetId: query.assetId } : {}),
+          ...(query.woId ? { woId: query.woId } : {}),
+          ...(query.incidentId ? { incidentId: query.incidentId } : {}),
+          ...(query.driverId ? { driverId: query.driverId } : {}),
+        },
+        az.documentListWhere(scope) ?? {},
+      ],
+    };
+    const [rows, total] = await Promise.all([
+      db.maintDocument.findMany({
+        where,
+        orderBy: { uploadedAt: "desc" },
+        skip,
+        take,
+      }),
+      db.maintDocument.count({ where }),
+    ]);
+    return {
+      data: rows.map((d) => this.withNumSize(d)),
+      meta: pageMeta(page, pageSize, total),
+    };
+  }
+
   async findDocument(email: string, id: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      const doc = await db.maintDocument.findFirst({
+        where: {
+          AND: [
+            { documentId: id },
+            (az.documentListWhere(scope) ?? {}) as P30.MaintDocumentWhereInput,
+          ],
+        },
+      });
+      if (!doc)
+        throw new NotFoundException(
+          `Dokument ${id} ne postoji ili nije vidljiv`,
+        );
+      return { data: this.withNumSize(doc) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const doc = await tx.maintDocument.findUnique({
         where: { documentId: id },
@@ -1364,6 +2747,14 @@ export class OdrzavanjeService {
   }
 
   async settings(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      // 🔴 `maint_settings_select` NE SADRŽI profil `management` — zatečena
+      // nedoslednost sy15, prenosi se doslovno (popravka je odluka o proizvodu).
+      if (!az.canReadSettings(scope)) return { data: null };
+      return { data: await db.maintSettings.findUnique({ where: { id: 1 } }) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintSettings.findUnique({ where: { id: 1 } });
       return { data };
@@ -1371,6 +2762,17 @@ export class OdrzavanjeService {
   }
 
   async notificationRules(email: string) {
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      // ⚠️ ŠIRE od `canReadNotificationLog`: magacioner vidi PRAVILA, ali ne outbox.
+      if (!az.canReadNotificationRules(scope)) return { data: [] };
+      return {
+        data: await db.maintNotificationRule.findMany({
+          orderBy: { createdAt: "asc" },
+        }),
+      };
+    }
     return this.withUserMapped(email, async (tx) => {
       const data = await tx.maintNotificationRule.findMany({
         orderBy: { createdAt: "asc" },
@@ -1381,6 +2783,7 @@ export class OdrzavanjeService {
 
   /** Outbox log (RLS: erp-admin ∨ chief/management/admin) + filteri. */
   async notifications(email: string, query: NotificationsQuery) {
+    if (this.tri30) return this.notifications30(email, query);
     const { page, pageSize, skip, take } = parsePagination(
       query.page,
       query.pageSize,
@@ -1407,6 +2810,37 @@ export class OdrzavanjeService {
     });
   }
 
+  private async notifications30(email: string, query: NotificationsQuery) {
+    const { page, pageSize, skip, take } = parsePagination(
+      query.page,
+      query.pageSize,
+    );
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    // ⚠️ Ovde NIJE `erp_admin_or_management` — magacioner NE vidi outbox
+    // (poruke nose imena i telefone primalaca).
+    if (!az.canReadNotificationLog(scope)) {
+      return { data: [], meta: pageMeta(page, pageSize, 0) };
+    }
+    const where: P30.MaintNotificationLogWhereInput = {
+      ...(query.status && NOTIF_STATUSES.has(query.status)
+        ? { status: query.status }
+        : {}),
+      ...(query.machineCode ? { machineCode: query.machineCode } : {}),
+      ...(query.incidentId ? { relatedEntityId: query.incidentId } : {}),
+    };
+    const [data, total] = await Promise.all([
+      db.maintNotificationLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+      db.maintNotificationLog.count({ where }),
+    ]);
+    return { data, meta: pageMeta(page, pageSize, total) };
+  }
+
   // ==========================================================================
   // Izveštaji (spec §4.10) — BE računa isto što 1.0 klijentski
   // ==========================================================================
@@ -1419,27 +2853,44 @@ export class OdrzavanjeService {
 
   async reportIncidents(email: string, period?: string) {
     const days = this.periodDays(period);
+    if (this.tri30) {
+      const { db, az } = this.tri();
+      const scope = await this.scope30(email);
+      const rows = await db.maintIncident.findMany({
+        where: {
+          AND: [
+            days ? { reportedAt: { gte: this.sinceDate(days) } } : {},
+            (az.incidentListWhere(scope) ?? {}) as P30.MaintIncidentWhereInput,
+          ],
+        },
+      });
+      return { data: this.incidentReportData(rows, days) };
+    }
     return this.withUserMapped(email, async (tx) => {
       const where: Prisma.MaintIncidentWhereInput = days
         ? { reportedAt: { gte: this.sinceDate(days) } }
         : {};
       const rows = await tx.maintIncident.findMany({ where });
-      const bySeverity = this.countBy(rows, (r) => r.severity);
-      const byStatus = this.countBy(rows, (r) => r.status);
-      const downtimeMinutes = rows.reduce(
-        (a, r) => a + (r.downtimeMinutes ?? 0),
-        0,
-      );
-      return {
-        data: {
-          total: rows.length,
-          bySeverity,
-          byStatus,
-          downtimeMinutes,
-          period: days ? `${days}d` : "all",
-        },
-      };
+      return { data: this.incidentReportData(rows, days) };
     });
+  }
+
+  /** Agregacija izveštaja o kvarovima — jedan izvor za oba izvora podataka. */
+  private incidentReportData(
+    rows: {
+      severity: string;
+      status: string;
+      downtimeMinutes: number | null;
+    }[],
+    days: number | null,
+  ) {
+    return {
+      total: rows.length,
+      bySeverity: this.countBy(rows, (r) => r.severity),
+      byStatus: this.countBy(rows, (r) => r.status),
+      downtimeMinutes: rows.reduce((a, r) => a + (r.downtimeMinutes ?? 0), 0),
+      period: days ? `${days}d` : "all",
+    };
   }
 
   /**
@@ -1473,6 +2924,20 @@ export class OdrzavanjeService {
       });
       for (const c of cat) catalogCost.set(c.partId, Number(c.unitCost ?? 0));
     }
+    return this.sumPartsCost(parts, catalogCost, out);
+  }
+
+  /** Zbrajanje stavki — deljeno između sy15 i 3.0 grane. */
+  private sumPartsCost(
+    parts: {
+      woId: string;
+      partId: string | null;
+      quantity: Prisma.Decimal | null;
+      unitCost: Prisma.Decimal | null;
+    }[],
+    catalogCost: Map<string, number>,
+    out: Map<string, number>,
+  ): Map<string, number> {
     for (const p of parts) {
       const unit =
         p.unitCost != null
@@ -1480,10 +2945,7 @@ export class OdrzavanjeService {
           : p.partId
             ? (catalogCost.get(p.partId) ?? 0)
             : 0;
-      out.set(
-        p.woId,
-        (out.get(p.woId) ?? 0) + Number(p.quantity ?? 0) * unit,
-      );
+      out.set(p.woId, (out.get(p.woId) ?? 0) + Number(p.quantity ?? 0) * unit);
     }
     return out;
   }
@@ -1496,7 +2958,7 @@ export class OdrzavanjeService {
    */
   private effectiveWoCost(
     partsCost: number,
-    costTotal: Prisma.Decimal | null,
+    costTotal: Prisma.Decimal | P30.Decimal | null,
   ): number {
     return Math.max(partsCost, Number(costTotal ?? 0));
   }
@@ -1508,6 +2970,7 @@ export class OdrzavanjeService {
    */
   async reportWorkOrderCosts(email: string, period?: string) {
     const days = this.periodDays(period);
+    if (this.tri30) return this.reportWorkOrderCosts30(email, days);
     return this.withUserMapped(email, async (tx) => {
       const where: Prisma.MaintWorkOrderWhereInput = days
         ? { createdAt: { gte: this.sinceDate(days) } }
@@ -1516,19 +2979,7 @@ export class OdrzavanjeService {
         where,
         select: { woId: true, type: true, assetType: true, costTotal: true },
       });
-      const emptyPeriod = days ? `${days}d` : "all";
-      if (!wos.length) {
-        return {
-          data: {
-            totalWorkOrders: 0,
-            partsCost: 0,
-            laborMinutes: 0,
-            costByAssetType: {},
-            byType: {},
-            period: emptyPeriod,
-          },
-        };
-      }
+      if (!wos.length) return { data: this.emptyWoCosts(days) };
       const woIds = wos.map((w) => w.woId);
       const [partsByWo, labor] = await Promise.all([
         this.partsCostByWo(tx, woIds),
@@ -1537,32 +2988,89 @@ export class OdrzavanjeService {
           select: { minutes: true },
         }),
       ]);
-      // Agregacija je PO NALOGU (ne po stavci) — tek na nivou naloga se zna da li je
-      // faktura servisa veća od popisanih delova.
-      let partsCost = 0;
-      const costByAssetType: Record<string, number> = {};
-      for (const w of wos) {
-        const cost = this.effectiveWoCost(
-          partsByWo.get(w.woId) ?? 0,
-          w.costTotal,
-        );
-        if (cost === 0) continue;
-        partsCost += cost;
-        const at = String(w.assetType);
-        costByAssetType[at] = (costByAssetType[at] ?? 0) + cost;
-      }
-      const laborMinutes = labor.reduce((a, l) => a + (l.minutes ?? 0), 0);
-      return {
-        data: {
-          totalWorkOrders: wos.length,
-          partsCost,
-          laborMinutes,
-          costByAssetType,
-          byType: this.countBy(wos, (w) => String(w.type)),
-          period: emptyPeriod,
-        },
-      };
+      return { data: this.woCostsData(wos, partsByWo, labor, days) };
     });
+  }
+
+  /**
+   * 3.0 parnjak. Sva tri upita nose scope: nalozi `workOrderListWhere`, stavke i
+   * rad `woChildWhere`. Bez toga bi izveštaj o TROŠKU bio prvi ekran koji odaje
+   * stanje cele firme — i to u agregatu, gde se curenje ne vidi po redovima.
+   */
+  private async reportWorkOrderCosts30(email: string, days: number | null) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const wos = await db.maintWorkOrder.findMany({
+      where: {
+        AND: [
+          days ? { createdAt: { gte: this.sinceDate(days) } } : {},
+          (az.workOrderListWhere(scope) ?? {}) as P30.MaintWorkOrderWhereInput,
+        ],
+      },
+      select: { woId: true, type: true, assetType: true, costTotal: true },
+    });
+    if (!wos.length) return { data: this.emptyWoCosts(days) };
+    const woIds = wos.map((w) => w.woId);
+    const [partsByWo, labor] = await Promise.all([
+      this.partsCostByWo30(scope, woIds),
+      db.maintWoLabor.findMany({
+        where: {
+          AND: [
+            { woId: { in: woIds } },
+            (az.woChildWhere(scope) ?? {}) as P30.MaintWoLaborWhereInput,
+          ],
+        },
+        select: { minutes: true },
+      }),
+    ]);
+    return { data: this.woCostsData(wos, partsByWo, labor, days) };
+  }
+
+  private emptyWoCosts(days: number | null) {
+    return {
+      totalWorkOrders: 0,
+      partsCost: 0,
+      laborMinutes: 0,
+      costByAssetType: {} as Record<string, number>,
+      byType: {} as Record<string, number>,
+      period: days ? `${days}d` : "all",
+    };
+  }
+
+  /** Agregacija WO troškova — jedan izvor za oba izvora podataka. */
+  private woCostsData(
+    wos: {
+      woId: string;
+      type: string;
+      assetType: string;
+      costTotal: Prisma.Decimal | P30.Decimal | null;
+    }[],
+    partsByWo: Map<string, number>,
+    labor: { minutes: number | null }[],
+    days: number | null,
+  ) {
+    // Agregacija je PO NALOGU (ne po stavci) — tek na nivou naloga se zna da li je
+    // faktura servisa veća od popisanih delova.
+    let partsCost = 0;
+    const costByAssetType: Record<string, number> = {};
+    for (const w of wos) {
+      const cost = this.effectiveWoCost(
+        partsByWo.get(w.woId) ?? 0,
+        w.costTotal,
+      );
+      if (cost === 0) continue;
+      partsCost += cost;
+      const at = String(w.assetType);
+      costByAssetType[at] = (costByAssetType[at] ?? 0) + cost;
+    }
+    return {
+      totalWorkOrders: wos.length,
+      partsCost,
+      laborMinutes: labor.reduce((a, l) => a + (l.minutes ?? 0), 0),
+      costByAssetType,
+      byType: this.countBy(wos, (w) => String(w.type)),
+      period: days ? `${days}d` : "all",
+    };
   }
 
   /**
@@ -1592,6 +3100,7 @@ export class OdrzavanjeService {
    *    „backup nije potreban" nije propust.
    */
   async reportAttention(email: string) {
+    if (this.tri30) return this.reportAttention30(email);
     return this.withUserMapped(email, async (tx) => {
       const [itAssets, facilities] = await Promise.all([
         tx.$queryRaw(
@@ -1616,6 +3125,207 @@ export class OdrzavanjeService {
       ]);
       return { data: { itAssets, facilities } };
     });
+  }
+
+  private async reportAttention30(email: string) {
+    const { db, az } = this.tri();
+    const scope = await this.scope30(email);
+    const neMasine = az.nonMachineViewScopeSql(scope);
+    const [itAssets, facilities] = await Promise.all([
+      db.$queryRaw(
+        P30.sql`SELECT * FROM v_maint_it_overview${az.viewWhere(
+          this.andSql(
+            P30.sql`archived_at IS NULL
+              AND (status <> 'running'
+                OR open_wo_count > 0
+                OR license_status = 'expired'
+                OR warranty_status = 'expired'
+                OR backup_status IN ('missing', 'stale'))`,
+            neMasine,
+          ),
+        )}
+            ORDER BY asset_code`,
+      ),
+      db.$queryRaw(
+        P30.sql`SELECT * FROM v_maint_facility_overview${az.viewWhere(
+          this.andSql(
+            P30.sql`archived_at IS NULL
+              AND (status <> 'running'
+                OR open_wo_count > 0
+                OR inspection_status = 'expired'
+                OR fire_safety_status = 'expired')`,
+            neMasine,
+          ),
+        )}
+            ORDER BY asset_code`,
+      ),
+    ]);
+    return { data: { itAssets, facilities } };
+  }
+
+  // ==========================================================================
+  // 3.0 — batch-resolve i izvedeni filteri (parnjaci privatnih sy15 helpera)
+  // ==========================================================================
+
+  /**
+   * Batch-resolve `full_name` iz `maint_user_profiles` pod 3.0 scope-om.
+   *
+   * ⚠️ `maint_user_profiles` SELECT = `uid() = user_id ∨ erp_admin`, pa ne-admin
+   * dobija ime SAMO za sebe — isto što je radio RLS (u sy15 je zato i stajalo
+   * „best-effort"). Prazan rezultat NIJE kvar; širenje ovog kruga bi otvorilo
+   * CMMS role i dodeljene mašine cele firme.
+   */
+  private async resolveProfiles30(
+    scope: MaintScope,
+    userIds: (number | null)[],
+  ): Promise<Map<number, string>> {
+    const { db, az } = this.tri();
+    const ids = [...new Set(userIds.filter((x): x is number => x != null))];
+    if (!ids.length) return new Map();
+    const rows = await db.maintUserProfile.findMany({
+      where: {
+        AND: [
+          { userId: { in: ids } },
+          (az.userProfileListWhere(scope) ??
+            {}) as P30.MaintUserProfileWhereInput,
+        ],
+      },
+      select: { userId: true, fullName: true },
+    });
+    return new Map(rows.map((r) => [r.userId, r.fullName]));
+  }
+
+  /** Batch-resolve sredstava za WO listu/detalj, pod `assetListWhere`. */
+  private async resolveAssets30(
+    scope: MaintScope,
+    assetIds: (string | null)[],
+  ): Promise<
+    Map<
+      string,
+      { assetId: string; assetCode: string; name: string; assetType: string }
+    >
+  > {
+    const { db, az } = this.tri();
+    const ids = [...new Set(assetIds.filter((x): x is string => !!x))];
+    if (!ids.length) return new Map();
+    const rows = await db.maintAsset.findMany({
+      where: {
+        AND: [
+          { assetId: { in: ids } },
+          (az.assetListWhere(scope) ?? {}) as P30.MaintAssetWhereInput,
+        ],
+      },
+      select: { assetId: true, assetCode: true, name: true, assetType: true },
+    });
+    return new Map(rows.map((r) => [r.assetId, { ...r }]));
+  }
+
+  /** 3.0 parnjak `activeOverride` — samo VAŽEĆI override, i samo za vidljivu mašinu. */
+  private async activeOverride30(scope: MaintScope, code: string) {
+    const { db, az } = this.tri();
+    if (!az.machineVisible(scope, code)) return null;
+    return db.maintMachineStatusOverride.findFirst({
+      where: {
+        machineCode: code,
+        OR: [{ validUntil: null }, { validUntil: { gte: new Date() } }],
+      },
+    });
+  }
+
+  /** 3.0 parnjak `partsCostByWo` — stavke nose scope RODITELJSKOG naloga. */
+  private async partsCostByWo30(
+    scope: MaintScope,
+    woIds: string[],
+  ): Promise<Map<string, number>> {
+    const { db, az } = this.tri();
+    const out = new Map<string, number>();
+    if (!woIds.length) return out;
+    const parts = await db.maintWoPart.findMany({
+      where: {
+        AND: [
+          { woId: { in: woIds } },
+          (az.woChildWhere(scope) ?? {}) as P30.MaintWoPartWhereInput,
+        ],
+      },
+      select: { woId: true, partId: true, quantity: true, unitCost: true },
+    });
+    const missing = [
+      ...new Set(
+        parts
+          .filter((p) => p.unitCost == null && p.partId)
+          .map((p) => p.partId as string),
+      ),
+    ];
+    const catalogCost = new Map<string, number>();
+    // Katalog cena je `maint_parts` (krug `canReadStock`): ko ne sme u magacin ne
+    // dobija fallback cenu, pa stavka bez `unit_cost` ostaje 0 — kao pod RLS-om.
+    if (missing.length && az.canReadStock(scope)) {
+      const cat = await db.maintPart.findMany({
+        where: { partId: { in: missing } },
+        select: { partId: true, unitCost: true },
+      });
+      for (const c of cat) catalogCost.set(c.partId, Number(c.unitCost ?? 0));
+    }
+    return this.sumPartsCost(parts, catalogCost, out);
+  }
+
+  /**
+   * 3.0 parnjak `machineCodeFilter` — skup `machine_code`-ova koji zadovoljavaju
+   * status/rok filter. Oba view-a nose `machineScopeSql`: bez toga bi filter
+   * „Prekoračeno" vraćao šifre tuđih mašina, koje bi tek presek sa scope-om
+   * odsekao — a presek se lako izgubi pri sledećoj izmeni.
+   */
+  private async machineCodeFilter30(
+    scope: MaintScope,
+    query: MachinesQuery,
+  ): Promise<string[] | undefined> {
+    const { db, az } = this.tri();
+    const statusVal = this.normalizeOpStatus(query.status);
+    const dl = query.deadline;
+    const needDeadline = dl === "overdue" || dl === "danas" || dl === "7d";
+    if (!statusVal && !needDeadline) return undefined;
+    const masine = az.machineScopeSql(scope);
+    const sets: Set<string>[] = [];
+    if (statusVal) {
+      const rows = await db.$queryRaw<{ machine_code: string }[]>(
+        P30.sql`SELECT machine_code FROM v_maint_machine_current_status${az.viewWhere(
+          this.andSql(P30.sql`status = ${statusVal}`, masine),
+        )}`,
+      );
+      sets.push(new Set(rows.map((r) => r.machine_code)));
+    }
+    if (dl === "overdue") {
+      const rows = await db.$queryRaw<{ machine_code: string }[]>(
+        P30.sql`SELECT machine_code FROM v_maint_machine_current_status${az.viewWhere(
+          this.andSql(P30.sql`overdue_checks_count > 0`, masine),
+        )}`,
+      );
+      sets.push(new Set(rows.map((r) => r.machine_code)));
+    } else if (dl === "danas") {
+      const rows = await db.$queryRaw<{ machine_code: string }[]>(
+        P30.sql`SELECT machine_code FROM v_maint_task_due_dates${az.viewWhere(
+          masine,
+        )}
+          GROUP BY machine_code
+          HAVING min(next_due_at) >= date_trunc('day', now())
+             AND min(next_due_at) < date_trunc('day', now()) + interval '1 day'`,
+      );
+      sets.push(new Set(rows.map((r) => r.machine_code)));
+    } else if (dl === "7d") {
+      const rows = await db.$queryRaw<{ machine_code: string }[]>(
+        P30.sql`SELECT machine_code FROM v_maint_task_due_dates${az.viewWhere(
+          masine,
+        )}
+          GROUP BY machine_code
+          HAVING min(next_due_at) < date_trunc('day', now()) + interval '8 days'`,
+      );
+      sets.push(new Set(rows.map((r) => r.machine_code)));
+    }
+    let acc = sets[0] ?? new Set<string>();
+    for (let i = 1; i < sets.length; i++) {
+      acc = new Set([...acc].filter((x) => sets[i].has(x)));
+    }
+    return [...acc];
   }
 
   // ==========================================================================
