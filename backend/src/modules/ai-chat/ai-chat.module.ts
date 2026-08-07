@@ -3,6 +3,8 @@ import { AiChatController } from "./ai-chat.controller";
 import { AiChatService } from "./ai-chat.service";
 import { KadrovskaModule } from "../kadrovska/kadrovska.module";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { OdrzavanjeAuthzService } from "../odrzavanje/odrzavanje-authz.service";
+import { OdrzavanjeFnService } from "../odrzavanje/odrzavanje-fn.service";
 
 /**
  * AI asistent — 3.0 TALAS B (podaci u sy15 bazi — Sy15Module, globalan).

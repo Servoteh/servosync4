@@ -3568,10 +3568,30 @@ export class OdrzavanjeService {
         serviceContract: s("service_contract"),
         serviceProvider: s("service_provider"),
         lastInspectionAt: this.toDbDate(s("last_inspection_at")) ?? null,
-        cadastralParcels: s("cadastral_parcels"),
         notes: s("notes"),
         updatedBy: uid,
       };
+      // ═══════════════════════════════════════════════════════════════════
+      // 🔴 ZATEČEN KVAR, POPRAVLJEN 06.08.2026 — „Objekti" NIKAD nisu radili
+      // ═══════════════════════════════════════════════════════════════════
+      // Ovde je stajalo `cadastralParcels: s("cadastral_parcels")`, a kolone
+      // `cadastral_parcels` u ŽIVOJ sy15 NEMA — izmereno `pg_attribute`:
+      // `maint_facility_details` tamo ima TAČNO 14 kolona i ta nije među njima.
+      // Prisma je kolonu ipak slala u INSERT/UPDATE (model `prisma/sy15.prisma`
+      // ju je deklarisao), baza je vraćala 42703, a `rethrowSy15` taj SQLSTATE
+      // ne mapira → 500. Zato na produkciji `maint_assets` tipa `facility` ima
+      // 0 redova i `maint_facility_details` 0 redova — modul Objekti nije mogao
+      // da sačuva NIJEDAN red otkad postoji.
+      //
+      // 🔴 Isti previd je obarao i ČITANJE: `findUnique` (v. `assetDetails`)
+      // takođe traži sve skalarne kolone modela. Zato je popravka MORALA da ide
+      // u model — polje je uklonjeno iz `prisma/sy15.prisma`, pa sy15 klijent
+      // više ni ne pominje kolonu. Ovde ostaje samo izostavljen upis.
+      //
+      // U 3.0 kolona POSTOJI (FE je nudi kao „Katastarske parcele"), pa preklop
+      // taj ekran usput popravlja u punom obimu. Upis parcela pod `3.0` je posao
+      // CRUD faze — dok se ne napiše, ceo ovaj put pod `3.0` ionako pada na 503
+      // (`withUserMapped` → `assertPorted`).
       const row = await tx.maintFacilityDetails.upsert({
         where: { assetId },
         create: { assetId, ...base },

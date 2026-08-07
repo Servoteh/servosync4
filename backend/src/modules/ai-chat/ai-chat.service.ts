@@ -17,6 +17,7 @@ import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { OdrzavanjeFnService } from "../odrzavanje/odrzavanje-fn.service";
 import {
   AiProviderService,
   ENGINES,
@@ -129,6 +130,13 @@ export class AiChatService {
      * @Optional: bez njega brana ne radi ništa (ponašanje kao `sy15`).
      */
     @Optional() private readonly odrzavanjeIzvor?: OdrzavanjeSourceService,
+    /**
+     * Prepis DEFINER logike održavanja nad 3.0 bazom (korak 2 seobe). Koristi ga
+     * SAMO alat `prijavi_kvar` i SAMO pod `ODRZAVANJE_IZVOR=3.0` — jedini upis
+     * AI-chata u tuđi domen. @Optional: bez njega alat pada na 503 umesto da
+     * tiho piše u sy15.
+     */
+    @Optional() private readonly odrzavanjeFn?: OdrzavanjeFnService,
   ) {}
 
   /** Liste niti: lične (own, auth.uid()) + projektne (scope='project', vide svi) — RLS scoping. */
@@ -795,6 +803,7 @@ export class AiChatService {
       prisma: this.prisma,
       kadrovska: this.kadrovska,
       odrzavanjeIzvor: this.odrzavanjeIzvor,
+      odrzavanjeFn: this.odrzavanjeFn,
     };
     try {
       const out = await tool.execute(args, {
