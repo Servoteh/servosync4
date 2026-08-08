@@ -450,7 +450,7 @@ outbox ostane prazan i fanout se ne pozove. Zato brana sada stoji i u kodu:
   dobija rep `| UPOZORENJE: …` uz `ERROR` u app logu.
 - **`maint-notify-dispatch`** pod `3.0`: kad je outbox prazan **i** nema nijednog aktivnog
   profila, summary dobija rep sa razlogom, uz `ERROR` u logu. Ovaj posao NE baca (radi na
-  svakih 5 min — crven red svaka 4 minuta bi bio šum), pa mu red u dnevniku ostaje zelen;
+  svakih 5 min — crven red svakih 5 minuta bi bio šum), pa mu red u dnevniku ostaje zelen;
   signal je tekst summary-ja i `ERROR` u logu.
 - Cena na podrazumevanom `sy15` putu je **nikakva**: provera postoji samo na 3.0 grani i
   izvršava se tek kad nema šta da se šalje (jedan `count` na praznom tiku).
@@ -459,6 +459,32 @@ Idempotencija rokova je usput morala da nauči novi status: red zatvoren baš ka
 `FANOUT_NO_RECIPIENTS` i dalje važi kao „već upisan", inače bi `maint-deadlines` svakog dana
 iznova upisivao isti rok (jedan mrtav `failed` red po roku po danu). Svaki **drugi** `failed`
 (stvaran neuspeh isporuke) i dalje pušta ponovni upis — kao u sy15 originalu.
+
+#### 🔴 …ali priznanje traje SAMO dok red ima pokušaja (treći krug, 08.08.2026)
+
+Prethodna alineja je, kako je prvo napisana, bila **bez ijednog prozora** — i time napravila
+obrnut kvar od onog koji je lečila. `maint_dispatch_dequeue` red uzima samo dok je
+`attempts < 8`; red ispumpan do plafona (~8 h uz backoff od 1 h) **prestaje da se pokušava**, a
+i dalje je zauvek blokirao ponovni upis tog roka. U stanju **delimičnog prenosa** — profila
+IMA (pa brana iznad prolazi), ali nijedan `chief`/`management` nema telefon — registracija,
+osiguranje i lekarski se ne bi javili **nikad**, a od drugog dana bi ulazili u `skipped`,
+nerazlučivo od uredno isporučenih.
+
+Zato priznanje sada važi uz `attempts < 8`:
+
+- dok je red **u redu čekanja** → rok je „upisan", ponovni upis se preskače (`skipped`);
+- kad red **ispadne** iz reda čekanja → prestaje da važi kao upisan, pa ga sutrašnji
+  `maint-deadlines` upiše **ponovo** (nov `queued` red; stari `failed` ostaje kao vidljiv trag).
+
+Granica je namerno `attempts`, a ne zidni sat — to je baš predikat dispečera, pa nema pogađanja
+koliko prozor traje ni zavisnosti od takta radnika. **Cena, izričito:** u stanju „nema kome"
+outbox raste za jedan mrtav red po roku po danu i `enqueued` ne pada na nulu. To je signal da
+obaveštenja ne sleću, a ne šum — jedina alternativa je tiho gubljenje roka.
+
+**Operativno:** ako se posle preklopa u `scheduled_job_runs` vidi `enqueued > 0` iz dana u dan
+uz `maint_notification_log` pun `failed` redova sa `FANOUT_NO_RECIPIENTS` — to nije bag nego
+poruka da `maint_user_profiles` nema telefone. Popuni telefone; postojeći mrtvi redovi se ne
+ponavljaju, a prvi sledeći upis rok stvarno pošalje.
 
 ### Povratak (rollback)
 

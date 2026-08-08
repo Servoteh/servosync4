@@ -4,7 +4,10 @@ import { Sy15Service } from "../../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
 import { PbSourceService } from "../../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
-import { OdrzavanjeFnService } from "../../odrzavanje/odrzavanje-fn.service";
+import {
+  MAINT_MAX_ATTEMPTS,
+  OdrzavanjeFnService,
+} from "../../odrzavanje/odrzavanje-fn.service";
 import type { ScheduledJob } from "../scheduler.types";
 
 /*
@@ -191,10 +194,13 @@ export interface DispatchSummary {
 }
 
 // Batch/attempts — isti default-i kao 1.0 edge (HR/MAINT 25 i 8, PB 10).
+// 🔴 `MAINT_MAX_ATTEMPTS` se NE definiše ovde nego se UVOZI iz
+// `odrzavanje-fn.service.ts`: isti broj je i granica do koje `postojiRok` red
+// zatvoren kao `FANOUT_NO_RECIPIENTS` priznaje kao „upisan". Dve nezavisne
+// osmice bi se razišle pri prvoj izmeni plafona i dale duple redove za isti rok.
 const KADR_BATCH = 25;
 const KADR_MAX_ATTEMPTS = 8;
 const MAINT_BATCH = 25;
-const MAINT_MAX_ATTEMPTS = 8;
 const PB_BATCH = 10;
 
 /** Meta Graph timeout (edge ga nema, ali viseći poziv ne sme da zakuca tik). */

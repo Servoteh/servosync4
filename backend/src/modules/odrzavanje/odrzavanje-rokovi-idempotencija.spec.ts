@@ -1,4 +1,7 @@
-import { OdrzavanjeFnService } from "./odrzavanje-fn.service";
+import {
+  MAINT_MAX_ATTEMPTS,
+  OdrzavanjeFnService,
+} from "./odrzavanje-fn.service";
 import { OdrzavanjeAuthzService } from "./odrzavanje-authz.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 
@@ -21,6 +24,19 @@ import type { PrismaService } from "../../prisma/prisma.service";
  * čime bi baš poređenje „pre/posle preklopa" (zbog kojeg je oblik summary-ja
  * namerno očuvan) postalo neupotrebljivo.
  *
+ * ── 🔴 A ONDA JE I TA POPRAVKA UVELA SVOJ KVAR (treći krug, 08.08.2026) ─────
+ *
+ * Priznanje `FANOUT_NO_RECIPIENTS` je bilo VEČNO — bez ijednog prozora. Pošto
+ * `dispatchDequeue` red uzima samo dok je `attempts < MAINT_MAX_ATTEMPTS`, red
+ * ispumpan do plafona (~8 h uz backoff od 1 h) prestaje da se pokušava, ALI je
+ * i dalje zauvek blokirao ponovni upis tog roka. Ishod je bio obrnut kvar od
+ * onog koji je lečen: rok se GUBI TRAJNO, i to tiho (od drugog dana ulazi u
+ * `skipped`, nerazlučivo od uredno isporučenog). Stanje u kojem ugriza je baš
+ * ono koje ovaj PR priprema — profila IMA, telefona nema (delimičan prenos).
+ *
+ * Zato priznanje sada važi samo unutar prozora ponovnih pokušaja, i testovi
+ * ispod pinuju OBE strane te granice (blokira dok je živ, pušta kad ispadne).
+ *
  * Testovi ispod zato NE mockuju odgovor `findFirst` nego drže MALI OUTBOX u
  * memoriji i primenjuju `where` koji servis stvarno pošalje. Mock koji vraća
  * unapred zadat red ne bi razlikovao ispravan filtar od pogrešnog.
@@ -36,6 +52,12 @@ interface Red {
   payload: Record<string, unknown>;
   /** Samo `it_backup` idempotencija ovo gleda (prozor od 7 dana). */
   createdAt: Date;
+  /**
+   * Brojač pokušaja dispečera. `dispatchDequeue` ga diže pri svakom claim-u i
+   * red uzima samo dok je `attempts < MAINT_MAX_ATTEMPTS`; ISTA granica govori i
+   * dokle red zatvoren kao `FANOUT_NO_RECIPIENTS` važi kao „upisan".
+   */
+  attempts: number;
 }
 
 /**
@@ -75,6 +97,11 @@ function poklapa(red: Red, where: Record<string, unknown>): boolean {
       case "createdAt": {
         const g = (v as { gte: Date }).gte;
         if (red.createdAt < g) return false;
+        break;
+      }
+      case "attempts": {
+        const lt = (v as { lt: number }).lt;
+        if (!(red.attempts < lt)) return false;
         break;
       }
       case "OR": {
@@ -149,6 +176,7 @@ function bazaSaJednimVozilom(outbox: Red[] = []) {
           error: null,
           payload: d.payload as Record<string, unknown>,
           createdAt: new Date(),
+          attempts: 0,
         });
         return Promise.resolve({ id: `N${outbox.length}` });
       },
@@ -160,6 +188,29 @@ function bazaSaJednimVozilom(outbox: Red[] = []) {
 function svc(db: unknown) {
   const prisma = db as PrismaService;
   return new OdrzavanjeFnService(prisma, new OdrzavanjeAuthzService(prisma));
+}
+
+/**
+ * Jedan tik dispečera nad redom koji fanout ne uspe da razgrana ni na koga.
+ *
+ * Verno preslikava ono što radnik STVARNO radi, jer o tome visi ceo prozor:
+ * `dispatchDequeue` claim-uje red (`attempts + 1`, status natrag na `queued`),
+ * pa `dispatchFanout` bez ijednog primaoca zove `markFailedRaw` — dakle
+ * `status='failed'` sa `FANOUT_NO_RECIPIENTS` u `error`. Claim se dešava SAMO
+ * dok je `attempts < MAINT_MAX_ATTEMPTS`; posle toga red trajno ispada iz reda
+ * čekanja, pa ga ovaj helper više i ne dira.
+ */
+function tikDispecera(red: Red): void {
+  if (red.attempts >= MAINT_MAX_ATTEMPTS) return;
+  red.attempts += 1;
+  red.status = "failed";
+  red.error =
+    "FANOUT_NO_RECIPIENTS: nijedan aktivan profil (chief) sa telefonom u maint_user_profiles";
+}
+
+/** Redovi koje `dispatchDequeue` još sme da uzme (živi pokušaji). */
+function zivih(outbox: Red[]): number {
+  return outbox.filter((r) => r.attempts < MAINT_MAX_ATTEMPTS).length;
 }
 
 describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () => {
@@ -179,7 +230,7 @@ describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () =
     expect(db.outbox).toHaveLength(1);
   });
 
-  it("🔴 red zatvoren kao FANOUT_NO_RECIPIENTS i dalje važi kao UPISAN", async () => {
+  it("🔴 FANOUT_NO_RECIPIENTS važi kao UPISAN dok je red U REDU ČEKANJA", async () => {
     const { db, registracijaIstice } = bazaSaJednimVozilom();
     const s = svc(db);
     await s.checkVehicleDeadlines(db as never, 30);
@@ -188,21 +239,28 @@ describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () =
     // Dispečer je red pokupio, fanout nije našao nijednog primaoca
     // (`maint_user_profiles` prazan) i zatvorio ga kao NEUSPEH — tačno ono što
     // prva popravka PR-a #125 radi.
-    db.outbox[0].status = "failed";
-    db.outbox[0].error =
-      "FANOUT_NO_RECIPIENTS: nijedan aktivan profil (chief) sa telefonom u maint_user_profiles";
+    tikDispecera(db.outbox[0]);
 
-    // 🔴 SUŠTINA: sutrašnji prolaz posla NE SME da napravi drugi red. Sa starim
-    // filtrom (`status IN ('queued','sent')`) ovde je nastajao NOV red — i tako
-    // svakog dana, dok se prenos podataka ne pusti.
+    // 🔴 SUŠTINA: dok red još ima pokušaja, prolaz posla NE SME da napravi drugi
+    // red. Sa starim filtrom (`status IN ('queued','sent')`) ovde je nastajao NOV
+    // red — i tako svakog dana, dok se prenos podataka ne pusti.
     expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
       enqueued: 0,
       skipped: 1,
     });
     expect(db.outbox).toHaveLength(1);
-    // I posle deset dana stoji TAČNO jedan red — outbox ne raste.
-    for (let i = 0; i < 10; i++) await s.checkVehicleDeadlines(db as never, 30);
+
+    // Sve do PRETPOSLEDNJEG pokušaja (attempts = 7) red i dalje blokira: prozor
+    // ponovnih pokušaja je otvoren, obaveštenje još može stvarno da ode.
+    while (db.outbox[0].attempts < MAINT_MAX_ATTEMPTS - 1) {
+      tikDispecera(db.outbox[0]);
+      expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
+        enqueued: 0,
+        skipped: 1,
+      });
+    }
     expect(db.outbox).toHaveLength(1);
+    expect(db.outbox[0].attempts).toBe(MAINT_MAX_ATTEMPTS - 1);
 
     // Idempotencija drži, ali se laž „poslato" NE vraća: red je i dalje `failed`
     // sa vidljivim razlogom. To je jedina razlika u odnosu na staro ponašanje.
@@ -211,6 +269,72 @@ describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () =
     // I dalje je vezan za TAJ rok (ne poklapa se slučajno sa bilo čim).
     expect(db.outbox[0].payload.deadline_date).toBe(isoDan(registracijaIstice));
     expect(db.outbox[0].payload.deadline_kind).toBe("registration");
+  });
+
+  it("🔴 rok ispumpan do PLAFONA se NE gubi zauvek — sledeći prolaz ga upiše ponovo", async () => {
+    // ── Zašto ovaj test postoji ────────────────────────────────────────────
+    // Prva verzija popravke idempotencije (commit `94130750`) priznavala je
+    // `FANOUT_NO_RECIPIENTS` kao „upisan" BEZ ijednog prozora. Kad `attempts`
+    // udari plafon, `dispatchDequeue` (`attempts < p_max_attempts`) red više ne
+    // uzima — dakle se NIKAD više ne pokušava — a on je i dalje zauvek blokirao
+    // ponovni upis. Rok je time TIHO nestajao: od drugog dana samo `skipped`,
+    // nerazlučivo od uredno isporučenog. Stanje u kojem ugriza je baš ono koje
+    // ovaj PR priprema: profila IMA (brana `maint-deadlines` prolazi), ali
+    // nijedan `chief`/`management` nema telefon — delimičan prenos.
+    const { db, registracijaIstice } = bazaSaJednimVozilom();
+    const s = svc(db);
+    await s.checkVehicleDeadlines(db as never, 30);
+
+    // Ceo prozor ponovnih pokušaja potrošen (~8 h uz backoff od 1 h).
+    for (let i = 0; i < MAINT_MAX_ATTEMPTS; i++) tikDispecera(db.outbox[0]);
+    expect(db.outbox[0].attempts).toBe(MAINT_MAX_ATTEMPTS);
+    expect(zivih(db.outbox)).toBe(0);
+
+    // 🔴 SUŠTINA: sutrašnji prolaz mora da upiše NOV red za isti rok.
+    expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
+      enqueued: 1,
+      skipped: 0,
+    });
+    expect(db.outbox).toHaveLength(2);
+    // Nov red je svež pokušaj…
+    expect(db.outbox[1].status).toBe("queued");
+    expect(db.outbox[1].attempts).toBe(0);
+    expect(db.outbox[1].payload.deadline_date).toBe(isoDan(registracijaIstice));
+    expect(db.outbox[1].payload.deadline_kind).toBe("registration");
+    // …a stari ostaje kao VIDLJIV trag neuspeha, ne prepisuje se u `sent`.
+    expect(db.outbox[0].status).toBe("failed");
+    expect(db.outbox[0].error).toContain("FANOUT_NO_RECIPIENTS");
+
+    // Nov red odmah opet blokira ponovni upis — dnevno TAČNO jedan pokušaj,
+    // ne jedan po prolazu posla.
+    expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
+      enqueued: 0,
+      skipped: 1,
+    });
+    expect(db.outbox).toHaveLength(2);
+  });
+
+  it("posle deset dana: outbox ima 10 redova, ali živ je uvek TAČNO jedan", async () => {
+    // Cena prozora, izmerena a ne pretpostavljena: u stanju „nema kome" outbox
+    // raste za jedan mrtav red po roku po danu (kao pre commita `6f389886`), a
+    // `enqueued` ne pada na nulu. To je namerno — signal da obaveštenja ne
+    // sleću — i jedina alternativa bila bi tiho gubljenje roka.
+    const { db } = bazaSaJednimVozilom();
+    const s = svc(db);
+    for (let dan = 0; dan < 10; dan++) {
+      expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
+        enqueued: 1,
+        skipped: 0,
+      });
+      // Dan dispečera: red se ispumpa do plafona i ispadne iz reda čekanja.
+      const posl = db.outbox[db.outbox.length - 1];
+      for (let i = 0; i < MAINT_MAX_ATTEMPTS; i++) tikDispecera(posl);
+      // U svakom trenutku najviše JEDAN red se stvarno pokušava.
+      expect(zivih(db.outbox)).toBe(0);
+      expect(db.outbox).toHaveLength(dan + 1);
+    }
+    // Nijedan red nije završio kao lažni `sent` — gubitak ostaje vidljiv.
+    expect(db.outbox.every((r) => r.status === "failed")).toBe(true);
   });
 
   it("STVARAN neuspeh isporuke i dalje pušta ponovni upis (paritet sa sy15)", async () => {
@@ -283,6 +407,7 @@ describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () =
             error: null,
             payload: d.payload as Record<string, unknown>,
             createdAt: new Date(),
+            attempts: 0,
           });
           return Promise.resolve({ id: `N${outbox.length}` });
         },
@@ -294,8 +419,7 @@ describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () =
       enqueued: 1,
       skipped: 0,
     });
-    outbox[0].status = "failed";
-    outbox[0].error = "FANOUT_NO_RECIPIENTS: nijedan aktivan profil (chief)";
+    tikDispecera(outbox[0]);
 
     iRaw = 0;
     expect(await s.checkItFacilityDeadlines(db as never, 30)).toEqual({
@@ -303,6 +427,27 @@ describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () =
       skipped: 1,
     });
     expect(outbox).toHaveLength(1);
+
+    // 🔴 I PROZOR se deli, ne samo skup statusa. `it_backup` ima SVOJ prozor od
+    // 7 dana (`createdAt`), pa bi bez ovoga „nema kome" red ovde blokirao rok
+    // celu nedelju, a u `postojiRok` ~8 h — ista funkcija, dva životna veka.
+    // Presek dva prozora daje kraći: čim red ispadne iz reda čekanja, upozorenje
+    // se upisuje ponovo — iako 7 dana još nije prošlo.
+    for (let i = 0; i < MAINT_MAX_ATTEMPTS; i++) tikDispecera(outbox[0]);
+    iRaw = 0;
+    expect(await s.checkItFacilityDeadlines(db as never, 30)).toEqual({
+      enqueued: 1,
+      skipped: 0,
+    });
+    expect(outbox).toHaveLength(2);
+    // A THROTTLE od 7 dana i dalje radi svoj posao nad redom koji JESTE otišao.
+    outbox[1].status = "sent";
+    iRaw = 0;
+    expect(await s.checkItFacilityDeadlines(db as never, 30)).toEqual({
+      enqueued: 0,
+      skipped: 1,
+    });
+    expect(outbox).toHaveLength(2);
   });
 
   it("DRUGI rok istog vozila nije blokiran prvim (filtar je po vrsti i datumu)", async () => {

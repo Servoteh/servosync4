@@ -98,12 +98,29 @@ export interface EnqueueNotifArgs {
 }
 
 /**
+ * Plafon pokušaja dispečera nad outbox-om održavanja (paritet 1.0 edge-a: 8).
+ *
+ * 🔴 JEDAN IZVOR, i to nosivo, ne kozmetika. Isti broj koristi TROJE:
+ *   1. `dispatchDequeue` — `attempts < maxAttempts` je uslov claim-a;
+ *   2. `NotifyDispatchService` (`MAINT_MAX_ATTEMPTS`) — vrednost koju radnik
+ *      prosleđuje pri svakom tiku;
+ *   3. `statusVaziKaoUpisan()` — granica posle koje red zatvoren kao
+ *      `FANOUT_NO_RECIPIENTS` PRESTAJE da važi kao „upisan".
+ * Da su ovo dva broja pa se raziđu (npr. radnik digne plafon na 12), tačka 3 bi
+ * pustila NOV red dok stari još ima pokušaja — dupli redovi za isti rok.
+ */
+export const MAINT_MAX_ATTEMPTS = 8;
+
+/**
  * Odmak do sledećeg pokušaja kad fanout ne nađe NIJEDNOG primaoca (1 sat).
  *
- * Sa `MAINT_MAX_ATTEMPTS = 8` u radniku to daje ~8 sati ponovnih pokušaja — taman
- * da preklop koji je pušten pre nego što je prenos podataka gotov ipak isporuči
- * obaveštenje čim se `maint_user_profiles` napuni — a posle toga red trajno
- * ispada iz reda čekanja i ostaje kao VIDLJIV `failed`, ne kao lažni `sent`.
+ * Sa `MAINT_MAX_ATTEMPTS = 8` to daje ~8 sati ponovnih pokušaja — taman da
+ * preklop koji je pušten pre nego što je prenos podataka gotov ipak isporuči
+ * obaveštenje čim se `maint_user_profiles` napuni. Posle toga TAJ RED trajno
+ * ispada iz reda čekanja i ostaje kao VIDLJIV `failed`, ne kao lažni `sent` —
+ * ali SAM ROK nije izgubljen: čim red ispadne iz prozora, prestaje da važi kao
+ * „upisan" (v. `statusVaziKaoUpisan()`), pa ga sutrašnji `maint-deadlines`
+ * upiše ponovo.
  */
 const FANOUT_NO_RECIPIENTS_BACKOFF_SEC = 3600;
 
@@ -123,13 +140,43 @@ export const FANOUT_NO_RECIPIENTS = "FANOUT_NO_RECIPIENTS";
  * Izvor gleda samo `('queued','sent')`; `failed` je NAMERNO izostavljen, jer
  * stvaran neuspeh isporuke sme sutradan da se pokuša ponovo. Izuzetak je jedini
  * `failed` koji NIJE neuspeh isporuke nego „nema kome" (`FANOUT_NO_RECIPIENTS`,
- * uvedeno 08.08.2026): tu je red već upisan i ponovni upis bi svakog dana
- * pravio nov mrtav red — v. duži komentar u `postojiRok`.
+ * uvedeno 08.08.2026): dok je taj red JOŠ U REDU ČEKANJA, rok je stvarno upisan
+ * i ponovni upis bi svakog dana pravio nov mrtav red.
+ *
+ * ── 🔴 PROZOR (treći krug, 08.08.2026) ──────────────────────────────────────
+ * `attempts < MAINT_MAX_ATTEMPTS` NIJE ukras. Bez njega je izuzetak bio VEČAN,
+ * pa je posledica bila obrnut kvar od onog koji je lečio: red koji je dispečer
+ * ispumpao do plafona (~8 h uz backoff od 1 h) trajno ispada iz `dispatchDequeue`
+ * (`attempts < p_max_attempts`) — dakle više se NIKAD ne pokušava — a i dalje je
+ * zauvek blokirao ponovni upis tog roka. Registracija/osiguranje/lekarski se u
+ * stanju „profila ima, telefona nema" (delimičan prenos) ne bi javili NIKAD, a od
+ * drugog dana bi ulazili u `skipped`, nerazlučivo od uredno isporučenih.
+ *
+ * Granica je namerno `attempts`, a NE zidni sat: to je BAŠ predikat koji
+ * `dispatchDequeue` koristi, pa red prestaje da važi kao „upisan" u tačno onom
+ * trenutku kad prestane da se pokušava — bez pogađanja koliko traje prozor i bez
+ * zavisnosti od takta radnika. (Ako radnik uopšte ne radi, `attempts` stoji i red
+ * i dalje blokira — ali tada bi ga blokirao i kao `queued`, što je zatečeno
+ * ponašanje izvora i ne menja se.)
+ *
+ * Cena, izričito: u stanju „nema kome" outbox opet raste za jedan mrtav red po
+ * roku po danu (kao pre commita `6f389886`) i `enqueued` ne pada na nulu. To je
+ * SIGNAL, ne šum — a slučaj „nijedan profil" uopšte ne stiže dovde, njega
+ * `maint-deadlines` odbija pre upisa (`sy15-cron-jobs.ts`, brana iz drugog kruga).
+ *
+ * ⚠️ ŽIVOTNI VEK NIJE ISTI NA OBA MESTA, i to je namerno: `it_backup` (`:1789`)
+ * dodatno seče svojim `createdAt >= now() - 7 dana`, pa je tamo prozor PRESEK
+ * (kraći od oba) — 7 dana važi za redove koji su stvarno otišli (`sent`), a za
+ * `FANOUT_NO_RECIPIENTS` i tamo odlučuje plafon pokušaja.
  */
 function statusVaziKaoUpisan(): Prisma.MaintNotificationLogWhereInput[] {
   return [
     { status: { in: ["queued", "sent"] } },
-    { status: "failed", error: { startsWith: FANOUT_NO_RECIPIENTS } },
+    {
+      status: "failed",
+      error: { startsWith: FANOUT_NO_RECIPIENTS },
+      attempts: { lt: MAINT_MAX_ATTEMPTS },
+    },
   ];
 }
 
@@ -1252,10 +1299,18 @@ export class OdrzavanjeFnService {
    * (statusi ostaju u postojećem CHECK-u `('queued','sent','failed')`, pa nema
    * migracije), plus ERROR u dnevnik. Roditelj se i dalje NE ZAGLAVLJUJE večno:
    * `dispatchDequeue` uzima `status IN ('queued','failed')` samo dok je
-   * `attempts < p_max_attempts` (radnik šalje 8), a svaki claim diže `attempts`.
-   * Posle 8 prolaza red trajno ispada iz reda čekanja i ostaje kao VIDLJIV
-   * neuspeh. Usput to daje i besplatnu korist: ako se prenos podataka pusti
-   * unutar prozora ponovnih pokušaja, obaveštenje stvarno ode.
+   * `attempts < MAINT_MAX_ATTEMPTS`, a svaki claim diže `attempts`. Posle 8
+   * prolaza (~8 h uz backoff od 1 h) red trajno ispada iz reda čekanja i ostaje
+   * kao VIDLJIV neuspeh. Ako se prenos podataka pusti unutar tog prozora,
+   * obaveštenje stvarno ode.
+   *
+   * 🔴 A ŠTA POSLE PROZORA (ispravka trećeg kruga, 08.08.2026): prozor NIJE
+   * jedina šansa i gubitak NIJE konačan. Isti plafon pokušaja je i granica do
+   * koje `statusVaziKaoUpisan()` ovakav red priznaje kao „upisan", pa čim red
+   * ispadne iz reda čekanja, sutrašnji `maint-deadlines` upiše rok PONOVO (nov
+   * `queued` red; stari `failed` ostaje kao vidljiv trag). Dok je ta granica
+   * falila, promašen rok se gubio ZAUVEK — v. duži komentar uz
+   * `statusVaziKaoUpisan()`.
    */
   async dispatchFanout(
     tx: OdrzavanjeTx | undefined,
@@ -1781,6 +1836,15 @@ export class OdrzavanjeFnService {
             // pa mora da deli i pravilo. Da je ostala na `('queued','sent')`,
             // backup-upozorenje bi se pod praznim `maint_user_profiles`
             // ponavljalo svakog dana iako red već stoji u outboxu.
+            //
+            // ⚠️ DVA PROZORA SE OVDE SEKU, i to je namerno (treći krug,
+            // 08.08.2026): `createdAt` od 7 dana je THROTTLE za upozorenje koje
+            // je STVARNO otišlo (`sent`), a `attempts < MAINT_MAX_ATTEMPTS` iz
+            // `statusVaziKaoUpisan()` je prozor za red koji NIJE imao kome da
+            // ode. Presek znači da se „nema kome" red ovde izleči po plafonu
+            // pokušaja (~8 h), ne tek posle 7 dana — isti životni vek kao kod
+            // `postojiRok`, jer je i posledica ista (inače bi ista funkcija na
+            // dva mesta imala dva različita životna veka, što nigde nije pisalo).
             OR: statusVaziKaoUpisan(),
             createdAt: { gte: nedeljaUnazad },
             AND: [
@@ -2134,6 +2198,14 @@ export class OdrzavanjeFnService {
    * „već upisan": idempotencija drži, a status ostaje `failed` — nigde se ne
    * vraća laž „poslato". Svaki DRUGI `failed` (stvarni neuspeh isporuke) i dalje
    * pušta ponovni upis, tačno kao u izvoru.
+   *
+   * 🔴 ALI SAMO DOK JE RED U REDU ČEKANJA (ispravka trećeg kruga, 08.08.2026):
+   * priznanje važi uz `attempts < MAINT_MAX_ATTEMPTS`. Bez te granice je gornje
+   * pravilo bilo VEČNO, pa je rok koji je ispumpan do plafona (a `dispatchDequeue`
+   * ga posle toga više ne uzima) ostajao zauvek blokiran za ponovni upis — tj.
+   * TRAJNO IZGUBLJEN, i to tiho: od drugog dana bi ulazio u `skipped`. Tačan
+   * razlog za `attempts` umesto zidnog sata i cena tog izbora stoje uz
+   * `statusVaziKaoUpisan()`.
    */
   private async postojiRok(
     tx: OdrzavanjeTx | undefined,
@@ -2205,7 +2277,7 @@ export class OdrzavanjeFnService {
   async dispatchDequeue(
     tx: OdrzavanjeTx | undefined,
     batchSize = 25,
-    maxAttempts = 8,
+    maxAttempts = MAINT_MAX_ATTEMPTS,
   ): Promise<MaintDispatchRow[]> {
     return this.db(tx).$queryRaw<MaintDispatchRow[]>(Prisma.sql`
       WITH picked AS (
