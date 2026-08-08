@@ -230,6 +230,12 @@ export function GanttTab() {
   const [pendingShift, setPendingShift] = useState<PendingShift | null>(null);
   const [chainPlan, setChainPlan] = useState<ShiftChainPlan | null>(null);
   const [lastShift, setLastShift] = useState<ShiftChainPlan | null>(null);
+  /**
+   * 🔴 078/26: koji je TERMIN sidra pomeren. Server ga ne vraća u odgovoru, a „Poništi"
+   * mora da vrati TAČNO ono što je pomereno — bez ovoga bi poništavanje vratilo CELU
+   * poziciju iako je pomeren jedan termin, i tiho razmestilo ostale.
+   */
+  const [lastShiftTermin, setLastShiftTermin] = useState<string | undefined>(undefined);
   // 070/26 — ručni redosled redova prevlačenjem. `rowDrag` u ref-u (a ne samo u stanju)
   // jer `dragstart`/`drop` idu kroz native događaje bez ponovnog rendera između.
   const rowDragRef = useRef<RowDragState | null>(null);
@@ -459,10 +465,18 @@ export function GanttTab() {
 
   /** Brzi put — bez ijednog klika. `expectedHash` se šalje samo kad ga imamo. */
   function posaljiKaskadu(row: GanttRow, deltaDays: number, kljucevi: string[], expectedHash?: string) {
+    const terminSidra = row.termin_id != null ? String(row.termin_id) : undefined;
+    setLastShiftTermin(terminSidra);
     shift.mutate(
       {
         workOrderId: row.work_order_id,
         lineId: row.line_id,
+        // 🔴 078/26 (odluka Nenad 08.08.2026): prevlačenje bara pomera SAMO taj termin.
+        // Bez ovoga bi tri termina iste pozicije bila zavarena zajedno i ceo zahtev
+        // („5 sad, 3 kasnije, 2 posle") ne bi imao smisla. Sledbenici po uslovu i dalje
+        // pomeraju SVE svoje termine — uslov je osobina pozicije, ne termina.
+        // Operacija bez termina ne šalje ništa: server tada radi kao pre 078/26.
+        terminId: terminSidra,
         deltaDays,
         clientEventId: newClientId(),
         expectedHash,
@@ -926,6 +940,10 @@ export function GanttTab() {
                   {
                     workOrderId: p.sidro.work_order_id,
                     lineId: p.sidro.line_id,
+                    // 🔴 078/26: poništava se TAČNO ono što je pomereno. Bez ovoga bi
+                    // „Poništi" vratilo CELU poziciju iako je pomeren jedan termin —
+                    // i tiho razmestilo ostale.
+                    terminId: lastShiftTermin,
                     deltaDays: -p.delta_dana,
                     clientEventId: newClientId(),
                     expectedHash: p.hash_after ?? undefined,

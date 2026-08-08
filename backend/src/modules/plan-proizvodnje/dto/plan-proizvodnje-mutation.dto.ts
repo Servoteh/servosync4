@@ -95,6 +95,17 @@ export class OverlayShiftChainDto {
   @Matches(DIGITS) workOrderId!: string;
   @Matches(DIGITS) lineId!: string;
   /**
+   * 078/26: TERMIN sidra, kad pozicija ima više termina (odluka Nenad 08.08.2026).
+   *
+   * Prevlačenje bara pomera SAMO taj termin — bez toga bi tri termina bila zavarena
+   * zajedno i ceo zahtev („5 sad, 3 kasnije, 2 posle") ne bi imao smisla.
+   * SLEDBENICI po uslovu i dalje pomeraju SVE svoje termine — uslov je osobina
+   * pozicije, ne pojedinačnog termina.
+   *
+   * Izostavljeno = ponašanje pre 078/26: pomera se cela pozicija.
+   */
+  @IsOptional() @Matches(DIGITS) terminId?: string;
+  /**
    * Pomak u CELIM KALENDARSKIM danima (Europe/Belgrade), ne apsolutni termini:
    * server tada radi svu aritmetiku jednim izrazom, pa sidro i rep ne mogu da se
    * raziđu preko prelaza na zimsko računanje vremena (25.10.2026).

@@ -1064,6 +1064,11 @@ export interface ShiftChainPlan {
 export interface ShiftChainVars {
   workOrderId: string;
   lineId: string;
+  /**
+   * 078/26: TERMIN sidra. Prevlačenje bara pomera SAMO taj termin; sledbenici po
+   * uslovu i dalje pomeraju sve svoje. Izostavljeno = cela pozicija (pre 078/26).
+   */
+  terminId?: string;
   deltaDays: number;
   /** 🔴 Kuje ga POZIVALAC, ne hook — v. dole. */
   clientEventId: string;
@@ -1111,6 +1116,8 @@ export const useGanttShiftChain = () => {
         lineId: v.lineId,
         deltaDays: v.deltaDays,
         clientEventId: v.clientEventId,
+        // 078/26: šalje se SAMO kad ga ima — izostanak je ugovoreno „cela pozicija".
+        ...(v.terminId ? { terminId: v.terminId } : {}),
         ...(v.expectedHash ? { expectedHash: v.expectedHash } : {}),
       }),
     onMutate: async (v) => {
