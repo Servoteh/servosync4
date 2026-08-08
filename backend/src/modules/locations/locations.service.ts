@@ -408,7 +408,12 @@ export class LocationsService {
     // `mine=1` (mobilna „Moja istorija"): server razreši sy15 uid prijavljenog i
     // njime filtrira `moved_by` — klijent NE šalje svoj UUID (ne zna ga). Ima
     // prednost nad `userId` (fail-closed: nerazrešiv nalog → prazna strana, ne
-    // cela istorija firme; NIJE greška — nov 3.0 nalog bez sy15 para nema pokrete).
+    // cela istorija firme).
+    // Prazna strana ovde znači SAMO „nalog nema sy15 par, pa nema ni pokrete" —
+    // NE „izvor je nedostupan". Pod `LOKACIJE_IZVOR=3.0` `authUserIdByEmail` baca
+    // 503 (brana), ne vraća `null`; inače bi „Moja istorija" na mobilnoj tiho
+    // prikazala LAŽNU praznu listu sa HTTP 200 umesto da glasno kaže da putanja
+    // nije preneta (v. `authUserIdByEmail` — 503 se NE guta u `catch`-u).
     const mine = ["1", "true"].includes((query.mine ?? "").trim().toLowerCase());
     if (mine) {
       const uid = email ? await this.authUserIdByEmail(email) : null;
@@ -605,14 +610,21 @@ export class LocationsService {
    * Keš: samo POZITIVNI pogodak (uid naloga se ne menja). Promašaj se NE kešira —
    * nalog kreiran posle prvog pokušaja bi inače ostao „nevidljiv" do restarta.
    * Greška (privilegije/nedostupan auth šem) → `null` = prazna lista, ne 500.
+   *
+   * 🔴 `this.db` se uzima IZNAD `try`-ja namerno: taj getter je brana prekidača
+   * (`LOKACIJE_IZVOR=3.0` → 503). Da je unutar `try`-ja, `catch { return null }`
+   * bi progutao 503 i pozivalac (`listMovements` sa `mine=1`) bi vratio praznu
+   * stranu sa HTTP 200 — tiho pogrešan odgovor umesto glasnog „nije preneto".
+   * Ovako `catch` hvata isključivo greške samog upita.
    */
   private async authUserIdByEmail(email: string): Promise<string | null> {
     const key = email.trim().toLowerCase();
     if (!key) return null;
     const cached = this.authUidByEmail.get(key);
     if (cached) return cached;
+    const db = this.db; // brana pre `try`-ja — 503 mora da izađe, ne da se proguta
     try {
-      const rows = await this.db.$queryRaw<{ id: string }[]>(
+      const rows = await db.$queryRaw<{ id: string }[]>(
         Prisma.sql`SELECT id::text AS id FROM auth.users
                    WHERE lower(email) = ${key} AND deleted_at IS NULL
                    LIMIT 1`,
