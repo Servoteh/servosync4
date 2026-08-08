@@ -423,10 +423,34 @@ iznova. `KadrovskaSourceService` **ne čita** zastareli `SASTANCI_PB_IZVOR`.
 | 63 Prisma modela (736 kolona) | `backend/prisma/schema.prisma` | ✅ `prisma validate` čist |
 | Migracija (63 tabele, 5+72 FK, 109 CHECK, 111 indeksa, 36 trigera, 45 DB default-a) | `backend/prisma/migrations/20260808120000_kadrovska_seoba_sy15/` | ✅ **primenjena na probnu bazu, NE na prod** |
 | Skripta prenosa | `backend/scripts/migrate-kadrovska-sy15.ts` | ✅ dry-run + `--apply` + `--verify-only` + `--show-columns` + `--attendance-from` |
-| Prekidač `KADROVSKA_IZVOR` | `backend/src/common/sy15/kadrovska-source.service.ts` | ✅ nezavisan, bez alias-a, brana u 4 getera |
+| Prekidač `KADROVSKA_IZVOR` | `backend/src/common/sy15/kadrovska-source.service.ts` | ✅ nezavisan, bez alias-a |
+| **Brana `assertPorted` kod SVIH 8 pozivalaca** (ne samo u modulu) | v. tabelu ispod | ✅ |
 | Env red | `backend/.env.example` | ✅ |
 | Testovi prekidača | `backend/src/common/sy15/izvor-prekidaci.spec.ts` | ✅ 53 testa (+10) |
 | Zajednički helper identiteta | `backend/scripts/lib/sy15-identity.ts` | ✅ **ponovo iskorišćen, nije menjan** |
+
+### 🔴 Gde je brana STVARNO postavljena (a ne samo dokumentovana)
+
+Prekidač koji **imenuje** pozivaoce a ne **brani** ih je gori od nikakvog — pod `3.0` bi
+nezaštićeni pozivalac tiho nastavio da piše u sy15. Zato je `assertPorted` postavljen kod
+svih osam:
+
+| # | Pozivalac | Gde tačno | Šta brani |
+|---|---|---|---|
+| 1 | `kadrovska.service.ts` | `withUserMapped` | 80 čitanja/izveštaja |
+| 2 | `kadrovska-mutations.service.ts` | `create` / `mutate` / `mutateRaw` | sve mutacije modula |
+| 3 | `moj-profil.service.ts` | `withUserMapped` + `runIdem` | 121 dodir samousluge (**upisi**) |
+| 4 | `podesavanja.service.ts` | novi `withKadrMapped`, na **31 metodi** | org. struktura, kompetencije, praznici, očekivanja, **2 allowlist tabele** |
+| 5 | `sy15-cron-jobs.ts` | novi helper `jK(...)` | **7** `kadr-*` poslova |
+| 6 | `notify-dispatch.service.ts` | `dispatchKadr()` | claim outboxa (`kadr_dispatch_dequeue`) |
+| 7 | `daily-brief.service.ts` | `sectionAbsencesToday` | odsutni danas |
+| 8 | `ai-chat` | (v. blokada 10) | **JOŠ NIJE** — 12 alata, ostaje kao posao |
+
+🔴 Namerno **NIJE** stavljena brana u `podesavanja.service.ts` na `listUsers`, `findUser`,
+`rolesCatalog`, `permissionsMatrix`, `companyProfile`, `predmet*`, `auditLog`, `aiModels` —
+to nije kadrovska, i brana bi tamo oborila ceo ekran Podešavanja pod `3.0`. Isto važi za
+`dispatchMaint`/`dispatchPb` u istom servisu i za ostalih 15 poslova u `sy15-cron-jobs.ts`.
+**To je ista pouka incidenta 06.08., samo primenjena unutar fajla, a ne između domena.**
 
 ### Prenosne odluke (sve izmerene)
 
@@ -493,8 +517,29 @@ produkcije), pa je skripta pročitala **živu sy15** (samo SELECT) i upisala.
 | struktura | **63 tabele · 736 kolona · 63 PK · 76 FK · 109 CHECK · 198 indeksa · 36 trigera** |
 | mapa identiteta (nalozi) | **35/35**, sekcija BLOKADE prazna |
 | mapa identiteta (zaposleni) | **48/48** po mejlu; 109 bez mejla (ispravno) |
-| dry-run | prošao bez blokada |
-| `--apply` | v. §7 „stanje" |
+| dry-run | prošao, **sekcija BLOKADE prazna** |
+| **`--apply` (pun prenos, bez reza)** | **`read=510.605 write=510.605`** — uključujući svih **491.252** redova kapije |
+| 🔴 **idempotencija (dokazana u letu)** | prvi pokušaj je pao na 158k reda (pukla SSH veza); ponovno pokretanje dalo je **`ins=351.755 upd=158.850`** — svih 158.850 već upisanih redova je AŽURIRANO u mestu, nijedan dupliran |
+| `worker_employee_map` posle spajanja | **103** = tačno predviđena unija (95 sy15 ∪ 79 3.0, `ins=24 upd=71`) |
+| `--verify-only` | **62/63 tabele se poklapaju** |
+
+### 🔴 Nalaz 9: jedina razlika u verifikaciji je KATZE MOST — uživo
+
+Posle prenosa `--verify-only` prijavljuje **jednu** razliku:
+
+```
+!!! attendance_events   sy15= 491259   3.0= 491252
+```
+
+Sedam redova razlike. To **nije greška prenosa** — to je most iz §5.3 koji je za tih
+~40 minuta koliko je prenos trajao **upisao 7 novih kucanja u sy15**. Izvor je **pokretna
+meta dok most radi**.
+
+To je najbolji mogući dokaz zašto korak 9 runbook-a (preusmeravanje mosta) mora da se
+izvede **istovremeno** sa korakom 8, a ne posle: svaki minut između njih je rupa u kapiji.
+Praktična posledica za runbook: `--apply` se sme ponoviti neposredno pre preklopa (traje
+sekunde za sve osim kapije, a kapiju dopuni inkrementalno) — ili se most zaustavi za vreme
+preklopa, pa nadoknadi (watermark `MAX(external_id)` ga sam vrati).
 
 Uz to **13 ponašajnih proba** na istoj bazi (sve prošle):
 
@@ -523,8 +568,18 @@ Uz to **13 ponašajnih proba** na istoj bazi (sve prošle):
 | `npx prisma validate` | ✅ čist |
 | 🔴 `npx tsc -p tsconfig.build.json --noEmit` | ✅ **nula grešaka** (obavezan prevod — `ts-jest` maskira `@Body()` DTO klasu grešaka) |
 | `npx tsc --noEmit` (sa spec fajlovima) | ✅ **nula NOVIH.** Ostaju 4 **zatečene** grupe u spec fajlovima (`handovers/handover-draft-print`, `kadrovska.zahtev-026`, `kamata`, `moj-profil.zahtev-026`) — iste kao 06.08., nijedan od njih nije u diff-u ove grane |
-| `npx jest izvor-prekidaci` | ✅ **53 testa** (+10 novih za `KADROVSKA_IZVOR`) |
+| `npx jest` (pun set) | ✅ **276 suita / 6.144 testa**, uključujući 53 testa prekidača (+10 novih za `KADROVSKA_IZVOR`) |
+| `npm run build` | ✅ entrypoint `dist/main.js` |
 | ceo lanac migracija | ✅ 121 migracija, `migrate status` čist, bez drift-a |
+| 🔴 **boot-smoke `node dist/main` u OBA položaja** | ✅ „Nest application successfully started" protiv **probne baze**, i sa `KADROVSKA_IZVOR=sy15` i sa `=3.0`: **0 ERROR redova** u oba |
+| 🔴 **dokaz razdvojenosti prekidača** | ✅ pod `=3.0` u logu upozorava **SAMO** `KadrovskaSourceService` (**4 instance**: kadrovska, „Moj profil", Podešavanja, scheduler); pod `=sy15` **nula** upozorenja bilo kog prekidača |
+
+> 🔴 Uz to je bilo potrebno dopuniti **4 postojeća spec fajla** (`sy15-cron-jobs.spec`,
+> `scheduler.service.spec`, `bigbit-sync-jobs.service.spec`,
+> `notify-dispatch.service.spec`) petim prekidačem — oni servise konstruišu POZICIONO.
+> `kadrIzvor` u `Sy15CronJobs` i `NotifyDispatchService` je **obavezan** argument, ne
+> `@Optional`: brana koja se može tiho preskočiti nije brana. (U servisima domena je
+> `@Optional`, jer tamo izostanak znači „ponašaj se kao `sy15`" — bezbedan smer.)
 
 ---
 

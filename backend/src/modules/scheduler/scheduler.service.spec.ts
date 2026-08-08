@@ -6,6 +6,7 @@ import { Sy15Service } from "../../common/sy15/sy15.service";
 import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
 
 function prismaMock() {
@@ -238,6 +239,7 @@ describe("Sy15CronJobs — registar poslova (Talas A/A2)", () => {
       {} as unknown as SastanciFnService,
       new PbSourceService(),
       new OdrzavanjeSourceService(),
+      new KadrovskaSourceService(),
     );
   it("12 poslova, jedinstveni ključevi, validni rasporedi", () => {
     const jobs = cronJobs(sy15Mock()).buildJobs();

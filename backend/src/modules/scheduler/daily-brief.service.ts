@@ -1,6 +1,11 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15Service } from "../../common/sy15/sy15.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { MailService } from "../../common/mail/mail.service";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
 import type { AiCallContext } from "../../common/ai/ai-usage.service";
@@ -125,6 +130,11 @@ export class DailyBriefService {
     private readonly sy15: Sy15Service,
     private readonly mail: MailService,
     private readonly ai: AiProviderService,
+    // Prekidač KADROVSKE: odeljak „ko je danas odsutan" čita `absences`,
+    // `work_hours` i `v_employees_safe` — sve tri su kadrovske tabele. Pod
+    // `KADROVSKA_IZVOR=3.0` bi brief tiho slao ZASTARELE odsutne sa sy15.
+    // `@Optional`: bez prekidača brana ne radi ništa (bezbedan smer).
+    @Optional() private readonly kadrIzvor?: KadrovskaSourceService,
   ) {}
 
   get enabled(): boolean {
@@ -678,6 +688,9 @@ export class DailyBriefService {
     forDate: string,
   ): Promise<BriefSection | null> {
     try {
+      // Brana prekidača — v. ctor. Odeljak je best-effort (pad se hvata niže i
+      // brief se šalje bez njega), pa 503 ovde NE obara ceo dnevni brief.
+      this.kadrIzvor?.assertPorted("dnevni brief: odsutni danas (absences + work_hours)");
       const result = await this.sy15.withUserRls(email, async (tx) => {
         const [absRows, gridRows] = await Promise.all([
           tx.absence.findMany({

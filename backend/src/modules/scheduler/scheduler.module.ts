@@ -18,6 +18,7 @@ import { SastanciModule } from "../sastanci/sastanci.module";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { ScadaSourceService } from "../../common/sy15/scada-source.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { ScadaJobsService } from "./scada-jobs.service";
 
 /**
@@ -92,6 +93,11 @@ import { ScadaJobsService } from "./scada-jobs.service";
     // dodirne poslove drugog.
     ScadaSourceService,
     ScadaJobsService,
+    // Peti prekidač (korak 4 gašenja sy15, KADROVSKA): 7 kadrovskih poslova u
+    // `Sy15CronJobs`, `kadr-notify-dispatch` u `NotifyDispatchService` i dnevni
+    // brief (odsutni). Isti razlog kao gore — preklop kadrovske ne sme da dodirne
+    // poslove sastanaka, PB-a, održavanja ni SCADA-e, ni obrnuto.
+    KadrovskaSourceService,
   ],
   // NotifyDispatchService se izvozi da bi Kadrovska/Moj profil mogli da okinu
   // ISTI dispečer sinhrono („Pošalji čekaće" / pulse posle mutacije) umesto da

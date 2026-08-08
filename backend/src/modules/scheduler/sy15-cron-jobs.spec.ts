@@ -3,6 +3,7 @@ import { Sy15CronJobs } from "./sy15-cron-jobs";
 import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
@@ -128,6 +129,7 @@ function make(
     fn.sastFn,
     new PbSourceService(),
     new OdrzavanjeSourceService(),
+    new KadrovskaSourceService(),
   );
   return {
     jobs: new Map(svc.buildJobs().map((j) => [j.key, j])),

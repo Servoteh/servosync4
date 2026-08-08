@@ -3,6 +3,7 @@ import { Sy15Service } from "../../common/sy15/sy15.service";
 import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   SastanciFnService,
@@ -77,6 +78,10 @@ export class Sy15CronJobs {
     // Zaseban prekidač održavanja: `maint-deadlines` ne zavisi ni od sastanaka ni
     // od PB-a. Ovaj fajl je jedino mesto u kodu koje drži SVA TRI prekidača.
     private readonly odrIzvor: OdrzavanjeSourceService,
+    // Zaseban prekidač kadrovske (korak 4): 6 `kadr-*` poslova ne zavisi ni od
+    // sastanaka, ni od PB-a, ni od održavanja. Ovaj fajl je jedino mesto u kodu
+    // koje drži SVA ČETIRI prekidača — i to je namerno vidljivo.
+    private readonly kadrIzvor: KadrovskaSourceService,
   ) {}
 
   /**
@@ -192,28 +197,56 @@ export class Sy15CronJobs {
       run: async () => this.call(fnSql),
     });
 
+    /**
+     * Posao KADROVSKE — isti oblik kao `j`, ali sa BRANOM prekidača.
+     *
+     * Korak 4 gašenja sy15: kadrovska se seli, ali logika (npr.
+     * `kadr_schedule_hr_reminders`, 39.357 znakova) još nije prepisana. Bez brane
+     * bi ovih šest poslova pod `KADROVSKA_IZVOR=3.0` TIHO nastavilo da piše u sy15
+     * `kadr_notification_log` dok modul čita 3.0 — dve istine o podsetnicima.
+     *
+     * 🔴 `kadrIzvor`, NE `izvor`/`pbIzvor`/`odrIzvor`: preklop bilo kog drugog
+     * domena ne sme da obori ove poslove, ni obrnuto (incident 06.08.2026).
+     */
+    const jK = (
+      key: string,
+      description: string,
+      schedule: ScheduledJob["schedule"],
+      fnSql: string,
+      catchUpMinutes?: number,
+    ): ScheduledJob => ({
+      key,
+      description,
+      schedule,
+      catchUpMinutes,
+      run: async () => {
+        this.kadrIzvor.assertPorted(`${key} (kadrovska cron posao)`);
+        return this.call(fnSql);
+      },
+    });
+
     return [
       // ── Kadrovska (outbox: kadr_notification_log; dispatch sy15) ──────────
-      j(
+      jK(
         "kadr-hr-reminders",
         "HR podsetnici (lekarski/ugovori/rođendani/stranci/kartice — grane A–I)",
         { kind: "daily", at: "09:00" },
         // TABLE fn → obavezno SELECT * FROM (record kolona ruši Prisma raw).
         "SELECT * FROM public.kadr_schedule_hr_reminders();",
       ),
-      j(
+      jK(
         "kadr-corrective",
         "Korektivne mere: probijen rok + follow-up danas",
         { kind: "daily", at: "09:30" },
         "SELECT public.kadr_schedule_corrective_reminders();",
       ),
-      j(
+      jK(
         "kadr-onboarding",
         "Onboarding/offboarding: dnevni digest otvorenih zadataka",
         { kind: "daily", at: "09:00" },
         "SELECT public.kadr_schedule_onboarding_reminders();",
       ),
-      j(
+      jK(
         "kadr-attendance-alerts",
         "Prisustvo: jučerašnje anomalije (zaboravljen izlaz, sati bez prolaza) — fn guard traži lokalno 06h",
         { kind: "daily", at: "06:00" },
@@ -222,20 +255,20 @@ export class Sy15CronJobs {
         "SELECT public.kadr_schedule_attendance_alerts()::text AS result;",
         55,
       ),
-      j(
+      jK(
         "kadr-attendance-digest",
         "Prisustvo: sedmični digest (pon 06:30 — fn guard pon+06h)",
         { kind: "weekly", isoDow: 1, at: "06:30" },
         "SELECT public.kadr_schedule_attendance_weekly_digest()::text AS result;",
         25,
       ),
-      j(
+      jK(
         "kadr-weekly-risk",
         "Nedeljni HR rizik-rezime (bolovanja/isteci ≤60d) na config primaoce",
         { kind: "weekly", isoDow: 1, at: "09:00" },
         "SELECT public.kadr_queue_weekly_risk_summary();",
       ),
-      j(
+      jK(
         "kadr-qbt-cards",
         "Bedževi operatera iz BigTehn kartica (posle bridge sync-a) — nije outbox",
         { kind: "daily", at: "06:30" },

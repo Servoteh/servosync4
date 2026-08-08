@@ -4,11 +4,13 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { isMissingDbObject } from "../../common/sy15/db-object-missing";
 import { jsonSafe } from "../../common/sy15/json-safe";
 import { assertRpcOk } from "../../common/sy15/rpc-ok";
@@ -64,6 +66,13 @@ export class MojProfilService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly dispatcher: NotifyDispatchService,
+    // 🔴 Prekidač KADROVSKE, ne "mog profila": ovaj modul PIŠE u iste tabele
+    // (godišnji, odsustva, nadoknade, plaćeno odsustvo, sati, razgovori, procene).
+    // Da nije pod istim prekidačem, pod KADROVSKA_IZVOR=3.0 bi samousluga i dalje
+    // pisala u sy15 dok kadrovska čita 3.0 — dve istine o godišnjem odmoru, bez
+    // ijedne greške u logu. `@Optional` iz istog razloga kao svuda: izostanak
+    // prekidača nikad ne prebacuje modul na 3.0.
+    @Optional() private readonly izvor?: KadrovskaSourceService,
   ) {}
 
   /**
@@ -665,6 +674,7 @@ export class MojProfilService {
     email: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<T> {
+    this.izvor?.assertPorted("moj profil (kadrovski podaci)");
     try {
       return await this.sy15.withUserRls(email, fn);
     } catch (e) {
@@ -715,6 +725,7 @@ export class MojProfilService {
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ) {
+    this.izvor?.assertPorted(`moj profil (upis: ${action})`);
     try {
       const out = await this.sy15.runIdempotentRls(
         email,
