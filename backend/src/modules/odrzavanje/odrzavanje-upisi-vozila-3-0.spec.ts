@@ -76,13 +76,30 @@ function poredi(vrednost: unknown, filter: unknown): boolean {
         ok &&= (vrednost as Date) != null && vrednost >= (arg as Date);
       else if (op === "lte")
         ok &&= (vrednost as Date) != null && vrednost <= (arg as Date);
+      // 🔴 `lt`/`gt` su dodati kad je `postojiRok` dobio prozor po broju pokušaja
+      // (`attempts: { lt: MAINT_MAX_ATTEMPTS }`). Bez njih je uslov padao u
+      // `else` granu ispod i TIHO davao „ne poklapa se" — pa je test tvrdio da
+      // kod duplira rok, iako je duplirala LAŽNA BAZA. Zato ta grana više ćuti.
+      else if (op === "lt")
+        ok &&= (vrednost as number) != null && vrednost < (arg as number);
+      else if (op === "gt")
+        ok &&= (vrednost as number) != null && vrednost > (arg as number);
       else if (op === "mode")
         ok &&= true; // insensitive — nebitno za ove testove
       else if (op === "contains")
         ok &&=
           typeof vrednost === "string" &&
           vrednost.toLowerCase().includes(String(arg).toLowerCase());
-      else ok &&= false;
+      // 🔴 NEPOZNAT OPERATOR BACA, ne vraća tiho „ne poklapa se".
+      // Tiha `false` grana je koštala jedan ceo krug istrage: kad je `postojiRok`
+      // dobio `attempts: { lt: … }`, ovaj prevodilac ga nije poznavao, pa je test
+      // prijavio da PROIZVODNI kod duplira rok — a duplirala je lažna baza.
+      // Ako sutra neko doda nov operator, neka padne odmah i glasno.
+      else
+        throw new Error(
+          `Lažna baza ne poznaje operator \`${op}\` (vrednost: ${JSON.stringify(arg)}). ` +
+            "Dodaj ga u `poredi()` — nemoj ga tiho tretirati kao neispunjen uslov.",
+        );
       if (!ok) return false;
     }
     return ok;
