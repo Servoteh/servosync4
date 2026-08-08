@@ -4,10 +4,12 @@ import {
   Injectable,
   NotFoundException,
   NotImplementedException,
+  Optional,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { isMissingDbObject } from "../../common/sy15/db-object-missing";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
@@ -93,6 +95,11 @@ export class KadrovskaService {
   constructor(
     private readonly sy15: Sy15Service,
     private readonly prisma: PrismaService,
+    // Prekidač izvora (korak 4 gašenja sy15). `@Optional` je NAMERNO: postojeći
+    // unit testovi prave servis sa dva argumenta, a — što je važnije — izostanak
+    // prekidača NIKAD ne sme da prebaci modul na 3.0. Bez njega `assertPorted`
+    // ne radi ništa, tj. ponašanje je kao `sy15` (bezbedan smer).
+    @Optional() private readonly izvor?: KadrovskaSourceService,
   ) {}
 
   // ==========================================================================
@@ -2122,6 +2129,14 @@ export class KadrovskaService {
     email: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<T> {
+    // Brana prekidača `KADROVSKA_IZVOR` (korak 4 gašenja sy15). Pod `sy15` (i kad
+    // prekidača NEMA) ne radi ništa; pod `3.0` baca 503 sa imenom putanje.
+    //
+    // Izmereno 08.08.2026: SAV saobraćaj `KadrovskaService` prolazi kroz ovaj
+    // geter (80 poziva) — nema nijednog direktnog `this.sy15.*` mimo njega. Zato
+    // je jedna brana ovde dovoljna da nijedno čitanje ni upis ne mogu TIHO da odu
+    // u sy15 dok se logika prepisuje. Isto važi i za `KadrovskaMutationsService`.
+    this.izvor?.assertPorted("kadrovska (čitanje/izveštaji)");
     try {
       return await this.sy15.withUserRls(email, fn);
     } catch (e) {

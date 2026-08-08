@@ -4,11 +4,13 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { jsonSafe } from "../../common/sy15/json-safe";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import { ROLE_CATALOG } from "../../common/authz/roles";
@@ -113,7 +115,27 @@ export class PodesavanjaService {
     private readonly sy15: Sy15Service,
     private readonly prisma: PrismaService,
     private readonly policy: AiModelPolicyService,
+    // Prekidač KADROVSKE — Podešavanja drže deo TOG domena: organizacionu
+    // strukturu (kadr_departments/sub_departments/job_positions), okvir
+    // kompetencija, praznike, očekivanja i 🔴 DVE allowlist tabele iz kojih se
+    // izvode prava `kadrovska.grid_edit` i `kadrovska.vacation_edit`.
+    // Ostatak modula (korisnici/role, AI politika, predmeti, revizija) NIJE
+    // kadrovska i NAMERNO ostaje van brane — inače bi preklop jednog domena
+    // oborio ceo ekran Podešavanja (incident 06.08.2026).
+    @Optional() private readonly kadrIzvor?: KadrovskaSourceService,
   ) {}
+
+  /**
+   * Branjeni geter za KADROVSKI deo Podešavanja. Pod `KADROVSKA_IZVOR=sy15`
+   * (i kad prekidača nema) identičan je `withUserMapped`; pod `3.0` pada sa 503.
+   */
+  private async withKadrMapped<T>(
+    email: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ): Promise<T> {
+    this.kadrIzvor?.assertPorted("podešavanja: kadrovski šifarnici i allowliste");
+    return this.withUserMapped(email, fn);
+  }
 
   // ---------- Korisnici i pristup (user_roles — ALL=admin) ----------
 
@@ -185,7 +207,7 @@ export class PodesavanjaService {
 
   /** Grid urednici (kadr_grid_editor_allowlist). */
   gridEditors(email: string) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const data = await tx.kadrGridEditorAllowlist.findMany({
         orderBy: [{ email: "asc" }],
       });
@@ -204,7 +226,7 @@ export class PodesavanjaService {
    */
   async addGridEditor(actorEmail: string, email: string, note?: string) {
     const e = email.trim().toLowerCase();
-    const row = await this.withUserMapped(actorEmail, async (tx) => {
+    const row = await this.withKadrMapped(actorEmail, async (tx) => {
       // Eksplicitna provera duplikata pre create (jasnija poruka od gole 23505).
       const existing = await tx.kadrGridEditorAllowlist.findUnique({
         where: { email: e },
@@ -223,7 +245,7 @@ export class PodesavanjaService {
    *  DUAL-WRITE kao kod add: skida i 2.0 override `kadrovska.grid_edit` (§2.5). */
   async removeGridEditor(actorEmail: string, email: string) {
     const e = email.trim().toLowerCase();
-    await this.withUserMapped(actorEmail, async (tx) => {
+    await this.withKadrMapped(actorEmail, async (tx) => {
       const res = await tx.kadrGridEditorAllowlist.deleteMany({
         where: { email: e },
       });
@@ -276,7 +298,7 @@ export class PodesavanjaService {
 
   /** Struktura: odeljenja + pododeljenja + pozicije (SELECT `true` svima). */
   orgStructure(email: string) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const [departments, subDepartments, jobPositions] = await Promise.all([
         tx.department.findMany({
           orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -294,7 +316,7 @@ export class PodesavanjaService {
 
   /** Praznici (kadr_holidays; read svi, write admin). */
   holidays(email: string) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const data = await tx.kadrHoliday.findMany({
         orderBy: [{ holidayDate: "asc" }],
       });
@@ -314,7 +336,7 @@ export class PodesavanjaService {
 
   /** Očekivanja zaposlenih (svi; v_employee_expectations je G-view, ovde tabela). */
   expectations(email: string) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const data = await tx.employeeExpectation.findMany({
         orderBy: [{ createdAt: "desc" }],
       });
@@ -324,7 +346,7 @@ export class PodesavanjaService {
 
   /** Okvir kompetencija (grupe/kompetence/nivoi/profili/pitanja/veze). */
   competenceFramework(email: string) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const [
         groups,
         competences,
@@ -502,7 +524,7 @@ export class PodesavanjaService {
 
   /** Jedno očekivanje (INSERT employee_expectations; created_by=ja). Paritet 1.0 saveExpectation. */
   createExpectation(email: string, dto: CreateExpectationDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const row = await tx.employeeExpectation.create({
         data: {
           employeeId: dto.employeeId,
@@ -526,7 +548,7 @@ export class PodesavanjaService {
    * Vraća { ok, requested }. RLS/gate kroz GUC — parcijalni uspeh nije moguć (transakcija).
    */
   bulkCreateExpectations(email: string, dto: BulkExpectationDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const ids = [...new Set(dto.employeeIds.filter(Boolean))];
       const res = await tx.employeeExpectation.createMany({
         data: ids.map((employeeId) => ({
@@ -550,7 +572,7 @@ export class PodesavanjaService {
    * status='ispunjeno' bez completed_at → auto completed_at=now). RLS/gate kroz GUC; 0 redova → 404.
    */
   updateExpectation(email: string, id: string, dto: UpdateExpectationDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const sets: Prisma.Sql[] = [Prisma.sql`updated_by = lower(${email})`];
       if (dto.title !== undefined) sets.push(Prisma.sql`title = ${dto.title}`);
       if (dto.descriptionMd !== undefined)
@@ -588,7 +610,7 @@ export class PodesavanjaService {
 
   /** Brisanje očekivanja (admin only — 1.0 pravilo; guard na ruti dodatno sužava). RLS kroz GUC. */
   deleteExpectation(email: string, id: string) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const res = await tx.employeeExpectation.deleteMany({ where: { id } });
       if (res.count === 0)
         throw new NotFoundException(`Očekivanje ${id} ne postoji`);
@@ -699,7 +721,7 @@ export class PodesavanjaService {
   // ---------- Departments ----------
 
   createDepartment(email: string, dto: CreateDepartmentDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const row = await tx.department.create({
         data: { name: dto.name.trim(), sortOrder: dto.sortOrder ?? 0 },
       });
@@ -708,7 +730,7 @@ export class PodesavanjaService {
   }
 
   updateDepartment(email: string, id: number, dto: UpdateDepartmentDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const patch: { name?: string; sortOrder?: number } = {};
       if (dto.name !== undefined) patch.name = dto.name.trim();
       if (dto.sortOrder !== undefined) patch.sortOrder = dto.sortOrder;
@@ -724,7 +746,7 @@ export class PodesavanjaService {
   }
 
   deleteDepartment(email: string, id: number) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const res = await tx.department.deleteMany({ where: { id } });
       if (res.count === 0)
         throw new NotFoundException(`Odeljenje ${id} ne postoji.`);
@@ -735,7 +757,7 @@ export class PodesavanjaService {
   // ---------- Sub-departments ----------
 
   createSubDepartment(email: string, dto: CreateSubDepartmentDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const row = await tx.subDepartment.create({
         data: {
           departmentId: dto.departmentId,
@@ -748,7 +770,7 @@ export class PodesavanjaService {
   }
 
   updateSubDepartment(email: string, id: number, dto: UpdateSubDepartmentDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const patch: {
         departmentId?: number;
         name?: string;
@@ -769,7 +791,7 @@ export class PodesavanjaService {
   }
 
   deleteSubDepartment(email: string, id: number) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const res = await tx.subDepartment.deleteMany({ where: { id } });
       if (res.count === 0)
         throw new NotFoundException(`Pododeljenje ${id} ne postoji.`);
@@ -780,7 +802,7 @@ export class PodesavanjaService {
   // ---------- Job positions (struktura) ----------
 
   createJobPosition(email: string, dto: CreateJobPositionDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const row = await tx.jobPosition.create({
         data: {
           departmentId: dto.departmentId,
@@ -794,7 +816,7 @@ export class PodesavanjaService {
   }
 
   updateJobPosition(email: string, id: number, dto: UpdateJobPositionDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const patch: {
         departmentId?: number;
         subDepartmentId?: number | null;
@@ -818,7 +840,7 @@ export class PodesavanjaService {
   }
 
   deleteJobPosition(email: string, id: number) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const res = await tx.jobPosition.deleteMany({ where: { id } });
       if (res.count === 0)
         throw new NotFoundException(`Pozicija ${id} ne postoji.`);
@@ -838,7 +860,7 @@ export class PodesavanjaService {
     id: number,
     dto: UpdateJobPositionProfileDto,
   ) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       // Provera postojanja pre update (RLS SELECT=true svima) da razdvojimo 404 od 403.
       const exists = await tx.jobPosition.findUnique({
         where: { id },
@@ -870,7 +892,7 @@ export class PodesavanjaService {
    */
   bulkJobPositionProfiles(email: string, dto: BulkJobPositionProfileDto) {
     const me = email.toLowerCase();
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const now = new Date();
       let ok = 0;
       let fail = 0;
@@ -919,7 +941,7 @@ export class PodesavanjaService {
   // ---------- Grupe (ose) ----------
 
   createCompetenceGroup(email: string, dto: CreateCompetenceGroupDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const row = await tx.competenceGroup.create({
         data: {
           code: genCode("grp", dto.nameSr),
@@ -940,7 +962,7 @@ export class PodesavanjaService {
     id: number,
     dto: UpdateCompetenceGroupDto,
   ) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const patch: {
         nameSr?: string;
         descriptionSr?: string | null;
@@ -966,7 +988,7 @@ export class PodesavanjaService {
 
   /** Brisanje grupe (FK ka kompetencijama/pitanjima može blokirati → 23503 propagira se). */
   deleteCompetenceGroup(email: string, id: number) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const res = await tx.competenceGroup.deleteMany({ where: { id } });
       if (res.count === 0)
         throw new NotFoundException(`Grupa kompetencija ${id} ne postoji.`);
@@ -981,7 +1003,7 @@ export class PodesavanjaService {
    * Nivoi: prazan descriptor se preskače pri insertu; ispunjen → upsert on_conflict.
    */
   createCompetence(email: string, dto: CreateCompetenceDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const row = await tx.competence.create({
         data: {
           groupId: dto.groupId,
@@ -1006,7 +1028,7 @@ export class PodesavanjaService {
    * paritet 1.0). 0 redova (nema reda) → 404.
    */
   updateCompetence(email: string, id: number, dto: UpdateCompetenceDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const patch: {
         groupId?: number;
         nameSr?: string;
@@ -1034,7 +1056,7 @@ export class PodesavanjaService {
 
   /** Brisanje kompetencije — prvo nivoi (FK; eksplicitno kao 1.0), pa kompetencija. */
   deleteCompetence(email: string, id: number) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       await tx.competenceLevel.deleteMany({ where: { competenceId: id } });
       const res = await tx.competence.deleteMany({ where: { id } });
       if (res.count === 0)
@@ -1068,7 +1090,7 @@ export class PodesavanjaService {
   // ---------- Pitanja (group_id NULL = opšte) ----------
 
   createCompetenceQuestion(email: string, dto: CreateCompetenceQuestionDto) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const row = await tx.competenceQuestion.create({
         data: {
           groupId: dto.groupId ?? null,
@@ -1087,7 +1109,7 @@ export class PodesavanjaService {
     id: number,
     dto: UpdateCompetenceQuestionDto,
   ) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const patch: {
         groupId?: number | null;
         textSr?: string;
@@ -1108,7 +1130,7 @@ export class PodesavanjaService {
   }
 
   deleteCompetenceQuestion(email: string, id: number) {
-    return this.withUserMapped(email, async (tx) => {
+    return this.withKadrMapped(email, async (tx) => {
       const res = await tx.competenceQuestion.deleteMany({ where: { id } });
       if (res.count === 0)
         throw new NotFoundException(`Pitanje ${id} ne postoji.`);

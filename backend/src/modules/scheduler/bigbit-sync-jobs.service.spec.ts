@@ -2,6 +2,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { SastanciSourceService } from "../../common/sy15/sastanci-source.service";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { SchedulerService } from "./scheduler.service";
 import { Sy15CronJobs } from "./sy15-cron-jobs";
 import {
@@ -124,6 +125,7 @@ describe("BigbitSyncJobs — prekidač i registracija", () => {
       {} as unknown as ConstructorParameters<typeof Sy15CronJobs>[3],
       new PbSourceService(),
       new OdrzavanjeSourceService(),
+      new KadrovskaSourceService(),
     )
       .buildJobs()
       .map((j) => j.key);

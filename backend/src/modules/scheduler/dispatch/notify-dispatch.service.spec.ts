@@ -5,6 +5,7 @@ import type { Sy15Service } from "../../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
 import { PbSourceService } from "../../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
+import { KadrovskaSourceService } from "../../../common/sy15/kadrovska-source.service";
 
 /*
  * Talas A-2a — dispatch worker. Testiramo PARITET sa 1.0 edge fn:
@@ -25,8 +26,11 @@ class NotifyDispatchService extends RealNotifyDispatchService {
     // Prekidač održavanja (korak 2 gašenja sy15) — isti obrazac kao gore:
     // podrazumevan argument, čita `process.env` po konstrukciji.
     odrIzvor: OdrzavanjeSourceService = new OdrzavanjeSourceService(),
+    // Peti prekidač (korak 4, KADROVSKA) — isti obrazac: podrazumevan argument,
+    // čita `process.env` po konstrukciji, pa `dispatchKadr` ima šta da pita.
+    kadrIzvor: KadrovskaSourceService = new KadrovskaSourceService(),
   ) {
-    super(sy15, mail, storage, izvor, odrIzvor);
+    super(sy15, mail, storage, izvor, odrIzvor, kadrIzvor);
   }
 }
 

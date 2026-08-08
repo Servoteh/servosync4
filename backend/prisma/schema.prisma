@@ -1281,24 +1281,24 @@ model GoodsDocumentMirror {
   /// BigBit `Broj dokumenta`. VarChar(50), a ne (20) kao legacy `GoodsDocument`:
   /// BigBitovi brojevi dokumenata ume da budu duži i sadrže zarez (vidi razdvajač
   /// `|` u izvozu).
-  documentNumber String? @map("document_number") @db.VarChar(50)
+  documentNumber String?   @map("document_number") @db.VarChar(50)
   /// `Datum knjizenja` — po njemu se seče period, `documentDate` je datum isprave.
-  postingDate DateTime? @map("posting_date") @db.Date
+  postingDate    DateTime? @map("posting_date") @db.Date
   /// BigBit `Ulaz` — smer prometa. = legacy `GoodsDocument.isInbound`.
-  isInflow Boolean @default(false) @map("is_inflow")
+  isInflow       Boolean   @default(false) @map("is_inflow")
   /// BigBit `Level`: 0 = knjiženo, 250 = radni dokumenti (ponude/rezervacije).
-  level Int @default(0) @map("level") @db.SmallInt
+  level          Int       @default(0) @map("level") @db.SmallInt
   /// BigBit `Rezervisi` — dokument rezerviše robu. = legacy `GoodsDocument.reserveStock`.
-  isReservation Boolean @default(false) @map("is_reservation")
+  isReservation  Boolean   @default(false) @map("is_reservation")
   /// `IDMagacinDOK` — magacin ZAGLAVLJA. KONTROLNI podatak; lager se grupiše po
   /// magacinu STAVKE (`GoodsDocumentItemMirror.warehouseId`).
-  warehouseId Int? @map("warehouse_id")
+  warehouseId    Int?      @map("warehouse_id")
   /// `Sifra komitenta` — meki ref na `customers` (sync-keš, bez @relation).
-  customerId Int? @map("customer_id")
+  customerId     Int?      @map("customer_id")
   /// `IDPredmet` — meki ref na `projects`.
-  projectId  Int?    @map("project_id")
-  isLocked   Boolean @default(false) @map("is_locked")
-  year       Int?    @map("year")
+  projectId      Int?      @map("project_id")
+  isLocked       Boolean   @default(false) @map("is_locked")
+  year           Int?      @map("year")
 
   /// OZNAKA POREKLA (noćni .mdb uvoz) — vidi Account.importedDropId.
   importedDropId Int?       @map("imported_drop_id")
@@ -1363,12 +1363,12 @@ model PurchaseOrderMirror {
   orderNumber String?   @map("order_number") @db.VarChar(50) // Broj trebovanja
   orderDate   DateTime? @map("order_date") @db.Date // Datum trebovanja
   /// `Sifra komitenta` — meki ref na `customers` (dobavljač).
-  supplierId Int?    @map("supplier_id")
-  projectId  Int?    @map("project_id") // IDPredmet — meki ref
-  note       String? @map("note") // Napomena (Memo — nosi CR/LF)
-  level      Int     @default(0) @map("level") @db.SmallInt
-  isOrdered  Boolean @default(false) @map("is_ordered") // Poruceno
-  year       Int?    @map("year")
+  supplierId  Int?      @map("supplier_id")
+  projectId   Int?      @map("project_id") // IDPredmet — meki ref
+  note        String?   @map("note") // Napomena (Memo — nosi CR/LF)
+  level       Int       @default(0) @map("level") @db.SmallInt
+  isOrdered   Boolean   @default(false) @map("is_ordered") // Poruceno
+  year        Int?      @map("year")
 
   /// OZNAKA POREKLA (noćni .mdb uvoz) — vidi Account.importedDropId.
   importedDropId Int?       @map("imported_drop_id")
@@ -1576,14 +1576,14 @@ model GoodsDocumentItem {
 
 /// Was: UplatniRacuni
 model PaymentAccount {
-  companyId     Int             @default(0) @map("company_id")
-  id            Int             @id(map: "pk_payment_accounts") @default(autoincrement()) @map("id")
-  accountNumber String          @map("account_number") @db.VarChar(50)
-  bankName      String?         @map("bank_name") @db.VarChar(50)
-  isDefault     Boolean         @default(false) @map("is_default")
-  sortOrder     Int             @default(0) @map("sort_order") @db.SmallInt
-  countryCode   String?         @map("country_code") @db.VarChar(20)
-  bankCode      String?         @map("bank_code") @db.VarChar(20)
+  companyId     Int     @default(0) @map("company_id")
+  id            Int     @id(map: "pk_payment_accounts") @default(autoincrement()) @map("id")
+  accountNumber String  @map("account_number") @db.VarChar(50)
+  bankName      String? @map("bank_name") @db.VarChar(50)
+  isDefault     Boolean @default(false) @map("is_default")
+  sortOrder     Int     @default(0) @map("sort_order") @db.SmallInt
+  countryCode   String? @map("country_code") @db.VarChar(20)
+  bankCode      String? @map("bank_code") @db.VarChar(20)
 
   // — Bankarske instrukcije za ino fakturu (blok na dnu Invoice 228/25 i na zasebnoj strani 060/26).
   //   Domaća faktura ovaj blok NEMA — ona nosi samo `accountNumber` („Tekući račun: 160-110610-83")
@@ -1601,8 +1601,8 @@ model PaymentAccount {
   /// devizni račun uzima za valutu fakture. Ista dužina kao Invoice.currency.
   currency    String? @map("currency") @db.VarChar(3)
 
-  self          PaymentAccount  @relation("PaymentAccountSelf", fields: [id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_payment_accounts_self")
-  selfReverse   PaymentAccount? @relation("PaymentAccountSelf")
+  self        PaymentAccount  @relation("PaymentAccountSelf", fields: [id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_payment_accounts_self")
+  selfReverse PaymentAccount? @relation("PaymentAccountSelf")
 
   @@map("payment_accounts")
 }
@@ -4549,9 +4549,9 @@ model VatExemptionBasis {
   /// Šifra razloga za SEF (EN16931 BT-121), oblik `PDV-RS-24-1-2`. NULL = šifra za taj
   /// osnov nije utvrđena (čl. 12 st. 3 nije oslobođenje po čl. 24 nego promet van polja
   /// primene) — u UBL tada ide samo tekst razloga, što BR-E-10 dozvoljava.
-  sefCode String? @map("sef_code") @db.VarChar(30)
+  sefCode   String? @map("sef_code") @db.VarChar(30)
   /// Tekst razloga za SEF (BT-120). Bez njega SEF odbija svaku kategoriju bez poreza.
-  sefReason String @map("sef_reason") @db.Text
+  sefReason String  @map("sef_reason") @db.Text
 
   /// 🔴 IDE LI DOKUMENT SA OVIM OSNOVOM NA SEF (odgovor 8: „24.1.2 … ne ide na sef",
   /// „24.1.5 … se šalje na SEF"). NIJE izvedeno iz `is_export`: oba su izvozna, a idu
@@ -5043,7 +5043,7 @@ model SefIncomingInvoice {
   supplierName  String? @map("supplier_name") @db.VarChar(255)
   invoiceNumber String  @map("invoice_number") @db.VarChar(64)
 
-  issueDate DateTime? @map("issue_date") @db.Timestamptz(6) // datum izdavanja
+  issueDate     DateTime? @map("issue_date") @db.Timestamptz(6) // datum izdavanja
   /// Datum PRIJEMA fakture na SEF — osnov zakonskog roka od 15 dana (acceptDeadline).
   /// PREIMENOVANO 02.08.2026 iz `deliveryDate` / `delivery_date`: to ime je značilo
   /// „datum prometa" (danas `Invoice.supplyDate` → UBL cbc:ActualDeliveryDate), pa je isti
@@ -5939,68 +5939,68 @@ model BbMdbStageKomitent {
   id     Int @id(map: "pk_bb_mdb_stage_komitenti") @default(autoincrement()) @map("id")
   dropId Int @map("drop_id")
 
-  sifra                        String? @map("sifra") // Sifra (IDENTITY → customers.id)
-  naziv                        String? @map("naziv") // Naziv
-  poslovnica                   String? @map("poslovnica") // Poslovnica
-  mesto                        String? @map("mesto") // Mesto
-  adresa                       String? @map("adresa") // Adresa
-  postanskiBroj                String? @map("postanski_broj") // Postanski broj
-  ziroRacun1                   String? @map("ziro_racun_1") // Ziro racun_1
-  ziroRacun2                   String? @map("ziro_racun_2") // Ziro racun_2
-  ziroRacun3                   String? @map("ziro_racun_3") // Ziro racun_3
-  telefon                      String? @map("telefon") // Telefon
-  fax                          String? @map("fax") // Fax
-  kontakt                      String? @map("kontakt") // Kontakt
-  napomena                     String? @map("napomena") // Napomena (Memo — nosi CR/LF)
-  drzava                       String? @map("drzava") // Drzava
-  region                       String? @map("region") // Region
-  vrstaSifre                   String? @map("vrsta_sifre") // Vrsta sifre
-  email                        String? @map("email") // Email
-  mobilni                      String? @map("mobilni") // Mobilni
-  datumRodjenja                String? @map("datum_rodjenja") // Datum rodjenja
-  webAdresa                    String? @map("web_adresa") // Web adresa
-  sifraProdavca                String? @map("sifra_prodavca") // Sifra prodavca
-  rabatKomitenta               String? @map("rabat_komitenta") // RabatKomitenta
-  zastKodKupca                 String? @map("zast_kod_kupca") // ZastKodKupca
-  pib                          String? @map("pib") // PIB (prazan je legitiman — ino kupci ga nemaju)
-  pdvStatus                    String? @map("pdv_status") // PDVStatus
-  msifra                       String? @map("msifra") // MSifra
-  odlozeno                     String? @map("odlozeno") // Odlozeno
-  idRuta                       String? @map("id_ruta") // IDRuta
-  idVozac                      String? @map("id_vozac") // IDVozac
-  idUplatniRacun               String? @map("id_uplatni_racun") // IDUplatniRacun
+  sifra                         String? @map("sifra") // Sifra (IDENTITY → customers.id)
+  naziv                         String? @map("naziv") // Naziv
+  poslovnica                    String? @map("poslovnica") // Poslovnica
+  mesto                         String? @map("mesto") // Mesto
+  adresa                        String? @map("adresa") // Adresa
+  postanskiBroj                 String? @map("postanski_broj") // Postanski broj
+  ziroRacun1                    String? @map("ziro_racun_1") // Ziro racun_1
+  ziroRacun2                    String? @map("ziro_racun_2") // Ziro racun_2
+  ziroRacun3                    String? @map("ziro_racun_3") // Ziro racun_3
+  telefon                       String? @map("telefon") // Telefon
+  fax                           String? @map("fax") // Fax
+  kontakt                       String? @map("kontakt") // Kontakt
+  napomena                      String? @map("napomena") // Napomena (Memo — nosi CR/LF)
+  drzava                        String? @map("drzava") // Drzava
+  region                        String? @map("region") // Region
+  vrstaSifre                    String? @map("vrsta_sifre") // Vrsta sifre
+  email                         String? @map("email") // Email
+  mobilni                       String? @map("mobilni") // Mobilni
+  datumRodjenja                 String? @map("datum_rodjenja") // Datum rodjenja
+  webAdresa                     String? @map("web_adresa") // Web adresa
+  sifraProdavca                 String? @map("sifra_prodavca") // Sifra prodavca
+  rabatKomitenta                String? @map("rabat_komitenta") // RabatKomitenta
+  zastKodKupca                  String? @map("zast_kod_kupca") // ZastKodKupca
+  pib                           String? @map("pib") // PIB (prazan je legitiman — ino kupci ga nemaju)
+  pdvStatus                     String? @map("pdv_status") // PDVStatus
+  msifra                        String? @map("msifra") // MSifra
+  odlozeno                      String? @map("odlozeno") // Odlozeno
+  idRuta                        String? @map("id_ruta") // IDRuta
+  idVozac                       String? @map("id_vozac") // IDVozac
+  idUplatniRacun                String? @map("id_uplatni_racun") // IDUplatniRacun
   fakturisanjePoMestimaIsporuke String? @map("fakturisanje_po_mestima_isporuke") // FakturisanjePoMestimaIsporuke
-  cenovnik                     String? @map("cenovnik") // Cenovnik
-  prviUnos                     String? @map("prvi_unos") // PrviUnos
-  poslednjaIzmena              String? @map("poslednja_izmena") // PoslednjaIzmena (vodeni žig za razliku)
-  prviUnosUser                 String? @map("prvi_unos_user") // PrviUnosUser
-  poslednjaIzmenaUser          String? @map("poslednja_izmena_user") // PoslednjaIzmenaUser
-  procenatProvizije            String? @map("procenat_provizije") // ProcenatProvizije
-  fiktRabatKomitenta           String? @map("fikt_rabat_komitenta") // FiktRabatKomitenta
-  komitentiNacinPlacanja       String? @map("komitenti_nacin_placanja") // KomitentiNacinPlacanja
-  potpisKom                    String? @map("potpis_kom") // PotpisKom
+  cenovnik                      String? @map("cenovnik") // Cenovnik
+  prviUnos                      String? @map("prvi_unos") // PrviUnos
+  poslednjaIzmena               String? @map("poslednja_izmena") // PoslednjaIzmena (vodeni žig za razliku)
+  prviUnosUser                  String? @map("prvi_unos_user") // PrviUnosUser
+  poslednjaIzmenaUser           String? @map("poslednja_izmena_user") // PoslednjaIzmenaUser
+  procenatProvizije             String? @map("procenat_provizije") // ProcenatProvizije
+  fiktRabatKomitenta            String? @map("fikt_rabat_komitenta") // FiktRabatKomitenta
+  komitentiNacinPlacanja        String? @map("komitenti_nacin_placanja") // KomitentiNacinPlacanja
+  potpisKom                     String? @map("potpis_kom") // PotpisKom
   // ── 17 kolona koje je otkrila brana zaglavlja (30.07.2026) ────────────────
   // Deklaracija je pravljena po starijoj kopiji baze; PRAVA tabela ih nosi.
   // Među njima su GLN, MaticniBroj, JBKJS i CRF — polja od kojih zavisi SEF.
   // Uvoz je do sada mislio da ih .mdb NE donosi i namerno ih je ostavljao na
   // miru; donosi ih, pa se sada mogu i preslikati.
-  skraceniNaziv                String? @map("skraceni_naziv") // SkraceniNaziv
-  datumIVremeKom               String? @map("datum_i_vreme_kom") // DatumIVremeKom
-  proveraDuga                  String? @map("provera_duga") // ProveraDuga
-  kreditLimit                  String? @map("kredit_limit") // KreditLimit
-  neProveravajPib              String? @map("ne_proveravaj_pib") // NeProveravajPIB
-  idPantheon                   String? @map("id_pantheon") // IDPantheon
-  newsLetter                   String? @map("news_letter") // NewsLetter
-  postaNaDruguAdresu           String? @map("posta_na_drugu_adresu") // PostaNaDruguAdresu
-  gln                          String? @map("gln") // GLN — e-faktura
-  klRucProc                    String? @map("kl_ruc_proc") // KLRucProc
-  napomenaZaSalda              String? @map("napomena_za_salda") // NapomenaZaSalda
-  nePrikazatiUPregledu         String? @map("ne_prikazati_u_pregledu") // NePrikazatiUPregledu
-  jbkjs                        String? @map("jbkjs") // JBKJS — javni sektor
-  maticniBroj                  String? @map("maticni_broj") // MaticniBroj
-  erXmlSaPopustomPoArtiklu     String? @map("er_xml_sa_popustom_po_artiklu") // ER_XMLSaPopustomPoArtiklu
-  crf                          String? @map("crf") // CRF — centralni registar faktura
-  koristiPnbZadModel           String? @map("koristi_pnb_zad_model") // KoristiPNBZadModel
+  skraceniNaziv                 String? @map("skraceni_naziv") // SkraceniNaziv
+  datumIVremeKom                String? @map("datum_i_vreme_kom") // DatumIVremeKom
+  proveraDuga                   String? @map("provera_duga") // ProveraDuga
+  kreditLimit                   String? @map("kredit_limit") // KreditLimit
+  neProveravajPib               String? @map("ne_proveravaj_pib") // NeProveravajPIB
+  idPantheon                    String? @map("id_pantheon") // IDPantheon
+  newsLetter                    String? @map("news_letter") // NewsLetter
+  postaNaDruguAdresu            String? @map("posta_na_drugu_adresu") // PostaNaDruguAdresu
+  gln                           String? @map("gln") // GLN — e-faktura
+  klRucProc                     String? @map("kl_ruc_proc") // KLRucProc
+  napomenaZaSalda               String? @map("napomena_za_salda") // NapomenaZaSalda
+  nePrikazatiUPregledu          String? @map("ne_prikazati_u_pregledu") // NePrikazatiUPregledu
+  jbkjs                         String? @map("jbkjs") // JBKJS — javni sektor
+  maticniBroj                   String? @map("maticni_broj") // MaticniBroj
+  erXmlSaPopustomPoArtiklu      String? @map("er_xml_sa_popustom_po_artiklu") // ER_XMLSaPopustomPoArtiklu
+  crf                           String? @map("crf") // CRF — centralni registar faktura
+  koristiPnbZadModel            String? @map("koristi_pnb_zad_model") // KoristiPNBZadModel
 
   drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_komitenti_drop")
 
@@ -6014,44 +6014,44 @@ model BbMdbStagePredmet {
   id     Int @id(map: "pk_bb_mdb_stage_predmeti") @default(autoincrement()) @map("id")
   dropId Int @map("drop_id")
 
-  idPredmet          String? @map("id_predmet") // IDPredmet → projects.id
-  brojPredmeta       String? @map("broj_predmeta") // BrojPredmeta (ljudski ključ; paritet-guard!)
-  opis               String? @map("opis") // Opis
-  datumOtvaranja     String? @map("datum_otvaranja") // DatumOtvaranja
-  idProdavac         String? @map("id_prodavac") // IDProdavac
-  idKomitent         String? @map("id_komitent") // IDKomitent → customers.id
-  nextAction         String? @map("next_action") // NextAction
-  datumZakljucenja   String? @map("datum_zakljucenja") // DatumZakljucenja
-  memo               String? @map("memo") // Memo (nosi CR/LF i zareze)
-  status             String? @map("status") // Status
-  nasaRef            String? @map("nasa_ref") // NasaRef
-  nasKontakt1        String? @map("nas_kontakt1") // NasKontakt1
-  nasKontakt2        String? @map("nas_kontakt2") // NasKontakt2
-  nasTel1            String? @map("nas_tel1") // NasTel1
-  nasTel2            String? @map("nas_tel2") // NasTel2
-  vasaRef            String? @map("vasa_ref") // VasaRef
-  vasKontakt1        String? @map("vas_kontakt1") // VasKontakt1
-  vasKontakt2        String? @map("vas_kontakt2") // VasKontakt2
-  vasTel1            String? @map("vas_tel1") // VasTel1
-  vasTel2            String? @map("vas_tel2") // VasTel2
-  nabavnaVrednost    String? @map("nabavna_vrednost") // NabavnaVrednost
-  carina             String? @map("carina") // Carina
-  spedicija          String? @map("spedicija") // Spedicija
-  prevoz             String? @map("prevoz") // Prevoz
-  ostalo             String? @map("ostalo") // Ostalo
-  inoDobavljac       String? @map("ino_dobavljac") // InoDobavljac
-  rj                 String? @map("rj") // RJ
-  devvaluta          String? @map("devvaluta") // devvaluta
-  kurs               String? @map("kurs") // kurs
-  idVrstaPosla       String? @map("id_vrsta_posla") // IDVrstaPosla
-  nazivPredmeta      String? @map("naziv_predmeta") // NazivPredmeta
-  rokZavrsetka       String? @map("rok_zavrsetka") // RokZavrsetka
-  potpis             String? @map("potpis") // Potpis
-  datumIVreme        String? @map("datum_i_vreme") // DatumIVreme (vodeni žig za razliku)
-  brojUgovora        String? @map("broj_ugovora") // BrojUgovora
-  datumUgovora       String? @map("datum_ugovora") // DatumUgovora
-  brojNarudzbenice   String? @map("broj_narudzbenice") // BrojNarudzbenice
-  datumNarudzbenice  String? @map("datum_narudzbenice") // DatumNarudzbenice
+  idPredmet         String? @map("id_predmet") // IDPredmet → projects.id
+  brojPredmeta      String? @map("broj_predmeta") // BrojPredmeta (ljudski ključ; paritet-guard!)
+  opis              String? @map("opis") // Opis
+  datumOtvaranja    String? @map("datum_otvaranja") // DatumOtvaranja
+  idProdavac        String? @map("id_prodavac") // IDProdavac
+  idKomitent        String? @map("id_komitent") // IDKomitent → customers.id
+  nextAction        String? @map("next_action") // NextAction
+  datumZakljucenja  String? @map("datum_zakljucenja") // DatumZakljucenja
+  memo              String? @map("memo") // Memo (nosi CR/LF i zareze)
+  status            String? @map("status") // Status
+  nasaRef           String? @map("nasa_ref") // NasaRef
+  nasKontakt1       String? @map("nas_kontakt1") // NasKontakt1
+  nasKontakt2       String? @map("nas_kontakt2") // NasKontakt2
+  nasTel1           String? @map("nas_tel1") // NasTel1
+  nasTel2           String? @map("nas_tel2") // NasTel2
+  vasaRef           String? @map("vasa_ref") // VasaRef
+  vasKontakt1       String? @map("vas_kontakt1") // VasKontakt1
+  vasKontakt2       String? @map("vas_kontakt2") // VasKontakt2
+  vasTel1           String? @map("vas_tel1") // VasTel1
+  vasTel2           String? @map("vas_tel2") // VasTel2
+  nabavnaVrednost   String? @map("nabavna_vrednost") // NabavnaVrednost
+  carina            String? @map("carina") // Carina
+  spedicija         String? @map("spedicija") // Spedicija
+  prevoz            String? @map("prevoz") // Prevoz
+  ostalo            String? @map("ostalo") // Ostalo
+  inoDobavljac      String? @map("ino_dobavljac") // InoDobavljac
+  rj                String? @map("rj") // RJ
+  devvaluta         String? @map("devvaluta") // devvaluta
+  kurs              String? @map("kurs") // kurs
+  idVrstaPosla      String? @map("id_vrsta_posla") // IDVrstaPosla
+  nazivPredmeta     String? @map("naziv_predmeta") // NazivPredmeta
+  rokZavrsetka      String? @map("rok_zavrsetka") // RokZavrsetka
+  potpis            String? @map("potpis") // Potpis
+  datumIVreme       String? @map("datum_i_vreme") // DatumIVreme (vodeni žig za razliku)
+  brojUgovora       String? @map("broj_ugovora") // BrojUgovora
+  datumUgovora      String? @map("datum_ugovora") // DatumUgovora
+  brojNarudzbenice  String? @map("broj_narudzbenice") // BrojNarudzbenice
+  datumNarudzbenice String? @map("datum_narudzbenice") // DatumNarudzbenice
 
   drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_predmeti_drop")
 
@@ -6093,12 +6093,12 @@ model BbMdbStagePodgrupa {
 }
 
 model BbMdbStagePoreklo {
-  id            Int     @id(map: "pk_bb_mdb_stage_poreklo") @default(autoincrement()) @map("id")
-  dropId        Int     @map("drop_id")
-  poreklo       String? @map("poreklo") // Poreklo
-  opis          String? @map("opis") // Opis
-  podgrupaVeza  String? @map("podgrupa_veza") // PodgrupaVeza -> R_Podgrupa.Podgrupa
-  popustProc    String? @map("popust_proc") // PopustProc
+  id           Int     @id(map: "pk_bb_mdb_stage_poreklo") @default(autoincrement()) @map("id")
+  dropId       Int     @map("drop_id")
+  poreklo      String? @map("poreklo") // Poreklo
+  opis         String? @map("opis") // Opis
+  podgrupaVeza String? @map("podgrupa_veza") // PodgrupaVeza -> R_Podgrupa.Podgrupa
+  popustProc   String? @map("popust_proc") // PopustProc
 
   drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_poreklo_drop")
 
@@ -6107,19 +6107,19 @@ model BbMdbStagePoreklo {
 }
 
 model BbMdbStageMagacin {
-  id               Int     @id(map: "pk_bb_mdb_stage_magacini") @default(autoincrement()) @map("id")
-  dropId           Int     @map("drop_id")
-  idFirma          String? @map("id_firma") // IDFirma
-  idMagacin        String? @map("id_magacin") // IDMagacin -> warehouses.id
-  magacin          String? @map("magacin") // Magacin (naziv)
-  ulicaIBroj       String? @map("ulica_i_broj") // UlicaIBroj
-  mesto            String? @map("mesto") // Mesto
-  prosecneCene     String? @map("prosecne_cene") // ProsecneCene (Access Boolean → '0'/'1')
-  vrstaMag         String? @map("vrsta_mag") // VrstaMag
-  kontoMag         String? @map("konto_mag") // KontoMag
-  imeMagacionera   String? @map("ime_magacionera") // ImeMagacionera
-  brLkMagacionera  String? @map("br_lk_magacionera") // BrLkMagacionera
-  potpisSlika      String? @map("potpis_slika") // PotpisSlika (slika potpisa — staging je prima, uvoz je ne koristi)
+  id              Int     @id(map: "pk_bb_mdb_stage_magacini") @default(autoincrement()) @map("id")
+  dropId          Int     @map("drop_id")
+  idFirma         String? @map("id_firma") // IDFirma
+  idMagacin       String? @map("id_magacin") // IDMagacin -> warehouses.id
+  magacin         String? @map("magacin") // Magacin (naziv)
+  ulicaIBroj      String? @map("ulica_i_broj") // UlicaIBroj
+  mesto           String? @map("mesto") // Mesto
+  prosecneCene    String? @map("prosecne_cene") // ProsecneCene (Access Boolean → '0'/'1')
+  vrstaMag        String? @map("vrsta_mag") // VrstaMag
+  kontoMag        String? @map("konto_mag") // KontoMag
+  imeMagacionera  String? @map("ime_magacionera") // ImeMagacionera
+  brLkMagacionera String? @map("br_lk_magacionera") // BrLkMagacionera
+  potpisSlika     String? @map("potpis_slika") // PotpisSlika (slika potpisa — staging je prima, uvoz je ne koristi)
 
   drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_magacini_drop")
 
@@ -6136,73 +6136,73 @@ model BbMdbStageArtikal {
   id     Int @id(map: "pk_bb_mdb_stage_artikli") @default(autoincrement()) @map("id")
   dropId Int @map("drop_id")
 
-  sifraArtikla           String? @map("sifra_artikla") // Sifra artikla
-  kataloskiBroj          String? @map("kataloski_broj") // Kataloski broj
-  barKod                 String? @map("bar_kod") // BarKod
-  plu                    String? @map("plu") // PLU
-  extSifra               String? @map("ext_sifra") // ExtSifra
-  naziv                  String? @map("naziv") // Naziv
-  jedinicaMere           String? @map("jedinica_mere") // Jedinica mere
-  pakovanje              String? @map("pakovanje") // Pakovanje
-  inoJm                  String? @map("ino_jm") // InoJm
-  kutija                 String? @map("kutija") // Kutija
-  transportnoPakovanje   String? @map("transportno_pakovanje") // Transportno pakovanje
-  poreklo                String? @map("poreklo") // Poreklo
-  grupa                  String? @map("grupa") // Grupa
-  podgrupa               String? @map("podgrupa") // Podgrupa
-  tarifaRobe             String? @map("tarifa_robe") // Tarifa robe
-  tarifaUsluga           String? @map("tarifa_usluga") // Tarifa usluga
-  uvekPorezNaRobu        String? @map("uvek_porez_na_robu") // Uvek porez na robu
-  uvekPorezNaUsluge      String? @map("uvek_porez_na_usluge") // Uvek porez na usluge
-  vpCena                 String? @map("vp_cena") // VP cena
-  mpCena                 String? @map("mp_cena") // MP cena
-  nabDevCena             String? @map("nab_dev_cena") // NabDevCena
-  prodDevCena            String? @map("prod_dev_cena") // ProdDevCena
-  minimalnaKolicina      String? @map("minimalna_kolicina") // Minimalna kolicina
-  artTaksa               String? @map("art_taksa") // ArtTaksa
-  odlozeno               String? @map("odlozeno") // Odlozeno
-  neoporeziviDeo         String? @map("neoporezivi_deo") // Neoporezivi deo
-  maxRabatProc           String? @map("max_rabat_proc") // MaxRabatProc
-  memo                   String? @map("memo") // Memo
-  kngSifra               String? @map("kng_sifra") // KngSifra
-  artAkciza              String? @map("art_akciza") // ArtAkciza
-  kngSifra2              String? @map("kng_sifra2") // KngSifra_2
-  zavTrosProiz           String? @map("zav_tros_proiz") // ZavTrosProiz
-  carStopa               String? @map("car_stopa") // CarStopa
-  idRaster               String? @map("id_raster") // IDRaster
-  carTarifa              String? @map("car_tarifa") // CarTarifa
-  zemljaPorekla          String? @map("zemlja_porekla") // ZemljaPorekla
-  polica                 String? @map("polica") // Polica
-  inoNaziv               String? @map("ino_naziv") // INONaziv
-  sifDob                 String? @map("sif_dob") // SifDob
-  webOpis                String? @map("web_opis") // WebOpis
-  opisArtikla            String? @map("opis_artikla") // OpisArtikla
-  tezina                 String? @map("tezina") // Tezina
-  pdfLink                String? @map("pdf_link") // PDFLink
-  zaBrisanje             String? @map("za_brisanje") // ZaBrisanje
-  aktivan                String? @map("aktivan") // Aktivan
-  cenaZaUpisUCen         String? @map("cena_za_upis_u_cen") // CenaZaUpisUCen
-  idMestoIzdavanja       String? @map("id_mesto_izdavanja") // IDMestoIzdavanja
-  proizvodjac            String? @map("proizvodjac") // Proizvodjac
-  hps                    String? @map("hps") // HPS
-  potpisArt              String? @map("potpis_art") // PotpisArt
-  datumIVremeArt         String? @map("datum_i_vreme_art") // DatumIVremeArt
-  kolUPak                String? @map("kol_u_pak") // KolUPak
-  klRucProc              String? @map("kl_ruc_proc") // KLRucProc
-  osnJm                  String? @map("osn_jm") // OsnJM
-  slikaSimbolaLink       String? @map("slika_simbola_link") // SlikaSimbolaLink
-  mpKaloProc             String? @map("mp_kalo_proc") // MPKaloProc
-  wordLokacija           String? @map("word_lokacija") // WordLokacija
-  vpKaloProc             String? @map("vp_kalo_proc") // VPKaloProc
-  neVodiZalihe           String? @map("ne_vodi_zalihe") // NeVodiZalihe
-  tezinaKg               String? @map("tezina_kg") // TezinaKg
-  zapremina              String? @map("zapremina") // Zapremina
-  povrsina               String? @map("povrsina") // Povrsina
-  rSort                  String? @map("r_sort") // RSort
-  akcijskiRabat          String? @map("akcijski_rabat") // AkcijskiRabat
-  napomena2              String? @map("napomena2") // Napomena2
-  idKvalitetArtikla      String? @map("id_kvalitet_artikla") // IDKvalitetArtikla
-  debljina               String? @map("debljina") // Debljina
+  sifraArtikla         String? @map("sifra_artikla") // Sifra artikla
+  kataloskiBroj        String? @map("kataloski_broj") // Kataloski broj
+  barKod               String? @map("bar_kod") // BarKod
+  plu                  String? @map("plu") // PLU
+  extSifra             String? @map("ext_sifra") // ExtSifra
+  naziv                String? @map("naziv") // Naziv
+  jedinicaMere         String? @map("jedinica_mere") // Jedinica mere
+  pakovanje            String? @map("pakovanje") // Pakovanje
+  inoJm                String? @map("ino_jm") // InoJm
+  kutija               String? @map("kutija") // Kutija
+  transportnoPakovanje String? @map("transportno_pakovanje") // Transportno pakovanje
+  poreklo              String? @map("poreklo") // Poreklo
+  grupa                String? @map("grupa") // Grupa
+  podgrupa             String? @map("podgrupa") // Podgrupa
+  tarifaRobe           String? @map("tarifa_robe") // Tarifa robe
+  tarifaUsluga         String? @map("tarifa_usluga") // Tarifa usluga
+  uvekPorezNaRobu      String? @map("uvek_porez_na_robu") // Uvek porez na robu
+  uvekPorezNaUsluge    String? @map("uvek_porez_na_usluge") // Uvek porez na usluge
+  vpCena               String? @map("vp_cena") // VP cena
+  mpCena               String? @map("mp_cena") // MP cena
+  nabDevCena           String? @map("nab_dev_cena") // NabDevCena
+  prodDevCena          String? @map("prod_dev_cena") // ProdDevCena
+  minimalnaKolicina    String? @map("minimalna_kolicina") // Minimalna kolicina
+  artTaksa             String? @map("art_taksa") // ArtTaksa
+  odlozeno             String? @map("odlozeno") // Odlozeno
+  neoporeziviDeo       String? @map("neoporezivi_deo") // Neoporezivi deo
+  maxRabatProc         String? @map("max_rabat_proc") // MaxRabatProc
+  memo                 String? @map("memo") // Memo
+  kngSifra             String? @map("kng_sifra") // KngSifra
+  artAkciza            String? @map("art_akciza") // ArtAkciza
+  kngSifra2            String? @map("kng_sifra2") // KngSifra_2
+  zavTrosProiz         String? @map("zav_tros_proiz") // ZavTrosProiz
+  carStopa             String? @map("car_stopa") // CarStopa
+  idRaster             String? @map("id_raster") // IDRaster
+  carTarifa            String? @map("car_tarifa") // CarTarifa
+  zemljaPorekla        String? @map("zemlja_porekla") // ZemljaPorekla
+  polica               String? @map("polica") // Polica
+  inoNaziv             String? @map("ino_naziv") // INONaziv
+  sifDob               String? @map("sif_dob") // SifDob
+  webOpis              String? @map("web_opis") // WebOpis
+  opisArtikla          String? @map("opis_artikla") // OpisArtikla
+  tezina               String? @map("tezina") // Tezina
+  pdfLink              String? @map("pdf_link") // PDFLink
+  zaBrisanje           String? @map("za_brisanje") // ZaBrisanje
+  aktivan              String? @map("aktivan") // Aktivan
+  cenaZaUpisUCen       String? @map("cena_za_upis_u_cen") // CenaZaUpisUCen
+  idMestoIzdavanja     String? @map("id_mesto_izdavanja") // IDMestoIzdavanja
+  proizvodjac          String? @map("proizvodjac") // Proizvodjac
+  hps                  String? @map("hps") // HPS
+  potpisArt            String? @map("potpis_art") // PotpisArt
+  datumIVremeArt       String? @map("datum_i_vreme_art") // DatumIVremeArt
+  kolUPak              String? @map("kol_u_pak") // KolUPak
+  klRucProc            String? @map("kl_ruc_proc") // KLRucProc
+  osnJm                String? @map("osn_jm") // OsnJM
+  slikaSimbolaLink     String? @map("slika_simbola_link") // SlikaSimbolaLink
+  mpKaloProc           String? @map("mp_kalo_proc") // MPKaloProc
+  wordLokacija         String? @map("word_lokacija") // WordLokacija
+  vpKaloProc           String? @map("vp_kalo_proc") // VPKaloProc
+  neVodiZalihe         String? @map("ne_vodi_zalihe") // NeVodiZalihe
+  tezinaKg             String? @map("tezina_kg") // TezinaKg
+  zapremina            String? @map("zapremina") // Zapremina
+  povrsina             String? @map("povrsina") // Povrsina
+  rSort                String? @map("r_sort") // RSort
+  akcijskiRabat        String? @map("akcijski_rabat") // AkcijskiRabat
+  napomena2            String? @map("napomena2") // Napomena2
+  idKvalitetArtikla    String? @map("id_kvalitet_artikla") // IDKvalitetArtikla
+  debljina             String? @map("debljina") // Debljina
 
   drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_artikli_drop")
 
@@ -6233,19 +6233,19 @@ model BbMdbStageRobniDokument {
   id     Int @id(map: "pk_bb_mdb_stage_robna_dokumenta") @default(autoincrement()) @map("id")
   dropId Int @map("drop_id")
 
-  idDok           String? @map("id_dok") // IDDok
-  ulaz            String? @map("ulaz") // Ulaz (Access Boolean → '0'/'1') — SMER PROMETA
-  brojDokumenta   String? @map("broj_dokumenta") // Broj dokumenta
-  vrstaDokumenta  String? @map("vrsta_dokumenta") // Vrsta dokumenta (UFROB, IFR, POPIS, REZM/REZR…)
-  sifraKomitenta  String? @map("sifra_komitenta") // Sifra komitenta
-  datumDokumenta  String? @map("datum_dokumenta") // Datum dokumenta
-  datumKnjizenja  String? @map("datum_knjizenja") // Datum knjizenja
-  idMagacinDok    String? @map("id_magacin_dok") // IDMagacinDOK (magacin ZAGLAVLJA — kontrolni!)
-  level           String? @map("level") // Level (0 = knjiženo stanje, 250 = ponude/rezervacije)
-  idPredmet       String? @map("id_predmet") // IDPredmet
-  zakljucano      String? @map("zakljucano") // Zakljucano
-  rezervisi       String? @map("rezervisi") // Rezervisi (1.576 dokumenata u tekućem fajlu)
-  godina          String? @map("godina") // Godina
+  idDok          String? @map("id_dok") // IDDok
+  ulaz           String? @map("ulaz") // Ulaz (Access Boolean → '0'/'1') — SMER PROMETA
+  brojDokumenta  String? @map("broj_dokumenta") // Broj dokumenta
+  vrstaDokumenta String? @map("vrsta_dokumenta") // Vrsta dokumenta (UFROB, IFR, POPIS, REZM/REZR…)
+  sifraKomitenta String? @map("sifra_komitenta") // Sifra komitenta
+  datumDokumenta String? @map("datum_dokumenta") // Datum dokumenta
+  datumKnjizenja String? @map("datum_knjizenja") // Datum knjizenja
+  idMagacinDok   String? @map("id_magacin_dok") // IDMagacinDOK (magacin ZAGLAVLJA — kontrolni!)
+  level          String? @map("level") // Level (0 = knjiženo stanje, 250 = ponude/rezervacije)
+  idPredmet      String? @map("id_predmet") // IDPredmet
+  zakljucano     String? @map("zakljucano") // Zakljucano
+  rezervisi      String? @map("rezervisi") // Rezervisi (1.576 dokumenata u tekućem fajlu)
+  godina         String? @map("godina") // Godina
 
   drop BbMdbDrop @relation(fields: [dropId], references: [id], onDelete: Cascade, map: "fk_bb_mdb_stage_robna_dokumenta_drop")
 
@@ -6526,17 +6526,17 @@ model AiUsageLog {
 /// (nextval radi preko default privilegija na `public`; NAMERNO bez eksplicitnog GRANT-a).
 /// Čuva se SAMO tekst posle transkripcije — audio snimak se odbacuje, ne ulazi ovde.
 model DictationInbox {
-  id          Int       @id(map: "pk_dictation_inbox") @default(autoincrement()) @map("id")
-  userId      Int       @map("user_id")
-  text        String    @map("text") @db.Text
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id              Int       @id(map: "pk_dictation_inbox") @default(autoincrement()) @map("id")
+  userId          Int       @map("user_id")
+  text            String    @map("text") @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   /// null = još nepreuzeto; NON-null = Claude povukao i markirao (idempotentni „latest").
-  deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(6)
+  deliveredAt     DateTime? @map("delivered_at") @db.Timestamptz(6)
   /// users.id naloga koji je red POVUKAO kroz `POST /v1/dictation-inbox/claim` (02.08.2026).
   /// null = ili još nepreuzeto, ili preuzeto STARIM putem (ručni psql `UPDATE … delivered_at`).
   /// Nosi oporavak: `GET /v1/dictation-inbox/last-claimed` vraća samo redove sa ovim
   /// nalogom, pa izgubljen HTTP odgovor ne znači trajno izgubljen diktat.
-  claimedByUserId Int?  @map("claimed_by_user_id")
+  claimedByUserId Int?      @map("claimed_by_user_id")
 
   @@index([userId, deliveredAt, createdAt], map: "idx_dictation_inbox_user_delivered_created")
   @@index([claimedByUserId, deliveredAt], map: "idx_dictation_inbox_claimed_by_delivered")
@@ -6682,12 +6682,12 @@ model Sastanak {
   intervalDays        Int?      @map("interval_days")
   prethodniSastanakId String?   @map("prethodni_sastanak_id") @db.Uuid
 
-  project           Project?                 @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_project")
-  prethodniSastanak Sastanak?                @relation("SastanakLanac", fields: [prethodniSastanakId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_prethodni")
+  project           Project?                  @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_project")
+  prethodniSastanak Sastanak?                 @relation("SastanakLanac", fields: [prethodniSastanakId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_sastanci_prethodni")
   /// Prisma vezu drži kao 1:N jer je u sy15 jedinstvenost PARCIJALNA
   /// (`WHERE prethodni_sastanak_id IS NOT NULL`) — to Prisma ne ume izraziti,
   /// pa taj unique ostaje SQL-only u migraciji (stvarna kardinalnost je 1:1).
-  sledeciSastanci   Sastanak[]               @relation("SastanakLanac")
+  sledeciSastanci   Sastanak[]                @relation("SastanakLanac")
   ucesnici          SastanakUcesnik[]
   odluke            SastanakOdluka[]
   arhiva            SastanakArhiva?
@@ -6930,9 +6930,9 @@ model AkcionaTacka {
   createdByEmail   String?   @map("created_by_email") @db.VarChar(255)
   updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  sastanak     Sastanak?                @relation(fields: [sastanakId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_sastanak")
-  tema         PmTema?                  @relation(fields: [temaId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_tema")
-  project      Project?                 @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_project")
+  sastanak     Sastanak?                 @relation(fields: [sastanakId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_sastanak")
+  tema         PmTema?                   @relation(fields: [temaId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_tema")
+  project      Project?                  @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_akcioni_plan_project")
   istorija     AkcionaTackaIstorija[]
   odluke       SastanakOdluka[]
   notifikacije SastanciNotificationLog[]
@@ -7559,12 +7559,12 @@ model MaintIncident {
   assetType       String?   @map("asset_type") @db.VarChar(20)
   safetyMarker    Boolean   @default(false) @map("safety_marker")
 
-  asset     MaintAsset?          @relation(fields: [assetId], references: [assetId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_incidents_asset")
-  workOrder MaintWorkOrder?      @relation("IncidentWorkOrder", fields: [workOrderId], references: [woId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_incidents_work_order")
-  events    MaintIncidentEvent[]
-  documents MaintDocument[]
+  asset             MaintAsset?          @relation(fields: [assetId], references: [assetId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_incidents_asset")
+  workOrder         MaintWorkOrder?      @relation("IncidentWorkOrder", fields: [workOrderId], references: [woId], onDelete: SetNull, onUpdate: NoAction, map: "fk_maint_incidents_work_order")
+  events            MaintIncidentEvent[]
+  documents         MaintDocument[]
   /// Nalozi kojima je OVAJ incident izvor (`maint_work_orders.source_incident_id`).
-  sourcedWorkOrders MaintWorkOrder[] @relation("WoSourceIncident")
+  sourcedWorkOrders MaintWorkOrder[]     @relation("WoSourceIncident")
 
   @@index([machineCode], map: "idx_maint_incidents_machine")
   // SQL-only: parcijalni indeksi (otvoreni/dodeljeni/bezbednosni/nalog/sredstvo), CHECK.
@@ -8415,4 +8415,1344 @@ model ScadaNotifyPref {
   updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   @@map("scada_notify_prefs")
+}
+
+// ============================================================================
+// KADROVSKA (HR) — seoba sy15 -> 3.0, korak 4.
+// Merenje i runbook: docs/SEOBA_KADROVSKE_2026-08-07.md
+//
+// 64 tabele / 510.455 redova / 152 MB (count(*) nad zivom sy15, 07.08.2026).
+// U 3.0 nastaje 63 NOVE tabele: 'departments' -> 'kadr_departments' (sudar sa
+// BigBit 'departments'), a 'worker_employee_map' 3.0 VEC IMA (79 redova) — ne
+// pravi se druga, nego se sy15 kopija (95 redova) SPAJA u postojecu.
+// ============================================================================
+
+/// Was: sy15 `public.absences`
+model Absence {
+  id             String    @id(map: "pk_absences") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  type           String    @default("godisnji") @map("type")
+  dateFrom       DateTime  @map("date_from") @db.Date
+  dateTo         DateTime  @map("date_to") @db.Date
+  daysCount      Int?      @map("days_count")
+  note           String?   @default("") @map("note")
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  paidReason     String?   @map("paid_reason")
+  absenceSubtype String?   @map("absence_subtype")
+  slobodanReason String?   @map("slobodan_reason")
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedBy     Int?      @map("archived_by")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "absences_employee_id_fkey")
+
+  // SQL-only FK (van domena): archived_by -> auth.users
+  @@map("absences")
+}
+
+/// Was: sy15 `public.assessment_answers`
+model AssessmentAnswer {
+  id           String  @id(map: "pk_assessment_answers") @default(uuid(4)) @map("id") @db.Uuid
+  raterId      String  @map("rater_id") @db.Uuid
+  questionCode String  @map("question_code")
+  answerText   String? @map("answer_text")
+
+  rater AssessmentRater @relation(fields: [raterId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assessment_answers_rater_id_fkey")
+
+  @@unique([raterId, questionCode], map: "aa_uniq")
+  @@map("assessment_answers")
+}
+
+/// Was: sy15 `public.assessment_cycles`
+model AssessmentCycle {
+  id          String    @id(map: "pk_assessment_cycles") @default(uuid(4)) @map("id") @db.Uuid
+  title       String    @map("title")
+  periodLabel String    @map("period_label")
+  status      String    @default("open") @map("status")
+  openedAt    DateTime? @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt    DateTime? @map("closed_at") @db.Timestamptz(6)
+  createdBy   String    @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  assessments Assessment[]
+
+  @@map("assessment_cycles")
+}
+
+/// Was: sy15 `public.assessment_raters`
+model AssessmentRater {
+  id              String    @id(map: "pk_assessment_raters") @default(uuid(4)) @map("id") @db.Uuid
+  assessmentId    String    @map("assessment_id") @db.Uuid
+  raterKind       String    @map("rater_kind")
+  raterEmployeeId String?   @map("rater_employee_id") @db.Uuid
+  raterEmail      String?   @map("rater_email")
+  token           String?   @unique(map: "assessment_raters_token_key") @map("token")
+  status          String    @default("pending") @map("status")
+  invitedAt       DateTime? @default(now()) @map("invited_at") @db.Timestamptz(6)
+  submittedAt     DateTime? @map("submitted_at") @db.Timestamptz(6)
+
+  assessment        Assessment         @relation(fields: [assessmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assessment_raters_assessment_id_fkey")
+  raterEmployee     Employee?          @relation(fields: [raterEmployeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "assessment_raters_rater_employee_id_fkey")
+  assessmentAnswers AssessmentAnswer[]
+  assessmentScores  AssessmentScore[]
+
+  @@map("assessment_raters")
+}
+
+/// Was: sy15 `public.assessment_results`
+model AssessmentResult {
+  id           String   @id(map: "pk_assessment_results") @default(uuid(4)) @map("id") @db.Uuid
+  assessmentId String   @map("assessment_id") @db.Uuid
+  scopeKind    String   @map("scope_kind")
+  refId        Int      @map("ref_id")
+  selfAvg      Decimal? @map("self_avg") @db.Decimal(4, 2)
+  peerAvg      Decimal? @map("peer_avg") @db.Decimal(4, 2)
+  peerCount    Int      @default(0) @map("peer_count")
+  leaderVal    Decimal? @map("leader_val") @db.Decimal(4, 2)
+  targetVal    Decimal? @map("target_val") @db.Decimal(4, 2)
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assessment_results_assessment_id_fkey")
+
+  @@unique([assessmentId, scopeKind, refId], map: "ares_uniq")
+  @@map("assessment_results")
+}
+
+/// Was: sy15 `public.assessment_scores`
+model AssessmentScore {
+  id           String   @id(map: "pk_assessment_scores") @default(uuid(4)) @map("id") @db.Uuid
+  raterId      String   @map("rater_id") @db.Uuid
+  competenceId Int      @map("competence_id")
+  level        Int?     @map("level") @db.SmallInt
+  comment      String?  @map("comment")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  competence Competence      @relation(fields: [competenceId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assessment_scores_competence_id_fkey")
+  rater      AssessmentRater @relation(fields: [raterId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assessment_scores_rater_id_fkey")
+
+  @@unique([raterId, competenceId], map: "asc_uniq")
+  @@map("assessment_scores")
+}
+
+/// Was: sy15 `public.assessment_targets`
+model AssessmentTarget {
+  id           String @id(map: "pk_assessment_targets") @default(uuid(4)) @map("id") @db.Uuid
+  assessmentId String @map("assessment_id") @db.Uuid
+  competenceId Int    @map("competence_id")
+  targetLevel  Int?   @map("target_level") @db.SmallInt
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assessment_targets_assessment_id_fkey")
+  competence Competence @relation(fields: [competenceId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assessment_targets_competence_id_fkey")
+
+  @@unique([assessmentId, competenceId], map: "at_uniq")
+  @@map("assessment_targets")
+}
+
+/// Was: sy15 `public.assessments`
+model Assessment {
+  id                String   @id(map: "pk_assessments") @default(uuid(4)) @map("id") @db.Uuid
+  cycleId           String?  @map("cycle_id") @db.Uuid
+  employeeId        String   @map("employee_id") @db.Uuid
+  planId            String?  @map("plan_id") @db.Uuid
+  profileId         Int?     @map("profile_id")
+  periodLabel       String   @map("period_label")
+  status            String   @default("collecting") @map("status")
+  visibleToEmployee Boolean  @default(false) @map("visible_to_employee")
+  openedBy          String   @map("opened_by")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  cycle             AssessmentCycle?   @relation(fields: [cycleId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "assessments_cycle_id_fkey")
+  employee          Employee           @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "assessments_employee_id_fkey")
+  plan              DevelopmentPlan?   @relation(fields: [planId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "assessments_plan_id_fkey")
+  profile           CompetenceProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "assessments_profile_id_fkey")
+  assessmentRaters  AssessmentRater[]
+  assessmentResults AssessmentResult[]
+  assessmentTargets AssessmentTarget[]
+
+  @@map("assessments")
+}
+
+/// Was: sy15 `public.attendance_corrections`
+model AttendanceCorrection {
+  id             String    @id(map: "pk_attendance_corrections") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  day            DateTime  @map("day") @db.Date
+  correctedIn    DateTime? @map("corrected_in") @db.Time(6)
+  correctedOut   DateTime? @map("corrected_out") @db.Time(6)
+  reason         String    @map("reason")
+  status         String    @default("active") @map("status")
+  createdBy      String    @map("created_by")
+  createdForSelf Boolean   @default(true) @map("created_for_self")
+  eventIds       BigInt[]  @default([]) @map("event_ids")
+  cancelledBy    String?   @map("cancelled_by")
+  cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "attendance_corrections_employee_id_fkey")
+
+  @@map("attendance_corrections")
+}
+
+/// Was: sy15 `public.attendance_events`
+model AttendanceEvent {
+  id           BigInt    @id(map: "pk_attendance_events") @default(autoincrement()) @map("id")
+  source       String    @map("source")
+  externalId   String?   @map("external_id")
+  badgeCode    String?   @map("badge_code")
+  employeeId   String?   @map("employee_id") @db.Uuid
+  eventTs      DateTime  @map("event_ts") @db.Timestamptz(6)
+  eventTsLocal DateTime? @map("event_ts_local") @db.Timestamp(6)
+  direction    String    @default("unknown") @map("direction")
+  terminalId   String?   @map("terminal_id")
+  terminalName String?   @map("terminal_name")
+  raw          Json?     @map("raw") @db.JsonB
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "attendance_events_employee_id_fkey")
+
+  @@map("attendance_events")
+}
+
+/// Was: sy15 `public.attendance_notify_extra`
+model AttendanceNotifyExtra {
+  id              String   @id(map: "pk_attendance_notify_extra") @default(uuid(4)) @map("id") @db.Uuid
+  subDepartmentId Int?     @map("sub_department_id")
+  email           String   @map("email")
+  note            String?  @map("note")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("attendance_notify_extra")
+}
+
+/// Was: sy15 `public.competence_groups`
+model CompetenceGroup {
+  id            Int      @id(map: "pk_competence_groups") @default(autoincrement()) @map("id")
+  code          String   @unique(map: "competence_groups_code_key") @map("code")
+  nameSr        String   @map("name_sr")
+  descriptionSr String?  @map("description_sr")
+  scope         String   @default("strucna") @map("scope")
+  sortOrder     Int      @default(100) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?  @map("updated_by")
+
+  competenceQuestions CompetenceQuestion[]
+  competences         Competence[]
+  profileGroups       ProfileGroup[]
+
+  @@map("competence_groups")
+}
+
+/// Was: sy15 `public.competence_levels`
+model CompetenceLevel {
+  id           Int    @id(map: "pk_competence_levels") @default(autoincrement()) @map("id")
+  competenceId Int    @map("competence_id")
+  level        Int    @map("level") @db.SmallInt
+  descriptorSr String @map("descriptor_sr")
+
+  competence Competence @relation(fields: [competenceId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "competence_levels_competence_id_fkey")
+
+  @@unique([competenceId, level], map: "cl_uniq")
+  @@map("competence_levels")
+}
+
+/// Was: sy15 `public.competence_profiles`
+model CompetenceProfile {
+  id            Int      @id(map: "pk_competence_profiles") @default(autoincrement()) @map("id")
+  code          String   @unique(map: "competence_profiles_code_key") @map("code")
+  nameSr        String   @map("name_sr")
+  descriptionSr String?  @map("description_sr")
+  sortOrder     Int      @default(100) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?  @map("updated_by")
+
+  assessments      Assessment[]
+  profileGroups    ProfileGroup[]
+  profilePositions ProfilePosition[]
+
+  @@map("competence_profiles")
+}
+
+/// Was: sy15 `public.competence_questions`
+model CompetenceQuestion {
+  id        Int     @id(map: "pk_competence_questions") @default(autoincrement()) @map("id")
+  groupId   Int?    @map("group_id")
+  code      String  @unique(map: "competence_questions_code_key") @map("code")
+  textSr    String  @map("text_sr")
+  sortOrder Int     @default(100) @map("sort_order")
+  isActive  Boolean @default(true) @map("is_active")
+
+  group CompetenceGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "competence_questions_group_id_fkey")
+
+  @@map("competence_questions")
+}
+
+/// Was: sy15 `public.competences`
+model Competence {
+  id            Int      @id(map: "pk_competences") @default(autoincrement()) @map("id")
+  groupId       Int      @map("group_id")
+  code          String   @unique(map: "competences_code_key") @map("code")
+  nameSr        String   @map("name_sr")
+  descriptionSr String?  @map("description_sr")
+  sortOrder     Int      @default(100) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?  @map("updated_by")
+
+  group             CompetenceGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "competences_group_id_fkey")
+  assessmentScores  AssessmentScore[]
+  assessmentTargets AssessmentTarget[]
+  competenceLevels  CompetenceLevel[]
+
+  @@map("competences")
+}
+
+/// Was: sy15 `public.contracts`
+model EmploymentContract {
+  id             String    @id(map: "pk_contracts") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  contractType   String    @default("neodredjeno") @map("contract_type")
+  contractNumber String?   @default("") @map("contract_number")
+  position       String?   @default("") @map("position")
+  dateFrom       DateTime  @map("date_from") @db.Date
+  dateTo         DateTime? @map("date_to") @db.Date
+  isActive       Boolean?  @default(true) @map("is_active")
+  note           String?   @default("") @map("note")
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  archivedBy     Int?      @map("archived_by")
+  probniRad      Boolean   @default(false) @map("probni_rad")
+  probniMeseci   Int?      @map("probni_meseci")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "contracts_employee_id_fkey")
+
+  // SQL-only FK (van domena): archived_by -> auth.users
+  @@map("contracts")
+}
+
+/// Was: sy15 `public.corrective_measures`
+model CorrectiveMeasure {
+  id                    String    @id(map: "pk_corrective_measures") @default(uuid(4)) @map("id") @db.Uuid
+  planId                String    @map("plan_id") @db.Uuid
+  descriptionMd         String    @map("description_md")
+  dueDate               DateTime? @map("due_date") @db.Date
+  responsibleEmployeeId String?   @map("responsible_employee_id") @db.Uuid
+  status                String    @default("otvoreno") @map("status")
+  completedAt           DateTime? @map("completed_at") @db.Timestamptz(6)
+  note                  String?   @map("note")
+  sort                  Int       @default(0) @map("sort")
+  escalatedAt           DateTime? @map("escalated_at") @db.Timestamptz(6)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  plan                CorrectivePlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "corrective_measures_plan_id_fkey")
+  responsibleEmployee Employee?      @relation(fields: [responsibleEmployeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "corrective_measures_responsible_employee_id_fkey")
+
+  @@map("corrective_measures")
+}
+
+/// Was: sy15 `public.corrective_plans`
+model CorrectivePlan {
+  id                 String    @id(map: "pk_corrective_plans") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId         String    @map("employee_id") @db.Uuid
+  talkId             String?   @map("talk_id") @db.Uuid
+  closingTalkId      String?   @map("closing_talk_id") @db.Uuid
+  reasonMd           String?   @map("reason_md")
+  status             String    @default("otvoren") @map("status")
+  followupDate       DateTime? @map("followup_date") @db.Date
+  followupNotifiedAt DateTime? @map("followup_notified_at") @db.Timestamptz(6)
+  visibleToEmployee  Boolean   @default(false) @map("visible_to_employee")
+  createdBy          String?   @map("created_by")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  closedAt           DateTime? @map("closed_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  closingTalk        EmployeeTalk?       @relation("corrective_plans_closing_talk_id_fkey", fields: [closingTalkId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "corrective_plans_closing_talk_id_fkey")
+  employee           Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "corrective_plans_employee_id_fkey")
+  talk               EmployeeTalk?       @relation("corrective_plans_talk_id_fkey", fields: [talkId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "corrective_plans_talk_id_fkey")
+  correctiveMeasures CorrectiveMeasure[]
+
+  @@map("corrective_plans")
+}
+
+/// Was: sy15 `public.departments` (preimenovano u 3.0: sudar imena)
+model KadrDepartment {
+  id        Int    @id(map: "pk_kadr_departments") @default(autoincrement()) @map("id")
+  name      String @map("name")
+  sortOrder Int    @default(0) @map("sort_order") @db.SmallInt
+
+  employees      Employee[]
+  jobPositions   KadrJobPosition[]
+  subDepartments KadrSubDepartment[]
+
+  @@map("kadr_departments")
+}
+
+/// Was: sy15 `public.development_checkins`
+model DevelopmentCheckin {
+  id          String   @id(map: "pk_development_checkins") @default(uuid(4)) @map("id") @db.Uuid
+  planId      String   @map("plan_id") @db.Uuid
+  employeeId  String   @map("employee_id") @db.Uuid
+  checkinDate DateTime @default(dbgenerated("CURRENT_DATE")) @map("checkin_date") @db.Date
+  authorEmail String   @map("author_email")
+  authorKind  String   @default("upravljac") @map("author_kind")
+  noteMd      String   @map("note_md")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "development_checkins_employee_id_fkey")
+  plan     DevelopmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "development_checkins_plan_id_fkey")
+
+  @@map("development_checkins")
+}
+
+/// Was: sy15 `public.development_plans`
+model DevelopmentPlan {
+  id               String    @id(map: "pk_development_plans") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  periodLabel      String    @map("period_label")
+  periodStart      DateTime? @map("period_start") @db.Date
+  periodEnd        DateTime? @map("period_end") @db.Date
+  careerGoalMd     String?   @map("career_goal_md")
+  targetPositionId Int?      @map("target_position_id")
+  mentorEmployeeId String?   @map("mentor_employee_id") @db.Uuid
+  summaryMd        String?   @map("summary_md")
+  selfAssessmentMd String?   @map("self_assessment_md")
+  status           String    @default("aktivan") @map("status")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String    @map("created_by")
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String?   @map("updated_by")
+
+  employee             Employee              @relation("development_plans_employee_id_fkey", fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "development_plans_employee_id_fkey")
+  mentorEmployee       Employee?             @relation("development_plans_mentor_employee_id_fkey", fields: [mentorEmployeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "development_plans_mentor_employee_id_fkey")
+  targetPosition       KadrJobPosition?      @relation(fields: [targetPositionId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "development_plans_target_position_id_fkey")
+  assessments          Assessment[]
+  developmentCheckins  DevelopmentCheckin[]
+  employeeExpectations EmployeeExpectation[]
+  employeeTalks        EmployeeTalk[]
+
+  @@map("development_plans")
+}
+
+/// Was: sy15 `public.employee_badges`
+model EmployeeBadge {
+  id         String    @id(map: "pk_employee_badges") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId String    @map("employee_id") @db.Uuid
+  badgeType  String    @map("badge_type")
+  code       String    @map("code")
+  codeShort  String?   @map("code_short")
+  validFrom  DateTime  @default(now()) @map("valid_from") @db.Timestamptz(6)
+  validTo    DateTime? @map("valid_to") @db.Timestamptz(6)
+  isActive   Boolean   @default(true) @map("is_active")
+  source     String    @default("katze") @map("source")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "employee_badges_employee_id_fkey")
+
+  @@unique([badgeType, code, employeeId], map: "employee_badges_badge_type_code_employee_id_key")
+  @@map("employee_badges")
+}
+
+/// Was: sy15 `public.employee_bank_cards`
+model EmployeeBankCard {
+  id         String    @id(map: "pk_employee_bank_cards") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId String    @map("employee_id") @db.Uuid
+  bank       String    @default("Banca Intesa") @map("bank")
+  cardNumber String?   @map("card_number")
+  validThru  DateTime? @map("valid_thru") @db.Date
+  isActive   Boolean   @default(true) @map("is_active")
+  note       String?   @default("") @map("note")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "employee_bank_cards_employee_id_fkey")
+
+  @@map("employee_bank_cards")
+}
+
+/// Was: sy15 `public.employee_children`
+model EmployeeChildren {
+  id         String    @id(map: "pk_employee_children") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId String    @map("employee_id") @db.Uuid
+  firstName  String    @map("first_name")
+  birthDate  DateTime? @map("birth_date") @db.Date
+  note       String?   @default("") @map("note")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "employee_children_employee_id_fkey")
+
+  @@map("employee_children")
+}
+
+/// Was: sy15 `public.employee_documents`
+model EmployeeDocument {
+  id          String    @id(map: "pk_employee_documents") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId  String    @map("employee_id") @db.Uuid
+  docType     String    @default("licna_karta") @map("doc_type")
+  fileName    String    @map("file_name")
+  storagePath String    @unique(map: "employee_documents_storage_path_key") @map("storage_path")
+  mimeType    String?   @map("mime_type")
+  sizeBytes   BigInt?   @map("size_bytes")
+  description String?   @map("description")
+  uploadedAt  DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  uploadedBy  Int?      @map("uploaded_by")
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "employee_documents_employee_id_fkey")
+
+  // SQL-only FK (van domena): uploaded_by -> auth.users
+  @@map("employee_documents")
+}
+
+/// Was: sy15 `public.employee_expectations`
+model EmployeeExpectation {
+  id             String    @id(map: "pk_employee_expectations") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  title          String    @map("title")
+  descriptionMd  String?   @map("description_md")
+  dueDate        DateTime? @map("due_date") @db.Date
+  priority       String    @default("srednja") @map("priority")
+  status         String    @default("aktivno") @map("status")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String    @map("created_by")
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?   @map("updated_by")
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
+  completionNote String?   @map("completion_note")
+  planId         String?   @map("plan_id") @db.Uuid
+  category       String    @default("ostalo") @map("category")
+  progress       Int       @default(0) @map("progress") @db.SmallInt
+
+  employee Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "employee_expectations_employee_id_fkey")
+  plan     DevelopmentPlan? @relation(fields: [planId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "employee_expectations_plan_id_fkey")
+
+  @@map("employee_expectations")
+}
+
+/// Was: sy15 `public.employee_foreign_docs`
+model EmployeeForeignDoc {
+  id                    String    @id(map: "pk_employee_foreign_docs") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId            String    @unique(map: "employee_foreign_docs_employee_id_key") @map("employee_id") @db.Uuid
+  passportNumber        String?   @map("passport_number")
+  passportExpiry        DateTime? @map("passport_expiry") @db.Date
+  visaNumber            String?   @map("visa_number")
+  visaExpiry            DateTime? @map("visa_expiry") @db.Date
+  workPermitNumber      String?   @map("work_permit_number")
+  workPermitExpiry      DateTime? @map("work_permit_expiry") @db.Date
+  residencePermitNumber String?   @map("residence_permit_number")
+  residencePermitExpiry DateTime? @map("residence_permit_expiry") @db.Date
+  residenceAddress      String?   @map("residence_address")
+  bankAccount           String?   @map("bank_account")
+  foreignIdNumber       String?   @map("foreign_id_number")
+  note                  String?   @default("") @map("note")
+  createdAt             DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "employee_foreign_docs_employee_id_fkey")
+
+  @@map("employee_foreign_docs")
+}
+
+/// Was: sy15 `public.employee_personal_docs`
+model EmployeePersonalDoc {
+  id                      String    @id(map: "pk_employee_personal_docs") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId              String    @unique(map: "employee_personal_docs_employee_id_key") @map("employee_id") @db.Uuid
+  lkNumber                String?   @map("lk_number")
+  lkExpiry                DateTime? @map("lk_expiry") @db.Date
+  passportNumber          String?   @map("passport_number")
+  passportExpiry          DateTime? @map("passport_expiry") @db.Date
+  driverLicenseNumber     String?   @map("driver_license_number")
+  driverLicenseExpiry     DateTime? @map("driver_license_expiry") @db.Date
+  driverLicenseCategories String?   @map("driver_license_categories")
+  note                    String?   @default("") @map("note")
+  createdAt               DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "employee_personal_docs_employee_id_fkey")
+
+  @@map("employee_personal_docs")
+}
+
+/// Was: sy15 `public.employee_talks`
+model EmployeeTalk {
+  id                 String    @id(map: "pk_employee_talks") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId         String    @map("employee_id") @db.Uuid
+  talkType           String    @map("talk_type")
+  talkDate           DateTime  @default(dbgenerated("CURRENT_DATE")) @map("talk_date") @db.Date
+  title              String?   @map("title")
+  zapisnikMd         String?   @map("zapisnik_md")
+  status             String    @default("nacrt") @map("status")
+  conductedBy        String?   @map("conducted_by")
+  planId             String?   @map("plan_id") @db.Uuid
+  raiseDecision      String?   @map("raise_decision")
+  raisePercent       Decimal?  @map("raise_percent") @db.Decimal(6, 2)
+  raiseEffectiveFrom DateTime? @map("raise_effective_from") @db.Date
+  raiseNote          String?   @map("raise_note")
+  sharedAt           DateTime? @map("shared_at") @db.Timestamptz(6)
+  acknowledgedAt     DateTime? @map("acknowledged_at") @db.Timestamptz(6)
+  createdBy          String?   @map("created_by")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedBy          String?   @map("updated_by")
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee                     Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "employee_talks_employee_id_fkey")
+  plan                         DevelopmentPlan? @relation(fields: [planId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "employee_talks_plan_id_fkey")
+  correctivePlansClosingTalkId CorrectivePlan[] @relation("corrective_plans_closing_talk_id_fkey")
+  correctivePlansTalkId        CorrectivePlan[] @relation("corrective_plans_talk_id_fkey")
+
+  @@map("employee_talks")
+}
+
+/// Was: sy15 `public.employees`
+model Employee {
+  id                       String    @id(map: "pk_employees") @default(uuid(4)) @map("id") @db.Uuid
+  fullName                 String    @unique(map: "employees_full_name_unique") @map("full_name")
+  position                 String?   @default("") @map("position")
+  department               String?   @default("") @map("department")
+  phone                    String?   @default("") @map("phone")
+  email                    String?   @default("") @map("email")
+  hireDate                 DateTime? @map("hire_date") @db.Date
+  isActive                 Boolean?  @default(true) @map("is_active")
+  note                     String?   @default("") @map("note")
+  createdAt                DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  firstName                String?   @map("first_name")
+  lastName                 String?   @map("last_name")
+  personalId               String?   @map("personal_id")
+  birthDate                DateTime? @map("birth_date") @db.Date
+  gender                   String?   @map("gender")
+  address                  String?   @map("address")
+  city                     String?   @map("city")
+  postalCode               String?   @map("postal_code")
+  bankName                 String?   @map("bank_name")
+  bankAccount              String?   @map("bank_account")
+  phonePrivate             String?   @map("phone_private")
+  emergencyContactName     String?   @map("emergency_contact_name")
+  emergencyContactPhone    String?   @map("emergency_contact_phone")
+  slava                    String?   @map("slava")
+  slavaDay                 String?   @map("slava_day")
+  educationLevel           String?   @map("education_level")
+  educationTitle           String?   @map("education_title")
+  medicalExamDate          DateTime? @map("medical_exam_date") @db.Date
+  medicalExamExpires       DateTime? @map("medical_exam_expires") @db.Date
+  team                     String?   @map("team")
+  workType                 String    @default("ugovor") @map("work_type")
+  departmentId             Int?      @map("department_id")
+  subDepartmentId          Int?      @map("sub_department_id")
+  positionId               Int?      @map("position_id")
+  emergencyContactRelation String?   @map("emergency_contact_relation")
+  emergencyContactPhoneAlt String?   @map("emergency_contact_phone_alt")
+  cardBarcode              String?   @map("card_barcode")
+
+  departmentIdRef                  KadrDepartment?         @relation(fields: [departmentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "employees_department_id_fkey")
+  positionIdRef                    KadrJobPosition?        @relation(fields: [positionId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "employees_position_id_fkey")
+  subDepartment                    KadrSubDepartment?      @relation(fields: [subDepartmentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "employees_sub_department_id_fkey")
+  absences                         Absence[]
+  assessmentRaters                 AssessmentRater[]
+  assessments                      Assessment[]
+  attendanceCorrections            AttendanceCorrection[]
+  attendanceEvents                 AttendanceEvent[]
+  contracts                        EmploymentContract[]
+  correctiveMeasures               CorrectiveMeasure[]
+  correctivePlans                  CorrectivePlan[]
+  developmentCheckins              DevelopmentCheckin[]
+  developmentPlansEmployeeId       DevelopmentPlan[]       @relation("development_plans_employee_id_fkey")
+  developmentPlansMentorEmployeeId DevelopmentPlan[]       @relation("development_plans_mentor_employee_id_fkey")
+  employeeBadges                   EmployeeBadge[]
+  employeeBankCards                EmployeeBankCard[]
+  employeeChildren                 EmployeeChildren[]
+  employeeDocuments                EmployeeDocument[]
+  employeeExpectations             EmployeeExpectation[]
+  employeeForeignDocs              EmployeeForeignDoc[]
+  employeePersonalDocs             EmployeePersonalDoc[]
+  employeeTalks                    EmployeeTalk[]
+  kadrCertificates                 KadrCertificate[]
+  kadrDocumentAck                  KadrDocumentAck[]
+  kadrMedicalExams                 KadrMedicalExam[]
+  kadrNotificationLog              KadrNotificationLog[]
+  kadrOnboardingRuns               KadrOnboardingRun[]
+  katzeEmployeeMap                 KatzeEmployeeMap[]
+  makeupRequests                   MakeupRequest[]
+  nopRequests                      NopRequest[]
+  paidLeaveRequests                PaidLeaveRequest[]
+  salaryPayroll                    SalaryPayroll[]
+  salaryTerms                      SalaryTerm[]
+  vacationBonusDays                VacationBonusDay[]
+  vacationChangeRequests           VacationChangeRequest[]
+  vacationEntitlements             VacationEntitlement[]
+  vacationHistory                  VacationHistory[]
+  vacationRequests                 VacationRequest[]
+  workHours                        WorkHour[]
+  workHoursRemarks                 WorkHoursRemark[]
+
+  @@map("employees")
+}
+
+/// Was: sy15 `public.job_positions`
+model KadrJobPosition {
+  id                 Int       @id(map: "pk_job_positions") @default(autoincrement()) @map("id")
+  departmentId       Int       @map("department_id")
+  subDepartmentId    Int?      @map("sub_department_id")
+  name               String    @map("name")
+  sortOrder          Int       @default(0) @map("sort_order") @db.SmallInt
+  summaryMd          String?   @map("summary_md")
+  expectationsMd     String?   @map("expectations_md")
+  responsibilitiesMd String?   @map("responsibilities_md")
+  dutiesMd           String?   @map("duties_md")
+  profileUpdatedAt   DateTime? @map("profile_updated_at") @db.Timestamptz(6)
+  profileUpdatedBy   String?   @map("profile_updated_by")
+  reportsToLine      String?   @map("reports_to_line")
+  authorityMd        String?   @map("authority_md")
+  kpiMd              String?   @map("kpi_md")
+  qualificationsMd   String?   @map("qualifications_md")
+  collaborationMd    String?   @map("collaboration_md")
+
+  department       KadrDepartment     @relation(fields: [departmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "job_positions_department_id_fkey")
+  subDepartment    KadrSubDepartment? @relation(fields: [subDepartmentId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "job_positions_sub_department_id_fkey")
+  developmentPlans DevelopmentPlan[]
+  employees        Employee[]
+  profilePositions ProfilePosition[]
+
+  @@map("job_positions")
+}
+
+/// Was: sy15 `public.kadr_audit_log`
+model KadrAuditLog {
+  id          BigInt   @id(map: "pk_kadr_audit_log") @default(autoincrement()) @map("id")
+  actorUserId Int?     @map("actor_user_id")
+  actorEmail  String?  @map("actor_email")
+  action      String   @map("action")
+  tableName   String   @map("table_name")
+  rowId       String?  @map("row_id")
+  employeeId  String?  @map("employee_id") @db.Uuid
+  beforeData  Json?    @map("before_data") @db.JsonB
+  afterData   Json?    @map("after_data") @db.JsonB
+  changedAt   DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+
+  @@map("kadr_audit_log")
+}
+
+/// Was: sy15 `public.kadr_certificates`
+model KadrCertificate {
+  id          String    @id(map: "pk_kadr_certificates") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId  String    @map("employee_id") @db.Uuid
+  certType    String    @map("cert_type")
+  certName    String    @map("cert_name")
+  issuer      String?   @map("issuer")
+  documentNo  String?   @map("document_no")
+  issuedOn    DateTime  @map("issued_on") @db.Date
+  expiresOn   DateTime? @map("expires_on") @db.Date
+  costRsd     Decimal   @default(0) @map("cost_rsd") @db.Decimal(12, 2)
+  documentUrl String?   @map("document_url")
+  note        String?   @map("note")
+  createdBy   Int?      @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "kadr_certificates_employee_id_fkey")
+
+  // SQL-only FK (van domena): created_by -> auth.users
+  @@map("kadr_certificates")
+}
+
+/// Was: sy15 `public.kadr_document_ack`
+model KadrDocumentAck {
+  id         String   @id(map: "pk_kadr_document_ack") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  refType    String   @map("ref_type")
+  refId      String   @map("ref_id")
+  label      String?  @map("label")
+  ackedAt    DateTime @default(now()) @map("acked_at") @db.Timestamptz(6)
+  ackedBy    String?  @map("acked_by")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "kadr_document_ack_employee_id_fkey")
+
+  @@unique([employeeId, refType, refId], map: "kadr_document_ack_employee_id_ref_type_ref_id_key")
+  @@map("kadr_document_ack")
+}
+
+/// Was: sy15 `public.kadr_grid_editor_allowlist`
+model KadrGridEditorAllowlist {
+  email     String   @id(map: "pk_kadr_grid_editor_allowlist") @map("email")
+  note      String   @default("") @map("note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("kadr_grid_editor_allowlist")
+}
+
+/// Was: sy15 `public.kadr_holidays`
+model KadrHoliday {
+  id          String    @id(map: "pk_kadr_holidays") @default(uuid(4)) @map("id") @db.Uuid
+  holidayDate DateTime  @unique(map: "kadr_holidays_date_unique") @map("holiday_date") @db.Date
+  name        String    @map("name")
+  isWorkday   Boolean   @default(false) @map("is_workday")
+  note        String?   @default("") @map("note")
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("kadr_holidays")
+}
+
+/// Was: sy15 `public.kadr_medical_exams`
+model KadrMedicalExam {
+  id          String    @id(map: "pk_kadr_medical_exams") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId  String    @map("employee_id") @db.Uuid
+  examDate    DateTime  @map("exam_date") @db.Date
+  validUntil  DateTime? @map("valid_until") @db.Date
+  examType    String    @default("redovan") @map("exam_type")
+  institution String?   @map("institution")
+  costRsd     Decimal   @default(0) @map("cost_rsd") @db.Decimal(12, 2)
+  documentUrl String?   @map("document_url")
+  note        String?   @map("note")
+  createdBy   Int?      @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "kadr_medical_exams_employee_id_fkey")
+
+  // SQL-only FK (van domena): created_by -> auth.users
+  @@map("kadr_medical_exams")
+}
+
+/// Was: sy15 `public.kadr_notification_config`
+model KadrNotificationConfig {
+  id                       Int       @id(map: "pk_kadr_notification_config") @default(1) @map("id")
+  enabled                  Boolean   @default(true) @map("enabled")
+  medicalLeadDays          Int       @default(30) @map("medical_lead_days")
+  contractLeadDays         Int       @default(30) @map("contract_lead_days")
+  birthdayEnabled          Boolean   @default(false) @map("birthday_enabled")
+  workAnniversaryEnabled   Boolean   @default(false) @map("work_anniversary_enabled")
+  whatsappRecipients       String[]  @default([]) @map("whatsapp_recipients")
+  emailRecipients          String[]  @default([]) @map("email_recipients")
+  updatedAt                DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy                String?   @map("updated_by")
+  childBirthdayEnabled     Boolean   @default(false) @map("child_birthday_enabled")
+  birthdayOversightEnabled Boolean   @default(true) @map("birthday_oversight_enabled")
+  birthdayDigestEnabled    Boolean   @default(true) @map("birthday_digest_enabled")
+  lkLeadDays               Int       @default(30) @map("lk_lead_days")
+  passportLeadDays         Int       @default(180) @map("passport_lead_days")
+  driverLicenseLeadDays    Int       @default(30) @map("driver_license_lead_days")
+  medicalEmpLeadDays       Int       @default(15) @map("medical_emp_lead_days")
+
+  @@map("kadr_notification_config")
+}
+
+/// Was: sy15 `public.kadr_notification_log`
+model KadrNotificationLog {
+  id                String    @id(map: "pk_kadr_notification_log") @default(uuid(4)) @map("id") @db.Uuid
+  channel           String    @default("whatsapp") @map("channel")
+  recipient         String    @map("recipient")
+  subject           String?   @map("subject")
+  body              String    @default("") @map("body")
+  relatedEntityType String    @map("related_entity_type")
+  relatedEntityId   String?   @map("related_entity_id")
+  employeeId        String?   @map("employee_id") @db.Uuid
+  notificationType  String    @map("notification_type")
+  status            String    @default("queued") @map("status")
+  scheduledAt       DateTime  @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt     DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  attempts          Int       @default(0) @map("attempts")
+  lastAttemptAt     DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
+  error             String?   @map("error")
+  payload           Json?     @default("{}") @map("payload") @db.JsonB
+  createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "kadr_notification_log_employee_id_fkey")
+
+  @@map("kadr_notification_log")
+}
+
+/// Was: sy15 `public.kadr_onboarding_runs`
+model KadrOnboardingRun {
+  id         String   @id(map: "pk_kadr_onboarding_runs") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  templateId String?  @map("template_id") @db.Uuid
+  kind       String   @default("onboarding") @map("kind")
+  startDate  DateTime @default(dbgenerated("CURRENT_DATE")) @map("start_date") @db.Date
+  status     String   @default("active") @map("status")
+  note       String?  @map("note")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by")
+
+  employee            Employee                @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "kadr_onboarding_runs_employee_id_fkey")
+  template            KadrOnboardingTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "kadr_onboarding_runs_template_id_fkey")
+  kadrOnboardingTasks KadrOnboardingTask[]
+
+  @@map("kadr_onboarding_runs")
+}
+
+/// Was: sy15 `public.kadr_onboarding_tasks`
+model KadrOnboardingTask {
+  id           String    @id(map: "pk_kadr_onboarding_tasks") @default(uuid(4)) @map("id") @db.Uuid
+  runId        String    @map("run_id") @db.Uuid
+  title        String    @map("title")
+  description  String?   @map("description")
+  sortOrder    Int       @default(0) @map("sort_order")
+  dueDate      DateTime? @map("due_date") @db.Date
+  assigneeHint String?   @map("assignee_hint")
+  status       String    @default("open") @map("status")
+  doneAt       DateTime? @map("done_at") @db.Timestamptz(6)
+  doneBy       String?   @map("done_by")
+  note         String?   @map("note")
+
+  run KadrOnboardingRun @relation(fields: [runId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "kadr_onboarding_tasks_run_id_fkey")
+
+  @@map("kadr_onboarding_tasks")
+}
+
+/// Was: sy15 `public.kadr_onboarding_template_items`
+model KadrOnboardingTemplateItem {
+  id           String  @id(map: "pk_kadr_onboarding_template_items") @default(uuid(4)) @map("id") @db.Uuid
+  templateId   String  @map("template_id") @db.Uuid
+  title        String  @map("title")
+  description  String? @map("description")
+  sortOrder    Int     @default(0) @map("sort_order")
+  offsetDays   Int     @default(0) @map("offset_days")
+  assigneeHint String? @map("assignee_hint")
+
+  template KadrOnboardingTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "kadr_onboarding_template_items_template_id_fkey")
+
+  @@map("kadr_onboarding_template_items")
+}
+
+/// Was: sy15 `public.kadr_onboarding_templates`
+model KadrOnboardingTemplate {
+  id        String   @id(map: "pk_kadr_onboarding_templates") @default(uuid(4)) @map("id") @db.Uuid
+  name      String   @map("name")
+  kind      String   @default("onboarding") @map("kind")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?  @map("created_by")
+
+  kadrOnboardingRuns          KadrOnboardingRun[]
+  kadrOnboardingTemplateItems KadrOnboardingTemplateItem[]
+
+  @@map("kadr_onboarding_templates")
+}
+
+/// Was: sy15 `public.kadr_salary_viewer_allowlist`
+model KadrSalaryViewerAllowlist {
+  email     String   @id(map: "pk_kadr_salary_viewer_allowlist") @map("email")
+  note      String?  @map("note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("kadr_salary_viewer_allowlist")
+}
+
+/// Was: sy15 `public.kadr_vacation_editor_allowlist`
+model KadrVacationEditorAllowlist {
+  email     String   @id(map: "pk_kadr_vacation_editor_allowlist") @map("email")
+  note      String   @default("") @map("note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("kadr_vacation_editor_allowlist")
+}
+
+/// Was: sy15 `public.katze_employee_map`
+model KatzeEmployeeMap {
+  katzeId      String    @id(map: "pk_katze_employee_map") @map("katze_id")
+  katzeIme     String?   @map("katze_ime")
+  katzePrezime String?   @map("katze_prezime")
+  katzeSektor  String?   @map("katze_sektor")
+  employeeId   String?   @map("employee_id") @db.Uuid
+  matchMethod  String?   @map("match_method")
+  confirmedBy  String?   @map("confirmed_by")
+  confirmedAt  DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "katze_employee_map_employee_id_fkey")
+
+  @@map("katze_employee_map")
+}
+
+/// Was: sy15 `public.makeup_requests`
+model MakeupRequest {
+  id               String    @id(map: "pk_makeup_requests") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  absenceDate      DateTime  @map("absence_date") @db.Date
+  absenceHours     Decimal   @default(8) @map("absence_hours") @db.Decimal(4, 1)
+  reason           String    @default("") @map("reason")
+  makeupPlan       String    @default("") @map("makeup_plan")
+  makeupDeadline   DateTime? @map("makeup_deadline") @db.Date
+  status           String    @default("pending") @map("status")
+  level1By         String?   @map("level1_by")
+  level1At         DateTime? @map("level1_at") @db.Timestamptz(6)
+  reviewedBy       String?   @map("reviewed_by")
+  reviewedAt       DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  completedBy      String?   @map("completed_by")
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz(6)
+  rejectionNote    String?   @map("rejection_note")
+  submittedBy      String    @map("submitted_by")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  compensationType String    @default("nadoknada") @map("compensation_type")
+  weekendWorkDate  DateTime? @map("weekend_work_date") @db.Date
+  stornoBy         String?   @map("storno_by")
+  stornoAt         DateTime? @map("storno_at") @db.Timestamptz(6)
+  stornoNote       String?   @map("storno_note")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "makeup_requests_employee_id_fkey")
+
+  @@map("makeup_requests")
+}
+
+/// Was: sy15 `public.nop_requests`
+model NopRequest {
+  id          String    @id(map: "pk_nop_requests") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId  String    @map("employee_id") @db.Uuid
+  workDate    DateTime  @map("work_date") @db.Date
+  reason      String?   @map("reason")
+  status      String    @default("pending") @map("status")
+  requestedBy String?   @map("requested_by")
+  reviewedBy  String?   @map("reviewed_by")
+  reviewedAt  DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote  String?   @map("review_note")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "nop_requests_employee_id_fkey")
+
+  @@map("nop_requests")
+}
+
+/// Was: sy15 `public.paid_leave_requests`
+model PaidLeaveRequest {
+  id            String    @id(map: "pk_paid_leave_requests") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId    String    @map("employee_id") @db.Uuid
+  leaveType     String    @map("leave_type")
+  dateFrom      DateTime  @map("date_from") @db.Date
+  dateTo        DateTime  @map("date_to") @db.Date
+  daysCount     Int       @default(0) @map("days_count")
+  reason        String    @default("") @map("reason")
+  proofNote     String    @default("") @map("proof_note")
+  status        String    @default("pending") @map("status")
+  level1By      String?   @map("level1_by")
+  level1At      DateTime? @map("level1_at") @db.Timestamptz(6)
+  reviewedBy    String?   @map("reviewed_by")
+  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectionNote String?   @map("rejection_note")
+  submittedBy   String    @map("submitted_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "paid_leave_requests_employee_id_fkey")
+
+  @@map("paid_leave_requests")
+}
+
+/// Was: sy15 `public.profile_groups`
+model ProfileGroup {
+  id        Int @id(map: "pk_profile_groups") @default(autoincrement()) @map("id")
+  profileId Int @map("profile_id")
+  groupId   Int @map("group_id")
+  sortOrder Int @default(100) @map("sort_order")
+
+  group   CompetenceGroup   @relation(fields: [groupId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "profile_groups_group_id_fkey")
+  profile CompetenceProfile @relation(fields: [profileId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "profile_groups_profile_id_fkey")
+
+  @@unique([profileId, groupId], map: "pg_uniq")
+  @@map("profile_groups")
+}
+
+/// Was: sy15 `public.profile_positions`
+model ProfilePosition {
+  id         Int @id(map: "pk_profile_positions") @default(autoincrement()) @map("id")
+  profileId  Int @map("profile_id")
+  positionId Int @unique(map: "pp_uniq") @map("position_id")
+
+  position KadrJobPosition   @relation(fields: [positionId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "profile_positions_position_id_fkey")
+  profile  CompetenceProfile @relation(fields: [profileId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "profile_positions_profile_id_fkey")
+
+  @@map("profile_positions")
+}
+
+/// Was: sy15 `public.salary_payroll`
+model SalaryPayroll {
+  id                      String    @id(map: "pk_salary_payroll") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId              String    @map("employee_id") @db.Uuid
+  periodYear              Int       @map("period_year")
+  periodMonth             Int       @map("period_month")
+  salaryType              String    @default("ugovor") @map("salary_type")
+  advanceAmount           Decimal   @default(0) @map("advance_amount") @db.Decimal(14, 2)
+  advancePaidOn           DateTime? @map("advance_paid_on") @db.Date
+  advanceNote             String?   @default("") @map("advance_note")
+  fixedSalary             Decimal   @default(0) @map("fixed_salary") @db.Decimal(14, 2)
+  hoursWorked             Decimal   @default(0) @map("hours_worked") @db.Decimal(8, 2)
+  hourlyRate              Decimal   @default(0) @map("hourly_rate") @db.Decimal(12, 2)
+  transportRsd            Decimal   @default(0) @map("transport_rsd") @db.Decimal(12, 2)
+  domesticDays            Int       @default(0) @map("domestic_days")
+  perDiemRsd              Decimal   @default(0) @map("per_diem_rsd") @db.Decimal(12, 2)
+  foreignDays             Int       @default(0) @map("foreign_days")
+  perDiemEur              Decimal   @default(0) @map("per_diem_eur") @db.Decimal(10, 2)
+  totalRsd                Decimal   @default(0) @map("total_rsd") @db.Decimal(14, 2)
+  totalEur                Decimal   @default(0) @map("total_eur") @db.Decimal(14, 2)
+  secondPartRsd           Decimal   @default(0) @map("second_part_rsd") @db.Decimal(14, 2)
+  finalPaidOn             DateTime? @map("final_paid_on") @db.Date
+  status                  String    @default("draft") @map("status")
+  note                    String?   @default("") @map("note")
+  createdBy               String?   @map("created_by")
+  createdAt               DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  compensationModel       String?   @map("compensation_model")
+  fondSatiMeseca          Decimal   @default(0) @map("fond_sati_meseca") @db.Decimal(8, 2)
+  redovanRadSati          Decimal   @default(0) @map("redovan_rad_sati") @db.Decimal(8, 2)
+  prekovremeniSati        Decimal   @default(0) @map("prekovremeni_sati") @db.Decimal(8, 2)
+  praznikPlaceniSati      Decimal   @default(0) @map("praznik_placeni_sati") @db.Decimal(8, 2)
+  praznikRadSati          Decimal   @default(0) @map("praznik_rad_sati") @db.Decimal(8, 2)
+  godisnjiSati            Decimal   @default(0) @map("godisnji_sati") @db.Decimal(8, 2)
+  slobodniDaniSati        Decimal   @default(0) @map("slobodni_dani_sati") @db.Decimal(8, 2)
+  bolovanje65Sati         Decimal   @default(0) @map("bolovanje_65_sati") @db.Decimal(8, 2)
+  bolovanje100Sati        Decimal   @default(0) @map("bolovanje_100_sati") @db.Decimal(8, 2)
+  dveMasineSati           Decimal   @default(0) @map("dve_masine_sati") @db.Decimal(8, 2)
+  terenUZemljiCount       Int       @default(0) @map("teren_u_zemlji_count")
+  terenUInostranstvuCount Int       @default(0) @map("teren_u_inostranstvu_count")
+  payableHours            Decimal   @default(0) @map("payable_hours") @db.Decimal(10, 2)
+  ukupnaZarada            Decimal   @default(0) @map("ukupna_zarada") @db.Decimal(14, 2)
+  prviDeo                 Decimal   @default(0) @map("prvi_deo") @db.Decimal(14, 2)
+  preostaloZaIsplatu      Decimal   @default(0) @map("preostalo_za_isplatu") @db.Decimal(14, 2)
+  warnings                Json      @default("[]") @map("warnings") @db.JsonB
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "salary_payroll_employee_id_fkey")
+
+  @@unique([employeeId, periodYear, periodMonth], map: "salary_payroll_employee_id_period_year_period_month_key")
+  @@map("salary_payroll")
+}
+
+/// Was: sy15 `public.salary_terms`
+model SalaryTerm {
+  id                      String    @id(map: "pk_salary_terms") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId              String    @map("employee_id") @db.Uuid
+  salaryType              String    @map("salary_type")
+  effectiveFrom           DateTime  @map("effective_from") @db.Date
+  effectiveTo             DateTime? @map("effective_to") @db.Date
+  amount                  Decimal   @default(0) @map("amount") @db.Decimal(14, 2)
+  amountType              String    @default("neto") @map("amount_type")
+  currency                String    @default("RSD") @map("currency")
+  hourlyRate              Decimal?  @map("hourly_rate") @db.Decimal(12, 2)
+  contractRef             String?   @map("contract_ref")
+  note                    String?   @default("") @map("note")
+  createdBy               String?   @map("created_by")
+  createdAt               DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  transportAllowanceRsd   Decimal   @default(0) @map("transport_allowance_rsd") @db.Decimal(12, 2)
+  perDiemRsd              Decimal   @default(0) @map("per_diem_rsd") @db.Decimal(12, 2)
+  perDiemEur              Decimal   @default(0) @map("per_diem_eur") @db.Decimal(10, 2)
+  compensationModel       String?   @map("compensation_model")
+  fixedAmount             Decimal   @default(0) @map("fixed_amount") @db.Decimal(14, 2)
+  fixedTransportComponent Decimal   @default(0) @map("fixed_transport_component") @db.Decimal(12, 2)
+  fixedExtraHourRate      Decimal   @default(0) @map("fixed_extra_hour_rate") @db.Decimal(12, 2)
+  firstPartAmount         Decimal   @default(0) @map("first_part_amount") @db.Decimal(14, 2)
+  splitHourRate           Decimal   @default(0) @map("split_hour_rate") @db.Decimal(12, 2)
+  splitTransportAmount    Decimal   @default(0) @map("split_transport_amount") @db.Decimal(12, 2)
+  hourlyTransportAmount   Decimal   @default(0) @map("hourly_transport_amount") @db.Decimal(12, 2)
+  terrainDomesticRate     Decimal   @default(0) @map("terrain_domestic_rate") @db.Decimal(12, 2)
+  terrainForeignRate      Decimal   @default(0) @map("terrain_foreign_rate") @db.Decimal(10, 2)
+  netoRsd                 Decimal?  @map("neto_rsd") @db.Decimal
+  brutoRsd                Decimal?  @map("bruto_rsd") @db.Decimal
+  approvedBy              String?   @map("approved_by")
+  approvedAt              DateTime? @map("approved_at") @db.Date
+  fixedNoExtraHours       Boolean   @default(false) @map("fixed_no_extra_hours")
+  paymentWindowOverride   String?   @map("payment_window_override")
+  payrollGroup            String    @default("standard") @map("payroll_group")
+  cashAllowanceRsd        Decimal   @default(0) @map("cash_allowance_rsd") @db.Decimal
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "salary_terms_employee_id_fkey")
+
+  @@map("salary_terms")
+}
+
+/// Was: sy15 `public.sub_departments`
+model KadrSubDepartment {
+  id           Int    @id(map: "pk_sub_departments") @default(autoincrement()) @map("id")
+  departmentId Int    @map("department_id")
+  name         String @map("name")
+  sortOrder    Int    @default(0) @map("sort_order") @db.SmallInt
+
+  department   KadrDepartment    @relation(fields: [departmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "sub_departments_department_id_fkey")
+  employees    Employee[]
+  jobPositions KadrJobPosition[]
+
+  @@map("sub_departments")
+}
+
+/// Was: sy15 `public.vacation_bonus_days`
+model VacationBonusDay {
+  id              String    @id(map: "pk_vacation_bonus_days") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId      String    @map("employee_id") @db.Uuid
+  year            Int       @map("year")
+  days            Decimal   @default(1) @map("days") @db.Decimal
+  workDate        DateTime? @map("work_date") @db.Date
+  reason          String    @default("") @map("reason")
+  makeupRequestId String?   @map("makeup_request_id") @db.Uuid
+  addedBy         String?   @map("added_by")
+  createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "vacation_bonus_days_employee_id_fkey")
+
+  @@map("vacation_bonus_days")
+}
+
+/// Was: sy15 `public.vacation_change_requests`
+model VacationChangeRequest {
+  id                String    @id(map: "pk_vacation_change_requests") @default(uuid(4)) @map("id") @db.Uuid
+  vacationRequestId String    @map("vacation_request_id") @db.Uuid
+  employeeId        String    @map("employee_id") @db.Uuid
+  kind              String    @map("kind")
+  newDateFrom       DateTime? @map("new_date_from") @db.Date
+  newDateTo         DateTime? @map("new_date_to") @db.Date
+  newDaysCount      Int?      @map("new_days_count")
+  oldDateFrom       DateTime  @map("old_date_from") @db.Date
+  oldDateTo         DateTime  @map("old_date_to") @db.Date
+  reason            String    @default("") @map("reason")
+  status            String    @default("pending") @map("status")
+  submittedBy       String    @map("submitted_by")
+  decidedBy         String?   @map("decided_by")
+  decidedAt         DateTime? @map("decided_at") @db.Timestamptz(6)
+  decisionNote      String?   @map("decision_note")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee        Employee        @relation(fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "vacation_change_requests_employee_id_fkey")
+  vacationRequest VacationRequest @relation(fields: [vacationRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "vacation_change_requests_vacation_request_id_fkey")
+
+  @@map("vacation_change_requests")
+}
+
+/// Was: sy15 `public.vacation_entitlements`
+model VacationEntitlement {
+  id                String    @id(map: "pk_vacation_entitlements") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId        String    @map("employee_id") @db.Uuid
+  year              Int       @map("year")
+  daysTotal         Int       @default(20) @map("days_total")
+  daysCarriedOver   Int       @default(0) @map("days_carried_over")
+  note              String?   @default("") @map("note")
+  createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  reviewFlag        String?   @map("review_flag")
+  source            String?   @map("source")
+  openingUsed       Int       @default(0) @map("opening_used")
+  accrualModel      Boolean   @default(false) @map("accrual_model")
+  accrualBase       Int       @default(20) @map("accrual_base")
+  accrualStart      DateTime? @map("accrual_start") @db.Date
+  advanceApproved   Boolean   @default(false) @map("advance_approved")
+  advanceApprovedBy String?   @map("advance_approved_by")
+  advanceApprovedAt DateTime? @map("advance_approved_at") @db.Timestamptz(6)
+  advanceNote       String?   @map("advance_note")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "vacation_entitlements_employee_id_fkey")
+
+  @@unique([employeeId, year], map: "vacation_entitlements_uniq")
+  @@map("vacation_entitlements")
+}
+
+/// Was: sy15 `public.vacation_go_days`
+model VacationGoDay {
+  employeeId String   @map("employee_id") @db.Uuid
+  usedDate   DateTime @map("used_date") @db.Date
+  sourceYear Int?     @map("source_year")
+  comment    String?  @map("comment")
+
+  @@id([employeeId, usedDate], map: "pk_vacation_go_days")
+  @@map("vacation_go_days")
+}
+
+/// Was: sy15 `public.vacation_history`
+model VacationHistory {
+  id            String   @id(map: "pk_vacation_history") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId    String   @map("employee_id") @db.Uuid
+  year          Int      @map("year")
+  entitledDays  Int?     @map("entitled_days")
+  usedDays      Int?     @map("used_days")
+  remainingDays Int?     @map("remaining_days")
+  entries       Json     @default("[]") @map("entries") @db.JsonB
+  rawBlock      String?  @map("raw_block")
+  source        String   @default("excel_godisnji") @map("source")
+  sourceFile    String?  @map("source_file")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "vacation_history_employee_id_fkey")
+
+  @@unique([employeeId, year, source], map: "vacation_history_uq")
+  @@map("vacation_history")
+}
+
+/// Was: sy15 `public.vacation_requests`
+model VacationRequest {
+  id            String    @id(map: "pk_vacation_requests") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId    String    @map("employee_id") @db.Uuid
+  year          Int       @map("year")
+  dateFrom      DateTime  @map("date_from") @db.Date
+  dateTo        DateTime  @map("date_to") @db.Date
+  daysCount     Int       @default(0) @map("days_count")
+  note          String    @default("") @map("note")
+  status        String    @default("pending") @map("status")
+  reviewedBy    String?   @map("reviewed_by")
+  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectionNote String?   @map("rejection_note")
+  submittedBy   String    @map("submitted_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  level1By      String?   @map("level1_by")
+  level1At      DateTime? @map("level1_at") @db.Timestamptz(6)
+
+  employee               Employee                @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "vacation_requests_employee_id_fkey")
+  vacationChangeRequests VacationChangeRequest[]
+
+  @@map("vacation_requests")
+}
+
+/// Was: sy15 `public.work_hours`
+model WorkHour {
+  id                String    @id(map: "pk_work_hours") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId        String    @map("employee_id") @db.Uuid
+  workDate          DateTime  @map("work_date") @db.Date
+  hours             Decimal   @default(0) @map("hours") @db.Decimal(5, 2)
+  overtimeHours     Decimal   @default(0) @map("overtime_hours") @db.Decimal(5, 2)
+  projectRef        String?   @default("") @map("project_ref")
+  note              String?   @default("") @map("note")
+  createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  fieldHours        Decimal   @default(0) @map("field_hours") @db.Decimal(5, 2)
+  absenceCode       String?   @map("absence_code")
+  twoMachineHours   Decimal   @default(0) @map("two_machine_hours") @db.Decimal(5, 2)
+  fieldSubtype      String?   @map("field_subtype")
+  absenceSubtype    String?   @map("absence_subtype")
+  lastEditedBy      String?   @map("last_edited_by")
+  fieldPredmetBroj  String?   @map("field_predmet_broj")
+  fieldPredmetNaziv String?   @map("field_predmet_naziv")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "work_hours_employee_id_fkey")
+
+  @@unique([employeeId, workDate], map: "work_hours_emp_date_uq")
+  @@map("work_hours")
+}
+
+/// Was: sy15 `public.work_hours_remarks`
+model WorkHoursRemark {
+  id         String    @id(map: "pk_work_hours_remarks") @default(uuid(4)) @map("id") @db.Uuid
+  employeeId String    @map("employee_id") @db.Uuid
+  year       Int       @map("year")
+  month      Int       @map("month")
+  note       String    @map("note")
+  status     String    @default("open") @map("status")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  resolvedBy String?   @map("resolved_by")
+  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "work_hours_remarks_employee_id_fkey")
+
+  @@unique([employeeId, year, month], map: "work_hours_remarks_employee_id_year_month_key")
+  @@map("work_hours_remarks")
 }

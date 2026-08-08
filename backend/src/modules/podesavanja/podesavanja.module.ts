@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { PodesavanjaController } from "./podesavanja.controller";
 import { PodesavanjaService } from "./podesavanja.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { PodesavanjaUsersService } from "./podesavanja-users.service";
 import { PredmetPlaneriService } from "./predmet-planeri.service";
 import { SyncSwitchService } from "./sync-switch.service";
@@ -21,6 +22,10 @@ import { ServiceRevenueTypeService } from "../sales/service-revenue-type.service
   controllers: [PodesavanjaController, KnjigovodstvoController],
   providers: [
     PodesavanjaService,
+    // Prekidač KADROVSKE — Podešavanja drže kadrovske šifarnike i DVE allowlist
+    // tabele iz kojih se izvode prava. Brana je SAMO na tim metodama; ostatak
+    // modula ostaje netaknut. V. `KadrovskaSourceService`.
+    KadrovskaSourceService,
     PodesavanjaUsersService,
     PredmetPlaneriService,
     SyncSwitchService,

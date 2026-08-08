@@ -4,6 +4,7 @@ import { Sy15Service } from "../../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
 import { PbSourceService } from "../../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
+import { KadrovskaSourceService } from "../../../common/sy15/kadrovska-source.service";
 import type { ScheduledJob } from "../scheduler.types";
 
 /*
@@ -155,6 +156,10 @@ export class NotifyDispatchService {
     // Zaseban prekidač održavanja — `maint-notify-dispatch` ne sme da zavisi od
     // preklopa PB-a ni sastanaka (incident 06.08.2026).
     private readonly odrIzvor: OdrzavanjeSourceService,
+    // Zaseban prekidač kadrovske (korak 4) — `kadr-notify-dispatch` ne sme da
+    // zavisi od preklopa PB-a, sastanaka ni održavanja, ni obrnuto. Ovaj servis
+    // drži TRI outbox-a i sada TRI prekidača; svaka grana prati SVOJ domen.
+    private readonly kadrIzvor: KadrovskaSourceService,
   ) {}
 
   /** Poseban prekidač za SLANJE (uz SCHEDULER_ENABLED koji pali sam pogon). */
@@ -234,6 +239,14 @@ export class NotifyDispatchService {
 
   // ══ KADROVSKA ══════════════════════════════════════════════════════════════
   async dispatchKadr(): Promise<DispatchSummary> {
+    // Korak 4 gašenja sy15. `kadr_dispatch_dequeue` claim-uje redove u sy15
+    // `kadr_notification_log`; pod `KADROVSKA_IZVOR=3.0` outbox je u 3.0, pa bi
+    // ova grana TIHO praznila POGREŠAN red — poruke iz 3.0 nikad ne bi otišle,
+    // a stare iz sy15 bi se slale ponovo. Brana pada glasno umesto toga.
+    //
+    // 🔴 `kadrIzvor`, NE `izvor`/`odrIzvor`: `dispatchMaint` i `dispatchPb` u
+    // istom servisu ostaju netaknuti (incident 06.08.2026).
+    this.kadrIzvor.assertPorted("kadr-notify-dispatch (kadr_dispatch_dequeue)");
     const rows = await this.sy15.db.$queryRaw<KadrRow[]>`
       SELECT * FROM public.kadr_dispatch_dequeue(${KADR_BATCH}::int, ${KADR_MAX_ATTEMPTS}::int)`;
     let sent = 0;

@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
   NotImplementedException,
+  Optional,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -12,6 +13,7 @@ import { randomBytes } from "node:crypto";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service, type Sy15Tx } from "../../common/sy15/sy15.service";
 import { Sy15StorageService } from "../../common/sy15/sy15-storage.service";
+import { KadrovskaSourceService } from "../../common/sy15/kadrovska-source.service";
 import { MailService } from "../../common/mail/mail.service";
 import { NotifyDispatchService } from "../scheduler/dispatch/notify-dispatch.service";
 import { assertRpcOk } from "../../common/sy15/rpc-ok";
@@ -76,7 +78,23 @@ export class KadrovskaMutationsService {
     private readonly dispatcher: NotifyDispatchService,
     /** 3.0 baza — brava zaključanog dana grida (AUDIT-K7c). */
     private readonly prisma: PrismaService,
+    // Prekidač izvora (korak 4 gašenja sy15). `@Optional` je NAMERNO: bez njega
+    // `assertPorted` ne radi ništa, tj. izostanak prekidača NIKAD ne prebacuje
+    // modul na 3.0 (bezbedan smer). V. `KadrovskaSourceService`.
+    @Optional() private readonly izvor?: KadrovskaSourceService,
   ) {}
+
+  /**
+   * Brana prekidača `KADROVSKA_IZVOR`. Pod `sy15` (i kad prekidača NEMA) ne radi
+   * ništa; pod `3.0` baca 503 sa imenom putanje.
+   *
+   * Izmereno 08.08.2026: sve mutacije prolaze kroz `create`/`mutate`/`mutateRaw`
+   * (16 poziva `withUserRls`/`runIdempotentRls` unutar njih), pa je dovoljno
+   * postaviti branu na ta tri getera da nijedan UPIS ne može TIHO da ode u sy15.
+   */
+  private assertPorted(feature: string): void {
+    this.izvor?.assertPorted(feature);
+  }
 
   // ==========================================================================
   // ODMORI
@@ -3735,6 +3753,7 @@ export class KadrovskaMutationsService {
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ) {
+    this.assertPorted(`kadrovska (upis: ${action})`);
     try {
       const out = await this.sy15.runIdempotentRls(
         email,
@@ -3755,6 +3774,7 @@ export class KadrovskaMutationsService {
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ) {
+    this.assertPorted(`kadrovska (upis: ${action})`);
     try {
       if (clientEventId) {
         const out = await this.sy15.runIdempotentRls(
@@ -3779,6 +3799,7 @@ export class KadrovskaMutationsService {
     action: string,
     fn: (tx: Sy15Tx) => Promise<T>,
   ): Promise<T> {
+    this.assertPorted(`kadrovska (upis: ${action})`);
     try {
       if (clientEventId) {
         const out = await this.sy15.runIdempotentRls(
