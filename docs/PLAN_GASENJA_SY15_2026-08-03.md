@@ -265,9 +265,14 @@ prevede. Pravi se i verifikuje jednom, koristi u svim koracima.
 > 3. `rev_api_idempotency` je registar **cele aplikacije** (643 reda: kadrovska 476,
 >    moj-profil 60, sastanci 56…, reversi samo 2) — ne seli se sa domenom.
 >
-> Pripremljeno i važi za korak 3: 14 Prisma modela, offline migracija, prenosna skripta
-> (dokazana: 195/195 redova, idempotentna), prekidač `REVERSI_IZVOR` (pod `3.0` sve što bi
-> pisalo u sy15 vraća 503 — nema tihog razilaženja). Runbook: `docs/SEOBA_REVERSA_2026-08-05.md`.
+> **NADIĐENO 07.08.2026** — v. [SEOBA_REVERSI_LOKACIJE_2026-08-07.md](SEOBA_REVERSI_LOKACIJE_2026-08-07.md).
+> Korak 3 je prerađen tako da obuhvata OBA domena (21 tabela / 5.659 redova, ne samo 14
+> rev tabela): izmereno je da `rev_issue_reversal` i `rev_confirm_return` u ISTOM COMMIT-u
+> pišu `rev_document_lines` i `loc_location_movements`, pa se ne mogu razdvojiti. Prekidači
+> su `REVERSI_IZVOR` + `LOKACIJE_IZVOR`, spregnuti branom koja obara podizanje ako se
+> vrednosti razlikuju. Stara grana `feat/sy15-seoba-reversi` je ODBAČENA (128 commit-a iza
+> `main`-a, pokrivala samo `rev_*`); `docs/SEOBA_REVERSA_2026-08-05.md` ostaje kao istorijat.
+> Gornji nalaz o `rev_api_idempotency` je nezavisno POTVRĐEN (680 redova, 2 reversi, 0 loc).
 
 Sastanci su listni domen bez transakcionih šavova ka drugima (2 inbound FK: istorija ide
 zajedno; `production.operativna_aktivnost.izvor_akcioni_plan_id` je mrtav šav — 0 popunjenih).
