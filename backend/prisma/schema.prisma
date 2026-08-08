@@ -2348,6 +2348,18 @@ model User {
   /// Bridge JWT user -> production Worker (definesApproval/definesLaunch, machine_access).
   /// RLS-ready keystone (AUTHZ_UNIFIED §5).
   workerId            Int?                     @map("worker_id")
+  /// PREVOD IDENTITETA sy15 -> 3.0. sy15 `auth.users.id` (uuid) istog čoveka.
+  /// Zašto postoji: 1.0/sy15 kolone koje nose korisnika (`maint_work_orders.assigned_to`,
+  /// `maint_machines.responsible_user_id`, `maint_drivers.auth_user_id`,
+  /// `maint_user_profiles.user_id`, `loc_*.moved_by`…) su uuid, a 3.0 parnjak je
+  /// `users.id` (Int, BACKEND_RULES §2.1). Bez ove kolone nijedan runtime prevod
+  /// uuid -> Int nije moguć, pa dodela naloga/odgovornog pod `ODRZAVANJE_IZVOR=3.0`
+  /// pada sa 422.
+  /// NULL je ISPRAVNO STANJE, ne kvar: izmereno 08.08.2026 — 3.0 ima 71 nalog,
+  /// sy15 62, poklapanje po mejlu 61/62. Deset 3.0 naloga nikad nije imalo sy15
+  /// parnjaka, a jedan sy15 nalog (`bigtehn-worker@system.local`, sistemski nalog
+  /// ugašenog BIGTEHN mosta) namerno NIJE dobio 3.0 parnjaka.
+  sy15UserId          String?                  @unique(map: "uq_users_sy15_user_id") @map("sy15_user_id") @db.Uuid
   createdAt           DateTime                 @default(now()) @map("created_at") @db.Timestamp(6)
   updatedAt           DateTime                 @updatedAt @map("updated_at") @db.Timestamp(6)
   worker              Worker?                  @relation("UserWorker", fields: [workerId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_users_worker")

@@ -28,6 +28,23 @@ import {
  */
 
 /* ── Enum allowliste (paritet žive sy15 šeme — prisma/sy15.prisma) ── */
+/**
+ * 🔴 ŠAV SEOBE (`ODRZAVANJE_IZVOR`): `maint_drivers.auth_user_id` (i njegov
+ * blizanac `maint_assets.responsible_user_id`, i `maint_user_profiles.user_id`)
+ * je u sy15 `auth.users.id` (**uuid**), a u 3.0 `users.id` (**Int**, odluka 2).
+ * Isti DTO opslužuje oba položaja prekidača, pa validacija mora primiti OBA
+ * oblika — `@IsUUID()` bi pod `3.0` odbio svaki ispravan id pre nego što zahtev
+ * uopšte stigne do servisa (422 bez ikakve veze sa uzrokom). Koji je oblik
+ * ispravan presuđuje servis, prema aktivnom izvoru.
+ *
+ * ⚠️ Brojna grana je OGRANIČENA na 10 cifara: `users.id` je PG `int4`, pa bi
+ * neograničeno `[0-9]+` propustilo „99999999999999999999" (`Number.isInteger`
+ * ga prihvata!) sve do Prisma sloja → 500 umesto 422. Tačan opseg int4 i dalje
+ * presuđuje servis (`jeIdKorisnika30`); ovo je samo prva, jeftina brana.
+ */
+const AUTH_USER_ID_OBA_IZVORA =
+  /^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]{1,10})$/;
+
 const OP_STATUS = ["running", "degraded", "down", "maintenance"] as const;
 const WO_STATUS = [
   "novi",
@@ -125,7 +142,8 @@ export class CreateMachineDto extends IdempotentDto {
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() tracked?: boolean;
   @IsOptional() @IsIn(["manual", "bigtehn"]) source?: string;
-  @IsOptional() @IsUUID() responsibleUserId?: string;
+  /** 🔴 ŠAV SEOBE — v. `AUTH_USER_ID_OBA_IZVORA`. */
+  @IsOptional() @Matches(AUTH_USER_ID_OBA_IZVORA) responsibleUserId?: string;
 }
 
 export class UpdateMachineDto {
@@ -142,7 +160,8 @@ export class UpdateMachineDto {
   @IsOptional() @IsNumber() weightKg?: number;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() tracked?: boolean;
-  @IsOptional() @IsUUID() responsibleUserId?: string;
+  /** 🔴 ŠAV SEOBE — v. `AUTH_USER_ID_OBA_IZVORA`. */
+  @IsOptional() @Matches(AUTH_USER_ID_OBA_IZVORA) responsibleUserId?: string;
 }
 
 export class RenameMachineDto {
@@ -229,7 +248,8 @@ export class ReportIncidentDto extends IdempotentDto {
 
 export class UpdateIncidentDto {
   @IsOptional() @IsIn(INCIDENT_STATUS) status?: string;
-  @IsOptional() @IsUUID() assignedTo?: string;
+  /** 🔴 ŠAV SEOBE — v. `AUTH_USER_ID_OBA_IZVORA`. */
+  @IsOptional() @Matches(AUTH_USER_ID_OBA_IZVORA) assignedTo?: string;
   @IsOptional() @IsIn(INCIDENT_SEVERITY) severity?: string;
   @IsOptional() @IsString() resolutionNotes?: string;
   @IsOptional() @IsInt() downtimeMinutes?: number;
@@ -271,7 +291,8 @@ export class CreateWorkOrderDto extends IdempotentDto {
 export class UpdateWorkOrderDto {
   @IsOptional() @IsIn(WO_STATUS) status?: string;
   @IsOptional() @IsIn(WO_PRIORITY) priority?: string;
-  @IsOptional() @IsUUID() assignedTo?: string;
+  /** 🔴 ŠAV SEOBE — v. `AUTH_USER_ID_OBA_IZVORA`. */
+  @IsOptional() @Matches(AUTH_USER_ID_OBA_IZVORA) assignedTo?: string;
   @IsOptional() @IsISO8601() dueAt?: string;
   @IsOptional() @IsString() @MaxLength(300) title?: string;
   @IsOptional() @IsString() description?: string;
@@ -355,23 +376,6 @@ export class DetailsUpsertDto {
  * `responsible_user_id` (create RPC ih NE prima → jedini put da se postave). `null` briše
  * vezu (unassign). Row-odluku (asset_visible ∧ erp/chief/admin) presuđuje RLS.
  */
-/**
- * 🔴 ŠAV SEOBE (`ODRZAVANJE_IZVOR`): `maint_drivers.auth_user_id` (i njegov
- * blizanac `maint_assets.responsible_user_id`, i `maint_user_profiles.user_id`)
- * je u sy15 `auth.users.id` (**uuid**), a u 3.0 `users.id` (**Int**, odluka 2).
- * Isti DTO opslužuje oba položaja prekidača, pa validacija mora primiti OBA
- * oblika — `@IsUUID()` bi pod `3.0` odbio svaki ispravan id pre nego što zahtev
- * uopšte stigne do servisa (422 bez ikakve veze sa uzrokom). Koji je oblik
- * ispravan presuđuje servis, prema aktivnom izvoru.
- *
- * ⚠️ Brojna grana je OGRANIČENA na 10 cifara: `users.id` je PG `int4`, pa bi
- * neograničeno `[0-9]+` propustilo „99999999999999999999" (`Number.isInteger`
- * ga prihvata!) sve do Prisma sloja → 500 umesto 422. Tačan opseg int4 i dalje
- * presuđuje servis (`jeIdKorisnika30`); ovo je samo prva, jeftina brana.
- */
-const AUTH_USER_ID_OBA_IZVORA =
-  /^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]{1,10})$/;
-
 export class PatchAssetCoreDto {
   @IsOptional() @IsString() @MaxLength(300) name?: string;
   @IsOptional() @IsIn(OP_STATUS) status?: string;

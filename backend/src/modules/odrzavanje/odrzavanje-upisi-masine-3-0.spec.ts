@@ -328,11 +328,45 @@ interface Sklop {
   storage: { upload: jest.Mock; remove: jest.Mock; signUrl: jest.Mock };
 }
 
+/**
+ * PREVOD IDENTITETA — sy15 uuid-i naloga iz seed-a.
+ *
+ * 🔴 Šef je PRVI red u `users`, a prevode se uuid-i OSTALIH: tako prevodilac koji
+ * bi ignorisao `sy15_user_id` i vratio „prvi nalog" pada, umesto da slučajno
+ * pogodi tačan broj. TREĆI nalog namerno NEMA sy15 parnjaka (10 od 71 3.0 naloga
+ * na produkciji je takvo — nullable kolona je izmereno stanje, ne kvar).
+ */
+const UUID_SEF = "11111111-1111-4111-8111-111111111111";
+const UUID_OPERATER = "22222222-2222-4222-8222-222222222222";
+/** Postoji u sy15, NEMA 3.0 parnjaka (u produkciji: `bigtehn-worker@system.local`). */
+const UUID_BEZ_PARNJAKA = "99999999-9999-4999-8999-999999999999";
+const TEHNICAR_MEJL = "tehnicar@servoteh.com";
+
 /** Šef proizvodnje (chief) = pun katalog-write; operater = najuži profil. */
 function seed(db: LaznaBaza): void {
   db.tabele.user.push(
-    { id: 1, email: SEF_MEJL, role: "user", active: true },
-    { id: 2, email: OPERATER_MEJL, role: "user", active: true },
+    {
+      id: 1,
+      email: SEF_MEJL,
+      role: "user",
+      active: true,
+      sy15UserId: UUID_SEF,
+    },
+    {
+      id: 2,
+      email: OPERATER_MEJL,
+      role: "user",
+      active: true,
+      sy15UserId: UUID_OPERATER,
+    },
+    // Nalog BEZ sy15 parnjaka — ispravno stanje, ne kvar.
+    {
+      id: 3,
+      email: TEHNICAR_MEJL,
+      role: "user",
+      active: true,
+      sy15UserId: null,
+    },
   );
   db.tabele.maintUserProfile.push(
     { userId: 1, role: "chief", active: true, assignedMachineCodes: [] },
@@ -980,29 +1014,6 @@ describe("(d) gejtovi — jedina brana kad RLS-a više nema", () => {
     ).rejects.toBeInstanceOf(UnprocessableEntityException);
   });
 
-  it("🔴 identitet: `assignedTo` kao sy15 uuid GLASNO pada (422), ne nestaje tiho", async () => {
-    const s = napravi("3.0");
-    s.db.tabele.maintWorkOrder.push({
-      woId: "w-5",
-      assetId: "a-312",
-      assetType: "machine",
-      status: "novi",
-      priority: "p3_manje",
-      assignedTo: null,
-      reportedBy: 1,
-      startedAt: null,
-      completedAt: null,
-      servicePlanId: null,
-      assetServicePlanId: null,
-    });
-    await expect(
-      s.svc.updateWorkOrder(SEF_MEJL, "w-5", {
-        assignedTo: "6f1e2b3c-4d5e-4a7b-8c9d-0e1f2a3b4c5d",
-      }),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
-    expect(s.db.tabele.maintWorkOrder[0].assignedTo).toBeNull();
-  });
-
   it("bez ubrizganog 3.0 sloja putanja pada sa 503 — nikad tih upis u sy15", async () => {
     process.env.ODRZAVANJE_IZVOR = "3.0";
     const db = new LaznaBaza();
@@ -1029,6 +1040,188 @@ describe("(d) gejtovi — jedina brana kad RLS-a više nema", () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(runIdempotentRls).not.toHaveBeenCalled();
     expect(withUserRls).not.toHaveBeenCalled();
+  });
+});
+
+/* ══════════════════════ (h) PREVOD IDENTITETA sy15 -> 3.0 ══════════════════════ */
+
+/**
+ * 🔴 ŠTA OVA GRUPA ČUVA
+ *
+ * `responsibleUserId` i `assignedTo` su u DTO-u `@IsUUID()` — to je sy15
+ * `auth.users.id`. U 3.0 je ista kolona `Int` (`users.id`). Do migracije
+ * `20260808100000_users_sy15_user_id_prevod_identiteta` 3.0 `users` NIJE imao
+ * nijednu kolonu sa sy15 uuid-om, pa je prevod bio NEMOGUĆ i modul je pod
+ * `ODRZAVANJE_IZVOR=3.0` padao sa 422 na 5 mesta — tj. dodela naloga čoveku i
+ * postavljanje odgovornog za mašinu NISU RADILI.
+ *
+ * Sada prevod postoji (`users.sy15_user_id`), ali ima tačno dva ishoda i oba se
+ * ovde pinuju:
+ *
+ *  1. **Ima parnjaka → TAČAN `users.id`.** Ne „neki broj": seed je namešten tako
+ *     da prevodilac koji ignoriše kolonu i uzme prvi red vrati 1 umesto 2. Test
+ *     koji tvrdi samo „nije null" tu grešku ne bi video.
+ *  2. **Nema parnjaka → GLASAN pad, sa imenovanim uuid-om.** `null` bi prošao
+ *     kroz Prisma sloj bez ijedne greške i upisao red sa PRAZNOM dodelom: nalog
+ *     sačuvan, čovek nestao. Zato se uz izuzetak tvrdi i da je red NETAKNUT.
+ *
+ * Nepromenjeno ponašanje (takođe pinovano): broj prolazi kao broj, izostavljeno
+ * polje se ne dira, a pod `sy15` se prevodilac NE ZOVE uopšte.
+ */
+describe("(h) prevod identiteta: sy15 uuid -> 3.0 `users.id`", () => {
+  /** Radni nalog bez dodele — polazna tačka za sve tvrdnje o `assignedTo`. */
+  function saNalogom(s: Sklop): void {
+    s.db.tabele.maintWorkOrder.push({
+      woId: "w-5",
+      assetId: "a-312",
+      assetType: "machine",
+      status: "novi",
+      priority: "p3_manje",
+      assignedTo: null,
+      reportedBy: 1,
+      startedAt: null,
+      completedAt: null,
+      servicePlanId: null,
+      assetServicePlanId: null,
+    });
+  }
+
+  it("🔴 `assignedTo` = uuid SA parnjakom → TAČAN `users.id` (2, ne prvi nalog)", async () => {
+    const s = napravi("3.0");
+    saNalogom(s);
+    await s.svc.updateWorkOrder(SEF_MEJL, "w-5", {
+      assignedTo: UUID_OPERATER,
+    });
+    // 🔴 Baš 2. Prevodilac koji vrati „prvi red iz `users`" dao bi 1 i prošao
+    // svaki test koji samo pita „je li dodeljeno".
+    expect(s.db.tabele.maintWorkOrder[0].assignedTo).toBe(2);
+  });
+
+  it("🔴 `assignedTo` = uuid BEZ parnjaka → pad sa IMENOVANIM uuid-om, red netaknut", async () => {
+    const s = napravi("3.0");
+    saNalogom(s);
+    const poziv = s.svc.updateWorkOrder(SEF_MEJL, "w-5", {
+      assignedTo: UUID_BEZ_PARNJAKA,
+    });
+    await expect(poziv).rejects.toBeInstanceOf(UnprocessableEntityException);
+    // Poruka mora da imenuje uuid — bez toga se na produkciji ne zna KOJI nalog
+    // treba povezati, pa 422 postaje neupotrebljiv.
+    await expect(poziv).rejects.toThrow(UUID_BEZ_PARNJAKA);
+    // 🔴 Dodela NIJE tiho ispražnjena.
+    expect(s.db.tabele.maintWorkOrder[0].assignedTo).toBeNull();
+  });
+
+  it("🔴 numerička vrednost prolazi kao danas (bez upita u `users`)", async () => {
+    const s = napravi("3.0");
+    saNalogom(s);
+    await s.svc.updateWorkOrder(SEF_MEJL, "w-5", { assignedTo: "2" });
+    expect(s.db.tabele.maintWorkOrder[0].assignedTo).toBe(2);
+  });
+
+  it("izostavljen `assignedTo` (`undefined`) prolazi netaknut — dodela se ne dira", async () => {
+    const s = napravi("3.0");
+    saNalogom(s);
+    s.db.tabele.maintWorkOrder[0].assignedTo = 2;
+    await s.svc.updateWorkOrder(SEF_MEJL, "w-5", { status: "u_radu" });
+    expect(s.db.tabele.maintWorkOrder[0].assignedTo).toBe(2);
+    expect(s.db.tabele.maintWorkOrder[0].status).toBe("u_radu");
+  });
+
+  it("🔴 `createMachine`: uuid odgovornog stiže PREVEDEN i u mašinu I u `maint_assets` ogledalo", async () => {
+    const s = napravi("3.0");
+    await s.svc.createMachine(SEF_MEJL, {
+      clientEventId: CID(),
+      machineCode: "9.7",
+      name: "Presa 9.7",
+      responsibleUserId: UUID_OPERATER,
+    });
+    const m = s.db.tabele.maintMachine.find((x) => x.machineCode === "9.7");
+    expect(m?.responsibleUserId).toBe(2);
+    // Ogledalo u `maint_assets` mora dobiti ISTU vrednost — dva prevoda koja se
+    // raziđu bila bi nevidljiva u UI-u, a vidljiva tek u izveštajima.
+    const a = s.db.tabele.maintAsset.find((x) => x.assetId === m?.assetId);
+    expect(a?.responsibleUserId).toBe(2);
+  });
+
+  it("🔴 `createMachine` sa uuid-om BEZ parnjaka ne ostavlja ni mašinu ni sredstvo", async () => {
+    const s = napravi("3.0");
+    const preAssets = s.db.tabele.maintAsset.length;
+    await expect(
+      s.svc.createMachine(SEF_MEJL, {
+        clientEventId: CID(),
+        machineCode: "9.8",
+        name: "Presa 9.8",
+        responsibleUserId: UUID_BEZ_PARNJAKA,
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(
+      s.db.tabele.maintMachine.find((x) => x.machineCode === "9.8"),
+    ).toBeUndefined();
+    expect(s.db.tabele.maintAsset.length).toBe(preAssets);
+  });
+
+  it("`updateMachine`: uuid odgovornog → `users.id`; `null` i dalje raskida vezu", async () => {
+    const s = napravi("3.0");
+    await s.svc.updateMachine(SEF_MEJL, "3.12", {
+      responsibleUserId: UUID_SEF,
+    });
+    expect(s.db.tabele.maintMachine[0].responsibleUserId).toBe(1);
+    await s.svc.updateMachine(SEF_MEJL, "3.12", {
+      responsibleUserId: null as unknown as string,
+    });
+    expect(s.db.tabele.maintMachine[0].responsibleUserId).toBeNull();
+  });
+
+  it("`updateIncident`: uuid dodeljenog → `users.id`", async () => {
+    const s = napravi("3.0");
+    s.db.tabele.maintIncident.push({
+      id: "inc-9",
+      machineCode: "3.12",
+      assetId: "a-312",
+      status: "prijavljen",
+      severity: "minor",
+      assignedTo: null,
+      reportedBy: 2,
+    });
+    await s.svc.updateIncident(SEF_MEJL, "inc-9", {
+      assignedTo: UUID_OPERATER,
+    });
+    expect(s.db.tabele.maintIncident[0].assignedTo).toBe(2);
+  });
+
+  it("vrednost koja nije ni broj ni uuid pada sa 422 (ne prolazi do baze)", async () => {
+    const s = napravi("3.0");
+    saNalogom(s);
+    await expect(
+      s.svc.updateWorkOrder(SEF_MEJL, "w-5", {
+        assignedTo: "pera-peric",
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(s.db.tabele.maintWorkOrder[0].assignedTo).toBeNull();
+  });
+
+  it("🔴 pod `sy15` prevodilac se NE ZOVE — uuid ide u sy15 nepromenjen", async () => {
+    const s = napravi("sy15");
+    const prevod = jest.spyOn(
+      s.svc as unknown as {
+        id30: (...a: unknown[]) => Promise<unknown>;
+      },
+      "id30",
+    );
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    s.sy15Tx.maintWorkOrder = {
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ startedAt: null, completedAt: null }),
+      updateMany,
+    };
+    await s.svc.updateWorkOrder(SEF_MEJL, "w-5", {
+      assignedTo: UUID_OPERATER,
+    });
+    expect(prevod).not.toHaveBeenCalled();
+    expect(s.withUserRls).toHaveBeenCalled();
+    // 🔴 U sy15 se upisuje SIROV uuid — ponašanje produkcije je nepromenjeno.
+    expect(updateMany.mock.calls[0][0].data.assignedTo).toBe(UUID_OPERATER);
   });
 });
 

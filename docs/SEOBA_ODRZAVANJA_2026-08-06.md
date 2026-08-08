@@ -111,6 +111,44 @@ Uparivanje koristi **postojeći** helper `backend/scripts/lib/sy15-identity.ts`
 Dva naloga zaslužuju napomenu, oba se razrešavaju: `ai-maint-test@servoteh.local` (nalog
 testa AI-prijave, `users.id = 56`) i `stamenic4@gmail.com` (`users.id = 39`).
 
+### 2.1b 🔴 Mapa identiteta je bila SAMO OFFLINE — zato su upisi padali sa 422 (rešeno 08.08.)
+
+`buildUserMaps` postoji **van runtime-a**: prenosna skripta ga pozove, razreši uuid → Int i
+upiše rezultat. **U bazi od toga nije ostajalo ništa** — izmereno 08.08.2026, 3.0 `users` je
+imao tačno ove kolone: `id, email, password_hash, full_name, role, active, email_verified_at,
+last_login_at, created_at, updated_at, worker_id, must_change_password`. Nijedne sa sy15 uuid-om.
+
+Posledica na živom radu: DTO polja koja nose čoveka (`responsibleUserId`, `assignedTo`) su
+`@IsUUID()`, pa je `OdrzavanjeService.id30` pod `ODRZAVANJE_IZVOR=3.0` **GLASNO padao sa 422
+na 5 mesta** (createMachine, updateMachine, updateIncident, updateWorkOrder ×2). Pad je bio
+svesna odluka — tiho `null` bi značilo „nalog sačuvan, dodela nestala" — ali je time
+**dodela radnog naloga čoveku i postavljanje odgovornog za mašinu bili neupotrebljivi**.
+
+Rešeno uvođenjem `users.sy15_user_id` (`uuid`, NULL dozvoljen, `uq_users_sy15_user_id`):
+
+| Merenje 08.08.2026 (`ANALYZE` pa `count(*)`, ne `n_live_tup`) | |
+|---|---:|
+| 3.0 `users` | **71** (svi aktivni, 71 različit mejl) |
+| sy15 `auth.users` | **62** (svi sa mejlom) |
+| poklapanje po `lower(btrim(email))` | **61 / 62 (98 %)** |
+| sy15 naloga bez 3.0 parnjaka | **1** — `bigtehn-worker@system.local` |
+| 3.0 naloga bez sy15 parnjaka | **10** |
+
+- **NULL je ispravno stanje, ne kvar.** Deset 3.0 naloga nikad nije imalo sy15 parnjaka
+  (71 vs 62); `NOT NULL` bi bio laž o podatku.
+- **`bigtehn-worker@system.local` OSTAJE bez parnjaka.** To je sistemski nalog BIGTEHN mosta,
+  a most je ugašen 07.08.2026. Pravljenje 3.0 naloga za mrtav sistem uvelo bi novo stanje koje
+  niko nije tražio; nalog bez ijedne dodele ionako nema šta da prevede. Nije prećutan —
+  migracija ga PRIJAVLJUJE (`RAISE WARNING`), i skripta ga ispisuje kao napomenu.
+- Popuna: migracija `20260808100000_users_sy15_user_id_prevod_identiteta` (DDL + 61 par
+  izmeren sa žive sy15; spajanje se obavlja NA CILJU po `lower(btrim(email))`, pa promenjen
+  mejl ne prođe tiho nego se prijavi). Održavanje veze posle toga:
+  `backend/scripts/povezi-identitet-sy15.ts` (dry-run podrazumevan, `--apply` upisuje) —
+  koristi **isti** `scripts/lib/sy15-identity.ts`, bez druge kopije pravila uparivanja.
+- Runtime: `backend/src/common/identity/sy15-user-id.ts`. Uuid **sa** parnjakom → `users.id`;
+  uuid **bez** parnjaka → i dalje 422, ali sada sa imenovanim uuid-om i uputstvom. Broj i
+  izostavljeno polje se ponašaju kao pre.
+
 ### 2.2 🔴 Presuda: održavanje se može preseliti PRE kadrovske
 
 Kod sastanaka je Projektni biro pao na tome što `pb_current_employee_id()` traži tabelu
@@ -367,6 +405,11 @@ rangirano po tome šta zaustavlja preklop.
 | **11** | 🟡 **`ai_chat_sql`** je generički read-only SQL alat i može da dotakne `maint_*`. Nije stavljen pod branu (nije mu poznat domen unaprijed); pod `3.0` bi čitao sy15 kopiju. Samo čitanje, ne razilazi baze | | dokumentovano |
 
 **Zbir: ~10–14 dana** do punog rada pod `3.0`. Sam prenos podataka je **~2 minuta**.
+
+> ✅ **PREVOD IDENTITETA (08.08.2026) — zatvoren.** Nije bio u tabeli gore jer nije ličio na
+> blokadu: kod je „radio", samo je svaka dodela čoveka pod `3.0` vraćala 422. Detalji i brojke
+> u §2.1b. Time je uklonjena poslednja stavka koja bi pri preklopu oborila **stvaran radni
+> tok** (dodela radnog naloga, odgovorni za mašinu), a ne samo neku rutu.
 
 ### Šta pod `3.0` RADI od 06.08.
 
