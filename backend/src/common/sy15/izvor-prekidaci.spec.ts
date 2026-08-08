@@ -3,6 +3,7 @@ import { SastanciSourceService } from "./sastanci-source.service";
 import { PbSourceService } from "./pb-source.service";
 import { OdrzavanjeSourceService } from "./odrzavanje-source.service";
 import { ScadaSourceService } from "./scada-source.service";
+import { KadrovskaSourceService } from "./kadrovska-source.service";
 
 /**
  * Prekidači izvora `SASTANCI_IZVOR` i `PB_IZVOR` — pin za tri stvari koje moraju
@@ -21,6 +22,7 @@ import { ScadaSourceService } from "./scada-source.service";
 
 const ENVS = [
   "SASTANCI_IZVOR",
+  "KADROVSKA_IZVOR",
   "PB_IZVOR",
   "ODRZAVANJE_IZVOR",
   "SCADA_IZVOR",
@@ -453,6 +455,124 @@ describe("zastareli SASTANCI_PB_IZVOR — rezerva SAMO za sastanke", () => {
       throw new Error("brana nije pukla");
     } catch (e) {
       expect((e as Error).message).toContain("SASTANCI_PB_IZVOR=sy15");
+    }
+  });
+});
+
+describe("KadrovskaSourceService (KADROVSKA_IZVOR) — korak 4, najveći domen", () => {
+  it("bez env-a: sy15, brana ne puca", () => {
+    const s = new KadrovskaSourceService();
+    expect(s.izvor).toBe("sy15");
+    expect(s.isThreeZero).toBe(false);
+    expect(() => s.assertPorted("kadrovska (čitanje/izveštaji)")).not.toThrow();
+  });
+
+  it("3.0: brana puca sa 503 i IMENUJE putanju + način povratka", () => {
+    hvatajWarn();
+    postavi({ KADROVSKA_IZVOR: "3.0" });
+    const s = new KadrovskaSourceService();
+    expect(s.isThreeZero).toBe(true);
+    try {
+      s.assertPorted("kadrovska (upis: vacreq.approve)");
+      throw new Error("brana nije pukla");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ServiceUnavailableException);
+      const m = (e as Error).message;
+      expect(m).toContain("kadrovska (upis: vacreq.approve)");
+      expect(m).toContain("KADROVSKA_IZVOR=sy15");
+    }
+  });
+
+  it("nepoznata vrednost NE postaje 3.0 (razilaženje baza je nevidljivo)", () => {
+    hvatajWarn();
+    postavi({ KADROVSKA_IZVOR: "3" });
+    const s = new KadrovskaSourceService();
+    expect(s.izvor).toBe("sy15");
+    expect(() => s.assertPorted("x")).not.toThrow();
+  });
+
+  it("🔴 zastareli SASTANCI_PB_IZVOR NE pomera kadrovsku", () => {
+    hvatajWarn();
+    postavi({ SASTANCI_PB_IZVOR: "3.0" });
+    const s = new KadrovskaSourceService();
+    // Isti razlog kao kod PB-a i održavanja: stari zajednički naziv ne sme da
+    // obori domen koji se ne seli. Kadrovska je najveći domen — kad bi je alias
+    // pomerio, palo bi 6 cron poslova, „Moj profil", Podešavanja i AI-alati.
+    expect(s.izvor).toBe("sy15");
+    expect(() => s.assertPorted("kadr-hr-reminders")).not.toThrow();
+  });
+
+  it("🔴 poruka na 3.0 IMENUJE Katze most kao nešto što prekidač NE pokriva", () => {
+    const warn = hvatajWarn();
+    postavi({ KADROVSKA_IZVOR: "3.0" });
+    new KadrovskaSourceService();
+    const poruke = (warn.mock.calls as unknown[][])
+      .map((c) => String(c[0]))
+      .join(" || ");
+    // Ako ovo ispadne iz poruke, preklop može da se izvede bez preusmeravanja
+    // mosta — a onda kapija TIHO staje (nema greške, samo prestanu nova kucanja).
+    expect(poruke).toContain("Katze most");
+    expect(poruke).toContain("Moj profil");
+  });
+});
+
+describe("nezavisnost SVIH PET prekidača (kadrovska uvedena 08.08.2026)", () => {
+  const svi = () => ({
+    sastanci: new SastanciSourceService(),
+    pb: new PbSourceService(),
+    odrzavanje: new OdrzavanjeSourceService(),
+    scada: new ScadaSourceService(),
+    kadrovska: new KadrovskaSourceService(),
+  });
+
+  it("🔴 stvarno stanje produkcije 08.08.2026: sastanci=3.0 + SCADA=3.0, kadrovska OSTAJE sy15", () => {
+    hvatajWarn();
+    postavi({ SASTANCI_IZVOR: "3.0", SCADA_IZVOR: "3.0" });
+    const { kadrovska } = svi();
+    expect(kadrovska.izvor).toBe("sy15");
+    expect(() => kadrovska.assertPorted("kadr-hr-reminders")).not.toThrow();
+  });
+
+  it("KADROVSKA_IZVOR=3.0: ostala ČETIRI domena rade NORMALNO", () => {
+    hvatajWarn();
+    postavi({ KADROVSKA_IZVOR: "3.0" });
+    const { sastanci, pb, odrzavanje, scada, kadrovska } = svi();
+    expect(kadrovska.isThreeZero).toBe(true);
+    // 🔴 Ovo je jezgro pouke incidenta 06.08.2026 prevedeno na najveći domen:
+    // kadrovska deli `employees` sa PB-om i Reversima, a `kadr_holidays` sa
+    // sastancima. Da su ti čitaoci stavljeni pod OVAJ prekidač, preklop bi ih
+    // sve oborio istog trenutka. Oni ostaju na sy15 dok sy15 živi.
+    expect(sastanci.izvor).toBe("sy15");
+    expect(pb.izvor).toBe("sy15");
+    expect(odrzavanje.izvor).toBe("sy15");
+    expect(scada.izvor).toBe("sy15");
+    expect(() => sastanci.assertPorted("sast-weekly-auto (kadr_holidays)")).not.toThrow();
+    expect(() => pb.assertPorted("pb-enqueue (pb_current_employee_id)")).not.toThrow();
+    expect(() => odrzavanje.assertPorted("maint-deadlines")).not.toThrow();
+    expect(() => scada.assertPorted("scada relej")).not.toThrow();
+  });
+
+  it("ODRZAVANJE_IZVOR=3.0 (već preseljeno): kadrovska NETAKNUTA", () => {
+    hvatajWarn();
+    postavi({ ODRZAVANJE_IZVOR: "3.0" });
+    const { kadrovska } = svi();
+    expect(kadrovska.izvor).toBe("sy15");
+    expect(() => kadrovska.assertPorted("kadrovska (čitanje/izveštaji)")).not.toThrow();
+  });
+
+  it("svih pet na 3.0: svaka brana puca sama za sebe", () => {
+    hvatajWarn();
+    postavi({
+      SASTANCI_IZVOR: "3.0",
+      PB_IZVOR: "3.0",
+      ODRZAVANJE_IZVOR: "3.0",
+      SCADA_IZVOR: "3.0",
+      KADROVSKA_IZVOR: "3.0",
+    });
+    const { sastanci, pb, odrzavanje, scada, kadrovska } = svi();
+    for (const s of [sastanci, pb, odrzavanje, scada, kadrovska]) {
+      expect(s.isThreeZero).toBe(true);
+      expect(() => s.assertPorted("x")).toThrow(ServiceUnavailableException);
     }
   });
 });
