@@ -3,6 +3,7 @@ import { PrismaModule } from "../../prisma/prisma.module";
 import { IdempotencyModule } from "../../common/idempotency/idempotency.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { ReversiLokacijeIzvorModule } from "../../common/sy15/reversi-lokacije-izvor.module";
 import { MasinaOtpisNotifyService } from "./masina-otpis-notify.service";
 import { OdrzavanjeAuthzService } from "./odrzavanje-authz.service";
 import { OdrzavanjeFnService } from "./odrzavanje-fn.service";
@@ -30,7 +31,17 @@ import { OdrzavanjeService } from "./odrzavanje.service";
  * `odrzavanje.service.spec.ts` (grupa „3.0 ožičenje") to i pinuje.
  */
 @Module({
-  imports: [PrismaModule, IdempotencyModule, NotificationsModule],
+  imports: [
+    PrismaModule,
+    IdempotencyModule,
+    NotificationsModule,
+    // 🔴 NALAZ C (08.08.2026): most ka `loc_locations` mora da VIDI `LOKACIJE_IZVOR`.
+    // Bez ovog uvoza `@Optional()` prekidač u mostu ostaje `undefined` — dakle MRTAV
+    // (tačno kvar iz prvog kruga: prekidač provajdovan, a nigde injektovan).
+    // Uvoz je bezopasan: `ReversiModule`/`LocationsModule` ga već uvoze, pa
+    // `assertSpojeniIzvori` u njegovom `onModuleInit` ne dodaje nov način pada.
+    ReversiLokacijeIzvorModule,
+  ],
   controllers: [OdrzavanjeController],
   providers: [
     OdrzavanjeService,

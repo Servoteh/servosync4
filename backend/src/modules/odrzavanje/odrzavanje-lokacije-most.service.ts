@@ -1,7 +1,13 @@
-import { Injectable, Logger, Optional } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+  type OnModuleInit,
+} from "@nestjs/common";
 import { Prisma } from "@prisma-sy15/client";
 import { Sy15Service } from "../../common/sy15/sy15.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import { LokacijeSourceService } from "../../common/sy15/lokacije-source.service";
 import { maintMachineDeptCode } from "./maint-dept-code";
 
 /**
@@ -40,21 +46,97 @@ import { maintMachineDeptCode } from "./maint-dept-code";
  * `RAISE WARNING`), a obaranje čuvanja mašine zbog nedostupne TUĐE baze bilo bi
  * gore od privremenog razilaženja. Razilaženje se sanira samo od sebe: operacija
  * je idempotentna (`ON CONFLICT DO NOTHING` + uslovni `UPDATE`), pa je sledeća
- * izmena iste mašine popravlja.
+ * izmena iste mašine popravlja. Vlasnik je 08.08.2026 potvrdio da fail-soft OSTAJE.
+ *
+ * ── 🔴 NALAZ C (protivnička provera, treći krug 08.08.2026) ─────────────────
+ * Do ove izmene je most bio uslovljen ISKLJUČIVO `ODRZAVANJE_IZVOR=3.0`, bez
+ * ijedne `LOKACIJE_IZVOR` kapije. A `loc_locations` JESTE među 21 tabelom koju
+ * korak 3 seli (`scripts/migrate-reversi-lokacije-sy15.ts`). Posledica pod
+ * `ODRZAVANJE_IZVOR=3.0` + `LOKACIJE_IZVOR=3.0`: lokacija svake mašine odlazi u
+ * NAPUŠTENU sy15 bazu koju posle preklopa niko ne čita — i to TIHO, jer je most
+ * fail-soft (WARN + `{ok:false}`), pa ni greške nema. Vlasnikova odluka o
+ * fail-softu pokriva PRELAZNI režim (Održavanje na 3.0, Lokacije još na sy15);
+ * stanje POSLE seobe Lokacija njome nije razmatrano.
+ *
+ * ── ODLUKA (08.08.2026): most PRATI `LOKACIJE_IZVOR` ────────────────────────
+ *   `LOKACIJE_IZVOR=sy15` (PODRAZUMEVANO, i danas na produkciji) — ponašanje je
+ *       NEPROMENJENO, red u red kao pre; to je jedini režim koji danas postoji.
+ *   `LOKACIJE_IZVOR=3.0` — most se GASI, i to GLASNO (`ERROR` u logu na startu i
+ *       na svakom pozivu, `{ ok: false, akcija: "brana" }`).
+ *
+ * Zašto GAŠENJE, a ne „piši u 3.0" (odbačena varijanta, i to je mereno):
+ *   1. `loc_locations` u 3.0 nema prepisan `loc_locations_guard_and_path` — to je
+ *      stavka **P1** runbook-a §7. Bez njega bi red imao `path_cached=''` i
+ *      `depth=0`, dakle red KOJI POSTOJI a u stablu je pogrešan. To je gore od
+ *      reda kog nema: pogrešan red se ne primeti, a nedostatak se traži.
+ *   2. 3.0 `loc_locations.id` nema DB default (`@default(uuid(4))` je klijentski,
+ *      migracija ima samo `"id" UUID NOT NULL`) — sirov `INSERT` bez `id` pada.
+ *   3. Format `path_cached` u sy15 nije izmeren (nema VPN-a u trenutku pisanja);
+ *      pogađanje formata bi bilo izmišljanje ponašanja, a ne prepis.
+ * Zato: brana sada, a upis u 3.0 (u ISTOJ transakciji kao mašina — odstupanje
+ * iznad tada nestaje) ulazi u P1, uz `loc_locations_guard_and_path`. Runbook §7.
+ *
+ * 🔴 ŠTA SE OSLANJA NA OVO (provereno pre izmene, treći krug):
+ *   • `aktivan()` NIJE promenjen — i dalje znači isključivo `ODRZAVANJE_IZVOR=3.0`.
+ *     Planirani pozivaoci u `odrzavanje.service.ts` (danas ih još nema; most je
+ *     provajdovan i izvožen, ali nepozvan) time ne menjaju ponašanje. Brana je
+ *     NAMERNO unutar `syncMachineToLoc`, a ne u `aktivan()`: drži i kad pozivalac
+ *     zaboravi da pita `aktivan()`.
+ *   • Fail-soft ugovor („nikad ne baca") je očuvan — brana vraća, ne baca.
+ *   • Povratni tip je proširen članom `"brana"`; `tsc` bi našao svakog potrošača
+ *     koji radi iscrpan `switch` (nema ga — jedini potrošači su testovi).
+ *   • `OdrzavanjeModule` sada uvozi `ReversiLokacijeIzvorModule` (da prekidač NE
+ *     bude mrtav — pouka prvog kruga). Taj modul u `onModuleInit` zove
+ *     `assertSpojeniIzvori`; u aplikaciji ga već uvoze `ReversiModule` i
+ *     `LocationsModule`, pa novog načina da se boot obori NEMA.
  *
  * ── Kad ovo umire ───────────────────────────────────────────────────────────
- * Sa korakom 3 (Reversi + Lokacije). Tada `loc_locations` prelazi u 3.0 i most
- * postaje običan upis u istu bazu — u istoj transakciji, bez odstupanja iznad.
- * Do tada je ovo JEDINI upis održavanja u sy15 pod `ODRZAVANJE_IZVOR=3.0`.
+ * Sa korakom 3 (Reversi + Lokacije), i to u P1: tada `loc_locations` prelazi u 3.0
+ * i most postaje običan upis u istu bazu — u istoj transakciji, bez odstupanja
+ * iznad. Do tada je ovo JEDINI upis održavanja u sy15 pod `ODRZAVANJE_IZVOR=3.0`.
  */
 @Injectable()
-export class OdrzavanjeLokacijeMostService {
+export class OdrzavanjeLokacijeMostService implements OnModuleInit {
   private readonly log = new Logger(OdrzavanjeLokacijeMostService.name);
 
   constructor(
     private readonly sy15: Sy15Service,
     @Optional() private readonly izvor?: OdrzavanjeSourceService,
+    @Optional() private readonly lokIzvor?: LokacijeSourceService,
   ) {}
+
+  /**
+   * Glasno na STARTU, ne tek pri prvoj izmeni mašine. Pouka „docker restart ne
+   * čita env" (07.08.2026): pogrešan prekidač ume da radi neprimećeno, a ovde bi
+   * to značilo mašine bez lokacije sve dok neko ne primeti prazno stablo.
+   */
+  onModuleInit(): void {
+    // 🔴 USLOV JE SAMO `lokacijeNa30()`, NE i `aktivan()`. Ranije je stajalo
+    // `aktivan() && lokacijeNa30()`, pa je poruka ĆUTALA u stanju koje preklop
+    // STVARNO proizvodi — a runbook §6 korak 10 odsustvo te poruke čita kao
+    // „P1 je gotov". Dakle lažno zeleno, gore od samog kvara.
+    //
+    // Izmereno 08.08.2026: `ODRZAVANJE_IZVOR` je NEPOSTAVLJEN i 3.0 `maint_*`
+    // su prazne → korak 2 nije preklopljen, a korak 6 postavlja SAMO
+    // `REVERSI_IZVOR` i `LOKACIJE_IZVOR`. Stanje posle preklopa je zato
+    // `ODRZAVANJE=sy15 + LOKACIJE=3.0`.
+    //
+    // U OBA stanja lokacija mašine završi u NAPUŠTENOJ sy15 tabeli, a živa 3.0
+    // `loc_locations` ne dobije red — menja se samo KO je pisac:
+    //   • `ODRZAVANJE=3.0`  → pisac bi bio ovaj most; brana ga hvata u letu
+    //     (`syncMachineToLoc` vraća `akcija: "brana"`).
+    //   • `ODRZAVANJE=sy15` → pisac je **sy15 TRIGER**
+    //     `trg_maint_machines_loc_sync`, jer se mašine i dalje upisuju u sy15
+    //     `maint_machines`. Taj pisac je u bazi i ovaj kod ga NE MOŽE zaustaviti
+    //     — može samo da ga glasno prijavi.
+    if (!this.lokacijeNa30()) return;
+    this.prijaviBranu(
+      this.aktivan()
+        ? "start"
+        : "start — pisac je sy15 TRIGER `trg_maint_machines_loc_sync`, ne ovaj most; " +
+            "kod ga ne može zaustaviti (mašine su još u sy15 `maint_machines`)",
+    );
+  }
 
   /**
    * Parnjak `maint_machines_sync_to_loc()` za INSERT i UPDATE.
@@ -72,7 +154,17 @@ export class OdrzavanjeLokacijeMostService {
       tracked: boolean;
     },
     op: "INSERT" | "UPDATE",
-  ): Promise<{ ok: boolean; akcija: "insert" | "update" | "preskoceno" }> {
+  ): Promise<{
+    ok: boolean;
+    akcija: "insert" | "update" | "preskoceno" | "brana";
+  }> {
+    // 🔴 NALAZ C: pod `LOKACIJE_IZVOR=3.0` sy15 `loc_locations` je NAPUŠTENA
+    // tabela. Upis u nju ne bi bio „malo zastareo" nego nevidljiv, pa se ovde
+    // staje — glasno, jer je most inače fail-soft i tih.
+    if (this.lokacijeNa30()) {
+      this.prijaviBranu(`mašina ${m.machineCode} (${op})`);
+      return { ok: false, akcija: "brana" };
+    }
     try {
       return await this.sync(m, op);
     } catch (e) {
@@ -146,7 +238,9 @@ export class OdrzavanjeLokacijeMostService {
       return { ok: true, akcija: "preskoceno" };
     }
     const naziv =
-      (name ?? "").trim().length > 0 ? (name as string).trim() : `Mašina ${code}`;
+      (name ?? "").trim().length > 0
+        ? (name as string).trim()
+        : `Mašina ${code}`;
     await this.sy15.db.$executeRaw(Prisma.sql`
       INSERT INTO public.loc_locations
         (location_code, name, location_type, parent_id, is_active, notes)
@@ -160,8 +254,33 @@ export class OdrzavanjeLokacijeMostService {
    * `true` kad most treba pozvati iz aplikacije (pod `ODRZAVANJE_IZVOR=3.0`).
    * Pod `sy15` posao i dalje radi DB triger — dupli poziv bi bio bezopasan
    * (idempotentan), ali nepotreban.
+   *
+   * 🔴 NAMERNO ne gleda `LOKACIJE_IZVOR`: značenje ove metode je „gde su mašine",
+   * a ne „gde su lokacije". Brana za lokacije stoji u `syncMachineToLoc` da bi
+   * važila i za pozivaoca koji `aktivan()` uopšte ne pita.
    */
   aktivan(): boolean {
     return this.izvor?.isThreeZero === true;
+  }
+
+  /**
+   * `true` kad su Lokacije preklopljene na 3.0 — tada je sy15 `loc_locations`
+   * napuštena tabela. Bez provajdera (test bez modula) vraća `false`, dakle
+   * ponašanje kao `sy15` — nikad kao `3.0` (pravilo iz `IzvorPrekidac`-a:
+   * nepoznato/neožičeno se NIKAD ne tumači kao preklopljeno).
+   */
+  private lokacijeNa30(): boolean {
+    return this.lokIzvor?.isThreeZero === true;
+  }
+
+  /** Jedna poruka, dva mesta (start + poziv) — da se u logu traži isti tekst. */
+  private prijaviBranu(gde: string): void {
+    this.log.error(
+      `LOKACIJE_IZVOR=3.0 — most maint_machines -> loc_locations je UGAŠEN (${gde}). ` +
+        "sy15 `loc_locations` je posle preklopa napuštena tabela; upis u nju bio bi " +
+        "nevidljiv. Nove/izmenjene mašine zato NEĆE dobiti red u stablu lokacija dok " +
+        "se most ne prepiše na 3.0 (runbook §7, P1 — uz `loc_locations_guard_and_path`). " +
+        "Povratak: LOKACIJE_IZVOR=sy15 + restart.",
+    );
   }
 }

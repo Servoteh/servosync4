@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -17,6 +18,7 @@ import { Sy15Service } from "../../common/sy15/sy15.service";
 import type { Sy15Tx } from "../../common/sy15/sy15.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { LabelPrintService } from "../../common/printing/label-print.service";
+import { LokacijeSourceService } from "../../common/sy15/lokacije-source.service";
 import type { PrintLabelDto } from "../../common/printing/print-label.dto";
 import { pageMeta, parsePagination } from "../../common/pagination";
 import {
@@ -212,7 +214,62 @@ export class LocationsService {
     private readonly labelPrint: LabelPrintService,
     /** Glavna (2.0) baza — SAMO `lookupDrawing` (work_orders su izvor feed-a ka sy15 kešu). */
     private readonly prisma: PrismaService,
+    // Prekidač svog domena (`LOKACIJE_IZVOR`, korak 3 gašenja sy15). @Optional:
+    // postojeći unit testovi prave servis sa 3 argumenta, a izostanak prekidača
+    // znači „sy15" — bezbedan smer, nikad tihi prelazak na 3.0.
+    @Optional() private readonly locIzvor?: LokacijeSourceService,
   ) {}
+
+  // ==========================================================================
+  // 🔴 BRANA PREKIDAČA `LOKACIJE_IZVOR` (docs/SEOBA_REVERSI_LOKACIJE_2026-08-07.md)
+  // ==========================================================================
+  //
+  // `loc_create_movement` + trigeri (`loc_after_movement_insert`,
+  // `loc_locations_guard_and_path`) još NISU prepisani u TypeScript (runbook §4.3,
+  // P1). Dok nisu, `LOKACIJE_IZVOR=3.0` ne sme da znači „radi po starom nad sy15" —
+  // 3.0 kopija bi se razišla od sy15 u koji mobilna i skener nastavljaju da pišu
+  // (izmereno 13 kretanja 07.08.2026).
+  //
+  // Brana stoji na PRISTUPU sy15 podacima, ne na ulaznim metodama: modul dodiruje
+  // sy15 kroz `sy15.db`, `sy15.withUser` i `sy15.withUserRls`, i sva tri ovde imaju
+  // parnjaka sa branom. Pod `sy15` (PODRAZUMEVANO) ne radi NIŠTA.
+  //
+  // `this.prisma` (3.0 `work_orders` u `lookupDrawing`) NAMERNO nije iza brane —
+  // to je 3.0 izvor, ne sy15.
+
+  /** Brana: pod `LOKACIJE_IZVOR=3.0` baca 503 sa imenom putanje; pod `sy15` ćuti. */
+  private assertPorted(feature: string): void {
+    this.locIzvor?.assertPorted(feature);
+  }
+
+  /** sy15 Prisma klijent — iza brane prekidača. */
+  private get db(): Sy15Service["db"] {
+    this.assertPorted("lokacije: čitanje/upis loc_* tabela");
+    return this.sy15.db;
+  }
+
+  /** `sy15.withUser` (GUC claims) — iza brane prekidača. */
+  private async withSy15User<T>(
+    email: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+  ): Promise<T> {
+    this.assertPorted("lokacije: čitanje/upis kroz sy15 sesiju");
+    return this.sy15.withUser(email, fn);
+  }
+
+  /** `sy15.withUserRls` (GUC + `SET LOCAL ROLE authenticated`) — iza brane prekidača. */
+  private async withSy15UserRls<T>(
+    email: string,
+    fn: (tx: Sy15Tx) => Promise<T>,
+    opts?: { timeoutMs?: number },
+  ): Promise<T> {
+    this.assertPorted("lokacije: čitanje/upis kroz sy15 RLS sesiju");
+    // `opts` se prosleđuje SAMO kad postoji — inače bi svaki poziv dobio treći
+    // argument `undefined` i promenio oblik poziva koji postojeći testovi pinuju.
+    return opts === undefined
+      ? this.sy15.withUserRls(email, fn)
+      : this.sy15.withUserRls(email, fn, opts);
+  }
 
   // ==========================================================================
   // Lokacije (šifarnik + hijerarhija) — fetchLocations paritet
@@ -250,19 +307,19 @@ export class LocationsService {
     }
 
     const [data, total] = await Promise.all([
-      this.sy15.db.locLocation.findMany({
+      this.db.locLocation.findMany({
         where,
         orderBy: { pathCached: "asc" },
         skip,
         take,
       }),
-      this.sy15.db.locLocation.count({ where }),
+      this.db.locLocation.count({ where }),
     ]);
     return { data, meta: pageMeta(page, pageSize, total) };
   }
 
   async findLocation(id: string) {
-    const loc = await this.sy15.db.locLocation.findUnique({ where: { id } });
+    const loc = await this.db.locLocation.findUnique({ where: { id } });
     if (!loc) throw new NotFoundException(`Lokacija ${id} ne postoji`);
     return { data: loc };
   }
@@ -314,7 +371,7 @@ export class LocationsService {
     // ROW-SCOPED tabela: RLS `loc_placements_select` krije `item_ref_table='rev_tools'`
     // od ne-manage (rev_can_manage). `sy15.db` (BYPASSRLS) bi vratio SVE rev_tools
     // redove bilo kome sa `lokacije.read` → MORA kroz `withUserRls` (doktrina A.2a).
-    const { data, total } = await this.sy15.withUserRls(email, async (tx) => {
+    const { data, total } = await this.withSy15UserRls(email, async (tx) => {
       const rows = await tx.locItemPlacement.findMany({
         where,
         // Stabilan tiebreak (id asc) — updated_at nije jedinstven (bulk-sync grupe
@@ -351,7 +408,12 @@ export class LocationsService {
     // `mine=1` (mobilna „Moja istorija"): server razreši sy15 uid prijavljenog i
     // njime filtrira `moved_by` — klijent NE šalje svoj UUID (ne zna ga). Ima
     // prednost nad `userId` (fail-closed: nerazrešiv nalog → prazna strana, ne
-    // cela istorija firme; NIJE greška — nov 3.0 nalog bez sy15 para nema pokrete).
+    // cela istorija firme).
+    // Prazna strana ovde znači SAMO „nalog nema sy15 par, pa nema ni pokrete" —
+    // NE „izvor je nedostupan". Pod `LOKACIJE_IZVOR=3.0` `authUserIdByEmail` baca
+    // 503 (brana), ne vraća `null`; inače bi „Moja istorija" na mobilnoj tiho
+    // prikazala LAŽNU praznu listu sa HTTP 200 umesto da glasno kaže da putanja
+    // nije preneta (v. `authUserIdByEmail` — 503 se NE guta u `catch`-u).
     const mine = ["1", "true"].includes((query.mine ?? "").trim().toLowerCase());
     if (mine) {
       const uid = email ? await this.authUserIdByEmail(email) : null;
@@ -392,7 +454,7 @@ export class LocationsService {
     if (and.length) where.AND = and;
 
     const [rows, total] = await Promise.all([
-      this.sy15.db.locLocationMovement.findMany({
+      this.db.locLocationMovement.findMany({
         where,
         // Stabilan tiebreak (id asc) — moved_at nije jedinstven (bulk-sync grupe
         // istog timestamp-a; živo: grupa od 84 reda); bez sekundarnog ključa fetch-all
@@ -401,7 +463,7 @@ export class LocationsService {
         skip,
         take,
       }),
-      this.sy15.db.locLocationMovement.count({ where }),
+      this.db.locLocationMovement.count({ where }),
     ]);
     // „Korisnik" kolona = ime umesto UUID (paritet 1.0): batch-resolve moved_by →
     // ime, dodaj `movedByName` (UUID `movedBy` ostaje — zero-loss; null ako nerazrešiv).
@@ -450,10 +512,10 @@ export class LocationsService {
     const startOfToday = this.belgradeStartOfDay(now, 0); // lokalna ponoć danas
     const startOf7d = this.belgradeStartOfDay(now, 6); // ponoć pre 6 dana (7 kal. dana)
     const [movements24h, movements7d] = await Promise.all([
-      this.sy15.db.locLocationMovement.count({
+      this.db.locLocationMovement.count({
         where: { movedAt: { gte: startOfToday } },
       }),
-      this.sy15.db.locLocationMovement.count({
+      this.db.locLocationMovement.count({
         where: { movedAt: { gte: startOf7d } },
       }),
     ]);
@@ -521,7 +583,7 @@ export class LocationsService {
    * (fallback UUID). Movements NISU row-scoped → `sy15.db` (BYPASSRLS).
    */
   async movementMovers(): Promise<{ data: { id: string; name: string | null }[] }> {
-    const rows = await this.sy15.db.$queryRaw<{ moved_by: string }[]>(
+    const rows = await this.db.$queryRaw<{ moved_by: string }[]>(
       Prisma.sql`SELECT DISTINCT moved_by
                  FROM public.loc_location_movements
                  WHERE moved_by IS NOT NULL`,
@@ -548,14 +610,21 @@ export class LocationsService {
    * Keš: samo POZITIVNI pogodak (uid naloga se ne menja). Promašaj se NE kešira —
    * nalog kreiran posle prvog pokušaja bi inače ostao „nevidljiv" do restarta.
    * Greška (privilegije/nedostupan auth šem) → `null` = prazna lista, ne 500.
+   *
+   * 🔴 `this.db` se uzima IZNAD `try`-ja namerno: taj getter je brana prekidača
+   * (`LOKACIJE_IZVOR=3.0` → 503). Da je unutar `try`-ja, `catch { return null }`
+   * bi progutao 503 i pozivalac (`listMovements` sa `mine=1`) bi vratio praznu
+   * stranu sa HTTP 200 — tiho pogrešan odgovor umesto glasnog „nije preneto".
+   * Ovako `catch` hvata isključivo greške samog upita.
    */
   private async authUserIdByEmail(email: string): Promise<string | null> {
     const key = email.trim().toLowerCase();
     if (!key) return null;
     const cached = this.authUidByEmail.get(key);
     if (cached) return cached;
+    const db = this.db; // brana pre `try`-ja — 503 mora da izađe, ne da se proguta
     try {
-      const rows = await this.sy15.db.$queryRaw<{ id: string }[]>(
+      const rows = await db.$queryRaw<{ id: string }[]>(
         Prisma.sql`SELECT id::text AS id FROM auth.users
                    WHERE lower(email) = ${key} AND deleted_at IS NULL
                    LIMIT 1`,
@@ -587,7 +656,7 @@ export class LocationsService {
     const out = new Map<string, string>();
     if (!ids.length) return out;
 
-    const roles = await this.sy15.db.userRoleSy15.findMany({
+    const roles = await this.db.userRoleSy15.findMany({
       where: { userId: { in: ids } },
       select: { userId: true, fullName: true, email: true },
       orderBy: { createdAt: "asc" },
@@ -601,7 +670,7 @@ export class LocationsService {
     const missing = ids.filter((id) => !out.has(id));
     if (missing.length) {
       try {
-        const rows = await this.sy15.db.$queryRaw<
+        const rows = await this.db.$queryRaw<
           { id: string; email: string | null }[]
         >(
           Prisma.sql`SELECT id::text AS id, email FROM auth.users
@@ -647,7 +716,7 @@ export class LocationsService {
     // Redosled argumenata = potpis fn-a (snapshot 12.07): p_drawing_no, p_order_no,
     // p_tp_no, p_project_search, p_location_id, p_location_q, p_hall_id,
     // p_location_kind, p_naziv_dela, p_sort, p_desc, p_limit, p_offset.
-    const rows = await this.sy15.withUser(
+    const rows = await this.withSy15User(
       email,
       (tx) => tx.$queryRaw<{ result: unknown }[]>`
         SELECT loc_report_parts_by_locations(
@@ -663,7 +732,7 @@ export class LocationsService {
   async reportSuggestNazivDela(q: string | undefined, email: string) {
     const query = (q ?? "").trim();
     if (query.length < 2) return { data: [] };
-    const rows = await this.sy15.withUser(
+    const rows = await this.withSy15User(
       email,
       (tx) => tx.$queryRaw<{ result: unknown }[]>`
         SELECT loc_report_suggest_naziv_dela(${query}::text, ${15}::int) AS result`,
@@ -692,7 +761,7 @@ export class LocationsService {
       1000,
     );
 
-    const tpsRows = await this.sy15.withUser(
+    const tpsRows = await this.withSy15User(
       email,
       (tx) => tx.$queryRaw<{ result: unknown }[]>`
         SELECT loc_tps_for_predmet(
@@ -707,7 +776,7 @@ export class LocationsService {
     let opStatus: unknown = null;
     const woId = Number.parseInt(query.workOrderId ?? "", 10);
     if (Number.isInteger(woId) && woId > 0) {
-      const opRows = await this.sy15.withUser(
+      const opRows = await this.withSy15User(
         email,
         (tx) => tx.$queryRaw<{ result: unknown }[]>`
           SELECT loc_get_bigtehn_op_status(${woId}::bigint) AS result`,
@@ -745,7 +814,7 @@ export class LocationsService {
     const whereSql = Prisma.sql`WHERE w.item_id = ${itemId}::bigint ${statusFilter}`;
 
     const [rows, totalRows] = await Promise.all([
-      this.sy15.db.$queryRaw<WorkOrderRaw[]>(Prisma.sql`
+      this.db.$queryRaw<WorkOrderRaw[]>(Prisma.sql`
         SELECT w.id, w.item_id, w.ident_broj, w.broj_crteza, w.naziv_dela,
                w.materijal, w.dimenzija_materijala, w.jedinica_mere, w.komada,
                w.tezina_obr, w.status_rn, w.revizija, w.rok_izrade, w.is_mes_active
@@ -753,7 +822,7 @@ export class LocationsService {
         ${whereSql}
         ORDER BY w.ident_broj ASC, w.id ASC
         LIMIT ${take}::int OFFSET ${skip}::int`),
-      this.sy15.db.$queryRaw<{ count: bigint }[]>(Prisma.sql`
+      this.db.$queryRaw<{ count: bigint }[]>(Prisma.sql`
         SELECT count(*)::bigint AS count
         FROM public.v_bigtehn_work_orders_with_mes_active w
         ${whereSql}`),
@@ -787,7 +856,7 @@ export class LocationsService {
   async validateOrder(orderNo: string | undefined, email: string) {
     const q = (orderNo ?? "").trim();
     if (!q) return { data: null };
-    const rows = await this.sy15.withUser(
+    const rows = await this.withSy15User(
       email,
       (tx) => tx.$queryRaw<{ result: boolean | null }[]>`
         SELECT loc_order_no_in_active_proj_mont(${q}::text) AS result`,
@@ -886,7 +955,7 @@ export class LocationsService {
       // keša — dupli ident_broj tipa `9400/3/193` inače vrati proizvoljan red,
       // promenljiv i posle VACUUM-a), pa `id` kao tie-break.
       if (!rows.length) {
-        const cached = await this.sy15.db.$queryRaw<
+        const cached = await this.db.$queryRaw<
           {
             ident_broj: string | null;
             broj_crteza: string | null;
@@ -1066,7 +1135,7 @@ export class LocationsService {
 
     // Row-scoped tabela (rev_tools scope) → withUserRls, kao listPlacements
     // (ovde je itemRefTable uvek 'bigtehn_rn', ali RLS mora da se evaluira).
-    const rows = await this.sy15.withUserRls(email, (tx) =>
+    const rows = await this.withSy15UserRls(email, (tx) =>
       tx.locItemPlacement.findMany({
         where: { itemRefTable, OR: or },
         orderBy: { updatedAt: "desc" },
@@ -1091,7 +1160,7 @@ export class LocationsService {
     locs: ShelfLoc[];
     locById: Map<string, ShelfLoc>;
   }> {
-    const rows = await this.sy15.db.locLocation.findMany({
+    const rows = await this.db.locLocation.findMany({
       where: { isActive: true },
       select: {
         id: true,
@@ -1123,7 +1192,7 @@ export class LocationsService {
    * (definer/admin fn čitaju identitet).
    */
   async syncStatus(email: string) {
-    return this.sy15.withUser(email, async (tx) => {
+    return this.withSy15User(email, async (tx) => {
       const ingest = await tx.$queryRaw<{ result: unknown }[]>`
         SELECT loc_get_bigtehn_ingest_status() AS result`;
       const health = await tx.$queryRaw<{ result: unknown }[]>`
@@ -1155,7 +1224,7 @@ export class LocationsService {
    * a da mu se ne otkrivaju admin interne (Sync tab). Reuse istih upita kao syncStatus.
    */
   async syncHealth(email: string) {
-    return this.sy15.withUser(email, async (tx) => {
+    return this.withSy15User(email, async (tx) => {
       const health = await tx.$queryRaw<{ result: unknown }[]>`
         SELECT loc_sync_health_summary() AS result`;
       const bridge = await this.loadBridgeLatest(tx);
@@ -1242,7 +1311,7 @@ export class LocationsService {
       1,
       Math.min(Number.parseInt(limitRaw ?? "80", 10) || 80, 300),
     );
-    const data = await this.sy15.withUser(
+    const data = await this.withSy15User(
       email,
       (tx) => tx.$queryRaw`
         SELECT * FROM loc_sync_outbound_events
@@ -1264,7 +1333,7 @@ export class LocationsService {
     // (isti obrazac kao WorkOrderRaw §125) i, kao mutacije, obmotavamo try/catch-em
     // (rethrowMutation) da DB/kontekst greška postane čist 4xx umesto 500.
     try {
-      const rows = await this.sy15.withUser(
+      const rows = await this.withSy15User(
         email,
         (tx) =>
           tx.$queryRaw<
@@ -1351,7 +1420,7 @@ export class LocationsService {
     if (dto.note !== undefined) payload.note = dto.note;
     if (dto.movedAt !== undefined) payload.moved_at = dto.movedAt;
 
-    const result = await this.sy15.withUser(email, async (tx) => {
+    const result = await this.withSy15User(email, async (tx) => {
       // fnName je fiksan literal (ne korisnički unos) — payload ide kao $1 bind.
       const rows = await tx.$queryRawUnsafe<{ result: FnEnvelope }[]>(
         "SELECT loc_create_movement($1::jsonb) AS result",
@@ -1365,7 +1434,7 @@ export class LocationsService {
 
   /** Premeštaj kaveza u drugu halu — `loc_move_cage` (manage: loc_can_manage_locations). */
   async moveCage(email: string, dto: CageMoveDto) {
-    const result = await this.sy15.withUser(email, async (tx) => {
+    const result = await this.withSy15User(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: FnEnvelope }[]>`
         SELECT loc_move_cage(
           ${dto.cageId}::uuid, ${dto.newHallId}::uuid, ${dto.reason ?? null}::text
@@ -1380,7 +1449,7 @@ export class LocationsService {
   /** Nova master lokacija (Prisma INSERT; paritet 1.0 createLocation, is_active=true). */
   async createLocation(email: string, dto: CreateLocationDto) {
     try {
-      const data = await this.sy15.withUser(email, (tx) =>
+      const data = await this.withSy15User(email, (tx) =>
         tx.locLocation.create({
           data: {
             locationCode: dto.locationCode.trim(),
@@ -1413,7 +1482,7 @@ export class LocationsService {
       throw new BadRequestException("PATCH bez ijednog polja za izmenu");
 
     try {
-      const updated = await this.sy15.withUser(email, (tx) =>
+      const updated = await this.withSy15User(email, (tx) =>
         tx.locLocation.update({ where: { id }, data }),
       );
       return { data: updated };
@@ -1424,7 +1493,7 @@ export class LocationsService {
 
   /** Sync: arm/disarm bigtehn ingest worker — `loc_bigtehn_ingest_arm` (admin). */
   async syncArm(email: string, armed: boolean) {
-    const result = await this.sy15.withUser(email, async (tx) => {
+    const result = await this.withSy15User(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: FnEnvelope }[]>`
         SELECT loc_bigtehn_ingest_arm(${armed}::boolean) AS result`;
       return rows[0]?.result ?? null;
@@ -1434,7 +1503,7 @@ export class LocationsService {
 
   /** Sync: ručno okidanje ingest-a — `loc_bigtehn_ingest_run_now` (admin). */
   async syncRunNow(email: string) {
-    const result = await this.sy15.withUser(email, async (tx) => {
+    const result = await this.withSy15User(email, async (tx) => {
       const rows = await tx.$queryRaw<{ result: FnEnvelope }[]>`
         SELECT loc_bigtehn_ingest_run_now() AS result`;
       return rows[0]?.result ?? null;
