@@ -1593,6 +1593,8 @@ describe("078/26 Faza B — termini", () => {
           captured.overlayUpsert = a;
           return { id: 77 };
         }),
+        // 078/26: brisanje POSLEDNJEG termina čisti i overlay (duh-bar).
+        update: jest.fn(async () => ({ id: 77 })),
       },
       workOrder: { findUnique: jest.fn(async () => ({ pieceCount: 10 })) },
       planProizvodnjeTermin: {
@@ -1708,6 +1710,30 @@ describe("078/26 Faza B — termini", () => {
     await svc.patchTermin(email, 5, { kolicina: 4 });
     expect(captured.update!.kolicina).toBe(4);
     expect(Object.keys(captured.update!)).not.toContain("plannedStartAt");
+  });
+
+it("🔴 brisanje POSLEDNJEG termina čisti i overlay (inače ostaje duh-bar)", async () => {
+    // Čitanje ima rezervu COALESCE(termin, overlay). Bez čišćenja bi se bar vratio
+    // na stari datum, i planer bi video bar koji je upravo obrisao.
+    const { svc, tx } = terminSvc({ postojeci: { id: 5, overlayId: 77 } });
+    (tx.planProizvodnjeTermin as unknown as { count: jest.Mock }).count = jest.fn(async () => 0);
+    const res = (await svc.deleteTermin(email, 5)) as { data: { poslednji: boolean } };
+    expect(res.data.poslednji).toBe(true);
+    const upd = (tx.planProizvodnjeOverlay as unknown as { update: jest.Mock }).update;
+    expect(upd).toHaveBeenCalled();
+    const arg = upd.mock.calls[0][0] as { data: Record<string, unknown> };
+    expect(arg.data.plannedStartAt).toBeNull();
+    expect(arg.data.plannedEndAt).toBeNull();
+    // Override trajanja se NE dira — podešavanje pozicije, ne termina (pouka 07.08.).
+    expect(Object.keys(arg.data)).not.toContain("plannedDurationMinutes");
+  });
+
+  it("brisanje NIJE poslednjeg termina ne dira overlay", async () => {
+    const { svc, tx } = terminSvc({ postojeci: { id: 5, overlayId: 77 } });
+    (tx.planProizvodnjeTermin as unknown as { count: jest.Mock }).count = jest.fn(async () => 2);
+    const res = (await svc.deleteTermin(email, 5)) as { data: { poslednji: boolean } };
+    expect(res.data.poslednji).toBe(false);
+    expect((tx.planProizvodnjeOverlay as unknown as { update: jest.Mock }).update).not.toHaveBeenCalled();
   });
 
   it("izmena nepostojećeg termina → 404", async () => {
