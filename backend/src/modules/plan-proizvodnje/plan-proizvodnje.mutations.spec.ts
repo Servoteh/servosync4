@@ -86,7 +86,7 @@ function makeService(
     $queryRaw: jest.fn(async (sql: unknown) => {
       const tekst = sqlText(sql);
       captured.queries.push(tekst);
-      if (tekst.includes("INSERT INTO plan_proizvodnje_termini")) {
+      if (tekst.includes("UPDATE plan_proizvodnje_termini t")) {
         const zadat = queryReturns[qi];
         if (Array.isArray(zadat)) {
           qi++;
@@ -133,6 +133,9 @@ function makeService(
     // 078/26 FAZA A — dvostruki upis termina. Hvata se SVAKI poziv, jer se baš na
     // ovome meri da preslikač uzima ZAVRŠNO stanje overlay reda, a ne patch.
     planProizvodnjeTermin: {
+      // 078/26: kaskada PREBROJI termine pogođenih parova, pa proveri da je pomerila
+      // tačno toliko. Mock vraća „jedan termin po operaciji" — današnje stvarno stanje.
+      count: jest.fn(async () => poslednjiOverlayUpdate),
       upsert: jest.fn(async (a: (typeof captured.termini)[number]) => {
         captured.termini.push(a);
         return { id: 1, ...a.create };
@@ -766,6 +769,46 @@ describe("gant kaskada — 075/26", () => {
     deltaDays: 5,
     clientEventId: UUID,
     ...extra,
+  });
+
+// ── 078/26: kaskada pomera SVE termine pozicije (odluka Nenad 08.08.2026) ────
+  //
+  // „Uslov" je osobina POZICIJE, ne pojedinačnog termina: pozicija u celini kasni
+  // ili rani, pa se pomeraju SVI njeni termini istim pomakom. Selektivno pomeranje
+  // bi razbilo redosled unutar same operacije („5 pa 3 pa 2" prestalo bi da bude to).
+
+  it("🔴 termini pomeraju SVOJU vrednost — NE prepisuju se sa overlay-a", async () => {
+    // Prepis sa overlay-a bi sve termine pozicije slepio na ISTI datum, jer overlay
+    // nosi samo jednu vrednost. Zato UPDATE mora da računa iz t.planned_start_at.
+    const l = lanac2();
+    const { svc, captured } = makeService([l, [], l, l.map((r) => vracen(r.work_order_id, r.line_id))]);
+    await svc.shiftChain(email, upis());
+    const upit = captured.queries.find((q) => q.includes("UPDATE plan_proizvodnje_termini t"));
+    expect(upit).toBeDefined();
+    expect(upit).toContain("t.planned_start_at");
+    expect(upit).not.toContain("o.planned_start_at");
+    // Filter je po paru (RN, linija) — dakle hvata SVE termine te pozicije.
+    expect(upit).toContain("(t.work_order_id, t.line_id) IN");
+  });
+
+  it("brana broji TERMINE, ne overlay redove", async () => {
+    const l = lanac2();
+    const { svc, captured } = makeService([l, [], l, l.map((r) => vracen(r.work_order_id, r.line_id))]);
+    await svc.shiftChain(email, upis());
+    // Poruka mora da govori o terminima — inače se pri kvaru gleda pogrešna tabela.
+    expect(captured.queries.some((q) => q.includes("UPDATE plan_proizvodnje_termini t"))).toBe(true);
+  });
+
+  it("lečenje NE koristi ON CONFLICT (posle Faze B jedinstvenog indeksa nema)", async () => {
+    const l = lanac2();
+    const { svc, captured } = makeService([l, [], l, l.map((r) => vracen(r.work_order_id, r.line_id))]);
+    await svc.shiftChain(email, upis());
+    const svi = captured.queries.concat(
+      captured.execs.map((e) => String((e as unknown as { sql?: string }).sql ?? "")),
+    );
+    expect(svi.some((q) => q.includes("ON CONFLICT (overlay_id)"))).toBe(false);
+    // Ali lečenje POSTOJI — pozicija bez ijednog termina dobija red.
+    expect(svi.some((q) => q.includes("NOT EXISTS") && q.includes("plan_proizvodnje_termini"))).toBe(true);
   });
 
   it("dryRun: ništa se ne upisuje, ključ se NE troši", async () => {
