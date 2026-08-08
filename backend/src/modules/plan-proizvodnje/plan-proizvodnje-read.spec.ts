@@ -257,7 +257,7 @@ describe("gant feed (046/26)", () => {
     // „sve što nije 1/2", da buduća 4. vrsta kvaliteta ne bi u planu prošla kao dobra.
     expect(sql).toContain("COALESCE(SUM(t.piece_count) FILTER (WHERE t.quality_type_id = 0), 0) AS good_done");
     // Kvačica: ručna presuda planera → pa količina DOBRIH ≥ plan.
-    expect(sql).toContain("COALESCE(tp.planned_done, CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0");
+    expect(sql).toContain("COALESCE(tp.planned_done, base.ov_planned_done, CASE WHEN base.komada_total IS NOT NULL AND base.komada_total > 0");
     expect(sql).toContain("THEN COALESCE(tr.good_done, 0) >= base.komada_total");
     // Zastavica kioska preživljava SAMO kao grana za nemerljivu količinu.
     expect(sql).toContain("ELSE COALESCE(tr.is_done, false) END) AS is_completed_effective");
@@ -274,7 +274,7 @@ describe("gant feed (046/26)", () => {
   it("069: oznaka škarta stoji dok škart NIJE nadoknađen (isti izraz gotovosti)", () => {
     const { priv } = makeSvc();
     const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
-    expect(sql).toContain("(COALESCE(g4.scrap_pieces, 0) > 0 AND NOT (COALESCE(tp.planned_done,");
+    expect(sql).toContain("(COALESCE(g4.scrap_pieces, 0) > 0 AND NOT (COALESCE(tp.planned_done, base.ov_planned_done,");
     expect(sql).toContain(") AS scrap_outstanding");
     // Izraz gotovosti se pojavljuje DVA puta — kvačica i oznaka moraju iz istog izvora.
     const hits = sql.split("THEN COALESCE(tr.good_done, 0) >= base.komada_total").length - 1;
@@ -302,7 +302,7 @@ describe("gant feed (046/26)", () => {
   it("trajanje = COALESCE(override, TPZ + TK × komada)", () => {
     const { priv } = makeSvc();
     const sql = priv.effectiveOpsInner(Prisma.empty).sql.replace(/\s+/g, " ");
-    expect(sql).toContain("COALESCE( tp.planned_duration_minutes, (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int )");
+    expect(sql).toContain("COALESCE( COALESCE(tp.planned_duration_minutes, base.ov_planned_duration_minutes), (COALESCE(base.tpz_min, 0) + COALESCE(base.tk_min, 0) * COALESCE(base.komada_total, 0))::int )");
   });
 
   it("gantt() zadržava i ZATVORENE stavke koje su već na osi (planned_start_at IS NOT NULL)", async () => {
@@ -398,7 +398,7 @@ describe("gant feed (046/26)", () => {
     // (izmereno na produ 03.08.2026: 537 takvih operacija). Kolona mora biti u
     // GANTT_COLS SELECT listi (odmah iza overlay_archived_at), ne samo negde u
     // podupitu — od C2 spoljni SELECT je `g.*, sklop_*`, pa se ne seče do prvog FROM.
-    expect(sql).toContain("overlay_archived_at, plan_rn_final_control_done FROM (");
+    expect(sql).toContain("eff.overlay_archived_at, eff.plan_rn_final_control_done");
   });
 
   // 046/26-C2: kolona „Sklop" — efektivni roditelj po 053 strukturi praćenja.
@@ -442,7 +442,7 @@ describe("gant feed (046/26)", () => {
     // iza njega — slice do prvog FROM više ne hvata GANTT_COLS. Kolone se zato traže
     // kao susedni niz iz GANTT_COLS liste (bez `base.` prefiksa — podupit ih nosi
     // prefiksovane, pa goli niz jedinstveno pogađa SELECT listu; isti obrazac kao A4).
-    expect(sql).toContain("is_ready_manual, ready_override_at, ready_override_by,");
+    expect(sql).toContain("eff.is_ready_manual, eff.ready_override_at, eff.ready_override_by,");
   });
 
   // 079/26: kartica pozicije nudi broj crteža kao link na PDF — ali samo kad crtež
@@ -454,7 +454,7 @@ describe("gant feed (046/26)", () => {
     const { svc, calls } = makeGanttSvc();
     await svc.gantt("pm@servoteh.com");
     const sql = calls[0].sql.replace(/\s+/g, " ");
-    expect(sql).toContain("rn_ident_broj, broj_crteza, has_bigtehn_drawing,");
+    expect(sql).toContain("eff.rn_ident_broj, eff.broj_crteza, eff.has_bigtehn_drawing,");
   });
 
   it("machineHalls() vraća SVE mašine (LEFT JOIN šifrarnika), ne samo dodeljene", async () => {
@@ -463,5 +463,68 @@ describe("gant feed (046/26)", () => {
     const sql = calls[0].sql.replace(/\s+/g, " ");
     expect(sql).toContain("FROM operations m");
     expect(sql).toContain("LEFT JOIN plan_proizvodnje_machine_halls mh");
+  });
+});
+
+/**
+ * 078/26 FAZA B — gant sme da prikaže operaciju VIŠE PUTA (jedan bar po terminu),
+ * dok svi ostali ekrani ostaju 1:1.
+ *
+ * Ovo je jedina izmena čitanja koja menja BROJ redova, pa se zaključava oblik upita:
+ * razvijanje mora da bude u zasebnom sloju (da filtri i poredak i dalje rade nad
+ * običnim imenima kolona) i mora da ima granu za operaciju BEZ ijednog termina.
+ */
+describe("078/26 Faza B — gant se razvija u termine", () => {
+  function ganttSql(): string {
+    const calls: Prisma.Sql[] = [];
+    const prisma = {
+      $queryRaw: jest.fn(async (sql: Prisma.Sql) => {
+        calls.push(sql);
+        return [];
+      }),
+    } as never;
+    const svc = new PlanProizvodnjeReadService(prisma, {} as never);
+    void svc.gantt("pm@servoteh.com", {});
+    return calls[0]?.sql ?? "";
+  }
+
+  it("🔴 operacija BEZ ijednog termina i dalje daje JEDAN red", async () => {
+    const s = ganttSql();
+    // Bez ove UNION ALL grane pozicije koje nisu na gantu nestaju sa ekrana.
+    expect(s).toContain("UNION ALL");
+    expect(s).toContain("WHERE NOT EXISTS");
+    expect(s).toContain("FROM plan_proizvodnje_termini t2 WHERE t2.overlay_id = eff.overlay_id");
+  });
+
+  it("🔴 razvijanje je u ZASEBNOM sloju — filtri rade nad golim imenima kolona", async () => {
+    const s = ganttSql();
+    // Da je join bio na istom nivou, golo planned_start_at u WHERE bilo bi dvosmisleno
+    // (i eff i tt ga nose) i upit bi pukao tek na produkciji.
+    const idxRazvijanje = s.indexOf("plan_proizvodnje_termini t");
+    const idxWhere = s.lastIndexOf("WHERE");
+    expect(idxRazvijanje).toBeGreaterThan(0);
+    expect(idxRazvijanje).toBeLessThan(idxWhere);
+  });
+
+  it("bar nosi termin_id (line_id se od sada PONAVLJA) i količinu termina", async () => {
+    const s = ganttSql();
+    expect(s).toContain("tt.termin_id");
+    expect(s).toContain("tt.termin_kolicina");
+  });
+
+  it("trajanje se računa PO TERMINU, ne po operaciji", async () => {
+    const s = ganttSql();
+    // Override trajanja je osobina termina; vrednost iz eff bila bi pogrešna na
+    // svakom baru osim izabranog. Beline se normalizuju — upit je višeredan.
+    const jedanRed = s.replace(/\s+/g, " ");
+    expect(jedanRed).toContain("COALESCE( tt.planned_duration_minutes,");
+    expect(jedanRed).toContain("AS effective_duration_minutes");
+  });
+
+  it("planirana polja idu sa TERMINA, ostalo sa operacije", async () => {
+    const s = ganttSql();
+    expect(s).toContain("tt.planned_start_at, tt.planned_end_at");
+    expect(s).toContain("eff.rn_ident_broj");
+    expect(s).toContain("eff.is_completed_effective");
   });
 });
