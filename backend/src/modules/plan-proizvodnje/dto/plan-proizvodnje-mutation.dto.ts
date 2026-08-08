@@ -177,3 +177,40 @@ export class DrawingUploadDto {
 export class BigtehnDrawingSignQueryDto {
   @IsString() code!: string;
 }
+
+/* ── Termini pozicije na gantu — zahtev 078/26 (Faza B) ──────────────────────
+ *
+ * Ista operacija sme da stoji u planu VIŠE PUTA, svaki put sa svojom količinom i
+ * eventualno na drugoj mašini („5 pa 3 pa 2 od ukupno 10"). Zato termin ima
+ * SOPSTVENE rute — `overlays` ostaje za STANJE operacije (ručni redosled,
+ * kooperacija, arhiva), a ovde je vremenska osa.
+ */
+
+/** Nov termin za operaciju. `plannedStartAt` je OBAVEZAN — termin bez početka ne postoji. */
+export class TerminCreateDto {
+  @Matches(DIGITS) workOrderId!: string;
+  @Matches(DIGITS) lineId!: string;
+  @IsISO8601() plannedStartAt!: string;
+  /** null/izostavljeno = trajanje se izvodi iz tehnologije (TPZ + TK × komada). */
+  @IsOptional() @IsISO8601() plannedEndAt?: string | null;
+  @IsOptional() @IsInt() @Min(1) @Max(100000) plannedDurationMinutes?: number | null;
+  /**
+   * Komada u OVOM terminu. Izostavljeno = pun plan operacije (ponašanje pre 078/26).
+   * Zbir po terminima se NE ograničava na plan: planer sme da isplanira i više
+   * (dorada, škart), a i manje (deo serije ide kasnije).
+   */
+  @IsOptional() @IsInt() @Min(1) @Max(1000000) kolicina?: number | null;
+  /** Mašina SAMO za ovaj termin. null = nasledi sa operacije. */
+  @IsOptional() @IsString() assignedMachineCode?: string | null;
+}
+
+/** Izmena jednog termina — merge-patch (`undefined` = ne diraj, `null` = obriši). */
+export class TerminPatchDto {
+  @IsOptional() @IsISO8601() plannedStartAt?: string;
+  @IsOptional() @IsISO8601() plannedEndAt?: string | null;
+  @IsOptional() @IsInt() @Min(1) @Max(100000) plannedDurationMinutes?: number | null;
+  @IsOptional() @IsInt() @Min(1) @Max(1000000) kolicina?: number | null;
+  @IsOptional() @IsString() assignedMachineCode?: string | null;
+  /** Override završenosti ovog termina. null = auto iz kucanja. */
+  @IsOptional() @IsBoolean() plannedDone?: boolean | null;
+}

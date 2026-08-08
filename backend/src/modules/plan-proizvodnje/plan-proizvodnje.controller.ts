@@ -43,6 +43,8 @@ import {
   OverlayReorderDto,
   OverlayShiftChainDto,
   OverlayUpsertDto,
+  TerminCreateDto,
+  TerminPatchDto,
   ReassignDto,
   SetUrgentDto,
 } from "./dto/plan-proizvodnje-mutation.dto";
@@ -161,6 +163,34 @@ export class PlanProizvodnjeController {
   @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
   shiftChain(@Req() req: AuthedRequest, @Body() dto: OverlayShiftChainDto) {
     return this.pp.shiftChain(req.user.email, dto);
+  }
+
+
+  // ---------- Termini pozicije na gantu — 078/26 Faza B (edit) ----------
+  //
+  // Zasebne rute od `overlays`: tamo je STANJE operacije, ovde vremenska osa.
+  // Ista operacija sme da ima VIŠE termina, svaki sa svojom količinom i mašinom.
+
+  @Post("termini")
+  @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
+  createTermin(@Req() req: AuthedRequest, @Body() dto: TerminCreateDto) {
+    return this.pp.createTermin(req.user.email, dto);
+  }
+
+  @Patch("termini/:id")
+  @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
+  patchTermin(
+    @Req() req: AuthedRequest,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: TerminPatchDto,
+  ) {
+    return this.pp.patchTermin(req.user.email, id, dto);
+  }
+
+  @Delete("termini/:id")
+  @RequirePermission(PERMISSIONS.PLAN_PROIZVODNJE_EDIT)
+  deleteTermin(@Req() req: AuthedRequest, @Param("id", ParseIntPipe) id: number) {
+    return this.pp.deleteTermin(req.user.email, id);
   }
 
   // ---------- Šifrarnik hala — 046/26 (edit) ----------
