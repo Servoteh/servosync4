@@ -338,12 +338,14 @@ describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () =
         enqueued: 1,
         skipped: 0,
       });
+      expect(db.outbox).toHaveLength(dan + 1);
+      // 🔴 Bez obzira koliko je mrtvih redova nagomilano, u redu čekanja je
+      // TAČNO JEDAN — dnevni upis ne pravi paralelne pokušaje.
+      expect(zivih(db.outbox)).toBe(1);
       // Dan dispečera: red se ispumpa do plafona i ispadne iz reda čekanja.
       const posl = db.outbox[db.outbox.length - 1];
       for (let i = 0; i < MAINT_MAX_ATTEMPTS; i++) tikDispecera(posl);
-      // U svakom trenutku najviše JEDAN red se stvarno pokušava.
       expect(zivih(db.outbox)).toBe(0);
-      expect(db.outbox).toHaveLength(dan + 1);
     }
     // Nijedan red nije završio kao lažni `sent` — gubitak ostaje vidljiv.
     expect(db.outbox.every((r) => r.status === "failed")).toBe(true);
