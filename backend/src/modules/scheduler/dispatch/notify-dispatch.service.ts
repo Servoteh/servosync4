@@ -149,6 +149,17 @@ interface MaintOutboxPort {
    * brojeve u `scheduled_job_runs.summary`) mora ostati identično do gašenja.
    */
   readonly nulaPrimalacaJeNeuspeh: boolean;
+  /**
+   * 🔴 Broj AKTIVNIH `maint_user_profiles` — postoji SAMO za 3.0 (`undefined` na
+   * sy15 putu, pa se tamo ne izvršava nijedan dodatni upit).
+   *
+   * Zašto uopšte: prazan outbox daje `processed=0 sent=0 failed=0` i ZELEN red u
+   * `scheduled_job_runs` — a to je istovremeno i „nema šta da se šalje" i
+   * „prekidač je na 3.0, a prenos podataka nije pušten" (IZMERENO 08.08.2026).
+   * Grana koja razlikuje ta dva stanja mora biti IZVAN petlje po redovima, jer
+   * baš u lošem slučaju petlja nema nijednu iteraciju.
+   */
+  readonly brojAktivnihProfila?: () => Promise<number>;
 }
 interface PbRow {
   id: string;
@@ -171,6 +182,12 @@ export interface DispatchSummary {
   skipped?: number;
   /** pb: da li je digest grupisanje bilo aktivno. */
   digest?: boolean;
+  /**
+   * Slobodan tekst koji se DOPISUJE na kraj summary-ja kad brojevi sami ne
+   * govore istinu (npr. „processed=0 zato što tabele nisu prenete", a ne zato
+   * što nema posla). Prazan u normalnom radu, pa oblik ostaje uporediv.
+   */
+  napomena?: string;
 }
 
 // Batch/attempts — isti default-i kao 1.0 edge (HR/MAINT 25 i 8, PB 10).
@@ -272,7 +289,8 @@ export class NotifyDispatchService {
     ]
       .filter(Boolean)
       .join(" ");
-    return `processed=${r.processed} sent=${r.sent} failed=${r.failed}${extra ? " " + extra : ""}`;
+    const osnovni = `processed=${r.processed} sent=${r.sent} failed=${r.failed}${extra ? " " + extra : ""}`;
+    return r.napomena ? `${osnovni} | ${r.napomena}` : osnovni;
   }
 
   // ══ KADROVSKA ══════════════════════════════════════════════════════════════
@@ -417,6 +435,8 @@ export class NotifyDispatchService {
         },
         fanout: (id) => this.odrFn.dispatchFanout(undefined, id),
         nulaPrimalacaJeNeuspeh: true,
+        brojAktivnihProfila: async () =>
+          (await this.odrFn.brojPreduslova(undefined)).aktivnihProfila,
       };
     }
     return {
@@ -442,6 +462,33 @@ export class NotifyDispatchService {
     // red samo stoji). Zato su cron i radnik prešli u ISTOM PR-u.
     const port = this.maintPort();
     const rows = await port.dequeue();
+    // ── 🔴 PRAZAN OUTBOX NIJE UVEK „nema posla" ──────────────────────────────
+    // Grana koja prijavljuje fanout bez primalaca je UNUTAR petlje ispod, pa u
+    // najgorem slučaju (prekidač na `3.0`, prenos podataka nije pušten) nikad ne
+    // dođe na red: outbox je prazan, petlja nema nijednu iteraciju, summary
+    // kaže `processed=0` i red u dnevniku je zelen. Zato se BAŠ TU, izvan
+    // petlje, jednom pita da li uopšte postoji ijedan aktivan profil. Provera se
+    // izvršava samo kad nema šta da se šalje (jedan `count` na praznom tiku) i
+    // samo na 3.0 putu — `sy15` port nema `brojAktivnihProfila`, pa je njegovo
+    // ponašanje bajt-identično.
+    if (rows.length === 0 && port.brojAktivnihProfila) {
+      const profila = await port.brojAktivnihProfila();
+      if (profila === 0) {
+        const napomena =
+          "🔴 ODRZAVANJE_IZVOR=3.0, outbox prazan I `maint_user_profiles` nema " +
+          "nijedan aktivan profil — prenos podataka održavanja nije pušten, pa " +
+          "obaveštenja o kvarovima ne mogu da odu NIKOME";
+        this.logger.error(`maint-notify-dispatch: ${napomena}.`);
+        return {
+          processed: 0,
+          sent: 0,
+          failed: 0,
+          fanouts: 0,
+          skipped: 0,
+          napomena,
+        };
+      }
+    }
     let sent = 0;
     let failed = 0;
     let fanouts = 0;

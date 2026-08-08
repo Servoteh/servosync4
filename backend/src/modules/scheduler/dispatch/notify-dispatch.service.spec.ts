@@ -123,6 +123,9 @@ function odrFnMock(
     redovi?: unknown[];
     fanoutBroj?: number;
     markSentBroj?: number;
+    /** Koliko AKTIVNIH `maint_user_profiles` postoji (podrazumevano: prenos je gotov). */
+    profila?: number;
+    sredstava?: number;
   } = {},
 ) {
   const dispatchDequeue = jest
@@ -132,17 +135,23 @@ function odrFnMock(
   const dispatchMarkSent = jest.fn().mockResolvedValue(opts.markSentBroj ?? 1);
   const dispatchMarkFailed = jest.fn().mockResolvedValue(undefined);
   const dispatchFanout = jest.fn().mockResolvedValue(opts.fanoutBroj ?? 0);
+  const brojPreduslova = jest.fn().mockResolvedValue({
+    aktivnihProfila: opts.profila ?? 4,
+    zivihSredstava: opts.sredstava ?? 40,
+  });
   return {
     odrFn: {
       dispatchDequeue,
       dispatchMarkSent,
       dispatchMarkFailed,
       dispatchFanout,
+      brojPreduslova,
     } as unknown as OdrzavanjeFnService,
     dispatchDequeue,
     dispatchMarkSent,
     dispatchMarkFailed,
     dispatchFanout,
+    brojPreduslova,
   };
 }
 
@@ -1522,6 +1531,88 @@ describe("ODRZAVANJE_IZVOR — maint grana dispečera", () => {
       storageMock().storage,
     );
     await expect(svc.dispatchMaint()).resolves.toBeDefined();
+    expect(m.sqlOf(0)).toContain("maint_dispatch_dequeue");
+  });
+});
+
+/*
+ * 🔴 PRAZAN OUTBOX NIJE UVEK „nema posla" (drugi krug provere PR #125).
+ *
+ * Prva popravka je fanout bez primalaca prijavila kao `failed`, ali TA grana je
+ * UNUTAR petlje po redovima. U izmerenom stanju produkcije (08.08.2026: 3.0
+ * `maint_*` tabele prazne) petlja nema nijednu iteraciju: dequeue vrati ništa,
+ * summary kaže `processed=0 sent=0 failed=0`, dnevnik zelen — dakle najgori
+ * mogući položaj prekidača izgleda TAČNO kao miran dan. Ova tri testa pinuju
+ * granu koja tu razliku pravi, i njenu cenu na sy15 putu (nikakvu).
+ */
+describe("maint dispečer — prazan outbox uz NEPRENETE podatke se VIDI", () => {
+  it("🔴 3.0 + prazan outbox + 0 aktivnih profila: napomena u summary-ju i ERROR u log", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const odr = odrFnMock({ redovi: [], profila: 0 });
+    const greska = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation(() => undefined);
+    const svc = new NotifyDispatchService(
+      sy15Mock().sy15,
+      mailMock().mail,
+      storageMock().storage,
+      undefined,
+      undefined,
+      odr.odrFn,
+    );
+
+    const r = await svc.dispatchMaint();
+
+    expect(odr.brojPreduslova).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ processed: 0, sent: 0, failed: 0 });
+    // Bez ovoga je run bio potpuno nem — brojevi identični mirnom danu.
+    expect(r.napomena).toContain("maint_user_profiles");
+    expect(greska).toHaveBeenCalledWith(
+      expect.stringContaining("maint-notify-dispatch"),
+    );
+
+    // Napomena mora stvarno da stigne u `scheduled_job_runs.summary`, ne samo u
+    // povratnu vrednost — dnevnik je jedino što čovek gleda posle preklopa.
+    const job = svc.buildJobs().find((j) => j.key === "maint-notify-dispatch")!;
+    const summary = String(await job.run({ scheduledFor: new Date() }));
+    expect(summary).toMatch(/^processed=0 sent=0 failed=0/);
+    expect(summary).toContain("maint_user_profiles");
+    greska.mockRestore();
+  });
+
+  it("3.0 + prazan outbox ali profili POSTOJE: summary ostaje čist (nema lažne uzbune)", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const odr = odrFnMock({ redovi: [], profila: 4 });
+    const svc = new NotifyDispatchService(
+      sy15Mock().sy15,
+      mailMock().mail,
+      storageMock().storage,
+      undefined,
+      undefined,
+      odr.odrFn,
+    );
+
+    const r = await svc.dispatchMaint();
+    expect(r.napomena).toBeUndefined();
+    const job = svc.buildJobs().find((j) => j.key === "maint-notify-dispatch")!;
+    expect(String(await job.run({ scheduledFor: new Date() }))).toBe(
+      "processed=0 sent=0 failed=0 fanouts=0 skipped=0",
+    );
+  });
+
+  it("🔴 podrazumevano (sy15): prazan outbox NE pravi nijedan dodatni upit", async () => {
+    // Prekidač NEPOSTAVLJEN = produkcija. Provera preduslova sme da postoji SAMO
+    // na 3.0 putu; `odrFnEksplozija` bi pukao na svaki dodir 3.0 servisa.
+    const m = sy15Mock();
+    m.pushResult([]);
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    const r = await svc.dispatchMaint();
+    expect(r.napomena).toBeUndefined();
+    expect(m.calls).toHaveLength(1);
     expect(m.sqlOf(0)).toContain("maint_dispatch_dequeue");
   });
 });

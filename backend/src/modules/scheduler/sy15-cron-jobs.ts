@@ -309,7 +309,8 @@ export class Sy15CronJobs {
       // ── Održavanje / Projektni biro ───────────────────────────────────────
       {
         key: "maint-deadlines",
-        description: "CMMS rokovi: vozila+vozači+dokumenti+IT/objekti (lookahead 30d)",
+        description:
+          "CMMS rokovi: vozila+vozači+dokumenti+IT/objekti (lookahead 30d)",
         schedule: { kind: "daily", at: "09:00" },
         run: async () => {
           // Korak 2 gašenja sy15: pod `3.0` posao ide kroz prepis
@@ -326,18 +327,47 @@ export class Sy15CronJobs {
           // već poslato i nastavi ostatak; jedna dugačka transakcija bi samo
           // držala brave nad outboxom bez ijedne dobiti.
           if (this.odrIzvor.isThreeZero) {
+            // ── 🔴 PRENOS PODATAKA JE TVRD PREDUSLOV, NE PREPORUKA ──────────────
+            // Nad praznim 3.0 tabelama posao vraća `enqueued=0 skipped=0` — isti
+            // brojevi kao savršeno miran dan — i run ostaje ZELEN. Zato se
+            // prekidač na `3.0` bez prenetih podataka (IZMERENO 08.08.2026:
+            // `maint_user_profiles` = 0) ODBIJA, a ne samo loguje: `run()` baca,
+            // pa `scheduled_job_runs` dobija stvarno CRVEN red sa razlogom.
+            // Usput to štedi i outbox — bez ijednog profila nijedno obaveštenje
+            // ionako ne može da ode nikome (fanout bi svaki red zatvorio kao
+            // `FANOUT_NO_RECIPIENTS`), pa nema svrhe upisivati ih.
+            const pre = await this.odrFn.brojPreduslova(undefined);
+            if (pre.aktivnihProfila === 0) {
+              throw new Error(
+                "ODRZAVANJE_IZVOR=3.0, a `maint_user_profiles` nema NIJEDAN " +
+                  "aktivan profil — prenos podataka održavanja nije pušten. " +
+                  "Rokovi se NE upisuju (nijedno obaveštenje ne bi imalo primaoca). " +
+                  "Vrati prekidač na `sy15` ili pusti prenos.",
+              );
+            }
             const rows = await this.odrFn.checkAllDeadlines(undefined, 30);
             // Summary je NAMERNO istog oblika koji `call()` daje za sy15 TABLE fn
             // `TABLE(source text, enqueued int, skipped int)` — inače bi dnevnik
             // `scheduled_job_runs` promenio format i poređenje „pre/posle
             // preklopa" ne bi radilo.
-            return rows
+            const summary = rows
               .map(
                 (r) =>
                   `source=${r.source} enqueued=${r.enqueued} skipped=${r.skipped}`,
               )
-              .join("; ")
-              .slice(0, 500);
+              .join("; ");
+            // Profili preneti, ali sredstava nema = DELIMIČAN prenos. Ovo ne
+            // obara posao (prazan registar sredstava je teorijski legitiman), ali
+            // se GLASNO vidi — i u app logu i na kraju summary-ja. Oblik iznad
+            // ostaje netaknut, upozorenje se samo dopisuje.
+            if (pre.zivihSredstava === 0) {
+              const upozorenje =
+                "UPOZORENJE: u `maint_assets` nema nijednog živog sredstva — " +
+                "rokovi se nemaju nad čim računati (delimičan prenos?)";
+              this.logger.error(`maint-deadlines: ${upozorenje}`);
+              return `${summary} | ${upozorenje}`.slice(0, 500);
+            }
+            return summary.slice(0, 500);
           }
           return this.call(
             "SELECT * FROM public.maint_check_all_deadlines(30);",

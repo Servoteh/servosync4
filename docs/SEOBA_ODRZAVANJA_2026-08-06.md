@@ -437,6 +437,29 @@ Zato:
 - Posle 8 pokušaja (backoff 1h) red trajno ispada iz reda čekanja i ostaje kao **vidljiv**
   neuspeh; ne visi večno, ali ni ne laže da je poslat.
 
+#### Preduslov sada drži i KOD, ne samo ovaj runbook (drugi krug, 08.08.2026)
+
+Prethodne dve alineje pokrivaju samo **delimičan** prenos (red je već u outboxu). Za izmereno
+stanje — tabele **prazne** — nijedna od njih se nikad ne izvrši: cron ne nađe nijedan rok, pa
+outbox ostane prazan i fanout se ne pozove. Zato brana sada stoji i u kodu:
+
+- **`maint-deadlines`** pod `ODRZAVANJE_IZVOR=3.0` prvo prebroji aktivne
+  `maint_user_profiles`. Ako ih je **0**, posao **BACA** — red u `scheduled_job_runs` je
+  stvarno `FAILED` sa razlogom, i **nijedan rok se ne upisuje** (bespredmetan je: nema kome).
+  Ako profila ima, a `maint_assets` je prazan (delimičan prenos), posao radi, ali summary
+  dobija rep `| UPOZORENJE: …` uz `ERROR` u app logu.
+- **`maint-notify-dispatch`** pod `3.0`: kad je outbox prazan **i** nema nijednog aktivnog
+  profila, summary dobija rep sa razlogom, uz `ERROR` u logu. Ovaj posao NE baca (radi na
+  svakih 5 min — crven red svaka 4 minuta bi bio šum), pa mu red u dnevniku ostaje zelen;
+  signal je tekst summary-ja i `ERROR` u logu.
+- Cena na podrazumevanom `sy15` putu je **nikakva**: provera postoji samo na 3.0 grani i
+  izvršava se tek kad nema šta da se šalje (jedan `count` na praznom tiku).
+
+Idempotencija rokova je usput morala da nauči novi status: red zatvoren baš kao
+`FANOUT_NO_RECIPIENTS` i dalje važi kao „već upisan", inače bi `maint-deadlines` svakog dana
+iznova upisivao isti rok (jedan mrtav `failed` red po roku po danu). Svaki **drugi** `failed`
+(stvaran neuspeh isporuke) i dalje pušta ponovni upis — kao u sy15 originalu.
+
 ### Povratak (rollback)
 
 Jedan potez, bez deploy-a koda: **`ODRZAVANJE_IZVOR=sy15` + restart (~2 min).** sy15 se tokom
