@@ -338,20 +338,42 @@ export class PlanProizvodnjeService {
       plannedDoneBy: row.plannedDoneBy,
       updatedBy: email,
     };
-    await tx.planProizvodnjeTermin.upsert({
+    // 🔴 NAMERNO `findFirst` + `create/update`, a NE `upsert({ where: { overlayId } })`.
+    //
+    // `upsert` traži da `overlayId` bude JEDINSTVEN, a on je jedinstven samo dok stoji
+    // privremeni indeks `uq_plan_proizvodnje_termini_overlay_faza_a`. Čim taj indeks
+    // padne (početak prave Faze B), `overlayId` izlazi iz Prisma `WhereUniqueInput`-a i
+    // ovaj fajl PRESTAJE DA SE PREVODI — dakle indeks ne bi mogao da se skine bez
+    // istovremene izmene koda, što je tačno ono što se ne sme raditi u istom potezu.
+    // Ovako preslikač preživljava skidanje indeksa i može da se ukloni zasebno, kad
+    // frontend prestane da piše termine kroz `/overlays`.
+    //
+    // Bira se NAJRANIJI termin: kad ih bude više, `/overlays` je operacijski put
+    // („pomeri poziciju"), pa dira prvi po vremenu — isti izbor koji čitanje pravi.
+    const postojeci = await tx.planProizvodnjeTermin.findFirst({
       where: { overlayId: row.id },
-      create: {
-        overlayId: row.id,
-        workOrderId: row.workOrderId,
-        lineId: row.lineId,
-        kolicina: wo?.pieceCount ?? null,
-        createdBy: email,
-        ...zajednicko,
-      },
+      orderBy: [{ plannedStartAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+    });
+    if (postojeci) {
       // `kolicina` i `assignedMachineCode` se NAMERNO ne diraju pri izmeni — u Fazi B
       // ih postavlja planer po terminu, a ovaj put sme da menja samo vremena.
-      update: { ...zajednicko, updatedAt: now },
-    });
+      await tx.planProizvodnjeTermin.update({
+        where: { id: postojeci.id },
+        data: { ...zajednicko, updatedAt: now },
+      });
+    } else {
+      await tx.planProizvodnjeTermin.create({
+        data: {
+          overlayId: row.id,
+          workOrderId: row.workOrderId,
+          lineId: row.lineId,
+          kolicina: wo?.pieceCount ?? null,
+          createdBy: email,
+          ...zajednicko,
+        },
+      });
+    }
   }
 
   /**

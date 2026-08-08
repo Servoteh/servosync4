@@ -54,7 +54,7 @@ function makeIdem(tx: unknown) {
  */
 function makeService(
   queryReturns: QReturn[] = [],
-  zatecen: { plannedStartAt?: Date | null } = {},
+  zatecen: { plannedStartAt?: Date | null; terminPostoji?: boolean } = {},
 ) {
   const captured: {
     overlay?: { where: unknown; create: Record<string, unknown>; update: Record<string, unknown> };
@@ -136,6 +136,22 @@ function makeService(
       // 078/26: kaskada PREBROJI termine pogođenih parova, pa proveri da je pomerila
       // tačno toliko. Mock vraća „jedan termin po operaciji" — današnje stvarno stanje.
       count: jest.fn(async () => poslednjiOverlayUpdate),
+      /**
+       * Preslikač od 08.08. koristi `findFirst` + `create`/`update` umesto `upsert`,
+       * da ne bi zavisio od privremenog jedinstvenog indeksa. `zatecenTermin`
+       * bira koju granu test vežba: `null` = red tek nastaje.
+       */
+      findFirst: jest.fn(async () =>
+        zatecen.terminPostoji === true ? { id: 42 } : null,
+      ),
+      create: jest.fn(async (a: { data: Record<string, unknown> }) => {
+        captured.termini.push({ where: {}, create: a.data, update: {} });
+        return { id: 1, ...a.data };
+      }),
+      update: jest.fn(async (a: { data: Record<string, unknown> }) => {
+        captured.termini.push({ where: {}, create: {}, update: a.data });
+        return { id: 42, ...a.data };
+      }),
       upsert: jest.fn(async (a: (typeof captured.termini)[number]) => {
         captured.termini.push(a);
         return { id: 1, ...a.create };
@@ -1496,7 +1512,12 @@ describe("078/26 Faza A — dvostruki upis termina", () => {
     // a overlay bi zadržao staru vrednost — tiho razilaženje koje se nigde ne prijavljuje.
     // Bar VEĆ stoji na gantu (inače se ne bi ni mogao resize-ovati) — zato zatečen start.
     const zatecenStart = new Date("2026-08-03T05:00:00.000Z");
-    const { svc, captured } = makeService([], { plannedStartAt: zatecenStart });
+    // Bar već ima termin (resize po definiciji radi nad postojećim), pa preslikač ide
+    // u granu IZMENE — od 08.08. to je `update`, ne `upsert` (v. zašto u servisu).
+    const { svc, captured } = makeService([], {
+      plannedStartAt: zatecenStart,
+      terminPostoji: true,
+    });
     await svc.upsertOverlay(email, {
       workOrderId: "9400",
       lineId: "12",
@@ -1505,15 +1526,27 @@ describe("078/26 Faza A — dvostruki upis termina", () => {
 
     expect(captured.termini).toHaveLength(1);
     const t = captured.termini[0];
-    // Mock `planProizvodnjeOverlay.upsert` vraća `{ id: 1, ...create }`, pa je ovo
-    // doslovno ono što je red imao POSLE upisa.
-    expect(t.create.plannedEndAt).toBeInstanceOf(Date);
+    // Mock `planProizvodnjeOverlay.upsert` vraća ceo red, pa je ovo doslovno ono što
+    // je overlay imao POSLE upisa.
     expect(t.update.plannedEndAt).toBeInstanceOf(Date);
     // 🔴 SRŽ: početak koji patch NIJE nosio mora ostati zatečena vrednost, a ne NULL.
     // Da se preslikavao patch, ovde bi stajalo undefined i termin bi se razišao sa
     // overlay-om na prvom resize-u bara.
     expect(t.update.plannedStartAt).toEqual(zatecenStart);
-    expect(t.create.plannedStartAt).toEqual(zatecenStart);
+  });
+
+  it("kad termina JOŠ nema, preslikač ga PRAVI (grana `create`)", async () => {
+    const zatecenStart = new Date("2026-08-03T05:00:00.000Z");
+    const { svc, captured } = makeService([], { plannedStartAt: zatecenStart });
+    await svc.upsertOverlay(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedEndAt: "2026-08-05T05:00:00.000Z",
+    });
+    expect(captured.termini).toHaveLength(1);
+    expect(captured.termini[0].create.plannedStartAt).toEqual(zatecenStart);
+    // Nov termin nosi PUN plan operacije (u Fazi A se količina ne deli).
+    expect(captured.termini[0].create.kolicina).toBe(7);
   });
 
   it("termin je LENJ — nastaje tek kad pozicija dobije termin", async () => {
