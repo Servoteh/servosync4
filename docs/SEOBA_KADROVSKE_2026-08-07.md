@@ -428,6 +428,41 @@ iznova. `KadrovskaSourceService` **ne čita** zastareli `SASTANCI_PB_IZVOR`.
 | Env red | `backend/.env.example` | ✅ |
 | Testovi prekidača | `backend/src/common/sy15/izvor-prekidaci.spec.ts` | ✅ 53 testa (+10) |
 | Zajednički helper identiteta | `backend/scripts/lib/sy15-identity.ts` | ✅ **ponovo iskorišćen, nije menjan** |
+| **Prepis 17 DEFINER fn oblasti PLATE i PRISUSTVO** (blokada 2, prvi deo) | `backend/src/modules/kadrovska/kadrovska-fn-plate.service.ts` | ✅ + spec: 118 testova, **8/8 mutacija ubijeno** |
+
+### 🔴 Prepis oblasti PLATE i PRISUSTVO (08.08.2026, grana `feat/kadrovska-fn-plate`)
+
+Prvi deo blokade 2. Tela su pročitana sa **žive sy15** (`pg_get_functiondef`), ne po
+dokumentaciji — i to je odmah oborilo dve tvrdnje mape funkcija (nalaz 10) i otkrilo funkciju
+koja **nikad nije proradila** (K7).
+
+| Oblast | Preneto | Gde je brana |
+|---|---|---|
+| **PLATE** (8 fn + 1 RLS view) | `current_user_can_view_salary`, `kadr_get_contract_salary`, `kadr_get_contract_bruto`, `v_salary_payroll_month`, `kadr_payroll_init_month`, `hr_upsert_salary_payroll`, `kadr_payroll_unlock`, `kadr_set_contract_salary`, `kadr_queue_payroll_notifications` | 🔴 `canViewSalary()` = **allowlist** `kadr_salary_viewer_allowlist`, ni jedna rola |
+| **PRISUSTVO** (9 fn + 1 view) | `can_edit_kadrovska_grid`, `hr_upsert_work_hours_batch`, `kadr_work_hours_audit`, `v_attendance_daily`, `attendance_submit_correction`, `attendance_cancel_correction`, `kiosk_record_punch`, `attendance_katze_max_idreg`, `kadr_schedule_attendance_alerts`, `kadr_schedule_attendance_weekly_digest` | `canEditKadrovskaGrid()` = allowlist `kadr_grid_editor_allowlist`; korekcije = `self ∨ managesEmployee ∨ hrOrAdmin` |
+| Pomoćni gejtovi (9) | `current_user_email` / `_is_admin` / `_is_hr` / `_is_hr_or_admin` / `_is_poslovni_admin` / `_managed_sub_department_ids` / `_manages_employee`, `kadr_oversight_recipients`, `attendance_extra_recipients` | privremeno u istom servisu; sele se u `KadrovskaAuthzService` (blokada 1) bez promene ponašanja |
+
+**Tabela istinitosti brave nad platama** je izvršna specifikacija u spec-u (7 identiteta × 5
+puteva). Ključno: **admin koji nije na spisku NE vidi zarade.** U 3.0 ruta nosi
+`@RequirePermission(kadrovska.salary)` (dobija ga samo admin), a servis nad tim drži allowlist —
+moraju proći OBA sloja. Izmereno i drugo: `kadr_get_contract_bruto` i `kadr_set_contract_salary`
+imaju granu `OR current_user_is_poslovni_admin()`, pa **poslovni_admin (1 aktivan) vidi ugovorni
+bruto i menja ugovornu zaradu** iako ga nijedna RLS politika ne pušta do tabele. To je zatečeno i
+preneto doslovno — ali „samo dva mejla vide zarade" nije cela istina.
+
+**Prelazni režim za `attendance_events` (491.271 red, most piše uživo):** čitanja idu po
+indeksiranom `event_ts` (`idx_attendance_events_ts`, `_emp_ts`), a lokalni dan se proverava u
+kodu — filter po `event_ts_local` nema indeks i bio bi sekvencijalni prolaz nad 491k redova na
+svaki dnevni posao. Nijedna metoda ne pretpostavlja potpun ili monoton niz događaja, pa sve rade
+i dok most piše u sy15; `katzeMaxIdreg()` ostaje samooporavljiv vodeni žig (§5.3).
+
+### 🔴 Nalaz 10: mapa funkcija greši na dva mesta (izmereno `pg_proc`)
+
+- `attendance_katze_max_idreg` je **`prosecdef = false`** — NIJE `SECURITY DEFINER`. Radi jer
+  aplikativna rola sme da čita `attendance_events`; pod RLS-om bi vraćala žig samo nad
+  vidljivim redovima. Za most je to razlika između „nastavi od 491.244" i „počni ispočetka".
+- `kiosk_record_punch` (2.629 znakova) i `attendance_katze_max_idreg` (289) su u mapi upisane
+  kao **0 znakova** — nisu bile pročitane.
 
 ### 🔴 Gde je brana STVARNO postavljena (a ne samo dokumentovana)
 
@@ -591,7 +626,7 @@ po tome šta zaustavlja preklop.
 | # | Blokada | Obim (mereno) | Procena |
 |---|---|---|---:|
 | **1** | 🔴 **167 RLS politika → `KadrovskaAuthzService`** (ne postoji). Ovo je najveći pojedinačni posao u celoj seobi sy15 — više politika nego u bilo kom domenu do sada. Gejtova koje politike zovu: 7 | 63 tabele | **5–8 dana** |
-| **2** | **116 funkcija koje kod dodiruje**, od kojih **54 nema prefiks domena** (§1 nalaz 2). Najveće: `kadr_schedule_hr_reminders` (**39.357 znakova**), `hr_upsert_salary_payroll` (9.186), `kadr_queue_vacation_notification` (9.884), `kadr_queue_weekly_risk_summary` (9.197), `hr_vacreq_approve` (8.749) | 63 `SECURITY DEFINER` | **6–9 dana** |
+| **2** | **116 funkcija koje kod dodiruje**, od kojih **54 nema prefiks domena** (§1 nalaz 2). Najveće: `kadr_schedule_hr_reminders` (**39.357 znakova**), `kadr_queue_vacation_notification` (9.884), `kadr_queue_weekly_risk_summary` (9.197), `hr_vacreq_approve` (8.749). ✅ **08.08: PLATE i PRISUSTVO gotovi — 17 fn + 2 view-a** (uklj. `hr_upsert_salary_payroll` 9.186), `kadrovska-fn-plate.service.ts`. OSTAJE: odsustva (37 fn, najveći ostatak), obaveštenja/scheduler (8), ocenjivanje i razgovori (16), dashboard/onboarding (7), AI alati (12) | 63 `SECURITY DEFINER`, od toga **17 preneto** | **4–7 dana** (bilo 6–9) |
 | **3** | **121 poziv kroz branjene getere** (`withUserMapped` 80 + mutacije 16 + „Moj profil" 25) treba prevesti na 3.0 Prisma put | ~150 REST ruta | **4–6 dana** |
 | **4** | **19 view-ova** (§1). **15 je `security_invoker = true`** — RLS se primenjivao I KROZ VIEW, pa scope MORA eksplicitno u upit. `v_employees_safe` uz to **maskira PII** (`personal_id`, `bank_account`, `address`…) kroz `current_user_can_manage_employee_pii()` — bez tog maskiranja JMBG-ovi bi procurili | + 4 `v_rev_*` (Reversi) | **2–3 dana** |
 | **5** | **23 „logika" trigera** — 10 × `kadr_audit_log_trigger`, 4 × `audit_row_change` (u tuđi `audit_log`), guard PII kolona, guard sistematizacije, 2 guarda samoocene, sync lekarskih pregleda, web-push, 2 × `set_created_by` | v. migracija §6b | **2 dana** |
@@ -614,6 +649,12 @@ je **~10–20 minuta** (491k redova kapije nosi najviše).
 
 Ništa iz modula — i to je namerno. Ovaj korak isporučuje **šemu, prenos, prekidač i merenje**;
 `3.0` je zasad položaj u kome sve pada sa 503 i imenuje putanju.
+
+⚠️ **Ne menja se ni posle prepisa PLATA i PRISUSTVA (08.08).** `KadrovskaFnPlateService` je
+prepisana LOGIKA, ali ga nijedan kontroler još ne zove — brana `assertPorted` je i dalje ispred
+svih 8 pozivalaca, pa pod `3.0` rute i dalje vraćaju 503. Uključivanje ide zajedno sa blokadom 3
+(prevođenje `withUserMapped` poziva na 3.0 Prisma put), ne pre nje: pola prepisanog domena je
+gore od nula prepisanog, jer bi deo upisa otišao u 3.0 a deo u sy15 i baze bi se razišle.
 
 ---
 
@@ -644,6 +685,12 @@ Ništa iz modula — i to je namerno. Ovaj korak isporučuje **šemu, prenos, pr
 | K4 | `kadr_grid_editor_allowlist` i `kadr_vacation_editor_allowlist` sadrže **legacy nalog sa greškom u domenu**: `nevena.knezevic@sevroteh.com` (sevroteh, ne servoteh) | čitanje sadržaja |
 | K5 | `salary_terms.created_by` sadrži i vrednosti koje nisu mejl (`'import-jun-2026'`) | uzorak |
 | K6 | `kadr_pulse_notify_dispatch` pg_cron posao postoji ali je **`active=false`** — dispečer se pogoni iz 3.0 schedulera | `cron.job` |
+| 🔴 **K7** | **`kadr_queue_payroll_notifications` NIKAD NIJE PRORADILA.** `INSERT` ne navodi `kadr_notification_log.related_entity_type`, a kolona je `NOT NULL` **bez DEFAULT-a** → prvi red pada sa `23502`, transakcija se vraća, **nula poruka**. Dokaz iz podataka: 17 tipova / 1.336 redova u `kadr_notification_log`, tipa `payroll_statement` **0**. Ruta `POST /kadrovska/notifications/payroll/run` (guard `kadrovska.manage`) danas vraća 500. Prepis čuva taj ishod — **uključivanje bi PRVI PUT poslalo mejl i WhatsApp svim aktivnim zaposlenima sa satima; to je odluka vlasnika, ne popravka** | `information_schema.columns` + `count(*)` po tipu |
+| 🔴 **K8** | `kadr_queue_payroll_notifications` je `SECURITY DEFINER`, **bez ijednog gejta prava**, a `EXECUTE` ima rola `authenticated` → u sy15 je svaki prijavljen korisnik mogao da pokrene masovno slanje. Jedina brana je `@RequirePermission` **kod pozivaoca**, što je obrnuto od pravila „popravka ide u branu". Nema ni dedup-a (dva poziva = duple poruke) | `pg_proc.prosecdef` + `has_function_privilege` |
+| 🔴 **K9** | `hr_upsert_salary_payroll`: `advance_paid_on` i `final_paid_on` NISU pod `COALESCE`-om nego pod `NULLIF(...)::date` — **delimičan upis koji ta dva ključa ne pošalje BRIŠE oba datuma isplate**, dok svako drugo polje čuva staru vrednost | čitanje tela + test koji pinuje zatečeno |
+| 🔴 **K10** | `hr_upsert_work_hours_batch`: vraća `{"conflicts": []}` uvek — ime obećava detekciju sudara koje u telu NEMA; nema ni optimističke provere (za razliku od obračuna), pa dva urednika grida tiho gaze jedan drugog. Uz to `EXECUTE` na toj **mutirajućoj** fn ima i rola **`anon`** (gejt je ipak sprečava) | čitanje tela + grantovi |
+| 🔴 **K11** | Dva različita rešavača „trenutne zarade": `kadr_get_contract_salary` sortira `effective_from DESC, created_at DESC`, a view `v_employee_current_salary` (koji koristi `kadr_payroll_init_month`) samo `effective_from DESC`. Kad dva uslova dele `effective_from`, „trenutna zarada" zavisi od toga koji je put pitao | poređenje tela fn i view-a |
+| 🔴 **K12** | `attendance_cancel_correction` traži `managesEmployee ∨ hrOrAdmin` — radnik **ne može da poništi SVOJU korekciju** koju je smeo da unese (`attendance_submit_correction` ima `self` granu, `cancel` je nema) | poređenje gejtova dve fn |
 
 ---
 
