@@ -22,6 +22,12 @@ import { OdrzavanjeService } from "./odrzavanje.service";
  * parnjak sy15 `rev_api_idempotency` koji `runIdem` koristi pod `ODRZAVANJE_IZVOR=3.0`.
  * Modul JESTE `@Global` (app.module.ts), ali se navodi izričito: zavisnost se vidi na
  * mestu gde nastaje, i modul se može dići samostalno u testu bez cele aplikacije.
+ *
+ * ⚠️ REDOSLED PROVAJDERA NIJE BITAN, ali JESTE bitno da `OdrzavanjeAuthzService`,
+ * `OdrzavanjeFnService` i `OdrzavanjeLokacijeMostService` budu ovde: `OdrzavanjeService`
+ * ih uzima kao `@Optional()` (zbog postojećih unit testova), pa bi ispuštena
+ * registracija prošla NEMO pri dizanju modula i pukla tek na prvom upisu pod `3.0`.
+ * `odrzavanje.service.spec.ts` (grupa „3.0 ožičenje") to i pinuje.
  */
 @Module({
   imports: [PrismaModule, IdempotencyModule, NotificationsModule],

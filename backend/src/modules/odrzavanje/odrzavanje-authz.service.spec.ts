@@ -292,6 +292,50 @@ describe("write pravila koja RLS više ne brani", () => {
     ).toBe(true);
   });
 
+  it("🔴 trajno brisanje mašine: ŠIRE od preimenovanja, ali ne za operatera/tehničara", () => {
+    for (const r of ["admin", "menadzment", "magacioner"]) {
+      expect(svc.canDeleteMachineHard(scope({ erpRoles: new Set([r]) }))).toBe(
+        true,
+      );
+    }
+    expect(svc.canDeleteMachineHard(scope({ profileRole: "chief" }))).toBe(
+      true,
+    );
+    expect(svc.canDeleteMachineHard(scope({ profileRole: "admin" }))).toBe(
+      true,
+    );
+    // Tehničar popravlja mašine — ne briše ih iz kataloga; operater pogotovo ne.
+    expect(svc.canDeleteMachineHard(scope({ profileRole: "technician" }))).toBe(
+      false,
+    );
+    expect(
+      svc.canDeleteMachineHard(
+        scope({ profileRole: "operator", assignedMachineCodes: ["3.12"] }),
+      ),
+    ).toBe(false);
+    expect(svc.canDeleteMachineHard(scope())).toBe(false);
+  });
+
+  it("🔴 ko sme da briše mašinu, tu mašinu i VIDI (mereno nad celim katalogom rola)", () => {
+    // Ovo je razlog što u koraku 1 hard-delete-a scope nije dovoljan, nego mora
+    // GEJT: svaka rola koju `canDeleteMachineHard` pušta ionako prolazi
+    // `machineVisible`, pa bi „skupi samo vidljive fajlove" pustilo BAŠ SVE.
+    // Ako se spisak rola ikad razdvoji, ovaj test pada i scope postaje živ.
+    const kandidati: MaintScope[] = [
+      ...["admin", "menadzment", "magacioner", "monter", "pm", "kontrolor"].map(
+        (r) => scope({ erpRoles: new Set([r]) }),
+      ),
+      ...(
+        ["operator", "technician", "chief", "management", "admin"] as const
+      ).map((r) => scope({ profileRole: r })),
+    ];
+    for (const s of kandidati) {
+      if (svc.canDeleteMachineHard(s)) {
+        expect(svc.machineVisible(s, "3.12")).toBe(true);
+      }
+    }
+  });
+
   it("zatvaranje incidenta je POSEBNO pravo (odvojeno od izmene)", () => {
     expect(svc.canCloseIncident(scope({ profileRole: "technician" }))).toBe(
       false,
