@@ -149,9 +149,17 @@ const GANTT_COLS_TERMIN = Prisma.sql`tt.termin_id, tt.termin_kolicina,
   eff.naziv_dela, eff.materijal, eff.komada_total, eff.komada_done,
   eff.komada_done_good, eff.scrap_pieces, eff.rework_pieces, eff.scrap_outstanding,
   eff.rok_izrade, eff.tpz_min, eff.tk_min,
+  -- 🔴 Trajanje se računa po KOLIČINI TERMINA, ne po punom planu operacije.
+  -- Termin od 30 komada u seriji od 100 traje 30 x TK, ne 100 x TK — inače bi bar
+  -- na gantu bio tri puta duži nego posao koji predstavlja, i planer bi rezervisao
+  -- mašinu za vreme koje mu ne treba. Priprema (TPZ) se NE deli: ona se plaća po
+  -- postavci, dakle jednom po terminu.
+  -- termin_kolicina je NULL za operaciju bez termina — tada pada na pun plan,
+  -- što je tačno ponašanje pre 078/26.
   COALESCE(
     tt.planned_duration_minutes,
-    (COALESCE(eff.tpz_min, 0) + COALESCE(eff.tk_min, 0) * COALESCE(eff.komada_total, 0))::int
+    (COALESCE(eff.tpz_min, 0)
+       + COALESCE(eff.tk_min, 0) * COALESCE(tt.termin_kolicina, eff.komada_total, 0))::int
   )::int AS effective_duration_minutes,
   tt.planned_start_at, tt.planned_end_at, tt.planned_duration_minutes,
   tt.planned_done, tt.planned_done_at, tt.planned_done_by, eff.is_completed_effective,

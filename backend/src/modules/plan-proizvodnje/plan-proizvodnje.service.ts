@@ -1747,10 +1747,36 @@ export class PlanProizvodnjeService {
 
   /** Brisanje jednog termina (pozicija ostaje, samo silazi sa te tačke ose). */
   async deleteTermin(email: string, id: number) {
-    const red = await this.prisma.planProizvodnjeTermin.findUnique({ where: { id } });
-    if (!red) throw new NotFoundException(`Termin ${id} ne postoji.`);
-    await this.prisma.planProizvodnjeTermin.delete({ where: { id } });
-    return { data: { id, obrisao: email } };
+    return this.prisma.$transaction(async (tx) => {
+      const red = await tx.planProizvodnjeTermin.findUnique({ where: { id } });
+      if (!red) throw new NotFoundException(`Termin ${id} ne postoji.`);
+      await tx.planProizvodnjeTermin.delete({ where: { id } });
+
+      // 🔴 DUH-BAR: čitanje ima rezervu `COALESCE(termin, overlay)` — uvedena je da
+      // pozicija bez termina ne izgubi ručne override-e. Ali ista rezerva znači da
+      // brisanjem POSLEDNJEG termina bar NE nestaje: vrati se na stari datum sa
+      // overlay-a, i planer vidi bar koji je upravo obrisao. Zato se, kad je obrisan
+      // poslednji, čisti i overlay — tek tada je pozicija stvarno skinuta sa ose.
+      //
+      // Ostali override-i (`planned_duration_minutes`) se NE diraju: oni su podešavanje
+      // pozicije, ne termina, i imaju smisla i kad pozicija nije na gantu (v. regresija
+      // od 07.08. kad su baš takvi override-i tiho izgubljeni).
+      const preostalo = await tx.planProizvodnjeTermin.count({
+        where: { overlayId: red.overlayId },
+      });
+      if (preostalo === 0) {
+        await tx.planProizvodnjeOverlay.update({
+          where: { id: red.overlayId },
+          data: {
+            plannedStartAt: null,
+            plannedEndAt: null,
+            updatedBy: email,
+            updatedAt: new Date(),
+          },
+        });
+      }
+      return { data: { id, obrisao: email, poslednji: preostalo === 0 } };
+    });
   }
 
   /** Prazan string NIJE mašina — COALESCE u čitanju bi ga uzeo kao vrednost. */
