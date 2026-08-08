@@ -4593,8 +4593,15 @@ export class OdrzavanjeService {
   /**
    * Hard-delete mašine: BE PRVO očisti storage (fajlovi mašine), pa RPC atomski
    * obriše red + child redove + upiše deletion_log (1.0 to radi klijent — spec §3).
-   * Storage brisanje je best-effort PRE RPC-a (meta-red je izvor istine; RLS SELECT
-   * na files presuđuje šta je vidljivo pozivaocu).
+   * Storage brisanje je best-effort PRE RPC-a (meta-red je izvor istine).
+   *
+   * 🔴 KO SME, presuđuje se PRE prvog obrisanog bajta. Pod `sy15` je korak 1 bio
+   * običan SELECT nad kojim je stajao RLS `mmf_select`
+   * (`maint_machine_visible(machine_code)`), pa je nevidljiva mašina davala 0
+   * redova; RLS-a pod `3.0` nema, a `Sy15StorageService.remove` ide servisnim
+   * ključem i briše STVARNO. Bez gejta ovde bi svako sa grubom modul-kapijom
+   * `ODRZAVANJE_WRITE` mogao da obriše sve fajlove tuđe mašine (uputstva, šeme,
+   * fotografije) i tek onda dobije 403 — nepovratno i bez traga.
    */
   async deleteMachineHard(email: string, code: string, reason: string) {
     // 1) Skupi putanje fajlova (RLS SELECT), pa best-effort obriši iz bucketa.
@@ -4608,7 +4615,28 @@ export class OdrzavanjeService {
         });
         return files.map((f) => f.storagePath).filter(Boolean);
       },
-      async (tx) => {
+      // ── 3.0 ──────────────────────────────────────────────────────────────
+      async (tx, scope) => {
+        // ⚠️ SVESNO ODSTUPANJE (u BEZBEDNOM smeru, i mereno): gejt trajnog
+        // brisanja je pomeren PRE brisanja bajtova. U sy15 je operater kome je
+        // mašina dodeljena stizao da joj obriše fajlove pa tek onda pao na 403
+        // u RPC-u; ovde ne stiže. Isti gejt (`canDeleteMachineHard`) presuđuje
+        // i u koraku 2 — ovo ga samo dovodi ISPRED nepovratnog poteza.
+        this.gejt(
+          this.az.canDeleteMachineHard(scope),
+          "maint_machine_delete_hard",
+        );
+        // `mmf_select` = `maint_machine_visible(machine_code)`, prepisan kao
+        // FILTER a ne kao gejt: pod sy15 nevidljiva mašina daje 0 redova
+        // (bajtovi ostaju), ne grešku.
+        //
+        // ⚠️ POŠTENO: danas je ova grana NEDOSTIŽNA — izmereno je da svaka rola
+        // koju `canDeleteMachineHard` pušta prolazi i `machineVisible`
+        // (`ERP_ADMIN_OR_MGMT_ROLES ⊂ FLOOR_READ_ROLES`). Zato bug gore ne bi
+        // popravio scope nego GEJT. Ostaje kao brana za razlaz ta dva spiska;
+        // implikacija je pinovana testom u `odrzavanje-authz.service.spec.ts`,
+        // pa se razlaz vidi kao pad testa, a ne kao obrisani tuđi fajlovi.
+        if (!this.az.machineVisible(scope, code)) return [];
         const files = await tx.maintMachineFile.findMany({
           where: { machineCode: code },
           select: { storagePath: true },
@@ -5513,9 +5541,18 @@ export class OdrzavanjeService {
         return inc?.machineCode ?? `incident/${id}`;
       },
       // ── 3.0 ── isti fallback; putanja u bucketu ostaje 1.0-kompatibilna.
-      async (tx) => {
-        const inc = await tx.maintIncident.findUnique({
-          where: { id },
+      // 🔴 Scope NIJE kozmetika: pod sy15 je RLS `maint_incidents` SELECT vraćao
+      // `null` prijaviocu koji svoj incident NE vidi (F6), pa su fotografije
+      // odlazile pod `incident/<id>/…`. Bez ovog isečka bi ista prijava pod 3.0
+      // dobila pravu šifru mašine i raspored bajtova u bucketu bi se tiho
+      // razišao između dva izvora — a authz i dalje presuđuje `fns` prepis.
+      async (tx, scope) => {
+        const inc = await tx.maintIncident.findFirst({
+          where: {
+            id,
+            ...((this.az.incidentListWhere(scope) ??
+              {}) as P30.MaintIncidentWhereInput),
+          },
           select: { machineCode: true },
         });
         return inc?.machineCode ?? `incident/${id}`;
@@ -5619,20 +5656,24 @@ export class OdrzavanjeService {
             machine: { select: { machineCode: true } },
           },
         });
+        // Nepostojeći `asset_id` je LOŠ PODATAK, ne uskraćeno pravo: u sy15 je
+        // INSERT padao na FK (23503) → 422. Bez ove provere `assetVisible(…,
+        // null)` = false pa bi 3.0 na istu grešku vratio 403 i FE bi javio
+        // „nemate pravo" umesto „sredstvo ne postoji".
+        if (!asset) {
+          throw new UnprocessableEntityException(
+            `Sredstvo ${dto.assetId} ne postoji`,
+          );
+        }
         this.gejt(
           this.az.canCreateWorkOrder(scope, scope.userId) &&
-            this.az.assetVisible(
-              scope,
-              asset
-                ? {
-                    assetType: asset.assetType,
-                    machineCode: asset.machine?.machineCode ?? null,
-                  }
-                : null,
-            ),
+            this.az.assetVisible(scope, {
+              assetType: asset.assetType,
+              machineCode: asset.machine?.machineCode ?? null,
+            }),
           "maint_wo_insert",
         );
-        if (asset?.archivedAt)
+        if (asset.archivedAt)
           throw new UnprocessableEntityException(
             `Sredstvo „${asset.name}" je otpisano — novi radni nalog nije moguć. Vratite ga u upotrebu ili izaberite drugo.`,
           );

@@ -879,12 +879,9 @@ export class OdrzavanjeFnService {
     const kod = (code ?? "").trim();
     const razlog = (reason ?? "").trim();
     // Gejt je ŠIRI od `machineRename` — uključuje `erp_admin_or_management`.
-    if (
-      !this.authz.isErpAdmin(scope) &&
-      !this.authz.isErpAdminOrManagement(scope) &&
-      scope.profileRole !== "chief" &&
-      scope.profileRole !== "admin"
-    ) {
+    // Izraz živi u `canDeleteMachineHard` jer ga traži i BE korak 1 (brisanje
+    // bajtova iz skladišta) — jedan izvor, da se dva prepisa ne raziđu.
+    if (!this.authz.canDeleteMachineHard(scope)) {
       throw new ForbiddenException("maint_machine_delete_hard: not authorized");
     }
     if (kod === "") {

@@ -192,6 +192,24 @@ export class OdrzavanjeAuthzService {
     return s.assignedMachineCodes ?? [];
   }
 
+  /**
+   * Gejt `maint_machine_delete_hard(code, reason)` — ŠIRI od `machine_rename`
+   * (uključuje `erp_admin_or_management`, koji nosi i `magacioner`).
+   *
+   * 🔴 Imenovan predikat, a ne izraz prepisan na dva mesta: trajno brisanje se
+   * presuđuje DVAPUT — jednom pre brisanja bajtova iz skladišta (BE korak 1) i
+   * jednom u samoj `machineDeleteHard`. Dva prepisa istog uslova su se već
+   * razišla (bajtovi su odlazili bez ijedne provere), pa je izvor jedan.
+   */
+  canDeleteMachineHard(s: MaintScope): boolean {
+    return (
+      this.isErpAdmin(s) ||
+      this.isErpAdminOrManagement(s) ||
+      s.profileRole === "chief" ||
+      s.profileRole === "admin"
+    );
+  }
+
   /** `maint_can_close_incident()` — zatvaranje incidenta je POSEBNO pravo. */
   canCloseIncident(s: MaintScope): boolean {
     return (

@@ -1032,6 +1032,168 @@ describe("(d) gejtovi — jedina brana kad RLS-a više nema", () => {
   });
 });
 
+/* ══════════════ (f) Skladište: bajtovi se ne diraju pre gejta ══════════════ */
+
+/**
+ * 🔴 ZAŠTO OVA GRUPA BROJI POZIVE KA SKLADIŠTU, A NE ISHOD RUTE:
+ *
+ * `Sy15StorageService.remove` ide servisnim ključem — zaobilazi prava bucketa i
+ * briše STVARNO. Ruta `DELETE /maintenance/machines/:code` na kraju svakako
+ * vrati 403 uskoj roli, pa test koji gleda samo izuzetak prolazi i onda kad su
+ * bajtovi već otišli. Pod sy15 je tu stajao RLS `mmf_select`
+ * (`maint_machine_visible`) i vraćao 0 redova; pod 3.0 RLS-a nema. Zato se
+ * ovde tvrdi `storage.remove` = 0 POZIVA, i to i za mašinu koju rola VIDI
+ * (samo scope bez gejta ne bi bio dovoljan — gejt mora biti PRE bajtova).
+ */
+describe("(f) trajno brisanje mašine ne dira bajtove pre gejta", () => {
+  /** Druga mašina (`8.1`, nije dodeljena operateru) + fajlovi obe mašine. */
+  function saFajlovima(s: Sklop): void {
+    s.db.tabele.maintAsset.push({
+      assetId: "a-81",
+      assetCode: "8.1",
+      assetType: "machine",
+      name: "Strug 8.1",
+      active: true,
+      archivedAt: null,
+    });
+    s.db.tabele.maintMachine.push({
+      machineCode: "8.1",
+      name: "Strug 8.1",
+      assetId: "a-81",
+      tracked: true,
+      archivedAt: null,
+    });
+    s.db.tabele.maintMachineFile.push(
+      {
+        id: "f-1",
+        machineCode: "8.1",
+        storagePath: "8.1/uputstvo.pdf",
+        uploadedBy: 1,
+        deletedAt: null,
+      },
+      {
+        id: "f-2",
+        machineCode: "8.1",
+        storagePath: "8.1/sema.png",
+        uploadedBy: 1,
+        deletedAt: null,
+      },
+      {
+        id: "f-3",
+        machineCode: "3.12",
+        storagePath: "3.12/uputstvo.pdf",
+        uploadedBy: 1,
+        deletedAt: null,
+      },
+    );
+  }
+
+  it("🔴 operater ne obriše NIJEDAN bajt TUĐE mašine — 0 poziva ka skladištu, pa 403", async () => {
+    const s = napravi("3.0");
+    saFajlovima(s);
+    await expect(
+      s.svc.deleteMachineHard(OPERATER_MEJL, "8.1", "hocu da probam"),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(s.storage.remove).not.toHaveBeenCalled();
+    // Ni meta-redovi ni mašina nisu dirnuti — odbijeno pre svakog poteza.
+    expect(s.db.tabele.maintMachineFile).toHaveLength(3);
+    expect(s.db.tabele.maintMachine.map((m) => m.machineCode).sort()).toEqual([
+      "3.12",
+      "8.1",
+    ]);
+    expect(s.db.tabele.maintMachineDeletionLog).toHaveLength(0);
+  });
+
+  it("🔴 ni bajtove SVOJE, dodeljene mašine — gejt je PRE bajtova, ne posle", async () => {
+    const s = napravi("3.0");
+    saFajlovima(s);
+    // `3.12` JESTE vidljiva operateru (`maint_machine_visible` = true), pa sam
+    // scope ovde ne bi zaustavio brisanje — zaustavlja ga jedino gejt.
+    await expect(
+      s.svc.deleteMachineHard(OPERATER_MEJL, "3.12", "hocu da probam"),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(s.storage.remove).not.toHaveBeenCalled();
+    expect(s.db.tabele.maintMachineFile).toHaveLength(3);
+  });
+
+  it("šef i dalje briše bajtove PRE RPC-a (paritet sa sy15 nije pokvaren)", async () => {
+    const s = napravi("3.0");
+    saFajlovima(s);
+    await s.svc.deleteMachineHard(SEF_MEJL, "8.1", "duplikat u katalogu");
+    expect(s.storage.remove.mock.calls.map((c) => c[1]).sort()).toEqual([
+      "8.1/sema.png",
+      "8.1/uputstvo.pdf",
+    ]);
+    // Fajl druge mašine ostaje i u bucketu i u meta tabeli.
+    expect(s.db.tabele.maintMachineFile.map((f) => f.machineCode)).toEqual([
+      "3.12",
+    ]);
+    expect(s.db.tabele.maintMachineDeletionLog).toHaveLength(1);
+  });
+});
+
+/* ══════════ (g) Raspored bajtova i kod greške ostaju kao pod sy15 ══════════ */
+
+describe("(g) sitna odstupanja 3.0 ↔ sy15 koja se lako previde", () => {
+  /** Najmanji ispravan PNG po magic bytes (`assertAttachments` sudi po sadržaju). */
+  const foto = () => [
+    {
+      originalname: "kvar.png",
+      buffer: Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
+      ]),
+    } as unknown as Express.Multer.File,
+  ];
+
+  it("🔴 prijavilac koji svoj kvar NE VIDI: fotografije idu pod `incident/<id>/…`", async () => {
+    const s = napravi("3.0");
+    // Kvar na mašini koja operateru NIJE dodeljena — pod sy15 mu ga RLS krije
+    // (F6), pa putanja pada na `incident/<id>`. Bez scope-a bi 3.0 vratio pravu
+    // šifru i isti kvar bi u bucketu završio na DRUGOM mestu.
+    s.db.tabele.maintIncident.push({
+      id: "i-nevidljiv",
+      machineCode: "8.1",
+      assetId: null,
+      status: "open",
+      severity: "minor",
+      reportedBy: 2,
+      attachmentUrls: [],
+    });
+    await s.svc.attachIncidentFiles(OPERATER_MEJL, "i-nevidljiv", foto());
+    expect(s.storage.upload.mock.calls[0][1]).toMatch(
+      /^incident\/i-nevidljiv\/[0-9a-f]{12}_kvar\.png$/,
+    );
+
+    // Kontrola: svoj kvar na SVOJOJ mašini vidi — putanja je 1.0-kompatibilna.
+    s.db.tabele.maintIncident.push({
+      id: "i-vidljiv",
+      machineCode: "3.12",
+      assetId: null,
+      status: "open",
+      severity: "minor",
+      reportedBy: 2,
+      attachmentUrls: [],
+    });
+    await s.svc.attachIncidentFiles(OPERATER_MEJL, "i-vidljiv", foto());
+    expect(s.storage.upload.mock.calls[1][1]).toMatch(/^3\.12\//);
+  });
+
+  it("nepostojeći `assetId` je 422 (nema sredstva), ne 403 (nemaš pravo)", async () => {
+    const s = napravi("3.0");
+    await expect(
+      s.svc.createWorkOrder(SEF_MEJL, {
+        clientEventId: CID(),
+        type: "kvar",
+        assetId: "00000000-0000-4000-8000-000000000000",
+        assetType: "machine",
+        title: "Ne radi",
+        priority: "p2_smetnja",
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(s.db.tabele.maintWorkOrder).toHaveLength(0);
+  });
+});
+
 /* ══════════════════════ (e) Pod sy15 se 3.0 sloj ne dodiruje ══════════════════════ */
 
 describe("(e) pod `ODRZAVANJE_IZVOR=sy15` 3.0 sloj ostaje netaknut", () => {
@@ -1064,6 +1226,23 @@ describe("(e) pod `ODRZAVANJE_IZVOR=sy15` 3.0 sloj ostaje netaknut", () => {
     await s.svc.updateWorkOrder(SEF_MEJL, "w-9", { status: "u_radu" });
     expect(s.withUserRls).toHaveBeenCalledTimes(1);
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("🔴 korak 1 hard-delete-a ostaje NEPROMENJEN: putanje iz RLS SELECT-a, bez 3.0 gejta", async () => {
+    // Produkcija danas radi ovako (prekidač je `sy15`): brisanje bajtova sudi
+    // RLS, ne aplikacija. Gejt uveden zbog 3.0 ne sme da se prelije ovamo —
+    // inače bi popravka jedne grane tiho promenila ponašanje druge.
+    const s = napravi("sy15");
+    s.sy15Tx.maintMachineFile = {
+      findMany: jest
+        .fn()
+        .mockResolvedValue([{ storagePath: "8.1/uputstvo.pdf" }]),
+    };
+    await s.svc.deleteMachineHard(OPERATER_MEJL, "8.1", "duplikat u katalogu");
+    expect(s.storage.remove).toHaveBeenCalledWith(
+      "maint-machine-files",
+      "8.1/uputstvo.pdf",
+    );
   });
 
   it("deleteMachineHard i dalje zove sy15 RPC, ne `machineDeleteHard`", async () => {
