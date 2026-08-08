@@ -1,6 +1,6 @@
 import "reflect-metadata";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { Logger, ServiceUnavailableException } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { ReversiLokacijeIzvorModule } from "./reversi-lokacije-izvor.module";
@@ -11,6 +11,8 @@ import { ReversiService } from "../../modules/reversi/reversi.service";
 import { ReversiModule } from "../../modules/reversi/reversi.module";
 import { LocationsService } from "../../modules/locations/locations.service";
 import { LocationsModule } from "../../modules/locations/locations.module";
+import { OdrzavanjeModule } from "../../modules/odrzavanje/odrzavanje.module";
+import { OdrzavanjeLokacijeMostService } from "../../modules/odrzavanje/odrzavanje-lokacije-most.service";
 import type { LabelPrintService } from "../printing/label-print.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 
@@ -103,6 +105,13 @@ describe("ReversiModule / LocationsModule — uvoz prekidača", () => {
   it("LocationsModule uvozi ReversiLokacijeIzvorModule", () => {
     expect(uvozi(LocationsModule)).toContain(ReversiLokacijeIzvorModule);
   });
+
+  // 🔴 NALAZ C: most ka `loc_locations` je TREĆI potrošač `LOKACIJE_IZVOR`-a.
+  // Bez ovog uvoza `@Optional()` prekidač u mostu ostaje `undefined` i brana je
+  // MRTVA — tačno kvar koji je prvi krug našao kod Reversa i Lokacija.
+  it("🔴 OdrzavanjeModule uvozi ReversiLokacijeIzvorModule (zbog mosta ka loc_locations)", () => {
+    expect(uvozi(OdrzavanjeModule)).toContain(ReversiLokacijeIzvorModule);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -119,6 +128,12 @@ describe("Injekcija prekidača u domenske servise", () => {
 
   it("LocationsService prima LokacijeSourceService", () => {
     expect(paramTypes(LocationsService)).toContain(LokacijeSourceService);
+  });
+
+  it("🔴 OdrzavanjeLokacijeMostService prima LokacijeSourceService (NALAZ C)", () => {
+    expect(paramTypes(OdrzavanjeLokacijeMostService)).toContain(
+      LokacijeSourceService,
+    );
   });
 });
 
@@ -516,5 +531,272 @@ describe("Disciplina brane — nijedan direktan `this.sy15.*` u domenskim servis
       src.split("\n").filter((l) => DEKLARACIJA_CLANA.test(l)).length;
     expect(clanovi(SRC.reversi)).toBeGreaterThan(50);
     expect(clanovi(SRC.lokacije)).toBeGreaterThan(30);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. 🔴 NALAZ D — detektor SAM pronalazi dodirne tačke (ne veruje spisku)
+// ---------------------------------------------------------------------------
+/**
+ * ZAŠTO OVAJ ODELJAK POSTOJI (protivnička provera 08.08.2026, NALAZ D):
+ * odeljak 5 gleda TAČNO DVA fajla, zakucana u `SRC`. Ta lista nije ničim
+ * dokazana kao potpuna — i nije bila: `odrzavanje-lokacije-most.service.ts` piše
+ * u `public.loc_locations` (tabela koju OVAJ korak seli) preko `this.sy15.db`,
+ * bez ijedne `LOKACIJE_IZVOR` kapije, i odeljak 5 ga ne vidi jer nije u `SRC`.
+ * Slepa mrlja spiska je veća od slepe mrlje prozora od 6 redova koju je zatvorio
+ * drugi krug: prozor je propuštao 4 reda, spisak propušta CEO FAJL.
+ *
+ * Zato ovde detektor NE dobija spisak nego ga IZVODI:
+ *   • tabele — iz samog skripta prenosa (`scripts/migrate-reversi-lokacije-sy15.ts`);
+ *     doda li neko 22. tabelu u seobu, detektor se širi sam, bez izmene testa;
+ *   • sy15 Prisma modeli nad tim tabelama — iz `prisma/sy15.prisma` (`@@map`);
+ *   • fajlovi — obilaskom CELOG `backend/src`.
+ * Dodirna tačka = fajl koji ima `this.sy15.` I pominje prenetu tabelu/model
+ * (van komentara). Svaka mora biti upisana u `POZNATE_DODIRNE_TACKE` sa
+ * obrazloženjem; nova, neupisana obara test.
+ */
+describe("🔴 NALAZ D — potpunost spiska dodirnih tačaka", () => {
+  const BACKEND = join(__dirname, "..", "..", "..");
+  const SRC_DIR = join(BACKEND, "src");
+
+  /**
+   * Tabele koje korak 3 STVARNO seli — čitaju se iz skripta prenosa, jedinog
+   * izvora istine o obimu seobe. Namerno NIJE prepisana lista: prepis bi se
+   * razišao sa skriptom, a razilaženje se ne bi videlo.
+   */
+  function preneteTabele(): string[] {
+    const s = readFileSync(
+      join(BACKEND, "scripts", "migrate-reversi-lokacije-sy15.ts"),
+      "utf8",
+    );
+    return [...s.matchAll(/\btable:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]);
+  }
+
+  /**
+   * Prisma akcesori sy15 klijenta nad tim tabelama (`revDocument`, `locLocation`…).
+   * Izvode se iz `@@map` u `prisma/sy15.prisma`, a ne iz pravila za množinu —
+   * `rev_tool_service_log` i `loc_bigtehn_ingest_state` nisu množina, pa bi svako
+   * „skidanje s" promašilo. Regex je CRLF-svestan (`[\s\S]`, `^` uz `m`).
+   */
+  function preneteModele(tabele: readonly string[]): string[] {
+    const s = readFileSync(join(BACKEND, "prisma", "sy15.prisma"), "utf8");
+    const trazene = new Set(tabele);
+    const out: string[] = [];
+    for (const m of s.matchAll(/^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm)) {
+      const map = /@@map\("([a-z0-9_]+)"\)/.exec(m[2]);
+      if (map && trazene.has(map[1]))
+        out.push(m[1][0].toLowerCase() + m[1].slice(1));
+    }
+    return out;
+  }
+
+  /** Svi izvorni `.ts` fajlovi (bez testova i deklaracija), rel. na `src`, POSIX put. */
+  function sviIzvori(): Map<string, string> {
+    const out = new Map<string, string>();
+    const obidji = (dir: string): void => {
+      for (const e of readdirSync(dir)) {
+        const p = join(dir, e);
+        if (statSync(p).isDirectory()) obidji(p);
+        else if (
+          e.endsWith(".ts") &&
+          !e.endsWith(".spec.ts") &&
+          !e.endsWith(".d.ts")
+        )
+          out.set(
+            relative(SRC_DIR, p).split(sep).join("/"),
+            readFileSync(p, "utf8"),
+          );
+      }
+    };
+    obidji(SRC_DIR);
+    return out;
+  }
+
+  /**
+   * Fajl -> razlozi zbog kojih je dodirna tačka. Komentari se preskaču: inače bi
+   * `odrzavanje.service.ts` („CMMS interna hijerarhija lokacija (≠ loc_locations)")
+   * bio lažan pogodak, a lažni pogoci ubijaju detektor brže od promašaja —
+   * spisak izuzetaka naraste i prestane da se čita.
+   *
+   * `split(/\r?\n/)` — fajlovi u ovom repou su CRLF (`core.autocrlf=true`);
+   * `split("\n")` bi ostavio `\r` na kraju svakog reda i sve obrasce vezane za
+   * kraj reda tiho oborio.
+   */
+  function klasifikuj(
+    fajlovi: ReadonlyMap<string, string>,
+    tabele: readonly string[],
+    modeli: readonly string[],
+  ): Map<string, string[]> {
+    const reTab = new RegExp(`\\b(${tabele.join("|")})\\b`);
+    const reMod = new RegExp(`\\.(${modeli.join("|")})\\b`);
+    const nadjene = new Map<string, string[]>();
+    for (const [rel, src] of fajlovi) {
+      let sy15 = false;
+      const razlozi: string[] = [];
+      src.split(/\r?\n/).forEach((linija, i) => {
+        const trim = linija.trimStart();
+        if (
+          trim.startsWith("//") ||
+          trim.startsWith("*") ||
+          trim.startsWith("/*")
+        )
+          return;
+        if (linija.includes("this.sy15.")) sy15 = true;
+        const t = reTab.exec(linija);
+        if (t) razlozi.push(`${t[1]} (linija ${i + 1})`);
+        const m = reMod.exec(linija);
+        if (m) razlozi.push(`.${m[1]} (linija ${i + 1})`);
+      });
+      if (sy15 && razlozi.length > 0) nadjene.set(rel, razlozi);
+    }
+    return nadjene;
+  }
+
+  /**
+   * 🔴 REGISTAR. Svaki fajl koji kroz `this.sy15.*` dodiruje prenetu tabelu mora
+   * stajati ovde SA OBRAZLOŽENJEM. Novi fajl (ili nov `this.sy15.*` nad prenetom
+   * tabelom u fajlu koji je ranije bio čist) obara test ispod — a to je jedina
+   * stvar koja je 08.08.2026 falila da bi NALAZ C bio viđen u prvom krugu.
+   */
+  const POZNATE_DODIRNE_TACKE: Record<string, string> = {
+    "modules/reversi/reversi.service.ts":
+      "IZA BRANE: svaki pristup ide kroz `this.db` / `withSy15User` / " +
+      "`runSy15Idempotent`, a svaki od njih zove `assertPorted` (odeljak 5).",
+    "modules/locations/locations.service.ts":
+      "IZA BRANE: `this.db` / `withSy15User` / `withSy15UserRls`, svaki sa " +
+      "`assertPorted` (odeljak 5).",
+    "modules/odrzavanje/odrzavanje-lokacije-most.service.ts":
+      "NALAZ C (08.08.2026): most `maint_machines` -> `loc_locations`. NIJE iza " +
+      "`assertPorted` jer je fail-soft i zove se POSLE commit-a (503 bi oborilo " +
+      "zahtev kome je mašina već sačuvana). Umesto toga se pod `LOKACIJE_IZVOR=3.0` " +
+      "GASI, glasno — v. `lokacijeNa30()` i test pozitivne kontrole ispod.",
+    "modules/kadrovska/kadrovska.service.ts":
+      "🔴 NALAZ E (08.08.2026, otkrio ovaj detektor): `offboardingOutstandingReversi` " +
+      "čita `rev_documents`/`rev_document_lines`/`rev_tools` kroz `withUserRls`. " +
+      "NIJE ožičeno jer je kadrovska ZAMRZNUTA do svoje seobe (runbook §1.4, §3 red 3). " +
+      'Pod `REVERSI_IZVOR=3.0` bi panel „Zaduženja za vraćanje" pri odlasku radnika ' +
+      "prikazao ZAMRZNUT sy15 snimak. Zato je u runbook-u §7 upisano kao P8 i kao " +
+      "preduslov koraka 6 — preklop se ne izvodi dok se ovo ne reši.",
+  };
+
+  const TABELE = preneteTabele();
+  const MODELI = preneteModele(TABELE);
+  const NADJENE = klasifikuj(sviIzvori(), TABELE, MODELI);
+
+  it("obim se čita iz skripta prenosa i sy15 šeme (a ne iz prepisane liste)", () => {
+    expect(TABELE).toContain("loc_locations");
+    expect(TABELE).toContain("rev_documents");
+    expect(TABELE.length).toBeGreaterThanOrEqual(21);
+    expect(MODELI).toContain("locLocation");
+    expect(MODELI).toContain("revDocumentLine");
+    expect(MODELI.length).toBeGreaterThanOrEqual(17);
+  });
+
+  it("🔴 spisak dodirnih tačaka je POTPUN — nijedna nije neupisana, nijedna zastarela", () => {
+    const nadjene = [...NADJENE.keys()].sort();
+    const upisane = Object.keys(POZNATE_DODIRNE_TACKE).sort();
+    // Poruka nosi razloge, da onaj ko obori test odmah vidi ŠTA je dodirnuto.
+    const opis = nadjene
+      .map((f) => `${f}: ${(NADJENE.get(f) ?? []).slice(0, 3).join(", ")}`)
+      .join("\n");
+    expect({ nadjene, opis: opis.length > 0 }).toEqual({
+      nadjene: upisane,
+      opis: true,
+    });
+  });
+
+  it("svaka upisana tačka ima stvarno obrazloženje", () => {
+    for (const [f, zasto] of Object.entries(POZNATE_DODIRNE_TACKE)) {
+      expect({ f, dovoljno: zasto.length > 60 }).toEqual({ f, dovoljno: true });
+      expect(zasto).not.toMatch(/TODO|FIXME|videti kasnije/i);
+    }
+  });
+
+  it("lažni pogodak iz komentara se NE broji (`odrzavanje.service.ts` pominje `loc_locations` samo u komentaru)", () => {
+    expect(NADJENE.has("modules/odrzavanje/odrzavanje.service.ts")).toBe(false);
+    // …a `loc-tp-feed.service.ts` ima `this.sy15.` ali NIJEDNU prenetu tabelu.
+    expect(NADJENE.has("modules/locations/loc-tp-feed.service.ts")).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // Mutacije X4 — dokaz da detektor stvarno hvata nov otvor
+  // -------------------------------------------------------------------------
+  function mut(rel: string, src: string): Map<string, string[]> {
+    return klasifikuj(new Map([[rel, src]]), TABELE, MODELI);
+  }
+
+  it("🔴 X4a: nov servis sa `this.sy15.db.locLocation` — HVATA se", () => {
+    const nov =
+      "class Nov {\n" +
+      "  async x() {\n" +
+      "    return this.sy15.db.locLocation.findMany();\n" +
+      "  }\n" +
+      "}\n";
+    expect([...mut("modules/nov/nov.service.ts", nov).keys()]).toEqual([
+      "modules/nov/nov.service.ts",
+    ]);
+  });
+
+  it("🔴 X4b: sirov SQL nad prenetom tabelom u `withUser` povratnom pozivu — HVATA se", () => {
+    const nov =
+      "class Nov {\n" +
+      "  async x(email: string) {\n" +
+      "    return this.sy15.withUserRls(email, (tx) =>\n" +
+      "      tx.$queryRaw(Prisma.sql`SELECT * FROM rev_documents`));\n" +
+      "  }\n" +
+      "}\n";
+    expect([...mut("modules/nov/nov.service.ts", nov).keys()]).toHaveLength(1);
+  });
+
+  it("🔴 X4c: isti fajl u CRLF obliku — i dalje se HVATA (fajlovi u repou SU CRLF)", () => {
+    const nov =
+      "class Nov {\r\n" +
+      "  async x() {\r\n" +
+      "    return this.sy15.db.revDocumentLine.count();\r\n" +
+      "  }\r\n" +
+      "}\r\n";
+    expect([...mut("modules/nov/nov.service.ts", nov).keys()]).toHaveLength(1);
+  });
+
+  it("X4d: sam pomen tabele bez `this.sy15.` (3.0 pristup kroz `this.prisma`) se NE broji", () => {
+    const nov =
+      "class Nov {\n" +
+      "  async x() {\n" +
+      "    return this.prisma.locLocation.findMany();\n" +
+      "  }\n" +
+      "}\n";
+    expect([...mut("modules/nov/nov.service.ts", nov).keys()]).toHaveLength(0);
+  });
+
+  it("X4e: `this.sy15.` nad tabelom KOJA SE NE SELI se NE broji (npr. `maint_machines`)", () => {
+    const nov =
+      "class Nov {\n" +
+      "  async x() {\n" +
+      "    return this.sy15.db.$queryRaw(Prisma.sql`SELECT 1 FROM maint_machines`);\n" +
+      "  }\n" +
+      "}\n";
+    expect([...mut("modules/nov/nov.service.ts", nov).keys()]).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Pozitivna kontrola za NALAZ C: kapija u mostu STVARNO postoji
+  // -------------------------------------------------------------------------
+  it("🔴 most ima `LOKACIJE_IZVOR` kapiju u `syncMachineToLoc` (a ne samo u `aktivan()`)", () => {
+    const most = readFileSync(
+      join(
+        SRC_DIR,
+        "modules",
+        "odrzavanje",
+        "odrzavanje-lokacije-most.service.ts",
+      ),
+      "utf8",
+    );
+    expect(most).toContain("private lokacijeNa30()");
+    expect(most).toContain("LokacijeSourceService");
+    // Kapija mora stajati PRE `try { return await this.sync(` — ne posle upisa.
+    const iKapija = most.indexOf("if (this.lokacijeNa30()) {");
+    const iUpis = most.indexOf("return await this.sync(");
+    expect(iKapija).toBeGreaterThan(-1);
+    expect(iUpis).toBeGreaterThan(iKapija);
   });
 });

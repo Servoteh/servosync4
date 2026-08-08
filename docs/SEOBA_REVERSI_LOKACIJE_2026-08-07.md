@@ -204,6 +204,71 @@ podrazumevano isključen (`LOC_TP_FEED_ENABLED`). `LocationsService.lookupDrawin
 
 ---
 
+### 2.2 🔴 Ispravka br. 2 (08.08.2026, treći krug): brana je imala TREĆU i ČETVRTU rupu
+
+Tabela u §2.1 popisuje **dva** fajla — i to je bila sva istina koju je test proveravao.
+Detektor discipline u `reversi-lokacije-ozicenje.spec.ts` imao je spisak od dva fajla
+**zakucan u kodu testa**, i nijedan test nije dokazivao da je taj spisak potpun. Nije bio.
+Obilazak celog `backend/src` (fajl koji ima `this.sy15.` **i** pominje neku od 21 prenete
+tabele, van komentara) daje **četiri** dodirne tačke:
+
+| # | fajl | šta dodiruje | stanje posle 08.08.2026 |
+|---|---|---|---|
+| 1 | `modules/reversi/reversi.service.ts` | 14 `rev_*` + `loc_location_movements` | 🟢 iza `assertPorted` (§2.1) |
+| 2 | `modules/locations/locations.service.ts` | `loc_*` + `rev_tools` | 🟢 iza `assertPorted` (§2.1) |
+| 3 | `modules/odrzavanje/odrzavanje-lokacije-most.service.ts` | **piše** `loc_locations` | 🟢 **NALAZ C — ožičeno sada** |
+| 4 | `modules/kadrovska/kadrovska.service.ts` | čita `rev_documents` / `rev_document_lines` / `rev_tools` | 🟠 **NALAZ E — otvoreno, P8** |
+
+**NALAZ C — most `maint_machines` → `loc_locations`.** Taj most (obrazloženje mu je u
+zaglavlju servisa) bio je uslovljen **isključivo** `ODRZAVANJE_IZVOR=3.0`, bez ijedne
+`LOKACIJE_IZVOR` kapije, a `loc_locations` **jeste** među 21 prenetom tabelom
+(`scripts/migrate-reversi-lokacije-sy15.ts`). Posledica pod `ODRZAVANJE_IZVOR=3.0` +
+`LOKACIJE_IZVOR=3.0`: lokacija svake nove/izmenjene mašine odlazi u **napuštenu sy15
+bazu** — i to **tiho**, jer je most fail-soft (`WARN` + `{ok:false}`). Zaglavlje mosta je
+samo reklo „kad ovo umire: sa korakom 3", a korak 3 je ovaj PR — pa most nije ni ugašen ni
+preusmeren. `assertSpojeniIzvori` to ne hvata: on spreže REVERSI↔LOKACIJE, ne ODRZAVANJE.
+
+**Odluka: most PRATI `LOKACIJE_IZVOR`, a pod `3.0` se GASI — glasno.**
+
+- `LOKACIJE_IZVOR=sy15` (podrazumevano, i danas na produkciji: prekidač nije postavljen) —
+  ponašanje **nepromenjeno**, red u red.
+- `LOKACIJE_IZVOR=3.0` — most ne dodiruje sy15 (0 upita), vraća `{ok:false, akcija:"brana"}`
+  i loguje **`ERROR`** (most je inače tih, pa `WARN` ne bi bio dovoljan), i to **na startu
+  aplikacije** i na svakom pozivu. Fail-soft ugovor („nikad ne baca") ostaje: brana vraća.
+
+Zašto **gašenje**, a ne „piši u 3.0" (odbačeno, i to iz merenih razloga):
+1. `loc_locations` u 3.0 nema prepisan `loc_locations_guard_and_path` — to je **P1** (§7).
+   Bez njega red dobija `path_cached=''` i `depth=0`: red **postoji**, a u stablu je
+   pogrešan. To je gore od reda kog nema — pogrešan red se ne primeti, nedostatak se traži.
+2. 3.0 `loc_locations.id` nema DB default (`"id" UUID NOT NULL` u migraciji; `@default(uuid(4))`
+   je klijentski), pa sirov `INSERT` bez `id` pada.
+3. Format `path_cached` u sy15 nije izmeren (bez VPN-a) — pogađanje formata je izmišljanje
+   ponašanja, a ne prepis.
+
+**Cena odluke, izričito:** dok je `LOKACIJE_IZVOR=3.0` a P1 nije gotov, nova mašina **ne
+dobija** red u stablu lokacija. To je isto stanje kao ostatak domena pod `3.0` (503 svuda,
+§2.1) — dakle stanje kvara, ne radno stanje; upravo zato korak 6 §6 ide TEK posle P1–P6.
+Da prekidač ne bi bio mrtav, `OdrzavanjeModule` sada **uvozi** `ReversiLokacijeIzvorModule`
+(bez uvoza `@Optional()` prekidač u mostu ostaje `undefined` — kvar iz prvog kruga).
+
+**NALAZ E — kadrovska čita `rev_*` (otvoreno).** `KadrovskaService.offboardingOutstandingReversi`
+(panel „Zaduženja za vraćanje" pri odlasku radnika) čita `rev_documents`, `rev_document_lines`
+i `rev_tools` kroz `this.sy15.withUserRls`. **Nije ožičeno** i namerno nije dirano: kadrovska
+je zamrznuta do svoje seobe (§1.4, §3 red 3). Pod `REVERSI_IZVOR=3.0` taj panel bi prikazao
+**zamrznut sy15 snimak** — radnik bi otišao sa alatom koji u 3.0 stoji kao izdat. Upisano
+kao **P8** (§7) i kao preduslov koraka 6 (§6). Traži odluku vlasnika: gate + 503, čitanje iz
+3.0, ili izričito prihvatanje razilaženja u prozoru.
+
+**Šta sada čuva potpunost spiska:** `reversi-lokacije-ozicenje.spec.ts` odeljak 6 spisak
+više ne dobija, nego ga **izvodi** — tabele iz skripta prenosa, sy15 modele iz `@@map` u
+`prisma/sy15.prisma`, fajlove obilaskom celog `backend/src`. Svaka dodirna tačka mora biti
+upisana u `POZNATE_DODIRNE_TACKE` sa obrazloženjem; nova, neupisana **obara test**. Doda li
+neko 22. tabelu u seobu, detektor se širi sam. Komentari se preskaču — bez toga bi
+`odrzavanje.service.ts` („CMMS interna hijerarhija lokacija (≠ `loc_locations`)") bio lažan
+pogodak, a lažni pogoci ubiju detektor brže od promašaja.
+
+---
+
 ## 3. Šema u 3.0 — odluke o tipovima
 
 | # | odluka | obrazloženje (mereno) |
@@ -411,6 +476,11 @@ na probnoj bazi.
 
 **Ovo se NE izvodi sada.** Ovde je zapisano da se ne bi improvizovalo kasnije.
 
+🔴 **DRUGI PREDUSLOV (v. §2.2):** dve dodirne tačke stoje IZVAN dva domenska servisa.
+**P1** mora biti gotov da bi most `maint_machines` → `loc_locations` opet upisivao
+lokaciju (pod `LOKACIJE_IZVOR=3.0` on je UGAŠEN, pa nova mašina ne dobija red u stablu),
+a **P8** da panel „Zaduženja za vraćanje" u kadrovskoj ne bi čitao zamrznut sy15 snimak.
+
 🔴 **PREDUSLOV KOJI SADA SPROVODI KOD (v. §2.1):** korak 5 postavlja prekidače na `3.0`,
 a brana je od 08.08.2026 stvarno ožičena — dok P1–P6 nisu gotovi, `3.0` znači da **ceo
 modul vraća 503**, ne „radi po starom". Koraci 6–10 se dakle izvode isključivo posle
@@ -439,7 +509,11 @@ prenos ne dira prekidače.
    u pravu bazu. Jedno premeštanje sa mobilne, jedno izdavanje alata, jedan povraćaj —
    pa proveriti da su **oba** upisa (dokument i kretanje) u 3.0, i da u sy15 nije
    nastao nijedan nov red.
-10. Vratiti `INSERT` pravo u sy15 (za slučaj povratka), ali NE oglašavati stari UI.
+10. 🔴 **Provera dve dodirne tačke iz §2.2.** U logu NE SME stajati „most maint_machines
+    -> loc_locations je UGAŠEN" (ta poruka znači da P1 nije završen, pa nove mašine ne
+    ulaze u stablo lokacija). Offboarding panel kadrovske mora davati iste brojeve kao
+    Reversi u 3.0 (P8) — inače radnik odlazi sa alatom koji u 3.0 stoji kao izdat.
+11. Vratiti `INSERT` pravo u sy15 (za slučaj povratka), ali NE oglašavati stari UI.
 
 **Povratak (~2 min):** obe promenljive na `sy15` + `docker compose up -d`.
 Podaci upisani u 3.0 posle preklopa se time ne vraćaju u sy15 — zato korak 9 mora
@@ -457,8 +531,9 @@ biti čist pre nego što se korisnicima kaže da rade.
 | **P4** | 51 RLS politika → dozvole u `PermissionsGuard` (AUTHZ_UNIFIED) | 2–3 | uključuje pravilo iz `loc_can_create_movement` koje gleda `department_id IN (2,3)` / „Magacin i logistika" — 3.0 katalog to danas NEMA |
 | **P5** | Preostale pomoćne funkcije koje kod zove (`loc_move_cage`, `loc_report_parts_by_locations`, `loc_tps_for_predmet`, `loc_locations_audit`, `rev_add_inventory_*`, `rev_write_off_tool`/`rev_restore_tool`, `loc_bigtehn_ingest_*`) | 3–5 | ~14 funkcija |
 | **P6** | Idempotencija mutacija reversa/lokacija u 3.0 sloju (zamena za `rev_api_idempotency`, §1.2) | 1 | mobilna šalje `client_event_uuid` — parcijalni UNIQUE već postoji u migraciji |
-| **P7** | Prenos + preklop po §6, uz prozor zabrane upisa | 0,5 | posle P1–P6 |
-| | **UKUPNO** | **16,5–24,5 dana** | ~3,5–5 nedelja jednog čoveka |
+| **P8** | 🔴 Dve dodirne tačke izvan domenskih servisa (§2.2): **(a)** most `maint_machines` → `loc_locations` prepisati na upis u 3.0, i to u ISTOJ transakciji kao mašina — ide uz `loc_locations_guard_and_path` iz P1, čime odstupanje „fail-soft posle commit-a" nestaje; **(b)** `KadrovskaService.offboardingOutstandingReversi` čita `rev_documents`/`rev_document_lines`/`rev_tools` iz sy15, a kadrovska je zamrznuta | 1–1,5 | (b) traži odluku — O-4 |
+| **P7** | Prenos + preklop po §6, uz prozor zabrane upisa | 0,5 | posle P1–P6 **i P8** |
+| | **UKUPNO** | **17,5–26 dana** | ~4–5,5 nedelja jednog čoveka |
 
 ### Otvorena pitanja (ne rešavati u kodu pre potvrde)
 
@@ -469,6 +544,11 @@ biti čist pre nego što se korisnicima kaže da rade.
   `sub_departments.name='Magacin i logistika'`), a ne samo po roli. To je pravilo koje
   živi u kadrovskoj — dok ona ne pređe, 3.0 ga može reprodukovati samo čitanjem sy15
   ili tvrdo kodiranom listom. Traži odluku.
+- **O-4 (NOVO, 08.08.2026):** kadrovska čita `rev_*` (§2.2, NALAZ E), a zamrznuta je do
+  svoje seobe. Tri izlaza: **(a)** brana + 503 na tom jednom panelu, **(b)** čitanje iz
+  3.0 uz jednu izmenu u zamrznutom modulu, **(c)** izričito prihvatanje razilaženja dok
+  kadrovska ne pređe. Ne dirati bez odluke — taj panel odlučuje da li radnik odlazi sa
+  nevraćenim alatom.
 - **O-3:** 400 od 702 `item_ref_id` (`bigtehn_rn`) ne postoji ni u 3.0 ni u mrtvom kešu.
   Prenosi se kao istorija (bez FK). Da li ih uopšte prikazivati u izveštajima?
 
@@ -512,6 +592,8 @@ Grana se **ne briše** (istorijat merenja), ali se **ne merge-uje**.
 | **Ožičenje brane u domenske servise** (`assertPorted` nad svakim pristupom sy15) | `backend/src/modules/reversi/reversi.service.ts`, `backend/src/modules/locations/locations.service.ts` |
 | Testovi prekidača (18) | `backend/src/common/sy15/reversi-lokacije-izvor.spec.ts` |
 | Testovi OŽIČENJA (podizanje modula, uvoz, injekcija, 503, disciplina) | `backend/src/common/sy15/reversi-lokacije-ozicenje.spec.ts` |
+| **Detektor dodirnih tačaka** — sam obilazi `src`, obim čita iz skripta prenosa (§2.2) | isti fajl, odeljak 6 |
+| **NALAZ C:** most `maint_machines` → `loc_locations` prati `LOKACIJE_IZVOR` | `backend/src/modules/odrzavanje/odrzavanje-lokacije-most.service.ts`, `odrzavanje.module.ts` |
 | Prenosna skripta (idempotentna, plan prolaz pre upisa, izlazni kodovi) | `backend/scripts/migrate-reversi-lokacije-sy15.ts` |
 | Otisak skupa ključeva (izdvojen da bi bio testabilan) | `backend/scripts/lib/keyset-checksum.ts` |
 | Testovi provere prenosa (otisak + brane `--apply`) | `backend/src/common/sy15/reversi-lokacije-prenos.spec.ts` |

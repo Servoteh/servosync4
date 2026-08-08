@@ -1,6 +1,8 @@
+import { Logger } from "@nestjs/common";
 import { OdrzavanjeLokacijeMostService } from "./odrzavanje-lokacije-most.service";
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
+import type { LokacijeSourceService } from "../../common/sy15/lokacije-source.service";
 
 /**
  * MOST ka `loc_locations` — paritet trigera `maint_machines_sync_to_loc`.
@@ -13,7 +15,11 @@ import type { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-sourc
 
 function fake(loc: { postoji?: boolean; hala?: boolean } = {}) {
   const upiti: { sql: string; vals: unknown[] }[] = [];
-  const zapis = (q: { strings?: string[]; sql?: string; values?: unknown[] }) => {
+  const zapis = (q: {
+    strings?: string[];
+    sql?: string;
+    values?: unknown[];
+  }) => {
     const sql = q.sql ?? (q.strings ?? []).join("?");
     upiti.push({ sql, vals: q.values ?? [] });
     return sql;
@@ -23,7 +29,10 @@ function fake(loc: { postoji?: boolean; hala?: boolean } = {}) {
       $queryRaw: async (q: never) => {
         const sql = zapis(q);
         // Redosled provera u kodu: postojanje reda mašine, pa hala.
-        if (sql.includes("location_code = $") || sql.includes("location_code")) {
+        if (
+          sql.includes("location_code = $") ||
+          sql.includes("location_code")
+        ) {
           if (upiti.length === 1 && loc.postoji !== undefined) {
             return loc.postoji ? [{ id: "L1" }] : [];
           }
@@ -46,12 +55,16 @@ const NA_SY15 = { isThreeZero: false } as unknown as OdrzavanjeSourceService;
 describe("aktivan() — most radi SAMO pod 3.0", () => {
   it("pod `sy15` posao i dalje radi DB triger", () => {
     const { sy15 } = fake();
-    expect(new OdrzavanjeLokacijeMostService(sy15, NA_SY15).aktivan()).toBe(false);
+    expect(new OdrzavanjeLokacijeMostService(sy15, NA_SY15).aktivan()).toBe(
+      false,
+    );
   });
 
   it("pod `3.0` most preuzima posao", () => {
     const { sy15 } = fake();
-    expect(new OdrzavanjeLokacijeMostService(sy15, NA_3_0).aktivan()).toBe(true);
+    expect(new OdrzavanjeLokacijeMostService(sy15, NA_3_0).aktivan()).toBe(
+      true,
+    );
   });
 
   it("🔴 bez prekidača most je NEAKTIVAN (bezbedan smer — kao `sy15`)", () => {
@@ -83,7 +96,12 @@ describe("INSERT grana", () => {
       sy15,
       NA_3_0,
     ).syncMachineToLoc(
-      { machineCode: "6.1", name: "Brusilica", archivedAt: null, tracked: true },
+      {
+        machineCode: "6.1",
+        name: "Brusilica",
+        archivedAt: null,
+        tracked: true,
+      },
       "INSERT",
     );
     expect(out.akcija).toBe("insert");
@@ -197,5 +215,134 @@ describe("🔴 fail-soft — svesno odstupanje od izvora", () => {
     );
     expect(out.akcija).toBe("preskoceno");
     expect(upiti).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 🔴 NALAZ C (protivnička provera, treći krug 08.08.2026)
+// ---------------------------------------------------------------------------
+/**
+ * Most je do ove izmene bio uslovljen ISKLJUČIVO `ODRZAVANJE_IZVOR=3.0`. Kad
+ * Lokacije pređu na 3.0, sy15 `loc_locations` postaje NAPUŠTENA tabela — a most
+ * bi i dalje pisao u nju, i to TIHO (fail-soft: WARN + `{ok:false}`).
+ *
+ * Ovi testovi pinuju obe strane odluke:
+ *   • pod `LOKACIJE_IZVOR=3.0` most NE DODIRUJE sy15 (0 upita) i vraća `"brana"`;
+ *   • pod `sy15` / bez provajdera ponašanje je NEPROMENJENO (regresija).
+ * Druga stavka je bitnija: podrazumevani prekidač je danas `sy15`, i baš to je
+ * ono što se ovom popravkom NE SME promeniti (produkcija 08.08.2026 nema
+ * postavljen nijedan od tri prekidača).
+ */
+const LOK_3_0 = { isThreeZero: true } as unknown as LokacijeSourceService;
+const LOK_SY15 = { isThreeZero: false } as unknown as LokacijeSourceService;
+
+const MASINA = {
+  machineCode: "6.1",
+  name: "Brusilica",
+  archivedAt: null,
+  tracked: true,
+};
+
+describe("🔴 NALAZ C — most prati LOKACIJE_IZVOR", () => {
+  beforeEach(() => {
+    jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation((): void => undefined);
+    jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation((): void => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it("🔴 LOKACIJE_IZVOR=3.0 + INSERT: 0 upita ka sy15, akcija `brana`", async () => {
+    const { sy15, upiti } = fake({ hala: true });
+    const out = await new OdrzavanjeLokacijeMostService(
+      sy15,
+      NA_3_0,
+      LOK_3_0,
+    ).syncMachineToLoc(MASINA, "INSERT");
+    expect(out).toEqual({ ok: false, akcija: "brana" });
+    // Najvažnija tvrdnja celog nalaza: u napuštenu bazu se NE piše.
+    expect(upiti).toHaveLength(0);
+  });
+
+  it("🔴 LOKACIJE_IZVOR=3.0 + UPDATE: isto — ni čitanja nema", async () => {
+    const { sy15, upiti } = fake({ postoji: true });
+    const out = await new OdrzavanjeLokacijeMostService(
+      sy15,
+      NA_3_0,
+      LOK_3_0,
+    ).syncMachineToLoc(MASINA, "UPDATE");
+    expect(out).toEqual({ ok: false, akcija: "brana" });
+    expect(upiti).toHaveLength(0);
+  });
+
+  it("🔴 brana je GLASNA — `error`, ne `warn` (most je inače tih)", async () => {
+    const greske = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation((): void => undefined);
+    const { sy15 } = fake({ hala: true });
+    await new OdrzavanjeLokacijeMostService(
+      sy15,
+      NA_3_0,
+      LOK_3_0,
+    ).syncMachineToLoc(MASINA, "INSERT");
+    expect(greske).toHaveBeenCalledTimes(1);
+    expect(String(greske.mock.calls[0][0])).toContain("LOKACIJE_IZVOR=3.0");
+  });
+
+  it('🔴 i na STARTU se javlja (pouka „docker restart ne čita env")', () => {
+    const greske = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation((): void => undefined);
+    const { sy15 } = fake();
+    new OdrzavanjeLokacijeMostService(sy15, NA_3_0, LOK_3_0).onModuleInit();
+    expect(greske).toHaveBeenCalledTimes(1);
+  });
+
+  it("start ćuti kad most nije aktivan ili su Lokacije još u sy15", () => {
+    const greske = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation((): void => undefined);
+    const { sy15 } = fake();
+    new OdrzavanjeLokacijeMostService(sy15, NA_3_0, LOK_SY15).onModuleInit();
+    new OdrzavanjeLokacijeMostService(sy15, NA_SY15, LOK_3_0).onModuleInit();
+    new OdrzavanjeLokacijeMostService(sy15).onModuleInit();
+    expect(greske).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // REGRESIJA: podrazumevano stanje se NE SME promeniti
+  // -------------------------------------------------------------------------
+  it("LOKACIJE_IZVOR=sy15: most radi kao i do sada (upis prolazi)", async () => {
+    const { sy15, upiti } = fake({ hala: true });
+    const out = await new OdrzavanjeLokacijeMostService(
+      sy15,
+      NA_3_0,
+      LOK_SY15,
+    ).syncMachineToLoc(MASINA, "INSERT");
+    expect(out).toEqual({ ok: true, akcija: "insert" });
+    expect(upiti[1].sql).toContain("ON CONFLICT DO NOTHING");
+  });
+
+  it("🔴 bez provajdera prekidača (neožičen modul) ponašanje je kao `sy15` — nikad kao `3.0`", async () => {
+    const { sy15, upiti } = fake({ hala: true });
+    const out = await new OdrzavanjeLokacijeMostService(
+      sy15,
+      NA_3_0,
+    ).syncMachineToLoc(MASINA, "INSERT");
+    expect(out).toEqual({ ok: true, akcija: "insert" });
+    expect(upiti).toHaveLength(2);
+  });
+
+  it("`aktivan()` NIJE promenjen — i dalje gleda samo ODRZAVANJE_IZVOR", () => {
+    const { sy15 } = fake();
+    const a = (o?: typeof NA_3_0, l?: typeof LOK_3_0) =>
+      new OdrzavanjeLokacijeMostService(sy15, o, l).aktivan();
+    expect(a(NA_3_0, LOK_3_0)).toBe(true);
+    expect(a(NA_3_0, LOK_SY15)).toBe(true);
+    expect(a(NA_SY15, LOK_3_0)).toBe(false);
+    expect(a(NA_SY15, LOK_SY15)).toBe(false);
+    expect(a()).toBe(false);
   });
 });
