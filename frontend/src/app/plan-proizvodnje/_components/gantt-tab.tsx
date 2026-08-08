@@ -43,6 +43,7 @@ import {
   addDays,
   barEnd,
   barGeometry,
+  barKey,
   barKeyAkcija,
   buildSuccessorIndex,
   chainFrom,
@@ -59,6 +60,7 @@ import {
   linkPath,
   machineRangeMinutes,
   pozicijaLabel,
+  pozicijeIzBarova,
   reorderByDrop,
   rowKey,
   scrapBadge,
@@ -346,16 +348,22 @@ export function GanttTab() {
     // da stigne IZMEĐU `dragstart` i `drop` — tada je pozicija puštanja računata nad
     // starim prikazom, a upis bi pošao od novog. Skup snimljen na `dragstart` mora da se
     // poklapa sa tekućim, inače se odustaje (planer ponovi gest nad onim što vidi).
-    const sada = g.rows.map(rowKey);
+    // 🔴 078/26: ceo ovaj put je OPERACIJSKI — upisuje se `shift_sort_order`, a to je
+    // jedno polje po operaciji. Od Faze B `g.rows` je lista BAROVA, pa se pozicija u
+    // njoj ponavlja; bez dedupa bi ista pozicija ušla u upis više puta i dobila
+    // POSLEDNJI redni broj, a planer bi video da joj se red „vratio". Dedup mora i
+    // ovde i u snimku sa `dragstart`, inače se poređenje nikad ne poklopi.
+    const pozicije = pozicijeIzBarova(g.rows);
+    const sada = pozicije.map(rowKey);
     if (sada.length !== d.snapshot.length || sada.some((k, i) => k !== d.snapshot[i])) {
       toast('⚠ Prikaz je u međuvremenu osvežen — prevuci ponovo.');
       return;
     }
-    if (g.rows.length > REORDER_MAX) {
-      toast(`⚠ Previše stavki za jedan upis (${g.rows.length}) — suzi prikaz.`);
+    if (pozicije.length > REORDER_MAX) {
+      toast(`⚠ Previše stavki za jedan upis (${pozicije.length}) — suzi prikaz.`);
       return;
     }
-    const next = reorderByDrop(g.rows, d.key, rowKey(target), after);
+    const next = reorderByDrop(pozicije, d.key, rowKey(target), after);
     if (!next) return;
     reorder.mutate({ orderedRows: next });
   }
@@ -566,13 +574,17 @@ export function GanttTab() {
       if (d.mode === 'move') {
         // 075/26: prevlačenje ide kroz KASKADU (server razrešava lanac) — to je JEDINI
         // gest koji pomera i pozicije ispod, i jedini koji je korisnik tražio takvim.
-        const moved = rows.find((r) => rowKey(r) === d.key);
+        // 078/26: `d.key` je identitet UHVAĆENOG BARA. Traženje po ključu pozicije
+        // vratilo bi PRVI bar te pozicije, a to ume da bude tuđi termin — pa bi se
+        // pomerio pogrešan bar, tiho.
+        const moved = rows.find((r) => barKey(r) === d.key);
         if (moved) void commitRef.current(moved, d.deltaDays, d.chain);
         return;
       }
       // `resize` NE kaskadira: menja samo kraj, delte u danima nema, a produžavanje
       // bara bi gurnulo ceo red čekanja na mašini.
-      const row = rows.find((r) => rowKey(r) === d.key);
+      // 078/26: razvlačenje menja kraj SAMO tog bara — isti razlog kao u grani `move`.
+      const row = rows.find((r) => barKey(r) === d.key);
       if (!row?.planned_start_at) return;
       const start = new Date(row.planned_start_at);
       const end = barEnd(row);
@@ -645,8 +657,10 @@ export function GanttTab() {
       setLinkDrag(null);
       if (!commit || !d?.targetKey) return;
       const all = rowsRef.current;
-      const source = all.find((r) => rowKey(r) === d.sourceKey);
-      const target = all.find((r) => rowKey(r) === d.targetKey);
+      // 078/26: `sourceKey`/`targetKey` dolaze iz `data-barkey`, dakle iz BAR prostora.
+      // Sam upis veze ostaje operacijski — „uslov" je osobina pozicije, ne termina.
+      const source = all.find((r) => barKey(r) === d.sourceKey);
+      const target = all.find((r) => barKey(r) === d.targetKey);
       if (!source || !target) return;
       if (
         target.predecessor_work_order_id === source.work_order_id &&
@@ -1079,12 +1093,21 @@ export function GanttTab() {
                         <div style={{ width: timelineW }} />
                       </div>
                       {m.rows.map((r, redniBroj) => {
-                        const key = rowKey(r);
+                        // 078/26: DVA ključa, i razlika je suštinska.
+                        //   `key`  = BAR (jedan termin) — React ključ, data-barkey,
+                        //            meta puštanja, hvataljka veze, uhvaćen bar.
+                        //   `oKey` = POZICIJA — ručni redosled, lanac („uslov"),
+                        //            dijalog detalja; ta polja su jedno po operaciji.
+                        // Dok je jedan termin po poziciji oba su jednoznačna; čim ih
+                        // bude više, mešanje tiho pomera pogrešan red.
+                        const key = barKey(r);
+                        const oKey = rowKey(r);
                         // 075/26: bar prati gest i kad NIJE uhvaćen — ako je u lancu
                         // sidra. Bez toga planer vuče jedan bar, ostatak stoji, „elbow"
                         // linije usput skaču u back-link rutu, pa sve poskoči tek po
                         // puštanju: gest izgleda pokvareno iako upis radi ispravno.
-                        const d = gestPomak(key, r);
+                        // Lanac je OPERACIJSKI, pa gest prima ključ pozicije.
+                        const d = gestPomak(oKey, r);
                         return (
                           <div
                             key={key}
@@ -1141,10 +1164,15 @@ export function GanttTab() {
                                   groupReorderable
                                     ? (e) => {
                                         e.dataTransfer.effectAllowed = 'move';
+                                        // 078/26: ručno ređanje upisuje `shift_sort_order`,
+                                        // a to polje je JEDNO po operaciji — zato ključ
+                                        // POZICIJE, i snimak dedupliran po pozicijama.
+                                        // Sirova lista barova poslala bi istu poziciju
+                                        // više puta i dala joj poslednji redni broj.
                                         rowDragRef.current = {
-                                          key,
+                                          key: oKey,
                                           group: gk,
-                                          snapshot: (rg?.rows ?? []).map(rowKey),
+                                          snapshot: pozicijeIzBarova(rg?.rows ?? []).map(rowKey),
                                         };
                                       }
                                     : undefined
@@ -1243,7 +1271,7 @@ export function GanttTab() {
                                       deltaDays: 0,
                                       chain:
                                         mode === 'move'
-                                          ? chainFrom(key, buildSuccessorIndex(rows))
+                                          ? chainFrom(oKey, buildSuccessorIndex(rows))
                                           : [],
                                     });
                                   }}

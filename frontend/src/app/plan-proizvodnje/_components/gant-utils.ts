@@ -219,6 +219,47 @@ export function hoursLabel(minutes: number): string {
 export const rowKey = opKey;
 
 /**
+ * 078/26 — ključ JEDNOG BARA na gantu.
+ *
+ * 🔴 Od Faze B gant vraća jedan red po TERMINU, pa se `line_id` PONAVLJA i `rowKey`
+ * više nije jedinstven na ovom ekranu. Sve što se odnosi na jedan bar — React ključ,
+ * `data-barkey`, hit-test gesta, razvlačenje, meta puštanja — mora ovaj ključ.
+ *
+ * Sve što se odnosi na POZICIJU bez obzira na broj termina i dalje koristi `rowKey`:
+ * ručni redosled (`shift_sort_order` je jedan po operaciji), „uslov"/lanac (osobina
+ * pozicije), dijalog detalja. Mešanje to dvoje znači da prevlačenje jednog bara TIHO
+ * pomeri pogrešan red — bez poruke i bez pada.
+ *
+ * `termin_id` je `null` za operaciju bez ijednog termina; tada je ključ jednak
+ * `rowKey`-u sa sufiksom, pa i takav red ostaje jedinstven.
+ */
+export function barKey(r: { work_order_id: string; line_id: string; termin_id?: number | null }): string {
+  return `${r.work_order_id}:${r.line_id}:${r.termin_id ?? '-'}`;
+}
+
+/**
+ * 078/26 — od liste BAROVA na listu POZICIJA, bez duplikata i sa očuvanim redosledom.
+ *
+ * Ručno ređanje (070/26) upisuje `shift_sort_order`, a to polje je JEDNO po operaciji.
+ * Od Faze B lista redova sadrži više barova iste pozicije, pa bi slanje sirove liste
+ * poslalo istu poziciju više puta — server bi joj dodelio poslednji redni broj, a
+ * planer bi video da se red „vratio". Zato se pre upisa uvek dedupira.
+ */
+export function pozicijeIzBarova<T extends { work_order_id: string; line_id: string }>(
+  barovi: readonly T[],
+): T[] {
+  const videno = new Set<string>();
+  const out: T[] = [];
+  for (const b of barovi) {
+    const k = opKey(b);
+    if (videno.has(k)) continue;
+    videno.add(k);
+    out.push(b);
+  }
+  return out;
+}
+
+/**
  * 069/26 — oznaka škarta: JEDAN izvor je `@/api/plan-proizvodnje` (tamo živi i
  * optimistički update koji je koristi). Ovde samo re-eksport, da tab i dijalog nastave
  * da uvoze logiku ganta s jednog mesta (isti obrazac kao `rowKey`).

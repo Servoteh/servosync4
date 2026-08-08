@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   CHAIN_CONFIRM_OVER,
+  barKey,
   barKeyAkcija,
   buildSuccessorIndex,
   chainFrom,
@@ -15,6 +16,8 @@ import {
   overlayErrorMessage,
   parseDecimalCommaInput,
   pozicijaLabel,
+  pozicijeIzBarova,
+  rowKey,
   shiftPreview,
 } from './gant-utils';
 import type { GanttRow } from '@/api/plan-proizvodnje';
@@ -411,4 +414,52 @@ test('kaskadaVanProzora: tačno kad NIJEDAN pomeren bar ne pada u prozor', () =>
   );
   // Prazan ishod ne pomera ništa.
   assert.equal(kaskadaVanProzora([], prozor, 30), false);
+});
+
+// ───────────────────────────── 078/26: bar-ključ vs ključ pozicije
+
+test('🔴 dva termina iste pozicije imaju RAZLIČIT bar-ključ, a ISTI ključ pozicije', () => {
+  // Ovo je cela poenta podele: React ključ, hit-test i razvlačenje moraju da razlikuju
+  // barove, dok ručni redosled i „uslov" moraju da ih vide kao JEDNU poziciju.
+  const a = { work_order_id: '45572', line_id: '226487', termin_id: 11 };
+  const b = { work_order_id: '45572', line_id: '226487', termin_id: 12 };
+  assert.notEqual(barKey(a), barKey(b));
+  assert.equal(rowKey(a), rowKey(b));
+});
+
+test('bar bez termina i dalje ima jedinstven ključ (ne prazan sufiks)', () => {
+  const a = { work_order_id: '1', line_id: '10', termin_id: null };
+  const b = { work_order_id: '1', line_id: '11', termin_id: null };
+  assert.notEqual(barKey(a), barKey(b));
+  assert.match(barKey(a), /:-$/);
+});
+
+test('bar-ključ ne meša poziciju sa terminom (nema sudara preko granice polja)', () => {
+  // Bez separatora bi „1:10 + termin 2" i „1:102 + bez termina" mogli da se poklope.
+  const a = { work_order_id: '1', line_id: '10', termin_id: 2 };
+  const b = { work_order_id: '1', line_id: '102', termin_id: null };
+  assert.notEqual(barKey(a), barKey(b));
+});
+
+test('🔴 dedup barova u pozicije čuva REDOSLED i uzima prvo pojavljivanje', () => {
+  // Ručni redosled se upisuje po poziciji; slanje iste pozicije više puta dalo bi joj
+  // POSLEDNJI redni broj, pa bi planer video da se red „vratio".
+  const barovi = [
+    { work_order_id: '1', line_id: '10', termin_id: 1 },
+    { work_order_id: '2', line_id: '20', termin_id: 5 },
+    { work_order_id: '1', line_id: '10', termin_id: 2 },
+    { work_order_id: '1', line_id: '10', termin_id: 3 },
+  ];
+  const p = pozicijeIzBarova(barovi);
+  assert.equal(p.length, 2);
+  assert.deepEqual(p.map(rowKey), ['1:10', '2:20']);
+  assert.equal(p[0].termin_id, 1);
+});
+
+test('dedup ne menja listu u kojoj svaka pozicija ima jedan bar', () => {
+  const barovi = [
+    { work_order_id: '1', line_id: '10', termin_id: 1 },
+    { work_order_id: '2', line_id: '20', termin_id: 2 },
+  ];
+  assert.deepEqual(pozicijeIzBarova(barovi), barovi);
 });
