@@ -305,6 +305,13 @@ odmora — bila je predmet oborene revizije 026!). **Tek posle tri uvežbana kru
 Uz nju idu `employee-docs` (24 MB, poverljivo) i `attendance_events` (140 MB stvarnog
 sadržaja — pre seobe utvrditi šta te kolone nose).
 
+> 🔴 **Ispravka merenja (08.08.2026):** „kadrovska 18 tabela" iz §1 je **filter po imenu**,
+> ne domen. Po FK grafu i RLS-u domen ima **65 tabela / 750 kolona / ~510.000 redova**
+> (43 tabele imaju FK na `employees`). `salaries` iz starijih spiskova **ne postoji** —
+> plate su `salary_payroll` + `salary_terms`. Skripta prenosa je gotova i dokazana na
+> probnoj bazi; merenje, runbook preklopa i zatečeni kvarovi:
+> **[SEOBA_KADROVSKE_PRENOS_2026-08-08.md](SEOBA_KADROVSKE_PRENOS_2026-08-08.md)**.
+
 ### Korak 4b — projektni biro (32 fn, podaci već preneti u koraku 1)
 Uključuje se tek kad `employees`/`departments`/`job_positions` budu u 3.0 bazi (korak 4) —
 `pb_current_employee_id()` je ulaz u sva PB prava i traži te tabele (revizija 2, tačka 1).
