@@ -128,6 +128,65 @@ const GANTT_COLS = Prisma.sql`line_id, work_order_id, operacija, opis_rada,
   is_non_machining, customer_short, customer_name, is_done_in_bigtehn,
   rn_zavrsen, is_cooperation_effective, overlay_archived_at, plan_rn_final_control_done`;
 
+/**
+ * 078/26 FAZA B — ista projekcija kao GANTT_COLS, ali PO TERMINU.
+ *
+ * Gant je jedini ekran koji operaciju sme da prikaže VIŠE PUTA (jedan bar po terminu);
+ * svi ostali je i dalje vide jednom (v. lateral „najraniji nezavršen" u
+ * effectiveOpsInner). Zato se 1:N radi OVDE, a ne u deljenom upitu.
+ *
+ * Kolone se moraju izričito kvalifikovati: i eff i tt nose planned_*, pa bi golo ime
+ * bilo dvosmisleno. Sve ide sa eff, OSIM planiranih polja koja idu sa tt.
+ *
+ * effective_duration_minutes se RAČUNA PONOVO po terminu — override trajanja je
+ * osobina termina, a ne operacije, pa bi vrednost iz eff (izabrani termin) bila
+ * pogrešna na svakom drugom baru.
+ */
+const GANTT_COLS_TERMIN = Prisma.sql`tt.termin_id, tt.termin_kolicina,
+  eff.line_id, eff.work_order_id, eff.operacija, eff.opis_rada,
+  eff.effective_machine_code, eff.original_machine_code, eff.original_machine_name, eff.hall,
+  eff.rn_ident_broj, eff.broj_crteza, eff.has_bigtehn_drawing,
+  eff.naziv_dela, eff.materijal, eff.komada_total, eff.komada_done,
+  eff.komada_done_good, eff.scrap_pieces, eff.rework_pieces, eff.scrap_outstanding,
+  eff.rok_izrade, eff.tpz_min, eff.tk_min,
+  COALESCE(
+    tt.planned_duration_minutes,
+    (COALESCE(eff.tpz_min, 0) + COALESCE(eff.tk_min, 0) * COALESCE(eff.komada_total, 0))::int
+  )::int AS effective_duration_minutes,
+  tt.planned_start_at, tt.planned_end_at, tt.planned_duration_minutes,
+  tt.planned_done, tt.planned_done_at, tt.planned_done_by, eff.is_completed_effective,
+  eff.predecessor_work_order_id, eff.predecessor_line,
+  eff.is_ready_for_machine, eff.is_ready_manual, eff.ready_override_at, eff.ready_override_by,
+  eff.previous_operation_status,
+  eff.previous_operation_operacija, eff.previous_operation_machine_code,
+  eff.local_status, eff.shift_sort_order, eff.shift_note, eff.is_urgent, eff.urgency_reason,
+  eff.is_non_machining, eff.customer_short, eff.customer_name, eff.is_done_in_bigtehn,
+  eff.rn_zavrsen, eff.is_cooperation_effective, eff.overlay_archived_at, eff.plan_rn_final_control_done`;
+
+/**
+ * 078/26 FAZA B — razvijanje operacije u njene TERMINE.
+ *
+ * Operacija sa N termina daje N redova; operacija BEZ ijednog termina daje TAČNO JEDAN
+ * red sa vrednostima iz eff (tj. iz overlay rezerve). Bez te druge grane bi pozicije
+ * koje nisu na gantu nestale sa ekrana „sve operacije", a gant ih namerno prikazuje.
+ *
+ * `termin_id` je jedini stabilan ključ bara — `line_id` se od sada PONAVLJA.
+ */
+const GANTT_TERMIN_JOIN = Prisma.sql`
+  LEFT JOIN LATERAL (
+    SELECT t.id AS termin_id, t.kolicina AS termin_kolicina,
+           t.planned_start_at, t.planned_end_at, t.planned_duration_minutes,
+           t.planned_done, t.planned_done_at, t.planned_done_by
+      FROM plan_proizvodnje_termini t
+     WHERE t.overlay_id = eff.overlay_id
+    UNION ALL
+    SELECT NULL::int, NULL::int,
+           eff.planned_start_at, eff.planned_end_at, eff.planned_duration_minutes,
+           eff.planned_done, eff.planned_done_at, eff.planned_done_by
+     WHERE NOT EXISTS (
+       SELECT 1 FROM plan_proizvodnje_termini t2 WHERE t2.overlay_id = eff.overlay_id)
+  ) tt ON TRUE`;
+
 const GANTT_LIMIT = 5000;
 
 /**
@@ -411,7 +470,14 @@ export class PlanProizvodnjeReadService {
     const rows = await this.prisma.$queryRaw(Prisma.sql`
       SELECT g.*, ${SKLOP_COLS}
       FROM (
-        SELECT ${GANTT_COLS} FROM (${this.effectiveOpsInner(Prisma.empty)}) eff
+        -- 078/26 FAZA B: razvijanje u termine ide u ZASEBAN sloj, pa filtri i poredak
+        -- ispod rade nad običnim imenima kolona i ostaju netaknuti. Da je join bio na
+        -- istom nivou, golo planned_start_at u filteru bilo bi dvosmisleno.
+        SELECT * FROM (
+          SELECT ${GANTT_COLS_TERMIN}
+          FROM (${this.effectiveOpsInner(Prisma.empty)}) eff
+          ${GANTT_TERMIN_JOIN}
+        ) t
         WHERE ${Prisma.join(conds, " AND ")}
         ${sort}
         LIMIT ${GANTT_LIMIT}
