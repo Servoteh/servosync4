@@ -139,6 +139,16 @@ interface MaintOutboxPort {
   markFailed(id: string, error: string, backoffSec: number): Promise<void>;
   /** Vraća broj dece; roditelja zatvara SAM (v. `dispatchMaint`). */
   fanout(id: string): Promise<number>;
+  /**
+   * 🔴 Da li izvor fanout BEZ IJEDNOG PRIMAOCA tretira kao NEUSPEH.
+   *
+   * `true` samo za 3.0 (`dispatchFanout` tamo zatvara roditelja kao `failed` sa
+   * `FANOUT_NO_RECIPIENTS`). sy15 DEFINER fn i dalje piše `sent` /
+   * `FANOUT_DONE: 0 recipients` — to je zatečeni defekt koji se NE dira, jer
+   * `sy15` je PODRAZUMEVAN položaj prekidača i njegovo ponašanje (uključujući
+   * brojeve u `scheduled_job_runs.summary`) mora ostati identično do gašenja.
+   */
+  readonly nulaPrimalacaJeNeuspeh: boolean;
 }
 interface PbRow {
   id: string;
@@ -406,6 +416,7 @@ export class NotifyDispatchService {
           await this.odrFn.dispatchMarkFailed(undefined, id, error, backoffSec);
         },
         fanout: (id) => this.odrFn.dispatchFanout(undefined, id),
+        nulaPrimalacaJeNeuspeh: true,
       };
     }
     return {
@@ -415,6 +426,7 @@ export class NotifyDispatchService {
       markFailed: (id, error, backoffSec) =>
         this.markFailedMaint(id, error, backoffSec),
       fanout: (id) => this.maintFanout(id),
+      nulaPrimalacaJeNeuspeh: false,
     };
   }
 
@@ -441,6 +453,22 @@ export class NotifyDispatchService {
           // Fanout raspiše na konkretne primaoce i SAM markira parent 'sent' —
           // worker NE sme da zove mark_sent za parent (edge paritet).
           const children = await port.fanout(row.id);
+          if (children === 0 && port.nulaPrimalacaJeNeuspeh) {
+            // 🔴 GUBITAK SE NE SME UPISATI KAO USPEH. Fanout bez ijednog
+            // primaoca znači da obaveštenje o kvaru nije otišlo NIKOME —
+            // najčešći uzrok je prazan `maint_user_profiles` (izmereno
+            // 08.08.2026: 0 redova, prenos podataka nije pušten). Sam red je
+            // brana već zatvorila kao `failed` sa `FANOUT_NO_RECIPIENTS`; ovde
+            // se stara da i SUMMARY posla to kaže — inače bi `scheduled_job_runs`
+            // pokazivao `failed=0` i ispad bi ostao nevidljiv u dnevniku.
+            this.logger.error(
+              `🔴 maint fanout ${this.mask(row.id)}: NULA primalaca — obaveštenje ` +
+                "NIJE poslato nikome (proveri `maint_user_profiles`: aktivan profil " +
+                "sa telefonom i rolom chief/management).",
+            );
+            failed++;
+            continue;
+          }
           this.logger.debug(
             `maint fanout ${this.mask(row.id)} → ${children} primalaca`,
           );

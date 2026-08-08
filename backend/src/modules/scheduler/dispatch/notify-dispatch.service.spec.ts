@@ -1389,7 +1389,7 @@ describe("ODRZAVANJE_IZVOR — maint grana dispečera", () => {
     expect(r).toMatchObject({ fanouts: 1, sent: 0, failed: 0 });
   });
 
-  it("🔴 fanout BEZ ijednog primaoca i dalje troši red (roditelj ne visi večno)", async () => {
+  it("🔴 fanout BEZ ijednog primaoca je NEUSPEH u summary-ju, ne tihi uspeh", async () => {
     process.env.ODRZAVANJE_IZVOR = "3.0";
     const odr = odrFnMock({
       redovi: [
@@ -1417,7 +1417,36 @@ describe("ODRZAVANJE_IZVOR — maint grana dispečera", () => {
     const r = await svc.dispatchMaint();
     expect(odr.dispatchFanout).toHaveBeenCalledTimes(1);
     expect(odr.dispatchMarkSent).not.toHaveBeenCalled();
-    expect(r).toMatchObject({ fanouts: 1, failed: 0 });
+    // 🔴 Do 08.08.2026 je ovde stajalo `{ fanouts: 1, failed: 0 }` — obaveštenje
+    // o kvaru nije otišlo NIKOME, a `scheduled_job_runs.summary` je bio čist.
+    // Sa praznim `maint_user_profiles` (izmereno: 0 redova) to bi bio SVAKI red.
+    expect(r).toMatchObject({ processed: 1, sent: 0, failed: 1, fanouts: 0 });
+  });
+
+  it("🔴 podrazumevano (sy15): fanout bez primalaca broji se PO STAROM (ništa se ne menja)", async () => {
+    // Prekidač je NEPOSTAVLJEN — produkcija 08.08.2026. sy15 DEFINER fn i dalje
+    // zatvara roditelja kao `sent`; to je zatečeni defekt koji se NE dira dok
+    // domen ne pređe, jer podrazumevani put mora ostati bajt-identičan.
+    const m = sy15Mock();
+    m.pushResult([
+      {
+        id: ID_A,
+        channel: "whatsapp",
+        recipient: "pending",
+        recipient_user_id: null,
+        subject: "Kvar",
+        body: "telo",
+        attempts: 0,
+      },
+    ]);
+    m.pushResult([{ children: 0 }]); // maint_dispatch_fanout → 0 primalaca
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    const r = await svc.dispatchMaint();
+    expect(r).toMatchObject({ processed: 1, sent: 0, failed: 0, fanouts: 1 });
   });
 
   it("ODRZAVANJE_IZVOR=3.0: neuspeh slanja ide u 3.0 markFailed sa ISTIM backoff-om", async () => {

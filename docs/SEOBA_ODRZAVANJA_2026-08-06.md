@@ -416,6 +416,27 @@ preklopa (i ponoviti — idempotentan je).
 ⚠️ **Korak 7 se NE izvodi dok blokade 1–5 iz §7 nisu zatvorene** — pod `3.0` ceo modul sada
 pada sa 503. Koraci 0–6 se izvode kad se hoće.
 
+### 🔴 Dopuna 08.08.2026 — koraci 0–6 su TVRD PREDUSLOV za korak 7
+
+Izmereno na produkciji 08.08.2026: `ODRZAVANJE_IZVOR` je **nepostavljen**, a 3.0 `maint_*`
+tabele su **prazne** (`maint_user_profiles` = 0, `maint_machines` = 0) — prenos (koraci 0–6)
+**nije pušten**.
+
+Dok su scheduler poslovi pod `3.0` padali sa 503, to je bila glasna brana: preklop bez prenosa
+nije mogao da prođe neprimećeno. Od kada su `maint-deadlines` i `maint-notify-dispatch`
+preneti, brane više nema — pa korak 7 nad praznim tabelama daje **tiho ništa**: cron nađe 0
+rokova, radnik prazan outbox, oba posla „uspeh".
+
+Zato:
+
+- **Korak 7 se NE izvodi bez uspešnog koraka 6** (`--verify-only`, svih 34 reda `OK`).
+- Ako red ipak uđe u outbox, a primalaca nema (prazan `maint_user_profiles`), `dispatchFanout`
+  ga **više ne zatvara kao `sent`** nego kao `failed` sa `FANOUT_NO_RECIPIENTS` u `error`, uz
+  `ERROR` u dnevniku i `failed=N` u `scheduled_job_runs.summary`. To je jedino svesno
+  odstupanje od sy15 originala — original je gubitak upisivao kao uspeh.
+- Posle 8 pokušaja (backoff 1h) red trajno ispada iz reda čekanja i ostaje kao **vidljiv**
+  neuspeh; ne visi večno, ali ni ne laže da je poslat.
+
 ### Povratak (rollback)
 
 Jedan potez, bez deploy-a koda: **`ODRZAVANJE_IZVOR=sy15` + restart (~2 min).** sy15 se tokom
@@ -442,8 +463,11 @@ domen i **nijedan ne sme da padne**. To je pinovano testovima
 (`sy15-cron-jobs.spec.ts`, `notify-dispatch.service.spec.ts`, `izvor-prekidaci.spec.ts`), ali
 proveriti i na produkciji — upravo je nepostojanje te provere bio incident.
 
-Očekivano je da padnu, i to samo ova dva: `maint-deadlines` i `maint-notify-dispatch`, sa 503 i
-imenom putanje. To je brana, ne kvar.
+🔴 **Ispravka 08.08.2026:** ranije je ovde pisalo da `maint-deadlines` i `maint-notify-dispatch`
+pod `3.0` očekivano padaju sa 503 („brana, ne kvar"). To VIŠE NE VAŽI — oba posla su prenesena i
+pod `3.0` normalno rade nad 3.0 bazom. Zato posle koraka 7 njihov **zeleni** red u dnevniku više
+nije dokaz da išta radi: proveri i `summary` (`enqueued`/`processed` ne smeju biti trajno 0) i
+tabelu `maint_notification_log` na `status='failed'` sa `FANOUT_NO_RECIPIENTS`.
 
 ---
 

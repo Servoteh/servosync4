@@ -129,11 +129,36 @@ function odrFnMock(
   };
 }
 
+/**
+ * 🔴 PODRAZUMEVANI `OdrzavanjeFnService` u ovom specu BACA na svaki dodir.
+ *
+ * Bez toga je `expect(sy15.sql).toEqual([...])` u sy15 testu nedovoljan: mutacija
+ * koja 3.0 fn zove BEZUSLOVNO (pre grananja po prekidaču) prolazi neopaženo, jer
+ * sy15 poziv i dalje ode. Ovaj Proxy je isti obrazac koji već drži dispečerov
+ * spec (`odrFnEksplozija` u `dispatch/notify-dispatch.service.spec.ts`) — pod
+ * podrazumevanim `ODRZAVANJE_IZVOR=sy15` posao NE SME ni da dodirne 3.0 bazu.
+ * Test koji stvarno hoće 3.0 put prosleđuje svoj `odrFnMock()`.
+ */
+function odrFnEksplozija(): ReturnType<typeof odrFnMock> {
+  const eksplodiraj = (prop: string) => () => {
+    throw new Error(
+      `OdrzavanjeFnService.${prop} pozvan bez eksplicitnog mock-a — ` +
+        "pod ODRZAVANJE_IZVOR=sy15 maint posao NE SME da dodirne 3.0 bazu.",
+    );
+  };
+  const checkAllDeadlines = jest.fn(eksplodiraj("checkAllDeadlines"));
+  const cilj: Record<string, unknown> = { checkAllDeadlines };
+  const odrFn = new Proxy(cilj, {
+    get: (t, prop) => t[String(prop)] ?? eksplodiraj(String(prop)),
+  }) as unknown as OdrzavanjeFnService;
+  return { odrFn, checkAllDeadlines };
+}
+
 function make(
   sy15 = sy15Mock(),
   p = prismaMock(),
   fn = sastFnMock(),
-  odr = odrFnMock(),
+  odr = odrFnEksplozija(),
 ): {
   jobs: Map<string, ScheduledJob>;
   sy15: ReturnType<typeof sy15Mock>;
@@ -466,12 +491,17 @@ describe("prekidači su NEZAVISNI — sve 4 kombinacije (incident 06.08.2026)", 
  * talac tuđeg preklopa, ni da tiho nastavi da piše u sy15 kad domen pređe.
  */
 describe("ODRZAVANJE_IZVOR — maint-deadlines je nezavisan od druga dva domena", () => {
-  it("podrazumevano (sy15): maint-deadlines zove sy15 fn", async () => {
-    const { jobs, sy15 } = make();
+  it("podrazumevano (sy15): maint-deadlines zove sy15 fn i NE DODIRUJE 3.0", async () => {
+    const { jobs, sy15, odr } = make();
     await run(jobs.get("maint-deadlines")!);
     expect(sy15.sql).toEqual([
       "SELECT * FROM public.maint_check_all_deadlines(30);",
     ]);
+    // 🔴 Bez ovog reda test propušta mutaciju „zovi 3.0 fn BEZUSLOVNO, pa tek
+    // onda grananje" — sy15 upit bi i dalje otišao, pa bi gornja tvrdnja
+    // ostala tačna dok bi rokovi nastajali u OBE baze. Podrazumevani `odrFn`
+    // je zato Proxy koji baca na svaki dodir; ovo pinuje da nije ni dodirnut.
+    expect(odr.checkAllDeadlines).not.toHaveBeenCalled();
   });
 
   it("ODRZAVANJE_IZVOR=3.0: maint-deadlines ide kroz 3.0 fn, NIJEDAN sy15 poziv", async () => {

@@ -94,6 +94,16 @@ export interface EnqueueNotifArgs {
   payload?: Prisma.InputJsonValue | null;
 }
 
+/**
+ * Odmak do sledećeg pokušaja kad fanout ne nađe NIJEDNOG primaoca (1 sat).
+ *
+ * Sa `MAINT_MAX_ATTEMPTS = 8` u radniku to daje ~8 sati ponovnih pokušaja — taman
+ * da preklop koji je pušten pre nego što je prenos podataka gotov ipak isporuči
+ * obaveštenje čim se `maint_user_profiles` napuni — a posle toga red trajno
+ * ispada iz reda čekanja i ostaje kao VIDLJIV `failed`, ne kao lažni `sent`.
+ */
+const FANOUT_NO_RECIPIENTS_BACKOFF_SEC = 3600;
+
 /** Rezultat `maint_check_*_deadlines` (RETURNS TABLE(enqueued, skipped)). */
 export interface DeadlineResult {
   enqueued: number;
@@ -1159,6 +1169,27 @@ export class OdrzavanjeFnService {
    * 🔴 Kod `critical` ciljaju se `chief` I `management`, inače samo `chief`.
    * ⚠️ Poznat defekt 1.0 koji se prenosi kakav jeste: dete kanala `email` u
    * `recipient` dobija TELEFON (izvor kopira `p.phone` bez obzira na kanal).
+   *
+   * ── 🔴 JEDINO SVESNO ODSTUPANJE OD IZVORA (08.08.2026) ──────────────────────
+   * sy15 original zatvara roditelja kao `sent` I KAD NEMA NIJEDNOG PRIMAOCA
+   * (`FANOUT_DONE: 0 recipients`). To znači da se GUBITAK obaveštenja u bazu
+   * upisuje kao USPEH: poruka o kvaru ne ode nikome, a dnevnik kaže „poslato".
+   *
+   * Zašto to više nije akademsko: 08.08.2026 je IZMERENO da su 3.0 `maint_*`
+   * tabele PRAZNE (`maint_user_profiles` = 0, prenos podataka još nije pušten).
+   * Pod `ODRZAVANJE_IZVOR=3.0` bi, dakle, SVAKI fanout pogodio nula primalaca —
+   * i svaki bi se zapisao kao uspešno poslat. Do ovog PR-a je jedini signal bila
+   * brana koja je taj položaj prekidača obarala sa 503; kad brana pada, mora je
+   * zameniti nešto što se i dalje VIDI.
+   *
+   * Zato: nula primalaca → `status='failed'` sa `FANOUT_NO_RECIPIENTS` u `error`
+   * (statusi ostaju u postojećem CHECK-u `('queued','sent','failed')`, pa nema
+   * migracije), plus ERROR u dnevnik. Roditelj se i dalje NE ZAGLAVLJUJE večno:
+   * `dispatchDequeue` uzima `status IN ('queued','failed')` samo dok je
+   * `attempts < p_max_attempts` (radnik šalje 8), a svaki claim diže `attempts`.
+   * Posle 8 prolaza red trajno ispada iz reda čekanja i ostaje kao VIDLJIV
+   * neuspeh. Usput to daje i besplatnu korist: ako se prenos podataka pusti
+   * unutar prozora ponovnih pokušaja, obaveštenje stvarno ode.
    */
   async dispatchFanout(
     tx: OdrzavanjeTx | undefined,
@@ -1181,29 +1212,44 @@ export class OdrzavanjeFnService {
       },
       select: { userId: true, fullName: true, phone: true },
     });
-    if (targets.length > 0) {
-      await db.maintNotificationLog.createMany({
-        data: targets.map((t) => ({
-          channel: parent.channel,
-          recipient: t.phone as string,
-          recipientUserId: t.userId,
-          subject: parent.subject,
-          body: parent.body,
-          relatedEntityType: parent.relatedEntityType,
-          relatedEntityId: parent.relatedEntityId,
-          machineCode: parent.machineCode,
-          escalationLevel: parent.escalationLevel,
-          status: "queued",
-          payload: {
-            ...payload,
-            fanout_parent: parent.id,
-            to_name: t.fullName,
-          } as Prisma.InputJsonValue,
-        })),
-      });
+    if (targets.length === 0) {
+      // 🔴 NULA PRIMALACA NIJE USPEH — v. odstupanje u zaglavlju metode.
+      const razlog =
+        `FANOUT_NO_RECIPIENTS: nijedan aktivan profil (${role.join("/")}) ` +
+        "sa telefonom u maint_user_profiles";
+      this.log.error(
+        `maint fanout ${parentId}: ${razlog} — obaveštenje NIJE otišlo nikome; ` +
+          `red ostaje 'failed' (ponovni pokušaj, pa trajno vidljiv neuspeh).`,
+      );
+      await this.markFailedRaw(
+        db,
+        parentId,
+        razlog,
+        FANOUT_NO_RECIPIENTS_BACKOFF_SEC,
+      );
+      return 0;
     }
-    // Roditelj se zatvara UVEK — i kad nema nijednog primaoca (izvor isto radi
-    // `UPDATE … WHERE EXISTS (SELECT 1 FROM parent)`), inače bi večno visio u redu.
+    await db.maintNotificationLog.createMany({
+      data: targets.map((t) => ({
+        channel: parent.channel,
+        recipient: t.phone as string,
+        recipientUserId: t.userId,
+        subject: parent.subject,
+        body: parent.body,
+        relatedEntityType: parent.relatedEntityType,
+        relatedEntityId: parent.relatedEntityId,
+        machineCode: parent.machineCode,
+        escalationLevel: parent.escalationLevel,
+        status: "queued",
+        payload: {
+          ...payload,
+          fanout_parent: parent.id,
+          to_name: t.fullName,
+        } as Prisma.InputJsonValue,
+      })),
+    });
+    // Deca su upisana — TEK SADA roditelj sme da bude `sent`. Ovaj `update` više
+    // NE pokriva slučaj „nula primalaca": on je iznad, i završava kao `failed`.
     await db.maintNotificationLog.update({
       where: { id: parentId },
       data: {
@@ -1988,6 +2034,20 @@ export class OdrzavanjeFnService {
   // stari radnik prazni sy15. Ako se preklopi samo jedno od to dvoje,
   // obaveštenja o kvarovima TIHO prestanu da stižu — nema greške, red samo
   // stoji. Zato cron i radnik moraju preći ZAJEDNO.
+  //
+  // ⚠️⚠️ SISTEMSKI ULAZ BEZ IJEDNE PROVERE PRAVA ⚠️⚠️
+  // `dispatchDequeue` / `dispatchMarkSent` / `dispatchMarkFailed` (i
+  // `dispatchFanout` gore) NEMAJU `MaintScope` argument i NE ZOVU `authz` —
+  // isto kao sy15 originali, koji su `SECURITY DEFINER` bez ijednog gejta, jer
+  // ih pokreće cron BEZ korisnika. Zato:
+  //
+  //   🔴 NIJEDNA HTTP putanja (kontroler, resolver, RPC) NE SME da ih pozove.
+  //      Pozivalac im je ISKLJUČIVO `src/modules/scheduler/**`. TypeScript to ne
+  //      može da spreči (Nest injektuje ceo servis), pa branu drži test
+  //      `odrzavanje-fn.dispatch-pozivaoci.spec.ts` — on skenira `src/` i pada
+  //      ako se pojavi pozivalac van scheduler-a.
+  //   🔴 Ko im ipak zatreba izvan radnika: NE zovi ih direktno, nego dodaj
+  //      metodu sa `MaintScope` koja prvo prođe kroz `OdrzavanjeAuthzService`.
 
   /**
    * `maint_dispatch_dequeue(p_batch_size, p_max_attempts)` — claim redova.
@@ -2054,7 +2114,7 @@ export class OdrzavanjeFnService {
   /**
    * `maint_dispatch_mark_failed(p_id, p_error, p_backoff_sec)` — re-arm reda.
    * Paritet izvora: `left(error, 1000)`, `greatest(backoff, 5)` sekundi, i
-   * `updateMany` (ne `update`) da nepostojeći id bude no-op, kao `WHERE id = p_id`.
+   * `UPDATE … WHERE id = p_id` (nepostojeći id je no-op, ne izuzetak).
    */
   async dispatchMarkFailed(
     tx: OdrzavanjeTx | undefined,
@@ -2063,14 +2123,35 @@ export class OdrzavanjeFnService {
     backoffSec = 60,
   ): Promise<void> {
     const sek = Math.max(backoffSec, 5);
-    await this.db(tx).maintNotificationLog.updateMany({
-      where: { id },
-      data: {
-        status: "failed",
-        error: (error ?? "").slice(0, 1000),
-        nextAttemptAt: new Date(Date.now() + sek * 1000),
-      },
-    });
+    await this.markFailedRaw(this.db(tx), id, error ?? "", sek);
+  }
+
+  /**
+   * Zatvaranje outbox reda kao NEUSPEH sa pomerenim `next_attempt_at`.
+   * Deli ga `dispatchMarkFailed` sa fanout-om bez primalaca.
+   *
+   * 🔴 SIROV SQL JE ZBOG SATA, ne zbog stila. Izvor računa
+   * `now() + make_interval(secs => …)` — SAT BAZE. `new Date(Date.now() + …)` je
+   * sat APLIKACIJE, a `dispatchDequeue` poredi `next_attempt_at <= now()` — opet
+   * sat baze. Dok su kontejner i Postgres na istom hostu razlike nema; čim API
+   * ode na drugi host, skew bi red vraćao prerano ili ga držao predugo. Vreme se
+   * zato računa TAMO GDE SE I POREDI.
+   *
+   * ⚠️ `error` se seče u SQL-u (`left(…, 1000)`), doslovno kao u izvoru — ne u
+   * JS-u, da granica ostane ista i za višebajtne znakove.
+   */
+  private async markFailedRaw(
+    db: OdrzavanjeTx,
+    id: string,
+    error: string,
+    sek: number,
+  ): Promise<void> {
+    await db.$executeRaw(Prisma.sql`
+      UPDATE maint_notification_log
+         SET status          = 'failed',
+             error           = left(${error}, 1000),
+             next_attempt_at = now() + make_interval(secs => ${sek}::double precision)
+       WHERE id = ${id}::uuid`);
   }
 }
 
