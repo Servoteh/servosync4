@@ -3595,6 +3595,24 @@ export class OdrzavanjeService {
       code === "22023" // invalid param (npr. delete-hard razlog < 5)
     )
       throw new UnprocessableEntityException(message);
+    /* 🔴 NEISPRAVAN OBLIK ULAZA = 422, NIKAD 500 (BACKEND_RULES §6).
+       `P2023` je Prisma „Inconsistent column data" (npr. `userId: "123"` nad
+       `uuid` kolonom u sy15), `22P02` je isti kvar kad ga vrati sam PG
+       (`invalid input syntax for type ...`). Otkad je `ParseUUIDPipe` skinut sa
+       `PATCH profiles/:id` (šav seobe: `user_id` je uuid u sy15, Int u 3.0),
+       besmislen parametar više ne pada na pipe nego stigne do upita — bez ovog
+       reda bi pod PODRAZUMEVANIM prekidačem (sy15, produkcija danas) 400/422
+       postalo 500. Poruka je NAŠA, ne Prisma-ina: sirova nosi ime modela i
+       kolone i nema šta da traži kod korisnika. */
+    if (
+      code === "P2023" ||
+      code === "22P02" ||
+      (typeof message === "string" &&
+        message.includes("invalid input syntax for type"))
+    )
+      throw new UnprocessableEntityException(
+        "Neispravan oblik identifikatora u zahtevu",
+      );
     if (code === "23505") throw new ConflictException(message);
     // Zaštitna mreža za trku „provera → INSERT" (zahtev 047/26): sirova P2002 poruka
     // („Unique constraint failed on the fields: (`machine_code`)") ne sme do korisnika.
@@ -3656,6 +3674,12 @@ export class OdrzavanjeService {
    * ⚠️ `IdempotencyService.run` otvara SVOJU Prisma transakciju sa podrazumevanih
    * 5 s. Bulk akcije (hard-delete mašine, uvoz iz kataloga, stock ledger) to ume da
    * probiju — takva putanja mora da preda `opts.timeoutMs`.
+   *
+   * 🔴 `MaintScope` se čita PRE otvaranja transakcije, isto kao u `withUser30`.
+   * Da se čita unutra, `scope30` bi tražio NOVU konekciju iz pool-a dok ova
+   * transakcija svoju već drži — pod opterećenjem svaka konekcija može biti
+   * zauzeta transakcijom koja čeka slobodnu, pa se pool sam sa sobom zaključa
+   * do isteka. Cena je jedan upit više na ponovljen (idempotentan) zahtev.
    */
   private async runIdem<T>(
     email: string,
@@ -3664,7 +3688,7 @@ export class OdrzavanjeService {
     fn: (tx: Sy15Tx) => Promise<T>,
     opts?: {
       /** 3.0 telo iste akcije; bez njega putanja NIJE preneta (brana 503). */
-      fn30?: (tx: IdempotencyTx) => Promise<T>;
+      fn30?: (tx: IdempotencyTx, s: MaintScope) => Promise<T>;
       /** Timeout 3.0 transakcije u ms (podrazumevano Prisma 5 s) — samo za bulk. */
       timeoutMs?: number;
     },
@@ -3672,17 +3696,21 @@ export class OdrzavanjeService {
     const fn30 = opts?.fn30;
     // Brana PRE registra idempotencije — neovlašćen/neprenet poziv ne sme da
     // potroši korisnikov `clientEventId` (isti redosled kao kod sastanaka, §7e).
-    // Izostanak registra (`IdempotencyService` nije ubrizgan) tretira se kao
-    // NEPRENETA putanja: pod `3.0` 503, nikad tih upis u sy15 bazu.
-    if (!fn30 || !this.idem) this.assertPorted(action);
+    // Izostanak registra (`IdempotencyService` nije ubrizgan) ILI 3.0 trojke
+    // (`tri30`) tretira se kao NEPRENETA putanja: pod `3.0` 503, nikad tih upis
+    // u sy15 bazu. Trojka je u spisku otkad `runIdem` sam učitava `MaintScope`
+    // (za to mu treba `prisma`+`authz`) — isti uslov koji `withUser30` već ima.
+    if (!fn30 || !this.idem || !this.tri30) this.assertPorted(action);
 
-    if (fn30 && this.idem && this.izvor?.isThreeZero === true) {
+    if (fn30 && this.idem && this.tri30) {
       try {
+        // Scope se čita VAN transakcije registra (v. napomenu iznad).
+        const s = await this.scope30(email);
         const out = await this.idem.run(
           email,
           clientEventId,
           action,
-          fn30,
+          (tx) => fn30(tx, s),
           opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : undefined,
         );
         return { data: out.result, meta: { idempotent: out.idempotent } };
@@ -6313,7 +6341,10 @@ export class OdrzavanjeService {
   }
 
   /**
-   * Omotač `fn30` za `runIdem`: dodaje `MaintScope` telu idempotentne akcije.
+   * Tipski most `fn30` → `runIdem`. `MaintScope` NE čita — njega učitava
+   * `runIdem` PRE nego što otvori transakciju registra idempotencije (v. tamo:
+   * čitanje scope-a iz transakcije traži drugu konekciju i pod opterećenjem
+   * zaključava pool).
    *
    * ⚠️ Kast `as T` je JEDINO mesto gde se gubi tipska veza sy15↔3.0 reda, i tu
    * je namerno: `runIdem` (zajednički za ceo modul) traži da obe grane vrate
@@ -6321,10 +6352,9 @@ export class OdrzavanjeService {
    * klijentu je JSON i oblik mu pinuju spec-ovi, ne prevodilac.
    */
   private idem30<T>(
-    email: string,
     fn30: (tx: OdrzavanjeTx, s: MaintScope) => Promise<unknown>,
-  ): (tx: IdempotencyTx) => Promise<T> {
-    return async (tx) => (await fn30(tx, await this.scope30(email))) as T;
+  ): (tx: IdempotencyTx, s: MaintScope) => Promise<T> {
+    return async (tx, s) => (await fn30(tx, s)) as T;
   }
 
   /** Prepis DEFINER funkcija/trigera — kratko ime za `this.tri().fn`. */
@@ -6444,9 +6474,7 @@ export class OdrzavanjeService {
         return { assetId: rows[0]?.id ?? null };
       },
       {
-        fn30: this.idem30(email, (tx, s) =>
-          this.createAsset30(tx, s, dto, kind),
-        ),
+        fn30: this.idem30((tx, s) => this.createAsset30(tx, s, dto, kind)),
       },
     );
   }
@@ -7306,7 +7334,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           // `maint_vehicle_tires_write` = asset_visible ∧ (erp adm/mgmt ∨ chief/admin).
           await this.assertAssetWrite30(tx, s, assetId, `Vozilo ${assetId}`);
           return tx.maintVehicleTire.create({
@@ -7455,7 +7483,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           // `maint_vsp_insert` = erp adm/mgmt ∨ chief/admin (BEZ asset_visible).
           this.assert30(
             this.az.canWriteStock(s),
@@ -7872,7 +7900,7 @@ export class OdrzavanjeService {
           },
         }),
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           this.assert30(
             this.mozePisatiVezuDeoVozilo(s),
             "Nemate pravo nad: Veza deo↔vozilo",
@@ -7983,7 +8011,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           // 🔴 `maint_booking_insert` je NAJŠIRA write politika modula:
           // erp adm/mgmt ∨ chief/admin/technician/**operator** — vozilo rezerviše
           // i operater. Sužavanje na `canWriteStock` bi oborilo carpool.
@@ -8154,7 +8182,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           this.assert30(
             this.az.canWriteStock(s),
             "Nemate pravo nad: Vlasnik vozila",
@@ -8211,7 +8239,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           // 🔴 VOZAČ JE LIČNI PODATAK (JMBG, adresa, lekarski). `maint_drivers_insert`
           // = erp adm/mgmt ∨ chief/admin — UŽE od `maint_drivers_select`
           // (`canReadAllDrivers`, koji uključuje i tehničara/operatera).
@@ -8266,7 +8294,7 @@ export class OdrzavanjeService {
     if (isInternal === false) return null;
     if (raw == null || raw === "") return null;
     const n = Number(raw);
-    if (!Number.isInteger(n)) {
+    if (!this.jeIdKorisnika30(n)) {
       throw new UnprocessableEntityException(
         `„${raw}" nije korisnički ID iz 3.0 baze (očekivan je broj) — izaberi zaposlenog iz liste`,
       );
@@ -8517,7 +8545,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           // `maint_asp_write` je [ALL] politika: isti izraz za I/U/D.
           this.assert30(
             this.az.canWriteStock(s),
@@ -8679,7 +8707,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           this.assert30(this.az.canWriteStock(s), "Nemate pravo nad: Deo");
           return tx.maintPart.create({
             data: {
@@ -8780,7 +8808,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           // `maint_stock_movements_insert` = created_by = uid ∧ (erp adm/mgmt ∨
           // technician/chief/admin) ∧ (wo_id IS NULL ∨ nalog je vidljiv).
           this.assert30(
@@ -8877,7 +8905,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           this.assert30(
             this.az.canWriteStock(s),
             "Nemate pravo nad: Dobavljač",
@@ -8969,7 +8997,7 @@ export class OdrzavanjeService {
           },
         }),
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           // `maint_locations_insert` = erp_admin ∨ chief/admin — 🔴 UŽE od
           // `canWriteStock` (menadzment/magacioner NE menjaju CMMS stablo).
           this.assert30(
@@ -9408,7 +9436,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           this.assert30(
             this.az.canWriteStock(s),
             "Nemate pravo nad: Pravilo obaveštavanja",
@@ -9603,7 +9631,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(email, async (tx, s) => {
+        fn30: this.idem30(async (tx, s) => {
           this.assert30(
             this.az.isErpAdmin(s),
             "Samo ERP admin sme da menja profile održavanja",
@@ -9640,12 +9668,22 @@ export class OdrzavanjeService {
   /** `maint_user_profiles.user_id`: uuid u sy15, `users.id` (Int) u 3.0. */
   private profileUserId30(raw: string | number): number {
     const n = typeof raw === "number" ? raw : Number(raw);
-    if (!Number.isInteger(n)) {
+    if (!this.jeIdKorisnika30(n)) {
       throw new UnprocessableEntityException(
         `„${raw}" nije korisnički ID iz 3.0 baze (očekivan je broj)`,
       );
     }
     return n;
+  }
+
+  /**
+   * `users.id` je PG `int4`, a DTO regex `[0-9]+` NEMA gornju granicu.
+   * `Number.isInteger(1e20)` je `true`, pa bi „99999999999999999999" prošlo
+   * proveru i palo tek u Prisma sloju kao 500 — isti kvar kao P2023, samo na
+   * drugom kraju šava. Zato opseg int4 (pozitivan deo) proverava KOD.
+   */
+  private jeIdKorisnika30(n: number): boolean {
+    return Number.isSafeInteger(n) && n > 0 && n <= 2147483647;
   }
 
   /**

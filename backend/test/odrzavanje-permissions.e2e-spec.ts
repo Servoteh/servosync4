@@ -703,5 +703,22 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         }).expect(403);
       },
     );
+    /**
+     * 🔴 DRUGA POLOVINA ISTOG NALAZA: za rolu KOJA SME da piše niko nije merio
+     * šta se dešava sa besmislenim parametrom — a upravo se tu ponašanje
+     * promenilo skidanjem pipe-a. Ovde se tvrdi da parametar stiže do servisa
+     * SIROV (bez 400 od pipe-a i bez tihe normalizacije); da oblik završi kao
+     * 422, a NIKAD 500, pinuje `odrzavanje-upisi-vozila-3-0.spec.ts`
+     * („besmislen identifikator = 422, NIKAD 500") — tamo je pravi servis.
+     */
+    it("PATCH /maintenance/profiles/:id → admin sa ne-uuid parametrom stiže do servisa (nema pipe 400)", async () => {
+      svcMock.updateProfile.mockClear();
+      await patch("/maintenance/profiles/4711", "admin", {
+        fullName: "X",
+      }).expect(200);
+      expect(svcMock.updateProfile).toHaveBeenCalledTimes(1);
+      const [, prosledjenId] = svcMock.updateProfile.mock.calls[0] as unknown[];
+      expect(prosledjenId).toBe("4711");
+    });
   });
 });

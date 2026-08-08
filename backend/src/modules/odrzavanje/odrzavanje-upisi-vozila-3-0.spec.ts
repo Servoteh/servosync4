@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   NotFoundException,
   ServiceUnavailableException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { OdrzavanjeService } from "./odrzavanje.service";
@@ -1046,6 +1047,170 @@ describe("§7.1 upisi vozila/vozača/zaliha pod ODRZAVANJE_IZVOR=3.0", () => {
     });
   });
 
+  /* ══════════════════════════════════════════════════════════════════════
+   * ČETIRI GEJTA KOJA NIJEDAN TEST NIJE DRŽAO
+   *
+   * Protivnička provera je nad ovim prepisom pustila mutacije prava i
+   * IZMERILA da četiri od njih PREŽIVE svih 431 zelenih testova — dakle da
+   * je sadržaj gejta bio tačan slučajno, a ne pinovano. Svaki test ispod
+   * pada ako se odgovarajući gejt zameni širim (ili ukine), i svaki nosi
+   * POZITIVNU kontrolu, da „403 na sve" ne prođe kao dokaz.
+   *
+   * Sve četiri asimetrije su izmerene na ŽIVIM sy15 politikama (`pg_policies`,
+   * 08.08.2026) — ovo su prepisi, ne procene.
+   * ══════════════════════════════════════════════════════════════════════ */
+  describe("🔴 asimetrije prava koje se NE VIDE iz imena metode", () => {
+    /**
+     * `maint_assets_update` = `maint_is_erp_admin() ∨ chief/admin` — BEZ
+     * `menadzment`/`magacioner`, iako oni smeju SVE ostalo oko sredstva
+     * (detalji, gume, arhiviranje). Prepis zato mora `canWriteCatalog`, a
+     * `canWriteStock` bi menadžmentu i magacioneru dao da menja naziv, status,
+     * lokaciju i odgovornog na BILO KOM sredstvu.
+     */
+    it("`patchAssetCore`: `menadzment` (i `magacioner`) NE smeju, `chief` sme", async () => {
+      for (const rola of ["menadzment", "magacioner"]) {
+        const d = postavi({ rola });
+        const assetId = dodajVozilo(d);
+        await expect(
+          d.svc.patchAssetCore(JA, assetId, { name: "Preimenovano" }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        // Kontrola da je stao na GEJTU, a ne na nečemu ranijem: red je netaknut.
+        expect(d.maintAsset.redovi[0].name).toBe("Kombi");
+      }
+
+      // Pozitivna kontrola: `chief` (bez ijedne ERP role iz write kruga) sme.
+      const ok = postavi({ rola: "monter", maintRola: "chief" });
+      const assetId = dodajVozilo(ok);
+      await ok.svc.patchAssetCore(JA, assetId, { name: "Preimenovano" });
+      expect(ok.maintAsset.redovi[0].name).toBe("Preimenovano");
+    });
+
+    /**
+     * `maint_pv_insert`/`maint_pv_update` IMAJU tehničara, `maint_pv_delete`
+     * ga NEMA. Prepis koji na brisanju upotrebi `mozePisatiVezuDeoVozilo`
+     * (izraz za insert/update) daje tehničaru da ODVEŽE deo sa vozila —
+     * evidencija tiho gubi red, a nijedna lista ne prijavi grešku.
+     */
+    it("`unlinkPartFromVehicle`: tehničar sme da VEŽE i MENJA vezu, ali NE da je odveže", async () => {
+      const d = postavi({ rola: "monter", maintRola: "technician" });
+      const assetId = dodajVozilo(d);
+
+      // Pozitivna kontrola 1 — insert (`maint_pv_insert` ima tehničara).
+      await d.svc.linkPartToVehicle(JA, assetId, {
+        clientEventId: cid(61),
+        partId: "deo-1",
+      });
+      expect(d.maintPartVehicle.redovi).toHaveLength(1);
+
+      // Pozitivna kontrola 2 — update (`maint_pv_update` takođe ima tehničara).
+      await d.svc.updatePartVehicleLink(JA, assetId, "deo-1", { qtyMin: 3 });
+      expect(d.maintPartVehicle.redovi[0]).toMatchObject({ qtyMin: 3 });
+
+      // 🔴 Brisanje NE (`maint_pv_delete` je bez tehničara) — i veza OSTAJE.
+      await expect(
+        d.svc.unlinkPartFromVehicle(JA, assetId, "deo-1"),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(d.maintPartVehicle.redovi).toHaveLength(1);
+    });
+
+    /**
+     * `maint_booking_update` ima granu `created_by = uid()` („moja rezervacija
+     * je moja"), a `maint_booking_delete` je NEMA. Prepis koji na brisanju
+     * upotrebi `canUpdateBooking` daje operateru da OBRIŠE svoju rezervaciju —
+     * a u sy15 je smeo samo da je otkaže (status), ne i da je ukloni iz kalendara.
+     */
+    it("`deleteBooking`: operater menja SVOJU rezervaciju, ali je NE briše", async () => {
+      const d = postavi({ rola: "monter", maintRola: "operator" });
+      const assetId = dodajVozilo(d);
+      d.maintVehicleBooking.redovi.push({
+        bookingId: "rez-moja",
+        assetId,
+        createdBy: 7, // = pozivalac
+        status: "planirana",
+      });
+
+      // Pozitivna kontrola: izmena SVOJE rezervacije prolazi.
+      await d.svc.updateBooking(JA, "rez-moja", { purpose: "teren" });
+      expect(d.maintVehicleBooking.redovi[0]).toMatchObject({
+        purpose: "teren",
+      });
+
+      // 🔴 Brisanje SVOJE rezervacije NE prolazi — i red OSTAJE u kalendaru.
+      await expect(d.svc.deleteBooking(JA, "rez-moja")).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(d.maintVehicleBooking.redovi).toHaveLength(1);
+    });
+
+    /**
+     * `maint_documents_update`/`_delete` su ČISTA vidljivost
+     * (`maint_document_visible(entity_type, entity_id)`) — bez role-gejta. To
+     * znači da brana NIJE „ko sme da piše" nego „šta uopšte vidiš": bez
+     * `assertExistingDocumentVisible30` korisnik menja i soft-briše dokument
+     * TUĐEG vozača, koga u listi nikad nije video. Vozačka dokumenta su PII.
+     */
+    it("dokumenti: bez vidljivosti nema ni izmene ni brisanja (tuđi vozač)", async () => {
+      const d = postavi({ rola: "proizvodni_radnik" });
+      // Vozač koji NIJE pozivalac + vozač koji jeste (pozitivna kontrola).
+      d.maintDriver.redovi.push(
+        { driverId: "voz-tudji", fullName: "Pera", authUserId: 99 },
+        { driverId: "voz-moj", fullName: "Ja", authUserId: 7 },
+      );
+      d.maintDocument.redovi.push(
+        {
+          documentId: "dok-tudji",
+          entityType: "driver",
+          entityId: "voz-tudji",
+          storagePath: "documents/driver/voz-tudji/a.pdf",
+          category: "vozacka",
+          deletedAt: null,
+        },
+        {
+          documentId: "dok-moj",
+          entityType: "driver",
+          entityId: "voz-moj",
+          storagePath: "documents/driver/voz-moj/b.pdf",
+          category: "vozacka",
+          deletedAt: null,
+        },
+      );
+      removeSpy.mockClear();
+
+      // Kontrola da pozivalac zaista NEMA `canReadAllDrivers` — inače bi ovaj
+      // test merio nešto drugo (npr. da mu fali profil).
+      expect(
+        d.authz.canReadAllDrivers({
+          userId: 7,
+          erpRoles: new Set(["proizvodni_radnik"]),
+          profileRole: null,
+          assignedMachineCodes: [],
+        }),
+      ).toBe(false);
+
+      await expect(
+        d.svc.updateDocument(JA, "dok-tudji", { category: "podmetnuto" }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(d.maintDocument.redovi[0].category).toBe("vozacka");
+
+      await expect(
+        d.svc.deleteDocument(JA, "dok-tudji"),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(d.maintDocument.redovi[0].deletedAt).toBeNull();
+      // 🔴 Bajtovi u sy15 storage-u se NE brišu na odbijen zahtev.
+      expect(removeSpy).not.toHaveBeenCalled();
+
+      // Pozitivna kontrola: SVOJ vozački dokument sme i da menja i da obriše.
+      await d.svc.updateDocument(JA, "dok-moj", { category: "lekarsko" });
+      expect(d.maintDocument.redovi[1].category).toBe("lekarsko");
+      await d.svc.deleteDocument(JA, "dok-moj");
+      expect(d.maintDocument.redovi[1].deletedAt).toBeInstanceOf(Date);
+      expect(removeSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        "documents/driver/voz-moj/b.pdf",
+      );
+    });
+  });
+
   describe("storage: šema putanje se NE menja (bajtovi ostaju u sy15)", () => {
     it("foto vozila ide na `documents/asset/<assetId>/…`, kao i pre preklopa", async () => {
       const d = postavi();
@@ -1158,6 +1323,138 @@ describe("pod ODRZAVANJE_IZVOR=sy15 (podrazumevano) upisi ostaju netaknuti", () 
     // (dupla primena bi udvostručila svako kretanje zaliha).
     expect(spy).not.toHaveBeenCalled();
     expect(d.maintPart.redovi).toHaveLength(0);
+  });
+
+  /**
+   * 🔴 REGRESIJA KOJU JE OVA GRANA UMALO PUSTILA NA PRODUKCIJU.
+   *
+   * `ParseUUIDPipe` je skinut sa `PATCH maintenance/profiles/:id`, a `@IsUUID()`
+   * zamenjen regexom koji prima i broj — oboje NUŽNO, jer je `user_id` uuid u
+   * sy15 a `users.id` (Int) u 3.0. Posledica pod PODRAZUMEVANIM prekidačem
+   * (sy15 = produkcija danas): besmislen parametar više ne pada na pipe sa 400,
+   * nego stigne do upita nad `uuid` kolonom i vrati se kao Prisma `P2023` /
+   * PG `22P02` — koje `rethrowSy15` nije poznavao, pa je korisnik dobijao **500**.
+   *
+   * BACKEND_RULES §6: 500 je rezervisan za NEOČEKIVANO. Neispravan oblik ulaza
+   * to nije.
+   */
+  describe("🔴 besmislen identifikator = 422, NIKAD 500", () => {
+    /** `withUserRls` koji pusti telo nad `tx`-om koji odmah baci zadatu grešku. */
+    function sy15Pukne(
+      d: ReturnType<typeof postavi>,
+      greska: unknown,
+      { erpAdmin = true }: { erpAdmin?: boolean } = {},
+    ) {
+      d.withUserRls.mockImplementation(
+        async (_e: string, fn: (t: unknown) => Promise<unknown>) =>
+          fn({
+            $queryRaw: jest.fn().mockResolvedValue([{ ok: erpAdmin }]),
+            maintUserProfile: {
+              count: jest.fn().mockRejectedValue(greska),
+              updateMany: jest.fn(),
+              findUnique: jest.fn(),
+            },
+          }),
+      );
+    }
+
+    it("Prisma `P2023` (ne-uuid u uuid koloni) → 422", async () => {
+      const d = postavi();
+      sy15Pukne(
+        d,
+        new Prisma.PrismaClientKnownRequestError(
+          "Inconsistent column data: Error creating UUID, invalid character",
+          { code: "P2023", clientVersion: "6.19.3" },
+        ),
+      );
+
+      const p = d.svc.updateProfile(JA, "nije-uuid", { fullName: "X" });
+      await expect(p).rejects.toBeInstanceOf(UnprocessableEntityException);
+      // Sirova Prisma poruka NE ide korisniku (nosi ime modela i kolone).
+      await expect(p).rejects.not.toThrow(/Inconsistent column data/);
+    });
+
+    it("sirov PG `22P02` (invalid input syntax) → 422", async () => {
+      const d = postavi();
+      sy15Pukne(
+        d,
+        Object.assign(new Error('invalid input syntax for type uuid: "123"'), {
+          code: "22P02",
+        }),
+      );
+      await expect(
+        d.svc.updateProfile(JA, "123", { fullName: "X" }),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("isti kvar bez strukturnog koda (samo u poruci konektora) → i dalje 422", async () => {
+      const d = postavi();
+      sy15Pukne(
+        d,
+        new Error(
+          'ERROR: invalid input syntax for type uuid: "nije-uuid" (ConnectorError)',
+        ),
+      );
+      await expect(
+        d.svc.updateProfile(JA, "nije-uuid", { fullName: "X" }),
+      ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    });
+
+    it("nepoznata greška OSTAJE 500 — mapper se nije proširio preko mere", async () => {
+      const d = postavi();
+      sy15Pukne(d, new Error("connection terminated unexpectedly"));
+      await expect(
+        d.svc.updateProfile(JA, "nije-uuid", { fullName: "X" }),
+      ).rejects.not.toBeInstanceOf(UnprocessableEntityException);
+    });
+  });
+});
+
+/**
+ * Drugi kraj ISTOG šava: pod `3.0` oblik presuđuje servis, a `users.id` je PG
+ * `int4`. Regex `[0-9]+` bez gornje granice bi propustio broj koji Prisma ne
+ * ume da smesti u `Int` → opet 500 umesto 422, samo iz druge baze.
+ */
+describe("🔴 pod 3.0: broj van opsega `int4` je 422, ne 500", () => {
+  withIzvor("3.0");
+
+  it("`updateProfile` sa 20-cifrenim brojem → 422", async () => {
+    const d = postavi();
+    await expect(
+      d.svc.updateProfile(JA, "99999999999999999999", { fullName: "X" }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it("`createDriver` sa `authUserId` van opsega → 422, i vozač NE nastaje", async () => {
+    const d = postavi();
+    await expect(
+      d.svc.createDriver(JA, {
+        clientEventId: cid(71),
+        fullName: "Pera",
+        isInternal: true,
+        authUserId: "2147483648", // int4 max + 1
+        driversLicenseNumber: "12345",
+        driversLicenseCategories: ["B"],
+        jmbg: "0101990710011",
+      }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(d.maintDriver.redovi).toHaveLength(0);
+  });
+
+  it("`patchAssetCore` sa `responsibleUserId` = 0 → 422 (id-jevi kreću od 1)", async () => {
+    const d = postavi();
+    const assetId = dodajVozilo(d);
+    await expect(
+      d.svc.patchAssetCore(JA, assetId, { responsibleUserId: "0" }),
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(d.maintAsset.redovi[0].responsibleUserId).toBeUndefined();
+  });
+
+  it("ispravan id i dalje prolazi (kontrola da granica nije previše uska)", async () => {
+    const d = postavi();
+    const assetId = dodajVozilo(d);
+    await d.svc.patchAssetCore(JA, assetId, { responsibleUserId: "7" });
+    expect(d.maintAsset.redovi[0].responsibleUserId).toBe(7);
   });
 });
 
