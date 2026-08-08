@@ -171,7 +171,25 @@ export const FANOUT_NO_RECIPIENTS = "FANOUT_NO_RECIPIENTS";
  */
 function statusVaziKaoUpisan(): Prisma.MaintNotificationLogWhereInput[] {
   return [
-    { status: { in: ["queued", "sent"] } },
+    // `sent` je STVARNO otišao — priznanje važi zauvek, bez prozora.
+    { status: "sent" },
+    // 🔴 `queued` NIJE trajno stanje, i prozor mu je OBAVEZAN: dispečer ima DVA
+    // izlaza iz reda čekanja, a ne jedan.
+    //
+    // Drugi izlaz (onaj koji je promakao): `dispatchDequeue` pri claim-u postavlja
+    // `status='queued'` i `attempts+1`, ali NE pomera `next_attempt_at` (namerno,
+    // v. tamo). Ako `port.fanout` BACI, `dispatchMaint` to uloguje i prebroji, ali
+    // NE zove `markFailed` — red ostaje `queued` sa rokom u prošlosti, pa ga
+    // sledeći tik uzima ponovo. Posle `MAINT_MAX_ATTEMPTS` tikova (radnik je na
+    // 5 min, backoff niko nije postavio → ~40 min) red je `queued` sa
+    // `attempts = MAINT_MAX_ATTEMPTS`: `dispatchDequeue` ga NIKAD više ne uzme.
+    //
+    // Bez prozora ovde, takav red bi zauvek priznavao rok kao „upisan" — dakle
+    // PROLAZAN otkaz (delimičan deploy, pool/statement timeout, restart baze)
+    // pretvorio bi se u TRAJAN i NEVIDLJIV gubitak SVIH rokova, i to za ~40 min.
+    // Ishod je bajt-identičan onome zbog čega je prozor i uveden: rok se ne javi
+    // nikad, a od sledećeg dana ulazi u `skipped`, nerazlučivo od isporučenog.
+    { status: "queued", attempts: { lt: MAINT_MAX_ATTEMPTS } },
     {
       status: "failed",
       error: { startsWith: FANOUT_NO_RECIPIENTS },

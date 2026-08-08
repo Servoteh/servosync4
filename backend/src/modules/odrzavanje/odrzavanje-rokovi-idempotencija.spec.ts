@@ -220,6 +220,21 @@ function tikDispecera(red: Red): void {
     "FANOUT_NO_RECIPIENTS: nijedan aktivan profil (chief) sa telefonom u maint_user_profiles";
 }
 
+/**
+ * DRUGI izlaz dispečera iz reda čekanja — onaj koji je promakao dva kruga.
+ *
+ * `dispatchDequeue` pri claim-u postavlja `queued` + `attempts+1` i NE pomera
+ * `next_attempt_at`. Kad `port.fanout` BACI, `dispatchMaint` uloguje i prebroji,
+ * ali NE zove `markFailed` — red ostaje `queued` sa rokom u prošlosti, pa ga
+ * sledeći tik uzima ponovo. Posle plafona je `queued` sa `attempts` na plafonu:
+ * dispečer ga NIKAD više ne uzme, iako status kaže „u redu čekanja".
+ */
+function tikDispeceraSaPadom(red: Red): void {
+  if (red.attempts >= MAINT_MAX_ATTEMPTS) return;
+  red.attempts += 1;
+  red.status = "queued"; // markFailed NIJE pozvan — to je suština
+}
+
 /** Redovi koje `dispatchDequeue` još sme da uzme (živi pokušaji). */
 function zivih(outbox: Red[]): number {
   return outbox.filter((r) => r.attempts < MAINT_MAX_ATTEMPTS).length;
@@ -479,5 +494,65 @@ describe("maint-deadlines — rok upisan JUČE se DANAS ne upisuje ponovo", () =
         AND: [{ payload: { path: ["deadline_kind"], equals: "insurance" } }],
       }),
     ).toBe(false);
+  });
+});
+
+describe("🔴 drugi izlaz dispečera: `queued` na plafonu je TERMINALNO stanje", () => {
+  it("prolazan pad fanouta NE SME da trajno blokira rok (prozor i na `queued`)", async () => {
+    const { db } = bazaSaJednimVozilom();
+    const s = svc(db);
+
+    expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
+      enqueued: 1,
+      skipped: 0,
+    });
+
+    // Radnik radi NORMALNO, ali fanout baca (delimičan deploy, pool/statement
+    // timeout, restart baze). `markFailed` NIJE pozvan — red ostaje `queued`.
+    for (let i = 0; i < MAINT_MAX_ATTEMPTS; i++)
+      tikDispeceraSaPadom(db.outbox[0]);
+    expect(db.outbox[0].status).toBe("queued");
+    expect(db.outbox[0].attempts).toBe(MAINT_MAX_ATTEMPTS);
+    // Dispečer ga više ne uzima — red je mrtav.
+    expect(zivih(db.outbox)).toBe(0);
+
+    // 🔴 SUŠTINA: rok se MORA upisati ponovo. Bez prozora na `queued` ovde bi
+    // stajalo `{ enqueued: 0, skipped: 1 }` — prolazan otkaz od ~40 minuta
+    // pretvorio bi se u TRAJAN i nevidljiv gubitak roka, a od sledećeg dana bi
+    // ulazio u `skipped`, nerazlučivo od uredno isporučenog.
+    expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
+      enqueued: 1,
+      skipped: 0,
+    });
+    expect(db.outbox).toHaveLength(2);
+    // Nov red je svež i živ; stari mrtav ostaje vidljiv kao trag.
+    expect(zivih(db.outbox)).toBe(1);
+    expect(db.outbox[1].attempts).toBe(0);
+  });
+
+  it("`queued` koji JOŠ ima pokušaja i dalje blokira (ne pravi duplikat)", async () => {
+    const { db } = bazaSaJednimVozilom();
+    const s = svc(db);
+    await s.checkVehicleDeadlines(db as never, 30);
+    // Samo jedan neuspeo pokušaj — red je još živ.
+    tikDispeceraSaPadom(db.outbox[0]);
+    expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
+      enqueued: 0,
+      skipped: 1,
+    });
+    expect(db.outbox).toHaveLength(1);
+  });
+
+  it("`sent` blokira ZAUVEK — nema prozora, jer je stvarno otišao", async () => {
+    const { db } = bazaSaJednimVozilom();
+    const s = svc(db);
+    await s.checkVehicleDeadlines(db as never, 30);
+    db.outbox[0].status = "sent";
+    db.outbox[0].attempts = MAINT_MAX_ATTEMPTS; // plafon NE sme da ga otvori
+    expect(await s.checkVehicleDeadlines(db as never, 30)).toEqual({
+      enqueued: 0,
+      skipped: 1,
+    });
+    expect(db.outbox).toHaveLength(1);
   });
 });
