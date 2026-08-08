@@ -28,6 +28,10 @@ import {
   type IdempotencyTx,
 } from "../../common/idempotency/idempotency.service";
 import { PrismaService } from "../../prisma/prisma.service";
+import {
+  jeSy15Uuid,
+  prevediSy15UuidUId30,
+} from "../../common/identity/sy15-user-id";
 import { AiProviderService } from "../../common/ai/ai-provider.service";
 import {
   AI_TASK,
@@ -3881,27 +3885,42 @@ export class OdrzavanjeService {
   }
 
   /**
-   * 🔴 IDENTITET NIJE PRENET: DTO polja koja nose korisnika (`responsibleUserId`,
+   * IDENTITET SE SADA PREVODI. DTO polja koja nose korisnika (`responsibleUserId`,
    * `assignedTo`) su `@IsUUID()` — to je sy15 `auth.users.id`. U 3.0 je ista
-   * kolona `Int` (`users.id`), a `users` NEMA kolonu sa sy15 uuid-om (izmereno:
-   * prenosna skripta ih je razrešila po mejlu, van runtime-a).
+   * kolona `Int` (`users.id`), pa vrednost mora da se prevede.
    *
-   * Zato takva vrednost pod `3.0` GLASNO pada umesto da se tiho odbaci — tiho
-   * odbacivanje bi značilo „sačuvao sam nalog, ali dodela je nestala". Polje koje
-   * klijent NIJE poslao (`undefined`) prolazi netaknuto, pa 95% upisa radi.
+   * Do migracije `20260808100000_users_sy15_user_id_prevod_identiteta` prevod NIJE
+   * BIO MOGUĆ: `users` nije imao NIJEDNU kolonu sa sy15 uuid-om, pa je ova metoda
+   * pod `3.0` GLASNO padala sa 422 na svih 5 mesta (createMachine, updateMachine,
+   * updateIncident, updateWorkOrder ×2). To je bila svesna odluka — tiho
+   * odbacivanje bi značilo „nalog sačuvan, dodela nestala" — ali je obarala
+   * stvaran radni tok: dodelu naloga čoveku i odgovornog za mašinu.
+   *
+   * Sada uuid ide kroz `users.sy15_user_id` (nullable, UNIQUE; popuna po mejlu je
+   * u istoj migraciji, izmereno 61/62 poklapanja).
+   *
+   * 🔴 Kad parnjaka NEMA, i dalje se PADA — i to sa imenovanim uuid-om. `null` bi
+   * upisao red bez dodele i ne bi ni jednom greškom najavio da je čovek ispario;
+   * to je tačno onaj kvar koji je stari 422 sprečavao, pa ostaje sprečen.
+   *
+   * Nepromenjeno: numerička vrednost prolazi kao i pre (`users.id` je već 3.0
+   * oblik), a polje koje klijent NIJE poslao (`undefined`) prolazi netaknuto.
    */
-  private id30(
+  private async id30(
+    db: OdrzavanjeTx,
     v: string | undefined,
     polje: string,
-  ): number | null | undefined {
+  ): Promise<number | null | undefined> {
     if (v === undefined) return undefined;
     if (v === null || v === "") return null;
     if (/^\d+$/.test(v)) return Number(v);
-    throw new UnprocessableEntityException(
-      `Polje „${polje}" nosi sy15 uuid (${v}), a pod ODRZAVANJE_IZVOR=3.0 se očekuje ` +
-        "numerički `users.id`. Prevod identiteta stiže sa korakom 3 seobe " +
-        "(docs/SEOBA_ODRZAVANJA_2026-08-06.md); do tada ovo polje radi samo pod `sy15`.",
-    );
+    if (!jeSy15Uuid(v)) {
+      throw new UnprocessableEntityException(
+        `Polje „${polje}" („${v}") nije ni 3.0 \`users.id\` (broj) ni sy15 uuid — ` +
+          "izaberi korisnika iz liste.",
+      );
+    }
+    return prevediSy15UuidUId30(db, v, polje);
   }
 
   // ---------- Mašine: katalog CRUD / arhiva / rename / import / hard-delete ----------
@@ -4056,12 +4075,16 @@ export class OdrzavanjeService {
         // 🔴 BEFORE INSERT triger `maint_machines_ensure_asset` — `asset_id` je
         // NOT NULL i u 3.0 ga NEMA ko drugi da popuni (triger NIJE prenet u bazu).
         const name = dto.name.trim();
+        // Prevod identiteta JEDNOM: `maint_assets` ogledalo i `maint_machines` red
+        // moraju dobiti ISTU vrednost, a dva poziva bi bila i dva upita.
+        const odgovorni =
+          (await this.id30(tx, dto.responsibleUserId, "responsibleUserId")) ??
+          null;
         const assetId = await this.fns.machineEnsureAsset(tx, {
           assetId: null,
           machineCode: code,
           name,
-          responsibleUserId:
-            this.id30(dto.responsibleUserId, "responsibleUserId") ?? null,
+          responsibleUserId: odgovorni,
           manufacturer: dto.manufacturer ?? null,
           model: dto.model ?? null,
           serialNumber: dto.serialNumber ?? null,
@@ -4085,8 +4108,7 @@ export class OdrzavanjeService {
             notes: dto.notes ?? null,
             tracked: dto.tracked !== false,
             source: dto.source ?? "manual",
-            responsibleUserId:
-              this.id30(dto.responsibleUserId, "responsibleUserId") ?? null,
+            responsibleUserId: odgovorni,
             updatedBy: scope.userId,
             assetId,
           },
@@ -4162,6 +4184,14 @@ export class OdrzavanjeService {
         this.gejt(this.az.canWriteCatalog(scope), "maint_machines_update");
         const exists =
           (await tx.maintMachine.count({ where: { machineCode: code } })) > 0;
+        // 🔴 Prevod PRE `updateMany`: `await` unutar objekta koji se gradi bio bi
+        // ispravan, ali bi neuspeo prevod pao POSLE dela sastavljenog patch-a —
+        // ovako se ne dodirne nijedan red dok identitet nije razrešen.
+        const noviOdgovorni = await this.id30(
+          tx,
+          dto.responsibleUserId,
+          "responsibleUserId",
+        );
         const { count } = await tx.maintMachine.updateMany({
           where: { machineCode: code },
           data: {
@@ -4188,13 +4218,8 @@ export class OdrzavanjeService {
             ...(dto.weightKg !== undefined ? { weightKg: dto.weightKg } : {}),
             ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
             ...(dto.tracked !== undefined ? { tracked: dto.tracked } : {}),
-            ...(dto.responsibleUserId !== undefined
-              ? {
-                  responsibleUserId: this.id30(
-                    dto.responsibleUserId,
-                    "responsibleUserId",
-                  ),
-                }
+            ...(noviOdgovorni !== undefined
+              ? { responsibleUserId: noviOdgovorni }
               : {}),
             updatedBy: scope.userId,
             updatedAt: new Date(),
@@ -5443,7 +5468,11 @@ export class OdrzavanjeService {
             "maint_incidents_update (close-gate)",
           );
         }
-        const noviAssignedTo = this.id30(dto.assignedTo, "assignedTo");
+        const noviAssignedTo = await this.id30(
+          tx,
+          dto.assignedTo,
+          "assignedTo",
+        );
         await tx.maintIncident.update({
           where: { id },
           data: {
@@ -5861,7 +5890,11 @@ export class OdrzavanjeService {
           "maint_wo_update",
         );
 
-        const noviAssignedTo = this.id30(dto.assignedTo, "assignedTo");
+        const noviAssignedTo = await this.id30(
+          tx,
+          dto.assignedTo,
+          "assignedTo",
+        );
         // 🔴 BEFORE UPDATE `maint_wo_log_field_changes` — PRE upisa, sa starim
         // vrednostima. Bez njega nalog menja status bez ijednog reda u
         // `maint_wo_events` (u 3.0 taj trigger NE POSTOJI).
