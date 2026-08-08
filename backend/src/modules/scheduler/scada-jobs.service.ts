@@ -31,15 +31,23 @@ const STALE_AFTER_MINUTES = 5;
 const STALE_SEVERITY = 2;
 
 /**
- * Koliko dana uzoraka trenda se cuva. 90 = `SCADA_HISTORY_RETENTION_DAYS` default iz
- * bridge/src/config.js, tj. TACNO ono sto sy15 radi danas.
+ * Koliko dana uzoraka trenda se cuva.
  *
- * 🔴 IZMERENO 07.08.2026: u sy15 ova retencija JOS NIJE NISTA OBRISALA — najstariji
- * uzorak je od 02.07.2026 (~36 dana), a rok je 90. Znaci prvi stvarni rez tek predstoji.
- * Vrednost se NE menja pri seobi: seoba i promena roka cuvanja su dve odluke, i mesanje
- * bi znacilo da se rok promenio a niko to nije trazio.
+ * 🔴 60 = ODLUKA VLASNIKA (Nenad, 07.08.2026): *„ta istorija nam ne treba, posebno ne
+ * tolika i da opterecuje server — zadnjih dva meseca uvek da bude aktuelno u nasoj bazi
+ * mi je sasvim OK"*. Ranije je stajalo 90 (nasledjeno iz `SCADA_HISTORY_RETENTION_DAYS`
+ * u bridge/src/config.js, tj. ono sto je sy15 radila) — pri seobi je namerno ostavljeno
+ * netaknuto da se dve odluke ne mesaju, a sada se sprovodi trazeni rok.
+ *
+ * IZMERENO 08.08.2026 na 3.0: **67.850 redova / 16,6 MB dnevno**. Odatle:
+ *   90 dana ≈ 6,1 mil. redova ≈ 1,5 GB
+ *   60 dana ≈ 4,1 mil. redova ≈ 1,0 GB   ← ovo
+ * Razlika je ~500 MB trajnog zauzeca, sto je i bio razlog odluke.
+ *
+ * Istorija iz sy15 NIJE prenosena (runbook §0), pa se prozor puni od 07.08.2026 —
+ * prvi stvarni rez pada oko 06.10.2026.
  */
-const HISTORY_RETENTION_DAYS = 90;
+const HISTORY_RETENTION_DAYS = 60;
 
 @Injectable()
 export class ScadaJobsService {
@@ -122,7 +130,7 @@ export class ScadaJobsService {
       key: SCADA_RETENTION_JOB_KEY,
       description: `Retention: scada_history > ${HISTORY_RETENTION_DAYS} dana`,
       schedule: { kind: "daily", at: "03:40" },
-      // Prvi rez posle seobe brise ~3,2 mil. redova odjednom (90 dana × ~3.540/h) i
+      // Prvi rez posle seobe brise ~4,1 mil. redova odjednom (60 dana × ~67.850/dan) i
       // moze da traje duze od podrazumevanih 10 min — bez ovoga bi scheduler smatrao
       // posao zaglavljenim i pokrenuo ga drugi put PREKO prvog.
       staleAfterMinutes: 60,
