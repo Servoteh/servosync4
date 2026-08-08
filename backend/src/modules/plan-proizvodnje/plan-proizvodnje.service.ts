@@ -732,18 +732,50 @@ export class PlanProizvodnjeService {
       );
     }
 
-    // ── 078/26 FAZA A: isti pomak i u `plan_proizvodnje_termini` ────────────────
+    // ── 078/26: isti pomak i u `plan_proizvodnje_termini` ───────────────────────
+    //
+    // 🔴 ODLUKA (Nenad 08.08.2026): kad lanac pomeri poziciju koja ima VIŠE termina,
+    // pomeraju se SVI, istim pomakom. Razlog: „uslov" (veza sa prethodnikom) je
+    // osobina POZICIJE, a ne pojedinačnog termina — pozicija u celini kasni ili rani.
+    // Selektivno pomeranje bi razbilo redosled unutar same operacije („5 pa 3 pa 2"
+    // prestalo bi da bude taj redosled), a planer nigde ne bi video zašto.
+    //
+    // 🔴 Zašto se termini pomeraju SAMI, a ne prepisuju sa overlay-a: overlay nosi
+    // JEDNU vrednost, pa bi prepis sve termine pozicije slepio na isti datum. Svaki
+    // termin zato pomera SVOJU vrednost — isti izraz (`shiftExpr`) koji je maločas
+    // pomerio overlay, samo nad `t.planned_start_at`.
     //
     // 🔴 Sa SOPSTVENOM brojačkom branom. Bez nje bi podupis bio NEM: odgovor se gradi
     // iz `RETURNING`-a overlay-a, pa bi FE optimistički prerenderovao barove na nova
     // vremena dok bi termini držali stara — laž na ekranu, najgora klasa u ovom modulu.
-    //
-    // Jedan iskaz koji i LEČI i pomera: `ON CONFLICT` popravlja red koji iz bilo kog
-    // razloga nedostaje (npr. overlay nastao pre ove faze), umesto da kaskada — inače
-    // ispravna i korisniku vidljiva radnja — pukne zbog knjigovodstva koje niko ne čita.
-    // Vremena se uzimaju sa VEĆ AŽURIRANOG overlay-a, pa se ne mogu razići sa njim.
-    // `kolicina` i `assigned_machine_code` se NE diraju (`shiftExpr` pomera samo vreme).
-    const preslikano = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+    const ocekivanoTermina = await tx.planProizvodnjeTermin.count({
+      where: { OR: parovi.map((p) => ({ workOrderId: p.wo, lineId: p.line })) },
+    });
+    const pomereniTermini = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+      UPDATE plan_proizvodnje_termini t
+         SET planned_start_at = ${this.shiftExpr(Prisma.raw("t.planned_start_at"), delta)},
+             planned_end_at   = ${this.shiftEndExpr(
+               Prisma.raw("t.planned_start_at"),
+               Prisma.raw("t.planned_end_at"),
+               delta,
+             )},
+             updated_by = ${email},
+             updated_at = now()
+       WHERE (t.work_order_id, t.line_id) IN (${this.pairsSql(parovi)})
+      RETURNING t.id::text AS id`);
+
+    if (pomereniTermini.length !== ocekivanoTermina) {
+      throw new InternalServerErrorException(
+        `Kaskada (termini): očekivano ${ocekivanoTermina} termina, pomereno ${pomereniTermini.length}.`,
+      );
+    }
+
+    // LEČENJE: pozicija koja na overlay-u ima termin a u tabeli nema nijedan red
+    // (npr. overlay nastao pre 078/26). Uzima se VEĆ POMERENA vrednost sa overlay-a,
+    // pa se NE sme pomerati drugi put. Bez ovoga bi kaskada — inače ispravna i
+    // korisniku vidljiva radnja — pukla zbog knjigovodstva koje niko ne čita.
+    // `ON CONFLICT` se NE koristi: posle Faze B jedinstvenog indeksa više nema.
+    await tx.$executeRaw(Prisma.sql`
       INSERT INTO plan_proizvodnje_termini (
         overlay_id, work_order_id, line_id,
         planned_start_at, planned_end_at, planned_duration_minutes,
@@ -757,18 +789,8 @@ export class PlanProizvodnjeService {
         LEFT JOIN work_orders wo ON wo.id = o.work_order_id
        WHERE (o.work_order_id, o.line_id) IN (${this.pairsSql(parovi)})
          AND o.planned_start_at IS NOT NULL
-      ON CONFLICT (overlay_id) DO UPDATE
-        SET planned_start_at = EXCLUDED.planned_start_at,
-            planned_end_at   = EXCLUDED.planned_end_at,
-            updated_by       = EXCLUDED.updated_by,
-            updated_at       = now()
-      RETURNING id::text AS id`);
-
-    if (preslikano.length !== updated.length) {
-      throw new InternalServerErrorException(
-        `Kaskada (termini): pomereno ${updated.length} overlay redova, a preslikano ${preslikano.length}.`,
-      );
-    }
+         AND NOT EXISTS (
+           SELECT 1 FROM plan_proizvodnje_termini t2 WHERE t2.overlay_id = o.id)`);
 
     // (e) odgovor iz RETURNING-a + hash POSLE (računa se u JS-u, bez trećeg upita).
     return this.chainResponse(plan2, delta, updated);
