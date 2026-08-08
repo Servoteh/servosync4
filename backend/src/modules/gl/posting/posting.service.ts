@@ -14,6 +14,10 @@
  *   StockDocument.documentTypeCode  ──►  DocumentType.postingTemplate (=IDSeme)
  *     ──►  AccountingScheme (orderType)  ──►  AccountingSchemeLine[] (Konto + DefDug/DefPot nad A–Z)
  *       ──►  varMap = agregati A–Z sa StockDocumentItem[] (doc 43 §1, AUTORITATIVNO)
+ *              ⚠️ za vrste kod kojih PDV NE POSTOJI (višak sa popisa, međumagacinski
+ *              prenos, revers…) porez se NE RAČUNA — `pdv-po-vrsti-dokumenta.ts`
+ *         ──►  BRANA: vrsta proglašena neporeskom ne sme imati šemu sa PDV redom, inače
+ *              422 (`razilazenjeVrsteISeme` — takav red bi uvek bio nula i tiho ispao)
  *         ──►  BRANA: svaka stopa sa ne-nultim PDV-om mora imati red u šemi, inače 422
  *              (`assertSchemeCoversVat` — porez koji šema ne knjiži nestaje bez traga)
  *       ──►  za svaku liniju: evaluateExpression(defDebit/defCredit, varMap, prismaDecimalArith)
@@ -32,7 +36,7 @@
  */
 
 import { businessYear } from "../../../common/business-date";
-import { Injectable, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, Logger, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../../prisma/prisma.service";
 import { evaluateExpression } from "./expression-parser";
@@ -42,6 +46,14 @@ import {
   openItemFields,
   type OpenItemFields,
 } from "./ledger-line";
+import {
+  porukaPotisnutogPdva,
+  razilazenjeVrsteISeme,
+  slovaKojaSemaReferise,
+  vatSlotsFor,
+  vrstaNosiPdv,
+  type PotisnutPdv,
+} from "./pdv-po-vrsti-dokumenta";
 import { prismaDecimalArith } from "./prisma-decimal-arith";
 import {
   VAT_RATE_BY_CODE,
@@ -157,27 +169,14 @@ export class AlreadyPostedException extends Error {
 // KEPU); u finansijsko ulazi posredno, kroz nabavnu vrednost prodate robe pri sledećoj prodaji.
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PDV SLOTOVI PO SMERU DOKUMENTA — brana „šema nema red za tu stopu"
+// PDV SLOTOVI PO SMERU DOKUMENTA — izmešteni u `pdv-po-vrsti-dokumenta.ts`
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Slova koja nose STVARAN POREZ (onaj koji ulazi u knjigu i u PDV prijavu), razdvojena po
-// smeru dokumenta. NE ulaze J/K/V (PDV na kalkulativnu VP cenu): to je međurezultat
-// maloprodajne kalkulacije, ne poreska obaveza ni pretporez.
-//
-// Smer se bira po `DocumentType.isInbound` jer `aggregateDocAmounts` UVEK računa i ulazni i
-// izlazni PDV (v. `void isInbound` na kraju te metode) — na izlaznoj fakturi je i `D`
-// ne-nulto (osnovica × stopa nad nabavnom cenom), a nijedna izlazna šema ga ne referiše.
-// Provera bez razdvajanja po smeru bi zato odbila SVAKI izlazni dokument.
-const VAT_SLOTS_OUTBOUND = [
-  { letter: "P" as const, label: "opštom stopom (20 %)" },
-  { letter: "Q" as const, label: "sniženom stopom (10 %)" },
-  { letter: "W" as const, label: "poljoprivrednom stopom (8 %)" },
-];
-const VAT_SLOTS_INBOUND = [
-  { letter: "D" as const, label: "opštom stopom (20 %)" },
-  { letter: "E" as const, label: "sniženom stopom (10 %)" },
-  { letter: "U" as const, label: "poljoprivrednom stopom (8 %)" },
-];
+// `VAT_SLOTS_INBOUND` / `VAT_SLOTS_OUTBOUND` (slova koja nose STVARAN porez, razdvojena po
+// smeru dokumenta) su od 08.08.2026. u `./pdv-po-vrsti-dokumenta`, zajedno sa spiskom vrsta
+// kod kojih PDV ne postoji. Razlog je što isti spisak slova odgovara na DVA pitanja — „koji
+// slot brana čuva" i „koji slot se ne sme ni izračunati na neporeskoj vrsti" — pa dva
+// prepisa istog spiska ne smeju ni da postoje. Čita se kroz `vatSlotsFor(isInbound)`.
 
 type DocVarMap = Record<string, Prisma.Decimal>;
 
@@ -214,8 +213,17 @@ interface LedgerLineDraft {
   description: string | null;
 }
 
+/** Agregati dokumenta + trag o PDV-u koji NIJE nastao (neporeska vrsta). */
+interface DocAggregate {
+  amounts: DocAmounts;
+  /** `null` kad vrsta nosi PDV, ili kad nijedna stavka nema ne-nultu stopu. */
+  potisnutPdv: PotisnutPdv | null;
+}
+
 @Injectable()
 export class PostingEngineService {
+  private readonly logger = new Logger(PostingEngineService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -443,11 +451,33 @@ export class PostingEngineService {
       });
 
       // 4) varMap A–Z iz agregata robnih stavki (doc 43 §1). Sve već Decimal.
-      const amounts = this.aggregateDocAmounts(
+      //    Za vrste kod kojih PDV NE POSTOJI (`VRSTE_BEZ_PDV`) porez se ne računa uopšte —
+      //    v. blok uz `aggregateDocAmounts`.
+      const { amounts, potisnutPdv } = this.aggregateDocAmounts(
         doc,
         items,
         docType.isInbound ?? false,
       );
+
+      /**
+       * 4a) BRANA DA SE DVA OPISA ISTE STVARI NE RAZIĐU (08.08.2026).
+       * Vrsta je proglašena neporeskom, a šema ipak ima red za PDV slot: taj red bi UVEK
+       * bio nula (porez se ne računa) i `finalizeLedgerLines` bi ga ćutke odbacio, pa bi
+       * knjigovođa mislio da porez negde leže — a ne bi legao nigde. Ovo je tiha rupa
+       * SUPROTNOG smera od `assertSchemeCoversVat`, i zato ima svoju branu.
+       */
+      const razilazenje = razilazenjeVrsteISeme({
+        documentTypeCode: doc.documentTypeCode,
+        schemeId: scheme.id,
+        orderType: scheme.orderType,
+        schemeLines: scheme.lines,
+        isInbound: docType.isInbound ?? false,
+      });
+      if (razilazenje) {
+        throw new UnprocessableEntityException(
+          `Robni dokument ${docId}: ${razilazenje}`,
+        );
+      }
 
       // 4b) BRANA: šema mora imati red za SVAKU stopu koja se na dokumentu pojavila.
       this.assertSchemeCoversVat(
@@ -457,6 +487,19 @@ export class PostingEngineService {
         amounts,
         docType.isInbound ?? false,
       );
+
+      /**
+       * 4c) TRAG, NE ODBIJANJE (odluka 08.08.2026 — v. `PotisnutPdv`).
+       * Dokument neporeske vrste čije stavke ipak nose poresku tarifu se KNJIŽI (višak sa
+       * popisa je legitiman i mora da prođe; tarifa 20 % na artiklu je normalna), ali se
+       * činjenica upisuje u log sa iznosom koji bi porez bio. Ide POSLE brana — dokument
+       * koji ionako pada ne treba da ostavlja upozorenje o knjiženju koje se nije desilo.
+       */
+      if (potisnutPdv) {
+        this.logger.warn(
+          porukaPotisnutogPdva(docId, potisnutPdv, docType.isInbound ?? false),
+        );
+      }
 
       const varMap = this.buildDocVarMap(amounts);
 
@@ -717,20 +760,13 @@ export class PostingEngineService {
     amounts: DocAmounts,
     isInbound: boolean,
   ): void {
-    // Slova koja šema uopšte pominje. Tokenizer parsera prima promenljivu SAMO kao jedno
-    // veliko slovo A–Z (`expression-parser.ts`), pa je skeniranje znakova ovde potpuno:
-    // nema višeslovnih imena u kojima bi se slovo moglo sakriti.
-    const referenced = new Set<string>();
-    for (const line of scheme.lines) {
-      for (const expr of [line.defDebit, line.defCredit]) {
-        if (!expr) continue;
-        for (const ch of expr) {
-          if (ch >= "A" && ch <= "Z") referenced.add(ch);
-        }
-      }
-    }
+    // Slova koja šema uopšte pominje — skener je od 08.08.2026. u
+    // `pdv-po-vrsti-dokumenta.ts` (`slovaKojaSemaReferise`), da ga ova brana i brana
+    // razilaženja vrste i šeme dele umesto da svaka nosi svoj prepis. ODLUKA ove brane
+    // (šta se prihvata, a šta baca) je NEPROMENJENA.
+    const referenced = slovaKojaSemaReferise(scheme.lines);
 
-    for (const slot of isInbound ? VAT_SLOTS_INBOUND : VAT_SLOTS_OUTBOUND) {
+    for (const slot of vatSlotsFor(isInbound)) {
       const iznos = amounts[slot.letter];
       if (iznos.isZero() || referenced.has(slot.letter)) continue;
 
@@ -769,6 +805,27 @@ export class PostingEngineService {
    * PDV (D/E/U ulazni, P/Q/W izlazni) = osnovica × stopa po `goodsTaxRateCode`
    * (doc 43 §4). Ulaz/izlaz se bira po DocumentType.isInbound (doc 43 §1: A=ULAZ,
    * O=IZLAZ). J/K/V = PDV na kalk. VP (RobaOsn/Zel/Pos) po istoj stopi.
+   *
+   * ─────────────────────────────────────────────────────────────────────────────
+   * 🔴 VRSTE KOD KOJIH PDV NE POSTOJI — POREZ SE NE RAČUNA (08.08.2026)
+   * ─────────────────────────────────────────────────────────────────────────────
+   * `vrstaNosiPdv(doc.documentTypeCode)` je JEDINO mesto na kome se to pita; spisak i
+   * merenje iza svake vrste su u `pdv-po-vrsti-dokumenta.ts`. Kad vrsta ne nosi PDV,
+   * NIJEDAN poreski agregat se ne akumulira — ni D/E/U, ni P/Q/W, ni J/K/V.
+   *
+   * POVOD: višak sa popisa (`VISAR`) je dobijao PRETPOREZ od tarife artikla (20 %), pa
+   * ga je brana `assertSchemeCoversVat` s pravom odbijala — šema 46 nema PDV red, jer
+   * višak nije poreski događaj (ništa nije kupljeno). Ispravka je da porez NE NASTANE,
+   * a ne da ga brana propusti.
+   *
+   * ⚠️ NIJE SE MENJALO: nepoznata šifra tarife i dalje pada glasno (422) i na neporeskoj
+   * vrsti. Ta provera ne pita „koliki je porez na ovom dokumentu" nego „da li artikal
+   * nosi šifru koju sistem uopšte zna" — a to je isti kvar u podatku bez obzira na vrstu
+   * dokumenta, i propuštanje bi ga sakrilo do prve prodaje tog artikla.
+   *
+   * ⚠️ ZAŠTO SE STOPA I DALJE RAZREŠAVA: da bi se znalo KOJE stavke nose porez, pa da
+   * upozorenje (`PotisnutPdv`) može da kaže tačan iznos koji nije obračunat. Bez toga bi
+   * potiskivanje bilo nemo — a nema traga je gore od greške.
    */
   private aggregateDocAmounts(
     doc: { isImport: boolean; documentTypeCode: string },
@@ -783,7 +840,14 @@ export class PostingEngineService {
       goodsTaxRateCode: string;
     }>,
     isInbound: boolean,
-  ): DocAmounts {
+  ): DocAggregate {
+    const nosiPdv = vrstaNosiPdv(doc.documentTypeCode);
+    // Trag za neporeske vrste: koje stope su nađene i koliki bi porez bio.
+    const sifreStopa = new Set<string>();
+    let stavkiSaStopom = 0;
+    let potisnutaOsnovica = ZERO;
+    let potisnutIznos = ZERO;
+
     let A = ZERO; // NabNetoVred = Σ Kol × purchasePriceNet
     let B = ZERO; // ZTS        = Σ Kol × dependentCostOwn
     let C = ZERO; // ZTD        = Σ Kol × dependentCostSupplier
@@ -842,6 +906,20 @@ export class PostingEngineService {
       const inVat = inBase.mul(rate);
       const outVat = stvarnaVp.mul(rate);
       const kalkVat = kalkVp.mul(rate);
+
+      // VRSTA NE NOSI PDV → nijedan poreski agregat se ne akumulira; skuplja se samo trag.
+      if (!nosiPdv) {
+        if (!rate.isZero()) {
+          sifreStopa.add(it.goodsTaxRateCode);
+          stavkiSaStopom += 1;
+          potisnutaOsnovica = potisnutaOsnovica.add(
+            isInbound ? inBase : stvarnaVp,
+          );
+          potisnutIznos = potisnutIznos.add(isInbound ? inVat : outVat);
+        }
+        continue;
+      }
+
       if (rate.equals(RATE_VISA)) {
         D_ = D_.add(inVat);
         P = P.add(outVat);
@@ -864,7 +942,18 @@ export class PostingEngineService {
     // vrednosti — parser uzima samo ono što DefDug/DefPot referišu.
     void isInbound;
 
-    return { A, B, C, D: D_, E, H, I, J, K, N, O, P, Q, T, U, V, W };
+    const amounts = { A, B, C, D: D_, E, H, I, J, K, N, O, P, Q, T, U, V, W };
+    const potisnutPdv: PotisnutPdv | null =
+      !nosiPdv && stavkiSaStopom > 0
+        ? {
+            documentTypeCode: doc.documentTypeCode,
+            sifreStopa: [...sifreStopa].sort(),
+            brojStavki: stavkiSaStopom,
+            osnovica: potisnutaOsnovica,
+            iznos: potisnutIznos,
+          }
+        : null;
+    return { amounts, potisnutPdv };
   }
 
   /** Mapiraj agregate A–Z u varMap; slova bez izvora = ZERO (doc 43 §1/§5). */
