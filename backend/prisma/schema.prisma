@@ -8416,3 +8416,1698 @@ model ScadaNotifyPref {
 
   @@map("scada_notify_prefs")
 }
+
+// ============================================================================
+// KADROVSKA — seoba sy15 → 3.0, KORAK „šema i migracija" (08.08.2026)
+//
+// Plan gašenja sy15: docs/PLAN_GASENJA_SY15_2026-08-03.md.
+// Ovaj blok SAMO opisuje tabele. Ništa se ne ožičava: servisi i dalje čitaju sy15
+// dok se u zasebnom poslu ne prenesu funkcije/RLS, pa podaci, pa tek onda prekidač.
+// 🔴 Prekidač prati POZIVAOCE, ne naziv domena: kadrovsku zove i `moj-profil`, i
+//    scheduler poslovi `kadr-*`, i AI alati, i `pb_current_employee_id` (Projektni
+//    biro). `SASTANCI_PB_IZVOR` je 06.08. oborio ceo PB baš zato što pozivaoci nisu
+//    bili izmereni — taj redosled se ovde ne sme ponoviti.
+//
+// ⚠️ KADROVSKA JE ZAMRZNUTA za dorade (docs/OTVORENI_POSLOVI.md §K). Seoba je
+//    izuzetak koji zamrzavanje ukida — ali SAMO kao PRENOS. Zato je pravilo ovog
+//    bloka: prepiši kakvo jeste. Nijedan zatečen kvar se ovde ne popravlja; kvarovi
+//    su popisani u opisu PR-a sa `fajl:linija`.
+//
+// ---------------------------------------------------------------------------
+// PRENOSNE ODLUKE (razilaženja od sy15 — svako je namerno i ovde zapisano)
+// ---------------------------------------------------------------------------
+// PO-1  `departments` → u 3.0 se zove `kadr_departments`. SUDAR IMENA: 3.0 već ima
+//       `departments` (legacy `BBOdeljenja`: `id/code/description`), a to je SASVIM
+//       druga tabela. Kadrovska stablo (odeljenje → pododeljenje → radno mesto)
+//       dobija prefiks samo na korenu; `sub_departments` i `job_positions` nemaju
+//       sudar pa im se ime NE dira (manje razilaženja = manje prepravki u fn-ovima).
+//
+// PO-2  FK-ovi ka Supabase `auth.users(id)` NEMAJU parnjaka u 3.0 (3.0 `users.id` je
+//       `Int`). Kolone ostaju `Uuid` i ČUVAJU zatečenu vrednost, ali BEZ stranog
+//       ključa. Pogođeno 6 kolona: `absences.archived_by`, `contracts.archived_by`,
+//       `employee_documents.uploaded_by`, `kadr_certificates.created_by`,
+//       `kadr_medical_exams.created_by`, `device_push_tokens.user_id`.
+//       🔴 Namerno se NE preslikavaju na `users(id)` — to traži mapiranje uuid→Int,
+//       a mapiranje je ožičavanje (i odluka), ne šema. Ostaje za prenos podataka.
+//
+// PO-3  `attendance_events.id` je u sy15 `GENERATED ALWAYS AS IDENTITY`; ovde je
+//       `BIGSERIAL` (Prisma ne ume ALWAYS). To je NADSKUP: sve što radi kapija radi
+//       isto, a prenos podataka sme da upiše izričit `id` (kod ALWAYS bi morao
+//       `OVERRIDING SYSTEM VALUE`). Ponašanje kapije se ne menja.
+//
+// PO-4  Svi `text` stupci ostaju TEXT — namerno se NE sužavaju na `VarChar(n)` iako
+//       je to uobičajeno u ovom repou (BACKEND_RULES §3). Razlog: predugačak unos bi
+//       tada pao kao `22001` umesto zatečenog `23514` (check_violation), a servisi
+//       prevode ta dva koda različito. Suženje bi bilo promena ponašanja, ne seoba.
+//
+// PO-5  Imena ograničenja prevedena su na `pk_/uq_/fk_/idx_` (BACKEND_RULES §3).
+//       IZMERENO da je bezbedno: nijedna sy15 funkcija ne koristi
+//       `ON CONFLICT ON CONSTRAINT <ime>` (`pg_get_functiondef` nad svih 73 fn,
+//       0 pogodaka), pa prevod imena ne može oboriti nijedan upis.
+//
+// PO-6  `absences` ima EXCLUDE preko GiST-a; njemu treba `btree_gist`, a 3.0 ga NEMA
+//       (izmereno `pg_extension`: pg_trgm, plpgsql, unaccent). Migracija ga pravi.
+//
+// PO-7  `worker_employee_map` se NE prenosi — 3.0 ga već ima (native, `worker_id Int`),
+//       a sy15-ova istoimena tabela je druga stvar (`bigtehn_worker_id`).
+//       `kadr_grid_day_locks` je 3.0-native, u sy15 ga nema — ne dira se.
+//       `user_roles.managed_sub_department_ids` u 3.0 VEĆ POSTOJI — ne dira se.
+//
+// PO-8  Trigeri: ovde ide samo MEHANIKA (`updated_at`, popuna `event_ts`, `full_name`).
+//       Sve što nosi POLITIKU ili RAČUN (RLS predikati, `salary_payroll_compute_totals`,
+//       `vacation_requests_no_overlap`, `employees_sensitive_guard`, audit trigeri…)
+//       pripada poslu „funkcije i RLS" i ovde ga NEMA. Spisak je u migraciji, §7.
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// A. Organizaciona struktura i šifarnici kompetencija
+// ----------------------------------------------------------------------------
+
+/// Odeljenje u kadrovskoj organizacionoj šemi.
+/// 🔴 PO-1: u sy15 se zove `departments`; ime je zauzeto u 3.0 (legacy `BBOdeljenja`).
+model KadrDepartment {
+  id        Int    @id(map: "pk_kadr_departments") @default(autoincrement()) @map("id")
+  name      String @map("name")
+  sortOrder Int    @default(0) @map("sort_order") @db.SmallInt
+
+  subDepartments SubDepartment[]
+  jobPositions   JobPosition[]
+  employees      Employee[]
+
+  @@map("kadr_departments")
+}
+
+/// Pododeljenje (drugi nivo). Šef pododeljenja je prvi krug odobravanja odsustava.
+model SubDepartment {
+  id           Int    @id(map: "pk_sub_departments") @default(autoincrement()) @map("id")
+  departmentId Int    @map("department_id")
+  name         String @map("name")
+  sortOrder    Int    @default(0) @map("sort_order") @db.SmallInt
+
+  department   KadrDepartment @relation(fields: [departmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_sub_departments_department")
+  jobPositions JobPosition[]
+  employees    Employee[]
+
+  @@index([departmentId], map: "idx_sub_departments_dept")
+  @@map("sub_departments")
+}
+
+/// Radno mesto + opis posla (markdown polja puni kadrovska).
+/// U sy15 nad njom stoji `jp_guard_structural_columns` — brani izmenu strukturnih
+/// kolona iz UI-ja. To je POLITIKA i ide sa funkcijama, ne ovde (PO-8).
+model JobPosition {
+  id                 Int       @id(map: "pk_job_positions") @default(autoincrement()) @map("id")
+  departmentId       Int       @map("department_id")
+  subDepartmentId    Int?      @map("sub_department_id")
+  name               String    @map("name")
+  sortOrder          Int       @default(0) @map("sort_order") @db.SmallInt
+  summaryMd          String?   @map("summary_md")
+  expectationsMd     String?   @map("expectations_md")
+  responsibilitiesMd String?   @map("responsibilities_md")
+  dutiesMd           String?   @map("duties_md")
+  profileUpdatedAt   DateTime? @map("profile_updated_at") @db.Timestamptz(6)
+  profileUpdatedBy   String?   @map("profile_updated_by")
+  reportsToLine      String?   @map("reports_to_line")
+  authorityMd        String?   @map("authority_md")
+  kpiMd              String?   @map("kpi_md")
+  qualificationsMd   String?   @map("qualifications_md")
+  collaborationMd    String?   @map("collaboration_md")
+
+  department       KadrDepartment    @relation(fields: [departmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_job_positions_department")
+  subDepartment    SubDepartment?    @relation(fields: [subDepartmentId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_job_positions_sub_department")
+  employees        Employee[]
+  profilePositions ProfilePosition[]
+  developmentPlans DevelopmentPlan[]
+
+  @@index([departmentId], map: "idx_job_positions_dept")
+  @@index([subDepartmentId], map: "idx_job_positions_subdept")
+  @@map("job_positions")
+}
+
+/// Misija/vizija/vrednosti firme — JEDAN red (`CHECK id = 1`).
+model CompanyProfile {
+  id         Int      @id(map: "pk_company_profile") @default(1) @map("id")
+  missionMd  String?  @map("mission_md")
+  visionMd   String?  @map("vision_md")
+  valuesMd   String?  @map("values_md")
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy  String?  @map("updated_by")
+
+  @@map("company_profile")
+}
+
+/// Grupa kompetencija. `scope`: core | strucna | liderska.
+model CompetenceGroup {
+  id            Int      @id(map: "pk_competence_groups") @default(autoincrement()) @map("id")
+  code          String   @map("code")
+  nameSr        String   @map("name_sr")
+  descriptionSr String?  @map("description_sr")
+  scope         String   @default("strucna") @map("scope")
+  sortOrder     Int      @default(100) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?  @map("updated_by")
+
+  competences   Competence[]
+  questions     CompetenceQuestion[]
+  profileGroups ProfileGroup[]
+
+  @@unique([code], map: "uq_competence_groups_code")
+  @@map("competence_groups")
+}
+
+/// Pojedinačna kompetencija unutar grupe.
+model Competence {
+  id            Int      @id(map: "pk_competences") @default(autoincrement()) @map("id")
+  groupId       Int      @map("group_id")
+  code          String   @map("code")
+  nameSr        String   @map("name_sr")
+  descriptionSr String?  @map("description_sr")
+  sortOrder     Int      @default(100) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?  @map("updated_by")
+
+  group   CompetenceGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_competences_group")
+  levels  CompetenceLevel[]
+  scores  AssessmentScore[]
+  targets AssessmentTarget[]
+
+  @@unique([code], map: "uq_competences_code")
+  @@index([groupId, sortOrder], map: "idx_competences_group")
+  @@map("competences")
+}
+
+/// Opis nivoa 0–5 za kompetenciju.
+model CompetenceLevel {
+  id           Int    @id(map: "pk_competence_levels") @default(autoincrement()) @map("id")
+  competenceId Int    @map("competence_id")
+  level        Int    @map("level") @db.SmallInt
+  descriptorSr String @map("descriptor_sr")
+
+  competence Competence @relation(fields: [competenceId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_competence_levels_competence")
+
+  @@unique([competenceId, level], map: "uq_competence_levels_competence_level")
+  @@map("competence_levels")
+}
+
+/// Profil kompetencija (skup grupa) koji se kači na radno mesto.
+model CompetenceProfile {
+  id            Int      @id(map: "pk_competence_profiles") @default(autoincrement()) @map("id")
+  code          String   @map("code")
+  nameSr        String   @map("name_sr")
+  descriptionSr String?  @map("description_sr")
+  sortOrder     Int      @default(100) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?  @map("updated_by")
+
+  groups      ProfileGroup[]
+  positions   ProfilePosition[]
+  assessments Assessment[]
+
+  @@unique([code], map: "uq_competence_profiles_code")
+  @@map("competence_profiles")
+}
+
+/// Otvoreno pitanje uz grupu kompetencija (360 upitnik).
+model CompetenceQuestion {
+  id        Int     @id(map: "pk_competence_questions") @default(autoincrement()) @map("id")
+  groupId   Int?    @map("group_id")
+  code      String  @map("code")
+  textSr    String  @map("text_sr")
+  sortOrder Int     @default(100) @map("sort_order")
+  isActive  Boolean @default(true) @map("is_active")
+
+  group CompetenceGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_competence_questions_group")
+
+  @@unique([code], map: "uq_competence_questions_code")
+  @@map("competence_questions")
+}
+
+/// Veza profil ↔ grupa kompetencija.
+model ProfileGroup {
+  id        Int @id(map: "pk_profile_groups") @default(autoincrement()) @map("id")
+  profileId Int @map("profile_id")
+  groupId   Int @map("group_id")
+  sortOrder Int @default(100) @map("sort_order")
+
+  profile CompetenceProfile @relation(fields: [profileId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_profile_groups_profile")
+  group   CompetenceGroup   @relation(fields: [groupId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_profile_groups_group")
+
+  @@unique([profileId, groupId], map: "uq_profile_groups_profile_group")
+  @@map("profile_groups")
+}
+
+/// Veza profil ↔ radno mesto. Jedno radno mesto ima najviše jedan profil
+/// (`uq_profile_positions_position`), pa je odnos u praksi 1:1.
+model ProfilePosition {
+  id         Int @id(map: "pk_profile_positions") @default(autoincrement()) @map("id")
+  profileId  Int @map("profile_id")
+  positionId Int @map("position_id")
+
+  profile  CompetenceProfile @relation(fields: [profileId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_profile_positions_profile")
+  position JobPosition       @relation(fields: [positionId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_profile_positions_position")
+
+  @@unique([positionId], map: "uq_profile_positions_position")
+  @@map("profile_positions")
+}
+
+// ----------------------------------------------------------------------------
+// B. Zaposleni i lični podaci (PII)
+// ----------------------------------------------------------------------------
+
+/// Zaposleni — koren celog domena. Ključ je `uuid` i takav ostaje: na njega se
+/// oslanja 3.0 `worker_employee_map.employee_id`, kapija (`attendance_events`),
+/// kiosk i 12 `pb_*` funkcija Projektnog biroa.
+///
+/// 🔴 Zatečeno dvojstvo koje se NE ispravlja (zamrzavanje): mesto/odeljenje postoje
+/// DVA puta — kao slobodan tekst (`position`, `department`, nasleđe prvog uvoza) i
+/// kao strani ključ (`position_id`, `department_id`, `sub_department_id`). Prava i
+/// rutiranje mejlova gledaju ID-jeve, spiskovi mestimično tekst.
+model Employee {
+  id                       String    @id(map: "pk_employees") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  /// Održava ga trigger `trg_employees_full_name_sync` iz `last_name + first_name`.
+  fullName                 String    @map("full_name")
+  position                 String?   @default("") @map("position")
+  department               String?   @default("") @map("department")
+  phone                    String?   @default("") @map("phone")
+  email                    String?   @default("") @map("email")
+  hireDate                 DateTime? @map("hire_date") @db.Date
+  isActive                 Boolean?  @default(true) @map("is_active")
+  note                     String?   @default("") @map("note")
+  createdAt                DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  firstName                String?   @map("first_name")
+  lastName                 String?   @map("last_name")
+  /// JMBG — `CHECK` traži tačno 13 cifara. PII.
+  personalId               String?   @map("personal_id")
+  birthDate                DateTime? @map("birth_date") @db.Date
+  /// M | Z
+  gender                   String?   @map("gender")
+  address                  String?   @map("address")
+  city                     String?   @map("city")
+  postalCode               String?   @map("postal_code")
+  bankName                 String?   @map("bank_name")
+  bankAccount              String?   @map("bank_account")
+  phonePrivate             String?   @map("phone_private")
+  emergencyContactName     String?   @map("emergency_contact_name")
+  emergencyContactPhone    String?   @map("emergency_contact_phone")
+  slava                    String?   @map("slava")
+  /// Dan slave kao `MMDD` (`CHECK` traži 4 cifre).
+  slavaDay                 String?   @map("slava_day")
+  educationLevel           String?   @map("education_level")
+  educationTitle           String?   @map("education_title")
+  /// Denormalizovano iz `kadr_medical_exams` (trigger `kadr_medical_exams_sync_employee`).
+  medicalExamDate          DateTime? @map("medical_exam_date") @db.Date
+  medicalExamExpires       DateTime? @map("medical_exam_expires") @db.Date
+  team                     String?   @map("team")
+  /// ugovor | praksa | dualno | penzioner
+  workType                 String    @default("ugovor") @map("work_type")
+  departmentId             Int?      @map("department_id")
+  subDepartmentId          Int?      @map("sub_department_id")
+  positionId               Int?      @map("position_id")
+  emergencyContactRelation String?   @map("emergency_contact_relation")
+  emergencyContactPhoneAlt String?   @map("emergency_contact_phone_alt")
+  /// Code128 sa fizičke ID kartice — skener vraća ovaj string.
+  cardBarcode              String?   @map("card_barcode")
+
+  departmentRef   KadrDepartment? @relation(fields: [departmentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_employees_department")
+  subDepartment   SubDepartment?  @relation(fields: [subDepartmentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_employees_sub_department")
+  positionRef     JobPosition?    @relation(fields: [positionId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_employees_position")
+
+  contracts               Contract[]
+  children                EmployeeChild[]
+  bankCards               EmployeeBankCard[]
+  foreignDocs             EmployeeForeignDoc?
+  personalDocs            EmployeePersonalDoc?
+  documents               EmployeeDocument[]
+  badges                  EmployeeBadge[]
+  certificates            KadrCertificate[]
+  medicalExams            KadrMedicalExam[]
+  katzeMaps               KatzeEmployeeMap[]
+  absences                Absence[]
+  vacationRequests        VacationRequest[]
+  vacationEntitlements    VacationEntitlement[]
+  vacationHistory         VacationHistory[]
+  vacationBonusDays       VacationBonusDay[]
+  // `vacationGoDays` NAMERNO nema relaciju — v. PO-9 kod modela `VacationGoDay`
+  // (u sy15 ta tabela nema FK; relacija bi ga stvorila i uvela CASCADE brisanje).
+  vacationChangeRequests  VacationChangeRequest[]
+  makeupRequests          MakeupRequest[]
+  paidLeaveRequests       PaidLeaveRequest[]
+  nopRequests             NopRequest[]
+  workHours               WorkHours[]
+  workHoursRemarks        WorkHoursRemark[]
+  attendanceEvents        AttendanceEvent[]
+  attendanceCorrections   AttendanceCorrection[]
+  salaryTerms             SalaryTerm[]
+  salaryPayrolls          SalaryPayroll[]
+  expectations            EmployeeExpectation[]
+  talks                   EmployeeTalk[]
+  developmentPlans        DevelopmentPlan[]       @relation("DevelopmentPlanEmployee")
+  developmentPlansMentor  DevelopmentPlan[]       @relation("DevelopmentPlanMentor")
+  developmentCheckins     DevelopmentCheckin[]
+  correctivePlans         CorrectivePlan[]
+  correctiveMeasures      CorrectiveMeasure[]
+  assessments             Assessment[]
+  assessmentRatings       AssessmentRater[]
+  onboardingRuns          KadrOnboardingRun[]
+  documentAcks            KadrDocumentAck[]
+  notificationLogs        KadrNotificationLog[]
+
+  @@unique([fullName], map: "uq_employees_full_name")
+  @@index([isActive], map: "idx_employees_active")
+  @@index([department], map: "idx_employees_department")
+  @@index([departmentId], map: "idx_employees_department_id")
+  @@index([lastName, firstName], map: "idx_employees_last_first")
+  @@index([position], map: "idx_employees_position")
+  @@index([subDepartmentId], map: "idx_employees_sub_department_id")
+  @@index([workType], map: "idx_employees_work_type")
+  @@map("employees")
+}
+
+/// Ugovor o radu. Soft-delete kroz `archived_at` (UI „Vrati" vraća na NULL).
+model Contract {
+  id             String    @id(map: "pk_contracts") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  /// neodredjeno | odredjeno | privremeno | delo | student | praksa | probni | ostalo
+  contractType   String    @default("neodredjeno") @map("contract_type")
+  contractNumber String?   @default("") @map("contract_number")
+  position       String?   @default("") @map("position")
+  dateFrom       DateTime  @map("date_from") @db.Date
+  dateTo         DateTime? @map("date_to") @db.Date
+  isActive       Boolean?  @default(true) @map("is_active")
+  note           String?   @default("") @map("note")
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  /// PO-2: `auth.users(id)` u sy15 → ovde uuid BEZ stranog ključa.
+  archivedBy     String?   @map("archived_by") @db.Uuid
+  probniRad      Boolean   @default(false) @map("probni_rad")
+  probniMeseci   Int?      @map("probni_meseci")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_contracts_employee")
+
+  @@index([isActive], map: "idx_contracts_active")
+  @@index([dateTo], map: "idx_contracts_dateto")
+  @@index([employeeId], map: "idx_contracts_employee")
+  @@map("contracts")
+}
+
+/// Deca zaposlenog (rođendani, pravo na slobodan dan). PII.
+model EmployeeChild {
+  id         String    @id(map: "pk_employee_children") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId String    @map("employee_id") @db.Uuid
+  firstName  String    @map("first_name")
+  birthDate  DateTime? @map("birth_date") @db.Date
+  note       String?   @default("") @map("note")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_employee_children_employee")
+
+  @@index([employeeId], map: "idx_employee_children_emp")
+  @@map("employee_children")
+}
+
+/// Službena (biznis) kartica banke; alarm 30 dana pre isteka i na dan isteka. PII.
+model EmployeeBankCard {
+  id         String    @id(map: "pk_employee_bank_cards") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId String    @map("employee_id") @db.Uuid
+  bank       String    @default("Banca Intesa") @map("bank")
+  cardNumber String?   @map("card_number")
+  validThru  DateTime? @map("valid_thru") @db.Date
+  isActive   Boolean   @default(true) @map("is_active")
+  note       String?   @default("") @map("note")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_employee_bank_cards_employee")
+
+  @@map("employee_bank_cards")
+}
+
+/// Dokumenti stranih radnika (pasoš/viza/radna i boravišna dozvola). 1:1. PII.
+model EmployeeForeignDoc {
+  id                      String    @id(map: "pk_employee_foreign_docs") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId              String    @unique(map: "uq_employee_foreign_docs_employee") @map("employee_id") @db.Uuid
+  passportNumber          String?   @map("passport_number")
+  passportExpiry          DateTime? @map("passport_expiry") @db.Date
+  visaNumber              String?   @map("visa_number")
+  visaExpiry              DateTime? @map("visa_expiry") @db.Date
+  workPermitNumber        String?   @map("work_permit_number")
+  workPermitExpiry        DateTime? @map("work_permit_expiry") @db.Date
+  residencePermitNumber   String?   @map("residence_permit_number")
+  residencePermitExpiry   DateTime? @map("residence_permit_expiry") @db.Date
+  residenceAddress        String?   @map("residence_address")
+  bankAccount             String?   @map("bank_account")
+  foreignIdNumber         String?   @map("foreign_id_number")
+  note                    String?   @default("") @map("note")
+  createdAt               DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_employee_foreign_docs_employee")
+
+  @@map("employee_foreign_docs")
+}
+
+/// Lična dokumenta domaćeg radnika (LK/pasoš/vozačka). 1:1. PII.
+model EmployeePersonalDoc {
+  id                      String    @id(map: "pk_employee_personal_docs") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId              String    @unique(map: "uq_employee_personal_docs_employee") @map("employee_id") @db.Uuid
+  lkNumber                String?   @map("lk_number")
+  lkExpiry                DateTime? @map("lk_expiry") @db.Date
+  passportNumber          String?   @map("passport_number")
+  passportExpiry          DateTime? @map("passport_expiry") @db.Date
+  driverLicenseNumber     String?   @map("driver_license_number")
+  driverLicenseExpiry     DateTime? @map("driver_license_expiry") @db.Date
+  driverLicenseCategories String?   @map("driver_license_categories")
+  note                    String?   @default("") @map("note")
+  createdAt               DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_employee_personal_docs_employee")
+
+  @@map("employee_personal_docs")
+}
+
+/// Skenirano dokumenat zaposlenog. Binarni sadržaj je van baze (privatni bucket).
+/// 🔴 Prenos priloga NIJE deo ove migracije — `storage_path` pokazuje na sy15 storage.
+model EmployeeDocument {
+  id          String    @id(map: "pk_employee_documents") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId  String    @map("employee_id") @db.Uuid
+  /// licna_karta | pasos | vozacka | diploma | ugovor | ugovor_skan | lekarski | other |
+  /// aneks | resenje_go | resenje_porodiljsko | potvrda_zaposlenje | potvrda_primanja |
+  /// karnet | evidencija_go | sporazumni_raskid
+  docType     String    @default("licna_karta") @map("doc_type")
+  fileName    String    @map("file_name")
+  storagePath String    @map("storage_path")
+  mimeType    String?   @map("mime_type")
+  sizeBytes   BigInt?   @map("size_bytes")
+  description String?   @map("description")
+  uploadedAt  DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  /// PO-2: `auth.users(id)` u sy15 → ovde uuid BEZ stranog ključa.
+  uploadedBy  String?   @map("uploaded_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_employee_documents_employee")
+
+  @@unique([storagePath], map: "uq_employee_documents_storage_path")
+  @@map("employee_documents")
+}
+
+/// Kartica/medij za evidenciju prisustva (Katze MediaID, QR, face…).
+model EmployeeBadge {
+  id         String    @id(map: "pk_employee_badges") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId String    @map("employee_id") @db.Uuid
+  /// media | card | qr | face
+  badgeType  String    @map("badge_type")
+  code       String    @map("code")
+  codeShort  String?   @map("code_short")
+  validFrom  DateTime  @default(now()) @map("valid_from") @db.Timestamptz(6)
+  validTo    DateTime? @map("valid_to") @db.Timestamptz(6)
+  isActive   Boolean   @default(true) @map("is_active")
+  source     String    @default("katze") @map("source")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_employee_badges_employee")
+
+  @@unique([badgeType, code, employeeId], map: "uq_employee_badges_type_code_employee")
+  @@index([employeeId], map: "idx_employee_badges_employee")
+  @@map("employee_badges")
+}
+
+/// Sertifikat / obuka zaposlenog (sa troškom i rokom važenja).
+model KadrCertificate {
+  id          String    @id(map: "pk_kadr_certificates") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId  String    @map("employee_id") @db.Uuid
+  certType    String    @map("cert_type")
+  certName    String    @map("cert_name")
+  issuer      String?   @map("issuer")
+  documentNo  String?   @map("document_no")
+  issuedOn    DateTime  @map("issued_on") @db.Date
+  expiresOn   DateTime? @map("expires_on") @db.Date
+  costRsd     Decimal   @default(0) @map("cost_rsd") @db.Decimal(12, 2)
+  documentUrl String?   @map("document_url")
+  note        String?   @map("note")
+  /// PO-2: `auth.users(id)` u sy15 → ovde uuid BEZ stranog ključa.
+  createdBy   String?   @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_kadr_certificates_employee")
+
+  @@index([employeeId], map: "idx_kadr_certs_emp")
+  @@index([certType], map: "idx_kadr_certs_type")
+  @@map("kadr_certificates")
+}
+
+/// Lekarski pregled. Trigger `kadr_medical_exams_sync_employee` u sy15 prepisuje
+/// zbir u `employees.medical_exam_*` — to je LOGIKA i ide sa funkcijama (PO-8).
+model KadrMedicalExam {
+  id          String    @id(map: "pk_kadr_medical_exams") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId  String    @map("employee_id") @db.Uuid
+  examDate    DateTime  @map("exam_date") @db.Date
+  validUntil  DateTime? @map("valid_until") @db.Date
+  /// redovan | prethodni | periodicni | ciljani | vanredni
+  examType    String    @default("redovan") @map("exam_type")
+  institution String?   @map("institution")
+  costRsd     Decimal   @default(0) @map("cost_rsd") @db.Decimal(12, 2)
+  documentUrl String?   @map("document_url")
+  note        String?   @map("note")
+  /// PO-2: `auth.users(id)` u sy15 → ovde uuid BEZ stranog ključa.
+  createdBy   String?   @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_kadr_medical_exams_employee")
+
+  @@index([employeeId, examDate(sort: Desc)], map: "idx_kadr_medical_exams_emp_date")
+  @@map("kadr_medical_exams")
+}
+
+/// Mapa Katze kadrovske evidencije → `employees`. Ključ je Katze ID (tekst).
+/// 🔴 Katze most UŽIVO piše `attendance_events` na 10 minuta; ova mapa je njegov rečnik.
+model KatzeEmployeeMap {
+  katzeId      String    @id(map: "pk_katze_employee_map") @map("katze_id")
+  katzeIme     String?   @map("katze_ime")
+  katzePrezime String?   @map("katze_prezime")
+  katzeSektor  String?   @map("katze_sektor")
+  employeeId   String?   @map("employee_id") @db.Uuid
+  /// auto_exact | auto_fuzzy | manual
+  matchMethod  String?   @map("match_method")
+  confirmedBy  String?   @map("confirmed_by")
+  confirmedAt  DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_katze_employee_map_employee")
+
+  @@map("katze_employee_map")
+}
+
+/// Web-push pretplata uređaja.
+/// 🔴 PO-2: `user_id` je u sy15 FK na `auth.users(id)`; ovde ostaje uuid BEZ FK-a
+///    (3.0 `users.id` je Int). Ožičavanje push-a nije deo ovog posla.
+model DevicePushToken {
+  id        String   @id(map: "pk_device_push_tokens") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  /// web | android | ios
+  platform  String   @map("platform")
+  endpoint  String?  @map("endpoint")
+  p256dh    String?  @map("p256dh")
+  auth      String?  @map("auth")
+  token     String?  @map("token")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeen  DateTime @default(now()) @map("last_seen") @db.Timestamptz(6)
+
+  @@unique([endpoint], map: "uq_device_push_tokens_endpoint")
+  @@unique([token], map: "uq_device_push_tokens_token")
+  @@index([userId], map: "idx_device_push_tokens_user")
+  @@map("device_push_tokens")
+}
+
+// ----------------------------------------------------------------------------
+// C. Odsustva, godišnji odmor, nadoknade
+// ----------------------------------------------------------------------------
+
+/// Evidentirano odsustvo (rezultat odobrenog zahteva ili ručnog unosa kadrovske).
+/// Soft-delete kroz `archived_at`; EXCLUDE brani preklapanje AKTIVNIH odsustava.
+model Absence {
+  id             String    @id(map: "pk_absences") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  /// godisnji | bolovanje | slobodan | placeno | neplaceno | sluzbeno | slava | ostalo
+  type           String    @default("godisnji") @map("type")
+  dateFrom       DateTime  @map("date_from") @db.Date
+  dateTo         DateTime  @map("date_to") @db.Date
+  daysCount      Int?      @map("days_count")
+  note           String?   @default("") @map("note")
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// rodjenje | svadba | smrt | selidba | ostalo
+  paidReason     String?   @map("paid_reason")
+  /// obicno | povreda_na_radu | odrzavanje_trudnoce (samo uz `type = 'bolovanje'`)
+  absenceSubtype String?   @map("absence_subtype")
+  /// brak | rodjenje_deteta | selidba | smrt_clana_porodice | dobrovoljno_davanje_krvi |
+  /// slava | ostalo (samo uz `type IN ('slobodan','placeno')`)
+  slobodanReason String?   @map("slobodan_reason")
+  archivedAt     DateTime? @map("archived_at") @db.Timestamptz(6)
+  /// PO-2: `auth.users(id)` u sy15 → ovde uuid BEZ stranog ključa.
+  archivedBy     String?   @map("archived_by") @db.Uuid
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_absences_employee")
+
+  @@index([employeeId], map: "idx_absences_employee")
+  @@index([dateFrom, dateTo], map: "idx_absences_range")
+  @@index([type], map: "idx_absences_type")
+  @@map("absences")
+}
+
+/// Zahtev za godišnji odmor. Tok: pending → sef_approved → approved/rejected/canceled.
+model VacationRequest {
+  id            String    @id(map: "pk_vacation_requests") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId    String    @map("employee_id") @db.Uuid
+  year          Int       @map("year")
+  dateFrom      DateTime  @map("date_from") @db.Date
+  dateTo        DateTime  @map("date_to") @db.Date
+  daysCount     Int       @default(0) @map("days_count")
+  note          String    @default("") @map("note")
+  /// pending | sef_approved | approved | rejected | canceled
+  status        String    @default("pending") @map("status")
+  reviewedBy    String?   @map("reviewed_by")
+  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectionNote String?   @map("rejection_note")
+  /// Mejl podnosioca iz JWT-a.
+  submittedBy   String    @map("submitted_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Prvi krug odobravanja (šef pododeljenja).
+  level1By      String?   @map("level1_by")
+  level1At      DateTime? @map("level1_at") @db.Timestamptz(6)
+
+  employee        Employee                @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_vacation_requests_employee")
+  changeRequests  VacationChangeRequest[]
+
+  @@index([employeeId], map: "idx_vacation_requests_employee")
+  @@index([status], map: "idx_vacation_requests_status")
+  @@index([year], map: "idx_vacation_requests_year")
+  @@map("vacation_requests")
+}
+
+/// Pravo na GO po godini (saldo). Upis brani `can_edit_vacation_balance` (allowlist).
+model VacationEntitlement {
+  id               String    @id(map: "pk_vacation_entitlements") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  year             Int       @map("year")
+  daysTotal        Int       @default(20) @map("days_total")
+  daysCarriedOver  Int       @default(0) @map("days_carried_over")
+  note             String?   @default("") @map("note")
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// overdraw | outlier | unmatched | missing | corrected (NULL = uredno)
+  reviewFlag       String?   @map("review_flag")
+  /// Poreklo reda: excel_import_2026 | manual | correction …
+  source           String?   @map("source")
+  /// Iskorišćeno GO pre preklopa, bez datiranih unosa; ulazi u `days_used`.
+  openingUsed      Int       @default(0) @map("opening_used")
+  /// TRUE = srazmerni (akrualni) model umesto punih dana od 1. januara.
+  accrualModel     Boolean   @default(false) @map("accrual_model")
+  accrualBase      Int       @default(20) @map("accrual_base")
+  /// Fallback je `employees.hire_date`.
+  accrualStart     DateTime? @map("accrual_start") @db.Date
+  /// Avans (korišćenje preko zarađenog) odobrava uprava.
+  advanceApproved  Boolean   @default(false) @map("advance_approved")
+  advanceApprovedBy String?  @map("advance_approved_by")
+  advanceApprovedAt DateTime? @map("advance_approved_at") @db.Timestamptz(6)
+  advanceNote      String?   @map("advance_note")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_vacation_entitlements_employee")
+
+  @@unique([employeeId, year], map: "uq_vacation_entitlements_employee_year")
+  @@index([year], map: "idx_vacation_entitlements_year")
+  @@map("vacation_entitlements")
+}
+
+/// Istorijski GO iz ručnih Excel fajlova. NE utiče na saldo — samo prikaz.
+model VacationHistory {
+  id            String   @id(map: "pk_vacation_history") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId    String   @map("employee_id") @db.Uuid
+  year          Int      @map("year")
+  entitledDays  Int?     @map("entitled_days")
+  usedDays      Int?     @map("used_days")
+  remainingDays Int?     @map("remaining_days")
+  entries       Json     @default("[]") @map("entries")
+  rawBlock      String?  @map("raw_block")
+  source        String   @default("excel_godisnji") @map("source")
+  sourceFile    String?  @map("source_file")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_vacation_history_employee")
+
+  @@unique([employeeId, year, source], map: "uq_vacation_history_employee_year_source")
+  @@index([employeeId, year], map: "idx_vacation_history_emp")
+  @@map("vacation_history")
+}
+
+/// Bonus dan GO (rad vikendom umesto nadoknade) — log kada i zašto je dan dodat.
+model VacationBonusDay {
+  id               String    @id(map: "pk_vacation_bonus_days") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  year             Int       @map("year")
+  days             Decimal   @default(1) @map("days") @db.Decimal
+  workDate         DateTime? @map("work_date") @db.Date
+  reason           String    @default("") @map("reason")
+  /// Meki ref `makeup_requests.id` — u sy15 NIJE strani ključ; ostaje kako jeste.
+  makeupRequestId  String?   @map("makeup_request_id") @db.Uuid
+  addedBy          String?   @map("added_by")
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_vacation_bonus_days_employee")
+
+  @@map("vacation_bonus_days")
+}
+
+/// Materijalizovani GO dani iz stare Excel evidencije — čita ih `go_ledger`.
+/// Bez `id`: ključ je (zaposleni, datum).
+///
+/// 🔴 PO-9 (RAZILAŽENJE KOJE SE NAMERNO NE „POPRAVLJA"): u sy15 ova tabela ima
+/// SAMO PK — **nema FK** na `employees` i **nema RLS** (IZMERENO: `pg_constraint`
+/// daje jedino `vacation_go_days_pkey`; `relrowsecurity=false`, 5.269 redova).
+/// Zato ovde NEMA `@relation` — Prisma bi od nje napravila FK sa `ON DELETE CASCADE`,
+/// a to je PROMENA PONAŠANJA, ne seoba: brisanje zaposlenog bi tiho odnelo i njegovu
+/// GO istoriju, dok je u sy15 ta istorija preživljavala. Danas nema ni jednog siročeta
+/// (0 od 5.269), pa FK ne bi pao na prenosu — ali odluka o njemu nije stvar šeme.
+/// Nedostatak FK-a i RLS-a je ZATEČEN nalaz, prijavljen u opisu PR-a, NIJE popravljen
+/// (kadrovska je zamrznuta za dorade — `docs/OTVORENI_POSLOVI.md` §K).
+model VacationGoDay {
+  employeeId String   @map("employee_id") @db.Uuid
+  usedDate   DateTime @map("used_date") @db.Date
+  sourceYear Int?     @map("source_year")
+  comment    String?  @map("comment")
+
+  @@id([employeeId, usedDate], map: "pk_vacation_go_days")
+  @@map("vacation_go_days")
+}
+
+/// Zahtev 026/26 — molba za izmenu/otkaz VEĆ ODOBRENOG GO termina.
+model VacationChangeRequest {
+  id                String    @id(map: "pk_vacation_change_requests") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  vacationRequestId String    @map("vacation_request_id") @db.Uuid
+  employeeId        String    @map("employee_id") @db.Uuid
+  /// cancel | revise
+  kind              String    @map("kind")
+  newDateFrom       DateTime? @map("new_date_from") @db.Date
+  newDateTo         DateTime? @map("new_date_to") @db.Date
+  newDaysCount      Int?      @map("new_days_count")
+  oldDateFrom       DateTime  @map("old_date_from") @db.Date
+  oldDateTo         DateTime  @map("old_date_to") @db.Date
+  reason            String    @default("") @map("reason")
+  /// pending | approved | rejected
+  status            String    @default("pending") @map("status")
+  submittedBy       String    @map("submitted_by")
+  decidedBy         String?   @map("decided_by")
+  decidedAt         DateTime? @map("decided_at") @db.Timestamptz(6)
+  decisionNote      String?   @map("decision_note")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  vacationRequest VacationRequest @relation(fields: [vacationRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_vacation_change_requests_request")
+  employee        Employee        @relation(fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_vacation_change_requests_employee")
+
+  @@index([employeeId, createdAt(sort: Desc)], map: "idx_vacation_change_requests_employee")
+  @@map("vacation_change_requests")
+}
+
+/// Zahtev za nadoknadu odsustva. `compensation_type`:
+///   `nadoknada`  = radi drugi dan;
+///   `dan_odmora` = rad vikendom → +1 dan GO u saldo (v. `vacation_bonus_days`).
+model MakeupRequest {
+  id               String    @id(map: "pk_makeup_requests") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  absenceDate      DateTime  @map("absence_date") @db.Date
+  absenceHours     Decimal   @default(8) @map("absence_hours") @db.Decimal(4, 1)
+  reason           String    @default("") @map("reason")
+  makeupPlan       String    @default("") @map("makeup_plan")
+  makeupDeadline   DateTime? @map("makeup_deadline") @db.Date
+  /// pending | sef_approved | approved | completed | rejected | storniran
+  status           String    @default("pending") @map("status")
+  level1By         String?   @map("level1_by")
+  level1At         DateTime? @map("level1_at") @db.Timestamptz(6)
+  reviewedBy       String?   @map("reviewed_by")
+  reviewedAt       DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  completedBy      String?   @map("completed_by")
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz(6)
+  rejectionNote    String?   @map("rejection_note")
+  submittedBy      String    @map("submitted_by")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// nadoknada | dan_odmora
+  compensationType String    @default("nadoknada") @map("compensation_type")
+  /// Dan vikenda kad je radio (za `dan_odmora`).
+  weekendWorkDate  DateTime? @map("weekend_work_date") @db.Date
+  stornoBy         String?   @map("storno_by")
+  stornoAt         DateTime? @map("storno_at") @db.Timestamptz(6)
+  stornoNote       String?   @map("storno_note")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_makeup_requests_employee")
+
+  @@index([absenceDate], map: "idx_makeup_requests_absence_date")
+  @@index([employeeId], map: "idx_makeup_requests_employee")
+  @@index([status], map: "idx_makeup_requests_status")
+  @@map("makeup_requests")
+}
+
+/// Zahtev za plaćeno odsustvo po Zakonu o radu (brak, smrt, krv…).
+model PaidLeaveRequest {
+  id            String    @id(map: "pk_paid_leave_requests") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId    String    @map("employee_id") @db.Uuid
+  /// brak | rodjenje_deteta | bolest_uze | porodjaj_drugi | smrt_uze | smrt_sire |
+  /// selidba | selidba_drugo | nepogoda | ispit | krv | ostalo
+  leaveType     String    @map("leave_type")
+  dateFrom      DateTime  @map("date_from") @db.Date
+  dateTo        DateTime  @map("date_to") @db.Date
+  daysCount     Int       @default(0) @map("days_count")
+  reason        String    @default("") @map("reason")
+  proofNote     String    @default("") @map("proof_note")
+  /// pending | sef_approved | approved | rejected
+  status        String    @default("pending") @map("status")
+  level1By      String?   @map("level1_by")
+  level1At      DateTime? @map("level1_at") @db.Timestamptz(6)
+  reviewedBy    String?   @map("reviewed_by")
+  reviewedAt    DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  rejectionNote String?   @map("rejection_note")
+  submittedBy   String    @map("submitted_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_paid_leave_requests_employee")
+
+  @@index([employeeId], map: "idx_paid_leave_requests_employee")
+  @@index([status], map: "idx_paid_leave_requests_status")
+  @@map("paid_leave_requests")
+}
+
+/// Zahtev za neplaćeno odsustvo (NOP) za jedan radni dan.
+model NopRequest {
+  id          String    @id(map: "pk_nop_requests") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId  String    @map("employee_id") @db.Uuid
+  workDate    DateTime  @map("work_date") @db.Date
+  reason      String?   @map("reason")
+  /// pending | approved | rejected
+  status      String    @default("pending") @map("status")
+  requestedBy String?   @map("requested_by")
+  reviewedBy  String?   @map("reviewed_by")
+  reviewedAt  DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote  String?   @map("review_note")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_nop_requests_employee")
+
+  @@map("nop_requests")
+}
+
+// ----------------------------------------------------------------------------
+// D. Prisustvo i mesečni grid
+// ----------------------------------------------------------------------------
+
+/// Mesečni grid sati po zaposlenom i danu (JEDAN red po danu — `uq_work_hours_emp_date`).
+model WorkHours {
+  id               String    @id(map: "pk_work_hours") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  workDate         DateTime  @map("work_date") @db.Date
+  hours            Decimal   @default(0) @map("hours") @db.Decimal(5, 2)
+  overtimeHours    Decimal   @default(0) @map("overtime_hours") @db.Decimal(5, 2)
+  projectRef       String?   @default("") @map("project_ref")
+  note             String?   @default("") @map("note")
+  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  fieldHours       Decimal   @default(0) @map("field_hours") @db.Decimal(5, 2)
+  /// go=godišnji | bo=bolovanje | sp=slobodan/plaćeni praznik | np=neplaćeno-legacy |
+  /// sl=slobodan dan | pr=praznik | sv=slava | pl=plaćeno | nop=neplaćeno odsustvo
+  absenceCode      String?   @map("absence_code")
+  twoMachineHours  Decimal   @default(0) @map("two_machine_hours") @db.Decimal(5, 2)
+  /// domestic | foreign
+  fieldSubtype     String?   @map("field_subtype")
+  /// obicno | povreda_na_radu | odrzavanje_trudnoce (samo uz `absence_code = 'bo'`)
+  absenceSubtype   String?   @map("absence_subtype")
+  /// Mejl poslednjeg upisivača (mesečni grid).
+  lastEditedBy     String?   @map("last_edited_by")
+  /// 🔴 Zatečeno: broj predmeta se drži kao TEKST iz `bigtehn_items_cache`, bez FK-a.
+  /// Kеš je mrtav (07.08), ali kolone ostaju kakve jesu — popravka bi bila dorada.
+  fieldPredmetBroj  String?  @map("field_predmet_broj")
+  fieldPredmetNaziv String?  @map("field_predmet_naziv")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_work_hours_employee")
+
+  @@unique([employeeId, workDate], map: "uq_work_hours_employee_date")
+  /// 🔴 PO-10 (ZATEČEN KVAR, NIJE POPRAVLJEN — samo zabeležen): sy15 nad `work_date`
+  /// drži DVA POTPUNO ISTA indeksa — `idx_work_hours_date` i `idx_work_hours_date_only`
+  /// (obadva `USING btree (work_date)`). Ovde je prenet SAMO jedan: dupli indeks nema
+  /// nikakav uticaj na planer (isti izraz), a Prisma dva istovetna `@@index` nad istom
+  /// kolonom ne ume da izrazi. Pokrivenost upita je NEPROMENJENA; razlika je samo u
+  /// suvišnom pisanju i prostoru. Ostatak `work_hours` indeksa prenet je 1:1.
+  @@index([workDate], map: "idx_work_hours_date")
+  @@index([employeeId, workDate], map: "idx_work_hours_emp_date")
+  @@index([employeeId], map: "idx_work_hours_employee")
+  @@index([absenceSubtype], map: "idx_work_hours_absence_subtype")
+  @@map("work_hours")
+}
+
+/// Primedba na mesečni obračun sati (jedna po zaposlenom i mesecu).
+model WorkHoursRemark {
+  id         String    @id(map: "pk_work_hours_remarks") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId String    @map("employee_id") @db.Uuid
+  year       Int       @map("year")
+  month      Int       @map("month")
+  note       String    @map("note")
+  /// open | resolved
+  status     String    @default("open") @map("status")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  resolvedBy String?   @map("resolved_by")
+  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_work_hours_remarks_employee")
+
+  @@unique([employeeId, year, month], map: "uq_work_hours_remarks_employee_period")
+  @@index([employeeId], map: "idx_work_hours_remarks_emp")
+  @@index([year, month], map: "idx_work_hours_remarks_period")
+  @@map("work_hours_remarks")
+}
+
+/// Kanonski prolaz kapije/kioska. NAJVEĆA tabela domena.
+/// IZMERENO 08.08.2026 (`ANALYZE` pa `count(*)`, ne `n_live_tup`): **491.268 redova**,
+/// izvori `katze` 488.921 / `katze_manual` 2.320 / `manual` 27; `employee_id` je NULL
+/// na **140.913** redova (nemapirane kartice), `event_ts_local` NIJE NULL nigde.
+///
+/// 🔴 Piše je Katze most UŽIVO (na 10 min) i kiosk (`kiosk_record_punch`). Prenos
+///    podataka i preusmerenje mosta NISU deo ove migracije.
+/// 🔴 PO-3: `id` je ovde `BIGSERIAL`, u sy15 `GENERATED ALWAYS AS IDENTITY`.
+model AttendanceEvent {
+  id           BigInt   @id(map: "pk_attendance_events") @default(autoincrement()) @map("id")
+  /// katze | katze_manual | phone | reader | face | manual | kiosk
+  source       String   @map("source")
+  externalId   String?  @map("external_id")
+  badgeCode    String?  @map("badge_code")
+  employeeId   String?  @map("employee_id") @db.Uuid
+  /// Trenutak prolaza sa zonom; puni ga trigger iz `event_ts_local`.
+  eventTs      DateTime @map("event_ts") @db.Timestamptz(6)
+  /// Lokalno vreme kako ga je poslala kapija (bez zone).
+  eventTsLocal DateTime? @map("event_ts_local") @db.Timestamp(6)
+  /// in | out | break | official_out | other | unknown
+  direction    String   @default("unknown") @map("direction")
+  terminalId   String?  @map("terminal_id")
+  terminalName String?  @map("terminal_name")
+  raw          Json?    @map("raw")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_attendance_events_employee")
+
+  /// 🔴 BRANA OD DUPLIKATA za Katze most i kiosk. U sy15 stoji kao UNIQUE INDEX
+  /// `ux_attendance_events_source_ext`. Bez nje bi ponovni prolaz mosta (kursor
+  /// `attendance_katze_max_idreg`) mogao da udvostruči prolaze — a nijedna sy15
+  /// funkcija ne radi `ON CONFLICT` nad ovom tabelom, pa je jedini branik ovaj
+  /// indeks (upis pada na `23505`). IZMERENO: postoji u sy15, ime se čuva.
+  @@unique([source, externalId], map: "ux_attendance_events_source_ext")
+  @@index([employeeId, eventTs(sort: Desc)], map: "idx_attendance_events_emp_ts")
+  @@index([eventTs(sort: Desc)], map: "idx_attendance_events_ts")
+  @@map("attendance_events")
+}
+
+/// Samouslužna korekcija prisustva — SAMO dodavanje nedostajućeg ulaza/izlaza,
+/// uz obavezno obrazloženje (`CHECK` traži ≥ 5 znakova).
+model AttendanceCorrection {
+  id              String    @id(map: "pk_attendance_corrections") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId      String    @map("employee_id") @db.Uuid
+  day             DateTime  @map("day") @db.Date
+  correctedIn     DateTime? @map("corrected_in") @db.Time(6)
+  correctedOut    DateTime? @map("corrected_out") @db.Time(6)
+  reason          String    @map("reason")
+  /// active | cancelled
+  status          String    @default("active") @map("status")
+  createdBy       String    @map("created_by")
+  createdForSelf  Boolean   @default(true) @map("created_for_self")
+  /// Prolazi koje je korekcija napravila (`attendance_events.id`).
+  eventIds        BigInt[]  @default([]) @map("event_ids")
+  cancelledBy     String?   @map("cancelled_by")
+  cancelledAt     DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_attendance_corrections_employee")
+
+  @@index([day(sort: Desc)], map: "idx_attendance_corrections_day")
+  @@map("attendance_corrections")
+}
+
+/// Dopunski primalac mejla prisustva za pododeljenje bez šefa. Čisto RUTIRANJE —
+/// ne dodeljuje prava. `sub_department_id IS NULL` = catch-all.
+model AttendanceNotifyExtra {
+  id              String   @id(map: "pk_attendance_notify_extra") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  subDepartmentId Int?     @map("sub_department_id")
+  email           String   @map("email")
+  note            String?  @map("note")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("attendance_notify_extra")
+}
+
+// ----------------------------------------------------------------------------
+// E. Zarade — 🔴 JEDINA brava je `current_user_can_view_salary()` (allowlist, 2 mejla).
+//    Ta funkcija i njene RLS politike ne idu ovde nego uz posao „funkcije i RLS".
+//    Do tada su ove tabele u 3.0 BEZ brave — v. migraciju §7 i opis PR-a.
+// ----------------------------------------------------------------------------
+
+/// Ugovoreni uslovi zarade sa važenjem (`effective_from` … `effective_to`).
+/// Trigger `salary_terms_close_previous` u sy15 zatvara prethodni period pri INSERT-u
+/// — to je LOGIKA i ide sa funkcijama (PO-8).
+model SalaryTerm {
+  id                      String    @id(map: "pk_salary_terms") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId              String    @map("employee_id") @db.Uuid
+  /// ugovor | dogovor | satnica
+  salaryType              String    @map("salary_type")
+  effectiveFrom           DateTime  @map("effective_from") @db.Date
+  effectiveTo             DateTime? @map("effective_to") @db.Date
+  amount                  Decimal   @default(0) @map("amount") @db.Decimal(14, 2)
+  /// neto | bruto
+  amountType              String    @default("neto") @map("amount_type")
+  /// RSD | EUR | USD
+  currency                String    @default("RSD") @map("currency")
+  hourlyRate              Decimal?  @map("hourly_rate") @db.Decimal(12, 2)
+  contractRef             String?   @map("contract_ref")
+  note                    String?   @default("") @map("note")
+  createdBy               String?   @map("created_by")
+  createdAt               DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  transportAllowanceRsd   Decimal   @default(0) @map("transport_allowance_rsd") @db.Decimal(12, 2)
+  perDiemRsd              Decimal   @default(0) @map("per_diem_rsd") @db.Decimal(12, 2)
+  perDiemEur              Decimal   @default(0) @map("per_diem_eur") @db.Decimal(10, 2)
+  /// fiksno | dva_dela | satnica | jednokratno | praksa
+  compensationModel       String?   @map("compensation_model")
+  fixedAmount             Decimal   @default(0) @map("fixed_amount") @db.Decimal(14, 2)
+  fixedTransportComponent Decimal   @default(0) @map("fixed_transport_component") @db.Decimal(12, 2)
+  fixedExtraHourRate      Decimal   @default(0) @map("fixed_extra_hour_rate") @db.Decimal(12, 2)
+  firstPartAmount         Decimal   @default(0) @map("first_part_amount") @db.Decimal(14, 2)
+  splitHourRate           Decimal   @default(0) @map("split_hour_rate") @db.Decimal(12, 2)
+  splitTransportAmount    Decimal   @default(0) @map("split_transport_amount") @db.Decimal(12, 2)
+  hourlyTransportAmount   Decimal   @default(0) @map("hourly_transport_amount") @db.Decimal(12, 2)
+  terrainDomesticRate     Decimal   @default(0) @map("terrain_domestic_rate") @db.Decimal(12, 2)
+  terrainForeignRate      Decimal   @default(0) @map("terrain_foreign_rate") @db.Decimal(10, 2)
+  /// NETO zarada — snimak iz kalkulatora, informativno.
+  netoRsd                 Decimal?  @map("neto_rsd") @db.Decimal
+  /// BRUTO I zarada — iznos koji ide u ugovor o radu (Član 6).
+  brutoRsd                Decimal?  @map("bruto_rsd") @db.Decimal
+  approvedBy              String?   @map("approved_by")
+  approvedAt              DateTime? @map("approved_at") @db.Date
+  /// FIKSNO/JEDNOKRATNO: prekovremeni/praznik/2 mašine se NE plaćaju (samo upozorenje).
+  fixedNoExtraHours       Boolean   @default(false) @map("fixed_no_extra_hours")
+  /// 01_05 | 15_20 (NULL = izvedeno iz modela)
+  paymentWindowOverride   String?   @map("payment_window_override")
+  /// standard | olaksice | razvoj | stranci | hapfluid | kes
+  payrollGroup            String    @default("standard") @map("payroll_group")
+  /// Mesečna naknada u kešu uz zaradu (interno, van zvaničnih tabela).
+  cashAllowanceRsd        Decimal   @default(0) @map("cash_allowance_rsd") @db.Decimal
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_salary_terms_employee")
+
+  @@index([compensationModel], map: "idx_salary_terms_comp_model")
+  @@index([employeeId], map: "idx_salary_terms_emp")
+  @@index([effectiveFrom, effectiveTo], map: "idx_salary_terms_period")
+  @@map("salary_terms")
+}
+
+/// Mesečni obračun zarade. Zbirovi (`ukupna_zarada`, `prvi_deo`, `preostalo_za_isplatu`,
+/// `payable_hours`, `warnings`) računa trigger `salary_payroll_compute_totals`, a
+/// `trg_0_salary_payroll_immutability` zaključava obračun — obе su LOGIKA (PO-8).
+model SalaryPayroll {
+  id                      String    @id(map: "pk_salary_payroll") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId              String    @map("employee_id") @db.Uuid
+  periodYear              Int       @map("period_year")
+  periodMonth             Int       @map("period_month")
+  /// ugovor | dogovor | satnica
+  salaryType              String    @default("ugovor") @map("salary_type")
+  advanceAmount           Decimal   @default(0) @map("advance_amount") @db.Decimal(14, 2)
+  advancePaidOn           DateTime? @map("advance_paid_on") @db.Date
+  advanceNote             String?   @default("") @map("advance_note")
+  fixedSalary             Decimal   @default(0) @map("fixed_salary") @db.Decimal(14, 2)
+  hoursWorked             Decimal   @default(0) @map("hours_worked") @db.Decimal(8, 2)
+  hourlyRate              Decimal   @default(0) @map("hourly_rate") @db.Decimal(12, 2)
+  transportRsd            Decimal   @default(0) @map("transport_rsd") @db.Decimal(12, 2)
+  domesticDays            Int       @default(0) @map("domestic_days")
+  perDiemRsd              Decimal   @default(0) @map("per_diem_rsd") @db.Decimal(12, 2)
+  foreignDays             Int       @default(0) @map("foreign_days")
+  perDiemEur              Decimal   @default(0) @map("per_diem_eur") @db.Decimal(10, 2)
+  totalRsd                Decimal   @default(0) @map("total_rsd") @db.Decimal(14, 2)
+  totalEur                Decimal   @default(0) @map("total_eur") @db.Decimal(14, 2)
+  secondPartRsd           Decimal   @default(0) @map("second_part_rsd") @db.Decimal(14, 2)
+  finalPaidOn             DateTime? @map("final_paid_on") @db.Date
+  /// draft | advance_paid | finalized | paid
+  status                  String    @default("draft") @map("status")
+  note                    String?   @default("") @map("note")
+  createdBy               String?   @map("created_by")
+  createdAt               DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// fiksno | dva_dela | satnica | jednokratno | praksa
+  compensationModel       String?   @map("compensation_model")
+  fondSatiMeseca          Decimal   @default(0) @map("fond_sati_meseca") @db.Decimal(8, 2)
+  redovanRadSati          Decimal   @default(0) @map("redovan_rad_sati") @db.Decimal(8, 2)
+  prekovremeniSati        Decimal   @default(0) @map("prekovremeni_sati") @db.Decimal(8, 2)
+  praznikPlaceniSati      Decimal   @default(0) @map("praznik_placeni_sati") @db.Decimal(8, 2)
+  praznikRadSati          Decimal   @default(0) @map("praznik_rad_sati") @db.Decimal(8, 2)
+  godisnjiSati            Decimal   @default(0) @map("godisnji_sati") @db.Decimal(8, 2)
+  slobodniDaniSati        Decimal   @default(0) @map("slobodni_dani_sati") @db.Decimal(8, 2)
+  bolovanje65Sati         Decimal   @default(0) @map("bolovanje_65_sati") @db.Decimal(8, 2)
+  bolovanje100Sati        Decimal   @default(0) @map("bolovanje_100_sati") @db.Decimal(8, 2)
+  dveMasineSati           Decimal   @default(0) @map("dve_masine_sati") @db.Decimal(8, 2)
+  terenUZemljiCount       Int       @default(0) @map("teren_u_zemlji_count")
+  terenUInostranstvuCount Int       @default(0) @map("teren_u_inostranstvu_count")
+  payableHours            Decimal   @default(0) @map("payable_hours") @db.Decimal(10, 2)
+  ukupnaZarada            Decimal   @default(0) @map("ukupna_zarada") @db.Decimal(14, 2)
+  prviDeo                 Decimal   @default(0) @map("prvi_deo") @db.Decimal(14, 2)
+  preostaloZaIsplatu      Decimal   @default(0) @map("preostalo_za_isplatu") @db.Decimal(14, 2)
+  warnings                Json      @default("[]") @map("warnings")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_salary_payroll_employee")
+
+  @@unique([employeeId, periodYear, periodMonth], map: "uq_salary_payroll_employee_period")
+  @@index([compensationModel], map: "idx_salary_payroll_comp_model")
+  @@index([employeeId], map: "idx_salary_payroll_emp")
+  @@index([periodYear, periodMonth], map: "idx_salary_payroll_period")
+  @@index([status], map: "idx_salary_payroll_status")
+  @@map("salary_payroll")
+}
+
+// ----------------------------------------------------------------------------
+// F. Razvoj, razgovori, ocenjivanje
+// ----------------------------------------------------------------------------
+
+/// Plan razvoja zaposlenog za period.
+model DevelopmentPlan {
+  id                 String    @id(map: "pk_development_plans") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId         String    @map("employee_id") @db.Uuid
+  periodLabel        String    @map("period_label")
+  periodStart        DateTime? @map("period_start") @db.Date
+  periodEnd          DateTime? @map("period_end") @db.Date
+  careerGoalMd       String?   @map("career_goal_md")
+  targetPositionId   Int?      @map("target_position_id")
+  mentorEmployeeId   String?   @map("mentor_employee_id") @db.Uuid
+  summaryMd          String?   @map("summary_md")
+  selfAssessmentMd   String?   @map("self_assessment_md")
+  /// nacrt | aktivan | zavrsen | arhiviran
+  status             String    @default("aktivan") @map("status")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy          String    @map("created_by")
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy          String?   @map("updated_by")
+
+  employee       Employee     @relation("DevelopmentPlanEmployee", fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_development_plans_employee")
+  mentor         Employee?    @relation("DevelopmentPlanMentor", fields: [mentorEmployeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_development_plans_mentor")
+  targetPosition JobPosition? @relation(fields: [targetPositionId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_development_plans_target_position")
+
+  checkins     DevelopmentCheckin[]
+  expectations EmployeeExpectation[]
+  talks        EmployeeTalk[]
+  assessments  Assessment[]
+
+  @@index([employeeId], map: "idx_development_plans_employee")
+  @@index([status, periodStart(sort: Desc)], map: "idx_development_plans_status")
+  @@map("development_plans")
+}
+
+/// Periodični osvrt uz plan razvoja.
+model DevelopmentCheckin {
+  id          String   @id(map: "pk_development_checkins") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  planId      String   @map("plan_id") @db.Uuid
+  employeeId  String   @map("employee_id") @db.Uuid
+  checkinDate DateTime @default(dbgenerated("CURRENT_DATE")) @map("checkin_date") @db.Date
+  authorEmail String   @map("author_email")
+  /// upravljac | zaposleni
+  authorKind  String   @default("upravljac") @map("author_kind")
+  noteMd      String   @map("note_md")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  plan     DevelopmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_development_checkins_plan")
+  employee Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_development_checkins_employee")
+
+  @@index([planId, checkinDate(sort: Desc)], map: "idx_development_checkins_plan")
+  @@map("development_checkins")
+}
+
+/// Očekivanje / razvojni cilj postavljen zaposlenom.
+model EmployeeExpectation {
+  id             String    @id(map: "pk_employee_expectations") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId     String    @map("employee_id") @db.Uuid
+  title          String    @map("title")
+  descriptionMd  String?   @map("description_md")
+  dueDate        DateTime? @map("due_date") @db.Date
+  /// niska | srednja | visoka
+  priority       String    @default("srednja") @map("priority")
+  /// aktivno | u_toku | ispunjeno | otkazano
+  status         String    @default("aktivno") @map("status")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String    @map("created_by")
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?   @map("updated_by")
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
+  completionNote String?   @map("completion_note")
+  /// NULL = samostalan cilj (van plana razvoja).
+  planId         String?   @map("plan_id") @db.Uuid
+  /// strucni | sertifikat | soft_skill | liderstvo | ostalo
+  category       String    @default("ostalo") @map("category")
+  /// 0–100; sinhronizuje se sa `status = 'ispunjeno'`.
+  progress       Int       @default(0) @map("progress") @db.SmallInt
+
+  employee Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_employee_expectations_employee")
+  plan     DevelopmentPlan? @relation(fields: [planId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_employee_expectations_plan")
+
+  @@index([createdAt(sort: Desc)], map: "idx_employee_expectations_created_at")
+  @@index([employeeId], map: "idx_employee_expectations_employee")
+  @@map("employee_expectations")
+}
+
+/// Zapisnik razgovora sa zaposlenim (godišnji, korektivni, 1:1).
+model EmployeeTalk {
+  id                 String    @id(map: "pk_employee_talks") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId         String    @map("employee_id") @db.Uuid
+  /// godisnji | korektivni | jedan_na_jedan | ostalo
+  talkType           String    @map("talk_type")
+  talkDate           DateTime  @default(dbgenerated("CURRENT_DATE")) @map("talk_date") @db.Date
+  title              String?   @map("title")
+  zapisnikMd         String?   @map("zapisnik_md")
+  /// nacrt | podeljen | potvrdjen
+  status             String    @default("nacrt") @map("status")
+  conductedBy        String?   @map("conducted_by")
+  planId             String?   @map("plan_id") @db.Uuid
+  /// da | ne | odlozeno
+  raiseDecision      String?   @map("raise_decision")
+  raisePercent       Decimal?  @map("raise_percent") @db.Decimal(6, 2)
+  raiseEffectiveFrom DateTime? @map("raise_effective_from") @db.Date
+  raiseNote          String?   @map("raise_note")
+  sharedAt           DateTime? @map("shared_at") @db.Timestamptz(6)
+  acknowledgedAt     DateTime? @map("acknowledged_at") @db.Timestamptz(6)
+  createdBy          String?   @map("created_by")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedBy          String?   @map("updated_by")
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_employee_talks_employee")
+  plan     DevelopmentPlan? @relation(fields: [planId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_employee_talks_plan")
+
+  correctivePlansOpened CorrectivePlan[] @relation("CorrectivePlanTalk")
+  correctivePlansClosed CorrectivePlan[] @relation("CorrectivePlanClosingTalk")
+
+  @@index([employeeId, talkDate(sort: Desc)], map: "idx_employee_talks_emp")
+  @@map("employee_talks")
+}
+
+/// Korektivni plan (posledica korektivnog razgovora).
+model CorrectivePlan {
+  id                  String    @id(map: "pk_corrective_plans") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId          String    @map("employee_id") @db.Uuid
+  talkId              String?   @map("talk_id") @db.Uuid
+  closingTalkId       String?   @map("closing_talk_id") @db.Uuid
+  reasonMd            String?   @map("reason_md")
+  /// otvoren | u_toku | zatvoren_uspesno | zatvoren_neuspesno
+  status              String    @default("otvoren") @map("status")
+  followupDate        DateTime? @map("followup_date") @db.Date
+  followupNotifiedAt  DateTime? @map("followup_notified_at") @db.Timestamptz(6)
+  visibleToEmployee   Boolean   @default(false) @map("visible_to_employee")
+  createdBy           String?   @map("created_by")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  closedAt            DateTime? @map("closed_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee    Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_corrective_plans_employee")
+  talk        EmployeeTalk? @relation("CorrectivePlanTalk", fields: [talkId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_corrective_plans_talk")
+  closingTalk EmployeeTalk? @relation("CorrectivePlanClosingTalk", fields: [closingTalkId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_corrective_plans_closing_talk")
+
+  measures CorrectiveMeasure[]
+
+  @@index([employeeId, createdAt(sort: Desc)], map: "idx_corrective_plans_emp")
+  @@map("corrective_plans")
+}
+
+/// Pojedinačna mera unutar korektivnog plana.
+model CorrectiveMeasure {
+  id                     String    @id(map: "pk_corrective_measures") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  planId                 String    @map("plan_id") @db.Uuid
+  descriptionMd          String    @map("description_md")
+  dueDate                DateTime? @map("due_date") @db.Date
+  responsibleEmployeeId  String?   @map("responsible_employee_id") @db.Uuid
+  /// otvoreno | u_toku | ispunjeno | neispunjeno
+  status                 String    @default("otvoreno") @map("status")
+  completedAt            DateTime? @map("completed_at") @db.Timestamptz(6)
+  note                   String?   @map("note")
+  sort                   Int       @default(0) @map("sort")
+  escalatedAt            DateTime? @map("escalated_at") @db.Timestamptz(6)
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  plan        CorrectivePlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_corrective_measures_plan")
+  responsible Employee?      @relation(fields: [responsibleEmployeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_corrective_measures_responsible")
+
+  @@index([planId, sort], map: "idx_corrective_measures_plan")
+  @@map("corrective_measures")
+}
+
+/// Ciklus ocenjivanja (kampanja).
+model AssessmentCycle {
+  id          String    @id(map: "pk_assessment_cycles") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  title       String    @map("title")
+  periodLabel String    @map("period_label")
+  /// draft | open | closed
+  status      String    @default("open") @map("status")
+  openedAt    DateTime? @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt    DateTime? @map("closed_at") @db.Timestamptz(6)
+  createdBy   String    @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  assessments Assessment[]
+
+  @@map("assessment_cycles")
+}
+
+/// Ocenjivanje jednog zaposlenog (360 ili samoocena).
+model Assessment {
+  id                String   @id(map: "pk_assessments") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  cycleId           String?  @map("cycle_id") @db.Uuid
+  employeeId        String   @map("employee_id") @db.Uuid
+  planId            String?  @map("plan_id") @db.Uuid
+  profileId         Int?     @map("profile_id")
+  periodLabel       String   @map("period_label")
+  /// draft | collecting | closed | shared
+  status            String   @default("collecting") @map("status")
+  visibleToEmployee Boolean  @default(false) @map("visible_to_employee")
+  openedBy          String   @map("opened_by")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  cycle    AssessmentCycle?   @relation(fields: [cycleId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_assessments_cycle")
+  employee Employee           @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_assessments_employee")
+  plan     DevelopmentPlan?   @relation(fields: [planId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_assessments_plan")
+  profile  CompetenceProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_assessments_profile")
+
+  raters  AssessmentRater[]
+  targets AssessmentTarget[]
+  results AssessmentResult[]
+
+  @@index([cycleId], map: "idx_assessments_cycle")
+  @@index([employeeId, periodLabel], map: "idx_assessments_employee")
+  @@map("assessments")
+}
+
+/// Ocenjivač u jednom ocenjivanju. `token` otvara javni 360 obrazac bez naloga.
+model AssessmentRater {
+  id              String    @id(map: "pk_assessment_raters") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  assessmentId    String    @map("assessment_id") @db.Uuid
+  /// self | peer | leader
+  raterKind       String    @map("rater_kind")
+  raterEmployeeId String?   @map("rater_employee_id") @db.Uuid
+  raterEmail      String?   @map("rater_email")
+  /// 🔴 Jednokratni token javnog 360 obrasca (anon EXECUTE nad `assessment_submit_by_token`).
+  token           String?   @map("token")
+  /// pending | submitted
+  status          String    @default("pending") @map("status")
+  invitedAt       DateTime? @default(now()) @map("invited_at") @db.Timestamptz(6)
+  submittedAt     DateTime? @map("submitted_at") @db.Timestamptz(6)
+
+  assessment    Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_assessment_raters_assessment")
+  raterEmployee Employee?  @relation(fields: [raterEmployeeId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_assessment_raters_employee")
+
+  scores  AssessmentScore[]
+  answers AssessmentAnswer[]
+
+  @@unique([token], map: "uq_assessment_raters_token")
+  @@index([assessmentId], map: "idx_assessment_raters_assessment")
+  @@map("assessment_raters")
+}
+
+/// Ocena jedne kompetencije od jednog ocenjivača (nivo 0–5).
+model AssessmentScore {
+  id           String   @id(map: "pk_assessment_scores") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  raterId      String   @map("rater_id") @db.Uuid
+  competenceId Int      @map("competence_id")
+  level        Int?     @map("level") @db.SmallInt
+  comment      String?  @map("comment")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  rater      AssessmentRater @relation(fields: [raterId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_assessment_scores_rater")
+  competence Competence      @relation(fields: [competenceId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_assessment_scores_competence")
+
+  @@unique([raterId, competenceId], map: "uq_assessment_scores_rater_competence")
+  @@index([raterId], map: "idx_assessment_scores_rater")
+  @@map("assessment_scores")
+}
+
+/// Odgovor na otvoreno pitanje (`competence_questions.code`).
+model AssessmentAnswer {
+  id           String  @id(map: "pk_assessment_answers") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  raterId      String  @map("rater_id") @db.Uuid
+  /// Meki ref `competence_questions.code` — u sy15 NIJE strani ključ; ostaje kako jeste.
+  questionCode String  @map("question_code")
+  answerText   String? @map("answer_text")
+
+  rater AssessmentRater @relation(fields: [raterId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_assessment_answers_rater")
+
+  @@unique([raterId, questionCode], map: "uq_assessment_answers_rater_question")
+  @@map("assessment_answers")
+}
+
+/// Ciljani nivo kompetencije u ocenjivanju.
+model AssessmentTarget {
+  id           String @id(map: "pk_assessment_targets") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  assessmentId String @map("assessment_id") @db.Uuid
+  competenceId Int    @map("competence_id")
+  targetLevel  Int?   @map("target_level") @db.SmallInt
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_assessment_targets_assessment")
+  competence Competence @relation(fields: [competenceId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_assessment_targets_competence")
+
+  @@unique([assessmentId, competenceId], map: "uq_assessment_targets_assessment_competence")
+  @@map("assessment_targets")
+}
+
+/// Izračunat rezultat ocenjivanja po grupi ili kompetenciji.
+/// `ref_id` je polimorfan (`scope_kind = 'group'` → `competence_groups.id`,
+/// `'competence'` → `competences.id`) — zato u sy15 NEMA FK; ostaje kako jeste.
+model AssessmentResult {
+  id           String   @id(map: "pk_assessment_results") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  assessmentId String   @map("assessment_id") @db.Uuid
+  /// group | competence
+  scopeKind    String   @map("scope_kind")
+  refId        Int      @map("ref_id")
+  selfAvg      Decimal? @map("self_avg") @db.Decimal(4, 2)
+  peerAvg      Decimal? @map("peer_avg") @db.Decimal(4, 2)
+  peerCount    Int      @default(0) @map("peer_count")
+  leaderVal    Decimal? @map("leader_val") @db.Decimal(4, 2)
+  targetVal    Decimal? @map("target_val") @db.Decimal(4, 2)
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_assessment_results_assessment")
+
+  @@unique([assessmentId, scopeKind, refId], map: "uq_assessment_results_scope")
+  @@map("assessment_results")
+}
+
+// ----------------------------------------------------------------------------
+// G. Uvođenje u posao, obaveštenja, allowlist-e, audit
+// ----------------------------------------------------------------------------
+
+/// Šablon uvođenja/ispraćaja.
+model KadrOnboardingTemplate {
+  id        String   @id(map: "pk_kadr_onboarding_templates") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  name      String   @map("name")
+  /// onboarding | offboarding
+  kind      String   @default("onboarding") @map("kind")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?  @map("created_by")
+
+  items KadrOnboardingTemplateItem[]
+  runs  KadrOnboardingRun[]
+
+  @@map("kadr_onboarding_templates")
+}
+
+/// Stavka šablona; `offset_days` je pomak roka od datuma početka.
+model KadrOnboardingTemplateItem {
+  id           String  @id(map: "pk_kadr_onboarding_template_items") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  templateId   String  @map("template_id") @db.Uuid
+  title        String  @map("title")
+  description  String? @map("description")
+  sortOrder    Int     @default(0) @map("sort_order")
+  offsetDays   Int     @default(0) @map("offset_days")
+  assigneeHint String? @map("assignee_hint")
+
+  template KadrOnboardingTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_kadr_onboarding_template_items_template")
+
+  @@index([templateId], map: "idx_kadr_onb_tmpl_items_tmpl")
+  @@map("kadr_onboarding_template_items")
+}
+
+/// Pokrenuto uvođenje/ispraćaj za zaposlenog.
+model KadrOnboardingRun {
+  id         String   @id(map: "pk_kadr_onboarding_runs") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  templateId String?  @map("template_id") @db.Uuid
+  /// onboarding | offboarding
+  kind       String   @default("onboarding") @map("kind")
+  startDate  DateTime @default(dbgenerated("CURRENT_DATE")) @map("start_date") @db.Date
+  /// active | done | canceled
+  status     String   @default("active") @map("status")
+  note       String?  @map("note")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?  @map("created_by")
+
+  employee Employee               @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_kadr_onboarding_runs_employee")
+  template KadrOnboardingTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_kadr_onboarding_runs_template")
+
+  tasks KadrOnboardingTask[]
+
+  @@index([employeeId], map: "idx_kadr_onb_runs_emp")
+  @@map("kadr_onboarding_runs")
+}
+
+/// Zadatak unutar pokrenutog uvođenja.
+model KadrOnboardingTask {
+  id           String    @id(map: "pk_kadr_onboarding_tasks") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  runId        String    @map("run_id") @db.Uuid
+  title        String    @map("title")
+  description  String?   @map("description")
+  sortOrder    Int       @default(0) @map("sort_order")
+  dueDate      DateTime? @map("due_date") @db.Date
+  assigneeHint String?   @map("assignee_hint")
+  /// open | done | skipped
+  status       String    @default("open") @map("status")
+  doneAt       DateTime? @map("done_at") @db.Timestamptz(6)
+  doneBy       String?   @map("done_by")
+  note         String?   @map("note")
+
+  run KadrOnboardingRun @relation(fields: [runId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_kadr_onboarding_tasks_run")
+
+  @@index([runId], map: "idx_kadr_onb_tasks_run")
+  @@map("kadr_onboarding_tasks")
+}
+
+/// Potvrda da je zaposleni pročitao dokument/obaveštenje. `ref_type`/`ref_id` su
+/// polimorfni pokazivač (bez FK-a u sy15) — ostaje kako jeste.
+model KadrDocumentAck {
+  id         String   @id(map: "pk_kadr_document_ack") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  refType    String   @map("ref_type")
+  refId      String   @map("ref_id")
+  label      String?  @map("label")
+  ackedAt    DateTime @default(now()) @map("acked_at") @db.Timestamptz(6)
+  ackedBy    String?  @map("acked_by")
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_kadr_document_ack_employee")
+
+  @@unique([employeeId, refType, refId], map: "uq_kadr_document_ack_employee_ref")
+  @@index([employeeId], map: "idx_kadr_doc_ack_emp")
+  @@map("kadr_document_ack")
+}
+
+/// Podešavanja kadrovskih obaveštenja — JEDAN red (`CHECK id = 1`).
+model KadrNotificationConfig {
+  id                       Int       @id(map: "pk_kadr_notification_config") @default(1) @map("id")
+  enabled                  Boolean   @default(true) @map("enabled")
+  medicalLeadDays          Int       @default(30) @map("medical_lead_days")
+  contractLeadDays         Int       @default(30) @map("contract_lead_days")
+  birthdayEnabled          Boolean   @default(false) @map("birthday_enabled")
+  workAnniversaryEnabled   Boolean   @default(false) @map("work_anniversary_enabled")
+  whatsappRecipients       String[]  @default([]) @map("whatsapp_recipients")
+  emailRecipients          String[]  @default([]) @map("email_recipients")
+  updatedAt                DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  updatedBy                String?   @map("updated_by")
+  childBirthdayEnabled     Boolean   @default(false) @map("child_birthday_enabled")
+  birthdayOversightEnabled Boolean   @default(true) @map("birthday_oversight_enabled")
+  birthdayDigestEnabled    Boolean   @default(true) @map("birthday_digest_enabled")
+  lkLeadDays               Int       @default(30) @map("lk_lead_days")
+  passportLeadDays         Int       @default(180) @map("passport_lead_days")
+  driverLicenseLeadDays    Int       @default(30) @map("driver_license_lead_days")
+  medicalEmpLeadDays       Int       @default(15) @map("medical_emp_lead_days")
+
+  @@map("kadr_notification_config")
+}
+
+/// Red za slanje kadrovskih obaveštenja (`kadr_dispatch_dequeue` ga prazni).
+/// 🔴 39 dozvoljenih vrednosti `notification_type` prepisano DOSLOVNO u CHECK.
+model KadrNotificationLog {
+  id                String    @id(map: "pk_kadr_notification_log") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  /// whatsapp | email | sms
+  channel           String    @default("whatsapp") @map("channel")
+  recipient         String    @map("recipient")
+  subject           String?   @map("subject")
+  body              String    @default("") @map("body")
+  relatedEntityType String    @map("related_entity_type")
+  relatedEntityId   String?   @map("related_entity_id")
+  employeeId        String?   @map("employee_id") @db.Uuid
+  notificationType  String    @map("notification_type")
+  /// queued | sent | failed | canceled
+  status            String    @default("queued") @map("status")
+  scheduledAt       DateTime  @default(now()) @map("scheduled_at") @db.Timestamptz(6)
+  nextAttemptAt     DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  attempts          Int       @default(0) @map("attempts")
+  lastAttemptAt     DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz(6)
+  error             String?   @map("error")
+  payload           Json?     @default("{}") @map("payload")
+  createdAt         DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_kadr_notification_log_employee")
+
+  @@index([relatedEntityType, relatedEntityId, notificationType, scheduledAt], map: "idx_kadr_notif_dedup")
+  @@index([employeeId], map: "idx_kadr_notif_emp")
+  @@index([status, nextAttemptAt], map: "idx_kadr_notif_status")
+  @@map("kadr_notification_log")
+}
+
+/// Državni praznici i neradni dani (`is_workday = true` = radi se uprkos prazniku).
+model KadrHoliday {
+  id          String    @id(map: "pk_kadr_holidays") @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+  holidayDate DateTime  @map("holiday_date") @db.Date
+  name        String    @map("name")
+  isWorkday   Boolean   @default(false) @map("is_workday")
+  note        String?   @default("") @map("note")
+  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([holidayDate], map: "uq_kadr_holidays_date")
+  @@index([holidayDate], map: "idx_kadr_holidays_date")
+  @@map("kadr_holidays")
+}
+
+/// Audit izmena osetljivih kadrovskih tabela (append-only).
+/// Puni ga trigger `kadr_audit_log_trigger` — trigeri idu uz posao „funkcije i RLS".
+model KadrAuditLog {
+  id          BigInt   @id(map: "pk_kadr_audit_log") @default(autoincrement()) @map("id")
+  /// PO-2: `auth.users(id)` u sy15 (bez FK-a i tamo) → ostaje uuid.
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  actorEmail  String?  @map("actor_email")
+  /// INSERT | UPDATE | DELETE
+  action      String   @map("action")
+  tableName   String   @map("table_name")
+  rowId       String?  @map("row_id")
+  employeeId  String?  @map("employee_id") @db.Uuid
+  beforeData  Json?    @map("before_data")
+  afterData   Json?    @map("after_data")
+  changedAt   DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+
+  @@index([tableName, changedAt(sort: Desc)], map: "idx_kadr_audit_table_time")
+  @@map("kadr_audit_log")
+}
+
+/// Allowlist urednika mesečnog grida (`can_edit_kadrovska_grid`). IZMERENO: 5 mejlova.
+model KadrGridEditorAllowlist {
+  email     String   @id(map: "pk_kadr_grid_editor_allowlist") @map("email")
+  note      String   @default("") @map("note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("kadr_grid_editor_allowlist")
+}
+
+/// Allowlist za uvid u zarade (`current_user_can_view_salary`). IZMERENO: 2 mejla.
+/// 🔴 Ovo je JEDINA brava nad `salary_terms`/`salary_payroll`.
+model KadrSalaryViewerAllowlist {
+  email     String   @id(map: "pk_kadr_salary_viewer_allowlist") @map("email")
+  note      String?  @map("note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("kadr_salary_viewer_allowlist")
+}
+
+/// Allowlist za izmenu salda GO (`can_edit_vacation_balance`). IZMERENO: 4 mejla.
+model KadrVacationEditorAllowlist {
+  email     String   @id(map: "pk_kadr_vacation_editor_allowlist") @map("email")
+  note      String   @default("") @map("note")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("kadr_vacation_editor_allowlist")
+}
