@@ -741,16 +741,32 @@ export interface PpTermin {
   plannedDone: boolean | null;
 }
 
+/*
+ * 🔴 INVALIDACIJA JE `KEYS.all`, NE podrazumevana — inače se GANT NE OSVEŽI.
+ *
+ * `usePpMutation` podrazumevano gasi `['pp','operations']`, a gant stoji pod
+ * `['pp','gantt']`. To NIJE prefiks, pa react-query taj upit ne dira: planer doda
+ * ili pomeri termin, upis prođe, a ekran ostane isti do ručnog refetch-a — dakle
+ * izgleda kao da dugme ne radi. `['pp']` hvata oba, a od 080/26 i „Po mašini"
+ * prati gant, pa i on mora u isti potez.
+ */
 export const useCreateTermin = () =>
-  usePpMutation<TerminNov, TxResponse<PpTermin>>((v) => post<PpTermin>('/termini', v));
+  usePpMutation<TerminNov, TxResponse<PpTermin>>(
+    (v) => post<PpTermin>('/termini', v),
+    KEYS.all,
+  );
 
 export const usePatchTermin = () =>
-  usePpMutation<{ id: number; patch: TerminPatch }, TxResponse<PpTermin>>((v) =>
-    patch<PpTermin>(`/termini/${v.id}`, v.patch),
+  usePpMutation<{ id: number; patch: TerminPatch }, TxResponse<PpTermin>>(
+    (v) => patch<PpTermin>(`/termini/${v.id}`, v.patch),
+    KEYS.all,
   );
 
 export const useDeleteTermin = () =>
-  usePpMutation<number, TxResponse<{ id: number }>>((id) => del<{ id: number }>(`/termini/${id}`));
+  usePpMutation<number, TxResponse<{ id: number }>>(
+    (id) => del<{ id: number }>(`/termini/${id}`),
+    KEYS.all,
+  );
 
 /**
  * Optimistički overlay upsert za inline akcije u tabeli (GAP-PM-20). Patch mapira
