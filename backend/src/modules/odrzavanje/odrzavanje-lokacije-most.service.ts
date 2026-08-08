@@ -111,7 +111,31 @@ export class OdrzavanjeLokacijeMostService implements OnModuleInit {
    * to značilo mašine bez lokacije sve dok neko ne primeti prazno stablo.
    */
   onModuleInit(): void {
-    if (this.aktivan() && this.lokacijeNa30()) this.prijaviBranu("start");
+    // 🔴 USLOV JE SAMO `lokacijeNa30()`, NE i `aktivan()`. Ranije je stajalo
+    // `aktivan() && lokacijeNa30()`, pa je poruka ĆUTALA u stanju koje preklop
+    // STVARNO proizvodi — a runbook §6 korak 10 odsustvo te poruke čita kao
+    // „P1 je gotov". Dakle lažno zeleno, gore od samog kvara.
+    //
+    // Izmereno 08.08.2026: `ODRZAVANJE_IZVOR` je NEPOSTAVLJEN i 3.0 `maint_*`
+    // su prazne → korak 2 nije preklopljen, a korak 6 postavlja SAMO
+    // `REVERSI_IZVOR` i `LOKACIJE_IZVOR`. Stanje posle preklopa je zato
+    // `ODRZAVANJE=sy15 + LOKACIJE=3.0`.
+    //
+    // U OBA stanja lokacija mašine završi u NAPUŠTENOJ sy15 tabeli, a živa 3.0
+    // `loc_locations` ne dobije red — menja se samo KO je pisac:
+    //   • `ODRZAVANJE=3.0`  → pisac bi bio ovaj most; brana ga hvata u letu
+    //     (`syncMachineToLoc` vraća `akcija: "brana"`).
+    //   • `ODRZAVANJE=sy15` → pisac je **sy15 TRIGER**
+    //     `trg_maint_machines_loc_sync`, jer se mašine i dalje upisuju u sy15
+    //     `maint_machines`. Taj pisac je u bazi i ovaj kod ga NE MOŽE zaustaviti
+    //     — može samo da ga glasno prijavi.
+    if (!this.lokacijeNa30()) return;
+    this.prijaviBranu(
+      this.aktivan()
+        ? "start"
+        : "start — pisac je sy15 TRIGER `trg_maint_machines_loc_sync`, ne ovaj most; " +
+            "kod ga ne može zaustaviti (mašine su još u sy15 `maint_machines`)",
+    );
   }
 
   /**

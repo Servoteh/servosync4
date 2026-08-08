@@ -300,15 +300,32 @@ describe("🔴 NALAZ C — most prati LOKACIJE_IZVOR", () => {
     expect(greske).toHaveBeenCalledTimes(1);
   });
 
-  it("start ćuti kad most nije aktivan ili su Lokacije još u sy15", () => {
+  it("start ćuti SAMO dok su Lokacije još u sy15", () => {
     const greske = jest
       .spyOn(Logger.prototype, "error")
       .mockImplementation((): void => undefined);
     const { sy15 } = fake();
     new OdrzavanjeLokacijeMostService(sy15, NA_3_0, LOK_SY15).onModuleInit();
-    new OdrzavanjeLokacijeMostService(sy15, NA_SY15, LOK_3_0).onModuleInit();
     new OdrzavanjeLokacijeMostService(sy15).onModuleInit();
     expect(greske).not.toHaveBeenCalled();
+  });
+
+  it("🔴 start GOVORI i kad Održavanje NIJE preklopljeno — pisac je tada sy15 triger", () => {
+    // Ranije je ovaj slučaj bio pinovan kao „ćuti", i to je bilo LAŽNO ZELENO:
+    // runbook §6 korak 10 je odsustvo poruke čitao kao „P1 je gotov", a upravo
+    // `ODRZAVANJE=sy15 + LOKACIJE=3.0` je stanje koje preklop STVARNO proizvodi
+    // (korak 6 ne dira `ODRZAVANJE_IZVOR`; izmereno 08.08.2026 da je nepostavljen).
+    // U tom stanju sy15 triger `trg_maint_machines_loc_sync` puni NAPUŠTENU sy15
+    // `loc_locations`, a živa 3.0 tabela ne dobija red — i to bez ijedne poruke.
+    const greske = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation((): void => undefined);
+    const { sy15 } = fake();
+    new OdrzavanjeLokacijeMostService(sy15, NA_SY15, LOK_3_0).onModuleInit();
+    expect(greske).toHaveBeenCalledTimes(1);
+    // Poruka MORA imenovati pravog pisca — inače operater traži krivca u kodu.
+    const tekst = String(greske.mock.calls[0][0]);
+    expect(tekst).toContain("trg_maint_machines_loc_sync");
   });
 
   // -------------------------------------------------------------------------

@@ -509,10 +509,35 @@ prenos ne dira prekidače.
    u pravu bazu. Jedno premeštanje sa mobilne, jedno izdavanje alata, jedan povraćaj —
    pa proveriti da su **oba** upisa (dokument i kretanje) u 3.0, i da u sy15 nije
    nastao nijedan nov red.
-10. 🔴 **Provera dve dodirne tačke iz §2.2.** U logu NE SME stajati „most maint_machines
-    -> loc_locations je UGAŠEN" (ta poruka znači da P1 nije završen, pa nove mašine ne
-    ulaze u stablo lokacija). Offboarding panel kadrovske mora davati iste brojeve kao
-    Reversi u 3.0 (P8) — inače radnik odlazi sa alatom koji u 3.0 stoji kao izdat.
+10. 🔴 **Provera dve dodirne tačke iz §2.2 — MERI, ne čitaj odsustvo poruke.**
+
+    ⚠️ Ranija verzija ovog koraka je govorila „u logu NE SME stajati *most … je UGAŠEN*",
+    dakle **odsustvo** poruke je značilo uspeh. To je bilo **lažno zeleno**: poruka je
+    tada bila uslovljena i sa `ODRZAVANJE_IZVOR=3.0`, a korak 6 taj prekidač ne dira —
+    pa je u stvarnom stanju posle preklopa (`ODRZAVANJE=sy15 + LOKACIJE=3.0`) poruke
+    nije ni moglo biti, a kvar je bio u toku.
+
+    Poruka sada stiže kad god je `LOKACIJE_IZVOR=3.0`, i **kaže ko je pisac**:
+    - „…pisac je sy15 TRIGER `trg_maint_machines_loc_sync`…" → mašine su još u sy15,
+      pa **sy15 triger** puni napuštenu sy15 `loc_locations`. Kod to ne može da
+      zaustavi. Dok korak 2 (Održavanje) ne pređe, nove mašine **ne ulaze u stablo
+      lokacija u 3.0**. To je poznato prelazno stanje — ne blokira preklop, ali mora
+      biti svesno i zapisano.
+    - poruka bez tog repa → pisac bi bio aplikativni most i brana ga hvata.
+
+    🔴 **Pravi dokaz je merenje, ne log.** Napravi jednu mašinu, pa uporedi:
+    ```bash
+    # nova baza — mora dobiti red
+    docker exec servosync-pg psql -U servosync -d servosync -c \
+      "SELECT count(*) FROM loc_locations WHERE code = '<sifra>';"
+    # stara baza — ne sme dobiti nov red
+    docker exec sy15-db psql -U supabase_admin -d postgres -c \
+      "SELECT count(*) FROM public.loc_locations WHERE code = '<sifra>';"
+    ```
+    Ako nov red padne u STARU bazu, pisac je sy15 triger i to je gornje prelazno stanje.
+
+    Offboarding panel kadrovske mora davati iste brojeve kao Reversi u 3.0 (P8) —
+    inače radnik odlazi sa alatom koji u 3.0 stoji kao izdat.
 11. Vratiti `INSERT` pravo u sy15 (za slučaj povratka), ali NE oglašavati stari UI.
 
 **Povratak (~2 min):** obe promenljive na `sy15` + `docker compose up -d`.
