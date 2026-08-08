@@ -416,6 +416,76 @@ preklopa (i ponoviti — idempotentan je).
 ⚠️ **Korak 7 se NE izvodi dok blokade 1–5 iz §7 nisu zatvorene** — pod `3.0` ceo modul sada
 pada sa 503. Koraci 0–6 se izvode kad se hoće.
 
+### 🔴 Dopuna 08.08.2026 — koraci 0–6 su TVRD PREDUSLOV za korak 7
+
+Izmereno na produkciji 08.08.2026: `ODRZAVANJE_IZVOR` je **nepostavljen**, a 3.0 `maint_*`
+tabele su **prazne** (`maint_user_profiles` = 0, `maint_machines` = 0) — prenos (koraci 0–6)
+**nije pušten**.
+
+Dok su scheduler poslovi pod `3.0` padali sa 503, to je bila glasna brana: preklop bez prenosa
+nije mogao da prođe neprimećeno. Od kada su `maint-deadlines` i `maint-notify-dispatch`
+preneti, brane više nema — pa korak 7 nad praznim tabelama daje **tiho ništa**: cron nađe 0
+rokova, radnik prazan outbox, oba posla „uspeh".
+
+Zato:
+
+- **Korak 7 se NE izvodi bez uspešnog koraka 6** (`--verify-only`, svih 34 reda `OK`).
+- Ako red ipak uđe u outbox, a primalaca nema (prazan `maint_user_profiles`), `dispatchFanout`
+  ga **više ne zatvara kao `sent`** nego kao `failed` sa `FANOUT_NO_RECIPIENTS` u `error`, uz
+  `ERROR` u dnevniku i `failed=N` u `scheduled_job_runs.summary`. To je jedino svesno
+  odstupanje od sy15 originala — original je gubitak upisivao kao uspeh.
+- Posle 8 pokušaja (backoff 1h) red trajno ispada iz reda čekanja i ostaje kao **vidljiv**
+  neuspeh; ne visi večno, ali ni ne laže da je poslat.
+
+#### Preduslov sada drži i KOD, ne samo ovaj runbook (drugi krug, 08.08.2026)
+
+Prethodne dve alineje pokrivaju samo **delimičan** prenos (red je već u outboxu). Za izmereno
+stanje — tabele **prazne** — nijedna od njih se nikad ne izvrši: cron ne nađe nijedan rok, pa
+outbox ostane prazan i fanout se ne pozove. Zato brana sada stoji i u kodu:
+
+- **`maint-deadlines`** pod `ODRZAVANJE_IZVOR=3.0` prvo prebroji aktivne
+  `maint_user_profiles`. Ako ih je **0**, posao **BACA** — red u `scheduled_job_runs` je
+  stvarno `FAILED` sa razlogom, i **nijedan rok se ne upisuje** (bespredmetan je: nema kome).
+  Ako profila ima, a `maint_assets` je prazan (delimičan prenos), posao radi, ali summary
+  dobija rep `| UPOZORENJE: …` uz `ERROR` u app logu.
+- **`maint-notify-dispatch`** pod `3.0`: kad je outbox prazan **i** nema nijednog aktivnog
+  profila, summary dobija rep sa razlogom, uz `ERROR` u logu. Ovaj posao NE baca (radi na
+  svakih 5 min — crven red svakih 5 minuta bi bio šum), pa mu red u dnevniku ostaje zelen;
+  signal je tekst summary-ja i `ERROR` u logu.
+- Cena na podrazumevanom `sy15` putu je **nikakva**: provera postoji samo na 3.0 grani i
+  izvršava se tek kad nema šta da se šalje (jedan `count` na praznom tiku).
+
+Idempotencija rokova je usput morala da nauči novi status: red zatvoren baš kao
+`FANOUT_NO_RECIPIENTS` i dalje važi kao „već upisan", inače bi `maint-deadlines` svakog dana
+iznova upisivao isti rok (jedan mrtav `failed` red po roku po danu). Svaki **drugi** `failed`
+(stvaran neuspeh isporuke) i dalje pušta ponovni upis — kao u sy15 originalu.
+
+#### 🔴 …ali priznanje traje SAMO dok red ima pokušaja (treći krug, 08.08.2026)
+
+Prethodna alineja je, kako je prvo napisana, bila **bez ijednog prozora** — i time napravila
+obrnut kvar od onog koji je lečila. `maint_dispatch_dequeue` red uzima samo dok je
+`attempts < 8`; red ispumpan do plafona (~8 h uz backoff od 1 h) **prestaje da se pokušava**, a
+i dalje je zauvek blokirao ponovni upis tog roka. U stanju **delimičnog prenosa** — profila
+IMA (pa brana iznad prolazi), ali nijedan `chief`/`management` nema telefon — registracija,
+osiguranje i lekarski se ne bi javili **nikad**, a od drugog dana bi ulazili u `skipped`,
+nerazlučivo od uredno isporučenih.
+
+Zato priznanje sada važi uz `attempts < 8`:
+
+- dok je red **u redu čekanja** → rok je „upisan", ponovni upis se preskače (`skipped`);
+- kad red **ispadne** iz reda čekanja → prestaje da važi kao upisan, pa ga sutrašnji
+  `maint-deadlines` upiše **ponovo** (nov `queued` red; stari `failed` ostaje kao vidljiv trag).
+
+Granica je namerno `attempts`, a ne zidni sat — to je baš predikat dispečera, pa nema pogađanja
+koliko prozor traje ni zavisnosti od takta radnika. **Cena, izričito:** u stanju „nema kome"
+outbox raste za jedan mrtav red po roku po danu i `enqueued` ne pada na nulu. To je signal da
+obaveštenja ne sleću, a ne šum — jedina alternativa je tiho gubljenje roka.
+
+**Operativno:** ako se posle preklopa u `scheduled_job_runs` vidi `enqueued > 0` iz dana u dan
+uz `maint_notification_log` pun `failed` redova sa `FANOUT_NO_RECIPIENTS` — to nije bag nego
+poruka da `maint_user_profiles` nema telefone. Popuni telefone; postojeći mrtvi redovi se ne
+ponavljaju, a prvi sledeći upis rok stvarno pošalje.
+
 ### Povratak (rollback)
 
 Jedan potez, bez deploy-a koda: **`ODRZAVANJE_IZVOR=sy15` + restart (~2 min).** sy15 se tokom
@@ -442,8 +512,11 @@ domen i **nijedan ne sme da padne**. To je pinovano testovima
 (`sy15-cron-jobs.spec.ts`, `notify-dispatch.service.spec.ts`, `izvor-prekidaci.spec.ts`), ali
 proveriti i na produkciji — upravo je nepostojanje te provere bio incident.
 
-Očekivano je da padnu, i to samo ova dva: `maint-deadlines` i `maint-notify-dispatch`, sa 503 i
-imenom putanje. To je brana, ne kvar.
+🔴 **Ispravka 08.08.2026:** ranije je ovde pisalo da `maint-deadlines` i `maint-notify-dispatch`
+pod `3.0` očekivano padaju sa 503 („brana, ne kvar"). To VIŠE NE VAŽI — oba posla su prenesena i
+pod `3.0` normalno rade nad 3.0 bazom. Zato posle koraka 7 njihov **zeleni** red u dnevniku više
+nije dokaz da išta radi: proveri i `summary` (`enqueued`/`processed` ne smeju biti trajno 0) i
+tabelu `maint_notification_log` na `status='failed'` sa `FANOUT_NO_RECIPIENTS`.
 
 ---
 

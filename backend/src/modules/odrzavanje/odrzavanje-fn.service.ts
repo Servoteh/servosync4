@@ -7,7 +7,10 @@ import {
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
-import { OdrzavanjeAuthzService, type MaintScope } from "./odrzavanje-authz.service";
+import {
+  OdrzavanjeAuthzService,
+  type MaintScope,
+} from "./odrzavanje-authz.service";
 
 /**
  * Prepis sy15 `SECURITY DEFINER` funkcija i LOGIČKIH trigera održavanja (CMMS)
@@ -94,6 +97,107 @@ export interface EnqueueNotifArgs {
   payload?: Prisma.InputJsonValue | null;
 }
 
+/**
+ * Plafon pokušaja dispečera nad outbox-om održavanja (paritet 1.0 edge-a: 8).
+ *
+ * 🔴 JEDAN IZVOR, i to nosivo, ne kozmetika. Isti broj koristi TROJE:
+ *   1. `dispatchDequeue` — `attempts < maxAttempts` je uslov claim-a;
+ *   2. `NotifyDispatchService` (`MAINT_MAX_ATTEMPTS`) — vrednost koju radnik
+ *      prosleđuje pri svakom tiku;
+ *   3. `statusVaziKaoUpisan()` — granica posle koje red zatvoren kao
+ *      `FANOUT_NO_RECIPIENTS` PRESTAJE da važi kao „upisan".
+ * Da su ovo dva broja pa se raziđu (npr. radnik digne plafon na 12), tačka 3 bi
+ * pustila NOV red dok stari još ima pokušaja — dupli redovi za isti rok.
+ */
+export const MAINT_MAX_ATTEMPTS = 8;
+
+/**
+ * Odmak do sledećeg pokušaja kad fanout ne nađe NIJEDNOG primaoca (1 sat).
+ *
+ * Sa `MAINT_MAX_ATTEMPTS = 8` to daje ~8 sati ponovnih pokušaja — taman da
+ * preklop koji je pušten pre nego što je prenos podataka gotov ipak isporuči
+ * obaveštenje čim se `maint_user_profiles` napuni. Posle toga TAJ RED trajno
+ * ispada iz reda čekanja i ostaje kao VIDLJIV `failed`, ne kao lažni `sent` —
+ * ali SAM ROK nije izgubljen: čim red ispadne iz prozora, prestaje da važi kao
+ * „upisan" (v. `statusVaziKaoUpisan()`), pa ga sutrašnji `maint-deadlines`
+ * upiše ponovo.
+ */
+const FANOUT_NO_RECIPIENTS_BACKOFF_SEC = 3600;
+
+/**
+ * Marker kojim `dispatchFanout` obeležava `error` reda zatvorenog kao „nema
+ * kome". Nije samo tekst za čoveka — `postojiRok` ga ČITA, pa se ne sme menjati
+ * bez izmene tamo (v. komentar u `postojiRok`).
+ */
+export const FANOUT_NO_RECIPIENTS = "FANOUT_NO_RECIPIENTS";
+
+/**
+ * Statusi outbox reda koji znače „za ovaj rok je već upisano obaveštenje" —
+ * JEDAN izvor za obe idempotencije posla `maint-deadlines` (rokovi po datumu u
+ * `postojiRok`, i `it_backup` sa prozorom od 7 dana). Dok su bile dve kopije,
+ * popravka jedne je drugu ostavljala na starom pravilu.
+ *
+ * Izvor gleda samo `('queued','sent')`; `failed` je NAMERNO izostavljen, jer
+ * stvaran neuspeh isporuke sme sutradan da se pokuša ponovo. Izuzetak je jedini
+ * `failed` koji NIJE neuspeh isporuke nego „nema kome" (`FANOUT_NO_RECIPIENTS`,
+ * uvedeno 08.08.2026): dok je taj red JOŠ U REDU ČEKANJA, rok je stvarno upisan
+ * i ponovni upis bi svakog dana pravio nov mrtav red.
+ *
+ * ── 🔴 PROZOR (treći krug, 08.08.2026) ──────────────────────────────────────
+ * `attempts < MAINT_MAX_ATTEMPTS` NIJE ukras. Bez njega je izuzetak bio VEČAN,
+ * pa je posledica bila obrnut kvar od onog koji je lečio: red koji je dispečer
+ * ispumpao do plafona (~8 h uz backoff od 1 h) trajno ispada iz `dispatchDequeue`
+ * (`attempts < p_max_attempts`) — dakle više se NIKAD ne pokušava — a i dalje je
+ * zauvek blokirao ponovni upis tog roka. Registracija/osiguranje/lekarski se u
+ * stanju „profila ima, telefona nema" (delimičan prenos) ne bi javili NIKAD, a od
+ * drugog dana bi ulazili u `skipped`, nerazlučivo od uredno isporučenih.
+ *
+ * Granica je namerno `attempts`, a NE zidni sat: to je BAŠ predikat koji
+ * `dispatchDequeue` koristi, pa red prestaje da važi kao „upisan" u tačno onom
+ * trenutku kad prestane da se pokušava — bez pogađanja koliko traje prozor i bez
+ * zavisnosti od takta radnika. (Ako radnik uopšte ne radi, `attempts` stoji i red
+ * i dalje blokira — ali tada bi ga blokirao i kao `queued`, što je zatečeno
+ * ponašanje izvora i ne menja se.)
+ *
+ * Cena, izričito: u stanju „nema kome" outbox opet raste za jedan mrtav red po
+ * roku po danu (kao pre commita `6f389886`) i `enqueued` ne pada na nulu. To je
+ * SIGNAL, ne šum — a slučaj „nijedan profil" uopšte ne stiže dovde, njega
+ * `maint-deadlines` odbija pre upisa (`sy15-cron-jobs.ts`, brana iz drugog kruga).
+ *
+ * ⚠️ ŽIVOTNI VEK NIJE ISTI NA OBA MESTA, i to je namerno: `it_backup` (`:1789`)
+ * dodatno seče svojim `createdAt >= now() - 7 dana`, pa je tamo prozor PRESEK
+ * (kraći od oba) — 7 dana važi za redove koji su stvarno otišli (`sent`), a za
+ * `FANOUT_NO_RECIPIENTS` i tamo odlučuje plafon pokušaja.
+ */
+function statusVaziKaoUpisan(): Prisma.MaintNotificationLogWhereInput[] {
+  return [
+    // `sent` je STVARNO otišao — priznanje važi zauvek, bez prozora.
+    { status: "sent" },
+    // 🔴 `queued` NIJE trajno stanje, i prozor mu je OBAVEZAN: dispečer ima DVA
+    // izlaza iz reda čekanja, a ne jedan.
+    //
+    // Drugi izlaz (onaj koji je promakao): `dispatchDequeue` pri claim-u postavlja
+    // `status='queued'` i `attempts+1`, ali NE pomera `next_attempt_at` (namerno,
+    // v. tamo). Ako `port.fanout` BACI, `dispatchMaint` to uloguje i prebroji, ali
+    // NE zove `markFailed` — red ostaje `queued` sa rokom u prošlosti, pa ga
+    // sledeći tik uzima ponovo. Posle `MAINT_MAX_ATTEMPTS` tikova (radnik je na
+    // 5 min, backoff niko nije postavio → ~40 min) red je `queued` sa
+    // `attempts = MAINT_MAX_ATTEMPTS`: `dispatchDequeue` ga NIKAD više ne uzme.
+    //
+    // Bez prozora ovde, takav red bi zauvek priznavao rok kao „upisan" — dakle
+    // PROLAZAN otkaz (delimičan deploy, pool/statement timeout, restart baze)
+    // pretvorio bi se u TRAJAN i NEVIDLJIV gubitak SVIH rokova, i to za ~40 min.
+    // Ishod je bajt-identičan onome zbog čega je prozor i uveden: rok se ne javi
+    // nikad, a od sledećeg dana ulazi u `skipped`, nerazlučivo od isporučenog.
+    { status: "queued", attempts: { lt: MAINT_MAX_ATTEMPTS } },
+    {
+      status: "failed",
+      error: { startsWith: FANOUT_NO_RECIPIENTS },
+      attempts: { lt: MAINT_MAX_ATTEMPTS },
+    },
+  ];
+}
+
 /** Rezultat `maint_check_*_deadlines` (RETURNS TABLE(enqueued, skipped)). */
 export interface DeadlineResult {
   enqueued: number;
@@ -111,7 +215,7 @@ export class OdrzavanjeFnService {
 
   /** Klijent koji se koristi kad pozivalac nije dao svoj `tx`. */
   private db(tx?: OdrzavanjeTx): OdrzavanjeTx {
-    return tx ?? (this.prisma as unknown as OdrzavanjeTx);
+    return tx ?? this.prisma;
   }
 
   // =========================================================================
@@ -124,7 +228,9 @@ export class OdrzavanjeFnService {
    * (jedina funkcija koja ih izričito nabraja) — ne iz `@default` u schema.prisma.
    */
   async settings(tx?: OdrzavanjeTx): Promise<SettingsLike> {
-    const row = await this.db(tx).maintSettings.findUnique({ where: { id: 1 } });
+    const row = await this.db(tx).maintSettings.findUnique({
+      where: { id: 1 },
+    });
     if (!row) return { ...SETTINGS_FALLBACK };
     return {
       autoCreateWoMajor: row.autoCreateWoMajor,
@@ -198,13 +304,18 @@ export class OdrzavanjeFnService {
     assetType: string | null;
   }> {
     const db = this.db(tx);
-    let asset: { assetId: string; assetType: string; assetCode: string } | null =
-      null;
+    let asset: {
+      assetId: string;
+      assetType: string;
+      assetCode: string;
+    } | null = null;
     if (input.assetId == null) {
       const m = await db.maintMachine.findFirst({
         where: { machineCode: input.machineCode ?? "" },
         select: {
-          asset: { select: { assetId: true, assetType: true, assetCode: true } },
+          asset: {
+            select: { assetId: true, assetType: true, assetCode: true },
+          },
         },
       });
       asset = m?.asset ?? null;
@@ -440,7 +551,7 @@ export class OdrzavanjeFnService {
           assigned_to: inc.assignedTo,
           target_role: r.targetRole,
           rule_id: r.ruleId,
-        } as Prisma.InputJsonValue,
+        },
       });
       // Kašnjenje po pravilu — izvor to radi zasebnim UPDATE-om posle upisa.
       const delay = (r.delayMinutes ?? 0) * 60_000;
@@ -469,7 +580,7 @@ export class OdrzavanjeFnService {
           severity: inc.severity,
           reported_by: inc.reportedBy,
           assigned_to: inc.assignedTo,
-        } as Prisma.InputJsonValue,
+        },
       });
     }
     return count;
@@ -574,11 +685,21 @@ export class OdrzavanjeFnService {
    */
   async applyPartStockMovement(
     tx: OdrzavanjeTx | undefined,
-    mv: { partId: string; movementType: string; quantity: Prisma.Decimal | number },
+    mv: {
+      partId: string;
+      movementType: string;
+      quantity: Prisma.Decimal | number;
+    },
   ): Promise<void> {
-    const q = new Prisma.Decimal(mv.quantity as never);
+    const q = new Prisma.Decimal(mv.quantity);
     const delta =
-      mv.movementType === "out" ? q.negated() : mv.movementType === "in" || mv.movementType === "return" || mv.movementType === "adjustment" ? q : null;
+      mv.movementType === "out"
+        ? q.negated()
+        : mv.movementType === "in" ||
+            mv.movementType === "return" ||
+            mv.movementType === "adjustment"
+          ? q
+          : null;
     // Nepoznat tip -> `CASE` bez `ELSE` daje NULL, a `stock + NULL` je NULL.
     // U 3.0 CHECK brani nepoznat tip, pa je ovo mrtva grana — ali tiho NE menja stanje.
     if (delta === null) return;
@@ -741,10 +862,14 @@ export class OdrzavanjeFnService {
       throw new ForbiddenException("maint_machine_rename: not authorized");
     }
     if (!oldCode || oldCode.trim() === "") {
-      throw new UnprocessableEntityException("maint_machine_rename: old code is required");
+      throw new UnprocessableEntityException(
+        "maint_machine_rename: old code is required",
+      );
     }
     if (!newCode || newCode.trim() === "") {
-      throw new UnprocessableEntityException("maint_machine_rename: new code is required");
+      throw new UnprocessableEntityException(
+        "maint_machine_rename: new code is required",
+      );
     }
     if (oldCode === newCode) {
       throw new UnprocessableEntityException(
@@ -801,8 +926,14 @@ export class OdrzavanjeFnService {
     const na = { machineCode: newCode };
     const tasks = await db.maintTask.updateMany({ where: gde, data: na });
     const checks = await db.maintCheck.updateMany({ where: gde, data: na });
-    const incidents = await db.maintIncident.updateMany({ where: gde, data: na });
-    const notes = await db.maintMachineNote.updateMany({ where: gde, data: na });
+    const incidents = await db.maintIncident.updateMany({
+      where: gde,
+      data: na,
+    });
+    const notes = await db.maintMachineNote.updateMany({
+      where: gde,
+      data: na,
+    });
     const overrides = await db.maintMachineStatusOverride.updateMany({
       where: gde,
       data: na,
@@ -813,7 +944,10 @@ export class OdrzavanjeFnService {
     });
     // 2b) 047/26 — bez ovog koraka fajlovi ostaju na staroj šifri i pripadnu
     // prvoj sledećoj mašini koja je zauzme.
-    const files = await db.maintMachineFile.updateMany({ where: gde, data: na });
+    const files = await db.maintMachineFile.updateMany({
+      where: gde,
+      data: na,
+    });
 
     // 3) Ogledalo u `maint_assets` — samo ako je šifra sredstva bila ODRAZ stare.
     let assetRenamed = false;
@@ -894,22 +1028,27 @@ export class OdrzavanjeFnService {
         "maint_machine_delete_hard: razlog je obavezan (min 5 karaktera)",
       );
     }
-    const row = await db.maintMachine.findUnique({ where: { machineCode: kod } });
+    const row = await db.maintMachine.findUnique({
+      where: { machineCode: kod },
+    });
     if (!row) {
       throw new NotFoundException(
         `maint_machine_delete_hard: masina ${kod} ne postoji u katalogu`,
       );
     }
 
-    const [tasks, checks, incidents, notes, files, override] = await Promise.all([
-      db.maintTask.count({ where: { machineCode: kod } }),
-      db.maintCheck.count({ where: { machineCode: kod } }),
-      db.maintIncident.count({ where: { machineCode: kod } }),
-      db.maintMachineNote.count({ where: { machineCode: kod } }),
-      // ⚠️ Jedini brojač koji gleda `deleted_at IS NULL` — prepis, ne previd.
-      db.maintMachineFile.count({ where: { machineCode: kod, deletedAt: null } }),
-      db.maintMachineStatusOverride.count({ where: { machineCode: kod } }),
-    ]);
+    const [tasks, checks, incidents, notes, files, override] =
+      await Promise.all([
+        db.maintTask.count({ where: { machineCode: kod } }),
+        db.maintCheck.count({ where: { machineCode: kod } }),
+        db.maintIncident.count({ where: { machineCode: kod } }),
+        db.maintMachineNote.count({ where: { machineCode: kod } }),
+        // ⚠️ Jedini brojač koji gleda `deleted_at IS NULL` — prepis, ne previd.
+        db.maintMachineFile.count({
+          where: { machineCode: kod, deletedAt: null },
+        }),
+        db.maintMachineStatusOverride.count({ where: { machineCode: kod } }),
+      ]);
     const counts = { tasks, checks, incidents, notes, files, override };
 
     await db.maintMachineDeletionLog.create({
@@ -921,7 +1060,7 @@ export class OdrzavanjeFnService {
             typeof v === "bigint" ? v.toString() : v,
           ),
         ) as Prisma.InputJsonValue,
-        relatedCounts: counts as unknown as Prisma.InputJsonValue,
+        relatedCounts: counts,
         reason: razlog,
         deletedBy: scope.userId,
         deletedByEmail: email ?? "",
@@ -1021,7 +1160,9 @@ export class OdrzavanjeFnService {
       asset = m ? { assetId: m.assetId, assetType: "machine" } : null;
     }
     if (!asset) {
-      throw new UnprocessableEntityException("Preventive task has no CMMS asset");
+      throw new UnprocessableEntityException(
+        "Preventive task has no CMMS asset",
+      );
     }
 
     const postojeci = await db.maintWorkOrder.findFirst({
@@ -1159,6 +1300,35 @@ export class OdrzavanjeFnService {
    * 🔴 Kod `critical` ciljaju se `chief` I `management`, inače samo `chief`.
    * ⚠️ Poznat defekt 1.0 koji se prenosi kakav jeste: dete kanala `email` u
    * `recipient` dobija TELEFON (izvor kopira `p.phone` bez obzira na kanal).
+   *
+   * ── 🔴 JEDINO SVESNO ODSTUPANJE OD IZVORA (08.08.2026) ──────────────────────
+   * sy15 original zatvara roditelja kao `sent` I KAD NEMA NIJEDNOG PRIMAOCA
+   * (`FANOUT_DONE: 0 recipients`). To znači da se GUBITAK obaveštenja u bazu
+   * upisuje kao USPEH: poruka o kvaru ne ode nikome, a dnevnik kaže „poslato".
+   *
+   * Zašto to više nije akademsko: 08.08.2026 je IZMERENO da su 3.0 `maint_*`
+   * tabele PRAZNE (`maint_user_profiles` = 0, prenos podataka još nije pušten).
+   * Pod `ODRZAVANJE_IZVOR=3.0` bi, dakle, SVAKI fanout pogodio nula primalaca —
+   * i svaki bi se zapisao kao uspešno poslat. Do ovog PR-a je jedini signal bila
+   * brana koja je taj položaj prekidača obarala sa 503; kad brana pada, mora je
+   * zameniti nešto što se i dalje VIDI.
+   *
+   * Zato: nula primalaca → `status='failed'` sa `FANOUT_NO_RECIPIENTS` u `error`
+   * (statusi ostaju u postojećem CHECK-u `('queued','sent','failed')`, pa nema
+   * migracije), plus ERROR u dnevnik. Roditelj se i dalje NE ZAGLAVLJUJE večno:
+   * `dispatchDequeue` uzima `status IN ('queued','failed')` samo dok je
+   * `attempts < MAINT_MAX_ATTEMPTS`, a svaki claim diže `attempts`. Posle 8
+   * prolaza (~8 h uz backoff od 1 h) red trajno ispada iz reda čekanja i ostaje
+   * kao VIDLJIV neuspeh. Ako se prenos podataka pusti unutar tog prozora,
+   * obaveštenje stvarno ode.
+   *
+   * 🔴 A ŠTA POSLE PROZORA (ispravka trećeg kruga, 08.08.2026): prozor NIJE
+   * jedina šansa i gubitak NIJE konačan. Isti plafon pokušaja je i granica do
+   * koje `statusVaziKaoUpisan()` ovakav red priznaje kao „upisan", pa čim red
+   * ispadne iz reda čekanja, sutrašnji `maint-deadlines` upiše rok PONOVO (nov
+   * `queued` red; stari `failed` ostaje kao vidljiv trag). Dok je ta granica
+   * falila, promašen rok se gubio ZAUVEK — v. duži komentar uz
+   * `statusVaziKaoUpisan()`.
    */
   async dispatchFanout(
     tx: OdrzavanjeTx | undefined,
@@ -1181,29 +1351,44 @@ export class OdrzavanjeFnService {
       },
       select: { userId: true, fullName: true, phone: true },
     });
-    if (targets.length > 0) {
-      await db.maintNotificationLog.createMany({
-        data: targets.map((t) => ({
-          channel: parent.channel,
-          recipient: t.phone as string,
-          recipientUserId: t.userId,
-          subject: parent.subject,
-          body: parent.body,
-          relatedEntityType: parent.relatedEntityType,
-          relatedEntityId: parent.relatedEntityId,
-          machineCode: parent.machineCode,
-          escalationLevel: parent.escalationLevel,
-          status: "queued",
-          payload: {
-            ...payload,
-            fanout_parent: parent.id,
-            to_name: t.fullName,
-          } as Prisma.InputJsonValue,
-        })),
-      });
+    if (targets.length === 0) {
+      // 🔴 NULA PRIMALACA NIJE USPEH — v. odstupanje u zaglavlju metode.
+      const razlog =
+        `${FANOUT_NO_RECIPIENTS}: nijedan aktivan profil (${role.join("/")}) ` +
+        "sa telefonom u maint_user_profiles";
+      this.log.error(
+        `maint fanout ${parentId}: ${razlog} — obaveštenje NIJE otišlo nikome; ` +
+          `red ostaje 'failed' (ponovni pokušaj, pa trajno vidljiv neuspeh).`,
+      );
+      await this.markFailedRaw(
+        db,
+        parentId,
+        razlog,
+        FANOUT_NO_RECIPIENTS_BACKOFF_SEC,
+      );
+      return 0;
     }
-    // Roditelj se zatvara UVEK — i kad nema nijednog primaoca (izvor isto radi
-    // `UPDATE … WHERE EXISTS (SELECT 1 FROM parent)`), inače bi večno visio u redu.
+    await db.maintNotificationLog.createMany({
+      data: targets.map((t) => ({
+        channel: parent.channel,
+        recipient: t.phone as string,
+        recipientUserId: t.userId,
+        subject: parent.subject,
+        body: parent.body,
+        relatedEntityType: parent.relatedEntityType,
+        relatedEntityId: parent.relatedEntityId,
+        machineCode: parent.machineCode,
+        escalationLevel: parent.escalationLevel,
+        status: "queued",
+        payload: {
+          ...payload,
+          fanout_parent: parent.id,
+          to_name: t.fullName,
+        },
+      })),
+    });
+    // Deca su upisana — TEK SADA roditelj sme da bude `sent`. Ovaj `update` više
+    // NE pokriva slučaj „nula primalaca": on je iznad, i završava kao `failed`.
     await db.maintNotificationLog.update({
       where: { id: parentId },
       data: {
@@ -1229,7 +1414,10 @@ export class OdrzavanjeFnService {
     scope: MaintScope,
     assetId?: string | null,
   ): Promise<number> {
-    this.assertMozeAutoWo(scope, "Nemaš ovlašćenje za generisanje WO iz plana servisa");
+    this.assertMozeAutoWo(
+      scope,
+      "Nemaš ovlašćenje za generisanje WO iz plana servisa",
+    );
     const db = this.db(tx);
     const rows = await db.$queryRaw<
       {
@@ -1360,14 +1548,42 @@ export class OdrzavanjeFnService {
   }
 
   /**
+   * Koliko 3.0 `maint_*` tabela je uopšte POPUNJENO — preduslov preklopa.
+   *
+   * 🔴 ZAŠTO POSTOJI: rezultat `checkAllDeadlines` nad PRAZNIM tabelama je
+   * `enqueued=0 skipped=0` — brojevi identični savršeno mirnom danu. Isto važi
+   * za dispečera: prazan outbox daje `processed=0`. Dakle najgori mogući ishod
+   * (prekidač na `3.0`, a prenos podataka nije pušten — IZMERENO stanje
+   * 08.08.2026: `maint_user_profiles` = 0, `maint_machines` = 0) izgleda TAČNO
+   * kao ispravan rad, i to u dnevniku koji je zelen. Ovo je jedini upit koji tu
+   * razliku može da napravi, pa ga pozivaoci (`maint-deadlines`,
+   * `maint-notify-dispatch`) koriste kao branu/uzbunu.
+   *
+   * ⚠️ Zove se SAMO na `3.0` putu; `sy15` položaj prekidača ga nikad ne dodirne.
+   */
+  async brojPreduslova(
+    tx: OdrzavanjeTx | undefined,
+  ): Promise<{ aktivnihProfila: number; zivihSredstava: number }> {
+    const db = this.db(tx);
+    const aktivnihProfila = await db.maintUserProfile.count({
+      where: { active: true },
+    });
+    const zivihSredstava = await db.maintAsset.count({
+      where: { archivedAt: null },
+    });
+    return { aktivnihProfila, zivihSredstava };
+  }
+
+  /**
    * `maint_check_vehicle_deadlines(lookahead_days)` — najveća funkcija domena
    * (9.595 znakova, tri petlje). Redom: vozila (registracija / osiguranje /
    * prva pomoć), vozači (vozačka / lekarski / lična karta), dokumenta
    * (`valid_until`).
    *
    * 🔴 IDEMPOTENCIJA JE PO TROJCI (entitet, `deadline_kind`, `deadline_date`) u
-   * `payload`-u, uz `status IN ('queued','sent')`. Bez nje bi posao svakog dana
-   * ponovo slao isto obaveštenje. `skipped` broji baš te preskočene.
+   * `payload`-u — v. `postojiRok` za tačan skup statusa koji se računa kao „već
+   * upisan". Bez nje bi posao svakog dana ponovo slao isto obaveštenje.
+   * `skipped` broji baš te preskočene.
    *
    * ⚠️ Servis vozila (`service_due_at`) se u izvoru ČITA ali se za njega NE
    * upisuje obaveštenje — prazna grana, prenosi se kakva jeste.
@@ -1391,7 +1607,13 @@ export class OdrzavanjeFnService {
       body: string,
       extra: Record<string, unknown> = {},
     ) => {
-      const postoji = await this.postojiRok(tx, entityType, entityId, kind, date);
+      const postoji = await this.postojiRok(
+        tx,
+        entityType,
+        entityId,
+        kind,
+        date,
+      );
       if (postoji) {
         skip += 1;
         return;
@@ -1410,7 +1632,7 @@ export class OdrzavanjeFnService {
           deadline_kind: kind,
           deadline_date: isoDan(date),
           ...extra,
-        } as Prisma.InputJsonValue,
+        },
       });
       enq += 1;
     };
@@ -1579,7 +1801,7 @@ export class OdrzavanjeFnService {
           deadline_kind: kind,
           deadline_date: isoDan(date),
           asset_code: assetCode,
-        } as Prisma.InputJsonValue,
+        },
       });
       enq += 1;
     };
@@ -1627,7 +1849,21 @@ export class OdrzavanjeFnService {
           where: {
             relatedEntityType: "asset",
             relatedEntityId: r.asset_id,
-            status: { in: ["queued", "sent"] },
+            // 🔴 ISTI skup statusa kao `postojiRok` — ovo je DRUGA kopija iste
+            // idempotencije (ključ je `backup_status` + 7 dana, ne datum roka),
+            // pa mora da deli i pravilo. Da je ostala na `('queued','sent')`,
+            // backup-upozorenje bi se pod praznim `maint_user_profiles`
+            // ponavljalo svakog dana iako red već stoji u outboxu.
+            //
+            // ⚠️ DVA PROZORA SE OVDE SEKU, i to je namerno (treći krug,
+            // 08.08.2026): `createdAt` od 7 dana je THROTTLE za upozorenje koje
+            // je STVARNO otišlo (`sent`), a `attempts < MAINT_MAX_ATTEMPTS` iz
+            // `statusVaziKaoUpisan()` je prozor za red koji NIJE imao kome da
+            // ode. Presek znači da se „nema kome" red ovde izleči po plafonu
+            // pokušaja (~8 h), ne tek posle 7 dana — isti životni vek kao kod
+            // `postojiRok`, jer je i posledica ista (inače bi ista funkcija na
+            // dva mesta imala dva različita životna veka, što nigde nije pisalo).
+            OR: statusVaziKaoUpisan(),
             createdAt: { gte: nedeljaUnazad },
             AND: [
               { payload: { path: ["deadline_kind"], equals: "it_backup" } },
@@ -1656,7 +1892,7 @@ export class OdrzavanjeFnService {
               deadline_kind: "it_backup",
               backup_status: r.backup_status,
               asset_code: r.asset_code,
-            } as Prisma.InputJsonValue,
+            },
           });
           enq += 1;
         }
@@ -1792,14 +2028,17 @@ export class OdrzavanjeFnService {
         });
         const inc = await tx.maintIncident.create({
           data: {
-            machineCode: polja.machineCode ?? (sifra as string),
+            machineCode: polja.machineCode ?? sifra,
             assetId: polja.assetId,
             // Izvor: `case when v_aid is null then null else v_atype end`.
-            assetType: polja.assetId == null ? null : (polja.assetType ?? assetType),
+            assetType:
+              polja.assetId == null ? null : (polja.assetType ?? assetType),
             reportedBy: reporterUserId,
             title: naslov,
             description:
-              (a.opis ?? "").trim().length > 0 ? (a.opis as string).trim() : null,
+              (a.opis ?? "").trim().length > 0
+                ? (a.opis as string).trim()
+                : null,
             severity,
             status: "open",
             safetyMarker: safety,
@@ -1922,7 +2161,12 @@ export class OdrzavanjeFnService {
     name: string;
   } | null> {
     const rows = await this.prisma.$queryRaw<
-      { asset_code: string; asset_id: string; asset_type: string; name: string }[]
+      {
+        asset_code: string;
+        asset_id: string;
+        asset_type: string;
+        name: string;
+      }[]
     >(Prisma.sql`
       SELECT a.asset_code, a.asset_id, a.asset_type, a.name
         FROM maint_assets a
@@ -1951,7 +2195,36 @@ export class OdrzavanjeFnService {
       : null;
   }
 
-  /** Provera „obaveštenje za ovaj rok već stoji u redu ili je poslato". */
+  /**
+   * Provera „obaveštenje za ovaj rok već stoji u redu ili je poslato".
+   *
+   * Izvor gleda `status IN ('queued','sent')`: red koji je dispečer ispumpao do
+   * `failed` SME ponovo da se upiše sutradan — to je zatečeni (i koristan)
+   * mehanizam ponovnog slanja posle stvarnog neuspeha isporuke, i ne dira se.
+   *
+   * ── 🔴 DOPUNA UZ FANOUT-ODSTUPANJE (08.08.2026) ──────────────────────────────
+   * Otkad `dispatchFanout` roditelja BEZ IJEDNOG PRIMAOCA zatvara kao `failed`
+   * (umesto lažnog `sent`), taj status u ovoj proveri više ne bi značio ništa —
+   * a dece nema (`createMany` se preskače), pa nijedan red ne bi zadovoljio
+   * uslov. Posledica: dok je `maint_user_profiles` prazan (IZMERENO 08.08.2026:
+   * 0 redova), `maint-deadlines` bi SVAKI DAN iznova upisivao isti rok za isto
+   * vozilo/dokument — outbox raste za jedan mrtav red po roku po danu, a
+   * `enqueued` u summary-ju nikad ne padne na nulu, pa poređenje „pre/posle
+   * preklopa" (zbog kojeg je oblik summary-ja i očuvan) gubi smisao.
+   *
+   * Zato red zatvoren BAŠ tim razlogom (`FANOUT_NO_RECIPIENTS`) i dalje važi kao
+   * „već upisan": idempotencija drži, a status ostaje `failed` — nigde se ne
+   * vraća laž „poslato". Svaki DRUGI `failed` (stvarni neuspeh isporuke) i dalje
+   * pušta ponovni upis, tačno kao u izvoru.
+   *
+   * 🔴 ALI SAMO DOK JE RED U REDU ČEKANJA (ispravka trećeg kruga, 08.08.2026):
+   * priznanje važi uz `attempts < MAINT_MAX_ATTEMPTS`. Bez te granice je gornje
+   * pravilo bilo VEČNO, pa je rok koji je ispumpan do plafona (a `dispatchDequeue`
+   * ga posle toga više ne uzima) ostajao zauvek blokiran za ponovni upis — tj.
+   * TRAJNO IZGUBLJEN, i to tiho: od drugog dana bi ulazio u `skipped`. Tačan
+   * razlog za `attempts` umesto zidnog sata i cena tog izbora stoje uz
+   * `statusVaziKaoUpisan()`.
+   */
   private async postojiRok(
     tx: OdrzavanjeTx | undefined,
     entityType: string,
@@ -1963,7 +2236,7 @@ export class OdrzavanjeFnService {
       where: {
         relatedEntityType: entityType,
         relatedEntityId: entityId,
-        status: { in: ["queued", "sent"] },
+        OR: statusVaziKaoUpisan(),
         AND: [
           { payload: { path: ["deadline_kind"], equals: kind } },
           { payload: { path: ["deadline_date"], equals: isoDan(date) } },
@@ -1973,6 +2246,156 @@ export class OdrzavanjeFnService {
     });
     return red != null;
   }
+
+  // =========================================================================
+  // DEFINER FUNKCIJE — outbox radnik (posao `maint-notify-dispatch`)
+  // =========================================================================
+  //
+  // Tri funkcije koje prazne `maint_notification_log`. Izvučene sa ŽIVE sy15
+  // (`pg_get_functiondef`, 07.08.2026) i prepisane istim obrascem kao ostatak
+  // ovog fajla (`tx` prvi argument; `auth.uid()` ovde ni nema — radnik nema
+  // korisnika, kao ni u izvoru).
+  //
+  // 🔴 ZAŠTO IDU U ISTOM KORAKU KAO `maint-deadlines`: outbox-a su DVA. Pod
+  // `ODRZAVANJE_IZVOR=3.0` novi red nastaje u 3.0 `maint_notification_log`, a
+  // stari radnik prazni sy15. Ako se preklopi samo jedno od to dvoje,
+  // obaveštenja o kvarovima TIHO prestanu da stižu — nema greške, red samo
+  // stoji. Zato cron i radnik moraju preći ZAJEDNO.
+  //
+  // ⚠️⚠️ SISTEMSKI ULAZ BEZ IJEDNE PROVERE PRAVA ⚠️⚠️
+  // `dispatchDequeue` / `dispatchMarkSent` / `dispatchMarkFailed` (i
+  // `dispatchFanout` gore) NEMAJU `MaintScope` argument i NE ZOVU `authz` —
+  // isto kao sy15 originali, koji su `SECURITY DEFINER` bez ijednog gejta, jer
+  // ih pokreće cron BEZ korisnika. Zato:
+  //
+  //   🔴 NIJEDNA HTTP putanja (kontroler, resolver, RPC) NE SME da ih pozove.
+  //      Pozivalac im je ISKLJUČIVO `src/modules/scheduler/**`. TypeScript to ne
+  //      može da spreči (Nest injektuje ceo servis), pa branu drži test
+  //      `odrzavanje-fn.dispatch-pozivaoci.spec.ts` — on skenira `src/` i pada
+  //      ako se pojavi pozivalac van scheduler-a.
+  //   🔴 Ko im ipak zatreba izvan radnika: NE zovi ih direktno, nego dodaj
+  //      metodu sa `MaintScope` koja prvo prođe kroz `OdrzavanjeAuthzService`.
+
+  /**
+   * `maint_dispatch_dequeue(p_batch_size, p_max_attempts)` — claim redova.
+   *
+   * 🔴 Prepis je NAMERNO sirov SQL, ne Prisma upit: izvor u JEDNOM iskazu bira
+   * (`FOR UPDATE SKIP LOCKED`) i diže `attempts`, pa dva radnika nikad ne uzmu
+   * isti red. Rastavljeno na `findMany` + `updateMany` ta garancija nestaje.
+   *
+   * ⚠️ `RETURNING n.*` u PostgreSQL-u vraća NOVE vrednosti, pa je `attempts`
+   * VEĆ uvećan — isto kao na sy15. Pozivalac koji računa backoff mora to znati
+   * (radnik i dalje računa `attempts + 1`, tačan paritet 1.0 edge-a).
+   *
+   * ⚠️ Prozor slanja je VAN brave: claim vraća `status='queued'` i ne pomera
+   * `next_attempt_at`, pa red odmah opet zadovoljava uslov dequeue-a. To je
+   * zatečeno 1.0 ponašanje (v. zaglavlje `notify-dispatch.service.ts`) — zato
+   * aktivacija mora biti ATOMSKI PREKLOP, nikad paralelan rad dva dispečera.
+   */
+  async dispatchDequeue(
+    tx: OdrzavanjeTx | undefined,
+    batchSize = 25,
+    maxAttempts = MAINT_MAX_ATTEMPTS,
+  ): Promise<MaintDispatchRow[]> {
+    return this.db(tx).$queryRaw<MaintDispatchRow[]>(Prisma.sql`
+      WITH picked AS (
+        SELECT id
+          FROM maint_notification_log
+         WHERE status IN ('queued', 'failed')
+           AND next_attempt_at <= now()
+           AND attempts < ${maxAttempts}::int
+         ORDER BY next_attempt_at ASC, created_at ASC
+         LIMIT ${batchSize}::int
+         FOR UPDATE SKIP LOCKED
+      )
+      UPDATE maint_notification_log n
+         SET attempts        = n.attempts + 1,
+             last_attempt_at = now(),
+             status          = 'queued'
+        FROM picked p
+       WHERE n.id = p.id
+      RETURNING n.id, n.channel, n.recipient, n.recipient_user_id,
+                n.subject, n.body, n.attempts`);
+  }
+
+  /**
+   * `maint_dispatch_mark_sent(p_ids uuid[])` — vraća broj stvarno pogođenih
+   * redova (izvor: `count(*)` nad CTE-om `RETURNING 1`).
+   *
+   * 🔴 Radnik ovo NE SME da pozove za STUB roditelja (`recipient='pending'` bez
+   * `recipient_user_id`) — njega zatvara `dispatchFanout` sam, pošto raspiše
+   * decu. Prevremeni `markSent` prekida fanout i deca se nikad ne pošalju.
+   */
+  async dispatchMarkSent(
+    tx: OdrzavanjeTx | undefined,
+    ids: string[],
+  ): Promise<number> {
+    if (ids.length === 0) return 0;
+    const r = await this.db(tx).maintNotificationLog.updateMany({
+      where: { id: { in: ids } },
+      data: { status: "sent", sentAt: new Date(), error: null },
+    });
+    return r.count;
+  }
+
+  /**
+   * `maint_dispatch_mark_failed(p_id, p_error, p_backoff_sec)` — re-arm reda.
+   * Paritet izvora: `left(error, 1000)`, `greatest(backoff, 5)` sekundi, i
+   * `UPDATE … WHERE id = p_id` (nepostojeći id je no-op, ne izuzetak).
+   */
+  async dispatchMarkFailed(
+    tx: OdrzavanjeTx | undefined,
+    id: string,
+    error: string,
+    backoffSec = 60,
+  ): Promise<void> {
+    const sek = Math.max(backoffSec, 5);
+    await this.markFailedRaw(this.db(tx), id, error ?? "", sek);
+  }
+
+  /**
+   * Zatvaranje outbox reda kao NEUSPEH sa pomerenim `next_attempt_at`.
+   * Deli ga `dispatchMarkFailed` sa fanout-om bez primalaca.
+   *
+   * 🔴 SIROV SQL JE ZBOG SATA, ne zbog stila. Izvor računa
+   * `now() + make_interval(secs => …)` — SAT BAZE. `new Date(Date.now() + …)` je
+   * sat APLIKACIJE, a `dispatchDequeue` poredi `next_attempt_at <= now()` — opet
+   * sat baze. Dok su kontejner i Postgres na istom hostu razlike nema; čim API
+   * ode na drugi host, skew bi red vraćao prerano ili ga držao predugo. Vreme se
+   * zato računa TAMO GDE SE I POREDI.
+   *
+   * ⚠️ `error` se seče u SQL-u (`left(…, 1000)`), doslovno kao u izvoru — ne u
+   * JS-u, da granica ostane ista i za višebajtne znakove.
+   */
+  private async markFailedRaw(
+    db: OdrzavanjeTx,
+    id: string,
+    error: string,
+    sek: number,
+  ): Promise<void> {
+    await db.$executeRaw(Prisma.sql`
+      UPDATE maint_notification_log
+         SET status          = 'failed',
+             error           = left(${error}, 1000),
+             next_attempt_at = now() + make_interval(secs => ${sek}::double precision)
+       WHERE id = ${id}::uuid`);
+  }
+}
+
+/**
+ * Red koji `dispatchDequeue` vraća radniku — imena kolona su snake_case, kao
+ * sa sy15 RPC-a, da ista petlja radnika radi nad oba izvora bez preslikavanja.
+ * ⚠️ `recipient_user_id` je Int u 3.0 (uuid u sy15) — radnik ga koristi samo
+ * kao „ima/nema", pa je tip namerno unija.
+ */
+export interface MaintDispatchRow {
+  id: string;
+  channel: string;
+  recipient: string;
+  recipient_user_id: string | number | null;
+  subject: string | null;
+  body: string;
+  attempts: number;
 }
 
 /** `to_char(d, 'DD.MM.YYYY')` — format iz tela sy15 funkcija. */

@@ -85,6 +85,7 @@ function fakeDb(odgovori: Record<string, unknown[]> = {}) {
     maintDriver: model("maintDriver"),
     maintDocument: model("maintDocument"),
     $queryRaw: red("raw", "queryRaw"),
+    $executeRaw: red("raw", "executeRaw"),
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
   };
   return db;
@@ -934,7 +935,7 @@ describe("maint_dispatch_fanout", () => {
     expect(q.where.role.in).toEqual(["chief", "management"]);
   });
 
-  it("🔴 roditelj se zatvara i kad NEMA nijednog primaoca (inače večno visi u redu)", async () => {
+  it("🔴 NULA primalaca NIJE `sent` — red ostaje vidljiv `failed` (gubitak se ne piše kao uspeh)", async () => {
     const db = fakeDb({
       "maintNotificationLog.findUnique": [
         {
@@ -953,13 +954,220 @@ describe("maint_dispatch_fanout", () => {
     });
     const n = await svc(db).dispatchFanout(db as never, "N1");
     expect(n).toBe(0);
-    const d = (
+
+    // 🔴 Do 08.08.2026 je ovde stajalo `status='sent'` +
+    // `FANOUT_DONE: 0 recipients` — paritet sa sy15, ali time se GUBITAK
+    // obaveštenja upisivao kao USPEH. Sa praznim `maint_user_profiles`
+    // (izmereno: 0 redova) to bi pogodilo SVAKI fanout.
+    expect(
       db.pozivi.find(
         (p) => p.model === "maintNotificationLog" && p.op === "update",
-      )?.args as { data: Record<string, unknown> }
-    ).data;
+      ),
+    ).toBeUndefined();
+    // Ni jedno dete se ne pravi kad nema kome.
+    expect(db.pozivi.find((p) => p.op === "createMany")).toBeUndefined();
+
+    const raw = db.pozivi.find((p) => p.op === "executeRaw")!;
+    const sql = String((raw.args as { sql: string }).sql).replace(/\s+/g, " ");
+    expect(sql).toContain("SET status = 'failed'");
+    expect((raw.args as { values: unknown[] }).values[0]).toContain(
+      "FANOUT_NO_RECIPIENTS",
+    );
+    // Roditelj i dalje NE VISI večno: `dispatchDequeue` ga uzima samo dok je
+    // `attempts < p_max_attempts`, a svaki claim diže `attempts`. Backoff je
+    // pomeren za 1h, pa posle 8 prolaza red trajno ispada iz reda čekanja.
+    expect((raw.args as { values: unknown[] }).values[1]).toBe(3600);
+    expect(sql).toContain("next_attempt_at = now() + make_interval");
+  });
+
+  it("🔴 kad primalaca IMA, roditelj se zatvara tek POSLE upisa dece", async () => {
+    const db = fakeDb({
+      "maintNotificationLog.findUnique": [
+        {
+          id: "N1",
+          channel: "whatsapp",
+          subject: "s",
+          body: "b",
+          relatedEntityType: null,
+          relatedEntityId: null,
+          machineCode: null,
+          escalationLevel: 0,
+          payload: {},
+        },
+      ],
+      "maintUserProfile.findMany": [
+        [{ userId: 2, fullName: "Šef", phone: "060" }],
+      ],
+    });
+    expect(await svc(db).dispatchFanout(db as never, "N1")).toBe(1);
+    const iCreate = db.pozivi.findIndex((p) => p.op === "createMany");
+    const iUpdate = db.pozivi.findIndex(
+      (p) => p.model === "maintNotificationLog" && p.op === "update",
+    );
+    expect(iCreate).toBeGreaterThanOrEqual(0);
+    // Obrnut redosled bi značio „poslato" pre nego što deca postoje.
+    expect(iUpdate).toBeGreaterThan(iCreate);
+    const d = (db.pozivi[iUpdate].args as { data: Record<string, unknown> })
+      .data;
     expect(d.status).toBe("sent");
-    expect(d.error).toBe("FANOUT_DONE: 0 recipients");
+    expect(d.error).toBe("FANOUT_DONE: 1 recipients");
+  });
+
+  it("NE-critical cilja SAMO chief (druga polovina para gore)", async () => {
+    const db = fakeDb({
+      "maintNotificationLog.findUnique": [
+        {
+          id: "N1",
+          channel: "whatsapp",
+          subject: "s",
+          body: "b",
+          relatedEntityType: null,
+          relatedEntityId: null,
+          machineCode: null,
+          escalationLevel: 0,
+          payload: { severity: "high" },
+        },
+      ],
+      "maintUserProfile.findMany": [
+        [{ userId: 2, fullName: "Šef", phone: "060" }],
+      ],
+    });
+    await svc(db).dispatchFanout(db as never, "N1");
+    const q = db.pozivi.find((p) => p.model === "maintUserProfile")?.args as {
+      where: { role: { in: string[] } };
+    };
+    expect(q.where.role.in).toEqual(["chief"]);
+    expect(q.where.role.in).not.toContain("management");
+  });
+
+  it("🔴 poznat defekt 1.0 se prenosi: dete kanala `email` u `recipient` dobija TELEFON", async () => {
+    const db = fakeDb({
+      "maintNotificationLog.findUnique": [
+        {
+          id: "N1",
+          channel: "email", // kanal je mejl…
+          subject: "s",
+          body: "b",
+          relatedEntityType: null,
+          relatedEntityId: null,
+          machineCode: null,
+          escalationLevel: 0,
+          payload: {},
+        },
+      ],
+      "maintUserProfile.findMany": [
+        [{ userId: 2, fullName: "Šef", phone: "0601234567" }],
+      ],
+    });
+    await svc(db).dispatchFanout(db as never, "N1");
+    const c = db.pozivi.find((p) => p.op === "createMany")?.args as {
+      data: { channel: string; recipient: string }[];
+    };
+    // …a `recipient` je ipak TELEFON — izvor kopira `p.phone` bez obzira na kanal.
+    // Ovo NIJE ispravka nego pin: prepis mora da se ponaša isto kao 1.0.
+    expect(c.data[0].channel).toBe("email");
+    expect(c.data[0].recipient).toBe("0601234567");
+  });
+});
+
+/*
+ * Outbox radnik (posao `maint-notify-dispatch`). Izvor: `pg_get_functiondef` sa
+ * žive sy15, 07.08.2026 — `maint_dispatch_dequeue` / `_mark_sent` / `_mark_failed`.
+ */
+describe("maint_dispatch_dequeue", () => {
+  it("🔴 claim je JEDAN iskaz: FOR UPDATE SKIP LOCKED + attempts+1", async () => {
+    const db = fakeDb({ "raw.queryRaw": [[{ id: "N1", attempts: 1 }]] });
+    const r = await svc(db).dispatchDequeue(db as never, 25, 8);
+    expect(r).toEqual([{ id: "N1", attempts: 1 }]);
+
+    const sql = String((db.pozivi[0].args as { sql: string }).sql).replace(
+      /\s+/g,
+      " ",
+    );
+    // Bez SKIP LOCKED bi dva radnika uzela isti red i poslala duplu poruku.
+    expect(sql).toContain("FOR UPDATE SKIP LOCKED");
+    // Dizanje pokušaja je u ISTOM iskazu kao izbor — rastavljeno na
+    // findMany+updateMany ta garancija nestaje.
+    expect(sql).toContain("attempts = n.attempts + 1");
+    expect(sql).toContain("status IN ('queued', 'failed')");
+    expect(sql).toContain("next_attempt_at <= now()");
+    // Redosled reda čekanja je deo pariteta (najstariji rok prvi).
+    expect(sql).toContain("ORDER BY next_attempt_at ASC, created_at ASC");
+    expect((db.pozivi[0].args as { values: unknown[] }).values).toEqual([
+      8, 25,
+    ]);
+  });
+});
+
+describe("maint_dispatch_mark_sent", () => {
+  it("prazan spisak je no-op BEZ dodira baze (izvor: `WHERE id = ANY('{}')`)", async () => {
+    const db = fakeDb();
+    expect(await svc(db).dispatchMarkSent(db as never, [])).toBe(0);
+    expect(db.pozivi).toHaveLength(0);
+  });
+
+  it("postavlja sent/sent_at i BRIŠE error, vraća broj pogođenih", async () => {
+    const db = fakeDb({ "maintNotificationLog.updateMany": [{ count: 2 }] });
+    const n = await svc(db).dispatchMarkSent(db as never, ["A", "B"]);
+    expect(n).toBe(2);
+    const a = db.pozivi[0].args as {
+      where: { id: { in: string[] } };
+      data: Record<string, unknown>;
+    };
+    expect(a.where.id.in).toEqual(["A", "B"]);
+    expect(a.data.status).toBe("sent");
+    expect(a.data.sentAt).toBeInstanceOf(Date);
+    // `error = NULL` je u izvoru izričito — bez toga bi poruka o ranijem
+    // neuspehu ostala na uspešno poslatom redu.
+    expect(a.data.error).toBeNull();
+  });
+});
+
+describe("maint_dispatch_mark_failed", () => {
+  const rawOf = (db: ReturnType<typeof fakeDb>) => {
+    const a = db.pozivi[0].args as { sql: string; values: unknown[] };
+    return { sql: String(a.sql).replace(/\s+/g, " "), values: a.values };
+  };
+
+  it("backoff ima POD od 5s (`greatest(p_backoff_sec, 5)`)", async () => {
+    const db = fakeDb({ "raw.executeRaw": [1] });
+    await svc(db).dispatchMarkFailed(db as never, "N1", "buknulo", 0);
+    // Bez poda bi backoff 0 značio vrteću petlju nad istim redom.
+    expect(rawOf(db).values[1]).toBe(5);
+  });
+
+  it("🔴 `next_attempt_at` se računa SATOM BAZE, ne satom aplikacije", async () => {
+    const db = fakeDb({ "raw.executeRaw": [1] });
+    await svc(db).dispatchMarkFailed(db as never, "N1", "e", 60);
+    const { sql, values } = rawOf(db);
+    // `dispatchDequeue` poredi `next_attempt_at <= now()` — SAT BAZE. Da se
+    // vreme računalo `new Date(Date.now() + …)`, skew između API hosta i
+    // Postgresa bi red vraćao prerano (dupla poruka) ili ga držao predugo.
+    expect(sql).toContain("next_attempt_at = now() + make_interval");
+    expect(sql).not.toContain("nextAttemptAt");
+    expect(values[1]).toBe(60);
+  });
+
+  it("greška se seče na 1000 znakova (`left(coalesce(p_error,''),1000)`)", async () => {
+    const db = fakeDb({ "raw.executeRaw": [1] });
+    await svc(db).dispatchMarkFailed(db as never, "N1", "x".repeat(5000), 60);
+    const { sql, values } = rawOf(db);
+    // Sečenje ide u SQL-u, kao u izvoru — ne u JS-u, da granica bude ista i za
+    // višebajtne znakove.
+    expect(sql).toContain("left(?, 1000)");
+    expect(values[0]).toHaveLength(5000);
+    expect(sql).toContain("SET status = 'failed'");
+  });
+
+  it("🔴 `UPDATE … WHERE id`: nepostojeći id je no-op, ne izuzetak", async () => {
+    const db = fakeDb({ "raw.executeRaw": [0] });
+    // Izvor je `UPDATE … WHERE id = p_id` — nepostojeći red prosto ne pogodi
+    // ništa. Prisma `update` bi bacio P2025 i oborio ceo prolaz radnika.
+    await expect(
+      svc(db).dispatchMarkFailed(db as never, "NEMA", "e", 60),
+    ).resolves.toBeUndefined();
+    expect(db.pozivi[0].op).toBe("executeRaw");
+    expect(rawOf(db).sql).toContain("WHERE id = ?::uuid");
   });
 });
 

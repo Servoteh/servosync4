@@ -15,8 +15,8 @@ import { ReservationService } from "../robno/reservation.service";
 import { SyncModule } from "../sync/sync.module";
 import { BigbitMdbJobs } from "../sync/bigbit-mdb-jobs";
 import { SastanciModule } from "../sastanci/sastanci.module";
+import { OdrzavanjeModule } from "../odrzavanje/odrzavanje.module";
 import { PbSourceService } from "../../common/sy15/pb-source.service";
-import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { ScadaSourceService } from "../../common/sy15/scada-source.service";
 import { ScadaJobsService } from "./scada-jobs.service";
 
@@ -62,13 +62,32 @@ import { ScadaJobsService } from "./scada-jobs.service";
  * `pb-enqueue` (`PB_IZVOR`), a `NotifyDispatchService` drži `pb-notify-dispatch`
  * (`PB_IZVOR`). Zato `PbSourceService` stoji ovde u providers — dok su prekidači
  * bili jedan, preklop sastanaka je obarao oba PB posla.
+ *
+ * Seoba održavanja (07.08.2026) — `OdrzavanjeModule` daje `OdrzavanjeFnService`
+ * (prepis sy15 DEFINER fn nad 3.0 bazom) poslovima `maint-deadlines` i
+ * `maint-notify-dispatch`. Isti razlog kao kod `SastanciModule`: pod `3.0` posao
+ * ide kroz ISTU logiku kao kontroler, ne kroz kopiju.
+ *
+ * 🔴 KOLATERAL NA TUĐE DOMENE (incident 06.08.2026) — uvoz novog modula menja
+ * redosled inicijalizacije: Nest diže uvezene module PRE ovog, pa `OdrzavanjeModule`
+ * (i njegovi Prisma/Idempotency/Notifications) sada ustaje pre scheduler-a. To je
+ * bezopasno jer se poslovi registruju u `onModuleInit`, a pogon kreće tek u
+ * `onApplicationBootstrap` (posle SVIH modula) — ali je razlog zašto boot-smoke ide
+ * u OBA položaja prekidača i zašto specovi pinuju da `sast-*`/`pb-*`/`kadr-*`
+ * poslovi ostaju netaknuti. `OdrzavanjeModule` ne uvozi scheduler → nema ciklusa.
  */
 @Module({
   // RobnoModule → ReservationService: dnevno oslobađanje isteklih rezervacija
   // (bez toga `expiresAt` ne radi ništa i rezervacija večno drži zalihu).
   // SyncModule → SyncService: noćni BigBit sync zove ISTI servis kao /sync/run
   // (bez duplirane logike). SyncModule ne uvozi scheduler → nema ciklusa.
-  imports: [Sy15Module, RobnoModule, SyncModule, SastanciModule],
+  imports: [
+    Sy15Module,
+    RobnoModule,
+    SyncModule,
+    SastanciModule,
+    OdrzavanjeModule,
+  ],
   controllers: [SchedulerController],
   providers: [
     SchedulerService,
@@ -81,11 +100,13 @@ import { ScadaJobsService } from "./scada-jobs.service";
     DailyBriefService,
     SecurityAuditService,
     PbSourceService,
-    // Treći prekidač (korak 2 gašenja sy15): `maint-deadlines` u `Sy15CronJobs` i
-    // `maint-notify-dispatch` u `NotifyDispatchService`. Stoji ovde iz istog
-    // razloga kao `PbSourceService` — scheduler drži poslove SVA TRI domena, pa
-    // mora imati sva tri prekidača da nijedan preklop ne obori tuđi posao.
-    OdrzavanjeSourceService,
+    // 🔴 Treći prekidač (`ODRZAVANJE_IZVOR`) NAMERNO VIŠE NIJE ovde: od kad se
+    // uvozi `OdrzavanjeModule` (koji ga i izvozi), lokalni provider bi napravio
+    // DRUGU instancu. `IzvorPrekidac` čita env u KONSTRUKTORU i tu jednom loguje
+    // upozorenje — dve instance znače dvostruko upozorenje na startu i dva
+    // odvojena keša iste vrednosti. Poslovi `maint-deadlines` i
+    // `maint-notify-dispatch` dobijaju prekidač iz uvezenog modula, isti onaj koji
+    // vide kontroler održavanja, AI-chat i Reversi.
     // Četvrti prekidač (korak 5 gašenja sy15): `ScadaJobsService` drži watchdog i
     // retenciju istorije, i OBA se registruju samo pod `SCADA_IZVOR=3.0`. Isti
     // razlog kao gore — svaki domen nosi svoj prekidač, da preklop jednog ne

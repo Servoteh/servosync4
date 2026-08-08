@@ -5,6 +5,7 @@ import type { Sy15Service } from "../../../common/sy15/sy15.service";
 import type { Sy15StorageService } from "../../../common/sy15/sy15-storage.service";
 import { PbSourceService } from "../../../common/sy15/pb-source.service";
 import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.service";
+import type { OdrzavanjeFnService } from "../../odrzavanje/odrzavanje-fn.service";
 
 /*
  * Talas A-2a — dispatch worker. Testiramo PARITET sa 1.0 edge fn:
@@ -15,7 +16,26 @@ import { OdrzavanjeSourceService } from "../../../common/sy15/odrzavanje-source.
  * (PB grana pod `3.0` pada sa 503, jer PB nije prenet). Da se ne bi diralo ~35
  * postojećih konstrukcija, prekidač se ovde dodaje kao PODRAZUMEVAN argument;
  * čita `process.env` po konstrukciji, pa test koji hoće `3.0` samo postavi env.
+ *
+ * Seoba 07.08 — ŠESTA zavisnost `OdrzavanjeFnService` (3.0 outbox održavanja),
+ * istim obrascem. Podrazumevana vrednost NAMERNO BACA: pod `ODRZAVANJE_IZVOR=sy15`
+ * maint grana ne sme ni da dodirne 3.0 fn, pa bi svaki poziv bio kvar — a test
+ * koji stvarno hoće 3.0 put prosleđuje svoj `odrFnMock()`.
  */
+const odrFnEksplozija = new Proxy(
+  {},
+  {
+    get(_t, prop) {
+      return () => {
+        throw new Error(
+          `OdrzavanjeFnService.${String(prop)} pozvan bez eksplicitnog mock-a — ` +
+            "pod ODRZAVANJE_IZVOR=sy15 maint grana NE SME da dodirne 3.0 bazu.",
+        );
+      };
+    },
+  },
+) as OdrzavanjeFnService;
+
 class NotifyDispatchService extends RealNotifyDispatchService {
   constructor(
     sy15: Sy15Service,
@@ -25,8 +45,9 @@ class NotifyDispatchService extends RealNotifyDispatchService {
     // Prekidač održavanja (korak 2 gašenja sy15) — isti obrazac kao gore:
     // podrazumevan argument, čita `process.env` po konstrukciji.
     odrIzvor: OdrzavanjeSourceService = new OdrzavanjeSourceService(),
+    odrFn: OdrzavanjeFnService = odrFnEksplozija,
   ) {
-    super(sy15, mail, storage, izvor, odrIzvor);
+    super(sy15, mail, storage, izvor, odrIzvor, odrFn);
   }
 }
 
@@ -86,6 +107,52 @@ function storageMock(bytes?: Uint8Array) {
     .fn()
     .mockResolvedValue(bytes ?? new Uint8Array([1, 2, 3]));
   return { storage: { download } as unknown as Sy15StorageService, download };
+}
+
+/**
+ * `OdrzavanjeFnService` mock — 3.0 outbox održavanja. Radnik iz njega dodiruje
+ * TAČNO četiri metode; ostale ostaju na `odrFnEksplozija` da bi svaki nepredviđen
+ * poziv pao glasno.
+ *
+ * ⚠️ `dispatchDequeue` servira redove SAMO PRVI put: `dispatchMaint()` u jednom
+ * prolazu zove dequeue jednom, a prazan drugi odgovor čuva od beskonačne petlje
+ * ako se to ikad promeni.
+ */
+function odrFnMock(
+  opts: {
+    redovi?: unknown[];
+    fanoutBroj?: number;
+    markSentBroj?: number;
+    /** Koliko AKTIVNIH `maint_user_profiles` postoji (podrazumevano: prenos je gotov). */
+    profila?: number;
+    sredstava?: number;
+  } = {},
+) {
+  const dispatchDequeue = jest
+    .fn()
+    .mockResolvedValueOnce(opts.redovi ?? [])
+    .mockResolvedValue([]);
+  const dispatchMarkSent = jest.fn().mockResolvedValue(opts.markSentBroj ?? 1);
+  const dispatchMarkFailed = jest.fn().mockResolvedValue(undefined);
+  const dispatchFanout = jest.fn().mockResolvedValue(opts.fanoutBroj ?? 0);
+  const brojPreduslova = jest.fn().mockResolvedValue({
+    aktivnihProfila: opts.profila ?? 4,
+    zivihSredstava: opts.sredstava ?? 40,
+  });
+  return {
+    odrFn: {
+      dispatchDequeue,
+      dispatchMarkSent,
+      dispatchMarkFailed,
+      dispatchFanout,
+      brojPreduslova,
+    } as unknown as OdrzavanjeFnService,
+    dispatchDequeue,
+    dispatchMarkSent,
+    dispatchMarkFailed,
+    dispatchFanout,
+    brojPreduslova,
+  };
 }
 
 type FetchSpy = jest.SpyInstance<Promise<Response>, Parameters<typeof fetch>>;
@@ -1255,16 +1322,186 @@ describe("ODRZAVANJE_IZVOR — maint grana dispečera", () => {
     expect(m.sqlOf(0)).toContain("maint_dispatch_dequeue");
   });
 
-  it("ODRZAVANJE_IZVOR=3.0: pada sa 503 PRE ijednog sy15 poziva", async () => {
+  it("ODRZAVANJE_IZVOR=3.0: prazni 3.0 outbox, NIJEDAN sy15 poziv", async () => {
     process.env.ODRZAVANJE_IZVOR = "3.0";
     const m = sy15Mock();
+    const odr = odrFnMock({
+      redovi: [
+        {
+          id: ID_A,
+          channel: "email",
+          recipient: "pera@servoteh.com",
+          recipient_user_id: 5,
+          subject: "Kvar",
+          body: "telo",
+          attempts: 0,
+        },
+      ],
+    });
+    const mail = mailMock();
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mail.mail,
+      storageMock().storage,
+      undefined,
+      undefined,
+      odr.odrFn,
+    );
+
+    const r = await svc.dispatchMaint();
+    expect(r).toMatchObject({ processed: 1, sent: 1, failed: 0 });
+
+    // 🔴 Suština rizika: pod `3.0` stari outbox se NE SME dirati. Da radnik ostao
+    // na sy15 dok cron piše u 3.0, red bi samo stajao — bez ijedne greške u logu.
+    expect(m.calls).toHaveLength(0);
+    expect(odr.dispatchDequeue).toHaveBeenCalledWith(undefined, 25, 8);
+    expect(odr.dispatchMarkSent).toHaveBeenCalledWith(undefined, [ID_A]);
+    expect(odr.dispatchMarkFailed).not.toHaveBeenCalled();
+  });
+
+  it("🔴 STUB red (recipient='pending', bez recipient_user_id): fanout DA, markSent za roditelja NE", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const m = sy15Mock();
+    const odr = odrFnMock({
+      redovi: [
+        {
+          id: ID_A,
+          channel: "whatsapp",
+          recipient: "pending",
+          recipient_user_id: null,
+          subject: "Kvar",
+          body: "telo",
+          attempts: 0,
+        },
+      ],
+      fanoutBroj: 3,
+    });
+    const mail = mailMock();
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mail.mail,
+      storageMock().storage,
+      undefined,
+      undefined,
+      odr.odrFn,
+    );
+
+    const r = await svc.dispatchMaint();
+
+    expect(odr.dispatchFanout).toHaveBeenCalledWith(undefined, ID_A);
+    // 🔴 Roditelja zatvara SAM fanout (`FANOUT_DONE: N recipients`). Da radnik
+    // pozove markSent, fanout bi se prekinuo i deca se NIKAD ne bi poslala.
+    expect(odr.dispatchMarkSent).not.toHaveBeenCalled();
+    expect(odr.dispatchMarkFailed).not.toHaveBeenCalled();
+    // Stub se ne šalje kao poruka — on je samo nalog za razgranavanje.
+    expect(mail.send).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ fanouts: 1, sent: 0, failed: 0 });
+  });
+
+  it("🔴 fanout BEZ ijednog primaoca je NEUSPEH u summary-ju, ne tihi uspeh", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const odr = odrFnMock({
+      redovi: [
+        {
+          id: ID_A,
+          channel: "whatsapp",
+          recipient: "pending",
+          recipient_user_id: null,
+          subject: "Kvar",
+          body: "telo",
+          attempts: 0,
+        },
+      ],
+      fanoutBroj: 0,
+    });
+    const svc = new NotifyDispatchService(
+      sy15Mock().sy15,
+      mailMock().mail,
+      storageMock().storage,
+      undefined,
+      undefined,
+      odr.odrFn,
+    );
+
+    const r = await svc.dispatchMaint();
+    expect(odr.dispatchFanout).toHaveBeenCalledTimes(1);
+    expect(odr.dispatchMarkSent).not.toHaveBeenCalled();
+    // 🔴 Do 08.08.2026 je ovde stajalo `{ fanouts: 1, failed: 0 }` — obaveštenje
+    // o kvaru nije otišlo NIKOME, a `scheduled_job_runs.summary` je bio čist.
+    // Sa praznim `maint_user_profiles` (izmereno: 0 redova) to bi bio SVAKI red.
+    expect(r).toMatchObject({ processed: 1, sent: 0, failed: 1, fanouts: 0 });
+  });
+
+  it("🔴 podrazumevano (sy15): fanout bez primalaca broji se PO STAROM (ništa se ne menja)", async () => {
+    // Prekidač je NEPOSTAVLJEN — produkcija 08.08.2026. sy15 DEFINER fn i dalje
+    // zatvara roditelja kao `sent`; to je zatečeni defekt koji se NE dira dok
+    // domen ne pređe, jer podrazumevani put mora ostati bajt-identičan.
+    const m = sy15Mock();
+    m.pushResult([
+      {
+        id: ID_A,
+        channel: "whatsapp",
+        recipient: "pending",
+        recipient_user_id: null,
+        subject: "Kvar",
+        body: "telo",
+        attempts: 0,
+      },
+    ]);
+    m.pushResult([{ children: 0 }]); // maint_dispatch_fanout → 0 primalaca
     const svc = new NotifyDispatchService(
       m.sy15,
       mailMock().mail,
       storageMock().storage,
     );
-    await expect(svc.dispatchMaint()).rejects.toThrow(/nije preneto na 3\.0/i);
-    expect(m.calls).toHaveLength(0);
+    const r = await svc.dispatchMaint();
+    expect(r).toMatchObject({ processed: 1, sent: 0, failed: 0, fanouts: 1 });
+  });
+
+  it("ODRZAVANJE_IZVOR=3.0: neuspeh slanja ide u 3.0 markFailed sa ISTIM backoff-om", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    // Samo `whatsapp` stvarno šalje — email/telegram/in_app su DRY-RUN u maint-u.
+    process.env.WA_ACCESS_TOKEN = "tok";
+    process.env.WA_PHONE_NUMBER_ID = "777";
+    process.env.WA_TEMPLATE_NAME = "t";
+    const odr = odrFnMock({
+      redovi: [
+        {
+          id: ID_A,
+          channel: "whatsapp",
+          recipient: "381641234567",
+          recipient_user_id: 5,
+          subject: "s",
+          body: "b",
+          attempts: 1,
+        },
+      ],
+    });
+    const spy = jest
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response("err", { status: 500 }));
+    const svc = new NotifyDispatchService(
+      sy15Mock().sy15,
+      mailMock().mail,
+      storageMock().storage,
+      undefined,
+      undefined,
+      odr.odrFn,
+    );
+
+    const r = await svc.dispatchMaint();
+    spy.mockRestore();
+
+    expect(r).toMatchObject({ sent: 0, failed: 1 });
+    expect(odr.dispatchMarkSent).not.toHaveBeenCalled();
+    // Backoff se računa iz `attempts + 1` (30 * 2^1 = 60s) — ista formula i isti
+    // ulaz kao na sy15 putu; `dispatchDequeue` je attempts VEĆ podigao.
+    expect(odr.dispatchMarkFailed).toHaveBeenCalledWith(
+      undefined,
+      ID_A,
+      expect.any(String),
+      60,
+    );
   });
 
   it("🔴 ODRZAVANJE_IZVOR=3.0 NE obara kadr ni pb granu", async () => {
@@ -1294,6 +1531,88 @@ describe("ODRZAVANJE_IZVOR — maint grana dispečera", () => {
       storageMock().storage,
     );
     await expect(svc.dispatchMaint()).resolves.toBeDefined();
+    expect(m.sqlOf(0)).toContain("maint_dispatch_dequeue");
+  });
+});
+
+/*
+ * 🔴 PRAZAN OUTBOX NIJE UVEK „nema posla" (drugi krug provere PR #125).
+ *
+ * Prva popravka je fanout bez primalaca prijavila kao `failed`, ali TA grana je
+ * UNUTAR petlje po redovima. U izmerenom stanju produkcije (08.08.2026: 3.0
+ * `maint_*` tabele prazne) petlja nema nijednu iteraciju: dequeue vrati ništa,
+ * summary kaže `processed=0 sent=0 failed=0`, dnevnik zelen — dakle najgori
+ * mogući položaj prekidača izgleda TAČNO kao miran dan. Ova tri testa pinuju
+ * granu koja tu razliku pravi, i njenu cenu na sy15 putu (nikakvu).
+ */
+describe("maint dispečer — prazan outbox uz NEPRENETE podatke se VIDI", () => {
+  it("🔴 3.0 + prazan outbox + 0 aktivnih profila: napomena u summary-ju i ERROR u log", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const odr = odrFnMock({ redovi: [], profila: 0 });
+    const greska = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation(() => undefined);
+    const svc = new NotifyDispatchService(
+      sy15Mock().sy15,
+      mailMock().mail,
+      storageMock().storage,
+      undefined,
+      undefined,
+      odr.odrFn,
+    );
+
+    const r = await svc.dispatchMaint();
+
+    expect(odr.brojPreduslova).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ processed: 0, sent: 0, failed: 0 });
+    // Bez ovoga je run bio potpuno nem — brojevi identični mirnom danu.
+    expect(r.napomena).toContain("maint_user_profiles");
+    expect(greska).toHaveBeenCalledWith(
+      expect.stringContaining("maint-notify-dispatch"),
+    );
+
+    // Napomena mora stvarno da stigne u `scheduled_job_runs.summary`, ne samo u
+    // povratnu vrednost — dnevnik je jedino što čovek gleda posle preklopa.
+    const job = svc.buildJobs().find((j) => j.key === "maint-notify-dispatch")!;
+    const summary = String(await job.run({ scheduledFor: new Date() }));
+    expect(summary).toMatch(/^processed=0 sent=0 failed=0/);
+    expect(summary).toContain("maint_user_profiles");
+    greska.mockRestore();
+  });
+
+  it("3.0 + prazan outbox ali profili POSTOJE: summary ostaje čist (nema lažne uzbune)", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const odr = odrFnMock({ redovi: [], profila: 4 });
+    const svc = new NotifyDispatchService(
+      sy15Mock().sy15,
+      mailMock().mail,
+      storageMock().storage,
+      undefined,
+      undefined,
+      odr.odrFn,
+    );
+
+    const r = await svc.dispatchMaint();
+    expect(r.napomena).toBeUndefined();
+    const job = svc.buildJobs().find((j) => j.key === "maint-notify-dispatch")!;
+    expect(String(await job.run({ scheduledFor: new Date() }))).toBe(
+      "processed=0 sent=0 failed=0 fanouts=0 skipped=0",
+    );
+  });
+
+  it("🔴 podrazumevano (sy15): prazan outbox NE pravi nijedan dodatni upit", async () => {
+    // Prekidač NEPOSTAVLJEN = produkcija. Provera preduslova sme da postoji SAMO
+    // na 3.0 putu; `odrFnEksplozija` bi pukao na svaki dodir 3.0 servisa.
+    const m = sy15Mock();
+    m.pushResult([]);
+    const svc = new NotifyDispatchService(
+      m.sy15,
+      mailMock().mail,
+      storageMock().storage,
+    );
+    const r = await svc.dispatchMaint();
+    expect(r.napomena).toBeUndefined();
+    expect(m.calls).toHaveLength(1);
     expect(m.sqlOf(0)).toContain("maint_dispatch_dequeue");
   });
 });

@@ -6,6 +6,7 @@ import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.ser
 import type { Sy15Service } from "../../common/sy15/sy15.service";
 import type { PrismaService } from "../../prisma/prisma.service";
 import type { SastanciFnService } from "../sastanci/sastanci-fn.service";
+import type { OdrzavanjeFnService } from "../odrzavanje/odrzavanje-fn.service";
 import type { ScheduledJob } from "./scheduler.types";
 
 /*
@@ -111,15 +112,71 @@ function sastFnMock(
   };
 }
 
+/**
+ * `OdrzavanjeFnService` mock — scheduler iz njega dodiruje SAMO
+ * `checkAllDeadlines` (posao `maint-deadlines`).
+ */
+function odrFnMock(
+  redovi: { source: string; enqueued: number; skipped: number }[] = [
+    { source: "vehicle", enqueued: 0, skipped: 0 },
+    { source: "it_facility", enqueued: 0, skipped: 0 },
+  ],
+  // Podrazumevano: prenos podataka je gotov (posao radi normalno). Test koji
+  // meri stanje produkcije od 08.08.2026 prosleđuje nule.
+  preduslov: { aktivnihProfila: number; zivihSredstava: number } = {
+    aktivnihProfila: 4,
+    zivihSredstava: 40,
+  },
+) {
+  const checkAllDeadlines = jest.fn().mockResolvedValue(redovi);
+  const brojPreduslova = jest.fn().mockResolvedValue(preduslov);
+  return {
+    odrFn: {
+      checkAllDeadlines,
+      brojPreduslova,
+    } as unknown as OdrzavanjeFnService,
+    checkAllDeadlines,
+    brojPreduslova,
+  };
+}
+
+/**
+ * 🔴 PODRAZUMEVANI `OdrzavanjeFnService` u ovom specu BACA na svaki dodir.
+ *
+ * Bez toga je `expect(sy15.sql).toEqual([...])` u sy15 testu nedovoljan: mutacija
+ * koja 3.0 fn zove BEZUSLOVNO (pre grananja po prekidaču) prolazi neopaženo, jer
+ * sy15 poziv i dalje ode. Ovaj Proxy je isti obrazac koji već drži dispečerov
+ * spec (`odrFnEksplozija` u `dispatch/notify-dispatch.service.spec.ts`) — pod
+ * podrazumevanim `ODRZAVANJE_IZVOR=sy15` posao NE SME ni da dodirne 3.0 bazu.
+ * Test koji stvarno hoće 3.0 put prosleđuje svoj `odrFnMock()`.
+ */
+function odrFnEksplozija(): ReturnType<typeof odrFnMock> {
+  const eksplodiraj = (prop: string) => () => {
+    throw new Error(
+      `OdrzavanjeFnService.${prop} pozvan bez eksplicitnog mock-a — ` +
+        "pod ODRZAVANJE_IZVOR=sy15 maint posao NE SME da dodirne 3.0 bazu.",
+    );
+  };
+  const checkAllDeadlines = jest.fn(eksplodiraj("checkAllDeadlines"));
+  const brojPreduslova = jest.fn(eksplodiraj("brojPreduslova"));
+  const cilj: Record<string, unknown> = { checkAllDeadlines, brojPreduslova };
+  const odrFn = new Proxy(cilj, {
+    get: (t, prop) => t[String(prop)] ?? eksplodiraj(String(prop)),
+  }) as unknown as OdrzavanjeFnService;
+  return { odrFn, checkAllDeadlines, brojPreduslova };
+}
+
 function make(
   sy15 = sy15Mock(),
   p = prismaMock(),
   fn = sastFnMock(),
+  odr = odrFnEksplozija(),
 ): {
   jobs: Map<string, ScheduledJob>;
   sy15: ReturnType<typeof sy15Mock>;
   p: ReturnType<typeof prismaMock>;
   fn: ReturnType<typeof sastFnMock>;
+  odr: ReturnType<typeof odrFnMock>;
 } {
   const svc = new Sy15CronJobs(
     sy15.sy15,
@@ -128,12 +185,14 @@ function make(
     fn.sastFn,
     new PbSourceService(),
     new OdrzavanjeSourceService(),
+    odr.odrFn,
   );
   return {
     jobs: new Map(svc.buildJobs().map((j) => [j.key, j])),
     sy15,
     p,
     fn,
+    odr,
   };
 }
 
@@ -444,22 +503,45 @@ describe("prekidači su NEZAVISNI — sve 4 kombinacije (incident 06.08.2026)", 
  * talac tuđeg preklopa, ni da tiho nastavi da piše u sy15 kad domen pređe.
  */
 describe("ODRZAVANJE_IZVOR — maint-deadlines je nezavisan od druga dva domena", () => {
-  it("podrazumevano (sy15): maint-deadlines zove sy15 fn", async () => {
-    const { jobs, sy15 } = make();
+  it("podrazumevano (sy15): maint-deadlines zove sy15 fn i NE DODIRUJE 3.0", async () => {
+    const { jobs, sy15, odr } = make();
     await run(jobs.get("maint-deadlines")!);
     expect(sy15.sql).toEqual([
       "SELECT * FROM public.maint_check_all_deadlines(30);",
     ]);
+    // 🔴 Bez ovog reda test propušta mutaciju „zovi 3.0 fn BEZUSLOVNO, pa tek
+    // onda grananje" — sy15 upit bi i dalje otišao, pa bi gornja tvrdnja
+    // ostala tačna dok bi rokovi nastajali u OBE baze. Podrazumevani `odrFn`
+    // je zato Proxy koji baca na svaki dodir; ovo pinuje da nije ni dodirnut.
+    expect(odr.checkAllDeadlines).not.toHaveBeenCalled();
   });
 
-  it("ODRZAVANJE_IZVOR=3.0: maint-deadlines GLASNO pada, NIJEDAN sy15 poziv", async () => {
+  it("ODRZAVANJE_IZVOR=3.0: maint-deadlines ide kroz 3.0 fn, NIJEDAN sy15 poziv", async () => {
     process.env.ODRZAVANJE_IZVOR = "3.0";
-    const { jobs, sy15 } = make();
-    await expect(run(jobs.get("maint-deadlines")!)).rejects.toThrow(
-      /nije preneto na 3\.0/i,
+    const { jobs, sy15, odr } = make(
+      sy15Mock(),
+      prismaMock(),
+      sastFnMock(),
+      odrFnMock([
+        { source: "vehicle", enqueued: 3, skipped: 11 },
+        { source: "it_facility", enqueued: 1, skipped: 4 },
+      ]),
     );
-    // Ključno: brana je PRE poziva — outbox se ne prazni iz stare baze.
+    const summary = await run(jobs.get("maint-deadlines")!);
+
+    // 🔴 Ovo je bila brana (503) do preklopa 07.08.2026 — sada je skretnica.
+    // Ključno ostaje ISTO: kad je izvor 3.0, u sy15 ne sme da ode NIJEDAN upit,
+    // inače bi rokovi nastajali u obe baze.
     expect(sy15.sql).toEqual([]);
+    expect(odr.checkAllDeadlines).toHaveBeenCalledTimes(1);
+    // `undefined` kao `tx`: posao NAMERNO ne ide u jednu dugu transakciju
+    // (idempotencija je po redu), pa prekid na pola preskoči već poslato.
+    expect(odr.checkAllDeadlines).toHaveBeenCalledWith(undefined, 30);
+    // Summary zadržava oblik sy15 TABLE fn — dnevnik `scheduled_job_runs` mora
+    // ostati uporediv pre i posle preklopa.
+    expect(summary).toBe(
+      "source=vehicle enqueued=3 skipped=11; source=it_facility enqueued=1 skipped=4",
+    );
   });
 
   it("🔴 ODRZAVANJE_IZVOR=3.0 NE obara poslove sastanaka ni PB-a", async () => {
@@ -469,7 +551,9 @@ describe("ODRZAVANJE_IZVOR — maint-deadlines je nezavisan od druga dva domena"
       prismaMock(),
       sastFnMock({ action: 2 }),
     );
-    await expect(run(jobs.get("sast-action-reminders")!)).resolves.toBeDefined();
+    await expect(
+      run(jobs.get("sast-action-reminders")!),
+    ).resolves.toBeDefined();
     await expect(run(jobs.get("pb-enqueue")!)).resolves.toBeDefined();
     await expect(run(jobs.get("kadr-hr-reminders")!)).resolves.toBeDefined();
     expect(sy15.sql).toEqual([
@@ -493,6 +577,89 @@ describe("ODRZAVANJE_IZVOR — maint-deadlines je nezavisan od druga dva domena"
     process.env.SASTANCI_PB_IZVOR = "3.0";
     const { jobs, sy15 } = make();
     await expect(run(jobs.get("maint-deadlines")!)).resolves.toBeDefined();
+    expect(sy15.sql).toEqual([
+      "SELECT * FROM public.maint_check_all_deadlines(30);",
+    ]);
+  });
+});
+
+/*
+ * 🔴 PRENOS PODATAKA JE TVRD PREDUSLOV (drugi krug provere PR #125).
+ *
+ * IZMERENO na produkciji 08.08.2026: 3.0 `maint_*` tabele su PRAZNE
+ * (`maint_user_profiles` = 0, `maint_machines` = 0), a `ODRZAVANJE_IZVOR` je
+ * nepostavljen. Da neko okrene prekidač pre prenosa, posao bi vratio
+ * `enqueued=0 skipped=0` — brojeve NERAZLUČIVE od savršeno mirnog dana — i red u
+ * `scheduled_job_runs` bi bio zelen. Nijedan alarm, nijedan trag; obaveštenja o
+ * isteklim registracijama i lekarskim jednostavno prestanu.
+ */
+describe("maint-deadlines pod 3.0 — prazne tabele se NE prećutkuju", () => {
+  it("🔴 0 aktivnih profila: posao ODBIJA rad (baca) i NE upisuje nijedan rok", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const { jobs, sy15, odr } = make(
+      sy15Mock(),
+      prismaMock(),
+      sastFnMock(),
+      odrFnMock(undefined, { aktivnihProfila: 0, zivihSredstava: 0 }),
+    );
+
+    // 🔴 Mora da BACI, ne da vrati tekst: `scheduler.service.ts` postavlja `DONE`
+    // za svaki `run()` koji ne baci, pa bi red u dnevniku ostao ZELEN.
+    await expect(run(jobs.get("maint-deadlines")!)).rejects.toThrow(
+      /maint_user_profiles/,
+    );
+    // Brana stoji IZNAD posla: nijedan rok se ne upisuje u outbox koji ionako
+    // nema kome da isporuči (svaki fanout bi bio `FANOUT_NO_RECIPIENTS`).
+    expect(odr.checkAllDeadlines).not.toHaveBeenCalled();
+    // I dalje NIJEDAN sy15 upit — brana ne sme da vrati posao na stari put.
+    expect(sy15.sql).toEqual([]);
+  });
+
+  it("profili preneti, sredstava NEMA: posao radi, ali summary GLASNO upozorava", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const { jobs, odr } = make(
+      sy15Mock(),
+      prismaMock(),
+      sastFnMock(),
+      odrFnMock(undefined, { aktivnihProfila: 3, zivihSredstava: 0 }),
+    );
+
+    const summary = String(await run(jobs.get("maint-deadlines")!));
+    expect(odr.checkAllDeadlines).toHaveBeenCalledTimes(1);
+    // Oblik sy15 TABLE fn ostaje NA POČETKU (dnevnik i dalje uporediv)…
+    expect(summary).toMatch(
+      /^source=vehicle enqueued=0 skipped=0; source=it_facility enqueued=0 skipped=0/,
+    );
+    // …a upozorenje se DOPISUJE, da `enqueued=0` ne prođe kao miran dan.
+    expect(summary).toContain("UPOZORENJE");
+    expect(summary).toContain("maint_assets");
+  });
+
+  it("prenos gotov: summary je BAJT-ISTI kao pre ove provere (bez repa)", async () => {
+    process.env.ODRZAVANJE_IZVOR = "3.0";
+    const { jobs } = make(
+      sy15Mock(),
+      prismaMock(),
+      sastFnMock(),
+      odrFnMock(
+        [
+          { source: "vehicle", enqueued: 3, skipped: 11 },
+          { source: "it_facility", enqueued: 1, skipped: 4 },
+        ],
+        { aktivnihProfila: 5, zivihSredstava: 62 },
+      ),
+    );
+    expect(await run(jobs.get("maint-deadlines")!)).toBe(
+      "source=vehicle enqueued=3 skipped=11; source=it_facility enqueued=1 skipped=4",
+    );
+  });
+
+  it("🔴 podrazumevano (sy15): preduslov se NE proverava — nijedan dodatni upit", async () => {
+    // Prekidač NEPOSTAVLJEN = stanje produkcije. `odrFnEksplozija` baca na svaki
+    // dodir 3.0 servisa, pa bi provera koja se izvršava bezuslovno oborila test.
+    const { jobs, sy15, odr } = make();
+    await expect(run(jobs.get("maint-deadlines")!)).resolves.toBeDefined();
+    expect(odr.brojPreduslova).not.toHaveBeenCalled();
     expect(sy15.sql).toEqual([
       "SELECT * FROM public.maint_check_all_deadlines(30);",
     ]);
