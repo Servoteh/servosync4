@@ -40,8 +40,9 @@ export type ReversiIzvor = Izvor;
  * ── KOJE SVE POZIVAOCE POKRIVA (mereno 07.08.2026, `grep` po `backend/src`) ─────
  *   1. `modules/reversi/*`   — 66 ruta, `rev_*` tabele + 15 `v_rev_*` view-ova
  *   2. `modules/locations/*` — `loc_*` tabele + `loc_create_movement`
- *   3. `common/printing/label-print.service.ts` — nalepnice nose `rev_tools.barcode`
- *      i `loc_locations.location_code`; oblik podatka, ne izvor — ne pada pod 503.
+ *   3. `common/printing/label-print.service.ts` — sam transport nalepnice (TSPL2) NE
+ *      zna za izvor i ne pada pod 503. Ali PODATAK koji se štampa (`rev_tools.barcode`)
+ *      čita `ReversiService` iz sy15 — taj deo JESTE iza brane, kao i sve ostalo.
  *
  * ── ŠTA OVAJ PREKIDAČ NAMERNO NE DODIRUJE ──────────────────────────────────────
  *   • `rev_api_idempotency` — uprkos prefiksu to je registar `Sy15Service.runIdempotent`
@@ -52,12 +53,17 @@ export type ReversiIzvor = Izvor;
  *   • `modules/part-locations/*` — 2.0-native QBigTehn ledger, drugi modul sa
  *     sličnim imenom. Nema nijedan `loc_*` objekat.
  *
- * ── STANJE 07.08.2026 ──────────────────────────────────────────────────────────
+ * ── STANJE 08.08.2026 ──────────────────────────────────────────────────────────
  * Šema i prenos SU spremni (21 tabela; prenos idempotentan i dokazan na probnoj
  * bazi), ali LOGIKA nije prepisana: `rev_issue_reversal` i `rev_confirm_return` su
  * cela poslovna logika izdavanja/povraćaja u PL/pgSQL-u, a u TypeScript-u je NEMA
- * (runbook §4 ih razlaže korak po korak; procena 5–8 dana). Zato pod `3.0` sve
- * neprenete putanje NAMERNO padaju sa 503 — glasno, umesto tiho pogrešno.
+ * (runbook §4 ih razlaže korak po korak; procena 5–8 dana).
+ *
+ * 🔴 Zato pod `3.0` DANAS pada CEO domen sa 503, ne „samo neprenete putanje" — nijedna
+ * putanja još nije preneta. To je stanje kvara, a ne radno stanje; `3.0` se postavlja
+ * TEK po završetku P1–P6 (runbook §6). Brana je ožičena u `ReversiService` nad svakim
+ * pristupom sy15 podacima (`this.db` / `withSy15User` / `runSy15Idempotent`) —
+ * ranije je bila samo provajdovana, pa je `3.0` tiho nastavljao da piše u sy15.
  */
 @Injectable()
 export class ReversiSourceService extends IzvorPrekidac {

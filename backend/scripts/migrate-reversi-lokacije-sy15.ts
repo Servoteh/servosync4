@@ -65,9 +65,13 @@
  *
  * POKRETANJE:
  *   npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts            # dry-run
- *   npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts --apply    # upis
- *   ... --verify-only     # samo uporedi brojeve izvor/odrediste
+ *   npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts --apply    # plan + upis
+ *   ... --verify-only     # broj redova + otisak skupa kljuceva (izlazni kod 1 na neslaganje)
  *   ... --show-columns    # ispiši mapu kolona po tabeli i izađi (revizija mapiranja)
+ *
+ * `--apply` UVEK prvo izvede plan prolaz (cita, razresava identitet, NE pise). Ako iko
+ * prijavi BLOKADU, upis se ne pokrece i odrediste ostaje netaknuto (izlazni kod 1).
+ * Sve tri komande vracaju != 0 kad nesto ne valja — da runbook korak ne prodje tiho.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -75,6 +79,7 @@ import { resolve } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { PrismaClient as Sy15PrismaClient } from "@prisma-sy15/client";
 import { buildUserMaps, type UserMaps } from "./lib/sy15-identity";
+import { keysetSql } from "./lib/keyset-checksum";
 
 // ---------------------------------------------------------------------------
 // Env bootstrap (bez dotenv zavisnosti) — isti obrazac kao migrate-odrzavanje-sy15.
@@ -126,6 +131,12 @@ interface StepReport {
 }
 const report: Record<string, StepReport> = {};
 const blockers: string[] = [];
+
+/** Briše izveštaj i blokade između dva prolaza (plan → upis). */
+function resetReport(): void {
+  for (const k of Object.keys(report)) delete report[k];
+  blockers.length = 0;
+}
 
 function step(name: string): StepReport {
   const s: StepReport = { read: 0, written: 0, skipped: 0, unresolved: {} };
@@ -610,6 +621,14 @@ async function transferTable(
   sy15: Sy15PrismaClient,
   spec: TableSpec,
   maps: UserMaps,
+  /**
+   * `false` = plan prolaz (čita, razrešava identitet, skuplja BLOKADE, NE piše).
+   * 🔴 Ovo NIJE isto što i `--dry-run` prekidač: pod `--apply` se plan prolaz izvodi
+   * PRVI, i ako iko prijavi blokadu upis se uopšte ne pokreće (v. `main`). Ranije se
+   * blokada otkrivala TOKOM pisanja, pa je blokiran `rev_documents` red obarao
+   * sledeći batch na FK i ostavljao delimično popunjenu bazu.
+   */
+  write: boolean,
 ): Promise<void> {
   const s = step(spec.table);
   const rows = await sy15.$queryRawUnsafe<Row[]>(selectSql(spec));
@@ -655,7 +674,7 @@ async function transferTable(
    */
   async function flush(): Promise<void> {
     if (batch.length === 0) return;
-    if (APPLY) {
+    if (write) {
       await prisma.$executeRawUnsafe(
         insertSqlFor(batch.length),
         ...batch.flat(),
@@ -734,7 +753,7 @@ async function transferTable(
       .join(" AND ");
     const sql = `UPDATE "${spec.table}" SET ${setSql} WHERE ${whereSql}`;
     for (const d of deferredRows) {
-      if (APPLY) await prisma.$executeRawUnsafe(sql, ...d.values, ...d.key);
+      if (write) await prisma.$executeRawUnsafe(sql, ...d.values, ...d.key);
     }
     note(s, "drugi prolaz (FK na samu sebe)", String(deferredRows.length));
   }
@@ -743,31 +762,54 @@ async function transferTable(
 // ---------------------------------------------------------------------------
 // Provera
 // ---------------------------------------------------------------------------
+/**
+ * 🔴 ZAŠTO BROJ REDOVA NIJE DOKAZ (protivnička provera 08.08.2026, NALAZ 4)
+ *
+ * Skripta je čist UPSERT — NIKAD ne briše. A `loc_item_placements` se u sy15 BRIŠE
+ * kad količina padne na 0 (triger `loc_after_movement_insert`, runbook §4.3). Znači:
+ * ako se između dva `--apply` desi jedno premeštanje (nestane red A, nastane red B),
+ * 3.0 zadrži fantomski red A — i `count(*)` se SAVRŠENO POKLOPI, a baze se raziđu.
+ *
+ * Zato uz broj ide i otisak SKUPA KLJUČEVA — `keysetSql` (v. `scripts/lib/keyset-checksum.ts`,
+ * izdvojen tamo da bi mogao da se testira; ovaj fajl je van `jest rootDir: src`).
+ *
+ * ⚠️ ŠTA OVO NE DOKAZUJE (namerno, da izveštaj ne obećava više nego što meri):
+ * poklapanje SADRŽAJA neključnih kolona. Otisak preko svih kolona nije moguć jer se
+ * kolone identiteta (`auth.users` uuid → `users.id` Int) po definiciji razlikuju
+ * između baza. Sadržaj se i dalje dokazuje ciljanim zbirovima iz runbook-a §5.2
+ * (`sum(quantity)`, `max(moved_at)`).
+ */
 async function verify(
   prisma: PrismaClient,
   sy15: Sy15PrismaClient,
-): Promise<void> {
-  console.log("\n── PROVERA (broj redova izvor -> odredište) ──");
+): Promise<number> {
+  console.log("\n── PROVERA (broj redova + otisak skupa ključeva) ──");
   let mismatch = 0;
   for (const spec of TABLES) {
-    const [src] = await sy15.$queryRawUnsafe<{ n: bigint }[]>(
-      `SELECT count(*)::bigint AS n FROM public."${spec.table}"`,
+    const [src] = await sy15.$queryRawUnsafe<{ n: bigint; ck: string }[]>(
+      keysetSql(spec, "public."),
     );
     let dstN = -1n;
+    let dstCk = "";
     try {
-      const [dst] = await prisma.$queryRawUnsafe<{ n: bigint }[]>(
-        `SELECT count(*)::bigint AS n FROM "${spec.table}"`,
+      const [dst] = await prisma.$queryRawUnsafe<{ n: bigint; ck: string }[]>(
+        keysetSql(spec, ""),
       );
       dstN = dst.n;
+      dstCk = dst.ck;
     } catch {
       // tabela još ne postoji u 3.0 (migracija nije primenjena)
     }
-    const ok = src.n === dstN;
-    if (!ok) mismatch += 1;
+    const brojOk = src.n === dstN;
+    const otisakOk = brojOk && src.ck === dstCk;
+    if (!otisakOk) mismatch += 1;
+    // 🟠 = brojevi se poklapaju ALI ključevi ne — tačno onaj tihi slučaj zbog kog
+    // otisak i postoji (fantomski red iz ranijeg `--apply`, koji je u sy15 obrisan).
+    const znak = otisakOk ? "🟢" : brojOk ? "🟠" : "🔴";
     console.log(
-      `  ${ok ? "🟢" : "🔴"} ${spec.table.padEnd(32)} ${String(src.n).padStart(6)} -> ${
+      `  ${znak} ${spec.table.padEnd(32)} ${String(src.n).padStart(6)} -> ${
         dstN < 0n ? "(nema tabele)" : String(dstN).padStart(6)
-      }`,
+      }${brojOk && !otisakOk ? "  ⚠️ ISTI BROJ, DRUGI KLJUČEVI (fantomski/nedostajući red)" : ""}`,
     );
   }
 
@@ -811,9 +853,10 @@ async function verify(
 
   console.log(
     mismatch === 0
-      ? "\n🟢 Sve se poklapa."
+      ? "\n🟢 Sve se poklapa (broj redova I skup ključeva)."
       : `\n🔴 ${mismatch} neslaganja — NE preklapati prekidač.`,
   );
+  return mismatch;
 }
 
 // ---------------------------------------------------------------------------
@@ -896,7 +939,10 @@ async function main(): Promise<void> {
 
   try {
     if (VERIFY_ONLY) {
-      await verify(prisma, sy15);
+      const mismatch = await verify(prisma, sy15);
+      // Izlazni kod, ne samo tekst: runbook §6 korak 3/4 se izvodi iz skripte i
+      // 🔴 ne sme da prođe neprimećeno ako operater ne gleda u ekran.
+      if (mismatch > 0) process.exitCode = 1;
       return;
     }
 
@@ -906,18 +952,45 @@ async function main(): Promise<void> {
         `users; ${maps.unmatchedAuthUuids.length} bez parnjaka.`,
     );
 
+    // ── PLAN PROLAZ (uvek, i pod --apply) ────────────────────────────────────
+    // Čita ceo izvor i razrešava identitet, ali NE PIŠE. Tek ako je čist, kreće upis.
     for (const spec of TABLES) {
-      await transferTable(prisma, sy15, spec, maps);
+      await transferTable(prisma, sy15, spec, maps, false);
     }
 
     printReport();
     printBlockers();
 
-    if (APPLY) await verify(prisma, sy15);
-    else
+    if (!APPLY) {
       console.log(
         "\n(dry-run — pokreni sa --apply pa onda --verify-only za potvrdu brojeva)",
       );
+      return;
+    }
+
+    // 🔴 ODBIJANJE UPISA UZ BLOKADE (protivnička provera 08.08.2026, NALAZ 4).
+    // Blokiran red se ne upisuje, ali redovi koji na njega pokazuju obaraju sledeći
+    // batch na FK — i baza ostaje delimično popunjena. Ranije se to otkrivalo TOKOM
+    // pisanja; sada `--apply` ne dodirne odredište dok blokada postoji.
+    if (blockers.length > 0) {
+      console.log(
+        `\n🔴 --apply ODBIJEN: ${blockers.length} blokada (nerazrešeni nalozi nad NOT NULL ` +
+          `kolonama identiteta). Ništa nije upisano. Reši blokade pa pokreni ponovo.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // ── UPIS ────────────────────────────────────────────────────────────────
+    console.log("\n🟢 Plan prolaz bez blokada — kreće upis.");
+    resetReport();
+    for (const spec of TABLES) {
+      await transferTable(prisma, sy15, spec, maps, true);
+    }
+    printReport();
+
+    const mismatch = await verify(prisma, sy15);
+    if (mismatch > 0) process.exitCode = 1;
   } finally {
     await prisma.$disconnect();
     await sy15.$disconnect();

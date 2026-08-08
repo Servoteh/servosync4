@@ -169,8 +169,38 @@ Zašto pucanje pri podizanju, a ne upozorenje: pouka 07.08.2026 („docker resta
 Bolje da backend ne krene nego da toliko dugo piše u dve baze.
 
 Kod: `backend/src/common/sy15/{reversi,lokacije}-source.service.ts`,
-`spojeni-izvori.ts`, `reversi-lokacije-izvor.module.ts`. Testovi (16, svi zeleni):
+`spojeni-izvori.ts`, `reversi-lokacije-izvor.module.ts`. Testovi (18, svi zeleni):
 `reversi-lokacije-izvor.spec.ts` — uključujući oba smera neslaganja.
+
+### 2.1 🔴 Gde brana STVARNO stoji (ispravka 08.08.2026)
+
+Prva verzija ovog koraka je prekidače samo **provajdovala** — `ReversiSourceService` i
+`LokacijeSourceService` nisu bili injektovani ni u jedan servis, a `assertPorted()` se u
+ovim domenima nigde nije zvao. Protivnička provera je to izmerila: pod `REVERSI_IZVOR=3.0`
+backend bi se podigao, log bi ispisao „3.0", `assertSpojeniIzvori` ne bi pukao,
+`post-deploy-verify.sh` bi dao 🟢 — a **svaki** zahtev bi i dalje čitao i pisao sy15.
+Tj. dokument je opisivao branu koje nema, i to baš onu po kojoj se planira preklop.
+
+Sada je brana ožičena, i to **ne po ulaznim metodama** (66 ruta — lako je zaboraviti
+jednu) nego po **pristupu sy15 podacima**. Oba servisa dodiruju sy15 na tačno tri načina
+i sva tri imaju parnjaka sa branom:
+
+| domen | pristupi sy15 | parnjak sa branom |
+|---|---|---|
+| Reversi | `sy15.db` (95×), `sy15.withUser` (15×), `sy15.runIdempotent` (2×) | `this.db`, `withSy15User`, `runSy15Idempotent` |
+| Lokacije | `sy15.db` (15×), `sy15.withUser` (15×), `sy15.withUserRls` (2×) | `this.db`, `withSy15User`, `withSy15UserRls` |
+
+Da neko sutra doda metodu koja zaobilazi kapiju, obara je statička provera u
+`reversi-lokacije-ozicenje.spec.ts` (obrazac iz `odrzavanje.set-role-discipline.spec.ts`).
+
+**Posledica za §6:** pod `3.0` ceo modul danas vraća 503 — to je stanje kvara, ne radno
+stanje. Preklop (§6 korak 5) se izvodi TEK po završetku P1–P6. Ranije je to bila samo
+rečenica u dokumentu; sada je sprovedeno kodom.
+
+`LocTpFeedService` (`loc-tp-feed.service.ts`) NIJE iza brane — on dodiruje isključivo
+`bigtehn_*_cache` i `loc_tp_feed_state`, koje nisu među 21 prenetom tabelom, a i sam je
+podrazumevano isključen (`LOC_TP_FEED_ENABLED`). `LocationsService.lookupDrawing` čita 3.0
+`work_orders` kroz `this.prisma` — to je 3.0 izvor i namerno nije iza brane.
 
 ---
 
@@ -188,7 +218,8 @@ Kod: `backend/src/common/sy15/{reversi,lokacije}-source.service.ts`,
 
 Migracija: `backend/prisma/migrations/20260808100000_seoba_reversi_lokacije/`.
 Generisana **offline** (`prisma migrate diff` datamodel→datamodel, BACKEND_RULES §12),
-plus ručni SQL rep: 34 CHECK-a i 13 izraznih/parcijalnih indeksa koje Prisma ne ume
+plus ručni SQL rep: **38** CHECK-ova, 13 izraznih/parcijalnih indeksa i jedan
+`SET NOT NULL` koje Prisma ne ume
 (najvažniji: `uq_loc_locations_scope_code_ci` — šifra lokacije jedinstvena u okviru
 roditelja i bez obzira na veličinu slova, i parcijalni UNIQUE nad `client_event_uuid`).
 
@@ -300,8 +331,8 @@ Skripta: `backend/scripts/migrate-reversi-lokacije-sy15.ts`
 ```bash
 npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts               # dry-run (podrazumevano)
 npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts --show-columns # revizija mape kolona
-npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts --apply        # upis
-npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts --verify-only  # samo brojevi
+npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts --apply        # plan prolaz + upis
+npx ts-node --transpile-only backend/scripts/migrate-reversi-lokacije-sy15.ts --verify-only  # brojevi + otisak ključeva
 ```
 
 Osobine:
@@ -318,9 +349,38 @@ Osobine:
 - **`barcode` i `loc_item_ref_id` se prenose eksplicitno** — u sy15 ih kuju trigeri
   kojih u 3.0 nema; bez toga bi veza 47/47 sa Lokacijama pukla;
 - NOT NULL kolone identiteta uz nerazrešen nalog = **BLOKADA sa spiskom**, red se ne
-  upisuje (ne izmišlja se nalog i ne gubi se red u tišini).
+  upisuje (ne izmišlja se nalog i ne gubi se red u tišini);
+- 🔴 **`--apply` UVEK prvo izvede plan prolaz** (čita, razrešava identitet, ne piše).
+  Ako ima ijedne blokade, upis se **ne pokreće** i odredište ostaje netaknuto
+  (izlazni kod 1). Ranije se blokada otkrivala TOKOM pisanja: blokiran `rev_documents`
+  red obarao je sledeći batch na FK i ostavljao delimično popunjenu bazu (ispravka
+  08.08.2026);
+- 🔴 **sve tri komande vraćaju izlazni kod ≠ 0 kad nešto ne valja** — runbook korak se
+  izvodi iz skripte i ne sme da prođe tiho ako operater ne gleda u ekran.
 
-### 5.1 🟢 Dokaz na probnoj bazi (NE na produkciji)
+### 5.1 🔴 Šta `--verify-only` dokazuje, a šta ne (ispravka 08.08.2026)
+
+Prva verzija je poredila **samo `count(*)`** po tabeli + 4 šava. To NIJE dokaz, jer je
+skripta čist UPSERT — **nikad ne briše** — a `loc_item_placements` se u sy15 **briše**
+kad količina padne na 0 (triger `loc_after_movement_insert`, §4.3). Znači: jedno
+premeštanje između dva `--apply` (nestane red A, nastane red B) ostavlja u 3.0 fantomski
+red A, **brojevi se savršeno poklope, i verify javi 🟢**.
+
+Sada uz broj ide i **otisak skupa ključeva** (`md5` nad sortiranim ključevima), koji taj
+slučaj hvata i prikazuje ga posebnim znakom:
+
+| znak | značenje |
+|---|---|
+| 🟢 | broj redova I skup ključeva se poklapaju |
+| 🟠 | **isti broj, drugi ključevi** — fantomski ili nedostajući red (tihi slučaj gore) |
+| 🔴 | broj redova se ne poklapa (ili tabele nema) |
+
+⚠️ **Šta i dalje NIJE dokazano:** poklapanje sadržaja neključnih kolona. Otisak preko
+svih kolona nije moguć jer se kolone identiteta (`auth.users` uuid → `users.id` Int) po
+definiciji razlikuju između baza. Sadržaj se dokazuje ciljanim zbirovima iz §5.2
+(`sum(quantity)`, `max(moved_at)`), koje treba ponoviti i na produkciji.
+
+### 5.2 🟢 Dokaz na probnoj bazi (NE na produkciji)
 
 Probna baza: `proba_seoba_rl_wf5` na `servosync-dev` (port 5437) — kopija
 **produkcijske 3.0 šeme** + `workers`/`users` podaci (71 nalog), pa migracija koraka 3.
@@ -351,25 +411,38 @@ na probnoj bazi.
 
 **Ovo se NE izvodi sada.** Ovde je zapisano da se ne bi improvizovalo kasnije.
 
+🔴 **PREDUSLOV KOJI SADA SPROVODI KOD (v. §2.1):** korak 5 postavlja prekidače na `3.0`,
+a brana je od 08.08.2026 stvarno ožičena — dok P1–P6 nisu gotovi, `3.0` znači da **ceo
+modul vraća 503**, ne „radi po starom". Koraci 6–10 se dakle izvode isključivo posle
+P1–P6. Do tada se izvode najviše koraci 1–5 (prenos podataka), i to je bezbedno:
+prenos ne dira prekidače.
+
 1. Objaviti prozor. **Lokacije se pišu uživo** (§0) — bez prozora se izgube kretanja
    nastala između `--apply` i preklopa.
 2. Zaustaviti upise: `LOKACIJE_IZVOR` i `REVERSI_IZVOR` ostaju `sy15`, ali se u sy15
    privremeno oduzme `INSERT` pravo nad `loc_location_movements` roli `servosync2_app`
    (mobilna dobija grešku, ne tihi gubitak).
-3. `--verify-only` → zabeležiti brojeve PRE.
-4. `--apply` → mora dati 🟢 na svih 21 tabelu i sva 4 šava.
-5. `REVERSI_IZVOR=3.0` **i** `LOKACIJE_IZVOR=3.0`, pa
+3. **Dry-run** (bez zastavica) → plan prolaz mora dati „🟢 Nema blokada". Ako ima
+   blokada, `--apply` bi ih ionako odbio — reši ih pre prozora, ne u prozoru.
+4. `--verify-only` → zabeležiti brojeve i otiske PRE.
+5. `--apply` → mora dati 🟢 na svih 21 tabelu i sva 4 šava, **bez ijednog 🟠**
+   (🟠 = isti broj, drugi ključevi → fantomski red iz ranijeg prolaza, v. §5.1) i
+   izlazni kod 0.
+6. `REVERSI_IZVOR=3.0` **i** `LOKACIJE_IZVOR=3.0`, pa
    **`docker compose up -d`** (ne `restart` — pouka 07.08.2026: `restart` NE čita
    novi env, kontejner ostaje zdrav i radi po starom prekidaču).
-6. Potvrditi u logu: `REVERSI_IZVOR=3.0 — …` i `LOKACIJE_IZVOR=3.0 — …`, i da
+7. Potvrditi u logu: `REVERSI_IZVOR=3.0 — …` i `LOKACIJE_IZVOR=3.0 — …`, i da
    `assertSpojeniIzvori` NIJE pukao.
-7. `backend/scripts/post-deploy-verify.sh` — bez 🟢 se ne kaže „radi".
-8. Dimni test uživo: jedno premeštanje sa mobilne, jedno izdavanje alata, jedan
-   povraćaj. Proveriti da su **oba** upisa (dokument i kretanje) u 3.0.
-9. Vratiti `INSERT` pravo u sy15 (za slučaj povratka), ali NE oglašavati stari UI.
+8. `backend/scripts/post-deploy-verify.sh` — bez 🟢 se ne kaže „radi".
+9. 🔴 **Dimni test uživo — jedini korak koji dokazuje da preklop radi.** Koraci 7 i 8
+   daju 🟢 i kad modul ne radi ništa: oni mere da se backend podigao, ne da podaci idu
+   u pravu bazu. Jedno premeštanje sa mobilne, jedno izdavanje alata, jedan povraćaj —
+   pa proveriti da su **oba** upisa (dokument i kretanje) u 3.0, i da u sy15 nije
+   nastao nijedan nov red.
+10. Vratiti `INSERT` pravo u sy15 (za slučaj povratka), ali NE oglašavati stari UI.
 
 **Povratak (~2 min):** obe promenljive na `sy15` + `docker compose up -d`.
-Podaci upisani u 3.0 posle preklopa se time ne vraćaju u sy15 — zato korak 8 mora
+Podaci upisani u 3.0 posle preklopa se time ne vraćaju u sy15 — zato korak 9 mora
 biti čist pre nego što se korisnicima kaže da rade.
 
 ---
@@ -434,10 +507,14 @@ Grana se **ne briše** (istorijat merenja), ali se **ne merge-uje**.
 | stavka | put |
 |---|---|
 | Prisma šema, 21 model + 14 back-relacija na `User` | `backend/prisma/schema.prisma` |
-| Offline migracija (21 tabela, 34 CHECK-a, 13 izraznih indeksa) | `backend/prisma/migrations/20260808100000_seoba_reversi_lokacije/` |
+| Offline migracija (21 tabela, **38** CHECK-ova, 13 izraznih indeksa, 1 `SET NOT NULL`) | `backend/prisma/migrations/20260808100000_seoba_reversi_lokacije/` |
 | Prekidači + brana sprege | `backend/src/common/sy15/{reversi,lokacije}-source.service.ts`, `spojeni-izvori.ts`, `reversi-lokacije-izvor.module.ts` |
-| Testovi prekidača (16) | `backend/src/common/sy15/reversi-lokacije-izvor.spec.ts` |
-| Prenosna skripta (idempotentna, dokazana) | `backend/scripts/migrate-reversi-lokacije-sy15.ts` |
+| **Ožičenje brane u domenske servise** (`assertPorted` nad svakim pristupom sy15) | `backend/src/modules/reversi/reversi.service.ts`, `backend/src/modules/locations/locations.service.ts` |
+| Testovi prekidača (18) | `backend/src/common/sy15/reversi-lokacije-izvor.spec.ts` |
+| Testovi OŽIČENJA (podizanje modula, uvoz, injekcija, 503, disciplina) | `backend/src/common/sy15/reversi-lokacije-ozicenje.spec.ts` |
+| Prenosna skripta (idempotentna, plan prolaz pre upisa, izlazni kodovi) | `backend/scripts/migrate-reversi-lokacije-sy15.ts` |
+| Otisak skupa ključeva (izdvojen da bi bio testabilan) | `backend/scripts/lib/keyset-checksum.ts` |
+| Testovi provere prenosa (otisak + brane `--apply`) | `backend/src/common/sy15/reversi-lokacije-prenos.spec.ts` |
 | Promenljive okruženja | `backend/.env.example` |
 | Ovaj runbook | `docs/SEOBA_REVERSI_LOKACIJE_2026-08-07.md` |
 

@@ -769,6 +769,16 @@ CREATE UNIQUE INDEX "uq_rev_documents_bulk_import_legacy_key"
   ON "rev_documents" ("bulk_import_legacy_key")
   WHERE "bulk_import_legacy_key" IS NOT NULL AND btrim("bulk_import_legacy_key") <> '';
 
+-- 🔴 NOT NULL koji Prisma ne ume nad skalarnom listom (`String[]`).
+-- U sy15 je `rev_cutting_tool_catalog.compatible_machine_codes` NOT NULL, a
+-- `prisma migrate diff` je izostavio NOT NULL — bez ovoga bi jedina kolona od
+-- ~250 poređenih odstupala od izvora (protivnička provera 08.08.2026, NALAZ 3).
+-- Tabela je danas prazna (0 redova), pa se izvodi bez `USING`/backfill-a.
+-- Prisma model ostaje `String[] @default([])` — u Prisma tipovima skalarna lista
+-- je ionako obavezna, pa klijent ne vidi razliku.
+ALTER TABLE "rev_cutting_tool_catalog"
+  ALTER COLUMN "compatible_machine_codes" SET NOT NULL;
+
 CREATE INDEX "idx_rev_cutting_tool_catalog_machines_gin"
   ON "rev_cutting_tool_catalog" USING gin ("compatible_machine_codes");
 CREATE INDEX "idx_rev_cutting_tool_catalog_bigtehn_sifra"

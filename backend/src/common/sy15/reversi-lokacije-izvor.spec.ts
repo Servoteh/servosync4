@@ -188,14 +188,29 @@ describe("🔴 sprega REVERSI <-> LOKACIJE (assertSpojeniIzvori)", () => {
     );
   });
 
-  it("bilo šta osim tačno 'true' NE otključava razdvajanje", () => {
+  // 🔴 Raniji test se ovde zvao „bilo šta osim tačno 'true' NE otključava" i imao
+  // `if (v.trim().toLowerCase() === "true") continue;` — tj. PRESKAKAO je baš onu
+  // vrednost koju je tvrdio da hvata (`"TRUE "`). Bila je tautologija: ime testa je
+  // lagalo, a nijedna tvrdnja se nije izvršila nad graničnim slučajem. Sada su oba
+  // skupa nabrojana IZRIČITO, bez grananja u testu (protivnička provera 08.08.2026).
+
+  it("vrednosti koje NE otključavaju razdvajanje (brana i dalje puca)", () => {
     hvatajWarn();
     process.env.REVERSI_IZVOR = "3.0";
-    for (const v of ["1", "da", "yes", "TRUE ", ""]) {
+    for (const v of ["1", "da", "yes", "", "true1", "nottrue"]) {
       process.env[RAZDVOJI_REVERSE_I_LOKACIJE] = v;
       const [r, l] = par();
-      if (v.trim().toLowerCase() === "true") continue;
-      expect(() => assertSpojeniIzvori(r, l)).toThrow();
+      expect(() => assertSpojeniIzvori(r, l)).toThrow(/transakciono spojena/);
+    }
+  });
+
+  it("razmaci i veličina slova SE tolerišu — `TRUE `/` True` otključavaju", () => {
+    hvatajWarn();
+    process.env.REVERSI_IZVOR = "3.0";
+    for (const v of ["true", "TRUE ", " True", "\tTrUe\n"]) {
+      process.env[RAZDVOJI_REVERSE_I_LOKACIJE] = v;
+      const [r, l] = par();
+      expect(() => assertSpojeniIzvori(r, l)).not.toThrow();
     }
   });
 });

@@ -22,11 +22,12 @@ export type LokacijeIzvor = Izvor;
  *
  * ── KOJE SVE POZIVAOCE POKRIVA (mereno 07.08.2026) ─────────────────────────────
  *   1. `modules/locations/locations.service.ts` — `loc_*` tabele, `loc_create_movement`,
- *      `loc_move_cage`, `loc_report_parts_by_locations`, `loc_locations_audit`
- *   2. `modules/locations/loc-tp-feed.service.ts` — `loc_tps_for_predmet`,
- *      `loc_get_bigtehn_op_status`, `loc_bigtehn_ingest_*`
- *   3. `modules/reversi/reversi.service.ts` — izdavanje/povraćaj PIŠU
- *      `loc_location_movements` u istoj transakciji (zato sprega)
+ *      `loc_move_cage`, `loc_report_parts_by_locations`, `loc_locations_audit`.
+ *      OŽIČENO 08.08.2026: svaki pristup ide kroz `this.db` / `withSy15User` /
+ *      `withSy15UserRls`, a svaki od njih zove `assertPorted` (503 pod `3.0`).
+ *   2. `modules/reversi/reversi.service.ts` — izdavanje/povraćaj PIŠU
+ *      `loc_location_movements` u istoj transakciji (zato sprega); ožičeno isto tako
+ *      kroz `REVERSI_IZVOR`.
  *
  * ── ŠTA OVAJ PREKIDAČ NAMERNO NE DODIRUJE ──────────────────────────────────────
  *   • `modules/part-locations/*` — 2.0-native QBigTehn ledger. Ime liči, domen ne;
@@ -36,6 +37,15 @@ export type LokacijeIzvor = Izvor;
  *     to je most ka QBigTehn MSSQL-u koji je MRTAV (1.575 događaja u `PENDING`,
  *     nijedan nikad isporučen; `bigtehn_work_orders_cache` stao 14.07). Prenose se
  *     kao istorija; NE oživljavaju se u 3.0 i nemaju radnika koji ih prazni.
+ *   • `modules/locations/loc-tp-feed.service.ts` — hranilica dodiruje ISKLJUČIVO
+ *     `bigtehn_*_cache` i `loc_tp_feed_state`, kojih nema među 21 prenetom tabelom;
+ *     uz to je podrazumevano isključena (`LOC_TP_FEED_ENABLED`). Zato NIJE iza brane.
+ *     (Do 08.08.2026 je ovde stajalo suprotno — ispravljeno merenjem.)
+ *
+ * ── STANJE 08.08.2026 ──────────────────────────────────────────────────────────
+ * Kao i kod reversa: pod `3.0` pada CEO domen sa 503, jer nijedna putanja još nije
+ * prepisana (`loc_create_movement` + trigeri, runbook §4.3). `3.0` se postavlja TEK
+ * po završetku P1–P6.
  */
 @Injectable()
 export class LokacijeSourceService extends IzvorPrekidac {
