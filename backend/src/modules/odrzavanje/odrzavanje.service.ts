@@ -6351,20 +6351,10 @@ export class OdrzavanjeService {
    * ISTI tip, a 3.0 red to po konstrukciji nije (v. `withUser30`). Odgovor
    * klijentu je JSON i oblik mu pinuju spec-ovi, ne prevodilac.
    */
-  private idem30<T>(
+  private idemMost30<T>(
     fn30: (tx: OdrzavanjeTx, s: MaintScope) => Promise<unknown>,
   ): (tx: IdempotencyTx, s: MaintScope) => Promise<T> {
     return async (tx, s) => (await fn30(tx, s)) as T;
-  }
-
-  /** Prepis DEFINER funkcija/trigera — kratko ime za `this.tri().fn`. */
-  private get fn30(): OdrzavanjeFnService {
-    return this.tri().fn;
-  }
-
-  /** 3.0 parnjak sy15 RLS-a — kratko ime za `this.tri().az`. */
-  private get az(): OdrzavanjeAuthzService {
-    return this.tri().az;
   }
 
   /** Jedan izraz za `RAISE EXCEPTION 'Nemaš ovlašćenje…'` iz sy15 funkcija. */
@@ -6474,7 +6464,7 @@ export class OdrzavanjeService {
         return { assetId: rows[0]?.id ?? null };
       },
       {
-        fn30: this.idem30((tx, s) => this.createAsset30(tx, s, dto, kind)),
+        fn30: this.idemMost30((tx, s) => this.createAsset30(tx, s, dto, kind)),
       },
     );
   }
@@ -7334,7 +7324,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           // `maint_vehicle_tires_write` = asset_visible ∧ (erp adm/mgmt ∨ chief/admin).
           await this.assertAssetWrite30(tx, s, assetId, `Vozilo ${assetId}`);
           return tx.maintVehicleTire.create({
@@ -7483,7 +7473,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           // `maint_vsp_insert` = erp adm/mgmt ∨ chief/admin (BEZ asset_visible).
           this.assert30(
             this.az.canWriteStock(s),
@@ -7809,7 +7799,7 @@ export class OdrzavanjeService {
       async (tx, s) => {
         // 🔴 Idempotencija je U SAMOM prepisu (`has_open_wo = FALSE` u view-u):
         // drugi uzastopni poziv za isto sredstvo daje 0 novih naloga.
-        const created = await this.fn30.ensureVehicleServiceWos(tx, s, assetId);
+        const created = await this.fns.ensureVehicleServiceWos(tx, s, assetId);
         if (created > 0) await this.seedEstimatedCost30(tx, "vehicle");
         return { data: { created } };
       },
@@ -7900,7 +7890,7 @@ export class OdrzavanjeService {
           },
         }),
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           this.assert30(
             this.mozePisatiVezuDeoVozilo(s),
             "Nemate pravo nad: Veza deo↔vozilo",
@@ -8011,7 +8001,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           // 🔴 `maint_booking_insert` je NAJŠIRA write politika modula:
           // erp adm/mgmt ∨ chief/admin/technician/**operator** — vozilo rezerviše
           // i operater. Sužavanje na `canWriteStock` bi oborilo carpool.
@@ -8150,7 +8140,7 @@ export class OdrzavanjeService {
       // upisuju TAČNO JEDAN red u `maint_notification_log`, drugi ide u `skipped`.
       // Bez toga bi vozači svakog dana dobijali isto obaveštenje.
       async (tx) => ({
-        data: await this.fn30.checkVehicleDeadlines(
+        data: await this.fns.checkVehicleDeadlines(
           tx,
           dto.lookaheadDays ?? 30,
         ),
@@ -8182,7 +8172,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           this.assert30(
             this.az.canWriteStock(s),
             "Nemate pravo nad: Vlasnik vozila",
@@ -8239,7 +8229,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           // 🔴 VOZAČ JE LIČNI PODATAK (JMBG, adresa, lekarski). `maint_drivers_insert`
           // = erp adm/mgmt ∨ chief/admin — UŽE od `maint_drivers_select`
           // (`canReadAllDrivers`, koji uključuje i tehničara/operatera).
@@ -8545,7 +8535,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           // `maint_asp_write` je [ALL] politika: isti izraz za I/U/D.
           this.assert30(
             this.az.canWriteStock(s),
@@ -8673,7 +8663,7 @@ export class OdrzavanjeService {
       },
       async (tx, s) => {
         // Idempotentno kao i vozilski parnjak: `has_open_wo = FALSE` u view-u.
-        const created = await this.fn30.ensureAssetServiceWos(tx, s, assetId);
+        const created = await this.fns.ensureAssetServiceWos(tx, s, assetId);
         if (created > 0) await this.seedEstimatedCost30(tx, "asset");
         return { data: { created } };
       },
@@ -8707,7 +8697,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           this.assert30(this.az.canWriteStock(s), "Nemate pravo nad: Deo");
           return tx.maintPart.create({
             data: {
@@ -8808,7 +8798,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           // `maint_stock_movements_insert` = created_by = uid ∧ (erp adm/mgmt ∨
           // technician/chief/admin) ∧ (wo_id IS NULL ∨ nalog je vidljiv).
           this.assert30(
@@ -8837,7 +8827,7 @@ export class OdrzavanjeService {
           // Upis u ledger mimo ovog poziva TIHO razilazi `current_stock` sa
           // zbirom kretanja: nema greške, nema loga, i vidi se tek na popisu.
           // Zato je u ISTOJ transakciji — ledger i stanje su jedan potez.
-          await this.fn30.applyPartStockMovement(tx, {
+          await this.fns.applyPartStockMovement(tx, {
             partId,
             movementType: dto.movementType,
             quantity: dto.quantity,
@@ -8905,7 +8895,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           this.assert30(
             this.az.canWriteStock(s),
             "Nemate pravo nad: Dobavljač",
@@ -8997,7 +8987,7 @@ export class OdrzavanjeService {
           },
         }),
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           // `maint_locations_insert` = erp_admin ∨ chief/admin — 🔴 UŽE od
           // `canWriteStock` (menadzment/magacioner NE menjaju CMMS stablo).
           this.assert30(
@@ -9408,7 +9398,7 @@ export class OdrzavanjeService {
         // 🔴 Čita se kroz `fn.settings(tx)`, ne sirovim `findUnique`: kad reda
         // `id = 1` nema, sy15 funkcije su radile sa `SETTINGS_FALLBACK`-om, pa
         // odgovor mora pokazati ONO PO ČEMU MODUL STVARNO RADI, a ne `null`.
-        return { data: await this.fn30.settings(tx) };
+        return { data: await this.fns.settings(tx) };
       },
     );
   }
@@ -9436,7 +9426,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           this.assert30(
             this.az.canWriteStock(s),
             "Nemate pravo nad: Pravilo obaveštavanja",
@@ -9552,7 +9542,7 @@ export class OdrzavanjeService {
       // Gejt i `LEAST(attempts, 7)` su U SAMOM prepisu (`notificationRetry`) —
       // ovde se ne ponavljaju da se ne raziđu sa izvorom.
       async (tx, s) => ({
-        data: { requeued: await this.fn30.notificationRetry(tx, s, id) },
+        data: { requeued: await this.fns.notificationRetry(tx, s, id) },
       }),
     );
   }
@@ -9631,7 +9621,7 @@ export class OdrzavanjeService {
         });
       },
       {
-        fn30: this.idem30(async (tx, s) => {
+        fn30: this.idemMost30(async (tx, s) => {
           this.assert30(
             this.az.isErpAdmin(s),
             "Samo ERP admin sme da menja profile održavanja",
@@ -9739,7 +9729,7 @@ export class OdrzavanjeService {
         // 🔴 Trigger `maint_profiles_guard_role` (BEFORE UPDATE) — u 3.0 postoji
         // SAMO kao `assertProfileRoleChange`. Bez njega bi RLS grana „menjam svoj
         // red" (koju erp-admin gejt ovde ionako pokriva) ostala bez druge brane.
-        this.fn30.assertProfileRoleChange(s, stari, {
+        this.fns.assertProfileRoleChange(s, stari, {
           role: dto.role,
           active: dto.active,
         });

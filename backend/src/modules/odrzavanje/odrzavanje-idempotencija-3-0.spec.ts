@@ -2,6 +2,8 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from "@nestjs/common";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { OdrzavanjeService } from "./odrzavanje.service";
 import { OdrzavanjeAuthzService } from "./odrzavanje-authz.service";
 import { OdrzavanjeFnService } from "./odrzavanje-fn.service";
@@ -296,20 +298,51 @@ describe("runIdem pod ODRZAVANJE_IZVOR=3.0", () => {
     expect(db.rows.size).toBe(0);
   });
 
-  it("(c2) prava ruta koja JOŠ NIJE preneta (createMachine) i dalje pada sa 503", async () => {
-    const db = makeIdemDb();
-    const { svc, runIdempotentRls } = makeSvc(
-      new IdempotencyService(db.prisma),
+  // 🔴 ZAMENJEN TEST — obrazloženje, da se sutra ne vrati „po analogiji".
+  //
+  // Ranije je ovde stajalo: „prava ruta koja JOŠ NIJE preneta (`createMachine`)
+  // i dalje pada sa 503". Posle spajanja upisnih PR-ova (#126 + #127) ta tvrdnja
+  // je prestala da važi — `createMachine` JESTE prenet, pa je test pao. To nije
+  // bio kvar nego tačno merenje: test je pinovao stanje seobe kao činjenicu.
+  //
+  // IZMERENO 08.08.2026 (brojanjem po zagradama, ne po prozoru redova — prozor
+  // od N redova promašuje `fn30` koji stoji IZA dugačkog sy15 tela):
+  // svih **15** `this.runIdem(...)` poziva u `odrzavanje.service.ts` ima 3.0 granu.
+  // Dakle NIJEDNA upisna putanja modula više nije neprenesena i test u starom
+  // obliku se ne može ni napisati.
+  //
+  // Sintetički slučaj (poziv `runIdem` sa neprenetom akcijom → 503, ključ
+  // nepotrošen) već pokriva (c1) i on ostaje tačan bez obzira na napredak seobe.
+  // Ovde umesto toga merimo SAMU tu činjenicu, nad izvorom: ako neko doda nov
+  // upisni put bez 3.0 grane, test to prijavi — ne da bi ga zabranio (brana ga
+  // uredno hvata sa 503), nego da bi to bila SVESNA odluka, a ne previd.
+  it("(c2) nijedan `runIdem` u modulu nije ostao bez 3.0 grane", () => {
+    const izvor = readFileSync(
+      join(__dirname, "odrzavanje.service.ts"),
+      "utf8",
     );
-    await expect(
-      svc.createMachine(JA, {
-        clientEventId: CID,
-        machineCode: "M-1",
-        name: "Presa",
-      }),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(runIdempotentRls).not.toHaveBeenCalled();
-    expect(db.rows.size).toBe(0);
+    const bez: number[] = [];
+    let i = 0;
+    let ukupno = 0;
+    while ((i = izvor.indexOf("this.runIdem", i)) >= 0) {
+      const otvorena = izvor.indexOf("(", i);
+      if (otvorena < 0) break;
+      let dubina = 0;
+      let k = otvorena;
+      for (; k < izvor.length; k++) {
+        if (izvor[k] === "(") dubina++;
+        else if (izvor[k] === ")") {
+          dubina--;
+          if (dubina === 0) break;
+        }
+      }
+      ukupno++;
+      if (!izvor.slice(otvorena, k + 1).includes("fn30"))
+        bez.push(izvor.slice(0, i).split("\n").length);
+      i = k + 1;
+    }
+    expect(ukupno).toBeGreaterThan(0); // da izmena imena ne obesmisli test
+    expect(bez).toEqual([]);
   });
 
   it("(c3) bez ubrizganog registra putanja pada sa 503 — NIKAD tih upis u sy15", async () => {
