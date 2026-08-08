@@ -100,8 +100,20 @@ function poklapa(red: Red, where: Record<string, unknown>): boolean {
         break;
       }
       case "attempts": {
-        const lt = (v as { lt: number }).lt;
-        if (!(red.attempts < lt)) return false;
+        // 🔴 Operator se PROVERAVA, ne pretpostavlja. Da smo samo pročitali
+        // `.lt`, svaka druga varijanta (`lte`, `gt`, `equals`) dala bi
+        // `red.attempts < undefined` = false — filtar bi tiho postao „nikad se
+        // ne poklapa" i test bi padao iz pogrešnog razloga, umesto da prijavi
+        // da servis šalje nešto što ovaj prevodilac ne meri.
+        const op = v as Record<string, unknown>;
+        const kljucevi = Object.keys(op);
+        if (kljucevi.length !== 1 || typeof op.lt !== "number") {
+          throw new Error(
+            `poklapa(): 'attempts' se meri SAMO kao { lt: number }, dobijeno ` +
+              `${JSON.stringify(op)} — dopuni prevodilac.`,
+          );
+        }
+        if (!(red.attempts < op.lt)) return false;
         break;
       }
       case "OR": {
