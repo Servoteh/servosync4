@@ -809,8 +809,19 @@ export class PlanProizvodnjeService {
    * orfan overlay (veza na operaciju koja više ne postoji) mora da OSTANE u rezultatu i
    * da se KLASIFIKUJE, a ne da tiho ispadne iz oba skupa.
    *
-   * Aliasi podupita su tačno `base` i `tr` — to je uslov da `IS_COMPLETED_EFFECTIVE`
-   * (jedan izvor sa read slojem) radi neizmenjen.
+   * 🔴 ALIASI PODUPITA SU UGOVOR, NE STIL: `IS_COMPLETED_EFFECTIVE` je jedan izraz
+   * deljen sa read slojem, pa OVDE moraju da postoje TAČNO oni aliasi koje on pominje —
+   * danas `base` (uz `base.ov_planned_done`), `tr` i `tp`.
+   *
+   * 08.08.2026 je taj ugovor prekršen i posledica je bila TIHA i POTPUNA: izraz je
+   * 07.08. prešao na `tp.planned_done`, a ovaj upit nema alias `tp` — Postgres baca
+   * „missing FROM-clause entry for table tp", pa je `POST /overlays/shift-chain` pucao
+   * na SVAKI poziv, uključujući `dryRun`. To je jedini put prevlačenja bara na gantu,
+   * dakle planer je na svako prevlačenje dobijao grešku. Nijedan test to nije uhvatio
+   * jer `plan-proizvodnje.mutations.spec.ts` mokuje `$queryRaw` — SQL se nikad ne
+   * izvršava. Zato ovde stoji i test koji EXPLAIN-uje izraz nad pravom bazom nije
+   * moguć bez nje; jedina brana je ovaj komentar + provera aliasa pri svakoj izmeni
+   * deljenog izraza.
    *
    * ⚠️ ODSTUPANJE OD SPECIFIKACIJE (izmereno, ne pretpostavljeno): specifikacija je
    * tražila `GROUP BY` + `(array_agg(putanja_txt ORDER BY …))[1]`. Oba dela tog izraza
@@ -882,7 +893,12 @@ export class PlanProizvodnjeService {
              COALESCE(${IS_COMPLETED_EFFECTIVE}, false) AS zavrseno
         FROM cvor c
         JOIN LATERAL (
-          SELECT o.planned_start_at, o.planned_end_at, o.planned_done, o.archived_at,
+          SELECT o.id AS overlay_id,
+                 o.planned_start_at, o.planned_end_at, o.planned_done, o.archived_at,
+                 -- 🔴 078/26: IS_COMPLETED_EFFECTIVE od 07.08. čita ov_planned_done
+                 -- (override sa overlay-a) kao REZERVU ispod termina. Bez ovog aliasa
+                 -- ceo shift-chain puca sa „missing FROM-clause entry".
+                 o.planned_done AS ov_planned_done,
                  l.id AS line_id_raw, l.work_order_id AS wo_raw,
                  l.operation_number AS operacija,
                  COALESCE(o.assigned_machine_code, NULLIF(BTRIM(l.work_center_code), '')) AS effective_machine_code,
@@ -896,6 +912,18 @@ export class PlanProizvodnjeService {
             LEFT JOIN operations m  ON m.work_center_code = l.work_center_code
            WHERE o.work_order_id = c.work_order_id AND o.line_id = c.line_id
         ) base ON true
+        -- 🔴 078/26: IS_COMPLETED_EFFECTIVE je deljen sa read slojem i od 07.08.
+        -- traži alias tp (termin). Bez njega ceo shift-chain pada na
+        -- „missing FROM-clause entry for table tp" — dakle prevlačenje bara na gantu
+        -- prestaje da radi, i to NA SVAKI POZIV, uključujući dryRun.
+        -- Isto pravilo kao u čitanju: NAJRANIJI NEZAVRŠEN termin.
+        LEFT JOIN LATERAL (
+          SELECT t.planned_done
+            FROM plan_proizvodnje_termini t
+           WHERE t.overlay_id = base.overlay_id
+           ORDER BY COALESCE(t.planned_done, false) ASC, t.planned_start_at ASC, t.id ASC
+           LIMIT 1
+        ) tp ON TRUE
         LEFT JOIN LATERAL (
           SELECT COALESCE(SUM(t.piece_count) FILTER (WHERE t.quality_type_id = 0), 0) AS good_done,
                  bool_or(COALESCE(t.is_process_finished, false)) AS is_done
