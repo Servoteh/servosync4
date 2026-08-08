@@ -190,6 +190,10 @@ describe("ScadaJobsService — registracija poslova prati prekidač", () => {
     // Prvi rez briše ~3,2 mil. redova — sa podrazumevanih 10 min scheduler bi
     // posao smatrao zaglavljenim i pokrenuo ga DRUGI PUT preko prvog.
     expect(ret.staleAfterMinutes).toBe(60);
+    // 🔴 ROK ČUVANJA JE ODLUKA VLASNIKA, ne tehnička sitnica: „zadnjih dva
+    // meseca" (Nenad, 07.08.2026). Bez ove tvrdnje broj tiho odluta pri prvom
+    // sledećem doterivanju, a razlika 60→90 je ~500 MB trajnog zauzeća.
+    expect(ret.description).toContain("60 dana");
   });
 
   it("neprepoznata vrednost ne sme da se protumači kao 3.0", () => {
