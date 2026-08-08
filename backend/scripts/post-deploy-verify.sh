@@ -37,6 +37,28 @@ case "$STATUS" in
   *)            bad "kontejner neočekivan status: $STATUS" ;;
 esac
 
+# 🔴 SVEŽINA — da li ovo uopšte proverava NOVI kod?
+#
+# 08.08.2026: deploy je PAO (CI kapiju mu je oborio noviji merge koji ga je pretekao),
+# stari kontejner je nastavio da služi saobraćaj, a ova skripta je prošla ZELENO na
+# svih osam provera. Nijedna tvrdnja nije bila netačna — aplikacija JESTE radila — ali
+# se nijedna nije odnosila na verziju koja je trebalo da ode. Bez ove provere
+# „🟢 DEPLOY OK" znači samo „nešto radi", a to nije ono zbog čega se skripta pušta.
+#
+# Prag je namerno velik (30 min): skripta ide odmah posle deploy-a, a sam deploy ume da
+# traje 15+ minuta. Stariji kontejner od toga NIJE dokaz kvara nego dokaz da ova provera
+# ne meri ono što misliš — zato UPOZORENJE sa uputstvom, ne pad.
+CREATED=$(docker inspect "$CONTAINER" --format '{{.Created}}' 2>/dev/null || echo "")
+if [ -n "$CREATED" ]; then
+  CREATED_TS=$(date -d "$CREATED" +%s 2>/dev/null || echo 0)
+  AGE_MIN=$(( ( $(date +%s) - CREATED_TS ) / 60 ))
+  if [ "$CREATED_TS" -gt 0 ] && [ "$AGE_MIN" -gt 30 ]; then
+    printf '  ⚠️  %s\n' "kontejner je star ${AGE_MIN} min — ovo NIJE nova verzija. Proveri u GitHub Actions da li je deploy stvarno prošao, pa tek onda veruj ostatku ispisa."
+  elif [ "$CREATED_TS" -gt 0 ]; then
+    ok "svežina: kontejner napravljen pre ${AGE_MIN} min (nova verzija)"
+  fi
+fi
+
 # 2) Nest boot uspešan (hvata dist/main.js / rootDir drift)
 # Ceo log (ne --tail): boot poruka je na vrhu, a kontejner koji dugo radi ima
 # hiljade runtime linija ispod. Ali crash-loop se vidi po ponovljenom modulu.
