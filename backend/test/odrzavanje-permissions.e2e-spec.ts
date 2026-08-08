@@ -184,8 +184,14 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [OdrzavanjeController],
       providers: [
-        { provide: PrismaService, useValue: { userPermissionOverride: { findUnique: async () => null } } },
-        { provide: OdrzavanjeService, useValue: svcMock }],
+        {
+          provide: PrismaService,
+          useValue: {
+            userPermissionOverride: { findUnique: async () => null },
+          },
+        },
+        { provide: OdrzavanjeService, useValue: svcMock },
+      ],
     })
       .overrideGuard(JwtAuthGuard)
       .useValue({
@@ -678,10 +684,24 @@ describe("Održavanje permission matrica (e2e, AUTHZ_ENFORCE=true)", () => {
         }).expect(403);
       },
     );
-    it("PATCH /maintenance/profiles/:id → 400 ne-uuid param (guard prošao, ParseUUID)", async () => {
-      await patch("/maintenance/profiles/nije-uuid", "admin", {
-        fullName: "X",
-      }).expect(400);
-    });
+    /**
+     * 🔴 IZMENJENO SA SEOBOM ODRŽAVANJA: `ParseUUIDPipe` je skinut sa ovog
+     * parametra. `maint_user_profiles.user_id` je JEDINI ključ modula koji nije
+     * uuid u obe baze — u sy15 je `auth.users.id` (uuid), u 3.0 `users.id` (Int).
+     * Pipe bi pod `ODRZAVANJE_IZVOR=3.0` odbio SVAKI ispravan id sa 400, pre
+     * nego što zahtev uopšte dođe do servisa. Oblik sada presuđuje servis
+     * (`profileUserId30` → 422 sa razumljivom porukom).
+     *
+     * Ono što ovaj test čuva OSTAJE isto: coarse guard je i dalje jedina brana
+     * ulaza, pa neovlašćena rola ni sa besmislenim parametrom ne prolazi.
+     */
+    it.each(NO_WRITE)(
+      "PATCH /maintenance/profiles/:id → 403 za %s i kad je param ne-uuid (guard je i dalje jedina brana ulaza)",
+      async (role) => {
+        await patch("/maintenance/profiles/nije-uuid", role, {
+          fullName: "X",
+        }).expect(403);
+      },
+    );
   });
 });
