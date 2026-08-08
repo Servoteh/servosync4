@@ -236,16 +236,20 @@ export class KadrovskaAuthzService {
 
     scope.email = (user.email ?? "").trim().toLowerCase();
 
-    // Neaktivan nalog ne nosi rolu — sy15 to postiže preko `is_active` na redu.
-    if (user.active && user.role) {
-      scope.roles.add(user.role.trim().toLowerCase());
-    }
-    for (const r of extraRoles) {
-      if (!r.role) continue;
-      const rola = r.role.trim().toLowerCase();
-      scope.roles.add(rola);
-      // `scopedRoles` NAMERNO ne dobija `users.role` — v. odstupanje #2.
-      if (user.active) scope.scopedRoles.add(rola);
+    // 🔴 Deaktiviran 3.0 nalog ne nosi NIJEDNU rolu — ni primarnu ni dodatnu.
+    // sy15 nema parnjak za `users.active` (tamo `is_active` stoji na redu
+    // `user_roles`), pa je ovo svesno, izmereno pravilo: brojevi u odstupanju #1
+    // izračunati su upravo sa `users.active` na OBE grane unije. Da se gasi samo
+    // primarna rola, deaktiviran nalog sa `user_roles` redom zadržao bi prava.
+    if (user.active) {
+      if (user.role) scope.roles.add(user.role.trim().toLowerCase());
+      for (const r of extraRoles) {
+        if (!r.role) continue;
+        const rola = r.role.trim().toLowerCase();
+        scope.roles.add(rola);
+        // `scopedRoles` NAMERNO ne dobija `users.role` — v. odstupanje #2.
+        scope.scopedRoles.add(rola);
+      }
     }
 
     // `current_user_managed_sub_department_ids()`:

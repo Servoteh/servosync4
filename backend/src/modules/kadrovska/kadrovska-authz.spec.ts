@@ -638,3 +638,170 @@ describe("MUTACIONE PROBE — dokaz da tabela istinitosti stvarno meri", () => {
     expect(mutirano).toBe(false);
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// `loadScope` — jedini deo koji dodiruje bazu. Ovde se pinuju TRI pravila koja
+// se ne vide iz čistih predikata: gašenje rola deaktiviranog naloga, očuvanje
+// razlike `NULL` vs `[]`, i default-deny dok kadrovskih tabela još nema.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("loadScope — čitanje snimka iz baze", () => {
+  type RawOdgovor = unknown[];
+
+  function prismaMock(opts: {
+    active: boolean;
+    role: string | null;
+    extraRoles: string[];
+    lista: number[] | null | undefined;
+    tabelePostoje?: boolean;
+    brave?: {
+      emp_id: string | null;
+      emp_id_aktivan: string | null;
+      grid: boolean;
+      salary: boolean;
+      vacation: boolean;
+    };
+  }) {
+    const odgovori: RawOdgovor[] = [
+      // 1. lista podsektora (sirov SQL — jedini način da NULL preživi)
+      opts.lista === undefined
+        ? []
+        : [{ managed_sub_department_ids: opts.lista }],
+      // 2. `to_regclass` proba
+      [{ ima: opts.tabelePostoje ?? false }],
+    ];
+    if (opts.tabelePostoje && opts.brave) odgovori.push([opts.brave]);
+    let poziv = 0;
+    return {
+      user: {
+        findUnique: () =>
+          Promise.resolve({
+            email: "korisnik@servoteh.com",
+            role: opts.role,
+            active: opts.active,
+          }),
+      },
+      userRole: {
+        findMany: () =>
+          Promise.resolve(opts.extraRoles.map((role) => ({ role }))),
+      },
+      // Odgovori se vraćaju po REDU poziva: 1) lista podsektora,
+      // 2) `to_regclass` proba, 3) allowlist brave (ako tabele postoje).
+      $queryRaw: () => Promise.resolve(odgovori[poziv++] ?? []),
+    } as unknown as PrismaService;
+  }
+
+  it("🔴 deaktiviran nalog ne nosi NIJEDNU rolu — ni primarnu ni iz `user_roles`", async () => {
+    const s = await new KadrovskaAuthzService(
+      prismaMock({
+        active: false,
+        role: "admin",
+        extraRoles: ["menadzment"],
+        lista: null,
+      }),
+    ).loadScope(1);
+    expect([...s.roles]).toEqual([]);
+    expect([...s.scopedRoles]).toEqual([]);
+    // Bez rola i bez liste -> ne vidi nijednog zaposlenog.
+    expect(broj([...ZAPOSLENI], svc.employeesSelectWhere(s))).toBe(0);
+  });
+
+  it("aktivan nalog dobija UNIJU `users.role` + `user_roles.role`", async () => {
+    const s = await new KadrovskaAuthzService(
+      prismaMock({
+        active: true,
+        role: "menadzment",
+        extraRoles: ["tim_lider"],
+        lista: [2],
+      }),
+    ).loadScope(1);
+    expect([...s.roles].sort()).toEqual(["menadzment", "tim_lider"]);
+    expect([...s.scopedRoles]).toEqual(["tim_lider"]);
+    expect(s.managedSubDepartmentIds).toEqual([2]);
+  });
+
+  it("🔴 `scopedRoles` NE sadrži `users.role` — inače unija širi prava (odstupanje #2)", async () => {
+    const s = await new KadrovskaAuthzService(
+      prismaMock({
+        active: true,
+        role: "menadzment", // primarna rola, BEZ `user_roles` reda
+        extraRoles: [],
+        lista: undefined, // nema reda -> lista je NULL
+      }),
+    ).loadScope(1);
+    expect(s.roles.has("menadzment")).toBe(true);
+    expect(s.scopedRoles.has("menadzment")).toBe(false);
+    expect(s.managedSubDepartmentIds).toBeNull();
+    // Ključ: NE prolazi kroz granu „menadzment bez liste vidi sve".
+    expect(svc.managesAllEmployees(s)).toBe(false);
+    expect(broj([...ZAPOSLENI], svc.employeesSelectWhere(s))).toBe(0);
+  });
+
+  it("🔴 razlika `NULL` vs `[]` preživi čitanje (Prisma je ne bi sačuvala)", async () => {
+    const sNull = await new KadrovskaAuthzService(
+      prismaMock({
+        active: true,
+        role: "viewer",
+        extraRoles: ["menadzment"],
+        lista: null,
+      }),
+    ).loadScope(1);
+    const sPrazna = await new KadrovskaAuthzService(
+      prismaMock({
+        active: true,
+        role: "viewer",
+        extraRoles: ["menadzment"],
+        lista: [],
+      }),
+    ).loadScope(1);
+    expect(sNull.managedSubDepartmentIds).toBeNull();
+    expect(sPrazna.managedSubDepartmentIds).toEqual([]);
+    // Ista rola, ista tabela — SUPROTAN ishod. To je ceo smisao sirovog SQL-a.
+    expect(broj([...ZAPOSLENI], svc.employeesSelectWhere(sNull))).toBe(8);
+    expect(broj([...ZAPOSLENI], svc.employeesSelectWhere(sPrazna))).toBe(0);
+  });
+
+  it("dok kadrovskih tabela nema, allowlist brave su default-deny (nikad `true`)", async () => {
+    const s = await new KadrovskaAuthzService(
+      prismaMock({
+        active: true,
+        role: "admin",
+        extraRoles: [],
+        lista: null,
+        tabelePostoje: false,
+      }),
+    ).loadScope(1);
+    expect(s.gridEditor).toBe(false);
+    expect(s.salaryViewer).toBe(false);
+    expect(s.vacationEditor).toBe(false);
+    expect(s.activeEmployeeId).toBeNull();
+    // Admin bez spiska: ne menja grid i ne vidi plate.
+    expect(svc.canEditKadrovskaGrid(s)).toBe(false);
+    expect(svc.canViewSalary(s)).toBe(false);
+  });
+
+  it("kad tabele postoje, brave i mapiranje mejl→zaposleni se učitavaju", async () => {
+    const s = await new KadrovskaAuthzService(
+      prismaMock({
+        active: true,
+        role: "hr",
+        extraRoles: [],
+        lista: null,
+        tabelePostoje: true,
+        brave: {
+          emp_id: "e1",
+          emp_id_aktivan: null, // ima red, ali `is_active = false`
+          grid: true,
+          salary: false,
+          vacation: true,
+        },
+      }),
+    ).loadScope(1);
+    expect(s.gridEditor).toBe(true);
+    expect(s.vacationEditor).toBe(true);
+    expect(s.salaryViewer).toBe(false);
+    // 🔴 Dve mape su ODVOJENE: `employeeId` postoji, `activeEmployeeId` ne.
+    expect(s.employeeId).toBe("e1");
+    expect(s.activeEmployeeId).toBeNull();
+  });
+});
