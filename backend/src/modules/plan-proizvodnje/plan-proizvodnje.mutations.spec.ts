@@ -811,6 +811,29 @@ describe("gant kaskada — 075/26", () => {
     expect(svi.some((q) => q.includes("NOT EXISTS") && q.includes("plan_proizvodnje_termini"))).toBe(true);
   });
 
+// ── 078/26: prevlačenje bara pomera SAMO taj termin (odluka Nenad 08.08.2026) ──
+
+  it("🔴 sa terminId: sidro pomera SAMO taj termin, sledbenici SVE svoje", async () => {
+    const l = lanac2();
+    const { svc, captured } = makeService([l, [], l, l.map((r) => vracen(r.work_order_id, r.line_id))]);
+    await svc.shiftChain(email, upis({ terminId: "42" }));
+    const upit = captured.queries.find((q) => q.includes("UPDATE plan_proizvodnje_termini t"));
+    expect(upit).toBeDefined();
+    // Sužavanje pogađa SAMO par sidra — ostali parovi (sledbenici) ostaju netaknuti.
+    expect(upit).toContain("AND NOT (t.work_order_id =");
+    expect(upit).toContain("AND t.id <>");
+  });
+
+  it("bez terminId ponašanje je kao pre 078/26 — cela pozicija", async () => {
+    const l = lanac2();
+    const { svc, captured } = makeService([l, [], l, l.map((r) => vracen(r.work_order_id, r.line_id))]);
+    await svc.shiftChain(email, upis());
+    const upit = captured.queries.find((q) => q.includes("UPDATE plan_proizvodnje_termini t"));
+    expect(upit).toBeDefined();
+    // Nema sužavanja — svi termini svih parova.
+    expect(upit).not.toContain("AND t.id <>");
+  });
+
   it("dryRun: ništa se ne upisuje, ključ se NE troši", async () => {
     const { svc, captured, idem } = makeService([lanac2()]);
     const res = (await svc.shiftChain(email, {

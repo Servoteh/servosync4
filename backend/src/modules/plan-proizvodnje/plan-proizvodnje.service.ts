@@ -748,8 +748,31 @@ export class PlanProizvodnjeService {
     // 🔴 Sa SOPSTVENOM brojačkom branom. Bez nje bi podupis bio NEM: odgovor se gradi
     // iz `RETURNING`-a overlay-a, pa bi FE optimistički prerenderovao barove na nova
     // vremena dok bi termini držali stara — laž na ekranu, najgora klasa u ovom modulu.
+    // 🔴 078/26 (odluka Nenad 08.08.2026): kad je zadat TERMIN sidra, prevlačenje pomera
+    // SAMO taj termin — ostali termini iste pozicije ostaju gde su. Bez toga bi tri
+    // termina bila zavarena zajedno i ceo zahtev („5 sad, 3 kasnije, 2 posle") ne bi
+    // imao smisla. SLEDBENICI po uslovu i dalje pomeraju SVE svoje termine: uslov je
+    // osobina POZICIJE, ne pojedinačnog termina.
+    const sidroPar = parovi[0];
+    const terminSidra = dto.terminId ? Number(dto.terminId) : null;
+    const suziNaSidro =
+      terminSidra !== null
+        ? Prisma.sql`AND NOT (t.work_order_id = ${sidroPar.wo} AND t.line_id = ${sidroPar.line}
+                              AND t.id <> ${terminSidra})`
+        : Prisma.empty;
     const ocekivanoTermina = await tx.planProizvodnjeTermin.count({
-      where: { OR: parovi.map((p) => ({ workOrderId: p.wo, lineId: p.line })) },
+      where: {
+        OR: parovi.map((p) => ({ workOrderId: p.wo, lineId: p.line })),
+        ...(terminSidra !== null
+          ? {
+              NOT: {
+                workOrderId: sidroPar.wo,
+                lineId: sidroPar.line,
+                id: { not: terminSidra },
+              },
+            }
+          : {}),
+      },
     });
     const pomereniTermini = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
       UPDATE plan_proizvodnje_termini t
@@ -762,6 +785,7 @@ export class PlanProizvodnjeService {
              updated_by = ${email},
              updated_at = now()
        WHERE (t.work_order_id, t.line_id) IN (${this.pairsSql(parovi)})
+         ${suziNaSidro}
       RETURNING t.id::text AS id`);
 
     if (pomereniTermini.length !== ocekivanoTermina) {
