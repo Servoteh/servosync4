@@ -25,6 +25,8 @@ import type {
   OverlayUpsertDto,
   ReassignDto,
   SetUrgentDto,
+  TerminCreateDto,
+  TerminPatchDto,
 } from "./dto/plan-proizvodnje-mutation.dto";
 
 type Tx = Prisma.TransactionClient;
@@ -1583,5 +1585,128 @@ export class PlanProizvodnjeService {
       where: { machineCode: code },
     });
     return { data: { machineCode: code } };
+  }
+// ═══════════════════════ TERMINI (078/26 Faza B) ═══════════════════════════
+  //
+  // Ista operacija sme da stoji u planu VIŠE PUTA. `overlays` ostaje za STANJE
+  // operacije; ovde je vremenska osa, jedan red po terminu.
+
+  /**
+   * Nov termin za operaciju.
+   *
+   * Overlay se po potrebi PRAVI (pozicija ne mora ranije biti dirana), jer termin
+   * visi o njemu. Količina se ne ograničava na plan operacije — planer sme da
+   * isplanira i više (dorada, škart) i manje (deo serije ide kasnije); jedina
+   * brana je da je pozitivna, iz DTO-a.
+   *
+   * 🔴 Dok traje Faza A/B-priprema, jedinstveni indeks `uq_..._termini_overlay_faza_a`
+   * dozvoljava SAMO JEDAN termin po operaciji, pa drugi poziv pada na P2002. To je
+   * NAMERNO: ruta postoji i testirana je, ali se stvarno otvara tek kad se indeks
+   * skine. Greška se prevodi u 409 sa jasnim tekstom umesto sirovog 500.
+   */
+  async createTermin(email: string, dto: TerminCreateDto) {
+    const wo = Number(dto.workOrderId);
+    const line = Number(dto.lineId);
+    const start = this.toDbTs(dto.plannedStartAt);
+    const end = this.toDbTs(dto.plannedEndAt);
+    if (start && end && end < start)
+      throw new UnprocessableEntityException(
+        "planned_end_before_start: kraj termina je pre početka.",
+      );
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const overlay = await tx.planProizvodnjeOverlay.upsert({
+        where: { workOrderId_lineId: { workOrderId: wo, lineId: line } },
+        create: { workOrderId: wo, lineId: line, createdBy: email, updatedBy: email },
+        update: { updatedBy: email, updatedAt: now },
+      });
+      const plan = await tx.workOrder.findUnique({
+        where: { id: wo },
+        select: { pieceCount: true },
+      });
+      try {
+        const red = await tx.planProizvodnjeTermin.create({
+          data: {
+            overlayId: overlay.id,
+            workOrderId: wo,
+            lineId: line,
+            plannedStartAt: start!,
+            plannedEndAt: end,
+            plannedDurationMinutes: dto.plannedDurationMinutes ?? null,
+            // Izostavljena količina = pun plan operacije (ponašanje pre 078/26).
+            kolicina: dto.kolicina ?? plan?.pieceCount ?? null,
+            assignedMachineCode: this.praznoUNull(dto.assignedMachineCode),
+            createdBy: email,
+            updatedBy: email,
+          },
+        });
+        return { data: jsonSafe(red) };
+      } catch (e) {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === "P2002"
+        )
+          throw new ConflictException(
+            "Ova operacija već ima termin. Više termina po operaciji još nije uključeno.",
+          );
+        throw e;
+      }
+    });
+  }
+
+  /** Izmena JEDNOG termina — merge-patch, validacija nad SPOJENIM stanjem. */
+  async patchTermin(email: string, id: number, dto: TerminPatchDto) {
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const zatecen = await tx.planProizvodnjeTermin.findUnique({ where: { id } });
+      if (!zatecen) throw new NotFoundException(`Termin ${id} ne postoji.`);
+
+      const patch: Record<string, unknown> = {};
+      if (dto.plannedStartAt !== undefined)
+        patch.plannedStartAt = this.toDbTs(dto.plannedStartAt);
+      if (dto.plannedEndAt !== undefined)
+        patch.plannedEndAt = this.toDbTs(dto.plannedEndAt);
+      if (dto.plannedDurationMinutes !== undefined)
+        patch.plannedDurationMinutes = dto.plannedDurationMinutes;
+      if (dto.kolicina !== undefined) patch.kolicina = dto.kolicina;
+      if (dto.assignedMachineCode !== undefined)
+        patch.assignedMachineCode = this.praznoUNull(dto.assignedMachineCode);
+      if (dto.plannedDone !== undefined) {
+        patch.plannedDone = dto.plannedDone;
+        patch.plannedDoneAt = dto.plannedDone === null ? null : now;
+        patch.plannedDoneBy = dto.plannedDone === null ? null : email;
+      }
+
+      // 🔴 Nad SPOJENIM stanjem, ne nad patch-om: FE resize bara šalje SAMO kraj,
+      // pa bi provera nad patch-om propustila svaki naopak interval (ista zamka
+      // koju `assertPlanConsistent` već čuva za overlay).
+      const start = (patch.plannedStartAt ?? zatecen.plannedStartAt) as Date | null;
+      const end = (patch.plannedEndAt ?? zatecen.plannedEndAt) as Date | null;
+      if (start && end && end < start)
+        throw new UnprocessableEntityException(
+          "planned_end_before_start: kraj termina je pre početka.",
+        );
+
+      const red = await tx.planProizvodnjeTermin.update({
+        where: { id },
+        data: { ...patch, updatedBy: email, updatedAt: now },
+      });
+      return { data: jsonSafe(red) };
+    });
+  }
+
+  /** Brisanje jednog termina (pozicija ostaje, samo silazi sa te tačke ose). */
+  async deleteTermin(email: string, id: number) {
+    const red = await this.prisma.planProizvodnjeTermin.findUnique({ where: { id } });
+    if (!red) throw new NotFoundException(`Termin ${id} ne postoji.`);
+    await this.prisma.planProizvodnjeTermin.delete({ where: { id } });
+    return { data: { id, obrisao: email } };
+  }
+
+  /** Prazan string NIJE mašina — COALESCE u čitanju bi ga uzeo kao vrednost. */
+  private praznoUNull(v: string | null | undefined): string | null | undefined {
+    if (v === undefined) return undefined;
+    const t = (v ?? "").trim();
+    return t.length === 0 ? null : t;
   }
 }

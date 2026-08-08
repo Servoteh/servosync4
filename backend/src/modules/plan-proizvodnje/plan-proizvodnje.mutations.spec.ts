@@ -10,6 +10,7 @@ import {
   PlanProizvodnjeService,
 } from "./plan-proizvodnje.service";
 import type { IdempotencyService } from "../../common/idempotency/idempotency.service";
+import { Prisma } from "@prisma/client";
 import type { PrismaService } from "../../prisma/prisma.service";
 
 /**
@@ -1524,5 +1525,152 @@ describe("078/26 Faza A — dvostruki upis termina", () => {
     const u = captured.termini[0].update;
     expect(Object.keys(u)).not.toContain("kolicina");
     expect(Object.keys(u)).not.toContain("assignedMachineCode");
+  });
+});
+
+/**
+ * 078/26 Faza B — rute za pojedinačan TERMIN.
+ *
+ * Rute postoje i pre nego što se skine privremeni jedinstveni indeks: dok on stoji,
+ * drugi termin pada na P2002 i to se PREVODI u razumljiv 409 umesto sirovog 500.
+ */
+describe("078/26 Faza B — termini", () => {
+  function terminSvc(opts: {
+    postojeci?: Record<string, unknown> | null;
+    createThrows?: unknown;
+  } = {}) {
+    const captured: {
+      create?: Record<string, unknown>;
+      update?: Record<string, unknown>;
+      overlayUpsert?: unknown;
+    } = {};
+    const tx = {
+      planProizvodnjeOverlay: {
+        upsert: jest.fn(async (a: unknown) => {
+          captured.overlayUpsert = a;
+          return { id: 77 };
+        }),
+      },
+      workOrder: { findUnique: jest.fn(async () => ({ pieceCount: 10 })) },
+      planProizvodnjeTermin: {
+        create: jest.fn(async (a: { data: Record<string, unknown> }) => {
+          if (opts.createThrows) throw opts.createThrows;
+          captured.create = a.data;
+          return { id: 5, ...a.data };
+        }),
+        findUnique: jest.fn(async () => opts.postojeci ?? null),
+        update: jest.fn(async (a: { data: Record<string, unknown> }) => {
+          captured.update = a.data;
+          return { id: 5, ...a.data };
+        }),
+        delete: jest.fn(async () => ({ id: 5 })),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(tx)),
+      planProizvodnjeTermin: tx.planProizvodnjeTermin,
+    } as unknown as PrismaService;
+    const svc = new PlanProizvodnjeService(
+      prisma,
+      makeIdem(tx) as unknown as IdempotencyService,
+    );
+    return { svc, captured, tx };
+  }
+
+  it("izostavljena količina = PUN plan operacije (ponašanje pre 078/26)", async () => {
+    const { svc, captured } = terminSvc();
+    await svc.createTermin(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: "2026-08-10T06:00:00.000Z",
+    });
+    expect(captured.create!.kolicina).toBe(10);
+  });
+
+  it("zadata količina se poštuje (deo serije)", async () => {
+    const { svc, captured } = terminSvc();
+    await svc.createTermin(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: "2026-08-10T06:00:00.000Z",
+      kolicina: 3,
+    });
+    expect(captured.create!.kolicina).toBe(3);
+  });
+
+  it("🔴 prazna mašina se upisuje kao NULL, ne kao prazan string", async () => {
+    // COALESCE u čitanju uzima i '' kao vrednost, pa bi prazan string značio
+    // „termin nema mašinu" umesto „nasledi sa operacije".
+    const { svc, captured } = terminSvc();
+    await svc.createTermin(email, {
+      workOrderId: "9400",
+      lineId: "12",
+      plannedStartAt: "2026-08-10T06:00:00.000Z",
+      assignedMachineCode: "   ",
+    });
+    expect(captured.create!.assignedMachineCode).toBeNull();
+  });
+
+  it("kraj pre početka → 422 (naopak interval se NE upisuje)", async () => {
+    const { svc } = terminSvc();
+    await expect(
+      svc.createTermin(email, {
+        workOrderId: "9400",
+        lineId: "12",
+        plannedStartAt: "2026-08-10T10:00:00.000Z",
+        plannedEndAt: "2026-08-10T06:00:00.000Z",
+      }),
+    ).rejects.toThrow(/planned_end_before_start/);
+  });
+
+  it("🔴 drugi termin dok indeks stoji → 409 sa objašnjenjem, ne sirov 500", async () => {
+    // Ne pravi se pravi Prisma izuzetak (klasa se ne uvozi u ovaj spec) — servis
+    // gleda `instanceof`, pa se koristi minimalan dvojnik sa istim oblikom.
+    const p2002 = Object.assign(
+      Object.create(Prisma.PrismaClientKnownRequestError.prototype) as object,
+      { code: "P2002", clientVersion: "6", message: "dup" },
+    );
+    const { svc } = terminSvc({ createThrows: p2002 });
+    await expect(
+      svc.createTermin(email, {
+        workOrderId: "9400",
+        lineId: "12",
+        plannedStartAt: "2026-08-10T06:00:00.000Z",
+      }),
+    ).rejects.toThrow(/već ima termin/);
+  });
+
+  it("🔴 izmena se validira nad SPOJENIM stanjem (resize šalje samo kraj)", async () => {
+    const { svc } = terminSvc({
+      postojeci: {
+        id: 5,
+        plannedStartAt: new Date("2026-08-10T10:00:00.000Z"),
+        plannedEndAt: new Date("2026-08-10T14:00:00.000Z"),
+      },
+    });
+    // Patch nosi SAMO kraj, i to pre zatečenog početka — mora pasti.
+    await expect(
+      svc.patchTermin(email, 5, { plannedEndAt: "2026-08-10T06:00:00.000Z" }),
+    ).rejects.toThrow(/planned_end_before_start/);
+  });
+
+  it("izmena koja ne dira vremena prolazi (količina)", async () => {
+    const { svc, captured } = terminSvc({
+      postojeci: {
+        id: 5,
+        plannedStartAt: new Date("2026-08-10T10:00:00.000Z"),
+        plannedEndAt: null,
+      },
+    });
+    await svc.patchTermin(email, 5, { kolicina: 4 });
+    expect(captured.update!.kolicina).toBe(4);
+    expect(Object.keys(captured.update!)).not.toContain("plannedStartAt");
+  });
+
+  it("izmena nepostojećeg termina → 404", async () => {
+    const { svc } = terminSvc({ postojeci: null });
+    await expect(svc.patchTermin(email, 999, { kolicina: 1 })).rejects.toThrow(
+      /ne postoji/,
+    );
   });
 });
