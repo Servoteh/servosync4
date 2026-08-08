@@ -206,6 +206,14 @@ export interface PpOverlay {
  * je NULL dok stavka nije stavljena na plan („Dodaj na plan") — tada nema bara na osi.
  */
 export interface GanttRow {
+  /**
+   * 078/26 Faza B: id TERMINA. Od Faze B gant vraća JEDAN RED PO TERMINU, pa se
+   * `line_id` PONAVLJA i više nije jedinstven ključ reda na ovom ekranu.
+   * `null` = operacija nema nijedan termin (prikazuje se jednom, iz overlay rezerve).
+   */
+  termin_id?: number | null;
+  /** Komada planiranih u OVOM terminu (078/26). `null` = pun plan operacije. */
+  termin_kolicina?: number | null;
   line_id: string;
   work_order_id: string;
   operacija: number | string | null;
@@ -687,6 +695,62 @@ export interface OverlayPatch {
 }
 export const useUpsertOverlay = () =>
   usePpMutation<OverlayPatch, TxResponse<PpOverlay>>((v) => post<PpOverlay>('/overlays', v));
+
+/* ── Termini pozicije na gantu — 078/26 Faza B ────────────────────────────────
+ *
+ * Ista operacija sme da stoji u planu VIŠE PUTA. `overlays` ostaje za STANJE
+ * operacije (ručni redosled, kooperacija, arhiva); ovde je vremenska osa, jedan
+ * red po terminu.
+ *
+ * 🔴 Dok privremeni jedinstveni indeks stoji, DRUGI termin vraća 409 sa jasnim
+ * tekstom („Ova operacija već ima termin…"). To NIJE kvar nego brana — Faza B se
+ * otvara tek kad indeks padne.
+ */
+export interface TerminNov {
+  workOrderId: string;
+  lineId: string;
+  plannedStartAt: string;
+  plannedEndAt?: string | null;
+  plannedDurationMinutes?: number | null;
+  /** Izostavljeno = pun plan operacije (ponašanje pre 078/26). */
+  kolicina?: number | null;
+  /** null/prazno = nasledi mašinu sa operacije. */
+  assignedMachineCode?: string | null;
+}
+
+/** Merge-patch jednog termina: `undefined` = ne diraj, `null` = obriši. */
+export interface TerminPatch {
+  plannedStartAt?: string;
+  plannedEndAt?: string | null;
+  plannedDurationMinutes?: number | null;
+  kolicina?: number | null;
+  assignedMachineCode?: string | null;
+  plannedDone?: boolean | null;
+}
+
+export interface PpTermin {
+  id: number;
+  overlayId: number;
+  workOrderId: number;
+  lineId: number;
+  plannedStartAt: string;
+  plannedEndAt: string | null;
+  plannedDurationMinutes: number | null;
+  kolicina: number | null;
+  assignedMachineCode: string | null;
+  plannedDone: boolean | null;
+}
+
+export const useCreateTermin = () =>
+  usePpMutation<TerminNov, TxResponse<PpTermin>>((v) => post<PpTermin>('/termini', v));
+
+export const usePatchTermin = () =>
+  usePpMutation<{ id: number; patch: TerminPatch }, TxResponse<PpTermin>>((v) =>
+    patch<PpTermin>(`/termini/${v.id}`, v.patch),
+  );
+
+export const useDeleteTermin = () =>
+  usePpMutation<number, TxResponse<{ id: number }>>((id) => del<{ id: number }>(`/termini/${id}`));
 
 /**
  * Optimistički overlay upsert za inline akcije u tabeli (GAP-PM-20). Patch mapira
