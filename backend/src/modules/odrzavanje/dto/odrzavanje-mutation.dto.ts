@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   MinLength,
   ValidateIf,
@@ -354,6 +355,23 @@ export class DetailsUpsertDto {
  * `responsible_user_id` (create RPC ih NE prima → jedini put da se postave). `null` briše
  * vezu (unassign). Row-odluku (asset_visible ∧ erp/chief/admin) presuđuje RLS.
  */
+/**
+ * 🔴 ŠAV SEOBE (`ODRZAVANJE_IZVOR`): `maint_drivers.auth_user_id` (i njegov
+ * blizanac `maint_assets.responsible_user_id`, i `maint_user_profiles.user_id`)
+ * je u sy15 `auth.users.id` (**uuid**), a u 3.0 `users.id` (**Int**, odluka 2).
+ * Isti DTO opslužuje oba položaja prekidača, pa validacija mora primiti OBA
+ * oblika — `@IsUUID()` bi pod `3.0` odbio svaki ispravan id pre nego što zahtev
+ * uopšte stigne do servisa (422 bez ikakve veze sa uzrokom). Koji je oblik
+ * ispravan presuđuje servis, prema aktivnom izvoru.
+ *
+ * ⚠️ Brojna grana je OGRANIČENA na 10 cifara: `users.id` je PG `int4`, pa bi
+ * neograničeno `[0-9]+` propustilo „99999999999999999999" (`Number.isInteger`
+ * ga prihvata!) sve do Prisma sloja → 500 umesto 422. Tačan opseg int4 i dalje
+ * presuđuje servis (`jeIdKorisnika30`); ovo je samo prva, jeftina brana.
+ */
+const AUTH_USER_ID_OBA_IZVORA =
+  /^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]{1,10})$/;
+
 export class PatchAssetCoreDto {
   @IsOptional() @IsString() @MaxLength(300) name?: string;
   @IsOptional() @IsIn(OP_STATUS) status?: string;
@@ -366,10 +384,14 @@ export class PatchAssetCoreDto {
   @IsOptional() @ValidateIf((_o, v) => v !== null) @IsUUID() locationId?:
     | string
     | null;
-  /** uuid odgovornog korisnika ILI null (unassign). */
+  /**
+   * Odgovorni korisnik ILI null (unassign).
+   * 🔴 ŠAV SEOBE: uuid pod `sy15`, `users.id` (Int) pod `3.0` — v.
+   * `AUTH_USER_ID_OBA_IZVORA`.
+   */
   @IsOptional()
   @ValidateIf((_o, v) => v !== null)
-  @IsUUID()
+  @Matches(AUTH_USER_ID_OBA_IZVORA)
   responsibleUserId?: string | null;
 }
 
@@ -491,7 +513,7 @@ export class CreateOwnerDto extends IdempotentDto {
 export class CreateDriverDto extends IdempotentDto {
   @IsString() @MaxLength(300) fullName!: string;
   @IsOptional() @IsBoolean() isInternal?: boolean;
-  @IsOptional() @IsUUID() authUserId?: string;
+  @IsOptional() @Matches(AUTH_USER_ID_OBA_IZVORA) authUserId?: string;
   @IsString() @MaxLength(100) driversLicenseNumber!: string;
   @IsArray()
   @ArrayMinSize(1)
@@ -516,9 +538,10 @@ export class UpdateDriverDto {
    * spoljni vozač (is_internal=false) NE sme imati auth_user_id (DB CHECK) — service
    * forsira null (maintenance.js:2836). `null` = eksplicitno odveži.
    */
-  @IsOptional() @ValidateIf((_o, v) => v !== null) @IsUUID() authUserId?:
-    | string
-    | null;
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @Matches(AUTH_USER_ID_OBA_IZVORA)
+  authUserId?: string | null;
   @IsOptional() @IsString() driversLicenseNumber?: string;
   @IsOptional()
   @IsArray()
@@ -707,8 +730,12 @@ export class UpdateNotificationRuleDto {
  * paritet 1.0 = slobodan tekst (bez stroge validacije, doktrina §C), pa ostaje `@IsString`.
  */
 export class CreateProfileDto extends IdempotentDto {
-  /** auth.users.id korisnika (= maint_user_profiles.user_id, PK). */
-  @IsUUID() userId!: string;
+  /**
+   * Korisnik čiji je ovo CMMS profil (= `maint_user_profiles.user_id`, PK).
+   * 🔴 ŠAV SEOBE: `auth.users.id` (uuid) pod `sy15`, `users.id` (Int) pod `3.0` —
+   * isti razlog i isti oblik kao `CreateDriverDto.authUserId`.
+   */
+  @Matches(AUTH_USER_ID_OBA_IZVORA) userId!: string;
   @IsString() @MaxLength(300) fullName!: string;
   @IsIn(MAINT_ROLE) role!: string;
   @IsOptional() @IsArray() @IsString({ each: true })

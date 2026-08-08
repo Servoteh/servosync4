@@ -1,5 +1,12 @@
-import { ServiceUnavailableException } from "@nestjs/common";
+import {
+  ForbiddenException,
+  ServiceUnavailableException,
+} from "@nestjs/common";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { OdrzavanjeService } from "./odrzavanje.service";
+import { OdrzavanjeAuthzService } from "./odrzavanje-authz.service";
+import { OdrzavanjeFnService } from "./odrzavanje-fn.service";
 import { OdrzavanjeSourceService } from "../../common/sy15/odrzavanje-source.service";
 import { IdempotencyService } from "../../common/idempotency/idempotency.service";
 import type { PrismaService } from "../../prisma/prisma.service";
@@ -119,22 +126,50 @@ type RunIdem = (
   action: string,
   fn: (tx: unknown) => Promise<unknown>,
   opts?: {
-    fn30?: (tx: unknown) => Promise<unknown>;
+    fn30?: (tx: unknown, s: unknown) => Promise<unknown>;
     timeoutMs?: number;
   },
 ) => Promise<{ data: unknown; meta: { idempotent: boolean } }>;
 
-function makeSvc(idem?: IdempotencyService) {
+/**
+ * 3.0 trojka (`prisma` + `authz` + `fnSvc`) je USLOV da `runIdem` uopšte uđe u
+ * 3.0 granu — otkad on sam učitava `MaintScope` PRE otvaranja transakcije
+ * registra (v. `runIdem`: čitanje scope-a IZ transakcije traži drugu konekciju
+ * i pod opterećenjem zaključava pool). Bez trojke je putanja NEPRENETA i pada
+ * sa 503, kao i do sada — samo sad iznad registra, a ne unutar njega.
+ *
+ * Zato ovaj spec ima minimalnu `users` tabelu: `scope30` traži nalog po mejlu i
+ * nepoznatom vraća 403 (nikad prazna prava).
+ */
+function makeScopeDb(prisma: { $transaction: jest.Mock }) {
+  const user = {
+    findFirst: jest.fn().mockResolvedValue({ id: 7 }),
+    findUnique: jest.fn().mockResolvedValue({ role: "admin", active: true }),
+  };
+  const db = {
+    ...prisma,
+    user,
+    userRole: { findMany: jest.fn().mockResolvedValue([]) },
+    maintUserProfile: { findUnique: jest.fn().mockResolvedValue(null) },
+  };
+  return { db: db as unknown as PrismaService, user };
+}
+
+function makeSvc(idem?: IdempotencyService, db?: PrismaService) {
   const s = makeSy15();
+  const prisma = db ?? makeScopeDb({ $transaction: jest.fn() }).db;
+  const authz = new OdrzavanjeAuthzService(prisma);
   const svc = new OdrzavanjeService(
     s.sy15,
     storageStub,
     notifyStub(),
     undefined, // ai
     undefined, // policy
-    undefined, // prisma (glavna baza — koristi ga samo otpis-notify put)
+    prisma,
     new OdrzavanjeSourceService(),
     idem,
+    authz,
+    new OdrzavanjeFnService(prisma, authz),
   );
   const runIdem = (svc as unknown as { runIdem: RunIdem }).runIdem.bind(svc);
   return { svc, runIdem, ...s };
@@ -263,20 +298,51 @@ describe("runIdem pod ODRZAVANJE_IZVOR=3.0", () => {
     expect(db.rows.size).toBe(0);
   });
 
-  it("(c2) prava ruta koja JOŠ NIJE preneta (createMachine) i dalje pada sa 503", async () => {
-    const db = makeIdemDb();
-    const { svc, runIdempotentRls } = makeSvc(
-      new IdempotencyService(db.prisma),
+  // 🔴 ZAMENJEN TEST — obrazloženje, da se sutra ne vrati „po analogiji".
+  //
+  // Ranije je ovde stajalo: „prava ruta koja JOŠ NIJE preneta (`createMachine`)
+  // i dalje pada sa 503". Posle spajanja upisnih PR-ova (#126 + #127) ta tvrdnja
+  // je prestala da važi — `createMachine` JESTE prenet, pa je test pao. To nije
+  // bio kvar nego tačno merenje: test je pinovao stanje seobe kao činjenicu.
+  //
+  // IZMERENO 08.08.2026 (brojanjem po zagradama, ne po prozoru redova — prozor
+  // od N redova promašuje `fn30` koji stoji IZA dugačkog sy15 tela):
+  // svih **15** `this.runIdem(...)` poziva u `odrzavanje.service.ts` ima 3.0 granu.
+  // Dakle NIJEDNA upisna putanja modula više nije neprenesena i test u starom
+  // obliku se ne može ni napisati.
+  //
+  // Sintetički slučaj (poziv `runIdem` sa neprenetom akcijom → 503, ključ
+  // nepotrošen) već pokriva (c1) i on ostaje tačan bez obzira na napredak seobe.
+  // Ovde umesto toga merimo SAMU tu činjenicu, nad izvorom: ako neko doda nov
+  // upisni put bez 3.0 grane, test to prijavi — ne da bi ga zabranio (brana ga
+  // uredno hvata sa 503), nego da bi to bila SVESNA odluka, a ne previd.
+  it("(c2) nijedan `runIdem` u modulu nije ostao bez 3.0 grane", () => {
+    const izvor = readFileSync(
+      join(__dirname, "odrzavanje.service.ts"),
+      "utf8",
     );
-    await expect(
-      svc.createMachine(JA, {
-        clientEventId: CID,
-        machineCode: "M-1",
-        name: "Presa",
-      }),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(runIdempotentRls).not.toHaveBeenCalled();
-    expect(db.rows.size).toBe(0);
+    const bez: number[] = [];
+    let i = 0;
+    let ukupno = 0;
+    while ((i = izvor.indexOf("this.runIdem", i)) >= 0) {
+      const otvorena = izvor.indexOf("(", i);
+      if (otvorena < 0) break;
+      let dubina = 0;
+      let k = otvorena;
+      for (; k < izvor.length; k++) {
+        if (izvor[k] === "(") dubina++;
+        else if (izvor[k] === ")") {
+          dubina--;
+          if (dubina === 0) break;
+        }
+      }
+      ukupno++;
+      if (!izvor.slice(otvorena, k + 1).includes("fn30"))
+        bez.push(izvor.slice(0, i).split("\n").length);
+      i = k + 1;
+    }
+    expect(ukupno).toBeGreaterThan(0); // da izmena imena ne obesmisli test
+    expect(bez).toEqual([]);
   });
 
   it("(c3) bez ubrizganog registra putanja pada sa 503 — NIKAD tih upis u sy15", async () => {
@@ -324,6 +390,57 @@ describe("runIdem pod ODRZAVANJE_IZVOR=3.0", () => {
     expect(run.mock.calls[0][4]).toEqual({ timeoutMs: 60_000 });
     const [, txOpts] = db.prismaMock.$transaction.mock.calls[0] as unknown[];
     expect(txOpts).toEqual({ timeout: 60_000 });
+  });
+
+  /**
+   * 🔴 `MaintScope` se čita PRE nego što registar otvori transakciju.
+   *
+   * `scope30` ide preko KORENSKOG Prisma klijenta, ne preko `tx` — dakle traži
+   * SVOJU konekciju iz pool-a. Da se čita unutar `IdempotencyService.run`
+   * transakcije, pod opterećenjem bi svaka konekcija mogla biti zauzeta
+   * transakcijom koja čeka slobodnu konekciju za `scope30`: pool se zaključa
+   * sam sa sobom i sve stoji do isteka. Ovo se NE VIDI u testu koji meri samo
+   * ishod — vidi se jedino po REDOSLEDU, pa se redosled i tvrdi.
+   *
+   * `withUser30` (ne-idempotentni upisi) to radi ispravno od početka.
+   */
+  it("🔴 scope se čita PRE otvaranja transakcije registra (inače pool sam sebe zaključa)", async () => {
+    const db = makeIdemDb();
+    const scope = makeScopeDb({ $transaction: jest.fn() });
+    const redosled: string[] = [];
+    scope.user.findFirst.mockImplementation(() => {
+      redosled.push("scope30");
+      return Promise.resolve({ id: 7 });
+    });
+    db.prismaMock.$transaction.mockImplementation(
+      async (cb: (t: unknown) => Promise<unknown>) => {
+        redosled.push("transakcija");
+        return cb(db.tx);
+      },
+    );
+    const { runIdem } = makeSvc(new IdempotencyService(db.prisma), scope.db);
+
+    const fn30 = jest.fn().mockResolvedValue({ ok: true });
+    await runIdem(JA, CID, "odrzavanje.create-tire", jest.fn(), { fn30 });
+
+    expect(redosled).toEqual(["scope30", "transakcija"]);
+    // Scope stiže do tela akcije kao DRUGI argument, ne kao novo čitanje unutra.
+    const [, prosledjenScope] = fn30.mock.calls[0] as unknown[];
+    expect(prosledjenScope).toMatchObject({ userId: 7 });
+  });
+
+  it("nepoznat nalog dobija 403 PRE registra — ključ ostaje neupotrebljen", async () => {
+    const db = makeIdemDb();
+    const scope = makeScopeDb({ $transaction: jest.fn() });
+    scope.user.findFirst.mockResolvedValue(null);
+    const { runIdem } = makeSvc(new IdempotencyService(db.prisma), scope.db);
+
+    await expect(
+      runIdem(JA, CID, "odrzavanje.create-tire", jest.fn(), {
+        fn30: () => Promise.resolve({}),
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(db.rows.size).toBe(0);
   });
 
   it("bez `timeoutMs` se Prismi NE prosleđuje opcija (ostaje njen podrazumevani prozor)", async () => {
